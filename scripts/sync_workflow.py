@@ -11,6 +11,13 @@ sync_workflow.py — Agent Workflow 中央標準庫雙向同步工具
 """
 
 import sys
+import sys
+import io
+if sys.stdout and hasattr(sys.stdout, 'buffer'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 import os
 import shutil
 import subprocess
@@ -182,7 +189,7 @@ def cmd_diff(args):
                 diff_found = True
 
     if not diff_found:
-        print("✅ 本地通用規範與中央標準庫完全一致，無任何差異。")
+        print("[SUCCESS] 本地通用規範與中央標準庫完全一致，無任何差異。")
     print("")
 
 def cmd_pull(args):
@@ -224,7 +231,7 @@ def cmd_pull(args):
 
     print("\n" + "=" * 60)
     print(f"  同步完成！新增: {created_count} 檔 | 更新: {synced_count} 檔")
-    print(f"  🛡️ 保護區 (dev_plans/extensions/AGENTS.md) 完好無損，未受任何更動。")
+    print(f"  [PROTECTED] 保護區 (dev_plans/extensions/AGENTS.md) 完好無損，未受任何更動。")
     print("=" * 60 + "\n")
 
 def cmd_push(args):
@@ -273,7 +280,7 @@ def cmd_push(args):
     if res_push.returncode != 0:
         print(f"[ERROR] 推送至遠端中央庫失敗：\n{res_push.stderr}")
         sys.exit(1)
-    print(f"✅ 成功將 {modified_count} 個通用檔案推回中央庫 ({cfg['core_repo']} - {cfg['branch']})！\n")
+    print(f"[SUCCESS] 成功將 {modified_count} 個通用檔案推回中央庫 ({cfg['core_repo']} - {cfg['branch']})！\n")
 
 def cmd_init(args):
     repo_url = args.repo or DEFAULT_CORE_REPO
