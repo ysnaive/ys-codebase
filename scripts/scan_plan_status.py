@@ -2,7 +2,7 @@
 """
 scan_plan_status.py — 專案開發進度與狀態掃描工具
 
-用途：掃描 `.agents/dev_plans/` 目錄，印出當前進行中與歷史 Dev Plan 的狀態矩陣。
+用途：掃描 `.agents/dev_plans/` 目錄，印出當前進行中與歷史 Dev Plan 的狀態矩陣（支援 Umbrella 主/子計畫階層）。
 """
 
 import sys
@@ -23,23 +23,37 @@ def get_workspace_root() -> Path:
 
 def get_plan_info(plan_dir: Path) -> tuple[str, str]:
     ft_plan = plan_dir / "FT_plan.md"
+    p00_req = plan_dir / "P00_semantic_requirements.md"
     p01_req = plan_dir / "P01_requirements_spec.md"
     umbrella = plan_dir / "umbrella_overview.md"
+    master_roadmaps = list(plan_dir.glob("master_plan_*.md"))
 
     track_type = "Unknown"
     status = "Unknown"
 
-    if ft_plan.exists():
+    if umbrella.exists() or len(master_roadmaps) > 0:
+        track_type = "Umbrella"
+        target_doc = umbrella if umbrella.exists() else master_roadmaps[0]
+        content = target_doc.read_text(encoding="utf-8", errors="ignore")
+        for st in ["Completed", "In Progress", "Implementing", "Planning", "Discussing", "Draft"]:
+            if f"狀態：{st}" in content or f"狀態: {st}" in content or f"Status: {st}" in content:
+                status = st
+                break
+        if status == "Unknown":
+            # 檢查子目錄完成度
+            sub_dirs = [d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")]
+            if sub_dirs:
+                sub_statuses = [get_plan_info(sd)[1] for sd in sub_dirs]
+                if all(s == "Completed" for s in sub_statuses):
+                    status = "Completed"
+                else:
+                    status = "In Progress"
+            else:
+                status = "Planning"
+    elif ft_plan.exists():
         track_type = "Fast Track"
         content = ft_plan.read_text(encoding="utf-8", errors="ignore")
         for st in ["Completed", "Reviewing", "Implementing", "Planning"]:
-            if st in content:
-                status = st
-                break
-    elif umbrella.exists():
-        track_type = "Umbrella"
-        content = umbrella.read_text(encoding="utf-8", errors="ignore")
-        for st in ["Completed", "Implementing", "Planning"]:
             if st in content:
                 status = st
                 break
@@ -59,6 +73,13 @@ def get_plan_info(plan_dir: Path) -> tuple[str, str]:
             status = "Designing/Phase 2"
         else:
             status = "Planning/Phase 1"
+    elif p00_req.exists():
+        track_type = "Phase 0 (P00)"
+        content = p00_req.read_text(encoding="utf-8", errors="ignore")
+        if "狀態：Confirmed" in content or "狀態: Confirmed" in content:
+            status = "P00 Confirmed"
+        else:
+            status = "P00 Discussing"
 
     return track_type, status
 
@@ -70,16 +91,27 @@ def scan_plans(include_history: bool = False):
         print("[INFO] 目前無 Dev Plans 目錄。")
         return
 
-    print("=" * 85)
-    print(f"{'計畫名稱':<50} | {'Track 模式':<14} | {'當前狀態':<14} | {'位置'}")
-    print("=" * 85)
+    print("=" * 90)
+    print(f"{'計畫名稱 / 子計畫':<52} | {'Track 模式':<15} | {'當前狀態':<16} | {'位置'}")
+    print("=" * 90)
+
+    def print_plan_tree(plan_dir: Path, loc_str: str):
+        t_type, status = get_plan_info(plan_dir)
+        disp_name = plan_dir.name if len(plan_dir.name) <= 50 else plan_dir.name[:47] + "..."
+        print(f"{disp_name:<52} | {t_type:<15} | {status:<16} | {loc_str}")
+        
+        # 掃描子計畫 sub_*
+        sub_dirs = sorted([d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")], key=lambda x: x.name)
+        for sd in sub_dirs:
+            st_type, s_status = get_plan_info(sd)
+            sub_disp = f"  └─ {sd.name}"
+            sub_disp = sub_disp if len(sub_disp) <= 50 else sub_disp[:47] + "..."
+            print(f"{sub_disp:<52} | {st_type:<15} | {s_status:<16} | {loc_str}")
 
     # 1. 進行中計畫
     active_plans = [d for d in dev_plans_dir.iterdir() if d.is_dir() and d.name != "history" and not d.name.startswith(".")]
     for plan in sorted(active_plans, key=lambda x: x.name, reverse=True):
-        t_type, status = get_plan_info(plan)
-        disp_name = plan.name if len(plan.name) <= 48 else plan.name[:45] + "..."
-        print(f"{disp_name:<50} | {t_type:<14} | {status:<14} | active/")
+        print_plan_tree(plan, "active/")
 
     # 2. 歷史計畫 (選填)
     if include_history:
@@ -91,11 +123,9 @@ def scan_plans(include_history: bool = False):
                         if m_dir.is_dir():
                             for plan in sorted(m_dir.iterdir(), reverse=True):
                                 if plan.is_dir():
-                                    t_type, status = get_plan_info(plan)
-                                    disp_name = plan.name if len(plan.name) <= 48 else plan.name[:45] + "..."
-                                    print(f"{disp_name:<50} | {t_type:<14} | {status:<14} | history/{y_dir.name}/{m_dir.name}/")
+                                    print_plan_tree(plan, f"history/{y_dir.name}/{m_dir.name}/")
 
-    print("=" * 85)
+    print("=" * 90)
 
 if __name__ == "__main__":
     show_all = "--all" in sys.argv or "-a" in sys.argv
