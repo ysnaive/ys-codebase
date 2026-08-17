@@ -19,6 +19,7 @@ description: 開發完成後品質與細節審查工作流
 ### 2. 日誌完整性
 - [ ] **關鍵進入點與重要狀態**：核心介面有適當的 Info / Debug 日誌。
 - [ ] **錯誤與異常處置**：錯誤邊界有 Warning / Error 日誌並附帶上下文資訊。
+- [ ] **高頻防衛**：嚴禁在每影格循環項目 (Update / Render / Calculate) 記錄日誌。
 
 ### 3. 知識庫與文檔同步 (Knowledge Base Sync)
 - [ ] 依專案 `docs/` 鏡像規則，更新受影響模組的 `README.md`、`[topic].md` 或 `DESIGN_NOTES.md`。
@@ -26,7 +27,16 @@ description: 開發完成後品質與細節審查工作流
 
 ### 4. 驗證與測試覆蓋
 - [ ] 自動化測試或 CLI 編譯 100% 通過（附帶日誌紀錄）。
-- [ ] 人工 / UX / 實機驗證已獲得開發者明確確認。
+- [ ] 人工 / UX / 實機驗證已獲得開發者明確確認（若涉 UI/互動）。
 
 ### 5. Commit 訊息規範
 - [ ] 採用 Conventional Commits 格式：`<type>(<scope>): <標題>`，簡潔且資訊完整。
+
+---
+
+### 6. Level 2 Umbrella 主計畫全域完工審查 (如適用)
+- [ ] **所有子計畫完工**：主計畫矩陣內的所有子計畫 (`sub_01`, `sub_02`...) 均已達到 `Completed` 狀態。
+- [ ] **全域依賴閉環**：跨子計畫之資料流、型態相容性與接口簽名均無遺留衝突。
+- [ ] **全域 Decision Records 彙整**：各子計畫的重大架構決策已同步收錄於 `umbrella_overview.md`。
+- [ ] **全域 CHANGELOG 整合**：根目錄 `CHANGELOG.md` 已整合並記錄本次 Umbrella 主計畫的完整演進成果。
+- [ ] **目錄保留原位**：所有子計畫與主目錄保留原位，等待開發者明確指示呼叫 `archive_plan.py` 進行統一歸檔。

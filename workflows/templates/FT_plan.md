@@ -2,9 +2,10 @@
 
 > 功能名稱：[填入功能名稱]
 > 建立日期：[YYYY-MM-DD]
-> 狀態：Planning / Implementing / Reviewing / Completed
+> 所屬主計畫：[填入主計畫名稱 / 無]
 > 依據 P00：[連結至 P00_semantic_requirements.md]
-> 模板版本：v1.2
+> 狀態：Planning / Implementing / Reviewing / Completed
+> 模板版本：v1.3
 
 ---
 

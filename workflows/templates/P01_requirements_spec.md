@@ -2,9 +2,10 @@
 
 > 功能名稱：[填入功能名稱]
 > 建立日期：[YYYY-MM-DD]
+> 所屬主計畫：[填入主計畫名稱 / 無]
+> 依據 P00 / 調研報告：[P00_semantic_requirements.md](./P00_semantic_requirements.md) / [R01_xxx.md](./R01_xxx.md)
 > 狀態：Draft / Confirmed
-> 依據 P00：[連結至 P00_semantic_requirements.md]
-> 模板版本：v1.1
+> 模板版本：v1.2
 
 ---
 

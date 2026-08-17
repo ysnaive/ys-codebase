@@ -1,6 +1,6 @@
 # Agent 專案行為準則與工作流指南 (AGENTS.template.md)
 
-本文件定義 Agent 在專案內執行任務時**必須強制遵守**的通用硬性規則、工作流程引導與工程規範。
+本文件定義 Agent 在專案內執行任務時**必須強制遵守**的硬性規則、工作流程引導與工程規範。
 
 ---
 
@@ -8,8 +8,8 @@
 
 Agent 必須始終遵守以下三大原則：
 1. **零臆測 (Zero Speculation)**：任何不確定的技術細節，都必須與開發者釐清後才能推進。禁止自行假設需求、猜測 API 行為或臆測解法。
-2. **可追溯 (Traceability)**：從需求到程式碼的每一步決策，都必須有文件記錄可回溯（P00 → P01 FR → API → 程式碼 → 測試）。
-3. **分級管控 (Graduated Control)**：完整 Phase 0 語意化討論後，依分流矩陣選擇 Full Track 或 Fast Track。
+2. **可追溯 (Traceability)**：從需求到程式碼的每一步決策，都必須有文件記錄可回溯（P00 語意 → P01 FR/EC → [DR-XX] → API 簽名 → 程式碼 → 測試）。
+3. **分級管控 (Graduated Control)**：完整 Phase 0 語意化討論後，依三大分流層級矩陣選擇 Level 0 (Fast Track)、Level 1 (Full Track) 或 Level 2 (Umbrella 分類型主計畫模式)。
 
 ### 🚨 執行紀律（絕對禁止條款）
 - **嚴禁連發**：一次回應 (Turn) **最多只能執行一個 Phase**。產出階段文件後，必須以明確文字詢問開發者並**立即 End Turn** 等待回覆。
@@ -21,60 +21,40 @@ Agent 必須始終遵守以下三大原則：
   - **嚴禁複合推論**：絕對禁止 Agent 自行假設「因為開發者解答了疑問 ➔ 代表整份文件無其他問題 ➔ 自動推進」。
   - **更新後二次確認 (Update & Re-confirm Loop)**：文件修訂後必須重新呈遞修改摘要，並重新等待開發者明確給出類型 B 指令。
 - **嚴禁空降實作**：未經 Phase 1~4（或 FT-1）規劃並獲得開發者確認前，**絕對禁止直接編寫或修改原始碼**。
-- **Phase 0 討論模式鐵律**：
-  - **Agent 嚴禁臆測需求**：在 Phase 0 討論階段，Agent 僅作為知識顧問，針對開發者陳述提出釐清問題。除非開發者明確要求（如「幫我列出常見方案」），否則嚴禁主動提出設計方案、功能清單或架構建議。
-  - **討論結束必須由開發者明確宣告**：Agent 絕對禁止自行判定討論已完整並推進。必須等待開發者明確表示（如「討論完成」、「進入下一步」）後，才可將 `P00_semantic_requirements.md` 標記為 `Confirmed`。
-  - **Track 分流在 P00 Confirmed 後才執行**：P00 確認後，在同一輪呈遞分流建議，由開發者最終決定 Track。
-  - **Fast Track 與 Full Track 皆需建立並確認 `P00_semantic_requirements.md`**：P00 是所有計畫的語意追溯根源。
-- **Phase 1 / FT-1 規格轉譯嚴禁臆測條款**：
-  - `P01_requirements_spec.md` 與 `FT_plan.md` 中的**每一個 FR 必須可回溯至 `P00_semantic_requirements.md` 中的具體使用情境或 API 使用案例**，填入「對應 P00 語意」欄。
-  - 嚴禁 Phase 1 / FT-1 在 P00 範疇之外新增未經討論的功能點。
 - **Test-First 測試前置定稿條款**：`P06_test_plan.md` 必須於 Phase 2~3 隨設計同步初始化草擬 (Draft)，並於 Phase 4 Review 階段與 `P04_implementation_plan.md` 一併剛性定稿 (Confirmed)，嚴禁延至 Phase 6 才開始憑空設計測試項目。Phase 6 之主軸純粹為「測試實機執行 + 回歸驗證 + 缺陷修復 + UX 驗證」。
 - **Phase 6 UX / 手動測試 Checkpoint 強制等待關卡**：即使 CLI 自動化測試 100% Passed，Agent **絕對禁止**自行將 P06 標記為 `Passed` 或擅自進入 Phase 7！必須呈遞 CLI 測試結果，並明確詢問開發者進行 UX/手動視覺與互動驗證。必須等待開發者明確回覆「UX 驗證通過/指示免測」後，方可將 P06 標記為 Passed 並推進至 Phase 7。
 - **Phase 6 驗證防呆鐵律 (無 Log 即未驗證)**：若 CLI 編譯/測試命令執行受阻（例如環境權限或 log 無法截取），Agent **絕對禁止**在 `P06_test_plan.md` 與對話中標記 `Passed`。必須明確標記 `[未實機編譯/僅靜態檢查]`，並呈遞精確命令請開發者於控制台執行回填。
-- **全階段文件模板剛性對齊**：所有 Phase (P00~P07 / FT_plan) 產出文件 **必須 100% 嚴格鏡像 DevelopmentSOP 模板結構**（包含 `.agents/workflows/templates/` 中定義的所有指定欄位、表格與 Header 規範標頭，如 P07 須標註 `> 狀態：Completed`），嚴禁 Agent 自行簡化或遺漏模板區塊。
+- **全階段文件模板剛性對齊**：所有 Phase (P00~P07 / FT_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像 DevelopmentSOP 模板結構**（包含 `.agents/workflows/templates/` 中定義的所有指定欄位、表格與 Header 規範標頭，如 P07 須標註 `> 狀態：Completed`），嚴禁 Agent 自行簡化或遺漏模板區塊。
+- **Phase 0 討論模式鐵律**：
+  - **Agent 嚴禁臆測需求**：在 Phase 0 討論階段，Agent 僅作為知識顧問，針對開發者陳述提出釐清問題。除非開發者明確要求（如「幫我列出常見方案」），否則嚴禁主動提出設計方案、功能清單或架構建議。
+  - **討論結束必須由開發者明確宣告**：Agent 絕對禁止自行判定討論已完整並推進。必須等待開發者明確表示（如「討論完成」、「進入下一步」）後，才可將 `P00_semantic_requirements.md` 標記為 `Confirmed`。
+  - **三大分流層級在 P00 Confirmed 後才執行**：P00 確認後，在同一輪呈遞三大分流層級建議（Level 0: Fast Track / Level 1: Full Track / Level 2: Umbrella Full Track $\times$ n），由開發者最終決定 Track。
+- **主/子計畫管理與巢狀層級硬性約束**：
+  - **模式 A (衍生型子計畫)**：Phase 6 發現衍生非當前範疇問題時，於主目錄下開立 `sub_XX` 子計畫（預設 Fast Track）。
+  - **模式 B (分類型主計畫 Umbrella)**：多個功能情境或跨模組大型任務時開立 Umbrella 主計畫，以 `umbrella_overview.md` 統籌，子計畫拆分評估以**單個 Full Track 能處理之顆粒度**為單位。
+  - **最多兩層約束**：專案嚴格限制子計畫目錄最多**兩層結構**（主計畫 ➔ 子計畫），**絕對禁止在子計畫下再開子計畫**！
+- **Phase 1 / FT-1 規格轉譯嚴禁臆測條款**：
+  - `P01_requirements_spec.md` 與 `FT_plan.md` 中的**每一個 FR 必須可回溯至 `P00_semantic_requirements.md` 中的具體使用情境或 API 使用案例**，填入「對應 P00 語意」欄。
+  - 嚴禁 Phase 1 / FT-1 在 P00 範疇之外新增未經討論的功能點。
+
 - **沙盒模式命令安全防護與防卡死鐵律**：
-  - **權限模式探測**：Agent 在發起任何 CLI 命令前，應透過環境回覆探測當前權限模式。
-  - **沙盒模式降級呈遞**：當處於**沙盒防護模式**且命令權限未放行時，Agent **絕對禁止盲目發起可能掛起或耗時的背景 `run_command`**！應直接呈遞排版精確的單行 Terminal 指令供開發者於控制台執行並貼回 Log。
-  - **背景 Task 限時與防堆疊**：若發起指令陷入 pending 或未在預期時間內返回 Log，Agent 必須立即終止或回報開發者，防止背景 Task 積累卡死 IDE。
+  - **權限模式探測**：Agent 在發起任何 CLI 命令前，應探測當前權限模式。
+  - **沙盒模式降級呈遞**：當處於沙盒防護模式且命令未放行時，優先呈遞精確 Terminal 指令供手動執行，嚴禁盲目發起可能掛起的背景 Task。
+  - **背景 Task 限時與防堆疊**：嚴禁無窮 Polling 或重複堆疊背景 Task 防止 IDE 卡死。
 - **目錄歸檔紀律與腳本優先**：
-  - **定式作業腳本優先**：進行歷史 Dev Plan / DR 檢索、狀態掃描或計畫歸檔等定式作業時，Agent **必須優先呼叫 `.agents/scripts/` 下的 Python 工具腳本**。
-  - **嚴禁主動歸檔**：**嚴禁 Agent 主動**執行歸檔動作。所有計畫預設留存原位，僅在開發者明確下達歸檔指令時才執行歸檔腳本。
-- **中央工作流標準庫雙向同步紀律 (`sync_workflow.py`)**：
-  - **同步來源與配置**：本專案對齊中央標準庫，配置記載於 `.agents/.workflow_config.json`。
-  - **保護區原則**：專案特化文件（`AGENTS.md`、`ContextInit.md`、`dev_plans/`、`ideas/`、專案特定 `workflows/extensions/`）受保護，禁止被中央庫通用檔案覆蓋。
-  - **Push 嚴格審查條款**：⚠️ **絕對禁止 Agent 未經開發者明確指示主動執行 `python .agents/scripts/sync_workflow.py push`**。
+  - **定式作業腳本優先**：進行歷史 Dev Plan / DR 檢索、狀態掃描或計畫歸檔等定式作業時，必須優先呼叫 `.agents/scripts/` 下的 Python 工具腳本。
+  - **嚴禁主動歸檔**：所有計畫預設留存原位，僅在開發者明確下達歸檔指令時才執行歸檔腳本。
 
 ---
 
 ## 2. 自動 Workflow 觸發引導 (Workflow Triggers)
 
-當接收到開發或文檔相關需求時，Agent 應自動對齊並參考以下 Workflow：
-
 | 開發情境 / 指令 | 對應 Workflow 檔案 | 說明 |
 | :--- | :--- | :--- |
 | **新 Session/Chat 啟動上下文** | [ContextInit.md](./workflows/ContextInit.md) | 在沙盒與全權限模式下安全秒級熱啟動專案規範與歷史脈絡 |
-| **開始新功能開發 / 重大修改** | [DevelopmentSOP.md](./workflows/DevelopmentSOP.md) | 從 Phase 0 開始執行完整的 SOP 分析與規劃 |
-| **接續中斷或已存在的計畫** | [DevelopmentSOP_Continue.md](./workflows/DevelopmentSOP_Continue.md) | 自動掃描 `.agents/dev_plans/` 並恢復上下文與進度 |
+| **開始新功能開發 / 重大修改** | [DevelopmentSOP.md](./workflows/DevelopmentSOP.md) | 從 Phase 0 開始執行完整的 SOP 分析與三大分流規劃 |
+| **大型/跨度大的深度技術調研** | [DevelopmentSOP_Research.md](./workflows/DevelopmentSOP_Research.md) | Phase 0 升級版：多維度技術探討、業界對比與 R{n:2d}_{topic} 報告產出 |
+| **接續中斷或已存在的計畫** | [DevelopmentSOP_Continue.md](./workflows/DevelopmentSOP_Continue.md) | 自動掃描 `.agents/dev_plans/` 並恢復上下文與 Umbrella/Sub-plan 進度 |
 | **開發完成後品質與細節審查** | [DevelopmentSOP_Review.md](./workflows/DevelopmentSOP_Review.md) | 功能實作完成後獨立進行細節、P07 Commit 訊息、Log 完備性與模板稽核 |
 | **更新 / 檢索專案知識庫文檔** | [DocumentationStandards.md](./workflows/DocumentationStandards.md) | 遵循 Package-like 鏡像結構維護 `docs/` |
 
----
-
-## 3. 專案特化工程規範 (Project Specific Engineering Standards)
-
-<!-- 
-================================================================================
-[專案特化擴充插槽]
-請在此區塊填入本專案特有的技術規範（如語言規範、目錄鏡像關係、物理單位約定等）。
-================================================================================
--->
-
-### 3.1 程式語言與路徑鏡像規範
-- [請填入專案之原始碼與測試、文檔之對應關係]
-
-### 3.2 程式碼風格與命名矩陣
-- [請填入專案之命名約定、大小寫規範、變數前綴等]
-
-### 3.3 註解與 Commit 規範
-- [請填入專案之註解層次與 Conventional Commits 標籤]

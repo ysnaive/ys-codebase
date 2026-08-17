@@ -37,7 +37,7 @@ last_updated: "YYYY-MM-DD"
 
 ### 參考開發計畫
 
-- **dev_plans 路徑**：`.agents/dev_plans/history/YYYY_MM_DD_HHMM_[計畫名稱]/`
+- **dev_plans 路徑**：`.agents/dev_plans/history/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_計畫名稱}/`
   *(註：對 dev_plans 統一參照 `history/` 歸檔路徑。若該計畫尚未歸檔，Agent 或讀者搜尋時按名稱 `YYYY_MM_DD_HHMM_[計畫名稱]` 於 `.agents/dev_plans/` 原位檢索即可)*
 
 ---

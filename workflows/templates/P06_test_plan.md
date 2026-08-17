@@ -2,8 +2,9 @@
 
 > 功能名稱：[填入功能名稱]
 > 建立日期：[YYYY-MM-DD]
+> 所屬主計畫：[填入主計畫名稱 / 無]
 > 狀態：Pending / In Progress / Passed / Failed
-> 模板版本：v1.1
+> 模板版本：v1.2
 
 ---
 

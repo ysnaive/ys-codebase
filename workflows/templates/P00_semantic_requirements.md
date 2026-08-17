@@ -175,15 +175,17 @@
 
 ---
 
-## Track 分流判定
+## 三大分流層級判定 (Three-Tier Phasing Matrix)
 
 > 本區塊在開發者確認 P00 後填寫。
 
-| Track | 判定結果 | 理由 |
-|-------|---------|------|
-| **Fast Track** | ☐ | 修改檔案 ≤ 2、不變更 Public API、無跨模組依賴、純 Bug 修復或局部微調 |
-| **Full Track** | ☐ | 新功能、跨模組變更、Public API 修改、架構調整或高風險任務 |
+| 分流層級 | 判定結果 | 適用場景與判定理由 |
+| :--- | :---: | :--- |
+| **Level 0：Fast Track** | ☐ | 修改檔案 ≤ 2、不變更 Public API、無跨模組依賴、純 Bug 修復或局部微調 |
+| **Level 1：Full Track** | ☐ | 單一功能語意、單一使用情境、單一模組的新增或重構 |
+| **Level 2：Full Track $\times$ n<br/>(啟用分類型主計畫 Umbrella)** | ☐ | 多個功能語意/情境、跨模組大型架構重構。子計畫拆分評估以**單個 Full Track 能處理之顆粒度**為單位 |
 
 > 分流後立即執行：
-> - **Fast Track** → 建立 `FT_plan.md`，P00 內容以引用形式嵌入 FT-1 節。
-> - **Full Track** → 建立計畫目錄、`changelog.md`，進入 Phase 1 規格轉譯。
+> - **Level 0 (Fast Track)** → 建立 `FT_plan.md`，P00 內容以引用形式嵌入 FT-1 節。
+> - **Level 1 (Full Track)** → 建立 `changelog.md`，進入 Phase 1 規格轉譯。
+> - **Level 2 (Umbrella Plan)** → 建立 `umbrella_overview.md`，拆分子計畫目錄 `sub_01`, `sub_02`... 並依序推進。
