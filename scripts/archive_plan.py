@@ -7,6 +7,11 @@ archive_plan.py — 開發計畫安全歸檔工具
 """
 
 import sys
+if sys.stdout and hasattr(sys.stdout, 'buffer'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 import shutil
 import re
 from pathlib import Path
