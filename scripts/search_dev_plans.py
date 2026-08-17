@@ -6,6 +6,11 @@ search_dev_plans.py — 歷史開發計畫與決策記錄 (DR) 檢索工具
 """
 
 import sys
+if sys.stdout and hasattr(sys.stdout, 'buffer'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 import re
 import argparse
 from pathlib import Path

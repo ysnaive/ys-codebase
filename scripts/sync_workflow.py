@@ -232,6 +232,13 @@ def cmd_pull(args):
     print("\n" + "=" * 60)
     print(f"  同步完成！新增: {created_count} 檔 | 更新: {synced_count} 檔")
     print(f"  [PROTECTED] 保護區 (dev_plans/extensions/AGENTS.md) 完好無損，未受任何更動。")
+    
+    agents_file = agents_dir / "AGENTS.md"
+    template_file = agents_dir / "workflows" / "templates" / "AGENTS.template.md"
+    if agents_file.exists() and template_file.exists():
+        print("  💡 [提示] 本地 AGENTS.md 受到特化保護未被覆蓋。")
+        print("     若中央庫有更新運行鐵則，建議參閱 .agents/workflows/templates/AGENTS.template.md")
+        print("     並手動將最新鐵則同步至本地 AGENTS.md。")
     print("=" * 60 + "\n")
 
 def cmd_push(args):
@@ -293,6 +300,12 @@ def cmd_init(args):
     }
     save_config(agents_dir, cfg)
     cmd_pull(args)
+    
+    agents_file = agents_dir / "AGENTS.md"
+    template_file = agents_dir / "workflows" / "templates" / "AGENTS.template.md"
+    if not agents_file.exists() and template_file.exists():
+        shutil.copy2(str(template_file), str(agents_file))
+        print(f"  + [INIT] 已從模板初始化專案專屬規範檔：{agents_file}\n")
 
 def main():
     import argparse

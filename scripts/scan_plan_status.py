@@ -6,6 +6,11 @@ scan_plan_status.py — 專案開發進度與狀態掃描工具
 """
 
 import sys
+if sys.stdout and hasattr(sys.stdout, 'buffer'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 from pathlib import Path
 
 def get_workspace_root() -> Path:

@@ -3,11 +3,20 @@
 > 功能名稱：[填入功能名稱]
 > 建立日期：[YYYY-MM-DD]
 > 狀態：Planning / Implementing / Reviewing / Completed
-> 模板版本：v1.1
+> 依據 P00：[連結至 P00_semantic_requirements.md]
+> 模板版本：v1.2
 
 ---
 
 ## FT-1：變更說明
+
+### P00 語意需求摘要（引用自 P00）
+
+> 從 `P00_semantic_requirements.md` 提取核心語意，確保 Fast Track 亦有可追溯的語意依據。
+
+- **計畫類型**：[Feature / Refactor / Bug Fix / Performance / Docs / 自訂類型]
+- **核心訴求**：[一句話概述 P00 的核心需求或問題]
+- **P00 關鍵情境 / 復現步驟摘要**：[從 P00 直接引用關鍵段落]
 
 ### 修改動機
 
@@ -16,6 +25,7 @@
 ### 修改內容
 
 [要修改什麼？一段話概述。]
+
 
 ### 受影響的檔案和函式
 
