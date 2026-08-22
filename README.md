@@ -1,90 +1,76 @@
 # YS-Codebase (`ys-codebase`)
 
-一套專為個人獨立開發者、中小型團隊與 Case-by-Case / 接案專案打造的嚴謹、可追溯、防臆測 AI Agent 代碼庫工程工具與標準規範庫。
+一套專為個人獨立開發者、中小型團隊與 Case-by-Case / 接案專案打造的輕量、模組化 AI Agent 代碼庫工程工具與管理系統。
 
 ---
 
-## 🌟 核心哲學與架構
+## 🌟 核心架構特色
 
-1. **三大原則 (Core Principles)**：
-   - **零臆測 (Zero Speculation)**：嚴禁自行假設需求或 API 行為。
-   - **可追溯 (Traceability)**：全生命週期文件留痕（P00 語意 $\rightarrow$ P01 FR/EC $\rightarrow$ 架構 $\rightarrow$ API $\rightarrow$ Task $\rightarrow$ Test $\rightarrow$ Walkthrough）。
-   - **分級管控 (Graduated Control)**：Level 0 (Fast Track)、Level 1 (Full Track) 與 Level 2 (Umbrella 主計畫) 三大分流體系。
-2. **防呆鐵律 (Guardrails)**：
-   - **嚴禁連發**：單次 Turn 最多執行一個 Phase，產出後強制 End Turn 等待確認。
-   - **嚴禁空降實作**：未經規劃與 Checkpoint 核准前，絕對禁止修改或編寫原始碼。
-   - **Test-First 前置定稿**：P06 測試計畫於 Phase 4 與實作計畫同步定稿。
-   - **人工/UX/實機驗證 Checkpoint**：嚴禁 Agent 代勾測試 Passed，無 Log 視同未驗證。
+1. **極簡單檔起手**：下游專案僅需 checkout [`yscb_installer.py`](./yscb_installer.py) 與同層 [`yscb_config.json`](./yscb_config.json) 即可運作。
+2. **Zero External Dependency**：純 Python 3 標準庫實現，跨平台（Windows / macOS / Linux）免安裝額外套件。
+3. **Source / Build 雙軌分流**：
+   - **標準使用者模式 (Build Mode)**：安裝 `build/<module>` 最終輸出工具與發布物。
+   - **開發者源碼模式 (Source Mode, `--source`)**：安裝 `source/<module>` 原始碼，並**自動強制相依安裝 `source/core` 基礎庫**，解鎖本地 Modify、Build 與 Push 能力。
+4. **模組生命週期管理**：完整支援 `help`、`init`、`install`、`pull`、`build`、`push`、`status`、`list`、`remove`。
 
 ---
 
-## 📁 儲存庫結構
+## 📁 倉庫結構
 
 ```text
 ys-codebase/
-├── workflows/
-│   ├── sop_NewPlan.md             # 核心標準作業流程 (Phase 0~7 / 三大分流體系)
-│   ├── sop_Continue.md            # 任務接續工作流
-│   ├── sop_Review.md              # 結案審查與合規驗證工作流
-│   ├── sop_Discuss.md             # 根因排查與深度討論工作流
-│   ├── sop_Idea.md                # 構想與靈感孵化池
-│   ├── sop_Pause.md               # 任務暫停與現場凍結
-│   ├── sop_Research.md            # 深度技術調研工作流
-│   ├── sop_ContextInit.md         # 專案上下文熱啟動工作流
-│   ├── DocumentationStandards.md  # 知識庫四分法與 docs/ 規範
-│   │
-│   ├── templates/                 # 通用規格書與計畫模板 (P00~P07 / FT / docs)
-│   │   ├── AGENTS.template.md
-│   │   ├── P00_semantic_requirements.md
-│   │   ├── P01_requirements_spec.md
-│   │   ├── P02_architecture_plan.md
-│   │   ├── P03_api_spec.md
-│   │   ├── P04_implementation_plan.md
-│   │   ├── P06_test_plan.md
-│   │   ├── P07_walkthrough.md
-│   │   ├── R_research_report.md
-│   │   ├── FT_plan.md
-│   │   ├── handoff.md
-│   │   ├── idea.md
-│   │   ├── changelog.md
-│   │   ├── global_changelog.md
-│   │   ├── umbrella_overview.md
-│   │   └── docs/ (readme, topic, design_notes, changelog, global_index)
-│   │
-│   └── extensions/
-│       └── ext_template.md        # 專案特化擴充模板
+├── yscb_installer.py              # 核心安裝管理工具 (單一入口 CLI)
+├── yscb_config.json               # 專案核心設定檔
+├── README.md                      # 專案說明
 │
-├── scripts/                       # 定式作業 Python 工具庫
-│   ├── archive_plan.py            # 計畫安全歸檔
-│   ├── scan_plan_status.py        # 計畫進度與狀態矩陣掃描
-│   ├── search_dev_plans.py        # 歷史計畫與 DR 決策全文檢索
-│   ├── sync_workflow.py           # 中央庫雙向同步工具
-│   ├── verify_plan.py             # 計畫合規性與 Extension 深度稽核
-│   └── README.md                  # 腳本使用指南
+├── source/                        # 原始碼空間 (開發者模式)
+│   ├── core/                      # 核心基座 (任何 --source 模組的強制相依底層)
+│   │   └── manifest.json
+│   └── <module_name>/             # 各模組原始碼
 │
-├── .workflow_config.template.json # 專案同步設定檔範本
-├── .gitignore
-├── LICENSE
-└── README.md
+├── build/                         # 發布產出物空間 (一般使用者安裝目標)
+│   └── <module_name>/             # 編譯/封裝後的終端發布產物
+│
+└── tests/                         # 自動化測試套件
+    └── test_installer.py
 ```
 
 ---
 
-## 🚀 快速開始：在專案中引入
+## 🚀 快速上手 (Quick Start)
 
-### 方法 1：使用同步腳本 (`sync_workflow.py`)
-1. 將本倉庫的 `scripts/sync_workflow.py` 複製至專案的 `.agents/scripts/`。
-2. 於專案 `.agents/` 建立 `.workflow_config.json`：
-   ```json
-   {
-     "core_repo": "https://github.com/YsNaive/ys-codebase.git",
-     "branch": "main"
-   }
-   ```
-3. 執行同步：
-   ```bash
-   python .agents/scripts/sync_workflow.py pull
-   ```
+### 1. 初始化專案配置
+```bash
+python yscb_installer.py init
+```
+
+### 2. 檢視可用模組
+```bash
+python yscb_installer.py list
+```
+
+### 3. 安裝模組
+```bash
+# 標準發布物模式安裝
+python yscb_installer.py install <module_name>
+
+# 開發者源碼模式安裝 (自動連帶安裝 source/core)
+python yscb_installer.py install <module_name> --source
+```
+
+### 4. 檢視安裝狀態
+```bash
+python yscb_installer.py status
+```
+
+### 5. 說明文檔與手冊
+```bash
+# 完整指令總覽
+python yscb_installer.py help
+
+# 特定子指令手冊
+python yscb_installer.py help install
+```
 
 ---
 

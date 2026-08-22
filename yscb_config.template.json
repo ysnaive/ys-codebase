@@ -1,0 +1,9 @@
+{
+  "version": "2.0",
+  "remote": {
+    "repo": "https://github.com/YsNaive/ys-codebase.git",
+    "branch": "main"
+  },
+  "installed_modules": {},
+  "custom_settings": {}
+}
