@@ -1,9 +1,15 @@
 # Python
 __pycache__/
+/**/__pycache__/
 *.py[cod]
 *$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 env/
 venv/
 .venv/
@@ -16,3 +22,12 @@ Thumbs.db
 
 # Scratch & temporary
 scratch/
+.yscb_cache/
+
+# 2x2 Matrix User-Level Local Configs (Ignore all user-level configs; track project configs & templates)
+*.local.json
+**/*.local.json
+yscb_config.local.json
+**/config.json
+!**/*template*
+!**/*project*
