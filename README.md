@@ -9,9 +9,9 @@
 1. **統一 CLI 調度器 (`yscb_cli.py`)**：統一轉接各模組專屬 CLI（如 `python yscb_cli.py agents-workflow verify`）與 Installer 管理指令。
 2. **極簡單檔起手**：下游專案僅需 checkout [`yscb_installer.py`](./yscb_installer.py) 與同層 [`yscb_config.json`](./yscb_config.json) 即可運作。
 3. **Zero External Dependency**：純 Python 3 標準庫實現，跨平台（Windows / macOS / Linux）免安裝額外套件。
-4. **Source / Build 雙軌分流**：
-   - **標準使用者模式 (Build Mode)**：安裝 `build/<module>` 最終輸出工具與發布物。
-   - **開發者源碼模式 (Source Mode, `--source`)**：安裝 `source/<module>` 原始碼，並**自動強制相依安裝 `source/core` 基礎庫**，解鎖本地 Modify、Build 與 Push 能力。
+4. **Source / Build / Modules 三層空間分流**：
+   - **標準使用者模式 (Build ➔ Modules)**：從遠端 `build/<module>`（最低執行需求發布物）拉取並安裝至本地 `modules/<module>` 運行（含本地 `config.json` + `config.template.json`）。
+   - **開發者源碼模式 (Source Mode, `--source`)**：安裝 `source/<module>` 完整原始碼至本地 `source/<module>`，並**自動強制相依安裝 `source/core` 基礎庫**，解鎖本地 Modify、Build 與 Push 能力。
 5. **模組 Scripts 與 Hook 規範**：
    - `module/scripts/cli.py`：模組專屬 CLI 入口（支援 `--help`）。
    - `module/scripts/_installed.py`：安裝完成後置 Hook。
@@ -30,12 +30,15 @@ ys-codebase/
 ├── README.md                      # 專案說明
 ├── docs/                          # 系統架構與規範知識庫
 │
-├── source/                        # 原始碼空間 (開發者模式)
+├── source/                        # [源碼空間] 完整開發原始碼 (開發者模式目標)
 │   ├── core/                      # 核心基座 (任何 --source 模組的強制相依底層)
 │   └── <module_name>/             # 各模組原始碼 (含 scripts/cli.py, _installed.py 等)
 │
-├── build/                         # 發布產出物空間 (一般使用者安裝目標)
-│   └── <module_name>/             # 編譯/封裝後的終端發布產物
+├── build/                         # [發布產物空間] 僅包含最低執行需求內容 (ex: 僅含 config.template)
+│   └── <module_name>/             # 由 source/ 編譯/打包產出，供純使用端拉取
+│
+├── modules/                       # [本地運行空間] 於本機端運行的模組 (ex: 含 config + config.template)
+│   └── <module_name>/             # 純使用端安裝目標，由遠端/本地 build/ 複製而來
 │
 └── tests/                         # 自動化測試套件
     └── test_installer.py

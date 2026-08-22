@@ -106,13 +106,13 @@ class TestYSCBInstaller(unittest.TestCase):
         self.assertIn("module_dependent", res_source)
 
     def test_04_install_build_mode(self):
-        """測試標準 Build 模式安裝"""
+        """測試標準 Build 模式安裝（從 build/ 安裝至 modules/）"""
         self.config_mgr.create_default()
         success = self.module_mgr.install_module("module_workflow", mode="build")
         self.assertTrue(success)
 
-        # 檢查 build/<module> 是否存在於專案中
-        installed_file = self.test_dir / "build" / "module_workflow" / "sop_dist.md"
+        # 檢查 modules/<module> 是否存在於專案中
+        installed_file = self.test_dir / "modules" / "module_workflow" / "sop_dist.md"
         self.assertTrue(installed_file.exists())
 
         # 檢查 config 紀錄
@@ -138,11 +138,15 @@ class TestYSCBInstaller(unittest.TestCase):
         self.assertEqual(cfg["installed_modules"]["module_workflow"]["mode"], "source")
 
     def test_06_build_module(self):
-        """測試將 source 模組建置為 build 發布產物（含相依解析與自訂 build.py）"""
+        """測試將 source 模組建置為 build 發布產物（含相依解析、自訂 build.py 與排除 config.json）"""
         # 1. 測試建置相依解析
         build_deps = self.module_mgr.resolve_build_dependencies(["module_dependent"])
         self.assertEqual(build_deps, ["module_workflow", "module_dependent"])
         self.assertNotIn("core", build_deps)
+
+        # 在 source 放入本地運行期 config.json
+        with open(self.source_dir / "module_dependent" / "config.json", "w", encoding="utf-8") as f:
+            f.write('{"local_runtime": true}')
 
         # 2. 測試標準建置
         success = self.module_mgr.build_module("module_dependent")
@@ -150,6 +154,8 @@ class TestYSCBInstaller(unittest.TestCase):
 
         built_file = self.test_dir / "build" / "module_dependent" / "dep.txt"
         self.assertTrue(built_file.exists())
+        # 確認 config.json 被排除
+        self.assertFalse((self.test_dir / "build" / "module_dependent" / "config.json").exists())
 
         # 檢查 manifest 注入 built_at
         manifest_path = self.test_dir / "build" / "module_dependent" / "manifest.json"
@@ -241,12 +247,12 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
         self.assertTrue(uninst_flag.exists())
 
     def test_10_yscb_cli_routing(self):
-        """測試 yscb_cli.py 的轉發與查找能力"""
+        """測試 yscb_cli.py 的轉發與查找能力 (支援 modules/)"""
         from yscb_cli import find_module_cli, get_all_available_clis
         self.config_mgr.create_default()
 
-        # 建立帶有 cli.py 的模組
-        cli_mod = self.build_dir / "module_with_cli"
+        # 建立 modules/ 帶有 cli.py 的模組
+        cli_mod = self.test_dir / "modules" / "module_with_cli"
         cli_mod.mkdir(parents=True, exist_ok=True)
         (cli_mod / "scripts").mkdir(parents=True, exist_ok=True)
         with open(cli_mod / "scripts" / "cli.py", "w", encoding="utf-8") as f:

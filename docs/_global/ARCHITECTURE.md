@@ -27,9 +27,9 @@ last_updated: "2026-08-22"
    - 專案核心依託 [`yscb_installer.py`](../../yscb_installer.py) 與同層設定檔 [`yscb_config.json`](../../yscb_config.json) 驅動模組拉取、更新與管理。
 2. **Zero External Dependency (零第三方依賴)**：
    - 核心工具庫完全基於 Python 3.8+ 標準庫（`argparse`, `json`, `subprocess`, `shutil`, `pathlib`），跨全平台（Windows, macOS, Linux）即開即用。
-3. **Source / Build 雙軌分流 (Dual-Track Lifecycle)**：
-   - 使用者模式 (`install <module>`) 僅消費 `build/<module>/` 終端發布產物。
-   - 開發者模式 (`install <module> --source`) 安裝 `source/<module>/` 原始碼，並自動連帶安裝 `source/core/` 基座。
+3. **Source / Build / Modules 三層空間分流 (Three-Tier Topology)**：
+   - 使用者模式 (`install <module>`) 從遠端/本地 `build/<module>/` 拉取最低執行需求產物並安裝至本地 `modules/<module>/` 運行。
+   - 開發者模式 (`install <module> --source`) 安裝 `source/<module>/` 原始碼至本地 `source/`，並自動連帶安裝 `source/core/` 基座。
 4. **標準化 Scripts 與生命週期 Hook**：
    - 模組透過 `module/scripts/cli.py` 對外暴露子指令，透過 `_installed.py` 與 `_uninstall.py` 與安裝引擎進行生命週期連動。
 
@@ -42,7 +42,7 @@ graph TD
     subgraph Upstream["遠端中央倉庫 (Upstream: ys-codebase)"]
         UC["source/core (純源碼基底)"]
         US["source/<module> (源碼空間)"]
-        UB["build/<module> (發布物空間)"]
+        UB["build/<module> (發布物空間: 最低需求)"]
         UI["yscb_installer.py / yscb_cli.py"]
         UT["yscb_config.template.json"]
     end
@@ -51,16 +51,16 @@ graph TD
         Router["yscb_cli.py (統一調度轉接器)"]
         DI["yscb_installer.py (獨立管理入口)"]
         DC["yscb_config.json (唯一設定檔)"]
-        DB["build/<module> (已安裝產物)"]
+        DM["modules/<module> (本地運行空間: config + template)"]
         DS["source/<module> (可選: 開發者源碼)"]
         DSC["source/core (可選: 連帶底層相依)"]
     end
 
     Router -->|"installer <args>"| DI
-    Router -->|"<module> <args>"| DB
+    Router -->|"<module> <args>"| DM
     UI -.->|"下載/複製"| DI
     UT -.->|"init 範本"| DC
-    UB -->|"install (預設模式)"| DB
+    UB -->|"install (預設模式)"| DM
     US -->|"install --source"| DS
     UC -->|"強制底層相依"| DSC
 ```
@@ -78,8 +78,13 @@ graph TD
 ### 2. 發布產出物空間 (`build/`)
 - **`build/<module>/`**：
   - 透過 `python yscb_installer.py build <module>` 自動打包產出。
-  - 自動排除開發垃圾檔案（`__pycache__`, `*.pyc`, `tests/`, `scratch/`, `.vscode/` 等）。
+  - 僅包含最低執行需求內容（排除 `config.json`、`__pycache__`, `*.pyc`, `tests/`, `scratch/`, `.vscode/` 等）。
   - 在 `manifest.json` 中注入 `built_at` 時間戳，保證發布物具備版本一致性與可追溯性。
+
+### 3. 本地運行模組空間 (`modules/`)
+- **`modules/<module>/`**：
+  - 由純使用端透過 `install <module>` 從 `build/<module>/` 複製安裝而來。
+  - 為本機實際運行空間，包含本地生成的 `config.json` 與 `config.template.json`。
 
 ---
 

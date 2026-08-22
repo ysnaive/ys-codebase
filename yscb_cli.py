@@ -54,17 +54,18 @@ def find_module_cli(root_dir: Path, module_name: str, config: Dict[str, Any]) ->
     installed = config.get("installed_modules", {})
     mode = installed.get(module_name, {}).get("mode", "build")
 
-    # 1. 依據已安裝模式查找
-    preferred_dir = root_dir / ("source" if mode == "source" else "build") / module_name
+    # 1. 依據已安裝模式查找 (source 模式查 source/，build 模式查 modules/)
+    preferred_dir = root_dir / ("source" if mode == "source" else "modules") / module_name
     cli_path = preferred_dir / "scripts" / "cli.py"
     if cli_path.is_file():
         return cli_path
 
-    # 2. 備用查找 (build/ 或 source/)
-    alt_dir = root_dir / ("build" if mode == "source" else "source") / module_name
-    alt_cli = alt_dir / "scripts" / "cli.py"
-    if alt_cli.is_file():
-        return alt_cli
+    # 2. 備用查找 (modules/ -> source/ -> build/)
+    for sub in ["modules", "source", "build"]:
+        alt_dir = root_dir / sub / module_name
+        alt_cli = alt_dir / "scripts" / "cli.py"
+        if alt_cli.is_file():
+            return alt_cli
 
     return None
 
@@ -95,8 +96,8 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
             "mode": info.get("mode", "build")
         }
 
-    # 3. 掃描本地 source/ 與 build/ 中存在 cli.py 但未註冊的模組
-    for sub in ["build", "source"]:
+    # 3. 掃描本地 modules/、source/ 與 build/ 中存在 cli.py 但未註冊的模組
+    for sub in ["modules", "source", "build"]:
         sub_dir = root_dir / sub
         if sub_dir.is_dir():
             for item in sub_dir.iterdir():

@@ -70,4 +70,5 @@ classDiagram
 
 ### 2. 檔案同步與安裝隔離
 - 使用 `shutil.copytree` 搭配 `dirs_exist_ok=True`，支援乾淨覆寫與增量補全。
-- 使用者安裝模式只拉取 `build/<module>/`，杜絕開發期垃圾檔案污染專案。
+- 使用者安裝模式（預設）從遠端/本地 `build/<module>/` 拉取最低執行需求產物並安裝至本地 `modules/<module>/`，杜絕開發期垃圾檔案污染專案。
+- 開發者模式（`--source`）則安裝至 `source/<module>/` 並連帶掛載 `source/core/` 基座。
