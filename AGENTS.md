@@ -64,8 +64,12 @@ Agent 必須始終遵守以下三大原則：
   - **三維錨點 1:1 交付驗收**：Phase 4 依 P03/P05/P06 預排文檔衝擊清單，Phase 7 Walkthrough 必須 1:1 核對全數交付。
 
 - **目錄歸檔紀律與 CLI 調度優先**：
-  - **統一 CLI 指令優先**：進行歷史 Dev Plan / DR 檢索、狀態掃描、合規驗證或計畫歸檔等定式作業時，必須優先呼叫 `python yscb_cli.py agents-workflow <verify|scan|search|archive>` 指令。
+  - **統一 CLI 指令優先**：進行歷史 Dev Plan / DR 檢索、狀態掃描、合規驗證、知識庫巡檢、擴充查詢或計畫歸檔等定式作業時，必須優先呼叫 `python yscb_cli.py agents-workflow <verify|scan|search|archive|docs|ext>` 指令。
   - **嚴禁主動歸檔**：所有計畫預設留存原位（`plans://`），僅在開發者明確下達歸檔指令時才執行歸檔。
+
+- **計畫內部日誌 vs. 全域變更日誌職責分離 (Changelog Separation)**：
+  - **`plans://<plan>/changelog.md`**：【計畫內部微觀日誌】記錄當前 Dev Plan 內部 Phase 轉換、DR 決策與偏差，開立計畫目錄時**必須與 P00 剛性伴隨初始化**。
+  - **`project://CHANGELOG.md`**：【全專案高階發布日誌】僅於 Phase 7 / FT-3 結案審查階段，由 Agent 追加本次 Dev Plan 的高階版本摘要。
 
 ---
 
@@ -115,4 +119,23 @@ python yscb_cli.py uri to-uri docs/_project/STANDARDS.md
 <!-- YSCB_AGENTS_END -->
 
 ## 4. 專案特化工程規範 (Project Specific Standards)
-*(專案特化 C++11 / C# / 硬體架構規範填寫於此，不受中央標準庫覆蓋)*
+*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*
+
+### 🚨 Dogfooding 自引用代碼庫三層空間邊界與防呆鐵律 (Dogfooding Axiom)
+本專案呈現「自引用 (Dogfooding)」狀態，Agent 必須強制遵守以下三大空間隔離與四步標準閉環流水線：
+
+#### 1. 三層空間權限矩陣
+- **空間 ① 源碼開發空間 (`:/ys_codebase/`)**：【唯一源碼來源 (SSOT)】包含 `ys_codebase/source/`、`ys_codebase/yscb_*.py`。所有代碼、腳本、SOP 工作流修改 **100% 必須在此空間進行**。
+- **空間 ② 測試驗證空間 (`:/test/`)**：【品質守門閘門】執行 `python test/run_regression.py`。未 100% 通過前嚴禁放行更新自引用產物。
+- **空間 ③ 自引用消費空間 (`:/` 專案根目錄)**：【發布運行產物】包含 `modules/`、`.agents/`、根目錄 `yscb_*.py`。**視為編譯產物，嚴禁手動直接修改**，必須透過 CLI 指令自動同步。
+
+#### 2. 標準四步閉環流水線 (The Canonical 4-Stage Pipeline)
+1. `Stage 1 (Source)`: 編輯 `ys_codebase/source/...` 或 `ys_codebase/yscb_*.py`。
+2. `Stage 2 (Build)`: `python yscb_cli.py installer build <module>` (或 `build --all`)。
+3. `Stage 3 (Regression)`: 實機執行 `python test/run_regression.py` (維持 23/23 + E2E 100% Passed)。
+4. `Stage 4 (Dogfooding Sync)`:
+   - 覆蓋同步根目錄起手腳本 (`yscb_installer.py` / `yscb_cli.py`)。
+   - `python yscb_cli.py installer install <module> --force` 部署至 `modules/`。
+   - `python yscb_cli.py agents-workflow --ide-antigravity` 重新生成 `.agents/workflows/`。
+   - 檢查 `AGENTS.md` 軟合併無損。
+

@@ -143,3 +143,30 @@ last_updated: "YYYY-MM-DD"
 | `[!WARNING]` | 常見誤用模式，影響系統穩定度、相容性或效能的注意事項 |
 | `[!NOTE]` | 非顯而易見但重要的設計細節（解釋 Why） |
 | `[!TIP]` | 推薦的最佳實踐與調用技巧 |
+
+---
+
+## 🛠️ 7. 知識庫定式維護工具鏈 (Deterministic Tooling)
+
+專案提供一系列定式 CLI 指令，輔助開發者與 Agent 高效維護 `docs/` 知識庫：
+
+### 7.1 初始化知識庫骨架與全域地圖
+```bash
+python yscb_cli.py agents-workflow docs init
+```
+- 自動於 `docs://` 建立 `_project/` 基礎規範範本與全域 `docs/README.md` 知識地圖骨架。
+
+### 7.2 快速生成中觀專題手冊 (Topic Handbook)
+```bash
+python yscb_cli.py agents-workflow docs new-topic <ModuleName> <TopicName>
+# 範例：python yscb_cli.py agents-workflow docs new-topic Core lifecycle
+```
+- 自動生成符合標準 Frontmatter Schema、狀態轉移矩陣與 Mermaid 拓撲骨架之專題 Markdown 檔案。
+
+### 7.3 自動化死鏈與 Frontmatter 合規巡檢 (Audit)
+```bash
+python yscb_cli.py agents-workflow docs audit
+# 或別名：python yscb_cli.py agents-workflow docs check-links
+```
+- 秒級全量掃描 `docs/` 目錄，檢查所有相對路徑超連結是否存在死鏈，並校驗 YAML Frontmatter 語法完備性。
+

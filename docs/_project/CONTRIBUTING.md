@@ -75,9 +75,29 @@ python test/run_regression.py
 
 ---
 
+---
+
+## 🚨 Dogfooding 自引用環境開發紀律
+
+當在 `ys-codebase` 本體倉庫進行開發與維護時，專案呈現「自引用 (Dogfooding)」狀態。請務必嚴格遵循以下四步閉環：
+
+```text
+  [Stage 1: 源碼開發] ➔ 編輯 ys_codebase/source/ (唯一源碼來源，嚴禁直接編輯 modules/)
+          │
+  [Stage 2: 模組打包] ➔ python yscb_cli.py installer build <module>
+          │
+  [Stage 3: 品質守門] ➔ python test/run_regression.py (23 Tests + E2E 100% Passed)
+          │
+  [Stage 4: 自引用更新] ➔ python yscb_cli.py installer install <module> --force
+                         python yscb_cli.py agents-workflow --ide-antigravity
+```
+
+---
+
 ### 步驟 6：提交與推送
 ```bash
 git add .
 git commit -m "feat(module): add my-new-module"
 git push origin main
 ```
+

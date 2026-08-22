@@ -35,6 +35,7 @@ from config_utils import (
     get_plans_dir,
     get_archive_dir,
     get_docs_dir,
+    get_extensions_dir,
     get_workspace_root,
     is_undefined_value,
     sync_agents_md,
@@ -309,13 +310,12 @@ def discover_all_extensions() -> List[Dict[str, Any]]:
     search_dirs = []
     
     # 1. 讀取專案設定之 extensions_dir
-    proj_cfg = load_project_config(MODULE_DIR)
-    ext_setting = proj_cfg.get("paths", {}).get("extensions_dir")
-    if ext_setting and not is_undefined_value(ext_setting):
-        p = Path(ext_setting)
-        ext_p = p if p.is_absolute() else (proj_root / p).resolve()
-        if ext_p.is_dir():
+    try:
+        ext_p = get_extensions_dir(MODULE_DIR)
+        if ext_p and ext_p.is_dir():
             search_dirs.append((ext_p, "sop_ext://"))
+    except Exception:
+        pass
 
     # 2. 模組內建 workflows/extensions
     builtin_ext = MODULE_DIR / "workflows" / "extensions"

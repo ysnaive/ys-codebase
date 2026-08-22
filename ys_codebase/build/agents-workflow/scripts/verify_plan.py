@@ -169,6 +169,23 @@ def verify_single_file(file_path: Path, all_exts: list) -> list:
 
 def verify_plan_directory(plan_dir: Path, all_exts: list) -> dict:
     results = {}
+
+    # 剛性檢查 changelog.md 存在性與基礎格式
+    changelog_path = plan_dir / "changelog.md"
+    if not changelog_path.is_file():
+        results["changelog.md"] = [{"level": "ERROR", "msg": "缺少必備計畫內部變更日誌 (changelog.md)"}]
+    else:
+        try:
+            cl_text = changelog_path.read_text(encoding="utf-8", errors="ignore")
+            cl_issues = []
+            if "變更" not in cl_text and "Changelog" not in cl_text:
+                cl_issues.append({"level": "WARN", "msg": "changelog.md 缺少標準標題 '# 計畫變更紀錄 (Changelog)'"})
+            if "| 日期時間" not in cl_text and "| 日期" not in cl_text:
+                cl_issues.append({"level": "WARN", "msg": "changelog.md 缺少標準表格欄位 '| 日期時間 | 類型 | 摘要 |'"})
+            results["changelog.md"] = cl_issues
+        except Exception as e:
+            results["changelog.md"] = [{"level": "ERROR", "msg": f"讀取 changelog.md 失敗: {e}"}]
+
     md_files = sorted(list(plan_dir.glob("*.md")))
     for md in md_files:
         if md.name in ["changelog.md", "handoff.md"]:

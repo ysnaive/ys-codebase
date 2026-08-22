@@ -22,8 +22,16 @@ python yscb_cli.py agents-workflow verify
 
 ### 步驟 2：全量 Extension 雙重深度稽核 (Extension Deep Audit)
 
-Agent 主動遍歷擴充目錄（`yscb://source/agents-workflow/workflows/extensions/` 或 `project://.agents/extensions/`）下的所有 `.md` 檔案（排除範例模板 `ext_template.md`），執行雙重比對：
+Agent 主動呼叫定式指令或遍歷擴充目錄（`sop_ext://` 或 `yscb://source/agents-workflow/workflows/extensions/`）：
+```bash
+# 檢視專案所有可用 Extension 清單與觸發模式
+python yscb_cli.py agents-workflow ext list
 
+# 檢視指定 Extension 完整內容與 Checklist
+python yscb_cli.py agents-workflow ext show <extension_name>
+```
+
+執行雙重比對：
 1. **常態觸發 (`trigger: always`) 檢查**：
    - 檢查對應 Phase 的 Header `> 擴充項目：` 是否已宣告該 extension 名稱。
    - 檢查正文是否包含該 extension 的執行結果表格。
@@ -47,6 +55,10 @@ Agent 主動遍歷擴充目錄（`yscb://source/agents-workflow/workflows/extens
 - [ ] **高頻防衛**：嚴禁在每影格循環項目 (Update / Render / Calculate) 記錄日誌。
 
 #### 3. 知識庫 1:1 交付與文檔審查 (Knowledge Base Delivery Audit)
+> 💡 **自動化檢查提示**：可優先執行知識庫定式巡檢工具，自動排查死鏈與 Frontmatter 語法：
+> ```bash
+> python yscb_cli.py agents-workflow docs audit
+> ```
 - [ ] **三維錨點對齊**：對照 P03 (API)、P05 (Tasks) 與 P06 (Tests)，確認所有公開介面、協同機制、狀態機、資料管線與工程妥協已全數覆蓋。
 - [ ] **中觀專題手冊 (Topic Docs)**：若涉及 3 個以上狀態轉移、通訊封包、資料管線或並發同步，已建立獨立 `docs/<Module>/[topic].md`（垂直 Mermaid TD + 轉移矩陣）。
 - [ ] **工程妥協登記**：若實作包含非直觀設計或 Workaround，已於 `docs/<Module>/DESIGN_NOTES.md` 登記 `DN-XX` 與 `[!CAUTION]`。
