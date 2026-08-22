@@ -23,3 +23,9 @@ Thumbs.db
 # Scratch & temporary
 scratch/
 .yscb_cache/
+
+# Module Local Configs (Ignore local module configs; track templates and globals)
+**/config.json
+!**/*template*
+!**/*global*
+
