@@ -33,13 +33,43 @@ def get_module_dir(current_path: Optional[Path] = None) -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def get_yscb_root(module_dir: Optional[Path] = None) -> Path:
+    """自動推導 YSCB 工具庫根目錄 (依 yscb_config.json 所在位置或環境變數 YSCB_ROOT)"""
+    yscb_root_str = os.environ.get("YSCB_ROOT")
+    if yscb_root_str:
+        return Path(yscb_root_str).resolve()
+
+    m_dir = get_module_dir(module_dir)
+    cur = m_dir
+    while cur != cur.parent:
+        if (cur / "yscb_config.json").is_file():
+            return cur.resolve()
+        cur = cur.parent
+    return m_dir.parent.parent.resolve()
+
+
 def get_workspace_root(module_dir: Optional[Path] = None) -> Path:
-    """自動推導專案根目錄 (優先使用 YSCB_PROJECT_ROOT，其次依模組目錄往上推兩層 {module_dir}/../..)"""
+    """自動推導專案根目錄 (優先使用 YSCB_PROJECT_ROOT，其次依 yscb_config.json 的 paths.project_root，最後降級至 {module_dir}/../..)"""
     proj_root_str = os.environ.get("YSCB_PROJECT_ROOT")
     if proj_root_str:
         return Path(proj_root_str).resolve()
-    
+
     m_dir = get_module_dir(module_dir)
+    cur = m_dir
+    while cur != cur.parent:
+        cfg_file = cur / "yscb_config.json"
+        if cfg_file.is_file():
+            try:
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                rel_proj = cfg_data.get("paths", {}).get("project_root")
+                if rel_proj:
+                    return (cfg_file.parent / rel_proj).resolve()
+            except Exception:
+                pass
+            return cur.resolve()
+        cur = cur.parent
+
     return m_dir.parent.parent.resolve()
 
 

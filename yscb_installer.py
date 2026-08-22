@@ -48,9 +48,20 @@ class ConfigManager:
     def exists(self) -> bool:
         return self.config_path.exists()
 
-    def create_default(self, repo: str = DEFAULT_REPO, branch: str = DEFAULT_BRANCH, force: bool = False) -> Dict[str, Any]:
+    def create_default(
+        self,
+        repo: str = DEFAULT_REPO,
+        branch: str = DEFAULT_BRANCH,
+        project_root: str = ".",
+        force: bool = False
+    ) -> Dict[str, Any]:
         if self.exists() and not force:
             raise FileExistsError(f"設定檔已存在：{self.config_path}。若需重新初始化請加上 --force。")
+
+        yscb_dir = self.root_dir.resolve()
+        project_dir = (yscb_dir / project_root).resolve()
+        rel_project_root = os.path.relpath(project_dir, yscb_dir).replace("\\", "/")
+        rel_yscb_root = os.path.relpath(yscb_dir, project_dir).replace("\\", "/")
 
         if self.template_path.exists():
             try:
@@ -60,6 +71,10 @@ class ConfigManager:
                     config["remote"] = {}
                 config["remote"]["repo"] = repo
                 config["remote"]["branch"] = branch
+                if "paths" not in config:
+                    config["paths"] = {}
+                config["paths"]["project_root"] = rel_project_root
+                config["paths"]["yscb_root"] = rel_yscb_root
                 self.save(config)
                 return config
             except Exception as e:
@@ -67,6 +82,10 @@ class ConfigManager:
 
         config = {
             "version": "2.0",
+            "paths": {
+                "project_root": rel_project_root,
+                "yscb_root": rel_yscb_root
+            },
             "remote": {
                 "repo": repo,
                 "branch": branch
@@ -77,10 +96,24 @@ class ConfigManager:
         self.save(config)
         return config
 
+    def get_project_root(self) -> Path:
+        """取得專案根目錄 (project_root) 的絕對 Path"""
+        cfg = self.load()
+        rel = cfg.get("paths", {}).get("project_root", ".")
+        return (self.root_dir / rel).resolve()
+
+    def get_yscb_root(self) -> Path:
+        """取得 YSCB 工具庫根目錄 (yscb_root) 的絕對 Path"""
+        return self.root_dir.resolve()
+
     def load(self) -> Dict[str, Any]:
         if not self.exists():
             return {
                 "version": "2.0",
+                "paths": {
+                    "project_root": ".",
+                    "yscb_root": "."
+                },
                 "remote": {
                     "repo": DEFAULT_REPO,
                     "branch": DEFAULT_BRANCH
@@ -95,6 +128,10 @@ class ConfigManager:
             print(f"[WARN] 讀取 {CONFIG_FILENAME} 失敗: {e}，回退至預設配置。")
             return {
                 "version": "2.0",
+                "paths": {
+                    "project_root": ".",
+                    "yscb_root": "."
+                },
                 "remote": {
                     "repo": DEFAULT_REPO,
                     "branch": DEFAULT_BRANCH
@@ -675,8 +712,8 @@ def format_help_doc() -> str:
 
 【指令一覽 (Commands)】
   1. init
-     初始化當前目錄，建立 {CONFIG_FILENAME} 設定檔。
-     用法: python yscb_installer.py init [--repo <URL>] [--branch <BRANCH>] [--force]
+     初始化當前目錄，建立 {CONFIG_FILENAME} 設定檔，綁定專案根目錄 (project_root) 與 YSCB 工具庫路徑 (yscb_root)。
+     用法: python yscb_installer.py init [-p/--project-root <PATH>] [--repo <URL>] [--branch <BRANCH>] [--force]
 
   2. install
      安裝指定模組（預設為 build 發布產物安裝至 modules/；加上 --source 則安裝原始碼至 source/ 並自動相依 core）。
@@ -732,6 +769,7 @@ def main():
 
     # 2. init
     init_parser = subparsers.add_parser("init", help="初始化專案設定檔")
+    init_parser.add_argument("-p", "--project-root", default=".", help="專案根目錄之相對路徑（以 yscb 安裝目錄為基準，預設: .）")
     init_parser.add_argument("--repo", default=DEFAULT_REPO, help=f"中央遠端倉庫 URL (預設: {DEFAULT_REPO})")
     init_parser.add_argument("--branch", default=DEFAULT_BRANCH, help=f"追蹤分支 (預設: {DEFAULT_BRANCH})")
     init_parser.add_argument("--force", action="store_true", help="強制覆寫既有設定檔")
@@ -789,24 +827,41 @@ def main():
 
     root_dir = Path.cwd()
     config_mgr = ConfigManager(root_dir)
-    cfg = config_mgr.load()
-    remote_info = cfg.get("remote", {})
-    git_client = GitRemoteClient(
-        root_dir=root_dir,
-        repo=remote_info.get("repo", DEFAULT_REPO),
-        branch=remote_info.get("branch", DEFAULT_BRANCH)
-    )
-    module_mgr = ModuleManager(root_dir, config_mgr, git_client)
 
     try:
         if args.subcommand == "init":
-            cfg = config_mgr.create_default(repo=args.repo, branch=args.branch, force=args.force)
+            cfg = config_mgr.create_default(
+                repo=args.repo,
+                branch=args.branch,
+                project_root=args.project_root,
+                force=args.force
+            )
+            proj_rel = cfg.get("paths", {}).get("project_root", ".")
+            yscb_rel = cfg.get("paths", {}).get("yscb_root", ".")
+            proj_abs = (root_dir / proj_rel).resolve()
             print(f"[SUCCESS] 已建立專案設定檔：{root_dir / CONFIG_FILENAME}")
-            print(f"  • Repo  : {cfg['remote']['repo']}")
-            print(f"  • Branch: {cfg['remote']['branch']}")
+            print(f"  • Project Root : {proj_rel} (絕對路徑: {proj_abs})")
+            print(f"  • YSCB Root    : {yscb_rel} (相對於 Project Root)")
+            print(f"  • Repo         : {cfg['remote']['repo']}")
+            print(f"  • Branch       : {cfg['remote']['branch']}")
             return 0
 
-        elif args.subcommand == "install":
+        # 強制要求：非 init 指令必須先完成初始化
+        if not config_mgr.exists():
+            print(f"[ERROR] 尚未初始化專案設定檔 ({CONFIG_FILENAME})！", file=sys.stderr)
+            print(f"提示：請先執行 'python yscb_installer.py init' 進行初始化（可透過 -p/--project-root 指定專案根目錄）。", file=sys.stderr)
+            return 1
+
+        cfg = config_mgr.load()
+        remote_info = cfg.get("remote", {})
+        git_client = GitRemoteClient(
+            root_dir=root_dir,
+            repo=remote_info.get("repo", DEFAULT_REPO),
+            branch=remote_info.get("branch", DEFAULT_BRANCH)
+        )
+        module_mgr = ModuleManager(root_dir, config_mgr, git_client)
+
+        if args.subcommand == "install":
             target_modules = args.modules
             mode = "source" if args.source else "build"
 
