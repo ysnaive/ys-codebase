@@ -8,7 +8,10 @@ import copy
 from pathlib import Path
 from typing import Optional, Union, Dict, Any
 
-from .context import ProjectContext
+try:
+    from .context import ProjectContext
+except (ImportError, ValueError):
+    from context import ProjectContext
 
 
 def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:

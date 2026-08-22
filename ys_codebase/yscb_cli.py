@@ -96,6 +96,14 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
         "is_builtin": True
     }
 
+    # 1.1 內建 uri 工具
+    result["uri"] = {
+        "name": "uri",
+        "description": "Codebase 專用語意 URI 解析與反向轉換工具 (resolve, list, to-uri)",
+        "cli_path": "builtin",
+        "is_builtin": True
+    }
+
     # 2. 掃描已安裝模組
     installed = config.get("installed_modules", {})
     for mod_name, info in installed.items():
@@ -163,6 +171,93 @@ def print_global_help(root_dir: Path, config: Dict[str, Any]):
     print("=" * 80 + "\n")
 
 
+def handle_uri_command(root_dir: Path, config: Dict[str, Any], args: List[str]) -> int:
+    """處理 uri 語意路徑相關指令 (resolve, list, to-uri)"""
+    start_p = Path.cwd().resolve() if (Path.cwd() / CONFIG_FILENAME).exists() else root_dir.resolve()
+    rel_proj = config.get("paths", {}).get("project_root", ".")
+    proj_root = (start_p / rel_proj).resolve() if (start_p / CONFIG_FILENAME).exists() else (root_dir / rel_proj).resolve()
+
+    core_candidates = [
+        proj_root / "modules" / "core",
+        proj_root / "source" / "core",
+        root_dir / "modules" / "core",
+        root_dir / "source" / "core",
+        root_dir / "ys_codebase" / "source" / "core",
+        root_dir / "ys_codebase" / "build" / "core",
+        root_dir / "ys_codebase" / "modules" / "core"
+    ]
+    for cp in core_candidates:
+        if (cp / "scripts").is_dir() and str(cp / "scripts") not in sys.path:
+            sys.path.insert(0, str(cp / "scripts"))
+            break
+        elif cp.is_dir() and str(cp) not in sys.path:
+            sys.path.insert(0, str(cp))
+            break
+
+    try:
+        from yscb_core import ProjectURI
+    except ImportError as e:
+        print(f"[ERROR] 無法載入 yscb_core SDK：{e}", file=sys.stderr)
+        return 1
+
+    if not args or args[0] in ["--help", "-h", "help"]:
+        print("\n" + "=" * 80)
+        print("  🧭 YS-Codebase 專用語意 URI 工具 (Semantic URI Tool)")
+        print("=" * 80)
+        print("  指令語法：")
+        print("    python yscb_cli.py uri resolve <uri_string>   解析語意 URI 為實體絕對路徑")
+        print("    python yscb_cli.py uri list                   列出所有支援的 URI 協議與狀態")
+        print("    python yscb_cli.py uri to-uri <file_path>     將實體路徑反向匹配為語意 URI")
+        print("\n  標準支援協議 (Supported Schemes)：")
+        print("    • project://<path>  - 專案根目錄 (Project Root)")
+        print("    • yscb://<path>     - 工具庫根目錄 (YSCB Root)")
+        print("    • plans://<path>    - 活躍開發計畫目錄 (paths.plans_dir)")
+        print("    • archive://<path>  - 歷史歸檔目錄 (paths.archive_dir)")
+        print("    • docs://<path>     - 專案知識庫目錄 (paths.docs_dir)")
+        print("=" * 80 + "\n")
+        return 0
+
+    subcmd = args[0]
+
+    if subcmd == "resolve":
+        if len(args) < 2:
+            print("用法: python yscb_cli.py uri resolve <uri_string>", file=sys.stderr)
+            return 1
+        target_uri = args[1]
+        res = ProjectURI.resolve(target_uri, start_dir=start_p)
+        if isinstance(res, str) and res == "!undefined":
+            print("!undefined")
+            return 1
+        print(str(res))
+        return 0
+
+    elif subcmd == "list":
+        schemes = ProjectURI.list_schemes(start_dir=start_p)
+        print("\n" + "=" * 96)
+        print("  Codebase 語意 URI 協議矩陣 (Semantic URI Protocol Matrix)")
+        print("=" * 96)
+        print(f"  {'協議 (Scheme)':<14} | {'所屬模組':<18} | {'設定鍵 (Setting)':<20} | {'狀態':<14} | {'解析基準路徑'}")
+        print("  " + "-" * 92)
+        for s in schemes:
+            status_str = f"[{s['status']}]"
+            print(f"  {s['scheme']:<14} | {s['module']:<18} | {s['setting']:<20} | {status_str:<14} | {s['resolved_path']}")
+        print("=" * 96 + "\n")
+        return 0
+
+    elif subcmd == "to-uri":
+        if len(args) < 2:
+            print("用法: python yscb_cli.py uri to-uri <file_path>", file=sys.stderr)
+            return 1
+        target_path = args[1]
+        uri_str = ProjectURI.to_uri(target_path, start_dir=start_p)
+        print(uri_str)
+        return 0
+
+    else:
+        print(f"[ERROR] 未知 uri 子指令 '{subcmd}'。請執行 'python yscb_cli.py uri --help'。", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     root_dir = get_root_dir()
     config = load_config(root_dir)
@@ -190,13 +285,11 @@ def main() -> int:
         res = subprocess.run([sys.executable, str(installer_script)] + sub_args)
         return res.returncode
 
-    # 2. 特殊基座模組 core 友善提示
-    if target_module == "core":
-        print("[INFO] 'core' (yscb_core) 為 YS-Codebase 核心運行期 SDK 基座，供所有模組引用，不提供獨立 CLI 入口。")
-        print("提示：可執行 'python yscb_cli.py --help' 檢視其他可用模組與指令手冊。")
-        return 0
+    # 1.1 轉發至 uri 工具
+    if target_module == "uri":
+        return handle_uri_command(root_dir, config, sub_args)
 
-    # 3. 轉發至模組專屬 scripts/cli.py
+    # 2. 轉發至模組專屬 scripts/cli.py
     cli_path = find_module_cli(root_dir, target_module, config)
     if not cli_path:
         print(f"[ERROR] 模組 '{target_module}' 未安裝或未提供 scripts/cli.py 接口。", file=sys.stderr)
@@ -223,7 +316,12 @@ def main() -> int:
         root_dir / "ys_codebase" / "modules" / "core"
     ]
     for cp in core_candidates:
-        if cp.is_dir():
+        if (cp / "scripts").is_dir():
+            curr_pypath = env.get("PYTHONPATH", "")
+            add_paths = str(cp / "scripts") + os.pathsep + str(cp)
+            env["PYTHONPATH"] = add_paths + (os.pathsep + curr_pypath if curr_pypath else "")
+            break
+        elif cp.is_dir():
             curr_pypath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = str(cp) + (os.pathsep + curr_pypath if curr_pypath else "")
             break

@@ -1,5 +1,5 @@
 ---
-description: 開發完成後品質與細節審查工作流 (Review) — 包含 verify_plan.py 定式掃描、全量 Extension 雙重稽核與即時修復閉環
+description: 開發完成後品質與細節審查工作流 (Review) — 包含 verify 定式掃描、全量 Extension 雙重稽核與即時修復閉環
 ---
 
 # 開發完成後審查工作流 (Review)
@@ -10,11 +10,11 @@ description: 開發完成後品質與細節審查工作流 (Review) — 包含 v
 
 ## 🚀 執行步驟
 
-### 步驟 1：執行定式計畫驗收腳本 (Deterministic Tooling)
+### 步驟 1：執行定式計畫驗收工具 (Deterministic Tooling)
 
 優先呼叫專案定式驗證工具，秒級完成 Header 元數據與 Extension 格式合規性掃描：
 ```bash
-python .agents/scripts/verify_plan.py
+python yscb_cli.py agents-workflow verify
 ```
 - 若腳本回報格式錯誤（例如 Header 欄位缺失、`> 擴充項目：` 遺漏），優先進行修復。
 
@@ -22,7 +22,7 @@ python .agents/scripts/verify_plan.py
 
 ### 步驟 2：全量 Extension 雙重深度稽核 (Extension Deep Audit)
 
-Agent 主動遍歷 `.agents/workflows/extensions/` 目錄下的所有 `.md` 檔案（排除範例模板 `ext_template.md`），執行雙重比對：
+Agent 主動遍歷擴充目錄（`yscb://source/agents-workflow/workflows/extensions/` 或 `project://.agents/extensions/`）下的所有 `.md` 檔案（排除範例模板 `ext_template.md`），執行雙重比對：
 
 1. **常態觸發 (`trigger: always`) 檢查**：
    - 檢查對應 Phase 的 Header `> 擴充項目：` 是否已宣告該 extension 名稱。
@@ -38,7 +38,7 @@ Agent 主動遍歷 `.agents/workflows/extensions/` 目錄下的所有 `.md` 檔�
 #### 1. 程式碼品質與清潔度
 - [ ] **無殘留 Debug 代碼**：所有臨時性的 print/log 已清除。
 - [ ] **無死代碼**：無大段被註解掉的廢棄代碼。
-- [ ] **命名與封裝**：命名符合專案 `coding-standards.md`，成員變數 `m_`/`s_`/`k_` 前綴完備。
+- [ ] **命名與封裝**：命名符合專案 [docs://_project/STANDARDS.md](docs://_project/STANDARDS.md)，成員變數 `m_`/`s_`/`k_` 前綴完備。
 - [ ] **物理/數學單位**：具體物理或數學變數顯式標註 `_{unit}` 單位後綴，且無同名覆蓋中轉。
 
 #### 2. 日誌與安全性
@@ -46,9 +46,12 @@ Agent 主動遍歷 `.agents/workflows/extensions/` 目錄下的所有 `.md` 檔�
 - [ ] **錯誤與異常處置**：錯誤邊界有 Warning / Error 日誌並附帶上下文資訊。
 - [ ] **高頻防衛**：嚴禁在每影格循環項目 (Update / Render / Calculate) 記錄日誌。
 
-#### 3. 知識庫與文檔同步 (Knowledge Base Sync)
-- [ ] 依專案 `docs/` 鏡像規則，更新受影響模組的 `README.md`、`[topic].md` 或 `DESIGN_NOTES.md`。
-- [ ] 全域 `CHANGELOG.md` 最上方已追加本次 Plan 之變更摘要。
+#### 3. 知識庫 1:1 交付與文檔審查 (Knowledge Base Delivery Audit)
+- [ ] **三維錨點對齊**：對照 P03 (API)、P05 (Tasks) 與 P06 (Tests)，確認所有公開介面、協同機制、狀態機、資料管線與工程妥協已全數覆蓋。
+- [ ] **中觀專題手冊 (Topic Docs)**：若涉及 3 個以上狀態轉移、通訊封包、資料管線或並發同步，已建立獨立 `docs/<Module>/[topic].md`（垂直 Mermaid TD + 轉移矩陣）。
+- [ ] **工程妥協登記**：若實作包含非直觀設計或 Workaround，已於 `docs/<Module>/DESIGN_NOTES.md` 登記 `DN-XX` 與 `[!CAUTION]`。
+- [ ] **模組 README 同步**：`docs/<Module>/README.md` 已補齊最新 API 簽名與快速上手範例。
+- [ ] **全域地圖與 CHANGELOG**：`docs/README.md` 知識地圖與全域 [project://CHANGELOG.md](project://CHANGELOG.md) 最上方已追加本次變更摘要。
 
 #### 4. 驗證與測試覆蓋
 - [ ] 自動化測試或 CLI 編譯 100% 通過（附帶日誌紀錄）。

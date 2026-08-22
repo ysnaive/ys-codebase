@@ -11,11 +11,11 @@ description: 構想與靈感孵化池工作流 (Idea) — 支援自由發想、W
 ## 🎯 核心原則與互動模式
 
 1. **獨立於 SOP 之外**：
-   - 靈感池存放於 `.agents/ideas/`，不需要走 Phase 1~7 流程，也不需立即分流判定。
+   - 靈感池存放於 `plans://ideas/`，不需要走 Phase 1~7 流程，也不需立即分流判定。
 2. **開放式自由對話**：
    - 開發者怎麼問，Agent 怎麼答。靈活探索可能性、架構思路與潛在邊界，不拘泥於死板格式。
 3. **提案產出 (What / Why / How / Related)**：
-   - 討論收斂後，依 `templates/idea.md` 模板產出結構化構想書，命名為 `YYYY_MM_DD_{idea_name}.md`。
+   - 討論收斂後，依 `workflows/templates/idea.md` 模板產出結構化構想書，命名為 `YYYY_MM_DD_{idea_name}.md`。
 4. **立項流轉機制 (Promoted to Dev Plan)**：
    - 當靈感成熟並獲指示正式開立 Dev Plan 時，**直接將 Idea 檔案搬移至新開立的 Dev Plan 目錄並轉換為 `P00_semantic_requirements.md`**，達成完美無縫銜接。
 
@@ -34,7 +34,7 @@ description: 構想與靈感孵化池工作流 (Idea) — 支援自由發想、W
 
 ### 步驟 2：產出構想提案書
 - 當討論告一段落時，Agent 依 `workflows/templates/idea.md` 建立檔案：
-  - **路徑**：`{plans_dir}/ideas/YYYY_MM_DD_{idea_name}.md`
+  - **路徑**：`plans://ideas/YYYY_MM_DD_{idea_name}.md`
   - **狀態**：標記為 `Incubating`（孵化中）或 `Draft`（草擬中）。
   - **產出約束**：嚴禁將開頭的 HTML 導引註解輸出至目標文件中。
 
@@ -42,6 +42,6 @@ description: 構想與靈感孵化池工作流 (Idea) — 支援自由發想、W
 
 ### 步驟 3：成熟立項流轉 (Promotion)
 - 當開發者宣告「將此 Idea 正式立項開發」時：
-  1. 建立標準 Dev Plan 目錄：`{plans_dir}/{YYYY_MM_DD_HHMM_功能名稱}/`。
+  1. 建立標準 Dev Plan 目錄：`plans://{YYYY_MM_DD_HHMM_功能名稱}/`。
   2. 將提案文件搬移至該目錄，並轉換重命名為 `P00_semantic_requirements.md`。
   3. 進入 `/NewPlan` 標準流程，由開發者確認 P00 後執行三大分流！

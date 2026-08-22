@@ -42,13 +42,36 @@ python yscb_cli.py installer status
 # 調用 Installer 安裝模組 (自動連帶安裝 core)
 python yscb_cli.py installer install agents-workflow
 
+# 初始化專案 SOP 路徑規範 (消除 !undefined)
+python yscb_cli.py agents-workflow init --default
+python yscb_cli.py agents-workflow init --plans-dir plans --archive-dir archive_plans --docs-dir docs --extensions-dir extensions
+
+# 查詢專案可用 Extension 擴充清單與 Checklist (sop_ext://)
+python yscb_cli.py agents-workflow ext list
+python yscb_cli.py agents-workflow ext show ext_security_audit
+
 # 調用 agents-workflow 的專屬 CLI 定式工具
 python yscb_cli.py agents-workflow verify
 python yscb_cli.py agents-workflow scan --all
 python yscb_cli.py agents-workflow search --query "Architecture"
+python yscb_cli.py agents-workflow archive 2026_08_22_1200_my_plan
 
-# 生成 / 清理 IDE 引用式指令 (Gemini / Antigravity)
-python yscb_cli.py agents-workflow --ide-gemini -prefix "sop_"
+# 知識庫 docs 健康守護與按需輔助
+python yscb_cli.py agents-workflow docs init
+python yscb_cli.py agents-workflow docs audit
+python yscb_cli.py agents-workflow docs new-topic Core lifecycle
+
+# 調用 core 核心 SDK CLI
+python yscb_cli.py core info
+python yscb_cli.py core uri list
+
+# 語意 URI 解析與反向轉換 (Semantic URI Protocol)
+python yscb_cli.py uri resolve docs://_project/STANDARDS.md
+python yscb_cli.py uri list
+python yscb_cli.py uri to-uri docs/_project/STANDARDS.md
+
+# 生成 / 清理 IDE 引用式指令 (Google Antigravity / Gemini)
+python yscb_cli.py agents-workflow --ide-antigravity -prefix "sop_"
 python yscb_cli.py agents-workflow --ide-clear
 ```
 

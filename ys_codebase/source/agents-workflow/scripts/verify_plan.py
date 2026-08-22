@@ -5,14 +5,16 @@ verify_plan.py — Dev Plan 合規性與 Extension 深度稽核工具
 用途：
   - 掃描指定 Dev Plan 目錄（或所有活躍進行中計畫），檢查：
     1. 各 Phase 文件 Header 元數據格式（功能名稱、建立日期、所屬主計畫、狀態、擴充項目、模板版本）。
-    2. 全量 Extension 稽核：檢查 extensions/ 目錄下必跑 (trigger: always) 與宣告之擴充項目是否皆已落實。
-    3. 未完成標記與未定稿佔位符檢測。
+    2. 全量 Extension 稽核：檢查 sop_ext:// / extensions/ 目錄下必跑 (trigger: always) 與宣告之擴充項目是否皆已落實。
+    3. P01 / FT_plan 之 Extension 適用性判定矩陣。
+    4. 未完成標記與未定稿佔位符檢測。
 """
 
 import sys
 import os
 import re
 from pathlib import Path
+from typing import Optional, List, Dict, Any
 
 if sys.stdout and hasattr(sys.stdout, 'buffer'):
     try:
@@ -20,57 +22,77 @@ if sys.stdout and hasattr(sys.stdout, 'buffer'):
     except Exception:
         pass
 
-def get_workspace_root() -> Path:
-    cur = Path(__file__).resolve().parent
-    while cur.parent != cur:
-        if (cur / ".agents").is_dir():
-            return cur
-        cur = cur.parent
-    return Path.cwd()
+SCRIPTS_DIR = Path(__file__).resolve().parent
+MODULE_DIR = SCRIPTS_DIR.parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
-def parse_extensions(agents_dir: Path) -> list:
-    ext_dir = agents_dir / "workflows" / "extensions"
+from config_utils import get_plans_dir, get_archive_dir, get_module_dir, get_extensions_dir, get_workspace_root
+
+
+def parse_extensions(module_dir: Path, workspace_root: Optional[Path] = None) -> list:
+    """掃描所有可用 Extension (從 sop_ext://, workflows/extensions, .agents/extensions)"""
+    search_dirs = []
+
+    try:
+        ext_dir = get_extensions_dir(module_dir)
+        if ext_dir.is_dir():
+            search_dirs.append(ext_dir)
+    except Exception:
+        pass
+
+    builtin_ext = module_dir / "workflows" / "extensions"
+    if builtin_ext.is_dir() and builtin_ext not in search_dirs:
+        search_dirs.append(builtin_ext)
+
+    if workspace_root:
+        dot_agents_ext = workspace_root / ".agents" / "extensions"
+        if dot_agents_ext.is_dir() and dot_agents_ext not in search_dirs:
+            search_dirs.append(dot_agents_ext)
+
     extensions = []
-    if not ext_dir.exists():
-        return extensions
+    seen = set()
 
-    for f in ext_dir.glob("*.md"):
-        if f.name == "ext_template.md":
-            continue
-        content = f.read_text(encoding="utf-8", errors="ignore")
-        name = f.stem
-        phase = "unknown"
-        trigger = "always"
+    for ed in search_dirs:
+        for f in ed.glob("*.md"):
+            if f.name == "ext_template.md" or f.name in seen:
+                continue
+            seen.add(f.name)
+            content = f.read_text(encoding="utf-8", errors="ignore")
+            name = f.stem
+            phase = "unknown"
+            trigger = "always"
 
-        # 解析 Frontmatter
-        fm_match = re.search(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
-        if fm_match:
-            fm_text = fm_match.group(1)
-            for line in fm_text.splitlines():
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    k = k.strip().lower()
-                    v = v.strip().strip("[]'\"")
-                    if k == "name":
-                        name = v
-                    elif k == "phase":
-                        phase = v
-                    elif k == "trigger":
-                        trigger = v.lower()
-        else:
-            # 檔案名稱推斷 (如 P01_logging_standards_ext.md)
-            parts = f.stem.split("_", 1)
-            if len(parts) == 2 and parts[0].startswith("P0"):
-                phase = parts[0]
+            # 解析 Frontmatter
+            fm_match = re.search(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+            if fm_match:
+                fm_text = fm_match.group(1)
+                for line in fm_text.splitlines():
+                    if ":" in line:
+                        k, v = line.split(":", 1)
+                        k = k.strip().lower()
+                        v = v.strip().strip("[]'\"")
+                        if k == "name":
+                            name = v
+                        elif k == "phase":
+                            phase = v
+                        elif k == "trigger":
+                            trigger = v.lower()
+            else:
+                # 檔案名稱推斷 (如 P01_logging_standards_ext.md)
+                parts = f.stem.split("_", 1)
+                if len(parts) == 2 and parts[0].startswith("P0"):
+                    phase = parts[0]
 
-        extensions.append({
-            "file": f.name,
-            "name": name,
-            "phase": phase,
-            "trigger": trigger,
-            "title": f.stem,
-        })
+            extensions.append({
+                "file": f.name,
+                "name": name,
+                "phase": phase,
+                "trigger": trigger,
+                "title": f.stem,
+            })
     return extensions
+
 
 def parse_plan_header(lines: list) -> dict:
     """結構化解析 Markdown 開頭 Blockquote (> 欄位：值) 中的 Header 元數據"""
@@ -86,6 +108,7 @@ def parse_plan_header(lines: list) -> dict:
                 k, v = inner.split(":", 1)
                 headers[k.strip().lower()] = v.strip()
     return headers
+
 
 def verify_single_file(file_path: Path, all_exts: list) -> list:
     issues = []
@@ -112,6 +135,17 @@ def verify_single_file(file_path: Path, all_exts: list) -> list:
     if not has_ext:
         issues.append({"level": "WARN", "msg": "Header 缺少 [擴充項目] (或 active ext.) 宣告欄位"})
 
+    # 2.1 檢查 Phase 1 / FT_plan 是否有 Extension 適用性判定矩陣
+    if file_path.name in ["P01_requirements_spec.md", "FT_plan.md"]:
+        has_matrix = any(term in content for term in [
+            "專案擴充特化判定矩陣",
+            "擴充特化判定矩陣",
+            "Extension Specialization Matrix",
+            "Extension Matrix"
+        ])
+        if not has_matrix:
+            issues.append({"level": "WARN", "msg": f"{file_path.name} 建議包含 [專案擴充特化判定矩陣 (Extension Specialization Matrix)] 評估表格"})
+
     # 3. 檢查必跑 Extension (trigger: always)
     phase_code = file_path.stem.split("_")[0].upper() # 例如 P01, P02...
     matching_always_exts = [e for e in all_exts if e["phase"].upper() == phase_code and e["trigger"] == "always"]
@@ -132,6 +166,7 @@ def verify_single_file(file_path: Path, all_exts: list) -> list:
 
     return issues
 
+
 def verify_plan_directory(plan_dir: Path, all_exts: list) -> dict:
     results = {}
     md_files = sorted(list(plan_dir.glob("*.md")))
@@ -150,11 +185,6 @@ def verify_plan_directory(plan_dir: Path, all_exts: list) -> dict:
 
     return results
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from config_utils import get_plans_dir, get_archive_dir, get_module_dir
 
 def main():
     import argparse
@@ -167,10 +197,8 @@ def main():
     plans_dir = get_plans_dir(module_dir)
     archive_dir = get_archive_dir(module_dir)
 
-    root = get_workspace_root()
-    agents_dir = root / ".agents"
-    # 優先從模組目錄讀取 extensions，若無則讀取 workspace .agents
-    all_exts = parse_extensions(module_dir) or parse_extensions(agents_dir)
+    root = get_workspace_root(module_dir)
+    all_exts = parse_extensions(module_dir, root)
 
     target_plans = []
     if args.plan:
@@ -215,13 +243,11 @@ def main():
     for plan in target_plans:
         print(f"\n📁 審查計畫：{plan.name}")
         plan_results = verify_plan_directory(plan, all_exts)
-        has_any_issue = False
 
         for f_name, issues in plan_results.items():
             if not issues:
                 print(f"  ✅ {f_name:<35} [合規通過]")
             else:
-                has_any_issue = True
                 print(f"  ⚠️ {f_name:<35} 發現 {len(issues)} 項問題:")
                 for iss in issues:
                     prefix = "🛑 [ERROR]" if iss["level"] == "ERROR" else "⚠️ [WARN] "
@@ -240,6 +266,7 @@ def main():
 
     if total_errors > 0:
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

@@ -43,20 +43,18 @@ description: 標準開發作業流程 (NewPlan) — 定義專案從需求到發�
 - **Phase 6 人工/UX/硬體測試 Checkpoint 強制等待關卡**：即使自動化測試 100% Passed，Agent **絕對禁止**自行將 P06 標記為 `Passed` 或擅自進入 Phase 7！必須呈遞測試結果，並明確詢問開發者進行實際互動/視覺/硬體驗證。必須等待開發者明確回覆「驗證通過/指示免測」後，方可將 P06 標記為 Passed 並推進至 Phase 7。
 - **Phase 6 驗證防呆鐵律 (無 Log 即未驗證)**：若 CLI 編譯/測試命令執行受阻，Agent **絕對禁止**在 `P06_test_plan.md` 與對話中標記 `Passed`。必須明確標記 `[未實機編譯/僅靜態檢查]`，並呈遞精確命令請開發者於控制台執行回填。
 - **全階段文件模板剛性對齊**：所有 Phase (P00~P07 / FT_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像標準模板結構**（包含指定欄位、表格與 Header 標頭，含 `> 擴充項目：`），嚴禁 Agent 自行簡化或遺漏模板區塊。
-- **目錄歸檔紀律與腳本優先**：
-  - 定式作業（歸檔、檢索、掃描、合規校驗）優先呼叫 `.agents/scripts/` 下的 Python 工具腳本。
-  - **嚴禁 Agent 主動歸檔**：所有計畫預設留存於 `{plans_dir}` 原位（預設專案根目錄 `./plans/`），僅在開發者明確下達歸檔指令時才執行歸檔腳本。
+- **目錄歸檔紀律與 CLI 調度優先**：
+  - 定式作業（歸檔、檢索、掃描、合規校驗）優先呼叫 `python yscb_cli.py agents-workflow <verify|scan|search|archive>` 指令。
+  - **嚴禁 Agent 主動歸檔**：所有計畫預設留存於 `plans://` 原位，僅在開發者明確下達歸檔指令時才執行歸檔工具。
 
 ---
 
 ## 📁 文件與目錄管理規範
 
-### 工作目錄結構（由 `config.json` / `config_global.json` 定義）
+### 工作目錄結構（由 `config.project.json` 定義）
 
-- **獨立計畫（進行中）**：`{plans_dir}/{YYYY_MM_DD_HHMM_功能名稱}/`  
-  *(預設路徑：專案根目錄 `./plans/{YYYY_MM_DD_HHMM_功能名稱}/`)*
-- **獨立計畫（已歸檔）**：`{archive_dir}/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`  
-  *(預設路徑：專案根目錄 `./archive_plans/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`)*
+- **獨立計畫（進行中）**：`plans://{YYYY_MM_DD_HHMM_功能名稱}/`  
+- **獨立計畫（已歸檔）**：`archive://{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`  
 
 > `YYYY_MM_DD_HHMM` 為建立計畫的當前時間（24 小時制），防止同天建立多個計畫時目錄名稱衝突。
 
@@ -64,21 +62,21 @@ description: 標準開發作業流程 (NewPlan) — 定義專案從需求到發�
 
 #### 模式 A：衍生型子計畫 (Derived Sub-Plans)
 在主計畫執行至 **Phase 6 測試** 過程中，若發現非當前計畫範疇之衍生問題、缺陷修復或功能優化需求，**嚴禁隨意擴大當前計畫範圍**，應於主目錄下建立衍生子計畫：
-- **子計畫目錄**：`{plans_dir}/{主計畫名稱}/sub_{編號}_{子計畫目的}/`
+- **子計畫目錄**：`plans://{主計畫名稱}/sub_{編號}_{子計畫目的}/`
 - **預設 Track**：Fast Track（除非開發者指定 Full Track）。
 - **處理流程**：子計畫完成後，將關鍵決策與設計變更納入主計畫文檔，並在主計畫的 `P07_walkthrough.md` 中記錄子計畫回歸結果。子計畫完成後留在主目錄內，待主計畫完成時一同歸檔。
 
 #### 模式 B：分類型主計畫 (Umbrella Plan / Master Plan)
 進行複合子模組系列開發、大型架構重構或跨領域演進時，建立 Umbrella 主計畫：
-- **主計畫目錄**：`{plans_dir}/{YYYY_MM_DD_HHMM_計畫名稱}/`
+- **主計畫目錄**：`plans://{YYYY_MM_DD_HHMM_計畫名稱}/`
 - **主計畫產出**：
   - `P00_semantic_requirements.md`（主計畫總綱語意需求與邊界）
   - `umbrella_overview.md`（總覽、子計畫清單與狀態矩陣、跨子計畫依賴關係圖、整體 Decision Records）
   - **主計畫本身不直接撰寫代碼**，專注於架構總覽與依賴協調。
-- **子計畫目錄**：`{plans_dir}/{主計畫名稱}/sub_{編號}_{子計畫名稱}/`
+- **子計畫目錄**：`plans://{主計畫名稱}/sub_{編號}_{子計畫名稱}/`
 - **子計畫獨立性**：每個子計畫以「單個 Full Track 能處理之顆粒度」為拆分單位，獨立進行 Phase 0 確認後執行其 Full Track (`P01~P07`) 或 Fast Track (`FT_plan`)。
 - **依賴管理**：子計畫間若有執行順序依賴，必須記錄於 `umbrella_overview.md` 並依序推進。
-- **完成與歸檔**：子計畫完成後留在主目錄內；待所有子計畫全部完成後，整個主目錄一起遷移至 `{archive_dir}/`。
+- **完成與歸檔**：子計畫完成後留在主目錄內；待所有子計畫全部完成後，整個主目錄一起遷移至 `archive://`。
 
 > [!IMPORTANT]
 > **巢狀層級硬性約束**：本專案嚴格限制子計畫目錄最多**兩層結構**（主計畫 ➔ 子計畫），**絕對禁止在子計畫目錄下再開設子計畫**！
@@ -167,7 +165,7 @@ flowchart TD
 3. **P00 先於分流**：完整討論 → P00 Confirmed → 三大層級分流，三步驟嚴格有序。
 
 #### 執行步驟
-1. **建立工作目錄**：`{plans_dir}/{YYYY_MM_DD_HHMM_功能名稱}/`（由 `config.json` / `config_global.json` 之 `plans_dir` 定義，預設為專案根目錄 `./plans/`）
+1. **建立工作目錄**：`plans://{YYYY_MM_DD_HHMM_功能名稱}/`（由 `config.project.json` 之 `paths.plans_dir` 定義）
 2. **初始化 P00 草稿**：依模組 `workflows/templates/P00_semantic_requirements.md` 建立 `P00_semantic_requirements.md`（狀態標記為 `Discussing`），選擇對應計畫類型（Feature / Refactor / Bug Fix / Performance / Docs / 自訂）。
 3. **開放式討論與深度調研 (Phase 0-R)**：
    - 標準情況：Agent 作為知識顧問提問釐清，持續補充 `P00` 的「開放議題紀錄」欄位。
@@ -192,11 +190,15 @@ flowchart TD
 將 `P00_semantic_requirements.md` 的語意需求 1:1 轉譯為可驗收的功能需求 (FR)、非功能需求 (NFR) 與邊界條件 (EC)。**嚴禁在 P00 範疇之外新增未經討論的功能點。**
 
 #### 執行步驟
-1. 依 `.agents/workflows/templates/P01_requirements_spec.md` 建立 `P01_requirements_spec.md`（狀態標記為 `Draft`），並標注「依據 P00」連結。
+1. 依 `workflows/templates/P01_requirements_spec.md` 建立 `P01_requirements_spec.md`（狀態標記為 `Draft`），並標注「依據 P00」連結。
 2. **規格轉譯（P00 → FR/EC）**：FR 表格中的每一行必須對應至 P00 的具體使用情境或 API 使用案例，填入「對應 P00 語意」欄。
 3. 列出邊界/異常情況 (EC) 與非功能需求 (NFR)。
-4. **查閱踩坑紀錄**：主動查閱相關模組在 `docs/` 及 `DESIGN_NOTES.md` 中的 `[!CAUTION]` 或 `[!WARNING]`。
-5. 於 `changelog.md` 記錄本階段決策。
+4. **專案特化擴充探測 (Extension Specialization Scan)**：
+   - 執行 `python yscb_cli.py agents-workflow ext list` 掃描 `sop_ext://` 下所有可用擴充。
+   - 於 `P01_requirements_spec.md` 中輸出「專案擴充特化判定矩陣」，逐項評估納入 (Included) 或排除 (Excluded) 理由。
+   - 頂部 Header `> 擴充項目：` 剛性同步已納入之 Extension 名稱（或標記 `none`）。
+5. **查閱踩坑紀錄**：主動查閱相關模組在 `docs://` 及 `DESIGN_NOTES.md` 中的 `[!CAUTION]` 或 `[!WARNING]`。
+6. 於 `changelog.md` 記錄本階段決策。
 
 → **Checkpoint** → 開發者確認（狀態更新為 `Confirmed`） → 進入 Phase 2
 
@@ -208,10 +210,10 @@ flowchart TD
 進行架構分層、模組劃分、依賴邊界與資料流設計。
 
 #### 執行步驟
-1. 依 `.agents/workflows/templates/P02_architecture_plan.md` 建立 `P02_architecture_plan.md`（標記為 `Draft`）。
-2. 繪製 Mermaid 循序圖或資料流圖。
+1. 依 `workflows/templates/P02_architecture_plan.md` 建立 `P02_architecture_plan.md`（標記為 `Draft`）。
+2. 繪製循序圖或資料流圖。
 3. 盤點受影響的模組與檔案清單。
-4. **Test-First 初始化**：依 `.agents/workflows/templates/P06_test_plan.md` 建立初始草稿 `P06_test_plan.md`（標記為 `Draft`），預先將 FR/EC 映射為測試項目。
+4. **Test-First 初始化**：依 `workflows/templates/P06_test_plan.md` 建立初始草稿 `P06_test_plan.md`（標記為 `Draft`），預先將 FR/EC 映射為測試項目。
 
 → **Checkpoint** → 開發者確認（狀態更新為 `Confirmed`） → 進入 Phase 3
 
@@ -223,7 +225,7 @@ flowchart TD
 定義所有 Public/Protected API 簽名、型態、錯誤處理與依賴拓撲順序。
 
 #### 執行步驟
-1. 依 `.agents/workflows/templates/P03_api_spec.md` 建立 `P03_api_spec.md`（標記為 `Draft`）。
+1. 依 `workflows/templates/P03_api_spec.md` 建立 `P03_api_spec.md`（標記為 `Draft`）。
 2. 定義型態簽名、命名風格與物理/數學顯式單位。
 3. 定義依賴拓撲（實作順序）。
 4. **執行 Extension 擴充**：若專案定義了 `P03_*_ext.md`，於標準步驟完成後執行擴充檢查並於 Header `> 擴充項目：` 宣告。
@@ -243,9 +245,15 @@ flowchart TD
    - [ ] 需求規格書中的每個 EC，在 API 規格書中有對應錯誤策略
    - [ ] 風險評估有對應緩解措施
    - [ ] 物理/數學變數皆帶有顯式單位後綴
-2. **靈魂拷問 (Stress Test)**：Agent 主動扮演架構審查員，提出至少 1 個尖銳且具建設性的問題，開發者回答後方可繼續。
-3. **產出最終計畫書**：依 `P04_implementation_plan.md` 模板彙整 DR 與實作細節，狀態更新為 `Confirmed`。
-4. **Test-First 定稿**：同步審查並定稿 `P06_test_plan.md`，狀態更新為 `Confirmed`。
+2. **Extension 任務自動注入 (Task & Test Injection)**：
+   - 將 Phase 1 判定納入的所有 Extension Checklist，實體注入 `P04_implementation_plan.md` 任務細節中。
+   - 將 Extension 驗證條件同步注入 `P06_test_plan.md` 測試案例中。
+3. **知識庫文檔衝擊盤點 (Documentation Impact Plan)**：
+   - 依據 P03 (API 介面)、P05 (實作任務) 與 P06 (測試案例) 進行 7 大抽象知識維度投影。
+   - 於 `P04_implementation_plan.md` 中輸出「知識庫文檔衝擊與交付規劃」，明確預排需新建/更新之 `docs/` 文件（特別是維度 3 中觀機制手冊與維度 5 Design Notes）。
+4. **靈魂拷問 (Stress Test)**：Agent 主動扮演架構審查員，提出至少 1 個尖銳且具建設性的問題，開發者回答後方可繼續。
+5. **產出最終計畫書**：依 `workflows/templates/P04_implementation_plan.md` 模板彙整 DR 與實作細節，狀態更新為 `Confirmed`。
+6. **Test-First 定稿**：同步審查並定稿 `workflows/templates/P06_test_plan.md`，狀態更新為 `Confirmed`。
 
 → **Checkpoint** → 開發者確認「開始實作」 → 進入 Phase 5
 
@@ -296,16 +304,17 @@ flowchart TD
 ### Phase 7：最終品質 Review
 
 #### 目標
-全面審查程式碼品質、同步知識庫文檔與產出 Commit 訊息。
+全面審查程式碼品質、1:1 交付知識庫文檔與產出 Commit 訊息。
 
 #### 執行步驟
 1. **代碼清理與規範檢查**：移除 Debug 語句、檢查命名規範、日誌與記憶體安全。
-2. **知識庫同步 (Knowledge Base Sync)**：
-   - 依 `DocumentationStandards.md` 與專案鏡像規則更新 `docs/` 下對應模組之 `README.md`、`[topic].md` 或 `DESIGN_NOTES.md`。
-   - 依 `global_changelog.md` 模板將本次變更摘要追加至專案根目錄 `CHANGELOG.md` 最上方。
-3. **產出 Commit 訊息**：依 Conventional Commits 格式（`<type>(<scope>): <標題>`）產出。
-4. **產出變更摘要**：依 `P07_walkthrough.md` 模板撰寫變更摘要。
-5. **目錄保留原位**：工作目錄維持原位，僅在開發者明確指示時呼叫 `archive_plan.py` 歸檔。
+2. **知識庫 1:1 交付對齊 (Knowledge Base Delivery Audit)**：
+   - 依據 `P04_implementation_plan.md` 預排之文檔計畫，1:1 實體核對與更新 `docs/` 知識庫。
+   - 確認中觀動態機制專題手冊（`[topic].md`）、工程妥協（`DESIGN_NOTES.md#DN-XX`）與模組 `README.md` 已全量交付。
+   - 依 `workflows/templates/global_changelog.md` 模板將本次變更摘要追加至專案根目錄 [project://CHANGELOG.md](project://CHANGELOG.md) 最上方。
+3. **產出變更摘要**：依 `workflows/templates/P07_walkthrough.md` 模板撰寫變更摘要，包含「知識庫文檔交付驗收對齊表」。
+4. **產出 Commit 訊息**：依 Conventional Commits 格式（`<type>(<scope>): <標題>`）產出。
+5. **目錄保留原位**：工作目錄維持原位，僅在開發者明確指示時呼叫 `python yscb_cli.py agents-workflow archive <plan_id>` 歸檔。
 
 → 開發者確認審查通過 → ✅ 開發完成
 

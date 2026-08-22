@@ -5,7 +5,8 @@
 2. Agent 行為鐵律：
    - 規格轉譯嚴禁臆測：本文件為 P00 的規格轉譯，嚴禁新增 P00 範疇之外未經討論的功能點。
    - 剛性追溯：FR 表格中每一行必須填入「對應 P00 語意」欄位。
-   - 主動查閱踩坑紀錄：查閱相關模組在 docs/ 與 DESIGN_NOTES.md 中的 [!CAUTION] / [!WARNING]。
+   - 主動探測擴充：執行 `python yscb_cli.py agents-workflow ext list` 掃描 sop_ext:// 目錄，並於「專案擴充特化判定矩陣」中逐項評估納入/排除理由。
+   - 主動查閱踩坑紀錄：查閱相關模組在 docs:// 與 DESIGN_NOTES.md 中的 [!CAUTION] / [!WARNING]。
 3. 產出約束：
    - Agent 生成目標文件時，嚴禁輸出本 HTML 註解區塊。
 ===================================================
@@ -17,8 +18,8 @@
 > 所屬主計畫：[填入主計畫目錄名稱 / 無]  
 > 依據 P00 / 調研報告：[P00_semantic_requirements.md](./P00_semantic_requirements.md) / [R01_xxx.md](./R01_xxx.md)  
 > 狀態：Draft / Confirmed  
-> 擴充項目：none  
-> 模板版本：v1.3  
+> 擴充項目：none (或宣告已納入之 Extension 名稱)  
+> 模板版本：v1.4  
 
 ---
 
@@ -47,6 +48,19 @@
 |----|---------|---------|--------|
 | EC-01 | [例：輸入為 null] | [拋錯 / 降級 / 忽略 / 靜默處理] | FR-XX |
 | EC-02 | | | |
+
+---
+
+## 專案擴充特化判定矩陣 (Extension Specialization Matrix)
+
+> 執行 `python yscb_cli.py agents-workflow ext list` 盤點 `sop_ext://` 下所有可用擴充，逐項評估本計畫之適用性：
+
+| 擴充項目名稱 | 觸發模式 | 本計畫適用性判定 | 納入 / 排除具體理由 |
+| :--- | :--- | :--- | :--- |
+| `[擴充名稱 1]` | `always` / `on_demand` | ✅ 納入 (Included) / ❌ 排除 (Excluded) | [說明為何需要或為何不涉及] |
+| `[擴充名稱 2]` | `always` / `on_demand` | ✅ 納入 (Included) / ❌ 排除 (Excluded) | [說明為何需要或為何不涉及] |
+
+> **標頭同步**：凡判定為「✅ 納入」之項目，必須宣告於頂部 Header `> 擴充項目：`；若全數排除則標記 `> 擴充項目：none (已於 Phase 1 評估排除)`。
 
 ---
 

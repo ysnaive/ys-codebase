@@ -48,12 +48,15 @@
 |---------|---------|------|
 | [[path/to/file]] | [函式名 / 類別名] | [修改什麼] |
 
-### 架構影響確認
+### 專案擴充特化判定矩陣 (Extension Specialization Matrix)
 
-- [ ] 不影響 Public API
-- [ ] 不影響模組間依賴關係
-- [ ] 不需新增 public 類別
-- [ ] 僅影響單一模組內部
+> 執行 `python yscb_cli.py agents-workflow ext list` 盤點 `sop_ext://` 下所有可用擴充，評估本計畫之適用性：
+
+| 擴充項目名稱 | 觸發模式 | 本計畫適用性判定 | 納入 / 排除具體理由 |
+| :--- | :--- | :--- | :--- |
+| `[擴充名稱 1]` | `always` / `on_demand` | ✅ 納入 (Included) / ❌ 排除 (Excluded) | [說明為何需要或為何不涉及] |
+
+> **標頭同步**：凡判定為「✅ 納入」之項目，宣告於頂部 Header `> 擴充項目：`；若全數排除則標記 `> 擴充項目：none (已評估排除)`。
 
 ### Decision Records
 
