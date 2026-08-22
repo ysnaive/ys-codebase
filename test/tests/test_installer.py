@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tests/test_installer.py — yscb_installer.py 自動化整合與單元測試
+test/tests/test_installer.py — yscb_installer.py 自動化整合與單元測試
 """
 
 import os
@@ -11,8 +11,17 @@ import unittest
 import json
 from pathlib import Path
 
-# 將專案根目錄加入 sys.path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# 取得專案根目錄與 ys_codebase 源碼目錄
+TESTS_DIR = Path(__file__).resolve().parent
+TEST_DIR = TESTS_DIR.parent
+ROOT_DIR = TEST_DIR.parent
+YS_CODEBASE_ROOT = ROOT_DIR / "ys_codebase"
+
+if (YS_CODEBASE_ROOT / "yscb_installer.py").is_file():
+    PROJECT_ROOT = YS_CODEBASE_ROOT
+else:
+    PROJECT_ROOT = ROOT_DIR
+
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from yscb_installer import ConfigManager, ModuleManager, GitRemoteClient, format_help_doc, CONFIG_FILENAME
@@ -288,7 +297,11 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
     def test_11_ide_gemini_generation(self):
         """測試 agents-workflow --ide-gemini 指令生成、自動清理與 --ide-clear 邏輯"""
         import importlib.util
-        cli_spec = importlib.util.spec_from_file_location("agents_wf_cli", str(PROJECT_ROOT / "source" / "agents-workflow" / "scripts" / "cli.py"))
+        src_path = PROJECT_ROOT / "source" / "agents-workflow" / "scripts" / "cli.py"
+        if not src_path.is_file():
+            src_path = YS_CODEBASE_ROOT / "source" / "agents-workflow" / "scripts" / "cli.py"
+
+        cli_spec = importlib.util.spec_from_file_location("agents_wf_cli", str(src_path))
         wf_cli = importlib.util.module_from_spec(cli_spec)
         cli_spec.loader.exec_module(wf_cli)
 
@@ -318,7 +331,7 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
         finally:
             if "YSCB_PROJECT_ROOT" in os.environ:
                 del os.environ["YSCB_PROJECT_ROOT"]
-            src_cfg = PROJECT_ROOT / "source" / "agents-workflow" / "config.json"
+            src_cfg = (PROJECT_ROOT / "source" / "agents-workflow" / "config.json")
             if src_cfg.exists():
                 src_cfg.unlink()
 
@@ -337,6 +350,8 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
         self.assertTrue(tpl_file.exists())
         with open(tpl_file, "r", encoding="utf-8") as f:
             data = json.load(f)
+        self.assertEqual(data.get("default_key"), "default_value")
+
     def test_13_missing_build_artifact_diagnostic(self):
         """測試當請求 build 模式但僅存在 source 時，提供友善診斷提示"""
         self.config_mgr.create_default()
@@ -354,7 +369,11 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
     def test_14_verify_plan_header_parsing(self):
         """測試 verify_plan.py 對全半形冒號與空白 Header 的結構化解析能力"""
         import importlib.util
-        vp_spec = importlib.util.spec_from_file_location("verify_plan_mod", str(PROJECT_ROOT / "source" / "agents-workflow" / "scripts" / "verify_plan.py"))
+        src_path = PROJECT_ROOT / "source" / "agents-workflow" / "scripts" / "verify_plan.py"
+        if not src_path.is_file():
+            src_path = YS_CODEBASE_ROOT / "source" / "agents-workflow" / "scripts" / "verify_plan.py"
+
+        vp_spec = importlib.util.spec_from_file_location("verify_plan_mod", str(src_path))
         vp = importlib.util.module_from_spec(vp_spec)
         vp_spec.loader.exec_module(vp)
 
@@ -373,7 +392,11 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
     def test_15_agents_workflow_config_and_global_config(self):
         """測試 agents-workflow 模組之 config_global 與 config 單一數據源、繼承與覆寫行為"""
         import importlib.util
-        cu_spec = importlib.util.spec_from_file_location("config_utils_mod", str(PROJECT_ROOT / "source" / "agents-workflow" / "scripts" / "config_utils.py"))
+        src_path = PROJECT_ROOT / "source" / "agents-workflow" / "scripts" / "config_utils.py"
+        if not src_path.is_file():
+            src_path = YS_CODEBASE_ROOT / "source" / "agents-workflow" / "scripts" / "config_utils.py"
+
+        cu_spec = importlib.util.spec_from_file_location("config_utils_mod", str(src_path))
         cu = importlib.util.module_from_spec(cu_spec)
         cu_spec.loader.exec_module(cu)
 
@@ -528,4 +551,3 @@ if __name__ == '__main__':
 
 if __name__ == "__main__":
     unittest.main()
-

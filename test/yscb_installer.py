@@ -204,16 +204,32 @@ class GitRemoteClient:
         if not self.is_git_available():
             raise RuntimeError("Git 未安裝或無法執行，無法同步遠端倉庫。")
 
+        repo_path = Path(self.repo)
         if not (self.cache_dir / ".git").exists():
             if self.cache_dir.exists():
                 shutil.rmtree(self.cache_dir, ignore_errors=True)
             print(f"[INFO] 正在複製遠端庫至快取: {self.repo} ({self.branch})...")
-            res = self._run_git(["clone", "--depth", "1", "-b", self.branch, self.repo, str(self.cache_dir)])
-            if res.returncode != 0:
-                raise RuntimeError(f"Clone 失敗: {res.stderr.strip()}")
-            print("[INFO] 遠端庫快取初始化完成。")
+            
+            if repo_path.is_dir():
+                # 本地倉庫直接進行檔案系統複製，免去沙盒權限與網路開銷
+                def ignore_temp(folder, files):
+                    return [f for f in files if f in [".yscb_cache", ".git", "__pycache__", ".pytest_cache"]]
+                shutil.copytree(repo_path, self.cache_dir, ignore=ignore_temp, dirs_exist_ok=True)
+                (self.cache_dir / ".git").mkdir(parents=True, exist_ok=True)
+                print("[INFO] 本地庫快取初始化完成。")
+            else:
+                clone_args = ["clone", "--depth", "1", "-b", self.branch, self.repo, str(self.cache_dir)]
+                res = self._run_git(clone_args)
+                if res.returncode != 0:
+                    raise RuntimeError(f"Clone 失敗: {res.stderr.strip()}")
+                print("[INFO] 遠端庫快取初始化完成。")
         else:
-            if force_refresh:
+            if repo_path.is_dir():
+                def ignore_temp(folder, files):
+                    return [f for f in files if f in [".yscb_cache", ".git", "__pycache__", ".pytest_cache"]]
+                shutil.copytree(repo_path, self.cache_dir, ignore=ignore_temp, dirs_exist_ok=True)
+                print("[INFO] 本地庫快取同步完成。")
+            elif force_refresh:
                 print(f"[INFO] 正在更新快取至最新 {self.branch} 分支...")
                 res = self._run_git(["fetch", "origin", self.branch], cwd=self.cache_dir)
                 if res.returncode != 0:
@@ -259,22 +275,38 @@ class ModuleManager:
         self.git_client = git_client
 
     def _get_source_dir(self, use_cache: bool = False) -> Path:
-        local_source = self.root_dir / "source"
-        if local_source.is_dir() and not use_cache:
-            return local_source
-        cache_source = self.git_client.cache_dir / "source"
-        if cache_source.is_dir():
-            return cache_source
-        return local_source
+        if not use_cache:
+            for candidate in [
+                self.root_dir / "source",
+                self.root_dir / "ys_codebase" / "source",
+                self.root_dir.parent / "ys_codebase" / "source"
+            ]:
+                if candidate.is_dir():
+                    return candidate
+        for cache_candidate in [
+            self.git_client.cache_dir / "source",
+            self.git_client.cache_dir / "ys_codebase" / "source"
+        ]:
+            if cache_candidate.is_dir():
+                return cache_candidate
+        return self.root_dir / "source"
 
     def _get_build_dir(self, use_cache: bool = False) -> Path:
-        local_build = self.root_dir / "build"
-        if local_build.is_dir() and not use_cache:
-            return local_build
-        cache_build = self.git_client.cache_dir / "build"
-        if cache_build.is_dir():
-            return cache_build
-        return local_build
+        if not use_cache:
+            for candidate in [
+                self.root_dir / "build",
+                self.root_dir / "ys_codebase" / "build",
+                self.root_dir.parent / "ys_codebase" / "build"
+            ]:
+                if candidate.is_dir():
+                    return candidate
+        for cache_candidate in [
+            self.git_client.cache_dir / "build",
+            self.git_client.cache_dir / "ys_codebase" / "build"
+        ]:
+            if cache_candidate.is_dir():
+                return cache_candidate
+        return self.root_dir / "build"
 
     def read_manifest(self, module_path: Path) -> Dict[str, Any]:
         manifest_file = module_path / "manifest.json"
@@ -400,18 +432,27 @@ class ModuleManager:
         return resolved
 
     def _locate_module_dir(self, module_name: str, mode: str) -> Optional[Path]:
-        """定位模組來源目錄（本地優先，其次快取）"""
+        """定位模組來源目錄（本地優先，包含本地 ys_codebase，其次快取）"""
         target_sub = "source" if mode == "source" else "build"
         
-        # 1. 本地目錄
-        local_path = self.root_dir / target_sub / module_name
-        if local_path.is_dir():
-            return local_path
+        # 1. 本地目錄搜尋候選
+        candidates = [
+            self.root_dir / target_sub / module_name,
+            self.root_dir / "ys_codebase" / target_sub / module_name,
+            self.root_dir.parent / "ys_codebase" / target_sub / module_name
+        ]
+        for p in candidates:
+            if p.is_dir():
+                return p
 
         # 2. 快取目錄
-        cache_path = self.git_client.cache_dir / target_sub / module_name
-        if cache_path.is_dir():
-            return cache_path
+        cache_candidates = [
+            self.git_client.cache_dir / target_sub / module_name,
+            self.git_client.cache_dir / "ys_codebase" / target_sub / module_name
+        ]
+        for cp in cache_candidates:
+            if cp.is_dir():
+                return cp
 
         return None
 
@@ -552,11 +593,19 @@ class ModuleManager:
             print("[INFO] 'core' 為基礎庫，無需生成 build 產出物。")
             return True
 
-        src_path = self.root_dir / "source" / module_name
-        if not src_path.is_dir():
-            raise FileNotFoundError(f"找不到源碼目錄：{src_path}，無法執行 build。")
+        src_path = self._locate_module_dir(module_name, "source")
+        if not src_path or not src_path.is_dir():
+            raise FileNotFoundError(f"找不到模組 '{module_name}' 的源碼目錄，無法執行 build。")
 
-        dest_path = self.root_dir / "build" / module_name
+        # 決定 build 產出目標目錄
+        if (self.root_dir / "source" / module_name).is_dir():
+            dest_path = self.root_dir / "build" / module_name
+        elif (self.root_dir / "ys_codebase" / "source" / module_name).is_dir():
+            dest_path = self.root_dir / "ys_codebase" / "build" / module_name
+        elif (self.root_dir.parent / "ys_codebase" / "source" / module_name).is_dir():
+            dest_path = self.root_dir.parent / "ys_codebase" / "build" / module_name
+        else:
+            dest_path = self.root_dir / "build" / module_name
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         manifest = self.read_manifest(src_path)

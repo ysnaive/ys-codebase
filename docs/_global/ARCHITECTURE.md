@@ -3,10 +3,11 @@ target: "System/Architecture"
 doc_type: "overview"
 status: "active"
 source_paths:
-  - "yscb_cli.py"
-  - "yscb_installer.py"
-  - "source/"
-  - "build/"
+  - "ys_codebase/yscb_cli.py"
+  - "ys_codebase/yscb_installer.py"
+  - "ys_codebase/source/"
+  - "ys_codebase/build/"
+  - "test/run_regression.py"
 related_docs:
   - "../README.md"
   - "./CLI_SPECIFICATION.md"
@@ -22,16 +23,20 @@ last_updated: "2026-08-22"
 
 ## 🏛️ 核心設計原則
 
-1. **統一轉接與極簡起手 (Unified Router & Entry Point)**：
-   - 下游專案可透過 [`yscb_cli.py`](../../yscb_cli.py) 統一調度所有模組指令與安裝器。
-   - 專案核心依託 [`yscb_installer.py`](../../yscb_installer.py) 與同層設定檔 [`yscb_config.json`](../../yscb_config.json) 驅動模組拉取、更新與管理。
-2. **Zero External Dependency (零第三方依賴)**：
-   - 核心工具庫完全基於 Python 3.8+ 標準庫（`argparse`, `json`, `subprocess`, `shutil`, `pathlib`），跨全平台（Windows, macOS, Linux）即開即用。
-3. **Source / Build / Modules 三層空間分流 (Three-Tier Topology)**：
+1. **三層環境架構體系 (Three-Tier Environment Architecture)**：
+   - **`:/ys_codebase/` [完整源碼開發環境]**：包含 Installer 核心引擎、CLI 統一轉接器、`source/` 源碼空間、`build/` 發布產物空間與技術手冊。
+   - **`:/test/` [假專案測試環境]**：作為下游消費端的隔離沙盒，配置獨立環境與全自動回歸測試腳本（`run_regression.py`）。
+   - **`:/` [自引用 Dogfooding 環境]**：根專案作為使用者，在工具開發成熟後自引用使用 `ys-codebase` 工具（包含 `modules/`、`docs/` 知識庫與 `plans/` 計畫紀錄）。
+2. **統一轉接與極簡起手 (Unified Router & Entry Point)**：
+   - 下游專案可透過 `yscb_cli.py` 統一調度所有模組指令與安裝器。
+   - 專案核心依託 `yscb_installer.py` 與同層設定檔 `yscb_config.json` 驅動模組拉取、更新與管理。
+3. **Zero External Dependency (零第三方依賴)**：
+   - 核心工具庫完全基於 Python 3.8+ 標準庫（`argparse`, `json`, `subprocess`, `shutil`, `pathlib`），跨全平台（Windows, macOS, Linux）免安裝任何外部依賴。
+4. **Source / Build / Modules 三層空間分流 (Three-Tier Module Topology)**：
    - 使用者模式 (`install <module>`) 從遠端/本地 `build/<module>/` 拉取最低執行需求產物並安裝至本地 `modules/<module>/` 運行。
    - 開發者模式 (`install <module> --source`) 安裝 `source/<module>/` 原始碼至本地 `source/`，並自動連帶安裝 `source/core/` 基座。
-4. **標準化 Scripts 與生命週期 Hook**：
-   - 模組透過 `module/scripts/cli.py` 對外暴露子指令，透過 `_installed.py` 與 `_uninstall.py` 與安裝引擎進行生命週期連動。
+5. **標準化 Scripts 與生命週期 Hook**：
+   - 模組透過 `module/scripts/cli.py` 對外暴露子指令，透過 `_installed.py`、`_uninstall.py` 與 `_migration.py` 與安裝引擎進行生命週期連動。
 
 ---
 
@@ -39,7 +44,7 @@ last_updated: "2026-08-22"
 
 ```mermaid
 graph TD
-    subgraph Upstream["遠端中央倉庫 (Upstream: ys-codebase)"]
+    subgraph ToolDev["工具庫源碼環境 (:/ys_codebase/)"]
         UC["source/core (純源碼基底)"]
         US["source/<module> (源碼空間)"]
         UB["build/<module> (發布物空間: 最低需求)"]
@@ -47,22 +52,27 @@ graph TD
         UT["yscb_config.template.json"]
     end
 
-    subgraph Downstream["下游使用者專案 (Downstream Project)"]
+    subgraph TestEnv["假專案測試環境 (:/test/)"]
+        TR["run_regression.py (回歸測試套件)"]
+        TT["tests/ (test_installer.py)"]
+        TS["模擬沙盒環境 (Dynamic Sandbox)"]
+    end
+
+    subgraph Downstream["下游使用者專案 / 自引用根環境 (Downstream / Dogfooding)"]
         Router["yscb_cli.py (統一調度轉接器)"]
         DI["yscb_installer.py (獨立管理入口)"]
         DC["yscb_config.json (唯一設定檔)"]
         DM["modules/<module> (本地運行空間: config + template)"]
-        DS["source/<module> (可選: 開發者源碼)"]
-        DSC["source/core (可選: 連帶底層相依)"]
     end
 
+    US -->|"build <module>"| UB
+    TR -->|"驗證"| ToolDev
+    TR -->|"驗證"| TS
+    UI -.->|"單檔部署"| DI
+    UT -.->|"init 範本"| DC
+    UB -->|"install (發布物模式)"| DM
     Router -->|"installer <args>"| DI
     Router -->|"<module> <args>"| DM
-    UI -.->|"下載/複製"| DI
-    UT -.->|"init 範本"| DC
-    UB -->|"install (預設模式)"| DM
-    US -->|"install --source"| DS
-    UC -->|"強制底層相依"| DSC
 ```
 
 ---
@@ -77,38 +87,21 @@ graph TD
 
 ### 2. 發布產出物空間 (`build/`)
 - **`build/<module>/`**：
-  - 透過 `python yscb_installer.py build <module>` 自動打包產出。
+  - 透過 `python ys_codebase/yscb_cli.py installer build <module>` 自動打包產出。
   - 僅包含最低執行需求內容（排除 `config.json`、`__pycache__`, `*.pyc`, `tests/`, `scratch/`, `.vscode/` 等）。
   - 在 `manifest.json` 中注入 `built_at` 時間戳，保證發布物具備版本一致性與可追溯性。
 
 ### 3. 本地運行模組空間 (`modules/`)
 - **`modules/<module>/`**：
-  - 由純使用端透過 `install <module>` 從 `build/<module>/` 複製安裝而來。
+  - 由純使用端透過 `installer install <module>` 從 `build/<module>/` 複製安裝而來。
   - 為本機實際運行空間，包含本地生成的 `config.json` 與 `config.template.json`。
 
 ---
 
-## 🔄 模組構建管線 (Build Pipeline)
+## 🔄 標準作業流程 (Development & Release Workflow)
 
 ```mermaid
-sequenceDiagram
-    participant Dev as 開發者
-    participant CLI as yscb_installer.py
-    participant Resolver as Dependency Resolver
-    participant Builder as Build Engine
-    participant Output as build/<module>
-
-    Dev->>CLI: python yscb_installer.py build <module>
-    CLI->>Resolver: 解析相依鏈 (排除 core)
-    Resolver-->>CLI: 返回拓撲建置順序 [DepModule, TargetModule]
-    loop 依序建置每個模組
-        CLI->>Builder: 執行模組建置
-        alt 存在 source/<module>/build.py
-            Builder->>Builder: 調用自訂建置腳本
-        else 標準打包管線
-            Builder->>Builder: 過濾開發檔案並複製到 build/<module>
-        end
-        Builder->>Output: 寫入/更新 manifest.json (注入 built_at)
-    end
-    CLI-->>Dev: [SUCCESS] 建置完成
+flowchart LR
+    A["1. 於 :/ 環境開發<br/>源碼修改於 :/ys_codebase/"] --> B["2. 進入 :/test/<br/>執行 python test/run_regression.py"]
+    B --> C["3. 測試通過<br/>發布/自引用更新"]
 ```
