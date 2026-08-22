@@ -33,8 +33,8 @@ description: 構想與靈感孵化池工作流 (Idea) — 支援自由發想、W
 ---
 
 ### 步驟 2：產出構想提案書
-- 當討論告一段落時，Agent 依 `.agents/workflows/templates/idea.md` 建立檔案：
-  - **路徑**：`.agents/ideas/YYYY_MM_DD_{idea_name}.md`
+- 當討論告一段落時，Agent 依 `workflows/templates/idea.md` 建立檔案：
+  - **路徑**：`{plans_dir}/ideas/YYYY_MM_DD_{idea_name}.md`
   - **狀態**：標記為 `Incubating`（孵化中）或 `Draft`（草擬中）。
   - **產出約束**：嚴禁將開頭的 HTML 導引註解輸出至目標文件中。
 
@@ -42,6 +42,6 @@ description: 構想與靈感孵化池工作流 (Idea) — 支援自由發想、W
 
 ### 步驟 3：成熟立項流轉 (Promotion)
 - 當開發者宣告「將此 Idea 正式立項開發」時：
-  1. 建立標準 Dev Plan 目錄：`.agents/dev_plans/{YYYY_MM_DD_HHMM_功能名稱}/`。
-  2. 將 `.agents/ideas/YYYY_MM_DD_{idea_name}.md` 搬移至該目錄，並轉換重命名為 `P00_semantic_requirements.md`。
+  1. 建立標準 Dev Plan 目錄：`{plans_dir}/{YYYY_MM_DD_HHMM_功能名稱}/`。
+  2. 將提案文件搬移至該目錄，並轉換重命名為 `P00_semantic_requirements.md`。
   3. 進入 `/NewPlan` 標準流程，由開發者確認 P00 後執行三大分流！

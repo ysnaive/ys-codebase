@@ -72,13 +72,23 @@
 
 ### 5. `scan_plan_status.py` — 專案進度與狀態掃描工具
 
-- **用途**：快速掃描 `.agents/dev_plans/` 中所有計畫的進度矩陣 (`Planning` / `Implementing` / `Completed`)。
+- **用途**：快速掃描計畫目錄中所有計畫的進度矩陣 (`Planning` / `Implementing` / `Completed`)。
 - **Agent 執行紀律**：當執行 `/Continue` 接續中斷任務時，優先執行此腳本定位目標 Plan。
 - **命令列語法**：
   ```bash
   # 僅掃描當前進行中 (Active) 計畫
-  python .agents/scripts/scan_plan_status.py
+  python yscb_cli.py agents-workflow scan
 
   # 掃描包含已歸檔的全量計畫
-  python .agents/scripts/scan_plan_status.py --all
+  python yscb_cli.py agents-workflow scan --all
+  ```
+
+---
+
+### 6. `_migration.py` — 模組跨版本遷移腳本 (Lifecycle Hook)
+
+- **用途**：在模組升級覆寫時自動由 `yscb_installer.py` 調用，接收 `<old_version>` 與 `<new_version>` 兩參數，負責遷移本地 `config.json` 或更新相容性路徑。
+- **命令列語法**：
+  ```bash
+  python modules/agents-workflow/scripts/_migration.py <old_version> <new_version>
   ```

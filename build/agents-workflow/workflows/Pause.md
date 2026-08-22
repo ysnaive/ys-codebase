@@ -17,12 +17,12 @@ description: 暫停開發與無縫交接工作流 (Pause) — 現場狀態凍結
 ## 🚀 執行步驟
 
 ### 步驟 1：定位當前活躍 Dev Plan 目錄
-- 定位當前正在進行的計畫目錄（如 `.agents/dev_plans/YYYY_MM_DD_HHMM_xxx/`）。
+- 定位當前正在進行的計畫目錄（如 `{plans_dir}/{YYYY_MM_DD_HHMM_xxx}/`）。
 
 ---
 
 ### 步驟 2：生成暫停交接快照 (`handoff.md`)
-- 依據 `.agents/workflows/templates/handoff.md` 模板，在該計畫目錄下建立 `handoff.md`：
+- 依據 `workflows/templates/handoff.md` 模板，在該計畫目錄下建立 `handoff.md`：
   ```markdown
   # 📌 當前進度與暫停交接現場 (Handoff Context)
 

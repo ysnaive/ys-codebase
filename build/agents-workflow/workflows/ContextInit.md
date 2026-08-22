@@ -21,12 +21,12 @@ description: 專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Cha
 當使用者輸入 `/ContextInit` 或 Agent 偵測到是全新的對話 Session 時， Agent **必須順序執行**以下加載步驟：
 
 ### 步驟 1：加載專案層級硬性規範與紀律
-- **讀取檔案**：[.agents/AGENTS.md](file://./.agents/AGENTS.md) *(下游專案之 Agent 行為規範)*
+- **讀取檔案**：[AGENTS.md](file://./AGENTS.md) 或 [.agents/AGENTS.md](file://./.agents/AGENTS.md) *(下游專案之 Agent 行為規範)*
 - **提取要點**：
   - SOP 三大原則：零臆測、可追溯、分級管控。
   - 嚴禁連發（一次 Turn 最多一個 Phase）、嚴禁空降實作。
   - 除錯排查與範疇保護鐵律、模板註解剝除鐵律。
-  - 定式作業腳本優先原則、嚴禁主動歸檔。
+  - 定式作業指令優先原則（透過 `yscb_cli.py` 調度）、嚴禁主動歸檔。
   - 專案程式碼架構與 `docs/` 知識庫之鏡像同步關係。
 
 ### 步驟 2：加載程式碼與命名規範
@@ -42,8 +42,11 @@ description: 專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Cha
   - 瞭解專案最近完成了哪些 Dev Plan 與架構優化。
   - 掌握當前專案處於何種演進階段。
 
-### 步驟 4：檢查進行中與歷史 Plan 結構
-- **原生檔案檢查**：查看 `.agents/dev_plans/` 目錄下的資料夾結構。
+### 步驟 4：加載工作流設定與檢查進行中/歷史 Plan 結構
+- **讀取設定**：[modules/agents-workflow/config.json](file://./modules/agents-workflow/config.json) *(若不存在則參照 [config_global.template.json](file://./modules/agents-workflow/config_global.template.json) 或 [config.template.json](file://./modules/agents-workflow/config.template.json))*
+- **提取要點與目錄檢查**：
+  - 取得 `plans_dir`（預設專案根目錄 `./plans/`）與 `archive_dir`（預設專案根目錄 `./archive_plans/`）。
+  - 檢查 `{plans_dir}` 下進行中 Plan 與 `{archive_dir}` 下歷史歸檔之目錄結構與進度。
 
 ---
 
@@ -64,7 +67,8 @@ description: 專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Cha
 
 ### 🛠️ 工具與 SOP 紀律 (Guardrails)
 - **SOP 紀律**：嚴禁連發、嚴禁空降實作、除錯排查範疇保護、嚴禁主動歸檔。
-- **定式作業**：歷史檢索/歸檔/驗證優先使用 `.agents/scripts/` 下的 Python 工具腳本。
+- **定式作業**：歷史檢索/歸檔/驗證優先使用 `python yscb_cli.py agents-workflow <verify|scan|search|archive>` 指令。
+- **Plan 空間**：進行中計畫位於 `{plans_dir}`，歷史歸檔位於 `{archive_dir}`。
 - **專案進度**：最新已完成 Plan 與核心功能動向已掌控。
 
 ---

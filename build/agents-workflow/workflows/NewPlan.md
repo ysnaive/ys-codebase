@@ -45,16 +45,18 @@ description: 標準開發作業流程 (NewPlan) — 定義專案從需求到發�
 - **全階段文件模板剛性對齊**：所有 Phase (P00~P07 / FT_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像標準模板結構**（包含指定欄位、表格與 Header 標頭，含 `> 擴充項目：`），嚴禁 Agent 自行簡化或遺漏模板區塊。
 - **目錄歸檔紀律與腳本優先**：
   - 定式作業（歸檔、檢索、掃描、合規校驗）優先呼叫 `.agents/scripts/` 下的 Python 工具腳本。
-  - **嚴禁 Agent 主動歸檔**：所有計畫預設留存於 `.agents/dev_plans/` 原位，僅在開發者明確下達歸檔指令時才執行歸檔腳本。
+  - **嚴禁 Agent 主動歸檔**：所有計畫預設留存於 `{plans_dir}` 原位（預設專案根目錄 `./plans/`），僅在開發者明確下達歸檔指令時才執行歸檔腳本。
 
 ---
 
 ## 📁 文件與目錄管理規範
 
-### 工作目錄結構
+### 工作目錄結構（由 `config.json` / `config_global.json` 定義）
 
-- **獨立計畫（進行中）**：`.agents/dev_plans/{YYYY_MM_DD_HHMM_功能名稱}/`
-- **獨立計畫（已歸檔）**：`.agents/dev_plans/history/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`
+- **獨立計畫（進行中）**：`{plans_dir}/{YYYY_MM_DD_HHMM_功能名稱}/`  
+  *(預設路徑：專案根目錄 `./plans/{YYYY_MM_DD_HHMM_功能名稱}/`)*
+- **獨立計畫（已歸檔）**：`{archive_dir}/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`  
+  *(預設路徑：專案根目錄 `./archive_plans/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`)*
 
 > `YYYY_MM_DD_HHMM` 為建立計畫的當前時間（24 小時制），防止同天建立多個計畫時目錄名稱衝突。
 
@@ -62,21 +64,21 @@ description: 標準開發作業流程 (NewPlan) — 定義專案從需求到發�
 
 #### 模式 A：衍生型子計畫 (Derived Sub-Plans)
 在主計畫執行至 **Phase 6 測試** 過程中，若發現非當前計畫範疇之衍生問題、缺陷修復或功能優化需求，**嚴禁隨意擴大當前計畫範圍**，應於主目錄下建立衍生子計畫：
-- **子計畫目錄**：`.agents/dev_plans/{主計畫名稱}/sub_{編號}_{子計畫目的}/`
+- **子計畫目錄**：`{plans_dir}/{主計畫名稱}/sub_{編號}_{子計畫目的}/`
 - **預設 Track**：Fast Track（除非開發者指定 Full Track）。
 - **處理流程**：子計畫完成後，將關鍵決策與設計變更納入主計畫文檔，並在主計畫的 `P07_walkthrough.md` 中記錄子計畫回歸結果。子計畫完成後留在主目錄內，待主計畫完成時一同歸檔。
 
 #### 模式 B：分類型主計畫 (Umbrella Plan / Master Plan)
 進行複合子模組系列開發、大型架構重構或跨領域演進時，建立 Umbrella 主計畫：
-- **主計畫目錄**：`.agents/dev_plans/{YYYY_MM_DD_HHMM_計畫名稱}/`
+- **主計畫目錄**：`{plans_dir}/{YYYY_MM_DD_HHMM_計畫名稱}/`
 - **主計畫產出**：
   - `P00_semantic_requirements.md`（主計畫總綱語意需求與邊界）
   - `umbrella_overview.md`（總覽、子計畫清單與狀態矩陣、跨子計畫依賴關係圖、整體 Decision Records）
   - **主計畫本身不直接撰寫代碼**，專注於架構總覽與依賴協調。
-- **子計畫目錄**：`.agents/dev_plans/{主計畫名稱}/sub_{編號}_{子計畫名稱}/`
+- **子計畫目錄**：`{plans_dir}/{主計畫名稱}/sub_{編號}_{子計畫名稱}/`
 - **子計畫獨立性**：每個子計畫以「單個 Full Track 能處理之顆粒度」為拆分單位，獨立進行 Phase 0 確認後執行其 Full Track (`P01~P07`) 或 Fast Track (`FT_plan`)。
 - **依賴管理**：子計畫間若有執行順序依賴，必須記錄於 `umbrella_overview.md` 並依序推進。
-- **完成與歸檔**：子計畫完成後留在主目錄內；待所有子計畫全部完成後，整個主目錄一起遷移至 `history/`。
+- **完成與歸檔**：子計畫完成後留在主目錄內；待所有子計畫全部完成後，整個主目錄一起遷移至 `{archive_dir}/`。
 
 > [!IMPORTANT]
 > **巢狀層級硬性約束**：本專案嚴格限制子計畫目錄最多**兩層結構**（主計畫 ➔ 子計畫），**絕對禁止在子計畫目錄下再開設子計畫**！
@@ -165,8 +167,8 @@ flowchart TD
 3. **P00 先於分流**：完整討論 → P00 Confirmed → 三大層級分流，三步驟嚴格有序。
 
 #### 執行步驟
-1. **建立工作目錄**：`.agents/dev_plans/{YYYY_MM_DD_HHMM_功能名稱}/`
-2. **初始化 P00 草稿**：依 `.agents/workflows/templates/P00_semantic_requirements.md` 建立 `P00_semantic_requirements.md`（狀態標記為 `Discussing`），選擇對應計畫類型（Feature / Refactor / Bug Fix / Performance / Docs / 自訂）。
+1. **建立工作目錄**：`{plans_dir}/{YYYY_MM_DD_HHMM_功能名稱}/`（由 `config.json` / `config_global.json` 之 `plans_dir` 定義，預設為專案根目錄 `./plans/`）
+2. **初始化 P00 草稿**：依模組 `workflows/templates/P00_semantic_requirements.md` 建立 `P00_semantic_requirements.md`（狀態標記為 `Discussing`），選擇對應計畫類型（Feature / Refactor / Bug Fix / Performance / Docs / 自訂）。
 3. **開放式討論與深度調研 (Phase 0-R)**：
    - 標準情況：Agent 作為知識顧問提問釐清，持續補充 `P00` 的「開放議題紀錄」欄位。
    - **高複雜度/跨度大需求**：若需求涉及全新架構、多維度可行性驗證或資產大規模遷移，依 [Research.md](./Research.md) 啟動特化調研，針對各技術主題產出自由論證格式之專題調研報告，統一採用前綴命名 **`R{n:2d}_{topic}.md`**（例：`R01_architecture_reference.md`）。調研結論收斂回填至 `P00` 與主計畫路線圖。

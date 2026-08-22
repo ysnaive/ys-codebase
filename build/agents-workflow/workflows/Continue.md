@@ -12,9 +12,9 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 ### 步驟 1：定位目標計畫目錄與狀態掃描
 
-1. 優先執行狀態掃描腳本（或檢視 `.agents/dev_plans/` 目錄）：
+1. 優先執行狀態掃描指令（或檢視 `{plans_dir}` 計畫目錄）：
    ```bash
-   python .agents/scripts/scan_plan_status.py
+   python yscb_cli.py agents-workflow scan
    ```
 2. 若使用者未明確指定計畫名稱：
    - 僅有一個進行中計畫 ➔ 自動定位為目標。

@@ -150,46 +150,59 @@ def verify_plan_directory(plan_dir: Path, all_exts: list) -> dict:
 
     return results
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from config_utils import get_plans_dir, get_archive_dir, get_module_dir
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Dev Plan 合規性與 Extension 深度稽核工具")
     parser.add_argument("plan", nargs="?", help="指定欲審查的 Dev Plan 目錄名稱或路徑（留空則掃描當前所有進行中計畫）")
-    parser.add_argument("--all", action="store_true", help="包含 history 已歸檔之計畫一併掃描")
+    parser.add_argument("--all", action="store_true", help="包含 archive_plans 已歸檔之計畫一併掃描")
     args = parser.parse_args()
+
+    module_dir = get_module_dir()
+    plans_dir = get_plans_dir(module_dir)
+    archive_dir = get_archive_dir(module_dir)
 
     root = get_workspace_root()
     agents_dir = root / ".agents"
-    dev_plans_dir = agents_dir / "dev_plans"
-    all_exts = parse_extensions(agents_dir)
+    # 優先從模組目錄讀取 extensions，若無則讀取 workspace .agents
+    all_exts = parse_extensions(module_dir) or parse_extensions(agents_dir)
 
     target_plans = []
     if args.plan:
         p = Path(args.plan)
         if not p.is_absolute():
-            p = dev_plans_dir / args.plan
+            if (plans_dir / args.plan).is_dir():
+                p = plans_dir / args.plan
+            elif (archive_dir / args.plan).is_dir():
+                p = archive_dir / args.plan
+            else:
+                p = plans_dir / args.plan
         if p.exists() and p.is_dir():
             target_plans.append(p)
         else:
             print(f"[ERROR] 找不到指定的計畫目錄：{p}")
             sys.exit(1)
     else:
-        if not dev_plans_dir.exists():
-            print("[INFO] 無 dev_plans 目錄。")
-            return
-        for item in dev_plans_dir.iterdir():
-            if item.is_dir() and item.name != "history":
-                target_plans.append(item)
-            elif args.all and item.name == "history":
-                for y in item.iterdir():
-                    if y.is_dir():
-                        for m in y.iterdir():
-                            if m.is_dir():
-                                for p in m.iterdir():
-                                    if p.is_dir():
-                                        target_plans.append(p)
+        if plans_dir.exists():
+            for item in plans_dir.iterdir():
+                if item.is_dir() and not item.name.startswith("."):
+                    target_plans.append(item)
+        if args.all and archive_dir.exists():
+            for y in archive_dir.iterdir():
+                if y.is_dir():
+                    for m in y.iterdir():
+                        if m.is_dir():
+                            for p in m.iterdir():
+                                if p.is_dir():
+                                    target_plans.append(p)
 
     if not target_plans:
-        print("[INFO] 目前無任何進行中的 Dev Plan。")
+        print(f"[INFO] 目前在 {plans_dir} 無任何進行中的 Plan。")
         return
 
     print("=" * 80)

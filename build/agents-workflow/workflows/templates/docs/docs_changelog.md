@@ -12,7 +12,7 @@ last_updated: "YYYY-MM-DD"
 # Baz — 架構演進歷史 (Changelog)
 
 > 本文件記錄 `[Namespace/Module]` 模塊的**重大架構重構**歷史。
-> 日常功能新增請見 `.agents/dev_plans/`；API 層級的當前規格請見 `README.md` 及主題文件。
+> 日常功能新增請見 `{plans_dir}`；API 層級的當前規格請見 `README.md` 及主題文件。
 
 > [!NOTE]
 > 本文件不記錄每次日常修改，**僅記錄**涉及架構變更、職責重劃或大規模重構的事件。
@@ -37,8 +37,8 @@ last_updated: "YYYY-MM-DD"
 
 ### 參考開發計畫
 
-- **dev_plans 路徑**：`.agents/dev_plans/history/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_計畫名稱}/`
-  *(註：對 dev_plans 統一參照 `history/` 歸檔路徑。若該計畫尚未歸檔，Agent 或讀者搜尋時按名稱 `YYYY_MM_DD_HHMM_[計畫名稱]` 於 `.agents/dev_plans/` 原位檢索即可)*
+- **Plan 歸檔路徑**：`{archive_dir}/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_計畫名稱}/`
+  *(註：對計畫統一參照歸檔路徑。若該計畫尚未歸檔，按名稱 `YYYY_MM_DD_HHMM_[計畫名稱]` 於 `{plans_dir}` 原位檢索即可)*
 
 ---
 

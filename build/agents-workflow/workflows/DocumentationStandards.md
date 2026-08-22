@@ -12,12 +12,12 @@ description: 文檔資料庫系統規範 — 定義 docs/ 目錄的結構、撰�
 
 | 系統 | 路徑 | 職責 | 內容性質 |
 | :--- | :--- | :--- | :--- |
-| **開發過程紀錄** | `.agents/dev_plans/` | 開發軌跡、Decision Records、Phase 推進 | 過程導向，完成後歸檔凍結 |
+| **開發過程紀錄** | `{plans_dir}` / `{archive_dir}` | 開發軌跡、Decision Records、Phase 推進 | 過程導向，完成後歸檔凍結 |
 | **知識庫（當前事實）** | `docs/` | 系統當前狀態：架構、機制、邊界條件、工程妥協 | 狀態導向，隨系統演進持續更新 |
 
 > [!IMPORTANT]
 > **知識庫只陳述事實，不記錄決策過程。**
-> 「為什麼這樣設計」的辯論留在 `.agents/dev_plans/` 的 Decision Records。
+> 「為什麼這樣設計」的辯論留在 `{plans_dir}` 的 Decision Records。
 > `docs/` 只回答「現在是什麼樣子」與「你需要知道的邊界條件與坑點」。
 
 ---
