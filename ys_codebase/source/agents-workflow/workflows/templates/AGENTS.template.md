@@ -1,6 +1,6 @@
 # Agent 專案行為準則與工作流指南 (AGENTS.template.md)
 
-<!-- CORE_RULES_BEGIN -->
+<!-- YSCB_AGENTS_BEGIN -->
 本文件定義 Agent 在專案內執行任務時**必須強制遵守**的硬性規則、工作流程引導與工程規範。
 
 ---
@@ -112,7 +112,7 @@ python yscb_cli.py uri to-uri docs/_project/STANDARDS.md
 | **開發完成後品質與細節審查** | [Review.md](./workflows/Review.md) | 調用 `python yscb_cli.py agents-workflow verify` 執行全量稽核 |
 | **構想與靈感孵化池** | [Idea.md](./workflows/Idea.md) | 開放式自由探討，產出 What/Why/How/Related 提案書 |
 | **更新 / 檢索專案知識庫文檔** | [DocumentationStandards.md](./workflows/DocumentationStandards.md) | 遵循 1:1 鏡像結構維護 `docs://` |
-<!-- CORE_RULES_END -->
+<!-- YSCB_AGENTS_END -->
 
 ## 4. 專案特化工程規範 (Project Specific Standards)
 *(專案特化 C++11 / C# / 硬體架構規範填寫於此，不受中央標準庫覆蓋)*
