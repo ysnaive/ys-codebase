@@ -33,16 +33,17 @@ from config_utils import (
     save_local_config,
     get_plans_dir,
     get_archive_dir,
+    get_workspace_root,
 )
 
 
 def load_module_config() -> Dict[str, Any]:
-    """載入本地運行期模組設定檔 (config.json / config.template.json)"""
+    """載入本地運行期個人模組設定 (config.local.json)"""
     return load_local_config(MODULE_DIR)
 
 
 def save_module_config(config: Dict[str, Any]):
-    """持久化儲存本地模組設定檔至 config.json"""
+    """持久化儲存本地模組個人設定至 config.local.json (被 .gitignore 忽略)"""
     save_local_config(config, MODULE_DIR)
 
 
@@ -91,8 +92,7 @@ def get_relative_link(from_dir: Path, to_file: Path) -> str:
 
 def locate_gemini_target_dir() -> Path:
     """定位專案的 Gemini / Antigravity 工作流目錄"""
-    proj_root_str = os.environ.get("YSCB_PROJECT_ROOT")
-    proj_root = Path(proj_root_str).resolve() if proj_root_str else Path.cwd().resolve()
+    proj_root = get_workspace_root(MODULE_DIR)
     
     if proj_root.name == ".agents":
         target = proj_root / "workflows"
@@ -104,7 +104,7 @@ def locate_gemini_target_dir() -> Path:
 
 
 def clear_ide_commands(ide_name: Optional[str] = None) -> int:
-    """清理已生成的 IDE 引用式指令檔案，並同步更新 config.json"""
+    """清理已生成的 IDE 引用式指令檔案，並同步更新 config.local.json"""
     mod_config = load_module_config()
     integrations = mod_config.get("ide_integrations", {})
 
@@ -150,7 +150,7 @@ def clear_ide_commands(ide_name: Optional[str] = None) -> int:
 
 
 def generate_gemini_ide_commands(prefix: str = "", postfix: str = "") -> int:
-    """為 Gemini / Antigravity IDE 生成引用式指令文件，生成前自動清理舊有指令並更新 config.json"""
+    """為 Gemini / Antigravity IDE 生成引用式指令文件，生成前自動清理舊有指令並更新 config.local.json"""
     # 1. 檢查並自動清理先前 gemini 生成的指令
     mod_config = load_module_config()
     if "gemini" in mod_config.get("ide_integrations", {}):
@@ -216,7 +216,7 @@ description: {desc}
 
     print("-" * 75)
     print(f"[SUCCESS] Gemini 工作流指令生成完成！共 {len(generated_files)} 個指令。")
-    print(f"  • 設定檔已記錄至: {MODULE_DIR / 'config.json'}\n")
+    print(f"  • 設定檔已記錄至: {MODULE_DIR / 'config.local.json'}\n")
     return 0
 
 

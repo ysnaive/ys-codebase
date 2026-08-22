@@ -5,8 +5,9 @@ yscb_installer.py — YS-Codebase 核心模組化工具庫安裝管理系統 (v2
 核心特性：
   - 純 Python 3 標準庫實現，Zero External Dependency
   - 支援 Source (源碼/開發者模式) 與 Build (發布物/使用者模式) 雙軌安裝
-  - 源碼模式強制自動連動相依 source/core 基礎基座
-  - 提供完整 CLI 工具鏈 (help, init, install, pull, build, push, status, list, remove)
+  - 支援 2×2 設定協定 (Codebase/Module × Project/User)
+  - 核心 Core SDK (yscb_core) 作為標準相依與建置產出物
+  - 提供完整 CLI 工具鏈 (help, init, install, pull, build, push, status, list, remove, diff)
 """
 
 import sys
@@ -31,18 +32,33 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
 DEFAULT_REPO = "https://github.com/YsNaive/ys-codebase.git"
 DEFAULT_BRANCH = "main"
 CONFIG_FILENAME = "yscb_config.json"
+LOCAL_CONFIG_FILENAME = "yscb_config.local.json"
 TEMPLATE_CONFIG_FILENAME = "yscb_config.template.json"
 CACHE_DIRNAME = ".yscb_cache"
 INSTALLER_VERSION = "2.0.0"
 
 
+# ── 工具函式 ─────────────────────────────────────────────────────────────
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """遞迴無損合併兩個字典"""
+    import copy
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
 # ── 配置管理 (Config Manager) ───────────────────────────────────────────
 class ConfigManager:
-    """管理 yscb_config.json 的讀寫、驗證與更新"""
+    """管理 yscb_config.json 與 yscb_config.local.json 的讀寫、驗證與更新"""
 
     def __init__(self, root_dir: Path):
         self.root_dir = root_dir
         self.config_path = root_dir / CONFIG_FILENAME
+        self.local_config_path = root_dir / LOCAL_CONFIG_FILENAME
         self.template_path = root_dir / TEMPLATE_CONFIG_FILENAME
 
     def exists(self) -> bool:
@@ -106,39 +122,41 @@ class ConfigManager:
         """取得 YSCB 工具庫根目錄 (yscb_root) 的絕對 Path"""
         return self.root_dir.resolve()
 
-    def load(self) -> Dict[str, Any]:
-        if not self.exists():
-            return {
-                "version": "2.0",
-                "paths": {
-                    "project_root": ".",
-                    "yscb_root": "."
-                },
-                "remote": {
-                    "repo": DEFAULT_REPO,
-                    "branch": DEFAULT_BRANCH
-                },
-                "installed_modules": {},
-                "custom_settings": {}
-            }
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[WARN] 讀取 {CONFIG_FILENAME} 失敗: {e}，回退至預設配置。")
-            return {
-                "version": "2.0",
-                "paths": {
-                    "project_root": ".",
-                    "yscb_root": "."
-                },
-                "remote": {
-                    "repo": DEFAULT_REPO,
-                    "branch": DEFAULT_BRANCH
-                },
-                "installed_modules": {},
-                "custom_settings": {}
-            }
+    def load(self, include_local: bool = True) -> Dict[str, Any]:
+        """載入設定檔（若存在 yscb_config.local.json 則自動無損合併）"""
+        base_cfg = {
+            "version": "2.0",
+            "paths": {
+                "project_root": ".",
+                "yscb_root": "."
+            },
+            "remote": {
+                "repo": DEFAULT_REPO,
+                "branch": DEFAULT_BRANCH
+            },
+            "installed_modules": {},
+            "custom_settings": {}
+        }
+
+        if self.exists():
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        base_cfg = deep_merge(base_cfg, loaded)
+            except Exception as e:
+                print(f"[WARN] 讀取 {CONFIG_FILENAME} 失敗: {e}，回退至預設配置。")
+
+        if include_local and self.local_config_path.is_file():
+            try:
+                with open(self.local_config_path, "r", encoding="utf-8") as f:
+                    local_cfg = json.load(f)
+                    if isinstance(local_cfg, dict):
+                        base_cfg = deep_merge(base_cfg, local_cfg)
+            except Exception:
+                pass
+
+        return base_cfg
 
     def save(self, config: Dict[str, Any]):
         with open(self.config_path, "w", encoding="utf-8") as f:
@@ -146,30 +164,42 @@ class ConfigManager:
             f.write("\n")
 
     def record_installed_module(self, module_name: str, mode: str, version: str = "1.0.0", meta: Optional[Dict[str, Any]] = None):
-        cfg = self.load()
+        # 僅讀寫基礎 yscb_config.json，不混淆 local 設定
+        if not self.exists():
+            cfg = self.load(include_local=False)
+        else:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+
         if "installed_modules" not in cfg:
             cfg["installed_modules"] = {}
-        
-        module_info = {
-            "mode": mode,
+
+        now_str = datetime.datetime.now().isoformat(timespec="seconds")
+        entry = {
             "version": version,
-            "installed_at": datetime.datetime.now().isoformat(timespec="seconds")
+            "mode": mode,
+            "installed_at": now_str
         }
         if meta:
-            module_info.update(meta)
-        cfg["installed_modules"][module_name] = module_info
+            entry.update(meta)
+
+        cfg["installed_modules"][module_name] = entry
         self.save(cfg)
 
     def remove_installed_module(self, module_name: str):
-        cfg = self.load()
+        if not self.exists():
+            return
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+
         if "installed_modules" in cfg and module_name in cfg["installed_modules"]:
             del cfg["installed_modules"][module_name]
             self.save(cfg)
 
 
-# ── Git 與遠端同步客戶端 (Git Remote Client) ─────────────────────────────
+# ── Git 遠端倉庫與快取管理 (Git Remote Client) ───────────────────────────
 class GitRemoteClient:
-    """管理與遠端中央標準庫的快取、拉取與推送"""
+    """負責同步、快取與推送中央 Git 倉庫"""
 
     def __init__(self, root_dir: Path, repo: str = DEFAULT_REPO, branch: str = DEFAULT_BRANCH):
         self.root_dir = root_dir
@@ -177,75 +207,74 @@ class GitRemoteClient:
         self.branch = branch
         self.cache_dir = root_dir / CACHE_DIRNAME
 
-    def _run_git(self, args: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
-        try:
-            res = subprocess.run(
-                ["git"] + args,
-                cwd=str(cwd or self.root_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace"
-            )
-            return res
-        except FileNotFoundError:
-            raise RuntimeError("系統中未找到 git 命令，請確認已安裝 Git 並已加入系統 PATH。")
-
     def is_git_available(self) -> bool:
-        try:
-            res = self._run_git(["--version"])
-            return res.returncode == 0
-        except Exception:
-            return False
+        return shutil.which("git") is not None
+
+    def _run_git(self, args: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+        if not self.is_git_available():
+            raise RuntimeError("本機環境未安裝 Git 或未加入 PATH，無法執行遠端倉庫操作。")
+        cmd = ["git"] + args
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd or self.root_dir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
 
     def sync_cache(self, force_refresh: bool = False) -> Path:
-        """確保本機快取目錄存在並同步至最新遠端狀態"""
-        if not self.is_git_available():
-            raise RuntimeError("Git 未安裝或無法執行，無法同步遠端倉庫。")
+        """將遠端倉庫 clone 或 pull 至本地快取 (.yscb_cache)"""
+        # 若 repo 指向當前目錄且非快取本體，直接回傳
+        if os.path.exists(self.repo) and Path(self.repo).resolve() == self.root_dir.resolve():
+            return self.root_dir
 
-        repo_path = Path(self.repo)
-        if not (self.cache_dir / ".git").exists():
+        if self.cache_dir.exists() and not force_refresh:
+            return self.cache_dir
+
+        # 若 repo 為本機存在的目錄（例如本地回歸測試或聯調）
+        if os.path.isdir(self.repo):
             if self.cache_dir.exists():
                 shutil.rmtree(self.cache_dir, ignore_errors=True)
+            self.cache_dir.parent.mkdir(parents=True, exist_ok=True)
+
+            def ignore_cache_files(folder, files):
+                ignored = []
+                for f in files:
+                    if f in [CACHE_DIRNAME, ".git", "__pycache__", "env", "venv", ".venv", "modules"]:
+                        ignored.append(f)
+                return ignored
+
+            shutil.copytree(self.repo, self.cache_dir, ignore=ignore_cache_files, dirs_exist_ok=True)
+            return self.cache_dir
+
+        if not self.cache_dir.exists():
             print(f"[INFO] 正在複製遠端庫至快取: {self.repo} ({self.branch})...")
-            
-            if repo_path.is_dir():
-                # 本地倉庫直接進行檔案系統複製，免去沙盒權限與網路開銷
-                def ignore_temp(folder, files):
-                    return [f for f in files if f in [".yscb_cache", ".git", "__pycache__", ".pytest_cache"]]
-                shutil.copytree(repo_path, self.cache_dir, ignore=ignore_temp, dirs_exist_ok=True)
-                (self.cache_dir / ".git").mkdir(parents=True, exist_ok=True)
-                print("[INFO] 本地庫快取初始化完成。")
-            else:
-                clone_args = ["clone", "--depth", "1", "-b", self.branch, self.repo, str(self.cache_dir)]
-                res = self._run_git(clone_args)
-                if res.returncode != 0:
-                    raise RuntimeError(f"Clone 失敗: {res.stderr.strip()}")
-                print("[INFO] 遠端庫快取初始化完成。")
+            self.cache_dir.parent.mkdir(parents=True, exist_ok=True)
+            res = self._run_git(["clone", "--depth", "1", "--branch", self.branch, self.repo, str(self.cache_dir)])
+            if res.returncode != 0:
+                res2 = self._run_git(["clone", "--depth", "1", self.repo, str(self.cache_dir)])
+                if res2.returncode != 0:
+                    raise RuntimeError(f"Clone 遠端庫失敗: {res.stderr.strip() or res2.stderr.strip()}")
+            print("[INFO] 遠端庫快取初始化完成。")
         else:
-            if repo_path.is_dir():
-                def ignore_temp(folder, files):
-                    return [f for f in files if f in [".yscb_cache", ".git", "__pycache__", ".pytest_cache"]]
-                shutil.copytree(repo_path, self.cache_dir, ignore=ignore_temp, dirs_exist_ok=True)
-                print("[INFO] 本地庫快取同步完成。")
-            elif force_refresh:
-                print(f"[INFO] 正在更新快取至最新 {self.branch} 分支...")
-                res = self._run_git(["fetch", "origin", self.branch], cwd=self.cache_dir)
-                if res.returncode != 0:
-                    print(f"[WARN] Fetch 失敗: {res.stderr.strip()}")
-                else:
-                    self._run_git(["reset", "--hard", f"origin/{self.branch}"], cwd=self.cache_dir)
-                    print("[INFO] 快取更新完成。")
+            print(f"[INFO] 正在更新快取庫: {self.repo}...")
+            res = self._run_git(["pull", "origin", self.branch], cwd=self.cache_dir)
+            if res.returncode != 0:
+                print(f"[WARN] Pull 快取失敗: {res.stderr.strip()}，嘗試重新 clone...")
+                shutil.rmtree(self.cache_dir, ignore_errors=True)
+                return self.sync_cache(force_refresh=True)
+
         return self.cache_dir
 
     def push_changes(self, commit_msg: str, branch: Optional[str] = None) -> bool:
-        """推送修改回遠端庫"""
+        """推送變更至遠端庫"""
         target_branch = branch or self.branch
-        print(f"[INFO] 準備推送修改至 {self.repo} ({target_branch})...")
-        
-        # 檢查工作目錄是否有 git
-        if not (self.root_dir / ".git").exists():
+        print(f"[INFO] 正在提交並推送變更至分支: {target_branch}...")
+
+        if (self.root_dir / ".git").is_dir():
+            target_repo_dir = self.root_dir
+        elif self.cache_dir.is_dir() and (self.cache_dir / ".git").is_dir():
             target_repo_dir = self.cache_dir
         else:
             target_repo_dir = self.root_dir
@@ -366,8 +395,8 @@ class ModuleManager:
 
         return modules
 
-    def resolve_dependencies(self, module_names: List[str], is_source_mode: bool) -> List[str]:
-        """解析相依性，確保以正確順序安裝，並在 --source 模式下強制補齊 core"""
+    def resolve_dependencies(self, module_names: List[str], is_source_mode: bool = False) -> List[str]:
+        """解析相依性，確保以拓撲順序安裝，並在相依或源碼模式下優先安裝 core"""
         available = self.discover_modules(from_remote=False)
         if not available:
             available = self.discover_modules(from_remote=True)
@@ -393,18 +422,17 @@ class ModuleManager:
         for m in module_names:
             visit(m)
 
-        # 在源碼模式下，若安裝任何模組且不是純 core，必須強制引入 core 作為首個底層相依
-        if is_source_mode:
-            if "core" not in resolved:
-                resolved.insert(0, "core")
-            else:
-                resolved.remove("core")
+        # 若安裝任何模組或在源碼模式下，確保 core 始終處於最前端安裝位置
+        if is_source_mode or any(m != "core" for m in module_names):
+            if "core" in available or "core" in resolved:
+                if "core" in resolved:
+                    resolved.remove("core")
                 resolved.insert(0, "core")
 
         return resolved
 
     def resolve_build_dependencies(self, module_names: List[str]) -> List[str]:
-        """解析建置相依性，確保以正確順序建置所有相依模組（自動排除無需 build 的 core）"""
+        """解析建置相依性，確保以正確順序建置所有相依模組"""
         available = self.discover_modules(from_remote=False)
         resolved: List[str] = []
         visited: Set[str] = set()
@@ -420,11 +448,9 @@ class ModuleManager:
                 deps = m_info["meta"].get("dependencies", [])
 
             for dep in deps:
-                if dep != "core":
-                    visit(dep)
+                visit(dep)
 
-            if name != "core":
-                resolved.append(name)
+            resolved.append(name)
 
         for m in module_names:
             visit(m)
@@ -478,7 +504,7 @@ class ModuleManager:
         version = manifest.get("version", "1.0.0")
 
         # 取得已安裝之舊版本紀錄
-        installed_dict = self.config_mgr.load().get("installed_modules", {})
+        installed_dict = self.config_mgr.load(include_local=False).get("installed_modules", {})
         old_info = installed_dict.get(module_name)
         old_version = old_info.get("version") if old_info else None
 
@@ -487,14 +513,16 @@ class ModuleManager:
         else:
             dest_path = self.root_dir / "modules" / module_name
 
-        saved_config_content = None
+        # 暫存保留本地既有的 2x2 設定檔 (config.project.json, config.local.json, config.json)
+        saved_configs: Dict[str, str] = {}
         if dest_path.exists():
-            local_config_file = dest_path / "config.json"
-            if local_config_file.is_file():
-                try:
-                    saved_config_content = local_config_file.read_text(encoding="utf-8")
-                except Exception:
-                    pass
+            for cfg_name in ["config.project.json", "config.local.json", "config.json", "config_global.json"]:
+                cfg_file = dest_path / cfg_name
+                if cfg_file.is_file():
+                    try:
+                        saved_configs[cfg_name] = cfg_file.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
 
             if not force and dest_path.resolve() == src_path.resolve():
                 print(f"[INFO] 模組 '{module_name}' 已存在於本地 ({dest_path})，跳過本體覆寫。")
@@ -505,12 +533,14 @@ class ModuleManager:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(src_path, dest_path, dirs_exist_ok=True)
 
-        # 還原既有本地 config.json（若新套件未攜帶且原先存在）
-        if saved_config_content is not None and not (dest_path / "config.json").exists():
-            try:
-                (dest_path / "config.json").write_text(saved_config_content, encoding="utf-8")
-            except Exception:
-                pass
+        # 還原既有本地設定檔（若新套件未攜帶且原先存在）
+        for cfg_name, content in saved_configs.items():
+            cfg_target = dest_path / cfg_name
+            if not cfg_target.exists():
+                try:
+                    cfg_target.write_text(content, encoding="utf-8")
+                except Exception:
+                    pass
 
         self.config_mgr.record_installed_module(
             module_name=module_name,
@@ -550,7 +580,7 @@ class ModuleManager:
 
     def remove_module(self, module_name: str, force: bool = False) -> bool:
         """卸載指定模組，並進行相依安全性檢查與 _uninstall.py Hook 調用"""
-        cfg = self.config_mgr.load()
+        cfg = self.config_mgr.load(include_local=False)
         installed = cfg.get("installed_modules", {})
 
         if module_name not in installed:
@@ -561,8 +591,8 @@ class ModuleManager:
             for other_mod, info in installed.items():
                 if other_mod == module_name:
                     continue
-                if module_name == "core" and info.get("mode") == "source":
-                    raise RuntimeError(f"無法移除 'core'：模組 '{other_mod}' 處於 source 模式並相依於 core。若需強制移除請加 --force。")
+                if module_name == "core":
+                    raise RuntimeError(f"無法移除 'core'：模組 '{other_mod}' 仍相依於 core SDK。若需強制移除請加 --force。")
 
         mod_info = installed[module_name]
         mode = mod_info.get("mode", "build")
@@ -571,6 +601,8 @@ class ModuleManager:
         if target_dir.exists():
             # 執行 _uninstall.py Hook
             uninstall_hook = target_dir / "scripts" / "_uninstall.py"
+            if not uninstall_hook.is_file():
+                uninstall_hook = target_dir / "_uninstall.py"
             if uninstall_hook.is_file():
                 print(f"[HOOK] 執行 '{module_name}' 卸載前置 Hook: {uninstall_hook.name}...")
                 try:
@@ -589,10 +621,6 @@ class ModuleManager:
 
     def build_module(self, module_name: str) -> bool:
         """將 source/<module> 編譯/建置為 build/<module>"""
-        if module_name == "core":
-            print("[INFO] 'core' 為基礎庫，無需生成 build 產出物。")
-            return True
-
         src_path = self._locate_module_dir(module_name, "source")
         if not src_path or not src_path.is_dir():
             raise FileNotFoundError(f"找不到模組 '{module_name}' 的源碼目錄，無法執行 build。")
@@ -604,9 +632,10 @@ class ModuleManager:
             dest_path = self.root_dir / "ys_codebase" / "build" / module_name
         elif (self.root_dir.parent / "ys_codebase" / "source" / module_name).is_dir():
             dest_path = self.root_dir.parent / "ys_codebase" / "build" / module_name
-        else:
-            dest_path = self.root_dir / "build" / module_name
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        # 確保建置前徹底清理既有目標目錄，杜絕歷史殘留檔案
+        if dest_path.exists():
+            shutil.rmtree(dest_path, ignore_errors=True)
+        dest_path.mkdir(parents=True, exist_ok=True)
 
         manifest = self.read_manifest(src_path)
 
@@ -618,18 +647,20 @@ class ModuleManager:
                 raise RuntimeError(f"模組 '{module_name}' 自訂建置失敗 (Exit {res.returncode})。")
         else:
             print(f"[BUILD] 使用標準管線將 '{module_name}' 封裝至 {dest_path}...")
-            if dest_path.exists():
-                shutil.rmtree(dest_path, ignore_errors=True)
-            
             custom_excludes = manifest.get("build_exclude", [])
 
             def ignore_dev_files(folder, files):
                 ignored = []
                 for f in files:
-                    # 預設排除規則（發布物僅包含最低執行需求，排除開發檔案與運行期設定 config.json / config_global.json）
-                    if f in [".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests", "scratch", ".vscode", ".idea", "build.py", "config.json", "config_global.json"]:
+                    # 預設排除規則（排除開發檔案、快取與本地實例設定，保留範本 template）
+                    if f in [
+                        ".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+                        "tests", "scratch", ".vscode", ".idea", "build.py",
+                        "config.json", "config_global.json", "config.project.json", "config.local.json",
+                        "yscb_config.local.json"
+                    ]:
                         ignored.append(f)
-                    elif f.endswith(".pyc") or f.endswith(".pyo") or f.endswith(".pyd"):
+                    elif f.endswith(".pyc") or f.endswith(".pyo") or f.endswith(".pyd") or f.endswith(".local.json"):
                         ignored.append(f)
                     elif f in custom_excludes:
                         ignored.append(f)
@@ -657,14 +688,13 @@ class ModuleManager:
 
     def diff_modules(self, module_names: List[str]) -> bool:
         """比對本地已安裝模組與遠端 cache 最新版本之間的檔案差異"""
-        # 先同步 cache（pull）
         print("[INFO] 正在同步遠端 cache...")
         try:
             self.git_client.sync_cache(force_refresh=True)
         except Exception as e:
             print(f"[WARN] 同步遠端 cache 失敗（可能在離線環境），改用本地快取比對: {e}")
 
-        cfg = self.config_mgr.load()
+        cfg = self.config_mgr.load(include_local=False)
         installed = cfg.get("installed_modules", {})
 
         if not module_names:
@@ -674,7 +704,10 @@ class ModuleManager:
             print("[INFO] 目前無任何已安裝模組可供比對。")
             return True
 
-        EXCLUDE_FILES = {"config.json", "config_global.json"}
+        EXCLUDE_FILES = {
+            "config.json", "config_global.json", "config.project.json", "config.local.json",
+            "yscb_config.local.json"
+        }
         total_diff = 0
 
         for mod in module_names:
@@ -704,11 +737,10 @@ class ModuleManager:
             print(f"\n[{mod}] 比對 {local_dir} ↔ {remote_dir}")
             print("  " + "-" * 66)
 
-            # 建立兩邊的相對路徑集合
             def collect_files(base: Path) -> Dict[str, Path]:
                 result = {}
                 for f in base.rglob("*"):
-                    if f.is_file() and f.name not in EXCLUDE_FILES and "__pycache__" not in str(f):
+                    if f.is_file() and f.name not in EXCLUDE_FILES and not f.name.endswith(".local.json") and "__pycache__" not in str(f):
                         result[f.relative_to(base).as_posix()] = f
                 return result
 
@@ -757,7 +789,7 @@ def format_help_doc() -> str:
 
 【核心定位】
   YS-Codebase 專為個人獨立開發者與中小型專案打造的輕量、模組化工具庫管理系統。
-  支援 Source (源碼/開發者) 與 Build (發布物/使用者) 雙軌安裝模式。
+  支援 2×2 設定協定、Core SDK (yscb_core) 與 Source/Build 雙軌安裝模式。
 
 【指令一覽 (Commands)】
   1. init
@@ -793,7 +825,7 @@ def format_help_doc() -> str:
      用法: python yscb_installer.py remove <module> [--force]
 
   9. diff
-     從遠端拉取最新 cache 後，逐檔比對本地已安裝模組與遠端版本之差異（排除 config.json）。
+     從遠端拉取最新 cache 後，逐檔比對本地已安裝模組與遠端版本之差異。
      用法: python yscb_installer.py diff [<module> ...]
 
  10. help
@@ -826,7 +858,7 @@ def main():
     # 3. install
     install_parser = subparsers.add_parser("install", help="安裝模組")
     install_parser.add_argument("modules", nargs="*", help="欲安裝的模組名稱（若未指定則安裝設定檔中宣告之模組）")
-    install_parser.add_argument("--source", action="store_true", help="以源碼模式 (Source Mode) 安裝（自動連動相依 core）")
+    install_parser.add_argument("--source", action="store_true", help="以源碼模式 (Source Mode) 安裝")
     install_parser.add_argument("--force", action="store_true", help="強制重新安裝並覆寫檔案")
 
     # 4. pull / update
@@ -926,7 +958,7 @@ def main():
             print(f"[PLAN] 安裝序列（含相依）: {' -> '.join(resolved_modules)}")
 
             for mod in resolved_modules:
-                mod_mode = "source" if (args.source or mod == "core") else mode
+                mod_mode = "source" if args.source else mode
                 module_mgr.install_module(mod, mode=mod_mode, force=args.force)
             print("[SUCCESS] 所有指定模組已順利安裝完成！")
             return 0
@@ -950,11 +982,11 @@ def main():
         elif args.subcommand == "build":
             modules_to_build = args.modules
             if args.all or not modules_to_build:
-                source_dir = root_dir / "source"
+                source_dir = module_mgr._get_source_dir(use_cache=False)
                 if not source_dir.is_dir():
                     print("[WARN] 本地無 source/ 目錄，無模組可供建置。")
                     return 0
-                modules_to_build = [d.name for d in source_dir.iterdir() if d.is_dir() and not d.name.startswith(".") and d.name != "core"]
+                modules_to_build = [d.name for d in source_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
 
             if not modules_to_build:
                 print("[INFO] 無任何模組需要建置。")

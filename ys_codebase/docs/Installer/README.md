@@ -6,57 +6,34 @@ source_paths:
   - "yscb_installer.py"
 related_docs:
   - "./DESIGN_NOTES.md"
-  - "../_global/CLI_SPECIFICATION.md"
+  - "../_project/CLI_SPECIFICATION.md"
 last_updated: "2026-08-22"
 ---
 
 # Installer 核心引擎架構 (`yscb_installer.py`)
 
-[`yscb_installer.py`](../../yscb_installer.py) 是 `ys-codebase` 體系的唯一執行與管理入口，負責全生命週期的設定、遠端同步、相依解析、模組安裝與建置發布。
+`yscb_installer.py` 是 `ys-codebase` 體系的唯一安裝與管理執行入口，負責全生命週期的設定、遠端同步、相依解析、模組安裝與建置發布。
 
 ---
 
-## 🏛️ 內部核心架構與類別劃分
+## 🏛️ 內部核心架構與元件劃分
 
-```mermaid
-classDiagram
-    class ConfigManager {
-        +Path root_dir
-        +Path config_path
-        +Path template_path
-        +exists() bool
-        +create_default(repo, branch, force) dict
-        +load() dict
-        +save(config) void
-        +record_installed_module(name, mode, version, meta) void
-        +remove_installed_module(name) void
-    }
-
-    class GitRemoteClient {
-        +Path root_dir
-        +str repo
-        +str branch
-        +Path cache_dir
-        +is_git_available() bool
-        +sync_cache(force_refresh) Path
-        +push_changes(commit_msg, branch) bool
-    }
-
-    class ModuleManager {
-        +Path root_dir
-        +ConfigManager config_mgr
-        +GitRemoteClient git_client
-        +read_manifest(path) dict
-        +discover_modules(from_remote) dict
-        +resolve_dependencies(modules, is_source) list
-        +resolve_build_dependencies(modules) list
-        +install_module(name, mode, force) bool
-        +remove_module(name, force) bool
-        +build_module(name) bool
-    }
-
-    ModuleManager --> ConfigManager : 讀寫狀態
-    ModuleManager --> GitRemoteClient : 同步遠端快取
+```text
+[yscb_installer.py]
+  ├── ConfigManager
+  │     - 讀寫 yscb_config.json 與 yscb_config.local.json
+  │     - 追蹤 installed_modules 狀態矩陣
+  │
+  ├── GitRemoteClient
+  │     - 管理本機 Git 倉庫快取 (cache/)
+  │     - 支援 pull、push 與多分支切換
+  │
+  └── ModuleManager
+        - discover_modules()：掃描本機與遠端可用模組
+        - resolve_dependencies()：遞迴解析相依性（自動包含 core）
+        - install_module()：支援 build (modules/) 與 source (source/) 模式
+        - build_module()：將 source/ 打包為純淨 build/ 發布物
+        - remove_module()：安全卸載與清理
 ```
 
 ---
@@ -65,10 +42,9 @@ classDiagram
 
 ### 1. 相依解析器 (Dependency Resolution)
 - 透過 DFS 拓撲排序，遞迴解析各模組之 `dependencies`。
-- **`--source` 源碼模式**：無條件自動將 `core` 置於安裝序列第一位。
-- **`build` 建置模式**：自動遞迴解析待建置相依模組，但自動過濾排除 `core`。
+- 所有宣告相依 `core` 的模組，皆自動遞迴安裝 `core`（Build 模式 ➔ `modules/core/`，Source 模式 ➔ `source/core/`）。
 
 ### 2. 檔案同步與安裝隔離
 - 使用 `shutil.copytree` 搭配 `dirs_exist_ok=True`，支援乾淨覆寫與增量補全。
-- 使用者安裝模式（預設）從遠端/本地 `build/<module>/` 拉取最低執行需求產物並安裝至本地 `modules/<module>/`，杜絕開發期垃圾檔案污染專案。
-- 開發者模式（`--source`）則安裝至 `source/<module>/` 並連帶掛載 `source/core/` 基座。
+- 使用者安裝模式（預設）從遠端/本地 `build/<module>/` 拉取最低執行需求產物並安裝至本地 `modules/<module>/`。
+- 開發者模式（`--source`）則安裝至 `source/<module>/`。
