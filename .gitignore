@@ -23,7 +23,6 @@ Thumbs.db
 # Scratch & temporary
 scratch/
 .yscb_cache/
-modules/
 
 # 2x2 Matrix User-Level Local Configs (Ignore all user-level configs; track project configs & templates)
 *.local.json
