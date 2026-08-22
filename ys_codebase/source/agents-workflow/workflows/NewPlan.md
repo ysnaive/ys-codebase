@@ -166,7 +166,10 @@ flowchart TD
 
 #### 執行步驟
 1. **建立工作目錄**：`plans://{YYYY_MM_DD_HHMM_功能名稱}/`（由 `config.project.json` 之 `paths.plans_dir` 定義）
-2. **初始化 P00 草稿**：依模組 `workflows/templates/P00_semantic_requirements.md` 建立 `P00_semantic_requirements.md`（狀態標記為 `Discussing`），選擇對應計畫類型（Feature / Refactor / Bug Fix / Performance / Docs / 自訂）。
+2. **雙星伴隨初始化 (Mandatory Co-Initialization)**：
+   - 依模組 `workflows/templates/P00_semantic_requirements.md` 建立 `P00_semantic_requirements.md`（狀態標記為 `Discussing`），選擇對應計畫類型（Feature / Refactor / Bug Fix / Performance / Docs / 自訂）。
+   - **同時**依模組 `workflows/templates/changelog.md` 建立 `changelog.md`，並立即寫入第 1 筆紀錄（開立計畫目錄與 P00 草稿）。
+   - 🚨 **防呆鐵律**：嚴禁延至分流後才建立 `changelog.md`！Phase 0 的所有討論、調研 (R01/R02) 與 DR 決策必須即時記錄於 `changelog.md`。
 3. **開放式討論與深度調研 (Phase 0-R)**：
    - 標準情況：Agent 作為知識顧問提問釐清，持續補充 `P00` 的「開放議題紀錄」欄位。
    - **高複雜度/跨度大需求**：若需求涉及全新架構、多維度可行性驗證或資產大規模遷移，依 [Research.md](./Research.md) 啟動特化調研，針對各技術主題產出自由論證格式之專題調研報告，統一採用前綴命名 **`R{n:2d}_{topic}.md`**（例：`R01_architecture_reference.md`）。調研結論收斂回填至 `P00` 與主計畫路線圖。
@@ -179,7 +182,7 @@ flowchart TD
 | 分流層級 | 適用場景 | 產出與執行軌道 |
 | :--- | :--- | :--- |
 | **Level 0：Fast Track** | • 修改檔案數 $\le 2$<br>• 不變更 Public API / 介面簽名<br>• 不引入新的跨模組依賴<br>• 純 Bug 修復、內部微調或簡單擴充 | 於工作目錄建立 `FT_plan.md`，嵌入 P00 引用，進入 FT-1 ~ FT-3。 |
-| **Level 1：Full Track** | • 單一功能語意、單一使用情境<br>• 單一模組的新增或重構<br>• 涉及 Public API 變更或內部依賴調整 | 建立 `changelog.md`，進入 Phase 1 ~ Phase 7 完整流程。 |
+| **Level 1：Full Track** | • 單一功能語意、單一使用情境<br>• 單一模組的新增或重構<br>• 涉及 Public API 變更或內部依賴調整 | 確認 `changelog.md` 已就緒，進入 Phase 1 ~ Phase 7 完整流程。 |
 | **Level 2：Full Track $\times$ n<br/>(分類型主計畫 Umbrella)** | • 多個功能語意、多個情境、跨模組大型架構重構<br>• 子計畫拆分評估以**單個 Full Track 能處理**為單位 | 建立 `umbrella_overview.md`，拆分 `sub_01`, `sub_02`... 各子計畫獨立執行其 Track。 |
 
 ---
@@ -251,6 +254,7 @@ flowchart TD
 3. **知識庫文檔衝擊盤點 (Documentation Impact Plan)**：
    - 依據 P03 (API 介面)、P05 (實作任務) 與 P06 (測試案例) 進行 7 大抽象知識維度投影。
    - 於 `P04_implementation_plan.md` 中輸出「知識庫文檔衝擊與交付規劃」，明確預排需新建/更新之 `docs/` 文件（特別是維度 3 中觀機制手冊與維度 5 Design Notes）。
+   - 💡 可使用 `python yscb_cli.py agents-workflow docs new-topic <ModuleName> <TopicName>` 快速生成標準專題手冊骨架。
 4. **靈魂拷問 (Stress Test)**：Agent 主動扮演架構審查員，提出至少 1 個尖銳且具建設性的問題，開發者回答後方可繼續。
 5. **產出最終計畫書**：依 `workflows/templates/P04_implementation_plan.md` 模板彙整 DR 與實作細節，狀態更新為 `Confirmed`。
 6. **Test-First 定稿**：同步審查並定稿 `workflows/templates/P06_test_plan.md`，狀態更新為 `Confirmed`。

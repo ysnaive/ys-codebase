@@ -64,8 +64,12 @@ Agent 必須始終遵守以下三大原則：
   - **三維錨點 1:1 交付驗收**：Phase 4 依 P03/P05/P06 預排文檔衝擊清單，Phase 7 Walkthrough 必須 1:1 核對全數交付。
 
 - **目錄歸檔紀律與 CLI 調度優先**：
-  - **統一 CLI 指令優先**：進行歷史 Dev Plan / DR 檢索、狀態掃描、合規驗證或計畫歸檔等定式作業時，必須優先呼叫 `python yscb_cli.py agents-workflow <verify|scan|search|archive>` 指令。
+  - **統一 CLI 指令優先**：進行歷史 Dev Plan / DR 檢索、狀態掃描、合規驗證、知識庫巡檢、擴充查詢或計畫歸檔等定式作業時，必須優先呼叫 `python yscb_cli.py agents-workflow <verify|scan|search|archive|docs|ext>` 指令。
   - **嚴禁主動歸檔**：所有計畫預設留存原位（`plans://`），僅在開發者明確下達歸檔指令時才執行歸檔。
+
+- **計畫內部日誌 vs. 全域變更日誌職責分離 (Changelog Separation)**：
+  - **`plans://<plan>/changelog.md`**：【計畫內部微觀日誌】記錄當前 Dev Plan 內部 Phase 轉換、DR 決策與偏差，開立計畫目錄時**必須與 P00 剛性伴隨初始化**。
+  - **`project://CHANGELOG.md`**：【全專案高階發布日誌】僅於 Phase 7 / FT-3 結案審查階段，由 Agent 追加本次 Dev Plan 的高階版本摘要。
 
 ---
 
