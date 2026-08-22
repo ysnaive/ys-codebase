@@ -9,7 +9,7 @@
 ### 1. `verify_plan.py` — Dev Plan 合規性與 Extension 深度稽核工具 (NEW)
 
 - **用途**：秒級自動驗證 Dev Plan 的 Header 元數據格式、佔位符、以及全量 `extensions/`（常態 always 與語意 on_demand）的落實情況。
-- **Agent 執行紀律**：當執行 `/sop_Review` 時，**必須優先呼叫此腳本**完成定式驗收。
+- **Agent 執行紀律**：當執行 `/Review` 時，**必須優先呼叫此腳本**完成定式驗收。
 - **命令列語法**：
   ```bash
   # 掃描所有進行中計畫
@@ -17,26 +17,6 @@
 
   # 掃描指定計畫
   python .agents/scripts/verify_plan.py 2026_08_16_1600_remove_centralized_auto_telemetry
-  ```
-
----
-
-### 2. `sync_workflow.py` — YS-Codebase 中央標準庫雙向同步工具 (v1.0)
-
-- **用途**：與遠端中央標準庫 (`ys-codebase`) 進行雙向同步，內建順序版本遷移管線與 `AGENTS.md` 核心區塊混合同步。
-- **命令列語法**：
-  ```bash
-  # 檢查狀態
-  python .agents/scripts/sync_workflow.py status
-
-  # 比對差異
-  python .agents/scripts/sync_workflow.py diff
-
-  # 拉取最新標準庫 (自動遷移舊版配置與同步核心規則)
-  python .agents/scripts/sync_workflow.py pull
-
-  # 推送本地通用修改回中央庫
-  python .agents/scripts/sync_workflow.py push -m "Commit message"
   ```
 
 ---
@@ -72,13 +52,23 @@
 
 ### 5. `scan_plan_status.py` — 專案進度與狀態掃描工具
 
-- **用途**：快速掃描 `.agents/dev_plans/` 中所有計畫的進度矩陣 (`Planning` / `Implementing` / `Completed`)。
-- **Agent 執行紀律**：當執行 `/sop_Continue` 接續中斷任務時，優先執行此腳本定位目標 Plan。
+- **用途**：快速掃描計畫目錄中所有計畫的進度矩陣 (`Planning` / `Implementing` / `Completed`)。
+- **Agent 執行紀律**：當執行 `/Continue` 接續中斷任務時，優先執行此腳本定位目標 Plan。
 - **命令列語法**：
   ```bash
   # 僅掃描當前進行中 (Active) 計畫
-  python .agents/scripts/scan_plan_status.py
+  python yscb_cli.py agents-workflow scan
 
   # 掃描包含已歸檔的全量計畫
-  python .agents/scripts/scan_plan_status.py --all
+  python yscb_cli.py agents-workflow scan --all
+  ```
+
+---
+
+### 6. `_migration.py` — 模組跨版本遷移腳本 (Lifecycle Hook)
+
+- **用途**：在模組升級覆寫時自動由 `yscb_installer.py` 調用，接收 `<old_version>` 與 `<new_version>` 兩參數，負責遷移本地 `config.json` 或更新相容性路徑。
+- **命令列語法**：
+  ```bash
+  python modules/agents-workflow/scripts/_migration.py <old_version> <new_version>
   ```

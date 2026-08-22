@@ -2,7 +2,7 @@
 """
 search_dev_plans.py — 歷史開發計畫與決策記錄 (DR) 檢索工具
 
-用途：結構化檢索 `.agents/dev_plans/` (含進行中、history 歸檔、Umbrella 主/子計畫與 R01~R99 調研報告) 下的關鍵字與 Decision Records (DR)。
+用途：結構化檢索 plans_dir (進行中) 與 archive_dir (歸檔) 下的關鍵字與 Decision Records (DR)。
 """
 
 import sys
@@ -15,25 +15,23 @@ import re
 import argparse
 from pathlib import Path
 
-def get_workspace_root() -> Path:
-    cur = Path(__file__).resolve().parent
-    while cur.parent != cur:
-        if (cur / ".agents").is_dir():
-            return cur
-        cur = cur.parent
-    return Path.cwd()
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
-def find_all_plans(dev_plans_dir: Path, year: str = None, month: str = None):
+from config_utils import get_plans_dir, get_archive_dir, get_module_dir, get_workspace_root
+
+def find_all_plans(plans_dir: Path, archive_dir: Path, year: str = None, month: str = None):
     plans = []
     # 1. 搜尋進行中計畫
-    for item in dev_plans_dir.iterdir():
-        if item.is_dir() and item.name != "history" and not item.name.startswith("."):
-            plans.append(item)
+    if plans_dir.is_dir():
+        for item in plans_dir.iterdir():
+            if item.is_dir() and not item.name.startswith("."):
+                plans.append(item)
 
-    # 2. 搜尋歷史計畫 history/YYYY/MM/
-    history_dir = dev_plans_dir / "history"
-    if history_dir.is_dir():
-        for y in history_dir.iterdir():
+    # 2. 搜尋歷史歸檔計畫 archive_plans/YYYY/MM/
+    if archive_dir.is_dir():
+        for y in archive_dir.iterdir():
             if y.is_dir() and (year is None or y.name == year):
                 for m in y.iterdir():
                     if m.is_dir() and (month is None or m.name == month):
@@ -113,7 +111,9 @@ def search_decision_records(plans: list, query: str = None, limit: int = 25):
     print("=" * 90)
     print(f"共找到 {found_count} 筆 Decision Records。")
 
-def search_full_text(plans: list, query: str, limit: int = 20):
+def search_full_text(plans: list, query: str, limit: int = 20, root: Path = None):
+    if root is None:
+        root = get_workspace_root(get_module_dir())
     print(f"搜尋關鍵字: \"{query}\" ...")
     print("=" * 90)
 
@@ -127,7 +127,10 @@ def search_full_text(plans: list, query: str, limit: int = 20):
 
             for idx, line in enumerate(lines):
                 if query.lower() in line.lower():
-                    rel_path = md_file.relative_to(get_workspace_root())
+                    try:
+                        rel_path = md_file.relative_to(root)
+                    except ValueError:
+                        rel_path = md_file
                     print(f"📄 [{rel_path}:L{idx+1}]")
                     start_i = max(0, idx - 1)
                     end_i = min(len(lines), idx + 2)
@@ -147,25 +150,28 @@ def search_full_text(plans: list, query: str, limit: int = 20):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="檢索 Dev Plans 歷史與決策")
-    parser.add_argument("query", nargs="?", default="", help="搜尋關鍵字")
-    parser.add_argument("-q", "--query_opt", type=str, help="搜尋關鍵字 (同 positional query)")
+    parser.add_argument("query_pos", nargs="?", default="", help="搜尋關鍵字 (positional)")
+    parser.add_argument("-q", "--query", type=str, help="搜尋關鍵字 (與 positional 等效)")
     parser.add_argument("--dr", action="store_true", help="專門檢索 Decision Records (DR)")
     parser.add_argument("--year", type=str, help="限定搜尋年份 (如 2026)")
     parser.add_argument("--month", type=str, help="限定搜尋月份 (如 08)")
     parser.add_argument("--limit", type=int, default=20, help="限制回傳筆數 (預設 20)")
 
     args = parser.parse_args()
-    q = args.query or args.query_opt or ""
+    q = args.query or args.query_pos or ""
 
-    root = get_workspace_root()
-    dp_dir = root / ".agents" / "dev_plans"
-    if not dp_dir.exists():
-        print(f"[ERROR] 找不到 Dev Plans 目錄：{dp_dir}")
-        sys.exit(1)
+    module_dir = get_module_dir()
+    plans_dir = get_plans_dir(module_dir)
+    archive_dir = get_archive_dir(module_dir)
+    workspace_root = get_workspace_root(module_dir)
 
-    all_plans = find_all_plans(dp_dir, year=args.year, month=args.month)
+    if not plans_dir.exists() and not archive_dir.exists():
+        print(f"[INFO] 找不到計畫目錄 ({plans_dir})。")
+        sys.exit(0)
+
+    all_plans = find_all_plans(plans_dir, archive_dir, year=args.year, month=args.month)
 
     if args.dr or not q:
         search_decision_records(all_plans, query=q, limit=args.limit)
     else:
-        search_full_text(all_plans, query=q, limit=args.limit)
+        search_full_text(all_plans, query=q, limit=args.limit, root=workspace_root)
