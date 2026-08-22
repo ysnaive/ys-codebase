@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-sync_workflow.py — Agent Workflow 中央標準庫雙向同步工具 (v1.0)
+sync_workflow.py — YS-Codebase 中央標準庫雙向同步工具 (v1.0)
 
 功能：
   - pull   : 從中央標準庫拉取最新通用 SOP、模板與腳本，並自動執行版本遷移與 AGENTS.md 核心區塊同步。
@@ -25,7 +25,7 @@ if sys.stdout and hasattr(sys.stdout, 'buffer'):
     except Exception:
         pass
 
-DEFAULT_CORE_REPO = "https://github.com/YsNaive/agent.workflow.git"
+DEFAULT_CORE_REPO = "https://github.com/YsNaive/ys-codebase.git"
 DEFAULT_BRANCH = "main"
 CURRENT_VERSION = "1.0"
 
@@ -205,7 +205,7 @@ def cmd_status(args):
     agents_dir = get_agents_dir()
     cfg = load_config(agents_dir)
     print("=" * 70)
-    print("  Agent Workflow 同步狀態 (v1.0)")
+    print("  YS-Codebase 同步狀態 (v1.0)")
     print("=" * 70)
     print(f"  工作目錄       : {agents_dir}")
     print(f"  配置版本       : {cfg.get('version', '0.0')}")
@@ -404,7 +404,7 @@ def cmd_init(args):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Agent Workflow 中央標準庫雙向同步工具 (v1.0)")
+    parser = argparse.ArgumentParser(description="YS-Codebase 中央標準庫雙向同步工具 (v1.0)")
     subparsers = parser.add_subparsers(dest="command", help="子指令")
 
     subparsers.add_parser("status", help="檢查同步狀態")

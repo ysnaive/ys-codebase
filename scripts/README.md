@@ -21,9 +21,9 @@
 
 ---
 
-### 2. `sync_workflow.py` — Agent Workflow 中央標準庫雙向同步工具 (v1.0)
+### 2. `sync_workflow.py` — YS-Codebase 中央標準庫雙向同步工具 (v1.0)
 
-- **用途**：與遠端中央標準庫 (`agent.workflow`) 進行雙向同步，內建順序版本遷移管線與 `AGENTS.md` 核心區塊混合同步。
+- **用途**：與遠端中央標準庫 (`ys-codebase`) 進行雙向同步，內建順序版本遷移管線與 `AGENTS.md` 核心區塊混合同步。
 - **命令列語法**：
   ```bash
   # 檢查狀態
