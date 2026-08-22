@@ -90,7 +90,7 @@ def run_e2e_downstream_simulation() -> bool:
             return False
         print("[+] 'installer init' 驗證通過。")
 
-        # 3. 測試 install agents-workflow (Build 模式)
+        # 3. 測試 install agents-workflow (Build 模式，自動連帶安裝 core SDK)
         print("\n[Step 2.2] 執行 'installer install agents-workflow' 安裝發布物...")
         res = subprocess.run([sys.executable, "yscb_installer.py", "install", "agents-workflow"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
         if res.returncode != 0:
@@ -99,7 +99,10 @@ def run_e2e_downstream_simulation() -> bool:
         if not (sandbox_dir / "modules" / "agents-workflow").is_dir():
             print("[ERROR] modules/agents-workflow 目錄未正確建立！")
             return False
-        print("[+] 'installer install agents-workflow' 驗證通過。")
+        if not (sandbox_dir / "modules" / "core").is_dir():
+            print("[ERROR] modules/core (Core SDK) 目錄未自動連帶建立！")
+            return False
+        print("[+] 'installer install agents-workflow' (含 core SDK) 驗證通過。")
 
         # 4. 測試 yscb_cli.py 調度
         print("\n[Step 2.3] 執行 'yscb_cli.py --help' 與 'yscb_cli.py installer status' 驗證調度器...")
@@ -118,7 +121,7 @@ def run_e2e_downstream_simulation() -> bool:
             return False
         print("[+] 模組專屬 CLI 轉發正常。")
 
-        # 6. 測試 IDE 引用式指令生成與清理
+        # 6. 測試 IDE 引用式指令生成與清理 (寫入 config.local.json)
         print("\n[Step 2.5] 測試 '--ide-gemini' 指令生成與 '--ide-clear'...")
         res_ide_gen = subprocess.run([sys.executable, "yscb_cli.py", "agents-workflow", "--ide-gemini", "-prefix", "sandbox_sop_"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
         if res_ide_gen.returncode != 0:
@@ -129,7 +132,12 @@ def run_e2e_downstream_simulation() -> bool:
         if not gen_sample.is_file():
             print(f"[ERROR] 找不到生成的 IDE 指令檔案：{gen_sample}")
             return False
-        print("[+] IDE 指令成功生成。")
+        
+        local_cfg_file = sandbox_dir / "modules" / "agents-workflow" / "config.local.json"
+        if not local_cfg_file.is_file():
+            print(f"[ERROR] config.local.json 未成功寫入個人偏好！")
+            return False
+        print("[+] IDE 指令成功生成且正確記錄至 config.local.json。")
 
         res_ide_clr = subprocess.run([sys.executable, "yscb_cli.py", "agents-workflow", "--ide-clear"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
         if res_ide_clr.returncode != 0 or gen_sample.exists():
@@ -138,10 +146,15 @@ def run_e2e_downstream_simulation() -> bool:
         print("[+] IDE 指令成功清理。")
 
         # 7. 測試 remove
-        print("\n[Step 2.6] 執行 'installer remove agents-workflow'...")
-        res_rem = subprocess.run([sys.executable, "yscb_installer.py", "remove", "agents-workflow"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if res_rem.returncode != 0:
-            print(f"[ERROR] 移除模組失敗: {res_rem.stderr}\n{res_rem.stdout}")
+        print("\n[Step 2.6] 執行 'installer remove agents-workflow' 與 'installer remove core'...")
+        res_rem_wf = subprocess.run([sys.executable, "yscb_installer.py", "remove", "agents-workflow"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if res_rem_wf.returncode != 0:
+            print(f"[ERROR] 移除模組 agents-workflow 失敗: {res_rem_wf.stderr}\n{res_rem_wf.stdout}")
+            return False
+        
+        res_rem_core = subprocess.run([sys.executable, "yscb_installer.py", "remove", "core"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if res_rem_core.returncode != 0:
+            print(f"[ERROR] 移除模組 core 失敗: {res_rem_core.stderr}\n{res_rem_core.stdout}")
             return False
         print("[+] 模組卸載驗證成功。")
 

@@ -9,7 +9,7 @@ source_paths:
   - "test/run_regression.py"
 related_docs:
   - "./STANDARDS.md"
-  - "../_global/ARCHITECTURE.md"
+  - "./ARCHITECTURE.md"
 last_updated: "2026-08-22"
 ---
 
@@ -23,38 +23,39 @@ last_updated: "2026-08-22"
 
 ### 步驟 1：在 `ys_codebase/source/` 建立模組目錄
 ```bash
-# 建立模組資料夾
 mkdir -p ys_codebase/source/my-new-module
 ```
 
 ### 步驟 2：撰寫 `manifest.json` 與源碼
-在 `ys_codebase/source/my-new-module/manifest.json` 定義模組元數據：
+在 `ys_codebase/source/my-new-module/manifest.json` 定義模組元數據（必須相依 `core`）：
 ```json
 {
   "name": "my-new-module",
   "version": "1.0.0",
   "description": "新模組說明",
-  "dependencies": []
+  "dependencies": ["core"]
 }
 ```
 
-編寫模組所需之代碼、文檔或配置檔。
+編寫模組所需之代碼、文檔或配置範本（`config.project.template.json` / `config.local.template.json`）。
 
 ---
 
-### 步驟 3：[可選] 自訂建置腳本 (`build.py`)
-若模組需要特殊的構建流程（如文檔預處理、代碼編譯或壓縮），可在 `ys_codebase/source/my-new-module/build.py` 撰寫自訂建置邏輯：
+### 步驟 3：撰寫腳本並引用 `yscb_core`
+在 `ys_codebase/source/my-new-module/scripts/cli.py` 撰寫 CLI 入口：
 ```python
-import sys, pathlib
+import argparse
+from yscb_core import ProjectContext, ConfigManager, Console
 
-src_path = pathlib.Path(sys.argv[1])
-dest_path = pathlib.Path(sys.argv[2])
+def main():
+    parser = argparse.ArgumentParser(description="My New Module CLI")
+    # 定義指令...
+    args = parser.parse_args()
+    Console.info("執行 My New Module...")
 
-dest_path.mkdir(parents=True, exist_ok=True)
-# 執行自訂拷貝或建置處理...
+if __name__ == "__main__":
+    main()
 ```
-
-若無特殊需求，Installer 將自動採用標準過濾打包器。
 
 ---
 
@@ -76,7 +77,6 @@ python test/run_regression.py
 
 ### 步驟 6：提交與推送
 ```bash
-# 提交變更並推送回中央遠端倉庫
 git add .
 git commit -m "feat(module): add my-new-module"
 git push origin main

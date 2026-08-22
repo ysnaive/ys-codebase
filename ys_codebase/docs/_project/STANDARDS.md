@@ -6,11 +6,12 @@ source_paths:
   - "yscb_cli.py"
   - "yscb_installer.py"
   - "source/core/manifest.json"
+  - "source/core/yscb_core/"
   - ".gitignore"
   - "tests/test_installer.py"
 related_docs:
-  - "../_global/ARCHITECTURE.md"
-  - "../_global/CLI_SPECIFICATION.md"
+  - "./ARCHITECTURE.md"
+  - "./CLI_SPECIFICATION.md"
   - "./CONTRIBUTING.md"
 last_updated: "2026-08-22"
 ---
@@ -23,7 +24,7 @@ last_updated: "2026-08-22"
 
 ## 1. 核心紀律：Zero External Dependency (零第三方依賴)
 
-- **原則**：Installer 引擎與核心定式腳本**嚴禁引入第三方套件**（如 `requests`、`click`、`pyyaml` 等），必須 100% 使用 Python 3.8+ 標準庫實現。
+- **原則**：Installer 引擎、Core SDK 與核心定式腳本**嚴禁引入第三方套件**（如 `requests`、`click`、`pyyaml` 等），必須 100% 使用 Python 3.8+ 標準庫實現。
 - **標準替代方案**：
   - HTTP 請求 ➔ `urllib.request`
   - 命令行解析 ➔ `argparse`
@@ -43,7 +44,7 @@ last_updated: "2026-08-22"
   "name": "module_name",
   "version": "1.0.0",
   "description": "模組功能的簡要說明",
-  "dependencies": ["dependency_module_a"],
+  "dependencies": ["core"],
   "build_exclude": ["drafts/**", "*.tmp"]
 }
 ```
@@ -54,45 +55,65 @@ last_updated: "2026-08-22"
 | `name` | string | **是** | 模組名稱（建議使用 lowercase + hyphen/underscore） |
 | `version` | string | **是** | 模組語意化版本號 (SemVer) |
 | `description` | string | 否 | 模組簡要說明（顯示於 `list` 與 `status`） |
-| `dependencies` | array | 否 | 相依之其他模組名稱清單 |
+| `dependencies` | array | **是** | 相依模組清單（業務模組必須包含 `"core"`） |
 | `build_exclude`| array | 否 | 在標準 build 打包時需額外排除的檔案或 glob |
 | `built_at` | string | 自動 | Build 產出時由 Installer 自動注入之 ISO 時間戳 |
 
 ---
 
-## 3. 模組設定檔與範本規範 (`config.template.json` / `config_global.json`)
+## 3. 2 × 2 設定協定與 Git 規則
 
-為確保本地運行期設定檔與共享範本/全域配置清晰隔離，模組遵循以下規範：
+```text
++-----------------------+----------------------------------+----------------------------------+
+| 範疇 \ 生命週期       | Project Level (進 Git 團隊規範)  | User Level (忽略 Git 個人偏好)   |
++-----------------------+----------------------------------+----------------------------------+
+| Codebase (全專案基底) | yscb_config.json                 | yscb_config.local.json           |
++-----------------------+----------------------------------+----------------------------------+
+| Module (特定單一模組) | config.project.json              | config.local.json                |
+|                       | config.project.template.json     | config.local.template.json       |
++-----------------------+----------------------------------+----------------------------------+
+```
 
-1. **範本必備原則**：
-   - 任何會產生/讀取本地 `config.json` 的模組，**必須**在源碼根目錄提供一份純淨的 `config.template.json`（或 `config.template`）。
-   - 若為模組全域設定，必須命名為 `config_global.json`，且同樣**必須**提供一份 `config_global.template.json`（或 `config_global.template`）。
-2. **Git 追蹤與忽略規則**：
-   - **忽略項目**：`.gitignore` 忽略所有本地模組運行期產生的 `**/config.json`。
-   - **追蹤項目（不被忽略）**：所有 `*template*` 檔案（如 `config.template.json`、`yscb_config.template.json`）與所有 `*global*` 檔案（如 `config_global.json`、`config_global.template.json`）**皆納入版本控制正常追蹤**。
-3. **優雅降級初始化**：
-   - 當模組執行時發現 `config.json` 尚未生成，必須自動讀取 `config.template.json` 作為基礎預設結構。
+### 規則要點：
+1. **範本提供**：
+   - 模組若需要專案級設定，必須提供 `config.project.template.json`。
+   - 模組若需要本機個人偏好，必須提供 `config.local.template.json`。
+2. **Git 忽略規範 (`.gitignore`)**：
+   - 所有 `*.local.json` 與 `yscb_config.local.json` 必須被 `.gitignore` 忽略。
+   - 所有 `*.project.json`、`*.template.json` 與 `manifest.json` 必須受 Git 追蹤。
+3. **載入與無損合併**：
+   - 模組透過 `yscb_core.ConfigManager.load("<module_name>")` 自動依優先級合併設定。
 
 ---
 
-## 4. 模組標準 Scripts 接口規範 (`module/scripts/`)
+## 4. 模組引用 SDK 規範
 
-為確保所有模組與 `yscb_cli.py` 轉接器及生命週期管理無縫協同，模組遵循以下腳本接口規範：
+模組內部腳本禁止使用硬編碼相對路徑查找專案根目錄，一律透過 `yscb_core`：
 
-| 腳本名稱 | 必備/選用 | 調用時機與職責 | 規範要求 |
-| :--- | :--- | :--- | :--- |
-| **`cli.py`** | 按需 | 模組 CLI 入口。透過 `python yscb_cli.py <module> <command>` 調用。 | 若存在，**必須**支援 `--help` / `-h` 輸出完整指令手冊。 |
-| **`_installed.py`** | 按需 | 安裝後置 Hook。在模組檔案複製與設定檔寫入完成後由 Installer 自動調用。 | 接收參數 `[<dest_path>, <mode>]`，用於環境初始化或資源掛載。 |
-| **`_uninstall.py`** | 按需 | 卸載前置 Hook。在模組目錄被刪除前由 Installer 自動調用。 | 接收參數 `[<target_dir>, <mode>]`，用於清理自訂生成的檔案或解除註冊。 |
+```python
+from yscb_core import ProjectContext, ConfigManager, Console
+
+# 1. 取得專案根目錄
+project_root = ProjectContext.get_project_root()
+
+# 2. 自動合併載入 2x2 設定
+config = ConfigManager.load("module_name")
+
+# 3. 解析相對於專案根目錄的路徑
+target_path = ProjectContext.resolve(config.get("target_dir", "docs"))
+
+# 4. 統一終端輸出
+Console.success("操作成功！")
+```
 
 ---
 
 ## 5. 測試與品質門檻 (Testing & Quality Gate)
 
 - **測試框架**：採用純 Python 標準庫 `unittest`。
-- **測試存放路徑**：`tests/`。
+- **測試存放路徑**：`test/tests/`。
 - **執行測試**：
   ```bash
-  python tests/test_installer.py
+  python test/run_regression.py
   ```
-- **門檻要求**：所有核心管理工具、相依解析器、Hook 機制與 build 管線之修改，必須維持 100% 測試通過率。
+- **門檻要求**：所有核心管理工具、相依解析器、2x2 設定合併與 build 管線之修改，必須維持 100% 測試通過率。

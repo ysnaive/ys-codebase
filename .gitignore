@@ -1,6 +1,6 @@
 # Python
 __pycache__/
-**/__pycache__/
+/**/__pycache__/
 *.py[cod]
 *$py.class
 *.pyc
@@ -25,8 +25,10 @@ scratch/
 .yscb_cache/
 modules/
 
-# Module Local Configs (Ignore local module configs; track templates and globals)
+# 2x2 Matrix User-Level Local Configs (Ignore all user-level configs; track project configs & templates)
+*.local.json
+**/*.local.json
+yscb_config.local.json
 **/config.json
 !**/*template*
-!**/*global*
-
+!**/*project*

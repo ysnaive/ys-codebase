@@ -91,7 +91,7 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
 
     result["installer"] = {
         "name": "installer",
-        "description": "YS-Codebase 核心安裝管理工具 (init, install, pull, build, push, status, list, remove)",
+        "description": "YS-Codebase 核心安裝管理工具 (init, install, pull, build, push, status, list, remove, diff)",
         "cli_path": installer_path if installer_path.exists() else None,
         "is_builtin": True
     }
@@ -99,6 +99,8 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
     # 2. 掃描已安裝模組
     installed = config.get("installed_modules", {})
     for mod_name, info in installed.items():
+        if mod_name == "core":
+            continue
         cli_p = find_module_cli(root_dir, mod_name, config)
         desc = info.get("description", "")
         result[mod_name] = {
@@ -114,7 +116,7 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
         sub_dir = root_dir / sub
         if sub_dir.is_dir():
             for item in sub_dir.iterdir():
-                if item.is_dir() and not item.name.startswith(".") and item.name not in result:
+                if item.is_dir() and not item.name.startswith(".") and item.name not in result and item.name != "core":
                     cli_candidate = item / "scripts" / "cli.py"
                     if cli_candidate.is_file():
                         manifest_p = item / "manifest.json"
@@ -179,14 +181,18 @@ def main() -> int:
     if target_module in ["installer", "yscb", "core_installer"]:
         installer_script = root_dir / INSTALLER_SCRIPT
         if not installer_script.is_file():
-            print(f"[ERROR] 找不到核心安裝器：{installer_script}", file=sys.stderr)
-            return 1
+            alt_inst = root_dir / "ys_codebase" / INSTALLER_SCRIPT
+            if alt_inst.is_file():
+                installer_script = alt_inst
+            else:
+                print(f"[ERROR] 找不到核心安裝器：{installer_script}", file=sys.stderr)
+                return 1
         res = subprocess.run([sys.executable, str(installer_script)] + sub_args)
         return res.returncode
 
     # 2. 特殊基座模組 core 友善提示
     if target_module == "core":
-        print("[INFO] 'core' 為 YS-Codebase 核心底層基座模組，純作為基礎相依，不提供獨立 CLI 指令接口。")
+        print("[INFO] 'core' (yscb_core) 為 YS-Codebase 核心運行期 SDK 基座，供所有模組引用，不提供獨立 CLI 入口。")
         print("提示：可執行 'python yscb_cli.py --help' 檢視其他可用模組與指令手冊。")
         return 0
 
@@ -197,12 +203,31 @@ def main() -> int:
         print(f"提示：可執行 'python yscb_cli.py --help' 檢視可用模組清單。", file=sys.stderr)
         return 1
 
-    # 執行模組 CLI
+    # 構造執行環境並自動注入 yscb_core 至 PYTHONPATH
     env = os.environ.copy()
     rel_proj = config.get("paths", {}).get("project_root", ".")
     proj_root = (root_dir / rel_proj).resolve()
+
     env["YSCB_PROJECT_ROOT"] = str(proj_root)
     env["YSCB_ROOT"] = str(root_dir.resolve())
+    env["YSCB_MODULE_DIR"] = str(cli_path.parent.parent.resolve())
+
+    # 自動查找 Core SDK 路徑並掛載至 PYTHONPATH
+    core_candidates = [
+        proj_root / "modules" / "core",
+        proj_root / "source" / "core",
+        root_dir / "modules" / "core",
+        root_dir / "source" / "core",
+        root_dir / "ys_codebase" / "source" / "core",
+        root_dir / "ys_codebase" / "build" / "core",
+        root_dir / "ys_codebase" / "modules" / "core"
+    ]
+    for cp in core_candidates:
+        if cp.is_dir():
+            curr_pypath = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = str(cp) + (os.pathsep + curr_pypath if curr_pypath else "")
+            break
+
     res = subprocess.run([sys.executable, str(cli_path)] + sub_args, cwd=str(proj_root), env=env)
     return res.returncode
 
