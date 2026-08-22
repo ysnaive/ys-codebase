@@ -66,19 +66,33 @@ class TestYSCBInstaller(unittest.TestCase):
             shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_01_config_init(self):
-        """測試設定檔初始化"""
+        """測試設定檔初始化與 project_root / yscb_root 相對路徑計算"""
+        # 1. 預設同層級目錄
         cfg = self.config_mgr.create_default(repo="https://github.com/custom/repo.git", branch="dev")
         self.assertTrue(self.config_mgr.exists())
         self.assertEqual(cfg["remote"]["repo"], "https://github.com/custom/repo.git")
         self.assertEqual(cfg["remote"]["branch"], "dev")
+        self.assertIn("paths", cfg)
+        self.assertEqual(cfg["paths"]["project_root"], ".")
+        self.assertEqual(cfg["paths"]["yscb_root"], ".")
+        self.assertEqual(self.config_mgr.get_project_root(), self.test_dir.resolve())
+        self.assertEqual(self.config_mgr.get_yscb_root(), self.test_dir.resolve())
 
         # 重複建立在無 --force 時應拋出 FileExistsError
         with self.assertRaises(FileExistsError):
             self.config_mgr.create_default()
 
-        # 加上 force 應成功
-        cfg_forced = self.config_mgr.create_default(repo="https://github.com/forced/repo.git", force=True)
-        self.assertEqual(cfg_forced["remote"]["repo"], "https://github.com/forced/repo.git")
+        # 2. 測試自訂 project_root（例如下游專案在外層 ../..）
+        cfg_custom = self.config_mgr.create_default(
+            repo="https://github.com/forced/repo.git",
+            project_root="../..",
+            force=True
+        )
+        self.assertEqual(cfg_custom["remote"]["repo"], "https://github.com/forced/repo.git")
+        self.assertEqual(cfg_custom["paths"]["project_root"], "../..")
+        expected_yscb_rel = os.path.relpath(self.test_dir.resolve(), (self.test_dir / "../..").resolve()).replace("\\", "/")
+        self.assertEqual(cfg_custom["paths"]["yscb_root"], expected_yscb_rel)
+        self.assertEqual(self.config_mgr.get_project_root(), (self.test_dir / "../..").resolve())
 
     def test_02_discover_modules(self):
         """測試模組掃描與發現"""
@@ -460,6 +474,56 @@ if __name__ == '__main__':
         self.assertEqual(migrated_cfg.get("custom_data"), "v1_state")
         self.assertEqual(migrated_cfg.get("migrated_from"), "1.0.0")
         self.assertEqual(migrated_cfg.get("migrated_to"), "2.0.0")
+
+    def test_17_mandatory_init_check(self):
+        """測試未執行 init 時，調用其他指令 (如 status/install) 會強制攔截並報錯"""
+        import subprocess
+        empty_temp_dir = Path(tempfile.mkdtemp(prefix="yscb_empty_"))
+        try:
+            installer_path = PROJECT_ROOT / "yscb_installer.py"
+            res = subprocess.run(
+                [sys.executable, str(installer_path), "status"],
+                cwd=str(empty_temp_dir),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            self.assertEqual(res.returncode, 1)
+            self.assertIn("尚未初始化專案設定檔", res.stderr + res.stdout)
+        finally:
+            shutil.rmtree(empty_temp_dir, ignore_errors=True)
+
+    def test_18_installer_init_with_project_root_cli(self):
+        """測試 CLI 執行 init -p / --project-root 能正確生成 paths.project_root 與 paths.yscb_root"""
+        import subprocess
+        test_workspace = Path(tempfile.mkdtemp(prefix="yscb_ws_"))
+        yscb_sub = test_workspace / "tools" / "ys-codebase"
+        yscb_sub.mkdir(parents=True, exist_ok=True)
+        try:
+            # 複製 installer 腳本到子目錄
+            shutil.copy2(str(PROJECT_ROOT / "yscb_installer.py"), str(yscb_sub / "yscb_installer.py"))
+            
+            # 在子目錄執行 init -p ../..
+            res = subprocess.run(
+                [sys.executable, "yscb_installer.py", "init", "-p", "../.."],
+                cwd=str(yscb_sub),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertTrue((yscb_sub / CONFIG_FILENAME).exists())
+
+            with open(yscb_sub / CONFIG_FILENAME, "r", encoding="utf-8") as f:
+                saved_cfg = json.load(f)
+
+            self.assertIn("paths", saved_cfg)
+            self.assertEqual(saved_cfg["paths"]["project_root"], "../..")
+            self.assertEqual(saved_cfg["paths"]["yscb_root"], "tools/ys-codebase")
+        finally:
+            shutil.rmtree(test_workspace, ignore_errors=True)
 
 
 if __name__ == "__main__":

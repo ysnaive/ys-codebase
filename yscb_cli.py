@@ -186,8 +186,11 @@ def main() -> int:
 
     # 執行模組 CLI
     env = os.environ.copy()
-    env["YSCB_PROJECT_ROOT"] = str(root_dir)
-    res = subprocess.run([sys.executable, str(cli_path)] + sub_args, cwd=str(root_dir), env=env)
+    rel_proj = config.get("paths", {}).get("project_root", ".")
+    proj_root = (root_dir / rel_proj).resolve()
+    env["YSCB_PROJECT_ROOT"] = str(proj_root)
+    env["YSCB_ROOT"] = str(root_dir.resolve())
+    res = subprocess.run([sys.executable, str(cli_path)] + sub_args, cwd=str(proj_root), env=env)
     return res.returncode
 
 
