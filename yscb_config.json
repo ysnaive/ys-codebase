@@ -10,6 +10,12 @@
       "version": "2.0.0",
       "installed_at": "2026-08-22T18:25:26",
       "description": "YS-Codebase 核心底層相依與基礎設施 (Core Base Infrastructure)"
+    },
+    "agents-workflow": {
+      "mode": "build",
+      "version": "1.0.0",
+      "installed_at": "2026-08-22T18:47:47",
+      "description": "AI Agent 開發標準作業流程 (SOP)、三大分流管控 (FT/Full/Umbrella)、規格書模板與定式輔助工具"
     }
   },
   "custom_settings": {}

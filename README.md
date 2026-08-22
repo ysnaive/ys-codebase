@@ -6,12 +6,16 @@
 
 ## 🌟 核心架構特色
 
-1. **極簡單檔起手**：下游專案僅需 checkout [`yscb_installer.py`](./yscb_installer.py) 與同層 [`yscb_config.json`](./yscb_config.json) 即可運作。
-2. **Zero External Dependency**：純 Python 3 標準庫實現，跨平台（Windows / macOS / Linux）免安裝額外套件。
-3. **Source / Build 雙軌分流**：
+1. **統一 CLI 調度器 (`yscb_cli.py`)**：統一轉接各模組專屬 CLI（如 `python yscb_cli.py agents-workflow verify`）與 Installer 管理指令。
+2. **極簡單檔起手**：下游專案僅需 checkout [`yscb_installer.py`](./yscb_installer.py) 與同層 [`yscb_config.json`](./yscb_config.json) 即可運作。
+3. **Zero External Dependency**：純 Python 3 標準庫實現，跨平台（Windows / macOS / Linux）免安裝額外套件。
+4. **Source / Build 雙軌分流**：
    - **標準使用者模式 (Build Mode)**：安裝 `build/<module>` 最終輸出工具與發布物。
    - **開發者源碼模式 (Source Mode, `--source`)**：安裝 `source/<module>` 原始碼，並**自動強制相依安裝 `source/core` 基礎庫**，解鎖本地 Modify、Build 與 Push 能力。
-4. **模組生命週期管理**：完整支援 `help`、`init`、`install`、`pull`、`build`、`push`、`status`、`list`、`remove`。
+5. **模組 Scripts 與 Hook 規範**：
+   - `module/scripts/cli.py`：模組專屬 CLI 入口（支援 `--help`）。
+   - `module/scripts/_installed.py`：安裝完成後置 Hook。
+   - `module/scripts/_uninstall.py`：卸載前置 Hook。
 
 ---
 
@@ -19,14 +23,16 @@
 
 ```text
 ys-codebase/
-├── yscb_installer.py              # 核心安裝管理工具 (單一入口 CLI)
+├── yscb_cli.py                    # 統一 CLI 調度轉接器
+├── yscb_installer.py              # 核心安裝管理引擎
 ├── yscb_config.json               # 專案核心設定檔
+├── yscb_config.template.json      # 純淨設定檔範本
 ├── README.md                      # 專案說明
+├── docs/                          # 系統架構與規範知識庫
 │
 ├── source/                        # 原始碼空間 (開發者模式)
 │   ├── core/                      # 核心基座 (任何 --source 模組的強制相依底層)
-│   │   └── manifest.json
-│   └── <module_name>/             # 各模組原始碼
+│   └── <module_name>/             # 各模組原始碼 (含 scripts/cli.py, _installed.py 等)
 │
 ├── build/                         # 發布產出物空間 (一般使用者安裝目標)
 │   └── <module_name>/             # 編譯/封裝後的終端發布產物
@@ -39,37 +45,33 @@ ys-codebase/
 
 ## 🚀 快速上手 (Quick Start)
 
-### 1. 初始化專案配置
+### 1. 檢視可用模組與指令
 ```bash
-python yscb_installer.py init
+python yscb_cli.py --help
 ```
 
-### 2. 檢視可用模組
+### 2. 使用 Installer 管理模組
 ```bash
-python yscb_installer.py list
+# 初始化設定檔
+python yscb_cli.py installer init
+
+# 安裝模組 (發布物模式)
+python yscb_cli.py installer install agents-workflow
+
+# 檢視模組安裝狀態
+python yscb_cli.py installer status
 ```
 
-### 3. 安裝模組
+### 3. 調用已安裝模組專屬 CLI
 ```bash
-# 標準發布物模式安裝
-python yscb_installer.py install <module_name>
+# 查看 agents-workflow 指令手冊
+python yscb_cli.py agents-workflow --help
 
-# 開發者源碼模式安裝 (自動連帶安裝 source/core)
-python yscb_installer.py install <module_name> --source
-```
+# 執行 Dev Plan 合規稽核
+python yscb_cli.py agents-workflow verify
 
-### 4. 檢視安裝狀態
-```bash
-python yscb_installer.py status
-```
-
-### 5. 說明文檔與手冊
-```bash
-# 完整指令總覽
-python yscb_installer.py help
-
-# 特定子指令手冊
-python yscb_installer.py help install
+# 掃描計畫狀態矩陣
+python yscb_cli.py agents-workflow scan --all
 ```
 
 ---

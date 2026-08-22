@@ -334,6 +334,34 @@ class ModuleManager:
 
         return resolved
 
+    def resolve_build_dependencies(self, module_names: List[str]) -> List[str]:
+        """解析建置相依性，確保以正確順序建置所有相依模組（自動排除無需 build 的 core）"""
+        available = self.discover_modules(from_remote=False)
+        resolved: List[str] = []
+        visited: Set[str] = set()
+
+        def visit(name: str):
+            if name in visited:
+                return
+            visited.add(name)
+
+            m_info = available.get(name)
+            deps = []
+            if m_info and "meta" in m_info:
+                deps = m_info["meta"].get("dependencies", [])
+
+            for dep in deps:
+                if dep != "core":
+                    visit(dep)
+
+            if name != "core":
+                resolved.append(name)
+
+        for m in module_names:
+            visit(m)
+
+        return resolved
+
     def _locate_module_dir(self, module_name: str, mode: str) -> Optional[Path]:
         """定位模組來源目錄（本地優先，其次快取）"""
         target_sub = "source" if mode == "source" else "build"
@@ -360,6 +388,12 @@ class ModuleManager:
             src_path = self._locate_module_dir(module_name, mode)
 
         if not src_path:
+            alt_source = self._locate_module_dir(module_name, "source")
+            if mode == "build" and alt_source:
+                raise FileNotFoundError(
+                    f"找不到模組 '{module_name}' 的 build 發布產物，但已發現可用源碼 ({alt_source})。\n"
+                    f"提示：可改用 '--source' 模式安裝源碼，或先執行 'python yscb_installer.py build {module_name}' 生成發布物。"
+                )
             raise FileNotFoundError(f"找不到模組 '{module_name}' 的 {mode} 來源檔案。請確認模組名稱或遠端倉庫內容。")
 
         manifest = self.read_manifest(src_path)
@@ -387,10 +421,22 @@ class ModuleManager:
             meta={"description": manifest.get("description", "")}
         )
         print(f"[SUCCESS] 模組 '{module_name}' ({mode} v{version}) 安裝完成 ➔ {dest_path}")
+
+        # 執行 _installed.py Hook
+        installed_hook = dest_path / "scripts" / "_installed.py"
+        if installed_hook.is_file():
+            print(f"[HOOK] 執行 '{module_name}' 安裝後置 Hook: {installed_hook.name}...")
+            try:
+                res = subprocess.run([sys.executable, str(installed_hook), str(dest_path), mode], cwd=str(dest_path))
+                if res.returncode != 0:
+                    print(f"[WARN] Hook _installed.py 執行返回非 0 狀態碼: {res.returncode}")
+            except Exception as e:
+                print(f"[WARN] 呼叫 _installed.py Hook 失敗: {e}")
+
         return True
 
     def remove_module(self, module_name: str, force: bool = False) -> bool:
-        """卸載指定模組，並進行相依安全性檢查"""
+        """卸載指定模組，並進行相依安全性檢查與 _uninstall.py Hook 調用"""
         cfg = self.config_mgr.load()
         installed = cfg.get("installed_modules", {})
 
@@ -410,6 +456,17 @@ class ModuleManager:
         target_dir = self.root_dir / ("source" if mode == "source" else "build") / module_name
 
         if target_dir.exists():
+            # 執行 _uninstall.py Hook
+            uninstall_hook = target_dir / "scripts" / "_uninstall.py"
+            if uninstall_hook.is_file():
+                print(f"[HOOK] 執行 '{module_name}' 卸載前置 Hook: {uninstall_hook.name}...")
+                try:
+                    res = subprocess.run([sys.executable, str(uninstall_hook), str(target_dir), mode], cwd=str(target_dir))
+                    if res.returncode != 0:
+                        print(f"[WARN] Hook _uninstall.py 執行返回非 0 狀態碼: {res.returncode}")
+                except Exception as e:
+                    print(f"[WARN] 呼叫 _uninstall.py Hook 失敗: {e}")
+
             shutil.rmtree(target_dir, ignore_errors=True)
             print(f"[INFO] 已清理模組目錄：{target_dir}")
 
@@ -419,21 +476,23 @@ class ModuleManager:
 
     def build_module(self, module_name: str) -> bool:
         """將 source/<module> 編譯/建置為 build/<module>"""
-        src_path = self.root_dir / "source" / module_name
-        if not src_path.is_dir():
-            raise FileNotFoundError(f"找不到源碼目錄：{src_path}，無法執行 build。")
-
         if module_name == "core":
             print("[INFO] 'core' 為基礎庫，無需生成 build 產出物。")
             return True
 
+        src_path = self.root_dir / "source" / module_name
+        if not src_path.is_dir():
+            raise FileNotFoundError(f"找不到源碼目錄：{src_path}，無法執行 build。")
+
         dest_path = self.root_dir / "build" / module_name
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
+        manifest = self.read_manifest(src_path)
+
         custom_build_script = src_path / "build.py"
         if custom_build_script.is_file():
-            print(f"[BUILD] 執行自訂建置腳本：{custom_build_script}...")
-            res = subprocess.run([sys.executable, str(custom_build_script), str(dest_path)], cwd=str(src_path))
+            print(f"[BUILD] 執行 '{module_name}' 自訂建置腳本：{custom_build_script}...")
+            res = subprocess.run([sys.executable, str(custom_build_script), str(src_path), str(dest_path)], cwd=str(src_path))
             if res.returncode != 0:
                 raise RuntimeError(f"模組 '{module_name}' 自訂建置失敗 (Exit {res.returncode})。")
         else:
@@ -441,18 +500,38 @@ class ModuleManager:
             if dest_path.exists():
                 shutil.rmtree(dest_path, ignore_errors=True)
             
+            custom_excludes = manifest.get("build_exclude", [])
+
             def ignore_dev_files(folder, files):
                 ignored = []
                 for f in files:
-                    if f in [".git", "__pycache__", ".pytest_cache", "tests", "scratch"]:
+                    # 預設排除規則
+                    if f in [".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests", "scratch", ".vscode", ".idea", "build.py"]:
                         ignored.append(f)
-                    elif f.endswith(".pyc"):
+                    elif f.endswith(".pyc") or f.endswith(".pyo") or f.endswith(".pyd"):
+                        ignored.append(f)
+                    elif f in custom_excludes:
                         ignored.append(f)
                 return ignored
 
             shutil.copytree(src_path, dest_path, ignore=ignore_dev_files, dirs_exist_ok=True)
 
-        print(f"[SUCCESS] 模組 '{module_name}' 建置完成 ➔ {dest_path}")
+        # 在 build/<module>/manifest.json 注入 built_at 時間戳與發布元數據
+        build_manifest_path = dest_path / "manifest.json"
+        build_manifest = self.read_manifest(dest_path)
+        build_manifest["built_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        if "version" in manifest:
+            build_manifest["version"] = manifest["version"]
+        if "dependencies" in manifest:
+            build_manifest["dependencies"] = manifest["dependencies"]
+        if "description" in manifest:
+            build_manifest["description"] = manifest["description"]
+
+        with open(build_manifest_path, "w", encoding="utf-8") as f:
+            json.dump(build_manifest, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+
+        print(f"[SUCCESS] 模組 '{module_name}' 建置完成 (v{build_manifest.get('version', '1.0.0')}) ➔ {dest_path}")
         return True
 
 
@@ -637,11 +716,19 @@ def main():
                 if not source_dir.is_dir():
                     print("[WARN] 本地無 source/ 目錄，無模組可供建置。")
                     return 0
-                modules_to_build = [d.name for d in source_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+                modules_to_build = [d.name for d in source_dir.iterdir() if d.is_dir() and not d.name.startswith(".") and d.name != "core"]
 
-            for mod in modules_to_build:
+            if not modules_to_build:
+                print("[INFO] 無任何模組需要建置。")
+                return 0
+
+            # 解析相依性序列
+            resolved_build_order = module_mgr.resolve_build_dependencies(modules_to_build)
+            print(f"[BUILD-PLAN] 建置序列（含相依）: {' -> '.join(resolved_build_order)}")
+
+            for mod in resolved_build_order:
                 module_mgr.build_module(mod)
-            print("[SUCCESS] 指定模組建置作業已完成！")
+            print("[SUCCESS] 指定模組建置作業已全部完成！")
             return 0
 
         elif args.subcommand == "push":
