@@ -71,6 +71,12 @@ def archive_plan(plan_name: str, force: bool = False) -> bool:
             print("若確定要跳過 CHANGELOG 檢查，請加上 --force 參數。")
             return False
 
+    # 清理暫時性交接檔案 (handoff.md)
+    temp_handoff = src_dir / "handoff.md"
+    if temp_handoff.exists():
+        temp_handoff.unlink()
+        print(f"  - [CLEANUP] 已清理暫時性交接檔案：{temp_handoff.name}")
+
     # 執行安全搬移
     dest_dir.parent.mkdir(parents=True, exist_ok=True)
     if dest_dir.exists():

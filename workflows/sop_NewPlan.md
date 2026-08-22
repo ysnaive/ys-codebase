@@ -1,8 +1,8 @@
 ---
-description: 標準開發作業流程 (Development SOP) — 定義專案從需求到發布的完整規範與分級管控
+description: 標準開發作業流程 (sop_NewPlan) — 定義專案從需求到發布的完整規範與三大分流管控
 ---
 
-# 標準開發作業流程 (Development SOP)
+# 標準開發作業流程 (sop_NewPlan)
 
 本文件定義 AI Agent 在本專案中進行功能開發、架構重構或問題修復時**必須強制遵守**的標準作業流程 (SOP)。
 
@@ -28,17 +28,23 @@ description: 標準開發作業流程 (Development SOP) — 定義專案從需�
   - **嚴禁複合推論**：絕對禁止 Agent 自行假設「因為開發者解答了疑問 ➔ 代表整份文件無其他問題 ➔ 自動推進」。
   - **更新後二次確認 (Update & Re-confirm Loop)**：文件修訂後必須重新呈遞修改摘要，並重新等待開發者明確給出類型 B 指令。
 - **嚴禁空降實作**：未經 Phase 1~4（或 FT-1）規劃並獲得開發者確認前，**絕對禁止直接編寫或修改原始碼**。
+- **除錯排查與範疇保護鐵律 (Scope-Bound Debugging & Anti-Drift Guardrail)**：
+  - **「由近及遠、本體優先」排查階層 (Local-First Hierarchy)**：遇到錯誤、異常或視覺/邏輯不符預期時，Agent **必須優先徹底排查當前組件本體內部邏輯與呼叫端傳參配置**。在未 100% 排除自身問題前，**絕對禁止直接跨模組深入下游/外部模組進行修改**。
+  - **修改範疇越界阻斷 (Out-of-Scope Modification Gate)**：若排查發現問題似乎位於超出本次 Dev Plan 承諾範圍的外部模組，**Agent 絕對禁止擅自修改外部代碼**！必須立即發起 `sop_Discuss` 向開發者呈遞調用證據，由開發者判定。
+  - **阻斷盲目淺層修補 (Anti-Trial-and-Error Loop)**：同一問題**連續 2 次修復失敗**，或修復將破壞既有架構/API 簽名時，必須強制停手發起 `sop_Discuss` 進行 5-Whys 根因分析。
+- **模板註解剝除鐵律 (Template Guidance Stripping)**：
+  - 模板開頭的 `<!-- === AGENT_GUIDANCE === ... -->` 區塊為 Agent JIT 指引，Agent 在生成實際 Markdown 檔案時**嚴禁輸出任何 HTML 導引註解**，必須保持目標文檔純淨。
 - **Phase 0 討論模式鐵律**：
   - **Agent 嚴禁臆測需求**：在 Phase 0 討論階段，Agent 僅作為知識顧問，針對開發者的陳述提出釐清問題。除非開發者明確要求，否則嚴禁主動提出設計方案、功能清單或架構建議。
-  - **討論結束必須由開發者明確宣告**：Agent 絕對禁止自行判定需求已釐清完整並推進。必須等待開發者明確表示（如「討論完成」、「進入下一步」）後，才可將 `P00_semantic_requirements.md` 標記為 `Confirmed`。
+  - **討論結束必須由開發者明確宣告**：Agent 絕對禁止自行判定需求已釐清完整並推進。必須等待開發者明確表示後，才可將 `P00_semantic_requirements.md` 標記為 `Confirmed`。
   - **Track 分流在 P00 Confirmed 後才執行**：P00 確認後，在同一輪呈遞三大層級分流建議，由開發者最終決定 Track。
 - **Phase 1 規格轉譯嚴禁新增臆測**：`P01_requirements_spec.md` 中的每一個 FR 必須可回溯至 `P00_semantic_requirements.md` 中的具體使用情境或 API 使用案例。嚴禁 Phase 1 在 P00 範疇之外新增未經討論的功能點。
 - **Test-First 測試前置定稿條款**：`P06_test_plan.md` 必須於 Phase 2~3 隨設計同步初始化草擬 (Draft)，並於 Phase 4 Review 階段與 `P04_implementation_plan.md` 一併剛性定稿 (Confirmed)，嚴禁延至 Phase 6 才開始憑空設計測試項目。Phase 6 之主軸純粹為「測試執行 + 缺陷修復 + 互動/UX/硬體驗證」。
 - **Phase 6 人工/UX/硬體測試 Checkpoint 強制等待關卡**：即使自動化測試 100% Passed，Agent **絕對禁止**自行將 P06 標記為 `Passed` 或擅自進入 Phase 7！必須呈遞測試結果，並明確詢問開發者進行實際互動/視覺/硬體驗證。必須等待開發者明確回覆「驗證通過/指示免測」後，方可將 P06 標記為 Passed 並推進至 Phase 7。
-- **Phase 6 驗證防呆鐵律 (無 Log 即未驗證)**：若 CLI 編譯/測試命令執行受阻（例如環境權限或 log 無法截取），Agent **絕對禁止**在 `P06_test_plan.md` 與對話中標記 `Passed`。必須明確標記 `[未實機編譯/僅靜態檢查]`，並呈遞精確命令請開發者於控制台執行回填。
-- **全階段文件模板剛性對齊**：所有 Phase (P00~P07 / FT_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像標準模板結構**（包含指定欄位、表格與 Header 標頭），嚴禁 Agent 自行簡化或遺漏模板區塊。
+- **Phase 6 驗證防呆鐵律 (無 Log 即未驗證)**：若 CLI 編譯/測試命令執行受阻，Agent **絕對禁止**在 `P06_test_plan.md` 與對話中標記 `Passed`。必須明確標記 `[未實機編譯/僅靜態檢查]`，並呈遞精確命令請開發者於控制台執行回填。
+- **全階段文件模板剛性對齊**：所有 Phase (P00~P07 / FT_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像標準模板結構**（包含指定欄位、表格與 Header 標頭，含 `> 擴充項目：`），嚴禁 Agent 自行簡化或遺漏模板區塊。
 - **目錄歸檔紀律與腳本優先**：
-  - 定式作業（歸檔、檢索、掃描）優先呼叫 `.agents/scripts/` 下的 Python 工具腳本。
+  - 定式作業（歸檔、檢索、掃描、合規校驗）優先呼叫 `.agents/scripts/` 下的 Python 工具腳本。
   - **嚴禁 Agent 主動歸檔**：所有計畫預設留存於 `.agents/dev_plans/` 原位，僅在開發者明確下達歸檔指令時才執行歸檔腳本。
 
 ---
@@ -105,9 +111,9 @@ description: 標準開發作業流程 (Development SOP) — 定義專案從需�
 - **觸發時機**：每個 Phase 結束產出階段文件時。
 - **Agent 行為**：呈遞摘要與關鍵產出，明確詢問開發者是否確認推進，並**立即 End Turn 等待**。
 
-### 2. Deep Discussion（深度討論）
-- **觸發時機**：當遇到重大架構歧異、未知技術可行性、跨模組依賴衝突、破壞性變更 (Breaking Changes) 或重大效能/代碼品質取捨時。
-- **Agent 行為**：主動暫停推進，整理「**方案比較表 (Pros & Cons)**」並提供「推薦方案與理由」，由開發者進行深度裁決。決策定稿後記錄於對應階段之 Decision Records (`DR-XX`)。
+### 2. Deep Discussion（深度討論 / sop_Discuss）
+- **觸發時機**：當遇到重大架構歧異、未知技術可行性、跨模組依賴衝突、破壞性變更 (Breaking Changes)、排查範疇越界或修復連續 2 次失敗時。
+- **Agent 行為**：依 [sop_Discuss.md](./sop_Discuss.md) 流程暫停推進，進行 5-Whys 根因分析，整理方案比較表 (Pros & Cons)，由開發者深度裁決並記錄 `[DR-XX]`。
 
 ---
 
@@ -161,14 +167,14 @@ flowchart TD
 #### 執行步驟
 1. **建立工作目錄**：`.agents/dev_plans/{YYYY_MM_DD_HHMM_功能名稱}/`
 2. **初始化 P00 草稿**：依 `.agents/workflows/templates/P00_semantic_requirements.md` 建立 `P00_semantic_requirements.md`（狀態標記為 `Discussing`），選擇對應計畫類型（Feature / Refactor / Bug Fix / Performance / Docs / 自訂）。
-4. **開放式討論與深度調研 (Phase 0-R)**：
+3. **開放式討論與深度調研 (Phase 0-R)**：
    - 標準情況：Agent 作為知識顧問提問釐清，持續補充 `P00` 的「開放議題紀錄」欄位。
-   - **高複雜度/跨度大需求**：若需求涉及全新架構、多維度可行性驗證或資產大規模遷移，依 [DevelopmentSOP_Research.md](./DevelopmentSOP_Research.md) 啟動特化調研，針對各技術主題產出自由論證格式之專題調研報告，統一採用前綴命名 **`R{n:2d}_{topic}.md`**（例：`R01_architecture_reference.md`）。調研結論收斂回填至 `P00` 與主計畫路線圖。
-5. **等待討論結束宣告**：開發者明確表示討論結束後，Agent 整理並最終化 `P00`，呈遞給開發者確認。
+   - **高複雜度/跨度大需求**：若需求涉及全新架構、多維度可行性驗證或資產大規模遷移，依 [sop_Research.md](./sop_Research.md) 啟動特化調研，針對各技術主題產出自由論證格式之專題調研報告，統一採用前綴命名 **`R{n:2d}_{topic}.md`**（例：`R01_architecture_reference.md`）。調研結論收斂回填至 `P00` 與主計畫路線圖。
+4. **等待討論結束宣告**：開發者明確表示討論結束後，Agent 整理並最終化 `P00`，呈遞給開發者確認。
 
 → **Checkpoint** → 開發者確認 P00 內容正確（狀態更新為 `Confirmed`）
 
-6. **執行三大層級分流判定 (Three-Tier Phasing Matrix)**：
+5. **執行三大層級分流判定 (Three-Tier Phasing Matrix)**：
 
 | 分流層級 | 適用場景 | 產出與執行軌道 |
 | :--- | :--- | :--- |
@@ -218,7 +224,7 @@ flowchart TD
 1. 依 `.agents/workflows/templates/P03_api_spec.md` 建立 `P03_api_spec.md`（標記為 `Draft`）。
 2. 定義型態簽名、命名風格與物理/數學顯式單位。
 3. 定義依賴拓撲（實作順序）。
-4. **執行 Extension 擴充**：若專案定義了 `P03_*_ext.md`，於標準步驟完成後執行擴充檢查。
+4. **執行 Extension 擴充**：若專案定義了 `P03_*_ext.md`，於標準步驟完成後執行擴充檢查並於 Header `> 擴充項目：` 宣告。
 
 → **Checkpoint** → 開發者確認（狀態更新為 `Confirmed`） → 進入 Phase 4
 
@@ -250,7 +256,7 @@ flowchart TD
 
 #### 實作紀律與上下文管理 (Context Management)
 - **唯一權威上下文**：進入實作階段後，應以 `P04_implementation_plan.md` 與 `P05_task.md` 作為核心上下文，避免頻繁載入過多歷史文件導致注意力發散與 Token 浪費。
-- **嚴格守門**：禁止引入計畫中未列出的新 public 類別或方法；禁止修改計畫中未提及的既有檔案。
+- **嚴格守門**：禁止引入計畫中未列出的新 public 類別或方法；禁止修改計畫中未提及的既有檔案。遇阻時依 [sop_Discuss.md](./sop_Discuss.md) 執行深度歸因。
 
 #### 執行步驟
 1. **進度追蹤**：於工作目錄建立 `P05_task.md`，列出 TODO 清單 `[ ]`。
@@ -326,8 +332,6 @@ flowchart TD
 ---
 
 ## 附錄：階段間資訊流依賴圖
-
-各階段產出物之間的剛性引用關係：
 
 ```mermaid
 flowchart TD

@@ -1,16 +1,24 @@
+<!--
+=== AGENT_GUIDANCE: 需求規格書 (P01) 填寫規範 ===
+1. 定位與目的：
+   - 將 P00 語意需求 1:1 轉譯為具體可驗收的功能需求 (FR)、非功能需求 (NFR) 與邊界情況 (EC)。
+2. Agent 行為鐵律：
+   - 規格轉譯嚴禁臆測：本文件為 P00 的規格轉譯，嚴禁新增 P00 範疇之外未經討論的功能點。
+   - 剛性追溯：FR 表格中每一行必須填入「對應 P00 語意」欄位。
+   - 主動查閱踩坑紀錄：查閱相關模組在 docs/ 與 DESIGN_NOTES.md 中的 [!CAUTION] / [!WARNING]。
+3. 產出約束：
+   - Agent 生成目標文件時，嚴禁輸出本 HTML 註解區塊。
+===================================================
+-->
 # 需求規格書 (Requirements Specification)
 
-> 功能名稱：[填入功能名稱]
-> 建立日期：[YYYY-MM-DD]
-> 所屬主計畫：[填入主計畫名稱 / 無]
-> 依據 P00 / 調研報告：[P00_semantic_requirements.md](./P00_semantic_requirements.md) / [R01_xxx.md](./R01_xxx.md)
-> 狀態：Draft / Confirmed
-> 模板版本：v1.2
-
----
-
-> [!IMPORTANT]
-> **[Agent 規格轉譯鐵律]** 本文件為 `P00_semantic_requirements.md` 的規格轉譯，**嚴禁新增 P00 範疇之外未經討論的功能點**。FR 表格中的每一行必須可回溯至 P00 的具體使用情境或 API 使用案例。
+> 功能名稱：[填入功能名稱]  
+> 建立日期：[YYYY-MM-DD]  
+> 所屬主計畫：[填入主計畫目錄名稱 / 無]  
+> 依據 P00 / 調研報告：[P00_semantic_requirements.md](./P00_semantic_requirements.md) / [R01_xxx.md](./R01_xxx.md)  
+> 狀態：Draft / Confirmed  
+> 擴充項目：none  
+> 模板版本：v1.3  
 
 ---
 

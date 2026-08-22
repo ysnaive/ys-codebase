@@ -1,10 +1,24 @@
+<!--
+=== AGENT_GUIDANCE: 分類型主計畫總覽 (umbrella_overview) 填寫規範 ===
+1. 定位與目的：
+   - 統籌管理 Level 2 (Umbrella) 大型跨模組計畫之子計畫拆分矩陣與依賴路線圖。
+2. Agent 行為鐵律：
+   - 拆分顆粒度：以「單個 Full Track 能處理之顆粒度」為基本拆分單位。
+   - 巢狀層級硬性約束：專案嚴格限制子計畫目錄最多兩層（主計畫 -> sub_XX），絕對禁止在子計畫下再開子計畫！
+   - 子計畫目錄前綴強制為 sub_01_, sub_02_ ...。
+3. 產出約束：
+   - Agent 生成目標文件時，嚴禁輸出本 HTML 註解區塊。
+=====================================================================
+-->
 # 分類型主計畫總覽 (Umbrella Plan Overview)
 
-> 計畫名稱：[填入主計畫名稱]
-> 建立日期：[YYYY-MM-DD]
-> 依據 P00：[P00_semantic_requirements.md](./P00_semantic_requirements.md)
-> 狀態：Planning / In Progress / Completed
-> 模板版本：v1.1
+> 功能名稱：[填入主計畫名稱]  
+> 建立日期：[YYYY-MM-DD]  
+> 所屬主計畫：無  
+> 依據 P00：[P00_semantic_requirements.md](./P00_semantic_requirements.md)  
+> 狀態：Planning / In Progress / Completed  
+> 擴充項目：none  
+> 模板版本：v1.2  
 
 ---
 
@@ -16,7 +30,6 @@
 
 ## 2. 子計畫拆分清單與執行進度
 
-> **[子計畫拆分原則]**：以「單個 Full Track 能處理之顆粒度」為基本拆分單位，子目錄強制建立於主計畫目錄下（如 `sub_01_xxx/`）。
 
 | 編號 | 子計畫目錄名稱 | 預設 Track | 當前狀態 | 核心目標摘要 |
 | :--- | :--- | :---: | :---: | :--- |

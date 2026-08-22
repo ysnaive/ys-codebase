@@ -1,19 +1,33 @@
+<!--
+=== AGENT_GUIDANCE: Fast Track 變更計畫 (FT_plan) 填寫規範 ===
+1. 定位與目的：
+   - 適用於 Level 0 (Fast Track) 輕量修改（修改檔案數 <= 2、不影響 Public API、不引入新跨模組依賴）。
+2. Agent 行為鐵律：
+   - 剛性追溯：FT-1 必須引用 P00 核心語意，嚴禁無語意依據空降實作。
+   - 升級防線：若發現影響 Public API 或跨模組依賴，立即暫停並建議升級為 Full Track。
+   - DR 類型規範：
+     - [TRADEOFF]：結論、理由、排除方案
+     - [NEW]：結論、理由
+     - [IMPROVE]：改進點、動機
+3. 產出約束：
+   - Agent 生成目標文件時，嚴禁輸出本 HTML 註解區塊。
+============================================================
+-->
 # Fast Track 變更計畫 (Fast Track Plan)
 
-> 功能名稱：[填入功能名稱]
-> 建立日期：[YYYY-MM-DD]
-> 所屬主計畫：[填入主計畫名稱 / 無]
-> 依據 P00：[連結至 P00_semantic_requirements.md]
-> 狀態：Planning / Implementing / Reviewing / Completed
-> 模板版本：v1.3
+> 功能名稱：[填入功能名稱]  
+> 建立日期：[YYYY-MM-DD]  
+> 所屬主計畫：[填入主計畫目錄名稱 / 無]  
+> 依據 P00：[連結至 P00_semantic_requirements.md]  
+> 狀態：Planning / Implementing / Reviewing / Completed  
+> 擴充項目：none  
+> 模板版本：v1.4  
 
 ---
 
 ## FT-1：變更說明
 
 ### P00 語意需求摘要（引用自 P00）
-
-> 從 `P00_semantic_requirements.md` 提取核心語意，確保 Fast Track 亦有可追溯的語意依據。
 
 - **計畫類型**：[Feature / Refactor / Bug Fix / Performance / Docs / 自訂類型]
 - **核心訴求**：[一句話概述 P00 的核心需求或問題]
@@ -41,18 +55,7 @@
 - [ ] 不需新增 public 類別
 - [ ] 僅影響單一模組內部
 
-> [!WARNING]
-> 如果任一項不符合，**立即暫停**並建議升級為 Full Track。
-
 ### Decision Records
-
-> **DR 類型說明**：每個 DR 依本質選擇對應類型填寫，不同類型所需欄位不同。
->
-> | 類型 | 適用情境 | 必填欄位 |
-> | :--- | :--- | :--- |
-> | `[TRADEOFF]` | 面對多種可行方案後選擇其一 | 結論、理由、**排除方案** |
-> | `[NEW]` | 首次提出並確立的新規範或約束 | 結論、理由 |
-> | `[IMPROVE]` | 對既有規範的補充、澄清或強化 | 改進點、動機 |
 
 ---
 

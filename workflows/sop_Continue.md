@@ -1,14 +1,14 @@
 ---
-description: 接續中斷或已存在的開發計畫工作流 — 從 dev_plans 中偵測進度、層級並恢復
+description: 接續中斷或已存在的開發計畫工作流 (sop_Continue) — 支援 handoff.md 現場交接與狀態自動恢復
 ---
 
-# 接續開發計畫工作流 (DevelopmentSOP Continue)
+# 接續開發計畫工作流 (sop_Continue)
 
-本 Workflow 用於從一個**已存在但尚未完成**的開發計畫接續工作。所有階段的執行規範請嚴格遵循 `.agents/workflows/DevelopmentSOP.md`。
+本 Workflow 用於從一個**已存在但尚未完成**的開發計畫接續工作。所有階段的執行規範請嚴格遵循 `.agents/workflows/sop_NewPlan.md`。
 
 ---
 
-## 執行步驟
+## 🚀 執行步驟
 
 ### 步驟 1：定位目標計畫目錄與狀態掃描
 
@@ -22,29 +22,40 @@ description: 接續中斷或已存在的開發計畫工作流 — 從 dev_plans 
 
 ---
 
-### 步驟 2：判定計畫層級與 Track 模式
+### 步驟 2：檢查 `handoff.md` 現場交接快照 (Handoff Detection)
+
+檢查目標計畫目錄下是否存在 `handoff.md`：
+- **若存在 `handoff.md`**：
+  1. 優先讀取 `handoff.md`，提取其中的「現場已完成事項」、「進行中待辦」、「踩坑與注意事項」與「下一次接手第 1 步」。
+  2. 依據現場快照直接還原斷點上下文，無需漫無目的地掃描所有歷史代碼。
+- **若無 `handoff.md`**：
+  - 進入步驟 3 進行標準 Track 與 Phase 結構化判定。
+
+---
+
+### 步驟 3：判定計畫層級與 Track 模式
 
 根據工作目錄中的關鍵檔案判定計畫層級：
 
 | 判定依據 | 計畫層級 / Track | 進入判定分支 |
 | :--- | :--- | :--- |
-| 存在 `umbrella_overview.md` 或 `master_plan_*.md` | **Level 2：Umbrella 分類型主計畫** | ➔ 進入 **步驟 2-U** |
-| 存在 `FT_plan.md` | **Level 0：Fast Track** | ➔ 進入 **步驟 2-F** |
-| 存在 `P00` / `P01` ~ `P07` | **Level 1：Full Track (或獨立子計畫)** | ➔ 進入 **步驟 2-T** |
+| 存在 `umbrella_overview.md` 或 `master_plan_*.md` | **Level 2：Umbrella 分類型主計畫** | ➔ 進入 **步驟 3-U** |
+| 存在 `FT_plan.md` | **Level 0：Fast Track** | ➔ 進入 **步驟 3-F** |
+| 存在 `P00` / `P01` ~ `P07` | **Level 1：Full Track (或獨立子計畫)** | ➔ 進入 **步驟 3-T** |
 
 ---
 
-#### 步驟 2-U：Umbrella 主計畫與子計畫定位
+#### 步驟 3-U：Umbrella 主計畫與子計畫定位
 
-1. 讀取主計畫的 `umbrella_overview.md`（或 `master_plan_subplans_roadmap.md`）與 `P00_semantic_requirements.md`。
+1. 讀取主計畫的 `umbrella_overview.md` 與 `P00_semantic_requirements.md`。
 2. 檢查子計畫清單矩陣：
    - 尋找當前處於 `進行中`、`In Progress`、`Planning` 或 `未開始` 的第一個子計畫目錄 `sub_{編號}_{名稱}/`。
    - 若所有既有子計畫均已 Completed 但主計畫尚有後續階段 ➔ 提示開發者是否開立下一個 `sub_XX` 子計畫。
-3. 進入當前目標子計畫目錄，依其檔案結構進入 **步驟 2-T** (Full Track) 或 **步驟 2-F** (Fast Track) 判定子計畫精確進度。
+3. 進入當前目標子計畫目錄，檢查該子計畫是否含有 `handoff.md`，若無則依其檔案結構進入 **步驟 3-T** (Full Track) 或 **步驟 3-F** (Fast Track) 判定進度。
 
 ---
 
-#### 步驟 2-T：Full Track 進度判定
+#### 步驟 3-T：Full Track 進度判定
 
 根據目標工作目錄中已存在的產出物檔案及其狀態標頭判定：
 
@@ -66,7 +77,7 @@ description: 接續中斷或已存在的開發計畫工作流 — 從 dev_plans 
 
 ---
 
-#### 步驟 2-F：Fast Track 進度判定
+#### 步驟 3-F：Fast Track 進度判定
 
 根據 `FT_plan.md` 的狀態欄位判定：
 
@@ -79,14 +90,14 @@ description: 接續中斷或已存在的開發計畫工作流 — 從 dev_plans 
 
 ---
 
-### 步驟 3：載入計畫上下文與決策脈絡
+### 步驟 4：載入計畫上下文與決策脈絡
 
 1. 優先讀取工作目錄中的 `changelog.md`（若為子計畫亦需讀取主目錄之 `umbrella_overview.md`），掌握關鍵決策 (`[DR-XX]`) 與演進歷程。
 2. 讀取當前 Phase 對應之文件內容，明確當前核心任務。
 
 ---
 
-### 步驟 4：呈遞接續進度簡報並確認
+### 步驟 5：呈遞接續進度簡報並確認
 
 向開發者呈現接續狀態簡報：
 
@@ -95,12 +106,10 @@ description: 接續中斷或已存在的開發計畫工作流 — 從 dev_plans 
 
 - **計畫名稱**：`{目錄名稱}`
 - **計畫層級**：Level 2 Umbrella 主計畫 / Level 1 獨立 Full Track / Level 0 Fast Track / 模式 A 衍生子計畫
-- **當前子計畫**：`{sub_XX_名稱}`（若為 Umbrella 模式）
+- **交接快照 (Handoff)**：已載入 handoff.md / 無交接檔案（依 Phase 狀態判定）
 - **當前進度**：Phase {N} 已完成 / Phase {N} 進行中（具體位置：{區塊名稱}）
-- **下一步動作**：進入 Phase {N+1} / 接續 Phase {N} 的 {未完成項目}
-- **關鍵決策脈絡 (DR)**：
-  - [DR-01]: [結論摘要]
-- **未解決/討論中議題**：[無 / 列出]
+- **關鍵注意事項 (Gotchas)**：{從 handoff.md 或 changelog 提取之踩坑點}
+- **下一步動作**：{極精確的下一步重啟行動指引}
 ```
 
-→ **Checkpoint** → 明確詢問開發者是否同意從此進度接續，並**立即 End Turn 等待**確認。
+詢問開發者是否確認開始接續，**立即 End Turn 等待確認**。

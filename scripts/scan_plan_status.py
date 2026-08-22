@@ -81,6 +81,10 @@ def get_plan_info(plan_dir: Path) -> tuple[str, str]:
         else:
             status = "P00 Discussing"
 
+    # 若存在暫停交接快照
+    if (plan_dir / "handoff.md").exists() and status != "Completed":
+        status = f"{status} (Paused)"
+
     return track_type, status
 
 def scan_plans(include_history: bool = False):
