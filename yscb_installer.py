@@ -402,7 +402,7 @@ class ModuleManager:
         if mode == "source":
             dest_path = self.root_dir / "source" / module_name
         else:
-            dest_path = self.root_dir / "build" / module_name
+            dest_path = self.root_dir / "modules" / module_name
 
         if dest_path.exists():
             if not force and dest_path.resolve() == src_path.resolve():
@@ -453,7 +453,7 @@ class ModuleManager:
 
         mod_info = installed[module_name]
         mode = mod_info.get("mode", "build")
-        target_dir = self.root_dir / ("source" if mode == "source" else "build") / module_name
+        target_dir = self.root_dir / ("source" if mode == "source" else "modules") / module_name
 
         if target_dir.exists():
             # 執行 _uninstall.py Hook
@@ -505,8 +505,8 @@ class ModuleManager:
             def ignore_dev_files(folder, files):
                 ignored = []
                 for f in files:
-                    # 預設排除規則
-                    if f in [".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests", "scratch", ".vscode", ".idea", "build.py"]:
+                    # 預設排除規則（發布物僅包含最低執行需求，排除開發檔案與運行期設定 config.json）
+                    if f in [".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests", "scratch", ".vscode", ".idea", "build.py", "config.json"]:
                         ignored.append(f)
                     elif f.endswith(".pyc") or f.endswith(".pyo") or f.endswith(".pyd"):
                         ignored.append(f)
@@ -553,7 +553,7 @@ def format_help_doc() -> str:
      用法: python yscb_installer.py init [--repo <URL>] [--branch <BRANCH>] [--force]
 
   2. install
-     安裝指定模組（預設為 build 發布產物；加上 --source 則安裝原始碼並自動相依 core）。
+     安裝指定模組（預設為 build 發布產物安裝至 modules/；加上 --source 則安裝原始碼至 source/ 並自動相依 core）。
      用法: python yscb_installer.py install [<module> ...] [--source] [--force]
 
   3. pull / update
