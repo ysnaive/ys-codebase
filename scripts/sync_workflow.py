@@ -113,7 +113,7 @@ def migrate_v0_to_v1(agents_dir: Path, config: dict):
                 print(f"  ! [MIGRATE WARN] 清理 {old_rel} 失敗: {e}")
 
     save_config(agents_dir, config)
-    print("[MIGRATE] v0.0 ➔ v1.0 升級完成！\n")
+    print("[MIGRATE] v0.0 -> v1.0 升級完成！\n")
 
 MIGRATIONS = [
     ("0.0", "1.0", migrate_v0_to_v1),
