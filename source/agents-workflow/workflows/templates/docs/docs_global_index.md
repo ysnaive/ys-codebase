@@ -41,4 +41,4 @@ Agent 進入知識庫時，建議按以下順序讀取：
 1. 閱讀本文件，確認改動涉及的模塊。
 2. 前往對應模塊的 `README.md`，建立基本認識。
 3. 根據 README 的「文件導覽」，按需讀取相關主題文件或 `DESIGN_NOTES.md`。
-4. 若需要了解歷史背景，閱讀模塊的 `CHANGELOG.md` 或 `.agents/dev_plans/history/`。
+4. 若需要了解歷史背景，閱讀模塊的 `CHANGELOG.md` 或 `{archive_dir}/`。

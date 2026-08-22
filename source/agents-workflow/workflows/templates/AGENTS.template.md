@@ -61,7 +61,7 @@ Agent 必須始終遵守以下三大原則：
 | :--- | :--- | :--- |
 | **新 Session/Chat 啟動上下文** | [ContextInit.md](./workflows/ContextInit.md) | 在沙盒與全權限模式下安全秒級熱啟動專案規範與歷史脈絡 |
 | **開始新功能開發 / 重大修改** | [NewPlan.md](./workflows/NewPlan.md) | 從 Phase 0 開始執行完整的 SOP 分析與三大分流規劃 |
-| **接續中斷或已存在的計畫** | [Continue.md](./workflows/Continue.md) | 自動掃描 `.agents/dev_plans/`，偵測 `handoff.md` 並恢復進度 |
+| **接續中斷或已存在的計畫** | [Continue.md](./workflows/Continue.md) | 自動掃描 `{plans_dir}` 計畫目錄，偵測 `handoff.md` 並恢復進度 |
 | **大型/跨度大的深度技術調研** | [Research.md](./workflows/Research.md) | 深度技術探討、業界方案對比與 `R01_xxx.md` 報告產出 |
 | **開發遇阻/根因排查** | [Discuss.md](./workflows/Discuss.md) | 強制停手、5-Whys 根因分析、防範排查越界與淺層修補 |
 | **暫停開發/現場凍結交接** | [Pause.md](./workflows/Pause.md) | 於計畫目錄生成 `handoff.md` 現場狀態，保證零斷層接手 |

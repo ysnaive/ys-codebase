@@ -1,7 +1,7 @@
 <!--
 === AGENT_GUIDANCE: 暫停交接現場 (Handoff) 填寫規範 ===
 1. 定位與目的：
-   - 於執行 /Pause 時建立於該計畫目錄下（如 .agents/dev_plans/xxx/handoff.md），達成即時上下文凍結。
+   - 於執行 /Pause 時建立於該計畫目錄下（如 {plans_dir}/xxx/handoff.md），達成即時上下文凍結。
    - 確保新 Agent 執行 /Continue 時能無縫秒級接手，完工歸檔時由 archive_plan.py 自動清理。
 2. 產出約束：
    - Agent 生成目標文件時，嚴禁輸出本 HTML 註解區塊。

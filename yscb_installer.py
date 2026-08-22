@@ -399,12 +399,25 @@ class ModuleManager:
         manifest = self.read_manifest(src_path)
         version = manifest.get("version", "1.0.0")
 
+        # 取得已安裝之舊版本紀錄
+        installed_dict = self.config_mgr.load().get("installed_modules", {})
+        old_info = installed_dict.get(module_name)
+        old_version = old_info.get("version") if old_info else None
+
         if mode == "source":
             dest_path = self.root_dir / "source" / module_name
         else:
             dest_path = self.root_dir / "modules" / module_name
 
+        saved_config_content = None
         if dest_path.exists():
+            local_config_file = dest_path / "config.json"
+            if local_config_file.is_file():
+                try:
+                    saved_config_content = local_config_file.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+
             if not force and dest_path.resolve() == src_path.resolve():
                 print(f"[INFO] 模組 '{module_name}' 已存在於本地 ({dest_path})，跳過本體覆寫。")
             else:
@@ -414,6 +427,13 @@ class ModuleManager:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(src_path, dest_path, dirs_exist_ok=True)
 
+        # 還原既有本地 config.json（若新套件未攜帶且原先存在）
+        if saved_config_content is not None and not (dest_path / "config.json").exists():
+            try:
+                (dest_path / "config.json").write_text(saved_config_content, encoding="utf-8")
+            except Exception:
+                pass
+
         self.config_mgr.record_installed_module(
             module_name=module_name,
             mode=mode,
@@ -422,8 +442,23 @@ class ModuleManager:
         )
         print(f"[SUCCESS] 模組 '{module_name}' ({mode} v{version}) 安裝完成 ➔ {dest_path}")
 
+        # 執行 _migration.py Hook（若存在舊版本且版本不同時）
+        migration_hook = dest_path / "scripts" / "_migration.py"
+        if not migration_hook.is_file():
+            migration_hook = dest_path / "_migration.py"
+        if migration_hook.is_file() and old_version and old_version != version:
+            print(f"[HOOK] 執行 '{module_name}' 版本遷移 Hook: {migration_hook.name} (v{old_version} ➔ v{version})...")
+            try:
+                res = subprocess.run([sys.executable, str(migration_hook), str(old_version), str(version)], cwd=str(dest_path))
+                if res.returncode != 0:
+                    print(f"[WARN] Hook _migration.py 執行返回非 0 狀態碼: {res.returncode}")
+            except Exception as e:
+                print(f"[WARN] 呼叫 _migration.py Hook 失敗: {e}")
+
         # 執行 _installed.py Hook
         installed_hook = dest_path / "scripts" / "_installed.py"
+        if not installed_hook.is_file():
+            installed_hook = dest_path / "_installed.py"
         if installed_hook.is_file():
             print(f"[HOOK] 執行 '{module_name}' 安裝後置 Hook: {installed_hook.name}...")
             try:
@@ -505,8 +540,8 @@ class ModuleManager:
             def ignore_dev_files(folder, files):
                 ignored = []
                 for f in files:
-                    # 預設排除規則（發布物僅包含最低執行需求，排除開發檔案與運行期設定 config.json）
-                    if f in [".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests", "scratch", ".vscode", ".idea", "build.py", "config.json"]:
+                    # 預設排除規則（發布物僅包含最低執行需求，排除開發檔案與運行期設定 config.json / config_global.json）
+                    if f in [".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "tests", "scratch", ".vscode", ".idea", "build.py", "config.json", "config_global.json"]:
                         ignored.append(f)
                     elif f.endswith(".pyc") or f.endswith(".pyo") or f.endswith(".pyd"):
                         ignored.append(f)

@@ -356,6 +356,111 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
         self.assertEqual(headers.get("狀態"), "Planning")
         self.assertEqual(headers.get("擴充項目"), "none")
 
+    def test_15_agents_workflow_config_and_global_config(self):
+        """測試 agents-workflow 模組之 config_global 與 config 單一數據源、繼承與覆寫行為"""
+        import importlib.util
+        cu_spec = importlib.util.spec_from_file_location("config_utils_mod", str(PROJECT_ROOT / "source" / "agents-workflow" / "scripts" / "config_utils.py"))
+        cu = importlib.util.module_from_spec(cu_spec)
+        cu_spec.loader.exec_module(cu)
+
+        temp_mod_dir = self.test_dir / "modules" / "agents-workflow"
+        temp_mod_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. 僅提供 config_global.template.json，config.template.json 保持純淨（無 plans_dir 重疊）
+        with open(temp_mod_dir / "config_global.template.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "plans_dir": "../../plans",
+                "archive_dir": "../../archive_plans"
+            }, f)
+
+        with open(temp_mod_dir / "config.template.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "ide_integrations": {},
+                "custom_module_settings": {}
+            }, f)
+
+        # 驗證預設自動繼承 global
+        g_cfg = cu.load_global_config(temp_mod_dir)
+        self.assertEqual(g_cfg["plans_dir"], "../../plans")
+
+        p_dir = cu.get_plans_dir(temp_mod_dir)
+        a_dir = cu.get_archive_dir(temp_mod_dir)
+        self.assertEqual(p_dir, (self.test_dir / "plans").resolve())
+        self.assertEqual(a_dir, (self.test_dir / "archive_plans").resolve())
+
+        # 2. 本地 config.json 設定 __inherit__ token，依然繼承 global
+        l_cfg = cu.load_local_config(temp_mod_dir)
+        l_cfg["plans_dir"] = "__inherit__"
+        cu.save_local_config(l_cfg, temp_mod_dir)
+        p_dir_inherited = cu.get_plans_dir(temp_mod_dir)
+        self.assertEqual(p_dir_inherited, (self.test_dir / "plans").resolve())
+
+        # 3. 本地 config.json 顯式自訂路徑，成功覆寫 global
+        l_cfg["plans_dir"] = "../../local_custom_plans"
+        cu.save_local_config(l_cfg, temp_mod_dir)
+        p_dir_overridden = cu.get_plans_dir(temp_mod_dir)
+        self.assertEqual(p_dir_overridden, (self.test_dir / "local_custom_plans").resolve())
+
+    def test_16_module_migration_hook(self):
+        """測試模組升級時自動呼叫 _migration.py (傳入 old_version, new_version) 並保留/遷移本地 config.json"""
+        mod_src = self.source_dir / "module_upgradeable"
+        mod_src.mkdir(parents=True, exist_ok=True)
+        scripts_src = mod_src / "scripts"
+        scripts_src.mkdir(parents=True, exist_ok=True)
+
+        # 1. 建立 v1.0.0 模組
+        with open(mod_src / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "name": "module_upgradeable",
+                "version": "1.0.0",
+                "description": "Upgradeable Test Module",
+                "dependencies": []
+            }, f)
+
+        self.module_mgr.build_module("module_upgradeable")
+        self.module_mgr.install_module("module_upgradeable", mode="build")
+
+        # 寫入本地 config.json
+        installed_dir = self.test_dir / "modules" / "module_upgradeable"
+        with open(installed_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump({"custom_data": "v1_state"}, f)
+
+        # 2. 升級至 v2.0.0 並提供 _migration.py 遷移腳本
+        with open(mod_src / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "name": "module_upgradeable",
+                "version": "2.0.0",
+                "description": "Upgradeable Test Module v2",
+                "dependencies": []
+            }, f)
+
+        migration_code = """import sys, json, pathlib
+if __name__ == '__main__':
+    old_ver = sys.argv[1]
+    new_ver = sys.argv[2]
+    mod_dir = pathlib.Path(__file__).resolve().parent.parent
+    cfg_file = mod_dir / 'config.json'
+    with open(cfg_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    data['migrated_from'] = old_ver
+    data['migrated_to'] = new_ver
+    with open(cfg_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f)
+"""
+        with open(scripts_src / "_migration.py", "w", encoding="utf-8") as f:
+            f.write(migration_code)
+
+        self.module_mgr.build_module("module_upgradeable")
+        self.module_mgr.install_module("module_upgradeable", mode="build", force=True)
+
+        # 3. 驗證遷移結果與本地 config.json 保留
+        with open(installed_dir / "config.json", "r", encoding="utf-8") as f:
+            migrated_cfg = json.load(f)
+
+        self.assertEqual(migrated_cfg.get("custom_data"), "v1_state")
+        self.assertEqual(migrated_cfg.get("migrated_from"), "1.0.0")
+        self.assertEqual(migrated_cfg.get("migrated_to"), "2.0.0")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,7 @@
 """
 archive_plan.py — 開發計畫安全歸檔工具
 
-用途：將已完成的開發計畫從 `.agents/dev_plans/<plan_name>` 安全搬移至 `.agents/dev_plans/history/YYYY/MM/<plan_name>`。
+用途：將已完成的開發計畫從 plans_dir/<plan_name> 安全搬移至 archive_dir/YYYY/MM/<plan_name>。
 守則：Agent 嚴禁主動執行，僅在開發者明確下達歸檔指令後方可呼叫。
 """
 
@@ -24,11 +24,19 @@ def get_workspace_root() -> Path:
         cur = cur.parent
     return Path.cwd()
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from config_utils import get_plans_dir, get_archive_dir, get_module_dir
+
 def archive_plan(plan_name: str, force: bool = False) -> bool:
+    module_dir = get_module_dir()
+    plans_dir = get_plans_dir(module_dir)
+    archive_dir = get_archive_dir(module_dir)
     root = get_workspace_root()
-    dev_plans_dir = root / ".agents" / "dev_plans"
-    
-    src_dir = dev_plans_dir / plan_name
+
+    src_dir = plans_dir / plan_name
     if not src_dir.exists() or not src_dir.is_dir():
         print(f"[ERROR] 找不到指定的計畫目錄：{src_dir}")
         return False
@@ -40,7 +48,7 @@ def archive_plan(plan_name: str, force: bool = False) -> bool:
         return False
 
     year, month = match.group(1), match.group(2)
-    dest_dir = dev_plans_dir / "history" / year / month / plan_name
+    dest_dir = archive_dir / year / month / plan_name
 
     # 檢查計畫是否已完成
     ft_plan = src_dir / "FT_plan.md"

@@ -24,6 +24,28 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 MODULE_DIR = SCRIPTS_DIR.parent
 WORKFLOWS_DIR = MODULE_DIR / "workflows"
 
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from config_utils import (
+    load_global_config,
+    load_local_config,
+    save_local_config,
+    get_plans_dir,
+    get_archive_dir,
+)
+
+
+def load_module_config() -> Dict[str, Any]:
+    """載入本地運行期模組設定檔 (config.json / config.template.json)"""
+    return load_local_config(MODULE_DIR)
+
+
+def save_module_config(config: Dict[str, Any]):
+    """持久化儲存本地模組設定檔至 config.json"""
+    save_local_config(config, MODULE_DIR)
+
+
 CORE_WORKFLOW_FILES = [
     "ContextInit.md",
     "NewPlan.md",
@@ -35,32 +57,9 @@ CORE_WORKFLOW_FILES = [
     "Review.md"
 ]
 
-
-def load_module_config() -> Dict[str, Any]:
-    """載入模組設定檔，若不存在則降級讀取 config.template.json"""
-    module_config_path = MODULE_DIR / "config.json"
-    template_config_path = MODULE_DIR / "config.template.json"
-    if module_config_path.is_file():
-        try:
-            with open(module_config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    if template_config_path.is_file():
-        try:
-            with open(template_config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"ide_integrations": {}, "custom_module_settings": {}}
-
-
-def save_module_config(config: Dict[str, Any]):
-    """持久化儲存模組設定檔至 module/config.json"""
-    module_config_path = MODULE_DIR / "config.json"
-    with open(module_config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+def get_core_workflow_files() -> List[str]:
+    """獲取核心工作流清單"""
+    return CORE_WORKFLOW_FILES
 
 
 def extract_description(md_path: Path) -> str:
@@ -167,8 +166,9 @@ def generate_gemini_ide_commands(prefix: str = "", postfix: str = "") -> int:
     print("-" * 75)
 
     generated_files = []
+    core_wf_files = get_core_workflow_files()
 
-    for wf_name in CORE_WORKFLOW_FILES:
+    for wf_name in core_wf_files:
         core_file = WORKFLOWS_DIR / wf_name
         if not core_file.is_file():
             print(f"[WARN] 找不到核心工作流檔案：{core_file}，略過。")

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-scan_plan_status.py — 專案開發進度與狀態掃描工具
+scan_plan_status.py — 開發計畫狀態矩陣掃描工具
 
-用途：掃描 `.agents/dev_plans/` 目錄，印出當前進行中與歷史 Dev Plan 的狀態矩陣（支援 Umbrella 主/子計畫階層）。
+用途：掃描 plans_dir (與 archive_dir) 目錄，印出當前進行中與歷史 Dev Plan 的狀態矩陣（支援 Umbrella 主/子計畫階層）。
 """
 
 import sys
@@ -87,12 +87,19 @@ def get_plan_info(plan_dir: Path) -> tuple[str, str]:
 
     return track_type, status
 
-def scan_plans(include_history: bool = False):
-    root = get_workspace_root()
-    dev_plans_dir = root / ".agents" / "dev_plans"
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
-    if not dev_plans_dir.exists():
-        print("[INFO] 目前無 Dev Plans 目錄。")
+from config_utils import get_plans_dir, get_archive_dir, get_module_dir
+
+def scan_plans(include_history: bool = False):
+    module_dir = get_module_dir()
+    plans_dir = get_plans_dir(module_dir)
+    archive_dir = get_archive_dir(module_dir)
+
+    if not plans_dir.exists() and not (include_history and archive_dir.exists()):
+        print(f"[INFO] 目前無計畫目錄 ({plans_dir})。")
         return
 
     print("=" * 90)
@@ -113,21 +120,20 @@ def scan_plans(include_history: bool = False):
             print(f"{sub_disp:<52} | {st_type:<15} | {s_status:<16} | {loc_str}")
 
     # 1. 進行中計畫
-    active_plans = [d for d in dev_plans_dir.iterdir() if d.is_dir() and d.name != "history" and not d.name.startswith(".")]
-    for plan in sorted(active_plans, key=lambda x: x.name, reverse=True):
-        print_plan_tree(plan, "active/")
+    if plans_dir.exists():
+        active_plans = [d for d in plans_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        for plan in sorted(active_plans, key=lambda x: x.name, reverse=True):
+            print_plan_tree(plan, "plans/")
 
-    # 2. 歷史計畫 (選填)
-    if include_history:
-        history_dir = dev_plans_dir / "history"
-        if history_dir.exists():
-            for y_dir in sorted(history_dir.iterdir(), reverse=True):
-                if y_dir.is_dir():
-                    for m_dir in sorted(y_dir.iterdir(), reverse=True):
-                        if m_dir.is_dir():
-                            for plan in sorted(m_dir.iterdir(), reverse=True):
-                                if plan.is_dir():
-                                    print_plan_tree(plan, f"history/{y_dir.name}/{m_dir.name}/")
+    # 2. 歷史歸檔計畫 (選填)
+    if include_history and archive_dir.exists():
+        for y_dir in sorted(archive_dir.iterdir(), reverse=True):
+            if y_dir.is_dir():
+                for m_dir in sorted(y_dir.iterdir(), reverse=True):
+                    if m_dir.is_dir():
+                        for plan in sorted(m_dir.iterdir(), reverse=True):
+                            if plan.is_dir():
+                                print_plan_tree(plan, f"archive/{y_dir.name}/{m_dir.name}/")
 
     print("=" * 90)
 
