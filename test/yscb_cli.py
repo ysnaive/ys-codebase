@@ -55,13 +55,21 @@ def find_module_cli(root_dir: Path, module_name: str, config: Dict[str, Any]) ->
     mode = installed.get(module_name, {}).get("mode", "build")
 
     # 1. 依據已安裝模式查找 (source 模式查 source/，build 模式查 modules/)
-    preferred_dir = root_dir / ("source" if mode == "source" else "modules") / module_name
-    cli_path = preferred_dir / "scripts" / "cli.py"
-    if cli_path.is_file():
-        return cli_path
+    preferred_dirs = [
+        root_dir / ("source" if mode == "source" else "modules") / module_name,
+        root_dir / "ys_codebase" / ("source" if mode == "source" else "modules") / module_name,
+    ]
+    for p in preferred_dirs:
+        cli_path = p / "scripts" / "cli.py"
+        if cli_path.is_file():
+            return cli_path
 
-    # 2. 備用查找 (modules/ -> source/ -> build/)
-    for sub in ["modules", "source", "build"]:
+    # 2. 備用查找 (modules/ -> source/ -> build/ -> ys_codebase/*)
+    search_subs = [
+        "modules", "source", "build",
+        "ys_codebase/modules", "ys_codebase/source", "ys_codebase/build"
+    ]
+    for sub in search_subs:
         alt_dir = root_dir / sub / module_name
         alt_cli = alt_dir / "scripts" / "cli.py"
         if alt_cli.is_file():
@@ -76,6 +84,11 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
 
     # 1. 內建 installer
     installer_path = root_dir / INSTALLER_SCRIPT
+    if not installer_path.exists():
+        alt_inst = root_dir / "ys_codebase" / INSTALLER_SCRIPT
+        if alt_inst.exists():
+            installer_path = alt_inst
+
     result["installer"] = {
         "name": "installer",
         "description": "YS-Codebase 核心安裝管理工具 (init, install, pull, build, push, status, list, remove)",
@@ -97,7 +110,7 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
         }
 
     # 3. 掃描本地 modules/、source/ 與 build/ 中存在 cli.py 但未註冊的模組
-    for sub in ["modules", "source", "build"]:
+    for sub in ["modules", "source", "build", "ys_codebase/source", "ys_codebase/build"]:
         sub_dir = root_dir / sub
         if sub_dir.is_dir():
             for item in sub_dir.iterdir():

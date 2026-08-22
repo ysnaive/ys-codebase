@@ -6,43 +6,71 @@
 
 ## 🌟 核心架構特色
 
-1. **統一 CLI 調度器 (`yscb_cli.py`)**：統一轉接各模組專屬 CLI（如 `python yscb_cli.py agents-workflow verify`）與 Installer 管理指令。
-2. **極簡單檔起手**：下游專案僅需 checkout [`yscb_installer.py`](./yscb_installer.py) 與同層 [`yscb_config.json`](./yscb_config.json) 即可運作。
-3. **Zero External Dependency**：純 Python 3 標準庫實現，跨平台（Windows / macOS / Linux）免安裝額外套件。
-4. **Source / Build / Modules 三層空間分流**：
-   - **標準使用者模式 (Build ➔ Modules)**：從遠端 `build/<module>`（最低執行需求發布物）拉取並安裝至本地 `modules/<module>` 運行（含本地 `config.json` + `config.template.json`）。
+1. **自引用（Dogfooding）三層架構**：
+   - **`:/ys_codebase/` [完整原始碼開發環境]**：工具庫核心原始碼（Installer、CLI、`source/` 源碼庫、`build/` 發布產物空間與模組架構設計文檔）。
+   - **`:/test/` [假專案測試環境]**：模擬下游真實消費者專案，配置獨立沙盒與自動化回歸測試套件（`run_regression.py`）。
+   - **`:/` [自引用 Dogfooding 環境]**：根專案作為使用者，使用 `ys-codebase` 工具（包含 `modules/agents-workflow`、`docs/` 知識庫與 `plans/` 計畫紀錄）。
+2. **統一 CLI 調度器 (`yscb_cli.py`)**：統一轉接各模組專屬 CLI（如 `python yscb_cli.py agents-workflow verify`）與 Installer 管理指令。
+3. **極簡單檔起手**：下游專案僅需 checkout [`yscb_installer.py`](./yscb_installer.py) 與同層 [`yscb_config.json`](./yscb_config.json) 即可運作。
+4. **Zero External Dependency**：純 Python 3 標準庫實現，跨平台（Windows / macOS / Linux）免安裝額外套件。
+5. **Source / Build / Modules 三層空間分流**：
+   - **標準使用者模式 (Build ➔ Modules)**：從遠端 `build/<module>`（最低執行需求發布物）拉取並安裝至本地 `modules/<module>` 運行。
    - **開發者源碼模式 (Source Mode, `--source`)**：安裝 `source/<module>` 完整原始碼至本地 `source/<module>`，並**自動強制相依安裝 `source/core` 基礎庫**，解鎖本地 Modify、Build 與 Push 能力。
-5. **模組 Scripts 與 Hook 規範**：
-   - `module/scripts/cli.py`：模組專屬 CLI 入口（支援 `--help`）。
-   - `module/scripts/_installed.py`：安裝完成後置 Hook。
-   - `module/scripts/_uninstall.py`：卸載前置 Hook。
 
 ---
 
 ## 📁 倉庫結構
 
 ```text
-ys-codebase/
-├── yscb_cli.py                    # 統一 CLI 調度轉接器
-├── yscb_installer.py              # 核心安裝管理引擎
-├── yscb_config.json               # 專案核心設定檔
-├── yscb_config.template.json      # 純淨設定檔範本
-├── README.md                      # 專案說明
-├── docs/                          # 系統架構與規範知識庫
+ys-codebase/ (專案根目錄，代表 ":/"，自引用 Dogfooding 環境)
+├── yscb_cli.py                        # [自引用] 統一 CLI 調度轉接器
+├── yscb_installer.py                  # [自引用] 核心安裝管理引擎
+├── yscb_config.json                   # [自引用] 專案核心設定檔 (已安裝 modules/agents-workflow)
+├── yscb_config.template.json          # 純淨設定檔範本
+├── README.md                          # 專案說明
+├── docs/                              # 專案頂層說明與架構索引知識庫
+├── plans/                             # 專案 Plans 與需求規劃紀錄
 │
-├── source/                        # [源碼空間] 完整開發原始碼 (開發者模式目標)
-│   ├── core/                      # 核心基座 (任何 --source 模組的強制相依底層)
-│   └── <module_name>/             # 各模組原始碼 (含 scripts/cli.py, _installed.py 等)
+├── modules/                           # [自引用運行空間] 根專案自引用安裝的發布物模組
+│   └── agents-workflow/               # AI Agent SOP 工作流模組 (運行實例)
 │
-├── build/                         # [發布產物空間] 僅包含最低執行需求內容 (ex: 僅含 config.template)
-│   └── <module_name>/             # 由 source/ 編譯/打包產出，供純使用端拉取
+├── ys_codebase/                       # [完整原始碼開發環境 (":/ys_codebase/")]
+│   ├── yscb_cli.py                    # 工具庫核心 CLI 調度器
+│   ├── yscb_installer.py              # 工具庫核心安裝管理引擎
+│   ├── yscb_config.template.json      # 模組設定模板
+│   ├── source/                        # [源碼空間] 模組完整源碼 (開發者模式目標)
+│   │   ├── core/                      # 核心基座 (任何 --source 模組的強制相依底層)
+│   │   └── agents-workflow/           # AI Agent SOP 工作流模組源碼
+│   ├── build/                         # [發布產物空間] 最低執行需求產物
+│   │   └── agents-workflow/           # 由 source/ 打包產出，供下游純使用端拉取
+│   └── docs/                          # 工具庫專屬架構、規範與設計文檔
 │
-├── modules/                       # [本地運行空間] 於本機端運行的模組 (ex: 含 config + config.template)
-│   └── <module_name>/             # 純使用端安裝目標，由遠端/本地 build/ 複製而來
-│
-└── tests/                         # 自動化測試套件
-    └── test_installer.py
+└── test/                              # [假專案測試環境 (":/test/")]
+    ├── yscb_cli.py                    # 測試沙盒 CLI
+    ├── yscb_installer.py              # 測試沙盒安裝引擎
+    ├── yscb_config.json               # 測試沙盒配置檔
+    ├── run_regression.py              # 一鍵全自動回歸測試腳本
+    └── tests/                         # 自動化單元與整合測試套件 (含 test_installer.py)
 ```
+
+---
+
+## 🔄 未來標準作業流程 (Standard Workflow)
+
+```mermaid
+flowchart LR
+    A["1. 於 :/ 環境開發<br/>源碼修改於 :/ys_codebase/"] --> B["2. 進入 :/test/<br/>執行 python test/run_regression.py"]
+    B --> C["3. 測試通過<br/>於 :/ 自引用更新"]
+```
+
+1. **開發階段 (`:/` 環境，源碼位於 `:/ys_codebase/`)**：
+   - 所有工具鏈、模組原始碼（`yscb_installer.py`、`source/core/`、`source/agents-workflow/` 等）僅在 `:/ys_codebase/` 內修改。
+   - 外部（`:/`）僅保留專案 Plans、Docs、IDE 工作流設定等。
+   - 於 `:/ys_codebase/` 執行 `build` 將 `source/` 打包成 `build/`。
+2. **回歸測試階段 (`:/test/`)**：
+   - 執行 `python test/run_regression.py` 進行單元、整合與下游沙盒端到端回歸測試。
+3. **自引用更新階段 (`:/`)**：
+   - 測試驗證全數通過後，在 `:/` 自引用環境執行更新，同步套用最新產出物。
 
 ---
 
@@ -53,7 +81,12 @@ ys-codebase/
 python yscb_cli.py --help
 ```
 
-### 2. 使用 Installer 管理模組
+### 2. 執行自動化回歸測試
+```bash
+python test/run_regression.py
+```
+
+### 3. 使用 Installer 管理模組
 ```bash
 # 初始化設定檔
 python yscb_cli.py installer init
@@ -65,7 +98,7 @@ python yscb_cli.py installer install agents-workflow
 python yscb_cli.py installer status
 ```
 
-### 3. 調用已安裝模組專屬 CLI
+### 4. 調用已安裝模組專屬 CLI
 ```bash
 # 查看 agents-workflow 指令手冊
 python yscb_cli.py agents-workflow --help
