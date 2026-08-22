@@ -40,7 +40,7 @@ class ProjectContext:
                     with open(cfg_path, "r", encoding="utf-8") as f:
                         cfg_data = json.load(f)
                     custom_proj = cfg_data.get("paths", {}).get("project_root")
-                    if custom_proj:
+                    if custom_proj and not cls.is_undefined(custom_proj):
                         resolved_proj = (parent / custom_proj).resolve()
                         if resolved_proj.is_dir():
                             return resolved_proj
@@ -68,7 +68,7 @@ class ProjectContext:
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg_data = json.load(f)
                 custom_yscb = cfg_data.get("paths", {}).get("yscb_root")
-                if custom_yscb:
+                if custom_yscb and not cls.is_undefined(custom_yscb):
                     resolved_yscb = (proj_root / custom_yscb).resolve()
                     if resolved_yscb.is_dir():
                         return resolved_yscb
@@ -87,6 +87,15 @@ class ProjectContext:
         if env_mod and os.path.isdir(env_mod):
             return Path(env_mod).resolve()
 
+        if start_dir:
+            s_path = Path(start_dir).resolve()
+            if s_path.is_dir() and s_path.name == module_name:
+                return s_path
+            if (s_path / "modules" / module_name).is_dir():
+                return (s_path / "modules" / module_name).resolve()
+            if (s_path / "source" / module_name).is_dir():
+                return (s_path / "source" / module_name).resolve()
+
         proj_root = cls.get_project_root(start_dir)
         candidate_dirs = [
             proj_root / "modules" / module_name,
@@ -104,8 +113,18 @@ class ProjectContext:
         return (proj_root / "modules" / module_name).resolve()
 
     @classmethod
+    def is_undefined(cls, val: Any) -> bool:
+        """檢查設定值是否為未初始化標記 (!undefined, 空值或以 ! 開頭)"""
+        if val is None:
+            return True
+        s = str(val).strip()
+        return s == "" or s.startswith("!")
+
+    @classmethod
     def resolve(cls, rel_path: Union[str, Path], base_dir: Optional[Union[str, Path]] = None) -> Path:
         """將相對於專案根目錄的路徑字串解析為標準絕對 Path"""
+        if cls.is_undefined(rel_path):
+            raise ValueError(f"指定路徑尚未初始化 (!undefined 或空值)：{rel_path}")
         p = Path(rel_path)
         if p.is_absolute():
             return p

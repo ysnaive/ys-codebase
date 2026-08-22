@@ -13,13 +13,11 @@ if sys.stdout and hasattr(sys.stdout, 'buffer'):
         pass
 from pathlib import Path
 
-def get_workspace_root() -> Path:
-    cur = Path(__file__).resolve().parent
-    while cur.parent != cur:
-        if (cur / ".agents").is_dir():
-            return cur
-        cur = cur.parent
-    return Path.cwd()
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from config_utils import get_plans_dir, get_archive_dir, get_module_dir, get_workspace_root
 
 def get_plan_info(plan_dir: Path) -> tuple[str, str]:
     ft_plan = plan_dir / "FT_plan.md"
@@ -86,12 +84,6 @@ def get_plan_info(plan_dir: Path) -> tuple[str, str]:
         status = f"{status} (Paused)"
 
     return track_type, status
-
-SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from config_utils import get_plans_dir, get_archive_dir, get_module_dir
 
 def scan_plans(include_history: bool = False):
     module_dir = get_module_dir()

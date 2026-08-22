@@ -1,5 +1,10 @@
 {
-  "plans_dir": "plans",
-  "archive_dir": "archive_plans",
-  "docs_dir": "docs"
+  "version": "1.0",
+  "paths": {
+    "plans_dir": "!undefined",
+    "archive_dir": "!undefined",
+    "docs_dir": "!undefined",
+    "extensions_dir": "!undefined"
+  },
+  "custom_project_settings": {}
 }

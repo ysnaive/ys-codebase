@@ -1,68 +1,89 @@
 ---
-namespace: "[Namespace/Module]"
+target: "[Namespace/ModuleName]"
 doc_type: "readme"
 status: "draft"
 source_paths:
-  - "[src/path/to/file]"
-related_docs: []
+  - "[src/path/to/entry_file]"
+related_docs:
+  - "../_project/STANDARDS.md"
 last_updated: "YYYY-MM-DD"
 ---
 
-# Baz
+# [模組名稱] (Module Title)
 
-> 一句話描述：[這個模塊的核心職責是什麼。]
-
-## 職責邊界
-
-**做什麼**：
-- [此模塊負責的核心功能 1]
-- [此模塊負責的核心功能 2]
-
-**不做什麼**（邊界）：
-- [明確列出此模塊不處理的事項，防止誤用]
+> 一句話描述：[本模組的核心職責是什麼]
 
 ---
 
-## 架構概覽
+## 職責邊界 (Scope & Boundaries)
 
-[30 秒內讓讀者理解整體結構。可使用 Mermaid 圖表。若結構簡單可省略圖表。]
+**負責事項 (In-Scope)**：
+- [核心職責 1]
+- [核心職責 2]
+
+**不負責事項 (Out-of-Scope)**：
+- [明確列出本模組不處理的事項，防止概念蔓延與依賴污染]
+
+---
+
+## 架構概覽 (Architecture Topology)
+
+> 30 秒內讓讀者理解整體結構與協同關係（建議使用垂直排版 Mermaid TD 圖）：
 
 ```mermaid
-classDiagram
-    class FooClass {
-        +methodA() void
-        +methodB() ReturnType
-    }
-    class BarClass {
-        +process() void
-    }
-    FooClass --> BarClass : 依賴
+graph TD
+    Client[外部調用方 Client] --> Entry[入口介面 / Facade]
+    Entry --> Engine[核心處理引擎 Engine]
+    Engine --> SubA[子組件 A]
+    Engine --> SubB[子組件 B]
+    Engine --> Storage[(資料儲存 / 快取)]
 ```
 
 ---
 
-## 文件導覽
+## 快速上手 (Quick Start & Usage)
 
-> 若目前只有 README 單一文件，刪除本節並直接在下方展開內容。
+```python
+# 典型調用範例 (根據專案實際語言替換)
+from my_module import Engine
 
-| 文件 | 說明 |
-| :--- | :--- |
-| [foo-algorithm.md](./foo-algorithm.md) | [Foo 演算法的核心原理說明] |
-| [bar-system.md](./bar-system.md) | [Bar 系統的運作機制] |
-| [DESIGN_NOTES.md](./DESIGN_NOTES.md) | 工程妥協記錄 |
-
----
-
-## 關鍵知識點速查
-
-> 僅列出 CAUTION 等級（可能致 Bug 或崩潰）的坑點。詳細知識點見各主題文件或 DESIGN_NOTES.md。
-
-> [!CAUTION] 知識點：[最重要的坑點標題]
-> [一句話說明：什麼情況下觸發，應如何避免。]
+engine = Engine()
+result = engine.process("input_data")
+print(result)
+```
 
 ---
 
-## 相關模塊
+## 公開介面速查 (Public API Reference)
 
-- [RelatedModuleA](../RelatedModuleA/README.md)：[與本模塊的關係]
-- [RelatedModuleB](../../OtherNamespace/RelatedModuleB/README.md)：[與本模塊的關係]
+| 介面 / 類別名稱 | 核心職責 | 典型使用場景 |
+| :--- | :--- | :--- |
+| `[ClassName1]` | [主要職責說明] | [何時使用] |
+| `[ClassName2]` | [主要職責說明] | [何時使用] |
+
+---
+
+## 專題技術手冊導覽 (Topic Handbooks)
+
+> 若本模組包含複雜動態機制（資料管線、狀態機、協議、演算法），強制建立獨立專題手冊：
+
+| 專題手冊 | 知識維度 | 說明 |
+| :--- | :--- | :--- |
+| [pipeline_flow.md](./pipeline_flow.md) | 維度 3 (中觀機制) | [資料處理管線流向與 Stage 規格] |
+| [lifecycle_fsm.md](./lifecycle_fsm.md) | 維度 3 (中觀機制) | [狀態機轉移矩陣與異常復原] |
+| [DESIGN_NOTES.md](./DESIGN_NOTES.md) | 維度 5 (工程妥協) | [記錄非直觀設計、效能/硬體限制與坑點防護] |
+
+---
+
+## 關鍵坑點防護速查 (Critical Invariants)
+
+> 僅列出最關鍵的 `[!CAUTION]` 等級坑點。完整妥協記錄見 [DESIGN_NOTES.md](./DESIGN_NOTES.md)。
+
+> [!CAUTION] 核心不變量防護：[坑點標題]
+> [說明什麼情況下觸發，以及未來重構時切勿隨意刪改的原因]
+
+---
+
+## 相關依賴模組 (Related Modules)
+
+- [RelatedModuleA](../RelatedModuleA/README.md)：[與本模組的依賴與協同關係]

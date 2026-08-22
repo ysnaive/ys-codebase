@@ -37,30 +37,56 @@ last_updated: "2026-08-22"
 
 ---
 
-## ⚙️ 2×2 設定協定配置
+## ⚙️ 2×2 設定協定與 `!undefined` 剛性約束
 
 - **專案級規範 (`config.project.json`)**：
-  定義專案路徑規範（如 `docs_dir: "docs"`, `plans_dir: "plans"`）。
+  初始範本採用 `!undefined` 標記，強制要求專案初始化，避免盲目建立預設垃圾目錄：
+  ```json
+  {
+    "version": "1.0",
+    "paths": {
+      "plans_dir": "!undefined",
+      "archive_dir": "!undefined",
+      "docs_dir": "!undefined"
+    }
+  }
+  ```
 - **本機個人偏好 (`config.local.json`)**：
-  記錄開發者本機選擇之 IDE（如 `gemini`）、前綴偏好等。
+  記錄開發者本機選擇之 IDE（如 `antigravity`）、前綴偏好等。
 
 ---
 
-## 🤖 IDE 引用式指令生成與清理器 (`--ide-gemini` / `--ide-clear`)
+## 🛠️ 模組專案路徑初始化 (`init`)
+
+安裝後可透過 `init` 指令快速設定專案 SOP 路徑：
+```bash
+# 1. 完整自訂路徑
+python yscb_cli.py agents-workflow init --plans-dir plans --archive-dir archive_plans --docs-dir docs
+
+# 2. 使用標準推薦預設值 (plans, archive_plans, docs)
+python yscb_cli.py agents-workflow init --default
+```
+
+---
+
+## 🤖 IDE 引用式指令生成與清理器 (`--ide-antigravity` / `--ide-clear`)
 
 ```bash
-# 生成預設指令 (例如 NewPlan.md)
-python yscb_cli.py agents-workflow --ide-gemini
+# 生成 Google Antigravity / Gemini 引用式指令 (例如 .agents/workflows/NewPlan.md)
+python yscb_cli.py agents-workflow --ide-antigravity
 
 # 附帶 sop_ 前綴生成 (例如 sop_NewPlan.md)
-python yscb_cli.py agents-workflow --ide-gemini -prefix "sop_"
+python yscb_cli.py agents-workflow --ide-antigravity -prefix "sop_"
+
+# 附帶自訂前綴與後綴
+python yscb_cli.py agents-workflow --ide-antigravity -prefix "sop-" -postfix "_v2"
 
 # 一鍵清理所有由 IDE 生成器產生的指令
 python yscb_cli.py agents-workflow --ide-clear
 ```
 
-- **自動清理 (Pre-Generation Cleanup)**：調用 `--ide-gemini` 時先檢查舊檔案並精準移除，防止孤兒檔案殘留。
-- **引用式設計**：生成的指令檔案僅包含 YAML Frontmatter 描述與指向核心工作流的相對路徑連結。
+- **自動清理 (Pre-Generation Cleanup)**：調用 `--ide-antigravity` 時先檢查舊檔案並精準移除，防止孤兒檔案殘留。
+- **引用式設計 (SSOT)**：生成的指令檔案僅包含 YAML Frontmatter 描述與指向核心工作流的相對路徑連結。
 - **設定留痕**：相關生成紀錄自動保存於 `config.local.json`（個人本機偏好，不污染 Git）。
 
 ---

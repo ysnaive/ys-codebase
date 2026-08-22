@@ -30,11 +30,11 @@ YS_CODEBASE_DIR = PROJECT_ROOT / "ys_codebase"
 
 def run_unit_tests() -> bool:
     print("=" * 80)
-    print("  [階段 1] 執行單元與整合測試套件 (test/tests/)")
+    print("  [階段 1] 執行單元與整合測試套件 (test/)")
     print("=" * 80)
     
     loader = unittest.TestLoader()
-    suite = loader.discover(start_dir=str(CURRENT_DIR / "tests"), pattern="test_*.py")
+    suite = loader.discover(start_dir=str(CURRENT_DIR), pattern="test_*.py")
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     
@@ -113,17 +113,17 @@ def run_e2e_downstream_simulation() -> bool:
             return False
         print("[+] 'yscb_cli.py' 統一調度轉接器運作正常。")
 
-        # 5. 測試 agents-workflow CLI 調用
-        print("\n[Step 2.4] 執行 'yscb_cli.py agents-workflow --help'...")
-        res_mod_help = subprocess.run([sys.executable, "yscb_cli.py", "agents-workflow", "--help"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if res_mod_help.returncode != 0:
-            print(f"[ERROR] 模組 CLI 轉發失敗: {res_mod_help.stderr}\n{res_mod_help.stdout}")
+        # 5. 測試 agents-workflow init (初始化專案路徑)
+        print("\n[Step 2.4] 執行 'yscb_cli.py agents-workflow init --default'...")
+        res_init = subprocess.run([sys.executable, "yscb_cli.py", "agents-workflow", "init", "--default"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if res_init.returncode != 0:
+            print(f"[ERROR] 模組 init 失敗: {res_init.stderr}\n{res_init.stdout}")
             return False
-        print("[+] 模組專屬 CLI 轉發正常。")
+        print("[+] 模組專案路徑初始化正常。")
 
         # 6. 測試 IDE 引用式指令生成與清理 (寫入 config.local.json)
-        print("\n[Step 2.5] 測試 '--ide-gemini' 指令生成與 '--ide-clear'...")
-        res_ide_gen = subprocess.run([sys.executable, "yscb_cli.py", "agents-workflow", "--ide-gemini", "-prefix", "sandbox_sop_"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        print("\n[Step 2.5] 測試 '--ide-antigravity' 指令生成與 '--ide-clear'...")
+        res_ide_gen = subprocess.run([sys.executable, "yscb_cli.py", "agents-workflow", "--ide-antigravity", "-prefix", "sandbox_sop_"], cwd=str(sandbox_dir), capture_output=True, text=True, encoding="utf-8", errors="replace")
         if res_ide_gen.returncode != 0:
             print(f"[ERROR] IDE 指令生成失敗: {res_ide_gen.stderr}\n{res_ide_gen.stdout}")
             return False

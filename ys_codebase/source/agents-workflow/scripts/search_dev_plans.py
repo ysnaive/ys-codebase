@@ -15,19 +15,11 @@ import re
 import argparse
 from pathlib import Path
 
-def get_workspace_root() -> Path:
-    cur = Path(__file__).resolve().parent
-    while cur.parent != cur:
-        if (cur / ".agents").is_dir():
-            return cur
-        cur = cur.parent
-    return Path.cwd()
-
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from config_utils import get_plans_dir, get_archive_dir, get_module_dir
+from config_utils import get_plans_dir, get_archive_dir, get_module_dir, get_workspace_root
 
 def find_all_plans(plans_dir: Path, archive_dir: Path, year: str = None, month: str = None):
     plans = []
@@ -119,7 +111,9 @@ def search_decision_records(plans: list, query: str = None, limit: int = 25):
     print("=" * 90)
     print(f"共找到 {found_count} 筆 Decision Records。")
 
-def search_full_text(plans: list, query: str, limit: int = 20):
+def search_full_text(plans: list, query: str, limit: int = 20, root: Path = None):
+    if root is None:
+        root = get_workspace_root(get_module_dir())
     print(f"搜尋關鍵字: \"{query}\" ...")
     print("=" * 90)
 
@@ -133,7 +127,10 @@ def search_full_text(plans: list, query: str, limit: int = 20):
 
             for idx, line in enumerate(lines):
                 if query.lower() in line.lower():
-                    rel_path = md_file.relative_to(get_workspace_root())
+                    try:
+                        rel_path = md_file.relative_to(root)
+                    except ValueError:
+                        rel_path = md_file
                     print(f"📄 [{rel_path}:L{idx+1}]")
                     start_i = max(0, idx - 1)
                     end_i = min(len(lines), idx + 2)
@@ -166,6 +163,7 @@ if __name__ == "__main__":
     module_dir = get_module_dir()
     plans_dir = get_plans_dir(module_dir)
     archive_dir = get_archive_dir(module_dir)
+    workspace_root = get_workspace_root(module_dir)
 
     if not plans_dir.exists() and not archive_dir.exists():
         print(f"[INFO] 找不到計畫目錄 ({plans_dir})。")
@@ -176,4 +174,4 @@ if __name__ == "__main__":
     if args.dr or not q:
         search_decision_records(all_plans, query=q, limit=args.limit)
     else:
-        search_full_text(all_plans, query=q, limit=args.limit)
+        search_full_text(all_plans, query=q, limit=args.limit, root=workspace_root)

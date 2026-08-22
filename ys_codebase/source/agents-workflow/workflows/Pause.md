@@ -17,7 +17,7 @@ description: 暫停開發與無縫交接工作流 (Pause) — 現場狀態凍結
 ## 🚀 執行步驟
 
 ### 步驟 1：定位當前活躍 Dev Plan 目錄
-- 定位當前正在進行的計畫目錄（如 `{plans_dir}/{YYYY_MM_DD_HHMM_xxx}/`）。
+- 定位當前正在進行的計畫目錄（如 `plans://{YYYY_MM_DD_HHMM_xxx}/`）。
 
 ---
 

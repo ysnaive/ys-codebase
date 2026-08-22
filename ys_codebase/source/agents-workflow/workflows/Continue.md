@@ -4,7 +4,7 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 # 接續開發計畫工作流 (Continue)
 
-本 Workflow 用於從一個**已存在但尚未完成**的開發計畫接續工作。所有階段的執行規範請嚴格遵循 `.agents/workflows/NewPlan.md`。
+本 Workflow 用於從一個**已存在但尚未完成**的開發計畫接續工作。所有階段的執行規範請嚴格遵循 [NewPlan.md](./NewPlan.md)。
 
 ---
 
@@ -12,7 +12,7 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 ### 步驟 1：定位目標計畫目錄與狀態掃描
 
-1. 優先執行狀態掃描指令（或檢視 `{plans_dir}` 計畫目錄）：
+1. 優先執行狀態掃描指令（或檢視 `plans://` 計畫目錄）：
    ```bash
    python yscb_cli.py agents-workflow scan
    ```
