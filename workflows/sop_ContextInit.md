@@ -4,7 +4,7 @@ description: 專案上下文熱啟動 Workflow (sop_ContextInit) — 新 Session
 
 # 專案上下文初始化流程 (sop_ContextInit)
 
-本 Workflow 用於在全新對話 (Session / Chat) 開始時，快速加載 `gcvex` 專案的核心架構、歷史變更、C++11/C# 程式碼規範與 Agent 紀律。確保 Agent 即使在大語言模型上下文重置後，也能 100% 掌握專案默契與工程標準。
+本 Workflow 用於在全新對話 (Session / Chat) 開始時，快速加載 `ys-codebase` 專案的核心架構、歷史變更、程式碼規範與 Agent 紀律。確保 Agent 即使在大語言模型上下文重置後，也能 100% 掌握專案默契與工程標準。
 
 ---
 
@@ -54,7 +54,7 @@ description: 專案上下文熱啟動 Workflow (sop_ContextInit) — 新 Session
 ```markdown
 # 🚀 專案上下文已成功熱啟動 (Context initialized)
 
-已成功載入 **gcvex** 專案的核心架構、C++11/C# 規範與歷史決策脈絡：
+已成功載入 **ys-codebase** 專案的核心架構、規範與歷史決策脈絡：
 
 ### 📌 專案核心規範摘要 (Coding Standards)
 - **Component & 路徑**：`include/` & `src/` ↔ `docs/` 剛性 1:1 鏡像。

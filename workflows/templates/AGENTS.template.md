@@ -31,7 +31,7 @@ Agent 必須始終遵守以下三大原則：
 - **Test-First 測試前置定稿條款**：`P06_test_plan.md` 必須於 Phase 2~3 隨設計同步初始化草擬 (Draft)，並於 Phase 4 Review 階段與 `P04_implementation_plan.md` 一併剛性定稿 (Confirmed)，嚴禁延至 Phase 6 才開始憑空設計測試項目。
 - **Phase 6 UX / 手動測試 Checkpoint 強制等待關卡**：即使 CLI 自動化測試 100% Passed，Agent **絕對禁止**自行將 P06 標記為 `Passed` 或擅自進入 Phase 7！必須呈遞 CLI 測試結果，並明確詢問開發者進行 UX/手動視覺與互動驗證。必須等待開發者明確回覆「UX 驗證通過/指示免測」後，方可將 P06 標記為 Passed 並推進至 Phase 7。
 - **Phase 6 驗證防呆鐵律 (無 Log 即未驗證)**：若 CLI 編譯/測試命令執行受阻，Agent **絕對禁止**在 `P06_test_plan.md` 與對話中標記 `Passed`。必須明確標記 `[未實機編譯/僅靜態檢查]`，並呈遞精確命令請開發者於控制台執行回填。
-- **全階段文件模板剛性對齊**：所有 Phase (P00~P07 / FT_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像 DevelopmentSOP 模板結構**（包含 `.agents/workflows/templates/` 中定義的所有指定欄位、表格與 Header 規範標頭，含 `> 擴充項目：`），嚴禁 Agent 自行簡化或遺漏模板區塊。
+- **全階段文件模板剛性對齊**：所有 Phase (P00~P07 / FT_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像 ys-codebase 模板結構**（包含 `.agents/workflows/templates/` 中定義的所有指定欄位、表格與 Header 規範標頭，含 `> 擴充項目：`），嚴禁 Agent 自行簡化或遺漏模板區塊。
 - **Phase 0 討論模式鐵律**：
   - **Agent 嚴禁臆測需求**：在 Phase 0 討論階段，Agent 僅作為知識顧問，針對開發者陳述提出釐清問題。除非開發者明確要求，否則嚴禁主動提出設計方案、功能清單或架構建議。
   - **討論結束必須由開發者明確宣告**：Agent 絕對禁止自行判定討論已完整並推進。必須等待開發者明確表示後，才可將 `P00_semantic_requirements.md` 標記為 `Confirmed`。

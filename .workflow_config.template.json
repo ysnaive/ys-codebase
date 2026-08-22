@@ -1,21 +1,16 @@
 {
-  "core_repo": "https://github.com/YsNaive/agent.workflow.git",
+  "core_repo": "https://github.com/YsNaive/ys-codebase.git",
   "branch": "main",
   "sync_include": [
-    "workflows/DevelopmentSOP.md",
-    "workflows/DevelopmentSOP_Continue.md",
-    "workflows/DevelopmentSOP_Review.md",
-    "workflows/DocumentationStandards.md",
-    "workflows/templates/**",
-    "workflows/extensions/ext_template.md",
+    "workflows/**",
     "scripts/**"
   ],
   "sync_exclude": [
     "workflows/extensions/**",
-    "workflows/ContextInit.md",
     "dev_plans/**",
     "ideas/**",
     "scratch/**",
     "AGENTS.md"
   ]
 }
+
