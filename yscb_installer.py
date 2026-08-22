@@ -569,6 +569,97 @@ class ModuleManager:
         print(f"[SUCCESS] 模組 '{module_name}' 建置完成 (v{build_manifest.get('version', '1.0.0')}) ➔ {dest_path}")
         return True
 
+    def diff_modules(self, module_names: List[str]) -> bool:
+        """比對本地已安裝模組與遠端 cache 最新版本之間的檔案差異"""
+        # 先同步 cache（pull）
+        print("[INFO] 正在同步遠端 cache...")
+        try:
+            self.git_client.sync_cache(force_refresh=True)
+        except Exception as e:
+            print(f"[WARN] 同步遠端 cache 失敗（可能在離線環境），改用本地快取比對: {e}")
+
+        cfg = self.config_mgr.load()
+        installed = cfg.get("installed_modules", {})
+
+        if not module_names:
+            module_names = list(installed.keys())
+
+        if not module_names:
+            print("[INFO] 目前無任何已安裝模組可供比對。")
+            return True
+
+        EXCLUDE_FILES = {"config.json", "config_global.json"}
+        total_diff = 0
+
+        for mod in module_names:
+            mod_info = installed.get(mod, {})
+            mode = mod_info.get("mode", "build")
+            target_sub = "source" if mode == "source" else "build"
+
+            local_dir: Optional[Path] = None
+            for candidate in [
+                self.root_dir / ("source" if mode == "source" else "modules") / mod,
+                self.root_dir / "modules" / mod,
+            ]:
+                if candidate.is_dir():
+                    local_dir = candidate
+                    break
+
+            remote_dir = self.git_client.cache_dir / target_sub / mod
+            if not remote_dir.is_dir():
+                print(f"\n[{mod}] [WARN] 遠端 cache 無此模組 ({target_sub}/{mod})，跳過比對。")
+                continue
+
+            if not local_dir:
+                print(f"\n[{mod}] [LOCAL_MISSING] 本地未安裝，遠端存在。")
+                total_diff += 1
+                continue
+
+            print(f"\n[{mod}] 比對 {local_dir} ↔ {remote_dir}")
+            print("  " + "-" * 66)
+
+            # 建立兩邊的相對路徑集合
+            def collect_files(base: Path) -> Dict[str, Path]:
+                result = {}
+                for f in base.rglob("*"):
+                    if f.is_file() and f.name not in EXCLUDE_FILES and "__pycache__" not in str(f):
+                        result[f.relative_to(base).as_posix()] = f
+                return result
+
+            local_files = collect_files(local_dir)
+            remote_files = collect_files(remote_dir)
+            all_paths = sorted(set(local_files) | set(remote_files))
+            mod_diff = 0
+
+            for rel in all_paths:
+                in_local = rel in local_files
+                in_remote = rel in remote_files
+                if in_local and in_remote:
+                    c1 = local_files[rel].read_bytes()
+                    c2 = remote_files[rel].read_bytes()
+                    if c1 != c2:
+                        print(f"  [MODIFIED]     {rel}")
+                        mod_diff += 1
+                elif in_local:
+                    print(f"  [LOCAL_ONLY]   {rel}")
+                    mod_diff += 1
+                else:
+                    print(f"  [REMOTE_ONLY]  {rel}")
+                    mod_diff += 1
+
+            if mod_diff == 0:
+                print(f"  [SAME] 本地與遠端完全一致 ({len(all_paths)} 檔)")
+            else:
+                print(f"  --\n  共 {mod_diff} 個差異檔案。")
+                total_diff += mod_diff
+
+        print()
+        if total_diff == 0:
+            print("[SUCCESS] 所有比對模組均與遠端完全一致，無任何差異。")
+        else:
+            print(f"[INFO] 比對完成，共發現 {total_diff} 個差異。")
+        return True
+
 
 # ── CLI 介面與指令分派 (CLI Interface & Dispatcher) ───────────────────────
 
@@ -615,7 +706,11 @@ def format_help_doc() -> str:
      移除已安裝之模組（具備相依安全保護）。
      用法: python yscb_installer.py remove <module> [--force]
 
-  9. help
+  9. diff
+     從遠端拉取最新 cache 後，逐檔比對本地已安裝模組與遠端版本之差異（排除 config.json）。
+     用法: python yscb_installer.py diff [<module> ...]
+
+ 10. help
      顯示本說明文檔或特定子指令詳解。
      用法: python yscb_installer.py help [command]
 ================================================================================
@@ -673,6 +768,10 @@ def main():
     remove_parser = subparsers.add_parser("remove", help="卸載模組")
     remove_parser.add_argument("module", help="欲移除的模組名稱")
     remove_parser.add_argument("--force", action="store_true", help="忽略相依安全警告強制移除")
+
+    # 10. diff
+    diff_parser = subparsers.add_parser("diff", help="比對本地已安裝模組與遠端最新版本差異")
+    diff_parser.add_argument("modules", nargs="*", help="欲比對的模組名稱（預設為全部已安裝模組）")
 
     args, unknown = parser.parse_known_args()
 
@@ -813,6 +912,10 @@ def main():
 
         elif args.subcommand == "remove":
             module_mgr.remove_module(args.module, force=args.force)
+            return 0
+
+        elif args.subcommand == "diff":
+            module_mgr.diff_modules(args.modules)
             return 0
 
     except Exception as e:
