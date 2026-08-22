@@ -21,26 +21,6 @@
 
 ---
 
-### 2. `sync_workflow.py` — YS-Codebase 中央標準庫雙向同步工具 (v1.0)
-
-- **用途**：與遠端中央標準庫 (`ys-codebase`) 進行雙向同步，內建順序版本遷移管線與 `AGENTS.md` 核心區塊混合同步。
-- **命令列語法**：
-  ```bash
-  # 檢查狀態
-  python .agents/scripts/sync_workflow.py status
-
-  # 比對差異
-  python .agents/scripts/sync_workflow.py diff
-
-  # 拉取最新標準庫 (自動遷移舊版配置與同步核心規則)
-  python .agents/scripts/sync_workflow.py pull
-
-  # 推送本地通用修改回中央庫
-  python .agents/scripts/sync_workflow.py push -m "Commit message"
-  ```
-
----
-
 ### 3. `archive_plan.py` — Dev Plan 安全歸檔工具
 
 - **用途**：將已完成的 Dev Plan 目錄安全搬移至 `.agents/dev_plans/history/YYYY/MM/`，並自動清理暫時性 `handoff.md`。

@@ -18,6 +18,17 @@ def main():
     mode = sys.argv[2] if len(sys.argv) > 2 else "build"
 
     print(f"[HOOK:agents-workflow] 正在卸載模組 (模式: {mode}, 目標: {target_dir.name})，清理工作流相關配置。")
+
+    # 清理 sync_workflow.py 時代遺留的舊設定檔
+    project_root = target_dir.parent.parent
+    legacy_cfg = project_root / ".agents" / ".workflow_config.json"
+    if legacy_cfg.is_file():
+        try:
+            legacy_cfg.unlink()
+            print(f"  • [CLEANUP] 已移除舊版 sync_workflow 設定檔: {legacy_cfg}")
+        except Exception as e:
+            print(f"  • [WARN] 清理舊版設定檔失敗: {e}")
+
     return 0
 
 if __name__ == "__main__":
