@@ -4,7 +4,8 @@
     "plans_dir": "!undefined",
     "archive_dir": "!undefined",
     "docs_dir": "!undefined",
-    "extensions_dir": "!undefined"
+    "extensions_dir": "!undefined",
+    "agents_md_path": "!undefined"
   },
   "custom_project_settings": {}
 }

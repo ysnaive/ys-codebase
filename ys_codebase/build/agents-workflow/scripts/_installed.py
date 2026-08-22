@@ -36,12 +36,38 @@ def main():
         except Exception:
             pass
 
-    # 2. 終端引導提示
+    # 2. 自動執行 AGENTS.md 軟合併同步（若已存在設定且非 !undefined）
+    try:
+        scripts_dir = dest_path / "scripts"
+        if scripts_dir.is_dir() and str(scripts_dir) not in sys.path:
+            sys.path.insert(0, str(scripts_dir))
+        from config_utils import sync_agents_md
+        sync_agents_md(dest_path)
+    except Exception:
+        pass
+
+    # 3. 自動更新 IDE 工作流指令（若先前已啟用生成且 config.local.json 有記錄）
+    try:
+        local_cfg_file = dest_path / "config.local.json"
+        if local_cfg_file.is_file():
+            import json
+            l_data = json.loads(local_cfg_file.read_text(encoding="utf-8"))
+            antigravity_cfg = l_data.get("ide_integrations", {}).get("antigravity")
+            if antigravity_cfg:
+                prefix = antigravity_cfg.get("prefix", "")
+                postfix = antigravity_cfg.get("postfix", "")
+                from cli import generate_antigravity_ide_commands
+                print("[HOOK:agents-workflow] 偵測到既有 Antigravity IDE 整合設定，自動同步最新全量 SOP 指令...")
+                generate_antigravity_ide_commands(prefix=prefix, postfix=postfix)
+    except Exception:
+        pass
+
+    # 3. 終端引導提示
     print(f"[HOOK:agents-workflow] 模組安裝成功 (模式: {mode}, 目標: {dest_path.name})！")
     print("────────────────────────────────────────────────────────────────────────")
     print("💡 下一步操作建議：")
     print("  1. 初始化專案 SOP 路徑設定 (消除 !undefined)：")
-    print("     • 完整自訂：python yscb_cli.py agents-workflow init --plans-dir plans --archive-dir archive_plans --docs-dir docs --extensions-dir extensions")
+    print("     • 完整自訂：python yscb_cli.py agents-workflow init --plans-dir plans --archive-dir archive_plans --docs-dir docs --extensions-dir extensions --agents-md AGENTS.md")
     print("     • 推薦預設：python yscb_cli.py agents-workflow init --default")
     print(f"     (亦可直接編輯 {dest_path.name}/config.project.json)")
     print("  2. 生成 Antigravity IDE 引用式工作流指令：")

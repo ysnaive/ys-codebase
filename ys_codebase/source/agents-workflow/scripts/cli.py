@@ -36,6 +36,9 @@ from config_utils import (
     get_archive_dir,
     get_docs_dir,
     get_workspace_root,
+    is_undefined_value,
+    sync_agents_md,
+    DEFAULT_AGENTS_MD_PATH,
 )
 
 
@@ -151,6 +154,54 @@ def clear_ide_commands(ide_name: Optional[str] = None) -> int:
     return 0
 
 
+def build_jit_uri_header(target_dir: Path, core_file: Path) -> str:
+    """生成動態 JIT 語意 URI 解析對照表 Markdown 區塊"""
+    proj_root = get_workspace_root(MODULE_DIR)
+    rel_core_link = get_relative_link(target_dir, core_file)
+
+    def _fmt_rel(raw_p: Any) -> str:
+        if is_undefined_value(raw_p) or str(raw_p) == "!undefined":
+            return "`!undefined` (未初始化)"
+        try:
+            p = Path(raw_p)
+            if p.is_absolute():
+                rel = os.path.relpath(p, proj_root).replace("\\", "/")
+                return f"`./{rel}`" if rel != "." else "`./`"
+            return f"`{raw_p}`"
+        except Exception:
+            return f"`{raw_p}`"
+
+    try:
+        from yscb_core import ProjectURI
+        plans_res = _fmt_rel(ProjectURI.resolve("plans://", start_dir=MODULE_DIR))
+        arch_res = _fmt_rel(ProjectURI.resolve("archive://", start_dir=MODULE_DIR))
+        docs_res = _fmt_rel(ProjectURI.resolve("docs://", start_dir=MODULE_DIR))
+        ext_res = _fmt_rel(ProjectURI.resolve("sop_ext://", start_dir=MODULE_DIR))
+        yscb_res = _fmt_rel(ProjectURI.resolve("yscb://", start_dir=MODULE_DIR))
+    except Exception:
+        plans_res = "`./plans`"
+        arch_res = "`./archive_plans`"
+        docs_res = "`./docs`"
+        ext_res = "`./extensions`"
+        yscb_res = "`./`"
+
+    return f"""> [!NOTE]
+> ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[{core_file.name}]({rel_core_link})）：
+> 
+> | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
+> | :--- | :--- | :--- |
+> | **`project://`** | `./` | `[ACTIVE]` |
+> | **`yscb://`** | {yscb_res} | `[ACTIVE]` |
+> | **`plans://`** | {plans_res} | `[ACTIVE]` |
+> | **`archive://`** | {arch_res} | `[ACTIVE]` |
+> | **`docs://`** | {docs_res} | `[ACTIVE]` |
+> | **`sop_ext://`** | {ext_res} | `[ACTIVE]` |
+> 
+> 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
+"""
+
+
 def generate_antigravity_ide_commands(prefix: str = "", postfix: str = "") -> int:
     """為 Antigravity / Gemini IDE 生成引用式指令文件，生成前自動清理舊有指令並更新 config.local.json"""
     # 1. 檢查並自動清理先前 antigravity / gemini 生成的指令
@@ -163,7 +214,7 @@ def generate_antigravity_ide_commands(prefix: str = "", postfix: str = "") -> in
         mod_config = load_module_config()
 
     target_dir = locate_antigravity_target_dir()
-    print(f"\n[IDE:Antigravity] 正在生成 Google Antigravity 引用式工作流指令...")
+    print(f"\n[IDE:Antigravity] 正在生成 Google Antigravity 工作流指令 (全量鏡像 + JIT 語意解析注入)...")
     print(f"  • 目標目錄: {target_dir}")
     print(f"  • 前綴 (Prefix): '{prefix}'")
     print(f"  • 後綴 (Postfix): '{postfix}'")
@@ -179,26 +230,43 @@ def generate_antigravity_ide_commands(prefix: str = "", postfix: str = "") -> in
             continue
 
         stem = core_file.stem
-        target_filename = f"{prefix}{stem}{postfix}.md"
+        cmd_name = f"{prefix}{stem}{postfix}"
+        target_filename = f"{cmd_name}.md"
         target_file = target_dir / target_filename
 
+        raw_content = core_file.read_text(encoding="utf-8")
         desc = extract_description(core_file)
-        rel_link = get_relative_link(target_dir, core_file)
 
-        # 產生引用式指令 Markdown 內容 (SSOT)
+        # 提取內文主體並標準化 Frontmatter
+        body = raw_content
+        if body.startswith("---"):
+            parts = body.split("---", 2)
+            if len(parts) >= 3:
+                body = parts[2].lstrip("\r\n")
+
+        # 替換正文內部對其他 workflow 的相對連結
+        for other_wf in core_wf_files:
+            o_stem = Path(other_wf).stem
+            o_target = f"{prefix}{o_stem}{postfix}.md"
+            body = body.replace(f"./workflows/{other_wf}", f"./{o_target}")
+            body = body.replace(f"./{other_wf}", f"./{o_target}")
+            body = body.replace(f"({other_wf})", f"({o_target})")
+
+        jit_header = build_jit_uri_header(target_dir, core_file)
+        clean_desc = desc.replace('"', '\\"')
         content = f"""---
-description: {desc}
+name: "{cmd_name}"
+description: "{clean_desc}"
 ---
 
-# /{prefix}{stem}{postfix} 指令
+{jit_header}
+---
 
-本指令引用 YS-Codebase 核心工作流規範：[{wf_name}]({rel_link})
-
-請 Agent 嚴格遵循上述核心工作流進行操作與各階段推進。
+{body}
 """
         target_file.write_text(content, encoding="utf-8")
         generated_files.append(target_filename)
-        print(f"  [+] 已生成指令: {target_filename} ➔ 引用 {wf_name}")
+        print(f"  [+] 已生成指令: {target_filename} (含 JIT 語意地圖)")
 
     try:
         rel_target_dir = os.path.relpath(target_dir, MODULE_DIR).replace("\\", "/")
@@ -220,6 +288,8 @@ description: {desc}
 
     print("-" * 75)
     print(f"[SUCCESS] Antigravity 工作流指令生成完成！共 {len(generated_files)} 個指令。")
+    print(f"  • 目標目錄: {target_dir}")
+    print(f"  • 提示: 若 IDE Chat UI 尚未出現選單，請使用 Ctrl+Shift+P 執行 'Developer: Reload Window' 或開啟新對話。")
     print(f"  • 設定檔已記錄至: {MODULE_DIR / 'config.local.json'}\n")
     return 0
 
@@ -347,6 +417,7 @@ def init_project_paths(
     archive_dir: Optional[str] = None,
     docs_dir: Optional[str] = None,
     extensions_dir: Optional[str] = None,
+    agents_md_path: Optional[str] = None,
     is_default: bool = False
 ) -> int:
     """初始化 agents-workflow 之專案路徑設定 (config.project.json)"""
@@ -359,20 +430,23 @@ def init_project_paths(
         proj_cfg["paths"]["archive_dir"] = archive_dir or "archive_plans"
         proj_cfg["paths"]["docs_dir"] = docs_dir or "docs"
         proj_cfg["paths"]["extensions_dir"] = extensions_dir or "extensions"
+        proj_cfg["paths"]["agents_md_path"] = agents_md_path or DEFAULT_AGENTS_MD_PATH
     else:
         if plans_dir: proj_cfg["paths"]["plans_dir"] = plans_dir
         if archive_dir: proj_cfg["paths"]["archive_dir"] = archive_dir
         if docs_dir: proj_cfg["paths"]["docs_dir"] = docs_dir
         if extensions_dir: proj_cfg["paths"]["extensions_dir"] = extensions_dir
+        if agents_md_path: proj_cfg["paths"]["agents_md_path"] = agents_md_path
 
     # 檢查是否仍有 !undefined
     p_val = proj_cfg["paths"].get("plans_dir", "!undefined")
     a_val = proj_cfg["paths"].get("archive_dir", "!undefined")
     d_val = proj_cfg["paths"].get("docs_dir", "!undefined")
     e_val = proj_cfg["paths"].get("extensions_dir", "!undefined")
+    ag_val = proj_cfg["paths"].get("agents_md_path", "!undefined")
 
-    if not is_default and (p_val == "!undefined" and a_val == "!undefined" and d_val == "!undefined" and e_val == "!undefined"):
-        print("[ERROR] 未指定任何有效路徑參數。請使用 --default 或指定 --plans-dir, --archive-dir, --docs-dir, --extensions-dir。")
+    if not is_default and (p_val == "!undefined" and a_val == "!undefined" and d_val == "!undefined" and e_val == "!undefined" and ag_val == "!undefined"):
+        print("[ERROR] 未指定任何有效路徑參數。請使用 --default 或指定 --plans-dir, --archive-dir, --docs-dir, --extensions-dir, --agents-md。")
         return 1
 
     save_project_config(proj_cfg, MODULE_DIR)
@@ -382,6 +456,13 @@ def init_project_paths(
     print(f"  • archive_dir     : {proj_cfg['paths'].get('archive_dir')}")
     print(f"  • docs_dir        : {proj_cfg['paths'].get('docs_dir')}")
     print(f"  • extensions_dir  : {proj_cfg['paths'].get('extensions_dir')}")
+    print(f"  • agents_md_path  : {proj_cfg['paths'].get('agents_md_path')}")
+
+    # 觸發 AGENTS.md 軟合併有效加載
+    target_agents_md = proj_cfg["paths"].get("agents_md_path")
+    if target_agents_md and not is_undefined_value(target_agents_md):
+        sync_agents_md(MODULE_DIR, target_agents_md)
+
     return 0
 
 
@@ -427,7 +508,8 @@ def main() -> int:
     init_p.add_argument("--archive-dir", help="指定歷史計畫歸檔目錄路徑 (相對於專案根目錄)")
     init_p.add_argument("--docs-dir", help="指定專案知識庫目錄路徑 (相對於專案根目錄)")
     init_p.add_argument("--extensions-dir", "--ext-dir", help="指定專案特化擴充清單目錄路徑 (相對於專案根目錄)")
-    init_p.add_argument("--default", action="store_true", help="使用推薦預設值快速初始化 (plans, archive_plans, docs, extensions)")
+    init_p.add_argument("--agents-md", "--agents-md-path", help="指定 AGENTS.md 行為準則檔案路徑 (相對於專案根目錄)")
+    init_p.add_argument("--default", action="store_true", help="使用推薦預設值快速初始化 (plans, archive_plans, docs, extensions, AGENTS.md)")
 
     # 0.1 ext
     ext_p = subparsers.add_parser("ext", help="查詢與檢視專案可用之 SOP Extension 擴充清單")
@@ -489,7 +571,7 @@ def main() -> int:
         return 0
 
     if args.subcommand == "init":
-        return init_project_paths(args.plans_dir, args.archive_dir, args.docs_dir, args.extensions_dir, args.default)
+        return init_project_paths(args.plans_dir, args.archive_dir, args.docs_dir, args.extensions_dir, args.agents_md, args.default)
 
     elif args.subcommand == "ext":
         return handle_ext_command(args)

@@ -692,8 +692,72 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
         self.assertNotEqual(res_audit_broken.returncode, 0)
         self.assertIn("Broken Link", res_audit_broken.stdout)
 
+    def test_23_agents_md_soft_merge_three_states(self):
+        """測試 AGENTS.md 軟合併三態處理 (無檔案新建、具備標記局部更新、無標記警告不覆寫)"""
+        import shutil
+
+        self.config_mgr.create_default()
+
+        mod_dir = self.test_dir / "modules" / "agents-workflow"
+        (mod_dir / "scripts").mkdir(parents=True, exist_ok=True)
+        (mod_dir / "workflows" / "templates").mkdir(parents=True, exist_ok=True)
+
+        src_scripts = PROJECT_ROOT / "source" / "agents-workflow" / "scripts"
+        if not src_scripts.exists():
+            src_scripts = YS_CODEBASE_ROOT / "source" / "agents-workflow" / "scripts"
+        for sf in src_scripts.glob("*.py"):
+            shutil.copy2(sf, mod_dir / "scripts" / sf.name)
+
+        tpl_src = PROJECT_ROOT / "source" / "agents-workflow" / "workflows" / "templates" / "AGENTS.template.md"
+        if not tpl_src.exists():
+            tpl_src = YS_CODEBASE_ROOT / "source" / "agents-workflow" / "workflows" / "templates" / "AGENTS.template.md"
+        shutil.copy2(tpl_src, mod_dir / "workflows" / "templates" / "AGENTS.template.md")
+
+        if str(mod_dir / "scripts") not in sys.path:
+            sys.path.insert(0, str(mod_dir / "scripts"))
+
+        from config_utils import sync_agents_md, AGENTS_BEGIN_MARKER, AGENTS_END_MARKER
+
+        os.environ["YSCB_PROJECT_ROOT"] = str(self.test_dir)
+        try:
+            target_agents = self.test_dir / "AGENTS.md"
+
+            # 狀態 1：無檔案 ➔ 建立新檔案
+            self.assertFalse(target_agents.exists())
+            ret1 = sync_agents_md(mod_dir, target_path_override="AGENTS.md")
+            self.assertTrue(ret1)
+            self.assertTrue(target_agents.is_file())
+            content1 = target_agents.read_text(encoding="utf-8")
+            self.assertIn(AGENTS_BEGIN_MARKER, content1)
+            self.assertIn(AGENTS_END_MARKER, content1)
+
+            # 狀態 2：具備標記 ➔ 局部替換，保留自訂前後綴
+            custom_prefix = "# My Custom Project Header\n\n"
+            custom_suffix = "\n\n## Custom Rules\n- Rule A\n- Rule B\n"
+            target_agents.write_text(f"{custom_prefix}{AGENTS_BEGIN_MARKER}\nOld Content\n{AGENTS_END_MARKER}{custom_suffix}", encoding="utf-8")
+
+            ret2 = sync_agents_md(mod_dir, target_path_override="AGENTS.md")
+            self.assertTrue(ret2)
+            content2 = target_agents.read_text(encoding="utf-8")
+            self.assertTrue(content2.startswith(custom_prefix))
+            self.assertTrue(content2.endswith(custom_suffix))
+            self.assertNotIn("Old Content", content2)
+            self.assertIn("零臆測 (Zero Speculation)", content2)
+
+            # 狀態 3：不具備標記 ➔ 輸出警告，不覆寫
+            user_manual_content = "# Pure Manual Document Without Markers\nDo not touch!"
+            target_agents.write_text(user_manual_content, encoding="utf-8")
+
+            ret3 = sync_agents_md(mod_dir, target_path_override="AGENTS.md")
+            self.assertFalse(ret3)
+            self.assertEqual(target_agents.read_text(encoding="utf-8"), user_manual_content)
+        finally:
+            if "YSCB_PROJECT_ROOT" in os.environ:
+                del os.environ["YSCB_PROJECT_ROOT"]
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

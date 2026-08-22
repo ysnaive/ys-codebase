@@ -122,10 +122,23 @@ class ProjectContext:
 
     @classmethod
     def resolve(cls, rel_path: Union[str, Path], base_dir: Optional[Union[str, Path]] = None) -> Path:
-        """將相對於專案根目錄的路徑字串解析為標準絕對 Path"""
+        """將相對於專案根目錄的路徑字串或語意 URI (project://, yscb://, docs:// 等) 解析為標準絕對 Path"""
         if cls.is_undefined(rel_path):
             raise ValueError(f"指定路徑尚未初始化 (!undefined 或空值)：{rel_path}")
-        p = Path(rel_path)
+        s = str(rel_path).strip()
+        if "://" in s:
+            try:
+                from .uri import ProjectURI
+            except (ImportError, ValueError):
+                from uri import ProjectURI
+            res = ProjectURI.resolve(s, start_dir=base_dir)
+            if isinstance(res, Path):
+                return res
+            if cls.is_undefined(res):
+                raise ValueError(f"無法解析語意 URI ({rel_path})：目標尚未初始化 (!undefined)")
+            return Path(str(res)).resolve()
+
+        p = Path(s)
         if p.is_absolute():
             return p
         base = Path(base_dir).resolve() if base_dir else cls.get_project_root()

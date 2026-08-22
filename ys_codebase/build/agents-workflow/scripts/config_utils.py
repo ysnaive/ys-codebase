@@ -44,6 +44,10 @@ DEFAULT_PLANS_DIR = "plans"
 DEFAULT_ARCHIVE_DIR = "archive_plans"
 DEFAULT_DOCS_DIR = "docs"
 DEFAULT_EXTENSIONS_DIR = "extensions"
+DEFAULT_AGENTS_MD_PATH = "AGENTS.md"
+
+AGENTS_BEGIN_MARKER = "<!-- YSCB_AGENTS_BEGIN -->"
+AGENTS_END_MARKER = "<!-- YSCB_AGENTS_END -->"
 
 
 def is_undefined_value(val: Any) -> bool:
@@ -248,4 +252,90 @@ def get_extensions_dir(module_dir: Optional[Path] = None) -> Path:
     if fallback.is_dir():
         return fallback
     raise RuntimeError("[ERROR] 模組 'agents-workflow' 尚未初始化 paths.extensions_dir (!undefined)！")
+
+
+def get_agents_md_path(module_dir: Optional[Path] = None) -> Optional[Path]:
+    """取得 agents_md_path 路徑 (若為 !undefined 或未設定則回傳 None)"""
+    m_dir = get_module_dir(module_dir)
+    if ConfigManager and ProjectContext:
+        full_cfg = ConfigManager.load("agents-workflow", m_dir)
+        raw_path = _extract_path_setting(full_cfg, "agents_md_path", "!undefined")
+        if not is_undefined_value(raw_path):
+            proj_root = ProjectContext.get_project_root(m_dir)
+            return ProjectContext.resolve(raw_path, base_dir=proj_root)
+        return None
+
+    proj_root = get_workspace_root(m_dir)
+    p_cfg = load_project_config(m_dir)
+    raw_path = _extract_path_setting(p_cfg, "agents_md_path", "!undefined")
+    if not is_undefined_value(raw_path):
+        p = Path(raw_path)
+        return p if p.is_absolute() else (proj_root / p).resolve()
+    return None
+
+
+def sync_agents_md(module_dir: Optional[Path] = None, target_path_override: Optional[str] = None) -> bool:
+    """
+    執行 AGENTS.md 軟合併同步 (Soft-Merge)：
+    - 若無檔案：使用 AGENTS.template.md 建立新檔案
+    - 若檔案具備 <!-- YSCB_AGENTS_BEGIN --> ~ <!-- YSCB_AGENTS_END -->：僅更新該區塊，保留外部自訂內容
+    - 若檔案存在但不具備標記：輸出提示/警告，不進行覆寫
+    """
+    m_dir = get_module_dir(module_dir)
+    proj_root = get_workspace_root(m_dir)
+    
+    if target_path_override:
+        if is_undefined_value(target_path_override):
+            return False
+        if ProjectContext:
+            target_file = ProjectContext.resolve(target_path_override, base_dir=proj_root)
+        else:
+            s = str(target_path_override).strip()
+            if s.startswith("project://"):
+                s = s[len("project://"):].lstrip("/\\")
+            p = Path(s)
+            target_file = p if p.is_absolute() else (proj_root / p).resolve()
+    else:
+        target_file = get_agents_md_path(m_dir)
+        if not target_file:
+            return False
+
+    template_file = m_dir / "workflows" / "templates" / "AGENTS.template.md"
+    if not template_file.is_file():
+        print(f"[WARN] 找不到行為準則範本檔: {template_file}", file=sys.stderr)
+        return False
+
+    tpl_content = template_file.read_text(encoding="utf-8")
+
+    # 擷取模板核心區塊
+    if AGENTS_BEGIN_MARKER in tpl_content and AGENTS_END_MARKER in tpl_content:
+        begin_idx = tpl_content.find(AGENTS_BEGIN_MARKER)
+        end_idx = tpl_content.find(AGENTS_END_MARKER) + len(AGENTS_END_MARKER)
+        tpl_block = tpl_content[begin_idx:end_idx]
+    else:
+        tpl_block = f"{AGENTS_BEGIN_MARKER}\n{tpl_content}\n{AGENTS_END_MARKER}"
+
+    # 狀態 1：目標檔案不存在 ➔ 直接建立新檔案
+    if not target_file.exists():
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file.write_text(tpl_content, encoding="utf-8")
+        print(f"[SUCCESS] 已依範本建立 AGENTS 行為準則文件 ➔ {target_file}")
+        return True
+
+    # 讀取既有目標檔案
+    existing_content = target_file.read_text(encoding="utf-8")
+
+    # 狀態 2：具備軟合併標記 ➔ 進行區塊替換
+    if AGENTS_BEGIN_MARKER in existing_content and AGENTS_END_MARKER in existing_content:
+        b_idx = existing_content.find(AGENTS_BEGIN_MARKER)
+        e_idx = existing_content.find(AGENTS_END_MARKER) + len(AGENTS_END_MARKER)
+        new_content = existing_content[:b_idx] + tpl_block + existing_content[e_idx:]
+        target_file.write_text(new_content, encoding="utf-8")
+        print(f"[SUCCESS] 已完成 AGENTS 行為準則核心區塊軟合併更新 ➔ {target_file}")
+        return True
+
+    # 狀態 3：檔案已存在但不具備標記 ➔ 提示開發者，不覆寫
+    print(f"[WARN] 目標檔案已存在 ({target_file}) 但未包含 '{AGENTS_BEGIN_MARKER}' 軟合併標記，跳過自動覆寫。請手動於檔案中加入標記以啟用自動同步。")
+    return False
+
 
