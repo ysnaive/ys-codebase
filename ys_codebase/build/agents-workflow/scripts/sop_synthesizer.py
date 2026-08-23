@@ -58,16 +58,21 @@ class SOPSynthesizer:
             if not injected_text:
                 continue
 
-            slot_marker = f"<!-- YSCB_SLOT:{target_slot} -->"
+            # 與 SLOT_PATTERN 一致的容錯正則匹配 (允許 <!--YSCB_SLOT:x--> 等空白變體)，
+            # 避免「extract_slots 認得、synthesize 卻匹配不到」的靜默錯置
+            slot_re = re.compile(r'<!--\s*YSCB_SLOT:' + re.escape(str(target_slot)) + r'\s*-->')
+            slot_match = slot_re.search(result)
 
-            if slot_marker in result:
+            if slot_match:
+                slot_marker = slot_match.group(0)
                 if position == "prepend":
                     replacement = f"\n\n{injected_text}\n\n{slot_marker}"
                 else:  # append (default)
                     replacement = f"{slot_marker}\n\n{injected_text}\n"
-                result = result.replace(slot_marker, replacement, 1)
+                result = result[:slot_match.start()] + replacement + result[slot_match.end():]
             else:
-                # 找不到對應插槽時，優雅降級附加至檔案末尾 (ET-01)
+                # 找不到對應插槽時，優雅降級附加至檔案末尾 (ET-01)，並明確提示貢獻方
+                print(f"[WARN] SOP Slot '{target_slot}' 不存在於目標模板中，注入內容已降級附加至檔案末尾。")
                 result = result.rstrip() + f"\n\n{injected_text}\n"
 
         return result

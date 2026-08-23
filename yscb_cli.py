@@ -92,7 +92,7 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
 
     result["installer"] = {
         "name": "installer",
-        "description": "YS-Codebase 核心安裝管理工具 (init, install, pull, build, push, status, list, remove, diff)",
+        "description": "YS-Codebase 核心安裝管理工具 (init, install, pull/update, build, push, status, list, remove/uninstall, diff, rollback, self-update)",
         "cli_path": installer_path if installer_path.exists() else None,
         "is_builtin": True
     }
@@ -485,6 +485,7 @@ def handle_version_command(root_dir: Path, config: Dict[str, Any], args: List[st
         print("=" * 90)
         print(f"  {'項目名稱 (Component)':<22} | {'當前安裝':<10} | {'最新可用':<10} | {'變更等級':<10} | {'升級指引 / Migration'}")
         print("  " + "-" * 86)
+        installer_update_available = False
         update_count = 0
 
         # 0. 檢查 Installer 起手腳本更新
@@ -494,12 +495,11 @@ def handle_version_command(root_dir: Path, config: Dict[str, Any], args: List[st
             i_ver = SemVer(inst_boot_v_str)
             s_ver = SemVer(src_boot_v_str)
             if s_ver > i_ver:
-                update_count += 1
+                installer_update_available = True
                 b_level = "PATCH" if s_ver.major == i_ver.major and s_ver.minor == i_ver.minor else ("MINOR" if s_ver.major == i_ver.major else "MAJOR")
                 print(f"  {'installer (CLI)':<22} | v{inst_boot_v_str:<9} | v{src_boot_v_str:<9} | {b_level:<10} | 💡 執行 'python yscb_cli.py installer self-update' 即可更新")
 
         print("  " + "-" * 86)
-        update_count = 0
 
         for mod in sorted_modules:
             inst_v_str = installed_dict.get(mod, {}).get("version")
@@ -540,10 +540,14 @@ def handle_version_command(root_dir: Path, config: Dict[str, Any], args: List[st
                 print(f"  {mod:<20} | v{inst_v_str:<11} | v{latest_v_str:<11} | {level:<10} | {mig_needed}")
 
         print("=" * 90)
-        if update_count == 0:
-            print("  ✨ 所有已安裝模組皆為最新版本，無待更新項目。\n")
+        if update_count == 0 and not installer_update_available:
+            print("  ✨ 所有已安裝模組與起手腳本皆為最新版本，無待更新項目。\n")
         else:
-            print(f"  💡 發現 {update_count} 個模組可升級。執行 'python yscb_cli.py installer install <module> --force' 即可安全升級。\n")
+            if update_count > 0:
+                print(f"  💡 發現 {update_count} 個模組可升級。執行 'python yscb_cli.py installer install <module> --force' 即可安全升級。")
+            if installer_update_available:
+                print("  💡 起手腳本 (installer) 有新版本。執行 'python yscb_cli.py installer self-update' 即可更新。")
+            print()
         return 0
 
     elif subcmd == "bump":

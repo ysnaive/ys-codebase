@@ -10,15 +10,15 @@
   },
   "installed_modules": {
     "core": {
-      "version": "2.1.0",
+      "version": "2.2.0",
       "mode": "build",
-      "installed_at": "2026-08-23T13:30:28",
+      "installed_at": "2026-08-23T14:11:34",
       "description": "YS-Codebase 核心運行期 SDK (Core Runtime SDK: ProjectContext, ConfigManager, Console, SemVer, MigrationRunner)"
     },
     "agents-workflow": {
-      "version": "1.0.1",
+      "version": "1.1.0",
       "mode": "build",
-      "installed_at": "2026-08-23T13:30:28",
+      "installed_at": "2026-08-23T14:11:35",
       "description": "AI Agent 開發標準作業流程 (SOP)、三大分流管控 (FT/Full/Umbrella)、規格書模板與定式輔助工具"
     }
   },

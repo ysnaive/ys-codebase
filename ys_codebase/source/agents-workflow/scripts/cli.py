@@ -109,37 +109,62 @@ def get_relative_link(from_dir: Path, to_file: Path) -> str:
         return str(to_file).replace("\\", "/")
 
 
-def locate_antigravity_target_dir() -> Path:
-    """定位專案的 Antigravity / Gemini 工作流目錄 (.agents/workflows/)"""
+# ── IDE Adapter 註冊表 (開放式擴充點) ────────────────────────────────────
+# 新增 IDE 支援時，僅需在此表新增一筆 adapter 定義 (target_subdir 為相對專案根目錄之路徑段)，
+# 生成、快取追蹤 (per-adapter manifest)、孤兒清理與 config.local.json 紀錄均自動套用。
+IDE_ADAPTERS: Dict[str, Dict[str, Any]] = {
+    "antigravity": {
+        "aliases": ["gemini"],
+        "target_subdir": (".agents", "workflows"),
+        "display_name": "Google Antigravity / Gemini",
+    },
+}
+
+
+def locate_ide_target_dir(adapter: str = "antigravity") -> Path:
+    """定位指定 IDE Adapter 的工作流指令目標目錄"""
     proj_root = get_workspace_root(MODULE_DIR)
-    
-    if proj_root.name == ".agents":
-        target = proj_root / "workflows"
+    subdir = IDE_ADAPTERS.get(adapter, IDE_ADAPTERS["antigravity"])["target_subdir"]
+
+    # 若專案根目錄本身即為目標子目錄首段 (例如根目錄名為 .agents)，避免重複疊加
+    if proj_root.name == subdir[0]:
+        target = proj_root.joinpath(*subdir[1:]) if len(subdir) > 1 else proj_root
     else:
-        target = proj_root / ".agents" / "workflows"
+        target = proj_root.joinpath(*subdir)
 
     target.mkdir(parents=True, exist_ok=True)
     return target
 
 
+def locate_antigravity_target_dir() -> Path:
+    """[相容別名] 定位專案的 Antigravity / Gemini 工作流目錄 (.agents/workflows/)"""
+    return locate_ide_target_dir("antigravity")
+
+
 def clear_ide_commands(ide_name: Optional[str] = None) -> int:
-    """清理已生成的 IDE 引用式指令檔案，並同步更新 config.local.json 與 IDECacheTracker"""
+    """清理已生成的 IDE 引用式指令檔案，並同步更新 config.local.json 與各 Adapter 之 IDECacheTracker"""
     proj_root = get_workspace_root(MODULE_DIR)
-    tracker = IDECacheTracker(proj_root)
-    cleaned_files = tracker.clean_orphans([])
-    
+
     mod_config = load_module_config()
     integrations = mod_config.get("ide_integrations", {})
 
     target_ides = [ide_name] if (ide_name and ide_name in integrations) else list(integrations.keys())
+    if not target_ides:
+        # 未有任何紀錄時，仍嘗試清理預設 adapter 與舊版全域 manifest 的殘留追蹤
+        target_ides = list(IDE_ADAPTERS.keys())
+
+    total_cleaned = 0
     for current_ide in list(target_ides):
+        tracker = IDECacheTracker(proj_root, adapter=current_ide)
+        cleaned_files = tracker.clean_orphans([])
+        total_cleaned += len(cleaned_files)
+        tracker.save_manifest([])
         if current_ide in integrations:
             del integrations[current_ide]
 
     mod_config["ide_integrations"] = integrations
     save_module_config(mod_config)
-    tracker.save_manifest([])
-    print(f"[SUCCESS] IDE 指令清理作業完成，共移除 {len(cleaned_files)} 個檔案。")
+    print(f"[SUCCESS] IDE 指令清理作業完成，共移除 {total_cleaned} 個檔案。")
     return 0
 
 
@@ -191,26 +216,12 @@ def build_jit_uri_header(target_dir: Path, core_file: Path) -> str:
 """
 
 
-def generate_antigravity_ide_commands(prefix: str = "", postfix: str = "") -> int:
-    """為 Antigravity / Gemini IDE 生成指令文件，整合連動合成與 IDECacheTracker 孤兒檔案清理"""
-    # 0. 先執行 workflows/ 連動動態合成
-    try:
-        from _on_modules_changed import synthesize_all_workflows
-        synthesize_all_workflows()
-    except Exception as e:
-        print(f"[WARN] 動態連動合成失敗: {e}")
+def _collect_sop_patches() -> Dict[str, list]:
+    """
+    收集所有模組貢獻之 sop_patches，依 target_sop 分組。
 
-    proj_root = get_workspace_root(MODULE_DIR)
-    tracker = IDECacheTracker(proj_root)
-    target_dir = locate_antigravity_target_dir()
-
-    print(f"\n[IDE:Antigravity] 正在生成 Google Antigravity 工作流指令 (全量鏡像 + JIT 語意解析注入)...")
-    print(f"  • 目標目錄: {target_dir}")
-    print(f"  • 前綴 (Prefix): '{prefix}'")
-    print(f"  • 後綴 (Postfix): '{postfix}'")
-    print("-" * 75)
-
-    # 收集跨模組 patches
+    疊加順序具決定性：先依 (priority, 模組名稱) 穩定排序，priority 未宣告時預設 100，數值越小越先注入。
+    """
     contributions = ProjectContext.get_contributions("agents-workflow", start_dir=MODULE_DIR)
     all_patches_by_sop: Dict[str, list] = {}
     for mod_name, mod_dir, payload in contributions:
@@ -220,7 +231,42 @@ def generate_antigravity_ide_commands(prefix: str = "", postfix: str = "") -> in
                     ts = patch["target_sop"]
                     if ts not in all_patches_by_sop:
                         all_patches_by_sop[ts] = []
-                    all_patches_by_sop[ts].append((patch, mod_dir))
+                    all_patches_by_sop[ts].append((patch, mod_dir, mod_name))
+
+    def _patch_sort_key(entry):
+        patch_dict, _mod_root, mod_name = entry
+        priority = patch_dict.get("priority", 100)
+        if not isinstance(priority, (int, float)):
+            priority = 100
+        return (priority, mod_name)
+
+    for ts in all_patches_by_sop:
+        all_patches_by_sop[ts].sort(key=_patch_sort_key)
+    return all_patches_by_sop
+
+
+def generate_ide_commands(adapter: str = "antigravity", prefix: str = "", postfix: str = "") -> int:
+    """為指定 IDE Adapter 生成指令文件，整合連動合成與 per-adapter IDECacheTracker 孤兒檔案清理"""
+    # 0. 先執行 workflows/ 連動動態合成
+    try:
+        from _on_modules_changed import synthesize_all_workflows
+        synthesize_all_workflows()
+    except Exception as e:
+        print(f"[WARN] 動態連動合成失敗: {e}")
+
+    adapter_info = IDE_ADAPTERS.get(adapter, IDE_ADAPTERS["antigravity"])
+    proj_root = get_workspace_root(MODULE_DIR)
+    tracker = IDECacheTracker(proj_root, adapter=adapter)
+    target_dir = locate_ide_target_dir(adapter)
+
+    print(f"\n[IDE:{adapter}] 正在生成 {adapter_info.get('display_name', adapter)} 工作流指令 (全量鏡像 + JIT 語意解析注入)...")
+    print(f"  • 目標目錄: {target_dir}")
+    print(f"  • 前綴 (Prefix): '{prefix}'")
+    print(f"  • 後綴 (Postfix): '{postfix}'")
+    print("-" * 75)
+
+    # 收集跨模組 patches (含 priority 決定性排序)
+    all_patches_by_sop = _collect_sop_patches()
 
     generated_files: List[Path] = []
     core_wf_files = get_core_workflow_files()
@@ -249,8 +295,8 @@ def generate_antigravity_ide_commands(prefix: str = "", postfix: str = "") -> in
             if len(parts) >= 3:
                 body = parts[2].lstrip("\r\n")
 
-        # 執行 Slot 補丁動態注入
-        for patch_dict, mod_root in all_patches_by_sop.get(wf_name, []):
+        # 執行 Slot 補丁動態注入 (依 priority 決定性順序)
+        for patch_dict, mod_root, _mod_name in all_patches_by_sop.get(wf_name, []):
             body = SOPSynthesizer.synthesize_sop(body, [patch_dict], mod_root)
 
         for other_wf in core_wf_files:
@@ -286,7 +332,7 @@ description: {desc}
     mod_config = load_module_config()
     if "ide_integrations" not in mod_config:
         mod_config["ide_integrations"] = {}
-    mod_config["ide_integrations"]["antigravity"] = {
+    mod_config["ide_integrations"][adapter] = {
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "target_dir": str(target_dir.relative_to(proj_root)).replace("\\", "/"),
         "absolute_target_dir": str(target_dir).replace("\\", "/"),
@@ -295,8 +341,13 @@ description: {desc}
     save_module_config(mod_config)
 
     print("-" * 75)
-    print(f"[SUCCESS] Antigravity 工作流指令生成完成！共寫入 {len(generated_files)} 個指令，清理 {len(deleted_orphans)} 個孤兒檔案。")
+    print(f"[SUCCESS] {adapter_info.get('display_name', adapter)} 工作流指令生成完成！共寫入 {len(generated_files)} 個指令，清理 {len(deleted_orphans)} 個孤兒檔案。")
     return 0
+
+
+def generate_antigravity_ide_commands(prefix: str = "", postfix: str = "") -> int:
+    """[相容別名] 為 Antigravity / Gemini IDE 生成指令文件"""
+    return generate_ide_commands("antigravity", prefix=prefix, postfix=postfix)
 
 
 # 相容別名
