@@ -12,7 +12,7 @@
 | 日期時間 | 類型 | 摘要 |
 |---------|------|------|
 | [YYYY-MM-DD HH:MM] | `PHASE` | Phase N → Phase N+1：[Checkpoint 通過] |
-| [YYYY-MM-DD HH:MM] | `DECISION` | [DR-XX] [決策結論一句話摘要] |
+| [YYYY-MM-DD HH:MM] | `DECISION` | [{Phase}:DR-XX] [決策結論一句話摘要] |
 | [YYYY-MM-DD HH:MM] | `DEVIATION` | [等級] [偏差內容摘要] |
 | [YYYY-MM-DD HH:MM] | `SUB-PLAN` | 新增子計畫：sub_XX_[名稱] |
 | [YYYY-MM-DD HH:MM] | `SUB-DONE` | 子計畫完成：sub_XX_[名稱] |

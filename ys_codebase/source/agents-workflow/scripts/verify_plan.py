@@ -41,7 +41,7 @@ except ImportError:
 
 
 def parse_extensions(module_dir: Path, workspace_root: Optional[Path] = None) -> list:
-    """透過 ExtensionRegistry 掃描所有可用 Extension"""
+    """透過 ExtensionRegistry 掃描所有可用 Extension（含各自宣告之 phase 適用範圍 Token 集合）"""
     registry = ExtensionRegistry.discover_all(ProjectContext)
     extensions = []
     for name, info in sorted(registry.items()):
@@ -49,7 +49,7 @@ def parse_extensions(module_dir: Path, workspace_root: Optional[Path] = None) ->
         extensions.append({
             "file": doc_p.name if doc_p else f"{name}.md",
             "name": name,
-            "phase": "All",
+            "phase": info.get("phase") or {"ALL"},
             "trigger": info.get("trigger", "on_demand"),
             "title": name,
             "script_path": info.get("script_path"),
@@ -57,6 +57,18 @@ def parse_extensions(module_dir: Path, workspace_root: Optional[Path] = None) ->
             "module_name": info.get("module_name"),
         })
     return extensions
+
+
+def compute_phase_code(file_name: str) -> str:
+    """
+    依 Dev Plan 產出物檔名推導標準 Phase Token，供比對 Extension manifest/frontmatter 宣告之 phase 欄位。
+    例：P01_requirements_spec.md -> "P01"；FT_plan.md -> "FT_PLAN"（不可用單純 stem.split("_")[0] 取得，
+    否則會誤判為 "FT" 而永遠無法比對到 dogfooding_pipeline_ext.md 等宣告的 "FT_plan" Token）。
+    """
+    stem = Path(file_name).stem
+    if stem == "FT_plan":
+        return "FT_PLAN"
+    return stem.split("_")[0].upper()
 
 
 def parse_plan_header(lines: list) -> dict:
@@ -112,8 +124,11 @@ def verify_single_file(file_path: Path, all_exts: list) -> list:
             issues.append({"level": "WARN", "msg": f"{file_path.name} 建議包含 [專案擴充特化判定矩陣 (Extension Specialization Matrix)] 評估表格"})
 
     # 3. 檢查必跑 Extension (trigger: always)
-    phase_code = file_path.stem.split("_")[0].upper() # 例如 P01, P02...
-    matching_always_exts = [e for e in all_exts if e["phase"].upper() == phase_code and e["trigger"] == "always"]
+    phase_code = compute_phase_code(file_path.name)  # 例如 P01, P02..., FT_PLAN
+    matching_always_exts = [
+        e for e in all_exts
+        if e["trigger"] == "always" and ("ALL" in e["phase"] or phase_code in e["phase"])
+    ]
 
     declared_exts_text = ""
     for k in ["擴充項目", "active ext", "active ext."]:
