@@ -67,8 +67,8 @@ class TestHardening(unittest.TestCase):
 
     # ── HT-01: build_module 於快取來源情境的 dest_path 回退 ──────────
     def test_ht_01_build_from_cache_only_source(self):
-        """僅 .yscb_cache/source 有源碼 (典型下游專案) 時，build 應回退輸出至本地 build/ 而非崩潰"""
-        cache_src = self.test_dir / ".yscb_cache" / "source" / "cache_mod"
+        """僅 .yscb_cache/mirror/source 有源碼 (典型下游專案) 時，build 應回退輸出至本地 build/ 而非崩潰"""
+        cache_src = self.test_dir / ".yscb_cache" / "mirror" / "source" / "cache_mod"
         self._write_manifest(cache_src, "cache_mod")
         (cache_src / "payload.txt").write_text("payload", encoding="utf-8")
 
