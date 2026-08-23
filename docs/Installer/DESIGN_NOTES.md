@@ -41,3 +41,31 @@ last_updated: "2026-08-22"
 
 - **最佳實踐建議**：
   在 Git 交互時建議確保 `core.longpaths=true`，並於 `yscb_installer.py` 處理遞迴目錄清理時使用 `ignore_errors=True` 避免被 Windows 檔案鎖死阻斷。
+
+---
+
+### 4. 專案適配 SemVer 剛性映射 (DN-04)
+> [!NOTE]
+> 傳統語意化版本（SemVer）主要針對函式庫 API 破壞性。在工具庫生態中，我們對此進行專案特化：
+> - **Major**：使用者角度不可調和之重大架構異動（通常不觸發）。
+> - **Minor**：需要執行資料結構或設定檔遷移 (`_migration.py`) 的代際更新。
+> - **Patch**：內部最佳化、缺陷修復或向後相容的功能擴充。
+
+---
+
+### 5. 五階段升級事務與快照回滾策略 (DN-05)
+> [!CAUTION]
+> 模組升級跨代時，若在執行 `_migration.py` 或覆寫檔案途中遭遇異常，模組目錄可能處於不一致的「半升級損毀狀態」。
+
+- **防禦機制**：
+  升級前於 Stage 2 強制建立舊版快照備份於 `.yscb_cache/backup/`。一旦後續階段（如資料遷移）拋出例外，立即自動觸發 `_rollback_snapshot()` 完整復原，達成具備事務性保證的無損升級。
+
+---
+
+### 6. Windows 執行中單檔起手腳本原子自更新防護 (DN-06)
+> [!IMPORTANT]
+> 在 Windows 作業系統中，若 Python 進程直接對自身正在執行的 `.py` 檔案進行二進位寫入覆蓋，會引發 Windows File Lock `PermissionError`。
+
+- **解決方案**：
+  在 `installer self-update` 時，新腳本一律先寫入臨時檔案 `yscb_installer.tmp`，隨後透過底層 C API 支援的 `os.replace` 進行單一原子指標替換，達成 100% 穩定免重啟自舉更新。
+

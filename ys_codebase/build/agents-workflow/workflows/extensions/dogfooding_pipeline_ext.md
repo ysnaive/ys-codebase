@@ -13,14 +13,17 @@ description: "自引用 (Dogfooding) 三層空間修改、構建、全量回歸�
 
 ## 擴充 Checklist
 
-- [ ] **Stage 1 (源碼空間確認)**：所有檔案修改均 100% 位於 `ys_codebase/source/` 或 `ys_codebase/yscb_*.py`，無任何直接編輯 `modules/` 或 `.agents/` 的越界行為。
-- [ ] **Stage 2 (模組打包構建)**：已執行 `python yscb_cli.py installer build <module>` (或 `build --all`)，且 `ys_codebase/build/` 正確生成。
-- [ ] **Stage 3 (全量回歸測試)**：已實機執行 `python test/run_regression.py` 並取得 `Ran 23 tests ... ALL PASSED` 日誌。
-- [ ] **Stage 4 (自引用同步)**：
+- [ ] **Stage 1 (源碼空間確認與版本號維護)**：
+  - [ ] 所有檔案修改均 100% 位於 `ys_codebase/source/` 或 `ys_codebase/yscb_*.py`，無任何直接編輯 `modules/` 或 `.agents/` 的越界行為。
+  - [ ] 若源碼有實質邏輯/設定變更，已執行 `python yscb_cli.py version bump <module> <level>` 正確遞進 `manifest.json` 版本號（SemVer 剛性維護）。
+- [ ] **Stage 2 (模組打包構建)**：已執行 `python yscb_cli.py installer build <module>` (或 `build --all`)，且 `ys_codebase/build/` 正確生成並繼承最新版本號。
+- [ ] **Stage 3 (全量回歸測試)**：已實機執行 `python test/run_regression.py` 並取得全量測試 100% Passed。
+- [ ] **Stage 4 (自引用同步與發布檢驗)**：
   - [ ] 根目錄起手腳本已覆蓋同步 (`yscb_installer.py` / `yscb_cli.py`)。
   - [ ] 已執行 `python yscb_cli.py installer install <module> --force` 部署至 `modules/`。
   - [ ] 若工作流有變更，已執行 `python yscb_cli.py agents-workflow --ide-antigravity` 重新生成 `.agents/workflows/`。
-  - [ ] 執行 `python yscb_cli.py installer status` 驗證自引用模組狀態為 `[已安裝 (build)]`。
+  - [ ] 執行 `python yscb_cli.py version status` 驗證自引用模組狀態為 `[SYNCED]`。
+  - [ ] 執行 `python yscb_cli.py agents-workflow verify` 驗證 `dogfooding_pipeline_verify.py` 外掛 100% 通過。
 
 ---
 
