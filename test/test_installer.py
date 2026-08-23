@@ -755,9 +755,39 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
             if "YSCB_PROJECT_ROOT" in os.environ:
                 del os.environ["YSCB_PROJECT_ROOT"]
 
+    def test_24_installer_self_update(self):
+        """測試 Installer 自舉升級 (self-update) 與起手腳本原子安全替換"""
+        self.config_mgr.create_default()
+        
+        # 在 test_dir 建立舊版起手腳本 (v2.0.0)
+        root_inst = self.test_dir / "yscb_installer.py"
+        root_inst.write_text('#!/usr/bin/env python3\nINSTALLER_VERSION = "2.0.0"\nprint("Old")', encoding="utf-8")
+        
+        # 在快取目錄建立新版起手腳本 (v2.1.0)
+        cache_dir = self.git_client.cache_dir
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        new_inst = cache_dir / "yscb_installer.py"
+        new_inst.write_text('#!/usr/bin/env python3\nINSTALLER_VERSION = "2.1.0"\nprint("New")', encoding="utf-8")
+        
+        # 阻斷網路同步，聚焦於檔案替換邏輯
+        self.git_client.sync_cache = lambda force_refresh=False: None
+
+        # 執行 self-update
+        success = self.module_mgr.self_update(force=False)
+        self.assertTrue(success)
+        
+        # 驗證 root_inst 內容已更新為 v2.1.0
+        updated_content = root_inst.read_text(encoding="utf-8")
+        self.assertIn('INSTALLER_VERSION = "2.1.0"', updated_content)
+        self.assertIn('print("New")', updated_content)
+        self.assertFalse((self.test_dir / "yscb_installer.tmp").exists())
+        self.assertFalse((self.test_dir / "yscb_installer.py.tmp").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 
 

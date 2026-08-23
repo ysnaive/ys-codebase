@@ -1,6 +1,7 @@
 {
   "name": "core",
-  "version": "2.0.0",
-  "description": "YS-Codebase 核心運行期 SDK (Core Runtime SDK: ProjectContext, ConfigManager, Console)",
+  "version": "2.1.0",
+  "description": "YS-Codebase 核心運行期 SDK (Core Runtime SDK: ProjectContext, ConfigManager, Console, SemVer, MigrationRunner)",
   "dependencies": []
 }
+

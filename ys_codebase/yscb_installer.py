@@ -12,13 +12,14 @@ yscb_installer.py — YS-Codebase 核心模組化工具庫安裝管理系統 (v2
 
 import sys
 import os
+import re
 import shutil
 import subprocess
 import json
 import argparse
 import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Any
+from typing import Dict, List, Optional, Set, Tuple, Any, Union
 
 # Windows 控制台編碼防呆 (強制 UTF-8 輸出)
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
@@ -35,7 +36,22 @@ CONFIG_FILENAME = "yscb_config.json"
 LOCAL_CONFIG_FILENAME = "yscb_config.local.json"
 TEMPLATE_CONFIG_FILENAME = "yscb_config.template.json"
 CACHE_DIRNAME = ".yscb_cache"
-INSTALLER_VERSION = "2.0.0"
+INSTALLER_VERSION = "2.1.0"
+
+
+def extract_installer_version(script_path: Path) -> Optional["SemVer"]:
+    """從起手腳本內容中提取 INSTALLER_VERSION"""
+    if not script_path.is_file():
+        return None
+    try:
+        content = script_path.read_text(encoding="utf-8", errors="ignore")
+        m = re.search(r'INSTALLER_VERSION\s*=\s*["\']([^"\']+)["\']', content)
+        if m:
+            return SemVer(m.group(1))
+    except Exception:
+        pass
+    return None
+
 
 
 # ── 工具函式 ─────────────────────────────────────────────────────────────
@@ -49,6 +65,269 @@ def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]
         else:
             result[key] = copy.deepcopy(value)
     return result
+
+
+# ── 語意化版本與相依約束 (SemVer 2.0.0 & Constraints) ───────────────────
+SEMVER_REGEX = re.compile(
+    r"^[vV]?(?P<major>0|[1-9]\d*)"
+    r"(?:\.(?P<minor>0|[1-9]\d*))?"
+    r"(?:\.(?P<patch>0|[1-9]\d*))?"
+    r"(?:-(?P<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"(?:\+(?P<build>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+)
+
+
+def _compare_prerelease(pre1: Optional[str], pre2: Optional[str]) -> int:
+    if pre1 is None and pre2 is None:
+        return 0
+    if pre1 is None and pre2 is not None:
+        return 1
+    if pre1 is not None and pre2 is None:
+        return -1
+
+    parts1 = pre1.split(".")  # type: ignore
+    parts2 = pre2.split(".")  # type: ignore
+
+    for p1, p2 in zip(parts1, parts2):
+        if p1 == p2:
+            continue
+        p1_is_num = p1.isdigit()
+        p2_is_num = p2.isdigit()
+        if p1_is_num and p2_is_num:
+            return 1 if int(p1) > int(p2) else -1
+        elif p1_is_num and not p2_is_num:
+            return -1
+        elif not p1_is_num and p2_is_num:
+            return 1
+        else:
+            return 1 if p1 > p2 else -1
+
+    if len(parts1) > len(parts2):
+        return 1
+    elif len(parts1) < len(parts2):
+        return -1
+    return 0
+
+
+class SemVer:
+    """SemVer 2.0.0 語意化版本類別"""
+    __slots__ = ("major", "minor", "patch", "prerelease", "build")
+
+    def __init__(self, version: Union[str, "SemVer"]):
+        if isinstance(version, SemVer):
+            self.major = version.major
+            self.minor = version.minor
+            self.patch = version.patch
+            self.prerelease = version.prerelease
+            self.build = version.build
+            return
+
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError(f"無效的版本格式: {repr(version)}")
+
+        cleaned = version.strip()
+        match = SEMVER_REGEX.match(cleaned)
+        if not match:
+            raise ValueError(f"無法解析為合法 SemVer 2.0.0 格式: '{version}'")
+
+        gd = match.groupdict()
+        self.major = int(gd["major"])
+        self.minor = int(gd["minor"]) if gd["minor"] is not None else 0
+        self.patch = int(gd["patch"]) if gd["patch"] is not None else 0
+        self.prerelease = gd["prerelease"]
+        self.build = gd["build"]
+
+    @classmethod
+    def parse(cls, version_str: str) -> "SemVer":
+        return cls(version_str)
+
+    @classmethod
+    def is_valid(cls, version_str: Any) -> bool:
+        if not isinstance(version_str, str) or not version_str.strip():
+            return False
+        return bool(SEMVER_REGEX.match(version_str.strip()))
+
+    def bump_major(self) -> "SemVer":
+        return SemVer(f"{self.major + 1}.0.0")
+
+    def bump_minor(self) -> "SemVer":
+        return SemVer(f"{self.major}.{self.minor + 1}.0")
+
+    def bump_patch(self) -> "SemVer":
+        return SemVer(f"{self.major}.{self.minor}.{self.patch + 1}")
+
+    def bump(self, level: str) -> "SemVer":
+        norm_level = level.strip().lower()
+        if norm_level == "major":
+            return self.bump_major()
+        elif norm_level == "minor":
+            return self.bump_minor()
+        elif norm_level == "patch":
+            return self.bump_patch()
+        else:
+            raise ValueError(f"未知的遞進等級 '{level}'，僅支援 'major', 'minor', 'patch'。")
+
+    def __tuple_key(self) -> Tuple[int, int, int]:
+        return (self.major, self.minor, self.patch)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, str):
+            if not SemVer.is_valid(other):
+                return False
+            other = SemVer(other)
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        return (
+            self.__tuple_key() == other.__tuple_key()
+            and _compare_prerelease(self.prerelease, other.prerelease) == 0
+        )
+
+    def __ne__(self, other: Any) -> bool:
+        eq = self.__eq__(other)
+        if eq is NotImplemented:
+            return NotImplemented
+        return not eq
+
+    def __lt__(self, other: Union[str, "SemVer"]) -> bool:
+        if isinstance(other, str):
+            other = SemVer(other)
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        if self.__tuple_key() < other.__tuple_key():
+            return True
+        elif self.__tuple_key() > other.__tuple_key():
+            return False
+        return _compare_prerelease(self.prerelease, other.prerelease) < 0
+
+    def __le__(self, other: Union[str, "SemVer"]) -> bool:
+        if isinstance(other, str):
+            other = SemVer(other)
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        return self.__lt__(other) or self.__eq__(other)
+
+    def __gt__(self, other: Union[str, "SemVer"]) -> bool:
+        if isinstance(other, str):
+            other = SemVer(other)
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        return not self.__le__(other)
+
+    def __ge__(self, other: Union[str, "SemVer"]) -> bool:
+        if isinstance(other, str):
+            other = SemVer(other)
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        return not self.__lt__(other)
+
+    def __hash__(self) -> int:
+        return hash((self.major, self.minor, self.patch, self.prerelease))
+
+    def __str__(self) -> str:
+        s = f"{self.major}.{self.minor}.{self.patch}"
+        if self.prerelease is not None:
+            s += f"-{self.prerelease}"
+        if self.build is not None:
+            s += f"+{self.build}"
+        return s
+
+    def __repr__(self) -> str:
+        return f"SemVer('{str(self)}')"
+
+
+class VersionConstraint:
+    """語意化版本相依約束表達式解析與匹配器"""
+    __slots__ = ("raw_expr", "_predicates")
+
+    def __init__(self, constraint_expr: str):
+        self.raw_expr = constraint_expr.strip() if constraint_expr else "*"
+        self._predicates: List[Tuple[str, SemVer]] = []
+        self._parse(self.raw_expr)
+
+    def _parse(self, expr: str):
+        if not expr or expr == "*":
+            return
+
+        raw_parts = [p.strip() for p in expr.split(",") if p.strip()]
+
+        for part in raw_parts:
+            if part == "*":
+                continue
+
+            op_match = re.match(r"^(\^|~|>=|<=|>|<|==|!=|=)?\s*(.+)$", part)
+            if not op_match:
+                continue
+
+            op, v_str = op_match.groups()
+            op = op or "=="
+            if op == "=":
+                op = "=="
+            v = SemVer(v_str.strip())
+
+            # Caret 相容 (^1.2.3)
+            if op == "^":
+                self._predicates.append((">=", v))
+                if v.major > 0:
+                    self._predicates.append(("<", SemVer(f"{v.major + 1}.0.0")))
+                elif v.minor > 0:
+                    self._predicates.append(("<", SemVer(f"0.{v.minor + 1}.0")))
+                else:
+                    self._predicates.append(("<", SemVer(f"0.0.{v.patch + 1}")))
+                continue
+
+            # Tilde 相容 (~1.2.3 或 ~1.2)
+            if op == "~":
+                self._predicates.append((">=", v))
+                self._predicates.append(("<", SemVer(f"{v.major}.{v.minor + 1}.0")))
+                continue
+
+            # 標準運算符
+            self._predicates.append((op, v))
+
+
+    def matches(self, version: Union[str, SemVer]) -> bool:
+        if not isinstance(version, SemVer):
+            try:
+                version = SemVer(version)
+            except Exception:
+                return False
+        for op, target_v in self._predicates:
+            if op == ">=" and not (version >= target_v):
+                return False
+            elif op == "<=" and not (version <= target_v):
+                return False
+            elif op == ">" and not (version > target_v):
+                return False
+            elif op == "<" and not (version < target_v):
+                return False
+            elif op == "==" and not (version == target_v):
+                return False
+            elif op == "!=" and not (version != target_v):
+                return False
+        return True
+
+    @classmethod
+    def parse_dependency_spec(cls, spec_str: str) -> Tuple[str, "VersionConstraint"]:
+        if not spec_str or not spec_str.strip():
+            raise ValueError("相依性描述不能為空。")
+        cleaned = spec_str.strip()
+        match = re.search(r"(\^|~|>=|<=|>|<|==|=|!=)", cleaned)
+        if match:
+            idx = match.start()
+            mod_name = cleaned[:idx].strip()
+            expr = cleaned[idx:].strip()
+            return mod_name, cls(expr)
+        parts = cleaned.split(maxsplit=1)
+        if len(parts) == 1:
+            return parts[0].strip(), cls("*")
+        else:
+            return parts[0].strip(), cls(parts[1].strip())
+
+    def __str__(self) -> str:
+        return self.raw_expr
+
+    def __repr__(self) -> str:
+        return f"VersionConstraint('{self.raw_expr}')"
 
 
 # ── 配置管理 (Config Manager) ───────────────────────────────────────────
@@ -415,7 +694,11 @@ class ModuleManager:
                 deps = m_info["meta"].get("dependencies", [])
 
             for dep in deps:
-                visit(dep)
+                try:
+                    dep_name = VersionConstraint.parse_dependency_spec(dep)[0]
+                except Exception:
+                    dep_name = dep.split()[0]
+                visit(dep_name)
 
             resolved.append(name)
 
@@ -448,7 +731,11 @@ class ModuleManager:
                 deps = m_info["meta"].get("dependencies", [])
 
             for dep in deps:
-                visit(dep)
+                try:
+                    dep_name = VersionConstraint.parse_dependency_spec(dep)[0]
+                except Exception:
+                    dep_name = dep.split()[0]
+                visit(dep_name)
 
             resolved.append(name)
 
@@ -482,8 +769,57 @@ class ModuleManager:
 
         return None
 
+    def check_module_dependencies(self, module_name: str, manifest: Dict[str, Any]) -> Tuple[bool, List[str]]:
+        """校驗模組相依性約束 (支援 SemVer 與 VersionConstraint)"""
+        deps = manifest.get("dependencies", [])
+        if not deps:
+            return True, []
+
+        installed_dict = self.config_mgr.load(include_local=False).get("installed_modules", {})
+        errors = []
+
+        for dep_spec in deps:
+            try:
+                dep_name, constraint = VersionConstraint.parse_dependency_spec(dep_spec)
+            except Exception as e:
+                errors.append(f"相依性描述語法錯誤 '{dep_spec}': {e}")
+                continue
+
+            if dep_name == module_name:
+                continue
+
+            if dep_name not in installed_dict:
+                # 若尚未在 installed_dict，檢查來源庫是否有可用模組
+                dep_dir = self._locate_module_dir(dep_name, "build") or self._locate_module_dir(dep_name, "source")
+                if not dep_dir:
+                    errors.append(f"相依模組 '{dep_name}' 尚未安裝且在來源目錄中找不到。")
+                    continue
+                dep_manifest = self.read_manifest(dep_dir)
+                dep_ver_str = dep_manifest.get("version", "1.0.0")
+            else:
+                dep_ver_str = installed_dict[dep_name].get("version", "1.0.0")
+
+            if not constraint.matches(dep_ver_str):
+                errors.append(
+                    f"相依模組 '{dep_name}' 版本不相容 (已安裝/可用: v{dep_ver_str}, 要求: {constraint.raw_expr})"
+                )
+
+        return len(errors) == 0, errors
+
+    def _rollback_snapshot(self, dest_path: Path, backup_dir: Optional[Path]):
+        """從快照備份目錄還原模組狀態"""
+        if backup_dir and backup_dir.is_dir():
+            print(f"[ROLLBACK] 正在從快照還原模組: {backup_dir.name} ➔ {dest_path}...")
+            try:
+                if dest_path.exists():
+                    shutil.rmtree(dest_path, ignore_errors=True)
+                shutil.copytree(backup_dir, dest_path, dirs_exist_ok=True)
+                print(f"[ROLLBACK] 模組 '{dest_path.name}' 已成功還原至升級前狀態。")
+            except Exception as e:
+                print(f"[CRITICAL] 還原快照失敗: {e}")
+
     def install_module(self, module_name: str, mode: str = "build", force: bool = False) -> bool:
-        """執行單個模組的複製與安裝註冊"""
+        """執行單個模組的五階段事務性安全安裝與升級"""
         print(f"[INSTALL] 正在安裝模組 '{module_name}' (模式: {mode})...")
 
         src_path = self._locate_module_dir(module_name, mode)
@@ -503,6 +839,12 @@ class ModuleManager:
         manifest = self.read_manifest(src_path)
         version = manifest.get("version", "1.0.0")
 
+        # ── Stage 1: Pre-flight Check (相依約束與相容性檢查) ─────────────
+        valid_deps, dep_errors = self.check_module_dependencies(module_name, manifest)
+        if not valid_deps and not force:
+            err_msg = "\n  - ".join(dep_errors)
+            raise RuntimeError(f"模組 '{module_name}' 相依性檢查失敗，無法繼續安裝：\n  - {err_msg}\n(若需強制安裝請加上 --force)")
+
         # 取得已安裝之舊版本紀錄
         installed_dict = self.config_mgr.load(include_local=False).get("installed_modules", {})
         old_info = installed_dict.get(module_name)
@@ -513,9 +855,22 @@ class ModuleManager:
         else:
             dest_path = self.root_dir / "modules" / module_name
 
-        # 暫存保留本地既有的 2x2 設定檔 (config.project.json, config.local.json, config.json)
+        # ── Stage 2: Staging & Snapshot Backup (建立舊版快照備份) ────────
+        backup_dir: Optional[Path] = None
         saved_configs: Dict[str, str] = {}
+
         if dest_path.exists():
+            # 建立快照備份
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            old_ver_tag = old_version or "unknown"
+            backup_dir = self.root_dir / CACHE_DIRNAME / "backup" / f"{module_name}_{old_ver_tag}_{timestamp}"
+            try:
+                backup_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(dest_path, backup_dir, dirs_exist_ok=True)
+            except Exception as e:
+                print(f"[WARN] 建立模組快照備份失敗: {e}")
+
+            # 暫存保留本地既有的 2x2 設定檔
             for cfg_name in ["config.project.json", "config.local.json", "config.json", "config_global.json"]:
                 cfg_file = dest_path / cfg_name
                 if cfg_file.is_file():
@@ -524,59 +879,91 @@ class ModuleManager:
                     except Exception:
                         pass
 
-            if not force and dest_path.resolve() == src_path.resolve():
-                print(f"[INFO] 模組 '{module_name}' 已存在於本地 ({dest_path})，跳過本體覆寫。")
+        # ── Stage 3: Protected Merge (分級資產覆蓋與增量合併) ───────────
+        try:
+            if dest_path.exists():
+                if not force and dest_path.resolve() == src_path.resolve():
+                    print(f"[INFO] 模組 '{module_name}' 已存在於本地 ({dest_path})，跳過本體覆寫。")
+                else:
+                    shutil.rmtree(dest_path, ignore_errors=True)
+                    shutil.copytree(src_path, dest_path, dirs_exist_ok=True)
             else:
-                shutil.rmtree(dest_path, ignore_errors=True)
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(src_path, dest_path, dirs_exist_ok=True)
-        else:
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(src_path, dest_path, dirs_exist_ok=True)
 
-        # 還原既有本地設定檔（若新套件未攜帶且原先存在）
-        for cfg_name, content in saved_configs.items():
-            cfg_target = dest_path / cfg_name
-            if not cfg_target.exists():
+            # 結構化配置安全增量深層合併 (config.project.json)
+            if "config.project.json" in saved_configs:
+                user_cfg_str = saved_configs["config.project.json"]
+                target_project_cfg = dest_path / "config.project.json"
+                template_project_cfg = dest_path / "config.project.template.json"
+                base_cfg_to_merge = {}
+                if template_project_cfg.is_file():
+                    try:
+                        base_cfg_to_merge = json.loads(template_project_cfg.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
                 try:
-                    cfg_target.write_text(content, encoding="utf-8")
+                    user_cfg_obj = json.loads(user_cfg_str)
+                    merged_project_cfg = deep_merge(base_cfg_to_merge, user_cfg_obj)
+                    target_project_cfg.write_text(json.dumps(merged_project_cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 except Exception:
-                    pass
+                    target_project_cfg.write_text(user_cfg_str, encoding="utf-8")
 
-        self.config_mgr.record_installed_module(
-            module_name=module_name,
-            mode=mode,
-            version=version,
-            meta={"description": manifest.get("description", "")}
-        )
-        print(f"[SUCCESS] 模組 '{module_name}' ({mode} v{version}) 安裝完成 ➔ {dest_path}")
+            # 本地配置 100% 唯讀保留 (config.local.json)
+            if "config.local.json" in saved_configs:
+                target_local_cfg = dest_path / "config.local.json"
+                target_local_cfg.write_text(saved_configs["config.local.json"], encoding="utf-8")
 
-        # 執行 _migration.py Hook（若存在舊版本且版本不同時）
-        migration_hook = dest_path / "scripts" / "_migration.py"
-        if not migration_hook.is_file():
-            migration_hook = dest_path / "_migration.py"
-        if migration_hook.is_file() and old_version and old_version != version:
-            print(f"[HOOK] 執行 '{module_name}' 版本遷移 Hook: {migration_hook.name} (v{old_version} ➔ v{version})...")
-            try:
+            # 其餘配置還原
+            for cfg_name, content in saved_configs.items():
+                if cfg_name in ["config.project.json", "config.local.json"]:
+                    continue
+                cfg_target = dest_path / cfg_name
+                if not cfg_target.exists():
+                    try:
+                        cfg_target.write_text(content, encoding="utf-8")
+                    except Exception:
+                        pass
+
+            # ── Stage 4: Migration Execution (鏈式增量遷移與回滾守門) ────────
+            migration_hook = dest_path / "scripts" / "_migration.py"
+            if not migration_hook.is_file():
+                migration_hook = dest_path / "_migration.py"
+
+            if migration_hook.is_file() and old_version and old_version != version:
+                print(f"[HOOK] 執行 '{module_name}' 版本遷移 Hook: {migration_hook.name} (v{old_version} ➔ v{version})...")
                 res = subprocess.run([sys.executable, str(migration_hook), str(old_version), str(version)], cwd=str(dest_path))
                 if res.returncode != 0:
-                    print(f"[WARN] Hook _migration.py 執行返回非 0 狀態碼: {res.returncode}")
-            except Exception as e:
-                print(f"[WARN] 呼叫 _migration.py Hook 失敗: {e}")
+                    print(f"[ERROR] Hook _migration.py 執行失敗 (狀態碼: {res.returncode})！")
+                    self._rollback_snapshot(dest_path, backup_dir)
+                    raise RuntimeError(f"模組 '{module_name}' 升級遷移失敗 (exit {res.returncode})，已安全還原至舊版。")
 
-        # 執行 _installed.py Hook
-        installed_hook = dest_path / "scripts" / "_installed.py"
-        if not installed_hook.is_file():
-            installed_hook = dest_path / "_installed.py"
-        if installed_hook.is_file():
-            print(f"[HOOK] 執行 '{module_name}' 安裝後置 Hook: {installed_hook.name}...")
-            try:
-                res = subprocess.run([sys.executable, str(installed_hook), str(dest_path), mode], cwd=str(dest_path))
-                if res.returncode != 0:
-                    print(f"[WARN] Hook _installed.py 執行返回非 0 狀態碼: {res.returncode}")
-            except Exception as e:
-                print(f"[WARN] 呼叫 _installed.py Hook 失敗: {e}")
+            # ── Stage 5: Commit & Finalize (後置 Hook 與狀態登記) ───────────
+            installed_hook = dest_path / "scripts" / "_installed.py"
+            if not installed_hook.is_file():
+                installed_hook = dest_path / "_installed.py"
+            if installed_hook.is_file():
+                print(f"[HOOK] 執行 '{module_name}' 安裝後置 Hook: {installed_hook.name}...")
+                try:
+                    res = subprocess.run([sys.executable, str(installed_hook), str(dest_path), mode], cwd=str(dest_path))
+                    if res.returncode != 0:
+                        print(f"[WARN] Hook _installed.py 執行返回非 0 狀態碼: {res.returncode}")
+                except Exception as e:
+                    print(f"[WARN] 呼叫 _installed.py Hook 失敗: {e}")
 
-        return True
+            self.config_mgr.record_installed_module(
+                module_name=module_name,
+                mode=mode,
+                version=version,
+                meta={"description": manifest.get("description", "")}
+            )
+            print(f"[SUCCESS] 模組 '{module_name}' ({mode} v{version}) 安裝完成 ➔ {dest_path}")
+            return True
+
+        except Exception as e:
+            if backup_dir and dest_path.exists():
+                self._rollback_snapshot(dest_path, backup_dir)
+            raise
 
     def remove_module(self, module_name: str, force: bool = False) -> bool:
         """卸載指定模組，並進行相依安全性檢查與 _uninstall.py Hook 調用"""
@@ -778,6 +1165,74 @@ class ModuleManager:
             print(f"[INFO] 比對完成，共發現 {total_diff} 個差異。")
         return True
 
+    def self_update(self, force: bool = False) -> bool:
+        """從遠端倉庫或快取更新 installer (yscb_installer.py) 與統一 CLI (yscb_cli.py)"""
+        print("[SELF-UPDATE] 正在檢查核心安裝器與起手腳本更新...")
+
+        # 1. 優先同步快取
+        try:
+            self.git_client.sync_cache(force_refresh=True)
+        except Exception as e:
+            print(f"[WARN] 同步遠端快取失敗: {e}")
+
+        # 2. 定位最新來源腳本
+        cache_dir = self.git_client.cache_dir
+        source_installer = cache_dir / "yscb_installer.py"
+        if not source_installer.is_file():
+            source_installer = cache_dir / "ys_codebase" / "yscb_installer.py"
+
+        source_cli = cache_dir / "yscb_cli.py"
+        if not source_cli.is_file():
+            source_cli = cache_dir / "ys_codebase" / "yscb_cli.py"
+
+        # 若在本地開發空間，亦可從本地 ys_codebase/ 取得
+        if not source_installer.is_file():
+            local_inst = self.root_dir / "ys_codebase" / "yscb_installer.py"
+            if local_inst.is_file():
+                source_installer = local_inst
+        if not source_cli.is_file():
+            local_cli = self.root_dir / "ys_codebase" / "yscb_cli.py"
+            if local_cli.is_file():
+                source_cli = local_cli
+
+        if not source_installer.is_file():
+            print("[ERROR] 找不到可用的最新 yscb_installer.py 來源檔案。")
+            return False
+
+        latest_ver = extract_installer_version(source_installer) or SemVer(INSTALLER_VERSION)
+        curr_ver = extract_installer_version(self.root_dir / "yscb_installer.py") or SemVer(INSTALLER_VERSION)
+
+        if latest_ver <= curr_ver and not force:
+            print(f"[INFO] 當前核心安裝器已是最新版本 (v{curr_ver})，無須更新。")
+            return True
+
+        print(f"[SELF-UPDATE] 正在升級起手腳本: v{curr_ver} ➔ v{latest_ver}...")
+
+        # 3. Windows 安全原子替換 (寫入 .tmp 再 rename/replace)
+        target_installer = self.root_dir / "yscb_installer.py"
+        target_cli = self.root_dir / "yscb_cli.py"
+
+        def atomic_replace(src: Path, dst: Path):
+            tmp_dst = dst.with_suffix(".tmp")
+            try:
+                shutil.copy2(src, tmp_dst)
+                os.replace(tmp_dst, dst)
+            except Exception as e:
+                if tmp_dst.exists():
+                    tmp_dst.unlink(missing_ok=True)
+                raise e
+
+        try:
+            atomic_replace(source_installer, target_installer)
+            if source_cli.is_file():
+                atomic_replace(source_cli, target_cli)
+            print(f"[SUCCESS] 核心安裝器與起手腳本已成功自更新至 v{latest_ver} ➔ {target_installer}")
+            return True
+        except Exception as e:
+            print(f"[ERROR] 自更新失敗: {e}")
+            return False
+
+
 
 # ── CLI 介面與指令分派 (CLI Interface & Dispatcher) ───────────────────────
 
@@ -891,6 +1346,11 @@ def main():
     # 10. diff
     diff_parser = subparsers.add_parser("diff", help="比對本地已安裝模組與遠端最新版本差異")
     diff_parser.add_argument("modules", nargs="*", help="欲比對的模組名稱（預設為全部已安裝模組）")
+
+    # 11. self-update
+    self_update_parser = subparsers.add_parser("self-update", help="自遠端或快取升級 installer 與統一 CLI 起手腳本")
+    self_update_parser.add_argument("--force", action="store_true", help="強制重新拉取覆蓋")
+
 
     args, unknown = parser.parse_known_args()
 
@@ -1053,6 +1513,11 @@ def main():
         elif args.subcommand == "diff":
             module_mgr.diff_modules(args.modules)
             return 0
+
+        elif args.subcommand in ["self-update", "self_update", "upgrade-self"]:
+            success = module_mgr.self_update(force=args.force)
+            return 0 if success else 1
+
 
     except Exception as e:
         print(f"\n[ERROR] 執行失敗: {e}\n", file=sys.stderr)

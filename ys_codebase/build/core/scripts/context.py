@@ -121,6 +121,36 @@ class ProjectContext:
         return s == "" or s.startswith("!")
 
     @classmethod
+    def get_module_manifest(cls, module_name: str, start_dir: Optional[Union[str, Path]] = None) -> Optional[Dict[str, Any]]:
+        """讀取指定模組之 manifest.json 內容，若不存在回傳 None"""
+        mod_dir = cls.get_module_dir(module_name, start_dir)
+        manifest_file = mod_dir / "manifest.json"
+        if manifest_file.is_file():
+            try:
+                with open(manifest_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        return None
+
+    @classmethod
+    def get_module_version(cls, module_name: str, start_dir: Optional[Union[str, Path]] = None) -> Optional[Any]:
+        """讀取指定模組之 manifest.json 並回傳 SemVer 實例，未安裝或不存在回傳 None"""
+        manifest = cls.get_module_manifest(module_name, start_dir)
+        if manifest and "version" in manifest:
+            try:
+                from .semver import SemVer
+            except (ImportError, ValueError):
+                from semver import SemVer
+            try:
+                return SemVer(manifest["version"])
+            except Exception:
+                return None
+        return None
+
+    @classmethod
     def resolve(cls, rel_path: Union[str, Path], base_dir: Optional[Union[str, Path]] = None) -> Path:
         """將相對於專案根目錄的路徑字串或語意 URI (project://, yscb://, docs:// 等) 解析為標準絕對 Path"""
         if cls.is_undefined(rel_path):
