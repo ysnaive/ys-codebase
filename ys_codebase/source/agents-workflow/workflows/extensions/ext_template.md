@@ -1,6 +1,6 @@
 ---
 name: [EXTENSION_NAME_ext]
-phase: [P01 ~ P07]
+phase: [all | 逗號分隔的 Phase Token 清單，例："P04, P05, P06, P07, FT_plan"]
 trigger: [always | on_demand]
 ---
 

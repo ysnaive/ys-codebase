@@ -74,9 +74,9 @@
 
 ## Decision Records
 
-> 僅在本階段觸發 Deep Discussion 時填寫。
+> 僅在本階段觸發 Deep Discussion 時填寫。ID 格式：`[P01:DR-XX]`（Phase 前綴確保跨文件全域不重複，詳見 NewPlan.md 追溯鏈規範）。
 
-### DR-01: [議題標題]
+### [P01:DR-01] [議題標題]
 - **議題**：[問題描述]
 - **結論**：[最終決定]
 - **理由**：[為什麼選擇這個方案]

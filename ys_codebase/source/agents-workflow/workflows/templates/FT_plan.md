@@ -60,18 +60,20 @@
 
 ### Decision Records
 
+> ID 格式：`[FT:DR-XX]`，並附加決策類型分類標籤（`[TRADEOFF]` / `[NEW]` / `[IMPROVE]`）。
+
 ---
 
-**DR-XX `[TRADEOFF]` 標題**
+**[FT:DR-XX] `[TRADEOFF]` 標題**
 - 結論：[最終選擇]
 - 理由：[為什麼選這個]
 - 排除方案：[被排除的方案及原因]
 
-**DR-XX `[NEW]` 標題**
+**[FT:DR-XX] `[NEW]` 標題**
 - 結論：[確立的規範或約束]
 - 理由：[為什麼需要這個規範]
 
-**DR-XX `[IMPROVE]` 標題**
+**[FT:DR-XX] `[IMPROVE]` 標題**
 - 改進點：[具體補充或澄清的內容]
 - 動機：[為什麼需要這個改進]
 
