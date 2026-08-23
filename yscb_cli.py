@@ -100,12 +100,20 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
     # 1.1 內建 uri 工具
     result["uri"] = {
         "name": "uri",
-        "description": "Codebase 專用語意 URI 解析與反向轉換工具 (resolve, list, to-uri)",
+        "description": "Codebase 專用語意 URI 解析、反向轉換與健康檢查工具 (resolve, list, to-uri, check)",
         "cli_path": "builtin",
         "is_builtin": True
     }
 
-    # 1.2 內建 version 工具
+    # 1.2 內建 cache 工具
+    result["cache"] = {
+        "name": "cache",
+        "description": "模組專屬快取管理與清理工具 (status, clean)",
+        "cli_path": "builtin",
+        "is_builtin": True
+    }
+
+    # 1.3 內建 version 工具
     result["version"] = {
         "name": "version",
         "description": "語意化版本管理與相依檢查工具 (status, check, check-update, bump)",
@@ -262,8 +270,124 @@ def handle_uri_command(root_dir: Path, config: Dict[str, Any], args: List[str]) 
         print(uri_str)
         return 0
 
+    elif subcmd == "check":
+        checks = ProjectURI.check_schemes(start_dir=start_p)
+        print("\n" + "=" * 96)
+        print("  🩺 Codebase 語意 URI 協議健康度與沙盒診斷報告 (URI Protocol Health Check)")
+        print("=" * 96)
+        print(f"  {'協議 (Scheme)':<16} | {'健康狀態':<10} | {'診斷細節':<30} | {'解析基準路徑'}")
+        print("  " + "-" * 92)
+        has_fail = False
+        for c in checks:
+            h_tag = f"[{c['health']}]"
+            if c['health'] == 'FAIL':
+                has_fail = True
+            print(f"  {c['scheme']:<16} | {h_tag:<10} | {c['details']:<30} | {c['resolved_path']}")
+        print("=" * 96 + "\n")
+        return 1 if has_fail else 0
+
     else:
         print(f"[ERROR] 未知 uri 子指令 '{subcmd}'。請執行 'python yscb_cli.py uri --help'。", file=sys.stderr)
+        return 1
+
+
+def handle_cache_command(root_dir: Path, config: Dict[str, Any], args: List[str]) -> int:
+    """處理 cache 快取管理相關指令 (clean, status)"""
+    start_p = Path.cwd().resolve() if (Path.cwd() / CONFIG_FILENAME).exists() else root_dir.resolve()
+    rel_proj = config.get("paths", {}).get("project_root", ".")
+    proj_root = (start_p / rel_proj).resolve() if (start_p / CONFIG_FILENAME).exists() else (root_dir / rel_proj).resolve()
+
+    core_candidates = [
+        proj_root / "modules" / "core",
+        proj_root / "source" / "core",
+        root_dir / "modules" / "core",
+        root_dir / "source" / "core",
+        root_dir / "ys_codebase" / "source" / "core",
+        root_dir / "ys_codebase" / "build" / "core",
+        root_dir / "ys_codebase" / "modules" / "core"
+    ]
+    for cp in core_candidates:
+        if (cp / "scripts").is_dir() and str(cp / "scripts") not in sys.path:
+            sys.path.insert(0, str(cp / "scripts"))
+            break
+        elif cp.is_dir() and str(cp) not in sys.path:
+            sys.path.insert(0, str(cp))
+            break
+
+    try:
+        from yscb_core import ProjectContext
+    except ImportError as e:
+        print(f"[ERROR] 無法載入 yscb_core SDK：{e}", file=sys.stderr)
+        return 1
+
+    cache_root = ProjectContext.get_cache_root(start_p)
+    modules_cache_root = cache_root / "modules"
+
+    if not args or args[0] in ["--help", "-h", "help"]:
+        print("\n" + "=" * 80)
+        print("  💾 YS-Codebase 模組快取管理工具 (Module Cache Tool)")
+        print("=" * 80)
+        print("  指令語法：")
+        print("    python yscb_cli.py cache status               檢視各模組專屬快取佔用狀態")
+        print("    python yscb_cli.py cache clean <module_name>  清理指定模組的命名空間快取")
+        print("    python yscb_cli.py cache clean --all          清理所有工具庫快取")
+        print(f"\n  快取根目錄: {cache_root}")
+        print("=" * 80 + "\n")
+        return 0
+
+    subcmd = args[0]
+
+    if subcmd == "status":
+        print("\n" + "=" * 80)
+        print(f"  📦 模組專屬快取佔用統計 ({modules_cache_root})")
+        print("=" * 80)
+        if not modules_cache_root.is_dir():
+            print("  [INFO] 目前無任何模組快取。")
+        else:
+            mod_dirs = [d for d in modules_cache_root.iterdir() if d.is_dir()]
+            if not mod_dirs:
+                print("  [INFO] 目前無任何模組快取。")
+            else:
+                print(f"  {'模組名稱 (Module)':<22} | {'檔案數量':<10} | {'磁碟佔用':<14} | {'實體快取路徑'}")
+                print("  " + "-" * 76)
+                for md in sorted(mod_dirs, key=lambda p: p.name):
+                    files = [f for f in md.rglob("*") if f.is_file()]
+                    total_size = sum(f.stat().st_size for f in files)
+                    kb = total_size / 1024
+                    print(f"  {md.name:<22} | {len(files):<10} | {kb:10.2f} KB | {md}")
+        print("=" * 80 + "\n")
+        return 0
+
+    elif subcmd == "clean":
+        clean_all = "--all" in args
+        target_mod = None
+        for a in args[1:]:
+            if not a.startswith("-"):
+                target_mod = a
+                break
+
+        import shutil
+        if clean_all:
+            if cache_root.is_dir():
+                shutil.rmtree(cache_root, ignore_errors=True)
+                print(f"[SUCCESS] 已徹底清理所有工具庫快取目錄：{cache_root}")
+            else:
+                print(f"[INFO] 快取目錄不存在，無需清理。")
+            return 0
+        elif target_mod:
+            mod_cache = modules_cache_root / target_mod
+            if mod_cache.is_dir():
+                shutil.rmtree(mod_cache, ignore_errors=True)
+                print(f"[SUCCESS] 已清理模組 '{target_mod}' 專屬快取目錄：{mod_cache}")
+            else:
+                print(f"[INFO] 模組 '{target_mod}' 無快取目錄或已被清理。")
+            return 0
+        else:
+            print("用法: python yscb_cli.py cache clean <module_name> 或 python yscb_cli.py cache clean --all", file=sys.stderr)
+            return 1
+
+    else:
+        print(f"[ERROR] 未知的 cache 子指令: '{subcmd}'", file=sys.stderr)
         return 1
 
 
@@ -367,7 +491,7 @@ def handle_version_command(root_dir: Path, config: Dict[str, Any], args: List[st
         # 1. 核心起手腳本 (Installer Bootstrapper)
         inst_boot_v = get_installer_file_version(root_dir / "yscb_installer.py")
         src_boot_v = get_installer_file_version(root_dir / "ys_codebase" / "yscb_installer.py") or inst_boot_v
-        cache_boot_v = get_installer_file_version(root_dir / ".yscb_cache" / "yscb_installer.py") or src_boot_v
+        cache_boot_v = get_installer_file_version(root_dir / ".yscb_cache" / "mirror" / "yscb_installer.py") or get_installer_file_version(root_dir / ".yscb_cache" / "yscb_installer.py") or src_boot_v
 
         boot_status = "[SYNCED]"
         if not inst_boot_v:
@@ -490,7 +614,7 @@ def handle_version_command(root_dir: Path, config: Dict[str, Any], args: List[st
 
         # 0. 檢查 Installer 起手腳本更新
         inst_boot_v_str = get_installer_file_version(root_dir / "yscb_installer.py")
-        src_boot_v_str = get_installer_file_version(root_dir / "ys_codebase" / "yscb_installer.py") or get_installer_file_version(root_dir / ".yscb_cache" / "yscb_installer.py")
+        src_boot_v_str = get_installer_file_version(root_dir / "ys_codebase" / "yscb_installer.py") or get_installer_file_version(root_dir / ".yscb_cache" / "mirror" / "yscb_installer.py") or get_installer_file_version(root_dir / ".yscb_cache" / "yscb_installer.py")
         if inst_boot_v_str and src_boot_v_str:
             i_ver = SemVer(inst_boot_v_str)
             s_ver = SemVer(src_boot_v_str)
@@ -639,7 +763,11 @@ def main() -> int:
     if target_module == "uri":
         return handle_uri_command(root_dir, config, sub_args)
 
-    # 1.2 轉發至 version 工具
+    # 1.2 轉發至 cache 工具
+    if target_module == "cache":
+        return handle_cache_command(root_dir, config, sub_args)
+
+    # 1.3 轉發至 version 工具
     if target_module == "version":
         return handle_version_command(root_dir, config, sub_args)
 
