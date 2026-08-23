@@ -81,21 +81,31 @@ Agent 必須始終遵守以下三大原則：
 | :--- | :--- | :--- |
 | **`project://<path>`** | 專案根目錄 | 指向專案最頂層根目錄（例：`project://AGENTS.md`、`project://CHANGELOG.md`） |
 | **`yscb://<path>`** | 工具庫根目錄 | 指向工具庫源碼或安裝目錄（例：`yscb://source/core`） |
-| **`plans://<path>`** | 活躍開發計畫目錄 | 指向進行中 Dev Plan 目錄（由 `config.project.json` 之 `paths.plans_dir` 定義） |
-| **`archive://<path>`** | 歷史歸檔目錄 | 指向歷史封存計畫目錄（由 `config.project.json` 之 `paths.archive_dir` 定義） |
-| **`docs://<path>`** | 專案知識庫目錄 | 指向系統知識庫目錄（由 `config.project.json` 之 `paths.docs_dir` 定義） |
-| **`sop_ext://<path>`** | 專案 SOP 擴充清單目錄 | 指向專案特化擴充清單目錄（由 `config.project.json` 之 `paths.extensions_dir` 定義） |
+| **`cache://<mod>/<p>`**| 模組專屬快取目錄 | 指向工具庫快取子目錄（例：`cache://agents-workflow/manifest.json` ➔ `yscb://.yscb_cache/modules/<mod>/`） |
+| **`storage://<mod>/<p>`**| 模組專案持久儲存 | 指向專案持久儲存子目錄（例：`storage://knowledge-db/meta.db` ➔ `project://.yscb_storage/<mod>/`） |
+| **`temp://<path>`**     | 系統暫存目錄 | 指向工具庫隔離暫存區（`yscb://.yscb_cache/tmp/`） |
+| **`plans://<path>`**    | 活躍開發計畫目錄 | 指向進行中 Dev Plan 目錄（由 `config.project.json` 之 `paths.plans_dir` 定義） |
+| **`archive://<path>`**  | 歷史歸檔目錄 | 指向歷史封存計畫目錄（由 `config.project.json` 之 `paths.archive_dir` 定義） |
+| **`docs://<path>`**     | 專案知識庫目錄 | 指向系統知識庫目錄（由 `config.project.json` 之 `paths.docs_dir` 定義） |
+| **`sop_ext://<path>`**  | 專案 SOP 擴充清單目錄 | 指向專案特化擴充清單目錄（由 `config.project.json` 之 `paths.extensions_dir` 定義） |
 
-### 🛠️ URI 終端動態解析指令
+### 🛠️ URI 與快取終端動態指令
 ```bash
 # 解析語意 URI 為實體絕對路徑
 python yscb_cli.py uri resolve docs://_project/STANDARDS.md
+
+# 診斷全專案語意 URI 協議健康狀態與沙盒圍欄
+python yscb_cli.py uri check
 
 # 列出所有已註冊協議與當前狀態
 python yscb_cli.py uri list
 
 # 將本機實體路徑轉為語意 URI
 python yscb_cli.py uri to-uri docs/_project/STANDARDS.md
+
+# 檢視模組專屬快取佔用與清理
+python yscb_cli.py cache status
+python yscb_cli.py cache clean <module>
 ```
 > **注意**：同目錄下的檔案引用（如 `P01` 引用同目錄的 `P00`）仍維持標準相對路徑（例：`[P00](./P00_semantic_requirements.md)`）。
 

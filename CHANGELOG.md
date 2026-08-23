@@ -4,6 +4,27 @@
 
 ---
 
+## 2026_08_23_1505_fix_yscb_root_path_isolation
+
+### Fixed
+- **[P0] `paths.yscb_root` 工具庫與專案空間 100% 物理隔離**：重構 `ProjectContext.get_yscb_root()`、`get_module_dir()` 與 `get_module_cache_dir()`，徹底消除 `yscb_tools` 子目錄配置時殘留專案根目錄 `modules/` 的空間污染問題。
+- **[P0] 遠端 Git 倉庫快取與模組執行期快取目錄混雜隔離 ([ARCH:DR-CACHE-02])**：透過衍生 Fast Track 子計畫 `sub_01_cache_mirror_isolation`，將 `GitRemoteClient.cache_dir` 預設路徑隔離收斂至 `yscb://.yscb_cache/mirror/`，杜絕 Git 鏡像同步失敗觸發 `sync_cache(force_refresh=True)` 時誤刪 `modules/` 快取與 `backup/` 快照的重大缺陷。
+
+### Added
+- **五層語意 URI 協議體系與統一路徑轉換器 (`ProjectURI`)**：實作 `project://`, `yscb://`, `cache://<module>/`, `storage://<module>/`, `temp://` 及動態擴充協議，支援 Windows/POSIX 雙向正規化、最長前綴匹配 (LPM) 反向轉換、沙盒圍欄安全防護 (Chroot Guard) 與高階 Direct I/O 操作門面。
+- **極致記憶體快取與 Fast-Path 系統呼叫避障 (3.8 µs/次)**：`ProjectURI.resolve()` 採用預編譯正規表達式與純 Python 快速通道，避開 Windows 內核系統呼叫開銷，單次解析速度達 3.82 µs（PT-01 10,000 次基準耗時 38.16 ms）。
+- **`ConfigManager.resolve_config_uris()` 自動展開**：`ConfigManager.load()` 預設自動遞迴解析字典與陣列中的語意 URI，使模組設定檔能無縫使用 `project://` 或 `cache://` 協定。
+- **快取管理終端工具鏈 (`yscb_cli.py cache status / clean`)**：新增 `cache status` 模組快取容量統計表格與 `cache clean <module> [--all]` 清理工具，並於模組卸載 (`remove`) 時自動連動清理快取空間。
+- **CLI URI 診斷與健康巡檢工具 (`yscb_cli.py uri check / list / resolve / to-uri`)**：支援全協議健康度診斷、實體路徑逆向轉譯與沙盒逃逸測試。
+- **主執行器三位一體公理 ([ARCH:DR-EXEC-01])**：確立 `yscb_config.json`、`yscb_installer.py` 與 `yscb_cli.py` 必須共生於同一目錄，自升級以當前實體路徑為主，其餘受管資產全面錨定 `paths.yscb_root`。
+- **全量完備性回歸測試套件**：新增 `test/test_uri_completeness.py` (FT-01~08, ET-01~07, PT-01)，全專案測試覆蓋增至 77/77 項單元/整合測試與下游沙盒 E2E 100% Passed。
+
+### Changed
+- **模組快取命名空間升級與自動平滑遷移**：`ide_sync.py` 快取路徑升級為 `cache://agents-workflow/`，啟動時自動將舊版根目錄快取檔案平滑遷移至模組命名空間。
+- **版本遞進**：`core` v2.2.0 ➔ v2.3.0、`agents-workflow` v1.1.0 ➔ v1.2.0、`installer` (CLI) v2.2.0 ➔ v2.3.1。
+
+---
+
 ## 2026_08_23_extensibility_reliability_hardening
 
 ### Fixed

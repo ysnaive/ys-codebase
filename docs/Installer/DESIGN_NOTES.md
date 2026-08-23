@@ -88,4 +88,23 @@ last_updated: "2026-08-22"
 - **防呆設計**：
   動態合成引擎在輸出具體化文檔（`workflows/*.md` 及 `.agents/workflows/*.md`）前，強制執行 `SOPSynthesizer.strip_slot_markers()` 正則清除所有 Slot 標記，保證對外文檔 100% 純淨無語法殘留。
 
+---
+
+### 9. 主執行器三位一體公理與自更新定位 (DN-09)
+> [!IMPORTANT]
+> [ARCH:DR-EXEC-01] 定義：`yscb_config.json`、`yscb_installer.py` 與 `yscb_cli.py` 為本專案三大核心主執行器檔案，必須共生於同一實體目錄下。
+
+- **邊界約束**：
+  - `installer self-update` / `cli` 自更新時，強制以當前正在執行的腳本實體檔案位置為主進行原子覆蓋。
+  - 其餘所有受管理資產（`modules/`, `source/`, `build/`, `.yscb_cache/`）100% 依 `yscb_config.json` 宣告之 `paths.yscb_root` 運行，達成完美的執行器與資產空間解耦。
+
+---
+
+### 10. 遠端 Git 鏡像快取目錄空間隔離 (DN-10)
+> [!CAUTION]
+> [ARCH:DR-CACHE-02] 若將遠端 Git 倉庫直接 Clone 至 `.yscb_cache` 根目錄，會導致 `.yscb_cache/modules/` 與 `.yscb_cache/backup/` 被 Git 視為 Working Tree Untracked Files；在 `git pull` 失敗觸發 `sync_cache(force_refresh=True)` 時引發 `shutil.rmtree` 將所有模組快取與歷史快照備份一併抹除。
+
+- **解決方案**：
+  `GitRemoteClient.cache_dir` 強制隔離收斂至 `yscb://.yscb_cache/mirror/`，使 Git 鏡像與模組執行期快取（`cache://`）、備份快照（`backup/`）及暫存區（`temp://`）達成 100% 空間職責分離。
+
 

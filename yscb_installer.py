@@ -36,7 +36,7 @@ CONFIG_FILENAME = "yscb_config.json"
 LOCAL_CONFIG_FILENAME = "yscb_config.local.json"
 TEMPLATE_CONFIG_FILENAME = "yscb_config.template.json"
 CACHE_DIRNAME = ".yscb_cache"
-INSTALLER_VERSION = "2.2.0"
+INSTALLER_VERSION = "2.3.1"
 
 
 def extract_installer_version(script_path: Path) -> Optional["SemVer"]:
@@ -399,6 +399,11 @@ class ConfigManager:
 
     def get_yscb_root(self) -> Path:
         """取得 YSCB 工具庫根目錄 (yscb_root) 的絕對 Path"""
+        cfg = self.load()
+        rel = cfg.get("paths", {}).get("yscb_root", ".")
+        proj_root = self.get_project_root()
+        if rel and rel != "!undefined":
+            return (proj_root / rel).resolve()
         return self.root_dir.resolve()
 
     def load(self, include_local: bool = True) -> Dict[str, Any]:
@@ -484,7 +489,7 @@ class GitRemoteClient:
         self.root_dir = root_dir
         self.repo = repo
         self.branch = branch
-        self.cache_dir = root_dir / CACHE_DIRNAME
+        self.cache_dir = root_dir / CACHE_DIRNAME / "mirror"
 
     def is_git_available(self) -> bool:
         return shutil.which("git") is not None
@@ -583,6 +588,51 @@ class ModuleManager:
         self.config_mgr = config_mgr
         self.git_client = git_client
 
+    @property
+    def yscb_root(self) -> Path:
+        """取得 YSCB 工具庫根目錄 (yscb://)"""
+        return self.config_mgr.get_yscb_root()
+
+    def clean_module_cache(self, module_name: str) -> bool:
+        """清理指定模組之命名空間快取目錄 (yscb://.yscb_cache/modules/<module_name>/)"""
+        cache_dir = self.yscb_root / CACHE_DIRNAME / "modules" / module_name
+        if cache_dir.is_dir():
+            try:
+                shutil.rmtree(cache_dir, ignore_errors=True)
+                print(f"[CACHE] 已清理模組 '{module_name}' 專屬快取目錄：{cache_dir}")
+                return True
+            except Exception as e:
+                print(f"[WARN] 清理模組快取失敗 ({module_name}): {e}")
+        return False
+
+    def clean_cache(self, module_name: Optional[str] = None, clean_all: bool = False) -> bool:
+        """清理指定模組或全域快取"""
+        if module_name:
+            return self.clean_module_cache(module_name)
+        if clean_all:
+            cache_dir = self.yscb_root / CACHE_DIRNAME
+            if cache_dir.is_dir():
+                shutil.rmtree(cache_dir, ignore_errors=True)
+                print(f"[CACHE] 已清理所有工具庫快取：{cache_dir}")
+                return True
+        return False
+
+    def get_cache_status(self) -> Dict[str, Dict[str, Any]]:
+        """統計各模組快取檔案數量與佔用空間"""
+        status: Dict[str, Dict[str, Any]] = {}
+        modules_cache_root = self.yscb_root / CACHE_DIRNAME / "modules"
+        if modules_cache_root.is_dir():
+            for mod_dir in modules_cache_root.iterdir():
+                if mod_dir.is_dir():
+                    files = [f for f in mod_dir.rglob("*") if f.is_file()]
+                    total_size = sum(f.stat().st_size for f in files)
+                    status[mod_dir.name] = {
+                        "path": str(mod_dir),
+                        "file_count": len(files),
+                        "size_bytes": total_size
+                    }
+        return status
+
     def _broadcast_modules_changed(self, changes: List[Tuple[str, str]]) -> None:
         """
         於整批安裝/更新/移除事務完成後，單次向所有具備 Hook 之已安裝模組派發廣播。
@@ -598,9 +648,9 @@ class ModuleManager:
 
         for mod_name, mod_info in installed_dict.items():
             mode = mod_info.get("mode", "build")
-            mod_dir = self.root_dir / ("source" if mode == "source" else "modules") / mod_name
+            mod_dir = self.yscb_root / ("source" if mode == "source" else "modules") / mod_name
             if not mod_dir.is_dir():
-                mod_dir = self.root_dir / "modules" / mod_name
+                mod_dir = self.yscb_root / "modules" / mod_name
             hook_script = mod_dir / "scripts" / "_on_modules_changed.py"
             if not hook_script.is_file():
                 hook_script = mod_dir / "_on_modules_changed.py"
@@ -609,16 +659,17 @@ class ModuleManager:
                 print(f"[HOOK] 執行 '{mod_name}' 生命週期連動 Hook: {hook_script.name}...")
                 try:
                     cmd = [sys.executable, str(hook_script)] + arg_payload
-                    res = subprocess.run(cmd, cwd=str(self.root_dir), timeout=120)
+                    res = subprocess.run(cmd, cwd=str(self.yscb_root), timeout=120)
                     if res.returncode != 0:
                         print(f"[WARN] Hook _on_modules_changed.py 執行返回非 0 狀態碼 ({mod_name}): {res.returncode}")
                 except Exception as e:
                     print(f"[WARN] 呼叫 _on_modules_changed.py Hook 失敗 ({mod_name}): {e}")
 
     def _get_source_dir(self, use_cache: bool = False) -> Path:
-
         if not use_cache:
             for candidate in [
+                self.yscb_root / "source",
+                self.yscb_root / "ys_codebase" / "source",
                 self.root_dir / "source",
                 self.root_dir / "ys_codebase" / "source",
                 self.root_dir.parent / "ys_codebase" / "source"
@@ -631,11 +682,13 @@ class ModuleManager:
         ]:
             if cache_candidate.is_dir():
                 return cache_candidate
-        return self.root_dir / "source"
+        return self.yscb_root / "source"
 
     def _get_build_dir(self, use_cache: bool = False) -> Path:
         if not use_cache:
             for candidate in [
+                self.yscb_root / "build",
+                self.yscb_root / "ys_codebase" / "build",
                 self.root_dir / "build",
                 self.root_dir / "ys_codebase" / "build",
                 self.root_dir.parent / "ys_codebase" / "build"
@@ -648,7 +701,7 @@ class ModuleManager:
         ]:
             if cache_candidate.is_dir():
                 return cache_candidate
-        return self.root_dir / "build"
+        return self.yscb_root / "build"
 
     def read_manifest(self, module_path: Path) -> Dict[str, Any]:
         manifest_file = module_path / "manifest.json"
@@ -784,6 +837,8 @@ class ModuleManager:
         
         # 1. 本地目錄搜尋候選
         candidates = [
+            self.yscb_root / target_sub / module_name,
+            self.yscb_root / "ys_codebase" / target_sub / module_name,
             self.root_dir / target_sub / module_name,
             self.root_dir / "ys_codebase" / target_sub / module_name,
             self.root_dir.parent / "ys_codebase" / target_sub / module_name
@@ -885,9 +940,9 @@ class ModuleManager:
         old_version = old_info.get("version") if old_info else None
 
         if mode == "source":
-            dest_path = self.root_dir / "source" / module_name
+            dest_path = self.yscb_root / "source" / module_name
         else:
-            dest_path = self.root_dir / "modules" / module_name
+            dest_path = self.yscb_root / "modules" / module_name
 
         # ── Stage 2: Staging & Snapshot Backup (建立舊版快照備份) ────────
         backup_dir: Optional[Path] = None
@@ -897,7 +952,7 @@ class ModuleManager:
             # 建立快照備份
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             old_ver_tag = old_version or "unknown"
-            backup_dir = self.root_dir / CACHE_DIRNAME / "backup" / f"{module_name}_{old_ver_tag}_{timestamp}"
+            backup_dir = self.yscb_root / CACHE_DIRNAME / "backup" / f"{module_name}_{old_ver_tag}_{timestamp}"
             try:
                 backup_dir.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(dest_path, backup_dir, dirs_exist_ok=True)
@@ -1051,7 +1106,7 @@ class ModuleManager:
 
         mod_info = installed[module_name]
         mode = mod_info.get("mode", "build")
-        target_dir = self.root_dir / ("source" if mode == "source" else "modules") / module_name
+        target_dir = self.yscb_root / ("source" if mode == "source" else "modules") / module_name
 
         if target_dir.exists():
             # 執行 _uninstall.py Hook
@@ -1070,13 +1125,16 @@ class ModuleManager:
             shutil.rmtree(target_dir, ignore_errors=True)
             print(f"[INFO] 已清理模組目錄：{target_dir}")
 
+        # 連動清理模組專屬命名空間快取
+        self.clean_module_cache(module_name)
+
         self.config_mgr.remove_installed_module(module_name)
         print(f"[SUCCESS] 模組 '{module_name}' 已成功移除。")
         return True
 
     def list_module_backups(self, module_name: str) -> List[Path]:
         """列出指定模組於 .yscb_cache/backup/ 之可用快照備份（依時間新至舊排序）"""
-        backup_root = self.root_dir / CACHE_DIRNAME / "backup"
+        backup_root = self.yscb_root / CACHE_DIRNAME / "backup"
         if not backup_root.is_dir():
             return []
         backups = [d for d in backup_root.iterdir() if d.is_dir() and d.name.startswith(f"{module_name}_")]
@@ -1113,7 +1171,7 @@ class ModuleManager:
 
         installed = self.config_mgr.load(include_local=False).get("installed_modules", {})
         mode = installed.get(module_name, {}).get("mode", "build")
-        dest_path = self.root_dir / ("source" if mode == "source" else "modules") / module_name
+        dest_path = self.yscb_root / ("source" if mode == "source" else "modules") / module_name
 
         self._rollback_snapshot(dest_path, target_backup)
 
@@ -1135,7 +1193,11 @@ class ModuleManager:
             raise FileNotFoundError(f"找不到模組 '{module_name}' 的源碼目錄，無法執行 build。")
 
         # 決定 build 產出目標目錄
-        if (self.root_dir / "source" / module_name).is_dir():
+        if (self.yscb_root / "source" / module_name).is_dir():
+            dest_path = self.yscb_root / "build" / module_name
+        elif (self.yscb_root / "ys_codebase" / "source" / module_name).is_dir():
+            dest_path = self.yscb_root / "ys_codebase" / "build" / module_name
+        elif (self.root_dir / "source" / module_name).is_dir():
             dest_path = self.root_dir / "build" / module_name
         elif (self.root_dir / "ys_codebase" / "source" / module_name).is_dir():
             dest_path = self.root_dir / "ys_codebase" / "build" / module_name
@@ -1143,7 +1205,7 @@ class ModuleManager:
             dest_path = self.root_dir.parent / "ys_codebase" / "build" / module_name
         else:
             # 源碼來自遠端快取 (.yscb_cache) 等其他位置時，回退至本地 build/ 輸出
-            dest_path = self.root_dir / "build" / module_name
+            dest_path = self.yscb_root / "build" / module_name
         # 確保建置前徹底清理既有目標目錄，杜絕歷史殘留檔案
         if dest_path.exists():
             shutil.rmtree(dest_path, ignore_errors=True)
@@ -1491,6 +1553,14 @@ def main():
     rollback_parser.add_argument("--list", action="store_true", dest="list_only", help="僅列出可用快照備份清單")
     rollback_parser.add_argument("--to", dest="backup_name", help="指定還原的快照備份名稱（預設為最近一份）")
 
+    # 13. cache
+    cache_parser = subparsers.add_parser("cache", help="管理與清理工具庫快取")
+    cache_sub = cache_parser.add_subparsers(dest="cache_action")
+    cache_clean_p = cache_sub.add_parser("clean", help="清理指定模組或全域快取")
+    cache_clean_p.add_argument("module", nargs="?", help="欲清理快取的模組名稱")
+    cache_clean_p.add_argument("--all", action="store_true", help="清理所有模組與全域快取")
+    cache_status_p = cache_sub.add_parser("status", help="檢視模組快取佔用狀態")
+
 
     args, unknown = parser.parse_known_args()
 
@@ -1622,6 +1692,7 @@ def main():
             print("=" * 70)
             print(f"  遠端庫: {remote_info.get('repo', DEFAULT_REPO)} ({remote_info.get('branch', DEFAULT_BRANCH)})")
             print(f"  設定檔: {root_dir / CONFIG_FILENAME}")
+            print(f"  工具庫: {module_mgr.yscb_root}")
             print("-" * 70)
             if not installed:
                 print("  [!] 當前未安裝任何模組。")
@@ -1630,10 +1701,10 @@ def main():
                 print("  " + "-" * 66)
                 for mod, info in installed.items():
                     m_mode = info.get("mode", "build")
-                    mod_dir = root_dir / ("source" if m_mode == "source" else "modules") / mod
+                    mod_dir = module_mgr.yscb_root / ("source" if m_mode == "source" else "modules") / mod
                     dir_state = "[OK]" if mod_dir.is_dir() else "[MISSING]"
                     print(f"  {mod:<20} | {m_mode:<10} | {info.get('version', '1.0.0'):<10} | {dir_state:<10} | {info.get('installed_at', '-')}")
-                if any(not (root_dir / ("source" if i.get("mode") == "source" else "modules") / m).is_dir() for m, i in installed.items()):
+                if any(not (module_mgr.yscb_root / ("source" if i.get("mode") == "source" else "modules") / m).is_dir() for m, i in installed.items()):
                     print("  " + "-" * 66)
                     print("  [!] 偵測到 [MISSING] 孤兒紀錄：模組目錄已不存在。可執行 'install <module> --force' 重新安裝或 'remove <module>' 清除紀錄。")
             print("=" * 70 + "\n")
@@ -1668,6 +1739,22 @@ def main():
                 module_mgr._broadcast_modules_changed([("removed", args.module)])
             return 0
 
+        elif args.subcommand == "cache":
+            action = getattr(args, "cache_action", None)
+            if action == "clean":
+                module_mgr.clean_cache(module_name=getattr(args, "module", None), clean_all=getattr(args, "all", False))
+                return 0
+            else:
+                st = module_mgr.get_cache_status()
+                print(f"\n[CACHE STATUS] 模組專屬快取佔用統計 ({module_mgr.yscb_root / CACHE_DIRNAME / 'modules'}):")
+                if not st:
+                    print("  [INFO] 目前無任何模組快取目錄。")
+                else:
+                    for mod, info in sorted(st.items()):
+                        kb = info['size_bytes'] / 1024
+                        print(f"  • {mod:<20} : {info['file_count']} 個檔案 ({kb:.2f} KB) ➔ {info['path']}")
+                print()
+                return 0
 
         elif args.subcommand == "diff":
             module_mgr.diff_modules(args.modules)
