@@ -6,7 +6,7 @@ import os
 import sys
 import json
 from pathlib import Path
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Union, Dict, Any, List, Tuple
 
 
 class ProjectContext:
@@ -173,3 +173,52 @@ class ProjectContext:
             return p
         base = Path(base_dir).resolve() if base_dir else cls.get_project_root()
         return (base / p).resolve()
+
+    @classmethod
+    def get_all_installed_manifests(cls, start_dir: Optional[Union[str, Path]] = None) -> Dict[str, Tuple[Path, Dict[str, Any]]]:
+        """
+        掃描所有已安裝模組 (modules/) 與源碼模組 (source/) 之 manifest.json。
+        回傳: Dict[mod_name, Tuple(mod_dir, manifest_dict)]
+        """
+        proj_root = cls.get_project_root(start_dir)
+        results: Dict[str, Tuple[Path, Dict[str, Any]]] = {}
+
+        candidate_roots = [
+            proj_root / "modules",
+            proj_root / "source",
+            proj_root / "ys_codebase" / "modules",
+            proj_root / "ys_codebase" / "source",
+        ]
+
+        for root in candidate_roots:
+            if root.is_dir():
+                for mod_dir in root.iterdir():
+                    if mod_dir.is_dir():
+                        manifest_path = mod_dir / "manifest.json"
+                        if manifest_path.is_file() and mod_dir.name not in results:
+                            try:
+                                with open(manifest_path, "r", encoding="utf-8") as f:
+                                    data = json.load(f)
+                                if isinstance(data, dict):
+                                    mod_name = data.get("name", mod_dir.name)
+                                    results[mod_name] = (mod_dir.resolve(), data)
+                            except Exception:
+                                pass
+        return results
+
+    @classmethod
+    def get_contributions(cls, namespace: str, start_dir: Optional[Union[str, Path]] = None) -> List[Tuple[str, Path, Dict[str, Any]]]:
+        """
+        安全掃描所有已安裝/源碼模組中，宣告於指定 namespace 之貢獻內容。
+        回傳: List of Tuple(模組名稱, 模組實體目錄路徑, 貢獻 Payload 字典)
+        """
+        results: List[Tuple[str, Path, Dict[str, Any]]] = []
+        manifests = cls.get_all_installed_manifests(start_dir)
+        for mod_name, (mod_dir, manifest) in manifests.items():
+            contributes = manifest.get("contributes")
+            if isinstance(contributes, dict) and namespace in contributes:
+                payload = contributes[namespace]
+                if isinstance(payload, dict):
+                    results.append((mod_name, mod_dir, payload))
+        return results
+

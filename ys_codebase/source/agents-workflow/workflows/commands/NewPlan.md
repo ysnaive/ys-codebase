@@ -174,6 +174,7 @@ flowchart TD
    - 標準情況：Agent 作為知識顧問提問釐清，持續補充 `P00` 的「開放議題紀錄」欄位。
    - **高複雜度/跨度大需求**：若需求涉及全新架構、多維度可行性驗證或資產大規模遷移，依 [Research.md](./Research.md) 啟動特化調研，針對各技術主題產出自由論證格式之專題調研報告，統一採用前綴命名 **`R{n:2d}_{topic}.md`**（例：`R01_architecture_reference.md`）。調研結論收斂回填至 `P00` 與主計畫路線圖。
 4. **等待討論結束宣告**：開發者明確表示討論結束後，Agent 整理並最終化 `P00`，呈遞給開發者確認。
+<!-- YSCB_SLOT:Phase0 -->
 
 → **Checkpoint** → 開發者確認 P00 內容正確（狀態更新為 `Confirmed`）
 
@@ -202,6 +203,7 @@ flowchart TD
    - 頂部 Header `> 擴充項目：` 剛性同步已納入之 Extension 名稱（或標記 `none`）。
 5. **查閱踩坑紀錄**：主動查閱相關模組在 `docs://` 及 `DESIGN_NOTES.md` 中的 `[!CAUTION]` 或 `[!WARNING]`。
 6. 於 `changelog.md` 記錄本階段決策。
+<!-- YSCB_SLOT:Phase1 -->
 
 → **Checkpoint** → 開發者確認（狀態更新為 `Confirmed`） → 進入 Phase 2
 
@@ -217,6 +219,7 @@ flowchart TD
 2. 繪製循序圖或資料流圖。
 3. 盤點受影響的模組與檔案清單。
 4. **Test-First 初始化**：依 `workflows/templates/P06_test_plan.md` 建立初始草稿 `P06_test_plan.md`（標記為 `Draft`），預先將 FR/EC 映射為測試項目。
+<!-- YSCB_SLOT:Phase2 -->
 
 → **Checkpoint** → 開發者確認（狀態更新為 `Confirmed`） → 進入 Phase 3
 
@@ -232,6 +235,7 @@ flowchart TD
 2. 定義型態簽名、命名風格與物理/數學顯式單位。
 3. 定義依賴拓撲（實作順序）。
 4. **執行 Extension 擴充**：若專案定義了 `P03_*_ext.md`，於標準步驟完成後執行擴充檢查並於 Header `> 擴充項目：` 宣告。
+<!-- YSCB_SLOT:Phase3 -->
 
 → **Checkpoint** → 開發者確認（狀態更新為 `Confirmed`） → 進入 Phase 4
 
@@ -258,6 +262,7 @@ flowchart TD
 4. **靈魂拷問 (Stress Test)**：Agent 主動扮演架構審查員，提出至少 1 個尖銳且具建設性的問題，開發者回答後方可繼續。
 5. **產出最終計畫書**：依 `workflows/templates/P04_implementation_plan.md` 模板彙整 DR 與實作細節，狀態更新為 `Confirmed`。
 6. **Test-First 定稿**：同步審查並定稿 `workflows/templates/P06_test_plan.md`，狀態更新為 `Confirmed`。
+<!-- YSCB_SLOT:Phase4 -->
 
 → **Checkpoint** → 開發者確認「開始實作」 → 進入 Phase 5
 
@@ -280,6 +285,7 @@ flowchart TD
    - 🚨 **Critical**（影響 Public API / 架構 / 跨模組依賴）：**立即停止實作**，向開發者回報並退回 Phase 1~4 修正計畫。
    - ⚠️ **Major**（不影響 Public API 但影響內部模組邏輯）：暫停當前項目並向開發者回報確認。
    - ℹ️ **Minor**（不影響架構之細微調整）：自行處理並詳細記錄於 `P05_task.md` 的偏差紀錄表。
+<!-- YSCB_SLOT:Phase5 -->
 
 → 所有 TODO 項目完成 → 進入 Phase 6
 
@@ -294,12 +300,13 @@ flowchart TD
 1. **自動化測試執行**：執行 CLI 編譯與單元測試，記錄輸出日誌。若命令受阻，標記 `[未實機編譯/僅靜態檢查]`。
 2. **人工 / UX / 硬體驗證 Checkpoint（強制等待）**：
    - Agent **絕對禁止**代勾或自行標記 `Passed`。
-   - 呈遞測試結果，明確詢問開發者進行實際互動/視覺/實機驗證。
+   - 呈遞測試結果，明確詢問開發者進行實際互動/視覺/硬體驗證。
    - 獲得開發者明確回覆「驗證通過」後，方可將 P06 標記為 `Passed`。
 3. **Bug 修復子循環與衍生子計畫**：
    - **實作錯誤**：修復後重新執行受影響測試。
    - **計畫缺陷**：回退 Phase 1~4 修正計畫後再修復。
    - **衍生問題或擴充優化**：若非當前範疇，開立「模式 A：衍生型子計畫 (`sub_XX`)」處理。
+<!-- YSCB_SLOT:Phase6 -->
 
 → 所有測試 Passed + 開發者驗證確認 → 進入 Phase 7
 
@@ -319,6 +326,7 @@ flowchart TD
 3. **產出變更摘要**：依 `workflows/templates/P07_walkthrough.md` 模板撰寫變更摘要，包含「知識庫文檔交付驗收對齊表」。
 4. **產出 Commit 訊息**：依 Conventional Commits 格式（`<type>(<scope>): <標題>`）產出。
 5. **目錄保留原位**：工作目錄維持原位，僅在開發者明確指示時呼叫 `python yscb_cli.py agents-workflow archive <plan_id>` 歸檔。
+<!-- YSCB_SLOT:Phase7 -->
 
 → 開發者確認審查通過 → ✅ 開發完成
 

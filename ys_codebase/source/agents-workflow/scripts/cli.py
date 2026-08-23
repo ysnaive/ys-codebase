@@ -42,6 +42,18 @@ from config_utils import (
     DEFAULT_AGENTS_MD_PATH,
 )
 
+from ext_registry import ExtensionRegistry
+from ide_sync import IDECacheTracker
+from sop_synthesizer import SOPSynthesizer
+
+try:
+    from yscb_core import ProjectContext
+except ImportError:
+    core_scripts = MODULE_DIR.parent / "core" / "scripts"
+    if core_scripts.is_dir() and str(core_scripts) not in sys.path:
+        sys.path.insert(0, str(core_scripts))
+    from context import ProjectContext
+
 
 def load_module_config() -> Dict[str, Any]:
     """載入本地運行期個人模組設定 (config.local.json)"""
@@ -61,7 +73,8 @@ CORE_WORKFLOW_FILES = [
     "Idea.md",
     "Pause.md",
     "Research.md",
-    "Review.md"
+    "Review.md",
+    "DocumentationStandards.md"
 ]
 
 def get_core_workflow_files() -> List[str]:
@@ -110,48 +123,23 @@ def locate_antigravity_target_dir() -> Path:
 
 
 def clear_ide_commands(ide_name: Optional[str] = None) -> int:
-    """清理已生成的 IDE 引用式指令檔案，並同步更新 config.local.json"""
+    """清理已生成的 IDE 引用式指令檔案，並同步更新 config.local.json 與 IDECacheTracker"""
+    proj_root = get_workspace_root(MODULE_DIR)
+    tracker = IDECacheTracker(proj_root)
+    cleaned_files = tracker.clean_orphans([])
+    
     mod_config = load_module_config()
     integrations = mod_config.get("ide_integrations", {})
 
-    if not integrations:
-        print("[IDE:Clear] 目前無任何由 IDE 生成器產生的檔案需要清理。")
-        return 0
-
     target_ides = [ide_name] if (ide_name and ide_name in integrations) else list(integrations.keys())
-    if not target_ides or (ide_name and ide_name not in integrations):
-        print(f"[IDE:Clear] 查無 IDE '{ide_name}' 的歷史生成紀錄。")
-        return 0
-
-    total_cleaned = 0
     for current_ide in list(target_ides):
-        ide_info = integrations.get(current_ide, {})
-        gen_files = ide_info.get("generated_files", [])
-        raw_target_dir = ide_info.get("absolute_target_dir") or ide_info.get("target_dir")
-        if not raw_target_dir:
-            continue
-
-        target_dir = Path(raw_target_dir)
-        if not target_dir.is_absolute():
-            target_dir = (MODULE_DIR / target_dir).resolve()
-
-        removed_count = 0
-        for fname in gen_files:
-            file_to_del = target_dir / fname
-            if file_to_del.is_file():
-                try:
-                    file_to_del.unlink()
-                    removed_count += 1
-                except Exception as e:
-                    print(f"[WARN] 無法刪除檔案 {file_to_del}: {e}")
-
-        print(f"[IDE:Clear] 已清理 {current_ide.capitalize()} 歷史生成的 {removed_count} 個指令檔案 (目錄: {target_dir})。")
-        total_cleaned += removed_count
-        del integrations[current_ide]
+        if current_ide in integrations:
+            del integrations[current_ide]
 
     mod_config["ide_integrations"] = integrations
     save_module_config(mod_config)
-    print(f"[SUCCESS] IDE 指令清理作業完成，共移除 {total_cleaned} 個檔案。")
+    tracker.save_manifest([])
+    print(f"[SUCCESS] IDE 指令清理作業完成，共移除 {len(cleaned_files)} 個檔案。")
     return 0
 
 
@@ -204,30 +192,47 @@ def build_jit_uri_header(target_dir: Path, core_file: Path) -> str:
 
 
 def generate_antigravity_ide_commands(prefix: str = "", postfix: str = "") -> int:
-    """為 Antigravity / Gemini IDE 生成引用式指令文件，生成前自動清理舊有指令並更新 config.local.json"""
-    # 1. 檢查並自動清理先前 antigravity / gemini 生成的指令
-    mod_config = load_module_config()
-    integrations = mod_config.get("ide_integrations", {})
-    if "antigravity" in integrations or "gemini" in integrations:
-        print(f"[IDE:Antigravity] 偵測到先前已存在生成紀錄，先執行舊檔案自動清理...")
-        clear_ide_commands("antigravity")
-        clear_ide_commands("gemini")
-        mod_config = load_module_config()
+    """為 Antigravity / Gemini IDE 生成指令文件，整合連動合成與 IDECacheTracker 孤兒檔案清理"""
+    # 0. 先執行 workflows/ 連動動態合成
+    try:
+        from _on_modules_changed import synthesize_all_workflows
+        synthesize_all_workflows()
+    except Exception as e:
+        print(f"[WARN] 動態連動合成失敗: {e}")
 
+    proj_root = get_workspace_root(MODULE_DIR)
+    tracker = IDECacheTracker(proj_root)
     target_dir = locate_antigravity_target_dir()
+
     print(f"\n[IDE:Antigravity] 正在生成 Google Antigravity 工作流指令 (全量鏡像 + JIT 語意解析注入)...")
     print(f"  • 目標目錄: {target_dir}")
     print(f"  • 前綴 (Prefix): '{prefix}'")
     print(f"  • 後綴 (Postfix): '{postfix}'")
     print("-" * 75)
 
-    generated_files = []
+    # 收集跨模組 patches
+    contributions = ProjectContext.get_contributions("agents-workflow", start_dir=MODULE_DIR)
+    all_patches_by_sop: Dict[str, list] = {}
+    for mod_name, mod_dir, payload in contributions:
+        if isinstance(payload, dict):
+            for patch in payload.get("sop_patches", []):
+                if isinstance(patch, dict) and patch.get("target_sop"):
+                    ts = patch["target_sop"]
+                    if ts not in all_patches_by_sop:
+                        all_patches_by_sop[ts] = []
+                    all_patches_by_sop[ts].append((patch, mod_dir))
+
+    generated_files: List[Path] = []
     core_wf_files = get_core_workflow_files()
 
     for wf_name in core_wf_files:
-        core_file = WORKFLOWS_DIR / wf_name
-        if not core_file.is_file():
-            print(f"[WARN] 找不到核心工作流檔案：{core_file}，略過。")
+        cmd_file = MODULE_DIR / "workflows" / "commands" / wf_name
+        if cmd_file.is_file():
+            core_file = cmd_file
+        elif (WORKFLOWS_DIR / wf_name).is_file():
+            core_file = WORKFLOWS_DIR / wf_name
+        else:
+            print(f"[WARN] 找不到工作流檔案：{wf_name}，略過。")
             continue
 
         stem = core_file.stem
@@ -238,60 +243,59 @@ def generate_antigravity_ide_commands(prefix: str = "", postfix: str = "") -> in
         raw_content = core_file.read_text(encoding="utf-8")
         desc = extract_description(core_file)
 
-        # 提取內文主體並標準化 Frontmatter
         body = raw_content
         if body.startswith("---"):
             parts = body.split("---", 2)
             if len(parts) >= 3:
                 body = parts[2].lstrip("\r\n")
 
-        # 替換正文內部對其他 workflow 的相對連結
+        # 執行 Slot 補丁動態注入
+        for patch_dict, mod_root in all_patches_by_sop.get(wf_name, []):
+            body = SOPSynthesizer.synthesize_sop(body, [patch_dict], mod_root)
+
         for other_wf in core_wf_files:
             o_stem = Path(other_wf).stem
-            o_target = f"{prefix}{o_stem}{postfix}.md"
-            body = body.replace(f"./workflows/{other_wf}", f"./{o_target}")
-            body = body.replace(f"./{other_wf}", f"./{o_target}")
-            body = body.replace(f"({other_wf})", f"({o_target})")
+            other_cmd = f"{prefix}{o_stem}{postfix}"
+            body = body.replace(f"./{other_wf}", f"./{other_cmd}.md")
+            body = body.replace(f"./{o_stem}.md", f"./{other_cmd}.md")
 
+        clean_body = SOPSynthesizer.strip_slot_markers(body)
         jit_header = build_jit_uri_header(target_dir, core_file)
-        clean_desc = desc.replace('"', '\\"')
-        content = f"""---
-name: "{cmd_name}"
-description: "{clean_desc}"
+
+        final_content = f"""---
+description: {desc}
 ---
 
 {jit_header}
----
+{clean_body}"""
 
-{body}
-"""
-        target_file.write_text(content, encoding="utf-8")
-        generated_files.append(target_filename)
-        print(f"  [+] 已生成指令: {target_filename} (含 JIT 語意地圖)")
+        target_file.write_text(final_content, encoding="utf-8")
+        generated_files.append(target_file)
+        print(f"  [+] 已生成: {target_file.name}")
 
-    try:
-        rel_target_dir = os.path.relpath(target_dir, MODULE_DIR).replace("\\", "/")
-    except ValueError:
-        rel_target_dir = str(target_dir).replace("\\", "/")
+    # 自動清理不再產出的孤兒指令檔案
+    deleted_orphans = tracker.clean_orphans(generated_files)
+    if deleted_orphans:
+        for orphan in deleted_orphans:
+            print(f"  [-] 已清理孤兒指令: {orphan.name}")
 
+    # 儲存快取紀錄
+    tracker.save_manifest(generated_files)
+
+    # 同步更新 config.local.json
+    mod_config = load_module_config()
     if "ide_integrations" not in mod_config:
         mod_config["ide_integrations"] = {}
-
     mod_config["ide_integrations"]["antigravity"] = {
-        "target_dir": rel_target_dir,
-        "absolute_target_dir": str(target_dir),
-        "prefix": prefix,
-        "postfix": postfix,
-        "generated_files": generated_files,
-        "generated_at": datetime.datetime.now().isoformat(timespec="seconds")
+        "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "target_dir": str(target_dir.relative_to(proj_root)).replace("\\", "/"),
+        "absolute_target_dir": str(target_dir).replace("\\", "/"),
+        "generated_files": [f.name for f in generated_files]
     }
     save_module_config(mod_config)
 
     print("-" * 75)
-    print(f"[SUCCESS] Antigravity 工作流指令生成完成！共 {len(generated_files)} 個指令。")
-    print(f"  • 目標目錄: {target_dir}")
-    print(f"  • 提示: 若 IDE Chat UI 尚未出現選單，請使用 Ctrl+Shift+P 執行 'Developer: Reload Window' 或開啟新對話。")
-    print(f"  • 設定檔已記錄至: {MODULE_DIR / 'config.local.json'}\n")
+    print(f"[SUCCESS] Antigravity 工作流指令生成完成！共寫入 {len(generated_files)} 個指令，清理 {len(deleted_orphans)} 個孤兒檔案。")
     return 0
 
 
@@ -300,80 +304,39 @@ generate_gemini_ide_commands = generate_antigravity_ide_commands
 
 
 def discover_all_extensions() -> List[Dict[str, Any]]:
-    """掃描所有可用 SOP 擴充 (從 sop_ext://, workflows/extensions, .agents/extensions)"""
+    """透過 ExtensionRegistry 掃描所有可用 SOP 擴充"""
+    registry = ExtensionRegistry.discover_all(ProjectContext)
     results = []
-    seen_names = set()
+    for name, info in sorted(registry.items()):
+        source_type = info.get("source_type", "module")
+        mod_name = info.get("module_name")
+        if source_type == "sop_ext":
+            source_tag = "[sop_ext]"
+        else:
+            source_tag = f"[module: {mod_name}]" if mod_name else "[module]"
 
-    proj_root = get_workspace_root(MODULE_DIR)
-    
-    # 候選搜尋目錄
-    search_dirs = []
-    
-    # 1. 讀取專案設定之 extensions_dir
-    try:
-        ext_p = get_extensions_dir(MODULE_DIR)
-        if ext_p and ext_p.is_dir():
-            search_dirs.append((ext_p, "sop_ext://"))
-    except Exception:
-        pass
-
-    # 2. 模組內建 workflows/extensions
-    builtin_ext = MODULE_DIR / "workflows" / "extensions"
-    if builtin_ext.is_dir():
-        search_dirs.append((builtin_ext, "builtin (workflows/extensions)"))
-
-    # 3. 專案 .agents/extensions
-    dot_agents_ext = proj_root / ".agents" / "extensions"
-    if dot_agents_ext.is_dir():
-        search_dirs.append((dot_agents_ext, ".agents/extensions"))
-
-    import re
-    for d, source_label in search_dirs:
-        for f in sorted(list(d.glob("*.md"))):
-            if f.name == "ext_template.md":
-                continue
-            name = f.stem
-            phase = "All / On-Demand"
-            trigger = "on_demand"
-            desc = ""
-
+        doc_path = info.get("doc_path")
+        desc = ""
+        if doc_path and doc_path.is_file():
             try:
-                content = f.read_text(encoding="utf-8", errors="ignore")
-                fm_match = re.search(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
-                if fm_match:
-                    for line in fm_match.group(1).splitlines():
-                        if ":" in line:
-                            k, v = line.split(":", 1)
-                            k = k.strip().lower()
-                            v = v.strip().strip("[]'\"")
-                            if k == "name":
-                                name = v
-                            elif k == "phase":
-                                phase = v
-                            elif k == "trigger":
-                                trigger = v.lower()
-                            elif k == "description":
-                                desc = v
-                if not desc:
-                    for l in content.splitlines():
-                        if l.startswith("#"):
-                            desc = l.lstrip("#").strip()
-                            break
+                content = doc_path.read_text(encoding="utf-8", errors="ignore")
+                for l in content.splitlines():
+                    if l.startswith("#"):
+                        desc = l.lstrip("#").strip()
+                        break
             except Exception:
                 pass
 
-            if name not in seen_names:
-                seen_names.add(name)
-                results.append({
-                    "name": name,
-                    "file": f.name,
-                    "path": f,
-                    "phase": phase,
-                    "trigger": trigger,
-                    "description": desc or f.stem,
-                    "source": source_label
-                })
-
+        results.append({
+            "name": name,
+            "file": doc_path.name if doc_path else f"{name}.md",
+            "path": doc_path,
+            "script_path": info.get("script_path"),
+            "phase": "All / On-Demand",
+            "trigger": info.get("trigger", "on_demand"),
+            "description": desc or name,
+            "source_tag": source_tag
+        })
     return results
 
 
@@ -389,24 +352,27 @@ def handle_ext_command(args) -> int:
             print("=" * 96 + "\n")
             return 0
 
-        print(f"  {'擴充名稱 (Name)':<24} | {'適用階段 (Phase)':<18} | {'觸發模式 (Trigger)':<16} | {'說明 / 來源'}")
+        print(f"  {'擴充名稱 (Name)':<28} | {'觸發模式 (Trigger)':<16} | {'來源 (Source)':<20} | {'說明'}")
         print("  " + "-" * 92)
         for e in exts:
             trig_str = f"[{e['trigger']}]"
-            desc = e['description'][:40]
-            print(f"  {e['name']:<24} | {e['phase']:<18} | {trig_str:<16} | {desc}")
+            desc = e['description'][:30]
+            print(f"  {e['name']:<28} | {trig_str:<16} | {e['source_tag']:<20} | {desc}")
         print("=" * 96 + "\n")
         return 0
 
     elif args.ext_command == "show":
         target = args.name
-        matched = [e for e in exts if e["name"].lower() == target.lower() or e["file"].lower() == target.lower() or e["path"].stem.lower() == target.lower()]
+        matched = [e for e in exts if e["name"].lower() == target.lower() or e["file"].lower() == target.lower()]
         if not matched:
             print(f"[ERROR] 找不到名為 '{target}' 的 Extension。請執行 'python yscb_cli.py agents-workflow ext list' 檢視可用清單。", file=sys.stderr)
             return 1
         target_ext = matched[0]
-        print(f"\n# 🧩 Extension: {target_ext['name']} (檔案: {target_ext['path'].name})\n")
-        print(target_ext["path"].read_text(encoding="utf-8", errors="replace"))
+        if target_ext.get("path") and target_ext["path"].is_file():
+            print(f"\n# 🧩 Extension: {target_ext['name']} ({target_ext['source_tag']} 檔案: {target_ext['path'].name})\n")
+            print(target_ext["path"].read_text(encoding="utf-8", errors="replace"))
+        else:
+            print(f"\n# 🧩 Extension: {target_ext['name']} ({target_ext['source_tag']})\n無附帶 Markdown 說明文件。")
         return 0
 
     return 0
