@@ -57,6 +57,6 @@ description: 深度歸因與防淺層修復工作流 (Discuss) — 實作/測試
 
 ### 步驟 4：決策固化與恢復執行 (DR & Plan Update)
 - 與開發者達成共識後：
-  1. **記錄決策**：在當前 Dev Plan 的 `FT_plan.md`、`changelog.md` 或對應 Phase 文件中追加一筆標準 **`[DR-XX]` (Decision Record)**。
+  1. **記錄決策**：在當前 Dev Plan 的 `FT_plan.md`、`changelog.md` 或對應 Phase 文件中追加一筆標準 **`[{Phase}:DR-XX]` (Decision Record)**（`{Phase}` 為決策所屬之階段 Token，如 `P01`/`P02`/`P03`/`P04`/`FT`/`UMBRELLA`）。
   2. **更新架構/任務**：若影響架構或工作清單，回填更新 `P02` / `P04` / `P05_task.md`。
   3. **恢復編碼**：重新進入 Phase 5/6 執行根本修復。
