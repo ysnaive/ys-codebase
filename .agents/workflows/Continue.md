@@ -54,7 +54,7 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 | 判定依據 | 計畫層級 / Track | 進入判定分支 |
 | :--- | :--- | :--- |
-| 存在 `umbrella_overview.md` 或 `master_plan_*.md` | **Level 2：Umbrella 分類型主計畫** | ➔ 進入 **步驟 3-U** |
+| 存在 `umbrella_overview.md`（標準命名）或 `master_plan_*.md`（僅相容偵測舊版/人工遷移專案殘留檔案，Agent 不應主動建立此檔名） | **Level 2：Umbrella 分類型主計畫** | ➔ 進入 **步驟 3-U** |
 | 存在 `FT_plan.md` | **Level 0：Fast Track** | ➔ 進入 **步驟 3-F** |
 | 存在 `P00` / `P01` ~ `P07` | **Level 1：Full Track (或獨立子計畫)** | ➔ 進入 **步驟 3-T** |
 
@@ -107,7 +107,7 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 ### 步驟 4：載入計畫上下文與決策脈絡
 
-1. 優先讀取工作目錄中的 `changelog.md`（若為子計畫亦需讀取主目錄之 `umbrella_overview.md`），掌握關鍵決策 (`[DR-XX]`) 與演進歷程。
+1. 優先讀取工作目錄中的 `changelog.md`（若為子計畫亦需讀取主目錄之 `umbrella_overview.md`），掌握關鍵決策 (`[{Phase}:DR-XX]`) 與演進歷程。
 2. 讀取當前 Phase 對應之文件內容，明確當前核心任務。
 
 ---

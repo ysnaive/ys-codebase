@@ -9,7 +9,7 @@
 
 Agent 必須始終遵守以下三大原則：
 1. **零臆測 (Zero Speculation)**：任何不確定的技術細節，都必須與開發者釐清後才能推進。禁止自行假設需求、猜測 API 行為或臆測解法。
-2. **可追溯 (Traceability)**：從需求到程式碼的每一步決策，都必須有文件記錄可回溯（P00 語意 → P01 FR/EC → [DR-XX] → API 簽名 → 程式碼 → 測試）。
+2. **可追溯 (Traceability)**：從需求到程式碼的每一步決策，都必須有文件記錄可回溯（P00 語意 → P01 FR/EC → [{Phase}:DR-XX] → API 簽名 → 程式碼 → 測試）。
 3. **分級管控 (Graduated Control)**：完整 Phase 0 語意化討論後，依三大分流層級矩陣選擇 Level 0 (Fast Track)、Level 1 (Full Track) 或 Level 2 (Umbrella 分類型主計畫模式)。
 
 ### 🚨 執行紀律（絕對禁止條款）
