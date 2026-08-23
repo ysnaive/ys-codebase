@@ -1,11 +1,10 @@
 ---
-name: "Pause"
-description: "暫停開發與無縫交接工作流 (Pause) — 現場狀態凍結、生成 handoff.md 達成零斷層接手"
+description: 暫停開發與無縫交接工作流 (Pause) — 現場狀態凍結、生成 handoff.md 達成零斷層接手
 ---
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Pause.md](../../modules/agents-workflow/workflows/Pause.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Pause.md](../../modules/agents-workflow/workflows/commands/Pause.md)）：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
@@ -17,8 +16,6 @@ description: "暫停開發與無縫交接工作流 (Pause) — 現場狀態凍�
 > | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
-
----
 
 # 暫停開發與無縫交接工作流 (Pause)
 
@@ -71,4 +68,3 @@ description: "暫停開發與無縫交接工作流 (Pause) — 現場狀態凍�
 ### 步驟 3：呈遞交接摘要卡並結束對話
 - 向開發者呈遞簡短的交接摘要卡，標註 `handoff.md` 已儲存與下次重啟第 1 步。
 - **立即 End Turn 等待下次喚醒**。
-

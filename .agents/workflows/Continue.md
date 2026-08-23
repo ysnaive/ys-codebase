@@ -1,11 +1,10 @@
 ---
-name: "Continue"
-description: "接續中斷或已存在的開發計畫工作流 (Continue) — 支援 handoff.md 現場交接與狀態自動恢復"
+description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支援 handoff.md 現場交接與狀態自動恢復
 ---
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Continue.md](../../modules/agents-workflow/workflows/Continue.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Continue.md](../../modules/agents-workflow/workflows/commands/Continue.md)）：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
@@ -17,8 +16,6 @@ description: "接續中斷或已存在的開發計畫工作流 (Continue) — �
 > | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
-
----
 
 # 接續開發計畫工作流 (Continue)
 
@@ -131,4 +128,3 @@ description: "接續中斷或已存在的開發計畫工作流 (Continue) — �
 ```
 
 詢問開發者是否確認開始接續，**立即 End Turn 等待確認**。
-

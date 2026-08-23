@@ -48,5 +48,6 @@ docs/
 | **開發標準** | [STANDARDS.md](./_project/STANDARDS.md) | 純 Python 3 標準庫、2x2 設定協定、Manifest Schema |
 | **貢獻指南** | [CONTRIBUTING.md](./_project/CONTRIBUTING.md) | 模組建立、SDK 引用、`build` 打包、`run_regression.py` 回歸 |
 | **Core 基礎庫** | [Core/README.md](./Core/README.md) | `yscb_core` SDK (ProjectContext, ConfigManager, Console) |
-| **Installer 引擎** | [Installer/README.md](./Installer/README.md) | `ConfigManager`, `GitRemoteClient`, `ModuleManager` 元件拆解 |
+| **Installer 引擎** | [Installer/README.md](./Installer/README.md) | `ConfigManager`, `GitRemoteClient`, `ModuleManager` 元件拆解與連動廣播 |
 | **Agents 工作流** | [AgentsWorkflow/README.md](./AgentsWorkflow/README.md) | 3-Track 管控 (FT/Full/Umbrella)、9 大 SOP 工作流、定式工具庫 |
+| **連動協定手冊** | [AgentsWorkflow/SOP_INTERLOCK_PROTOCOL.md](./AgentsWorkflow/SOP_INTERLOCK_PROTOCOL.md) | 三大合約、Slot 插槽注入、雙層 Extension 發現與 IDE 無感同步 |

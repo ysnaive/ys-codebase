@@ -1,11 +1,10 @@
 ---
-name: "Review"
-description: "開發完成後品質與細節審查工作流 (Review) — 包含 verify 定式掃描、全量 Extension 雙重稽核與即時修復閉環"
+description: 開發完成後品質與細節審查工作流 (Review) — 包含 verify 定式掃描、全量 Extension 雙重稽核與即時修復閉環
 ---
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Review.md](../../modules/agents-workflow/workflows/Review.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Review.md](../../modules/agents-workflow/workflows/commands/Review.md)）：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
@@ -17,8 +16,6 @@ description: "開發完成後品質與細節審查工作流 (Review) — 包含 
 > | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
-
----
 
 # 開發完成後審查工作流 (Review)
 
@@ -97,4 +94,3 @@ python yscb_cli.py agents-workflow ext show <extension_name>
 - **非單純報錯**：若審查中發現任何代碼瑕疵、文檔缺漏、未執行的 ext 或規範偏差，Agent **絕對禁止僅僅列出問題就結束**！
 - **即時修復**：Agent 必須呈遞具體修復方案，與開發者即時討論並動手修正。
 - **回填閉環**：修復完成後，將審查結論與偏差紀錄同步寫入 `P07_walkthrough.md` 與 `changelog.md`。
-

@@ -29,69 +29,33 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from config_utils import get_plans_dir, get_archive_dir, get_module_dir, get_extensions_dir, get_workspace_root
+from ext_registry import ExtensionRegistry
+
+try:
+    from yscb_core import ProjectContext
+except ImportError:
+    core_scripts = MODULE_DIR.parent / "core" / "scripts"
+    if core_scripts.is_dir() and str(core_scripts) not in sys.path:
+        sys.path.insert(0, str(core_scripts))
+    from context import ProjectContext
 
 
 def parse_extensions(module_dir: Path, workspace_root: Optional[Path] = None) -> list:
-    """掃描所有可用 Extension (從 sop_ext://, workflows/extensions, .agents/extensions)"""
-    search_dirs = []
-
-    try:
-        ext_dir = get_extensions_dir(module_dir)
-        if ext_dir.is_dir():
-            search_dirs.append(ext_dir)
-    except Exception:
-        pass
-
-    builtin_ext = module_dir / "workflows" / "extensions"
-    if builtin_ext.is_dir() and builtin_ext not in search_dirs:
-        search_dirs.append(builtin_ext)
-
-    if workspace_root:
-        dot_agents_ext = workspace_root / ".agents" / "extensions"
-        if dot_agents_ext.is_dir() and dot_agents_ext not in search_dirs:
-            search_dirs.append(dot_agents_ext)
-
+    """透過 ExtensionRegistry 掃描所有可用 Extension"""
+    registry = ExtensionRegistry.discover_all(ProjectContext)
     extensions = []
-    seen = set()
-
-    for ed in search_dirs:
-        for f in ed.glob("*.md"):
-            if f.name == "ext_template.md" or f.name in seen:
-                continue
-            seen.add(f.name)
-            content = f.read_text(encoding="utf-8", errors="ignore")
-            name = f.stem
-            phase = "unknown"
-            trigger = "always"
-
-            # 解析 Frontmatter
-            fm_match = re.search(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
-            if fm_match:
-                fm_text = fm_match.group(1)
-                for line in fm_text.splitlines():
-                    if ":" in line:
-                        k, v = line.split(":", 1)
-                        k = k.strip().lower()
-                        v = v.strip().strip("[]'\"")
-                        if k == "name":
-                            name = v
-                        elif k == "phase":
-                            phase = v
-                        elif k == "trigger":
-                            trigger = v.lower()
-            else:
-                # 檔案名稱推斷 (如 P01_logging_standards_ext.md)
-                parts = f.stem.split("_", 1)
-                if len(parts) == 2 and parts[0].startswith("P0"):
-                    phase = parts[0]
-
-            extensions.append({
-                "file": f.name,
-                "name": name,
-                "phase": phase,
-                "trigger": trigger,
-                "title": f.stem,
-            })
+    for name, info in sorted(registry.items()):
+        doc_p = info.get("doc_path")
+        extensions.append({
+            "file": doc_p.name if doc_p else f"{name}.md",
+            "name": name,
+            "phase": "All",
+            "trigger": info.get("trigger", "on_demand"),
+            "title": name,
+            "script_path": info.get("script_path"),
+            "source_type": info.get("source_type", "module"),
+            "module_name": info.get("module_name"),
+        })
     return extensions
 
 
@@ -169,10 +133,9 @@ def verify_single_file(file_path: Path, all_exts: list) -> list:
 
 
 def run_pluggable_extension_verifiers(plan_dir: Path, extensions_dir: Optional[Path]) -> dict:
-    """抽象動態外掛 Hook：掃描 Plan Header 宣告之擴充項目，自動調用 sop_ext://<ext>_verify.py"""
+    """抽象動態外掛 Hook：掃描 Plan Header 宣告之擴充項目，自動調用對應驗證腳本"""
     ext_results = {}
-    if not extensions_dir or not extensions_dir.is_dir():
-        return ext_results
+    registry = ExtensionRegistry.discover_all(ProjectContext)
 
     declared_ext_names = set()
     for md in plan_dir.glob("*.md"):
@@ -189,17 +152,16 @@ def run_pluggable_extension_verifiers(plan_dir: Path, extensions_dir: Optional[P
             pass
 
     for ext_name in sorted(list(declared_ext_names)):
-        candidates = [
-            extensions_dir / f"{ext_name}_verify.py",
-            extensions_dir / f"{ext_name}.py"
-        ]
         script_to_run = None
-        for c in candidates:
-            if c.is_file():
-                script_to_run = c
-                break
+        if ext_name in registry:
+            script_to_run = registry[ext_name].get("script_path")
+        elif extensions_dir and extensions_dir.is_dir():
+            for c in [extensions_dir / f"{ext_name}_verify.py", extensions_dir / f"{ext_name}.py"]:
+                if c.is_file():
+                    script_to_run = c
+                    break
 
-        if not script_to_run:
+        if not script_to_run or not Path(script_to_run).is_file():
             continue
 
         try:
@@ -227,6 +189,7 @@ def run_pluggable_extension_verifiers(plan_dir: Path, extensions_dir: Optional[P
             ext_results[f"Extension:{ext_name}"] = [{"level": "ERROR", "msg": f"[{ext_name}] 執行外掛驗證腳本出錯: {e}"}]
 
     return ext_results
+
 
 
 def verify_plan_directory(plan_dir: Path, all_exts: list, extensions_dir: Optional[Path] = None) -> dict:

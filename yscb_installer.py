@@ -582,7 +582,40 @@ class ModuleManager:
         self.config_mgr = config_mgr
         self.git_client = git_client
 
+    def _broadcast_modules_changed(self, changes: List[Tuple[str, str]]) -> None:
+        """
+        於整批安裝/更新/移除事務完成後，單次向所有具備 Hook 之已安裝模組派發廣播。
+
+        :param changes: 本次指令所有異動模組清單，每項為 Tuple(action, module_name)
+                        action 可為: "installed" | "updated" | "removed"
+        """
+        if not changes:
+            return
+
+        arg_payload = [f"{action}:{mod_name}" for action, mod_name in changes]
+        installed_dict = self.config_mgr.load(include_local=False).get("installed_modules", {})
+
+        for mod_name, mod_info in installed_dict.items():
+            mode = mod_info.get("mode", "build")
+            mod_dir = self.root_dir / ("source" if mode == "source" else "modules") / mod_name
+            if not mod_dir.is_dir():
+                mod_dir = self.root_dir / "modules" / mod_name
+            hook_script = mod_dir / "scripts" / "_on_modules_changed.py"
+            if not hook_script.is_file():
+                hook_script = mod_dir / "_on_modules_changed.py"
+
+            if hook_script.is_file():
+                print(f"[HOOK] 執行 '{mod_name}' 生命週期連動 Hook: {hook_script.name}...")
+                try:
+                    cmd = [sys.executable, str(hook_script)] + arg_payload
+                    res = subprocess.run(cmd, cwd=str(self.root_dir), timeout=30)
+                    if res.returncode != 0:
+                        print(f"[WARN] Hook _on_modules_changed.py 執行返回非 0 狀態碼 ({mod_name}): {res.returncode}")
+                except Exception as e:
+                    print(f"[WARN] 呼叫 _on_modules_changed.py Hook 失敗 ({mod_name}): {e}")
+
     def _get_source_dir(self, use_cache: bool = False) -> Path:
+
         if not use_cache:
             for candidate in [
                 self.root_dir / "source",
@@ -1417,9 +1450,14 @@ def main():
             resolved_modules = module_mgr.resolve_dependencies(target_modules, is_source_mode=args.source)
             print(f"[PLAN] 安裝序列（含相依）: {' -> '.join(resolved_modules)}")
 
+            changes = []
             for mod in resolved_modules:
                 mod_mode = "source" if args.source else mode
                 module_mgr.install_module(mod, mode=mod_mode, force=args.force)
+                changes.append(("installed", mod))
+
+            # 觸發批次全域收斂廣播
+            module_mgr._broadcast_modules_changed(changes)
             print("[SUCCESS] 所有指定模組已順利安裝完成！")
             return 0
 
@@ -1433,9 +1471,14 @@ def main():
                 print("[INFO] 目前無任何已安裝模組需要更新。")
                 return 0
 
+            changes = []
             for mod in target_modules:
                 m_mode = installed.get(mod, {}).get("mode", mode)
                 module_mgr.install_module(mod, mode=m_mode, force=True)
+                changes.append(("updated", mod))
+
+            # 觸發批次全域收斂廣播
+            module_mgr._broadcast_modules_changed(changes)
             print("[SUCCESS] 模組更新同步完成！")
             return 0
 
@@ -1507,8 +1550,11 @@ def main():
             return 0
 
         elif args.subcommand == "remove":
-            module_mgr.remove_module(args.module, force=args.force)
+            if module_mgr.remove_module(args.module, force=args.force):
+                # 觸發批次全域收斂廣播
+                module_mgr._broadcast_modules_changed([("removed", args.module)])
             return 0
+
 
         elif args.subcommand == "diff":
             module_mgr.diff_modules(args.modules)

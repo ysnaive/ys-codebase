@@ -1,11 +1,10 @@
 ---
-name: "Idea"
-description: "構想與靈感孵化池工作流 (Idea) — 支援自由發想、What/Why/How/Related 提案產出與一鍵立項流轉"
+description: 構想與靈感孵化池工作流 (Idea) — 支援自由發想、What/Why/How/Related 提案產出與一鍵立項流轉
 ---
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Idea.md](../../modules/agents-workflow/workflows/Idea.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Idea.md](../../modules/agents-workflow/workflows/commands/Idea.md)）：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
@@ -17,8 +16,6 @@ description: "構想與靈感孵化池工作流 (Idea) — 支援自由發想、
 > | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
-
----
 
 # 構想與靈感孵化池工作流 (Idea)
 
@@ -63,4 +60,3 @@ description: "構想與靈感孵化池工作流 (Idea) — 支援自由發想、
   1. 建立標準 Dev Plan 目錄：`plans://{YYYY_MM_DD_HHMM_功能名稱}/`。
   2. 將提案文件搬移至該目錄，並轉換重命名為 `P00_semantic_requirements.md`。
   3. 進入 `/NewPlan` 標準流程，由開發者確認 P00 後執行三大分流！
-

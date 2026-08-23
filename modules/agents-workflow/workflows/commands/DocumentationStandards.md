@@ -169,4 +169,3 @@ python yscb_cli.py agents-workflow docs audit
 # 或別名：python yscb_cli.py agents-workflow docs check-links
 ```
 - 秒級全量掃描 `docs/` 目錄，檢查所有相對路徑超連結是否存在死鏈，並校驗 YAML Frontmatter 語法完備性。
-
