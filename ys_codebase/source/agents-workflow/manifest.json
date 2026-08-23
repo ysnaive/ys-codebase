@@ -1,9 +1,18 @@
 {
   "name": "agents-workflow",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "AI Agent 開發標準作業流程 (SOP)、三大分流管控 (FT/Full/Umbrella)、規格書模板與定式輔助工具",
   "dependencies": [
     "core >= 2.0.0"
-  ]
+  ],
+  "contributes": {
+    "core": {
+      "uri_schemes": [
+        { "scheme": "plans", "config_key": "plans_dir" },
+        { "scheme": "archive", "config_key": "archive_dir" },
+        { "scheme": "docs", "config_key": "docs_dir", "default": "docs" },
+        { "scheme": "sop_ext", "config_key": "extensions_dir" }
+      ]
+    }
+  }
 }
-
