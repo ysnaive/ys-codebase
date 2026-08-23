@@ -16,6 +16,7 @@ yscb_cli.py — YS-Codebase 統一 CLI 轉接器 (Unified CLI Router)
 
 import sys
 import os
+import re
 import subprocess
 import json
 from pathlib import Path
@@ -100,6 +101,14 @@ def get_all_available_clis(root_dir: Path, config: Dict[str, Any]) -> Dict[str, 
     result["uri"] = {
         "name": "uri",
         "description": "Codebase 專用語意 URI 解析與反向轉換工具 (resolve, list, to-uri)",
+        "cli_path": "builtin",
+        "is_builtin": True
+    }
+
+    # 1.2 內建 version 工具
+    result["version"] = {
+        "name": "version",
+        "description": "語意化版本管理與相依檢查工具 (status, check, check-update, bump)",
         "cli_path": "builtin",
         "is_builtin": True
     }
@@ -258,6 +267,343 @@ def handle_uri_command(root_dir: Path, config: Dict[str, Any], args: List[str]) 
         return 1
 
 
+def handle_version_command(root_dir: Path, config: Dict[str, Any], args: List[str]) -> int:
+    """處理 version 子指令 (status, check, check-update, bump)"""
+    rel_proj = config.get("paths", {}).get("project_root", ".")
+    proj_root = (root_dir / rel_proj).resolve()
+
+    # 掛載 yscb_core
+    core_candidates = [
+        proj_root / "modules" / "core",
+        proj_root / "source" / "core",
+        root_dir / "modules" / "core",
+        root_dir / "source" / "core",
+        root_dir / "ys_codebase" / "source" / "core",
+        root_dir / "ys_codebase" / "build" / "core",
+        root_dir / "ys_codebase" / "modules" / "core"
+    ]
+    for cp in core_candidates:
+        if (cp / "scripts").is_dir() and str(cp / "scripts") not in sys.path:
+            sys.path.insert(0, str(cp / "scripts"))
+            break
+        elif cp.is_dir() and str(cp) not in sys.path:
+            sys.path.insert(0, str(cp))
+            break
+
+    try:
+        from yscb_core import SemVer, VersionConstraint, ProjectContext
+    except ImportError:
+        try:
+            from semver import SemVer, VersionConstraint
+        except ImportError:
+            print("[ERROR] 無法載入 SemVer 模組，請確認 core 模組已就緒。", file=sys.stderr)
+            return 1
+
+    if not args or args[0] in ["--help", "-h", "help"]:
+        print("\n" + "=" * 80)
+        print("  🏷️  YS-Codebase 語意化版本管理工具 (Version Management Tool)")
+        print("=" * 80)
+        print("  指令語法：")
+        print("    python yscb_cli.py version status                      檢視全專案模組版本狀態矩陣")
+        print("    python yscb_cli.py version check                       校驗全專案相依性約束相容性")
+        print("    python yscb_cli.py version check-update                檢查是否有可用更新與 Migration 提示")
+        print("    python yscb_cli.py version bump <module> <level>       遞進模組版本號 (major|minor|patch)")
+        print("=" * 80 + "\n")
+        return 0
+
+    subcmd = args[0].lower()
+
+    def get_manifest_version(p: Path) -> Optional[str]:
+        mf = p / "manifest.json"
+        if mf.is_file():
+            try:
+                with open(mf, "r", encoding="utf-8") as f:
+                    return json.load(f).get("version")
+            except Exception:
+                pass
+        return None
+
+    def get_installer_file_version(p: Path) -> Optional[str]:
+        if not p.is_file():
+            return None
+        try:
+            content = p.read_text(encoding="utf-8", errors="ignore")
+            m = re.search(r'INSTALLER_VERSION\s*=\s*["\']([^"\']+)["\']', content)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+        return None
+
+    # 收集全模組名稱
+    all_modules = set()
+    scan_subs = [
+        root_dir / "source",
+        root_dir / "build",
+        root_dir / "modules",
+        root_dir / "ys_codebase" / "source",
+        root_dir / "ys_codebase" / "build",
+        root_dir / "ys_codebase" / "modules"
+    ]
+    for s_dir in scan_subs:
+        if s_dir.is_dir():
+            for item in s_dir.iterdir():
+                if item.is_dir() and not item.name.startswith("."):
+                    all_modules.add(item.name)
+
+    installed_dict = config.get("installed_modules", {})
+    for m in installed_dict:
+        all_modules.add(m)
+
+    sorted_modules = sorted(list(all_modules))
+
+    if subcmd == "status":
+        print("\n" + "=" * 96)
+        print("  🏷️  全專案模組與工具庫版本狀態矩陣 (Module & Tooling Version Status Matrix)")
+        print("=" * 96)
+        print(f"  {'模組/工具 (Name)':<22} | {'源碼版本 (Source)':<18} | {'建置版本 (Build)':<18} | {'安裝版本 (Install)':<18} | {'同步狀態 (Status)'}")
+        print("  " + "-" * 92)
+
+        # 1. 核心起手腳本 (Installer Bootstrapper)
+        inst_boot_v = get_installer_file_version(root_dir / "yscb_installer.py")
+        src_boot_v = get_installer_file_version(root_dir / "ys_codebase" / "yscb_installer.py") or inst_boot_v
+        cache_boot_v = get_installer_file_version(root_dir / ".yscb_cache" / "yscb_installer.py") or src_boot_v
+
+        boot_status = "[SYNCED]"
+        if not inst_boot_v:
+            boot_status = "[NOT_FOUND]"
+        elif src_boot_v and SemVer(src_boot_v) > SemVer(inst_boot_v):
+            boot_status = "[OUTDATED]"
+
+        print(f"  {'installer (CLI)':<22} | {('v'+src_boot_v if src_boot_v else '-'):<18} | {('v'+cache_boot_v if cache_boot_v else '-'):<18} | {('v'+inst_boot_v if inst_boot_v else '-'):<18} | {boot_status}")
+
+        for mod in sorted_modules:
+            # 尋找 source version
+            src_v = None
+            for p in [root_dir / "source" / mod, root_dir / "ys_codebase" / "source" / mod]:
+                src_v = get_manifest_version(p)
+                if src_v:
+                    break
+
+            # 尋找 build version
+            build_v = None
+            for p in [root_dir / "build" / mod, root_dir / "ys_codebase" / "build" / mod]:
+                build_v = get_manifest_version(p)
+                if build_v:
+                    break
+
+            # 尋找 installed version
+            inst_v = installed_dict.get(mod, {}).get("version")
+            if not inst_v:
+                for p in [root_dir / "modules" / mod, root_dir / "ys_codebase" / "modules" / mod]:
+                    inst_v = get_manifest_version(p)
+                    if inst_v:
+                        break
+
+            # 計算同步狀態
+            status_tag = "[SYNCED]"
+            if not inst_v:
+                status_tag = "[NOT_INSTALLED]"
+            elif src_v and build_v and inst_v:
+                if src_v == build_v == inst_v:
+                    status_tag = "[SYNCED]"
+                elif SemVer(src_v) > SemVer(inst_v) or SemVer(src_v) > SemVer(build_v):
+                    status_tag = "[OUTDATED]"
+                else:
+                    status_tag = "[DIVERGED]"
+            elif src_v and not build_v:
+                status_tag = "[UNBUILT]"
+
+            src_display = f"v{src_v}" if src_v else "-"
+            build_display = f"v{build_v}" if build_v else "-"
+            inst_display = f"v{inst_v}" if inst_v else "-"
+
+            print(f"  {mod:<22} | {src_display:<18} | {build_display:<18} | {inst_display:<18} | {status_tag}")
+
+        print("=" * 96 + "\n")
+        return 0
+
+    elif subcmd == "check":
+        print("\n" + "=" * 80)
+        print("  🔍 全專案模組相依性相容約束校驗 (Dependency Compatibility Check)")
+        print("=" * 80)
+        has_error = False
+
+        for mod in sorted_modules:
+            manifest_p = None
+            for p in [root_dir / "source" / mod, root_dir / "modules" / mod, root_dir / "ys_codebase" / "source" / mod]:
+                if (p / "manifest.json").is_file():
+                    manifest_p = p / "manifest.json"
+                    break
+
+            if not manifest_p:
+                continue
+
+            try:
+                with open(manifest_p, "r", encoding="utf-8") as f:
+                    mf_data = json.load(f)
+            except Exception:
+                continue
+
+            deps = mf_data.get("dependencies", [])
+            for dep_spec in deps:
+                try:
+                    dep_name, constraint = VersionConstraint.parse_dependency_spec(dep_spec)
+                except Exception as e:
+                    print(f"  ❌ [{mod}] 相依語法錯誤: '{dep_spec}' ({e})")
+                    has_error = True
+                    continue
+
+                # 取得相依模組版本
+                dep_ver = installed_dict.get(dep_name, {}).get("version")
+                if not dep_ver:
+                    for p in [root_dir / "source" / dep_name, root_dir / "modules" / dep_name, root_dir / "ys_codebase" / "source" / dep_name]:
+                        dep_ver = get_manifest_version(p)
+                        if dep_ver:
+                            break
+
+                if not dep_ver:
+                    print(f"  ❌ [{mod}] 缺少相依模組 '{dep_name}' (要求約束: {constraint.raw_expr})")
+                    has_error = True
+                elif not constraint.matches(dep_ver):
+                    print(f"  ❌ [{mod}] 相依衝突 '{dep_name}' (當前: v{dep_ver}, 要求約束: {constraint.raw_expr})")
+                    has_error = True
+                else:
+                    print(f"  ✅ [{mod}] 相依滿足: '{dep_name}' (v{dep_ver} 滿足 {constraint.raw_expr})")
+
+        print("=" * 80)
+        if has_error:
+            print("  🚨 檢測到相依性衝突或遺漏，請檢查上述錯誤。\n")
+            return 1
+        else:
+            print("  🎉 [PASS] 全專案所有模組相依性約束 100% 滿足相容性要求！\n")
+            return 0
+
+    elif subcmd == "check-update":
+        print("\n" + "=" * 90)
+        print("  🚀 模組與起手腳本更新檢查 (Check Updates & Migration Advisory)")
+        print("=" * 90)
+        print(f"  {'項目名稱 (Component)':<22} | {'當前安裝':<10} | {'最新可用':<10} | {'變更等級':<10} | {'升級指引 / Migration'}")
+        print("  " + "-" * 86)
+        update_count = 0
+
+        # 0. 檢查 Installer 起手腳本更新
+        inst_boot_v_str = get_installer_file_version(root_dir / "yscb_installer.py")
+        src_boot_v_str = get_installer_file_version(root_dir / "ys_codebase" / "yscb_installer.py") or get_installer_file_version(root_dir / ".yscb_cache" / "yscb_installer.py")
+        if inst_boot_v_str and src_boot_v_str:
+            i_ver = SemVer(inst_boot_v_str)
+            s_ver = SemVer(src_boot_v_str)
+            if s_ver > i_ver:
+                update_count += 1
+                b_level = "PATCH" if s_ver.major == i_ver.major and s_ver.minor == i_ver.minor else ("MINOR" if s_ver.major == i_ver.major else "MAJOR")
+                print(f"  {'installer (CLI)':<22} | v{inst_boot_v_str:<9} | v{src_boot_v_str:<9} | {b_level:<10} | 💡 執行 'python yscb_cli.py installer self-update' 即可更新")
+
+        print("  " + "-" * 86)
+        update_count = 0
+
+        for mod in sorted_modules:
+            inst_v_str = installed_dict.get(mod, {}).get("version")
+            if not inst_v_str:
+                for p in [root_dir / "modules" / mod, root_dir / "ys_codebase" / "modules" / mod]:
+                    inst_v_str = get_manifest_version(p)
+                    if inst_v_str:
+                        break
+
+            if not inst_v_str:
+                continue
+
+            # 最新可用版本 (源碼優先)
+            latest_v_str = None
+            for p in [root_dir / "source" / mod, root_dir / "build" / mod, root_dir / "ys_codebase" / "source" / mod]:
+                latest_v_str = get_manifest_version(p)
+                if latest_v_str:
+                    break
+
+            if not latest_v_str:
+                continue
+
+            inst_v = SemVer(inst_v_str)
+            latest_v = SemVer(latest_v_str)
+
+            if latest_v > inst_v:
+                update_count += 1
+                if latest_v.major > inst_v.major:
+                    level = "MAJOR"
+                    mig_needed = "🚨 需要專案升級指南"
+                elif latest_v.minor > inst_v.minor:
+                    level = "MINOR"
+                    mig_needed = f"⚠️ 需要執行 _migration.py ({latest_v.major}.{latest_v.minor}.x)"
+                else:
+                    level = "PATCH"
+                    mig_needed = "✅ 無 (安全直接覆蓋)"
+
+                print(f"  {mod:<20} | v{inst_v_str:<11} | v{latest_v_str:<11} | {level:<10} | {mig_needed}")
+
+        print("=" * 90)
+        if update_count == 0:
+            print("  ✨ 所有已安裝模組皆為最新版本，無待更新項目。\n")
+        else:
+            print(f"  💡 發現 {update_count} 個模組可升級。執行 'python yscb_cli.py installer install <module> --force' 即可安全升級。\n")
+        return 0
+
+    elif subcmd == "bump":
+        if len(args) < 3:
+            print("用法: python yscb_cli.py version bump <module_name> <major|minor|patch>", file=sys.stderr)
+            return 1
+
+        mod_name = args[1]
+        bump_level = args[2].lower()
+
+        if bump_level not in ["major", "minor", "patch"]:
+            print(f"[ERROR] 未知的遞進等級 '{bump_level}'，僅支援 'major', 'minor', 'patch'。", file=sys.stderr)
+            return 1
+
+        # 尋找源碼 manifest.json (SSOT)
+        src_manifest_candidates = [
+            root_dir / "source" / mod_name / "manifest.json",
+            root_dir / "ys_codebase" / "source" / mod_name / "manifest.json"
+        ]
+        target_mf: Optional[Path] = None
+        for p in src_manifest_candidates:
+            if p.is_file():
+                target_mf = p
+                break
+
+        if not target_mf:
+            print(f"[ERROR] 找不到模組 '{mod_name}' 的源碼 manifest.json。請確認模組名稱。", file=sys.stderr)
+            return 1
+
+        try:
+            with open(target_mf, "r", encoding="utf-8") as f:
+                mf_content = json.load(f)
+        except Exception as e:
+            print(f"[ERROR] 讀取 {target_mf} 失敗: {e}", file=sys.stderr)
+            return 1
+
+        curr_ver_str = mf_content.get("version", "1.0.0")
+        curr_ver = SemVer(curr_ver_str)
+        new_ver = curr_ver.bump(bump_level)
+
+        mf_content["version"] = str(new_ver)
+        try:
+            with open(target_mf, "w", encoding="utf-8") as f:
+                json.dump(mf_content, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+        except Exception as e:
+            print(f"[ERROR] 寫入 {target_mf} 失敗: {e}", file=sys.stderr)
+            return 1
+
+        print(f"\n[SUCCESS] 模組 '{mod_name}' 版本號已成功遞進：")
+        print(f"  • 原版本 : v{curr_ver_str}")
+        print(f"  • 新版本 : v{new_ver} (級別: {bump_level.upper()})")
+        print(f"  • 更新檔 : {target_mf}\n")
+        return 0
+
+    else:
+        print(f"[ERROR] 未知 version 子指令 '{subcmd}'。請執行 'python yscb_cli.py version --help'。", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     root_dir = get_root_dir()
     config = load_config(root_dir)
@@ -288,6 +634,10 @@ def main() -> int:
     # 1.1 轉發至 uri 工具
     if target_module == "uri":
         return handle_uri_command(root_dir, config, sub_args)
+
+    # 1.2 轉發至 version 工具
+    if target_module == "version":
+        return handle_version_command(root_dir, config, sub_args)
 
     # 2. 轉發至模組專屬 scripts/cli.py
     cli_path = find_module_cli(root_dir, target_module, config)

@@ -9,19 +9,27 @@ try:
     from .config import ConfigManager, deep_merge
     from .console import Console
     from .uri import ProjectURI
+    from .semver import SemVer, VersionConstraint
+    from .migration import MigrationRunner
 except (ImportError, ValueError):
     from context import ProjectContext
     from config import ConfigManager, deep_merge
     from console import Console
     from uri import ProjectURI
+    from semver import SemVer, VersionConstraint
+    from migration import MigrationRunner
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
     "ProjectContext",
     "ConfigManager",
     "Console",
     "ProjectURI",
+    "SemVer",
+    "VersionConstraint",
+    "MigrationRunner",
     "deep_merge",
     "__version__",
 ]
+

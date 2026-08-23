@@ -7,6 +7,9 @@ from .yscb_core import (
     ConfigManager,
     Console,
     ProjectURI,
+    SemVer,
+    VersionConstraint,
+    MigrationRunner,
     deep_merge,
     __version__,
 )
@@ -16,6 +19,9 @@ __all__ = [
     "ConfigManager",
     "Console",
     "ProjectURI",
+    "SemVer",
+    "VersionConstraint",
+    "MigrationRunner",
     "deep_merge",
     "__version__",
 ]

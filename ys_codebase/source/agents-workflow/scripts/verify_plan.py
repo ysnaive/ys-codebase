@@ -13,6 +13,7 @@ verify_plan.py — Dev Plan 合規性與 Extension 深度稽核工具
 import sys
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -167,7 +168,68 @@ def verify_single_file(file_path: Path, all_exts: list) -> list:
     return issues
 
 
-def verify_plan_directory(plan_dir: Path, all_exts: list) -> dict:
+def run_pluggable_extension_verifiers(plan_dir: Path, extensions_dir: Optional[Path]) -> dict:
+    """抽象動態外掛 Hook：掃描 Plan Header 宣告之擴充項目，自動調用 sop_ext://<ext>_verify.py"""
+    ext_results = {}
+    if not extensions_dir or not extensions_dir.is_dir():
+        return ext_results
+
+    declared_ext_names = set()
+    for md in plan_dir.glob("*.md"):
+        try:
+            content = md.read_text(encoding="utf-8", errors="ignore")
+            headers = parse_header_metadata(content)
+            for k in ["擴充項目", "active ext", "active ext."]:
+                if k in headers and headers[k] and "none" not in headers[k].lower():
+                    for item in re.split(r"[,、 ]+", headers[k]):
+                        item_clean = item.strip()
+                        if item_clean and item_clean.lower() != "none":
+                            declared_ext_names.add(item_clean)
+        except Exception:
+            pass
+
+    for ext_name in sorted(list(declared_ext_names)):
+        candidates = [
+            extensions_dir / f"{ext_name}_verify.py",
+            extensions_dir / f"{ext_name}.py"
+        ]
+        script_to_run = None
+        for c in candidates:
+            if c.is_file():
+                script_to_run = c
+                break
+
+        if not script_to_run:
+            continue
+
+        try:
+            res = subprocess.run(
+                [sys.executable, str(script_to_run), str(plan_dir)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            issues = []
+            if res.returncode != 0:
+                err_text = (res.stderr.strip() or res.stdout.strip() or f"exit code {res.returncode}")
+                issues.append({"level": "ERROR", "msg": f"[{ext_name}] 外掛驗證失敗：{err_text}"})
+            else:
+                out_text = res.stdout.strip()
+                if out_text:
+                    for line in out_text.splitlines():
+                        if "[WARN]" in line:
+                            issues.append({"level": "WARN", "msg": f"[{ext_name}] {line}"})
+                        elif "[ERROR]" in line:
+                            issues.append({"level": "ERROR", "msg": f"[{ext_name}] {line}"})
+            ext_results[f"Extension:{ext_name}"] = issues
+        except Exception as e:
+            ext_results[f"Extension:{ext_name}"] = [{"level": "ERROR", "msg": f"[{ext_name}] 執行外掛驗證腳本出錯: {e}"}]
+
+    return ext_results
+
+
+def verify_plan_directory(plan_dir: Path, all_exts: list, extensions_dir: Optional[Path] = None) -> dict:
     results = {}
 
     # 剛性檢查 changelog.md 存在性與基礎格式
@@ -193,10 +255,15 @@ def verify_plan_directory(plan_dir: Path, all_exts: list) -> dict:
         file_issues = verify_single_file(md, all_exts)
         results[md.name] = file_issues
 
+    # 執行抽象外掛式 Extension Verifier Hook
+    if extensions_dir:
+        ext_hook_results = run_pluggable_extension_verifiers(plan_dir, extensions_dir)
+        results.update(ext_hook_results)
+
     # 遞迴檢查子計畫
     for sub in plan_dir.iterdir():
         if sub.is_dir() and sub.name.startswith("sub_"):
-            sub_res = verify_plan_directory(sub, all_exts)
+            sub_res = verify_plan_directory(sub, all_exts, extensions_dir)
             for k, v in sub_res.items():
                 results[f"{sub.name}/{k}"] = v
 
@@ -257,9 +324,15 @@ def main():
     total_errors = 0
     total_warns = 0
 
+    ext_dir = None
+    try:
+        ext_dir = get_extensions_dir(module_dir)
+    except Exception:
+        pass
+
     for plan in target_plans:
         print(f"\n📁 審查計畫：{plan.name}")
-        plan_results = verify_plan_directory(plan, all_exts)
+        plan_results = verify_plan_directory(plan, all_exts, ext_dir)
 
         for f_name, issues in plan_results.items():
             if not issues:
