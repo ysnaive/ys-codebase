@@ -170,7 +170,8 @@ def run_pluggable_extension_verifiers(plan_dir: Path, extensions_dir: Optional[P
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                errors="replace"
+                errors="replace",
+                timeout=120
             )
             issues = []
             if res.returncode != 0:

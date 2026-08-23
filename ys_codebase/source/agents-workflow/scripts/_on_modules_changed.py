@@ -61,7 +61,7 @@ def synthesize_all_workflows() -> int:
     contributions = ProjectContext.get_contributions("agents-workflow", start_dir=MODULE_DIR)
 
     # 收集全部 sop_patches
-    # 格式: [ (target_sop, patch_dict, mod_root), ... ]
+    # 格式: { target_sop: [ (patch_dict, mod_root, mod_name), ... ] }
     all_patches_by_sop = {}
     for mod_name, mod_dir, payload in contributions:
         if not isinstance(payload, dict):
@@ -75,7 +75,18 @@ def synthesize_all_workflows() -> int:
                 if target_sop:
                     if target_sop not in all_patches_by_sop:
                         all_patches_by_sop[target_sop] = []
-                    all_patches_by_sop[target_sop].append((patch, mod_dir))
+                    all_patches_by_sop[target_sop].append((patch, mod_dir, mod_name))
+
+    # 疊加順序決定性保證：依 (priority, 模組名稱) 穩定排序，priority 預設 100，數值越小越先注入
+    def _patch_sort_key(entry):
+        patch_dict, _mod_root, mod_name = entry
+        priority = patch_dict.get("priority", 100)
+        if not isinstance(priority, (int, float)):
+            priority = 100
+        return (priority, mod_name)
+
+    for _ts in all_patches_by_sop:
+        all_patches_by_sop[_ts].sort(key=_patch_sort_key)
 
     synthesized_count = 0
     WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
@@ -85,7 +96,7 @@ def synthesize_all_workflows() -> int:
         patches_for_file = all_patches_by_sop.get(cmd_file.name, [])
 
         result_text = template_text
-        for patch_dict, mod_root in patches_for_file:
+        for patch_dict, mod_root, _mod_name in patches_for_file:
             result_text = SOPSynthesizer.synthesize_sop(
                 template_content=result_text,
                 patches=[patch_dict],

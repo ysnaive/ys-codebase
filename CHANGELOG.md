@@ -4,6 +4,34 @@
 
 ---
 
+## 2026_08_23_extensibility_reliability_hardening
+
+### Fixed
+- **[P0] 下游 `build` 指令崩潰修復**：`build_module()` 之 `dest_path` 於「源碼僅存在於遠端快取 (.yscb_cache)」情境（即標準下游專案）缺少 fallback 分支，導致 `UnboundLocalError`。現回退輸出至本地 `build/`。
+- **[P0] `YSCB_MODULE_DIR` 跨模組汙染修復**：`ProjectContext.get_module_dir()` 先前在環境變數存在時無條件回傳該路徑（完全忽略 `module_name` 參數），導致模組 A 執行期查詢模組 B 的目錄/設定時被汙染。現僅於環境變數目錄名稱與目標模組相符時採用。
+- **Slot 匹配規則一致性修復**：`SOPSynthesizer.synthesize_sop()` 改用與 `SLOT_PATTERN` 一致的容錯正則匹配插槽（支援 `<!--YSCB_SLOT:x-->` 等空白變體），並於找不到插槽降級附加檔尾時輸出 `[WARN]` 明確提示，消除靜默錯置。
+- **`remove` 相依防護真實化**：先前僅硬編碼保護 `core`；現依各已安裝模組 `manifest.json` 宣告之 `dependencies` 執行真實相依阻斷（`--force` 可越過）。
+- **`version check-update` 計數器修復**：修正模組更新計數在 installer 檢查後被重置歸零、導致「發現更新」與「無待更新項目」同時輸出的自相矛盾訊息。
+- **指令與文檔一致性**：`pull` / `remove` 新增 argparse 別名 `update` / `uninstall`（README 與內建 help 先前已宣稱存在但實際未註冊，執行必 exit 2）；`pull` 支援顯式 `--all` 旗標。
+- **清除過期測試副本**：移除 `test/yscb_installer.py`、`test/yscb_cli.py`、`test/yscb_config.json`——與根目錄版本號相同 (2.1.0) 但缺少整套互鎖廣播機制的 stale 拷貝（測試實際 import 的是 `ys_codebase/` 版本，該副本為誤留死重量）。
+
+### Added
+- **URI Scheme 開放註冊協定 (Contract III)**：`ProjectURI.get_dynamic_schemes()` 動態聚合各模組 `manifest.json` 之 `contributes["core"]["uri_schemes"]` 宣告，core SDK 不再硬編碼 `agents-workflow` 模組名稱；`agents-workflow` 改以宣言式註冊 `plans/archive/docs/sop_ext` 四協議；舊版映射表保留為向後相容 fallback；`project://`、`yscb://` 為保留字不可覆蓋。
+- **IDE Adapter 註冊表與 per-adapter 快取**：`cli.py` 新增 `IDE_ADAPTERS` 開放擴充點與泛用 `generate_ide_commands(adapter)`；`IDECacheTracker` 改為每個 adapter 獨立 manifest (`.yscb_cache/ide_manifest_<adapter>.json`)，杜絕未來多 IDE 並存時互刪產物，並自動平滑遷移舊版全域 manifest。
+- **`installer rollback` 指令**：`rollback <module> [--list] [--to <備份名稱>]` 自 `.yscb_cache/backup/` 快照一鍵還原模組並同步回寫安裝紀錄；快照新增保留策略（每模組保留最近 5 份）。
+- **`installer status` 孤兒偵測**：新增「實體狀態」欄位，模組目錄遺失時標記 `[MISSING]` 並提示修復指令。
+- **SOP Patch 決定性疊加順序**：`sop_patches` 支援選填 `priority` 欄位（預設 100，越小越先注入），依 `(priority, 模組名稱)` 穩定排序；`get_contributions()` 與 `get_all_installed_manifests()` 改為名稱排序掃描，跨平台結果具決定性。
+- **GitHub Actions CI**：新增 `.github/workflows/ci.yml`，於 ubuntu/windows × Python 3.11/3.12 矩陣自動執行全量回歸套件（含下游沙盒 E2E）。
+- **強化回歸測試套件**：新增 `test/test_hardening.py` (HT-01~HT-07)，覆蓋上述全部修復與版本 SSOT 同步防護。
+
+### Changed
+- **Hook 執行逾時防護**：`_migration.py` (600s)、`_installed.py` / `_uninstall.py` (120s)、`_on_modules_changed.py` (120s)、自訂 `build.py` (600s)、Extension Verifier (120s) 與全部 git 子程序 (600s) 均加上 timeout，杜絕無限掛起；遷移逾時視同失敗並觸發快照回滾。
+- **錯誤診斷體驗**：頂層錯誤訊息附帶例外類別名稱，並支援 `YSCB_DEBUG=1` 環境變數輸出完整堆疊。
+- **版本號 SSOT 收斂**：`yscb_core.__version__` 改為自 `manifest.json` 動態讀取，消除三處硬編碼版本號發散風險。
+- **版本升級**：`core` v2.1.0 ➔ v2.2.0、`agents-workflow` v1.0.1 ➔ v1.1.0、起手腳本 v2.1.0 ➔ v2.2.0。
+
+---
+
 ## 2026_08_23_1112_module_interlock_system
 
 ### Added

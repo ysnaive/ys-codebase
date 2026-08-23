@@ -19,7 +19,18 @@ except (ImportError, ValueError):
     from semver import SemVer, VersionConstraint
     from migration import MigrationRunner
 
-__version__ = "2.1.0"
+def _read_own_version() -> str:
+    """自 manifest.json (SSOT) 讀取模組版本號，避免版本號多處硬編碼發散"""
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        _manifest = _Path(__file__).resolve().parent.parent / "manifest.json"
+        return str(_json.loads(_manifest.read_text(encoding="utf-8")).get("version", "0.0.0"))
+    except Exception:
+        return "0.0.0"
+
+
+__version__ = _read_own_version()
 
 __all__ = [
     "ProjectContext",
