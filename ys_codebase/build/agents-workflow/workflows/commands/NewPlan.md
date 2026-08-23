@@ -92,7 +92,7 @@ description: 標準開發作業流程 (NewPlan) — 定義專案從需求到發�
 | **功能需求** | `FR-{XX}` | `FR-01`, `FR-02` | 定義於 `P01`，且必須追溯至 `P00` 語意 |
 | **邊界條件** | `EC-{XX}` | `EC-01`, `EC-02` | 定義於 `P01`，涵蓋異常輸入與極限狀態 |
 | **非功能需求** | `NFR-{XX}` | `NFR-01` | 定義於 `P01`，涵蓋效能、GC、記憶體指標 |
-| **決策紀錄** | `[REQ:DR-XX]` / `[ARCH:DR-XX]` / `[API:DR-XX]` | `[REQ:DR-01]` | 各 Phase 關鍵技術與架構裁決 |
+| **決策紀錄** | `[{Phase}:DR-XX]`（`{Phase}` 為產出該決策之文件對應 Token，如 `P01`/`P02`/`P03`/`P04`/`FT`/`UMBRELLA`） | `[P01:DR-01]` | 各 Phase 關鍵技術與架構裁決，Phase 前綴確保跨文件 ID 全域不重複 |
 | **功能測試** | `FT-{XX}` | `FT-01` | 對應 `FR-XX` 的自動化測試 |
 | **邊界測試** | `ET-{XX}` | `ET-01` | 對應 `EC-XX` 的防禦與降級測試 |
 | **回歸測試** | `RT-{XX}` | `RT-01` | 全域既有功能回歸確認 |
@@ -101,7 +101,7 @@ description: 標準開發作業流程 (NewPlan) — 定義專案從需求到發�
 | **缺陷紀錄** | `BUG-{XX}` | `BUG-01` | 測試過程中發現的計畫缺陷或實作錯誤 |
 
 > **剛性追溯鏈矩陣**：
-> `P00 語意需求` ➔ `FR-XX / EC-XX` ➔ `[DR-XX] 設計決策` ➔ `Public/Internal API 簽名` ➔ `代碼實作` ➔ `FT-XX / ET-XX 測試`。
+> `P00 語意需求` ➔ `FR-XX / EC-XX` ➔ `[{Phase}:DR-XX] 設計決策` ➔ `Public/Internal API 簽名` ➔ `代碼實作` ➔ `FT-XX / ET-XX 測試`。
 
 ---
 
@@ -113,7 +113,7 @@ description: 標準開發作業流程 (NewPlan) — 定義專案從需求到發�
 
 ### 2. Deep Discussion（深度討論 / Discuss）
 - **觸發時機**：當遇到重大架構歧異、未知技術可行性、跨模組依賴衝突、破壞性變更 (Breaking Changes)、排查範疇越界或修復連續 2 次失敗時。
-- **Agent 行為**：依 [Discuss.md](./Discuss.md) 流程暫停推進，進行 5-Whys 根因分析，整理方案比較表 (Pros & Cons)，由開發者深度裁決並記錄 `[DR-XX]`。
+- **Agent 行為**：依 [Discuss.md](./Discuss.md) 流程暫停推進，進行 5-Whys 根因分析，整理方案比較表 (Pros & Cons)，由開發者深度裁決並記錄 `[{Phase}:DR-XX]`。
 
 ---
 
@@ -278,7 +278,7 @@ flowchart TD
 - **嚴格守門**：禁止引入計畫中未列出的新 public 類別或方法；禁止修改計畫中未提及的既有檔案。遇阻時依 [Discuss.md](./Discuss.md) 執行深度歸因。
 
 #### 執行步驟
-1. **進度追蹤**：於工作目錄建立 `P05_task.md`，列出 TODO 清單 `[ ]`。
+1. **進度追蹤**：依 `workflows/templates/P05_task.md` 建立 `P05_task.md`（標記為 `Implementing`），依 P04 實作順序表展開 TODO 清單 `[ ]`。
 2. **依序實作**：按依賴拓撲實作，每完成一項於 `P05_task.md` 標記 `[x]`。
 3. **編譯驗證**：每個主要模組實作完成後執行編譯檢查。
 4. **偏差三級處置策略 (Deviation Handling)**：

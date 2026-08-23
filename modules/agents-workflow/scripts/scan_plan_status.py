@@ -24,6 +24,8 @@ def get_plan_info(plan_dir: Path) -> tuple[str, str]:
     p00_req = plan_dir / "P00_semantic_requirements.md"
     p01_req = plan_dir / "P01_requirements_spec.md"
     umbrella = plan_dir / "umbrella_overview.md"
+    # master_plan_*.md 為舊版/人工遷移專案之相容命名偵測，標準 SOP 一律使用 umbrella_overview.md，
+    # Agent 不應主動建立此檔名（僅供偵測既有專案殘留檔案）。
     master_roadmaps = list(plan_dir.glob("master_plan_*.md"))
 
     track_type = "Unknown"
@@ -51,8 +53,9 @@ def get_plan_info(plan_dir: Path) -> tuple[str, str]:
     elif ft_plan.exists():
         track_type = "Fast Track"
         content = ft_plan.read_text(encoding="utf-8", errors="ignore")
+        # 精確比對 Header「狀態：」欄位，避免正文其他段落偶然出現同名字詞（如 "Reviewing"）造成誤判
         for st in ["Completed", "Reviewing", "Implementing", "Planning"]:
-            if st in content:
+            if f"狀態：{st}" in content or f"狀態: {st}" in content or f"Status: {st}" in content:
                 status = st
                 break
     elif p01_req.exists():

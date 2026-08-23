@@ -11,6 +11,10 @@ test/test_hardening.py — 擴充性與可靠性強化回歸測試套件
   - HT-05: URI Scheme 可由模組 manifest contributes["core"]["uri_schemes"] 開放註冊
   - HT-06: 多模組貢獻查詢 (get_contributions) 結果具決定性排序
   - HT-07: 版本號單一事實來源 (SSOT) 同步防護 (起手腳本雙副本 / yscb_core.__version__)
+  - HT-08: Extension phase 宣告不再是死碼，always-trigger 必跑稽核可正確依 Phase 範圍生效/不誤觸發
+  - HT-09: ext_registry._normalize_phase() 與 verify_plan.compute_phase_code() 之正規化邏輯
+  - HT-10: P05_task.md 標準模板存在且具備必要 Header 欄位
+  - HT-11: scan_plan_status.py 之 Fast Track 狀態判定精確比對 Header，不受正文同名字詞誤導
 """
 
 import os
@@ -43,6 +47,9 @@ from yscb_installer import ConfigManager, ModuleManager, GitRemoteClient
 from context import ProjectContext
 from uri import ProjectURI
 from sop_synthesizer import SOPSynthesizer
+import ext_registry
+import verify_plan
+import scan_plan_status
 
 
 class TestHardening(unittest.TestCase):
@@ -207,6 +214,89 @@ class TestHardening(unittest.TestCase):
         import yscb_core as core_sdk_check
         # 於源碼樹執行時 __version__ 應與 source manifest 一致
         self.assertEqual(core_sdk_check.__version__, core_manifest.get("version"))
+
+    # ── HT-08: Extension phase 死碼修復 — always-trigger 稽核正確依 Phase 生效 ──
+    def test_ht_08_extension_phase_gating_no_longer_dead_code(self):
+        """
+        原 Bug：verify_plan.parse_extensions() 將 phase 硬編碼為 "All"，
+        導致 always-trigger Extension 的必跑稽核恆為死碼（永遠不觸發）。
+        修復後：P04 文件缺少宣告時應被攔截；不在宣告 phase 範圍內的 P01 則不應誤觸發。
+        """
+        plan_dir = self.test_dir / "plan"
+        plan_dir.mkdir()
+        always_ext = {
+            "file": "dogfooding_test_ext.md", "name": "dogfooding_test_ext",
+            "phase": {"P04", "P05", "P06", "P07", "FT_PLAN"}, "trigger": "always",
+            "title": "dogfooding_test_ext", "script_path": None,
+            "source_type": "sop_ext", "module_name": None,
+        }
+
+        p04_file = plan_dir / "P04_implementation_plan.md"
+        p04_file.write_text(
+            "> 功能名稱：Test\n> 建立日期：2026-01-01\n> 狀態：Draft\n> 擴充項目：none\n\n# body\n",
+            encoding="utf-8"
+        )
+        issues_p04 = verify_plan.verify_single_file(p04_file, [always_ext])
+        self.assertTrue(
+            any("必跑擴充項目" in i["msg"] for i in issues_p04),
+            "P04 文件缺少宣告時應被 always-trigger 必跑稽核攔截（phase gating 不應恆為死碼）"
+        )
+
+        p01_file = plan_dir / "P01_requirements_spec.md"
+        p01_file.write_text(
+            "> 功能名稱：Test\n> 建立日期：2026-01-01\n> 狀態：Draft\n> 擴充項目：none\n\n# body\n",
+            encoding="utf-8"
+        )
+        issues_p01 = verify_plan.verify_single_file(p01_file, [always_ext])
+        self.assertFalse(
+            any("必跑擴充項目" in i["msg"] for i in issues_p01),
+            "P01 不在該 Extension 宣告之 phase 範圍內，不應誤觸發必跑稽核"
+        )
+
+    # ── HT-09: phase 正規化與 Phase Token 推導 ──────────────────────
+    def test_ht_09_normalize_phase_and_compute_phase_code(self):
+        self.assertEqual(ext_registry._normalize_phase("P04, P05, FT_plan"), {"P04", "P05", "FT_PLAN"})
+        self.assertEqual(ext_registry._normalize_phase(None), {"ALL"})
+        self.assertEqual(ext_registry._normalize_phase(""), {"ALL"})
+        self.assertEqual(ext_registry._normalize_phase(["P01", "P02"]), {"P01", "P02"})
+
+        self.assertEqual(verify_plan.compute_phase_code("P01_requirements_spec.md"), "P01")
+        self.assertEqual(verify_plan.compute_phase_code("P04_implementation_plan.md"), "P04")
+        self.assertEqual(
+            verify_plan.compute_phase_code("FT_plan.md"), "FT_PLAN",
+            "FT_plan.md 若沿用 stem.split('_')[0] 會誤推導為 'FT'，永遠比對不到 frontmatter 的 'FT_plan' Token"
+        )
+
+    # ── HT-10: P05_task.md 標準模板存在性 ────────────────────────────
+    def test_ht_10_p05_task_template_exists(self):
+        """P00~P04/P06/P07 皆有模板可鏡像，P05 不應是唯一缺口，否則違反「全階段文件模板剛性對齊」鐵律"""
+        tpl_path = YS_CODEBASE_DIR / "source" / "agents-workflow" / "workflows" / "templates" / "P05_task.md"
+        self.assertTrue(tpl_path.is_file(), "P05_task.md 模板缺失")
+        content = tpl_path.read_text(encoding="utf-8")
+        for required in ["功能名稱", "建立日期", "狀態", "擴充項目", "模板版本", "[ ]", "[x]"]:
+            self.assertIn(required, content, f"P05_task.md 模板缺少必要元素：{required}")
+
+    # ── HT-11: Fast Track 狀態判定精確比對 Header ────────────────────
+    def test_ht_11_scan_plan_status_ft_precise_header_match(self):
+        """
+        原 Bug：scan_plan_status.py 對 Fast Track 用裸字串 `if st in content` 判定狀態，
+        正文任何角落出現同名字詞即可能誤判。修復後須採用與其他分支一致的精確 Header 比對。
+        """
+        plan_dir = self.test_dir / "plan_ft"
+        plan_dir.mkdir()
+        ft_file = plan_dir / "FT_plan.md"
+        ft_file.write_text(
+            "> 狀態：Planning\n\n"
+            "## FT-3：品質與 UX 審查\n"
+            "本階段稍後會經過 Reviewing 與 Completed 兩個字詞但目前仍在 Planning。\n",
+            encoding="utf-8"
+        )
+        track_type, status = scan_plan_status.get_plan_info(plan_dir)
+        self.assertEqual(track_type, "Fast Track")
+        self.assertEqual(
+            status, "Planning",
+            "應精確採用 Header「狀態：」欄位判定，而非被正文偶然出現的字詞（Reviewing/Completed）誤導"
+        )
 
 
 if __name__ == "__main__":

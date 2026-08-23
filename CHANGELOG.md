@@ -4,6 +4,22 @@
 
 ---
 
+## 2026_08_23_sop_template_consistency
+
+### Fixed
+- **[Critical] Extension「必跑」自動化稽核死碼修復**：`ext_registry.py` 從未解析 `ext_template.md` 規範定義的 `phase:` frontmatter 欄位，`verify_plan.py` 之 `parse_extensions()` 將每個 Extension 的 `phase` 硬編碼為字面字串 `"All"`，導致 `verify_plan.py` 中「檢查必跑 Extension (trigger: always)」的自動化把關邏輯恆為死碼——無論任何 Phase 文件是否漏宣告 `always` 型擴充皆不會被攔截。已於 `ext_registry.py` 新增 `_normalize_phase()` 將 phase 宣告正規化為大寫 Token 集合並貫通三處 Extension 發現迴圈；`verify_plan.py` 新增 `compute_phase_code()` 正確處理 `FT_plan.md` 的 Token 對應（避免誤推導為 `"FT"` 而永遠比對不到 frontmatter 宣告的 `"FT_plan"`）。已用實際 `dogfooding_pipeline_ext.md` 驗證修復生效。
+- **`P05_task.md` 模板缺失補齊**：P00~P04、P06、P07 皆有標準模板可鏡像，唯獨 Phase 5 任務清單（被 `NewPlan.md`、`Continue.md`、`Discuss.md`、`scan_plan_status.py` 四處引用/依賴，`/Continue` 更需解析其 `[x]`/`[ ]` 標記定位斷點）從未有對應模板，違反「全階段文件模板剛性對齊」鐵律。新增 `workflows/templates/P05_task.md`，並將 `NewPlan.md` Phase 5 步驟 1 補上明確模板引用。
+- **P03/P06 模板語言中立化**：`P03_api_spec.md` 原整份以真實 C# 語法（`namespace UIToolkit.[Subsystem]`、XML doc、`ArgumentNullException`）示範，`P06_test_plan.md` 原寫死 `dotnet test`，與工具庫「純標準庫、任何下游專案皆可用」定位衝突。已改為語言中立偽代碼並比照 `FT_plan.md` 既有的多語言測試指令範例（`pytest` / `dotnet test` / `npm test` / `cargo test` 等）泛化；`P00_semantic_requirements.md` 中一處貼有 `csharp` 語法標籤但內容實為純中文偽代碼註解的程式碼區塊，亦一併修正為語言中立標籤。
+- **決策紀錄 (DR) ID 前綴格式統一**：`NewPlan.md` 定義的 `[REQ:DR-XX]` / `[ARCH:DR-XX]` / `[API:DR-XX]` 格式從未被任何模板實際使用，P01/P02/P03/umbrella_overview 各自使用裸 `DR-01`、P04 使用 `[P01:DR-01]`、FT_plan 使用 `DR-XX` + 獨立分類標籤，四種格式並存且互不相容，破壞可追溯鏈的跨文件唯一性承諾。已統一收斂為 P04 既有先例格式 `[{Phase}:DR-XX]`（Phase 為產出該決策之文件對應 Token，如 `P01`/`P02`/`P03`/`P04`/`FT`/`UMBRELLA`），並同步更新 `NewPlan.md` ID 表、`Discuss.md`、`Continue.md`、`changelog.md` 模板、`AGENTS.template.md` 及全部 6 份會產出 DR 的模板。
+- **`scan_plan_status.py` Fast Track 狀態解析脆弱性修復**：Umbrella 與 P00 分支皆用精確比對 `狀態：{st}`，唯獨 Fast Track 分支用裸字串 `if st in content`，正文任何角落偶然出現同名字詞（如 "Reviewing"）即可能誤判狀態。已統一改為與其他分支一致的 Header 精確比對。
+- **`master_plan_*.md` 孤兒相容分支澄清**：`scan_plan_status.py` 與 `Continue.md` 仍偵測此舊版/人工遷移專案之相容命名，但沒有任何 SOP 文件教 Agent 主動建立此檔名。已於原始碼註解與 `Continue.md` 表格明確標註其為「僅相容偵測、Agent 不應主動建立」，避免未來維護者誤解為與 `umbrella_overview.md` 對等的兩種標準選項。
+
+### Added
+- **強化回歸測試套件擴充 (HT-08~HT-11)**：新增 `test/test_hardening.py` 測試涵蓋 Extension phase 死碼修復（含正向攔截與負向不誤觸發兩案例）、`_normalize_phase()`/`compute_phase_code()` 正規化邏輯、`P05_task.md` 模板存在性與必要欄位、`scan_plan_status.py` Fast Track 精確 Header 比對防迴歸。
+
+### Changed
+- **版本升級**：`agents-workflow` v1.1.0 ➔ v1.2.0。
+
 ## 2026_08_23_1505_fix_yscb_root_path_isolation
 
 ### Fixed
