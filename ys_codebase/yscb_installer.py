@@ -36,7 +36,7 @@ CONFIG_FILENAME = "yscb_config.json"
 LOCAL_CONFIG_FILENAME = "yscb_config.local.json"
 TEMPLATE_CONFIG_FILENAME = "yscb_config.template.json"
 CACHE_DIRNAME = ".yscb_cache"
-INSTALLER_VERSION = "2.1.0"
+INSTALLER_VERSION = "2.2.0"
 
 
 def extract_installer_version(script_path: Path) -> Optional["SemVer"]:
@@ -499,7 +499,8 @@ class GitRemoteClient:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            timeout=600
         )
 
     def sync_cache(self, force_refresh: bool = False) -> Path:
@@ -608,7 +609,7 @@ class ModuleManager:
                 print(f"[HOOK] 執行 '{mod_name}' 生命週期連動 Hook: {hook_script.name}...")
                 try:
                     cmd = [sys.executable, str(hook_script)] + arg_payload
-                    res = subprocess.run(cmd, cwd=str(self.root_dir), timeout=30)
+                    res = subprocess.run(cmd, cwd=str(self.root_dir), timeout=120)
                     if res.returncode != 0:
                         print(f"[WARN] Hook _on_modules_changed.py 執行返回非 0 狀態碼 ({mod_name}): {res.returncode}")
                 except Exception as e:
@@ -900,6 +901,13 @@ class ModuleManager:
             try:
                 backup_dir.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(dest_path, backup_dir, dirs_exist_ok=True)
+                # 備份保留策略：每模組僅保留最近 5 份快照，避免快取無限增長
+                all_backups = sorted(
+                    [d for d in backup_dir.parent.iterdir() if d.is_dir() and d.name.startswith(f"{module_name}_")],
+                    key=lambda d: d.stat().st_mtime
+                )
+                for stale_backup in all_backups[:-5]:
+                    shutil.rmtree(stale_backup, ignore_errors=True)
             except Exception as e:
                 print(f"[WARN] 建立模組快照備份失敗: {e}")
 
@@ -965,11 +973,16 @@ class ModuleManager:
 
             if migration_hook.is_file() and old_version and old_version != version:
                 print(f"[HOOK] 執行 '{module_name}' 版本遷移 Hook: {migration_hook.name} (v{old_version} ➔ v{version})...")
-                res = subprocess.run([sys.executable, str(migration_hook), str(old_version), str(version)], cwd=str(dest_path))
-                if res.returncode != 0:
-                    print(f"[ERROR] Hook _migration.py 執行失敗 (狀態碼: {res.returncode})！")
+                try:
+                    res = subprocess.run([sys.executable, str(migration_hook), str(old_version), str(version)], cwd=str(dest_path), timeout=600)
+                    mig_rc = res.returncode
+                except subprocess.TimeoutExpired:
+                    print(f"[ERROR] Hook _migration.py 執行逾時 (>600s)！")
+                    mig_rc = -1
+                if mig_rc != 0:
+                    print(f"[ERROR] Hook _migration.py 執行失敗 (狀態碼: {mig_rc})！")
                     self._rollback_snapshot(dest_path, backup_dir)
-                    raise RuntimeError(f"模組 '{module_name}' 升級遷移失敗 (exit {res.returncode})，已安全還原至舊版。")
+                    raise RuntimeError(f"模組 '{module_name}' 升級遷移失敗 (exit {mig_rc})，已安全還原至舊版。")
 
             # ── Stage 5: Commit & Finalize (後置 Hook 與狀態登記) ───────────
             installed_hook = dest_path / "scripts" / "_installed.py"
@@ -978,7 +991,7 @@ class ModuleManager:
             if installed_hook.is_file():
                 print(f"[HOOK] 執行 '{module_name}' 安裝後置 Hook: {installed_hook.name}...")
                 try:
-                    res = subprocess.run([sys.executable, str(installed_hook), str(dest_path), mode], cwd=str(dest_path))
+                    res = subprocess.run([sys.executable, str(installed_hook), str(dest_path), mode], cwd=str(dest_path), timeout=120)
                     if res.returncode != 0:
                         print(f"[WARN] Hook _installed.py 執行返回非 0 狀態碼: {res.returncode}")
                 except Exception as e:
@@ -1008,11 +1021,33 @@ class ModuleManager:
             return False
 
         if not force:
+            # 依據各已安裝模組 manifest.json 宣告之 dependencies 執行真實相依安全檢查
+            blockers: List[str] = []
             for other_mod, info in installed.items():
                 if other_mod == module_name:
                     continue
-                if module_name == "core":
-                    raise RuntimeError(f"無法移除 'core'：模組 '{other_mod}' 仍相依於 core SDK。若需強制移除請加 --force。")
+                other_mode = info.get("mode", "build")
+                other_dir = self.root_dir / ("source" if other_mode == "source" else "modules") / other_mod
+                if not (other_dir / "manifest.json").is_file():
+                    located = self._locate_module_dir(other_mod, other_mode)
+                    if not located:
+                        located = self._locate_module_dir(other_mod, "source" if other_mode != "source" else "build")
+                    if located:
+                        other_dir = located
+                deps = self.read_manifest(other_dir).get("dependencies", []) if other_dir.is_dir() else []
+                for dep_spec in deps:
+                    try:
+                        dep_name, _ = VersionConstraint.parse_dependency_spec(dep_spec)
+                    except Exception:
+                        parts = str(dep_spec).split()
+                        dep_name = parts[0] if parts else ""
+                    if dep_name == module_name:
+                        blockers.append(other_mod)
+                        break
+            if blockers:
+                raise RuntimeError(
+                    f"無法移除 '{module_name}'：模組 {', '.join(blockers)} 仍相依於此模組。若需強制移除請加 --force。"
+                )
 
         mod_info = installed[module_name]
         mode = mod_info.get("mode", "build")
@@ -1026,7 +1061,7 @@ class ModuleManager:
             if uninstall_hook.is_file():
                 print(f"[HOOK] 執行 '{module_name}' 卸載前置 Hook: {uninstall_hook.name}...")
                 try:
-                    res = subprocess.run([sys.executable, str(uninstall_hook), str(target_dir), mode], cwd=str(target_dir))
+                    res = subprocess.run([sys.executable, str(uninstall_hook), str(target_dir), mode], cwd=str(target_dir), timeout=120)
                     if res.returncode != 0:
                         print(f"[WARN] Hook _uninstall.py 執行返回非 0 狀態碼: {res.returncode}")
                 except Exception as e:
@@ -1037,6 +1072,60 @@ class ModuleManager:
 
         self.config_mgr.remove_installed_module(module_name)
         print(f"[SUCCESS] 模組 '{module_name}' 已成功移除。")
+        return True
+
+    def list_module_backups(self, module_name: str) -> List[Path]:
+        """列出指定模組於 .yscb_cache/backup/ 之可用快照備份（依時間新至舊排序）"""
+        backup_root = self.root_dir / CACHE_DIRNAME / "backup"
+        if not backup_root.is_dir():
+            return []
+        backups = [d for d in backup_root.iterdir() if d.is_dir() and d.name.startswith(f"{module_name}_")]
+        return sorted(backups, key=lambda d: d.stat().st_mtime, reverse=True)
+
+    def rollback_module(self, module_name: str, list_only: bool = False, backup_name: Optional[str] = None) -> bool:
+        """自本地快照備份還原模組至升級前狀態，並同步回寫安裝紀錄"""
+        backups = self.list_module_backups(module_name)
+
+        if list_only:
+            print(f"\n[ROLLBACK] 模組 '{module_name}' 可用快照備份清單：")
+            if not backups:
+                print("  [INFO] 無任何可用快照備份。")
+                return True
+            for b in backups:
+                ts = datetime.datetime.fromtimestamp(b.stat().st_mtime).isoformat(timespec="seconds")
+                print(f"  • {b.name}  (建立於 {ts})")
+            print(f"\n提示: 執行 'python yscb_installer.py rollback {module_name}' 還原最近一份，或加 '--to <備份名稱>' 指定。\n")
+            return True
+
+        if not backups:
+            raise RuntimeError(f"模組 '{module_name}' 無任何可用快照備份，無法執行還原。")
+
+        target_backup: Optional[Path] = None
+        if backup_name:
+            for b in backups:
+                if b.name == backup_name:
+                    target_backup = b
+                    break
+            if not target_backup:
+                raise RuntimeError(f"找不到名為 '{backup_name}' 的快照備份。可執行 'rollback {module_name} --list' 檢視可用清單。")
+        else:
+            target_backup = backups[0]
+
+        installed = self.config_mgr.load(include_local=False).get("installed_modules", {})
+        mode = installed.get(module_name, {}).get("mode", "build")
+        dest_path = self.root_dir / ("source" if mode == "source" else "modules") / module_name
+
+        self._rollback_snapshot(dest_path, target_backup)
+
+        restored_manifest = self.read_manifest(dest_path)
+        restored_version = restored_manifest.get("version", "1.0.0")
+        self.config_mgr.record_installed_module(
+            module_name=module_name,
+            mode=mode,
+            version=restored_version,
+            meta={"description": restored_manifest.get("description", "")}
+        )
+        print(f"[SUCCESS] 模組 '{module_name}' 已自快照 '{target_backup.name}' 還原 (v{restored_version}) ➔ {dest_path}")
         return True
 
     def build_module(self, module_name: str) -> bool:
@@ -1052,6 +1141,9 @@ class ModuleManager:
             dest_path = self.root_dir / "ys_codebase" / "build" / module_name
         elif (self.root_dir.parent / "ys_codebase" / "source" / module_name).is_dir():
             dest_path = self.root_dir.parent / "ys_codebase" / "build" / module_name
+        else:
+            # 源碼來自遠端快取 (.yscb_cache) 等其他位置時，回退至本地 build/ 輸出
+            dest_path = self.root_dir / "build" / module_name
         # 確保建置前徹底清理既有目標目錄，杜絕歷史殘留檔案
         if dest_path.exists():
             shutil.rmtree(dest_path, ignore_errors=True)
@@ -1062,7 +1154,7 @@ class ModuleManager:
         custom_build_script = src_path / "build.py"
         if custom_build_script.is_file():
             print(f"[BUILD] 執行 '{module_name}' 自訂建置腳本：{custom_build_script}...")
-            res = subprocess.run([sys.executable, str(custom_build_script), str(src_path), str(dest_path)], cwd=str(src_path))
+            res = subprocess.run([sys.executable, str(custom_build_script), str(src_path), str(dest_path)], cwd=str(src_path), timeout=600)
             if res.returncode != 0:
                 raise RuntimeError(f"模組 '{module_name}' 自訂建置失敗 (Exit {res.returncode})。")
         else:
@@ -1316,7 +1408,15 @@ def format_help_doc() -> str:
      從遠端拉取最新 cache 後，逐檔比對本地已安裝模組與遠端版本之差異。
      用法: python yscb_installer.py diff [<module> ...]
 
- 10. help
+ 10. rollback
+     自本地快照備份 (.yscb_cache/backup/) 還原模組至升級前狀態。
+     用法: python yscb_installer.py rollback <module> [--list] [--to <備份名稱>]
+
+ 11. self-update
+     自遠端或快取升級 installer 與統一 CLI 起手腳本（Windows 原子安全覆蓋）。
+     用法: python yscb_installer.py self-update [--force]
+
+ 12. help
      顯示本說明文檔或特定子指令詳解。
      用法: python yscb_installer.py help [command]
 ================================================================================
@@ -1350,9 +1450,10 @@ def main():
     install_parser.add_argument("--force", action="store_true", help="強制重新安裝並覆寫檔案")
 
     # 4. pull / update
-    pull_parser = subparsers.add_parser("pull", help="拉取並更新模組")
+    pull_parser = subparsers.add_parser("pull", aliases=["update"], help="拉取並更新模組")
     pull_parser.add_argument("modules", nargs="*", help="欲更新的模組名稱（預設為全部已安裝模組）")
     pull_parser.add_argument("--source", action="store_true", help="更新為源碼模式")
+    pull_parser.add_argument("--all", action="store_true", help="明確指定更新全部已安裝模組（等同於未指定模組名稱）")
 
     # 5. build
     build_parser = subparsers.add_parser("build", help="編譯/建置源碼模組至 build/")
@@ -1371,8 +1472,8 @@ def main():
     list_parser = subparsers.add_parser("list", help="列出可用模組")
     list_parser.add_argument("--remote", action="store_true", help="自遠端倉庫重新掃描可用模組清單")
 
-    # 9. remove
-    remove_parser = subparsers.add_parser("remove", help="卸載模組")
+    # 9. remove / uninstall
+    remove_parser = subparsers.add_parser("remove", aliases=["uninstall"], help="卸載模組")
     remove_parser.add_argument("module", help="欲移除的模組名稱")
     remove_parser.add_argument("--force", action="store_true", help="忽略相依安全警告強制移除")
 
@@ -1383,6 +1484,12 @@ def main():
     # 11. self-update
     self_update_parser = subparsers.add_parser("self-update", help="自遠端或快取升級 installer 與統一 CLI 起手腳本")
     self_update_parser.add_argument("--force", action="store_true", help="強制重新拉取覆蓋")
+
+    # 12. rollback
+    rollback_parser = subparsers.add_parser("rollback", help="自本地快照備份還原模組至升級前狀態")
+    rollback_parser.add_argument("module", help="欲還原的模組名稱")
+    rollback_parser.add_argument("--list", action="store_true", dest="list_only", help="僅列出可用快照備份清單")
+    rollback_parser.add_argument("--to", dest="backup_name", help="指定還原的快照備份名稱（預設為最近一份）")
 
 
     args, unknown = parser.parse_known_args()
@@ -1461,7 +1568,7 @@ def main():
             print("[SUCCESS] 所有指定模組已順利安裝完成！")
             return 0
 
-        elif args.subcommand == "pull":
+        elif args.subcommand in ("pull", "update"):
             mode = "source" if args.source else "build"
             git_client.sync_cache(force_refresh=True)
             installed = cfg.get("installed_modules", {})
@@ -1519,10 +1626,16 @@ def main():
             if not installed:
                 print("  [!] 當前未安裝任何模組。")
             else:
-                print(f"  {'模組名稱':<20} | {'安裝模式':<10} | {'版本':<10} | {'安裝時間'}")
+                print(f"  {'模組名稱':<20} | {'安裝模式':<10} | {'版本':<10} | {'實體狀態':<10} | {'安裝時間'}")
                 print("  " + "-" * 66)
                 for mod, info in installed.items():
-                    print(f"  {mod:<20} | {info.get('mode', 'build'):<10} | {info.get('version', '1.0.0'):<10} | {info.get('installed_at', '-')}")
+                    m_mode = info.get("mode", "build")
+                    mod_dir = root_dir / ("source" if m_mode == "source" else "modules") / mod
+                    dir_state = "[OK]" if mod_dir.is_dir() else "[MISSING]"
+                    print(f"  {mod:<20} | {m_mode:<10} | {info.get('version', '1.0.0'):<10} | {dir_state:<10} | {info.get('installed_at', '-')}")
+                if any(not (root_dir / ("source" if i.get("mode") == "source" else "modules") / m).is_dir() for m, i in installed.items()):
+                    print("  " + "-" * 66)
+                    print("  [!] 偵測到 [MISSING] 孤兒紀錄：模組目錄已不存在。可執行 'install <module> --force' 重新安裝或 'remove <module>' 清除紀錄。")
             print("=" * 70 + "\n")
             return 0
 
@@ -1549,7 +1662,7 @@ def main():
             print("=" * 75 + "\n")
             return 0
 
-        elif args.subcommand == "remove":
+        elif args.subcommand in ("remove", "uninstall"):
             if module_mgr.remove_module(args.module, force=args.force):
                 # 觸發批次全域收斂廣播
                 module_mgr._broadcast_modules_changed([("removed", args.module)])
@@ -1564,9 +1677,21 @@ def main():
             success = module_mgr.self_update(force=args.force)
             return 0 if success else 1
 
+        elif args.subcommand == "rollback":
+            success = module_mgr.rollback_module(
+                args.module,
+                list_only=args.list_only,
+                backup_name=args.backup_name
+            )
+            return 0 if success else 1
+
 
     except Exception as e:
-        print(f"\n[ERROR] 執行失敗: {e}\n", file=sys.stderr)
+        if os.environ.get("YSCB_DEBUG"):
+            import traceback
+            traceback.print_exc()
+        print(f"\n[ERROR] 執行失敗: {type(e).__name__}: {e}", file=sys.stderr)
+        print("(提示: 設定環境變數 YSCB_DEBUG=1 可顯示完整錯誤堆疊)\n", file=sys.stderr)
         return 1
 
     return 0

@@ -26,13 +26,57 @@ except (ImportError, ValueError):
 class ProjectURI:
     """Codebase 專用語意 URI (project://, yscb://, plans://, archive://, docs://, sop_ext://) 解析器"""
 
-    # 模組特化 Scheme 映射表: scheme -> (module_name, config_key, default_fallback)
+    # 保留字協議 (由 core 直接解析，不開放模組註冊)
+    RESERVED_SCHEMES = ("project", "yscb")
+
+    # [DEPRECATED] 向後相容映射表: scheme -> (module_name, config_key, default_fallback)
+    # 新模組請改於 manifest.json 宣告 contributes["core"]["uri_schemes"] 動態註冊，
+    # 此表僅作為舊版 agents-workflow (未宣告 contributes) 之 fallback。
     DYNAMIC_SCHEMES = {
         "plans": ("agents-workflow", "plans_dir", None),
         "archive": ("agents-workflow", "archive_dir", None),
         "docs": ("agents-workflow", "docs_dir", "docs"),
         "sop_ext": ("agents-workflow", "extensions_dir", None),
     }
+
+    @classmethod
+    def get_dynamic_schemes(cls, start_dir: Optional[Union[str, Path]] = None) -> Dict[str, Tuple[str, str, Optional[str]]]:
+        """
+        動態發現所有已註冊之語意 URI 協議映射: scheme -> (module_name, config_key, default_fallback)。
+
+        來源優先序：
+        1. 各已安裝/源碼模組 manifest.json 之 contributes["core"]["uri_schemes"] 宣告 (開放協定)，
+           宣告格式: [{"scheme": "plans", "config_key": "plans_dir", "default": null}, ...]
+        2. 內建向後相容映射表 DYNAMIC_SCHEMES (舊版模組未宣告時之 fallback)
+
+        模組掃描依名稱排序，同名 scheme 先註冊者優先，具決定性。
+        """
+        schemes: Dict[str, Tuple[str, str, Optional[str]]] = {}
+        try:
+            contributions = ProjectContext.get_contributions("core", start_dir)
+        except Exception:
+            contributions = []
+
+        for mod_name, mod_dir, payload in contributions:
+            entries = payload.get("uri_schemes")
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                scheme = str(entry.get("scheme", "")).strip().lower()
+                config_key = entry.get("config_key")
+                if not scheme or not config_key or scheme in cls.RESERVED_SCHEMES:
+                    continue
+                if scheme in schemes:
+                    continue  # 同名協議：先註冊者優先 (依模組名稱排序，具決定性)
+                schemes[scheme] = (mod_name, str(config_key), entry.get("default"))
+
+        # 向後相容 fallback：未被任何模組宣告接管的舊版內建協議
+        for scheme, spec in cls.DYNAMIC_SCHEMES.items():
+            schemes.setdefault(scheme, spec)
+
+        return schemes
 
     @classmethod
     def parse_uri(cls, uri: str) -> Tuple[Optional[str], str]:
@@ -58,8 +102,9 @@ class ProjectURI:
         if scheme == "yscb":
             return ProjectContext.get_yscb_root(start_dir)
 
-        if scheme in cls.DYNAMIC_SCHEMES:
-            mod_name, key, default_fb = cls.DYNAMIC_SCHEMES[scheme]
+        dynamic_schemes = cls.get_dynamic_schemes(start_dir)
+        if scheme in dynamic_schemes:
+            mod_name, key, default_fb = dynamic_schemes[scheme]
             mod_dir = ProjectContext.get_module_dir(mod_name, start_dir)
             if not mod_dir.is_dir():
                 # 模組未安裝
@@ -126,8 +171,8 @@ class ProjectURI:
         start_dir_p = Path(start_dir).resolve() if start_dir else Path.cwd().resolve()
         proj_root = ProjectContext.get_project_root(start_dir_p)
 
-        # 依序匹配動態 scheme (plans, archive, docs, sop_ext), 再 yscb, 最後 project
-        schemes_to_check = ["plans", "archive", "docs", "sop_ext", "yscb", "project"]
+        # 依序匹配動態 scheme (依名稱排序，具決定性), 再 yscb, 最後 project
+        schemes_to_check = sorted(cls.get_dynamic_schemes(start_dir_p).keys()) + ["yscb", "project"]
         for scheme in schemes_to_check:
             base = cls.get_base_path(scheme, start_dir_p)
             if isinstance(base, Path) and base.exists():
@@ -171,8 +216,8 @@ class ProjectURI:
             "status": "ACTIVE" if yscb_root.is_dir() else "UNINITIALIZED"
         })
 
-        # 2. Dynamic Schemes
-        for scheme, (mod_name, key, default_fb) in cls.DYNAMIC_SCHEMES.items():
+        # 2. Dynamic Schemes (contributes 宣告 + 向後相容 fallback)
+        for scheme, (mod_name, key, default_fb) in cls.get_dynamic_schemes(start_p).items():
             base_res = cls.get_base_path(scheme, start_p)
             mod_dir = ProjectContext.get_module_dir(mod_name, start_p)
             

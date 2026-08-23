@@ -85,7 +85,11 @@ class ProjectContext:
         """
         env_mod = os.environ.get("YSCB_MODULE_DIR")
         if env_mod and os.path.isdir(env_mod):
-            return Path(env_mod).resolve()
+            env_path = Path(env_mod).resolve()
+            # 僅在環境變數確實指向「目標模組」時採用，避免跨模組查詢
+            # (如 A 模組查詢 B 模組的目錄) 被當前執行中模組的環境變數汙染
+            if env_path.name == module_name:
+                return env_path
 
         if start_dir:
             s_path = Path(start_dir).resolve()
@@ -192,7 +196,8 @@ class ProjectContext:
 
         for root in candidate_roots:
             if root.is_dir():
-                for mod_dir in root.iterdir():
+                # 依名稱排序掃描，保證跨平台/跨檔案系統之決定性結果
+                for mod_dir in sorted(root.iterdir(), key=lambda p: p.name):
                     if mod_dir.is_dir():
                         manifest_path = mod_dir / "manifest.json"
                         if manifest_path.is_file() and mod_dir.name not in results:
@@ -214,7 +219,8 @@ class ProjectContext:
         """
         results: List[Tuple[str, Path, Dict[str, Any]]] = []
         manifests = cls.get_all_installed_manifests(start_dir)
-        for mod_name, (mod_dir, manifest) in manifests.items():
+        # 依模組名稱排序，確保多模組貢獻之疊加順序具決定性
+        for mod_name, (mod_dir, manifest) in sorted(manifests.items()):
             contributes = manifest.get("contributes")
             if isinstance(contributes, dict) and namespace in contributes:
                 payload = contributes[namespace]
