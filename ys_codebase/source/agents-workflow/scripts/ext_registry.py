@@ -4,7 +4,32 @@ ext_registry.py — 雙層 Extension 發現與優先級調度器
 
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Set
+
+
+def _parse_frontmatter(content: str) -> Dict[str, str]:
+    """輕量解析 Markdown YAML Frontmatter 為 Dict[str, str]（僅供內部單層鍵值讀取，非完整 YAML 解析）"""
+    result: Dict[str, str] = {}
+    fm_match = re.search(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+    if not fm_match:
+        return result
+    for line in fm_match.group(1).splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            result[k.strip().lower()] = v.strip().strip("[]'\"")
+    return result
+
+
+def _normalize_phase(raw: Any) -> Set[str]:
+    """
+    將 phase 宣告（逗號分隔字串或清單，例："P04, P05, FT_plan"）正規化為大寫 Token 集合。
+    未宣告、空值或宣告為 "all" 時視為全 Phase 皆適用（回傳 {"ALL"}）。
+    """
+    if raw is None:
+        return {"ALL"}
+    tokens = raw if isinstance(raw, list) else str(raw).split(",")
+    normalized = {str(t).strip().upper() for t in tokens if str(t).strip()}
+    return normalized or {"ALL"}
 
 
 class ExtensionRegistry:
@@ -55,7 +80,8 @@ class ExtensionRegistry:
                     "module_name": mod_name,
                     "script_path": (mod_dir / script_rel).resolve() if script_rel else None,
                     "doc_path": (mod_dir / doc_rel).resolve() if doc_rel else None,
-                    "trigger": ext.get("trigger", "on_demand")
+                    "trigger": ext.get("trigger", "on_demand"),
+                    "phase": _normalize_phase(ext.get("phase")),
                 }
 
         # 2. 載入主機內建 Extension 目錄 (若存在)
@@ -70,6 +96,11 @@ class ExtensionRegistry:
                     for doc_file in host_ext_dir.glob("*.md"):
                         name = doc_file.stem
                         script_file = host_ext_dir / f"{name}_verify.py"
+                        phase_raw = None
+                        try:
+                            phase_raw = _parse_frontmatter(doc_file.read_text(encoding="utf-8", errors="ignore")).get("phase")
+                        except Exception:
+                            pass
                         if name not in registry:
                             registry[name] = {
                                 "name": name,
@@ -77,7 +108,8 @@ class ExtensionRegistry:
                                 "module_name": "agents-workflow",
                                 "script_path": script_file.resolve() if script_file.is_file() else None,
                                 "doc_path": doc_file.resolve(),
-                                "trigger": "on_demand"
+                                "trigger": "on_demand",
+                                "phase": _normalize_phase(phase_raw),
                             }
         except Exception:
             pass
@@ -99,8 +131,9 @@ class ExtensionRegistry:
                 for doc_file in project_ext_dir.glob("*.md"):
                     name = doc_file.stem
                     trigger = "always" if "dogfooding" in name else "on_demand"
+                    phase_raw = None
 
-                    # 嘗試自 Frontmatter 解析精確 name 與 trigger
+                    # 嘗試自 Frontmatter 解析精確 name、trigger 與 phase
                     try:
                         content = doc_file.read_text(encoding="utf-8", errors="ignore")
                         fm_match = re.search(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
@@ -114,6 +147,8 @@ class ExtensionRegistry:
                                         name = v
                                     elif k == "trigger":
                                         trigger = v.lower()
+                                    elif k == "phase":
+                                        phase_raw = v
                     except Exception:
                         pass
 
@@ -127,7 +162,8 @@ class ExtensionRegistry:
                         "module_name": None,
                         "script_path": script_file.resolve() if script_file.is_file() else None,
                         "doc_path": doc_file.resolve(),
-                        "trigger": trigger
+                        "trigger": trigger,
+                        "phase": _normalize_phase(phase_raw),
                     }
 
                 for script_file in project_ext_dir.glob("*_verify.py"):
@@ -143,7 +179,8 @@ class ExtensionRegistry:
                             "module_name": None,
                             "script_path": script_file.resolve(),
                             "doc_path": doc_file.resolve() if doc_file.is_file() else None,
-                            "trigger": "always" if "dogfooding" in base else "on_demand"
+                            "trigger": "always" if "dogfooding" in base else "on_demand",
+                            "phase": {"ALL"},
                         }
         except Exception:
             pass

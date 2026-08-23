@@ -55,5 +55,5 @@
 
 ## 4. 測試結論與 Phase 6 Checkpoint
 
-- [ ] **Agent CLI 自動化測試**：已實機執行 `dotnet test` 並全部通過（無 Error/Warning）
+- [ ] **Agent CLI 自動化測試**：已實機完成自動化測試（例 `pytest` / `dotnet test` / `npm test` / `cargo test` 等，依專案實際測試框架）並全部通過（無 Error/Warning）
 - [ ] **開發者 UX / 手動測試確認**：開發者明確回覆「UX 驗證通過」或指示免測，允許進入 Phase 7
