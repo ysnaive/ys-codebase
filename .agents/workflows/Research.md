@@ -1,11 +1,10 @@
 ---
-name: "Research"
-description: "深度技術調研工作流 (Research) — 適用於高複雜度技術探索、方案選型對比與 R01 專題調研報告產出"
+description: 深度技術調研工作流 (Research) — 適用於高複雜度技術探索、方案選型對比與 R01 專題調研報告產出
 ---
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Research.md](../../modules/agents-workflow/workflows/Research.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Research.md](../../modules/agents-workflow/workflows/commands/Research.md)）：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
@@ -17,8 +16,6 @@ description: "深度技術調研工作流 (Research) — 適用於高複雜度�
 > | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
-
----
 
 # 深度技術調研工作流 (Research)
 
@@ -82,4 +79,3 @@ flowchart TD
 - 將調研形成的**核心公理、不可破壞之約束與架構決策**收斂回填：
   1. 回填至 `P00_semantic_requirements.md` 與 `P01_requirements_spec.md`（「依據 P00 / 調研報告：[R01_xxx.md]」）。
   2. 若為大型任務，作為 `umbrella_overview.md` 子計畫拆分與依賴路線圖的依據。
-

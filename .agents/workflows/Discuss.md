@@ -1,11 +1,10 @@
 ---
-name: "Discuss"
-description: "深度歸因與防淺層修復工作流 (Discuss) — 實作/測試遇阻時的強制暫停、根因追溯與範疇保護機制"
+description: 深度歸因與防淺層修復工作流 (Discuss) — 實作/測試遇阻時的強制暫停、根因追溯與範疇保護機制
 ---
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Discuss.md](../../modules/agents-workflow/workflows/Discuss.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Discuss.md](../../modules/agents-workflow/workflows/commands/Discuss.md)）：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
@@ -17,8 +16,6 @@ description: "深度歸因與防淺層修復工作流 (Discuss) — 實作/測�
 > | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
-
----
 
 # 深度歸因與防淺層修復工作流 (Discuss)
 
@@ -78,4 +75,3 @@ description: "深度歸因與防淺層修復工作流 (Discuss) — 實作/測�
   1. **記錄決策**：在當前 Dev Plan 的 `FT_plan.md`、`changelog.md` 或對應 Phase 文件中追加一筆標準 **`[DR-XX]` (Decision Record)**。
   2. **更新架構/任務**：若影響架構或工作清單，回填更新 `P02` / `P04` / `P05_task.md`。
   3. **恢復編碼**：重新進入 Phase 5/6 執行根本修復。
-

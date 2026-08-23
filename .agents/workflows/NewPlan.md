@@ -1,11 +1,10 @@
 ---
-name: "NewPlan"
-description: "標準開發作業流程 (NewPlan) — 定義專案從需求到發布的完整規範與三大分流管控"
+description: 標準開發作業流程 (NewPlan) — 定義專案從需求到發布的完整規範與三大分流管控
 ---
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[NewPlan.md](../../modules/agents-workflow/workflows/NewPlan.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[NewPlan.md](../../modules/agents-workflow/workflows/commands/NewPlan.md)）：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
@@ -17,8 +16,6 @@ description: "標準開發作業流程 (NewPlan) — 定義專案從需求到發
 > | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
-
----
 
 # 標準開發作業流程 (NewPlan)
 
@@ -312,7 +309,7 @@ flowchart TD
 1. **自動化測試執行**：執行 CLI 編譯與單元測試，記錄輸出日誌。若命令受阻，標記 `[未實機編譯/僅靜態檢查]`。
 2. **人工 / UX / 硬體驗證 Checkpoint（強制等待）**：
    - Agent **絕對禁止**代勾或自行標記 `Passed`。
-   - 呈遞測試結果，明確詢問開發者進行實際互動/視覺/實機驗證。
+   - 呈遞測試結果，明確詢問開發者進行實際互動/視覺/硬體驗證。
    - 獲得開發者明確回覆「驗證通過」後，方可將 P06 標記為 `Passed`。
 3. **Bug 修復子循環與衍生子計畫**：
    - **實作錯誤**：修復後重新執行受影響測試。
@@ -387,4 +384,3 @@ flowchart TD
     
     CL["changelog.md (計畫內部日誌)"] -. 貫穿記錄 .-> P01 & P02 & P03 & P04 & P05 & P06Run & P07
 ```
-

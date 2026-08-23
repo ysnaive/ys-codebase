@@ -1,11 +1,10 @@
 ---
-name: "ContextInit"
-description: "專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Chat 開啟時快速初始化專案記憶與規範"
+description: 專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Chat 開啟時快速初始化專案記憶與規範
 ---
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[ContextInit.md](../../modules/agents-workflow/workflows/ContextInit.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[ContextInit.md](../../modules/agents-workflow/workflows/commands/ContextInit.md)）：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
@@ -17,8 +16,6 @@ description: "專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Ch
 > | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
-
----
 
 # 專案上下文初始化流程 (ContextInit)
 
@@ -94,4 +91,3 @@ description: "專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Ch
 
 **🤖 Agent 狀態**：已準備就緒！請問今天我們準備進行什麼任務或功能開發？
 ```
-

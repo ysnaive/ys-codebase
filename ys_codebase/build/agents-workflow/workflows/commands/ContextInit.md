@@ -29,6 +29,7 @@ description: 專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Cha
   - 除錯排查與範疇保護鐵律、模板註解剝除鐵律。
   - 定式作業指令優先原則（透過 `python yscb_cli.py agents-workflow <verify|scan|search|archive>` 調度）、嚴禁主動歸檔。
   - 專案程式碼架構與 `docs/` 知識庫之鏡像同步關係。
+<!-- YSCB_SLOT:Step1 -->
 
 ### 步驟 2：加載程式碼與命名規範
 - **讀取檔案**：[docs://_project/STANDARDS.md](docs://_project/STANDARDS.md) 或 [docs://_project/coding-standards.md](docs://_project/coding-standards.md) *(若專案未獨立提供則依 AGENTS.md 為準)*
@@ -36,18 +37,21 @@ description: 專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Cha
   - 識別碼與變數命名規範（如前綴、大小寫慣例、命名空間結構）。
   - 單位與型別標註約束（具體變數顯式帶單位，轉換時嚴禁同名覆蓋）。
   - 註解哲學與文檔標準（`docs/` 負責宏觀公理，代碼負責微觀自包含）。
+<!-- YSCB_SLOT:Step2 -->
 
 ### 步驟 3：加載專案最新演進與當前進度
 - **讀取檔案**：[project://CHANGELOG.md](project://CHANGELOG.md) (前 2 ~ 3 個區塊) *(下游專案全域變更記錄)*
 - **提取要點**：
   - 瞭解專案最近完成了哪些 Dev Plan 與架構優化。
   - 掌握當前專案處於何種演進階段。
+<!-- YSCB_SLOT:Step3 -->
 
 ### 步驟 4：加載工作流設定與檢查進行中/歷史 Plan 結構
 - **讀取設定**：[modules/agents-workflow/config.project.json](modules/agents-workflow/config.project.json) *(若未初始化可執行 `python yscb_cli.py agents-workflow init --default`)*
 - **提取要點與目錄檢查**：
   - 取得 `plans_dir`（對應 `plans://`）與 `archive_dir`（對應 `archive://`）。
   - 檢查進行中 Plan 與歷史歸檔之目錄結構與進度。
+<!-- YSCB_SLOT:Step4 -->
 
 ---
 

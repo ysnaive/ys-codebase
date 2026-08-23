@@ -3,5 +3,5 @@
   "version": "2.1.0",
   "description": "YS-Codebase 核心運行期 SDK (Core Runtime SDK: ProjectContext, ConfigManager, Console, SemVer, MigrationRunner)",
   "dependencies": [],
-  "built_at": "2026-08-23T11:02:53"
+  "built_at": "2026-08-23T13:30:19"
 }

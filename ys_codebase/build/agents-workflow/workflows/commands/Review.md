@@ -17,6 +17,7 @@ description: 開發完成後品質與細節審查工作流 (Review) — 包含 v
 python yscb_cli.py agents-workflow verify
 ```
 - 若腳本回報格式錯誤（例如 Header 欄位缺失、`> 擴充項目：` 遺漏），優先進行修復。
+<!-- YSCB_SLOT:Step1 -->
 
 ---
 
@@ -38,6 +39,7 @@ python yscb_cli.py agents-workflow ext show <extension_name>
 2. **語意化觸發 (`trigger: on_demand`) 檢驗**：
    - 檢視本次 Dev Plan 的實作範疇（例如：是否修改了通訊協定、持久化層、渲染底層或日誌系統）。
    - 判斷是否踩中任何 on-demand extension 的語意條件；若符合但先前遺漏執行，**立即在此階段攔截並補做該 Checklist**。
+<!-- YSCB_SLOT:Step2 -->
 
 ---
 
@@ -71,6 +73,7 @@ python yscb_cli.py agents-workflow ext show <extension_name>
 
 #### 5. Commit 訊息規範
 - [ ] 採用 Conventional Commits 格式：`<type>(<scope>): <標題>`，簡潔且資訊完整。
+<!-- YSCB_SLOT:Step3 -->
 
 ---
 
@@ -79,3 +82,4 @@ python yscb_cli.py agents-workflow ext show <extension_name>
 - **非單純報錯**：若審查中發現任何代碼瑕疵、文檔缺漏、未執行的 ext 或規範偏差，Agent **絕對禁止僅僅列出問題就結束**！
 - **即時修復**：Agent 必須呈遞具體修復方案，與開發者即時討論並動手修正。
 - **回填閉環**：修復完成後，將審查結論與偏差紀錄同步寫入 `P07_walkthrough.md` 與 `changelog.md`。
+<!-- YSCB_SLOT:Step4 -->

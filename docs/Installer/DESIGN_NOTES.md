@@ -67,5 +67,25 @@ last_updated: "2026-08-22"
 > 在 Windows 作業系統中，若 Python 進程直接對自身正在執行的 `.py` 檔案進行二進位寫入覆蓋，會引發 Windows File Lock `PermissionError`。
 
 - **解決方案**：
-  在 `installer self-update` 時，新腳本一律先寫入臨時檔案 `yscb_installer.tmp`，隨後透過底層 C API 支援的 `os.replace` 進行單一原子指標替換，達成 100% 穩定免重啟自舉更新。
+  在 `installer self-update` 時，新腳本一律先寫入臨時檔案 `yscb_installer.tmp`，隨後透過底層 C API 支援的 `os.replace`進行單一原子指標替換，達成 100% 穩定免重啟自舉更新。
+
+---
+
+### 7. 安裝期生命週期連動廣播與 build 嚴格排除鐵律 (DN-07)
+> [!CAUTION]
+> 在模組建置階段 (`installer build`)，產物必須維持 100% 純淨與環境無關。若在建置期調用連動 Hook，會導致本機工作區的暫態狀態被固化進發布產物中。
+
+- **架構約束**：
+  - `_broadcast_modules_changed()` 僅在 `install`、`pull`、`remove` 整批事務結尾派發一次。
+  - `build` 指令嚴格排除廣播觸發，確保建置產物零連動副作用。
+
+---
+
+### 8. SOPSynthesizer Slot 標記剝除與零殘留防呆 (DN-08)
+> [!IMPORTANT]
+> 主 SOP 在 `commands/` 基準庫中包含 `<!-- YSCB_SLOT:... -->` 標記供外掛注入。若未命中的標記殘留在最終交付文檔中，將嚴重影響排版專業度與 LLM 的注意力聚焦。
+
+- **防呆設計**：
+  動態合成引擎在輸出具體化文檔（`workflows/*.md` 及 `.agents/workflows/*.md`）前，強制執行 `SOPSynthesizer.strip_slot_markers()` 正則清除所有 Slot 標記，保證對外文檔 100% 純淨無語法殘留。
+
 

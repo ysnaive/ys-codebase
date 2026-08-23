@@ -2,6 +2,21 @@
 description: 專案知識庫架構與維護規範 — 定義 docs/ 抽象知識維度、判定決策樹、P03/P05/P06 投影矩陣與 Topic 專題文檔標準
 ---
 
+> [!NOTE]
+> ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
+> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[DocumentationStandards.md](../../modules/agents-workflow/workflows/commands/DocumentationStandards.md)）：
+> 
+> | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
+> | :--- | :--- | :--- |
+> | **`project://`** | `./` | `[ACTIVE]` |
+> | **`yscb://`** | `./` | `[ACTIVE]` |
+> | **`plans://`** | `./plans` | `[ACTIVE]` |
+> | **`archive://`** | `./archive_plans` | `[ACTIVE]` |
+> | **`docs://`** | `./docs` | `[ACTIVE]` |
+> | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
+> 
+> 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
+
 # 專案知識庫架構與維護規範 (Documentation Standards)
 
 本文件定義專案知識庫（`docs://`）的抽象知識維度、判定決策樹、中觀專題手冊 (Topic Docs) 觸發標準與全生命週期對齊機制。
@@ -169,4 +184,3 @@ python yscb_cli.py agents-workflow docs audit
 # 或別名：python yscb_cli.py agents-workflow docs check-links
 ```
 - 秒級全量掃描 `docs/` 目錄，檢查所有相對路徑超連結是否存在死鏈，並校驗 YAML Frontmatter 語法完備性。
-
