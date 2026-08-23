@@ -783,6 +783,28 @@ with open(target.parent / "uninstalled_flag.txt", "w") as f: f.write("uninstalle
         self.assertFalse((self.test_dir / "yscb_installer.tmp").exists())
         self.assertFalse((self.test_dir / "yscb_installer.py.tmp").exists())
 
+    def test_18_git_remote_mirror_isolation(self):
+        """測試 GitRemoteClient 快取目錄自動收斂至 .yscb_cache/mirror 且與 modules 快取隔離"""
+        self.assertEqual(self.git_client.cache_dir.resolve(), (self.test_dir / ".yscb_cache" / "mirror").resolve())
+
+        # 模擬建立模組快取與 mirror 快取
+        mod_cache = self.test_dir / ".yscb_cache" / "modules" / "test_mod"
+        mod_cache.mkdir(parents=True, exist_ok=True)
+        (mod_cache / "cached_data.json").write_text("{}", encoding="utf-8")
+
+        # 建立 local repo 來源並同步至 mirror
+        local_src = self.test_dir / "my_source_repo"
+        local_src.mkdir(parents=True, exist_ok=True)
+        (local_src / "repo_file.txt").write_text("repo content", encoding="utf-8")
+
+        self.git_client.repo = str(local_src)
+        synced_dir = self.git_client.sync_cache(force_refresh=True)
+
+        # 斷言同步至 mirror 目錄且不覆寫/破壞 modules 快取
+        self.assertEqual(synced_dir.resolve(), (self.test_dir / ".yscb_cache" / "mirror").resolve())
+        self.assertTrue((synced_dir / "repo_file.txt").is_file())
+        self.assertTrue((mod_cache / "cached_data.json").is_file(), "sync_cache 誤刪了 modules 模組快取！")
+
 
 if __name__ == "__main__":
     unittest.main()

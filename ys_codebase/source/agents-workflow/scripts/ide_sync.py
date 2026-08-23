@@ -1,10 +1,15 @@
-"""
-ide_sync.py — IDE 工作流指令生成快取與檔案追蹤器
-"""
-
 import json
+import shutil
 from pathlib import Path
 from typing import List, Set
+
+try:
+    from yscb_core import ProjectContext
+except ImportError:
+    try:
+        from context import ProjectContext
+    except ImportError:
+        ProjectContext = None
 
 
 class IDECacheTracker:
@@ -16,9 +21,29 @@ class IDECacheTracker:
     def __init__(self, project_root: Path, adapter: str = "antigravity"):
         self.project_root = Path(project_root).resolve()
         self.adapter = adapter
-        # 每個 adapter 各自持有獨立 manifest，避免生成 A 時把 B 的產物當孤兒清掉
-        self.cache_path = self.project_root / ".yscb_cache" / f"ide_manifest_{adapter}.json"
+
+        if ProjectContext:
+            try:
+                self.module_cache_dir = ProjectContext.get_module_cache_dir("agents-workflow", start_dir=self.project_root)
+            except Exception:
+                self.module_cache_dir = self.project_root / ".yscb_cache" / "modules" / "agents-workflow"
+        else:
+            self.module_cache_dir = self.project_root / ".yscb_cache" / "modules" / "agents-workflow"
+
+        self.cache_path = self.module_cache_dir / f"ide_manifest_{adapter}.json"
+        self.legacy_adapter_cache = self.project_root / ".yscb_cache" / f"ide_manifest_{adapter}.json"
         self.legacy_cache_path = self.project_root / self.CACHE_FILE
+
+        self._migrate_legacy_cache()
+
+    def _migrate_legacy_cache(self) -> None:
+        """平滑自動遷移舊版快取至模組專屬命名空間"""
+        if not self.cache_path.exists() and self.legacy_adapter_cache.exists() and self.legacy_adapter_cache != self.cache_path:
+            try:
+                self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(self.legacy_adapter_cache), str(self.cache_path))
+            except Exception:
+                pass
 
     def get_tracked_files(self) -> Set[Path]:
         """取得上一次生成之檔案清單 (絕對路徑)；新版 manifest 不存在時回讀舊版全域 manifest 以平滑遷移"""
@@ -71,5 +96,10 @@ class IDECacheTracker:
         if self.legacy_cache_path.exists() and self.legacy_cache_path != self.cache_path:
             try:
                 self.legacy_cache_path.unlink()
+            except OSError:
+                pass
+        if self.legacy_adapter_cache.exists() and self.legacy_adapter_cache != self.cache_path:
+            try:
+                self.legacy_adapter_cache.unlink()
             except OSError:
                 pass

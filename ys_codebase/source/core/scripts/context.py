@@ -61,6 +61,21 @@ class ProjectContext:
         if env_root and os.path.isdir(env_root):
             return Path(env_root).resolve()
 
+        # 優先自 start_dir 或其父層尋找 yscb_config.json
+        cur = Path(start_dir).resolve() if start_dir else Path.cwd().resolve()
+        for parent in [cur] + list(cur.parents):
+            cfg_path = parent / cls.CONFIG_FILE
+            if cfg_path.is_file():
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg_data = json.load(f)
+                    custom_yscb = cfg_data.get("paths", {}).get("yscb_root")
+                    if custom_yscb and not cls.is_undefined(custom_yscb):
+                        return (parent / custom_yscb).resolve()
+                except Exception:
+                    pass
+                return parent
+
         proj_root = cls.get_project_root(start_dir)
         cfg_path = proj_root / cls.CONFIG_FILE
         if cfg_path.is_file():
@@ -69,25 +84,62 @@ class ProjectContext:
                     cfg_data = json.load(f)
                 custom_yscb = cfg_data.get("paths", {}).get("yscb_root")
                 if custom_yscb and not cls.is_undefined(custom_yscb):
-                    resolved_yscb = (proj_root / custom_yscb).resolve()
-                    if resolved_yscb.is_dir():
-                        return resolved_yscb
+                    return (proj_root / custom_yscb).resolve()
             except Exception:
                 pass
 
         return proj_root
 
     @classmethod
+    def get_cache_root(cls, start_dir: Optional[Union[str, Path]] = None) -> Path:
+        """取得工具庫中繼快取總根目錄 (預設為 yscb://.yscb_cache/)"""
+        env_cache = os.environ.get("YSCB_CACHE_ROOT")
+        if env_cache and os.path.isdir(env_cache):
+            return Path(env_cache).resolve()
+        return (cls.get_yscb_root(start_dir) / ".yscb_cache").resolve()
+
+    @classmethod
+    def get_module_cache_dir(cls, module_name: str, start_dir: Optional[Union[str, Path]] = None, auto_mkdir: bool = True) -> Path:
+        """
+        取得特定模組專屬的命名空間快取目錄 (yscb://.yscb_cache/modules/<module_name>/)。
+        :param module_name: 模組名稱（如 "knowledge-db", "agents-workflow"）
+        :param auto_mkdir: 若為 True，目錄不存在時自動遞迴建立 (mkdir -p)
+        :return: 該模組專屬快取目錄之絕對 Path
+        """
+        cache_dir = cls.get_cache_root(start_dir) / "modules" / module_name
+        if auto_mkdir:
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        return cache_dir.resolve()
+
+    @classmethod
+    def get_module_storage_dir(cls, module_name: str, start_dir: Optional[Union[str, Path]] = None, auto_mkdir: bool = True) -> Path:
+        """
+        取得特定模組專屬的持久化儲存目錄 (project://.yscb_storage/<module_name>/)。
+        :param module_name: 模組名稱
+        :param auto_mkdir: 若為 True，目錄不存在時自動遞迴建立 (mkdir -p)
+        :return: 該模組專屬持久儲存目錄之絕對 Path
+        """
+        storage_dir = cls.get_project_root(start_dir) / ".yscb_storage" / module_name
+        if auto_mkdir:
+            try:
+                storage_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        return storage_dir.resolve()
+
+    @classmethod
     def get_module_dir(cls, module_name: str, start_dir: Optional[Union[str, Path]] = None) -> Path:
         """
         取得特定模組的目錄路徑。
-        優先尋找 modules/<module_name> (Build 模式)，次之 source/<module_name> (Source 模式)。
+        優先尋找 yscb://modules/<module_name> (Build 模式)，次之 yscb://source/<module_name> (Source 模式)。
         """
         env_mod = os.environ.get("YSCB_MODULE_DIR")
         if env_mod and os.path.isdir(env_mod):
             env_path = Path(env_mod).resolve()
-            # 僅在環境變數確實指向「目標模組」時採用，避免跨模組查詢
-            # (如 A 模組查詢 B 模組的目錄) 被當前執行中模組的環境變數汙染
+            # 僅在環境變數確實指向「目標模組」時採用，避免跨模組查詢被污染
             if env_path.name == module_name:
                 return env_path
 
@@ -100,21 +152,22 @@ class ProjectContext:
             if (s_path / "source" / module_name).is_dir():
                 return (s_path / "source" / module_name).resolve()
 
+        yscb_root = cls.get_yscb_root(start_dir)
         proj_root = cls.get_project_root(start_dir)
         candidate_dirs = [
+            yscb_root / "modules" / module_name,
+            yscb_root / "source" / module_name,
+            yscb_root / "build" / module_name,
             proj_root / "modules" / module_name,
             proj_root / "source" / module_name,
-            proj_root / "ys_codebase" / "modules" / module_name,
-            proj_root / "ys_codebase" / "source" / module_name,
-            proj_root / "ys_codebase" / "build" / module_name,
         ]
 
         for cand in candidate_dirs:
             if cand.is_dir():
                 return cand.resolve()
 
-        # 預設回傳 modules/<module_name>
-        return (proj_root / "modules" / module_name).resolve()
+        # 預設回傳 yscb_root / "modules" / module_name
+        return (yscb_root / "modules" / module_name).resolve()
 
     @classmethod
     def is_undefined(cls, val: Any) -> bool:
@@ -184,14 +237,15 @@ class ProjectContext:
         掃描所有已安裝模組 (modules/) 與源碼模組 (source/) 之 manifest.json。
         回傳: Dict[mod_name, Tuple(mod_dir, manifest_dict)]
         """
+        yscb_root = cls.get_yscb_root(start_dir)
         proj_root = cls.get_project_root(start_dir)
         results: Dict[str, Tuple[Path, Dict[str, Any]]] = {}
 
         candidate_roots = [
+            yscb_root / "modules",
+            yscb_root / "source",
             proj_root / "modules",
             proj_root / "source",
-            proj_root / "ys_codebase" / "modules",
-            proj_root / "ys_codebase" / "source",
         ]
 
         for root in candidate_roots:

@@ -57,9 +57,26 @@ class ConfigManager:
             f.write("\n")
 
     @classmethod
-    def load(cls, module_name: str, start_dir: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
+    def resolve_config_uris(cls, data: Any, start_dir: Optional[Union[str, Path]] = None) -> Any:
+        """遞迴解析字典或清單中包含 '://' 之語意 URI 字串為實體絕對 Path"""
+        if isinstance(data, dict):
+            return {k: cls.resolve_config_uris(v, start_dir=start_dir) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [cls.resolve_config_uris(item, start_dir=start_dir) for item in data]
+        elif isinstance(data, str) and "://" in data:
+            try:
+                from .uri import ProjectURI
+            except (ImportError, ValueError):
+                from uri import ProjectURI
+            res = ProjectURI.resolve(data, start_dir=start_dir)
+            return str(res) if isinstance(res, Path) else res
+        return data
+
+    @classmethod
+    def load(cls, module_name: str, start_dir: Optional[Union[str, Path]] = None, resolve_uris: bool = False) -> Dict[str, Any]:
         """
         按照 2×2 矩陣優先級完整載入並合併模組設定。
+        :param resolve_uris: 若為 True，自動遞迴展開字典中所有的語意 URI (project://, yscb:// 等)
         """
         proj_root = ProjectContext.get_project_root(start_dir)
         mod_dir = ProjectContext.get_module_dir(module_name, start_dir)
@@ -99,6 +116,9 @@ class ConfigManager:
             # 向後相容舊版 config.json (若不存在 config.project.json)
             mod_user = cls._read_json(mod_dir / "config.json")
         merged = deep_merge(merged, mod_user)
+
+        if resolve_uris:
+            merged = cls.resolve_config_uris(merged, start_dir=start_dir)
 
         return merged
 
