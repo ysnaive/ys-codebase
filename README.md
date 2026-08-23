@@ -54,8 +54,9 @@ ys-codebase/ (專案根目錄，代表 "project://" / ":/"，自引用 Dogfoodin
 │       └── agents-workflow/           # 由 source/ 打包產出之標準模組包
 │
 └── test/                              # [假專案測試環境 (":/test/")]
-    ├── test_installer.py              # 23 項單元與整合測試套件
-    └── run_regression.py              # 一鍵全自動回歸測試腳本 (含沙盒 E2E 回歸)
+    ├── test_installer.py              # Installer 與 Core SDK 單元/整合測試套件
+    ├── test_hardening.py              # 擴充性與可靠性強化回歸測試套件
+    └── run_regression.py              # 一鍵全自動回歸測試腳本 (含沙盒 E2E 回歸，CI 同步執行)
 ```
 
 ---
@@ -135,6 +136,8 @@ python yscb_cli.py agents-workflow docs audit
 | **`docs://<path>`** | 系統知識庫目錄 | 指向專案知識庫目錄（由 `paths.docs_dir` 定義） |
 | **`sop_ext://<path>`** | 專案 SOP 擴充目錄 | 指向專案特化擴充清單目錄（由 `paths.extensions_dir` 定義） |
 
+> 💡 **開放註冊協定**：任何模組皆可於 `manifest.json` 宣告 `contributes["core"]["uri_schemes"]` 註冊自訂協議（例：`{"scheme": "notes", "config_key": "notes_dir"}`），無須修改 core SDK。`project://` 與 `yscb://` 為保留字。
+
 ### 🛠️ URI 終端動態解析指令
 ```bash
 # 解析語意 URI 為實體絕對路徑
@@ -153,9 +156,12 @@ python yscb_cli.py uri to-uri docs/_project/STANDARDS.md
 
 ### 1. 安裝器管理 (`installer`)
 ```bash
-python yscb_cli.py installer status               # 檢視已安裝模組與版本報告
-python yscb_cli.py installer update --all         # 更新全量模組至最新發布物
-python yscb_cli.py installer remove <module_name> # 安全解除安裝指定模組
+python yscb_cli.py installer status               # 檢視已安裝模組、版本與實體狀態報告
+python yscb_cli.py installer update --all         # 更新全量模組至最新發布物 (同 pull)
+python yscb_cli.py installer remove <module_name> # 安全解除安裝指定模組 (同 uninstall，具真實相依防護)
+python yscb_cli.py installer rollback <module> --list  # 列出模組可用快照備份
+python yscb_cli.py installer rollback <module>    # 一鍵還原模組至升級前快照
+python yscb_cli.py installer self-update          # 升級 installer 與 CLI 起手腳本
 ```
 
 ### 2. 工作流定式作業 (`agents-workflow`)
