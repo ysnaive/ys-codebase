@@ -24,6 +24,10 @@ Thumbs.db
 scratch/
 sandbox/
 .yscb_cache/
+ys_codebase/.temp/
+ys_codebase/.mirror/
+ys_codebase/.snapshots/
+ys_codebase/.cache/
 
 # 2x2 Matrix User-Level Local Configs (Ignore all user-level configs; track project configs & templates)
 *.local.json

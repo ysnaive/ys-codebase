@@ -61,9 +61,19 @@ class ContributesAggregator:
                 if isinstance(p_contribs, dict):
                     self._deep_merge(aggregated[target], p_contribs)
 
-            # Persist injected contributes
-            target_cfg_uri = f"config.root://{target}/contributes.merged.json"
-            uri.write_json(target_cfg_uri, aggregated[target])
+            # Remove legacy file in config/ if exists
+            legacy_cfg_uri = f"config.root://{target}/contributes.merged.json"
+            if uri.exists(legacy_cfg_uri):
+                uri.remove(legacy_cfg_uri)
+
+            # Persist injected contributes to cache space
+            target_cache_uri = f"cache.root://{target}/contributes.merged.json"
+            if aggregated[target]:
+                uri.makedirs(f"cache.root://{target}", exist_ok=True)
+                uri.write_json(target_cache_uri, aggregated[target])
+            else:
+                if uri.exists(target_cache_uri):
+                    uri.remove(target_cache_uri)
 
         return aggregated
 

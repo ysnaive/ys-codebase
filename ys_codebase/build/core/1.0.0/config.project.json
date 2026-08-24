@@ -1,26 +1,3 @@
 {
-  "$schema": "./ys_codebase/modules/core/schemas/config.project.schema.json",
-  "project_name": "my_project",
-  "version": "1.0.0",
-  "default_provider": "./ys_codebase/build",
-  "paths": {
-    "plans_dir": "plans",
-    "docs_dir": "docs",
-    "archive_dir": "archive_plans",
-    "extensions_dir": "extensions"
-  },
-  "modules": {
-    "core": {
-      "auto_reload": true
-    },
-    "dev": {
-      "default_test_type": "all",
-      "preserve_sandbox_on_failure": true
-    }
-  },
-  "contributes": {
-    "core": {
-      "uri_schemes": []
-    }
-  }
+  "project_root": "!undefined"
 }

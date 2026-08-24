@@ -26,9 +26,10 @@
 | **sub_04** | `sub_04_dev_module` | Full Track | **已完成** | 建立 `module:dev`：實作模組腳手架 `create`、規範檢查 `check`、純淨打包 `build` 工具 |
 | **sub_05** | `sub_05_dev_testing_workflow` | Full Track | **已完成** | 建立並完善 dev 測試流程：實作 `dev test` 沙盒測試引擎與標準化回歸測試矩陣 |
 | **sub_06** | `sub_06_misc_polish_and_tests` | Full Track | **已完成** | 雜項功能完善補齊與 core, dev 標準化測試添加：補齊 Gap 1~5 核心機制並建立 8 大持久化標準測試套件 |
-| **sub_07** | `sub_07_core_docs_update` | Fast Track | 未開始 | 文檔更新：更新專案根目錄、`core` 與 `dev` 模組之規範文檔與 README |
-| **sub_08** | `sub_08_agents_workflow_migration` | Full Track | 未開始 | agents-workflow 模組遷移：依新架構規範重構 `agents-workflow` 並發布安裝 |
-| **sub_09** | `sub_09_agents_workflow_docs_update` | Fast Track | 未開始 | agents-workflow 文檔更新：更新工作流 SOP 模板、URI 引導與行為準則文檔 |
+| **sub_07** | `sub_07_core_module_polish` | Full Track | **已完成** | Core 模組功能打磨：完善命名空間 Hook 體系、顯式 config 協議、零 Fallback project:// 與組態增量補齊 |
+| **sub_08** | `sub_08_core_docs_update` | Fast Track | 未開始 | 文檔更新：更新專案根目錄、`core` 與 `dev` 模組之規範文檔與 README |
+| **sub_09** | `sub_09_agents_workflow_migration` | Full Track | 未開始 | agents-workflow 模組遷移：依新架構規範重構 `agents-workflow` 並發布安裝 |
+| **sub_10** | `sub_10_agents_workflow_docs_update` | Fast Track | 未開始 | agents-workflow 文檔更新：更新工作流 SOP 模板、URI 引導與行為準則文檔 |
 
 ---
 
@@ -40,10 +41,11 @@ flowchart TD
     sub_02 --> sub_03["sub_03: 建立 module:core<br/>(微內核與語意 URI)"]
     sub_03 --> sub_04["sub_04: 建立 module:dev<br/>(開發者建置工具)"]
     sub_04 --> sub_05["sub_05: 完善 dev 測試流程<br/>(沙盒測試引擎)"]
-    sub_05 --> sub_06["sub_06: 驗證自部署與混合模式<br/>(Dogfooding 閉環驗證)"]
-    sub_06 --> sub_07["sub_07: 核心與工具文檔更新<br/>(Host/Core/Dev Docs)"]
-    sub_07 --> sub_08["sub_08: agents-workflow 模組遷移<br/>(SOP 模組化適配)"]
-    sub_08 --> sub_09["sub_09: agents-workflow 文檔更新<br/>(SOP 與準則文檔發布)"]
+    sub_05 --> sub_06["sub_06: 核心雜項完善與標準測試<br/>(Gap 1~5 & Test Suites)"]
+    sub_06 --> sub_07["sub_07: Core 模組功能打磨<br/>(Core Module Polish)"]
+    sub_07 --> sub_08["sub_08: 核心與工具文檔更新<br/>(Host/Core/Dev Docs)"]
+    sub_08 --> sub_09["sub_09: agents-workflow 模組遷移<br/>(SOP 模組化適配)"]
+    sub_09 --> sub_10["sub_10: agents-workflow 文檔更新<br/>(SOP 與準則文檔發布)"]
 ```
 
 ---

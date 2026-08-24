@@ -3,5 +3,71 @@
   "version": "1.0.0",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
-  "dependencies": {}
+  "dependencies": {},
+  "contributes": {
+    "core": {
+      "uri_schemes": [
+        {
+          "token": "yscb",
+          "type": "const",
+          "value": "{yscb_root}",
+          "description": "YS-Codebase 工具庫根目錄"
+        },
+        {
+          "token": "mirror",
+          "type": "const",
+          "value": "yscb://.mirror/",
+          "description": "本地端模組鏡像庫"
+        },
+        {
+          "token": "temp",
+          "type": "const",
+          "value": "yscb://.temp/",
+          "description": "系統暫存目錄"
+        },
+        {
+          "token": "snapshot",
+          "type": "const",
+          "value": "yscb://.snapshots/",
+          "description": "組態歷史快照目錄"
+        },
+        {
+          "token": "module.root",
+          "type": "const",
+          "value": "yscb://modules/",
+          "description": "本地模組運行端空間根目錄"
+        },
+        {
+          "token": "module",
+          "type": "const",
+          "value": "yscb://modules/{module}/",
+          "description": "本地模組運行端專屬目錄"
+        },
+        {
+          "token": "config.root",
+          "type": "const",
+          "value": "yscb://config/",
+          "description": "模組專屬設定檔根目錄"
+        },
+        {
+          "token": "config",
+          "type": "const",
+          "value": "yscb://config/{module}/",
+          "description": "模組專屬設定檔目錄"
+        },
+        {
+          "token": "cache.root",
+          "type": "const",
+          "value": "yscb://.cache/",
+          "description": "模組快取根目錄"
+        },
+        {
+          "token": "cache",
+          "type": "const",
+          "value": "yscb://.cache/{module}/",
+          "description": "模組專屬快取目錄"
+        }
+      ]
+    }
+  }
 }

@@ -5,10 +5,16 @@ import os
 import json
 from dev.testing import YSCBTestCase
 from core import uri
+from core.uri import ExecutionContext
 
 class TestCoreURI(YSCBTestCase):
     def test_protocol_resolution_standards(self):
-        """Verify standard protocol resolutions without throwing."""
+        """Verify standard protocol resolutions and explicit config/ path."""
+        # Ensure core config has project_root for project:// resolution
+        core_cfg = "config.root://core/config.project.json"
+        if not uri.exists(core_cfg):
+            uri.write_json(core_cfg, {"project_root": "./"}, indent=2)
+            
         protocols = [
             "project://", "yscb://", "mirror://", "temp://", "snapshot://",
             "module.root://", "module://", "config.root://", "config://",
@@ -18,6 +24,27 @@ class TestCoreURI(YSCBTestCase):
         for p in protocols:
             res = uri.resolve(p)
             self.assertTrue(isinstance(res, str) and len(res) > 0, f"Failed resolving {p}")
+            
+        # Verify explicit config/ directory (not .config)
+        cfg_root = uri.resolve("config.root://")
+        self.assertTrue(cfg_root.endswith("config") and not cfg_root.endswith(".config"), f"config.root:// must be explicit config/, got {cfg_root}")
+        self.mark_passed()
+
+    def test_project_root_undefined_raises_value_error(self):
+        """Verify project:// without project_root raises ValueError (Zero Fallback)."""
+        core_cfg = "config.root://core/config.project.json"
+        saved = None
+        if uri.exists(core_cfg):
+            saved = uri.read_json(core_cfg)
+            uri.remove(core_cfg)
+            
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                uri.resolve("project://some/file.txt")
+            self.assertIn("'project://' is undefined", str(ctx.exception))
+        finally:
+            if saved is not None:
+                uri.write_json(core_cfg, saved, indent=2)
         self.mark_passed()
 
     def test_vfs_atomic_io(self):
