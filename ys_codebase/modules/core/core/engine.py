@@ -60,8 +60,12 @@ class AtomicEngine:
         dest_mirror_uri = f"mirror://{module_name}/{version}/"
         uri.makedirs(dest_mirror_uri)
         
-        # Check if local provider directory
+        # Check if local provider directory (strictly build/distribution structure)
         local_src = os.path.join(provider_url, module_name, version)
+        if not os.path.isdir(local_src):
+            local_src = os.path.join(provider_url, module_name)
+        if not os.path.isdir(local_src):
+            local_src = os.path.join(provider_url, "build", module_name)
         if os.path.isdir(local_src):
             uri.copy(local_src, dest_mirror_uri)
             return dest_mirror_uri
@@ -115,10 +119,10 @@ sys.exit(0)
         target_ver = version_constraint or "1.0.0"
         return [(target_module, target_ver)]
 
-    def act_prepare(self, target_list: List[Tuple[str, str]], provider_url: str) -> None:
+    def act_prepare(self, target_list: List[Tuple[str, str]], provider_url: str, force: bool = False) -> None:
         for mod, ver in target_list:
             mirror_manifest = f"mirror://{mod}/{ver}/manifest.json"
-            if not uri.exists(mirror_manifest):
+            if force or not uri.exists(mirror_manifest):
                 self.act_download(mod, ver, provider_url)
 
     def act_reload(self, clean_stage: bool = True, inject_stage: bool = True) -> None:

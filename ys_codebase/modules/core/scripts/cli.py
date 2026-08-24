@@ -6,9 +6,17 @@ import os
 
 # Add parent directory to sys.path so 'core' package can be imported directly
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+module_dir = os.path.dirname(current_dir)
+modules_root = os.path.dirname(module_dir)
+
+if os.path.isdir(modules_root):
+    for m in os.listdir(modules_root):
+        m_p = os.path.join(modules_root, m)
+        if os.path.isdir(m_p) and m_p not in sys.path:
+            sys.path.insert(0, m_p)
+
+if module_dir not in sys.path:
+    sys.path.insert(0, module_dir)
 
 from core.installer import Installer
 from core import uri
@@ -37,10 +45,16 @@ def main(argv=None) -> int:
     clean = False
     remote = False
     clean_args = []
+    force_flag = False
+    version = None
     
     for a in args:
         if a.startswith("--provider="):
             provider = a.split("=", 1)[1].strip("\"'")
+        elif a.startswith("--version="):
+            version = a.split("=", 1)[1].strip("\"'")
+        elif a == "--force":
+            force_flag = True
         elif a == "--clean":
             clean = True
         elif a == "--remote":
@@ -51,11 +65,15 @@ def main(argv=None) -> int:
     installer = Installer()
     
     if cmd == "install":
-        mod_name = clean_args[0] if clean_args else ""
-        ver = None
-        if "@" in mod_name:
-            mod_name, ver = mod_name.split("@", 1)
-        return installer.cmd_install(mod_name, version=ver, provider=provider)
+        if not clean_args:
+            print("[core:install] Error: Module name is required.")
+            return 1
+        module_spec = clean_args[0]
+        if "@" in module_spec:
+            module_name, version = module_spec.split("@", 1)
+        else:
+            module_name = module_spec
+        return installer.cmd_install(module_name, version=version, provider=provider, force=force_flag)
     elif cmd == "update":
         mod_name = clean_args[0] if clean_args else None
         return installer.cmd_update(mod_name, provider=provider)

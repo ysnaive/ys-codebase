@@ -23,7 +23,7 @@
 | **sub_01** | `sub_01_quarantine_and_backup` | Fast Track | **已完成** | 處理現有檔案狀況：隔離現有模組至 `.quarantine/` 並備份歷史起手腳本與組態 |
 | **sub_02** | `sub_02_host_bootstrapper` | Full Track | **已完成** | 建立宿主單檔：100% 原生實現超薄 `yscb.py`（含 `init`, `self-update`, CLI 轉接派發） |
 | **sub_03** | `sub_03_core_module` | Full Track | **已完成** | 建立 `module:core`：實作 12 大原子操作、7 大 Installer 指令、語意 URI 與 Contributes 聚合器 |
-| **sub_04** | `sub_04_dev_module` | Full Track | 未開始 | 建立 `module:dev`：實作模組腳手架 `create`、規範檢查 `check`、純淨打包 `build` 工具 |
+| **sub_04** | `sub_04_dev_module` | Full Track | **已完成** | 建立 `module:dev`：實作模組腳手架 `create`、規範檢查 `check`、純淨打包 `build` 工具 |
 | **sub_05** | `sub_05_dev_testing_workflow` | Full Track | 未開始 | 建立並完善 dev 測試流程：實作 `dev test` 沙盒測試引擎與標準化回歸測試矩陣 |
 | **sub_06** | `sub_06_self_deploy_and_hybrid_mode` | Full Track | 未開始 | 驗證自部署並確保混合模式：驗證純消費者模式與（使用+開發）混合模式運行正常 |
 | **sub_07** | `sub_07_core_docs_update` | Fast Track | 未開始 | 文檔更新：更新專案根目錄、`core` 與 `dev` 模組之規範文檔與 README |
