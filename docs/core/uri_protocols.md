@@ -78,3 +78,16 @@ uri.resolve("project://AGENTS.md")
    - 支援將 URI 指向 `config.project.json` 中的巢狀鍵（例：`"paths.plans_dir"`），自動展開為絕對實體路徑。
 3. **中介層物化快照 (`cache://core/contributes.merged.json`)**：
    - `core.uri` 動態自快取區讀取預先編譯好的協議表，達成 $O(1)$ 的前綴比對與路徑解析。
+
+---
+
+## 5. `yscb://` 常數確定性自定位與 Host Context 注入 (Zero Speculation)
+
+### 5.1 `yscb://` 常數自定位
+`yscb://` 為整個 VFS 的最底層絕對錨點，其路徑直接基於 `core.uri` 模組自身的檔案位置（`__file__` 往上 3 層）確定性常數計算得出，**完全不需要依賴、也不需要讀取 `yscb.config.json`**，徹底終結向上動態爬目錄與 `os.getcwd()` 猜測。
+
+### 5.2 宿主 Context 注入
+- 宿主 `yscb.py` 在派發子程序時自動注入 `os.environ["YSCB_HOST_DIR"]`。
+- Python SDK 提供 `core.uri.set_host_dir(path)` / `get_host_dir()` 作為程式碼調用通道。
+- `core.engine` 內部直接依賴 `host_dir` 讀寫 `yscb.config.json`，徹底與 `project://` 解耦。
+

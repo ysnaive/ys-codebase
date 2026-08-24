@@ -13,7 +13,7 @@ import shutil
 import ast
 
 CONFIG_FILENAME: str = "yscb.config.json"
-DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/build"
+DEFAULT_PROVIDER_URL: str = "./ys_codebase/build"
 CORE_COMMANDS: set = {
     "install",
     "update",
@@ -77,6 +77,7 @@ def cmd_init(argv: List[str]) -> int:
 
     init_cfg = {
         "yscb_root": yscb_root_arg,
+        "default_provider": provider_arg,
         "installed_modules": {}
     }
 
@@ -219,8 +220,12 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
         print(f"       Expected path: {target_cli}")
         return 1
 
+    # Inject YSCB_HOST_DIR into environment for deterministic zero-speculation anchoring
+    env = dict(os.environ)
+    env["YSCB_HOST_DIR"] = base_dir
+
     try:
-        res = subprocess.run([sys.executable, target_cli, *args])
+        res = subprocess.run([sys.executable, target_cli, *args], env=env)
         return res.returncode
     except Exception as e:
         print(f"[yscb] Error executing module '{module_name}': {e}")

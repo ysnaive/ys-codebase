@@ -79,7 +79,7 @@ def main(argv=None) -> int:
         return installer.cmd_update(mod_name, provider=provider)
     elif cmd == "remove":
         mod_name = clean_args[0] if clean_args else ""
-        return installer.cmd_remove(mod_name, clean=clean)
+        return installer.cmd_remove(mod_name, clean=clean, force=force_flag)
     elif cmd == "list":
         return installer.cmd_list(remote=remote, provider=provider)
     elif cmd == "status":

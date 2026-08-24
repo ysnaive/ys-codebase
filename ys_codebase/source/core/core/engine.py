@@ -10,7 +10,7 @@ import time
 import shutil
 import urllib.request
 import importlib.util
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Set
 
 from core import uri
 from core.uri import ExecutionContext
@@ -23,24 +23,32 @@ class AtomicEngine:
         self.contributes_aggregator = ContributesAggregator()
 
     def _get_config(self) -> Tuple[str, Dict[str, Any]]:
-        cfg_uri = "project://yscb.config.json"
-        if not uri.exists(cfg_uri):
-            raise FileNotFoundError("yscb.config.json not found in project root. Please run init first.")
-        return cfg_uri, uri.read_json(cfg_uri)
+        host_dir, _ = uri._find_host_config()
+        cfg_path = os.path.join(host_dir, "yscb.config.json")
+        if not os.path.isfile(cfg_path):
+            raise FileNotFoundError(f"yscb.config.json not found at '{cfg_path}'. Please run init first.")
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            return cfg_path, json.load(f)
 
     def _save_config(self, config_data: Dict[str, Any]) -> None:
-        cfg_uri = "project://yscb.config.json"
-        uri.write_json(cfg_uri, config_data)
+        host_dir, _ = uri._find_host_config()
+        cfg_path = os.path.join(host_dir, "yscb.config.json")
+        uri.write_json(cfg_path, config_data, indent=2)
 
     def act_init(self, yscb_root: str, default_provider: str = "./ys_codebase/build") -> None:
-        cfg_uri = "project://yscb.config.json"
-        if not uri.exists(cfg_uri):
+        try:
+            host_dir, _ = uri._find_host_config()
+        except Exception:
+            host_dir = uri.get_host_dir() or os.path.dirname(uri._get_yscb_root())
+            
+        cfg_path = os.path.join(host_dir, "yscb.config.json")
+        if not os.path.isfile(cfg_path):
             cfg_data = {
                 "yscb_root": yscb_root,
                 "default_provider": default_provider,
                 "installed_modules": {}
             }
-            uri.write_json(cfg_uri, cfg_data)
+            uri.write_json(cfg_path, cfg_data, indent=2)
         
         # Ensure directories
         for sub in ["modules", "build", ".mirror", ".snapshots", ".temp", ".cache", "config", "source"]:
@@ -193,9 +201,93 @@ class AtomicEngine:
             del cfg["installed_modules"][module_name]
             self._save_config(cfg)
 
-    def act_solve_deps(self, target_module: str, version_constraint: Optional[str], provider_url: str) -> List[Tuple[str, str]]:
+    def _parse_dependencies(self, raw_deps: Any) -> Dict[str, str]:
+        """
+        Parses dependencies from manifest supporting both dict and list schemas.
+        e.g. {"core": ">=1.0.0"} or ["core >=1.0.0", "dev"]
+        """
+        parsed: Dict[str, str] = {}
+        if isinstance(raw_deps, dict):
+            for k, v in raw_deps.items():
+                parsed[k] = str(v) if v else "*"
+        elif isinstance(raw_deps, list):
+            for item in raw_deps:
+                if isinstance(item, str):
+                    parts = item.strip().split(maxsplit=1)
+                    if len(parts) == 2:
+                        parsed[parts[0]] = parts[1]
+                    elif len(parts) == 1:
+                        parsed[parts[0]] = "*"
+        return parsed
+
+    def _get_module_manifest_from_provider_or_local(self, module_name: str, provider_url: str, version: Optional[str] = None) -> Dict[str, Any]:
+        """Helper to load manifest for dependency solving."""
+        # 1. Try local mirror first
+        if version and uri.exists(f"mirror://{module_name}/{version}/manifest.json"):
+            return uri.read_json(f"mirror://{module_name}/{version}/manifest.json")
+        # 2. Try installed
+        if uri.exists(f"module.root://{module_name}/manifest.json"):
+            return uri.read_json(f"module.root://{module_name}/manifest.json")
+        # 3. Try provider
+        cand_dirs = [
+            os.path.join(provider_url, module_name),
+            os.path.join(provider_url, "build", module_name)
+        ]
+        for c_dir in cand_dirs:
+            if os.path.isdir(c_dir):
+                # Check exact version dir
+                if version and os.path.isfile(os.path.join(c_dir, version, "manifest.json")):
+                    with open(os.path.join(c_dir, version, "manifest.json"), "r", encoding="utf-8") as f:
+                        return json.load(f)
+                # Check root manifest
+                if os.path.isfile(os.path.join(c_dir, "manifest.json")):
+                    with open(os.path.join(c_dir, "manifest.json"), "r", encoding="utf-8") as f:
+                        return json.load(f)
+                # Scan subdirectories for highest/matching version
+                sub_vers = [v for v in os.listdir(c_dir) if os.path.isfile(os.path.join(c_dir, v, "manifest.json"))]
+                if sub_vers:
+                    latest = sorted(sub_vers)[-1]
+                    with open(os.path.join(c_dir, latest, "manifest.json"), "r", encoding="utf-8") as f:
+                        return json.load(f)
+        return {"name": module_name, "version": version or "1.0.0", "dependencies": {}}
+
+    def act_solve_deps(
+        self, 
+        target_module: str, 
+        version_constraint: Optional[str], 
+        provider_url: str
+    ) -> List[Tuple[str, str]]:
+        """
+        Recursively resolves dependency topology with cycle detection.
+        Returns ordered installation list: [(dep_1, ver_1), ..., (target, target_ver)]
+        """
         target_ver = version_constraint or "1.0.0"
-        return [(target_module, target_ver)]
+        ordered_list: List[Tuple[str, str]] = []
+        visited: Set[str] = set()
+        visiting: Set[str] = set()
+
+        def _solve(mod_name: str, ver_req: str):
+            if mod_name in visiting:
+                raise ValueError(f"Circular dependency detected in module dependencies: '{mod_name}' is required by another module in the call chain.")
+            if mod_name in visited:
+                return
+                
+            visiting.add(mod_name)
+            manifest = self._get_module_manifest_from_provider_or_local(mod_name, provider_url, ver_req)
+            raw_deps = manifest.get("dependencies", {})
+            parsed_deps = self._parse_dependencies(raw_deps)
+            
+            for dep_name, dep_ver in parsed_deps.items():
+                if dep_name != "core":  # core is infrastructure baseline
+                    _solve(dep_name, dep_ver)
+                    
+            visiting.remove(mod_name)
+            visited.add(mod_name)
+            resolved_ver = manifest.get("version", ver_req or "1.0.0")
+            ordered_list.append((mod_name, resolved_ver))
+
+        _solve(target_module, target_ver)
+        return ordered_list
 
     def act_prepare(self, target_list: List[Tuple[str, str]], provider_url: str, force: bool = False) -> None:
         for mod, ver in target_list:
@@ -249,7 +341,7 @@ class AtomicEngine:
                         pass
 
     def act_reload(self, clean_stage: bool = True, inject_stage: bool = True) -> None:
-        cfg_uri, cfg = self._get_config()
+        cfg_path, cfg = self._get_config()
         installed = cfg.get("installed_modules", {})
         
         if clean_stage:
@@ -280,19 +372,23 @@ class AtomicEngine:
             self.act_broadcast_event("core", "on_reload", ExecutionContext("core", "reload", []))
 
     def act_snapshot(self, tag: Optional[str] = None) -> str:
+        host_dir, _ = uri._find_host_config()
+        host_cfg = os.path.join(host_dir, "yscb.config.json")
         snapshot_id = tag or f"snap_{int(time.time())}"
         snap_dir = f"snapshot://{snapshot_id}"
         uri.makedirs(snap_dir)
-        if uri.exists("project://yscb.config.json"):
-            uri.copy("project://yscb.config.json", f"{snap_dir}/yscb.config.json")
+        if os.path.isfile(host_cfg):
+            uri.copy(host_cfg, f"{snap_dir}/yscb.config.json")
         return snapshot_id
 
     def act_restore_snapshot(self, snapshot_id: str) -> None:
+        host_dir, _ = uri._find_host_config()
+        host_cfg = os.path.join(host_dir, "yscb.config.json")
         snap_dir = f"snapshot://{snapshot_id}"
         snap_cfg = f"{snap_dir}/yscb.config.json"
         if not uri.exists(snap_cfg):
             raise FileNotFoundError(f"Snapshot '{snapshot_id}' does not exist.")
-        uri.copy(snap_cfg, "project://yscb.config.json")
+        uri.copy(snap_cfg, host_cfg)
         self.act_reload(clean_stage=True, inject_stage=True)
 
     def act_broadcast_event(

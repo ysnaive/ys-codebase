@@ -1,0 +1,7 @@
+{
+  "name": "dev",
+  "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester)",
+  "versions": [
+    "1.0.0"
+  ]
+}

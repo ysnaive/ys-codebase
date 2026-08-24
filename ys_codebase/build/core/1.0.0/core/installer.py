@@ -17,7 +17,7 @@ class Installer:
             print("[core:install] Error: Module name is required.")
             return 1
         
-        cfg_uri, cfg = self.engine._get_config()
+        cfg_path, cfg = self.engine._get_config()
         default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider") or "./ys_codebase/build"
         provider_url = provider or default_provider
         target_ver = version or "1.0.0"
@@ -43,7 +43,7 @@ class Installer:
             return 1
 
     def cmd_update(self, module_name: Optional[str] = None, provider: Optional[str] = None) -> int:
-        cfg_uri, cfg = self.engine._get_config()
+        cfg_path, cfg = self.engine._get_config()
         default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider") or "./ys_codebase/build"
         provider_url = provider or default_provider
         installed = cfg.get("installed_modules", {})
@@ -100,12 +100,12 @@ class Installer:
             self.engine.act_restore_snapshot(snap_id)
             return 1
 
-    def cmd_remove(self, module_name: str, clean: bool = False) -> int:
+    def cmd_remove(self, module_name: str, clean: bool = False, force: bool = False) -> int:
         if not module_name:
             print("[core:remove] Error: Module name is required.")
             return 1
             
-        cfg_uri, cfg = self.engine._get_config()
+        cfg_path, cfg = self.engine._get_config()
         installed = cfg.get("installed_modules", {})
         
         if module_name not in installed:
@@ -115,6 +115,28 @@ class Installer:
         if module_name == "core":
             print("[core:remove] Error: Cannot remove 'core' infrastructure module.")
             return 1
+            
+        # Reverse dependency safety check
+        dependents: List[str] = []
+        for other_mod in installed.keys():
+            if other_mod == module_name:
+                continue
+            manifest_uri = f"module.root://{other_mod}/manifest.json"
+            if uri.exists(manifest_uri):
+                try:
+                    m_data = uri.read_json(manifest_uri)
+                    deps = self.engine._parse_dependencies(m_data.get("dependencies", {}))
+                    if module_name in deps:
+                        dependents.append(other_mod)
+                except Exception:
+                    pass
+                    
+        if dependents:
+            if not force:
+                print(f"[core:remove] Error: Cannot remove '{module_name}' because it is required by installed module(s): {', '.join(dependents)}. Use --force to override.")
+                return 1
+            else:
+                print(f"[core:remove] Warning: Force removing '{module_name}' which is required by: {', '.join(dependents)}.")
             
         print(f"[core:remove] Removing module '{module_name}'...")
         self.engine.act_broadcast_event("core", "on_remove", ExecutionContext("core", "remove", [module_name]))
@@ -127,7 +149,7 @@ class Installer:
         return 0
 
     def cmd_list(self, remote: bool = False, provider: Optional[str] = None) -> int:
-        cfg_uri, cfg = self.engine._get_config()
+        cfg_path, cfg = self.engine._get_config()
         installed = cfg.get("installed_modules", {})
         
         print("-" * 65)
@@ -146,7 +168,7 @@ class Installer:
         return 0
 
     def cmd_status(self) -> int:
-        cfg_uri, cfg = self.engine._get_config()
+        cfg_path, cfg = self.engine._get_config()
         installed = cfg.get("installed_modules", {})
         
         print("=" * 60)

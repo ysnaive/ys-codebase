@@ -35,7 +35,12 @@
 
 ### Fixed
 - **隔離歷史干擾**：舊版代碼、舊起手腳本與歷史工作流全數移至 `.quarantine/` 封存。
-- **全量回歸測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (25/25) = **31/31 測試全數 Passed (0.438s)**。
+- **[Critical] 宿主組態與專案空間徹底解耦 (BUG-01, BUG-02)**：`AtomicEngine` 內部所有對 `yscb.config.json` 的讀寫、清冊維護與快照還原全面改由 `host_dir` 實體路徑執行，徹底與 `project://` 解耦，確保在下游外部專案中執行套件管理時 100% 零阻斷。
+- **[Critical] `yscb://` 代碼位置常數確定性自定位 (BUG-03, D-07)**：`yscb://` 解析基準直接由 `core.uri` 的實體檔案位置（`__file__` 往上 3 層）確定性常數計算；宿主 Context 顯式注入；徹底刪除動態爬目錄與 `os.getcwd()` 猜測。
+- **Provider `index.json` 版本清冊自動維護 (D-06)**：`dev build` 打包時自動增量更新 `build/{module}/index.json`，支援 SemVer 升序排序與去重。
+- **`remove` 反向相依安全阻斷防護 (D-08)**：`cmd_remove` 實作反向依賴掃描，被依賴模組未帶 `--force` 時阻斷移除。
+- **相依格式雙向相容與遞迴相依拓撲求解 (D-01, D-02)**：`act_solve_deps` 支援 Dict 與 List 格式雙向相容，實作遞迴依賴分析與循環相依檢測。
+- **全量回歸測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (32/32) = **38/38 測試全數 Passed (0.555s)**。
 
 ---
 

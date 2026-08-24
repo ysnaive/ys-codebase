@@ -4,9 +4,9 @@
   "installed_modules": {
     "core": {
       "version": "1.0.0",
-      "installed_at": "2026-08-24T22:00:00",
+      "installed_at": "2026-08-25T00:46:41",
       "provider": "./ys_codebase/build",
-      "description": "YS-Codebase Core Infrastructure Module"
+      "description": "Module core"
     },
     "dev": {
       "version": "1.0.0",
