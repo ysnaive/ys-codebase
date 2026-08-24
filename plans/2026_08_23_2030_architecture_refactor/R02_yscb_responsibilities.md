@@ -65,13 +65,13 @@
   - 現定義佔位符：`{module}` = 當前模塊名稱。
 
 - **通用協議清單**：
-  - **`project://`**：來源為 `config.core`，專案 root。
+  - **`project://`**：來源為 `config://core/config.project.json` 之 `project_root`（未配置則拋錯，完全禁止 Fallback）。
   - **`yscb://`**：來源為 `yscb.config.json`（即 `init {yscbRoot}` 所配置之路徑），代表 ys-codebase root。
   - **`mirror://`**：常數 `const="yscb://.mirror/"`，本地端倉庫鏡像目錄（內部採 `<module>/<version>/` 版本化目錄拓撲）。
   - **`temp://`**：常數 `const="yscb://.temp/"`，系統暫存目錄（可隨時清空，不被 git 追蹤）。
   - **`snapshot://`**：常數 `const="yscb://.snapshots/"`，系統組態歷史快照目錄（用於 `rollback` 災難恢復）。
   - **`module://`**：常數 `const="yscb://modules/{module}/"`，本地模組運行端空間（對應根目錄協議 **`module.root://`** ➔ `yscb://modules/`）。
-  - **`config://`**：常數 `const="yscb://.config/{module}/"`，模組專屬設定檔目錄（對應根目錄協議 **`config.root://`** ➔ `yscb://.config/`）。
+  - **`config://`**：常數 `const="yscb://config/{module}/"`，模組專屬設定檔目錄（對應根目錄協議 **`config.root://`** ➔ `yscb://config/`，非隱藏受 Git 追蹤資產）。
   - **`cache://`**：常數 `const="yscb://.cache/{module}/"`，模組快取目錄（對應根目錄協議 **`cache.root://`** ➔ `yscb://.cache/`）。
   - *(開發專用)* **`module.source://`**：常數 `const="yscb://source/{module}/"`，源碼開發空間（對應根目錄協議 **`module.source.root://`** ➔ `yscb://source/`）。
   - *(開發專用)* **`module.build://`**：常數 `const="yscb://build/{module}/"`，純淨產物空間（輸出為版本化目錄 `module.build://{version}/`；對應根目錄協議 **`module.build.root://`** ➔ `yscb://build/`）。

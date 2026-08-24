@@ -25,7 +25,7 @@
 | **ACT-05** | `UNREGISTER` | **`yscb.config.json`** | 檢查反向相依安全後，自 `yscb.config.json` 的 `installed_modules` 清冊中移除指定模組。 |
 | **ACT-06** | `SOLVE_DEPS` | **相依求解** | 給定目標模組與版本約束，讀取 manifest 求解版本相容性與相依拓撲樹，輸出合法之變更模組清單。 |
 | **ACT-07** | `PREPARE` | **狀態同步** | 驗證安裝清單 ➔ 遍歷清冊中所有模組確認 `mirror://` 狀態 ➔ 按情況（缺失或版本不符）調用 `DOWNLOAD`。 |
-| **ACT-08** | `RELOAD` | **`module.root://`** | 運行端調和重構：清空 `module.root://` ➔ 根據 `yscb.config.json` 將 `mirror/` 純淨模組載入 `module://` ➔ 運行依賴注入與事件廣播。 |
+| **ACT-08** | `RELOAD` | **`module.root://`** | 運行端調和重構：清空 `module.root://` ➔ 根據 `yscb.config.json` 將 `mirror/` 純淨模組載入 `module://` ➔ 自動分發/增量補齊模組組態至 `config://` ➔ 運行依賴注入與命名空間事件廣播。 |
 | **ACT-09** | `FETCH<source>` | **來源傳輸協定** | 來源通道抓取器：依指定來源協定（`<git>`、`<https>`、`<local>` 等）自遠端或本地獲取模組產物包或 manifest 元數據。 |
 | **ACT-10** | `SNAPSHOT` | **`snapshot://`** | 狀態快照備份：於執行破壞性變更前，將當前 `yscb.config.json` 與狀態點備份至 `snapshot://` 目錄。 |
 | **ACT-11** | `RESTORE_SNAPSHOT` | **`snapshot://`** | 狀態快照還原：自 `snapshot://` 目錄讀取最近（或指定）之歷史狀態點，倒回覆蓋 `yscb.config.json`。 |

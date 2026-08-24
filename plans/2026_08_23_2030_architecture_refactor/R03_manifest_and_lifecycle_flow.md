@@ -203,13 +203,13 @@ class ExecutionContext:
   {
     "token": "config",
     "type": "const",
-    "value": "yscb://.config/{module}/",
-    "description": "模組專屬設定檔目錄"
+    "value": "yscb://config/{module}/",
+    "description": "模組專屬設定檔目錄 (受 Git 追蹤資產)"
   },
   {
     "token": "config.root",
     "type": "const",
-    "value": "yscb://.config/",
+    "value": "yscb://config/",
     "description": "模組設定檔存放層級根目錄"
   },
   {
@@ -255,29 +255,13 @@ class ExecutionContext:
 
 ---
 
-### 2.3 生命週期事件廣播注入 (events)
+### 2.3 生命週期事件廣播與命名空間 Hook 對接 (Lifecycle Hooks & Events)
 
 專門用於模組生命週期各關鍵里程碑的廣播事件監聽（Observer / Pub-Sub 模式）。
 
-#### 2.3.1 注入格式 Schema
-```json
-{
-  "event": "event_name",
-  "handler": "scripts/lifecycle.py:handler_function",
-  "priority": 100,
-  "description": "事件處理用途說明"
-}
-```
-
-#### 2.3.2 欄位定義說明
-| 欄位名稱 | 型別 | 必填 | 說明 |
-| :--- | :--- | :--- | :--- |
-| **`event`** | `string` | **是** | 目標事件名稱（由 `core` 定義之生命週期事件標識，例：`post_install`, `on_reload`）。 |
-| **`handler`** | `string` | **是** | **事件回呼函式進入點**（格式：`相對路徑:函式名`）。 |
-| **`priority`** | `integer` | 否 | 執行優先級權重（預設 `100`，數值越小越先執行）。 |
-| **`description`** | `string` | 否 | 該事件監聽器之處理行為與用途說明。 |
-
-#### 2.3.3 調度與自舉防呆注意事項
-1. **廣播全量執行**：當 `core` 觸發指定事件時，所有登記該事件的模組依 **「相依拓撲排序 ➔ Priority 權重」** 依序全部調度執行。
-2. **初始化自舉防呆 (Bootstrap Guardrail)**：在 `yscb.py init` 初始安裝 `core` 的自引用階段，必須確保最小基礎設施（路徑解算與檔案系統）就緒後方可發送事件，避免在未完全就緒前觸發未定義的 `events`。
+#### 2.3.1 命名空間 Hook 對接規範
+- **接收端檔案路徑**：`module.root://{receiver}/scripts/hook.{emit_module}.py`（例：對接 `core` 建立 `hook.core.py`；對接 `dev` 建立 `hook.dev.py`）。
+- **回呼函式簽名**：`def <event_name>(context: ExecutionContext) -> None:`。
+- **發起端調用**：發起模組調用 `act_broadcast_event(emit_module, event_name, context)`。
+- **異常隔離與韌性**：Core 調度各模組 Hook 時實施 `try-except` 隔離，單一模組異常記錄 Warning，絕不中斷主發起端生命週期。
 
