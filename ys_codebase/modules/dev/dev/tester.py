@@ -1,16 +1,63 @@
 """
-CLI Command dispatcher for 'dev test'.
+CLI Command dispatcher for 'dev test', 'dev op-mksb', and 'dev op-test'.
 """
+import os
 import sys
 import time
+import subprocess
 from typing import List, Dict, Any, Optional
 from dev.testing.runner import TestDiscovery, TestRunner, ASCIIReportFormatter
+from dev.testing.sandbox import SandboxProvisioner, SandboxContext
 
 class Tester:
     def __init__(self):
         pass
 
     def run(self, argv: List[str]) -> int:
+        if not argv:
+            self._print_usage()
+            return 1
+            
+        subcmd = argv[0]
+        sub_argv = argv[1:]
+        
+        if subcmd == "op-mksb":
+            return self._run_op_mksb(sub_argv)
+        elif subcmd == "op-test":
+            return self._run_op_test(sub_argv)
+        elif subcmd == "test":
+            return self._run_test(sub_argv)
+        else:
+            # Invoked as Tester.run(["core", ...]) or with arguments directly
+            return self._run_test(argv)
+
+    def _print_usage(self) -> None:
+        print("[dev:test] Usage: python yscb.py dev test [module_name | --all] [options]")
+        print("Subcommands / Modes:")
+        print("  dev test [mod | --all]     High-level E2E: Provision sandbox -> Run tests -> Teardown")
+        print("  dev op-mksb [--dir=<path>] Atomic primitive: Provision isolated virtual sandbox")
+        print("  dev op-test [mod | --all]  Atomic primitive: Run in-place test execution without sandboxing")
+        print("Options:")
+        print("  --all            Run tests across all modules in source/")
+        print("  --contract-only  Run only universal standard contract tests")
+        print("  --type=<type>    Filter test type (logic | host_cli | network)")
+        print("  -k <pattern>     Run only tests matching pattern")
+        print("  --verbose, -v    Verbose output with full tracebacks")
+        print("  --keep-sandbox   Preserve sandbox directories on success")
+
+    def _run_op_mksb(self, argv: List[str]) -> int:
+        target_dir = None
+        for a in argv:
+            if a.startswith("--dir="):
+                target_dir = a.split("=", 1)[1].strip('\"\'')
+        ctx = SandboxProvisioner.create_sandbox(target_dir=target_dir)
+        print(f"[dev:op-mksb] Sandbox successfully created at: {ctx.sandbox_dir}")
+        print(f"  |- Host workspace : {ctx.host_dir}")
+        print(f"  |- Project root   : {ctx.project_dir}")
+        print(f"  \\- Mock provider  : {ctx.provider_dir}")
+        return 0
+
+    def _run_op_test(self, argv: List[str]) -> int:
         target_mod: Optional[str] = None
         run_all: bool = False
         test_type: Optional[str] = None
@@ -43,14 +90,11 @@ class Tester:
             i += 1
 
         if not target_mod and not run_all:
-            print("[dev:test] Usage: python yscb.py dev test [module_name | --all] [options]")
-            print("Options:")
-            print("  --all            Run tests across all modules in source/")
-            print("  --contract-only  Run only universal standard contract tests")
-            print("  --type=<type>    Filter test type (logic | sandbox | host | network)")
-            print("  -k <pattern>     Run only tests matching pattern")
-            print("  --verbose, -v    Verbose output with full tracebacks")
-            print("  --keep-sandbox   Preserve sandbox directories on success")
+            self._print_usage()
+            return 1
+
+        if test_type and test_type.lower() not in ("logic", "host_cli", "network"):
+            print(f"[dev:test] Error: Invalid test type '{test_type}'. Valid types: logic, host_cli, network")
             return 1
 
         modules = TestDiscovery.discover_modules(target_mod)
@@ -113,3 +157,34 @@ class Tester:
         report_data["duration"] = time.perf_counter() - start_time
         print(ASCIIReportFormatter.format_summary(report_data))
         return 0 if all_passed else 1
+
+    def _run_test(self, argv: List[str]) -> int:
+        """High-level facade: op-mksb -> run op-test in sandbox -> cleanup"""
+        keep_sandbox = "--keep-sandbox" in argv
+        
+        # 1. Provision virtual sandbox
+        ctx = SandboxProvisioner.create_sandbox()
+        sandbox_dir = ctx.sandbox_dir
+        host_dir = ctx.host_dir
+        
+        # 2. Invoke dev op-test inside sandbox
+        sandbox_yscb = os.path.join(host_dir, "yscb.py")
+        cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + argv
+        
+        try:
+            res = subprocess.run(cmd, cwd=host_dir)
+            ret_code = res.returncode
+        except Exception as e:
+            print(f"[dev:test] Subprocess execution error: {e}")
+            ret_code = 1
+            
+        # 3. Teardown policy
+        if ret_code == 0 and not keep_sandbox:
+            SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
+        else:
+            if ret_code != 0:
+                print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
+            else:
+                print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
+                
+        return ret_code

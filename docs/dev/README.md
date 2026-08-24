@@ -57,14 +57,17 @@ python yscb.py dev build --all [--clean]
   2. 在輸出之 `manifest.json` 自動打上 `built_at` ISO 時間戳記；
   3. 自動掃描並更新 `build/{module}/index.json` 版本清冊（`name`, `description`, `versions: [...]` SemVer 升序排列），供遠端或本地 Provider 清單檢索與相依求解。
 
-### 2.4 執行測試驗收 (`dev test`)
+### 2.4 執行測試與沙盒操作 (`dev test` / `dev op-mksb` / `dev op-test`)
 ```bash
-# 執行全量測試（自動契約測試 + 自訂測試）
+# 【高階端到端】自動建立沙盒 ➔ 執行測試 ➔ 自動銷毀
 python yscb.py dev test --all --verbose
-
-# 僅執行特定模組之測試
 python yscb.py dev test <module_name>
-
-# 僅執行 Auto-Contract 契約測試
 python yscb.py dev test --all --contract-only
+
+# 【原子操作：環境工廠】手動建立微型虛擬沙盒（供互動除錯）
+python yscb.py dev op-mksb [--dir=<custom_path>]
+
+# 【原子操作：原地執行】在當前環境原地執行單元測試（零沙盒、零遞迴）
+python yscb.py dev op-test [module_name | --all] [--type=<logic|host_cli|network>] [-k <pattern>]
 ```
+
