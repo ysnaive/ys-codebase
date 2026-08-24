@@ -4,6 +4,41 @@
 
 ---
 
+## 2026_08_23_2030_architecture_refactor
+
+### Added
+- **超薄無狀態宿主 (Ultra-Thin Host `yscb.py`)**：100% Python 標準庫原生實現，體積縮減至百餘行，僅負責路徑定位、最小自舉與動態命令轉發，徹底擺脫單檔膨脹與自引用死鎖。
+- **Core 微內核基礎設施模組 (`module:core`)**：
+  - **First-Class VFS SDK (`core.uri`)**：原生支援語意 URI 讀寫、目錄操作、最長前綴匹配與原子安全寫入。
+  - **`AtomicEngine` 12 大原子操作生命週期**：將系統狀態變更分解為 `INIT`, `DOWNLOAD`, `DELETE`, `REGISTER`, `UNREGISTER`, `SOLVE_DEPS`, `PREPARE`, `RELOAD`, `FETCH`, `SNAPSHOT`, `RESTORE_SNAPSHOT`, `DISPATCH_CLI`。
+  - **套件管理器 (`core.installer`)**：提供 `install`, `update`, `remove`, `list`, `status`, `rollback`, `reload` 完整套件生命週期。
+  - **5 來源依賴注入聚合器 (`core.contributes`)**：支援 Manifest、指向性 JSON、專案與本地層級宣告式能力注入，產出中介層快照至 `cache://` 加速查表。
+- **Dev 開發者工具箱模組 (`module:dev`)**：
+  - **模組腳手架 (`dev create`)**：一鍵生成符合規範之模組標準骨架與測試模板。
+  - **靜態合規檢查器 (`dev check`)**：驗證 Manifest SemVer 規範、CLI 進入點語法與 `.yscbignore`。
+  - **純淨套件打包器 (`dev build`)**：自動排除 `tests/` 與 `.yscbignore`，產出純淨版本化套件包並注入 `built_at` 時間戳記。
+  - **沙盒測試引擎 (`dev test`)**：提供 `YSCBTestCase` 隔離沙盒、Auto-Contract 動態契約合成與兩階段測試執行。
+- **14 組自宣告注入語意 URI 協議**：
+  - 核心協議：`yscb://`, `mirror://`, `temp://`, `snapshot://`, `module.root://`, `module://`, `config.root://`, `config://`, `cache.root://`, `cache://`。
+  - 開發協議：`module.source.root://`, `module.source://`, `module.build.root://`, `module.build://`。
+- **精準命名空間 Hook 對接體系 (`scripts/hook.{emit_module}.py`)**：
+  - 模組以發起端命名對接檔案（例 `hook.core.py`, `hook.dev.py`），提供 `ExecutionContext` 凍結資料介面與 try-except 例外隔離防護。
+- **系統全域知識庫綠地重建 (`docs/`)**：
+  - 依據 7 大抽象維度落成 10 大標準手冊（全域地圖、核心規範、Core 架構、URI 協議、Hook 手冊、Dev 工具箱、測試指南、設計註記 `DN-01~04` 及專案首頁）。
+
+### Changed
+- **`project://` 顯式配置與零 Fallback 鐵律**：`project_root` 預設為 `!undefined`，未定義時精準拋出 `ValueError` 顯式阻斷，杜絕隱式猜測與環境路徑漂移。
+- **2x2 組態空間顯式化**：將原 `.config/` 隱藏目錄導正為顯式之 `config/` 專案目錄（受 Git 追蹤資產）。
+- **中介快照空間純淨化**：框架衍生之 `contributes.merged.json` 導正至 `cache://`（即 `.cache/`，受 Git 忽略），並實施空檔抑制機制。
+- **套件倉庫空間追蹤**：本機 Provider 套件庫 `ys_codebase/build/` 正式受 Git 追蹤以利開箱自舉。
+- **版本升級**：`core` 升級至 `1.0.0`，`dev` 升級至 `1.0.0`，超薄宿主 `yscb.py` 升級至 `1.0.0`。
+
+### Fixed
+- **隔離歷史干擾**：舊版代碼、舊起手腳本與歷史工作流全數移至 `.quarantine/` 封存。
+- **全量回歸測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (25/25) = **31/31 測試全數 Passed (0.438s)**。
+
+---
+
 ## 2026_08_23_sop_template_consistency
 
 ### Fixed
