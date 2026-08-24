@@ -13,6 +13,8 @@
 | **DN-02** | 依賴注入中介層快照存於 `cache://` | `source/core/core/contributes.py` | ⚠️ WARNING |
 | **DN-03** | 模組組態遞迴原地增量補齊 | `source/core/core/engine.py` | ⚠️ WARNING |
 | **DN-04** | 命名空間 Hook 對接與例外隔離 | `source/core/core/engine.py` | 💡 INFO |
+| **DN-05** | 宿主組態實體路徑解耦 (脫離 project://) | `source/core/core/engine.py` | 🚨 CRITICAL |
+| **DN-06** | `yscb://` 常數自定位與零猜測阻斷 | `source/core/core/uri.py` | 🚨 CRITICAL |
 
 ---
 
@@ -47,3 +49,18 @@
 
 - **核心決策**：Hook 檔案採用 `scripts/hook.{emit_module}.py`，Core 調度時實施 `try-except` 隔離。
 - **背後考量**：明確權責，避免單一外掛模組的語法錯誤或崩潰導致整體 CLI 安裝或更新流程卡死。
+
+---
+
+### [DN-05] 宿主組態實體路徑解耦 (脫離 `project://`)
+
+- **核心決策**：`AtomicEngine` 內部所有對 `yscb.config.json` 的讀寫、清冊維護與快照還原，一律依賴宿主目錄實體路徑（透過 `_find_host_config()`），嚴禁調用 `project://`。
+- **背後考量**：`project://` 代表被管理的外部下游專案根目錄（預設未配置），而 `yscb.config.json` 是工具庫自身的基礎設施，兩者在架構職責上完全隔離。
+
+---
+
+### [DN-06] `yscb://` 常數自定位與零猜測阻斷
+
+- **核心決策**：`yscb://` 直接以 `core.uri` 代碼位置（`__file__` 往上 3 層）常數自定位；宿主 Context 顯式傳遞；徹底移除動態向上爬目錄迴圈與 `os.getcwd()` 猜測。
+- **背後考量**：徹底根除環境路徑漂移與跨目錄執行時的隱性 Bug，貫徹「零臆測 (Zero Speculation)」鐵律。
+

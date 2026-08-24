@@ -30,6 +30,31 @@ class TestCoreURI(YSCBTestCase):
         self.assertTrue(cfg_root.endswith("config") and not cfg_root.endswith(".config"), f"config.root:// must be explicit config/, got {cfg_root}")
         self.mark_passed()
 
+    def test_yscb_uri_constant_self_locating(self):
+        """Verify yscb:// constant self-locating from __file__ and host context injection."""
+        yscb_root = uri._get_yscb_root()
+        self.assertTrue(os.path.isdir(yscb_root), f"yscb_root must be a valid directory: {yscb_root}")
+        
+        # Test set_host_dir / get_host_dir
+        dummy_host = os.path.normpath(self.sandbox_dir)
+        uri.set_host_dir(dummy_host)
+        self.assertEqual(uri.get_host_dir(), dummy_host)
+        
+        # Reset host dir
+        uri.set_host_dir(None)
+        self.mark_passed()
+
+    def test_uninitialized_host_raises_file_not_found(self):
+        """Verify _find_host_config raises FileNotFoundError on missing yscb.config.json (Zero Speculation)."""
+        empty_dir = os.path.join(self.sandbox_dir, "empty_dir_for_test")
+        os.makedirs(empty_dir, exist_ok=True)
+        
+        # When looking strictly at a directory with no yscb.config.json anywhere
+        with self.assertRaises(FileNotFoundError) as ctx:
+            uri._find_host_config(start_dir=empty_dir)
+        self.assertIn("yscb.config.json", str(ctx.exception))
+        self.mark_passed()
+
     def test_project_root_undefined_raises_value_error(self):
         """Verify project:// without project_root raises ValueError (Zero Fallback)."""
         core_cfg = "config.root://core/config.project.json"

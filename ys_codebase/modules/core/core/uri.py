@@ -14,6 +14,7 @@ from typing import Optional, List, Dict, Any, Tuple
 
 CONFIG_FILENAME = "yscb.config.json"
 _active_module_context: Optional[str] = None
+_active_host_dir: Optional[str] = None
 
 # Bootstrap fallback schemes used strictly during initial bootstrap before contributes injection
 _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
@@ -47,29 +48,62 @@ def set_module_context(module_name: Optional[str]) -> None:
 def get_module_context() -> Optional[str]:
     return _active_module_context
 
+def set_host_dir(host_dir: Optional[str]) -> None:
+    """Explicitly inject host directory."""
+    global _active_host_dir
+    _active_host_dir = os.path.normpath(os.path.abspath(host_dir)) if host_dir else None
+
+def get_host_dir() -> Optional[str]:
+    """Get active host directory from memory context or YSCB_HOST_DIR environment variable."""
+    if _active_host_dir:
+        return _active_host_dir
+    env_dir = os.environ.get("YSCB_HOST_DIR")
+    if env_dir and os.path.isdir(env_dir):
+        return os.path.normpath(os.path.abspath(env_dir))
+    return None
+
+def _get_yscb_root() -> str:
+    """
+    Constant self-locating: computes yscb_root from __file__ location (up 3 levels).
+    Runtime: <yscb_root>/modules/core/core/uri.py -> <yscb_root>
+    Source:  <yscb_root>/source/core/core/uri.py  -> <yscb_root>
+    """
+    curr = os.path.dirname(os.path.abspath(__file__))
+    return os.path.normpath(os.path.dirname(os.path.dirname(os.path.dirname(curr))))
+
 def _find_host_config(start_dir: Optional[str] = None) -> Tuple[str, str]:
-    """Finds directory containing yscb.config.json and computes yscb_root."""
-    curr = os.path.abspath(start_dir or os.getcwd())
-    while True:
-        cfg_path = os.path.join(curr, CONFIG_FILENAME)
+    """
+    Locates host directory and yscb_root deterministically.
+    1. If start_dir is given, checks start_dir strictly.
+    2. Uses get_host_dir() if injected.
+    3. Falls back to parent of yscb_root or yscb_root if yscb.config.json exists.
+    4. Raises FileNotFoundError if yscb.config.json does not exist. (Zero Speculation)
+    """
+    yscb_dir = _get_yscb_root()
+    if start_dir:
+        s_abs = os.path.normpath(os.path.abspath(start_dir))
+        cfg_path = os.path.join(s_abs, CONFIG_FILENAME)
         if os.path.isfile(cfg_path):
-            try:
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                host_dir = curr
-                yscb_rel = data.get("yscb_root", "./ys_codebase")
-                yscb_dir = os.path.normpath(os.path.join(host_dir, yscb_rel))
-                return host_dir, yscb_dir
-            except Exception:
-                pass
-        parent = os.path.dirname(curr)
-        if parent == curr:
-            break
-        curr = parent
+            return s_abs, yscb_dir
+        raise FileNotFoundError(f"'{CONFIG_FILENAME}' not found at specified start_dir '{s_abs}'.")
+        
+    injected_host = get_host_dir()
+    candidate_hosts: List[str] = []
+    if injected_host:
+        candidate_hosts.append(injected_host)
+    candidate_hosts.append(os.path.normpath(os.path.dirname(yscb_dir)))
+    candidate_hosts.append(yscb_dir)
     
-    # Fallback host dir
-    proj = os.path.abspath(os.getcwd())
-    return proj, os.path.join(proj, "ys_codebase")
+    for h_dir in candidate_hosts:
+        cfg_path = os.path.join(h_dir, CONFIG_FILENAME)
+        if os.path.isfile(cfg_path):
+            return h_dir, yscb_dir
+            
+    # Zero Speculation: Raise explicit error
+    raise FileNotFoundError(
+        f"'{CONFIG_FILENAME}' not found in candidate host directories: {candidate_hosts}. "
+        "Please initialize environment with 'python yscb.py init <yscbRoot>' first."
+    )
 
 def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
     """Reads project_root explicitly from config/core/config.project.json. No fallback allowed."""
@@ -123,23 +157,24 @@ def resolve(
     if os.path.isabs(uri) or (len(uri) > 1 and uri[1] == ":"):
         return os.path.normpath(uri)
     
-    host_dir, yscb_dir = _find_host_config()
+    yscb_dir = _get_yscb_root()
     mod = current_module or _active_module_context or "core"
     
+    # Fast-path for root anchor protocol yscb:// (No need to read host config)
+    if uri.startswith("yscb://"):
+        rel = uri[len("yscb://"):].lstrip("/\\")
+        return os.path.normpath(os.path.join(yscb_dir, rel)) if rel else yscb_dir
+
     # 1. Check project:// with strict explicit configuration rule (Zero Speculation / No Fallback)
     if uri.startswith("project://"):
+        host_dir, _ = _find_host_config()
         proj_dir = _get_project_dir(host_dir, yscb_dir)
         if proj_dir is None:
             raise ValueError("'project://' is undefined. Please configure 'project_root' in config://config.project.json (core)")
         rel = uri[len("project://"):].lstrip("/\\")
         return os.path.normpath(os.path.join(proj_dir, rel)) if rel else proj_dir
-    
-    # 2. Check root anchor protocol yscb://
-    if uri.startswith("yscb://"):
-        rel = uri[len("yscb://"):].lstrip("/\\")
-        return os.path.normpath(os.path.join(yscb_dir, rel)) if rel else yscb_dir
 
-    # 3. Dynamic contributed protocols lookup
+    # 2. Dynamic contributed protocols lookup
     if "://" in uri:
         scheme_token, rel = uri.split("://", 1)
         rel = rel.lstrip("/\\")
@@ -166,6 +201,7 @@ def resolve(
                     return os.path.normpath(os.path.join(target_base, rel_expanded))
                 return os.path.normpath(target_base)
             elif stype == "config":
+                host_dir, _ = _find_host_config()
                 mod_proj_cfg = os.path.join(yscb_dir, "config", mod, "config.project.json")
                 if not os.path.isfile(mod_proj_cfg):
                     mod_proj_cfg = os.path.join(yscb_dir, "config", "core", "config.project.json")
@@ -192,14 +228,24 @@ def resolve(
 
         raise ValueError(f"Unsupported URI scheme: {scheme_token}://")
         
-    proj_d = _get_project_dir(host_dir, yscb_dir)
-    return os.path.normpath(os.path.join(proj_d or host_dir, uri))
+    try:
+        host_dir, _ = _find_host_config()
+        proj_d = _get_project_dir(host_dir, yscb_dir)
+        return os.path.normpath(os.path.join(proj_d or host_dir, uri))
+    except Exception:
+        return os.path.normpath(os.path.join(yscb_dir, uri))
 
 def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
     norm = os.path.normpath(os.path.abspath(abs_path))
-    host_dir, yscb_dir = _find_host_config()
+    yscb_dir = _get_yscb_root()
     mod = current_module or _active_module_context or "core"
-    proj_dir = _get_project_dir(host_dir, yscb_dir)
+    
+    proj_dir = None
+    try:
+        host_dir, _ = _find_host_config()
+        proj_dir = _get_project_dir(host_dir, yscb_dir)
+    except Exception:
+        pass
     
     # Dynamically build resolution list from contributed schemes
     all_schemes = _get_merged_uri_schemes(yscb_dir)
@@ -276,16 +322,25 @@ def write_bytes(path_or_uri: str, data: bytes, current_module: Optional[str] = N
     os.rename(tmp_path, real_path)
 
 def exists(path_or_uri: str, current_module: Optional[str] = None) -> bool:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    return os.path.exists(real_path)
+    try:
+        real_path = resolve(path_or_uri, current_module=current_module)
+        return os.path.exists(real_path)
+    except Exception:
+        return False
 
 def is_file(path_or_uri: str, current_module: Optional[str] = None) -> bool:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    return os.path.isfile(real_path)
+    try:
+        real_path = resolve(path_or_uri, current_module=current_module)
+        return os.path.isfile(real_path)
+    except Exception:
+        return False
 
 def is_dir(path_or_uri: str, current_module: Optional[str] = None) -> bool:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    return os.path.isdir(real_path)
+    try:
+        real_path = resolve(path_or_uri, current_module=current_module)
+        return os.path.isdir(real_path)
+    except Exception:
+        return False
 
 def makedirs(path_or_uri: str, exist_ok: bool = True, current_module: Optional[str] = None) -> None:
     real_path = resolve(path_or_uri, current_module=current_module)

@@ -29,6 +29,7 @@
 | **sub_06** | `sub_06_misc_polish_and_tests` | Full Track | **已完成** | 雜項功能完善補齊與 core, dev 標準化測試添加：補齊 Gap 1~5 核心機制並建立 8 大持久化標準測試套件 |
 | **sub_07** | `sub_07_core_module_polish` | Full Track | **已完成** | Core 模組功能打磨：完善命名空間 Hook 體系、顯式 config 協議、零 Fallback project:// 與組態增量補齊 |
 | **sub_08** | `sub_08_core_docs_update` | Fast Track | **已完成** | 文檔更新：綠地重建專案根目錄、`core` 與 `dev` 模組之知識庫手冊與規範文檔 |
+| **sub_09** | `sub_09_compliance_and_bugfix` | Full Track | **已完成** | 架構合規性缺陷修復與穩固性強化：修復宿主組態路徑混淆、移除隱式猜測、增強 Provider 與相依防護 |
 
 ---
 
