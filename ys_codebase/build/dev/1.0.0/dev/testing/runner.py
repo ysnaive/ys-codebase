@@ -56,6 +56,11 @@ class TestDiscovery:
             src_real = uri.resolve(f"module.source.root://{module_name}")
             tests_dir = os.path.join(src_real, "tests")
             if os.path.isdir(tests_dir):
+                # Clear cached 'tests' namespace in sys.modules to prevent cross-module test collisions
+                for mod_k in list(sys.modules.keys()):
+                    if mod_k == "tests" or mod_k.startswith("tests."):
+                        del sys.modules[mod_k]
+                        
                 loader = unittest.TestLoader()
                 # Ensure src_real is in sys.path so modules can import themselves
                 if src_real not in sys.path:

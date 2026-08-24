@@ -56,13 +56,53 @@ class AtomicEngine:
             except Exception as e:
                 return False, str(e)
 
+    def act_lock(self, operation: str, timeout: float = 10.0) -> None:
+        """
+        Acquire inter-process lock on temp://.yscb.lock.
+        Supports 10s auto-healing on crashed/stale processes.
+        """
+        lock_uri = "temp://.yscb.lock"
+        lock_path = uri.resolve(lock_uri)
+        uri.makedirs("temp://", exist_ok=True)
+        
+        now = time.time()
+        if os.path.exists(lock_path):
+            try:
+                with open(lock_path, "r", encoding="utf-8") as f:
+                    lock_info = json.load(f)
+                lock_time = lock_info.get("timestamp", 0)
+                if now - lock_time > timeout:
+                    # Stale lock detected, auto-heal
+                    os.remove(lock_path)
+            except Exception:
+                try:
+                    os.remove(lock_path)
+                except Exception:
+                    pass
+
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "timestamp": now, "operation": operation}, f)
+        except FileExistsError:
+            raise BlockingIOError(f"Another yscb process is currently holding the lock for operation '{operation}'.")
+
+    def act_unlock(self, operation: str) -> None:
+        """Release inter-process lock on temp://.yscb.lock."""
+        lock_uri = "temp://.yscb.lock"
+        if uri.exists(lock_uri):
+            try:
+                uri.remove(lock_uri)
+            except Exception:
+                pass
+
     def act_download(self, module_name: str, version: str, provider_url: str) -> str:
         dest_mirror_uri = f"mirror://{module_name}/{version}/"
         if uri.exists(dest_mirror_uri):
             uri.rmtree(dest_mirror_uri)
         uri.makedirs(dest_mirror_uri)
         
-        # Check if local provider directory (strictly build/distribution structure)
+        # 1. Check if local provider directory
         local_src = os.path.join(provider_url, module_name, version)
         if not os.path.isdir(local_src):
             local_src = os.path.join(provider_url, module_name)
@@ -74,11 +114,37 @@ class AtomicEngine:
             uri.copy(local_src, dest_mirror_uri)
             return dest_mirror_uri
             
-        # Or remote download
+        # 2. Remote HTTP/Git Download
         ok, res = self.act_fetch(provider_url, f"{module_name}/{version}/index.json")
         if not ok:
             ok, res = self.act_fetch(provider_url, f"{module_name}/index.json")
-        if not ok and not uri.exists(f"{dest_mirror_uri}/manifest.json"):
+        if not ok:
+            ok, res = self.act_fetch(provider_url, f"{module_name}/{version}/manifest.json")
+            
+        if ok and isinstance(res, dict):
+            # If provider declares files list in index.json
+            files_list = res.get("files")
+            if files_list and isinstance(files_list, list):
+                for rel_f in files_list:
+                    f_ok, f_content = self.act_fetch(provider_url, f"{module_name}/{version}/{rel_f}")
+                    if not f_ok:
+                        f_ok, f_content = self.act_fetch(provider_url, f"{module_name}/{rel_f}")
+                    if f_ok:
+                        out_uri = f"{dest_mirror_uri}/{rel_f}"
+                        if isinstance(f_content, (dict, list)):
+                            uri.write_json(out_uri, f_content)
+                        else:
+                            uri.write_text(out_uri, str(f_content))
+                    else:
+                        uri.rmtree(dest_mirror_uri)
+                        raise RuntimeError(f"Failed to fetch file '{rel_f}' for module '{module_name}@{version}' from provider.")
+                return dest_mirror_uri
+            else:
+                # Direct manifest
+                uri.write_json(f"{dest_mirror_uri}/manifest.json", res)
+                return dest_mirror_uri
+
+        if not uri.exists(f"{dest_mirror_uri}/manifest.json"):
             raise FileNotFoundError(f"Cannot find package '{module_name}@{version}' from provider '{provider_url}'.")
         return dest_mirror_uri
 

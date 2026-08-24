@@ -25,21 +25,25 @@ class Installer:
         snap_id = self.engine.act_snapshot(f"pre_install_{module_name}")
         
         try:
+            self.engine.act_lock("install")
             targets = self.engine.act_solve_deps(module_name, target_ver, provider_url)
             self.engine.act_prepare(targets, provider_url, force=force)
             for mod, ver in targets:
                 self.engine.act_register(mod, ver, provider_url)
             self.engine.act_reload(clean_stage=True, inject_stage=True)
+            self.engine.act_unlock("install")
             print(f"[core:install] Successfully installed '{module_name}@{target_ver}'.")
             return 0
         except Exception as e:
+            self.engine.act_unlock("install")
             print(f"[core:install] Error during install: {e}")
             self.engine.act_restore_snapshot(snap_id)
             return 1
 
     def cmd_update(self, module_name: Optional[str] = None, provider: Optional[str] = None) -> int:
-        provider_url = provider or "default"
         cfg_uri, cfg = self.engine._get_config()
+        default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider") or "./ys_codebase/build"
+        provider_url = provider or default_provider
         installed = cfg.get("installed_modules", {})
         
         targets = [module_name] if module_name else list(installed.keys())
@@ -47,17 +51,51 @@ class Installer:
             print("[core:update] No modules installed to update.")
             return 0
             
-        print(f"[core:update] Updating modules: {', '.join(targets)}...")
-        self.engine.act_snapshot("pre_update")
+        print(f"[core:update] Checking updates for modules: {', '.join(targets)}...")
+        snap_id = self.engine.act_snapshot("pre_update")
         
-        for mod in targets:
-            ver = "1.1.0"
-            self.engine.act_prepare([(mod, ver)], provider_url)
-            self.engine.act_register(mod, ver, provider_url)
+        updated_any = False
+        try:
+            self.engine.act_lock("update")
+            for mod in targets:
+                cur_ver = installed.get(mod, {}).get("version", "1.0.0")
+                latest_ver = cur_ver
+                
+                # Check available versions in local provider
+                mod_local = os.path.join(provider_url, mod)
+                if not os.path.isdir(mod_local):
+                    mod_local = os.path.join(provider_url, "build", mod)
+                if os.path.isdir(mod_local):
+                    versions = [v for v in os.listdir(mod_local) if os.path.isdir(os.path.join(mod_local, v))]
+                    if versions:
+                        latest_ver = sorted(versions)[-1]
+                else:
+                    # Remote lookup
+                    ok, res = self.engine.act_fetch(provider_url, f"{mod}/index.json")
+                    if ok and isinstance(res, dict):
+                        if "versions" in res and isinstance(res["versions"], list) and res["versions"]:
+                            latest_ver = sorted(res["versions"])[-1]
+                        elif "version" in res:
+                            latest_ver = res["version"]
+
+                if latest_ver > cur_ver:
+                    print(f"[core:update] Updating '{mod}' from {cur_ver} -> {latest_ver}...")
+                    self.engine.act_prepare([(mod, latest_ver)], provider_url, force=True)
+                    self.engine.act_register(mod, latest_ver, provider_url)
+                    updated_any = True
+                else:
+                    print(f"[core:update] Module '{mod}' is already up-to-date (v{cur_ver}).")
             
-        self.engine.act_reload(clean_stage=True, inject_stage=True)
-        print(f"[core:update] Update completed successfully.")
-        return 0
+            if updated_any:
+                self.engine.act_reload(clean_stage=True, inject_stage=True)
+                print(f"[core:update] Update completed successfully.")
+            self.engine.act_unlock("update")
+            return 0
+        except Exception as e:
+            self.engine.act_unlock("update")
+            print(f"[core:update] Error during update: {e}")
+            self.engine.act_restore_snapshot(snap_id)
+            return 1
 
     def cmd_remove(self, module_name: str, clean: bool = False) -> int:
         if not module_name:

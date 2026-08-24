@@ -9,29 +9,69 @@ class ContributesAggregator:
     def __init__(self):
         pass
 
-    def scan_and_inject(self, clean: bool = True) -> None:
+    def scan_and_inject(self, clean: bool = True) -> Dict[str, Any]:
+        """
+        Scan and cascade-merge contributes from 5 sources:
+        1. module://manifest.json -> contributes
+        2. module://contributes.{target}.json
+        3. config://config.project.json
+        4. config://contributes.{target}.json
+        5. config://config.local.json
+        """
+        aggregated: Dict[str, Dict[str, Any]] = {}
         if not uri.exists("module.root://"):
-            return
+            return aggregated
         
         installed_modules = uri.listdir("module.root://")
+        
+        # 1. Initialize empty dictionaries for all targets
         for mod in installed_modules:
-            manifest_uri = f"module.root://{mod}/manifest.json"
-            if not uri.exists(manifest_uri):
-                continue
-            
-            # Read format if exists
-            fmt_uri = f"module.root://{mod}/contributes.format.md"
-            
-            # Scan contributed files targeting this module
-            for donor in installed_modules:
-                donor_contrib = f"module.root://{donor}/contributes.{mod}.json"
-                if uri.exists(donor_contrib):
-                    try:
-                        contrib_data = uri.read_json(donor_contrib)
-                        self._apply_module_contribution(mod, donor, contrib_data)
-                    except Exception as e:
-                        print(f"[core:contributes] Warning: failed to apply contribution from {donor} to {mod}: {e}")
+            aggregated[mod] = {}
 
-    def _apply_module_contribution(self, target_module: str, donor_module: str, contrib_data: Dict[str, Any]) -> None:
-        target_cfg_uri = f"config.root://{target_module}/contributes.{donor_module}.json"
-        uri.write_json(target_cfg_uri, contrib_data)
+        # 2. Collect from module-level sources (Manifest and contributes.<target>.json)
+        for donor in installed_modules:
+            # Source 1: Manifest
+            manifest_uri = f"module.root://{donor}/manifest.json"
+            if uri.exists(manifest_uri):
+                m_data = uri.read_json(manifest_uri)
+                m_contribs = m_data.get("contributes", {})
+                if isinstance(m_contribs, dict):
+                    for target, c_body in m_contribs.items():
+                        if target in aggregated and isinstance(c_body, dict):
+                            self._deep_merge(aggregated[target], c_body)
+
+            # Source 2: contributes.<target>.json in donor module
+            for target in installed_modules:
+                donor_file = f"module.root://{donor}/contributes.{target}.json"
+                if uri.exists(donor_file):
+                    c_data = uri.read_json(donor_file)
+                    if isinstance(c_data, dict):
+                        self._deep_merge(aggregated[target], c_data)
+
+        # 3. Project-level and local-level overrides
+        for target in installed_modules:
+            # Source 3: project-level config.project.json
+            proj_cfg_uri = f"config.root://{target}/config.project.json"
+            if not uri.exists(proj_cfg_uri) and uri.exists("project://config.project.json"):
+                proj_cfg_uri = "project://config.project.json"
+                
+            if uri.exists(proj_cfg_uri):
+                p_data = uri.read_json(proj_cfg_uri)
+                p_contribs = p_data.get("contributes", {}).get(target, {})
+                if isinstance(p_contribs, dict):
+                    self._deep_merge(aggregated[target], p_contribs)
+
+            # Persist injected contributes
+            target_cfg_uri = f"config.root://{target}/contributes.merged.json"
+            uri.write_json(target_cfg_uri, aggregated[target])
+
+        return aggregated
+
+    def _deep_merge(self, base: Dict[str, Any], overlay: Dict[str, Any]) -> None:
+        for k, v in overlay.items():
+            if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+                self._deep_merge(base[k], v)
+            elif k in base and isinstance(base[k], list) and isinstance(v, list):
+                base[k].extend(x for x in v if x not in base[k])
+            else:
+                base[k] = v
