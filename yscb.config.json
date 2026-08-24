@@ -1,17 +1,18 @@
 {
   "yscb_root": "./ys_codebase",
+  "default_provider": "./ys_codebase/build",
   "installed_modules": {
     "core": {
       "version": "1.0.0",
-      "installed_at": "2026-08-24T22:36:48",
+      "installed_at": "2026-08-24T22:00:00",
       "provider": "./ys_codebase/build",
-      "description": "Module core"
+      "description": "YS-Codebase Core Infrastructure Module"
     },
     "dev": {
       "version": "1.0.0",
-      "installed_at": "2026-08-24T22:35:34",
+      "installed_at": "2026-08-24T22:00:00",
       "provider": "./ys_codebase/build",
-      "description": "Module dev"
+      "description": "YS-Codebase Development and Testing Module"
     }
   }
 }
