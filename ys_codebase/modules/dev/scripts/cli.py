@@ -1,8 +1,9 @@
 """
-Dev Module CLI Dispatcher.
+CLI router entry point for module:dev.
 """
 import sys
 import os
+from typing import List
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 module_dir = os.path.dirname(current_dir)
@@ -20,109 +21,91 @@ if module_dir not in sys.path:
 from dev.scaffold import Scaffolder
 from dev.checker import Checker
 from dev.builder import Builder
-from core import uri
+from dev.tester import Tester
 
-def main(argv=None) -> int:
-    if argv is None:
-        argv = sys.argv[1:]
-        
+def main(argv: List[str]) -> int:
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print("YS-Codebase Developer Tools (dev)")
-        print("Commands:")
-        print("  create <module_name> [--desc=\"<description>\"]")
-        print("  check [module_name | --all]")
-        print("  build [module_name | --all] [--clean]")
+        print("[dev] YS-Codebase Developer Tools")
+        print("Usage:")
+        print("  python yscb.py dev create <name> [--desc=\"...\"]")
+        print("  python yscb.py dev check [name | --all]")
+        print("  python yscb.py dev build [name | --all] [--clean]")
+        print("  python yscb.py dev test [name | --all] [options]")
         return 0
 
-    cmd = argv[0]
-    args = argv[1:]
-    
-    desc = ""
-    clean = False
-    all_flag = False
-    clean_args = []
-    
-    for a in args:
-        if a.startswith("--desc="):
-            desc = a.split("=", 1)[1].strip("\"'")
-        elif a.startswith("--description="):
-            desc = a.split("=", 1)[1].strip("\"'")
-        elif a == "--clean":
-            clean = True
-        elif a == "--all":
-            all_flag = True
-        else:
-            clean_args.append(a)
+    subcmd = argv[0]
+    sub_argv = argv[1:]
 
-    scaffolder = Scaffolder()
-    checker = Checker()
-    builder = Builder()
-
-    if cmd == "create":
-        if not clean_args:
-            print("[dev:create] Error: Module name is required.")
+    if subcmd == "create":
+        if not sub_argv:
+            print("[dev:create] Usage: python yscb.py dev create <name> [--desc=\"...\"]")
             return 1
-        name = clean_args[0]
-        ok, msg = scaffolder.create_module(name, description=desc)
+        name = sub_argv[0]
+        desc = "A YS-Codebase module"
+        for arg in sub_argv[1:]:
+            if arg.startswith("--desc="):
+                desc = arg.split("=", 1)[1].strip('\"')
+        scaffolder = Scaffolder()
+        ok, msg = scaffolder.create_module(name, desc)
         print(f"[dev:create] {msg}")
         return 0 if ok else 1
 
-    elif cmd == "check":
-        if all_flag or not clean_args:
+    elif subcmd == "check":
+        checker = Checker()
+        if not sub_argv or "--all" in sub_argv:
             print("[dev:check] Scanning all modules in source/...")
-            res_dict = checker.check_all()
-            if not res_dict:
-                print("  (No modules found in source/)")
-                return 0
-            all_passed = True
-            for mod, (ok, errs) in res_dict.items():
-                if ok:
+            results = checker.check_all()
+            all_ok = True
+            for mod, (passed, errors) in results.items():
+                if passed:
                     print(f"  [*] {mod}: PASSED")
                 else:
-                    all_passed = False
+                    all_ok = False
                     print(f"  [!] {mod}: FAILED")
-                    for e in errs:
-                        print(f"      - {e}")
-            return 0 if all_passed else 1
+                    for err in errors:
+                        print(f"      - {err}")
+            return 0 if all_ok else 1
         else:
-            name = clean_args[0]
-            ok, errs = checker.check_module(name)
-            if ok:
-                print(f"[dev:check] Module '{name}' passed all compliance checks.")
+            name = sub_argv[0]
+            passed, errors = checker.check_module(name)
+            if passed:
+                print(f"[dev:check] Module '{name}': PASSED")
                 return 0
             else:
-                print(f"[dev:check] Module '{name}' failed compliance checks:")
-                for e in errs:
-                    print(f"  - {e}")
+                print(f"[dev:check] Module '{name}': FAILED")
+                for err in errors:
+                    print(f"  - {err}")
                 return 1
 
-    elif cmd == "build":
-        if all_flag:
+    elif subcmd == "build":
+        builder = Builder()
+        clean = "--clean" in sub_argv
+        targets = [a for a in sub_argv if not a.startswith("-")]
+
+        if "--all" in sub_argv or not targets:
             print("[dev:build] Building all modules in source/...")
-            res_dict = builder.build_all(clean=clean)
-            if not res_dict:
-                print("  (No modules found in source/)")
-                return 0
-            all_passed = True
-            for mod, (ok, msg) in res_dict.items():
-                if ok:
+            results = builder.build_all(clean=clean)
+            all_ok = True
+            for mod, (passed, msg) in results.items():
+                if passed:
                     print(f"  [*] {mod}: {msg}")
                 else:
-                    all_passed = False
+                    all_ok = False
                     print(f"  [!] {mod}: {msg}")
-            return 0 if all_passed else 1
+            return 0 if all_ok else 1
         else:
-            if not clean_args:
-                print("[dev:build] Error: Module name or --all flag is required.")
-                return 1
-            name = clean_args[0]
-            ok, msg = builder.build_module(name, clean=clean)
+            name = targets[0]
+            passed, msg = builder.build_module(name, clean=clean)
             print(f"[dev:build] {msg}")
-            return 0 if ok else 1
+            return 0 if passed else 1
+
+    elif subcmd == "test":
+        tester = Tester()
+        return tester.run(sub_argv)
 
     else:
-        print(f"[dev] Unknown command '{cmd}'. Run 'python yscb.py dev --help' for available commands.")
+        print(f"[dev] Unknown subcommand '{subcmd}'. Use --help for available commands.")
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
