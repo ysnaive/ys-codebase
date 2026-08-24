@@ -29,6 +29,6 @@ class TestDevTester(YSCBTestCase):
 
     def test_tester_contract_only_cli(self):
         """Verify Tester CLI runs in --contract-only mode."""
-        res = self.tester.run(["core", "--contract-only"])
+        res = self.tester.run(["op-test", "core", "--contract-only"])
         self.assertEqual(res, 0)
         self.mark_passed()

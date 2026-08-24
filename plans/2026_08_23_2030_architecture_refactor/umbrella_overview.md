@@ -30,6 +30,7 @@
 | **sub_07** | `sub_07_core_module_polish` | Full Track | **已完成** | Core 模組功能打磨：完善命名空間 Hook 體系、顯式 config 協議、零 Fallback project:// 與組態增量補齊 |
 | **sub_08** | `sub_08_core_docs_update` | Fast Track | **已完成** | 文檔更新：綠地重建專案根目錄、`core` 與 `dev` 模組之知識庫手冊與規範文檔 |
 | **sub_09** | `sub_09_compliance_and_bugfix` | Full Track | **已完成** | 架構合規性缺陷修復與穩固性強化：修復宿主組態路徑混淆、移除隱式猜測、增強 Provider 與相依防護 |
+| **sub_10** | `sub_10_test_framework_polish` | Full Track | **已完成** | 測試框架生命週期與全隔離虛擬沙盒重構：落實三階指令 (op-mksb, op-test, test)、完全對標沙盒與 hook.dev.py 自治體系 |
 
 ---
 
@@ -43,7 +44,9 @@ flowchart TD
     sub_04 --> sub_05["sub_05: 完善 dev 測試流程<br/>(沙盒測試引擎)"]
     sub_05 --> sub_06["sub_06: 核心雜項完善與標準測試<br/>(Gap 1~5 & Test Suites)"]
     sub_06 --> sub_07["sub_07: Core 模組功能打磨<br/>(Core Module Polish)"]
-    sub_07 --> sub_08["sub_08: 核心與工具文檔更新<br/>(Host/Core/Dev Docs)"]
+    sub_07 --> sub_08["sub_08: 文檔綠地更新<br/>(Core Docs Update)"]
+    sub_08 --> sub_09["sub_09: 合規缺陷修復<br/>(Compliance & Bugfix)"]
+    sub_09 --> sub_10["sub_10: 測試框架打磨<br/>(Test Framework Polish)"]
 ```
 
 ---
@@ -84,8 +87,8 @@ flowchart TD
 
 ## 5. 主計畫結案成果與驗收總結 (Master Plan Completion)
 
-- **子計畫執行達成率**：8 / 8 子計畫 100% 交付結案。
+- **子計畫執行達成率**：10 / 10 子計畫 100% 交付結案。
 - **程式碼品質與依賴**：100% Python 標準庫，零第三方套件依賴。
-- **自動化測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (25/25) = **31/31 測試全數 Passed (0.438s)**。
-- **知識庫交付**：`docs/` 10 大標準手冊全面綠地落成。
+- **自動化測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (42/42) = **48/48 測試全數 Passed (100% Ready)**。
+- **知識庫交付**：`docs/` 10 大標準手冊全面綠地落成與 1:1 驗收。
 - **全主計畫狀態**：**✅ 圓滿結案 (Completed)**。

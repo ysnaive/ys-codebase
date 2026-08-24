@@ -31,6 +31,8 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py dev check [name | --all]")
         print("  python yscb.py dev build [name | --all] [--clean]")
         print("  python yscb.py dev test [name | --all] [options]")
+        print("  python yscb.py dev op-mksb [--dir=<path>]")
+        print("  python yscb.py dev op-test [name | --all] [options]")
         return 0
 
     subcmd = argv[0]
@@ -99,9 +101,9 @@ def main(argv: List[str]) -> int:
             print(f"[dev:build] {msg}")
             return 0 if passed else 1
 
-    elif subcmd == "test":
+    elif subcmd in ("test", "op-mksb", "op-test"):
         tester = Tester()
-        return tester.run(sub_argv)
+        return tester.run([subcmd] + sub_argv)
 
     else:
         print(f"[dev] Unknown subcommand '{subcmd}'. Use --help for available commands.")
