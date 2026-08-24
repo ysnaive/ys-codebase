@@ -21,10 +21,19 @@
 - **14 組自宣告注入語意 URI 協議**：
   - 核心協議：`yscb://`, `mirror://`, `temp://`, `snapshot://`, `module.root://`, `module://`, `config.root://`, `config://`, `cache.root://`, `cache://`。
   - 開發協議：`module.source.root://`, `module.source://`, `module.build.root://`, `module.build://`。
+- **三階測試指令體系與遞迴語意解耦 (`sub_10`)**：
+  - `dev op-mksb`：純沙盒建造工廠，支援指定路徑與 `temp://sandbox_{timestamp}/` 動態微秒命名。
+  - `dev op-test`：純原地單元測試執行器（100% 零沙盒、零遞迴），支援 `--type=<logic|host_cli|network>` 與 `-k` 遞迴過濾。
+  - `dev test`：高階組合門面，自動建造沙盒 ➔ 進入沙盒執行 ➔ 通過後自動銷毀清理。
+- **完全對標微型虛擬環境 (`SandboxProvisioner`) (`sub_10`)**：
+  - 鋪設 `mock_downstream_project/`、`host_env/`（含 `yscb.py`, `yscb.config.json` 與 `modules/`）、`mock_provider/` 三大標準子空間。
+  - 完整繼承父層已安裝模組與配置，消除測試環境混血狀態，嚴格維持 `yscb.py` 僅調用 `modules/` 之單一真相來源。
+- **模組測試前置自治 Hook (`scripts/hook.dev.py`) (`sub_10`)**：
+  - 各模組提供 `on_test_setup` 與 `on_test_teardown`，隨 `build` 套件打包發布，`core` 自動配置沙盒 `project_root` 解除 `!undefined`。
 - **精準命名空間 Hook 對接體系 (`scripts/hook.{emit_module}.py`)**：
   - 模組以發起端命名對接檔案（例 `hook.core.py`, `hook.dev.py`），提供 `ExecutionContext` 凍結資料介面與 try-except 例外隔離防護。
 - **系統全域知識庫綠地重建 (`docs/`)**：
-  - 依據 7 大抽象維度落成 10 大標準手冊（全域地圖、核心規範、Core 架構、URI 協議、Hook 手冊、Dev 工具箱、測試指南、設計註記 `DN-01~04` 及專案首頁）。
+  - 依據 7 大抽象維度落成 10 大標準手冊（全域地圖、核心規範、Core 架構、URI 協議、Hook 手冊、Dev 工具箱、測試指南、設計註記 `DN-01~03` 及專案首頁）。
 
 ### Changed
 - **`project://` 顯式配置與零 Fallback 鐵律**：`project_root` 預設為 `!undefined`，未定義時精準拋出 `ValueError` 顯式阻斷，杜絕隱式猜測與環境路徑漂移。

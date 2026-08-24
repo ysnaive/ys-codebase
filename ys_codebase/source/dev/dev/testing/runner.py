@@ -10,6 +10,55 @@ from typing import List, Dict, Any, Optional, Tuple
 from core import uri
 from dev.testing.contract import make_contract_suite
 from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import Requirement
+
+def filter_suite(
+    suite: unittest.TestSuite,
+    pattern: Optional[str] = None,
+    test_type: Optional[str] = None
+) -> unittest.TestSuite:
+    """
+    Recursively filter test cases within a TestSuite tree by pattern and requirement test_type.
+    """
+    filtered = unittest.TestSuite()
+    
+    def _matches(test_case: unittest.TestCase) -> bool:
+        method_name = getattr(test_case, "_testMethodName", "")
+        # 1. Pattern filter (case-insensitive substring match)
+        if pattern and pattern.lower() not in method_name.lower():
+            return False
+            
+        # 2. Type filter against @require(Requirement)
+        if test_type:
+            tt = test_type.lower()
+            method = getattr(test_case, method_name, None)
+            req = getattr(method, "__requirement__", None) if method else None
+            
+            if tt == "logic":
+                # Logic tests must not require HOST_CLI or NETWORK
+                if req and (Requirement.HOST_CLI in req or Requirement.NETWORK in req):
+                    return False
+            elif tt == "host_cli":
+                if not req or (Requirement.HOST_CLI not in req):
+                    return False
+            elif tt == "network":
+                if not req or (Requirement.NETWORK not in req):
+                    return False
+            else:
+                return False
+        return True
+
+    def _recurse(node: Any) -> None:
+        if isinstance(node, unittest.TestSuite):
+            for sub in node:
+                _recurse(sub)
+        elif isinstance(node, unittest.TestCase):
+            if _matches(node):
+                filtered.addTest(node)
+
+    _recurse(suite)
+    return filtered
+
 
 class TestDiscovery:
     @staticmethod
@@ -47,6 +96,8 @@ class TestDiscovery:
         
         # Phase 1: Universal Auto-Contract Suite
         contract_suite = make_contract_suite(module_name)
+        if pattern or test_type:
+            contract_suite = filter_suite(contract_suite, pattern=pattern, test_type=test_type)
         contract_count = contract_suite.countTestCases()
         master_suite.addTests(contract_suite)
 
@@ -56,29 +107,29 @@ class TestDiscovery:
             src_real = uri.resolve(f"module.source.root://{module_name}")
             tests_dir = os.path.join(src_real, "tests")
             if os.path.isdir(tests_dir):
-                # Clear cached 'tests' namespace in sys.modules to prevent cross-module test collisions
+                # 1. Clear cached 'tests' namespace in sys.modules to prevent cross-module test collisions
                 for mod_k in list(sys.modules.keys()):
                     if mod_k == "tests" or mod_k.startswith("tests."):
                         del sys.modules[mod_k]
                         
+                # 2. Clean other module source directories from sys.path to avoid module name shadowing
+                try:
+                    src_root = uri.resolve("module.source.root://")
+                    sys.path[:] = [p for p in sys.path if not (p.startswith(src_root) and p != src_real)]
+                except Exception:
+                    pass
+
+                # 3. Ensure current src_real is strictly at sys.path[0]
+                if src_real in sys.path:
+                    sys.path.remove(src_real)
+                sys.path.insert(0, src_real)
+
                 loader = unittest.TestLoader()
-                # Ensure src_real is in sys.path so modules can import themselves
-                if src_real not in sys.path:
-                    sys.path.insert(0, src_real)
                 discovered = loader.discover(start_dir=tests_dir, pattern="test_*.py", top_level_dir=src_real)
                 
-                # Apply filter if pattern specified
-                if pattern:
-                    filtered_suite = unittest.TestSuite()
-                    for test_group in discovered:
-                        for test in test_group:
-                            if hasattr(test, "_testMethodName") and pattern.lower() in test._testMethodName.lower():
-                                filtered_suite.addTest(test)
-                            elif hasattr(test, "_tests"):
-                                for sub_test in test:
-                                    if hasattr(sub_test, "_testMethodName") and pattern.lower() in sub_test._testMethodName.lower():
-                                        filtered_suite.addTest(sub_test)
-                    discovered = filtered_suite
+                # Apply recursive pattern & type filter
+                if pattern or test_type:
+                    discovered = filter_suite(discovered, pattern=pattern, test_type=test_type)
                 
                 custom_count = discovered.countTestCases()
                 master_suite.addTests(discovered)

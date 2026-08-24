@@ -10,6 +10,7 @@
 | :--- | :--- | :--- | :---: |
 | **DN-DEV-01** | 執行期 Auto-Contract 動態契約合成 | `source/dev/dev/testing/contract.py` | 💡 INFO |
 | **DN-DEV-02** | 測試失敗現場自動保留機制 | `source/dev/dev/testing/case.py` | 💡 INFO |
+| **DN-DEV-03** | 三階測試指令解耦與完全對標虛擬沙盒隔離 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/sandbox.py` | 💡 INFO |
 
 ---
 
@@ -22,5 +23,13 @@
 
 ### [DN-DEV-02] 測試失敗現場自動保留機制
 
-- **核心決策**：在 `YSCBTestCase.tearDown()` 中，唯有當測試方法顯式呼叫 `self.mark_passed()` 時才清理沙盒。若遇到未捕獲例外或斷言失敗，沙盒目錄原封不動保留在 `temp://sandbox_<uuid>` 並將絕對路徑印至終端。
+- **核心決策**：在 `YSCBTestCase.tearDown()` 中，唯有當測試方法顯式呼叫 `self.mark_passed()` 時才清理沙盒。若遇到未捕獲例外或斷言失敗，沙盒目錄原封不動保留在 `temp://sandbox_<timestamp>` 並將絕對路徑印至終端。
 - **背後考量**：避免測試出錯時現場被銷毀導致無法重現或除錯。
+
+---
+
+### [DN-DEV-03] 三階測試指令解耦與完全對標虛擬沙盒隔離
+
+- **核心決策**：將測試命令解耦為 `dev op-mksb` (環境工廠)、`dev op-test` (原地單元執行器) 與 `dev test` (組合門面)。`yscb.py` 嚴格僅調用 `modules/`，沙盒建置時完整複製父層 `modules/` 與 `installed_modules` 配置，徹底終結二度沙盒遞迴與父層污染。
+- **背後考量**：徹底分離「外層沙盒調度」與「內層測試執行」職責，既保證端到端測試環境純淨度，又提供開發者手動除錯的原子能力。
+

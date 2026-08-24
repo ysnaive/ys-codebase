@@ -1,85 +1,127 @@
 # Dev 測試框架與沙盒指南 (Testing Framework & Sandbox Guide)
 
-> 本手冊為維度 3 中觀專題手冊，定義 YS-Codebase 測試體系、`YSCBTestCase` 隔離沙盒生命週期與 Auto-Contract 自動契約測試機制。
+> 本手冊為維度 3 中觀專題手冊，定義 YS-Codebase 測試體系、三階 CLI 指令架構、完全對標微型虛擬環境 (`SandboxProvisioner`)、`scripts/hook.dev.py` 測試自治 Hook 與 `YSCBTestCase` 測試基類。
 
 ---
 
-## 1. 兩階段測試架構 (Two-Phase Testing Architecture)
+## 1. 三階 CLI 指令架構 (3-Tier Testing CLI Architecture)
 
-```mermaid
-graph TD
-    classDef contract fill:#1e3a8a,stroke:#3b82f6,stroke-width:2px,color:#fff;
-    classDef custom fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#fff;
+為根除傳統測試命令「同時負責建沙盒又負責跑測試」所引發的遞迴語意陷阱，Dev 測試框架解耦為高階門面與底層原子指令：
 
-    subgraph Suite ["TestDiscovery 聚合測試套件"]
-        Phase1["階段 ① 自動契約測試 (Auto-Contract)<br/><i>3 項標準契約：Manifest, CLI Entrypoint, Clean Build</i>"]:::contract
-        Phase2["階段 ② 自訂業務/持久化測試 (Custom Tests)<br/><i>繼承 YSCBTestCase 的各項自訂功能測試</i>"]:::custom
-    end
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│ 高階開發者指令 (User-Facing Facade)                                    │
+│   • python yscb.py dev test [mod | --all] [options]                    │
+│     ➔ 完整端到端：調用 op-mksb 建立沙盒 ➔ 切入沙盒執行 op-test ➔ 銷毀 │
+├────────────────────────────────────────────────────────────────────────┤
+│ 底層原子操作 (Atomic Primitives)                                       │
+│   1. python yscb.py dev op-mksb [--dir=<path>]                         │
+│      ➔ 【純環境工廠】建立微型虛擬環境、複製 modules/ 與 source/、廣播 Hook│
+│                                                                        │
+│   2. python yscb.py dev op-test [mod | --all] [options]                │
+│      ➔ 【純執行引擎】在當前環境原地執行 TestDiscovery + TestRunner      │
+│         100% 零沙盒建立、零遞迴                                       │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. 核心測試基類：`YSCBTestCase`
+## 2. 完全對標微型虛擬環境拓撲 (Virtual Sandbox Topology)
 
-所有 YS-Codebase 測試案例均應繼承 `dev.testing.YSCBTestCase`，具備開箱即用的隔離沙盒環境：
+由 `SandboxProvisioner` (或 `dev op-mksb`) 建立之沙盒位於 `temp://sandbox_{timestamp}/`，嚴格劃分三大空間：
+
+```text
+temp://sandbox_20260825_022508_665564/
+  ├── mock_downstream_project/          # 【專案空間 project://】被管理之下游業務專案
+  ├── host_env/                         # 【宿主空間 host_dir】
+  │     ├── yscb.py                     # 宿主派發腳本（嚴格僅調用 modules/）
+  │     ├── yscb.config.json            # 宿主設定檔 (yscb_root="./engine", installed_modules)
+  │     └── engine/                     # 【工具庫空間 yscb://】
+  │           ├── modules/              # 繼承父層已安裝模組 (core, dev 等)
+  │           ├── source/               # 複製待測最新源碼
+  │           ├── config/               # 模組設定檔 (config/core/config.project.json)
+  │           └── .temp/                # 沙盒內部臨時檔案
+  └── mock_provider/                    # 【套件來源庫】提供 file:/// 協議之 Mock 套件
+```
+
+---
+
+## 3. 模組測試自治 Hook 體系 (`scripts/hook.dev.py`)
+
+為解決第三方模組初始化相依問題（如 `core` 模組需指定 `project_root` 以免拋出 `!undefined`），模組可在其根目錄提供自治測試 Hook：
+
+### 3.1 標準 Hook 介面規範
+```python
+# scripts/hook.dev.py
+from typing import Any
+
+def on_test_setup(context: Any) -> None:
+    """當 SandboxProvisioner 建立沙盒時調用，用於配置沙盒內模組專屬設定。"""
+    pass
+
+def on_test_teardown(context: Any) -> None:
+    """沙盒銷毀前調用 (選填)。"""
+    pass
+```
+
+### 3.2 Core 模組具體實作
+```python
+# source/core/scripts/hook.dev.py
+from typing import Any
+
+def on_test_setup(context: Any) -> None:
+    # 自動為沙盒配置 core 的 project_root 指向 mock_downstream_project
+    context.set_module_config("core", "config.project.json", {
+        "project_root": "../mock_downstream_project"
+    })
+```
+> **發布保證**：`dev build` 在打包模組發布產物時，會自動排除 `tests/` 但**完整保留 `scripts/hook.dev.py`**，使第三方在發布包環境下依然具備 100% 自治測試能力！
+
+---
+
+## 4. 核心測試基類：`YSCBTestCase`
+
+所有單元與整合測試均應繼承 `dev.testing.YSCBTestCase`：
 
 ```python
-from dev.testing import YSCBTestCase
+from dev.testing import YSCBTestCase, require, Requirement
 from core import uri
 
 class TestMyFeature(YSCBTestCase):
-    def test_isolated_sandbox_io(self):
-        # 1. 每個測試方法自動擁有獨立的 temp://sandbox_<uuid> 空間
-        test_file = f"{self.sandbox_uri}/data.json"
+    @require(Requirement.LOGIC)
+    def test_mock_package_installation(self):
+        # 1. 快速在沙盒 mock_provider 中動態合成 Mock 套件
+        pkg_dir = self.create_mock_package("mock_lib", "1.0.0")
         
-        uri.write_json(test_file, {"status": "ok"})
-        self.assertFileExists(test_file)
-        self.assertJsonEquals({"status": "ok"}, test_file)
+        # 2. 於沙盒 host_env 執行 CLI 指令
+        ret, stdout, stderr = self.run_cli(["core", "install", "mock_lib"])
+        self.assertSuccess(ret)
+        self.assertInOutput("Successfully installed", stdout)
         
-        # 2. 測試通過時標記，以觸發 tearDown 安全自動清理
+        # 3. 標記測試成功以觸發 tearDown 安全銷毀
         self.mark_passed()
 ```
 
-### 2.1 沙盒生命週期與除錯防呆
-- **`setUp()`**：自動建立 `temp://sandbox_<uuid>` 實體目錄，並備份 `sys.path` 與 `os.environ`。
-- **`tearDown()`**：
-  - 若測試呼叫了 `self.mark_passed()` 且未開啟保留開關，則**自動清理刪除該沙盒**。
-  - 若測試失敗（AssertionError / Exception），則**自動保留現場並在終端輸出沙盒路徑**，供開發者實機除錯！
-- **環境變數控制**：
-  - `YSCB_TEST_KEEP_SANDBOX=1`：強制保留所有測試沙盒目錄。
-
----
-
-## 3. Auto-Contract 自動契約測試機制
-
-為杜絕傳統專案「只測功能、不測打包與進入點」的盲區，Dev 測試引擎會在執行期自動為所有模組動態合成 3 項契約測試：
-
-| 契約編號 | 契約名稱 | 驗證標準 |
-| :--- | :--- | :--- |
-| **Contract 1** | `test_contract_manifest_schema` | 驗證 `manifest.json` 必填欄位完整，且 `version` 嚴格符合 SemVer 2.0.0 規範。 |
-| **Contract 2** | `test_contract_entrypoint_valid` | 驗證 `scripts/cli.py` 存在、無語法錯誤，且具備 `def main(argv: List[str]) -> int:` 進入點。 |
-| **Contract 3** | `test_contract_clean_build` | 呼叫 `Builder` 執行純淨打包，驗證產物輸出至 `build/{mod}/{ver}/`，且 `tests/` 確實被排除。 |
-
----
-
-## 4. 斷言輔助庫 (Assertion Helpers)
-
-`YSCBTestCase` 提供語意化斷言輔助函式：
-
+### 4.1 需求條件裝飾器 (`@require`)
 ```python
-# 斷言 CLI 回傳碼為 0
-self.assertSuccess(returncode, "Command failed")
+from dev.testing import require, Requirement
 
-# 斷言終端輸出包含特定文字
-self.assertInOutput("Healthy", stdout)
-
-# 斷言實體路徑或語意 URI 存在
-self.assertFileExists("config://config.project.json")
-
-# 斷言 JSON 內容精準相等
-self.assertJsonEquals({"project_root": "./"}, "config://config.project.json")
-
-# 斷言執行期耗時小於特定秒數
-with self.assertExecutionTime(max_seconds=0.05):
-    uri.resolve("config://settings.json")
+class Requirement(Flag):
+    NONE = 0
+    LOGIC = auto()     # 純內部單元邏輯
+    HOST_CLI = auto()  # 需呼叫 yscb.py 子程序
+    NETWORK = auto()   # 需對外聯網連線（無網路時自動 Skip）
 ```
+
+---
+
+## 5. 兩階段測試探索 (Two-Phase TestDiscovery)
+
+當執行 `dev op-test` 時，測試探索引擎會自動組裝兩階段測試：
+1. **Phase 1: Auto-Contract 自動契約測試**：
+   - 契約 1 (`Manifest` 必填欄位與 SemVer 合規)。
+   - 契約 2 (`scripts/cli.py` 存在且具備 `main(argv)` 進入點)。
+   - 契約 3 (`Builder` 純淨打包驗證)。
+2. **Phase 2: 自訂業務測試 (Custom Tests)**：
+   - 載入 `source/<module>/tests/test_*.py`。
+   - 支援 `--type=<logic|host_cli|network>` 與 `-k <pattern>` 遞迴深度篩選。

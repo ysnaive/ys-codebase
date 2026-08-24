@@ -19,10 +19,12 @@ class ContributesAggregator:
         5. config://config.local.json
         """
         aggregated: Dict[str, Dict[str, Any]] = {}
-        if not uri.exists("module.root://"):
-            return aggregated
+        installed_modules = uri.listdir("module.root://") if uri.exists("module.root://") else []
+        if not installed_modules and uri.exists("module.source.root://"):
+            installed_modules = uri.listdir("module.source.root://")
         
-        installed_modules = uri.listdir("module.root://")
+        if not installed_modules:
+            return aggregated
         
         # 1. Initialize empty dictionaries for all targets
         for mod in installed_modules:
@@ -32,6 +34,9 @@ class ContributesAggregator:
         for donor in installed_modules:
             # Source 1: Manifest
             manifest_uri = f"module.root://{donor}/manifest.json"
+            if not uri.exists(manifest_uri) and uri.exists(f"module.source.root://{donor}/manifest.json"):
+                manifest_uri = f"module.source.root://{donor}/manifest.json"
+
             if uri.exists(manifest_uri):
                 m_data = uri.read_json(manifest_uri)
                 m_contribs = m_data.get("contributes", {})
@@ -43,6 +48,9 @@ class ContributesAggregator:
             # Source 2: contributes.<target>.json in donor module
             for target in installed_modules:
                 donor_file = f"module.root://{donor}/contributes.{target}.json"
+                if not uri.exists(donor_file) and uri.exists(f"module.source.root://{donor}/contributes.{target}.json"):
+                    donor_file = f"module.source.root://{donor}/contributes.{target}.json"
+
                 if uri.exists(donor_file):
                     c_data = uri.read_json(donor_file)
                     if isinstance(c_data, dict):

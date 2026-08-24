@@ -22,6 +22,17 @@ GLOBAL_IGNORES = [
     "tests/*"
 ]
 
+def _parse_semver_key(v_str: str) -> Tuple[int, ...]:
+    clean = v_str.lstrip("vV")
+    parts = clean.split("-")[0].split(".")
+    nums = []
+    for p in parts:
+        try:
+            nums.append(int(p))
+        except ValueError:
+            nums.append(0)
+    return tuple(nums)
+
 class Builder:
     def __init__(self):
         self.checker = Checker()
@@ -48,6 +59,26 @@ class Builder:
             if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(norm_rel, pat) or fnmatch.fnmatch(norm_rel, pat + "/*") or norm_rel.startswith(pat.rstrip("*").rstrip("/") + "/"):
                 return True
         return False
+
+    def _update_index_json(self, name: str, description: str = "") -> None:
+        """Automatically updates build/{name}/index.json with all available built versions."""
+        mod_build_root = f"module.build.root://{name}"
+        if not uri.exists(mod_build_root):
+            return
+            
+        versions: List[str] = []
+        for item in uri.listdir(mod_build_root):
+            sub_uri = f"{mod_build_root}/{item}"
+            if uri.is_dir(sub_uri) and uri.exists(f"{sub_uri}/manifest.json"):
+                versions.append(item)
+                
+        versions.sort(key=_parse_semver_key)
+        index_data = {
+            "name": name,
+            "description": description or f"YS-Codebase module {name}",
+            "versions": versions
+        }
+        uri.write_json(f"{mod_build_root}/index.json", index_data, indent=2)
 
     def build_module(self, name: str, clean: bool = False) -> Tuple[bool, str]:
         src_uri = f"module.source.root://{name}"
@@ -92,6 +123,9 @@ class Builder:
                     shutil.copy2(src_file_path, dst_file_path)
                     copied_count += 1
                     
+        # 3. Automatically update index.json
+        self._update_index_json(name, description=manifest_data.get("description", ""))
+        
         return True, f"Successfully built '{name}' ({copied_count} files) to {build_uri}."
 
     def build_all(self, clean: bool = False) -> Dict[str, Tuple[bool, str]]:
