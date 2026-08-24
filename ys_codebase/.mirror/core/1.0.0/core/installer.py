@@ -5,6 +5,7 @@ import os
 import sys
 from typing import Optional, List
 from core import uri
+from core.uri import ExecutionContext
 from core.engine import AtomicEngine
 
 class Installer:
@@ -31,6 +32,7 @@ class Installer:
             for mod, ver in targets:
                 self.engine.act_register(mod, ver, provider_url)
             self.engine.act_reload(clean_stage=True, inject_stage=True)
+            self.engine.act_broadcast_event("core", "on_installed", ExecutionContext("core", "install", [module_name, target_ver]))
             self.engine.act_unlock("install")
             print(f"[core:install] Successfully installed '{module_name}@{target_ver}'.")
             return 0
@@ -88,6 +90,7 @@ class Installer:
             
             if updated_any:
                 self.engine.act_reload(clean_stage=True, inject_stage=True)
+                self.engine.act_broadcast_event("core", "on_update", ExecutionContext("core", "update", targets))
                 print(f"[core:update] Update completed successfully.")
             self.engine.act_unlock("update")
             return 0
@@ -114,6 +117,7 @@ class Installer:
             return 1
             
         print(f"[core:remove] Removing module '{module_name}'...")
+        self.engine.act_broadcast_event("core", "on_remove", ExecutionContext("core", "remove", [module_name]))
         self.engine.act_snapshot(f"pre_remove_{module_name}")
         self.engine.act_unregister(module_name)
         if clean:

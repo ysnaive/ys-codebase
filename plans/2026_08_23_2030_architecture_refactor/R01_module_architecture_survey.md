@@ -67,8 +67,8 @@ flowchart TD
   - `module://contributes.format.md`：當該 module 具備注入功能時必須提供，供其他模組參閱其擴充格式。
 - **可選檔案**：
   - `module://scripts/cli.py`：cli 功能擴充。
-  - `module://scripts/hook.*.py`：特定 hook 橋接擴充。
+  - `module://scripts/hook.{emit_module}.py`：特定發起端命名空間之 Hook 對接擴充（例：`hook.core.py`, `hook.dev.py`）。
   - `module://contributes.{module}.json`：靜態指向性貢獻注入檔。
-  - `config://config.local.json`：本地端設定，將被 git 忽略。
-  - `config://config.project.json`：專案級設定。
+  - `config://config.local.json`：本地端設定，將被 git 忽略（物理位置：`yscb://config/{module}/config.local.json`）。
+  - `config://config.project.json`：專案級設定（物理位置：`yscb://config/{module}/config.project.json`）。
   - `config://contributes.{module}.json`：專案級指向性貢獻注入檔。
