@@ -29,3 +29,15 @@ class TestDevBuilder(YSCBTestCase):
         self.assertFalse(uri.exists("module.build.root://dev/1.0.0/tests"))
         self.assertFalse(uri.exists("module.build.root://dev/1.0.0/.yscbignore"))
         self.mark_passed()
+
+    def test_builder_generates_and_updates_index_json(self):
+        """Verify builder automatically creates and updates build/{module}/index.json (FT-04)."""
+        passed, msg = self.builder.build_module("core", clean=True)
+        self.assertTrue(passed)
+        
+        index_uri = "module.build.root://core/index.json"
+        self.assertTrue(uri.exists(index_uri))
+        index_data = uri.read_json(index_uri)
+        self.assertEqual(index_data.get("name"), "core")
+        self.assertIn("1.0.0", index_data.get("versions", []))
+        self.mark_passed()

@@ -52,7 +52,10 @@ python yscb.py dev build <module_name> [--clean]
 # 打包 source/ 下所有模組
 python yscb.py dev build --all [--clean]
 ```
-- 打包行為：自動排除 `tests/`、`__pycache__/` 與 `.yscbignore` 中定義之模式，並在輸出之 `manifest.json` 自動打上 `built_at` ISO 時間戳記。
+- 打包行為：
+  1. 自動排除 `tests/`、`__pycache__/` 與 `.yscbignore` 中定義之模式；
+  2. 在輸出之 `manifest.json` 自動打上 `built_at` ISO 時間戳記；
+  3. 自動掃描並更新 `build/{module}/index.json` 版本清冊（`name`, `description`, `versions: [...]` SemVer 升序排列），供遠端或本地 Provider 清單檢索與相依求解。
 
 ### 2.4 執行測試驗收 (`dev test`)
 ```bash

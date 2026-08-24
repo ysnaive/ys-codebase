@@ -13,9 +13,80 @@ class TestCoreEngine(YSCBTestCase):
         super().setUp()
         self.engine = AtomicEngine()
 
+    def test_host_config_isolation_from_project_uri(self):
+        """Verify host config and snapshot operations succeed even when project:// is undefined (FT-01)."""
+        core_cfg = "config.root://core/config.project.json"
+        saved = None
+        if uri.exists(core_cfg):
+            saved = uri.read_json(core_cfg)
+            uri.remove(core_cfg)
+            
+        try:
+            # project:// should fail with ValueError
+            with self.assertRaises(ValueError):
+                uri.resolve("project://yscb.config.json")
+                
+            # Engine operations must succeed without relying on project://
+            cfg_path, cfg = self.engine._get_config()
+            self.assertTrue(os.path.isfile(cfg_path))
+            self.assertIn("installed_modules", cfg)
+            
+            snap_id = self.engine.act_snapshot("isolation_test_snap")
+            self.assertTrue(uri.exists(f"snapshot://{snap_id}/yscb.config.json"))
+            self.engine.act_restore_snapshot(snap_id)
+            uri.rmtree(f"snapshot://{snap_id}")
+        finally:
+            if saved is not None:
+                uri.write_json(core_cfg, saved, indent=2)
+        self.mark_passed()
+
+    def test_manifest_dependencies_schema_compatibility(self):
+        """Verify _parse_dependencies supports both dict and list schemas (FT-06)."""
+        dict_deps = {"core": ">=1.0.0", "dev": "^1.2.0"}
+        parsed_dict = self.engine._parse_dependencies(dict_deps)
+        self.assertEqual(parsed_dict["core"], ">=1.0.0")
+        self.assertEqual(parsed_dict["dev"], "^1.2.0")
+        
+        list_deps = ["core >=1.0.0", "helper ^0.5.0", "standalone"]
+        parsed_list = self.engine._parse_dependencies(list_deps)
+        self.assertEqual(parsed_list["core"], ">=1.0.0")
+        self.assertEqual(parsed_list["helper"], "^0.5.0")
+        self.assertEqual(parsed_list["standalone"], "*")
+        self.mark_passed()
+
+    def test_act_solve_deps_recursive_and_cycle_guard(self):
+        """Verify act_solve_deps solves recursive topology and catches circular dependencies (FT-08)."""
+        provider_dir = os.path.join(self.sandbox_dir, "mock_provider")
+        os.makedirs(provider_dir, exist_ok=True)
+        
+        # Setup mod_a -> mod_b -> mod_c
+        mod_c_dir = os.path.join(provider_dir, "mod_c", "1.0.0")
+        os.makedirs(mod_c_dir, exist_ok=True)
+        uri.write_json(os.path.join(mod_c_dir, "manifest.json"), {"name": "mod_c", "version": "1.0.0", "dependencies": {}})
+        
+        mod_b_dir = os.path.join(provider_dir, "mod_b", "1.0.0")
+        os.makedirs(mod_b_dir, exist_ok=True)
+        uri.write_json(os.path.join(mod_b_dir, "manifest.json"), {"name": "mod_b", "version": "1.0.0", "dependencies": {"mod_c": ">=1.0.0"}})
+        
+        mod_a_dir = os.path.join(provider_dir, "mod_a", "1.0.0")
+        os.makedirs(mod_a_dir, exist_ok=True)
+        uri.write_json(os.path.join(mod_a_dir, "manifest.json"), {"name": "mod_a", "version": "1.0.0", "dependencies": {"mod_b": ">=1.0.0"}})
+        
+        # 1. Topological order should be [mod_c, mod_b, mod_a]
+        order = self.engine.act_solve_deps("mod_a", "1.0.0", provider_dir)
+        names = [m[0] for m in order]
+        self.assertEqual(names, ["mod_c", "mod_b", "mod_a"])
+        
+        # 2. Setup cycle: mod_c -> mod_a
+        uri.write_json(os.path.join(mod_c_dir, "manifest.json"), {"name": "mod_c", "version": "1.0.0", "dependencies": {"mod_a": ">=1.0.0"}})
+        with self.assertRaises(ValueError) as ctx:
+            self.engine.act_solve_deps("mod_a", "1.0.0", provider_dir)
+        self.assertIn("Circular dependency detected", str(ctx.exception))
+        self.mark_passed()
+
     def test_snapshot_and_restore(self):
         """Verify snapshot creation and disaster recovery rollback."""
-        orig_cfg = uri.read_json("project://yscb.config.json")
+        cfg_path, orig_cfg = self.engine._get_config()
         snap_id = self.engine.act_snapshot("unit_test_snap")
         self.assertTrue(uri.exists(f"snapshot://{snap_id}/yscb.config.json"))
         
@@ -25,7 +96,8 @@ class TestCoreEngine(YSCBTestCase):
         
         # Test restore
         self.engine.act_restore_snapshot(snap_id)
-        self.assertEqual(uri.read_json("project://yscb.config.json"), orig_cfg)
+        _, restored_cfg = self.engine._get_config()
+        self.assertEqual(restored_cfg, orig_cfg)
         
         uri.rmtree(f"snapshot://{snap_id}")
         self.mark_passed()
