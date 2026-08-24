@@ -58,6 +58,8 @@ class AtomicEngine:
 
     def act_download(self, module_name: str, version: str, provider_url: str) -> str:
         dest_mirror_uri = f"mirror://{module_name}/{version}/"
+        if uri.exists(dest_mirror_uri):
+            uri.rmtree(dest_mirror_uri)
         uri.makedirs(dest_mirror_uri)
         
         # Check if local provider directory (strictly build/distribution structure)
@@ -65,26 +67,19 @@ class AtomicEngine:
         if not os.path.isdir(local_src):
             local_src = os.path.join(provider_url, module_name)
         if not os.path.isdir(local_src):
+            local_src = os.path.join(provider_url, "build", module_name, version)
+        if not os.path.isdir(local_src):
             local_src = os.path.join(provider_url, "build", module_name)
         if os.path.isdir(local_src):
             uri.copy(local_src, dest_mirror_uri)
             return dest_mirror_uri
             
-        # Or mock/direct download
-        ok, res = self.act_fetch(provider_url, f"{module_name}/index.json")
+        # Or remote download
+        ok, res = self.act_fetch(provider_url, f"{module_name}/{version}/index.json")
+        if not ok:
+            ok, res = self.act_fetch(provider_url, f"{module_name}/index.json")
         if not ok and not uri.exists(f"{dest_mirror_uri}/manifest.json"):
-            # Create a clean fallback module build
-            uri.write_json(f"{dest_mirror_uri}/manifest.json", {
-                "name": module_name,
-                "version": version,
-                "description": f"Installed module {module_name}@{version}",
-                "dependencies": {}
-            })
-            uri.makedirs(f"{dest_mirror_uri}/scripts")
-            uri.write_text(f"{dest_mirror_uri}/scripts/cli.py", f'''import sys
-print(f"[{module_name}@{version}] Executing: " + " ".join(sys.argv[1:]))
-sys.exit(0)
-''')
+            raise FileNotFoundError(f"Cannot find package '{module_name}@{version}' from provider '{provider_url}'.")
         return dest_mirror_uri
 
     def act_delete(self, module_name: str, version: Optional[str] = None) -> None:
