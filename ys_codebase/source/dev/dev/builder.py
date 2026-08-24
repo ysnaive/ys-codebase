@@ -17,7 +17,9 @@ GLOBAL_IGNORES = [
     ".git*",
     ".pytest_cache",
     ".DS_Store",
-    ".yscbignore"
+    ".yscbignore",
+    "tests",
+    "tests/*"
 ]
 
 class Builder:

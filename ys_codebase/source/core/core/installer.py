@@ -16,7 +16,9 @@ class Installer:
             print("[core:install] Error: Module name is required.")
             return 1
         
-        provider_url = provider or "default"
+        cfg_uri, cfg = self.engine._get_config()
+        default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider") or "./ys_codebase/build"
+        provider_url = provider or default_provider
         target_ver = version or "1.0.0"
         
         print(f"[core:install] Resolving dependencies for '{module_name}'...")
