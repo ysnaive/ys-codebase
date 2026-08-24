@@ -10,7 +10,7 @@ class Scaffolder:
     def __init__(self):
         pass
 
-    def create_module(self, name: str, description: str = "", author: str = "") -> Tuple[bool, str]:
+    def create_module(self, name: str, description: str = "", author: str = "", desc: str = "") -> Tuple[bool, str]:
         if not name:
             return False, "Module name cannot be empty."
         
@@ -21,13 +21,13 @@ class Scaffolder:
         if uri.exists(target_src_uri):
             return False, f"Module '{name}' already exists at {target_src_uri}."
         
-        desc = description or f"YS-Codebase module: {name}"
+        final_desc = desc or description or f"YS-Codebase module: {name}"
         
         # 1. Create manifest.json
         uri.write_json(f"{target_src_uri}/manifest.json", {
             "name": name,
             "version": "0.1.0",
-            "description": desc,
+            "description": final_desc,
             "entry": "scripts/cli.py",
             "dependencies": {
                 "core": ">=1.0.0"

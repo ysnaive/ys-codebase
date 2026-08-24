@@ -16,30 +16,39 @@ from core import uri
 
 class YSCBTestCase(unittest.TestCase):
     """
-    YS-Codebase Core Test Fixture (Inspired by uitk.net UIToolkitTestFixture).
+    YS-Codebase Core Test Fixture (Standard Isolated Sandbox on temp://sandbox_<uuid>).
     """
+    sandbox_id: str
+    sandbox_uri: str
     sandbox_dir: str
     _test_passed: bool
     _orig_sys_path: List[str]
     _orig_env: Dict[str, str]
 
     def setUp(self) -> None:
-        """Test setup: create isolated sandbox and backup environment."""
+        """Test setup: create isolated sandbox under temp://sandbox_<uuid> and backup environment."""
+        import uuid
         self._test_passed = False
-        self.sandbox_dir = tempfile.mkdtemp(prefix="yscb_test_")
+        self.sandbox_id = f"sandbox_{uuid.uuid4().hex[:8]}"
+        self.sandbox_uri = f"temp://{self.sandbox_id}"
+        self.sandbox_dir = uri.resolve(self.sandbox_uri)
+        uri.makedirs(self.sandbox_uri)
         self._orig_sys_path = list(sys.path)
         self._orig_env = dict(os.environ)
 
     def tearDown(self) -> None:
-        """Test teardown: restore environment and enforce Preserve-on-Failure policy."""
+        """Test teardown: restore environment and cleanup sandbox according to policy."""
         sys.path[:] = self._orig_sys_path
         os.environ.clear()
         os.environ.update(self._orig_env)
         
         keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
         if self._test_passed and not keep_all:
-            if os.path.exists(self.sandbox_dir):
-                shutil.rmtree(self.sandbox_dir, ignore_errors=True)
+            if uri.exists(self.sandbox_uri):
+                try:
+                    uri.rmtree(self.sandbox_uri)
+                except Exception:
+                    pass
         else:
             if not self._test_passed:
                 print(f"\n[Test Failed] Sandbox preserved at: {self.sandbox_dir}")
