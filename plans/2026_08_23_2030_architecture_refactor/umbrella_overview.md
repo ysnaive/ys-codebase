@@ -20,7 +20,7 @@
 
 | 編號 | 子計畫目錄名稱 | 預設 Track | 當前狀態 | 核心目標摘要 |
 | :--- | :--- | :---: | :---: | :--- |
-| **sub_01** | `sub_01_quarantine_and_backup` | Fast Track | 未開始 | 處理現有檔案狀況：隔離現有模組至 `.quarantine/` 並備份歷史起手腳本與組態 |
+| **sub_01** | `sub_01_quarantine_and_backup` | Fast Track | **已完成** | 處理現有檔案狀況：隔離現有模組至 `.quarantine/` 並備份歷史起手腳本與組態 |
 | **sub_02** | `sub_02_host_bootstrapper` | Full Track | 未開始 | 建立宿主單檔：100% 原生實現超薄 `yscb.py`（含 `init`, `self-update`, CLI 轉接派發） |
 | **sub_03** | `sub_03_core_module` | Full Track | 未開始 | 建立 `module:core`：實作 12 大原子操作、7 大 Installer 指令、語意 URI 與 Contributes 聚合器 |
 | **sub_04** | `sub_04_dev_module` | Full Track | 未開始 | 建立 `module:dev`：實作模組腳手架 `create`、規範檢查 `check`、純淨打包 `build` 工具 |
