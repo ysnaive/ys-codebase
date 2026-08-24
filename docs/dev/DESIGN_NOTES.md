@@ -1,0 +1,26 @@
+# Dev 開發者工具鏈設計決策與工程註記 (Dev Design Notes)
+
+> 本文件記錄 Dev 開發者模組與測試框架中的非直觀實作、工程妥協與關鍵防呆決策（維度 5）。
+
+---
+
+## 登錄決策清單 (Decision Registry)
+
+| 決策編號 | 標題 / 主題 | 影響檔案 | 風險等級 |
+| :--- | :--- | :--- | :---: |
+| **DN-DEV-01** | 執行期 Auto-Contract 動態契約合成 | `source/dev/dev/testing/contract.py` | 💡 INFO |
+| **DN-DEV-02** | 測試失敗現場自動保留機制 | `source/dev/dev/testing/case.py` | 💡 INFO |
+
+---
+
+### [DN-DEV-01] 執行期 Auto-Contract 動態契約合成
+
+- **核心決策**：不要求開發者在每個模組手動撰寫重複的 `test_manifest.py` 或 `test_cli.py`，而是由 `dev.testing.contract.create_contract_suite_for_module(mod)` 在測試收集時，使用 `type(f"{mod_camel}AutoContractTestCase", (YSCBTestCase,), ...)` 動態合成契約測試類別。
+- **背後考量**：大幅減輕新模組開發負擔，同時對所有模組實施 100% 強制性的品質守門。
+
+---
+
+### [DN-DEV-02] 測試失敗現場自動保留機制
+
+- **核心決策**：在 `YSCBTestCase.tearDown()` 中，唯有當測試方法顯式呼叫 `self.mark_passed()` 時才清理沙盒。若遇到未捕獲例外或斷言失敗，沙盒目錄原封不動保留在 `temp://sandbox_<uuid>` 並將絕對路徑印至終端。
+- **背後考量**：避免測試出錯時現場被銷毀導致無法重現或除錯。
