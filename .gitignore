@@ -31,3 +31,7 @@ yscb_config.local.json
 **/config.json
 !**/*template*
 !**/*project*
+
+# Quarantine & Legacy Archive
+.quarantine/
+
