@@ -11,7 +11,7 @@ class Installer:
     def __init__(self):
         self.engine = AtomicEngine()
 
-    def cmd_install(self, module_name: str, version: Optional[str] = None, provider: Optional[str] = None) -> int:
+    def cmd_install(self, module_name: str, version: Optional[str] = None, provider: Optional[str] = None, force: bool = False) -> int:
         if not module_name:
             print("[core:install] Error: Module name is required.")
             return 1
@@ -24,7 +24,7 @@ class Installer:
         
         try:
             targets = self.engine.act_solve_deps(module_name, target_ver, provider_url)
-            self.engine.act_prepare(targets, provider_url)
+            self.engine.act_prepare(targets, provider_url, force=force)
             for mod, ver in targets:
                 self.engine.act_register(mod, ver, provider_url)
             self.engine.act_reload(clean_stage=True, inject_stage=True)
