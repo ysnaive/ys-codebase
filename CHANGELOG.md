@@ -2,6 +2,22 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_25_2200_agents_workflow_migration
+
+- **Agents Workflow 核心骨架遷移與協議產物工廠化 (`sub_01`)**：
+  - **純淨通用內核與三位一體資產 (`assets/`)**：
+    - 徹底剝離專案特化規則，提供 100% 通用抽象資產：`assets/standards/` (2 項規範: DocumentationStandards, DevelopmentStandards)、`assets/workflows/` (ContextInit)、`assets/templates/` (`header.md` 與 13 大標準模板庫)。
+  - **協議產物工廠化與宣告式依賴注入引擎 (`compiler.py`)**：
+    - 支援宣告式 `export`（資產導出）、`insert`（錨點注入，支援 `const`/`uri` 與 `replace`/`below`/`above`）與 `token`（自省元數據）Schema 規範。
+    - 實作 5-Step 多輪遞迴狀態機（建立快照 ➔ 依拓撲注入 ➔ 移除已解算錨點標籤 ➔ 遞迴探測收斂 ➔ 分流原子寫入至 `module://exports/`），保證自指死鎖防護與無殘留標籤。
+    - 完成 `PHASEXX_STANDARD_HEADER` 標頭解耦與 replace 自注入閉環驗證。
+  - **CLI 自省與微內核 Hook 自治閉環**：
+    - 提供 `agents-workflow compile` (物化編譯)、`tokens` (錨點清單查詢) 與 `list` (物料清冊查詢) 指令。
+    - 註冊 `scripts/hook.core.py:on_reload` 事件監聽，在 `yscb reload` 後自動自主編譯物化。
+  - **腳手架與資產空間優化**：
+    - 統一收納靜態資產至 `assets/` 目錄。
+    - 修復 `dev:scaffold` 腳手架對連字號模組名稱之自動底線套件轉換。
+
 ## 2026_08_23_2030_architecture_refactor
 
 - **全系統 CLI UX 標準化與本地發布守門精簡 (`sub_14`)**：

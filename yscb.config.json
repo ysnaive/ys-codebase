@@ -9,7 +9,12 @@
     },
     "dev": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-25 21:37:08",
+      "installed_at": "2026-08-26 00:11:33",
+      "provider": "./release"
+    },
+    "agents-workflow": {
+      "version": "0.1.0.build",
+      "installed_at": "2026-08-26 00:42:24",
       "provider": "./release"
     }
   }
