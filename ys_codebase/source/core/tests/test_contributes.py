@@ -1,8 +1,9 @@
 """
-Official test suite for core.contributes.ContributesAggregator.
+Official test suite for core.contributes.ContributesAggregator and SDK.
 """
 from dev.testing import YSCBTestCase
-from core.contributes import ContributesAggregator
+from core import contributes
+from core.contributes import ContributesAggregator, _tag_provider
 from core import uri
 
 class TestCoreContributes(YSCBTestCase):
@@ -32,4 +33,31 @@ class TestCoreContributes(YSCBTestCase):
         self.assertEqual(base["opts"]["timeout"], 10)
         self.assertEqual(base["opts"]["debug"], True)
         self.assertEqual(base["opts"]["extra"], "yes")
+        self.mark_passed()
+
+    def test_provider_tagging(self):
+        """FT-01, FT-02: Verify __provider__ auto-injection and explicit preservation."""
+        raw_items = [
+            {"name": "cmd1", "desc": "Command 1"},
+            {"name": "cmd2", "desc": "Command 2", "__provider__": "custom_donor"}
+        ]
+        tagged = _tag_provider(raw_items, "my_module")
+        self.assertEqual(tagged[0]["__provider__"], "my_module")
+        self.assertEqual(tagged[1]["__provider__"], "custom_donor") # preserved
+        self.mark_passed()
+
+    def test_contributes_get_sdk(self):
+        """FT-04, FT-05: Verify core.contributes.get and get_for_current_module SDK."""
+        # 1. Direct get for core
+        core_data = contributes.get("core")
+        self.assertTrue(isinstance(core_data, dict))
+
+        # 2. Get specific key
+        schemes = contributes.get("core", "uri_schemes", default=[])
+        self.assertTrue(isinstance(schemes, list))
+
+        # 3. Get for current module in module_scope
+        with uri.module_scope("core"):
+            mod_data = contributes.get_for_current_module()
+            self.assertEqual(mod_data, core_data)
         self.mark_passed()

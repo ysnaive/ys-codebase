@@ -100,7 +100,7 @@ class Builder:
         Updates release/{name}/index.json with Single Active Revision per X.Y.Z rule.
         If new_version is provided, automatically eliminates older revision zip files under the same major.minor.patch.
         """
-        mod_rel_root = f"release.root://{name}"
+        mod_rel_root = f"module.release.root://{name}"
         if not uri.exists(mod_rel_root):
             return
             
@@ -232,7 +232,7 @@ class Builder:
             return False, f"Source module not found at {src_uri}."
             
         manifest_data = uri.read_json(f"{src_uri}/manifest.json")
-        mod_rel_root = f"release.root://{name}"
+        mod_rel_root = f"module.release.root://{name}"
         uri.makedirs(mod_rel_root)
         
         real_rel_dir = uri.resolve(mod_rel_root)

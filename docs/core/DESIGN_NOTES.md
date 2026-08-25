@@ -20,13 +20,15 @@
 | **DN-09** | 四段式版本尾號不具比較性與單一 Revision 淘汰 | `source/core/core/semver.py`<br/>`source/dev/dev/builder.py` | 🚨 CRITICAL |
 | **DN-10** | 同 Major 升級鎖定原則 | `source/core/core/installer.py`<br/>`source/core/core/engine.py` | ⚠️ WARNING |
 | **DN-11** | 模組運行空間純粹化與 config 模板自動剝除 | `source/core/core/engine.py` | 💡 INFO |
+| **DN-12** | JIT `!undefined` 熱更新補齊機制與自引用防護 | `source/core/core/uri.py` | 🚨 CRITICAL |
+| **DN-13** | Contributes `__provider__` 拓撲聚合與 SDK 查詢 | `source/core/core/contributes.py` | ⚠️ WARNING |
 
 ---
 
 ### [DN-01] `project://` 顯式配置與零 Fallback 阻斷
 
-- **核心決策**：`project://` 協議不屬於微內核自舉最小集。其解析嚴格依賴 `yscb://config/core/config.project.json` 中配置之 `project_root`。預設為 `!undefined`。若檔案不存在或為 `!undefined`，必須直接拋出 `ValueError`。
-- **背後考量**：若微內核在未配置時隱式猜測當前工作目錄（`os.getcwd()`），在跨 CLI、不同 IDE（VSCode vs Antigravity vs 終端）以及自引用環境中，會產生難以排查的路徑漂移與跨目錄覆蓋問題。
+- **核心決策**：`project://` 協議不屬於微內核自舉最小集。其解析嚴格依賴 `yscb://config/core/config.project.json` 中配置之 `project_root`。預設為 `!undefined`。若檔案不存在或為 `!undefined`，在非互動模式下必須拋出 `UndefinedURIError`。
+- **背後考量**：若微內核在未配置時隱式猜測當前工作目錄（`os.getcwd()`），在跨 CLI、不同 IDE 以及自引用環境中，會產生難以排查的路徑漂移與跨目錄覆蓋問題。
 - **防禦宣告**：
   > [!CAUTION]
   > **嚴禁在此處新增任何 `os.getcwd()` 或父目錄猜測 Fallback 代碼！**
@@ -89,7 +91,7 @@
   6. `sandbox.py` 剛性定位宿主 `yscb.py`。
 - **防禦宣告**：
   > [!CAUTION]
-  > 專案嚴格遵守 R01~R05 剛性拓撲原則，禁止為規避局部報錯而擅自引入跨空間穿透與動態猜測代碼。
+  > 專案嚴格遵守剛性拓撲原則，禁止為規避局部報錯而擅自引入跨空間穿透與動態猜測代碼。
 
 ---
 
@@ -102,30 +104,36 @@
 
 ### [DN-10] 同 Major 升級鎖定原則
 
-- **核心決策**：`yscb update` 指令預設自動將升級範圍約束在當前 Major 內（`^current_version`）。
-- **背後考量**：防止日常更新時意外拉取破壞性大版本升級導致專案崩潰。跨 Major 升級必須明確指定 `yscb install <mod>@<new_major>`。
+- **核心決策**：CLI 執行 `update` 時，預設僅在同一個 Major 主版本內尋找最新 Minor/Patch/Revision 進行安全升級；跨 Major 破壞性升級必須顯式指定版本或執行 `install <module>@<new_major>`。
+- **背後考量**：防止自動更新意外拉入破壞性 API 變更導致專案中斷。
 
 ---
 
 ### [DN-11] 模組運行空間純粹化與 config 模板自動剝除
 
-- **核心決策**：模組安裝包（`mirror://` / `release://`）中的 `config.project.json` 與 `config.local.json` 作為配置種子模板，在 `act_reload` 完成種子提取並軟合併進 `config/{mod}/` 後，自動將其從 `modules/{mod}/` 運行目錄中移除。
-- **背後考量**：`modules/` 必須維持純粹可執行代碼，避免配置雙頭維護與開發者修改路徑混淆。
+- **核心決策**：模組在運行空間（`modules/<module>/`）內部嚴禁留存任何 `config.*.json` 模板或 `.yscbignore` 檔案；`act_reload` 在掃描提取組態至 `config/` 後，無條件實體刪除模組目錄下的模板。
+- **背後考量**：徹底避免執行期代碼、外部套件或下游應用誤讀模組內的預設模板而產生組態分叉。
 
 ---
 
-### [DN-12] 全系統全面 Zip 單檔標準與明文空間二分法
+### [DN-12] JIT `!undefined` 熱更新補齊機制與自引用防護
 
-- **核心決策**：全系統除了源碼庫（`source/<mod>/`）與運行庫（`modules/<mod>/`）維持展開目錄外，其餘所有中間快取與發布產物（`build/`、`release/`、`.mirror/`）一律強制使用單檔 `{version}.zip` 存儲。
-- **背後考量**：徹底消除散裝目錄在版本更迭時產生的檔案孤兒殘留，統一本地與遠端 HTTP 下載的同構管線，大幅降低磁碟碎片與管理負擔。
+- **核心決策**：
+  1. 當 `uri.resolve()` 遇到未定義（`!undefined`）之協議時，在 TTY 終端主動提示 `[-y <path> / -n / --help]`。
+  2. 使用者輸入 `-y <path>` 時，相對路徑一律以 `yscb://`（工具庫根目錄）為基準展開，支援連鎖未定義依賴遞迴解算。
+  3. 自動將輸入值寫回所屬模組（`__provider__`）之 `config.project.json` 並刷新記憶體 URI 快取，無縫繼續原呼叫。
+  4. 建立 `_reconciling_tokens: Set[str]`，當檢測到自引用或循環依賴時立即拋出 `CyclicURIDependencyError` 阻斷無窮迴圈。
+  5. 在非 TTY（CI/CD、背景任務、靜態分析）或 `interactive=False` 模式下，直接拋出結構化 `UndefinedURIError`。
 - **防禦宣告**：
-  > [!CAUTION]
-  > 嚴禁在 `build/`、`release/` 或 `.mirror/` 中建立散裝目錄。所有物化操作一律遵循「單檔 Zip ➔ modules/ 展開」的原子解包流程。
+  > [!IMPORTANT]
+  > JIT 補齊嚴格以 `yscb://` 為相對起始基準，嚴禁擅自回退為 `os.getcwd()` 或 `project://`。
 
 ---
 
-### [DN-13] 4-Stage Atomic Reload 流水線與解包前剛性清空
+### [DN-13] Contributes `__provider__` 拓撲聚合與 SDK 查詢
 
-- **核心決策**：`act_reload` 重構為標準四階段流水線（Stage 1: 自癒拉取 ➔ Stage 2: 解壓物化 ➔ Stage 3: 組態治理 ➔ Stage 4: 依賴注入）。在 Stage 2 解壓前，強制清空目標 `modules/<mod>/` 資料夾；在 Stage 3 執行無條件的組態模板與開發輔助檔案（如 `.yscbignore`）物理刪除。
-- **背後考量**：避免 `zipfile.extractall()` 的增量覆蓋缺陷導致歷史殘留檔案遺留，保證 `modules/` 運行空間 100% 絕對純淨且與單檔 Zip 完全鏡像。
-
+- **核心決策**：
+  1. 在微內核 `scan_and_inject()` 搜集 donor 模組 contributes 時，自動遞迴為 Dict 與 List[Dict] 項目注入 `"__provider__": donor_name`。若物件已顯式宣告 `__provider__` 則予以保留不覆蓋。
+  2. 依據已安裝模組之依賴拓撲順序 (Topological Order) 有序合併，保證底層基礎設施優先註冊，擴充模組後續追加。
+  3. 提供標準微內核查詢 SDK `core.contributes.get(target_module, key=None, default=None)` 與 `get_for_current_module()`，內建自愈快取。
+- **背後考量**：徹底解決下游外掛模組無法溯源能力提供者、合併順序非決定性以及缺乏標準查詢 API 的痛點。

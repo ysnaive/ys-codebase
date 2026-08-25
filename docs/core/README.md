@@ -2,104 +2,93 @@
 
 > 模組名稱：`core`  
 > 模組版本：`1.0.0`  
-> 職責定位：YS-Codebase 系統微內核基礎設施、套件生命週期、VFS 檔案系統、SemVer 運算與依賴注入引擎。
+> 職責定位：YS-Codebase 系統微內核基礎設施、套件生命週期、VFS 檔案系統、語意 URI 系統、SemVer 運算與依賴注入引擎。
 
 ---
 
 ## 1. Core 微內核架構設計 (Microkernel Architecture)
 
-`core` 模組由五大核心子系統組成：
+`core` 模組由六大核心子系統組成：
 
 ```mermaid
 graph TD
     classDef sub fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
     
     subgraph CoreModule ["Core 微內核系統 (module:core)"]
-        VFS["First-Class VFS SDK<br/><code>core.uri</code><br/><i>語意路徑解算、CM 作用域與原子 I/O</i>"]:::sub
+        VFS["First-Class VFS & URI<br/><code>core.uri</code><br/><i>語意路徑解算、JIT 熱補齊、自省清冊與原子 I/O</i>"]:::sub
         SemVer["SemVer 2.0.0 運算器<br/><code>core.semver</code><br/><i>數值排序、約束匹配與依賴求解</i>"]:::sub
         Context["執行上下文 SSOT<br/><code>core.context</code><br/><i>不可變 ExecutionContext 載體</i>"]:::sub
         Engine["AtomicEngine 引擎<br/><code>core.engine</code><br/><i>12 大原子操作、OS 原子鎖與雙層快照</i>"]:::sub
         Installer["套件生命週期調度器<br/><code>core.installer</code><br/><i>安裝、更新、移除、快照回滾</i>"]:::sub
-        Contributes["5 來源依賴注入器<br/><code>core.contributes</code><br/><i>宣告式能力聚合與中介層快取</i>"]:::sub
+        Contributes["Contribute 依賴注入器<br/><code>core.contributes</code><br/><i>__provider__ 自動標記、拓撲排序聚合與查詢 SDK</i>"]:::sub
     end
 ```
 
 ---
 
-## 2. First-Class VFS SDK (`core.uri`)
+## 2. 語意 URI 協定與 First-Class VFS SDK (`core.uri`)
 
-`core.uri` 提供系統標準的虛擬檔案系統介面，原生支援所有語意 URI（如 `config://`、`cache://`、`temp://`）：
+YS-Codebase 透過 `core.uri` 提供標準化虛擬檔案系統介面，實現實體路徑與語意抽象的完全解耦：
 
+### 2.1 六大核心空間語意協議表
+| 空間類型 | 根空間協議 (Root) | 模組專屬空間協議 (Scoped) | 實體預設位置 |
+| :--- | :--- | :--- | :--- |
+| **工具庫核心** | `yscb://` | - | 工具庫安裝根目錄 |
+| **運行端空間** | `module.root://` | `module://` | `yscb://modules/{module}/` |
+| **源碼端空間** | `module.source.root://` | `module.source://` | `yscb://source/{module}/` |
+| **建置端空間** | `module.build.root://` | `module.build://` | `yscb://build/{module}/` |
+| **發布端空間** | `module.release.root://` | `module.release://` | `yscb://release/{module}/` |
+| **鏡像端空間** | `module.mirror.root://` | `module.mirror://` | `yscb://.mirror/{module}/` |
+| **組態空間** | `config.root://` | `config://` | `yscb://config/{module}/` |
+| **快取空間** | `cache.root://` | `cache://` | `yscb://.cache/{module}/` |
+| **持久儲存** | `storage.root://` | `storage://` | `yscb://storage/{module}/` |
+| **暫存/快照** | `temp://` / `snapshot://` | - | `yscb://.temp/` / `yscb://.snapshots/` |
+| **專案宿主** | `project://` | - | `config.project.json` (core: `project_root`) |
+
+### 2.2 JIT `!undefined` 熱更新補齊機制
+當 `uri.resolve()` 遇到未配置或為 `!undefined` 的協議時，會在互動 TTY 環境自動彈出熱補齊選單：
+- `-y <path>`：輸入路徑（以 `yscb://` 為相對基準，支援 `../` 或語意協議），自動原子寫回 `config.project.json` 並熱刷新快取繼續運行。
+- `-n`：安全終止操作。
+- `--help`：展開全系統可用協議清冊與狀態。
+- **非 TTY / 靜態檢查**：直接拋出結構化 `UndefinedURIError`。
+
+---
+
+## 3. 微內核 Contribute 依賴注入與查詢 SDK (`core.contributes`)
+
+### 3.1 `__provider__` 拓撲聚合
+在微內核搜集 donor 模組 contributes 時，自動為 Dict 與 List[Dict] 項目注入 `"__provider__": donor_name`，並依模組安裝之拓撲排序有序合併。
+
+### 3.2 標準查詢 SDK
 ```python
-from core import uri
+from core import contributes, uri
 
-# 1. 檔案讀寫（自動建立父目錄、原子安全寫入）
-uri.write_text("config://custom.txt", "Hello YSCB")
-content = uri.read_text("config://custom.txt")
+# 1. 查詢特定目標模組之已合併 Contributes
+all_contribs = contributes.get("core")
+schemes = contributes.get("core", "uri_schemes", default=[])
 
-uri.write_json("config://settings.json", {"debug": True}, indent=2)
-data = uri.read_json("config://settings.json")
-
-# 2. 目錄操作
-uri.makedirs("temp://my_sandbox/", exist_ok=True)
-files = uri.listdir("module.root://")
-uri.copy("module.source://core/", "temp://core_backup/")
-uri.rmtree("temp://my_sandbox/")
-
-# 3. 作用域切換
-with uri.module_scope("dev"):
-    # 此處 module:// 自動指向 dev 模組
-    pass
-
-# 4. 狀態判斷與路徑反查
-if uri.exists("config://settings.json"):
-    print("實體絕對路徑：", uri.resolve("config://settings.json"))
+# 2. 自動在當前 module_scope 下查詢本模組 Contributes
+with uri.module_scope("core"):
+    my_contribs = contributes.get_for_current_module()
 ```
 
 ---
 
-## 3. AtomicEngine 12 原子操作生命週期 (`core.engine`)
-
-`AtomicEngine` 嚴格將系統狀態變更分解為 12 項不可分割的原子操作：
-
-| 操作代碼 | 操作名稱 | 目標空間 | 職責說明 |
-| :--- | :--- | :--- | :--- |
-| **ACT-01** | `INIT` | 宿主環境 | 建立 `yscb_root`、寫入初始 `yscb.config.json` 與基礎目錄。 |
-| **ACT-02** | `DOWNLOAD` | `mirror://` | 自本地或遠端抓取指定模組之純淨產物包至鏡像庫（嚴格比對版本）。 |
-| **ACT-03** | `DELETE` | `mirror://` | 自鏡像庫實體刪除指定模組版本。 |
-| **ACT-04** | `REGISTER` | `yscb.config.json` | 登記或更新模組元數據（`installed_modules`）。 |
-| **ACT-05** | `UNREGISTER`| `yscb.config.json` | 移除指定模組之清冊登記。 |
-| **ACT-06** | `SOLVE_DEPS`| 相依求解 | 讀取 manifest 依據 SemVer 2.0.0 求解相依拓撲與版本相容性。 |
-| **ACT-07** | `PREPARE` | 狀態同步 | 遍歷清冊模組，確認鏡像狀態並調用 `DOWNLOAD`。 |
-| **ACT-08** | `RELOAD` | `module.root://` | 運行端調和：清空 `modules/` ➔ 物化載入 ➔ 組態自動分發與增量補齊 ➔ 依賴注入 ➔ 事件廣播。 |
-| **ACT-09** | `FETCH` | 傳輸通道 | 依協定（Local/HTTP/Git）獲取模組產物包或 manifest。 |
-| **ACT-10** | `SNAPSHOT` | `snapshot://` | 執行破壞性操作前雙層備份當前 `yscb.config.json` 與 `config.root://`。 |
-| **ACT-11** | `RESTORE_SNAPSHOT` | `snapshot://` | 倒回覆蓋歷史快照點並同步重新物化運行目錄。 |
-| **ACT-12** | `DISPATCH_CLI` | 模組進入點 | 宿主探測並委派執行目標模組之 `scripts/cli.py`。 |
-
----
-
-## 4. 套件管理 CLI 指令速查 (`core.installer`)
+## 4. CLI 指令速查
 
 ```bash
-# 安裝模組（支援指定版本與來源）
-python yscb.py install <module_name>[@version] [--provider="<source>"] [--force]
+# 1. 語意 URI 清冊自省與解析
+python yscb.py uri list                     # 列出全系統已註冊語意協議清冊 (含原始設定與解析路徑)
+python yscb.py uri resolve <path_or_uri>    # 解析特定語意 URI 為實體絕對路徑
+python yscb.py uri to-uri <abs_path>        # 將實體路徑反查轉換為語意 URI
+python yscb.py uri check                    # 全量語意協議健康檢查
 
-# 更新模組至最新版本（SemVer 排序選擇最高相容版）
-python yscb.py update [<module_name>] [--provider="<source>"]
-
-# 移除已安裝模組（保護 core 不可移除）
-python yscb.py remove <module_name> [--clean]
-
-# 列出已安裝模組清單
+# 2. 套件生命週期管理
+python yscb.py install <module>[@version] [--provider="<source>"] [--force]
+python yscb.py update [<module>] [--provider="<source>"]
+python yscb.py remove <module> [--clean]
 python yscb.py list
-
-# 系統健康狀態診斷巡檢
 python yscb.py status
-
-# 災難恢復快照回滾
-python yscb.py rollback [<snapshot_id>]
-
-# 運行端環境調和與依賴注入刷新
+python yscb.py rollback [snapshot_id]
 python yscb.py reload
 ```

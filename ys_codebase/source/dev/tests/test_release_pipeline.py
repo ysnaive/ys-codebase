@@ -37,7 +37,7 @@ class TestReleasePipeline(unittest.TestCase):
         # Test release packaging outputs clean package (.zip)
         ok_rel, msg_rel = self.builder.package_release("core", "1.0.0.0")
         self.assertTrue(ok_rel)
-        rel_zip = uri.resolve("release.root://core/1.0.0.0.zip")
+        rel_zip = uri.resolve("module.release.root://core/1.0.0.0.zip")
         self.assertTrue(os.path.isfile(rel_zip))
         # Ensure tests/ is excluded in release zip
         import zipfile

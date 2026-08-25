@@ -23,7 +23,8 @@ CORE_COMMANDS: set = {
     "list",
     "status",
     "rollback",
-    "reload"
+    "reload",
+    "uri"
 }
 
 

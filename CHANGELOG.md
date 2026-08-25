@@ -4,6 +4,22 @@
 
 ## 2026_08_25_2200_agents_workflow_migration
 
+- **Core Contribute 系統優化與語意 URI 系統打磨 (`sub_02`)**：
+  - **Contribute 來源自動標記 (`__provider__`)**：
+    - 在微內核搜集 donor 模組 contributes 時，自動遞迴為 Dict 與 List[Dict] 項目注入 `"__provider__": donor_name`（顯式指定保留不覆蓋），確保下游模組可無痛自省貢獻來源。
+  - **依賴拓撲聚合排序 (Topological Ingestion Order)**：
+    - 依據已安裝模組之依賴拓撲順序有序合併，保證底層基礎設施優先註冊，擴充模組後續追加覆蓋。
+  - **微內核標準 Contribute 查詢 SDK**：
+    - 提供 `core.contributes.get(target_module, key=None, default=None)` 與 `get_for_current_module()`，內建自愈快取。
+  - **JIT `!undefined` URI 熱更新補齊機制**：
+    - 在 `uri.resolve()` 探測到 `!undefined` 或未配置路徑時，於 TTY 終端主動彈出 `[-y <path> / -n / --help]` 互動選單。
+    - 相對路徑一律以 `yscb://` 為基準展開，支援連鎖未定義依賴遞迴解算與自引用循環死鎖防護 (`CyclicURIDependencyError`)。
+    - 自動原子寫回所屬模組之 `config.project.json` 並刷新記憶體快取無縫繼續運行；非 TTY 或靜態檢查時拋出結構化 `UndefinedURIError`。
+  - **語意協議高度對稱化與自省清冊**：
+    - 徹底清除歷史殘留別名 `build://`。
+    - 將鏡像空間與發布空間納入 `module` 分支（`module.mirror.root://` / `module.mirror://`、`module.release.root://` / `module.release://`），與源碼、建置、運行空間達成 6 大空間高度對稱。
+    - 新增 `python yscb.py uri list` / `--list`、`resolve`、`to-uri`、`check` CLI 自省命令，支援清晰展示原始宣告值 (`RAW TARGET / VALUE`) 與展開後實體路徑。
+
 - **Agents Workflow 核心骨架遷移與協議產物工廠化 (`sub_01`)**：
   - **純淨通用內核與三位一體資產 (`assets/`)**：
     - 徹底剝離專案特化規則，提供 100% 通用抽象資產：`assets/standards/` (2 項規範: DocumentationStandards, DevelopmentStandards)、`assets/workflows/` (ContextInit)、`assets/templates/` (`header.md` 與 13 大標準模板庫)。

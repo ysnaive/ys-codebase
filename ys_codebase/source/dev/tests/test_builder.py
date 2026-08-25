@@ -38,7 +38,7 @@ class TestDevBuilder(YSCBTestCase):
         # Release packager must exclude tests/
         ok_rel, msg_rel = self.builder.package_release("dev", "1.0.0.0")
         self.assertTrue(ok_rel, f"Release packager failed: {msg_rel}")
-        rel_zip_uri = "release.root://dev/1.0.0.0.zip"
+        rel_zip_uri = "module.release.root://dev/1.0.0.0.zip"
         self.assertTrue(uri.exists(rel_zip_uri))
         
         real_rel_zip = uri.resolve(rel_zip_uri)
@@ -54,17 +54,17 @@ class TestDevBuilder(YSCBTestCase):
         # Package 1.0.0.1
         ok1, msg1 = self.builder.package_release("dev", "1.0.0.1")
         self.assertTrue(ok1, f"Package 1.0.0.1 failed: {msg1}")
-        zip_1 = uri.resolve("release.root://dev/1.0.0.1.zip")
+        zip_1 = uri.resolve("module.release.root://dev/1.0.0.1.zip")
         self.assertTrue(os.path.isfile(zip_1))
         
         # Package 1.0.0.2 -> must purge 1.0.0.1.zip
         ok2, msg2 = self.builder.package_release("dev", "1.0.0.2")
         self.assertTrue(ok2, f"Package 1.0.0.2 failed: {msg2}")
-        zip_2 = uri.resolve("release.root://dev/1.0.0.2.zip")
+        zip_2 = uri.resolve("module.release.root://dev/1.0.0.2.zip")
         self.assertTrue(os.path.isfile(zip_2))
         self.assertFalse(os.path.isfile(zip_1))
         
-        idx = uri.read_json("release.root://dev/index.json")
+        idx = uri.read_json("module.release.root://dev/index.json")
         self.assertIn("1.0.0.2", idx.get("versions", []))
         self.assertNotIn("1.0.0.1", idx.get("versions", []))
         self.mark_passed()

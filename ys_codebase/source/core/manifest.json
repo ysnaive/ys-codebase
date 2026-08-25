@@ -14,10 +14,16 @@
           "description": "YS-Codebase 工具庫根目錄"
         },
         {
-          "token": "mirror",
+          "token": "module.mirror.root",
           "type": "const",
           "value": "yscb://.mirror/",
-          "description": "本地端模組鏡像庫"
+          "description": "本地端模組鏡像庫根目錄"
+        },
+        {
+          "token": "module.mirror",
+          "type": "const",
+          "value": "yscb://.mirror/{module}/",
+          "description": "本地端模組專屬鏡像目錄"
         },
         {
           "token": "temp",
