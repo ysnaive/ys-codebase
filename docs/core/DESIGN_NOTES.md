@@ -17,6 +17,9 @@
 | **DN-06** | `yscb://` 常數自定位與零猜測阻斷 | `source/core/core/uri.py` | 🚨 CRITICAL |
 | **DN-07** | OS 核心原子鎖保護與 10s 自修復機制 | `source/core/core/engine.py` | ⚠️ WARNING |
 | **DN-08** | 剛性拓撲回歸與 6 大軟相容全面清除 | 全域多模組 | 🚨 CRITICAL |
+| **DN-09** | 四段式版本尾號不具比較性與單一 Revision 淘汰 | `source/core/core/semver.py`<br/>`source/dev/dev/builder.py` | 🚨 CRITICAL |
+| **DN-10** | 同 Major 升級鎖定原則 | `source/core/core/installer.py`<br/>`source/core/core/engine.py` | ⚠️ WARNING |
+| **DN-11** | 模組運行空間純粹化與 config 模板自動剝除 | `source/core/core/engine.py` | 💡 INFO |
 
 ---
 
@@ -87,3 +90,25 @@
 - **防禦宣告**：
   > [!CAUTION]
   > 專案嚴格遵守 R01~R05 剛性拓撲原則，禁止為規避局部報錯而擅自引入跨空間穿透與動態猜測代碼。
+
+---
+
+### [DN-09] 四段式版本尾號不具比較性與單一 Revision 淘汰
+
+- **核心決策**：四段式版本尾號 `revision` 在日常三元安裝與依賴求解中不具獨立比較意義；`release/` 發布庫中針對相同 `X.Y.Z` 僅允許保留單一最新 Revision 產物。
+- **背後考量**：避免多個微小修訂號並存導致來源庫混亂與版本求解複雜度爆炸，常態性以三元語意版本進行發布與消費。
+
+---
+
+### [DN-10] 同 Major 升級鎖定原則
+
+- **核心決策**：`yscb update` 指令預設自動將升級範圍約束在當前 Major 內（`^current_version`）。
+- **背後考量**：防止日常更新時意外拉取破壞性大版本升級導致專案崩潰。跨 Major 升級必須明確指定 `yscb install <mod>@<new_major>`。
+
+---
+
+### [DN-11] 模組運行空間純粹化與 config 模板自動剝除
+
+- **核心決策**：模組安裝包（`mirror://` / `release://`）中的 `config.project.json` 與 `config.local.json` 作為配置種子模板，在 `act_reload` 完成種子提取並軟合併進 `config/{mod}/` 後，自動將其從 `modules/{mod}/` 運行目錄中移除。
+- **背後考量**：`modules/` 必須維持純粹可執行代碼，避免配置雙頭維護與開發者修改路徑混淆。
+

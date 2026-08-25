@@ -186,15 +186,24 @@ class Tester:
         return 0 if all_passed else 1
 
     def _run_test(self, argv: List[str]) -> int:
-        """High-level facade: op-mksb -> run op-test in sandbox -> cleanup"""
+        """High-level facade: auto dev build -> op-mksb -> run op-test in sandbox -> cleanup"""
         keep_sandbox = "--keep-sandbox" in argv
         
-        # 1. Provision virtual sandbox
+        # 1. Automatic pre-test Hermetic Dev Build
+        from dev.builder import Builder
+        builder = Builder()
+        target_mod = next((a for a in argv if not a.startswith("-") and a != "test"), None)
+        if target_mod and target_mod != "--all":
+            builder.build_module(target_mod, clean=True)
+        else:
+            builder.build_all(clean=True)
+        
+        # 2. Provision virtual sandbox (resolves from build:// -> mirror:// -> provider)
         ctx = SandboxProvisioner.create_sandbox()
         sandbox_dir = ctx.sandbox_dir
         host_dir = ctx.host_dir
         
-        # 2. Invoke dev op-test inside sandbox
+        # 3. Invoke dev op-test inside sandbox
         sandbox_yscb = os.path.join(host_dir, "yscb.py")
         cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + argv
         
@@ -205,7 +214,7 @@ class Tester:
             print(f"[dev:test] Subprocess execution error: {e}")
             ret_code = 1
             
-        # 3. Teardown policy
+        # 4. Teardown policy
         if ret_code == 0 and not keep_sandbox:
             SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
         else:

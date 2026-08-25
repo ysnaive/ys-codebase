@@ -1,5 +1,6 @@
 """
 Core Package Management Installer Subcommands (install, update, remove, list, status, rollback, reload).
+Includes Major Boundary Lock & Incremental Migration Trigger.
 """
 import os
 import sys
@@ -25,11 +26,14 @@ class Installer:
             print("[core:install] Error: No default_provider configured in yscb.config.json and no --provider specified.")
             return 1
             
-        target_ver = version or "1.0.0"
+        target_ver = semver.normalize_version(version) if version else "1.0.0.0"
         
         print(f"[core:install] Resolving dependencies for '{module_name}'...")
         snap_id = self.engine.act_snapshot(f"pre_install_{module_name}")
         
+        installed = cfg.get("installed_modules", {})
+        old_ver = installed.get(module_name, {}).get("version", "0.0.0.0")
+
         try:
             self.engine.act_lock("install")
             targets = self.engine.act_solve_deps(module_name, target_ver, provider_url)
@@ -37,6 +41,12 @@ class Installer:
             for mod, ver in targets:
                 self.engine.act_register(mod, ver, provider_url)
             self.engine.act_reload(clean_stage=True, inject_stage=True)
+            
+            # Execute migration if upgrading
+            if old_ver != "0.0.0.0" and semver.compare_semver(target_ver, old_ver) > 0:
+                print(f"[core:install] Running migration ladder for '{module_name}' ({old_ver} -> {target_ver})...")
+                self.engine.act_migrate(module_name, old_ver, target_ver)
+                
             self.engine.act_broadcast_event("core", "on_installed", ExecutionContext("core", "install", [module_name, target_ver]))
             self.engine.act_unlock("install")
             print(f"[core:install] Successfully installed '{module_name}@{target_ver}'.")
@@ -62,41 +72,47 @@ class Installer:
             print("[core:update] No modules installed to update.")
             return 0
             
-        print(f"[core:update] Checking updates for modules: {', '.join(targets)}...")
+        print(f"[core:update] Checking updates for modules: {', '.join(targets)} (Major Lock active)...")
         snap_id = self.engine.act_snapshot("pre_update")
         
         updated_any = False
         try:
             self.engine.act_lock("update")
             for mod in targets:
-                cur_ver = installed.get(mod, {}).get("version", "1.0.0")
+                cur_ver = installed.get(mod, {}).get("version", "1.0.0.0")
+                cur_t = semver.parse_semver(cur_ver)
+                # Major Boundary Lock: constrain update within same major (e.g. ^1.0.0.0)
+                major_constraint = f"^{cur_t.major}.{cur_t.minor}.{cur_t.patch}"
                 latest_ver = cur_ver
                 
-                # Check available versions in local provider
-                mod_local = os.path.join(provider_url, mod)
-                if not os.path.isdir(mod_local):
-                    mod_local = os.path.join(provider_url, "build", mod)
-                if os.path.isdir(mod_local):
-                    versions = [v for v in os.listdir(mod_local) if os.path.isdir(os.path.join(mod_local, v))]
-                    if versions:
-                        best_v = semver.find_best_version(versions)
-                        if best_v:
-                            latest_ver = best_v
-                else:
+                # Check available versions in release/ & provider
+                candidate_dirs = [
+                    os.path.join(provider_url, "release", mod),
+                    os.path.join(provider_url, mod),
+                    os.path.join(provider_url, "build", mod)
+                ]
+                
+                found_versions: List[str] = []
+                for c_dir in candidate_dirs:
+                    if os.path.isdir(c_dir):
+                        found_versions.extend([v for v in os.listdir(c_dir) if os.path.isdir(os.path.join(c_dir, v))])
+                
+                if not found_versions:
                     # Remote lookup
                     ok, res = self.engine.act_fetch(provider_url, f"{mod}/index.json")
-                    if ok and isinstance(res, dict):
-                        if "versions" in res and isinstance(res["versions"], list) and res["versions"]:
-                            best_v = semver.find_best_version(res["versions"])
-                            if best_v:
-                                latest_ver = best_v
-                        elif "version" in res:
-                            latest_ver = res["version"]
+                    if ok and isinstance(res, dict) and "versions" in res:
+                        found_versions = res["versions"]
+                        
+                best_v = semver.find_best_version(found_versions, major_constraint)
+                if best_v:
+                    latest_ver = best_v
 
                 if semver.compare_semver(latest_ver, cur_ver) > 0:
                     print(f"[core:update] Updating '{mod}' from {cur_ver} -> {latest_ver}...")
                     self.engine.act_prepare([(mod, latest_ver)], provider_url, force=True)
                     self.engine.act_register(mod, latest_ver, provider_url)
+                    # Run migration ladder
+                    self.engine.act_migrate(mod, cur_ver, latest_ver)
                     updated_any = True
                 else:
                     print(f"[core:update] Module '{mod}' is already up-to-date (v{cur_ver}).")
@@ -129,7 +145,6 @@ class Installer:
             print("[core:remove] Error: Cannot remove 'core' infrastructure module.")
             return 1
             
-        # Reverse dependency safety check
         dependents: List[str] = []
         for other_mod in installed.keys():
             if other_mod == module_name:
@@ -146,10 +161,10 @@ class Installer:
                     
         if dependents:
             if not force:
-                print(f"[core:remove] Error: Cannot remove '{module_name}' because it is required by installed module(s): {', '.join(dependents)}. Use --force to override.")
+                print(f"[core:remove] Error: Cannot remove '{module_name}' because it is required by: {', '.join(dependents)}. Use --force to override.")
                 return 1
             else:
-                print(f"[core:remove] Warning: Force removing '{module_name}' which is required by: {', '.join(dependents)}.")
+                print(f"[core:remove] Warning: Force removing '{module_name}' required by: {', '.join(dependents)}.")
             
         print(f"[core:remove] Removing module '{module_name}'...")
         self.engine.act_broadcast_event("core", "on_remove", ExecutionContext("core", "remove", [module_name]))

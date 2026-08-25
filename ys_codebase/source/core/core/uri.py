@@ -30,10 +30,15 @@ _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
     {"token": "config", "type": "const", "value": "yscb://config/{module}/"},
     {"token": "cache.root", "type": "const", "value": "yscb://.cache/"},
     {"token": "cache", "type": "const", "value": "yscb://.cache/{module}/"},
+    {"token": "storage.root", "type": "const", "value": "yscb://storage/"},
+    {"token": "storage", "type": "const", "value": "yscb://storage/{module}/"},
     {"token": "module.source.root", "type": "const", "value": "yscb://source/"},
     {"token": "module.source", "type": "const", "value": "yscb://source/{module}/"},
     {"token": "module.build.root", "type": "const", "value": "yscb://build/"},
     {"token": "module.build", "type": "const", "value": "yscb://build/{module}/"},
+    {"token": "build", "type": "const", "value": "yscb://build/{module}/"},
+    {"token": "release.root", "type": "const", "value": "yscb://release/"},
+    {"token": "release", "type": "const", "value": "yscb://release/{module}/"},
 ]
 
 def set_module_context(module_name: Optional[str]) -> None:
