@@ -1,54 +1,69 @@
----
-target: "Root/KnowledgeBase"
-doc_type: "overview"
-status: "active"
-source_paths:
-  - "ys_codebase/yscb_installer.py"
-  - "ys_codebase/yscb_cli.py"
-  - "ys_codebase/source/"
-  - "ys_codebase/build/"
-  - "test/run_regression.py"
-related_docs:
-  - "./_project/ARCHITECTURE.md"
-  - "./_project/CLI_SPECIFICATION.md"
-  - "./_project/STANDARDS.md"
-last_updated: "2026-08-22"
----
+# YS-Codebase 系統架構與全域知識地圖 (System Overview & Architecture Map)
 
-# YS-Codebase 系統知識庫 (Knowledge Base)
-
-歡迎查閱 `ys-codebase` 核心知識庫。本目錄記錄系統**最新架構、運作機制、規範標準與模組規格**。
+> 歡迎查閱 **YS-Codebase** 核心架構知識庫！  
+> 本專案為 100% Python 標準庫、零第三方依賴構建之現代化模組化微內核系統。
 
 ---
 
-## 🗺️ 知識庫導覽地圖 (Knowledge Map)
+## 1. 系統宏觀分層架構 (High-Level Architecture)
 
-```text
-docs/
-├── 🌐 專案系統架構與規範 (_project/)
-│   ├── ARCHITECTURE.md          ← 宏觀架構全景、2x2 設定矩陣與 Core SDK 體系
-│   ├── CLI_SPECIFICATION.md     ← yscb_cli.py 與 yscb_installer.py 指令合約
-│   ├── STANDARDS.md             ← 模組 Manifest 規範、2x2 設定協定與品質門檻
-│   └── CONTRIBUTING.md          ← 模組開發、打包構建 (build) 與發布指南
-│
-└── 📦 核心模組知識庫 (鏡像源碼)
-    ├── Core/                    ← yscb_core 運行期 SDK 定義與 API 使用手冊
-    ├── Installer/               ← yscb_installer.py 核心引擎設計與內部元件
-    └── AgentsWorkflow/          ← agents-workflow SOP 工作流、3-Track 與定式工具庫
+```mermaid
+graph TD
+    classDef host fill:#1e293b,stroke:#64748b,stroke-width:2px,color:#f8fafc;
+    classDef micro fill:#0f172a,stroke:#3b82f6,stroke-width:2px,color:#60a5fa;
+    classDef tool fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#34d399;
+    classDef ext fill:#4c1d95,stroke:#8b5cf6,stroke-width:2px,color:#c084fc;
+
+    Host["超薄宿主啟動器 (Thin Host)<br/><code>yscb.py</code><br/><i>無狀態指令轉發與核心自舉</i>"]:::host
+    
+    subgraph Microkernel ["Core 微內核基礎設施 (module:core)"]
+        URI["語意 URI 協議與 First-Class VFS SDK<br/><code>core.uri</code> (Zero Fallback)"]
+        Engine["AtomicEngine 12 原子操作引擎<br/><code>core.engine</code>"]
+        Installer["套件管理與生命週期調度器<br/><code>core.installer</code>"]
+        Contrib["5 來源依賴注入與快取聚合器<br/><code>core.contributes</code>"]
+    end
+    class Microkernel micro;
+
+    subgraph Toolchain ["開發者工具鏈 (module:dev)"]
+        Scaffold["模組腳手架 (Scaffolder)<br/><code>dev create</code>"]
+        Checker["靜態合規檢查器 (Checker)<br/><code>dev check</code>"]
+        Builder["純淨打包建置器 (Builder)<br/><code>dev build</code>"]
+        Testing["沙盒測試與契約合成引擎 (Tester)<br/><code>dev test</code>"]
+    end
+    class Toolchain tool;
+
+    subgraph Extensions ["領域擴充模組生態 (Extension Ecosystem)"]
+        Agents["工作流與規範管理<br/><code>agents-workflow</code>"]
+        CustomMod["其他自訂業務模組<br/><code>custom-modules...</code>"]
+    end
+    class Extensions ext;
+
+    Host -->|自舉與動態調度| Microkernel
+    Microkernel -->|提供底層 SDK 與擴充點| Toolchain
+    Microkernel -->|依賴注入與生命週期廣播| Extensions
+    Toolchain -->|腳手架、檢查、打包與測試| Extensions
 ```
 
 ---
 
-## 🧭 快速索引 (Quick Links)
+## 2. 全域知識庫導覽地圖 (Knowledge Base Index)
 
-| 主題領域 | 文件連結 | 關鍵內容摘要 |
+| 核心維度 | 知識手冊路徑 | 說明 |
 | :--- | :--- | :--- |
-| **系統全貌** | [ARCHITECTURE.md](./_project/ARCHITECTURE.md) | 100% 專案自包含、2x2 設定矩陣、Core SDK 體系 |
-| **指令規格** | [CLI_SPECIFICATION.md](./_project/CLI_SPECIFICATION.md) | `init`, `install`, `pull`, `build`, `push`, `status`, `list`, `remove` |
-| **開發標準** | [STANDARDS.md](./_project/STANDARDS.md) | 純 Python 3 標準庫、2x2 設定協定、Manifest Schema |
-| **貢獻指南** | [CONTRIBUTING.md](./_project/CONTRIBUTING.md) | 模組建立、SDK 引用、`build` 打包、`run_regression.py` 回歸 |
-| **Core 基礎庫** | [Core/README.md](./Core/README.md) | `yscb_core` SDK (ProjectContext, ConfigManager, Console) |
-| **語意 URI 系統** | [Core/SEMANTIC_URI_SYSTEM.md](./Core/SEMANTIC_URI_SYSTEM.md) | 五層協議模型、沙盒圍欄防護 (Chroot Guard)、LPM 演算法與 Direct I/O API |
-| **Installer 引擎** | [Installer/README.md](./Installer/README.md) | `ConfigManager`, `GitRemoteClient`, `ModuleManager` 元件拆解與連動廣播 |
-| **Agents 工作流** | [AgentsWorkflow/README.md](./AgentsWorkflow/README.md) | 3-Track 管控 (FT/Full/Umbrella)、9 大 SOP 工作流、定式工具庫 |
-| **連動協定手冊** | [AgentsWorkflow/SOP_INTERLOCK_PROTOCOL.md](./AgentsWorkflow/SOP_INTERLOCK_PROTOCOL.md) | 三大合約、Slot 插槽注入、雙層 Extension 發現與 IDE 無感同步 |
+| **維度 2：核心規範** | [STANDARDS.md](./_project/STANDARDS.md) | 全專案四大空間協議、2x2 組態邊界、Dogfooding 自引用三層空間與標準閉環流水線 |
+| **維度 2：核心內核** | [core/README.md](./core/README.md) | Core 微內核架構、AtomicEngine 12 原子操作、First-Class VFS SDK 與套件管理 |
+| **維度 3：專題手冊** | [core/uri_protocols.md](./core/uri_protocols.md) | 語意 URI 協議規範、`project://` 零 Fallback 阻斷與中介快照動態解算機制 |
+| **維度 3：專題手冊** | [core/lifecycle_and_hooks.md](./core/lifecycle_and_hooks.md) | 命名空間 Hook 對接規範 (`hook.{emit_module}.py`)、`ExecutionContext` 介面與例外隔離 |
+| **維度 5：工程妥協** | [core/DESIGN_NOTES.md](./core/DESIGN_NOTES.md) | Core 微內核關鍵工程決策與設計註記 (`DN-01` ~ `DN-06`)，含宿主組態解耦 (DN-05) 與常數自定位零猜測阻斷 (DN-06) |
+| **維度 2：開發工具** | [dev/README.md](./dev/README.md) | Dev 工具鏈架構、Scaffold 模組建立、Checker 規範檢驗、Builder 純淨打包 |
+| **維度 3：專題手冊** | [dev/testing_guide.md](./dev/testing_guide.md) | `YSCBTestCase` 隔離沙盒生命週期、Auto-Contract 自動契約合成與兩階段測試 |
+| **維度 5：工程妥協** | [dev/DESIGN_NOTES.md](./dev/DESIGN_NOTES.md) | Dev 開發者工具鏈關鍵設計註記 (`DN-DEV-01`) |
+
+---
+
+## 3. 模組生態總覽 (Module Registry)
+
+| 模組名稱 | 版本 | 職責定位 | 主要進入點 |
+| :--- | :---: | :--- | :--- |
+| **`core`** | `1.0.0` | 系統微內核、VFS 檔案系統、套件生命週期、依賴注入與 Hook 派發 | `modules/core/scripts/cli.py` |
+| **`dev`** | `1.0.0` | 開發者工具箱：腳手架、靜態檢查、純淨套件打包、單元/契約測試引擎 | `modules/dev/scripts/cli.py` |

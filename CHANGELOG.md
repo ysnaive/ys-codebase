@@ -4,6 +4,70 @@
 
 ---
 
+## 2026_08_23_2030_architecture_refactor
+
+### Added
+- **超薄無狀態宿主 (Ultra-Thin Host `yscb.py`)**：100% Python 標準庫原生實現，體積縮減至百餘行，僅負責路徑定位、最小自舉與動態命令轉發，徹底擺脫單檔膨脹與自引用死鎖。
+- **Core 微內核基礎設施模組 (`module:core`)**：
+  - **First-Class VFS SDK (`core.uri`)**：原生支援語意 URI 讀寫、目錄操作、最長前綴匹配與原子安全寫入。
+  - **`AtomicEngine` 12 大原子操作生命週期**：將系統狀態變更分解為 `INIT`, `DOWNLOAD`, `DELETE`, `REGISTER`, `UNREGISTER`, `SOLVE_DEPS`, `PREPARE`, `RELOAD`, `FETCH`, `SNAPSHOT`, `RESTORE_SNAPSHOT`, `DISPATCH_CLI`。
+  - **套件管理器 (`core.installer`)**：提供 `install`, `update`, `remove`, `list`, `status`, `rollback`, `reload` 完整套件生命週期。
+  - **5 來源依賴注入聚合器 (`core.contributes`)**：支援 Manifest、指向性 JSON、專案與本地層級宣告式能力注入，產出中介層快照至 `cache://` 加速查表。
+- **Dev 開發者工具箱模組 (`module:dev`)**：
+  - **模組腳手架 (`dev create`)**：一鍵生成符合規範之模組標準骨架與測試模板。
+  - **靜態合規檢查器 (`dev check`)**：驗證 Manifest SemVer 規範、CLI 進入點語法與 `.yscbignore`。
+  - **純淨套件打包器 (`dev build`)**：自動排除 `tests/` 與 `.yscbignore`，產出純淨版本化套件包並注入 `built_at` 時間戳記。
+  - **沙盒測試引擎 (`dev test`)**：提供 `YSCBTestCase` 隔離沙盒、Auto-Contract 動態契約合成與兩階段測試執行。
+- **14 組自宣告注入語意 URI 協議**：
+  - 核心協議：`yscb://`, `mirror://`, `temp://`, `snapshot://`, `module.root://`, `module://`, `config.root://`, `config://`, `cache.root://`, `cache://`。
+  - 開發協議：`module.source.root://`, `module.source://`, `module.build.root://`, `module.build://`。
+- **三階測試指令體系與遞迴語意解耦 (`sub_10`)**：
+  - `dev op-mksb`：純沙盒建造工廠，支援指定路徑與 `temp://sandbox_{timestamp}/` 動態微秒命名。
+  - `dev op-test`：純原地單元測試執行器（100% 零沙盒、零遞迴），支援 `--type=<logic|host_cli|network>` 與 `-k` 遞迴過濾。
+  - `dev test`：高階組合門面，自動建造沙盒 ➔ 進入沙盒執行 ➔ 通過後自動銷毀清理。
+- **完全對標微型虛擬環境 (`SandboxProvisioner`) (`sub_10`)**：
+  - 鋪設 `mock_downstream_project/`、`host_env/`（含 `yscb.py`, `yscb.config.json` 與 `modules/`）、`mock_provider/` 三大標準子空間。
+  - 完整繼承父層已安裝模組與配置，消除測試環境混血狀態，嚴格維持 `yscb.py` 僅調用 `modules/` 之單一真相來源。
+- **模組測試前置自治 Hook (`scripts/hook.dev.py`) (`sub_10`)**：
+  - 各模組提供 `on_test_setup` 與 `on_test_teardown`，隨 `build` 套件打包發布，`core` 自動配置沙盒 `project_root` 解除 `!undefined`。
+- **精準命名空間 Hook 對接體系 (`scripts/hook.{emit_module}.py`)**：
+  - 模組以發起端命名對接檔案（例 `hook.core.py`, `hook.dev.py`），提供 `ExecutionContext` 凍結資料介面與 try-except 例外隔離防護。
+- **系統全域知識庫綠地重建 (`docs/`)**：
+  - 依據 7 大抽象維度落成 10 大標準手冊（全域地圖、核心規範、Core 架構、URI 協議、Hook 手冊、Dev 工具箱、測試指南、設計註記 `DN-01~03` 及專案首頁）。
+- **套件框架健壯性強化與缺陷修復 (`sub_11`)**：
+  - **100% Python 標準庫 SemVer 2.0.0 運算器 (`core.semver`)**：純標準庫實作，支援四元組解析、數值排序（保證 `1.10.0 > 1.9.0`）、`>=, >, <=, <, ==, !=, ~=, *` 範圍匹配與最高合規版本依賴求解。
+  - **剛性拓撲隔離與 6 大軟相容手段清除**：`yscb.py` 移除向上爬樹；`contributes.py` 清除對 `source/` 與 `project://` 穿透；`installer.py` 清除硬編碼後門；`uri.resolve()` 嚴格攔截非標準 URI 拋出 `ValueError`。
+  - **不可變 `ExecutionContext` SSOT 與 CM 作用域**：`core.context` 集中定義不可變數據載體；`core.uri` 提供 `module_scope` 與 `host_scope` 上下文管理器，例外安全自動還原。
+  - **雙層組態快照與 Hermetic Clean Build**：快照還原同步備份覆蓋 `config.root://`；`dev.builder` 預設強制清空發布版本目錄，100% 排除 `tests/` 與 `.yscbignore` 污染。
+  - **Contract/Custom 分離統計與獨立失敗清單**：測試框架精準分離計數，杜絕交叉誤扣，並提供獨立失敗案例清單。全量測試 59/59 項 100% Passed。
+- **四段式版本號、雙軌來源庫、三層降級鏈與發布流水線 (`sub_12`)**：
+  - **四段式語意化版本 (`core.semver`)**：支援 `(major, minor, patch, revision)` 解析與正規化，前三段數值比大小（`1.10.0.0 > 1.9.0.0`），尾號 `revision` 支援微小修訂號或 `build` 本地標籤，日常三元版本常態安裝。
+  - **雙軌來源庫架構 (`build://` vs `release://`)**：
+    - `build/` (開發庫)：`dev build` 產出完整包（包含 `tests/`，版本強制為 `X.Y.Z.build`），供全黑盒測試直接解析與安裝。
+    - `release/` (發布庫)：`dev release` 產出純淨發布包（排除 `tests/`），針對同 `X.Y.Z` 實施單一最新 Revision 淘汰清理。
+  - **三層安裝降級鏈 (`build://` ➔ `mirror://` ➔ `provider`)**：依序滿足本地開發即時測試、離線快取與遠端發布庫解析，三層同構維護 `index.json`。
+  - **模組增量遷移階梯調用引擎 (`act_migrate`)**：升級時依序遞增調用 `scripts/migrations/{minor}.x.py` 增量腳本，缺腳本自動靜默跳過，失敗自動 Snapshot 原子回滾。
+  - **Dev Releaser 發布安全交易防護 (`dev release`)**：Pre-flight 4 大守門、Version Bump、純淨打包、智慧 Git Tag（Major/Minor 自動打 Tag，Patch/Revision 預設不打）與失敗 100% 原子回滾。
+  - **運行空間純粹化與自治忽略**：模組物化安裝後自動剝除 `modules/` 內的 `config.*.json` 模板；`init` 自動生成 `yscb://.gitignore` 確保專案根目錄零污染。全量測試 70/70 項 100% Passed。
+
+### Changed
+- **`project://` 顯式配置與零 Fallback 鐵律**：`project_root` 預設為 `!undefined`，未定義時精準拋出 `ValueError` 顯式阻斷，杜絕隱式猜測與環境路徑漂移。
+- **2x2 組態空間顯式化**：將原 `.config/` 隱藏目錄導正為顯式之 `config/` 專案目錄（受 Git 追蹤資產）。
+- **中介快照空間純淨化**：框架衍生之 `contributes.merged.json` 導正至 `cache://`（即 `.cache/`，受 Git 忽略），並實施空檔抑制機制。
+- **套件倉庫空間追蹤**：本機 Provider 套件庫 `ys_codebase/build/` 正式受 Git 追蹤以利開箱自舉。
+- **版本升級**：`core` 升級至 `1.0.0`，`dev` 升級至 `1.0.0`，超薄宿主 `yscb.py` 升級至 `1.0.0`。
+
+### Fixed
+- **隔離歷史干擾**：舊版代碼、舊起手腳本與歷史工作流全數移至 `.quarantine/` 封存。
+- **[Critical] 宿主組態與專案空間徹底解耦 (BUG-01, BUG-02)**：`AtomicEngine` 內部所有對 `yscb.config.json` 的讀寫、清冊維護與快照還原全面改由 `host_dir` 實體路徑執行，徹底與 `project://` 解耦，確保在下游外部專案中執行套件管理時 100% 零阻斷。
+- **[Critical] `yscb://` 代碼位置常數確定性自定位 (BUG-03, D-07)**：`yscb://` 解析基準直接由 `core.uri` 的實體檔案位置（`__file__` 往上 3 層）確定性常數計算；宿主 Context 顯式注入；徹底刪除動態爬目錄與 `os.getcwd()` 猜測。
+- **Provider `index.json` 版本清冊自動維護 (D-06)**：`dev build` 打包時自動增量更新 `build/{module}/index.json`，支援 SemVer 升序排序與去重。
+- **`remove` 反向相依安全阻斷防護 (D-08)**：`cmd_remove` 實作反向依賴掃描，被依賴模組未帶 `--force` 時阻斷移除。
+- **相依格式雙向相容與遞迴相依拓撲求解 (D-01, D-02)**：`act_solve_deps` 支援 Dict 與 List 格式雙向相容，實作遞迴依賴分析與循環相依檢測。
+- **全量回歸測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (32/32) = **38/38 測試全數 Passed (0.555s)**。
+
+---
+
 ## 2026_08_23_sop_template_consistency
 
 ### Fixed
