@@ -31,6 +31,7 @@
 | **sub_08** | `sub_08_core_docs_update` | Fast Track | **已完成** | 文檔更新：綠地重建專案根目錄、`core` 與 `dev` 模組之知識庫手冊與規範文檔 |
 | **sub_09** | `sub_09_compliance_and_bugfix` | Full Track | **已完成** | 架構合規性缺陷修復與穩固性強化：修復宿主組態路徑混淆、移除隱式猜測、增強 Provider 與相依防護 |
 | **sub_10** | `sub_10_test_framework_polish` | Full Track | **已完成** | 測試框架生命週期與全隔離虛擬沙盒重構：落實三階指令 (op-mksb, op-test, test)、完全對標沙盒與 hook.dev.py 自治體系 |
+| **sub_11** | `sub_11_framework_robustness_and_bugfix` | Full Track | **已完成** | 套件框架健壯性強化與缺陷修復：清除軟相容手段回歸剛性拓撲、SemVer 2.0.0 數值運算器、雙層快照還原、CM 作用域與 Hermetic Clean Build |
 
 ---
 
@@ -47,6 +48,7 @@ flowchart TD
     sub_07 --> sub_08["sub_08: 文檔綠地更新<br/>(Core Docs Update)"]
     sub_08 --> sub_09["sub_09: 合規缺陷修復<br/>(Compliance & Bugfix)"]
     sub_09 --> sub_10["sub_10: 測試框架打磨<br/>(Test Framework Polish)"]
+    sub_10 --> sub_11["sub_11: 框架健壯性與缺陷修復<br/>(Robustness & SemVer)"]
 ```
 
 ---

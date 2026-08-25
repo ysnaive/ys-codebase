@@ -116,28 +116,44 @@ class SandboxProvisioner:
                         if os.path.exists(dest_mod):
                             shutil.rmtree(dest_mod)
                         shutil.copytree(mod_src_path, dest_mod, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+
+                        # Dynamically read manifest version from real source/modules
+                        mod_ver = "1.0.0"
+                        mod_desc = f"Standard host module {mod_name}"
+                        mf_path = os.path.join(mod_src_path, "manifest.json")
+                        if os.path.isfile(mf_path):
+                            try:
+                                with open(mf_path, "r", encoding="utf-8") as mf_f:
+                                    mf_d = json.load(mf_f)
+                                mod_ver = mf_d.get("version", mod_ver)
+                                mod_desc = mf_d.get("description", mod_desc)
+                            except Exception:
+                                pass
+
                         host_config["installed_modules"][mod_name] = {
-                            "version": "1.0.0",
+                            "version": mod_ver,
                             "installed_at": "host_inherited",
                             "provider": prov_uri,
-                            "description": f"Standard host module {mod_name}"
+                            "description": mod_desc
                         }
 
         # Write finalized host yscb.config.json
         with open(os.path.join(ctx.host_dir, "yscb.config.json"), "w", encoding="utf-8") as f:
             json.dump(host_config, f, indent=2)
 
-        # 2. Copy host bootstrapper script yscb.py
-        curr_yscb = None
-        host_d = uri.get_host_dir()
-        if host_d and os.path.isfile(os.path.join(host_d, "yscb.py")):
-            curr_yscb = os.path.join(host_d, "yscb.py")
-        if not curr_yscb or not os.path.isfile(curr_yscb):
-            fallback_yscb = os.path.abspath("yscb.py")
-            if os.path.isfile(fallback_yscb):
-                curr_yscb = fallback_yscb
-        if curr_yscb and os.path.isfile(curr_yscb):
+        # 2. Copy host bootstrapper script yscb.py with rigid self-location
+        host_d, _ = uri._get_host_config()
+        curr_yscb = os.path.join(host_d, "yscb.py")
+        if not os.path.isfile(curr_yscb):
+            yscb_d = uri._get_yscb_root()
+            curr_yscb = os.path.join(yscb_d, "yscb.py")
+        if not os.path.isfile(curr_yscb):
+            curr_yscb = os.path.abspath("yscb.py")
+            
+        if os.path.isfile(curr_yscb):
             shutil.copy2(curr_yscb, os.path.join(ctx.host_dir, "yscb.py"))
+        else:
+            raise FileNotFoundError(f"Host bootstrapper 'yscb.py' not found at '{curr_yscb}'.")
 
         # 3. Copy source tree if requested
         if copy_source:

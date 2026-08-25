@@ -45,14 +45,18 @@ class TestCoreURI(YSCBTestCase):
         self.mark_passed()
 
     def test_uninitialized_host_raises_file_not_found(self):
-        """Verify _find_host_config raises FileNotFoundError on missing yscb.config.json (Zero Speculation)."""
+        """Verify _get_host_config (and legacy _find_host_config alias) raises FileNotFoundError on missing yscb.config.json (Zero Speculation)."""
         empty_dir = os.path.join(self.sandbox_dir, "empty_dir_for_test")
         os.makedirs(empty_dir, exist_ok=True)
         
         # When looking strictly at a directory with no yscb.config.json anywhere
         with self.assertRaises(FileNotFoundError) as ctx:
-            uri._find_host_config(start_dir=empty_dir)
+            uri._get_host_config(start_dir=empty_dir)
         self.assertIn("yscb.config.json", str(ctx.exception))
+
+        # Test backward-compatibility alias
+        with self.assertRaises(FileNotFoundError):
+            uri._find_host_config(start_dir=empty_dir)
         self.mark_passed()
 
     def test_project_root_undefined_raises_value_error(self):
