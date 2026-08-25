@@ -12,7 +12,8 @@
 ┌────────────────────────────────────────────────────────────────────────┐
 │ 高階開發者指令 (User-Facing Facade)                                    │
 │   • python yscb.py dev test [mod | --all] [options]                    │
-│     ➔ 完整端到端：調用 op-mksb 建立沙盒 ➔ 切入沙盒執行 op-test ➔ 銷毀 │
+│     ➔ 完整端到端：自動執行 Hermetic dev build ➔ 調用 op-mksb 建立沙盒 │
+│        ➔ 沙盒內透過標準三層鏈解析與安裝 ➔ 原地執行 op-test ➔ 銷毀      │
 ├────────────────────────────────────────────────────────────────────────┤
 │ 底層原子操作 (Atomic Primitives)                                       │
 │   1. python yscb.py dev op-mksb [--dir=<path>]                         │

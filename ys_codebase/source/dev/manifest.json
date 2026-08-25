@@ -1,7 +1,7 @@
 {
   "name": "dev",
-  "version": "1.0.0",
-  "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester)",
+  "version": "1.0.0.0",
+  "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
     "core": ">=1.0.0"
@@ -25,13 +25,19 @@
           "token": "module.build.root",
           "type": "const",
           "value": "yscb://build/",
-          "description": "純淨安裝產物根目錄"
+          "description": "本地開發完整建置產物根目錄"
         },
         {
           "token": "module.build",
           "type": "const",
           "value": "yscb://build/{module}/",
-          "description": "純淨安裝產物專屬目錄"
+          "description": "本地開發完整建置產物專屬目錄"
+        },
+        {
+          "token": "build",
+          "type": "const",
+          "value": "yscb://build/{module}/",
+          "description": "本地開發完整建置產物別名"
         }
       ]
     }
