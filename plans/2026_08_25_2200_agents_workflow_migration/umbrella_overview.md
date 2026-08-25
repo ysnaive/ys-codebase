@@ -22,6 +22,7 @@
 | **sub_02** | `sub_02_core_contribute_optimization_and_uri_polish` | Full Track | `Completed` | core contribute 依賴注入系統優化（__provider__ 自動標記、拓撲排序、查詢 SDK）與語意 URI 系統打磨（JIT !undefined 熱補齊、6 大空間對稱協議、uri list 自省清冊）。 |
 | **sub_03** | `sub_03_workflow_placeholder_format_migration` | Full Track | `Completed` | workflow 佔位符格式修改：遷移為視覺友善的插入佔位符 `__@{token}__` 與路徑佔位符 `__#{uri}__`。 |
 | **sub_04** | `sub_04_agents_workflow_injection_config_and_init_default` | Full Track | `Completed` | agents-workflow 專案組態治理 (config.project.json)、4 大 URI 協議貢獻，與一鍵初始化指令 (--init-default)。 |
+| **sub_05** | `sub_05_html_annotation_tokens_and_host_uri` | Fast Track | `Completed` | HTML 註解 Token 註冊 (BEGIN/END_HTML_ANNOTATION) 與 core 協議 yscb.host:// 支援。 |
 
 ---
 

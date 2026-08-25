@@ -13,6 +13,7 @@
 | **[DN-AW-03]** | 統一靜態資產空間收納至 `assets/` | 目錄結構、Manifest 規格 | `Active` |
 | **[DN-AW-04]** | 佔位符 Markdown 可視化語法選型與殘留抹除策略 | 工廠編譯器、全量資產庫 | `Active` |
 | **[DN-AW-05]** | 組態模板 `!undefined` 剛性解耦與推薦預設值封裝 | 組態治理、一鍵初始化引擎 | `Active` |
+| **[DN-AW-06]** | HTML 註解 Token 自宣告與字面值 Replace 解算 | 工廠編譯器、資產導出 | `Active` |
 
 ---
 
@@ -51,3 +52,12 @@
   1. `config.project.json` 模板中 `paths` 欄位剛性保持 `"!undefined"`，並保留 `ide: []` 等未來擴充欄位。
   2. 將一鍵初始化推薦路徑（`project://.agent_workflow/plans` 等）封裝於 `WorkflowInitializer` 類別中。
   3. 僅當使用者顯式執行 `--init-default` 並確認後，才由引導引擎原子寫入 `config.project.json` 並刷新 Core URI 快取。
+
+---
+
+### [DN-AW-06] HTML 註解 Token 自宣告與字面值 Replace 解算
+- **背景**：當模板或標準文檔需要動態產生原生 HTML 註解（如 `<!-- slide -->` 或隱藏標記）時，直接寫入 HTML 註解會在某些 Markdown 編輯器被過濾或混淆。
+- **決策**：
+  1. 宣告 `BEGIN_HTML_ANNOTATION` 與 `END_HTML_ANNOTATION` Token。
+  2. 在 `manifest.json` 中配置 `type: "const"` 與 `mode: "replace"`，分別替換為字面值 `<!--` 與 `-->`。
+  3. 編譯期由工廠狀態機原子替換，解算後產生合規 HTML 註解。

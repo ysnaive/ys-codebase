@@ -4,6 +4,14 @@
 
 ## 2026_08_25_2200_agents_workflow_migration
 
+- **HTML 註解 Token 自宣告與 Core `yscb.host://` 協議支援 (`sub_05`)**：
+  - **HTML 註解 Token 自宣告與 Replace 展開**：
+    - 於 `agents-workflow/manifest.json` 宣告 `BEGIN_HTML_ANNOTATION` 與 `END_HTML_ANNOTATION` Token。
+    - 配置 replace 模式分別物化為字面值 `<!--` 與 `-->`，由工廠編譯器安全展開，避免 Markdown 預覽干擾。
+  - **Core `yscb.host://` 專案宿主協議**：
+    - 於 `core` 模組引入 `yscb.host://` 一等公民常數協議，模板值為 `{yscb_host}`。
+    - 強制指向起手腳本 `yscb.py` 與 `yscb.config.json` 所在之專案宿主工程根目錄，支援 O(1) fast-path 路由。
+
 - **Agents Workflow 配置治理與一鍵初始化引導 (`sub_04`)**：
   - **4 大 Workflow URI 協議體系貢獻**：
     - 於 `manifest.json` 中宣告 `workflow.plans://`, `workflow.archived://`, `workflow.ext://`, `workflow.docs://` 協議，動態綁定至專案級組態 `paths.*`。

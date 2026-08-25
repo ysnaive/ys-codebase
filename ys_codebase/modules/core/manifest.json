@@ -14,6 +14,12 @@
           "description": "YS-Codebase 工具庫根目錄"
         },
         {
+          "token": "yscb.host",
+          "type": "const",
+          "value": "{yscb_host}",
+          "description": "宿主工程根目錄 (包含起手腳本 yscb.py 所在目錄)"
+        },
+        {
           "token": "module.mirror.root",
           "type": "const",
           "value": "yscb://.mirror/",

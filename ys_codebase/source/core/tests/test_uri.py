@@ -16,7 +16,7 @@ class TestCoreURI(YSCBTestCase):
             uri.write_json(core_cfg, {"project_root": "./"}, indent=2)
             
         protocols = [
-            "project://", "yscb://", "module.mirror.root://", "module.mirror://", "temp://", "snapshot://",
+            "project://", "yscb://", "yscb.host://", "module.mirror.root://", "module.mirror://", "temp://", "snapshot://",
             "module.root://", "module://", "config.root://", "config://",
             "cache.root://", "cache://", "module.source.root://", "module.source://",
             "module.build.root://", "module.build://", "module.release.root://", "module.release://"
