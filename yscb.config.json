@@ -4,12 +4,12 @@
   "installed_modules": {
     "core": {
       "version": "1.0.0.0",
-      "installed_at": "2026-08-25 15:20:17",
+      "installed_at": "2026-08-25 21:37:04",
       "provider": "./release"
     },
     "dev": {
-      "version": "1.0.0.0",
-      "installed_at": "2026-08-25 15:20:18",
+      "version": "1.0.0.build",
+      "installed_at": "2026-08-25 21:37:08",
       "provider": "./release"
     }
   }

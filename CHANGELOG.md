@@ -4,7 +4,10 @@
 
 ## 2026_08_23_2030_architecture_refactor
 
-### Added
+- **全系統 CLI UX 標準化與本地發布守門精簡 (`sub_14`)**：
+  - **全域 Banner 與層次化 Help (`yscb --help`)**：重構輸出視覺架構，整合 Banner、Usage、`CORE COMMANDS` (整併 `init`)，並動態掃描聚合已安裝模組之 `MODULE COMMANDS` 清冊。
+  - **智慧指令拼寫建議 (Did you mean?)**：採用 Python 標準庫 `difflib`，在使用者輸入未知指令時提供精準候選提示。
+  - **本地發布守門精簡 (`dev.releaser`)**：移除 Gate 1 Git Dirty 限制，支援非 Git 倉庫與本地敏捷發布打包。
 - **全面 Zip 單檔打包與同構自舉管線 (`sub_13`)**：
   - **明文空間嚴格二分法**：全系統僅 `source/` 與 `modules/` 維持展開檔案，中間快取與產物庫（`build/`、`release/`、`.mirror/`）全面強制改為 `{version}.zip` 單檔格式。
   - **4-Stage Atomic Reload 流水線**：解耦為 Stage 1 (自癒拉取) ➔ Stage 2 (解壓物化，解壓前剛性清空) ➔ Stage 3 (組態治理，掃描部署並無條件刪除模板) ➔ Stage 4 (依賴注入)。

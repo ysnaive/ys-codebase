@@ -339,6 +339,101 @@ def cmd_self_update(argv: List[str]) -> int:
         return 1
 
 
+import difflib
+
+
+def _get_installed_module_commands(base_dir: str, yscb_root: str) -> Dict[str, Dict[str, str]]:
+    """Scans installed modules in modules/ to summarize contributed CLI commands."""
+    summary: Dict[str, Dict[str, str]] = {}
+    modules_dir = os.path.normpath(os.path.join(base_dir, yscb_root, "modules"))
+    if not os.path.isdir(modules_dir):
+        return summary
+
+    for mod_name in sorted(os.listdir(modules_dir)):
+        if mod_name == "core":
+            continue
+        mod_p = os.path.join(modules_dir, mod_name)
+        if not os.path.isdir(mod_p):
+            continue
+        mf_path = os.path.join(mod_p, "manifest.json")
+        if not os.path.isfile(mf_path):
+            continue
+        try:
+            with open(mf_path, "r", encoding="utf-8") as f:
+                mf_data = json.load(f)
+            mod_desc = mf_data.get("description", f"{mod_name} module")
+            contrib = mf_data.get("contributes", {})
+            cmds = contrib.get("commands", {})
+            if cmds and isinstance(cmds, dict):
+                summary[mod_name] = {cmd: desc for cmd, desc in cmds.items()}
+            else:
+                if mod_name == "dev":
+                    summary["dev"] = {
+                        "create": "Create a new module skeleton (source/<name>)",
+                        "check": "Validate module structure and manifest compliance",
+                        "build": "Build dev package (.build.zip with tests)",
+                        "test": "Run module tests inside an isolated sandbox",
+                        "release": "Package and release pure module (.zip to release/)"
+                    }
+                else:
+                    summary[mod_name] = {
+                        "run": mod_desc
+                    }
+        except Exception:
+            pass
+    return summary
+
+
+def _print_global_help() -> None:
+    """Outputs standardized, beautifully structured YSCB CLI help."""
+    print("=" * 70)
+    print("  YS-Codebase - Ultra-Thin Modular Microkernel CLI (v2.0)")
+    print("=" * 70)
+    print("\nUSAGE:")
+    print("  python yscb.py <command> [options]")
+    print("  python yscb.py <module> <command> [options]")
+    
+    print("\nCORE COMMANDS:")
+    core_docs = [
+        ("init <root> [--provider=<url>]", "Initialize a new YSCB workspace"),
+        ("self-update [--provider=<url>]", "Update yscb.py host bootstrapper script"),
+        ("install <module>[@<version>]", "Install a module from provider"),
+        ("update [<module>]", "Update installed module(s) to latest version"),
+        ("remove <module> [--force]", "Remove an installed module from environment"),
+        ("list", "List all installed modules, versions and providers"),
+        ("status", "Health check and runtime diagnostic report"),
+        ("reload", "Reconcile and refresh runtime environment"),
+        ("rollback", "Revert environment to the previous snapshot state"),
+    ]
+    for cmd, desc in core_docs:
+        print(f"  {cmd:<35} {desc}")
+
+    print("\nMODULE COMMANDS:")
+    cfg_path, cfg = load_config()
+    if cfg_path and cfg and "yscb_root" in cfg:
+        mod_cmds = _get_installed_module_commands(os.path.dirname(cfg_path), cfg["yscb_root"])
+        if mod_cmds:
+            for mod_name, cmds in mod_cmds.items():
+                print(f"  [{mod_name}]")
+                for subcmd, desc in cmds.items():
+                    full_cmd = f"  {mod_name} {subcmd}"
+                    print(f"  {full_cmd:<33} {desc}")
+        else:
+            print("  (No additional module commands available. Use 'install <module>' to add capabilities.)")
+    else:
+        print("  (Environment not initialized. Run 'init <root>' to enable module commands.)")
+
+    print("\nGLOBAL OPTIONS:")
+    print("  -h, --help                          Show this help message and exit")
+    print("=" * 70)
+
+
+def _suggest_command(unknown_cmd: str, candidate_pool: List[str]) -> Optional[str]:
+    """Uses difflib to find the closest matching command or module name."""
+    matches = difflib.get_close_matches(unknown_cmd, candidate_pool, n=1, cutoff=0.5)
+    return matches[0] if matches else None
+
+
 def dispatch_module(module_name: str, args: List[str]) -> int:
     cfg_path, cfg = load_config()
     if not cfg_path or not cfg or "yscb_root" not in cfg:
@@ -350,8 +445,17 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
     target_cli = os.path.normpath(os.path.join(base_dir, yscb_root, "modules", module_name, "scripts", "cli.py"))
 
     if not os.path.isfile(target_cli):
-        print(f"[yscb] Error: Module '{module_name}' is not installed or missing 'scripts/cli.py'.")
-        print(f"       Expected path: {target_cli}")
+        # Unknown module / command -> trigger intelligent spelling suggestion
+        known_cmds = ["init", "self-update"] + list(CORE_COMMANDS)
+        modules_dir = os.path.normpath(os.path.join(base_dir, yscb_root, "modules"))
+        if os.path.isdir(modules_dir):
+            known_cmds.extend([d for d in os.listdir(modules_dir) if os.path.isdir(os.path.join(modules_dir, d)) and d != "core"])
+        
+        suggestion = _suggest_command(module_name, known_cmds)
+        print(f"[yscb] Error: Unknown command or module '{module_name}'.")
+        if suggestion:
+            print(f"       Did you mean '{suggestion}'?")
+        print("       Run 'python yscb.py --help' for available commands.")
         return 1
 
     env = dict(os.environ)
@@ -370,12 +474,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         argv = sys.argv[1:]
 
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print("YS-Codebase Ultra-Thin Single-File Host Bootstrapper")
-        print("Usage:")
-        print("  python yscb.py init <yscbRoot> [--provider=<source>]   Initialize environment")
-        print("  python yscb.py self-update [--provider=<source>]       Update yscb.py host script")
-        print("  python yscb.py <install|update|remove|list|status|rollback|reload> [...]")
-        print("  python yscb.py <module_name> <command> [args...]")
+        _print_global_help()
         return 0
 
     cmd = argv[0]

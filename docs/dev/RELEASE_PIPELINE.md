@@ -13,13 +13,15 @@
 
 ---
 
-## 2. Pre-flight 4 大守門機制 (Pre-flight Gates)
+## 2. Pre-flight 守門機制 (Pre-flight Gates)
 
 在正式發布前，流水線自動執行嚴格檢查：
-1. **Gate 1: Git 工作區乾淨檢查**（`git status --porcelain` 必須無未提交變更）。
-2. **Gate 2: 測試套件 100% 通過**（自動執行全黑盒測試，可透過 `--no-test` 繞過）。
-3. **Gate 3: 版本唯一性與不可變性檢查**（目標版本不可與 `release/` 已存在版本完全重複）。
-4. **Gate 4: Manifest 合規性靜態檢查**（Manifest 欄位與結構必須通過 `Checker` 驗證）。
+1. **Gate 1 (測試守門)**：自動執行全隔離沙盒測試（可透過 `--no-test` 繞過）。
+2. **Gate 2 (版本唯一性與不可變性)**：目標版本不可與 `release/` 已存在版本完全重複，嚴禁覆蓋已有發布版本。
+3. **Gate 3 (Manifest 合規性檢查)**：Manifest 欄位、進入點與依賴結構必須通過 `Checker` 驗證。
+
+> [!NOTE]
+> **本地發布解耦 Git 限制**：由於 YSCB 框架為本地產出單檔 Zip 至 `release/`，由開發者自主掌控何時 Push 遠端，發布流水線不再被 Git Dirty 狀態阻斷，並在非 Git 環境下自動安全略過 Git Commit / Tag。
 
 ---
 

@@ -11,6 +11,7 @@
 | **DN-DEV-01** | 執行期 Auto-Contract 動態契約合成 | `source/dev/dev/testing/contract.py` | 💡 INFO |
 | **DN-DEV-02** | 測試失敗現場自動保留機制 | `source/dev/dev/testing/case.py` | 💡 INFO |
 | **DN-DEV-03** | 三階測試指令解耦與完全對標虛擬沙盒隔離 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/sandbox.py` | 💡 INFO |
+| **DN-DEV-04** | 本地發布流水線解耦 Git 乾淨限制之純淨打包哲學 | `source/dev/dev/releaser.py` | 💡 INFO |
 
 ---
 
@@ -32,4 +33,11 @@
 
 - **核心決策**：將測試命令解耦為 `dev op-mksb` (環境工廠)、`dev op-test` (原地單元執行器) 與 `dev test` (組合門面)。`yscb.py` 嚴格僅調用 `modules/`，沙盒建置時完整複製父層 `modules/` 與 `installed_modules` 配置，徹底終結二度沙盒遞迴與父層污染。
 - **背後考量**：徹底分離「外層沙盒調度」與「內層測試執行」職責，既保證端到端測試環境純淨度，又提供開發者手動除錯的原子能力。
+
+---
+
+### [DN-DEV-04] 本地發布流水線解耦 Git 乾淨限制之純淨打包哲學
+
+- **核心決策**：在 `dev.releaser` 中移除強制檢查 `git status --porcelain` 的守門限制。本地發布純粹產出單檔 Zip 至 `release/<mod>/<ver>.zip` 並維護 `index.json`，由開發者自主掌控何時 Commit / Push 遠端。若處於非 Git 倉庫，流水線自動安全跳過 Git 操作而不拋出例外。
+- **背後考量**：將「本機發布打包」與「遠端版本庫推送」的職責正交解耦，大幅提升本地模組迭代、測試與離線協同的流暢度。
 

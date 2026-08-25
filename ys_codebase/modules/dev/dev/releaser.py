@@ -52,11 +52,6 @@ class ReleasePipeline:
         """
         errors: List[str] = []
         
-        # Gate 1: Git Working Tree Clean
-        code, out, _ = self._run_git_cmd(["status", "--porcelain"])
-        if code == 0 and out:
-            errors.append(f"Gate 1 Failed: Git working tree is dirty. Please commit or stash changes before release.")
-
         # Gate 4: Manifest compliance check
         passed, chk_errors = self.checker.check_module(module_name)
         if not passed:
@@ -145,20 +140,22 @@ class ReleasePipeline:
                 raise RuntimeError(f"Package release failed: {msg_pkg}")
             created_rel_zip = True
 
-            # Step 3: Git Commit
+            # Step 3: Git Commit (Optional if in Git repository)
             commit_msg = f"chore(release): release {module_name}@{target_version}"
-            c_code, c_out, c_err = self._run_git_cmd(["add", "-A"])
-            c_code, c_out, c_err = self._run_git_cmd(["commit", "-m", commit_msg])
-            if c_code == 0:
-                created_commit = True
+            git_check, _, _ = self._run_git_cmd(["rev-parse", "--is-inside-work-tree"])
+            if git_check == 0:
+                c_code, c_out, c_err = self._run_git_cmd(["add", "-A"])
+                c_code, c_out, c_err = self._run_git_cmd(["commit", "-m", commit_msg])
+                if c_code == 0:
+                    created_commit = True
 
-            # Step 4: Smart Git Tag
-            if self.should_create_git_tag(b_type, tag):
-                t_code, t_out, t_err = self._run_git_cmd(["tag", "-a", tag_name, "-m", commit_msg])
-                if t_code == 0:
-                    created_tag = True
-                else:
-                    raise RuntimeError(f"Failed to create Git Tag '{tag_name}': {t_err}")
+                # Step 4: Smart Git Tag
+                if self.should_create_git_tag(b_type, tag):
+                    t_code, t_out, t_err = self._run_git_cmd(["tag", "-a", tag_name, "-m", commit_msg])
+                    if t_code == 0:
+                        created_tag = True
+                    else:
+                        raise RuntimeError(f"Failed to create Git Tag '{tag_name}': {t_err}")
 
             return True, f"Successfully released '{module_name}@{target_version}' (Tag: {tag_name if created_tag else 'None'})."
 
