@@ -67,7 +67,8 @@ __version__ = "0.1.0"
 '''
         uri.write_text(f"{target_src_uri}/{name}/__init__.py", init_content)
         
-        # 4. Create tests/test_basic.py
+        # 4. Create tests/__init__.py and tests/test_basic.py
+        uri.write_text(f"{target_src_uri}/tests/__init__.py", '"""\nTest package.\n"""\n')
         test_content = f'''"""
 Basic test for {name}.
 """
