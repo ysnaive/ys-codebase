@@ -1,0 +1,9 @@
+# YS-Codebase Autonomous Internal Ignore Rules
+/build/
+/.mirror/
+/.temp/
+/.snapshots/
+/.cache/
+*.local.json
+__pycache__/
+*.pyc

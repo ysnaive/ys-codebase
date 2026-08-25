@@ -1,0 +1,45 @@
+{
+  "name": "dev",
+  "version": "1.0.0.0",
+  "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
+  "entry": "scripts/cli.py",
+  "dependencies": {
+    "core": ">=1.0.0"
+  },
+  "contributes": {
+    "core": {
+      "uri_schemes": [
+        {
+          "token": "module.source.root",
+          "type": "const",
+          "value": "yscb://source/",
+          "description": "模組源碼空間根目錄"
+        },
+        {
+          "token": "module.source",
+          "type": "const",
+          "value": "yscb://source/{module}/",
+          "description": "模組專屬源碼目錄"
+        },
+        {
+          "token": "module.build.root",
+          "type": "const",
+          "value": "yscb://build/",
+          "description": "本地開發完整建置產物根目錄"
+        },
+        {
+          "token": "module.build",
+          "type": "const",
+          "value": "yscb://build/{module}/",
+          "description": "本地開發完整建置產物專屬目錄"
+        },
+        {
+          "token": "build",
+          "type": "const",
+          "value": "yscb://build/{module}/",
+          "description": "本地開發完整建置產物別名"
+        }
+      ]
+    }
+  }
+}

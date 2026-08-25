@@ -1,9 +1,0 @@
-{
-  "version": "1.0",
-  "paths": {
-    "plans_dir": "plans",
-    "archive_dir": "archive_plans",
-    "docs_dir": "docs",
-    "extensions_dir": "extensions"
-  }
-}
