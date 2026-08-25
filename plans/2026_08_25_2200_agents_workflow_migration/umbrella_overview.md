@@ -19,6 +19,7 @@
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_core_skeleton_migration` | Full Track | `Completed` | 核心骨架遷移：SOP 本體純淨化、協議產物工廠化與宣告式依賴注入、CLI 自省與 Hook 自治閉環。 |
+| **sub_02** | `sub_02_core_contribute_optimization_and_uri_polish` | Full Track | `Completed` | core contribute 依賴注入系統優化（__provider__ 自動標記、拓撲排序、查詢 SDK）與語意 URI 系統打磨（JIT !undefined 熱補齊、6 大空間對稱協議、uri list 自省清冊）。 |
 
 ---
 

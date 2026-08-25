@@ -3,13 +3,13 @@
   "default_provider": "./release",
   "installed_modules": {
     "core": {
-      "version": "1.0.0.0",
-      "installed_at": "2026-08-25 21:37:04",
+      "version": "1.0.0.build",
+      "installed_at": "2026-08-26 01:46:08",
       "provider": "./release"
     },
     "dev": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-26 00:11:33",
+      "installed_at": "2026-08-26 01:44:08",
       "provider": "./release"
     },
     "agents-workflow": {
