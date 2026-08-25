@@ -1,176 +1,69 @@
----
-target: "Project/Standards"
-doc_type: "topic"
-status: "active"
-source_paths:
-  - "yscb_cli.py"
-  - "yscb_installer.py"
-  - "source/core/manifest.json"
-  - "source/core/yscb_core/"
-  - ".gitignore"
-  - "tests/test_installer.py"
-related_docs:
-  - "./ARCHITECTURE.md"
-  - "./CLI_SPECIFICATION.md"
-  - "./CONTRIBUTING.md"
-last_updated: "2026-08-22"
----
+# 全專案核心工程規範與邊界架構 (Project Standards & Boundary Architecture)
 
-# 專案工程標準與模組規範 (Project Standards)
-
-本文件定義在 `ys-codebase` 體系中開發新模組、撰寫腳本與進行自動化測試時必須遵守的剛性標準。
+> 本文件為 YS-Codebase 全專案的最高工程規範與架構準則，定義空間協議、組態矩陣與開發防呆邊界。
 
 ---
 
-## 1. 核心紀律：Zero External Dependency (零第三方依賴)
+## 1. 語意空間協議清單 (Semantic Space Protocols)
 
-- **原則**：Installer 引擎、Core SDK 與核心定式腳本**嚴禁引入第三方套件**（如 `requests`、`click`、`pyyaml` 等），必須 100% 使用 Python 3.8+ 標準庫實現。
-- **標準替代方案**：
-  - HTTP 請求 ➔ `urllib.request`
-  - 命令行解析 ➔ `argparse`
-  - 檔案與路徑 ➔ `pathlib.Path`、`shutil`、`os`
-  - 子進程調度 ➔ `subprocess`
-  - 數據格式 ➔ `json`
-  - 單元測試 ➔ `unittest`
+系統嚴格劃分四大核心空間與開發專屬空間，杜絕脆弱的相對路徑與環境漂移：
+
+| 語意 URI 協議 | 實體解析路徑 | 空間定義與職責 | Git 追蹤政策 |
+| :--- | :--- | :--- | :---: |
+| **`project://`** | 由 `config/core/config.project.json` 之 `project_root` 解算 | **宿主專案空間**（如外部被管理的專案根目錄） | 專案自行管理 |
+| **`yscb://`** | 由 `yscb.config.json` 之 `yscb_root` 定位 | **YS-Codebase 工具庫根目錄** | ✅ 受追蹤 |
+| **`module.root://`** | `yscb://modules/` | **本地模組運行端根目錄** | ✅ 受追蹤 |
+| **`module://`** | `yscb://modules/{module}/` | **特定模組之運行端純淨代碼目錄** | ✅ 受追蹤 |
+| **`config.root://`** | `yscb://config/` | **全域模組設定檔根目錄** | ✅ 受追蹤 |
+| **`config://`** | `yscb://config/{module}/` | **特定模組專屬設定檔目錄** | ✅ 受追蹤 |
+| **`cache.root://`** | `yscb://.cache/` | **全域模組編譯快取與中介產物根目錄** | 🚫 忽略 |
+| **`cache://`** | `yscb://.cache/{module}/` | **特定模組專屬快取目錄** | 🚫 忽略 |
+| **`mirror://`** | `yscb://.mirror/` | **本地端模組鏡像庫（版本化備份）** | 🚫 忽略 |
+| **`temp://`** | `yscb://.temp/` | **系統隔離暫存區（含鎖與測試沙盒）** | 🚫 忽略 |
+| **`snapshot://`** | `yscb://.snapshots/` | **組態快照備份目錄（用於災難恢復）** | 🚫 忽略 |
+| *(開發)* **`module.source.root://`** | `yscb://source/` | **模組原始碼開發空間根目錄** | ✅ 受追蹤 |
+| *(開發)* **`module.source://`** | `yscb://source/{module}/` | **特定模組原始碼開發空間** | ✅ 受追蹤 |
+| *(開發)* **`module.build.root://`** | `yscb://build/` | **純淨安裝產物空間（本機套件發布庫）** | ✅ 受追蹤 |
+| *(開發)* **`module.build://`** | `yscb://build/{module}/{version}/` | **特定模組之純淨發布產物版本包** | ✅ 受追蹤 |
 
 ---
 
-## 2. 模組元數據規範 (`manifest.json` Schema)
+## 2. 2x2 組態矩陣邊界規範 (Configuration Matrix)
 
-每個模組根目錄必須包含 `manifest.json`：
+全系統設定檔嚴格依據「專案 vs 本地」與「全域 vs 模組」進行 2x2 邊界劃分：
 
-```json
-{
-  "name": "module_name",
-  "version": "1.0.0",
-  "description": "模組功能的簡要說明",
-  "dependencies": ["core"],
-  "build_exclude": ["drafts/**", "*.tmp"]
-}
+| 範圍維度 | 專案層級 (`config.project.json`)<br/>✅ **受 Git 追蹤 (Team Shared)** | 本地個人層級 (`config.local.json`)<br/>🚫 **Git 忽略 (Machine Specific)** |
+| :--- | :--- | :--- |
+| **全域層級** | `yscb.config.json`：宣告 `yscb_root`、預設 `default_provider` 與 `installed_modules` 清冊。 | `yscb.config.local.json`：本機覆蓋設定。 |
+| **模組層級** | `yscb://config/{module}/config.project.json`：模組專案層級設定（如 `core` 的 `project_root`）。 | `yscb://config/{module}/config.local.json`：模組本機層級覆蓋。 |
+
+### 🛡️ 組態管理三項鐵律
+1. **`project://` 零 Fallback 鐵律**：`project_root` 預設為 `!undefined`。若設定檔缺失或為 `!undefined`，解析 `project://` 時必須直接拋出 `ValueError`，完全禁止 fallback 猜測當前目錄。
+2. **自動分發與增量補齊**：模組安裝時自動分發預設組態；若目標已存在，遞迴原地補齊新增之缺失鍵，用戶既有之自訂值 100% 保持不變。
+3. **中介層快照隔離**：框架衍生之 `contributes.merged.json` 必須輸出至 `cache://`，嚴禁污染 `config://` 目錄。
+
+---
+
+## 3. Dogfooding 自引用空間邊界與四步閉環 (Dogfooding Axiom)
+
+專案呈現「自引用 (Dogfooding)」狀態，開發者與 Agent 必須強制遵守以下三大空間隔離與四步閉環流水線：
+
+```mermaid
+graph LR
+    classDef s1 fill:#1e3a8a,stroke:#3b82f6,stroke-width:2px,color:#fff;
+    classDef s2 fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#fff;
+    classDef s3 fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#fff;
+    classDef s4 fill:#4c1d95,stroke:#8b5cf6,stroke-width:2px,color:#fff;
+
+    Stage1["空間 ① 源碼開發<br/><code>source/{module}/</code><br/><i>唯一真理來源 (SSOT)</i>"]:::s1
+    Stage2["Stage 2 打包構建<br/><code>dev build {module}</code><br/><i>產出純淨 build/</i>"]:::s2
+    Stage3["空間 ② 測試閘門<br/><code>dev test --all</code><br/><i>31/31 100% Passed</i>"]:::s3
+    Stage4["空間 ③ 自引用消費<br/><code>yscb reload / modules/</code><br/><i>發布運行產物同步</i>"]:::s4
+
+    Stage1 --> Stage2 --> Stage3 --> Stage4
 ```
 
-### 欄位定義：
-| 欄位名稱 | 型別 | 必填 | 說明 |
-| :--- | :--- | :--- | :--- |
-| `name` | string | **是** | 模組名稱（建議使用 lowercase + hyphen/underscore） |
-| `version` | string | **是** | 模組語意化版本號 (SemVer) |
-| `description` | string | 否 | 模組簡要說明（顯示於 `list` 與 `status`） |
-| `dependencies` | array | **是** | 相依模組清單（業務模組必須包含 `"core"`） |
-| `build_exclude`| array | 否 | 在標準 build 打包時需額外排除的檔案或 glob |
-| `built_at` | string | 自動 | Build 產出時由 Installer 自動注入之 ISO 時間戳 |
-
----
-
-## 3. 2 × 2 設定協定與 Git 規則
-
-```text
-+-----------------------+----------------------------------+----------------------------------+
-| 範疇 \ 生命週期       | Project Level (進 Git 團隊規範)  | User Level (忽略 Git 個人偏好)   |
-+-----------------------+----------------------------------+----------------------------------+
-| Codebase (全專案基底) | yscb_config.json                 | yscb_config.local.json           |
-+-----------------------+----------------------------------+----------------------------------+
-| Module (特定單一模組) | config.project.json              | config.local.json                |
-|                       | config.project.template.json     | config.local.template.json       |
-+-----------------------+----------------------------------+----------------------------------+
-```
-
-### 規則要點：
-1. **範本提供**：
-   - 模組若需要專案級設定，必須提供 `config.project.template.json`。
-   - 模組若需要本機個人偏好，必須提供 `config.local.template.json`。
-2. **Git 忽略規範 (`.gitignore`)**：
-   - 所有 `*.local.json` 與 `yscb_config.local.json` 必須被 `.gitignore` 忽略。
-   - 所有 `*.project.json`、`*.template.json` 與 `manifest.json` 必須受 Git 追蹤。
-3. **載入與無損合併**：
-   - 模組透過 `yscb_core.ConfigManager.load("<module_name>")` 自動依優先級合併設定。
-
----
-
-## 4. 模組引用 SDK 規範
-
-模組內部腳本禁止使用硬編碼相對路徑查找專案根目錄，一律透過 `yscb_core`：
-
-```python
-from yscb_core import ProjectContext, ConfigManager, Console
-
-# 1. 取得專案根目錄
-project_root = ProjectContext.get_project_root()
-
-# 2. 自動合併載入 2x2 設定
-config = ConfigManager.load("module_name")
-
-# 3. 解析相對於專案根目錄的路徑
-target_path = ProjectContext.resolve(config.get("target_dir", "docs"))
-
-# 4. 統一終端輸出
-Console.success("操作成功！")
-```
-
----
-
-## 5. Codebase 專用語意 URI 協定 (Semantic URI Protocol)
-
-為了消除深層子目錄跳轉（如 `../../../../`）造成的路徑脆弱性，`ys-codebase` 建立了統一的語意 URI 體系：
-
-| URI 協議 | 核心語意 | 解析邏輯 | 狀態異常處理 |
-| :--- | :--- | :--- | :--- |
-| **`project://`** | 專案根目錄 | `ProjectContext.get_project_root()` | 找不到根目錄回傳 `!undefined` |
-| **`yscb://`** | 工具庫安裝目錄 | `ProjectContext.get_yscb_root()` | 未安裝回傳 `!undefined` |
-| **`plans://`** | 活躍開發計畫目錄 | 讀取 `agents-workflow` 之 `paths.plans_dir` | 模組未裝或未配置回傳 `!undefined` |
-| **`archive://`** | 歷史計畫歸檔目錄 | 讀取 `agents-workflow` 之 `paths.archive_dir` | 模組未裝或未配置回傳 `!undefined` |
-| **`docs://`** | 專案知識庫目錄 | 讀取 `agents-workflow` / 專案之 `paths.docs_dir` | 模組未裝或未配置回傳 `!undefined` |
-| **`sop_ext://`** | 專案 SOP 擴充清單目錄 | 讀取 `agents-workflow` 之 `paths.extensions_dir` | 模組未裝或未配置回傳 `!undefined` |
-
-### Python SDK 調用範例：
-```python
-from yscb_core import ProjectURI
-
-# 解析為本機實體 Path (若未設定回傳 "!undefined")
-standards_path = ProjectURI.resolve("docs://_project/STANDARDS.md")
-
-# 反向匹配最短 URI
-uri_str = ProjectURI.to_uri(standards_path) # "docs://_project/STANDARDS.md"
-```
-
-### CLI 調度指令：
-```bash
-python yscb_cli.py uri resolve docs://_project/STANDARDS.md
-python yscb_cli.py uri list
-python yscb_cli.py uri to-uri docs/_project/STANDARDS.md
-```
-
----
-
-## 6. 測試與品質門檻 (Testing & Quality Gate)
-
-- **測試框架**：採用純 Python 標準庫 `unittest`。
-- **測試存放路徑**：`test/tests/`。
-- **執行測試**：
-  ```bash
-  python test/run_regression.py
-  ```
-- **門檻要求**：所有核心管理工具、相依解析器、2x2 設定合併、語意 URI 解析與 build 管線之修改，必須維持 100% 測試通過率。
-
----
-
-## 7. 專案知識庫 7 大抽象維度與維護規範 (Documentation Standards)
-
-專案知識庫（`docs://`）只陳述「當前客觀事實與坑點」，不記錄歷史探索爭辯過程（留於 `plans://`）：
-
-1. **7 大抽象知識維度**：
-   - ① 領域概念模型 ➔ `docs/_project/ARCHITECTURE.md`、`docs/<Module>/README.md`
-   - ② 靜態邊界拓撲 ➔ `docs/<Module>/README.md`（職責邊界）
-   - ③ 中觀動態機制 ➔ `docs/<Module>/[topic].md`（**跨物件協同、狀態機、資料管線、協議強制獨立專題**）
-   - ④ 介面合約承諾 ➔ Typed Docstrings / Public Headers
-   - ⑤ 工程妥協暗角 ➔ `docs/<Module>/DESIGN_NOTES.md`（`DN-XX` + `[!CAUTION]`）
-   - ⑥ 人因操作引導 ➔ `docs/<Module>/README.md` / `CLI_SPECIFICATION.md`
-   - ⑦ 架構重構歷史 ➔ `docs/<Module>/CHANGELOG.md`
-2. **對話視窗 vs. 文檔檔案排版與語法邊界鐵律**：
-   - **對話視窗 (Chat Window / CLI Output)**：
-     - 🚫 **嚴禁使用 Mermaid 圖表**（一律使用純文字樹狀圖、ASCII 與 Markdown 表格）。
-     - 🚫 **嚴禁使用 LaTeX 數學公式**（一律使用純文字表示，如 `O(N log N)`、`x >= y`）。
-   - **Markdown 文檔檔案本體 (`.md` 文件)**：
-     - ✅ **盡量使用強定義語法**：圖表排版優先級為 Markdown 表格 > 垂直 Mermaid (TD) > 橫向 Mermaid > ASCII；數學公式盡量使用標準 LaTeX（如 `$O(N^2)$`）。
-   - **超連結規範**：文檔內部超連結一律採用標準相對路徑（確保原生點擊跳轉）。
-3. **P03/P05/P06 三維錨點驗收**：Phase 4 預排交付清單，Phase 7 結案前 1:1 交叉對齊驗收。
-
+### 🚨 三大空間隔離禁令
+1. **源碼空間 (`source/`) 為唯一 SSOT**：所有功能修改 100% 必須在 `source/` 進行。
+2. **禁止直接修改運行端 (`modules/`)**：`modules/` 視為編譯與部署產物，嚴禁手動直接修改。
+3. **測試未通過嚴禁發布**：實機測試未 100% 通過前，嚴禁將 `build/` 產物同步至 `modules/`。
