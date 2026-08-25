@@ -130,6 +130,14 @@
         {
           "value": "DYNAMIC_CONTEXT_MAP",
           "description": "即時語意 URI 地圖注入錨點（位於 ContextInit.md 頂部）"
+        },
+        {
+          "value": "BEGIN_HTML_ANNOTATION",
+          "description": "HTML 註解起始標籤注入錨點"
+        },
+        {
+          "value": "END_HTML_ANNOTATION",
+          "description": "HTML 註解結束標籤注入錨點"
         }
       ],
       "insert": [
@@ -137,6 +145,18 @@
           "type": "uri",
           "token": "PHASEXX_STANDARD_HEADER",
           "value": "module.root://agents-workflow/assets/templates/header.md",
+          "mode": "replace"
+        },
+        {
+          "type": "const",
+          "token": "BEGIN_HTML_ANNOTATION",
+          "value": "<!--",
+          "mode": "replace"
+        },
+        {
+          "type": "const",
+          "token": "END_HTML_ANNOTATION",
+          "value": "-->",
           "mode": "replace"
         }
       ]

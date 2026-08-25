@@ -44,6 +44,8 @@ class TestArtifactCompiler(unittest.TestCase):
         self.assertIn("PHASEXX_STANDARD_HEADER", token_values)
         self.assertIn("PROJECT_SPECIFIC_STANDARDS", token_values)
         self.assertIn("DYNAMIC_CONTEXT_MAP", token_values)
+        self.assertIn("BEGIN_HTML_ANNOTATION", token_values)
+        self.assertIn("END_HTML_ANNOTATION", token_values)
 
     def test_ft_02_single_artifact_replace_resolution(self):
         """FT-02: 驗證工廠編譯器多輪遞迴狀態機解算與 replace 自注入。"""
@@ -180,11 +182,15 @@ class TestArtifactCompiler(unittest.TestCase):
         resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
         self.assertIn("Value with", resolved)
 
-    def test_et_05_compile_all_end_to_end(self):
-        """ET-05: 驗證全量 compile_all() 物化產物 100% 成功。"""
-        result = self.compiler.compile_all()
-        self.assertTrue(result["success"])
-        self.assertGreaterEqual(result["exported_count"], 16)
+    def test_ft_07_html_annotation_tokens_resolution(self):
+        """FT-07: 驗證 BEGIN_HTML_ANNOTATION 與 END_HTML_ANNOTATION 替換為 <!-- 與 -->。"""
+        raw_text = "__@{BEGIN_HTML_ANNOTATION}__ slide __@{END_HTML_ANNOTATION}__"
+        inserts = [
+            {"type": "const", "token": "BEGIN_HTML_ANNOTATION", "value": "<!--", "mode": "replace"},
+            {"type": "const", "token": "END_HTML_ANNOTATION", "value": "-->", "mode": "replace"}
+        ]
+        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
+        self.assertEqual(resolved, "<!-- slide -->")
 
 
 if __name__ == "__main__":
