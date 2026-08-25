@@ -47,7 +47,7 @@ class TestArtifactCompiler(unittest.TestCase):
 
     def test_ft_02_single_artifact_replace_resolution(self):
         """FT-02: 驗證工廠編譯器多輪遞迴狀態機解算與 replace 自注入。"""
-        raw_text = "# Requirements Spec\n\n<!-- __PHASEXX_STANDARD_HEADER__ -->\n\n## 1. FR\n"
+        raw_text = "# Requirements Spec\n\n__@{PHASEXX_STANDARD_HEADER}__\n\n## 1. FR\n"
         inserts = [
             {
                 "type": "const",
@@ -58,14 +58,14 @@ class TestArtifactCompiler(unittest.TestCase):
         ]
         
         resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertNotIn("<!-- __PHASEXX_STANDARD_HEADER__ -->", resolved)
+        self.assertNotIn("__@{PHASEXX_STANDARD_HEADER}__", resolved)
         self.assertIn("> 功能名稱：Test Feature", resolved)
         self.assertIn("> 狀態：Confirmed", resolved)
         self.assertIn("## 1. FR", resolved)
 
     def test_ft_03_multi_module_below_above_injection_and_purge(self):
         """FT-03: 驗證多模組以 below/above 向同一 Token 追加注入，且 Step 3 乾淨移除標籤。"""
-        raw_text = "# Standards\n\n<!-- __RULES__ -->\n\nEnd of Doc"
+        raw_text = "# Standards\n\n__@{RULES}__\n\nEnd of Doc"
         inserts = [
             {
                 "type": "const",
@@ -82,7 +82,7 @@ class TestArtifactCompiler(unittest.TestCase):
         ]
         
         resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertNotIn("<!-- __RULES__ -->", resolved)
+        self.assertNotIn("__@{RULES}__", resolved)
         self.assertIn("RULE-01: Above Rule", resolved)
         self.assertIn("RULE-02: Below Rule", resolved)
         # Verify order: above is before below
@@ -91,19 +91,29 @@ class TestArtifactCompiler(unittest.TestCase):
         self.assertLess(pos_above, pos_below)
 
     def test_ft_04_uri_tag_preserved(self):
-        """FT-04: 驗證 <!-- __URI(...)__ --> 標籤在物化解算階段保持原樣不被破壞。"""
-        raw_text = "Doc with link: <!-- __URI(\"docs://STANDARDS.md\")__ --> and <!-- __TOKEN__ -->"
+        """FT-04: 驗證 __#{uri}__ 標籤在物化解算階段 100% 保持原樣不被破壞。"""
+        raw_text = "Doc with link: __#{module.root://agents-workflow/assets/standards/DocumentationStandards.md}__ and __@{TOKEN}__"
         inserts = [
             {"type": "const", "token": "TOKEN", "value": "Resolved Value", "mode": "replace"}
         ]
         
         resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertIn("<!-- __URI(\"docs://STANDARDS.md\")__ -->", resolved)
+        self.assertIn("__#{module.root://agents-workflow/assets/standards/DocumentationStandards.md}__", resolved)
         self.assertIn("Resolved Value", resolved)
-        self.assertNotIn("<!-- __TOKEN__ -->", resolved)
+        self.assertNotIn("__@{TOKEN}__", resolved)
 
-    def test_ft_05_cli_commands(self):
-        """FT-05: 驗證 compile, tokens, list 指令正常執行。"""
+    def test_ft_05_whitespace_tolerance(self):
+        """FT-05: 驗證大括號內部微量空格容錯識別 (__@{ TOKEN }__)。"""
+        raw_text = "Anchor: __@{ CUSTOM_TOKEN }__"
+        inserts = [
+            {"type": "const", "token": "CUSTOM_TOKEN", "value": "Tolerance Passed", "mode": "replace"}
+        ]
+        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
+        self.assertNotIn("__@{ CUSTOM_TOKEN }__", resolved)
+        self.assertIn("Tolerance Passed", resolved)
+
+    def test_ft_06_cli_commands_and_hook(self):
+        """FT-06: 驗證 compile, tokens, list 指令與 hook 正常執行。"""
         # tokens
         tokens_code = cli.main(["tokens"])
         self.assertEqual(tokens_code, 0)
@@ -116,28 +126,26 @@ class TestArtifactCompiler(unittest.TestCase):
         compile_code = cli.main(["compile"])
         self.assertEqual(compile_code, 0)
 
-    def test_ft_06_hook_on_reload(self):
-        """FT-06: 驗證 hook.core.py:on_reload 能正常執行不拋錯。"""
+        # hook
         if hook_core and hasattr(hook_core, "on_reload"):
-            # Should run without error
             hook_core.on_reload(None)
 
     def test_et_01_unmatched_token_purged_safely(self):
         """ET-01: 驗證無匹配 Insert 時 Token 標籤被乾淨移除，不殘留也不崩潰。"""
-        raw_text = "Before\n<!-- __NON_EXISTENT_TOKEN__ -->\nAfter"
+        raw_text = "Before\n__@{NON_EXISTENT_TOKEN}__\nAfter"
         resolved = self.compiler.resolve_single_artifact(raw_text, [])
-        self.assertNotIn("<!-- __NON_EXISTENT_TOKEN__ -->", resolved)
+        self.assertNotIn("__@{NON_EXISTENT_TOKEN}__", resolved)
         self.assertIn("Before", resolved)
         self.assertIn("After", resolved)
 
     def test_et_02_recursive_multi_pass(self):
         """ET-02: 驗證新注入內容包含子 Token 時能多輪收斂展開。"""
-        raw_text = "Start -> <!-- __PARENT__ --> -> End"
+        raw_text = "Start -> __@{PARENT}__ -> End"
         inserts = [
             {
                 "type": "const",
                 "token": "PARENT",
-                "value": "ParentContent(<!-- __CHILD__ -->)",
+                "value": "ParentContent(__@{CHILD}__)",
                 "mode": "replace"
             },
             {
@@ -149,12 +157,31 @@ class TestArtifactCompiler(unittest.TestCase):
         ]
         
         resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertNotIn("<!-- __PARENT__ -->", resolved)
-        self.assertNotIn("<!-- __CHILD__ -->", resolved)
+        self.assertNotIn("__@{PARENT}__", resolved)
+        self.assertNotIn("__@{CHILD}__", resolved)
         self.assertIn("ParentContent(ChildValue)", resolved)
 
-    def test_et_03_self_injection_end_to_end_compile(self):
-        """ET-03: 驗證全量 compile_all() 物化產物 100% 成功。"""
+    def test_et_03_legacy_html_comment_ignored(self):
+        """ET-03: 驗證舊的 HTML 註解格式不再被視為錨點進行展開，作為純文字保留。"""
+        raw_text = "Legacy: <!-- __PHASEXX_STANDARD_HEADER__ -->"
+        inserts = [
+            {"type": "const", "token": "PHASEXX_STANDARD_HEADER", "value": "New Header", "mode": "replace"}
+        ]
+        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
+        self.assertIn("<!-- __PHASEXX_STANDARD_HEADER__ -->", resolved)
+        self.assertNotIn("New Header", resolved)
+
+    def test_et_04_self_referential_deadlock_prevention(self):
+        """ET-04: 驗證注入內容包含同名 Token 時不會陷入無窮遞迴死鎖。"""
+        raw_text = "Anchor: __@{LOOP}__"
+        inserts = [
+            {"type": "const", "token": "LOOP", "value": "Value with __@{LOOP}__", "mode": "replace"}
+        ]
+        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
+        self.assertIn("Value with", resolved)
+
+    def test_et_05_compile_all_end_to_end(self):
+        """ET-05: 驗證全量 compile_all() 物化產物 100% 成功。"""
         result = self.compiler.compile_all()
         self.assertTrue(result["success"])
         self.assertGreaterEqual(result["exported_count"], 16)

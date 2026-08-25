@@ -1,6 +1,6 @@
-# 實作計畫與審查定稿 (Implementation Plan & Review)
+# 實作計畫與定稿審查書 (Implementation Plan & Review)
 
-<!-- __PHASEXX_STANDARD_HEADER__ -->
+__@{PHASEXX_STANDARD_HEADER}__
 
 ---
 

@@ -15,4 +15,4 @@
 
 ---
 
-<!-- __DYNAMIC_CONTEXT_MAP__ -->
+__@{DYNAMIC_CONTEXT_MAP}__
