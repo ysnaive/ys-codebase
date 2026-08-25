@@ -130,9 +130,13 @@ class AtomicEngine:
 
         # 1. Tier 1: Check build:// for single zip
         build_root = f"module.build.root://{module_name}"
+        v_tuple = semver.parse_semver(version)
+        build_ver_str = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
         build_zip_candidates = [
             f"{build_root}/{version}.zip",
             f"{build_root}/{version}.build.zip",
+            f"{build_root}/{build_ver_str}.zip",
+            f"{build_root}/{build_ver_str}.build.zip",
             f"{build_root}/1.0.0.build.zip"
         ]
         for b_zip in build_zip_candidates:
@@ -140,7 +144,12 @@ class AtomicEngine:
                 shutil.copy2(uri.resolve(b_zip), dest_zip_real)
                 return dest_zip_uri
 
-        # 2. Tier 2: Check local directory provider (release/ or direct zip)
+        # 2. Tier 2: Check release.root:// or local directory provider
+        rel_root = f"release.root://{module_name}"
+        if uri.exists(f"{rel_root}/{version}.zip"):
+            shutil.copy2(uri.resolve(f"{rel_root}/{version}.zip"), dest_zip_real)
+            return dest_zip_uri
+
         p_abs = os.path.abspath(provider_url) if not provider_url.startswith(("http://", "https://", "file://")) else None
         if p_abs and os.path.isdir(p_abs):
             zip_candidates = [
@@ -650,3 +659,44 @@ class AtomicEngine:
                     results[mod] = f"warning: {e}"
                     print(f"[core:events] Warning: Hook '{mod}:hook.{emit_module}.py' failed on '{event_name}': {e}", file=sys.stderr)
         return results
+
+    def act_get_installed_commands_summary(self) -> Dict[str, Dict[str, str]]:
+        """
+        Scans installed modules in module.root:// to summarize contributed CLI commands.
+        Returns: { module_name: { command_name: description } }
+        """
+        summary: Dict[str, Dict[str, str]] = {}
+        if not uri.exists("module.root://"):
+            return summary
+            
+        for mod_name in sorted(uri.listdir("module.root://")):
+            if mod_name == "core":
+                continue
+            mf_uri = f"module.root://{mod_name}/manifest.json"
+            if not uri.exists(mf_uri):
+                continue
+            try:
+                mf_data = uri.read_json(mf_uri)
+                mod_desc = mf_data.get("description", f"{mod_name} module")
+                
+                contrib = mf_data.get("contributes", {})
+                cmds = contrib.get("commands", {})
+                if cmds and isinstance(cmds, dict):
+                    summary[mod_name] = {cmd: desc for cmd, desc in cmds.items()}
+                else:
+                    if mod_name == "dev":
+                        summary["dev"] = {
+                            "create": "Create a new module skeleton",
+                            "check": "Validate module structure and manifest compliance",
+                            "build": "Build dev package (.build.zip with tests)",
+                            "test": "Run module tests inside an isolated sandbox",
+                            "release": "Package and release pure module to release/"
+                        }
+                    else:
+                        summary[mod_name] = {
+                            "run": mod_desc
+                        }
+            except Exception:
+                pass
+                
+        return summary

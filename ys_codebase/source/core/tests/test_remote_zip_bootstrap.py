@@ -89,7 +89,8 @@ class TestRemoteZipBootstrap(unittest.TestCase):
             zf.writestr("config.project.json", json.dumps({"foo": "bar"}, indent=2))
             
         self.engine.act_download("pure_mod", "1.0.0.0", prov_dir)
-        self.engine.act_reload("pure_mod", "1.0.0.0")
+        self.engine.act_register("pure_mod", "1.0.0.0", prov_dir)
+        self.engine.act_reload()
         
         # Check module root
         mod_root = uri.resolve("module.root://pure_mod")
@@ -97,5 +98,59 @@ class TestRemoteZipBootstrap(unittest.TestCase):
         self.assertFalse(os.path.isfile(os.path.join(mod_root, "config.local.json")))
         
         # Clean up
+        self.engine.act_unregister("pure_mod")
         uri.rmtree("module.root://pure_mod")
         uri.rmtree("mirror://pure_mod")
+
+    def test_zip_slip_vulnerability_blocked_on_reload(self):
+        """Security: Verify malicious Zip with path traversal (Zip Slip) is blocked on reload."""
+        prov_dir = os.path.join(self.temp_dir, "provider")
+        os.makedirs(os.path.join(prov_dir, "evil_mod"), exist_ok=True)
+        zip_path = os.path.join(prov_dir, "evil_mod", "1.0.0.0.zip")
+        
+        # Create malicious zip with ../../ path traversal
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("manifest.json", json.dumps({"name": "evil_mod", "version": "1.0.0.0"}, indent=2))
+            zf.writestr("../../evil_escape.txt", "MALICIOUS PAYLOAD OUTSIDE DESTINATION")
+            
+        self.engine.act_download("evil_mod", "1.0.0.0", prov_dir)
+        self.engine.act_register("evil_mod", "1.0.0.0", prov_dir)
+        
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                self.engine.act_reload()
+            self.assertIn("Zip Slip vulnerability detected", str(ctx.exception))
+        finally:
+            self.engine.act_unregister("evil_mod")
+            uri.rmtree("mirror://evil_mod")
+
+    def test_zip_slip_blocked_on_host_fetch_and_extract(self):
+        """Security: Verify yscb._fetch_and_extract_zip blocks Zip Slip."""
+        import importlib.util
+        host_d, _ = uri._get_host_config()
+        candidates = [
+            os.path.join(host_d, "yscb.py"),
+            os.path.join(uri._get_yscb_root(), "yscb.py"),
+            os.path.join(os.path.dirname(uri._get_yscb_root()), "yscb.py"),
+            os.path.abspath("yscb.py")
+        ]
+        yscb_mod = None
+        for c in candidates:
+            if os.path.isfile(c):
+                spec = importlib.util.spec_from_file_location("yscb_test_load", c)
+                if spec and spec.loader:
+                    yscb_mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(yscb_mod)
+                    break
+                    
+        self.assertIsNotNone(yscb_mod)
+        zip_path = os.path.join(self.temp_dir, "evil_host.zip")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("manifest.json", json.dumps({"name": "evil_host"}, indent=2))
+            zf.writestr("../../evil_host_escape.txt", "MALICIOUS")
+            
+        target_dir = os.path.join(self.temp_dir, "dest_host")
+        with self.assertRaises(RuntimeError) as ctx:
+            yscb_mod._fetch_and_extract_zip(zip_path, target_dir)
+            
+        self.assertIn("Zip Slip vulnerability detected", str(ctx.exception))
