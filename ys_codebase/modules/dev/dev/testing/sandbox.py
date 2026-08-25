@@ -6,6 +6,7 @@ import sys
 import json
 import uuid
 import shutil
+import zipfile
 import importlib.util
 from typing import Dict, Any, Optional, List, Tuple
 from core import uri
@@ -31,11 +32,11 @@ class SandboxContext:
     def create_mock_package(
         self,
         name: str,
-        version: str = "1.0.0",
+        version: str = "1.0.0.0",
         deps: Optional[Dict[str, str]] = None,
         description: str = "Mock Package for Testing"
     ) -> str:
-        """Create a valid versioned mock package inside sandbox mock_provider."""
+        """Create a valid versioned mock package inside sandbox mock_provider (both unpacked & zip)."""
         pkg_ver_dir = os.path.join(self.provider_dir, name, version)
         os.makedirs(os.path.join(pkg_ver_dir, "scripts"), exist_ok=True)
         
@@ -49,9 +50,18 @@ class SandboxContext:
         with open(os.path.join(pkg_ver_dir, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
             
-        cli_content = "#!/usr/bin/env python3\ndef main(argv):\n    print(f'[{name}] Running mock cli with args: {argv}')\n    return 0\n"
+        cli_content = f"#!/usr/bin/env python3\ndef main(argv):\n    print(f'[{name}] Running mock cli with args: {{argv}}')\n    return 0\n"
         with open(os.path.join(pkg_ver_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
             f.write(cli_content)
+
+        # Create single-file zip in provider_dir/<name>/<version>.zip
+        zip_path = os.path.join(self.provider_dir, name, f"{version}.zip")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(pkg_ver_dir):
+                rel = os.path.relpath(root, pkg_ver_dir)
+                for f in files:
+                    arc = f if rel == "." else os.path.join(rel, f).replace("\\", "/")
+                    zf.write(os.path.join(root, f), arcname=arc)
 
         # Update module index.json
         mod_index_path = os.path.join(self.provider_dir, name, "index.json")

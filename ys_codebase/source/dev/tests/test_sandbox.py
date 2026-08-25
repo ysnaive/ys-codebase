@@ -5,6 +5,7 @@ import os
 import sys
 import json
 import unittest
+import zipfile
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 from dev.testing.sandbox import SandboxProvisioner, SandboxContext
@@ -146,14 +147,15 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_builder_preserves_hook_dev(self):
-        """ET-03: Verify Builder builds module and preserves scripts/hook.dev.py."""
+        """ET-03: Verify Builder builds module and preserves scripts/hook.dev.py in single-file zip."""
         builder = Builder()
         ok, msg = builder.build_module("core", clean=True)
         self.assertTrue(ok, msg)
         
-        build_core_root = uri.resolve("module.build.root://core/1.0.0.build")
-        hook_file = os.path.join(build_core_root, "scripts", "hook.dev.py")
-        self.assertTrue(os.path.isfile(hook_file), "scripts/hook.dev.py was unexpectedly excluded from build artifact!")
+        build_zip = uri.resolve("module.build.root://core/1.0.0.build.zip")
+        self.assertTrue(os.path.isfile(build_zip))
+        with zipfile.ZipFile(build_zip, "r") as zf:
+            self.assertIn("scripts/hook.dev.py", zf.namelist(), "scripts/hook.dev.py was unexpectedly excluded from build artifact!")
         self.mark_passed()
 
     @require(Requirement.LOGIC)

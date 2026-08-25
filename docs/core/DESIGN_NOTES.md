@@ -112,3 +112,20 @@
 - **核心決策**：模組安裝包（`mirror://` / `release://`）中的 `config.project.json` 與 `config.local.json` 作為配置種子模板，在 `act_reload` 完成種子提取並軟合併進 `config/{mod}/` 後，自動將其從 `modules/{mod}/` 運行目錄中移除。
 - **背後考量**：`modules/` 必須維持純粹可執行代碼，避免配置雙頭維護與開發者修改路徑混淆。
 
+---
+
+### [DN-12] 全系統全面 Zip 單檔標準與明文空間二分法
+
+- **核心決策**：全系統除了源碼庫（`source/<mod>/`）與運行庫（`modules/<mod>/`）維持展開目錄外，其餘所有中間快取與發布產物（`build/`、`release/`、`.mirror/`）一律強制使用單檔 `{version}.zip` 存儲。
+- **背後考量**：徹底消除散裝目錄在版本更迭時產生的檔案孤兒殘留，統一本地與遠端 HTTP 下載的同構管線，大幅降低磁碟碎片與管理負擔。
+- **防禦宣告**：
+  > [!CAUTION]
+  > 嚴禁在 `build/`、`release/` 或 `.mirror/` 中建立散裝目錄。所有物化操作一律遵循「單檔 Zip ➔ modules/ 展開」的原子解包流程。
+
+---
+
+### [DN-13] 4-Stage Atomic Reload 流水線與解包前剛性清空
+
+- **核心決策**：`act_reload` 重構為標準四階段流水線（Stage 1: 自癒拉取 ➔ Stage 2: 解壓物化 ➔ Stage 3: 組態治理 ➔ Stage 4: 依賴注入）。在 Stage 2 解壓前，強制清空目標 `modules/<mod>/` 資料夾；在 Stage 3 執行無條件的組態模板與開發輔助檔案（如 `.yscbignore`）物理刪除。
+- **背後考量**：避免 `zipfile.extractall()` 的增量覆蓋缺陷導致歷史殘留檔案遺留，保證 `modules/` 運行空間 100% 絕對純淨且與單檔 Zip 完全鏡像。
+
