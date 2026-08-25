@@ -4,6 +4,17 @@
 
 ## 2026_08_25_2200_agents_workflow_migration
 
+- **Workflow 佔位符格式重構與可視化語法遷移 (`sub_03`)**：
+  - **全新 Markdown 可視化佔位符語法**：
+    - 徹底淘汰原易被 Markdown / HTML 預覽引擎隱藏的 HTML 註解格式（`<!-- __TOKEN__ -->`）。
+    - 引入**插入佔位符 (Token Anchor)**：`__@{token}__`（如 `__@{PHASEXX_STANDARD_HEADER}__`、`__@{DYNAMIC_CONTEXT_MAP}__`），支援大括號內部微量空格容錯。
+    - 引入**路徑佔位符 (URI Reference)**：`__#{uri}__`（如 `__#{module.root://agents-workflow/assets/...}__`），編譯期 100% 原樣保留，作為 Markdown 文檔的語意參照與路徑錨點。
+  - **工廠編譯器 5-Step 狀態機與殘留抹除升級**：
+    - 升級 `ArtifactCompiler`，支援 `replace` / `below` / `above` 多輪遞迴展開與自指死鎖防護。
+    - 實作智慧抹除正則工廠，解算完成後自動吞噬行首縮排與換行，確保產物排版純淨無多餘空行。
+  - **全域資產 1:1 語法遷移**：
+    - 全面更新 `assets/templates/` (P01~P07)、`DevelopmentStandards.md` 與 `ContextInit.md` 中的標籤。
+
 - **Core Contribute 系統優化與語意 URI 系統打磨 (`sub_02`)**：
   - **Contribute 來源自動標記 (`__provider__`)**：
     - 在微內核搜集 donor 模組 contributes 時，自動遞迴為 Dict 與 List[Dict] 項目注入 `"__provider__": donor_name`（顯式指定保留不覆蓋），確保下游模組可無痛自省貢獻來源。

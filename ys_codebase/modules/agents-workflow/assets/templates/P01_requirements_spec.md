@@ -1,6 +1,6 @@
 # 需求規格說明書 (Requirements Specification)
 
-<!-- __PHASEXX_STANDARD_HEADER__ -->
+__@{PHASEXX_STANDARD_HEADER}__
 
 ---
 

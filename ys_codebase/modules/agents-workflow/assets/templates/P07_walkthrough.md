@@ -1,6 +1,6 @@
 # 成果展示與結案報告 (Walkthrough)
 
-<!-- __PHASEXX_STANDARD_HEADER__ -->
+__@{PHASEXX_STANDARD_HEADER}__
 
 ---
 

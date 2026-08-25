@@ -1,4 +1,4 @@
-# 架構與模組設計說明書 (Architecture & Module Plan)
+# 架構設計說明書 (Architecture Design)
 
 > 功能名稱：[功能名稱]  
 > 建立日期：[YYYY-MM-DD]  
@@ -13,6 +13,7 @@
 ## 1. 模組架構分層與職責邊界 (Layered Architecture)
 
 ```text
+{{ ... }}
 ```
 
 ---

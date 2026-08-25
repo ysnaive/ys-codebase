@@ -1,6 +1,6 @@
-# 測試與驗證計畫 (Test Plan & Verification)
+# 測試計畫與驗證報告 (Test Plan & Verification)
 
-<!-- __PHASEXX_STANDARD_HEADER__ -->
+__@{PHASEXX_STANDARD_HEADER}__
 
 ---
 

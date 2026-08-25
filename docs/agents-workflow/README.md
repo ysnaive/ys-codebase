@@ -17,7 +17,21 @@
 
 ---
 
-## 2. CLI 快速使用指南
+## 2. 佔位符語法與渲染機制 (Placeholder Architecture)
+
+系統採用 Markdown 原生可視的強定義佔位符語法，淘汰被 HTML 隱藏的舊註解格式：
+
+| 佔位符類型 | 語法結構 | 正則表達式 | 核心職責與編譯行為 |
+| :--- | :--- | :--- | :--- |
+| **插入佔位符 (Token Anchor)** | `__@{TOKEN_NAME}__` | `r"__@\{\s*([A-Za-z0-9_]+)\s*\}__"` | 主動注入點。由編譯器 5-Step 狀態機進行 `replace` / `below` / `above` 多輪遞迴展開，解算完成後自動乾淨抹除殘留標籤行。 |
+| **路徑佔位符 (URI Reference)** | `__#{URI_OR_PATH}__` | `r"__#\{\s*([^}]+)\s*\}__"` | 被動語意參照。於物化編譯時 100% 原樣保留，作為文檔中的語意協議錨點供下游工具與人眼閱讀。 |
+
+> [!TIP]
+> 插入佔位符支援大括號內部微量空格容錯（例 `__@{ PHASEXX_STANDARD_HEADER }__` 與 `__@{PHASEXX_STANDARD_HEADER}__` 等價）。
+
+---
+
+## 3. CLI 快速使用指南
 
 ```bash
 # 列出全系統已註冊之 Token 錨點清單與說明
@@ -32,7 +46,7 @@ python yscb.py agents-workflow compile
 
 ---
 
-## 3. 架構與專題手冊導引
+## 4. 架構與專題手冊導引
 
 - **協議產物工廠化與多輪狀態機**：詳見 [FACTORY_PIPELINE.md](./FACTORY_PIPELINE.md)。
 - **設計決策與工程妥協**：詳見 [DESIGN_NOTES.md](./DESIGN_NOTES.md)。

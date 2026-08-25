@@ -1,4 +1,4 @@
-# 實作計畫與審查定稿 (Implementation Plan & Review)
+# 實作計畫與定稿審查書 (Implementation Plan & Review)
 
 > 功能名稱：[功能名稱]  
 > 建立日期：[YYYY-MM-DD]  
