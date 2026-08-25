@@ -488,8 +488,15 @@ class AtomicEngine:
                 real_zip = uri.resolve(mirror_zip)
                 if os.path.exists(real_dst):
                     shutil.rmtree(real_dst, ignore_errors=True)
-                os.makedirs(real_dst, exist_ok=True)
                 with zipfile.ZipFile(real_zip, "r") as zf:
+                    real_dst_abs = os.path.abspath(real_dst)
+                    for member in zf.infolist():
+                        target_path = os.path.abspath(os.path.join(real_dst_abs, member.filename))
+                        if not target_path.startswith(real_dst_abs + os.sep) and target_path != real_dst_abs:
+                            raise RuntimeError(
+                                f"Zip Slip vulnerability detected: '{member.filename}' in mirror '{mirror_zip}' "
+                                f"attempts to extract outside destination '{real_dst}'."
+                            )
                     zf.extractall(real_dst)
             elif uri.exists(f"mirror://{mod}/{ver}/"):
                 mirror_src = f"mirror://{mod}/{ver}/"

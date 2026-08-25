@@ -96,6 +96,11 @@ def _fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
             with zipfile.ZipFile(tmp_path, "r") as zf:
                 if zf.testzip() is not None:
                     raise RuntimeError(f"Corrupted zip archive from '{source_url_or_path}'.")
+                dest_dir_abs = os.path.abspath(dest_dir)
+                for member in zf.infolist():
+                    target_path = os.path.abspath(os.path.join(dest_dir_abs, member.filename))
+                    if not target_path.startswith(dest_dir_abs + os.sep) and target_path != dest_dir_abs:
+                        raise RuntimeError(f"Zip Slip vulnerability detected: '{member.filename}' attempts to extract outside destination '{dest_dir}'.")
                 zf.extractall(dest_dir)
         finally:
             if os.path.exists(tmp_path):
@@ -108,6 +113,11 @@ def _fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
         p_abs = os.path.abspath(source_url_or_path)
         if os.path.isfile(p_abs) and (p_abs.endswith(".zip") or zipfile.is_zipfile(p_abs)):
             with zipfile.ZipFile(p_abs, "r") as zf:
+                dest_dir_abs = os.path.abspath(dest_dir)
+                for member in zf.infolist():
+                    target_path = os.path.abspath(os.path.join(dest_dir_abs, member.filename))
+                    if not target_path.startswith(dest_dir_abs + os.sep) and target_path != dest_dir_abs:
+                        raise RuntimeError(f"Zip Slip vulnerability detected: '{member.filename}' attempts to extract outside destination '{dest_dir}'.")
                 zf.extractall(dest_dir)
         elif os.path.isdir(p_abs):
             for item in os.listdir(p_abs):
