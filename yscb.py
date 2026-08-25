@@ -15,7 +15,7 @@ import zipfile
 import tempfile
 
 CONFIG_FILENAME: str = "yscb.config.json"
-DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/release"
+DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release"
 CORE_COMMANDS: set = {
     "install",
     "update",
