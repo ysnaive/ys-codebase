@@ -31,9 +31,31 @@
 
 ---
 
-## 3. CLI 快速使用指南
+## 3. Workflow URI 協議體系與組態治理
+
+模組向 Core 貢獻 4 大專屬語意 URI 協議，動態綁定至 `config://agents-workflow/config.project.json`：
+
+| 協議名稱 | 類型 | 預設模板值 | 一鍵初始化推薦路徑 | 核心職責說明 |
+| :--- | :---: | :---: | :--- | :--- |
+| `workflow.plans://` | `config` | `!undefined` | `project://.agent_workflow/plans` | 指向當前專案活躍開發計畫目錄。 |
+| `workflow.archived://` | `config` | `!undefined` | `project://.agent_workflow/plans/archived` | 指向歷史封存計畫目錄。 |
+| `workflow.ext://` | `config` | `!undefined` | `project://.agent_workflow/extensions` | 指向專案特化 SOP 擴充清單目錄。 |
+| `workflow.docs://` | `config` | `!undefined` | `project://docs` | 指向專案知識庫目錄。 |
+
+> [!IMPORTANT]
+> **零臆測原則**：`config.project.json` 模板路徑預設剛性為 `"!undefined"`。推薦路徑由 `--init-default` 指令攜帶，僅在使用者確認後才寫入組態。
+
+---
+
+## 4. CLI 快速使用指南
 
 ```bash
+# 一鍵初始化 Workflow 協議、建立推薦目錄並寫入組態 (支援 -y 自動確認)
+python yscb.py agents-workflow --init-default [-y]
+
+# 使用自訂路徑進行初始化覆蓋
+python yscb.py agents-workflow --init-default --path-plans="project://my_plans" --path-docs="project://my_docs" -y
+
 # 列出全系統已註冊之 Token 錨點清單與說明
 python yscb.py agents-workflow tokens
 
@@ -46,7 +68,7 @@ python yscb.py agents-workflow compile
 
 ---
 
-## 4. 架構與專題手冊導引
+## 5. 架構與專題手冊導引
 
 - **協議產物工廠化與多輪狀態機**：詳見 [FACTORY_PIPELINE.md](./FACTORY_PIPELINE.md)。
 - **設計決策與工程妥協**：詳見 [DESIGN_NOTES.md](./DESIGN_NOTES.md)。
