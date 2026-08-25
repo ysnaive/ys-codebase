@@ -14,8 +14,8 @@ class Scaffolder:
         if not name:
             return False, "Module name cannot be empty."
         
-        if not name.isidentifier():
-            return False, f"Invalid module name '{name}'. Module name must be a valid Python identifier."
+        if not re.match(r"^[a-zA-Z0-9_][a-zA-Z0-9_-]*$", name):
+            return False, f"Invalid module name '{name}'. Module name must contain only alphanumeric characters, underscores, or hyphens."
         
         target_src_uri = f"module.source.root://{name}"
         if uri.exists(target_src_uri):
@@ -59,13 +59,14 @@ if __name__ == "__main__":
 '''
         uri.write_text(f"{target_src_uri}/scripts/cli.py", cli_content)
         
-        # 3. Create <name>/__init__.py
+        # 3. Create <pkg_name>/__init__.py
+        pkg_name = name.replace("-", "_")
         init_content = f'''"""
 {name} package initialization.
 """
 __version__ = "0.1.0"
 '''
-        uri.write_text(f"{target_src_uri}/{name}/__init__.py", init_content)
+        uri.write_text(f"{target_src_uri}/{pkg_name}/__init__.py", init_content)
         
         # 4. Create tests/__init__.py and tests/test_basic.py
         uri.write_text(f"{target_src_uri}/tests/__init__.py", '"""\nTest package.\n"""\n')
