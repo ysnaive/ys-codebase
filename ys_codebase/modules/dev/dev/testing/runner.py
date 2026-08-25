@@ -107,9 +107,9 @@ class TestDiscovery:
             src_real = uri.resolve(f"module.source.root://{module_name}")
             tests_dir = os.path.join(src_real, "tests")
             if os.path.isdir(tests_dir):
-                # 1. Clear cached 'tests' namespace in sys.modules to prevent cross-module test collisions
+                # 1. Clear cached 'tests' and module namespace in sys.modules to prevent stale module cache
                 for mod_k in list(sys.modules.keys()):
-                    if mod_k == "tests" or mod_k.startswith("tests."):
+                    if mod_k == "tests" or mod_k.startswith("tests.") or mod_k == module_name or mod_k.startswith(f"{module_name}."):
                         del sys.modules[mod_k]
                         
                 # 2. Clean other module source directories from sys.path to avoid module name shadowing
@@ -159,6 +159,20 @@ class ASCIIReportFormatter:
             if mod_info.get("errors"):
                 for err in mod_info["errors"]:
                     lines.append(f"        [!] ERROR: {err}")
+        
+        # Dedicated Failure / Error Detailed List Block
+        failures_list = report_data.get("failures_list", [])
+        if failures_list:
+            lines.append("-" * 70)
+            lines.append("FAILED / ERROR TEST CASES LIST:")
+            for item in failures_list:
+                m_tag = f"[{item.get('module', 'unknown')}]"
+                t_type = item.get('type', 'FAIL')
+                t_name = item.get('test', 'unknown')
+                t_msg = item.get('message', '')
+                lines.append(f"  [!] {m_tag:<10} {t_type:<8} {t_name}")
+                if t_msg:
+                    lines.append(f"      └── {t_msg}")
         
         lines.append("-" * 70)
         total = report_data.get("total", 0)

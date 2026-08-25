@@ -9,8 +9,11 @@ import sys
 import json
 import shutil
 import importlib.util
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Tuple
+from contextlib import contextmanager
+from typing import Optional, List, Dict, Any, Tuple, Generator
+
+# Import ExecutionContext from SSOT context.py
+from core.context import ExecutionContext
 
 CONFIG_FILENAME = "yscb.config.json"
 _active_module_context: Optional[str] = None
@@ -33,20 +36,25 @@ _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
     {"token": "module.build", "type": "const", "value": "yscb://build/{module}/"},
 ]
 
-@dataclass(frozen=True)
-class ExecutionContext:
-    """執行期語意上下文介面 (Execution Context Interface)"""
-    module_name: str
-    command: Optional[str] = None
-    args: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
 def set_module_context(module_name: Optional[str]) -> None:
     global _active_module_context
     _active_module_context = module_name
 
 def get_module_context() -> Optional[str]:
     return _active_module_context
+
+@contextmanager
+def module_scope(module_name: Optional[str]) -> Generator[None, None, None]:
+    """
+    模組上下文安全作用域 (Context Manager)：
+    退出區塊時以 finally 100% 保證還原舊全域 _active_module_context，防止測試與 Hook 污染。
+    """
+    old = get_module_context()
+    set_module_context(module_name)
+    try:
+        yield
+    finally:
+        set_module_context(old)
 
 def set_host_dir(host_dir: Optional[str]) -> None:
     """Explicitly inject host directory."""
@@ -62,18 +70,34 @@ def get_host_dir() -> Optional[str]:
         return os.path.normpath(os.path.abspath(env_dir))
     return None
 
+@contextmanager
+def host_scope(host_dir: Optional[str]) -> Generator[None, None, None]:
+    """
+    宿主目錄安全作用域 (Context Manager)：
+    退出區塊時以 finally 100% 保證還原舊全域 _active_host_dir。
+    """
+    old = get_host_dir()
+    set_host_dir(host_dir)
+    try:
+        yield
+    finally:
+        set_host_dir(old)
+
 def _get_yscb_root() -> str:
     """
     Constant self-locating: computes yscb_root from __file__ location (up 3 levels).
     Runtime: <yscb_root>/modules/core/core/uri.py -> <yscb_root>
     Source:  <yscb_root>/source/core/core/uri.py  -> <yscb_root>
+    
+    Under YSCB microkernel dispatch invariants, the code can only be invoked if yscb.py
+    has located core. Therefore, __file__ up 3 levels strictly equals yscb_root (zero I/O fast-path).
     """
     curr = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.dirname(os.path.dirname(os.path.dirname(curr))))
 
-def _find_host_config(start_dir: Optional[str] = None) -> Tuple[str, str]:
+def _get_host_config(start_dir: Optional[str] = None) -> Tuple[str, str]:
     """
-    Locates host directory and yscb_root deterministically.
+    獲取宿主目錄與工具庫根目錄 (Physical Topology Invariant Guarantee).
     1. If start_dir is given, checks start_dir strictly.
     2. Uses get_host_dir() if injected.
     3. Falls back to parent of yscb_root or yscb_root if yscb.config.json exists.
@@ -99,32 +123,38 @@ def _find_host_config(start_dir: Optional[str] = None) -> Tuple[str, str]:
         if os.path.isfile(cfg_path):
             return h_dir, yscb_dir
             
-    # Zero Speculation: Raise explicit error
     raise FileNotFoundError(
-        f"'{CONFIG_FILENAME}' not found in candidate host directories: {candidate_hosts}. "
-        "Please initialize environment with 'python yscb.py init <yscbRoot>' first."
+        f"Cannot locate '{CONFIG_FILENAME}'. Checked candidate locations: {candidate_hosts}. "
+        "YS-Codebase requires a valid yscb.config.json to operate."
     )
 
+# Backward-compatibility alias
+_find_host_config = _get_host_config
+
 def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
-    """Reads project_root explicitly from config/core/config.project.json. No fallback allowed."""
-    core_cfg_path = os.path.join(yscb_dir, "config", "core", "config.project.json")
-    if os.path.isfile(core_cfg_path):
+    """
+    Resolves project root directory from config://config.project.json (core module).
+    """
+    proj_cfg_path = os.path.join(yscb_dir, "config", "core", "config.project.json")
+    if os.path.isfile(proj_cfg_path):
         try:
-            with open(core_cfg_path, "r", encoding="utf-8") as f:
-                cfg_data = json.load(f)
-            p_root = cfg_data.get("project_root")
-            if p_root is not None and isinstance(p_root, str):
-                p_clean = p_root.strip()
-                if p_clean and p_clean != "!undefined":
-                    if os.path.isabs(p_clean):
-                        return os.path.normpath(p_clean)
-                    return os.path.normpath(os.path.join(host_dir, p_clean))
+            with open(proj_cfg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            rel_proj = data.get("project_root")
+            if rel_proj:
+                if rel_proj.startswith("!undefined"):
+                    return None
+                if os.path.isabs(rel_proj):
+                    return os.path.normpath(rel_proj)
+                return os.path.normpath(os.path.join(host_dir, rel_proj))
         except Exception:
             pass
     return None
 
 def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
-    """Loads all dynamically registered URI schemes from .cache/core/contributes.merged.json."""
+    """
+    Reads contributed URI schemes from merged cache.
+    """
     merged_cfg = os.path.join(yscb_dir, ".cache", "core", "contributes.merged.json")
     if os.path.isfile(merged_cfg):
         try:
@@ -167,7 +197,7 @@ def resolve(
 
     # 1. Check project:// with strict explicit configuration rule (Zero Speculation / No Fallback)
     if uri.startswith("project://"):
-        host_dir, _ = _find_host_config()
+        host_dir, _ = _get_host_config()
         proj_dir = _get_project_dir(host_dir, yscb_dir)
         if proj_dir is None:
             raise ValueError("'project://' is undefined. Please configure 'project_root' in config://config.project.json (core)")
@@ -201,7 +231,7 @@ def resolve(
                     return os.path.normpath(os.path.join(target_base, rel_expanded))
                 return os.path.normpath(target_base)
             elif stype == "config":
-                host_dir, _ = _find_host_config()
+                host_dir, _ = _get_host_config()
                 mod_proj_cfg = os.path.join(yscb_dir, "config", mod, "config.project.json")
                 if not os.path.isfile(mod_proj_cfg):
                     mod_proj_cfg = os.path.join(yscb_dir, "config", "core", "config.project.json")
@@ -228,12 +258,11 @@ def resolve(
 
         raise ValueError(f"Unsupported URI scheme: {scheme_token}://")
         
-    try:
-        host_dir, _ = _find_host_config()
-        proj_d = _get_project_dir(host_dir, yscb_dir)
-        return os.path.normpath(os.path.join(proj_d or host_dir, uri))
-    except Exception:
-        return os.path.normpath(os.path.join(yscb_dir, uri))
+    # Zero Speculation: Disallow ambiguous non-URI relative strings
+    raise ValueError(
+        f"Invalid semantic URI format: '{uri}'. "
+        "Path must be a registered semantic URI ('scheme://...') or an absolute OS path."
+    )
 
 def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
     norm = os.path.normpath(os.path.abspath(abs_path))
@@ -242,7 +271,7 @@ def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
     
     proj_dir = None
     try:
-        host_dir, _ = _find_host_config()
+        host_dir, _ = _get_host_config()
         proj_dir = _get_project_dir(host_dir, yscb_dir)
     except Exception:
         pass
@@ -280,99 +309,85 @@ def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
             
     return norm
 
-# --- First-Class VFS SDK Operations ---
+# --- First-Class VFS IO Helpers ---
 
-def read_text(path_or_uri: str, encoding: str = "utf-8", current_module: Optional[str] = None) -> str:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    with open(real_path, "r", encoding=encoding) as f:
+def exists(uri: str) -> bool:
+    try:
+        p = resolve(uri)
+        return os.path.exists(p)
+    except Exception:
+        return False
+
+def isfile(uri: str) -> bool:
+    try:
+        p = resolve(uri)
+        return os.path.isfile(p)
+    except Exception:
+        return False
+
+is_file = isfile
+
+def isdir(uri: str) -> bool:
+    try:
+        p = resolve(uri)
+        return os.path.isdir(p)
+    except Exception:
+        return False
+
+is_dir = isdir
+
+def remove(uri_str: str) -> None:
+    try:
+        p = resolve(uri_str)
+        if os.path.isdir(p):
+            shutil.rmtree(p)
+        elif os.path.exists(p):
+            os.remove(p)
+    except Exception:
+        pass
+
+def read_text(uri: str, encoding: str = "utf-8") -> str:
+    p = resolve(uri)
+    with open(p, "r", encoding=encoding) as f:
         return f.read()
 
-def write_text(path_or_uri: str, content: str, encoding: str = "utf-8", current_module: Optional[str] = None) -> None:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    os.makedirs(os.path.dirname(real_path), exist_ok=True)
-    tmp_path = f"{real_path}.tmp_{os.getpid()}"
-    with open(tmp_path, "w", encoding=encoding) as f:
+def write_text(uri: str, content: str, encoding: str = "utf-8") -> None:
+    p = resolve(uri)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding=encoding) as f:
         f.write(content)
-    if os.path.exists(real_path):
-        os.remove(real_path)
-    os.rename(tmp_path, real_path)
 
-def read_json(path_or_uri: str, encoding: str = "utf-8", current_module: Optional[str] = None) -> Any:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    with open(real_path, "r", encoding=encoding) as f:
+def read_json(uri: str, encoding: str = "utf-8") -> Any:
+    p = resolve(uri)
+    with open(p, "r", encoding=encoding) as f:
         return json.load(f)
 
-def write_json(path_or_uri: str, data: Any, indent: int = 2, encoding: str = "utf-8", current_module: Optional[str] = None) -> None:
-    content = json.dumps(data, indent=indent, ensure_ascii=False)
-    write_text(path_or_uri, content, encoding=encoding, current_module=current_module)
+def write_json(uri: str, data: Any, indent: int = 2, encoding: str = "utf-8") -> None:
+    p = resolve(uri)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding=encoding) as f:
+        json.dump(data, f, indent=indent, ensure_ascii=False)
 
-def read_bytes(path_or_uri: str, current_module: Optional[str] = None) -> bytes:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    with open(real_path, "rb") as f:
-        return f.read()
+def makedirs(uri: str, exist_ok: bool = True) -> None:
+    p = resolve(uri)
+    os.makedirs(p, exist_ok=exist_ok)
 
-def write_bytes(path_or_uri: str, data: bytes, current_module: Optional[str] = None) -> None:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    os.makedirs(os.path.dirname(real_path), exist_ok=True)
-    tmp_path = f"{real_path}.tmp_{os.getpid()}"
-    with open(tmp_path, "wb") as f:
-        f.write(data)
-    if os.path.exists(real_path):
-        os.remove(real_path)
-    os.rename(tmp_path, real_path)
+def listdir(uri: str) -> List[str]:
+    p = resolve(uri)
+    return os.listdir(p)
 
-def exists(path_or_uri: str, current_module: Optional[str] = None) -> bool:
-    try:
-        real_path = resolve(path_or_uri, current_module=current_module)
-        return os.path.exists(real_path)
-    except Exception:
-        return False
-
-def is_file(path_or_uri: str, current_module: Optional[str] = None) -> bool:
-    try:
-        real_path = resolve(path_or_uri, current_module=current_module)
-        return os.path.isfile(real_path)
-    except Exception:
-        return False
-
-def is_dir(path_or_uri: str, current_module: Optional[str] = None) -> bool:
-    try:
-        real_path = resolve(path_or_uri, current_module=current_module)
-        return os.path.isdir(real_path)
-    except Exception:
-        return False
-
-def makedirs(path_or_uri: str, exist_ok: bool = True, current_module: Optional[str] = None) -> None:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    os.makedirs(real_path, exist_ok=exist_ok)
-
-def remove(path_or_uri: str, current_module: Optional[str] = None) -> None:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    if os.path.isfile(real_path) or os.path.islink(real_path):
-        os.remove(real_path)
-
-def rmtree(path_or_uri: str, ignore_errors: bool = False, current_module: Optional[str] = None) -> None:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    if os.path.exists(real_path):
-        shutil.rmtree(real_path, ignore_errors=ignore_errors)
-
-def listdir(path_or_uri: str, current_module: Optional[str] = None) -> List[str]:
-    real_path = resolve(path_or_uri, current_module=current_module)
-    if os.path.isdir(real_path):
-        return os.listdir(real_path)
-    return []
-
-def copy(src_uri: str, dst_uri: str, current_module: Optional[str] = None) -> None:
-    src_p = resolve(src_uri, current_module=current_module)
-    dst_p = resolve(dst_uri, current_module=current_module)
+def copy(src_uri: str, dst_uri: str) -> None:
+    src_p = resolve(src_uri)
+    dst_p = resolve(dst_uri)
     if os.path.isdir(src_p):
-        shutil.copytree(src_p, dst_p, dirs_exist_ok=True)
+        if os.path.exists(dst_p):
+            shutil.rmtree(dst_p)
+        shutil.copytree(src_p, dst_p)
     else:
         os.makedirs(os.path.dirname(dst_p), exist_ok=True)
         shutil.copy2(src_p, dst_p)
 
-def move(src_uri: str, dst_uri: str, current_module: Optional[str] = None) -> None:
-    src_p = resolve(src_uri, current_module=current_module)
-    dst_p = resolve(dst_uri, current_module=current_module)
-    os.makedirs(os.path.dirname(dst_p), exist_ok=True)
-    shutil.move(src_p, dst_p)
+def rmtree(uri: str) -> None:
+    p = resolve(uri)
+    if os.path.exists(p):
+        shutil.rmtree(p)

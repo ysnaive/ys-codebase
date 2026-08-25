@@ -1,0 +1,77 @@
+# Core 模組 API 規格手冊 (Core API Reference)
+
+> 所屬模組：`module:core`  
+> 抽象維度：維度 2（微觀物件與 API 簽名規格）  
+
+---
+
+## 1. `core.semver` 子模組
+
+```python
+from core import semver
+```
+
+### 1.1 `parse_semver(v_str: str) -> VersionTuple`
+- **說明**：解析語意化版本字串為數值四元組 `VersionTuple(major, minor, patch, prerelease)`。
+- **例外**：若格式不符合 SemVer 2.0.0 拋出 `ValueError`。
+
+### 1.2 `compare_semver(v1: str, v2: str) -> int`
+- **說明**：比較兩版本優先級大小。`v1 > v2` 返回 `1`，`v1 < v2` 返回 `-1`，相等返回 `0`。
+
+### 1.3 `match_constraint(v_str: str, constraint: Optional[str]) -> bool`
+- **說明**：判斷目標版本是否滿足給定之版本範圍約束（如 `">=1.0.0, <2.0.0"`）。
+
+### 1.4 `find_best_version(versions: List[str], constraint: Optional[str] = None) -> Optional[str]`
+- **說明**：自候選版本清單中篩選並回傳符合約束之最高版本。
+
+---
+
+## 2. `core.context` 子模組
+
+```python
+from core.context import ExecutionContext
+```
+
+### 2.1 `ExecutionContext` (不可變數據載體 SSOT)
+```python
+@dataclass(frozen=True)
+class ExecutionContext:
+    module_name: str
+    command: Optional[str] = None
+    args: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+```
+
+---
+
+## 3. `core.uri` 子模組
+
+```python
+from core import uri
+```
+
+### 3.1 作用域上下文管理器 (Context Managers)
+```python
+@contextmanager
+def module_scope(module_name: str) -> Iterator[str]:
+    """暫時切換當前執行模組上下文 (module://)，退出時保證 100% 還原。"""
+
+@contextmanager
+def host_scope(host_dir_path: str) -> Iterator[str]:
+    """暫時切換宿主環境目錄 (yscb://)，退出時保證 100% 還原。"""
+```
+
+### 3.2 VFS IO 函式庫
+- `uri.resolve(uri_str: str) -> str`
+- `uri.to_uri(abs_path: str) -> str`
+- `uri.exists(uri_str: str) -> bool`
+- `uri.isfile(uri_str: str) -> bool` (別名: `is_file`)
+- `uri.isdir(uri_str: str) -> bool` (別名: `is_dir`)
+- `uri.read_text(uri_str: str, encoding: str = "utf-8") -> str`
+- `uri.write_text(uri_str: str, content: str, encoding: str = "utf-8") -> None`
+- `uri.read_json(uri_str: str, encoding: str = "utf-8") -> Any`
+- `uri.write_json(uri_str: str, data: Any, indent: int = 2, encoding: str = "utf-8") -> None`
+- `uri.makedirs(uri_str: str, exist_ok: bool = True) -> None`
+- `uri.listdir(uri_str: str) -> List[str]`
+- `uri.copy(src_uri: str, dst_uri: str) -> None`
+- `uri.rmtree(uri_str: str) -> None` (別名: `remove`)

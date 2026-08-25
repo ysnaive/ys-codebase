@@ -37,7 +37,7 @@ temp://sandbox_20260825_022508_665564/
   │     ├── yscb.py                     # 宿主派發腳本（嚴格僅調用 modules/）
   │     ├── yscb.config.json            # 宿主設定檔 (yscb_root="./engine", installed_modules)
   │     └── engine/                     # 【工具庫空間 yscb://】
-  │           ├── modules/              # 繼承父層已安裝模組 (core, dev 等)
+  │           ├── modules/              # 繼承父層已安裝模組 (core, dev 等，動態讀取 manifest 版本)
   │           ├── source/               # 複製待測最新源碼
   │           ├── config/               # 模組設定檔 (config/core/config.project.json)
   │           └── .temp/                # 沙盒內部臨時檔案
@@ -125,3 +125,27 @@ class Requirement(Flag):
 2. **Phase 2: 自訂業務測試 (Custom Tests)**：
    - 載入 `source/<module>/tests/test_*.py`。
    - 支援 `--type=<logic|host_cli|network>` 與 `-k <pattern>` 遞迴深度篩選。
+
+---
+
+## 6. 精確報表與失敗案例清單 (Accurate Diagnostics & Failure Reports)
+
+測試執行器 (`TestRunner`) 採用嚴格分離的分類統計算法：
+- **分類精準計數**：依據 TestCase 類型將通過數與失敗數分別歸屬於 `[Contract]` 與 `[Custom]`，杜絕交叉誤扣。
+- **獨立失敗案例清單**：若有任何測試失敗或拋出例外，於報表底部輸出獨立清單區塊：
+
+```text
+======================================================================
+YS-Codebase Test Execution Diagnostic Report
+======================================================================
+[*] Module: core                                                   [PASS]
+    |-- [Contract] Auto-Contract Suite ... (3/3)
+    \-- [Custom]   Custom Tests ........... (32/32)
+[*] Module: dev                                                    [PASS]
+    |-- [Contract] Auto-Contract Suite ... (3/3)
+    \-- [Custom]   Custom Tests ........... (21/21)
+----------------------------------------------------------------------
+Summary : 59 Total, 59 Passed, 0 Failed, 0 Skipped (5.077s)
+Status  : PASSED (100% Ready)
+======================================================================
+```

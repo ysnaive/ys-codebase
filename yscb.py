@@ -26,19 +26,18 @@ CORE_COMMANDS: set = {
 
 
 def load_config(start_dir: Optional[str] = None) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """
+    剛性組態載入 (Rigid Configuration Loader - Zero Speculation).
+    僅探測指定目錄或當前目錄同層之 yscb.config.json，徹底杜絕向上爬樹導致的沙盒逃逸與環境污染。
+    """
     curr = os.path.abspath(start_dir or os.getcwd())
-    while True:
-        cfg_path = os.path.join(curr, CONFIG_FILENAME)
-        if os.path.isfile(cfg_path):
-            try:
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    return cfg_path, json.load(f)
-            except Exception:
-                return cfg_path, None
-        parent = os.path.dirname(curr)
-        if parent == curr:
-            break
-        curr = parent
+    cfg_path = os.path.join(curr, CONFIG_FILENAME)
+    if os.path.isfile(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                return cfg_path, json.load(f)
+        except Exception:
+            return cfg_path, None
     return None, None
 
 

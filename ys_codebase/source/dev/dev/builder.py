@@ -1,11 +1,14 @@
 """
 Clean Builder implementation for YS-Codebase modules.
+Enforces Hermetic Clean Builds and strict ignore rules (.yscbignore).
 """
 import os
 import fnmatch
 import shutil
+import functools
 from typing import Tuple, Dict, List
 from core import uri
+from core import semver
 from dev.checker import Checker
 
 GLOBAL_IGNORES = [
@@ -21,17 +24,6 @@ GLOBAL_IGNORES = [
     "tests",
     "tests/*"
 ]
-
-def _parse_semver_key(v_str: str) -> Tuple[int, ...]:
-    clean = v_str.lstrip("vV")
-    parts = clean.split("-")[0].split(".")
-    nums = []
-    for p in parts:
-        try:
-            nums.append(int(p))
-        except ValueError:
-            nums.append(0)
-    return tuple(nums)
 
 class Builder:
     def __init__(self):
@@ -61,7 +53,7 @@ class Builder:
         return False
 
     def _update_index_json(self, name: str, description: str = "") -> None:
-        """Automatically updates build/{name}/index.json with all available built versions."""
+        """Automatically updates build/{name}/index.json with all available built versions sorted by SemVer."""
         mod_build_root = f"module.build.root://{name}"
         if not uri.exists(mod_build_root):
             return
@@ -72,7 +64,7 @@ class Builder:
             if uri.is_dir(sub_uri) and uri.exists(f"{sub_uri}/manifest.json"):
                 versions.append(item)
                 
-        versions.sort(key=_parse_semver_key)
+        versions.sort(key=functools.cmp_to_key(semver.compare_semver))
         index_data = {
             "name": name,
             "description": description or f"YS-Codebase module {name}",
@@ -80,7 +72,7 @@ class Builder:
         }
         uri.write_json(f"{mod_build_root}/index.json", index_data, indent=2)
 
-    def build_module(self, name: str, clean: bool = False) -> Tuple[bool, str]:
+    def build_module(self, name: str, clean: bool = True) -> Tuple[bool, str]:
         src_uri = f"module.source.root://{name}"
         
         if not uri.exists(src_uri):
@@ -96,8 +88,8 @@ class Builder:
         version = manifest_data.get("version", "1.0.0")
         build_uri = f"module.build.root://{name}/{version}"
         
-        # 2. Prepare build directory
-        if clean and uri.exists(build_uri):
+        # 2. Prepare build directory (Hermetic Clean Build by default)
+        if uri.exists(build_uri):
             uri.rmtree(build_uri)
         uri.makedirs(build_uri)
         
@@ -128,7 +120,7 @@ class Builder:
         
         return True, f"Successfully built '{name}' ({copied_count} files) to {build_uri}."
 
-    def build_all(self, clean: bool = False) -> Dict[str, Tuple[bool, str]]:
+    def build_all(self, clean: bool = True) -> Dict[str, Tuple[bool, str]]:
         results = {}
         src_root_uri = "module.source.root://"
         if not uri.exists(src_root_uri):
