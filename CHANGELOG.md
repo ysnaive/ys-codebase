@@ -4,6 +4,18 @@
 
 ## 2026_08_25_2200_agents_workflow_migration
 
+- **Agents Workflow 配置治理與一鍵初始化引導 (`sub_04`)**：
+  - **4 大 Workflow URI 協議體系貢獻**：
+    - 於 `manifest.json` 中宣告 `workflow.plans://`, `workflow.archived://`, `workflow.ext://`, `workflow.docs://` 協議，動態綁定至專案級組態 `paths.*`。
+  - **專案級組態模板與 `!undefined` 剛性解耦**：
+    - 新增 `config.project.json` 模板，所有路徑預設剛性為 `"!undefined"`，貫徹微內核零臆測鐵律。
+    - 宣告保留欄位 `ide: []`, `enable_agents_md: true`, `enable_project_changelog: true` 供未來 IDE 適配擴充。
+  - **`--init-default` 一鍵初始化與目錄引導引擎 (`WorkflowInitializer`)**：
+    - 封裝官方推薦路徑（`project://.agent_workflow/plans` 等），提供實體路徑存在性探測、已存在路徑警示與互動確認 `[-y / -n]`。
+    - 自動建立缺失目錄並原子增量持久化至 `config/agents-workflow/config.project.json`，刷新 Core URI 快取。
+  - **`--path-*` 變種覆蓋參數支援**：
+    - CLI 支援 `--path-plans`, `--path-archived`, `--path-ext`, `--path-docs` 以及 `-y` / `--yes` 自動確認模式。
+
 - **Workflow 佔位符格式重構與可視化語法遷移 (`sub_03`)**：
   - **全新 Markdown 可視化佔位符語法**：
     - 徹底淘汰原易被 Markdown / HTML 預覽引擎隱藏的 HTML 註解格式（`<!-- __TOKEN__ -->`）。

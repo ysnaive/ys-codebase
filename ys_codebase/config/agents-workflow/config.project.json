@@ -1,0 +1,11 @@
+{
+  "paths": {
+    "plans": "!undefined",
+    "archived": "!undefined",
+    "ext": "!undefined",
+    "docs": "!undefined"
+  },
+  "ide": [],
+  "enable_agents_md": true,
+  "enable_project_changelog": true
+}

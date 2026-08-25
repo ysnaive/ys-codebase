@@ -12,6 +12,7 @@
 | **[DN-AW-02]** | 多輪遞迴狀態機之自指死鎖防護與標籤清除機制 | 工廠編譯器 (`compiler.py`) | `Active` |
 | **[DN-AW-03]** | 統一靜態資產空間收納至 `assets/` | 目錄結構、Manifest 規格 | `Active` |
 | **[DN-AW-04]** | 佔位符 Markdown 可視化語法選型與殘留抹除策略 | 工廠編譯器、全量資產庫 | `Active` |
+| **[DN-AW-05]** | 組態模板 `!undefined` 剛性解耦與推薦預設值封裝 | 組態治理、一鍵初始化引擎 | `Active` |
 
 ---
 
@@ -41,3 +42,12 @@
   1. 全面重構為原生可視語法：插入佔位符 `__@{token}__`（主動注入）與路徑佔位符 `__#{uri}__`（被動參照）。
   2. 抹除正則工廠 `make_purge_regex` 採用 `r"([ \t]*__@\{\s*" + re.escape(token_name) + r"\s*\}__[ \t]*\r?\n?)"`，自動吞噬行首縮排與行尾換行，確保抹除後文檔不留多餘空行。
   3. `__#{uri}__` 於編譯階段 100% 原樣保留，作為 Markdown 文檔的語意參照與路徑錨點。
+
+---
+
+### [DN-AW-05] 組態模板 `!undefined` 剛性解耦與推薦預設值封裝
+- **背景**：若將預設路徑（如 `.agent_workflow/plans`）直接寫死在 `config.project.json` 模板中，將破壞微內核「未配置即 `!undefined`」的零臆測鐵律。
+- **決策**：
+  1. `config.project.json` 模板中 `paths` 欄位剛性保持 `"!undefined"`，並保留 `ide: []` 等未來擴充欄位。
+  2. 將一鍵初始化推薦路徑（`project://.agent_workflow/plans` 等）封裝於 `WorkflowInitializer` 類別中。
+  3. 僅當使用者顯式執行 `--init-default` 並確認後，才由引導引擎原子寫入 `config.project.json` 並刷新 Core URI 快取。

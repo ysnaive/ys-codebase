@@ -4,10 +4,11 @@ Commands:
   compile (alias: build)  - Execute artifact factory resolution pipeline
   tokens                  - Inspect registered token anchors
   list                    - Inspect exported standards, workflows, and templates
+  --init-default          - One-click workflow URI protocols and directories initialization
 """
 import sys
 import os
-from typing import List
+from typing import List, Dict
 
 # Ensure package directory and sibling modules (e.g. core) are importable
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +21,7 @@ if _modules_root not in sys.path and os.path.isdir(_modules_root):
     sys.path.insert(0, _modules_root)
 
 from agents_workflow.compiler import ArtifactCompiler
+from agents_workflow.initializer import WorkflowInitializer
 
 
 def cmd_compile(args: List[str]) -> int:
@@ -81,14 +83,48 @@ def cmd_list(args: List[str]) -> int:
     return 0
 
 
+def cmd_init_default(args: List[str]) -> int:
+    """處理 --init-default 與 --path-* 覆蓋參數。"""
+    auto_confirm = False
+    paths_override: Dict[str, str] = {}
+
+    for arg in args:
+        if arg in ("-y", "--yes"):
+            auto_confirm = True
+        elif arg.startswith("--path-plans="):
+            paths_override["plans"] = arg.split("=", 1)[1]
+        elif arg.startswith("--path-archived="):
+            paths_override["archived"] = arg.split("=", 1)[1]
+        elif arg.startswith("--path-ext="):
+            paths_override["ext"] = arg.split("=", 1)[1]
+        elif arg.startswith("--path-docs="):
+            paths_override["docs"] = arg.split("=", 1)[1]
+
+    initializer = WorkflowInitializer()
+    is_interactive = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
+    res = initializer.run_init_default(
+        paths_override=paths_override,
+        auto_confirm=auto_confirm,
+        interactive=is_interactive
+    )
+    return 0 if res.get("success", False) else 1
+
+
 def print_help():
     print("""Usage: yscb agents-workflow <command> [options]
 
 Commands:
-  compile, build   Run the artifact factory resolution and emit to exports/
-  tokens           List all registered token anchors and descriptions
-  list             List all declared export standards, workflows, and templates
-  --help, -h       Show this help message
+  compile, build              Run the artifact factory resolution and emit to exports/
+  tokens                      List all registered token anchors and descriptions
+  list                        List all declared export standards, workflows, and templates
+  --init-default, init        One-click workflow URI protocols and directories initialization
+    Options for --init-default:
+      -y, --yes               Automatic confirmation mode without prompting
+      --path-plans=<path>     Override recommended path for workflow.plans
+      --path-archived=<path>  Override recommended path for workflow.archived
+      --path-ext=<path>       Override recommended path for workflow.ext
+      --path-docs=<path>      Override recommended path for workflow.docs
+  --help, -h                  Show this help message
 """)
 
 
@@ -100,13 +136,20 @@ def main(args: List[str]) -> int:
     cmd = args[0].lower()
     sub_args = args[1:]
 
-    if cmd in ("compile", "build"):
+    # 若第一個參數即為 --init-default
+    if cmd in ("--init-default", "init-default", "init"):
+        return cmd_init_default(sub_args)
+    elif cmd in ("compile", "build"):
         return cmd_compile(sub_args)
     elif cmd in ("tokens", "--list-token", "--list-tokens"):
         return cmd_tokens(sub_args)
     elif cmd in ("list", "--list"):
         return cmd_list(sub_args)
     else:
+        # 檢查是否含有 --init-default 標誌
+        if "--init-default" in args:
+            all_init_args = [a for a in args if a != "--init-default"]
+            return cmd_init_default(all_init_args)
         print(f"[agents-workflow] Unknown command '{cmd}'. See --help.")
         return 1
 

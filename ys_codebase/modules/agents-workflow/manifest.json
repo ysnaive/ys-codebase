@@ -7,6 +7,34 @@
     "core": ">=1.0.0"
   },
   "contributes": {
+    "core": {
+      "uri_schemes": [
+        {
+          "token": "workflow.plans",
+          "type": "config",
+          "value": "paths.plans",
+          "description": "指向 agents-workflow 活躍開發計畫目錄"
+        },
+        {
+          "token": "workflow.archived",
+          "type": "config",
+          "value": "paths.archived",
+          "description": "指向 agents-workflow 歷史封存計畫目錄"
+        },
+        {
+          "token": "workflow.ext",
+          "type": "config",
+          "value": "paths.ext",
+          "description": "指向 agents-workflow 專案擴充清單目錄"
+        },
+        {
+          "token": "workflow.docs",
+          "type": "config",
+          "value": "paths.docs",
+          "description": "指向 agents-workflow 專案知識庫文檔目錄"
+        }
+      ]
+    },
     "agents-workflow": {
       "export": [
         {
