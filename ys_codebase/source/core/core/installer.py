@@ -26,7 +26,7 @@ class Installer:
             print("[core:install] Error: No default_provider configured in yscb.config.json and no --provider specified.")
             return 1
             
-        target_ver = semver.normalize_version(version) if version else "1.0.0.0"
+        ver_constraint = semver.normalize_version(version) if version else None
         
         print(f"[core:install] Resolving dependencies for '{module_name}'...")
         snap_id = self.engine.act_snapshot(f"pre_install_{module_name}")
@@ -36,20 +36,23 @@ class Installer:
 
         try:
             self.engine.act_lock("install")
-            targets = self.engine.act_solve_deps(module_name, target_ver, provider_url)
+            targets = self.engine.act_solve_deps(module_name, ver_constraint, provider_url)
             self.engine.act_prepare(targets, provider_url, force=force)
+            installed_ver = "1.0.0.0"
             for mod, ver in targets:
                 self.engine.act_register(mod, ver, provider_url)
+                if mod == module_name:
+                    installed_ver = ver
             self.engine.act_reload(clean_stage=True, inject_stage=True)
             
             # Execute migration if upgrading
-            if old_ver != "0.0.0.0" and semver.compare_semver(target_ver, old_ver) > 0:
-                print(f"[core:install] Running migration ladder for '{module_name}' ({old_ver} -> {target_ver})...")
-                self.engine.act_migrate(module_name, old_ver, target_ver)
+            if old_ver != "0.0.0.0" and semver.compare_semver(installed_ver, old_ver) > 0:
+                print(f"[core:install] Running migration ladder for '{module_name}' ({old_ver} -> {installed_ver})...")
+                self.engine.act_migrate(module_name, old_ver, installed_ver)
                 
-            self.engine.act_broadcast_event("core", "on_installed", ExecutionContext("core", "install", [module_name, target_ver]))
+            self.engine.act_broadcast_event("core", "on_installed", ExecutionContext("core", "install", [module_name, installed_ver]))
             self.engine.act_unlock("install")
-            print(f"[core:install] Successfully installed '{module_name}@{target_ver}'.")
+            print(f"[core:install] Successfully installed '{module_name}@{installed_ver}'.")
             return 0
         except Exception as e:
             self.engine.act_unlock("install")

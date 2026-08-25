@@ -124,6 +124,15 @@ class TestDiscovery:
                     sys.path.remove(src_real)
                 sys.path.insert(0, src_real)
 
+                # Ensure tests/ directory has __init__.py for discover stability
+                init_py = os.path.join(tests_dir, "__init__.py")
+                if not os.path.isfile(init_py):
+                    try:
+                        with open(init_py, "w", encoding="utf-8") as f:
+                            f.write('"""Test package auto-infill."""\n')
+                    except Exception:
+                        pass
+
                 loader = unittest.TestLoader()
                 discovered = loader.discover(start_dir=tests_dir, pattern="test_*.py", top_level_dir=src_real)
                 
