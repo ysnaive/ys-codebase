@@ -27,20 +27,22 @@ class TestReleasePipeline(unittest.TestCase):
         self.assertFalse(self.releaser.should_create_git_tag("major", explicit_tag=False))
 
     def test_builder_dev_build_and_release_package(self):
-        # Test dev build outputs X.Y.Z.build containing tests
+        # Test dev build outputs X.Y.Z.build.zip containing tests
         ok, msg = self.builder.build_module("core", clean=True)
         self.assertTrue(ok)
         
-        build_root = uri.resolve("module.build.root://core")
-        self.assertTrue(os.path.isdir(build_root))
+        build_zip = uri.resolve("module.build.root://core/1.0.0.build.zip")
+        self.assertTrue(os.path.isfile(build_zip))
         
-        # Test release packaging outputs clean package
+        # Test release packaging outputs clean package (.zip)
         ok_rel, msg_rel = self.builder.package_release("core", "1.0.0.0")
         self.assertTrue(ok_rel)
-        rel_dir = uri.resolve("release.root://core/1.0.0.0")
-        self.assertTrue(os.path.isdir(rel_dir))
-        # Ensure tests/ is excluded in release
-        self.assertFalse(os.path.exists(os.path.join(rel_dir, "tests")))
+        rel_zip = uri.resolve("release.root://core/1.0.0.0.zip")
+        self.assertTrue(os.path.isfile(rel_zip))
+        # Ensure tests/ is excluded in release zip
+        import zipfile
+        with zipfile.ZipFile(rel_zip, "r") as zf:
+            self.assertFalse(any(f.startswith("tests/") for f in zf.namelist()))
 
 if __name__ == "__main__":
     unittest.main()

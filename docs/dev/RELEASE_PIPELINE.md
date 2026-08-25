@@ -53,6 +53,6 @@
 
 若發布中途發生任何異常（如打包失敗、Git 操作失敗）：
 - **Manifest 回滾**：還原 `source/manifest.json` 為原版本。
-- **Release 目錄回滾**：自動清除已寫入之 `release/<mod>/<ver>` 目錄。
+- **Release 單檔 Zip 回滾**：自動清除已寫入之 `release/<mod>/<ver>.zip` 單檔。
 - **Index 回滾**：還原 `release/<mod>/index.json`。
 - **Git 回滾**：若已建立 Tag 則自動刪除 Tag (`git tag -d`)；若已 Commit 則軟回退 (`git reset --soft HEAD~1`)。

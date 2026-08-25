@@ -2,11 +2,14 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
----
-
 ## 2026_08_23_2030_architecture_refactor
 
 ### Added
+- **全面 Zip 單檔打包與同構自舉管線 (`sub_13`)**：
+  - **明文空間嚴格二分法**：全系統僅 `source/` 與 `modules/` 維持展開檔案，中間快取與產物庫（`build/`、`release/`、`.mirror/`）全面強制改為 `{version}.zip` 單檔格式。
+  - **4-Stage Atomic Reload 流水線**：解耦為 Stage 1 (自癒拉取) ➔ Stage 2 (解壓物化，解壓前剛性清空) ➔ Stage 3 (組態治理，掃描部署並無條件刪除模板) ➔ Stage 4 (依賴注入)。
+  - **同構 Zip 下載與自舉**：`yscb.py init` 預設遠端指向 GitHub 官方 Release 庫，100% 透過 Python 標準庫串流下載與解包自舉。
+  - **職責精確邊界**：`release.root` 與 `release` 語意協議精準歸由 `dev` 模組貢獻治理。
 - **超薄無狀態宿主 (Ultra-Thin Host `yscb.py`)**：100% Python 標準庫原生實現，體積縮減至百餘行，僅負責路徑定位、最小自舉與動態命令轉發，徹底擺脫單檔膨脹與自引用死鎖。
 - **Core 微內核基礎設施模組 (`module:core`)**：
   - **First-Class VFS SDK (`core.uri`)**：原生支援語意 URI 讀寫、目錄操作、最長前綴匹配與原子安全寫入。

@@ -11,9 +11,11 @@ import urllib.request
 import subprocess
 import shutil
 import ast
+import zipfile
+import tempfile
 
 CONFIG_FILENAME: str = "yscb.config.json"
-DEFAULT_PROVIDER_URL: str = "./release"
+DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/release"
 CORE_COMMANDS: set = {
     "install",
     "update",
@@ -70,6 +72,64 @@ def _generate_internal_gitignore(yscb_dir: str) -> None:
         pass
 
 
+def _fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
+    """
+    Fetches a module zip (from local path or remote URL) and extracts cleanly to dest_dir.
+    Purges any config.*.json templates from dest_dir to maintain pure code.
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    
+    if source_url_or_path.startswith(("http://", "https://")):
+        # Remote HTTP Download
+        req = urllib.request.Request(source_url_or_path, headers={"User-Agent": "yscb-host/2.0"})
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_f:
+            tmp_path = tmp_f.name
+            
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                with open(tmp_path, "wb") as out_f:
+                    shutil.copyfileobj(resp, out_f)
+                    
+            if not zipfile.is_zipfile(tmp_path):
+                raise RuntimeError(f"Downloaded payload from '{source_url_or_path}' is not a valid zip file.")
+                
+            with zipfile.ZipFile(tmp_path, "r") as zf:
+                if zf.testzip() is not None:
+                    raise RuntimeError(f"Corrupted zip archive from '{source_url_or_path}'.")
+                zf.extractall(dest_dir)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+    else:
+        # Local path
+        p_abs = os.path.abspath(source_url_or_path)
+        if os.path.isfile(p_abs) and (p_abs.endswith(".zip") or zipfile.is_zipfile(p_abs)):
+            with zipfile.ZipFile(p_abs, "r") as zf:
+                zf.extractall(dest_dir)
+        elif os.path.isdir(p_abs):
+            for item in os.listdir(p_abs):
+                s = os.path.join(p_abs, item)
+                d = os.path.join(dest_dir, item)
+                if os.path.isdir(s):
+                    shutil.copytree(s, d, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(s, d)
+        else:
+            raise FileNotFoundError(f"Source package not found at '{source_url_or_path}'.")
+
+    # Purge config.*.json templates from extracted runtime directory
+    for cfg_tpl in ("config.project.json", "config.local.json"):
+        tpl_p = os.path.join(dest_dir, cfg_tpl)
+        if os.path.isfile(tpl_p):
+            try:
+                os.remove(tpl_p)
+            except Exception:
+                pass
+
+
 def cmd_init(argv: List[str]) -> int:
     if not argv or argv[0].startswith("-"):
         print("[yscb] Usage: python yscb.py init <yscbRoot> [--provider=<source>]")
@@ -104,74 +164,110 @@ def cmd_init(argv: List[str]) -> int:
         "installed_modules": {}
     }
 
-    # Core bootstrapping with Official Dev vs Third-Party Consumer detection
-    is_official_dev = os.path.isfile(os.path.join(script_dir, "source", "core", "manifest.json")) or \
-                      os.path.isfile(os.path.join(yscb_abs, "source", "core", "manifest.json"))
-                      
-    core_mirror = os.path.join(yscb_abs, ".mirror", "core", "1.0.0.0")
+    core_mirror_dir = os.path.join(yscb_abs, ".mirror", "core")
+    os.makedirs(core_mirror_dir, exist_ok=True)
     core_module = os.path.join(yscb_abs, "modules", "core")
 
-    # Case A: Local directory provider or Official Dev
+    # Case A: Local directory provider
     p_abs = os.path.abspath(provider_arg) if not provider_arg.startswith(("http://", "https://", "file://")) else None
     if p_abs and os.path.isdir(p_abs):
-        local_candidates = [
-            os.path.join(p_abs, "core", "1.0.0.0"),
-            os.path.join(p_abs, "core", "1.0.0"),
-            os.path.join(p_abs, "release", "core", "1.0.0.0"),
-            os.path.join(p_abs, "release", "core"),
-            os.path.join(p_abs, "build", "core"),
-            os.path.join(p_abs, "core"),
-            p_abs if os.path.isfile(os.path.join(p_abs, "manifest.json")) else None
+        # Check for single zip or unpacked directory in local provider
+        local_zip_candidates = [
+            os.path.join(p_abs, "core", "1.0.0.0.zip"),
+            os.path.join(p_abs, "core", "1.0.0.build.zip"),
+            os.path.join(p_abs, "release", "core", "1.0.0.0.zip"),
+            os.path.join(p_abs, "build", "core", "1.0.0.build.zip")
         ]
-        found = None
-        for cand in local_candidates:
-            if cand and os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "manifest.json")):
-                found = cand
-                break
+        found_zip = next((z for z in local_zip_candidates if os.path.isfile(z)), None)
+        c_ver = "1.0.0.0"
+        
+        if found_zip:
+            print(f"[yscb] Bootstrapping 'core' infrastructure module from local zip: {found_zip}")
+            _fetch_and_extract_zip(found_zip, core_module)
+            # Read version
+            mf_path = os.path.join(core_module, "manifest.json")
+            if os.path.isfile(mf_path):
+                try:
+                    with open(mf_path, "r", encoding="utf-8") as f:
+                        c_ver = json.load(f).get("version", c_ver)
+                except Exception:
+                    pass
+            mirror_zip = os.path.join(core_mirror_dir, f"{c_ver}.zip")
+            shutil.copy2(found_zip, mirror_zip)
+        else:
+            local_dir_candidates = [
+                os.path.join(p_abs, "core", "1.0.0.0"),
+                os.path.join(p_abs, "core"),
+                os.path.join(p_abs, "build", "core"),
+                p_abs if os.path.isfile(os.path.join(p_abs, "manifest.json")) else None
+            ]
+            found_dir = next((d for d in local_dir_candidates if d and os.path.isdir(d) and os.path.isfile(os.path.join(d, "manifest.json"))), None)
+            if not found_dir:
+                print(f"[yscb] Error: Cannot find 'core' package or zip in local provider '{provider_arg}'.")
+                return 1
+            print(f"[yscb] Bootstrapping 'core' infrastructure module from local directory: {found_dir}")
+            _fetch_and_extract_zip(found_dir, core_module)
+            mf_path = os.path.join(core_module, "manifest.json")
+            if os.path.isfile(mf_path):
+                try:
+                    with open(mf_path, "r", encoding="utf-8") as f:
+                        c_ver = json.load(f).get("version", c_ver)
+                except Exception:
+                    pass
+            # Package into mirror zip
+            mirror_zip = os.path.join(core_mirror_dir, f"{c_ver}.zip")
+            with zipfile.ZipFile(mirror_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+                for root, _, files in os.walk(found_dir):
+                    for f in files:
+                        f_p = os.path.join(root, f)
+                        arc = os.path.relpath(f_p, found_dir).replace("\\", "/")
+                        zf.write(f_p, arcname=arc)
                 
-        if found:
-            print(f"[yscb] Bootstrapping 'core' infrastructure module from local provider: {found}")
-            if os.path.exists(core_mirror):
-                shutil.rmtree(core_mirror)
-            shutil.copytree(found, core_mirror)
-            if os.path.exists(core_module):
-                shutil.rmtree(core_module)
-            shutil.copytree(found, core_module)
-            
-            # Read version from bootstrapped core manifest
-            c_ver = "1.0.0.0"
+        init_cfg["installed_modules"]["core"] = {
+            "version": c_ver,
+            "installed_at": "init",
+            "provider": provider_arg,
+            "description": "Core Infrastructure Module"
+        }
+
+    # Case B: Remote URL provider (HTTP/HTTPS)
+    elif provider_arg.startswith(("http://", "https://", "file://")):
+        print(f"[yscb] Bootstrapping 'core' infrastructure module from remote gateway: {provider_arg}")
+        try:
+            # 1. Check core/index.json to determine target version
+            target_version = "1.0.0.0"
+            index_url = provider_arg.rstrip("/") + "/core/index.json"
             try:
-                with open(os.path.join(found, "manifest.json"), "r", encoding="utf-8") as f:
-                    c_ver = json.load(f).get("version", c_ver)
+                req_idx = urllib.request.Request(index_url, headers={"User-Agent": "yscb-host/2.0"})
+                with urllib.request.urlopen(req_idx, timeout=10) as resp:
+                    idx_data = json.loads(resp.read().decode("utf-8"))
+                vers = idx_data.get("versions", [])
+                if vers:
+                    target_version = vers[-1]
             except Exception:
                 pass
-                
+
+            # 2. Download core/<target_version>.zip and save to .mirror/core/<ver>.zip
+            remote_zip_url = provider_arg.rstrip("/") + f"/core/{target_version}.zip"
+            print(f"[yscb] Downloading '{remote_zip_url}'...")
+            
+            mirror_zip = os.path.join(core_mirror_dir, f"{target_version}.zip")
+            req = urllib.request.Request(remote_zip_url, headers={"User-Agent": "yscb-host/2.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                with open(mirror_zip, "wb") as out_f:
+                    shutil.copyfileobj(resp, out_f)
+                    
+            # 3. Extract to modules/core/
+            _fetch_and_extract_zip(mirror_zip, core_module)
+
             init_cfg["installed_modules"]["core"] = {
-                "version": c_ver,
+                "version": target_version,
                 "installed_at": "init",
                 "provider": provider_arg,
                 "description": "Core Infrastructure Module"
             }
-        else:
-            print(f"[yscb] Error: Cannot find 'core' module in local provider '{provider_arg}'.")
-            return 1
-
-    # Case B: Remote URL provider
-    elif provider_arg.startswith(("http://", "https://", "file://")):
-        print(f"[yscb] Bootstrapping 'core' infrastructure module from remote: {provider_arg}")
-        try:
-            manifest_url = provider_arg.rstrip("/") + "/core/manifest.json"
-            req = urllib.request.Request(manifest_url, headers={"User-Agent": "yscb-host/2.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                m_data = json.loads(resp.read().decode("utf-8"))
-            init_cfg["installed_modules"]["core"] = {
-                "version": m_data.get("version", "1.0.0.0"),
-                "installed_at": "init",
-                "provider": provider_arg,
-                "description": m_data.get("description", "Core Infrastructure Module")
-            }
         except Exception as e:
-            print(f"[yscb] Error: Failed to fetch 'core' module from remote provider '{provider_arg}': {e}")
+            print(f"[yscb] Error: Failed to bootstrap 'core' module from remote provider '{provider_arg}': {e}")
             return 1
     else:
         print(f"[yscb] Error: Invalid provider '{provider_arg}'. Must be an existing local directory or valid URL.")

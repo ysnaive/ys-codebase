@@ -3,7 +3,7 @@ Release Pipeline implementation for YS-Codebase modules.
 Implements:
 - Pre-flight 4 Gates (Git Clean, Tests 100%, Version Conflict/Purging, Manifest Valid)
 - Version Bump Engine (major, minor, patch, revision)
-- Hermetic Release Packaging (excludes tests/)
+- Hermetic Release Packaging (pure single-file <mod>/<ver>.zip)
 - Smart Git Tag Trigger Matrix (major/minor auto-tag, patch/revision no-tag)
 - Release Transaction Guard (All-or-Nothing Atomic Rollback)
 """
@@ -63,11 +63,9 @@ class ReleasePipeline:
             errors.append(f"Gate 4 Failed: Module check failed:\n  - " + "\n  - ".join(chk_errors))
 
         # Gate 3: Immutability / Version Conflict
-        target_tuple = semver.parse_semver(target_version)
-        mod_rel_root = f"release.root://{module_name}"
-        exact_rel_uri = f"{mod_rel_root}/{target_version}"
-        if uri.exists(exact_rel_uri):
-            errors.append(f"Gate 3 Failed: Version '{target_version}' already exists in release repository. Duplicate release forbidden.")
+        exact_rel_zip = f"release.root://{module_name}/{target_version}.zip"
+        if uri.exists(exact_rel_zip):
+            errors.append(f"Gate 3 Failed: Version '{target_version}' already exists in release repository ({exact_rel_zip}). Duplicate release forbidden.")
 
         return len(errors) == 0, errors
 
@@ -128,7 +126,7 @@ class ReleasePipeline:
             return True, f"[Dry-run] Pre-flight passed. Target release: {module_name}@{target_version} (Tag: {self.should_create_git_tag(b_type, tag)})"
 
         # 2. Release Transaction Guard
-        created_rel_dir = False
+        created_rel_zip = False
         tag_name = f"{module_name}/v{target_version}"
         created_tag = False
         created_commit = False
@@ -141,11 +139,11 @@ class ReleasePipeline:
             old_mdata["version"] = target_version
             uri.write_json(manifest_uri, old_mdata)
             
-            # Step 2: Hermetic Clean Release Packaging
+            # Step 2: Single-file Pure Release Packaging (.zip)
             ok_pkg, msg_pkg = self.builder.package_release(module_name, target_version)
             if not ok_pkg:
                 raise RuntimeError(f"Package release failed: {msg_pkg}")
-            created_rel_dir = True
+            created_rel_zip = True
 
             # Step 3: Git Commit
             commit_msg = f"chore(release): release {module_name}@{target_version}"
@@ -171,10 +169,10 @@ class ReleasePipeline:
             # Rollback manifest.json
             uri.write_text(manifest_uri, old_manifest_content)
             
-            # Rollback release directory
-            target_rel_uri = f"release.root://{module_name}/{target_version}"
-            if created_rel_dir and uri.exists(target_rel_uri):
-                uri.rmtree(target_rel_uri)
+            # Rollback release zip file
+            target_rel_zip = f"release.root://{module_name}/{target_version}.zip"
+            if created_rel_zip and uri.exists(target_rel_zip):
+                uri.remove(target_rel_zip)
                 
             # Rollback index.json
             if old_index_content:
