@@ -48,4 +48,4 @@ Agent 必須始終遵守以下三大原則：
 
 ---
 
-<!-- __PROJECT_SPECIFIC_STANDARDS__ -->
+__@{PROJECT_SPECIFIC_STANDARDS}__

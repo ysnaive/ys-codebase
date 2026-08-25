@@ -1,6 +1,6 @@
 # API 與介面規格書 (API & Interface Specification)
 
-<!-- __PHASEXX_STANDARD_HEADER__ -->
+__@{PHASEXX_STANDARD_HEADER}__
 
 ---
 

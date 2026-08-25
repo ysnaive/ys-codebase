@@ -1,12 +1,13 @@
-# 架構與模組設計說明書 (Architecture & Module Plan)
+# 架構設計說明書 (Architecture Design)
 
-<!-- __PHASEXX_STANDARD_HEADER__ -->
+__@{PHASEXX_STANDARD_HEADER}__
 
 ---
 
 ## 1. 模組架構分層與職責邊界 (Layered Architecture)
 
 ```text
+{{ ... }}
 ```
 
 ---

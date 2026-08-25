@@ -11,6 +11,20 @@ try:
 except ImportError:
     uri = None
 
+# Global Placeholder Pattern Constants
+TOKEN_ANCHOR_REGEX = re.compile(r"__@\{\s*([A-Za-z0-9_]+)\s*\}__")
+URI_REF_REGEX = re.compile(r"__#\{\s*([^}]+)\s*\}__")
+
+
+def make_token_tag_regex(token_name: str) -> re.Pattern:
+    """構造匹配指定 Token 標籤之正則表達式，支援大括號內部微量空格。"""
+    return re.compile(r"__@\{\s*" + re.escape(token_name) + r"\s*\}__")
+
+
+def make_purge_regex(token_name: str) -> re.Pattern:
+    """構造用於抹除殘留 Token 錨點行之正則表達式，自動吞噬行首縮排與行尾換行。"""
+    return re.compile(r"([ \t]*__@\{\s*" + re.escape(token_name) + r"\s*\}__[ \t]*\r?\n?)")
+
 
 class ArtifactCompiler:
     """
@@ -109,9 +123,14 @@ class ArtifactCompiler:
                     if uri.exists(m_uri):
                         try:
                             m_data = uri.read_json(m_uri)
-                            # 1. 直接 contributes
                             c_all = m_data.get("contributes", {})
                             c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
+                            for key in ("export", "insert", "token"):
+                                items = c_aw.get(key, [])
+                                if isinstance(items, list):
+                                    for it in items:
+                                        if isinstance(it, dict) and it not in aggregated[key]:
+                                            aggregated[key].append(it)
                         except Exception:
                             pass
 
@@ -145,11 +164,11 @@ class ArtifactCompiler:
     ) -> str:
         """
         單一 Export 檔案之多輪遞迴解算狀態機：
-        - Step 1: 建立文本當前 <!-- __TOKEN__ --> 錨點快照 CurrentTokens。
+        - Step 1: 建立文本當前 __@{token}__ 錨點快照 CurrentTokens。
         - Step 2: 依照拓撲順序有序展開匹配的 insert (replace / below / above)。
-        - Step 3: 移除本輪已完成解算之 Token 錨點標籤（清理殘留錨點）。
+        - Step 3: 移除本輪已完成解算或無匹配之 Token 錨點標籤行。
         - Step 4: 遞迴檢查文本是否仍有新 Token（有則回 Step 1，無則收斂結束）。
-        - Step 5: 保持 <!-- __URI(...)__ --> 標籤原樣返回。
+        - Step 5: 保持 __#{uri}__ 標籤原樣返回。
         """
         resolved_text = content
         pass_count = 0
@@ -157,17 +176,16 @@ class ArtifactCompiler:
         while pass_count < max_passes:
             pass_count += 1
             
-            # Step 1: 建立快照
-            current_tokens = list(dict.fromkeys(re.findall(r"<!--\s*__([A-Za-z0-9_]+)__\s*-->", resolved_text)))
+            # Step 1: 建立快照 (支援大括號內空白容錯)
+            current_tokens = list(dict.fromkeys(TOKEN_ANCHOR_REGEX.findall(resolved_text)))
             if not current_tokens:
                 break
 
             # Step 2: 依序執行 insert 注入
-            # 依據 token 分組匹配
             matched_tokens_this_pass = set()
 
             for token_name in current_tokens:
-                token_tag_regex = re.compile(r"<!--\s*__" + re.escape(token_name) + r"__\s*-->")
+                token_tag_regex = make_token_tag_regex(token_name)
                 
                 # 尋找所有匹配此 token 的 insert 宣告
                 matched_inserts = [
@@ -176,7 +194,7 @@ class ArtifactCompiler:
                 ]
 
                 if not matched_inserts:
-                    # 無匹配 insert，亦記錄待 Step 3 清除
+                    # 無匹配 insert，記錄待 Step 3 清除
                     matched_tokens_this_pass.add(token_name)
                     continue
 
@@ -192,7 +210,7 @@ class ArtifactCompiler:
                     else:
                         val_content = str(raw_val)
 
-                    # 自指防護 (EC-02): 若注入內容包含同名 Token，暫時跳過自我展開
+                    # 自指防護 (EC-01): 若注入內容包含同名 Token，跳過自我展開
                     if mode == "replace":
                         resolved_text = token_tag_regex.sub(lambda _: val_content, resolved_text, count=1)
                     elif mode == "below":
@@ -208,18 +226,17 @@ class ArtifactCompiler:
                             count=1
                         )
 
-            # Step 3: 清除本輪已解算或無匹配的 Token 錨點標籤
+            # Step 3: 清除本輪已解算或無匹配的 Token 錨點標籤行
             for token_name in matched_tokens_this_pass:
-                # 若為 below/above 殘留標籤或無匹配標籤，自文本中乾淨抹除
-                purge_regex = re.compile(r"([ \t]*<!--\s*__" + re.escape(token_name) + r"__\s*-->[ \t]*\r?\n?)")
+                purge_regex = make_purge_regex(token_name)
                 resolved_text = purge_regex.sub("", resolved_text)
 
             # Step 4: 遞迴檢查是否仍有新 Token
-            remaining = re.findall(r"<!--\s*__([A-Za-z0-9_]+)__\s*-->", resolved_text)
+            remaining = TOKEN_ANCHOR_REGEX.findall(resolved_text)
             if not remaining:
                 break
 
-        # Step 5: 保持 <!-- __URI(...)__ --> 原樣，返回最終字串
+        # Step 5: 保持 __#{uri}__ 語意標籤原樣，返回最終純淨字串
         return resolved_text
 
     def compile_all(self) -> Dict[str, Any]:

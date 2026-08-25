@@ -1,6 +1,6 @@
-# 任務執行追蹤表 (Task Tracking)
+# 實作任務清單 (Task Breakdown)
 
-<!-- __PHASEXX_STANDARD_HEADER__ -->
+__@{PHASEXX_STANDARD_HEADER}__
 
 ---
 
