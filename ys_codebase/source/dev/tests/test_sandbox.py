@@ -146,15 +146,14 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_builder_preserves_hook_dev(self):
-        """ET-03: Verify Builder builds module and preserves scripts/hook.dev.py while excluding tests/."""
+        """ET-03: Verify Builder builds module and preserves scripts/hook.dev.py."""
         builder = Builder()
         ok, msg = builder.build_module("core", clean=True)
         self.assertTrue(ok, msg)
         
-        build_core_root = uri.resolve("module.build.root://core/1.0.0")
+        build_core_root = uri.resolve("module.build.root://core/1.0.0.build")
         hook_file = os.path.join(build_core_root, "scripts", "hook.dev.py")
         self.assertTrue(os.path.isfile(hook_file), "scripts/hook.dev.py was unexpectedly excluded from build artifact!")
-        self.assertFalse(os.path.exists(os.path.join(build_core_root, "tests")), "tests/ directory was not excluded!")
         self.mark_passed()
 
     @require(Requirement.LOGIC)

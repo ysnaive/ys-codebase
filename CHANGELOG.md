@@ -40,6 +40,15 @@
   - **不可變 `ExecutionContext` SSOT 與 CM 作用域**：`core.context` 集中定義不可變數據載體；`core.uri` 提供 `module_scope` 與 `host_scope` 上下文管理器，例外安全自動還原。
   - **雙層組態快照與 Hermetic Clean Build**：快照還原同步備份覆蓋 `config.root://`；`dev.builder` 預設強制清空發布版本目錄，100% 排除 `tests/` 與 `.yscbignore` 污染。
   - **Contract/Custom 分離統計與獨立失敗清單**：測試框架精準分離計數，杜絕交叉誤扣，並提供獨立失敗案例清單。全量測試 59/59 項 100% Passed。
+- **四段式版本號、雙軌來源庫、三層降級鏈與發布流水線 (`sub_12`)**：
+  - **四段式語意化版本 (`core.semver`)**：支援 `(major, minor, patch, revision)` 解析與正規化，前三段數值比大小（`1.10.0.0 > 1.9.0.0`），尾號 `revision` 支援微小修訂號或 `build` 本地標籤，日常三元版本常態安裝。
+  - **雙軌來源庫架構 (`build://` vs `release://`)**：
+    - `build/` (開發庫)：`dev build` 產出完整包（包含 `tests/`，版本強制為 `X.Y.Z.build`），供全黑盒測試直接解析與安裝。
+    - `release/` (發布庫)：`dev release` 產出純淨發布包（排除 `tests/`），針對同 `X.Y.Z` 實施單一最新 Revision 淘汰清理。
+  - **三層安裝降級鏈 (`build://` ➔ `mirror://` ➔ `provider`)**：依序滿足本地開發即時測試、離線快取與遠端發布庫解析，三層同構維護 `index.json`。
+  - **模組增量遷移階梯調用引擎 (`act_migrate`)**：升級時依序遞增調用 `scripts/migrations/{minor}.x.py` 增量腳本，缺腳本自動靜默跳過，失敗自動 Snapshot 原子回滾。
+  - **Dev Releaser 發布安全交易防護 (`dev release`)**：Pre-flight 4 大守門、Version Bump、純淨打包、智慧 Git Tag（Major/Minor 自動打 Tag，Patch/Revision 預設不打）與失敗 100% 原子回滾。
+  - **運行空間純粹化與自治忽略**：模組物化安裝後自動剝除 `modules/` 內的 `config.*.json` 模板；`init` 自動生成 `yscb://.gitignore` 確保專案根目錄零污染。全量測試 70/70 項 100% Passed。
 
 ### Changed
 - **`project://` 顯式配置與零 Fallback 鐵律**：`project_root` 預設為 `!undefined`，未定義時精準拋出 `ValueError` 顯式阻斷，杜絕隱式猜測與環境路徑漂移。

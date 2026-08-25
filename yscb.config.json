@@ -1,16 +1,16 @@
 {
   "yscb_root": "./ys_codebase",
-  "default_provider": "./ys_codebase/build",
+  "default_provider": "./release",
   "installed_modules": {
     "core": {
-      "version": "1.0.0",
+      "version": "1.0.0.0",
       "installed_at": "2026-08-25 15:20:17",
-      "provider": "./ys_codebase/build"
+      "provider": "./release"
     },
     "dev": {
-      "version": "1.0.0",
+      "version": "1.0.0.0",
       "installed_at": "2026-08-25 15:20:18",
-      "provider": "./ys_codebase/build"
+      "provider": "./release"
     }
   }
 }

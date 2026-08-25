@@ -11,7 +11,7 @@ class SemVerCoreTest(unittest.TestCase):
         self.assertEqual(v.minor, 2)
         self.assertEqual(v.patch, 3)
         self.assertEqual(v.prerelease, "")
-        self.assertEqual(str(v), "1.2.3")
+        self.assertEqual(str(v), "1.2.3.0")
 
         v_pre = semver.parse_semver("2.0.0-beta.1")
         self.assertEqual(v_pre.major, 2)
@@ -21,7 +21,7 @@ class SemVerCoreTest(unittest.TestCase):
         self.assertEqual(str(v_pre), "2.0.0-beta.1")
 
     def test_parse_malformed_semver_raises_value_error(self):
-        malformed = ["1.0", "v1.x.y", "invalid", "", "1.2.3.4", "1.a.3"]
+        malformed = ["1.0", "v1.x.y", "invalid", "", "1.2.3.4.5", "1.a.3"]
         for bad in malformed:
             with self.assertRaises(ValueError, msg=f"Should raise on '{bad}'"):
                 semver.parse_semver(bad)

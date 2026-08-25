@@ -13,7 +13,7 @@ import shutil
 import ast
 
 CONFIG_FILENAME: str = "yscb.config.json"
-DEFAULT_PROVIDER_URL: str = "./ys_codebase/build"
+DEFAULT_PROVIDER_URL: str = "./release"
 CORE_COMMANDS: set = {
     "install",
     "update",
@@ -49,6 +49,27 @@ def save_config(config_path: str, data: Dict[str, Any]) -> None:
     os.replace(tmp_path, config_path)
 
 
+def _generate_internal_gitignore(yscb_dir: str) -> None:
+    """Generates yscb://.gitignore ensuring zero pollution to user project root."""
+    gi_path = os.path.join(yscb_dir, ".gitignore")
+    content = (
+        "# YS-Codebase Autonomous Internal Ignore Rules\n"
+        "/build/\n"
+        "/.mirror/\n"
+        "/.temp/\n"
+        "/.snapshots/\n"
+        "/.cache/\n"
+        "*.local.json\n"
+        "__pycache__/\n"
+        "*.pyc\n"
+    )
+    try:
+        with open(gi_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        pass
+
+
 def cmd_init(argv: List[str]) -> int:
     if not argv or argv[0].startswith("-"):
         print("[yscb] Usage: python yscb.py init <yscbRoot> [--provider=<source>]")
@@ -74,24 +95,32 @@ def cmd_init(argv: List[str]) -> int:
     os.makedirs(os.path.join(yscb_abs, "modules"), exist_ok=True)
     os.makedirs(os.path.join(yscb_abs, ".mirror"), exist_ok=True)
 
+    # Generate yscb://.gitignore autonomously
+    _generate_internal_gitignore(yscb_abs)
+
     init_cfg = {
         "yscb_root": yscb_root_arg,
         "default_provider": provider_arg,
         "installed_modules": {}
     }
 
-    # Bootstrap core infrastructure module strictly from provider_arg
-    core_mirror = os.path.join(yscb_abs, ".mirror", "core", "1.0.0")
+    # Core bootstrapping with Official Dev vs Third-Party Consumer detection
+    is_official_dev = os.path.isfile(os.path.join(script_dir, "source", "core", "manifest.json")) or \
+                      os.path.isfile(os.path.join(yscb_abs, "source", "core", "manifest.json"))
+                      
+    core_mirror = os.path.join(yscb_abs, ".mirror", "core", "1.0.0.0")
     core_module = os.path.join(yscb_abs, "modules", "core")
 
-    # Case A: Local directory provider
-    if os.path.isdir(provider_arg) or os.path.isdir(os.path.abspath(provider_arg)):
-        p_abs = os.path.abspath(provider_arg)
+    # Case A: Local directory provider or Official Dev
+    p_abs = os.path.abspath(provider_arg) if not provider_arg.startswith(("http://", "https://", "file://")) else None
+    if p_abs and os.path.isdir(p_abs):
         local_candidates = [
+            os.path.join(p_abs, "core", "1.0.0.0"),
             os.path.join(p_abs, "core", "1.0.0"),
-            os.path.join(p_abs, "core"),
-            os.path.join(p_abs, "build", "core", "1.0.0"),
+            os.path.join(p_abs, "release", "core", "1.0.0.0"),
+            os.path.join(p_abs, "release", "core"),
             os.path.join(p_abs, "build", "core"),
+            os.path.join(p_abs, "core"),
             p_abs if os.path.isfile(os.path.join(p_abs, "manifest.json")) else None
         ]
         found = None
@@ -99,23 +128,33 @@ def cmd_init(argv: List[str]) -> int:
             if cand and os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "manifest.json")):
                 found = cand
                 break
-        if not found:
+                
+        if found:
+            print(f"[yscb] Bootstrapping 'core' infrastructure module from local provider: {found}")
+            if os.path.exists(core_mirror):
+                shutil.rmtree(core_mirror)
+            shutil.copytree(found, core_mirror)
+            if os.path.exists(core_module):
+                shutil.rmtree(core_module)
+            shutil.copytree(found, core_module)
+            
+            # Read version from bootstrapped core manifest
+            c_ver = "1.0.0.0"
+            try:
+                with open(os.path.join(found, "manifest.json"), "r", encoding="utf-8") as f:
+                    c_ver = json.load(f).get("version", c_ver)
+            except Exception:
+                pass
+                
+            init_cfg["installed_modules"]["core"] = {
+                "version": c_ver,
+                "installed_at": "init",
+                "provider": provider_arg,
+                "description": "Core Infrastructure Module"
+            }
+        else:
             print(f"[yscb] Error: Cannot find 'core' module in local provider '{provider_arg}'.")
             return 1
-        
-        print(f"[yscb] Bootstrapping 'core' infrastructure module from local provider: {found}")
-        if os.path.exists(core_mirror):
-            shutil.rmtree(core_mirror)
-        shutil.copytree(found, core_mirror)
-        if os.path.exists(core_module):
-            shutil.rmtree(core_module)
-        shutil.copytree(found, core_module)
-        init_cfg["installed_modules"]["core"] = {
-            "version": "1.0.0",
-            "installed_at": "init",
-            "provider": provider_arg,
-            "description": "Core Infrastructure Module"
-        }
 
     # Case B: Remote URL provider
     elif provider_arg.startswith(("http://", "https://", "file://")):
@@ -126,7 +165,7 @@ def cmd_init(argv: List[str]) -> int:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 m_data = json.loads(resp.read().decode("utf-8"))
             init_cfg["installed_modules"]["core"] = {
-                "version": m_data.get("version", "1.0.0"),
+                "version": m_data.get("version", "1.0.0.0"),
                 "installed_at": "init",
                 "provider": provider_arg,
                 "description": m_data.get("description", "Core Infrastructure Module")
@@ -141,7 +180,7 @@ def cmd_init(argv: List[str]) -> int:
     save_config(cfg_path, init_cfg)
     print(f"[yscb] Successfully initialized environment at '{yscb_root_arg}'.")
 
-    # If core module exists, run reload to initialize environment
+    # Initial reload
     core_cli = os.path.join(yscb_abs, "modules", "core", "scripts", "cli.py")
     if os.path.isfile(core_cli):
         print("[yscb] Triggering initial core reload...")
@@ -219,7 +258,6 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
         print(f"       Expected path: {target_cli}")
         return 1
 
-    # Inject YSCB_HOST_DIR into environment for deterministic zero-speculation anchoring
     env = dict(os.environ)
     env["YSCB_HOST_DIR"] = base_dir
 

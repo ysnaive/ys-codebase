@@ -22,6 +22,7 @@ from dev.scaffold import Scaffolder
 from dev.checker import Checker
 from dev.builder import Builder
 from dev.tester import Tester
+from dev.releaser import ReleasePipeline
 
 def main(argv: List[str]) -> int:
     if not argv or argv[0] in ("-h", "--help", "help"):
@@ -30,6 +31,7 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py dev create <name> [--desc=\"...\"]")
         print("  python yscb.py dev check [name | --all]")
         print("  python yscb.py dev build [name | --all] [--clean]")
+        print("  python yscb.py dev release <name> [bump_type] [options]")
         print("  python yscb.py dev test [name | --all] [options]")
         print("  python yscb.py dev op-mksb [--dir=<path>]")
         print("  python yscb.py dev op-test [name | --all] [options]")
@@ -85,7 +87,7 @@ def main(argv: List[str]) -> int:
         targets = [a for a in sub_argv if not a.startswith("-")]
 
         if "--all" in sub_argv or not targets:
-            print("[dev:build] Building all modules in source/...")
+            print("[dev:build] Building all modules in source/ (dev complete package)...")
             results = builder.build_all(clean=clean)
             all_ok = True
             for mod, (passed, msg) in results.items():
@@ -100,6 +102,40 @@ def main(argv: List[str]) -> int:
             passed, msg = builder.build_module(name, clean=clean)
             print(f"[dev:build] {msg}")
             return 0 if passed else 1
+
+    elif subcmd == "release":
+        if not sub_argv:
+            print("[dev:release] Usage: python yscb.py dev release <module> [major|minor|patch|revision|ver] [options]")
+            return 1
+            
+        mod_name = sub_argv[0]
+        bump_type = None
+        explicit_ver = None
+        yes = "-y" in sub_argv or "--yes" in sub_argv
+        dry_run = "--dry-run" in sub_argv
+        tag_flag = True if "--tag" in sub_argv else (False if "--no-tag" in sub_argv else None)
+        no_test = "--no-test" in sub_argv
+        
+        pos_args = [a for a in sub_argv[1:] if not a.startswith("-")]
+        if pos_args:
+            arg_val = pos_args[0]
+            if arg_val.lower() in ("major", "minor", "patch", "revision"):
+                bump_type = arg_val.lower()
+            else:
+                explicit_ver = arg_val
+                
+        releaser = ReleasePipeline()
+        ok, msg = releaser.run_release(
+            module_name=mod_name,
+            bump_type=bump_type,
+            explicit_version=explicit_ver,
+            yes=yes,
+            dry_run=dry_run,
+            tag=tag_flag,
+            no_test=no_test
+        )
+        print(f"[dev:release] {msg}")
+        return 0 if ok else 1
 
     elif subcmd in ("test", "op-mksb", "op-test"):
         tester = Tester()

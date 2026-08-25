@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "paths": {
+    "plans_dir": "project://plans",
+    "archive_dir": "project://archive_plans",
+    "docs_dir": "project://docs",
+    "extensions_dir": "project://extensions",
+    "agents_md_path": "project://AGENTS.md"
+  },
+  "custom_project_settings": {}
+}
