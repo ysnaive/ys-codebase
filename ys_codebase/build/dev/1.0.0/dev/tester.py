@@ -112,7 +112,8 @@ class Tester:
             "passed": 0,
             "failed": 0,
             "skipped": 0,
-            "duration": 0.0
+            "duration": 0.0,
+            "failures_list": []
         }
 
         start_time = time.perf_counter()
@@ -135,17 +136,43 @@ class Tester:
             if mod_failed > 0:
                 all_passed = False
 
+            # Accurate classification based on TestCase class name
+            contract_failed = sum(1 for c, _ in result.failures + result.errors if "Contract" in c.__class__.__name__)
+            custom_failed = mod_failed - contract_failed
+
+            contract_skipped = sum(1 for c, _ in result.skipped if "Contract" in c.__class__.__name__)
+            custom_skipped = mod_skipped - contract_skipped
+
+            contract_passed = max(0, contract_total - contract_failed - contract_skipped)
+            custom_passed = max(0, custom_total - custom_failed - custom_skipped)
+
             err_msgs = []
-            for test_case, tb in result.failures + result.errors:
-                err_msgs.append(f"{test_case}: {tb.strip().splitlines()[-1]}")
+            for test_case, tb in result.failures:
+                last_line = tb.strip().splitlines()[-1] if tb.strip() else "AssertionError"
+                err_msgs.append(f"{test_case}: {last_line}")
+                report_data["failures_list"].append({
+                    "module": mod_name,
+                    "test": str(test_case),
+                    "type": "FAIL",
+                    "message": last_line
+                })
+            for test_case, tb in result.errors:
+                last_line = tb.strip().splitlines()[-1] if tb.strip() else "Error"
+                err_msgs.append(f"{test_case}: {last_line}")
+                report_data["failures_list"].append({
+                    "module": mod_name,
+                    "test": str(test_case),
+                    "type": "ERROR",
+                    "message": last_line
+                })
 
             mod_info = {
                 "name": mod_name,
                 "passed": mod_failed == 0,
                 "contract_total": contract_total,
-                "contract_passed": contract_total if mod_failed == 0 else max(0, contract_total - mod_failed),
+                "contract_passed": contract_passed,
                 "custom_total": custom_total,
-                "custom_passed": custom_total if mod_failed == 0 else max(0, custom_total - mod_failed),
+                "custom_passed": custom_passed,
                 "errors": err_msgs
             }
             report_data["modules"].append(mod_info)

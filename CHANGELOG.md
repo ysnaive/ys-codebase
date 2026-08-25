@@ -34,6 +34,12 @@
   - 模組以發起端命名對接檔案（例 `hook.core.py`, `hook.dev.py`），提供 `ExecutionContext` 凍結資料介面與 try-except 例外隔離防護。
 - **系統全域知識庫綠地重建 (`docs/`)**：
   - 依據 7 大抽象維度落成 10 大標準手冊（全域地圖、核心規範、Core 架構、URI 協議、Hook 手冊、Dev 工具箱、測試指南、設計註記 `DN-01~03` 及專案首頁）。
+- **套件框架健壯性強化與缺陷修復 (`sub_11`)**：
+  - **100% Python 標準庫 SemVer 2.0.0 運算器 (`core.semver`)**：純標準庫實作，支援四元組解析、數值排序（保證 `1.10.0 > 1.9.0`）、`>=, >, <=, <, ==, !=, ~=, *` 範圍匹配與最高合規版本依賴求解。
+  - **剛性拓撲隔離與 6 大軟相容手段清除**：`yscb.py` 移除向上爬樹；`contributes.py` 清除對 `source/` 與 `project://` 穿透；`installer.py` 清除硬編碼後門；`uri.resolve()` 嚴格攔截非標準 URI 拋出 `ValueError`。
+  - **不可變 `ExecutionContext` SSOT 與 CM 作用域**：`core.context` 集中定義不可變數據載體；`core.uri` 提供 `module_scope` 與 `host_scope` 上下文管理器，例外安全自動還原。
+  - **雙層組態快照與 Hermetic Clean Build**：快照還原同步備份覆蓋 `config.root://`；`dev.builder` 預設強制清空發布版本目錄，100% 排除 `tests/` 與 `.yscbignore` 污染。
+  - **Contract/Custom 分離統計與獨立失敗清單**：測試框架精準分離計數，杜絕交叉誤扣，並提供獨立失敗案例清單。全量測試 59/59 項 100% Passed。
 
 ### Changed
 - **`project://` 顯式配置與零 Fallback 鐵律**：`project_root` 預設為 `!undefined`，未定義時精準拋出 `ValueError` 顯式阻斷，杜絕隱式猜測與環境路徑漂移。

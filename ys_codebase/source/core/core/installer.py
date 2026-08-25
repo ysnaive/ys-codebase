@@ -5,8 +5,9 @@ import os
 import sys
 from typing import Optional, List
 from core import uri
-from core.uri import ExecutionContext
+from core.context import ExecutionContext
 from core.engine import AtomicEngine
+from core import semver
 
 class Installer:
     def __init__(self):
@@ -18,8 +19,12 @@ class Installer:
             return 1
         
         cfg_path, cfg = self.engine._get_config()
-        default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider") or "./ys_codebase/build"
+        default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider")
         provider_url = provider or default_provider
+        if not provider_url:
+            print("[core:install] Error: No default_provider configured in yscb.config.json and no --provider specified.")
+            return 1
+            
         target_ver = version or "1.0.0"
         
         print(f"[core:install] Resolving dependencies for '{module_name}'...")
@@ -44,8 +49,12 @@ class Installer:
 
     def cmd_update(self, module_name: Optional[str] = None, provider: Optional[str] = None) -> int:
         cfg_path, cfg = self.engine._get_config()
-        default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider") or "./ys_codebase/build"
+        default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider")
         provider_url = provider or default_provider
+        if not provider_url:
+            print("[core:update] Error: No default_provider configured in yscb.config.json and no --provider specified.")
+            return 1
+            
         installed = cfg.get("installed_modules", {})
         
         targets = [module_name] if module_name else list(installed.keys())
@@ -70,17 +79,21 @@ class Installer:
                 if os.path.isdir(mod_local):
                     versions = [v for v in os.listdir(mod_local) if os.path.isdir(os.path.join(mod_local, v))]
                     if versions:
-                        latest_ver = sorted(versions)[-1]
+                        best_v = semver.find_best_version(versions)
+                        if best_v:
+                            latest_ver = best_v
                 else:
                     # Remote lookup
                     ok, res = self.engine.act_fetch(provider_url, f"{mod}/index.json")
                     if ok and isinstance(res, dict):
                         if "versions" in res and isinstance(res["versions"], list) and res["versions"]:
-                            latest_ver = sorted(res["versions"])[-1]
+                            best_v = semver.find_best_version(res["versions"])
+                            if best_v:
+                                latest_ver = best_v
                         elif "version" in res:
                             latest_ver = res["version"]
 
-                if latest_ver > cur_ver:
+                if semver.compare_semver(latest_ver, cur_ver) > 0:
                     print(f"[core:update] Updating '{mod}' from {cur_ver} -> {latest_ver}...")
                     self.engine.act_prepare([(mod, latest_ver)], provider_url, force=True)
                     self.engine.act_register(mod, latest_ver, provider_url)

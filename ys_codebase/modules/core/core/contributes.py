@@ -1,5 +1,6 @@
 """
 Contributes Aggregator and Dependency Injection Engine.
+Rigid Topology & Zero Speculation: strictly scans installed modules in module.root://.
 """
 from typing import Dict, Any, List, Optional
 import os
@@ -11,7 +12,7 @@ class ContributesAggregator:
 
     def scan_and_inject(self, clean: bool = True) -> Dict[str, Any]:
         """
-        Scan and cascade-merge contributes from 5 sources:
+        Scan and cascade-merge contributes from 5 sources (strictly in installed space):
         1. module://manifest.json -> contributes
         2. module://contributes.{target}.json
         3. config://config.project.json
@@ -20,8 +21,6 @@ class ContributesAggregator:
         """
         aggregated: Dict[str, Dict[str, Any]] = {}
         installed_modules = uri.listdir("module.root://") if uri.exists("module.root://") else []
-        if not installed_modules and uri.exists("module.source.root://"):
-            installed_modules = uri.listdir("module.source.root://")
         
         if not installed_modules:
             return aggregated
@@ -34,9 +33,6 @@ class ContributesAggregator:
         for donor in installed_modules:
             # Source 1: Manifest
             manifest_uri = f"module.root://{donor}/manifest.json"
-            if not uri.exists(manifest_uri) and uri.exists(f"module.source.root://{donor}/manifest.json"):
-                manifest_uri = f"module.source.root://{donor}/manifest.json"
-
             if uri.exists(manifest_uri):
                 m_data = uri.read_json(manifest_uri)
                 m_contribs = m_data.get("contributes", {})
@@ -48,9 +44,6 @@ class ContributesAggregator:
             # Source 2: contributes.<target>.json in donor module
             for target in installed_modules:
                 donor_file = f"module.root://{donor}/contributes.{target}.json"
-                if not uri.exists(donor_file) and uri.exists(f"module.source.root://{donor}/contributes.{target}.json"):
-                    donor_file = f"module.source.root://{donor}/contributes.{target}.json"
-
                 if uri.exists(donor_file):
                     c_data = uri.read_json(donor_file)
                     if isinstance(c_data, dict):
@@ -60,9 +53,6 @@ class ContributesAggregator:
         for target in installed_modules:
             # Source 3: project-level config.project.json
             proj_cfg_uri = f"config.root://{target}/config.project.json"
-            if not uri.exists(proj_cfg_uri) and uri.exists("project://config.project.json"):
-                proj_cfg_uri = "project://config.project.json"
-                
             if uri.exists(proj_cfg_uri):
                 p_data = uri.read_json(proj_cfg_uri)
                 p_contribs = p_data.get("contributes", {}).get(target, {})
@@ -72,7 +62,7 @@ class ContributesAggregator:
             # Remove legacy file in config/ if exists
             legacy_cfg_uri = f"config.root://{target}/contributes.merged.json"
             if uri.exists(legacy_cfg_uri):
-                uri.remove(legacy_cfg_uri)
+                uri.rmtree(legacy_cfg_uri) if uri.isdir(legacy_cfg_uri) else uri.write_text(legacy_cfg_uri, "")
 
             # Persist injected contributes to cache space
             target_cache_uri = f"cache.root://{target}/contributes.merged.json"
@@ -81,7 +71,9 @@ class ContributesAggregator:
                 uri.write_json(target_cache_uri, aggregated[target])
             else:
                 if uri.exists(target_cache_uri):
-                    uri.remove(target_cache_uri)
+                    target_p = uri.resolve(target_cache_uri)
+                    if os.path.exists(target_p):
+                        os.remove(target_p)
 
         return aggregated
 

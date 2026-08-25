@@ -15,6 +15,8 @@
 | **DN-04** | 命名空間 Hook 對接與例外隔離 | `source/core/core/engine.py` | 💡 INFO |
 | **DN-05** | 宿主組態實體路徑解耦 (脫離 project://) | `source/core/core/engine.py` | 🚨 CRITICAL |
 | **DN-06** | `yscb://` 常數自定位與零猜測阻斷 | `source/core/core/uri.py` | 🚨 CRITICAL |
+| **DN-07** | OS 核心原子鎖保護與 10s 自修復機制 | `source/core/core/engine.py` | ⚠️ WARNING |
+| **DN-08** | 剛性拓撲回歸與 6 大軟相容全面清除 | 全域多模組 | 🚨 CRITICAL |
 
 ---
 
@@ -54,7 +56,7 @@
 
 ### [DN-05] 宿主組態實體路徑解耦 (脫離 `project://`)
 
-- **核心決策**：`AtomicEngine` 內部所有對 `yscb.config.json` 的讀寫、清冊維護與快照還原，一律依賴宿主目錄實體路徑（透過 `_find_host_config()`），嚴禁調用 `project://`。
+- **核心決策**：`AtomicEngine` 內部所有對 `yscb.config.json` 的讀寫、清冊維護與快照還原，一律依賴宿主目錄實體路徑（透過 `_get_host_config()`），嚴禁調用 `project://`。
 - **背後考量**：`project://` 代表被管理的外部下游專案根目錄（預設未配置），而 `yscb.config.json` 是工具庫自身的基礎設施，兩者在架構職責上完全隔離。
 
 ---
@@ -64,3 +66,24 @@
 - **核心決策**：`yscb://` 直接以 `core.uri` 代碼位置（`__file__` 往上 3 層）常數自定位；宿主 Context 顯式傳遞；徹底移除動態向上爬目錄迴圈與 `os.getcwd()` 猜測。
 - **背後考量**：徹底根除環境路徑漂移與跨目錄執行時的隱性 Bug，貫徹「零臆測 (Zero Speculation)」鐵律。
 
+---
+
+### [DN-07] OS 核心原子鎖保護與 10s 自修復機制
+
+- **核心決策**：`AtomicEngine.act_lock` 使用作業系統核心層標誌 `os.O_CREAT | os.O_EXCL` 建立 `temp://.yscb.lock`，由 OS 核心提供剛性互斥保證。
+- **背後考量**：在單進程同步調度模型下，10s 超時判定僅用於前次執行非正常中斷崩潰後的自動容災修復 (Self-Healing)，正常執行流程中 `os.O_EXCL` 提供 100% 互斥安全。
+
+---
+
+### [DN-08] 剛性拓撲回歸與 6 大軟相容全面清除
+
+- **核心決策**：全面清除代碼中的 6 大軟相容退化點：
+  1. `yscb.py:load_config` 移除向上爬樹，剛性錨定同層目錄。
+  2. `contributes.py` 嚴格僅讀取 `modules/` 運行空間產物，徹底移除對 `source/` 的穿透 fallback。
+  3. `contributes.py` 移除對 `project://` 的穿透 fallback，僅讀取模組專屬 `config.root://`。
+  4. `uri.resolve()` 嚴格攔截非標準 URI 與非絕對路徑，拋出 `ValueError`。
+  5. `installer.py` 移除 `default_provider` 硬編碼後門。
+  6. `sandbox.py` 剛性定位宿主 `yscb.py`。
+- **防禦宣告**：
+  > [!CAUTION]
+  > 專案嚴格遵守 R01~R05 剛性拓撲原則，禁止為規避局部報錯而擅自引入跨空間穿透與動態猜測代碼。

@@ -4,15 +4,13 @@
   "installed_modules": {
     "core": {
       "version": "1.0.0",
-      "installed_at": "2026-08-25T02:10:11",
-      "provider": "./ys_codebase/build",
-      "description": "Module core"
+      "installed_at": "2026-08-25 15:20:17",
+      "provider": "./ys_codebase/build"
     },
     "dev": {
       "version": "1.0.0",
-      "installed_at": "2026-08-25T02:24:58",
-      "provider": "./ys_codebase/build",
-      "description": "Module dev"
+      "installed_at": "2026-08-25 15:20:18",
+      "provider": "./ys_codebase/build"
     }
   }
 }
