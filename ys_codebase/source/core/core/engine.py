@@ -659,3 +659,44 @@ class AtomicEngine:
                     results[mod] = f"warning: {e}"
                     print(f"[core:events] Warning: Hook '{mod}:hook.{emit_module}.py' failed on '{event_name}': {e}", file=sys.stderr)
         return results
+
+    def act_get_installed_commands_summary(self) -> Dict[str, Dict[str, str]]:
+        """
+        Scans installed modules in module.root:// to summarize contributed CLI commands.
+        Returns: { module_name: { command_name: description } }
+        """
+        summary: Dict[str, Dict[str, str]] = {}
+        if not uri.exists("module.root://"):
+            return summary
+            
+        for mod_name in sorted(uri.listdir("module.root://")):
+            if mod_name == "core":
+                continue
+            mf_uri = f"module.root://{mod_name}/manifest.json"
+            if not uri.exists(mf_uri):
+                continue
+            try:
+                mf_data = uri.read_json(mf_uri)
+                mod_desc = mf_data.get("description", f"{mod_name} module")
+                
+                contrib = mf_data.get("contributes", {})
+                cmds = contrib.get("commands", {})
+                if cmds and isinstance(cmds, dict):
+                    summary[mod_name] = {cmd: desc for cmd, desc in cmds.items()}
+                else:
+                    if mod_name == "dev":
+                        summary["dev"] = {
+                            "create": "Create a new module skeleton",
+                            "check": "Validate module structure and manifest compliance",
+                            "build": "Build dev package (.build.zip with tests)",
+                            "test": "Run module tests inside an isolated sandbox",
+                            "release": "Package and release pure module to release/"
+                        }
+                    else:
+                        summary[mod_name] = {
+                            "run": mod_desc
+                        }
+            except Exception:
+                pass
+                
+        return summary

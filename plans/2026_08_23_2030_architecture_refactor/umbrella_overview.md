@@ -34,6 +34,7 @@
 | **sub_11** | `sub_11_framework_robustness_and_bugfix` | Full Track | **已完成** | 套件框架健壯性強化與缺陷修復：清除軟相容手段回歸剛性拓撲、SemVer 2.0.0 數值運算器、雙層快照還原、CM 作用域與 Hermetic Clean Build |
 | **sub_12** | `sub_12_versioning_and_release_pipeline` | Full Track | **已完成** | 四段式版本號、雙軌來源庫 (Build vs Release)、三層安裝降級鏈、發布流水線與 Migration 階梯調用 |
 | **sub_13** | `sub_13_native_consumer_testing_and_hardening` | Full Track | **已完成** | 原生消費者端到端測試、預設 Provider 遠端自舉、全面單檔 Zip 打包標準、4-Stage Reload 流水線與第三方加固 |
+| **sub_14** | `sub_14_framework_final_polish_and_cli_ux` | Full Track | **已完成** | 框架骨架最終打磨：`dev release` 守門精簡解耦 Git 限制、全系統 CLI UX / --help 排版標準化與智慧拼寫建議 |
 
 ---
 
@@ -93,8 +94,8 @@ flowchart TD
 
 ## 5. 主計畫結案成果與驗收總結 (Master Plan Completion)
 
-- **子計畫執行達成率**：13 / 13 子計畫 100% 交付結案。
+- **子計畫執行達成率**：14 / 14 子計畫 100% 交付結案。
 - **程式碼品質與依賴**：100% Python 標準庫，零第三方套件依賴。
-- **自動化測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (68/68) = **74/74 測試全數 Passed (100% Ready)**。
+- **自動化測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (72/72) = **78/78 測試全數 Passed (100% Ready)**。
 - **知識庫交付**：`docs/` 12 大標準手冊全面綠地落成與 1:1 驗收。
 - **全主計畫狀態**：**✅ 圓滿結案 (Completed)**。

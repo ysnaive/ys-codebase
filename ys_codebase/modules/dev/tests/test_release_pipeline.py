@@ -44,5 +44,12 @@ class TestReleasePipeline(unittest.TestCase):
         with zipfile.ZipFile(rel_zip, "r") as zf:
             self.assertFalse(any(f.startswith("tests/") for f in zf.namelist()))
 
+    def test_preflight_check_without_git_dirty_restriction(self):
+        """FT-01: Verifies that preflight_check passes even if git status is dirty or in non-git env."""
+        # preflight_check for 'core' with a new version like '9.9.9.0'
+        passed, errors = self.releaser.preflight_check("core", "9.9.9.0", skip_test=True)
+        self.assertTrue(passed, f"Preflight check unexpectedly failed with errors: {errors}")
+        self.assertEqual(len(errors), 0)
+
 if __name__ == "__main__":
     unittest.main()
