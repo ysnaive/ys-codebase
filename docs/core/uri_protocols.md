@@ -33,6 +33,7 @@ graph TD
 | 協議 Token | 注入來源 | 類型 | 宣告值 (Value Template) | 說明 |
 | :--- | :---: | :---: | :--- | :--- |
 | **`yscb://`** | `core` | `const` | `{yscb_root}` | 工具庫根目錄 |
+| **`yscb.host://`** | `core` | `const` | `{yscb_host}` | 專案宿主根目錄（包含起手腳本 `yscb.py` 與 `yscb.config.json` 所在目錄） |
 | **`mirror://`** | `core` | `const` | `yscb://.mirror/` | 本地模組鏡像庫 |
 | **`temp://`** | `core` | `const` | `yscb://.temp/` | 系統隔離暫存區 |
 | **`snapshot://`** | `core` | `const` | `yscb://.snapshots/` | 組態歷史快照目錄 |

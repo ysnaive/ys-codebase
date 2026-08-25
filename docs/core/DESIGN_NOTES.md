@@ -22,6 +22,7 @@
 | **DN-11** | 模組運行空間純粹化與 config 模板自動剝除 | `source/core/core/engine.py` | 💡 INFO |
 | **DN-12** | JIT `!undefined` 熱更新補齊機制與自引用防護 | `source/core/core/uri.py` | 🚨 CRITICAL |
 | **DN-13** | Contributes `__provider__` 拓撲聚合與 SDK 查詢 | `source/core/core/contributes.py` | ⚠️ WARNING |
+| **DN-14** | `yscb.host://` 宿主協議常數解算與 fast-path 路由 | `source/core/core/uri.py` | 🚨 CRITICAL |
 
 ---
 
@@ -137,3 +138,13 @@
   2. 依據已安裝模組之依賴拓撲順序 (Topological Order) 有序合併，保證底層基礎設施優先註冊，擴充模組後續追加。
   3. 提供標準微內核查詢 SDK `core.contributes.get(target_module, key=None, default=None)` 與 `get_for_current_module()`，內建自愈快取。
 - **背後考量**：徹底解決下游外掛模組無法溯源能力提供者、合併順序非決定性以及缺乏標準查詢 API 的痛點。
+
+---
+
+### [DN-14] `yscb.host://` 宿主協議常數解算與 fast-path 路由
+
+- **核心決策**：
+  1. 引入 `yscb.host://` 一等公民常數協議，類型為 `const`，模板值為 `{yscb_host}`。
+  2. 強制指向起手腳本 `yscb.py` 與 `yscb.config.json` 所在之專案宿主工程根目錄。
+  3. 於 `uri.resolve()` 提供 O(1) fast-path 解析，並相容自引用與外部專案宿主上下文。
+- **背後考量**：當工具庫（`yscb://`）位於子目錄（如 `ys_codebase/`）時，模組與工作流需精準定位包含起手腳本的宿主根目錄，避免混淆 `project://`（受被管理目標路徑組態影響）與 `yscb://`（工具庫源碼根目錄）。

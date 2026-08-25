@@ -23,6 +23,7 @@ _reconciling_tokens: Set[str] = set()
 
 # Bootstrap fallback schemes used strictly during initial bootstrap before contributes injection
 _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
+    {"token": "yscb.host", "type": "const", "value": "{yscb_host}"},
     {"token": "module.mirror.root", "type": "const", "value": "yscb://.mirror/"},
     {"token": "module.mirror", "type": "const", "value": "yscb://.mirror/{module}/"},
     {"token": "temp", "type": "const", "value": "yscb://.temp/"},
@@ -377,6 +378,15 @@ def resolve(
         rel = uri[len("yscb://"):].lstrip("/\\")
         return os.path.normpath(os.path.join(yscb_dir, rel)) if rel else yscb_dir
 
+    # Fast-path for host anchor protocol yscb.host:// (Force points to yscb.py/yscb.config.json directory)
+    if uri.startswith("yscb.host://"):
+        try:
+            host_dir, _ = _get_host_config()
+        except Exception:
+            host_dir = get_host_dir() or os.path.normpath(os.path.dirname(yscb_dir))
+        rel = uri[len("yscb.host://"):].lstrip("/\\")
+        return os.path.normpath(os.path.join(host_dir, rel)) if rel else host_dir
+
     # 1. Check project:// with strict explicit configuration rule & JIT Hot-Reconciliation
     if uri.startswith("project://"):
         host_dir, _ = _get_host_config()
@@ -412,7 +422,11 @@ def resolve(
             provider_name = scheme.get("__provider__", mod)
             
             if stype == "const":
-                val_expanded = sval.replace("{module}", mod).replace("{yscb_root}", yscb_dir)
+                try:
+                    host_dir, _ = _get_host_config()
+                except Exception:
+                    host_dir = get_host_dir() or os.path.normpath(os.path.dirname(yscb_dir))
+                val_expanded = sval.replace("{module}", mod).replace("{yscb_root}", yscb_dir).replace("{yscb_host}", host_dir or "")
                 if "{module}" in sval and not mod:
                     raise ValueError(f"Cannot resolve placeholder {{module}} in '{uri}' without active module context.")
                 target_base = resolve(val_expanded, current_module=mod, context=context, interactive=interactive)
