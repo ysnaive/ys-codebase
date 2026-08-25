@@ -1,0 +1,44 @@
+{
+  "name": "agents-workflow",
+  "version": "0.1.0",
+  "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
+  "entry": "scripts/cli.py",
+  "dependencies": {
+    "core": ">=1.0.0"
+  },
+  "contributes": {
+    "agents-workflow": {
+      "export": [
+        { "type": "standard", "source": "module.root://agents-workflow/assets/standards/DocumentationStandards.md", "description": "專案文檔標準規範" },
+        { "type": "standard", "source": "module.root://agents-workflow/assets/standards/DevelopmentStandards.md", "description": "開發標準規範 SOP 0~7" },
+        { "type": "workflow", "source": "module.root://agents-workflow/assets/workflows/ContextInit.md", "description": "上下文熱啟動流程" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/P00_semantic_requirements.md", "description": "Phase 0 語意需求模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/P01_requirements_spec.md", "description": "Phase 1 需求規格模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/P02_architecture_plan.md", "description": "Phase 2 架構設計模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/P03_api_spec.md", "description": "Phase 3 API規格模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/P04_implementation_plan.md", "description": "Phase 4 實作計畫模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/P05_task.md", "description": "Phase 5 任務清單模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/P06_test_plan.md", "description": "Phase 6 測試計畫模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/P07_walkthrough.md", "description": "Phase 7 結案報告模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/FT_plan.md", "description": "Fast Track 敏捷計畫模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/umbrella_overview.md", "description": "Umbrella 主計畫總覽模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/changelog.md", "description": "計畫變更日誌模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/R_research_report.md", "description": "深度調研報告模板" },
+        { "type": "template", "source": "module.root://agents-workflow/assets/templates/handoff.md", "description": "現場凍結交接模板" }
+      ],
+      "token": [
+        { "value": "PHASEXX_STANDARD_HEADER", "description": "P01~P07 模板共通標準標頭注入錨點" },
+        { "value": "PROJECT_SPECIFIC_STANDARDS", "description": "專案特化工程規範注入錨點（位於 DevelopmentStandards.md 尾部）" },
+        { "value": "DYNAMIC_CONTEXT_MAP", "description": "即時語意 URI 地圖注入錨點（位於 ContextInit.md 頂部）" }
+      ],
+      "insert": [
+        {
+          "type": "uri",
+          "token": "PHASEXX_STANDARD_HEADER",
+          "value": "module.root://agents-workflow/assets/templates/header.md",
+          "mode": "replace"
+        }
+      ]
+    }
+  }
+}
