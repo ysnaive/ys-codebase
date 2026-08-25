@@ -120,15 +120,15 @@ class AtomicEngine:
 
     def act_download(self, module_name: str, version: str, provider_url: str) -> str:
         """
-        Downloads/Materializes a specific module version into mirror://{module_name}/{version}.zip.
-        Enforces 3-Tier Resolution Chain (build:// -> mirror:// -> provider_url).
+        Downloads/Materializes a specific module version into module.mirror.root://{module_name}/{version}.zip.
+        Enforces 3-Tier Resolution Chain (module.build.root:// -> module.release.root:// -> provider_url).
         """
-        dest_mirror_dir = f"mirror://{module_name}"
+        dest_mirror_dir = f"module.mirror.root://{module_name}"
         uri.makedirs(dest_mirror_dir)
         dest_zip_uri = f"{dest_mirror_dir}/{version}.zip"
         dest_zip_real = uri.resolve(dest_zip_uri)
 
-        # 1. Tier 1: Check build:// for single zip
+        # 1. Tier 1: Check module.build.root:// for single zip
         build_root = f"module.build.root://{module_name}"
         v_tuple = semver.parse_semver(version)
         build_ver_str = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
@@ -144,8 +144,8 @@ class AtomicEngine:
                 shutil.copy2(uri.resolve(b_zip), dest_zip_real)
                 return dest_zip_uri
 
-        # 2. Tier 2: Check release.root:// or local directory provider
-        rel_root = f"release.root://{module_name}"
+        # 2. Tier 2: Check module.release.root:// or local directory provider
+        rel_root = f"module.release.root://{module_name}"
         if uri.exists(f"{rel_root}/{version}.zip"):
             shutil.copy2(uri.resolve(f"{rel_root}/{version}.zip"), dest_zip_real)
             return dest_zip_uri
@@ -436,36 +436,71 @@ class AtomicEngine:
             mod_real = uri.resolve(f"module.root://{mod}")
             if not os.path.isdir(mod_real):
                 continue
-                
-            # 1. Infill/Seed config templates from module to config.root://{mod}/
-            self._seed_or_update_config(mod, mod_real)
+
+        cfg_path, host_cfg = self._get_config()
+        installed = host_cfg.get("installed_modules", {})
+
+        for mod in uri.listdir("module.root://"):
+            if mod not in installed and mod != "core":
+                continue
             
-            # 2. Unconditionally physically purge template files from modules runtime space
-            for cfg_tpl in ("config.project.json", "config.local.json", ".yscbignore"):
-                tpl_p = os.path.join(mod_real, cfg_tpl)
-                if os.path.isfile(tpl_p):
+            mod_runtime_dir = f"module.root://{mod}"
+            if not uri.isdir(mod_runtime_dir):
+                continue
+            
+            config_templates = [
+                f for f in uri.listdir(mod_runtime_dir) 
+                if (f.startswith("config.") and f.endswith(".json")) or f == "config.json"
+            ]
+            
+            for tmpl_file in config_templates:
+                tmpl_uri = f"{mod_runtime_dir}/{tmpl_file}"
+                tmpl_data = uri.read_json(tmpl_uri)
+                if not isinstance(tmpl_data, dict):
+                    continue
+
+                if tmpl_file == "config.local.json":
+                    target_cfg_uri = f"config.root://{mod}/config.local.json"
+                elif tmpl_file == "config.project.json":
+                    target_cfg_uri = f"config.root://{mod}/config.project.json"
+                elif tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
+                    sub_name = tmpl_file[len("config."):-len(".local.json")]
+                    target_cfg_uri = f"config.root://{mod}/config.{sub_name}.local.json"
+                elif tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
+                    sub_name = tmpl_file[len("config."):-len(".project.json")]
+                    target_cfg_uri = f"config.root://{mod}/config.{sub_name}.project.json"
+                else:
+                    target_cfg_uri = f"config.root://{mod}/config.project.json"
+
+                target_data = {}
+                if uri.exists(target_cfg_uri):
                     try:
-                        os.remove(tpl_p)
+                        target_data = uri.read_json(target_cfg_uri)
                     except Exception:
-                        pass
+                        target_data = {}
+
+                merged_data, changed = self._deep_infill_dict(target_data, tmpl_data)
+
+                if changed or not uri.exists(target_cfg_uri):
+                    uri.makedirs(f"config.root://{mod}", exist_ok=True)
+                    uri.write_json(target_cfg_uri, merged_data, indent=2)
+
+                uri.remove(tmpl_uri)
 
     def act_reload(self, clean_stage: bool = True, inject_stage: bool = True) -> None:
         """
         4-Stage Atomic Reload Pipeline:
-        Stage 1: 拉取/還原壓縮來源檔 (Fetch/Prepare from mirror or source)
-        Stage 2: 解壓並部署代碼至 modules/ (Extract & deploy code to modules/)
-        Stage 3: 掃描並部署組態 (Scan & deploy config from modules to config/, purge templates)
-        Stage 4: 依賴注入與事件廣播 (Contributes injection & on_reload event broadcast)
+        Stage 1 (自癒拉取) -> Stage 2 (解壓物化) -> Stage 3 (組態治理) -> Stage 4 (依賴注入與事件廣播)
         """
         cfg_path, cfg = self._get_config()
         installed = cfg.get("installed_modules", {})
         default_prov = cfg.get("default_provider", "")
         
-        # Stage 1: 拉取/還原壓縮來源檔 (若 mirror:// 缺少單檔 zip，自癒補齊)
+        # Stage 1: 拉取/還原壓縮來源檔 (若 module.mirror.root:// 缺少單檔 zip，自癒補齊)
         for mod, meta in installed.items():
             ver = meta.get("version", "1.0.0.0")
             prov = meta.get("provider") or default_prov
-            mirror_zip = f"mirror://{mod}/{ver}.zip"
+            mirror_zip = f"module.mirror.root://{mod}/{ver}.zip"
             if not uri.exists(mirror_zip):
                 try:
                     self.act_download(mod, ver, prov)
@@ -480,7 +515,7 @@ class AtomicEngine:
 
         for mod, meta in installed.items():
             ver = meta.get("version", "1.0.0.0")
-            mirror_zip = f"mirror://{mod}/{ver}.zip"
+            mirror_zip = f"module.mirror.root://{mod}/{ver}.zip"
             runtime_dst = f"module.root://{mod}/"
             real_dst = uri.resolve(runtime_dst)
             
@@ -488,11 +523,18 @@ class AtomicEngine:
                 real_zip = uri.resolve(mirror_zip)
                 if os.path.exists(real_dst):
                     shutil.rmtree(real_dst, ignore_errors=True)
-                os.makedirs(real_dst, exist_ok=True)
                 with zipfile.ZipFile(real_zip, "r") as zf:
+                    real_dst_abs = os.path.abspath(real_dst)
+                    for member in zf.infolist():
+                        target_path = os.path.abspath(os.path.join(real_dst_abs, member.filename))
+                        if not target_path.startswith(real_dst_abs + os.sep) and target_path != real_dst_abs:
+                            raise RuntimeError(
+                                f"Zip Slip vulnerability detected: '{member.filename}' in mirror '{mirror_zip}' "
+                                f"attempts to extract outside destination '{real_dst}'."
+                            )
                     zf.extractall(real_dst)
-            elif uri.exists(f"mirror://{mod}/{ver}/"):
-                mirror_src = f"mirror://{mod}/{ver}/"
+            elif uri.exists(f"module.mirror.root://{mod}/{ver}/"):
+                mirror_src = f"module.mirror.root://{mod}/{ver}/"
                 if os.path.exists(real_dst):
                     shutil.rmtree(real_dst, ignore_errors=True)
                 uri.copy(mirror_src, runtime_dst)

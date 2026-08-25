@@ -1,11 +1,11 @@
 """
-Official test suite for core.uri VFS and semantic URI protocol resolution.
+Official test suite for core.uri VFS, semantic URI protocol resolution and JIT reconciliation.
 """
 import os
 import json
 from dev.testing import YSCBTestCase
 from core import uri
-from core.uri import ExecutionContext
+from core.uri import ExecutionContext, UndefinedURIError, CyclicURIDependencyError
 
 class TestCoreURI(YSCBTestCase):
     def test_protocol_resolution_standards(self):
@@ -16,17 +16,17 @@ class TestCoreURI(YSCBTestCase):
             uri.write_json(core_cfg, {"project_root": "./"}, indent=2)
             
         protocols = [
-            "project://", "yscb://", "mirror://", "temp://", "snapshot://",
+            "project://", "yscb://", "module.mirror.root://", "module.mirror://", "temp://", "snapshot://",
             "module.root://", "module://", "config.root://", "config://",
             "cache.root://", "cache://", "module.source.root://", "module.source://",
-            "module.build.root://", "module.build://"
+            "module.build.root://", "module.build://", "module.release.root://", "module.release://"
         ]
         for p in protocols:
-            res = uri.resolve(p)
+            res = uri.resolve(p, interactive=False)
             self.assertTrue(isinstance(res, str) and len(res) > 0, f"Failed resolving {p}")
             
         # Verify explicit config/ directory (not .config)
-        cfg_root = uri.resolve("config.root://")
+        cfg_root = uri.resolve("config.root://", interactive=False)
         self.assertTrue(cfg_root.endswith("config") and not cfg_root.endswith(".config"), f"config.root:// must be explicit config/, got {cfg_root}")
         self.mark_passed()
 
@@ -45,22 +45,17 @@ class TestCoreURI(YSCBTestCase):
         self.mark_passed()
 
     def test_uninitialized_host_raises_file_not_found(self):
-        """Verify _get_host_config (and legacy _find_host_config alias) raises FileNotFoundError on missing yscb.config.json (Zero Speculation)."""
+        """Verify _get_host_config raises FileNotFoundError on missing yscb.config.json (Zero Speculation)."""
         empty_dir = os.path.join(self.sandbox_dir, "empty_dir_for_test")
         os.makedirs(empty_dir, exist_ok=True)
         
-        # When looking strictly at a directory with no yscb.config.json anywhere
         with self.assertRaises(FileNotFoundError) as ctx:
             uri._get_host_config(start_dir=empty_dir)
         self.assertIn("yscb.config.json", str(ctx.exception))
-
-        # Test backward-compatibility alias
-        with self.assertRaises(FileNotFoundError):
-            uri._find_host_config(start_dir=empty_dir)
         self.mark_passed()
 
-    def test_project_root_undefined_raises_value_error(self):
-        """Verify project:// without project_root raises ValueError (Zero Fallback)."""
+    def test_project_root_undefined_raises_undefined_uri_error(self):
+        """FT-08, ET-03: Verify project:// without project_root raises UndefinedURIError in non-interactive mode."""
         core_cfg = "config.root://core/config.project.json"
         saved = None
         if uri.exists(core_cfg):
@@ -68,12 +63,33 @@ class TestCoreURI(YSCBTestCase):
             uri.remove(core_cfg)
             
         try:
-            with self.assertRaises(ValueError) as ctx:
-                uri.resolve("project://some/file.txt")
-            self.assertIn("'project://' is undefined", str(ctx.exception))
+            with self.assertRaises(UndefinedURIError) as ctx:
+                uri.resolve("project://some/file.txt", interactive=False)
+            self.assertIn("project", ctx.exception.scheme)
         finally:
             if saved is not None:
                 uri.write_json(core_cfg, saved, indent=2)
+        self.mark_passed()
+
+    def test_registered_schemes_summary(self):
+        """FT-07: Verify list_registered_schemes_summary returns full summary list."""
+        summary = uri.list_registered_schemes_summary()
+        self.assertTrue(isinstance(summary, list))
+        self.assertTrue(len(summary) >= 10)
+        tokens = [s["token"] for s in summary]
+        self.assertIn("project", tokens)
+        self.assertIn("module.root", tokens)
+        self.assertIn("config.root", tokens)
+        self.mark_passed()
+
+    def test_cyclic_dependency_protection(self):
+        """ET-01: Verify reconcile_undefined_uri raises CyclicURIDependencyError on self-referencing cycle."""
+        uri._reconciling_tokens.add("test_cycle")
+        try:
+            with self.assertRaises(CyclicURIDependencyError):
+                uri.reconcile_undefined_uri("test_cycle", "!undefined", interactive=False)
+        finally:
+            uri._reconciling_tokens.discard("test_cycle")
         self.mark_passed()
 
     def test_vfs_atomic_io(self):
@@ -122,5 +138,5 @@ class TestCoreURI(YSCBTestCase):
     def test_unsupported_scheme_raises_value_error(self):
         """Verify unsupported schemes throw ValueError."""
         with self.assertRaises(ValueError):
-            uri.resolve("invalid_proto://path/to/file")
+            uri.resolve("invalid_proto://path/to/file", interactive=False)
         self.mark_passed()

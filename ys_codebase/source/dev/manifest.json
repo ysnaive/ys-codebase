@@ -34,19 +34,13 @@
           "description": "本地開發完整建置產物專屬目錄"
         },
         {
-          "token": "build",
-          "type": "const",
-          "value": "yscb://build/{module}/",
-          "description": "本地開發完整建置產物別名"
-        },
-        {
-          "token": "release.root",
+          "token": "module.release.root",
           "type": "const",
           "value": "yscb://release/",
           "description": "模組發布來源根目錄"
         },
         {
-          "token": "release",
+          "token": "module.release",
           "type": "const",
           "value": "yscb://release/{module}/",
           "description": "模組專屬發布來源目錄"
