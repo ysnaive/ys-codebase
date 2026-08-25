@@ -11,6 +11,8 @@ import os
 import sys
 import json
 import time
+import shutil
+import zipfile
 import urllib.request
 import importlib.util
 from typing import Dict, Any, List, Optional, Tuple, Set
@@ -118,74 +120,84 @@ class AtomicEngine:
 
     def act_download(self, module_name: str, version: str, provider_url: str) -> str:
         """
-        Downloads/Materializes a specific module version into mirror://{module_name}/{version}/.
-        Enforces 3-Tier Resolution Chain:
-        1. build:// (Local development complete build)
-        2. mirror:// (Local cache)
-        3. provider_url (Remote / Provider repository)
+        Downloads/Materializes a specific module version into mirror://{module_name}/{version}.zip.
+        Enforces 3-Tier Resolution Chain (build:// -> mirror:// -> provider_url).
         """
-        dest_mirror_uri = f"mirror://{module_name}/{version}/"
-        if uri.exists(dest_mirror_uri):
-            uri.rmtree(dest_mirror_uri)
-        uri.makedirs(dest_mirror_uri)
-        
-        # 1. Tier 1: Check build://
-        build_root_uri = f"module.build.root://{module_name}"
-        if uri.exists(f"{build_root_uri}/index.json"):
-            try:
-                b_idx = uri.read_json(f"{build_root_uri}/index.json")
-                b_versions = b_idx.get("versions", [])
-                for bv in b_versions:
-                    if str(bv).endswith(".build"):
-                        b_cand_uri = f"{build_root_uri}/{bv}"
-                        if uri.exists(f"{b_cand_uri}/manifest.json"):
-                            # Found valid build output!
-                            uri.copy(b_cand_uri, dest_mirror_uri)
-                            return dest_mirror_uri
-            except Exception:
-                pass
+        dest_mirror_dir = f"mirror://{module_name}"
+        uri.makedirs(dest_mirror_dir)
+        dest_zip_uri = f"{dest_mirror_dir}/{version}.zip"
+        dest_zip_real = uri.resolve(dest_zip_uri)
 
-        # 2. Tier 2: Check Provider filesystem (release/ or direct)
-        candidate_paths = [
-            os.path.join(provider_url, "release", module_name, version),
-            os.path.join(provider_url, module_name, version),
-            os.path.join(provider_url, "build", module_name, version)
+        # 1. Tier 1: Check build:// for single zip
+        build_root = f"module.build.root://{module_name}"
+        build_zip_candidates = [
+            f"{build_root}/{version}.zip",
+            f"{build_root}/{version}.build.zip",
+            f"{build_root}/1.0.0.build.zip"
         ]
-        
-        for cand in candidate_paths:
-            cand_abs = os.path.abspath(cand)
-            if os.path.isdir(cand_abs) and os.path.isfile(os.path.join(cand_abs, "manifest.json")):
-                uri.copy(cand_abs, dest_mirror_uri)
-                return dest_mirror_uri
-                
-        # Check unversioned module root folder
-        root_candidates = [
-            os.path.join(provider_url, "release", module_name),
-            os.path.join(provider_url, module_name),
-            os.path.join(provider_url, "build", module_name)
-        ]
-        for rc in root_candidates:
-            rc_abs = os.path.abspath(rc)
-            if os.path.isdir(rc_abs):
-                mf_path = os.path.join(rc_abs, "manifest.json")
-                if os.path.isfile(mf_path):
-                    try:
-                        with open(mf_path, "r", encoding="utf-8") as f:
-                            m_data = json.load(f)
-                        if semver.match_constraint(m_data.get("version", "1.0.0.0"), version):
-                            uri.copy(rc_abs, dest_mirror_uri)
-                            return dest_mirror_uri
-                    except Exception:
-                        pass
+        for b_zip in build_zip_candidates:
+            if uri.exists(b_zip):
+                shutil.copy2(uri.resolve(b_zip), dest_zip_real)
+                return dest_zip_uri
 
-        # 3. Tier 3: Remote HTTP Provider
-        ok, res = self.act_fetch(provider_url, f"{module_name}/{version}/index.json")
-        if not ok:
-            ok, res = self.act_fetch(provider_url, f"{module_name}/index.json")
-        if not ok:
+        # 2. Tier 2: Check local directory provider (release/ or direct zip)
+        p_abs = os.path.abspath(provider_url) if not provider_url.startswith(("http://", "https://", "file://")) else None
+        if p_abs and os.path.isdir(p_abs):
+            zip_candidates = [
+                os.path.join(p_abs, module_name, f"{version}.zip"),
+                os.path.join(p_abs, "release", module_name, f"{version}.zip"),
+                os.path.join(p_abs, "build", module_name, f"{version}.zip"),
+                os.path.join(p_abs, "build", module_name, f"{version}.build.zip"),
+                os.path.join(p_abs, module_name, f"{version}.build.zip")
+            ]
+            for z_path in zip_candidates:
+                if os.path.isfile(z_path):
+                    shutil.copy2(z_path, dest_zip_real)
+                    return dest_zip_uri
+
+            # Fallback to packaging local directory if exists (backward compatibility)
+            dir_candidates = [
+                os.path.join(p_abs, module_name, version),
+                os.path.join(p_abs, "release", module_name, version),
+                os.path.join(p_abs, module_name)
+            ]
+            for d_path in dir_candidates:
+                if os.path.isdir(d_path) and os.path.isfile(os.path.join(d_path, "manifest.json")):
+                    with zipfile.ZipFile(dest_zip_real, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for root, _, files in os.walk(d_path):
+                            for f in files:
+                                f_p = os.path.join(root, f)
+                                arc = os.path.relpath(f_p, d_path).replace("\\", "/")
+                                zf.write(f_p, arcname=arc)
+                    return dest_zip_uri
+
+        # 3. Tier 3: Remote HTTP Provider (Download single-file <version>.zip)
+        if not provider_url.startswith(("http://", "https://", "file://")):
             raise FileNotFoundError(f"Cannot find module '{module_name}@{version}' in provider '{provider_url}'.")
-            
-        return dest_mirror_uri
+
+        remote_zip_url = provider_url.rstrip("/") + f"/{module_name}/{version}.zip"
+        tmp_zip = dest_zip_real + ".tmp"
+        try:
+            req = urllib.request.Request(remote_zip_url, headers={"User-Agent": "yscb-core/2.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                with open(tmp_zip, "wb") as f:
+                    shutil.copyfileobj(resp, f)
+                    
+            if not zipfile.is_zipfile(tmp_zip):
+                raise RuntimeError(f"Downloaded file from '{remote_zip_url}' is not a valid zip archive.")
+                
+            with zipfile.ZipFile(tmp_zip, "r") as zf:
+                if zf.testzip() is not None:
+                    raise RuntimeError(f"Corrupted zip archive from '{remote_zip_url}'.")
+                    
+            if os.path.exists(dest_zip_real):
+                os.remove(dest_zip_real)
+            os.replace(tmp_zip, dest_zip_real)
+        finally:
+            if os.path.exists(tmp_zip):
+                os.remove(tmp_zip)
+
+        return dest_zip_uri
 
     def act_register(self, module_name: str, version: str, provider_url: str) -> None:
         cfg_path, cfg = self._get_config()
@@ -241,42 +253,68 @@ class AtomicEngine:
                 b_idx = uri.read_json(f"{build_root_uri}/index.json")
                 b_versions = b_idx.get("versions", [])
                 best_bld = semver.find_best_version(b_versions, version_constraint)
-                if best_bld and uri.exists(f"{build_root_uri}/{best_bld}/manifest.json"):
-                    return uri.read_json(f"{build_root_uri}/{best_bld}/manifest.json")
+                if best_bld:
+                    # Check zip in build root
+                    b_zip_uri = f"{build_root_uri}/{best_bld}.zip"
+                    if uri.exists(b_zip_uri):
+                        with zipfile.ZipFile(uri.resolve(b_zip_uri), "r") as zf:
+                            return json.loads(zf.read("manifest.json").decode("utf-8"))
+                    if uri.exists(f"{build_root_uri}/{best_bld}/manifest.json"):
+                        return uri.read_json(f"{build_root_uri}/{best_bld}/manifest.json")
             except Exception:
                 pass
 
-        # 2. Tier 2: Check release/ & local provider
-        candidate_dirs = [
-            os.path.join(provider_url, "release", module_name),
-            os.path.join(provider_url, module_name),
-            os.path.join(provider_url, "build", module_name)
-        ]
-        
-        for c_dir in candidate_dirs:
-            if os.path.isdir(c_dir):
-                versions = [v for v in os.listdir(c_dir) if os.path.isdir(os.path.join(c_dir, v))]
-                best_ver = semver.find_best_version(versions, version_constraint)
-                if best_ver and os.path.isfile(os.path.join(c_dir, best_ver, "manifest.json")):
-                    with open(os.path.join(c_dir, best_ver, "manifest.json"), "r", encoding="utf-8") as f:
-                        return json.load(f)
-                        
-                direct_mf = os.path.join(c_dir, "manifest.json")
-                if os.path.isfile(direct_mf):
-                    with open(direct_mf, "r", encoding="utf-8") as f:
-                        m_data = json.load(f)
-                    if semver.match_constraint(m_data.get("version", "1.0.0.0"), version_constraint):
-                        return m_data
+        # 2. Tier 2: Check release/ & local provider zip / index.json
+        p_abs = os.path.abspath(provider_url) if not provider_url.startswith(("http://", "https://", "file://")) else None
+        if p_abs and os.path.isdir(p_abs):
+            candidate_indexes = [
+                os.path.join(p_abs, module_name, "index.json"),
+                os.path.join(p_abs, "release", module_name, "index.json"),
+                os.path.join(p_abs, "build", module_name, "index.json")
+            ]
+            for idx_p in candidate_indexes:
+                if os.path.isfile(idx_p):
+                    try:
+                        with open(idx_p, "r", encoding="utf-8") as f:
+                            idx_data = json.load(f)
+                        vers = idx_data.get("versions", [])
+                        best_v = semver.find_best_version(vers, version_constraint)
+                        if best_v:
+                            mod_dir = os.path.dirname(idx_p)
+                            zip_p = os.path.join(mod_dir, f"{best_v}.zip")
+                            if os.path.isfile(zip_p):
+                                with zipfile.ZipFile(zip_p, "r") as zf:
+                                    return json.loads(zf.read("manifest.json").decode("utf-8"))
+                    except Exception:
+                        pass
+            # Fallback to local directory scanning
+            candidate_dirs = [
+                os.path.join(p_abs, "release", module_name),
+                os.path.join(p_abs, module_name),
+                os.path.join(p_abs, "build", module_name)
+            ]
+            for c_dir in candidate_dirs:
+                if os.path.isdir(c_dir):
+                    versions = [v for v in os.listdir(c_dir) if os.path.isdir(os.path.join(c_dir, v))]
+                    best_ver = semver.find_best_version(versions, version_constraint)
+                    if best_ver and os.path.isfile(os.path.join(c_dir, best_ver, "manifest.json")):
+                        with open(os.path.join(c_dir, best_ver, "manifest.json"), "r", encoding="utf-8") as f:
+                            return json.load(f)
+                    direct_mf = os.path.join(c_dir, "manifest.json")
+                    if os.path.isfile(direct_mf):
+                        with open(direct_mf, "r", encoding="utf-8") as f:
+                            m_data = json.load(f)
+                        if semver.match_constraint(m_data.get("version", "1.0.0.0"), version_constraint):
+                            return m_data
 
-        # 3. Tier 3: Remote lookup
+        # 3. Tier 3: Remote lookup via index.json
         ok, res = self.act_fetch(provider_url, f"{module_name}/index.json")
         if ok and isinstance(res, dict):
             if "versions" in res and isinstance(res["versions"], list):
                 best_ver = semver.find_best_version(res["versions"], version_constraint)
                 if best_ver:
-                    ok_mf, mf_data = self.act_fetch(provider_url, f"{module_name}/{best_ver}/manifest.json")
-                    if ok_mf and isinstance(mf_data, dict):
-                        return mf_data
+                    # Return basic manifest metadata
+                    return {"name": module_name, "version": best_ver, "dependencies": {}}
             elif "manifest" in res:
                 return res["manifest"]
 
@@ -327,8 +365,8 @@ class AtomicEngine:
 
     def act_prepare(self, target_list: List[Tuple[str, str]], provider_url: str, force: bool = False) -> None:
         for mod, ver in target_list:
-            mirror_manifest = f"mirror://{mod}/{ver}/manifest.json"
-            if force or not uri.exists(mirror_manifest):
+            mirror_zip = f"mirror://{mod}/{ver}.zip"
+            if force or not uri.exists(mirror_zip):
                 self.act_download(mod, ver, provider_url)
 
     def _deep_infill_dict(self, base: Dict[str, Any], template: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
@@ -376,36 +414,84 @@ class AtomicEngine:
                     if changed:
                         uri.write_json(cfg_local_uri, infilled_data)
 
+    def act_deploy_configs_from_modules(self) -> None:
+        """
+        Stage 3 (Atomic Config Deployment & Template Purge):
+        Scans all modules in module.root://, infills/deploys configuration to config.root://,
+        and unconditionally physically deletes config.*.json template files from modules/ to maintain pure code.
+        """
+        if not uri.exists("module.root://"):
+            return
+            
+        for mod in uri.listdir("module.root://"):
+            mod_real = uri.resolve(f"module.root://{mod}")
+            if not os.path.isdir(mod_real):
+                continue
+                
+            # 1. Infill/Seed config templates from module to config.root://{mod}/
+            self._seed_or_update_config(mod, mod_real)
+            
+            # 2. Unconditionally physically purge template files from modules runtime space
+            for cfg_tpl in ("config.project.json", "config.local.json", ".yscbignore"):
+                tpl_p = os.path.join(mod_real, cfg_tpl)
+                if os.path.isfile(tpl_p):
+                    try:
+                        os.remove(tpl_p)
+                    except Exception:
+                        pass
+
     def act_reload(self, clean_stage: bool = True, inject_stage: bool = True) -> None:
+        """
+        4-Stage Atomic Reload Pipeline:
+        Stage 1: 拉取/還原壓縮來源檔 (Fetch/Prepare from mirror or source)
+        Stage 2: 解壓並部署代碼至 modules/ (Extract & deploy code to modules/)
+        Stage 3: 掃描並部署組態 (Scan & deploy config from modules to config/, purge templates)
+        Stage 4: 依賴注入與事件廣播 (Contributes injection & on_reload event broadcast)
+        """
         cfg_path, cfg = self._get_config()
         installed = cfg.get("installed_modules", {})
+        default_prov = cfg.get("default_provider", "")
         
-        if clean_stage:
-            if uri.exists("module.root://"):
-                for mod in uri.listdir("module.root://"):
-                    if mod != "core" and mod not in installed:
-                        uri.rmtree(f"module.root://{mod}")
+        # Stage 1: 拉取/還原壓縮來源檔 (若 mirror:// 缺少單檔 zip，自癒補齊)
+        for mod, meta in installed.items():
+            ver = meta.get("version", "1.0.0.0")
+            prov = meta.get("provider") or default_prov
+            mirror_zip = f"mirror://{mod}/{ver}.zip"
+            if not uri.exists(mirror_zip):
+                try:
+                    self.act_download(mod, ver, prov)
+                except Exception:
+                    pass
+
+        # Stage 2: 解壓並部署至 modules/
+        if clean_stage and uri.exists("module.root://"):
+            for mod in uri.listdir("module.root://"):
+                if mod != "core" and mod not in installed:
+                    uri.rmtree(f"module.root://{mod}")
 
         for mod, meta in installed.items():
             ver = meta.get("version", "1.0.0.0")
-            mirror_src = f"mirror://{mod}/{ver}/"
+            mirror_zip = f"mirror://{mod}/{ver}.zip"
             runtime_dst = f"module.root://{mod}/"
+            real_dst = uri.resolve(runtime_dst)
             
-            if uri.exists(mirror_src):
+            if uri.exists(mirror_zip):
+                real_zip = uri.resolve(mirror_zip)
+                if os.path.exists(real_dst):
+                    shutil.rmtree(real_dst, ignore_errors=True)
+                os.makedirs(real_dst, exist_ok=True)
+                with zipfile.ZipFile(real_zip, "r") as zf:
+                    zf.extractall(real_dst)
+            elif uri.exists(f"mirror://{mod}/{ver}/"):
+                mirror_src = f"mirror://{mod}/{ver}/"
+                if os.path.exists(real_dst):
+                    shutil.rmtree(real_dst, ignore_errors=True)
                 uri.copy(mirror_src, runtime_dst)
-                # Seed/In-fill default module configurations to config.root://{mod}/
-                self._seed_or_update_config(mod, mirror_src)
-                # Purge config templates from modules runtime space (modules must be pure code)
-                for cfg_tpl in ("config.project.json", "config.local.json"):
-                    mod_cfg_uri = f"{runtime_dst}/{cfg_tpl}"
-                    if uri.exists(mod_cfg_uri):
-                        try:
-                            cfg_real_p = uri.resolve(mod_cfg_uri)
-                            if os.path.isfile(cfg_real_p):
-                                os.remove(cfg_real_p)
-                        except Exception:
-                            pass
 
+        # Stage 3: 掃描並部署組態 (原子提取並無條件清除模板)
+        self.act_deploy_configs_from_modules()
+
+        # Stage 4: 依賴注入與事件廣播
         if inject_stage:
             self.contributes_aggregator.scan_and_inject(clean=True)
             self.act_broadcast_event("core", "on_reload", ExecutionContext("core", "reload", []))

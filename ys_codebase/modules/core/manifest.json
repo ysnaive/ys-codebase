@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.0.0.0",
+  "version": "1.0.0.build",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -78,18 +78,6 @@
           "type": "const",
           "value": "yscb://storage/{module}/",
           "description": "模組專屬持久化儲存目錄"
-        },
-        {
-          "token": "release.root",
-          "type": "const",
-          "value": "yscb://release/",
-          "description": "模組發布來源根目錄"
-        },
-        {
-          "token": "release",
-          "type": "const",
-          "value": "yscb://release/{module}/",
-          "description": "模組專屬發布來源目錄"
         }
       ]
     }

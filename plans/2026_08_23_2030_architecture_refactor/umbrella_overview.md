@@ -33,6 +33,7 @@
 | **sub_10** | `sub_10_test_framework_polish` | Full Track | **已完成** | 測試框架生命週期與全隔離虛擬沙盒重構：落實三階指令 (op-mksb, op-test, test)、完全對標沙盒與 hook.dev.py 自治體系 |
 | **sub_11** | `sub_11_framework_robustness_and_bugfix` | Full Track | **已完成** | 套件框架健壯性強化與缺陷修復：清除軟相容手段回歸剛性拓撲、SemVer 2.0.0 數值運算器、雙層快照還原、CM 作用域與 Hermetic Clean Build |
 | **sub_12** | `sub_12_versioning_and_release_pipeline` | Full Track | **已完成** | 四段式版本號、雙軌來源庫 (Build vs Release)、三層安裝降級鏈、發布流水線與 Migration 階梯調用 |
+| **sub_13** | `sub_13_native_consumer_testing_and_hardening` | Full Track | **已完成** | 原生消費者端到端測試、預設 Provider 遠端自舉、全面單檔 Zip 打包標準、4-Stage Reload 流水線與第三方加固 |
 
 ---
 
@@ -51,6 +52,7 @@ flowchart TD
     sub_09 --> sub_10["sub_10: 測試框架打磨<br/>(Test Framework Polish)"]
     sub_10 --> sub_11["sub_11: 框架健壯性與缺陷修復<br/>(Robustness & SemVer)"]
     sub_11 --> sub_12["sub_12: 版控與發布流水線<br/>(Versioning & Release)"]
+    sub_12 --> sub_13["sub_13: 原生消費者測試與加固<br/>(Native Consumer Hardening)"]
 ```
 
 ---
@@ -91,8 +93,8 @@ flowchart TD
 
 ## 5. 主計畫結案成果與驗收總結 (Master Plan Completion)
 
-- **子計畫執行達成率**：10 / 10 子計畫 100% 交付結案。
+- **子計畫執行達成率**：13 / 13 子計畫 100% 交付結案。
 - **程式碼品質與依賴**：100% Python 標準庫，零第三方套件依賴。
-- **自動化測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (42/42) = **48/48 測試全數 Passed (100% Ready)**。
-- **知識庫交付**：`docs/` 10 大標準手冊全面綠地落成與 1:1 驗收。
+- **自動化測試守門**：Auto-Contract (6/6) + Custom Persistent Tests (68/68) = **74/74 測試全數 Passed (100% Ready)**。
+- **知識庫交付**：`docs/` 12 大標準手冊全面綠地落成與 1:1 驗收。
 - **全主計畫狀態**：**✅ 圓滿結案 (Completed)**。
