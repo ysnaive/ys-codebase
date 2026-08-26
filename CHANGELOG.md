@@ -2,6 +2,28 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_0143_dev_agents_workflow_injection_expansion
+
+- **擴充 Dev 模組對 Agents-Workflow 注入之工程規範與指令防呆**：
+  - **Contributes Commands 規格統一與頂層廢除**：
+    - 徹底廢除頂層特例 `contributes.commands`，統一收斂至由 `core` 模組治理的 `contributes.core.commands` 標準規格。
+    - 支援富語意 Schema：`{"description": "...", "case_pros": ["..."], "case_cons": ["..."]}`。
+    - 宿主起手腳本 `yscb.py` 適配自 `contributes.core.commands` 讀取並渲染標準 CLI Help。
+  - **動態指令手冊與強制防呆守門 (`AGENTS_CLI_GUILD`)**：
+    - `core.providers.get_agents_cli_guild` 實作動態掃描與過濾（自動排除 pros/cons 皆空指令），輸出標準 Markdown 防呆對照表。
+    - `agents-workflow` 導出 `AgentsCliGuild.md` 並透過 `__@{AGENTS_CLI_GUILD}__` 自動物化至發布目標。
+    - `AgentsStandards.md` 注入「查表比對」與「Default-Deny 未列情境向開發者確認」之強制守門鐵律。
+  - **現有三大模組指令清冊全面補齊**：
+    - `core`（8 大指令）、`dev`（10 大子指令）、`agents-workflow`（7 大子指令）全面補齊 `contributes.core.commands` 與詳細防呆推薦/禁止情境。
+  - **工作流導航修復與編譯器轉譯增強**：
+    - `ContextInit.md` 步驟 2 導航導向 `DevelopmentStandards.md` 與 `AgentsCliGuild.md`。
+    - `compiler.py` 增強 `URI_REF_REGEX`，支援在 Markdown 超連結括號內直接使用 `__#{module://...}__` 並轉譯為各 Target 相對超連結。
+  - **測試沙盒隔離漏洞修復**：
+    - 修復 `test_robustness.py` 中缺少 `_get_yscb_root` mock 的沙盒外溢問題，達成 100% 虛擬目錄拘束隔離。
+  - **全系統回歸與交付**：
+    - 全系統沙盒跑測 `python yscb.py dev test --all` 通過 122/122 測試 (100% Ready)。
+    - 完成 `contributes.format.md`、`docs/agents-workflow/user_guide.md` 與 `docs/dev/user_guide.md` 知識庫文檔交付。
+
 ## 2026_08_27_0045_pure_uri_scheme_and_recursive_resolve_fix
 
 - **純淨語意 URI 協議、遞迴解算缺陷修復與 on_reload 自動發布 Hook**：

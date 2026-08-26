@@ -7,15 +7,6 @@
     "core": ">=1.0.0"
   },
   "contributes": {
-    "commands": {
-      "init": "One-click workflow URI protocols and directories initialization",
-      "plan": "Dev Plans management toolchain (status, archive, search, verify)",
-      "release": "Execute 4-step atomic release transaction for all active targets",
-      "release-target": "Manage release targets (list, add, remove)",
-      "compile": "Run Stage 1 artifact compilation into cache.root://",
-      "tokens": "List all registered token anchors and descriptions",
-      "list": "List all declared export standards, workflows, and templates"
-    },
     "core": {
       "uri_schemes": [
         {
@@ -36,7 +27,63 @@
           "value": "paths.docs",
           "description": "指向 agents-workflow 專案知識庫文檔目錄"
         }
-      ]
+      ],
+      "commands": {
+        "init": {
+          "description": "One-click workflow URI protocols and directories initialization",
+          "case_pros": [
+            "專案初次建立或重新初始化 agents-workflow 工作流環境"
+          ],
+          "case_cons": [
+            "🚨 嚴禁在已有工作流配置的環境重複手動執行 init"
+          ]
+        },
+        "plan": {
+          "description": "Dev Plans management toolchain (status, archive, search, verify)",
+          "case_pros": [
+            "檢視計畫狀態: agents-workflow plan status",
+            "搜尋歷史計畫: agents-workflow plan search <query>",
+            "驗證計畫完整度: agents-workflow plan verify",
+            "依開發者明確指示封存計畫: agents-workflow plan archive <plan_dir>"
+          ],
+          "case_cons": [
+            "🚨 嚴禁 Agent 主動或擅自執行 plan archive (除非開發者明確指示歸檔)"
+          ]
+        },
+        "release": {
+          "description": "Execute 4-step atomic release transaction for all active targets",
+          "case_pros": [
+            "模組通過測試後編譯發布工作流資產至各 release_target (如 .agents/)"
+          ],
+          "case_cons": [
+            "🚨 嚴禁在未獲發布授權前擅自執行"
+          ]
+        },
+        "release-target": {
+          "description": "Manage release targets (list, add, remove)",
+          "case_pros": [
+            "檢視或管理工作流發布目標清冊"
+          ]
+        },
+        "compile": {
+          "description": "Run Stage 1 artifact compilation into cache.root://",
+          "case_pros": [
+            "測試編譯或除錯 Stage 1 中繼資產"
+          ]
+        },
+        "tokens": {
+          "description": "List all registered token anchors and descriptions",
+          "case_pros": [
+            "檢視全系統可用的 Token 錨點清單"
+          ]
+        },
+        "list": {
+          "description": "List all declared export standards, workflows, and templates",
+          "case_pros": [
+            "檢視 agents-workflow 導出之規範、工作流與模板清單"
+          ]
+        }
+      }
     },
     "agents-workflow": {
       "export": [
@@ -44,6 +91,11 @@
           "type": "standard",
           "source": "module://agents-workflow/assets/standards/AgentsStandards.md",
           "description": "Agent 專案核心原則與防呆紀律規範"
+        },
+        {
+          "type": "standard",
+          "source": "module://agents-workflow/assets/standards/AgentsCliGuild.md",
+          "description": "YSCB CLI 指令防呆與語意情境對照指南"
         },
         {
           "type": "standard",
@@ -373,6 +425,10 @@
         {
           "value": "HANDOFF_TEMPLATE",
           "description": "現場凍結交接模板主體擴充注入錨點（位於 handoff.md 尾部）"
+        },
+        {
+          "value": "AGENTS_CLI_GUILD",
+          "description": "YSCB CLI 指令防呆手冊動態注入錨點（位於 AgentsCliGuild.md）"
         }
       ],
       "insert": [

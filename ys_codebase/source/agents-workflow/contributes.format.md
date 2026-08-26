@@ -169,3 +169,39 @@
   }
 }
 ```
+
+---
+
+### 2.5 核心 CLI 指令與防呆情境宣告 (`contributes.core.commands`)
+宣告本模組所提供之子指令、說明以及防呆情境（用於產生宿主 CLI Help 與 `AGENTS_CLI_GUILD` 動態手冊）。
+
+- **欄位說明**：
+  - `<command_name>` (`object`，必填)：子指令名稱。
+    - `description` (`string`，必填)：指令功能簡述。
+    - `case_pros` (`list[string]`, 選填)：推薦 / 適用情境列表（若 pros 與 cons 皆無或為空，自動排除於 Agent 防呆手冊）。
+    - `case_cons` (`list[string]`, 選填)：絕對禁止 / 不適用情境列表（以 `🚨` 明確警示）。
+
+```json
+{
+  "contributes": {
+    "core": {
+      "commands": {
+        "plan": {
+          "description": "Dev Plans management toolchain (status, archive, search, verify)",
+          "case_pros": [
+            "檢視計畫狀態: agents-workflow plan status",
+            "搜尋歷史計畫: agents-workflow plan search <query>",
+            "驗證計畫完整度: agents-workflow plan verify",
+            "依開發者明確指示封存計畫: agents-workflow plan archive <plan_dir>"
+          ],
+          "case_cons": [
+            "🚨 嚴禁 Agent 主動或擅自執行 plan archive (除非開發者明確指示歸檔)"
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+
