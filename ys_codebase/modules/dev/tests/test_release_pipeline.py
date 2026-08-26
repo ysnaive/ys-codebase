@@ -31,13 +31,13 @@ class TestReleasePipeline(unittest.TestCase):
         ok, msg = self.builder.build_module("core", clean=True)
         self.assertTrue(ok)
         
-        build_zip = uri.resolve("module.build://core/1.0.0.build.zip")
+        build_zip = uri.resolve("module.build.root://core/1.0.0.build.zip")
         self.assertTrue(os.path.isfile(build_zip))
         
         # Test release packaging outputs clean package (.zip)
         ok_rel, msg_rel = self.builder.package_release("core", "1.0.0.0")
         self.assertTrue(ok_rel)
-        rel_zip = uri.resolve("module.release://core/1.0.0.0.zip")
+        rel_zip = uri.resolve("module.release.root://core/1.0.0.0.zip")
         self.assertTrue(os.path.isfile(rel_zip))
         # Ensure tests/ is excluded in release zip
         import zipfile

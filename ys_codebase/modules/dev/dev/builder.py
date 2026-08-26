@@ -72,7 +72,7 @@ class Builder:
 
     def _update_build_index(self, name: str, description: str = "") -> None:
         """Updates build/{name}/index.json scanning *.zip files."""
-        mod_build_root = f"module.build://{name}"
+        mod_build_root = f"module.build.root://{name}"
         if not uri.exists(mod_build_root):
             return
             
@@ -100,7 +100,7 @@ class Builder:
         Updates release/{name}/index.json with Single Active Revision per X.Y.Z rule.
         If new_version is provided, automatically eliminates older revision zip files under the same major.minor.patch.
         """
-        mod_rel_root = f"module.release://{name}"
+        mod_rel_root = f"module.release.root://{name}"
         if not uri.exists(mod_rel_root):
             return
             
@@ -151,7 +151,7 @@ class Builder:
         - 清理舊 *.build.zip 保持單一最新產物。
         - 自動更新 build/{name}/index.json。
         """
-        src_uri = f"module.source://{name}"
+        src_uri = f"module.source.root://{name}"
         if not uri.exists(src_uri):
             return False, f"Source module not found at {src_uri}."
         
@@ -166,7 +166,7 @@ class Builder:
         v_tuple = semver.parse_semver(raw_version)
         build_version = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
         
-        mod_build_root = f"module.build://{name}"
+        mod_build_root = f"module.build.root://{name}"
         uri.makedirs(mod_build_root)
         
         real_build_dir = uri.resolve(mod_build_root)
@@ -227,12 +227,12 @@ class Builder:
         - 自動執行同 X.Y.Z 舊 Revision.zip 淘汰清理。
         - 更新 release/{name}/index.json。
         """
-        src_uri = f"module.source://{name}"
+        src_uri = f"module.source.root://{name}"
         if not uri.exists(src_uri):
             return False, f"Source module not found at {src_uri}."
             
         manifest_data = uri.read_json(f"{src_uri}/manifest.json")
-        mod_rel_root = f"module.release://{name}"
+        mod_rel_root = f"module.release.root://{name}"
         uri.makedirs(mod_rel_root)
         
         real_rel_dir = uri.resolve(mod_rel_root)
@@ -279,11 +279,11 @@ class Builder:
 
     def build_all(self, clean: bool = True) -> Dict[str, Tuple[bool, str]]:
         results = {}
-        src_root_uri = "module.source://"
+        src_root_uri = "module.source.root://"
         if not uri.exists(src_root_uri):
             return results
         for item in uri.listdir(src_root_uri):
-            item_uri = f"module.source://{item}"
+            item_uri = f"module.source.root://{item}"
             if uri.is_dir(item_uri) and uri.exists(f"{item_uri}/manifest.json"):
                 results[item] = self.build_module(item, clean=clean)
         return results

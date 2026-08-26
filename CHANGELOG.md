@@ -2,6 +2,29 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_25_2200_agents_workflow_migration
+
+- **Plans CLI 工具鏈補齊與舊版功能遷移 (`sub_08_plans_cli_toolchain_migration`)**：
+  - **Plans 工具鏈子套件體系 (`agents_workflow.plans`)**：
+    - 將舊版 4 大孤立維護腳本（`archive_plan.py`, `scan_plan_status.py`, `search_dev_plans.py`, `verify_plan.py`）完整重構為高內聚子套件，定義自定義例外基底與型別（`PlanNotFoundError`, `PlanFormatError`, `PlanIncompleteError`, `PlanDestinationExistsError`）。
+    - 100% 透過 `core.uri.resolve` 解析語意空間（`workflow.plans://`, `workflow.archived://`, `project://`），消除所有硬編碼路徑。
+  - **計畫安全歸檔服務 (`PlanArchiver`)**：
+    - 實作 4 重安全檢查守門模型（Completed 狀態、全域 CHANGELOG 登載、清理暫時 `handoff.md`、目的地同名防護）。
+    - 依據時間戳前綴 `YYYY_MM_` 自動分流至 `workflow.archived://{YYYY}/{MM}/{plan_name}/`；支援 `--force` 放行。
+  - **計畫狀態矩陣掃描服務 (`PlanScanner`)**：
+    - 專注掃描活躍進行中計畫（明確排除歷史目錄），精確識別 4 大 Track（Umbrella, Fast Track, Full Track, Phase 0）與當前 Phase 狀態，輸出純 ASCII 樹狀縮排清冊。
+  - **歷史與決策檢索服務 (`PlanSearcher`)**：
+    - 支援 `--dr` 模式正則結構化擷取去重跨計畫決策記錄，相容中英文與 Markdown 列表/標題格式；支援全文程式碼與上下文行檢索，提供 `--year`, `--month`, `--limit` 篩選。
+  - **文件合規性與規範稽核服務 (`PlanVerifier`)**：
+    - 稽核 Markdown 是否殘留 `<!-- AGENT_GUIDANCE -->` 模板指引註解；檢查 Blockquote Header 元數據（`功能名稱`, `建立日期`, `狀態`）齊備性；遞迴稽核 `sub_*` 子計畫目錄。
+  - **CLI 路由派發與平鋪別名 (`scripts/cli.py`)**：
+    - 實作 `agents-workflow plan <archive|status|search|verify>` 路由，並提供 `plan-archive`, `plan-status`, `plan-search`, `plan-verify` 雙軌別名支援。
+    - 內建 Windows 控制台 UTF-8 安全轉碼保護與純 ASCII 格式渲染，徹底消除編碼崩潰。
+  - **全量測試與回歸驗證**：
+    - 模組內部單元測試 20/20 100% Passed。
+    - 全系統端到端沙盒測試 111/111 100% Ready。
+    - 交付 `docs/agents-workflow/README.md` 與 `docs/agents-workflow/user_guide.md`。
+
 ## 2026_08_26_1747_core_dev_refinement
 
 - **Dev 模組發布與驗證工具鏈重構 (`sub_02_dev_release_verification_refactor`)**：
