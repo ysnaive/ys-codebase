@@ -8,8 +8,10 @@ from typing import Dict, List, Any, Optional, Tuple
 
 try:
     from core import uri
+    from core.context import ExecutionContext
 except ImportError:
     uri = None
+    ExecutionContext = None
 
 # Global Placeholder Pattern Constants (Strict Backtick Format)
 TOKEN_ANCHOR_REGEX = re.compile(r"`__@\{\s*([A-Za-z0-9_]+)\s*\}__`")
@@ -160,7 +162,8 @@ class ArtifactCompiler:
         content: str,
         inserts: List[Dict[str, Any]],
         mod_order: Optional[List[str]] = None,
-        max_passes: int = 10
+        max_passes: int = 10,
+        context: Optional[Any] = None
     ) -> str:
         """
         單一 Export 檔案之多輪遞迴解算狀態機：
@@ -207,6 +210,15 @@ class ArtifactCompiler:
                     # 解算注入內容
                     if ins_type == "uri":
                         val_content = self._read_file_content(str(raw_val))
+                    elif ins_type == "computed":
+                        try:
+                            from core.symbols import resolve_callable
+                            target_fn = resolve_callable(str(raw_val), context=context)
+                            comp_res = target_fn(context)
+                            val_content = "" if comp_res is None else str(comp_res)
+                        except Exception as e:
+                            print(f"[compiler:warning] Failed to resolve computed token '{token_name}' ({raw_val}): {e}", file=sys.stderr)
+                            val_content = ""
                     else:
                         val_content = str(raw_val)
 
@@ -288,7 +300,8 @@ class ArtifactCompiler:
                 continue
 
             try:
-                resolved_content = self.resolve_single_artifact(raw_content, inserts)
+                ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
+                resolved_content = self.resolve_single_artifact(raw_content, inserts, context=ctx)
                 
                 # 寫入 exports
                 written = False

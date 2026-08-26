@@ -1,3 +1,16 @@
+> [!NOTE]
+> ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
+> 本專案已註冊之語意 URI 實體路徑如下：
+> 
+> | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
+> | :--- | :--- | :--- |
+> | **`project://`** | `./` | `[ACTIVE]` |
+> | **`yscb://`** | `./ys_codebase` | `[ACTIVE]` |
+> | **`plans://`** | `./plans` | `[!UNDEFINED]` |
+> | **`archive://`** | `./archive` | `[!UNDEFINED]` |
+> | **`docs://`** | `./docs` | `[!UNDEFINED]` |
+> 
+> 🛠️ **CLI 動態解析指令**：`python yscb.py uri resolve <uri>`（例：`python yscb.py uri resolve project://AGENTS.md`）
 
 # 專案上下文初始化流程 (ContextInit)
 

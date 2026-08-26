@@ -232,6 +232,22 @@ class TestArtifactCompiler(unittest.TestCase):
         resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
         self.assertEqual(resolved, "<!-- slide -->")
 
+    def test_ft_08_computed_token_resolution(self):
+        """FT-08: 驗證 type: 'computed' 與 code.func:// 動態調用解算。"""
+        raw_text = "# Header\n\n`__@{DYNAMIC_CONTEXT_MAP}__`\n\n# Body"
+        inserts = [
+            {
+                "type": "computed",
+                "token": "DYNAMIC_CONTEXT_MAP",
+                "value": "code.func://agents-workflow/providers:get_dynamic_context_map",
+                "mode": "replace"
+            }
+        ]
+        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
+        self.assertNotIn("`__@{DYNAMIC_CONTEXT_MAP}__`", resolved)
+        self.assertIn("專案語意 URI 即時解析地圖", resolved)
+        self.assertIn("project://", resolved)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -113,6 +113,12 @@
           "token": "END_HTML_ANNOTATION",
           "value": "-->",
           "mode": "replace"
+        },
+        {
+          "type": "computed",
+          "token": "DYNAMIC_CONTEXT_MAP",
+          "value": "code.func://agents-workflow/providers:get_dynamic_context_map",
+          "mode": "replace"
         }
       ]
     }
