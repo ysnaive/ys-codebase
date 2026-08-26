@@ -54,12 +54,12 @@ Agent 必須始終遵守以下三大原則：
 ## 2. 工作目錄與子計畫管理規範 (Workspace & Sub-Plans)
 
 ### 2.1 計畫目錄結構與命名
-- **獨立計畫（進行中）**：`plans://{YYYY_MM_DD_HHMM_功能名稱}/`
-- **獨立計畫（已歸檔）**：`archive://{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`
+- **獨立計畫（進行中）**：`workflow.plans://{YYYY_MM_DD_HHMM_功能名稱}/`
+- **獨立計畫（已歸檔）**：`workflow.archived://{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`
 > `YYYY_MM_DD_HHMM` 採用 24 小時制時間戳，確保同一天建立多個計畫時目錄名稱不產生衝撞。
 
 ### 2.2 計畫內部日誌 vs. 全域變更日誌職責分離
-- **`plans://<plan>/changelog.md`（計畫內部微觀日誌）**：記錄當前 Dev Plan 內部 Phase 轉換、DR 決策與偏差處置，開立計畫目錄時**必須與 P00 剛性伴隨初始化**。
+- **`workflow.plans://<plan>/changelog.md`（計畫內部微觀日誌）**：記錄當前 Dev Plan 內部 Phase 轉換、DR 決策與偏差處置，開立計畫目錄時**必須與 P00 剛性伴隨初始化**。
 - **`project://CHANGELOG.md`（全專案高階發布日誌）**：僅於 Phase 7 / FT-3 結案審查階段，由 Agent 追加本次 Dev Plan 的高階發布摘要。
 
 ### 2.3 巢狀子計畫管理 (Sub-Plans Architecture)
@@ -125,8 +125,8 @@ Agent 必須始終遵守以下三大原則：
   - **人工 / UX 驗證 Checkpoint（強制等待關卡）**：呈遞測試結果，明確等待開發者完成實際互動/視覺/手動 UX 驗證或指示免測後，方可標記 `Passed`。
 - **Phase 7 (成果展示與結案)**：
   - 產出結案報告 `P07_walkthrough.md`。
-  - **知識庫 1:1 交付驗收**：核對並交付 Phase 4 預排之 `docs/` 文檔，追加版本日誌至專案根目錄 `CHANGELOG.md`。
-  - 工作目錄預設留存於 `plans://` 原位，嚴禁主動歸檔。
+  - **知識庫 1:1 交付驗收**：核對並交付 Phase 4 預排之 `workflow.docs://` 文檔，追加版本日誌至專案根目錄 `CHANGELOG.md`。
+  - 工作目錄預設留存於 `workflow.plans://` 原位，嚴禁主動歸檔。
 
 ### 4.3 Fast Track 敏捷流程
 - **FT-1 (需求確認 & 變更規劃)**：建立 `fast_track_plan.md` (Draft)，嵌入 P00 引用，通過架構確認 Checklist ➔ Checkpoint ➔ Confirmed。

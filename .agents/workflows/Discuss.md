@@ -4,22 +4,21 @@ description: 深度歸因與防淺層修復工作流 (Discuss) — 實作/測試
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Discuss.md](../../modules/agents-workflow/workflows/commands/Discuss.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
 > | **`project://`** | `./` | `[ACTIVE]` |
-> | **`yscb://`** | `./` | `[ACTIVE]` |
-> | **`plans://`** | `./plans` | `[ACTIVE]` |
-> | **`archive://`** | `./archive_plans` | `[ACTIVE]` |
-> | **`docs://`** | `./docs` | `[ACTIVE]` |
-> | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
+> | **`yscb://`** | `./ys_codebase` | `[ACTIVE]` |
+> | **`plans://`** | `./plans` | `[!UNDEFINED]` |
+> | **`archive://`** | `./archive` | `[!UNDEFINED]` |
+> | **`docs://`** | `./docs` | `[!UNDEFINED]` |
 > 
-> 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
+> 🛠️ **CLI 動態解析指令**：`python yscb.py uri resolve <uri>`（例：`python yscb.py uri resolve project://AGENTS.md`）
 
 # 深度歸因與防淺層修復工作流 (Discuss)
 
-本 Workflow 是開發過程中（特別是 Phase 5 實作與 Phase 6 測試）遇到非預期錯誤、測試失敗、或範疇越界時的**「強制停手與深度歸因機制」**，旨在杜絕 LLM 盲目亂槍打鳥式的淺層修補。
+本 Workflow 是開發過程中（特別是 Phase 5 實作與 Phase 6 測試）遇到非預期錯誤、測試失敗、或範疇越界時的**「強制停手與深度歸因機制」**，旨在杜絕 LLM 盲目亂槍打鳥式的淺層修補。所有階段的執行規範請嚴格遵循 [標準開發作業流程 (NewPlan)](./NewPlan.md)。
 
 ---
 
@@ -72,6 +71,9 @@ description: 深度歸因與防淺層修復工作流 (Discuss) — 實作/測試
 
 ### 步驟 4：決策固化與恢復執行 (DR & Plan Update)
 - 與開發者達成共識後：
-  1. **記錄決策**：在當前 Dev Plan 的 `FT_plan.md`、`changelog.md` 或對應 Phase 文件中追加一筆標準 **`[{Phase}:DR-XX]` (Decision Record)**（`{Phase}` 為決策所屬之階段 Token，如 `P01`/`P02`/`P03`/`P04`/`FT`/`UMBRELLA`）。
-  2. **更新架構/任務**：若影響架構或工作清單，回填更新 `P02` / `P04` / `P05_task.md`。
+  1. **記錄決策**：在當前 Dev Plan 的 [`fast_track_plan.md`](../templates/fast_track_plan.md)、[`changelog.md`](../templates/changelog.md) 或對應 Phase 文件中追加一筆標準 **`[{Phase}:DR-XX]` (Decision Record)**（`{Phase}` 為決策所屬之階段 Token，如 `P01`/`P02`/`P03`/`P04`/`FT`/`UMBRELLA`）。
+  2. **更新架構/任務**：若影響架構或工作清單，回填更新 [`P02_architecture_plan.md`](../templates/P02_architecture_plan.md) / [`P04_implementation_plan.md`](../templates/P04_implementation_plan.md) / [`P05_task.md`](../templates/P05_task.md)。
   3. **恢復編碼**：重新進入 Phase 5/6 執行根本修復。
+
+---
+
