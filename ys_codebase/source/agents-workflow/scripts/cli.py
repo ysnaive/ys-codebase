@@ -95,8 +95,6 @@ def cmd_init_default(args: List[str]) -> int:
             paths_override["plans"] = arg.split("=", 1)[1]
         elif arg.startswith("--path-archived="):
             paths_override["archived"] = arg.split("=", 1)[1]
-        elif arg.startswith("--path-ext="):
-            paths_override["ext"] = arg.split("=", 1)[1]
         elif arg.startswith("--path-docs="):
             paths_override["docs"] = arg.split("=", 1)[1]
 
@@ -122,7 +120,6 @@ Commands:
       -y, --yes               Automatic confirmation mode without prompting
       --path-plans=<path>     Override recommended path for workflow.plans
       --path-archived=<path>  Override recommended path for workflow.archived
-      --path-ext=<path>       Override recommended path for workflow.ext
       --path-docs=<path>      Override recommended path for workflow.docs
   --help, -h                  Show this help message
 """)
