@@ -17,7 +17,7 @@ class Scaffolder:
         if not re.match(r"^[a-zA-Z0-9_][a-zA-Z0-9_-]*$", name):
             return False, f"Invalid module name '{name}'. Module name must contain only alphanumeric characters, underscores, or hyphens."
         
-        target_src_uri = f"module.source://{name}"
+        target_src_uri = f"module.source.root://{name}"
         if uri.exists(target_src_uri):
             return False, f"Module '{name}' already exists at {target_src_uri}."
         

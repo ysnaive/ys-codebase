@@ -26,6 +26,7 @@
 | **sub_06** | `sub_06_computed_token_provider` | Full Track | `Completed` | Contributes 依賴注入擴充支援 Computed Token 與 code.func:// 函式定位協議，實現 DYNAMIC_CONTEXT_MAP 即時路徑地圖動態注入。 |
 | **sub_07** | `sub_07_placeholder_pipeline_optimization` | Full Track | `Completed` | 佔位符解析管線優化：兩階段 6 步語意管線、三層 URI 重映射演算、release_target Contributes 體系、4 步原子發布交易與全量模板尋址消除。 |
 | **sub_08** | `sub_08_plans_cli_toolchain_migration` | Full Track | `Completed` | Plans CLI 工具鏈補齊與舊版功能遷移。 |
+| **sub_09** | `sub_09_standards_refactor_and_contributes_doc` | Full Track | `Completed` | 開發標準規範與流程分離重構 (AgentsStandards vs. DevelopmentStandards) 及 Contributes 規格文檔建立。 |
 
 ---
 

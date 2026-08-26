@@ -99,7 +99,7 @@ class SandboxProvisioner:
             from datetime import datetime
             ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             sandbox_id = f"sandbox_{ts}"
-            target_dir = uri.resolve(f"cache://dev/sandbox/{sandbox_id}")
+            target_dir = uri.resolve(f"temp://{sandbox_id}")
             
         ctx = SandboxContext(target_dir)
         for d in [ctx.sandbox_dir, ctx.project_dir, ctx.host_dir, ctx.engine_dir, ctx.provider_dir]:
@@ -114,8 +114,8 @@ class SandboxProvisioner:
         }
         
         # Ingest installed host modules and config
-        if uri.exists("module://"):
-            host_modules_dir = uri.resolve("module://")
+        if uri.exists("module.root://"):
+            host_modules_dir = uri.resolve("module.root://")
             if os.path.isdir(host_modules_dir):
                 sandbox_modules_dir = os.path.join(ctx.engine_dir, "modules")
                 os.makedirs(sandbox_modules_dir, exist_ok=True)
@@ -167,8 +167,8 @@ class SandboxProvisioner:
 
         # 3. Copy source tree if requested
         if copy_source:
-            if uri.exists("module.source://"):
-                curr_source = uri.resolve("module.source://")
+            if uri.exists("module.source.root://"):
+                curr_source = uri.resolve("module.source.root://")
                 if os.path.isdir(curr_source):
                     dest_source = os.path.join(ctx.engine_dir, "source")
                     if os.path.exists(dest_source):

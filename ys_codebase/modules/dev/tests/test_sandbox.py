@@ -152,7 +152,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         ok, msg = builder.build_module("core", clean=True)
         self.assertTrue(ok, msg)
         
-        build_zip = uri.resolve("module.build://core/1.0.0.build.zip")
+        build_zip = uri.resolve("module.build.root://core/1.0.0.build.zip")
         self.assertTrue(os.path.isfile(build_zip))
         with zipfile.ZipFile(build_zip, "r") as zf:
             self.assertIn("scripts/hook.dev.py", zf.namelist(), "scripts/hook.dev.py was unexpectedly excluded from build artifact!")
@@ -165,7 +165,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         try:
             # When copy_source=False, source/ is empty, but host modules (core, dev) are inherited into sandbox modules/
             sandbox_core_mod = os.path.join(ctx.engine_dir, "modules", "core")
-            if os.path.isdir(uri.resolve("module://core")):
+            if os.path.isdir(uri.resolve("module.root://core")):
                 self.assertTrue(os.path.isdir(sandbox_core_mod))
                 # Verify hook in inherited module was triggered and wrote config.project.json
                 cfg_file = os.path.join(ctx.engine_dir, "config", "core", "config.project.json")

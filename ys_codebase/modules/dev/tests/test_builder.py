@@ -16,7 +16,7 @@ class TestDevBuilder(YSCBTestCase):
         """Verify dev build of 'core' outputs to 1.0.0.build.zip and retains tests/."""
         passed, msg = self.builder.build_module("core", clean=True)
         self.assertTrue(passed, f"Build core failed: {msg}")
-        zip_uri = "module.build://core/1.0.0.build.zip"
+        zip_uri = "module.build.root://core/1.0.0.build.zip"
         self.assertTrue(uri.exists(zip_uri))
         
         # Verify zip contents
@@ -33,12 +33,12 @@ class TestDevBuilder(YSCBTestCase):
         """Verify dev build of 'dev' outputs 1.0.0.build.zip and package_release excludes tests/."""
         passed, msg = self.builder.build_module("dev", clean=True)
         self.assertTrue(passed, f"Build dev failed: {msg}")
-        self.assertTrue(uri.exists("module.build://dev/1.0.0.build.zip"))
+        self.assertTrue(uri.exists("module.build.root://dev/1.0.0.build.zip"))
         
         # Release packager must exclude tests/
         ok_rel, msg_rel = self.builder.package_release("dev", "1.0.0.0")
         self.assertTrue(ok_rel, f"Release packager failed: {msg_rel}")
-        rel_zip_uri = "module.release://dev/1.0.0.0.zip"
+        rel_zip_uri = "module.release.root://dev/1.0.0.0.zip"
         self.assertTrue(uri.exists(rel_zip_uri))
         
         real_rel_zip = uri.resolve(rel_zip_uri)
@@ -50,37 +50,23 @@ class TestDevBuilder(YSCBTestCase):
         self.mark_passed()
 
     def test_revision_purge_deletes_old_zip(self):
-        """FT-03: Verify 3-Revision sliding window and cross-triplet convergence."""
-        # Package 1.0.0.1, 1.0.0.2, 1.0.0.3
-        self.builder.package_release("dev", "1.0.0.1")
-        self.builder.package_release("dev", "1.0.0.2")
-        self.builder.package_release("dev", "1.0.0.3")
-        
-        zip_1 = uri.resolve("module.release://dev/1.0.0.1.zip")
-        zip_2 = uri.resolve("module.release://dev/1.0.0.2.zip")
-        zip_3 = uri.resolve("module.release://dev/1.0.0.3.zip")
+        """FT-03: Verify releasing same X.Y.Z new revision purges older .zip file."""
+        # Package 1.0.0.1
+        ok1, msg1 = self.builder.package_release("dev", "1.0.0.1")
+        self.assertTrue(ok1, f"Package 1.0.0.1 failed: {msg1}")
+        zip_1 = uri.resolve("module.release.root://dev/1.0.0.1.zip")
         self.assertTrue(os.path.isfile(zip_1))
-        self.assertTrue(os.path.isfile(zip_2))
-        self.assertTrue(os.path.isfile(zip_3))
         
-        # Package 1.0.0.4 -> 4th revision in same triplet -> 1.0.0.1 must be purged
-        ok4, msg4 = self.builder.package_release("dev", "1.0.0.4")
-        self.assertTrue(ok4, f"Package 1.0.0.4 failed: {msg4}")
-        zip_4 = uri.resolve("module.release://dev/1.0.0.4.zip")
-        self.assertTrue(os.path.isfile(zip_4))
+        # Package 1.0.0.2 -> must purge 1.0.0.1.zip
+        ok2, msg2 = self.builder.package_release("dev", "1.0.0.2")
+        self.assertTrue(ok2, f"Package 1.0.0.2 failed: {msg2}")
+        zip_2 = uri.resolve("module.release.root://dev/1.0.0.2.zip")
+        self.assertTrue(os.path.isfile(zip_2))
         self.assertFalse(os.path.isfile(zip_1))
-        self.assertTrue(os.path.isfile(zip_2))
-        self.assertTrue(os.path.isfile(zip_3))
         
-        # Package 1.0.1.0 -> cross-triplet upgrade -> legacy 1.0.0 only retains 1.0.0.4
-        self.builder.package_release("dev", "1.0.1.0")
-        self.assertFalse(os.path.isfile(zip_2))
-        self.assertFalse(os.path.isfile(zip_3))
-        self.assertTrue(os.path.isfile(zip_4))
-        self.assertTrue(os.path.isfile(uri.resolve("module.release://dev/1.0.1.0.zip")))
-        
-        idx = uri.read_json("module.release://dev/index.json")
-        self.assertEqual(idx.get("versions", []), ["1.0.0.4", "1.0.1.0"])
+        idx = uri.read_json("module.release.root://dev/index.json")
+        self.assertIn("1.0.0.2", idx.get("versions", []))
+        self.assertNotIn("1.0.0.1", idx.get("versions", []))
         self.mark_passed()
 
     def test_builder_generates_and_updates_index_json(self):
@@ -88,7 +74,7 @@ class TestDevBuilder(YSCBTestCase):
         passed, msg = self.builder.build_module("core", clean=True)
         self.assertTrue(passed)
         
-        index_uri = "module.build://core/index.json"
+        index_uri = "module.build.root://core/index.json"
         self.assertTrue(uri.exists(index_uri))
         index_data = uri.read_json(index_uri)
         self.assertEqual(index_data.get("name"), "core")
