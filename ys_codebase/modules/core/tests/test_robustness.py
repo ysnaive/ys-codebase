@@ -74,7 +74,7 @@ class FrameworkRobustnessTest(unittest.TestCase):
             engine = AtomicEngine()
             
             # Setup custom module config in config/core/
-            cfg_p = uri.resolve("config.root://core/config.project.json")
+            cfg_p = uri.resolve("config://core/config.project.json")
             with open(cfg_p, "w", encoding="utf-8") as f:
                 json.dump({"project_root": "original_val"}, f)
 

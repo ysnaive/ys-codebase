@@ -33,117 +33,117 @@
       "export": [
         {
           "type": "standard",
-          "source": "module.root://agents-workflow/assets/standards/DocumentationStandards.md",
+          "source": "module://agents-workflow/assets/standards/DocumentationStandards.md",
           "description": "專案文檔標準規範"
         },
         {
           "type": "standard",
-          "source": "module.root://agents-workflow/assets/standards/DevelopmentStandards.md",
+          "source": "module://agents-workflow/assets/standards/DevelopmentStandards.md",
           "description": "開發標準規範 SOP 0~7"
         },
         {
           "type": "workflow",
-          "source": "module.root://agents-workflow/assets/workflows/ContextInit.md",
+          "source": "module://agents-workflow/assets/workflows/ContextInit.md",
           "description": "上下文熱啟動流程"
         },
         {
           "type": "workflow",
-          "source": "module.root://agents-workflow/assets/workflows/NewPlan.md",
+          "source": "module://agents-workflow/assets/workflows/NewPlan.md",
           "description": "標準開發作業流程 (NewPlan) — 定義專案從需求到發布的完整規範與三大分流管控"
         },
         {
           "type": "workflow",
-          "source": "module.root://agents-workflow/assets/workflows/Continue.md",
+          "source": "module://agents-workflow/assets/workflows/Continue.md",
           "description": "接續中斷或已存在的開發計畫工作流 (Continue) — 支援 handoff.md 現場交接與狀態自動恢復"
         },
         {
           "type": "workflow",
-          "source": "module.root://agents-workflow/assets/workflows/Pause.md",
+          "source": "module://agents-workflow/assets/workflows/Pause.md",
           "description": "暫停開發與無縫交接工作流 (Pause) — 現場狀態凍結、生成 handoff.md 達成零斷層接手"
         },
         {
           "type": "workflow",
-          "source": "module.root://agents-workflow/assets/workflows/Discuss.md",
+          "source": "module://agents-workflow/assets/workflows/Discuss.md",
           "description": "深度歸因與防淺層修復工作流 (Discuss) — 實作/測試遇阻時的強制暫停、根因追溯與範疇保護機制"
         },
         {
           "type": "workflow",
-          "source": "module.root://agents-workflow/assets/workflows/Review.md",
+          "source": "module://agents-workflow/assets/workflows/Review.md",
           "description": "開發完成後品質與細節審查工作流 (Review) — 包含五維度品質矩陣驗收與即時修復閉環"
         },
         {
           "type": "workflow",
-          "source": "module.root://agents-workflow/assets/workflows/Research.md",
+          "source": "module://agents-workflow/assets/workflows/Research.md",
           "description": "深度技術調研工作流 (Research) — 適用於高複雜度技術探索、方案選型對比與 R01 專題調研報告產出"
         },
         {
           "type": "workflow",
-          "source": "module.root://agents-workflow/assets/workflows/Idea.md",
+          "source": "module://agents-workflow/assets/workflows/Idea.md",
           "description": "構想與靈感孵化池工作流 (Idea) — 支援自由發想、What/Why/How/Related 提案產出與一鍵立項流轉"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/P00_semantic_requirements.md",
+          "source": "module://agents-workflow/assets/templates/P00_semantic_requirements.md",
           "description": "Phase 0 語意需求模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/P01_requirements_spec.md",
+          "source": "module://agents-workflow/assets/templates/P01_requirements_spec.md",
           "description": "Phase 1 需求規格模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/P02_architecture_plan.md",
+          "source": "module://agents-workflow/assets/templates/P02_architecture_plan.md",
           "description": "Phase 2 架構設計模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/P03_api_spec.md",
+          "source": "module://agents-workflow/assets/templates/P03_api_spec.md",
           "description": "Phase 3 API規格模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/P04_implementation_plan.md",
+          "source": "module://agents-workflow/assets/templates/P04_implementation_plan.md",
           "description": "Phase 4 實作計畫模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/P05_task.md",
+          "source": "module://agents-workflow/assets/templates/P05_task.md",
           "description": "Phase 5 任務清單模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/P06_test_plan.md",
+          "source": "module://agents-workflow/assets/templates/P06_test_plan.md",
           "description": "Phase 6 測試計畫模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/P07_walkthrough.md",
+          "source": "module://agents-workflow/assets/templates/P07_walkthrough.md",
           "description": "Phase 7 結案報告模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/fast_track_plan.md",
+          "source": "module://agents-workflow/assets/templates/fast_track_plan.md",
           "description": "Fast Track 敏捷計畫模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/umbrella_overview.md",
+          "source": "module://agents-workflow/assets/templates/umbrella_overview.md",
           "description": "Umbrella 主計畫總覽模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/changelog.md",
+          "source": "module://agents-workflow/assets/templates/changelog.md",
           "description": "計畫變更日誌模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/RXX_research_report.md",
+          "source": "module://agents-workflow/assets/templates/RXX_research_report.md",
           "description": "深度調研報告模板"
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/handoff.md",
+          "source": "module://agents-workflow/assets/templates/handoff.md",
           "description": "現場凍結交接模板"
         }
       ],
@@ -365,13 +365,13 @@
         {
           "type": "uri",
           "token": "DEVELOPMENT_STANDARDS",
-          "value": "module.root://agents-workflow/assets/standards/DevelopmentStandards.md",
+          "value": "module://agents-workflow/assets/standards/DevelopmentStandards.md",
           "mode": "replace"
         },
         {
           "type": "uri",
           "token": "PHASEXX_HEADER",
-          "value": "module.root://agents-workflow/assets/templates/header.md",
+          "value": "module://agents-workflow/assets/templates/header.md",
           "mode": "replace"
         },
         {

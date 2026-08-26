@@ -29,14 +29,14 @@ class TestCoreInstaller(YSCBTestCase):
         self.installer.engine.act_register("mock_app", "1.0.0", "local")
         
         # Setup mock_app manifest declaring dependency on mock_lib
-        uri.makedirs("module.root://mock_app")
-        uri.write_json("module.root://mock_app/manifest.json", {
+        uri.makedirs("module://mock_app")
+        uri.write_json("module://mock_app/manifest.json", {
             "name": "mock_app",
             "version": "1.0.0",
             "dependencies": {"mock_lib": ">=1.0.0"}
         })
-        uri.makedirs("module.root://mock_lib")
-        uri.write_json("module.root://mock_lib/manifest.json", {
+        uri.makedirs("module://mock_lib")
+        uri.write_json("module://mock_lib/manifest.json", {
             "name": "mock_lib",
             "version": "1.0.0"
         })
@@ -51,6 +51,43 @@ class TestCoreInstaller(YSCBTestCase):
         
         # Cleanup
         self.installer.cmd_remove("mock_app", force=True)
+        self.mark_passed()
+
+    def test_remove_lifecycle_cache_cleaning_and_purge(self):
+        """FT-04, FT-05, ET-04: Test module removal cache cleaning and --purge behavior."""
+        # 1. Setup mock_lifecycle module with storage, config, and cache
+        mod_name = "mock_lifecycle"
+        self.installer.engine.act_register(mod_name, "1.0.0", "local")
+        uri.makedirs(f"module://{mod_name}")
+        uri.write_json(f"module://{mod_name}/manifest.json", {"name": mod_name, "version": "1.0.0"})
+        
+        uri.makedirs(f"storage://{mod_name}")
+        uri.write_text(f"storage://{mod_name}/data.json", '{"state": 1}')
+        uri.makedirs(f"config://{mod_name}")
+        uri.write_text(f"config://{mod_name}/config.json", '{"enabled": true}')
+        uri.makedirs(f"cache://{mod_name}")
+        uri.write_text(f"cache://{mod_name}/temp.cache", "cache_content")
+
+        # Standard remove: cache deleted, storage & config preserved
+        res_std = self.installer.cmd_remove(mod_name, force=True, purge=False)
+        self.assertEqual(res_std, 0)
+        self.assertFalse(uri.exists(f"cache://{mod_name}"))
+        self.assertTrue(uri.exists(f"storage://{mod_name}"))
+        self.assertTrue(uri.exists(f"config://{mod_name}"))
+
+        # Re-register and populate for purge test
+        self.installer.engine.act_register(mod_name, "1.0.0", "local")
+        uri.makedirs(f"module://{mod_name}")
+        uri.write_json(f"module://{mod_name}/manifest.json", {"name": mod_name, "version": "1.0.0"})
+        uri.makedirs(f"cache://{mod_name}")
+        uri.write_text(f"cache://{mod_name}/temp.cache", "cache_content")
+
+        # Purge remove: cache, storage, config all deleted
+        res_purge = self.installer.cmd_remove(mod_name, force=True, purge=True)
+        self.assertEqual(res_purge, 0)
+        self.assertFalse(uri.exists(f"cache://{mod_name}"))
+        self.assertFalse(uri.exists(f"storage://{mod_name}"))
+        self.assertFalse(uri.exists(f"config://{mod_name}"))
         self.mark_passed()
 
     def test_list_installed_modules(self):

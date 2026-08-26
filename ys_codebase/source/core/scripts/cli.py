@@ -100,7 +100,7 @@ def main(argv=None) -> int:
         print("Commands:")
         print("  install <module>[@version] [--provider=<source>]")
         print("  update [module] [--provider=<source>]")
-        print("  remove <module> [--clean]")
+        print("  remove <module> [--clean] [--purge] [--force]")
         print("  list [--remote]")
         print("  status")
         print("  rollback [snapshot_id]")
@@ -117,6 +117,7 @@ def main(argv=None) -> int:
     # Parse provider flag if present
     provider = None
     clean = False
+    purge = False
     remote = False
     clean_args = []
     force_flag = False
@@ -131,6 +132,8 @@ def main(argv=None) -> int:
             force_flag = True
         elif a == "--clean":
             clean = True
+        elif a == "--purge":
+            purge = True
         elif a == "--remote":
             remote = True
         else:
@@ -153,7 +156,7 @@ def main(argv=None) -> int:
         return installer.cmd_update(mod_name, provider=provider)
     elif cmd == "remove":
         mod_name = clean_args[0] if clean_args else ""
-        return installer.cmd_remove(mod_name, clean=clean, force=force_flag)
+        return installer.cmd_remove(mod_name, clean=clean, purge=purge, force=force_flag)
     elif cmd == "list":
         return installer.cmd_list(remote=remote, provider=provider)
     elif cmd == "status":

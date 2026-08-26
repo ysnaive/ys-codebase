@@ -12,7 +12,7 @@ class Checker:
 
     def check_module(self, name: str) -> Tuple[bool, List[str]]:
         errors = []
-        src_uri = f"module.source.root://{name}"
+        src_uri = f"module.source://{name}"
         if not uri.exists(src_uri):
             return False, [f"Module source not found at {src_uri}."]
         
@@ -58,12 +58,12 @@ class Checker:
 
     def check_all(self) -> Dict[str, Tuple[bool, List[str]]]:
         results = {}
-        src_root_uri = "module.source.root://"
+        src_root_uri = "module.source://"
         if not uri.exists(src_root_uri):
             return results
         
         for item in uri.listdir(src_root_uri):
-            item_uri = f"module.source.root://{item}"
+            item_uri = f"module.source://{item}"
             if uri.is_dir(item_uri) and uri.exists(f"{item_uri}/manifest.json"):
                 results[item] = self.check_module(item)
                 

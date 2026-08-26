@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import shutil
+import warnings
 import importlib.util
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Tuple, Generator, Set
@@ -21,28 +22,44 @@ _active_module_context: Optional[str] = None
 _active_host_dir: Optional[str] = None
 _reconciling_tokens: Set[str] = set()
 
-# Bootstrap fallback schemes used strictly during initial bootstrap before contributes injection
+# Bootstrap fallback schemes (Option B: Canonical Rooted Schemes)
 _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
     {"token": "yscb.host", "type": "const", "value": "{yscb_host}"},
-    {"token": "module.mirror.root", "type": "const", "value": "yscb://.mirror/"},
-    {"token": "module.mirror", "type": "const", "value": "yscb://.mirror/{module}/"},
-    {"token": "temp", "type": "const", "value": "yscb://.temp/"},
+    {"token": "module.mirror", "type": "const", "value": "yscb://.mirror/"},
     {"token": "snapshot", "type": "const", "value": "yscb://.snapshots/"},
-    {"token": "module.root", "type": "const", "value": "yscb://modules/"},
-    {"token": "module", "type": "const", "value": "yscb://modules/{module}/"},
-    {"token": "config.root", "type": "const", "value": "yscb://config/"},
-    {"token": "config", "type": "const", "value": "yscb://config/{module}/"},
-    {"token": "cache.root", "type": "const", "value": "yscb://.cache/"},
-    {"token": "cache", "type": "const", "value": "yscb://.cache/{module}/"},
-    {"token": "storage.root", "type": "const", "value": "yscb://storage/"},
-    {"token": "storage", "type": "const", "value": "yscb://storage/{module}/"},
-    {"token": "module.source.root", "type": "const", "value": "yscb://source/"},
-    {"token": "module.source", "type": "const", "value": "yscb://source/{module}/"},
-    {"token": "module.build.root", "type": "const", "value": "yscb://build/"},
-    {"token": "module.build", "type": "const", "value": "yscb://build/{module}/"},
-    {"token": "module.release.root", "type": "const", "value": "yscb://release/"},
-    {"token": "module.release", "type": "const", "value": "yscb://release/{module}/"},
+    {"token": "module", "type": "const", "value": "yscb://modules/"},
+    {"token": "config", "type": "const", "value": "yscb://config/"},
+    {"token": "cache", "type": "const", "value": "yscb://.cache/"},
+    {"token": "storage", "type": "const", "value": "yscb://storage/"},
+    {"token": "module.source", "type": "const", "value": "yscb://source/"},
+    {"token": "module.build", "type": "const", "value": "yscb://build/"},
+    {"token": "module.release", "type": "const", "value": "yscb://release/"},
 ]
+
+# Deprecated legacy schemes redirect map (Backwards Compatibility & Deprecation Warnings)
+_DEPRECATED_SCHEME_REDIRECTS: Dict[str, str] = {
+    "storage.root": "storage",
+    "cache.root": "cache",
+    "config.root": "config",
+    "module.root": "module",
+    "module.source.root": "module.source",
+    "module.build.root": "module.build",
+    "module.release.root": "module.release",
+    "module.mirror.root": "module.mirror",
+    "temp": "cache",
+}
+
+
+class UndefinedModuleContextError(ValueError):
+    """當 URI 中包含 '@/' 自省語法但缺乏當前模組上下文時拋出。"""
+    def __init__(self, uri_str: str, message: Optional[str] = None):
+        self.uri_str = uri_str
+        default_msg = (
+            f"Cannot resolve active module placeholder '@' in URI '{uri_str}'. "
+            "No active module context is set. Please use 'with uri.module_scope(name):' "
+            "or pass explicit module name like '{scheme}://{module}/path'."
+        )
+        super().__init__(message or default_msg)
 
 
 class UndefinedURIError(ValueError):
@@ -71,6 +88,9 @@ def set_module_context(module_name: Optional[str]) -> None:
 
 def get_module_context() -> Optional[str]:
     return _active_module_context
+
+
+get_execution_context = get_module_context
 
 
 @contextmanager
@@ -371,7 +391,7 @@ def resolve(
         return os.path.normpath(uri)
     
     yscb_dir = _get_yscb_root()
-    mod = current_module or _active_module_context or "core"
+    active_mod = current_module or _active_module_context or (context.module_name if context and hasattr(context, "module_name") else None)
     
     # Fast-path for root anchor protocol yscb:// (No need to read host config)
     if uri.startswith("yscb://"):
@@ -409,6 +429,30 @@ def resolve(
         scheme_token, rel = uri.split("://", 1)
         rel = rel.lstrip("/\\")
         
+        # Check Deprecated scheme redirects (Backwards compatibility)
+        if scheme_token in _DEPRECATED_SCHEME_REDIRECTS:
+            canonical_scheme = _DEPRECATED_SCHEME_REDIRECTS[scheme_token]
+            warnings.warn(
+                f"Semantic URI scheme '{scheme_token}://' is deprecated and will be removed in future releases. "
+                f"Please use '{canonical_scheme}://' instead.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            scheme_token = canonical_scheme
+
+        # Resolve '@/' active module context placeholder in path
+        if rel.startswith("@/") or rel == "@":
+            if not active_mod:
+                raise UndefinedModuleContextError(uri)
+            if rel == "@":
+                rel = active_mod
+            else:
+                rel = active_mod + rel[1:]
+        elif "{module}" in rel:
+            if not active_mod:
+                raise UndefinedModuleContextError(uri)
+            rel = rel.replace("{module}", active_mod)
+        
         all_schemes = _get_merged_uri_schemes(yscb_dir)
         token_map = {s.get("token"): s for s in all_schemes if isinstance(s, dict) and "token" in s}
         for fb in _BOOTSTRAP_FALLBACK_SCHEMES:
@@ -419,27 +463,37 @@ def resolve(
             scheme = token_map[scheme_token]
             stype = scheme.get("type", "const")
             sval = scheme.get("value", "")
-            provider_name = scheme.get("__provider__", mod)
+            provider_name = scheme.get("__provider__", active_mod or "core")
             
             if stype == "const":
                 try:
                     host_dir, _ = _get_host_config()
                 except Exception:
                     host_dir = get_host_dir() or os.path.normpath(os.path.dirname(yscb_dir))
-                val_expanded = sval.replace("{module}", mod).replace("{yscb_root}", yscb_dir).replace("{yscb_host}", host_dir or "")
-                if "{module}" in sval and not mod:
-                    raise ValueError(f"Cannot resolve placeholder {{module}} in '{uri}' without active module context.")
-                target_base = resolve(val_expanded, current_module=mod, context=context, interactive=interactive)
+                
+                # Expand const placeholders
+                if "{module}" in sval:
+                    if not active_mod:
+                        raise UndefinedModuleContextError(uri)
+                    val_expanded = sval.replace("{module}", active_mod)
+                else:
+                    val_expanded = sval
+                val_expanded = val_expanded.replace("{yscb_root}", yscb_dir).replace("{yscb_host}", host_dir or "")
+                
+                target_base = resolve(val_expanded, current_module=active_mod, context=context, interactive=interactive)
                 if rel:
-                    rel_expanded = rel.replace("{module}", mod)
-                    return os.path.normpath(os.path.join(target_base, rel_expanded))
+                    resolved_path = os.path.normpath(os.path.join(target_base, rel))
+                    # Security Sandbox Guard (EC-02): Prevent path traversal escaping target_base
+                    if not resolved_path.startswith(target_base) and ".." in rel:
+                        raise PermissionError(f"Path traversal detected in URI '{uri}': escaped root '{target_base}'.")
+                    return resolved_path
                 return os.path.normpath(target_base)
             elif stype == "config":
                 host_dir, _ = _get_host_config()
-                # 優先尋找 provider_name 的 config.project.json，其次 mod，最後 core
+                # 優先尋找 provider_name 的 config.project.json，其次 active_mod，最後 core
                 cand_configs = [
                     os.path.join(yscb_dir, "config", provider_name, "config.project.json"),
-                    os.path.join(yscb_dir, "config", mod, "config.project.json"),
+                    os.path.join(yscb_dir, "config", active_mod or "core", "config.project.json"),
                     os.path.join(yscb_dir, "config", "core", "config.project.json")
                 ]
                 curr_val = None
@@ -620,6 +674,12 @@ def copy(src_uri: str, dst_uri: str) -> None:
     else:
         os.makedirs(os.path.dirname(dst_p), exist_ok=True)
         shutil.copy2(src_p, dst_p)
+
+def move(src_uri: str, dst_uri: str) -> None:
+    src_p = resolve(src_uri, interactive=False)
+    dst_p = resolve(dst_uri, interactive=False)
+    os.makedirs(os.path.dirname(dst_p), exist_ok=True)
+    shutil.move(src_p, dst_p)
 
 def rmtree(uri: str) -> None:
     p = resolve(uri, interactive=False)

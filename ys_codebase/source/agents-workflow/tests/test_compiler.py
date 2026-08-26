@@ -72,7 +72,7 @@ class TestArtifactCompiler(unittest.TestCase):
     def test_st_02_release_target_header_macro_interpolation(self):
         """ST-02: 驗證純文字/陣列 Header 巨集模板動態替換與 KeyError 容錯。"""
         export_item = {
-            "source": "module.root://agents-workflow/assets/workflows/NewPlan.md",
+            "source": "module://agents-workflow/assets/workflows/NewPlan.md",
             "description": "標準開發作業流程 (NewPlan)",
             "name": "NewPlan",
             "type": "workflow"
@@ -105,13 +105,13 @@ class TestArtifactCompiler(unittest.TestCase):
         """ST-04: 驗證三層 URI 重映射與相對路徑計算 (正斜線 / 格式)。"""
         current_dst = "H:/UseFolder/CodeRepo/project/.agents/workflows/NewPlan.md"
         deployment_map = {
-            "module.root://agents-workflow/assets/templates/P00_semantic_requirements.md": "H:/UseFolder/CodeRepo/project/.agents/templates/P00_semantic_requirements.md",
-            "module.root://agents-workflow/assets/standards/DevelopmentStandards.md": "H:/UseFolder/CodeRepo/project/.agents/standards/DevelopmentStandards.md"
+            "module://agents-workflow/assets/templates/P00_semantic_requirements.md": "H:/UseFolder/CodeRepo/project/.agents/templates/P00_semantic_requirements.md",
+            "module://agents-workflow/assets/standards/DevelopmentStandards.md": "H:/UseFolder/CodeRepo/project/.agents/standards/DevelopmentStandards.md"
         }
 
         raw_text = (
-            "Read P00: `__#{module.root://agents-workflow/assets/templates/P00_semantic_requirements.md}__`\n"
-            "Read SOP: `__#{module.root://agents-workflow/assets/standards/DevelopmentStandards.md}__`\n"
+            "Read P00: `__#{module://agents-workflow/assets/templates/P00_semantic_requirements.md}__`\n"
+            "Read SOP: `__#{module://agents-workflow/assets/standards/DevelopmentStandards.md}__`\n"
             "Read Unknown: `__#{unknown://foo/bar}__`"
         )
 
@@ -120,7 +120,7 @@ class TestArtifactCompiler(unittest.TestCase):
         # Tier 1 驗證
         self.assertIn("../templates/P00_semantic_requirements.md", resolved)
         self.assertIn("../standards/DevelopmentStandards.md", resolved)
-        self.assertNotIn("`__#{module.root://", resolved)
+        self.assertNotIn("`__#{module://", resolved)
         
         # Tier 3 驗證 (安全降級)
         self.assertIn("unknown://foo/bar", resolved)

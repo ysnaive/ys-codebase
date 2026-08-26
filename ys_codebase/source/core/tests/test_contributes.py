@@ -13,14 +13,14 @@ class TestCoreContributes(YSCBTestCase):
 
     def test_scan_and_inject_execution(self):
         """Verify scan_and_inject outputs to cache space and leaves config space clean."""
-        res = self.aggregator.scan_and_inject(clean=True)
+        res = self.aggregator.scan_and_inject()
         self.assertTrue(isinstance(res, dict))
         
         # Verify cache file exists for core
-        self.assertTrue(uri.exists("cache.root://core/contributes.merged.json"))
+        self.assertTrue(uri.exists("cache://core/contributes.merged.json"))
         # Verify config directory is NOT polluted with merged artifact
-        self.assertFalse(uri.exists("config.root://core/contributes.merged.json"))
-        self.assertFalse(uri.exists("config.root://dev/contributes.merged.json"))
+        self.assertFalse(uri.exists("config://core/contributes.merged.json"))
+        self.assertFalse(uri.exists("config://dev/contributes.merged.json"))
         self.mark_passed()
 
     def test_deep_merge_dictionary_and_lists(self):

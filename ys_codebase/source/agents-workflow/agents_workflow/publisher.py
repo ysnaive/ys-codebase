@@ -34,7 +34,7 @@ except ImportError:
 from agents_workflow.compiler import ArtifactCompiler
 
 
-MANIFEST_STORAGE_URI = "storage://agents-workflow/release_manifest.json"
+MANIFEST_STORAGE_URI = "storage://@/release_manifest.json"
 AGENTS_MD_BEGIN = "<!-- YSCB_AGENTS_BEGIN -->"
 AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
 
@@ -301,6 +301,21 @@ class ReleasePublisher:
                 precomputed_files[dst_abs] = final_text
 
         # --- 步驟 1 (過往清理): 讀取 storage:// release_manifest.json ---
+        # 自動偵測與平滑遷移歷史誤建檔案 (EC-05: storage/core/agents-workflow/ -> storage/agents-workflow/)
+        if uri:
+            try:
+                legacy_wrong_uri = "storage://core/agents-workflow/release_manifest.json"
+                if uri.exists(legacy_wrong_uri):
+                    if not uri.exists(MANIFEST_STORAGE_URI):
+                        legacy_data = uri.read_json(legacy_wrong_uri)
+                        uri.write_json(MANIFEST_STORAGE_URI, legacy_data)
+                    uri.remove(legacy_wrong_uri)
+                    legacy_dir_uri = "storage://core/agents-workflow"
+                    if uri.exists(legacy_dir_uri):
+                        uri.rmtree(legacy_dir_uri)
+            except Exception:
+                pass
+
         old_published_files: Set[str] = set()
         if uri and uri.exists(MANIFEST_STORAGE_URI):
             try:

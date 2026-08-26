@@ -93,14 +93,14 @@ class TestRemoteZipBootstrap(unittest.TestCase):
         self.engine.act_reload()
         
         # Check module root
-        mod_root = uri.resolve("module.root://pure_mod")
+        mod_root = uri.resolve("module://pure_mod")
         self.assertFalse(os.path.isfile(os.path.join(mod_root, "config.project.json")))
         self.assertFalse(os.path.isfile(os.path.join(mod_root, "config.local.json")))
         
         # Clean up
         self.engine.act_unregister("pure_mod")
-        uri.rmtree("module.root://pure_mod")
-        uri.rmtree("module.mirror.root://pure_mod")
+        uri.rmtree("module://pure_mod")
+        uri.rmtree("module.mirror://pure_mod")
 
     def test_zip_slip_vulnerability_blocked_on_reload(self):
         """Security: Verify malicious Zip with path traversal (Zip Slip) is blocked on reload."""
@@ -122,7 +122,7 @@ class TestRemoteZipBootstrap(unittest.TestCase):
             self.assertIn("Zip Slip vulnerability detected", str(ctx.exception))
         finally:
             self.engine.act_unregister("evil_mod")
-            uri.rmtree("module.mirror.root://evil_mod")
+            uri.rmtree("module.mirror://evil_mod")
 
     def test_zip_slip_blocked_on_host_fetch_and_extract(self):
         """Security: Verify yscb._fetch_and_extract_zip blocks Zip Slip."""
