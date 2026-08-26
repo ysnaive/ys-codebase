@@ -109,3 +109,20 @@ except Exception as e:
 
 > [!IMPORTANT]
 > **單一 Hook 崩潰零擴散**：任何單一模組的 Hook 執行異常（語法錯誤、執行期例外）只會記錄 stderr Warning，絕不中斷發起端的主生命週期操作（如安裝、更新、重載、測試啟動）。
+
+---
+
+## 6. 模組資料三位一體與生命週期治理 (`--purge`)
+
+YS-Codebase 確立三大資料空間語意與版本控制原則：
+1. **`storage://` (持久化/Git 追蹤)**：業務資料與發布清冊（`storage/agents-workflow/release_manifest.json`），卸載時預設安全保留。
+2. **`config://` (專案設定/Git 追蹤)**：專案設定檔（`config/core/config.project.json`），卸載時預設安全保留。
+3. **`cache://` (快取暫存/Git 忽略)**：編譯快照、沙盒環境（`cache://dev/sandbox/`）與程序鎖（`cache://.yscb.lock`），卸載與重載時自動清空。
+
+### 6.1 卸載治理行為
+- **標準卸載 (`python yscb.py core remove <module>`)**：
+  - 自動物理清空 `cache://{module}/`。
+  - 安全保留 `storage://{module}/` 與 `config://{module}/`。
+- **深度清除 (`python yscb.py core remove <module> --purge`)**：
+  - 強制物理銷毀 `storage://{module}/`、`config://{module}/` 與 `cache://{module}/`。
+  - 具備目錄邊界防護（EC-04），禁止逃逸出 `storage` 或 `config` 根空間。

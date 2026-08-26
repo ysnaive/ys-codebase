@@ -15,7 +15,7 @@ class TestCoreEngine(YSCBTestCase):
 
     def test_host_config_isolation_from_project_uri(self):
         """Verify host config and snapshot operations succeed even when project:// is undefined (FT-01)."""
-        core_cfg = "config.root://core/config.project.json"
+        core_cfg = "config://core/config.project.json"
         saved = None
         if uri.exists(core_cfg):
             saved = uri.read_json(core_cfg)
@@ -108,7 +108,7 @@ class TestCoreEngine(YSCBTestCase):
         
         # 1. Acquire lock
         self.engine.act_lock("test_op")
-        self.assertTrue(uri.exists("temp://.yscb.lock"))
+        self.assertTrue(uri.exists("cache://.yscb.lock"))
         
         # 2. Second lock should fail with BlockingIOError
         with self.assertRaises(BlockingIOError):
@@ -116,7 +116,7 @@ class TestCoreEngine(YSCBTestCase):
             
         # 3. Unlock
         self.engine.act_unlock("test_op")
-        self.assertFalse(uri.exists("temp://.yscb.lock"))
+        self.assertFalse(uri.exists("cache://.yscb.lock"))
         
         # 4. Simulate stale lock auto-healing (timeout=0.01s)
         self.engine.act_lock("stale_op")
@@ -140,7 +140,7 @@ class TestCoreEngine(YSCBTestCase):
         
         # 1. First seed
         self.engine._seed_or_update_config("mod_test_cfg", tpl_dir)
-        target_cfg_uri = "config.root://mod_test_cfg/config.project.json"
+        target_cfg_uri = "config://mod_test_cfg/config.project.json"
         self.assertTrue(uri.exists(target_cfg_uri))
         self.assertEqual(uri.read_json(target_cfg_uri), initial_tpl)
         
@@ -175,12 +175,12 @@ class TestCoreEngine(YSCBTestCase):
         self.assertEqual(final_cfg["setting_b"], "new_default_b")
         self.assertEqual(final_cfg["nested"]["sub_2"], "new_default_sub2")
         
-        uri.rmtree(f"config.root://mod_test_cfg")
+        uri.rmtree(f"config://mod_test_cfg")
         self.mark_passed()
 
     def test_broadcast_event_and_exception_isolation(self):
         """Verify namespaced hook.{emit_mod}.py execution and try-except fault isolation."""
-        receiver_dir = f"module.root://mock_receiver/scripts"
+        receiver_dir = f"module://mock_receiver/scripts"
         uri.makedirs(receiver_dir)
         
         flag_file = f"{self.sandbox_uri}/hook_executed.txt"
@@ -192,7 +192,7 @@ def on_test_event(context):
         uri.write_text(f"{receiver_dir}/hook.dev.py", hook_code)
         
         # Also create a broken hook in another module
-        broken_dir = f"module.root://mock_broken/scripts"
+        broken_dir = f"module://mock_broken/scripts"
         uri.makedirs(broken_dir)
         broken_code = """
 def on_test_event(context):
@@ -214,8 +214,8 @@ def on_test_event(context):
         self.assertTrue(results["mock_broken"].startswith("warning:"))
         
         # Cleanup
-        uri.rmtree("module.root://mock_receiver")
-        uri.rmtree("module.root://mock_broken")
+        uri.rmtree("module://mock_receiver")
+        uri.rmtree("module://mock_broken")
         self.mark_passed()
 
     def test_download_missing_package_raises_not_found(self):

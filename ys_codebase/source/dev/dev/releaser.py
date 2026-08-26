@@ -58,7 +58,7 @@ class ReleasePipeline:
             errors.append(f"Gate 4 Failed: Module check failed:\n  - " + "\n  - ".join(chk_errors))
 
         # Gate 3: Immutability / Version Conflict
-        exact_rel_zip = f"module.release.root://{module_name}/{target_version}.zip"
+        exact_rel_zip = f"module.release://{module_name}/{target_version}.zip"
         if uri.exists(exact_rel_zip):
             errors.append(f"Gate 3 Failed: Version '{target_version}' already exists in release repository ({exact_rel_zip}). Duplicate release forbidden.")
 
@@ -91,7 +91,7 @@ class ReleasePipeline:
         tag: Optional[bool] = None,
         no_test: bool = False
     ) -> Tuple[bool, str]:
-        src_uri = f"module.source.root://{module_name}"
+        src_uri = f"module.source://{module_name}"
         if not uri.exists(src_uri):
             return False, f"Module '{module_name}' does not exist in source repository ({src_uri})."
             
@@ -126,7 +126,7 @@ class ReleasePipeline:
         created_tag = False
         created_commit = False
 
-        rel_index_uri = f"module.release.root://{module_name}/index.json"
+        rel_index_uri = f"module.release://{module_name}/index.json"
         old_index_content = uri.read_text(rel_index_uri) if uri.exists(rel_index_uri) else None
 
         try:
@@ -167,7 +167,7 @@ class ReleasePipeline:
             uri.write_text(manifest_uri, old_manifest_content)
             
             # Rollback release zip file
-            target_rel_zip = f"module.release.root://{module_name}/{target_version}.zip"
+            target_rel_zip = f"module.release://{module_name}/{target_version}.zip"
             if created_rel_zip and uri.exists(target_rel_zip):
                 uri.remove(target_rel_zip)
                 

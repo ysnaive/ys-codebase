@@ -29,10 +29,10 @@
 
 ## 2. 完全對標微型虛擬環境拓撲 (Virtual Sandbox Topology)
 
-由 `SandboxProvisioner` (或 `dev op-mksb`) 建立之沙盒位於 `temp://sandbox_{timestamp}/`，嚴格劃分三大空間：
+由 `SandboxProvisioner` (或 `dev op-mksb`) 建立之沙盒位於 `cache://dev/sandbox/sandbox_{timestamp}/` (`.cache/dev/sandbox/`)，嚴格劃分三大空間：
 
 ```text
-temp://sandbox_20260825_022508_665564/
+.cache/dev/sandbox/sandbox_20260826_184739_990974/
   ├── mock_downstream_project/          # 【專案空間 project://】被管理之下游業務專案
   ├── host_env/                         # 【宿主空間 host_dir】
   │     ├── yscb.py                     # 宿主派發腳本（嚴格僅調用 modules/）
@@ -41,7 +41,7 @@ temp://sandbox_20260825_022508_665564/
   │           ├── modules/              # 繼承父層已安裝模組 (core, dev 等，動態讀取 manifest 版本)
   │           ├── source/               # 複製待測最新源碼
   │           ├── config/               # 模組設定檔 (config/core/config.project.json)
-  │           └── .temp/                # 沙盒內部臨時檔案
+  │           └── .cache/               # 沙盒內部快取暫存檔案
   └── mock_provider/                    # 【套件來源庫】提供 file:/// 協議之 Mock 套件
 ```
 

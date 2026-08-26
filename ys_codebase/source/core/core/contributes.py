@@ -33,11 +33,11 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
     標準 Contributes 查詢 SDK:
     查詢指定目標模組之已合併 Contributes 字典或特定鍵值。
     
-    1. 優先從 cache.root://{target_module}/contributes.merged.json 讀取。
+    1. 優先從 cache://{target_module}/contributes.merged.json 讀取。
     2. 若快取不存在或損毀，自動調用 scan_and_inject() 即時自愈聚合。
     3. 若指定 key 則返回該特定欄位，否則返回全字典。
     """
-    cache_file = f"cache.root://{target_module}/contributes.merged.json"
+    cache_file = f"cache://{target_module}/contributes.merged.json"
     data = None
     if uri.exists(cache_file):
         try:
@@ -58,29 +58,27 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
 
 def get_for_current_module(key: Optional[str] = None, default: Any = None) -> Any:
     """
-    根據當前 active module 上下文 (uri.get_module_context()) 自動查詢本模組之 Contributes。
+    從當前活躍模組上下文獲取 Contributes 字典或特定鍵值。
     """
-    current_mod = uri.get_module_context() or "core"
-    return get(current_mod, key=key, default=default)
+    curr_mod = uri.get_module_context() or "core"
+    return get(curr_mod, key=key, default=default)
 
 
 class ContributesAggregator:
+    """
+    Contributes 聚合引擎：
+    負責掃描已安裝模組的 Contributes 宣告，執行拓撲合併，並物化寫入 cache://{module}/contributes.merged.json。
+    """
     def __init__(self):
         pass
 
-    def scan_and_inject(self, topological_order: Optional[List[str]] = None, clean: bool = True) -> Dict[str, Any]:
+    def scan_and_inject(self, topological_order: Optional[List[str]] = None, clean: bool = True) -> Dict[str, Dict[str, Any]]:
         """
-        Scan and cascade-merge contributes from 5 sources (strictly in installed space):
-        1. module://manifest.json -> contributes
-        2. module://contributes.{target}.json
-        3. config://config.project.json
-        4. config://contributes.{target}.json
-        5. config://config.local.json
-
+        掃描所有 installed_modules，聚合 Manifest 與 contributes.<target>.json，
         依拓撲排序 (topological_order) 依序合併，並在搜集階段自動注入 __provider__。
         """
         aggregated: Dict[str, Dict[str, Any]] = {}
-        installed_modules = uri.listdir("module.root://") if uri.exists("module.root://") else []
+        installed_modules = uri.listdir("module://") if uri.exists("module://") else []
         
         if not installed_modules:
             return aggregated
@@ -106,7 +104,7 @@ class ContributesAggregator:
         # 3. 依拓撲順序搜集模組層級 contributes
         for donor in ordered_donors:
             # Source 1: Manifest
-            manifest_uri = f"module.root://{donor}/manifest.json"
+            manifest_uri = f"module://{donor}/manifest.json"
             if uri.exists(manifest_uri):
                 try:
                     m_data = uri.read_json(manifest_uri)
@@ -131,7 +129,7 @@ class ContributesAggregator:
 
             # Source 2: contributes.<target>.json in donor module
             for target in installed_modules:
-                donor_file = f"module.root://{donor}/contributes.{target}.json"
+                donor_file = f"module://{donor}/contributes.{target}.json"
                 if uri.exists(donor_file):
                     try:
                         c_data = uri.read_json(donor_file)
@@ -154,7 +152,7 @@ class ContributesAggregator:
         # 4. Project-level and local-level overrides
         for target in installed_modules:
             # Source 3: project-level config.project.json
-            proj_cfg_uri = f"config.root://{target}/config.project.json"
+            proj_cfg_uri = f"config://{target}/config.project.json"
             if uri.exists(proj_cfg_uri):
                 try:
                     p_data = uri.read_json(proj_cfg_uri)
@@ -165,7 +163,7 @@ class ContributesAggregator:
                     pass
 
             # Remove legacy file in config/ if exists
-            legacy_cfg_uri = f"config.root://{target}/contributes.merged.json"
+            legacy_cfg_uri = f"config://{target}/contributes.merged.json"
             if uri.exists(legacy_cfg_uri):
                 try:
                     uri.rmtree(legacy_cfg_uri) if uri.isdir(legacy_cfg_uri) else uri.write_text(legacy_cfg_uri, "")
@@ -173,9 +171,9 @@ class ContributesAggregator:
                     pass
 
             # Persist injected contributes to cache space
-            target_cache_uri = f"cache.root://{target}/contributes.merged.json"
+            target_cache_uri = f"cache://{target}/contributes.merged.json"
             if aggregated[target]:
-                uri.makedirs(f"cache.root://{target}", exist_ok=True)
+                uri.makedirs(f"cache://{target}", exist_ok=True)
                 uri.write_json(target_cache_uri, aggregated[target])
             else:
                 if uri.exists(target_cache_uri):

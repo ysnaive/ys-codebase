@@ -132,7 +132,7 @@ class Installer:
             self.engine.act_restore_snapshot(snap_id)
             return 1
 
-    def cmd_remove(self, module_name: str, clean: bool = False, force: bool = False) -> int:
+    def cmd_remove(self, module_name: str, clean: bool = False, purge: bool = False, force: bool = False) -> int:
         if not module_name:
             print("[core:remove] Error: Module name is required.")
             return 1
@@ -152,7 +152,7 @@ class Installer:
         for other_mod in installed.keys():
             if other_mod == module_name:
                 continue
-            manifest_uri = f"module.root://{other_mod}/manifest.json"
+            manifest_uri = f"module://{other_mod}/manifest.json"
             if uri.exists(manifest_uri):
                 try:
                     m_data = uri.read_json(manifest_uri)
@@ -173,10 +173,12 @@ class Installer:
         self.engine.act_broadcast_event("core", "on_remove", ExecutionContext("core", "remove", [module_name]))
         self.engine.act_snapshot(f"pre_remove_{module_name}")
         self.engine.act_unregister(module_name)
-        if clean:
-            self.engine.act_delete(module_name)
+        self.engine.act_delete(module_name, clean_mirror=clean, purge=purge)
         self.engine.act_reload(clean_stage=True, inject_stage=True)
-        print(f"[core:remove] Module '{module_name}' removed successfully.")
+        if purge:
+            print(f"[core:remove] Module '{module_name}' and all its persistent data/config purged successfully.")
+        else:
+            print(f"[core:remove] Module '{module_name}' removed successfully (cache cleared, storage/config preserved).")
         return 0
 
     def cmd_list(self, remote: bool = False, provider: Optional[str] = None) -> int:
@@ -193,7 +195,7 @@ class Installer:
             for mod, meta in installed.items():
                 ver = meta.get("version", "unknown")
                 prov = meta.get("provider", "local")
-                status = "Installed" if uri.exists(f"module.root://{mod}") else "Missing files"
+                status = "Installed" if uri.exists(f"module://{mod}") else "Missing files"
                 print(f"{mod:<20} {ver:<10} {prov:<15} {status:<15}")
         print("-" * 65)
         return 0
@@ -210,8 +212,8 @@ class Installer:
         
         healthy = True
         for mod, meta in installed.items():
-            mod_exists = uri.exists(f"module.root://{mod}/manifest.json")
-            cli_exists = uri.exists(f"module.root://{mod}/scripts/cli.py")
+            mod_exists = uri.exists(f"module://{mod}/manifest.json")
+            cli_exists = uri.exists(f"module://{mod}/scripts/cli.py")
             if not mod_exists or not cli_exists:
                 healthy = False
                 print(f"  [!] {mod}: Incomplete (manifest={mod_exists}, cli={cli_exists})")

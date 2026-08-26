@@ -2,6 +2,24 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_26_1747_core_dev_refinement
+
+- **模組資料管理相關 URI 協議釐清與遷移 (`sub_01_module_data_uri_refactor`)**：
+  - **方案 B：全量 Root 化與 `@/` 自省語法模型 (`core.uri`)**：
+    - 徹底廢除全系統所有 `*.root://` 協議（`storage.root`, `cache.root`, `config.root`, `module.root`, `module.source.root`, `module.build.root`, `module.release.root`, `module.mirror.root`）與 `temp://` 協議，協議庫精簡 50%，確立 8 大清晰正交標準協議。
+    - 支援顯式跨模組尋址 `{scheme}://{module}/{path}` 與當前模組自省語法 `{scheme}://@/{path}`，無模組上下文調用 `@/` 時拋出結構化 `UndefinedModuleContextError`。
+    - 內建舊協議 DeprecationWarning 向下相容轉向與路徑穿越 (`..`) 沙盒逃逸防護。
+  - **模組資料三位一體與生命週期治理 (`core:remove --purge`)**：
+    - 確立 `storage://` (持久化/Git 追蹤)、`config://` (專案設定/Git 追蹤)、`cache://` (暫存快取/Git 忽略) 之三位一體原則與 Git 版本控制策略。
+    - 實作模組標準卸載自動清空 `cache://{module}/` 並保留持久資料；新增 `--purge` 旗標支援物理銷毀 `storage`、`config` 與 `cache`。
+  - **開發工具鏈與測試沙盒遷移 (`dev`)**：
+    - 測試沙盒環境全面自 `temp://` 遷移至 `cache://dev/sandbox/` (`.cache/dev/sandbox/`)，測試完畢自動乾淨銷毀。
+    - `builder.py`、`releaser.py`、`checker.py` 等工具鏈全面升級方案 B 協議。
+  - **發布清冊錯誤路徑修復與歷史清理 (`agents-workflow`)**：
+    - 修復發布清冊至 `storage://@/release_manifest.json` (`storage/agents-workflow/release_manifest.json`)，根除雙重嵌套缺陷，物理清理歷史遺留之 `storage/core/agents-workflow/` 與 `.temp/`。
+  - **全量回歸驗證**：
+    - 全專案 110/110 自動化測試全數通過 (100% Ready)。
+
 ## 2026_08_25_2200_agents_workflow_migration
 
 - **佔位符解析管線優化、三層 URI 重映射與多環境原子發布 (`sub_07`)**：

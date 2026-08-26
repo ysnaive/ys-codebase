@@ -14,7 +14,7 @@ class BaseModuleContractTestCase(YSCBTestCase):
 
     def test_contract_manifest_schema(self) -> None:
         """Contract 1: Validate manifest.json required fields & SemVer format."""
-        src_uri = f"module.source.root://{self.module_name}/manifest.json"
+        src_uri = f"module.source://{self.module_name}/manifest.json"
         self.assertTrue(uri.exists(src_uri), f"Missing manifest.json for module '{self.module_name}'")
         data = uri.read_json(src_uri)
         for field in ("name", "version", "entry"):
