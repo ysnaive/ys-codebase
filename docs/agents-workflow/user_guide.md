@@ -177,5 +177,19 @@ python yscb.py agents-workflow release [target_name]
 - **穿插替換**：支援在同一個代碼塊中穿插其他文字（例如 `` `python __${yscb.host://yscb.py}__ agents-workflow plan status` ``），展開時僅替換佔位符字串，保留前後文字與外層反引號。
 - **未包裹警示**：若文本中出現未被反引號包裹的裸佔位符，編譯器不予展開並輸出 `[compiler:warning]` 警示提示。
 
+---
 
+## 5. 自動連續推進工作流 (Auto Workflow)
 
+### 5.1 核心定位與觸發時機
+`/Auto` 為可在 **Phase 01 ~ Phase 05** 之間觸發的連續推進指令。當開發者確認需求（Phase 0 完成）後，下達 `/Auto` 授權 Agent 在無技術歧義與無爭議的前提下，跳過中間各 Phase 的強制 Checkpoint 等待，自動連續產出各階段規範與代碼實作，直達 Phase 6 手動/UX 驗證前。
+
+### 5.2 適用範圍與分流
+- **Full Track (Level 1)**：進行中計畫。
+- **Umbrella (Level 2)**：主計畫下處於進行中狀態之 Full Track 子計畫 (`sub_XX`)。
+- **排除 Fast Track (Level 0)**：Fast Track 無多階段等待需求，不適用 `/Auto`。
+
+### 5.3 三大熔斷防線 (Circuit Breakers)
+1. **零臆測熔斷 (Zero Speculation Gate)**：遇到任何需求不明或技術未知，立即停手提問。
+2. **偏差熔斷 (Deviation Gate)**：遇到 Major/Critical 架構或 API 偏差，立即停止並轉入 `/Discuss`。
+3. **P06 手動/UX 驗證絕對阻斷 (Mandatory UX Gate)**：CLI 自動化測試通過後，強制停步等待開發者人工/UX 驗收，絕對禁止自動結案。

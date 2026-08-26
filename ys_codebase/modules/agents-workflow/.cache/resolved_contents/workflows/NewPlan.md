@@ -121,6 +121,12 @@
 - **FT-2 (程式碼實作與驗證)**：依序撰寫代碼與測試，若遇 Critical 偏差立即升級為 Full Track。
 - **FT-3 (品質 Review 與結案)**：代碼清理、回歸驗證、1:1 知識庫交付，追加 `CHANGELOG.md` ➔ Checkpoint ➔ Completed。
 
+### 4.4 自動連續推進模式 (/Auto)
+- **觸發時機**：於 Full Track (Level 1) 或 Umbrella (Level 2) 活躍子計畫處於 Phase 01 ~ Phase 05 區間時由開發者調用。
+- **特權授權**：在無未確定技術疑問與無爭議前提下，授權 Agent 跳過中間 Phase 強制 Checkpoint 連續推進各 Phase 產出與代碼實作。
+- **三大熔斷防線**：嚴格受「零臆測熔斷」（遇歧義立即停手提問）、「偏差熔斷」（Major/Critical 偏差立即轉入 `/Discuss`）與「P06 手動/UX 驗證絕對阻斷」（CLI 跑測通過後強制停步等待人工驗收）約束。
+- **產出保真**：連續推進期間各 Phase 文件（P01~P06、P05 任務清單、changelog 日誌）仍必須 100% 完整生成與記錄。
+
 ---
 
 
