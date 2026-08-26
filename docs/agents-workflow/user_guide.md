@@ -114,16 +114,38 @@ python yscb.py agents-workflow plan-verify
 
 ---
 
-## 2. 工作流程資產發布與初始化
+## 2. 工作流程資產發布與組態治理
 
-### 2.1 一鍵工作流初始化 (`--init-default`)
+### 2.1 專案組態開關 (`config.project.json`)
+位於 `config://agents-workflow/config.project.json`：
+```json
+{
+  "paths": {
+    "plans": "!undefined",
+    "archived": "!undefined",
+    "docs": "!undefined"
+  },
+  "release_targets": [],
+  "enable_agents_md": true,
+  "enable_project_changelog": true
+}
+```
+- **`release_targets`**：預設為空清單 `[]`。手動指定欲啟用的 Target（例 `["antigravity"]`），發布時將資產投影輸出至對應目錄。
+- **`enable_agents_md`**：`true` 時發布自動執行 `AGENTS.md` 軟合併（僅注入精簡版 `AgentsStandards.md`）；`false` 時完全跳過。
+- **`enable_project_changelog`**：控制是否啟用全專案 `project://CHANGELOG.md` 結案登載與歸檔守門要求。
+
+### 2.2 一鍵工作流初始化 (`--init-default`)
 ```bash
 # 初始化 workflow.plans://, workflow.archived://, workflow.docs:// 目錄結構與組態
 python yscb.py agents-workflow --init-default -y
 ```
 
-### 2.2 原子發布交易 (`release`)
+### 2.3 原子發布交易 (`release`)
 ```bash
-# 執行 4 步原子交易發布至 .agents/ 目錄並軟合併 AGENTS.md
-python yscb.py agents-workflow release
+# 執行 4 步原子交易發布至各 Target 投影目錄並軟合併 AGENTS.md
+python yscb.py agents-workflow release [target_name]
 ```
+- **特性**：
+  - 若 `release_targets` 為空 `[]`，安全略過投影目錄寫入（`Published files: 0`）。
+  - 若 `enable_agents_md` 為 `true`，自動提取 `AgentsStandards.md` 軟合併更新專案根目錄 `AGENTS.md`，保留專案特化規則。
+

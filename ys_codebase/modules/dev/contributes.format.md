@@ -16,22 +16,28 @@
     "core": {
       "uri_schemes": [
         {
-          "token": "module.source",
+          "token": "module.source.root",
           "type": "const",
           "value": "yscb://source/",
           "description": "模組源碼空間根目錄"
         },
         {
-          "token": "module.build",
+          "token": "module.source",
           "type": "const",
-          "value": "yscb://build/",
-          "description": "本地開發完整建置產物空間根目錄"
+          "value": "yscb://source/{module}/",
+          "description": "模組專屬源碼目錄"
         },
         {
-          "token": "module.release",
+          "token": "module.build.root",
           "type": "const",
-          "value": "yscb://release/",
-          "description": "模組發布來源空間根目錄"
+          "value": "yscb://build/",
+          "description": "純淨安裝產物根目錄"
+        },
+        {
+          "token": "module.build",
+          "type": "const",
+          "value": "yscb://build/{module}/",
+          "description": "純淨安裝產物專屬目錄"
         }
       ]
     }

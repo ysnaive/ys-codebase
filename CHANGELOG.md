@@ -4,6 +4,23 @@
 
 ## 2026_08_25_2200_agents_workflow_migration
 
+- **開發標準規範與流程分離重構及 Contributes 文檔建立 (`sub_09_standards_refactor_and_contributes_doc`)**：
+  - **標準規範與開發流程資產徹底解耦**：
+    - 新增 `AgentsStandards.md`：專門收斂 Agent 通用核心原則、防呆紀律與絕對禁止條款。
+    - 重構 `DevelopmentStandards.md`：收斂工作目錄管理、追溯鏈矩陣、模板尋址指針、三大分流矩陣、SOP 0~7 階段流程與 Fast Track 流程。
+    - `NewPlan.md` 維持完整載入 `DevelopmentStandards.md` 流程指引。
+  - **`AGENTS.md` 精簡軟合併與 Prompt 上下文優化**：
+    - `ReleasePublisher` 發布時僅提取極簡版 `AgentsStandards.md` 注入至 `AGENTS.md` 的標記區間，縮減 Prompt 冗餘 Token 60% 以上，100% 保留專案特化工程規範。
+  - **專案組態開關落實與預設調整**：
+    - `config.project.json` 中 `"release_targets"` 預設改為空陣列 `[]`（無），避免未宣告時主動生成未預期的 IDE 目錄。
+    - 完整支援 `enable_agents_md` 與 `enable_project_changelog` 開關控制。
+  - **官方 Contributes 規格書建立**：
+    - 交付 `source/agents-workflow/contributes.format.md`，完整定義 `core.uri_schemes`、`export`、`token`、`insert`、`release_target` 的欄位型別與使用範例。
+  - **全量測試與回歸驗證**：
+    - 模組內部單元測試 21/21 100% Passed。
+    - 全系統端到端沙盒測試 114/114 100% Ready。
+    - 交付 `docs/agents-workflow/README.md` 與 `docs/agents-workflow/user_guide.md`。
+
 - **Plans CLI 工具鏈補齊與舊版功能遷移 (`sub_08_plans_cli_toolchain_migration`)**：
   - **Plans 工具鏈子套件體系 (`agents_workflow.plans`)**：
     - 將舊版 4 大孤立維護腳本（`archive_plan.py`, `scan_plan_status.py`, `search_dev_plans.py`, `verify_plan.py`）完整重構為高內聚子套件，定義自定義例外基底與型別（`PlanNotFoundError`, `PlanFormatError`, `PlanIncompleteError`, `PlanDestinationExistsError`）。

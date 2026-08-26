@@ -34,12 +34,11 @@ class Tester:
     def _print_usage(self) -> None:
         print("[dev:test] Usage: python yscb.py dev test [module_name | --all] [options]")
         print("Subcommands / Modes:")
-        print("  dev test [mod | --all]     High-level E2E: Auto build -> Provision sandbox -> Run tests -> Teardown")
+        print("  dev test [mod | --all]     High-level E2E: Provision sandbox -> Run tests -> Teardown")
         print("  dev op-mksb [--dir=<path>] Atomic primitive: Provision isolated virtual sandbox")
         print("  dev op-test [mod | --all]  Atomic primitive: Run in-place test execution without sandboxing")
         print("Options:")
         print("  --all            Run tests across all modules in source/")
-        print("  --no-build       Skip automatic pre-build step and test existing build packages")
         print("  --contract-only  Run only universal standard contract tests")
         print("  --type=<type>    Filter test type (logic | host_cli | network)")
         print("  -k <pattern>     Run only tests matching pattern")
@@ -189,25 +188,15 @@ class Tester:
     def _run_test(self, argv: List[str]) -> int:
         """High-level facade: auto dev build -> op-mksb -> run op-test in sandbox -> cleanup"""
         keep_sandbox = "--keep-sandbox" in argv
-        no_build = "--no-build" in argv
-        clean_argv = [a for a in argv if a != "--no-build"]
         
-        # 1. Automatic pre-test Hermetic Dev Build (unless --no-build)
-        if not no_build:
-            from dev.builder import Builder
-            builder = Builder()
-            target_mod = next((a for a in clean_argv if not a.startswith("-") and a != "test"), None)
-            if target_mod and target_mod != "--all":
-                ok, msg = builder.build_module(target_mod)
-                if not ok:
-                    print(f"[dev:test] Pre-build failed for module '{target_mod}':\n  {msg}", file=sys.stderr)
-                    return 1
-            else:
-                results = builder.build_all()
-                for m_name, (ok, msg) in results.items():
-                    if not ok:
-                        print(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", file=sys.stderr)
-                        return 1
+        # 1. Automatic pre-test Hermetic Dev Build
+        from dev.builder import Builder
+        builder = Builder()
+        target_mod = next((a for a in argv if not a.startswith("-") and a != "test"), None)
+        if target_mod and target_mod != "--all":
+            builder.build_module(target_mod, clean=True)
+        else:
+            builder.build_all(clean=True)
         
         # 2. Provision virtual sandbox (resolves from build:// -> mirror:// -> provider)
         ctx = SandboxProvisioner.create_sandbox()
@@ -216,8 +205,7 @@ class Tester:
         
         # 3. Invoke dev op-test inside sandbox
         sandbox_yscb = os.path.join(host_dir, "yscb.py")
-        op_test_args = [a for a in clean_argv if a != "test"]
-        cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + op_test_args
+        cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + argv
         
         try:
             res = subprocess.run(cmd, cwd=host_dir)

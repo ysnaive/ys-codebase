@@ -1,6 +1,3 @@
-# Agent 專案行為準則與工作流指南 (AGENTS.template.md)
-
-<!-- YSCB_AGENTS_BEGIN -->
 # Agent 專案行為準則與防呆紀律規範 (Agents Standards)
 
 本文件定義 Agent 在專案內執行任務時**必須強制遵守**的通用硬性核心原則、防呆紀律與工程規範。
@@ -38,26 +35,3 @@ Agent 必須始終遵守以下三大原則：
 - **雙星伴隨初始化鐵律**：開立計畫目錄時，`P00_semantic_requirements.md` 必須與 `changelog.md` 剛性伴隨同時建立，立即寫入第 1 筆紀錄。
 - **目錄歸檔紀律與 CLI 調度優先**：所有計畫預設留存原位（`plans://`），嚴禁 Agent 主動歸檔，僅在開發者明確下達歸檔指令時才執行歸檔工具。
 - **巢狀層級硬性約束**：專案嚴格限制子計畫目錄最多**兩層結構**（主計畫 ➔ 子計畫），**絕對禁止在子計畫下再開子計畫**！
-<!-- YSCB_AGENTS_END -->
-
-## 4. 專案特化工程規範 (Project Specific Standards)
-*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*
-
-### 🚨 Dogfooding 自引用代碼庫三層空間邊界與防呆鐵律 (Dogfooding Axiom)
-本專案呈現「自引用 (Dogfooding)」狀態，Agent 必須強制遵守以下三大空間隔離與四步標準閉環流水線：
-
-#### 1. 三層空間權限矩陣
-- **空間 ① 源碼開發空間 (`:/ys_codebase/`)**：【唯一源碼來源 (SSOT)】包含 `ys_codebase/source/`、`ys_codebase/yscb_*.py`。所有代碼、腳本、SOP 工作流修改 **100% 必須在此空間進行**。
-- **空間 ② 測試驗證空間 (`:/test/`)**：【品質守門閘門】執行 `python test/run_regression.py`。未 100% 通過前嚴禁放行更新自引用產物。
-- **空間 ③ 自引用消費空間 (`:/` 專案根目錄)**：【發布運行產物】包含 `modules/`、`.agents/`、根目錄 `yscb_*.py`。**視為編譯產物，嚴禁手動直接修改**，必須透過 CLI 指令自動同步。
-
-#### 2. 標準四步閉環流水線 (The Canonical 4-Stage Pipeline)
-1. `Stage 1 (Source)`: 編輯 `ys_codebase/source/...` 或 `ys_codebase/yscb_*.py`。
-2. `Stage 2 (Build)`: `python yscb_cli.py installer build <module>` (或 `build --all`)。
-3. `Stage 3 (Regression)`: 實機執行 `python test/run_regression.py` (維持 23/23 + E2E 100% Passed)。
-4. `Stage 4 (Dogfooding Sync)`:
-   - 覆蓋同步根目錄起手腳本 (`yscb_installer.py` / `yscb_cli.py`)。
-   - `python yscb_cli.py installer install <module> --force` 部署至 `modules/`。
-   - `python yscb_cli.py agents-workflow --ide-antigravity` 重新生成 `.agents/workflows/`。
-   - 檢查 `AGENTS.md` 軟合併無損。
-

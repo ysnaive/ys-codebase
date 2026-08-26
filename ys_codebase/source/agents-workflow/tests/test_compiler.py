@@ -173,6 +173,42 @@ class TestArtifactCompiler(unittest.TestCase):
         self.assertIn("專案語意 URI 即時解析地圖", resolved)
         self.assertIn("project://", resolved)
 
+    def test_ft_09_dual_standards_and_publisher_config_flags(self):
+        """FT-09: 驗證雙標準資產、enable_agents_md 開關與空 release_targets 發布。"""
+        # 1. 驗證 Stage 1 解算包含 AgentsStandards 與 DevelopmentStandards
+        stage1_res = self.compiler.compile_stage1()
+        self.assertTrue(stage1_res["success"])
+        base_names = [it["base_name"] for it in stage1_res["resolved_items"]]
+        self.assertIn("AgentsStandards.md", base_names)
+        self.assertIn("DevelopmentStandards.md", base_names)
+
+        # 2. 驗證 enable_agents_md 開關在 release_all 中之守門邏輯
+        orig_cfg_fn = self.publisher._get_project_config
+        try:
+            # 模擬 enable_agents_md = False
+            self.publisher._get_project_config = lambda: {
+                "paths": {},
+                "release_targets": [],
+                "enable_agents_md": False,
+                "enable_project_changelog": True
+            }
+            res_disabled = self.publisher.release_all()
+            self.assertTrue(res_disabled["success"])
+            self.assertEqual(res_disabled["published_count"], 0)
+
+            # 模擬 enable_agents_md = True, release_targets = []
+            self.publisher._get_project_config = lambda: {
+                "paths": {},
+                "release_targets": [],
+                "enable_agents_md": True,
+                "enable_project_changelog": True
+            }
+            res_empty_target = self.publisher.release_all()
+            self.assertTrue(res_empty_target["success"])
+            self.assertEqual(res_empty_target["published_count"], 0)
+        finally:
+            self.publisher._get_project_config = orig_cfg_fn
+
 
 if __name__ == "__main__":
     unittest.main()
