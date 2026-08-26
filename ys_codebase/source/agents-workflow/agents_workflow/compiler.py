@@ -32,7 +32,7 @@ except ImportError:
 
 # Global Placeholder Pattern Constants (Strict Backtick Format)
 TOKEN_ANCHOR_REGEX = re.compile(r"`__@\{\s*([A-Za-z0-9_]+)\s*\}__`")
-URI_REF_REGEX = re.compile(r"`__#\{\s*([^}]+)\s*\}__`")
+URI_REF_REGEX = re.compile(r"`?__#\{\s*([^}]+)\s*\}__`?")
 
 
 def make_token_tag_regex(token_name: str) -> re.Pattern:

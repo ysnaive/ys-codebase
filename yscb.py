@@ -374,9 +374,16 @@ def _get_installed_module_commands(base_dir: str, yscb_root: str) -> Dict[str, D
                 mf_data = json.load(f)
             mod_desc = mf_data.get("description", f"{mod_name} module")
             contrib = mf_data.get("contributes", {})
-            cmds = contrib.get("commands", {})
+            c_core = contrib.get("core", {}) if isinstance(contrib, dict) else {}
+            cmds = c_core.get("commands", {}) if isinstance(c_core, dict) else {}
             if cmds and isinstance(cmds, dict):
-                summary[mod_name] = {cmd: desc for cmd, desc in cmds.items()}
+                sub_map = {}
+                for cmd, val in cmds.items():
+                    if isinstance(val, dict):
+                        sub_map[cmd] = val.get("description", "")
+                    elif isinstance(val, str):
+                        sub_map[cmd] = val
+                summary[mod_name] = sub_map
             else:
                 summary[mod_name] = {
                     "run": mod_desc

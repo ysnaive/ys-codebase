@@ -4,18 +4,18 @@
   "installed_modules": {
     "core": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-27 00:46:48",
-      "provider": "./ys_codebase/build"
+      "installed_at": "2026-08-27 02:45:16",
+      "provider": "./ys_codebase/release"
     },
     "dev": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-27 00:47:01",
-      "provider": "./ys_codebase/build"
+      "installed_at": "2026-08-27 02:45:21",
+      "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-27 00:50:50",
-      "provider": "./ys_codebase/build"
+      "installed_at": "2026-08-27 03:03:43",
+      "provider": "./ys_codebase/release"
     }
   }
 }

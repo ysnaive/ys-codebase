@@ -149,3 +149,15 @@ python yscb.py agents-workflow release [target_name]
   - 若 `release_targets` 為空 `[]`，安全略過投影目錄寫入（`Published files: 0`）。
   - 若 `enable_agents_md` 為 `true`，自動提取 `AgentsStandards.md` 軟合併更新專案根目錄 `AGENTS.md`，保留專案特化規則。
 
+---
+
+## 3. CLI 指令防呆手冊與 Default-Deny 守門機制 (Agents CLI Guild)
+
+### 3.1 宣告式 CLI 防呆指南 (`AgentsCliGuild.md`)
+由 `agents-workflow` 導出並物化至 `.agents/.yscb/standards/AgentsCliGuild.md`。透過 Core 模組動態 Token `AGENTS_CLI_GUILD`，自動收集所有已安裝模組在 `contributes.core.commands` 中宣告的推薦情境 (`case_pros`) 與禁止情境 (`case_cons`)。
+
+### 3.2 Agent 調用守門鐵律
+1. **查表比對 (Look Up & Match)**：Agent 執行任何 `python yscb.py` 命令前必須比對 `AgentsCliGuild.md`。
+2. **Default-Deny 閉環 (Default-Deny Gate)**：若欲執行之命令未列於表、無對應推薦欄位、或命中 `🚨 絕對禁止/不適用情境`，Agent 絕對禁止擅自執行，必須向開發者呈遞調用意圖與完整命令列，獲明確授權後方可執行。
+
+
