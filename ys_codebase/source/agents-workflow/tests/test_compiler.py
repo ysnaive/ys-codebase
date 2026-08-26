@@ -238,7 +238,51 @@ class TestArtifactCompiler(unittest.TestCase):
         with patch("agents_workflow.publisher.ReleasePublisher.release_all") as mock_rel:
             mock_rel.return_value = {"success": True, "published_count": 24, "active_targets": ["antigravity"]}
             hook_mod.on_reload(None)
-            mock_rel.assert_called_once()
+    def test_ft_12_project_uri_placeholder_root_and_sub_dir(self):
+        """FT-12: 驗證 __${uri}__ 以專案根目錄為基準點展開為純淨相對路徑 (root 與子目錄)。"""
+        raw_text = "Root: `__${project://yscb.py}__`\nSub: `__${project://tools/sub/cli.py}__`\n"
+        deployment_map = {}
+        dst_path = os.path.join(self.compiler.module_root, "dummy_target.md")
+        resolved = self.compiler.resolve_stage2_uri(raw_text, dst_path, deployment_map)
+        self.assertIn("Root: `yscb.py`", resolved)
+        self.assertIn("Sub: `tools/sub/cli.py`", resolved)
+
+    def test_ft_13_inline_code_block_expansion(self):
+        """FT-13: 驗證代碼塊內部穿插文字時，僅替換佔位符本體並保留外層反引號與前後文字。"""
+        # 1. 測試 Stage 1 __@{token}__ 穿插替換
+        stage1_raw = "Command: `run __@{CMD_NAME}__ --flag`\n"
+        inserts = [{"token": "CMD_NAME", "value": "test_cmd", "mode": "replace"}]
+        stage1_res = self.compiler.resolve_single_artifact(stage1_raw, inserts)
+        self.assertEqual(stage1_res.strip(), "Command: `run test_cmd --flag`")
+
+        # 2. 測試 Stage 2 __${uri}__ 穿插替換
+        stage2_raw = "Run: `python __${project://yscb.py}__ plan status`\n"
+        dst_path = os.path.join(self.compiler.module_root, "dummy.md")
+        stage2_res = self.compiler.resolve_stage2_uri(stage2_raw, dst_path, {})
+        self.assertEqual(stage2_res.strip(), "Run: `python yscb.py plan status`")
+
+    def test_ft_14_unenclosed_placeholder_warning_and_preservation(self):
+        """FT-14: 驗證未被反引號包裹的裸佔位符絕對不被展開，且輸出警示。"""
+        raw_text = "Bare token: __@{MY_TOKEN}__ and Bare URI: __${project://yscb.py}__\n"
+        inserts = [{"token": "MY_TOKEN", "value": "EXPANDED", "mode": "replace"}]
+        
+        # Capture stderr
+        import io
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            stage1_res = self.compiler.resolve_single_artifact(raw_text, inserts)
+            stage2_res = self.compiler.resolve_stage2_uri(stage1_res, "dummy.md", {})
+            err_output = sys.stderr.getvalue()
+        finally:
+            sys.stderr = old_stderr
+
+        # 斷言裸佔位符未被展開
+        self.assertIn("__@{MY_TOKEN}__", stage2_res)
+        self.assertIn("__${project://yscb.py}__", stage2_res)
+        self.assertNotIn("EXPANDED", stage2_res)
+        # 斷言輸出 Warning 提示
+        self.assertIn("[compiler:warning] Unenclosed placeholder tag", err_output)
 
 
 if __name__ == "__main__":

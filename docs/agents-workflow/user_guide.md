@@ -160,4 +160,22 @@ python yscb.py agents-workflow release [target_name]
 1. **查表比對 (Look Up & Match)**：Agent 執行任何 `python yscb.py` 命令前必須比對 `AgentsCliGuild.md`。
 2. **Default-Deny 閉環 (Default-Deny Gate)**：若欲執行之命令未列於表、無對應推薦欄位、或命中 `🚨 絕對禁止/不適用情境`，Agent 絕對禁止擅自執行，必須向開發者呈遞調用意圖與完整命令列，獲明確授權後方可執行。
 
+---
+
+## 4. 模板佔位符三層語意體系 (Three-Tier Placeholder System)
+
+編譯器在執行資產 Stage 1 與 Stage 2 編譯時，支援三大結構化語意佔位符：
+
+| 佔位符 | 語意分類 | 解析基準點 | 適用情境與範例 |
+| :--- | :--- | :--- | :--- |
+| **`` `__@{token}__` ``** | **文件內容佔位符** | Stage 1 內容狀態機 | 常數注入、模板片段嵌入、`code.func://` 動態計算產出（例：`` `__@{AGENTS_CLI_GUILD}__` ``）。 |
+| **`` `__#{uri}__` ``** | **自身相對路徑佔位符** | 當前 Markdown 文件所在目錄 (`cur_doc_dir`) | Markdown 文本內部超連結導航（例：`[標準](`__#{module://.../DevStandards.md}__`)` ➔ `[標準](../.yscb/standards/DevStandards.md)`）。 |
+| **`` `__${uri}__` ``** | **專案根目錄相對路徑佔位符** | 專案根目錄 (`project://`) | 終端機 Shell 執行指令與專案相對路徑參照（例：`` `python __${yscb.host://yscb.py}__ run` `` ➔ `` `python yscb.py run` ``，子目錄自適應為 `` `python tools/yscb.py run` ``）。 |
+
+### 4.1 反引號包裹與穿插展開
+- **強制包裹**：佔位符必須由反引號（代碼塊 `` `...` ``）包裹方可被解析。
+- **穿插替換**：支援在同一個代碼塊中穿插其他文字（例如 `` `python __${yscb.host://yscb.py}__ agents-workflow plan status` ``），展開時僅替換佔位符字串，保留前後文字與外層反引號。
+- **未包裹警示**：若文本中出現未被反引號包裹的裸佔位符，編譯器不予展開並輸出 `[compiler:warning]` 警示提示。
+
+
 

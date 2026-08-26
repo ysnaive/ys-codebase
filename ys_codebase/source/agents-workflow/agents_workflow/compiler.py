@@ -31,13 +31,33 @@ except ImportError:
     ExecutionContext = None
 
 # Global Placeholder Pattern Constants (Strict Backtick Format)
+CODE_SPAN_REGEX = re.compile(r"(`[^`\r\n]+`)")
+UNENCLOSED_TAG_REGEX = re.compile(r"__[@#\$]\{\s*[^}]+\s*\}__")
+
+TOKEN_ANCHOR_INNER_REGEX = re.compile(r"__@\{\s*([A-Za-z0-9_]+)\s*\}__")
+LOCAL_URI_INNER_REGEX = re.compile(r"__#\{\s*([^}]+)\s*\}__")
+PROJECT_URI_INNER_REGEX = re.compile(r"__\$\{\s*([^}]+)\s*\}__")
+
+# Legacy compatibility alias
 TOKEN_ANCHOR_REGEX = re.compile(r"`__@\{\s*([A-Za-z0-9_]+)\s*\}__`")
-URI_REF_REGEX = re.compile(r"`?__#\{\s*([^}]+)\s*\}__`?")
+URI_REF_REGEX = re.compile(r"`__#\{\s*([^}]+)\s*\}__`")
+
+
+def check_unenclosed_tags(content: str, doc_name: str = "") -> None:
+    """檢查並輸出未被反引號包裹的裸佔位符警示 (Unenclosed Placeholder Warning Gate)。"""
+    if not content:
+        return
+    clean_text = CODE_SPAN_REGEX.sub("", content)
+    matches = UNENCLOSED_TAG_REGEX.findall(clean_text)
+    if matches:
+        for m in dict.fromkeys(matches):
+            target_str = f" in '{doc_name}'" if doc_name else ""
+            print(f"[compiler:warning] Unenclosed placeholder tag '{m}' detected{target_str} (must be enclosed in backticks '`...`')", file=sys.stderr)
 
 
 def make_token_tag_regex(token_name: str) -> re.Pattern:
     """構造匹配指定 Token 標籤之正則表達式，支援大括號內部微量空格。"""
-    return re.compile(r"`__@\{\s*" + re.escape(token_name) + r"\s*\}__`")
+    return re.compile(r"__@\{\s*" + re.escape(token_name) + r"\s*\}__")
 
 
 def make_purge_regex(token_name: str) -> re.Pattern:
@@ -188,20 +208,29 @@ class ArtifactCompiler:
     ) -> str:
         """
         Stage 1: 單一 Export 檔案之多輪遞迴解算狀態機 (resolve_stage1_content)：
-        - Step 1: 建立文本當前 __@{token}__ 錨點快照 CurrentTokens。
+        - Step 1: 建立文本當前 `...` 代碼塊內部的 __@{token}__ 錨點快照 CurrentTokens。
         - Step 2: 依照拓撲順序有序展開匹配的 insert (replace / below / above)。
-        - Step 3: 移除本輪已完成解算或無匹配之 Token 錨點標籤行。
+        - Step 3: 移除本輪已完成解算或無匹配之 Token 錨點標籤行/標籤。
         - Step 4: 遞迴檢查文本是否仍有新 Token（有則回 Step 1，無則收斂結束）。
-        - Step 5: 保持 __#{uri}__ 標籤原樣返回。
+        - Step 5: 保持 `__#{uri}__` 與 `__${uri}__` 標籤原樣返回。
         """
+        if not content:
+            return ""
+
+        check_unenclosed_tags(content)
         resolved_text = content
         pass_count = 0
 
         while pass_count < max_passes:
             pass_count += 1
             
-            # Step 1: 建立快照 (支援大括號內空白容錯)
-            current_tokens = list(dict.fromkeys(TOKEN_ANCHOR_REGEX.findall(resolved_text)))
+            # Step 1: 建立快照（僅自代碼塊中提取）
+            code_spans = CODE_SPAN_REGEX.findall(resolved_text)
+            current_tokens = []
+            for cs in code_spans:
+                for t in TOKEN_ANCHOR_INNER_REGEX.findall(cs):
+                    if t not in current_tokens:
+                        current_tokens.append(t)
             if not current_tokens:
                 break
 
@@ -243,31 +272,47 @@ class ArtifactCompiler:
                     else:
                         val_content = str(raw_val)
 
-                    # 自指防護 (EC-01): 若注入內容包含同名 Token，跳過自我展開
-                    if mode == "replace":
-                        resolved_text = token_tag_regex.sub(lambda _: val_content, resolved_text, count=1)
-                    elif mode == "below":
-                        resolved_text = token_tag_regex.sub(
-                            lambda m: m.group(0) + "\n" + val_content, 
-                            resolved_text, 
-                            count=1
-                        )
-                    elif mode == "above":
-                        resolved_text = token_tag_regex.sub(
-                            lambda m: val_content + "\n" + m.group(0), 
-                            resolved_text, 
-                            count=1
-                        )
+                    # 1. 優先處理 Standalone Anchor: `__@{token_name}__`
+                    standalone_tag_regex = re.compile(r"[ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?")
+                    if standalone_tag_regex.search(resolved_text):
+                        if mode == "replace":
+                            resolved_text = standalone_tag_regex.sub(lambda _: (val_content.rstrip("\r\n") + "\n") if val_content else "", resolved_text, count=1)
+                        elif mode == "below":
+                            resolved_text = standalone_tag_regex.sub(lambda _: ("\n" + val_content.rstrip("\r\n") + "\n") if val_content else "", resolved_text, count=1)
+                        elif mode == "above":
+                            resolved_text = standalone_tag_regex.sub(lambda _: (val_content.rstrip("\r\n") + "\n\n") if val_content else "", resolved_text, count=1)
+                    else:
+                        # 2. 處理 Inline Code Span: `prefix __@{token_name}__ suffix`
+                        def _replace_inline(match: re.Match) -> str:
+                            span = match.group(0)
+                            inner = span[1:-1]
+                            if token_tag_regex.search(inner):
+                                inner = token_tag_regex.sub(lambda _: val_content, inner)
+                                return f"`{inner}`"
+                            return span
 
-            # Step 3: 清除本輪已解算或無匹配的 Token 錨點標籤行
+                        resolved_text = CODE_SPAN_REGEX.sub(_replace_inline, resolved_text)
+
+            # Step 3: 清除本輪已解算或無匹配的 Token 錨點標籤行/殘留
             for token_name in matched_tokens_this_pass:
                 purge_regex = make_purge_regex(token_name)
                 resolved_text = purge_regex.sub("", resolved_text)
+                token_tag_regex = make_token_tag_regex(token_name)
+                def _purge_span_tag(match: re.Match) -> str:
+                    span = match.group(0)
+                    inner = span[1:-1]
+                    if token_tag_regex.search(inner):
+                        return f"`{token_tag_regex.sub('', inner)}`"
+                    return span
+                resolved_text = CODE_SPAN_REGEX.sub(_purge_span_tag, resolved_text)
 
             # Step 4: 遞迴檢查是否仍有新 Token
-            remaining = TOKEN_ANCHOR_REGEX.findall(resolved_text)
-            if not remaining:
+            code_spans = CODE_SPAN_REGEX.findall(resolved_text)
+            has_remaining = any(TOKEN_ANCHOR_INNER_REGEX.search(cs) for cs in code_spans)
+            if not has_remaining:
                 break
+
+        return resolved_text
 
         # Step 5: 保持 __#{uri}__ 語意標籤原樣，返回純淨中繼字串
         return resolved_text
@@ -367,21 +412,30 @@ class ArtifactCompiler:
         deployment_map: Dict[str, str]
     ) -> str:
         """
-        Stage 2: 依三層重映射階層動態轉譯 `__#{uri}__` 為相對於 current_dst_path 之實體相對路徑。
-        - Tier 1: 命中 deployment_map (本次發布拓撲映射表)
-        - Tier 2: 專案級語意協議 (project://, docs://, plans://)
-        - Tier 3: 未知/未決協議安全降級
+        Stage 2: 依三層重映射階層動態轉譯 `__#{uri}__` (自身相對路徑) 與 `__${uri}__` (專案根目錄相對路徑)。
+        - `__#{uri}__`: 相對於 current_dst_path 所在目錄 (cur_dir)，適用於 Markdown 內部超連結。
+        - `__${uri}__`: 相對於專案根目錄 (project_root)，適用於 Shell 命令列與專案路徑參照。
         """
-        if not content or "__#{" not in content:
-            return content
+        if not content:
+            return ""
 
         cur_dir = os.path.dirname(os.path.abspath(current_dst_path))
 
-        def _replace_uri_tag(match: re.Match) -> str:
-            tag_uri = match.group(1).strip()
+        # 獲取 project_root
+        project_root = None
+        if uri:
+            try:
+                project_root = os.path.normpath(os.path.abspath(uri.resolve("project://", interactive=False)))
+            except Exception:
+                pass
+        if not project_root:
+            project_root = os.path.normpath(os.path.abspath(self.host_dir or os.getcwd()))
 
+        # 檢查未包裹標籤警示
+        check_unenclosed_tags(content, doc_name=os.path.basename(current_dst_path))
+
+        def _resolve_local_uri(tag_uri: str) -> str:
             # --- Tier 1: 命中發布拓撲映射表 ---
-            # 支援完整 URI 與標準短名匹配 (如 module.root://.../templates/P00.md 與 templates/P00.md)
             if tag_uri in deployment_map:
                 target_abs = deployment_map[tag_uri]
                 try:
@@ -409,10 +463,39 @@ class ArtifactCompiler:
                     pass
 
             # --- Tier 3: 未知協議安全降級 ---
-            print(f"[compiler:warning] Unresolved semantic URI tag: '{tag_uri}'", file=sys.stderr)
+            print(f"[compiler:warning] Unresolved semantic URI tag: '{tag_uri}' in '{os.path.basename(current_dst_path)}'", file=sys.stderr)
             return tag_uri
 
-        return URI_REF_REGEX.sub(_replace_uri_tag, content)
+        def _resolve_project_uri(tag_uri: str) -> str:
+            if uri and "://" in tag_uri:
+                try:
+                    real_p = uri.resolve(tag_uri, interactive=False)
+                    rel_p = os.path.relpath(real_p, project_root).replace("\\", "/")
+                    if rel_p == "." or rel_p == "./":
+                        rel_p = ""
+                    elif rel_p.startswith("./"):
+                        rel_p = rel_p[2:]
+                    return rel_p
+                except Exception as e:
+                    print(f"[compiler:warning] Failed to resolve project URI '{tag_uri}' in '{os.path.basename(current_dst_path)}': {e}", file=sys.stderr)
+            return tag_uri
+
+        def _replace_in_code_span(match: re.Match) -> str:
+            span_text = match.group(0)
+            inner = span_text[1:-1]
+            has_local = "__#{" in inner
+            has_proj = "__${" in inner
+            if not has_local and not has_proj:
+                return span_text
+
+            if has_local:
+                inner = LOCAL_URI_INNER_REGEX.sub(lambda m: _resolve_local_uri(m.group(1).strip()), inner)
+            if has_proj:
+                inner = PROJECT_URI_INNER_REGEX.sub(lambda m: _resolve_project_uri(m.group(1).strip()), inner)
+
+            return f"`{inner}`"
+
+        return CODE_SPAN_REGEX.sub(_replace_in_code_span, content)
 
     def compile_all(self) -> Dict[str, Any]:
         """相容性別名：執行 Stage 1 快取物化編譯。"""
