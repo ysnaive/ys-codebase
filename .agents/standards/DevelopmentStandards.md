@@ -32,7 +32,19 @@ Agent 必須始終遵守以下三大原則：
 - **Test-First 測試前置定稿條款**：`P06_test_plan.md` 必須於 Phase 2 隨設計同步初始化草擬 (Draft)，並於 Phase 4 Review 階段與 `P04_implementation_plan.md` 一併剛性定稿 (Confirmed)，嚴禁延至 Phase 6 才開始憑空設計測試項目。
 - **Phase 6 UX / 手動測試 Checkpoint 強制等待關卡**：即使 CLI 自動化測試 100% Passed，Agent **絕對禁止**自行將 P06 標記為 `Passed` 或擅自進入 Phase 7！必須呈遞測試結果，並明確詢問開發者進行實際互動/視覺/UX 驗證。必須等待開發者明確回覆「UX 驗證通過/指示免測」後，方可將 P06 標記為 `Passed` 並推進至 Phase 7。
 - **Phase 6 驗證防呆鐵律 (無 Log 即未驗證)**：若 CLI 編譯/測試命令執行受阻，Agent **絕對禁止**在 `P06_test_plan.md` 與對話中標記 `Passed`。必須明確標記 `[未實機編譯/僅靜態檢查]`，並呈遞精確命令請開發者於控制台執行回填。
-- **全階段文件模板剛性對齊**：所有 Phase (P00~P07 / fast_track_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像標準模板結構**（包含所有指定欄位、表格與 Header 規範標頭），嚴禁 Agent 自行簡化或遺漏模板區塊。
+- **全階段文件模板剛性對齊與精確尋址**：所有 Phase (P00~P07 / fast_track_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像標準模板結構**（包含所有指定欄位、表格與 Header 規範標頭），嚴禁 Agent 自行簡化或遺漏模板區塊。各階段標準模板實體路徑指針如下：
+  - Phase 0: [`P00_semantic_requirements.md`](../templates/P00_semantic_requirements.md)
+  - Phase 1: [`P01_requirements_spec.md`](../templates/P01_requirements_spec.md)
+  - Phase 2: [`P02_architecture_plan.md`](../templates/P02_architecture_plan.md)
+  - Phase 3: [`P03_api_spec.md`](../templates/P03_api_spec.md)
+  - Phase 4: [`P04_implementation_plan.md`](../templates/P04_implementation_plan.md)
+  - Phase 5: [`P05_task.md`](../templates/P05_task.md)
+  - Phase 6: [`P06_test_plan.md`](../templates/P06_test_plan.md)
+  - Phase 7: [`P07_walkthrough.md`](../templates/P07_walkthrough.md)
+  - Level 0 (Fast Track): [`fast_track_plan.md`](../templates/fast_track_plan.md)
+  - Level 2 (Umbrella): [`umbrella_overview.md`](../templates/umbrella_overview.md)
+  - 計畫日誌: [`changelog.md`](../templates/changelog.md)
+  - 現場交接: [`handoff.md`](../templates/handoff.md)
 - **雙星伴隨初始化鐵律**：開立計畫目錄時，`P00_semantic_requirements.md` 必須與 `changelog.md` 剛性伴隨同時建立，立即寫入第 1 筆紀錄。
 - **目錄歸檔紀律與 CLI 調度優先**：所有計畫預設留存原位（`plans://`），嚴禁 Agent 主動歸檔，僅在開發者明確下達歸檔指令時才執行歸檔工具。
 - **巢狀層級硬性約束**：專案嚴格限制子計畫目錄最多**兩層結構**（主計畫 ➔ 子計畫），**絕對禁止在子計畫下再開子計畫**！

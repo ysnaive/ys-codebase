@@ -4,7 +4,9 @@
     "archived": "!undefined",
     "docs": "!undefined"
   },
-  "ide": [],
+  "release_targets": [
+    "antigravity"
+  ],
   "enable_agents_md": true,
   "enable_project_changelog": true
 }
