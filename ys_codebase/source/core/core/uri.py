@@ -37,17 +37,7 @@ _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
 ]
 
 # Deprecated legacy schemes redirect map (Backwards Compatibility & Deprecation Warnings)
-_DEPRECATED_SCHEME_REDIRECTS: Dict[str, str] = {
-    "storage.root": "storage",
-    "cache.root": "cache",
-    "config.root": "config",
-    "module.root": "module",
-    "module.source.root": "module.source",
-    "module.build.root": "module.build",
-    "module.release.root": "module.release",
-    "module.mirror.root": "module.mirror",
-    "temp": "cache",
-}
+_DEPRECATED_SCHEME_REDIRECTS: Dict[str, str] = {}
 
 
 class UndefinedModuleContextError(ValueError):
@@ -534,7 +524,7 @@ def resolve(
                 # 已有配置值
                 val_str = str(curr_val)
                 if "://" in val_str:
-                    target_base = resolve(val_str, current_module=mod, context=context, interactive=interactive)
+                    target_base = resolve(val_str, current_module=active_mod, context=context, interactive=interactive)
                 elif os.path.isabs(val_str) or (len(val_str) > 1 and val_str[1] == ":"):
                     target_base = os.path.normpath(val_str)
                 else:

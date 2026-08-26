@@ -67,12 +67,9 @@ class TestCoreURI(YSCBTestCase):
         self.mark_passed()
 
     def test_deprecated_scheme_redirection_warning(self):
-        """ET-03, EC-03: Verify legacy *.root:// schemes redirect with DeprecationWarning."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            res_legacy = uri.resolve("storage.root://dev/data.json")
-            self.assertTrue(res_legacy.replace("\\", "/").endswith("storage/dev/data.json"))
-            self.assertTrue(any(issubclass(warn.category, DeprecationWarning) for warn in w))
+        """ET-03, EC-03: Verify legacy *.root:// schemes raise ValueError in pure mode."""
+        with self.assertRaises(ValueError):
+            uri.resolve("storage.root://dev/data.json")
         self.mark_passed()
 
     def test_yscb_uri_constant_self_locating(self):

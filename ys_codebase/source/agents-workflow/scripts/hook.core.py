@@ -1,26 +1,42 @@
 """
 Microkernel Lifecycle Hook for agents-workflow.
-Listens to 'on_reload' event to autonomously re-compile and materialize exports.
+Listens to 'on_reload' event to autonomously execute release transaction for all active targets.
 """
 import sys
 import os
 
-# Ensure package directory is importable
+# Ensure package directory and sibling modules (e.g. core) are importable
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_root = os.path.dirname(_script_dir)
+_modules_root = os.path.dirname(_pkg_root)
+
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
+if _modules_root not in sys.path and os.path.isdir(_modules_root):
+    sys.path.insert(0, _modules_root)
 
-from agents_workflow.compiler import ArtifactCompiler
+for cand_core in [
+    os.path.join(_modules_root, "core"),
+    os.path.join(os.path.dirname(_modules_root), "source", "core"),
+    os.path.join(os.path.dirname(_modules_root), "modules", "core")
+]:
+    if os.path.isdir(cand_core) and cand_core not in sys.path:
+        sys.path.insert(0, cand_core)
+
+from agents_workflow.publisher import ReleasePublisher
 
 
-def on_reload(ctx) -> None:
+def on_reload(ctx=None) -> None:
     """
     Autonomously triggered on microkernel Stage 4 reload.
-    Re-compiles all registered exports and materializes them to exports/.
+    Executes full 4-step atomic release transaction for all active targets.
     """
     try:
-        compiler = ArtifactCompiler()
-        compiler.compile_all()
+        publisher = ReleasePublisher()
+        res = publisher.release_all()
+        if res.get("success", False):
+            print(f"[agents-workflow:hook] Auto-released on reload ({res.get('published_count', 0)} files, targets: {', '.join(res.get('active_targets', []))}).")
+        else:
+            print(f"[agents-workflow:hook] Auto-release failed on reload: {res.get('error', 'Unknown')}")
     except Exception as e:
-        print(f"[agents-workflow:hook] Auto-compile on reload failed: {e}")
+        print(f"[agents-workflow:hook] Auto-release on reload failed: {e}")
