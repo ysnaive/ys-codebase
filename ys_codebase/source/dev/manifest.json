@@ -28,6 +28,16 @@
           "description": "模組發布來源空間根目錄"
         }
       ]
+    },
+    "agents-workflow": {
+      "insert": [
+        {
+          "type": "uri",
+          "token": "WORKFLOW_SOP_STANDARDS",
+          "value": "module://dev/assets/standards/DevEngineeringStandards.md",
+          "mode": "below"
+        }
+      ]
     }
   }
 }

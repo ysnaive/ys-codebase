@@ -12,6 +12,7 @@
 | **DN-DEV-02** | 測試失敗現場自動保留機制 | `source/dev/dev/testing/case.py` | 💡 INFO |
 | **DN-DEV-03** | 三階測試指令解耦與完全對標虛擬沙盒隔離 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/sandbox.py` | 💡 INFO |
 | **DN-DEV-04** | 本地發布流水線解耦 Git 乾淨限制之純淨打包哲學 | `source/dev/dev/releaser.py` | 💡 INFO |
+| **DN-DEV-05** | 本地建置產物直裝通道 (@build) 與宣告式工程規範連動注入 | `source/core/core/engine.py`<br/>`source/dev/manifest.json` | 💡 INFO |
 
 ---
 
@@ -24,7 +25,7 @@
 
 ### [DN-DEV-02] 測試失敗現場自動保留機制
 
-- **核心決策**：在 `YSCBTestCase.tearDown()` 中，唯有當測試方法顯式呼叫 `self.mark_passed()` 時才清理沙盒。若遇到未捕獲例外或斷言失敗，沙盒目錄原封不動保留在 `temp://sandbox_<timestamp>` 並將絕對路徑印至終端。
+- **核心決策**：在 `YSCBTestCase.tearDown()` 中，唯有當測試方法顯式呼叫 `self.mark_passed()` 時才清理沙盒。若遇到未捕獲例外或斷言失敗，沙盒目錄原封不動保留在 `cache://dev/sandbox/sandbox_<timestamp>` 並將絕對路徑印至終端。
 - **背後考量**：避免測試出錯時現場被銷毀導致無法重現或除錯。
 
 ---
@@ -40,4 +41,14 @@
 
 - **核心決策**：在 `dev.releaser` 中移除強制檢查 `git status --porcelain` 的守門限制。本地發布純粹產出單檔 Zip 至 `release/<mod>/<ver>.zip` 並維護 `index.json`，由開發者自主掌控何時 Commit / Push 遠端。若處於非 Git 倉庫，流水線自動安全跳過 Git 操作而不拋出例外。
 - **背後考量**：將「本機發布打包」與「遠端版本庫推送」的職責正交解耦，大幅提升本地模組迭代、測試與離線協同的流暢度。
+
+---
+
+### [DN-DEV-05] 本地建置產物直裝通道 (@build) 與宣告式工程規範連動注入
+
+- **核心決策**：
+  1. `core.engine.PackageManager` 特例處理 `@build` revision：當版本約束包含 `build` 時，強制直連 `module.build://` 下載 `*.build.zip`，未建置時拋出清楚的引導提示，徹底終結本地開發需先手動 release 的繁瑣流程。
+  2. `dev` 模組透過 `contributes["agents-workflow"]`（`mode: "below"`）向 `WORKFLOW_SOP_STANDARDS` 注入專案特化工程規範（`DevEngineeringStandards.md`），收斂三層空間 SSOT、沙盒除錯加速與禁止 Agent 主動 release/install 鐵律。
+- **背後考量**：落實「零侵入宣告式擴充」架構哲學，並提供流暢安全的自引用 (Dogfooding) 開發體驗。
+
 

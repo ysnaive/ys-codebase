@@ -128,21 +128,43 @@ class AtomicEngine:
         dest_zip_uri = f"{dest_mirror_dir}/{version}.zip"
         dest_zip_real = uri.resolve(dest_zip_uri)
 
+        is_build_req = (version == "build" or version.endswith(".build") or "build" in version)
+
         # 1. Tier 1: Check module.build:// for single zip
         build_root = f"module.build://{module_name}"
-        v_tuple = semver.parse_semver(version)
-        build_ver_str = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
         build_zip_candidates = [
             f"{build_root}/{version}.zip",
             f"{build_root}/{version}.build.zip",
-            f"{build_root}/{build_ver_str}.zip",
-            f"{build_root}/{build_ver_str}.build.zip",
-            f"{build_root}/1.0.0.build.zip"
         ]
+        try:
+            v_tuple = semver.parse_semver(version)
+            build_ver_str = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
+            build_zip_candidates.extend([
+                f"{build_root}/{build_ver_str}.zip",
+                f"{build_root}/{build_ver_str}.build.zip",
+            ])
+        except Exception:
+            pass
+
+        # Scan for any matching *.build.zip in module.build://
+        if uri.exists(build_root):
+            try:
+                for f in uri.listdir(build_root):
+                    if f.endswith(".build.zip") or (is_build_req and f.endswith(".zip")):
+                        build_zip_candidates.append(f"{build_root}/{f}")
+            except Exception:
+                pass
+
         for b_zip in build_zip_candidates:
             if uri.exists(b_zip):
                 shutil.copy2(uri.resolve(b_zip), dest_zip_real)
                 return dest_zip_uri
+
+        # If explicitly requested build version, strictly fail with clear guidance
+        if is_build_req:
+            raise FileNotFoundError(
+                f"Build package not found for '{module_name}'. Please run 'python yscb.py dev build {module_name}' first."
+            )
 
         # 2. Tier 2: Check module.release:// or local directory provider
         rel_root = f"module.release://{module_name}"
@@ -255,8 +277,26 @@ class AtomicEngine:
         provider_url: str, 
         version_constraint: Optional[str]
     ) -> Dict[str, Any]:
+        is_build_req = bool(version_constraint and (version_constraint == "build" or version_constraint.endswith(".build") or "build" in version_constraint))
+
         # 1. Tier 1: Check build://
         build_root_uri = f"module.build://{module_name}"
+        if uri.exists(build_root_uri):
+            try:
+                # Direct scan for *.build.zip if requested build revision
+                for f in uri.listdir(build_root_uri):
+                    if f.endswith(".build.zip") or (is_build_req and f.endswith(".zip")):
+                        b_zip_uri = f"{build_root_uri}/{f}"
+                        with zipfile.ZipFile(uri.resolve(b_zip_uri), "r") as zf:
+                            m_data = json.loads(zf.read("manifest.json").decode("utf-8"))
+                            ver_in_m = m_data.get("version", "1.0.0.0")
+                            if not ver_in_m.endswith(".build"):
+                                v_p = semver.parse_semver(ver_in_m)
+                                m_data["version"] = f"{v_p.major}.{v_p.minor}.{v_p.patch}.build"
+                            return m_data
+            except Exception:
+                pass
+
         if uri.exists(f"{build_root_uri}/index.json"):
             try:
                 b_idx = uri.read_json(f"{build_root_uri}/index.json")

@@ -17,7 +17,7 @@ from dev.testing.sandbox import SandboxContext, SandboxProvisioner
 
 class YSCBTestCase(unittest.TestCase):
     """
-    YS-Codebase Core Test Fixture (Full-Fidelity Virtual Sandbox on temp://sandbox_<uuid>).
+    YS-Codebase Core Test Fixture (Full-Fidelity Virtual Sandbox on cache://dev/sandbox/<uuid>).
     """
     ctx: SandboxContext
     sandbox_id: str
@@ -43,7 +43,7 @@ class YSCBTestCase(unittest.TestCase):
         self.sandbox_project_dir = self.ctx.project_dir
         self.sandbox_provider_dir = self.ctx.provider_dir
         self.sandbox_id = os.path.basename(self.sandbox_dir)
-        self.sandbox_uri = f"temp://{self.sandbox_id}"
+        self.sandbox_uri = f"cache://dev/sandbox/{self.sandbox_id}"
 
     def tearDown(self) -> None:
         """Test teardown: restore environment and cleanup sandbox according to policy."""

@@ -209,6 +209,22 @@ class TestArtifactCompiler(unittest.TestCase):
         finally:
             self.publisher._get_project_config = orig_cfg_fn
 
+    def test_ft_10_dev_engineering_standards_injection(self):
+        """FT-10: 驗證 dev 模組之 DevEngineeringStandards.md 能透過 below 模式注入至 DevelopmentStandards.md。"""
+        raw_text = "# Standards\n\nSome standard content.\n\n`__@{WORKFLOW_SOP_STANDARDS}__`\n"
+        inserts = [
+            {
+                "token": "WORKFLOW_SOP_STANDARDS",
+                "mode": "below",
+                "value": "### YS-Codebase 模組開發專案特化工程規範\n- 嚴禁 Agent 主動發布與覆蓋宿主安裝\n- 空間邊界與流水線\n"
+            }
+        ]
+        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
+        self.assertNotIn("`__@{WORKFLOW_SOP_STANDARDS}__`", resolved)
+        self.assertIn("### YS-Codebase 模組開發專案特化工程規範", resolved)
+        self.assertIn("嚴禁 Agent 主動發布與覆蓋宿主安裝", resolved)
+
 
 if __name__ == "__main__":
     unittest.main()
+

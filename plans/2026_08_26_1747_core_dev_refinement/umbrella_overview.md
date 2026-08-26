@@ -21,10 +21,13 @@
 | **sub_01** | [`sub_01_module_data_uri_refactor`](./sub_01_module_data_uri_refactor/) | Level 1 Full Track | `Completed` | 模組資料管理相關 URI 協議釐清與遷移 |
 | **sub_02** | [`sub_02_dev_release_verification_refactor`](./sub_02_dev_release_verification_refactor/) | Level 1 Full Track | `Completed` | Dev 模組發布與驗證工具鏈重構 |
 | **sub_03** | [`sub_03_dev_release_force_override`](./sub_03_dev_release_force_override/) | Level 0 Fast Track | `Completed` | Dev 模組發布強制覆蓋模式 (--force 支援同版本原地修訂) |
+| **sub_04** | [`sub_04_dev_agents_workflow_linkage_injection`](./sub_04_dev_agents_workflow_linkage_injection/) | Level 1 Full Track | `Completed` | Dev 與 Agents-Workflow 模組連動注入與 install @build 特例 |
 
 ---
 
 ## 3. 主計畫里程碑與推進狀態 (Milestones)
 
 - [x] **里程碑 1**：完成模組資料管理相關 URI 協議（storage / cache 等）之職責釐清與全面遷移 (`sub_01`)。
-- [ ] **里程碑 2**：待依據後續討論追加其他 `core` / `dev` 打磨子計畫。
+- [x] **里程碑 2**：完成 Dev 模組發布與驗證工具鏈重構 (`sub_02`) 與強制覆蓋模式 (`sub_03`)。
+- [x] **里程碑 3**：完成 Dev 與 Agents-Workflow 模組連動注入、專案工程規範與 install @build 本地直裝特例 (`sub_04`)。
+
