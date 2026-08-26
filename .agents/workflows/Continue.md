@@ -10,9 +10,9 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 > | :--- | :--- | :--- |
 > | **`project://`** | `./` | `[ACTIVE]` |
 > | **`yscb://`** | `./ys_codebase` | `[ACTIVE]` |
-> | **`plans://`** | `./plans` | `[!UNDEFINED]` |
-> | **`archive://`** | `./archive` | `[!UNDEFINED]` |
-> | **`docs://`** | `./docs` | `[!UNDEFINED]` |
+> | **`workflow.plans://`** | `./plans` | `[ACTIVE]` |
+> | **`workflow.archived://`** | `./plans/archived` | `[ACTIVE]` |
+> | **`workflow.docs://`** | `./docs` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb.py uri resolve <uri>`（例：`python yscb.py uri resolve project://AGENTS.md`）
 

@@ -2,6 +2,19 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_0045_pure_uri_scheme_and_recursive_resolve_fix
+
+- **純淨語意 URI 協議、遞迴解算缺陷修復與 on_reload 自動發布 Hook**：
+  - **Core 模組遞迴解算變數修正與純淨模式落實**：
+    - 修復 `core.uri.resolve` 遞迴解算 config 協議時因 `current_module=mod` 誤用引發之 `NameError`，修正為 `active_mod`。
+    - 清空 `_DEPRECATED_SCHEME_REDIRECTS = {}`，系統全量切換為 100% Pure Canonical 語意協議模型，杜絕向下相容別名污染。
+  - **Agents-Workflow 協議正規化與動態地圖修復**：
+    - `providers.py` 查詢清單正規化為 `["project", "yscb", "workflow.plans", "workflow.archived", "workflow.docs"]`。
+    - `ContextInit.md` 模板更新參照標籤為 `workflow.*`，使 JIT 動態語意解析地圖全數正常顯示為 `[ACTIVE]`。
+  - **`on_reload` Hook 自動發布閉環**：
+    - 在 `agents-workflow/scripts/hook.core.py` 實作 `on_reload` 自動調用 `ReleasePublisher().release_all()`，達成 microkernel 重載環境時自動更新工作流與 IDE 投影片。
+    - 單元測試與全模組回歸 119/119 100% Passed。
+
 ## 2026_08_25_2200_agents_workflow_migration
 
 - **開發標準規範與流程分離重構及 Contributes 文檔建立 (`sub_09_standards_refactor_and_contributes_doc`)**：

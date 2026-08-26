@@ -224,7 +224,24 @@ class TestArtifactCompiler(unittest.TestCase):
         self.assertIn("### YS-Codebase 模組開發專案特化工程規範", resolved)
         self.assertIn("嚴禁 Agent 主動發布與覆蓋宿主安裝", resolved)
 
+    def test_ft_11_on_reload_hook_triggers_release_all(self):
+        """FT-11: 驗證 hook.core.py 之 on_reload 能自動調用 ReleasePublisher.release_all。"""
+        import importlib.util
+        from unittest.mock import patch
+        hook_path = os.path.join(_pkg_root, "scripts", "hook.core.py")
+        self.assertTrue(os.path.exists(hook_path), "hook.core.py must exist in scripts/")
+        spec = importlib.util.spec_from_file_location("hook_core_test_unit", hook_path)
+        hook_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook_mod)
+        self.assertTrue(hasattr(hook_mod, "on_reload"), "hook.core.py must define on_reload function")
+        
+        with patch("agents_workflow.publisher.ReleasePublisher.release_all") as mock_rel:
+            mock_rel.return_value = {"success": True, "published_count": 24, "active_targets": ["antigravity"]}
+            hook_mod.on_reload(None)
+            mock_rel.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -6,9 +6,9 @@
 > | :--- | :--- | :--- |
 > | **`project://`** | `./` | `[ACTIVE]` |
 > | **`yscb://`** | `./ys_codebase` | `[ACTIVE]` |
-> | **`plans://`** | `./plans` | `[!UNDEFINED]` |
-> | **`archive://`** | `./archive` | `[!UNDEFINED]` |
-> | **`docs://`** | `./docs` | `[!UNDEFINED]` |
+> | **`workflow.plans://`** | `./plans` | `[ACTIVE]` |
+> | **`workflow.archived://`** | `./plans/archived` | `[ACTIVE]` |
+> | **`workflow.docs://`** | `./docs` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb.py uri resolve <uri>`（例：`python yscb.py uri resolve project://AGENTS.md`）
 
@@ -22,7 +22,7 @@
 
 1. **沙盒 100% 安全 (Sandbox Native Read)**：優先使用內建檔案讀取工具（如 `view_file`），不依賴需額外權限的 CLI 命令，確保在沙盒模式與完全存取模式下均能無障礙秒級執行。
 2. **零臆測脈絡 (Zero Speculation)**：從既有真實文檔（`CHANGELOG.md`、`coding-standards.md`、`AGENTS.md`）載入現況，不自行假設專案結構。
-3. **語意 URI 標準化 (Semantic URI Protocol)**：透過 `project://`、`docs://`、`plans://` 等標準協議精準指向各級資源。
+3. **語意 URI 標準化 (Semantic URI Protocol)**：透過 `project://`、`workflow.docs://`、`workflow.plans://` 等標準協議精準指向各級資源。
 4. **極簡 Token 高效加載**：僅抽取專案的核心公理與最新變更，不載入無關細節。
 
 ---
@@ -38,14 +38,14 @@
   - 嚴禁連發（一次 Turn 最多一個 Phase）、嚴禁空降實作。
   - 除錯排查與範疇保護鐵律、模板註解剝除鐵律。
   - 定式作業指令優先原則、嚴禁主動歸檔。
-  - 專案程式碼架構與 `docs/` 知識庫之鏡像同步關係。
+  - 專案程式碼架構與 `workflow.docs://` 知識庫之鏡像同步關係。
 
 ### 步驟 2：加載程式碼與命名規範
-- **讀取檔案**：[STANDARDS.md](`__#{docs://_project/STANDARDS.md}__`) *(若專案未獨立提供則依 AGENTS.md 為準)*
+- **讀取檔案**：[STANDARDS.md](`__#{workflow.docs://_project/STANDARDS.md}__`) *(若專案未獨立提供則依 AGENTS.md 為準)*
 - **提取要點**：
   - 識別碼與變數命名規範（如前綴、大小寫慣例、命名空間結構）。
   - 單位與型別標註約束（具體變數顯式帶單位，轉換時嚴禁同名覆蓋）。
-  - 註解哲學與文檔標準（`docs/` 負責宏觀公理，代碼負責微觀自包含）。
+  - 註解哲學與文檔標準（`workflow.docs://` 負責宏觀公理，代碼負責微觀自包含）。
 
 ### 步驟 3：加載專案最新演進與當前進度
 - **讀取檔案**：[CHANGELOG.md](`__#{project://CHANGELOG.md}__`) (前 2 ~ 3 個區塊)
@@ -56,7 +56,7 @@
 ### 步驟 4：檢查進行中與歷史 Plan 結構
 - **讀取設定**：[config.project.json](`__#{project://config.project.json}__`)
 - **提取要點與目錄檢查**：
-  - 取得 `plans_dir`（對應 `plans://`）與 `archive_dir`（對應 `archive://`）。
+  - 取得 `plans_dir`（對應 `workflow.plans://`）與 `archive_dir`（對應 `workflow.archived://`）。
   - 檢查進行中 Plan 與歷史歸檔之目錄結構與進度。
 
 ---
@@ -71,15 +71,15 @@
 已成功載入本專案的核心架構、規範與歷史決策脈絡：
 
 ### 📌 專案核心規範摘要 (Coding Standards)
-- **目錄與路徑架構**：原始碼與 docs:// 知識庫鏡像對齊。
+- **目錄與路徑架構**：原始碼與 workflow.docs:// 知識庫鏡像對齊。
 - **識別碼命名規範**：遵循專案定義之命名風格與前綴慣例。
 - **單位與型別約束**：物理/數學變數顯式標註單位，轉換時嚴禁同名覆蓋。
-- **註解哲學**：docs:// 宏觀，代碼文檔註解微觀自包含。
+- **註解哲學**：workflow.docs:// 宏觀，代碼文檔註解微觀自包含。
 
 ### 🛠️ 工具與 SOP 紀律 (Guardrails)
 - **SOP 紀律**：嚴禁連發、嚴禁空降實作、除錯排查範疇保護、嚴禁主動歸檔。
 - **定式作業**：歷史檢索/歸檔/驗證優先使用 `python yscb_cli.py agents-workflow <verify|scan|search|archive>` 指令。
-- **Plan 空間**：進行中計畫位於 `plans://`，歷史歸檔位於 `archive://`。
+- **Plan 空間**：進行中計畫位於 `workflow.plans://`，歷史歸檔位於 `workflow.archived://`。
 - **專案進度**：最新已完成 Plan 與核心功能動向已掌控。
 
 ---

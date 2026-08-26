@@ -19,7 +19,7 @@ def get_dynamic_context_map(context: Optional[Any] = None) -> str:
         包含動態 JIT 解析地圖的 Markdown 區塊字串
     """
     # 核心優先展示的協議清單 (維持視覺與認知穩定)
-    primary_schemes = ["project", "yscb", "plans", "archive", "docs"]
+    primary_schemes = ["project", "yscb", "workflow.plans", "workflow.archived", "workflow.docs"]
     
     # 探測專案根目錄以計算相對路徑
     proj_root = "./"
