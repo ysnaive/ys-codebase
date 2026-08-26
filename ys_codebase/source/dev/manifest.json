@@ -7,6 +7,13 @@
     "core": ">=1.0.0"
   },
   "contributes": {
+    "commands": {
+      "create": "Create a new module skeleton (source/<name>)",
+      "check": "Validate module structure and manifest compliance",
+      "build": "Build dev package (.build.zip with tests)",
+      "test": "Run module tests inside an isolated sandbox",
+      "release": "Package and release pure module (.zip to release/)"
+    },
     "core": {
       "uri_schemes": [
         {

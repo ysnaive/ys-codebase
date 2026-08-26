@@ -138,8 +138,12 @@ class PlanScanner:
             return []
 
         results = []
-        # 篩選非隱藏目錄
-        plan_dirs = [d for d in self.plans_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        # 篩選非隱藏目錄，並明確排除封存目錄 (archived 或 workflow.archived://)
+        archived_dir = _resolve_uri_path("workflow.archived://")
+        plan_dirs = [
+            d for d in self.plans_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and d.name != "archived" and (not archived_dir or d.resolve() != archived_dir)
+        ]
 
         for p_dir in sorted(plan_dirs, key=lambda x: x.name, reverse=True):
             track_type, status = self.get_plan_info(p_dir)
