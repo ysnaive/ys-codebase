@@ -20,6 +20,7 @@
 | :--- | :--- | :---: | :---: | :--- |
 | **sub_01** | [`sub_01_module_data_uri_refactor`](./sub_01_module_data_uri_refactor/) | Level 1 Full Track | `Completed` | 模組資料管理相關 URI 協議釐清與遷移 |
 | **sub_02** | [`sub_02_dev_release_verification_refactor`](./sub_02_dev_release_verification_refactor/) | Level 1 Full Track | `Completed` | Dev 模組發布與驗證工具鏈重構 |
+| **sub_03** | [`sub_03_dev_release_force_override`](./sub_03_dev_release_force_override/) | Level 0 Fast Track | `Completed` | Dev 模組發布強制覆蓋模式 (--force 支援同版本原地修訂) |
 
 ---
 

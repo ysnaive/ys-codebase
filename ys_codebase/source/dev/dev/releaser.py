@@ -52,12 +52,12 @@ class Releaser:
         except Exception as e:
             return -1, "", str(e)
 
-    def release_check(self, module_name: str) -> Tuple[bool, List[str]]:
+    def release_check(self, module_name: str, force: bool = False) -> Tuple[bool, List[str]]:
         """
-        獨立發布就緒預檢門面 (dev release-check <mod>):
+        獨立發布就緒預檢門面 (dev release-check <mod> [--force]):
         - Gate 1: Checker.check_module(module_name) 靜態合規性。
-        - Gate 2: 版本不可變性（release/<mod>/<target_ver>.zip 不得已存在）。
-        - Gate 3: 版本單調遞增（target_ver 必須嚴格大於同三元組在庫最高 revision）。
+        - Gate 2: 版本不可變性（release/<mod>/<target_ver>.zip 不得已存在；force=True 時放行）。
+        - Gate 3: 版本單調遞增（target_ver 必須嚴格大於同三元組在庫最高 revision；force=True 且 target == highest 時放行同版本覆蓋，但小於歷史舊版本仍阻斷）。
         - Returns: (passed: bool, error_messages: List[str])
         """
         errors: List[str] = []
@@ -86,10 +86,10 @@ class Releaser:
 
         # Gate 2: Immutability / Version Conflict
         exact_rel_zip = f"module.release://{module_name}/{target_version}.zip"
-        if uri.exists(exact_rel_zip):
+        if uri.exists(exact_rel_zip) and not force:
             errors.append(
                 f"Gate 2 Failed (Immutability): Version '{target_version}' already exists in release repository "
-                f"({exact_rel_zip}). Duplicate release forbidden."
+                f"({exact_rel_zip}). Duplicate release forbidden (use --force to override)."
             )
 
         # Gate 3: Monotonicity / No Rollback
@@ -111,21 +111,30 @@ class Releaser:
                 if same_triplet_versions:
                     same_triplet_versions.sort(key=functools.cmp_to_key(semver.compare_semver))
                     highest_tuple = same_triplet_versions[-1]
-                    if semver.compare_semver(target_tuple, highest_tuple) <= 0:
-                        errors.append(
-                            f"Gate 3 Failed (Monotonicity): Target version '{target_version}' must be strictly greater than "
-                            f"the highest existing revision '{highest_tuple}' in the same triplet."
-                        )
+                    cmp_res = semver.compare_semver(target_tuple, highest_tuple)
+
+                    if not force:
+                        if cmp_res <= 0:
+                            errors.append(
+                                f"Gate 3 Failed (Monotonicity): Target version '{target_version}' must be strictly greater than "
+                                f"the highest existing revision '{highest_tuple}' in the same triplet."
+                            )
+                    else:
+                        if cmp_res < 0:
+                            errors.append(
+                                f"Gate 3 Failed (Monotonicity): Target version '{target_version}' is less than "
+                                f"the highest existing revision '{highest_tuple}'. Version rollback is forbidden even with --force."
+                            )
 
         return len(errors) == 0, errors
 
-    def release_module(self, module_name: str) -> Tuple[bool, str]:
+    def release_module(self, module_name: str, force: bool = False) -> Tuple[bool, str]:
         """
-        單一模組純淨發布 (dev release <mod>):
-        1. 執行 release_check(module_name)，若未通過拋出錯誤中斷。
+        單一模組純淨發布 (dev release <mod> [--force]):
+        1. 執行 release_check(module_name, force=force)，若未通過拋出錯誤中斷。
         2. 調用 Builder.package_release(module_name, target_version)。
         """
-        passed, errors = self.release_check(module_name)
+        passed, errors = self.release_check(module_name, force=force)
         if not passed:
             err_msg = "\n  - ".join(errors)
             return False, f"Release pre-flight check failed for '{module_name}':\n  - {err_msg}"
@@ -136,12 +145,12 @@ class Releaser:
 
         return self.builder.package_release(module_name, target_version)
 
-    def release_all(self) -> Dict[str, Tuple[bool, str]]:
+    def release_all(self, force: bool = False) -> Dict[str, Tuple[bool, str]]:
         """
-        全量模組依賴拓撲批次發布 (dev release --all):
+        全量模組依賴拓撲批次發布 (dev release --all [--force]):
         1. 讀取 source/ 下所有模組 manifest.json 中的 dependencies。
         2. 建構 DAG 並使用 Kahn 演算法計算拓撲發布序列。
-        3. 依序調用 release_module()。
+        3. 依序調用 release_module(mod_name, force=force)。
         """
         results: Dict[str, Tuple[bool, str]] = {}
         src_root_uri = "module.source://"
@@ -195,21 +204,32 @@ class Releaser:
 
         # Execute release in topological order
         for mod_name in topo_order:
-            results[mod_name] = self.release_module(mod_name)
+            results[mod_name] = self.release_module(mod_name, force=force)
 
         return results
 
-    def release_git(self, module_name: str, commit_msg: str) -> Tuple[bool, str]:
+    def release_git(self, module_name: str, commit_msg: str, force: bool = False) -> Tuple[bool, str]:
         """
-        4 步發布與版本控制安全流水線 (dev release-git <mod> <msg>):
+        4 步發布與版本控制安全流水線 (dev release-git <mod> "<msg>" [--force]):
         1. 調用 Tester 執行 dev test <mod>（失敗即中斷）。
-        2. 調用 release_check(module_name)（失敗即中斷）。
-        3. 調用 release_module(module_name)（失敗即中斷）。
-        4. 本地 Git 提交：git add -A -> git commit -m commit_msg -> git tag -a "<mod>/v<ver>" -m commit_msg。
+        2. 檢查目標版本是否已發布：
+           - 若尚未發布：調用 release_check ➔ release_module。
+           - 若已發布且無 --force：略過打包動作，直接推進至本地 Git 提交。
+           - 若已發布且傳入 --force：強制調用 release_check(force=True) ➔ release_module(force=True) 覆蓋打包。
+        3. 本地 Git 提交：git add -A -> git commit -m commit_msg -> git tag [-f] -a "<mod>/v<ver>" -m commit_msg。
         🚨 防呆約束：嚴禁調用 git push，所有操作僅於本地端完成。
         """
         if not commit_msg or not commit_msg.strip():
             return False, "Commit message cannot be empty for release-git."
+
+        src_uri = f"module.source://{module_name}"
+        if not uri.exists(f"{src_uri}/manifest.json"):
+            return False, f"manifest.json not found for module '{module_name}'."
+
+        manifest_data = uri.read_json(f"{src_uri}/manifest.json")
+        ver = manifest_data.get("version", "1.0.0.0")
+        exact_rel_zip = f"module.release://{module_name}/{ver}.zip"
+        is_already_released = uri.exists(exact_rel_zip)
 
         # Step 1: E2E Test
         from dev.tester import Tester
@@ -218,21 +238,20 @@ class Releaser:
         if test_ret != 0:
             return False, f"Step 1 Failed: E2E test failed for module '{module_name}'. Release aborted."
 
-        # Step 2: Release Check
-        passed, chk_errors = self.release_check(module_name)
-        if not passed:
-            err_details = "\n  - ".join(chk_errors)
-            return False, f"Step 2 Failed: Release readiness check failed for '{module_name}':\n  - {err_details}"
+        # Step 2 & 3: Release Check and Packaging (Smart Skip or Force Overwrite)
+        if is_already_released and not force:
+            print(f"[dev:release-git] Target version '{module_name}@{ver}' is already released ({exact_rel_zip}). Skipping packaging step.")
+        else:
+            passed, chk_errors = self.release_check(module_name, force=force)
+            if not passed:
+                err_details = "\n  - ".join(chk_errors)
+                return False, f"Step 2 Failed: Release readiness check failed for '{module_name}':\n  - {err_details}"
 
-        # Step 3: Pure Release Packaging
-        ok_pkg, msg_pkg = self.release_module(module_name)
-        if not ok_pkg:
-            return False, f"Step 3 Failed: Release packaging failed for '{module_name}': {msg_pkg}"
+            ok_pkg, msg_pkg = self.release_module(module_name, force=force)
+            if not ok_pkg:
+                return False, f"Step 3 Failed: Release packaging failed for '{module_name}': {msg_pkg}"
 
         # Step 4: Local Git Commit and Tag
-        src_uri = f"module.source://{module_name}"
-        manifest_data = uri.read_json(f"{src_uri}/manifest.json")
-        ver = manifest_data.get("version", "1.0.0.0")
         tag_name = f"{module_name}/v{ver}"
 
         git_check, _, _ = self._run_git_cmd(["rev-parse", "--is-inside-work-tree"])
@@ -249,12 +268,14 @@ class Releaser:
             # If nothing to commit (e.g. workspace clean), continue to tag
             pass
 
-        # Local Tag
-        t_code, _, t_err = self._run_git_cmd(["tag", "-a", tag_name, "-m", commit_msg])
+        # Local Tag (-f if force=True)
+        tag_cmd = ["tag", "-f", "-a", tag_name, "-m", commit_msg] if force else ["tag", "-a", tag_name, "-m", commit_msg]
+        t_code, _, t_err = self._run_git_cmd(tag_cmd)
         if t_code != 0:
             return False, f"Git tag failed for '{tag_name}': {t_err}"
 
-        return True, f"Successfully released '{module_name}@{ver}' and created local Git commit & tag '{tag_name}'."
+        return True, f"Successfully processed '{module_name}@{ver}' and updated local Git commit & tag '{tag_name}'."
 
 # Backward compatibility alias
 ReleasePipeline = Releaser
+

@@ -216,7 +216,8 @@ class Tester:
         
         # 3. Invoke dev op-test inside sandbox
         sandbox_yscb = os.path.join(host_dir, "yscb.py")
-        cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + clean_argv
+        op_test_args = [a for a in clean_argv if a != "test"]
+        cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + op_test_args
         
         try:
             res = subprocess.run(cmd, cwd=host_dir)

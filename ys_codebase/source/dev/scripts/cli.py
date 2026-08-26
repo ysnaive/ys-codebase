@@ -59,9 +59,9 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py dev create <name> [--desc=\"...\"]")
         print("  python yscb.py dev check [name | --all]")
         print("  python yscb.py dev build [name | --all]")
-        print("  python yscb.py dev release [name | --all]")
-        print("  python yscb.py dev release-check <name>")
-        print("  python yscb.py dev release-git <name> \"<commit message>\"")
+        print("  python yscb.py dev release [name | --all] [--force|-f]")
+        print("  python yscb.py dev release-check <name> [--force|-f]")
+        print("  python yscb.py dev release-git <name> \"<commit message>\" [--force|-f]")
         print("  python yscb.py dev bump-[major|minor|patch|revision] <name>")
         print("  python yscb.py dev test [name | --all] [--no-build] [options]")
         print("  python yscb.py dev op-mksb [--dir=<path>]")
@@ -135,12 +135,13 @@ def main(argv: List[str]) -> int:
 
     elif subcmd == "release":
         releaser = Releaser()
+        force = "--force" in sub_argv or "-f" in sub_argv
         targets = [a for a in sub_argv if not a.startswith("-")]
 
         if "--all" in sub_argv or not targets:
             print("[dev:release] Releasing all modules in source/ (topological pure release)...")
             try:
-                results = releaser.release_all()
+                results = releaser.release_all(force=force)
                 all_ok = True
                 for mod, (passed, msg) in results.items():
                     if passed:
@@ -154,7 +155,7 @@ def main(argv: List[str]) -> int:
                 return 1
         else:
             name = targets[0]
-            ok, msg = releaser.release_module(name)
+            ok, msg = releaser.release_module(name, force=force)
             if ok:
                 print(f"[dev:release] {msg}")
                 return 0
@@ -169,15 +170,17 @@ def main(argv: List[str]) -> int:
         if "--all" in sub_argv:
             print("[dev:release-check] Error: 'release-check' only supports checking a single module. '--all' is not supported.", file=sys.stderr)
             return 1
+        force = "--force" in sub_argv or "-f" in sub_argv
         targets = [a for a in sub_argv if not a.startswith("-")]
         if not targets:
-            print("[dev:release-check] Usage: python yscb.py dev release-check <module_name>")
+            print("[dev:release-check] Usage: python yscb.py dev release-check <module_name> [--force|-f]")
             return 1
         mod_name = targets[0]
         releaser = Releaser()
-        passed, errors = releaser.release_check(mod_name)
+        passed, errors = releaser.release_check(mod_name, force=force)
         if passed:
-            print(f"[dev:release-check] Module '{mod_name}' is READY for release (All 3 Gates Passed).")
+            msg_suffix = " (Force Override mode)" if force else ""
+            print(f"[dev:release-check] Module '{mod_name}' is READY for release (All 3 Gates Passed){msg_suffix}.")
             return 0
         else:
             print(f"[dev:release-check] Module '{mod_name}' FAILED release check:")
@@ -186,14 +189,15 @@ def main(argv: List[str]) -> int:
             return 1
 
     elif subcmd == "release-git":
+        force = "--force" in sub_argv or "-f" in sub_argv
         targets = [a for a in sub_argv if not a.startswith("-")]
         if len(targets) < 2:
-            print("[dev:release-git] Usage: python yscb.py dev release-git <module_name> \"<commit message>\"")
+            print("[dev:release-git] Usage: python yscb.py dev release-git <module_name> \"<commit message>\" [--force|-f]")
             return 1
         mod_name = targets[0]
         commit_msg = targets[1]
         releaser = Releaser()
-        ok, msg = releaser.release_git(mod_name, commit_msg)
+        ok, msg = releaser.release_git(mod_name, commit_msg, force=force)
         if ok:
             print(f"[dev:release-git] {msg}")
             return 0
