@@ -2,6 +2,21 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_0344_agents_workflow_auto
+
+- **Agents-Workflow 模組新增 `/Auto` 自動連續推進工作流與 ContextInit 讀取引導強化**：
+  - **`/Auto` 工作流指引建立與 IDE 註冊導出**：
+    - 新增 `assets/workflows/Auto.md` 工作流資產，定義適用於 Full Track (Level 1) 與 Umbrella (Level 2) 活躍子計畫之連續推進管線（Phase 01~05）。
+    - 授權 Agent 在無未確定技術疑問前提下，自動連續推進 Phase 1~5 文件產出與代碼實作，跳過中間 Checkpoint。
+    - 嚴格落實三大熔斷防線：零臆測熔斷（遇未知立即提問）、偏差熔斷（Major/Critical 偏差立即轉入 `/Discuss`）、以及 Phase 6 手動/UX 驗證絕對阻斷（強制等待人工驗收）。
+    - `manifest.json` 註冊 `Auto.md` 導出與 `WORKFLOW_AUTO` token 錨點。
+  - **`DevelopmentStandards.md` 規範增補**：
+    - 增補 §4.4 自動連續推進模式 (`/Auto`) 授權邊界與熔斷原則。
+  - **`ContextInit.md` 開發標準讀取引導強化**：
+    - 步驟 2 強化為 Mandatory Standards Read，剛性引導 Agent 完整讀取 `DevelopmentStandards.md`，深度掌握 SOP 0~7 流程、追溯鏈矩陣與三大分流。
+  - **發布與版本更新**：
+    - 模組版本升版至 `1.0.1.1`，完成正式 release 打包與發布安裝。
+
 ## 2026_08_27_0143_dev_agents_workflow_injection_expansion
 
 - **擴充 Dev 模組對 Agents-Workflow 注入之工程規範與指令防呆**：

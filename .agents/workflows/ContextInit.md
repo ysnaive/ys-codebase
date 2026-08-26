@@ -44,15 +44,16 @@ description: 上下文熱啟動流程
   - 定式作業指令優先原則、嚴禁主動歸檔。
   - 專案程式碼架構與 `workflow.docs://` 知識庫之鏡像同步關係。
 
-### 步驟 2：加載開發標準與 CLI 防呆指南
+### 步驟 2：加載開發標準與 CLI 防呆指南 (Mandatory Standards Read)
 - **讀取檔案**：
-  - 開發標準作業規範：[DevelopmentStandards.md](`../.yscb/standards/DevelopmentStandards.md`)
+  - 🚨 **開發標準作業規範 (必須完整讀取)**：[DevelopmentStandards.md](`../.yscb/standards/DevelopmentStandards.md`)
   - 指令防呆情境手冊：[AgentsCliGuild.md](`../.yscb/standards/AgentsCliGuild.md`)
   - 專案特化命名規範：[STANDARDS.md](`../../docs/_project/STANDARDS.md`) *(若專案未獨立提供則依 DevelopmentStandards.md 為準)*
-- **提取要點**：
-  - 掌握 Phase 0 ~ 7 標準開發作業流程 (SOP) 與三大分流原則。
-  - 熟悉 CLI 語意情境對照表，嚴格執行 Default-Deny 守門。
-  - 識別碼與變數命名規範、單位與型別標註約束。
+- **強制提取要點**：
+  - 🚨 **SOP 0~7 完整生命週期與三大分流**：掌握 Phase 0 語意需求 ➔ Phase 1 需求規格 ➔ Phase 2 架構設計 (Test-First) ➔ Phase 3 API 規格 ➔ Phase 4 定稿審查與靈魂拷問 ➔ Phase 5 依序實作 ➔ Phase 6 跑測與 UX 強制等待 ➔ Phase 7 交付結案，以及 Level 0 Fast Track / Level 2 Umbrella / `/Auto` 模式。
+  - **剛性追溯鏈矩陣**：`P00 語意` ➔ `FR/EC` ➔ `[{Phase}:DR-XX]` ➔ `API 簽名` ➔ `程式碼` ➔ `測試案例`。
+  - **全階段模板指針**：嚴格鏡像 `.yscb/templates/` 標準模板格式，嚴禁省略欄位。
+  - **CLI 指令查表比對**：熟悉 CLI 語意情境對照表，嚴格執行 Default-Deny 守門。
 
 ### 步驟 3：加載專案最新演進與當前進度
 - **讀取檔案**：[CHANGELOG.md](`../../CHANGELOG.md`) (前 2 ~ 3 個區塊)
@@ -85,8 +86,9 @@ description: 上下文熱啟動流程
 - **單位與型別約束**：物理/數學變數顯式標註單位，轉換時嚴禁同名覆蓋。
 - **註解哲學**：workflow.docs:// 宏觀，代碼文檔註解微觀自包含。
 
-### 🛠️ 工具與 SOP 紀律 (Guardrails)
-- **SOP 紀律**：零臆測、嚴禁連發、嚴禁空降實作、除錯排查範疇保護、嚴禁主動歸檔。
+### 🛠️ 工具與 SOP 紀律 (Guardrails & SOP)
+- **SOP 核心流程**：遵循 `DevelopmentStandards.md` SOP 0~7 完整生命週期、三大分流矩陣與 `/Auto` 模式。
+- **紀律防呆**：零臆測、嚴禁連發、嚴禁空降實作、除錯排查範疇保護、嚴禁主動歸檔。
 - **CLI 守門**：執行指令前必先查對 `AgentsCliGuild.md`，Default-Deny 阻斷未列情境。
 - **定式作業**：計畫檢索/歸檔/驗證使用 `python yscb.py agents-workflow plan <status|search|verify|archive>`。
 - **Plan 狀態**：透過 `plan status` 掌握進行中計畫大綱（深入閱讀留待 `/Continue` 接手時按需進行）。

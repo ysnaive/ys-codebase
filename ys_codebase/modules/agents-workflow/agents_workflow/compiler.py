@@ -151,50 +151,48 @@ class ArtifactCompiler:
                 except Exception:
                     pass
 
-        # 若 release_target 或 export 依然為空，主動掃描模組根目錄
-        if not aggregated["export"] or not aggregated["release_target"]:
-            search_roots = ["module://", "module.source://"]
-            seen_modules = set()
+        # 主動掃描模組根目錄與源碼目錄，增量補充未快取之宣告
+        search_roots = ["module.source://", "module://"]
+        seen_modules = set()
 
-            for s_root in search_roots:
-                if uri and uri.exists(s_root):
-                    for mod in uri.listdir(s_root):
-                        if mod in seen_modules:
-                            continue
-                        seen_modules.add(mod)
-                        m_uri = f"{s_root}{mod}/manifest.json"
-                        if uri.exists(m_uri):
-                            try:
-                                m_data = uri.read_json(m_uri)
-                                c_all = m_data.get("contributes", {})
-                                c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
-                                for key in ("export", "insert", "token", "release_target"):
-                                    items = c_aw.get(key, [])
-                                    if isinstance(items, list):
-                                        for it in items:
-                                            if isinstance(it, dict) and it not in aggregated[key]:
-                                                aggregated[key].append(it)
-                            except Exception:
-                                pass
+        for s_root in search_roots:
+            if uri and uri.exists(s_root):
+                for mod in uri.listdir(s_root):
+                    if mod in seen_modules:
+                        continue
+                    seen_modules.add(mod)
+                    m_uri = f"{s_root}{mod}/manifest.json"
+                    if uri.exists(m_uri):
+                        try:
+                            m_data = uri.read_json(m_uri)
+                            c_all = m_data.get("contributes", {})
+                            c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
+                            for key in ("export", "insert", "token", "release_target"):
+                                items = c_aw.get(key, [])
+                                if isinstance(items, list):
+                                    for it in items:
+                                        if isinstance(it, dict) and it not in aggregated[key]:
+                                            aggregated[key].append(it)
+                        except Exception:
+                            pass
 
-        # 若依然為空，直接讀取模組本地 manifest.json (本地源碼/安裝兜底)
-        if not aggregated["export"] or not aggregated["release_target"]:
-            local_mf = os.path.join(self.module_root, "manifest.json")
-            if os.path.isfile(local_mf):
-                try:
-                    import json
-                    with open(local_mf, "r", encoding="utf-8") as f:
-                        m_data = json.load(f)
-                    c_all = m_data.get("contributes", {})
-                    c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
-                    for key in ("export", "insert", "token", "release_target"):
-                        items = c_aw.get(key, []) or m_data.get(key, [])
-                        if isinstance(items, list):
-                            for it in items:
-                                if isinstance(it, dict) and it not in aggregated[key]:
-                                    aggregated[key].append(it)
-                except Exception:
-                    pass
+        # 直接讀取模組本地 manifest.json (本地源碼/安裝兜底)
+        local_mf = os.path.join(self.module_root, "manifest.json")
+        if os.path.isfile(local_mf):
+            try:
+                import json
+                with open(local_mf, "r", encoding="utf-8") as f:
+                    m_data = json.load(f)
+                c_all = m_data.get("contributes", {})
+                c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
+                for key in ("export", "insert", "token", "release_target"):
+                    items = c_aw.get(key, []) or m_data.get(key, [])
+                    if isinstance(items, list):
+                        for it in items:
+                            if isinstance(it, dict) and it not in aggregated[key]:
+                                aggregated[key].append(it)
+            except Exception:
+                pass
 
         return aggregated
 
