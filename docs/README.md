@@ -58,6 +58,10 @@ graph TD
 | **維度 2：開發工具** | [dev/README.md](./dev/README.md) | Dev 工具鏈架構、Scaffold 模組建立、Checker 規範檢驗、Builder 純淨打包 |
 | **維度 3：專題手冊** | [dev/testing_guide.md](./dev/testing_guide.md) | `YSCBTestCase` 隔離沙盒生命週期、Auto-Contract 自動契約合成與兩階段測試 |
 | **維度 5：工程妥協** | [dev/DESIGN_NOTES.md](./dev/DESIGN_NOTES.md) | Dev 開發者工具鏈關鍵設計註記 (`DN-DEV-01`) |
+| **維度 2：工作流規範** | [agents-workflow/README.md](./agents-workflow/README.md) | 通用 Agent 工作流程、三大分流管理矩陣、模板庫與 Release Target 投射體系 |
+| **維度 3：專題手冊** | [agents-workflow/user_guide.md](./agents-workflow/user_guide.md) | Dev Plans 工具鏈使用指南（status, search, verify, archive） |
+| **維度 3：專題手冊** | [agents-workflow/FACTORY_PIPELINE.md](./agents-workflow/FACTORY_PIPELINE.md) | 協議產物工廠化與 6 步語意管線 |
+| **維度 5：工程妥協** | [agents-workflow/DESIGN_NOTES.md](./agents-workflow/DESIGN_NOTES.md) | Agents-Workflow 關鍵設計決策與註記 |
 
 ---
 
@@ -65,5 +69,6 @@ graph TD
 
 | 模組名稱 | 版本 | 職責定位 | 主要進入點 |
 | :--- | :---: | :--- | :--- |
-| **`core`** | `1.0.0` | 系統微內核、VFS 檔案系統、套件生命週期、依賴注入與 Hook 派發 | `modules/core/scripts/cli.py` |
-| **`dev`** | `1.0.0` | 開發者工具箱：腳手架、靜態檢查、純淨套件打包、單元/契約測試引擎 | `modules/dev/scripts/cli.py` |
+| **`core`** | `1.0.1.0` | 系統微內核、VFS 檔案系統、套件生命週期、依賴注入與 Hook 派發 | `modules/core/scripts/cli.py` |
+| **`dev`** | `1.0.0.2` | 開發者工具箱：腳手架、靜態檢查、純淨套件打包、單元/契約測試引擎 | `modules/dev/scripts/cli.py` |
+| **`agents-workflow`** | `1.0.1.2` | 通用 Agent 工作流程框架、SOP 0~7 規範治理、Plans 工具鏈與 IDE 投影 | `modules/agents-workflow/scripts/cli.py` |

@@ -149,10 +149,15 @@ class TestSandboxArchitecture(YSCBTestCase):
     def test_builder_preserves_hook_dev(self):
         """ET-03: Verify Builder builds module and preserves scripts/hook.dev.py in single-file zip."""
         builder = Builder()
+        m_data = uri.read_json("module.source://core/manifest.json")
+        ver = m_data.get("version", "1.0.0.0")
+        triplet = ver.rsplit(".", 1)[0] if ver.count(".") == 3 else ver
+        build_tag = f"{triplet}.build"
+
         ok, msg = builder.build_module("core", clean=True)
         self.assertTrue(ok, msg)
         
-        build_zip = uri.resolve("module.build://core/1.0.0.build.zip")
+        build_zip = uri.resolve(f"module.build://core/{build_tag}.zip")
         self.assertTrue(os.path.isfile(build_zip))
         with zipfile.ZipFile(build_zip, "r") as zf:
             self.assertIn("scripts/hook.dev.py", zf.namelist(), "scripts/hook.dev.py was unexpectedly excluded from build artifact!")
