@@ -4,16 +4,19 @@
 
 ---
 
-## 1. 核心定位與三位一體資產
+## 1. 核心定位與資產架構
 
 模組徹底剝離特定專案特化規則，提供 100% 通用抽象資產：
 - **規範 (`assets/standards/`)**：
+  - `AgentsStandards.md`：Agent 通用核心原則、防呆紀律與絕對禁止條款（自動注入至 `AGENTS.md`）。
+  - `DevelopmentStandards.md`：SOP 0~7 標準生命週期、三大分流矩陣、追溯鏈與工作目錄規範。
   - `DocumentationStandards.md`：知識庫 7 大抽象維度、Topic 專題文檔與 1:1 交付原則。
-  - `DevelopmentStandards.md`：SOP 0~7 標準生命週期、三大分流 (Fast/Full/Umbrella) 與防呆紀律。
 - **流程 (`assets/workflows/`)**：
   - `ContextInit.md`：上下文熱啟動流程。
+  - `NewPlan.md`：標準立項流程（完整載入 `DevelopmentStandards.md`）。
 - **模板 (`assets/templates/`)**：
   - 13 大標準模板庫（`P00`~`P07`, `FT_plan`, `umbrella_overview`, `changelog`, `R_research_report`, `handoff`）與共用標頭 `header.md`。
+- **擴充手冊**：[`contributes.format.md`](../../source/agents-workflow/contributes.format.md) 官方擴充宣告格式規格書。
 
 ---
 

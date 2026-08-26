@@ -271,7 +271,7 @@ class ReleasePublisher:
         # --- 步驟 2 (提前解算): 為所有已啟用 Target 解算檔案清單與內容 ---
         precomputed_files: Dict[str, str] = {}  # {target_abs_path: final_content}
         orphan_targets: List[str] = []
-        dev_standards_content = ""
+        agents_standards_content = ""
 
         for t_name in active_target_names:
             if t_name not in all_registered_targets:
@@ -287,9 +287,9 @@ class ReleasePublisher:
                 stage1_text = t_item["content"]
                 exp_item = t_item["export"]
 
-                # 提取 DevelopmentStandards 供 AGENTS.md 軟合併使用
-                if "DevelopmentStandards" in t_item["base_name"]:
-                    dev_standards_content = stage1_text
+                # 提取 AgentsStandards 供 AGENTS.md 軟合併使用
+                if "AgentsStandards" in t_item["base_name"]:
+                    agents_standards_content = stage1_text
 
                 # Stage 2 URI 佔位符轉譯 (Tier 1 -> Tier 2 -> Tier 3)
                 stage2_text = self.compiler.resolve_stage2_uri(stage1_text, dst_abs, dep_map)
@@ -357,7 +357,7 @@ class ReleasePublisher:
                 f.write(content)
             written_count += 1
 
-        # 執行 AGENTS.md 軟合併
+        # 執行 AGENTS.md 軟合併 (若啟用 enable_agents_md)
         proj_root = os.getcwd()
         if uri:
             try:
@@ -365,19 +365,30 @@ class ReleasePublisher:
             except Exception:
                 pass
 
-        if enable_agents_md and dev_standards_content:
-            target_agents_abs = os.path.join(proj_root, "AGENTS.md")
-            # 依主要 Target 之發布拓撲映射表轉譯 URI 標籤為相對於根目錄之路徑
-            rendered_agents_content = dev_standards_content
-            if active_target_names:
-                main_target_cfg = all_registered_targets.get(active_target_names[0], {})
-                if main_target_cfg:
-                    dep_map_main, _ = self.build_deployment_map(main_target_cfg, resolved_items)
+        if enable_agents_md:
+            # 若無 active targets 但有 resolved_items，直接從 Stage 1 物化產物中提取 AgentsStandards
+            if not agents_standards_content:
+                for r_item in resolved_items:
+                    if "AgentsStandards" in r_item.get("base_name", ""):
+                        agents_standards_content = r_item.get("content", "")
+                        break
+
+            if agents_standards_content:
+                target_agents_abs = os.path.join(proj_root, "AGENTS.md")
+                rendered_agents_content = agents_standards_content
+                if active_target_names:
+                    main_target_cfg = all_registered_targets.get(active_target_names[0], {})
+                    if main_target_cfg:
+                        dep_map_main, _ = self.build_deployment_map(main_target_cfg, resolved_items)
+                        rendered_agents_content = self.compiler.resolve_stage2_uri(
+                            agents_standards_content, target_agents_abs, dep_map_main
+                        )
+                else:
                     rendered_agents_content = self.compiler.resolve_stage2_uri(
-                        dev_standards_content, target_agents_abs, dep_map_main
+                        agents_standards_content, target_agents_abs, {}
                     )
 
-            self._soft_merge_agents_md(rendered_agents_content, proj_root)
+                self._soft_merge_agents_md(rendered_agents_content, proj_root)
 
         return {
             "success": True,
