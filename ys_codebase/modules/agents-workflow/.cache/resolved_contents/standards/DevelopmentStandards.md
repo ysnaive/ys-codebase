@@ -107,6 +107,7 @@
 
 ---
 
+
 # YS-Codebase 模組開發專案特化工程規範 (YS-Codebase Module Engineering Standards)
 
 本文件定義針對 **YS-Codebase 工具庫體系模組作者與 Agent** 在進行模組（如 `core`、`dev`、`agents-workflow` 或第三方擴充模組）之開發、測試、構建與交付時，**必須強制遵守**的專案特化工程規範與防呆防護紀律。
@@ -189,4 +190,3 @@
      - 模組源碼空間：`module.source://<module>/...`
      - 本地建置產物空間：`module.build://<module>/...`
      - 發布來源空間：`module.release://<module>/...`
-

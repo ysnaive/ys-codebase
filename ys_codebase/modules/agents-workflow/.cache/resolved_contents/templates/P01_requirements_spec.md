@@ -18,7 +18,6 @@ Phase 1 執行指引：
 > 狀態：[Draft | Confirmed | Completed]  
 
 
-
 > 依據 P00：[P00_semantic_requirements.md](./P00_semantic_requirements.md)  
 > 模板版本：v1.4  
 

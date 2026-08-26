@@ -36,7 +36,7 @@ description: 上下文熱啟動流程
 當使用者輸入 `/ContextInit` 或 Agent 偵測到是全新的對話 Session 時，Agent **必須順序執行**以下加載步驟：
 
 ### 步驟 1：加載專案層級硬性規範與紀律
-- **讀取檔案**：[AGENTS.md](../../AGENTS.md)
+- **讀取檔案**：[AGENTS.md](`../../AGENTS.md`)
 - **提取要點**：
   - SOP 三大原則：零臆測、可追溯、分級管控。
   - 嚴禁連發（一次 Turn 最多一個 Phase）、嚴禁空降實作。
@@ -46,16 +46,16 @@ description: 上下文熱啟動流程
 
 ### 步驟 2：加載開發標準與 CLI 防呆指南
 - **讀取檔案**：
-  - 開發標準作業規範：[DevelopmentStandards.md](../.yscb/standards/DevelopmentStandards.md)
-  - 指令防呆情境手冊：[AgentsCliGuild.md](../.yscb/standards/AgentsCliGuild.md)
-  - 專案特化命名規範：[STANDARDS.md](../../docs/_project/STANDARDS.md) *(若專案未獨立提供則依 DevelopmentStandards.md 為準)*
+  - 開發標準作業規範：[DevelopmentStandards.md](`../.yscb/standards/DevelopmentStandards.md`)
+  - 指令防呆情境手冊：[AgentsCliGuild.md](`../.yscb/standards/AgentsCliGuild.md`)
+  - 專案特化命名規範：[STANDARDS.md](`../../docs/_project/STANDARDS.md`) *(若專案未獨立提供則依 DevelopmentStandards.md 為準)*
 - **提取要點**：
   - 掌握 Phase 0 ~ 7 標準開發作業流程 (SOP) 與三大分流原則。
   - 熟悉 CLI 語意情境對照表，嚴格執行 Default-Deny 守門。
   - 識別碼與變數命名規範、單位與型別標註約束。
 
 ### 步驟 3：加載專案最新演進與當前進度
-- **讀取檔案**：[CHANGELOG.md](../../CHANGELOG.md) (前 2 ~ 3 個區塊)
+- **讀取檔案**：[CHANGELOG.md](`../../CHANGELOG.md`) (前 2 ~ 3 個區塊)
 - **提取要點**：
   - 瞭解專案最近完成了哪些 Dev Plan 與架構優化。
   - 掌握當前專案處於何種演進階段。
