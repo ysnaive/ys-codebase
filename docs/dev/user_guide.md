@@ -67,6 +67,14 @@ python yscb.py dev build --all
   - 產物版本號標記為 `{major}.{minor}.{patch}.build`。
   - 自動更新 `build/<mod>/index.json`。
 
+#### 💡 本機開發一鍵直裝 (`install <mod>@build`)
+當本地修改了 `source/<module>/` 程式碼並執行 `dev build <module>` 後，若希望在宿主環境直接載入最新開發建置產物進行交互調試，無需走正式 release 流程，可直接執行：
+```bash
+python yscb.py install <module_name>@build --force
+```
+- **核心特例機制**：當 revision 為 `build` 或以 `.build` 結尾時，套件管理器自動鎖定直連本地端 `module.build://`，免去先手動跑 release 的冗餘負擔。
+
+
 ### 3.2 發布就緒預檢 (`dev release-check`)
 獨立執行 3-Gate 發布守門檢驗，確認模組是否已就緒發布：
 ```bash

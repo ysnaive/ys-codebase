@@ -223,3 +223,33 @@ def on_test_event(context):
         with self.assertRaises(FileNotFoundError):
             self.engine.act_download("non_existent_pkg_xyz", "9.9.9", "invalid_provider_path")
         self.mark_passed()
+
+    def test_download_build_revision_special_case(self):
+        """Verify requesting build revision downloads directly from module.build://."""
+        import zipfile
+        # Setup mock build package
+        build_dir = "module.build://mock_build_pkg"
+        uri.makedirs(build_dir)
+        b_zip_uri = f"{build_dir}/1.0.0.build.zip"
+        with zipfile.ZipFile(uri.resolve(b_zip_uri), "w") as zf:
+            zf.writestr("manifest.json", '{"name": "mock_build_pkg", "version": "1.0.0.build", "entry": "scripts/cli.py"}')
+            zf.writestr("scripts/cli.py", 'print("build hello")')
+
+        # Test download with @build
+        dl_uri = self.engine.act_download("mock_build_pkg", "build", "non_existent_provider_path")
+        self.assertTrue(uri.exists(dl_uri))
+        self.assertTrue(uri.exists("module.mirror://mock_build_pkg/build.zip"))
+
+        # Cleanup
+        uri.rmtree(build_dir)
+        uri.rmtree("module.mirror://mock_build_pkg")
+        self.mark_passed()
+
+    def test_download_build_revision_not_found_raises(self):
+        """Verify requesting build revision with missing package raises FileNotFoundError with build guidance."""
+        with self.assertRaises(FileNotFoundError) as ctx:
+            self.engine.act_download("non_existent_build_mod", "build", "non_existent_prov")
+        self.assertIn("Build package not found", str(ctx.exception))
+        self.assertIn("dev build", str(ctx.exception))
+        self.mark_passed()
+
