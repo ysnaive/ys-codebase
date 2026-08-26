@@ -2,6 +2,7 @@
   "name": "agents-workflow",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "versions": [
-    "1.0.0.0"
+    "1.0.0.0",
+    "1.0.1.0"
   ]
 }
