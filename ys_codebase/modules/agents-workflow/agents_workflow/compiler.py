@@ -11,19 +11,19 @@ try:
 except ImportError:
     uri = None
 
-# Global Placeholder Pattern Constants
-TOKEN_ANCHOR_REGEX = re.compile(r"__@\{\s*([A-Za-z0-9_]+)\s*\}__")
-URI_REF_REGEX = re.compile(r"__#\{\s*([^}]+)\s*\}__")
+# Global Placeholder Pattern Constants (Strict Backtick Format)
+TOKEN_ANCHOR_REGEX = re.compile(r"`__@\{\s*([A-Za-z0-9_]+)\s*\}__`")
+URI_REF_REGEX = re.compile(r"`__#\{\s*([^}]+)\s*\}__`")
 
 
 def make_token_tag_regex(token_name: str) -> re.Pattern:
     """構造匹配指定 Token 標籤之正則表達式，支援大括號內部微量空格。"""
-    return re.compile(r"__@\{\s*" + re.escape(token_name) + r"\s*\}__")
+    return re.compile(r"`__@\{\s*" + re.escape(token_name) + r"\s*\}__`")
 
 
 def make_purge_regex(token_name: str) -> re.Pattern:
     """構造用於抹除殘留 Token 錨點行之正則表達式，自動吞噬行首縮排與行尾換行。"""
-    return re.compile(r"([ \t]*__@\{\s*" + re.escape(token_name) + r"\s*\}__[ \t]*\r?\n?)")
+    return re.compile(r"([ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?)")
 
 
 class ArtifactCompiler:

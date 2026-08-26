@@ -22,12 +22,6 @@
           "description": "指向 agents-workflow 歷史封存計畫目錄"
         },
         {
-          "token": "workflow.ext",
-          "type": "config",
-          "value": "paths.ext",
-          "description": "指向 agents-workflow 專案擴充清單目錄"
-        },
-        {
           "token": "workflow.docs",
           "type": "config",
           "value": "paths.docs",
@@ -94,7 +88,7 @@
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/FT_plan.md",
+          "source": "module.root://agents-workflow/assets/templates/fast_track_plan.md",
           "description": "Fast Track 敏捷計畫模板"
         },
         {
@@ -109,7 +103,7 @@
         },
         {
           "type": "template",
-          "source": "module.root://agents-workflow/assets/templates/R_research_report.md",
+          "source": "module.root://agents-workflow/assets/templates/RXX_research_report.md",
           "description": "深度調研報告模板"
         },
         {
@@ -120,12 +114,16 @@
       ],
       "token": [
         {
-          "value": "PHASEXX_STANDARD_HEADER",
-          "description": "P01~P07 模板共通標準標頭注入錨點"
+          "value": "PHASEXX_HEADER",
+          "description": "P00~P07 模板共通標準標頭注入錨點"
         },
         {
-          "value": "PROJECT_SPECIFIC_STANDARDS",
+          "value": "WORKFLOW_SOP_STANDARDS",
           "description": "專案特化工程規範注入錨點（位於 DevelopmentStandards.md 尾部）"
+        },
+        {
+          "value": "WORKFLOW_DOCS_STANDARDS",
+          "description": "專案特化文檔規範注入錨點（位於 DocumentationStandards.md 尾部）"
         },
         {
           "value": "DYNAMIC_CONTEXT_MAP",
@@ -138,12 +136,168 @@
         {
           "value": "END_HTML_ANNOTATION",
           "description": "HTML 註解結束標籤注入錨點"
+        },
+        {
+          "value": "PHASE00_HEADER",
+          "description": "Phase 0 模板標頭特化擴充注入錨點（位於 P00_semantic_requirements.md）"
+        },
+        {
+          "value": "PHASE00_AGENTS_GUILD",
+          "description": "Phase 0 JIT 註解內部擴充注入錨點（位於 P00_semantic_requirements.md 頂部）"
+        },
+        {
+          "value": "PHASE00_TEMPLATE",
+          "description": "Phase 0 模板主體擴充注入錨點（位於 P00_semantic_requirements.md 尾部）"
+        },
+        {
+          "value": "PHASE01_HEADER",
+          "description": "Phase 1 模板標頭特化擴充注入錨點（位於 P01_requirements_spec.md）"
+        },
+        {
+          "value": "PHASE01_AGENTS_GUILD",
+          "description": "Phase 1 JIT 註解內部擴充注入錨點（位於 P01_requirements_spec.md 頂部）"
+        },
+        {
+          "value": "PHASE01_TEMPLATE",
+          "description": "Phase 1 模板主體擴充注入錨點（位於 P01_requirements_spec.md 尾部）"
+        },
+        {
+          "value": "PHASE02_HEADER",
+          "description": "Phase 2 模板標頭特化擴充注入錨點（位於 P02_architecture_plan.md）"
+        },
+        {
+          "value": "PHASE02_AGENTS_GUILD",
+          "description": "Phase 2 JIT 註解內部擴充注入錨點（位於 P02_architecture_plan.md 頂部）"
+        },
+        {
+          "value": "PHASE02_TEMPLATE",
+          "description": "Phase 2 模板主體擴充注入錨點（位於 P02_architecture_plan.md 尾部）"
+        },
+        {
+          "value": "PHASE03_HEADER",
+          "description": "Phase 3 模板標頭特化擴充注入錨點（位於 P03_api_spec.md）"
+        },
+        {
+          "value": "PHASE03_AGENTS_GUILD",
+          "description": "Phase 3 JIT 註解內部擴充注入錨點（位於 P03_api_spec.md 頂部）"
+        },
+        {
+          "value": "PHASE03_TEMPLATE",
+          "description": "Phase 3 模板主體擴充注入錨點（位於 P03_api_spec.md 尾部）"
+        },
+        {
+          "value": "PHASE04_HEADER",
+          "description": "Phase 4 模板標頭特化擴充注入錨點（位於 P04_implementation_plan.md）"
+        },
+        {
+          "value": "PHASE04_AGENTS_GUILD",
+          "description": "Phase 4 JIT 註解內部擴充注入錨點（位於 P04_implementation_plan.md 頂部）"
+        },
+        {
+          "value": "PHASE04_TEMPLATE",
+          "description": "Phase 4 模板主體擴充注入錨點（位於 P04_implementation_plan.md 尾部）"
+        },
+        {
+          "value": "PHASE05_HEADER",
+          "description": "Phase 5 模板標頭特化擴充注入錨點（位於 P05_task.md）"
+        },
+        {
+          "value": "PHASE05_AGENTS_GUILD",
+          "description": "Phase 5 JIT 註解內部擴充注入錨點（位於 P05_task.md 頂部）"
+        },
+        {
+          "value": "PHASE05_TEMPLATE",
+          "description": "Phase 5 模板主體擴充注入錨點（位於 P05_task.md 尾部）"
+        },
+        {
+          "value": "PHASE06_HEADER",
+          "description": "Phase 6 模板標頭特化擴充注入錨點（位於 P06_test_plan.md）"
+        },
+        {
+          "value": "PHASE06_AGENTS_GUILD",
+          "description": "Phase 6 JIT 註解內部擴充注入錨點（位於 P06_test_plan.md 頂部）"
+        },
+        {
+          "value": "PHASE06_TEMPLATE",
+          "description": "Phase 6 模板主體擴充注入錨點（位於 P06_test_plan.md 尾部）"
+        },
+        {
+          "value": "PHASE07_HEADER",
+          "description": "Phase 7 模板標頭特化擴充注入錨點（位於 P07_walkthrough.md）"
+        },
+        {
+          "value": "PHASE07_AGENTS_GUILD",
+          "description": "Phase 7 JIT 註解內部擴充注入錨點（位於 P07_walkthrough.md 頂部）"
+        },
+        {
+          "value": "PHASE07_TEMPLATE",
+          "description": "Phase 7 模板主體擴充注入錨點（位於 P07_walkthrough.md 尾部）"
+        },
+        {
+          "value": "FAST_TRACK_HEADER",
+          "description": "Fast Track 模板標頭特化擴充注入錨點（位於 fast_track_plan.md）"
+        },
+        {
+          "value": "FAST_TRACK_AGENTS_GUILD",
+          "description": "Fast Track JIT 註解內部擴充注入錨點（位於 fast_track_plan.md 頂部）"
+        },
+        {
+          "value": "FAST_TRACK_TEMPLATE",
+          "description": "Fast Track 模板主體擴充注入錨點（位於 fast_track_plan.md 尾部）"
+        },
+        {
+          "value": "CHANGELOG_HEADER",
+          "description": "變更日誌模板標頭特化擴充注入錨點（位於 changelog.md）"
+        },
+        {
+          "value": "CHANGELOG_AGENTS_GUILD",
+          "description": "變更日誌 JIT 註解內部擴充注入錨點（位於 changelog.md 頂部）"
+        },
+        {
+          "value": "CHANGELOG_TEMPLATE",
+          "description": "變更日誌模板主體擴充注入錨點（位於 changelog.md 尾部）"
+        },
+        {
+          "value": "UMBRELLA_HEADER",
+          "description": "Umbrella 主計畫總覽模板標頭特化擴充注入錨點（位於 umbrella_overview.md）"
+        },
+        {
+          "value": "UMBRELLA_AGENTS_GUILD",
+          "description": "Umbrella 主計畫總覽 JIT 註解內部擴充注入錨點（位於 umbrella_overview.md 頂部）"
+        },
+        {
+          "value": "UMBRELLA_TEMPLATE",
+          "description": "Umbrella 主計畫總覽模板主體擴充注入錨點（位於 umbrella_overview.md 尾部）"
+        },
+        {
+          "value": "RESEARCH_HEADER",
+          "description": "深度調研報告模板標頭特化擴充注入錨點（位於 RXX_research_report.md）"
+        },
+        {
+          "value": "RESEARCH_AGENTS_GUILD",
+          "description": "深度調研報告 JIT 註解內部擴充注入錨點（位於 RXX_research_report.md 頂部）"
+        },
+        {
+          "value": "RESEARCH_TEMPLATE",
+          "description": "深度調研報告模板主體擴充注入錨點（位於 RXX_research_report.md 尾部）"
+        },
+        {
+          "value": "HANDOFF_HEADER",
+          "description": "現場凍結交接模板標頭特化擴充注入錨點（位於 handoff.md）"
+        },
+        {
+          "value": "HANDOFF_AGENTS_GUILD",
+          "description": "現場凍結交接 JIT 註解內部擴充注入錨點（位於 handoff.md 頂部）"
+        },
+        {
+          "value": "HANDOFF_TEMPLATE",
+          "description": "現場凍結交接模板主體擴充注入錨點（位於 handoff.md 尾部）"
         }
       ],
       "insert": [
         {
           "type": "uri",
-          "token": "PHASEXX_STANDARD_HEADER",
+          "token": "PHASEXX_HEADER",
           "value": "module.root://agents-workflow/assets/templates/header.md",
           "mode": "replace"
         },

@@ -1,6 +1,23 @@
+`__@{BEGIN_HTML_ANNOTATION}__`
+
+Phase 3 執行指引：
+1. 目標：完成所有 Public/Internal API 簽名、型態契約、錯誤處理策略與實作依賴拓撲順序。
+2. 介面契約：明確定義類別/函式/介面之命名、職責、參數型態、返回值型態與顯式物理/數學單位。
+3. 錯誤策略：定義所有可能拋出的自定義例外與邊界防禦處理契約。
+4. 依賴拓撲：定義由底層至上層的無環依賴實作拓撲順序 (Implementation Topology)，作為 Phase 5 依序實作之剛性依據。
+5. Checkpoint 等待關卡：等待開發者明確確認 P03 內容（狀態更新為 Confirmed）後推進至 Phase 4。
+
+`__@{PHASE03_AGENTS_GUILD}__`
+
+`__@{END_HTML_ANNOTATION}__`
+
 # API 與介面規格書 (API & Interface Specification)
 
-__@{PHASEXX_STANDARD_HEADER}__
+`__@{PHASEXX_HEADER}__`
+
+`__@{PHASE03_HEADER}__`
+
+> 模板版本：v1.2  
 
 ---
 
@@ -23,3 +40,5 @@ __@{PHASEXX_STANDARD_HEADER}__
 
 ```text
 ```
+
+`__@{PHASE03_TEMPLATE}__`
