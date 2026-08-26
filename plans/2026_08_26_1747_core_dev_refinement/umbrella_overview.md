@@ -17,8 +17,9 @@
 ## 2. 子計畫拆分與執行矩陣 (Sub-Plan Breakdown)
 
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
-| :---: | :--- | :---: | :---: | :--- |
+| :--- | :--- | :---: | :---: | :--- |
 | **sub_01** | [`sub_01_module_data_uri_refactor`](./sub_01_module_data_uri_refactor/) | Level 1 Full Track | `Completed` | 模組資料管理相關 URI 協議釐清與遷移 |
+| **sub_02** | [`sub_02_dev_release_verification_refactor`](./sub_02_dev_release_verification_refactor/) | Level 1 Full Track | `Completed` | Dev 模組發布與驗證工具鏈重構 |
 
 ---
 
