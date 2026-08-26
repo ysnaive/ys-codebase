@@ -70,36 +70,37 @@ class FrameworkRobustnessTest(unittest.TestCase):
         self.assertEqual(uri.get_module_context(), orig_mod)
 
     def test_dual_layer_snapshot_and_restore(self):
-        with uri.host_scope(self.host_dir):
-            engine = AtomicEngine()
-            
-            # Setup custom module config in config/core/
-            cfg_p = uri.resolve("config://core/config.project.json")
-            with open(cfg_p, "w", encoding="utf-8") as f:
-                json.dump({"project_root": "original_val"}, f)
+        with unittest.mock.patch("core.uri._get_yscb_root", return_value=self.engine_dir):
+            with uri.host_scope(self.host_dir):
+                engine = AtomicEngine()
+                
+                # Setup custom module config in config/core/
+                cfg_p = uri.resolve("config://core/config.project.json")
+                with open(cfg_p, "w", encoding="utf-8") as f:
+                    json.dump({"project_root": "original_val"}, f)
 
-            # Create dual-layer snapshot
-            snap_id = engine.act_snapshot("test_dual_snap")
+                # Create dual-layer snapshot
+                snap_id = engine.act_snapshot("test_dual_snap")
 
-            # Mutate both host config and module config
-            with open(self.host_cfg_path, "w", encoding="utf-8") as f:
-                json.dump({"mutated": True}, f)
-            with open(cfg_p, "w", encoding="utf-8") as f:
-                json.dump({"project_root": "mutated_val"}, f)
+                # Mutate both host config and module config
+                with open(self.host_cfg_path, "w", encoding="utf-8") as f:
+                    json.dump({"mutated": True}, f)
+                with open(cfg_p, "w", encoding="utf-8") as f:
+                    json.dump({"project_root": "mutated_val"}, f)
 
-            # Restore snapshot
-            engine.act_restore_snapshot(snap_id)
+                # Restore snapshot
+                engine.act_restore_snapshot(snap_id)
 
-            # Verify host config restored
-            with open(self.host_cfg_path, "r", encoding="utf-8") as f:
-                h_data = json.load(f)
-            self.assertIn("yscb_root", h_data)
-            self.assertNotIn("mutated", h_data)
+                # Verify host config restored
+                with open(self.host_cfg_path, "r", encoding="utf-8") as f:
+                    h_data = json.load(f)
+                self.assertIn("yscb_root", h_data)
+                self.assertNotIn("mutated", h_data)
 
-            # Verify module config restored
-            with open(cfg_p, "r", encoding="utf-8") as f:
-                m_data = json.load(f)
-            self.assertEqual(m_data.get("project_root"), "original_val")
+                # Verify module config restored
+                with open(cfg_p, "r", encoding="utf-8") as f:
+                    m_data = json.load(f)
+                self.assertEqual(m_data.get("project_root"), "original_val")
 
     def test_execution_context_ssot_immutability(self):
         ctx = ExecutionContext("core", "test_cmd", ["arg1"], {"key": "val"})
