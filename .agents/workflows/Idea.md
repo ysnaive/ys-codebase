@@ -10,9 +10,9 @@ description: 構想與靈感孵化池工作流 (Idea) — 支援自由發想、W
 > | :--- | :--- | :--- |
 > | **`project://`** | `./` | `[ACTIVE]` |
 > | **`yscb://`** | `./ys_codebase` | `[ACTIVE]` |
-> | **`plans://`** | `./plans` | `[!UNDEFINED]` |
-> | **`archive://`** | `./archive` | `[!UNDEFINED]` |
-> | **`docs://`** | `./docs` | `[!UNDEFINED]` |
+> | **`workflow.plans://`** | `./plans` | `[ACTIVE]` |
+> | **`workflow.archived://`** | `./plans/archived` | `[ACTIVE]` |
+> | **`workflow.docs://`** | `./docs` | `[ACTIVE]` |
 > 
 > 🛠️ **CLI 動態解析指令**：`python yscb.py uri resolve <uri>`（例：`python yscb.py uri resolve project://AGENTS.md`）
 
