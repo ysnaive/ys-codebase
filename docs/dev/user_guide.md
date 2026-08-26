@@ -144,3 +144,19 @@ python yscb.py dev test dev -k test_builder
 # 測試失敗時保留沙盒目錄以供除錯
 python yscb.py dev test core --keep-sandbox
 ```
+
+---
+
+## 5. Agent 指令防呆情境與調用規範 (Dev Command Abuse Guardrails)
+
+為避免 Agent 在開發過程中濫用指令造成環境污染或效能浪費，`dev` 模組在 `contributes.core.commands` 明確定義 6 大情境防呆規範：
+
+| 指令 | ✅ 推薦/適用情境 | 🚨 絕對禁止/不適用情境 |
+| :--- | :--- | :--- |
+| `dev test <mod>` | • 正在開發當前模組，需驗證單元邏輯或整體功能<br/>• 微調時優先附加 `--no-build` 或 `-k <pattern>` | • 嚴禁在跑測前手動執行 `dev build`<br/>• 嚴禁在日常開發中頻繁執行 `dev test --all`<br/>• 嚴禁調用內部原子操作 `dev op-test` |
+| `dev check <mod>` | • 代碼編寫完成後進行靜態合規與語法預檢 | • 嚴禁未修改代碼即無意義高頻重複執行 |
+| `dev build <mod>` | • 手動打包本地測試包供跨環境測試或本地直裝物化 | • 嚴禁在跑測前手動 build (dev test 內部自動前置構建) |
+| `dev release <mod>` | • 模組通過全部測試，正式打包發布 (Phase 7 結案前) | • 開發者未明確下達發布指示前絕對禁止執行 |
+| `dev bump-*` | • 依架構變更或修復類型單向遞增版本號 | • 未獲開發者明確指示前絕對禁止擅自執行 |
+| `dev release-git` | • 發布完成後進行本地 git commit 與 tag (絕不 push) | • 未獲指示前絕對禁止擅自執行 |
+

@@ -55,6 +55,79 @@
           "value": "yscb://storage/",
           "description": "模組持久化儲存空間根目錄 (Git 追蹤)"
         }
+      ],
+      "commands": {
+        "install": {
+          "description": "Install a module from provider or local build package (@build)",
+          "case_pros": [
+            "安裝新模組能力至環境中",
+            "本地模組自引用調試: install <mod>@build --force (不更新無關模組)"
+          ],
+          "case_cons": [
+            "🚨 嚴禁未經開發者指示在日常開發中重複安裝或重裝全部模組"
+          ]
+        },
+        "update": {
+          "description": "Update installed module(s) to latest version",
+          "case_pros": [
+            "升級已安裝之模組版本"
+          ],
+          "case_cons": [
+            "🚨 嚴禁在未獲升級指示前擅自更新"
+          ]
+        },
+        "remove": {
+          "description": "Remove an installed module from environment",
+          "case_pros": [
+            "清理不再使用之模組"
+          ],
+          "case_cons": [
+            "🚨 嚴禁擅自移除 core 或使用中之依賴模組"
+          ]
+        },
+        "list": {
+          "description": "List all installed modules, versions and providers",
+          "case_pros": [
+            "檢視當前環境已安裝之模組清冊與版本"
+          ]
+        },
+        "status": {
+          "description": "Health check and runtime diagnostic report",
+          "case_pros": [
+            "環境健康診斷與自我修復檢查"
+          ]
+        },
+        "reload": {
+          "description": "Reconcile and refresh runtime environment",
+          "case_pros": [
+            "重新聚合 contributes 並觸發模組 on_reload Hook"
+          ]
+        },
+        "rollback": {
+          "description": "Revert environment to the previous snapshot state",
+          "case_pros": [
+            "當前環境損毀時回滾至前一快照"
+          ],
+          "case_cons": [
+            "🚨 嚴禁未經確認擅自回滾環境"
+          ]
+        },
+        "uri": {
+          "description": "Resolve canonical semantic URI to physical path",
+          "case_pros": [
+            "動態解析語意 URI (如 python yscb.py uri resolve project://AGENTS.md)"
+          ]
+        }
+      }
+    },
+    "agents-workflow": {
+      "insert": [
+        {
+          "type": "computed",
+          "token": "AGENTS_CLI_GUILD",
+          "value": "code.func://core/providers:get_agents_cli_guild",
+          "mode": "replace"
+        }
       ]
     }
   }
