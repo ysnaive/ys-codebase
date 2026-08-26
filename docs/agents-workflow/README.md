@@ -39,15 +39,18 @@
 | :--- | :---: | :---: | :--- | :--- |
 | `workflow.plans://` | `config` | `!undefined` | `project://.agent_workflow/plans` | 指向當前專案活躍開發計畫目錄。 |
 | `workflow.archived://` | `config` | `!undefined` | `project://.agent_workflow/plans/archived` | 指向歷史封存計畫目錄。 |
-| `workflow.ext://` | `config` | `!undefined` | `project://.agent_workflow/extensions` | 指向專案特化 SOP 擴充清單目錄。 |
 | `workflow.docs://` | `config` | `!undefined` | `project://docs` | 指向專案知識庫目錄。 |
-
-> [!IMPORTANT]
-> **零臆測原則**：`config.project.json` 模板路徑預設剛性為 `"!undefined"`。推薦路徑由 `--init-default` 指令攜帶，僅在使用者確認後才寫入組態。
 
 ---
 
-## 4. CLI 快速使用指南
+## 4. 動態計算 Token (Computed Token Provider)
+
+模組支援透過 `code.func://` 協議在編譯解算期動態調用 Python 函式生成內容：
+- **`DYNAMIC_CONTEXT_MAP`**：由 `code.func://agents-workflow/providers:get_dynamic_context_map` 即時生成當前專案活躍語意 URI 解析地圖，注入 `ContextInit.md`。
+
+---
+
+## 5. CLI 快速使用指南
 
 ```bash
 # 一鍵初始化 Workflow 協議、建立推薦目錄並寫入組態 (支援 -y 自動確認)

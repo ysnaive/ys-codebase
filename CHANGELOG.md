@@ -4,6 +4,15 @@
 
 ## 2026_08_25_2200_agents_workflow_migration
 
+- **Contributes 擴充支援 Computed Token 與 `code.func://` 函式定位協議 (`sub_06`)**：
+  - **`code.func://` 符號定位協議 (`core.symbols`)**：
+    - 建立全專案標準的程式碼函式與符號定位協議：`code.func://<module>/<subpath>:<function_name>`。
+    - 實作雙軌動態載入器（Package Import + VFS 檔案 Spec 載入），支援 Zip 模組與源碼開發環境、命名空間隔離與 Callable 快取。
+  - **Contributes Insert 支援 `type: "computed"`**：
+    - 工廠編譯器解算器升級，於 `compile` 階段即時調用 Provider 函式並注入執行期上下文 `ExecutionContext`，具備型別安全轉型防護。
+  - **`agents-workflow` 動態路徑地圖實裝**：
+    - 實作 `providers.py:get_dynamic_context_map`，成功在 `ContextInit.md` 物化產物中即時動態渲染專案活躍語意 URI 解析地圖。
+
 - **HTML 註解 Token 自宣告與 Core `yscb.host://` 協議支援 (`sub_05`)**：
   - **HTML 註解 Token 自宣告與 Replace 展開**：
     - 於 `agents-workflow/manifest.json` 宣告 `BEGIN_HTML_ANNOTATION` 與 `END_HTML_ANNOTATION` Token。
