@@ -47,6 +47,41 @@
           "description": "上下文熱啟動流程"
         },
         {
+          "type": "workflow",
+          "source": "module.root://agents-workflow/assets/workflows/NewPlan.md",
+          "description": "標準開發作業流程 (NewPlan) — 定義專案從需求到發布的完整規範與三大分流管控"
+        },
+        {
+          "type": "workflow",
+          "source": "module.root://agents-workflow/assets/workflows/Continue.md",
+          "description": "接續中斷或已存在的開發計畫工作流 (Continue) — 支援 handoff.md 現場交接與狀態自動恢復"
+        },
+        {
+          "type": "workflow",
+          "source": "module.root://agents-workflow/assets/workflows/Pause.md",
+          "description": "暫停開發與無縫交接工作流 (Pause) — 現場狀態凍結、生成 handoff.md 達成零斷層接手"
+        },
+        {
+          "type": "workflow",
+          "source": "module.root://agents-workflow/assets/workflows/Discuss.md",
+          "description": "深度歸因與防淺層修復工作流 (Discuss) — 實作/測試遇阻時的強制暫停、根因追溯與範疇保護機制"
+        },
+        {
+          "type": "workflow",
+          "source": "module.root://agents-workflow/assets/workflows/Review.md",
+          "description": "開發完成後品質與細節審查工作流 (Review) — 包含五維度品質矩陣驗收與即時修復閉環"
+        },
+        {
+          "type": "workflow",
+          "source": "module.root://agents-workflow/assets/workflows/Research.md",
+          "description": "深度技術調研工作流 (Research) — 適用於高複雜度技術探索、方案選型對比與 R01 專題調研報告產出"
+        },
+        {
+          "type": "workflow",
+          "source": "module.root://agents-workflow/assets/workflows/Idea.md",
+          "description": "構想與靈感孵化池工作流 (Idea) — 支援自由發想、What/Why/How/Related 提案產出與一鍵立項流轉"
+        },
+        {
           "type": "template",
           "source": "module.root://agents-workflow/assets/templates/P00_semantic_requirements.md",
           "description": "Phase 0 語意需求模板"
@@ -116,6 +151,38 @@
         {
           "value": "PHASEXX_HEADER",
           "description": "P00~P07 模板共通標準標頭注入錨點"
+        },
+        {
+          "value": "DEVELOPMENT_STANDARDS",
+          "description": "標準開發作業流程規範主體（來自 DevelopmentStandards.md）"
+        },
+        {
+          "value": "WORKFLOW_NEWPLAN",
+          "description": "NewPlan 工作流特化擴充注入錨點（位於 NewPlan.md 尾部）"
+        },
+        {
+          "value": "WORKFLOW_CONTINUE",
+          "description": "Continue 工作流特化擴充注入錨點（位於 Continue.md 尾部）"
+        },
+        {
+          "value": "WORKFLOW_PAUSE",
+          "description": "Pause 工作流特化擴充注入錨點（位於 Pause.md 尾部）"
+        },
+        {
+          "value": "WORKFLOW_DISCUSS",
+          "description": "Discuss 工作流特化擴充注入錨點（位於 Discuss.md 尾部）"
+        },
+        {
+          "value": "WORKFLOW_REVIEW",
+          "description": "Review 工作流特化擴充注入錨點（位於 Review.md 尾部）"
+        },
+        {
+          "value": "WORKFLOW_RESEARCH",
+          "description": "Research 工作流特化擴充注入錨點（位於 Research.md 尾部）"
+        },
+        {
+          "value": "WORKFLOW_IDEA",
+          "description": "Idea 工作流特化擴充注入錨點（位於 Idea.md 尾部）"
         },
         {
           "value": "WORKFLOW_SOP_STANDARDS",
@@ -295,6 +362,12 @@
         }
       ],
       "insert": [
+        {
+          "type": "uri",
+          "token": "DEVELOPMENT_STANDARDS",
+          "value": "module.root://agents-workflow/assets/standards/DevelopmentStandards.md",
+          "mode": "replace"
+        },
         {
           "type": "uri",
           "token": "PHASEXX_HEADER",

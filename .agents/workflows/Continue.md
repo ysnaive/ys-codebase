@@ -4,22 +4,21 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[Continue.md](../../modules/agents-workflow/workflows/commands/Continue.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
 > | **`project://`** | `./` | `[ACTIVE]` |
-> | **`yscb://`** | `./` | `[ACTIVE]` |
-> | **`plans://`** | `./plans` | `[ACTIVE]` |
-> | **`archive://`** | `./archive_plans` | `[ACTIVE]` |
-> | **`docs://`** | `./docs` | `[ACTIVE]` |
-> | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
+> | **`yscb://`** | `./ys_codebase` | `[ACTIVE]` |
+> | **`plans://`** | `./plans` | `[!UNDEFINED]` |
+> | **`archive://`** | `./archive` | `[!UNDEFINED]` |
+> | **`docs://`** | `./docs` | `[!UNDEFINED]` |
 > 
-> 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
+> 🛠️ **CLI 動態解析指令**：`python yscb.py uri resolve <uri>`（例：`python yscb.py uri resolve project://AGENTS.md`）
 
 # 接續開發計畫工作流 (Continue)
 
-本 Workflow 用於從一個**已存在但尚未完成**的開發計畫接續工作。所有階段的執行規範請嚴格遵循 [NewPlan.md](./NewPlan.md)。
+本 Workflow 用於從一個**已存在但尚未完成**的開發計畫接續工作。所有階段的執行規範請嚴格遵循 [標準開發作業流程 (NewPlan)](./NewPlan.md)。
 
 ---
 
@@ -27,10 +26,7 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 ### 步驟 1：定位目標計畫目錄與狀態掃描
 
-1. 優先執行狀態掃描指令（或檢視 `plans://` 計畫目錄）：
-   ```bash
-   python yscb_cli.py agents-workflow scan
-   ```
+1. 檢視 `workflow.plans://` 計畫目錄下的進行中計畫。
 2. 若使用者未明確指定計畫名稱：
    - 僅有一個進行中計畫 ➔ 自動定位為目標。
    - 多個進行中計畫 ➔ 列出所有計畫名稱與狀態，詢問開發者要接續哪一個。
@@ -39,7 +35,7 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 ### 步驟 2：檢查 `handoff.md` 現場交接快照 (Handoff Detection)
 
-檢查目標計畫目錄下是否存在 `handoff.md`：
+檢查目標計畫目錄下是否存在 [`handoff.md`](../templates/handoff.md)：
 - **若存在 `handoff.md`**：
   1. 優先讀取 `handoff.md`，提取其中的「現場已完成事項」、「進行中待辦」、「踩坑與注意事項」與「下一次接手第 1 步」。
   2. 依據現場快照直接還原斷點上下文，無需漫無目的地掃描所有歷史代碼。
@@ -54,19 +50,19 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 | 判定依據 | 計畫層級 / Track | 進入判定分支 |
 | :--- | :--- | :--- |
-| 存在 `umbrella_overview.md`（標準命名）或 `master_plan_*.md`（僅相容偵測舊版/人工遷移專案殘留檔案，Agent 不應主動建立此檔名） | **Level 2：Umbrella 分類型主計畫** | ➔ 進入 **步驟 3-U** |
-| 存在 `FT_plan.md` | **Level 0：Fast Track** | ➔ 進入 **步驟 3-F** |
+| 存在 [`umbrella_overview.md`](../templates/umbrella_overview.md) | **Level 2：Umbrella 分類型主計畫** | ➔ 進入 **步驟 3-U** |
+| 存在 [`fast_track_plan.md`](../templates/fast_track_plan.md) | **Level 0：Fast Track** | ➔ 進入 **步驟 3-F** |
 | 存在 `P00` / `P01` ~ `P07` | **Level 1：Full Track (或獨立子計畫)** | ➔ 進入 **步驟 3-T** |
 
 ---
 
 #### 步驟 3-U：Umbrella 主計畫與子計畫定位
 
-1. 讀取主計畫的 `umbrella_overview.md` 與 `P00_semantic_requirements.md`。
+1. 讀取主計畫的 [`umbrella_overview.md`](../templates/umbrella_overview.md) 與 [`P00_semantic_requirements.md`](../templates/P00_semantic_requirements.md)。
 2. 檢查子計畫清單矩陣：
    - 尋找當前處於 `進行中`、`In Progress`、`Planning` 或 `未開始` 的第一個子計畫目錄 `sub_{編號}_{名稱}/`。
    - 若所有既有子計畫均已 Completed 但主計畫尚有後續階段 ➔ 提示開發者是否開立下一個 `sub_XX` 子計畫。
-3. 進入當前目標子計畫目錄，檢查該子計畫是否含有 `handoff.md`，若無則依其檔案結構進入 **步驟 3-T** (Full Track) 或 **步驟 3-F** (Fast Track) 判定進度。
+3. 進入當前目標子計畫目錄，檢查該子計畫是否含有 [`handoff.md`](../templates/handoff.md)，若無則依其檔案結構進入 **步驟 3-T** (Full Track) 或 **步驟 3-F** (Fast Track) 判定進度。
 
 ---
 
@@ -76,25 +72,25 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 | 已存在的最新檔案 | 檔案狀態為 `Confirmed` / `Passed` | 檔案狀態為 `Discussing` / `Draft` / `Pending` | 判定結果 |
 | :--- | :---: | :---: | :--- |
-| `P00_semantic_requirements.md` | ✅ | — | Phase 0 已確認，尚未進行分流或進入 Phase 1 |
-| `P00_semantic_requirements.md` | — | ✅ | Phase 0 需求討論進行中 |
-| `P01_requirements_spec.md` | ✅ | — | Phase 1 已完成，應從 Phase 2 開始 |
-| `P01_requirements_spec.md` | — | ✅ | Phase 1 進行中，應接續 Phase 1 |
-| `P02_architecture_plan.md` | ✅ | — | Phase 2 已完成，應從 Phase 3 開始 |
-| `P02_architecture_plan.md` | — | ✅ | Phase 2 進行中，應接續 Phase 2 |
-| `P03_api_spec.md` | ✅ | — | Phase 3 已完成，應從 Phase 4 開始 |
-| `P03_api_spec.md` | — | ✅ | Phase 3 進行中，應接續 Phase 3 |
-| `P04_implementation_plan.md` | ✅ | — | Phase 4 已定稿，應進入 Phase 5 開始實作 |
-| `P04_implementation_plan.md` | — | ✅ | Phase 4 Review 進行中 |
-| `P05_task.md` | — | — | Phase 5 實作中（讀取 `[x]` / `[ ]` 定位中斷點） |
-| `P06_test_plan.md` | — | — | Phase 6 測試驗證中（檢查實測狀態與 UX 驗證關卡） |
-| `P07_walkthrough.md` | — | — | Phase 7 Review 中（若已完成應已歸檔） |
+| [`P00_semantic_requirements.md`](../templates/P00_semantic_requirements.md) | ✅ | — | Phase 0 已確認，尚未進行分流或進入 Phase 1 |
+| [`P00_semantic_requirements.md`](../templates/P00_semantic_requirements.md) | — | ✅ | Phase 0 需求討論進行中 |
+| [`P01_requirements_spec.md`](../templates/P01_requirements_spec.md) | ✅ | — | Phase 1 已完成，應從 Phase 2 開始 |
+| [`P01_requirements_spec.md`](../templates/P01_requirements_spec.md) | — | ✅ | Phase 1 進行中，應接續 Phase 1 |
+| [`P02_architecture_plan.md`](../templates/P02_architecture_plan.md) | ✅ | — | Phase 2 已完成，應從 Phase 3 開始 |
+| [`P02_architecture_plan.md`](../templates/P02_architecture_plan.md) | — | ✅ | Phase 2 進行中，應接續 Phase 2 |
+| [`P03_api_spec.md`](../templates/P03_api_spec.md) | ✅ | — | Phase 3 已完成，應從 Phase 4 開始 |
+| [`P03_api_spec.md`](../templates/P03_api_spec.md) | — | ✅ | Phase 3 進行中，應接續 Phase 3 |
+| [`P04_implementation_plan.md`](../templates/P04_implementation_plan.md) | ✅ | — | Phase 4 已定稿，應進入 Phase 5 開始實作 |
+| [`P04_implementation_plan.md`](../templates/P04_implementation_plan.md) | — | ✅ | Phase 4 Review 進行中 |
+| [`P05_task.md`](../templates/P05_task.md) | — | — | Phase 5 實作中（讀取 `[x]` / `[ ]` 定位中斷點） |
+| [`P06_test_plan.md`](../templates/P06_test_plan.md) | — | — | Phase 6 測試驗證中（檢查實測狀態與 UX 驗證關卡） |
+| [`P07_walkthrough.md`](../templates/P07_walkthrough.md) | — | — | Phase 7 Review 中（若已完成應已歸檔） |
 
 ---
 
 #### 步驟 3-F：Fast Track 進度判定
 
-根據 `FT_plan.md` 的狀態欄位判定：
+根據 [`fast_track_plan.md`](../templates/fast_track_plan.md) 的狀態欄位判定：
 
 | 狀態 | 判定結果 |
 | :--- | :--- |
@@ -107,7 +103,7 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 
 ### 步驟 4：載入計畫上下文與決策脈絡
 
-1. 優先讀取工作目錄中的 `changelog.md`（若為子計畫亦需讀取主目錄之 `umbrella_overview.md`），掌握關鍵決策 (`[{Phase}:DR-XX]`) 與演進歷程。
+1. 優先讀取工作目錄中的 [`changelog.md`](../templates/changelog.md)（若為子計畫亦需讀取主目錄之 [`umbrella_overview.md`](../templates/umbrella_overview.md)），掌握關鍵決策 (`[{Phase}:DR-XX]`) 與演進歷程。
 2. 讀取當前 Phase 對應之文件內容，明確當前核心任務。
 
 ---
@@ -128,3 +124,6 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue) — 支
 ```
 
 詢問開發者是否確認開始接續，**立即 End Turn 等待確認**。
+
+---
+

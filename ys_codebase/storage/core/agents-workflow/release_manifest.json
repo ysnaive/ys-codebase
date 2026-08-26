@@ -18,7 +18,11 @@
     "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\templates\\fast_track_plan.md",
     "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\templates\\handoff.md",
     "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\templates\\umbrella_overview.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\ContextInit.md"
+    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\ContextInit.md",
+    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Continue.md",
+    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Discuss.md",
+    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\NewPlan.md",
+    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Pause.md"
   ],
   "updated_at": "2026-08-26"
 }
