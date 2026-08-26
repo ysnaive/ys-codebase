@@ -17,7 +17,7 @@ class TestDevScaffolder(YSCBTestCase):
         ok, msg = self.scaffolder.create_module(mod_name, desc="Unit test module")
         self.assertTrue(ok, f"Scaffold failed: {msg}")
         
-        src_uri = f"module.source.root://{mod_name}"
+        src_uri = f"module.source://{mod_name}"
         self.assertTrue(uri.exists(f"{src_uri}/manifest.json"))
         self.assertTrue(uri.exists(f"{src_uri}/scripts/cli.py"))
         self.assertTrue(uri.exists(f"{src_uri}/{mod_name}/__init__.py"))
@@ -37,5 +37,5 @@ class TestDevScaffolder(YSCBTestCase):
         self.assertFalse(ok2)
         self.assertIn("already exists", msg2)
         
-        uri.rmtree(f"module.source.root://{mod_name}")
+        uri.rmtree(f"module.source://{mod_name}")
         self.mark_passed()

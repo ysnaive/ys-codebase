@@ -2,7 +2,7 @@
 
 # 開發完成後審查工作流 (Review)
 
-本工作流用於功能實作完成後（通常於 Phase 7 Walkthrough 結束後或發布/結案前），進行獨立且嚴格的品質稽核、五維度品質矩陣驗收與即時修復閉環。所有階段的執行規範請嚴格遵循 [標準開發作業流程 (NewPlan)](`__#{module.root://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流用於功能實作完成後（通常於 Phase 7 Walkthrough 結束後或發布/結案前），進行獨立且嚴格的品質稽核、五維度品質矩陣驗收與即時修復閉環。所有階段的執行規範請嚴格遵循 [標準開發作業流程 (NewPlan)](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
 
 ---
 
@@ -22,7 +22,7 @@
 - [ ] **高頻防衛**：嚴禁在每影格循環項目 (Update / Render / Calculate) 頻繁記錄日誌。
 
 #### 3. 知識庫 1:1 交付與文檔審查 (Knowledge Base Delivery Audit)
-- [ ] **三維錨點對齊**：對照 [`P03_api_spec.md`](`__#{module.root://agents-workflow/assets/templates/P03_api_spec.md}__`)、[`P05_task.md`](`__#{module.root://agents-workflow/assets/templates/P05_task.md}__`) 與 [`P06_test_plan.md`](`__#{module.root://agents-workflow/assets/templates/P06_test_plan.md}__`)，確認所有公開介面、協同機制、狀態機、資料管線與工程妥協已全數覆蓋。
+- [ ] **三維錨點對齊**：對照 [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)、[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) 與 [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)，確認所有公開介面、協同機制、狀態機、資料管線與工程妥協已全數覆蓋。
 - [ ] **中觀專題手冊 (Topic Docs)**：若涉及 3 個以上狀態轉移、通訊封包、資料管線或並發同步，已建立獨立 `workflow.docs://<Module>/[topic].md`（垂直 Mermaid TD + 轉移矩陣）。
 - [ ] **工程妥協登記**：若實作包含非直觀設計或 Workaround，已於 `workflow.docs://<Module>/DESIGN_NOTES.md` 登記 `DN-XX` 與 `[!CAUTION]`。
 - [ ] **模組 README 同步**：`workflow.docs://<Module>/README.md` 已補齊最新 API 簽名與快速上手範例。
@@ -41,7 +41,7 @@
 
 - **非單純報錯**：若審查中發現任何代碼瑕疵、文檔缺漏或規範偏差，Agent **絕對禁止僅僅列出問題就結束**！
 - **即時修復**：Agent 必須呈遞具體修復方案，與開發者即時討論並動手修正。
-- **回填閉環**：修復完成後，將審查結論與偏差紀錄同步寫入 [`P07_walkthrough.md`](`__#{module.root://agents-workflow/assets/templates/P07_walkthrough.md}__`) 與 [`changelog.md`](`__#{module.root://agents-workflow/assets/templates/changelog.md}__`)。
+- **回填閉環**：修復完成後，將審查結論與偏差紀錄同步寫入 [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) 與 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)。
 
 ---
 

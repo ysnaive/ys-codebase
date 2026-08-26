@@ -13,11 +13,11 @@ class TestMigrationLadder(unittest.TestCase):
     def setUp(self):
         self.engine = AtomicEngine()
         self.test_mod = "test_mod_mig"
-        self.mig_dir = uri.resolve(f"module.root://{self.test_mod}/scripts/migrations")
+        self.mig_dir = uri.resolve(f"module://{self.test_mod}/scripts/migrations")
         os.makedirs(self.mig_dir, exist_ok=True)
 
     def tearDown(self):
-        mod_uri = f"module.root://{self.test_mod}"
+        mod_uri = f"module://{self.test_mod}"
         if uri.exists(mod_uri):
             uri.rmtree(mod_uri)
 

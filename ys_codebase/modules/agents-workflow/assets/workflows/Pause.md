@@ -8,7 +8,7 @@
 
 ## 🎯 核心目標：零斷層、零疑問
 
-確保未來的自己、接手開發者或新開 Session 的 Agent，**光看計畫目錄下的 [`handoff.md`](`__#{module.root://agents-workflow/assets/templates/handoff.md}__`) 就能在 3 秒內無縫接軌**，不需要耗費大量 Token 重新猜測與探勘程式碼。
+確保未來的自己、接手開發者或新開 Session 的 Agent，**光看計畫目錄下的 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`) 就能在 3 秒內無縫接軌**，不需要耗費大量 Token 重新猜測與探勘程式碼。
 
 ---
 
@@ -20,7 +20,7 @@
 ---
 
 ### 步驟 2：生成暫停交接快照 (`handoff.md`)
-- 依據標準模板 [`handoff.md`](`__#{module.root://agents-workflow/assets/templates/handoff.md}__`)，在該計畫目錄下建立 `handoff.md`：
+- 依據標準模板 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，在該計畫目錄下建立 `handoff.md`：
 
 ```markdown
 # 📌 當前進度與暫停交接現場 (Handoff Context)
@@ -50,8 +50,8 @@
 ---
 
 ### 步驟 3：呈遞交接摘要卡並結束對話
-- 向開發者呈遞簡短的交接摘要卡，標註 [`handoff.md`](`__#{module.root://agents-workflow/assets/templates/handoff.md}__`) 已儲存與下次重啟第 1 步。
-- 提示開發者下次可透過 [接續開發計畫工作流 (Continue)](`__#{module.root://agents-workflow/assets/workflows/Continue.md}__`) 秒級熱重啟。
+- 向開發者呈遞簡短的交接摘要卡，標註 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`) 已儲存與下次重啟第 1 步。
+- 提示開發者下次可透過 [接續開發計畫工作流 (Continue)](`__#{module://agents-workflow/assets/workflows/Continue.md}__`) 秒級熱重啟。
 - **立即 End Turn 等待下次喚醒**。
 
 ---

@@ -133,10 +133,10 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
     # --- 軌道 2: 嘗試 VFS 實體檔案載入 ---
     if loaded_mod is None:
         file_candidates = [
-            f"module.root://{module_name}/{subpath}.py",
-            f"module.root://{module_name}/{mod_pkg}/{subpath}.py",
-            f"module.source.root://{module_name}/{mod_pkg}/{subpath}.py",
-            f"module.source.root://{module_name}/{subpath}.py",
+            f"module://{module_name}/{subpath}.py",
+            f"module://{module_name}/{mod_pkg}/{subpath}.py",
+            f"module.source://{module_name}/{mod_pkg}/{subpath}.py",
+            f"module.source://{module_name}/{subpath}.py",
         ]
         
         # Also check relative to workspace if module is core

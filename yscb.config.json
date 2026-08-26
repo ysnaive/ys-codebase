@@ -4,7 +4,7 @@
   "installed_modules": {
     "core": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-26 15:47:36",
+      "installed_at": "2026-08-26 18:42:10",
       "provider": "./release"
     },
     "dev": {

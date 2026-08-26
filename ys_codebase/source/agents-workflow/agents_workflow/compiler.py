@@ -70,9 +70,9 @@ class ArtifactCompiler:
                 except Exception:
                     pass
             
-            # 若 module.root:// 失敗，自適應嘗試 module.source.root://
-            if path_or_uri.startswith("module.root://"):
-                fallback_src_uri = path_or_uri.replace("module.root://", "module.source.root://", 1)
+            # 若 module:// 失敗，自適應嘗試 module.source://
+            if path_or_uri.startswith("module://"):
+                fallback_src_uri = path_or_uri.replace("module://", "module.source://", 1)
                 if uri.exists(fallback_src_uri):
                     try:
                         return uri.read_text(fallback_src_uri)
@@ -120,7 +120,7 @@ class ArtifactCompiler:
         }
 
         if uri:
-            merged_uri = "cache.root://agents-workflow/contributes.merged.json"
+            merged_uri = "cache://agents-workflow/contributes.merged.json"
             if uri.exists(merged_uri):
                 try:
                     data = uri.read_json(merged_uri)
@@ -133,7 +133,7 @@ class ArtifactCompiler:
 
         # 若 release_target 或 export 依然為空，主動掃描模組根目錄
         if not aggregated["export"] or not aggregated["release_target"]:
-            search_roots = ["module.root://", "module.source.root://"]
+            search_roots = ["module://", "module.source://"]
             seen_modules = set()
 
             for s_root in search_roots:
@@ -289,7 +289,7 @@ class ArtifactCompiler:
         resolved_items = []
         errors = []
 
-        cache_target_root = "cache.root://agents-workflow/resolved_contents"
+        cache_target_root = "cache://@/resolved_contents"
 
         for exp in exports:
             if not isinstance(exp, dict):
@@ -330,7 +330,13 @@ class ArtifactCompiler:
                         written = False
 
                 if not written:
-                    local_cache = os.path.join(self.module_root, ".cache", "resolved_contents", sub_folder, base_name)
+                    if uri:
+                        try:
+                            local_cache = uri.resolve(cache_uri)
+                        except Exception:
+                            local_cache = os.path.join(self.module_root, ".cache", "resolved_contents", sub_folder, base_name)
+                    else:
+                        local_cache = os.path.join(self.module_root, ".cache", "resolved_contents", sub_folder, base_name)
                     os.makedirs(os.path.dirname(local_cache), exist_ok=True)
                     with open(local_cache, "w", encoding="utf-8") as f:
                         f.write(stage1_content)

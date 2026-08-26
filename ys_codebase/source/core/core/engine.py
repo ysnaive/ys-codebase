@@ -80,11 +80,11 @@ class AtomicEngine:
 
     def act_lock(self, operation: str, timeout: float = 10.0) -> None:
         """
-        Acquire inter-process lock on temp://.yscb.lock using OS-level atomic creation (os.O_CREAT | os.O_EXCL).
+        Acquire inter-process lock on cache://.yscb.lock using OS-level atomic creation (os.O_CREAT | os.O_EXCL).
         """
-        lock_uri = "temp://.yscb.lock"
+        lock_uri = "cache://.yscb.lock"
         lock_path = uri.resolve(lock_uri)
-        uri.makedirs("temp://", exist_ok=True)
+        uri.makedirs("cache://", exist_ok=True)
         
         now = time.time()
         if os.path.exists(lock_path):
@@ -108,8 +108,8 @@ class AtomicEngine:
             raise BlockingIOError(f"Another yscb process is currently holding the lock for operation '{operation}'.")
 
     def act_unlock(self, operation: str) -> None:
-        """Release inter-process lock on temp://.yscb.lock."""
-        lock_uri = "temp://.yscb.lock"
+        """Release inter-process lock on cache://.yscb.lock."""
+        lock_uri = "cache://.yscb.lock"
         if uri.exists(lock_uri):
             try:
                 lock_p = uri.resolve(lock_uri)
@@ -120,16 +120,16 @@ class AtomicEngine:
 
     def act_download(self, module_name: str, version: str, provider_url: str) -> str:
         """
-        Downloads/Materializes a specific module version into module.mirror.root://{module_name}/{version}.zip.
-        Enforces 3-Tier Resolution Chain (module.build.root:// -> module.release.root:// -> provider_url).
+        Downloads/Materializes a specific module version into module.mirror://{module_name}/{version}.zip.
+        Enforces 3-Tier Resolution Chain (module.build:// -> module.release:// -> provider_url).
         """
-        dest_mirror_dir = f"module.mirror.root://{module_name}"
+        dest_mirror_dir = f"module.mirror://{module_name}"
         uri.makedirs(dest_mirror_dir)
         dest_zip_uri = f"{dest_mirror_dir}/{version}.zip"
         dest_zip_real = uri.resolve(dest_zip_uri)
 
-        # 1. Tier 1: Check module.build.root:// for single zip
-        build_root = f"module.build.root://{module_name}"
+        # 1. Tier 1: Check module.build:// for single zip
+        build_root = f"module.build://{module_name}"
         v_tuple = semver.parse_semver(version)
         build_ver_str = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
         build_zip_candidates = [
@@ -144,8 +144,8 @@ class AtomicEngine:
                 shutil.copy2(uri.resolve(b_zip), dest_zip_real)
                 return dest_zip_uri
 
-        # 2. Tier 2: Check module.release.root:// or local directory provider
-        rel_root = f"module.release.root://{module_name}"
+        # 2. Tier 2: Check module.release:// or local directory provider
+        rel_root = f"module.release://{module_name}"
         if uri.exists(f"{rel_root}/{version}.zip"):
             shutil.copy2(uri.resolve(f"{rel_root}/{version}.zip"), dest_zip_real)
             return dest_zip_uri
@@ -256,7 +256,7 @@ class AtomicEngine:
         version_constraint: Optional[str]
     ) -> Dict[str, Any]:
         # 1. Tier 1: Check build://
-        build_root_uri = f"module.build.root://{module_name}"
+        build_root_uri = f"module.build://{module_name}"
         if uri.exists(f"{build_root_uri}/index.json"):
             try:
                 b_idx = uri.read_json(f"{build_root_uri}/index.json")
@@ -396,13 +396,13 @@ class AtomicEngine:
         tpl_proj_uri = f"{template_dir_or_uri}/config.project.json"
         tpl_local_uri = f"{template_dir_or_uri}/config.local.json"
 
-        cfg_proj_uri = f"config.root://{module_name}/config.project.json"
-        cfg_local_uri = f"config.root://{module_name}/config.local.json"
+        cfg_proj_uri = f"config://{module_name}/config.project.json"
+        cfg_local_uri = f"config://{module_name}/config.local.json"
 
         if uri.exists(tpl_proj_uri):
             tpl_proj_data = uri.read_json(tpl_proj_uri)
             if not uri.exists(cfg_proj_uri):
-                uri.makedirs(f"config.root://{module_name}", exist_ok=True)
+                uri.makedirs(f"config://{module_name}", exist_ok=True)
                 uri.write_json(cfg_proj_uri, tpl_proj_data)
             else:
                 curr_data = uri.read_json(cfg_proj_uri)
@@ -414,7 +414,7 @@ class AtomicEngine:
         if uri.exists(tpl_local_uri):
             tpl_local_data = uri.read_json(tpl_local_uri)
             if not uri.exists(cfg_local_uri):
-                uri.makedirs(f"config.root://{module_name}", exist_ok=True)
+                uri.makedirs(f"config://{module_name}", exist_ok=True)
                 uri.write_json(cfg_local_uri, tpl_local_data)
             else:
                 curr_data = uri.read_json(cfg_local_uri)
@@ -426,51 +426,50 @@ class AtomicEngine:
     def act_deploy_configs_from_modules(self) -> None:
         """
         Stage 3 (Atomic Config Deployment & Template Purge):
-        Scans all modules in module.root://, infills/deploys configuration to config.root://,
+        Scans all modules in module://, infills/deploys configuration to config://,
         and unconditionally physically deletes config.*.json template files from modules/ to maintain pure code.
         """
-        if not uri.exists("module.root://"):
+        if not uri.exists("module://"):
             return
             
-        for mod in uri.listdir("module.root://"):
-            mod_real = uri.resolve(f"module.root://{mod}")
+        for mod in uri.listdir("module://"):
+            mod_real = uri.resolve(f"module://{mod}")
             if not os.path.isdir(mod_real):
                 continue
 
         cfg_path, host_cfg = self._get_config()
         installed = host_cfg.get("installed_modules", {})
 
-        for mod in uri.listdir("module.root://"):
+        for mod in uri.listdir("module://"):
             if mod not in installed and mod != "core":
                 continue
             
-            mod_runtime_dir = f"module.root://{mod}"
+            mod_runtime_dir = f"module://{mod}"
             if not uri.isdir(mod_runtime_dir):
                 continue
             
-            config_templates = [
-                f for f in uri.listdir(mod_runtime_dir) 
-                if (f.startswith("config.") and f.endswith(".json")) or f == "config.json"
-            ]
-            
-            for tmpl_file in config_templates:
+            for tmpl_file in uri.listdir(mod_runtime_dir):
+                if not (tmpl_file.startswith("config.") and tmpl_file.endswith(".json")):
+                    continue
+
                 tmpl_uri = f"{mod_runtime_dir}/{tmpl_file}"
-                tmpl_data = uri.read_json(tmpl_uri)
-                if not isinstance(tmpl_data, dict):
+                try:
+                    tmpl_data = uri.read_json(tmpl_uri)
+                except Exception:
                     continue
 
                 if tmpl_file == "config.local.json":
-                    target_cfg_uri = f"config.root://{mod}/config.local.json"
+                    target_cfg_uri = f"config://{mod}/config.local.json"
                 elif tmpl_file == "config.project.json":
-                    target_cfg_uri = f"config.root://{mod}/config.project.json"
+                    target_cfg_uri = f"config://{mod}/config.project.json"
                 elif tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
                     sub_name = tmpl_file[len("config."):-len(".local.json")]
-                    target_cfg_uri = f"config.root://{mod}/config.{sub_name}.local.json"
+                    target_cfg_uri = f"config://{mod}/config.{sub_name}.local.json"
                 elif tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
                     sub_name = tmpl_file[len("config."):-len(".project.json")]
-                    target_cfg_uri = f"config.root://{mod}/config.{sub_name}.project.json"
+                    target_cfg_uri = f"config://{mod}/config.{sub_name}.project.json"
                 else:
-                    target_cfg_uri = f"config.root://{mod}/config.project.json"
+                    target_cfg_uri = f"config://{mod}/config.project.json"
 
                 target_data = {}
                 if uri.exists(target_cfg_uri):
@@ -482,10 +481,61 @@ class AtomicEngine:
                 merged_data, changed = self._deep_infill_dict(target_data, tmpl_data)
 
                 if changed or not uri.exists(target_cfg_uri):
-                    uri.makedirs(f"config.root://{mod}", exist_ok=True)
+                    uri.makedirs(f"config://{mod}", exist_ok=True)
                     uri.write_json(target_cfg_uri, merged_data, indent=2)
 
                 uri.remove(tmpl_uri)
+
+    def _clean_module_cache(self, module_name: str) -> None:
+        """
+        物理清空指定模組之快取空間 (cache://{module_name}/)。
+        """
+        cache_uri = f"cache://{module_name}"
+        if uri.exists(cache_uri):
+            try:
+                uri.rmtree(cache_uri)
+            except Exception:
+                pass
+
+    def act_delete(self, module_name: str, clean_mirror: bool = False, purge: bool = False) -> None:
+        """
+        刪除指定模組資產與相關狀態 (生命週期治理)。
+        - 自動清空 cache://{module_name}/
+        - clean_mirror=True: 刪除 module.mirror://{module_name}/
+        - purge=True: 強制物理刪除 storage://{module_name}/ 與 config://{module_name}/
+        """
+        # 1. 自動物理清理快取空間
+        self._clean_module_cache(module_name)
+
+        # 2. 清理本地鏡像庫
+        if clean_mirror:
+            mirror_uri = f"module.mirror://{module_name}"
+            if uri.exists(mirror_uri):
+                uri.rmtree(mirror_uri)
+
+        # 3. 深度清除 (Purge)
+        if purge:
+            # 刪除持久化儲存 (具備目錄邊界防護)
+            storage_uri = f"storage://{module_name}"
+            if uri.exists(storage_uri):
+                try:
+                    p = uri.resolve(storage_uri)
+                    storage_root = uri.resolve("storage://")
+                    if os.path.abspath(p).startswith(os.path.abspath(storage_root) + os.sep):
+                        shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
+
+            # 刪除模組設定檔
+            config_uri = f"config://{module_name}"
+            if uri.exists(config_uri):
+                try:
+                    p = uri.resolve(config_uri)
+                    config_root = uri.resolve("config://")
+                    if os.path.abspath(p).startswith(os.path.abspath(config_root) + os.sep):
+                        shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
 
     def act_reload(self, clean_stage: bool = True, inject_stage: bool = True) -> None:
         """
@@ -496,11 +546,11 @@ class AtomicEngine:
         installed = cfg.get("installed_modules", {})
         default_prov = cfg.get("default_provider", "")
         
-        # Stage 1: 拉取/還原壓縮來源檔 (若 module.mirror.root:// 缺少單檔 zip，自癒補齊)
+        # Stage 1: 拉取/還原壓縮來源檔 (若 module.mirror:// 缺少單檔 zip，自癒補齊)
         for mod, meta in installed.items():
             ver = meta.get("version", "1.0.0.0")
             prov = meta.get("provider") or default_prov
-            mirror_zip = f"module.mirror.root://{mod}/{ver}.zip"
+            mirror_zip = f"module.mirror://{mod}/{ver}.zip"
             if not uri.exists(mirror_zip):
                 try:
                     self.act_download(mod, ver, prov)
@@ -508,15 +558,17 @@ class AtomicEngine:
                     pass
 
         # Stage 2: 解壓並部署至 modules/
-        if clean_stage and uri.exists("module.root://"):
-            for mod in uri.listdir("module.root://"):
+        if clean_stage and uri.exists("module://"):
+            for mod in uri.listdir("module://"):
                 if mod != "core" and mod not in installed:
-                    uri.rmtree(f"module.root://{mod}")
+                    uri.rmtree(f"module://{mod}")
+                    # 卸載殘留清理快取
+                    self._clean_module_cache(mod)
 
         for mod, meta in installed.items():
             ver = meta.get("version", "1.0.0.0")
-            mirror_zip = f"module.mirror.root://{mod}/{ver}.zip"
-            runtime_dst = f"module.root://{mod}/"
+            mirror_zip = f"module.mirror://{mod}/{ver}.zip"
+            runtime_dst = f"module://{mod}/"
             real_dst = uri.resolve(runtime_dst)
             
             if uri.exists(mirror_zip):
@@ -533,8 +585,203 @@ class AtomicEngine:
                                 f"attempts to extract outside destination '{real_dst}'."
                             )
                     zf.extractall(real_dst)
-            elif uri.exists(f"module.mirror.root://{mod}/{ver}/"):
-                mirror_src = f"module.mirror.root://{mod}/{ver}/"
+            elif uri.exists(f"module.mirror://{mod}/{ver}/"):
+                mirror_src = f"module.mirror://{mod}/{ver}/"
+                if os.path.exists(real_dst):
+                    shutil.rmtree(real_dst, ignore_errors=True)
+                uri.copy(mirror_src, runtime_dst)
+
+        # Stage 3: 掃描並部署組態 (原子提取並無條件清除模板)
+        self.act_deploy_configs_from_modules()
+
+        if uri.exists(tpl_proj_uri):
+            tpl_proj_data = uri.read_json(tpl_proj_uri)
+            if not uri.exists(cfg_proj_uri):
+                uri.makedirs(f"config://{module_name}", exist_ok=True)
+                uri.write_json(cfg_proj_uri, tpl_proj_data)
+            else:
+                curr_data = uri.read_json(cfg_proj_uri)
+                if isinstance(curr_data, dict) and isinstance(tpl_proj_data, dict):
+                    infilled_data, changed = self._deep_infill_dict(curr_data, tpl_proj_data)
+                    if changed:
+                        uri.write_json(cfg_proj_uri, infilled_data)
+
+        if uri.exists(tpl_local_uri):
+            tpl_local_data = uri.read_json(tpl_local_uri)
+            if not uri.exists(cfg_local_uri):
+                uri.makedirs(f"config://{module_name}", exist_ok=True)
+                uri.write_json(cfg_local_uri, tpl_local_data)
+            else:
+                curr_data = uri.read_json(cfg_local_uri)
+                if isinstance(curr_data, dict) and isinstance(tpl_local_data, dict):
+                    infilled_data, changed = self._deep_infill_dict(curr_data, tpl_local_data)
+                    if changed:
+                        uri.write_json(cfg_local_uri, infilled_data)
+
+    def act_deploy_configs_from_modules(self) -> None:
+        """
+        Stage 3 (Atomic Config Deployment & Template Purge):
+        Scans all modules in module://, infills/deploys configuration to config://,
+        and unconditionally physically deletes config.*.json template files from modules/ to maintain pure code.
+        """
+        if not uri.exists("module://"):
+            return
+            
+        for mod in uri.listdir("module://"):
+            mod_real = uri.resolve(f"module://{mod}")
+            if not os.path.isdir(mod_real):
+                continue
+
+        cfg_path, host_cfg = self._get_config()
+        installed = host_cfg.get("installed_modules", {})
+
+        for mod in uri.listdir("module://"):
+            if mod not in installed and mod != "core":
+                continue
+            
+            mod_runtime_dir = f"module://{mod}"
+            if not uri.isdir(mod_runtime_dir):
+                continue
+            
+            for tmpl_file in uri.listdir(mod_runtime_dir):
+                if not (tmpl_file.startswith("config.") and tmpl_file.endswith(".json")):
+                    continue
+
+                tmpl_uri = f"{mod_runtime_dir}/{tmpl_file}"
+                try:
+                    tmpl_data = uri.read_json(tmpl_uri)
+                except Exception:
+                    continue
+
+                if tmpl_file == "config.local.json":
+                    target_cfg_uri = f"config://{mod}/config.local.json"
+                elif tmpl_file == "config.project.json":
+                    target_cfg_uri = f"config://{mod}/config.project.json"
+                elif tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
+                    sub_name = tmpl_file[len("config."):-len(".local.json")]
+                    target_cfg_uri = f"config://{mod}/config.{sub_name}.local.json"
+                elif tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
+                    sub_name = tmpl_file[len("config."):-len(".project.json")]
+                    target_cfg_uri = f"config://{mod}/config.{sub_name}.project.json"
+                else:
+                    target_cfg_uri = f"config://{mod}/config.project.json"
+
+                target_data = {}
+                if uri.exists(target_cfg_uri):
+                    try:
+                        target_data = uri.read_json(target_cfg_uri)
+                    except Exception:
+                        target_data = {}
+
+                merged_data, changed = self._deep_infill_dict(target_data, tmpl_data)
+
+                if changed or not uri.exists(target_cfg_uri):
+                    uri.makedirs(f"config://{mod}", exist_ok=True)
+                    uri.write_json(target_cfg_uri, merged_data, indent=2)
+
+                uri.remove(tmpl_uri)
+
+    def _clean_module_cache(self, module_name: str) -> None:
+        """
+        物理清空指定模組之快取空間 (cache://{module_name}/)。
+        """
+        cache_uri = f"cache://{module_name}"
+        if uri.exists(cache_uri):
+            try:
+                uri.rmtree(cache_uri)
+            except Exception:
+                pass
+
+    def act_delete(self, module_name: str, clean_mirror: bool = False, purge: bool = False) -> None:
+        """
+        刪除指定模組資產與相關狀態 (生命週期治理)。
+        - 自動清空 cache://{module_name}/
+        - clean_mirror=True: 刪除 module.mirror://{module_name}/
+        - purge=True: 強制物理刪除 storage://{module_name}/ 與 config://{module_name}/
+        """
+        # 1. 自動物理清理快取空間
+        self._clean_module_cache(module_name)
+
+        # 2. 清理本地鏡像庫
+        if clean_mirror:
+            mirror_uri = f"module.mirror://{module_name}"
+            if uri.exists(mirror_uri):
+                uri.rmtree(mirror_uri)
+
+        # 3. 深度清除 (Purge)
+        if purge:
+            # 刪除持久化儲存 (具備目錄邊界防護)
+            storage_uri = f"storage://{module_name}"
+            if uri.exists(storage_uri):
+                try:
+                    p = uri.resolve(storage_uri)
+                    storage_root = uri.resolve("storage://")
+                    if os.path.abspath(p).startswith(os.path.abspath(storage_root) + os.sep):
+                        shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
+
+            # 刪除模組設定檔
+            config_uri = f"config://{module_name}"
+            if uri.exists(config_uri):
+                try:
+                    p = uri.resolve(config_uri)
+                    config_root = uri.resolve("config://")
+                    if os.path.abspath(p).startswith(os.path.abspath(config_root) + os.sep):
+                        shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
+
+    def act_reload(self, clean_stage: bool = True, inject_stage: bool = True) -> None:
+        """
+        4-Stage Atomic Reload Pipeline:
+        Stage 1 (自癒拉取) -> Stage 2 (解壓物化) -> Stage 3 (組態治理) -> Stage 4 (依賴注入與事件廣播)
+        """
+        cfg_path, cfg = self._get_config()
+        installed = cfg.get("installed_modules", {})
+        default_prov = cfg.get("default_provider", "")
+        
+        # Stage 1: 拉取/還原壓縮來源檔 (若 module.mirror:// 缺少單檔 zip，自癒補齊)
+        for mod, meta in installed.items():
+            ver = meta.get("version", "1.0.0.0")
+            prov = meta.get("provider") or default_prov
+            mirror_zip = f"module.mirror://{mod}/{ver}.zip"
+            if not uri.exists(mirror_zip):
+                try:
+                    self.act_download(mod, ver, prov)
+                except Exception:
+                    pass
+
+        # Stage 2: 解壓並部署至 modules/
+        if clean_stage and uri.exists("module://"):
+            for mod in uri.listdir("module://"):
+                if mod != "core" and mod not in installed:
+                    uri.rmtree(f"module://{mod}")
+                    # 卸載殘留清理快取
+                    self._clean_module_cache(mod)
+
+        for mod, meta in installed.items():
+            ver = meta.get("version", "1.0.0.0")
+            mirror_zip = f"module.mirror://{mod}/{ver}.zip"
+            runtime_dst = f"module://{mod}/"
+            real_dst = uri.resolve(runtime_dst)
+            
+            if uri.exists(mirror_zip):
+                real_zip = uri.resolve(mirror_zip)
+                if os.path.exists(real_dst):
+                    shutil.rmtree(real_dst, ignore_errors=True)
+                with zipfile.ZipFile(real_zip, "r") as zf:
+                    real_dst_abs = os.path.abspath(real_dst)
+                    for member in zf.infolist():
+                        target_path = os.path.abspath(os.path.join(real_dst_abs, member.filename))
+                        if not target_path.startswith(real_dst_abs + os.sep) and target_path != real_dst_abs:
+                            raise RuntimeError(
+                                f"Zip Slip vulnerability detected: '{member.filename}' in mirror '{mirror_zip}' "
+                                f"attempts to extract outside destination '{real_dst}'."
+                            )
+                    zf.extractall(real_dst)
+            elif uri.exists(f"module.mirror://{mod}/{ver}/"):
+                mirror_src = f"module.mirror://{mod}/{ver}/"
                 if os.path.exists(real_dst):
                     shutil.rmtree(real_dst, ignore_errors=True)
                 uri.copy(mirror_src, runtime_dst)
@@ -551,9 +798,9 @@ class AtomicEngine:
         """
         Creates a full atomic snapshot:
         1. Backs up yscb.config.json.
-        2. Backs up config.root:// (config/).
-        3. Backs up storage.root:// (storage/).
-        4. Backs up module.root:// (modules/).
+        2. Backs up config:// (config/).
+        3. Backs up storage:// (storage/).
+        4. Backs up module:// (modules/).
         """
         host_dir, _ = uri._get_host_config()
         host_cfg = os.path.join(host_dir, "yscb.config.json")
@@ -566,16 +813,16 @@ class AtomicEngine:
             uri.copy(host_cfg, f"{snap_dir}/yscb.config.json")
             
         # 2. config/
-        if uri.exists("config.root://"):
-            uri.copy("config.root://", f"{snap_dir}/config/")
+        if uri.exists("config://"):
+            uri.copy("config://", f"{snap_dir}/config/")
             
         # 3. storage/
-        if uri.exists("storage.root://"):
-            uri.copy("storage.root://", f"{snap_dir}/storage/")
+        if uri.exists("storage://"):
+            uri.copy("storage://", f"{snap_dir}/storage/")
             
         # 4. modules/
-        if uri.exists("module.root://"):
-            uri.copy("module.root://", f"{snap_dir}/modules/")
+        if uri.exists("module://"):
+            uri.copy("module://", f"{snap_dir}/modules/")
             
         return snapshot_id
 
@@ -600,23 +847,23 @@ class AtomicEngine:
         # 2. Restore config/
         snap_config_dir = f"{snap_dir}/config"
         if uri.exists(snap_config_dir):
-            if uri.exists("config.root://"):
-                uri.rmtree("config.root://")
-            uri.copy(snap_config_dir, "config.root://")
+            if uri.exists("config://"):
+                uri.rmtree("config://")
+            uri.copy(snap_config_dir, "config://")
             
         # 3. Restore storage/
         snap_storage_dir = f"{snap_dir}/storage"
         if uri.exists(snap_storage_dir):
-            if uri.exists("storage.root://"):
-                uri.rmtree("storage.root://")
-            uri.copy(snap_storage_dir, "storage.root://")
+            if uri.exists("storage://"):
+                uri.rmtree("storage://")
+            uri.copy(snap_storage_dir, "storage://")
             
         # 4. Restore modules/
         snap_mod_dir = f"{snap_dir}/modules"
         if uri.exists(snap_mod_dir):
-            if uri.exists("module.root://"):
-                uri.rmtree("module.root://")
-            uri.copy(snap_mod_dir, "module.root://")
+            if uri.exists("module://"):
+                uri.rmtree("module://")
+            uri.copy(snap_mod_dir, "module://")
 
         self.act_reload(clean_stage=False, inject_stage=True)
 
@@ -650,7 +897,7 @@ class AtomicEngine:
         # Step through minor ladder (e.g. 1.0 -> 1.3 calls 1.1.x, 1.2.x, 1.3.x)
         for m in range(t_old.minor + 1, t_new.minor + 1):
             script_rel = f"scripts/migrations/{t_old.major}.{m}.x.py"
-            mod_script_uri = f"module.root://{module_name}/{script_rel}"
+            mod_script_uri = f"module://{module_name}/{script_rel}"
             
             if uri.exists(mod_script_uri):
                 script_real = uri.resolve(mod_script_uri)
@@ -677,12 +924,12 @@ class AtomicEngine:
         context: Optional[ExecutionContext] = None
     ) -> Dict[str, Any]:
         results = {}
-        if not uri.exists("module.root://"):
+        if not uri.exists("module://"):
             return results
             
         ctx = context or ExecutionContext(emit_module, event_name, [])
-        for mod in uri.listdir("module.root://"):
-            hook_file_uri = f"module.root://{mod}/scripts/hook.{emit_module}.py"
+        for mod in uri.listdir("module://"):
+            hook_file_uri = f"module://{mod}/scripts/hook.{emit_module}.py"
             if uri.exists(hook_file_uri):
                 hook_real_path = uri.resolve(hook_file_uri)
                 mod_key = f"_yscb_hook_{mod}_{emit_module}"
@@ -692,11 +939,10 @@ class AtomicEngine:
                         hook_mod = importlib.util.module_from_spec(spec)
                         sys.modules[mod_key] = hook_mod
                         spec.loader.exec_module(hook_mod)
-                        if hasattr(hook_mod, event_name):
-                            handler_fn = getattr(hook_mod, event_name)
-                            if callable(handler_fn):
-                                handler_fn(ctx)
-                                results[mod] = "success"
+                        hook_func = getattr(hook_mod, "on_event", None) or getattr(hook_mod, event_name, None)
+                        if callable(hook_func):
+                            h_res = hook_func(ctx)
+                            results[mod] = h_res if h_res is not None else "success"
                 except Exception as e:
                     results[mod] = f"warning: {e}"
                     print(f"[core:events] Warning: Hook '{mod}:hook.{emit_module}.py' failed on '{event_name}': {e}", file=sys.stderr)
@@ -704,17 +950,17 @@ class AtomicEngine:
 
     def act_get_installed_commands_summary(self) -> Dict[str, Dict[str, str]]:
         """
-        Scans installed modules in module.root:// to summarize contributed CLI commands.
+        Scans installed modules in module:// to summarize contributed CLI commands.
         Returns: { module_name: { command_name: description } }
         """
         summary: Dict[str, Dict[str, str]] = {}
-        if not uri.exists("module.root://"):
+        if not uri.exists("module://"):
             return summary
             
-        for mod_name in sorted(uri.listdir("module.root://")):
+        for mod_name in sorted(uri.listdir("module://")):
             if mod_name == "core":
                 continue
-            mf_uri = f"module.root://{mod_name}/manifest.json"
+            mf_uri = f"module://{mod_name}/manifest.json"
             if not uri.exists(mf_uri):
                 continue
             try:
