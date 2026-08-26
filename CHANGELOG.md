@@ -27,6 +27,18 @@
 
 ## 2026_08_26_1747_core_dev_refinement
 
+- **Dev 模組發布強制覆蓋模式與 release-git 智慧略過 (`sub_03_dev_release_force_override`)**：
+  - **發布強制覆蓋模式 (`--force` / `-f`)**：
+    - 為 `dev release`、`dev release-check` 與 `dev release-git` 擴充 `--force` 旗標支援。
+    - 剛打包發布發現文檔/註解小瑕疵時，允許原地覆蓋同名 `<ver>.zip` 產物並同步更新 `release/<mod>/index.json`，免被迫 bump revision 造成版本膨脹。
+    - **Gate 2 / Gate 3 放行邊界**：`force=True` 時放行 Gate 2 覆蓋與 Gate 3 同版本（`target == highest`）修訂；但若版本小於歷史舊版本（`target < highest`），依然嚴格拋出 `VersionRollbackError` 阻斷。
+  - **`dev release-git` 智慧感應機制**：
+    - 自動感應目標版本是否已在庫：尚未發布則打包，已發布且無 force 自動略過打包步驟直接接續 Local Git Commit & Tag，已發布且傳入 force 則強制重新打包覆蓋並更新 tag。
+  - **全量測試與回歸驗證**：
+    - 模組單元測試 29/29 100% Passed。
+    - 全系統端到端沙盒測試 113/113 100% Ready。
+    - 交付 `docs/dev/README.md` 與 `docs/dev/user_guide.md`。
+
 - **Dev 模組發布與驗證工具鏈重構 (`sub_02_dev_release_verification_refactor`)**：
   - **建置與純淨發布職責分離 (`Builder` & `Releaser`)**：
     - `dev build`：移除 `--clean` 選項（打包前一律自動物理清空目標 `build/<mod>/` 目錄），100% 完整保留 `tests/` 與開發檔案，產出 `<ver>.build.zip` 並更新 `build/<mod>/index.json`。

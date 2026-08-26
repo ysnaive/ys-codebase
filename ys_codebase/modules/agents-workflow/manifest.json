@@ -1,6 +1,6 @@
 {
   "name": "agents-workflow",
-  "version": "0.1.0.build",
+  "version": "0.1.0",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
