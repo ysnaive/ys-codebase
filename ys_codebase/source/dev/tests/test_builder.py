@@ -12,11 +12,19 @@ class TestDevBuilder(YSCBTestCase):
         super().setUp()
         self.builder = Builder()
 
+    def _get_build_tag(self, module_name: str) -> str:
+        """動態解算目標模組之 build tag (例如 1.0.1.build)。"""
+        m_data = uri.read_json(f"module.source://{module_name}/manifest.json")
+        ver = m_data.get("version", "1.0.0.0")
+        triplet = ver.rsplit(".", 1)[0] if ver.count(".") == 3 else ver
+        return f"{triplet}.build", ver
+
     def test_clean_build_core(self):
-        """Verify dev build of 'core' outputs to 1.0.0.build.zip and retains tests/."""
+        """Verify dev build of 'core' outputs to <ver>.build.zip and retains tests/."""
+        build_tag, _ = self._get_build_tag("core")
         passed, msg = self.builder.build_module("core", clean=True)
         self.assertTrue(passed, f"Build core failed: {msg}")
-        zip_uri = "module.build://core/1.0.0.build.zip"
+        zip_uri = f"module.build://core/{build_tag}.zip"
         self.assertTrue(uri.exists(zip_uri))
         
         # Verify zip contents
@@ -30,15 +38,16 @@ class TestDevBuilder(YSCBTestCase):
         self.mark_passed()
 
     def test_clean_build_dev(self):
-        """Verify dev build of 'dev' outputs 1.0.0.build.zip and package_release excludes tests/."""
+        """Verify dev build of 'dev' outputs <ver>.build.zip and package_release excludes tests/."""
+        build_tag, ver = self._get_build_tag("dev")
         passed, msg = self.builder.build_module("dev", clean=True)
         self.assertTrue(passed, f"Build dev failed: {msg}")
-        self.assertTrue(uri.exists("module.build://dev/1.0.0.build.zip"))
+        self.assertTrue(uri.exists(f"module.build://dev/{build_tag}.zip"))
         
         # Release packager must exclude tests/
-        ok_rel, msg_rel = self.builder.package_release("dev", "1.0.0.0")
+        ok_rel, msg_rel = self.builder.package_release("dev", ver)
         self.assertTrue(ok_rel, f"Release packager failed: {msg_rel}")
-        rel_zip_uri = "module.release://dev/1.0.0.0.zip"
+        rel_zip_uri = f"module.release://dev/{ver}.zip"
         self.assertTrue(uri.exists(rel_zip_uri))
         
         real_rel_zip = uri.resolve(rel_zip_uri)
@@ -85,6 +94,7 @@ class TestDevBuilder(YSCBTestCase):
 
     def test_builder_generates_and_updates_index_json(self):
         """Verify builder automatically creates and updates build/{module}/index.json (FT-04)."""
+        build_tag, _ = self._get_build_tag("core")
         passed, msg = self.builder.build_module("core", clean=True)
         self.assertTrue(passed)
         
@@ -92,5 +102,5 @@ class TestDevBuilder(YSCBTestCase):
         self.assertTrue(uri.exists(index_uri))
         index_data = uri.read_json(index_uri)
         self.assertEqual(index_data.get("name"), "core")
-        self.assertIn("1.0.0.build", index_data.get("versions", []))
+        self.assertIn(build_tag, index_data.get("versions", []))
         self.mark_passed()
