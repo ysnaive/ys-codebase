@@ -4,6 +4,28 @@
 
 ## 2026_08_26_1747_core_dev_refinement
 
+- **Dev 模組發布與驗證工具鏈重構 (`sub_02_dev_release_verification_refactor`)**：
+  - **建置與純淨發布職責分離 (`Builder` & `Releaser`)**：
+    - `dev build`：移除 `--clean` 選項（打包前一律自動物理清空目標 `build/<mod>/` 目錄），100% 完整保留 `tests/` 與開發檔案，產出 `<ver>.build.zip` 並更新 `build/<mod>/index.json`。
+    - `dev release`：重構為純淨打包器（嚴格排除 `tests/` 與 `.yscbignore`），產出 `release/<mod>/<ver>.zip`；移除舊版冗餘的 bump 選項，與 `build` 對標極簡簽名。
+  - **發布產物時序滑動窗口與跨三元組收斂演算法 (`3-Revision Retention Policy`)**：
+    - 同三元組 `X.Y.Z` 依時序保留至多 3 份最新 Revision zip，第 4 份及更早者自動物理淘汰。
+    - 跨三元組升級時，所有歷史舊三元組自動收斂僅保留最後最高 1 份 Revision zip，徹底消除歷史殘留。
+    - 以磁碟真實存在的 zip 檔案為唯一事實來源 (SSOT) 同步生成 `release/<mod>/index.json`，已被物理刪除的舊 Revision 自動自清冊排除。
+  - **3-Gate 發布品質守門閘門 (`3-Gate Verification`)**：
+    - Gate 1 (靜態合規性)：Manifest 格式完整性與 `scripts/cli.py` 語法/進入點存在性。
+    - Gate 2 (版本不可變性 - Immutability)：檢查四元版本庫是否已存在同名 zip，重複發布拋出 `ReleaseVersionExistsError` 阻斷。
+    - Gate 3 (版本單調遞增 - Monotonicity)：待發布版本號必須嚴格大於同三元組在庫最高 revision，防止倒退，拋出 `VersionRollbackError` 阻斷。
+  - **版本遞增、預檢與安全流水線 CLI 工具鏈 (`scripts/cli.py`)**：
+    - 實作 `dev bump-[major|minor|patch|revision] <mod>`：單向遞增模組 `manifest.json` 版本號。
+    - 實作 `dev release-check <mod>`：獨立執行 3-Gate 發布就緒預檢（明確阻斷 `--all`）。
+    - 實作 `dev release-git <mod> "<msg>"`：依序執行 `test` ➔ `release-check` ➔ `release` ➔ 本地 `git commit & tag`（🚨 嚴禁遠端 push）。
+  - **測試流水線前置自動建置 (`Tester`)**：
+    - `dev test` 預設自動前置執行 `dev build`，構建失敗立即阻斷；支援 `--no-build` 旗標跳過前置打包直接跑測。
+  - **全量測試與回歸驗證**：
+    - 新增專用測試套件 `test/test_dev_toolchain_refactor.py` (15/15 Passed)。
+    - 全系統沙盒端到端測試 109/109 全數通過 (100% Ready)。
+
 - **模組資料管理相關 URI 協議釐清與遷移 (`sub_01_module_data_uri_refactor`)**：
   - **方案 B：全量 Root 化與 `@/` 自省語法模型 (`core.uri`)**：
     - 徹底廢除全系統所有 `*.root://` 協議（`storage.root`, `cache.root`, `config.root`, `module.root`, `module.source.root`, `module.build.root`, `module.release.root`, `module.mirror.root`）與 `temp://` 協議，協議庫精簡 50%，確立 8 大清晰正交標準協議。

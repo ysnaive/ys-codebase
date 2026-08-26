@@ -50,23 +50,37 @@ class TestDevBuilder(YSCBTestCase):
         self.mark_passed()
 
     def test_revision_purge_deletes_old_zip(self):
-        """FT-03: Verify releasing same X.Y.Z new revision purges older .zip file."""
-        # Package 1.0.0.1
-        ok1, msg1 = self.builder.package_release("dev", "1.0.0.1")
-        self.assertTrue(ok1, f"Package 1.0.0.1 failed: {msg1}")
-        zip_1 = uri.resolve("module.release://dev/1.0.0.1.zip")
-        self.assertTrue(os.path.isfile(zip_1))
+        """FT-03: Verify 3-Revision sliding window and cross-triplet convergence."""
+        # Package 1.0.0.1, 1.0.0.2, 1.0.0.3
+        self.builder.package_release("dev", "1.0.0.1")
+        self.builder.package_release("dev", "1.0.0.2")
+        self.builder.package_release("dev", "1.0.0.3")
         
-        # Package 1.0.0.2 -> must purge 1.0.0.1.zip
-        ok2, msg2 = self.builder.package_release("dev", "1.0.0.2")
-        self.assertTrue(ok2, f"Package 1.0.0.2 failed: {msg2}")
+        zip_1 = uri.resolve("module.release://dev/1.0.0.1.zip")
         zip_2 = uri.resolve("module.release://dev/1.0.0.2.zip")
+        zip_3 = uri.resolve("module.release://dev/1.0.0.3.zip")
+        self.assertTrue(os.path.isfile(zip_1))
         self.assertTrue(os.path.isfile(zip_2))
+        self.assertTrue(os.path.isfile(zip_3))
+        
+        # Package 1.0.0.4 -> 4th revision in same triplet -> 1.0.0.1 must be purged
+        ok4, msg4 = self.builder.package_release("dev", "1.0.0.4")
+        self.assertTrue(ok4, f"Package 1.0.0.4 failed: {msg4}")
+        zip_4 = uri.resolve("module.release://dev/1.0.0.4.zip")
+        self.assertTrue(os.path.isfile(zip_4))
         self.assertFalse(os.path.isfile(zip_1))
+        self.assertTrue(os.path.isfile(zip_2))
+        self.assertTrue(os.path.isfile(zip_3))
+        
+        # Package 1.0.1.0 -> cross-triplet upgrade -> legacy 1.0.0 only retains 1.0.0.4
+        self.builder.package_release("dev", "1.0.1.0")
+        self.assertFalse(os.path.isfile(zip_2))
+        self.assertFalse(os.path.isfile(zip_3))
+        self.assertTrue(os.path.isfile(zip_4))
+        self.assertTrue(os.path.isfile(uri.resolve("module.release://dev/1.0.1.0.zip")))
         
         idx = uri.read_json("module.release://dev/index.json")
-        self.assertIn("1.0.0.2", idx.get("versions", []))
-        self.assertNotIn("1.0.0.1", idx.get("versions", []))
+        self.assertEqual(idx.get("versions", []), ["1.0.0.4", "1.0.1.0"])
         self.mark_passed()
 
     def test_builder_generates_and_updates_index_json(self):

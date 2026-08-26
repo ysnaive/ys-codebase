@@ -1,12 +1,12 @@
-# Dev 開發者工具鏈架構手冊 (Developer Toolchain Overview)
+# Dev 開發者工具鏈概覽手冊 (Developer Toolchain Overview)
 
 > 模組名稱：`dev`  
 > 模組版本：`1.0.0`  
-> 職責定位：YS-Codebase 官方開發者工具箱（模組腳手架、靜態合規檢查、純淨套件打包、單元/契約測試引擎）。
+> 職責定位：YS-Codebase 官方開發者工具箱（模組腳手架、靜態合規檢查、開發與純淨發布套件打包、時序滑動窗口產物治理、端到端沙盒測試引擎與安全版本發布流水線）。
 
 ---
 
-## 1. Dev 工具鏈架構 (Toolchain Architecture)
+## 1. Dev 工具鏈五大核心引擎
 
 ```mermaid
 graph TD
@@ -15,59 +15,34 @@ graph TD
     subgraph DevModule ["Dev 開發者模組 (module:dev)"]
         Scaffold["模組腳手架<br/><code>dev.scaffold</code><br/><i>標準模板一鍵生成</i>"]:::sub
         Checker["靜態合規檢查器<br/><code>dev.checker</code><br/><i>Manifest / CLI / 空間合規</i>"]:::sub
-        Builder["純淨打包建置器<br/><code>dev.builder</code><br/><i>排除 tests 與 .yscbignore</i>"]:::sub
-        Tester["測試引擎<br/><code>dev.tester</code><br/><i>沙盒測試與 Auto-Contract</i>"]:::sub
+        Builder["建置與打包引擎<br/><code>dev.builder</code><br/><i>自動 clean / 3-Revision 滑動窗口治理</i>"]:::sub
+        Tester["測試調度引擎<br/><code>dev.tester</code><br/><i>自動前置 build / 虛擬沙盒跑測</i>"]:::sub
+        Releaser["發布調度引擎<br/><code>dev.releaser</code><br/><i>3-Gate 守門 / DAG 拓撲 / release-git 流水線</i>"]:::sub
     end
 ```
 
 ---
 
-## 2. CLI 指令手冊
+## 2. CLI 指令矩陣快速索引
 
-### 2.1 建立新模組 (`dev create`)
-```bash
-# 在 source/ 目錄下一鍵生成符合規範的模組骨架
-python yscb.py dev create <module_name> [--description="..."]
-```
-- 自動生成檔案：`manifest.json`、`scripts/cli.py`、`{module}/__init__.py`、`.yscbignore`、`tests/test_basic.py`。
+| 指令群組 | 指令語法 | 核心職責說明 |
+| :--- | :--- | :--- |
+| **模組建立** | `python yscb.py dev create <name> [--desc="..."]` | 一鍵生成標準模組骨架與設定 |
+| **合規檢查** | `python yscb.py dev check [name \| --all]` | 驗證 `manifest.json`、`scripts/cli.py` 語法與規範 |
+| **開發建置** | `python yscb.py dev build [name \| --all]` | 自動清空目標目錄，打包 `<ver>.build.zip`（保留 `tests/`） |
+| **版本管理** | `python yscb.py dev bump-[major\|minor\|patch\|revision] <name>` | 對模組 `manifest.json` 版本號進行單向遞增 |
+| **發布預檢** | `python yscb.py dev release-check <name>` | 獨立執行 3-Gate 發布就緒校驗（合規、未重複、未倒退，拒絕 `--all`） |
+| **純淨發布** | `python yscb.py dev release [name \| --all]` | 通過 3-Gate 後純淨打包（排除 `tests/` 與 `.yscbignore`），實施 3-Revision 滑動窗口淘汰 |
+| **安全發布** | `python yscb.py dev release-git <name> "<msg>"` | 依序執行 test ➔ release-check ➔ release ➔ 本地 git commit & tag（🚨 嚴禁 remote push） |
+| **沙盒測試** | `python yscb.py dev test [name \| --all] [--no-build] [opts]` | 自動前置 build ➔ 配置沙盒 ➔ 跑測 ➔ 銷毀環境 |
+| **原子操作** | `python yscb.py dev op-mksb [--dir=<path>]` | 手動建立微型虛擬沙盒（除錯用） |
+| **原子操作** | `python yscb.py dev op-test [name \| --all] [opts]` | 原地執行單元測試（無沙盒） |
 
-### 2.2 靜態合規檢查 (`dev check`)
-```bash
-# 檢查單一模組
-python yscb.py dev check <module_name>
+---
 
-# 檢查 source/ 下所有模組
-python yscb.py dev check --all
-```
-- 驗證清單：
-  1. `manifest.json` 是否存在且符合 SemVer 規範；
-  2. `scripts/cli.py` 是否存在、具備 `main(argv)` 函式且 Python 語法無錯誤；
-  3. `.yscbignore` 是否存在。
+## 3. 模組文件導航
 
-### 2.3 純淨套件打包 (`dev build`)
-```bash
-# 打包單一模組至 build/<module>/<version>/
-python yscb.py dev build <module_name> [--clean]
-
-# 打包 source/ 下所有模組
-python yscb.py dev build --all [--clean]
-```
-- 打包行為：
-  1. 自動排除 `tests/`、`__pycache__/` 與 `.yscbignore` 中定義之模式；
-  2. 在輸出之 `manifest.json` 自動打上 `built_at` ISO 時間戳記；
-  3. 自動掃描並更新 `build/{module}/index.json` 版本清冊（`name`, `description`, `versions: [...]` SemVer 升序排列），供遠端或本地 Provider 清單檢索與相依求解。
-
-### 2.4 執行測試與沙盒操作 (`dev test` / `dev op-mksb` / `dev op-test`)
-```bash
-# 【高階端到端】自動建立沙盒 ➔ 執行測試 ➔ 自動銷毀
-python yscb.py dev test --all --verbose
-python yscb.py dev test <module_name>
-python yscb.py dev test --all --contract-only
-
-# 【原子操作：環境工廠】手動建立微型虛擬沙盒（供互動除錯）
-python yscb.py dev op-mksb [--dir=<custom_path>]
-
-# 【原子操作：原地執行】在當前環境原地執行單元測試（零沙盒、零遞迴）
-python yscb.py dev op-test [module_name | --all] [--type=<logic|host_cli|network>] [-k <pattern>]
-```
-
+- [架構規格手冊 (architecture.md)](./architecture.md)：五層分層架構、3-Gate 守門模型與 3-Revision 滑動窗口演算法。
+- [完整使用手冊 (user_guide.md)](./user_guide.md)：CLI 指令詳細用法、參數說明與範例。
+- [發布產物治理專題手冊 (topics/release_governance.md)](./topics/release_governance.md)：時序滑動窗口原理、跨三元組收斂、實體 SSOT 索引機制。
+- [沙盒測試指南 (testing_guide.md)](./testing_guide.md)：沙盒架構、測試發現與契約測試規範。
