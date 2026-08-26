@@ -18,7 +18,6 @@ Phase 3 執行指引：
 > 狀態：[Draft | Confirmed | Completed]  
 
 
-
 > 模板版本：v1.2  
 
 ---

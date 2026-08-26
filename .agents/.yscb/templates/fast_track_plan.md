@@ -18,7 +18,6 @@ Fast Track 執行指引：
 > 狀態：[Draft | Confirmed | Completed]  
 
 
-
 > 計畫類型：Level 0 Fast Track  
 > 模板版本：v1.1  
 

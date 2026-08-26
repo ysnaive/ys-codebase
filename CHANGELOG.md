@@ -18,10 +18,22 @@
   - **工作流導航修復與編譯器轉譯增強**：
     - `ContextInit.md` 步驟 2 導航導向 `DevelopmentStandards.md` 與 `AgentsCliGuild.md`。
     - `compiler.py` 增強 `URI_REF_REGEX`，支援在 Markdown 超連結括號內直接使用 `__#{module://...}__` 並轉譯為各 Target 相對超連結。
+  - **衍生子計畫 sub_01: 專案相對路徑協議佔位符 `__${uri}__` 與三大佔位符體系明確化**：
+    - **三大佔位符體系語意與編譯器擴充**：
+      - `__@{token}__`（文件內容佔位符）：Stage 1 內容狀態機遞迴展開。
+      - `__#{uri}__`（自身相對路徑佔位符）：Stage 2 依產物 Markdown 自身所在目錄解算相對路徑（超連結）。
+      - `__${uri}__`（專案相對路徑佔位符）：Stage 2 依專案根目錄 (`project://`) 解算相對路徑（Shell 指令與專案路徑參照）。
+    - **強制反引號包裹與穿插展開語意**：
+      - 佔位符必須包裹於代碼塊（`` `...` ``）內，支援內部穿插前後文字（如 `` `python __${yscb.host://yscb.py}__ run` `` ➔ `` `python yscb.py run` ``），保留外層反引號。
+      - 裸佔位符阻斷不展開，並輸出 `[compiler:warning]` 警示提示。
+    - **跨目錄拓撲 100% 自適應**：
+      - 更新 `ContextInit.md` 步驟 4 指令套用 `__${yscb.host://yscb.py}__`，達成無論起手腳本在根目錄或子目錄均能無縫自適應展開。
+    - **全系統回歸驗證**：
+      - 全系統跑測 `python yscb.py dev test --all` 達成 **125/125 Passed (100% Ready)**。
   - **測試沙盒隔離漏洞修復**：
     - 修復 `test_robustness.py` 中缺少 `_get_yscb_root` mock 的沙盒外溢問題，達成 100% 虛擬目錄拘束隔離。
   - **全系統回歸與交付**：
-    - 全系統沙盒跑測 `python yscb.py dev test --all` 通過 122/122 測試 (100% Ready)。
+    - 全系統沙盒跑測 `python yscb.py dev test --all` 通過 125/125 測試 (100% Ready)。
     - 完成 `contributes.format.md`、`docs/agents-workflow/user_guide.md` 與 `docs/dev/user_guide.md` 知識庫文檔交付。
 
 ## 2026_08_27_0045_pure_uri_scheme_and_recursive_resolve_fix

@@ -48,18 +48,18 @@
 
 所有 Phase (P00~P07 / fast_track_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像標準模板結構**（包含所有指定欄位、表格與 Header 規範標頭），嚴禁 Agent 自行簡化或遺漏模板區塊。各階段標準模板實體路徑指針如下：
 
-- Phase 0: [`P00_semantic_requirements.md`](../templates/P00_semantic_requirements.md)
-- Phase 1: [`P01_requirements_spec.md`](../templates/P01_requirements_spec.md)
-- Phase 2: [`P02_architecture_plan.md`](../templates/P02_architecture_plan.md)
-- Phase 3: [`P03_api_spec.md`](../templates/P03_api_spec.md)
-- Phase 4: [`P04_implementation_plan.md`](../templates/P04_implementation_plan.md)
-- Phase 5: [`P05_task.md`](../templates/P05_task.md)
-- Phase 6: [`P06_test_plan.md`](../templates/P06_test_plan.md)
-- Phase 7: [`P07_walkthrough.md`](../templates/P07_walkthrough.md)
-- Level 0 (Fast Track): [`fast_track_plan.md`](../templates/fast_track_plan.md)
-- Level 2 (Umbrella): [`umbrella_overview.md`](../templates/umbrella_overview.md)
-- 計畫日誌: [`changelog.md`](../templates/changelog.md)
-- 現場交接: [`handoff.md`](../templates/handoff.md)
+- Phase 0: [`P00_semantic_requirements.md`](`../templates/P00_semantic_requirements.md`)
+- Phase 1: [`P01_requirements_spec.md`](`../templates/P01_requirements_spec.md`)
+- Phase 2: [`P02_architecture_plan.md`](`../templates/P02_architecture_plan.md`)
+- Phase 3: [`P03_api_spec.md`](`../templates/P03_api_spec.md`)
+- Phase 4: [`P04_implementation_plan.md`](`../templates/P04_implementation_plan.md`)
+- Phase 5: [`P05_task.md`](`../templates/P05_task.md`)
+- Phase 6: [`P06_test_plan.md`](`../templates/P06_test_plan.md`)
+- Phase 7: [`P07_walkthrough.md`](`../templates/P07_walkthrough.md`)
+- Level 0 (Fast Track): [`fast_track_plan.md`](`../templates/fast_track_plan.md`)
+- Level 2 (Umbrella): [`umbrella_overview.md`](`../templates/umbrella_overview.md`)
+- 計畫日誌: [`changelog.md`](`../templates/changelog.md`)
+- 現場交接: [`handoff.md`](`../templates/handoff.md`)
 
 ---
 
@@ -106,6 +106,7 @@
 - **FT-3 (品質 Review 與結案)**：代碼清理、回歸驗證、1:1 知識庫交付，追加 `CHANGELOG.md` ➔ Checkpoint ➔ Completed。
 
 ---
+
 
 # YS-Codebase 模組開發專案特化工程規範 (YS-Codebase Module Engineering Standards)
 
@@ -189,4 +190,3 @@
      - 模組源碼空間：`module.source://<module>/...`
      - 本地建置產物空間：`module.build://<module>/...`
      - 發布來源空間：`module.release://<module>/...`
-

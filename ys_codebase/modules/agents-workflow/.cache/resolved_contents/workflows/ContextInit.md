@@ -32,7 +32,7 @@
 當使用者輸入 `/ContextInit` 或 Agent 偵測到是全新的對話 Session 時，Agent **必須順序執行**以下加載步驟：
 
 ### 步驟 1：加載專案層級硬性規範與紀律
-- **讀取檔案**：[AGENTS.md](__#{project://AGENTS.md}__)
+- **讀取檔案**：[AGENTS.md](`__#{project://AGENTS.md}__`)
 - **提取要點**：
   - SOP 三大原則：零臆測、可追溯、分級管控。
   - 嚴禁連發（一次 Turn 最多一個 Phase）、嚴禁空降實作。
@@ -42,22 +42,22 @@
 
 ### 步驟 2：加載開發標準與 CLI 防呆指南
 - **讀取檔案**：
-  - 開發標準作業規範：[DevelopmentStandards.md](__#{module://agents-workflow/assets/standards/DevelopmentStandards.md}__)
-  - 指令防呆情境手冊：[AgentsCliGuild.md](__#{module://agents-workflow/assets/standards/AgentsCliGuild.md}__)
-  - 專案特化命名規範：[STANDARDS.md](__#{workflow.docs://_project/STANDARDS.md}__) *(若專案未獨立提供則依 DevelopmentStandards.md 為準)*
+  - 開發標準作業規範：[DevelopmentStandards.md](`__#{module://agents-workflow/assets/standards/DevelopmentStandards.md}__`)
+  - 指令防呆情境手冊：[AgentsCliGuild.md](`__#{module://agents-workflow/assets/standards/AgentsCliGuild.md}__`)
+  - 專案特化命名規範：[STANDARDS.md](`__#{workflow.docs://_project/STANDARDS.md}__`) *(若專案未獨立提供則依 DevelopmentStandards.md 為準)*
 - **提取要點**：
   - 掌握 Phase 0 ~ 7 標準開發作業流程 (SOP) 與三大分流原則。
   - 熟悉 CLI 語意情境對照表，嚴格執行 Default-Deny 守門。
   - 識別碼與變數命名規範、單位與型別標註約束。
 
 ### 步驟 3：加載專案最新演進與當前進度
-- **讀取檔案**：[CHANGELOG.md](__#{project://CHANGELOG.md}__) (前 2 ~ 3 個區塊)
+- **讀取檔案**：[CHANGELOG.md](`__#{project://CHANGELOG.md}__`) (前 2 ~ 3 個區塊)
 - **提取要點**：
   - 瞭解專案最近完成了哪些 Dev Plan 與架構優化。
   - 掌握當前專案處於何種演進階段。
 
 ### 步驟 4：檢查進行中計畫狀態與大綱
-- **調取狀態指令**：`python yscb.py agents-workflow plan status`
+- **調取狀態指令**：`python __${yscb.host://yscb.py}__ agents-workflow plan status`
 - **輕量載入與防呆鐵律**：
   - 🚨 **嚴禁批次深入閱讀**：在 ContextInit 階段**絕對禁止批次或深入讀取 `workflow.plans://` 各計畫內的詳細文件**（如 P00~P07），僅需調取 `plan status` 大綱掌握全貌即可，避免浪費 Prompt Token 與上下文污染。
   - **按需接手原則**：只有在後續收到開發者明確指示「接續/接手特定計畫開發」時，方可在 `/Continue` 流程中深入讀取該 Plan 目錄與 `handoff.md`。
@@ -84,7 +84,7 @@
 ### 🛠️ 工具與 SOP 紀律 (Guardrails)
 - **SOP 紀律**：零臆測、嚴禁連發、嚴禁空降實作、除錯排查範疇保護、嚴禁主動歸檔。
 - **CLI 守門**：執行指令前必先查對 `AgentsCliGuild.md`，Default-Deny 阻斷未列情境。
-- **定式作業**：計畫檢索/歸檔/驗證使用 `python yscb.py agents-workflow plan <status|search|verify|archive>`。
+- **定式作業**：計畫檢索/歸檔/驗證使用 `python __${yscb.host://yscb.py}__ agents-workflow plan <status|search|verify|archive>`。
 - **Plan 狀態**：透過 `plan status` 掌握進行中計畫大綱（深入閱讀留待 `/Continue` 接手時按需進行）。
 
 ---

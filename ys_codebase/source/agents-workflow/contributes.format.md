@@ -204,4 +204,21 @@
 }
 ```
 
+---
+
+## 3. 模板佔位符三層語意體系規範 (Three-Tier Placeholder System)
+
+編譯器在執行資產編譯與物化時，支援三大結構化語意佔位符：
+
+| 佔位符語法 | 語意分類 | 解析階段 | 基準路徑 | 適用情境與範例 |
+| :--- | :--- | :---: | :--- | :--- |
+| **`` `__@{token}__` ``** | **文件內容佔位符**<br/>(Content Token) | Stage 1 | 內容狀態機 | 常數注入、模板片段嵌入、`code.func://` 動態計算產出。<br/>例：`` `__@{AGENTS_CLI_GUILD}__` `` ➔ 展開為 Markdown 表格正文。 |
+| **`` `__#{uri}__` ``** | **文件自身相對路徑佔位符**<br/>(Local Relative URI) | Stage 2 | 當前 Markdown 文件所在目錄 (`cur_doc_dir`) | Markdown 內部超連結導航、相對文件引用。<br/>例：`[標準](`__#{module://.../DevStandards.md}__`)` ➔ `[標準](../.yscb/standards/DevStandards.md)` |
+| **`` `__${uri}__` ``** | **專案根目錄相對路徑佔位符**<br/>(Project Relative URI) | Stage 2 | 專案根目錄 (`project://`) | 終端機 Shell 執行指令、相對於根目錄之設定檔參照。<br/>例：`` `python __${yscb.host://yscb.py}__ run` `` ➔ `` `python yscb.py run` ``（子目錄自適應為 `` `python tools/yscb.py run` ``） |
+
+### 3.1 嚴格反引號包裹原則與代碼塊穿插展開
+1. **反引號包裹要求**：所有佔位符**強制必須包裹於反引號（代碼塊 `` `...` ``）內**方會被編譯器解析展開。
+2. **代碼塊內部穿插展開**：支援在同一個代碼塊中包含前後文字（如 `` `python __${yscb.host://yscb.py}__ agents-workflow plan status` ``），編譯器展開時**僅替換佔位符字串本體**，精確保留外層反引號與前後文字。
+3. **未包裹裸佔位符安全警示**：若文本中出現未被反引號包裹的裸佔位符（如 `__@{token}__`、`__#{uri}__`、`__${uri}__`），編譯器**絕對不予展開**，並輸出 `[compiler:warning]` 警示提示開發者。
+
 

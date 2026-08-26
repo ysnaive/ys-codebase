@@ -21,7 +21,6 @@ Phase 0 執行指引：
 > 狀態：[Draft | Confirmed | Completed]  
 
 
-
 > 計畫類型：[Feature | Refactor | Bug Fix | Performance | Docs]  
 > 模板版本：v1.1  
 
