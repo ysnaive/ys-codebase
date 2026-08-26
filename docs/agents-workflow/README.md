@@ -85,11 +85,26 @@ python yscb.py agents-workflow list
 
 # 執行 Stage 1 內容編譯並寫入 cache.root://agents-workflow/resolved_contents/
 python yscb.py agents-workflow compile
+
+# --- Dev Plans 工具鏈 (Plans Management Toolchain) ---
+# 掃描並輸出進行中開發計畫狀態矩陣 (ASCII 樹狀清冊)
+python yscb.py agents-workflow plan status
+
+# 跨計畫檢索決策記錄 (DR) 或全文程式碼
+python yscb.py agents-workflow plan search --dr [--year=YYYY] [--month=MM] [--limit=N]
+python yscb.py agents-workflow plan search "關鍵字" [--limit=N]
+
+# 稽核計畫文件合規性與 Header 規範 (偵測未剝除之 AGENT_GUIDANCE 註解)
+python yscb.py agents-workflow plan verify [plan_name] [--all]
+
+# 安全歸檔已完成計畫至 workflow.archived://YYYY/MM/ (具備 4 重守門與 handoff 清理)
+python yscb.py agents-workflow plan archive <plan_name> [--force]
 ```
 
 ---
 
 ## 7. 架構與專題手冊導引
 
+- **Dev Plans 工具鏈完整操作手冊**：詳見 [user_guide.md](./user_guide.md)。
 - **協議產物工廠化與 6 步語意管線**：詳見 [FACTORY_PIPELINE.md](./FACTORY_PIPELINE.md)。
 - **設計決策與工程妥協**：詳見 [DESIGN_NOTES.md](./DESIGN_NOTES.md)。

@@ -14,7 +14,7 @@
     },
     "agents-workflow": {
       "version": "0.1.0.build",
-      "installed_at": "2026-08-26 17:42:32",
+      "installed_at": "2026-08-26 22:00:34",
       "provider": "./release"
     }
   }

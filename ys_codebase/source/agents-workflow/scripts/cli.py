@@ -7,10 +7,19 @@ Commands:
   tokens                      - Inspect registered token anchors
   list                        - Inspect exported standards, workflows, and templates
   --init-default              - One-click workflow URI protocols and directories initialization
+  plan                        - Manage Dev Plans (archive, status, search, verify)
 """
 import sys
 import os
-from typing import List, Dict
+import argparse
+from typing import List, Dict, Optional
+
+# Windows 控制台 UTF-8 安全輸出保護
+if sys.stdout and hasattr(sys.stdout, 'buffer'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 # Ensure package directory and sibling modules (e.g. core) are importable
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +44,13 @@ from agents_workflow.compiler import ArtifactCompiler
 from agents_workflow.initializer import WorkflowInitializer
 from agents_workflow.publisher import ReleasePublisher
 from agents_workflow.targets import ReleaseTargetManager
+from agents_workflow.plans import (
+    PlanArchiver,
+    PlanScanner,
+    PlanSearcher,
+    PlanVerifier,
+    PlansToolchainError,
+)
 
 
 def cmd_release(args: List[str]) -> int:
@@ -45,18 +61,18 @@ def cmd_release(args: List[str]) -> int:
     
     if res.get("success", False):
         print(f"[agents-workflow] Release completed successfully!")
-        print(f"  • Published files: {res.get('published_count', 0)}")
-        print(f"  • Active targets:  {', '.join(res.get('active_targets', []))}")
+        print(f"  * Published files: {res.get('published_count', 0)}")
+        print(f"  * Active targets:  {', '.join(res.get('active_targets', []))}")
         if res.get("removed_count", 0) > 0:
-            print(f"  • Pruned files:    {res.get('removed_count', 0)}")
+            print(f"  * Pruned files:    {res.get('removed_count', 0)}")
         if res.get("orphan_targets"):
-            print(f"  • Warning orphans: {', '.join(res.get('orphan_targets', []))}")
+            print(f"  * Warning orphans: {', '.join(res.get('orphan_targets', []))}")
         return 0
     else:
         print(f"[agents-workflow] Release failed:")
         print(f"  - {res.get('error', 'Unknown error')}")
         for d in res.get("details", []):
-            print(f"    • {d}")
+            print(f"    * {d}")
         return 1
 
 
@@ -116,9 +132,9 @@ def cmd_compile(args: List[str]) -> int:
     
     if result["success"]:
         print(f"[agents-workflow] Stage 1 compilation completed successfully!")
-        print(f"  • Cached files:    {len(result.get('resolved_items', []))}")
-        print(f"  • Active inserts:  {result.get('inserted_count', 0)}")
-        print(f"  • Known tokens:    {result.get('tokens_count', 0)}")
+        print(f"  * Cached files:    {len(result.get('resolved_items', []))}")
+        print(f"  * Active inserts:  {result.get('inserted_count', 0)}")
+        print(f"  * Known tokens:    {result.get('tokens_count', 0)}")
         return 0
     else:
         print(f"[agents-workflow] Stage 1 compilation failed with errors:")
@@ -193,6 +209,158 @@ def cmd_init_default(args: List[str]) -> int:
     return 0 if res.get("success", False) else 1
 
 
+def cmd_plan(args: List[str]) -> int:
+    """處理 Dev Plans 工具鏈 (archive, status, search, verify)。"""
+    if not args or args[0] in ("-h", "--help", "help"):
+        print("""Usage: yscb agents-workflow plan <action> [options]
+
+Plan Actions:
+  archive <plan_name> [--force]   Safely archive a completed Dev Plan to workflow.archived://
+  status                          Scan and print the active Dev Plans status matrix
+  search [query] [options]        Search Decision Records (DR) or full-text in Dev Plans
+    Options:
+      --dr                        Search specifically for Decision Records (DR)
+      --year=<YYYY>               Filter by year (e.g. 2026)
+      --month=<MM>                Filter by month (e.g. 08)
+      --limit=<N>                 Limit returned count (default: 20/25)
+  verify [plan_name] [--all]      Verify Markdown compliance and Blockquote headers in Dev Plans
+""")
+        return 0
+
+    action = args[0].lower()
+    sub_args = args[1:]
+
+    # 1. plan archive
+    if action == "archive":
+        if not sub_args:
+            print("[agents-workflow:plan] Error: Missing plan name to archive. Usage: plan archive <plan_name> [--force]")
+            return 1
+        plan_name = sub_args[0]
+        force = "--force" in sub_args or "-f" in sub_args
+
+        archiver = PlanArchiver()
+        try:
+            res = archiver.archive_plan(plan_name, force=force)
+            if res.get("cleaned_handoff"):
+                print(f"  * [CLEANUP] 已清理暫時性交接快照：handoff.md")
+            for w in res.get("warnings", []):
+                print(f"  [WARNING] {w}")
+            print(f"[agents-workflow:plan] [SUCCESS] 已成功將計畫歸檔至：{res.get('dest_path')}")
+            return 0
+        except PlansToolchainError as pe:
+            print(f"[agents-workflow:plan] [ERROR] {pe}")
+            return 1
+        except Exception as ex:
+            print(f"[agents-workflow:plan] [ERROR] 歸檔過程發生非預期錯誤：{ex}")
+            return 1
+
+    # 2. plan status (明確不掃描歷史目錄)
+    elif action == "status":
+        scanner = PlanScanner()
+        matrix_str = scanner.render_matrix_ascii()
+        print(matrix_str)
+        return 0
+
+    # 3. plan search
+    elif action == "search":
+        is_dr = "--dr" in sub_args
+        limit = 20 if not is_dr else 25
+        year = None
+        month = None
+        pos_queries = []
+
+        for sa in sub_args:
+            if sa == "--dr":
+                is_dr = True
+            elif sa.startswith("--year="):
+                year = sa.split("=", 1)[1]
+            elif sa.startswith("--month="):
+                month = sa.split("=", 1)[1]
+            elif sa.startswith("--limit="):
+                try:
+                    limit = int(sa.split("=", 1)[1])
+                except ValueError:
+                    pass
+            elif not sa.startswith("-"):
+                pos_queries.append(sa)
+
+        query = " ".join(pos_queries)
+        searcher = PlanSearcher()
+
+        if is_dr or not query:
+            drs = searcher.search_drs(query=query, year=year, month=month, limit=limit)
+            print("=" * 90)
+            print(f"{'Plan 名稱 / 來源檔案':<40} | {'DR ID / 標題':<22} | {'結論 / 摘要'}")
+            print("=" * 90)
+            for d in drs:
+                src = d["source_file"] if len(d["source_file"]) <= 38 else d["source_file"][:35] + "..."
+                did = d["dr_id"] if len(d["dr_id"]) <= 20 else d["dr_id"][:17] + "..."
+                summ = d["summary"] if len(d["summary"]) <= 40 else d["summary"][:37] + "..."
+                print(f"{src:<40} | {did:<22} | {summ}")
+            print("=" * 90)
+            print(f"共找到 {len(drs)} 筆 Decision Records。")
+            return 0
+        else:
+            matches = searcher.search_full_text(query=query, year=year, month=month, limit=limit)
+            print(f"搜尋關鍵字: \"{query}\" ...")
+            print("=" * 90)
+            for m in matches:
+                print(f"[{m['plan_name']}/{m['rel_path']}:L{m['line_no']}]")
+                for l_no, l_text in m.get("context", []):
+                    prefix = " > " if l_no == m["line_no"] else "   "
+                    print(f"{prefix}{l_no:4d}: {l_text}")
+                print("-" * 90)
+            print(f"共找到 {len(matches)} 筆符合結果。")
+            return 0
+
+    # 4. plan verify
+    elif action == "verify":
+        if sub_args and sub_args[0] in ("-h", "--help", "help"):
+            print("Usage: yscb agents-workflow plan verify [plan_name] [--all]")
+            return 0
+        include_all = "--all" in sub_args or "-a" in sub_args
+        target_name = None
+        for sa in sub_args:
+            if sa not in ("--all", "-a") and not sa.startswith("-"):
+                target_name = sa
+                break
+
+        verifier = PlanVerifier()
+        res = verifier.verify(plan_name=target_name, include_all=include_all)
+
+        if not res.get("success", False) and res.get("error"):
+            print(f"[agents-workflow:plan] [ERROR] {res['error']}")
+            return 1
+
+        print("=" * 80)
+        print(f"  Dev Plan 合規性稽核報告 (共審查 {res['plans_audited']} 個計畫)")
+        print("=" * 80)
+
+        for p_name, p_files in res.get("details", {}).items():
+            print(f"\n[PLAN] 審查計畫：{p_name}")
+            for f_name, issues in p_files.items():
+                if not issues:
+                    print(f"  [PASS] {f_name:<35} [合規通過]")
+                else:
+                    print(f"  [WARN] {f_name:<35} 發現 {len(issues)} 項問題:")
+                    for iss in issues:
+                        prefix = "[ERROR]" if iss["level"] == "ERROR" else "[WARN] "
+                        print(f"     {prefix} {iss['msg']}")
+
+        print("\n" + "=" * 80)
+        if res["total_errors"] == 0 and res["total_warns"] == 0:
+            print("  [SUCCESS] 驗收結果：100% 合規！所有計畫均符合 Header 元數據與指引過濾規範。")
+        else:
+            print(f"  驗收摘要：發現 {res['total_errors']} 個重大錯誤 (ERROR)，{res['total_warns']} 個警告 (WARN)。")
+        print("=" * 80 + "\n")
+
+        return 0 if res["total_errors"] == 0 else 1
+
+    else:
+        print(f"[agents-workflow:plan] Unknown plan action '{action}'. Use archive, status, search, or verify.")
+        return 1
+
+
 def print_help():
     print("""Usage: yscb agents-workflow <command> [options]
 
@@ -211,6 +379,11 @@ Commands:
       --path-plans=<path>     Override recommended path for workflow.plans
       --path-archived=<path>  Override recommended path for workflow.archived
       --path-docs=<path>      Override recommended path for workflow.docs
+  plan <action> [options]     Dev Plans management toolchain
+    archive <name> [--force]  Safely archive a completed Dev Plan
+    status                    Scan active Dev Plans status matrix (active plans only)
+    search <query> [--dr]     Search Decision Records or full text in Dev Plans
+    verify [name] [--all]     Verify Markdown compliance and Blockquote headers
   --help, -h                  Show this help message
 """)
 
@@ -235,6 +408,16 @@ def main(args: List[str]) -> int:
         return cmd_tokens(sub_args)
     elif cmd in ("list", "--list"):
         return cmd_list(sub_args)
+    elif cmd == "plan":
+        return cmd_plan(sub_args)
+    elif cmd == "plan-archive":
+        return cmd_plan(["archive"] + sub_args)
+    elif cmd in ("plan-status", "plans-status"):
+        return cmd_plan(["status"] + sub_args)
+    elif cmd == "plan-search":
+        return cmd_plan(["search"] + sub_args)
+    elif cmd == "plan-verify":
+        return cmd_plan(["verify"] + sub_args)
     else:
         if "--init-default" in args:
             all_init_args = [a for a in args if a != "--init-default"]
