@@ -20,7 +20,7 @@
 當使用者輸入 `/ContextInit` 或 Agent 偵測到是全新的對話 Session 時，Agent **必須順序執行**以下加載步驟：
 
 ### 步驟 1：加載專案層級硬性規範與紀律
-- **讀取檔案**：[project://AGENTS.md](project://AGENTS.md) 或 [.agents/AGENTS.md](./.agents/AGENTS.md)
+- **讀取檔案**：[AGENTS.md](`__#{project://AGENTS.md}__`)
 - **提取要點**：
   - SOP 三大原則：零臆測、可追溯、分級管控。
   - 嚴禁連發（一次 Turn 最多一個 Phase）、嚴禁空降實作。
@@ -29,20 +29,20 @@
   - 專案程式碼架構與 `docs/` 知識庫之鏡像同步關係。
 
 ### 步驟 2：加載程式碼與命名規範
-- **讀取檔案**：[docs://_project/STANDARDS.md](docs://_project/STANDARDS.md) 或 [docs://_project/coding-standards.md](docs://_project/coding-standards.md) *(若專案未獨立提供則依 AGENTS.md 為準)*
+- **讀取檔案**：[STANDARDS.md](`__#{docs://_project/STANDARDS.md}__`) *(若專案未獨立提供則依 AGENTS.md 為準)*
 - **提取要點**：
   - 識別碼與變數命名規範（如前綴、大小寫慣例、命名空間結構）。
   - 單位與型別標註約束（具體變數顯式帶單位，轉換時嚴禁同名覆蓋）。
   - 註解哲學與文檔標準（`docs/` 負責宏觀公理，代碼負責微觀自包含）。
 
 ### 步驟 3：加載專案最新演進與當前進度
-- **讀取檔案**：[project://CHANGELOG.md](project://CHANGELOG.md) (前 2 ~ 3 個區塊)
+- **讀取檔案**：[CHANGELOG.md](`__#{project://CHANGELOG.md}__`) (前 2 ~ 3 個區塊)
 - **提取要點**：
   - 瞭解專案最近完成了哪些 Dev Plan 與架構優化。
   - 掌握當前專案處於何種演進階段。
 
 ### 步驟 4：檢查進行中與歷史 Plan 結構
-- **讀取設定**：[project://config.project.json](project://config.project.json)
+- **讀取設定**：[config.project.json](`__#{project://config.project.json}__`)
 - **提取要點與目錄檢查**：
   - 取得 `plans_dir`（對應 `plans://`）與 `archive_dir`（對應 `archive://`）。
   - 檢查進行中 Plan 與歷史歸檔之目錄結構與進度。

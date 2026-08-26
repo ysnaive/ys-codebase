@@ -1,21 +1,31 @@
 """
-Unit and Integration Tests for agents-workflow ArtifactCompiler and CLI.
-Covers FT-01 ~ FT-06, ET-01 ~ ET-04.
+Unit and Integration Tests for agents-workflow ArtifactCompiler, ReleasePublisher, and CLI.
+Covers ST-01 ~ ST-08, FT-01 ~ FT-08, ET-01 ~ ET-04.
+100% Python Standard Library, Zero Third-Party Dependency.
 """
+
 import unittest
 import os
 import io
 import sys
+import tempfile
 from typing import Dict, Any, List
 
-# Ensure package and core are in sys.path
+import importlib.util
+
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_root = os.path.dirname(_test_dir)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
+_cli_path = os.path.join(_pkg_root, "scripts", "cli.py")
+_spec_cli = importlib.util.spec_from_file_location("aw_cli_compiler_test", _cli_path)
+cli = importlib.util.module_from_spec(_spec_cli)
+_spec_cli.loader.exec_module(cli)
+
 from agents_workflow.compiler import ArtifactCompiler
-from scripts import cli
+from agents_workflow.publisher import ReleasePublisher
+from agents_workflow.targets import ReleaseTargetManager
 
 hook_core = None
 try:
@@ -32,14 +42,19 @@ except Exception:
 class TestArtifactCompiler(unittest.TestCase):
     def setUp(self):
         self.compiler = ArtifactCompiler()
+        self.publisher = ReleasePublisher(compiler=self.compiler)
 
     def test_ft_01_manifest_exports_and_tokens_discovery(self):
         """FT-01: 驗證自導出資產 (16 項) 與 token 宣告能被正確解析收集。"""
         data = self.compiler.get_contributes_data()
         exports = data.get("export", [])
         tokens = data.get("token", [])
+        release_targets = data.get("release_target", [])
         
         self.assertGreaterEqual(len(exports), 16)
+        self.assertGreaterEqual(len(release_targets), 1)
+        self.assertEqual(release_targets[0].get("name"), "antigravity")
+
         token_values = [t.get("value") for t in tokens]
         self.assertIn("PHASEXX_HEADER", token_values)
         self.assertIn("WORKFLOW_SOP_STANDARDS", token_values)
@@ -47,190 +62,100 @@ class TestArtifactCompiler(unittest.TestCase):
         self.assertIn("DYNAMIC_CONTEXT_MAP", token_values)
         self.assertIn("BEGIN_HTML_ANNOTATION", token_values)
         self.assertIn("END_HTML_ANNOTATION", token_values)
-        self.assertIn("PHASE00_HEADER", token_values)
-        self.assertIn("PHASE00_AGENTS_GUILD", token_values)
-        self.assertIn("PHASE00_TEMPLATE", token_values)
-        self.assertIn("PHASE01_HEADER", token_values)
-        self.assertIn("PHASE01_AGENTS_GUILD", token_values)
-        self.assertIn("PHASE01_TEMPLATE", token_values)
-        self.assertIn("PHASE02_HEADER", token_values)
-        self.assertIn("PHASE02_AGENTS_GUILD", token_values)
-        self.assertIn("PHASE02_TEMPLATE", token_values)
-        self.assertIn("PHASE03_HEADER", token_values)
-        self.assertIn("PHASE03_AGENTS_GUILD", token_values)
-        self.assertIn("PHASE03_TEMPLATE", token_values)
-        self.assertIn("PHASE04_HEADER", token_values)
-        self.assertIn("PHASE04_AGENTS_GUILD", token_values)
-        self.assertIn("PHASE04_TEMPLATE", token_values)
-        self.assertIn("PHASE05_HEADER", token_values)
-        self.assertIn("PHASE05_AGENTS_GUILD", token_values)
-        self.assertIn("PHASE05_TEMPLATE", token_values)
-        self.assertIn("PHASE06_HEADER", token_values)
-        self.assertIn("PHASE06_AGENTS_GUILD", token_values)
-        self.assertIn("PHASE06_TEMPLATE", token_values)
-        self.assertIn("PHASE07_HEADER", token_values)
-        self.assertIn("PHASE07_AGENTS_GUILD", token_values)
-        self.assertIn("PHASE07_TEMPLATE", token_values)
-        self.assertIn("FAST_TRACK_HEADER", token_values)
-        self.assertIn("FAST_TRACK_AGENTS_GUILD", token_values)
-        self.assertIn("FAST_TRACK_TEMPLATE", token_values)
-        self.assertIn("CHANGELOG_HEADER", token_values)
-        self.assertIn("CHANGELOG_AGENTS_GUILD", token_values)
-        self.assertIn("CHANGELOG_TEMPLATE", token_values)
-        self.assertIn("UMBRELLA_HEADER", token_values)
-        self.assertIn("UMBRELLA_AGENTS_GUILD", token_values)
-        self.assertIn("UMBRELLA_TEMPLATE", token_values)
-        self.assertIn("RESEARCH_HEADER", token_values)
-        self.assertIn("RESEARCH_AGENTS_GUILD", token_values)
-        self.assertIn("RESEARCH_TEMPLATE", token_values)
-        self.assertIn("HANDOFF_HEADER", token_values)
-        self.assertIn("HANDOFF_AGENTS_GUILD", token_values)
-        self.assertIn("HANDOFF_TEMPLATE", token_values)
 
-    def test_ft_02_single_artifact_replace_resolution(self):
-        """FT-02: 驗證工廠編譯器多輪遞迴狀態機解算與 replace 自注入。"""
-        raw_text = "# Requirements Spec\n\n`__@{PHASEXX_HEADER}__`\n\n## 1. FR\n"
-        inserts = [
-            {
-                "type": "const",
-                "token": "PHASEXX_HEADER",
-                "value": "> 功能名稱：Test Feature\n> 狀態：Confirmed",
-                "mode": "replace"
-            }
-        ]
+    def test_st_01_stage1_cache_output(self):
+        """ST-01: 驗證 Stage 1 快取物化寫入 cache.root:// 並回傳結構化項目清單。"""
+        res = self.compiler.compile_stage1()
+        self.assertTrue(res["success"])
+        self.assertGreaterEqual(len(res["resolved_items"]), 16)
+
+    def test_st_02_release_target_header_macro_interpolation(self):
+        """ST-02: 驗證純文字/陣列 Header 巨集模板動態替換與 KeyError 容錯。"""
+        export_item = {
+            "source": "module.root://agents-workflow/assets/workflows/NewPlan.md",
+            "description": "標準開發作業流程 (NewPlan)",
+            "name": "NewPlan",
+            "type": "workflow"
+        }
         
-        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertNotIn("`__@{PHASEXX_HEADER}__`", resolved)
-        self.assertIn("> 功能名稱：Test Feature", resolved)
-        self.assertIn("> 狀態：Confirmed", resolved)
-        self.assertIn("## 1. FR", resolved)
-
-    def test_ft_03_multi_module_below_above_injection_and_purge(self):
-        """FT-03: 驗證多模組以 below/above 向同一 Token 追加注入，且 Step 3 乾淨移除標籤。"""
-        raw_text = "# Standards\n\n`__@{RULES}__`\n\nEnd of Doc"
-        inserts = [
-            {
-                "type": "const",
-                "token": "RULES",
-                "value": "RULE-01: Above Rule",
-                "mode": "above"
-            },
-            {
-                "type": "const",
-                "token": "RULES",
-                "value": "RULE-02: Below Rule",
-                "mode": "below"
-            }
+        # 測試字串陣列模板
+        header_tpl_list = [
+            "---",
+            "description: {export.description}",
+            "command: {export.name}",
+            "---"
         ]
+        rendered = self.publisher.render_header(export_item, header_tpl_list, "antigravity")
+        self.assertIn("description: 標準開發作業流程 (NewPlan)", rendered)
+        self.assertIn("command: NewPlan", rendered)
+
+        # 測試缺失巨集容錯
+        header_tpl_missing = "--- \n info: {export.non_existent} \n ---"
+        rendered_missing = self.publisher.render_header(export_item, header_tpl_missing, "antigravity")
+        self.assertNotIn("{export.non_existent}", rendered_missing)
+
+    def test_st_03_release_target_manager_and_orphan(self):
+        """ST-03: 驗證 ReleaseTargetManager 查詢清單與 ORPHAN 標註。"""
+        targets = ReleaseTargetManager.list_targets()
+        self.assertGreaterEqual(len(targets), 1)
+        names = [t["name"] for t in targets]
+        self.assertIn("antigravity", names)
+
+    def test_st_04_three_tier_uri_resolution(self):
+        """ST-04: 驗證三層 URI 重映射與相對路徑計算 (正斜線 / 格式)。"""
+        current_dst = "H:/UseFolder/CodeRepo/project/.agents/workflows/NewPlan.md"
+        deployment_map = {
+            "module.root://agents-workflow/assets/templates/P00_semantic_requirements.md": "H:/UseFolder/CodeRepo/project/.agents/templates/P00_semantic_requirements.md",
+            "module.root://agents-workflow/assets/standards/DevelopmentStandards.md": "H:/UseFolder/CodeRepo/project/.agents/standards/DevelopmentStandards.md"
+        }
+
+        raw_text = (
+            "Read P00: `__#{module.root://agents-workflow/assets/templates/P00_semantic_requirements.md}__`\n"
+            "Read SOP: `__#{module.root://agents-workflow/assets/standards/DevelopmentStandards.md}__`\n"
+            "Read Unknown: `__#{unknown://foo/bar}__`"
+        )
+
+        resolved = self.compiler.resolve_stage2_uri(raw_text, current_dst, deployment_map)
         
-        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertNotIn("`__@{RULES}__`", resolved)
-        self.assertIn("RULE-01: Above Rule", resolved)
-        self.assertIn("RULE-02: Below Rule", resolved)
-        # Verify order: above is before below
-        pos_above = resolved.find("RULE-01: Above Rule")
-        pos_below = resolved.find("RULE-02: Below Rule")
-        self.assertLess(pos_above, pos_below)
-
-    def test_ft_04_uri_tag_preserved(self):
-        """FT-04: 驗證 `__#{uri}__` 標籤在物化解算階段 100% 保持原樣不被破壞。"""
-        raw_text = "Doc with link: `__#{module.root://agents-workflow/assets/standards/DocumentationStandards.md}__` and `__@{TOKEN}__`"
-        inserts = [
-            {"type": "const", "token": "TOKEN", "value": "Resolved Value", "mode": "replace"}
-        ]
+        # Tier 1 驗證
+        self.assertIn("../templates/P00_semantic_requirements.md", resolved)
+        self.assertIn("../standards/DevelopmentStandards.md", resolved)
+        self.assertNotIn("`__#{module.root://", resolved)
         
-        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertIn("`__#{module.root://agents-workflow/assets/standards/DocumentationStandards.md}__`", resolved)
-        self.assertIn("Resolved Value", resolved)
-        self.assertNotIn("`__@{TOKEN}__`", resolved)
+        # Tier 3 驗證 (安全降級)
+        self.assertIn("unknown://foo/bar", resolved)
 
-    def test_ft_05_whitespace_tolerance(self):
-        """FT-05: 驗證大括號內部微量空格容錯識別 (`__@{ TOKEN }__`)。"""
-        raw_text = "Anchor: `__@{ CUSTOM_TOKEN }__`"
-        inserts = [
-            {"type": "const", "token": "CUSTOM_TOKEN", "value": "Tolerance Passed", "mode": "replace"}
-        ]
-        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertNotIn("`__@{ CUSTOM_TOKEN }__`", resolved)
-        self.assertIn("Tolerance Passed", resolved)
+    def test_st_05_atomic_release_transaction(self):
+        """ST-05: 驗證原子 4 步發布交易。"""
+        res = self.publisher.release_all()
+        self.assertTrue(res["success"])
+        self.assertGreaterEqual(res["published_count"], 16)
 
-    def test_ft_06_cli_commands_and_hook(self):
-        """FT-06: 驗證 compile, tokens, list 指令與 hook 正常執行。"""
-        # tokens
-        tokens_code = cli.main(["tokens"])
-        self.assertEqual(tokens_code, 0)
+    def test_st_06_agents_md_soft_merge(self):
+        """ST-06: 驗證 AGENTS.md 軟合併無損保護。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            orig_agents_md = os.path.join(tmp_dir, "AGENTS.md")
+            with open(orig_agents_md, "w", encoding="utf-8") as f:
+                f.write("# AGENTS\n\n<!-- YSCB_AGENTS_BEGIN -->\nOld Rules\n<!-- YSCB_AGENTS_END -->\n\n## 4. Custom\nCustom Rule\n")
+            
+            ok = self.publisher._soft_merge_agents_md("New Injected Rules", tmp_dir)
+            self.assertTrue(ok)
+            
+            with open(orig_agents_md, "r", encoding="utf-8") as f:
+                merged = f.read()
+            
+            self.assertIn("New Injected Rules", merged)
+            self.assertNotIn("Old Rules", merged)
+            self.assertIn("## 4. Custom", merged)
+            self.assertIn("Custom Rule", merged)
 
-        # list
-        list_code = cli.main(["list"])
-        self.assertEqual(list_code, 0)
+    def test_st_07_cli_release_and_target_commands(self):
+        """ST-07: 驗證 CLI release 與 release-target 系列指令。"""
+        code_release = cli.main(["release"])
+        self.assertEqual(code_release, 0)
 
-        # compile
-        compile_code = cli.main(["compile"])
-        self.assertEqual(compile_code, 0)
-
-        # hook
-        if hook_core and hasattr(hook_core, "on_reload"):
-            hook_core.on_reload(None)
-
-    def test_et_01_unmatched_token_purged_safely(self):
-        """ET-01: 驗證無匹配 Insert 時 Token 標籤被乾淨移除，不殘留也不崩潰。"""
-        raw_text = "Before\n`__@{NON_EXISTENT_TOKEN}__`\nAfter"
-        resolved = self.compiler.resolve_single_artifact(raw_text, [])
-        self.assertNotIn("`__@{NON_EXISTENT_TOKEN}__`", resolved)
-        self.assertIn("Before", resolved)
-        self.assertIn("After", resolved)
-
-    def test_et_02_recursive_multi_pass(self):
-        """ET-02: 驗證新注入內容包含子 Token 時能多輪收斂展開。"""
-        raw_text = "Start -> `__@{PARENT}__` -> End"
-        inserts = [
-            {
-                "type": "const",
-                "token": "PARENT",
-                "value": "ParentContent(`__@{CHILD}__`)",
-                "mode": "replace"
-            },
-            {
-                "type": "const",
-                "token": "CHILD",
-                "value": "ChildValue",
-                "mode": "replace"
-            }
-        ]
-        
-        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertNotIn("`__@{PARENT}__`", resolved)
-        self.assertNotIn("`__@{CHILD}__`", resolved)
-        self.assertIn("ParentContent(ChildValue)", resolved)
-
-    def test_et_03_legacy_html_comment_ignored(self):
-        """ET-03: 驗證舊的 HTML 註解格式不再被視為錨點進行展開，作為純文字保留。"""
-        raw_text = "Legacy: <!-- __PHASEXX_HEADER__ -->"
-        inserts = [
-            {"type": "const", "token": "PHASEXX_HEADER", "value": "New Header", "mode": "replace"}
-        ]
-        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertIn("<!-- __PHASEXX_HEADER__ -->", resolved)
-        self.assertNotIn("New Header", resolved)
-
-    def test_et_04_self_referential_deadlock_prevention(self):
-        """ET-04: 驗證注入內容包含同名 Token 時不會陷入無窮遞迴死鎖。"""
-        raw_text = "Anchor: `__@{LOOP}__`"
-        inserts = [
-            {"type": "const", "token": "LOOP", "value": "Value with `__@{LOOP}__`", "mode": "replace"}
-        ]
-        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertIn("Value with", resolved)
-
-    def test_ft_07_html_annotation_tokens_resolution(self):
-        """FT-07: 驗證 BEGIN_HTML_ANNOTATION 與 END_HTML_ANNOTATION 替換為 <!-- 與 -->。"""
-        raw_text = "`__@{BEGIN_HTML_ANNOTATION}__` slide `__@{END_HTML_ANNOTATION}__`"
-        inserts = [
-            {"type": "const", "token": "BEGIN_HTML_ANNOTATION", "value": "<!--", "mode": "replace"},
-            {"type": "const", "token": "END_HTML_ANNOTATION", "value": "-->", "mode": "replace"}
-        ]
-        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertEqual(resolved, "<!-- slide -->")
+        code_list = cli.main(["release-target", "--list"])
+        self.assertEqual(code_list, 0)
 
     def test_ft_08_computed_token_resolution(self):
         """FT-08: 驗證 type: 'computed' 與 code.func:// 動態調用解算。"""

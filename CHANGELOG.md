@@ -4,6 +4,24 @@
 
 ## 2026_08_25_2200_agents_workflow_migration
 
+- **佔位符解析管線優化、三層 URI 重映射與多環境原子發布 (`sub_07`)**：
+  - **兩階段 6 步語意編譯發布流水線 (`ArtifactCompiler` & `ReleasePublisher`)**：
+    - 徹底廢棄模組安裝目錄原 `exports/` 殘留目錄，將 Stage 1 內容佔位符展開物化寫入 `cache.root://agents-workflow/resolved_contents/` 微內核快取中繼。
+    - Stage 2 依啟用之 Release Targets 建立發布拓撲映射表，動態轉譯 `__#{uri}__` 為相對於落地檔案之本機實體相對路徑 (`os.path.relpath`)。
+  - **三層 URI 重映射階層演算 (3-Tier Resolution)**：
+    - Tier 1: 本次發布拓撲表 (Deployment Map) ➔ 精確計算相對路徑。
+    - Tier 2: Core 專案級語意協議 (`project://`, `docs://`, `plans://`) ➔ 調用 `core.uri.resolve` 計算相對路徑。
+    - Tier 3: 未知/未決協議安全降級原樣輸出並發出警告。
+  - **消除 Agent 模板尋址盲區**：
+    - 於 `DevelopmentStandards.md` 與 `AGENTS.md` 中全面注入標準模板之語意 URI 引用指針，自動轉譯為有效跳轉路徑（如 `../templates/P00_semantic_requirements.md`、`.agents/templates/...`），徹底根除 Agent 模板幻覺。
+  - **`release_target` Contributes 體系與純文字/陣列 Header 巨集插值**：
+    - 在模組 `manifest.json` 支援宣告 `release_target`（如 `antigravity`），定義 `projections` 與 Header 模板。
+    - 支援 `{export.description}`, `{export.name}`, `{target.name}` 等巨集插值，徹底告別 YAML 格式綁定。
+  - **4 步原子發布交易與孤立檔案精確清理**：
+    - 基於 `storage://agents-workflow/release_manifest.json` 實現「過往清理 ➔ 提前解算防污染 ➔ 持久紀錄 ➔ 目錄落地與 `AGENTS.md` 軟合併」原子交易保證。
+  - **完整 CLI 指令體系實裝**：
+    - 實作 `python yscb.py agents-workflow release`、`release-target --list`、`release-target --add <t>`、`release-target --remove <t>`。
+
 - **Contributes 擴充支援 Computed Token 與 `code.func://` 函式定位協議 (`sub_06`)**：
   - **`code.func://` 符號定位協議 (`core.symbols`)**：
     - 建立全專案標準的程式碼函式與符號定位協議：`code.func://<module>/<subpath>:<function_name>`。

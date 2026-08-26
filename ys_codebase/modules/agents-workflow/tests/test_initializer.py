@@ -8,6 +8,7 @@ import sys
 import json
 import shutil
 import tempfile
+import importlib.util
 from typing import Dict, Any
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
@@ -15,8 +16,12 @@ _pkg_root = os.path.dirname(_test_dir)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
+_cli_path = os.path.join(_pkg_root, "scripts", "cli.py")
+_spec_cli = importlib.util.spec_from_file_location("aw_cli_init_test", _cli_path)
+cli = importlib.util.module_from_spec(_spec_cli)
+_spec_cli.loader.exec_module(cli)
+
 from agents_workflow.initializer import WorkflowInitializer
-from scripts import cli
 
 
 class TestWorkflowInitializer(unittest.TestCase):
@@ -60,7 +65,7 @@ class TestWorkflowInitializer(unittest.TestCase):
             self.assertIn("archived", paths)
             self.assertIn("docs", paths)
             self.assertNotIn("ext", paths)
-            self.assertIn("ide", tpl_data)
+            self.assertIn("release_targets", tpl_data)
             self.assertIn("enable_agents_md", tpl_data)
             self.assertIn("enable_project_changelog", tpl_data)
 

@@ -1,21 +1,20 @@
 ---
-description: 專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Chat 開啟時快速初始化專案記憶與規範
+description: 上下文熱啟動流程
 ---
 
 > [!NOTE]
 > ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)
-> 本專案已註冊之語意 URI 實體路徑如下（核心來源規範：[ContextInit.md](../../modules/agents-workflow/workflows/commands/ContextInit.md)）：
+> 本專案已註冊之語意 URI 實體路徑如下：
 > 
 > | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |
 > | :--- | :--- | :--- |
 > | **`project://`** | `./` | `[ACTIVE]` |
-> | **`yscb://`** | `./` | `[ACTIVE]` |
-> | **`plans://`** | `./plans` | `[ACTIVE]` |
-> | **`archive://`** | `./archive_plans` | `[ACTIVE]` |
-> | **`docs://`** | `./docs` | `[ACTIVE]` |
-> | **`sop_ext://`** | `./extensions` | `[ACTIVE]` |
+> | **`yscb://`** | `./ys_codebase` | `[ACTIVE]` |
+> | **`plans://`** | `./plans` | `[!UNDEFINED]` |
+> | **`archive://`** | `./archive` | `[!UNDEFINED]` |
+> | **`docs://`** | `./docs` | `[!UNDEFINED]` |
 > 
-> 🛠️ **CLI 動態解析指令**：`python yscb_cli.py uri resolve <uri>`（例：`python yscb_cli.py uri resolve project://AGENTS.md`）
+> 🛠️ **CLI 動態解析指令**：`python yscb.py uri resolve <uri>`（例：`python yscb.py uri resolve project://AGENTS.md`）
 
 # 專案上下文初始化流程 (ContextInit)
 
@@ -34,32 +33,32 @@ description: 專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Cha
 
 ## 🚀 執行步驟
 
-當使用者輸入 `/ContextInit` 或 Agent 偵測到是全新的對話 Session 時， Agent **必須順序執行**以下加載步驟：
+當使用者輸入 `/ContextInit` 或 Agent 偵測到是全新的對話 Session 時，Agent **必須順序執行**以下加載步驟：
 
 ### 步驟 1：加載專案層級硬性規範與紀律
-- **讀取檔案**：[project://AGENTS.md](project://AGENTS.md) 或 [.agents/AGENTS.md](./.agents/AGENTS.md) *(下游專案之 Agent 行為規範)*
+- **讀取檔案**：[AGENTS.md](../../AGENTS.md)
 - **提取要點**：
   - SOP 三大原則：零臆測、可追溯、分級管控。
   - 嚴禁連發（一次 Turn 最多一個 Phase）、嚴禁空降實作。
   - 除錯排查與範疇保護鐵律、模板註解剝除鐵律。
-  - 定式作業指令優先原則（透過 `python yscb_cli.py agents-workflow <verify|scan|search|archive>` 調度）、嚴禁主動歸檔。
+  - 定式作業指令優先原則、嚴禁主動歸檔。
   - 專案程式碼架構與 `docs/` 知識庫之鏡像同步關係。
 
 ### 步驟 2：加載程式碼與命名規範
-- **讀取檔案**：[docs://_project/STANDARDS.md](docs://_project/STANDARDS.md) 或 [docs://_project/coding-standards.md](docs://_project/coding-standards.md) *(若專案未獨立提供則依 AGENTS.md 為準)*
+- **讀取檔案**：[STANDARDS.md](docs://_project/STANDARDS.md) *(若專案未獨立提供則依 AGENTS.md 為準)*
 - **提取要點**：
   - 識別碼與變數命名規範（如前綴、大小寫慣例、命名空間結構）。
   - 單位與型別標註約束（具體變數顯式帶單位，轉換時嚴禁同名覆蓋）。
   - 註解哲學與文檔標準（`docs/` 負責宏觀公理，代碼負責微觀自包含）。
 
 ### 步驟 3：加載專案最新演進與當前進度
-- **讀取檔案**：[project://CHANGELOG.md](project://CHANGELOG.md) (前 2 ~ 3 個區塊) *(下游專案全域變更記錄)*
+- **讀取檔案**：[CHANGELOG.md](../../CHANGELOG.md) (前 2 ~ 3 個區塊)
 - **提取要點**：
   - 瞭解專案最近完成了哪些 Dev Plan 與架構優化。
   - 掌握當前專案處於何種演進階段。
 
-### 步驟 4：加載工作流設定與檢查進行中/歷史 Plan 結構
-- **讀取設定**：[modules/agents-workflow/config.project.json](modules/agents-workflow/config.project.json) *(若未初始化可執行 `python yscb_cli.py agents-workflow init --default`)*
+### 步驟 4：檢查進行中與歷史 Plan 結構
+- **讀取設定**：[config.project.json](../../config.project.json)
 - **提取要點與目錄檢查**：
   - 取得 `plans_dir`（對應 `plans://`）與 `archive_dir`（對應 `archive://`）。
   - 檢查進行中 Plan 與歷史歸檔之目錄結構與進度。
@@ -71,7 +70,7 @@ description: 專案上下文熱啟動 Workflow (ContextInit) — 新 Session/Cha
 完成上述檔案讀取後，Agent **必須**向開發者呈現以下格式的上下文熱啟動簡報，並結束當前 Turn 等待開發者下達任務：
 
 ```markdown
-# 🚀 專案上下文已成功熱啟動 (Context initialized)
+# 🚀 專案上下文已成功熱啟動 (Context Initialized)
 
 已成功載入本專案的核心架構、規範與歷史決策脈絡：
 

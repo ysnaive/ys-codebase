@@ -24,6 +24,7 @@
 | **sub_04** | `sub_04_agents_workflow_injection_config_and_init_default` | Full Track | `Completed` | agents-workflow 專案組態治理 (config.project.json)、4 大 URI 協議貢獻，與一鍵初始化指令 (--init-default)。 |
 | **sub_05** | `sub_05_html_annotation_tokens_and_host_uri` | Fast Track | `Completed` | HTML 註解 Token 註冊 (BEGIN/END_HTML_ANNOTATION) 與 core 協議 yscb.host:// 支援。 |
 | **sub_06** | `sub_06_computed_token_provider` | Full Track | `Completed` | Contributes 依賴注入擴充支援 Computed Token 與 code.func:// 函式定位協議，實現 DYNAMIC_CONTEXT_MAP 即時路徑地圖動態注入。 |
+| **sub_07** | `sub_07_placeholder_pipeline_optimization` | Full Track | `Completed` | 佔位符解析管線優化：兩階段 6 步語意管線、三層 URI 重映射演算、release_target Contributes 體系、4 步原子發布交易與全量模板尋址消除。 |
 
 ---
 

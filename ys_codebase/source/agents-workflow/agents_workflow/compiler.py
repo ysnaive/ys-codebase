@@ -1,10 +1,27 @@
 """
 Artifact Factory Compiler for agents-workflow.
-Implements the 5-Step Multi-Pass Recursive State Machine for artifact resolution.
+Implements the 6-Stage Semantic Pipeline:
+Stage 1: 5-Step Multi-Pass Recursive State Machine for Content Token Resolution -> cache.root://
+Stage 2: 3-Tier Contextual Semantic URI Resolution -> Target Deployments.
+100% Python Standard Library, Zero Third-Party Dependency.
 """
+
 import os
+import sys
 import re
 from typing import Dict, List, Any, Optional, Tuple
+
+# 自動探測掛載 core 模組
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_pkg_root_aw = os.path.dirname(_this_dir)
+_mods_root_aw = os.path.dirname(_pkg_root_aw)
+for _cand in [
+    os.path.join(_mods_root_aw, "core"),
+    os.path.join(os.path.dirname(_mods_root_aw), "source", "core"),
+    os.path.join(os.path.dirname(_mods_root_aw), "modules", "core")
+]:
+    if os.path.isdir(_cand) and _cand not in sys.path:
+        sys.path.insert(0, _cand)
 
 try:
     from core import uri
@@ -31,8 +48,8 @@ def make_purge_regex(token_name: str) -> re.Pattern:
 class ArtifactCompiler:
     """
     協議產物工廠編譯器 (Artifact Factory Compiler).
-    負責解析已安裝模組之 contributes (export, insert, token)，
-    執行多輪遞迴狀態機展開，並將標準資產物化寫入 module.root://agents-workflow/exports/。
+    負責解析已安裝模組之 contributes (export, insert, token, release_target)，
+    執行 Stage 1 內容展開快取與 Stage 2 URI 相對路徑轉譯。
     """
 
     def __init__(self, host_dir: Optional[str] = None):
@@ -91,53 +108,57 @@ class ArtifactCompiler:
 
     def get_contributes_data(self) -> Dict[str, Any]:
         """
-        收集全系統 contributes 資料：
+        收集全系統 contributes 資料 (export, insert, token, release_target)：
         1. 優先自 cache.root://agents-workflow/contributes.merged.json 讀取。
-        2. 降級掃描 module.root:// 與 module.source.root:// 下各模組之 manifest.json。
+        2. 若缺少 release_target 或為空，主動掃描 module.root:// 與 module.source.root:// 下各模組之 manifest.json 補充。
         """
+        aggregated: Dict[str, Any] = {
+            "export": [],
+            "insert": [],
+            "token": [],
+            "release_target": []
+        }
+
         if uri:
             merged_uri = "cache.root://agents-workflow/contributes.merged.json"
             if uri.exists(merged_uri):
                 try:
                     data = uri.read_json(merged_uri)
                     if isinstance(data, dict):
-                        return data
+                        for k in ("export", "insert", "token", "release_target"):
+                            if k in data and isinstance(data[k], list):
+                                aggregated[k].extend(data[k])
                 except Exception:
                     pass
 
-        # 降級主動搜集
-        aggregated: Dict[str, Any] = {
-            "export": [],
-            "insert": [],
-            "token": []
-        }
+        # 若 release_target 或 export 依然為空，主動掃描模組根目錄
+        if not aggregated["export"] or not aggregated["release_target"]:
+            search_roots = ["module.root://", "module.source.root://"]
+            seen_modules = set()
 
-        search_roots = ["module.root://", "module.source.root://"]
-        seen_modules = set()
-
-        for s_root in search_roots:
-            if uri and uri.exists(s_root):
-                for mod in uri.listdir(s_root):
-                    if mod in seen_modules:
-                        continue
-                    seen_modules.add(mod)
-                    m_uri = f"{s_root}{mod}/manifest.json"
-                    if uri.exists(m_uri):
-                        try:
-                            m_data = uri.read_json(m_uri)
-                            c_all = m_data.get("contributes", {})
-                            c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
-                            for key in ("export", "insert", "token"):
-                                items = c_aw.get(key, [])
-                                if isinstance(items, list):
-                                    for it in items:
-                                        if isinstance(it, dict) and it not in aggregated[key]:
-                                            aggregated[key].append(it)
-                        except Exception:
-                            pass
+            for s_root in search_roots:
+                if uri and uri.exists(s_root):
+                    for mod in uri.listdir(s_root):
+                        if mod in seen_modules:
+                            continue
+                        seen_modules.add(mod)
+                        m_uri = f"{s_root}{mod}/manifest.json"
+                        if uri.exists(m_uri):
+                            try:
+                                m_data = uri.read_json(m_uri)
+                                c_all = m_data.get("contributes", {})
+                                c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
+                                for key in ("export", "insert", "token", "release_target"):
+                                    items = c_aw.get(key, [])
+                                    if isinstance(items, list):
+                                        for it in items:
+                                            if isinstance(it, dict) and it not in aggregated[key]:
+                                                aggregated[key].append(it)
+                            except Exception:
+                                pass
 
         # 若依然為空，直接讀取模組本地 manifest.json (本地源碼/安裝兜底)
-        if not any(aggregated.values()):
+        if not aggregated["export"] or not aggregated["release_target"]:
             local_mf = os.path.join(self.module_root, "manifest.json")
             if os.path.isfile(local_mf):
                 try:
@@ -146,7 +167,7 @@ class ArtifactCompiler:
                         m_data = json.load(f)
                     c_all = m_data.get("contributes", {})
                     c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
-                    for key in ("export", "insert", "token"):
+                    for key in ("export", "insert", "token", "release_target"):
                         items = c_aw.get(key, []) or m_data.get(key, [])
                         if isinstance(items, list):
                             for it in items:
@@ -166,7 +187,7 @@ class ArtifactCompiler:
         context: Optional[Any] = None
     ) -> str:
         """
-        單一 Export 檔案之多輪遞迴解算狀態機：
+        Stage 1: 單一 Export 檔案之多輪遞迴解算狀態機 (resolve_stage1_content)：
         - Step 1: 建立文本當前 __@{token}__ 錨點快照 CurrentTokens。
         - Step 2: 依照拓撲順序有序展開匹配的 insert (replace / below / above)。
         - Step 3: 移除本輪已完成解算或無匹配之 Token 錨點標籤行。
@@ -248,42 +269,37 @@ class ArtifactCompiler:
             if not remaining:
                 break
 
-        # Step 5: 保持 __#{uri}__ 語意標籤原樣，返回最終純淨字串
+        # Step 5: 保持 __#{uri}__ 語意標籤原樣，返回純淨中繼字串
         return resolved_text
 
-    def compile_all(self) -> Dict[str, Any]:
+    def resolve_stage1_content(self, content: str, inserts: List[Dict[str, Any]], context: Optional[Any] = None) -> str:
+        """Stage 1: 解算內容佔位符別名。"""
+        return self.resolve_single_artifact(content, inserts, context=context)
+
+    def compile_stage1(self) -> Dict[str, Any]:
         """
-        執行全量工廠物化編譯流水線：
-        1. 收集全系統 export, insert, token 宣告。
-        2. 逐一讀取 export 來源文字，調用 resolve_single_artifact 解算。
-        3. 分流原子覆蓋寫入至 exports/{standards|workflows|templates}/。
+        執行 Stage 1 全量段落佔位符解算：
+        將所有 export 項目物化寫入 cache.root://agents-workflow/resolved_contents/。
         """
         data = self.get_contributes_data()
         exports = data.get("export", [])
         inserts = data.get("insert", [])
         tokens = data.get("token", [])
 
-        exported_count = 0
+        resolved_items = []
         errors = []
 
-        # 確保目標輸出根目錄存在 (module.root://agents-workflow/exports/ 或 local exports/)
-        target_export_root = "module.root://agents-workflow/exports"
-        if not (uri and uri.exists("module.root://agents-workflow")):
-            # 本地源碼環境降級輸出
-            target_export_root = "module.source.root://agents-workflow/exports"
+        cache_target_root = "cache.root://agents-workflow/resolved_contents"
 
         for exp in exports:
             if not isinstance(exp, dict):
                 continue
-            exp_type = exp.get("type", "template")  # standard, workflow, template
+            exp_type = exp.get("type", "template")
             source_p = exp.get("source", "")
-            
-            # 推導目標檔案名稱
             base_name = os.path.basename(source_p.replace("\\", "/"))
             if not base_name:
                 continue
 
-            # 分類子目錄 (standards, workflows, templates)
             folder_map = {
                 "standard": "standards",
                 "standards": "standards",
@@ -301,35 +317,106 @@ class ArtifactCompiler:
 
             try:
                 ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
-                resolved_content = self.resolve_single_artifact(raw_content, inserts, context=ctx)
-                
-                # 寫入 exports
+                stage1_content = self.resolve_single_artifact(raw_content, inserts, context=ctx)
+
+                cache_uri = f"{cache_target_root}/{sub_folder}/{base_name}"
                 written = False
-                dst_uri = f"{target_export_root}/{sub_folder}/{base_name}"
                 if uri:
                     try:
-                        uri.makedirs(f"{target_export_root}/{sub_folder}", exist_ok=True)
-                        uri.write_text(dst_uri, resolved_content)
+                        uri.makedirs(f"{cache_target_root}/{sub_folder}", exist_ok=True)
+                        uri.write_text(cache_uri, stage1_content)
                         written = True
                     except Exception:
                         written = False
 
                 if not written:
-                    local_dst = os.path.join(self.module_root, "exports", sub_folder, base_name)
-                    os.makedirs(os.path.dirname(local_dst), exist_ok=True)
-                    with open(local_dst, "w", encoding="utf-8") as f:
-                        f.write(resolved_content)
-                
-                exported_count += 1
+                    local_cache = os.path.join(self.module_root, ".cache", "resolved_contents", sub_folder, base_name)
+                    os.makedirs(os.path.dirname(local_cache), exist_ok=True)
+                    with open(local_cache, "w", encoding="utf-8") as f:
+                        f.write(stage1_content)
+                    cache_uri = local_cache
+
+                resolved_items.append({
+                    "export": exp,
+                    "sub_folder": sub_folder,
+                    "base_name": base_name,
+                    "cache_uri": cache_uri,
+                    "content": stage1_content
+                })
             except Exception as e:
-                errors.append(f"Failed resolving {base_name}: {e}")
+                errors.append(f"Failed Stage 1 for {base_name}: {e}")
 
         return {
             "success": len(errors) == 0,
-            "exported_count": exported_count,
+            "resolved_items": resolved_items,
             "inserted_count": len(inserts),
             "tokens_count": len(tokens),
             "errors": errors
+        }
+
+    def resolve_stage2_uri(
+        self,
+        content: str,
+        current_dst_path: str,
+        deployment_map: Dict[str, str]
+    ) -> str:
+        """
+        Stage 2: 依三層重映射階層動態轉譯 `__#{uri}__` 為相對於 current_dst_path 之實體相對路徑。
+        - Tier 1: 命中 deployment_map (本次發布拓撲映射表)
+        - Tier 2: 專案級語意協議 (project://, docs://, plans://)
+        - Tier 3: 未知/未決協議安全降級
+        """
+        if not content or "__#{" not in content:
+            return content
+
+        cur_dir = os.path.dirname(os.path.abspath(current_dst_path))
+
+        def _replace_uri_tag(match: re.Match) -> str:
+            tag_uri = match.group(1).strip()
+
+            # --- Tier 1: 命中發布拓撲映射表 ---
+            # 支援完整 URI 與標準短名匹配 (如 module.root://.../templates/P00.md 與 templates/P00.md)
+            if tag_uri in deployment_map:
+                target_abs = deployment_map[tag_uri]
+                try:
+                    rel_p = os.path.relpath(target_abs, cur_dir).replace("\\", "/")
+                    return rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                except Exception:
+                    return target_abs.replace("\\", "/")
+
+            # 嘗試正規化短名匹配
+            for s_key, t_abs in deployment_map.items():
+                if tag_uri.endswith(s_key) or s_key.endswith(tag_uri):
+                    try:
+                        rel_p = os.path.relpath(t_abs, cur_dir).replace("\\", "/")
+                        return rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                    except Exception:
+                        return t_abs.replace("\\", "/")
+
+            # --- Tier 2: 專案級語意協議 ---
+            if uri and "://" in tag_uri:
+                try:
+                    real_p = uri.resolve(tag_uri, interactive=False)
+                    rel_p = os.path.relpath(real_p, cur_dir).replace("\\", "/")
+                    return rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                except Exception:
+                    pass
+
+            # --- Tier 3: 未知協議安全降級 ---
+            print(f"[compiler:warning] Unresolved semantic URI tag: '{tag_uri}'", file=sys.stderr)
+            return tag_uri
+
+        return URI_REF_REGEX.sub(_replace_uri_tag, content)
+
+    def compile_all(self) -> Dict[str, Any]:
+        """相容性別名：執行 Stage 1 快取物化編譯。"""
+        res = self.compile_stage1()
+        return {
+            "success": res.get("success", False),
+            "exported_count": len(res.get("resolved_items", [])),
+            "inserted_count": res.get("inserted_count", 0),
+            "tokens_count": res.get("tokens_count", 0),
+            "errors": res.get("errors", [])
         }
 
     def get_registered_tokens(self) -> List[Dict[str, Any]]:
@@ -341,3 +428,8 @@ class ArtifactCompiler:
         """自省查詢全系統已宣告的 Export 資產清單。"""
         data = self.get_contributes_data()
         return data.get("export", [])
+
+    def get_release_targets(self) -> List[Dict[str, Any]]:
+        """自省查詢全系統已宣告的 Release Target 清單。"""
+        data = self.get_contributes_data()
+        return data.get("release_target", [])
