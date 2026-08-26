@@ -21,7 +21,6 @@ class WorkflowInitializer:
     DEFAULT_RECOMMENDED_PATHS: Dict[str, str] = {
         "plans": "project://.agent_workflow/plans",
         "archived": "project://.agent_workflow/plans/archived",
-        "ext": "project://.agent_workflow/extensions",
         "docs": "project://docs"
     }
 

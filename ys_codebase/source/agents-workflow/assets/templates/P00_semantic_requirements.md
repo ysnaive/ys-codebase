@@ -1,12 +1,27 @@
+`__@{BEGIN_HTML_ANNOTATION}__`
+
+Phase 0 執行指引：
+1. 目標：在動筆寫任何規格前，以開放式對話完整釐清開發者的真實意圖與使用情境，建立可追溯的語意需求說明書 (P00_semantic_requirements.md)。
+2. 討論模式三大原則：
+   - Agent = 知識顧問：提問釐清、提供業界參考、揭示潛在邊界，絕對不主動提出設計方案或功能列表（除非開發者明確要求）。
+   - 開發者主導結束：討論必須由開發者明確宣告結束，Agent 嚴禁自行判定需求完整並推進。
+   - 先 P00 後分流：完整討論 ➔ P00 Confirmed ➔ 在同一輪呈遞三大層級分流判定建議。
+3. 雙星伴隨初始化：開立計畫目錄時，P00 必須與 changelog.md 剛性伴隨同時建立，並立即寫入第 1 筆紀錄。
+4. 深度調研 (Phase 0-R)：高複雜度或高未知需求啟動專題調研，產出 R{n:2d}_{topic}.md 專題調研報告，結論收斂回填 P00。
+5. Checkpoint 等待關卡：等待開發者明確確認 P00 內容（狀態更新為 Confirmed），並由開發者決定後續執行 Track。
+
+`__@{PHASE00_AGENTS_GUILD}__`
+
+`__@{END_HTML_ANNOTATION}__`
+
 # 語意需求說明書 (Semantic Requirements Discovery)
 
-> 功能名稱：[功能名稱]  
-> 建立日期：[YYYY-MM-DD]  
-> 所屬主計畫：[所屬主計畫]  
-> 計畫類型：[Feature / Refactor / Fix]  
-> 狀態：`Discussing`  
-> 擴充項目：none  
-> 模板版本：v1.4  
+`__@{PHASEXX_HEADER}__`
+
+`__@{PHASE00_HEADER}__`
+
+> 計畫類型：[Feature | Refactor | Bug Fix | Performance | Docs]  
+> 模板版本：v1.1  
 
 ---
 
@@ -27,3 +42,5 @@
 ## 3. 開放議題與確認紀錄
 
 - [ ] 
+
+`__@{PHASE00_TEMPLATE}__`
