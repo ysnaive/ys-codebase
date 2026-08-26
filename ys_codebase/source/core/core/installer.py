@@ -26,7 +26,10 @@ class Installer:
             print("[core:install] Error: No default_provider configured in yscb.config.json and no --provider specified.")
             return 1
             
-        ver_constraint = semver.normalize_version(version) if version else None
+        if version and (version == "build" or version.endswith(".build")):
+            ver_constraint = version
+        else:
+            ver_constraint = semver.normalize_version(version) if version else None
         
         print(f"[core:install] Resolving dependencies for '{module_name}'...")
         snap_id = self.engine.act_snapshot(f"pre_install_{module_name}")

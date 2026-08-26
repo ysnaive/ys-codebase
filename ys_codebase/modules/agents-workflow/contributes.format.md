@@ -132,36 +132,40 @@
   - `name` (`string`，必填)：發布 Target 識別碼（例 `antigravity`、`cursor`）。
   - `description` (`string`，選填)：Target 說明。
   - `projections` (`object`，必填)：針對不同資產 `type` 定義輸出路徑與格式：
-    - `target_dir` (`string`)：目標輸出目錄之語意 URI（例 `project://.agents/workflows`）。
-    - `extension` (`string`)：輸出副檔名（例 `.md`）。
-    - `header` (`array[string]` 或 `string`，選填)：注入於檔案頂部的 Header 模板（支援 `{export.description}`, `{export.name}` 等巨集）。
+    - `target_dir` (`string`)：目標輸出目錄之路徑（例 `.agents/workflows`）。
+    - `extension` (`string`)：目標檔案副檔名（預設 `.md`）。
+    - `header` (`list[string]`, 可選)：檔案開頭注入之 Frontmatter 標頭，支援 `{export.description}` 等元數據插值。
 
 ```json
 {
-  "release_target": [
-    {
-      "name": "antigravity",
-      "description": "Google Antigravity IDE 原生 Slash Commands 與標準規範輸出",
-      "projections": {
-        "workflow": {
-          "target_dir": "project://.agents/workflows",
-          "extension": ".md",
-          "header": [
-            "---",
-            "description: {export.description}",
-            "---"
-          ]
-        },
-        "template": {
-          "target_dir": "project://.agents/templates",
-          "extension": ".md"
-        },
-        "standard": {
-          "target_dir": "project://.agents/standards",
-          "extension": ".md"
+  "contributes": {
+    "agents-workflow": {
+      "release_target": [
+        {
+          "name": "antigravity",
+          "description": "Google Antigravity IDE 原生 Slash Commands 與標準規範輸出",
+          "projections": {
+            "workflow": {
+              "target_dir": ".agents/workflows",
+              "extension": ".md",
+              "header": [
+                "---",
+                "description: {export.description}",
+                "---"
+              ]
+            },
+            "template": {
+              "target_dir": "project://.agents/.yscb/templates",
+              "extension": ".md"
+            },
+            "standard": {
+              "target_dir": "project://.agents/.yscb/standards",
+              "extension": ".md"
+            }
+          }
         }
-      }
+      ]
     }
-  ]
+  }
 }
 ```

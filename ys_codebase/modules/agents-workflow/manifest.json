@@ -419,11 +419,11 @@
               ]
             },
             "template": {
-              "target_dir": "project://.agents/templates",
+              "target_dir": "project://.agents/.yscb/templates",
               "extension": ".md"
             },
             "standard": {
-              "target_dir": "project://.agents/standards",
+              "target_dir": "project://.agents/.yscb/standards",
               "extension": ".md"
             }
           }

@@ -72,7 +72,7 @@ class Builder:
 
     def _update_build_index(self, name: str, description: str = "") -> None:
         """Updates build/{name}/index.json scanning *.zip files."""
-        mod_build_root = f"module.build.root://{name}"
+        mod_build_root = f"module.build://{name}"
         if not uri.exists(mod_build_root):
             return
             
@@ -97,10 +97,12 @@ class Builder:
 
     def _update_release_index(self, name: str, description: str = "", new_version: Optional[str] = None) -> None:
         """
-        Updates release/{name}/index.json with Single Active Revision per X.Y.Z rule.
-        If new_version is provided, automatically eliminates older revision zip files under the same major.minor.patch.
+        Updates release/{name}/index.json with 3-Revision Sliding Window & Legacy Triplet Convergence.
+        - Rule 1 (Same Triplet): Retain at most 3 latest revisions (X.Y.Z.W, X.Y.Z.W-1, X.Y.Z.W-2), purge older.
+        - Rule 2 (Cross Triplet): When bumped to X.Y.Z+1 or higher, legacy triplets retain only their highest revision (X.Y.Z.W_max).
+        - Rule 3 (Index SSOT): Re-scan active physical zip files to generate index.json.
         """
-        mod_rel_root = f"module.release.root://{name}"
+        mod_rel_root = f"module.release://{name}"
         if not uri.exists(mod_rel_root):
             return
             
@@ -108,26 +110,51 @@ class Builder:
         if not os.path.isdir(real_rel_dir):
             return
 
-        # 1. Clean up old revisions if new_version given
+        # 1. Execute Retention and Purge Policy
         if new_version:
-            new_tuple = semver.parse_semver(new_version)
-            for item in list(os.listdir(real_rel_dir)):
-                item_path = os.path.join(real_rel_dir, item)
-                if item.endswith(".zip"):
-                    item_ver = item[:-4]
-                    if item_ver != new_version:
+            try:
+                new_tuple = semver.parse_semver(new_version)
+            except Exception:
+                new_tuple = None
+
+            if new_tuple is not None:
+                triplet_map: Dict[Tuple[int, int, int], List[Tuple[semver.VersionTuple, str, str]]] = {}
+                for item in list(os.listdir(real_rel_dir)):
+                    item_path = os.path.join(real_rel_dir, item)
+                    if item.endswith(".zip"):
+                        item_ver = item[:-4]
                         try:
                             item_tuple = semver.parse_semver(item_ver)
-                            if item_tuple.triplet == new_tuple.triplet:
-                                # Same X.Y.Z -> purge older revision zip file
-                                os.remove(item_path)
+                            trip = item_tuple.triplet
+                            if trip not in triplet_map:
+                                triplet_map[trip] = []
+                            triplet_map[trip].append((item_tuple, item_ver, item_path))
                         except Exception:
                             pass
-                elif os.path.isdir(item_path):
-                    # Purge any legacy unpacked directories
-                    shutil.rmtree(item_path, ignore_errors=True)
+                    elif os.path.isdir(item_path):
+                        shutil.rmtree(item_path, ignore_errors=True)
 
-        # 2. Gather active release versions from .zip files
+                for trip, items in triplet_map.items():
+                    items.sort(key=functools.cmp_to_key(lambda a, b: semver.compare_semver(a[0], b[0])), reverse=True)
+                    
+                    if trip == new_tuple.triplet:
+                        # Rule 1: Same triplet retains at most 3 revisions
+                        purge = items[3:]
+                        for _, _, purge_path in purge:
+                            try:
+                                os.remove(purge_path)
+                            except Exception:
+                                pass
+                    else:
+                        # Rule 2: Legacy triplets retain only the highest revision
+                        purge = items[1:]
+                        for _, _, purge_path in purge:
+                            try:
+                                os.remove(purge_path)
+                            except Exception:
+                                pass
+
+        # 2. Gather active release versions from .zip files (Index SSOT)
         versions: List[str] = []
         for item in os.listdir(real_rel_dir):
             if item.endswith(".zip"):
@@ -145,13 +172,13 @@ class Builder:
     def build_module(self, name: str, clean: bool = True) -> Tuple[bool, str]:
         """
         本地完整打包 (dev build):
+        - 打包前一律自動清空 build/<name>/ 目錄。
         - 輸出單一 build/<name>/<ver>.build.zip。
         - 100% 完整保留 tests/ 與開發檔案。
         - 產物版本號強制標記為 X.Y.Z.build。
-        - 清理舊 *.build.zip 保持單一最新產物。
         - 自動更新 build/{name}/index.json。
         """
-        src_uri = f"module.source.root://{name}"
+        src_uri = f"module.source://{name}"
         if not uri.exists(src_uri):
             return False, f"Source module not found at {src_uri}."
         
@@ -166,20 +193,22 @@ class Builder:
         v_tuple = semver.parse_semver(raw_version)
         build_version = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
         
-        mod_build_root = f"module.build.root://{name}"
+        mod_build_root = f"module.build://{name}"
         uri.makedirs(mod_build_root)
         
         real_build_dir = uri.resolve(mod_build_root)
         
-        # 2. Clean previous *.build.zip files
-        if clean and os.path.isdir(real_build_dir):
+        # 2. Automatically clean all previous build files and directories
+        if os.path.isdir(real_build_dir):
             for item in list(os.listdir(real_build_dir)):
-                if item.endswith(".build.zip") or item.endswith(".build"):
-                    p = os.path.join(real_build_dir, item)
-                    if os.path.isdir(p):
-                        shutil.rmtree(p, ignore_errors=True)
-                    else:
+                p = os.path.join(real_build_dir, item)
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    try:
                         os.remove(p)
+                    except Exception:
+                        pass
 
         target_zip_path = os.path.join(real_build_dir, f"{build_version}.zip")
         tmp_zip_path = target_zip_path + ".tmp"
@@ -224,15 +253,15 @@ class Builder:
         純淨發布打包 (dev release packager):
         - 輸出單一 release/<name>/<target_version>.zip。
         - 嚴格依 .yscbignore 與 RELEASE_IGNORES 排除 tests/ 與開發檔案。
-        - 自動執行同 X.Y.Z 舊 Revision.zip 淘汰清理。
+        - 自動執行 3-Revision 滑動窗口保留與淘汰清理。
         - 更新 release/{name}/index.json。
         """
-        src_uri = f"module.source.root://{name}"
+        src_uri = f"module.source://{name}"
         if not uri.exists(src_uri):
             return False, f"Source module not found at {src_uri}."
             
         manifest_data = uri.read_json(f"{src_uri}/manifest.json")
-        mod_rel_root = f"module.release.root://{name}"
+        mod_rel_root = f"module.release://{name}"
         uri.makedirs(mod_rel_root)
         
         real_rel_dir = uri.resolve(mod_rel_root)
@@ -272,18 +301,18 @@ class Builder:
             os.remove(target_zip_path)
         os.replace(tmp_zip_path, target_zip_path)
                 
-        # Update release/index.json with revision purging
+        # Update release/index.json with 3-Revision Retention Policy
         self._update_release_index(name, description=manifest_data.get("description", ""), new_version=target_version)
         
         return True, f"Successfully packaged release '{name}@{target_version}' ({copied_count} files) -> {target_zip_path}."
 
     def build_all(self, clean: bool = True) -> Dict[str, Tuple[bool, str]]:
         results = {}
-        src_root_uri = "module.source.root://"
+        src_root_uri = "module.source://"
         if not uri.exists(src_root_uri):
             return results
         for item in uri.listdir(src_root_uri):
-            item_uri = f"module.source.root://{item}"
+            item_uri = f"module.source://{item}"
             if uri.is_dir(item_uri) and uri.exists(f"{item_uri}/manifest.json"):
                 results[item] = self.build_module(item, clean=clean)
         return results

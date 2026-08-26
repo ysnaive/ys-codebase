@@ -44,6 +44,18 @@
 
 ## 2026_08_26_1747_core_dev_refinement
 
+- **Dev 與 Agents-Workflow 模組連動注入與本地建置直裝特例 (`sub_04_dev_agents_workflow_linkage_injection`)**：
+  - **宣告式工程規範連動注入 (`contributes["agents-workflow"]`)**：
+    - `dev` 模組於 `manifest.json` 宣告 `contributes["agents-workflow"]`，以 `mode: "below"` 模式向 `DevelopmentStandards.md` 尾部的 `WORKFLOW_SOP_STANDARDS` 錨點注入 `DevEngineeringStandards.md`。
+    - 建立 `DevEngineeringStandards.md` 資產，冠以 **「YS-Codebase 模組開發專案特化工程規範」**，收斂三大空間 SSOT、虛擬沙盒測試規範、靜態合規守門。
+    - **🚨 Agent 剛性防呆禁止條款**：規範中剛性明定：在開發者未明確下達指示（如「發布/安裝/同步」）前，**Agent 絕對禁止主動執行 `dev release` 或 `install` 覆蓋宿主環境**；唯一允許的驗證手段為 **`python yscb.py dev test` 於隔離虛擬沙盒中跑測**。
+  - **套件管理器本地建置直裝通道 (`install @build`)**：
+    - `core.engine.PackageManager` 在 `act_download` 與 `_get_module_manifest_from_provider_or_local` 擴充 `@build` 特例通道：當版本約束包含 `build` 時，強制直連本地端 `module.build://{module_name}/` 尋找 `*.build.zip` 下載物化，缺少產物時拋出明確引導錯誤，徹底終結本地開發調試需先手動 release 的繁瑣流程。
+  - **全量測試與回歸驗證**：
+    - 模組內部單元測試與 `agents-workflow` 規範注入測試 100% Passed。
+    - 全系統端到端沙盒測試 118/118 100% Ready (47.770s)。
+    - 交付 `docs/dev/user_guide.md` 與 `docs/dev/DESIGN_NOTES.md` (DN-DEV-05)。
+
 - **Dev 模組發布強制覆蓋模式與 release-git 智慧略過 (`sub_03_dev_release_force_override`)**：
   - **發布強制覆蓋模式 (`--force` / `-f`)**：
     - 為 `dev release`、`dev release-check` 與 `dev release-git` 擴充 `--force` 旗標支援。

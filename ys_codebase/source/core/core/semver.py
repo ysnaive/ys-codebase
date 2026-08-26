@@ -218,12 +218,13 @@ def _match_single_clause(version: str, clause: str) -> bool:
             return v_curr.major == 0 and v_curr.minor == v_target.minor
         return v_curr.major == v_target.major
     
-    return False
-
 def match_constraint(version: Union[str, VersionTuple], constraint: Optional[str]) -> bool:
     v_str = str(version)
     if not constraint or constraint.strip() == "" or constraint.strip() == "*":
         return True
+    
+    if constraint.strip() == "build" or constraint.strip() == "==build":
+        return ("build" in v_str or v_str.endswith(".build"))
     
     clauses = [c.strip() for c in constraint.split(",") if c.strip()]
     for c in clauses:

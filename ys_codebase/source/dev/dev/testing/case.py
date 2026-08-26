@@ -17,7 +17,7 @@ from dev.testing.sandbox import SandboxContext, SandboxProvisioner
 
 class YSCBTestCase(unittest.TestCase):
     """
-    YS-Codebase Core Test Fixture (Full-Fidelity Virtual Sandbox on temp://sandbox_<uuid>).
+    YS-Codebase Core Test Fixture (Full-Fidelity Virtual Sandbox on cache://dev/sandbox/<uuid>).
     """
     ctx: SandboxContext
     sandbox_id: str

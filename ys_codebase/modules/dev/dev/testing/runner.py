@@ -63,7 +63,7 @@ def filter_suite(
 class TestDiscovery:
     @staticmethod
     def discover_modules(target: Optional[str] = None) -> List[str]:
-        source_root_uri = "module.source.root://"
+        source_root_uri = "module.source://"
         if not uri.exists(source_root_uri):
             return []
         source_real = uri.resolve(source_root_uri)
@@ -104,7 +104,7 @@ class TestDiscovery:
         # Phase 2: Custom Tests in source/<mod>/tests/
         custom_count = 0
         if not contract_only:
-            src_real = uri.resolve(f"module.source.root://{module_name}")
+            src_real = uri.resolve(f"module.source://{module_name}")
             tests_dir = os.path.join(src_real, "tests")
             if os.path.isdir(tests_dir):
                 # 1. Clear cached 'tests' and module namespace in sys.modules to prevent stale module cache
@@ -114,7 +114,7 @@ class TestDiscovery:
                         
                 # 2. Clean other module source directories from sys.path to avoid module name shadowing
                 try:
-                    src_root = uri.resolve("module.source.root://")
+                    src_root = uri.resolve("module.source://")
                     sys.path[:] = [p for p in sys.path if not (p.startswith(src_root) and p != src_real)]
                 except Exception:
                     pass
