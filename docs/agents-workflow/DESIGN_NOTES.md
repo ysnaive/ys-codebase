@@ -14,6 +14,7 @@
 | **[DN-AW-04]** | 佔位符 Markdown 可視化語法選型與殘留抹除策略 | 工廠編譯器、全量資產庫 | `Active` |
 | **[DN-AW-05]** | 組態模板 `!undefined` 剛性解耦與推薦預設值封裝 | 組態治理、一鍵初始化引擎 | `Active` |
 | **[DN-AW-06]** | HTML 註解 Token 自宣告與字面值 Replace 解算 | 工廠編譯器、資產導出 | `Active` |
+| **[DN-AW-07]** | 兩階段 6 步管線、三層 URI 重映射與 4 步原子發布交易 | 工廠編譯器、發布引擎、CLI | `Active` |
 
 ---
 
@@ -61,3 +62,16 @@
   1. 宣告 `BEGIN_HTML_ANNOTATION` 與 `END_HTML_ANNOTATION` Token。
   2. 在 `manifest.json` 中配置 `type: "const"` 與 `mode: "replace"`，分別替換為字面值 `<!--` 與 `-->`。
   3. 編譯期由工廠狀態機原子替換，解算後產生合規 HTML 註解。
+
+---
+
+### [DN-AW-07] 兩階段 6 步管線、三層 URI 重映射與 4 步原子發布交易
+- **背景**：
+  1. 原 `exports/` 目錄直接輸出在模組根目錄下，造成安裝與源碼空間污染。
+  2. 模組原始資產維持語意 URI 解耦（如 `module.root://`），但 Agent 工具 (`view_file`) 與人眼預覽需要相對於落地檔案的實體相對路徑。
+  3. 多 Release Target 發布時，若發布中途異常可能造成孤立殘留檔案或中斷損毀。
+- **決策**：
+  1. 拆解為標準 6 步語意編譯發布管線：Stage 1 專注解算內容並寫入 `cache.root://agents-workflow/resolved_contents/`，Stage 2 依啟用之 `release_targets` 解析發布拓撲並計算相對路徑。
+  2. 實作三層重映射階層：Tier 1 (發布拓撲映射表) ➔ Tier 2 (Core 專案級協議) ➔ Tier 3 (未知協議安全降級)。
+  3. 實作基於 `storage://agents-workflow/release_manifest.json` 的 4 步原子發布交易（過往清理 ➔ 提前解算 ➔ 持久紀錄 ➔ 目錄落地與 `AGENTS.md` 軟合併）。
+- **效益**：模組安裝目錄保持 100% 純淨，Agent 模板尋址盲區徹底消除，多環境發布具備交易級安全保證。

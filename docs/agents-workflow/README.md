@@ -24,7 +24,7 @@
 | 佔位符類型 | 語法結構 | 正則表達式 | 核心職責與編譯行為 |
 | :--- | :--- | :--- | :--- |
 | **插入佔位符 (Token Anchor)** | `__@{TOKEN_NAME}__` | `r"__@\{\s*([A-Za-z0-9_]+)\s*\}__"` | 主動注入點。由編譯器 5-Step 狀態機進行 `replace` / `below` / `above` 多輪遞迴展開，解算完成後自動乾淨抹除殘留標籤行。 |
-| **路徑佔位符 (URI Reference)** | `__#{URI_OR_PATH}__` | `r"__#\{\s*([^}]+)\s*\}__"` | 被動語意參照。於物化編譯時 100% 原樣保留，作為文檔中的語意協議錨點供下游工具與人眼閱讀。 |
+| **路徑佔位符 (URI Reference)** | `__#{URI_OR_PATH}__` | `r"__#\{\s*([^}]+)\s*\}__"` | 被動語意參照。於 Stage 1 快取中保留解耦，於 Stage 2 釋出發布時依三層階層（Tier 1 拓撲表 ➔ Tier 2 Core 協議 ➔ Tier 3 降級）動態轉譯為相對於目標檔案之本機實體相對路徑。 |
 
 > [!TIP]
 > 插入佔位符支援大括號內部微量空格容錯（例 `__@{ PHASEXX_STANDARD_HEADER }__` 與 `__@{PHASEXX_STANDARD_HEADER}__` 等價）。
@@ -33,7 +33,7 @@
 
 ## 3. Workflow URI 協議體系與組態治理
 
-模組向 Core 貢獻 4 大專屬語意 URI 協議，動態綁定至 `config://agents-workflow/config.project.json`：
+模組向 Core 貢獻 3 大專屬語意 URI 協議，動態綁定至 `config://agents-workflow/config.project.json`：
 
 | 協議名稱 | 類型 | 預設模板值 | 一鍵初始化推薦路徑 | 核心職責說明 |
 | :--- | :---: | :---: | :--- | :--- |
@@ -43,21 +43,39 @@
 
 ---
 
-## 4. 動態計算 Token (Computed Token Provider)
+## 4. 釋出目標體系 (`release_target` Contributes)
+
+模組支援宣告 `release_target`，定義不同開發環境（如 Google Antigravity IDE、Claude Code 等）的資產投影規則：
+- **`projections`**：定義 `workflow`、`template`、`standard` 的目標目錄、副檔名與純文字/陣列 `header` 模板。
+- **巨集插值**：`header` 支援 `{export.description}`、`{export.name}`、`{target.name}` 等巨集變數動態替換。
+- **原子交易發布**：由 `ReleasePublisher` 基於 `storage://` 執行過往清理、提前解算、持久清單與目錄落地 4 步原子交易，並依 `enable_agents_md` 軟合併專案根目錄 `AGENTS.md`。
+
+---
+
+## 5. 動態計算 Token (Computed Token Provider)
 
 模組支援透過 `code.func://` 協議在編譯解算期動態調用 Python 函式生成內容：
 - **`DYNAMIC_CONTEXT_MAP`**：由 `code.func://agents-workflow/providers:get_dynamic_context_map` 即時生成當前專案活躍語意 URI 解析地圖，注入 `ContextInit.md`。
 
 ---
 
-## 5. CLI 快速使用指南
+## 6. CLI 快速使用指南
 
 ```bash
+# 執行 4 步原子發布流水線，物化輸出至所有已啟用之 Release Targets (如 .agents/)
+python yscb.py agents-workflow release
+
+# 查詢全系統可用 Release Targets 與本專案啟用狀態
+python yscb.py agents-workflow release-target --list
+
+# 啟用指定 Release Target 並自動觸發原子發布
+python yscb.py agents-workflow release-target --add antigravity
+
+# 停用指定 Release Target 並自動清理已發布檔案
+python yscb.py agents-workflow release-target --remove antigravity
+
 # 一鍵初始化 Workflow 協議、建立推薦目錄並寫入組態 (支援 -y 自動確認)
 python yscb.py agents-workflow --init-default [-y]
-
-# 使用自訂路徑進行初始化覆蓋
-python yscb.py agents-workflow --init-default --path-plans="project://my_plans" --path-docs="project://my_docs" -y
 
 # 列出全系統已註冊之 Token 錨點清單與說明
 python yscb.py agents-workflow tokens
@@ -65,13 +83,13 @@ python yscb.py agents-workflow tokens
 # 列出當前所有模組導出之 Standards, Workflows, Templates 清冊
 python yscb.py agents-workflow list
 
-# 觸發工廠物化流水線，執行多輪遞迴狀態機解算並寫入 exports/
+# 執行 Stage 1 內容編譯並寫入 cache.root://agents-workflow/resolved_contents/
 python yscb.py agents-workflow compile
 ```
 
 ---
 
-## 5. 架構與專題手冊導引
+## 7. 架構與專題手冊導引
 
-- **協議產物工廠化與多輪狀態機**：詳見 [FACTORY_PIPELINE.md](./FACTORY_PIPELINE.md)。
+- **協議產物工廠化與 6 步語意管線**：詳見 [FACTORY_PIPELINE.md](./FACTORY_PIPELINE.md)。
 - **設計決策與工程妥協**：詳見 [DESIGN_NOTES.md](./DESIGN_NOTES.md)。
