@@ -1,12 +1,21 @@
 {
   "name": "agents-workflow",
-  "version": "0.1.0.build",
+  "version": "1.0.0.build",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
     "core": ">=1.0.0"
   },
   "contributes": {
+    "commands": {
+      "init": "One-click workflow URI protocols and directories initialization",
+      "plan": "Dev Plans management toolchain (status, archive, search, verify)",
+      "release": "Execute 4-step atomic release transaction for all active targets",
+      "release-target": "Manage release targets (list, add, remove)",
+      "compile": "Run Stage 1 artifact compilation into cache.root://",
+      "tokens": "List all registered token anchors and descriptions",
+      "list": "List all declared export standards, workflows, and templates"
+    },
     "core": {
       "uri_schemes": [
         {

@@ -378,18 +378,9 @@ def _get_installed_module_commands(base_dir: str, yscb_root: str) -> Dict[str, D
             if cmds and isinstance(cmds, dict):
                 summary[mod_name] = {cmd: desc for cmd, desc in cmds.items()}
             else:
-                if mod_name == "dev":
-                    summary["dev"] = {
-                        "create": "Create a new module skeleton (source/<name>)",
-                        "check": "Validate module structure and manifest compliance",
-                        "build": "Build dev package (.build.zip with tests)",
-                        "test": "Run module tests inside an isolated sandbox",
-                        "release": "Package and release pure module (.zip to release/)"
-                    }
-                else:
-                    summary[mod_name] = {
-                        "run": mod_desc
-                    }
+                summary[mod_name] = {
+                    "run": mod_desc
+                }
         except Exception:
             pass
     return summary

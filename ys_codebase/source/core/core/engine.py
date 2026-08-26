@@ -275,52 +275,52 @@ class AtomicEngine:
         self, 
         module_name: str, 
         provider_url: str, 
-        version_constraint: Optional[str]
+        version_constraint: Optional[str] = None
     ) -> Dict[str, Any]:
         is_build_req = bool(version_constraint and (version_constraint == "build" or version_constraint.endswith(".build") or "build" in version_constraint))
 
-        # 1. Tier 1: Check build://
-        build_root_uri = f"module.build://{module_name}"
-        if uri.exists(build_root_uri):
-            try:
-                # Direct scan for *.build.zip if requested build revision
-                for f in uri.listdir(build_root_uri):
-                    if f.endswith(".build.zip") or (is_build_req and f.endswith(".zip")):
-                        b_zip_uri = f"{build_root_uri}/{f}"
-                        with zipfile.ZipFile(uri.resolve(b_zip_uri), "r") as zf:
-                            m_data = json.loads(zf.read("manifest.json").decode("utf-8"))
-                            ver_in_m = m_data.get("version", "1.0.0.0")
-                            if not ver_in_m.endswith(".build"):
-                                v_p = semver.parse_semver(ver_in_m)
-                                m_data["version"] = f"{v_p.major}.{v_p.minor}.{v_p.patch}.build"
-                            return m_data
-            except Exception:
-                pass
+        # 1. Tier 1: Check build:// (ONLY IF explicitly requested build revision)
+        if is_build_req:
+            build_root_uri = f"module.build://{module_name}"
+            if uri.exists(build_root_uri):
+                try:
+                    for f in uri.listdir(build_root_uri):
+                        if f.endswith(".build.zip") or f.endswith(".zip"):
+                            b_zip_uri = f"{build_root_uri}/{f}"
+                            with zipfile.ZipFile(uri.resolve(b_zip_uri), "r") as zf:
+                                m_data = json.loads(zf.read("manifest.json").decode("utf-8"))
+                                ver_in_m = m_data.get("version", "1.0.0.0")
+                                if not ver_in_m.endswith(".build"):
+                                    v_p = semver.parse_semver(ver_in_m)
+                                    m_data["version"] = f"{v_p.major}.{v_p.minor}.{v_p.patch}.build"
+                                return m_data
+                except Exception:
+                    pass
 
-        if uri.exists(f"{build_root_uri}/index.json"):
-            try:
-                b_idx = uri.read_json(f"{build_root_uri}/index.json")
-                b_versions = b_idx.get("versions", [])
-                best_bld = semver.find_best_version(b_versions, version_constraint)
-                if best_bld:
-                    # Check zip in build root
-                    b_zip_uri = f"{build_root_uri}/{best_bld}.zip"
-                    if uri.exists(b_zip_uri):
-                        with zipfile.ZipFile(uri.resolve(b_zip_uri), "r") as zf:
-                            return json.loads(zf.read("manifest.json").decode("utf-8"))
-                    if uri.exists(f"{build_root_uri}/{best_bld}/manifest.json"):
-                        return uri.read_json(f"{build_root_uri}/{best_bld}/manifest.json")
-            except Exception:
-                pass
-
+            if uri.exists(f"{build_root_uri}/index.json"):
+                try:
+                    b_idx = uri.read_json(f"{build_root_uri}/index.json")
+                    b_versions = b_idx.get("versions", [])
+                    best_bld = semver.find_best_version(b_versions, version_constraint)
+                    if best_bld:
+                        b_zip_uri = f"{build_root_uri}/{best_bld}.zip"
+                        if uri.exists(b_zip_uri):
+                            with zipfile.ZipFile(uri.resolve(b_zip_uri), "r") as zf:
+                                return json.loads(zf.read("manifest.json").decode("utf-8"))
+                        if uri.exists(f"{build_root_uri}/{best_bld}/manifest.json"):
+                            return uri.read_json(f"{build_root_uri}/{best_bld}/manifest.json")
+                except Exception:
+                    pass
         # 2. Tier 2: Check release/ & local provider zip / index.json
         p_abs = os.path.abspath(provider_url) if not provider_url.startswith(("http://", "https://", "file://")) else None
         if p_abs and os.path.isdir(p_abs):
             candidate_indexes = [
                 os.path.join(p_abs, module_name, "index.json"),
-                os.path.join(p_abs, "release", module_name, "index.json"),
-                os.path.join(p_abs, "build", module_name, "index.json")
+                os.path.join(p_abs, "release", module_name, "index.json")
             ]
+            if is_build_req:
+                candidate_indexes.append(os.path.join(p_abs, "build", module_name, "index.json"))
+
             for idx_p in candidate_indexes:
                 if os.path.isfile(idx_p):
                     try:
@@ -339,9 +339,10 @@ class AtomicEngine:
             # Fallback to local directory scanning
             candidate_dirs = [
                 os.path.join(p_abs, "release", module_name),
-                os.path.join(p_abs, module_name),
-                os.path.join(p_abs, "build", module_name)
+                os.path.join(p_abs, module_name)
             ]
+            if is_build_req:
+                candidate_dirs.append(os.path.join(p_abs, "build", module_name))
             for c_dir in candidate_dirs:
                 if os.path.isdir(c_dir):
                     versions = [v for v in os.listdir(c_dir) if os.path.isdir(os.path.join(c_dir, v))]

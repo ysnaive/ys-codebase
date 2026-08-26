@@ -1,21 +1,21 @@
 {
   "yscb_root": "./ys_codebase",
-  "default_provider": "./release",
+  "default_provider": "./ys_codebase/release",
   "installed_modules": {
     "core": {
-      "version": "1.0.0.build",
-      "installed_at": "2026-08-26 18:42:10",
-      "provider": "./release"
+      "version": "1.0.0.0",
+      "installed_at": "2026-08-27 00:05:00",
+      "provider": "./ys_codebase/release"
     },
     "dev": {
-      "version": "1.0.0.build",
-      "installed_at": "2026-08-26 23:25:21",
-      "provider": "./release"
+      "version": "1.0.0.0",
+      "installed_at": "2026-08-27 00:22:33",
+      "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "0.1.0.build",
-      "installed_at": "2026-08-26 22:41:23",
-      "provider": "./release"
+      "version": "1.0.0.0",
+      "installed_at": "2026-08-27 00:22:32",
+      "provider": "./ys_codebase/release"
     }
   }
 }

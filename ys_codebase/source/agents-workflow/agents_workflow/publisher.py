@@ -34,7 +34,7 @@ except ImportError:
 from agents_workflow.compiler import ArtifactCompiler
 
 
-MANIFEST_STORAGE_URI = "storage://@/release_manifest.json"
+MANIFEST_STORAGE_URI = "storage://agents-workflow/release_manifest.json"
 AGENTS_MD_BEGIN = "<!-- YSCB_AGENTS_BEGIN -->"
 AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
 

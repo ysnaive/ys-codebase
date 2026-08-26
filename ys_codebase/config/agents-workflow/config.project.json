@@ -1,9 +1,8 @@
 {
   "paths": {
-    "plans": "!undefined",
-    "archived": "!undefined",
-    "ext": "!undefined",
-    "docs": "!undefined"
+    "plans": "project://plans",
+    "archived": "project://plans/archived",
+    "docs": "project://docs"
   },
   "ide": [],
   "enable_agents_md": true,
