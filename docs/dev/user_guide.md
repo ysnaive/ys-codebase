@@ -70,10 +70,14 @@ python yscb.py dev build --all
 ### 3.2 發布就緒預檢 (`dev release-check`)
 獨立執行 3-Gate 發布守門檢驗，確認模組是否已就緒發布：
 ```bash
+# 標準預檢
 python yscb.py dev release-check <module_name>
+
+# 強制覆蓋模式預檢（放行同版本衝突）
+python yscb.py dev release-check <module_name> --force
 ```
 - **注意**：本指令專注於單一模組發布審查，**明確拒絕 `--all` 參數**。
-- **檢查項目**：Gate 1 靜態合規性、Gate 2 版本庫未重複、Gate 3 版本號嚴格大於在庫同三元組最高 revision。
+- **檢查項目**：Gate 1 靜態合規性、Gate 2 版本庫未重複（`--force` 時放行）、Gate 3 版本號嚴格大於在庫最高 revision（`--force` 時允許同版本原地覆蓋，但歷史舊版本回退仍被阻斷）。
 
 ### 3.3 純淨正式發布 (`dev release`)
 執行 3-Gate 校驗通過後，產出純淨發布包並實施產物治理：
@@ -81,24 +85,31 @@ python yscb.py dev release-check <module_name>
 # 發布單一模組
 python yscb.py dev release <module_name>
 
+# 原地覆蓋同版本發布（剛打包發現註解/文檔小瑕疵時使用，免 bump revision）
+python yscb.py dev release <module_name> --force
+
 # 依模組依賴 DAG 拓撲排序批次發布
-python yscb.py dev release --all
+python yscb.py dev release --all [--force]
 ```
 - **特性**：
   - 嚴格排除 `tests/` 與 `.yscbignore`。
   - 自動執行 **3-Revision 時序滑動窗口保留**與**跨三元組升級舊版收斂淘汰**。
+  - `--force` 模式：支援物理覆蓋同名 `.zip` 產物，重新計算 hash 並同步更新 `release/<mod>/index.json`。
   - 以磁碟真實存在的 zip 檔案為唯一事實來源動態更新 `release/<mod>/index.json`。
 
 ### 3.4 安全提交流水線 (`dev release-git`)
 一鍵執行標準 4 步發布與版本控制流水線：
 ```bash
+# 標準安全發布
 python yscb.py dev release-git <module_name> "<commit message>"
+
+# 強制重新覆蓋發布並覆蓋 Git Tag
+python yscb.py dev release-git <module_name> "<commit message>" --force
 ```
-- **執行順序**：
-  1. `dev test <module_name>`（跑測失敗立即中斷）。
-  2. `dev release-check <module_name>`（預檢失敗立即中斷）。
-  3. `dev release <module_name>`（純淨打包與產物治理）。
-  4. 本地 Git 提交並打標：`git add -A` ➔ `git commit -m "<msg>"` ➔ `git tag -a "<mod>/v<ver>" -m "<msg>"`。
+- **智慧感應機制**：
+  - 若目標版本**尚未發布**：依序執行 `dev test` ➔ `dev release-check` ➔ `dev release` ➔ 本地 Git Commit & Tag。
+  - 若目標版本**已發布且無 `--force`**：自動安全略過 release 打包步驟，直接推進執行後續的 Local Git Commit & Tag。
+  - 若目標版本**已發布且傳入 `--force`**：重新調用 `dev release --force` 物理覆蓋打包產物，並以 `git tag -f` 覆蓋標籤。
 - 🚨 **安全承諾**：本指令**絕不執行 `git push`**，完全由開發者自主決定何時推播至遠端。
 
 ---
