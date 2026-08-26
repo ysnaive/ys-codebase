@@ -75,3 +75,23 @@ def host_scope(host_dir_path: str) -> Iterator[str]:
 - `uri.listdir(uri_str: str) -> List[str]`
 - `uri.copy(src_uri: str, dst_uri: str) -> None`
 - `uri.rmtree(uri_str: str) -> None` (別名: `remove`)
+
+---
+
+## 4. `core.symbols` 子模組
+
+```python
+from core import symbols
+from core.symbols import resolve_callable, parse_code_func_uri, InvalidSymbolURIError, SymbolNotFoundError
+```
+
+### 4.1 `parse_code_func_uri(uri_str: str) -> Tuple[str, str, str]`
+- **說明**：解析 `code.func://<module>/<subpath>:<function_name>` 語法，拆解為 `(module_name, subpath, function_name)` 三元組。
+- **例外**：若格式不符合協議或缺少 `:` 拋出 `InvalidSymbolURIError`。
+
+### 4.2 `resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: bool = True) -> Callable`
+- **說明**：解析 `code.func://` 協議並動態載入返回 Python Callable 物件。具備雙軌尋址（Package Import + VFS 檔案 Spec 載入）與快取機制。
+- **例外**：模組或函式不存在拋出 `SymbolNotFoundError`。
+
+### 4.3 `clear_callable_cache() -> None`
+- **說明**：清理符號解析器之內部 Callable 物件快取。

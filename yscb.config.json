@@ -4,7 +4,7 @@
   "installed_modules": {
     "core": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-26 02:59:53",
+      "installed_at": "2026-08-26 15:47:36",
       "provider": "./release"
     },
     "dev": {
@@ -14,7 +14,7 @@
     },
     "agents-workflow": {
       "version": "0.1.0.build",
-      "installed_at": "2026-08-26 15:22:36",
+      "installed_at": "2026-08-26 15:48:28",
       "provider": "./release"
     }
   }
