@@ -18,16 +18,21 @@ class TestReleasePipeline(unittest.TestCase):
 
     def test_builder_dev_build_and_release_package(self):
         # Test dev build outputs X.Y.Z.build.zip containing tests
+        m_data = uri.read_json("module.source://core/manifest.json")
+        ver = m_data.get("version", "1.0.0.0")
+        triplet = ver.rsplit(".", 1)[0] if ver.count(".") == 3 else ver
+        build_tag = f"{triplet}.build"
+
         ok, msg = self.builder.build_module("core", clean=True)
         self.assertTrue(ok)
         
-        build_zip = uri.resolve("module.build://core/1.0.0.build.zip")
+        build_zip = uri.resolve(f"module.build://core/{build_tag}.zip")
         self.assertTrue(os.path.isfile(build_zip))
         
         # Test release packaging outputs clean package (.zip)
-        ok_rel, msg_rel = self.builder.package_release("core", "1.0.0.0")
+        ok_rel, msg_rel = self.builder.package_release("core", ver)
         self.assertTrue(ok_rel)
-        rel_zip = uri.resolve("module.release://core/1.0.0.0.zip")
+        rel_zip = uri.resolve(f"module.release://core/{ver}.zip")
         self.assertTrue(os.path.isfile(rel_zip))
         
         with zipfile.ZipFile(rel_zip, "r") as zf:
@@ -41,8 +46,14 @@ class TestReleasePipeline(unittest.TestCase):
 
     def test_release_force_override_behavior(self):
         """FT-01 & ET-01: 驗證 --force 允許覆蓋在庫最高同版本，無 force 則被 Gate 2/3 阻斷。"""
-        # 假設 core@1.0.0.0 已存在於 release
-        rel_zip = uri.resolve("module.release://core/1.0.0.0.zip")
+        # 動態獲取 core 目前版本
+        m_data = uri.read_json("module.source://core/manifest.json")
+        ver = m_data.get("version", "1.0.0.0")
+
+        # 確保 core@ver 在庫
+        rel_zip = uri.resolve(f"module.release://core/{ver}.zip")
+        if not os.path.isfile(rel_zip):
+            self.builder.package_release("core", ver)
         self.assertTrue(os.path.isfile(rel_zip))
 
         # 1. 無 force: 預期 Gate 2 / Gate 3 阻斷
@@ -50,7 +61,7 @@ class TestReleasePipeline(unittest.TestCase):
         self.assertFalse(passed_no_force)
         self.assertTrue(any("Gate 2 Failed" in e or "Gate 3 Failed" in e for e in errors_no_force))
 
-        # 2. 有 force: 預期放行（因為版本等於最高版本 1.0.0.0）
+        # 2. 有 force: 預期放行（因為版本等於最高版本 ver）
         passed_force, errors_force = self.releaser.release_check("core", force=True)
         self.assertTrue(passed_force)
         self.assertEqual(len(errors_force), 0)

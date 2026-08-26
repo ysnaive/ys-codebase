@@ -2,6 +2,20 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_0412_dev_and_governance_health_fix
+
+- **工程健檢缺陷修復、Dev 測試動態解算、PlanVerifier 標頭相容與文檔知識庫校準**：
+  - **Dev 測試套件版本硬編碼消除與動態解算**：
+    - 修復 `test_builder.py`、`test_release_pipeline.py`、`test_sandbox.py` 對 `core` 靜態版本字串之依賴，改採動態自 `manifest.json` 讀取版本組裝 build tag。
+    - 消除 `core` 升版後導致 `dev` 5 個測試案例失敗之缺陷，恢復 `dev test dev` 全量 30/30 通過 (100% Ready)。
+  - **`PlanVerifier` 調研報告標頭別名相容增強**：
+    - 擴充 `verifier.py` 之合法 Header 比對清單，認列 `調研主題`、`調研狀態`、`topic` 等合法別名，消除調研手冊 (RXX) 驗證誤判。
+    - 全專案 4 個開發計畫共 19 份 Markdown 文件稽核達成 0 Error, 0 Warn (100% 合規)。
+  - **`docs/README.md` 全域知識地圖同步**：
+    - 補齊 `agents-workflow` 模組導覽與生態清冊登載，同步校準全系統版本號矩陣。
+  - **Dogfooding 自引用版本發布**：
+    - `dev` 模組升版至 `1.0.0.2`，`agents-workflow` 模組升版至 `1.0.1.2`，完成正式打包與本地安裝同步。
+
 ## 2026_08_27_0344_agents_workflow_auto
 
 - **Agents-Workflow 模組新增 `/Auto` 自動連續推進工作流與 ContextInit 讀取引導強化**：

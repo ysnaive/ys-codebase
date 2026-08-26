@@ -85,9 +85,18 @@ class PlanVerifier:
 
         # 2. 檢查 Header 元數據
         headers = self.parse_plan_header(lines)
-        has_name = any(k in headers for k in ["功能名稱", "計畫名稱", "name", "title"])
-        has_date = any(k in headers for k in ["建立日期", "完成日期", "date", "created_at"])
-        has_status = any(k in headers for k in ["狀態", "status"])
+        has_name = any(k in headers for k in [
+            "功能名稱", "計畫名稱", "name", "title",
+            "調研主題", "topic", "subject", "主題"
+        ])
+        has_date = any(k in headers for k in [
+            "建立日期", "完成日期", "date", "created_at",
+            "日期", "time", "timestamp"
+        ])
+        has_status = any(k in headers for k in [
+            "狀態", "status", "調研狀態", "research_status",
+            "plan_status", "進度"
+        ])
 
         if not has_name:
             issues.append({"level": "WARN", "msg": "Header 缺少 [功能名稱] 欄位"})
