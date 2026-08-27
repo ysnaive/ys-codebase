@@ -392,6 +392,10 @@ class TestRunner:
                 result = runner.run(suite)
             return result, capturer.get_output()
         finally:
+            try:
+                YSCBTestCase.cleanup_shared_sandbox()
+            except Exception:
+                pass
             if orig_sandbox is not None:
                 os.environ["YSCB_TEST_SANDBOX"] = orig_sandbox
             else:

@@ -3,7 +3,7 @@
 > 功能名稱：knowledge-db 模組開發 (Knowledge Database Module)  
 > 建立日期：2026-08-27  
 > 所屬主計畫：無 (分類型主計畫 Umbrella)  
-> 狀態：Draft  
+> 狀態：Confirmed  
 > 計畫類型：Feature  
 > 模板版本：v1.1  
 
@@ -15,7 +15,8 @@
 - **核心目標**：
   1. 建立 `knowledge-db` 模組開發之分類型主計畫 (Umbrella Plan)。
   2. 統籌模組三大核心能力：資料庫空間定義 (Database Space Definition)、語意打包 (Semantic Bundling/Packaging)、以及語意化搜尋 (Semantic Search)。
-- **邊界排除 (Explicitly Excluded)**：待討論釐清。
+- **邊界排除 (Explicitly Excluded)**：
+  - 不引入任何外部第三方相依套件（保持 Zero External Dependency，100% 純 Python 3 標準庫）。
 
 ---
 
@@ -34,6 +35,6 @@
 
 ## 3. 開放議題與確認紀錄
 
-- [ ] **確認 1 (四大維度劃分)**：開發者是否認同將系統劃分為「空間管理」、「解析打包」、「分詞檢索」、「CLI與生態」四大維度？
-- [ ] **確認 2 (子計畫拆分矩陣)**：開發者是否同意依 `sub_01` (空間與Schema) $\rightarrow$ `sub_02` (解析與打包) $\rightarrow$ `sub_03` (分詞與BM25) $\rightarrow$ `sub_04` (CLI與生態) 之路線循序執行？
-- [ ] **確認 3 (設計細節覆核)**：R01 中所載之統一符號 Schema、多欄位加權比重、2x2 組態格式是否確認無誤？
+- [x] **確認 1 (四大維度劃分)**：開發者已確認將系統劃分為「空間管理」、「解析打包」、「分詞檢索」、「CLI與生態」四大維度。
+- [x] **確認 2 (子計畫拆分矩陣)**：開發者已同意依 `sub_01` (空間與Schema) $\rightarrow$ `sub_02` (解析與打包) $\rightarrow$ `sub_03` (分詞與BM25) $\rightarrow$ `sub_04` (CLI與生態) 之路線循序執行。
+- [x] **確認 3 (設計細節覆核)**：R01 中所載之統一符號 Schema、多欄位加權比重、2x2 組態格式確認無誤。
