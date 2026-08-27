@@ -93,7 +93,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         """FT-06: Verify filter_suite recursively filters by pattern and Requirement type."""
         suite = unittest.TestSuite()
         
-        class DummyCase(unittest.TestCase):
+        class DummyCase(YSCBTestCase):
             @require(Requirement.LOGIC)
             def test_alpha_logic(self):
                 pass
@@ -259,3 +259,73 @@ class TestSandboxArchitecture(YSCBTestCase):
                 import shutil
                 shutil.rmtree(non_sandbox_dir)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_filter_suite_taxonomy_and_target(self):
+        """FT-02, FT-03, FT-04: Verify filter_suite with 4-tier taxonomy and target pinning."""
+        class MockLogicTest(YSCBTestCase):
+            @require(Requirement.LOGIC)
+            def test_logic(self): pass
+            @require(Requirement.ENV)
+            def test_env(self): pass
+            @require(Requirement.WORKFLOW)
+            def test_workflow(self): pass
+            @require(Requirement.PERF)
+            def test_perf(self): pass
+
+        suite = unittest.TestSuite()
+        suite.addTest(MockLogicTest("test_logic"))
+        suite.addTest(MockLogicTest("test_env"))
+        suite.addTest(MockLogicTest("test_workflow"))
+        suite.addTest(MockLogicTest("test_perf"))
+
+        # Default filter: includes logic + env (2 tests), excludes workflow + perf
+        def_suite = filter_suite(suite)
+        self.assertEqual(def_suite.countTestCases(), 2)
+
+        # Explicit logical
+        logic_suite = filter_suite(suite, test_type="logic")
+        self.assertEqual(logic_suite.countTestCases(), 1)
+
+        # Explicit workflow
+        wf_suite = filter_suite(suite, test_type="workflow")
+        self.assertEqual(wf_suite.countTestCases(), 1)
+
+        # Explicit perf
+        perf_suite = filter_suite(suite, test_type="perf")
+        self.assertEqual(perf_suite.countTestCases(), 1)
+
+        # Explicit all
+        all_suite = filter_suite(suite, test_type="all")
+        self.assertEqual(all_suite.countTestCases(), 4)
+
+        # Target pinning: bypasses default exclusions to run specific test
+        tgt_suite = filter_suite(suite, target="test_workflow")
+        self.assertEqual(tgt_suite.countTestCases(), 1)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_discovery_dynamic_type_guard_rejects_unittest_testcase(self):
+        """FT-05: Verify TestDiscovery raises TypeError when a discovered test directly subclasses unittest.TestCase."""
+        import shutil
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_raw_test_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(tmp_mod_dir, "tests"), exist_ok=True)
+            
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_raw_test_mod", "version": "1.0.0.0", "entry": "scripts/cli.py"}')
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def main(): pass')
+            with open(os.path.join(tmp_mod_dir, "tests", "test_raw.py"), "w", encoding="utf-8") as f:
+                f.write('import unittest\nclass TestRawDirect(unittest.TestCase):\n    def test_a(self): pass\n')
+
+            with self.assertRaises(TypeError) as ctx:
+                TestDiscovery.build_suite_for_module("mock_raw_test_mod")
+            self.assertIn("Security Guard Blocked", str(ctx.exception))
+            self.assertIn("TestRawDirect", str(ctx.exception))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)

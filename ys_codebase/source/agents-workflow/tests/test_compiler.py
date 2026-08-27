@@ -39,8 +39,12 @@ except Exception:
     hook_core = None
 
 
-class TestArtifactCompiler(unittest.TestCase):
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
+
+class TestArtifactCompiler(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self.compiler = ArtifactCompiler()
         self.publisher = ReleasePublisher(compiler=self.compiler)
 

@@ -7,16 +7,19 @@ import json
 import unittest
 from core import uri
 from core.engine import AtomicEngine
-from core import semver
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
 
-class TestMigrationLadder(unittest.TestCase):
+class TestMigrationLadder(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self.engine = AtomicEngine()
         self.test_mod = "test_mod_mig"
         self.mig_dir = uri.resolve(f"module://{self.test_mod}/scripts/migrations")
         os.makedirs(self.mig_dir, exist_ok=True)
 
     def tearDown(self):
+        super().tearDown()
         mod_uri = f"module://{self.test_mod}"
         if uri.exists(mod_uri):
             uri.rmtree(mod_uri)

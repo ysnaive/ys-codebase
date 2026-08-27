@@ -1,13 +1,13 @@
 """
 test_plans_toolchain.py — agents-workflow 模組內部 Plans 工具鏈單元測試。
 """
-
 import sys
 import os
 import shutil
 import tempfile
-import unittest
 from pathlib import Path
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
 
 # 確保模組內部套件可引入
 _pkg_root = Path(__file__).resolve().parent.parent
@@ -25,11 +25,11 @@ from agents_workflow.plans import (
     PlanDestinationExistsError,
 )
 
-
-class TestPlansToolchainInternal(unittest.TestCase):
+class TestPlansToolchainInternal(YSCBTestCase):
     """模組內部 Plans 工具鏈單元測試。"""
 
     def setUp(self):
+        super().setUp()
         self.temp_dir = tempfile.mkdtemp(prefix="test_aw_plans_int_")
         self.workspace_root = Path(self.temp_dir)
         self.plans_dir = self.workspace_root / "plans"
@@ -41,9 +41,11 @@ class TestPlansToolchainInternal(unittest.TestCase):
         self.changelog_file.write_text("# Changelog\n\n## 2026_08_20_1200_demo\n", encoding="utf-8")
 
     def tearDown(self):
+        super().tearDown()
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
     def test_scanner_and_archiver_flow(self):
         p_name = "2026_08_20_1200_demo"
         p_dir = self.plans_dir / p_name
@@ -71,7 +73,9 @@ class TestPlansToolchainInternal(unittest.TestCase):
         self.assertTrue(res["cleaned_handoff"])
         self.assertTrue((self.archive_dir / "2026" / "08" / p_name).exists())
         self.assertFalse((self.plans_dir / p_name).exists())
+        self.mark_passed()
 
+    @require(Requirement.LOGIC)
     def test_searcher_and_verifier_flow(self):
         p_name = "2026_08_20_1300_search_verify"
         p_dir = self.plans_dir / p_name
@@ -90,7 +94,4 @@ class TestPlansToolchainInternal(unittest.TestCase):
         res = verifier.verify(plan_name=p_name)
         self.assertTrue(res["success"])
         self.assertEqual(res["total_errors"], 0)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.mark_passed()

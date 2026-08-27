@@ -4,6 +4,19 @@
 
 ## 2026_08_27_1506_dev_test_architecture_optimization
 
+- **dev 測試架構優化主計畫 — sub_03: 測試分類體系重構、效能深水區與沙盒型別安全防固 (`sub_03_test_performance_optimization`)**：
+  - **四層測試分類體系 (4-Tier Test Taxonomy)**：在 `dev.testing.requirement` 定義 `LOGIC` (純邏輯)、`ENV` (環境/跨模組)、`WORKFLOW` (工作流/E2E)、`PERF` (壓力效能) 與正交 `ISOLATED_SANDBOX` 標籤；預設跑測僅執行 `LOGIC` 與 `ENV`，大幅提升回歸效能。
+  - **CLI 篩選旗標與精準目標定位器 (`--target`)**：
+    - 擴充 CLI 分類篩選（`--logical`, `--env`, `--workflow`, `--perf`, `--all-types`）。
+    - 支援 `--target=<mod>:[<case>][.<method>]`，達成單一測試案例 **0.75 秒極速單點驗證**。
+  - **三道型別與環境防呆守門鎖 (Triple-Lock Guard)**：
+    - 靜態門禁：`dev check` AST 語法樹掃描全面禁止測試類別直接繼承原生 `unittest.TestCase`。
+    - 動態門禁：`TestDiscovery` 於載入測試套件時驗證 MRO 繼承鏈，非 `YSCBTestCase` 測試直接拒絕加載。
+    - 入口門禁：`YSCBTestCase.setUp()` 檢測宿主裸跑直接拋出 `SecurityError` 阻斷，根除任何非授權的真實環境污染。
+  - **全庫 16 個測試檔案 100% 標準化遷移**：全面改寫為 `YSCBTestCase`，徹底消除進程內寫入外洩與 `test_release_pipeline.py` 內部遞迴跑測問題。
+  - **全量測試與回歸驗證**：全庫 144 個測試案例回歸 144/144 Passed (100% Ready)。
+  - **知識庫交付**：更新 `docs/dev/user_guide.md` §4.4 (測試四層分類與目標定位) 與 §4.5 (三道防呆守門鎖)。
+
 - **dev 測試架構優化主計畫 — sub_02: 預設共用沙盒、ISOLATED_SANDBOX 分流與 URI JIT 測試靜默防護 (`sub_02_test_architecture_refinement`)**：
   - **預設共用沙盒機制 (Shared Sandbox by Default)**：在 `YSCBTestCase` 實作 Class-level 延遲初始化共用沙盒，同類別測試方法預設複用同一個沙盒實例，並於 `tearDownClass` 銷毀。將全模組回歸耗時由 ~73 秒壓縮至 **35.6 秒**（**加速超過 50%**）。
   - **`Requirement.ISOLATED_SANDBOX` 獨立沙盒分流**：在 `dev.testing.requirement` 定義 `ISOLATED_SANDBOX` 列舉，標記 `@require(Requirement.ISOLATED_SANDBOX)` 之測試方法自動分流獲得 Per-Method 專屬全新沙盒，於 `tearDown` 即時釋放，達成零污染隔離。

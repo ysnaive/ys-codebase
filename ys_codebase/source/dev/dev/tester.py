@@ -37,11 +37,18 @@ class Tester:
         print("  dev test [mod | --all]     High-level E2E: Auto build -> Provision sandbox -> Run tests -> Teardown")
         print("  dev op-mksb [--dir=<path>] Atomic primitive: Provision isolated virtual sandbox")
         print("  dev op-test [mod | --all]  Atomic primitive: Run in-place test execution without sandboxing")
-        print("Options:")
+        print("Classification & Targeting Options:")
+        print("  --logical        Run only unit / pure logical tests")
+        print("  --env            Run environment / inter-module / DI tests")
+        print("  --workflow       Run multi-step composite workflow / E2E tests (default excluded)")
+        print("  --perf, --stress Run performance / stress benchmark tests (default excluded)")
+        print("  --all-types      Run tests across all categories (logic + env + workflow + perf)")
+        print("  --type=<type>    Filter test type (logic | env | workflow | perf | all)")
+        print("  --target=<mod:[case][.method]>  Pinpoint specific module, test case or method")
+        print("General Options:")
         print("  --all            Run tests across all modules in source/")
         print("  --no-build       Skip automatic pre-build step and test existing build packages")
         print("  --contract-only  Run only universal standard contract tests")
-        print("  --type=<type>    Filter test type (logic | host_cli | network)")
         print("  -k <pattern>     Run only tests matching pattern")
         print("  --verbose, -v    Verbose output with full tracebacks")
         print("  --keep-sandbox   Preserve sandbox directories on success")
@@ -63,9 +70,12 @@ class Tester:
         run_all: bool = False
         test_type: Optional[str] = None
         pattern: Optional[str] = None
+        target: Optional[str] = None
         contract_only: bool = False
         verbose: bool = False
         keep_sandbox: bool = False
+
+        VALID_TYPES = {"logic", "logical", "env", "host_cli", "workflow", "perf", "performance", "stress", "all", "all_types", "all-types"}
 
         i = 0
         while i < len(argv):
@@ -78,8 +88,24 @@ class Tester:
                 verbose = True
             elif arg == "--keep-sandbox":
                 keep_sandbox = True
+            elif arg == "--logical":
+                test_type = "logic"
+            elif arg == "--env":
+                test_type = "env"
+            elif arg == "--workflow":
+                test_type = "workflow"
+            elif arg in ("--perf", "--performance", "--stress"):
+                test_type = "perf"
+            elif arg == "--all-types":
+                test_type = "all"
             elif arg.startswith("--type="):
                 test_type = arg.split("=", 1)[1].strip()
+            elif arg.startswith("--target="):
+                target = arg.split("=", 1)[1].strip()
+            elif arg == "--target":
+                if i + 1 < len(argv):
+                    target = argv[i + 1]
+                    i += 1
             elif arg.startswith("-k="):
                 pattern = arg.split("=", 1)[1].strip()
             elif arg == "-k":
@@ -90,12 +116,15 @@ class Tester:
                 target_mod = arg
             i += 1
 
-        if not target_mod and not run_all:
+        if target and not target_mod:
+            target_mod = target.split(":", 1)[0]
+
+        if not target_mod and not run_all and not target:
             self._print_usage()
             return 1
 
-        if test_type and test_type.lower() not in ("logic", "host_cli", "network"):
-            print(f"[dev:test] Error: Invalid test type '{test_type}'. Valid types: logic, host_cli, network")
+        if test_type and test_type.lower().replace("-", "_") not in {t.replace("-", "_") for t in VALID_TYPES}:
+            print(f"[dev:test] Error: Invalid test type '{test_type}'. Valid types: logic, env, workflow, perf, all")
             return 1
 
         modules = TestDiscovery.discover_modules(target_mod)
@@ -125,6 +154,7 @@ class Tester:
                 mod_name,
                 test_type=test_type,
                 pattern=pattern,
+                target=target,
                 contract_only=contract_only
             )
             
