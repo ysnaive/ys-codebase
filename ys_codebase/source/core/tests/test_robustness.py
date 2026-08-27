@@ -9,9 +9,12 @@ import json
 from core import uri
 from core.context import ExecutionContext
 from core.engine import AtomicEngine
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
 
-class FrameworkRobustnessTest(unittest.TestCase):
+class FrameworkRobustnessTest(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self.tmp_dir = tempfile.mkdtemp()
         self.host_dir = os.path.join(self.tmp_dir, "host")
         self.engine_dir = os.path.join(self.tmp_dir, "engine")

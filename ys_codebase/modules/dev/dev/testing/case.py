@@ -16,6 +16,10 @@ from core import uri
 from dev.testing.requirement import Requirement
 from dev.testing.sandbox import SandboxContext, SandboxProvisioner
 
+class SecurityError(RuntimeError):
+    """Raised when tests are executed in an insecure or forbidden host environment."""
+    pass
+
 class YSCBTestCase(unittest.TestCase):
     """
     YS-Codebase Core Test Fixture (Full-Fidelity Virtual Sandbox on cache://dev/sandbox/<uuid>).
@@ -46,17 +50,24 @@ class YSCBTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         """Test setup: create or reuse virtual environment and backup environment."""
+        # Gate 3: Intercept insecure host direct execution
+        if os.environ.get("YSCB_TEST_SANDBOX") != "1":
+            raise SecurityError(
+                "[dev:test] Security Guard Blocked: Running tests directly on the host workspace is strictly forbidden to prevent environment contamination. "
+                "Please use 'python yscb.py dev test <module>' or execute within an authenticated YSCB virtual sandbox."
+            )
+
         self._test_passed = False
         self._orig_sys_path = list(sys.path)
         self._orig_env = dict(os.environ)
-        os.environ["YSCB_TEST_SANDBOX"] = "1"
 
         # Determine if current test method requires ISOLATED_SANDBOX
         method_name = getattr(self, "_testMethodName", "")
         method = getattr(self, method_name, None)
         req = getattr(method, "__requirement__", None) if method else None
 
-        if req and (Requirement.ISOLATED_SANDBOX in req):
+        req_val = req.value if hasattr(req, "value") else (int(req) if req is not None else 0)
+        if req and bool(req_val & Requirement.ISOLATED_SANDBOX.value):
             self._is_isolated_sandbox = True
             self.ctx = SandboxProvisioner.create_sandbox()
         else:

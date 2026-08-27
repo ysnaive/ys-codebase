@@ -53,6 +53,31 @@ class Checker:
                     except Exception as e:
                         errors.append(f"Error parsing {rel_p}: {e}")
                         
+        # 4. Check test classes inherit from YSCBTestCase (Gate 1: Static Type Guard)
+        tests_real_dir = os.path.join(real_dir, "tests")
+        if os.path.isdir(tests_real_dir):
+            for t_file in os.listdir(tests_real_dir):
+                if t_file.startswith("test_") and t_file.endswith(".py"):
+                    t_full = os.path.join(tests_real_dir, t_file)
+                    try:
+                        with open(t_full, "r", encoding="utf-8") as tf:
+                            tree = ast.parse(tf.read(), filename=t_file)
+                        for node in ast.walk(tree):
+                            if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                                base_names = []
+                                for b in node.bases:
+                                    if isinstance(b, ast.Name):
+                                        base_names.append(b.id)
+                                    elif isinstance(b, ast.Attribute):
+                                        base_names.append(b.attr)
+                                if "TestCase" in base_names and "YSCBTestCase" not in base_names:
+                                    errors.append(
+                                        f"Security Guard: Test class '{node.name}' in tests/{t_file}:{node.lineno} "
+                                        f"directly subclasses 'unittest.TestCase'. Must inherit from 'dev.testing.case.YSCBTestCase'."
+                                    )
+                    except Exception as e:
+                        errors.append(f"Error parsing test file tests/{t_file}: {e}")
+
         passed = (len(errors) == 0)
         return passed, errors
 

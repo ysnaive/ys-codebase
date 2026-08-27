@@ -7,11 +7,12 @@ import json
 import zipfile
 import shutil
 import tempfile
-import unittest
 from core import uri
 from core.engine import AtomicEngine
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
 
-class TestRemoteZipBootstrap(unittest.TestCase):
+class TestRemoteZipBootstrap(YSCBTestCase):
     def setUp(self):
         super().setUp()
         self.engine = AtomicEngine()

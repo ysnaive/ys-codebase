@@ -29,10 +29,14 @@ def _load_yscb_module():
     raise FileNotFoundError("Cannot locate yscb.py host script")
 
 
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
+
 yscb = _load_yscb_module()
 
 
-class TestCLIHelpAndUX(unittest.TestCase):
+class TestCLIHelpAndUX(YSCBTestCase):
+    @require(Requirement.LOGIC)
     def test_global_help_output_structure(self):
         """FT-02: Verifies that _print_global_help outputs Banner, Usage, Core & Module commands."""
         f = io.StringIO()

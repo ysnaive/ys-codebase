@@ -1,11 +1,12 @@
 """
 Unit tests for Four-Segment SemVer Parser, Comparator and Constraint Solver.
 """
-import unittest
 from core import semver
 from core.semver import VersionTuple, parse_semver, compare_semver, match_constraint, find_best_version, bump_version
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
 
-class TestSemverV4(unittest.TestCase):
+class TestSemverV4(YSCBTestCase):
     def test_parse_semver_four_segments(self):
         v = parse_semver("1.2.3.4")
         self.assertEqual(v.major, 1)

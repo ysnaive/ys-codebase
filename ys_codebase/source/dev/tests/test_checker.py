@@ -1,7 +1,7 @@
-"""
-Official test suite for dev.checker.Checker.
-"""
+import os
+import shutil
 from dev.testing import YSCBTestCase
+from dev.testing.requirement import require, Requirement
 from dev.checker import Checker
 from core import uri
 
@@ -47,4 +47,29 @@ class TestDevChecker(YSCBTestCase):
         self.assertIn("YS-Codebase 模組開發專案特化工程規範", content)
         self.assertIn("嚴禁 Agent 主動發布與覆蓋宿主安裝", content)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_checker_detects_raw_unittest_testcase(self):
+        """FT-05: Verify Checker detects test classes directly subclassing unittest.TestCase."""
+        import shutil
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_bad_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(tmp_mod_dir, "tests"), exist_ok=True)
+            
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_bad_mod", "version": "1.0.0.0", "entry": "scripts/cli.py"}')
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def main(): pass')
+            with open(os.path.join(tmp_mod_dir, "tests", "test_bad.py"), "w", encoding="utf-8") as f:
+                f.write('import unittest\nclass TestBad(unittest.TestCase):\n    def test_foo(self): pass\n')
+                
+            passed, errors = self.checker.check_module("mock_bad_mod")
+            self.assertFalse(passed)
+            self.assertTrue(any("Security Guard: Test class 'TestBad'" in e for e in errors))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
 
