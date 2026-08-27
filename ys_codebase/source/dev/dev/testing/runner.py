@@ -348,6 +348,29 @@ class ASCIIReportFormatter:
         return "\n".join(lines)
 
 
+class SafeStreamWriter:
+    """Stream wrapper that handles Unicode encoding errors gracefully on Windows console."""
+    def __init__(self, target: Any):
+        self.target = target
+
+    def write(self, s: str) -> None:
+        try:
+            self.target.write(s)
+        except UnicodeEncodeError:
+            enc = getattr(self.target, "encoding", None) or "utf-8"
+            safe_s = s.encode(enc, errors="replace").decode(enc, errors="replace")
+            self.target.write(safe_s)
+
+    def flush(self) -> None:
+        try:
+            self.target.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.target, name)
+
+
 class TestRunner:
     def __init__(self, verbose: bool = False, keep_sandbox: bool = False):
         self.verbose = verbose
@@ -361,7 +384,7 @@ class TestRunner:
         else:
             os.environ.pop("YSCB_TEST_KEEP_SANDBOX", None)
             
-        stream = sys.stdout if self.verbose else StringIO()
+        stream = SafeStreamWriter(sys.stdout) if self.verbose else StringIO()
         runner = unittest.TextTestRunner(stream=stream, verbosity=2 if self.verbose else 0)
         capturer = OutputCapturer(enabled=not self.verbose)
         try:

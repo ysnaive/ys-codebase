@@ -68,7 +68,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertEqual(res, 0)
         self.mark_passed()
 
-    @require(Requirement.HOST_CLI)
+    @require(Requirement.WORKFLOW)
     def test_dev_test_high_level_orchestration(self):
         """FT-04: Verify high-level dev test runs E2E workflow."""
         ret, stdout, stderr = self.run_cli(["dev", "test", "core", "--contract-only"])
@@ -424,7 +424,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertEqual(get_test_category(MockCatTest("test_default")), "logic")
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
+    @require(Requirement.WORKFLOW)
     def test_single_module_worker_execution_and_report_json(self):
         """FT-01/FT-02: Verify _run_single_module_worker runs in dedicated sandbox and writes report JSON."""
         res_data = self.tester._run_single_module_worker(

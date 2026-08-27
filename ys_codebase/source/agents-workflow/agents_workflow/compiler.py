@@ -332,7 +332,7 @@ class ArtifactCompiler:
         resolved_items = []
         errors = []
 
-        cache_target_root = "cache://@/resolved_contents"
+        cache_target_root = "cache://agents-workflow/resolved_contents"
 
         for exp in exports:
             if not isinstance(exp, dict):
@@ -377,9 +377,10 @@ class ArtifactCompiler:
                         try:
                             local_cache = uri.resolve(cache_uri)
                         except Exception:
-                            local_cache = os.path.join(self.module_root, ".cache", "resolved_contents", sub_folder, base_name)
+                            yscb_root = uri._get_yscb_root()
+                            local_cache = os.path.join(yscb_root, ".cache", "agents-workflow", "resolved_contents", sub_folder, base_name)
                     else:
-                        local_cache = os.path.join(self.module_root, ".cache", "resolved_contents", sub_folder, base_name)
+                        local_cache = os.path.join(os.path.dirname(os.path.dirname(self.module_root)), ".cache", "agents-workflow", "resolved_contents", sub_folder, base_name)
                     os.makedirs(os.path.dirname(local_cache), exist_ok=True)
                     with open(local_cache, "w", encoding="utf-8") as f:
                         f.write(stage1_content)

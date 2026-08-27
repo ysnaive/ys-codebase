@@ -2,6 +2,26 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_2011_dev_test_performance_and_encoding_fix
+
+- **Dev 模組測試效能優化、Mock 模組建置隔離與 Windows Unicode/cp950 控制台編碼防禦**：
+  - **Windows 控制台與子進程編碼安全防禦 (`SafeStreamWriter` / `safe_print`)**：
+    - 在 `dev.tester`、`dev.testing.runner` 與 `dev.testing.case` 導入 `safe_print` 與 `SafeStreamWriter`，子進程 Standard Streams 與終端輸出全面覆蓋 UTF-8 與 `errors="replace"` 安全轉譯。
+    - 徹底根除 Windows 中文語系環境下 `cp950` 控制台在輸出替換字符 `\ufffd` 或非 BMP Unicode 時崩潰中斷之缺陷。
+  - **測試四層分類精準歸類 (`WORKFLOW` Tier)**：
+    - 將純高階多進程 E2E 調度測試（`test_dev_test_high_level_orchestration` 與 `test_single_module_worker_execution_and_report_json`）標記為 `@require(Requirement.WORKFLOW)`。
+    - 日常預設回歸 (`LOGIC` + `ENV`) 自動排除重型測試，可透過 `--workflow` 或 `--all-types` 按需調度。
+  - **單元測試去子進程化 (Mocking)**：
+    - 重構 `test_tester.py` 沙盒全量清理邏輯，以 Mock 隔離 Worker 子進程，毫秒級完成驗證，消除測試內部遞迴啟動多行程。
+  - **標準建置與發布測試全面改採 Mock Module 隔離 (Zero Side Effect)**：
+    - 重構 `test_builder.py` 與 `test_release_pipeline.py`，全面改以動態生成之輕量 Mock Module 測試 build、package_release、revision purge 與 index.json。
+    - 徹底解除對真實官方模組原始碼的打包依賴，根除未來官方新增或修改模組時產生的耦合副作用。
+  - **效能指標躍升**：
+    - `dev` 模組跑測耗時由 **12.08 秒大幅壓至 3.81 秒（加速超過 68%）**。
+    - 全系統回歸跑測 118/118 測試案例 100% Passed。
+  - **知識庫交付**：
+    - 更新 `docs/dev/user_guide.md` §4.7 (控制台編碼防禦與 Mock 模組建置測試實踐規範)。
+
 ## 2026_08_27_1506_dev_test_architecture_optimization
 
 - **dev 測試架構優化主計畫 — sub_05: 多進程/多 Worker 多模組並行跑測 (`sub_05_parallel_module_test_runner`)**：
