@@ -13,11 +13,13 @@ import unittest
 from contextlib import contextmanager
 from typing import List, Optional, Dict, Any, Tuple, Iterator
 from core import uri
+from dev.testing.requirement import Requirement
 from dev.testing.sandbox import SandboxContext, SandboxProvisioner
 
 class YSCBTestCase(unittest.TestCase):
     """
     YS-Codebase Core Test Fixture (Full-Fidelity Virtual Sandbox on cache://dev/sandbox/<uuid>).
+    Supports shared class-level sandbox by default and per-method isolated sandbox via @require(Requirement.ISOLATED_SANDBOX).
     """
     ctx: SandboxContext
     sandbox_id: str
@@ -26,18 +28,44 @@ class YSCBTestCase(unittest.TestCase):
     sandbox_host_dir: str
     sandbox_project_dir: str
     sandbox_provider_dir: str
+    
+    _class_sandbox_ctx: Optional[SandboxContext] = None
+    _is_isolated_sandbox: bool = False
     _test_passed: bool
     _orig_sys_path: List[str]
     _orig_env: Dict[str, str]
 
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Class-level teardown: cleanup shared sandbox if present."""
+        if cls._class_sandbox_ctx is not None:
+            keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
+            if not keep_all:
+                SandboxProvisioner.cleanup_sandbox(cls._class_sandbox_ctx.sandbox_dir, force=True)
+            cls._class_sandbox_ctx = None
+
     def setUp(self) -> None:
-        """Test setup: create isolated micro virtual environment and backup environment."""
+        """Test setup: create or reuse virtual environment and backup environment."""
         self._test_passed = False
         self._orig_sys_path = list(sys.path)
         self._orig_env = dict(os.environ)
+        os.environ["YSCB_TEST_SANDBOX"] = "1"
 
-        # Create full virtual sandbox
-        self.ctx = SandboxProvisioner.create_sandbox()
+        # Determine if current test method requires ISOLATED_SANDBOX
+        method_name = getattr(self, "_testMethodName", "")
+        method = getattr(self, method_name, None)
+        req = getattr(method, "__requirement__", None) if method else None
+
+        if req and (Requirement.ISOLATED_SANDBOX in req):
+            self._is_isolated_sandbox = True
+            self.ctx = SandboxProvisioner.create_sandbox()
+        else:
+            self._is_isolated_sandbox = False
+            cls = self.__class__
+            if cls._class_sandbox_ctx is None:
+                cls._class_sandbox_ctx = SandboxProvisioner.create_sandbox()
+            self.ctx = cls._class_sandbox_ctx
+
         self.sandbox_dir = self.ctx.sandbox_dir
         self.sandbox_host_dir = self.ctx.host_dir
         self.sandbox_project_dir = self.ctx.project_dir
@@ -46,19 +74,25 @@ class YSCBTestCase(unittest.TestCase):
         self.sandbox_uri = f"cache://dev/sandbox/{self.sandbox_id}"
 
     def tearDown(self) -> None:
-        """Test teardown: restore environment and cleanup sandbox according to policy."""
+        """Test teardown: restore environment and cleanup isolated sandbox according to policy."""
         sys.path[:] = self._orig_sys_path
         os.environ.clear()
         os.environ.update(self._orig_env)
         
         keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
-        if self._test_passed and not keep_all:
-            SandboxProvisioner.cleanup_sandbox(self.sandbox_dir, force=True)
+        if self._is_isolated_sandbox:
+            if self._test_passed and not keep_all:
+                SandboxProvisioner.cleanup_sandbox(self.sandbox_dir, force=True)
+            else:
+                if not self._test_passed:
+                    print(f"\n[Test Failed] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
+                elif keep_all:
+                    print(f"\n[Sandbox Kept] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
         else:
             if not self._test_passed:
-                print(f"\n[Test Failed] Virtual sandbox preserved at: {self.sandbox_dir}")
+                print(f"\n[Test Failed] Shared virtual sandbox preserved at: {self.sandbox_dir}")
             elif keep_all:
-                print(f"\n[Sandbox Kept] Virtual sandbox preserved at: {self.sandbox_dir}")
+                print(f"\n[Sandbox Kept] Shared virtual sandbox preserved at: {self.sandbox_dir}")
 
     def mark_passed(self) -> None:
         """Mark that current test method executed to completion successfully."""
@@ -122,6 +156,7 @@ class YSCBTestCase(unittest.TestCase):
 
         cmd = [sys.executable, yscb_script] + args
         p_env = dict(os.environ)
+        p_env["YSCB_TEST_SANDBOX"] = "1"
         if env:
             p_env.update(env)
         res = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, env=p_env)

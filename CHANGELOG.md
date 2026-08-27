@@ -4,6 +4,13 @@
 
 ## 2026_08_27_1506_dev_test_architecture_optimization
 
+- **dev 測試架構優化主計畫 — sub_02: 預設共用沙盒、ISOLATED_SANDBOX 分流與 URI JIT 測試靜默防護 (`sub_02_test_architecture_refinement`)**：
+  - **預設共用沙盒機制 (Shared Sandbox by Default)**：在 `YSCBTestCase` 實作 Class-level 延遲初始化共用沙盒，同類別測試方法預設複用同一個沙盒實例，並於 `tearDownClass` 銷毀。將全模組回歸耗時由 ~73 秒壓縮至 **35.6 秒**（**加速超過 50%**）。
+  - **`Requirement.ISOLATED_SANDBOX` 獨立沙盒分流**：在 `dev.testing.requirement` 定義 `ISOLATED_SANDBOX` 列舉，標記 `@require(Requirement.ISOLATED_SANDBOX)` 之測試方法自動分流獲得 Per-Method 專屬全新沙盒，於 `tearDown` 即時釋放，達成零污染隔離。
+  - **`YSCB_TEST_SANDBOX` 測試模式 JIT 靜默防護**：測試框架自動注入 `YSCB_TEST_SANDBOX=1` 並於子行程 `run_cli` 中透傳；`core.uri.reconcile_undefined_uri` 檢測到測試環境時靜默跳過 `input()` 終端阻塞，即時拋出結構化 `UndefinedURIError`，保證測試工作流零打斷。
+  - **全量測試與回歸驗證**：新增 `source/dev/tests/test_case.py` 單元測試，全系統回歸跑測 `dev test --all` 達成 141/141 100% Passed (100% Ready)。
+  - **知識庫交付**：更新 `docs/dev/user_guide.md` §4.3 測試沙盒模式指南。
+
 - **dev 測試架構優化主計畫 — sub_01: 殘留 sandbox 清理與自動滾動修剪機制 (`sub_01_residual_sandbox_cleanup`)**：
   - **沙盒生命週期雙軌自動清理 (Sandbox Dual-Track Lifecycle Cleanup)**：
     - **Case 1 (滾動上限修剪 Rolling Prune)**：在 `SandboxProvisioner` 實作 `prune_sandboxes(max_keep=3)`，於沙盒建立與失敗保留時自動淘汰超過上限的最舊沙盒，常態保持殘留沙盒數不超過 3 個，消除無限膨脹佔用硬碟空間之問題。
