@@ -2,6 +2,19 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_2146_release_targets_codex_claude
+
+- **`agents-workflow` 模組新增 Anthropic Claude Code 與 OpenAI Codex Release Targets**：
+  - **多平台 Release Target 宣告與投影拓撲 (`manifest.json`)**：
+    - 新增 `claude` 目標：工作流指令投影至 `project://.claude/commands/{name}.md`，模板與標準規範投影至 `project://.claude/.yscb/`，支援 YAML Frontmatter。
+    - 新增 `codex` 目標：工作流指令投影至 `project://.codex/workflows/{name}.md`，模板與標準規範投影至 `project://.codex/.yscb/`，支援 YAML Frontmatter。
+  - **CLI 管理指令支援 (`release-target`)**：
+    - 支援 `python yscb.py agents-workflow release-target <list|add|remove>` 自由切換與發布多平台目標。
+  - **測試與回歸驗證**：
+    - 新增 `test_targets.py` 驗證多目標宣告、清單查詢與拓撲路徑映射，模組全量 23/23 測試 100% Passed。
+  - **知識庫交付**：
+    - 更新 `docs/agents-workflow/user_guide.md` §2.4 (多平台 Release Targets 矩陣與管理)。
+
 ## 2026_08_27_2011_dev_test_performance_and_encoding_fix
 
 - **Dev 模組測試效能優化、Mock 模組建置隔離與 Windows Unicode/cp950 控制台編碼防禦**：
