@@ -15,37 +15,82 @@ from dev.testing.requirement import Requirement
 def filter_suite(
     suite: unittest.TestSuite,
     pattern: Optional[str] = None,
-    test_type: Optional[str] = None
+    test_type: Optional[str] = None,
+    target: Optional[str] = None,
+    active_types: Optional[set] = None
 ) -> unittest.TestSuite:
     """
-    Recursively filter test cases within a TestSuite tree by pattern and requirement test_type.
+    Recursively filter test cases within a TestSuite tree by pattern, target selector, and 4-tier taxonomy.
     """
     filtered = unittest.TestSuite()
     
+    # Resolve active categories
+    resolved_types = set(active_types) if active_types else set()
+    if test_type:
+        tt = test_type.lower().replace("-", "_")
+        if tt in ("logic", "logical"):
+            resolved_types = {"logic"}
+        elif tt == "env":
+            resolved_types = {"env"}
+        elif tt == "network":
+            resolved_types = {"network"}
+        elif tt == "workflow":
+            resolved_types = {"workflow"}
+        elif tt in ("perf", "performance", "stress"):
+            resolved_types = {"perf"}
+        elif tt in ("all", "all_types"):
+            resolved_types = {"logic", "env", "workflow", "perf", "network"}
+    
+    if not resolved_types:
+        resolved_types = {"logic", "env"}  # Default: run logic + env tests
+
     def _matches(test_case: unittest.TestCase) -> bool:
         method_name = getattr(test_case, "_testMethodName", "")
-        # 1. Pattern filter (case-insensitive substring match)
-        if pattern and pattern.lower() not in method_name.lower():
-            return False
-            
-        # 2. Type filter against @require(Requirement)
-        if test_type:
-            tt = test_type.lower()
-            method = getattr(test_case, method_name, None)
-            req = getattr(method, "__requirement__", None) if method else None
-            
-            if tt == "logic":
-                # Logic tests must not require HOST_CLI or NETWORK
-                if req and (Requirement.HOST_CLI in req or Requirement.NETWORK in req):
-                    return False
-            elif tt == "host_cli":
-                if not req or (Requirement.HOST_CLI not in req):
-                    return False
-            elif tt == "network":
-                if not req or (Requirement.NETWORK not in req):
-                    return False
-            else:
+        class_name = test_case.__class__.__name__
+        module_name = test_case.__class__.__module__
+        full_id = f"{module_name}.{class_name}.{method_name}"
+
+        # 1. Target selector filter (--target=mod:[case][.method])
+        if target:
+            t_clean = target.split(":", 1)[1] if ":" in target else target
+            t_clean_lower = t_clean.lower()
+            if (
+                t_clean_lower not in full_id.lower()
+                and t_clean_lower not in method_name.lower()
+                and t_clean_lower not in class_name.lower()
+            ):
                 return False
+            # Explicit target bypasses default category exclusions
+            return True
+
+        # 2. Pattern filter (-k pattern)
+        if pattern and (pattern.lower() not in method_name.lower() and pattern.lower() not in class_name.lower()):
+            return False
+
+        # 3. 4-tier Taxonomy filter against @require(Requirement)
+        method = getattr(test_case, method_name, None)
+        req = getattr(method, "__requirement__", None) if method else None
+
+        if req is None:
+            category = "logic"
+        else:
+            req_val = req.value if hasattr(req, "value") else int(req)
+            if req_val == 0:
+                category = "logic"
+            elif req_val & Requirement.WORKFLOW.value:
+                category = "workflow"
+            elif req_val & Requirement.PERF.value:
+                category = "perf"
+            elif req_val & Requirement.NETWORK.value:
+                category = "network"
+            elif req_val & Requirement.ENV.value:
+                category = "env"
+            else:
+                category = "logic"
+
+        if category not in resolved_types:
+            return False
+
         return True
 
     def _recurse(node: Any) -> None:
@@ -68,9 +113,10 @@ class TestDiscovery:
             return []
         source_real = uri.resolve(source_root_uri)
         if target:
-            mod_path = os.path.join(source_real, target)
+            target_mod = target.split(":", 1)[0] if ":" in target else target
+            mod_path = os.path.join(source_real, target_mod)
             if os.path.isdir(mod_path) and os.path.isfile(os.path.join(mod_path, "manifest.json")):
-                return [target]
+                return [target_mod]
             return []
         modules = []
         for item in sorted(os.listdir(source_real)):
@@ -84,6 +130,7 @@ class TestDiscovery:
         module_name: str,
         test_type: Optional[str] = None,
         pattern: Optional[str] = None,
+        target: Optional[str] = None,
         contract_only: bool = False
     ) -> Tuple[unittest.TestSuite, int, int]:
         """
@@ -96,8 +143,8 @@ class TestDiscovery:
         
         # Phase 1: Universal Auto-Contract Suite
         contract_suite = make_contract_suite(module_name)
-        if pattern or test_type:
-            contract_suite = filter_suite(contract_suite, pattern=pattern, test_type=test_type)
+        if pattern or test_type or target:
+            contract_suite = filter_suite(contract_suite, pattern=pattern, test_type=test_type, target=target)
         contract_count = contract_suite.countTestCases()
         master_suite.addTests(contract_suite)
 
@@ -136,9 +183,24 @@ class TestDiscovery:
                 loader = unittest.TestLoader()
                 discovered = loader.discover(start_dir=tests_dir, pattern="test_*.py", top_level_dir=src_real)
                 
-                # Apply recursive pattern & type filter
-                if pattern or test_type:
-                    discovered = filter_suite(discovered, pattern=pattern, test_type=test_type)
+                # Gate 2: Dynamic Type Guard - Ensure all discovered tests inherit from YSCBTestCase
+                def _validate_test_types(node: Any) -> None:
+                    if isinstance(node, unittest.TestSuite):
+                        for sub in node:
+                            _validate_test_types(sub)
+                    elif isinstance(node, unittest.TestCase):
+                        if node.__class__.__name__ == "_FailedTest":
+                            return
+                        mro_names = [b.__name__ for b in node.__class__.__mro__]
+                        if "YSCBTestCase" not in mro_names:
+                            raise TypeError(
+                                f"[dev:test] Security Guard Blocked: Test class '{node.__class__.__name__}' directly subclasses 'unittest.TestCase'. "
+                                f"All YSCB tests MUST inherit from 'dev.testing.case.YSCBTestCase' to prevent sandbox leakage."
+                            )
+                _validate_test_types(discovered)
+
+                # Apply recursive pattern, target & 4-tier taxonomy filter
+                discovered = filter_suite(discovered, pattern=pattern, test_type=test_type, target=target)
                 
                 custom_count = discovered.countTestCases()
                 master_suite.addTests(discovered)

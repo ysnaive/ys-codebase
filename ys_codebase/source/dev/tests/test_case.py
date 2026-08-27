@@ -70,7 +70,34 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ysc_test_sandbox_env_set_in_setup(self):
-        """FT-03: Verify YSCB_TEST_SANDBOX=1 is set in setUp."""
-        self.assertEqual(os.environ.get("YSCB_TEST_SANDBOX"), "1")
+    def test_taxonomy_flags_and_masks(self):
+        """FT-01: Verify 4-tier taxonomy flags, aliases, and composite masks."""
+        self.assertTrue(bool(Requirement.LOGIC & Requirement.ALL_DEFAULT))
+        self.assertTrue(bool(Requirement.ENV & Requirement.ALL_DEFAULT))
+        self.assertFalse(bool(Requirement.WORKFLOW & Requirement.ALL_DEFAULT))
+        self.assertFalse(bool(Requirement.PERF & Requirement.ALL_DEFAULT))
+        
+        # ALL mask includes all 4 categories
+        self.assertTrue(bool(Requirement.WORKFLOW & Requirement.ALL))
+        self.assertTrue(bool(Requirement.PERF & Requirement.ALL))
+        self.assertEqual(Requirement.PERFORMANCE, Requirement.PERF)
+        self.assertEqual(Requirement.HOST_CLI, Requirement.ENV)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_security_error_when_direct_host_run(self):
+        """FT-05 & ET-02: Verify SecurityError is raised if running YSCBTestCase directly outside sandbox."""
+        from dev.testing.case import SecurityError
+        old_val = os.environ.get("YSCB_TEST_SANDBOX")
+        try:
+            if "YSCB_TEST_SANDBOX" in os.environ:
+                del os.environ["YSCB_TEST_SANDBOX"]
+            
+            dummy = DummySharedTestCase("test_method_one")
+            with self.assertRaises(SecurityError) as ctx:
+                dummy.setUp()
+            self.assertIn("Security Guard Blocked", str(ctx.exception))
+        finally:
+            if old_val is not None:
+                os.environ["YSCB_TEST_SANDBOX"] = old_val
         self.mark_passed()

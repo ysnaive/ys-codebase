@@ -1,10 +1,11 @@
 """
 Unit tests for core.semver (SemVer 2.0.0 parsing, comparison and constraint solver).
 """
-import unittest
 from core import semver
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
 
-class SemVerCoreTest(unittest.TestCase):
+class SemVerCoreTest(YSCBTestCase):
     def test_parse_valid_semver(self):
         v = semver.parse_semver("1.2.3")
         self.assertEqual(v.major, 1)

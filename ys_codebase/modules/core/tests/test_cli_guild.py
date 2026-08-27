@@ -7,7 +7,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from core.providers import get_agents_cli_guild
 
 
-class TestCliGuildProvider(unittest.TestCase):
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
+
+class TestCliGuildProvider(YSCBTestCase):
     """測試 CLI 防呆手冊動態產生與過濾邏輯。"""
 
     def test_filter_and_formatting(self):

@@ -18,8 +18,12 @@ from agents_workflow.compiler import ArtifactCompiler
 from agents_workflow.publisher import ReleasePublisher
 
 
-class TestAutoWorkflow(unittest.TestCase):
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
+
+class TestAutoWorkflow(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self.compiler = ArtifactCompiler()
         self.publisher = ReleasePublisher(compiler=self.compiler)
         self.auto_md_path = os.path.join(_pkg_root, "assets", "workflows", "Auto.md")

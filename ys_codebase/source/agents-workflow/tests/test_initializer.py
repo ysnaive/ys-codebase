@@ -2,7 +2,6 @@
 Unit and Integration Tests for agents-workflow WorkflowInitializer and --init-default CLI.
 Covers FT-01 ~ FT-06, ET-01 ~ ET-03.
 """
-import unittest
 import os
 import sys
 import json
@@ -10,6 +9,8 @@ import shutil
 import tempfile
 import importlib.util
 from typing import Dict, Any
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_root = os.path.dirname(_test_dir)
@@ -24,18 +25,31 @@ _spec_cli.loader.exec_module(cli)
 from agents_workflow.initializer import WorkflowInitializer
 
 
-class TestWorkflowInitializer(unittest.TestCase):
+class TestWorkflowInitializer(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self.temp_dir = tempfile.mkdtemp(prefix="test_aw_init_")
         self.initializer = WorkflowInitializer()
+        
+        # Backup config.project.json for airtight rollback
+        self._cfg_backup = None
+        self._cfg_path = os.path.join(self.sandbox_project_dir, "..", "config", "agents-workflow", "config.project.json")
+        if os.path.isfile(self._cfg_path):
+            with open(self._cfg_path, "r", encoding="utf-8") as f:
+                self._cfg_backup = f.read()
 
     def tearDown(self):
+        super().tearDown()
         if os.path.exists(self.temp_dir):
             try:
                 shutil.rmtree(self.temp_dir)
             except Exception:
                 pass
+        if self._cfg_backup and os.path.isfile(self._cfg_path):
+            with open(self._cfg_path, "w", encoding="utf-8") as f:
+                f.write(self._cfg_backup)
 
+    @require(Requirement.LOGIC)
     def test_ft_01_manifest_and_template_structure(self):
         """FT-01 & FT-02: 驗證 manifest.json 宣告 3 大 URI 協議與 config 模板 !undefined 剛性。"""
         mf_path = os.path.join(_pkg_root, "manifest.json")
@@ -68,7 +82,9 @@ class TestWorkflowInitializer(unittest.TestCase):
             self.assertIn("release_targets", tpl_data)
             self.assertIn("enable_agents_md", tpl_data)
             self.assertIn("enable_project_changelog", tpl_data)
+        self.mark_passed()
 
+    @require(Requirement.LOGIC)
     def test_ft_02_probe_paths(self):
         """FT-02: 驗證 probe_paths 能正確識別實體路徑與存在性。"""
         existing_sub = os.path.join(self.temp_dir, "existing_docs")
@@ -86,7 +102,9 @@ class TestWorkflowInitializer(unittest.TestCase):
 
         self.assertTrue(docs_item["exists"])
         self.assertFalse(plans_item["exists"])
+        self.mark_passed()
 
+    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
     def test_ft_03_init_default_auto_confirm(self):
         """FT-03: 驗證 --init-default 自動確認時建立目錄並寫入組態。"""
         plans_dir = os.path.join(self.temp_dir, "plans")
@@ -108,14 +126,18 @@ class TestWorkflowInitializer(unittest.TestCase):
         self.assertTrue(os.path.isdir(plans_dir))
         self.assertTrue(os.path.isdir(archived_dir))
         self.assertTrue(os.path.isdir(docs_dir))
+        self.mark_passed()
 
+    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
     def test_ft_04_cli_invocation_with_path_override(self):
         """FT-05: 驗證 CLI 指令解析 --init-default 與 --path-* 參數。"""
         custom_docs = os.path.join(self.temp_dir, "my_custom_docs")
         ret = cli.main(["--init-default", "-y", f"--path-docs={custom_docs}"])
         self.assertEqual(ret, 0)
         self.assertTrue(os.path.isdir(custom_docs))
+        self.mark_passed()
 
+    @require(Requirement.LOGIC)
     def test_et_01_user_cancellation(self):
         """ET-01: 驗證非自動確認且無 TTY 時使用者拒絕安全退出。"""
         res = self.initializer.run_init_default(
@@ -126,7 +148,4 @@ class TestWorkflowInitializer(unittest.TestCase):
         self.assertTrue(res["success"])
         self.assertTrue(res["cancelled"])
         self.assertFalse(os.path.exists(os.path.join(self.temp_dir, "cancelled_plans")))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.mark_passed()

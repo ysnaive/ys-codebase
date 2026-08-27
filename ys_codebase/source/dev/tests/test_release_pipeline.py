@@ -5,17 +5,20 @@ import os
 import sys
 import json
 import zipfile
-import unittest
 from core import uri
 from core import semver
 from dev.releaser import Releaser, ReleasePipeline
 from dev.builder import Builder
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
 
-class TestReleasePipeline(unittest.TestCase):
+class TestReleasePipeline(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self.releaser = Releaser()
         self.builder = Builder()
 
+    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
     def test_builder_dev_build_and_release_package(self):
         # Test dev build outputs X.Y.Z.build.zip containing tests
         m_data = uri.read_json("module.source://core/manifest.json")
@@ -37,13 +40,17 @@ class TestReleasePipeline(unittest.TestCase):
         
         with zipfile.ZipFile(rel_zip, "r") as zf:
             self.assertFalse(any(f.startswith("tests/") for f in zf.namelist()))
+        self.mark_passed()
 
+    @require(Requirement.LOGIC)
     def test_release_check_gates(self):
         """Verify release_check executes 3-Gate verification."""
         passed, errors = self.releaser.release_check("core")
         self.assertTrue(isinstance(passed, bool))
         self.assertTrue(isinstance(errors, list))
+        self.mark_passed()
 
+    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
     def test_release_force_override_behavior(self):
         """FT-01 & ET-01: 驗證 --force 允許覆蓋在庫最高同版本，無 force 則被 Gate 2/3 阻斷。"""
         # 動態獲取 core 目前版本
@@ -70,14 +77,18 @@ class TestReleasePipeline(unittest.TestCase):
         ok_rel, msg_rel = self.releaser.release_module("core", force=True)
         self.assertTrue(ok_rel)
         self.assertTrue(os.path.isfile(rel_zip))
+        self.mark_passed()
 
+    @require(Requirement.WORKFLOW | Requirement.ISOLATED_SANDBOX)
     def test_release_git_smart_skip_and_force(self):
         """FT-02 & FT-03: 驗證 release-git 在已發布時自動略過打包或在 force 下覆蓋打包。"""
         # 測試 release_git 智慧略過（已發布且無 force）
-        # mock git command to avoid real git operations in unit test
+        # mock git command & tester.run to avoid real git operations & recursive test runner in unit test
         original_git = self.releaser._run_git_cmd
+        original_tester_run = self.releaser.tester.run
         try:
             self.releaser._run_git_cmd = lambda args, cwd=None: (0, "", "")
+            self.releaser.tester.run = lambda argv: 0
             
             # 版本已在庫，force=False -> 略過打包
             ok, msg = self.releaser.release_git("core", "test commit msg", force=False)
@@ -90,6 +101,5 @@ class TestReleasePipeline(unittest.TestCase):
             self.assertIn("Successfully processed", msg_f)
         finally:
             self.releaser._run_git_cmd = original_git
-
-if __name__ == "__main__":
-    unittest.main()
+            self.releaser.tester.run = original_tester_run
+        self.mark_passed()

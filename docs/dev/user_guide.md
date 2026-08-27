@@ -160,12 +160,42 @@ python yscb.py dev test core --keep-sandbox
    - 同一個 `YSCBTestCase` 類別內的所有測試方法，預設**共用同一個沙盒實例**（Class-level Lazy Sandbox）。
    - 避免每個測試方法重複複製目錄與初始化 Hook，使一般邏輯與 VFS 測試獲得數倍效能加速。
    - 類別測試全部結束後，自動由 `tearDownClass` 銷毀共用沙盒。
-2. **專屬獨立沙盒 (`@require(Requirement.ISOLATED_SANDBOX)`)**：
+2. **專屬獨立沙盒 (`@require(Requirement.ISOLATED_SANDBOX)`)：**
    - 針對破壞性寫入、模組物理安裝、建置產物覆蓋等具狀態副作用之測試案例，標記 `@require(Requirement.ISOLATED_SANDBOX)`。
    - 該方法在 `setUp()` 時將自動獲得一個全新的專屬沙盒，並在 `tearDown()` 結束後即時銷毀，確保與共用沙盒完全隔離。
-3. **測試模式 JIT 靜默防護 (`YSCB_TEST_SANDBOX`)**：
+3. **測試模式 JIT 靜默防護 (`YSCB_TEST_SANDBOX`)：**
    - 測試框架執行期間自動注入 `YSCB_TEST_SANDBOX=1`。
    - 被測代碼在解析 `!undefined` 協議時自動靜默跳過終端鍵盤互動，即時拋出 `UndefinedURIError`，保障自動化測試流暢度。
+
+### 4.4 測試四層分類體系與精準目標定位 (Taxonomy & Target Selection)
+為進一步優化測試執行效能，系統將測試劃分為四大語意類別：
+- **`LOGIC` (純邏輯測試)**：純內部邏輯、記憶體資料運算、自我完備（預設執行）。
+- **`ENV` (環境測試)**：涉及跨模組連動、依賴注入 (DI)、VFS 虛擬檔案系統操作（預設執行）。
+- **`WORKFLOW` (工作流測試)**：組合多個原子操作之高階 E2E 流水線（如 `release_git`），**預設略過**（可帶 `--workflow` 啟用）。
+- **`PERF` (壓力效能測試)**：基準效能、高負載、大型 I/O 測試，**預設略過**（可帶 `--perf` 啟用）。
+
+#### CLI 篩選與精準定位指令
+```bash
+# 預設模式（僅執行 LOGIC 與 ENV 快速回歸）
+python yscb.py dev test dev
+
+# 顯式篩選特定類別
+python yscb.py dev test dev --logical     # 僅跑純邏輯測試
+python yscb.py dev test dev --env         # 僅跑環境測試
+python yscb.py dev test dev --workflow    # 啟用並執行工作流測試
+python yscb.py dev test dev --perf        # 啟用並執行效能/壓力測試
+python yscb.py dev test dev --all-types   # 執行所有類別測試
+
+# 精準目標定位器 (--target)
+python yscb.py dev test --target=core:test_symbols.TestSymbolsProtocol.test_st_01_parse_code_func_uri_success
+python yscb.py dev test --target=dev:TestDevChecker.test_check_core_module_passes
+```
+
+### 4.5 三道型別與環境防呆守門鎖 (Triple-Lock Guard)
+為根治測試副作用外洩至專案宿主環境，系統落實三層剛性防禦：
+1. **第 1 鎖（靜態門禁 `dev check`）**：AST 語法樹靜態掃描所有 `test_*.py`，全面禁止原生 `class *(unittest.TestCase)`。
+2. **第 2 鎖（動態門禁 `TestDiscovery`）**：測試加載時驗證 MRO 繼承鏈，非 `YSCBTestCase` 測試直接拒絕加載並拋出 `TypeError`。
+3. **第 3 鎖（入口門禁 `YSCBTestCase.setUp`）**：檢測若未在授權沙盒環境 (`YSCB_TEST_SANDBOX==1`) 裸跑，直接拋出 `SecurityError` 強制阻斷。
 
 ---
 

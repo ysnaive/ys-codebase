@@ -13,15 +13,19 @@ from core.symbols import (
 )
 
 
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
+
 def sample_test_func(context=None):
     """用於測試符號解析之測試函式。"""
     return f"sample_output:{getattr(context, 'name', 'no_ctx')}"
 
 
-class TestSymbolsProtocol(unittest.TestCase):
+class TestSymbolsProtocol(YSCBTestCase):
     """測試 code.func:// 協議解析與 Callable 加載。"""
 
     def setUp(self):
+        super().setUp()
         clear_callable_cache()
 
     def test_st_01_parse_code_func_uri_success(self):
