@@ -2,6 +2,20 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_28_0215_test_shared_sandbox_optimization
+
+- **測試框架 Session-Level 全局共用沙盒與寫入型測試隔離優化**：
+  - **Session-Level 全局共用沙盒生命週期 (`YSCBTestCase`)**：
+    - 將 `YSCBTestCase` 預設沙盒生命週期由「類別層級 (Class-Level)」重構為「Session-Level 類別級全域單例 (`_shared_sandbox_ctx`)」，徹底消除跨測試類別重複在 Windows NTFS 上建立與刪除目錄的實體 I/O 開銷。
+    - 實作 `YSCBTestCase.cleanup_shared_sandbox()`，並於 `TestRunner.run_suite()` 之 `finally` 區塊保證自動安全釋放。
+  - **寫入與變異型測試剛性隔離標註 (`ISOLATED_SANDBOX`)**：
+    - 全面盤點寫入型測試（`TestCoreInstaller`, `TestCoreEngine`, `TestRemoteZipBootstrap`），顯式標註 `@require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)`，確保 100% 測試狀態純淨與環境隔離。
+    - 擴充 `YSCBTestCase.setUp()` 支援類別層級 `@require` 條件解析。
+  - **全量測試與回歸驗證**：
+    - 新增跨 Class Session-Level 沙盒複用與清理安全單元測試，全庫 114/114 測試 100% Passed (100% Ready)。
+  - **知識庫交付**：
+    - 更新 `docs/dev/user_guide.md` §4.3 (Session-Level 共用沙盒與 ISOLATED_SANDBOX 測試沙盒模式指南)。
+
 ## 2026_08_27_2146_release_targets_codex_claude
 
 - **`agents-workflow` 模組新增 Anthropic Claude Code 與 OpenAI Codex Release Targets**：

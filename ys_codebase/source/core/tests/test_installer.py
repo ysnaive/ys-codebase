@@ -5,7 +5,7 @@ from dev.testing import YSCBTestCase, require, Requirement
 from core.installer import Installer
 from core import uri
 
-@require(Requirement.ENV)
+@require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
 class TestCoreInstaller(YSCBTestCase):
     def setUp(self):
         super().setUp()

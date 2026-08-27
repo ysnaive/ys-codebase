@@ -12,7 +12,7 @@ from core.engine import AtomicEngine
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 
-@require(Requirement.ENV)
+@require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
 class TestRemoteZipBootstrap(YSCBTestCase):
     def setUp(self):
         super().setUp()
