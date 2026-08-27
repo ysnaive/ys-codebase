@@ -4,6 +4,21 @@
 
 ## 2026_08_27_1506_dev_test_architecture_optimization
 
+- **dev 測試架構優化主計畫 — sub_05: 多進程/多 Worker 多模組並行跑測 (`sub_05_parallel_module_test_runner`)**：
+  - **多 Worker 多沙盒並行測試調度 (`Tester._run_parallel_test`)**：
+    - `dev test --all` 預設自動啟用多進程並行執行，利用 `ThreadPoolExecutor` 驅動多個獨立虛擬沙盒子行程（Worker Processes），總回歸時間縮短至單一最慢模組耗時（由 ~23 秒壓至 **~14 秒，加速 >40%**）。
+    - 支援 `-j <N> / --jobs=<N>` 控制最大並行 Worker 數（預設 `min(cpu_count, num_modules)`）。
+    - 支援 `--sequential / --no-parallel` 快速回退為單進程順序執行。
+  - **獨立沙盒實例隔離與線程安全 (`SandboxProvisioner`)**：
+    - 沙盒目錄引入 `uuid` 唯一性綴詞，確保微秒級多 Worker 同時建立沙盒時零目錄碰撞與零檔案衝突。
+    - 每個 Worker 獲取專屬 `sandbox 1..N` 標籤與獨立環境變數空間。
+  - **即時交錯生命週期 Log 與報告聚合**：
+    - 各 Worker 建立沙盒、開始測試與結束測試之 Log 即時交錯呈現在終端。
+    - 各 Worker 透過 `--report-json` 導出結構化數據，主進程聚合所有模組數據並按原始順序輸出單一整合 ASCII Diagnostic Report。
+  - **差異化沙盒清理策略**：通過之模組沙盒即時銷毀，若有失敗模組僅保留該失敗模組所在的沙盒供除錯。
+  - **全量測試與回歸驗證**：新增多 Worker 並行派發與獨立沙盒單元測試，全庫 148 個測試案例回歸 148/148 100% Passed。
+  - **知識庫交付**：更新 `docs/dev/user_guide.md` §4.1 (並行測試參數與用法)。
+
 - **dev 測試架構優化主計畫 — sub_04: dev test CLI 輸出結構、日誌降噪與即時反饋優化 (`sub_04_test_cli_output_and_ux_optimization`)**：
   - **中間輸出緩衝捕獲與靜默降噪 (`OutputCapturer`)**：跑測期間預設對 stdout/stderr 進行記憶體緩衝，常態消除 Hook、Mock 與 print 控制台雜訊，僅在失敗或 `-v / --verbose` 時展開。
   - **跑測生命週期即時進度 Log**：即時輸出 `Create sandbox <id> at: "..."`, `<mod> begin test in sandbox <id>`, `<mod> test finish in ({time}s)` 與 `Cleaned up sandbox <id>`，為後續多行程 Worker 空間奠定基礎。

@@ -25,6 +25,7 @@ from agents_workflow.plans import (
     PlanDestinationExistsError,
 )
 
+@require(Requirement.ENV)
 class TestPlansToolchainInternal(YSCBTestCase):
     """模組內部 Plans 工具鏈單元測試。"""
 
