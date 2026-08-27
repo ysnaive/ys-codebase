@@ -2,10 +2,11 @@
 Official test suite for dev.scaffold.Scaffolder.
 """
 import os
-from dev.testing import YSCBTestCase
+from dev.testing import YSCBTestCase, require, Requirement
 from dev.scaffold import Scaffolder
 from core import uri
 
+@require(Requirement.ENV)
 class TestDevScaffolder(YSCBTestCase):
     def setUp(self):
         super().setUp()

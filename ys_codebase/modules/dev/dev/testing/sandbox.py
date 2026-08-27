@@ -196,7 +196,8 @@ class SandboxProvisioner:
             from datetime import datetime
             SandboxProvisioner.prune_sandboxes(max_keep=3)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            sandbox_id = f"sandbox_{ts}"
+            unique_hex = uuid.uuid4().hex[:6]
+            sandbox_id = f"sandbox_{ts}_{unique_hex}"
             target_dir = uri.resolve(f"cache://dev/sandbox/{sandbox_id}")
             
         ctx = SandboxContext(target_dir)

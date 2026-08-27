@@ -9,12 +9,12 @@
     },
     "dev": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-27 17:38:10",
+      "installed_at": "2026-08-27 17:58:29",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
       "version": "1.0.1.build",
-      "installed_at": "2026-08-27 17:04:20",
+      "installed_at": "2026-08-27 17:57:13",
       "provider": "./ys_codebase/release"
     }
   }

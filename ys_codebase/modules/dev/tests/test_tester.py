@@ -33,7 +33,7 @@ class TestDevTester(YSCBTestCase):
         self.assertEqual(res, 0)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
+    @require(Requirement.ENV)
     def test_run_test_all_success_cleans_sandboxes(self):
         """FT-03: Verify _run_test with --all cleans all sandboxes when tests pass."""
         import os

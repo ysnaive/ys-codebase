@@ -3,7 +3,7 @@
 > 功能名稱：dev 測試架構優化 (Dev Test Architecture Optimization)  
 > 建立日期：2026-08-27  
 > 所屬主計畫：無 (分類型主計畫 Umbrella)  
-> 狀態：`Discussing`  
+> 狀態：`Completed`  
 > 計畫類型：Refactor / Performance / Architecture  
 > 模板版本：v1.1  
 

@@ -34,9 +34,10 @@ class CyclicDependencyError(RuntimeError):
 class Releaser:
     """純淨發布調度器：負責發布前 3-Gate 校驗、DAG 拓撲排序批次發布與 release-git 本地流水線。"""
 
-    def __init__(self, builder: Optional[Builder] = None, checker: Optional[Checker] = None):
+    def __init__(self, builder: Optional[Builder] = None, checker: Optional[Checker] = None, tester: Optional[Any] = None):
         self.builder = builder or Builder()
         self.checker = checker or Checker()
+        self.tester = tester
 
     def _run_git_cmd(self, args: List[str], cwd: Optional[str] = None) -> Tuple[int, str, str]:
         """Runs a Git command safely within local repository."""
@@ -232,8 +233,10 @@ class Releaser:
         is_already_released = uri.exists(exact_rel_zip)
 
         # Step 1: E2E Test
-        from dev.tester import Tester
-        tester = Tester()
+        tester = self.tester
+        if tester is None:
+            from dev.tester import Tester
+            tester = Tester()
         test_ret = tester.run(["test", module_name])
         if test_ret != 0:
             return False, f"Step 1 Failed: E2E test failed for module '{module_name}'. Release aborted."

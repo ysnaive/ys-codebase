@@ -129,8 +129,15 @@ python yscb.py dev release-git <module_name> "<commit message>" --force
 # 測試指定模組（預設自動前置執行 dev build）
 python yscb.py dev test core
 
-# 測試所有模組
+# 測試所有模組（預設自動啟用多進程多沙盒並行跑測，加速 >40%）
 python yscb.py dev test --all
+
+# 指定並行 Worker 數量限制 (-j / --jobs)
+python yscb.py dev test --all -j 2
+python yscb.py dev test --all --jobs=4
+
+# 停用並行，回退為單進程順序執行 (--sequential / --no-parallel)
+python yscb.py dev test --all --sequential
 
 # 跳過前置 build，直接測試既有 build 產物
 python yscb.py dev test dev --no-build

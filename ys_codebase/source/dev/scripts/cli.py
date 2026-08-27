@@ -63,7 +63,7 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py dev release-check <name> [--force|-f]")
         print("  python yscb.py dev release-git <name> \"<commit message>\" [--force|-f]")
         print("  python yscb.py dev bump-[major|minor|patch|revision] <name>")
-        print("  python yscb.py dev test [name | --all] [--no-build] [options]")
+        print("  python yscb.py dev test [name | --all] [--no-build] [-j <N>] [--sequential] [options]")
         print("  python yscb.py dev op-mksb [--dir=<path>]")
         print("  python yscb.py dev op-test [name | --all] [options]")
         return 0
