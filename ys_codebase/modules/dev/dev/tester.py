@@ -4,9 +4,10 @@ CLI Command dispatcher for 'dev test', 'dev op-mksb', and 'dev op-test'.
 import os
 import sys
 import time
+import unittest
 import subprocess
 from typing import List, Dict, Any, Optional
-from dev.testing.runner import TestDiscovery, TestRunner, ASCIIReportFormatter
+from dev.testing.runner import TestDiscovery, TestRunner, ASCIIReportFormatter, get_test_category
 from dev.testing.sandbox import SandboxProvisioner, SandboxContext
 
 class Tester:
@@ -135,8 +136,23 @@ class Tester:
                 print("[dev:test] No modules found in source/.")
             return 1
 
+        # Determine filter mode string for report metadata
+        if test_type:
+            tt = test_type.lower().replace("-", "_")
+            if tt in ("all", "all_types"):
+                filter_mode = "ALL Types"
+            else:
+                filter_mode = f"[{test_type.upper()}]"
+        else:
+            filter_mode = "Default (LOGIC + ENV)"
+
+        target_scope = target if target else (target_mod if target_mod and not run_all else "All")
+
         runner = TestRunner(verbose=verbose, keep_sandbox=keep_sandbox)
         report_data: Dict[str, Any] = {
+            "filter_mode": filter_mode,
+            "target_scope": target_scope,
+            "no_build": "--no-build" in argv,
             "modules": [],
             "total": 0,
             "passed": 0,
@@ -146,10 +162,14 @@ class Tester:
             "failures_list": []
         }
 
+        sandbox_id = os.environ.get("YSCB_SANDBOX_ID", "sandbox")
         start_time = time.perf_counter()
         all_passed = True
 
         for mod_name in modules:
+            if not verbose:
+                print(f"[dev:test] {mod_name} begin test in {sandbox_id}", flush=True)
+            mod_start = time.perf_counter()
             suite, contract_total, custom_total = TestDiscovery.build_suite_for_module(
                 mod_name,
                 test_type=test_type,
@@ -158,7 +178,10 @@ class Tester:
                 contract_only=contract_only
             )
             
-            result = runner.run_suite(suite)
+            result, captured_output = runner.run_suite(suite)
+            mod_duration = time.perf_counter() - mod_start
+            if not verbose:
+                print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
             mod_total = result.testsRun
             mod_failed = len(result.failures) + len(result.errors)
             mod_skipped = len(result.skipped)
@@ -177,33 +200,89 @@ class Tester:
             contract_passed = max(0, contract_total - contract_failed - contract_skipped)
             custom_passed = max(0, custom_total - custom_failed - custom_skipped)
 
+            # Taxonomy breakdown for custom passed tests
+            logic_passed = 0
+            env_passed = 0
+            workflow_passed = 0
+            perf_passed = 0
+            
+            failed_test_objs = set(c for c, _ in result.failures + result.errors)
+            skipped_test_objs = set(c for c, _ in result.skipped)
+            
+            def _tally_custom(node: Any):
+                nonlocal logic_passed, env_passed, workflow_passed, perf_passed
+                if isinstance(node, unittest.TestSuite):
+                    for sub in node:
+                        _tally_custom(sub)
+                elif isinstance(node, unittest.TestCase):
+                    if "Contract" in node.__class__.__name__:
+                        return
+                    if node not in failed_test_objs and node not in skipped_test_objs:
+                        cat = get_test_category(node)
+                        if cat == "logic":
+                            logic_passed += 1
+                        elif cat == "env":
+                            env_passed += 1
+                        elif cat == "workflow":
+                            workflow_passed += 1
+                        elif cat == "perf":
+                            perf_passed += 1
+            _tally_custom(suite)
+
             err_msgs = []
             for test_case, tb in result.failures:
                 last_line = tb.strip().splitlines()[-1] if tb.strip() else "AssertionError"
+                loc = ""
+                for l in reversed(tb.strip().splitlines()):
+                    if "File " in l and ", line " in l:
+                        loc = l.strip()
+                        break
+                cls_name = test_case.__class__.__name__
+                m_name = getattr(test_case, "_testMethodName", "")
+                rerun_target = f"python yscb.py dev test --target={mod_name}:{cls_name}.{m_name}" if m_name else f"python yscb.py dev test --target={mod_name}:{cls_name}"
                 err_msgs.append(f"{test_case}: {last_line}")
                 report_data["failures_list"].append({
                     "module": mod_name,
-                    "test": str(test_case),
+                    "test": f"{cls_name}.{m_name}" if m_name else str(test_case),
                     "type": "FAIL",
-                    "message": last_line
+                    "message": last_line,
+                    "location": loc,
+                    "rerun": rerun_target,
+                    "captured_output": captured_output
                 })
             for test_case, tb in result.errors:
                 last_line = tb.strip().splitlines()[-1] if tb.strip() else "Error"
+                loc = ""
+                for l in reversed(tb.strip().splitlines()):
+                    if "File " in l and ", line " in l:
+                        loc = l.strip()
+                        break
+                cls_name = test_case.__class__.__name__
+                m_name = getattr(test_case, "_testMethodName", "")
+                rerun_target = f"python yscb.py dev test --target={mod_name}:{cls_name}.{m_name}" if m_name else f"python yscb.py dev test --target={mod_name}:{cls_name}"
                 err_msgs.append(f"{test_case}: {last_line}")
                 report_data["failures_list"].append({
                     "module": mod_name,
-                    "test": str(test_case),
+                    "test": f"{cls_name}.{m_name}" if m_name else str(test_case),
                     "type": "ERROR",
-                    "message": last_line
+                    "message": last_line,
+                    "location": loc,
+                    "rerun": rerun_target,
+                    "captured_output": captured_output
                 })
 
             mod_info = {
                 "name": mod_name,
                 "passed": mod_failed == 0,
+                "duration": mod_duration,
                 "contract_total": contract_total,
                 "contract_passed": contract_passed,
                 "custom_total": custom_total,
                 "custom_passed": custom_passed,
+                "logic_passed": logic_passed,
+                "env_passed": env_passed,
+                "workflow_passed": workflow_passed,
+                "perf_passed": perf_passed,
                 "errors": err_msgs
             }
             report_data["modules"].append(mod_info)
@@ -218,12 +297,15 @@ class Tester:
 
     def _run_test(self, argv: List[str]) -> int:
         """High-level facade: auto dev build -> op-mksb -> run op-test in sandbox -> cleanup"""
+        is_nested = os.environ.get("YSCB_NESTED_TEST") == "1"
         keep_sandbox = "--keep-sandbox" in argv
         no_build = "--no-build" in argv
         clean_argv = [a for a in argv if a != "--no-build"]
         
         # 1. Automatic pre-test Hermetic Dev Build (unless --no-build)
         if not no_build:
+            if not is_nested:
+                print("[dev:test] Pre-building modules for test execution...", flush=True)
             from dev.builder import Builder
             builder = Builder()
             target_mod = next((a for a in clean_argv if not a.startswith("-") and a != "test"), None)
@@ -242,7 +324,11 @@ class Tester:
         # 2. Provision virtual sandbox (resolves from build:// -> mirror:// -> provider)
         ctx = SandboxProvisioner.create_sandbox()
         sandbox_dir = ctx.sandbox_dir
+        sandbox_idx = int(os.environ.get("YSCB_SANDBOX_INDEX", "1"))
+        sandbox_display_id = f"sandbox {sandbox_idx}"
         host_dir = ctx.host_dir
+        if not is_nested:
+            print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
         
         # 3. Invoke dev op-test inside sandbox
         sandbox_yscb = os.path.join(host_dir, "yscb.py")
@@ -251,24 +337,42 @@ class Tester:
         
         p_env = dict(os.environ)
         p_env["YSCB_TEST_SANDBOX"] = "1"
+        p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
         try:
-            res = subprocess.run(cmd, cwd=host_dir, env=p_env)
+            res = subprocess.run(
+                cmd,
+                cwd=host_dir,
+                env=p_env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
             ret_code = res.returncode
+            if not is_nested:
+                if res.stdout:
+                    print(res.stdout, end="", flush=True)
+                if res.stderr:
+                    print(res.stderr, end="", file=sys.stderr, flush=True)
         except Exception as e:
-            print(f"[dev:test] Subprocess execution error: {e}")
+            if not is_nested:
+                print(f"[dev:test] Subprocess execution error: {e}", file=sys.stderr)
             ret_code = 1
             
         # 4. Teardown policy
         if ret_code == 0 and not keep_sandbox:
+            if not is_nested:
+                print(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
             if "--all" in clean_argv:
                 SandboxProvisioner.cleanup_all_sandboxes()
             else:
                 SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
         else:
             SandboxProvisioner.prune_sandboxes(max_keep=3)
-            if ret_code != 0:
-                print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
-            else:
-                print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
+            if not is_nested:
+                if ret_code != 0:
+                    print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
+                else:
+                    print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
                 
         return ret_code

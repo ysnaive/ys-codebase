@@ -42,11 +42,17 @@ class TestDevTester(YSCBTestCase):
         os.makedirs(sandbox_parent, exist_ok=True)
         dummy_sb = os.path.join(sandbox_parent, "sandbox_20260101_200001_000000")
         os.makedirs(dummy_sb, exist_ok=True)
+        orig_nested = os.environ.get("YSCB_NESTED_TEST")
+        os.environ["YSCB_NESTED_TEST"] = "1"
         try:
             ret = self.tester._run_test(["--all", "--contract-only", "--no-build"])
             self.assertEqual(ret, 0)
             self.assertFalse(os.path.exists(dummy_sb))
         finally:
+            if orig_nested is not None:
+                os.environ["YSCB_NESTED_TEST"] = orig_nested
+            else:
+                os.environ.pop("YSCB_NESTED_TEST", None)
             if os.path.exists(dummy_sb):
                 SandboxProvisioner.cleanup_sandbox(dummy_sb, force=True)
         self.mark_passed()

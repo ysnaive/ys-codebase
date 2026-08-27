@@ -4,6 +4,18 @@
 
 ## 2026_08_27_1506_dev_test_architecture_optimization
 
+- **dev 測試架構優化主計畫 — sub_04: dev test CLI 輸出結構、日誌降噪與即時反饋優化 (`sub_04_test_cli_output_and_ux_optimization`)**：
+  - **中間輸出緩衝捕獲與靜默降噪 (`OutputCapturer`)**：跑測期間預設對 stdout/stderr 進行記憶體緩衝，常態消除 Hook、Mock 與 print 控制台雜訊，僅在失敗或 `-v / --verbose` 時展開。
+  - **跑測生命週期即時進度 Log**：即時輸出 `Create sandbox <id> at: "..."`, `<mod> begin test in sandbox <id>`, `<mod> test finish in ({time}s)` 與 `Cleaned up sandbox <id>`，為後續多行程 Worker 空間奠定基礎。
+  - **雙報表根除與子行程輸出隔離**：在 `Tester._run_test` 實作子行程 `capture_output=True` 搭配 `YSCB_NESTED_TEST` 隔離，徹底根除巢狀測試產生的雙報表洩漏。
+  - **診斷報告結構豐富化 (`ASCIIReportFormatter`)**：
+    - 頂部元數據呈現 `Mode / Target / Build`。
+    - 各模組列顯示獨立執行精確耗時。
+    - Custom 節點展示四層分類細分計數 (`[Logic: X, Env: Y]`)。
+    - 失敗時輸出結構化診斷區塊與一鍵 `--target` 快速重測指令。
+  - **全量測試與回歸驗證**：新增 `OutputCapturer`、報表元數據與分類統計單元測試，全系統回歸跑測 147/147 測試 100% Passed。
+  - **知識庫交付**：更新 `docs/dev/user_guide.md` §4.1 (`-v`) 與 §4.6 (診斷報告結構與即時反饋)。
+
 - **dev 測試架構優化主計畫 — sub_03: 測試分類體系重構、效能深水區與沙盒型別安全防固 (`sub_03_test_performance_optimization`)**：
   - **四層測試分類體系 (4-Tier Test Taxonomy)**：在 `dev.testing.requirement` 定義 `LOGIC` (純邏輯)、`ENV` (環境/跨模組)、`WORKFLOW` (工作流/E2E)、`PERF` (壓力效能) 與正交 `ISOLATED_SANDBOX` 標籤；預設跑測僅執行 `LOGIC` 與 `ENV`，大幅提升回歸效能。
   - **CLI 篩選旗標與精準目標定位器 (`--target`)**：

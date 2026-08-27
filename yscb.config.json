@@ -9,7 +9,7 @@
     },
     "dev": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-27 17:04:27",
+      "installed_at": "2026-08-27 17:38:10",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
