@@ -32,6 +32,15 @@ class DummySharedTestCase(YSCBTestCase):
         self.mark_passed()
 
 
+class DummySharedTestCaseB(YSCBTestCase):
+    """Second test class verifying cross-class session-level sandbox reuse."""
+    def test_method_b1(self):
+        _shared_dirs_recorded.append(self.sandbox_dir)
+        self.assertTrue(os.path.isdir(self.sandbox_dir))
+        self.assertFalse(self._is_isolated_sandbox)
+        self.mark_passed()
+
+
 class TestCaseSandboxLifecycleTest(YSCBTestCase):
     """Test suite validating YSCBTestCase sandbox lifecycle rules."""
 
@@ -55,18 +64,36 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
         suite.addTest(DummySharedTestCase("test_method_one"))
         suite.addTest(DummySharedTestCase("test_method_two"))
         suite.addTest(DummySharedTestCase("test_method_isolated"))
+        suite.addTest(DummySharedTestCaseB("test_method_b1"))
 
         runner = unittest.TextTestRunner(verbosity=0)
         result = runner.run(suite)
 
         self.assertTrue(result.wasSuccessful())
-        self.assertEqual(len(_shared_dirs_recorded), 2)
-        # Shared methods must have identical sandbox_dir
+        self.assertEqual(len(_shared_dirs_recorded), 3)
+        # Shared methods across different classes must have identical session-level sandbox_dir
         self.assertEqual(_shared_dirs_recorded[0], _shared_dirs_recorded[1])
+        self.assertEqual(_shared_dirs_recorded[0], _shared_dirs_recorded[2])
         
         self.assertEqual(len(_isolated_dirs_recorded), 1)
         # Isolated method must have a different sandbox_dir
         self.assertNotEqual(_isolated_dirs_recorded[0], _shared_dirs_recorded[0])
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_cleanup_shared_sandbox_safe(self):
+        """FT-03: Verify cleanup_shared_sandbox resets _shared_sandbox_ctx and deletes dir."""
+        # Ensure a shared sandbox exists
+        dummy = DummySharedTestCase("test_method_one")
+        dummy.setUp()
+        sb_dir = dummy.sandbox_dir
+        self.assertTrue(os.path.isdir(sb_dir))
+        self.assertIsNotNone(YSCBTestCase._shared_sandbox_ctx)
+
+        # Cleanup
+        YSCBTestCase.cleanup_shared_sandbox()
+        self.assertIsNone(YSCBTestCase._shared_sandbox_ctx)
+        self.assertFalse(os.path.isdir(sb_dir))
         self.mark_passed()
 
     @require(Requirement.LOGIC)

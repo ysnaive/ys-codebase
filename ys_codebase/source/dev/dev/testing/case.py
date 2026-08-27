@@ -33,20 +33,25 @@ class YSCBTestCase(unittest.TestCase):
     sandbox_project_dir: str
     sandbox_provider_dir: str
     
-    _class_sandbox_ctx: Optional[SandboxContext] = None
+    _shared_sandbox_ctx: Optional[SandboxContext] = None
     _is_isolated_sandbox: bool = False
     _test_passed: bool
     _orig_sys_path: List[str]
     _orig_env: Dict[str, str]
 
     @classmethod
-    def tearDownClass(cls) -> None:
-        """Class-level teardown: cleanup shared sandbox if present."""
-        if cls._class_sandbox_ctx is not None:
+    def cleanup_shared_sandbox(cls) -> None:
+        """Session-level teardown: cleanup shared sandbox when test suite finishes."""
+        if YSCBTestCase._shared_sandbox_ctx is not None:
             keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
             if not keep_all:
-                SandboxProvisioner.cleanup_sandbox(cls._class_sandbox_ctx.sandbox_dir, force=True)
-            cls._class_sandbox_ctx = None
+                SandboxProvisioner.cleanup_sandbox(YSCBTestCase._shared_sandbox_ctx.sandbox_dir, force=True)
+            YSCBTestCase._shared_sandbox_ctx = None
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Class-level teardown: defensive fallback (no-op in session-level mode)."""
+        pass
 
     def setUp(self) -> None:
         """Test setup: create or reuse virtual environment and backup environment."""
@@ -65,6 +70,8 @@ class YSCBTestCase(unittest.TestCase):
         method_name = getattr(self, "_testMethodName", "")
         method = getattr(self, method_name, None)
         req = getattr(method, "__requirement__", None) if method else None
+        if req is None:
+            req = getattr(self.__class__, "__requirement__", None)
 
         req_val = req.value if hasattr(req, "value") else (int(req) if req is not None else 0)
         if req and bool(req_val & Requirement.ISOLATED_SANDBOX.value):
@@ -72,10 +79,9 @@ class YSCBTestCase(unittest.TestCase):
             self.ctx = SandboxProvisioner.create_sandbox()
         else:
             self._is_isolated_sandbox = False
-            cls = self.__class__
-            if cls._class_sandbox_ctx is None:
-                cls._class_sandbox_ctx = SandboxProvisioner.create_sandbox()
-            self.ctx = cls._class_sandbox_ctx
+            if YSCBTestCase._shared_sandbox_ctx is None:
+                YSCBTestCase._shared_sandbox_ctx = SandboxProvisioner.create_sandbox()
+            self.ctx = YSCBTestCase._shared_sandbox_ctx
 
         self.sandbox_dir = self.ctx.sandbox_dir
         self.sandbox_host_dir = self.ctx.host_dir

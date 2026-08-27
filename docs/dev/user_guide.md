@@ -166,10 +166,10 @@ python yscb.py dev test dev -v
 
 ### 4.3 測試沙盒模式指南 (Shared vs. Isolated Sandboxes)
 為平衡測試執行效能與環境隔離，`YSCBTestCase` 支援智慧沙盒分流機制：
-1. **預設共用沙盒 (Shared Sandbox by Default)**：
-   - 同一個 `YSCBTestCase` 類別內的所有測試方法，預設**共用同一個沙盒實例**（Class-level Lazy Sandbox）。
-   - 避免每個測試方法重複複製目錄與初始化 Hook，使一般邏輯與 VFS 測試獲得數倍效能加速。
-   - 類別測試全部結束後，自動由 `tearDownClass` 銷毀共用沙盒。
+1. **預設 Session-Level 共用沙盒 (Session-Level Shared Sandbox by Default)**：
+   - 同一次跑測 Session / TestSuite 內的所有 `YSCBTestCase` 測試方法與類別，預設**跨 Class 共用同一個沙盒實例**（Session-Level Singleton）。
+   - 徹底根除跨測試類別重複在 Windows NTFS 建立與銷毀目錄之開銷，使單元與回歸測試大幅提速。
+   - 整個 TestSuite 執行完畢後，由 `TestRunner.run_suite()` 的 `finally` 區塊統一調用 `cleanup_shared_sandbox()` 銷毀共用沙盒。
 2. **專屬獨立沙盒 (`@require(Requirement.ISOLATED_SANDBOX)`)：**
    - 針對破壞性寫入、模組物理安裝、建置產物覆蓋等具狀態副作用之測試案例，標記 `@require(Requirement.ISOLATED_SANDBOX)`。
    - 該方法在 `setUp()` 時將自動獲得一個全新的專屬沙盒，並在 `tearDown()` 結束後即時銷毀，確保與共用沙盒完全隔離。

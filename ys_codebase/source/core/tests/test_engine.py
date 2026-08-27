@@ -3,11 +3,12 @@ Official test suite for core.engine.AtomicEngine.
 """
 import os
 import time
-from dev.testing import YSCBTestCase
+from dev.testing import YSCBTestCase, require, Requirement
 from core.engine import AtomicEngine
 from core.uri import ExecutionContext
 from core import uri
 
+@require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
 class TestCoreEngine(YSCBTestCase):
     def setUp(self):
         super().setUp()
