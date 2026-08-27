@@ -12,6 +12,33 @@ from typing import List, Dict, Any, Optional, Tuple
 from dev.testing.runner import TestDiscovery, TestRunner, ASCIIReportFormatter, get_test_category
 from dev.testing.sandbox import SandboxProvisioner, SandboxContext
 
+def safe_print(text: Any = "", file=None, end: str = "\n", flush: bool = False) -> None:
+    """
+    Safely output text to standard streams on Windows systems where encoding
+    (e.g., cp950) might throw UnicodeEncodeError on certain special characters.
+    """
+    target = file or sys.stdout
+    content = str(text) + end
+    try:
+        target.write(content)
+        if flush:
+            target.flush()
+    except UnicodeEncodeError:
+        enc = getattr(target, "encoding", None) or "utf-8"
+        safe_str = content.encode(enc, errors="replace").decode(enc, errors="replace")
+        try:
+            target.write(safe_str)
+            if flush:
+                target.flush()
+        except Exception:
+            ascii_str = content.encode("ascii", errors="replace").decode("ascii")
+            target.write(ascii_str)
+            if flush:
+                target.flush()
+    except Exception:
+        pass
+
+
 class Tester:
     def __init__(self):
         pass
@@ -309,7 +336,7 @@ class Tester:
                 print(f"[dev:test] Warning: Failed to export report JSON: {e}", file=sys.stderr)
 
         if not quiet_report:
-            print(ASCIIReportFormatter.format_summary(report_data))
+            safe_print(ASCIIReportFormatter.format_summary(report_data))
         return 0 if all_passed else 1
 
     def _run_test(self, argv: List[str]) -> int:
@@ -417,12 +444,12 @@ class Tester:
             ret_code = res.returncode
             if not is_nested:
                 if res.stdout:
-                    print(res.stdout, end="", flush=True)
+                    safe_print(res.stdout, end="", flush=True)
                 if res.stderr:
-                    print(res.stderr, end="", file=sys.stderr, flush=True)
+                    safe_print(res.stderr, end="", file=sys.stderr, flush=True)
         except Exception as e:
             if not is_nested:
-                print(f"[dev:test] Subprocess execution error: {e}", file=sys.stderr)
+                safe_print(f"[dev:test] Subprocess execution error: {e}", file=sys.stderr)
             ret_code = 1
             
         # 4. Teardown policy
@@ -557,7 +584,7 @@ class Tester:
         }
 
         if not is_nested:
-            print(ASCIIReportFormatter.format_summary(final_report))
+            safe_print(ASCIIReportFormatter.format_summary(final_report))
 
         if all_passed and not keep_sandbox:
             if "--all" in clean_argv:
@@ -581,8 +608,8 @@ class Tester:
         sandbox_display_id = f"sandbox {worker_idx}"
         host_dir = ctx.host_dir
         if not is_nested:
-            print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
-            print(f"[dev:test] {mod_name} begin test in {sandbox_display_id}", flush=True)
+            safe_print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
+            safe_print(f"[dev:test] {mod_name} begin test in {sandbox_display_id}", flush=True)
 
         sandbox_yscb = os.path.join(host_dir, "yscb.py")
         op_test_args = [a for a in clean_argv if a != "test" and a != "--all"] + [mod_name]
@@ -612,17 +639,17 @@ class Tester:
             ret_code = res.returncode
             mod_duration = time.perf_counter() - mod_start
             if not is_nested:
-                print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
+                safe_print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
                 if res.stdout:
-                    print(res.stdout, end="", flush=True)
+                    safe_print(res.stdout, end="", flush=True)
                 if res.stderr:
-                    print(res.stderr, end="", file=sys.stderr, flush=True)
+                    safe_print(res.stderr, end="", file=sys.stderr, flush=True)
             if os.path.isfile(report_json_path):
                 with open(report_json_path, "r", encoding="utf-8") as rf:
                     mod_report_data = json.load(rf)
         except Exception as e:
             if not is_nested:
-                print(f"[dev:test] Subprocess error for module '{mod_name}': {e}", file=sys.stderr)
+                safe_print(f"[dev:test] Subprocess error for module '{mod_name}': {e}", file=sys.stderr)
             ret_code = 1
 
         # Granular cleanup policy
