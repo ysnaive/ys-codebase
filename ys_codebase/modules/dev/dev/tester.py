@@ -3,10 +3,12 @@ CLI Command dispatcher for 'dev test', 'dev op-mksb', and 'dev op-test'.
 """
 import os
 import sys
+import json
 import time
 import unittest
 import subprocess
-from typing import List, Dict, Any, Optional
+import concurrent.futures
+from typing import List, Dict, Any, Optional, Tuple
 from dev.testing.runner import TestDiscovery, TestRunner, ASCIIReportFormatter, get_test_category
 from dev.testing.sandbox import SandboxProvisioner, SandboxContext
 
@@ -38,6 +40,9 @@ class Tester:
         print("  dev test [mod | --all]     High-level E2E: Auto build -> Provision sandbox -> Run tests -> Teardown")
         print("  dev op-mksb [--dir=<path>] Atomic primitive: Provision isolated virtual sandbox")
         print("  dev op-test [mod | --all]  Atomic primitive: Run in-place test execution without sandboxing")
+        print("Parallel & Concurrency Options:")
+        print("  -j <N>, --jobs=<N>         Set max parallel worker processes (default: min(cpu_count, num_modules))")
+        print("  --sequential, --no-parallel Disable parallel execution and run sequentially")
         print("Classification & Targeting Options:")
         print("  --logical        Run only unit / pure logical tests")
         print("  --env            Run environment / inter-module / DI tests")
@@ -48,85 +53,87 @@ class Tester:
         print("  --target=<mod:[case][.method]>  Pinpoint specific module, test case or method")
         print("General Options:")
         print("  --all            Run tests across all modules in source/")
-        print("  --no-build       Skip automatic pre-build step and test existing build packages")
-        print("  --contract-only  Run only universal standard contract tests")
-        print("  -k <pattern>     Run only tests matching pattern")
-        print("  --verbose, -v    Verbose output with full tracebacks")
-        print("  --keep-sandbox   Preserve sandbox directories on success")
+        print("  --no-build       Skip automatic pre-test hermetic build")
+        print("  --keep-sandbox   Retain virtual sandbox directory upon test completion")
+        print("  -v, --verbose    Expand verbose test method execution details")
 
     def _run_op_mksb(self, argv: List[str]) -> int:
         target_dir = None
         for a in argv:
             if a.startswith("--dir="):
-                target_dir = a.split("=", 1)[1].strip('\"\'')
-        ctx = SandboxProvisioner.create_sandbox(target_dir=target_dir)
-        print(f"[dev:op-mksb] Sandbox successfully created at: {ctx.sandbox_dir}")
-        print(f"  |- Host workspace : {ctx.host_dir}")
-        print(f"  |- Project root   : {ctx.project_dir}")
-        print(f"  \\- Mock provider  : {ctx.provider_dir}")
-        return 0
-
-    def _run_op_test(self, argv: List[str]) -> int:
-        target_mod: Optional[str] = None
-        run_all: bool = False
-        test_type: Optional[str] = None
-        pattern: Optional[str] = None
-        target: Optional[str] = None
-        contract_only: bool = False
-        verbose: bool = False
-        keep_sandbox: bool = False
-
-        VALID_TYPES = {"logic", "logical", "env", "host_cli", "workflow", "perf", "performance", "stress", "all", "all_types", "all-types"}
-
-        i = 0
-        while i < len(argv):
-            arg = argv[i]
-            if arg == "--all":
-                run_all = True
-            elif arg == "--contract-only":
-                contract_only = True
-            elif arg in ("--verbose", "-v"):
-                verbose = True
-            elif arg == "--keep-sandbox":
-                keep_sandbox = True
-            elif arg == "--logical":
-                test_type = "logic"
-            elif arg == "--env":
-                test_type = "env"
-            elif arg == "--workflow":
-                test_type = "workflow"
-            elif arg in ("--perf", "--performance", "--stress"):
-                test_type = "perf"
-            elif arg == "--all-types":
-                test_type = "all"
-            elif arg.startswith("--type="):
-                test_type = arg.split("=", 1)[1].strip()
-            elif arg.startswith("--target="):
-                target = arg.split("=", 1)[1].strip()
-            elif arg == "--target":
-                if i + 1 < len(argv):
-                    target = argv[i + 1]
-                    i += 1
-            elif arg.startswith("-k="):
-                pattern = arg.split("=", 1)[1].strip()
-            elif arg == "-k":
-                if i + 1 < len(argv):
-                    pattern = argv[i + 1]
-                    i += 1
-            elif not arg.startswith("-"):
-                target_mod = arg
-            i += 1
-
-        if target and not target_mod:
-            target_mod = target.split(":", 1)[0]
-
-        if not target_mod and not run_all and not target:
-            self._print_usage()
+                target_dir = a.split("=", 1)[1]
+        try:
+            ctx = SandboxProvisioner.create_sandbox(target_dir)
+            print(f"[dev:op-mksb] Provisioned virtual sandbox at: {ctx.sandbox_dir}")
+            return 0
+        except Exception as e:
+            print(f"[dev:op-mksb] Error provisioning sandbox: {e}")
             return 1
 
+    def _run_op_test(self, argv: List[str]) -> int:
+        """In-place atomic test execution engine."""
+        report_json_path = None
+        quiet_report = False
+        target_mod = None
+        test_type = None
+        pattern = None
+        target = None
+        contract_only = False
+        verbose = False
+        keep_sandbox = False
+        run_all = False
+
+        idx = 0
+        while idx < len(argv):
+            a = argv[idx]
+            if a.startswith("--report-json="):
+                report_json_path = a.split("=", 1)[1]
+            elif a == "--quiet-report":
+                quiet_report = True
+            elif a == "--all":
+                run_all = True
+            elif a == "--contract-only":
+                contract_only = True
+            elif a in ("-v", "--verbose"):
+                verbose = True
+            elif a == "--keep-sandbox":
+                keep_sandbox = True
+            elif a == "--logical":
+                test_type = "logic"
+            elif a == "--env":
+                test_type = "env"
+            elif a == "--workflow":
+                test_type = "workflow"
+            elif a in ("--perf", "--stress"):
+                test_type = "perf"
+            elif a == "--all-types":
+                test_type = "all"
+            elif a.startswith("--type="):
+                test_type = a.split("=", 1)[1]
+            elif a.startswith("--target="):
+                target = a.split("=", 1)[1]
+            elif a in ("-k", "--pattern"):
+                if idx + 1 < len(argv):
+                    pattern = argv[idx + 1]
+                    idx += 1
+            elif a.startswith("-k="):
+                pattern = a.split("=", 1)[1]
+            elif not a.startswith("-"):
+                target_mod = a
+            idx += 1
+
+        VALID_TYPES = {"logic", "logical", "env", "host_cli", "workflow", "perf", "performance", "stress", "all", "all_types", "all-types"}
         if test_type and test_type.lower().replace("-", "_") not in {t.replace("-", "_") for t in VALID_TYPES}:
             print(f"[dev:test] Error: Invalid test type '{test_type}'. Valid types: logic, env, workflow, perf, all")
             return 1
+
+        if target:
+            target_mod_match = target.split(":", 1)[0]
+            if target_mod_match:
+                target_mod = target_mod_match
+
+        if not target_mod and not run_all:
+            target_mod = "core"
 
         modules = TestDiscovery.discover_modules(target_mod)
         if not modules:
@@ -162,12 +169,12 @@ class Tester:
             "failures_list": []
         }
 
-        sandbox_id = os.environ.get("YSCB_SANDBOX_ID", "sandbox")
+        sandbox_id = os.environ.get("YSCB_SANDBOX_ID", "sandbox 1")
         start_time = time.perf_counter()
         all_passed = True
 
         for mod_name in modules:
-            if not verbose:
+            if not verbose and not quiet_report:
                 print(f"[dev:test] {mod_name} begin test in {sandbox_id}", flush=True)
             mod_start = time.perf_counter()
             suite, contract_total, custom_total = TestDiscovery.build_suite_for_module(
@@ -180,7 +187,7 @@ class Tester:
             
             result, captured_output = runner.run_suite(suite)
             mod_duration = time.perf_counter() - mod_start
-            if not verbose:
+            if not verbose and not quiet_report:
                 print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
             mod_total = result.testsRun
             mod_failed = len(result.failures) + len(result.errors)
@@ -292,7 +299,17 @@ class Tester:
             report_data["skipped"] += mod_skipped
 
         report_data["duration"] = time.perf_counter() - start_time
-        print(ASCIIReportFormatter.format_summary(report_data))
+
+        if report_json_path:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(report_json_path)), exist_ok=True)
+                with open(report_json_path, "w", encoding="utf-8") as rf:
+                    json.dump(report_data, rf, indent=2, ensure_ascii=False)
+            except Exception as e:
+                print(f"[dev:test] Warning: Failed to export report JSON: {e}", file=sys.stderr)
+
+        if not quiet_report:
+            print(ASCIIReportFormatter.format_summary(report_data))
         return 0 if all_passed else 1
 
     def _run_test(self, argv: List[str]) -> int:
@@ -300,15 +317,64 @@ class Tester:
         is_nested = os.environ.get("YSCB_NESTED_TEST") == "1"
         keep_sandbox = "--keep-sandbox" in argv
         no_build = "--no-build" in argv
-        clean_argv = [a for a in argv if a != "--no-build"]
+        is_sequential = "--sequential" in argv or "--no-parallel" in argv
         
+        # Parse -j / --jobs
+        jobs = None
+        clean_argv = []
+        idx = 0
+        while idx < len(argv):
+            a = argv[idx]
+            if a == "--no-build" or a == "--sequential" or a == "--no-parallel":
+                idx += 1
+                continue
+            if a.startswith("--jobs="):
+                try:
+                    jobs = int(a.split("=", 1)[1])
+                except ValueError:
+                    pass
+                idx += 1
+                continue
+            if a == "-j" or a == "--jobs":
+                if idx + 1 < len(argv):
+                    try:
+                        jobs = int(argv[idx + 1])
+                        idx += 2
+                        continue
+                    except ValueError:
+                        pass
+                idx += 1
+                continue
+            if a.startswith("-j") and len(a) > 2 and a[2:].isdigit():
+                jobs = int(a[2:])
+                idx += 1
+                continue
+            clean_argv.append(a)
+            idx += 1
+
+        target_mod = next((a for a in clean_argv if not a.startswith("-") and a != "test"), None)
+        is_all = "--all" in clean_argv or target_mod == "--all"
+        target_param = next((a for a in clean_argv if a.startswith("--target=")), None)
+
+        # Multi-module parallel dispatch if --all (or multiple modules) and not sequential and no single target
+        if is_all and not is_sequential and not target_param:
+            all_modules = TestDiscovery.discover_modules(None)
+            if len(all_modules) > 1:
+                return self._run_parallel_test(
+                    clean_argv,
+                    all_modules,
+                    no_build=no_build,
+                    keep_sandbox=keep_sandbox,
+                    jobs=jobs,
+                    is_nested=is_nested
+                )
+
         # 1. Automatic pre-test Hermetic Dev Build (unless --no-build)
         if not no_build:
             if not is_nested:
                 print("[dev:test] Pre-building modules for test execution...", flush=True)
             from dev.builder import Builder
             builder = Builder()
-            target_mod = next((a for a in clean_argv if not a.startswith("-") and a != "test"), None)
             if target_mod and target_mod != "--all":
                 ok, msg = builder.build_module(target_mod)
                 if not ok:
@@ -376,3 +442,206 @@ class Tester:
                     print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
                 
         return ret_code
+
+    def _run_parallel_test(
+        self,
+        clean_argv: List[str],
+        modules: List[str],
+        no_build: bool = False,
+        keep_sandbox: bool = False,
+        jobs: Optional[int] = None,
+        is_nested: bool = False
+    ) -> int:
+        """Runs multiple modules concurrently across independent virtual sandboxes."""
+        if not no_build:
+            if not is_nested:
+                print("[dev:test] Pre-building modules for test execution...", flush=True)
+            from dev.builder import Builder
+            builder = Builder()
+            results = builder.build_all()
+            for m_name, (ok, msg) in results.items():
+                if not ok:
+                    print(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", file=sys.stderr)
+                    return 1
+
+        cpu_limit = os.cpu_count() or 4
+        max_workers = jobs if (jobs and jobs > 0) else min(cpu_limit, len(modules))
+
+        start_time = time.perf_counter()
+        worker_results: Dict[str, Dict[str, Any]] = {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    self._run_single_module_worker,
+                    mod_name,
+                    worker_idx=idx + 1,
+                    clean_argv=clean_argv,
+                    keep_sandbox=keep_sandbox,
+                    is_nested=is_nested
+                ): mod_name
+                for idx, mod_name in enumerate(modules)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                mod_name = futures[future]
+                try:
+                    res_data = future.result()
+                    worker_results[mod_name] = res_data
+                except Exception as e:
+                    if not is_nested:
+                        print(f"[dev:test] Worker error for '{mod_name}': {e}", file=sys.stderr)
+                    worker_results[mod_name] = {
+                        "module": mod_name,
+                        "worker_idx": 0,
+                        "returncode": 1,
+                        "report_data": None,
+                        "sandbox_dir": ""
+                    }
+
+        # Aggregate report
+        all_passed = True
+        aggregated_modules = []
+        total_tests = 0
+        total_passed = 0
+        total_failed = 0
+        total_skipped = 0
+        failures_list = []
+        filter_mode = "Default (LOGIC + ENV)"
+
+        for mod_name in modules:
+            w_res = worker_results.get(mod_name)
+            if not w_res or w_res["returncode"] != 0:
+                all_passed = False
+
+            rep = w_res.get("report_data") if w_res else None
+            if rep and rep.get("modules"):
+                filter_mode = rep.get("filter_mode", filter_mode)
+                m_info = rep["modules"][0]
+                aggregated_modules.append(m_info)
+                total_tests += rep.get("total", 0)
+                total_passed += rep.get("passed", 0)
+                total_failed += rep.get("failed", 0)
+                total_skipped += rep.get("skipped", 0)
+                failures_list.extend(rep.get("failures_list", []))
+            else:
+                # Fallback if module failed before exporting report
+                all_passed = False
+                aggregated_modules.append({
+                    "name": mod_name,
+                    "passed": False,
+                    "duration": 0.0,
+                    "contract_total": 0,
+                    "contract_passed": 0,
+                    "custom_total": 0,
+                    "custom_passed": 0,
+                    "logic_passed": 0,
+                    "env_passed": 0,
+                    "workflow_passed": 0,
+                    "perf_passed": 0,
+                    "errors": [f"Execution failed with code {w_res.get('returncode') if w_res else 1}"]
+                })
+                total_failed += 1
+
+        parallel_duration = time.perf_counter() - start_time
+        final_report: Dict[str, Any] = {
+            "filter_mode": filter_mode,
+            "target_scope": "All",
+            "no_build": no_build,
+            "modules": aggregated_modules,
+            "total": total_tests,
+            "passed": total_passed,
+            "failed": total_failed,
+            "skipped": total_skipped,
+            "duration": parallel_duration,
+            "failures_list": failures_list
+        }
+
+        if not is_nested:
+            print(ASCIIReportFormatter.format_summary(final_report))
+
+        if all_passed and not keep_sandbox:
+            if "--all" in clean_argv:
+                SandboxProvisioner.cleanup_all_sandboxes()
+        else:
+            SandboxProvisioner.prune_sandboxes(max_keep=3)
+
+        return 0 if all_passed else 1
+
+    def _run_single_module_worker(
+        self,
+        mod_name: str,
+        worker_idx: int,
+        clean_argv: List[str],
+        keep_sandbox: bool = False,
+        is_nested: bool = False
+    ) -> Dict[str, Any]:
+        """Worker executing a single module inside an isolated sandbox."""
+        ctx = SandboxProvisioner.create_sandbox()
+        sandbox_dir = ctx.sandbox_dir
+        sandbox_display_id = f"sandbox {worker_idx}"
+        host_dir = ctx.host_dir
+        if not is_nested:
+            print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
+            print(f"[dev:test] {mod_name} begin test in {sandbox_display_id}", flush=True)
+
+        sandbox_yscb = os.path.join(host_dir, "yscb.py")
+        op_test_args = [a for a in clean_argv if a != "test" and a != "--all"] + [mod_name]
+        
+        report_json_path = os.path.join(ctx.engine_dir, f"report_{mod_name}.json")
+        op_test_args.extend([f"--report-json={report_json_path}", "--quiet-report"])
+
+        cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + op_test_args
+        p_env = dict(os.environ)
+        p_env["YSCB_TEST_SANDBOX"] = "1"
+        p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
+        p_env["YSCB_SANDBOX_INDEX"] = str(worker_idx)
+
+        mod_report_data = None
+        ret_code = 1
+        mod_start = time.perf_counter()
+        try:
+            res = subprocess.run(
+                cmd,
+                cwd=host_dir,
+                env=p_env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            ret_code = res.returncode
+            mod_duration = time.perf_counter() - mod_start
+            if not is_nested:
+                print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
+                if res.stdout:
+                    print(res.stdout, end="", flush=True)
+                if res.stderr:
+                    print(res.stderr, end="", file=sys.stderr, flush=True)
+            if os.path.isfile(report_json_path):
+                with open(report_json_path, "r", encoding="utf-8") as rf:
+                    mod_report_data = json.load(rf)
+        except Exception as e:
+            if not is_nested:
+                print(f"[dev:test] Subprocess error for module '{mod_name}': {e}", file=sys.stderr)
+            ret_code = 1
+
+        # Granular cleanup policy
+        if ret_code == 0 and not keep_sandbox:
+            if not is_nested:
+                print(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
+            SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
+        else:
+            SandboxProvisioner.prune_sandboxes(max_keep=3)
+            if not is_nested:
+                if ret_code != 0:
+                    print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}", flush=True)
+                else:
+                    print(f"[dev:test] Sandbox preserved at: {sandbox_dir}", flush=True)
+
+        return {
+            "module": mod_name,
+            "worker_idx": worker_idx,
+            "returncode": ret_code,
+            "report_data": mod_report_data,
+            "sandbox_dir": sandbox_dir
+        }

@@ -1,10 +1,11 @@
 """
 Official test suite for core.installer.Installer.
 """
-from dev.testing import YSCBTestCase
+from dev.testing import YSCBTestCase, require, Requirement
 from core.installer import Installer
 from core import uri
 
+@require(Requirement.ENV)
 class TestCoreInstaller(YSCBTestCase):
     def setUp(self):
         super().setUp()

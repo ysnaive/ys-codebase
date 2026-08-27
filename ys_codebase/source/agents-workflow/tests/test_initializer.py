@@ -25,6 +25,7 @@ _spec_cli.loader.exec_module(cli)
 from agents_workflow.initializer import WorkflowInitializer
 
 
+@require(Requirement.ENV)
 class TestWorkflowInitializer(YSCBTestCase):
     def setUp(self):
         super().setUp()

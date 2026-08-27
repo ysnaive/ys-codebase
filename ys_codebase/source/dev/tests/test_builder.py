@@ -3,10 +3,11 @@ Official test suite for dev.builder.Builder with Full Zip Single-File packaging.
 """
 import os
 import zipfile
-from dev.testing import YSCBTestCase
+from dev.testing import YSCBTestCase, require, Requirement
 from dev.builder import Builder
 from core import uri
 
+@require(Requirement.ENV)
 class TestDevBuilder(YSCBTestCase):
     def setUp(self):
         super().setUp()

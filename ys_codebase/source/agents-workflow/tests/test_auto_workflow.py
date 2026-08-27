@@ -21,6 +21,7 @@ from agents_workflow.publisher import ReleasePublisher
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 
+@require(Requirement.WORKFLOW)
 class TestAutoWorkflow(YSCBTestCase):
     def setUp(self):
         super().setUp()

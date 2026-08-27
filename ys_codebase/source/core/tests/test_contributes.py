@@ -1,7 +1,7 @@
 """
 Official test suite for core.contributes.ContributesAggregator and SDK.
 """
-from dev.testing import YSCBTestCase
+from dev.testing import YSCBTestCase, require, Requirement
 from core import contributes
 from core.contributes import ContributesAggregator, _tag_provider
 from core import uri
@@ -11,6 +11,7 @@ class TestCoreContributes(YSCBTestCase):
         super().setUp()
         self.aggregator = ContributesAggregator()
 
+    @require(Requirement.ENV)
     def test_scan_and_inject_execution(self):
         """Verify scan_and_inject outputs to cache space and leaves config space clean."""
         res = self.aggregator.scan_and_inject()

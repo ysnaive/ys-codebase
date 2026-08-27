@@ -423,3 +423,21 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertEqual(get_test_category(MockCatTest("test_p")), "perf")
         self.assertEqual(get_test_category(MockCatTest("test_default")), "logic")
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_single_module_worker_execution_and_report_json(self):
+        """FT-01/FT-02: Verify _run_single_module_worker runs in dedicated sandbox and writes report JSON."""
+        res_data = self.tester._run_single_module_worker(
+            mod_name="core",
+            worker_idx=99,
+            clean_argv=["--contract-only"],
+            keep_sandbox=False,
+            is_nested=True
+        )
+        self.assertEqual(res_data["returncode"], 0)
+        self.assertEqual(res_data["module"], "core")
+        self.assertEqual(res_data["worker_idx"], 99)
+        self.assertIsNotNone(res_data["report_data"])
+        self.assertEqual(res_data["report_data"]["passed"], 3)
+        self.assertFalse(os.path.exists(res_data["sandbox_dir"]))
+        self.mark_passed()

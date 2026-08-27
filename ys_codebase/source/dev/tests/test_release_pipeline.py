@@ -85,10 +85,12 @@ class TestReleasePipeline(YSCBTestCase):
         # 測試 release_git 智慧略過（已發布且無 force）
         # mock git command & tester.run to avoid real git operations & recursive test runner in unit test
         original_git = self.releaser._run_git_cmd
-        original_tester_run = self.releaser.tester.run
+        class MockTester:
+            def run(self, argv):
+                return 0
+        self.releaser.tester = MockTester()
         try:
             self.releaser._run_git_cmd = lambda args, cwd=None: (0, "", "")
-            self.releaser.tester.run = lambda argv: 0
             
             # 版本已在庫，force=False -> 略過打包
             ok, msg = self.releaser.release_git("core", "test commit msg", force=False)
@@ -101,5 +103,5 @@ class TestReleasePipeline(YSCBTestCase):
             self.assertIn("Successfully processed", msg_f)
         finally:
             self.releaser._run_git_cmd = original_git
-            self.releaser.tester.run = original_tester_run
+            self.releaser.tester = None
         self.mark_passed()
