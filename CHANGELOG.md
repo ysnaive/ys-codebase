@@ -2,6 +2,19 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_1506_dev_test_architecture_optimization
+
+- **dev 測試架構優化主計畫 — sub_01: 殘留 sandbox 清理與自動滾動修剪機制 (`sub_01_residual_sandbox_cleanup`)**：
+  - **沙盒生命週期雙軌自動清理 (Sandbox Dual-Track Lifecycle Cleanup)**：
+    - **Case 1 (滾動上限修剪 Rolling Prune)**：在 `SandboxProvisioner` 實作 `prune_sandboxes(max_keep=3)`，於沙盒建立與失敗保留時自動淘汰超過上限的最舊沙盒，常態保持殘留沙盒數不超過 3 個，消除無限膨脹佔用硬碟空間之問題。
+    - **Case 2 (全量通過清空 Full-Pass Flush)**：在 `Tester._run_test` 整合，當以 `--all` 執行且全系統回歸測試 100% 通過時，自動呼叫 `cleanup_all_sandboxes()` 清空 `cache://dev/sandbox/`，達成乾淨交付。
+    - **零選項無侵入架構**：不新增額外 CLI 選項，完全內建於生命週期中。
+  - **全量測試與回歸驗證**：
+    - 單元測試新增 `test_prune_sandboxes_limit`、`test_cleanup_all_sandboxes`、`test_sandbox_cleanup_empty_or_missing`、`test_sandbox_cleanup_ignores_non_sandbox` 與 `test_run_test_all_success_cleans_sandboxes`。
+    - 全系統回歸跑測 `python yscb.py dev test --all` 通過 134/134 測試 (100% Ready)。
+  - **知識庫交付**：
+    - 更新 `docs/dev/user_guide.md` §4.2 沙盒生命週期與自動清理機制說明。
+
 ## 2026_08_27_0412_dev_and_governance_health_fix
 
 - **工程健檢缺陷修復、Dev 測試動態解算、PlanVerifier 標頭相容與文檔知識庫校準**：

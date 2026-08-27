@@ -145,6 +145,15 @@ python yscb.py dev test dev -k test_builder
 python yscb.py dev test core --keep-sandbox
 ```
 
+### 4.2 沙盒生命週期與自動清理機制 (Sandbox Lifecycle & Cleanup)
+為避免測試失敗或除錯保留之沙盒持續累積佔用硬碟空間，系統內建雙軌自動清理機制：
+1. **滾動修剪 (Rolling Prune)**：
+   - 緩存目錄 (`cache://dev/sandbox/`) 嚴格限制最多保留 **3 個** 歷史沙盒。
+   - 當生成或保留沙盒達到第 4 個時，系統自動依照時間排序刪除最舊的 1 個沙盒，保持總數不超過 3 個。
+2. **全量通過清理 (Full-Pass Flush)**：
+   - 當執行全模組回歸測試 `python yscb.py dev test --all` 且全數通過 (Exit Code 0) 時，系統自動清空 `cache://dev/sandbox/` 下的所有殘留歷史沙盒，達成全系統乾淨交付。
+   - 單模組跑測 (`dev test <mod>`) 通過時僅清理當次生成的沙盒，不觸發歷史沙盒全量清空。
+
 ---
 
 ## 5. Agent 指令防呆情境與調用規範 (Dev Command Abuse Guardrails)
