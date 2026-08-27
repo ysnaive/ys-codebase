@@ -143,6 +143,9 @@ python yscb.py dev test dev -k test_builder
 
 # 測試失敗時保留沙盒目錄以供除錯
 python yscb.py dev test core --keep-sandbox
+
+# 展開詳細執行狀態與即時日誌（關閉靜默捕獲）
+python yscb.py dev test dev -v
 ```
 
 ### 4.2 沙盒生命週期與自動清理機制 (Sandbox Lifecycle & Cleanup)
@@ -196,6 +199,16 @@ python yscb.py dev test --target=dev:TestDevChecker.test_check_core_module_passe
 1. **第 1 鎖（靜態門禁 `dev check`）**：AST 語法樹靜態掃描所有 `test_*.py`，全面禁止原生 `class *(unittest.TestCase)`。
 2. **第 2 鎖（動態門禁 `TestDiscovery`）**：測試加載時驗證 MRO 繼承鏈，非 `YSCBTestCase` 測試直接拒絕加載並拋出 `TypeError`。
 3. **第 3 鎖（入口門禁 `YSCBTestCase.setUp`）**：檢測若未在授權沙盒環境 (`YSCB_TEST_SANDBOX==1`) 裸跑，直接拋出 `SecurityError` 強制阻斷。
+
+### 4.6 終端輸出結構、診斷報告與即時進度反饋 (Diagnostic Report & UX)
+測試調度器提供結構化、降噪與即時狀態反饋：
+1. **生命週期即時 Log**：依序回饋 `Create sandbox <id>`, `<mod> begin test in sandbox <id>`, `<mod> test finish in ({time}s)`。
+2. **中間日誌捕獲 (`OutputCapturer`)**：常態自動捕獲 print 與 stderr 雜訊，僅在失敗或 `-v` 時展開。
+3. **結構化診斷報告 (`ASCIIReportFormatter`)**：
+   - 頂部呈現 `Mode / Target / Build` 元數據。
+   - 模組列呈現獨立執行耗時。
+   - Custom 節點呈現 `[Logic: X, Env: Y]` 細分計數。
+   - 失敗時提供出錯位置、斷言摘要與一鍵 `--target` 快速重測指令。
 
 ---
 

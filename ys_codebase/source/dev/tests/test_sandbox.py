@@ -9,7 +9,7 @@ import zipfile
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 from dev.testing.sandbox import SandboxProvisioner, SandboxContext
-from dev.testing.runner import TestDiscovery, filter_suite
+from dev.testing.runner import TestDiscovery, filter_suite, OutputCapturer, ASCIIReportFormatter, get_test_category
 from dev.tester import Tester
 from dev.builder import Builder
 from core import uri
@@ -329,3 +329,97 @@ class TestSandboxArchitecture(YSCBTestCase):
         finally:
             if os.path.exists(tmp_mod_dir):
                 shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_output_capturer_buffers_and_restores(self):
+        """FT-01: Verify OutputCapturer captures stdout and stderr and safely restores original streams."""
+        capturer = OutputCapturer(enabled=True)
+        orig_out = sys.stdout
+        with capturer:
+            print("hello stdout world")
+            print("hello stderr world", file=sys.stderr)
+        self.assertEqual(sys.stdout, orig_out)
+        out = capturer.get_output()
+        self.assertIn("hello stdout world", out)
+        self.assertIn("hello stderr world", out)
+
+        # Exception restoration test
+        try:
+            with OutputCapturer(enabled=True):
+                raise RuntimeError("deliberate error")
+        except RuntimeError:
+            pass
+        self.assertEqual(sys.stdout, orig_out)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ascii_report_formatter_with_metadata_and_taxonomy(self):
+        """FT-02, FT-03, FT-04: Verify ASCIIReportFormatter outputs metadata, timing, taxonomy, and re-run guides."""
+        sample_data = {
+            "filter_mode": "Default (LOGIC + ENV)",
+            "target_scope": "core",
+            "no_build": True,
+            "modules": [
+                {
+                    "name": "core",
+                    "passed": False,
+                    "duration": 0.45,
+                    "contract_total": 3,
+                    "contract_passed": 3,
+                    "custom_total": 10,
+                    "custom_passed": 9,
+                    "logic_passed": 6,
+                    "env_passed": 3,
+                    "workflow_passed": 0,
+                    "perf_passed": 0,
+                    "errors": ["test_fail: AssertionError"]
+                }
+            ],
+            "failures_list": [
+                {
+                    "module": "core",
+                    "test": "TestCore.test_fail",
+                    "type": "FAIL",
+                    "message": "AssertionError: 1 != 2",
+                    "location": "tests/test_core.py:10",
+                    "rerun": "python yscb.py dev test --target=core:TestCore.test_fail",
+                    "captured_output": "debug print line"
+                }
+            ],
+            "total": 13,
+            "passed": 12,
+            "failed": 1,
+            "skipped": 0,
+            "duration": 0.45
+        }
+        report = ASCIIReportFormatter.format_summary(sample_data)
+        self.assertIn("Mode: Default (LOGIC + ENV)", report)
+        self.assertIn("Target: core", report)
+        self.assertIn("Build: No-build (Fast)", report)
+        self.assertIn("core (0.45s)", report)
+        self.assertIn("[Logic: 6, Env: 3]", report)
+        self.assertIn("FAILED / ERROR TEST CASES LIST:", report)
+        self.assertIn("Quick Re-run: python yscb.py dev test --target=core:TestCore.test_fail", report)
+        self.assertIn("debug print line", report)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_get_test_category_extraction(self):
+        """Verify get_test_category correctly identifies taxonomy flags."""
+        class MockCatTest(YSCBTestCase):
+            @require(Requirement.LOGIC)
+            def test_l(self): pass
+            @require(Requirement.ENV)
+            def test_e(self): pass
+            @require(Requirement.WORKFLOW)
+            def test_w(self): pass
+            @require(Requirement.PERF)
+            def test_p(self): pass
+            def test_default(self): pass
+
+        self.assertEqual(get_test_category(MockCatTest("test_l")), "logic")
+        self.assertEqual(get_test_category(MockCatTest("test_e")), "env")
+        self.assertEqual(get_test_category(MockCatTest("test_w")), "workflow")
+        self.assertEqual(get_test_category(MockCatTest("test_p")), "perf")
+        self.assertEqual(get_test_category(MockCatTest("test_default")), "logic")
+        self.mark_passed()
