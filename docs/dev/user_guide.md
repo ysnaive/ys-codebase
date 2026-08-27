@@ -217,6 +217,13 @@ python yscb.py dev test --target=dev:TestDevChecker.test_check_core_module_passe
    - Custom 節點呈現 `[Logic: X, Env: Y]` 細分計數。
    - 失敗時提供出錯位置、斷言摘要與一鍵 `--target` 快速重測指令。
 
+### 4.7 控制台編碼防禦與 Mock 模組建置測試實踐 (Encoding Resilience & Mock Module Testing)
+1. **Windows 控制台與子進程編碼安全防禦 (`SafeStreamWriter` / `safe_print`)**：
+   - 在 Windows 中文語系 (cp950/gbk) 環境下，當子進程輸出或測試日誌包含非 BMP Unicode 字元（如特殊符號、替換字元 `\ufffd`）時，輸出流自動進行安全降級轉譯 (`errors="replace"`)，杜絕 `UnicodeEncodeError` 崩潰。
+2. **Mock 模組測試隔離規範 (`create_mock_source_module`)**：
+   - 測試 Builder、Release Pipeline 與版本滑動修剪等底層打包機制時，一律透過 `self.create_mock_source_module("mock_pkg", ...)` 動態建立輕量 Mock 模組。
+   - 嚴禁在測試中直接對真實官方模組（`core`, `dev`, `agents-workflow`）進行打包驗證，避免未來官方新增或修改模組時產生耦合副作用 (Zero Side Effect)。
+
 ---
 
 ## 5. Agent 指令防呆情境與調用規範 (Dev Command Abuse Guardrails)

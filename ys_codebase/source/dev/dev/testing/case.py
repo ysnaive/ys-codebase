@@ -119,6 +119,57 @@ class YSCBTestCase(unittest.TestCase):
         """Helper to dynamically generate a mock package in sandbox mock_provider."""
         return self.ctx.create_mock_package(name, version, deps, description)
 
+    def create_mock_source_module(
+        self,
+        name: str = "mock_source_pkg",
+        version: str = "1.0.0.0",
+        deps: Optional[Dict[str, str]] = None,
+        files: Optional[Dict[str, str]] = None
+    ) -> str:
+        """
+        Creates a valid mock source module in the sandbox's source/<name> directory
+        with standard manifest.json and boilerplate entry points.
+        Returns the resolved source directory path.
+        """
+        src_root = uri.resolve("module.source://")
+        src_dir = os.path.join(src_root, name)
+        os.makedirs(src_dir, exist_ok=True)
+        manifest = {
+            "name": name,
+            "version": version,
+            "description": f"Mock Source Module {name}",
+            "dependencies": deps or {},
+            "entry": "scripts/cli.py"
+        }
+        with open(os.path.join(src_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+            
+        scripts_dir = os.path.join(src_dir, "scripts")
+        os.makedirs(scripts_dir, exist_ok=True)
+        cli_content = files.get("scripts/cli.py") if files and "scripts/cli.py" in files else (
+            "def main():\n    pass\n"
+        )
+        with open(os.path.join(scripts_dir, "cli.py"), "w", encoding="utf-8") as f:
+            f.write(cli_content)
+
+        tests_dir = os.path.join(src_dir, "tests")
+        os.makedirs(tests_dir, exist_ok=True)
+        with open(os.path.join(tests_dir, "__init__.py"), "w", encoding="utf-8") as f:
+            f.write('"""Mock test package."""\n')
+        with open(os.path.join(tests_dir, "test_dummy.py"), "w", encoding="utf-8") as f:
+            f.write("from dev.testing.case import YSCBTestCase\nclass DummyMockTest(YSCBTestCase):\n    def test_mock_pass(self): pass\n")
+
+        if files:
+            for rel_p, content in files.items():
+                if rel_p in ("manifest.json", "scripts/cli.py", "tests/__init__.py", "tests/test_dummy.py"):
+                    continue
+                full_p = os.path.join(src_dir, rel_p)
+                os.makedirs(os.path.dirname(full_p), exist_ok=True)
+                with open(full_p, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    
+        return src_dir
+
     def assertSuccess(self, returncode: int, msg: str = "") -> None:
         """Assert command exit code is 0."""
         self.assertEqual(returncode, 0, msg or f"Expected exit code 0, got {returncode}")
@@ -170,5 +221,13 @@ class YSCBTestCase(unittest.TestCase):
         p_env["YSCB_TEST_SANDBOX"] = "1"
         if env:
             p_env.update(env)
-        res = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, env=p_env)
+        res = subprocess.run(
+            cmd,
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=p_env
+        )
         return res.returncode, res.stdout, res.stderr
