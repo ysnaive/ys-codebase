@@ -501,6 +501,52 @@
               "extension": ".md"
             }
           }
+        },
+        {
+          "name": "claude",
+          "description": "Anthropic Claude Code 原生 Slash Commands 與標準規範輸出",
+          "projections": {
+            "workflow": {
+              "target_dir": "project://.claude/commands",
+              "extension": ".md",
+              "header": [
+                "---",
+                "description: {export.description}",
+                "---"
+              ]
+            },
+            "template": {
+              "target_dir": "project://.claude/.yscb/templates",
+              "extension": ".md"
+            },
+            "standard": {
+              "target_dir": "project://.claude/.yscb/standards",
+              "extension": ".md"
+            }
+          }
+        },
+        {
+          "name": "codex",
+          "description": "OpenAI Codex CLI / VS Code Extension 原生工作流與標準規範輸出",
+          "projections": {
+            "workflow": {
+              "target_dir": "project://.codex/workflows",
+              "extension": ".md",
+              "header": [
+                "---",
+                "description: {export.description}",
+                "---"
+              ]
+            },
+            "template": {
+              "target_dir": "project://.codex/.yscb/templates",
+              "extension": ".md"
+            },
+            "standard": {
+              "target_dir": "project://.codex/.yscb/standards",
+              "extension": ".md"
+            }
+          }
         }
       ]
     }
