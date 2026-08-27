@@ -86,6 +86,75 @@ class SandboxProvisioner:
     """Sandbox environment lifecycle manager and provisioner (dev op-mksb engine)."""
 
     @staticmethod
+    def prune_sandboxes(max_keep: int = 3) -> int:
+        """
+        Scans cache://dev/sandbox/ and deletes the oldest sandbox_* directories
+        if total count exceeds max_keep.
+
+        Args:
+            max_keep: Maximum number of sandboxes to retain (default: 3).
+
+        Returns:
+            int: Number of deleted sandboxes.
+        """
+        try:
+            if not uri.exists("cache://dev/sandbox/"):
+                return 0
+            sandbox_parent = uri.resolve("cache://dev/sandbox/")
+            if not os.path.isdir(sandbox_parent):
+                return 0
+
+            entries = [
+                d for d in os.listdir(sandbox_parent)
+                if d.startswith("sandbox_") and os.path.isdir(os.path.join(sandbox_parent, d))
+            ]
+            entries.sort()
+
+            if len(entries) <= max_keep:
+                return 0
+
+            num_to_delete = len(entries) - max_keep
+            to_delete = entries[:num_to_delete]
+            deleted_count = 0
+            for item in to_delete:
+                full_p = os.path.join(sandbox_parent, item)
+                if SandboxProvisioner.cleanup_sandbox(full_p, force=True):
+                    deleted_count += 1
+            return deleted_count
+        except Exception as e:
+            print(f"[dev:sandbox] Warning: Failed during prune_sandboxes: {e}", file=sys.stderr)
+            return 0
+
+    @staticmethod
+    def cleanup_all_sandboxes() -> int:
+        """
+        Removes all sandbox_* directories under cache://dev/sandbox/.
+
+        Returns:
+            int: Number of deleted sandboxes.
+        """
+        try:
+            if not uri.exists("cache://dev/sandbox/"):
+                return 0
+            sandbox_parent = uri.resolve("cache://dev/sandbox/")
+            if not os.path.isdir(sandbox_parent):
+                return 0
+
+            entries = [
+                d for d in os.listdir(sandbox_parent)
+                if d.startswith("sandbox_") and os.path.isdir(os.path.join(sandbox_parent, d))
+            ]
+            deleted_count = 0
+            for item in entries:
+                full_p = os.path.join(sandbox_parent, item)
+                if SandboxProvisioner.cleanup_sandbox(full_p, force=True):
+                    deleted_count += 1
+            return deleted_count
+        except Exception as e:
+            print(f"[dev:sandbox] Warning: Failed during cleanup_all_sandboxes: {e}", file=sys.stderr)
+            return 0
+
+    @staticmethod
     def create_sandbox(target_dir: Optional[str] = None, copy_source: bool = True) -> SandboxContext:
         """
         Builds a full-fidelity micro virtual environment:
@@ -97,6 +166,7 @@ class SandboxProvisioner:
         """
         if not target_dir:
             from datetime import datetime
+            SandboxProvisioner.prune_sandboxes(max_keep=3)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             sandbox_id = f"sandbox_{ts}"
             target_dir = uri.resolve(f"cache://dev/sandbox/{sandbox_id}")

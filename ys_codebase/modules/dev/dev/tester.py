@@ -228,8 +228,12 @@ class Tester:
             
         # 4. Teardown policy
         if ret_code == 0 and not keep_sandbox:
-            SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
+            if "--all" in clean_argv:
+                SandboxProvisioner.cleanup_all_sandboxes()
+            else:
+                SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
         else:
+            SandboxProvisioner.prune_sandboxes(max_keep=3)
             if ret_code != 0:
                 print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
             else:

@@ -32,3 +32,21 @@ class TestDevTester(YSCBTestCase):
         res = self.tester.run(["op-test", "core", "--contract-only"])
         self.assertEqual(res, 0)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_run_test_all_success_cleans_sandboxes(self):
+        """FT-03: Verify _run_test with --all cleans all sandboxes when tests pass."""
+        import os
+        from dev.testing.sandbox import SandboxProvisioner
+        sandbox_parent = uri.resolve("cache://dev/sandbox/")
+        os.makedirs(sandbox_parent, exist_ok=True)
+        dummy_sb = os.path.join(sandbox_parent, "sandbox_20260101_200001_000000")
+        os.makedirs(dummy_sb, exist_ok=True)
+        try:
+            ret = self.tester._run_test(["--all", "--contract-only", "--no-build"])
+            self.assertEqual(ret, 0)
+            self.assertFalse(os.path.exists(dummy_sb))
+        finally:
+            if os.path.exists(dummy_sb):
+                SandboxProvisioner.cleanup_sandbox(dummy_sb, force=True)
+        self.mark_passed()
