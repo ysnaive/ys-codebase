@@ -2,15 +2,30 @@
   "files.exclude": {
     "**/.git": true,
     "**/.vscode": true,
-    ".vscode": true,
-    ".gitignore": true,
+    "**/.gitignore": true,
+    "**/.gitkeep": true,
     "LICENSE": true,
-    "**/__pycache__": true,
-    "**/.gitkeep": true
+    "**/__pycache__": true
   },
   "search.exclude": {
     "**/.git": true,
     "**/.vscode": true,
-    "**/__pycache__": true
-  }
+    "**/__pycache__": true,
+    "**/.cache/**": true,
+    "**/build/**": true,
+    "**/.mirror/**": true,
+    "**/release/**": true
+  },
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/*/**": true,
+    "**/__pycache__/**": true,
+    "**/.cache/**": true,
+    "**/build/**": true,
+    "**/.mirror/**": true,
+    "**/.snapshots/**": true,
+    "**/release/**": true
+  },
+  "git.autorefresh": true
 }
