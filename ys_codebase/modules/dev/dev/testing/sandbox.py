@@ -86,27 +86,40 @@ class SandboxProvisioner:
     """Sandbox environment lifecycle manager and provisioner (dev op-mksb engine)."""
 
     @staticmethod
-    def prune_sandboxes(max_keep: int = 3) -> int:
+    def prune_sandboxes(
+        max_keep: int = 3,
+        sandbox_parent_dir: Optional[str] = None,
+        exclude: Optional[List[str]] = None
+    ) -> int:
         """
-        Scans cache://dev/sandbox/ and deletes the oldest sandbox_* directories
-        if total count exceeds max_keep.
+        Removes oldest sandbox_* directories under cache://dev/sandbox/ when count exceeds max_keep.
 
         Args:
-            max_keep: Maximum number of sandboxes to retain (default: 3).
+            max_keep: Maximum number of newest sandboxes to retain (default: 3).
+            sandbox_parent_dir: Optional parent directory to prune. Defaults to cache://dev/sandbox/.
+            exclude: Optional list of directory names or paths to exclude from deletion.
 
         Returns:
             int: Number of deleted sandboxes.
         """
         try:
-            if not uri.exists("cache://dev/sandbox/"):
-                return 0
-            sandbox_parent = uri.resolve("cache://dev/sandbox/")
+            if sandbox_parent_dir:
+                sandbox_parent = sandbox_parent_dir
+            else:
+                if not uri.exists("cache://dev/sandbox/"):
+                    return 0
+                sandbox_parent = uri.resolve("cache://dev/sandbox/")
+
             if not os.path.isdir(sandbox_parent):
                 return 0
 
+            exclude_set = set(exclude or [])
             entries = [
                 d for d in os.listdir(sandbox_parent)
-                if d.startswith("sandbox_") and os.path.isdir(os.path.join(sandbox_parent, d))
+                if d.startswith("sandbox_")
+                and os.path.isdir(os.path.join(sandbox_parent, d))
+                and d not in exclude_set
+                and os.path.join(sandbox_parent, d) not in exclude_set
             ]
             entries.sort()
 
@@ -126,23 +139,38 @@ class SandboxProvisioner:
             return 0
 
     @staticmethod
-    def cleanup_all_sandboxes() -> int:
+    def cleanup_all_sandboxes(
+        sandbox_parent_dir: Optional[str] = None,
+        exclude: Optional[List[str]] = None
+    ) -> int:
         """
         Removes all sandbox_* directories under cache://dev/sandbox/.
+
+        Args:
+            sandbox_parent_dir: Optional parent directory to clean. Defaults to cache://dev/sandbox/.
+            exclude: Optional list of directory names or paths to exclude from deletion.
 
         Returns:
             int: Number of deleted sandboxes.
         """
         try:
-            if not uri.exists("cache://dev/sandbox/"):
-                return 0
-            sandbox_parent = uri.resolve("cache://dev/sandbox/")
+            if sandbox_parent_dir:
+                sandbox_parent = sandbox_parent_dir
+            else:
+                if not uri.exists("cache://dev/sandbox/"):
+                    return 0
+                sandbox_parent = uri.resolve("cache://dev/sandbox/")
+
             if not os.path.isdir(sandbox_parent):
                 return 0
 
+            exclude_set = set(exclude or [])
             entries = [
                 d for d in os.listdir(sandbox_parent)
-                if d.startswith("sandbox_") and os.path.isdir(os.path.join(sandbox_parent, d))
+                if d.startswith("sandbox_")
+                and os.path.isdir(os.path.join(sandbox_parent, d))
+                and d not in exclude_set
+                and os.path.join(sandbox_parent, d) not in exclude_set
             ]
             deleted_count = 0
             for item in entries:

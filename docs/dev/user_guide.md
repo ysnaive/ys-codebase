@@ -154,6 +154,19 @@ python yscb.py dev test core --keep-sandbox
    - 當執行全模組回歸測試 `python yscb.py dev test --all` 且全數通過 (Exit Code 0) 時，系統自動清空 `cache://dev/sandbox/` 下的所有殘留歷史沙盒，達成全系統乾淨交付。
    - 單模組跑測 (`dev test <mod>`) 通過時僅清理當次生成的沙盒，不觸發歷史沙盒全量清空。
 
+### 4.3 測試沙盒模式指南 (Shared vs. Isolated Sandboxes)
+為平衡測試執行效能與環境隔離，`YSCBTestCase` 支援智慧沙盒分流機制：
+1. **預設共用沙盒 (Shared Sandbox by Default)**：
+   - 同一個 `YSCBTestCase` 類別內的所有測試方法，預設**共用同一個沙盒實例**（Class-level Lazy Sandbox）。
+   - 避免每個測試方法重複複製目錄與初始化 Hook，使一般邏輯與 VFS 測試獲得數倍效能加速。
+   - 類別測試全部結束後，自動由 `tearDownClass` 銷毀共用沙盒。
+2. **專屬獨立沙盒 (`@require(Requirement.ISOLATED_SANDBOX)`)**：
+   - 針對破壞性寫入、模組物理安裝、建置產物覆蓋等具狀態副作用之測試案例，標記 `@require(Requirement.ISOLATED_SANDBOX)`。
+   - 該方法在 `setUp()` 時將自動獲得一個全新的專屬沙盒，並在 `tearDown()` 結束後即時銷毀，確保與共用沙盒完全隔離。
+3. **測試模式 JIT 靜默防護 (`YSCB_TEST_SANDBOX`)**：
+   - 測試框架執行期間自動注入 `YSCB_TEST_SANDBOX=1`。
+   - 被測代碼在解析 `!undefined` 協議時自動靜默跳過終端鍵盤互動，即時拋出 `UndefinedURIError`，保障自動化測試流暢度。
+
 ---
 
 ## 5. Agent 指令防呆情境與調用規範 (Dev Command Abuse Guardrails)

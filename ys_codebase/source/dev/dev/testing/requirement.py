@@ -10,9 +10,10 @@ import urllib.request
 
 class Requirement(Flag):
     NONE = 0
-    LOGIC = auto()     # Pure in-memory / unit logic test
-    HOST_CLI = auto()  # Subprocess invocation required
-    NETWORK = auto()   # Active network connection required
+    LOGIC = auto()            # Pure in-memory / unit logic test
+    HOST_CLI = auto()         # Subprocess invocation required
+    NETWORK = auto()          # Active network connection required
+    ISOLATED_SANDBOX = auto() # Dedicated per-test isolated sandbox required
 
 def is_network_available(timeout: float = 1.5) -> bool:
     try:

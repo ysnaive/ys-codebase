@@ -182,9 +182,8 @@ class TestSandboxArchitecture(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_prune_sandboxes_limit(self):
         """FT-01: Verify prune_sandboxes deletes oldest sandboxes when total count exceeds max_keep."""
-        sandbox_parent = uri.resolve("cache://dev/sandbox/")
+        sandbox_parent = os.path.join(self.sandbox_dir, "test_prune_scope")
         os.makedirs(sandbox_parent, exist_ok=True)
-        SandboxProvisioner.cleanup_all_sandboxes()
         created_dirs = []
         try:
             for i in range(1, 6):
@@ -193,7 +192,7 @@ class TestSandboxArchitecture(YSCBTestCase):
                 os.makedirs(d_path, exist_ok=True)
                 created_dirs.append(d_path)
 
-            deleted_cnt = SandboxProvisioner.prune_sandboxes(max_keep=3)
+            deleted_cnt = SandboxProvisioner.prune_sandboxes(max_keep=3, sandbox_parent_dir=sandbox_parent)
             self.assertEqual(deleted_cnt, 2)
 
             # Oldest 2 should be deleted
@@ -213,9 +212,8 @@ class TestSandboxArchitecture(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_cleanup_all_sandboxes(self):
         """FT-02: Verify cleanup_all_sandboxes deletes all sandbox_* directories."""
-        sandbox_parent = uri.resolve("cache://dev/sandbox/")
+        sandbox_parent = os.path.join(self.sandbox_dir, "test_cleanup_scope")
         os.makedirs(sandbox_parent, exist_ok=True)
-        SandboxProvisioner.cleanup_all_sandboxes()
         created_dirs = []
         try:
             for i in range(1, 4):
@@ -224,7 +222,7 @@ class TestSandboxArchitecture(YSCBTestCase):
                 os.makedirs(d_path, exist_ok=True)
                 created_dirs.append(d_path)
 
-            deleted_cnt = SandboxProvisioner.cleanup_all_sandboxes()
+            deleted_cnt = SandboxProvisioner.cleanup_all_sandboxes(sandbox_parent_dir=sandbox_parent)
             self.assertEqual(deleted_cnt, 3)
 
             for p in created_dirs:
@@ -238,22 +236,23 @@ class TestSandboxArchitecture(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_sandbox_cleanup_empty_or_missing(self):
         """ET-01: Verify prune_sandboxes and cleanup_all_sandboxes return 0 when no sandboxes exist."""
-        # Ensure cleanup on empty returns 0 without errors
-        cnt1 = SandboxProvisioner.prune_sandboxes(max_keep=3)
-        cnt2 = SandboxProvisioner.cleanup_all_sandboxes()
-        self.assertIsInstance(cnt1, int)
-        self.assertIsInstance(cnt2, int)
+        empty_scope = os.path.join(self.sandbox_dir, "test_empty_scope")
+        os.makedirs(empty_scope, exist_ok=True)
+        cnt1 = SandboxProvisioner.prune_sandboxes(max_keep=3, sandbox_parent_dir=empty_scope)
+        cnt2 = SandboxProvisioner.cleanup_all_sandboxes(sandbox_parent_dir=empty_scope)
+        self.assertEqual(cnt1, 0)
+        self.assertEqual(cnt2, 0)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_sandbox_cleanup_ignores_non_sandbox(self):
         """ET-02: Verify cleanup_all_sandboxes does not delete non-sandbox directories."""
-        sandbox_parent = uri.resolve("cache://dev/sandbox/")
+        sandbox_parent = os.path.join(self.sandbox_dir, "test_ignore_scope")
         os.makedirs(sandbox_parent, exist_ok=True)
         non_sandbox_dir = os.path.join(sandbox_parent, "other_cache_dir_do_not_delete")
         os.makedirs(non_sandbox_dir, exist_ok=True)
         try:
-            SandboxProvisioner.cleanup_all_sandboxes()
+            SandboxProvisioner.cleanup_all_sandboxes(sandbox_parent_dir=sandbox_parent)
             self.assertTrue(os.path.exists(non_sandbox_dir))
         finally:
             if os.path.exists(non_sandbox_dir):

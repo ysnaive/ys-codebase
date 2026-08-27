@@ -3,13 +3,13 @@
   "default_provider": "./ys_codebase/release",
   "installed_modules": {
     "core": {
-      "version": "1.0.1.0",
-      "installed_at": "2026-08-27 03:31:44",
+      "version": "1.0.1.build",
+      "installed_at": "2026-08-27 16:00:13",
       "provider": "./ys_codebase/release"
     },
     "dev": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-27 15:18:37",
+      "installed_at": "2026-08-27 16:00:44",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {

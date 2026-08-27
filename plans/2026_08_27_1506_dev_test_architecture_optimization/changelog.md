@@ -14,6 +14,8 @@
 
 | 日期時間 | 類型 | 摘要 |
 | :--- | :---: | :--- |
+| 2026-08-27 16:06 | `SUB-PLAN` | 開立第三子計畫 `sub_03_test_performance_optimization`，產出 R01 測試耗時瓶頸調研報告 |
+| 2026-08-27 15:25 | `SUB-PLAN` | 開立第二子計畫 `sub_02_test_architecture_refinement`，啟動現行測試架構狀況調研 |
 | 2026-08-27 15:22 | `SUB-DONE` | 子計畫 `sub_01_residual_sandbox_cleanup` 順利結案，全系統回歸通過 (134/134 100% Passed) |
 | 2026-08-27 15:08 | `SUB-PLAN` | 開立第一子計畫 `sub_01_residual_sandbox_cleanup` 並建立 `umbrella_overview.md` |
 | 2026-08-27 15:06 | `PHASE` | 開立分類型主計畫目錄，伴隨建立 P00 與本變更日誌 (狀態：`Discussing`) |

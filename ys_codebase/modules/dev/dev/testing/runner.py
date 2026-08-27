@@ -202,6 +202,8 @@ class TestRunner:
         self.keep_sandbox = keep_sandbox
 
     def run_suite(self, suite: unittest.TestSuite) -> unittest.TestResult:
+        orig_sandbox = os.environ.get("YSCB_TEST_SANDBOX")
+        os.environ["YSCB_TEST_SANDBOX"] = "1"
         if self.keep_sandbox:
             os.environ["YSCB_TEST_KEEP_SANDBOX"] = "1"
         else:
@@ -209,4 +211,10 @@ class TestRunner:
             
         stream = sys.stdout if self.verbose else StringIO()
         runner = unittest.TextTestRunner(stream=stream, verbosity=2 if self.verbose else 0)
-        return runner.run(suite)
+        try:
+            return runner.run(suite)
+        finally:
+            if orig_sandbox is not None:
+                os.environ["YSCB_TEST_SANDBOX"] = orig_sandbox
+            else:
+                os.environ.pop("YSCB_TEST_SANDBOX", None)

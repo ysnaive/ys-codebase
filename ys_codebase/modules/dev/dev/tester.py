@@ -219,8 +219,10 @@ class Tester:
         op_test_args = [a for a in clean_argv if a != "test"]
         cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + op_test_args
         
+        p_env = dict(os.environ)
+        p_env["YSCB_TEST_SANDBOX"] = "1"
         try:
-            res = subprocess.run(cmd, cwd=host_dir)
+            res = subprocess.run(cmd, cwd=host_dir, env=p_env)
             ret_code = res.returncode
         except Exception as e:
             print(f"[dev:test] Subprocess execution error: {e}")
