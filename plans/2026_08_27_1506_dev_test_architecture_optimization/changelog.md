@@ -3,7 +3,7 @@
 > 功能名稱：dev 測試架構優化 (Dev Test Architecture Optimization)  
 > 建立日期：2026-08-27  
 > 所屬主計畫：無 (分類型主計畫 Umbrella)  
-> 狀態：`Completed`  
+> 狀態：`Executing`  
 > 模板版本：v1.1  
 
 ---
@@ -14,7 +14,8 @@
 
 | 日期時間 | 類型 | 摘要 |
 | :--- | :---: | :--- |
-| 2026-08-27 17:08 | `UMBRELLA-DONE` | 三大子計畫 (sub_01, sub_02, sub_03) 全部圓滿完成交付，全系統 144 個測試 100% Passed，主計畫正式結案 (狀態：`Completed`) |
+| 2026-08-27 17:39 | `SUB-DONE` | 子計畫 `sub_04_test_cli_output_and_ux_optimization` 順利結案，日誌緩衝捕獲、即時生命週期 Log、雙報表根除與診斷報表豐富化落地 (147/147 Passed) |
+| 2026-08-27 17:12 | `SUB-PLAN` | 開立第四子計畫 `sub_04_test_cli_output_and_ux_optimization` (狀態：`Discussing`) |
 | 2026-08-27 17:08 | `SUB-DONE` | 子計畫 `sub_03_test_performance_optimization` 順利結案，四層分類、--target 精準定位 (0.75s)、三道守門鎖與全庫遷移落地 (144/144 Passed) |
 | 2026-08-27 16:06 | `SUB-PLAN` | 開立第三子計畫 `sub_03_test_performance_optimization`，產出 R01 測試耗時瓶頸調研報告 |
 | 2026-08-27 15:58 | `SUB-DONE` | 子計畫 `sub_02_test_architecture_refinement` 順利結案，預設共用沙盒與 JIT 靜默防護落地 (141/141 Passed, 加速 >50%) |

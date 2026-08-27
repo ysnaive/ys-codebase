@@ -208,6 +208,57 @@ class TestDiscovery:
         return master_suite, contract_count, custom_count
 
 
+def get_test_category(test_case: unittest.TestCase) -> str:
+    """Extract semantic category string ('logic', 'env', 'workflow', 'perf', 'network') from TestCase."""
+    method_name = getattr(test_case, "_testMethodName", "")
+    method = getattr(test_case, method_name, None) if method_name else None
+    req = getattr(method, "__requirement__", None) if method else None
+    if req is None:
+        req = getattr(test_case, "__requirement__", None)
+
+    if req is not None:
+        req_val = req.value if hasattr(req, "value") else int(req)
+        if bool(req_val & Requirement.WORKFLOW.value):
+            return "workflow"
+        if bool(req_val & Requirement.PERF.value):
+            return "perf"
+        if bool(req_val & Requirement.ENV.value):
+            return "env"
+        if bool(req_val & Requirement.NETWORK.value):
+            return "network"
+        if bool(req_val & Requirement.LOGIC.value):
+            return "logic"
+    return "logic"
+
+
+class OutputCapturer:
+    """Context manager for buffering stdout and stderr during test execution."""
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+        self._stdout_buf = StringIO()
+        self._stderr_buf = StringIO()
+        self._orig_stdout: Optional[Any] = None
+        self._orig_stderr: Optional[Any] = None
+
+    def __enter__(self) -> "OutputCapturer":
+        if self.enabled:
+            self._orig_stdout = sys.stdout
+            self._orig_stderr = sys.stderr
+            sys.stdout = self._stdout_buf
+            sys.stderr = self._stderr_buf
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self.enabled:
+            if self._orig_stdout is not None:
+                sys.stdout = self._orig_stdout
+            if self._orig_stderr is not None:
+                sys.stderr = self._orig_stderr
+
+    def get_output(self) -> str:
+        return (self._stdout_buf.getvalue() + self._stderr_buf.getvalue()).strip()
+
+
 class ASCIIReportFormatter:
     @staticmethod
     def format_summary(report_data: Dict[str, Any]) -> str:
@@ -217,13 +268,35 @@ class ASCIIReportFormatter:
             "=" * 70,
         ]
         
+        # 1. Top Metadata Block
+        filter_mode = report_data.get("filter_mode", "Default (LOGIC + ENV)")
+        target_scope = report_data.get("target_scope", "All")
+        no_build = report_data.get("no_build", False)
+        build_str = "No-build (Fast)" if no_build else "Hermetic Build"
+        lines.append(f"[*] Mode: {filter_mode} | Target: {target_scope} | Build: {build_str}")
+        lines.append("-" * 70)
+
+        # 2. Module Tree Block
         for mod_info in report_data.get("modules", []):
             mod_name = mod_info["name"]
+            mod_dur = mod_info.get("duration", 0.0)
             status_str = "[PASS]" if mod_info["passed"] else "[FAIL]"
-            lines.append(f"[*] Module: {mod_name:<20} {status_str:>40}")
+            header_left = f"[*] Module: {mod_name} ({mod_dur:.2f}s)"
+            lines.append(f"{header_left:<50} {status_str:>19}")
             lines.append(f"    |-- [Contract] Auto-Contract Suite ... ({mod_info['contract_passed']}/{mod_info['contract_total']})")
+            
             if mod_info["custom_total"] > 0:
-                lines.append(f"    \\-- [Custom]   Custom Tests ........... ({mod_info['custom_passed']}/{mod_info['custom_total']})")
+                tax_parts = []
+                if mod_info.get("logic_passed", 0) > 0:
+                    tax_parts.append(f"Logic: {mod_info['logic_passed']}")
+                if mod_info.get("env_passed", 0) > 0:
+                    tax_parts.append(f"Env: {mod_info['env_passed']}")
+                if mod_info.get("workflow_passed", 0) > 0:
+                    tax_parts.append(f"Workflow: {mod_info['workflow_passed']}")
+                if mod_info.get("perf_passed", 0) > 0:
+                    tax_parts.append(f"Perf: {mod_info['perf_passed']}")
+                tax_str = f" [{', '.join(tax_parts)}]" if tax_parts else ""
+                lines.append(f"    \\-- [Custom]   Custom Tests ........... ({mod_info['custom_passed']}/{mod_info['custom_total']}){tax_str}")
             else:
                 lines.append(f"    \\-- [Custom]   Custom Tests ........... (No custom tests)")
             
@@ -231,7 +304,7 @@ class ASCIIReportFormatter:
                 for err in mod_info["errors"]:
                     lines.append(f"        [!] ERROR: {err}")
         
-        # Dedicated Failure / Error Detailed List Block
+        # 3. Dedicated Failure / Error Detailed List Block
         failures_list = report_data.get("failures_list", [])
         if failures_list:
             lines.append("-" * 70)
@@ -241,9 +314,26 @@ class ASCIIReportFormatter:
                 t_type = item.get('type', 'FAIL')
                 t_name = item.get('test', 'unknown')
                 t_msg = item.get('message', '')
+                t_loc = item.get('location', '')
+                t_re_run = item.get('rerun', '')
+                captured = item.get('captured_output', '')
+
                 lines.append(f"  [!] {m_tag:<10} {t_type:<8} {t_name}")
                 if t_msg:
-                    lines.append(f"      └── {t_msg}")
+                    lines.append(f"      |-- Message:  {t_msg}")
+                if t_loc:
+                    lines.append(f"      |-- Location: {t_loc}")
+                if captured:
+                    cap_lines = captured.splitlines()
+                    if len(cap_lines) > 20:
+                        cap_snippet = "\n          ".join(cap_lines[:10] + ["... [truncated] ..."] + cap_lines[-5:])
+                    else:
+                        cap_snippet = "\n          ".join(cap_lines)
+                    lines.append(f"      |-- Output:\n          {cap_snippet}")
+                if t_re_run:
+                    lines.append(f"      \\-- Quick Re-run: {t_re_run}")
+                else:
+                    lines.append(f"      \\-- Quick Re-run: python yscb.py dev test --target={item.get('module')}:{t_name}")
         
         lines.append("-" * 70)
         total = report_data.get("total", 0)
@@ -263,7 +353,7 @@ class TestRunner:
         self.verbose = verbose
         self.keep_sandbox = keep_sandbox
 
-    def run_suite(self, suite: unittest.TestSuite) -> unittest.TestResult:
+    def run_suite(self, suite: unittest.TestSuite) -> Tuple[unittest.TestResult, str]:
         orig_sandbox = os.environ.get("YSCB_TEST_SANDBOX")
         os.environ["YSCB_TEST_SANDBOX"] = "1"
         if self.keep_sandbox:
@@ -273,8 +363,11 @@ class TestRunner:
             
         stream = sys.stdout if self.verbose else StringIO()
         runner = unittest.TextTestRunner(stream=stream, verbosity=2 if self.verbose else 0)
+        capturer = OutputCapturer(enabled=not self.verbose)
         try:
-            return runner.run(suite)
+            with capturer:
+                result = runner.run(suite)
+            return result, capturer.get_output()
         finally:
             if orig_sandbox is not None:
                 os.environ["YSCB_TEST_SANDBOX"] = orig_sandbox
