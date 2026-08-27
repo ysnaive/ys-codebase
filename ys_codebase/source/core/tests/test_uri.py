@@ -181,3 +181,19 @@ class TestCoreURI(YSCBTestCase):
         uri.rmtree(f"{self.sandbox_uri}/vfs_test_dir")
         self.assertFalse(uri.exists(f"{self.sandbox_uri}/vfs_test_dir"))
         self.mark_passed()
+
+    def test_test_sandbox_env_suppresses_jit_interaction(self):
+        """FT-04: Verify YSCB_TEST_SANDBOX=1 environment suppresses JIT prompt and raises UndefinedURIError."""
+        orig_env = os.environ.get("YSCB_TEST_SANDBOX")
+        os.environ["YSCB_TEST_SANDBOX"] = "1"
+        try:
+            with self.assertRaises(UndefinedURIError) as ctx:
+                # Even with interactive=True, YSCB_TEST_SANDBOX=1 must immediately suppress prompt
+                uri.reconcile_undefined_uri("mock_undef", "!undefined", interactive=True)
+            self.assertEqual(ctx.exception.scheme, "mock_undef")
+        finally:
+            if orig_env is not None:
+                os.environ["YSCB_TEST_SANDBOX"] = orig_env
+            else:
+                os.environ.pop("YSCB_TEST_SANDBOX", None)
+        self.mark_passed()

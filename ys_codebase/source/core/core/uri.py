@@ -264,8 +264,9 @@ def reconcile_undefined_uri(
     binding_key = config_binding or ("project_root" if scheme_token == "project" else "unknown")
     desc = description or ("指向專案最頂層根目錄" if scheme_token == "project" else "")
     
+    is_test_env = os.environ.get("YSCB_TEST_SANDBOX") == "1"
     is_tty = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
-    if not interactive or not is_tty:
+    if is_test_env or not interactive or not is_tty:
         raise UndefinedURIError(scheme=scheme_token, provider=provider_name, binding=binding_key)
 
     yscb_dir = _get_yscb_root()
