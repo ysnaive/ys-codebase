@@ -3,7 +3,7 @@
 > 功能名稱：模組工具鏈優化主計畫 (Module Toolchain Optimization Umbrella)  
 > 建立日期：2026-08-28  
 > 所屬主計畫：無 (分類型主計畫 Umbrella)  
-> 狀態：Discussing  
+> 狀態：Confirmed  
 > 計畫類型：Refactor  
 > 模板版本：v1.1  
 

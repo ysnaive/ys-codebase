@@ -181,6 +181,10 @@
       "description": "專案特化文檔規範注入錨點（位於 DocumentationStandards.md 尾部）"
     },
     {
+      "value": "AGENTS_STANDARDS",
+      "description": "Agent 行為準則擴充注入錨點（位於 AgentsStandards.md 尾部）"
+    },
+    {
       "value": "DYNAMIC_CONTEXT_MAP",
       "description": "即時語意 URI 地圖注入錨點（位於 ContextInit.md 頂部）"
     },

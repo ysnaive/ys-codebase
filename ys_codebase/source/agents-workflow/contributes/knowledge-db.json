@@ -1,0 +1,14 @@
+{
+  "spaces": {
+    "docs": {
+      "description": "專案知識庫與設計文檔空間 (由 agents-workflow 貢獻)",
+      "include": [
+        "workflow.docs://"
+      ],
+      "exclude": [
+        "**/__pycache__/**",
+        "**/.git/**"
+      ]
+    }
+  }
+}

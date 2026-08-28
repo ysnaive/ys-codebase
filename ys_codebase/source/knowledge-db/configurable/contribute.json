@@ -1,31 +1,4 @@
 {
-  "spaces": {
-    "project_main": {
-      "description": "專案全域代碼與文檔空間 (未指定 file_patterns 預設 include all)",
-      "include": [
-        "project://source",
-        "project://docs"
-      ],
-      "exclude": [
-        "**/__pycache__/**",
-        "**/.git/**",
-        "**/tests/**",
-        "**/build/**",
-        "**/release/**"
-      ]
-    }
-  },
-  "thesaurus": [
-    [
-      "知識庫",
-      "knowledge_db",
-      "knowledge_base",
-      "vector_store"
-    ],
-    [
-      "增量掃描",
-      "incremental_scan",
-      "fingerprint"
-    ]
-  ]
+  "spaces": {},
+  "thesaurus": []
 }

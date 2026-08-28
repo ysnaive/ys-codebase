@@ -55,12 +55,15 @@
 
 ---
 
-## 5. 動態計算 Token (Computed Token Provider)
+## 5. 動態計算 Token 與行為準則擴充 (Tokens & Standards Injection)
 
-模組支援透過 `code.func://` 協議在編譯解算期動態調用 Python 函式生成內容：
+模組支援宣告式 Token 錨點與動態計算 Provider：
+- **`AGENTS_STANDARDS`**：位於 `AgentsStandards.md` 尾部之擴充錨點，由 `knowledge-db` 等子模組宣告 `insert` 注入專屬行為準則（如檢索優先紀律、Docstring 符號防護等）。
 - **`DYNAMIC_CONTEXT_MAP`**：由 `code.func://agents-workflow/providers:get_dynamic_context_map` 即時生成當前專案活躍語意 URI 解析地圖，注入 `ContextInit.md`。
+- **`spaces.docs` 貢獻**：透過 `contributes/knowledge-db.json` 向知識庫微內核宣告 `workflow.docs://` 文檔空間。
 
 ---
+
 
 ## 6. CLI 快速使用指南
 
