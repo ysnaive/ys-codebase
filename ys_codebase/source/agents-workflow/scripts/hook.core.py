@@ -33,9 +33,12 @@ def on_reload(ctx=None) -> None:
     """
     try:
         publisher = ReleasePublisher()
-        res = publisher.release_all()
+        res = publisher.release_all(force=False)
         if res.get("success", False):
-            print(f"[agents-workflow:hook] Auto-released on reload ({res.get('published_count', 0)} files, targets: {', '.join(res.get('active_targets', []))}).")
+            if res.get("short_circuited", False):
+                print(f"[agents-workflow:hook] Auto-release skipped on reload (no changes detected, {res.get('skipped_count', 0)} files up to date).")
+            else:
+                print(f"[agents-workflow:hook] Auto-released on reload ({res.get('written_count', 0)} written, {res.get('skipped_count', 0)} unchanged, {res.get('removed_count', 0)} removed, targets: {', '.join(res.get('active_targets', []))}).")
         else:
             print(f"[agents-workflow:hook] Auto-release failed on reload: {res.get('error', 'Unknown')}")
     except Exception as e:

@@ -51,7 +51,7 @@
 模組支援宣告 `release_target`，定義不同開發環境（如 Google Antigravity IDE、Claude Code 等）的資產投影規則：
 - **`projections`**：定義 `workflow`、`template`、`standard` 的目標目錄、副檔名與純文字/陣列 `header` 模板。
 - **巨集插值**：`header` 支援 `{export.description}`、`{export.name}`、`{target.name}` 等巨集變數動態替換。
-- **原子交易發布**：由 `ReleasePublisher` 基於 `storage://` 執行過往清理、提前解算、持久清單與目錄落地 4 步原子交易，並依 `enable_agents_md` 軟合併專案根目錄 `AGENTS.md`。
+- **原子交易發布**：由 `ReleasePublisher` 基於 `storage://` 執行雙階 Diff 防護（Stage 0 來源指紋短路 + Stage 4 落地內容比對），大幅消除模組 reload 與重複發布的無效 File I/O，並依 `enable_agents_md` 軟合併專案根目錄 `AGENTS.md`。
 
 ---
 
@@ -65,8 +65,11 @@
 ## 6. CLI 快速使用指南
 
 ```bash
-# 執行 4 步原子發布流水線，物化輸出至所有已啟用之 Release Targets (如 .agents/)
+# 執行原子發布流水線（具備雙階 Diff 檢測，無變更時自動短路）
 python yscb.py agents-workflow release
+
+# 強制忽略 Diff 檢測，全量重新編譯與強制覆寫所有發布目標檔案
+python yscb.py agents-workflow release --force
 
 # 查詢全系統可用 Release Targets 與本專案啟用狀態
 python yscb.py agents-workflow release-target --list

@@ -56,11 +56,12 @@
 
 ---
 
-## 3. 4 步原子發布交易語意 (4-Step Atomic Release)
+## 3. 雙階 Diff 檢測與原子發布交易語意 (2-Stage Diff & Atomic Release)
 
-為防止發布中途崩潰導致殘留檔案或孤立檔案污染，發布引擎採用基於 `storage://agents-workflow/release_manifest.json` 的 4 步交易保證：
+為防止無效 File I/O 頻繁衝擊磁碟與中途崩潰導致孤立檔案污染，發布引擎採用基於 `storage://agents-workflow/release_manifest.json` 的雙階 Diff 與 4 步交易保證：
 
+0. **階段 0 (來源端綜合指紋短路 - Stage 0)**：在編譯前計算來源資產（`assets/`）、`manifest.json`、專案組態與 Target 規則之綜合 SHA-256 指紋。若 `force=False` 且指紋相符且已發布檔案皆完好存在，**立即提前返回 (0 I/O，耗時 ~1ms)**。
 1. **步驟 1 (過往發布狀態清理)**：讀取持久紀錄，若存在過往發布清單，比對本次即將發布清單，精確刪除已停用 Target 或已刪除資產之實體檔案。
 2. **步驟 2 (提前解算新清單)**：對所有已啟用的 Release Targets 提前完整解算所有目標檔案的「絕對路徑 ➔ 最終渲染字串」映射。若解算過程發生嚴重錯誤，立即中止交易，絕不污染專案檔案系統。
-3. **步驟 3 (更新持久清單)**：原子寫入本次最新發布清單至 `storage://agents-workflow/release_manifest.json`。
-4. **步驟 4 (物理落地與軟合併)**：建立目標實體目錄，原子寫入檔案；若 `enable_agents_md: true`，對根目錄 `AGENTS.md` 執行無損軟合併。
+3. **步驟 3 (更新持久清單與指紋)**：原子寫入本次最新發布清單與新來源指紋至 `storage://agents-workflow/release_manifest.json`。
+4. **步驟 4 (物理落地與增量軟合併)**：比對各目標檔案現存磁碟內容，僅在內容相異或 `force=True` 時執行實體磁碟寫入；若 `enable_agents_md: true`，對根目錄 `AGENTS.md` 執行無損軟合併（注入前後無變化則跳過寫入）。
