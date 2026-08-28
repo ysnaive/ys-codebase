@@ -3,6 +3,7 @@ knowledge-db 模組核心套件導出
 """
 
 from .bundler import SemanticBundle, SemanticBundler
+from .engine import KnowledgeEngine
 from .exceptions import (
     FingerprintCorruptedError,
     InvalidSpaceConfigError,
@@ -74,4 +75,5 @@ __all__ = [
     "BM25Engine",
     "QueryFilter",
     "SearchResult",
+    "KnowledgeEngine",
 ]

@@ -3,7 +3,7 @@
 > 計畫名稱：knowledge-db 模組開發 (Knowledge Database Module)  
 > 建立日期：2026-08-27  
 > 主計畫目錄：`plans://2026_08_27_2127_knowledge_db/`  
-> 狀態：`Planning`  
+> 狀態：`Completed`  
 > 模板版本：v1.1  
 
 ---
@@ -22,7 +22,7 @@
 | **sub_01** | `sub_01_space_management_and_schema` | Full Track | `Completed` | **空間管理與資料架構**：模組骨架、UnifiedSymbol Schema、SpaceManager 多空間定義、2x2 組態矩陣、SHA1+mtime 增量指紋比對與 VFS 空間存儲。 |
 | **sub_02** | `sub_02_parsers_and_semantic_bundler` | Full Track | `Completed` | **多語言解析與語意打包**：ParserRegistry 動態外掛介面、Python/Markdown/Cpp/CSharp 多語言解析器、SemanticBundler 打包與解包引擎。 |
 | **sub_03** | `sub_03_tokenizer_thesaurus_and_bm25_retrieval` | Full Track | `Completed` | **分詞同義詞與檢索引擎**：CodeTokenizer 混合分詞、雙層 Thesaurus 同義詞合併、倒排索引構建、多欄位加權 BM25 評分與 QueryFilter 過濾。 |
-| **sub_04** | `sub_04_cli_sdk_and_workflow_interlock` | Full Track | `Pending` | **CLI 工具鏈與生態整合**：KnowledgeEngine 門面 API、yscb.py knowledge-db 完整 CLI 命令、agents-workflow 注入與安裝 Hook 連動。 |
+| **sub_04** | `sub_04_cli_sdk_and_workflow_interlock` | Full Track | `Completed` | **CLI 工具鏈與生態整合**：KnowledgeEngine 門面 API、yscb.py knowledge-db 完整 6 大 CLI 命令、agents-workflow 注入與安裝 Hook 連動。 |
 
 ---
 
@@ -32,7 +32,7 @@
 - [x] **里程碑 2 (sub_01)**：完成空間管理、Schema 模型、2x2 組態與增量指紋比對。
 - [x] **里程碑 3 (sub_02)**：完成多語言解析器外掛體系與 SemanticBundler 打包解包引擎。
 - [x] **里程碑 4 (sub_03)**：完成分詞、雙層同義詞擴展與多欄位加權 BM25 語意檢索引擎。
-- [ ] **里程碑 5 (sub_04)**：完成 CLI 路由器、SDK 統一門面、agents-workflow 連動與全庫沙盒測試。
+- [x] **里程碑 5 (sub_04)**：完成 CLI 路由器、SDK 統一門面、agents-workflow 連動與全庫沙盒測試。
 
 ---
 

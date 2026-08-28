@@ -68,17 +68,22 @@ class SpaceManager:
         return None
 
     def _get_storage_root(self) -> Path:
-        """取得 storage 根目錄"""
+        """取得資料庫本機快取根目錄 (cache://knowledge-db/)"""
         if self._custom_storage_dir:
             return self._custom_storage_dir
 
-        resolved = _safe_resolve_uri("storage://knowledge-db/")
+        resolved = _safe_resolve_uri("cache://knowledge-db/")
         if resolved:
             return resolved
 
-        # 預設回退至本地 storage/knowledge-db
-        p = Path("./storage/knowledge-db").resolve()
+        # 預設回退至本地 .cache/knowledge-db
+        p = Path("./.cache/knowledge-db").resolve()
         return p
+
+    @property
+    def storage_dir(self) -> Path:
+        """取得存儲空間根目錄"""
+        return self._get_storage_root()
 
     def _load_contributes(self) -> Dict[str, Any]:
         """讀取模組聯動注入之 Contributes 資料"""
