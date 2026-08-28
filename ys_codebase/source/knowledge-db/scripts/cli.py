@@ -59,12 +59,12 @@ def main(argv: List[str]) -> int:
             print(f"  - 存儲空間根目錄: {st['storage_dir']}")
             print("-" * 80)
             for name, sp in st["spaces"].items():
-                pat_str = f" [patterns: {', '.join(sp['file_patterns'])}]" if sp['file_patterns'] else " [all files]"
-                idx_str = "已建立" if sp['has_index'] else "未建立"
-                print(f"  - 空間: {name} (來源: {sp['origin']}){pat_str}")
-                if sp["description"]:
+                pat_str = f" [patterns: {', '.join(sp['file_patterns'])}]" if sp.get('file_patterns') else " [all files]"
+                idx_str = "已建立" if (sp.get('has_index') or sp.get('index_cached')) else "未建立"
+                print(f"  - 空間: {name} (來源: {sp.get('origin', 'unknown')}){pat_str}")
+                if sp.get("description"):
                     print(f"    說明: {sp['description']}")
-                print(f"    來源目錄數: {sp['include_count']}, 指紋快取檔案: {sp['cached_files']} 檔, 倒排索引: {idx_str}")
+                print(f"    來源目錄數: {sp.get('include_count', 0)}, 指紋快取檔案: {sp.get('cached_files', sp.get('fingerprint_cached_files', 0))} 檔, 倒排索引: {idx_str}")
             print("-" * 80)
             return 0
 

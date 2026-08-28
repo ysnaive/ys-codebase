@@ -67,7 +67,7 @@ class TestEngine(YSCBTestCase):
             # 4. build_index 驗證 (FT-04)
             indices = engine.build_index(space="demo_space")
             self.assertIn("demo_space", indices)
-            idx_file = storage_dir / "indices" / "demo_space.index.json"
+            idx_file = storage_dir / "indices" / "demo_space.index.bin.gz"
             self.assertTrue(idx_file.exists())
 
             # 5. search 驗證 (FT-05)
@@ -79,7 +79,7 @@ class TestEngine(YSCBTestCase):
             engine.clean(space="demo_space")
             self.assertFalse(idx_file.exists())
             st_after = engine.status()
-            self.assertEqual(st_after["spaces"]["demo_space"]["cached_files"], 0)
+            self.assertEqual(st_after["spaces"]["demo_space"]["fingerprint_cached_files"], 0)
 
     @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
     def test_engine_search_and_lazy_indexing(self):

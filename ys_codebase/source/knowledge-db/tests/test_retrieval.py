@@ -165,3 +165,58 @@ class TestRetrieval(YSCBTestCase):
 
         # 特殊正則字元防禦 (EC-06)
         self.assertEqual(engine.search(".*+?^${}()|[]\\", index), [])
+
+    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    def test_symbol_pool_normalization_and_binary_gzip_io(self):
+        """FT-01, FT-02: 驗證 InvertedIndex 符號池去重與二進位 Gzip 讀寫無損還原"""
+        import tempfile
+        from pathlib import Path
+
+        index = InvertedIndex(space_name="test_space")
+        index.build(self.symbols, tokenizer=self.tokenizer)
+
+        # 1. 驗證符號池去重
+        self.assertEqual(len(index.symbols), 3)
+        self.assertIn("sym_01_pid", index.symbols)
+        self.assertEqual(index.get_symbol("sym_01_pid").name, "PIDController")
+
+        # 驗證 Posting 字典不內嵌 symbol
+        first_term = list(index.index.keys())[0]
+        first_posting = index.index[first_term][0]
+        p_dict = first_posting.to_dict()
+        self.assertNotIn("symbol", p_dict)
+        self.assertIn("doc_id", p_dict)
+
+        # 2. 驗證二進位 Gzip 儲存與還原
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bin_path = Path(temp_dir) / "test.index.bin.gz"
+            index.save_binary(bin_path)
+
+            self.assertTrue(bin_path.exists())
+            self.assertGreater(bin_path.stat().st_size, 0)
+
+            # 讀取還原
+            restored = InvertedIndex.load_binary(bin_path)
+            self.assertEqual(restored.space_name, "test_space")
+            self.assertEqual(restored.doc_count, 3)
+            self.assertEqual(len(restored.symbols), 3)
+            self.assertEqual(len(restored.index), len(index.index))
+
+            # 驗證還原後搜尋能力一致
+            engine = BM25Engine(tokenizer=self.tokenizer, thesaurus=self.thesaurus)
+            res = engine.search("PIDController", restored)
+            self.assertGreaterEqual(len(res), 1)
+            self.assertEqual(res[0].symbol.name, "PIDController")
+
+    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    def test_corrupted_binary_cache_fallback(self):
+        """ET-01: 驗證損毀之二進位檔案讀取拋錯 (EC-01)"""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            corrupt_path = Path(temp_dir) / "corrupt.index.bin.gz"
+            corrupt_path.write_bytes(b"not a valid gzip or pickle data 123456789")
+
+            with self.assertRaises(Exception):
+                InvertedIndex.load_binary(corrupt_path)

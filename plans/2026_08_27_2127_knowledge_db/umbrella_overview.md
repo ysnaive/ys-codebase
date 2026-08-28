@@ -18,11 +18,12 @@
 ## 2. 子計畫拆分與執行矩陣 (Sub-Plan Breakdown)
 
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
-| :---: | :--- | :---: | :---: | :--- |
+| :--- | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_space_management_and_schema` | Full Track | `Completed` | **空間管理與資料架構**：模組骨架、UnifiedSymbol Schema、SpaceManager 多空間定義、2x2 組態矩陣、SHA1+mtime 增量指紋比對與 VFS 空間存儲。 |
 | **sub_02** | `sub_02_parsers_and_semantic_bundler` | Full Track | `Completed` | **多語言解析與語意打包**：ParserRegistry 動態外掛介面、Python/Markdown/Cpp/CSharp 多語言解析器、SemanticBundler 打包與解包引擎。 |
 | **sub_03** | `sub_03_tokenizer_thesaurus_and_bm25_retrieval` | Full Track | `Completed` | **分詞同義詞與檢索引擎**：CodeTokenizer 混合分詞、雙層 Thesaurus 同義詞合併、倒排索引構建、多欄位加權 BM25 評分與 QueryFilter 過濾。 |
 | **sub_04** | `sub_04_cli_sdk_and_workflow_interlock` | Full Track | `Completed` | **CLI 工具鏈與生態整合**：KnowledgeEngine 門面 API、yscb.py knowledge-db 完整 6 大 CLI 命令、agents-workflow 注入與安裝 Hook 連動。 |
+| **sub_05** | `sub_05_binary_index_cache_optimization` | Full Track | `Completed` | **倒排索引二進位快取優化**：符號池分離去重 (Symbol Pool Normalization)、二進位 Pickle + Gzip 壓縮快取 (`.index.bin.gz`)，體積縮減 99.53% 與讀取提速 40 倍。 |
 
 ---
 
@@ -33,6 +34,7 @@
 - [x] **里程碑 3 (sub_02)**：完成多語言解析器外掛體系與 SemanticBundler 打包解包引擎。
 - [x] **里程碑 4 (sub_03)**：完成分詞、雙層同義詞擴展與多欄位加權 BM25 語意檢索引擎。
 - [x] **里程碑 5 (sub_04)**：完成 CLI 路由器、SDK 統一門面、agents-workflow 連動與全庫沙盒測試。
+- [x] **里程碑 6 (sub_05)**：完成符號池抽離去重與二進位 Gzip 快取序列化重構，達成全庫極速檢索與輕量化存儲。
 
 ---
 
@@ -40,3 +42,4 @@
 
 - **[UMBRELLA:DR-01] 開立分類型主計畫**：開立 Umbrella 主計畫 `plans://2026_08_27_2127_knowledge_db/`，統籌空間定義、語意打包與語意搜尋系列子計畫。
 - **[UMBRELLA:DR-02] 產出 R01 深度調研與四大維度拆分**：確立全系統四大維度（空間管理、解析打包、檢索引擎、CLI/生態），並規劃 sub_01 ~ sub_04 四大 Full Track 循序推進路線。
+- **[UMBRELLA:DR-03] 倒排索引二進位快取與符號池重構**：開立 sub_05 專案子計畫，將倒排索引由純文字 JSON 升級為二進位 Pickle+Gzip (`.index.bin.gz`) 與符號池解耦架構，消除 500x 冗餘膨脹。

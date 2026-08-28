@@ -30,7 +30,7 @@ flowchart TD
         CacheRoot["cache://knowledge-db/ (.cache/ 零 Git 污染)"]
         FPStorage["spaces/<space>/fingerprints.json (指紋快取)"]
         BundleStorage["bundles/*.bundle.json (語意發布包)"]
-        IndexStorage["indices/*.index.json (倒排索引快取)"]
+        IndexStorage["indices/*.index.bin.gz (二進位 Gzip 倒排索引快取)"]
     end
 
     CLI --> Engine

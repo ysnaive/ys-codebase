@@ -1,7 +1,7 @@
 # Knowledge Database 模組手冊 (Knowledge-DB Overview)
 
 > 模組名稱：`knowledge-db`  
-> 模組版本：`0.1.0.0`  
+> 模組版本：`1.0.0.0`  
 > 職責定位：YS-Codebase 專案代碼與文檔語意知識庫基礎設施，提供多來源空間宣告、雙軌聚合、雙階增量指紋比對、多語言 AST/狀態機解析、雙層同義詞擴展與多欄位加權 BM25 語意搜尋服務。
 
 ---
@@ -26,6 +26,7 @@
 | **sub_02** | **多語言解析與語意打包** | **Completed** | ParserRegistry 動態外掛、Python/Markdown/Cpp/CSharp 解析器、SemanticBundler 打包引擎。 |
 | **sub_03** | **分詞同義詞與檢索引擎** | **Completed** | CodeTokenizer 混合分詞、雙層 Thesaurus 同義詞擴展、倒排索引與 BM25 評分。 |
 | **sub_04** | **CLI 工具鏈與生態整合** | **Completed** | KnowledgeEngine 統一門面 SDK、完整 6 大 CLI 指令集與 agents-workflow 生態連動。 |
+| **sub_05** | **倒排索引二進位快取優化** | **Completed** | 符號池抽離去重、原生 Pickle Protocol 5 + Gzip 二進位快取 (`.index.bin.gz`)，體積縮減 99.53% 與讀取提速 40x。 |
 
 ---
 
