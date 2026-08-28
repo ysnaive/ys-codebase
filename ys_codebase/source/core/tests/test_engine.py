@@ -254,3 +254,32 @@ def on_test_event(context):
         self.assertIn("dev build", str(ctx.exception))
         self.mark_passed()
 
+    def test_deploy_configurable_templates(self):
+        """FT-04: Verify act_deploy_configs_from_modules deploys from configurable/ and cleans up."""
+        mod_dir = f"module://mock_deploy_mod"
+        cfg_tpl_dir = f"{mod_dir}/configurable"
+        uri.makedirs(cfg_tpl_dir, exist_ok=True)
+        uri.write_json(f"{cfg_tpl_dir}/config.project.json", {"proj_key": "val1"})
+        uri.write_json(f"{cfg_tpl_dir}/config.local.json", {"local_key": "val2"})
+        uri.write_json(f"{cfg_tpl_dir}/contribute.json", {"spaces": {"sp1": {}}})
+
+        # Register mock module
+        self.engine.act_register("mock_deploy_mod", "1.0.0.0", "mock_prov")
+        self.engine.act_deploy_configs_from_modules()
+
+        # Check deployed to config://
+        self.assertTrue(uri.exists("config://mock_deploy_mod/config.project.json"))
+        self.assertTrue(uri.exists("config://mock_deploy_mod/config.local.json"))
+        self.assertTrue(uri.exists("config://mock_deploy_mod/contribute.json"))
+        self.assertEqual(uri.read_json("config://mock_deploy_mod/config.project.json")["proj_key"], "val1")
+
+        # Check configurable/ was physically purged from module runtime
+        self.assertFalse(uri.exists(cfg_tpl_dir))
+
+        # Cleanup
+        self.engine.act_unregister("mock_deploy_mod")
+        uri.rmtree(mod_dir)
+        uri.rmtree("config://mock_deploy_mod")
+        self.mark_passed()
+
+

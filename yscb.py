@@ -24,8 +24,10 @@ CORE_COMMANDS: set = {
     "status",
     "rollback",
     "reload",
-    "uri"
+    "uri",
+    "config"
 }
+
 
 
 def load_config(start_dir: Optional[str] = None) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:

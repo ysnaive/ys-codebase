@@ -2,7 +2,27 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_28_1754_module_toolchain_optimization — sub_02_config_system_upgrade
+
+- **Config 系統架構升級、Contribute 專案特化規範與工具鏈建立 (`sub_02`)**：
+  - **微內核 `core.config` 統一 SDK**：
+    - 提供 `get(module, key, default)`（支援點分隔路徑）、`get_all(module)`、`set(module, key, value, local=False)`、`delete`、`reload` 與 `list_modules` 介面。
+    - 封裝 Local > Project (Tier 1 > Tier 2) 雙層深層合併，並以 `(project_mtime, local_mtime)` 雙時間戳快取達成 0 I/O 與 Auto-Healing 自動自愈。
+  - **標準 `configurable/` 模板目錄規範**：
+    - 徹底廢除源碼根目錄散落之 `config.*.json` 模板；模組預設設定一律置於 `source/<module>/configurable/`。
+    - 部署引擎 `act_deploy_configs_from_modules()` 自動掃描 `configurable/` 增量補齊至 `config://`，並物理刪除 runtime 空間之模板目錄，確保代碼純淨。
+  - **專案特化 `contribute.json` 類別與 Git 剛性追蹤公理**：
+    - 下游專案對目標模組之能力擴充注入統一置於 `config://<target>/contribute.json`（對應實體 `config/<target>/contribute.json`）。
+    - 核心聚合引擎 `ContributesAggregator` 階層 ② 專門載入 `config://<target>/contribute.json`；剛性禁止 `contribute.local.json`（檢測到主動警告並忽略），保障工作流與軟體構建之 100% 確定性。
+  - **全生態系消費端 100% 收斂**：
+    - `core.uri`、`knowledge-db` (`space.py`)、`agents-workflow` (`targets.py`, `publisher.py`, `initializer.py`) 全面收斂調用 `core.config` 與 `core.contributes` SDK，徹底消滅手寫讀寫組態與手寫提取 contributes 反模式。
+  - **CLI 工具鏈與 Contributes 註冊**：
+    - 提供 `python yscb.py config list / get / set / reload` 指令體系，並於 `contributes/core.json` 註冊防呆條款。
+  - **全量測試與回歸驗證**：
+    - 全系統 4 大模組虛擬沙盒回歸跑測 **172/172 測試案例 100% Passed (27.717s)**，靜態品質與契約檢查 `dev check --all` 100% PASSED。
+
 ## 2026_08_28_1754_module_toolchain_optimization — sub_01_core_contributes_file_structure_upgrade
+
 
 - **Core Contributes 系統檔案結構升級與純淨目錄化標準重構 (`sub_01`)**：
   - **目錄化 Contributes 唯一官方標準 (`source/<module>/contributes/<target>.json`)**：

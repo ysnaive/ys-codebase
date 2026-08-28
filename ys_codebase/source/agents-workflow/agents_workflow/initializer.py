@@ -68,6 +68,14 @@ class WorkflowInitializer:
 
     def _write_project_config(self, bound_paths: Dict[str, str]) -> bool:
         """原子增量寫入 config/agents-workflow/config.project.json。"""
+        try:
+            from core import config
+            for k, v in bound_paths.items():
+                config.set("agents-workflow", f"paths.{k}", v, local=False)
+            return True
+        except Exception:
+            pass
+
         # 尋找目標 config.project.json 實體路徑
         target_json_path = None
         if uri:
@@ -141,6 +149,7 @@ class WorkflowInitializer:
                     pass
             print(f"[agents-workflow] Error writing config.project.json: {e}", file=sys.stderr)
             return False
+
 
     def run_init_default(
         self,

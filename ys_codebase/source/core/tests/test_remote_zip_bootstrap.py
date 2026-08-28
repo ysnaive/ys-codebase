@@ -88,7 +88,7 @@ class TestRemoteZipBootstrap(YSCBTestCase):
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(manifest, indent=2))
             zf.writestr("scripts/cli.py", "def main(): return 0\n")
-            zf.writestr("config.project.json", json.dumps({"foo": "bar"}, indent=2))
+            zf.writestr("configurable/config.project.json", json.dumps({"foo": "bar"}, indent=2))
             
         self.engine.act_download("pure_mod", "1.0.0.0", prov_dir)
         self.engine.act_register("pure_mod", "1.0.0.0", prov_dir)
@@ -98,6 +98,9 @@ class TestRemoteZipBootstrap(YSCBTestCase):
         mod_root = uri.resolve("module://pure_mod")
         self.assertFalse(os.path.isfile(os.path.join(mod_root, "config.project.json")))
         self.assertFalse(os.path.isfile(os.path.join(mod_root, "config.local.json")))
+        self.assertFalse(os.path.isdir(os.path.join(mod_root, "configurable")))
+        self.mark_passed()
+
         
         # Clean up
         self.engine.act_unregister("pure_mod")

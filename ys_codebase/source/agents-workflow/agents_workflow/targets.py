@@ -23,6 +23,21 @@ class ReleaseTargetManager:
     @classmethod
     def _get_config_path_and_data(cls) -> Tuple[str, Dict[str, Any]]:
         """獲取設定檔路徑與內容。"""
+        try:
+            from core import config
+            cfg_real_path = config.get_config_path("agents-workflow", local=False)
+            cfg_data = config.get_all("agents-workflow")
+            if not cfg_data:
+                cfg_data = {
+                    "paths": {},
+                    "release_targets": ["antigravity"],
+                    "enable_agents_md": True,
+                    "enable_project_changelog": True
+                }
+            return cfg_real_path, cfg_data
+        except Exception:
+            pass
+
         cfg_uri = "config://agents-workflow/config.project.json"
         cfg_data = {
             "paths": {},
@@ -53,9 +68,17 @@ class ReleaseTargetManager:
     @classmethod
     def _save_config_data(cls, cfg_real_path: str, cfg_data: Dict[str, Any]) -> None:
         """寫入設定檔。"""
+        try:
+            from core import config
+            for k, v in cfg_data.items():
+                config.set("agents-workflow", k, v, local=False)
+            return
+        except Exception:
+            pass
         os.makedirs(os.path.dirname(cfg_real_path), exist_ok=True)
         with open(cfg_real_path, "w", encoding="utf-8") as f:
             json.dump(cfg_data, f, indent=2, ensure_ascii=False)
+
 
     @classmethod
     def list_targets(cls) -> List[Dict[str, Any]]:
