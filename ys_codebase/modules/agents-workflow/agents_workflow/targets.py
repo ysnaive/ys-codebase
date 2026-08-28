@@ -1,107 +1,131 @@
 """
 Release Target Manager for agents-workflow.
-Manages release_targets configuration and lifecycle operations.
+Manages release_targets configuration across Local and Project tiers,
+with Local as default and support for --proj flag.
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
 import os
 import json
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 try:
     from core import uri
 except ImportError:
     uri = None
 
+try:
+    from core import config
+except ImportError:
+    config = None
+
 from agents_workflow.compiler import ArtifactCompiler
 from agents_workflow.publisher import ReleasePublisher
 
 
 class ReleaseTargetManager:
-    """釋出目標組態管理器：負責 config.project.json 之 targets 讀寫。"""
+    """釋出目標組態管理器：負責 Local (Tier 1) 與 Project (Tier 2) targets 讀寫。"""
+
+    DEFAULT_PROJECT_TARGETS = ["antigravity"]
 
     @classmethod
-    def _get_config_path_and_data(cls) -> Tuple[str, Dict[str, Any]]:
-        """獲取設定檔路徑與內容。"""
+    def get_tier_targets(cls, is_project: bool = False) -> List[str]:
+        """讀取特定層級 (Local 或 Project) 的 release_targets 清單。"""
+        if config is None:
+            return cls.DEFAULT_PROJECT_TARGETS if is_project else []
         try:
-            from core import config
-            cfg_real_path = config.get_config_path("agents-workflow", local=False)
-            cfg_data = config.get_all("agents-workflow")
-            if not cfg_data:
-                cfg_data = {
-                    "paths": {},
-                    "release_targets": ["antigravity"],
-                    "enable_agents_md": True,
-                    "enable_project_changelog": True
-                }
-            return cfg_real_path, cfg_data
+            default_val = cls.DEFAULT_PROJECT_TARGETS if is_project else []
+            raw = config.get_raw("agents-workflow", "release_targets", local=not is_project, default=None)
+            if raw is None:
+                return list(default_val)
+            if isinstance(raw, list):
+                return list(raw)
+            return list(default_val)
         except Exception:
-            return "", {
-                "paths": {},
-                "release_targets": ["antigravity"],
-                "enable_agents_md": True,
-                "enable_project_changelog": True
-            }
+            return cls.DEFAULT_PROJECT_TARGETS if is_project else []
 
     @classmethod
-    def _save_config_data(cls, cfg_real_path: str, cfg_data: Dict[str, Any]) -> None:
-        """寫入設定檔。"""
+    def save_tier_targets(cls, targets: List[str], is_project: bool = False) -> None:
+        """寫入特定層級的 release_targets 清單。"""
+        if config is None:
+            return
         try:
-            from core import config
-            for k, v in cfg_data.items():
-                config.set("agents-workflow", k, v, local=False)
+            config.set("agents-workflow", "release_targets", targets, local=not is_project)
         except Exception:
             pass
-
-
 
     @classmethod
     def list_targets(cls) -> List[Dict[str, Any]]:
         """
-        列出全系統可用 Targets，標註 [ENABLED], [DISABLED] 或 [ORPHAN / NOT FOUND]。
+        列出全系統可用 Targets，標註來源狀態:
+        [ENABLED (LOCAL)], [ENABLED (PROJECT)], [ENABLED (BOTH)], [DISABLED] 或 [ORPHAN / NOT FOUND]。
         """
         compiler = ArtifactCompiler()
         registered_targets = {t["name"]: t for t in compiler.get_release_targets() if "name" in t}
-        
-        _, cfg_data = cls._get_config_path_and_data()
-        active_targets = set(cfg_data.get("release_targets", []))
+
+        proj_targets = set(cls.get_tier_targets(is_project=True))
+        local_targets = set(cls.get_tier_targets(is_project=False))
+        all_active = proj_targets | local_targets
 
         result: List[Dict[str, Any]] = []
 
         # 1. 遍歷已註冊 targets
         for name, t_obj in registered_targets.items():
-            is_enabled = name in active_targets
+            in_local = name in local_targets
+            in_proj = name in proj_targets
+
+            if in_local and in_proj:
+                status = "[ENABLED (BOTH)]"
+                source = "both"
+                enabled = True
+            elif in_local:
+                status = "[ENABLED (LOCAL)]"
+                source = "local"
+                enabled = True
+            elif in_proj:
+                status = "[ENABLED (PROJECT)]"
+                source = "project"
+                enabled = True
+            else:
+                status = "[DISABLED]"
+                source = "none"
+                enabled = False
+
             result.append({
                 "name": name,
                 "description": t_obj.get("description", ""),
-                "enabled": is_enabled,
-                "status": "[ENABLED]" if is_enabled else "[DISABLED]"
+                "enabled": enabled,
+                "source": source,
+                "status": status,
             })
 
         # 2. 檢查配置中但未註冊的 Orphan targets
-        for name in active_targets:
+        for name in sorted(all_active):
             if name not in registered_targets:
+                in_local = name in local_targets
+                in_proj = name in proj_targets
+                src_label = "BOTH" if (in_local and in_proj) else ("LOCAL" if in_local else "PROJECT")
                 result.append({
                     "name": name,
                     "description": "(Unknown Target - definition not found in any module)",
                     "enabled": True,
-                    "status": "[ORPHAN / NOT FOUND]"
+                    "source": "orphan",
+                    "status": f"[ORPHAN / NOT FOUND ({src_label})]",
                 })
 
         return result
 
     @classmethod
-    def add_target(cls, target_name: str) -> bool:
+    def add_target(cls, target_name: str, is_project: bool = False) -> bool:
         """
-        啟用 Target，更新 config.project.json 並自動觸發 release_all()。
+        啟用 Target，預設寫入 config.local.json (is_project=False)，加 --proj 寫入 config.project.json。
+        自動觸發 ReleasePublisher.release_all()。
         """
-        cfg_path, cfg_data = cls._get_config_path_and_data()
-        active_targets = list(cfg_data.get("release_targets", []))
+        active_targets = cls.get_tier_targets(is_project=is_project)
 
         if target_name not in active_targets:
             active_targets.append(target_name)
-            cfg_data["release_targets"] = active_targets
-            cls._save_config_data(cfg_path, cfg_data)
+            cls.save_tier_targets(active_targets, is_project=is_project)
 
         # 自動觸發發布流水線
         publisher = ReleasePublisher()
@@ -109,17 +133,16 @@ class ReleaseTargetManager:
         return res.get("success", False)
 
     @classmethod
-    def remove_target(cls, target_name: str) -> bool:
+    def remove_target(cls, target_name: str, is_project: bool = False) -> bool:
         """
-        停用 Target，更新 config.project.json 並自動觸發 release_all()（清理舊檔案）。
+        停用 Target，預設從 config.local.json 移除，加 --proj 從 config.project.json 移除。
+        自動觸發 ReleasePublisher.release_all()（清理檔案）。
         """
-        cfg_path, cfg_data = cls._get_config_path_and_data()
-        active_targets = list(cfg_data.get("release_targets", []))
+        active_targets = cls.get_tier_targets(is_project=is_project)
 
         if target_name in active_targets:
             active_targets.remove(target_name)
-            cfg_data["release_targets"] = active_targets
-            cls._save_config_data(cfg_path, cfg_data)
+            cls.save_tier_targets(active_targets, is_project=is_project)
 
         # 自動觸發發布流水線 (自動清理該 Target 舊檔案)
         publisher = ReleasePublisher()

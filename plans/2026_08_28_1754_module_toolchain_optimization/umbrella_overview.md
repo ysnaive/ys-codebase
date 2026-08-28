@@ -24,6 +24,7 @@
 | **sub_02** | `sub_02_config_system_upgrade` | Full Track | `Completed` | **Config 系統架構升級、Contribute 專案特化規範與工具鏈建立**：微內核 `core.config` SDK、`configurable/` 模板目錄規範、專案特化 `contribute.json` 類別 (強制 Git 追蹤)、消費端 100% 收斂、CLI `config` 工具鏈與全模組 172/172 測試通過。 |
 | **sub_03** | `sub_03_dev_module_check_upgrade` | Full Track | `Completed` | **Dev 模組狀態檢核工具升級**：5 步流水線合規檢查引擎、三級嚴重度 (`[PASS]`/`[WARN]`/`[FAIL]`)、Release 剛性守門阻斷、反模式靶向攔截、CLI 彩色診斷輸出與全模組 178/178 測試通過。 |
 | **sub_04** | `sub_04_agents_workflow_plan_check_upgrade` | Full Track | `Completed` | **Agents-Workflow Plan 核查工具鏈升級**：5 步計畫檢核流水線、動態模板 `#Header` 鏡像核對、嚴禁 HTML 註解與佔位符、Noise-Free 聚焦排版、PlanArchiver 剛性守門阻斷與全模組 178/178 測試通過。 |
+| **sub_05** | `sub_05_agents_workflow_release_local_mode` | Full Track | `Completed` | **Agents-Workflow Release 預設 Local 模式與 Gitignore 軟合併同步**：release-target 啟用/停用預設寫入本機私有 `config.local.json`、`--proj` 寫入專案組態、Target 來源辨識排版、微內核 `core.config.get_raw/inspect` 溯源 API、發布時 `project://.gitignore` 區塊非破壞性軟合併與全模組 181/181 測試通過。 |
 
 ---
 
@@ -36,6 +37,8 @@
 - [x] **里程碑 5 (sub_02 實作與結案交付)**：完成 sub_02 微內核 SDK、模板標準目錄、專案特化 `contribute.json`、全模組消費端收斂、CLI 工具鏈、全系統沙盒回歸 (172/172 Passed) 與 Walkthrough 交付。
 - [x] **里程碑 6 (sub_03 狀態檢核工具升級與結案交付)**：完成 sub_03 5 步檢核流水線、反模式靜態靶向攔截、Release 守門阻斷、全模組沙盒回歸 (178/178 Passed) 與 Walkthrough 交付。
 - [x] **里程碑 7 (sub_04 Plan 核查工具鏈升級與結案交付)**：完成 sub_04 動態模板 Header 鏡像核對、5 步流水線、Noise-Free 排版、歸檔剛性守門、全模組沙盒回歸 (178/178 Passed) 與 Walkthrough 交付。
+- [x] **里程碑 8 (sub_05 Release 預設 Local 模式與 Gitignore 軟合併結案交付)**：完成 sub_05 Local 預設、`--proj` 支援、`core.config.get_raw/inspect` 溯源 API、`.gitignore` 軟合併、全模組沙盒回歸 (181/181 Passed)、本地 `@build` 部屬與既有 target 成功遷移至 local。
+
 
 
 

@@ -154,6 +154,44 @@ class TestConfigManager(YSCBTestCase):
         self.assertEqual(ret_list, 0)
         self.mark_passed()
 
+    def test_config_get_raw_and_inspect(self):
+        """FT-08: 驗證 get_raw 單層原始讀取與 inspect 來源層級診斷。"""
+        mod = "test_mod_inspect"
+        config.set(mod, "target.alpha", "from_project", local=False)
+        config.set(mod, "target.beta", "from_project", local=False)
+        config.set(mod, "target.beta", "from_local", local=True)
+        config.set(mod, "target.gamma", "from_local", local=True)
+
+        # 1. 測試 get_raw
+        self.assertEqual(config.get_raw(mod, "target.alpha", local=False), "from_project")
+        self.assertIsNone(config.get_raw(mod, "target.alpha", local=True))
+        self.assertEqual(config.get_raw(mod, "target.beta", local=False), "from_project")
+        self.assertEqual(config.get_raw(mod, "target.beta", local=True), "from_local")
+        self.assertEqual(config.get_raw(mod, "target.gamma", local=True), "from_local")
+        self.assertIsNone(config.get_raw(mod, "target.gamma", local=False))
+
+        # 2. 測試 inspect
+        insp_alpha = config.inspect(mod, "target.alpha")
+        self.assertEqual(insp_alpha["source"], "project")
+        self.assertEqual(insp_alpha["effective"], "from_project")
+        self.assertFalse(insp_alpha["is_overridden"])
+
+        insp_beta = config.inspect(mod, "target.beta")
+        self.assertEqual(insp_beta["source"], "both")
+        self.assertEqual(insp_beta["effective"], "from_local")
+        self.assertTrue(insp_beta["is_overridden"])
+
+        insp_gamma = config.inspect(mod, "target.gamma")
+        self.assertEqual(insp_gamma["source"], "local")
+        self.assertEqual(insp_gamma["effective"], "from_local")
+        self.assertFalse(insp_gamma["is_overridden"])
+
+        insp_none = config.inspect(mod, "target.nonexistent")
+        self.assertEqual(insp_none["source"], "none")
+        self.assertIsNone(insp_none["effective"])
+        self.mark_passed()
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,3 +7,33 @@
 *.local.json
 __pycache__/
 *.pyc
+
+# === YSCB AGENTS_WORKFLOW IGNORE BEGIN ===
+# Auto-managed by agents-workflow. Do not edit this block manually.
+/.agents/.yscb/standards/AgentsCliGuild.md
+/.agents/.yscb/standards/AgentsStandards.md
+/.agents/.yscb/standards/DevelopmentStandards.md
+/.agents/.yscb/standards/DocumentationStandards.md
+/.agents/.yscb/templates/P00_semantic_requirements.md
+/.agents/.yscb/templates/P01_requirements_spec.md
+/.agents/.yscb/templates/P02_architecture_plan.md
+/.agents/.yscb/templates/P03_api_spec.md
+/.agents/.yscb/templates/P04_implementation_plan.md
+/.agents/.yscb/templates/P05_task.md
+/.agents/.yscb/templates/P06_test_plan.md
+/.agents/.yscb/templates/P07_walkthrough.md
+/.agents/.yscb/templates/RXX_research_report.md
+/.agents/.yscb/templates/changelog.md
+/.agents/.yscb/templates/fast_track_plan.md
+/.agents/.yscb/templates/handoff.md
+/.agents/.yscb/templates/umbrella_overview.md
+/.agents/workflows/Auto.md
+/.agents/workflows/ContextInit.md
+/.agents/workflows/Continue.md
+/.agents/workflows/Discuss.md
+/.agents/workflows/Idea.md
+/.agents/workflows/NewPlan.md
+/.agents/workflows/Pause.md
+/.agents/workflows/Research.md
+/.agents/workflows/Review.md
+# === YSCB AGENTS_WORKFLOW IGNORE END ===

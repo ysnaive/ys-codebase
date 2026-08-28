@@ -220,6 +220,80 @@ class ConfigManager:
             cls._mtimes.clear()
 
     @classmethod
+    def get_raw(
+        cls,
+        module: str,
+        key: Optional[str] = None,
+        local: bool = False,
+        default: Any = None,
+    ) -> Any:
+        """
+        讀取指定模組特定層級 (local=True 讀 Local, local=False 讀 Project) 之未合併原始組態。
+        若 key 為 None 則回傳該層級完整字典副本。
+        """
+        if not module:
+            return default
+        target_path = cls.get_config_path(module, local=local)
+        raw_data = cls._read_json_file(target_path)
+        if key is None:
+            return copy.deepcopy(raw_data)
+        return cls._get_by_dot_path(raw_data, key, default)
+
+    @classmethod
+    def inspect(cls, module: str, key: str) -> Dict[str, Any]:
+        """
+        探測指定模組特定鍵值之來源層級與覆蓋狀態。
+        回傳字典結構:
+        {
+            "key": key,
+            "effective": effective_value,
+            "source": "local" | "project" | "both" | "none",
+            "local_value": ...,
+            "project_value": ...,
+            "is_overridden": bool
+        }
+        """
+        if not module or not key:
+            return {
+                "key": key,
+                "effective": None,
+                "source": "none",
+                "local_value": None,
+                "project_value": None,
+                "is_overridden": False,
+            }
+
+        sentinel = object()
+        proj_val = cls.get_raw(module, key, local=False, default=sentinel)
+        local_val = cls.get_raw(module, key, local=True, default=sentinel)
+        effective_val = cls.get(module, key, default=None)
+
+        has_proj = proj_val is not sentinel
+        has_local = local_val is not sentinel
+
+        if has_proj and has_local:
+            source = "both"
+            is_overridden = (local_val != proj_val)
+        elif has_local:
+            source = "local"
+            is_overridden = False
+        elif has_proj:
+            source = "project"
+            is_overridden = False
+        else:
+            source = "none"
+            is_overridden = False
+
+        return {
+            "key": key,
+            "effective": effective_val,
+            "source": source,
+            "local_value": copy.deepcopy(local_val) if has_local else None,
+            "project_value": copy.deepcopy(proj_val) if has_proj else None,
+            "is_overridden": is_overridden,
+        }
+
+    @classmethod
     def list_modules(cls) -> List[str]:
         """列出當前 config:// 空間下存在設定檔之所有模組清單。"""
         yscb_root = cls._get_yscb_root()
@@ -238,8 +312,11 @@ class ConfigManager:
 # 頂層便捷函式 (Public API Facade)
 get = ConfigManager.get
 get_all = ConfigManager.get_all
+get_raw = ConfigManager.get_raw
+inspect = ConfigManager.inspect
 set = ConfigManager.set
 delete = ConfigManager.delete
 reload = ConfigManager.reload
 list_modules = ConfigManager.list_modules
 get_config_path = ConfigManager.get_config_path
+
