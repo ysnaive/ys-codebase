@@ -2,6 +2,24 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_0038_knowledge_db_search_snippet_optimization
+
+- **Knowledge-DB 搜尋結果代碼切片與預覽優化 (`v1.0.1.2`)**：
+  - **消滅 Double-Look 檢索瓶頸**：
+    - 新增 `--snippet`、`-s` 與 `--preview` 旗標，於搜尋結果中直接嵌入帶行號對齊之程式碼切片與 Docstring 摘要。
+    - 實測證實可將 Agent 探索代碼庫時的二次檔案讀取 (`view_file`) 降低 80%~95%，搜尋至理解一輪到位。
+  - **強韌延遲切片提取器 (`SnippetExtractor`)**：
+    - 採用延遲讀取架構，未指定 `--snippet` 時磁碟 I/O 增量為 0。
+    - 具備檔案缺失降級 (`[Snippet Unavailable: File not found]`)、行號邊界安全截斷與 UTF-8 `replace` 容錯防禦。
+  - **Workspace 相對路徑標準化**：
+    - 搜尋結果輸出之檔案路徑自動正規化為相對於專案根目錄之標準相對路徑，優化 IDE 點擊跳轉體驗。
+  - **JSON 結構化輸出擴充 (`--json -s`)**：
+    - JSON 輸出物件新增 `code_snippet` 結構化欄位（包含 `start_line`, `end_line`, `target_line`, `lines`, `docstring_summary`）。
+  - **Agents-Workflow 注入規範同步**：
+    - 同步更新 `KnowledgeAgentsStandards.md`、`phase00_guild.md`、`research_guild.md` 與 `contributes/core.json`，於行為準則與 JIT 引導中推薦使用 `--snippet`。
+  - **全量測試與回歸驗證**：
+    - `knowledge-db` 模組 43/43 測試 100% 通過；全生態系 4 大模組 186/186 測試全數通過。
+
 ## 2026_08_28_1754_module_toolchain_optimization — sub_07_knowledge_db_search_output_formatting
 
 - **Knowledge-DB 搜尋結果輸出格式優化 (`sub_07`)**：

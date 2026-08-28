@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import pickle
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .exceptions import KnowledgeDBError, SchemaValidationError
 from .schema import UnifiedSymbol
@@ -61,6 +61,145 @@ class QueryFilter:
     limit: int = 20
 
 
+@dataclass
+class CodeSnippet:
+    """提取之結構化程式碼片段與 Docstring 摘要"""
+
+    lines: List[Tuple[int, str]] = field(default_factory=list)  # [(line_num, text), ...]
+    start_line: int = 1
+    end_line: int = 1
+    target_line: int = 1
+    docstring_summary: str = ""
+    is_truncated: bool = False
+    error: Optional[str] = None
+
+    def format_text(self, prefix: str = "    ") -> str:
+        """格式化為帶有行號對齊的純文字區塊"""
+        if self.error:
+            return f"{prefix}[Snippet Unavailable: {self.error}]"
+        if not self.lines:
+            return ""
+
+        max_line_num = max(ln for ln, _ in self.lines)
+        line_num_width = max(len(str(max_line_num)), 3)
+
+        formatted_lines = []
+        for ln, txt in self.lines:
+            pointer = " >" if ln == self.target_line else "  "
+            formatted_lines.append(f"{prefix}{pointer} {ln:{line_num_width}d} | {txt}")
+
+        if self.is_truncated:
+            formatted_lines.append(f"{prefix}   {' ' * line_num_width} | ... (lines truncated)")
+
+        return "\n".join(formatted_lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "target_line": self.target_line,
+            "docstring_summary": self.docstring_summary,
+            "is_truncated": self.is_truncated,
+            "error": self.error,
+            "lines": [{"line_number": ln, "content": txt} for ln, txt in self.lines],
+            "formatted_code": self.format_text(prefix=""),
+        }
+
+
+class SnippetExtractor:
+    """原始碼片段延遲提取器 (安全切片讀取與編碼容錯)"""
+
+    def __init__(self, workspace_root: Optional[Union[str, Path]] = None, max_lines: int = 12):
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
+        self.max_lines = max_lines
+
+    def resolve_file_path(self, file_path: Union[str, Path]) -> Path:
+        """解析檔案為實體絕對路徑"""
+        p = Path(file_path)
+        if p.is_absolute() and p.exists():
+            return p
+        if self.workspace_root:
+            cand = self.workspace_root / p
+            if cand.exists():
+                return cand
+        # 嘗試以當前工作目錄尋找
+        cand_cwd = Path.cwd() / p
+        if cand_cwd.exists():
+            return cand_cwd
+        return p
+
+    def extract(
+        self,
+        file_path: Union[str, Path],
+        line_number: int,
+        context_before: int = 2,
+        context_after: int = 4,
+        docstring: str = "",
+    ) -> CodeSnippet:
+        """
+        自實體檔案安全切片讀取原始碼區塊。
+        """
+        real_path = self.resolve_file_path(file_path)
+        doc_summary = docstring.strip().split("\n")[0] if docstring else ""
+
+        if not real_path.is_file():
+            return CodeSnippet(
+                lines=[],
+                start_line=line_number,
+                end_line=line_number,
+                target_line=line_number,
+                docstring_summary=doc_summary,
+                error="File not found",
+            )
+
+        try:
+            with open(real_path, "r", encoding="utf-8", errors="replace") as f:
+                all_lines = f.readlines()
+        except Exception as e:
+            return CodeSnippet(
+                lines=[],
+                start_line=line_number,
+                end_line=line_number,
+                target_line=line_number,
+                docstring_summary=doc_summary,
+                error=f"Read error: {e}",
+            )
+
+        total_lines = len(all_lines)
+        if total_lines == 0:
+            return CodeSnippet(
+                lines=[],
+                start_line=1,
+                end_line=1,
+                target_line=line_number,
+                docstring_summary=doc_summary,
+            )
+
+        target_ln = max(1, min(line_number, total_lines))
+        start_ln = max(1, target_ln - context_before)
+        end_ln = min(total_lines, target_ln + context_after)
+
+        # 限制最大行數
+        is_trunc = False
+        if (end_ln - start_ln + 1) > self.max_lines:
+            end_ln = start_ln + self.max_lines - 1
+            is_trunc = True
+
+        slice_lines = []
+        for ln in range(start_ln, end_ln + 1):
+            raw_line = all_lines[ln - 1].rstrip("\r\n")
+            slice_lines.append((ln, raw_line))
+
+        return CodeSnippet(
+            lines=slice_lines,
+            start_line=start_ln,
+            end_line=end_ln,
+            target_line=target_ln,
+            docstring_summary=doc_summary,
+            is_truncated=is_trunc,
+        )
+
+
 @dataclass(frozen=True)
 class SearchResult:
     """結構化檢索結果"""
@@ -70,9 +209,10 @@ class SearchResult:
     matched_terms: List[str]
     space: str
     snippet: str = ""
+    code_snippet: Optional[CodeSnippet] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "id": self.symbol.id,
             "name": self.symbol.name,
             "kind": self.symbol.kind,
@@ -84,6 +224,9 @@ class SearchResult:
             "space": self.space,
             "snippet": self.snippet,
         }
+        if self.code_snippet:
+            data["code_snippet"] = self.code_snippet.to_dict()
+        return data
 
 
 class InvertedIndex:

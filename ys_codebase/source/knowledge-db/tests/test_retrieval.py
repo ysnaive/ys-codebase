@@ -220,3 +220,74 @@ class TestRetrieval(YSCBTestCase):
 
             with self.assertRaises(Exception):
                 InvertedIndex.load_binary(corrupt_path)
+
+    @require(Requirement.LOGIC)
+    def test_snippet_extractor_and_code_snippet(self):
+        """FT-01, FT-02, ET-01~04: 驗證 SnippetExtractor 安全讀取、截斷與編碼容錯"""
+        import tempfile
+        from pathlib import Path
+        from knowledge_db.retrieval import SnippetExtractor, CodeSnippet
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            code_file = temp_path / "sample.py"
+            code_file.write_text(
+                "def line_1():\n"
+                "    pass\n"
+                "\n"
+                "def target_func(a, b):\n"
+                "    '''Calculate sum'''\n"
+                "    c = a + b\n"
+                "    return c\n"
+                "\n"
+                "def line_9():\n"
+                "    return True\n",
+                encoding="utf-8"
+            )
+
+            extractor = SnippetExtractor(workspace_root=temp_path, max_lines=6)
+
+            # 1. 正常提取 (FT-01)
+            snip = extractor.extract(
+                file_path="sample.py",
+                line_number=4,
+                context_before=1,
+                context_after=3,
+                docstring="Calculate sum",
+            )
+            self.assertIsInstance(snip, CodeSnippet)
+            self.assertIsNone(snip.error)
+            self.assertEqual(snip.target_line, 4)
+            self.assertEqual(snip.docstring_summary, "Calculate sum")
+            self.assertGreater(len(snip.lines), 0)
+            formatted = snip.format_text()
+            self.assertIn("target_func", formatted)
+            self.assertIn(">", formatted)  # 指標
+
+            # 2. 序列化測試 (FR-05)
+            s_dict = snip.to_dict()
+            self.assertEqual(s_dict["target_line"], 4)
+            self.assertIn("formatted_code", s_dict)
+
+            # 3. 檔案不存在測試 (ET-01, EC-01)
+            snip_missing = extractor.extract("non_existent.py", line_number=10)
+            self.assertIsNotNone(snip_missing.error)
+            self.assertEqual(snip_missing.error, "File not found")
+            self.assertIn("[Snippet Unavailable", snip_missing.format_text())
+
+            # 4. 行號超界測試 (ET-02, EC-02)
+            snip_oob = extractor.extract("sample.py", line_number=999)
+            self.assertIsNone(snip_oob.error)
+            self.assertLessEqual(snip_oob.end_line, 10)
+
+            # 5. 超出行數截斷 (ET-03, EC-03)
+            snip_trunc = extractor.extract("sample.py", line_number=1, context_before=0, context_after=9)
+            self.assertTrue(snip_trunc.is_truncated)
+            self.assertLessEqual(len(snip_trunc.lines), 6)
+
+            # 6. 二進位/非 UTF-8 容錯 (ET-04, EC-04)
+            bin_file = temp_path / "binary.dat"
+            bin_file.write_bytes(b"\xff\xfe\x00\x12\x34\x56\x78\x90")
+            snip_bin = extractor.extract("binary.dat", line_number=1)
+            self.assertIsNone(snip_bin.error)
+

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 from .bundler import SemanticBundle, SemanticBundler
 from .exceptions import KnowledgeDBError, SpaceNotFoundError
 from .parsers.registry import ParserRegistry
-from .retrieval import BM25Engine, InvertedIndex, QueryFilter, SearchResult
+from .retrieval import BM25Engine, CodeSnippet, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
 from .scanner import FingerprintScanner, ScanDiffResult
 from .schema import UnifiedSymbol
 from .space import SpaceManager
@@ -59,6 +59,32 @@ class KnowledgeEngine:
             field_weights=field_weights,
         )
         self._index_cache: Dict[str, InvertedIndex] = {}
+        self.snippet_extractor = SnippetExtractor(workspace_root=self._get_workspace_root())
+
+    def _get_workspace_root(self) -> Path:
+        try:
+            from core import uri
+            host_dir = uri.get_host_dir()
+            if host_dir:
+                return Path(host_dir)
+        except Exception:
+            pass
+        return Path.cwd()
+
+    def normalize_workspace_path(self, file_path: Union[str, Path]) -> str:
+        """將路徑正規化為相對於 Workspace 根目錄之標準相對路徑 (forward slash)"""
+        p = Path(file_path)
+        ws = self._get_workspace_root().resolve()
+        try:
+            if p.is_absolute():
+                rel = p.resolve().relative_to(ws)
+                return str(rel).replace("\\", "/")
+        except ValueError:
+            pass
+        s = str(file_path).replace("\\", "/")
+        if ws.name == "ys_codebase" and s.startswith("ys_codebase/"):
+            s = s[len("ys_codebase/"):]
+        return s
 
     @property
     def storage_dir(self) -> Path:
@@ -202,9 +228,11 @@ class KnowledgeEngine:
         languages: Optional[List[str]] = None,
         min_score: float = 0.01,
         limit: int = 10,
+        snippet: bool = False,
+        context_lines: int = 3,
     ) -> List[SearchResult]:
         """
-        多空間多欄位加權語意檢索 (支援自動懶加載二進位快取與即時索引建置)。
+        多空間多欄位加權語意檢索 (支援自動懶加載二進位快取、即時索引建置與延遲代碼片段提取)。
         """
         if not query or not query.strip():
             return []
@@ -264,7 +292,32 @@ class KnowledgeEngine:
             limit=limit,
         )
 
-        return self.bm25_engine.search(query=query, index=merged_index, filter_cfg=flt)
+        raw_results = self.bm25_engine.search(query=query, index=merged_index, filter_cfg=flt)
+
+        if not snippet:
+            return raw_results
+
+        # 4. 延遲提取代碼片段 (Top-K Lazy Fetching, FR-02)
+        results_with_snippets: List[SearchResult] = []
+        for r in raw_results:
+            snip = self.snippet_extractor.extract(
+                file_path=r.symbol.file_path,
+                line_number=r.symbol.line_number,
+                context_before=2,
+                context_after=max(2, context_lines + 1),
+                docstring=r.symbol.docstring,
+            )
+            results_with_snippets.append(
+                SearchResult(
+                    symbol=r.symbol,
+                    score=r.score,
+                    matched_terms=r.matched_terms,
+                    space=r.space,
+                    snippet=r.snippet,
+                    code_snippet=snip,
+                )
+            )
+        return results_with_snippets
 
     def clean(self, space: Optional[str] = None) -> None:
         """
