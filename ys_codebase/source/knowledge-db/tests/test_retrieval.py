@@ -166,7 +166,7 @@ class TestRetrieval(YSCBTestCase):
         # 特殊正則字元防禦 (EC-06)
         self.assertEqual(engine.search(".*+?^${}()|[]\\", index), [])
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_symbol_pool_normalization_and_binary_gzip_io(self):
         """FT-01, FT-02: 驗證 InvertedIndex 符號池去重與二進位 Gzip 讀寫無損還原"""
         import tempfile
@@ -208,7 +208,7 @@ class TestRetrieval(YSCBTestCase):
             self.assertGreaterEqual(len(res), 1)
             self.assertEqual(res[0].symbol.name, "PIDController")
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_corrupted_binary_cache_fallback(self):
         """ET-01: 驗證損毀之二進位檔案讀取拋錯 (EC-01)"""
         import tempfile

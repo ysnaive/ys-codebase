@@ -403,6 +403,41 @@ class Checker:
         if not os.path.isdir(tests_dir):
             return
 
+        def _extract_tokens(expr_node: ast.AST) -> List[str]:
+            tokens = []
+            for n in ast.walk(expr_node):
+                if isinstance(n, ast.Attribute):
+                    tokens.append(n.attr)
+                elif isinstance(n, ast.Name):
+                    tokens.append(n.id)
+            return tokens
+
+        def _check_require_node(target_node: ast.AST, t_file: str) -> None:
+            for dec in getattr(target_node, "decorator_list", []):
+                if isinstance(dec, ast.Call):
+                    func_name = ""
+                    if isinstance(dec.func, ast.Name):
+                        func_name = dec.func.id
+                    elif isinstance(dec.func, ast.Attribute):
+                        func_name = dec.func.attr
+                    
+                    if func_name == "require" and dec.args:
+                        tokens = _extract_tokens(dec.args[0])
+                        if "LOGIC" in tokens and ("ISOLATED_SANDBOX" in tokens or "ISOLATE_SANDBOX" in tokens):
+                            node_kind = "class" if isinstance(target_node, ast.ClassDef) else "function"
+                            report.issues.append(
+                                CheckIssue(
+                                    severity=CheckSeverity.WARN,
+                                    category="ANTIPATTERN",
+                                    message=(
+                                        f"Anti-Pattern: Test {node_kind} '{getattr(target_node, 'name', '')}' in tests/{t_file}:{target_node.lineno} "
+                                        f"is marked with both 'LOGIC' and 'ISOLATED_SANDBOX'. Pure logical tests should not request dedicated per-method sandbox isolation."
+                                    ),
+                                    file_path=f"tests/{t_file}",
+                                    line_number=target_node.lineno,
+                                )
+                            )
+
         for t_file in os.listdir(tests_dir):
             if t_file.startswith("test_") and t_file.endswith(".py"):
                 t_full = os.path.join(tests_dir, t_file)
@@ -410,23 +445,27 @@ class Checker:
                     with open(t_full, "r", encoding="utf-8") as tf:
                         tree = ast.parse(tf.read(), filename=t_file)
                     for node in ast.walk(tree):
-                        if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
-                            base_names = []
-                            for b in node.bases:
-                                if isinstance(b, ast.Name):
-                                    base_names.append(b.id)
-                                elif isinstance(b, ast.Attribute):
-                                    base_names.append(b.attr)
-                            if "TestCase" in base_names and "YSCBTestCase" not in base_names:
-                                report.issues.append(
-                                    CheckIssue(
-                                        severity=CheckSeverity.FAIL,
-                                        category="STRUCTURE",
-                                        message=f"Security Guard: Test class '{node.name}' in tests/{t_file}:{node.lineno} directly subclasses 'unittest.TestCase'. Must inherit from 'dev.testing.case.YSCBTestCase'.",
-                                        file_path=f"tests/{t_file}",
-                                        line_number=node.lineno,
+                        if isinstance(node, ast.ClassDef):
+                            if node.name.startswith("Test"):
+                                base_names = []
+                                for b in node.bases:
+                                    if isinstance(b, ast.Name):
+                                        base_names.append(b.id)
+                                    elif isinstance(b, ast.Attribute):
+                                        base_names.append(b.attr)
+                                if "TestCase" in base_names and "YSCBTestCase" not in base_names:
+                                    report.issues.append(
+                                        CheckIssue(
+                                            severity=CheckSeverity.FAIL,
+                                            category="STRUCTURE",
+                                            message=f"Security Guard: Test class '{node.name}' in tests/{t_file}:{node.lineno} directly subclasses 'unittest.TestCase'. Must inherit from 'dev.testing.case.YSCBTestCase'.",
+                                            file_path=f"tests/{t_file}",
+                                            line_number=node.lineno,
+                                        )
                                     )
-                                )
+                            _check_require_node(node, t_file)
+                        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            _check_require_node(node, t_file)
                 except Exception as e:
                     report.issues.append(
                         CheckIssue(
@@ -436,6 +475,7 @@ class Checker:
                             file_path=f"tests/{t_file}",
                         )
                     )
+
 
     def check_all(self) -> Dict[str, CheckReport]:
         results = {}

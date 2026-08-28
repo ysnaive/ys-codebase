@@ -25,7 +25,7 @@ _spec.loader.exec_module(_hook_dev)
 
 
 class TestCLI(YSCBTestCase):
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_cli_all_commands(self):
         """FT-07: 驗證 CLI 6 大子指令路由與執行 (status, scan, bundle, index, search, clean)"""
         # 1. 說明指令
@@ -55,7 +55,7 @@ class TestCLI(YSCBTestCase):
         # 8. 未知指令 (EC-06)
         self.assertEqual(main(["unknown_cmd_xyz"]), 1)
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_hook_lifecycle(self):
         """FT-08: 驗證 hook.dev.py 測試前置與後置鉤子正常執行"""
         with tempfile.TemporaryDirectory() as temp_dir:
