@@ -1,0 +1,41 @@
+{
+  "name": "knowledge-db",
+  "version": "0.1.0.0",
+  "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
+  "entry": "scripts/cli.py",
+  "dependencies": {
+    "core": ">=1.0.0"
+  },
+  "contributes": {
+    "core": {
+      "uri_schemes": [
+        {
+          "token": "knowledge.storage",
+          "type": "const",
+          "value": "storage://knowledge-db/",
+          "description": "knowledge-db 模組專屬持久化存儲空間根目錄"
+        }
+      ],
+      "commands": {
+        "status": {
+          "description": "查看知識庫空間狀態與指紋統計",
+          "case_pros": [
+            "日常檢視知識庫已註冊空間與快取狀態"
+          ],
+          "case_cons": [
+            "執行大量資料庫重構或打包時"
+          ]
+        },
+        "scan": {
+          "description": "執行指定空間或全空間聯集增量指紋掃描",
+          "case_pros": [
+            "比對程式碼與文檔變更並更新指紋庫"
+          ],
+          "case_cons": [
+            "測試期間無需頻繁手動掃描"
+          ]
+        }
+      }
+    }
+  }
+}
