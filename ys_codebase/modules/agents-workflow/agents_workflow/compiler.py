@@ -89,15 +89,7 @@ class ArtifactCompiler:
                     return uri.read_text(path_or_uri)
                 except Exception:
                     pass
-            
-            # 若 module:// 失敗，自適應嘗試 module.source://
-            if path_or_uri.startswith("module://"):
-                fallback_src_uri = path_or_uri.replace("module://", "module.source://", 1)
-                if uri.exists(fallback_src_uri):
-                    try:
-                        return uri.read_text(fallback_src_uri)
-                    except Exception:
-                        pass
+
 
         # 2. 本地模組相對路徑嘗試 (自包含 fallback)
         sub_path = path_or_uri

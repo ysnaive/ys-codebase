@@ -62,3 +62,15 @@ source/<module>/contributes/core.json
   }
 }
 ```
+
+---
+
+## 4. 專案特化注入 (`config://<target>/contribute.json`)
+
+當下游專案欲對目標模組注入特化擴充時，應建立於：
+```text
+config/<target>/contribute.json
+```
+- **Git 追蹤原則**：`contribute.json` **強制受 Git 追蹤**（禁止 `contribute.local.json`，保障環境與編譯一致性）。
+- **聚合優先權**：專案層級 `contribute.json` 於 `core.contributes.ContributesAggregator` 階層 ② 自動覆蓋 Donor 模組預設之 contributes 宣告。
+

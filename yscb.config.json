@@ -4,22 +4,22 @@
   "installed_modules": {
     "core": {
       "version": "1.0.1.build",
-      "installed_at": "2026-08-28 19:35:12",
+      "installed_at": "2026-08-28 20:06:22",
       "provider": "./ys_codebase/release"
     },
     "dev": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-28 19:29:47",
+      "installed_at": "2026-08-28 20:06:23",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
       "version": "1.0.1.build",
-      "installed_at": "2026-08-28 19:29:44",
+      "installed_at": "2026-08-28 20:06:24",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-28 19:35:13",
+      "installed_at": "2026-08-28 20:06:25",
       "provider": "./ys_codebase/release"
     }
   }
