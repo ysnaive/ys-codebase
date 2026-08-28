@@ -128,40 +128,55 @@ class AtomicEngine:
         dest_zip_uri = f"{dest_mirror_dir}/{version}.zip"
         dest_zip_real = uri.resolve(dest_zip_uri)
 
-        is_build_req = (version == "build" or version.endswith(".build") or "build" in version)
-
-        # 1. Tier 1: Check module.build:// for single zip
-        build_root = f"module.build://{module_name}"
-        build_zip_candidates = [
-            f"{build_root}/{version}.zip",
-            f"{build_root}/{version}.build.zip",
-        ]
-        try:
-            v_tuple = semver.parse_semver(version)
-            build_ver_str = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
-            build_zip_candidates.extend([
-                f"{build_root}/{build_ver_str}.zip",
-                f"{build_root}/{build_ver_str}.build.zip",
-            ])
-        except Exception:
-            pass
-
-        # Scan for any matching *.build.zip in module.build://
-        if uri.exists(build_root):
+        is_build_req = bool(version == "build" or version.endswith(".build") or "build" in version)
+        if not is_build_req:
             try:
-                for f in uri.listdir(build_root):
-                    if f.endswith(".build.zip") or (is_build_req and f.endswith(".zip")):
-                        build_zip_candidates.append(f"{build_root}/{f}")
+                v_tuple = semver.parse_semver(version)
+                is_build_req = (v_tuple.revision == "build")
             except Exception:
                 pass
 
-        for b_zip in build_zip_candidates:
-            if uri.exists(b_zip):
-                shutil.copy2(uri.resolve(b_zip), dest_zip_real)
-                return dest_zip_uri
-
-        # If explicitly requested build version, strictly fail with clear guidance
+        # 1. Tier 1: Check module.build:// for single zip (ONLY IF explicitly requested build revision)
         if is_build_req:
+            build_root = f"module.build://{module_name}"
+            build_zip_candidates = [
+                f"{build_root}/{version}.zip",
+                f"{build_root}/{version}.build.zip",
+            ]
+            try:
+                v_tuple = semver.parse_semver(version)
+                build_ver_str = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
+                build_zip_candidates.extend([
+                    f"{build_root}/{build_ver_str}.zip",
+                    f"{build_root}/{build_ver_str}.build.zip",
+                ])
+            except Exception:
+                pass
+
+            if uri.exists(build_root):
+                try:
+                    for f in uri.listdir(build_root):
+                        if f.endswith(".build.zip") or f.endswith(".zip"):
+                            build_zip_candidates.append(f"{build_root}/{f}")
+                except Exception:
+                    pass
+
+            for b_zip in build_zip_candidates:
+                if uri.exists(b_zip):
+                    shutil.copy2(uri.resolve(b_zip), dest_zip_real)
+                    return dest_zip_uri
+
+            p_abs = os.path.abspath(provider_url) if not provider_url.startswith(("http://", "https://", "file://")) else None
+            if p_abs and os.path.isdir(p_abs):
+                b_candidates = [
+                    os.path.join(p_abs, "build", module_name, f"{version}.zip"),
+                    os.path.join(p_abs, "build", module_name, f"{version}.build.zip"),
+                ]
+                for b_path in b_candidates:
+                    if os.path.isfile(b_path):
+                        shutil.copy2(b_path, dest_zip_real)
+                        return dest_zip_uri
+
             raise FileNotFoundError(
                 f"Build package not found for '{module_name}'. Please run 'python yscb.py dev build {module_name}' first."
             )
@@ -177,20 +192,16 @@ class AtomicEngine:
             zip_candidates = [
                 os.path.join(p_abs, module_name, f"{version}.zip"),
                 os.path.join(p_abs, "release", module_name, f"{version}.zip"),
-                os.path.join(p_abs, "build", module_name, f"{version}.zip"),
-                os.path.join(p_abs, "build", module_name, f"{version}.build.zip"),
-                os.path.join(p_abs, module_name, f"{version}.build.zip")
             ]
             for z_path in zip_candidates:
                 if os.path.isfile(z_path):
                     shutil.copy2(z_path, dest_zip_real)
                     return dest_zip_uri
 
-            # Fallback to packaging local directory if exists (backward compatibility)
+            # Fallback to packaging local release directory if exists (backward compatibility)
             dir_candidates = [
                 os.path.join(p_abs, module_name, version),
                 os.path.join(p_abs, "release", module_name, version),
-                os.path.join(p_abs, module_name)
             ]
             for d_path in dir_candidates:
                 if os.path.isdir(d_path) and os.path.isfile(os.path.join(d_path, "manifest.json")):
@@ -204,7 +215,7 @@ class AtomicEngine:
 
         # 3. Tier 3: Remote HTTP Provider (Download single-file <version>.zip)
         if not provider_url.startswith(("http://", "https://", "file://")):
-            raise FileNotFoundError(f"Cannot find module '{module_name}@{version}' in provider '{provider_url}'.")
+            raise FileNotFoundError(f"Cannot find release package for module '{module_name}@{version}' in provider '{provider_url}'.")
 
         remote_zip_url = provider_url.rstrip("/") + f"/{module_name}/{version}.zip"
         tmp_zip = dest_zip_real + ".tmp"
@@ -219,16 +230,16 @@ class AtomicEngine:
                 
             with zipfile.ZipFile(tmp_zip, "r") as zf:
                 if zf.testzip() is not None:
-                    raise RuntimeError(f"Corrupted zip archive from '{remote_zip_url}'.")
-                    
-            if os.path.exists(dest_zip_real):
-                os.remove(dest_zip_real)
+                    raise RuntimeError(f"Corrupted zip archive downloaded from '{remote_zip_url}'.")
             os.replace(tmp_zip, dest_zip_real)
-        finally:
+            return dest_zip_uri
+        except Exception as e:
             if os.path.exists(tmp_zip):
-                os.remove(tmp_zip)
-
-        return dest_zip_uri
+                try:
+                    os.remove(tmp_zip)
+                except Exception:
+                    pass
+            raise FileNotFoundError(f"Failed to download module '{module_name}@{version}' from '{remote_zip_url}': {e}")
 
     def act_register(self, module_name: str, version: str, provider_url: str) -> None:
         cfg_path, cfg = self._get_config()
@@ -278,6 +289,12 @@ class AtomicEngine:
         version_constraint: Optional[str] = None
     ) -> Dict[str, Any]:
         is_build_req = bool(version_constraint and (version_constraint == "build" or version_constraint.endswith(".build") or "build" in version_constraint))
+        if not is_build_req and version_constraint:
+            try:
+                v_p = semver.parse_semver(version_constraint)
+                is_build_req = (v_p.revision == "build")
+            except Exception:
+                pass
 
         # 1. Tier 1: Check build:// (ONLY IF explicitly requested build revision)
         if is_build_req:
@@ -368,7 +385,9 @@ class AtomicEngine:
             elif "manifest" in res:
                 return res["manifest"]
 
-        return {"name": module_name, "version": version_constraint or "1.0.0.0", "dependencies": {}}
+        raise ModuleNotFoundError(
+            f"Cannot find module '{module_name}' (version constraint: '{version_constraint}') in provider '{provider_url}'."
+        )
 
     def act_solve_deps(
         self, 

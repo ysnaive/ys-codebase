@@ -2,6 +2,29 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_2127_knowledge_db — sub_04_cli_sdk_and_workflow_interlock
+
+- **`knowledge-db` 模組頂層統一門面 SDK、完整 6 大 CLI 指令體系、本地端快取遷移與 Core 套件解析嚴格化 (`sub_04`)**：
+  - **Python SDK 頂層統一門面 (`engine.py` / `KnowledgeEngine`)**：
+    - 實作 `KnowledgeEngine` 高階門面 Facade，一站式封裝 `SpaceManager`、`FingerprintScanner`、`ParserRegistry`、`SemanticBundler`、`ThesaurusEngine` 與 `BM25Engine`。
+    - 提供簡潔且完整型別標註的公開 API：`status()`、`scan()`、`bundle()`、`build_index()`、`search()`、`clean()`。
+    - 實作透明索引自動懶加載 (Lazy Indexing) 與多空間 InvertedIndex 高速 Posting 零拷貝聚合。
+  - **資料庫與索引檔案全面本地端化 (`cache://knowledge-db/`)**：
+    - 預設存儲空間全面遷移至 `cache://knowledge-db/`（對應 `yscb://.cache/knowledge-db/`），空間指紋、倒排索引與 Bundle 產物 100% 留存本地端。
+    - 利用 `.cache/` 由專案 `.gitignore` 全局忽略之特性，徹底杜絕龐大 AST 符號與 Postings JSON 檔案污染專案 Git 倉庫。
+  - **Core 模組套件解析嚴格化與 Build 包隔離 (`core.engine.AtomicEngine`)**：
+    - 徹底廢除 `_get_module_manifest_from_provider_or_local` 查無發布時回傳 fake manifest 的 dummy fallback，嚴格拋出 `ModuleNotFoundError`。
+    - 實作 `module.build://` 物理隔離，僅在請求明確包含 `build` revision 標記時允許存取，防禦未授權之幽靈模組安裝。
+  - **模組自治 Hook (`scripts/hook.dev.py`)**：
+    - 實作 `on_test_setup` 與 `on_test_teardown`，支援 YSCB 沙盒測試生命週期環境自動準備與清理。
+  - **CLI 完整 6 大子指令體系 (`scripts/cli.py` / `manifest.json`)**：
+    - 完整實作 `status`、`scan`、`bundle`、`index`、`search`、`clean` 6 大子指令與格式化彩色輸出。
+    - 在 `manifest.json` 完整宣告 commands 說明與防呆 case pros/cons 規範。
+  - **全量測試與品質驗收**：
+    - 實作 `test_engine.py` (FT-01~06, ET-01)、`test_cli.py` (FT-07~08)、`test_space.py` (FT-11)、`test_installer.py` (FT-09~10) 與全量回歸套件，全模組 38/38 + Core 48/48 測試案例 100% Passed。
+  - **知識庫交付**：
+    - 更新 `docs/knowledge-db/README.md`（完整 6 大 CLI 指令集與 Python SDK 快速上手手冊）與 `docs/knowledge-db/architecture.md`（全系統整合架構設計與本地端快取拓撲）。
+
 ## 2026_08_27_2127_knowledge_db — sub_03_tokenizer_thesaurus_and_bm25_retrieval
 
 - **`knowledge-db` 模組代碼/中文混合分詞、雙層同義詞擴展與多欄位 BM25 檢索引擎 (`sub_03`)**：
