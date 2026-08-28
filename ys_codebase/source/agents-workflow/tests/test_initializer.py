@@ -52,18 +52,19 @@ class TestWorkflowInitializer(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_01_manifest_and_template_structure(self):
-        """FT-01 & FT-02: 驗證 manifest.json 宣告 3 大 URI 協議與 config 模板 !undefined 剛性。"""
-        mf_path = os.path.join(_pkg_root, "manifest.json")
-        self.assertTrue(os.path.isfile(mf_path))
-        with open(mf_path, "r", encoding="utf-8") as f:
-            mf_data = json.load(f)
+        """FT-01 & FT-02: 驗證 contributes/core.json 宣告 3 大 URI 協議與 config 模板 !undefined 剛性。"""
+        contrib_path = os.path.join(_pkg_root, "contributes", "core.json")
+        self.assertTrue(os.path.isfile(contrib_path))
+        with open(contrib_path, "r", encoding="utf-8") as f:
+            c_data = json.load(f)
         
-        core_uri_list = mf_data.get("contributes", {}).get("core", {}).get("uri_schemes", [])
+        core_uri_list = c_data.get("uri_schemes", [])
         tokens = [item.get("token") for item in core_uri_list if isinstance(item, dict)]
         self.assertIn("workflow.plans", tokens)
         self.assertIn("workflow.archived", tokens)
         self.assertIn("workflow.docs", tokens)
         self.assertNotIn("workflow.ext", tokens)
+
 
         # 檢測 config.project.json 模板或已部署之 config
         tpl_path = os.path.join(_pkg_root, "config.project.json")

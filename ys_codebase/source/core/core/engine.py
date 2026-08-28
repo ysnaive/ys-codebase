@@ -1010,41 +1010,23 @@ class AtomicEngine:
 
     def act_get_installed_commands_summary(self) -> Dict[str, Dict[str, str]]:
         """
-        Scans installed modules in module:// to summarize contributed CLI commands.
+        Summarizes contributed CLI commands via core.contributes SDK.
         Returns: { module_name: { command_name: description } }
         """
         summary: Dict[str, Dict[str, str]] = {}
-        if not uri.exists("module://"):
+        from core import contributes
+        all_commands = contributes.get("core", "commands", default={})
+        if not isinstance(all_commands, dict):
             return summary
             
-        for mod_name in sorted(uri.listdir("module://")):
-            if mod_name == "core":
-                continue
-            mf_uri = f"module://{mod_name}/manifest.json"
-            if not uri.exists(mf_uri):
-                continue
-            try:
-                mf_data = uri.read_json(mf_uri)
-                mod_desc = mf_data.get("description", f"{mod_name} module")
-                
-                contrib = mf_data.get("contributes", {})
-                cmds = contrib.get("commands", {})
-                if cmds and isinstance(cmds, dict):
-                    summary[mod_name] = {cmd: desc for cmd, desc in cmds.items()}
-                else:
-                    if mod_name == "dev":
-                        summary["dev"] = {
-                            "create": "Create a new module skeleton",
-                            "check": "Validate module structure and manifest compliance",
-                            "build": "Build dev package (.build.zip with tests)",
-                            "test": "Run module tests inside an isolated sandbox",
-                            "release": "Package and release pure module to release/"
-                        }
-                    else:
-                        summary[mod_name] = {
-                            "run": mod_desc
-                        }
-            except Exception:
-                pass
-                
+        for cmd_name, cmd_body in sorted(all_commands.items()):
+            if isinstance(cmd_body, dict):
+                donor = cmd_body.get("__provider__", "core")
+                if donor == "core":
+                    continue
+                desc = str(cmd_body.get("description", f"{cmd_name} command"))
+                if donor not in summary:
+                    summary[donor] = {}
+                summary[donor][cmd_name] = desc
         return summary
+

@@ -129,8 +129,7 @@ class ArtifactCompiler:
     def get_contributes_data(self) -> Dict[str, Any]:
         """
         收集全系統 contributes 資料 (export, insert, token, release_target)：
-        1. 優先自 cache.root://agents-workflow/contributes.merged.json 讀取。
-        2. 若缺少 release_target 或為空，主動掃描 module.root:// 與 module.source.root:// 下各模組之 manifest.json 補充。
+        100% 透過 core.contributes SDK 查詢已合併快取或觸發自愈。
         """
         aggregated: Dict[str, Any] = {
             "export": [],
@@ -139,62 +138,18 @@ class ArtifactCompiler:
             "release_target": []
         }
 
-        if uri:
-            merged_uri = "cache://agents-workflow/contributes.merged.json"
-            if uri.exists(merged_uri):
-                try:
-                    data = uri.read_json(merged_uri)
-                    if isinstance(data, dict):
-                        for k in ("export", "insert", "token", "release_target"):
-                            if k in data and isinstance(data[k], list):
-                                aggregated[k].extend(data[k])
-                except Exception:
-                    pass
-
-        # 主動掃描模組根目錄與源碼目錄，增量補充未快取之宣告
-        search_roots = ["module.source://", "module://"]
-        seen_modules = set()
-
-        for s_root in search_roots:
-            if uri and uri.exists(s_root):
-                for mod in uri.listdir(s_root):
-                    if mod in seen_modules:
-                        continue
-                    seen_modules.add(mod)
-                    m_uri = f"{s_root}{mod}/manifest.json"
-                    if uri.exists(m_uri):
-                        try:
-                            m_data = uri.read_json(m_uri)
-                            c_all = m_data.get("contributes", {})
-                            c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
-                            for key in ("export", "insert", "token", "release_target"):
-                                items = c_aw.get(key, [])
-                                if isinstance(items, list):
-                                    for it in items:
-                                        if isinstance(it, dict) and it not in aggregated[key]:
-                                            aggregated[key].append(it)
-                        except Exception:
-                            pass
-
-        # 直接讀取模組本地 manifest.json (本地源碼/安裝兜底)
-        local_mf = os.path.join(self.module_root, "manifest.json")
-        if os.path.isfile(local_mf):
-            try:
-                import json
-                with open(local_mf, "r", encoding="utf-8") as f:
-                    m_data = json.load(f)
-                c_all = m_data.get("contributes", {})
-                c_aw = c_all.get("agents-workflow", {}) if isinstance(c_all, dict) else {}
-                for key in ("export", "insert", "token", "release_target"):
-                    items = c_aw.get(key, []) or m_data.get(key, [])
-                    if isinstance(items, list):
-                        for it in items:
-                            if isinstance(it, dict) and it not in aggregated[key]:
-                                aggregated[key].append(it)
-            except Exception:
-                pass
+        try:
+            from core import contributes
+            data = contributes.get("agents-workflow")
+            if isinstance(data, dict):
+                for k in ("export", "insert", "token", "release_target"):
+                    if k in data and isinstance(data[k], list):
+                        aggregated[k].extend(data[k])
+        except Exception:
+            pass
 
         return aggregated
+
 
     def resolve_single_artifact(
         self,

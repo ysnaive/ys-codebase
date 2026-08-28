@@ -1,12 +1,12 @@
 # Agents-Workflow 模組貢獻擴充格式說明書 (contributes.format.md)
 
-> 本文件定義其他模組在 `manifest.json` 中向 `agents-workflow` 宣告工作流、模板、標準資產、Token 錨點、內容注入與發布 Target 之標準擴充格式。
+> 本文件定義其他模組在 `source/<donor>/contributes/agents-workflow.json` 中向 `agents-workflow` 宣告工作流、模板、標準資產、Token 錨點、內容注入與發布 Target 之標準擴充格式。
 
 ---
 
 ## 1. 支援之擴充點清單 (Contribution Points)
 
-模組可在 `manifest.json` 的 `contributes["agents-workflow"]` 物件下宣告以下四大核心擴充點：
+模組可在 `source/<donor>/contributes/agents-workflow.json` 檔案中宣告以下四大核心擴充點：
 
 | 擴充鍵名 (Key) | 說明 | 格式型別 |
 | :--- | :--- | :--- |
@@ -15,13 +15,7 @@
 | **`insert`** | 宣告向特定 Token 錨點注入內容（支援 URI、純文字與 Computed 動態函式） | `array[object]` |
 | **`release_target`** | 宣告發布目標環境與投影目錄規則（例 `antigravity`） | `array[object]` |
 
-同時，`agents-workflow` 亦向 `core` 模組貢獻三大工作流專屬 URI 協議：
-
-| 所屬貢獻 | 協議 Token | 類型 | 說明 |
-| :--- | :--- | :---: | :--- |
-| `contributes["core"]["uri_schemes"]` | **`workflow.plans`** | `config` | 指向活躍開發計畫目錄（綁定 `paths.plans`） |
-| `contributes["core"]["uri_schemes"]` | **`workflow.archived`** | `config` | 指向歷史封存計畫目錄（綁定 `paths.archived`） |
-| `contributes["core"]["uri_schemes"]` | **`workflow.docs`** | `config` | 指向專案知識庫文檔目錄（綁定 `paths.docs`） |
+同時，`agents-workflow` 向 `core` 貢獻之 URI 協議與指令清冊則置於 `source/agents-workflow/contributes/core.json`。
 
 ---
 
@@ -138,69 +132,31 @@
 
 ```json
 {
-  "contributes": {
-    "agents-workflow": {
-      "release_target": [
-        {
-          "name": "antigravity",
-          "description": "Google Antigravity IDE 原生 Slash Commands 與標準規範輸出",
-          "projections": {
-            "workflow": {
-              "target_dir": ".agents/workflows",
-              "extension": ".md",
-              "header": [
-                "---",
-                "description: {export.description}",
-                "---"
-              ]
-            },
-            "template": {
-              "target_dir": "project://.agents/.yscb/templates",
-              "extension": ".md"
-            },
-            "standard": {
-              "target_dir": "project://.agents/.yscb/standards",
-              "extension": ".md"
-            }
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
----
-
-### 2.5 核心 CLI 指令與防呆情境宣告 (`contributes.core.commands`)
-宣告本模組所提供之子指令、說明以及防呆情境（用於產生宿主 CLI Help 與 `AGENTS_CLI_GUILD` 動態手冊）。
-
-- **欄位說明**：
-  - `<command_name>` (`object`，必填)：子指令名稱。
-    - `description` (`string`，必填)：指令功能簡述。
-    - `case_pros` (`list[string]`, 選填)：推薦 / 適用情境列表（若 pros 與 cons 皆無或為空，自動排除於 Agent 防呆手冊）。
-    - `case_cons` (`list[string]`, 選填)：絕對禁止 / 不適用情境列表（以 `🚨` 明確警示）。
-
-```json
-{
-  "contributes": {
-    "core": {
-      "commands": {
-        "plan": {
-          "description": "Dev Plans management toolchain (status, archive, search, verify)",
-          "case_pros": [
-            "檢視計畫狀態: agents-workflow plan status",
-            "搜尋歷史計畫: agents-workflow plan search <query>",
-            "驗證計畫完整度: agents-workflow plan verify",
-            "依開發者明確指示封存計畫: agents-workflow plan archive <plan_dir>"
-          ],
-          "case_cons": [
-            "🚨 嚴禁 Agent 主動或擅自執行 plan archive (除非開發者明確指示歸檔)"
+  "release_target": [
+    {
+      "name": "antigravity",
+      "description": "Google Antigravity IDE 原生 Slash Commands 與標準規範輸出",
+      "projections": {
+        "workflow": {
+          "target_dir": "project://.agents/workflows",
+          "extension": ".md",
+          "header": [
+            "---",
+            "description: {export.description}",
+            "---"
           ]
+        },
+        "template": {
+          "target_dir": "project://.agents/.yscb/templates",
+          "extension": ".md"
+        },
+        "standard": {
+          "target_dir": "project://.agents/.yscb/standards",
+          "extension": ".md"
         }
       }
     }
-  }
+  ]
 }
 ```
 
@@ -215,10 +171,3 @@
 | **`` `__@{token}__` ``** | **文件內容佔位符**<br/>(Content Token) | Stage 1 | 內容狀態機 | 常數注入、模板片段嵌入、`code.func://` 動態計算產出。<br/>例：`` `__@{AGENTS_CLI_GUILD}__` `` ➔ 展開為 Markdown 表格正文。 |
 | **`` `__#{uri}__` ``** | **文件自身相對路徑佔位符**<br/>(Local Relative URI) | Stage 2 | 當前 Markdown 文件所在目錄 (`cur_doc_dir`) | Markdown 內部超連結導航、相對文件引用。<br/>例：`[標準](`__#{module://.../DevStandards.md}__`)` ➔ `[標準](../.yscb/standards/DevStandards.md)` |
 | **`` `__${uri}__` ``** | **專案根目錄相對路徑佔位符**<br/>(Project Relative URI) | Stage 2 | 專案根目錄 (`project://`) | 終端機 Shell 執行指令、相對於根目錄之設定檔參照。<br/>例：`` `python __${yscb.host://yscb.py}__ run` `` ➔ `` `python yscb.py run` ``（子目錄自適應為 `` `python tools/yscb.py run` ``） |
-
-### 3.1 嚴格反引號包裹原則與代碼塊穿插展開
-1. **反引號包裹要求**：所有佔位符**強制必須包裹於反引號（代碼塊 `` `...` ``）內**方會被編譯器解析展開。
-2. **代碼塊內部穿插展開**：支援在同一個代碼塊中包含前後文字（如 `` `python __${yscb.host://yscb.py}__ agents-workflow plan status` ``），編譯器展開時**僅替換佔位符字串本體**，精確保留外層反引號與前後文字。
-3. **未包裹裸佔位符安全警示**：若文本中出現未被反引號包裹的裸佔位符（如 `__@{token}__`、`__#{uri}__`、`__${uri}__`），編譯器**絕對不予展開**，並輸出 `[compiler:warning]` 警示提示開發者。
-
-

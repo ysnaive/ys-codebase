@@ -4,6 +4,7 @@ Official test suite for core.contributes.ContributesAggregator and SDK.
 from dev.testing import YSCBTestCase, require, Requirement
 from core import contributes
 from core.contributes import ContributesAggregator, _tag_provider
+from core import providers
 from core import uri
 
 class TestCoreContributes(YSCBTestCase):
@@ -13,7 +14,7 @@ class TestCoreContributes(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_scan_and_inject_execution(self):
-        """Verify scan_and_inject outputs to cache space and leaves config space clean."""
+        """FT-01: Verify scan_and_inject outputs to cache space and leaves config space clean."""
         res = self.aggregator.scan_and_inject()
         self.assertTrue(isinstance(res, dict))
         
@@ -47,8 +48,9 @@ class TestCoreContributes(YSCBTestCase):
         self.assertEqual(tagged[1]["__provider__"], "custom_donor") # preserved
         self.mark_passed()
 
+    @require(Requirement.ENV)
     def test_contributes_get_sdk(self):
-        """FT-04, FT-05: Verify core.contributes.get and get_for_current_module SDK."""
+        """FT-04: Verify core.contributes.get and get_for_current_module SDK."""
         # 1. Direct get for core
         core_data = contributes.get("core")
         self.assertTrue(isinstance(core_data, dict))
@@ -61,4 +63,12 @@ class TestCoreContributes(YSCBTestCase):
         with uri.module_scope("core"):
             mod_data = contributes.get_for_current_module()
             self.assertEqual(mod_data, core_data)
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_cli_guild_dynamic_generation(self):
+        """FT-05: Verify core.providers.get_agents_cli_guild outputs Markdown table via SDK."""
+        table_md = providers.get_agents_cli_guild()
+        self.assertIn("| 指令名稱 | 推薦/適用情境 (Pros) | 🚨 絕對禁止/不適用情境 (Cons) |", table_md)
+        self.assertIn("`python yscb.py install`", table_md)
         self.mark_passed()
