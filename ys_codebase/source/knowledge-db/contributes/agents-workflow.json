@@ -1,0 +1,28 @@
+{
+  "insert": [
+    {
+      "type": "uri",
+      "token": "AGENTS_STANDARDS",
+      "value": "module://knowledge-db/assets/KnowledgeAgentsStandards.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "RESEARCH_AGENTS_GUILD",
+      "value": "module://knowledge-db/assets/research_guild.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "PHASE00_AGENTS_GUILD",
+      "value": "module://knowledge-db/assets/phase00_guild.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "PHASE07_AGENTS_GUILD",
+      "value": "module://knowledge-db/assets/phase07_guild.md",
+      "mode": "below"
+    }
+  ]
+}

@@ -27,6 +27,7 @@
 | **sub_03** | **分詞同義詞與檢索引擎** | **Completed** | CodeTokenizer 混合分詞、雙層 Thesaurus 同義詞擴展、倒排索引與 BM25 評分。 |
 | **sub_04** | **CLI 工具鏈與生態整合** | **Completed** | KnowledgeEngine 統一門面 SDK、完整 6 大 CLI 指令集與 agents-workflow 生態連動。 |
 | **sub_05** | **倒排索引二進位快取優化** | **Completed** | 符號池抽離去重、原生 Pickle Protocol 5 + Gzip 二進位快取 (`.index.bin.gz`)，體積縮減 99.53% 與讀取提速 40x。 |
+| **sub_06** | **雙向 Contributes 聯動與 Space 解耦** | **Completed** | 清空模組預設硬編碼空間、由 `agents-workflow` 宣告貢獻 `docs` 空間、專案特化宣告 `source` 空間，並向工作流注入檢索優先紀律與 JIT 指引。 |
 
 ---
 

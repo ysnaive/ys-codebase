@@ -3,7 +3,7 @@
 > 計畫名稱：模組工具鏈優化主計畫 (Module Toolchain Optimization Umbrella)  
 > 建立日期：2026-08-28  
 > 主計畫目錄：`plans://2026_08_28_1754_module_toolchain_optimization/`  
-> 狀態：`Planning`  
+> 狀態：In Progress  
 > 模板版本：v1.1  
 
 ---
@@ -25,6 +25,11 @@
 | **sub_03** | `sub_03_dev_module_check_upgrade` | Full Track | `Completed` | **Dev 模組狀態檢核工具升級**：5 步流水線合規檢查引擎、三級嚴重度 (`[PASS]`/`[WARN]`/`[FAIL]`)、Release 剛性守門阻斷、反模式靶向攔截、CLI 彩色診斷輸出與全模組 178/178 測試通過。 |
 | **sub_04** | `sub_04_agents_workflow_plan_check_upgrade` | Full Track | `Completed` | **Agents-Workflow Plan 核查工具鏈升級**：5 步計畫檢核流水線、動態模板 `#Header` 鏡像核對、嚴禁 HTML 註解與佔位符、Noise-Free 聚焦排版、PlanArchiver 剛性守門阻斷與全模組 178/178 測試通過。 |
 | **sub_05** | `sub_05_agents_workflow_release_local_mode` | Full Track | `Completed` | **Agents-Workflow Release 預設 Local 模式與 Gitignore 軟合併同步**：release-target 啟用/停用預設寫入本機私有 `config.local.json`、`--proj` 寫入專案組態、Target 來源辨識排版、微內核 `core.config.get_raw/inspect` 溯源 API、發布時 `project://.gitignore` 區塊非破壞性軟合併與全模組 181/181 測試通過。 |
+| **sub_06** | `sub_06_agents_workflow_knowledge_db_integration` | Full Track | `Completed` | **Knowledge-DB 與 Agents-Workflow 雙向 Contributes 聯動與 Space 解耦**：清空 knowledge-db 預設空間、agents-workflow 貢獻 docs 空間、專案特化宣告 source 空間、AgentsStandards 錨點補齊、KnowledgeAgentsStandards 與 SOP search/index JIT 註解注入。全生態系 183/183 測試通過。 |
+
+
+
+
 
 ---
 

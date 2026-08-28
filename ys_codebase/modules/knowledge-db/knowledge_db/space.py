@@ -109,6 +109,11 @@ class SpaceManager:
                     logger.warning(f"Failed to read custom contribute.json: {e}")
             return result
 
+        if self._custom_contributes_data is not None:
+            return result
+
+
+
         # 3. 核心 SDK 聚合結果
         try:
             from core import contributes

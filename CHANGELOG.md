@@ -2,7 +2,24 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_28_1754_module_toolchain_optimization — sub_06_agents_workflow_knowledge_db_integration
+
+- **Knowledge-DB 與 Agents-Workflow 雙向 Contributes 聯動與 Space 解耦 (`sub_06`)**：
+  - **Space 空間解耦與來源職責分離**：
+    - `knowledge-db/configurable/contribute.json` 清空預設硬編碼路徑（`spaces: {}`），達成模組零假設與通用性。
+    - `agents-workflow` 透過 `contributes/knowledge-db.json` 向知識庫貢獻 `docs` 空間（指向 `workflow.docs://`）。
+    - 宿主專案透過 `config/knowledge-db/contribute.json` 宣告特化之 `source` 源碼空間（指向 `project://source`, `project://ys_codebase`）。
+  - **`AGENTS_STANDARDS` 錨點補齊與行為準則注入**：
+    - 於 `AgentsStandards.md` 底部補齊 `__@{AGENTS_STANDARDS}__`，並於 `agents-workflow.json` 宣告對應 Token。
+    - 由 `knowledge-db` 注入 `KnowledgeAgentsStandards.md`（知識檢索優先紀律、Docstring 符號結構防護）。
+  - **SOP AGENT GUILD JIT 註解注入**：
+    - 調研與需求階段 (`PHASE00_AGENTS_GUILD`, `RESEARCH_AGENTS_GUILD`) 引導使用 `knowledge-db search` 定向查找資料，嚴禁盲目大範圍 grep 或逐檔翻找。
+    - 結案階段 (`PHASE07_AGENTS_GUILD`) 明確指引調用 `knowledge-db index` 即刻更新專案倒排索引庫。
+  - **全量測試與回歸驗證**：
+    - 全生態系 4 大核心模組沙盒回歸跑測 **183/183 測試案例 100% Passed (17.045s)**。
+
 ## 2026_08_28_1754_module_toolchain_optimization — sub_05_agents_workflow_release_local_mode
+
 
 - **Agents-Workflow Release 預設 Local 模式、Gitignore 軟合併同步與 Core Config 來源層級探測 (`sub_05`)**：
   - **微內核組態溯源 API (`core.config`)**：

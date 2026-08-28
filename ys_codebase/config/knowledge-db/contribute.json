@@ -1,10 +1,10 @@
 {
   "spaces": {
-    "project_main": {
-      "description": "專案全域代碼與文檔空間 (未指定 file_patterns 預設 include all)",
+    "source": {
+      "description": "YS-Codebase 核心源碼空間",
       "include": [
         "project://source",
-        "project://docs"
+        "project://ys_codebase"
       ],
       "exclude": [
         "**/__pycache__/**",

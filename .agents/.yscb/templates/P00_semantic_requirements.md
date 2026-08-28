@@ -11,6 +11,8 @@ Phase 0 執行指引：
 5. Checkpoint 等待關卡：等待開發者明確確認 P00 內容（狀態更新為 Confirmed），並由開發者決定後續執行 Track。
 
 
+- **知識庫定向檢索指引**：在啟動 Phase 0 需求發想或架構釐清前，優先執行 `python yscb.py knowledge-db search <關鍵字>` 檢索專案既有符號與文檔，避免重複設計或盲目翻找原始碼。
+
 -->
 
 # 語意需求說明書 (Semantic Requirements Discovery)

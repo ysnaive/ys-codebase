@@ -152,3 +152,13 @@ class TestSpaceManager(YSCBTestCase):
             ".cache" in str(storage_root) or "cache" in str(storage_root),
             f"Storage root '{storage_root}' should point to cache directory."
         )
+
+    @require(Requirement.LOGIC)
+    def test_sub_06_empty_configurable_contribute_defaults(self):
+        """SUB-06: 驗證 knowledge-db 模組內建 configurable/contribute.json 預設為空 spaces"""
+        cfg_template = Path(_pkg_root) / "configurable" / "contribute.json"
+        self.assertTrue(cfg_template.exists(), f"Configurable template {cfg_template} must exist")
+        with open(cfg_template, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data.get("spaces"), {}, "Configurable template must have empty spaces dict by default")
+
