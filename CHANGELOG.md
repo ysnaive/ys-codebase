@@ -2,6 +2,27 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_2127_knowledge_db — sub_02_parsers_and_semantic_bundler
+
+- **`knowledge-db` 模組多語言解析器外掛體系與語意打包引擎 (`sub_02`)**：
+  - **解析器基礎抽象與外掛註冊分發中心 (`parsers/base.py`, `parsers/registry.py`)**：
+    - 定義 `BaseParser` 抽象基底契約（`can_parse`, `parse`）。
+    - 實作 `ParserRegistry`，支援自訂解析器優先權覆蓋、依副檔名匹配與未知檔案類型安全降級略過。
+  - **四大多語言原生語意解析器 (`parsers/`)**：
+    - **`PythonParser`**：利用 Python 原生 `ast` 模組，完整解析 Class、Function、AsyncFunction、Method、Decorator、Docstring、Signature（含型別標註與預設值）與成員清單 (`MemberInfo`)，具備 `SyntaxError` 安全降級。
+    - **`MarkdownParser`**：狀態機解析 H1~H4 標題節點 (`DOC_HEADING_1~4`)、Tables 表格 (`DOC_TABLE`) 與段落內容摘要，支援純文字檔案降級 (`DOC_SECTION`)。
+    - **`CppParser`**：狀態機解析 C/C++ Class、Struct、Enum、Function、`#define` 巨集與 Doxygen 註解 (`///`, `/** */`)。
+    - **`CSharpParser`**：狀態機解析 C# Namespace、Class、Interface、Struct、Method、Property 與 XML `<summary>` 註解。
+  - **語意發布包與打包引擎 (`bundler.py`)**：
+    - 實作 `SemanticBundle` 不可變資料模型與純 JSON 序列化/反序列化。
+    - 實作 `SemanticBundler`，支援空間全量解析打包 (`bundle_space`)、原子暫存檔替換導出 (`export_bundle`) 與離線載入還原 (`import_bundle`)。
+  - **CLI 指令擴充 (`scripts/cli.py` / `manifest.json`)**：
+    - 新增 `bundle [space | --all] [--output=path]` 指令，支援命令列一鍵打包空間語意 Bundle。
+  - **全量測試與品質驗收**：
+    - 實作 `test_parsers.py` (FT-01~06) 與 `test_bundler.py` (FT-07~08, ET-01) 單元測試套件，全模組 24/24 測試案例 100% Passed (3.113s)。
+  - **知識庫交付**：
+    - 交付 `docs/knowledge-db/parsers.md`（多語言解析器指南）、`docs/knowledge-db/bundler.md`（語意打包引擎指南）並更新 `docs/knowledge-db/README.md`。
+
 ## 2026_08_27_2127_knowledge_db — sub_01_space_management_and_schema
 
 - **全新 `knowledge-db` 模組空間管理、資料架構與雙階增量指紋比對引擎 (`sub_01`)**：

@@ -34,6 +34,15 @@
           "case_cons": [
             "測試期間無需頻繁手動掃描"
           ]
+        },
+        "bundle": {
+          "description": "執行指定空間或全空間聯集之多語言語意打包與導出",
+          "case_pros": [
+            "建置與發布空間之 SemanticBundle 發布包"
+          ],
+          "case_cons": [
+            "僅查詢檢索時無需重複完整打包"
+          ]
         }
       }
     }
