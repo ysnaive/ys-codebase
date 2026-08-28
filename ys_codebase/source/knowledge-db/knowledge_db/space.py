@@ -86,28 +86,47 @@ class SpaceManager:
         return self._get_storage_root()
 
     def _load_contributes(self) -> Dict[str, Any]:
-        """讀取模組聯動注入之 Contributes 資料 (100% 由 core.contributes SDK 驅動)"""
-        if self._custom_contributes_data is not None:
-            return self._custom_contributes_data
+        """讀取模組聯動注入之 Contributes 資料 (100% 由 core.contributes SDK 與專案特化 contribute.json 驅動)"""
+        result = {"spaces": {}, "thesaurus": []}
 
+        # 1. 自訂注入 (測試或隔離環境)
+        if self._custom_contributes_data is not None:
+            if isinstance(self._custom_contributes_data, dict):
+                result["spaces"].update(self._custom_contributes_data.get("spaces", {}))
+                result["thesaurus"].extend(self._custom_contributes_data.get("thesaurus", []))
+
+        # 2. 自訂 config_dir 之 contribute.json (若指定)
+        if self._custom_config_dir:
+            contrib_file = self._custom_config_dir / "contribute.json"
+            if contrib_file.exists():
+                try:
+                    with open(contrib_file, "r", encoding="utf-8", errors="replace") as f:
+                        c_data = json.load(f)
+                    if isinstance(c_data, dict):
+                        result["spaces"].update(c_data.get("spaces", {}))
+                        result["thesaurus"].extend(c_data.get("thesaurus", []))
+                except Exception as e:
+                    logger.warning(f"Failed to read custom contribute.json: {e}")
+            return result
+
+        # 3. 核心 SDK 聚合結果
         try:
             from core import contributes
             data = contributes.get("knowledge-db")
             if isinstance(data, dict):
-                return data
+                result["spaces"].update(data.get("spaces", {}))
+                result["thesaurus"].extend(data.get("thesaurus", []))
         except Exception as e:
             logger.warning(f"Failed to read contributes via core SDK: {e}")
 
-        return {"spaces": {}, "thesaurus": []}
+        return result
 
     def load_spaces(self) -> Dict[str, SpaceConfig]:
         """
-        載入並聚合所有來源 (Contributes + Project Config + Local Config) 之空間清單。
-        依 Local > Project > Contributed 進行同名空間覆蓋。
+        載入並聚合所有來源 (Contributes 體系：模組 Contributes + 專案特化 contribute.json) 之空間清單。
         """
         spaces: Dict[str, SpaceConfig] = {}
 
-        # 1. Contributed Spaces
         contrib_data = self._load_contributes()
         contrib_spaces = contrib_data.get("spaces", {})
         if isinstance(contrib_spaces, dict):
@@ -120,40 +139,11 @@ class SpaceManager:
                     except InvalidSpaceConfigError as e:
                         logger.warning(f"Skipping invalid contributed space '{sp_name}': {e}")
 
-
-        # 2. Project Config (config.project.json)
-        proj_cfg_path = self._get_config_path("config.project.json")
-        if proj_cfg_path and proj_cfg_path.exists():
-            try:
-                with open(proj_cfg_path, "r", encoding="utf-8", errors="replace") as f:
-                    proj_data = json.load(f)
-                proj_spaces = proj_data.get("spaces", {})
-                if isinstance(proj_spaces, dict):
-                    for sp_name, sp_val in proj_spaces.items():
-                        if isinstance(sp_val, dict):
-                            spaces[sp_name] = SpaceConfig.from_dict(sp_name, sp_val, origin=SpaceOrigin.PROJECT.value)
-            except Exception as e:
-                logger.warning(f"Failed to read project config from {proj_cfg_path}: {e}")
-
-        # 3. Local Config (config.local.json)
-        local_cfg_path = self._get_config_path("config.local.json")
-        if local_cfg_path and local_cfg_path.exists():
-            try:
-                with open(local_cfg_path, "r", encoding="utf-8", errors="replace") as f:
-                    local_data = json.load(f)
-                local_spaces = local_data.get("spaces", {})
-                if isinstance(local_spaces, dict):
-                    for sp_name, sp_val in local_spaces.items():
-                        if isinstance(sp_val, dict):
-                            spaces[sp_name] = SpaceConfig.from_dict(sp_name, sp_val, origin=SpaceOrigin.LOCAL.value)
-            except Exception as e:
-                logger.warning(f"Failed to read local config from {local_cfg_path}: {e}")
-
         return spaces
 
     def load_thesaurus(self) -> List[ThesaurusGroup]:
         """
-        載入並聚合所有來源之同義詞群組清單。
+        載入並聚合所有來源之同義詞群組清單 (Contributes 體系)。
         """
         all_groups: List[ThesaurusGroup] = []
         seen_signatures = set()
@@ -169,29 +159,11 @@ class SpaceManager:
                         seen_signatures.add(sig)
                         all_groups.append(list(item))
 
-        # 1. Contributed Thesaurus
         contrib_data = self._load_contributes()
         _add_groups(contrib_data.get("thesaurus", []))
+        return all_groups
 
-        # 2. Project Config
-        proj_cfg_path = self._get_config_path("config.project.json")
-        if proj_cfg_path and proj_cfg_path.exists():
-            try:
-                with open(proj_cfg_path, "r", encoding="utf-8", errors="replace") as f:
-                    proj_data = json.load(f)
-                _add_groups(proj_data.get("thesaurus", []))
-            except Exception as e:
-                logger.warning(f"Failed reading thesaurus from project config: {e}")
 
-        # 3. Local Config
-        local_cfg_path = self._get_config_path("config.local.json")
-        if local_cfg_path and local_cfg_path.exists():
-            try:
-                with open(local_cfg_path, "r", encoding="utf-8", errors="replace") as f:
-                    local_data = json.load(f)
-                _add_groups(local_data.get("thesaurus", []))
-            except Exception as e:
-                logger.warning(f"Failed reading thesaurus from local config: {e}")
 
         return all_groups
 

@@ -486,16 +486,11 @@ class AtomicEngine:
     def act_deploy_configs_from_modules(self) -> None:
         """
         Stage 3 (Atomic Config Deployment & Template Purge):
-        Scans all modules in module://, infills/deploys configuration to config://,
-        and unconditionally physically deletes config.*.json template files from modules/ to maintain pure code.
+        Scans all modules in module://, infills/deploys configuration from configurable/ (or root config.*.json) to config://,
+        and unconditionally physically deletes template files from modules/ to maintain pure code.
         """
         if not uri.exists("module://"):
             return
-            
-        for mod in uri.listdir("module://"):
-            mod_real = uri.resolve(f"module://{mod}")
-            if not os.path.isdir(mod_real):
-                continue
 
         cfg_path, host_cfg = self._get_config()
         installed = host_cfg.get("installed_modules", {})
@@ -508,6 +503,59 @@ class AtomicEngine:
             if not uri.isdir(mod_runtime_dir):
                 continue
             
+            # 1. 優先處理標準 configurable/ 目錄
+            cfg_tpl_dir = f"{mod_runtime_dir}/configurable"
+            if uri.exists(cfg_tpl_dir) and uri.isdir(cfg_tpl_dir):
+                try:
+                    for tmpl_file in uri.listdir(cfg_tpl_dir):
+                        if not tmpl_file.endswith(".json"):
+                            continue
+                        
+                        tmpl_uri = f"{cfg_tpl_dir}/{tmpl_file}"
+                        try:
+                            tmpl_data = uri.read_json(tmpl_uri)
+                        except Exception:
+                            continue
+
+                        if tmpl_file == "contribute.json":
+                            target_cfg_uri = f"config://{mod}/contribute.json"
+                        elif tmpl_file == "config.local.json":
+                            target_cfg_uri = f"config://{mod}/config.local.json"
+                        elif tmpl_file == "config.project.json":
+                            target_cfg_uri = f"config://{mod}/config.project.json"
+                        elif tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
+                            sub_name = tmpl_file[len("config."):-len(".local.json")]
+                            target_cfg_uri = f"config://{mod}/config.{sub_name}.local.json"
+                        elif tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
+                            sub_name = tmpl_file[len("config."):-len(".project.json")]
+                            target_cfg_uri = f"config://{mod}/config.{sub_name}.project.json"
+                        else:
+                            target_cfg_uri = f"config://{mod}/{tmpl_file}"
+
+                        target_data = {}
+                        if uri.exists(target_cfg_uri):
+                            try:
+                                target_data = uri.read_json(target_cfg_uri)
+                            except Exception:
+                                target_data = {}
+
+                        merged_data, changed = self._deep_infill_dict(target_data, tmpl_data)
+
+                        if changed or not uri.exists(target_cfg_uri):
+                            uri.makedirs(f"config://{mod}", exist_ok=True)
+                            uri.write_json(target_cfg_uri, merged_data, indent=2)
+
+                        uri.remove(tmpl_uri)
+
+                    # 移除已清空的 configurable 目錄
+                    try:
+                        uri.remove(cfg_tpl_dir)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            # 2. 向下相容掃描模組根目錄殘留之 config.*.json
             for tmpl_file in uri.listdir(mod_runtime_dir):
                 if not (tmpl_file.startswith("config.") and tmpl_file.endswith(".json")):
                     continue
@@ -545,6 +593,7 @@ class AtomicEngine:
                     uri.write_json(target_cfg_uri, merged_data, indent=2)
 
                 uri.remove(tmpl_uri)
+
 
     def _clean_module_cache(self, module_name: str) -> None:
         """
@@ -654,94 +703,8 @@ class AtomicEngine:
         # Stage 3: 掃描並部署組態 (原子提取並無條件清除模板)
         self.act_deploy_configs_from_modules()
 
-        if uri.exists(tpl_proj_uri):
-            tpl_proj_data = uri.read_json(tpl_proj_uri)
-            if not uri.exists(cfg_proj_uri):
-                uri.makedirs(f"config://{module_name}", exist_ok=True)
-                uri.write_json(cfg_proj_uri, tpl_proj_data)
-            else:
-                curr_data = uri.read_json(cfg_proj_uri)
-                if isinstance(curr_data, dict) and isinstance(tpl_proj_data, dict):
-                    infilled_data, changed = self._deep_infill_dict(curr_data, tpl_proj_data)
-                    if changed:
-                        uri.write_json(cfg_proj_uri, infilled_data)
-
-        if uri.exists(tpl_local_uri):
-            tpl_local_data = uri.read_json(tpl_local_uri)
-            if not uri.exists(cfg_local_uri):
-                uri.makedirs(f"config://{module_name}", exist_ok=True)
-                uri.write_json(cfg_local_uri, tpl_local_data)
-            else:
-                curr_data = uri.read_json(cfg_local_uri)
-                if isinstance(curr_data, dict) and isinstance(tpl_local_data, dict):
-                    infilled_data, changed = self._deep_infill_dict(curr_data, tpl_local_data)
-                    if changed:
-                        uri.write_json(cfg_local_uri, infilled_data)
-
-    def act_deploy_configs_from_modules(self) -> None:
-        """
-        Stage 3 (Atomic Config Deployment & Template Purge):
-        Scans all modules in module://, infills/deploys configuration to config://,
-        and unconditionally physically deletes config.*.json template files from modules/ to maintain pure code.
-        """
-        if not uri.exists("module://"):
-            return
-            
-        for mod in uri.listdir("module://"):
-            mod_real = uri.resolve(f"module://{mod}")
-            if not os.path.isdir(mod_real):
-                continue
-
-        cfg_path, host_cfg = self._get_config()
-        installed = host_cfg.get("installed_modules", {})
-
-        for mod in uri.listdir("module://"):
-            if mod not in installed and mod != "core":
-                continue
-            
-            mod_runtime_dir = f"module://{mod}"
-            if not uri.isdir(mod_runtime_dir):
-                continue
-            
-            for tmpl_file in uri.listdir(mod_runtime_dir):
-                if not (tmpl_file.startswith("config.") and tmpl_file.endswith(".json")):
-                    continue
-
-                tmpl_uri = f"{mod_runtime_dir}/{tmpl_file}"
-                try:
-                    tmpl_data = uri.read_json(tmpl_uri)
-                except Exception:
-                    continue
-
-                if tmpl_file == "config.local.json":
-                    target_cfg_uri = f"config://{mod}/config.local.json"
-                elif tmpl_file == "config.project.json":
-                    target_cfg_uri = f"config://{mod}/config.project.json"
-                elif tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
-                    sub_name = tmpl_file[len("config."):-len(".local.json")]
-                    target_cfg_uri = f"config://{mod}/config.{sub_name}.local.json"
-                elif tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
-                    sub_name = tmpl_file[len("config."):-len(".project.json")]
-                    target_cfg_uri = f"config://{mod}/config.{sub_name}.project.json"
-                else:
-                    target_cfg_uri = f"config://{mod}/config.project.json"
-
-                target_data = {}
-                if uri.exists(target_cfg_uri):
-                    try:
-                        target_data = uri.read_json(target_cfg_uri)
-                    except Exception:
-                        target_data = {}
-
-                merged_data, changed = self._deep_infill_dict(target_data, tmpl_data)
-
-                if changed or not uri.exists(target_cfg_uri):
-                    uri.makedirs(f"config://{mod}", exist_ok=True)
-                    uri.write_json(target_cfg_uri, merged_data, indent=2)
-
-                uri.remove(tmpl_uri)
-
     def _clean_module_cache(self, module_name: str) -> None:
+
         """
         物理清空指定模組之快取空間 (cache://{module_name}/)。
         """

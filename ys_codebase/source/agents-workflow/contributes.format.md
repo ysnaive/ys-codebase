@@ -171,3 +171,15 @@
 | **`` `__@{token}__` ``** | **文件內容佔位符**<br/>(Content Token) | Stage 1 | 內容狀態機 | 常數注入、模板片段嵌入、`code.func://` 動態計算產出。<br/>例：`` `__@{AGENTS_CLI_GUILD}__` `` ➔ 展開為 Markdown 表格正文。 |
 | **`` `__#{uri}__` ``** | **文件自身相對路徑佔位符**<br/>(Local Relative URI) | Stage 2 | 當前 Markdown 文件所在目錄 (`cur_doc_dir`) | Markdown 內部超連結導航、相對文件引用。<br/>例：`[標準](`__#{module://.../DevStandards.md}__`)` ➔ `[標準](../.yscb/standards/DevStandards.md)` |
 | **`` `__${uri}__` ``** | **專案根目錄相對路徑佔位符**<br/>(Project Relative URI) | Stage 2 | 專案根目錄 (`project://`) | 終端機 Shell 執行指令、相對於根目錄之設定檔參照。<br/>例：`` `python __${yscb.host://yscb.py}__ run` `` ➔ `` `python yscb.py run` ``（子目錄自適應為 `` `python tools/yscb.py run` ``） |
+
+---
+
+## 4. 專案特化注入 (`config://agents-workflow/contribute.json`)
+
+當下游專案欲對工作流系統注入專案特化擴充（例如專案自訂 release_targets、專案特化 Token 注入）時，應建立於：
+```text
+config/agents-workflow/contribute.json
+```
+- **Git 追蹤原則**：`contribute.json` **強制受 Git 追蹤**（禁止 `contribute.local.json`，保障工作流編譯與產物之確定性）。
+- **聚合優先權**：專案層級 `contribute.json` 於 `core.contributes.ContributesAggregator` 階層 ② 自動覆蓋 Donor 模組預設之 contributes 宣告。
+

@@ -110,6 +110,18 @@
       "case_pros": [
         "動態解析語意 URI (如 python yscb.py uri resolve project://AGENTS.md)"
       ]
+    },
+    "config": {
+      "description": "YS-Codebase module configuration manager (list, get, set, reload)",
+      "case_pros": [
+        "檢視專案或模組設定狀態: python yscb.py config list [--mod=<module>]",
+        "查詢特定組態值: python yscb.py config get <module> [key]",
+        "更新專案或本機組態: python yscb.py config set <module> <key> <value> [--local]"
+      ],
+      "case_cons": [
+        "🚨 嚴禁手動編輯損毀 JSON 語法"
+      ]
     }
   }
 }
+
