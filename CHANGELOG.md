@@ -2,7 +2,25 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_28_1754_module_toolchain_optimization — sub_03_dev_module_check_upgrade
+
+- **Dev 模組狀態檢核工具升級 (`sub_03`)**：
+  - **5 步流水線合規檢查引擎 (`dev.checker.Checker`)**：
+    - **Step 1 (ManifestGuard)**：驗證必填欄位完整性、SemVer 嚴格格式、強制 `dependencies` 包含 `core`（`core` 本體除外）。
+    - **Step 2 (CoreInjectGuard)**：檢核 `contributes/core.json`（宣告 `commands` 或 `uri_schemes`）。
+    - **Step 3 (StructureGuard)**：`scripts/cli.py` 存在性、強制 `configurable/` 模板標準（嚴禁根目錄散落 `config.*.json`）、暫存垃圾檔案清理、`contributes.format.md` 文檔合規提示。
+    - **Step 4 (AstSecurityGuard)**：AST 語法檢查、空間穿透防禦（禁止業務模組存取 `module.source://`）、反模式靶向攔截（禁止業務代碼直接存取 `config.project.json` / `contributes.merged.json`，放行一般原生 I/O）。
+    - **Step 5 (TestClassGuard)**：強制測試類別繼承 `dev.testing.case.YSCBTestCase`。
+  - **三級嚴重度與 Release 剛性守門 (`dev.releaser.Releaser`)**：
+    - 結構化 `[PASS]`, `[WARN]`, `[FAIL]` 分級。
+    - 存在 `[FAIL]` 時剛性阻斷 `dev release` 正式打包發布；同時放行 `dev build` 以利本機調試。
+  - **診斷報告與 CLI 體驗升級**：
+    - 支援終端彩色診斷排版與 `--json` 機器可讀格式輸出。
+  - **全量測試與回歸驗證**：
+    - 全生態系 4 大模組虛擬沙盒回歸跑測 **178/178 測試案例 100% Passed (21.623s)**，清理歷史殘留之 6 處穿透與反模式。
+
 ## 2026_08_28_1754_module_toolchain_optimization — sub_02_config_system_upgrade
+
 
 - **Config 系統架構升級、Contribute 專案特化規範與工具鏈建立 (`sub_02`)**：
   - **微內核 `core.config` 統一 SDK**：

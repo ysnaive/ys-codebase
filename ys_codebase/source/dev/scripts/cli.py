@@ -22,10 +22,11 @@ if module_dir not in sys.path:
 from core import uri
 from core import semver
 from dev.scaffold import Scaffolder
-from dev.checker import Checker
+from dev.checker import Checker, CheckSeverity, CheckIssue, CheckReport
 from dev.builder import Builder
 from dev.tester import Tester
 from dev.releaser import Releaser
+
 
 def _handle_bump(subcmd: str, sub_argv: List[str]) -> int:
     bump_type = subcmd.split("-", 1)[1].lower()
@@ -87,30 +88,68 @@ def main(argv: List[str]) -> int:
 
     elif subcmd == "check":
         checker = Checker()
-        if not sub_argv or "--all" in sub_argv:
-            print("[dev:check] Scanning all modules in source/...")
-            results = checker.check_all()
-            all_ok = True
-            for mod, (passed, errors) in results.items():
-                if passed:
-                    print(f"  [*] {mod}: PASSED")
+        json_output = "--json" in sub_argv
+        filtered_argv = [a for a in sub_argv if a != "--json"]
+
+        if not filtered_argv or "--all" in filtered_argv or "-a" in filtered_argv:
+            reports = checker.check_all()
+            if json_output:
+                print(json.dumps({mod: rep.to_dict() for mod, rep in reports.items()}, indent=2))
+                return 0 if all(rep.passed for rep in reports.values()) else 1
+
+            print("=" * 70)
+            print("YS-Codebase Module Compliance Diagnostic Report")
+            print("=" * 70)
+            all_passed = True
+            pass_cnt, warn_cnt, fail_cnt = 0, 0, 0
+
+            for mod, rep in reports.items():
+                if rep.status == CheckSeverity.PASS:
+                    pass_cnt += 1
+                    print(f"[*] Module: {mod:<50} [PASS]")
+                elif rep.status == CheckSeverity.WARN:
+                    warn_cnt += 1
+                    print(f"[*] Module: {mod:<50} [WARN]")
+                    for issue in rep.issues:
+                        if issue.severity == CheckSeverity.WARN:
+                            loc = f" ({issue.file_path})" if issue.file_path else ""
+                            print(f"    |-- [WARN] [{issue.category}]{loc} {issue.message}")
                 else:
-                    all_ok = False
-                    print(f"  [!] {mod}: FAILED")
-                    for err in errors:
-                        print(f"      - {err}")
-            return 0 if all_ok else 1
+                    fail_cnt += 1
+                    all_passed = False
+                    print(f"[*] Module: {mod:<50} [FAIL]")
+                    for issue in rep.issues:
+                        loc = f" ({issue.file_path})" if issue.file_path else ""
+                        tag = issue.severity.value
+                        print(f"    |-- [{tag}] [{issue.category}]{loc} {issue.message}")
+
+            print("-" * 70)
+            status_text = "PASSED" if all_passed and warn_cnt == 0 else ("WARNINGS FOUND" if all_passed else "FAILED (Release Blocked)")
+            print(f"Summary : {len(reports)} Total, {pass_cnt} Passed, {warn_cnt} Warnings, {fail_cnt} Failed")
+            print(f"Status  : {status_text}")
+            print("=" * 70)
+            return 0 if all_passed else 1
         else:
-            name = sub_argv[0]
-            passed, errors = checker.check_module(name)
-            if passed:
-                print(f"[dev:check] Module '{name}': PASSED")
-                return 0
-            else:
-                print(f"[dev:check] Module '{name}': FAILED")
-                for err in errors:
-                    print(f"  - {err}")
-                return 1
+            name = filtered_argv[0]
+            rep = checker.check_module(name)
+            if json_output:
+                print(json.dumps(rep.to_dict(), indent=2))
+                return 0 if rep.passed else 1
+
+            print("=" * 70)
+            print(f"YS-Codebase Module Compliance Report: {name}")
+            print("=" * 70)
+            print(f"[*] Module: {name:<50} [{rep.status.value}]")
+            for issue in rep.issues:
+                loc = f" ({issue.file_path})" if issue.file_path else ""
+                tag = issue.severity.value
+                print(f"    |-- [{tag}] [{issue.category}]{loc} {issue.message}")
+            print("-" * 70)
+            status_text = "PASSED" if rep.passed and not rep.has_warns else ("WARNINGS FOUND" if rep.passed else "FAILED (Release Blocked)")
+            print(f"Status  : {status_text}")
+            print("=" * 70)
+            return 0 if rep.passed else 1
+
 
     elif subcmd == "build":
         builder = Builder()

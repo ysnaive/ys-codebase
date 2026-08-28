@@ -36,34 +36,12 @@ class ReleaseTargetManager:
                 }
             return cfg_real_path, cfg_data
         except Exception:
-            pass
-
-        cfg_uri = "config://agents-workflow/config.project.json"
-        cfg_data = {
-            "paths": {},
-            "release_targets": ["antigravity"],
-            "enable_agents_md": True,
-            "enable_project_changelog": True
-        }
-        
-        cfg_real_path = ""
-        if uri:
-            try:
-                cfg_real_path = uri.resolve(cfg_uri, interactive=False)
-            except Exception:
-                pass
-
-        if not cfg_real_path:
-            cfg_real_path = os.path.join(os.getcwd(), "config", "agents-workflow", "config.project.json")
-
-        if os.path.isfile(cfg_real_path):
-            try:
-                with open(cfg_real_path, "r", encoding="utf-8") as f:
-                    cfg_data = json.load(f)
-            except Exception:
-                pass
-
-        return cfg_real_path, cfg_data
+            return "", {
+                "paths": {},
+                "release_targets": ["antigravity"],
+                "enable_agents_md": True,
+                "enable_project_changelog": True
+            }
 
     @classmethod
     def _save_config_data(cls, cfg_real_path: str, cfg_data: Dict[str, Any]) -> None:
@@ -72,12 +50,9 @@ class ReleaseTargetManager:
             from core import config
             for k, v in cfg_data.items():
                 config.set("agents-workflow", k, v, local=False)
-            return
         except Exception:
             pass
-        os.makedirs(os.path.dirname(cfg_real_path), exist_ok=True)
-        with open(cfg_real_path, "w", encoding="utf-8") as f:
-            json.dump(cfg_data, f, indent=2, ensure_ascii=False)
+
 
 
     @classmethod

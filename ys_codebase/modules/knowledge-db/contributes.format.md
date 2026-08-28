@@ -47,4 +47,6 @@
 
 - `knowledge-db` **無單一 `default_space` 強制約定**。
 - 所有合法注入之空間均會被系統接收，全域檢索與掃描天然以所有空間之聯集作為處理範圍。
-- 專案組態檔 (`config.project.json` / `config.local.json`) 可宣告同名空間以覆蓋 Donor 模組之預設設定。
+- 專案層級可透過 `config://knowledge-db/contribute.json` 宣告自訂或同名空間以覆蓋 Donor 模組之預設設定（強制受 Git 追蹤）。
+
+

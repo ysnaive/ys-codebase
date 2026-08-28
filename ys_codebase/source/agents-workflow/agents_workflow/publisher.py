@@ -59,30 +59,13 @@ class ReleasePublisher:
         except Exception:
             pass
 
-        cfg_uri = "config://agents-workflow/config.project.json"
-        if uri and uri.exists(cfg_uri):
-            try:
-                data = uri.read_json(cfg_uri)
-                if isinstance(data, dict):
-                    return data
-            except Exception:
-                pass
-        
-        # 本地 fallback 尋找
-        proj_dir = os.getcwd()
-        cand = os.path.join(proj_dir, "config", "agents-workflow", "config.project.json")
-        if os.path.isfile(cand):
-            try:
-                with open(cand, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
         return {
             "paths": {},
             "release_targets": ["antigravity"],
             "enable_agents_md": True,
             "enable_project_changelog": True
         }
+
 
 
     def compute_source_fingerprint(self) -> str:

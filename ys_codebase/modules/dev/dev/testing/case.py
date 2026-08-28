@@ -140,15 +140,19 @@ class YSCBTestCase(unittest.TestCase):
         src_root = uri.resolve("module.source://")
         src_dir = os.path.join(src_root, name)
         os.makedirs(src_dir, exist_ok=True)
+        if deps is None:
+            deps = {"core": ">=1.0.0"} if name != "core" else {}
+
         manifest = {
             "name": name,
             "version": version,
             "description": f"Mock Source Module {name}",
-            "dependencies": deps or {},
+            "dependencies": deps,
             "entry": "scripts/cli.py"
         }
         with open(os.path.join(src_dir, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
+
             
         scripts_dir = os.path.join(src_dir, "scripts")
         os.makedirs(scripts_dir, exist_ok=True)

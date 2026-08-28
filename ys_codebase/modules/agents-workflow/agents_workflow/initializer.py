@@ -74,81 +74,8 @@ class WorkflowInitializer:
                 config.set("agents-workflow", f"paths.{k}", v, local=False)
             return True
         except Exception:
-            pass
-
-        # 尋找目標 config.project.json 實體路徑
-        target_json_path = None
-        if uri:
-            config_uri = "config://agents-workflow/config.project.json"
-            try:
-                target_json_path = uri.resolve(config_uri, interactive=False)
-            except Exception:
-                target_json_path = None
-
-        if not target_json_path:
-            # 依賴模組或 host fallback 定位
-            cand_roots = [
-                os.path.join(os.getcwd(), "config", "agents-workflow", "config.project.json"),
-                os.path.join(os.path.dirname(os.path.dirname(self.module_root)), "config", "agents-workflow", "config.project.json")
-            ]
-            for cand in cand_roots:
-                target_json_path = cand
-                break
-
-        if not target_json_path:
             return False
 
-        # 讀取現有內容或預設模板
-        existing_data = {
-            "paths": {
-                "plans": "!undefined",
-                "archived": "!undefined",
-                "ext": "!undefined",
-                "docs": "!undefined"
-            },
-            "ide": [],
-            "enable_agents_md": True,
-            "enable_project_changelog": True
-        }
-
-        if os.path.isfile(target_json_path):
-            try:
-                with open(target_json_path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                    if isinstance(loaded, dict):
-                        existing_data.update(loaded)
-            except Exception:
-                pass
-
-        if "paths" not in existing_data or not isinstance(existing_data["paths"], dict):
-            existing_data["paths"] = {}
-
-        # 增量寫入已綁定路徑
-        for k, v in bound_paths.items():
-            existing_data["paths"][k] = v
-
-        # 原子寫入
-        os.makedirs(os.path.dirname(target_json_path), exist_ok=True)
-        tmp_path = target_json_path + ".tmp"
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(existing_data, f, indent=2, ensure_ascii=False)
-            if os.path.exists(target_json_path):
-                os.remove(target_json_path)
-            os.rename(tmp_path, target_json_path)
-            
-            # 刷新快取
-            if uri and hasattr(uri, "invalidate_cache"):
-                uri.invalidate_cache()
-            return True
-        except Exception as e:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-            print(f"[agents-workflow] Error writing config.project.json: {e}", file=sys.stderr)
-            return False
 
 
     def run_init_default(
