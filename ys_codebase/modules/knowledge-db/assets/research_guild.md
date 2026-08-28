@@ -1,0 +1,1 @@
+- **調研知識庫預檢指引**：在啟動技術調研 (Research) 前，優先執行 `python yscb.py knowledge-db search <關鍵字>` 檢索既有架構設計與模組能力，避免重複發明輪子。

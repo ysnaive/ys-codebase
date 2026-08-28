@@ -14,12 +14,12 @@
     },
     "agents-workflow": {
       "version": "1.0.1.build",
-      "installed_at": "2026-08-28 20:49:58",
+      "installed_at": "2026-08-28 21:22:57",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
       "version": "1.0.0.build",
-      "installed_at": "2026-08-28 20:06:25",
+      "installed_at": "2026-08-28 21:23:01",
       "provider": "./ys_codebase/release"
     }
   }

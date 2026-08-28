@@ -288,6 +288,24 @@ class TestArtifactCompiler(YSCBTestCase):
         # 斷言輸出 Warning 提示
         self.assertIn("[compiler:warning] Unenclosed placeholder tag", err_output)
 
+    def test_sub_06_agents_standards_token_and_contributes(self):
+        """SUB-06: 驗證 AGENTS_STANDARDS token 宣告與 knowledge-db 貢獻注入。"""
+        tokens = self.compiler.get_contributes_data().get("token", [])
+        token_values = [t.get("value") for t in tokens]
+        self.assertIn("AGENTS_STANDARDS", token_values)
+
+        # 模擬 insert 注入
+        raw_text = "# Agents Standards\n---\n`__@{AGENTS_STANDARDS}__`\n"
+        inserts = [{
+            "token": "AGENTS_STANDARDS",
+            "value": "### Knowledge Standards\nInjected Content",
+            "mode": "below"
+        }]
+        res = self.compiler.resolve_single_artifact(raw_text, inserts)
+        self.assertIn("Knowledge Standards", res)
+        self.assertIn("Injected Content", res)
+        self.assertNotIn("__@{AGENTS_STANDARDS}__", res)
+
 
 if __name__ == "__main__":
     unittest.main()
