@@ -90,52 +90,58 @@ def cmd_release(args: List[str]) -> int:
 
 
 def cmd_release_target(args: List[str]) -> int:
-    """管理 release-target 清單與狀態。"""
+    """管理 release-target 清單與狀態（支援 --proj 旗標）。"""
     if not args or args[0] in ("--list", "list", "-l"):
         targets = ReleaseTargetManager.list_targets()
         if not targets:
             print("[agents-workflow] No release targets found.")
             return 0
         print(f"\n[agents-workflow] Available Release Targets ({len(targets)}):")
-        print("-" * 80)
-        print(f"{'TARGET NAME':<20} {'STATUS':<20} {'DESCRIPTION'}")
-        print("-" * 80)
+        print("-" * 88)
+        print(f"{'TARGET NAME':<20} {'STATUS':<26} {'DESCRIPTION'}")
+        print("-" * 88)
         for t in targets:
-            print(f"{t['name']:<20} {t['status']:<20} {t['description']}")
-        print("-" * 80)
+            status_str = t['status']
+            print(f"{t['name']:<20} {status_str:<26} {t['description']}")
+        print("-" * 88)
         return 0
 
     sub = args[0]
+    is_proj = "--proj" in args or "--project" in args
+    tier_label = "PROJECT" if is_proj else "LOCAL"
+    pos_args = [a for a in args[1:] if not a.startswith("-")]
+
     if sub in ("--add", "add"):
-        if len(args) < 2:
-            print("[agents-workflow] Error: Missing target name for --add. Usage: release-target --add <target>")
+        if not pos_args:
+            print("[agents-workflow] Error: Missing target name for --add. Usage: release-target --add <target> [--proj]")
             return 1
-        t_name = args[1]
-        print(f"[agents-workflow] Adding release target '{t_name}' and triggering atomic release...")
-        ok = ReleaseTargetManager.add_target(t_name)
+        t_name = pos_args[0]
+        print(f"[agents-workflow] Adding release target '{t_name}' ({tier_label}) and triggering atomic release...")
+        ok = ReleaseTargetManager.add_target(t_name, is_project=is_proj)
         if ok:
-            print(f"[agents-workflow] Target '{t_name}' enabled and released successfully.")
+            print(f"[agents-workflow] Target '{t_name}' enabled ({tier_label}) and released successfully.")
             return 0
         else:
-            print(f"[agents-workflow] Failed enabling target '{t_name}'.")
+            print(f"[agents-workflow] Failed enabling target '{t_name}' ({tier_label}).")
             return 1
 
     elif sub in ("--remove", "remove", "--rm"):
-        if len(args) < 2:
-            print("[agents-workflow] Error: Missing target name for --remove. Usage: release-target --remove <target>")
+        if not pos_args:
+            print("[agents-workflow] Error: Missing target name for --remove. Usage: release-target --remove <target> [--proj]")
             return 1
-        t_name = args[1]
-        print(f"[agents-workflow] Removing release target '{t_name}' and triggering atomic release...")
-        ok = ReleaseTargetManager.remove_target(t_name)
+        t_name = pos_args[0]
+        print(f"[agents-workflow] Removing release target '{t_name}' ({tier_label}) and triggering atomic release...")
+        ok = ReleaseTargetManager.remove_target(t_name, is_project=is_proj)
         if ok:
-            print(f"[agents-workflow] Target '{t_name}' removed and cleaned successfully.")
+            print(f"[agents-workflow] Target '{t_name}' removed ({tier_label}) and cleaned successfully.")
             return 0
         else:
-            print(f"[agents-workflow] Failed removing target '{t_name}'.")
+            print(f"[agents-workflow] Failed removing target '{t_name}' ({tier_label}).")
             return 1
     else:
-        print(f"[agents-workflow] Unknown release-target option '{sub}'. Use --list, --add <t>, or --remove <t>.")
+        print(f"[agents-workflow] Unknown release-target option '{sub}'. Use --list, --add <t> [--proj], or --remove <t> [--proj].")
         return 1
+
 
 
 def cmd_compile(args: List[str]) -> int:

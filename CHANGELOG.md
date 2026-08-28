@@ -2,7 +2,25 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_28_1754_module_toolchain_optimization — sub_05_agents_workflow_release_local_mode
+
+- **Agents-Workflow Release 預設 Local 模式、Gitignore 軟合併同步與 Core Config 來源層級探測 (`sub_05`)**：
+  - **微內核組態溯源 API (`core.config`)**：
+    - `core.config.get_raw(module, key, local, default)`：可精確讀取單一層級 (Local 或 Project) 的原始未合併設定。
+    - `core.config.inspect(module, key)`：可深度診斷鍵值來源（`"local"`、`"project"`、`"both"`、`"none"`）與 `is_overridden` 覆蓋狀態。
+  - **Release Target 預設 Local 模式 (`ReleaseTargetManager`)**：
+    - `release-target --add <t>` 與 `--remove <t>` 預設操作本機私有之 `config.local.json`（Tier 1，不入 Git），避免不同開發工具相互污染專案。
+    - 支援 `--proj` / `--project` 旗標以顯式切換寫入 `config.project.json`（Tier 2，團隊共用）。
+  - **多層來源標註清冊 (`release-target --list`)**：
+    - 終端排版清晰標註各 Target 啟用層級：`[ENABLED (LOCAL)]`、`[ENABLED (PROJECT)]`、`[ENABLED (BOTH)]`、`[DISABLED]`。
+  - **`project://.gitignore` 區塊非破壞性軟合併 (`ReleasePublisher.sync_gitignore`)**：
+    - 4 步發布交易中自動維護 `# === YSCB AGENTS_WORKFLOW IGNORE BEGIN ===` 標記區塊。
+    - 若 `.gitignore` 不存在則自動建立；若已存在則非破壞性替換區塊，用戶自訂規則 100% 完好保留。
+  - **全量測試與回歸驗證**：
+    - 全生態系 4 大核心模組沙盒回歸跑測 **181/181 測試案例 100% Passed**。
+
 ## 2026_08_28_1754_module_toolchain_optimization — sub_04_agents_workflow_plan_check_upgrade
+
 
 - **Agents-Workflow Plan 核查工具鏈升級 (`sub_04`)**：
   - **5 步計畫合規檢核流水線 (`agents_workflow.plans.verifier.PlanVerifier`)**：

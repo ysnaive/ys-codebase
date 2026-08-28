@@ -40,6 +40,8 @@ from agents_workflow.compiler import ArtifactCompiler
 MANIFEST_STORAGE_URI = "storage://agents-workflow/release_manifest.json"
 AGENTS_MD_BEGIN = "<!-- YSCB_AGENTS_BEGIN -->"
 AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
+GITIGNORE_BEGIN_MARKER = "# === YSCB AGENTS_WORKFLOW IGNORE BEGIN ==="
+GITIGNORE_END_MARKER = "# === YSCB AGENTS_WORKFLOW IGNORE END ==="
 
 
 class ReleasePublisher:
@@ -50,21 +52,30 @@ class ReleasePublisher:
         self.host_dir = host_dir
 
     def _get_project_config(self) -> Dict[str, Any]:
-        """讀取 config://agents-workflow 設定檔（Local > Project）。"""
-        try:
-            from core import config
-            data = config.get_all("agents-workflow")
-            if data:
-                return data
-        except Exception:
-            pass
-
-        return {
+        """讀取 config://agents-workflow 設定檔（自動計算 Local 與 Project 之 release_targets 聯集）。"""
+        cfg = {
             "paths": {},
             "release_targets": ["antigravity"],
             "enable_agents_md": True,
             "enable_project_changelog": True
         }
+        try:
+            from core import config
+            data = config.get_all("agents-workflow")
+            if data:
+                cfg = dict(data)
+            
+            # 計算 release_targets 聯集 (Local | Project)
+            proj_targets = config.get_raw("agents-workflow", "release_targets", local=False, default=["antigravity"]) or ["antigravity"]
+            local_targets = config.get_raw("agents-workflow", "release_targets", local=True, default=[]) or []
+            union_targets = list(dict.fromkeys(list(proj_targets) + list(local_targets)))
+            if union_targets:
+                cfg["release_targets"] = union_targets
+        except Exception:
+            pass
+
+        return cfg
+
 
 
 
@@ -319,8 +330,11 @@ class ReleasePublisher:
                         proj_root = uri.resolve("project://", interactive=False)
                     except Exception:
                         pass
-                if not os.path.isfile(os.path.join(proj_root, "AGENTS.md")):
+                agents_md_file = os.path.join(proj_root, "AGENTS.md")
+                if not os.path.isfile(agents_md_file):
                     all_files_exist = False
+
+
 
             if all_files_exist and published_files:
                 return {
@@ -482,6 +496,14 @@ class ReleasePublisher:
 
                 self._soft_merge_agents_md(rendered_agents_content, proj_root, force=force)
 
+        # 執行 project://.gitignore 軟合併同步 (傳入本次發布之精確檔案清單)
+        gitignore_res = self.sync_gitignore(
+            active_targets=active_target_names,
+            published_files=current_published_set,
+            proj_root=proj_root
+        )
+
+
         return {
             "success": True,
             "short_circuited": False,
@@ -491,5 +513,116 @@ class ReleasePublisher:
             "active_targets": active_target_names,
             "orphan_targets": orphan_targets,
             "removed_count": len(files_to_remove),
+            "gitignore_synced": gitignore_res.get("updated", False) or gitignore_res.get("created", False),
             "fingerprint": current_fingerprint
         }
+
+    def sync_gitignore(
+        self,
+        active_targets: Optional[List[str]] = None,
+        published_files: Optional[Any] = None,
+        proj_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        非破壞性軟合併 project://.gitignore 中的 YSCB 管理區塊。
+        精準針對 agents-workflow 發布之個別檔案與 .yscb 私有目錄進行忽略，
+        避免整目錄忽略 (.agents/) 干擾使用者存放於該目錄下的自訂 skills/rules/檔案。
+        """
+        if proj_root is None:
+            proj_root = os.getcwd()
+            if uri:
+                try:
+                    proj_root = uri.resolve("project://", interactive=False)
+                except Exception:
+                    pass
+
+        if active_targets is None:
+            cfg = self._get_project_config()
+            active_targets = list(cfg.get("release_targets", []))
+
+        all_registered = {t["name"]: t for t in self.get_registered_targets() if "name" in t}
+        ignore_patterns: Set[str] = set()
+
+        # 1. 取得發布檔案清單 (優先使用傳入的 published_files，否則讀取 storage manifest)
+        file_list = []
+        if published_files is not None:
+            file_list = list(published_files)
+        else:
+            if uri and uri.exists(MANIFEST_STORAGE_URI):
+                try:
+                    m_data = uri.read_json(MANIFEST_STORAGE_URI)
+                    file_list = m_data.get("published_files", [])
+                except Exception:
+                    pass
+
+        # 2. 針對個別發布檔案轉換為相對路徑 (100% 精確檔案路徑，不濃縮任何目錄)
+
+        for f_abs in file_list:
+            try:
+                rel = os.path.relpath(f_abs, proj_root).replace("\\", "/")
+                if not rel.startswith("../") and not rel.startswith("/"):
+                    ignore_patterns.add(f"/{rel}")
+            except Exception:
+                pass
+
+        # 3. 補充各 Target 宣告之自訂 ignore patterns (若有的話)
+        for t_name in active_targets:
+            t_cfg = all_registered.get(t_name, {})
+            for pat in t_cfg.get("ignore_patterns", []):
+                p_clean = pat.strip()
+                if not p_clean.startswith("/") and not p_clean.startswith("*"):
+                    p_clean = f"/{p_clean}"
+                ignore_patterns.add(p_clean)
+
+        # 排序 patterns
+        sorted_patterns = sorted(list(ignore_patterns))
+
+        block_lines = [
+            GITIGNORE_BEGIN_MARKER,
+            "# Auto-managed by agents-workflow. Do not edit this block manually.",
+
+        ]
+        block_lines.extend(sorted_patterns)
+        block_lines.append(GITIGNORE_END_MARKER)
+        new_block_text = "\n".join(block_lines)
+
+        gitignore_path = os.path.join(proj_root, ".gitignore")
+        existing_content = ""
+        has_existing = os.path.isfile(gitignore_path)
+
+        if has_existing:
+            try:
+                with open(gitignore_path, "r", encoding="utf-8") as f:
+                    existing_content = f.read()
+            except Exception:
+                existing_content = ""
+
+        # 檢測現有標記
+        pattern = re.compile(
+            rf"{re.escape(GITIGNORE_BEGIN_MARKER)}[\s\S]*?{re.escape(GITIGNORE_END_MARKER)}",
+            re.MULTILINE,
+        )
+
+
+        if pattern.search(existing_content):
+            merged_content = pattern.sub(new_block_text, existing_content)
+        else:
+            if existing_content and not existing_content.endswith("\n"):
+                merged_content = existing_content + "\n\n" + new_block_text + "\n"
+            elif existing_content:
+                merged_content = existing_content + "\n" + new_block_text + "\n"
+            else:
+                merged_content = new_block_text + "\n"
+
+        # 若無變更則跳過
+        if has_existing and existing_content == merged_content:
+            return {"updated": False, "created": False, "patterns": sorted_patterns}
+
+        try:
+            with open(gitignore_path, "w", encoding="utf-8") as f:
+                f.write(merged_content)
+            return {"updated": True, "created": not has_existing, "patterns": sorted_patterns}
+        except Exception as e:
+            print(f"[publisher:warning] Failed to sync .gitignore: {e}", file=sys.stderr)
+            return {"updated": False, "created": False, "error": str(e), "patterns": sorted_patterns}
+
