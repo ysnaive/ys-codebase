@@ -1,3 +1,0 @@
-"""
-knowledge-db test suite
-"""

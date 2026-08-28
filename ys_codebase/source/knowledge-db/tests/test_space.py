@@ -20,7 +20,7 @@ from knowledge_db.space import SpaceManager
 
 
 class TestSpaceManager(YSCBTestCase):
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_ft_04_dual_track_aggregation_and_priority(self):
         """FT-04: 驗證 SpaceManager Contributes 體系與 Project contribute.json 優先權覆蓋"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -80,7 +80,7 @@ class TestSpaceManager(YSCBTestCase):
             self.mark_passed()
 
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_ft_05_union_spaces_and_uri_resolution(self):
         """FT-05: 驗證全空間聯集 (Union Scope) 與 resolve_space_include 路徑解算"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -121,7 +121,7 @@ class TestSpaceManager(YSCBTestCase):
             sm.get_space("non_existent_space")
         self.assertIn("non_existent_space", str(ctx.exception))
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_et_03_invalid_source_path_warning_and_skip(self):
         """ET-03: 驗證包含不存在之來源路徑時安全略過且不中斷 (EC-02)"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -143,7 +143,7 @@ class TestSpaceManager(YSCBTestCase):
             self.assertEqual(len(resolved), 1)
             self.assertEqual(resolved[0], valid_dir.resolve())
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_ft_11_cache_storage_root_resolution(self):
         """FT-11: 驗證 SpaceManager 預設儲存目錄指向 cache://knowledge-db/ (.cache/knowledge-db/)"""
         sm = SpaceManager(contributes_data={"spaces": {}})

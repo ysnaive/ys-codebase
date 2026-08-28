@@ -106,7 +106,7 @@ class TestWorkflowInitializer(YSCBTestCase):
         self.assertFalse(plans_item["exists"])
         self.mark_passed()
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_ft_03_init_default_auto_confirm(self):
         """FT-03: 驗證 --init-default 自動確認時建立目錄並寫入組態。"""
         plans_dir = os.path.join(self.temp_dir, "plans")
@@ -130,7 +130,7 @@ class TestWorkflowInitializer(YSCBTestCase):
         self.assertTrue(os.path.isdir(docs_dir))
         self.mark_passed()
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_ft_04_cli_invocation_with_path_override(self):
         """FT-05: 驗證 CLI 指令解析 --init-default 與 --path-* 參數。"""
         custom_docs = os.path.join(self.temp_dir, "my_custom_docs")
