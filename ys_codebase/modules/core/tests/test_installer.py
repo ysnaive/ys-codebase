@@ -96,3 +96,48 @@ class TestCoreInstaller(YSCBTestCase):
         res = self.installer.cmd_list()
         self.assertEqual(res, 0)
         self.mark_passed()
+
+    def test_install_unreleased_module_strict_error(self):
+        """FT-09: Verify unreleased or non-existent module installation is strictly rejected with error."""
+        # 1. Direct engine call must raise ModuleNotFoundError (Zero Dummy Fallback)
+        with self.assertRaises(ModuleNotFoundError):
+            self.installer.engine._get_module_manifest_from_provider_or_local("non_existent_unreleased_xyz", "local")
+
+        # 2. CLI install must fail cleanly with return code 1
+        res = self.installer.cmd_install("non_existent_unreleased_xyz")
+        self.assertEqual(res, 1)
+
+        # 3. yscb.config.json must NOT contain the ghost module
+        _, cfg = self.installer.engine._get_config()
+        self.assertNotIn("non_existent_unreleased_xyz", cfg.get("installed_modules", {}))
+        self.mark_passed()
+
+    def test_build_package_isolation(self):
+        """FT-10: Verify build packages are isolated and only accessible when explicitly requested."""
+        import zipfile
+        import json
+        mod_name = "mock_isolated_build_mod"
+
+        # Setup build package in module.build://
+        uri.makedirs(f"module.build://{mod_name}")
+        build_zip_path = uri.resolve(f"module.build://{mod_name}/1.0.0.build.zip")
+        with zipfile.ZipFile(build_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("manifest.json", json.dumps({"name": mod_name, "version": "1.0.0.build"}))
+            zf.writestr("scripts/cli.py", "print('mock build cli')")
+
+        # 1. Regular install (no build revision specified) MUST fail because module is not released
+        res_regular = self.installer.cmd_install(mod_name)
+        self.assertEqual(res_regular, 1)
+
+        # 2. Explicit build install (version="1.0.0.build") MUST succeed
+        res_build = self.installer.cmd_install(mod_name, version="1.0.0.build")
+        self.assertEqual(res_build, 0)
+
+        # Verify installed version has .build tag
+        _, cfg = self.installer.engine._get_config()
+        self.assertIn(mod_name, cfg.get("installed_modules", {}))
+        self.assertEqual(cfg["installed_modules"][mod_name]["version"], "1.0.0.build")
+
+        # Cleanup
+        self.installer.cmd_remove(mod_name, force=True, purge=True)
+        self.mark_passed()

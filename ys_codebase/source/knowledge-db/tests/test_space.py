@@ -153,3 +153,13 @@ class TestSpaceManager(YSCBTestCase):
             resolved = sm.resolve_space_include("mixed_space")
             self.assertEqual(len(resolved), 1)
             self.assertEqual(resolved[0], valid_dir.resolve())
+
+    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    def test_ft_11_cache_storage_root_resolution(self):
+        """FT-11: 驗證 SpaceManager 預設儲存目錄指向 cache://knowledge-db/ (.cache/knowledge-db/)"""
+        sm = SpaceManager(contributes_data={"spaces": {}})
+        storage_root = sm.storage_dir
+        self.assertTrue(
+            ".cache" in str(storage_root) or "cache" in str(storage_root),
+            f"Storage root '{storage_root}' should point to cache directory."
+        )

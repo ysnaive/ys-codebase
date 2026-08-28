@@ -103,7 +103,12 @@ class InvertedIndex:
         doc_id = symbol.id
         self.symbols_map[doc_id] = symbol
         self.doc_count += 1
-        curr_space = space or getattr(symbol, "space", "") or self.space_name
+        curr_space = (
+            space
+            or symbol.metadata.get("space", "")
+            or getattr(symbol, "space", "")
+            or self.space_name
+        )
 
         # 1. 提取各欄位文字
         members_text = " ".join([f"{m.name} {m.signature} {m.docstring}" for m in symbol.members])

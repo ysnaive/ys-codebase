@@ -12,13 +12,13 @@
         {
           "token": "knowledge.storage",
           "type": "const",
-          "value": "storage://knowledge-db/",
-          "description": "knowledge-db 模組專屬持久化存儲空間根目錄"
+          "value": "cache://knowledge-db/",
+          "description": "knowledge-db 模組專屬本機快取存儲空間根目錄"
         }
       ],
       "commands": {
         "status": {
-          "description": "查看知識庫空間狀態與指紋統計",
+          "description": "查看知識庫空間狀態、指紋快取、同義詞與索引統計",
           "case_pros": [
             "日常檢視知識庫已註冊空間與快取狀態"
           ],
@@ -44,6 +44,15 @@
             "僅查詢檢索時無需重複完整打包"
           ]
         },
+        "index": {
+          "description": "建置與快取指定空間或全空間聯集之多欄位倒排索引",
+          "case_pros": [
+            "預熱檢索快取加速大規模檢索"
+          ],
+          "case_cons": [
+            "檢索 search 指令已內建自動懶索引建置"
+          ]
+        },
         "search": {
           "description": "對全空間或指定空間符號進行多欄位加權 BM25 語意檢索",
           "case_pros": [
@@ -51,6 +60,15 @@
           ],
           "case_cons": [
             "單純檢視空間清單時請用 status"
+          ]
+        },
+        "clean": {
+          "description": "清理指定空間或全空間之指紋、Bundle 與倒排索引快取",
+          "case_pros": [
+            "快取異常損毀或需要徹底重建資料庫時"
+          ],
+          "case_cons": [
+            "日常常規操作無需隨意清理快取"
           ]
         }
       }
