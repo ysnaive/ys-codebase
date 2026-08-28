@@ -2,6 +2,18 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_28_1754_module_toolchain_optimization — sub_07_knowledge_db_search_output_formatting
+
+- **Knowledge-DB 搜尋結果輸出格式優化 (`sub_07`)**：
+  - **預設極輕量簡易模式 (Simple Mode)**：
+    - `python yscb.py knowledge-db search <query>` 預設改為極簡排版，每筆結果僅輸出 `#<Rank:02d> <file_path>:<line_number>` 單行資訊，大幅降低終端雜訊並加速點擊跳轉。
+  - **詳細多行卡片模式 (Detailed Mode)**：
+    - 支援 `--detail`、`-d` 或 `--verbose` 旗標，完整保留評分 (Score)、符號類型、符號名稱、語言、簽名、摘要說明與命中關鍵詞之完整多行卡片。
+  - **結構化 JSON 模式 (JSON Mode)**：
+    - 支援 `--json` 旗標輸出包含 `query`, `total`, `results` 結構之純淨 JSON，供自動化腳本或第三方工具鏈解析。
+  - **CLI 說明與單元測試完善**：
+    - 更新 `knowledge-db --help` 說明文字；新增簡易模式、詳細模式與 JSON 模式完整單元與邊界測試（全模組 42/42 測試 100% Passed）。
+
 ## 2026_08_28_1754_module_toolchain_optimization — sub_06_agents_workflow_knowledge_db_integration
 
 - **Knowledge-DB 與 Agents-Workflow 雙向 Contributes 聯動與 Space 解耦 (`sub_06`)**：

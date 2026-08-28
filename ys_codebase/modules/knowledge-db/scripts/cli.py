@@ -44,7 +44,7 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db scan [space | --all] 執行增量/全量檔案指紋掃描")
         print("  python yscb.py knowledge-db bundle [space|--all] 打包空間符號為 SemanticBundle")
         print("  python yscb.py knowledge-db index [space | --all] 建立/更新空間倒排索引快取")
-        print("  python yscb.py knowledge-db search <query>       多欄位 BM25 語意檢索")
+        print("  python yscb.py knowledge-db search <query> [--detail|-d] [--json] 多欄位 BM25 語意檢索")
         print("  python yscb.py knowledge-db clean [space | --all] 清理指定或全空間快取檔案")
         return 0
 
@@ -119,6 +119,8 @@ def main(argv: List[str]) -> int:
             kind_filter = None
             lang_filter = None
             limit = 10
+            is_detail = False
+            is_json = False
 
             for a in sub_argv:
                 if a.startswith("--space="):
@@ -132,6 +134,10 @@ def main(argv: List[str]) -> int:
                         limit = int(a.split("=", 1)[1])
                     except ValueError:
                         pass
+                elif a in ("--detail", "-d", "--verbose"):
+                    is_detail = True
+                elif a == "--json":
+                    is_json = True
 
             results = engine.search(
                 query=query_str,
@@ -141,18 +147,53 @@ def main(argv: List[str]) -> int:
                 limit=limit,
             )
 
+            if is_json:
+                data = [
+                    {
+                        "rank": rank,
+                        "score": round(res.score, 4),
+                        "space": res.space,
+                        "symbol": {
+                            "name": res.symbol.name,
+                            "kind": res.symbol.kind,
+                            "language": res.symbol.language,
+                            "file_path": res.symbol.file_path,
+                            "line_number": res.symbol.line_number,
+                            "signature": res.symbol.signature,
+                            "docstring": res.symbol.docstring,
+                        },
+                        "snippet": res.snippet,
+                        "matched_terms": res.matched_terms,
+                    }
+                    for rank, res in enumerate(results, start=1)
+                ]
+                print(json.dumps({"query": query_str, "total": len(results), "results": data}, indent=2, ensure_ascii=False))
+                return 0
+
+            if not results:
+                print(f"[knowledge-db] 檢索查詢: '{query_str}' (未找到符合的結果)")
+                return 0
+
+            if is_detail:
+                print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 筆結果):")
+                print("=" * 85)
+                for rank, res in enumerate(results, start=1):
+                    sym = res.symbol
+                    print(f"#{rank:02d} [{res.score:05.2f}] {sym.kind.upper()}: {sym.name} ({sym.language})")
+                    print(f"     檔案: {sym.file_path}:{sym.line_number}")
+                    if sym.signature:
+                        print(f"     簽名: {sym.signature}")
+                    if res.snippet:
+                        print(f"     說明: {res.snippet}")
+                    print(f"     命中詞: {', '.join(res.matched_terms)}")
+                    print("-" * 85)
+                return 0
+
+            # 簡易模式 (預設極簡單行排版)
             print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 筆結果):")
-            print("=" * 85)
             for rank, res in enumerate(results, start=1):
                 sym = res.symbol
-                print(f"#{rank:02d} [{res.score:05.2f}] {sym.kind.upper()}: {sym.name} ({sym.language})")
-                print(f"     檔案: {sym.file_path}:{sym.line_number}")
-                if sym.signature:
-                    print(f"     簽名: {sym.signature}")
-                if res.snippet:
-                    print(f"     說明: {res.snippet}")
-                print(f"     命中詞: {', '.join(res.matched_terms)}")
-                print("-" * 85)
+                print(f"#{rank:02d} {sym.file_path}:{sym.line_number}")
             return 0
 
         elif subcmd == "clean":

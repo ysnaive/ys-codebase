@@ -2,7 +2,10 @@
 Unit Tests for knowledge-db CLI Router and Development Hooks.
 """
 
+import contextlib
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -54,6 +57,62 @@ class TestCLI(YSCBTestCase):
 
         # 8. 未知指令 (EC-06)
         self.assertEqual(main(["unknown_cmd_xyz"]), 1)
+
+    @require(Requirement.LOGIC)
+    def test_cli_search_modes(self):
+        """FT-01 ~ FT-03, ET-01: 驗證 search 簡易模式、詳細模式與 JSON 結構化輸出"""
+        # 1. 簡易模式 (預設)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ret = main(["search", "PIDController"])
+        self.assertEqual(ret, 0)
+        out = buf.getvalue()
+        self.assertIn("檢索查詢", out)
+        if "#01" in out:
+            # 簡易模式每行應為 #01 file_path:line
+            self.assertNotIn("命中詞:", out)
+            self.assertNotIn("簽名:", out)
+
+        # 2. 詳細模式 (--detail, -d, --verbose)
+        for flag in ["--detail", "-d", "--verbose"]:
+            buf_detail = io.StringIO()
+            with contextlib.redirect_stdout(buf_detail):
+                ret = main(["search", "PIDController", flag])
+            self.assertEqual(ret, 0)
+            out_detail = buf_detail.getvalue()
+            if "#01" in out_detail:
+                self.assertIn("命中詞:", out_detail)
+
+        # 3. JSON 模式 (--json)
+        buf_json = io.StringIO()
+        with contextlib.redirect_stdout(buf_json):
+            ret = main(["search", "PIDController", "--json"])
+        self.assertEqual(ret, 0)
+        data = json.loads(buf_json.getvalue())
+        self.assertEqual(data["query"], "PIDController")
+        self.assertIn("total", data)
+        self.assertIn("results", data)
+        if data["total"] > 0:
+            item = data["results"][0]
+            self.assertIn("rank", item)
+            self.assertIn("score", item)
+            self.assertIn("symbol", item)
+            self.assertIn("file_path", item["symbol"])
+
+        # 4. 0 筆結果情境 (ET-01)
+        buf_empty = io.StringIO()
+        with contextlib.redirect_stdout(buf_empty):
+            ret = main(["search", "NonExistentTermXYZ_123456"])
+        self.assertEqual(ret, 0)
+        self.assertIn("未找到符合的結果", buf_empty.getvalue())
+
+        buf_empty_json = io.StringIO()
+        with contextlib.redirect_stdout(buf_empty_json):
+            ret = main(["search", "NonExistentTermXYZ_123456", "--json"])
+        self.assertEqual(ret, 0)
+        data_empty = json.loads(buf_empty_json.getvalue())
+        self.assertEqual(data_empty["total"], 0)
+        self.assertEqual(data_empty["results"], [])
 
     @require(Requirement.LOGIC)
     def test_hook_lifecycle(self):
