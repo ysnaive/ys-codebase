@@ -49,8 +49,12 @@ from agents_workflow.plans import (
     PlanScanner,
     PlanSearcher,
     PlanVerifier,
+    PlanSeverity,
+    PlanIssue,
+    PlanReport,
     PlansToolchainError,
 )
+
 
 
 def cmd_release(args: List[str]) -> int:
@@ -322,52 +326,62 @@ Plan Actions:
             print(f"共找到 {len(matches)} 筆符合結果。")
             return 0
 
-    # 4. plan verify
-    elif action == "verify":
+    # 4. plan verify / plan check
+    elif action in ("verify", "check"):
         if sub_args and sub_args[0] in ("-h", "--help", "help"):
-            print("Usage: yscb agents-workflow plan verify [plan_name] [--all]")
+            print("Usage: yscb agents-workflow plan check [plan_name] [--all] [--json]")
             return 0
         include_all = "--all" in sub_args or "-a" in sub_args
+        is_json = "--json" in sub_args
         target_name = None
         for sa in sub_args:
-            if sa not in ("--all", "-a") and not sa.startswith("-"):
+            if sa not in ("--all", "-a", "--json") and not sa.startswith("-"):
                 target_name = sa
                 break
 
         verifier = PlanVerifier()
-        res = verifier.verify(plan_name=target_name, include_all=include_all)
-
-        if not res.get("success", False) and res.get("error"):
-            print(f"[agents-workflow:plan] [ERROR] {res['error']}")
-            return 1
-
-        print("=" * 80)
-        print(f"  Dev Plan 合規性稽核報告 (共審查 {res['plans_audited']} 個計畫)")
-        print("=" * 80)
-
-        for p_name, p_files in res.get("details", {}).items():
-            print(f"\n[PLAN] 審查計畫：{p_name}")
-            for f_name, issues in p_files.items():
-                if not issues:
-                    print(f"  [PASS] {f_name:<35} [合規通過]")
-                else:
-                    print(f"  [WARN] {f_name:<35} 發現 {len(issues)} 項問題:")
-                    for iss in issues:
-                        prefix = "[ERROR]" if iss["level"] == "ERROR" else "[WARN] "
-                        print(f"     {prefix} {iss['msg']}")
-
-        print("\n" + "=" * 80)
-        if res["total_errors"] == 0 and res["total_warns"] == 0:
-            print("  [SUCCESS] 驗收結果：100% 合規！所有計畫均符合 Header 元數據與指引過濾規範。")
+        if target_name:
+            rep = verifier.verify_plan(target_name)
+            reports = {rep.plan_name: rep}
         else:
-            print(f"  驗收摘要：發現 {res['total_errors']} 個重大錯誤 (ERROR)，{res['total_warns']} 個警告 (WARN)。")
-        print("=" * 80 + "\n")
+            reports = verifier.verify_all_plans(include_archived=include_all)
 
-        return 0 if res["total_errors"] == 0 else 1
+        if is_json:
+            import json
+            json_dict = {k: v.to_dict() for k, v in reports.items()}
+            print(json.dumps(json_dict, indent=2, ensure_ascii=False))
+            return 0 if all(r.passed for r in reports.values()) else 1
+
+        print("=" * 70)
+        print("YS-Codebase Dev Plan Compliance Diagnostic Report")
+        print("=" * 70)
+
+        total_plans = len(reports)
+        passed_plans = sum(1 for r in reports.values() if r.status == PlanSeverity.PASS)
+        warn_plans = sum(1 for r in reports.values() if r.status == PlanSeverity.WARN)
+        fail_plans = sum(1 for r in reports.values() if r.status == PlanSeverity.FAIL)
+
+        for p_name, r in reports.items():
+            status_tag = f"[{r.status.value}]"
+            print(f"[*] Plan: {p_name:<50} {status_tag}")
+            if r.status != PlanSeverity.PASS:
+                for iss in r.issues:
+                    loc = f"{iss.file_name}:{iss.line_number}" if iss.line_number else iss.file_name
+                    print(f"    |-- [{iss.severity.value}] ({loc}) [{iss.category}] {iss.message}")
+
+        print("-" * 70)
+        summary_str = f"Summary : {total_plans} Total, {passed_plans} Passed, {warn_plans} Warnings, {fail_plans} Failed"
+        print(summary_str)
+        overall_status = "PASSED" if fail_plans == 0 else "FAILED"
+        print(f"Status  : {overall_status}")
+        print("=" * 70)
+
+        return 0 if fail_plans == 0 else 1
 
     else:
-        print(f"[agents-workflow:plan] Unknown plan action '{action}'. Use archive, status, search, or verify.")
+        print(f"[agents-workflow:plan] Unknown plan action '{action}'. Use archive, status, search, or check.")
         return 1
+
 
 
 def print_help():

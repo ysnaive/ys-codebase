@@ -30,13 +30,14 @@
       ]
     },
     "plan": {
-      "description": "Dev Plans management toolchain (status, archive, search, verify)",
+      "description": "Dev Plans management toolchain (status, archive, search, check)",
       "case_pros": [
         "檢視計畫狀態: agents-workflow plan status",
         "搜尋歷史計畫: agents-workflow plan search <query>",
-        "驗證計畫完整度: agents-workflow plan verify",
+        "合規性檢核計畫: agents-workflow plan check",
         "依開發者明確指示封存計畫: agents-workflow plan archive <plan_dir>"
       ],
+
       "case_cons": [
         "🚨 嚴禁 Agent 主動或擅自執行 plan archive (除非開發者明確指示歸檔)"
       ]
