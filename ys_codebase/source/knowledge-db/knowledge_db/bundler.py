@@ -1,0 +1,209 @@
+"""
+knowledge-db 語意打包引擎 (SemanticBundler) 與 Bundle 資料結構
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import json
+import logging
+import os
+from pathlib import Path
+import tempfile
+from typing import Any, Callable, Dict, List, Optional, Union
+
+from .exceptions import KnowledgeDBError, SchemaValidationError
+from .parsers.registry import ParserRegistry
+from .scanner import FingerprintScanner
+from .schema import SpaceConfig, ThesaurusGroup, UnifiedSymbol
+from .space import SpaceManager
+
+logger = logging.getLogger("knowledge-db.bundler")
+
+
+@dataclass(frozen=True)
+class SemanticBundle:
+    """自包含語意發布包資料模型"""
+
+    version: str
+    space_name: str
+    created_at: str
+    symbols: List[UnifiedSymbol] = field(default_factory=list)
+    thesaurus: List[ThesaurusGroup] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "version": self.version,
+            "space_name": self.space_name,
+            "created_at": self.created_at,
+            "symbol_count": len(self.symbols),
+            "symbols": [s.to_dict() for s in self.symbols],
+            "thesaurus": [list(g) for g in self.thesaurus],
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SemanticBundle":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("SemanticBundle data must be a dictionary.")
+
+        version = str(data.get("version", "1.0.0"))
+        space_name = str(data.get("space_name", "unknown"))
+        created_at = str(data.get("created_at", datetime.now(timezone.utc).isoformat()))
+
+        symbols_raw = data.get("symbols", [])
+        symbols = [
+            UnifiedSymbol.from_dict(s) if isinstance(s, dict) else s
+            for s in symbols_raw
+        ]
+
+        thesaurus_raw = data.get("thesaurus", [])
+        thesaurus: List[ThesaurusGroup] = []
+        for g in thesaurus_raw:
+            if isinstance(g, list):
+                thesaurus.append([str(w) for w in g])
+
+        metadata = dict(data.get("metadata", {}))
+
+        return cls(
+            version=version,
+            space_name=space_name,
+            created_at=created_at,
+            symbols=symbols,
+            thesaurus=thesaurus,
+            metadata=metadata,
+        )
+
+
+class SemanticBundler:
+    """空間語意打包與導出/導入引擎"""
+
+    def __init__(
+        self,
+        space_manager: SpaceManager,
+        parser_registry: Optional[ParserRegistry] = None,
+        scanner: Optional[FingerprintScanner] = None,
+    ):
+        self.space_manager = space_manager
+        self.parser_registry = parser_registry or ParserRegistry(register_defaults=True)
+        self.scanner = scanner or FingerprintScanner(space_manager)
+
+    def bundle_space(
+        self,
+        space_config: SpaceConfig,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> SemanticBundle:
+        """
+        掃描並解析空間內所有有效來源檔案，提取符號與同義詞庫並封裝為 SemanticBundle。
+        """
+        space_name = space_config.name
+        source_roots = self.space_manager.resolve_space_include(space_name)
+
+        # 收集所有需解析的檔案路徑與相對路徑
+        files_to_parse: List[tuple[Path, str]] = []  # (abs_path, relpath)
+
+        for source_root in source_roots:
+            if source_root.is_file():
+                if space_config.is_file_included(source_root.name) and not FingerprintScanner._is_excluded(
+                    source_root.name, space_config.exclude
+                ):
+                    files_to_parse.append((source_root, source_root.name))
+            else:
+                base_dir = source_root
+                for root_dir, dirs, files in os.walk(str(source_root)):
+                    rel_dir = os.path.relpath(root_dir, str(base_dir)).replace("\\", "/")
+                    if rel_dir != "." and FingerprintScanner._is_excluded(rel_dir + "/", space_config.exclude):
+                        dirs.clear()
+                        continue
+
+                    for f in files:
+                        try:
+                            f_path = Path(root_dir) / f
+                            relpath = os.path.relpath(str(f_path), str(base_dir)).replace("\\", "/")
+                            if not FingerprintScanner._is_excluded(relpath, space_config.exclude) and space_config.is_file_included(f):
+                                files_to_parse.append((f_path, relpath))
+                        except Exception:
+                            pass
+
+        total_files = len(files_to_parse)
+        all_symbols: List[UnifiedSymbol] = []
+
+        for idx, (f_path, relpath) in enumerate(files_to_parse, start=1):
+            if progress_callback:
+                progress_callback(relpath, idx, total_files)
+
+            try:
+                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                symbols = self.parser_registry.parse_file(
+                    file_path=relpath, content=content, space=space_name
+                )
+                all_symbols.extend(symbols)
+            except Exception as e:
+                logger.warning(f"Failed parsing file '{f_path}' during bundle: {e}")
+
+        thesaurus = self.space_manager.load_thesaurus()
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        return SemanticBundle(
+            version="1.0.0",
+            space_name=space_name,
+            created_at=created_at,
+            symbols=all_symbols,
+            thesaurus=thesaurus,
+            metadata={
+                "source_count": len(source_roots),
+                "file_count": total_files,
+                "origin": space_config.origin,
+            },
+        )
+
+    def export_bundle(
+        self,
+        bundle: SemanticBundle,
+        target_path: Optional[Union[str, Path]] = None,
+    ) -> Path:
+        """
+        以原子寫入方式導出 Bundle 為 JSON 檔案。
+        """
+        if target_path is not None:
+            out_file = Path(target_path).resolve()
+        else:
+            storage_dir = self.space_manager.get_space_storage_dir(bundle.space_name)
+            bundles_dir = storage_dir.parent.parent / "bundles"
+            bundles_dir.mkdir(parents=True, exist_ok=True)
+            out_file = bundles_dir / f"{bundle.space_name}.bundle.json"
+
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(
+            dir=str(out_file.parent), prefix="bundle_tmp_", suffix=".json"
+        )
+
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                json.dump(bundle.to_dict(), f, indent=2, ensure_ascii=False)
+            os.replace(temp_path, str(out_file))
+            logger.info(f"Successfully exported SemanticBundle for '{bundle.space_name}' to {out_file}")
+            return out_file
+        except Exception as e:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise KnowledgeDBError(f"Failed exporting bundle to {out_file}: {e}")
+
+    def import_bundle(self, bundle_path: Union[str, Path]) -> SemanticBundle:
+        """
+        載入並反序列化 Bundle 檔案。
+        """
+        p = Path(bundle_path).resolve()
+        if not p.exists():
+            raise KnowledgeDBError(f"Bundle file not found at: {p}")
+
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                data = json.load(f)
+            return SemanticBundle.from_dict(data)
+        except Exception as e:
+            raise KnowledgeDBError(f"Failed to import bundle from {p}: {e}")
