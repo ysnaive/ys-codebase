@@ -2,6 +2,29 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_2127_knowledge_db — sub_01_space_management_and_schema
+
+- **全新 `knowledge-db` 模組空間管理、資料架構與雙階增量指紋比對引擎 (`sub_01`)**：
+  - **模組骨架與元數據宣告 (`manifest.json` / `scripts/cli.py`)**：
+    - 在 `source/knowledge-db/` 建立符合 YSCB 規範之模組骨架，依賴 `core >= 1.0.0`，並宣告 URI Scheme `knowledge.storage -> storage://knowledge-db/`。
+    - 實作 `scripts/cli.py` 提供 `status`（檢視空間與快取）與 `scan`（單空間/全空間聯集增量比對）指令。
+  - **核心解耦資料模型 (`schema.py`)**：
+    - 定義 `SymbolKind`、`LanguageType`、`SpaceOrigin` 列舉與 `MemberInfo` 成員模型。
+    - 實作不可變 `UnifiedSymbol` 模型，包含 SHA-1 唯一 ID 計算演算法（`compute_id`）與字典序列化/反序列化。
+    - 實作獨立解耦之 `SpaceConfig`（選填 `file_patterns` 預設 include all 邏輯）與 `ThesaurusConfig` 同義詞模型。
+  - **多空間雙軌聚合與聯集模型 (`SpaceManager`)**：
+    - 支援模組聯動注入（`contributes.knowledge-db.json` / `manifest.json`）與專案組態（`config.project.json` / `config.local.json`）雙軌空間定義。
+    - 實作 `Local` > `Project` > `Contributed` 階層優先權覆蓋與 `resolve_space_include` 語意 URI 解算。
+    - 廢除單一 `default_space` 強制約定，全系統以所有有效空間之聯集作為全域處理範圍 ($Scope = \bigcup Space_i$)。
+  - **雙階增量檔案指紋比對引擎 (`FingerprintScanner`)**：
+    - 實作 Stage 1 (`mtime`+`size` 初篩，零 I/O 與零 SHA1 運算) + Stage 2 (`SHA1` 內容校驗) 雙階比對。
+    - 支援 `scan_space` 與 `scan_all_spaces`，輸出 `ScanDiffResult`（Added/Modified/Deleted/Unchanged）。
+    - 實作指紋快取損毀自動自癒重置與基於暫存檔之原子寫入持久化機制。
+  - **全量測試與品質驗證**：
+    - 實作 `test_schema.py`、`test_space.py`、`test_scanner.py` 單元測試套件，15/15 測試案例 100% Passed (3.400s)。
+  - **知識庫交付**：
+    - 交付 `docs/knowledge-db/README.md`（模組手冊與子計畫演進）、`docs/knowledge-db/contributes_guide.md`（擴充點指南）與 `docs/knowledge-db/architecture.md`（架構說明）。
+
 ## 2026_08_28_0215_test_shared_sandbox_optimization
 
 - **測試框架 Session-Level 全局共用沙盒與寫入型測試隔離優化**：
