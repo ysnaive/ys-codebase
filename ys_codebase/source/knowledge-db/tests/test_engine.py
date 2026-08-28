@@ -20,7 +20,7 @@ from knowledge_db.schema import SpaceConfig
 
 
 class TestEngine(YSCBTestCase):
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_engine_status_and_lifecycle(self):
         """FT-01~06: 驗證 KnowledgeEngine 門面 API 全生命週期操作"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -81,7 +81,7 @@ class TestEngine(YSCBTestCase):
             st_after = engine.status()
             self.assertEqual(st_after["spaces"]["demo_space"]["fingerprint_cached_files"], 0)
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_engine_search_and_lazy_indexing(self):
         """FT-05: 驗證未手動建置索引時 search 自動觸發懶建置 (Lazy Indexing, EC-01)"""
         with tempfile.TemporaryDirectory() as temp_dir:

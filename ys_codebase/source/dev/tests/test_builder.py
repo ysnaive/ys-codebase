@@ -8,8 +8,9 @@ from dev.testing import YSCBTestCase, require, Requirement
 from dev.builder import Builder
 from core import uri
 
-@require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+@require(Requirement.ENV)
 class TestDevBuilder(YSCBTestCase):
+
     def setUp(self):
         super().setUp()
         self.builder = Builder()

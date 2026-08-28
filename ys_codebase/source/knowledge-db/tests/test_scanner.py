@@ -22,7 +22,7 @@ from knowledge_db.space import SpaceManager
 
 
 class TestScanner(YSCBTestCase):
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_ft_06_stage_1_unchanged_fast_path(self):
         """FT-06: 驗證 Stage 1 (mtime+size) 初篩比對與 UNCHANGED 極速判定"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -51,7 +51,7 @@ class TestScanner(YSCBTestCase):
             self.assertEqual(len(diff2.unchanged), 1)
             self.assertFalse(diff2.has_changes)
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_ft_07_stage_2_touch_file_sha1_match(self):
         """FT-07: 驗證 Stage 2 校驗：touch 檔案時比對 SHA1 一致僅更新快取 mtime 並標記 UNCHANGED (EC-04)"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -86,7 +86,7 @@ class TestScanner(YSCBTestCase):
             fps = scanner.load_fingerprints("test_space")
             self.assertAlmostEqual(fps["app.py"].mtime, new_mtime, places=1)
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_ft_08_diff_detection_added_modified_deleted(self):
         """FT-08: 驗證檔案增量偵測：新增 (ADDED)、修改 (MODIFIED)、刪除 (DELETED)"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -132,7 +132,7 @@ class TestScanner(YSCBTestCase):
             self.assertEqual(len(diff2.unchanged), 1)
             self.assertEqual(diff2.unchanged[0].relpath, "keep.py")
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_ft_09_scan_all_spaces_and_atomic_save(self):
         """FT-09: 驗證 scan_all_spaces 全空間聯集掃描與原子寫入持久化"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -170,7 +170,7 @@ class TestScanner(YSCBTestCase):
             self.assertTrue(fp_a.exists())
             self.assertTrue(fp_b.exists())
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_et_01_corrupted_cache_self_healing(self):
         """ET-01: 驗證指紋快取檔案損毀時自癒重置為全量掃描並修復 (EC-03)"""
         with tempfile.TemporaryDirectory() as temp_dir:

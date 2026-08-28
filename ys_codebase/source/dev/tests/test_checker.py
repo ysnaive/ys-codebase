@@ -215,3 +215,34 @@ class TestDevChecker(YSCBTestCase):
         finally:
             if os.path.exists(tmp_mod_dir):
                 shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_ft07_logic_plus_isolated_sandbox_warning(self):
+        """FT-07: Verify test method marked with both LOGIC and ISOLATED_SANDBOX triggers [WARN]."""
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_ft07_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(tmp_mod_dir, "tests"), exist_ok=True)
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_ft07_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def main(): pass')
+            with open(os.path.join(tmp_mod_dir, "tests", "test_sample.py"), "w", encoding="utf-8") as f:
+                f.write(
+                    'from dev.testing import YSCBTestCase, require, Requirement\n'
+                    'class TestSample(YSCBTestCase):\n'
+                    '    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)\n'
+                    '    def test_overkill(self):\n'
+                    '        pass\n'
+                )
+
+            report = self.checker.check_module("mock_ft07_mod")
+            self.assertTrue(report.passed)  # Warning does not block pass
+            self.assertTrue(report.has_warns)
+            self.assertTrue(any("marked with both 'LOGIC' and 'ISOLATED_SANDBOX'" in w for w in report.warnings))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+

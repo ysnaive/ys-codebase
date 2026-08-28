@@ -42,7 +42,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.compiler = ArtifactCompiler()
         self.publisher = ReleasePublisher(compiler=self.compiler)
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_ft_01_initial_release_persists_fingerprint(self):
         """FT-01: 首次發布成功物化檔案，Manifest 正確記錄指紋與發布檔案清冊。"""
         res = self.publisher.release_all(force=True)
@@ -60,7 +60,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
             self.assertEqual(manifest_data.get("fingerprint"), res["fingerprint"])
             self.assertEqual(len(manifest_data.get("published_files", [])), res["published_count"])
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_ft_02_short_circuit_when_no_change(self):
         """FT-02: 二次發布在無異動情況下觸發 Stage 0 短路 (0 I/O)。"""
         # 第 1 次：全量發布
@@ -75,7 +75,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertEqual(res2["skipped_count"], res1["published_count"])
         self.assertEqual(res2["fingerprint"], res1["fingerprint"])
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_ft_03_incremental_write_on_partial_change(self):
         """FT-03: 目標檔案內容有局部變更時，觸發增量寫入 (僅變更檔案寫入，其餘略過)。"""
         res1 = self.publisher.release_all(force=True)
@@ -102,7 +102,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
             self.assertEqual(res2["written_count"], 1)
             self.assertEqual(res2["skipped_count"], len(target_files) - 1)
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_ft_04_forced_release_overwrites_all(self):
         """FT-04: 傳入 force=True 時強制跳過短路與略過邏輯，執行全量覆寫。"""
         # 第 1 次發布
@@ -115,7 +115,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertEqual(res_forced["written_count"], res_forced["published_count"])
         self.assertEqual(res_forced["skipped_count"], 0)
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_ft_05_agents_md_soft_merge_diff(self):
         """FT-05: AGENTS.md 軟合併在注入內容未變更時跳過磁碟寫入。"""
         proj_root = os.getcwd()
@@ -146,7 +146,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertIn("New Standard Body", updated_text)
         self.assertIn("## Custom Footer", updated_text)
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_ft_06_cli_release_with_force_flag(self):
         """FT-06: CLI release 指令解析 --force 參數並執行。"""
         # 測試正常發布 (不帶 --force)
@@ -161,7 +161,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         code3 = cmd_release(["--force"])
         self.assertEqual(code3, 0)
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_et_01_short_circuit_invalidated_when_file_missing(self):
         """ET-01: 已發布檔案遭刪除時，即使指紋未變仍自動失效短路並修復補齊。"""
         # 第 1 次發布
@@ -186,7 +186,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
             # 只有缺失的檔案被寫入，其餘檔案跳過寫入
             self.assertEqual(res2["written_count"], 1)
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_et_02_target_configuration_change_triggers_republish(self):
         """ET-02: Target 宣告或指紋計算能敏感反映變更。"""
         fp1 = self.publisher.compute_source_fingerprint()
@@ -197,7 +197,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         fp2 = self.publisher.compute_source_fingerprint()
         self.assertEqual(fp1, fp2)
 
-    @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.ENV)
     def test_et_03_corrupted_or_missing_manifest_fallback(self):
         """ET-03: storage:// 中之 manifest 損毀或缺失時，安全降級為全量發布並自癒。"""
         if uri:

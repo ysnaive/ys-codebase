@@ -15,8 +15,14 @@
   - **SOP AGENT GUILD JIT 註解注入**：
     - 調研與需求階段 (`PHASE00_AGENTS_GUILD`, `RESEARCH_AGENTS_GUILD`) 引導使用 `knowledge-db search` 定向查找資料，嚴禁盲目大範圍 grep 或逐檔翻找。
     - 結案階段 (`PHASE07_AGENTS_GUILD`) 明確指引調用 `knowledge-db index` 即刻更新專案倒排索引庫。
+  - **測試套件標籤清理與效能最佳化**：
+    - 清理 `knowledge-db` (17 個)、`agents-workflow` (11 個) 與 `dev` 測試中誤掛之 `ISOLATED_SANDBOX`，回歸純 `LOGIC` / `ENV` 與 Session 共享沙盒。
+    - 全模組跑測時長從 **21.099s ⬇️ 大幅下降至 8.224s (2.5x 提速)**。
+  - **Dev Module Check 靜態合規檢核升級 (`dev.checker`)**：
+    - 於 AST 靜態語法分析新增測試方法/類別裝飾器檢核：若同時標記 `LOGIC` 與 `ISOLATED_SANDBOX` 則發出 `[WARN]` 反模式警告，引導合理使用沙盒。
   - **全量測試與回歸驗證**：
-    - 全生態系 4 大核心模組沙盒回歸跑測 **183/183 測試案例 100% Passed (17.045s)**。
+    - 全生態系 4 大核心模組沙盒回歸跑測 **184/184 測試案例 100% Passed (8.224s)**。
+
 
 ## 2026_08_28_1754_module_toolchain_optimization — sub_05_agents_workflow_release_local_mode
 

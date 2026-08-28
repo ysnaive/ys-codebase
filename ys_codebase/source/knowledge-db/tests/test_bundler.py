@@ -55,7 +55,7 @@ class TestBundler(YSCBTestCase):
         self.assertEqual(restored.symbols[0].name, "TestEngine")
         self.assertEqual(restored.thesaurus, [["引擎", "engine"]])
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_ft_08_bundler_bundle_export_and_import(self):
         """FT-08: 驗證 SemanticBundler 空間解析、原子導出與載入還原 (EC-07)"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -94,7 +94,7 @@ class TestBundler(YSCBTestCase):
             self.assertEqual(imported_bundle.space_name, "multi_lang_space")
             self.assertEqual(len(imported_bundle.symbols), len(bundle.symbols))
 
-    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
+    @require(Requirement.LOGIC)
     def test_et_01_import_corrupted_bundle_error(self):
         """ET-01: 驗證載入損毀或不存在的 Bundle 檔案拋出 KnowledgeDBError (EC-05)"""
         with tempfile.TemporaryDirectory() as temp_dir:
