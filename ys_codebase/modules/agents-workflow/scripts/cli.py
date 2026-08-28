@@ -54,14 +54,23 @@ from agents_workflow.plans import (
 
 
 def cmd_release(args: List[str]) -> int:
-    """執行原子 4 步發布交易。"""
+    """執行原子 4 步發布交易（支援 --force 與雙階 Diff 檢測）。"""
+    parser = argparse.ArgumentParser(prog="agents-workflow release", description="Execute release transaction for all active targets")
+    parser.add_argument("--force", "-f", action="store_true", help="Force release all files without diff skipping")
+    parsed_args = parser.parse_args(args)
+
     publisher = ReleasePublisher()
-    print("[agents-workflow] Starting 4-step atomic release transaction...")
-    res = publisher.release_all()
+    print("[agents-workflow] Starting release transaction...")
+    res = publisher.release_all(force=parsed_args.force)
     
     if res.get("success", False):
-        print(f"[agents-workflow] Release completed successfully!")
-        print(f"  * Published files: {res.get('published_count', 0)}")
+        if res.get("short_circuited", False):
+            print(f"[agents-workflow] Release up to date (no changes detected, skipped {res.get('skipped_count', 0)} files).")
+        else:
+            print(f"[agents-workflow] Release completed successfully!")
+            print(f"  * Written files:   {res.get('written_count', 0)}")
+            print(f"  * Unchanged files: {res.get('skipped_count', 0)}")
+            print(f"  * Total published: {res.get('published_count', 0)}")
         print(f"  * Active targets:  {', '.join(res.get('active_targets', []))}")
         if res.get("removed_count", 0) > 0:
             print(f"  * Pruned files:    {res.get('removed_count', 0)}")
