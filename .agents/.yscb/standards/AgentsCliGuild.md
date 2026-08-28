@@ -3,6 +3,7 @@
 <!-- YSCB_AGENTS_CLI_GUILD_BEGIN -->
 | 指令名稱 | 推薦/適用情境 (Pros) | 🚨 絕對禁止/不適用情境 (Cons) |
 | :--- | :--- | :--- |
+| **`python yscb.py config`** | ✅ 檢視專案或模組設定狀態: python yscb.py config list [--mod=<module>]<br/>✅ 查詢特定組態值: python yscb.py config get <module> [key]<br/>✅ 更新專案或本機組態: python yscb.py config set <module> <key> <value> [--local] | 🚨 嚴禁手動編輯損毀 JSON 語法 |
 | **`python yscb.py install`** | ✅ 安裝新模組能力至環境中<br/>✅ 本地模組自引用調試: install <mod>@build --force (不更新無關模組) | 🚨 嚴禁未經開發者指示在日常開發中重複安裝或重裝全部模組 |
 | **`python yscb.py reload`** | ✅ 重新聚合 contributes 並觸發模組 on_reload Hook | *(無特殊禁止事項)* |
 | **`python yscb.py remove`** | ✅ 清理不再使用之模組 | 🚨 嚴禁擅自移除 core 或使用中之依賴模組 |
@@ -12,7 +13,7 @@
 | **`python yscb.py agents-workflow compile`** | ✅ 測試編譯或除錯 Stage 1 中繼資產 | *(無特殊禁止事項)* |
 | **`python yscb.py agents-workflow init`** | ✅ 專案初次建立或重新初始化 agents-workflow 工作流環境 | 🚨 嚴禁在已有工作流配置的環境重複手動執行 init |
 | **`python yscb.py agents-workflow list`** | ✅ 檢視當前環境已安裝之模組清冊與版本<br/>✅ 檢視 agents-workflow 導出之規範、工作流與模板清單 | *(無特殊禁止事項)* |
-| **`python yscb.py agents-workflow plan`** | ✅ 檢視計畫狀態: agents-workflow plan status<br/>✅ 搜尋歷史計畫: agents-workflow plan search <query><br/>✅ 驗證計畫完整度: agents-workflow plan verify<br/>✅ 依開發者明確指示封存計畫: agents-workflow plan archive <plan_dir> | 🚨 嚴禁 Agent 主動或擅自執行 plan archive (除非開發者明確指示歸檔) |
+| **`python yscb.py agents-workflow plan`** | ✅ 檢視計畫狀態: agents-workflow plan status<br/>✅ 搜尋歷史計畫: agents-workflow plan search <query><br/>✅ 合規性檢核計畫: agents-workflow plan check<br/>✅ 依開發者明確指示封存計畫: agents-workflow plan archive <plan_dir> | 🚨 嚴禁 Agent 主動或擅自執行 plan archive (除非開發者明確指示歸檔) |
 | **`python yscb.py agents-workflow release-target`** | ✅ 檢視或管理工作流發布目標清冊 | *(無特殊禁止事項)* |
 | **`python yscb.py agents-workflow tokens`** | ✅ 檢視全系統可用的 Token 錨點清單 | *(無特殊禁止事項)* |
 | **`python yscb.py dev build`** | ✅ 手動打包本地測試包供跨環境測試或本地直裝物化 | 🚨 嚴禁在執行 dev test 前手動執行 dev build (dev test 內部自動前置構建) |
