@@ -2,6 +2,28 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_2127_knowledge_db — sub_03_tokenizer_thesaurus_and_bm25_retrieval
+
+- **`knowledge-db` 模組代碼/中文混合分詞、雙層同義詞擴展與多欄位 BM25 檢索引擎 (`sub_03`)**：
+  - **純原生代碼與中文混合分詞器 (`tokenizer.py`)**：
+    - 實作 `CodeTokenizer`，支援駝峰（`camelCase`, `PascalCase`）、底線（`snake_case`）與全大寫縮寫標識符拆解，同時保留子單字與完整小寫標識符。
+    - 實作 CJK 中文字元 1-gram 單字與 2-gram 相鄰雙字滑動窗口切分。
+    - 內建中英文高頻停用詞與純標點符號過濾。
+  - **雙層同義詞擴展引擎 (`thesaurus.py`)**：
+    - 實作 `ThesaurusEngine`，內建 18 組軟體工程通用雙向中英對照同義詞庫。
+    - 支援動態合併專案與空間層級自訂同義詞庫 (`ThesaurusConfig`)。
+    - 實作查詢端雙向去重擴展 (`expand_query`)，具備 Set 集合防無窮迴圈與最大擴展上限 (EC-05)。
+  - **多欄位加權 BM25 倒排索引與檢索引擎 (`retrieval.py`)**：
+    - 實作 `InvertedIndex` 多欄位倒排索引結構，記錄詞頻、平均欄位長度 $\text{avgdl}$ 與全域 IDF 預計算，支援純 JSON 序列化導出與還原。
+    - 實作 `BM25Engine` 多欄位加權評分（Name 3.5, Signature 2.0, Member 2.0, Docstring 1.5），具備平滑 IDF 與 Exact Match 2.0x 置頂加權。
+    - 實作 `QueryFilter` 複合條件過濾器（空間、語言、類型、分數門檻）與結構化 `SearchResult`。
+  - **CLI 指令擴充 (`scripts/cli.py` / `manifest.json`)**：
+    - 新增 `search <query> [--space=name] [--kind=type] [--lang=py] [--limit=10]` 指令，支援命令列快速語意檢索與高亮格式化輸出。
+  - **全量測試與品質驗收**：
+    - 實作 `test_tokenizer.py` (FT-01~02)、`test_thesaurus.py` (FT-03) 與 `test_retrieval.py` (FT-04~07, ET-01) 單元測試套件，全模組 32/32 測試案例 100% Passed (3.268s)。
+  - **知識庫交付**：
+    - 交付 `docs/knowledge-db/tokenizer.md`（分詞與同義詞指南）、`docs/knowledge-db/retrieval.md`（檢索引擎指南）並更新 `docs/knowledge-db/README.md`。
+
 ## 2026_08_27_2127_knowledge_db — sub_02_parsers_and_semantic_bundler
 
 - **`knowledge-db` 模組多語言解析器外掛體系與語意打包引擎 (`sub_02`)**：
