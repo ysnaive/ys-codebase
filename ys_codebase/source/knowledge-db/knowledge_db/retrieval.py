@@ -1,14 +1,18 @@
 """
-knowledge-db 倒排索引、多欄位加權 BM25 語意評分與檢索引擎 (retrieval.py)
+knowledge-db 倒排索引、多欄位加權 BM25 語意評分與二進位 Gzip 快取引擎 (retrieval.py)
 100% 採用純 Python 原生標準庫 (Zero External Dependency)
 """
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+import gzip
 import json
 import logging
 import math
+import os
 from pathlib import Path
+import pickle
+import tempfile
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from .exceptions import KnowledgeDBError, SchemaValidationError
@@ -21,18 +25,16 @@ logger = logging.getLogger("knowledge-db.retrieval")
 
 @dataclass
 class Posting:
-    """倒排索引單項紀錄"""
+    """輕量倒排索引節點 (消滅 Symbol 深拷貝冗餘)"""
 
     doc_id: str
-    symbol: UnifiedSymbol
-    field_freqs: Dict[str, int]
-    field_lengths: Dict[str, int]
+    field_freqs: Dict[str, int] = field(default_factory=dict)
+    field_lengths: Dict[str, int] = field(default_factory=dict)
     space: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "doc_id": self.doc_id,
-            "symbol": self.symbol.to_dict(),
             "field_freqs": self.field_freqs,
             "field_lengths": self.field_lengths,
             "space": self.space,
@@ -42,7 +44,6 @@ class Posting:
     def from_dict(cls, data: Dict[str, Any]) -> "Posting":
         return cls(
             doc_id=data["doc_id"],
-            symbol=UnifiedSymbol.from_dict(data["symbol"]),
             field_freqs=data.get("field_freqs", {}),
             field_lengths=data.get("field_lengths", {}),
             space=data.get("space", ""),
@@ -86,22 +87,35 @@ class SearchResult:
 
 
 class InvertedIndex:
-    """多欄位倒排索引結構"""
+    """多欄位倒排索引與符號池中心"""
 
     INDEXED_FIELDS = ["name", "signature", "members", "docstring"]
 
     def __init__(self, space_name: str = ""):
         self.space_name = space_name
         self.doc_count: int = 0
+        self.symbols: Dict[str, UnifiedSymbol] = {}
         self.index: Dict[str, List[Posting]] = defaultdict(list)
-        self.symbols_map: Dict[str, UnifiedSymbol] = {}
         self.field_avgdl: Dict[str, float] = {f: 1.0 for f in self.INDEXED_FIELDS}
         self.field_total_lengths: Dict[str, int] = {f: 0 for f in self.INDEXED_FIELDS}
 
+    @property
+    def symbols_map(self) -> Dict[str, UnifiedSymbol]:
+        """向後相容別名"""
+        return self.symbols
+
+    @symbols_map.setter
+    def symbols_map(self, value: Dict[str, UnifiedSymbol]) -> None:
+        self.symbols = value
+
+    def get_symbol(self, doc_id: str) -> Optional[UnifiedSymbol]:
+        """自符號池中以 O(1) 獲取符號實例"""
+        return self.symbols.get(doc_id)
+
     def add_symbol(self, symbol: UnifiedSymbol, tokenizer: CodeTokenizer, space: str = "") -> None:
-        """加入單一 UnifiedSymbol 建立欄位倒排索引"""
+        """加入單一 UnifiedSymbol 建立欄位倒排索引與註冊符號池"""
         doc_id = symbol.id
-        self.symbols_map[doc_id] = symbol
+        self.symbols[doc_id] = symbol
         self.doc_count += 1
         curr_space = (
             space
@@ -135,12 +149,11 @@ class InvertedIndex:
             field_freqs_map[f_name] = counts
             all_unique_terms.update(counts.keys())
 
-        # 3. 建立 Posting
+        # 3. 建立輕量 Posting (僅記錄 doc_id)
         for term in all_unique_terms:
             t_freqs = {f_name: field_freqs_map[f_name][term] for f_name in self.INDEXED_FIELDS}
             posting = Posting(
                 doc_id=doc_id,
-                symbol=symbol,
                 field_freqs=t_freqs,
                 field_lengths=field_lengths,
                 space=curr_space,
@@ -151,8 +164,8 @@ class InvertedIndex:
         """批次建立倒排索引並計算 avgdl"""
         tok = tokenizer or CodeTokenizer()
         self.doc_count = 0
+        self.symbols.clear()
         self.index.clear()
-        self.symbols_map.clear()
         self.field_total_lengths = {f: 0 for f in self.INDEXED_FIELDS}
 
         for sym in symbols:
@@ -167,22 +180,25 @@ class InvertedIndex:
                 self.field_avgdl[f] = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
-        """序列化倒排索引"""
+        """序列化倒排索引為正規化符號池字典"""
         serialized_index = {}
         for term, postings in self.index.items():
             serialized_index[term] = [p.to_dict() for p in postings]
+
+        serialized_symbols = {doc_id: sym.to_dict() for doc_id, sym in self.symbols.items()}
 
         return {
             "space_name": self.space_name,
             "doc_count": self.doc_count,
             "field_avgdl": self.field_avgdl,
             "field_total_lengths": self.field_total_lengths,
+            "symbols": serialized_symbols,
             "index": serialized_index,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "InvertedIndex":
-        """反序列化倒排索引"""
+        """反序列化正規化倒排索引"""
         if not isinstance(data, dict):
             raise SchemaValidationError("InvertedIndex data must be a dictionary.")
 
@@ -191,14 +207,57 @@ class InvertedIndex:
         idx.field_avgdl = data.get("field_avgdl", {f: 1.0 for f in cls.INDEXED_FIELDS})
         idx.field_total_lengths = data.get("field_total_lengths", {f: 0 for f in cls.INDEXED_FIELDS})
 
+        # 1. 還原符號池
+        raw_symbols = data.get("symbols", {})
+        if raw_symbols:
+            for doc_id, s_dict in raw_symbols.items():
+                if isinstance(s_dict, dict):
+                    idx.symbols[doc_id] = UnifiedSymbol.from_dict(s_dict)
+
+        # 2. 還原倒排表 (兼顧舊版內嵌 symbol 格式)
         raw_index = data.get("index", {})
         for term, postings_raw in raw_index.items():
-            postings = [Posting.from_dict(p) for p in postings_raw if isinstance(p, dict)]
+            postings: List[Posting] = []
+            for p in postings_raw:
+                if isinstance(p, dict):
+                    posting = Posting.from_dict(p)
+                    postings.append(posting)
+                    # 舊版向下相容：若舊版 JSON 內含 symbol 且未在符號池中，補充註冊
+                    if "symbol" in p and isinstance(p["symbol"], dict) and posting.doc_id not in idx.symbols:
+                        idx.symbols[posting.doc_id] = UnifiedSymbol.from_dict(p["symbol"])
             idx.index[term] = postings
-            for p in postings:
-                idx.symbols_map[p.doc_id] = p.symbol
 
         return idx
+
+    def save_binary(self, path: Union[str, Path]) -> None:
+        """使用 Pickle (Protocol 5) + Gzip (Level 6) 原子持久化二進位快取"""
+        out_path = Path(path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        data = self.to_dict()
+        pkl_bytes = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
+        compressed_bytes = gzip.compress(pkl_bytes, compresslevel=6)
+
+        tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+        with open(tmp_path, "wb") as f:
+            f.write(compressed_bytes)
+
+        os.replace(str(tmp_path), str(out_path))
+        logger.debug(f"Saved binary inverted index to: {out_path} ({len(compressed_bytes)} bytes)")
+
+    @classmethod
+    def load_binary(cls, path: Union[str, Path]) -> "InvertedIndex":
+        """自二進位 Gzip 快取反序列化 InvertedIndex"""
+        in_path = Path(path)
+        if not in_path.exists():
+            raise FileNotFoundError(f"Binary inverted index cache not found: {in_path}")
+
+        with open(in_path, "rb") as f:
+            compressed_bytes = f.read()
+
+        pkl_bytes = gzip.decompress(compressed_bytes)
+        data = pickle.loads(pkl_bytes)
+        return cls.from_dict(data)
 
 
 class BM25Engine:
@@ -295,8 +354,9 @@ class BM25Engine:
         # 3. Exact Match 置頂加權 (2.0x Boost)
         clean_raw_query = raw_query.lower()
         for doc_id, base_score in list(doc_scores.items()):
-            posting = doc_postings[doc_id]
-            sym = posting.symbol
+            sym = index.get_symbol(doc_id)
+            if not sym:
+                continue
             sym_name_clean = sym.name.lower()
             last_segment = sym_name_clean.split(".")[-1].split("::")[-1]
 
@@ -309,8 +369,11 @@ class BM25Engine:
             if score < flt.min_score:
                 continue
 
+            sym = index.get_symbol(doc_id)
+            if not sym:
+                continue
+
             posting = doc_postings[doc_id]
-            sym = posting.symbol
             sp = posting.space
 
             # 過濾 space
