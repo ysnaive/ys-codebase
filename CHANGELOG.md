@@ -2,6 +2,22 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_28_1735_agents_workflow_release_diff_optimization
+
+- **`agents-workflow` 發布引擎來源 Diff 檢測與無效 File IO 優化**：
+  - **Stage 0 來源端綜合特徵指紋與提前短路 (Source Fingerprint Early Short-Circuit)**：
+    - 實作 `ReleasePublisher.compute_source_fingerprint()`：整合 `assets/` 資源檔案 (templates, standards, workflows) SHA-1、`manifest.json`、專案組態 (`config.project.json`) 與啟用 Target 之投影規則，計算 64 位元 SHA-256 綜合指紋。
+    - 在發布交易前（Stage 0）比對 `storage://release_manifest.json` 記錄之指紋與實體檔案完整性。若來源未變且發布檔案皆完好，**立即提前短路 (0 I/O，耗時 ~1ms)**，徹底消除 microkernel reload 階段的無效檔案寫入。
+  - **Stage 4 落地端記憶體內容 Diff 比對與增量物化 (Incremental Materialization)**：
+    - 在實體落地階段比對目標檔案現存磁碟文字與渲染產物，僅在內容實質相異時執行 `open(w)` 寫入，相同者跳過寫入。
+    - `_soft_merge_agents_md` 升級 Diff 檢測，正則區塊替換前後字串一致時跳過磁碟寫入。
+  - **`--force` 強制發布支援與結構化指標透明化**：
+    - CLI `python yscb.py agents-workflow release --force` 與 SDK 支援 `force=True` 旗標，可強制忽略所有 Diff 檢測進行全量重新編譯與覆寫。
+    - `release_all()` 回傳指標擴充包含 `short_circuited`、`written_count`、`skipped_count`、`removed_count` 等欄位，Hook 日誌清晰展示變更計數。
+  - **全量測試與品質驗收**：
+    - 新增 `source/agents-workflow/tests/test_publisher.py` (FT-01~06, ET-01~03)，模組 32/32 Passed，全系統 163/163 測試案例 100% Passed (10.409s)。
+
+
 ## 2026_08_27_2127_knowledge_db — sub_05_binary_index_cache_optimization
 
 - **`knowledge-db` 符號池去重與二進位 Gzip 倒排索引快取優化 (`sub_05`)**：

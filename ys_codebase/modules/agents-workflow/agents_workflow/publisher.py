@@ -1,10 +1,11 @@
 """
 Release Publisher for agents-workflow.
 Executes the 4-Step Atomic Release Transaction:
+0. Pre-check source fingerprint for early short-circuit (Zero-I/O optimization)
 1. Prune legacy published files recorded in storage://agents-workflow/release_manifest.json
 2. Pre-compute deployment topology & rendered content for all active release_targets
-3. Persist latest published file manifest to storage://
-4. Materialize physical files & perform AGENTS.md soft-merge.
+3. Persist latest published file manifest and fingerprint to storage://
+4. Materialize physical files (with in-memory diff check) & perform AGENTS.md soft-merge.
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
@@ -12,6 +13,8 @@ import os
 import sys
 import re
 import json
+import hashlib
+import datetime
 from typing import Dict, List, Any, Optional, Set, Tuple
 
 # 自動探測掛載 core 模組
@@ -40,7 +43,7 @@ AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
 
 
 class ReleasePublisher:
-    """發布引擎：負責 Target 拓撲映射、Header 巨集插值與 4 步原子交易。"""
+    """發布引擎：負責 Target 拓撲映射、Header 巨集插值、雙階 Diff 檢測與 4 步原子交易。"""
 
     def __init__(self, compiler: Optional[ArtifactCompiler] = None, host_dir: Optional[str] = None):
         self.compiler = compiler or ArtifactCompiler(host_dir=host_dir)
@@ -72,6 +75,38 @@ class ReleasePublisher:
             "enable_agents_md": True,
             "enable_project_changelog": True
         }
+
+    def compute_source_fingerprint(self) -> str:
+        """
+        計算來源端綜合特徵指紋 (SHA-256 Hex Digest)。
+        涵蓋 assets 資源、contributes 宣告、專案組態與 target 投影規則。
+        """
+        hasher = hashlib.sha256()
+
+        # 1. 專案組態
+        cfg = self._get_project_config()
+        hasher.update(json.dumps(cfg, sort_keys=True).encode("utf-8"))
+
+        # 2. Contributes 資料 (export, insert, token, release_target)
+        contrib = self.compiler.get_contributes_data()
+        hasher.update(json.dumps(contrib, sort_keys=True).encode("utf-8"))
+
+        # 3. 實體來源檔案特徵 (路徑與 SHA-1)
+        for exp in contrib.get("export", []):
+            src = exp.get("source", "")
+            if src:
+                content = self.compiler._read_file_content(src)
+                hasher.update(src.encode("utf-8"))
+                hasher.update(hashlib.sha1(content.encode("utf-8")).hexdigest().encode("utf-8"))
+
+        for ins in contrib.get("insert", []):
+            src = ins.get("source", "")
+            if src:
+                content = self.compiler._read_file_content(src)
+                hasher.update(src.encode("utf-8"))
+                hasher.update(hashlib.sha1(content.encode("utf-8")).hexdigest().encode("utf-8"))
+
+        return hasher.hexdigest()
 
     def get_registered_targets(self) -> List[Dict[str, Any]]:
         """自 contributes 獲取所有已宣告之 release_target。"""
@@ -204,8 +239,12 @@ class ReleasePublisher:
         res = re.sub(r"\{(?:export|target)\.[A-Za-z0-9_]+\}", "", res)
         return res.strip() + "\n\n" if res.strip() else ""
 
-    def _soft_merge_agents_md(self, dev_standards_content: str, proj_root: str) -> bool:
-        """執行 AGENTS.md 軟合併注入，保留自定義章節。"""
+    def _soft_merge_agents_md(self, dev_standards_content: str, proj_root: str, force: bool = False) -> Tuple[bool, bool]:
+        """
+        執行 AGENTS.md 軟合併注入，保留自定義章節。
+        Returns:
+            (success: bool, written: bool)
+        """
         target_file = os.path.join(proj_root, "AGENTS.md")
         injected_section = f"{AGENTS_MD_BEGIN}\n{dev_standards_content.strip()}\n{AGENTS_MD_END}"
 
@@ -219,7 +258,7 @@ class ReleasePublisher:
             )
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(full_content)
-            return True
+            return True, True
 
         # 若已存在，讀取並執行正則軟合併
         try:
@@ -237,32 +276,87 @@ class ReleasePublisher:
                 # 若無標籤，追加在最前或特定標題後
                 new_content = injected_section + "\n\n" + existing
 
+            if not force and new_content == existing:
+                return True, False
+
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(new_content)
-            return True
+            return True, True
         except Exception as e:
             print(f"[publisher:warning] Failed soft-merge AGENTS.md: {e}", file=sys.stderr)
-            return False
+            return False, False
 
-    def release_all(self, interactive: bool = False) -> Dict[str, Any]:
+    def release_all(self, force: bool = False, interactive: bool = False) -> Dict[str, Any]:
         """
-        執行 4 步原子發布交易流水線：
-        1. 檢查 storage:// 舊發布清單並安全清理舊檔案
-        2. 提前解算所有已啟用 Target 之檔案實體路徑與渲染內容
-        3. 原子寫入 storage:// 最新發布清單
-        4. 建立目標實體目錄並覆蓋寫入檔案（含 AGENTS.md 軟合併）
+        執行 4 步原子發布交易流水線（支援雙階 Diff 優化）：
+        Stage 0: 來源指紋提前短路檢查 (若 not force 且指紋相符且目標檔案皆存在，立即返回)
+        Stage 1: 內容佔位符展開 (compile_stage1)
+        Stage 2: 提前解算所有已啟用 Target 之檔案實體路徑與渲染內容
+        Stage 3: 原子寫入 storage:// 最新發布清單 (含 fingerprint)
+        Stage 4: 落地端檔案內容比對與增量輸出（含 AGENTS.md 軟合併）
         """
         cfg = self._get_project_config()
         active_target_names: List[str] = cfg.get("release_targets", ["antigravity"])
         enable_agents_md: bool = cfg.get("enable_agents_md", True)
+
+        # -------------------------------------------------------------
+        # Stage 0: 來源指紋提前短路檢查 (Source Fingerprint Gate)
+        # -------------------------------------------------------------
+        current_fingerprint = self.compute_source_fingerprint()
+        old_manifest_data: Dict[str, Any] = {}
+        if uri and uri.exists(MANIFEST_STORAGE_URI):
+            try:
+                data = uri.read_json(MANIFEST_STORAGE_URI)
+                if isinstance(data, dict):
+                    old_manifest_data = data
+            except Exception:
+                pass
+
+        if not force and old_manifest_data.get("fingerprint") == current_fingerprint:
+            published_files = old_manifest_data.get("published_files", [])
+            all_files_exist = True
+            for f_path in published_files:
+                if not os.path.isfile(f_path):
+                    all_files_exist = False
+                    break
+
+            if enable_agents_md:
+                proj_root = os.getcwd()
+                if uri:
+                    try:
+                        proj_root = uri.resolve("project://", interactive=False)
+                    except Exception:
+                        pass
+                if not os.path.isfile(os.path.join(proj_root, "AGENTS.md")):
+                    all_files_exist = False
+
+            if all_files_exist and published_files:
+                return {
+                    "success": True,
+                    "short_circuited": True,
+                    "published_count": len(published_files),
+                    "written_count": 0,
+                    "skipped_count": len(published_files),
+                    "removed_count": 0,
+                    "active_targets": active_target_names,
+                    "orphan_targets": [],
+                    "fingerprint": current_fingerprint
+                }
 
         # 執行 Stage 1: 內容佔位符展開與快取
         stage1_res = self.compiler.compile_stage1()
         if not stage1_res.get("success", False):
             return {
                 "success": False,
+                "short_circuited": False,
                 "error": "Stage 1 content compilation failed",
-                "details": stage1_res.get("errors", [])
+                "details": stage1_res.get("errors", []),
+                "published_count": 0,
+                "written_count": 0,
+                "skipped_count": 0,
+                "removed_count": 0,
+                "active_targets": active_target_names,
+                "orphan_targets": []
             }
 
         resolved_items = stage1_res.get("resolved_items", [])
@@ -316,14 +410,7 @@ class ReleasePublisher:
             except Exception:
                 pass
 
-        old_published_files: Set[str] = set()
-        if uri and uri.exists(MANIFEST_STORAGE_URI):
-            try:
-                manifest_data = uri.read_json(MANIFEST_STORAGE_URI)
-                if isinstance(manifest_data, dict):
-                    old_published_files = set(manifest_data.get("published_files", []))
-            except Exception:
-                pass
+        old_published_files: Set[str] = set(old_manifest_data.get("published_files", []))
 
         # 算出本次不再保留的過往孤立檔案
         current_published_set = set(precomputed_files.keys())
@@ -337,10 +424,12 @@ class ReleasePublisher:
                     print(f"[publisher:warning] Failed removing stale file {f_rem}: {e}", file=sys.stderr)
 
         # --- 步驟 3 (更新持久清單): 原子寫入 storage:// release_manifest.json ---
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_manifest = {
+            "fingerprint": current_fingerprint,
             "active_targets": active_target_names,
             "published_files": sorted(list(current_published_set)),
-            "updated_at": "2026-08-26"
+            "updated_at": now_str
         }
 
         if uri:
@@ -349,9 +438,20 @@ class ReleasePublisher:
             except Exception:
                 pass
 
-        # --- 步驟 4 (建立目錄並落地輸出檔案) ---
+        # --- 步驟 4 (建立目錄並落地輸出檔案，含 Diff 檢測) ---
         written_count = 0
+        skipped_count = 0
         for dst_abs, content in precomputed_files.items():
+            if not force and os.path.isfile(dst_abs):
+                try:
+                    with open(dst_abs, "r", encoding="utf-8") as f:
+                        existing_content = f.read()
+                    if existing_content == content:
+                        skipped_count += 1
+                        continue
+                except Exception:
+                    pass
+
             os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
             with open(dst_abs, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -388,12 +488,16 @@ class ReleasePublisher:
                         agents_standards_content, target_agents_abs, {}
                     )
 
-                self._soft_merge_agents_md(rendered_agents_content, proj_root)
+                self._soft_merge_agents_md(rendered_agents_content, proj_root, force=force)
 
         return {
             "success": True,
-            "published_count": written_count,
+            "short_circuited": False,
+            "published_count": len(current_published_set),
+            "written_count": written_count,
+            "skipped_count": skipped_count,
             "active_targets": active_target_names,
             "orphan_targets": orphan_targets,
-            "removed_count": len(files_to_remove)
+            "removed_count": len(files_to_remove),
+            "fingerprint": current_fingerprint
         }
