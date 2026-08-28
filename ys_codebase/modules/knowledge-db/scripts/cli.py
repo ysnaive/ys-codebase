@@ -44,7 +44,7 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db scan [space | --all] 執行增量/全量檔案指紋掃描")
         print("  python yscb.py knowledge-db bundle [space|--all] 打包空間符號為 SemanticBundle")
         print("  python yscb.py knowledge-db index [space | --all] 建立/更新空間倒排索引快取")
-        print("  python yscb.py knowledge-db search <query> [--detail|-d] [--json] 多欄位 BM25 語意檢索")
+        print("  python yscb.py knowledge-db search <query> [--snippet|-s] [--detail|-d] [--json] 多欄位 BM25 語意檢索")
         print("  python yscb.py knowledge-db clean [space | --all] 清理指定或全空間快取檔案")
         return 0
 
@@ -120,6 +120,7 @@ def main(argv: List[str]) -> int:
             lang_filter = None
             limit = 10
             is_detail = False
+            is_snippet = False
             is_json = False
 
             for a in sub_argv:
@@ -136,6 +137,8 @@ def main(argv: List[str]) -> int:
                         pass
                 elif a in ("--detail", "-d", "--verbose"):
                     is_detail = True
+                elif a in ("--snippet", "-s", "--preview"):
+                    is_snippet = True
                 elif a == "--json":
                     is_json = True
 
@@ -145,6 +148,7 @@ def main(argv: List[str]) -> int:
                 kinds=kind_filter,
                 languages=lang_filter,
                 limit=limit,
+                snippet=is_snippet,
             )
 
             if is_json:
@@ -157,12 +161,13 @@ def main(argv: List[str]) -> int:
                             "name": res.symbol.name,
                             "kind": res.symbol.kind,
                             "language": res.symbol.language,
-                            "file_path": res.symbol.file_path,
+                            "file_path": engine.normalize_workspace_path(res.symbol.file_path),
                             "line_number": res.symbol.line_number,
                             "signature": res.symbol.signature,
                             "docstring": res.symbol.docstring,
                         },
                         "snippet": res.snippet,
+                        "code_snippet": res.code_snippet.to_dict() if res.code_snippet else None,
                         "matched_terms": res.matched_terms,
                     }
                     for rank, res in enumerate(results, start=1)
@@ -174,13 +179,34 @@ def main(argv: List[str]) -> int:
                 print(f"[knowledge-db] 檢索查詢: '{query_str}' (未找到符合的結果)")
                 return 0
 
+            if is_snippet:
+                print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 筆結果，預覽模式):")
+                print("=" * 85)
+                for rank, res in enumerate(results, start=1):
+                    sym = res.symbol
+                    norm_path = engine.normalize_workspace_path(sym.file_path)
+                    print(f"#{rank:02d} [{res.score:05.2f}] {sym.kind.upper()}: {sym.name} ({sym.language})")
+                    print(f"     檔案: {norm_path}:{sym.line_number}")
+                    if sym.signature:
+                        print(f"     簽名: {sym.signature}")
+                    if res.code_snippet and res.code_snippet.docstring_summary:
+                        print(f"     摘要: {res.code_snippet.docstring_summary}")
+                    elif res.snippet:
+                        print(f"     摘要: {res.snippet}")
+                    if res.code_snippet and res.code_snippet.lines:
+                        print(f"     代碼片段 (Lines {res.code_snippet.start_line}~{res.code_snippet.end_line}):")
+                        print(res.code_snippet.format_text(prefix="       "))
+                    print("-" * 85)
+                return 0
+
             if is_detail:
                 print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 筆結果):")
                 print("=" * 85)
                 for rank, res in enumerate(results, start=1):
                     sym = res.symbol
+                    norm_path = engine.normalize_workspace_path(sym.file_path)
                     print(f"#{rank:02d} [{res.score:05.2f}] {sym.kind.upper()}: {sym.name} ({sym.language})")
-                    print(f"     檔案: {sym.file_path}:{sym.line_number}")
+                    print(f"     檔案: {norm_path}:{sym.line_number}")
                     if sym.signature:
                         print(f"     簽名: {sym.signature}")
                     if res.snippet:
@@ -193,7 +219,8 @@ def main(argv: List[str]) -> int:
             print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 筆結果):")
             for rank, res in enumerate(results, start=1):
                 sym = res.symbol
-                print(f"#{rank:02d} {sym.file_path}:{sym.line_number}")
+                norm_path = engine.normalize_workspace_path(sym.file_path)
+                print(f"#{rank:02d} {norm_path}:{sym.line_number}")
             return 0
 
         elif subcmd == "clean":

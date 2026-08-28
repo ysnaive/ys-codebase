@@ -99,7 +99,30 @@ class TestCLI(YSCBTestCase):
             self.assertIn("symbol", item)
             self.assertIn("file_path", item["symbol"])
 
-        # 4. 0 筆結果情境 (ET-01)
+        # 4. Snippet 模式 (--snippet, -s, --preview)
+        for flag in ["--snippet", "-s", "--preview"]:
+            buf_snip = io.StringIO()
+            with contextlib.redirect_stdout(buf_snip):
+                ret = main(["search", "PIDController", flag])
+            self.assertEqual(ret, 0)
+            out_snip = buf_snip.getvalue()
+            self.assertIn("檢索查詢", out_snip)
+            if "#01" in out_snip:
+                self.assertIn("預覽模式", out_snip)
+                self.assertIn("檔案:", out_snip)
+
+        # 5. JSON + Snippet 模式
+        buf_json_snip = io.StringIO()
+        with contextlib.redirect_stdout(buf_json_snip):
+            ret = main(["search", "PIDController", "-s", "--json"])
+        self.assertEqual(ret, 0)
+        data_snip = json.loads(buf_json_snip.getvalue())
+        self.assertIn("results", data_snip)
+        if data_snip["total"] > 0:
+            item = data_snip["results"][0]
+            self.assertIn("code_snippet", item)
+
+        # 6. 0 筆結果情境 (ET-01)
         buf_empty = io.StringIO()
         with contextlib.redirect_stdout(buf_empty):
             ret = main(["search", "NonExistentTermXYZ_123456"])
