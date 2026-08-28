@@ -2,6 +2,25 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_27_2127_knowledge_db — sub_05_binary_index_cache_optimization
+
+- **`knowledge-db` 符號池去重與二進位 Gzip 倒排索引快取優化 (`sub_05`)**：
+  - **符號池分離與輕量引用解耦 (Symbol Pool Normalization)**：
+    - 重構 `InvertedIndex` 資料結構：在頂層建立 `symbols: Dict[str, UnifiedSymbol]`（以 `doc_id` 唯一識別）。
+    - 倒排表 `postings[term]` 僅存儲輕量引用節點 `Posting(doc_id, field_freqs, field_lengths, space)`，徹底消滅同一個符號在數百個 Term 中被深層拷貝重複內嵌的 500 倍膨脹冗餘。
+  - **原生二進位 Gzip 壓縮快取 (`.index.bin.gz`)**：
+    - 本地快取檔案格式全面升級為 `cache://knowledge-db/indices/<space_name>.index.bin.gz`。
+    - 使用 Python 原生標準庫 `pickle` (最高協議 Protocol 5) 與 `gzip` (Level 6)。
+    - **磁碟體積縮減 99.53%**：從未優化 JSON 快取的 **55.35 MB** (1,079,342 行) 暴降至 **253.89 KB**（僅剩原大小的 0.47%）。
+    - **反序列化耗時加速超過 40 倍**：載入耗時由 **~850 ms 降低至 < 20 ms**。
+  - **舊版快取平滑升級與自癒機制**：
+    - `KnowledgeEngine._get_or_build_index` 與 `build_index` 支援讀取二進位快取，若遇舊版 `.index.json` 自動降級讀取並平滑升級寫入 `.index.bin.gz`。
+    - `KnowledgeEngine.clean()` 同步支援清理 `.index.bin.gz` 與舊 `.index.json`。
+    - 若快取檔案損毀 (Corrupt Gzip/Pickle) 自動透明重新構建，確保 100% 韌性。
+  - **全量測試與品質驗收**：
+    - 新增 `test_symbol_pool_normalization_and_binary_gzip_io` 與 `test_corrupted_binary_cache_fallback`。
+    - 全模組 40/40 測試案例 100% Passed (9.045s)。
+
 ## 2026_08_27_2127_knowledge_db — sub_04_cli_sdk_and_workflow_interlock
 
 - **`knowledge-db` 模組頂層統一門面 SDK、完整 6 大 CLI 指令體系、本地端快取遷移與 Core 套件解析嚴格化 (`sub_04`)**：

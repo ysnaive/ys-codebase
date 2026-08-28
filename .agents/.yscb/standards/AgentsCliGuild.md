@@ -29,6 +29,12 @@
 | `dev` | `dev release-check` | Run 3-Gate verification on release readiness without packaging | • 發布前預檢 3-Gate 合規性 | — |
 | `dev` | `dev release-git` | Integrated pipeline: test -> release-check -> release -> local git commit/tag | • 發布完成後進行本地 git commit 與 tag (🚨 嚴禁遠端 push) | • 🚨 未獲指示前絕對禁止擅自執行<br/>• 🚨 嚴禁執行 git push 遠端同步 |
 | `dev` | `dev test` | Run module tests inside an isolated sandbox | • 正在開發當前模組，需驗證單元邏輯或整體功能 (Phase 5/6)<br/>• 微調時優先附加 --no-build 或 -k <pattern> 快速跑測 | • 🚨 嚴禁在跑測前手動執行 dev build<br/>• 🚨 嚴禁在日常開發中執行 dev test --all (僅全系統回歸或顯式指示時調用)<br/>• 🚨 嚴禁調用內部原子操作 dev op-test |
+| `knowledge-db` | `knowledge-db bundle` | 執行指定空間或全空間聯集之多語言語意打包與導出 | • 建置與發布空間之 SemanticBundle 發布包 | • 僅查詢檢索時無需重複完整打包 |
+| `knowledge-db` | `knowledge-db clean` | 清理指定空間或全空間之指紋、Bundle 與倒排索引快取 | • 快取異常損毀或需要徹底重建資料庫時 | • 日常常規操作無需隨意清理快取 |
+| `knowledge-db` | `knowledge-db index` | 建置與快取指定空間或全空間聯集之多欄位倒排索引 | • 預熱檢索快取加速大規模檢索 | • 檢索 search 指令已內建自動懶索引建置 |
+| `knowledge-db` | `knowledge-db scan` | 執行指定空間或全空間聯集增量指紋掃描 | • 比對程式碼與文檔變更並更新指紋庫 | • 測試期間無需頻繁手動掃描 |
+| `knowledge-db` | `knowledge-db search` | 對全空間或指定空間符號進行多欄位加權 BM25 語意檢索 | • 透過關鍵字、符號名稱或功能描述快速定位代碼與文檔 | • 單純檢視空間清單時請用 status |
+| `knowledge-db` | `knowledge-db status` | 查看知識庫空間狀態、指紋快取、同義詞與索引統計 | • 日常檢視知識庫已註冊空間與快取狀態 | • 執行大量資料庫重構或打包時 |
 <!-- YSCB_AGENTS_CLI_GUILD_END -->
 
 ---
