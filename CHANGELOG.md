@@ -2,7 +2,30 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_28_1754_module_toolchain_optimization — sub_01_core_contributes_file_structure_upgrade
+
+- **Core Contributes 系統檔案結構升級與純淨目錄化標準重構 (`sub_01`)**：
+  - **目錄化 Contributes 唯一官方標準 (`source/<module>/contributes/<target>.json`)**：
+    - 徹底廢除散落於模組根目錄之 `contributes.<target>.json` 與 `manifest.json` 內嵌擴充宣告。
+    - 確立全生態系唯一的標準結構：模組欲貢獻給目標 `<target>` 之宣告一律儲存於專屬 `contributes/<target>.json` 檔案中。
+  - **Manifest 徹底瘦身 (Slimming down >98%)**：
+    - 全系統 4 大核心模組 (`core`, `dev`, `knowledge-db`, `agents-workflow`) 之 `manifest.json` 徹底剝除 `"contributes"` 冗餘物件，恢復純粹輕量元數據宣告（`agents-workflow/manifest.json` 由 554 行精簡至 10 行）。
+  - **雙階聚合引擎重構與專案特化覆蓋 (`core.contributes.ContributesAggregator`)**：
+    - **階層 ① (模組貢獻)**：自動掃描已安裝模組之 `module://<donor>/contributes/<target>.json`，遞迴注入 `__provider__ = donor` 標記並進行深度拓撲合併。
+    - **階層 ② (專案特化注入與覆蓋)**：完整掃描 `config://<target>/config.project.json`（與 `config.local.json`）之 `"contributes"` 物件，疊加覆蓋於模組基礎貢獻之上，保障下游專案特化擴充擁有最高優先權。
+    - **物化快取與自愈機制 (Auto-Healing)**：聚合結果原子寫入 `cache://<target>/contributes.merged.json`；若快取遺失或損毀，`core.contributes.get()` 自動觸發即時自愈重建。
+  - **消費端 SDK 100% 收斂與空間穿透反模式清算 (Zero Source Probing)**：
+    - 徹底清理 `agents-workflow/compiler.py` 與 `core/providers.py` 中探測 `module.source://` 的歷史穿透壞味道，恪守三層空間公理。
+    - 全模組消費端（`core/providers.py`、`core/engine.py`、`knowledge_db/space.py`、`agents_workflow/compiler.py`）徹底廢除手寫檔案遍歷，統一 100% 調用 `core.contributes.get(target, key)` SDK 查詢。
+  - **測試沙盒構建產物覆蓋增強 (`dev.testing.sandbox`)**：
+    - 升級測試沙盒初始化機制，自動將 `module.build://` 構建之最新測試包解壓覆蓋至沙盒 `engine/modules/` 空間，確保 Hermetic Build 與 Dogfooding 測試高保真度。
+  - **全量測試與回歸驗證**：
+    - 全系統 4 大核心模組虛擬沙盒回歸跑測 **164/164 測試案例 100% Passed (19.632s)**，全模組靜態合規檢查 `dev check --all` 100% PASSED。
+  - **知識庫交付**：
+    - 交付 `source/core/contributes.format.md`、`source/knowledge-db/contributes.format.md`、`source/dev/contributes.format.md` 與 `source/agents-workflow/contributes.format.md`。
+
 ## 2026_08_28_1735_agents_workflow_release_diff_optimization
+
 
 - **`agents-workflow` 發布引擎來源 Diff 檢測與無效 File IO 優化**：
   - **Stage 0 來源端綜合特徵指紋與提前短路 (Source Fingerprint Early Short-Circuit)**：

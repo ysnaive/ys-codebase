@@ -213,11 +213,11 @@ class SandboxProvisioner:
         }
         
         # Ingest installed host modules and config
+        sandbox_modules_dir = os.path.join(ctx.engine_dir, "modules")
+        os.makedirs(sandbox_modules_dir, exist_ok=True)
         if uri.exists("module://"):
             host_modules_dir = uri.resolve("module://")
             if os.path.isdir(host_modules_dir):
-                sandbox_modules_dir = os.path.join(ctx.engine_dir, "modules")
-                os.makedirs(sandbox_modules_dir, exist_ok=True)
                 for mod_name in sorted(os.listdir(host_modules_dir)):
                     mod_src_path = os.path.join(host_modules_dir, mod_name)
                     if os.path.isdir(mod_src_path):
@@ -226,29 +226,49 @@ class SandboxProvisioner:
                             shutil.rmtree(dest_mod)
                         shutil.copytree(mod_src_path, dest_mod, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
-                        # Dynamically read manifest version from real source/modules
-                        mod_ver = "1.0.0"
-                        mod_desc = f"Standard host module {mod_name}"
-                        mf_path = os.path.join(mod_src_path, "manifest.json")
-                        if os.path.isfile(mf_path):
-                            try:
-                                with open(mf_path, "r", encoding="utf-8") as mf_f:
-                                    mf_d = json.load(mf_f)
-                                mod_ver = mf_d.get("version", mod_ver)
-                                mod_desc = mf_d.get("description", mod_desc)
-                            except Exception:
-                                pass
+        # Overlay freshly built packages from module.build:// (dev build)
+        if uri.exists("module.build://"):
+            build_root_dir = uri.resolve("module.build://")
+            if os.path.isdir(build_root_dir):
+                for mod_name in sorted(os.listdir(build_root_dir)):
+                    mod_b_dir = os.path.join(build_root_dir, mod_name)
+                    if os.path.isdir(mod_b_dir):
+                        zips = [f for f in os.listdir(mod_b_dir) if f.endswith(".zip")]
+                        if zips:
+                            latest_zip = os.path.join(mod_b_dir, sorted(zips)[-1])
+                            dest_mod = os.path.join(sandbox_modules_dir, mod_name)
+                            if os.path.exists(dest_mod):
+                                shutil.rmtree(dest_mod)
+                            os.makedirs(dest_mod, exist_ok=True)
+                            with zipfile.ZipFile(latest_zip, "r") as zf:
+                                zf.extractall(dest_mod)
 
-                        host_config["installed_modules"][mod_name] = {
-                            "version": mod_ver,
-                            "installed_at": "host_inherited",
-                            "provider": prov_uri,
-                            "description": mod_desc
-                        }
+        # Register all provisioned modules into sandbox host_config
+        for mod_name in sorted(os.listdir(sandbox_modules_dir)):
+            dest_mod = os.path.join(sandbox_modules_dir, mod_name)
+            if os.path.isdir(dest_mod):
+                mod_ver = "1.0.0"
+                mod_desc = f"Standard host module {mod_name}"
+                mf_path = os.path.join(dest_mod, "manifest.json")
+                if os.path.isfile(mf_path):
+                    try:
+                        with open(mf_path, "r", encoding="utf-8") as mf_f:
+                            mf_d = json.load(mf_f)
+                        mod_ver = mf_d.get("version", mod_ver)
+                        mod_desc = mf_d.get("description", mod_desc)
+                    except Exception:
+                        pass
+                host_config["installed_modules"][mod_name] = {
+                    "version": mod_ver,
+                    "installed_at": "sandbox_provisioned",
+                    "provider": prov_uri,
+                    "description": mod_desc
+                }
 
         # Write finalized host yscb.config.json
         with open(os.path.join(ctx.host_dir, "yscb.config.json"), "w", encoding="utf-8") as f:
             json.dump(host_config, f, indent=2)
+
 
         # 2. Copy host bootstrapper script yscb.py with rigid self-location
         host_d, _ = uri._get_host_config()

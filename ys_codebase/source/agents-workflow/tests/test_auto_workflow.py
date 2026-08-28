@@ -51,23 +51,25 @@ class TestAutoWorkflow(YSCBTestCase):
         self.assertIn("__@{WORKFLOW_AUTO}__", content)
 
     def test_ft_02_manifest_export_and_token(self):
-        """FT-02: 驗證 manifest.json 正確註冊 Auto.md 導出與 WORKFLOW_AUTO token 錨點。"""
-        self.assertTrue(os.path.exists(self.manifest_path))
-        with open(self.manifest_path, "r", encoding="utf-8") as f:
-            manifest_data = json.load(f)
+        """FT-02: 驗證 contributes/agents-workflow.json 正確註冊 Auto.md 導出與 WORKFLOW_AUTO token 錨點。"""
+        contrib_aw_path = os.path.join(os.path.dirname(self.manifest_path), "contributes", "agents-workflow.json")
+        self.assertTrue(os.path.exists(contrib_aw_path))
+        with open(contrib_aw_path, "r", encoding="utf-8") as f:
+            contrib_data = json.load(f)
 
-        exports = manifest_data.get("contributes", {}).get("agents-workflow", {}).get("export", [])
-        tokens = manifest_data.get("contributes", {}).get("agents-workflow", {}).get("token", [])
+        exports = contrib_data.get("export", [])
+        tokens = contrib_data.get("token", [])
 
         auto_export = next(
             (e for e in exports if e.get("source") == "module://agents-workflow/assets/workflows/Auto.md"),
             None
         )
-        self.assertIsNotNone(auto_export, "manifest.json 必須宣告導出 Auto.md")
+        self.assertIsNotNone(auto_export, "contributes/agents-workflow.json 必須宣告導出 Auto.md")
         self.assertEqual(auto_export.get("type"), "workflow")
 
         token_values = [t.get("value") for t in tokens]
-        self.assertIn("WORKFLOW_AUTO", token_values, "manifest.json 必須註冊 WORKFLOW_AUTO token")
+        self.assertIn("WORKFLOW_AUTO", token_values, "contributes/agents-workflow.json 必須註冊 WORKFLOW_AUTO token")
+
 
     def test_ft_03_compilation_and_placeholder_resolution(self):
         """FT-03: 驗證 compiler.py 能順利編譯 Auto.md 且佔位符與相對路徑解算正確。"""

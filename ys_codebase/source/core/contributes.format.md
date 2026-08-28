@@ -1,6 +1,6 @@
 # Core 模組貢獻擴充格式說明書 (contributes.format.md)
 
-> 本文件定義其他模組在 `manifest.json` 或 `contributes.core.json` 中向 `core` 宣告擴充之標準格式。
+> 本文件定義其他模組在 `source/<donor>/contributes/core.json` 中向 `core` 宣告擴充之標準格式。
 
 ---
 
@@ -8,62 +8,57 @@
 
 | 擴充鍵名 (Key) | 說明 | 格式型別 |
 | :--- | :--- | :--- |
-| **`path_placeholders`** | 註冊自訂路徑佔位符（用於 URI 解算，例 `{workspace_id}`） | `array[object]` |
-| **`uri_schemes`** | 註冊自訂語意 URI 協議（例 `plans://...`, `docs://...`） | `array[object]` |
-| **`events`** | 訂閱核心生命週期事件（例 `on_install`, `on_reload`） | `array[object]` |
+| **`uri_schemes`** | 註冊自訂語意 URI 協議（例 `workflow.plans://`, `knowledge.storage://`） | `array[object]` |
+| **`commands`** | 註冊 CLI 子指令、描述、使用情境 (Pros) 與防呆條款 (Cons) | `object[string, object]` |
 
 ---
 
-## 2. Schema 定義與宣告範例
+## 2. 宣告檔案路徑
 
-### 2.1 路徑佔位符 (`path_placeholders`)
-```json
-{
-  "path_placeholders": [
-    {
-      "token": "workspace_id",
-      "handler": "scripts/resolvers.py:resolve_workspace",
-      "description": "解析當前工作區識別碼"
-    }
-  ]
-}
+模組必須將欲向 `core` 貢獻之內容建立於以下標準路徑：
+```text
+source/<module>/contributes/core.json
 ```
 
-### 2.2 語意 URI 協議 (`uri_schemes`)
+---
+
+## 3. Schema 定義與宣告範例
+
+### 3.1 語意 URI 協議 (`uri_schemes`)
 ```json
 {
   "uri_schemes": [
     {
-      "token": "plans",
+      "token": "workflow.plans",
       "type": "config",
-      "value": "paths.plans_dir",
+      "value": "paths.plans",
       "description": "指向專案活躍開發計畫目錄"
     },
     {
-      "token": "docs",
-      "type": "config",
-      "value": "paths.docs_dir",
-      "description": "指向專案知識庫文檔目錄"
-    },
-    {
-      "token": "custom_cache",
+      "token": "knowledge.storage",
       "type": "const",
-      "value": "yscb://.cache/{module}/custom/",
-      "description": "模組自訂暫存快取目錄"
+      "value": "cache://knowledge-db/",
+      "description": "知識庫模組專屬快取存儲目錄"
     }
   ]
 }
 ```
 
-### 2.3 生命週期事件訂閱 (`events`)
+### 3.2 CLI 子指令與防呆手冊 (`commands`)
 ```json
 {
-  "events": [
-    {
-      "event_name": "on_reload",
-      "handler": "scripts/hooks.py:on_env_reloaded",
-      "description": "當環境重構刷新完成時觸發"
+  "commands": {
+    "test": {
+      "description": "Run module tests inside an isolated sandbox",
+      "case_pros": [
+        "正在開發當前模組，需驗證單元邏輯或整體功能 (Phase 5/6)",
+        "微調時優先附加 --no-build 或 -k <pattern> 快速跑測"
+      ],
+      "case_cons": [
+        "🚨 嚴禁在跑測前手動執行 dev build",
+        "🚨 嚴禁在日常開發中執行 dev test --all"
+      ]
     }
-  ]
+  }
 }
 ```

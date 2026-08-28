@@ -4,11 +4,9 @@
 
 ---
 
-## 1. 注入途徑 (Injection Pathways)
+## 1. 注入途徑 (唯一標準路徑)
 
-### 途徑 A：獨立貢獻檔案 (`module://<donor>/contributes.knowledge-db.json`)【強烈推薦】
-
-在模組根目錄建立 `contributes.knowledge-db.json`：
+在模組目錄建立 `source/<donor>/contributes/knowledge-db.json`：
 
 ```json
 {
@@ -16,7 +14,6 @@
     "<space_name>": {
       "description": "模組專屬知識庫空間說明",
       "include": [
-        "module://<donor>/source",
         "module://<donor>/docs"
       ],
       "exclude": [
@@ -30,30 +27,6 @@
     ["詞組A", "synonym_a", "alias_a"],
     ["狀態機", "state_machine", "FSM"]
   ]
-}
-```
-
-### 途徑 B：模組清單 (`module://<donor>/manifest.json`)
-
-在 `manifest.json` 的 `contributes` 物件下宣告：
-
-```json
-{
-  "name": "<donor-module>",
-  "version": "1.0.0.0",
-  "contributes": {
-    "knowledge-db": {
-      "spaces": {
-        "<space_name>": {
-          "description": "模組專屬空間",
-          "include": ["module://<donor-module>/source"]
-        }
-      },
-      "thesaurus": [
-        ["關鍵字", "keyword", "key"]
-      ]
-    }
-  }
 }
 ```
 

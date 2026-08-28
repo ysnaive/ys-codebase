@@ -8,40 +8,60 @@
 
 ## 1. 宣告式擴充點 (Contribution Points)
 
-`dev` 模組透過 `contributes.core` 命名空間向微內核 `core` 自宣告注入以下開發者專屬空間協議：
+`dev` 模組透過 `source/dev/contributes/` 目錄向全系統宣告擴充：
 
+### 1.1 向 `core` 貢獻 (`contributes/core.json`)
+注入開發者專屬空間協議與 CLI 開發指令清冊：
 ```json
 {
-  "contributes": {
-    "core": {
-      "uri_schemes": [
-        {
-          "token": "module.source",
-          "type": "const",
-          "value": "yscb://source/",
-          "description": "模組源碼空間根目錄"
-        },
-        {
-          "token": "module.build",
-          "type": "const",
-          "value": "yscb://build/",
-          "description": "本地開發完整建置產物空間根目錄"
-        },
-        {
-          "token": "module.release",
-          "type": "const",
-          "value": "yscb://release/",
-          "description": "模組發布來源空間根目錄"
-        }
+  "uri_schemes": [
+    {
+      "token": "module.source",
+      "type": "const",
+      "value": "yscb://source/",
+      "description": "模組源碼空間根目錄"
+    },
+    {
+      "token": "module.build",
+      "type": "const",
+      "value": "yscb://build/",
+      "description": "本地開發完整建置產物空間根目錄"
+    },
+    {
+      "token": "module.release",
+      "type": "const",
+      "value": "yscb://release/",
+      "description": "模組發布來源空間根目錄"
+    }
+  ],
+  "commands": {
+    "test": {
+      "description": "Run module tests inside an isolated sandbox",
+      "case_pros": [
+        "正在開發當前模組，需驗證單元邏輯或整體功能 (Phase 5/6)",
+        "微調時優先附加 --no-build 或 -k <pattern> 快速跑測"
+      ],
+      "case_cons": [
+        "🚨 嚴禁在跑測前手動執行 dev build",
+        "🚨 嚴禁在日常開發中執行 dev test --all",
+        "🚨 嚴禁調用內部原子操作 dev op-test"
       ]
     }
   }
 }
 ```
 
----
-
-## 2. 擴充說明
-
-- **`module.source://`**：供開發者編輯源碼、建立單元測試。
-- **`module.build://`**：供建置工具輸出版本化純淨產物包（`module.build://{version}/`），自動排除開發期雜項。
+### 1.2 向 `agents-workflow` 貢獻 (`contributes/agents-workflow.json`)
+注入開發者專屬 SOP 標準規範：
+```json
+{
+  "insert": [
+    {
+      "type": "uri",
+      "token": "WORKFLOW_SOP_STANDARDS",
+      "value": "module://dev/assets/standards/DevEngineeringStandards.md",
+      "mode": "below"
+    }
+  ]
+}
+```

@@ -86,58 +86,19 @@ class SpaceManager:
         return self._get_storage_root()
 
     def _load_contributes(self) -> Dict[str, Any]:
-        """讀取模組聯動注入之 Contributes 資料"""
+        """讀取模組聯動注入之 Contributes 資料 (100% 由 core.contributes SDK 驅動)"""
         if self._custom_contributes_data is not None:
             return self._custom_contributes_data
 
-        # 嘗試讀取快取之 contributes.merged.json
-        merged_path = _safe_resolve_uri("cache://knowledge-db/contributes.merged.json")
-        if merged_path and merged_path.exists():
-            try:
-                with open(merged_path, "r", encoding="utf-8", errors="replace") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"Failed to read merged contributes cache: {e}")
-
-        # 若快取不存在，嘗試透過 core.uri 遍歷 module://
         try:
-            from core import uri as core_uri
-            installed_modules = core_uri.listdir("module://") if core_uri.exists("module://") else []
-            aggregated: Dict[str, Any] = {"spaces": {}, "thesaurus": []}
-            for mod in installed_modules:
-                # 檢查 contributes.knowledge-db.json
-                contrib_uri = f"module://{mod}/contributes.knowledge-db.json"
-                if core_uri.exists(contrib_uri):
-                    try:
-                        data = core_uri.read_json(contrib_uri)
-                        if isinstance(data, dict):
-                            for sp_name, sp_body in data.get("spaces", {}).items():
-                                if isinstance(sp_body, dict):
-                                    sp_body["origin"] = f"module:{mod}"
-                                    aggregated["spaces"][sp_name] = sp_body
-                            for th_item in data.get("thesaurus", []):
-                                aggregated["thesaurus"].append(th_item)
-                    except Exception as ex:
-                        logger.warning(f"Failed reading {contrib_uri}: {ex}")
+            from core import contributes
+            data = contributes.get("knowledge-db")
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            logger.warning(f"Failed to read contributes via core SDK: {e}")
 
-                # 檢查 manifest.json
-                manifest_uri = f"module://{mod}/manifest.json"
-                if core_uri.exists(manifest_uri):
-                    try:
-                        m_data = core_uri.read_json(manifest_uri)
-                        kdb_contrib = m_data.get("contributes", {}).get("knowledge-db", {})
-                        if isinstance(kdb_contrib, dict):
-                            for sp_name, sp_body in kdb_contrib.get("spaces", {}).items():
-                                if isinstance(sp_body, dict) and sp_name not in aggregated["spaces"]:
-                                    sp_body["origin"] = f"module:{mod}"
-                                    aggregated["spaces"][sp_name] = sp_body
-                            for th_item in kdb_contrib.get("thesaurus", []):
-                                aggregated["thesaurus"].append(th_item)
-                    except Exception as ex:
-                        logger.warning(f"Failed reading {manifest_uri}: {ex}")
-            return aggregated
-        except Exception:
-            return {"spaces": {}, "thesaurus": []}
+        return {"spaces": {}, "thesaurus": []}
 
     def load_spaces(self) -> Dict[str, SpaceConfig]:
         """
@@ -152,11 +113,13 @@ class SpaceManager:
         if isinstance(contrib_spaces, dict):
             for sp_name, sp_val in contrib_spaces.items():
                 if isinstance(sp_val, dict):
-                    origin = sp_val.get("origin", SpaceOrigin.CONTRIBUTED.value)
+                    donor = sp_val.get("__provider__")
+                    origin = f"module:{donor}" if donor else sp_val.get("origin", SpaceOrigin.CONTRIBUTED.value)
                     try:
                         spaces[sp_name] = SpaceConfig.from_dict(sp_name, sp_val, origin=origin)
                     except InvalidSpaceConfigError as e:
                         logger.warning(f"Skipping invalid contributed space '{sp_name}': {e}")
+
 
         # 2. Project Config (config.project.json)
         proj_cfg_path = self._get_config_path("config.project.json")
