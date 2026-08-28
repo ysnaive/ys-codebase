@@ -31,7 +31,7 @@
 | **`python yscb.py knowledge-db clean`** | ✅ 快取異常損毀或需要徹底重建資料庫時 | 🚨 日常常規操作無需隨意清理快取 |
 | **`python yscb.py knowledge-db index`** | ✅ 預熱檢索快取加速大規模檢索 | 🚨 檢索 search 指令已內建自動懶索引建置 |
 | **`python yscb.py knowledge-db scan`** | ✅ 比對程式碼與文檔變更並更新指紋庫 | 🚨 測試期間無需頻繁手動掃描 |
-| **`python yscb.py knowledge-db search`** | ✅ 透過關鍵字、符號名稱或功能描述快速定位代碼與文檔 | 🚨 單純檢視空間清單時請用 status |
+| **`python yscb.py knowledge-db search`** | ✅ 透過關鍵字、符號名稱或功能描述快速定位代碼與文檔 (支援 --snippet 預覽代碼區塊與 Docstring) | 🚨 單純檢視空間清單時請用 status |
 | **`python yscb.py knowledge-db status`** | ✅ 環境健康診斷與自我修復檢查<br/>✅ 日常檢視知識庫已註冊空間與快取狀態 | 🚨 執行大量資料庫重構或打包時 |
 <!-- YSCB_AGENTS_CLI_GUILD_END -->
 
