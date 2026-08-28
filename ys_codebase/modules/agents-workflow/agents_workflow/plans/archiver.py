@@ -84,7 +84,17 @@ class PlanArchiver:
         year, month = match.group(1), match.group(2)
         dest_dir = self.archive_dir / year / month / plan_name
 
-        # 1. 檢查完成狀態
+        # 1. 執行 PlanVerifier 剛性合規檢核 (FR-07)
+        from .verifier import PlanVerifier
+        verifier = PlanVerifier(self.plans_dir, self.archive_dir)
+        report = verifier.verify_plan(src_dir)
+        if report.has_fails and not force:
+            fail_msgs = "\n  - ".join(report.errors[:5])
+            raise PlanIncompleteError(
+                f"計畫 '{plan_name}' 存在未通過之檢核項目 ({len(report.errors)} 個重大錯誤 FAIL)，無法歸檔：\n  - {fail_msgs}\n若確定要強制歸檔，請使用 --force 參數。"
+            )
+
+        # 2. 檢查完成狀態
         ft_plan = src_dir / "fast_track_plan.md"
         legacy_ft_plan = src_dir / "FT_plan.md"
         p07_walkthrough = src_dir / "P07_walkthrough.md"
@@ -109,7 +119,8 @@ class PlanArchiver:
                 f"計畫 '{plan_name}' 尚未完成（未找到 Completed 標記）。若確定要強制歸檔，請使用 --force 參數。"
             )
 
-        # 2. 檢查全域 CHANGELOG.md 是否記載
+        # 3. 檢查全域 CHANGELOG.md 是否記載
+
         changelog_file = self.project_root / "CHANGELOG.md"
         if changelog_file.exists() and not force:
             cl_content = changelog_file.read_text(encoding="utf-8", errors="ignore")
