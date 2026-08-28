@@ -7,7 +7,11 @@ Project Overrides: config://<target>/config.project.json
 from typing import Dict, Any, List, Optional
 import os
 import copy
+import logging
 from core import uri
+
+logger = logging.getLogger("core.contributes")
+
 
 def _tag_provider(data: Any, donor_name: str) -> Any:
     """
@@ -163,19 +167,26 @@ class ContributesAggregator:
                 except Exception:
                     pass
 
-        # 4. 階層 ②：專案層級與本機層級特化注入 (Project/Local Overrides)
+        # 4. 階層 ②：專案層級特化注入 (Project Contribute Overrides)
+        # 🚨 剛性禁止 contribute.local.json，檢測到時輸出警告日誌並忽略。
         all_targets = list(aggregated.keys())
         for target in all_targets:
-            for cfg_filename in ["config.project.json", "config.local.json"]:
-                cfg_uri = f"config://{target}/{cfg_filename}"
-                if uri.exists(cfg_uri):
-                    try:
-                        p_data = uri.read_json(cfg_uri)
-                        p_contribs = p_data.get("contributes", {}).get(target, {}) if isinstance(p_data, dict) else {}
-                        if isinstance(p_contribs, dict):
-                            self._deep_merge(aggregated[target], p_contribs)
-                    except Exception:
-                        pass
+            local_contrib_uri = f"config://{target}/contribute.local.json"
+            if uri.exists(local_contrib_uri):
+                logger.warning(f"Ignoring '{local_contrib_uri}': project contribute overrides must be tracked by Git (no local overrides allowed).")
+
+            proj_contrib_uri = f"config://{target}/contribute.json"
+            if uri.exists(proj_contrib_uri):
+                try:
+                    c_data = uri.read_json(proj_contrib_uri)
+                    if isinstance(c_data, dict):
+                        # contribute.json 可直接為該目標之擴充內容，或嵌套於 target 鍵下
+                        target_overlay = c_data.get(target, c_data)
+                        if isinstance(target_overlay, dict):
+                            self._deep_merge(aggregated[target], target_overlay)
+                except Exception as e:
+                    logger.warning(f"Failed to read project contribute override '{proj_contrib_uri}': {e}")
+
 
             # 5. 持久化物化至 cache 空間
             target_cache_uri = f"cache://{target}/contributes.merged.json"

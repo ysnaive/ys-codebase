@@ -22,13 +22,13 @@ from knowledge_db.space import SpaceManager
 class TestSpaceManager(YSCBTestCase):
     @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
     def test_ft_04_dual_track_aggregation_and_priority(self):
-        """FT-04: 驗證 SpaceManager 雙軌聚合與 Local > Project > Contributed 優先權覆蓋 (EC-07)"""
+        """FT-04: 驗證 SpaceManager Contributes 體系與 Project contribute.json 優先權覆蓋"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             cfg_dir = temp_path / "config"
             cfg_dir.mkdir(parents=True)
 
-            # 1. 模擬 Contributed 空間
+            # 1. 模擬 Contributed 空間 (來自 Module Donor)
             mock_contributes = {
                 "spaces": {
                     "mod_space": {
@@ -46,34 +46,22 @@ class TestSpaceManager(YSCBTestCase):
                 "thesaurus": [["同義詞A", "syn_a"]],
             }
 
-            # 2. 模擬 Project Config
-            proj_config = {
+            # 2. 模擬專案特化 contribute.json (覆蓋 shared_space 並新增 proj_space)
+            proj_contribute = {
                 "spaces": {
                     "proj_space": {
-                        "description": "專案組態空間",
+                        "description": "專案注入空間",
                         "include": [str(temp_path / "proj_src")],
                     },
                     "shared_space": {
-                        "description": "Project 覆蓋版本",
+                        "description": "Project contribute.json 覆蓋版本",
                         "include": [str(temp_path / "proj_shared")],
                     },
                 },
                 "thesaurus": [["同義詞B", "syn_b"]],
             }
-            with open(cfg_dir / "config.project.json", "w", encoding="utf-8") as f:
-                json.dump(proj_config, f)
-
-            # 3. 模擬 Local Config (覆蓋 shared_space)
-            local_config = {
-                "spaces": {
-                    "shared_space": {
-                        "description": "Local 最終覆蓋版本",
-                        "include": [str(temp_path / "local_shared")],
-                    }
-                }
-            }
-            with open(cfg_dir / "config.local.json", "w", encoding="utf-8") as f:
-                json.dump(local_config, f)
+            with open(cfg_dir / "contribute.json", "w", encoding="utf-8") as f:
+                json.dump(proj_contribute, f)
 
             sm = SpaceManager(config_dir=cfg_dir, contributes_data=mock_contributes)
             spaces = sm.load_spaces()
@@ -83,13 +71,14 @@ class TestSpaceManager(YSCBTestCase):
             self.assertIn("proj_space", spaces)
             self.assertIn("shared_space", spaces)
 
-            # 驗證優先權: shared_space 應為 Local 覆蓋
-            self.assertEqual(spaces["shared_space"].description, "Local 最終覆蓋版本")
-            self.assertEqual(spaces["shared_space"].origin, "local")
+            # 驗證優先權: shared_space 應為 Project contribute.json 覆蓋
+            self.assertEqual(spaces["shared_space"].description, "Project contribute.json 覆蓋版本")
 
             # 驗證 Thesaurus 聚合
             thesaurus = sm.load_thesaurus()
             self.assertEqual(len(thesaurus), 2)
+            self.mark_passed()
+
 
     @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)
     def test_ft_05_union_spaces_and_uri_resolution(self):

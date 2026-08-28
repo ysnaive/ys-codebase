@@ -21,6 +21,7 @@
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_core_contributes_file_structure_upgrade` | Full Track | `Completed` | **Core Contributes 系統檔案結構升級**：全系統 contributes 現況調研 (R01)、目錄化多軌 Discovery 掃描 (`contributes/<target>.json`)、Manifest 瘦身 (>98%)、專案級 config 空間特化注入、消費端 SDK 統一收斂與全系統沙盒回歸 100% Passed。 |
+| **sub_02** | `sub_02_config_system_upgrade` | Full Track | `Completed` | **Config 系統架構升級、Contribute 專案特化規範與工具鏈建立**：微內核 `core.config` SDK、`configurable/` 模板目錄規範、專案特化 `contribute.json` 類別 (強制 Git 追蹤)、消費端 100% 收斂、CLI `config` 工具鏈與全模組 172/172 測試通過。 |
 
 ---
 
@@ -29,6 +30,9 @@
 - [x] **里程碑 1 (主計畫初始化與模式確立)**：完成 Umbrella 主計畫立項，確立增量滾動推進機制與無固定邊界模式。
 - [x] **里程碑 2 (sub_01 啟動與 R01 調研)**：開立 `sub_01` 子計畫並產出 `R01_core_contributes_architecture_and_file_structure.md` 專題架構調研。
 - [x] **里程碑 3 (sub_01 實作與驗收)**：完成 sub_01 規格、實作、全模組回歸驗證 (164/164 Passed) 與知識庫交付。
+- [x] **里程碑 4 (sub_02 啟動與 R01 調研)**：開立 `sub_02` 子計畫並產出 `R01_config_system_architecture_and_mechanisms.md` 調研報告。
+- [x] **里程碑 5 (sub_02 實作與結案交付)**：完成 sub_02 微內核 SDK、模板標準目錄、專案特化 `contribute.json`、全模組消費端收斂、CLI 工具鏈、全系統沙盒回歸 (172/172 Passed) 與 Walkthrough 交付。
+
 
 
 

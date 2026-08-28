@@ -172,23 +172,22 @@ _find_host_config = _get_host_config
 
 def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
     """
-    Resolves project root directory from config://config.project.json (core module).
+    Resolves project root directory using core.config SDK (core module).
     """
-    proj_cfg_path = os.path.join(yscb_dir, "config", "core", "config.project.json")
-    if os.path.isfile(proj_cfg_path):
-        try:
-            with open(proj_cfg_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            rel_proj = data.get("project_root")
-            if rel_proj:
-                if str(rel_proj).startswith("!undefined"):
-                    return None
-                if os.path.isabs(str(rel_proj)):
-                    return os.path.normpath(str(rel_proj))
-                return os.path.normpath(os.path.join(host_dir, str(rel_proj)))
-        except Exception:
-            pass
+    try:
+        from core import config
+        rel_proj = config.get("core", "project_root")
+    except Exception:
+        rel_proj = None
+
+    if rel_proj:
+        if str(rel_proj).startswith("!undefined"):
+            return None
+        if os.path.isabs(str(rel_proj)):
+            return os.path.normpath(str(rel_proj))
+        return os.path.normpath(os.path.join(host_dir, str(rel_proj)))
     return None
+
 
 
 def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
@@ -481,33 +480,17 @@ def resolve(
                 return os.path.normpath(target_base)
             elif stype == "config":
                 host_dir, _ = _get_host_config()
-                # 優先尋找 provider_name 的 config.project.json，其次 active_mod，最後 core
-                cand_configs = [
-                    os.path.join(yscb_dir, "config", provider_name, "config.project.json"),
-                    os.path.join(yscb_dir, "config", active_mod or "core", "config.project.json"),
-                    os.path.join(yscb_dir, "config", "core", "config.project.json")
-                ]
                 curr_val = None
-                found_cfg_file = None
-                for mod_proj_cfg in cand_configs:
-                    if os.path.isfile(mod_proj_cfg):
-                        try:
-                            with open(mod_proj_cfg, "r", encoding="utf-8") as pf:
-                                pcfg = json.load(pf)
-                            keys = sval.split(".")
-                            c_temp = pcfg
-                            for k in keys:
-                                if isinstance(c_temp, dict):
-                                    c_temp = c_temp.get(k)
-                                else:
-                                    c_temp = None
-                                    break
-                            if c_temp is not None:
-                                curr_val = c_temp
-                                found_cfg_file = mod_proj_cfg
-                                break
-                        except Exception:
-                            pass
+                try:
+                    from core import config
+                    curr_val = config.get(provider_name, sval)
+                    if curr_val is None and active_mod and active_mod != provider_name:
+                        curr_val = config.get(active_mod, sval)
+                    if curr_val is None and provider_name != "core":
+                        curr_val = config.get("core", sval)
+                except Exception:
+                    curr_val = None
+
                 
                 # 檢查是否為 !undefined 或未找到
                 if curr_val is None or str(curr_val).startswith("!undefined"):

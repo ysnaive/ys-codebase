@@ -50,7 +50,15 @@ class ReleasePublisher:
         self.host_dir = host_dir
 
     def _get_project_config(self) -> Dict[str, Any]:
-        """讀取 config://agents-workflow/config.project.json 設定檔。"""
+        """讀取 config://agents-workflow 設定檔（Local > Project）。"""
+        try:
+            from core import config
+            data = config.get_all("agents-workflow")
+            if data:
+                return data
+        except Exception:
+            pass
+
         cfg_uri = "config://agents-workflow/config.project.json"
         if uri and uri.exists(cfg_uri):
             try:
@@ -75,6 +83,7 @@ class ReleasePublisher:
             "enable_agents_md": True,
             "enable_project_changelog": True
         }
+
 
     def compute_source_fingerprint(self) -> str:
         """
