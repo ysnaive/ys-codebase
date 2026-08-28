@@ -32,11 +32,11 @@ class TestDevChecker(YSCBTestCase):
         self.mark_passed()
 
     def test_dev_contributes_and_standards_exist(self):
-        """Verify dev/manifest.json contains contributes['agents-workflow'] and DevEngineeringStandards.md exists."""
-        dev_manifest = uri.read_json("module.source://dev/manifest.json")
-        self.assertIn("contributes", dev_manifest)
-        self.assertIn("agents-workflow", dev_manifest["contributes"])
-        inserts = dev_manifest["contributes"]["agents-workflow"].get("insert", [])
+        """Verify dev/contributes/agents-workflow.json exists and DevEngineeringStandards.md exists."""
+        contrib_uri = "module.source://dev/contributes/agents-workflow.json"
+        self.assertTrue(uri.exists(contrib_uri))
+        c_data = uri.read_json(contrib_uri)
+        inserts = c_data.get("insert", [])
         self.assertTrue(any(item.get("token") == "WORKFLOW_SOP_STANDARDS" for item in inserts))
 
         # Check asset file content
@@ -47,6 +47,7 @@ class TestDevChecker(YSCBTestCase):
         self.assertIn("YS-Codebase 模組開發專案特化工程規範", content)
         self.assertIn("嚴禁 Agent 主動發布與覆蓋宿主安裝", content)
         self.mark_passed()
+
 
     @require(Requirement.LOGIC)
     def test_checker_detects_raw_unittest_testcase(self):

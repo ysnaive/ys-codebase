@@ -1,6 +1,8 @@
 """
 Contributes Aggregator and Dependency Injection Engine.
-Rigid Topology & Zero Speculation: strictly scans installed modules in module.root://.
+Rigid Topology & Zero Speculation: strictly scans installed modules in module://.
+Standard Directory: module://<donor>/contributes/<target>.json
+Project Overrides: config://<target>/config.project.json
 """
 from typing import Dict, Any, List, Optional
 import os
@@ -66,16 +68,18 @@ def get_for_current_module(key: Optional[str] = None, default: Any = None) -> An
 
 class ContributesAggregator:
     """
-    Contributes 聚合引擎：
-    負責掃描已安裝模組的 Contributes 宣告，執行拓撲合併，並物化寫入 cache://{module}/contributes.merged.json。
+    Contributes 雙階聚合引擎：
+    負責掃描已安裝模組的 contributes/<target>.json 宣告與專案級組態，
+    執行拓撲合併，並物化寫入 cache://{module}/contributes.merged.json。
     """
     def __init__(self):
         pass
 
     def scan_and_inject(self, topological_order: Optional[List[str]] = None, clean: bool = True) -> Dict[str, Dict[str, Any]]:
         """
-        掃描所有 installed_modules，聚合 Manifest 與 contributes.<target>.json，
-        依拓撲排序 (topological_order) 依序合併，並在搜集階段自動注入 __provider__。
+        掃描所有 installed_modules 之 contributes/<target>.json，
+        依拓撲排序 (topological_order) 依序合併，自動注入 __provider__，
+        最後疊加 config:// 專案特化宣告並寫入快取。
         """
         aggregated: Dict[str, Dict[str, Any]] = {}
         installed_modules = uri.listdir("module://") if uri.exists("module://") else []
@@ -97,21 +101,53 @@ class ContributesAggregator:
                 if m not in ordered_donors:
                     ordered_donors.append(m)
 
-        # 2. 初始化所有 targets 字典
+        # 2. 初始化所有已安裝模組 targets 字典
         for mod in installed_modules:
             aggregated[mod] = {}
 
-        # 3. 依拓撲順序搜集模組層級 contributes
+        # 3. 階層 ①：依拓撲順序搜集模組層級 contributes/<target>.json
         for donor in ordered_donors:
-            # Source 1: Manifest
-            manifest_uri = f"module://{donor}/manifest.json"
-            if uri.exists(manifest_uri):
+            donor_contrib_dir = f"module://{donor}/contributes"
+            if uri.exists(donor_contrib_dir) and uri.isdir(donor_contrib_dir):
                 try:
-                    m_data = uri.read_json(manifest_uri)
-                    m_contribs = m_data.get("contributes", {})
-                    if isinstance(m_contribs, dict):
-                        for target, c_body in m_contribs.items():
-                            if target in aggregated and isinstance(c_body, dict):
+                    for filename in uri.listdir(donor_contrib_dir):
+                        if not filename.endswith(".json"):
+                            continue
+                        target = filename[:-5]
+                        if target not in aggregated:
+                            aggregated[target] = {}
+                        
+                        target_file_uri = f"{donor_contrib_dir}/{filename}"
+                        try:
+                            c_data = uri.read_json(target_file_uri)
+                            if isinstance(c_data, dict):
+                                tagged_body = {}
+                                for c_key, c_val in c_data.items():
+                                    if isinstance(c_val, list):
+                                        tagged_body[c_key] = [
+                                            _tag_provider(item, donor) if isinstance(item, dict) else item 
+                                            for item in c_val
+                                        ]
+                                    elif isinstance(c_val, dict):
+                                        tagged_body[c_key] = _tag_provider(c_val, donor)
+                                    else:
+                                        tagged_body[c_key] = c_val
+                                self._deep_merge(aggregated[target], tagged_body)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # 單一 contributes.json 輔助支援
+            donor_unified_file = f"module://{donor}/contributes.json"
+            if uri.exists(donor_unified_file):
+                try:
+                    u_data = uri.read_json(donor_unified_file)
+                    if isinstance(u_data, dict):
+                        for target, c_body in u_data.items():
+                            if isinstance(c_body, dict):
+                                if target not in aggregated:
+                                    aggregated[target] = {}
                                 tagged_body = {}
                                 for c_key, c_val in c_body.items():
                                     if isinstance(c_val, list):
@@ -127,59 +163,33 @@ class ContributesAggregator:
                 except Exception:
                     pass
 
-            # Source 2: contributes.<target>.json in donor module
-            for target in installed_modules:
-                donor_file = f"module://{donor}/contributes.{target}.json"
-                if uri.exists(donor_file):
+        # 4. 階層 ②：專案層級與本機層級特化注入 (Project/Local Overrides)
+        all_targets = list(aggregated.keys())
+        for target in all_targets:
+            for cfg_filename in ["config.project.json", "config.local.json"]:
+                cfg_uri = f"config://{target}/{cfg_filename}"
+                if uri.exists(cfg_uri):
                     try:
-                        c_data = uri.read_json(donor_file)
-                        if isinstance(c_data, dict):
-                            tagged_body = {}
-                            for c_key, c_val in c_data.items():
-                                if isinstance(c_val, list):
-                                    tagged_body[c_key] = [
-                                        _tag_provider(item, donor) if isinstance(item, dict) else item 
-                                        for item in c_val
-                                    ]
-                                elif isinstance(c_val, dict):
-                                    tagged_body[c_key] = _tag_provider(c_val, donor)
-                                else:
-                                    tagged_body[c_key] = c_val
-                            self._deep_merge(aggregated[target], tagged_body)
+                        p_data = uri.read_json(cfg_uri)
+                        p_contribs = p_data.get("contributes", {}).get(target, {}) if isinstance(p_data, dict) else {}
+                        if isinstance(p_contribs, dict):
+                            self._deep_merge(aggregated[target], p_contribs)
                     except Exception:
                         pass
 
-        # 4. Project-level and local-level overrides
-        for target in installed_modules:
-            # Source 3: project-level config.project.json
-            proj_cfg_uri = f"config://{target}/config.project.json"
-            if uri.exists(proj_cfg_uri):
-                try:
-                    p_data = uri.read_json(proj_cfg_uri)
-                    p_contribs = p_data.get("contributes", {}).get(target, {})
-                    if isinstance(p_contribs, dict):
-                        self._deep_merge(aggregated[target], p_contribs)
-                except Exception:
-                    pass
-
-            # Remove legacy file in config/ if exists
-            legacy_cfg_uri = f"config://{target}/contributes.merged.json"
-            if uri.exists(legacy_cfg_uri):
-                try:
-                    uri.rmtree(legacy_cfg_uri) if uri.isdir(legacy_cfg_uri) else uri.write_text(legacy_cfg_uri, "")
-                except Exception:
-                    pass
-
-            # Persist injected contributes to cache space
+            # 5. 持久化物化至 cache 空間
             target_cache_uri = f"cache://{target}/contributes.merged.json"
             if aggregated[target]:
                 uri.makedirs(f"cache://{target}", exist_ok=True)
                 uri.write_json(target_cache_uri, aggregated[target])
             else:
                 if uri.exists(target_cache_uri):
-                    target_p = uri.resolve(target_cache_uri, interactive=False)
-                    if os.path.exists(target_p):
-                        os.remove(target_p)
+                    try:
+                        target_p = uri.resolve(target_cache_uri, interactive=False)
+                        if os.path.exists(target_p):
+                            os.remove(target_p)
+                    except Exception:
+                        pass
 
         return aggregated
 

@@ -2,11 +2,10 @@
 YS-Codebase Core Computed Token Providers.
 Provides dynamic AGENTS_CLI_GUILD generation from declared contributes.core.commands.
 100% Python Standard Library, Zero Third-Party Dependency.
+100% SDK-Driven: powered by core.contributes.get().
 """
 
 from typing import Dict, Any, Optional, List, Tuple
-import os
-from core import uri
 from core import contributes
 
 
@@ -21,95 +20,73 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
     :param context: 可選之編譯期上下文（由 agents-workflow compiler 提供）
     :return: 格式化完成之 Markdown 防呆手冊文字
     """
-    module_commands: List[Tuple[str, str, str, List[str], List[str]]] = []
+    # 1. 透過標準 SDK 取得全系統已合併之 core commands
+    all_commands = contributes.get("core", "commands", default={})
+    if not isinstance(all_commands, dict) or not all_commands:
+        return "| 指令名稱 | 推薦/適用情境 (Pros) | 🚨 絕對禁止/不適用情境 (Cons) |\n| :--- | :--- | :--- |\n| *(目前無已註冊之 CLI 防呆指令)* | - | - |"
 
-    # 1. 搜集所有已安裝或源碼模組
-    installed_modules: List[str] = []
-    try:
-        if uri.exists("module://"):
-            installed_modules = uri.listdir("module://")
-    except Exception:
-        installed_modules = []
+    # 2. 依 __provider__ 分組搜集
+    grouped_commands: Dict[str, List[Tuple[str, str, List[str], List[str]]]] = {}
 
-    if not installed_modules:
-        # Fallback 探測 source/ (開發環境跑測支援)
-        try:
-            if uri.exists("module.source://"):
-                installed_modules = uri.listdir("module.source://")
-        except Exception:
-            pass
-
-    # 排序模組 (core 第一，其餘字母序)
-    ordered_mods = (["core"] if "core" in installed_modules else []) + sorted([m for m in installed_modules if m != "core"])
-
-    for mod_name in ordered_mods:
-        mf_data: Dict[str, Any] = {}
-        for base_scheme in ["module://", "module.source://"]:
-            mf_uri = f"{base_scheme}{mod_name}/manifest.json"
-            if uri.exists(mf_uri):
-                try:
-                    mf_data = uri.read_json(mf_uri)
-                    if mf_data:
-                        break
-                except Exception:
-                    pass
-
-        if not mf_data:
+    for cmd_name, cmd_body in sorted(all_commands.items()):
+        if not isinstance(cmd_body, dict):
             continue
 
-        c_core = mf_data.get("contributes", {}).get("core", {})
-        cmds = c_core.get("commands", {})
-        if not isinstance(cmds, dict):
+        donor = cmd_body.get("__provider__", "core")
+        desc = str(cmd_body.get("description", "")).strip()
+        raw_pros = cmd_body.get("case_pros", [])
+        raw_cons = cmd_body.get("case_cons", [])
+
+        case_pros: List[str] = []
+        if isinstance(raw_pros, str):
+            case_pros = [raw_pros.strip()] if raw_pros.strip() else []
+        elif isinstance(raw_pros, list):
+            case_pros = [str(p).strip() for p in raw_pros if str(p).strip()]
+
+        case_cons: List[str] = []
+        if isinstance(raw_cons, str):
+            case_cons = [raw_cons.strip()] if raw_cons.strip() else []
+        elif isinstance(raw_cons, list):
+            case_cons = [str(c).strip() for c in raw_cons if str(c).strip()]
+
+        # 核心防呆過濾：若 pros 與 cons 皆無，自動排除
+        if not case_pros and not case_cons:
             continue
 
-        for cmd_name, cmd_body in sorted(cmds.items()):
-            desc = ""
-            case_pros: List[str] = []
-            case_cons: List[str] = []
+        if donor not in grouped_commands:
+            grouped_commands[donor] = []
+        grouped_commands[donor].append((cmd_name, desc, case_pros, case_cons))
 
-            if isinstance(cmd_body, dict):
-                desc = str(cmd_body.get("description", "")).strip()
-                raw_pros = cmd_body.get("case_pros", [])
-                raw_cons = cmd_body.get("case_cons", [])
+    if not grouped_commands:
+        return "| 指令名稱 | 推薦/適用情境 (Pros) | 🚨 絕對禁止/不適用情境 (Cons) |\n| :--- | :--- | :--- |\n| *(目前無已註冊之 CLI 防呆指令)* | - | - |"
 
-                if isinstance(raw_pros, str):
-                    case_pros = [raw_pros.strip()] if raw_pros.strip() else []
-                elif isinstance(raw_pros, list):
-                    case_pros = [str(p).strip() for p in raw_pros if str(p).strip()]
+    # 3. 排序模組 (core 最先，其餘字母序)
+    ordered_donors = (["core"] if "core" in grouped_commands else []) + sorted([d for d in grouped_commands if d != "core"])
 
-                if isinstance(raw_cons, str):
-                    case_cons = [raw_cons.strip()] if raw_cons.strip() else []
-                elif isinstance(raw_cons, list):
-                    case_cons = [str(c).strip() for c in raw_cons if str(c).strip()]
-            elif isinstance(cmd_body, str):
-                desc = cmd_body.strip()
-                case_pros = []
-                case_cons = []
+    lines: List[str] = []
+    lines.append("| 指令名稱 | 推薦/適用情境 (Pros) | 🚨 絕對禁止/不適用情境 (Cons) |")
+    lines.append("| :--- | :--- | :--- |")
 
-            # 🚨 關鍵過濾規則：若 case_pros 與 case_cons 兩者皆無定義或皆為空，排除於生成清單
-            if not case_pros and not case_cons:
-                continue
+    for donor in ordered_donors:
+        for cmd_name, desc, pros, cons in grouped_commands[donor]:
+            full_cmd = f"`python yscb.py {cmd_name}`" if donor == "core" else f"`python yscb.py {donor} {cmd_name}`"
+            
+            # Pros 格式化
+            if pros:
+                pros_str = "<br/>".join([f"✅ {p}" if not p.startswith("✅") else p for p in pros])
+            else:
+                pros_str = f"✅ {desc}" if desc else "✅ 通用呼叫"
 
-            module_commands.append((mod_name, cmd_name, desc, case_pros, case_cons))
+            # Cons 格式化
+            if cons:
+                cons_str = "<br/>".join([f"🚨 {c}" if not c.startswith("🚨") else c for c in cons])
+            else:
+                cons_str = "*(無特殊禁止事項)*"
 
-    if not module_commands:
-        return "> *(目前全系統模組尚未定義具備防呆情境之 CLI 指令)*\n"
+            # Escape pipe characters in table cells
+            pros_str = pros_str.replace("|", "\\|")
+            cons_str = cons_str.replace("|", "\\|")
 
-    # 組裝 Markdown 表格
-    lines = [
-        "| 模組 | 指令 (Command) | 說明 (Description) | ✅ 推薦/適用情境 (case_pros) | 🚨 絕對禁止/不適用情境 (case_cons) |",
-        "| :---: | :--- | :--- | :--- | :--- |"
-    ]
-
-    for mod_name, cmd_name, desc, pros, cons in module_commands:
-        cmd_display = f"`{cmd_name}`" if mod_name == "core" else f"`{mod_name} {cmd_name}`"
-        pros_str = "<br/>".join([f"• {p}" for p in pros]) if pros else "—"
-        cons_str = "<br/>".join([f"• {c}" for c in cons]) if cons else "—"
-        
-        desc_clean = desc.replace("\n", " ").replace("|", "\\|")
-        pros_clean = pros_str.replace("\n", " ").replace("|", "\\|")
-        cons_clean = cons_str.replace("\n", " ").replace("|", "\\|")
-
-        lines.append(f"| `{mod_name}` | {cmd_display} | {desc_clean} | {pros_clean} | {cons_clean} |")
+            lines.append(f"| **{full_cmd}** | {pros_str} | {cons_str} |")
 
     return "\n".join(lines)

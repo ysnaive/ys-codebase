@@ -1,0 +1,10 @@
+{
+  "insert": [
+    {
+      "type": "uri",
+      "token": "WORKFLOW_SOP_STANDARDS",
+      "value": "module://dev/assets/standards/DevEngineeringStandards.md",
+      "mode": "below"
+    }
+  ]
+}

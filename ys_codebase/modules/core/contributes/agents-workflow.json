@@ -1,0 +1,10 @@
+{
+  "insert": [
+    {
+      "type": "computed",
+      "token": "AGENTS_CLI_GUILD",
+      "value": "code.func://core/providers:get_agents_cli_guild",
+      "mode": "replace"
+    }
+  ]
+}
