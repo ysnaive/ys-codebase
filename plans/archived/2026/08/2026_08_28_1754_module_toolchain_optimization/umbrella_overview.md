@@ -3,7 +3,7 @@
 > 計畫名稱：模組工具鏈優化主計畫 (Module Toolchain Optimization Umbrella)  
 > 建立日期：2026-08-28  
 > 主計畫目錄：`plans://2026_08_28_1754_module_toolchain_optimization/`  
-> 狀態：In Progress  
+> 狀態：Completed  
 > 模板版本：v1.1  
 
 ---
@@ -26,10 +26,7 @@
 | **sub_04** | `sub_04_agents_workflow_plan_check_upgrade` | Full Track | `Completed` | **Agents-Workflow Plan 核查工具鏈升級**：5 步計畫檢核流水線、動態模板 `#Header` 鏡像核對、嚴禁 HTML 註解與佔位符、Noise-Free 聚焦排版、PlanArchiver 剛性守門阻斷與全模組 178/178 測試通過。 |
 | **sub_05** | `sub_05_agents_workflow_release_local_mode` | Full Track | `Completed` | **Agents-Workflow Release 預設 Local 模式與 Gitignore 軟合併同步**：release-target 啟用/停用預設寫入本機私有 `config.local.json`、`--proj` 寫入專案組態、Target 來源辨識排版、微內核 `core.config.get_raw/inspect` 溯源 API、發布時 `project://.gitignore` 區塊非破壞性軟合併與全模組 181/181 測試通過。 |
 | **sub_06** | `sub_06_agents_workflow_knowledge_db_integration` | Full Track | `Completed` | **Knowledge-DB 與 Agents-Workflow 雙向 Contributes 聯動與 Space 解耦**：清空 knowledge-db 預設空間、agents-workflow 貢獻 docs 空間、專案特化宣告 source 空間、AgentsStandards 錨點補齊、KnowledgeAgentsStandards 與 SOP search/index JIT 註解注入。全生態系 183/183 測試通過。 |
-
-
-
-
+| **sub_07** | `sub_07_knowledge_db_search_output_formatting` | Full Track | `Completed` | **Knowledge-DB 搜尋結果輸出格式優化**：預設極輕量單行排版 (`#01 path:line`)、詳細模式 (`--detail`, `-d`, `--verbose`)、`--json` 結構化輸出支援、CLI 說明更新與全模組測試 42/42 通過。 |
 
 ---
 
@@ -43,6 +40,8 @@
 - [x] **里程碑 6 (sub_03 狀態檢核工具升級與結案交付)**：完成 sub_03 5 步檢核流水線、反模式靜態靶向攔截、Release 守門阻斷、全模組沙盒回歸 (178/178 Passed) 與 Walkthrough 交付。
 - [x] **里程碑 7 (sub_04 Plan 核查工具鏈升級與結案交付)**：完成 sub_04 動態模板 Header 鏡像核對、5 步流水線、Noise-Free 排版、歸檔剛性守門、全模組沙盒回歸 (178/178 Passed) 與 Walkthrough 交付。
 - [x] **里程碑 8 (sub_05 Release 預設 Local 模式與 Gitignore 軟合併結案交付)**：完成 sub_05 Local 預設、`--proj` 支援、`core.config.get_raw/inspect` 溯源 API、`.gitignore` 軟合併、全模組沙盒回歸 (181/181 Passed)、本地 `@build` 部屬與既有 target 成功遷移至 local。
+- [x] **里程碑 9 (sub_06 知識庫雙向整合與空間解耦結案交付)**：完成 sub_06 空間解耦、錨點規範注入、SOP JIT 檢索指引、跑測提速 2.5x 與全模組沙盒回歸 (183/183 Passed)。
+- [x] **里程碑 10 (sub_07 搜尋結果輸出格式優化結案交付)**：完成 sub_07 預設簡易單行排版、詳細模式切換、`--json` 支援、1:1 知識庫手冊更新與 42/42 測試通過。
 
 
 

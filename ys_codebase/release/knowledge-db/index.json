@@ -3,6 +3,7 @@
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "versions": [
     "1.0.0.0",
-    "1.0.1.0"
+    "1.0.1.0",
+    "1.0.1.1"
   ]
 }

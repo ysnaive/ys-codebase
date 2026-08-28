@@ -28,6 +28,7 @@
 | **sub_04** | **CLI 工具鏈與生態整合** | **Completed** | KnowledgeEngine 統一門面 SDK、完整 6 大 CLI 指令集與 agents-workflow 生態連動。 |
 | **sub_05** | **倒排索引二進位快取優化** | **Completed** | 符號池抽離去重、原生 Pickle Protocol 5 + Gzip 二進位快取 (`.index.bin.gz`)，體積縮減 99.53% 與讀取提速 40x。 |
 | **sub_06** | **雙向 Contributes 聯動與 Space 解耦** | **Completed** | 清空模組預設硬編碼空間、由 `agents-workflow` 宣告貢獻 `docs` 空間、專案特化宣告 `source` 空間，並向工作流注入檢索優先紀律與 JIT 指引。 |
+| **sub_07** | **搜尋結果輸出格式優化** | **Completed** | 預設極輕量單行排版 (`#01 path:line`)、詳細模式 (`--detail`, `-d`, `--verbose`) 與結構化模式 (`--json`) 支援。 |
 
 ---
 
@@ -47,11 +48,18 @@ python yscb.py knowledge-db bundle project_main
 # 4. 預先建置並快取空間倒排索引
 python yscb.py knowledge-db index --all
 
-# 5. 執行多欄位加權 BM25 語意檢索 (支援自動懶建置索引)
+# 5. 執行多欄位加權 BM25 語意檢索 (預設為簡易單行排版，支援自動懶建置索引)
 python yscb.py knowledge-db search PIDController
 python yscb.py knowledge-db search "狀態機更新" --kind=class --limit=5
 
-# 6. 清理特定或全空間之指紋、Bundle 與倒排索引快取
+# 6. 詳細模式 (輸出評分、符號類型、簽名、摘要與命中關鍵詞)
+python yscb.py knowledge-db search PIDController --detail
+python yscb.py knowledge-db search PIDController -d
+
+# 7. 結構化 JSON 輸出 (供自動化工具鏈解析)
+python yscb.py knowledge-db search PIDController --json
+
+# 8. 清理特定或全空間之指紋、Bundle 與倒排索引快取
 python yscb.py knowledge-db clean --all
 ```
 
