@@ -21,8 +21,11 @@ if module_dir not in sys.path:
 
 from knowledge_db.bundler import SemanticBundler
 from knowledge_db.exceptions import KnowledgeDBError, SpaceNotFoundError
+from knowledge_db.retrieval import BM25Engine, InvertedIndex, QueryFilter
 from knowledge_db.scanner import FingerprintScanner
 from knowledge_db.space import SpaceManager
+from knowledge_db.thesaurus import ThesaurusEngine
+from knowledge_db.tokenizer import CodeTokenizer
 
 
 def main(argv: List[str]) -> int:
@@ -32,6 +35,7 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db status               列出所有註冊空間與狀態")
         print("  python yscb.py knowledge-db scan [space | --all] 執行增量指紋掃描")
         print("  python yscb.py knowledge-db bundle [space|--all] 打包空間符號為 SemanticBundle")
+        print("  python yscb.py knowledge-db search <query>       多欄位 BM25 語意檢索")
         return 0
 
     subcmd = argv[0]
@@ -118,6 +122,74 @@ def main(argv: List[str]) -> int:
             except Exception as e:
                 print(f"[knowledge-db] 打包失敗: {e}", file=sys.stderr)
                 return 1
+
+    elif subcmd == "search":
+        queries = [a for a in sub_argv if not a.startswith("-")]
+        if not queries:
+            print("[knowledge-db] 錯誤: 請提供查詢字串 (例: python yscb.py knowledge-db search PIDController)", file=sys.stderr)
+            return 1
+
+        query_str = " ".join(queries)
+        space_filter = None
+        kind_filter = None
+        lang_filter = None
+        limit = 10
+
+        for a in sub_argv:
+            if a.startswith("--space="):
+                space_filter = [a.split("=", 1)[1]]
+            elif a.startswith("--kind="):
+                kind_filter = [a.split("=", 1)[1]]
+            elif a.startswith("--lang="):
+                lang_filter = [a.split("=", 1)[1]]
+            elif a.startswith("--limit="):
+                try:
+                    limit = int(a.split("=", 1)[1])
+                except ValueError:
+                    pass
+
+        # 聚合空間符號並構建檢索倒排索引
+        spaces = space_mgr.get_union_spaces()
+        all_symbols = []
+        for sp in spaces:
+            if space_filter and sp.name not in space_filter:
+                continue
+            b = bundler.bundle_space(sp)
+            all_symbols.extend(b.symbols)
+
+        if not all_symbols:
+            print(f"[knowledge-db] 空間內無有效符號或未找到符合條件之符號。")
+            return 0
+
+        thesaurus_groups = space_mgr.load_thesaurus()
+        tokenizer = CodeTokenizer()
+        thesaurus = ThesaurusEngine(thesaurus_groups)
+        index = InvertedIndex(space_name="union")
+        index.build(all_symbols, tokenizer=tokenizer)
+
+        engine = BM25Engine(tokenizer=tokenizer, thesaurus=thesaurus)
+        flt = QueryFilter(
+            spaces=space_filter,
+            languages=lang_filter,
+            kinds=kind_filter,
+            limit=limit,
+        )
+
+        results = engine.search(query_str, index=index, filter_cfg=flt)
+
+        print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 筆結果):")
+        print("=" * 85)
+        for rank, res in enumerate(results, start=1):
+            sym = res.symbol
+            print(f"#{rank:02d} [{res.score:05.2f}] {sym.kind.upper()}: {sym.name} ({sym.language})")
+            print(f"     檔案: {sym.file_path}:{sym.line_number}")
+            if sym.signature:
+                print(f"     簽名: {sym.signature}")
+            if res.snippet:
+                print(f"     說明: {res.snippet}")
+            print(f"     命中詞: {', '.join(res.matched_terms)}")
+            print("-" * 85)
+        return 0
 
     else:
         print(f"[knowledge-db] 未知指令: '{subcmd}'。輸入 -h 或 --help 查看用法。", file=sys.stderr)
