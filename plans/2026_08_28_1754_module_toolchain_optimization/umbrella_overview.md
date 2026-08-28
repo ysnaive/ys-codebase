@@ -23,6 +23,7 @@
 | **sub_01** | `sub_01_core_contributes_file_structure_upgrade` | Full Track | `Completed` | **Core Contributes 系統檔案結構升級**：全系統 contributes 現況調研 (R01)、目錄化多軌 Discovery 掃描 (`contributes/<target>.json`)、Manifest 瘦身 (>98%)、專案級 config 空間特化注入、消費端 SDK 統一收斂與全系統沙盒回歸 100% Passed。 |
 | **sub_02** | `sub_02_config_system_upgrade` | Full Track | `Completed` | **Config 系統架構升級、Contribute 專案特化規範與工具鏈建立**：微內核 `core.config` SDK、`configurable/` 模板目錄規範、專案特化 `contribute.json` 類別 (強制 Git 追蹤)、消費端 100% 收斂、CLI `config` 工具鏈與全模組 172/172 測試通過。 |
 | **sub_03** | `sub_03_dev_module_check_upgrade` | Full Track | `Completed` | **Dev 模組狀態檢核工具升級**：5 步流水線合規檢查引擎、三級嚴重度 (`[PASS]`/`[WARN]`/`[FAIL]`)、Release 剛性守門阻斷、反模式靶向攔截、CLI 彩色診斷輸出與全模組 178/178 測試通過。 |
+| **sub_04** | `sub_04_agents_workflow_plan_check_upgrade` | Full Track | `Completed` | **Agents-Workflow Plan 核查工具鏈升級**：5 步計畫檢核流水線、動態模板 `#Header` 鏡像核對、嚴禁 HTML 註解與佔位符、Noise-Free 聚焦排版、PlanArchiver 剛性守門阻斷與全模組 178/178 測試通過。 |
 
 ---
 
@@ -34,6 +35,8 @@
 - [x] **里程碑 4 (sub_02 啟動與 R01 調研)**：開立 `sub_02` 子計畫並產出 `R01_config_system_architecture_and_mechanisms.md` 調研報告。
 - [x] **里程碑 5 (sub_02 實作與結案交付)**：完成 sub_02 微內核 SDK、模板標準目錄、專案特化 `contribute.json`、全模組消費端收斂、CLI 工具鏈、全系統沙盒回歸 (172/172 Passed) 與 Walkthrough 交付。
 - [x] **里程碑 6 (sub_03 狀態檢核工具升級與結案交付)**：完成 sub_03 5 步檢核流水線、反模式靜態靶向攔截、Release 守門阻斷、全模組沙盒回歸 (178/178 Passed) 與 Walkthrough 交付。
+- [x] **里程碑 7 (sub_04 Plan 核查工具鏈升級與結案交付)**：完成 sub_04 動態模板 Header 鏡像核對、5 步流水線、Noise-Free 排版、歸檔剛性守門、全模組沙盒回歸 (178/178 Passed) 與 Walkthrough 交付。
+
 
 
 

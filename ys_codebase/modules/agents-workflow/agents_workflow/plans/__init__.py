@@ -31,7 +31,7 @@ class PlanDestinationExistsError(PlansToolchainError):
 from .archiver import PlanArchiver
 from .scanner import PlanScanner
 from .searcher import PlanSearcher
-from .verifier import PlanVerifier
+from .verifier import PlanVerifier, PlanSeverity, PlanIssue, PlanReport
 
 __all__ = [
     "PlansToolchainError",
@@ -43,4 +43,8 @@ __all__ = [
     "PlanScanner",
     "PlanSearcher",
     "PlanVerifier",
+    "PlanSeverity",
+    "PlanIssue",
+    "PlanReport",
 ]
+

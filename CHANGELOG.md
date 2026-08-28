@@ -2,7 +2,25 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_28_1754_module_toolchain_optimization — sub_04_agents_workflow_plan_check_upgrade
+
+- **Agents-Workflow Plan 核查工具鏈升級 (`sub_04`)**：
+  - **5 步計畫合規檢核流水線 (`agents_workflow.plans.verifier.PlanVerifier`)**：
+    - **Stage 1 (Structure & Depth Guard)**：目錄層級限制 $\le 2$ 層（主計畫 ➔ 子計畫），Umbrella 主計畫 `umbrella_overview.md` 存在性與子清冊一致性。
+    - **Stage 2 (Changelog Integrity Guard)**：`changelog.md` 伴隨存在性、Markdown 表格格式與有效紀錄列。
+    - **Stage 3 (Dynamic Template Resolver)**：動態讀取 `.cache/agents-workflow/resolved_contents/templates/<template>.md`（展開後之標準模板），提取 Markdown `# Header` 標題清單。
+    - **Stage 4 (Markdown File & ID Guard)**：Blockquote Header 元數據完整性、佔位符與嚴禁殘留任何 HTML 註解（`<!-- ... -->`）、標準 ID 前綴格式 (`FR-XX`, `EC-XX`, `FT-XX`, `ET-XX`)。
+    - **Stage 5 (Severity Aggregator)**：`[PASS]`, `[WARN]`, `[FAIL]` 三級嚴重度聚合與向下相容 Tuple 解包。
+  - **Noise-Free 聚焦排版與 CLI 整合**：
+    - 全數通過時單行收斂 (`[*] Plan: <name> [PASS]`)；有違規時自動隱藏 Pass 檔案，僅展示 Fail/Warn 問題檔案與行號。
+    - 支援 `--json` 結構化格式輸出。
+  - **PlanArchiver 剛性歸檔守門阻斷**：
+    - `plan archive` 在歸檔前自動執行 plan check，若存在 `[FAIL]` 且未加 `--force` 時剛性阻斷歸檔。
+  - **全量測試與回歸驗證**：
+    - 全生態系 4 大核心模組沙盒回歸跑測 **178/178 測試案例 100% Passed**。
+
 ## 2026_08_28_1754_module_toolchain_optimization — sub_03_dev_module_check_upgrade
+
 
 - **Dev 模組狀態檢核工具升級 (`sub_03`)**：
   - **5 步流水線合規檢查引擎 (`dev.checker.Checker`)**：
