@@ -18,6 +18,13 @@ from .parsers import (
     ParserRegistry,
     PythonParser,
 )
+from .retrieval import (
+    BM25Engine,
+    InvertedIndex,
+    Posting,
+    QueryFilter,
+    SearchResult,
+)
 from .scanner import FileFingerprint, FingerprintScanner, ScanDiffResult
 from .schema import (
     LanguageType,
@@ -30,6 +37,8 @@ from .schema import (
     UnifiedSymbol,
 )
 from .space import SpaceManager
+from .thesaurus import BUILTIN_THESAURUS, ThesaurusEngine
+from .tokenizer import CodeTokenizer
 
 __all__ = [
     "KnowledgeDBError",
@@ -57,4 +66,12 @@ __all__ = [
     "CSharpParser",
     "SemanticBundle",
     "SemanticBundler",
+    "CodeTokenizer",
+    "ThesaurusEngine",
+    "BUILTIN_THESAURUS",
+    "Posting",
+    "InvertedIndex",
+    "BM25Engine",
+    "QueryFilter",
+    "SearchResult",
 ]
