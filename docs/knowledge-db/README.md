@@ -29,6 +29,7 @@
 | **sub_05** | **倒排索引二進位快取優化** | **Completed** | 符號池抽離去重、原生 Pickle Protocol 5 + Gzip 二進位快取 (`.index.bin.gz`)，體積縮減 99.53% 與讀取提速 40x。 |
 | **sub_06** | **雙向 Contributes 聯動與 Space 解耦** | **Completed** | 清空模組預設硬編碼空間、由 `agents-workflow` 宣告貢獻 `docs` 空間、專案特化宣告 `source` 空間，並向工作流注入檢索優先紀律與 JIT 指引。 |
 | **sub_07** | **搜尋結果輸出格式優化** | **Completed** | 預設極輕量單行排版 (`#01 path:line`)、詳細模式 (`--detail`, `-d`, `--verbose`) 與結構化模式 (`--json`) 支援。 |
+| **sub_08** | **搜尋結果代碼切片與預覽優化** | **Completed** | 支援 `--snippet` / `-s` / `--preview` 延遲切片讀取，直接在檢索結果中內嵌 Docstring 摘要與帶行號代碼片段，徹底消除 Agent 二次檔案讀取。 |
 
 ---
 
@@ -52,14 +53,19 @@ python yscb.py knowledge-db index --all
 python yscb.py knowledge-db search PIDController
 python yscb.py knowledge-db search "狀態機更新" --kind=class --limit=5
 
-# 6. 詳細模式 (輸出評分、符號類型、簽名、摘要與命中關鍵詞)
+# 6. 代碼片段預覽模式 (輸出帶行號之程式碼切片與 Docstring 摘要，消除二次檔案讀取)
+python yscb.py knowledge-db search PIDController --snippet
+python yscb.py knowledge-db search "狀態機" -s
+
+# 7. 詳細模式 (輸出評分、符號類型、簽名、摘要與命中關鍵詞)
 python yscb.py knowledge-db search PIDController --detail
 python yscb.py knowledge-db search PIDController -d
 
-# 7. 結構化 JSON 輸出 (供自動化工具鏈解析)
+# 8. 結構化 JSON 輸出 (供自動化工具鏈解析，包含 snippet 與 code_snippet 欄位)
 python yscb.py knowledge-db search PIDController --json
+python yscb.py knowledge-db search PIDController -s --json
 
-# 8. 清理特定或全空間之指紋、Bundle 與倒排索引快取
+# 9. 清理特定或全空間之指紋、Bundle 與倒排索引快取
 python yscb.py knowledge-db clean --all
 ```
 

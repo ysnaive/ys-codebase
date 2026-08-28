@@ -18,8 +18,8 @@
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.0.1.1",
-      "installed_at": "2026-08-28 21:53:41",
+      "version": "1.0.1.3",
+      "installed_at": "2026-08-29 01:04:07",
       "provider": "./ys_codebase/release"
     }
   }

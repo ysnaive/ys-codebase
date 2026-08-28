@@ -81,3 +81,32 @@ index.save_binary("path/to/space.index.bin.gz")
 restored_index = InvertedIndex.load_binary("path/to/space.index.bin.gz")
 ```
 
+---
+
+## 🔍 6. 代碼片段延遲提取器 (`SnippetExtractor`)
+
+為消滅 Agent 在檢索後的二次檔案讀取（Double-Look 耗時），`SnippetExtractor` 支援延遲切片讀取與安全截斷：
+
+```python
+from knowledge_db.retrieval import SnippetExtractor
+
+extractor = SnippetExtractor(workspace_root="/path/to/workspace", max_lines=12)
+
+# 安全切片提取目標符號之代碼上下文
+snippet = extractor.extract(
+    file_path="src/pid.cpp",
+    line_number=45,
+    context_before=2,
+    context_after=4,
+    docstring="PID 計算函式",
+)
+
+print(snippet.format_text())
+# 輸出：
+#    >  45 | float PIDController::Calculate(float target, float current) {
+#       46 |     float error = target - current;
+#       47 |     return kp * error;
+#       48 | }
+```
+
+
