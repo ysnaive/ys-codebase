@@ -38,7 +38,7 @@ from .schema import (
     UnifiedSymbol,
 )
 from .space import SpaceManager
-from .thesaurus import BUILTIN_THESAURUS, ThesaurusEngine
+from .thesaurus import ThesaurusEngine
 from .tokenizer import CodeTokenizer
 
 __all__ = [
@@ -70,7 +70,6 @@ __all__ = [
     "SemanticBundler",
     "CodeTokenizer",
     "ThesaurusEngine",
-    "BUILTIN_THESAURUS",
     "Posting",
     "InvertedIndex",
     "BM25Engine",

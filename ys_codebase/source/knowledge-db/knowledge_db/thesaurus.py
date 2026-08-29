@@ -6,38 +6,17 @@ from collections import defaultdict
 import logging
 from typing import Dict, List, Optional, Set
 
-from .schema import WeightedToken
+from .schema import ThesaurusConfig, WeightedToken
 
 logger = logging.getLogger("knowledge-db.thesaurus")
 
-# 內建軟體工程通用同義詞庫 (標準雙向映射)
-BUILTIN_THESAURUS: List[List[str]] = [
-    ["建立", "創建", "初始化", "建置", "create", "init", "initialize", "new", "build", "construct"],
-    ["搜尋", "檢索", "查詢", "尋找", "search", "query", "find", "lookup", "retrieval"],
-    ["狀態", "現狀", "status", "state"],
-    ["更新", "修改", "變更", "update", "modify", "change"],
-    ["刪除", "移除", "清除", "delete", "remove", "clear"],
-    ["取得", "獲取", "讀取", "get", "fetch", "read", "load"],
-    ["儲存", "保存", "寫入", "save", "store", "write", "persist"],
-    ["控制", "控制器", "control", "controller"],
-    ["引擎", "核心", "engine", "core"],
-    ["解析", "解析器", "parse", "parser"],
-    ["打包", "封裝", "bundle", "bundler", "package"],
-    ["空間", "範圍", "space", "scope"],
-    ["配置", "組態", "設定", "config", "configuration", "setting"],
-    ["掃描", "比對", "scan", "scanner", "diff"],
-    ["符號", "識別碼", "symbol", "identifier"],
-    ["類別", "類", "class", "struct"],
-    ["函式", "方法", "函數", "function", "method"],
-    ["錯誤", "異常", "例外", "error", "exception", "bug"],
-]
-
 
 class ThesaurusEngine:
-    """雙層三階同義詞與關聯詞擴展引擎"""
+    """雙層三階同義詞與關聯詞擴展引擎 (純淨無狀態詞庫容器)"""
 
     def __init__(
         self,
+        config: Optional[ThesaurusConfig] = None,
         custom_groups: Optional[List[List[str]]] = None,
         custom_aliases: Optional[Dict[str, List[str]]] = None,
         custom_related: Optional[List[List[str]]] = None,
@@ -46,9 +25,17 @@ class ThesaurusEngine:
         self._alias_map: Dict[str, Set[str]] = defaultdict(set)
         self._related_map: Dict[str, Set[str]] = defaultdict(set)
 
-        # 1. 載入內建軟工詞庫
-        for group in BUILTIN_THESAURUS:
-            self.add_group(group)
+        # 1. 載入傳入之 ThesaurusConfig
+        if config:
+            if config.groups:
+                for group in config.groups:
+                    self.add_group(group)
+            if config.aliases:
+                for src, tgts in config.aliases.items():
+                    self.add_alias(src, tgts)
+            if config.related:
+                for r_group in config.related:
+                    self.add_related_group(r_group)
 
         # 2. 合併自訂同義詞庫 (Tier 2, 0.6)
         if custom_groups:
@@ -168,31 +155,47 @@ class ThesaurusEngine:
                 _insert_or_update(clean_t, weight=1.0, kind="original")
 
         # Tier 2: 同義詞與單向別名 (weight=0.6)
+        tier2_terms: List[str] = []
         for t in cleaned_inputs:
             # 2a. 同義詞
             for syn in self._synonym_map.get(t, set()):
-                _insert_or_update(syn, weight=0.6, kind="synonym")
+                if _insert_or_update(syn, weight=0.6, kind="synonym"):
+                    tier2_terms.append(syn)
                 if len(token_order) >= max_expanded:
                     break
             if len(token_order) >= max_expanded:
                 break
             # 2b. 單向別名
             for alias in self._alias_map.get(t, set()):
-                _insert_or_update(alias, weight=0.6, kind="alias")
+                if _insert_or_update(alias, weight=0.6, kind="alias"):
+                    tier2_terms.append(alias)
                 if len(token_order) >= max_expanded:
                     break
             if len(token_order) >= max_expanded:
                 break
 
-        # Tier 3: 領域關聯詞 (weight=0.25)
+        # Tier 3: 領域關聯詞 (weight=0.25) - 多跳鏈式傳播 (Hop 2 關聯 + Hop 3 關聯同義展開)
         if include_related and len(token_order) < max_expanded:
-            for t in cleaned_inputs:
+            hop2_sources = list(cleaned_inputs) + [t for t in tier2_terms if t not in cleaned_inputs]
+            hop2_related_terms: List[str] = []
+            for t in hop2_sources:
                 for rel in self._related_map.get(t, set()):
-                    _insert_or_update(rel, weight=0.25, kind="related")
+                    if _insert_or_update(rel, weight=0.25, kind="related"):
+                        hop2_related_terms.append(rel)
                     if len(token_order) >= max_expanded:
                         break
                 if len(token_order) >= max_expanded:
                     break
+
+            # Hop 3: 關聯詞之雙向同義展開 (例如: 中文尋路 -> astar -> dijkstra -> 最短路徑)
+            if len(token_order) < max_expanded:
+                for r_term in hop2_related_terms:
+                    for r_syn in self._synonym_map.get(r_term, set()):
+                        _insert_or_update(r_syn, weight=0.25, kind="related")
+                        if len(token_order) >= max_expanded:
+                            break
+                    if len(token_order) >= max_expanded:
+                        break
 
         return [token_map[t] for t in token_order]
 
