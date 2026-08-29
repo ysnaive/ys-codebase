@@ -54,9 +54,9 @@ python yscb.py knowledge-db index --all
 python yscb.py knowledge-db search PIDController
 python yscb.py knowledge-db search "狀態機更新" --kind=class --limit=5
 
-# 6. 代碼片段預覽模式 (輸出帶行號之程式碼切片與 Docstring 摘要，消除二次檔案讀取)
-python yscb.py knowledge-db search PIDController --snippet
-python yscb.py knowledge-db search "狀態機" -s
+# 6. 代碼/文檔分流檢索 (--ftype 與 --snippet 預覽代碼區塊與 Docstring 摘要)
+python yscb.py knowledge-db search "PIDController" --ftype=c,cpp,py -s
+python yscb.py knowledge-db search "開發規範" --ftype=md -s
 
 # 7. 詳細模式 (輸出評分、符號類型、簽名、摘要與命中關鍵詞)
 python yscb.py knowledge-db search PIDController --detail

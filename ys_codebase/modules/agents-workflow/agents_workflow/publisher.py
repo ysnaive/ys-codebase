@@ -302,7 +302,6 @@ class ReleasePublisher:
         if not os.path.isfile(target_file):
             # 若不存在，建立全新 AGENTS.md
             full_content = (
-                f"# Agent 專案行為準則與工作流指南 (AGENTS.md)\n\n"
                 f"{injected_section}\n\n"
                 f"## 4. 專案特化工程規範 (Project Specific Standards)\n"
                 f"*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n"

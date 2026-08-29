@@ -360,12 +360,6 @@
   "insert": [
     {
       "type": "uri",
-      "token": "AGENTS_STANDARDS",
-      "value": "module://agents-workflow/assets/standards/AgentsStandards.md",
-      "mode": "replace"
-    },
-    {
-      "type": "uri",
       "token": "DEVELOPMENT_STANDARDS",
       "value": "module://agents-workflow/assets/standards/DevelopmentStandards.md",
       "mode": "replace"
