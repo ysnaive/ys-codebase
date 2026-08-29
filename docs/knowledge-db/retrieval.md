@@ -22,11 +22,20 @@
 | **`members`** | **2.0** | 類別內部公開/保護方法與成員欄位 |
 | **`docstring`** | **1.5** | 文檔說明、段落內文或註解說明 |
 
-### 2.2 平滑 IDF 公式
+### 2.2 詞條加權與衰減計分 (Term Weight Decay)
+檢索引擎結合三階展開權重進行詞條得分計算：
+$$\text{Score}(d, q) = \sum_{t \in \text{Expanded}(q)} \text{IDF}(t) \cdot \left(\sum_{f \in \text{Fields}} W_f \cdot \text{TF}_{\text{norm}}(t, d, f)\right) \cdot \text{Weight}(t)$$
+
+其中 $\text{Weight}(t)$ 依展開來源指派：
+- 原始查詢詞 (Original)：`1.0`
+- 雙向同義詞 (Synonym) / 單向別名 (Alias)：`0.6`
+- 領域關聯詞 (Related)：`0.25`
+
+### 2.3 平滑 IDF 公式
 為防止高頻詞出現負分數，IDF 計算採用平滑截斷：
 $$\text{IDF}(q) = \ln\left(1 + \max\left(0, \frac{N - n(q) + 0.5}{n(q) + 0.5}\right)\right)$$
 
-### 2.3 Exact Match 2.0x 置頂加權
+### 2.4 Exact Match 2.0x 置頂加權
 當使用者輸入之查詢字串與符號之 `name` 完全精確一致時，加權總分額外乘上 **2.0x 置頂係數**，確保精準查詢時目標符號絕對置頂。
 
 ---
