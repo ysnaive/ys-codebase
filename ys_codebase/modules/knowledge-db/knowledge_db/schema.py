@@ -310,17 +310,45 @@ class SpaceConfig:
         )
 
 
+@dataclass
+class WeightedToken:
+    """查詢 Token 資料結構 (含權重與語意類別)"""
+    term: str
+    weight: float = 1.0
+    kind: str = "original"  # "original" | "synonym" | "alias" | "related"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "term": self.term,
+            "weight": self.weight,
+            "kind": self.kind,
+        }
+
+
 ThesaurusGroup = List[str]
 
 
 @dataclass
 class ThesaurusConfig:
     groups: List[ThesaurusGroup] = field(default_factory=list)
+    aliases: Dict[str, List[str]] = field(default_factory=dict)
+    related: List[ThesaurusGroup] = field(default_factory=list)
     origin: str = "project"
+
+    @property
+    def thesaurus(self) -> List[ThesaurusGroup]:
+        return self.groups
+
+    @thesaurus.setter
+    def thesaurus(self, value: List[ThesaurusGroup]) -> None:
+        self.groups = value
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "groups": [list(g) for g in self.groups],
+            "thesaurus": [list(g) for g in self.groups],
+            "aliases": {str(k): [str(w) for w in v] for k, v in self.aliases.items()},
+            "related": [list(g) for g in self.related],
             "origin": self.origin,
         }
 
@@ -331,14 +359,43 @@ class ThesaurusConfig:
             groups = []
             for item in data:
                 if isinstance(item, list):
-                    groups.append([str(w) for w in item])
+                    groups.append([str(w) for w in item if str(w).strip()])
             return cls(groups=groups, origin=origin)
         elif isinstance(data, dict):
-            groups_raw = data.get("groups", [])
+            # 1. 讀取 groups / thesaurus
+            raw_thesaurus = data.get("thesaurus") or data.get("groups", [])
             groups = []
-            for item in groups_raw:
-                if isinstance(item, list):
-                    groups.append([str(w) for w in item])
-            return cls(groups=groups, origin=str(data.get("origin", origin)))
+            if isinstance(raw_thesaurus, list):
+                for item in raw_thesaurus:
+                    if isinstance(item, list):
+                        groups.append([str(w) for w in item if str(w).strip()])
+
+            # 2. 讀取 aliases (Dict[str, List[str]])
+            raw_aliases = data.get("aliases", {})
+            aliases: Dict[str, List[str]] = {}
+            if isinstance(raw_aliases, dict):
+                for k, v in raw_aliases.items():
+                    key_clean = str(k).strip()
+                    if key_clean:
+                        if isinstance(v, list):
+                            aliases[key_clean] = [str(w).strip() for w in v if str(w).strip()]
+                        elif isinstance(v, str) and v.strip():
+                            aliases[key_clean] = [v.strip()]
+
+            # 3. 讀取 related (List[List[str]])
+            raw_related = data.get("related", [])
+            related = []
+            if isinstance(raw_related, list):
+                for item in raw_related:
+                    if isinstance(item, list):
+                        related.append([str(w) for w in item if str(w).strip()])
+
+            return cls(
+                groups=groups,
+                aliases=aliases,
+                related=related,
+                origin=str(data.get("origin", origin)),
+            )
         else:
             return cls(groups=[], origin=origin)
+

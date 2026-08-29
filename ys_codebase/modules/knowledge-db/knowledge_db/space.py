@@ -87,13 +87,15 @@ class SpaceManager:
 
     def _load_contributes(self) -> Dict[str, Any]:
         """讀取模組聯動注入之 Contributes 資料 (100% 由 core.contributes SDK 與專案特化 contribute.json 驅動)"""
-        result = {"spaces": {}, "thesaurus": []}
+        result: Dict[str, Any] = {"spaces": {}, "thesaurus": [], "aliases": {}, "related": []}
 
         # 1. 自訂注入 (測試或隔離環境)
         if self._custom_contributes_data is not None:
             if isinstance(self._custom_contributes_data, dict):
                 result["spaces"].update(self._custom_contributes_data.get("spaces", {}))
                 result["thesaurus"].extend(self._custom_contributes_data.get("thesaurus", []))
+                result["aliases"].update(self._custom_contributes_data.get("aliases", {}))
+                result["related"].extend(self._custom_contributes_data.get("related", []))
 
         # 2. 自訂 config_dir 之 contribute.json (若指定)
         if self._custom_config_dir:
@@ -105,14 +107,14 @@ class SpaceManager:
                     if isinstance(c_data, dict):
                         result["spaces"].update(c_data.get("spaces", {}))
                         result["thesaurus"].extend(c_data.get("thesaurus", []))
+                        result["aliases"].update(c_data.get("aliases", {}))
+                        result["related"].extend(c_data.get("related", []))
                 except Exception as e:
                     logger.warning(f"Failed to read custom contribute.json: {e}")
             return result
 
         if self._custom_contributes_data is not None:
             return result
-
-
 
         # 3. 核心 SDK 聚合結果
         try:
@@ -121,8 +123,24 @@ class SpaceManager:
             if isinstance(data, dict):
                 result["spaces"].update(data.get("spaces", {}))
                 result["thesaurus"].extend(data.get("thesaurus", []))
+                result["aliases"].update(data.get("aliases", {}))
+                result["related"].extend(data.get("related", []))
         except Exception as e:
             logger.warning(f"Failed to read contributes via core SDK: {e}")
+
+        # 4. 模組內建宣告之安全降級載入 (當尚未部署至 core 或單元測試直接運行時)
+        if not result["thesaurus"] and not result["aliases"] and not result["related"]:
+            try:
+                mod_contrib = Path(__file__).resolve().parent.parent / "contributes" / "knowledge-db.json"
+                if mod_contrib.exists():
+                    with open(mod_contrib, "r", encoding="utf-8", errors="replace") as f:
+                        m_data = json.load(f)
+                    if isinstance(m_data, dict):
+                        result["thesaurus"].extend(m_data.get("thesaurus", []))
+                        result["aliases"].update(m_data.get("aliases", {}))
+                        result["related"].extend(m_data.get("related", []))
+            except Exception as e:
+                logger.debug(f"Failed to fallback load module default contributes: {e}")
 
         return result
 
@@ -146,31 +164,86 @@ class SpaceManager:
 
         return spaces
 
-    def load_thesaurus(self) -> List[ThesaurusGroup]:
+    def load_thesaurus_config(self) -> ThesaurusConfig:
         """
-        載入並聚合所有來源之同義詞群組清單 (Contributes 體系)。
+        載入並聚合所有來源之結構化詞庫組態 (含同義詞 groups、單向別名 aliases 與關聯詞 related)。
         """
+        contrib_data = self._load_contributes()
         all_groups: List[ThesaurusGroup] = []
         seen_signatures = set()
 
-        def _add_groups(raw_list: Any):
-            if not isinstance(raw_list, list):
-                return
-            for item in raw_list:
+        raw_thesaurus = contrib_data.get("thesaurus") or contrib_data.get("groups", [])
+        if isinstance(raw_thesaurus, list):
+            for item in raw_thesaurus:
                 if isinstance(item, list):
-                    normalized = sorted(list(set(str(w).strip() for w in item if str(w).strip())))
+                    normalized = sorted(list(set(str(w).strip().lower() for w in item if str(w).strip())))
                     sig = tuple(normalized)
                     if sig and sig not in seen_signatures:
                         seen_signatures.add(sig)
                         all_groups.append(list(item))
 
-        contrib_data = self._load_contributes()
-        _add_groups(contrib_data.get("thesaurus", []))
-        return all_groups
+        # 載入 aliases (Dict[str, List[str]])
+        merged_aliases: Dict[str, List[str]] = {}
+        raw_aliases = contrib_data.get("aliases", {})
+        if isinstance(raw_aliases, dict):
+            for k, v in raw_aliases.items():
+                key_clean = str(k).strip()
+                if key_clean:
+                    if isinstance(v, list):
+                        merged_aliases[key_clean] = [str(w).strip() for w in v if str(w).strip()]
+                    elif isinstance(v, str) and v.strip():
+                        merged_aliases[key_clean] = [v.strip()]
 
+        # 載入 related (List[List[str]])
+        all_related: List[ThesaurusGroup] = []
+        seen_related_sigs = set()
+        raw_related = contrib_data.get("related", [])
+        if isinstance(raw_related, list):
+            for item in raw_related:
+                if isinstance(item, list):
+                    normalized = sorted(list(set(str(w).strip().lower() for w in item if str(w).strip())))
+                    sig = tuple(normalized)
+                    if sig and sig not in seen_related_sigs:
+                        seen_related_sigs.add(sig)
+                        all_related.append(list(item))
 
+        return ThesaurusConfig(
+            groups=all_groups,
+            aliases=merged_aliases,
+            related=all_related,
+            origin="contributed",
+        )
 
-        return all_groups
+    def load_thesaurus(self) -> List[ThesaurusGroup]:
+        """
+        載入並聚合所有來源之同義詞群組清單 (向後相容介面)。
+        """
+        cfg = self.load_thesaurus_config()
+        return cfg.groups
+
+    def create_thesaurus_engine(
+        self,
+        extra_config: Optional[ThesaurusConfig] = None,
+    ) -> Any:
+        """
+        工廠方法：自 core.contributes 體系載入並聚合所有同義詞、別名與關聯詞，
+        並可選擇性疊加 extra_config，最後裝配返回 ThesaurusEngine 實例。
+        """
+        from .thesaurus import ThesaurusEngine
+        cfg = self.load_thesaurus_config()
+        engine = ThesaurusEngine(config=cfg)
+        if extra_config:
+            if extra_config.groups:
+                for g in extra_config.groups:
+                    engine.add_group(g)
+            if extra_config.aliases:
+                for src, tgts in extra_config.aliases.items():
+                    engine.add_alias(src, tgts)
+            if extra_config.related:
+                for rg in extra_config.related:
+                    engine.add_related_group(rg)
+        return engine
+
 
     def get_space(self, name: str) -> SpaceConfig:
         """
