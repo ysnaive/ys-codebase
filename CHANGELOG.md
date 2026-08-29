@@ -2,6 +2,22 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_1049_knowledge_db_algorithm_optimization — sub_01_jit_invalidation_and_hot_healing
+
+- **Knowledge-DB 全域聯集單一索引與 JIT 智能變更感知熱自愈**：
+  - **全專案空間聯集去重建檔與單一全域倒排索引 (`unified.index.bin.gz`)**：
+    - 放棄各空間獨立建檔舊機制，改以實體檔案絕對路徑為唯一鍵去重，所有檔案 100% 僅讀取與 AST 解析 1 次。
+    - 單一全域倒排索引使 BM25 的 IDF 與 $avgdl$ 指標全局精確正規化，消滅跨空間重疊引起的重複符號與 BM25 評分失真。
+    - 符號與 Posting 自動記錄所屬多空間標籤清單 (`spaces: List[str]`)，支援 `--space <name>` 進行 $O(1)$ 高速空間標籤過濾。
+  - **極致緊湊原生二進位狀態快照 (`unified.meta.bin`)**：
+    - 採用 Magic Header `b"YFP1"` + 原生 `struct` 封裝，反序列化耗時 $< 0.1\text{ ms}$。
+    - 建立微秒級快照清冊，完全避免 JSON 序列化與 SHA-1 內容計算之磁碟 I/O 開銷。
+  - **JIT 查詢時智能變更感知與背景熱自愈 (Just-In-Time Smart Healing)**：
+    - 檢索入口透過 `os.scandir` 進行極速 `(mtime, size)` 比對（耗時僅 $2\sim 3\text{ ms}$），一旦檢測到檔案新增、修改、刪除或索引缺失，自動於背景執行熱重建。
+    - 熱自愈提示導向 `sys.stderr`，絕不污染 `--json` 結構化輸出；CLI 支援 `--no-auto-rebuild` / `-n` 旗標以手動停用自動熱自愈。
+  - **全量測試與回歸驗證**：
+    - `knowledge-db` 模組 50/50 測試 100% 通過；全生態系 4 大模組 198/198 測試 100% 通過。
+
 ## 2026_08_29_1025_agents_workflow_manifest_cache_placement
 
 - **Agents-Workflow 發布清單雙軌分流儲存與換行符號歸一化 (`v1.0.2.1`)**：

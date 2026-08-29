@@ -158,6 +158,104 @@ class SemanticBundler:
             },
         )
 
+    def bundle_union(
+        self,
+        spaces: Optional[List[SpaceConfig]] = None,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> SemanticBundle:
+        """
+        掃描全專案空間聯集 (Union Scope)，以實體檔案絕對路徑為唯一鍵去重，
+        所有檔案 100% 僅讀取與 AST 解析 1 次；於各 UnifiedSymbol.metadata["spaces"] 注入命中的空間名稱清單。
+        """
+        target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
+
+        # 收集實體檔案與其所命中的所有空間集合: canonical_path -> (file_path, relpath, set_of_spaces)
+        unique_files: Dict[str, Tuple[Path, str, Set[str]]] = {}
+
+        for sp in target_spaces:
+            space_name = sp.name
+            source_roots = self.space_manager.resolve_space_include(space_name)
+
+            for source_root in source_roots:
+                if source_root.is_file():
+                    if sp.is_file_included(source_root.name) and not FingerprintScanner._is_excluded(
+                        source_root.name, sp.exclude
+                    ):
+                        c_key = str(source_root.resolve()).replace("\\", "/")
+                        if c_key not in unique_files:
+                            unique_files[c_key] = (source_root, source_root.name, {space_name})
+                        else:
+                            unique_files[c_key][2].add(space_name)
+                else:
+                    base_dir = source_root
+                    for root_dir, dirs, files in os.walk(str(source_root)):
+                        rel_dir = os.path.relpath(root_dir, str(base_dir)).replace("\\", "/")
+                        if rel_dir != "." and FingerprintScanner._is_excluded(rel_dir + "/", sp.exclude):
+                            dirs.clear()
+                            continue
+                        for f in files:
+                            try:
+                                f_path = Path(root_dir) / f
+                                relpath = os.path.relpath(str(f_path), str(base_dir)).replace("\\", "/")
+                                if not FingerprintScanner._is_excluded(relpath, sp.exclude) and sp.is_file_included(f):
+                                    c_key = str(f_path.resolve()).replace("\\", "/")
+                                    if c_key not in unique_files:
+                                        unique_files[c_key] = (f_path, relpath, {space_name})
+                                    else:
+                                        unique_files[c_key][2].add(space_name)
+                            except Exception:
+                                pass
+
+        total_files = len(unique_files)
+        all_symbols: List[UnifiedSymbol] = []
+
+        # 逐一檔案讀取與 AST 解析 (100% 僅解析 1 次)
+        for idx, (c_key, (f_path, relpath, sp_set)) in enumerate(unique_files.items(), start=1):
+            if progress_callback:
+                progress_callback(relpath, idx, total_files)
+
+            sorted_spaces = sorted(list(sp_set))
+            primary_space = sorted_spaces[0] if sorted_spaces else "unified"
+
+            try:
+                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                symbols = self.parser_registry.parse_file(
+                    file_path=relpath, content=content, space=primary_space
+                )
+
+                for sym in symbols:
+                    sym.metadata["spaces"] = sorted_spaces
+                    sym.metadata["space"] = primary_space
+                    all_symbols.append(sym)
+            except Exception as e:
+                logger.warning(f"Failed parsing file '{f_path}' during union bundle: {e}")
+
+        thesaurus = self.space_manager.load_thesaurus()
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        files_map = {}
+        for c_key, (f_path, _, _) in unique_files.items():
+            try:
+                st = f_path.stat()
+                files_map[c_key] = (st.st_mtime, st.st_size)
+            except OSError:
+                pass
+
+        return SemanticBundle(
+            version="1.0.0",
+            space_name="unified",
+            created_at=created_at,
+            symbols=all_symbols,
+            thesaurus=thesaurus,
+            metadata={
+                "total_spaces": len(target_spaces),
+                "total_files": total_files,
+                "total_symbols": len(all_symbols),
+                "files_map": files_map,
+            },
+        )
+
     def export_bundle(
         self,
         bundle: SemanticBundle,

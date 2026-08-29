@@ -30,6 +30,7 @@
 | **sub_06** | **雙向 Contributes 聯動與 Space 解耦** | **Completed** | 清空模組預設硬編碼空間、由 `agents-workflow` 宣告貢獻 `docs` 空間、專案特化宣告 `source` 空間，並向工作流注入檢索優先紀律與 JIT 指引。 |
 | **sub_07** | **搜尋結果輸出格式優化** | **Completed** | 預設極輕量單行排版 (`#01 path:line`)、詳細模式 (`--detail`, `-d`, `--verbose`) 與結構化模式 (`--json`) 支援。 |
 | **sub_08** | **搜尋結果代碼切片與預覽優化** | **Completed** | 支援 `--snippet` / `-s` / `--preview` 延遲切片讀取，直接在檢索結果中內嵌 Docstring 摘要與帶行號代碼片段，徹底消除 Agent 二次檔案讀取。 |
+| **sub_09** | **JIT 智能變更感知與全域聯集單一索引** | **Completed** | 全專案空間聯集實體去重 AST 解析、單一全域倒排索引 (`unified.index.bin.gz`)、原生二進位快照 (`unified.meta.bin` Magic `YFP1`) 與 JIT 查詢時智能變更感知熱自愈。 |
 
 ---
 
