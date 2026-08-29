@@ -1,1 +1,1 @@
-- **知識庫索引同步指引**：在 Phase 7 成果展示與 1:1 文檔交付後，若本次子計畫涉及新增/修改 Public API 或文檔，請實機執行 `python yscb.py knowledge-db index`（或 `scan`）即刻更新專案倒排索引庫。
+- **知識庫索引同步指引**：本專案已具備 JIT 查詢智能變更感知與背景熱自愈機制，日常無需手動維護索引；若欲在交付後立即執行全量校準，亦可調用 `python __${yscb.host://yscb.py}__ knowledge-db index`。

@@ -1,1 +1,1 @@
-- **知識庫定向檢索指引**：在啟動 Phase 0 需求發想或架構釐清前，優先執行 `python yscb.py knowledge-db search <關鍵字> [-s|--snippet]` 檢索專案既有符號、Docstring 與代碼片段，避免重複設計或盲目翻找原始碼。
+- **知識庫定向檢索指引**：在啟動 Phase 0 需求發想或架構釐清前，優先依決策樹執行 `python __${yscb.host://yscb.py}__ knowledge-db search <關鍵字> -s` 檢索既有符號、Docstring 與代碼切片，快速定位行位址並進行極小範圍定向閱讀，避免盲目翻找原始碼。
