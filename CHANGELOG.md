@@ -2,6 +2,16 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_2035_user_guidance_and_module_readme_enhancement (Umbrella Level 2 結案)
+
+- **全生態系模組純用戶導引手冊建置與專案級 README 重構**：
+  - **`core` 模組導引手冊 (`source/core/README.md`)**：以純用戶視角完整說明微核心架構定位、11 大語意空間協議 VFS、2x2 組態矩陣（專案共享 vs 本機覆蓋）、全量 CLI 指令速查、Python SDK 常用公開 API 與 3 大情境 Cookbook。
+  - **`dev` 模組導引手冊 (`source/dev/README.md`)**：完整闡述五大核心引擎、Dogfooding 雙軌閉環流水線（軌道 A 本地自引用 / 軌道 B 正式發布）、四段式語意版本號 (`Major.Minor.Patch.Revision`) 標準定義、全量 CLI 指令矩陣、`YSCBTestCase` 單元測試指南與 Cookbook。
+  - **`agents-workflow` 模組導引手冊 (`source/agents-workflow/README.md`)**：完整介紹四層架構、11 大官方 Slash Commands 導覽表、6 大計畫分支拓撲決策樹、Agent 行為核心三大公理與 6 大防呆鐵律、全量 CLI 速查與接入 Cookbook。
+  - **`knowledge-db` 模組導引手冊 (`source/knowledge-db/README.md`)**：詳解四層檢索流水線、日常檢索決策樹（`--ftype=c,cpp,py` / `--ftype=md` / hybrid）、`-s` 代碼切片即時預覽強制替代原則、全量 CLI 指令矩陣、`KnowledgeEngine` SDK 範例與 3 大情境 Cookbook。
+  - **專案根目錄 README 重構 (`README.md`)**：加入頂部 Agent 醒目安裝指引、全景 Mermaid 生態系架構圖、標準基礎安裝與 `core.project_root` 綁定、`agents-workflow` 安裝/路徑手動調整與 Pre-flight 核對提示、`knowledge-db` 安裝/源碼空間設定與 Pre-flight 詢問提示、及全域 CLI Cheat Sheet。
+  - **回歸驗證與合規檢核**：5 大子計畫與主計畫全部通過 `plan verify` 100% Passed；全生態系 4 大模組 **211/211 測試 100% Passed**。
+
 ## 2026_08_29_1505_workflow_and_agents_guidance_optimization — sub_05_init_project_uri_guardrail (`agents-workflow@1.0.2.9`)
 
 - **一鍵初始化 `init` 前置依賴協議 `project://` 驗證與防呆修復引導 (`initializer.py`)**：
