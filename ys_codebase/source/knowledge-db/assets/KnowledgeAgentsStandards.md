@@ -1,28 +1,47 @@
-### 🧠 知識庫檢索與日常代碼搜尋強制鐵律 (Knowledge-DB Mandatory Search Standards)
+### 🧠 知識庫檢索與代碼搜尋規範 (Knowledge-DB Search Standards)
 
-#### 🚨 執行紀律：日常代碼搜尋強制工具替代 (Search Tool Substitution & Prohibitions)
-- **預設第一反射工具 (Default First Search Tool)**：
-  在日常任何任務、問題排查、符號定位、功能探索或架構查詢時，**Agent 的第一搜尋動作 100% 必須強制調用 `python __${yscb.host://yscb.py}__ knowledge-db search`**，嚴禁以內建工具走捷徑。
-- **🚨 絕對禁止條款 (Absolute Prohibitions)**：
-  1. **嚴禁以 `grep_search` 進行模糊探索**：絕對禁止在未知精確符號/常數全名前，使用 `grep_search` 發起全專案正則遍歷、模糊搜尋或關鍵字廣蒐。
-  2. **嚴禁以 `list_dir` / `view_file` 盲目翻找**：絕對禁止在未透過 `knowledge-db search` 定位精確行位址前，盲目列出目錄或整檔逐篇閱讀。
-- **唯一允許調用 `grep_search` 的例外條件 (Strict Exception)**：
-  僅在「已獲取 100% 精確且唯一的符號名/常數名（如 `foo.doSomethingExact`），且僅需在單一已知檔案內精準定位行號」時，方可使用 `grep_search`。其餘 90%+ 的日常代碼探索與檢索情境，一律強制由 `knowledge-db search -s` 承接。
+#### 1. 搜尋工具二分流決策矩陣 (Tool Routing Matrix)
 
-- **日常檢索決策樹與 `--ftype` 分流指引 (Search Decision Tree & FType Routing)**：
-  1. **確定搜索程式碼 (Code Search)**：
-     ➔ 附加 `--ftype=c,cpp,py`（或 `--ftype=py`, `--ftype=c,cpp` 等）：  
-     `python __${yscb.host://yscb.py}__ knowledge-db search '<關鍵詞組合>' --ftype=c,cpp,py -s`
-  2. **確定搜索規範、文檔或 SOP (Documentation Search)**：
-     ➔ 附加 `--ftype=md`：  
-     `python __${yscb.host://yscb.py}__ knowledge-db search '<關鍵詞組合>' --ftype=md -s`
-  3. **廣義探索、語意探索或跨來源關聯 (Hybrid / Concept Search)**：
-     ➔ 不加 `--ftype` 進行全空間加權檢索：  
-     `python __${yscb.host://yscb.py}__ knowledge-db search '<語意化描述>' -s`
+| 查詢特徵與情境 | 推薦工具 | 適用說明 |
+| :--- | :---: | :--- |
+| **純標點 / 語法錨點 / 字串常數**（例：`__#{`、`__@{`、`<!--`、`[x]`、`TODO:`、`0x7FFF`） | `grep_search` | 標點會被分詞器過濾；直接逐字節精確匹配行號。 |
+| **精確符號定位**（已知唯一全名，僅需取得單檔行號） | `grep_search` | 單檔行位址定點。 |
+| **代碼標識符 / 類別 / 函式**（例：`PIDController`、`ThesaurusEngine`） | `knowledge-db search -s` | 取得駝峰/底線拆解、Docstring 摘要與上下文代碼切片。 |
+| **業務概念 / 架構邏輯 / 多詞組合**（例：`三階加權展開`、`尋路演算法`、`佔位符解析`） | `knowledge-db search -s` | 享有同義詞擴展、多跳鏈式傳播與 BM25 加權排序。 |
 
-- **「定位 ➔ 切片即時理解」核心哲學 (Targeted Reading & Snippet Axiom)**：
-  - **切片即時預覽**：檢索一律強制附加 `-s`（或 `--snippet`）直接獲取帶行號之上下文代碼切片與 Docstring 摘要。
-  - **極小範圍定向閱讀**：利用檢索定位之精確檔案與行號進行極小範圍定向確認，消滅 80%+ 的無效二次檔案讀取。
+---
 
-- **Docstring 與符號結構防護鐵律 (Docstring Integrity Guardrail)**：
-  - Agent 在編寫或重構 Public API 時，**嚴禁刪除或破壞已有的標準 Docstring 註解結構**，必須確保符號能被 `knowledge-db` AST 解析器無損提取。
+#### 2. 語意廣搜心法：拒絕狹隘關鍵字 (Semantic Breadth Formulation)
+
+- **初始檢索目的**：在未掌握專案全貌前，優先用語意化詞組抓取宏觀架構廣度，嚴禁直接使用單一檔名或表面變數孤立搜尋。
+- **三維語意查詢公式**：
+  $$\text{Query} = \text{[領域概念]} + \text{[架構機制]} + \text{[核心動詞]}$$
+  - 例：「排查 ContextInit 佔位符失效」 ➔ `search '佔位符 語意URI 拓撲映射 發布流水線' -s`
+  - 例：「詞庫改為 contribute 提供」 ➔ `search '詞庫解耦 contributes 宣告式注入 跨模組聚合' -s`
+
+---
+
+#### 3. 簽名 + 情境複合檢索 (Signature + Context Co-Search)
+
+- **通用簽名消歧義**：遇到通用名稱之函式或方法（如 `resolve`、`compile`、`update`、`create`、`validate`、`init`），強制採用 **「簽名詞 + 業務情境詞」** 複合檢索。
+- **Docstring 交叉加權**：簽名詞命中函式標頭，情境詞命中 Docstring 註解，過濾同名無關簽章。
+  - 例：尋找佔位符路徑解算 ➔ `search 'resolve 佔位符 拓撲 產物工廠' -s`（避免單搜 `resolve`）
+  - 例：尋找模組升級與快照 ➔ `search 'update 模組升級 雙軌快照' -s`（避免單搜 `update`）
+
+---
+
+#### 4. 兩階段檢索流程 (`--ftype` Routing)
+
+- **Phase A (宏觀脈絡 / 廣度)**：`python __${yscb.host://yscb.py}__ knowledge-db search '<語意化情境詞組>' --ftype=md -s`（或不加 `--ftype` 全空間檢索）。
+- **Phase B (微觀實作 / 深度)**：`python __${yscb.host://yscb.py}__ knowledge-db search '<簽名詞 業務情境詞>' --ftype=c,cpp,py -s`。
+
+---
+
+#### 5. 執行紀律 (Guardrails)
+
+1. **第一反射原則**：凡標識符、概念、功能探索與架構查詢，強制調用 `python __${yscb.host://yscb.py}__ knowledge-db search`。
+2. **新詞主動補足鐵律**：在分析、修改或排查途中，凡遭遇當前上下文未曾具備之任何新名詞、新欄位、新協議或未知概念，嚴禁憑字面臆測，必須即刻將其轉化為語意化查詢（`python __${yscb.host://yscb.py}__ knowledge-db search '<新詞 業務情境>' -s`），主動補足對應知識上下文後方可繼續推進。
+3. **禁止模糊探索**：嚴禁以 `grep_search` 進行未指定精確符號之全專案正則遍歷或關鍵字廣蒐。
+4. **禁止盲目翻讀**：嚴禁在未定位精確行位址前使用 `list_dir` / `view_file` 盲目列出目錄或整檔閱讀。
+5. **強制切片預覽**：檢索強制附加 `-s`（或 `--snippet`）直接獲取帶行號之上下文代碼切片與 Docstring。
+6. **註解結構保護**：編寫或重構 Public API 時，嚴禁破壞標準 Docstring 註解結構。

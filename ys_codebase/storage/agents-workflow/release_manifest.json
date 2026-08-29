@@ -1,5 +1,5 @@
 {
-  "fingerprint": "36d62f7dca245f32f630295589ca04a24e21cf09485ed547bbdef5522ecb2d75",
+  "fingerprint": "01b65c1109b488b368761131063037565715d62a9105c36b4c70829036ed27f1",
   "active_targets": [
     "antigravity"
   ],
@@ -35,5 +35,5 @@
     "project://.agents/workflows/Review.md",
     "project://.agents/workflows/Roadmap.md"
   ],
-  "updated_at": "2026-08-30 00:23:31"
+  "updated_at": "2026-08-30 00:41:40"
 }
