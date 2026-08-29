@@ -1,6 +1,39 @@
 {
-  "fingerprint": "",
-  "active_targets": [],
-  "published_files": [],
-  "updated_at": "2026-08-29 18:37:12"
+  "fingerprint": "4e35d7a41ccb98859c9f7c75b1e6b5e2de9b918fc8f5c0e93d2db4f3b4313157",
+  "active_targets": [
+    "antigravity"
+  ],
+  "published_files": [
+    "project://.agents/.yscb/standards/AgentsCliGuild.md",
+    "project://.agents/.yscb/standards/AgentsStandards.md",
+    "project://.agents/.yscb/standards/DevelopmentStandards.md",
+    "project://.agents/.yscb/standards/DocumentationStandards.md",
+    "project://.agents/.yscb/templates/P00_discuss.md",
+    "project://.agents/.yscb/templates/P01_requirements_spec.md",
+    "project://.agents/.yscb/templates/P02_architecture_plan.md",
+    "project://.agents/.yscb/templates/P03_api_spec.md",
+    "project://.agents/.yscb/templates/P04_implementation_plan.md",
+    "project://.agents/.yscb/templates/P05_task.md",
+    "project://.agents/.yscb/templates/P06_test_plan.md",
+    "project://.agents/.yscb/templates/P07_walkthrough.md",
+    "project://.agents/.yscb/templates/RXX_research_report.md",
+    "project://.agents/.yscb/templates/changelog.md",
+    "project://.agents/.yscb/templates/fast_track_plan.md",
+    "project://.agents/.yscb/templates/handoff.md",
+    "project://.agents/.yscb/templates/roadmap.md",
+    "project://.agents/.yscb/templates/umbrella_overview.md",
+    "project://.agents/workflows/Auto.md",
+    "project://.agents/workflows/BumpRevision.md",
+    "project://.agents/workflows/ContextInit.md",
+    "project://.agents/workflows/Continue.md",
+    "project://.agents/workflows/Discuss.md",
+    "project://.agents/workflows/Idea.md",
+    "project://.agents/workflows/NewPlan.md",
+    "project://.agents/workflows/Pause.md",
+    "project://.agents/workflows/Research.md",
+    "project://.agents/workflows/Retro.md",
+    "project://.agents/workflows/Review.md",
+    "project://.agents/workflows/Roadmap.md"
+  ],
+  "updated_at": "2026-08-29 21:53:35"
 }
