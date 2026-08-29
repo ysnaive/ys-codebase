@@ -52,16 +52,20 @@
   "commands": {
     "install": {
       "description": "Install a module from provider or local build package (@build)",
+      "tier": "gated",
+      "phases": ["P07", "FT-3"],
       "case_pros": [
         "安裝新模組能力至環境中",
         "本地模組自引用調試: install <mod>@build --force (不更新無關模組)"
       ],
       "case_cons": [
-        "🚨 嚴禁未經開發者指示在日常開發中重複安裝或重裝全部模組"
+        "🚨 嚴禁在未授權情況下，於開發過程連動 release 指令自部署，應使用 build + install <mod>@build 部署開發版"
       ]
     },
     "update": {
       "description": "Update installed module(s) to latest version",
+      "tier": "gated",
+      "phases": [],
       "case_pros": [
         "升級已安裝之模組版本"
       ],
@@ -71,6 +75,8 @@
     },
     "remove": {
       "description": "Remove an installed module from environment",
+      "tier": "gated",
+      "phases": [],
       "case_pros": [
         "清理不再使用之模組"
       ],
@@ -80,24 +86,32 @@
     },
     "list": {
       "description": "List all installed modules, versions and providers",
+      "tier": "safe",
+      "phases": ["CONTEXT_INIT", "P00", "RESEARCH"],
       "case_pros": [
         "檢視當前環境已安裝之模組清冊與版本"
       ]
     },
     "status": {
       "description": "Health check and runtime diagnostic report",
+      "tier": "safe",
+      "phases": ["CONTEXT_INIT", "P00", "RESEARCH"],
       "case_pros": [
         "環境健康診斷與自我修復檢查"
       ]
     },
     "reload": {
       "description": "Reconcile and refresh runtime environment",
+      "tier": "safe",
+      "phases": ["P05", "FT-2"],
       "case_pros": [
         "重新聚合 contributes 並觸發模組 on_reload Hook"
       ]
     },
     "rollback": {
       "description": "Revert environment to the previous snapshot state",
+      "tier": "gated",
+      "phases": ["DISCUSS"],
       "case_pros": [
         "當前環境損毀時回滾至前一快照"
       ],
@@ -107,19 +121,20 @@
     },
     "uri": {
       "description": "Resolve canonical semantic URI to physical path",
+      "tier": "safe",
+      "phases": ["CONTEXT_INIT", "P00", "P02", "P05"],
       "case_pros": [
         "動態解析語意 URI (如 python yscb.py uri resolve project://AGENTS.md)"
       ]
     },
     "config": {
       "description": "YS-Codebase module configuration manager (list, get, set, reload)",
+      "tier": "safe",
+      "phases": ["CONTEXT_INIT", "P00", "P02"],
       "case_pros": [
         "檢視專案或模組設定狀態: python yscb.py config list [--mod=<module>]",
         "查詢特定組態值: python yscb.py config get <module> [key]",
         "更新專案或本機組態: python yscb.py config set <module> <key> <value> [--local]"
-      ],
-      "case_cons": [
-        "🚨 嚴禁手動編輯損毀 JSON 語法"
       ]
     }
   }

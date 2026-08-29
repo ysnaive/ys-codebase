@@ -48,6 +48,8 @@
 
 所有 Phase (P00~P07 / fast_track_plan / umbrella_overview) 產出文件 **必須 100% 嚴格鏡像標準模板結構**（包含所有指定欄位、表格與 Header 規範標頭），嚴禁 Agent 自行簡化或遺漏模板區塊。各階段標準模板實體路徑指針如下：
 
+> 🚨 **模板註解剝除鐵律 (Mandatory Comment Stripping)**：使用標準模板產出任何 Phase 階段文件時，**落檔時必須徹底移除頂部指引之 HTML 註解（`<!-- ... -->`）**，嚴禁將模板導引註解遺留於正式計畫文件中。
+
 - Phase 0: [`P00_semantic_requirements.md`](`__#{module://agents-workflow/assets/templates/P00_semantic_requirements.md}__`)
 - Phase 1: [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)
 - Phase 2: [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)
@@ -98,7 +100,7 @@
 - **Phase 7 (成果展示與結案)**：
   - 產出結案報告 `P07_walkthrough.md`。
   - **知識庫 1:1 交付驗收**：核對並交付 Phase 4 預排之 `workflow.docs://` 文檔，追加版本日誌至專案根目錄 `CHANGELOG.md`。
-  - **計畫合規性驗證**：剝除 HTML 註解後實機調用 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 確保計畫結構完整與合規。
+  - **🚨 計畫合規性檢核 (Mandatory Plan Check)**：結案交付前**必須實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` (或 `plan check`)** 驗證 Markdown 結構完整性、追溯鏈合規性與註解剝除狀態。
   - 工作目錄預設留存於 `workflow.plans://` 原位，嚴禁主動歸檔。
 
 ### 4.3 Fast Track 敏捷流程
