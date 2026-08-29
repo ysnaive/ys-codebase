@@ -58,10 +58,11 @@ flowchart TD
 
 ---
 
-### 步驟 4：收斂結論與回填 (Synthesis)
-- 將調研形成的**核心公理、不可破壞之約束與架構決策**收斂回填：
-  1. 回填至 [`P00_semantic_requirements.md`](`__#{module://agents-workflow/assets/templates/P00_semantic_requirements.md}__`) 與 [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)。
-  2. 若為大型任務，作為 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) 子計畫拆分與依賴路線圖的依據。
+### 步驟 4：收斂結論與三大出口轉化 (Synthesis & Exit Paths)
+- 將調研形成的**核心公理、不可破壞之約束與架構決策**收斂並執行三大出口分流：
+  1. **出口 ① (即刻立項開發)**：回填至 [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)，無縫升級為實作型 Plan（直接繼承 R01 結論與背景）。
+  2. **出口 ② (沉澱為技術路線圖)**：轉化沉澱至 [`roadmap.md`](`__#{module://agents-workflow/assets/templates/roadmap.md}__`)（置於 `__${workflow.roadmap://}__`）作為專案長期技術儲備。
+  3. **出口 ③ (存檔歸檔)**：作為純知識留痕，直接歸檔至 `workflow.archived://`。
 
 ---
 

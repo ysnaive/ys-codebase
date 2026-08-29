@@ -17,9 +17,23 @@
       "type": "config",
       "value": "paths.docs",
       "description": "指向 agents-workflow 專案知識庫文檔目錄"
+    },
+    {
+      "token": "workflow.roadmap",
+      "type": "config",
+      "value": "paths.roadmap",
+      "description": "指向 agents-workflow 長期技術路線圖與策略資產目錄"
     }
   ],
   "commands": {
+    "roadmap": {
+      "description": "Scan and format long-term strategic roadmaps summary and status",
+      "tier": "safe",
+      "phases": ["CONTEXT_INIT", "P00", "RESEARCH"],
+      "case_pros": [
+        "檢視或探索長期技術儲備: agents-workflow roadmap"
+      ]
+    },
     "init": {
       "description": "One-click workflow URI protocols and directories initialization",
       "tier": "gated",

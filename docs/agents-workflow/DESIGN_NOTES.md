@@ -87,3 +87,17 @@
   2. 行內穿插代碼（如命令列 `python __${...}__ run`）解算內部佔位符後維持外層代碼反引號。
   3. 工作流中面向 Agent 讀檔與終端執行的檔案動線，全面切換為 `__${...}__` (Project Relative URI)，確保專案根目錄直達可讀。
 - **效益**：Markdown 超連結符合 100% CommonMark 規範，徹底消滅 Agent 初始化 404 與非預期搜尋開銷。
+
+---
+
+### [DN-AW-09] 6 大計畫分支拓撲、/NewPlan 延遲建檔與 Roadmap 策略資產體系
+- **背景**：
+  1. 原 Fast Track 僅以「檔案數 $\le 2$」為硬性判斷標準，出現「10 檔共修 50 行被阻擋，而 1 檔修改 2000 行卻誤判進入 Fast Track」的規模盲點。
+  2. 原 SOP 缺乏修訂計畫（邊校驗邊改短循環）、調研計畫（非代碼技術選型）與長期策略資產（Roadmap 儲備庫）。
+  3. 原 `/NewPlan` 觸發即立即開立目錄與模板，若討論途中切換或放棄會遺留無效垃圾目錄。
+- **決策**：
+  1. 建立 6 大計畫分支矩陣：Full Track (Level 1)、Fast Track (Level 0, 4 維度綜合規模判定)、Umbrella (Level 2, 模式 B-1 預先規劃型 vs 模式 B-2 增量演進型)、修訂計畫 (4 步短循環免開目錄)、調研計畫 (3 步調研與三大出口轉化)、Roadmap (長期策略資產)。
+  2. 實作 `/NewPlan` 延遲建檔守門 (Delayed Materialization)：P00_discuss 階段維持純對話，確立分流時才一併建立目錄與模板。
+  3. 實作 `RoadmapManager` 與 `python yscb.py agents-workflow roadmap` CLI 摘要掃描工具，結合 `/Roadmap` 智能推薦工作流達成低 Token 儲備探索。
+- **效益**：涵蓋多維開發需求場景，保護 Token 開銷與磁碟整潔度，建立長期技術儲備與一鍵轉化能力。
+

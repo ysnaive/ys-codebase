@@ -54,7 +54,35 @@ from agents_workflow.plans import (
     PlanReport,
     PlansToolchainError,
 )
+from agents_workflow.roadmap import RoadmapManager
 
+
+def cmd_roadmap(args: List[str]) -> int:
+    """處理 `agents-workflow roadmap` CLI 指令。"""
+    parser = argparse.ArgumentParser(
+        prog="agents-workflow roadmap",
+        description="Scan and format long-term strategic roadmaps summary and status",
+    )
+    parser.add_argument("topic", nargs="?", default=None, help="Specific roadmap topic or filename to inspect")
+    parser.add_argument("--list", "-l", action="store_true", help="List all roadmaps in summary table format")
+    parsed_args = parser.parse_args(args)
+
+    mgr = RoadmapManager()
+    if parsed_args.topic and parsed_args.topic != "--list":
+        item = mgr.get_roadmap(parsed_args.topic)
+        if not item:
+            print(f"[agents-workflow:roadmap] Roadmap topic '{parsed_args.topic}' not found in {mgr.roadmap_dir}.")
+            return 1
+        print(f"\n[agents-workflow:roadmap] Topic: {item.topic} ({item.status})")
+        print(f"  * Path:    {item.path}")
+        print(f"  * Date:    {item.date if item.date else 'N/A'}")
+        print(f"  * Title:   {item.title}")
+        print(f"  * Summary: {item.problem_summary}")
+        return 0
+    else:
+        table_str = mgr.format_summary_table()
+        print(table_str)
+        return 0
 
 
 def cmd_release(args: List[str]) -> int:
@@ -400,6 +428,7 @@ Commands:
     --add <target>            Enable release target and trigger release
     --remove <target>         Disable release target and prune published files
   compile, build              Run Stage 1 artifact compilation into cache.root://
+  roadmap [topic]             Scan and format long-term strategic roadmaps summary and status
   tokens                      List all registered token anchors and descriptions
   list                        List all declared export standards, workflows, and templates
   --init-default, init        One-click workflow URI protocols and directories initialization
@@ -433,6 +462,8 @@ def main(args: List[str]) -> int:
         return cmd_release_target(sub_args)
     elif cmd in ("compile", "build"):
         return cmd_compile(sub_args)
+    elif cmd in ("roadmap", "roadmaps"):
+        return cmd_roadmap(sub_args)
     elif cmd in ("tokens", "--list-token", "--list-tokens"):
         return cmd_tokens(sub_args)
     elif cmd in ("list", "--list"):

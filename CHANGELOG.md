@@ -2,6 +2,32 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_1901_dev_agents_standards_dynamic_injection (`dev@1.0.1.2`)
+
+- **Dogfooding 閉環流水線與模組開發三層空間規範之宣告式動態注入 (`contributes/agents-workflow.json`)**：
+  - **資產新增**：新增 `DevAgentsStandards.md`，完整定義 Dogfooding 3 級空間隔離矩陣、標準四步閉環流水線與發布/安裝免測防呆鐵律。
+  - **宣告式注入**：於 `contributes/agents-workflow.json` 宣告將 `DevAgentsStandards.md` 自動注入至 `AGENTS_STANDARDS` Token 錨點。
+  - **規範解耦**：移除 `AGENTS.md` 第 4 節的硬編碼內容，凡安裝 `dev` 模組之環境自動無損軟合併注入 Dogfooding 規範。
+  - **發布與驗證**：完成 Revision bump 至 `1.0.1.2`，正式打包並完成本機覆蓋安裝。
+
+## 2026_08_29_1505_workflow_and_agents_guidance_optimization — sub_03_plan_taxonomy_and_archetypes_expansion (`v1.0.2.5`)
+
+- **計畫分流維度重構、工作類型拓撲擴充、延遲建檔守門與 Roadmap 策略資產體系**：
+  - **全景 6 大計畫分支矩陣 (Plan Taxonomy Matrix)**：
+    - **Fast Track (Level 0) 4 維度重構**：升級為修改總行數 $\le 100$ 行、Public API 零變更、架構自包含、既有測試可驗證之綜合規模判定，並設置 Escalation Gate 升級防線。
+    - **Umbrella (Level 2) 雙軌拓撲**：明確劃分 **模式 B-1 (預先規劃型 Pre-planned)** 藍圖模式與 **模式 B-2 (增量演進型 Incremental)** 滾動模式。
+    - **修訂計畫 (Revision Plan)**：建立 4 步短循環（精準定位 ➔ 原地極小修訂 ➔ 極簡變更卡 ➔ Turn Gate 待命），免開實體目錄保護 Token。
+    - **調研計畫 (Research Plan)**：建立 3 步專題調研流程（P00_discuss ➔ R01 報告 ➔ 三大出口分流：立項實作 / 轉入 Roadmap / 存檔歸檔）。
+  - **`/NewPlan` 延遲建檔與 JIT 動態分流引導守門**：
+    - 實現延遲建檔機制 (Delayed Materialization)：`/NewPlan` 觸發時維持純對話狀態，待確立分流時才伴隨建立目錄與模板，杜絕空目錄殘留。
+    - P00 顧問角色純化：除非主動要求，Agent 絕不主動提出個人主觀想法，僅以客觀事實與技術架構角度回覆。
+  - **Roadmap 長期策略資產與 CLI 管理體系**：
+    - 新增 `workflow.roadmap://`（預設解析至 `workflow.plans://roadmap/`）空間協議與標準 `roadmap.md` 模板。
+    - 實作 `RoadmapManager` 與 `python yscb.py agents-workflow roadmap` CLI 指令，支援 `--list` 結構化摘要對照表與非標準 Markdown 容錯預覽。
+    - 新增 `/Roadmap` 智能推薦工作流，以 CLI 零 Token 掃描 ➔ 客觀事實匹配 ➔ 推薦卡 ➔ 一鍵轉化為核心步驟。
+  - **全量測試與回歸驗證**：
+    - 新增 `test_roadmap.py` 測試套件，全生態系 4 大模組 209/209 測試 100% Passed (100% Ready)；正式發布 `agents-workflow@1.0.2.5`。
+
 ## 2026_08_29_1715_agents_workflow_release_manifest_idempotency
 
 - **Release Manifest 寫入冪等性防護與空轉 Git Diff 消除 (`publisher.py`)**：

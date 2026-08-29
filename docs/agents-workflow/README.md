@@ -9,13 +9,14 @@
 模組徹底剝離特定專案特化規則，提供 100% 通用抽象資產：
 - **規範 (`assets/standards/`)**：
   - `AgentsStandards.md`：Agent 通用核心原則、防呆紀律與絕對禁止條款（自動注入至 `AGENTS.md`）。
-  - `DevelopmentStandards.md`：SOP 0~7 標準生命週期、三大分流矩陣、追溯鏈與工作目錄規範。
+  - `DevelopmentStandards.md`：SOP 0~7 標準生命週期、6 大計畫分支全景判斷矩陣、4 維度 Fast Track、追溯鏈與工作目錄規範。
   - `DocumentationStandards.md`：知識庫 7 大抽象維度、Topic 專題文檔與 1:1 交付原則。
 - **流程 (`assets/workflows/`)**：
   - `ContextInit.md`：上下文熱啟動流程。
-  - `NewPlan.md`：標準立項流程（完整載入 `DevelopmentStandards.md`）。
+  - `NewPlan.md`：標準立項流程（延遲建檔、JIT 動態分流比對、完整載入 `DevelopmentStandards.md`）。
+  - `Roadmap.md`：技術路線圖智能推薦工作流（探索長期技術儲備並推薦適合當前情境之主題）。
 - **模板 (`assets/templates/`)**：
-  - 13 大標準模板庫（`P00`~`P07`, `FT_plan`, `umbrella_overview`, `changelog`, `R_research_report`, `handoff`）與共用標頭 `header.md`。
+  - 14 大標準模板庫（`P00_discuss`, `P01`~`P07`, `fast_track_plan`, `umbrella_overview`, `changelog`, `RXX_research_report`, `handoff`, `roadmap`）與共用標頭。
 - **擴充手冊**：[`contributes.format.md`](../../source/agents-workflow/contributes.format.md) 官方擴充宣告格式規格書。
 
 ---
@@ -36,13 +37,14 @@
 
 ## 3. Workflow URI 協議體系與組態治理
 
-模組向 Core 貢獻 3 大專屬語意 URI 協議，動態綁定至 `config://agents-workflow/config.project.json`：
+模組向 Core 貢獻 4 大專屬語意 URI 協議，動態綁定至 `config://agents-workflow/config.project.json`：
 
 | 協議名稱 | 類型 | 預設模板值 | 一鍵初始化推薦路徑 | 核心職責說明 |
 | :--- | :---: | :---: | :--- | :--- |
-| `workflow.plans://` | `config` | `!undefined` | `project://.agent_workflow/plans` | 指向當前專案活躍開發計畫目錄。 |
-| `workflow.archived://` | `config` | `!undefined` | `project://.agent_workflow/plans/archived` | 指向歷史封存計畫目錄。 |
+| `workflow.plans://` | `config` | `!undefined` | `project://plans` | 指向當前專案活躍開發計畫目錄。 |
+| `workflow.archived://` | `config` | `!undefined` | `workflow.plans://archived` | 指向歷史封存計畫目錄。 |
 | `workflow.docs://` | `config` | `!undefined` | `project://docs` | 指向專案知識庫目錄。 |
+| `workflow.roadmap://` | `config` | `!undefined` | `workflow.plans://roadmap` | 指向專案長期策略技術路線圖儲備庫。 |
 
 ---
 
