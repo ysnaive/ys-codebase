@@ -130,6 +130,15 @@ class SnippetExtractor:
         p = Path(file_path)
         if p.is_absolute() and p.exists():
             return p
+        try:
+            from core import uri
+            p_res = uri.resolve(f"project://{file_path}", interactive=False)
+            if p_res:
+                p_cand = Path(p_res).resolve()
+                if p_cand.exists():
+                    return p_cand
+        except Exception:
+            pass
         if self.workspace_root:
             cand = self.workspace_root / p
             if cand.exists():

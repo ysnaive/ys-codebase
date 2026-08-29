@@ -444,6 +444,21 @@ class ArtifactCompiler:
             return tag_uri
 
         def _resolve_project_uri(tag_uri: str) -> str:
+            # --- Tier 1: Target 部署投影映射優先 ---
+            if deployment_map and tag_uri in deployment_map:
+                t_abs = deployment_map[tag_uri]
+                if t_abs:
+                    try:
+                        rel_p = os.path.relpath(t_abs, project_root).replace("\\", "/")
+                        if rel_p == "." or rel_p == "./":
+                            rel_p = ""
+                        elif rel_p.startswith("./"):
+                            rel_p = rel_p[2:]
+                        return rel_p
+                    except Exception:
+                        return t_abs.replace("\\", "/")
+
+            # --- Tier 2: 專案級語意協議 ---
             if uri and "://" in tag_uri:
                 try:
                     real_p = uri.resolve(tag_uri, interactive=False)
