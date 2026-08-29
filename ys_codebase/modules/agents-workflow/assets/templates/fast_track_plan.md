@@ -5,7 +5,7 @@ Fast Track 執行指引：
 2. 溯源與初始化：嵌入 P00 引用，開立計畫目錄時與 changelog.md 剛性伴隨初始化。
 3. FT-1 (變更規劃)：定義核心需求、受影響範圍、TASK 清單與測試規劃 ➔ Checkpoint 等待確認 (Confirmed)。
 4. FT-2 (實作與驗證)：按 TASK 依序撰寫代碼並執行實機編譯與測試，記錄真實日誌。若遇 Critical 偏差立即升級 Full Track。
-5. FT-3 (品質審查與結案)：代碼清理、1:1 知識庫同步，追加 project://CHANGELOG.md ➔ Checkpoint 等待結案確認 (Completed)。
+5. FT-3 (品質審查與結案)：代碼清理、1:1 知識庫同步，實機調用 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 驗證計畫完整合規，追加 project://CHANGELOG.md ➔ Checkpoint 等待結案確認 (Completed)。
 
 `__@{FAST_TRACK_AGENTS_GUILD}__`
 

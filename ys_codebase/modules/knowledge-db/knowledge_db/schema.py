@@ -96,6 +96,17 @@ class UnifiedSymbol:
     members: List[MemberInfo] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def spaces(self) -> List[str]:
+        """獲取該符號所屬之空間標籤清單"""
+        sp = self.metadata.get("spaces", [])
+        if isinstance(sp, list):
+            return sp
+        if isinstance(sp, str) and sp:
+            return [sp]
+        single_sp = self.metadata.get("space", "")
+        return [single_sp] if single_sp else []
+
     @classmethod
     def compute_id(cls, space: str, file_path: str, name: str, kind: str, line_number: int) -> str:
         """計算唯一 SHA1 雜湊識別碼"""
