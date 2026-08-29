@@ -9,11 +9,11 @@ import logging
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .exceptions import KnowledgeDBError, SchemaValidationError
 from .parsers.registry import ParserRegistry
-from .scanner import FingerprintScanner
+from .scanner import FingerprintScanner, ScanDiffDetail
 from .schema import SpaceConfig, ThesaurusGroup, UnifiedSymbol
 from .space import SpaceManager
 
@@ -87,6 +87,11 @@ class SemanticBundler:
         self.space_manager = space_manager
         self.parser_registry = parser_registry or ParserRegistry(register_defaults=True)
         self.scanner = scanner or FingerprintScanner(space_manager)
+        self._file_symbols_cache: Dict[str, List[UnifiedSymbol]] = {}
+
+    def clear_symbols_cache(self) -> None:
+        """清空記憶體符號快取池"""
+        self._file_symbols_cache.clear()
 
     def _get_project_relpath(self, f_path: Path, fallback_base: Path) -> str:
         """
@@ -178,18 +183,10 @@ class SemanticBundler:
             },
         )
 
-    def bundle_union(
-        self,
-        spaces: Optional[List[SpaceConfig]] = None,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None,
-    ) -> SemanticBundle:
-        """
-        掃描全專案空間聯集 (Union Scope)，以實體檔案絕對路徑為唯一鍵去重，
-        所有檔案 100% 僅讀取與 AST 解析 1 次；於各 UnifiedSymbol.metadata["spaces"] 注入命中的空間名稱清單。
-        """
-        target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
-
-        # 收集實體檔案與其所命中的所有空間集合: canonical_path -> (file_path, relpath, set_of_spaces)
+    def _collect_space_files(
+        self, target_spaces: List[SpaceConfig]
+    ) -> Dict[str, Tuple[Path, str, Set[str]]]:
+        """收集所有實體檔案與其所屬空間集合: canonical_path -> (file_path, relpath, set_of_spaces)"""
         unique_files: Dict[str, Tuple[Path, str, Set[str]]] = {}
 
         for sp in target_spaces:
@@ -209,27 +206,33 @@ class SemanticBundler:
                             unique_files[c_key][2].add(space_name)
                 else:
                     base_dir = source_root
-                    for root_dir, dirs, files in os.walk(str(source_root)):
-                        rel_dir = os.path.relpath(root_dir, str(base_dir)).replace("\\", "/")
-                        if rel_dir != "." and FingerprintScanner._is_excluded(rel_dir + "/", sp.exclude):
-                            dirs.clear()
-                            continue
-                        for f in files:
-                            try:
-                                f_path = Path(root_dir) / f
-                                scan_rel = os.path.relpath(str(f_path), str(base_dir)).replace("\\", "/")
-                                if not FingerprintScanner._is_excluded(scan_rel, sp.exclude) and sp.is_file_included(f):
-                                    c_key = str(f_path.resolve()).replace("\\", "/")
-                                    relpath = self._get_project_relpath(f_path, base_dir)
-                                    if c_key not in unique_files:
-                                        unique_files[c_key] = (f_path, relpath, {space_name})
-                                    else:
-                                        unique_files[c_key][2].add(space_name)
-                            except Exception:
-                                pass
+                    files_to_check: List[Tuple[Path, str, os.stat_result]] = []
+                    self.scanner._scan_entries_fast(base_dir, source_root, sp, files_to_check)
+                    for f_path, scan_rel, _ in files_to_check:
+                        c_key = str(f_path.resolve()).replace("\\", "/")
+                        relpath = self._get_project_relpath(f_path, base_dir)
+                        if c_key not in unique_files:
+                            unique_files[c_key] = (f_path, relpath, {space_name})
+                        else:
+                            unique_files[c_key][2].add(space_name)
+
+        return unique_files
+
+    def bundle_union(
+        self,
+        spaces: Optional[List[SpaceConfig]] = None,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> SemanticBundle:
+        """
+        掃描全專案空間聯集 (Union Scope)，以實體檔案絕對路徑為唯一鍵去重，
+        所有檔案 100% 僅讀取與 AST 解析 1 次；於各 UnifiedSymbol.metadata["spaces"] 注入命中的空間名稱清單。
+        """
+        target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
+        unique_files = self._collect_space_files(target_spaces)
 
         total_files = len(unique_files)
         all_symbols: List[UnifiedSymbol] = []
+        self._file_symbols_cache.clear()
 
         # 逐一檔案讀取與 AST 解析 (100% 僅解析 1 次)
         for idx, (c_key, (f_path, relpath, sp_set)) in enumerate(unique_files.items(), start=1):
@@ -239,6 +242,7 @@ class SemanticBundler:
             sorted_spaces = sorted(list(sp_set))
             primary_space = sorted_spaces[0] if sorted_spaces else "unified"
 
+            file_symbols: List[UnifiedSymbol] = []
             try:
                 with open(f_path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
@@ -249,9 +253,12 @@ class SemanticBundler:
                 for sym in symbols:
                     sym.metadata["spaces"] = sorted_spaces
                     sym.metadata["space"] = primary_space
+                    file_symbols.append(sym)
                     all_symbols.append(sym)
             except Exception as e:
                 logger.warning(f"Failed parsing file '{f_path}' during union bundle: {e}")
+
+            self._file_symbols_cache[c_key] = file_symbols
 
         thesaurus = self.space_manager.load_thesaurus()
         created_at = datetime.now(timezone.utc).isoformat()
@@ -277,6 +284,57 @@ class SemanticBundler:
                 "files_map": files_map,
             },
         )
+
+    def bundle_dirty_files(
+        self,
+        dirty_diff: ScanDiffDetail,
+        spaces: Optional[List[SpaceConfig]] = None,
+    ) -> Tuple[Dict[str, List[UnifiedSymbol]], Set[str]]:
+        """
+        僅針對 dirty_diff 中 added 與 modified 的檔案執行 AST 解析，
+        同步自 _file_symbols_cache 移除 deleted 與 modified 檔案的舊快取，
+        回傳 (new_symbols_by_file, dirty_canonical_keys)。
+        """
+        target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
+        dirty_keys = dirty_diff.dirty_files
+
+        # 1. 自快取中清除 deleted 與 modified 舊符號
+        for d_key in dirty_diff.deleted | dirty_diff.modified:
+            self._file_symbols_cache.pop(d_key, None)
+
+        if not (dirty_diff.added or dirty_diff.modified):
+            return {}, dirty_keys
+
+        # 2. 收集空間對應
+        space_files_map = self._collect_space_files(target_spaces)
+        new_symbols_by_file: Dict[str, List[UnifiedSymbol]] = {}
+
+        for c_key in (dirty_diff.added | dirty_diff.modified):
+            file_info = space_files_map.get(c_key)
+            if not file_info:
+                continue
+            f_path, relpath, sp_set = file_info
+            sorted_spaces = sorted(list(sp_set))
+            primary_space = sorted_spaces[0] if sorted_spaces else "unified"
+
+            symbols: List[UnifiedSymbol] = []
+            try:
+                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                parsed = self.parser_registry.parse_file(
+                    file_path=relpath, content=content, space=primary_space
+                )
+                for sym in parsed:
+                    sym.metadata["spaces"] = sorted_spaces
+                    sym.metadata["space"] = primary_space
+                    symbols.append(sym)
+            except Exception as e:
+                logger.warning(f"Failed parsing dirty file '{f_path}': {e}")
+
+            self._file_symbols_cache[c_key] = symbols
+            new_symbols_by_file[c_key] = symbols
+
+        return new_symbols_by_file, dirty_keys
 
     def export_bundle(
         self,
