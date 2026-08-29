@@ -2,6 +2,15 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_2125_unit_tests_audit_and_maintenance (Level 1 Full Track 結案)
+
+- **全生態系四大模組單元測試套件地毯式排查、整併、瘦身與分流提速優化**：
+  - **`core` 模組**：重構 `source/core/tests/test_semver.py`，完整涵蓋 4 段式 (`Major.Minor.Patch.Revision`) 與 3 段式 SemVer 解析、比較、升級與約束求解；安全刪除重複之 `test_semver_v4.py`。
+  - **`dev` 模組**：校正 `source/dev/tests/test_sandbox.py` 中 5 大實體沙盒複製與打包測試為 `@require(Requirement.ENV)`，使 `dev test --all --logical` 純邏輯秒級跑測降至 6.25 秒（175 測）。
+  - **`agents-workflow` 模組**：移除早期留存之孤立冒煙測試 `test_basic.py`；建立 `source/agents-workflow/scripts/hook.dev.py`，於沙盒生命週期自動注入 `project://` 語意空間路徑組態，徹底消除 28 項編譯器未定義警告日誌噪音；將專案組態升級為 `project://` 協議。
+  - **`knowledge-db` 模組**：將深度 AST 解析邊界測試整合至 `test_parsers.py` 並刪除 `test_parsers_deep.py`；將同義詞庫雙向擴展與分詞測試整合至 `test_tokenizer.py` 並刪除 `test_thesaurus.py`。
+  - **回歸驗證與品質守門**：全生態系全量跑測 `dev test --all` ➔ **201/201 Passed (100% Ready)**；四大模組 `dev check <module>` 靜態合規性 100% 通過。
+
 ## 2026_08_29_2035_user_guidance_and_module_readme_enhancement (Umbrella Level 2 結案)
 
 - **全生態系模組純用戶導引手冊建置與專案級 README 重構**：

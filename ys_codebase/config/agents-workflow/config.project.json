@@ -2,11 +2,13 @@
   "paths": {
     "plans": "project://plans",
     "docs": "project://docs",
-    "archived": "workflow.plans://archived",
-    "roadmap": "workflow.plans://roadmap"
+    "archived": "project://plans/archived",
+    "roadmap": "project://docs/roadmap.md"
   },
   "ide": [],
   "enable_agents_md": true,
   "enable_project_changelog": true,
-  "release_targets": []
+  "release_targets": [
+    "antigravity"
+  ]
 }
