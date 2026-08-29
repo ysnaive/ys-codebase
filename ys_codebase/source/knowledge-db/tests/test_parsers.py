@@ -85,10 +85,12 @@ def standalone_func(x: int, y: int = 10) -> int:
     return x + y
 '''
         symbols = parser.parse("source/engine.py", code, "test_space")
-        self.assertEqual(len(symbols), 2)  # BaseEngine 類別與 standalone_func 函式
+        sym_map = {s.name: s for s in symbols}
+        self.assertEqual(len(symbols), 4)  # BaseEngine 類別, __init__, execute_task 與 standalone_func 函式
 
         # 類別驗證
-        cls_sym = symbols[0]
+        self.assertIn("BaseEngine", sym_map)
+        cls_sym = sym_map["BaseEngine"]
         self.assertEqual(cls_sym.name, "BaseEngine")
         self.assertEqual(cls_sym.kind, SymbolKind.CLASS.value)
         self.assertEqual(cls_sym.language, LanguageType.PYTHON.value)
@@ -102,8 +104,13 @@ def standalone_func(x: int, y: int = 10) -> int:
         self.assertIn("async def execute_task", exec_mem.signature)
         self.assertEqual(exec_mem.visibility, "public")
 
+        # 獨立方法符號驗證 (FR-01)
+        self.assertIn("BaseEngine.__init__", sym_map)
+        self.assertIn("BaseEngine.execute_task", sym_map)
+
         # 獨立函式驗證
-        func_sym = symbols[1]
+        self.assertIn("standalone_func", sym_map)
+        func_sym = sym_map["standalone_func"]
         self.assertEqual(func_sym.name, "standalone_func")
         self.assertEqual(func_sym.kind, SymbolKind.FUNCTION.value)
         self.assertEqual(func_sym.docstring, "獨立計算函式")

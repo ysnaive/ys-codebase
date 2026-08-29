@@ -17,7 +17,7 @@ from .exceptions import KnowledgeDBError, SpaceNotFoundError
 from .parsers.registry import ParserRegistry
 from .retrieval import BM25Engine, CodeSnippet, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
 from .scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffResult
-from .schema import UnifiedSymbol
+from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
 from .space import SpaceManager
 from .thesaurus import ThesaurusEngine
 from .tokenizer import CodeTokenizer
@@ -270,15 +270,17 @@ class KnowledgeEngine:
         space: Optional[Union[str, List[str]]] = None,
         kinds: Optional[List[str]] = None,
         languages: Optional[List[str]] = None,
+        ftypes: Optional[Union[str, List[str]]] = None,
         min_score: float = 0.01,
         limit: int = 10,
         snippet: bool = False,
         context_lines: int = 3,
         auto_rebuild: bool = True,
         verbose: bool = True,
-    ) -> List[SearchResult]:
+        aggregate: bool = True,
+    ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
         """
-        全域聯集多欄位加權語意檢索 (支援 JIT 變更嗅探、自動背景熱自愈、空間標籤篩選與延遲代碼片段提取)。
+        全域聯集多欄位加權語意檢索 (支援 JIT 變更嗅探、自動背景熱自愈、空間與副檔名篩選、Top-N 檔案聚合與延遲代碼切片提取)。
         """
         if not query or not query.strip():
             return []
@@ -328,45 +330,87 @@ class KnowledgeEngine:
         if not unified_index or unified_index.doc_count == 0:
             return []
 
-        # 3. 規格化空間過濾清單
+        # 3. 規格化空間與副檔名過濾清單
         target_spaces: Optional[List[str]] = None
         if space:
             target_spaces = [space] if isinstance(space, str) else list(space)
+
+        target_ftypes: Optional[List[str]] = None
+        if ftypes:
+            target_ftypes = [ftypes] if isinstance(ftypes, str) else list(ftypes)
 
         flt = QueryFilter(
             spaces=target_spaces,
             languages=languages,
             kinds=kinds,
+            ftypes=target_ftypes,
             min_score=min_score,
             limit=limit,
         )
 
-        raw_results = self.bm25_engine.search(query=query, index=unified_index, filter_cfg=flt)
+        if not aggregate:
+            raw_results = self.bm25_engine.search(query=query, index=unified_index, filter_cfg=flt)
+            if not snippet:
+                return raw_results
+
+            results_with_snippets: List[SearchResult] = []
+            for r in raw_results:
+                snip = self.snippet_extractor.extract(
+                    file_path=r.symbol.file_path,
+                    line_number=r.symbol.line_number,
+                    context_before=2,
+                    context_after=max(2, context_lines + 1),
+                    docstring=r.symbol.docstring,
+                )
+                results_with_snippets.append(
+                    SearchResult(
+                        symbol=r.symbol,
+                        score=r.score,
+                        matched_terms=r.matched_terms,
+                        space=r.space,
+                        snippet=r.snippet,
+                        code_snippet=snip,
+                    )
+                )
+            return results_with_snippets
+
+        # 預設聚合模式 (FR-04, FR-05)
+        raw_agg_results = self.bm25_engine.search_aggregated(query=query, index=unified_index, filter_cfg=flt)
 
         if not snippet:
-            return raw_results
+            return raw_agg_results
 
-        # 4. 延遲提取代碼片段 (Top-K Lazy Fetching, FR-02)
-        results_with_snippets: List[SearchResult] = []
-        for r in raw_results:
-            snip = self.snippet_extractor.extract(
-                file_path=r.symbol.file_path,
-                line_number=r.symbol.line_number,
-                context_before=2,
-                context_after=max(2, context_lines + 1),
-                docstring=r.symbol.docstring,
-            )
-            results_with_snippets.append(
-                SearchResult(
-                    symbol=r.symbol,
-                    score=r.score,
-                    matched_terms=r.matched_terms,
-                    space=r.space,
-                    snippet=r.snippet,
-                    code_snippet=snip,
+        # 4. 延遲提取代碼片段 (Top-K Lazy Fetching on Aggregated Items)
+        agg_with_snippets: List[AggregatedFileResult] = []
+        for file_res in raw_agg_results:
+            updated_items: List[AggregatedItem] = []
+            for itm in file_res.items:
+                snip = self.snippet_extractor.extract(
+                    file_path=itm.symbol.file_path,
+                    line_number=itm.symbol.line_number,
+                    context_before=2,
+                    context_after=max(2, context_lines + 1),
+                    docstring=itm.symbol.docstring,
+                )
+                updated_items.append(
+                    AggregatedItem(
+                        symbol=itm.symbol,
+                        score=itm.score,
+                        matched_terms=itm.matched_terms,
+                        snippet=itm.snippet,
+                        code_snippet=snip,
+                    )
+                )
+            agg_with_snippets.append(
+                AggregatedFileResult(
+                    file_path=file_res.file_path,
+                    total_score=file_res.total_score,
+                    items=updated_items,
+                    spaces=file_res.spaces,
+                    language=file_res.language,
                 )
             )
-        return results_with_snippets
+        return agg_with_snippets
 
     def clean(self, space: Optional[str] = None) -> None:
         """
