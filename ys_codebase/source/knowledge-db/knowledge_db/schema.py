@@ -93,6 +93,7 @@ class UnifiedSymbol:
     language: str
     docstring: str = ""
     signature: str = ""
+    end_line: int = 0
     members: List[MemberInfo] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -122,6 +123,7 @@ class UnifiedSymbol:
             "kind": self.kind,
             "file_path": self.file_path,
             "line_number": self.line_number,
+            "end_line": self.end_line,
             "language": self.language,
             "docstring": self.docstring,
             "signature": self.signature,
@@ -149,12 +151,107 @@ class UnifiedSymbol:
             kind=str(data["kind"]),
             file_path=str(data["file_path"]),
             line_number=int(data["line_number"]),
+            end_line=int(data.get("end_line", data.get("line_number", 0))),
             language=str(data["language"]),
             docstring=str(data.get("docstring", "")),
             signature=str(data.get("signature", "")),
             members=members,
             metadata=dict(data.get("metadata", {})),
         )
+
+
+@dataclass(frozen=True)
+class AggregatedItem:
+    """單一檔案節點內部的命中項目"""
+
+    symbol: UnifiedSymbol
+    score: float
+    matched_terms: List[str]
+    snippet: str = ""
+    code_snippet: Optional[Any] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "id": self.symbol.id,
+            "name": self.symbol.name,
+            "kind": self.symbol.kind,
+            "line_number": self.symbol.line_number,
+            "end_line": self.symbol.end_line,
+            "score": round(self.score, 4),
+            "matched_terms": self.matched_terms,
+            "signature": self.symbol.signature,
+            "snippet": self.snippet,
+        }
+        if self.code_snippet and hasattr(self.code_snippet, "to_dict"):
+            data["code_snippet"] = self.code_snippet.to_dict()
+        return data
+
+
+@dataclass(frozen=True)
+class AggregatedFileResult:
+    """檔案層級聚合結果節點"""
+
+    file_path: str
+    total_score: float
+    items: List[AggregatedItem]
+    spaces: List[str]
+    language: str
+
+    @property
+    def symbol(self) -> UnifiedSymbol:
+        """向後相容：獲取該檔案中排名最高之主要 UnifiedSymbol"""
+        if self.items:
+            return self.items[0].symbol
+        return UnifiedSymbol(
+            id=self.file_path,
+            name=self.file_path,
+            kind="file",
+            file_path=self.file_path,
+            line_number=1,
+            language=self.language,
+        )
+
+    @property
+    def score(self) -> float:
+        """向後相容別名"""
+        return self.total_score
+
+    @property
+    def space(self) -> str:
+        """向後相容別名"""
+        return ", ".join(self.spaces) if self.spaces else ""
+
+    @property
+    def matched_terms(self) -> List[str]:
+        """向後相容：獲取子項目命中詞聯集"""
+        terms = set()
+        for itm in self.items:
+            terms.update(itm.matched_terms)
+        return sorted(list(terms))
+
+    @property
+    def snippet(self) -> str:
+        """向後相容：獲取主要子項目之摘要"""
+        if self.items:
+            return self.items[0].snippet
+        return ""
+
+    @property
+    def code_snippet(self) -> Optional[Any]:
+        """向後相容：獲取主要子項目之代碼切片"""
+        if self.items:
+            return self.items[0].code_snippet
+        return None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file_path": self.file_path,
+            "total_score": round(self.total_score, 4),
+            "spaces": self.spaces,
+            "language": self.language,
+            "item_count": len(self.items),
+            "items": [item.to_dict() for item in self.items],
+        }
 
 
 @dataclass

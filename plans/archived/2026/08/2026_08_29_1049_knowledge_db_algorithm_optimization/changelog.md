@@ -11,6 +11,8 @@
 
 | 日期時間 | 類型 | 摘要 |
 | :--- | :---: | :--- |
+| 2026-08-29 14:46 | `SUB-DONE` | 子計畫 03 [`sub_03_parser_and_search_optimization`](./sub_03_parser_and_search_optimization) 完成驗收與結案交付 (207/207 全量測試通過) |
+| 2026-08-29 13:59 | `SUB-PLAN` | 開立子計畫 03 [`sub_03_parser_and_search_optimization`](./sub_03_parser_and_search_optimization) 進入 Phase 0 需求討論 |
 | 2026-08-29 13:39 | `SUB-DONE` | 子計畫 02 [`sub_02_agents_workflow_injection_optimization`](./sub_02_agents_workflow_injection_optimization) 完成驗收與結案交付 |
 | 2026-08-29 13:22 | `SUB-PLAN` | 開立子計畫 02 [`sub_02_agents_workflow_injection_optimization`](./sub_02_agents_workflow_injection_optimization) 進入 Phase 0 需求討論 |
 | 2026-08-29 12:20 | `SUB-DONE` | 子計畫 01 [`sub_01_jit_invalidation_and_hot_healing`](./sub_01_jit_invalidation_and_hot_healing) 完成驗收與結案交付 |

@@ -165,6 +165,7 @@ class PythonParser(BaseParser):
                             )
                         )
 
+                class_end_line = getattr(node, "end_lineno", node.lineno)
                 sym_id = UnifiedSymbol.compute_id(
                     space=space,
                     file_path=normalized_path,
@@ -179,23 +180,68 @@ class PythonParser(BaseParser):
                         kind=SymbolKind.CLASS.value,
                         file_path=normalized_path,
                         line_number=node.lineno,
+                        end_line=class_end_line,
                         language=LanguageType.PYTHON.value,
                         docstring=docstring,
                         signature=sig,
                         members=members,
                         metadata={
-                            "end_line": getattr(node, "end_lineno", node.lineno),
+                            "end_line": class_end_line,
                             "decorators": decorators,
                             "bases": bases,
                         },
                     )
                 )
 
+                # 將類別內部之 Methods 亦物化為獨立一級 UnifiedSymbol (FR-01)
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        m_doc = ast.get_docstring(item) or ""
+                        m_sig = _build_func_signature(item)
+                        m_name = item.name
+                        m_end_line = getattr(item, "end_lineno", item.lineno)
+                        m_dec = []
+                        for d in item.decorator_list:
+                            try:
+                                m_dec.append(ast.unparse(d))
+                            except Exception:
+                                pass
+
+                        method_sym_id = UnifiedSymbol.compute_id(
+                            space=space,
+                            file_path=normalized_path,
+                            name=f"{class_name}.{m_name}",
+                            kind=SymbolKind.METHOD.value,
+                            line_number=item.lineno,
+                        )
+                        symbols.append(
+                            UnifiedSymbol(
+                                id=method_sym_id,
+                                name=f"{class_name}.{m_name}",
+                                kind=SymbolKind.METHOD.value,
+                                file_path=normalized_path,
+                                line_number=item.lineno,
+                                end_line=m_end_line,
+                                language=LanguageType.PYTHON.value,
+                                docstring=m_doc,
+                                signature=m_sig,
+                                members=[],
+                                metadata={
+                                    "parent_scope": class_name,
+                                    "method_name": m_name,
+                                    "end_line": m_end_line,
+                                    "decorators": m_dec,
+                                    "is_async": isinstance(item, ast.AsyncFunctionDef),
+                                },
+                            )
+                        )
+
             # 2. 頂層函式定義
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 func_name = node.name
                 docstring = ast.get_docstring(node) or ""
                 sig = _build_func_signature(node)
+                func_end_line = getattr(node, "end_lineno", node.lineno)
                 decorators = []
                 for dec in node.decorator_list:
                     try:
@@ -217,12 +263,13 @@ class PythonParser(BaseParser):
                         kind=SymbolKind.FUNCTION.value,
                         file_path=normalized_path,
                         line_number=node.lineno,
+                        end_line=func_end_line,
                         language=LanguageType.PYTHON.value,
                         docstring=docstring,
                         signature=sig,
                         members=[],
                         metadata={
-                            "end_line": getattr(node, "end_lineno", node.lineno),
+                            "end_line": func_end_line,
                             "decorators": decorators,
                             "is_async": isinstance(node, ast.AsyncFunctionDef),
                         },

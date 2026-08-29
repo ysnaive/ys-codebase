@@ -12,11 +12,12 @@ import math
 import os
 from pathlib import Path
 import pickle
+import re
 import tempfile
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .exceptions import KnowledgeDBError, SchemaValidationError
-from .schema import UnifiedSymbol
+from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
 from .thesaurus import ThesaurusEngine
 from .tokenizer import CodeTokenizer
 
@@ -67,6 +68,7 @@ class QueryFilter:
     spaces: Optional[List[str]] = None
     languages: Optional[List[str]] = None
     kinds: Optional[List[str]] = None
+    ftypes: Optional[List[str]] = None
     min_score: float = 0.01
     limit: int = 20
 
@@ -527,6 +529,95 @@ class BM25Engine:
             if clean_raw_query == sym_name_clean or clean_raw_query == last_segment:
                 doc_scores[doc_id] = base_score * 2.0
 
+    def _normalize_ftypes(self, ftypes: Optional[Union[str, List[str]]]) -> Set[str]:
+        """將使用者輸入的副檔名規格化為純小寫且無前置點的集合"""
+        if not ftypes:
+            return set()
+        raw_list = [ftypes] if isinstance(ftypes, str) else list(ftypes)
+        result: Set[str] = set()
+        for item in raw_list:
+            # 支援管道符號 (|) 或逗號 (,) 分隔
+            parts = re.split(r"[|,]", str(item))
+            for p in parts:
+                clean = p.strip().lower().lstrip(".")
+                if clean:
+                    result.add(clean)
+        return result
+
+    def search(
+        self,
+        query: str,
+        index: InvertedIndex,
+        filter_cfg: Optional[QueryFilter] = None,
+    ) -> List[SearchResult]:
+        """
+        執行多欄位加權語意檢索 (向後相容扁平清單模式)。
+        """
+        if not query or not query.strip() or index.doc_count == 0:
+            return []
+
+        flt = filter_cfg or QueryFilter()
+        raw_query = query.strip()
+        allowed_ftypes = self._normalize_ftypes(flt.ftypes)
+
+        # 1. 分詞與同義詞擴展
+        base_tokens = self.tokenizer.tokenize(raw_query)
+        if not base_tokens:
+            return []
+
+        expanded_tokens = self.thesaurus.expand_query(base_tokens)
+
+        # 2. 候選文檔計分累加器: doc_id -> (score, matched_terms, posting)
+        doc_scores: Dict[str, float] = defaultdict(float)
+        doc_matches: Dict[str, Set[str]] = defaultdict(set)
+        doc_postings: Dict[str, Posting] = {}
+
+        N = index.doc_count
+
+        for term in expanded_tokens:
+            postings = index.index.get(term, [])
+            if not postings:
+                continue
+
+            # IDF 權重
+            n_q = len(postings)
+            idf = self._compute_idf(n_q, N)
+
+            for posting in postings:
+                doc_id = posting.doc_id
+                doc_postings[doc_id] = posting
+                doc_matches[doc_id].add(term)
+
+                # 多欄位 BM25 評分計算
+                field_scores_sum = 0.0
+                for f_name, weight in self.field_weights.items():
+                    tf = posting.field_freqs.get(f_name, 0)
+                    if tf <= 0:
+                        continue
+                    dl = posting.field_lengths.get(f_name, 1)
+                    avgdl = max(1.0, index.field_avgdl.get(f_name, 1.0))
+
+                    # BM25 tf normalization
+                    norm_tf = (tf * (self.k1 + 1.0)) / (
+                        tf + self.k1 * (1.0 - self.b + self.b * (dl / avgdl)) + 1e-9
+                    )
+                    field_scores_sum += weight * norm_tf
+
+                term_score = idf * field_scores_sum
+                doc_scores[doc_id] += term_score
+
+        # 3. Exact Match 置頂加權 (2.0x Boost)
+        clean_raw_query = raw_query.lower()
+        for doc_id, base_score in list(doc_scores.items()):
+            sym = index.get_symbol(doc_id)
+            if not sym:
+                continue
+            sym_name_clean = sym.name.lower()
+            last_segment = sym_name_clean.split(".")[-1].split("::")[-1]
+
+            if clean_raw_query == sym_name_clean or clean_raw_query == last_segment:
+                doc_scores[doc_id] = base_score * 2.0
+
         # 4. 條件過濾與結果封裝
         results: List[SearchResult] = []
         for doc_id, score in doc_scores.items():
@@ -536,6 +627,12 @@ class BM25Engine:
             sym = index.get_symbol(doc_id)
             if not sym:
                 continue
+
+            # 過濾 ftypes (FR-03)
+            if allowed_ftypes:
+                file_ext = Path(sym.file_path).suffix.lower().lstrip(".")
+                if file_ext not in allowed_ftypes:
+                    continue
 
             posting = doc_postings[doc_id]
             posting_spaces = getattr(posting, "spaces", None) or ([posting.space] if posting.space else [])
@@ -569,3 +666,178 @@ class BM25Engine:
         # 按分數降序排列
         results.sort(key=lambda x: x.score, reverse=True)
         return results[:flt.limit]
+
+    def search_aggregated(
+        self,
+        query: str,
+        index: InvertedIndex,
+        filter_cfg: Optional[QueryFilter] = None,
+        alpha: float = 0.2,
+        top_k_items_per_file: int = 3,
+    ) -> List[AggregatedFileResult]:
+        """
+        執行多欄位加權 BM25 檢索並透過 Top-N 動態回填管線聚合為檔案節點清單 (FR-04, FR-05)。
+        
+        評分公式：
+          Score(File) = max(S_i) + alpha * sum(S_j for j != i)
+        """
+        if not query or not query.strip() or index.doc_count == 0:
+            return []
+
+        flt = filter_cfg or QueryFilter()
+        raw_query = query.strip()
+        allowed_ftypes = self._normalize_ftypes(flt.ftypes)
+
+        # 1. 分詞與同義詞擴展
+        base_tokens = self.tokenizer.tokenize(raw_query)
+        if not base_tokens:
+            return []
+
+        expanded_tokens = self.thesaurus.expand_query(base_tokens)
+
+        # 2. 候選文檔計分累加器
+        doc_scores: Dict[str, float] = defaultdict(float)
+        doc_matches: Dict[str, Set[str]] = defaultdict(set)
+        doc_postings: Dict[str, Posting] = {}
+
+        N = index.doc_count
+
+        for term in expanded_tokens:
+            postings = index.index.get(term, [])
+            if not postings:
+                continue
+
+            n_q = len(postings)
+            idf = self._compute_idf(n_q, N)
+
+            for posting in postings:
+                doc_id = posting.doc_id
+                doc_postings[doc_id] = posting
+                doc_matches[doc_id].add(term)
+
+                field_scores_sum = 0.0
+                for f_name, weight in self.field_weights.items():
+                    tf = posting.field_freqs.get(f_name, 0)
+                    if tf <= 0:
+                        continue
+                    dl = posting.field_lengths.get(f_name, 1)
+                    avgdl = max(1.0, index.field_avgdl.get(f_name, 1.0))
+
+                    norm_tf = (tf * (self.k1 + 1.0)) / (
+                        tf + self.k1 * (1.0 - self.b + self.b * (dl / avgdl)) + 1e-9
+                    )
+                    field_scores_sum += weight * norm_tf
+
+                term_score = idf * field_scores_sum
+                doc_scores[doc_id] += term_score
+
+        # 3. Exact Match 置頂加權
+        clean_raw_query = raw_query.lower()
+        for doc_id, base_score in list(doc_scores.items()):
+            sym = index.get_symbol(doc_id)
+            if not sym:
+                continue
+            sym_name_clean = sym.name.lower()
+            last_segment = sym_name_clean.split(".")[-1].split("::")[-1]
+
+            if clean_raw_query == sym_name_clean or clean_raw_query == last_segment:
+                doc_scores[doc_id] = base_score * 2.0
+
+        # 4. 篩選合格的候選 Item 池並按單項分數降序排列
+        candidate_items: List[Tuple[UnifiedSymbol, float, List[str], List[str]]] = []
+        for doc_id, score in doc_scores.items():
+            if score < flt.min_score:
+                continue
+
+            sym = index.get_symbol(doc_id)
+            if not sym:
+                continue
+
+            # 過濾 ftypes
+            if allowed_ftypes:
+                file_ext = Path(sym.file_path).suffix.lower().lstrip(".")
+                if file_ext not in allowed_ftypes:
+                    continue
+
+            posting = doc_postings[doc_id]
+            posting_spaces = getattr(posting, "spaces", None) or ([posting.space] if posting.space else [])
+
+            if flt.spaces and not any(s in flt.spaces for s in posting_spaces):
+                continue
+            if flt.languages and sym.language not in flt.languages:
+                continue
+            if flt.kinds and sym.kind not in flt.kinds:
+                continue
+
+            candidate_items.append(
+                (sym, score, sorted(list(doc_matches[doc_id])), list(posting_spaces))
+            )
+
+        candidate_items.sort(key=lambda x: x[1], reverse=True)
+
+        if not candidate_items:
+            return []
+
+        # 5. Top-N 動態聚合與回填管線 (FR-05)
+        file_nodes: Dict[str, Dict[str, Any]] = {}
+        unique_files: List[str] = []
+        target_limit = max(1, flt.limit)
+
+        for sym, score, matched_terms, spaces in candidate_items:
+            file_path = sym.file_path
+            snippet = sym.docstring.split("\n")[0] if sym.docstring else sym.signature
+            if len(snippet) > 120:
+                snippet = snippet[:120] + "..."
+
+            agg_item = AggregatedItem(
+                symbol=sym,
+                score=score,
+                matched_terms=matched_terms,
+                snippet=snippet,
+            )
+
+            if file_path in file_nodes:
+                node = file_nodes[file_path]
+                node["items"].append(agg_item)
+                node["scores"].append(score)
+                node["spaces"].update(spaces)
+            else:
+                if len(unique_files) < target_limit:
+                    unique_files.append(file_path)
+                    file_nodes[file_path] = {
+                        "items": [agg_item],
+                        "scores": [score],
+                        "spaces": set(spaces),
+                        "language": sym.language,
+                    }
+                else:
+                    # 已滿 target_limit 個唯一檔案，且此項目屬於未入選之新檔案，略過
+                    continue
+
+        # 6. 計算各檔案聚合積分並裁切內部 Top-3 (FR-04)
+        aggregated_results: List[AggregatedFileResult] = []
+        for file_path in unique_files:
+            node = file_nodes[file_path]
+            scores = node["scores"]
+            items = node["items"]
+
+            items_sorted = sorted(items, key=lambda x: x.score, reverse=True)
+            capped_items = items_sorted[:top_k_items_per_file]
+
+            max_s = max(scores) if scores else 0.0
+            rest_sum = sum(scores) - max_s
+            total_score = max_s + alpha * rest_sum
+
+            aggregated_results.append(
+                AggregatedFileResult(
+                    file_path=file_path,
+                    total_score=total_score,
+                    items=capped_items,
+                    spaces=sorted(list(node["spaces"])),
+                    language=node["language"],
+                )
+            )
+
+        # 7. 二次依最終聚合總分降序穩定重排 (EC-06)
+        aggregated_results.sort(key=lambda x: x.total_score, reverse=True)
+        return aggregated_results
