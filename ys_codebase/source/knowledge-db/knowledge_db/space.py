@@ -87,13 +87,15 @@ class SpaceManager:
 
     def _load_contributes(self) -> Dict[str, Any]:
         """讀取模組聯動注入之 Contributes 資料 (100% 由 core.contributes SDK 與專案特化 contribute.json 驅動)"""
-        result = {"spaces": {}, "thesaurus": []}
+        result: Dict[str, Any] = {"spaces": {}, "thesaurus": [], "aliases": {}, "related": []}
 
         # 1. 自訂注入 (測試或隔離環境)
         if self._custom_contributes_data is not None:
             if isinstance(self._custom_contributes_data, dict):
                 result["spaces"].update(self._custom_contributes_data.get("spaces", {}))
                 result["thesaurus"].extend(self._custom_contributes_data.get("thesaurus", []))
+                result["aliases"].update(self._custom_contributes_data.get("aliases", {}))
+                result["related"].extend(self._custom_contributes_data.get("related", []))
 
         # 2. 自訂 config_dir 之 contribute.json (若指定)
         if self._custom_config_dir:
@@ -105,14 +107,14 @@ class SpaceManager:
                     if isinstance(c_data, dict):
                         result["spaces"].update(c_data.get("spaces", {}))
                         result["thesaurus"].extend(c_data.get("thesaurus", []))
+                        result["aliases"].update(c_data.get("aliases", {}))
+                        result["related"].extend(c_data.get("related", []))
                 except Exception as e:
                     logger.warning(f"Failed to read custom contribute.json: {e}")
             return result
 
         if self._custom_contributes_data is not None:
             return result
-
-
 
         # 3. 核心 SDK 聚合結果
         try:
@@ -121,8 +123,24 @@ class SpaceManager:
             if isinstance(data, dict):
                 result["spaces"].update(data.get("spaces", {}))
                 result["thesaurus"].extend(data.get("thesaurus", []))
+                result["aliases"].update(data.get("aliases", {}))
+                result["related"].extend(data.get("related", []))
         except Exception as e:
             logger.warning(f"Failed to read contributes via core SDK: {e}")
+
+        # 4. 模組內建宣告之安全降級載入 (當尚未部署至 core 或單元測試直接運行時)
+        if not result["thesaurus"] and not result["aliases"] and not result["related"]:
+            try:
+                mod_contrib = Path(__file__).resolve().parent.parent / "contributes" / "knowledge-db.json"
+                if mod_contrib.exists():
+                    with open(mod_contrib, "r", encoding="utf-8", errors="replace") as f:
+                        m_data = json.load(f)
+                    if isinstance(m_data, dict):
+                        result["thesaurus"].extend(m_data.get("thesaurus", []))
+                        result["aliases"].update(m_data.get("aliases", {}))
+                        result["related"].extend(m_data.get("related", []))
+            except Exception as e:
+                logger.debug(f"Failed to fallback load module default contributes: {e}")
 
         return result
 
@@ -158,7 +176,7 @@ class SpaceManager:
         if isinstance(raw_thesaurus, list):
             for item in raw_thesaurus:
                 if isinstance(item, list):
-                    normalized = sorted(list(set(str(w).strip() for w in item if str(w).strip())))
+                    normalized = sorted(list(set(str(w).strip().lower() for w in item if str(w).strip())))
                     sig = tuple(normalized)
                     if sig and sig not in seen_signatures:
                         seen_signatures.add(sig)
@@ -183,7 +201,7 @@ class SpaceManager:
         if isinstance(raw_related, list):
             for item in raw_related:
                 if isinstance(item, list):
-                    normalized = sorted(list(set(str(w).strip() for w in item if str(w).strip())))
+                    normalized = sorted(list(set(str(w).strip().lower() for w in item if str(w).strip())))
                     sig = tuple(normalized)
                     if sig and sig not in seen_related_sigs:
                         seen_related_sigs.add(sig)
@@ -202,6 +220,29 @@ class SpaceManager:
         """
         cfg = self.load_thesaurus_config()
         return cfg.groups
+
+    def create_thesaurus_engine(
+        self,
+        extra_config: Optional[ThesaurusConfig] = None,
+    ) -> Any:
+        """
+        工廠方法：自 core.contributes 體系載入並聚合所有同義詞、別名與關聯詞，
+        並可選擇性疊加 extra_config，最後裝配返回 ThesaurusEngine 實例。
+        """
+        from .thesaurus import ThesaurusEngine
+        cfg = self.load_thesaurus_config()
+        engine = ThesaurusEngine(config=cfg)
+        if extra_config:
+            if extra_config.groups:
+                for g in extra_config.groups:
+                    engine.add_group(g)
+            if extra_config.aliases:
+                for src, tgts in extra_config.aliases.items():
+                    engine.add_alias(src, tgts)
+            if extra_config.related:
+                for rg in extra_config.related:
+                    engine.add_related_group(rg)
+        return engine
 
 
     def get_space(self, name: str) -> SpaceConfig:
