@@ -8,13 +8,15 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union
+import sys
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .bundler import SemanticBundle, SemanticBundler
 from .exceptions import KnowledgeDBError, SpaceNotFoundError
 from .parsers.registry import ParserRegistry
 from .retrieval import BM25Engine, CodeSnippet, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
-from .scanner import FingerprintScanner, ScanDiffResult
+from .scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffResult
 from .schema import UnifiedSymbol
 from .space import SpaceManager
 from .thesaurus import ThesaurusEngine
@@ -59,6 +61,7 @@ class KnowledgeEngine:
             field_weights=field_weights,
         )
         self._index_cache: Dict[str, InvertedIndex] = {}
+        self._unified_index: Optional[InvertedIndex] = None
         self.snippet_extractor = SnippetExtractor(workspace_root=self._get_workspace_root())
 
     def _get_workspace_root(self) -> Path:
@@ -167,132 +170,178 @@ class KnowledgeEngine:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
+    def build_unified_index(
+        self,
+        force: bool = False,
+        current_files: Optional[Dict[str, Tuple[float, int]]] = None,
+    ) -> InvertedIndex:
+        """
+        建置全專案空間聯集單一倒排索引，並原子持久化二進位 Gzip 快取 (unified.index.bin.gz)
+        與二進位狀態快照 (unified.meta.bin) 至磁碟。
+        """
+        indices_dir = self._get_indices_dir()
+        bin_file = indices_dir / "unified.index.bin.gz"
+        meta_file = indices_dir / "unified.meta.bin"
+
+        if not force and bin_file.exists() and meta_file.exists():
+            try:
+                idx = InvertedIndex.load_binary(bin_file)
+                self._unified_index = idx
+                return idx
+            except Exception as e:
+                logger.warning(f"Failed loading unified binary index, rebuilding: {e}")
+
+        # 全域聯集去重打包
+        bundle = self.bundler.bundle_union()
+        idx = InvertedIndex(space_name="unified")
+        idx.build_unified(bundle.symbols, tokenizer=self.tokenizer)
+
+        # 原子持久化二進位 Gzip 索引
+        try:
+            idx.save_binary(bin_file)
+        except Exception as e:
+            raise KnowledgeDBError(f"Failed saving unified binary index: {e}")
+
+        # 收集或使用現有檔案快照並持久化
+        files_map = current_files
+        if files_map is None:
+            files_map = bundle.metadata.get("files_map", {})
+
+        try:
+            BinarySnapshotManager.save(meta_file, files_map)
+        except Exception as e:
+            logger.warning(f"Failed saving binary snapshot meta: {e}")
+
+        self._unified_index = idx
+        return idx
+
     def build_index(
         self,
         space: Optional[str] = None,
         force: bool = False,
     ) -> Dict[str, InvertedIndex]:
         """
-        建置空間倒排索引並原子持久化二進位 Gzip 快取 (.index.bin.gz) 至磁碟。
+        建置空間倒排索引並原子持久化二進位 Gzip 快取至磁碟。
+        若 space 為 None 則建置全域單一聯集索引 (unified.index.bin.gz)。
         """
-        targets = [self.space_manager.get_space(space)] if space is not None else self.space_manager.get_union_spaces()
+        if space is None:
+            idx = self.build_unified_index(force=force)
+            return {"unified": idx}
+
+        sp = self.space_manager.get_space(space)
         indices_dir = self._get_indices_dir()
-        result_indices = {}
+        sp_name = sp.name
+        bin_file = indices_dir / f"{sp_name}.index.bin.gz"
+        legacy_json = indices_dir / f"{sp_name}.index.json"
 
-        for sp in targets:
-            sp_name = sp.name
-            bin_file = indices_dir / f"{sp_name}.index.bin.gz"
-            legacy_json = indices_dir / f"{sp_name}.index.json"
-
-            if not force and bin_file.exists():
-                try:
-                    idx = InvertedIndex.load_binary(bin_file)
-                    self._index_cache[sp_name] = idx
-                    result_indices[sp_name] = idx
-                    continue
-                except Exception as e:
-                    logger.warning(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
-            elif not force and legacy_json.exists():
-                try:
-                    with open(legacy_json, "r", encoding="utf-8", errors="replace") as f:
-                        data = json.load(f)
-                    idx = InvertedIndex.from_dict(data)
-                    idx.save_binary(bin_file)  # 自動升級轉換為二進位
-                    self._index_cache[sp_name] = idx
-                    result_indices[sp_name] = idx
-                    continue
-                except Exception as e:
-                    logger.warning(f"Failed converting legacy JSON index for '{sp_name}', rebuilding: {e}")
-
-            # 即時打包並構建倒排索引
-            bundle = self.bundler.bundle_space(sp)
-            idx = InvertedIndex(space_name=sp_name)
-            idx.build(bundle.symbols, tokenizer=self.tokenizer, space=sp_name)
-
-            # 原子持久化二進位 Gzip
+        if not force and bin_file.exists():
             try:
-                idx.save_binary(bin_file)
+                idx = InvertedIndex.load_binary(bin_file)
+                self._index_cache[sp_name] = idx
+                return {sp_name: idx}
             except Exception as e:
-                raise KnowledgeDBError(f"Failed saving binary index cache for '{sp_name}': {e}")
+                logger.warning(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
+        elif not force and legacy_json.exists():
+            try:
+                with open(legacy_json, "r", encoding="utf-8", errors="replace") as f:
+                    data = json.load(f)
+                idx = InvertedIndex.from_dict(data)
+                idx.save_binary(bin_file)
+                self._index_cache[sp_name] = idx
+                return {sp_name: idx}
+            except Exception as e:
+                logger.warning(f"Failed converting legacy JSON index for '{sp_name}', rebuilding: {e}")
 
-            self._index_cache[sp_name] = idx
-            result_indices[sp_name] = idx
+        bundle = self.bundler.bundle_space(sp)
+        idx = InvertedIndex(space_name=sp_name)
+        idx.build(bundle.symbols, tokenizer=self.tokenizer, space=sp_name)
 
-        return result_indices
+        try:
+            idx.save_binary(bin_file)
+        except Exception as e:
+            raise KnowledgeDBError(f"Failed saving binary index cache for '{sp_name}': {e}")
+
+        self._index_cache[sp_name] = idx
+        return {sp_name: idx}
 
     def search(
         self,
         query: str,
-        space: Optional[str] = None,
+        space: Optional[Union[str, List[str]]] = None,
         kinds: Optional[List[str]] = None,
         languages: Optional[List[str]] = None,
         min_score: float = 0.01,
         limit: int = 10,
         snippet: bool = False,
         context_lines: int = 3,
+        auto_rebuild: bool = True,
+        verbose: bool = True,
     ) -> List[SearchResult]:
         """
-        多空間多欄位加權語意檢索 (支援自動懶加載二進位快取、即時索引建置與延遲代碼片段提取)。
+        全域聯集多欄位加權語意檢索 (支援 JIT 變更嗅探、自動背景熱自愈、空間標籤篩選與延遲代碼片段提取)。
         """
         if not query or not query.strip():
             return []
 
-        # 1. 確保目標空間已加載倒排索引 (Lazy Indexing, EC-01)
-        targets = [self.space_manager.get_space(space)] if space is not None else self.space_manager.get_union_spaces()
+        indices_dir = self._get_indices_dir()
+        bin_file = indices_dir / "unified.index.bin.gz"
+        meta_file = indices_dir / "unified.meta.bin"
 
-        for sp in targets:
-            sp_name = sp.name
-            if sp_name not in self._index_cache:
-                bin_file = self._get_indices_dir() / f"{sp_name}.index.bin.gz"
-                legacy_json = self._get_indices_dir() / f"{sp_name}.index.json"
+        # 1. JIT 變更感知與自動熱自愈 (FR-03, FR-04)
+        if auto_rebuild:
+            is_dirty, scanned_count, reason, current_files = self.scanner.check_invalidation(
+                snapshot_path=meta_file
+            )
+            if not bin_file.exists():
+                is_dirty = True
+                reason = "Unified index missing"
 
-                if bin_file.exists():
-                    try:
-                        self._index_cache[sp_name] = InvertedIndex.load_binary(bin_file)
-                    except Exception:
-                        self.build_index(space=sp_name, force=True)
-                elif legacy_json.exists():
-                    try:
-                        with open(legacy_json, "r", encoding="utf-8", errors="replace") as f:
-                            data = json.load(f)
-                        idx = InvertedIndex.from_dict(data)
-                        idx.save_binary(bin_file)
-                        self._index_cache[sp_name] = idx
-                    except Exception:
-                        self.build_index(space=sp_name, force=True)
-                else:
-                    self.build_index(space=sp_name, force=True)
+            if is_dirty:
+                if verbose:
+                    print(
+                        f"[knowledge-db:auto-rebuild] Detected changes ({reason}), hot-rebuilding index...",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                t0 = time.time()
+                self.build_unified_index(force=True, current_files=current_files)
+                elapsed_ms = max(1, int((time.time() - t0) * 1000))
+                if verbose:
+                    print(
+                        f"[knowledge-db:auto-rebuild] Index updated in {elapsed_ms}ms ({scanned_count} files).",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
-        # 2. 構建全域查詢倒排索引 (零拷貝聚合 Posting 清單與符號池)
-        merged_index = InvertedIndex(space_name="merged")
-        for sp in targets:
-            idx = self._index_cache.get(sp.name)
-            if idx:
-                for term, postings in idx.index.items():
-                    merged_index.index[term].extend(postings)
-                merged_index.doc_count += idx.doc_count
-                for f in InvertedIndex.INDEXED_FIELDS:
-                    merged_index.field_total_lengths[f] += idx.field_total_lengths.get(f, 0)
-                merged_index.symbols.update(idx.symbols)
+        # 2. 載入全域倒排索引
+        if self._unified_index is None:
+            if bin_file.exists():
+                try:
+                    self._unified_index = InvertedIndex.load_binary(bin_file)
+                except Exception as e:
+                    logger.warning(f"Failed loading unified binary index: {e}, rebuilding...")
+                    self.build_unified_index(force=True)
+            else:
+                self.build_unified_index(force=True)
 
-        if merged_index.doc_count > 0:
-            for f in InvertedIndex.INDEXED_FIELDS:
-                merged_index.field_avgdl[f] = max(
-                    1.0, merged_index.field_total_lengths[f] / merged_index.doc_count
-                )
-        else:
+        unified_index = self._unified_index
+        if not unified_index or unified_index.doc_count == 0:
             return []
 
-        # 3. 執行檢索
+        # 3. 規格化空間過濾清單
+        target_spaces: Optional[List[str]] = None
+        if space:
+            target_spaces = [space] if isinstance(space, str) else list(space)
+
         flt = QueryFilter(
-            spaces=[space] if space else None,
+            spaces=target_spaces,
             languages=languages,
             kinds=kinds,
             min_score=min_score,
             limit=limit,
         )
 
-        raw_results = self.bm25_engine.search(query=query, index=merged_index, filter_cfg=flt)
+        raw_results = self.bm25_engine.search(query=query, index=unified_index, filter_cfg=flt)
 
         if not snippet:
             return raw_results
@@ -351,5 +400,15 @@ class KnowledgeEngine:
                     except OSError:
                         pass
 
-            # 4. 清理記憶體快取
             self._index_cache.pop(sp_name, None)
+
+        # 4. 清理全域聯集索引與二進位快照
+        for fn in ["unified.index.bin.gz", "unified.meta.bin"]:
+            f_path = self.storage_dir / "indices" / fn
+            if f_path.exists():
+                try:
+                    f_path.unlink()
+                except OSError:
+                    pass
+        self._unified_index = None
+

@@ -31,6 +31,13 @@ class Posting:
     field_freqs: Dict[str, int] = field(default_factory=dict)
     field_lengths: Dict[str, int] = field(default_factory=dict)
     space: str = ""
+    spaces: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.spaces and self.space:
+            self.spaces = [self.space]
+        elif self.spaces and not self.space:
+            self.space = self.spaces[0]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -38,15 +45,18 @@ class Posting:
             "field_freqs": self.field_freqs,
             "field_lengths": self.field_lengths,
             "space": self.space,
+            "spaces": self.spaces,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Posting":
+        spaces = data.get("spaces") or ([data["space"]] if data.get("space") else [])
         return cls(
             doc_id=data["doc_id"],
             field_freqs=data.get("field_freqs", {}),
             field_lengths=data.get("field_lengths", {}),
             space=data.get("space", ""),
+            spaces=spaces,
         )
 
 
@@ -255,17 +265,22 @@ class InvertedIndex:
         """自符號池中以 O(1) 獲取符號實例"""
         return self.symbols.get(doc_id)
 
-    def add_symbol(self, symbol: UnifiedSymbol, tokenizer: CodeTokenizer, space: str = "") -> None:
+    def add_symbol(
+        self,
+        symbol: UnifiedSymbol,
+        tokenizer: CodeTokenizer,
+        space: str = "",
+        spaces: Optional[List[str]] = None,
+    ) -> None:
         """加入單一 UnifiedSymbol 建立欄位倒排索引與註冊符號池"""
         doc_id = symbol.id
         self.symbols[doc_id] = symbol
         self.doc_count += 1
-        curr_space = (
-            space
-            or symbol.metadata.get("space", "")
-            or getattr(symbol, "space", "")
-            or self.space_name
-        )
+
+        # 提取 spaces 標籤清單
+        symbol_spaces = getattr(symbol, "spaces", [])
+        effective_spaces = spaces or symbol_spaces or ([space] if space else []) or ([self.space_name] if self.space_name else [])
+        curr_space = effective_spaces[0] if effective_spaces else ""
 
         # 1. 提取各欄位文字
         members_text = " ".join([f"{m.name} {m.signature} {m.docstring}" for m in symbol.members])
@@ -292,7 +307,7 @@ class InvertedIndex:
             field_freqs_map[f_name] = counts
             all_unique_terms.update(counts.keys())
 
-        # 3. 建立輕量 Posting (僅記錄 doc_id)
+        # 3. 建立輕量 Posting (僅記錄 doc_id 與 spaces)
         for term in all_unique_terms:
             t_freqs = {f_name: field_freqs_map[f_name][term] for f_name in self.INDEXED_FIELDS}
             posting = Posting(
@@ -300,6 +315,7 @@ class InvertedIndex:
                 field_freqs=t_freqs,
                 field_lengths=field_lengths,
                 space=curr_space,
+                spaces=list(effective_spaces),
             )
             self.index[term].append(posting)
 
@@ -321,6 +337,11 @@ class InvertedIndex:
         else:
             for f in self.INDEXED_FIELDS:
                 self.field_avgdl[f] = 1.0
+
+    def build_unified(self, symbols: List[UnifiedSymbol], tokenizer: Optional[CodeTokenizer] = None) -> None:
+        """批次建立全域聯集單一倒排索引並正規化全域 avgdl/IDF 基準指標"""
+        self.space_name = "unified"
+        self.build(symbols, tokenizer=tokenizer, space="unified")
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化倒排索引為正規化符號池字典"""
@@ -517,10 +538,10 @@ class BM25Engine:
                 continue
 
             posting = doc_postings[doc_id]
-            sp = posting.space
+            posting_spaces = getattr(posting, "spaces", None) or ([posting.space] if posting.space else [])
 
             # 過濾 space
-            if flt.spaces and sp not in flt.spaces:
+            if flt.spaces and not any(s in flt.spaces for s in posting_spaces):
                 continue
             # 過濾 language
             if flt.languages and sym.language not in flt.languages:
@@ -534,12 +555,13 @@ class BM25Engine:
             if len(snippet) > 120:
                 snippet = snippet[:120] + "..."
 
+            sp_display = ", ".join(posting_spaces) if posting_spaces else posting.space
             results.append(
                 SearchResult(
                     symbol=sym,
                     score=score,
                     matched_terms=sorted(list(doc_matches[doc_id])),
-                    space=sp,
+                    space=sp_display,
                     snippet=snippet,
                 )
             )

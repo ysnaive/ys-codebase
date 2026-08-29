@@ -122,6 +122,7 @@ def main(argv: List[str]) -> int:
             is_detail = False
             is_snippet = False
             is_json = False
+            no_auto = "--no-auto-rebuild" in sub_argv or "-n" in sub_argv
 
             for a in sub_argv:
                 if a.startswith("--space="):
@@ -149,6 +150,7 @@ def main(argv: List[str]) -> int:
                 languages=lang_filter,
                 limit=limit,
                 snippet=is_snippet,
+                auto_rebuild=not no_auto,
             )
 
             if is_json:

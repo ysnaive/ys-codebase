@@ -109,4 +109,22 @@ print(snippet.format_text())
 #       48 | }
 ```
 
+---
+
+## ⚡ 7. 全域聯集單一索引與 JIT 智能變更感知熱自愈機制 (Unified Index & JIT Hot Healing)
+
+`knowledge-db@1.0.2.0` (sub_01) 引入了「全域聯集單一倒排索引 (`unified.index.bin.gz`)」與「JIT 查詢時智能變更感知與熱自愈 (Just-In-Time Smart Healing)」架構：
+
+1. **全專案空間聯集去重 (Union Scope De-duplication)**：
+   - 掃描器將所有空間之 `include`/`exclude` 規則計算為去重的實體檔案集合，每個檔案 **100% 僅解析 1 次**。
+   - 單一全域倒排索引使 BM25 的 IDF 與 $avgdl$ 指標全局正規化，消除空間重疊引起的重複符號與 BM25 評分失真。
+   - 符號與 Posting 自動記錄命中的多空間標籤 (`spaces: List[str]`)，支援 `--space <name>` 進行 $O(1)$ 高速空間篩選。
+2. **原生二進位極速快照 (`unified.meta.bin`)**：
+   - 採用 Magic `YFP1` + 原生 `struct` 封裝，反序列化延遲 $< 0.1\text{ ms}$。
+   - JIT 變更嗅探只透過 `os.scandir` 取得 `(mtime, size)`，千檔規模下偵測耗時僅 $2\sim 3\text{ ms}$。
+3. **無縫非侵入式熱自愈 (Non-Intrusive Hot Healing)**：
+   - 查詢時若感知來源檔案新增、修改或刪除，自動於背景執行熱重建並向 `stderr` 輸出提示（不污染 `--json` 結構化輸出）。
+   - CLI 支援 `--no-auto-rebuild` / `-n` 旗標以手動停用自動熱自愈。
+
+
 
