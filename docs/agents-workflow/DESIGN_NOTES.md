@@ -15,6 +15,7 @@
 | **[DN-AW-05]** | 組態模板 `!undefined` 剛性解耦與推薦預設值封裝 | 組態治理、一鍵初始化引擎 | `Active` |
 | **[DN-AW-06]** | HTML 註解 Token 自宣告與字面值 Replace 解算 | 工廠編譯器、資產導出 | `Active` |
 | **[DN-AW-07]** | 兩階段 6 步管線、三層 URI 重映射與 4 步原子發布交易 | 工廠編譯器、發布引擎、CLI | `Active` |
+| **[DN-AW-08]** | Stage 2 佔位符二分法解析與反引號完全替代剝除 | 工廠編譯器 (`compiler.py`) | `Active` |
 
 ---
 
@@ -75,3 +76,14 @@
   2. 實作三層重映射階層：Tier 1 (發布拓撲映射表) ➔ Tier 2 (Core 專案級協議) ➔ Tier 3 (未知協議安全降級)。
   3. 實作基於 `storage://agents-workflow/release_manifest.json` 的 4 步原子發布交易（過往清理 ➔ 提前解算 ➔ 持久紀錄 ➔ 目錄落地與 `AGENTS.md` 軟合併）。
 - **效益**：模組安裝目錄保持 100% 純淨，Agent 模板尋址盲區徹底消除，多環境發布具備交易級安全保證。
+ 
+---
+
+### [DN-AW-08] Stage 2 佔位符二分法解析與反引號完全替代剝除
+- **背景**：
+  原 Stage 2 URI 解析實作對所有命中 `CODE_SPAN_REGEX` 的代碼塊無差別包回反引號（`f"\`{inner}\`"`）。導致純佔位符（非穿插類型，如 `[Link](\`__#{uri}__\`)`）在解算後錯誤殘留反引號（`[Link](\`../path.md\`)`），破壞 Markdown 超連結規範與點擊跳轉；同時工作流中讀檔指引誤用 `__#{...}__` 導致 Agent 在根目錄 CWD 執行 `view_file` 時發生 404。
+- **決策**：
+  1. 在 `compiler.resolve_stage2_uri` 中引入 Standalone 純佔位符判定（`LOCAL_URI_EXACT_REGEX` / `PROJECT_URI_EXACT_REGEX`），純佔位符解算後直接返回純路徑字串（完全替代並剝除外層反引號）。
+  2. 行內穿插代碼（如命令列 `python __${...}__ run`）解算內部佔位符後維持外層代碼反引號。
+  3. 工作流中面向 Agent 讀檔與終端執行的檔案動線，全面切換為 `__${...}__` (Project Relative URI)，確保專案根目錄直達可讀。
+- **效益**：Markdown 超連結符合 100% CommonMark 規範，徹底消滅 Agent 初始化 404 與非預期搜尋開銷。

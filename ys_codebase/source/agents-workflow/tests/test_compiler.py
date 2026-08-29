@@ -243,13 +243,13 @@ class TestArtifactCompiler(YSCBTestCase):
             mock_rel.return_value = {"success": True, "published_count": 24, "active_targets": ["antigravity"]}
             hook_mod.on_reload(None)
     def test_ft_12_project_uri_placeholder_root_and_sub_dir(self):
-        """FT-12: 驗證 __${uri}__ 以專案根目錄為基準點展開為純淨相對路徑 (root 與子目錄)。"""
+        """FT-12: 驗證 __${uri}__ 以專案根目錄為基準點展開為純淨相對路徑 (root 與子目錄，純佔位符剝除反引號)。"""
         raw_text = "Root: `__${project://yscb.py}__`\nSub: `__${project://tools/sub/cli.py}__`\n"
         deployment_map = {}
         dst_path = os.path.join(self.compiler.module_root, "dummy_target.md")
         resolved = self.compiler.resolve_stage2_uri(raw_text, dst_path, deployment_map)
-        self.assertIn("Root: `yscb.py`", resolved)
-        self.assertIn("Sub: `tools/sub/cli.py`", resolved)
+        self.assertIn("Root: yscb.py", resolved)
+        self.assertIn("Sub: tools/sub/cli.py", resolved)
 
     def test_ft_13_inline_code_block_expansion(self):
         """FT-13: 驗證代碼塊內部穿插文字時，僅替換佔位符本體並保留外層反引號與前後文字。"""
@@ -264,6 +264,29 @@ class TestArtifactCompiler(YSCBTestCase):
         dst_path = os.path.join(self.compiler.module_root, "dummy.md")
         stage2_res = self.compiler.resolve_stage2_uri(stage2_raw, dst_path, {})
         self.assertEqual(stage2_res.strip(), "Run: `python yscb.py plan status`")
+
+    def test_sub_02_stage2_standalone_and_markdown_links(self):
+        """SUB-02: 驗證 Stage 2 佔位符二分法解析與 Markdown 超連結完全替代。"""
+        deployment_map = {
+            "module://agents-workflow/assets/standards/AgentsStandards.md": "/abs/project/.agents/.yscb/standards/AgentsStandards.md",
+            "module://agents-workflow/assets/workflows/NewPlan.md": "/abs/project/.agents/workflows/NewPlan.md"
+        }
+        dst_path = "/abs/project/.agents/workflows/ContextInit.md"
+        
+        # 1. Standalone 測試：__#{...}__ 與 __${...}__ 均應剝除反引號
+        raw_standalone = "[Standards](`__#{module://agents-workflow/assets/standards/AgentsStandards.md}__`)"
+        res_standalone = self.compiler.resolve_stage2_uri(raw_standalone, dst_path, deployment_map)
+        self.assertEqual(res_standalone, "[Standards](../.yscb/standards/AgentsStandards.md)")
+
+        # 2. Project URI Standalone 測試
+        raw_proj = "[Root](`__${project://AGENTS.md}__`)"
+        res_proj = self.compiler.resolve_stage2_uri(raw_proj, dst_path, {})
+        self.assertEqual(res_proj, "[Root](AGENTS.md)")
+
+        # 3. 容忍空格 Standalone 測試
+        raw_spaces = "[NewPlan](`__#{ module://agents-workflow/assets/workflows/NewPlan.md }__`)"
+        res_spaces = self.compiler.resolve_stage2_uri(raw_spaces, dst_path, deployment_map)
+        self.assertEqual(res_spaces, "[NewPlan](./NewPlan.md)")
 
     def test_ft_14_unenclosed_placeholder_warning_and_preservation(self):
         """FT-14: 驗證未被反引號包裹的裸佔位符絕對不被展開，且輸出警示。"""

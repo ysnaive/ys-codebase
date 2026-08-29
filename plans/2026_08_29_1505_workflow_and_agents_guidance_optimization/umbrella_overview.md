@@ -2,7 +2,7 @@
 
 > 計畫名稱：`workflow_and_agents_guidance_optimization`  
 > 建立日期：2026-08-29  
-> 計畫狀態：In Progress  
+> 狀態：In Progress  
 > 模板版本：v1.1  
 
 ---
@@ -23,9 +23,13 @@
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_cli_guidance_and_privilege_optimization` | Full Track | `Completed` | **CLI 指令引導與三級權限防呆優化**：擴充 `contributes.core.commands` 資料結構（`tier`, `phases`），動態生成帶權限標籤手冊與各 Phase JIT 模板註解引導 |
+| **sub_02** | `sub_02_uri_placeholders_and_workflow_path_healing` | Full Track | `Completed` | **佔位符解析完全替代與工作流路徑治癒**：修復 `compiler.py` Stage 2 佔位符反引號剝除邏輯、工作流讀檔動線全面改用 `__${...}__`、修復非標準協議前綴與 Dogfooding 同步 |
 
 ---
 
 ## 3. 主計畫里程碑與推進狀態 (Milestones)
 
 - [x] **里程碑 1 (CLI 指令引導與三級權限防呆優化)**：完成 `sub_01` 實作，建立 commands SSOT 結構擴充、動態 JIT 指令注入與全生態系 commands 標註。
+- [x] **里程碑 2 (佔位符解析完全替代與工作流路徑治癒)**：推進 `sub_02`，修復 Stage 2 佔位符解析邏輯、全生態系工作流路徑治癒、協議前綴修正與自引用物化驗證。
+
+
