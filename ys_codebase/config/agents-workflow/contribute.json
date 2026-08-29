@@ -1,0 +1,9 @@
+{
+  "export": [
+    {
+      "type": "workflow",
+      "source": "config://agents-workflow/workflows/BumpRevision.md",
+      "description": "專案特化版本晉升與自部署工作流 (BumpRevision) — 檢查 installed_modules，對 @build 模組執行 bump、release 與 update"
+    }
+  ]
+}

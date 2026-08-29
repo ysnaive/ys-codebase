@@ -29,6 +29,7 @@ __pycache__/
 /.agents/.yscb/templates/roadmap.md
 /.agents/.yscb/templates/umbrella_overview.md
 /.agents/workflows/Auto.md
+/.agents/workflows/BumpRevision.md
 /.agents/workflows/ContextInit.md
 /.agents/workflows/Continue.md
 /.agents/workflows/Discuss.md
@@ -36,6 +37,7 @@ __pycache__/
 /.agents/workflows/NewPlan.md
 /.agents/workflows/Pause.md
 /.agents/workflows/Research.md
+/.agents/workflows/Retro.md
 /.agents/workflows/Review.md
 /.agents/workflows/Roadmap.md
 # === YSCB AGENTS_WORKFLOW IGNORE END ===

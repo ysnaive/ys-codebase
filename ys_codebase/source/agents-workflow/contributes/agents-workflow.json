@@ -71,6 +71,11 @@
       "description": "技術路線圖智能推薦工作流 (Roadmap) — 探索長期技術儲備並推薦適合當前專案情境之主題"
     },
     {
+      "type": "workflow",
+      "source": "module://agents-workflow/assets/workflows/Retro.md",
+      "description": "開發歷程自檢工作流 (Retro) — 支援對話歷程回顧、紀律合規性稽核及模組注入自檢自評"
+    },
+    {
       "type": "template",
       "source": "module://agents-workflow/assets/templates/P00_discuss.md",
       "description": "Phase 0 討論模板"
@@ -185,6 +190,14 @@
     {
       "value": "WORKFLOW_ROADMAP",
       "description": "Roadmap 工作流特化擴充注入錨點（位於 Roadmap.md 尾部）"
+    },
+    {
+      "value": "WORKFLOW_RETRO",
+      "description": "Retro 工作流特化擴充注入錨點（位於 Retro.md 尾部）"
+    },
+    {
+      "value": "RETRO_CHECK_ITEMS",
+      "description": "模組自評與自檢項目清單（由下游模組如 knowledge-db, core 等宣告注入至 /Retro 工作流）"
     },
     {
       "value": "WORKFLOW_SOP_STANDARDS",

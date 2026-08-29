@@ -112,6 +112,18 @@
       "token": "DYNAMIC_CONTEXT_MAP",
       "value": "code.func://agents-workflow/providers:get_dynamic_context_map",
       "mode": "replace"
+    },
+    {
+      "type": "const",
+      "token": "RETRO_CHECK_ITEMS",
+      "mode": "below",
+      "value": "##### 知識庫 Search 效益評測 (knowledge-db: Search Efficiency & Ranking Quality)\n- **調用次數統計**：統計當前 Session 調用 `knowledge-db search` 總次數。\n- **調用時機合理性**：是否在未知符號/架構探索時及時調用？有無過度濫用或應調用而漏調用？\n- **效益性對比**：相較傳統 `grep_search` / `list_dir` / `view_file` 盲目翻找，估算節省之 Token、Turn 數與往返時間。\n- **演算法有效性**：檢索結果對解決問題之實質貢獻度，以及高相關內容是否排名靠前 (Top 1~3)。"
+    },
+    {
+      "type": "const",
+      "token": "RETRO_CHECK_ITEMS",
+      "mode": "below",
+      "value": "##### CLI 指令 Default-Deny 守門查核 (core: CLI Execution & Safety Guardrails)\n- **CLI 執行全量查核**：檢查 Session 中調用的每一個指令是否 100% 符合 `AgentsCliGuild.md` 推薦清單。\n- **Default-Deny 阻斷有效性**：是否有未授權執行未列指令或違反禁止情境之情事。"
     }
   ]
 }
