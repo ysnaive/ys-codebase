@@ -17,7 +17,7 @@ import tempfile
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .exceptions import KnowledgeDBError, SchemaValidationError
-from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
+from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol, WeightedToken
 from .thesaurus import ThesaurusEngine
 from .tokenizer import CodeTokenizer
 
@@ -560,12 +560,16 @@ class BM25Engine:
         raw_query = query.strip()
         allowed_ftypes = self._normalize_ftypes(flt.ftypes)
 
-        # 1. 分詞與同義詞擴展
+        # 1. 分詞與加權同義詞/別名/關聯詞擴展 (三階加權展開)
         base_tokens = self.tokenizer.tokenize(raw_query)
         if not base_tokens:
             return []
 
-        expanded_tokens = self.thesaurus.expand_query(base_tokens)
+        if hasattr(self.thesaurus, "expand_query_weighted"):
+            weighted_tokens = self.thesaurus.expand_query_weighted(base_tokens)
+        else:
+            expanded_raw = self.thesaurus.expand_query(base_tokens)
+            weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in expanded_raw]
 
         # 2. 候選文檔計分累加器: doc_id -> (score, matched_terms, posting)
         doc_scores: Dict[str, float] = defaultdict(float)
@@ -574,7 +578,9 @@ class BM25Engine:
 
         N = index.doc_count
 
-        for term in expanded_tokens:
+        for w_token in weighted_tokens:
+            term = w_token.term
+            term_weight = w_token.weight
             postings = index.index.get(term, [])
             if not postings:
                 continue
@@ -588,7 +594,7 @@ class BM25Engine:
                 doc_postings[doc_id] = posting
                 doc_matches[doc_id].add(term)
 
-                # 多欄位 BM25 評分計算
+                # 多欄位 BM25 評分計算 (結合 term_weight 衰減)
                 field_scores_sum = 0.0
                 for f_name, weight in self.field_weights.items():
                     tf = posting.field_freqs.get(f_name, 0)
@@ -603,7 +609,7 @@ class BM25Engine:
                     )
                     field_scores_sum += weight * norm_tf
 
-                term_score = idf * field_scores_sum
+                term_score = idf * field_scores_sum * term_weight
                 doc_scores[doc_id] += term_score
 
         # 3. Exact Match 置頂加權 (2.0x Boost)
@@ -688,12 +694,16 @@ class BM25Engine:
         raw_query = query.strip()
         allowed_ftypes = self._normalize_ftypes(flt.ftypes)
 
-        # 1. 分詞與同義詞擴展
+        # 1. 分詞與同義詞擴展 (三階加權展開)
         base_tokens = self.tokenizer.tokenize(raw_query)
         if not base_tokens:
             return []
 
-        expanded_tokens = self.thesaurus.expand_query(base_tokens)
+        if hasattr(self.thesaurus, "expand_query_weighted"):
+            weighted_tokens = self.thesaurus.expand_query_weighted(base_tokens)
+        else:
+            expanded_raw = self.thesaurus.expand_query(base_tokens)
+            weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in expanded_raw]
 
         # 2. 候選文檔計分累加器
         doc_scores: Dict[str, float] = defaultdict(float)
@@ -702,7 +712,9 @@ class BM25Engine:
 
         N = index.doc_count
 
-        for term in expanded_tokens:
+        for w_token in weighted_tokens:
+            term = w_token.term
+            term_weight = w_token.weight
             postings = index.index.get(term, [])
             if not postings:
                 continue
@@ -728,7 +740,7 @@ class BM25Engine:
                     )
                     field_scores_sum += weight * norm_tf
 
-                term_score = idf * field_scores_sum
+                term_score = idf * field_scores_sum * term_weight
                 doc_scores[doc_id] += term_score
 
         # 3. Exact Match 置頂加權
