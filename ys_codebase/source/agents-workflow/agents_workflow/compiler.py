@@ -199,6 +199,11 @@ class ArtifactCompiler:
                     matched_tokens_this_pass.add(token_name)
                     continue
 
+                above_blocks = []
+                replace_blocks = []
+                below_blocks = []
+                last_inline_val = ""
+
                 for ins in matched_inserts:
                     matched_tokens_this_pass.add(token_name)
                     ins_type = ins.get("type", "const")
@@ -220,26 +225,49 @@ class ArtifactCompiler:
                     else:
                         val_content = str(raw_val)
 
-                    # 1. 優先處理 Standalone Anchor: `__@{token_name}__`
-                    standalone_tag_regex = re.compile(r"[ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?")
-                    if standalone_tag_regex.search(resolved_text):
-                        if mode == "replace":
-                            resolved_text = standalone_tag_regex.sub(lambda _: (val_content.rstrip("\r\n") + "\n") if val_content else "", resolved_text, count=1)
-                        elif mode == "below":
-                            resolved_text = standalone_tag_regex.sub(lambda _: ("\n" + val_content.rstrip("\r\n") + "\n") if val_content else "", resolved_text, count=1)
-                        elif mode == "above":
-                            resolved_text = standalone_tag_regex.sub(lambda _: (val_content.rstrip("\r\n") + "\n\n") if val_content else "", resolved_text, count=1)
-                    else:
-                        # 2. 處理 Inline Code Span: `prefix __@{token_name}__ suffix`
-                        def _replace_inline(match: re.Match) -> str:
-                            span = match.group(0)
-                            inner = span[1:-1]
-                            if token_tag_regex.search(inner):
-                                inner = token_tag_regex.sub(lambda _: val_content, inner)
-                                return f"`{inner}`"
-                            return span
+                    if val_content is None:
+                        val_content = ""
 
-                        resolved_text = CODE_SPAN_REGEX.sub(_replace_inline, resolved_text)
+                    last_inline_val = val_content
+
+                    if mode == "above":
+                        if val_content.strip():
+                            above_blocks.append(val_content.rstrip("\r\n"))
+                    elif mode == "below":
+                        if val_content.strip():
+                            below_blocks.append(val_content.rstrip("\r\n"))
+                    else:  # replace
+                        if val_content.strip():
+                            replace_blocks.append(val_content.rstrip("\r\n"))
+
+                # 1. 優先處理 Standalone Anchor: `__@{token_name}__`
+                standalone_tag_regex = re.compile(r"[ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?")
+                if standalone_tag_regex.search(resolved_text):
+                    combined_pieces = []
+                    if above_blocks:
+                        combined_pieces.extend(above_blocks)
+                    if replace_blocks:
+                        combined_pieces.extend(replace_blocks)
+                    if below_blocks:
+                        combined_pieces.extend(below_blocks)
+
+                    if combined_pieces:
+                        combined_str = "\n\n".join(combined_pieces).rstrip("\r\n") + "\n"
+                    else:
+                        combined_str = ""
+
+                    resolved_text = standalone_tag_regex.sub(lambda _: combined_str, resolved_text, count=1)
+                else:
+                    # 2. 處理 Inline Code Span: `prefix __@{token_name}__ suffix`
+                    def _replace_inline(match: re.Match) -> str:
+                        span = match.group(0)
+                        inner = span[1:-1]
+                        if token_tag_regex.search(inner):
+                            inner = token_tag_regex.sub(lambda _: last_inline_val, inner)
+                            return f"`{inner}`"
+                        return span
+
+                    resolved_text = CODE_SPAN_REGEX.sub(_replace_inline, resolved_text)
 
             # Step 3: 清除本輪已解算或無匹配的 Token 錨點標籤行/殘留
             for token_name in matched_tokens_this_pass:
