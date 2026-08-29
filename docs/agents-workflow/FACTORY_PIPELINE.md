@@ -54,6 +54,10 @@
                                    └───────────┘ └─────────┘
 ```
 
+### 🎯 佔位符二分法解析 (Standalone vs. Inline)
+- **純佔位符 (Standalone)**：當 `` `...` `` 代碼塊內部字串為單一完整之 `__#{uri}__` 或 `__${uri}__` 時，判定為路徑求值，解算後**完全替代並吞噬外層反引號**（如 `[Link](`__#{uri}__`)` ➔ `[Link](../path.md)`）。
+- **穿插代碼 (Inline)**：當 code span 內部包含指令或其他前綴後綴（如 `` `python __${yscb.host://yscb.py}__ run` ``），解算內部佔位符後**維持外層代碼反引號**（➔ `` `python yscb.py run` ``）。
+
 ---
 
 ## 3. 雙軌 Manifest 與原子發布交易語意 (Dual-Track Manifest & Atomic Release)

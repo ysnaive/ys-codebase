@@ -26,7 +26,7 @@
 - [ ] **中觀專題手冊 (Topic Docs)**：若涉及 3 個以上狀態轉移、通訊封包、資料管線或並發同步，已建立獨立 `workflow.docs://<Module>/[topic].md`（垂直 Mermaid TD + 轉移矩陣）。
 - [ ] **工程妥協登記**：若實作包含非直觀設計或 Workaround，已於 `workflow.docs://<Module>/DESIGN_NOTES.md` 登記 `DN-XX` 與 `[!CAUTION]`。
 - [ ] **模組 README 同步**：`workflow.docs://<Module>/README.md` 已補齊最新 API 簽名與快速上手範例。
-- [ ] **全域發布日誌**：專案根目錄 [CHANGELOG.md](`__#{project://CHANGELOG.md}__`) 最上方已追加本次變更摘要。
+- [ ] **全域發布日誌**：專案根目錄 [CHANGELOG.md](`__${project://CHANGELOG.md}__`) 最上方已追加本次變更摘要。
 
 #### 4. 驗證與測試覆蓋
 - [ ] 自動化測試或 CLI 編譯 100% 通過（附帶日誌紀錄）。
