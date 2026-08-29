@@ -9,14 +9,112 @@ import json
 import logging
 import os
 from pathlib import Path
+import struct
 import tempfile
-from typing import Any, Dict, List, Optional, Set
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .exceptions import FingerprintCorruptedError
 from .schema import SpaceConfig
 from .space import SpaceManager
 
 logger = logging.getLogger("knowledge-db.scanner")
+
+
+class BinarySnapshotManager:
+    """
+    原生二進位快照管理器 (Magic: YFP1)。
+    提供微秒級 (< 0.1ms) 反序列化與極致緊湊磁碟儲存，作為 JIT 變更嗅探之高速快取清冊。
+    """
+
+    MAGIC: bytes = b"YFP1"
+    VERSION: int = 1
+    HEADER_STRUCT = "<4sHId"  # magic(4B), version(2B), total_files(4B), timestamp(8B) = 18B -> 20B padded
+    ENTRY_STRUCT = "<HQd"    # path_len(2B), size(8B), mtime(8B) = 18B
+
+    @classmethod
+    def save(
+        cls,
+        snapshot_path: Union[str, Path],
+        files_map: Dict[str, Tuple[float, int]],
+        timestamp: Optional[float] = None,
+    ) -> None:
+        """
+        原子寫入二進位快照至磁碟。
+        :param snapshot_path: 目標檔案路徑 (.meta.bin)
+        :param files_map: {正規化檔案路徑: (mtime, size)}
+        :param timestamp: 建置時間戳 (預設 time.time())
+        """
+        target_path = Path(snapshot_path).resolve()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        ts = timestamp if timestamp is not None else time.time()
+        total_files = len(files_map)
+
+        header = struct.pack(cls.HEADER_STRUCT, cls.MAGIC, cls.VERSION, total_files, ts)
+        buffer = bytearray(header)
+
+        for path_str, (mtime, size) in files_map.items():
+            path_bytes = path_str.encode("utf-8")
+            path_len = len(path_bytes)
+            entry = struct.pack(cls.ENTRY_STRUCT, path_len, int(size), float(mtime))
+            buffer.extend(entry)
+            buffer.extend(path_bytes)
+
+        temp_fd, temp_path = tempfile.mkstemp(dir=str(target_path.parent), prefix="meta_tmp_", suffix=".bin")
+        try:
+            with os.fdopen(temp_fd, "wb") as f:
+                f.write(buffer)
+            os.replace(temp_path, str(target_path))
+        except Exception as e:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise e
+
+    @classmethod
+    def load(cls, snapshot_path: Union[str, Path]) -> Optional[Dict[str, Tuple[float, int]]]:
+        """
+        載入二進位快照檔案，若不存在或損毀回傳 None。
+        :return: {正規化檔案路徑: (mtime, size)}
+        """
+        target_path = Path(snapshot_path)
+        if not target_path.exists():
+            return None
+
+        try:
+            with open(target_path, "rb") as f:
+                data = f.read()
+
+            header_size = struct.calcsize(cls.HEADER_STRUCT)
+            if len(data) < header_size:
+                return None
+
+            magic, version, total_files, _ = struct.unpack_from(cls.HEADER_STRUCT, data, 0)
+            if magic != cls.MAGIC or version != cls.VERSION:
+                return None
+
+            files_map: Dict[str, Tuple[float, int]] = {}
+            offset = header_size
+            entry_size = struct.calcsize(cls.ENTRY_STRUCT)
+
+            for _ in range(total_files):
+                if offset + entry_size > len(data):
+                    return None
+                path_len, size, mtime = struct.unpack_from(cls.ENTRY_STRUCT, data, offset)
+                offset += entry_size
+                if offset + path_len > len(data):
+                    return None
+                path_str = data[offset : offset + path_len].decode("utf-8")
+                offset += path_len
+                files_map[path_str] = (mtime, size)
+
+            return files_map
+        except Exception as e:
+            logger.warning(f"Failed loading binary snapshot '{snapshot_path}': {e}")
+            return None
+
 
 
 @dataclass(frozen=True)
@@ -290,3 +388,86 @@ class FingerprintScanner:
         for sp in target_spaces:
             results[sp.name] = self.scan_space(sp, force=force)
         return results
+
+    def check_invalidation(
+        self,
+        spaces: Optional[List[SpaceConfig]] = None,
+        snapshot_path: Optional[Union[str, Path]] = None,
+    ) -> Tuple[bool, int, str, Dict[str, Tuple[float, int]]]:
+        """
+        對全專案空間聯集 (Union Scope) 執行極速 JIT 變更嗅探 (基於 stat: mtime & size)。
+        :param spaces: 空間清單 (預設為 get_union_spaces())
+        :param snapshot_path: 快照檔案路徑 (預設為 storage_dir/indices/unified.meta.bin)
+        :return: (is_dirty, scanned_file_count, reason, current_files_map)
+        """
+        target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
+        if snapshot_path is None:
+            snapshot_path = self.space_manager.storage_dir / "indices" / "unified.meta.bin"
+
+        cached_map = BinarySnapshotManager.load(snapshot_path)
+        if cached_map is None:
+            return True, 0, "Snapshot missing or corrupted", {}
+
+        current_files: Dict[str, Tuple[float, int]] = {}
+        visited_keys: Set[str] = set()
+
+        for sp in target_spaces:
+            space_name = sp.name
+            source_roots = self.space_manager.resolve_space_include(space_name)
+
+            for source_root in source_roots:
+                if source_root.is_file():
+                    files_to_check = [source_root]
+                    base_dir = source_root.parent
+                else:
+                    files_to_check = []
+                    base_dir = source_root
+                    for root_dir, dirs, files in os.walk(str(source_root)):
+                        rel_dir = os.path.relpath(root_dir, str(base_dir)).replace("\\", "/")
+                        if rel_dir != "." and self._is_excluded(rel_dir + "/", sp.exclude):
+                            dirs.clear()
+                            continue
+                        for file in files:
+                            files_to_check.append(Path(root_dir) / file)
+
+                for file_path in files_to_check:
+                    try:
+                        relpath = os.path.relpath(str(file_path), str(base_dir)).replace("\\", "/")
+                    except ValueError:
+                        relpath = file_path.name
+
+                    canonical_key = str(file_path.resolve()).replace("\\", "/")
+                    if canonical_key in visited_keys:
+                        continue
+
+                    if self._is_excluded(relpath, sp.exclude):
+                        continue
+
+                    if not sp.is_file_included(file_path.name):
+                        continue
+
+                    visited_keys.add(canonical_key)
+
+                    try:
+                        stat_res = file_path.stat()
+                    except (OSError, PermissionError) as e:
+                        logger.warning(f"Failed to stat file '{file_path}': {e}")
+                        continue
+
+                    mtime = stat_res.st_mtime
+                    size = stat_res.st_size
+                    current_files[canonical_key] = (mtime, size)
+
+                    cached_entry = cached_map.get(canonical_key)
+                    if cached_entry is None:
+                        return True, len(current_files), f"New file detected: {file_path.name}", current_files
+
+                    cached_mtime, cached_size = cached_entry
+                    if cached_mtime != mtime or cached_size != size:
+                        return True, len(current_files), f"Modified file detected: {file_path.name}", current_files
+
+        if len(current_files) != len(cached_map):
+            return True, len(current_files), "File count mismatch (deleted or added files)", current_files
+
+        return False, len(current_files), "Clean", current_files
+

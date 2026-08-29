@@ -26,7 +26,7 @@ from .retrieval import (
     QueryFilter,
     SearchResult,
 )
-from .scanner import FileFingerprint, FingerprintScanner, ScanDiffResult
+from .scanner import BinarySnapshotManager, FileFingerprint, FingerprintScanner, ScanDiffResult
 from .schema import (
     LanguageType,
     MemberInfo,
@@ -56,6 +56,7 @@ __all__ = [
     "ThesaurusConfig",
     "ThesaurusGroup",
     "SpaceManager",
+    "BinarySnapshotManager",
     "FileFingerprint",
     "ScanDiffResult",
     "FingerprintScanner",
