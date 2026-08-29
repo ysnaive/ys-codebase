@@ -8,6 +8,7 @@ from .csharp_parser import CSharpParser
 from .markdown_parser import MarkdownParser
 from .python_parser import PythonParser
 from .registry import ParserRegistry
+from .spice_parser import LogicalLine, SpiceParser
 
 __all__ = [
     "BaseParser",
@@ -16,4 +17,6 @@ __all__ = [
     "MarkdownParser",
     "CppParser",
     "CSharpParser",
+    "SpiceParser",
+    "LogicalLine",
 ]
