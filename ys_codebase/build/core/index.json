@@ -1,7 +1,0 @@
-{
-  "name": "core",
-  "description": "YS-Codebase Core Infrastructure Module & Package Manager",
-  "versions": [
-    "1.0.2.build"
-  ]
-}

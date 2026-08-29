@@ -3,6 +3,7 @@
     "**/.git": true,
     "**/.vscode": true,
     "**/.gitignore": true,
+    "**/.gitattributes": true,
     "**/.gitkeep": true,
     "LICENSE": true,
     "**/__pycache__": true
