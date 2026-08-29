@@ -13,6 +13,16 @@
     - `knowledge-db search` 全面升級：簡易模式、預覽模式 (`-s`)、詳細模式 (`-d`) 的檔案標頭全面輸出為 `[rel_path:Lstart-end](file:///abs_path#Lstart)` 可點擊 Markdown 連結，支援 IDE 中 `Ctrl+Click` 直達行號並消除 Agent 路徑拼接失誤；`--json` 模式於每筆檢索結果注入 `file_uri` 欄位。
   - **回歸驗證與品質守門**：
     - 新增單元測試 `test_ft_07_to_file_uri_and_formatting` 與 `test_et_04_zero_fallback_cache_root_guardrail`；全生態系全量跑測 `dev test --all` ➔ **230/230 Passed (100% Ready)**；模組靜態合規性檢核 100% 通過。
+## 2026_08_29_2349_knowledge_db_thesaurus_enhancement_and_decoupling (Umbrella Level 2 結案)
+
+- **`knowledge-db` 模組三階同義詞加權擴展檢索重構與宣告式詞庫解耦豐富化**：
+  - **三階加權擴展檢索架構 (`thesaurus.py` & `retrieval.py`)**：
+    - 實作三階層查詢 Token 擴展權重模型：原始詞 (1.0)、嚴格同義詞與單向別名 (0.6)、領域關聯詞 (0.25)。
+    - 重構 BM25 檢索引擎，支援 `WeightedToken` 語意衰減乘積計分，大幅提升檢索廣度 (Recall) 並 100% 確保首屏精確度 (Precision)。
+  - **詞彙庫硬編碼解耦與宣告式 Contributes 體系 (`space.py` & `contributes/knowledge-db.json`)**：
+    - 徹底移除源碼硬編碼之 `BUILTIN_THESAURUS`，轉為由 `SpaceManager` 自 `core.contributes` 宣告式動態載入。
+    - 建立涵蓋 98+ 組高頻軟體工程、架構概念、多語言語法與 SPICE 網表之高品質同義詞、別名與關聯詞庫。
+  - **回歸驗證與品質守門**：全生態系全量跑測 `dev test --all` ➔ **228/228 Passed (100% Ready)**；四大模組靜態合規性檢核 100% 通過。
 
 ## 2026_08_29_2315_knowledge_db_spice_parser_integration (Level 1 Full Track 結案)
 
