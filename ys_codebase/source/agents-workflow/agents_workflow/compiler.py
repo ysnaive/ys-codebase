@@ -38,6 +38,9 @@ TOKEN_ANCHOR_INNER_REGEX = re.compile(r"__@\{\s*([A-Za-z0-9_]+)\s*\}__")
 LOCAL_URI_INNER_REGEX = re.compile(r"__#\{\s*([^}]+)\s*\}__")
 PROJECT_URI_INNER_REGEX = re.compile(r"__\$\{\s*([^}]+)\s*\}__")
 
+LOCAL_URI_EXACT_REGEX = re.compile(r"^__#\{\s*([^}]+)\s*\}__$")
+PROJECT_URI_EXACT_REGEX = re.compile(r"^__\$\{\s*([^}]+)\s*\}__$")
+
 # Legacy compatibility alias
 TOKEN_ANCHOR_REGEX = re.compile(r"`__@\{\s*([A-Za-z0-9_]+)\s*\}__`")
 URI_REF_REGEX = re.compile(r"`__#\{\s*([^}]+)\s*\}__`")
@@ -434,6 +437,16 @@ class ArtifactCompiler:
             if not has_local and not has_proj:
                 return span_text
 
+            # 1. 判定是否為純 Standalone 佔位符（非穿插類型）：完全替代並剝除外層反引號
+            m_local_exact = LOCAL_URI_EXACT_REGEX.fullmatch(inner.strip())
+            if m_local_exact:
+                return _resolve_local_uri(m_local_exact.group(1).strip())
+
+            m_proj_exact = PROJECT_URI_EXACT_REGEX.fullmatch(inner.strip())
+            if m_proj_exact:
+                return _resolve_project_uri(m_proj_exact.group(1).strip())
+
+            # 2. 穿插類型（如命令列或複合代碼區塊）：替換內部佔位符並保留外層反引號
             if has_local:
                 inner = LOCAL_URI_INNER_REGEX.sub(lambda m: _resolve_local_uri(m.group(1).strip()), inner)
             if has_proj:

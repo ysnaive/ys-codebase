@@ -2,6 +2,23 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_1505_workflow_and_agents_guidance_optimization — sub_02_uri_placeholders_and_workflow_path_healing (`v1.0.2.4`)
+
+- **Stage 2 佔位符二分法解析、工作流路徑根目錄直達與確定性讀檔阻斷鐵律**：
+  - **Stage 2 佔位符二分法解析與反引號完全替代剝除 (`compiler.py`)**：
+    - 實作 `LOCAL_URI_EXACT_REGEX` 與 `PROJECT_URI_EXACT_REGEX` 精確判定。
+    - **純佔位符 (Standalone)**：解算後直接返回純路徑字串並吞噬外層反引號，確保 Markdown 超連結 `` [Link](`__#{uri}__`) `` 產出 100% 合規之 CommonMark `[Link](../path.md)`（0 反引號殘留）。
+    - **穿插代碼 (Inline)**：指令如 `` `python __${yscb.host://yscb.py}__ run` `` 解算後維持代碼區塊反引號（➔ `` `python yscb.py run` ``）。
+  - **工作流讀檔動線全面切換至專案根目錄協議 (`__${...}__`)**：
+    - 將 `ContextInit.md` 等工作流中供 Agent 於專案根目錄以 `view_file` 讀取之檔案指引全面改用 `__${...}__` (Project Relative URI)。
+    - 物化後產出 `AGENTS.md`、`CHANGELOG.md`、`docs/_project/STANDARDS.md` 等根目錄直達路徑，徹底消除 404 與非預期搜尋開銷。
+  - **確定性文檔讀取失效阻斷鐵律 (Deterministic Document Read Guardrail)**：
+    - 於 `AgentsStandards.md` 注入剛性禁令：當讀取 SOP/指引顯式指定之確定性檔案失敗時，**絕對禁止**自主發起同義詞或模糊搜尋來掩蓋路徑缺陷，必須立即停步向開發者呈報具體報錯。
+  - **非標準語意協議前綴治癒**：
+    - 全面修正 `DocumentationStandards.md`、`P07_walkthrough.md` 的 `plans://` ➔ `workflow.plans://` 與 `umbrella_overview.md` 的 `archive://` ➔ `workflow.archived://`。
+  - **全量測試與回歸驗證**：
+    - 全生態系 4 大模組 209/209 測試 100% Passed (100% Ready)；正式發布 `agents-workflow@1.0.2.4`。
+
 ## 2026_08_29_1505_workflow_and_agents_guidance_optimization — sub_01_cli_guidance_and_privilege_optimization
 
 - **CLI 三級權限防呆手冊、JIT 階段指令引導與行為準則純化**：
