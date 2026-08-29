@@ -135,5 +135,17 @@ print(snippet.format_text())
    - 查詢時若感知來源檔案新增、修改或刪除，自動於背景執行熱重建並向 `stderr` 輸出提示（不污染 `--json` 結構化輸出）。
    - CLI 支援 `--no-auto-rebuild` / `-n` 旗標以手動停用自動熱自愈。
 
+---
+
+## 🔗 8. IDE 相容 Markdown 超連結與零 Fallback 快取隔離 (IDE Clickable Links & Zero Fallback)
+
+1. **RFC 8089 IDE 超連結 (`to_file_uri`)**：
+   - `knowledge-db search` 全面輸出 `[relative/path.py:L10-20](file:///absolute/path.py#L10)` 之 Markdown 格式。
+   - 支援人類開發者於 VS Code / Cursor / 終端機中透過 `Ctrl + Click` 直達精確程式碼行位址。
+   - 為 Agent 自動化提供 100% 確定之實體路徑，消除路徑拼接猜測。
+   - `--json` 模式於每筆搜尋項目注入 `file_uri` 欄位。
+2. **快取根目錄零 Fallback 守門 (Zero Fallback Guardrail)**：
+   - `SpaceManager._get_storage_root()` 嚴格遵循語意協議 `cache://knowledge-db/`，禁止任何隱式退化至 CWD 之相對路徑，杜絕在專案宿主根目錄意外產生 `.cache/` 殘留目錄。
+
 
 

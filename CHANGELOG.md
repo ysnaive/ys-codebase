@@ -2,6 +2,18 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_30_0102_knowledge_db_cache_isolation_and_uri_output (Level 1 Full Track 結案)
+
+- **`knowledge-db` 模組快取目錄零 Fallback 固化與搜尋輸出 RFC 8089 檔案 URI 連結格式重構**：
+  - **快取儲存根目錄零 Fallback 剛性守門 (`space.py`)**：
+    - 重構 `SpaceManager._get_storage_root()`，徹底消除 `Path("./.cache/knowledge-db")` 隱式回退。
+    - 當 `_safe_resolve_uri("cache://knowledge-db/")` 失敗且未傳入自訂 `storage_dir` 時，強制拋出 `InvalidSpaceConfigError`，徹底杜絕專案宿主根目錄意外產生 `.cache/` 殘留目錄之副作用。
+  - **RFC 8089 檔案 URI 與 Markdown 連結輸出 (`engine.py` & `cli.py`)**：
+    - 於 `KnowledgeEngine` 實作 `to_file_uri()` 與 `format_file_link()` 方法。
+    - `knowledge-db search` 全面升級：簡易模式、預覽模式 (`-s`)、詳細模式 (`-d`) 的檔案標頭全面輸出為 `[rel_path:Lstart-end](file:///abs_path#Lstart)` 可點擊 Markdown 連結，支援 IDE 中 `Ctrl+Click` 直達行號並消除 Agent 路徑拼接失誤；`--json` 模式於每筆檢索結果注入 `file_uri` 欄位。
+  - **回歸驗證與品質守門**：
+    - 新增單元測試 `test_ft_07_to_file_uri_and_formatting` 與 `test_et_04_zero_fallback_cache_root_guardrail`；全生態系全量跑測 `dev test --all` ➔ **230/230 Passed (100% Ready)**；模組靜態合規性檢核 100% 通過。
+
 ## 2026_08_29_2315_knowledge_db_spice_parser_integration (Level 1 Full Track 結案)
 
 - **`knowledge-db` 模組 SPICE (.cir, .sp, .spice, .net, .cdl) 網表語系解譯器 (SpiceParser) 整合與語意檢索擴充**：

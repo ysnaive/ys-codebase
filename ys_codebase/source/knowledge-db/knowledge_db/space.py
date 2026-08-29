@@ -76,9 +76,11 @@ class SpaceManager:
         if resolved:
             return resolved
 
-        # 預設回退至本地 .cache/knowledge-db
-        p = Path("./.cache/knowledge-db").resolve()
-        return p
+        # 零 Fallback 剛性守門：未指定 storage_dir 且無法透過 VFS 解析 cache:// 時拋出結構化異常
+        raise InvalidSpaceConfigError(
+            "Cannot resolve storage root for 'cache://knowledge-db/'. "
+            "Ensure core.uri is available or specify storage_dir explicitly."
+        )
 
     @property
     def storage_dir(self) -> Path:

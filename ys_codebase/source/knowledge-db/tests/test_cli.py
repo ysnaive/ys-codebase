@@ -69,9 +69,10 @@ class TestCLI(YSCBTestCase):
         out = buf.getvalue()
         self.assertIn("檢索查詢", out)
         if "#01" in out:
-            # 簡易模式每行應為 #01 file_path:line
+            # 簡易模式每行應為 #01 [file_path:line](file:///...)
             self.assertNotIn("命中詞:", out)
             self.assertNotIn("簽名:", out)
+            self.assertIn("](file:///", out)
 
         # 2. 詳細模式 (--detail, -d, --verbose)
         for flag in ["--detail", "-d", "--verbose"]:
@@ -82,6 +83,7 @@ class TestCLI(YSCBTestCase):
             out_detail = buf_detail.getvalue()
             if "#01" in out_detail:
                 self.assertIn("命中詞:", out_detail)
+                self.assertIn("](file:///", out_detail)
 
         # 3. JSON 模式 (--json)
         buf_json = io.StringIO()
@@ -94,6 +96,8 @@ class TestCLI(YSCBTestCase):
         self.assertIn("results", data)
         if data["total"] > 0:
             item = data["results"][0]
+            self.assertIn("file_uri", item)
+            self.assertTrue(item["file_uri"].startswith("file:///"))
             self.assertIn("rank", item)
             self.assertIn("score", item)
             self.assertIn("symbol", item)
@@ -110,6 +114,7 @@ class TestCLI(YSCBTestCase):
             if "#01" in out_snip:
                 self.assertIn("預覽模式", out_snip)
                 self.assertIn("檔案:", out_snip)
+                self.assertIn("](file:///", out_snip)
 
         # 5. JSON + Snippet 模式
         buf_json_snip = io.StringIO()
@@ -120,6 +125,8 @@ class TestCLI(YSCBTestCase):
         self.assertIn("results", data_snip)
         if data_snip["total"] > 0:
             item = data_snip["results"][0]
+            self.assertIn("file_uri", item)
+            self.assertTrue(item["file_uri"].startswith("file:///"))
             self.assertIn("code_snippet", item)
 
         # 6. 0 筆結果情境 (ET-01)
