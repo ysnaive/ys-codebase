@@ -45,6 +45,25 @@ class ReleaseTargetManager:
             return cls.DEFAULT_PROJECT_TARGETS if is_project else []
 
     @classmethod
+    def get_classified_targets(cls) -> Dict[str, List[str]]:
+        """
+        回傳分類 Targets 字典：
+        {
+            "project": List[str],  # 來自 config.project.json
+            "local": List[str],    # 來自 config.local.json
+            "union": List[str]     # 兩者聯集 (維持順序去重)
+        }
+        """
+        proj_targets = cls.get_tier_targets(is_project=True)
+        local_targets = cls.get_tier_targets(is_project=False)
+        union_targets = list(dict.fromkeys(list(proj_targets) + list(local_targets)))
+        return {
+            "project": proj_targets,
+            "local": local_targets,
+            "union": union_targets
+        }
+
+    @classmethod
     def save_tier_targets(cls, targets: List[str], is_project: bool = False) -> None:
         """寫入特定層級的 release_targets 清單。"""
         if config is None:

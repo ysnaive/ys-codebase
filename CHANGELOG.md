@@ -2,7 +2,23 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_1025_agents_workflow_manifest_cache_placement
+
+- **Agents-Workflow 發布清單雙軌分流儲存與換行符號歸一化 (`v1.0.2.1`)**：
+  - **雙軌 Manifest 空間與格式分流**：
+    - **Project 軌 (Tier 2)**：發布清單寫入 `storage://agents-workflow/release_manifest.json`（受 Git 追蹤），路徑 100% 格式化為 `project://` 語意協議路徑（例如 `project://.agents/workflows/Auto.md`），徹底杜絕跨機協作與 Git diff 污染。
+    - **Local 軌 (Tier 1)**：發布清單寫入 `cache://agents-workflow/release_manifest.json`（受 Git 忽略），路徑格式使用本機實體絕對路徑。
+  - **獨立 Pruning 孤立檔案清理與容錯自癒**：
+    - 雙軌各自獨立維護指紋與已發布檔案清冊，獨立執行孤立舊檔案清理。
+    - 讀取含有異機絕對路徑（如 `H:\...`）之歷史 Manifest 時不崩潰，安全自癒並標準化。
+  - **全專案跨平台換行符號 (LF) 剛性歸一化**：
+    - 專案根目錄建立 `.gitattributes`（`* text=auto eol=lf`），並於 `.vscode/settings.json` 加入隱藏清單。
+    - 發布引擎及檔案寫入統一顯式指定 `newline="\n"`，徹底根絕 Windows 下 Python 預設自動轉換為 CRLF 產生的警告與換行符號差異。
+  - **全量測試與回歸驗證**：
+    - `agents-workflow` 模組 40/40 測試全數通過；全生態系 4 大模組 191/191 測試 100% 通過。
+
 ## 2026_08_29_0038_knowledge_db_search_snippet_optimization
+
 
 - **Knowledge-DB 搜尋結果代碼切片與預覽優化 (`v1.0.1.2`)**：
   - **消滅 Double-Look 檢索瓶頸**：

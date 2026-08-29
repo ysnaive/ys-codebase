@@ -1,35 +1,6 @@
 {
-  "fingerprint": "4570e50744cfcb864ff16c8a7b7cfd90fdf3a6a95a92e33ed43abcf59d5f14c7",
-  "active_targets": [
-    "antigravity"
-  ],
-  "published_files": [
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\standards\\AgentsCliGuild.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\standards\\AgentsStandards.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\standards\\DevelopmentStandards.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\standards\\DocumentationStandards.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\P00_semantic_requirements.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\P01_requirements_spec.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\P02_architecture_plan.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\P03_api_spec.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\P04_implementation_plan.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\P05_task.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\P06_test_plan.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\P07_walkthrough.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\RXX_research_report.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\changelog.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\fast_track_plan.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\handoff.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\.yscb\\templates\\umbrella_overview.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Auto.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\ContextInit.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Continue.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Discuss.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Idea.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\NewPlan.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Pause.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Research.md",
-    "H:\\UseFolder\\CodeRepo\\ys_codebase\\.agents\\workflows\\Review.md"
-  ],
-  "updated_at": "2026-08-29 01:25:32"
+  "fingerprint": "",
+  "active_targets": [],
+  "published_files": [],
+  "updated_at": "2026-08-29 10:38:35"
 }

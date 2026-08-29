@@ -88,6 +88,8 @@ class TestReleasePublisherDiff(YSCBTestCase):
             self.assertGreater(len(target_files), 1)
 
             modified_file = target_files[0]
+            if modified_file.startswith("project://"):
+                modified_file = uri.resolve(modified_file, interactive=False)
             with open(modified_file, "w", encoding="utf-8") as f:
                 f.write("MODIFIED CONTENT")
 
@@ -175,6 +177,8 @@ class TestReleasePublisherDiff(YSCBTestCase):
             self.assertGreater(len(target_files), 0)
 
             deleted_file = target_files[0]
+            if deleted_file.startswith("project://"):
+                deleted_file = uri.resolve(deleted_file, interactive=False)
             if os.path.isfile(deleted_file):
                 os.remove(deleted_file)
 
