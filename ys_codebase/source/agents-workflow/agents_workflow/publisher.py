@@ -138,7 +138,15 @@ class ReleasePublisher:
             cfg["release_targets"] = sorted(list(target_names))
         hasher.update(json.dumps(cfg, sort_keys=True).encode("utf-8"))
 
-        # 2. Contributes 資料 (export, insert, token, release_target)
+        # 2. 模組自身版本與 Contributes 資料 (export, insert, token, release_target)
+        try:
+            manifest_p = os.path.join(self.compiler.module_root, "manifest.json")
+            if os.path.isfile(manifest_p):
+                with open(manifest_p, "r", encoding="utf-8") as f:
+                    hasher.update(f.read().encode("utf-8"))
+        except Exception:
+            pass
+
         contrib = self.compiler.get_contributes_data()
         hasher.update(json.dumps(contrib, sort_keys=True).encode("utf-8"))
 
@@ -151,10 +159,10 @@ class ReleasePublisher:
                 hasher.update(hashlib.sha1(content.encode("utf-8")).hexdigest().encode("utf-8"))
 
         for ins in contrib.get("insert", []):
-            src = ins.get("source", "")
+            src = ins.get("source") or (ins.get("value") if ins.get("type") == "uri" else "")
             if src:
-                content = self.compiler._read_file_content(src)
-                hasher.update(src.encode("utf-8"))
+                content = self.compiler._read_file_content(str(src))
+                hasher.update(str(src).encode("utf-8"))
                 hasher.update(hashlib.sha1(content.encode("utf-8")).hexdigest().encode("utf-8"))
 
         return hasher.hexdigest()

@@ -329,8 +329,47 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertIn("Injected Content", res)
         self.assertNotIn("__@{AGENTS_STANDARDS}__", res)
 
+    def test_sub_07_multi_donor_insert_aggregation(self):
+        """SUB-07: 驗證同一個 Token 錨點支援多模組 (Multi-Donor) 同時注入 (above, replace, below 拓撲聚合)。"""
+        raw_text = "# Standards\n\n`__@{MULTI_TEST_TOKEN}__`\n\n# End"
+        inserts = [
+            {
+                "token": "MULTI_TEST_TOKEN",
+                "value": "### Above Block 1",
+                "mode": "above"
+            },
+            {
+                "token": "MULTI_TEST_TOKEN",
+                "value": "### Replace Block 1",
+                "mode": "replace"
+            },
+            {
+                "token": "MULTI_TEST_TOKEN",
+                "value": "### Below Block 1",
+                "mode": "below"
+            },
+            {
+                "token": "MULTI_TEST_TOKEN",
+                "value": "### Below Block 2",
+                "mode": "below"
+            }
+        ]
+        res = self.compiler.resolve_single_artifact(raw_text, inserts)
+        self.assertNotIn("`__@{MULTI_TEST_TOKEN}__`", res)
+        self.assertIn("### Above Block 1", res)
+        self.assertIn("### Replace Block 1", res)
+        self.assertIn("### Below Block 1", res)
+        self.assertIn("### Below Block 2", res)
+        # 驗證順序: Above -> Replace -> Below 1 -> Below 2
+        idx_above = res.index("### Above Block 1")
+        idx_replace = res.index("### Replace Block 1")
+        idx_below1 = res.index("### Below Block 1")
+        idx_below2 = res.index("### Below Block 2")
+        self.assertTrue(idx_above < idx_replace < idx_below1 < idx_below2)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
