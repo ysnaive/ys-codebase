@@ -162,11 +162,20 @@ def main(argv: List[str]) -> int:
                     res.to_dict() if hasattr(res, "to_dict") else res
                     for res in results
                 ]
-                # 正規化路徑
+                # 正規化路徑與注入 file_uri
                 if isinstance(data, list):
                     for entry in data:
                         if isinstance(entry, dict) and "file_path" in entry:
-                            entry["file_path"] = engine.normalize_workspace_path(entry["file_path"])
+                            f_path = entry["file_path"]
+                            entry["file_path"] = engine.normalize_workspace_path(f_path)
+                            entry["file_uri"] = engine.to_file_uri(f_path)
+                            if "items" in entry and isinstance(entry["items"], list):
+                                for item in entry["items"]:
+                                    if isinstance(item, dict) and "symbol" in item and isinstance(item["symbol"], dict):
+                                        sym_dict = item["symbol"]
+                                        s_line = sym_dict.get("line_number")
+                                        s_file = sym_dict.get("file_path", f_path)
+                                        item["file_uri"] = engine.to_file_uri(s_file, line=s_line)
                 print(json.dumps({"query": query_str, "total": len(results), "results": data}, indent=2, ensure_ascii=False))
                 return 0
 
@@ -179,8 +188,11 @@ def main(argv: List[str]) -> int:
                 print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 個檔案節點，預覽模式):")
                 print("=" * 85)
                 for rank, res in enumerate(results, start=1):
-                    norm_path = engine.normalize_workspace_path(res.file_path)
-                    print(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {norm_path} ({len(res.items)} 個命中項目, {res.language})")
+                    first_sym = res.items[0].symbol if res.items else None
+                    first_line = first_sym.line_number if first_sym else None
+                    first_end = first_sym.end_line if first_sym else None
+                    file_link = engine.format_file_link(res.file_path, line=first_line, end_line=first_end)
+                    print(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} ({len(res.items)} 個命中項目, {res.language})")
                     for itm_idx, itm in enumerate(res.items, start=1):
                         is_last = (itm_idx == len(res.items))
                         branch = "└──" if is_last else "├──"
@@ -204,8 +216,11 @@ def main(argv: List[str]) -> int:
                 print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 個檔案節點，詳細模式):")
                 print("=" * 85)
                 for rank, res in enumerate(results, start=1):
-                    norm_path = engine.normalize_workspace_path(res.file_path)
-                    print(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {norm_path} ({len(res.items)} 個命中項目, {res.language})")
+                    first_sym = res.items[0].symbol if res.items else None
+                    first_line = first_sym.line_number if first_sym else None
+                    first_end = first_sym.end_line if first_sym else None
+                    file_link = engine.format_file_link(res.file_path, line=first_line, end_line=first_end)
+                    print(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} ({len(res.items)} 個命中項目, {res.language})")
                     for itm_idx, itm in enumerate(res.items, start=1):
                         is_last = (itm_idx == len(res.items))
                         branch = "└──" if is_last else "├──"
@@ -225,19 +240,22 @@ def main(argv: List[str]) -> int:
             # 簡易模式 (預設極簡樹狀排版)
             print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 個檔案節點):")
             for rank, res in enumerate(results, start=1):
-                norm_path = engine.normalize_workspace_path(res.file_path)
                 if len(res.items) == 1:
                     sym = res.items[0].symbol
-                    line_str = f"{sym.line_number}-{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"{sym.line_number}"
-                    print(f"#{rank:02d} {norm_path}:{line_str} ({sym.kind}:{sym.name}) [{res.total_score:05.2f}]")
+                    file_link = engine.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
+                    print(f"#{rank:02d} {file_link} ({sym.kind}:{sym.name}) [{res.total_score:05.2f}]")
                 else:
-                    print(f"#{rank:02d} {norm_path} (總分: {res.total_score:05.2f}, {len(res.items)} 項命中):")
+                    first_sym = res.items[0].symbol if res.items else None
+                    first_line = first_sym.line_number if first_sym else None
+                    first_end = first_sym.end_line if first_sym else None
+                    file_link = engine.format_file_link(res.file_path, line=first_line, end_line=first_end)
+                    print(f"#{rank:02d} {file_link} (總分: {res.total_score:05.2f}, {len(res.items)} 項命中):")
                     for itm_idx, itm in enumerate(res.items, start=1):
                         is_last = (itm_idx == len(res.items))
                         branch = "└──" if is_last else "├──"
                         sym = itm.symbol
-                        line_str = f"{sym.line_number}-{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"{sym.line_number}"
-                        print(f"  {branch} #{rank:02d}.{itm_idx} line {line_str} ({sym.kind}:{sym.name}) [{itm.score:05.2f}]")
+                        sym_link = engine.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
+                        print(f"  {branch} #{rank:02d}.{itm_idx} {sym_link} ({sym.kind}:{sym.name}) [{itm.score:05.2f}]")
             return 0
 
         elif subcmd == "clean":

@@ -15,7 +15,7 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from knowledge_db.exceptions import SpaceNotFoundError
+from knowledge_db.exceptions import InvalidSpaceConfigError, SpaceNotFoundError
 from knowledge_db.space import SpaceManager
 
 
@@ -145,13 +145,24 @@ class TestSpaceManager(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_11_cache_storage_root_resolution(self):
-        """FT-11: 驗證 SpaceManager 預設儲存目錄指向 cache://knowledge-db/ (.cache/knowledge-db/)"""
-        sm = SpaceManager(contributes_data={"spaces": {}})
-        storage_root = sm.storage_dir
-        self.assertTrue(
-            ".cache" in str(storage_root) or "cache" in str(storage_root),
-            f"Storage root '{storage_root}' should point to cache directory."
-        )
+        """FT-11: 驗證 SpaceManager 顯式指定 storage_dir 或有效 URI 正確解算"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sm = SpaceManager(storage_dir=temp_dir, contributes_data={"spaces": {}})
+            self.assertEqual(sm.storage_dir, Path(temp_dir).resolve())
+
+    @require(Requirement.LOGIC)
+    def test_et_04_zero_fallback_cache_root_guardrail(self):
+        """ET-04: 驗證無 core 且未指定 storage_dir 時拋出 InvalidSpaceConfigError (零 Fallback 鐵律)"""
+        # 覆蓋 _safe_resolve_uri 使其回傳 None
+        import knowledge_db.space as space_mod
+        orig_resolver = space_mod._safe_resolve_uri
+        try:
+            space_mod._safe_resolve_uri = lambda uri_str: None
+            sm = SpaceManager(contributes_data={"spaces": {}})
+            with self.assertRaises(InvalidSpaceConfigError):
+                _ = sm.storage_dir
+        finally:
+            space_mod._safe_resolve_uri = orig_resolver
 
     @require(Requirement.LOGIC)
     def test_sub_06_empty_configurable_contribute_defaults(self):

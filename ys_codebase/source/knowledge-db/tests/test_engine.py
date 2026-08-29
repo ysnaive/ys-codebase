@@ -104,6 +104,32 @@ class TestEngine(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_non_existent_space_error(self):
         """ET-01: 驗證操作不存在空間拋出 SpaceNotFoundError (EC-02)"""
-        engine = KnowledgeEngine()
-        with self.assertRaises(SpaceNotFoundError):
-            engine.scan(space="non_existent_12345")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine = KnowledgeEngine(storage_dir=temp_dir)
+            with self.assertRaises(SpaceNotFoundError):
+                engine.scan(space="non_existent_12345")
+
+    @require(Requirement.LOGIC)
+    def test_ft_07_to_file_uri_and_formatting(self):
+        """FT-07: 驗證 to_file_uri 與 format_file_link 生成標準 RFC 8089 URI 與 Markdown 標籤"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine = KnowledgeEngine(storage_dir=temp_dir)
+            
+            # 1. 驗證 to_file_uri 基本轉換與行號
+            uri_no_line = engine.to_file_uri("source/core/core/uri.py")
+            self.assertTrue(uri_no_line.startswith("file:///"))
+            self.assertIn("source/core/core/uri.py", uri_no_line)
+            self.assertNotIn("#L", uri_no_line)
+
+            uri_with_line = engine.to_file_uri("source/core/core/uri.py", line=42)
+            self.assertTrue(uri_with_line.endswith("#L42"))
+
+            # 2. 驗證 format_file_link 單行與跨行標籤
+            link_single = engine.format_file_link("source/core/core/uri.py", line=10)
+            self.assertTrue(link_single.startswith("["))
+            self.assertIn(":L10](file:///", link_single)
+            self.assertTrue(link_single.endswith("#L10)"))
+
+            link_range = engine.format_file_link("source/core/core/uri.py", line=10, end_line=25)
+            self.assertIn(":L10-25](file:///", link_range)
+            self.assertTrue(link_range.endswith("#L10)"))
