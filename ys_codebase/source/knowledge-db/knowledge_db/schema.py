@@ -37,6 +37,7 @@ class LanguageType(str, Enum):
     MARKDOWN = "markdown"
     CPP = "cpp"
     CSHARP = "csharp"
+    SPICE = "spice"
     JSON = "json"
     TEXT = "text"
     UNKNOWN = "unknown"
