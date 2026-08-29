@@ -40,30 +40,64 @@
 
 ---
 
-
 ### 🏛️ 模組開發與 Dogfooding 自引用空間閉環鐵律 (Module Dev & Dogfooding Axiom)
 
-本模組提供本地擴充模組開發與測試設施。凡安裝 `dev` 模組之專案，Agent 進行生態系模組開發時**必須強制遵守**以下三大空間隔離與四步標準閉環流水線：
+本模組提供本地擴充模組開發與測試設施。凡安裝 `dev` 模組之專案，Agent 進行生態系模組開發時**必須強制遵守**以下三大空間隔離與雙軌標準閉環流水線：
 
 #### 1. 三層空間權限矩陣
 - **空間 ① 源碼開發空間 (`source/<module>/`)**：【唯一源碼來源 (SSOT)】所有代碼、腳本、工作流修改 **100% 必須在此空間進行**。
 - **空間 ② 測試驗證空間 (`cache://dev/sandbox/`)**：【品質守門閘門】所有自動化測試在獨立隔離沙盒中執行（`python yscb.py dev test <module>` 或 `python yscb.py dev test --all`），未 100% 通過前嚴禁放行更新自引用產物。
 - **空間 ③ 自引用運行消費空間 (`modules/<module>/` 與 `.mirror/`)**：【部署運行產物】視為編譯產物，**嚴禁手動直接修改**，一律由 CLI 同步物化。
 
-#### 2. 標準四步開發閉環流水線 (The Canonical 4-Stage Pipeline)
-1. `Step 1 (Source)`：編輯 `source/<module>/...` (唯一 SSOT)。
-2. `Step 2 (Build/Check)`：`python yscb.py dev check <module>` 靜態稽核，或 `python yscb.py dev build <module>` 產出本機開發包。
-3. `Step 3 (Regression)`：實機執行 `python yscb.py dev test <module>` (或全量 `python yscb.py dev test --all`) 100% Passed。
-4. `Step 4 (Dogfooding Sync)`：
-   - 透過 `@build` 直裝通道部署至 `modules/`：`python yscb.py install <module>@build --force` (🚨 嚴禁未獲指示使用 `dev release` 正式發布)。
-   - 工作流系統自動完成資產物化與 `AGENTS.md` 軟合併無損。
+#### 2. 雙軌開發與發布閉環流水線 (Dual-Track Development & Release Pipeline)
+
+- **軌道 A：日常開發與本地自引用調試 (Dogfooding Track)**（未晉升版本之日常修改與調試）：
+  1. `Step 1 (Source)`：編輯 `source/<module>/...` (唯一 SSOT)。
+  2. `Step 2 (Build/Check)`：`python yscb.py dev check <module>` 靜態稽核，或 `python yscb.py dev build <module>` 產出本機開發包。
+  3. `Step 3 (Regression)`：實機執行 `python yscb.py dev test <module>` 100% Passed。
+  4. `Step 4 (Dogfooding Sync)`：透過 `@build` 直裝通道部署至 `modules/`：`python yscb.py install <module>@build --force`。
+
+- **軌道 B：版本晉升與正式發布交付 (Release & Bump Track)**（獲指示進行 bump、release 或結案交付）：
+  1. `Step 1 (Bump)`：執行版本遞增 `python yscb.py dev bump-[revision|patch|minor|major] <module>`。
+  2. `Step 2 (Regression)`：實機執行 `python yscb.py dev test <module>` (或 `dev test --all`) 100% Passed。
+  3. `Step 3 (Release)`：正式打包發布 `python yscb.py dev release <module>` (產出純淨發布包至 `build/` 與 `release/`)。
+  4. `Step 4 (Formal Sync)`：以正式發布通道同步至環境：`python yscb.py install <module> --force`（或 `python yscb.py update <module>`）。
 
 #### 3. 🚨 發布、安裝與部署免測防呆鐵律 (Release & Install Guardrails)
-- **嚴禁未獲授權主動發布**：未獲開發者明確指示前，**絕對禁止**主動執行 `python yscb.py dev release` 正式打包，或對當前本機宿主環境進行 `python yscb.py install` 覆蓋安裝。
-- **部署後免重複測試鐵律 (No Redundant Test Post-Deployment)**：在通過沙盒測試並完成 **`@build` 本地部署 (`python yscb.py install <module>@build --force`)** 後，**不需要且嚴禁重複調用 `dev test` 跑測**！安裝部署僅為產物物化與環境同步操作，部署完成後直接結案交付。
+- **嚴禁未獲授權主動正式發布**：日常熱開發中未獲開發者明確指示 (如未下達 bump/release 指令) 前，**絕對禁止**自主切入軌道 B 執行 `dev release`，應一律維持軌道 A (`@build`) 部署開發版。
+- **部署後免重複測試鐵律 (No Redundant Test Post-Deployment)**：在通過沙盒測試並完成 `@build` 本地部署或正式版覆蓋安裝後，**不需要且嚴禁重複調用 `dev test` 跑測**！安裝部署僅為產物物化與環境同步操作，部署完成後直接結案交付。
 
 #### 4. 📦 語意 URI 與源碼解耦鐵律 (VFS & Decoupling Governance)
 - **嚴禁硬編碼相對路徑**：模組內部跨空間檔案存取**嚴禁使用硬編碼之宿主相對路徑**，必須 100% 使用語意空間協議（`storage://`、`cache://`、`config://`、`module.source://`、`module.build://`、`module.release://`）。
+
+### 🧠 知識庫檢索與日常代碼搜尋強制鐵律 (Knowledge-DB Mandatory Search Standards)
+
+#### 🚨 執行紀律：日常代碼搜尋強制工具替代 (Search Tool Substitution & Prohibitions)
+- **預設第一反射工具 (Default First Search Tool)**：
+  在日常任何任務、問題排查、符號定位、功能探索或架構查詢時，**Agent 的第一搜尋動作 100% 必須強制調用 `python yscb.py knowledge-db search`**，嚴禁以內建工具走捷徑。
+- **🚨 絕對禁止條款 (Absolute Prohibitions)**：
+  1. **嚴禁以 `grep_search` 進行模糊探索**：絕對禁止在未知精確符號/常數全名前，使用 `grep_search` 發起全專案正則遍歷、模糊搜尋或關鍵字廣蒐。
+  2. **嚴禁以 `list_dir` / `view_file` 盲目翻找**：絕對禁止在未透過 `knowledge-db search` 定位精確行位址前，盲目列出目錄或整檔逐篇閱讀。
+- **唯一允許調用 `grep_search` 的例外條件 (Strict Exception)**：
+  僅在「已獲取 100% 精確且唯一的符號名/常數名（如 `foo.doSomethingExact`），且僅需在單一已知檔案內精準定位行號」時，方可使用 `grep_search`。其餘 90%+ 的日常代碼探索與檢索情境，一律強制由 `knowledge-db search -s` 承接。
+
+- **日常檢索決策樹與 `--ftype` 分流指引 (Search Decision Tree & FType Routing)**：
+  1. **確定搜索程式碼 (Code Search)**：
+     ➔ 附加 `--ftype=c,cpp,py`（或 `--ftype=py`, `--ftype=c,cpp` 等）：  
+     `python yscb.py knowledge-db search '<關鍵詞組合>' --ftype=c,cpp,py -s`
+  2. **確定搜索規範、文檔或 SOP (Documentation Search)**：
+     ➔ 附加 `--ftype=md`：  
+     `python yscb.py knowledge-db search '<關鍵詞組合>' --ftype=md -s`
+  3. **廣義探索、語意探索或跨來源關聯 (Hybrid / Concept Search)**：
+     ➔ 不加 `--ftype` 進行全空間加權檢索：  
+     `python yscb.py knowledge-db search '<語意化描述>' -s`
+
+- **「定位 ➔ 切片即時理解」核心哲學 (Targeted Reading & Snippet Axiom)**：
+  - **切片即時預覽**：檢索一律強制附加 `-s`（或 `--snippet`）直接獲取帶行號之上下文代碼切片與 Docstring 摘要。
+  - **極小範圍定向閱讀**：利用檢索定位之精確檔案與行號進行極小範圍定向確認，消滅 80%+ 的無效二次檔案讀取。
+
+- **Docstring 與符號結構防護鐵律 (Docstring Integrity Guardrail)**：
+  - Agent 在編寫或重構 Public API 時，**嚴禁刪除或破壞已有的標準 Docstring 註解結構**，必須確保符號能被 `knowledge-db` AST 解析器無損提取。
 <!-- YSCB_AGENTS_END -->
 
 ## 4. 專案特化工程規範 (Project Specific Standards)

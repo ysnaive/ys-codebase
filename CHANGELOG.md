@@ -2,6 +2,20 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_1920_dev_dual_track_pipeline_standards (`dev@1.0.1.3`)
+
+- **Dogfooding 與正式發布雙軌閉環流水線規範重構 (`DevAgentsStandards.md`)**：
+  - **雙軌閉環流程劃分**：明確定義「軌道 A：日常開發與本地自引用調試 (`@build`)」與「軌道 B：版本晉升與正式發布交付 (`bump` ➔ `release` ➔ `install --force` / `update`)」。
+  - **發布防呆守門純化**：明確規範日常開發嚴禁擅自切入軌道 B 正式 release；當獲指示進行 bump 或 release 交付時，依軌道 B 執行正式發布與本機同步。
+  - **沙盒回歸與正式發布**：全套件 50/50 測試 100% Passed；正式發布 `dev@1.0.1.3` 並完成本機覆蓋安裝。
+
+## 2026_08_29_1915_agents_workflow_multi_donor_insert_aggregation (`agents-workflow@1.0.2.7`)
+
+- **單一 Token 錨點多模組 (Multi-Donor) 注入聚合與指紋特徵比對修復 (`compiler.py` & `publisher.py`)**：
+  - **多 Donor 注入聚合狀態機**：修復 `compiler.py` 中 `mode == "below"` / `above` 提早抹除 Token 錨點造成後續模組注入失效之邏輯缺陷；支援同一個 Token 錨點依 `above` ➔ `replace` ➔ `below` 拓撲順序多模組同時注入。
+  - **發布特徵指紋計算優化**：修正 `publisher.py` 指紋計算中 `insert` 之 URI 取值 (`ins.get("value")`) 並納入模組版本，確保編譯器或資產異動時觸發發布。
+  - **回歸驗證與正式發布**：新增 `test_sub_07_multi_donor_insert_aggregation`，全套件 42/42 測試 100% Passed；正式發布 `agents-workflow@1.0.2.7` 並完成本機覆蓋安裝，驗證 `dev` 與 `knowledge-db` 規範 100% 同步注入 `AGENTS.md`。
+
 ## 2026_08_29_1901_dev_agents_standards_dynamic_injection (`dev@1.0.1.2`)
 
 - **Dogfooding 閉環流水線與模組開發三層空間規範之宣告式動態注入 (`contributes/agents-workflow.json`)**：
