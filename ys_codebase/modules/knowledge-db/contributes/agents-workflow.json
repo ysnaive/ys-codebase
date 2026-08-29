@@ -23,6 +23,12 @@
       "token": "PHASE07_AGENTS_GUILD",
       "value": "module://knowledge-db/assets/phase07_guild.md",
       "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "RETRO_CHECK_ITEMS",
+      "value": "module://knowledge-db/assets/retro_check.md",
+      "mode": "below"
     }
   ]
 }

@@ -367,6 +367,52 @@ class TestArtifactCompiler(YSCBTestCase):
         idx_below2 = res.index("### Below Block 2")
         self.assertTrue(idx_above < idx_replace < idx_below1 < idx_below2)
 
+    def test_sub_08_retro_workflow_export_and_token(self):
+        """SUB-08: 驗證 /Retro 工作流資產導出、RETRO_CHECK_ITEMS Token 宣告與未注入自動 Purge / 注入渲染。"""
+        data = self.compiler.get_contributes_data()
+        exports = data.get("export", [])
+        tokens = data.get("token", [])
+
+        # 1. 驗證 export 與 token 註冊
+        export_sources = [e.get("source") for e in exports]
+        self.assertIn("module://agents-workflow/assets/workflows/Retro.md", export_sources)
+        token_values = [t.get("value") for t in tokens]
+        self.assertIn("RETRO_CHECK_ITEMS", token_values)
+        self.assertIn("WORKFLOW_RETRO", token_values)
+
+        # 2. 驗證 Stage 1 編譯成功
+        res = self.compiler.compile_stage1()
+        self.assertTrue(res["success"])
+        resolved_list = res.get("resolved_items", [])
+        retro_item = next((item for item in resolved_list if item.get("base_name") == "Retro.md"), None)
+        self.assertIsNotNone(retro_item)
+        retro_content = retro_item["content"]
+
+        # 3. 驗證核心文檔溯源標頭與無殘留 Token 標籤
+        self.assertIn("開發歷程自檢工作流 (Retro)", retro_content)
+        self.assertIn("不合規文檔溯源分析", retro_content)
+        self.assertNotIn("`__@{RETRO_CHECK_ITEMS}__`", retro_content)
+        self.assertNotIn("`__@{WORKFLOW_RETRO}__`", retro_content)
+
+        # 4. 驗證模擬 Donor 注入 RETRO_CHECK_ITEMS
+        raw_text = "# Retro Test\n\n`__@{RETRO_CHECK_ITEMS}__`\n\n# End"
+        mock_inserts = [
+            {
+                "token": "RETRO_CHECK_ITEMS",
+                "value": "#### 2.2 知識庫檢索效益評測 (knowledge-db)\n- 調用次數: 5 次",
+                "mode": "below"
+            },
+            {
+                "token": "RETRO_CHECK_ITEMS",
+                "value": "#### 2.3 CLI Default-Deny 守門查核 (core)\n- 指令合規: 100%",
+                "mode": "below"
+            }
+        ]
+        injected_res = self.compiler.resolve_single_artifact(raw_text, mock_inserts)
+        self.assertNotIn("`__@{RETRO_CHECK_ITEMS}__`", injected_res)
+        self.assertIn("知識庫檢索效益評測", injected_res)
+        self.assertIn("CLI Default-Deny 守門查核", injected_res)
+
 
 if __name__ == "__main__":
     unittest.main()

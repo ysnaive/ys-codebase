@@ -24,6 +24,16 @@
   - **規範解耦**：移除 `AGENTS.md` 第 4 節的硬編碼內容，凡安裝 `dev` 模組之環境自動無損軟合併注入 Dogfooding 規範。
   - **發布與驗證**：完成 Revision bump 至 `1.0.1.2`，正式打包並完成本機覆蓋安裝。
 
+## 2026_08_29_1505_workflow_and_agents_guidance_optimization — sub_04_retro_workflow_and_token (`agents-workflow@1.0.2.8`)
+
+- **`/Retro` 開發歷程自檢工作流與 `RETRO_CHECK_ITEMS` 宣告式模組擴充體系**：
+  - **`/Retro` 標準工作流落地 (`Retro.md`)**：建立普適任何 Session 歷史（日常除錯、零散問答、標準計畫）之自檢工作流，內建「不合規文檔溯源分析 (Documentation-Root-Cause Traceability)」剛性紀律與核心自檢「異常過濾呈遞」原則。
+  - **宣告式多模組擴充 Token 體系 (`RETRO_CHECK_ITEMS`)**：宣告 `RETRO_CHECK_ITEMS` 與 `WORKFLOW_RETRO` 錨點，將通用紀律與領域特化指標完全解耦。
+  - **生態系模組注入與標定格式落地**：
+    - `knowledge-db`：宣告注入「知識庫 Search 效益評測」（調用統計、時機合理性、相較傳統 grep/list 效益對比估算與 Top 1~3 排名命中率）。
+    - `core`：宣告注入「CLI 指令 Default-Deny 守門查核」（採異常過濾呈遞與 5-Whys 根因溯源）。
+  - **無序獨立標頭與多 Donor 聚合**：採用無序語意標頭確保多 Donor 注入之無序性與獨立性，通過全生態系 211/211 測試並完成熱物化至 `.agents/workflows/Retro.md`。
+
 ## 2026_08_29_1505_workflow_and_agents_guidance_optimization — sub_03_plan_taxonomy_and_archetypes_expansion (`v1.0.2.5`)
 
 - **計畫分流維度重構、工作類型拓撲擴充、延遲建檔守門與 Roadmap 策略資產體系**：
