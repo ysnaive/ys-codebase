@@ -12,6 +12,7 @@ from .cpp_parser import CppParser
 from .csharp_parser import CSharpParser
 from .markdown_parser import MarkdownParser
 from .python_parser import PythonParser
+from .spice_parser import SpiceParser
 
 logger = logging.getLogger("knowledge-db.parsers.registry")
 
@@ -26,6 +27,7 @@ class ParserRegistry:
             self.register_parser(MarkdownParser(), priority=100)
             self.register_parser(CppParser(), priority=100)
             self.register_parser(CSharpParser(), priority=100)
+            self.register_parser(SpiceParser(), priority=100)
 
     def register_parser(self, parser: BaseParser, priority: int = 100) -> None:
         """

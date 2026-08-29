@@ -18,7 +18,7 @@ graph TD
 
     subgraph KnowledgeDBModule ["Knowledge-DB 模組 (module:knowledge-db)"]
         Scanner["指紋掃描 (Scanner)<br/><i>mtime / SHA-256 增量比對</i>"]:::sub
-        Parsers["AST 符號解析 (AST Parsers)<br/><i>Python, C, C++, Markdown</i>"]:::sub
+        Parsers["AST 符號解析 (AST Parsers)<br/><i>Python, C, C++, C#, SPICE, Markdown</i>"]:::sub
         Tokenizer["分詞與同義詞 (Tokenizer & Thesaurus)<br/><i>駝峰/蛇形分詞 / 軟工詞庫</i>"]:::sub
         Retrieval["BM25 檢索引擎 (Retrieval Engine)<br/><i>倒排索引 / 檔案類型過濾</i>"]:::sub
     end
@@ -43,7 +43,7 @@ graph TD
 
     Start["檢索需求"] --> Type{"查詢目標類型"}
 
-    Type -- "明確搜索原始碼 (Python/C/C++)" --> Code["附加 <code>--ftype=c,cpp,py</code><br/><code>knowledge-db search '&lt;關鍵詞&gt;' --ftype=c,cpp,py -s</code>"]:::code
+    Type -- "明確搜索原始碼 (Python/C/C++/SPICE)" --> Code["附加 <code>--ftype=c,cpp,py,cir,sp</code><br/><code>knowledge-db search '&lt;關鍵詞&gt;' --ftype=c,cpp,py,cir,sp -s</code>"]:::code
     Type -- "明確搜索規範、文檔或 SOP" --> Doc["附加 <code>--ftype=md</code><br/><code>knowledge-db search '&lt;關鍵詞&gt;' --ftype=md -s</code>"]:::doc
     Type -- "廣義探索、概念或跨空間關聯" --> Hybrid["不帶 <code>--ftype</code> (全空間加權)<br/><code>knowledge-db search '&lt;語意化描述&gt;' -s</code>"]:::hybrid
 ```

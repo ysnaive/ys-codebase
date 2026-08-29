@@ -2,6 +2,16 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_2315_knowledge_db_spice_parser_integration (Level 1 Full Track 結案)
+
+- **`knowledge-db` 模組 SPICE (.cir, .sp, .spice, .net, .cdl) 網表語系解譯器 (SpiceParser) 整合與語意檢索擴充**：
+  - **多語言 Schema 擴充**：於 `schema.py` 新增 `LanguageType.SPICE = "spice"` 列舉支援。
+  - **雙階段語意解譯引擎 (`SpiceParser`)**：
+    - **Stage 1 邏輯行聚合器**：精準合併行首 `+` 多行接續指令並保持原始行號映射 (`line_number` ~ `end_line`)；相容行首 `*` 與行尾 `;` (ngspice) / `$` (HSPICE) 註解，並支援連續註解萃取為符號 Docstring。
+    - **Stage 2 階層語意狀態機**：完整提取子電路 (`.subckt ... .ends` ➔ `CLASS`)、模型 (`.model` ➔ `STRUCT`)、參數 (`.param` ➔ `VARIABLE`)、包含指令 (`.include`/`.lib`/`.global` ➔ `MACRO`) 與頂層/內部元件實例 (`X...`, `M...`, `R...` ➔ `members`)。
+  - **解析器動態調度與 CLI 檢索整合**：於 `ParserRegistry` 預設註冊 `SpiceParser` (優先級 100)；`knowledge-db search` 支援 `--ftype=sp,cir,spice,net,cdl` 與 `-s` 程式碼切片即時預覽。
+  - **回歸驗證與品質守門**：新增 `test_spice_parser.py` (9 測 100% 通過)；全生態系全量跑測 `dev test --all` ➔ **210/210 Passed (100% Ready)**；模組靜態合規性檢核 100% 通過。
+
 ## 2026_08_29_2125_unit_tests_audit_and_maintenance (Level 1 Full Track 結案)
 
 - **全生態系四大模組單元測試套件地毯式排查、整併、瘦身與分流提速優化**：
