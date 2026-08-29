@@ -25,6 +25,8 @@ from knowledge_db.schema import LanguageType, SymbolKind, UnifiedSymbol
 
 
 class TestParsers(YSCBTestCase):
+    """多語言語意解析器 (Python, C/C++, C#, Markdown) 與 ParserRegistry 整合單元測試。"""
+
     @require(Requirement.LOGIC)
     def test_ft_01_parser_registry_dispatch_and_priority(self):
         """FT-01: 驗證 ParserRegistry 動態註冊、副檔名分發與優先權 (EC-02)"""
@@ -86,7 +88,7 @@ def standalone_func(x: int, y: int = 10) -> int:
 '''
         symbols = parser.parse("source/engine.py", code, "test_space")
         sym_map = {s.name: s for s in symbols}
-        self.assertEqual(len(symbols), 4)  # BaseEngine 類別, __init__, execute_task 與 standalone_func 函式
+        self.assertEqual(len(symbols), 4)
 
         # 類別驗證
         self.assertIn("BaseEngine", sym_map)
@@ -95,7 +97,7 @@ def standalone_func(x: int, y: int = 10) -> int:
         self.assertEqual(cls_sym.kind, SymbolKind.CLASS.value)
         self.assertEqual(cls_sym.language, LanguageType.PYTHON.value)
         self.assertEqual(cls_sym.docstring, "基礎引擎類別")
-        self.assertEqual(len(cls_sym.members), 3)  # engine_version, __init__, execute_task
+        self.assertEqual(len(cls_sym.members), 3)
 
         init_mem = [m for m in cls_sym.members if m.name == "__init__"][0]
         self.assertEqual(init_mem.docstring, "初始化")
@@ -104,7 +106,7 @@ def standalone_func(x: int, y: int = 10) -> int:
         self.assertIn("async def execute_task", exec_mem.signature)
         self.assertEqual(exec_mem.visibility, "public")
 
-        # 獨立方法符號驗證 (FR-01)
+        # 獨立方法符號驗證
         self.assertIn("BaseEngine.__init__", sym_map)
         self.assertIn("BaseEngine.execute_task", sym_map)
 
@@ -154,7 +156,7 @@ def standalone_func(x: int, y: int = 10) -> int:
         self.assertIn("欄位A", table_sym.name)
         self.assertIn("值1", table_sym.docstring)
 
-        # 測試無標題檔案降級 (EC-03)
+        # 測試無標題檔案降級
         no_heading_doc = "純純的一段文字段落，沒有任何 markdown 標題。\n第二行內容。"
         fallback_syms = parser.parse("notes.txt", no_heading_doc, "test_space")
         self.assertEqual(len(fallback_syms), 1)
@@ -229,3 +231,63 @@ namespace App.Services {
         cls_sym = [s for s in symbols if s.kind == SymbolKind.CLASS.value][0]
         self.assertEqual(cls_sym.name, "App.Services.UserService")
         self.assertEqual(cls_sym.docstring, "使用者服務實作類別")
+
+    @require(Requirement.LOGIC)
+    def test_cpp_multiline_signature_and_scope(self):
+        """驗證 C++ 多行簽名累積狀態機、Namespace 堆疊與 Class 作用域。"""
+        parser = CppParser()
+        code = '''
+namespace Engine {
+namespace Rendering {
+
+class Renderer {
+public:
+    virtual void Initialize(
+        int width,
+        int height
+    ) override;
+
+    void Shutdown();
+};
+
+} // namespace Rendering
+} // namespace Engine
+'''
+        symbols = parser.parse("src/renderer.h", code, space="test")
+        sym_map = {s.name: s for s in symbols}
+
+        self.assertIn("Engine::Rendering::Renderer", sym_map)
+        cls_sym = sym_map["Engine::Rendering::Renderer"]
+        self.assertEqual(cls_sym.kind, SymbolKind.CLASS.value)
+
+        self.assertIn("Engine::Rendering::Renderer::Initialize", sym_map)
+        init_m = sym_map["Engine::Rendering::Renderer::Initialize"]
+        self.assertEqual(init_m.kind, SymbolKind.METHOD.value)
+        self.assertEqual(init_m.metadata.get("parent_scope"), "Renderer")
+
+    @require(Requirement.LOGIC)
+    def test_csharp_and_markdown_end_line_coordinates(self):
+        """驗證 C# 與 Markdown end_line 邊界座標精確性。"""
+        cs_parser = CSharpParser()
+        cs_code = '''
+namespace Game.Core {
+    public class PlayerController {
+        public void Move(float x, float y) {}
+    }
+}
+'''
+        cs_symbols = cs_parser.parse("src/Player.cs", cs_code, space="test")
+        for s in cs_symbols:
+            self.assertGreaterEqual(s.end_line, s.line_number)
+
+        md_parser = MarkdownParser()
+        doc = '''# Introduction
+This is an intro paragraph.
+
+## Features
+- Feature 1
+'''
+        md_symbols = md_parser.parse("docs/guide.md", doc, space="test")
+        intro = [s for s in md_symbols if s.name == "Introduction"][0]
+        self.assertEqual(intro.line_number, 1)
+        self.assertGreaterEqual(intro.end_line, 2)

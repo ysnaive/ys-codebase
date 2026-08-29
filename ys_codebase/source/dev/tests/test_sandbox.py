@@ -19,7 +19,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         super().setUp()
         self.tester = Tester()
 
-    @require(Requirement.LOGIC)
+    @require(Requirement.ENV)
     def test_op_mksb_atomic_provisioning(self):
         """FT-01: Verify dev op-mksb creates full micro virtual environment with core hook setup."""
         ctx = SandboxProvisioner.create_sandbox()
@@ -47,7 +47,7 @@ class TestSandboxArchitecture(YSCBTestCase):
             SandboxProvisioner.cleanup_sandbox(ctx.sandbox_dir, force=True)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
+    @require(Requirement.ENV)
     def test_sandbox_vfs_natural_constant_self_locating(self):
         """FT-02: Verify constant self-locating operates deterministically in sandbox without code hacks."""
         ctx = SandboxProvisioner.create_sandbox()
@@ -121,7 +121,7 @@ class TestSandboxArchitecture(YSCBTestCase):
 
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
+    @require(Requirement.ENV)
     def test_hook_dev_error_isolation(self):
         """ET-01: Verify error isolation when a hook raises an exception during test setup."""
         ctx = SandboxProvisioner.create_sandbox()
@@ -145,7 +145,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertEqual(res, 1)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
+    @require(Requirement.ENV)
     def test_builder_preserves_hook_dev(self):
         """ET-03: Verify Builder builds module and preserves scripts/hook.dev.py in single-file zip."""
         builder = Builder()
@@ -163,7 +163,7 @@ class TestSandboxArchitecture(YSCBTestCase):
             self.assertIn("scripts/hook.dev.py", zf.namelist(), "scripts/hook.dev.py was unexpectedly excluded from build artifact!")
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
+    @require(Requirement.ENV)
     def test_third_party_host_module_inheritance(self):
         """Verify sandbox inherits installed host modules when not present in source/ and dispatches their hooks."""
         ctx = SandboxProvisioner.create_sandbox(copy_source=False)
