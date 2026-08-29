@@ -2,6 +2,27 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_1505_workflow_and_agents_guidance_optimization — sub_01_cli_guidance_and_privilege_optimization
+
+- **CLI 三級權限防呆手冊、JIT 階段指令引導與行為準則純化**：
+  - **`contributes.core.commands` Schema 擴充與三級權限分級**：
+    - 擴充 `tier` (`safe` | `conditional` | `gated`) 與 `phases` 宣告欄位，於全生態系 4 大模組 26 個指令完成補齊。
+    - 🟢 `safe` (自主安全)：沙盒跑測、靜態預檢、知識檢索、計畫狀態查詢。
+    - 🟡 `conditional` (階段約束)：`dev build`、`knowledge-db scan/bundle/index`。
+    - 🔴 `gated` (授權守門)：`dev release`、`bump-*`、`release-git`、`install --force`、`plan archive`，未獲明確指示前嚴格阻斷執行。
+  - **動態防呆手冊產生器與 JIT Phase 指令過濾器**：
+    - 實作 `core.providers.get_agents_cli_guild()`，動態渲染帶 🟢/🟡/🔴 標籤之防呆對照表。
+    - 實作 `core.providers.get_phase_cli_guild()`，依據當前 Phase 動態過濾推薦指令與紅線警示。
+  - **Knowledge-DB 日常檢索強制工具替代與 `--ftype` 決策樹**：
+    - 於 `KnowledgeAgentsStandards.md` 強化最高優先級之工具替代條款，明文禁止以 `grep_search` 進行模糊探索或盲目 `list_dir` / `view_file`。
+    - 建立 `--ftype=c,cpp,py` (代碼) 與 `--ftype=md` (文檔) 之二分檢索決策樹。
+  - **ContextInit 與 Standards 職責解耦與純化**：
+    - `ContextInit.md` 解耦模組專屬敘述，聚焦於 `AgentsStandards` 核心防呆反射，SOP 0~7 規範遞延至開啟計畫時按需精讀。
+    - `AgentsStandards.md` 純化為核心防呆四重奏，非剛性 SOP 流程敘事 100% 歸位至 `DevelopmentStandards.md`。
+    - 移除 `agents-workflow.json` 對 `AGENTS_STANDARDS` 之自引用 `insert`，消滅遞迴軟合併與外層重複 H1 標題。
+  - **全量測試與回歸驗證**：
+    - 全生態系 4 大模組 208/208 測試 100% Passed (100% Ready)；`sub_01` 計畫 `plan verify` 100% Passed。
+
 ## 2026_08_29_1049_knowledge_db_algorithm_optimization — sub_02_agents_workflow_injection_optimization
 
 - **Knowledge-DB 與 Agents-Workflow 注入內容與檢索決策樹優化**：
