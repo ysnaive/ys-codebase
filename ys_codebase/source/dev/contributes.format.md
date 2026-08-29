@@ -52,14 +52,14 @@
 ```
 
 ### 1.2 向 `agents-workflow` 貢獻 (`contributes/agents-workflow.json`)
-注入開發者專屬 SOP 標準規範：
+注入開發者專屬 Agent 行為準則與 Dogfooding 工程規範：
 ```json
 {
   "insert": [
     {
       "type": "uri",
-      "token": "WORKFLOW_SOP_STANDARDS",
-      "value": "module://dev/assets/standards/DevEngineeringStandards.md",
+      "token": "AGENTS_STANDARDS",
+      "value": "module://dev/assets/standards/DevAgentsStandards.md",
       "mode": "below"
     }
   ]

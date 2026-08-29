@@ -14,7 +14,7 @@ __pycache__/
 /.agents/.yscb/standards/AgentsStandards.md
 /.agents/.yscb/standards/DevelopmentStandards.md
 /.agents/.yscb/standards/DocumentationStandards.md
-/.agents/.yscb/templates/P00_semantic_requirements.md
+/.agents/.yscb/templates/P00_discuss.md
 /.agents/.yscb/templates/P01_requirements_spec.md
 /.agents/.yscb/templates/P02_architecture_plan.md
 /.agents/.yscb/templates/P03_api_spec.md
@@ -26,6 +26,7 @@ __pycache__/
 /.agents/.yscb/templates/changelog.md
 /.agents/.yscb/templates/fast_track_plan.md
 /.agents/.yscb/templates/handoff.md
+/.agents/.yscb/templates/roadmap.md
 /.agents/.yscb/templates/umbrella_overview.md
 /.agents/workflows/Auto.md
 /.agents/workflows/ContextInit.md
@@ -36,4 +37,5 @@ __pycache__/
 /.agents/workflows/Pause.md
 /.agents/workflows/Research.md
 /.agents/workflows/Review.md
+/.agents/workflows/Roadmap.md
 # === YSCB AGENTS_WORKFLOW IGNORE END ===

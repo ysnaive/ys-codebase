@@ -42,7 +42,7 @@
 
 #### 步驟 3-U：Umbrella 主計畫與子計畫定位
 
-1. 讀取主計畫的 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) 與 [`P00_semantic_requirements.md`](`__#{module://agents-workflow/assets/templates/P00_semantic_requirements.md}__`)。
+1. 讀取主計畫的 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) 與 [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)。
 2. 檢查子計畫清單矩陣：
    - 尋找當前處於 `進行中`、`In Progress`、`Planning` 或 `未開始` 的第一個子計畫目錄 `sub_{編號}_{名稱}/`。
    - 若所有既有子計畫均已 Completed 但主計畫尚有後續階段 ➔ 提示開發者是否開立下一個 `sub_XX` 子計畫。
@@ -56,8 +56,8 @@
 
 | 已存在的最新檔案 | 檔案狀態為 `Confirmed` / `Passed` | 檔案狀態為 `Discussing` / `Draft` / `Pending` | 判定結果 |
 | :--- | :---: | :---: | :--- |
-| [`P00_semantic_requirements.md`](`__#{module://agents-workflow/assets/templates/P00_semantic_requirements.md}__`) | ✅ | — | Phase 0 已確認，尚未進行分流或進入 Phase 1 |
-| [`P00_semantic_requirements.md`](`__#{module://agents-workflow/assets/templates/P00_semantic_requirements.md}__`) | — | ✅ | Phase 0 需求討論進行中 |
+| [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) | ✅ | — | Phase 0 已確認，尚未進行分流或進入 Phase 1 |
+| [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) | — | ✅ | Phase 0 需求討論進行中 |
 | [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) | ✅ | — | Phase 1 已完成，應從 Phase 2 開始 |
 | [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) | — | ✅ | Phase 1 進行中，應接續 Phase 1 |
 | [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) | ✅ | — | Phase 2 已完成，應從 Phase 3 開始 |

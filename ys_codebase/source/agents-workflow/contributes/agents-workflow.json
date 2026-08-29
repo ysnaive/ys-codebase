@@ -66,9 +66,19 @@
       "description": "自動連續推進工作流 (Auto) — 支援 Phase 01~05 跳過中間 Checkpoint 連續執行直至 P06 手動驗證"
     },
     {
+      "type": "workflow",
+      "source": "module://agents-workflow/assets/workflows/Roadmap.md",
+      "description": "技術路線圖智能推薦工作流 (Roadmap) — 探索長期技術儲備並推薦適合當前專案情境之主題"
+    },
+    {
       "type": "template",
-      "source": "module://agents-workflow/assets/templates/P00_semantic_requirements.md",
-      "description": "Phase 0 語意需求模板"
+      "source": "module://agents-workflow/assets/templates/P00_discuss.md",
+      "description": "Phase 0 討論模板"
+    },
+    {
+      "type": "template",
+      "source": "module://agents-workflow/assets/templates/roadmap.md",
+      "description": "Roadmap 技術路線圖模板"
     },
     {
       "type": "template",
@@ -173,6 +183,10 @@
       "description": "Auto 工作流特化擴充注入錨點（位於 Auto.md 尾部）"
     },
     {
+      "value": "WORKFLOW_ROADMAP",
+      "description": "Roadmap 工作流特化擴充注入錨點（位於 Roadmap.md 尾部）"
+    },
+    {
       "value": "WORKFLOW_SOP_STANDARDS",
       "description": "專案特化工程規範注入錨點（位於 DevelopmentStandards.md 尾部）"
     },
@@ -197,16 +211,24 @@
       "description": "HTML 註解結束標籤注入錨點"
     },
     {
+      "value": "ROADMAP_HEADER",
+      "description": "Roadmap 模板標頭特化擴充注入錨點（位於 roadmap.md）"
+    },
+    {
+      "value": "ROADMAP_TEMPLATE",
+      "description": "Roadmap 模板主體擴充注入錨點（位於 roadmap.md 尾部）"
+    },
+    {
       "value": "PHASE00_HEADER",
-      "description": "Phase 0 模板標頭特化擴充注入錨點（位於 P00_semantic_requirements.md）"
+      "description": "Phase 0 討論模板標頭特化擴充注入錨點（位於 P00_discuss.md）"
     },
     {
       "value": "PHASE00_AGENTS_GUILD",
-      "description": "Phase 0 JIT 註解內部擴充注入錨點（位於 P00_semantic_requirements.md 頂部）"
+      "description": "Phase 0 JIT 註解內部擴充注入錨點（位於 P00_discuss.md 頂部）"
     },
     {
       "value": "PHASE00_TEMPLATE",
-      "description": "Phase 0 模板主體擴充注入錨點（位於 P00_semantic_requirements.md 尾部）"
+      "description": "Phase 0 討論模板主體擴充注入錨點（位於 P00_discuss.md 尾部）"
     },
     {
       "value": "PHASE01_HEADER",

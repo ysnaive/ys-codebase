@@ -17,8 +17,8 @@ Phase 1 執行指引：
 
 `__@{PHASE01_HEADER}__`
 
-> 依據 P00：[P00_semantic_requirements.md](./P00_semantic_requirements.md)  
-> 模板版本：v1.4  
+> 依據 P00：[P00_discuss.md](./P00_discuss.md)  
+> 模板版本：v1.5  
 
 ---
 

@@ -41,8 +41,8 @@
 ### 步驟 3：成熟立項流轉 (Promotion)
 - 當開發者宣告「將此 Idea 正式立項開發」時：
   1. 建立標準 Dev Plan 目錄：`workflow.plans://{YYYY_MM_DD_HHMM_功能名稱}/`。
-  2. 將提案文件搬移至該目錄，並轉換重命名為 [`P00_semantic_requirements.md`](`__#{module://agents-workflow/assets/templates/P00_semantic_requirements.md}__`)。
-  3. 進入 [標準開發作業流程 (NewPlan)](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`) 標準流程，由開發者確認 P00 後執行三大分流！
+  2. 將提案文件搬移至該目錄，並轉換重命名為 [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)。
+  3. 進入 [標準開發作業流程 (NewPlan)](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`) 標準流程，由開發者確認 P00 後執行分流！
 
 ---
 

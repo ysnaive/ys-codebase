@@ -45,7 +45,8 @@ class PlanScanner:
         """
         ft_plan = plan_dir / "fast_track_plan.md"
         legacy_ft_plan = plan_dir / "FT_plan.md"
-        p00_req = plan_dir / "P00_semantic_requirements.md"
+        p00_req = plan_dir / "P00_discuss.md"
+        legacy_p00_req = plan_dir / "P00_semantic_requirements.md"
         p01_req = plan_dir / "P01_requirements_spec.md"
         umbrella = plan_dir / "umbrella_overview.md"
         master_roadmaps = list(plan_dir.glob("master_plan_*.md"))
@@ -138,11 +139,12 @@ class PlanScanner:
             return []
 
         results = []
-        # 篩選非隱藏目錄，並明確排除封存目錄 (archived 或 workflow.archived://)
+        # 篩選非隱藏目錄，並明確排除封存目錄 (archived 或 workflow.archived://) 與 roadmap 儲備庫 (roadmap 或 workflow.roadmap://)
         archived_dir = _resolve_uri_path("workflow.archived://")
+        roadmap_dir = _resolve_uri_path("workflow.roadmap://")
         plan_dirs = [
             d for d in self.plans_dir.iterdir()
-            if d.is_dir() and not d.name.startswith(".") and d.name != "archived" and (not archived_dir or d.resolve() != archived_dir)
+            if d.is_dir() and not d.name.startswith(".") and d.name not in ("archived", "roadmap") and (not archived_dir or d.resolve() != archived_dir) and (not roadmap_dir or d.resolve() != roadmap_dir)
         ]
 
         for p_dir in sorted(plan_dirs, key=lambda x: x.name, reverse=True):
