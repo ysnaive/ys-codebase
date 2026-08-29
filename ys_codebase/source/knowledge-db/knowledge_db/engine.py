@@ -67,27 +67,31 @@ class KnowledgeEngine:
     def _get_workspace_root(self) -> Path:
         try:
             from core import uri
-            host_dir = uri.get_host_dir()
-            if host_dir:
-                return Path(host_dir)
+            p_res = uri.resolve("project://", interactive=False)
+            if p_res:
+                return Path(p_res).resolve()
         except Exception:
             pass
-        return Path.cwd()
+        try:
+            from core import uri
+            host_dir = uri.get_host_dir()
+            if host_dir:
+                return Path(host_dir).resolve()
+        except Exception:
+            pass
+        return Path.cwd().resolve()
 
     def normalize_workspace_path(self, file_path: Union[str, Path]) -> str:
-        """將路徑正規化為相對於 Workspace 根目錄之標準相對路徑 (forward slash)"""
+        """將路徑正規化為相對於 Workspace/Project 根目錄之標準相對路徑 (forward slash)"""
         p = Path(file_path)
-        ws = self._get_workspace_root().resolve()
+        ws = self._get_workspace_root()
         try:
             if p.is_absolute():
                 rel = p.resolve().relative_to(ws)
                 return str(rel).replace("\\", "/")
-        except ValueError:
+        except (ValueError, Exception):
             pass
-        s = str(file_path).replace("\\", "/")
-        if ws.name == "ys_codebase" and s.startswith("ys_codebase/"):
-            s = s[len("ys_codebase/"):]
-        return s
+        return str(file_path).replace("\\", "/")
 
     def to_file_uri(self, file_path: Union[str, Path], line: Optional[int] = None) -> str:
         """
@@ -99,8 +103,17 @@ class KnowledgeEngine:
         """
         p = Path(file_path)
         if not p.is_absolute():
-            ws = self._get_workspace_root().resolve()
-            p = (ws / p).resolve()
+            resolved = None
+            try:
+                from core import uri
+                resolved = uri.resolve(f"project://{file_path}", interactive=False)
+            except Exception:
+                pass
+            if resolved:
+                p = Path(resolved).resolve()
+            else:
+                ws = self._get_workspace_root()
+                p = (ws / p).resolve()
         else:
             p = p.resolve()
 

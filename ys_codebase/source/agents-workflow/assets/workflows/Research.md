@@ -16,7 +16,7 @@
      - 若已開立 Dev Plan ➔ 寫入計畫目錄下的 `R{n:2d}_{topic}.md`（如 `R01_architecture_reference.md`）。
      - 若開立 Idea ➔ 整合進 `workflow.plans://ideas/` 對應的構想文檔中。
 3. **免除死板模板束縛 (Freedom from Rigid Templates)**：
-   - 依標準模板 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 建立檔案，維持頂部標準元數據 Header，正文格式依主題特性自由排版論述（對比表、拓撲/時序圖、PoC 範例、明確結論）。
+   - 依標準模板 [`__${module://agents-workflow/assets/templates/RXX_research_report.md}__`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 建立檔案，維持頂部標準元數據 Header，正文格式依主題特性自由排版論述（對比表、拓撲/時序圖、PoC 範例、明確結論）。
 4. **標準前綴命名規範**：
    - 調研報告統一採用標準前綴：**`R{n:2d}_{topic}.md`**。
 
@@ -47,7 +47,7 @@ flowchart TD
 ---
 
 ### 步驟 3：產出專題調研報告 (`R{n:2d}_{topic}.md`)
-- 達成共識後，若處於 Dev Plan 流程中，依標準模板 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 建立 `R01_{主題簡稱}.md`。
+- 達成共識後，若處於 Dev Plan 流程中，依標準模板 [`__${module://agents-workflow/assets/templates/RXX_research_report.md}__`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 建立 `R01_{主題簡稱}.md`。
 - **報告核心要素**：
   1. 標準 Header 元數據。
   2. 背景痛點與調研目標。
