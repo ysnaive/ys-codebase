@@ -89,6 +89,56 @@ class KnowledgeEngine:
             s = s[len("ys_codebase/"):]
         return s
 
+    def to_file_uri(self, file_path: Union[str, Path], line: Optional[int] = None) -> str:
+        """
+        將指定檔案路徑轉譯為標準 RFC 8089 file:/// 協議 URI。
+
+        :param file_path: 檔案路徑 (相對或絕對)
+        :param line: 行號 (可選)
+        :return: 標準 file:/// 格式字串 (例: file:///H:/path/file.py#L10)
+        """
+        p = Path(file_path)
+        if not p.is_absolute():
+            ws = self._get_workspace_root().resolve()
+            p = (ws / p).resolve()
+        else:
+            p = p.resolve()
+
+        posix_path = p.as_posix()
+        if not posix_path.startswith("/"):
+            posix_path = "/" + posix_path
+
+        uri_str = f"file://{posix_path}"
+        if line is not None:
+            uri_str += f"#L{line}"
+        return uri_str
+
+    def format_file_link(
+        self,
+        file_path: Union[str, Path],
+        line: Optional[int] = None,
+        end_line: Optional[int] = None,
+    ) -> str:
+        """
+        格式化為 IDE 相容之 Markdown 檔案超連結標籤: [rel_path:Lxx~Lyy](file:///abs_path#Lxx)
+
+        :param file_path: 檔案路徑
+        :param line: 起始行號 (可選)
+        :param end_line: 結束行號 (可選)
+        :return: Markdown 格式字串 (例: [src/engine.py:L10-20](file:///.../engine.py#L10))
+        """
+        rel_path = self.normalize_workspace_path(file_path)
+        if line is not None:
+            if end_line is not None and end_line > line:
+                label = f"{rel_path}:L{line}-{end_line}"
+            else:
+                label = f"{rel_path}:L{line}"
+        else:
+            label = rel_path
+
+        uri_str = self.to_file_uri(file_path, line=line)
+        return f"[{label}]({uri_str})"
+
     @property
     def storage_dir(self) -> Path:
         return self.space_manager.storage_dir
