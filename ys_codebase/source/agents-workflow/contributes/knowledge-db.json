@@ -9,6 +9,19 @@
         "**/__pycache__/**",
         "**/.git/**"
       ]
+    },
+    "plans": {
+      "description": "開發計畫、架構決策與 Roadmap 策略空間 (由 agents-workflow 貢獻)",
+      "include": [
+        "workflow.plans://"
+      ],
+      "exclude": [
+        "**/archived/**",
+        "**/__pycache__/**",
+        "**/.git/**",
+        "**/.*/**",
+        "**/.*"
+      ]
     }
   }
 }
