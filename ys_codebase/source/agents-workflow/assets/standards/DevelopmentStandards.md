@@ -98,12 +98,13 @@
 - **Phase 7 (成果展示與結案)**：
   - 產出結案報告 `P07_walkthrough.md`。
   - **知識庫 1:1 交付驗收**：核對並交付 Phase 4 預排之 `workflow.docs://` 文檔，追加版本日誌至專案根目錄 `CHANGELOG.md`。
+  - **計畫合規性驗證**：剝除 HTML 註解後實機調用 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 確保計畫結構完整與合規。
   - 工作目錄預設留存於 `workflow.plans://` 原位，嚴禁主動歸檔。
 
 ### 4.3 Fast Track 敏捷流程
 - **FT-1 (需求確認 & 變更規劃)**：建立 `fast_track_plan.md` (Draft)，嵌入 P00 引用，通過架構確認 Checklist ➔ Checkpoint ➔ Confirmed。
 - **FT-2 (程式碼實作與驗證)**：依序撰寫代碼與測試，若遇 Critical 偏差立即升級為 Full Track。
-- **FT-3 (品質 Review 與結案)**：代碼清理、回歸驗證、1:1 知識庫交付，追加 `CHANGELOG.md` ➔ Checkpoint ➔ Completed。
+- **FT-3 (品質 Review 與結案)**：代碼清理、回歸驗證、1:1 知識庫交付、調用 `plan verify` 檢核合規，追加 `CHANGELOG.md` ➔ Checkpoint ➔ Completed。
 
 ### 4.4 自動連續推進模式 (/Auto)
 - **觸發時機**：於 Full Track (Level 1) 或 Umbrella (Level 2) 活躍子計畫處於 Phase 01 ~ Phase 05 區間時由開發者調用。

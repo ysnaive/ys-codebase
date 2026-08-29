@@ -2,6 +2,23 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_1049_knowledge_db_algorithm_optimization — sub_02_agents_workflow_injection_optimization
+
+- **Knowledge-DB 與 Agents-Workflow 注入內容與檢索決策樹優化**：
+  - **剛性檢索決策樹 (Search Decision Tree)**：
+    - 於 `KnowledgeAgentsStandards.md` 建立明確三層決策分流：
+      1. 唯一精確簽章（如 `foo.doSomething`）➔ 原生 `grep_search`。
+      2. 明確分類概念（如 "實體智能尋路模組"）➔ 複合關鍵詞檢索 `python yscb.py knowledge-db search '<詞組>' -s`。
+      3. 廣義需求探索 ➔ 語意化敘述檢索 `python yscb.py knowledge-db search '<需求>' -s`。
+  - **「定位 ➔ 定向閱讀」核心工程哲學 (Targeted Reading Axiom)**：
+    - 明確界定檢索職責為「行位址定位與切片預覽」，後續僅進行極小範圍定向閱讀 (`view_file`) 或單一精準 grep，嚴禁在未知精準簽章前發起全專案盲目暴力正則與全文掃描。
+  - **過時手動索引指引移除**：
+    - `phase07_guild.md` 移除強制手動執行 `knowledge-db index`，說明 JIT 查詢智能感知熱自愈機制。
+  - **SOP JIT Guild 檢索引導升級**：
+    - `phase00_guild.md` 與 `research_guild.md` 強化 `-s` (`--snippet`) 參數指引與複合關鍵詞檢索建議。
+  - **全量測試與 Dogfooding 同步**：
+    - 全生態系 4 大模組 198/198 測試 100% 通過 (8.825s)；根目錄 `AGENTS.md` 與 `.agents/` 產物 100% 同步軟合併無損。
+
 ## 2026_08_29_1049_knowledge_db_algorithm_optimization — sub_01_jit_invalidation_and_hot_healing
 
 - **Knowledge-DB 全域聯集單一索引與 JIT 智能變更感知熱自愈**：

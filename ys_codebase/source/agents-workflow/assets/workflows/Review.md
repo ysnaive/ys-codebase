@@ -31,6 +31,7 @@
 #### 4. 驗證與測試覆蓋
 - [ ] 自動化測試或 CLI 編譯 100% 通過（附帶日誌紀錄）。
 - [ ] 人工 / UX / 實機驗證已獲得開發者明確確認。
+- [ ] **計畫合規性檢核**：已實機調用 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>`，確認計畫所有文件結構完整、無殘留 HTML 註解且標頭狀態合法。
 
 #### 5. Commit 訊息規範
 - [ ] 採用 Conventional Commits 格式：`<type>(<scope>): <標題>`，簡潔且資訊完整。
