@@ -151,3 +151,37 @@ class TestWorkflowInitializer(YSCBTestCase):
         self.assertTrue(res["cancelled"])
         self.assertFalse(os.path.exists(os.path.join(self.temp_dir, "cancelled_plans")))
         self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_05_check_project_protocol_valid(self):
+        """FT-01: 驗證當 project:// 正確配置時，check_project_protocol 回傳 (True, path)。"""
+        is_valid, proj_path = self.initializer.check_project_protocol()
+        self.assertTrue(is_valid)
+        self.assertTrue(bool(proj_path))
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_et_02_project_protocol_undefined_guardrail(self):
+        """ET-01: 驗證當 project:// 未配置 (!undefined) 時，init 流程觸發防呆阻斷並返回失敗。"""
+        from core import config
+        orig_proj_root = config.get("core", "project_root")
+        try:
+            config.set("core", "project_root", "!undefined", local=False)
+            initializer = WorkflowInitializer()
+            is_valid, err_msg = initializer.check_project_protocol()
+            self.assertFalse(is_valid)
+
+            # 執行 run_init_default 應被前置阻斷
+            res = initializer.run_init_default(auto_confirm=True, interactive=False)
+            self.assertFalse(res["success"])
+            self.assertEqual(res.get("error"), "project:// protocol is undefined")
+            self.assertEqual(len(res.get("created_dirs", [])), 0)
+
+            # CLI 進入點亦應回傳非 0 狀態碼
+            ret = cli.main(["--init-default", "-y"])
+            self.assertEqual(ret, 1)
+        finally:
+            if orig_proj_root:
+                config.set("core", "project_root", orig_proj_root, local=False)
+        self.mark_passed()
+

@@ -2,6 +2,14 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_1505_workflow_and_agents_guidance_optimization — sub_05_init_project_uri_guardrail (`agents-workflow@1.0.2.9`)
+
+- **一鍵初始化 `init` 前置依賴協議 `project://` 驗證與防呆修復引導 (`initializer.py`)**：
+  - **前置依賴防呆驗證**：於 `WorkflowInitializer` 實作 `check_project_protocol()`，在執行目錄探測與建立前，先驗證 `project://` 是否已定義（`core.project_root` 非空且非 `!undefined`）。
+  - **修復引導與建議指令**：當 `project://` 未定義時，中斷初始化流程並輸出清晰警示方塊與建議指令（`config set core project_root <path>` 或 `uri resolve project://`）。
+  - **清除隱式 Fallback 漏洞**：重構 `_resolve_physical_path()`，徹底移除對 `os.getcwd()` 的隱式退化處理，嚴格落實《`project://` 零 Fallback 鐵律》。
+  - **回歸驗證與正式發布**：新增單元測試案例 `test_ft_05_check_project_protocol_valid` 與 `test_et_02_project_protocol_undefined_guardrail`，全生態系 211/211 測試 100% Passed；正式發布 `agents-workflow@1.0.2.9` 並完成本機更新。
+
 ## 2026_08_29_1920_dev_dual_track_pipeline_standards (`dev@1.0.1.3`)
 
 - **Dogfooding 與正式發布雙軌閉環流水線規範重構 (`DevAgentsStandards.md`)**：
