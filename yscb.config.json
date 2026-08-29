@@ -8,13 +8,13 @@
       "provider": "./ys_codebase/release"
     },
     "dev": {
-      "version": "1.0.1.1",
-      "installed_at": "2026-08-29 16:02:39",
+      "version": "1.0.1.2",
+      "installed_at": "2026-08-29 19:06:16",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "1.0.2.4",
-      "installed_at": "2026-08-29 16:24:59",
+      "version": "1.0.2.5",
+      "installed_at": "2026-08-29 18:49:29",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {

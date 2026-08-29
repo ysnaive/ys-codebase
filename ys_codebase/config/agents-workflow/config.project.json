@@ -1,8 +1,9 @@
 {
   "paths": {
     "plans": "project://plans",
-    "archived": "project://plans/archived",
-    "docs": "project://docs"
+    "docs": "project://docs",
+    "archived": "workflow.plans://archived",
+    "roadmap": "workflow.plans://roadmap"
   },
   "ide": [],
   "enable_agents_md": true,

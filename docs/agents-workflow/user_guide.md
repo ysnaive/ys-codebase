@@ -114,6 +114,20 @@ python yscb.py agents-workflow plan-verify
 
 ---
 
+### 1.5 長期技術路線圖管理 (`roadmap`)
+
+掃描並條列 `workflow.roadmap://`（預設為 `plans/roadmap/`）儲備庫中的長期技術藍圖與策略資產。
+
+```bash
+# 條列所有 Roadmap 主題摘要對照表
+python yscb.py agents-workflow roadmap
+
+# 檢視指定主題之詳細背景與路徑
+python yscb.py agents-workflow roadmap release_binary_storage_optimization
+```
+
+---
+
 ## 2. 工作流程資產發布與組態治理
 
 ### 2.1 專案組態開關 (`config.project.json`)
@@ -123,7 +137,8 @@ python yscb.py agents-workflow plan-verify
   "paths": {
     "plans": "!undefined",
     "archived": "!undefined",
-    "docs": "!undefined"
+    "docs": "!undefined",
+    "roadmap": "!undefined"
   },
   "release_targets": [],
   "enable_agents_md": true,

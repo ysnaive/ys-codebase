@@ -21,7 +21,8 @@ class WorkflowInitializer:
     DEFAULT_RECOMMENDED_PATHS: Dict[str, str] = {
         "plans": "project://plans",
         "archived": "project://plans/archived",
-        "docs": "project://docs"
+        "docs": "project://docs",
+        "roadmap": "workflow.plans://roadmap"
     }
 
     def __init__(self, host_dir: Optional[str] = None):

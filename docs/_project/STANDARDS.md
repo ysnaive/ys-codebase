@@ -56,9 +56,9 @@ graph LR
     classDef s4 fill:#4c1d95,stroke:#8b5cf6,stroke-width:2px,color:#fff;
 
     Stage1["空間 ① 源碼開發<br/><code>source/{module}/</code><br/><i>唯一真理來源 (SSOT)</i>"]:::s1
-    Stage2["Stage 2 打包構建<br/><code>dev build {module}</code><br/><i>產出純淨 build/</i>"]:::s2
-    Stage3["空間 ② 測試閘門<br/><code>dev test --all</code><br/><i>31/31 100% Passed</i>"]:::s3
-    Stage4["空間 ③ 自引用消費<br/><code>yscb reload / modules/</code><br/><i>發布運行產物同步</i>"]:::s4
+    Stage2["Stage 2 打包構建<br/><code>dev build {module}</code><br/><i>產出本機 build/</i>"]:::s2
+    Stage3["空間 ② 測試閘門<br/><code>dev test --all</code><br/><i>100% Passed</i>"]:::s3
+    Stage4["空間 ③ 自引用消費<br/><code>install {mod}@build</code><br/><i>直裝通道安全同步</i>"]:::s4
 
     Stage1 --> Stage2 --> Stage3 --> Stage4
 ```
