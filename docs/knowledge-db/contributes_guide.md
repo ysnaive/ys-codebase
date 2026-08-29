@@ -28,6 +28,12 @@
   "thesaurus": [
     ["工作流", "workflow", "pipeline", "流水線"],
     ["狀態機", "state_machine", "FSM"]
+  ],
+  "aliases": {
+    "ngspice": ["spice", "circuit"]
+  },
+  "related": [
+    ["parser", "ast", "lexer", "visitor"]
   ]
 }
 ```
@@ -51,6 +57,12 @@
       },
       "thesaurus": [
         ["同義詞A", "synonym_a"]
+      ],
+      "aliases": {
+        "別名來源": ["展開目標A", "展開目標B"]
+      },
+      "related": [
+        ["關聯詞A", "關聯詞B", "關聯詞C"]
       ]
     }
   }

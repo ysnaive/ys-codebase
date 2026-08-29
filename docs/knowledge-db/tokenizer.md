@@ -22,7 +22,7 @@
 
 ---
 
-## 🔄 2. 雙層同義詞擴展引擎 (`ThesaurusEngine`)
+## 🔄 2. 雙層三階同義詞與關聯詞擴展引擎 (`ThesaurusEngine`)
 
 ### 2.1 內建通用軟體工程詞庫
 模組內建 18 組軟工常用雙向中英對照同義詞：
@@ -32,8 +32,17 @@
 - `["控制", "控制器", "control", "controller"]`
 - `["引擎", "核心", "engine", "core"]`
 
-### 2.2 查詢端雙向擴展 (Query Expansion)
-檢索時自動將查詢詞展開至同義詞集合，例如輸入 `"搜尋底盤"` 自動展開為 `["搜尋", "search", "query", "底盤", "chassis", "drivetrain"]`，大幅提升跨語言與概念檢索召回率。
+### 2.2 三階加權展開管線 (Three-Tier Weighted Expansion)
+為了在大幅提升檢索廣度 (Recall) 的同時完全不稀釋首屏精準度 (Precision)，`ThesaurusEngine` 採用三階加權展開架構：
+
+| 層級 (Tier) | 類型 | 權重 | 說明 |
+| :--- | :---: | :---: | :--- |
+| **Tier 1** | **原始詞 (Original)** | **`1.0`** | 使用者查詢輸入之原始詞條，享完整基礎 BM25 分數與 Exact Match 置頂加權。 |
+| **Tier 2** | **雙向同義詞 (Synonym)**<br/>**單向別名 (Alias)** | **`0.6`** | 雙向等價替換詞（`搜尋 <=> search`）與單向特化別名（`ngspice => spice`），以 0.6 衰減係數杜絕查詢漂移。 |
+| **Tier 3** | **領域關聯詞 (Related)** | **`0.25`** | 領域關聯與上下游術語（`parser <-> ast <-> lexer`），作為底層微弱加分與寬鬆召回。 |
+
+### 2.3 權重衝突解決原則 (Max-Weight Retention)
+若同一個詞條同時由多個路徑被命中（例如既是原始詞又是其他詞展開之同義詞/關聯詞），系統剛性保留最高權重（$1.0 > 0.6 > 0.25$）。
 
 ---
 
@@ -49,9 +58,20 @@ tokens = tokenizer.tokenize("在 PIDController 中計算速度")
 print("Tokens:", tokens)
 # 輸出: ['pid', 'controller', 'pidcontroller', '計', '算', '計算', '速度', '計算速度']
 
-# 2. 同義詞擴展
-thesaurus = ThesaurusEngine(custom_groups=[["底盤", "chassis", "drivetrain"]])
-expanded = thesaurus.expand_query(["搜尋", "底盤"])
-print("Expanded:", expanded)
-# 輸出: ['搜尋', '底盤', 'search', 'query', 'chassis', 'drivetrain', ...]
+# 2. 三階加權同義詞、別名與關聯詞擴展
+thesaurus = ThesaurusEngine(
+    custom_groups=[["底盤", "chassis", "drivetrain"]],
+    custom_aliases={"ngspice": ["spice", "circuit"]},
+    custom_related=[["parser", "ast", "lexer"]],
+)
+
+# 2a. 加權展開 (返回 List[WeightedToken])
+weighted_tokens = thesaurus.expand_query_weighted(["ngspice", "parser"])
+for wt in weighted_tokens:
+    print(f"Term: {wt.term}, Weight: {wt.weight}, Kind: {wt.kind}")
+
+# 2b. 向後相容扁平展開 (返回 List[str])
+flat_tokens = thesaurus.expand_query(["搜尋", "底盤"])
+print("Expanded:", flat_tokens)
 ```
+
