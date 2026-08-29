@@ -2,6 +2,15 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_29_1715_agents_workflow_release_manifest_idempotency
+
+- **Release Manifest 寫入冪等性防護與空轉 Git Diff 消除 (`publisher.py`)**：
+  - **雙軌 Manifest 實質變更防抖檢測**：
+    - 於 `ReleasePublisher.release_all` Stage 3 寫入 `storage://` (Project 軌) 與 `cache://` (Local 軌) 前，引入 `fingerprint`、`active_targets` 與 `published_files` 三要素實質比對。
+    - 當內容完全未變更時，保留原有之 `updated_at` 時間戳記，並跳過磁碟重複寫入，徹底消滅每次執行 `reload` 或發布流程時產生的空轉 Git diff。
+  - **全量測試與回歸驗證**：
+    - `agents-workflow` 模組 41/41 測試全數通過；全生態系 4 大模組 209/209 測試 100% Passed (100% Ready)。
+
 ## 2026_08_29_1505_workflow_and_agents_guidance_optimization — sub_02_uri_placeholders_and_workflow_path_healing (`v1.0.2.4`)
 
 - **Stage 2 佔位符二分法解析、工作流路徑根目錄直達與確定性讀檔阻斷鐵律**：

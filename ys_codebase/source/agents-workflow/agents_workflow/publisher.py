@@ -523,23 +523,49 @@ class ReleasePublisher:
         # 1. Project 軌 (寫入 storage://，使用 project:// 協議路徑)
         if proj_targets or old_proj_manifest:
             proj_uris = [self._to_project_uri(f, proj_root) for f in precomputed_project_files.keys()]
+            sorted_proj_uris = sorted(proj_uris)
+            if (
+                old_proj_manifest
+                and old_proj_manifest.get("fingerprint") == proj_fingerprint
+                and old_proj_manifest.get("active_targets") == proj_targets
+                and old_proj_manifest.get("published_files") == sorted_proj_uris
+                and "updated_at" in old_proj_manifest
+            ):
+                updated_at_proj = old_proj_manifest["updated_at"]
+            else:
+                updated_at_proj = now_str
+
             new_proj_manifest = {
                 "fingerprint": proj_fingerprint,
                 "active_targets": proj_targets,
-                "published_files": sorted(proj_uris),
-                "updated_at": now_str
+                "published_files": sorted_proj_uris,
+                "updated_at": updated_at_proj
             }
-            self._save_manifest(PROJECT_MANIFEST_STORAGE_URI, new_proj_manifest)
+            if new_proj_manifest != old_proj_manifest:
+                self._save_manifest(PROJECT_MANIFEST_STORAGE_URI, new_proj_manifest)
 
         # 2. Local 軌 (寫入 cache://，使用實體絕對路徑)
         if local_targets or old_local_manifest:
+            sorted_local_files = sorted(list(precomputed_local_files.keys()))
+            if (
+                old_local_manifest
+                and old_local_manifest.get("fingerprint") == local_fingerprint
+                and old_local_manifest.get("active_targets") == local_targets
+                and old_local_manifest.get("published_files") == sorted_local_files
+                and "updated_at" in old_local_manifest
+            ):
+                updated_at_local = old_local_manifest["updated_at"]
+            else:
+                updated_at_local = now_str
+
             new_local_manifest = {
                 "fingerprint": local_fingerprint,
                 "active_targets": local_targets,
-                "published_files": sorted(list(precomputed_local_files.keys())),
-                "updated_at": now_str
+                "published_files": sorted_local_files,
+                "updated_at": updated_at_local
             }
-            self._save_manifest(LOCAL_MANIFEST_CACHE_URI, new_local_manifest)
+            if new_local_manifest != old_local_manifest:
+                self._save_manifest(LOCAL_MANIFEST_CACHE_URI, new_local_manifest)
 
         # --- 步驟 4 (建立目錄並落地輸出檔案，含 Diff 檢測與純 LF 換行) ---
         written_count = 0
