@@ -5,7 +5,7 @@ Provides probe, confirmation, directory creation, and atomic configuration bindi
 import os
 import sys
 import json
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 try:
     from core import uri
@@ -30,6 +30,21 @@ class WorkflowInitializer:
         # 定位模組根目錄
         self.module_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+    def check_project_protocol(self) -> Tuple[bool, str]:
+        """
+        前置驗證依賴之 project:// 協議是否已正確定義 (core.project_root)。
+        回傳 (is_valid, error_or_path)。
+        """
+        if uri is None:
+            return True, ""
+        try:
+            proj_path = uri.resolve("project://", interactive=False)
+            if proj_path and not str(proj_path).startswith("!undefined"):
+                return True, proj_path
+            return False, "project_root is not configured or is !undefined"
+        except Exception as e:
+            return False, str(e)
+
     def _resolve_physical_path(self, raw_path: str) -> str:
         """安全嘗試將語意 URI 或相對路徑解析為實體絕對路徑。"""
         if not raw_path or raw_path == "!undefined":
@@ -39,14 +54,7 @@ class WorkflowInitializer:
             try:
                 return uri.resolve(raw_path, interactive=False)
             except Exception:
-                pass
-
-        # 若包含 project:// 但無法透過 uri.resolve 解析 (例未配置 project_root)
-        if raw_path.startswith("project://"):
-            sub = raw_path[len("project://"):].lstrip("/\\")
-            # 優先嘗試當前工作目錄
-            cwd = os.getcwd()
-            return os.path.abspath(os.path.join(cwd, sub))
+                return ""
 
         # 一般相對/絕對路徑
         return os.path.abspath(raw_path)
@@ -77,8 +85,6 @@ class WorkflowInitializer:
         except Exception:
             return False
 
-
-
     def run_init_default(
         self,
         paths_override: Optional[Dict[str, str]] = None,
@@ -88,6 +94,29 @@ class WorkflowInitializer:
         """
         執行 --init-default 完整流程。
         """
+        # 1. 前置依賴協議 project:// 防呆驗證
+        is_project_defined, proj_err = self.check_project_protocol()
+        if not is_project_defined:
+            print("\n" + "=" * 75, file=sys.stderr)
+            print("[agents-workflow:init] 🚨 錯誤：依賴協議 'project://' 尚未定義！", file=sys.stderr)
+            print("=" * 75, file=sys.stderr)
+            print("agents-workflow 依賴專案根目錄協議 'project://' 來定位 plans 與 docs 目錄。", file=sys.stderr)
+            print("當前 core.project_root 未配置或為 !undefined。\n", file=sys.stderr)
+            print("💡 建議解決步驟：", file=sys.stderr)
+            print("  1. 請先執行以下指令設定專案根目錄 (例如指定當前目錄或專案路徑)：", file=sys.stderr)
+            print("     python yscb.py config set core project_root .\n", file=sys.stderr)
+            print("  2. 或於終端執行協議解析以進行及時熱更新補齊：", file=sys.stderr)
+            print("     python yscb.py uri resolve project://\n", file=sys.stderr)
+            print("  3. 設定完成後，請重新執行 agents-workflow 一鍵初始化。", file=sys.stderr)
+            print("=" * 75 + "\n", file=sys.stderr)
+            return {
+                "success": False,
+                "cancelled": False,
+                "error": "project:// protocol is undefined",
+                "created_dirs": [],
+                "bound_paths": {}
+            }
+
         # 合併推薦路徑與使用者覆蓋參數
         target_paths = dict(self.DEFAULT_RECOMMENDED_PATHS)
         if paths_override:

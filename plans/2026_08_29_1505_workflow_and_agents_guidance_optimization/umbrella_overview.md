@@ -26,6 +26,7 @@
 | **sub_02** | `sub_02_uri_placeholders_and_workflow_path_healing` | Full Track | `Completed` | **佔位符解析完全替代與工作流路徑治癒**：修復 `compiler.py` Stage 2 佔位符反引號剝除邏輯、工作流讀檔動線全面改用 `__${...}__`、修復非標準協議前綴與 Dogfooding 同步 |
 | **sub_03** | `sub_03_plan_taxonomy_and_archetypes_expansion` | Full Track | `Completed` | **計畫分流維度重構、工作類型拓撲擴充與策略資產規範**：升級 Fast Track 4 維度評估矩陣、定義 Umbrella 雙軌拓撲、修訂計畫、調研 3 步 SOP、Roadmap 體系與 CLI 指令 |
 | **sub_04** | `sub_04_retro_workflow_and_token` | Full Track | `Completed` | **開發歷程自檢工作流與擴充 Token**：新增通用 `/Retro` 工作流資產、定義 `RETRO_CHECK_ITEMS` 擴充 Token 錨點、解耦核心通用紀律與模組注入項 |
+| **sub_05** | `sub_05_init_project_uri_guardrail` | Fast Track | `Completed` | **一鍵初始化 project:// 依賴驗證與防呆引導**：`WorkflowInitializer` 前置驗證 `project://` 定義狀態、警示與建議修復指令引導、清除隱式 `os.getcwd()` Fallback |
 
 ---
 
@@ -35,5 +36,8 @@
 - [x] **里程碑 2 (佔位符解析完全替代與工作流路徑治癒)**：推進 `sub_02`，修復 Stage 2 佔位符解析邏輯、全生態系工作流路徑治癒、協議前綴修正與自引用物化驗證。
 - [x] **里程碑 3 (計畫分流維度重構、工作類型拓撲擴充與策略資產規範)**：完成 `sub_03` 實作，重構 6 大計畫分支判斷矩陣、4 維度 Fast Track、Roadmap CLI 工具鏈與 `/Roadmap` 智能工作流。
 - [x] **里程碑 4 (開發歷程自檢工作流與擴充 Token)**：完成 `sub_04` 實作，新增 `/Retro` 工作流模板、宣告 `RETRO_CHECK_ITEMS` 擴充 Token 錨點、注入 `knowledge-db` (Search 效益) 與 `core` (CLI 守門)、完成 211/211 測試與實機自檢驗證。
+- [x] **里程碑 5 (一鍵初始化 project:// 依賴驗證與防呆引導)**：完成 `sub_05` 實作，實作 `WorkflowInitializer` 前置驗證、清除隱式 Fallback、新增測試案例並完成驗證。
+
+
 
 
