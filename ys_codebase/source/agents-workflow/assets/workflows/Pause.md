@@ -20,7 +20,7 @@
 ---
 
 ### 步驟 2：生成暫停交接快照 (`handoff.md`)
-- 依據標準模板 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，在該計畫目錄下建立 `handoff.md`：
+- 依據標準模板 [`__${module://agents-workflow/assets/templates/handoff.md}__`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，在該計畫目錄下建立 `handoff.md`：
 
 ```markdown
 # 📌 當前進度與暫停交接現場 (Handoff Context)

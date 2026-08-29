@@ -88,6 +88,24 @@ class SemanticBundler:
         self.parser_registry = parser_registry or ParserRegistry(register_defaults=True)
         self.scanner = scanner or FingerprintScanner(space_manager)
 
+    def _get_project_relpath(self, f_path: Path, fallback_base: Path) -> str:
+        """
+        將檔案路徑轉譯為標準相對於 project:// 根目錄之路徑。
+        若不在 project:// 目錄下或無法解析，則退回以 fallback_base 計算。
+        """
+        try:
+            from core import uri
+            p_res = uri.resolve("project://", interactive=False)
+            if p_res:
+                proj_root = Path(p_res).resolve()
+                return os.path.relpath(str(f_path.resolve()), str(proj_root)).replace("\\", "/")
+        except Exception:
+            pass
+        try:
+            return os.path.relpath(str(f_path), str(fallback_base)).replace("\\", "/")
+        except Exception:
+            return f_path.name
+
     def bundle_space(
         self,
         space_config: SpaceConfig,
@@ -107,7 +125,8 @@ class SemanticBundler:
                 if space_config.is_file_included(source_root.name) and not FingerprintScanner._is_excluded(
                     source_root.name, space_config.exclude
                 ):
-                    files_to_parse.append((source_root, source_root.name))
+                    relpath = self._get_project_relpath(source_root, source_root.parent)
+                    files_to_parse.append((source_root, relpath))
             else:
                 base_dir = source_root
                 for root_dir, dirs, files in os.walk(str(source_root)):
@@ -119,8 +138,9 @@ class SemanticBundler:
                     for f in files:
                         try:
                             f_path = Path(root_dir) / f
-                            relpath = os.path.relpath(str(f_path), str(base_dir)).replace("\\", "/")
-                            if not FingerprintScanner._is_excluded(relpath, space_config.exclude) and space_config.is_file_included(f):
+                            scan_rel = os.path.relpath(str(f_path), str(base_dir)).replace("\\", "/")
+                            if not FingerprintScanner._is_excluded(scan_rel, space_config.exclude) and space_config.is_file_included(f):
+                                relpath = self._get_project_relpath(f_path, base_dir)
                                 files_to_parse.append((f_path, relpath))
                         except Exception:
                             pass
@@ -182,8 +202,9 @@ class SemanticBundler:
                         source_root.name, sp.exclude
                     ):
                         c_key = str(source_root.resolve()).replace("\\", "/")
+                        relpath = self._get_project_relpath(source_root, source_root.parent)
                         if c_key not in unique_files:
-                            unique_files[c_key] = (source_root, source_root.name, {space_name})
+                            unique_files[c_key] = (source_root, relpath, {space_name})
                         else:
                             unique_files[c_key][2].add(space_name)
                 else:
@@ -196,9 +217,10 @@ class SemanticBundler:
                         for f in files:
                             try:
                                 f_path = Path(root_dir) / f
-                                relpath = os.path.relpath(str(f_path), str(base_dir)).replace("\\", "/")
-                                if not FingerprintScanner._is_excluded(relpath, sp.exclude) and sp.is_file_included(f):
+                                scan_rel = os.path.relpath(str(f_path), str(base_dir)).replace("\\", "/")
+                                if not FingerprintScanner._is_excluded(scan_rel, sp.exclude) and sp.is_file_included(f):
                                     c_key = str(f_path.resolve()).replace("\\", "/")
+                                    relpath = self._get_project_relpath(f_path, base_dir)
                                     if c_key not in unique_files:
                                         unique_files[c_key] = (f_path, relpath, {space_name})
                                     else:
