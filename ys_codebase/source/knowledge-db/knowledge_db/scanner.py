@@ -21,6 +21,23 @@ from .space import SpaceManager
 logger = logging.getLogger("knowledge-db.scanner")
 
 
+@dataclass
+class ScanDiffDetail:
+    """JIT 變更嗅探之差量明細"""
+
+    added: Set[str] = field(default_factory=set)  # canonical paths
+    modified: Set[str] = field(default_factory=set)  # canonical paths
+    deleted: Set[str] = field(default_factory=set)  # canonical paths
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.added or self.modified or self.deleted)
+
+    @property
+    def dirty_files(self) -> Set[str]:
+        return self.added | self.modified | self.deleted
+
+
 class BinarySnapshotManager:
     """
     原生二進位快照管理器 (Magic: YFP1)。
@@ -389,24 +406,88 @@ class FingerprintScanner:
             results[sp.name] = self.scan_space(sp, force=force)
         return results
 
+    def _scan_entries_fast(
+        self,
+        base_dir: Path,
+        current_dir: Path,
+        sp: SpaceConfig,
+        files_to_check: List[Tuple[Path, str, os.stat_result]],
+    ) -> None:
+        """使用 os.scandir 遞迴走訪目錄，直接自 DirEntry.stat() 提取資訊，減少系統呼叫。"""
+        try:
+            with os.scandir(str(current_dir)) as it:
+                for entry in it:
+                    try:
+                        entry_path = Path(entry.path)
+                        rel_path = os.path.relpath(str(entry_path), str(base_dir)).replace("\\", "/")
+                        if entry.is_dir(follow_symlinks=False):
+                            if self._is_excluded(rel_path + "/", sp.exclude):
+                                continue
+                            self._scan_entries_fast(base_dir, entry_path, sp, files_to_check)
+                        elif entry.is_file(follow_symlinks=False):
+                            if self._is_excluded(rel_path, sp.exclude):
+                                continue
+                            if not sp.is_file_included(entry.name):
+                                continue
+                            stat_res = entry.stat()
+                            files_to_check.append((entry_path, rel_path, stat_res))
+                    except (OSError, PermissionError) as e:
+                        logger.warning(f"Failed scanning entry '{entry.path}': {e}")
+        except (OSError, PermissionError) as e:
+            logger.warning(f"Failed opening directory '{current_dir}': {e}")
+
+    def _collect_full_files_map(
+        self, spaces: List[SpaceConfig]
+    ) -> Dict[str, Tuple[float, int]]:
+        """全量走訪並收集空間檔案之 (mtime, size) 清冊。"""
+        files_map: Dict[str, Tuple[float, int]] = {}
+        visited: Set[str] = set()
+        for sp in spaces:
+            for s_root in self.space_manager.resolve_space_include(sp.name):
+                if s_root.is_file():
+                    try:
+                        if not self._is_excluded(s_root.name, sp.exclude) and sp.is_file_included(s_root.name):
+                            c_key = str(s_root.resolve()).replace("\\", "/")
+                            if c_key not in visited:
+                                visited.add(c_key)
+                                st = s_root.stat()
+                                files_map[c_key] = (st.st_mtime, st.st_size)
+                    except (OSError, PermissionError):
+                        pass
+                else:
+                    files_to_check: List[Tuple[Path, str, os.stat_result]] = []
+                    self._scan_entries_fast(s_root, s_root, sp, files_to_check)
+                    for f_path, _, st in files_to_check:
+                        c_key = str(f_path.resolve()).replace("\\", "/")
+                        if c_key not in visited:
+                            visited.add(c_key)
+                            files_map[c_key] = (st.st_mtime, st.st_size)
+        return files_map
+
     def check_invalidation(
         self,
         spaces: Optional[List[SpaceConfig]] = None,
         snapshot_path: Optional[Union[str, Path]] = None,
-    ) -> Tuple[bool, int, str, Dict[str, Tuple[float, int]]]:
+    ) -> Tuple[bool, int, str, Dict[str, Tuple[float, int]], ScanDiffDetail]:
         """
         對全專案空間聯集 (Union Scope) 執行極速 JIT 變更嗅探 (基於 stat: mtime & size)。
+        保證 100% 完整走訪所有目標檔案，絕不提早中斷。
+
         :param spaces: 空間清單 (預設為 get_union_spaces())
         :param snapshot_path: 快照檔案路徑 (預設為 storage_dir/indices/unified.meta.bin)
-        :return: (is_dirty, scanned_file_count, reason, current_files_map)
+        :return: (is_dirty, scanned_file_count, reason, full_current_files_map, diff_detail)
         """
         target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
         if snapshot_path is None:
             snapshot_path = self.space_manager.storage_dir / "indices" / "unified.meta.bin"
 
         cached_map = BinarySnapshotManager.load(snapshot_path)
+        diff = ScanDiffDetail()
+
         if cached_map is None:
-            return True, 0, "Snapshot missing or corrupted", {}
+            current_files = self._collect_full_files_map(target_spaces)
+            diff.added = set(current_files.keys())
+            return True, len(current_files), "Snapshot missing or corrupted", current_files, diff
 
         current_files: Dict[str, Tuple[float, int]] = {}
         visited_keys: Set[str] = set()
@@ -417,57 +498,66 @@ class FingerprintScanner:
 
             for source_root in source_roots:
                 if source_root.is_file():
-                    files_to_check = [source_root]
-                    base_dir = source_root.parent
-                else:
-                    files_to_check = []
-                    base_dir = source_root
-                    for root_dir, dirs, files in os.walk(str(source_root)):
-                        rel_dir = os.path.relpath(root_dir, str(base_dir)).replace("\\", "/")
-                        if rel_dir != "." and self._is_excluded(rel_dir + "/", sp.exclude):
-                            dirs.clear()
-                            continue
-                        for file in files:
-                            files_to_check.append(Path(root_dir) / file)
-
-                for file_path in files_to_check:
                     try:
-                        relpath = os.path.relpath(str(file_path), str(base_dir)).replace("\\", "/")
-                    except ValueError:
-                        relpath = file_path.name
+                        if not self._is_excluded(source_root.name, sp.exclude) and sp.is_file_included(source_root.name):
+                            canonical_key = str(source_root.resolve()).replace("\\", "/")
+                            if canonical_key not in visited_keys:
+                                visited_keys.add(canonical_key)
+                                stat_res = source_root.stat()
+                                mtime = stat_res.st_mtime
+                                size = stat_res.st_size
+                                current_files[canonical_key] = (mtime, size)
 
-                    canonical_key = str(file_path.resolve()).replace("\\", "/")
-                    if canonical_key in visited_keys:
-                        continue
-
-                    if self._is_excluded(relpath, sp.exclude):
-                        continue
-
-                    if not sp.is_file_included(file_path.name):
-                        continue
-
-                    visited_keys.add(canonical_key)
-
-                    try:
-                        stat_res = file_path.stat()
+                                cached_entry = cached_map.get(canonical_key)
+                                if cached_entry is None:
+                                    diff.added.add(canonical_key)
+                                else:
+                                    cached_mtime, cached_size = cached_entry
+                                    if cached_mtime != mtime or cached_size != size:
+                                        diff.modified.add(canonical_key)
                     except (OSError, PermissionError) as e:
-                        logger.warning(f"Failed to stat file '{file_path}': {e}")
-                        continue
+                        logger.warning(f"Failed to stat file '{source_root}': {e}")
+                else:
+                    base_dir = source_root
+                    files_to_check: List[Tuple[Path, str, os.stat_result]] = []
+                    self._scan_entries_fast(base_dir, source_root, sp, files_to_check)
 
-                    mtime = stat_res.st_mtime
-                    size = stat_res.st_size
-                    current_files[canonical_key] = (mtime, size)
+                    for file_path, relpath, stat_res in files_to_check:
+                        canonical_key = str(file_path.resolve()).replace("\\", "/")
+                        if canonical_key in visited_keys:
+                            continue
+                        visited_keys.add(canonical_key)
 
-                    cached_entry = cached_map.get(canonical_key)
-                    if cached_entry is None:
-                        return True, len(current_files), f"New file detected: {file_path.name}", current_files
+                        mtime = stat_res.st_mtime
+                        size = stat_res.st_size
+                        current_files[canonical_key] = (mtime, size)
 
-                    cached_mtime, cached_size = cached_entry
-                    if cached_mtime != mtime or cached_size != size:
-                        return True, len(current_files), f"Modified file detected: {file_path.name}", current_files
+                        cached_entry = cached_map.get(canonical_key)
+                        if cached_entry is None:
+                            diff.added.add(canonical_key)
+                        else:
+                            cached_mtime, cached_size = cached_entry
+                            if cached_mtime != mtime or cached_size != size:
+                                diff.modified.add(canonical_key)
 
-        if len(current_files) != len(cached_map):
-            return True, len(current_files), "File count mismatch (deleted or added files)", current_files
+        # 檢測刪除檔案：在 cached_map 中但不在 current_files 中的檔案
+        for cached_key in cached_map.keys():
+            if cached_key not in current_files:
+                diff.deleted.add(cached_key)
 
-        return False, len(current_files), "Clean", current_files
+        is_dirty = diff.has_changes
+        if not is_dirty:
+            return False, len(current_files), "Clean", current_files, diff
+
+        reasons = []
+        if diff.added:
+            reasons.append(f"{len(diff.added)} added")
+        if diff.modified:
+            reasons.append(f"{len(diff.modified)} modified")
+        if diff.deleted:
+            reasons.append(f"{len(diff.deleted)} deleted")
+        reason_str = ", ".join(reasons)
+
+        return True, len(current_files), f"Detected changes: {reason_str}", current_files, diff
+
 

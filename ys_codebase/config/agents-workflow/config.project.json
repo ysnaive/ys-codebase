@@ -1,14 +1,12 @@
 {
   "paths": {
     "plans": "project://plans",
-    "docs": "project://docs",
     "archived": "project://plans/archived",
-    "roadmap": "project://docs/roadmap.md"
+    "docs": "!undefined"
   },
-  "ide": [],
-  "enable_agents_md": true,
-  "enable_project_changelog": true,
   "release_targets": [
     "antigravity"
-  ]
+  ],
+  "enable_agents_md": true,
+  "enable_project_changelog": true
 }

@@ -16,7 +16,7 @@ from .bundler import SemanticBundle, SemanticBundler
 from .exceptions import KnowledgeDBError, SpaceNotFoundError
 from .parsers.registry import ParserRegistry
 from .retrieval import BM25Engine, CodeSnippet, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
-from .scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffResult
+from .scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffDetail, ScanDiffResult
 from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
 from .space import SpaceManager
 from .thesaurus import ThesaurusEngine
@@ -259,13 +259,13 @@ class KnowledgeEngine:
         idx = InvertedIndex(space_name="unified")
         idx.build_unified(bundle.symbols, tokenizer=self.tokenizer)
 
-        # 原子持久化二進位 Gzip 索引
+        # 原子持久化二進位 Gzip 索引 (compresslevel=1 快速寫盤)
         try:
-            idx.save_binary(bin_file)
+            idx.save_binary(bin_file, compresslevel=1)
         except Exception as e:
             raise KnowledgeDBError(f"Failed saving unified binary index: {e}")
 
-        # 收集或使用現有檔案快照並持久化
+        # 收集或使用現有檔案快照並持久化 (保證 100% 完整清冊)
         files_map = current_files
         if files_map is None:
             files_map = bundle.metadata.get("files_map", {})
@@ -277,6 +277,46 @@ class KnowledgeEngine:
 
         self._unified_index = idx
         return idx
+
+    def _hot_patch_unified_index(
+        self,
+        diff_detail: ScanDiffDetail,
+        full_files_map: Dict[str, Tuple[float, int]],
+    ) -> bool:
+        """
+        執行極速增量熱自愈修補管線 (FR-03, FR-04, FR-05)：
+        1. 若記憶體 _unified_index 為空，回傳 False 降級為全量建置。
+        2. 僅對 dirty 檔案呼叫 AST 解析並更新符號快取池。
+        3. 調用 _unified_index.patch_incremental 進行倒排差量打補丁。
+        4. 快速原子持久化快照與二進位索引。
+        :return: 若修補成功回傳 True，否則 False
+        """
+        if self._unified_index is None:
+            return False
+
+        indices_dir = self._get_indices_dir()
+        bin_file = indices_dir / "unified.index.bin.gz"
+        meta_file = indices_dir / "unified.meta.bin"
+
+        try:
+            new_symbols_by_file, dirty_keys = self.bundler.bundle_dirty_files(diff_detail)
+            all_new_symbols: List[UnifiedSymbol] = []
+            for syms in new_symbols_by_file.values():
+                all_new_symbols.extend(syms)
+
+            self._unified_index.patch_incremental(
+                dirty_file_paths=dirty_keys,
+                new_symbols=all_new_symbols,
+                tokenizer=self.tokenizer,
+            )
+
+            # 快速原子持久化 (compresslevel=1)
+            self._unified_index.save_binary(bin_file, compresslevel=1)
+            BinarySnapshotManager.save(meta_file, full_files_map)
+            return True
+        except Exception as e:
+            logger.warning(f"Incremental hot patch failed: {e}, falling back to full rebuild.")
+            return False
 
     def build_index(
         self,
@@ -352,9 +392,16 @@ class KnowledgeEngine:
         bin_file = indices_dir / "unified.index.bin.gz"
         meta_file = indices_dir / "unified.meta.bin"
 
-        # 1. JIT 變更感知與自動熱自愈 (FR-03, FR-04)
+        # 預先載入快取以利增量修補
+        if self._unified_index is None and bin_file.exists() and meta_file.exists():
+            try:
+                self._unified_index = InvertedIndex.load_binary(bin_file)
+            except Exception:
+                pass
+
+        # 1. JIT 變更感知與自動增量熱自愈 (FR-01, FR-03, FR-04, FR-05)
         if auto_rebuild:
-            is_dirty, scanned_count, reason, current_files = self.scanner.check_invalidation(
+            is_dirty, scanned_count, reason, full_files_map, diff_detail = self.scanner.check_invalidation(
                 snapshot_path=meta_file
             )
             if not bin_file.exists():
@@ -369,7 +416,13 @@ class KnowledgeEngine:
                         flush=True,
                     )
                 t0 = time.time()
-                self.build_unified_index(force=True, current_files=current_files)
+                patched = False
+                if bin_file.exists() and self._unified_index is not None and diff_detail.has_changes:
+                    patched = self._hot_patch_unified_index(diff_detail, full_files_map)
+
+                if not patched:
+                    self.build_unified_index(force=True, current_files=full_files_map)
+
                 elapsed_ms = max(1, int((time.time() - t0) * 1000))
                 if verbose:
                     print(
@@ -378,7 +431,7 @@ class KnowledgeEngine:
                         flush=True,
                     )
 
-        # 2. 載入全域倒排索引
+        # 2. 載入全域倒排索引 (若仍為 None 則建置)
         if self._unified_index is None:
             if bin_file.exists():
                 try:

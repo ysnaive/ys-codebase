@@ -404,14 +404,80 @@ class InvertedIndex:
 
         return idx
 
-    def save_binary(self, path: Union[str, Path]) -> None:
-        """使用 Pickle (Protocol 5) + Gzip (Level 6) 原子持久化二進位快取"""
+    def patch_incremental(
+        self,
+        dirty_file_paths: Set[str],
+        new_symbols: List[UnifiedSymbol],
+        tokenizer: Optional[CodeTokenizer] = None,
+    ) -> None:
+        """
+        差量修補倒排索引 (Incremental Hot Patching)：
+        1. 識別並刪除屬於 dirty_file_paths 的舊符號與 Postings，扣減長度指標。
+        2. 將 new_symbols 注入符號池與倒排表。
+        3. 動態重新計算 field_avgdl。
+        """
+        tok = tokenizer or CodeTokenizer()
+        dirty_paths_norm = {p.replace("\\", "/") for p in dirty_file_paths}
+
+        # 1. 識別需移除的舊 doc_id
+        doc_ids_to_remove: List[str] = []
+        for doc_id, sym in list(self.symbols.items()):
+            sym_path_norm = sym.file_path.replace("\\", "/")
+            if any(
+                sym_path_norm == p or p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p)
+                for p in dirty_paths_norm
+            ):
+                doc_ids_to_remove.append(doc_id)
+
+        doc_ids_set = set(doc_ids_to_remove)
+
+        # 2. 扣減長度與自符號池移除
+        for doc_id in doc_ids_to_remove:
+            sym = self.symbols.pop(doc_id, None)
+            if sym:
+                self.doc_count = max(0, self.doc_count - 1)
+                members_text = " ".join([f"{m.name} {m.signature} {m.docstring}" for m in sym.members])
+                field_texts = {
+                    "name": sym.name,
+                    "signature": sym.signature,
+                    "members": members_text,
+                    "docstring": sym.docstring,
+                }
+                for f_name, text in field_texts.items():
+                    tokens = tok.tokenize(text)
+                    self.field_total_lengths[f_name] = max(
+                        0, self.field_total_lengths[f_name] - len(tokens)
+                    )
+
+        # 3. 自倒排表移除舊 Postings
+        if doc_ids_set:
+            for term in list(self.index.keys()):
+                new_postings = [p for p in self.index[term] if p.doc_id not in doc_ids_set]
+                if new_postings:
+                    self.index[term] = new_postings
+                else:
+                    del self.index[term]
+
+        # 4. 加入新符號
+        for sym in new_symbols:
+            self.add_symbol(sym, tok, spaces=sym.spaces)
+
+        # 5. 重新計算 avgdl
+        if self.doc_count > 0:
+            for f in self.INDEXED_FIELDS:
+                self.field_avgdl[f] = max(1.0, self.field_total_lengths[f] / self.doc_count)
+        else:
+            for f in self.INDEXED_FIELDS:
+                self.field_avgdl[f] = 1.0
+
+    def save_binary(self, path: Union[str, Path], compresslevel: int = 1) -> None:
+        """使用 Pickle (Protocol 5) + Gzip 原子持久化二進位快取，預設 compresslevel=1 快速壓縮"""
         out_path = Path(path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         data = self.to_dict()
         pkl_bytes = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
-        compressed_bytes = gzip.compress(pkl_bytes, compresslevel=6)
+        compressed_bytes = gzip.compress(pkl_bytes, compresslevel=compresslevel)
 
         tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
         with open(tmp_path, "wb") as f:

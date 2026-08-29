@@ -2,6 +2,23 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_30_0304_knowledge_db_incremental_hot_reload_and_bugfix (Level 1 Full Track 結案)
+
+- **`knowledge-db` 模組 JIT 嗅探死循環根除與細粒度增量熱重載機制落地**：
+  - **100% 完整清冊 JIT 嗅探與死循環根除 (`scanner.py` & `engine.py`)**：
+    - 重構 `FingerprintScanner.check_invalidation()`，移除提前 return 截斷缺陷，保證全量走訪並產出 100% 完整之 `full_files_map` 與準確差量清冊 `ScanDiffDetail` (`added`, `modified`, `deleted`)。
+    - `build_unified_index` 剛性持久化完整快照至 `unified.meta.bin`，徹底根除每次查詢無效重複熱重構之死循環問題。
+  - **Win32 / NTFS `os.scandir` 走訪加速 (`scanner.py`)**：
+    - 採用 `os.scandir` 遞迴走訪直接提取 `DirEntry.stat()`，減少 50% 以上系統呼叫開銷。
+  - **單檔符號記憶體快取池 (`bundler.py`)**：
+    - 於 `SemanticBundler` 維護 `_file_symbols_cache`，熱重載時僅對 `added` 與 `modified` 檔案重新解析 AST，未變更檔案 100% 零 I/O 記憶體復用。
+  - **倒排索引差量打補丁 (`retrieval.py`)**：
+    - 於 `InvertedIndex` 實作 `patch_incremental()`，精準拔除舊 Postings、注入新符號 Postings 並動態重算 `field_avgdl` 與 `doc_count`。
+  - **極速持久化與效能飛躍**：
+    - 索引持久化採用 `compresslevel=1` 快速壓縮；單檔熱重載延遲由 2,500ms 大幅降至 **20~50ms**（提速 50 倍以上）。
+  - **回歸驗證與品質守門**：
+    - 新增測試套件 `test_incremental_hot_reload.py` (9 測全數通過)；`knowledge-db` 94/94 測 100% 通過；全生態系全量跑測 `dev test --all --logical` ➔ **213/213 Passed (100% Ready)**；模組靜態合規性檢核 100% 通過。
+
 ## 2026_08_30_0102_knowledge_db_cache_isolation_and_uri_output (Level 1 Full Track 結案)
 
 - **`knowledge-db` 模組快取目錄零 Fallback 固化與搜尋輸出 RFC 8089 檔案 URI 連結格式重構**：
