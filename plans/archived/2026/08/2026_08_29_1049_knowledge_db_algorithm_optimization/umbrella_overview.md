@@ -2,7 +2,7 @@
 
 > 計畫名稱：`knowledge_db_algorithm_optimization`  
 > 建立日期：2026-08-29  
-> 狀態：In Progress  
+> 狀態：Completed  
 > 模板版本：v1.1  
 
 ---
@@ -24,6 +24,7 @@
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_jit_invalidation_and_hot_healing` | Full Track | `Completed` | **JIT 查詢智能變更感知與索引熱自愈**：在檢索入口實作輕量 mtime 變更嗅探，支援檔案異動時無感增量熱自愈並回傳最新搜尋結果，索引維持 `cache://` 儲存 |
 | **sub_02** | `sub_02_agents_workflow_injection_optimization` | Full Track | `Completed` | **Agents-Workflow 注入內容與引導優化**：建立剛性檢索決策樹（簽章/複合詞/語意分流）、確立定位至定向閱讀非暴力廣蒐哲學，並更新 Phase 0 / Research / Phase 7 JIT 引導資產 |
+| **sub_03** | `sub_03_parser_and_search_optimization` | Full Track | `Completed` | **解析器 & 搜索機制優化**：針對各語言解析器符號提取邊界（Python 方法物化、C++ 多行簽名狀態機與作用域）、`--ftype` 來源過濾、同檔案評分動態聚合與樹狀 ASCII 代碼切片輸出進行深度強化 |
 
 ---
 
@@ -31,5 +32,6 @@
 
 - [x] **里程碑 1 (JIT 變更感知與索引熱自愈)**：完成 `sub_01` 實作與驗證，徹底根絕跨開發者異地同步過期問題與 Git 二進位衝突。
 - [x] **里程碑 2 (Agents-Workflow 注入內容優化)**：完成 `sub_02` 注入資產修訂與 `agents-workflow` 渲染同步。
+- [x] **里程碑 3 (解析器深度優化與同檔案動態聚合檢索)**：完成 `sub_03` 實作與全量驗收，達成類別方法獨立物化、C++ 跨行狀態機與 Namespace 堆疊、`--ftype` 來源過濾與樹狀 ASCII 動態聚合輸出。
 
 

@@ -118,6 +118,7 @@ def main(argv: List[str]) -> int:
             space_filter = None
             kind_filter = None
             lang_filter = None
+            ftype_filter = None
             limit = 10
             is_detail = False
             is_snippet = False
@@ -131,6 +132,8 @@ def main(argv: List[str]) -> int:
                     kind_filter = [a.split("=", 1)[1]]
                 elif a.startswith("--lang="):
                     lang_filter = [a.split("=", 1)[1]]
+                elif a.startswith("--ftype="):
+                    ftype_filter = a.split("=", 1)[1]
                 elif a.startswith("--limit="):
                     try:
                         limit = int(a.split("=", 1)[1])
@@ -148,6 +151,7 @@ def main(argv: List[str]) -> int:
                 space=space_filter,
                 kinds=kind_filter,
                 languages=lang_filter,
+                ftypes=ftype_filter,
                 limit=limit,
                 snippet=is_snippet,
                 auto_rebuild=not no_auto,
@@ -155,25 +159,14 @@ def main(argv: List[str]) -> int:
 
             if is_json:
                 data = [
-                    {
-                        "rank": rank,
-                        "score": round(res.score, 4),
-                        "space": res.space,
-                        "symbol": {
-                            "name": res.symbol.name,
-                            "kind": res.symbol.kind,
-                            "language": res.symbol.language,
-                            "file_path": engine.normalize_workspace_path(res.symbol.file_path),
-                            "line_number": res.symbol.line_number,
-                            "signature": res.symbol.signature,
-                            "docstring": res.symbol.docstring,
-                        },
-                        "snippet": res.snippet,
-                        "code_snippet": res.code_snippet.to_dict() if res.code_snippet else None,
-                        "matched_terms": res.matched_terms,
-                    }
-                    for rank, res in enumerate(results, start=1)
+                    res.to_dict() if hasattr(res, "to_dict") else res
+                    for res in results
                 ]
+                # 正規化路徑
+                if isinstance(data, list):
+                    for entry in data:
+                        if isinstance(entry, dict) and "file_path" in entry:
+                            entry["file_path"] = engine.normalize_workspace_path(entry["file_path"])
                 print(json.dumps({"query": query_str, "total": len(results), "results": data}, indent=2, ensure_ascii=False))
                 return 0
 
@@ -181,48 +174,70 @@ def main(argv: List[str]) -> int:
                 print(f"[knowledge-db] 檢索查詢: '{query_str}' (未找到符合的結果)")
                 return 0
 
+            # 樹狀階層預覽輸出 (FR-06)
             if is_snippet:
-                print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 筆結果，預覽模式):")
+                print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 個檔案節點，預覽模式):")
                 print("=" * 85)
                 for rank, res in enumerate(results, start=1):
-                    sym = res.symbol
-                    norm_path = engine.normalize_workspace_path(sym.file_path)
-                    print(f"#{rank:02d} [{res.score:05.2f}] {sym.kind.upper()}: {sym.name} ({sym.language})")
-                    print(f"     檔案: {norm_path}:{sym.line_number}")
-                    if sym.signature:
-                        print(f"     簽名: {sym.signature}")
-                    if res.code_snippet and res.code_snippet.docstring_summary:
-                        print(f"     摘要: {res.code_snippet.docstring_summary}")
-                    elif res.snippet:
-                        print(f"     摘要: {res.snippet}")
-                    if res.code_snippet and res.code_snippet.lines:
-                        print(f"     代碼片段 (Lines {res.code_snippet.start_line}~{res.code_snippet.end_line}):")
-                        print(res.code_snippet.format_text(prefix="       "))
+                    norm_path = engine.normalize_workspace_path(res.file_path)
+                    print(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {norm_path} ({len(res.items)} 個命中項目, {res.language})")
+                    for itm_idx, itm in enumerate(res.items, start=1):
+                        is_last = (itm_idx == len(res.items))
+                        branch = "└──" if is_last else "├──"
+                        pipe = "   " if is_last else "│  "
+                        sym = itm.symbol
+                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        print(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {sym.kind.upper()}: {sym.name} ({line_range})")
+                        if sym.signature:
+                            print(f"  {pipe}   簽名: {sym.signature}")
+                        if itm.code_snippet and itm.code_snippet.docstring_summary:
+                            print(f"  {pipe}   摘要: {itm.code_snippet.docstring_summary}")
+                        elif itm.snippet:
+                            print(f"  {pipe}   摘要: {itm.snippet}")
+                        if itm.code_snippet and itm.code_snippet.lines:
+                            print(f"  {pipe}   代碼切片 ({line_range}):")
+                            print(itm.code_snippet.format_text(prefix=f"  {pipe}     "))
                     print("-" * 85)
                 return 0
 
             if is_detail:
-                print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 筆結果):")
+                print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 個檔案節點，詳細模式):")
                 print("=" * 85)
                 for rank, res in enumerate(results, start=1):
-                    sym = res.symbol
-                    norm_path = engine.normalize_workspace_path(sym.file_path)
-                    print(f"#{rank:02d} [{res.score:05.2f}] {sym.kind.upper()}: {sym.name} ({sym.language})")
-                    print(f"     檔案: {norm_path}:{sym.line_number}")
-                    if sym.signature:
-                        print(f"     簽名: {sym.signature}")
-                    if res.snippet:
-                        print(f"     說明: {res.snippet}")
-                    print(f"     命中詞: {', '.join(res.matched_terms)}")
+                    norm_path = engine.normalize_workspace_path(res.file_path)
+                    print(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {norm_path} ({len(res.items)} 個命中項目, {res.language})")
+                    for itm_idx, itm in enumerate(res.items, start=1):
+                        is_last = (itm_idx == len(res.items))
+                        branch = "└──" if is_last else "├──"
+                        pipe = "   " if is_last else "│  "
+                        sym = itm.symbol
+                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        print(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {sym.kind.upper()}: {sym.name} ({line_range})")
+                        if sym.signature:
+                            print(f"  {pipe}   簽名: {sym.signature}")
+                        if itm.snippet:
+                            print(f"  {pipe}   說明: {itm.snippet}")
+                        if itm.matched_terms:
+                            print(f"  {pipe}   命中詞: {', '.join(itm.matched_terms)}")
                     print("-" * 85)
                 return 0
 
-            # 簡易模式 (預設極簡單行排版)
-            print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 筆結果):")
+            # 簡易模式 (預設極簡樹狀排版)
+            print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 個檔案節點):")
             for rank, res in enumerate(results, start=1):
-                sym = res.symbol
-                norm_path = engine.normalize_workspace_path(sym.file_path)
-                print(f"#{rank:02d} {norm_path}:{sym.line_number}")
+                norm_path = engine.normalize_workspace_path(res.file_path)
+                if len(res.items) == 1:
+                    sym = res.items[0].symbol
+                    line_str = f"{sym.line_number}-{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"{sym.line_number}"
+                    print(f"#{rank:02d} {norm_path}:{line_str} ({sym.kind}:{sym.name}) [{res.total_score:05.2f}]")
+                else:
+                    print(f"#{rank:02d} {norm_path} (總分: {res.total_score:05.2f}, {len(res.items)} 項命中):")
+                    for itm_idx, itm in enumerate(res.items, start=1):
+                        is_last = (itm_idx == len(res.items))
+                        branch = "└──" if is_last else "├──"
+                        sym = itm.symbol
+                        line_str = f"{sym.line_number}-{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"{sym.line_number}"
+                        print(f"  {branch} #{rank:02d}.{itm_idx} line {line_str} ({sym.kind}:{sym.name}) [{itm.score:05.2f}]")
             return 0
 
         elif subcmd == "clean":

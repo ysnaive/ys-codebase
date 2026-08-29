@@ -45,7 +45,7 @@ class MarkdownParser(BaseParser):
         table_lines: List[str] = []
         table_start_lineno = 0
 
-        def _flush_heading():
+        def _flush_heading(current_end_lineno: Optional[int] = None):
             nonlocal current_heading_node, body_lines
             if current_heading_node is not None:
                 doc = "\n".join(body_lines).strip()
@@ -53,12 +53,15 @@ class MarkdownParser(BaseParser):
                 if len(doc) > 4000:
                     doc = doc[:4000] + "... (truncated)"
 
+                start_ln = current_heading_node["lineno"]
+                end_ln = current_end_lineno if current_end_lineno is not None else (start_ln + max(0, len(body_lines)))
+
                 sym_id = UnifiedSymbol.compute_id(
                     space=space,
                     file_path=normalized_path,
                     name=current_heading_node["name"],
                     kind=current_heading_node["kind"],
-                    line_number=current_heading_node["lineno"],
+                    line_number=start_ln,
                 )
                 symbols.append(
                     UnifiedSymbol(
@@ -66,12 +69,13 @@ class MarkdownParser(BaseParser):
                         name=current_heading_node["name"],
                         kind=current_heading_node["kind"],
                         file_path=normalized_path,
-                        line_number=current_heading_node["lineno"],
+                        line_number=start_ln,
+                        end_line=end_ln,
                         language=LanguageType.MARKDOWN.value,
                         docstring=doc,
                         signature=f"{'#' * current_heading_node['level']} {current_heading_node['name']}",
                         members=[],
-                        metadata={"level": current_heading_node["level"]},
+                        metadata={"level": current_heading_node["level"], "end_line": end_ln},
                     )
                 )
                 current_heading_node = None
@@ -84,6 +88,7 @@ class MarkdownParser(BaseParser):
                 header_row = table_lines[0].strip("|").strip()
                 t_name = f"Table: {header_row[:60]}"
                 t_doc = "\n".join(table_lines)
+                end_ln = table_start_lineno + len(table_lines) - 1
                 sym_id = UnifiedSymbol.compute_id(
                     space=space,
                     file_path=normalized_path,
@@ -98,11 +103,12 @@ class MarkdownParser(BaseParser):
                         kind=SymbolKind.DOC_TABLE.value,
                         file_path=normalized_path,
                         line_number=table_start_lineno,
+                        end_line=end_ln,
                         language=LanguageType.MARKDOWN.value,
                         docstring=t_doc,
                         signature="markdown_table",
                         members=[],
-                        metadata={"row_count": len(table_lines)},
+                        metadata={"row_count": len(table_lines), "end_line": end_ln},
                     )
                 )
             in_table = False
@@ -113,7 +119,7 @@ class MarkdownParser(BaseParser):
             heading_match = HEADING_PATTERN.match(line)
             if heading_match:
                 _flush_table()
-                _flush_heading()
+                _flush_heading(current_end_lineno=i - 1 if i > 1 else 1)
 
                 level = len(heading_match.group(1))
                 h_name = heading_match.group(2).strip()
@@ -151,13 +157,14 @@ class MarkdownParser(BaseParser):
 
         # 迴圈結束收尾
         _flush_table()
-        _flush_heading()
+        _flush_heading(current_end_lineno=len(lines))
 
         # 2. 若完全無 Heading 標題 (EC-03: 降級為 DOC_SECTION)
         if not symbols and lines:
             non_empty_lines = [l for l in lines if l.strip()]
             sec_name = non_empty_lines[0][:60] if non_empty_lines else os.path.basename(normalized_path)
             full_doc = "\n".join(lines[:200]).strip()
+            total_ln = len(lines)
             sym_id = UnifiedSymbol.compute_id(
                 space=space,
                 file_path=normalized_path,
@@ -172,11 +179,12 @@ class MarkdownParser(BaseParser):
                     kind=SymbolKind.DOC_SECTION.value,
                     file_path=normalized_path,
                     line_number=1,
+                    end_line=total_ln,
                     language=LanguageType.MARKDOWN.value,
                     docstring=full_doc,
                     signature="markdown_section",
                     members=[],
-                    metadata={"fallback": True},
+                    metadata={"fallback": True, "end_line": total_ln},
                 )
             )
 

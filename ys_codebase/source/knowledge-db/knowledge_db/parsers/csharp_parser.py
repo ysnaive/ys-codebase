@@ -19,7 +19,7 @@ TYPE_PATTERN = re.compile(
 )
 METHOD_PATTERN = re.compile(
     r"^\s*(?:(?:public|protected|private|internal|static|async|virtual|override|abstract|sealed)\s+)+"
-    r"([\w_<>\[\],?]+)\s+([A-Za-z_]\w*)(?:<[^>]+>)?\s*\(([^)]*)\)\s*(?:where\s+.*)?(?:\s*\{|;|\s*=>)"
+    r"([\w_<>\[\],?]+)\s+([A-Za-z_]\w*)(?:<[^>]+>)?\s*\(([^)]*)\)\s*(?:where\s+.*)?(?:\s*\{|;|\s*=>|\s*$)"
 )
 PROPERTY_PATTERN = re.compile(
     r"^\s*(?:(?:public|protected|private|internal|static|virtual|override)\s+)+"
@@ -103,11 +103,12 @@ class CSharpParser(BaseParser):
                         kind=kind,
                         file_path=normalized_path,
                         line_number=i,
+                        end_line=i,
                         language=LanguageType.CSHARP.value,
                         docstring=doc,
                         signature=sig,
                         members=[],
-                        metadata={"namespace": current_namespace, "bases": bases.strip() if bases else ""},
+                        metadata={"namespace": current_namespace, "bases": bases.strip() if bases else "", "end_line": i},
                     )
                 )
                 continue
@@ -138,10 +139,12 @@ class CSharpParser(BaseParser):
                             kind=SymbolKind.METHOD.value,
                             file_path=normalized_path,
                             line_number=i,
+                            end_line=i,
                             language=LanguageType.CSHARP.value,
                             docstring=doc,
                             signature=sig,
                             members=[],
+                            metadata={"namespace": current_namespace, "end_line": i},
                         )
                     )
                     continue
@@ -169,16 +172,43 @@ class CSharpParser(BaseParser):
                         kind=SymbolKind.VARIABLE.value,
                         file_path=normalized_path,
                         line_number=i,
+                        end_line=i,
                         language=LanguageType.CSHARP.value,
                         docstring=doc,
                         signature=sig,
                         members=[],
-                        metadata={"is_property": True},
+                        metadata={"is_property": True, "namespace": current_namespace, "end_line": i},
                     )
                 )
                 continue
 
             if not stripped.startswith("//") and not stripped.startswith("/*"):
                 xml_comments = []
+
+        # 完善各符號之 end_line 近似估算 (FR-01, Type 1)
+        total_lines = len(lines)
+        if symbols:
+            symbols.sort(key=lambda s: s.line_number)
+            for idx in range(len(symbols)):
+                curr = symbols[idx]
+                if idx + 1 < len(symbols):
+                    next_start = symbols[idx + 1].line_number
+                    calc_end = max(curr.line_number, next_start - 1)
+                else:
+                    calc_end = total_lines
+                # 重新建立 UnifiedSymbol 填入精確計算後的 end_line
+                symbols[idx] = UnifiedSymbol(
+                    id=curr.id,
+                    name=curr.name,
+                    kind=curr.kind,
+                    file_path=curr.file_path,
+                    line_number=curr.line_number,
+                    end_line=calc_end,
+                    language=curr.language,
+                    docstring=curr.docstring,
+                    signature=curr.signature,
+                    members=curr.members,
+                    metadata={**curr.metadata, "end_line": calc_end},
+                )
 
         return symbols
