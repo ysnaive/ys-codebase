@@ -56,12 +56,22 @@
 
 ---
 
-## 3. 雙階 Diff 檢測與原子發布交易語意 (2-Stage Diff & Atomic Release)
+## 3. 雙軌 Manifest 與原子發布交易語意 (Dual-Track Manifest & Atomic Release)
 
-為防止無效 File I/O 頻繁衝擊磁碟與中途崩潰導致孤立檔案污染，發布引擎採用基於 `storage://agents-workflow/release_manifest.json` 的雙階 Diff 與 4 步交易保證：
+為防止無效 File I/O 頻繁衝擊磁碟、中途崩潰導致孤立檔案污染，以及跨機器協作時絕對路徑污染 Git 版本庫，發布引擎採用分流雙軌 Manifest 與 4 步原子交易保證：
 
-0. **階段 0 (來源端綜合指紋短路 - Stage 0)**：在編譯前計算來源資產（`assets/`）、`manifest.json`、專案組態與 Target 規則之綜合 SHA-256 指紋。若 `force=False` 且指紋相符且已發布檔案皆完好存在，**立即提前返回 (0 I/O，耗時 ~1ms)**。
-1. **步驟 1 (過往發布狀態清理)**：讀取持久紀錄，若存在過往發布清單，比對本次即將發布清單，精確刪除已停用 Target 或已刪除資產之實體檔案。
-2. **步驟 2 (提前解算新清單)**：對所有已啟用的 Release Targets 提前完整解算所有目標檔案的「絕對路徑 ➔ 最終渲染字串」映射。若解算過程發生嚴重錯誤，立即中止交易，絕不污染專案檔案系統。
-3. **步驟 3 (更新持久清單與指紋)**：原子寫入本次最新發布清單與新來源指紋至 `storage://agents-workflow/release_manifest.json`。
-4. **步驟 4 (物理落地與增量軟合併)**：比對各目標檔案現存磁碟內容，僅在內容相異或 `force=True` 時執行實體磁碟寫入；若 `enable_agents_md: true`，對根目錄 `AGENTS.md` 執行無損軟合併（注入前後無變化則跳過寫入）。
+### 🏛️ 雙軌空間與路徑分流架構
+1. **Project 軌 (Tier 2，團隊共享 Targets)**：
+   - **儲存空間**：`storage://agents-workflow/release_manifest.json`（受 Git 追蹤）。
+   - **路徑格式**：100% 使用 `project://` 語意協議路徑（例如 `project://.agents/workflows/Auto.md`），徹底消除本機絕對路徑外溢與 Git dirty diff。
+2. **Local 軌 (Tier 1，個人私有 Targets)**：
+   - **儲存空間**：`cache://agents-workflow/release_manifest.json`（受 Git 忽略）。
+   - **路徑格式**：使用本機實體絕對路徑。
+
+### 🔄 4 步原子發布交易流水線
+0. **階段 0 (來源端雙軌指紋短路 - Stage 0)**：計算來源資產（`assets/`）、`manifest.json`、專案組態與 Target 規則之綜合 SHA-256 指紋。若 `force=False` 且雙軌指紋相符且各軌檔案皆完好存在，**立即提前返回 (0 I/O，耗時 ~1ms)**。
+1. **步驟 1 (過往發布狀態獨立清理 - Pruning)**：分別讀取 Project 與 Local 歷史紀錄，比對全量物化檔案集合，精確刪除已停用 Target 或已刪除資產之實體檔案。
+2. **步驟 2 (提前解算新清單與分流集合)**：對所有已啟用的 Release Targets 提前完整解算目標檔案映射，並標註 Project 軌與 Local 軌歸屬清冊。
+3. **步驟 3 (原子寫入雙軌 Manifest)**：分別將 Project 軌 (`project://` 格式) 寫入 `storage://`，將 Local 軌 (絕對路徑格式) 寫入 `cache://`。
+4. **步驟 4 (物理落地與增量軟合併)**：比對磁碟現有內容執行增量寫入；所有檔案寫入顯式傳入 `newline="\n"`，與根目錄 `.gitattributes` 配合確保全專案純 LF 換行；若 `enable_agents_md: true`，對根目錄 `AGENTS.md` 執行無損軟合併。
+
