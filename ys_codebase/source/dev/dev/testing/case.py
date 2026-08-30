@@ -80,7 +80,12 @@ class YSCBTestCase(unittest.TestCase):
         else:
             self._is_isolated_sandbox = False
             if YSCBTestCase._shared_sandbox_ctx is None:
-                YSCBTestCase._shared_sandbox_ctx = SandboxProvisioner.create_sandbox()
+                if os.environ.get("YSCB_TEST_SANDBOX") == "1":
+                    curr_cwd = os.getcwd()
+                    sb_dir = os.path.dirname(curr_cwd) if os.path.basename(curr_cwd) == "host_env" else curr_cwd
+                    YSCBTestCase._shared_sandbox_ctx = SandboxContext(sb_dir)
+                else:
+                    YSCBTestCase._shared_sandbox_ctx = SandboxProvisioner.create_sandbox()
             self.ctx = YSCBTestCase._shared_sandbox_ctx
 
         self.sandbox_dir = self.ctx.sandbox_dir

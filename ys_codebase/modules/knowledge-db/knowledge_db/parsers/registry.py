@@ -10,6 +10,9 @@ from ..schema import UnifiedSymbol
 from .base import BaseParser
 from .cpp_parser import CppParser
 from .csharp_parser import CSharpParser
+from .css_parser import CssParser
+from .html_parser import HtmlParser
+from .js_ts_parser import JsTsParser
 from .markdown_parser import MarkdownParser
 from .python_parser import PythonParser
 from .spice_parser import SpiceParser
@@ -28,6 +31,9 @@ class ParserRegistry:
             self.register_parser(CppParser(), priority=100)
             self.register_parser(CSharpParser(), priority=100)
             self.register_parser(SpiceParser(), priority=100)
+            self.register_parser(JsTsParser(), priority=100)
+            self.register_parser(HtmlParser(), priority=100)
+            self.register_parser(CssParser(), priority=100)
 
     def register_parser(self, parser: BaseParser, priority: int = 100) -> None:
         """

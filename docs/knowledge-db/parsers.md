@@ -16,7 +16,7 @@
 
 ---
 
-## 🧩 2. 內建四大語言解析器
+## 🧩 2. 內建核心語言解析器
 
 | 解析器名稱 | 支援副檔名 | 核心解析技術 | 提取語意維度 |
 | :--- | :--- | :--- | :--- |
@@ -24,6 +24,9 @@
 | **`MarkdownParser`** | `.md`, `.markdown` | 語意狀態機 (純正則) | H1~H4 標題節點 (`DOC_HEADING_1~4`), 表格 (`DOC_TABLE`), 區塊摘要 (`DOC_SECTION`) |
 | **`CppParser`** | `.cpp`, `.hpp`, `.h`, `.c`, `.cc`, `.cxx` | 語意狀態機 + 巨集掃描器 | Class, Struct, Enum, Function, `#define` 巨集, Doxygen 註解 (`///`, `/** */`) |
 | **`CSharpParser`** | `.cs` | 語意狀態機 + XML Doc 提取器 | Namespace, Class, Interface, Struct, Method, Property, XML `<summary>` 註解 |
+| **`JsTsParser`** | `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.mts`, `.cts` | 語意狀態機 + JSDoc 提取器 | Class, Interface, Type Alias, Enum, Function, Arrow Function, Class Method, JSDoc 註解 |
+| **`HtmlParser`** | `.html`, `.htm` | 語意標籤正則狀態機 | `<title>`, `<h1>`~`<h6>`, `#id` 選擇器, HTML5 語意標籤 (`<main>`, `<section>` 等), HTML 註解 |
+| **`CssParser`** | `.css`, `.scss`, `.less` | 選擇器與變數正則狀態機 | Class 選擇器 (`.class`), ID 選擇器 (`#id`), CSS 變數 (`--var`), SASS (`$var`), LESS (`@var`), `@keyframes` |
 
 ---
 

@@ -298,9 +298,12 @@ class SemanticBundler:
         target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
         dirty_keys = dirty_diff.dirty_files
 
-        # 1. 自快取中清除 deleted 與 modified 舊符號
+        # 1. 自快取中清除 deleted 與 modified 舊符號 (大小寫不敏感匹配)
         for d_key in dirty_diff.deleted | dirty_diff.modified:
-            self._file_symbols_cache.pop(d_key, None)
+            d_key_norm = d_key.replace("\\", "/").lower()
+            keys_to_pop = [k for k in self._file_symbols_cache.keys() if k.replace("\\", "/").lower() == d_key_norm]
+            for k in keys_to_pop:
+                self._file_symbols_cache.pop(k, None)
 
         if not (dirty_diff.added or dirty_diff.modified):
             return {}, dirty_keys

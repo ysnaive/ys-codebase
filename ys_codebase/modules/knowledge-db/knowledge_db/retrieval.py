@@ -417,14 +417,18 @@ class InvertedIndex:
         3. 動態重新計算 field_avgdl。
         """
         tok = tokenizer or CodeTokenizer()
-        dirty_paths_norm = {p.replace("\\", "/") for p in dirty_file_paths}
+        dirty_paths_norm = {p.replace("\\", "/").lower() for p in dirty_file_paths}
 
         # 1. 識別需移除的舊 doc_id
         doc_ids_to_remove: List[str] = []
         for doc_id, sym in list(self.symbols.items()):
-            sym_path_norm = sym.file_path.replace("\\", "/")
+            sym_path_norm = sym.file_path.replace("\\", "/").lower()
+            sym_filename = Path(sym_path_norm).name
             if any(
-                sym_path_norm == p or p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p)
+                sym_path_norm == p
+                or p.endswith("/" + sym_path_norm)
+                or sym_path_norm.endswith("/" + p)
+                or Path(p).name == sym_filename
                 for p in dirty_paths_norm
             ):
                 doc_ids_to_remove.append(doc_id)

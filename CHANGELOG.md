@@ -2,6 +2,26 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_30_1618_knowledge_db_web_parsers (Level 1 Full Track 結案)
+
+- **`knowledge-db` 模組 Web 技術棧 (JS/TS/HTML/CSS) 語言解譯器與語意檢索整合落地**：
+  - **JavaScript / TypeScript 解譯器 (`JsTsParser`)**：
+    - 支援 `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.mts`, `.cts` 副檔名。
+    - 實作狀態機與正則引擎，精準提取 `class` (類別)、`interface` (介面)、`type` (型別別名)、`enum` (列舉)、頂層 `function`、`const` 箭頭函式、類別內部 `method` 與多行 JSDoc 註解。
+    - 內建樣板字串 (`` `...` ``) 與 TSX / TS 泛型 `<T>` 標籤歧義防禦。
+  - **HTML 網頁解譯器 (`HtmlParser`)**：
+    - 支援 `.html`, `.htm` 副檔名。
+    - 提取 `<title>` (標題)、`<h1>`~`<h6>` (階層標題，具缺損閉合容錯能力)、ID 選擇器元素 (`#id`)、HTML5 語意標籤 (`<main>`, `<section>`, `<article>`, `<dialog>` 等) 與 HTML 註解。
+  - **CSS / SCSS / LESS 樣式解譯器 (`CssParser`)**：
+    - 支援 `.css`, `.scss`, `.less` 副檔名。
+    - 提取 Class 選擇器 (`.className`)、ID 選擇器 (`#idName`)、CSS 原生變數 (`--var`)、SASS 變數 (`$var`)、LESS 變數 (`@var`) 與 `@keyframes` 動畫幀容器。
+  - **解析器註冊分發與架構優化**：
+    - 於 `schema.py` 擴充 `LanguageType` (`JAVASCRIPT`, `TYPESCRIPT`, `HTML`, `CSS`) 與 `SymbolKind.TYPE_ALIAS`。
+    - 於 `ParserRegistry` 完成 Web 解析器自動分流註冊。
+    - 最佳化 `YSCBTestCase` 沙盒環境復用與 Windows 跨平台大小寫不敏感檔名比對，徹底杜絕 Windows 260 字元路徑溢位。
+  - **品質驗證與合規性檢核**：
+    - 新增測試套件 `test_web_parsers.py` (9 測全數通過)；`knowledge-db` 單元測試全數通過 (**103/103 Passed, 100% Ready**)；模組靜態合規性檢核 100% 通過。
+
 ## 2026_08_30_0304_knowledge_db_incremental_hot_reload_and_bugfix (Level 1 Full Track 結案)
 
 - **`knowledge-db` 模組 JIT 嗅探死循環根除與細粒度增量熱重載機制落地**：
