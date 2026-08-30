@@ -351,7 +351,7 @@ class SandboxProvisioner:
                             spec.loader.exec_module(mod)
                             fn = getattr(mod, hook_name, None)
                             if callable(fn):
-                                with uri.host_scope(ctx.host_dir):
+                                with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
                                     fn(ctx)
                     except Exception as e:
                         print(f"[dev:sandbox] Warning: Hook '{mod_name}:scripts/hook.dev.py:{hook_name}' failed: {e}", file=sys.stderr)

@@ -2,6 +2,22 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_30_1928_core_topology_injection_and_zero_fallback (Level 1 Full Track 結案)
+
+- **`core` 核心空間拓撲雙軌注入 (`yscb_root`)、全庫 Fallback 機制剛性收斂與沙盒生命週期雙重隔離**：
+  - **`core.uri` 對稱注入體系 (`uri.py`)**：
+    - 補齊與 `host_dir` 嚴格對稱之核心拓撲注入介面：`set_yscb_root(path)`、`get_yscb_root()`、`yscb_scope(path)` 與 `YSCB_ROOT_DIR` 環境變數。
+    - `_get_yscb_root()` 剛性遵循三階梯優先順序：記憶體注入 (`_active_yscb_dir`) $\rightarrow$ 環境變數 (`YSCB_ROOT_DIR`) $\rightarrow$ 常數基準 (`__file__` 向上 3 層)，杜絕路徑漂移。
+  - **`core.config` 徹底清除遞迴 Fallback 盲點 (`config.py`)**：
+    - 徹底移除 `ConfigManager._get_yscb_root` 中的 `while` 遞迴搜尋與 `os.getcwd()` fallback，100% 委任 `uri._get_yscb_root()`。
+  - **`dev` 測試沙盒生命週期鉤子雙軌隔離 (`sandbox.py`)**：
+    - 於 `SandboxProvisioner._dispatch_test_hooks` 同時包覆 `host_scope(ctx.host_dir)` 與 `yscb_scope(ctx.engine_dir)`，確保模組測試鉤子 100% 運行於沙盒專屬空間，徹底杜絕跨進程並發建沙盒時對宿主專案檔案的搶寫與穿透。
+  - **`agents-workflow` 路徑收斂 (`searcher.py`)**：
+    - 收斂 `PlanSearcher` 預設歸檔目錄為標準 `plans/archived`，消除全庫命名分歧。
+  - **品質驗證與全生態系全類別全綠燈**：
+    - 新增 `test_yscb_root_injection_and_scope` 單元測試案例。
+    - 全生態系 4 大模組全類別 (`LOGIC` + `ENV` + `WORKFLOW` + `PERF`) 回歸測試 **252/252 Passed (100% Ready, 0 Failed, 0 Skipped)**。
+
 ## 2026_08_30_1807_fix_sandbox_path_and_benchmark (Level 0 Fast Track 結案)
 
 - **`dev` 模組跨平台沙盒路徑自省、上游活躍沙盒守門防護與 `knowledge-db` 並發壓測容錯優化**：

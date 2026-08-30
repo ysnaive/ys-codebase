@@ -26,10 +26,17 @@
     "**/build/**": true,
     "**/.mirror/**": true,
     "**/.snapshots/**": true,
-    "**/release/**": true
+    "**/release/**": true,
+    "plans/archived/**": true,
+    "ys_codebase/storage/**": true
   },
   "git.autorefresh": true,
   "git.autoRepositoryDetection": true,
   "git.decorations.enabled": true,
-  "git.experimental.useFsWatcher": true
+  "git.experimental.useFsWatcher": false,
+  "workbench.editorAssociations": {
+    "*.md": "vscode.markdown.preview.editor"
+  },
+  "markdown.preview.openMarkdownLinks": "inPreview",
+  "markdown.preview.doubleClickToSwitchToEditor": true
 }
