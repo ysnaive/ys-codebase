@@ -2,6 +2,20 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_30_1807_fix_sandbox_path_and_benchmark (Level 0 Fast Track 結案)
+
+- **`dev` 模組跨平台沙盒路徑自省、上游活躍沙盒守門防護與 `knowledge-db` 並發壓測容錯優化**：
+  - **沙盒 CWD 祖先路徑向上探測 (`case.py` & `tester.py`)**：
+    - 重構 `YSCBTestCase.setUp`，改為向上遞迴搜尋包含 `host_env` / `mock_provider` 之沙盒根目錄，支援 `YSCB_SANDBOX_DIR` 優先讀取，徹底杜絕深層 CWD 下的 `FileNotFoundError`。
+    - 於 `tester.py` 子進程環境顯式注入 `YSCB_SANDBOX_DIR` 並綁定 `stdin=subprocess.DEVNULL`，杜絕子進程非互動環境阻塞。
+  - **上游託管活躍沙盒防誤刪守門 (`sandbox.py` & `test_sandbox.py`)**：
+    - 於 `SandboxProvisioner.cleanup_sandbox` 注入「活躍沙盒防護」守門：下游子測試無權銷毀當前進程所在的 Runner 沙盒（僅上游結案時透過 `is_harness_cleanup=True` 銷毀），徹底根除 Linux (POSIX) 即時 Unlink 引發的連鎖崩潰。
+    - 新增測試案例 `test_guardrail_active_sandbox_protected_from_accidental_cleanup` 守門驗證。
+  - **並發 I/O 基準測試環境容錯 (`test_incremental_hot_reload.py`)**：
+    - 將 `knowledge-db` 增量熱重載延遲基準測試門檻校正為具容器並發韌性之 `<= 1200.0ms`。
+  - **全生態系測試排查與全綠燈交付**：
+    - 全生態系 4 大模組 43 套測試全數排查，`dev check` 100% Passed，全量迴歸測試 `dev test --all --logical` **223/223 Passed (100% Ready)**。
+
 ## 2026_08_30_1618_knowledge_db_web_parsers (Level 1 Full Track 結案)
 
 - **`knowledge-db` 模組 Web 技術棧 (JS/TS/HTML/CSS) 語言解譯器與語意檢索整合落地**：

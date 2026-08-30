@@ -141,7 +141,8 @@ class SandboxProvisioner:
     @staticmethod
     def cleanup_all_sandboxes(
         sandbox_parent_dir: Optional[str] = None,
-        exclude: Optional[List[str]] = None
+        exclude: Optional[List[str]] = None,
+        is_harness_cleanup: bool = True
     ) -> int:
         """
         Removes all sandbox_* directories under cache://dev/sandbox/.
@@ -149,6 +150,7 @@ class SandboxProvisioner:
         Args:
             sandbox_parent_dir: Optional parent directory to clean. Defaults to cache://dev/sandbox/.
             exclude: Optional list of directory names or paths to exclude from deletion.
+            is_harness_cleanup: Whether cleanup is initiated by test harness runner.
 
         Returns:
             int: Number of deleted sandboxes.
@@ -175,7 +177,7 @@ class SandboxProvisioner:
             deleted_count = 0
             for item in entries:
                 full_p = os.path.join(sandbox_parent, item)
-                if SandboxProvisioner.cleanup_sandbox(full_p, force=True):
+                if SandboxProvisioner.cleanup_sandbox(full_p, force=True, is_harness_cleanup=is_harness_cleanup):
                     deleted_count += 1
             return deleted_count
         except Exception as e:
@@ -300,10 +302,21 @@ class SandboxProvisioner:
         return ctx
 
     @staticmethod
-    def cleanup_sandbox(sandbox_dir: str, force: bool = False) -> bool:
-        """Tears down the virtual sandbox safely."""
+    def cleanup_sandbox(sandbox_dir: str, force: bool = False, is_harness_cleanup: bool = False) -> bool:
+        """Tears down the virtual sandbox safely with active running sandbox guardrail."""
         if not os.path.exists(sandbox_dir):
             return True
+
+        # Guardrail: protect active harness sandbox from accidental child test case deletion
+        if not is_harness_cleanup and os.environ.get("YSCB_TEST_SANDBOX") == "1":
+            target_abs = os.path.abspath(sandbox_dir)
+            active_sb = os.environ.get("YSCB_SANDBOX_DIR")
+            if active_sb and os.path.abspath(active_sb) == target_abs:
+                return True
+            curr_cwd = os.path.abspath(os.getcwd())
+            if curr_cwd == target_abs or curr_cwd.startswith(target_abs + os.sep):
+                return True
+
         try:
             ctx = SandboxContext(sandbox_dir)
             SandboxProvisioner._dispatch_test_hooks(ctx, "on_test_teardown")
@@ -338,6 +351,7 @@ class SandboxProvisioner:
                             spec.loader.exec_module(mod)
                             fn = getattr(mod, hook_name, None)
                             if callable(fn):
-                                fn(ctx)
+                                with uri.host_scope(ctx.host_dir):
+                                    fn(ctx)
                     except Exception as e:
                         print(f"[dev:sandbox] Warning: Hook '{mod_name}:scripts/hook.dev.py:{hook_name}' failed: {e}", file=sys.stderr)

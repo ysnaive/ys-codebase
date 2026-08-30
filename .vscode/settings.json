@@ -28,5 +28,8 @@
     "**/.snapshots/**": true,
     "**/release/**": true
   },
-  "git.autorefresh": true
+  "git.autorefresh": true,
+  "git.autoRepositoryDetection": true,
+  "git.decorations.enabled": true,
+  "git.experimental.useFsWatcher": true
 }
