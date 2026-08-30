@@ -35,12 +35,8 @@ class ConfigManager:
                 return uri._get_yscb_root()
             except Exception:
                 pass
-        cur = os.path.abspath(os.path.dirname(__file__))
-        while cur and cur != os.path.dirname(cur):
-            if os.path.isfile(os.path.join(cur, "yscb.py")) or os.path.basename(cur) == "ys_codebase":
-                return cur
-            cur = os.path.dirname(cur)
-        return os.getcwd()
+        curr = os.path.dirname(os.path.abspath(__file__))
+        return os.path.normpath(os.path.dirname(os.path.dirname(os.path.dirname(curr))))
 
     @classmethod
     def get_config_path(cls, module: str, local: bool = False) -> str:

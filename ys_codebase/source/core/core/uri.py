@@ -20,6 +20,7 @@ from core.context import ExecutionContext
 CONFIG_FILENAME = "yscb.config.json"
 _active_module_context: Optional[str] = None
 _active_host_dir: Optional[str] = None
+_active_yscb_dir: Optional[str] = None
 _reconciling_tokens: Set[str] = set()
 
 # Bootstrap fallback schemes (Option B: Canonical Rooted Schemes)
@@ -127,12 +128,45 @@ def host_scope(host_dir: Optional[str]) -> Generator[None, None, None]:
         set_host_dir(old)
 
 
+def set_yscb_root(yscb_dir: Optional[str]) -> None:
+    """Explicitly inject YSCB toolchain root directory."""
+    global _active_yscb_dir
+    _active_yscb_dir = os.path.normpath(os.path.abspath(yscb_dir)) if yscb_dir else None
+
+
+def get_yscb_root() -> Optional[str]:
+    """Get active YSCB toolchain root directory from memory context or YSCB_ROOT_DIR environment variable."""
+    if _active_yscb_dir:
+        return _active_yscb_dir
+    env_dir = os.environ.get("YSCB_ROOT_DIR")
+    if env_dir and os.path.isdir(env_dir):
+        return os.path.normpath(os.path.abspath(env_dir))
+    return None
+
+
+@contextmanager
+def yscb_scope(yscb_dir: Optional[str]) -> Generator[None, None, None]:
+    """
+    工具庫核心目錄安全作用域 (Context Manager)：
+    退出區塊時以 finally 100% 保證還原舊全域 _active_yscb_dir。
+    """
+    old = get_yscb_root()
+    set_yscb_root(yscb_dir)
+    try:
+        yield
+    finally:
+        set_yscb_root(old)
+
+
 def _get_yscb_root() -> str:
     """
-    Constant self-locating: computes yscb_root from __file__ location (up 3 levels).
-    Runtime: <yscb_root>/modules/core/core/uri.py -> <yscb_root>
-    Source:  <yscb_root>/source/core/core/uri.py  -> <yscb_root>
+    三階梯物理拓撲不變性自省：
+    1. 優先返回顯式注入之 yscb_root (記憶體或環境變數)。
+    2. 常數自省：以 __file__ 物理路徑向上推算 3 層。
     """
+    injected = get_yscb_root()
+    if injected and os.path.isdir(injected):
+        return injected
     curr = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.dirname(os.path.dirname(os.path.dirname(curr))))
 
@@ -638,13 +672,28 @@ def listdir(uri: str) -> List[str]:
     p = resolve(uri, interactive=False)
     return os.listdir(p)
 
+def _safe_copytree(src: str, dst: str) -> None:
+    os.makedirs(dst, exist_ok=True)
+    seen_lower = set()
+    for item in sorted(os.listdir(src)):
+        if item.lower() in seen_lower:
+            continue
+        seen_lower.add(item.lower())
+        s = os.path.join(src, item)
+        d = os.path.join(dst, item)
+        if os.path.isdir(s):
+            _safe_copytree(s, d)
+        else:
+            shutil.copy2(s, d)
+
+
 def copy(src_uri: str, dst_uri: str) -> None:
     src_p = resolve(src_uri, interactive=False)
     dst_p = resolve(dst_uri, interactive=False)
     if os.path.isdir(src_p):
         if os.path.exists(dst_p):
-            shutil.rmtree(dst_p)
-        shutil.copytree(src_p, dst_p)
+            shutil.rmtree(dst_p, ignore_errors=True)
+        _safe_copytree(src_p, dst_p)
     else:
         os.makedirs(os.path.dirname(dst_p), exist_ok=True)
         shutil.copy2(src_p, dst_p)
@@ -658,4 +707,4 @@ def move(src_uri: str, dst_uri: str) -> None:
 def rmtree(uri: str) -> None:
     p = resolve(uri, interactive=False)
     if os.path.exists(p):
-        shutil.rmtree(p)
+        shutil.rmtree(p, ignore_errors=True)
