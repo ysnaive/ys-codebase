@@ -43,7 +43,7 @@ class PlanSearcher:
             self.archive_dir = Path(archive_dir).resolve()
         else:
             res_arch = _resolve_uri_path("workflow.archived://")
-            self.archive_dir = res_arch if res_arch else Path.cwd() / "archive_plans"
+            self.archive_dir = res_arch if res_arch else Path.cwd() / "plans" / "archived"
 
     def find_all_plans(self, year: Optional[str] = None, month: Optional[str] = None) -> List[Path]:
         """

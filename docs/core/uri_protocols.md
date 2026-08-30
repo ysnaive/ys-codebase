@@ -74,8 +74,17 @@ graph TD
 
 ---
 
-## 5. `yscb://` 常數確定性自定位與 Host Context 注入
+## 5. `yscb://` 雙軌對稱注入體系與常數自定位
 
-- `yscb://` 基於 `core.uri` 模組檔案位置確定性常數計算，零猜測。
-- 宿主 `yscb.py` 透過 `os.environ["YSCB_HOST_DIR"]` 與 `uri.set_host_dir()` 傳遞宿主根目錄。
+- **常數基準自省**：預設依據 `core.uri` 物理路徑向上 3 層確定性解算，零 `os.getcwd()` 猜測。
+- **宿主目錄注入 (`host_dir`)**：
+  - 記憶體注入：`uri.set_host_dir(path)` 與 `uri.host_scope(path)` Context Manager。
+  - 環境變數：`YSCB_HOST_DIR`。
+- **核心工具庫注入 (`yscb_root`)**：
+  - 記憶體注入：`uri.set_yscb_root(path)` 與 `uri.yscb_scope(path)` Context Manager。
+  - 環境變數：`YSCB_ROOT_DIR`。
+- **三階自省優先順序**：
+  $$\text{記憶體注入 } (\texttt{\_active\_yscb\_dir}) \;\longrightarrow\; \text{環境變數 } (\texttt{YSCB\_ROOT\_DIR}) \;\longrightarrow\; \text{常數基準 } (\texttt{\_\_file\_\_})$$
+- **沙盒鉤子隔離保證**：測試 Runner 在調度 `scripts/hook.dev.py` 時，強制包覆 `with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):`，確保所有 VFS 與 `core.config` 操作 100% 沙盒化。
+
 

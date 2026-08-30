@@ -197,3 +197,56 @@ class TestCoreURI(YSCBTestCase):
             else:
                 os.environ.pop("YSCB_TEST_SANDBOX", None)
         self.mark_passed()
+
+    def test_yscb_root_injection_and_scope(self):
+        """FT-01, FT-02, FT-03: Verify set_yscb_root, get_yscb_root, yscb_scope, and env override."""
+        dummy_dir = os.path.join(self.sandbox_dir, "custom_yscb_root")
+        os.makedirs(dummy_dir, exist_ok=True)
+
+        # 1. Test set_yscb_root / get_yscb_root
+        orig_yscb = uri.get_yscb_root()
+        try:
+            uri.set_yscb_root(dummy_dir)
+            self.assertEqual(uri.get_yscb_root(), dummy_dir)
+            self.assertEqual(uri._get_yscb_root(), dummy_dir)
+
+            # 2. Test yscb_scope nesting & restoration
+            nested_dir = os.path.join(self.sandbox_dir, "nested_yscb_root")
+            os.makedirs(nested_dir, exist_ok=True)
+            with uri.yscb_scope(nested_dir):
+                self.assertEqual(uri.get_yscb_root(), nested_dir)
+                self.assertEqual(uri._get_yscb_root(), nested_dir)
+
+            # Restored to dummy_dir
+            self.assertEqual(uri.get_yscb_root(), dummy_dir)
+
+            # 3. Test exception in yscb_scope ensures finally restoration
+            try:
+                with uri.yscb_scope(nested_dir):
+                    self.assertEqual(uri.get_yscb_root(), nested_dir)
+                    raise RuntimeError("Intentional error inside scope")
+            except RuntimeError:
+                pass
+            self.assertEqual(uri.get_yscb_root(), dummy_dir)
+        finally:
+            uri.set_yscb_root(orig_yscb)
+
+        # 4. Test YSCB_ROOT_DIR environment variable
+        orig_env = os.environ.get("YSCB_ROOT_DIR")
+        try:
+            os.environ["YSCB_ROOT_DIR"] = dummy_dir
+            # When memory injection is None, env takes precedence over __file__
+            with uri.yscb_scope(None):
+                self.assertEqual(uri.get_yscb_root(), dummy_dir)
+                self.assertEqual(uri._get_yscb_root(), dummy_dir)
+        finally:
+            if orig_env is not None:
+                os.environ["YSCB_ROOT_DIR"] = orig_env
+            else:
+                os.environ.pop("YSCB_ROOT_DIR", None)
+
+        # 5. Verify ConfigManager._get_yscb_root delegation
+        from core.config import ConfigManager
+        self.assertTrue(isinstance(ConfigManager._get_yscb_root(), str))
+        self.mark_passed()
+
