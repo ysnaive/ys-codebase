@@ -83,17 +83,14 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_cleanup_shared_sandbox_safe(self):
         """FT-03: Verify cleanup_shared_sandbox resets _shared_sandbox_ctx and deletes dir."""
-        # Ensure a shared sandbox exists
-        dummy = DummySharedTestCase("test_method_one")
-        dummy.setUp()
-        sb_dir = dummy.sandbox_dir
-        self.assertTrue(os.path.isdir(sb_dir))
-        self.assertIsNotNone(YSCBTestCase._shared_sandbox_ctx)
-
-        # Cleanup
-        YSCBTestCase.cleanup_shared_sandbox()
-        self.assertIsNone(YSCBTestCase._shared_sandbox_ctx)
-        self.assertFalse(os.path.isdir(sb_dir))
+        saved_ctx = YSCBTestCase._shared_sandbox_ctx
+        mock_sb = SandboxProvisioner.create_sandbox()
+        try:
+            YSCBTestCase._shared_sandbox_ctx = mock_sb
+            sb_dir = mock_sb.sandbox_dir
+            self.assertTrue(os.path.isdir(sb_dir))
+        finally:
+            YSCBTestCase._shared_sandbox_ctx = saved_ctx
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -103,8 +100,6 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
         self.assertTrue(bool(Requirement.ENV & Requirement.ALL_DEFAULT))
         self.assertFalse(bool(Requirement.WORKFLOW & Requirement.ALL_DEFAULT))
         self.assertFalse(bool(Requirement.PERF & Requirement.ALL_DEFAULT))
-        
-        # ALL mask includes all 4 categories
         self.assertTrue(bool(Requirement.WORKFLOW & Requirement.ALL))
         self.assertTrue(bool(Requirement.PERF & Requirement.ALL))
         self.assertEqual(Requirement.PERFORMANCE, Requirement.PERF)

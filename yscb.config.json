@@ -8,8 +8,8 @@
       "provider": "./ys_codebase/release"
     },
     "dev": {
-      "version": "1.0.1.6",
-      "installed_at": "2026-08-30 16:29:21",
+      "version": "1.0.1.7",
+      "installed_at": "2026-08-30 18:27:13",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
@@ -18,8 +18,8 @@
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.0.1.16",
-      "installed_at": "2026-08-30 16:29:18",
+      "version": "1.0.1.17",
+      "installed_at": "2026-08-30 18:26:50",
       "provider": "./ys_codebase/release"
     }
   }

@@ -43,8 +43,9 @@ class YSCBTestCase(unittest.TestCase):
     def cleanup_shared_sandbox(cls) -> None:
         """Session-level teardown: cleanup shared sandbox when test suite finishes."""
         if YSCBTestCase._shared_sandbox_ctx is not None:
+            is_harness_managed = os.environ.get("YSCB_TEST_SANDBOX") == "1"
             keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
-            if not keep_all:
+            if not keep_all and not is_harness_managed:
                 SandboxProvisioner.cleanup_sandbox(YSCBTestCase._shared_sandbox_ctx.sandbox_dir, force=True)
             YSCBTestCase._shared_sandbox_ctx = None
 
@@ -83,6 +84,17 @@ class YSCBTestCase(unittest.TestCase):
                 if os.environ.get("YSCB_TEST_SANDBOX") == "1":
                     curr_cwd = os.getcwd()
                     sb_dir = os.path.dirname(curr_cwd) if os.path.basename(curr_cwd) == "host_env" else curr_cwd
+                    env_sb = os.environ.get("YSCB_SANDBOX_DIR")
+                    if env_sb and os.path.isdir(env_sb):
+                        sb_dir = os.path.abspath(env_sb)
+                    else:
+                        curr = os.path.abspath(os.getcwd())
+                        sb_dir = curr
+                        while curr and curr != os.path.dirname(curr):
+                            if (os.path.basename(curr).startswith("sandbox_") and os.path.isdir(os.path.join(curr, "host_env"))) or (os.path.isdir(os.path.join(curr, "host_env")) and os.path.isdir(os.path.join(curr, "mock_provider"))):
+                                sb_dir = curr
+                                break
+                            curr = os.path.dirname(curr)
                     YSCBTestCase._shared_sandbox_ctx = SandboxContext(sb_dir)
                 else:
                     YSCBTestCase._shared_sandbox_ctx = SandboxProvisioner.create_sandbox()
