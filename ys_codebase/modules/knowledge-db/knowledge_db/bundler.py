@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from .exceptions import KnowledgeDBError, SchemaValidationError
 from .parsers.registry import ParserRegistry
 from .scanner import FingerprintScanner, ScanDiffDetail
-from .schema import SpaceConfig, ThesaurusGroup, UnifiedSymbol
+from .schema import SpaceConfig, SymbolCallSite, ThesaurusGroup, UnifiedSymbol
 from .space import SpaceManager
 
 logger = logging.getLogger("knowledge-db.bundler")
@@ -426,3 +426,83 @@ class SemanticBundler:
             return SemanticBundle.from_dict(data)
         except Exception as e:
             raise KnowledgeDBError(f"Failed to import bundle from {p}: {e}")
+
+    def extract_all_call_sites_and_imports(
+        self,
+        spaces: Optional[List[SpaceConfig]] = None,
+    ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
+        """
+        掃描全專案空間聯集，提取所有檔案的 SymbolCallSite 清單與檔頭 Import 映射表。
+        """
+        target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
+        unique_files = self._collect_space_files(target_spaces)
+
+        all_call_sites: List[SymbolCallSite] = []
+        all_imports: Dict[str, Dict[str, str]] = {}
+
+        for c_key, (f_path, relpath, sp_set) in unique_files.items():
+            primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
+            try:
+                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                sites = self.parser_registry.extract_call_sites(
+                    file_path=relpath, content=content, space=primary_space
+                )
+                imps = self.parser_registry.extract_imports(
+                    file_path=relpath, content=content
+                )
+                all_call_sites.extend(sites)
+                if imps:
+                    all_imports[relpath] = imps
+            except Exception as e:
+                logger.debug(f"Error extracting call sites/imports from '{f_path}': {e}")
+
+        return all_call_sites, all_imports
+
+    def extract_dirty_call_sites_and_imports(
+        self,
+        dirty_diff: ScanDiffDetail,
+        spaces: Optional[List[SpaceConfig]] = None,
+    ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
+        """
+        僅針對 dirty_diff 中 added 與 modified 檔案提取調用點與 Import 映射。
+        """
+        target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
+        unique_files = self._collect_space_files(target_spaces)
+        dirty_keys_norm = {k.replace("\\", "/").lower() for k in dirty_diff.dirty_files}
+
+        dirty_call_sites: List[SymbolCallSite] = []
+        dirty_imports: Dict[str, Dict[str, str]] = {}
+
+        for c_key, (f_path, relpath, sp_set) in unique_files.items():
+            c_key_norm = c_key.replace("\\", "/").lower()
+            relpath_norm = relpath.replace("\\", "/").lower()
+
+            is_dirty = any(
+                c_key_norm == dk
+                or c_key_norm.endswith("/" + dk)
+                or relpath_norm == dk
+                or relpath_norm.endswith("/" + dk)
+                for dk in dirty_keys_norm
+            )
+            if not is_dirty:
+                continue
+
+            primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
+            try:
+                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                sites = self.parser_registry.extract_call_sites(
+                    file_path=relpath, content=content, space=primary_space
+                )
+                imps = self.parser_registry.extract_imports(
+                    file_path=relpath, content=content
+                )
+                dirty_call_sites.extend(sites)
+                if imps:
+                    dirty_imports[relpath] = imps
+            except Exception as e:
+                logger.debug(f"Error extracting dirty call sites/imports from '{f_path}': {e}")
+
+        return dirty_call_sites, dirty_imports
+

@@ -6,9 +6,9 @@ import logging
 import os
 from pathlib import Path
 import re
-from typing import List, Optional, Set, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
-from ..schema import LanguageType, MemberInfo, SymbolKind, UnifiedSymbol
+from ..schema import LanguageType, MemberInfo, SymbolCallSite, SymbolKind, UnifiedSymbol
 from .base import BaseParser
 
 logger = logging.getLogger("knowledge-db.parsers.csharp")
@@ -212,3 +212,113 @@ class CSharpParser(BaseParser):
                 )
 
         return symbols
+
+    def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
+        """提取 C# 檔頭 using 命名空間與別名映射表"""
+        imports: Dict[str, str] = {}
+        for line in content.splitlines():
+            stripped = line.strip()
+            # 1. using Alias = Target;
+            alias_m = re.match(r"^\s*using\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*;", stripped)
+            if alias_m:
+                imports[alias_m.group(1)] = alias_m.group(2)
+                continue
+
+            # 2. using static System.Math;
+            static_m = re.match(r"^\s*using\s+static\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*;", stripped)
+            if static_m:
+                target = static_m.group(1)
+                short_name = target.split(".")[-1]
+                imports[short_name] = target
+                continue
+
+            # 3. using System.Collections.Generic;
+            using_m = re.match(r"^\s*using\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*;", stripped)
+            if using_m:
+                ns = using_m.group(1)
+                short_ns = ns.split(".")[-1]
+                imports[short_ns] = ns
+                imports[ns] = ns
+
+        return imports
+
+    def extract_call_sites(self, file_path: str, content: str, space: str) -> List[SymbolCallSite]:
+        """提取 C# 原始碼中的方法調用點"""
+        normalized_path = file_path.replace("\\", "/")
+        lines = content.splitlines()
+        call_sites: List[SymbolCallSite] = []
+
+        class_stack: List[Tuple[str, int]] = []
+        method_stack: List[Tuple[str, int]] = []
+        current_brace_depth = 0
+
+        cs_call_re = re.compile(r'(?:(?:\b([A-Za-z_]\w*)\s*\.)|\b)\b([A-Za-z_]\w+)\s*\(')
+        keywords = {
+            "if", "for", "foreach", "while", "switch", "catch", "return", "typeof",
+            "sizeof", "nameof", "lock", "using", "new", "is", "as", "where", "await",
+            "class", "interface", "struct", "enum", "public", "private", "protected",
+            "internal", "static", "virtual", "override", "async", "get", "set", "throw"
+        }
+
+        for i, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+                continue
+
+            open_b = line.count("{")
+            close_b = line.count("}")
+
+            # 類別進入
+            cls_m = TYPE_PATTERN.match(stripped)
+            if cls_m and not stripped.endswith(";"):
+                c_name = cls_m.group(2)
+                class_stack.append((c_name, current_brace_depth + (1 if open_b > 0 else 0)))
+
+            # 方法進入
+            m_m = METHOD_PATTERN.match(stripped)
+            if m_m and ("{" in stripped or "=>" in stripped):
+                m_name = m_m.group(2)
+                method_stack.append((m_name, current_brace_depth + 1))
+
+            curr_class = class_stack[-1][0] if class_stack else ""
+            curr_method = method_stack[-1][0] if method_stack else ""
+            if curr_class and curr_method:
+                curr_caller = f"{curr_class}.{curr_method}"
+            elif curr_class:
+                curr_caller = curr_class
+            elif curr_method:
+                curr_caller = curr_method
+            else:
+                curr_caller = "<module>"
+
+            # 提取調用點
+            if not cls_m and not (m_m and stripped.endswith("{")):
+                for match in cs_call_re.finditer(line):
+                    prefix = match.group(1) or ""
+                    callee = match.group(2)
+
+                    if callee in keywords or prefix in keywords:
+                        continue
+
+                    norm_prefix = "self" if prefix == "this" else prefix
+
+                    call_sites.append(
+                        SymbolCallSite(
+                            callee_name=callee,
+                            line_number=i,
+                            caller_member_name=curr_caller,
+                            context_prefix=norm_prefix,
+                            file_path=normalized_path,
+                            space=space,
+                        )
+                    )
+
+            current_brace_depth += (open_b - close_b)
+
+            while class_stack and current_brace_depth < class_stack[-1][1]:
+                class_stack.pop()
+            while method_stack and current_brace_depth < method_stack[-1][1]:
+                method_stack.pop()
+
+        return call_sites
+

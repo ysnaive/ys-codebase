@@ -6,9 +6,9 @@ import logging
 import os
 from pathlib import Path
 import re
-from typing import List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
-from ..schema import LanguageType, MemberInfo, SymbolKind, UnifiedSymbol
+from ..schema import LanguageType, MemberInfo, SymbolCallSite, SymbolKind, UnifiedSymbol
 from .base import BaseParser
 
 logger = logging.getLogger("knowledge-db.parsers.cpp")
@@ -382,3 +382,118 @@ class CppParser(BaseParser):
                 pending_comments = []
 
         return symbols
+
+    def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
+        """提取 C/C++ 檔頭 #include 與 using 映射表"""
+        imports: Dict[str, str] = {}
+        for line in content.splitlines():
+            stripped = line.strip()
+            # 1. #include <foo.h> 或 #include "bar.hpp"
+            inc_m = re.match(r'^\s*#\s*include\s+[<"]([^>"]+)[>"]', stripped)
+            if inc_m:
+                header = inc_m.group(1)
+                stem = Path(header).stem
+                imports[stem] = header
+                imports[header] = header
+                continue
+
+            # 2. using namespace Foo::Bar;
+            ns_m = re.match(r'^\s*using\s+namespace\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*;', stripped)
+            if ns_m:
+                ns = ns_m.group(1)
+                short_ns = ns.split("::")[-1]
+                imports[short_ns] = ns
+                continue
+
+            # 3. using Alias = Target;
+            alias_m = re.match(r'^\s*using\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*;', stripped)
+            if alias_m:
+                imports[alias_m.group(1)] = alias_m.group(2)
+
+        return imports
+
+    def extract_call_sites(self, file_path: str, content: str, space: str) -> List[SymbolCallSite]:
+        """提取 C/C++ 原始碼中的函式/方法調用點"""
+        normalized_path = file_path.replace("\\", "/")
+        lines = content.splitlines()
+        call_sites: List[SymbolCallSite] = []
+
+        # 作用域追蹤堆疊: (name, enter_depth)
+        class_stack: List[Tuple[str, int]] = []
+        func_stack: List[Tuple[str, int]] = []
+        current_brace_depth = 0
+
+        cpp_call_re = re.compile(r'(?:(?:\b([A-Za-z_]\w*)\s*(?:\.|->|::))|\b)\b([A-Za-z_]\w+)\s*\(')
+        keywords = {
+            "if", "for", "while", "switch", "catch", "return", "sizeof", "decltype",
+            "typeid", "static_cast", "dynamic_cast", "reinterpret_cast", "const_cast",
+            "define", "include", "ifdef", "ifndef", "alignof", "alignas", "template",
+            "class", "struct", "enum", "namespace", "using", "typedef", "virtual",
+            "inline", "explicit", "friend", "constexpr"
+        }
+
+        for i, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+                continue
+
+            # 括號深度
+            open_b = line.count("{")
+            close_b = line.count("}")
+
+            # 類別/結構進入
+            cls_m = CLASS_STRUCT_PATTERN.match(stripped)
+            if cls_m and not stripped.endswith(";"):
+                c_name = cls_m.group(1)
+                class_stack.append((c_name, current_brace_depth + (1 if open_b > 0 else 0)))
+
+            # 函式進入
+            fn_m = FUNC_PATTERN.match(stripped)
+            if fn_m and "{" in stripped:
+                f_name = fn_m.group(2)
+                func_stack.append((f_name, current_brace_depth + 1))
+
+            # 計算目前作用域 caller_member_name
+            curr_class = class_stack[-1][0] if class_stack else ""
+            curr_func = func_stack[-1][0] if func_stack else ""
+            if curr_class and curr_func:
+                curr_caller = f"{curr_class}.{curr_func}" if "." not in curr_func else curr_func
+            elif curr_class:
+                curr_caller = curr_class
+            elif curr_func:
+                curr_caller = curr_func
+            else:
+                curr_caller = "<module>"
+
+            # 提取調用點 (跳過宣告行)
+            if not cls_m and not (fn_m and "{" in stripped and stripped.endswith("{")):
+                for match in cpp_call_re.finditer(line):
+                    prefix = match.group(1) or ""
+                    callee = match.group(2)
+
+                    if callee in keywords or prefix in keywords:
+                        continue
+
+                    # 正規化 this / self
+                    norm_prefix = "self" if prefix == "this" else prefix
+
+                    call_sites.append(
+                        SymbolCallSite(
+                            callee_name=callee,
+                            line_number=i,
+                            caller_member_name=curr_caller,
+                            context_prefix=norm_prefix,
+                            file_path=normalized_path,
+                            space=space,
+                        )
+                    )
+
+            current_brace_depth += (open_b - close_b)
+
+            while class_stack and current_brace_depth < class_stack[-1][1]:
+                class_stack.pop()
+            while func_stack and current_brace_depth < func_stack[-1][1]:
+                func_stack.pop()
+
+        return call_sites
+

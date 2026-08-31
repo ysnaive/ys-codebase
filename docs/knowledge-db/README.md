@@ -33,6 +33,7 @@
 | **sub_10** | **Agents-Workflow 注入內容與決策樹優化** | **Completed** | 注入剛性檢索決策樹（簽章/複合詞/語意敘述分流）、確立「定位 ➔ 定向閱讀」非暴力廣蒐哲學，並更新 Phase 0 / Research / Phase 7 JIT 引導資產。 |
 | **sub_11** | **細粒度增量熱重載與死循環修復** | **Completed** | 100% 完整清冊 JIT 嗅探根除重複熱重載死循環、單檔符號記憶體快取池、倒排索引差量打補丁 (`patch_incremental`) 與 Fast Gzip 持久化，單檔熱重載延遲降至 20~50ms (提速 50x)。 |
 | **sub_12** | **全棧運算提速、並發 AST 打包與倒排索引記憶體瘦身** | **Completed** | `CodeTokenizer` Unicode 整數區間比對與 LRU 識別碼快取、`Posting` `__slots__` 與頂層 `doc_lengths` 共享池 (記憶體瘦身 40%+)、同義詞加權展開快取、`SemanticBundler` 動態門檻多進程並發解析與舊快取平滑自省遷移。 |
+| **sub_13** | **跨檔案符號調用圖譜與引用依賴拓撲索引** | **Completed** | `SymbolCallSite` 模型、Python AST 作用域走訪器、`TopologyLinker` 四階消歧鏈接、`CallGraphIndex` 整數池化雙向圖索引、Gzip 二進位快取 (`unified.graph.bin.gz`)、JIT 增量熱自愈修補，以及 `callers`、`callees`、`impact` CLI 指令與 RFC 8089 輸出。 |
 
 
 ---
@@ -50,7 +51,7 @@ python yscb.py knowledge-db scan project_main --force
 # 3. 執行空間語意符號打包與 Bundle 導出
 python yscb.py knowledge-db bundle project_main
 
-# 4. 預先建置並快取空間倒排索引
+# 4. 預先建置並快取空間倒排索引與調用圖譜
 python yscb.py knowledge-db index --all
 
 # 5. 執行多欄位加權 BM25 語意檢索 (預設為簡易單行排版，支援自動懶建置索引)
@@ -61,15 +62,16 @@ python yscb.py knowledge-db search "狀態機更新" --kind=class --limit=5
 python yscb.py knowledge-db search "PIDController" --ftype=c,cpp,py -s
 python yscb.py knowledge-db search "開發規範" --ftype=md -s
 
-# 7. 詳細模式 (輸出評分、符號類型、簽名、摘要與命中關鍵詞)
-python yscb.py knowledge-db search PIDController --detail
-python yscb.py knowledge-db search PIDController -d
+# 7. 查詢符號上游調用者 (Who calls me?)
+python yscb.py knowledge-db callers "InvertedIndex.load_binary" -s
 
-# 8. 結構化 JSON 輸出 (供自動化工具鏈解析，包含 snippet 與 code_snippet 欄位)
-python yscb.py knowledge-db search PIDController --json
-python yscb.py knowledge-db search PIDController -s --json
+# 8. 查詢符號內部調用之下游被調用者 (Whom do I call?)
+python yscb.py knowledge-db callees "KnowledgeEngine.build_unified_index" -s
 
-# 9. 清理特定或全空間之指紋、Bundle 與倒排索引快取
+# 9. 分析重構影響面擴散拓撲 (Blast Radius Impact)
+python yscb.py knowledge-db impact "InvertedIndex.patch_incremental" --depth=2
+
+# 10. 清理特定或全空間之指紋、Bundle 與倒排索引快取
 python yscb.py knowledge-db clean --all
 ```
 
