@@ -1,5 +1,4 @@
 {
-  "enable_agents_md": true,
   "enable_project_changelog": true,
   "paths": {
     "plans": "project://plans",
@@ -9,5 +8,6 @@
   },
   "release_targets": [
     "antigravity"
-  ]
+  ],
+  "enable_agents_md": true
 }

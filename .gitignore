@@ -10,10 +10,7 @@ __pycache__/
 
 # === YSCB AGENTS_WORKFLOW IGNORE BEGIN ===
 # Auto-managed by agents-workflow. Do not edit this block manually.
-/.agents/.yscb/standards/AgentsCliGuild.md
 /.agents/.yscb/standards/AgentsStandards.md
-/.agents/.yscb/standards/DevelopmentStandards.md
-/.agents/.yscb/standards/DocumentationStandards.md
 /.agents/.yscb/templates/P00_discuss.md
 /.agents/.yscb/templates/P01_requirements_spec.md
 /.agents/.yscb/templates/P02_architecture_plan.md
@@ -28,6 +25,21 @@ __pycache__/
 /.agents/.yscb/templates/handoff.md
 /.agents/.yscb/templates/roadmap.md
 /.agents/.yscb/templates/umbrella_overview.md
+/.agents/skills/development-sop/SKILL.md
+/.agents/skills/development-sop/references/phase_00_discuss.md
+/.agents/skills/development-sop/references/phase_01_requirements.md
+/.agents/skills/development-sop/references/phase_02_architecture.md
+/.agents/skills/development-sop/references/phase_03_api_spec.md
+/.agents/skills/development-sop/references/phase_04_plan.md
+/.agents/skills/development-sop/references/phase_05_task.md
+/.agents/skills/development-sop/references/phase_06_test.md
+/.agents/skills/development-sop/references/phase_07_walkthrough.md
+/.agents/skills/development-sop/references/plan_modes.md
+/.agents/skills/documentation/SKILL.md
+/.agents/skills/documentation/references/author_guide_and_checklist.md
+/.agents/skills/knowledge-db-search/SKILL.md
+/.agents/skills/yscb-cli-guild/SKILL.md
+/.agents/skills/yscb-module-dev/SKILL.md
 /.agents/workflows/Auto.md
 /.agents/workflows/BumpRevision.md
 /.agents/workflows/ContextInit.md

@@ -1,18 +1,3 @@
-`__@{BEGIN_HTML_ANNOTATION}__`
-
-Phase 4 執行指引：
-1. 目標：對 Phase 1~3 進行嚴密交叉驗證、預排知識庫文檔衝擊 (docs/)、進行架構靈魂拷問、將 P06 測試計畫一併剛性定稿，並產出有序實作任務清單。
-2. 交叉驗證：核對所有 FR/EC/NFR 在 API 規格書與架構中均有具體承接。
-3. 文檔預排：依據知識庫 7 大抽象維度，主動盤點模組手冊 (README.md)、專題手冊 ([topic].md) 與工程妥協 (DESIGN_NOTES.md)，預排本次交付必須建立或更新的 docs/ 文件清單（Phase 7 將 1:1 剛性核對交付）。
-4. 架構靈魂拷問：提出 2~3 個極端破壞性或邊界情境，給出明確防護解法。
-5. Test-First 剛性定稿：同步審查並將 P06_test_plan.md 定稿為 Confirmed。
-6. 實作任務拆解：將實作任務依依賴拓撲拆解為有序的 TASK 清單。
-7. Checkpoint 等待關卡：等待開發者明確確認 P04 與 P06 內容（狀態更新為 Confirmed）後推進至 Phase 5。
-
-`__@{PHASE04_AGENTS_GUILD}__`
-
-`__@{END_HTML_ANNOTATION}__`
-
 # 實作計畫與定稿審查書 (Implementation Plan & Review)
 
 `__@{PHASEXX_HEADER}__`
@@ -34,10 +19,11 @@ Phase 4 執行指引：
 ## 2. 知識庫文檔衝擊與交付規劃 (Documentation Impact Plan)
 
 | 維度 | 文件路徑 | 變更類型 | 交付內容與重點 |
-| :---: | :--- | :---: | :--- |
+| :--- | :--- | :---: | :--- |
 | **模組手冊** | `docs/<Module>/README.md` | New / Modify | 模組概覽與快速上手 |
 | **專題手冊** | `docs/<Module>/[topic].md` | New / Modify | 核心機制、資料流或狀態機 |
 | **設計決策** | `docs/<Module>/DESIGN_NOTES.md` | Modify | 登記 DN-XX 工程妥協與防坑邊界 |
+| **發布日誌** | `CHANGELOG.md` | Modify | 記錄本版本發布摘要 |
 
 ---
 

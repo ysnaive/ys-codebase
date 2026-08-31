@@ -2,6 +2,22 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_31_1718_agents_workflow_architecture_optimization (sub_02_skills_architecture 結案)
+
+- **`agents-workflow` 宣告式 Skills 體系與多 Target 投影架構全面實作**：
+  - **宣告式 `export.type = "skill"` 與目錄級資產掃描**：
+    - `ArtifactCompiler` 擴充 `_scan_directory_files`，支援以目錄為單位的 Skill 包（包含 `SKILL.md`、`references/` 等子檔案）遞迴掃描與 Stage 1 快取，保留相對目錄階層。
+  - **Target 技能投影與路徑巨集插值 (`projections.skill`)**：
+    - `ReleasePublisher` 支援 `target_dir` 插值 `{export.name}`、`{export.basename}` 與 `{target.name}`，實現跨 Target 靈活部署。
+    - 統一配置 `antigravity`、`claude`、`codex` 三大 Targets 之技能投影，並將 `codex` 專案路徑對齊官方規範 `project://.agents/`。
+  - **多檔案 Stage 2 語意 URI 相對路徑轉譯**：
+    - 支援 Markdown 內 `__#{...}__` (Local URI) 與 `__${...}__` (Project URI) 多階解析與點擊性跳轉。
+  - **首個領域技能資產落地：`documentation` Skill**：
+    - 重構傳統單檔文檔規範為 `documentation` Skill 包（`SKILL.md` 讀者須知 + `references/author_guide_and_checklist.md` 作者須知）。
+    - 抽象中觀層為通用 `<Category>` 領域命名空間，提供 7 大維度導引、判定樹與 3-Tier 交付核對清單。
+  - **自動化測試與回歸驗證**：
+    - 新增 FT-09~10 與 ET-05 測試，模組 47/47 Passed，生態系全量 278/278 Passed。
+
 ## 2026_08_31_1026_knowledge_db_call_graph_and_reference_index (Level 1 Full Track 結案)
 
 - **`knowledge-db` 跨檔案符號調用圖譜與引用依賴拓撲索引全棧實作**：

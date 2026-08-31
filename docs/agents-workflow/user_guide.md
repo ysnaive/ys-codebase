@@ -141,12 +141,10 @@ python yscb.py agents-workflow roadmap release_binary_storage_optimization
     "roadmap": "!undefined"
   },
   "release_targets": [],
-  "enable_agents_md": true,
   "enable_project_changelog": true
 }
 ```
-- **`release_targets`**：預設為空清單 `[]`。手動指定欲啟用的 Target（例 `["antigravity"]`），發布時將資產投影輸出至對應目錄。
-- **`enable_agents_md`**：`true` 時發布自動執行 `AGENTS.md` 軟合併（僅注入精簡版 `AgentsStandards.md`）；`false` 時完全跳過。
+- **`release_targets`**：預設為空清單 `[]`。手動指定欲啟用的 Target（例 `["antigravity"]`），發布時將資產投影輸出至對應目錄與各 Target 宣告之 `agents_md` 規範檔案路徑。
 - **`enable_project_changelog`**：控制是否啟用全專案 `project://CHANGELOG.md` 結案登載與歸檔守門要求。
 
 ### 2.2 一鍵工作流初始化 (`--init-default`)
@@ -157,22 +155,22 @@ python yscb.py agents-workflow --init-default -y
 
 ### 2.3 原子發布交易 (`release`)
 ```bash
-# 執行 4 步原子交易發布至各 Target 投影目錄並軟合併 AGENTS.md
+# 執行 4 步原子交易發布至各 Target 投影目錄並軟合併規範檔案
 python yscb.py agents-workflow release [target_name]
 ```
 - **特性**：
   - 若 `release_targets` 為空 `[]`，安全略過投影目錄寫入（`Published files: 0`）。
-  - 若 `enable_agents_md` 為 `true`，自動提取 `AgentsStandards.md` 軟合併更新專案根目錄 `AGENTS.md`，保留專案特化規則。
+  - 各啟用 Target 依其 `agents_md` 宣告路徑（如 `project://AGENTS.md` 或 `project://CLAUDE.md`）自動提取 `AgentsStandards.md` 執行軟合併更新，保留專案特化規則。
 
 ### 2.4 多平台 Release Targets 矩陣與管理 (`release-target`)
 
 `agents-workflow` 原生支援多種 AI 程式碼助理與 IDE 之發布投影拓撲：
 
-| Target 名稱 | 適用平台 / IDE | Workflows 投影目錄 | Templates / Standards 投影目錄 | 規則檔支援 |
-| :--- | :--- | :--- | :--- | :--- |
-| **`antigravity`** | Google Antigravity IDE | `.agents/workflows/{name}.md` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
-| **`claude`** | Anthropic Claude Code | `.claude/commands/{name}.md` | `.claude/.yscb/templates/`, `.claude/.yscb/standards/` | — |
-| **`codex`** | OpenAI Codex (CLI / VS Code) | `.codex/workflows/{name}.md` | `.codex/.yscb/templates/`, `.codex/.yscb/standards/` | `AGENTS.md` (軟合併) |
+| Target 名稱 | 適用平台 / IDE | Workflows 投影目錄 | Skills 投影目錄 | Templates / Standards | 規則檔支援 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`antigravity`** | Google Antigravity IDE | `.agents/workflows/{name}.md` | `.agents/skills/{export.name}/` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
+| **`claude`** | Anthropic Claude Code | `.claude/commands/{name}.md` | `.claude/skills/{export.name}/` | `.claude/.yscb/templates/`, `.claude/.yscb/standards/` | `CLAUDE.md` (軟合併) |
+| **`codex`** | OpenAI Codex (CLI / VS Code) | `.agents/workflows/{name}.md` | `.agents/skills/{export.name}/` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
 
 #### CLI Target 管理指令
 ```bash

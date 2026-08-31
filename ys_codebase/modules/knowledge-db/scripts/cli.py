@@ -43,11 +43,10 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db status               列出所有註冊空間、快取與索引狀態")
         print("  python yscb.py knowledge-db scan [space | --all] 執行增量/全量檔案指紋掃描")
         print("  python yscb.py knowledge-db bundle [space|--all] 打包空間符號為 SemanticBundle")
-        print("  python yscb.py knowledge-db index [space | --all] 建立/更新空間倒排索引快取")
-        print("  python yscb.py knowledge-db search <query> [--[simple|detail]] [--limit=auto|N] [--snippet|-s] [--[json|md]] 多欄位 BM25 語意檢索")
-        print("  python yscb.py knowledge-db callers <symbol> [--snippet|-s] [--space=X] [--json] 查詢上游調用者 (Who calls me?)")
-        print("  python yscb.py knowledge-db callees <symbol> [--snippet|-s] [--space=X] [--json] 查詢下游被調用者 (Whom do I call?)")
-        print("  python yscb.py knowledge-db impact <symbol> [--depth=N] [--space=X] [--json] 分析重構影響面擴散拓撲")
+        print("  python yscb.py knowledge-db search <query> [--preview|-s | --detail|-d | --simple] [--limit=auto|N] [--[json|md]] 多欄位 BM25 語意檢索 (預設 simple 大綱)")
+        print("  python yscb.py knowledge-db callers <symbol> [--preview|-s | --detail|-d | --simple] [--space=X] [--[json|md]] 查詢上游調用者 (Who calls me?)")
+        print("  python yscb.py knowledge-db callees <symbol> [--preview|-s | --detail|-d | --simple] [--space=X] [--[json|md]] 查詢下游被調用者 (Whom do I call?)")
+        print("  python yscb.py knowledge-db impact <symbol> [--depth=N] [--detail|-d | --simple] [--space=X] [--[json|md]] 分析重構影響面擴散拓撲")
         print("  python yscb.py knowledge-db clean [space | --all] 清理指定或全空間快取檔案")
         return 0
 
@@ -114,7 +113,7 @@ def main(argv: List[str]) -> int:
         elif subcmd == "search":
             queries = [a for a in sub_argv if not a.startswith("-")]
             if not queries:
-                print("[knowledge-db] 錯誤: 請提供查詢字串 (例: python yscb.py knowledge-db search PIDController)", file=sys.stderr)
+                print("[knowledge-db] 錯誤: 請輸入檢索查詢詞。例如: python yscb.py knowledge-db search 'InvertedIndex' -s", file=sys.stderr)
                 return 1
 
             query_str = " ".join(queries)
@@ -123,8 +122,7 @@ def main(argv: List[str]) -> int:
             lang_filter = None
             ftype_filter = None
             limit_val: Union[int, str] = "auto"
-            detail_mode = "auto"
-            is_snippet = False
+            tier = "simple"
             is_json = False
             is_md = False
             no_auto = "--no-auto-rebuild" in sub_argv or "-n" in sub_argv
@@ -148,16 +146,18 @@ def main(argv: List[str]) -> int:
                         except ValueError:
                             limit_val = "auto"
                 elif a in ("--detail", "-d", "--verbose"):
-                    detail_mode = "detail"
-                elif a == "--simple":
-                    detail_mode = "simple"
+                    tier = "detail"
                 elif a in ("--snippet", "-s", "--preview"):
-                    is_snippet = True
+                    tier = "snippet"
+                elif a == "--simple":
+                    tier = "simple"
                 elif a == "--json":
                     is_json = True
                 elif a in ("--md", "--markdown"):
                     is_md = True
 
+            is_snippet = (tier == "snippet") or (tier == "detail" and any(x in sub_argv for x in ("-s", "--snippet", "--preview")))
+            detail_mode = "detail" if tier == "detail" else "simple"
             fetch_limit = 50 if limit_val == "auto" else max(1, int(limit_val))
 
             results = engine.search(
@@ -188,35 +188,81 @@ def main(argv: List[str]) -> int:
                 elif isinstance(limit_val, int) and limit_val > 0:
                     filtered_results = results[:limit_val]
 
-                data = []
-                for res in filtered_results:
-                    f_dict = {
-                        "file_path": engine.normalize_workspace_path(res.file_path),
-                        "file_uri": engine.to_file_uri(res.file_path),
-                        "total_score": round(res.total_score, 2),
-                        "language": res.language,
-                        "spaces": res.spaces,
-                        "item_count": len(res.items),
-                        "items": [
-                            {
-                                "id": itm.symbol.id,
-                                "name": itm.symbol.name,
-                                "kind": itm.symbol.kind,
-                                "line_number": itm.symbol.line_number,
-                                "end_line": itm.symbol.end_line,
-                                "score": round(itm.score, 2),
-                                "matched_terms": itm.matched_terms,
-                                "file_uri": engine.to_file_uri(itm.symbol.file_path, line=itm.symbol.line_number),
-                                "signature": itm.symbol.signature,
-                                "snippet": itm.snippet,
-                                **({"code_snippet": itm.code_snippet.to_dict()} if (is_snippet and itm.code_snippet) else {}),
-                            }
-                            for itm in res.items
-                        ],
-                    }
-                    data.append(f_dict)
-
-                print(json.dumps({"query": query_str, "total": len(data), "results": data}, indent=2, ensure_ascii=False))
+                if tier == "detail":
+                    data = []
+                    for res in filtered_results:
+                        f_dict = {
+                            "file_path": engine.normalize_workspace_path(res.file_path),
+                            "file_uri": engine.to_file_uri(res.file_path),
+                            "total_score": round(res.total_score, 2),
+                            "language": res.language,
+                            "spaces": res.spaces,
+                            "item_count": len(res.items),
+                            "items": [
+                                {
+                                    "id": itm.symbol.id,
+                                    "name": itm.symbol.name,
+                                    "kind": itm.symbol.kind,
+                                    "line_number": itm.symbol.line_number,
+                                    "end_line": itm.symbol.end_line,
+                                    "score": round(itm.score, 2),
+                                    "matched_terms": itm.matched_terms,
+                                    "file_uri": engine.to_file_uri(itm.symbol.file_path, line=itm.symbol.line_number),
+                                    "signature": itm.symbol.signature,
+                                    "snippet": itm.snippet,
+                                    **({"code_snippet": itm.code_snippet.to_dict()} if (is_snippet and itm.code_snippet) else {}),
+                                }
+                                for itm in res.items
+                            ],
+                        }
+                        data.append(f_dict)
+                    print(json.dumps({"query": query_str, "tier": "detail", "total": len(data), "results": data}, indent=2, ensure_ascii=False))
+                elif tier == "snippet":
+                    data = []
+                    for res in filtered_results:
+                        f_dict = {
+                            "file_path": engine.normalize_workspace_path(res.file_path),
+                            "file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None),
+                            "total_score": round(res.total_score, 2),
+                            "language": res.language,
+                            "items": [
+                                {
+                                    "name": itm.symbol.name,
+                                    "kind": itm.symbol.kind,
+                                    "line_number": itm.symbol.line_number,
+                                    "end_line": itm.symbol.end_line,
+                                    "score": round(itm.score, 2),
+                                    "signature": itm.symbol.signature,
+                                    "summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else ""),
+                                    **({"code": itm.code_snippet.get_raw_code(), "code_lines": [itm.code_snippet.start_line, itm.code_snippet.end_line]} if (itm.code_snippet and itm.code_snippet.lines) else {}),
+                                }
+                                for itm in res.items
+                            ],
+                        }
+                        data.append(f_dict)
+                    print(json.dumps({"query": query_str, "tier": "preview", "total": len(data), "results": data}, separators=(',', ':'), ensure_ascii=False))
+                else:
+                    data = []
+                    for res in filtered_results:
+                        f_dict = {
+                            "file_path": engine.normalize_workspace_path(res.file_path),
+                            "file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None),
+                            "total_score": round(res.total_score, 2),
+                            "language": res.language,
+                            "items": [
+                                {
+                                    "name": itm.symbol.name,
+                                    "kind": itm.symbol.kind,
+                                    "line_number": itm.symbol.line_number,
+                                    "end_line": itm.symbol.end_line,
+                                    "score": round(itm.score, 2),
+                                    "signature": itm.symbol.signature,
+                                }
+                                for itm in res.items
+                            ],
+                        }
+                        data.append(f_dict)
+                    print(json.dumps({"query": query_str, "tier": "simple", "total": len(data), "results": data}, separators=(',', ':'), ensure_ascii=False))
                 return 0
 
             fmt_type = "md" if is_md else "text"
@@ -237,10 +283,9 @@ def main(argv: List[str]) -> int:
                 print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callers 'InvertedIndex.load_binary'", file=sys.stderr)
                 return 1
             query_str = targets[0]
-            is_snippet = False
+            tier = "simple"
             is_json = False
             is_md = False
-            detail_mode = "auto"
             limit_val = "auto"
             space_target = None
 
@@ -257,15 +302,18 @@ def main(argv: List[str]) -> int:
                         except ValueError:
                             limit_val = "auto"
                 elif a in ("--detail", "-d", "--verbose"):
-                    detail_mode = "detail"
-                elif a == "--simple":
-                    detail_mode = "simple"
+                    tier = "detail"
                 elif a in ("--snippet", "-s", "--preview"):
-                    is_snippet = True
+                    tier = "snippet"
+                elif a == "--simple":
+                    tier = "simple"
                 elif a == "--json":
                     is_json = True
                 elif a in ("--md", "--markdown"):
                     is_md = True
+
+            is_snippet = (tier == "snippet") or (tier == "detail" and any(x in sub_argv for x in ("-s", "--snippet", "--preview")))
+            detail_mode = "detail" if tier == "detail" else "simple"
 
             res = engine.act_callers(target_query=query_str, space=space_target, snippet=is_snippet)
             if is_json:
@@ -275,44 +323,99 @@ def main(argv: List[str]) -> int:
                 if isinstance(limit_val, int) and limit_val > 0:
                     filtered_callers = raw_callers[:limit_val]
 
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "target_symbol": {
-                        "id": tsym.id,
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-                        "line_number": tsym.line_number,
-                        "end_line": tsym.end_line,
-                        "signature": tsym.signature,
-                    } if tsym else None,
-                    "total_callers": len(filtered_callers),
-                    "callers": [
-                        {
-                            "symbol": {
-                                "id": c["symbol"].id,
-                                "name": c["symbol"].name,
-                                "kind": c["symbol"].kind,
-                                "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
-                                "file_uri": engine.to_file_uri(c["symbol"].file_path, line=c["symbol"].line_number),
-                                "line_number": c["symbol"].line_number,
-                                "end_line": c["symbol"].end_line,
-                                "signature": c["symbol"].signature,
-                            },
-                            "call_sites": [
-                                {
-                                    "line_number": s.get("line_number"),
-                                    "scope": s.get("scope"),
-                                    "file_uri": engine.to_file_uri(s.get("caller_file", c["symbol"].file_path), line=s.get("line_number")),
-                                }
-                                for s in c.get("call_sites", [])
-                            ],
-                            **({"code_snippet": c["code_snippet"].to_dict()} if (is_snippet and c.get("code_snippet")) else {}),
-                        }
-                        for c in filtered_callers
-                    ],
-                }, indent=2, ensure_ascii=False))
+                if tier == "detail":
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "detail",
+                        "target_symbol": {
+                            "id": tsym.id,
+                            "name": tsym.name,
+                            "kind": tsym.kind,
+                            "file_path": engine.normalize_workspace_path(tsym.file_path),
+                            "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+                            "line_number": tsym.line_number,
+                            "end_line": tsym.end_line,
+                            "signature": tsym.signature,
+                        } if tsym else None,
+                        "total_callers": len(filtered_callers),
+                        "callers": [
+                            {
+                                "symbol": {
+                                    "id": c["symbol"].id,
+                                    "name": c["symbol"].name,
+                                    "kind": c["symbol"].kind,
+                                    "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
+                                    "file_uri": engine.to_file_uri(c["symbol"].file_path, line=c["symbol"].line_number),
+                                    "line_number": c["symbol"].line_number,
+                                    "end_line": c["symbol"].end_line,
+                                    "signature": c["symbol"].signature,
+                                },
+                                "call_sites": [
+                                    {
+                                        "line_number": s.get("line_number"),
+                                        "scope": s.get("scope"),
+                                        "file_uri": engine.to_file_uri(s.get("caller_file", c["symbol"].file_path), line=s.get("line_number")),
+                                    }
+                                    for s in c.get("call_sites", [])
+                                ],
+                                **({"code_snippet": c["code_snippet"].to_dict()} if (is_snippet and c.get("code_snippet")) else {}),
+                            }
+                            for c in filtered_callers
+                        ],
+                    }, indent=2, ensure_ascii=False))
+                elif tier == "snippet":
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "preview",
+                        "target_symbol": {
+                            "name": tsym.name,
+                            "kind": tsym.kind,
+                            "file_path": engine.normalize_workspace_path(tsym.file_path),
+                            "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+                            "line_number": tsym.line_number,
+                            "end_line": tsym.end_line,
+                            "signature": tsym.signature,
+                        } if tsym else None,
+                        "total_callers": len(filtered_callers),
+                        "callers": [
+                            {
+                                "symbol": {
+                                    "name": c["symbol"].name,
+                                    "kind": c["symbol"].kind,
+                                    "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
+                                    "line_number": c["symbol"].line_number,
+                                    "end_line": c["symbol"].end_line,
+                                },
+                                "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
+                                **({"code": c["code_snippet"].get_raw_code(), "code_lines": [c["code_snippet"].start_line, c["code_snippet"].end_line]} if (c.get("code_snippet") and c["code_snippet"].lines) else {}),
+                            }
+                            for c in filtered_callers
+                        ],
+                    }, separators=(',', ':'), ensure_ascii=False))
+                else:
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "simple",
+                        "target_symbol": {
+                            "name": tsym.name,
+                            "kind": tsym.kind,
+                            "file_path": engine.normalize_workspace_path(tsym.file_path),
+                            "line_number": tsym.line_number,
+                        } if tsym else None,
+                        "total_callers": len(filtered_callers),
+                        "callers": [
+                            {
+                                "symbol": {
+                                    "name": c["symbol"].name,
+                                    "kind": c["symbol"].kind,
+                                    "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
+                                    "line_number": c["symbol"].line_number,
+                                },
+                                "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
+                            }
+                            for c in filtered_callers
+                        ],
+                    }, separators=(',', ':'), ensure_ascii=False))
                 return 0
 
             fmt_type = "md" if is_md else "text"
@@ -331,10 +434,9 @@ def main(argv: List[str]) -> int:
                 print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callees 'KnowledgeEngine.build_unified_index'", file=sys.stderr)
                 return 1
             query_str = targets[0]
-            is_snippet = False
+            tier = "simple"
             is_json = False
             is_md = False
-            detail_mode = "auto"
             limit_val = "auto"
             space_target = None
 
@@ -351,15 +453,18 @@ def main(argv: List[str]) -> int:
                         except ValueError:
                             limit_val = "auto"
                 elif a in ("--detail", "-d", "--verbose"):
-                    detail_mode = "detail"
-                elif a == "--simple":
-                    detail_mode = "simple"
+                    tier = "detail"
                 elif a in ("--snippet", "-s", "--preview"):
-                    is_snippet = True
+                    tier = "snippet"
+                elif a == "--simple":
+                    tier = "simple"
                 elif a == "--json":
                     is_json = True
                 elif a in ("--md", "--markdown"):
                     is_md = True
+
+            is_snippet = (tier == "snippet") or (tier == "detail" and any(x in sub_argv for x in ("-s", "--snippet", "--preview")))
+            detail_mode = "detail" if tier == "detail" else "simple"
 
             res = engine.act_callees(target_query=query_str, space=space_target, snippet=is_snippet)
             if is_json:
@@ -369,44 +474,99 @@ def main(argv: List[str]) -> int:
                 if isinstance(limit_val, int) and limit_val > 0:
                     filtered_callees = raw_callees[:limit_val]
 
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "target_symbol": {
-                        "id": tsym.id,
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-                        "line_number": tsym.line_number,
-                        "end_line": tsym.end_line,
-                        "signature": tsym.signature,
-                    } if tsym else None,
-                    "total_callees": len(filtered_callees),
-                    "callees": [
-                        {
-                            "symbol": {
-                                "id": c["symbol"].id,
-                                "name": c["symbol"].name,
-                                "kind": c["symbol"].kind,
-                                "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
-                                "file_uri": engine.to_file_uri(c["symbol"].file_path, line=c["symbol"].line_number),
-                                "line_number": c["symbol"].line_number,
-                                "end_line": c["symbol"].end_line,
-                                "signature": c["symbol"].signature,
-                            },
-                            "call_sites": [
-                                {
-                                    "line_number": s.get("line_number"),
-                                    "scope": s.get("scope"),
-                                    "file_uri": engine.to_file_uri(tsym.file_path if tsym else c["symbol"].file_path, line=s.get("line_number")),
-                                }
-                                for s in c.get("call_sites", [])
-                            ],
-                            **({"code_snippet": c["code_snippet"].to_dict()} if (is_snippet and c.get("code_snippet")) else {}),
-                        }
-                        for c in filtered_callees
-                    ],
-                }, indent=2, ensure_ascii=False))
+                if tier == "detail":
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "detail",
+                        "target_symbol": {
+                            "id": tsym.id,
+                            "name": tsym.name,
+                            "kind": tsym.kind,
+                            "file_path": engine.normalize_workspace_path(tsym.file_path),
+                            "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+                            "line_number": tsym.line_number,
+                            "end_line": tsym.end_line,
+                            "signature": tsym.signature,
+                        } if tsym else None,
+                        "total_callees": len(filtered_callees),
+                        "callees": [
+                            {
+                                "symbol": {
+                                    "id": c["symbol"].id,
+                                    "name": c["symbol"].name,
+                                    "kind": c["symbol"].kind,
+                                    "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
+                                    "file_uri": engine.to_file_uri(c["symbol"].file_path, line=c["symbol"].line_number),
+                                    "line_number": c["symbol"].line_number,
+                                    "end_line": c["symbol"].end_line,
+                                    "signature": c["symbol"].signature,
+                                },
+                                "call_sites": [
+                                    {
+                                        "line_number": s.get("line_number"),
+                                        "scope": s.get("scope"),
+                                        "file_uri": engine.to_file_uri(tsym.file_path if tsym else c["symbol"].file_path, line=s.get("line_number")),
+                                    }
+                                    for s in c.get("call_sites", [])
+                                ],
+                                **({"code_snippet": c["code_snippet"].to_dict()} if (is_snippet and c.get("code_snippet")) else {}),
+                            }
+                            for c in filtered_callees
+                        ],
+                    }, indent=2, ensure_ascii=False))
+                elif tier == "snippet":
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "preview",
+                        "target_symbol": {
+                            "name": tsym.name,
+                            "kind": tsym.kind,
+                            "file_path": engine.normalize_workspace_path(tsym.file_path),
+                            "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+                            "line_number": tsym.line_number,
+                            "end_line": tsym.end_line,
+                            "signature": tsym.signature,
+                        } if tsym else None,
+                        "total_callees": len(filtered_callees),
+                        "callees": [
+                            {
+                                "symbol": {
+                                    "name": c["symbol"].name,
+                                    "kind": c["symbol"].kind,
+                                    "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
+                                    "line_number": c["symbol"].line_number,
+                                    "end_line": c["symbol"].end_line,
+                                },
+                                "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
+                                **({"code": c["code_snippet"].get_raw_code(), "code_lines": [c["code_snippet"].start_line, c["code_snippet"].end_line]} if (c.get("code_snippet") and c["code_snippet"].lines) else {}),
+                            }
+                            for c in filtered_callees
+                        ],
+                    }, separators=(',', ':'), ensure_ascii=False))
+                else:
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "simple",
+                        "target_symbol": {
+                            "name": tsym.name,
+                            "kind": tsym.kind,
+                            "file_path": engine.normalize_workspace_path(tsym.file_path),
+                            "line_number": tsym.line_number,
+                        } if tsym else None,
+                        "total_callees": len(filtered_callees),
+                        "callees": [
+                            {
+                                "symbol": {
+                                    "name": c["symbol"].name,
+                                    "kind": c["symbol"].kind,
+                                    "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
+                                    "line_number": c["symbol"].line_number,
+                                },
+                                "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
+                            }
+                            for c in filtered_callees
+                        ],
+                    }, separators=(',', ':'), ensure_ascii=False))
                 return 0
 
             fmt_type = "md" if is_md else "text"
@@ -425,9 +585,9 @@ def main(argv: List[str]) -> int:
                 print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db impact 'InvertedIndex.patch_incremental' --depth=2", file=sys.stderr)
                 return 1
             query_str = targets[0]
+            tier = "simple"
             is_json = False
             is_md = False
-            detail_mode = "auto"
             limit_val = "auto"
             depth = 2
             space_target = None
@@ -450,50 +610,79 @@ def main(argv: List[str]) -> int:
                         except ValueError:
                             limit_val = "auto"
                 elif a in ("--detail", "-d", "--verbose"):
-                    detail_mode = "detail"
+                    tier = "detail"
                 elif a == "--simple":
-                    detail_mode = "simple"
+                    tier = "simple"
                 elif a == "--json":
                     is_json = True
                 elif a in ("--md", "--markdown"):
                     is_md = True
 
+            detail_mode = "detail" if tier == "detail" else "simple"
             res = engine.act_impact(target_query=query_str, depth=depth, space=space_target)
             if is_json:
                 tsym = res.get("target_symbol")
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "target_symbol": {
-                        "id": tsym.id,
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-                        "line_number": tsym.line_number,
-                        "end_line": tsym.end_line,
-                        "signature": tsym.signature,
-                    } if tsym else None,
-                    "max_depth": res.get("max_depth", depth),
-                    "total_impacted_symbols": res.get("total_impacted_symbols", 0),
-                    "total_impacted_files": res.get("total_impacted_files", 0),
-                    "layers": {
-                        str(d): [
-                            {
-                                "id": s.id,
-                                "name": s.name,
-                                "kind": s.kind,
-                                "file_path": engine.normalize_workspace_path(s.file_path),
-                                "file_uri": engine.to_file_uri(s.file_path, line=s.line_number),
-                                "line_number": s.line_number,
-                                "end_line": s.end_line,
-                                "signature": s.signature,
-                            }
-                            for s in syms
-                        ]
-                        for d, syms in res.get("layers", {}).items()
-                    },
-                    "call_chains": res.get("call_chains", {}),
-                }, indent=2, ensure_ascii=False))
+                if tier == "detail":
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "detail",
+                        "target_symbol": {
+                            "id": tsym.id,
+                            "name": tsym.name,
+                            "kind": tsym.kind,
+                            "file_path": engine.normalize_workspace_path(tsym.file_path),
+                            "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+                            "line_number": tsym.line_number,
+                            "end_line": tsym.end_line,
+                            "signature": tsym.signature,
+                        } if tsym else None,
+                        "max_depth": res.get("max_depth", depth),
+                        "total_impacted_symbols": res.get("total_impacted_symbols", 0),
+                        "total_impacted_files": res.get("total_impacted_files", 0),
+                        "layers": {
+                            str(d): [
+                                {
+                                    "id": s.id,
+                                    "name": s.name,
+                                    "kind": s.kind,
+                                    "file_path": engine.normalize_workspace_path(s.file_path),
+                                    "file_uri": engine.to_file_uri(s.file_path, line=s.line_number),
+                                    "line_number": s.line_number,
+                                    "end_line": s.end_line,
+                                    "signature": s.signature,
+                                }
+                                for s in syms
+                            ]
+                            for d, syms in res.get("layers", {}).items()
+                        },
+                        "call_chains": res.get("call_chains", {}),
+                    }, indent=2, ensure_ascii=False))
+                else:
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "simple",
+                        "target_symbol": {
+                            "name": tsym.name,
+                            "kind": tsym.kind,
+                            "file_path": engine.normalize_workspace_path(tsym.file_path),
+                            "line_number": tsym.line_number,
+                        } if tsym else None,
+                        "max_depth": res.get("max_depth", depth),
+                        "total_impacted_symbols": res.get("total_impacted_symbols", 0),
+                        "total_impacted_files": res.get("total_impacted_files", 0),
+                        "layers": {
+                            str(d): [
+                                {
+                                    "name": s.name,
+                                    "kind": s.kind,
+                                    "file_path": engine.normalize_workspace_path(s.file_path),
+                                    "line_number": s.line_number,
+                                }
+                                for s in syms
+                            ]
+                            for d, syms in res.get("layers", {}).items()
+                        },
+                    }, separators=(',', ':'), ensure_ascii=False))
                 return 0
 
             fmt_type = "md" if is_md else "text"
