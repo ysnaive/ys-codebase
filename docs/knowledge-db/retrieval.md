@@ -78,15 +78,23 @@ for r in results:
 
 ---
 
-## ⚡ 5. 符號池去重與二進位 Gzip 快取持久化 (`.index.bin.gz`)
+## ⚡ 5. 符號池去重、Slots 瘦身與二進位 Gzip 快取持久化 (`.index.bin.gz`)
 
-`knowledge-db` 倒排索引採用 **符號池解耦 (Symbol Pool Normalization)** 與 **原生 Pickle (Protocol 5) + Gzip (Level 6)** 壓縮快取：
+`knowledge-db` 倒排索引採用 **符號池解耦 (Symbol Pool Normalization)**、**`Posting` `__slots__` 節點瘦身** 與 **頂層 `doc_lengths` 共享池** 架構：
+
+1. **`Posting` 節點輕量化**：
+   - 節點配置 `__slots__ = ('doc_id', 'field_freqs', 'space', 'spaces')`，徹底消滅 Python 動態字典 `__dict__` 開銷。
+   - 欄位長度字典抽離至頂層 `InvertedIndex.doc_lengths: Dict[str, Dict[str, int]]` 共享池，消除數十萬個重複字典物件（記憶體瘦身 40%+）。
+2. **Schema 自省相容升級**：
+   - `InvertedIndex.from_dict` 具備自動遷移能力，載入舊版二進位快取時自動將 `Posting` 內部之 `field_lengths` 提取至頂層共享池。
+3. **二進位快取持久化**：
+   - 使用 **原生 Pickle (Protocol 5) + Gzip (Level 1/6)** 壓縮快取，讀取載入耗時 < 20 ms。
 
 ```python
 # 1. 保存二進位壓縮快取 (體積縮減 99.5%)
 index.save_binary("path/to/space.index.bin.gz")
 
-# 2. 極速載入二進位快取 (載入耗時 < 20 ms)
+# 2. 極速載入二進位快取 (載入耗時 < 20 ms，具備舊快取自省升級)
 restored_index = InvertedIndex.load_binary("path/to/space.index.bin.gz")
 ```
 

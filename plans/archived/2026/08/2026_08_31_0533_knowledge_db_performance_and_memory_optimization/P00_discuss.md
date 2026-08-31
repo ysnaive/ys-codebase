@@ -3,7 +3,7 @@
 > 功能名稱：knowledge-db 全棧運算提速、並發 AST 打包與倒排索引記憶體瘦身  
 > 建立日期：2026-08-31  
 > 所屬計畫：2026_08_31_0533_knowledge_db_performance_and_memory_optimization  
-> 狀態：Discussing  
+> 狀態：Confirmed  
 
 ---
 
@@ -23,20 +23,19 @@
 - **[P00:DR-01]**：`CodeTokenizer` 極速化——廢除每字元正則匹配，改採 Python 頂層 Unicode 整數區間比對 (`0x4e00 <= ord(c) <= 0x9fff` 等)，並為 `split_identifier` 引入 `@lru_cache(maxsize=8192)` 與預編譯正則。
 - **[P00:DR-02]**：倒排索引資料結構瘦身——於 `Posting` 引入 `__slots__`，將 `field_lengths` 字典抽離至 `InvertedIndex.doc_lengths: Dict[str, Dict[str, int]]` 頂層共享池，保持 Protocol 5 二進位快取向下相容。
 - **[P00:DR-03]**：同義詞展開快取——為 `ThesaurusEngine.expand_query_weighted` 引入 LRU Memoization 快取機制。
-- **[P00:DR-04]**：多工作者並發 AST 語意打包——於 `SemanticBundler` 實作分批並發檔案解析機制，動態調度多核心處理。
-- **[P00:DR-05]**：BM25 Top-K 動態評分剪枝——於 `InvertedIndex.search` 評分迴圈引入候選分數上限預估與安全早停剪枝。
+- **[P00:DR-04]**：多工作者並發 AST 語意打包——於 `SemanticBundler` 實作動態門檻並發檔案解析機制，檔案數 `< 10` 採主進程串行，`>= 10` 且多核時調度 `ProcessPoolExecutor` 分批並行解析。
+- **[P00:DR-05]**：BM25 Top-K 動態評分剪枝——於 `InvertedIndex.search` 評分迴圈引入 Max-Score 候選分數上限預估與安全早停剪枝，100% 保證與暴力計算精度一致。
 
 ---
 
-## 3. 開放議題與待深度討論清單 (Open Issues for Discussion)
+## 3. 開放議題決策結論 (Resolved Open Issues)
 
-- [ ] **議題 1：多工作者並發打包模型選型**（`ProcessPoolExecutor` vs `ThreadPoolExecutor` vs Chunked Batching）在沙盒與不同 OS 平台下的相容性與記憶體開銷評估。
-- [ ] **議題 2：倒排索引 Protocol 5 二進位快取向後相容性**（舊版快取載入時若遇舊格式 `field_lengths` 的防禦與自動遷移策略）。
-- [ ] **議題 3：BM25 Top-K 動態剪枝策略的精度守門**（如何確保動態早停 100% 不會漏掉潛在的高分相關符號）。
-- [ ] **議題 4：基準測試 (Benchmark) 設計**（如何量化驗證分詞吞吐量 10x、打包提速 3.7x、記憶體節省 53% 等指標）。
+- **議題 1：多工作者並發打包架構選型** ➔ 採動態門檻分流：檔案數 `< 10` 採主進程串行（零進程開銷），`>= 10` 且多核時調度 `ProcessPoolExecutor(chunksize=16)` 分批解析。
+- **議題 2：倒排索引 Protocol 5 二進位快取相容性** ➔ 於 `InvertedIndex.load()` 實作 Schema 自省與自動遷移：相容載入舊版含 `field_lengths` 的物件並升級，損毀時自動觸發增量重新建置。
+- **議題 3：BM25 Top-K 動態剪枝精度守門** ➔ 採用數學證明的 Max-Score 剪枝演算法，預算 Term 最高分上限，確保零漏搜 (Zero False Negatives)。
+- **議題 4：基準測試 (Benchmark) 設計** ➔ 新增 `test_benchmark_perf_and_memory.py` 驗證分詞吞吐量提升、記憶體降低幅度與搜尋精度等價性。
 
 ---
 
 ## 4. 分流確認
 - 涉及跨 4 大核心組件重構、記憶體資料結構調整與效能壓測驗證，分流確立為 **Level 1 (Full Track)**。
-

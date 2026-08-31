@@ -10,6 +10,11 @@
 
 `SemanticBundler` 是 `knowledge-db` 模組的核心打包與導出引擎。它協同 `SpaceManager`、`FingerprintScanner` 與 `ParserRegistry`，將空間內的原始碼與文檔編譯提取為自包含的語意封裝包 **`SemanticBundle`**。
 
+### 🚀 動態門檻多進程並行解析 (Multiprocessing AST Bundling)
+- **動態門檻分流**：當全專案檔案數量 $\ge 10$ 且系統具備多核心 ($CPU > 1$) 時，自動啟用 `ProcessPoolExecutor` 分發批次檔案解析任務。
+- **頂層可序列化工作者 (`_parse_file_task_worker`)**：以頂層純函式架構確保跨進程 IPC 100% 可 Pickle。
+- **平滑降級容錯**：遇到單核環境、單元測試沙盒或多進程例外時，自動安全降級為串行處理；單檔解析失敗時記錄警告並跳過，確保打包主流程永不崩潰。
+
 ---
 
 ## 📦 2. Bundle 資料格式規範 (`.bundle.json`)

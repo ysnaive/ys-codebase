@@ -4,7 +4,7 @@ knowledge-db 雙層三階同義詞與關聯詞擴展引擎 (ThesaurusEngine)
 
 from collections import defaultdict
 import logging
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from .schema import ThesaurusConfig, WeightedToken
 
@@ -12,7 +12,7 @@ logger = logging.getLogger("knowledge-db.thesaurus")
 
 
 class ThesaurusEngine:
-    """雙層三階同義詞與關聯詞擴展引擎 (純淨無狀態詞庫容器)"""
+    """雙層三階同義詞與關聯詞擴展引擎 (純淨無狀態詞庫容器，具備 LRU Memoization 快取)"""
 
     def __init__(
         self,
@@ -24,6 +24,8 @@ class ThesaurusEngine:
         self._synonym_map: Dict[str, Set[str]] = defaultdict(set)
         self._alias_map: Dict[str, Set[str]] = defaultdict(set)
         self._related_map: Dict[str, Set[str]] = defaultdict(set)
+        self._expansion_cache: Dict[Tuple[Tuple[str, ...], int, bool], List[WeightedToken]] = {}
+        self._cache_maxsize: int = 1024
 
         # 1. 載入傳入之 ThesaurusConfig
         if config:
@@ -52,6 +54,10 @@ class ThesaurusEngine:
             for group in custom_related:
                 self.add_related_group(group)
 
+    def _clear_cache(self) -> None:
+        """清空同義詞展開快取池"""
+        self._expansion_cache.clear()
+
     def add_group(self, group: List[str]) -> None:
         """
         動態加入一組雙向等價同義詞 (Tier 2, weight=0.6)。
@@ -60,6 +66,7 @@ class ThesaurusEngine:
         if not group or len(group) < 2:
             return
 
+        self._clear_cache()
         cleaned_words = [w.strip().lower() for w in group if w and str(w).strip()]
         for w in cleaned_words:
             for other in cleaned_words:
@@ -74,6 +81,7 @@ class ThesaurusEngine:
         """
         if not source or not str(source).strip() or not targets:
             return
+        self._clear_cache()
         src_clean = str(source).strip().lower()
         for t in targets:
             if t and str(t).strip():
@@ -89,6 +97,7 @@ class ThesaurusEngine:
         if not group or len(group) < 2:
             return
 
+        self._clear_cache()
         cleaned_words = [w.strip().lower() for w in group if w and str(w).strip()]
         for w in cleaned_words:
             for other in cleaned_words:
@@ -114,13 +123,23 @@ class ThesaurusEngine:
         include_related: bool = True,
     ) -> List[WeightedToken]:
         """
-        對輸入的查詢 Token 清單進行三階加權展開與去重 (Max-Weight Retention, EC-01, EC-02, EC-04)。
+        對輸入的查詢 Token 清單進行三階加權展開與去重 (具備 LRU Memoization 快取)。
         - Tier 1: 原始詞 (kind="original", weight=1.0)
         - Tier 2: 雙向同義詞 (kind="synonym", weight=0.6) / 單向別名 (kind="alias", weight=0.6)
         - Tier 3: 領域關聯詞 (kind="related", weight=0.25)
         """
         if not tokens:
             return []
+
+        # 查快取 (以標準化 tuple 為鍵)
+        cache_key = (
+            tuple(str(t).strip().lower() for t in tokens if t and str(t).strip()),
+            max_expanded,
+            include_related,
+        )
+        if cache_key in self._expansion_cache:
+            # 返回淺拷貝清單，避免外部修改破壞快取內容
+            return list(self._expansion_cache[cache_key])
 
         # 1. 建立加權字典 (term -> WeightedToken) 與順序清單
         token_order: List[str] = []
@@ -138,7 +157,7 @@ class ThesaurusEngine:
                 token_order.append(clean)
                 return True
             else:
-                # 衝突時保留最高權重 (EC-02)
+                # 衝突時保留最高權重
                 existing = token_map[clean]
                 if weight > existing.weight:
                     existing.weight = weight
@@ -174,7 +193,7 @@ class ThesaurusEngine:
             if len(token_order) >= max_expanded:
                 break
 
-        # Tier 3: 領域關聯詞 (weight=0.25) - 多跳鏈式傳播 (Hop 2 關聯 + Hop 3 關聯同義展開)
+        # Tier 3: 領域關聯詞 (weight=0.25) - 多跳鏈式傳播
         if include_related and len(token_order) < max_expanded:
             hop2_sources = list(cleaned_inputs) + [t for t in tier2_terms if t not in cleaned_inputs]
             hop2_related_terms: List[str] = []
@@ -187,7 +206,7 @@ class ThesaurusEngine:
                 if len(token_order) >= max_expanded:
                     break
 
-            # Hop 3: 關聯詞之雙向同義展開 (例如: 中文尋路 -> astar -> dijkstra -> 最短路徑)
+            # Hop 3: 關聯詞之雙向同義展開
             if len(token_order) < max_expanded:
                 for r_term in hop2_related_terms:
                     for r_syn in self._synonym_map.get(r_term, set()):
@@ -197,7 +216,17 @@ class ThesaurusEngine:
                     if len(token_order) >= max_expanded:
                         break
 
-        return [token_map[t] for t in token_order]
+        result = [token_map[t] for t in token_order]
+
+        # 寫入快取 (FIFO / 簡單容量上限保護)
+        if len(self._expansion_cache) >= self._cache_maxsize:
+            # 清除最舊一半快取
+            keys = list(self._expansion_cache.keys())
+            for k in keys[: len(keys) // 2]:
+                self._expansion_cache.pop(k, None)
+
+        self._expansion_cache[cache_key] = result
+        return list(result)
 
     def expand_query(self, tokens: List[str], max_expanded: int = 50) -> List[str]:
         """
@@ -205,4 +234,3 @@ class ThesaurusEngine:
         """
         weighted = self.expand_query_weighted(tokens, max_expanded=max_expanded, include_related=True)
         return [w.term for w in weighted]
-

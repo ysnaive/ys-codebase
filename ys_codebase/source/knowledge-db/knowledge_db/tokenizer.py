@@ -3,8 +3,9 @@ knowledge-db 代碼標識符與 CJK 中文混合分詞器 (CodeTokenizer)
 100% 採用純 Python 原生標準庫 (Zero External Dependency)
 """
 
+import functools
 import re
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 
 # 預設中英文常用停用詞
 DEFAULT_STOPWORDS: Set[str] = {
@@ -24,10 +25,57 @@ DEFAULT_STOPWORDS: Set[str] = {
     "在", "於", "把", "被", "讓", "由", "向", "往", "從", "到",
 }
 
-# CJK 中文字元 Unicode 正則區間
-CJK_PATTERN = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
-# 英文/數字/底線程式碼標識符正則
-IDENTIFIER_CHUNK_PATTERN = re.compile(r"[A-Za-z0-9_]+")
+# 預編譯標識符拆解正則
+_CAMEL_SUB1 = re.compile(r"([A-Z]+)([A-Z][a-z0-9])")
+_CAMEL_SUB2 = re.compile(r"([a-z0-9])([A-Z])")
+_SPLIT_PUNCT = re.compile(r"[_\-\s.]+")
+_CLEAN_ALPHA = re.compile(r"[^a-z0-9]")
+
+
+def _is_cjk_ord(code: int) -> bool:
+    """
+    依據 Unicode 整數值判斷是否為 CJK / 東亞常用字元 (純整數比對，零正則呼叫開銷)。
+    """
+    return (
+        (0x4E00 <= code <= 0x9FFF) or   # CJK Unified Ideographs
+        (0x3400 <= code <= 0x4DBF) or   # CJK Unified Ideographs Extension A
+        (0x20000 <= code <= 0x2A6DF) or # CJK Extension B
+        (0xF900 <= code <= 0xFAFF) or   # CJK Compatibility Ideographs
+        (0x3040 <= code <= 0x309F) or   # Hiragana
+        (0x30A0 <= code <= 0x30FF) or   # Katakana
+        (0xAC00 <= code <= 0xD7AF)      # Hangul Syllables
+    )
+
+
+@functools.lru_cache(maxsize=8192)
+def _split_identifier_cached(identifier: str) -> Tuple[str, ...]:
+    """
+    將程式碼標識符進行駝峰與底線拆解，結果以元組形式快取 (LRU Cache)。
+    """
+    if not identifier:
+        return ()
+
+    # 1. 駝峰拆解正則
+    s1 = _CAMEL_SUB1.sub(r"\1_\2", identifier)
+    s2 = _CAMEL_SUB2.sub(r"\1_\2", s1)
+
+    # 2. 底線與標點切分
+    parts = [p.lower() for p in _SPLIT_PUNCT.split(s2) if p]
+
+    tokens: List[str] = []
+    for p in parts:
+        if p:
+            tokens.append(p)
+
+    # 若拆解出多個子 token，保留整體小寫標識符
+    clean_raw = identifier.lower().replace("-", "_")
+    if clean_raw not in tokens and len(clean_raw) > 1:
+        tokens.append(clean_raw)
+    pure_alpha = _CLEAN_ALPHA.sub("", identifier.lower())
+    if pure_alpha and pure_alpha not in tokens and len(pure_alpha) > 1:
+        tokens.append(pure_alpha)
+
+    return tuple(tokens)
 
 
 class CodeTokenizer:
@@ -38,8 +86,10 @@ class CodeTokenizer:
 
     @classmethod
     def is_cjk(cls, char: str) -> bool:
-        """檢查單一字元是否為 CJK 中文字元"""
-        return bool(CJK_PATTERN.match(char))
+        """檢查單一字元是否為 CJK 中文字元 (向後相容)"""
+        if not char:
+            return False
+        return _is_cjk_ord(ord(char[0]))
 
     @classmethod
     def split_identifier(cls, identifier: str) -> List[str]:
@@ -50,30 +100,7 @@ class CodeTokenizer:
           - 'getHTTPResponse' ➔ ['get', 'http', 'response', 'gethttpresponse']
           - 'user_id_v5' ➔ ['user', 'id', 'v5', 'user_id_v5']
         """
-        if not identifier:
-            return []
-
-        # 1. 駝峰拆解正則
-        s1 = re.sub(r"([A-Z]+)([A-Z][a-z0-9])", r"\1_\2", identifier)
-        s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1)
-
-        # 2. 底線與標點切分
-        parts = [p.lower() for p in re.split(r"[_\-\s.]+", s2) if p]
-
-        tokens: List[str] = []
-        for p in parts:
-            if p:
-                tokens.append(p)
-
-        # 若拆解出多個子 token，保留整體小寫標識符
-        clean_raw = identifier.lower().replace("-", "_")
-        if clean_raw not in tokens and len(clean_raw) > 1:
-            tokens.append(clean_raw)
-        pure_alpha = re.sub(r"[^a-z0-9]", "", identifier.lower())
-        if pure_alpha and pure_alpha not in tokens and len(pure_alpha) > 1:
-            tokens.append(pure_alpha)
-
-        return tokens
+        return list(_split_identifier_cached(identifier))
 
     def tokenize(self, text: str) -> List[str]:
         """
@@ -88,11 +115,12 @@ class CodeTokenizer:
 
         while i < n:
             ch = text[i]
+            code = ord(ch)
 
-            # 1. 處理 CJK 中文字元連續區塊
-            if self.is_cjk(ch):
+            # 1. 處理 CJK 中文字元連續區塊 (純整數比對)
+            if _is_cjk_ord(code):
                 cjk_start = i
-                while i < n and self.is_cjk(text[i]):
+                while i < n and _is_cjk_ord(ord(text[i])):
                     i += 1
                 cjk_chunk = text[cjk_start:i]
 
@@ -119,7 +147,7 @@ class CodeTokenizer:
                     i += 1
                 ident_chunk = text[ident_start:i]
 
-                sub_tokens = self.split_identifier(ident_chunk)
+                sub_tokens = _split_identifier_cached(ident_chunk)
                 for st in sub_tokens:
                     if st not in self.stopwords and len(st) > 0:
                         tokens.append(st)

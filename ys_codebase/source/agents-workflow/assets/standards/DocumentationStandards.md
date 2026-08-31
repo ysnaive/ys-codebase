@@ -69,10 +69,15 @@ Q5: 是否包含「反直覺妥協 / Workaround / 效能硬體限制」？
 
 ---
 
-## 🧭 4. 三維錨點投影與交付驗收
+## 🧭 4. 三層文檔交付架構與三維錨點驗收 (Three-Tier Delivery & Anchors)
 
-- **Phase 4 預先盤點 (Impact Plan)**：在 `P04` 定稿前，依據 P03 (API)、P05 (Tasks)、P06 (Tests) 投影並輸出 `docs/` 需更新清單。
-- **Phase 7 結案驗收 (Delivery Audit)**：在 `P07_walkthrough.md` 中 1:1 交叉對齊盤點清單，任一項未交付則阻斷結案。
+- **三層文檔交付模型 (Three-Tier Delivery Model)**：
+  - **宏觀層 (Macro)**：專案全域發布日誌（`CHANGELOG.md`），記錄高階發布與架構演進。
+  - **中觀層 (Meso)**：模組手冊 (`docs/<Module>/README.md`)、專題手冊 (`docs/<Module>/[topic].md`) 與設計決策 (`DESIGN_NOTES.md`)。
+  - **微觀層 (Micro)**：原始碼內部 Public API Docstring、型別契約與複雜演算法 Why-Driven 行內動機註解。
+- **Phase 4 預先盤點 (Impact Plan)**：在 `P04` 定稿前，主動盤點宏觀日誌、中觀手冊與微觀契約，輸出文檔衝擊清單。
+- **Phase 5 實作落實 (Implementation)**：代碼編寫時將微觀註解與中觀手冊視為一等公民任務同步交付。
+- **Phase 7 結案驗收 (Delivery Audit)**：在 `P07_walkthrough.md` 中 1:1 交叉對齊三層文檔清單，任一項未交付則阻斷結案。
 
 ---
 

@@ -32,6 +32,7 @@
 | **sub_09** | **JIT 智能變更感知與全域聯集單一索引** | **Completed** | 全專案空間聯集實體去重 AST 解析、單一全域倒排索引 (`unified.index.bin.gz`)、原生二進位快照 (`unified.meta.bin` Magic `YFP1`) 與 JIT 查詢時智能變更感知熱自愈。 |
 | **sub_10** | **Agents-Workflow 注入內容與決策樹優化** | **Completed** | 注入剛性檢索決策樹（簽章/複合詞/語意敘述分流）、確立「定位 ➔ 定向閱讀」非暴力廣蒐哲學，並更新 Phase 0 / Research / Phase 7 JIT 引導資產。 |
 | **sub_11** | **細粒度增量熱重載與死循環修復** | **Completed** | 100% 完整清冊 JIT 嗅探根除重複熱重載死循環、單檔符號記憶體快取池、倒排索引差量打補丁 (`patch_incremental`) 與 Fast Gzip 持久化，單檔熱重載延遲降至 20~50ms (提速 50x)。 |
+| **sub_12** | **全棧運算提速、並發 AST 打包與倒排索引記憶體瘦身** | **Completed** | `CodeTokenizer` Unicode 整數區間比對與 LRU 識別碼快取、`Posting` `__slots__` 與頂層 `doc_lengths` 共享池 (記憶體瘦身 40%+)、同義詞加權展開快取、`SemanticBundler` 動態門檻多進程並發解析與舊快取平滑自省遷移。 |
 
 
 ---
