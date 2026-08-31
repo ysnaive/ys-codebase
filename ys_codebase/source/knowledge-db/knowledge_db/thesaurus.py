@@ -119,7 +119,7 @@ class ThesaurusEngine:
     def expand_query_weighted(
         self,
         tokens: List[str],
-        max_expanded: int = 50,
+        max_expanded: int = 100,
         include_related: bool = True,
     ) -> List[WeightedToken]:
         """
@@ -228,7 +228,7 @@ class ThesaurusEngine:
         self._expansion_cache[cache_key] = result
         return list(result)
 
-    def expand_query(self, tokens: List[str], max_expanded: int = 50) -> List[str]:
+    def expand_query(self, tokens: List[str], max_expanded: int = 100) -> List[str]:
         """
         向後相容介面：回傳包含原始詞、同義詞、別名與關聯詞之字串 Token 清單。
         """

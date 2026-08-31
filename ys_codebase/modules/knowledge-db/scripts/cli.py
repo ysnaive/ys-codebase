@@ -44,7 +44,7 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db scan [space | --all] 執行增量/全量檔案指紋掃描")
         print("  python yscb.py knowledge-db bundle [space|--all] 打包空間符號為 SemanticBundle")
         print("  python yscb.py knowledge-db index [space | --all] 建立/更新空間倒排索引快取")
-        print("  python yscb.py knowledge-db search <query> [--snippet|-s] [--detail|-d] [--json] 多欄位 BM25 語意檢索")
+        print("  python yscb.py knowledge-db search <query> [--[simple|detail]] [--limit=auto|N] [--snippet|-s] [--[json|md]] 多欄位 BM25 語意檢索")
         print("  python yscb.py knowledge-db callers <symbol> [--snippet|-s] [--space=X] [--json] 查詢上游調用者 (Who calls me?)")
         print("  python yscb.py knowledge-db callees <symbol> [--snippet|-s] [--space=X] [--json] 查詢下游被調用者 (Whom do I call?)")
         print("  python yscb.py knowledge-db impact <symbol> [--depth=N] [--space=X] [--json] 分析重構影響面擴散拓撲")
@@ -122,10 +122,11 @@ def main(argv: List[str]) -> int:
             kind_filter = None
             lang_filter = None
             ftype_filter = None
-            limit = 10
-            is_detail = False
+            limit_val: Union[int, str] = "auto"
+            detail_mode = "auto"
             is_snippet = False
             is_json = False
+            is_md = False
             no_auto = "--no-auto-rebuild" in sub_argv or "-n" in sub_argv
 
             for a in sub_argv:
@@ -138,16 +139,26 @@ def main(argv: List[str]) -> int:
                 elif a.startswith("--ftype="):
                     ftype_filter = a.split("=", 1)[1]
                 elif a.startswith("--limit="):
-                    try:
-                        limit = int(a.split("=", 1)[1])
-                    except ValueError:
-                        pass
+                    l_val = a.split("=", 1)[1].strip()
+                    if l_val.lower() == "auto":
+                        limit_val = "auto"
+                    else:
+                        try:
+                            limit_val = int(l_val)
+                        except ValueError:
+                            limit_val = "auto"
                 elif a in ("--detail", "-d", "--verbose"):
-                    is_detail = True
+                    detail_mode = "detail"
+                elif a == "--simple":
+                    detail_mode = "simple"
                 elif a in ("--snippet", "-s", "--preview"):
                     is_snippet = True
                 elif a == "--json":
                     is_json = True
+                elif a in ("--md", "--markdown"):
+                    is_md = True
+
+            fetch_limit = 50 if limit_val == "auto" else max(1, int(limit_val))
 
             results = engine.search(
                 query=query_str,
@@ -155,110 +166,69 @@ def main(argv: List[str]) -> int:
                 kinds=kind_filter,
                 languages=lang_filter,
                 ftypes=ftype_filter,
-                limit=limit,
+                limit=fetch_limit,
                 snippet=is_snippet,
                 auto_rebuild=not no_auto,
             )
 
             if is_json:
-                data = [
-                    res.to_dict() if hasattr(res, "to_dict") else res
-                    for res in results
-                ]
-                # 正規化路徑與注入 file_uri
-                if isinstance(data, list):
-                    for entry in data:
-                        if isinstance(entry, dict) and "file_path" in entry:
-                            f_path = entry["file_path"]
-                            entry["file_path"] = engine.normalize_workspace_path(f_path)
-                            entry["file_uri"] = engine.to_file_uri(f_path)
-                            if "items" in entry and isinstance(entry["items"], list):
-                                for item in entry["items"]:
-                                    if isinstance(item, dict) and "symbol" in item and isinstance(item["symbol"], dict):
-                                        sym_dict = item["symbol"]
-                                        s_line = sym_dict.get("line_number")
-                                        s_file = sym_dict.get("file_path", f_path)
-                                        item["file_uri"] = engine.to_file_uri(s_file, line=s_line)
-                print(json.dumps({"query": query_str, "total": len(results), "results": data}, indent=2, ensure_ascii=False))
+                filtered_results = results
+                if limit_val == "auto":
+                    if results:
+                        top_score = results[0].total_score
+                        filtered_results = []
+                        prev_score = top_score
+                        for r in results:
+                            if r.total_score < 0.20 * top_score:
+                                break
+                            if prev_score > 0 and (r.total_score / prev_score) < 0.35 and len(filtered_results) >= 3:
+                                break
+                            filtered_results.append(r)
+                            prev_score = r.total_score
+                elif isinstance(limit_val, int) and limit_val > 0:
+                    filtered_results = results[:limit_val]
+
+                data = []
+                for res in filtered_results:
+                    f_dict = {
+                        "file_path": engine.normalize_workspace_path(res.file_path),
+                        "file_uri": engine.to_file_uri(res.file_path),
+                        "total_score": round(res.total_score, 2),
+                        "language": res.language,
+                        "spaces": res.spaces,
+                        "item_count": len(res.items),
+                        "items": [
+                            {
+                                "id": itm.symbol.id,
+                                "name": itm.symbol.name,
+                                "kind": itm.symbol.kind,
+                                "line_number": itm.symbol.line_number,
+                                "end_line": itm.symbol.end_line,
+                                "score": round(itm.score, 2),
+                                "matched_terms": itm.matched_terms,
+                                "file_uri": engine.to_file_uri(itm.symbol.file_path, line=itm.symbol.line_number),
+                                "signature": itm.symbol.signature,
+                                "snippet": itm.snippet,
+                                **({"code_snippet": itm.code_snippet.to_dict()} if (is_snippet and itm.code_snippet) else {}),
+                            }
+                            for itm in res.items
+                        ],
+                    }
+                    data.append(f_dict)
+
+                print(json.dumps({"query": query_str, "total": len(data), "results": data}, indent=2, ensure_ascii=False))
                 return 0
 
-            if not results:
-                print(f"[knowledge-db] 檢索查詢: '{query_str}' (未找到符合的結果)")
-                return 0
-
-            # 樹狀階層預覽輸出 (FR-06)
-            if is_snippet:
-                print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 個檔案節點，預覽模式):")
-                print("=" * 85)
-                for rank, res in enumerate(results, start=1):
-                    first_sym = res.items[0].symbol if res.items else None
-                    first_line = first_sym.line_number if first_sym else None
-                    first_end = first_sym.end_line if first_sym else None
-                    file_link = engine.format_file_link(res.file_path, line=first_line, end_line=first_end)
-                    print(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} ({len(res.items)} 個命中項目, {res.language})")
-                    for itm_idx, itm in enumerate(res.items, start=1):
-                        is_last = (itm_idx == len(res.items))
-                        branch = "└──" if is_last else "├──"
-                        pipe = "   " if is_last else "│  "
-                        sym = itm.symbol
-                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
-                        print(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {sym.kind.upper()}: {sym.name} ({line_range})")
-                        if sym.signature:
-                            print(f"  {pipe}   簽名: {sym.signature}")
-                        if itm.code_snippet and itm.code_snippet.docstring_summary:
-                            print(f"  {pipe}   摘要: {itm.code_snippet.docstring_summary}")
-                        elif itm.snippet:
-                            print(f"  {pipe}   摘要: {itm.snippet}")
-                        if itm.code_snippet and itm.code_snippet.lines:
-                            print(f"  {pipe}   代碼切片 ({line_range}):")
-                            print(itm.code_snippet.format_text(prefix=f"  {pipe}     "))
-                    print("-" * 85)
-                return 0
-
-            if is_detail:
-                print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 個檔案節點，詳細模式):")
-                print("=" * 85)
-                for rank, res in enumerate(results, start=1):
-                    first_sym = res.items[0].symbol if res.items else None
-                    first_line = first_sym.line_number if first_sym else None
-                    first_end = first_sym.end_line if first_sym else None
-                    file_link = engine.format_file_link(res.file_path, line=first_line, end_line=first_end)
-                    print(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} ({len(res.items)} 個命中項目, {res.language})")
-                    for itm_idx, itm in enumerate(res.items, start=1):
-                        is_last = (itm_idx == len(res.items))
-                        branch = "└──" if is_last else "├──"
-                        pipe = "   " if is_last else "│  "
-                        sym = itm.symbol
-                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
-                        print(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {sym.kind.upper()}: {sym.name} ({line_range})")
-                        if sym.signature:
-                            print(f"  {pipe}   簽名: {sym.signature}")
-                        if itm.snippet:
-                            print(f"  {pipe}   說明: {itm.snippet}")
-                        if itm.matched_terms:
-                            print(f"  {pipe}   命中詞: {', '.join(itm.matched_terms)}")
-                    print("-" * 85)
-                return 0
-
-            # 簡易模式 (預設極簡樹狀排版)
-            print(f"[knowledge-db] 檢索查詢: '{query_str}' (共找到 {len(results)} 個檔案節點):")
-            for rank, res in enumerate(results, start=1):
-                if len(res.items) == 1:
-                    sym = res.items[0].symbol
-                    file_link = engine.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
-                    print(f"#{rank:02d} {file_link} ({sym.kind}:{sym.name}) [{res.total_score:05.2f}]")
-                else:
-                    first_sym = res.items[0].symbol if res.items else None
-                    first_line = first_sym.line_number if first_sym else None
-                    first_end = first_sym.end_line if first_sym else None
-                    file_link = engine.format_file_link(res.file_path, line=first_line, end_line=first_end)
-                    print(f"#{rank:02d} {file_link} (總分: {res.total_score:05.2f}, {len(res.items)} 項命中):")
-                    for itm_idx, itm in enumerate(res.items, start=1):
-                        is_last = (itm_idx == len(res.items))
-                        branch = "└──" if is_last else "├──"
-                        sym = itm.symbol
-                        sym_link = engine.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
-                        print(f"  {branch} #{rank:02d}.{itm_idx} {sym_link} ({sym.kind}:{sym.name}) [{itm.score:05.2f}]")
+            fmt_type = "md" if is_md else "text"
+            formatted_output = engine.format_search_output(
+                results=results,
+                query=query_str,
+                detail_mode=detail_mode,
+                snippet=is_snippet,
+                format_type=fmt_type,
+                limit_mode=limit_val,
+            )
+            print(formatted_output)
             return 0
 
         elif subcmd == "callers":
@@ -267,31 +237,92 @@ def main(argv: List[str]) -> int:
                 print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callers 'InvertedIndex.load_binary'", file=sys.stderr)
                 return 1
             query_str = targets[0]
-            is_snippet = "--snippet" in sub_argv or "-s" in sub_argv
-            is_json = "--json" in sub_argv
+            is_snippet = False
+            is_json = False
+            is_md = False
+            detail_mode = "auto"
+            limit_val = "auto"
             space_target = None
+
             for a in sub_argv:
                 if a.startswith("--space="):
                     space_target = a.split("=", 1)[1]
+                elif a.startswith("--limit="):
+                    l_val = a.split("=", 1)[1].strip()
+                    if l_val.lower() == "auto":
+                        limit_val = "auto"
+                    else:
+                        try:
+                            limit_val = int(l_val)
+                        except ValueError:
+                            limit_val = "auto"
+                elif a in ("--detail", "-d", "--verbose"):
+                    detail_mode = "detail"
+                elif a == "--simple":
+                    detail_mode = "simple"
+                elif a in ("--snippet", "-s", "--preview"):
+                    is_snippet = True
+                elif a == "--json":
+                    is_json = True
+                elif a in ("--md", "--markdown"):
+                    is_md = True
 
             res = engine.act_callers(target_query=query_str, space=space_target, snippet=is_snippet)
             if is_json:
+                tsym = res.get("target_symbol")
+                raw_callers = res.get("callers", [])
+                filtered_callers = raw_callers
+                if isinstance(limit_val, int) and limit_val > 0:
+                    filtered_callers = raw_callers[:limit_val]
+
                 print(json.dumps({
                     "target_query": res.get("target_query"),
-                    "target_symbol": res["target_symbol"].to_dict() if res.get("target_symbol") else None,
-                    "total_callers": res.get("total_callers", 0),
+                    "target_symbol": {
+                        "id": tsym.id,
+                        "name": tsym.name,
+                        "kind": tsym.kind,
+                        "file_path": engine.normalize_workspace_path(tsym.file_path),
+                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+                        "line_number": tsym.line_number,
+                        "end_line": tsym.end_line,
+                        "signature": tsym.signature,
+                    } if tsym else None,
+                    "total_callers": len(filtered_callers),
                     "callers": [
                         {
-                            "symbol": c["symbol"].to_dict(),
-                            "call_sites": c["call_sites"],
-                            "code_snippet": c["code_snippet"].to_dict() if c.get("code_snippet") else None,
+                            "symbol": {
+                                "id": c["symbol"].id,
+                                "name": c["symbol"].name,
+                                "kind": c["symbol"].kind,
+                                "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
+                                "file_uri": engine.to_file_uri(c["symbol"].file_path, line=c["symbol"].line_number),
+                                "line_number": c["symbol"].line_number,
+                                "end_line": c["symbol"].end_line,
+                                "signature": c["symbol"].signature,
+                            },
+                            "call_sites": [
+                                {
+                                    "line_number": s.get("line_number"),
+                                    "scope": s.get("scope"),
+                                    "file_uri": engine.to_file_uri(s.get("caller_file", c["symbol"].file_path), line=s.get("line_number")),
+                                }
+                                for s in c.get("call_sites", [])
+                            ],
+                            **({"code_snippet": c["code_snippet"].to_dict()} if (is_snippet and c.get("code_snippet")) else {}),
                         }
-                        for c in res.get("callers", [])
-                    ]
+                        for c in filtered_callers
+                    ],
                 }, indent=2, ensure_ascii=False))
                 return 0
 
-            print(engine.format_callers_output(res, snippet=is_snippet))
+            fmt_type = "md" if is_md else "text"
+            print(engine.format_callers_output(
+                result=res,
+                detail_mode=detail_mode,
+                snippet=is_snippet,
+                format_type=fmt_type,
+                limit_mode=limit_val,
+            ))
             return 0
 
         elif subcmd == "callees":
@@ -300,31 +331,92 @@ def main(argv: List[str]) -> int:
                 print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callees 'KnowledgeEngine.build_unified_index'", file=sys.stderr)
                 return 1
             query_str = targets[0]
-            is_snippet = "--snippet" in sub_argv or "-s" in sub_argv
-            is_json = "--json" in sub_argv
+            is_snippet = False
+            is_json = False
+            is_md = False
+            detail_mode = "auto"
+            limit_val = "auto"
             space_target = None
+
             for a in sub_argv:
                 if a.startswith("--space="):
                     space_target = a.split("=", 1)[1]
+                elif a.startswith("--limit="):
+                    l_val = a.split("=", 1)[1].strip()
+                    if l_val.lower() == "auto":
+                        limit_val = "auto"
+                    else:
+                        try:
+                            limit_val = int(l_val)
+                        except ValueError:
+                            limit_val = "auto"
+                elif a in ("--detail", "-d", "--verbose"):
+                    detail_mode = "detail"
+                elif a == "--simple":
+                    detail_mode = "simple"
+                elif a in ("--snippet", "-s", "--preview"):
+                    is_snippet = True
+                elif a == "--json":
+                    is_json = True
+                elif a in ("--md", "--markdown"):
+                    is_md = True
 
             res = engine.act_callees(target_query=query_str, space=space_target, snippet=is_snippet)
             if is_json:
+                tsym = res.get("target_symbol")
+                raw_callees = res.get("callees", [])
+                filtered_callees = raw_callees
+                if isinstance(limit_val, int) and limit_val > 0:
+                    filtered_callees = raw_callees[:limit_val]
+
                 print(json.dumps({
                     "target_query": res.get("target_query"),
-                    "target_symbol": res["target_symbol"].to_dict() if res.get("target_symbol") else None,
-                    "total_callees": res.get("total_callees", 0),
+                    "target_symbol": {
+                        "id": tsym.id,
+                        "name": tsym.name,
+                        "kind": tsym.kind,
+                        "file_path": engine.normalize_workspace_path(tsym.file_path),
+                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+                        "line_number": tsym.line_number,
+                        "end_line": tsym.end_line,
+                        "signature": tsym.signature,
+                    } if tsym else None,
+                    "total_callees": len(filtered_callees),
                     "callees": [
                         {
-                            "symbol": c["symbol"].to_dict(),
-                            "call_sites": c["call_sites"],
-                            "code_snippet": c["code_snippet"].to_dict() if c.get("code_snippet") else None,
+                            "symbol": {
+                                "id": c["symbol"].id,
+                                "name": c["symbol"].name,
+                                "kind": c["symbol"].kind,
+                                "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
+                                "file_uri": engine.to_file_uri(c["symbol"].file_path, line=c["symbol"].line_number),
+                                "line_number": c["symbol"].line_number,
+                                "end_line": c["symbol"].end_line,
+                                "signature": c["symbol"].signature,
+                            },
+                            "call_sites": [
+                                {
+                                    "line_number": s.get("line_number"),
+                                    "scope": s.get("scope"),
+                                    "file_uri": engine.to_file_uri(tsym.file_path if tsym else c["symbol"].file_path, line=s.get("line_number")),
+                                }
+                                for s in c.get("call_sites", [])
+                            ],
+                            **({"code_snippet": c["code_snippet"].to_dict()} if (is_snippet and c.get("code_snippet")) else {}),
                         }
-                        for c in res.get("callees", [])
-                    ]
+                        for c in filtered_callees
+                    ],
                 }, indent=2, ensure_ascii=False))
                 return 0
 
-            print(engine.format_callees_output(res, snippet=is_snippet))
+            fmt_type = "md" if is_md else "text"
+            print(engine.format_callees_output(
+                result=res,
+                detail_mode=detail_mode,
+                snippet=is_snippet,
+                format_type=fmt_type,
+                limit_mode=limit_val,
+            ))
             return 0
 
         elif subcmd == "impact":
@@ -333,9 +425,13 @@ def main(argv: List[str]) -> int:
                 print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db impact 'InvertedIndex.patch_incremental' --depth=2", file=sys.stderr)
                 return 1
             query_str = targets[0]
-            is_json = "--json" in sub_argv
+            is_json = False
+            is_md = False
+            detail_mode = "auto"
+            limit_val = "auto"
             depth = 2
             space_target = None
+
             for a in sub_argv:
                 if a.startswith("--depth="):
                     try:
@@ -344,24 +440,69 @@ def main(argv: List[str]) -> int:
                         pass
                 elif a.startswith("--space="):
                     space_target = a.split("=", 1)[1]
+                elif a.startswith("--limit="):
+                    l_val = a.split("=", 1)[1].strip()
+                    if l_val.lower() == "auto":
+                        limit_val = "auto"
+                    else:
+                        try:
+                            limit_val = int(l_val)
+                        except ValueError:
+                            limit_val = "auto"
+                elif a in ("--detail", "-d", "--verbose"):
+                    detail_mode = "detail"
+                elif a == "--simple":
+                    detail_mode = "simple"
+                elif a == "--json":
+                    is_json = True
+                elif a in ("--md", "--markdown"):
+                    is_md = True
 
             res = engine.act_impact(target_query=query_str, depth=depth, space=space_target)
             if is_json:
+                tsym = res.get("target_symbol")
                 print(json.dumps({
                     "target_query": res.get("target_query"),
-                    "target_symbol": res["target_symbol"].to_dict() if res.get("target_symbol") else None,
+                    "target_symbol": {
+                        "id": tsym.id,
+                        "name": tsym.name,
+                        "kind": tsym.kind,
+                        "file_path": engine.normalize_workspace_path(tsym.file_path),
+                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+                        "line_number": tsym.line_number,
+                        "end_line": tsym.end_line,
+                        "signature": tsym.signature,
+                    } if tsym else None,
                     "max_depth": res.get("max_depth", depth),
                     "total_impacted_symbols": res.get("total_impacted_symbols", 0),
                     "total_impacted_files": res.get("total_impacted_files", 0),
                     "layers": {
-                        str(d): [s.to_dict() for s in syms]
+                        str(d): [
+                            {
+                                "id": s.id,
+                                "name": s.name,
+                                "kind": s.kind,
+                                "file_path": engine.normalize_workspace_path(s.file_path),
+                                "file_uri": engine.to_file_uri(s.file_path, line=s.line_number),
+                                "line_number": s.line_number,
+                                "end_line": s.end_line,
+                                "signature": s.signature,
+                            }
+                            for s in syms
+                        ]
                         for d, syms in res.get("layers", {}).items()
                     },
                     "call_chains": res.get("call_chains", {}),
                 }, indent=2, ensure_ascii=False))
                 return 0
 
-            print(engine.format_impact_output(res))
+            fmt_type = "md" if is_md else "text"
+            print(engine.format_impact_output(
+                result=res,
+                detail_mode=detail_mode,
+                format_type=fmt_type,
+                limit_mode=limit_val,
+            ))
             return 0
 
         elif subcmd == "clean":
