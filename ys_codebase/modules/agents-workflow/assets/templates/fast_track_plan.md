@@ -43,6 +43,7 @@ Fast Track 執行指引：
 
 ## 3. 結案與交付確認 (FT-3 Closure & Walkthrough)
 
+- [ ] **文檔與日誌交付**：同步更新對應 `docs/` 手冊與追加 `project://CHANGELOG.md` 發布摘要。
 - [ ] **結構與註解檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` (或 `plan check`) 驗證 100% Passed。
 - **結案狀態**：`Completed`
 

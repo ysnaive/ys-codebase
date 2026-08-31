@@ -2,6 +2,7 @@
 knowledge-db 語意打包引擎 (SemanticBundler) 與 Bundle 資料結構
 """
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
@@ -18,6 +19,34 @@ from .schema import SpaceConfig, ThesaurusGroup, UnifiedSymbol
 from .space import SpaceManager
 
 logger = logging.getLogger("knowledge-db.bundler")
+
+# 並發門檻常數
+PARALLEL_BUNDLE_THRESHOLD = 10
+
+
+def _parse_file_task_worker(
+    task: Tuple[str, str, str, List[str]]
+) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
+    """
+    頂層可序列化工作者函式 (供 ProcessPoolExecutor 或串行調用)：
+    task: (c_key, f_path_str, relpath, sorted_spaces)
+    return: (c_key, [symbol.to_dict(), ...], error_message_or_None)
+    """
+    c_key, f_path_str, relpath, sorted_spaces = task
+    primary_space = sorted_spaces[0] if sorted_spaces else "unified"
+    try:
+        registry = ParserRegistry(register_defaults=True)
+        with open(f_path_str, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        symbols = registry.parse_file(file_path=relpath, content=content, space=primary_space)
+        results = []
+        for sym in symbols:
+            sym.metadata["spaces"] = sorted_spaces
+            sym.metadata["space"] = primary_space
+            results.append(sym.to_dict())
+        return (c_key, results, None)
+    except Exception as e:
+        return (c_key, [], str(e))
 
 
 @dataclass(frozen=True)
@@ -76,7 +105,7 @@ class SemanticBundle:
 
 
 class SemanticBundler:
-    """空間語意打包與導出/導入引擎"""
+    """空間語意打包與導出/導入引擎 (支援動態門檻多進程並行打包)"""
 
     def __init__(
         self,
@@ -225,7 +254,7 @@ class SemanticBundler:
     ) -> SemanticBundle:
         """
         掃描全專案空間聯集 (Union Scope)，以實體檔案絕對路徑為唯一鍵去重，
-        所有檔案 100% 僅讀取與 AST 解析 1 次；於各 UnifiedSymbol.metadata["spaces"] 注入命中的空間名稱清單。
+        支援動態門檻多進程並行解析 AST (檔案數 >= 10 且 CPU > 1 啟用 ProcessPoolExecutor)。
         """
         target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
         unique_files = self._collect_space_files(target_spaces)
@@ -234,31 +263,48 @@ class SemanticBundler:
         all_symbols: List[UnifiedSymbol] = []
         self._file_symbols_cache.clear()
 
-        # 逐一檔案讀取與 AST 解析 (100% 僅解析 1 次)
-        for idx, (c_key, (f_path, relpath, sp_set)) in enumerate(unique_files.items(), start=1):
-            if progress_callback:
-                progress_callback(relpath, idx, total_files)
-
+        tasks: List[Tuple[str, str, str, List[str]]] = []
+        for c_key, (f_path, relpath, sp_set) in unique_files.items():
             sorted_spaces = sorted(list(sp_set))
-            primary_space = sorted_spaces[0] if sorted_spaces else "unified"
+            tasks.append((c_key, str(f_path), relpath, sorted_spaces))
 
-            file_symbols: List[UnifiedSymbol] = []
+        cpu_cnt = os.cpu_count() or 1
+        use_parallel = (total_files >= PARALLEL_BUNDLE_THRESHOLD and cpu_cnt > 1)
+
+        if use_parallel:
             try:
-                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-                symbols = self.parser_registry.parse_file(
-                    file_path=relpath, content=content, space=primary_space
-                )
+                workers = min(4, cpu_cnt)
+                chunk_size = max(1, total_files // (workers * 4))
+                with ProcessPoolExecutor(max_workers=workers) as pool:
+                    results_iter = pool.map(_parse_file_task_worker, tasks, chunksize=chunk_size)
+                    for idx, (c_key, sym_dicts, err) in enumerate(results_iter, start=1):
+                        if progress_callback:
+                            rel = unique_files[c_key][1]
+                            progress_callback(rel, idx, total_files)
+                        if err:
+                            logger.warning(f"Failed parsing file '{c_key}' during parallel bundle: {err}")
+                            self._file_symbols_cache[c_key] = []
+                            continue
+                        file_symbols = [UnifiedSymbol.from_dict(d) for d in sym_dicts]
+                        all_symbols.extend(file_symbols)
+                        self._file_symbols_cache[c_key] = file_symbols
+            except Exception as pool_err:
+                logger.warning(f"ProcessPoolExecutor error, falling back to serial parsing: {pool_err}")
+                use_parallel = False
 
-                for sym in symbols:
-                    sym.metadata["spaces"] = sorted_spaces
-                    sym.metadata["space"] = primary_space
-                    file_symbols.append(sym)
-                    all_symbols.append(sym)
-            except Exception as e:
-                logger.warning(f"Failed parsing file '{f_path}' during union bundle: {e}")
-
-            self._file_symbols_cache[c_key] = file_symbols
+        if not use_parallel:
+            for idx, task in enumerate(tasks, start=1):
+                c_key, sym_dicts, err = _parse_file_task_worker(task)
+                if progress_callback:
+                    rel = unique_files[c_key][1]
+                    progress_callback(rel, idx, total_files)
+                if err:
+                    logger.warning(f"Failed parsing file '{c_key}' during serial bundle: {err}")
+                    self._file_symbols_cache[c_key] = []
+                    continue
+                file_symbols = [UnifiedSymbol.from_dict(d) for d in sym_dicts]
+                all_symbols.extend(file_symbols)
+                self._file_symbols_cache[c_key] = file_symbols
 
         thesaurus = self.space_manager.load_thesaurus()
         created_at = datetime.now(timezone.utc).isoformat()
@@ -292,8 +338,7 @@ class SemanticBundler:
     ) -> Tuple[Dict[str, List[UnifiedSymbol]], Set[str]]:
         """
         僅針對 dirty_diff 中 added 與 modified 的檔案執行 AST 解析，
-        同步自 _file_symbols_cache 移除 deleted 與 modified 檔案的舊快取，
-        回傳 (new_symbols_by_file, dirty_canonical_keys)。
+        同步自 _file_symbols_cache 移除 deleted 與 modified 檔案的舊快取。
         """
         target_spaces = spaces if spaces is not None else self.space_manager.get_union_spaces()
         dirty_keys = dirty_diff.dirty_files
@@ -312,30 +357,23 @@ class SemanticBundler:
         space_files_map = self._collect_space_files(target_spaces)
         new_symbols_by_file: Dict[str, List[UnifiedSymbol]] = {}
 
+        tasks: List[Tuple[str, str, str, List[str]]] = []
         for c_key in (dirty_diff.added | dirty_diff.modified):
             file_info = space_files_map.get(c_key)
             if not file_info:
                 continue
             f_path, relpath, sp_set = file_info
-            sorted_spaces = sorted(list(sp_set))
-            primary_space = sorted_spaces[0] if sorted_spaces else "unified"
+            tasks.append((c_key, str(f_path), relpath, sorted(list(sp_set))))
 
-            symbols: List[UnifiedSymbol] = []
-            try:
-                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-                parsed = self.parser_registry.parse_file(
-                    file_path=relpath, content=content, space=primary_space
-                )
-                for sym in parsed:
-                    sym.metadata["spaces"] = sorted_spaces
-                    sym.metadata["space"] = primary_space
-                    symbols.append(sym)
-            except Exception as e:
-                logger.warning(f"Failed parsing dirty file '{f_path}': {e}")
-
-            self._file_symbols_cache[c_key] = symbols
-            new_symbols_by_file[c_key] = symbols
+        for task in tasks:
+            c_key, sym_dicts, err = _parse_file_task_worker(task)
+            if err:
+                logger.warning(f"Failed parsing dirty file '{c_key}': {err}")
+                self._file_symbols_cache[c_key] = []
+                continue
+            file_symbols = [UnifiedSymbol.from_dict(d) for d in sym_dicts]
+            self._file_symbols_cache[c_key] = file_symbols
+            new_symbols_by_file[c_key] = file_symbols
 
         return new_symbols_by_file, dirty_keys
 
