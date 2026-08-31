@@ -24,6 +24,11 @@
   - **測試與品質保證**：
     - 新增測試套件 `tests/test_call_graph.py` (FT-01~11, ET-01~02, PT-01 全數通過)。
     - `knowledge-db` 全量單元測試 **125/125 Passed (100% Ready, 1.08s)**，全庫物化安裝完成。
+  - **衍生子計畫 `sub_01_contributes_injection_optimization` (Level 0 Fast Track 結案)**：
+    - 於 `source/knowledge-db/contributes/core.json` 登錄 `callers`, `callees`, `impact` 權限規範，自動編譯同步至 `AgentsCliGuild.md`。
+    - 升級 `KnowledgeAgentsStandards.md` 工具分流決策矩陣與防呆阻斷鐵律，同步物化至專案根目錄 `AGENTS.md`。
+    - 升級 `research_guild.md`、`phase00_guild.md` 與 `retro_check.md`，注入調用圖譜架構探索指引與評測欄位。
+    - 於 `contributes/knowledge-db.json` 擴充調用圖譜專用語及前端 Web 技術棧（HTML/DOM、JS/TS/JSX/TSX、CSS/Flexbox/Grid 佈局排版）同義詞、別名與關聯度詞條。
 
 ## 2026_08_31_0533_knowledge_db_performance_and_memory_optimization (Level 1 Full Track 結案)
 

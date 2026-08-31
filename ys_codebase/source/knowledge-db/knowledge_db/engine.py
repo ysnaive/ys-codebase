@@ -134,23 +134,25 @@ class KnowledgeEngine:
         file_path: Union[str, Path],
         line: Optional[int] = None,
         end_line: Optional[int] = None,
+        use_basename: bool = True,
     ) -> str:
         """
-        格式化為 IDE 相容之 Markdown 檔案超連結標籤: [rel_path:Lxx~Lyy](file:///abs_path#Lxx)
+        格式化為 IDE 相容之 Markdown 檔案超連結標籤: [filename:Lxx~Lyy](file:///abs_path#Lxx)
 
         :param file_path: 檔案路徑
         :param line: 起始行號 (可選)
         :param end_line: 結束行號 (可選)
-        :return: Markdown 格式字串 (例: [src/engine.py:L10-20](file:///.../engine.py#L10))
+        :param use_basename: 是否僅顯示純檔案名稱與副檔名 (預設 True)
+        :return: Markdown 格式字串 (例: [engine.py:L10-20](file:///.../engine.py#L10))
         """
-        rel_path = self.normalize_workspace_path(file_path)
+        base_label = Path(file_path).name if use_basename else self.normalize_workspace_path(file_path)
         if line is not None:
             if end_line is not None and end_line > line:
-                label = f"{rel_path}:L{line}-{end_line}"
+                label = f"{base_label}:L{line}-{end_line}"
             else:
-                label = f"{rel_path}:L{line}"
+                label = f"{base_label}:L{line}"
         else:
-            label = rel_path
+            label = base_label
 
         uri_str = self.to_file_uri(file_path, line=line)
         return f"[{label}]({uri_str})"
@@ -543,8 +545,9 @@ class KnowledgeEngine:
                 snip = self.snippet_extractor.extract(
                     file_path=r.symbol.file_path,
                     line_number=r.symbol.line_number,
+                    end_line=r.symbol.end_line,
                     context_before=2,
-                    context_after=max(2, context_lines + 1),
+                    context_after=8,
                     docstring=r.symbol.docstring,
                 )
                 results_with_snippets.append(
@@ -573,8 +576,9 @@ class KnowledgeEngine:
                 snip = self.snippet_extractor.extract(
                     file_path=itm.symbol.file_path,
                     line_number=itm.symbol.line_number,
+                    end_line=itm.symbol.end_line,
                     context_before=2,
-                    context_after=max(2, context_lines + 1),
+                    context_after=8,
                     docstring=itm.symbol.docstring,
                 )
                 updated_items.append(
@@ -721,7 +725,7 @@ class KnowledgeEngine:
                     file_path=caller_sym.file_path,
                     line_number=target_ln,
                     context_before=2,
-                    context_after=3,
+                    context_after=5,
                     docstring=caller_sym.docstring,
                 )
 
@@ -773,8 +777,9 @@ class KnowledgeEngine:
                 code_snip = self.snippet_extractor.extract(
                     file_path=callee_sym.file_path,
                     line_number=callee_sym.line_number,
+                    end_line=callee_sym.end_line,
                     context_before=2,
-                    context_after=3,
+                    context_after=6,
                     docstring=callee_sym.docstring,
                 )
 
@@ -838,108 +843,636 @@ class KnowledgeEngine:
             "total_impacted_files": len(all_files),
         }
 
-    def format_callers_output(self, result: Dict[str, Any], snippet: bool = True) -> str:
-        """格式化 callers 輸出為帶有 RFC 8089 可點擊連結的 Markdown 報告"""
+    def format_callers_output(
+        self,
+        result: Dict[str, Any],
+        detail_mode: str = "auto",
+        snippet: bool = True,
+        format_type: str = "text",
+        limit_mode: Union[int, str] = "auto",
+    ) -> str:
+        """格式化 callers (調用源) 輸出為 ANSI 樹狀圖或 Markdown 格式"""
         target = result.get("target_symbol")
+        is_md = (format_type == "md")
         if not target:
-            return f"[knowledge-db] 查無相符符號: '{result.get('target_query')}'"
+            if is_md:
+                return f"### 🔍 調用源查詢: `{result.get('target_query')}` (未找到相符符號)"
+            return f"[knowledge-db] 查無相符目標符號: '{result.get('target_query')}'"
 
-        target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
-        lines = [
-            f"[knowledge-db] 符號 '{target.name}' 之上游調用者清單 (Callers - 共 {result.get('total_callers', 0)} 個調用來源):",
-            "-" * 80,
-            f"📍 目標符號: `{target.name}` ({target_link})",
-        ]
+        mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
+        if mode not in ("simple", "detail"):
+            mode = "auto"
 
         callers = result.get("callers", [])
-        if not callers:
-            lines.append("  (目前尚無靜態調用者)")
+        total_callers = len(callers)
+        target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
+
+        # 1. 限制模式處理
+        filtered_callers = callers
+        if isinstance(limit_mode, int) and limit_mode > 0:
+            filtered_callers = callers[:limit_mode]
+
+        # 2. Header
+        mode_desc = "清單模式" if mode == "simple" else ("詳細模式" if mode == "detail" else ("預覽模式" if snippet else ""))
+        desc_tag = f"，{mode_desc}" if mode_desc else ""
+
+        if is_md:
+            header = f"### 📞 調用源追蹤 (Callers): `{target.name}` (共找到 {total_callers} 個調用來源{desc_tag}):\n\n"
+            header += f"- **📍 目標符號**: `{target.name}` ({target.kind}) 檔案: {target_link}"
+            if target.signature:
+                header += f"\n  - **簽名**: `{target.signature}`"
+            lines = [header, ""]
+        else:
+            header = f"[knowledge-db] 符號 '{target.name}' 之上游調用者清單 (Callers - 共 {total_callers} 個來源{desc_tag}):"
+            lines = [
+                header,
+                "-" * 85,
+                f"📍 目標符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
+            ]
+            if mode == "detail" and target.signature:
+                lines.append(f"   簽名: {target.signature}")
+            lines.append("")
+
+        if not filtered_callers:
+            empty_msg = "  (目前尚無靜態調用者依賴)" if not is_md else "> *(目前尚無靜態調用者依賴)*"
+            lines.append(empty_msg)
             return "\n".join(lines)
 
-        for idx, item in enumerate(callers, start=1):
+        rendered_nodes = 0
+        budget_reached = False
+        remaining_count = 0
+
+        for idx, item in enumerate(filtered_callers, start=1):
+            node_lines = []
             sym = item["symbol"]
             sites = item.get("call_sites", [])
-            line_num = sites[0]["line_number"] if sites else sym.line_number
-            link_str = self.format_file_link(sym.file_path, line=line_num)
-            is_last = (idx == len(callers))
+            primary_line = sites[0]["line_number"] if sites else sym.line_number
+            link_str = self.format_file_link(sym.file_path, line=primary_line)
+            is_last = (idx == len(filtered_callers))
             branch = "└──" if is_last else "├──"
-            lines.append(f"{branch} 🔹 {link_str} (`{sym.name}`)")
-
+            pipe = "   " if is_last else "│  "
             code_snip = item.get("code_snippet")
-            if snippet and code_snip and code_snip.lines:
-                sub_indent = "    " if is_last else "│   "
-                lines.append(code_snip.format_text(prefix=sub_indent + "  "))
+
+            if is_md:
+                # Markdown 格式
+                site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
+                site_info = f" *(調用點: {', '.join(site_strs)})*" if site_strs else ""
+                if mode == "simple":
+                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(f"  ```{sym.language or ''}")
+                        for ln, code in code_snip.lines:
+                            mark = ">" if ln == code_snip.target_line else " "
+                            node_lines.append(f"  {mark} {ln:5d} | {code}")
+                        node_lines.append("  ```")
+                elif mode == "detail":
+                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**)")
+                    if sym.signature:
+                        node_lines.append(f"  - **簽名**: `{sym.signature}`")
+                    if sites:
+                        sites_desc = ", ".join(f"Line {s['line_number']}" + (f" (scope: `{s['scope']}`)" if s.get("scope") else "") for s in sites)
+                        node_lines.append(f"  - **調用點**: {sites_desc}")
+                    if code_snip and code_snip.docstring_summary:
+                        node_lines.append(f"  - **摘要**: {code_snip.docstring_summary}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(f"  - **調用代碼切片**:")
+                        node_lines.append(f"    ```{sym.language or ''}")
+                        for ln, code in code_snip.lines:
+                            mark = ">" if ln == code_snip.target_line else " "
+                            node_lines.append(f"    {mark} {ln:5d} | {code}")
+                        node_lines.append("    ```")
+                else:  # auto
+                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(f"  ```{sym.language or ''}")
+                        for ln, code in code_snip.lines:
+                            mark = ">" if ln == code_snip.target_line else " "
+                            node_lines.append(f"  {mark} {ln:5d} | {code}")
+                        node_lines.append("  ```")
+            else:
+                # Text / ANSI 格式
+                site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
+                site_info = f" [調用點: {', '.join(site_strs)}]" if site_strs else ""
+                if mode == "simple":
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                elif mode == "detail":
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind.upper()}: {sym.name})")
+                    if sym.signature:
+                        node_lines.append(f"{pipe}   簽名: {sym.signature}")
+                    if sites:
+                        sites_desc = ", ".join(f"Line {s['line_number']}" + (f" (scope: {s['scope']})" if s.get("scope") else "") for s in sites)
+                        node_lines.append(f"{pipe}   調用位置: {sites_desc}")
+                    if code_snip and code_snip.docstring_summary:
+                        node_lines.append(f"{pipe}   摘要: {code_snip.docstring_summary}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(f"{pipe}   調用代碼切片:")
+                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                else:  # auto
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+
+            lines.extend(node_lines)
+            rendered_nodes += 1
+
+            if limit_mode == "auto":
+                current_chars = sum(len(l) + 1 for l in lines)
+                if current_chars >= 3500:
+                    budget_reached = True
+                    remaining_count = len(filtered_callers) - rendered_nodes
+                    break
+
+        if budget_reached and remaining_count > 0:
+            if is_md:
+                lines.append(f"\n> 💡 *... (已達 3500 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 `--limit=N` 查看更多)*")
+            else:
+                lines.append(f"\n... (已達 3500 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 --limit=<N> 查看完整輸出)")
 
         return "\n".join(lines)
 
-    def format_callees_output(self, result: Dict[str, Any], snippet: bool = True) -> str:
-        """格式化 callees 輸出為帶有 RFC 8089 可點擊連結的 Markdown 報告"""
+    def format_callees_output(
+        self,
+        result: Dict[str, Any],
+        detail_mode: str = "auto",
+        snippet: bool = True,
+        format_type: str = "text",
+        limit_mode: Union[int, str] = "auto",
+    ) -> str:
+        """格式化 callees (被調用者) 輸出為 ANSI 樹狀圖或 Markdown 格式"""
         target = result.get("target_symbol")
+        is_md = (format_type == "md")
         if not target:
-            return f"[knowledge-db] 查無相符符號: '{result.get('target_query')}'"
+            if is_md:
+                return f"### 🔍 被調用鏈查詢: `{result.get('target_query')}` (未找到相符符號)"
+            return f"[knowledge-db] 查無相符來源符號: '{result.get('target_query')}'"
 
-        target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
-        lines = [
-            f"[knowledge-db] 符號 '{target.name}' 內部調用之下游被調用者清單 (Callees - 共 {result.get('total_callees', 0)} 個被調用點):",
-            "-" * 80,
-            f"📍 來源符號: `{target.name}` ({target_link})",
-        ]
+        mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
+        if mode not in ("simple", "detail"):
+            mode = "auto"
 
         callees = result.get("callees", [])
-        if not callees:
-            lines.append("  (內部無跨符號調用點)")
+        total_callees = len(callees)
+        target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
+
+        # 1. 限制模式處理
+        filtered_callees = callees
+        if isinstance(limit_mode, int) and limit_mode > 0:
+            filtered_callees = callees[:limit_mode]
+
+        # 2. Header
+        mode_desc = "清單模式" if mode == "simple" else ("詳細模式" if mode == "detail" else ("預覽模式" if snippet else ""))
+        desc_tag = f"，{mode_desc}" if mode_desc else ""
+
+        if is_md:
+            header = f"### 📥 被調用鏈 (Callees): `{target.name}` (共找到 {total_callees} 個被調用符號{desc_tag}):\n\n"
+            header += f"- **📍 來源符號**: `{target.name}` ({target.kind}) 檔案: {target_link}"
+            if target.signature:
+                header += f"\n  - **簽名**: `{target.signature}`"
+            lines = [header, ""]
+        else:
+            header = f"[knowledge-db] 符號 '{target.name}' 內部調用之下游被調用者清單 (Callees - 共 {total_callees} 個項目{desc_tag}):"
+            lines = [
+                header,
+                "-" * 85,
+                f"📍 來源符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
+            ]
+            if mode == "detail" and target.signature:
+                lines.append(f"   簽名: {target.signature}")
+            lines.append("")
+
+        if not filtered_callees:
+            empty_msg = "  (內部無跨符號調用點)" if not is_md else "> *(內部無跨符號調用點)*"
+            lines.append(empty_msg)
             return "\n".join(lines)
 
-        for idx, item in enumerate(callees, start=1):
-            sym = item["symbol"]
-            link_str = self.format_file_link(sym.file_path, line=sym.line_number)
-            is_last = (idx == len(callees))
-            branch = "└──" if is_last else "├──"
-            lines.append(f"{branch} 🔹 {link_str} (`{sym.name}`)")
+        rendered_nodes = 0
+        budget_reached = False
+        remaining_count = 0
 
+        for idx, item in enumerate(filtered_callees, start=1):
+            node_lines = []
+            sym = item["symbol"]
+            sites = item.get("call_sites", [])
+            link_str = self.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
+            is_last = (idx == len(filtered_callees))
+            branch = "└──" if is_last else "├──"
+            pipe = "   " if is_last else "│  "
             code_snip = item.get("code_snippet")
-            if snippet and code_snip and code_snip.lines:
-                sub_indent = "    " if is_last else "│   "
-                lines.append(code_snip.format_text(prefix=sub_indent + "  "))
+
+            if is_md:
+                # Markdown 格式
+                site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
+                site_info = f" *(調用點: {', '.join(site_strs)})*" if site_strs else ""
+                if mode == "simple":
+                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(f"  ```{sym.language or ''}")
+                        for ln, code in code_snip.lines:
+                            mark = ">" if ln == code_snip.target_line else " "
+                            node_lines.append(f"  {mark} {ln:5d} | {code}")
+                        node_lines.append("  ```")
+                elif mode == "detail":
+                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**)")
+                    if sym.signature:
+                        node_lines.append(f"  - **簽名**: `{sym.signature}`")
+                    if sites:
+                        sites_desc = ", ".join(f"Line {s['line_number']}" + (f" (scope: `{s['scope']}`)" if s.get("scope") else "") for s in sites)
+                        node_lines.append(f"  - **調用點**: {sites_desc}")
+                    if code_snip and code_snip.docstring_summary:
+                        node_lines.append(f"  - **摘要**: {code_snip.docstring_summary}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(f"  - **目標實作切片**:")
+                        node_lines.append(f"    ```{sym.language or ''}")
+                        for ln, code in code_snip.lines:
+                            mark = ">" if ln == code_snip.target_line else " "
+                            node_lines.append(f"    {mark} {ln:5d} | {code}")
+                        node_lines.append("    ```")
+                else:  # auto
+                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(f"  ```{sym.language or ''}")
+                        for ln, code in code_snip.lines:
+                            mark = ">" if ln == code_snip.target_line else " "
+                            node_lines.append(f"  {mark} {ln:5d} | {code}")
+                        node_lines.append("  ```")
+            else:
+                # Text / ANSI 格式
+                site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
+                site_info = f" [調用點: {', '.join(site_strs)}]" if site_strs else ""
+                if mode == "simple":
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                elif mode == "detail":
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind.upper()}: {sym.name})")
+                    if sym.signature:
+                        node_lines.append(f"{pipe}   簽名: {sym.signature}")
+                    if sites:
+                        sites_desc = ", ".join(f"Line {s['line_number']}" + (f" (scope: {s['scope']})" if s.get("scope") else "") for s in sites)
+                        node_lines.append(f"{pipe}   調用位置: {sites_desc}")
+                    if code_snip and code_snip.docstring_summary:
+                        node_lines.append(f"{pipe}   摘要: {code_snip.docstring_summary}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(f"{pipe}   目標實作切片:")
+                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                else:  # auto
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
+                    if snippet and code_snip and code_snip.lines:
+                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+
+            lines.extend(node_lines)
+            rendered_nodes += 1
+
+            if limit_mode == "auto":
+                current_chars = sum(len(l) + 1 for l in lines)
+                if current_chars >= 3500:
+                    budget_reached = True
+                    remaining_count = len(filtered_callees) - rendered_nodes
+                    break
+
+        if budget_reached and remaining_count > 0:
+            if is_md:
+                lines.append(f"\n> 💡 *... (已達 3500 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 `--limit=N` 查看更多)*")
+            else:
+                lines.append(f"\n... (已達 3500 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 --limit=<N> 查看完整輸出)")
 
         return "\n".join(lines)
 
-    def format_impact_output(self, result: Dict[str, Any]) -> str:
-        """格式化 impact 影響面分析輸出為階層樹狀圖"""
+    def format_impact_output(
+        self,
+        result: Dict[str, Any],
+        detail_mode: str = "auto",
+        format_type: str = "text",
+        limit_mode: Union[int, str] = "auto",
+    ) -> str:
+        """格式化 impact (重構影響面拓撲) 輸出為 ANSI 階層樹或 Markdown 格式"""
         target = result.get("target_symbol")
+        is_md = (format_type == "md")
         if not target:
-            return f"[knowledge-db] 查無相符符號: '{result.get('target_query')}'"
+            if is_md:
+                return f"### 💥 影響面拓撲查詢: `{result.get('target_query')}` (未找到相符符號)"
+            return f"[knowledge-db] 查無相符目標符號: '{result.get('target_query')}'"
+
+        mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
+        if mode not in ("simple", "detail"):
+            mode = "auto"
 
         target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
         depth = result.get("max_depth", 2)
         total_syms = result.get("total_impacted_symbols", 0)
         total_files = result.get("total_impacted_files", 0)
 
-        lines = [
-            f"[knowledge-db] 符號 '{target.name}' 重構影響面擴散拓撲 (Blast Radius: {depth} 階深度, 影響 {total_syms} 個符號 / {total_files} 個檔案):",
-            "-" * 80,
-            f"📍 目標核心符號: `{target.name}` ({target_link})",
-        ]
+        mode_desc = "清單模式" if mode == "simple" else ("詳細模式" if mode == "detail" else "")
+        desc_tag = f"，{mode_desc}" if mode_desc else ""
+
+        if is_md:
+            header = f"### 💥 重構影響面擴散拓撲 (Impact Analysis): `{target.name}`{desc_tag}\n\n"
+            header += f"- **📍 目標核心符號**: `{target.name}` ({target.kind}) 檔案: {target_link}\n"
+            header += f"- **📊 影響半徑**: 擴散深度 `{depth}` 階，波及 `{total_syms}` 個符號 / `{total_files}` 個實體檔案"
+            lines = [header, ""]
+        else:
+            header = f"[knowledge-db] 符號 '{target.name}' 重構影響面擴散拓撲 (Blast Radius: {depth} 階深度, 影響 {total_syms} 個符號 / {total_files} 個檔案{desc_tag}):"
+            lines = [
+                header,
+                "-" * 85,
+                f"📍 目標核心符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
+            ]
+            if mode == "detail" and target.signature:
+                lines.append(f"   簽名: {target.signature}")
+            lines.append("")
 
         layers = result.get("layers", {})
         if not layers:
-            lines.append("  (未發現上游依賴影響點，修改安全)")
+            empty_msg = "  (未發現上游依賴影響點，修改安全)" if not is_md else "> *(未發現上游依賴影響點，修改安全)*"
+            lines.append(empty_msg)
             return "\n".join(lines)
+
+        rendered_nodes = 0
+        budget_reached = False
+        remaining_count = 0
+        max_items = limit_mode if (isinstance(limit_mode, int) and limit_mode > 0) else None
 
         sorted_depths = sorted(layers.keys())
         for d_idx, d in enumerate(sorted_depths):
             syms = layers[d]
             is_last_depth = (d_idx == len(sorted_depths) - 1)
             depth_branch = "└──" if is_last_depth else "├──"
-            tag = "🟢 1 階直接影響 (Direct Callers)" if d == 1 else f"🟡 {d} 階間接影響 (Transitive Callers Level {d})"
-            lines.append(f"{depth_branch} {tag} - {len(syms)} 個符號:")
+            tag_name = f"{d} 階直接影響 (Direct Callers)" if d == 1 else f"{d} 階間接影響 (Transitive Callers Level {d})"
+
+            if is_md:
+                lines.append(f"#### 階層 {d}：{tag_name} ({len(syms)} 個符號)")
+            else:
+                icon = "🟢" if d == 1 else "🟡"
+                lines.append(f"{depth_branch} {icon} {tag_name} - {len(syms)} 個符號:")
 
             sub_prefix = "    " if is_last_depth else "│   "
             for s_idx, s in enumerate(syms):
+                if max_items is not None and rendered_nodes >= max_items:
+                    break
+
                 is_last_sym = (s_idx == len(syms) - 1)
                 sub_branch = "└──" if is_last_sym else "├──"
-                link_str = self.format_file_link(s.file_path, line=s.line_number)
-                lines.append(f"{sub_prefix}{sub_branch} {link_str} (`{s.name}`)")
+                sub_pipe = "   " if is_last_sym else "│  "
+                link_str = self.format_file_link(s.file_path, line=s.line_number, end_line=s.end_line)
+
+                if is_md:
+                    if mode == "detail":
+                        lines.append(f"- **#{rendered_nodes+1:02d}** 檔案: {link_str} (`{s.kind}`: **{s.name}**)")
+                        if s.signature:
+                            lines.append(f"  - **簽名**: `{s.signature}`")
+                        if s.docstring:
+                            doc_sum = s.docstring.strip().split("\n")[0]
+                            lines.append(f"  - **摘要**: {doc_sum}")
+                    else:
+                        lines.append(f"- **#{rendered_nodes+1:02d}** 檔案: {link_str} (`{s.kind}`: **{s.name}**)")
+                else:
+                    if mode == "detail":
+                        lines.append(f"{sub_prefix}{sub_branch} #{rendered_nodes+1:02d} 檔案: {link_str} ({s.kind.upper()}: {s.name})")
+                        if s.signature:
+                            lines.append(f"{sub_prefix}{sub_pipe}   簽名: {s.signature}")
+                        if s.docstring:
+                            doc_sum = s.docstring.strip().split("\n")[0]
+                            lines.append(f"{sub_prefix}{sub_pipe}   摘要: {doc_sum}")
+                    else:
+                        lines.append(f"{sub_prefix}{sub_branch} #{rendered_nodes+1:02d} 檔案: {link_str} ({s.kind}:{s.name})")
+
+                rendered_nodes += 1
+
+                if limit_mode == "auto":
+                    current_chars = sum(len(l) + 1 for l in lines)
+                    if current_chars >= 3500:
+                        budget_reached = True
+                        remaining_count = total_syms - rendered_nodes
+                        break
+
+            if budget_reached or (max_items is not None and rendered_nodes >= max_items):
+                break
+
+        if budget_reached and remaining_count > 0:
+            if is_md:
+                lines.append(f"\n> 💡 *... (已達 3500 字元自適應上限，尚有 {remaining_count} 個受影響符號；可附加 `--limit=N` 查看更多)*")
+            else:
+                lines.append(f"\n... (已達 3500 字元自適應上限，尚有 {remaining_count} 個受影響符號；可附加 --limit=<N> 查看完整輸出)")
+
+        return "\n".join(lines)
+
+    def format_search_output(
+        self,
+        results: List[AggregatedFileResult],
+        query: str = "",
+        detail_mode: str = "auto",
+        snippet: bool = False,
+        format_type: str = "text",
+        limit_mode: Union[int, str] = "auto",
+    ) -> str:
+        """
+        格式化 search 檢索結果為結構化終端或 Markdown 報告 (支援 auto 自適應斷層截斷與 3500 字元剛性預算守門)。
+        """
+        if not results:
+            if format_type == "md":
+                return f"### 🔍 知識庫檢索: `{query}` (未找到符合的結果)"
+            return f"[knowledge-db] 檢索查詢: '{query}' (未找到符合的結果)"
+
+        # 1. 自適應分數斷層過濾 (Adaptive Score Cutoff)
+        filtered_results: List[AggregatedFileResult] = list(results)
+        if limit_mode == "auto":
+            top_score = results[0].total_score
+            min_thresh = max(0.5, top_score * 0.20)
+            adapted = []
+            for i, r in enumerate(results):
+                if r.total_score < min_thresh:
+                    break
+                if i >= 3:
+                    prev_score = results[i - 1].total_score
+                    if r.total_score < prev_score * 0.40 or r.total_score < top_score * 0.15:
+                        break
+                adapted.append(r)
+                if len(adapted) >= 15:
+                    break
+            filtered_results = adapted if adapted else [results[0]]
+        elif isinstance(limit_mode, int) and limit_mode > 0:
+            filtered_results = results[:limit_mode]
+
+        total_nodes = len(filtered_results)
+        is_md = (format_type == "md")
+        mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
+        if mode not in ("simple", "detail"):
+            mode = "auto"
+
+        # 2. 決定 Header
+        mode_desc = ""
+        if mode == "simple":
+            mode_desc = "清單模式"
+        elif mode == "detail":
+            mode_desc = "詳細模式"
+        elif snippet:
+            mode_desc = "預覽模式"
+
+        desc_tag = f"，{mode_desc}" if mode_desc else ""
+
+        if is_md:
+            header = f"### 🔍 知識庫檢索: `{query}` (共找到 {total_nodes} 個檔案節點{desc_tag}):\n"
+        else:
+            header = f"[knowledge-db] 檢索查詢: '{query}' (共找到 {total_nodes} 個檔案節點{desc_tag}):"
+
+        lines = [header]
+        if not is_md and mode in ("detail", "auto") and snippet:
+            lines.append("=" * 85)
+
+        # 3. 逐檔案節點渲染 (含 3500 字元預算守門)
+        rendered_nodes = 0
+        budget_reached = False
+        remaining_count = 0
+
+        for rank, res in enumerate(filtered_results, start=1):
+            node_lines = []
+            first_sym = res.items[0].symbol if res.items else None
+            first_line = first_sym.line_number if first_sym else None
+            first_end = first_sym.end_line if first_sym else None
+            file_link = self.format_file_link(res.file_path, line=first_line, end_line=first_end)
+
+            if is_md:
+                # Markdown 格式
+                if mode == "simple":
+                    node_lines.append(f"- **#{rank:02d}** 檔案: {file_link}")
+                    for itm_idx, itm in enumerate(res.items, start=1):
+                        sym = itm.symbol
+                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        node_lines.append(f"  - `{sym.kind.upper()}`: **{sym.name}** ({line_range})")
+                        if snippet and itm.code_snippet and itm.code_snippet.lines:
+                            lang = res.language or ""
+                            node_lines.append(f"    ```{lang}")
+                            for ln, code in itm.code_snippet.lines:
+                                mark = ">" if ln == itm.code_snippet.target_line else " "
+                                node_lines.append(f"    {mark} {ln:5d} | {code}")
+                            node_lines.append("    ```")
+                elif mode == "detail":
+                    node_lines.append(f"#### #{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} *({res.language}, {len(res.items)} 個命中項目)*")
+                    for itm_idx, itm in enumerate(res.items, start=1):
+                        sym = itm.symbol
+                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        node_lines.append(f"- **#{rank:02d}.{itm_idx}** [{itm.score:05.2f}] `{sym.kind.upper()}`: **{sym.name}** ({line_range})")
+                        if sym.signature:
+                            node_lines.append(f"  - **簽名**: `{sym.signature}`")
+                        if itm.code_snippet and itm.code_snippet.docstring_summary:
+                            node_lines.append(f"  - **摘要**: {itm.code_snippet.docstring_summary}")
+                        elif itm.snippet:
+                            node_lines.append(f"  - **摘要**: {itm.snippet}")
+                        if itm.matched_terms:
+                            node_lines.append(f"  - **命中詞**: {', '.join(itm.matched_terms)}")
+                        if snippet and itm.code_snippet and itm.code_snippet.lines:
+                            lang = res.language or ""
+                            node_lines.append(f"  - **代碼切片** ({line_range}):")
+                            node_lines.append(f"    ```{lang}")
+                            for ln, code in itm.code_snippet.lines:
+                                mark = ">" if ln == itm.code_snippet.target_line else " "
+                                node_lines.append(f"    {mark} {ln:5d} | {code}")
+                            node_lines.append("    ```")
+                else:  # auto
+                    node_lines.append(f"- **#{rank:02d}** [{res.total_score:05.2f}] 檔案: {file_link} *({res.language})*")
+                    for itm_idx, itm in enumerate(res.items, start=1):
+                        sym = itm.symbol
+                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        node_lines.append(f"  - **#{rank:02d}.{itm_idx}** [{itm.score:05.2f}] `{sym.kind.upper()}`: **{sym.name}** ({line_range})")
+                        if sym.signature:
+                            node_lines.append(f"    - **簽名**: `{sym.signature}`")
+                        if itm.code_snippet and itm.code_snippet.docstring_summary:
+                            node_lines.append(f"    - **摘要**: {itm.code_snippet.docstring_summary}")
+                        elif itm.snippet:
+                            node_lines.append(f"    - **摘要**: {itm.snippet}")
+                        if snippet and itm.code_snippet and itm.code_snippet.lines:
+                            lang = res.language or ""
+                            node_lines.append(f"    ```{lang}")
+                            for ln, code in itm.code_snippet.lines:
+                                mark = ">" if ln == itm.code_snippet.target_line else " "
+                                node_lines.append(f"    {mark} {ln:5d} | {code}")
+                            node_lines.append("    ```")
+            else:
+                # Text / ANSI 終端格式
+                if mode == "simple":
+                    node_lines.append(f"#{rank:02d} 檔案: {file_link}")
+                    for itm_idx, itm in enumerate(res.items, start=1):
+                        is_last = (itm_idx == len(res.items))
+                        branch = "└──" if is_last else "├──"
+                        pipe = "   " if is_last else "│  "
+                        sym = itm.symbol
+                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        node_lines.append(f"  {branch} {sym.kind.upper()}: {sym.name} ({line_range})")
+                        if snippet and itm.code_snippet and itm.code_snippet.lines:
+                            node_lines.append(itm.code_snippet.format_text(prefix=f"  {pipe}     "))
+                elif mode == "detail":
+                    node_lines.append(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} ({len(res.items)} 個命中項目, {res.language})")
+                    for itm_idx, itm in enumerate(res.items, start=1):
+                        is_last = (itm_idx == len(res.items))
+                        branch = "└──" if is_last else "├──"
+                        pipe = "   " if is_last else "│  "
+                        sym = itm.symbol
+                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {sym.kind.upper()}: {sym.name} ({line_range})")
+                        if sym.signature:
+                            node_lines.append(f"  {pipe}   簽名: {sym.signature}")
+                        if itm.code_snippet and itm.code_snippet.docstring_summary:
+                            node_lines.append(f"  {pipe}   摘要: {itm.code_snippet.docstring_summary}")
+                        elif itm.snippet:
+                            node_lines.append(f"  {pipe}   摘要: {itm.snippet}")
+                        if itm.matched_terms:
+                            node_lines.append(f"  {pipe}   命中詞: {', '.join(itm.matched_terms)}")
+                        if snippet and itm.code_snippet and itm.code_snippet.lines:
+                            node_lines.append(f"  {pipe}   代碼切片 ({line_range}):")
+                            node_lines.append(itm.code_snippet.format_text(prefix=f"  {pipe}     "))
+                    node_lines.append("-" * 85)
+                else:  # auto
+                    if snippet:
+                        node_lines.append(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} ({len(res.items)} 個命中項目, {res.language})")
+                        for itm_idx, itm in enumerate(res.items, start=1):
+                            is_last = (itm_idx == len(res.items))
+                            branch = "└──" if is_last else "├──"
+                            pipe = "   " if is_last else "│  "
+                            sym = itm.symbol
+                            line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                            node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {sym.kind.upper()}: {sym.name} ({line_range})")
+                            if sym.signature:
+                                node_lines.append(f"  {pipe}   簽名: {sym.signature}")
+                            if itm.code_snippet and itm.code_snippet.docstring_summary:
+                                node_lines.append(f"  {pipe}   摘要: {itm.code_snippet.docstring_summary}")
+                            elif itm.snippet:
+                                node_lines.append(f"  {pipe}   摘要: {itm.snippet}")
+                            if itm.code_snippet and itm.code_snippet.lines:
+                                node_lines.append(f"  {pipe}   代碼切片 ({line_range}):")
+                                node_lines.append(itm.code_snippet.format_text(prefix=f"  {pipe}     "))
+                        node_lines.append("-" * 85)
+                    else:
+                        if len(res.items) == 1:
+                            sym = res.items[0].symbol
+                            sym_link = self.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
+                            node_lines.append(f"#{rank:02d} 檔案: {sym_link} ({sym.kind}:{sym.name}) [{res.total_score:05.2f}]")
+                        else:
+                            node_lines.append(f"#{rank:02d} 檔案: {file_link} (總分: {res.total_score:05.2f}, {len(res.items)} 項命中):")
+                            for itm_idx, itm in enumerate(res.items, start=1):
+                                is_last = (itm_idx == len(res.items))
+                                branch = "└──" if is_last else "├──"
+                                sym = itm.symbol
+                                sym_link = self.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
+                                node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} {sym_link} ({sym.kind}:{sym.name}) [{itm.score:05.2f}]")
+
+            lines.extend(node_lines)
+            rendered_nodes += 1
+
+            # 檢查 3500 字元預算上限
+            if limit_mode == "auto":
+                current_chars = sum(len(l) + 1 for l in lines)
+                if current_chars >= 3500:
+                    budget_reached = True
+                    remaining_count = len(filtered_results) - rendered_nodes
+                    break
+
+        if budget_reached and remaining_count > 0:
+            if is_md:
+                lines.append(f"\n> 💡 *... (已達 3500 字元自適應上限，尚有 {remaining_count} 個檔案結果；可附加 `--limit=N` 查看更多)*")
+            else:
+                lines.append(f"\n... (已達 3500 字元自適應上限，尚有 {remaining_count} 個檔案結果；可附加 --limit=<N> 查看完整輸出)")
 
         return "\n".join(lines)
 

@@ -267,7 +267,8 @@ class TestRetrieval(YSCBTestCase):
             # 2. 序列化測試 (FR-05)
             s_dict = snip.to_dict()
             self.assertEqual(s_dict["target_line"], 4)
-            self.assertIn("formatted_code", s_dict)
+            self.assertIn("raw_code", s_dict)
+            self.assertIn("target_func", s_dict["raw_code"])
 
             # 3. 檔案不存在測試 (ET-01, EC-01)
             snip_missing = extractor.extract("non_existent.py", line_number=10)

@@ -107,22 +107,27 @@ class CodeSnippet:
         return "\n".join(formatted_lines)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        """產出精簡且完備之結構化字典 (提供 raw_code 與行號區間)"""
+        raw_code = "\n".join(txt for _, txt in self.lines)
+        res: Dict[str, Any] = {
             "start_line": self.start_line,
             "end_line": self.end_line,
             "target_line": self.target_line,
-            "docstring_summary": self.docstring_summary,
-            "is_truncated": self.is_truncated,
-            "error": self.error,
-            "lines": [{"line_number": ln, "content": txt} for ln, txt in self.lines],
-            "formatted_code": self.format_text(prefix=""),
+            "raw_code": raw_code,
         }
+        if self.docstring_summary:
+            res["docstring_summary"] = self.docstring_summary
+        if self.is_truncated:
+            res["is_truncated"] = True
+        if self.error:
+            res["error"] = self.error
+        return res
 
 
 class SnippetExtractor:
-    """原始碼片段延遲提取器 (安全切片讀取與編碼容錯)"""
+    """原始碼片段延遲提取器 (安全切片讀取、符號邊界感知與編碼容錯)"""
 
-    def __init__(self, workspace_root: Optional[Union[str, Path]] = None, max_lines: int = 12):
+    def __init__(self, workspace_root: Optional[Union[str, Path]] = None, max_lines: int = 30):
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self.max_lines = max_lines
 
@@ -153,11 +158,12 @@ class SnippetExtractor:
         self,
         file_path: Union[str, Path],
         line_number: int,
+        end_line: Optional[int] = None,
         context_before: int = 2,
-        context_after: int = 4,
+        context_after: int = 8,
         docstring: str = "",
     ) -> CodeSnippet:
-        """自實體檔案安全切片讀取原始碼區塊。"""
+        """自實體檔案安全切片讀取原始碼區塊 (支援完整符號邊界感知)。"""
         real_path = self.resolve_file_path(file_path)
         doc_summary = docstring.strip().split("\n")[0] if docstring else ""
 
@@ -165,7 +171,7 @@ class SnippetExtractor:
             return CodeSnippet(
                 lines=[],
                 start_line=line_number,
-                end_line=line_number,
+                end_line=end_line or line_number,
                 target_line=line_number,
                 docstring_summary=doc_summary,
                 error="File not found",
@@ -178,7 +184,7 @@ class SnippetExtractor:
             return CodeSnippet(
                 lines=[],
                 start_line=line_number,
-                end_line=line_number,
+                end_line=end_line or line_number,
                 target_line=line_number,
                 docstring_summary=doc_summary,
                 error=f"Read error: {e}",
@@ -196,8 +202,14 @@ class SnippetExtractor:
 
         target_ln = max(1, min(line_number, total_lines))
         start_ln = max(1, target_ln - context_before)
-        end_ln = min(total_lines, target_ln + context_after)
+        
+        # 若有提供 end_line，以 end_line 為目標切片邊界
+        if end_line is not None and end_line >= target_ln:
+            target_end_ln = min(total_lines, end_line + 1)
+        else:
+            target_end_ln = min(total_lines, target_ln + context_after)
 
+        end_ln = target_end_ln
         is_trunc = False
         if (end_ln - start_ln + 1) > self.max_lines:
             end_ln = start_ln + self.max_lines - 1
