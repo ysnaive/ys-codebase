@@ -6,19 +6,22 @@
       "description": "Agent 專案核心原則與防呆紀律規範"
     },
     {
-      "type": "standard",
-      "source": "module://agents-workflow/assets/standards/AgentsCliGuild.md",
-      "description": "YSCB CLI 指令防呆與語意情境對照指南"
+      "type": "skill",
+      "name": "yscb-cli-guild",
+      "source": "module://agents-workflow/assets/skills/yscb-cli-guild",
+      "description": "YSCB CLI 指令防呆與語意情境對照指南。當需要查詢、驗證或執行 yscb 命令列指令、查閱 CLI 權限矩陣（自主安全/階段條件/授權守門）與防呆規範時觸發。"
     },
     {
-      "type": "standard",
-      "source": "module://agents-workflow/assets/standards/DocumentationStandards.md",
-      "description": "專案文檔標準規範"
+      "type": "skill",
+      "name": "documentation",
+      "source": "module://agents-workflow/assets/skills/documentation",
+      "description": "專案文檔與知識庫架構規範指南。當有閱讀、搜尋、查閱、撰寫、更新或維護專案 `__${workflow.docs://}__` 知識庫文檔時觸發。"
     },
     {
-      "type": "standard",
-      "source": "module://agents-workflow/assets/standards/DevelopmentStandards.md",
-      "description": "標準開發流程手冊與作業規範"
+      "type": "skill",
+      "name": "development-sop",
+      "source": "module://agents-workflow/assets/skills/development-sop",
+      "description": "專案標準開發流程 (SOP 0~7) 與分流規範指南。當需要開立新計畫、評估分流矩陣 (Full Track/Fast Track/Umbrella)、推進或執行各階段開發任務 (P00~P07, FT-1~3)、查閱追溯鏈 (FR/DR/FT) 或模板指針時觸發。"
     },
     {
       "type": "workflow",
@@ -204,12 +207,12 @@
       "description": "專案特化工程規範注入錨點（位於 DevelopmentStandards.md 尾部）"
     },
     {
-      "value": "WORKFLOW_DOCS_STANDARDS",
-      "description": "專案特化文檔規範注入錨點（位於 DocumentationStandards.md 尾部）"
-    },
-    {
       "value": "AGENTS_STANDARDS",
       "description": "Agent 行為準則擴充注入錨點（位於 AgentsStandards.md 尾部）"
+    },
+    {
+      "value": "AGENTS_SKILL_ROUTING",
+      "description": "條件式技能分流導航矩陣擴充錨點（位於 AgentsStandards.md 的 Markdown 表格行內部，供下游模組以 |cond|skill name| 方式擴充）"
     },
     {
       "value": "DYNAMIC_CONTEXT_MAP",
@@ -237,7 +240,7 @@
     },
     {
       "value": "PHASE00_AGENTS_GUILD",
-      "description": "Phase 0 JIT 註解內部擴充注入錨點（位於 P00_discuss.md 頂部）"
+      "description": "Phase 0 階段專屬指引擴充注入錨點（位於 development-sop/references/phase_00_discuss.md）"
     },
     {
       "value": "PHASE00_TEMPLATE",
@@ -249,7 +252,7 @@
     },
     {
       "value": "PHASE01_AGENTS_GUILD",
-      "description": "Phase 1 JIT 註解內部擴充注入錨點（位於 P01_requirements_spec.md 頂部）"
+      "description": "Phase 1 階段專屬指引擴充注入錨點（位於 development-sop/references/phase_01_requirements.md）"
     },
     {
       "value": "PHASE01_TEMPLATE",
@@ -261,7 +264,7 @@
     },
     {
       "value": "PHASE02_AGENTS_GUILD",
-      "description": "Phase 2 JIT 註解內部擴充注入錨點（位於 P02_architecture_plan.md 頂部）"
+      "description": "Phase 2 階段專屬指引擴充注入錨點（位於 development-sop/references/phase_02_architecture.md）"
     },
     {
       "value": "PHASE02_TEMPLATE",
@@ -273,7 +276,7 @@
     },
     {
       "value": "PHASE03_AGENTS_GUILD",
-      "description": "Phase 3 JIT 註解內部擴充注入錨點（位於 P03_api_spec.md 頂部）"
+      "description": "Phase 3 階段專屬指引擴充注入錨點（位於 development-sop/references/phase_03_api_spec.md）"
     },
     {
       "value": "PHASE03_TEMPLATE",
@@ -285,7 +288,7 @@
     },
     {
       "value": "PHASE04_AGENTS_GUILD",
-      "description": "Phase 4 JIT 註解內部擴充注入錨點（位於 P04_implementation_plan.md 頂部）"
+      "description": "Phase 4 階段專屬指引擴充注入錨點（位於 development-sop/references/phase_04_plan.md）"
     },
     {
       "value": "PHASE04_TEMPLATE",
@@ -297,7 +300,7 @@
     },
     {
       "value": "PHASE05_AGENTS_GUILD",
-      "description": "Phase 5 JIT 註解內部擴充注入錨點（位於 P05_task.md 頂部）"
+      "description": "Phase 5 階段專屬指引擴充注入錨點（位於 development-sop/references/phase_05_task.md）"
     },
     {
       "value": "PHASE05_TEMPLATE",
@@ -309,7 +312,7 @@
     },
     {
       "value": "PHASE06_AGENTS_GUILD",
-      "description": "Phase 6 JIT 註解內部擴充注入錨點（位於 P06_test_plan.md 頂部）"
+      "description": "Phase 6 階段專屬指引擴充注入錨點（位於 development-sop/references/phase_06_test.md）"
     },
     {
       "value": "PHASE06_TEMPLATE",
@@ -321,7 +324,7 @@
     },
     {
       "value": "PHASE07_AGENTS_GUILD",
-      "description": "Phase 7 JIT 註解內部擴充注入錨點（位於 P07_walkthrough.md 頂部）"
+      "description": "Phase 7 階段專屬指引擴充注入錨點（位於 development-sop/references/phase_07_walkthrough.md）"
     },
     {
       "value": "PHASE07_TEMPLATE",
@@ -389,14 +392,14 @@
     },
     {
       "value": "AGENTS_CLI_GUILD",
-      "description": "YSCB CLI 指令防呆手冊動態注入錨點（位於 AgentsCliGuild.md）"
+      "description": "YSCB CLI 指令防呆手冊動態注入錨點（位於 yscb-cli-guild/SKILL.md）"
     }
   ],
   "insert": [
     {
       "type": "uri",
       "token": "DEVELOPMENT_STANDARDS",
-      "value": "module://agents-workflow/assets/standards/DevelopmentStandards.md",
+      "value": "module://agents-workflow/assets/skills/development-sop/SKILL.md",
       "mode": "replace"
     },
     {
@@ -428,6 +431,7 @@
     {
       "name": "antigravity",
       "description": "Google Antigravity IDE 原生 Slash Commands 與標準規範輸出",
+      "agents_md": "project://AGENTS.md",
       "projections": {
         "workflow": {
           "target_dir": "project://.agents/workflows",
@@ -445,12 +449,17 @@
         "standard": {
           "target_dir": "project://.agents/.yscb/standards",
           "extension": ".md"
+        },
+        "skill": {
+          "target_dir": "project://.agents/skills/{export.name}",
+          "extension": ".md"
         }
       }
     },
     {
       "name": "claude",
       "description": "Anthropic Claude Code 原生 Slash Commands 與標準規範輸出",
+      "agents_md": "project://CLAUDE.md",
       "projections": {
         "workflow": {
           "target_dir": "project://.claude/commands",
@@ -468,15 +477,20 @@
         "standard": {
           "target_dir": "project://.claude/.yscb/standards",
           "extension": ".md"
+        },
+        "skill": {
+          "target_dir": "project://.claude/skills/{export.name}",
+          "extension": ".md"
         }
       }
     },
     {
       "name": "codex",
       "description": "OpenAI Codex CLI / VS Code Extension 原生工作流與標準規範輸出",
+      "agents_md": "project://AGENTS.md",
       "projections": {
         "workflow": {
-          "target_dir": "project://.codex/workflows",
+          "target_dir": "project://.agents/workflows",
           "extension": ".md",
           "header": [
             "---",
@@ -485,11 +499,15 @@
           ]
         },
         "template": {
-          "target_dir": "project://.codex/.yscb/templates",
+          "target_dir": "project://.agents/.yscb/templates",
           "extension": ".md"
         },
         "standard": {
-          "target_dir": "project://.codex/.yscb/standards",
+          "target_dir": "project://.agents/.yscb/standards",
+          "extension": ".md"
+        },
+        "skill": {
+          "target_dir": "project://.agents/skills/{export.name}",
           "extension": ".md"
         }
       }

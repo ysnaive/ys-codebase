@@ -26,6 +26,42 @@ from .tokenizer import CodeTokenizer
 
 logger = logging.getLogger("knowledge-db.engine")
 
+AUTO_BUDGET_CHARS: int = 12500
+AUTO_DECAY_START_CHARS: int = 5000
+AUTO_DECAY_MIN_CHARS: int = 9000
+AUTO_NO_SNIPPET_CHARS: int = 11000
+AUTO_MAX_SNIPPET_LINES: int = 30
+AUTO_MIN_SNIPPET_LINES: int = 10
+AUTO_MIN_RENDERED_ITEMS: int = 5
+
+
+def compute_dynamic_snippet_lines(
+    current_chars: int,
+    budget_limit: int = AUTO_BUDGET_CHARS,
+    start_decay: int = AUTO_DECAY_START_CHARS,
+    min_decay: int = AUTO_DECAY_MIN_CHARS,
+    no_snippet_threshold: int = AUTO_NO_SNIPPET_CHARS,
+    max_lines: int = AUTO_MAX_SNIPPET_LINES,
+    min_lines: int = AUTO_MIN_SNIPPET_LINES,
+) -> int:
+    """
+    計算 auto 模式下的動態切片行數預算。
+    - < 5000 字元: 30 行
+    - 5000 ~ 9000 字元: 30 -> 10 行線性遞減
+    - 9000 ~ 11000 字元: 10 行
+    - 11000 ~ 12500 字元: 0 行 (強制無切片)
+    - >= 12500 字元: 0 行
+    """
+    if current_chars < start_decay:
+        return max_lines
+    elif current_chars < min_decay:
+        ratio = (current_chars - start_decay) / (min_decay - start_decay)
+        return max(min_lines, int(round(max_lines - ratio * (max_lines - min_lines))))
+    elif current_chars < no_snippet_threshold:
+        return min_lines
+    else:
+        return 0
+
 
 class KnowledgeEngine:
     """
@@ -913,18 +949,29 @@ class KnowledgeEngine:
             pipe = "   " if is_last else "│  "
             code_snip = item.get("code_snippet")
 
+            max_snip_lines: Optional[int] = None
+            if limit_mode == "auto":
+                current_chars = sum(len(l) + 1 for l in lines)
+                if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
+                    budget_reached = True
+                    remaining_count = len(filtered_callers) - rendered_nodes
+                    break
+                max_snip_lines = compute_dynamic_snippet_lines(current_chars)
+
             if is_md:
                 # Markdown 格式
                 site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
                 site_info = f" *(調用點: {', '.join(site_strs)})*" if site_strs else ""
                 if mode == "simple":
                     node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(f"  ```{sym.language or ''}")
-                        for ln, code in code_snip.lines:
-                            mark = ">" if ln == code_snip.target_line else " "
-                            node_lines.append(f"  {mark} {ln:5d} | {code}")
-                        node_lines.append("  ```")
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        snip_lines = code_snip.get_lines(max_snip_lines)
+                        if snip_lines:
+                            node_lines.append(f"  ```{sym.language or ''}")
+                            for ln, code in snip_lines:
+                                mark = ">" if ln == code_snip.target_line else " "
+                                node_lines.append(f"  {mark} {ln:5d} | {code}")
+                            node_lines.append("  ```")
                 elif mode == "detail":
                     node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**)")
                     if sym.signature:
@@ -934,29 +981,35 @@ class KnowledgeEngine:
                         node_lines.append(f"  - **調用點**: {sites_desc}")
                     if code_snip and code_snip.docstring_summary:
                         node_lines.append(f"  - **摘要**: {code_snip.docstring_summary}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(f"  - **調用代碼切片**:")
-                        node_lines.append(f"    ```{sym.language or ''}")
-                        for ln, code in code_snip.lines:
-                            mark = ">" if ln == code_snip.target_line else " "
-                            node_lines.append(f"    {mark} {ln:5d} | {code}")
-                        node_lines.append("    ```")
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        snip_lines = code_snip.get_lines(max_snip_lines)
+                        if snip_lines:
+                            node_lines.append(f"  - **調用代碼切片**:")
+                            node_lines.append(f"    ```{sym.language or ''}")
+                            for ln, code in snip_lines:
+                                mark = ">" if ln == code_snip.target_line else " "
+                                node_lines.append(f"    {mark} {ln:5d} | {code}")
+                            node_lines.append("    ```")
                 else:  # auto
                     node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(f"  ```{sym.language or ''}")
-                        for ln, code in code_snip.lines:
-                            mark = ">" if ln == code_snip.target_line else " "
-                            node_lines.append(f"  {mark} {ln:5d} | {code}")
-                        node_lines.append("  ```")
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        snip_lines = code_snip.get_lines(max_snip_lines)
+                        if snip_lines:
+                            node_lines.append(f"  ```{sym.language or ''}")
+                            for ln, code in snip_lines:
+                                mark = ">" if ln == code_snip.target_line else " "
+                                node_lines.append(f"  {mark} {ln:5d} | {code}")
+                            node_lines.append("  ```")
             else:
                 # Text / ANSI 格式
                 site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
                 site_info = f" [調用點: {', '.join(site_strs)}]" if site_strs else ""
                 if mode == "simple":
                     node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
+                        if formatted_snip:
+                            node_lines.append(formatted_snip)
                 elif mode == "detail":
                     node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind.upper()}: {sym.name})")
                     if sym.signature:
@@ -966,29 +1019,33 @@ class KnowledgeEngine:
                         node_lines.append(f"{pipe}   調用位置: {sites_desc}")
                     if code_snip and code_snip.docstring_summary:
                         node_lines.append(f"{pipe}   摘要: {code_snip.docstring_summary}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(f"{pipe}   調用代碼切片:")
-                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
+                        if formatted_snip:
+                            node_lines.append(f"{pipe}   調用代碼切片:")
+                            node_lines.append(formatted_snip)
                 else:  # auto
                     node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
+                        if formatted_snip:
+                            node_lines.append(formatted_snip)
 
             lines.extend(node_lines)
             rendered_nodes += 1
 
             if limit_mode == "auto":
                 current_chars = sum(len(l) + 1 for l in lines)
-                if current_chars >= 3500:
+                if current_chars >= AUTO_BUDGET_CHARS:
                     budget_reached = True
                     remaining_count = len(filtered_callers) - rendered_nodes
                     break
 
         if budget_reached and remaining_count > 0:
             if is_md:
-                lines.append(f"\n> 💡 *... (已達 3500 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 `--limit=N` 查看更多)*")
+                lines.append(f"\n> 💡 *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 `--limit=N` 查看更多)*")
             else:
-                lines.append(f"\n... (已達 3500 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 --limit=<N> 查看完整輸出)")
+                lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 --limit=<N> 查看完整輸出)")
 
         return "\n".join(lines)
 
@@ -1061,18 +1118,29 @@ class KnowledgeEngine:
             pipe = "   " if is_last else "│  "
             code_snip = item.get("code_snippet")
 
+            max_snip_lines: Optional[int] = None
+            if limit_mode == "auto":
+                current_chars = sum(len(l) + 1 for l in lines)
+                if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
+                    budget_reached = True
+                    remaining_count = len(filtered_callees) - rendered_nodes
+                    break
+                max_snip_lines = compute_dynamic_snippet_lines(current_chars)
+
             if is_md:
                 # Markdown 格式
                 site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
                 site_info = f" *(調用點: {', '.join(site_strs)})*" if site_strs else ""
                 if mode == "simple":
                     node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(f"  ```{sym.language or ''}")
-                        for ln, code in code_snip.lines:
-                            mark = ">" if ln == code_snip.target_line else " "
-                            node_lines.append(f"  {mark} {ln:5d} | {code}")
-                        node_lines.append("  ```")
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        snip_lines = code_snip.get_lines(max_snip_lines)
+                        if snip_lines:
+                            node_lines.append(f"  ```{sym.language or ''}")
+                            for ln, code in snip_lines:
+                                mark = ">" if ln == code_snip.target_line else " "
+                                node_lines.append(f"  {mark} {ln:5d} | {code}")
+                            node_lines.append("  ```")
                 elif mode == "detail":
                     node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**)")
                     if sym.signature:
@@ -1082,29 +1150,35 @@ class KnowledgeEngine:
                         node_lines.append(f"  - **調用點**: {sites_desc}")
                     if code_snip and code_snip.docstring_summary:
                         node_lines.append(f"  - **摘要**: {code_snip.docstring_summary}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(f"  - **目標實作切片**:")
-                        node_lines.append(f"    ```{sym.language or ''}")
-                        for ln, code in code_snip.lines:
-                            mark = ">" if ln == code_snip.target_line else " "
-                            node_lines.append(f"    {mark} {ln:5d} | {code}")
-                        node_lines.append("    ```")
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        snip_lines = code_snip.get_lines(max_snip_lines)
+                        if snip_lines:
+                            node_lines.append(f"  - **目標實作切片**:")
+                            node_lines.append(f"    ```{sym.language or ''}")
+                            for ln, code in snip_lines:
+                                mark = ">" if ln == code_snip.target_line else " "
+                                node_lines.append(f"    {mark} {ln:5d} | {code}")
+                            node_lines.append("    ```")
                 else:  # auto
                     node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(f"  ```{sym.language or ''}")
-                        for ln, code in code_snip.lines:
-                            mark = ">" if ln == code_snip.target_line else " "
-                            node_lines.append(f"  {mark} {ln:5d} | {code}")
-                        node_lines.append("  ```")
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        snip_lines = code_snip.get_lines(max_snip_lines)
+                        if snip_lines:
+                            node_lines.append(f"  ```{sym.language or ''}")
+                            for ln, code in snip_lines:
+                                mark = ">" if ln == code_snip.target_line else " "
+                                node_lines.append(f"  {mark} {ln:5d} | {code}")
+                            node_lines.append("  ```")
             else:
                 # Text / ANSI 格式
                 site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
                 site_info = f" [調用點: {', '.join(site_strs)}]" if site_strs else ""
                 if mode == "simple":
                     node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
+                        if formatted_snip:
+                            node_lines.append(formatted_snip)
                 elif mode == "detail":
                     node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind.upper()}: {sym.name})")
                     if sym.signature:
@@ -1114,29 +1188,33 @@ class KnowledgeEngine:
                         node_lines.append(f"{pipe}   調用位置: {sites_desc}")
                     if code_snip and code_snip.docstring_summary:
                         node_lines.append(f"{pipe}   摘要: {code_snip.docstring_summary}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(f"{pipe}   目標實作切片:")
-                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
+                        if formatted_snip:
+                            node_lines.append(f"{pipe}   目標實作切片:")
+                            node_lines.append(formatted_snip)
                 else:  # auto
                     node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
-                    if snippet and code_snip and code_snip.lines:
-                        node_lines.append(code_snip.format_text(prefix=f"{pipe}     "))
+                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
+                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
+                        if formatted_snip:
+                            node_lines.append(formatted_snip)
 
             lines.extend(node_lines)
             rendered_nodes += 1
 
             if limit_mode == "auto":
                 current_chars = sum(len(l) + 1 for l in lines)
-                if current_chars >= 3500:
+                if current_chars >= AUTO_BUDGET_CHARS:
                     budget_reached = True
                     remaining_count = len(filtered_callees) - rendered_nodes
                     break
 
         if budget_reached and remaining_count > 0:
             if is_md:
-                lines.append(f"\n> 💡 *... (已達 3500 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 `--limit=N` 查看更多)*")
+                lines.append(f"\n> 💡 *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 `--limit=N` 查看更多)*")
             else:
-                lines.append(f"\n... (已達 3500 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 --limit=<N> 查看完整輸出)")
+                lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 --limit=<N> 查看完整輸出)")
 
         return "\n".join(lines)
 
@@ -1242,7 +1320,7 @@ class KnowledgeEngine:
 
                 if limit_mode == "auto":
                     current_chars = sum(len(l) + 1 for l in lines)
-                    if current_chars >= 3500:
+                    if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
                         budget_reached = True
                         remaining_count = total_syms - rendered_nodes
                         break
@@ -1252,9 +1330,9 @@ class KnowledgeEngine:
 
         if budget_reached and remaining_count > 0:
             if is_md:
-                lines.append(f"\n> 💡 *... (已達 3500 字元自適應上限，尚有 {remaining_count} 個受影響符號；可附加 `--limit=N` 查看更多)*")
+                lines.append(f"\n> 💡 *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個受影響符號；可附加 `--limit=N` 查看更多)*")
             else:
-                lines.append(f"\n... (已達 3500 字元自適應上限，尚有 {remaining_count} 個受影響符號；可附加 --limit=<N> 查看完整輸出)")
+                lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個受影響符號；可附加 --limit=<N> 查看完整輸出)")
 
         return "\n".join(lines)
 
@@ -1268,7 +1346,7 @@ class KnowledgeEngine:
         limit_mode: Union[int, str] = "auto",
     ) -> str:
         """
-        格式化 search 檢索結果為結構化終端或 Markdown 報告 (支援 auto 自適應斷層截斷與 3500 字元剛性預算守門)。
+        格式化 search 檢索結果為結構化終端或 Markdown 報告 (支援 auto 自適應斷層截斷與動態平滑衰減預算守門)。
         """
         if not results:
             if format_type == "md":
@@ -1321,7 +1399,7 @@ class KnowledgeEngine:
         if not is_md and mode in ("detail", "auto") and snippet:
             lines.append("=" * 85)
 
-        # 3. 逐檔案節點渲染 (含 3500 字元預算守門)
+        # 3. 逐檔案節點渲染 (含動態預算與衰減切片守門)
         rendered_nodes = 0
         budget_reached = False
         remaining_count = 0
@@ -1333,6 +1411,15 @@ class KnowledgeEngine:
             first_end = first_sym.end_line if first_sym else None
             file_link = self.format_file_link(res.file_path, line=first_line, end_line=first_end)
 
+            max_snip_lines: Optional[int] = None
+            if limit_mode == "auto":
+                current_chars = sum(len(l) + 1 for l in lines)
+                if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
+                    budget_reached = True
+                    remaining_count = len(filtered_results) - rendered_nodes
+                    break
+                max_snip_lines = compute_dynamic_snippet_lines(current_chars)
+
             if is_md:
                 # Markdown 格式
                 if mode == "simple":
@@ -1341,13 +1428,15 @@ class KnowledgeEngine:
                         sym = itm.symbol
                         line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
                         node_lines.append(f"  - `{sym.kind.upper()}`: **{sym.name}** ({line_range})")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines:
-                            lang = res.language or ""
-                            node_lines.append(f"    ```{lang}")
-                            for ln, code in itm.code_snippet.lines:
-                                mark = ">" if ln == itm.code_snippet.target_line else " "
-                                node_lines.append(f"    {mark} {ln:5d} | {code}")
-                            node_lines.append("    ```")
+                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
+                            snip_lines = itm.code_snippet.get_lines(max_snip_lines)
+                            if snip_lines:
+                                lang = res.language or ""
+                                node_lines.append(f"    ```{lang}")
+                                for ln, code in snip_lines:
+                                    mark = ">" if ln == itm.code_snippet.target_line else " "
+                                    node_lines.append(f"    {mark} {ln:5d} | {code}")
+                                node_lines.append("    ```")
                 elif mode == "detail":
                     node_lines.append(f"#### #{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} *({res.language}, {len(res.items)} 個命中項目)*")
                     for itm_idx, itm in enumerate(res.items, start=1):
@@ -1362,14 +1451,16 @@ class KnowledgeEngine:
                             node_lines.append(f"  - **摘要**: {itm.snippet}")
                         if itm.matched_terms:
                             node_lines.append(f"  - **命中詞**: {', '.join(itm.matched_terms)}")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines:
-                            lang = res.language or ""
-                            node_lines.append(f"  - **代碼切片** ({line_range}):")
-                            node_lines.append(f"    ```{lang}")
-                            for ln, code in itm.code_snippet.lines:
-                                mark = ">" if ln == itm.code_snippet.target_line else " "
-                                node_lines.append(f"    {mark} {ln:5d} | {code}")
-                            node_lines.append("    ```")
+                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
+                            snip_lines = itm.code_snippet.get_lines(max_snip_lines)
+                            if snip_lines:
+                                lang = res.language or ""
+                                node_lines.append(f"  - **代碼切片** ({line_range}):")
+                                node_lines.append(f"    ```{lang}")
+                                for ln, code in snip_lines:
+                                    mark = ">" if ln == itm.code_snippet.target_line else " "
+                                    node_lines.append(f"    {mark} {ln:5d} | {code}")
+                                node_lines.append("    ```")
                 else:  # auto
                     node_lines.append(f"- **#{rank:02d}** [{res.total_score:05.2f}] 檔案: {file_link} *({res.language})*")
                     for itm_idx, itm in enumerate(res.items, start=1):
@@ -1382,13 +1473,15 @@ class KnowledgeEngine:
                             node_lines.append(f"    - **摘要**: {itm.code_snippet.docstring_summary}")
                         elif itm.snippet:
                             node_lines.append(f"    - **摘要**: {itm.snippet}")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines:
-                            lang = res.language or ""
-                            node_lines.append(f"    ```{lang}")
-                            for ln, code in itm.code_snippet.lines:
-                                mark = ">" if ln == itm.code_snippet.target_line else " "
-                                node_lines.append(f"    {mark} {ln:5d} | {code}")
-                            node_lines.append("    ```")
+                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
+                            snip_lines = itm.code_snippet.get_lines(max_snip_lines)
+                            if snip_lines:
+                                lang = res.language or ""
+                                node_lines.append(f"    ```{lang}")
+                                for ln, code in snip_lines:
+                                    mark = ">" if ln == itm.code_snippet.target_line else " "
+                                    node_lines.append(f"    {mark} {ln:5d} | {code}")
+                                node_lines.append("    ```")
             else:
                 # Text / ANSI 終端格式
                 if mode == "simple":
@@ -1400,8 +1493,10 @@ class KnowledgeEngine:
                         sym = itm.symbol
                         line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
                         node_lines.append(f"  {branch} {sym.kind.upper()}: {sym.name} ({line_range})")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines:
-                            node_lines.append(itm.code_snippet.format_text(prefix=f"  {pipe}     "))
+                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
+                            formatted_snip = itm.code_snippet.format_text(prefix=f"  {pipe}     ", max_lines=max_snip_lines)
+                            if formatted_snip:
+                                node_lines.append(formatted_snip)
                 elif mode == "detail":
                     node_lines.append(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} ({len(res.items)} 個命中項目, {res.language})")
                     for itm_idx, itm in enumerate(res.items, start=1):
@@ -1419,9 +1514,11 @@ class KnowledgeEngine:
                             node_lines.append(f"  {pipe}   摘要: {itm.snippet}")
                         if itm.matched_terms:
                             node_lines.append(f"  {pipe}   命中詞: {', '.join(itm.matched_terms)}")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines:
-                            node_lines.append(f"  {pipe}   代碼切片 ({line_range}):")
-                            node_lines.append(itm.code_snippet.format_text(prefix=f"  {pipe}     "))
+                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
+                            formatted_snip = itm.code_snippet.format_text(prefix=f"  {pipe}     ", max_lines=max_snip_lines)
+                            if formatted_snip:
+                                node_lines.append(f"  {pipe}   代碼切片 ({line_range}):")
+                                node_lines.append(formatted_snip)
                     node_lines.append("-" * 85)
                 else:  # auto
                     if snippet:
@@ -1439,9 +1536,11 @@ class KnowledgeEngine:
                                 node_lines.append(f"  {pipe}   摘要: {itm.code_snippet.docstring_summary}")
                             elif itm.snippet:
                                 node_lines.append(f"  {pipe}   摘要: {itm.snippet}")
-                            if itm.code_snippet and itm.code_snippet.lines:
-                                node_lines.append(f"  {pipe}   代碼切片 ({line_range}):")
-                                node_lines.append(itm.code_snippet.format_text(prefix=f"  {pipe}     "))
+                            if itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
+                                formatted_snip = itm.code_snippet.format_text(prefix=f"  {pipe}     ", max_lines=max_snip_lines)
+                                if formatted_snip:
+                                    node_lines.append(f"  {pipe}   代碼切片 ({line_range}):")
+                                    node_lines.append(formatted_snip)
                         node_lines.append("-" * 85)
                     else:
                         if len(res.items) == 1:
@@ -1460,19 +1559,19 @@ class KnowledgeEngine:
             lines.extend(node_lines)
             rendered_nodes += 1
 
-            # 檢查 3500 字元預算上限
+            # 檢查 20000 字元預算上限 (保底 5 個項目)
             if limit_mode == "auto":
                 current_chars = sum(len(l) + 1 for l in lines)
-                if current_chars >= 3500:
+                if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
                     budget_reached = True
                     remaining_count = len(filtered_results) - rendered_nodes
                     break
 
         if budget_reached and remaining_count > 0:
             if is_md:
-                lines.append(f"\n> 💡 *... (已達 3500 字元自適應上限，尚有 {remaining_count} 個檔案結果；可附加 `--limit=N` 查看更多)*")
+                lines.append(f"\n> 💡 *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個檔案結果；可附加 `--limit=N` 查看更多)*")
             else:
-                lines.append(f"\n... (已達 3500 字元自適應上限，尚有 {remaining_count} 個檔案結果；可附加 --limit=<N> 查看完整輸出)")
+                lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個檔案結果；可附加 --limit=<N> 查看完整輸出)")
 
         return "\n".join(lines)
 

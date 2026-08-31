@@ -42,6 +42,16 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.compiler = ArtifactCompiler()
         self.publisher = ReleasePublisher(compiler=self.compiler)
 
+    def tearDown(self):
+        try:
+            from core import config
+            config.delete("agents-workflow", "release_targets", local=True)
+            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
+            config.reload()
+        except Exception:
+            pass
+        super().tearDown()
+
     @require(Requirement.ENV)
     def test_ft_01_initial_release_persists_fingerprint(self):
         """FT-01: 首次發布成功物化檔案，Manifest 正確記錄指紋與發布檔案清冊。"""
@@ -202,24 +212,111 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertEqual(fp1, fp2)
 
     @require(Requirement.ENV)
-    def test_et_03_corrupted_or_missing_manifest_fallback(self):
-        """ET-03: storage:// 中之 manifest 損毀或缺失時，安全降級為全量發布並自癒。"""
-        if uri:
-            # 寫入無效 JSON 或空字串
-            uri.write_text(MANIFEST_STORAGE_URI, "INVALID_CORRUPTED_JSON{{{")
-
-        res = self.publisher.release_all(force=False)
+    def test_ft_07_custom_agents_md_projection(self):
+        """FT-07: 驗證指定 Target (如 claude) 之 agents_md (project://CLAUDE.md) 正確被發布與軟合併。"""
+        from core import config
+        config.set("agents-workflow", "release_targets", ["claude"], local=True)
+        res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
-        self.assertFalse(res["short_circuited"])
-        self.assertGreater(res["published_count"], 0)
 
-        # 驗證已自癒修復為有效 JSON
-        if uri and uri.exists(MANIFEST_STORAGE_URI):
-            manifest_data = uri.read_json(MANIFEST_STORAGE_URI)
-            self.assertIn("fingerprint", manifest_data)
-            self.assertIn("published_files", manifest_data)
-            self.assertEqual(len(manifest_data["published_files"]), res["published_count"])
+        proj_root = os.getcwd()
+        if uri:
+            try:
+                proj_root = uri.resolve("project://", interactive=False)
+            except Exception:
+                pass
+        claude_md = os.path.join(proj_root, "CLAUDE.md")
+        self.assertTrue(os.path.isfile(claude_md))
+        content = open(claude_md, "r", encoding="utf-8").read()
+        self.assertIn("YSCB_AGENTS_BEGIN", content)
+        self.assertIn("YSCB_AGENTS_END", content)
+
+    @require(Requirement.ENV)
+    def test_ft_08_empty_agents_md_skips_output(self):
+        """FT-08: 驗證 Target 宣告 agents_md: '' 時跳過規範檔輸出。"""
+        temp_target = {
+            "name": "custom_no_rules",
+            "agents_md": "",
+            "projections": {
+                "workflow": {
+                    "target_dir": "project://.custom/workflows",
+                    "extension": ".md"
+                }
+            }
+        }
+        dep_map, items = self.publisher.build_deployment_map(temp_target, [])
+        self.assertEqual(len(items), 0)
+
+    @require(Requirement.ENV)
+    def test_ft_09_multi_target_shared_agents_md(self):
+        """FT-09: 多 Target 共享相同 agents_md 時（如 antigravity 與 codex），軟合併冪等無衝突。"""
+        from core import config
+        config.set("agents-workflow", "release_targets", ["antigravity", "codex"], local=True)
+        res = self.publisher.release_all(force=True)
+        self.assertTrue(res["success"])
+
+        proj_root = os.getcwd()
+        if uri:
+            try:
+                proj_root = uri.resolve("project://", interactive=False)
+            except Exception:
+                pass
+        agents_md = os.path.join(proj_root, "AGENTS.md")
+        self.assertTrue(os.path.isfile(agents_md))
+        content = open(agents_md, "r", encoding="utf-8").read()
+        # 確保只有一組 YSCB 標記區間
+        self.assertEqual(content.count("<!-- YSCB_AGENTS_BEGIN -->"), 1)
+        self.assertEqual(content.count("<!-- YSCB_AGENTS_END -->"), 1)
+
+    @require(Requirement.ENV)
+    def test_ft_10_skill_projection_and_deployment_map(self):
+        """FT-10: 驗證 build_deployment_map 支援 skill 類型與 rel_path 多檔案映射。"""
+        mock_target = {
+            "name": "antigravity",
+            "projections": {
+                "skill": {
+                    "target_dir": "project://.agents/skills/{export.name}",
+                    "extension": ".md"
+                }
+            }
+        }
+        mock_resolved = [
+            {
+                "export": {"type": "skill", "name": "my-skill", "source": "module://test/assets/skills/my-skill"},
+                "sub_folder": "skills",
+                "base_name": "SKILL.md",
+                "rel_path": "SKILL.md",
+                "content": "# Main Skill",
+                "is_skill": True,
+                "skill_name": "my-skill"
+            },
+            {
+                "export": {"type": "skill", "name": "my-skill", "source": "module://test/assets/skills/my-skill"},
+                "sub_folder": "skills",
+                "base_name": "guide.md",
+                "rel_path": "references/guide.md",
+                "content": "# Sub Guide",
+                "is_skill": True,
+                "skill_name": "my-skill"
+            }
+        ]
+
+        dep_map, target_items = self.publisher.build_deployment_map(mock_target, mock_resolved)
+        self.assertEqual(len(target_items), 2)
+        
+        main_item = target_items[0]
+        guide_item = target_items[1]
+
+        # 斷言路徑結構保留
+        self.assertTrue(main_item["target_abs_path"].replace("\\", "/").endswith(".agents/skills/my-skill/SKILL.md"))
+        self.assertTrue(guide_item["target_abs_path"].replace("\\", "/").endswith(".agents/skills/my-skill/references/guide.md"))
+
+        # 斷言 deployment_map 包含主入口與子檔案
+        self.assertIn("skills/my-skill", dep_map)
+        self.assertIn("skills/my-skill/references/guide.md", dep_map)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+

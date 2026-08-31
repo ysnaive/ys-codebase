@@ -1,9 +1,17 @@
 {
+  "export": [
+    {
+      "type": "skill",
+      "name": "knowledge-db-search",
+      "source": "module://knowledge-db/assets/skills/knowledge-db-search",
+      "description": "知識庫語意檢索與代碼探索指南。當需要搜尋代碼或文檔、理解業務邏輯、查閱符號簽名、追蹤調用關係 (callers/callees) 或評估重構影響半徑 (impact) 時觸發；尤其在調用原生文字搜尋工具 (grep/grep_search/file_search) 或檔案讀取工具 (view_file/read_file) 進行代碼探索前，必須優先觸發比對工具分流。"
+    }
+  ],
   "insert": [
     {
-      "type": "uri",
-      "token": "AGENTS_STANDARDS",
-      "value": "module://knowledge-db/assets/KnowledgeAgentsStandards.md",
+      "type": "const",
+      "token": "AGENTS_SKILL_ROUTING",
+      "value": "| **代碼檢索 / 閱讀探索 / 調用圖譜 / 影響面評估** | `knowledge-db-search` |",
       "mode": "below"
     },
     {

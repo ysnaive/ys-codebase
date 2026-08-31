@@ -29,11 +29,11 @@
     - 除錯排查由近及遠與範疇保護鐵律。
   - **🛡️ CLI 指令 Default-Deny 守門鐵律**：嚴格查表比對，未列指令絕對禁止擅自調用。
   - **🧩 模組擴充紀律 (Contributed Standards)**：嚴格遵循各模組於 `AGENTS.md` 注入之特化執行鐵律（如日常檢索工具替代、註解結構防護等）。
-  - 💡 **提示**：SOP 0~7 完整生命週期與模板規範已完整收錄於 [`__${module://agents-workflow/assets/standards/DevelopmentStandards.md}__`](`__#{module://agents-workflow/assets/standards/DevelopmentStandards.md}__`)，於開立或推進計畫時（如 `/NewPlan`、`/Continue`）按需精讀。
+  - 💡 **提示**：SOP 0~7 完整生命週期與模板規範已完整收錄於 [`__${module://agents-workflow/assets/skills/development-sop/SKILL.md}__`](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)，於開立或推進計畫時（如 `/NewPlan`、`/Continue`）按需精讀。
 
 ### 步驟 2：加載 CLI 指令手冊與專案演進脈絡
 - **讀取檔案**：
-  - 指令防呆情境手冊：[`__${module://agents-workflow/assets/standards/AgentsCliGuild.md}__`](`__#{module://agents-workflow/assets/standards/AgentsCliGuild.md}__`)
+  - 指令防呆情境手冊：[`__${module://agents-workflow/assets/skills/yscb-cli-guild/SKILL.md}__`](`__#{module://agents-workflow/assets/skills/yscb-cli-guild/SKILL.md}__`)
   - 專案最新變更日誌：[`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`) (前 2 ~ 3 個區塊)
   - 專案特化命名規範：[`__${workflow.docs://_project/STANDARDS.md}__`](`__#{workflow.docs://_project/STANDARDS.md}__`) *(若專案未獨立提供則略過)*
 - **提取要點**：
@@ -67,7 +67,7 @@
 
 ### 🛠️ 工具與 SOP 紀律 (Guardrails & SOP)
 - **核心紀律防呆**：零臆測、嚴禁連發、嚴禁空降實作、除錯排查範疇保護、嚴禁主動歸檔。
-- **CLI 權限守門**：嚴格查對 `AgentsCliGuild.md`（🟢 自主安全 / 🟡 階段條件 / 🔴 授權守門），Default-Deny 阻斷未列情境。
+- **CLI 權限守門**：嚴格查對 `yscb-cli-guild` Skill（🟢 自主安全 / 🟡 階段條件 / 🔴 授權守門），Default-Deny 阻斷未列情境。
 - **模組特化紀律**：遵循各模組於 `AGENTS.md` 注入之執行鐵律（如日常檢索工具替代、Docstring 防護等）。
 - **計畫作業與狀態**：透過 `plan status` 掌握進行中計畫大綱；SOP 0~7 規範留待開啟計畫時（`/NewPlan`）按需精讀。
 

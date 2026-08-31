@@ -1,13 +1,13 @@
 # YS-Codebase Knowledge-DB 知識庫與語意檢索模組 (Knowledge Database & Retrieval Engine)
 
 > 模組名稱：`knowledge-db`  
-> 職責定位：知識庫與符號檢索引擎。提供多語言 AST 符號解析、增量指紋比對、多欄位 BM25 檢索、軟工同義詞庫與代碼切片預覽。
+> 職責定位：知識庫與符號檢索引擎。提供多語言 AST 符號解析、增量指紋比對、多欄位 BM25 檢索、調用圖譜分析 (Callers/Callees/Impact)、軟工同義詞庫與 AST 代碼切片預覽。
 
 ---
 
 ## 1. 模組架構全景 (Architecture Overview)
 
-`knowledge-db` 模組提供代碼與文檔的解析與檢索流水線：
+`knowledge-db` 模組提供代碼與文檔的解析、索引與多維檢索流水線：
 
 ```mermaid
 graph TD
@@ -21,83 +21,72 @@ graph TD
         Parsers["AST 符號解析 (AST Parsers)<br/><i>Python, C, C++, C#, SPICE, Markdown</i>"]:::sub
         Tokenizer["分詞與同義詞 (Tokenizer & Thesaurus)<br/><i>駝峰/蛇形分詞 / 軟工詞庫</i>"]:::sub
         Retrieval["BM25 檢索引擎 (Retrieval Engine)<br/><i>倒排索引 / 檔案類型過濾</i>"]:::sub
+        Graph["調用圖譜引擎 (Call Graph Engine)<br/><i>Callers / Callees / Impact</i>"]:::sub
     end
 
     CLI --> Scanner
     Scanner --> Parsers
     Parsers --> Tokenizer
     Tokenizer --> Retrieval
+    Parsers --> Graph
 ```
 
 ---
 
-## 2. 日常檢索決策樹與 `--ftype` 路由規範 (Search Decision Tree)
+## 2. 意圖導向三級複雜度矩陣 (3-Tier View Matrix)
 
-為了避免盲目搜尋造成 Token 浪費與效率低下，Agent 與開發者在日常代碼與文檔檢索時，應強制依循以下決策樹：
+本模組指令（`search`、`callers`、`callees`、`impact`）全面支援三級意圖複雜度與高密度 JSON 輸出：
 
-```mermaid
-graph TD
-    classDef code fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#fff;
-    classDef doc fill:#1e3a8a,stroke:#3b82f6,stroke-width:2px,color:#fff;
-    classDef hybrid fill:#4c1d95,stroke:#8b5cf6,stroke-width:2px,color:#fff;
-
-    Start["檢索需求"] --> Type{"查詢目標類型"}
-
-    Type -- "明確搜索原始碼 (Python/C/C++/SPICE)" --> Code["附加 <code>--ftype=c,cpp,py,cir,sp</code><br/><code>knowledge-db search '&lt;關鍵詞&gt;' --ftype=c,cpp,py,cir,sp -s</code>"]:::code
-    Type -- "明確搜索規範、文檔或 SOP" --> Doc["附加 <code>--ftype=md</code><br/><code>knowledge-db search '&lt;關鍵詞&gt;' --ftype=md -s</code>"]:::doc
-    Type -- "廣義探索、概念或跨空間關聯" --> Hybrid["不帶 <code>--ftype</code> (全空間加權)<br/><code>knowledge-db search '&lt;語意化描述&gt;' -s</code>"]:::hybrid
-```
-
-### 🚨 執行紀律：強制工具替代原則 (Search Tool Substitution)
-- **第一反射工具**：在日常任何任務、問題排查、符號定位或架構查詢時，**第一動作強制調用 `knowledge-db search -s`**。
-- **消滅盲目探索**：嚴禁在未知精確符號全名前，使用文字搜尋（如 `grep_search` / `grep`）發起全專案正則遍歷或用目錄走訪/讀檔工具（如 `list_dir` / `view_file` / `read_file`）盲目翻找目錄。
-- **切片即時預覽 (`-s` / `--snippet`)**：檢索一律強制附加 `-s`，直接獲取帶行號之上下文代碼切片與 Docstring 摘要，實現「定位 ➔ 切片即時理解」並消滅 80%+ 的無效二次檔案讀取。
+| 複雜度層級 (Tier) | 觸發旗標 | 適用情境與終端輸出 | Agent 推薦 `--json` 格式 |
+| :--- | :---: | :--- | :--- |
+| **Tier 1: 極簡大綱 (Simple)**<br>*(預設模式)* | *(無旗標)*<br>`--simple` | 僅列出命中檔案、符號名稱、行號區間與分數，零代碼負擔。 | **超緊湊 JSON** (`--json`)：<br>Token 消耗 < 50 Tokens。 |
+| **Tier 2: 內文瀏覽 (Preview)**<br>*(Agent 探索首選)* 🌟 | `-s` / `--snippet`<br>`--preview` | 一步到位取得帶行號之 AST 代碼切片、簽名與 Docstrings。 | **高密度業務 JSON** (`--json -s`)：<br>剪除雜湊 ID 與除錯欄位，資訊密度高達 86%+。 |
+| **Tier 3: 全量除錯 (Detail)** | `-d` / `--detail`<br>`--verbose` | 包含 40 碼 SHA-1、BM25 分詞矩陣 (`matched_terms`) 與全量屬性。 | **全量除錯 JSON** (`--json -d`)：<br>保留全 Schema 與 2-space 縮排。 |
 
 ---
 
 ## 3. CLI 指令集速查與範例 (CLI Reference)
 
-### 3.1 多欄位語意檢索 (Search Engine)
+### 3.1 語意檢索與切片瀏覽 (`search`)
 
 ```bash
-# 基礎檢索 (顯示命中清單與分數)
-python yscb.py knowledge-db search "ExecutionContext"
+# 1. 極簡大綱檢索 (預設無 flag 即為 simple)
+python yscb.py knowledge-db search 'ThesaurusEngine' --json
 
-# 帶代碼切片預覽檢索 (推薦日常使用，包含行號、簽名與上下文代碼)
-python yscb.py knowledge-db search "ExecutionContext" -s
+# 2. 內文切片檢索 (Agent 唯一首選 - 帶 AST 代碼切片)
+python yscb.py knowledge-db search '編譯 佔位符 resolve' --json -s
 
-# 代碼專屬定向檢索 (過濾 Python 與 C/C++ 檔案)
-python yscb.py knowledge-db search "resolve_uri" --ftype=c,cpp,py -s
-
-# 文檔專屬定向檢索 (過濾 Markdown 檔案)
-python yscb.py knowledge-db search "SOP 0~7" --ftype=md -s
-
-# 指定 Top-K 返回數量
-python yscb.py knowledge-db search "SemVer" -n 5 -s
-
-# 輸出結構化 JSON (供自動化腳本或工具鏈整合)
-python yscb.py knowledge-db search "ThesaurusEngine" --json
+# 3. 兩階段副檔名定向過濾
+python yscb.py knowledge-db search 'SOP 0~7' --ftype=md --json -s          # 文檔脈絡
+python yscb.py knowledge-db search 'resolve_uri' --ftype=c,cpp,py --json -s # 程式碼實作
 ```
 
-### 3.2 知識庫狀態、掃描與索引管理 (Index Management)
+### 3.2 調用圖譜與影響面分析 (`callers`, `callees`, `impact`)
 
 ```bash
-# 查詢全系統註冊空間、快取檔案數與倒排索引狀態
+# 1. 查詢誰調用了特定 Public API (Who calls me)
+python yscb.py knowledge-db callers resolve_stage2_uri --json -s
+
+# 2. 查詢特定類別或函式調用了哪些子組件 (Whom do I call)
+python yscb.py knowledge-db callees compile_stage1 --json -s
+
+# 3. 評估重構多階擴散影響半徑 (Blast Radius)
+python yscb.py knowledge-db impact ReleasePublisher --depth=2 --json
+```
+
+### 3.3 知識庫狀態與維護管理 (`status`, `scan`, `bundle`, `index`, `clean`)
+
+```bash
+# 查詢全系統註冊空間、指紋快取與索引狀態
 python yscb.py knowledge-db status
 
-# 執行增量檔案指紋掃描 (自動感應 mtime 與 SHA-256 變更)
+# 執行增量檔案指紋掃描
 python yscb.py knowledge-db scan
 
-# 強制全量重新掃描
-python yscb.py knowledge-db scan --force
-
-# 建立或更新倒排索引快取
+# 建置或更新空間倒排索引快取
 python yscb.py knowledge-db index
 
-# 強制全量重建倒排索引
-python yscb.py knowledge-db index --rebuild
-
-# 打包空間符號為 SemanticBundle 快照
+# 導出語意符號 SemanticBundle 發布包
 python yscb.py knowledge-db bundle
 
 # 清理指定空間或全空間快取檔案
@@ -108,62 +97,34 @@ python yscb.py knowledge-db clean --all
 
 ## 4. Python SDK 公開 API 速查 (Python SDK Reference)
 
-下游自訂模組或腳本可在 Python 代碼中直接調用門面引擎 `KnowledgeEngine`：
-
 ```python
 from knowledge_db.engine import KnowledgeEngine
 
-# 初始化門面引擎 (自動載入同義詞庫與已註冊空間)
+# 初始化門面引擎 (自動感知已註冊空間與同義詞庫)
 engine = KnowledgeEngine()
 
-# 1. 執行多欄位 BM25 檢索
+# 1. 多欄位 BM25 檢索
 results = engine.search(
     query="ExecutionContext",
-    top_k=5,
-    file_types=["py"],   # 指定副檔名過濾
-    include_snippet=True # 包含上下文代碼切片
+    limit=5,
+    file_types=["py"],
+    tier="snippet"  # "simple" | "snippet" | "detail"
 )
 
-for r in results:
-    print(f"檔案: {r['file_path']} (Score: {r['score']})")
-    for hit in r.get("hits", []):
-        print(f"  - [{hit['symbol_type']}] {hit['name']} (Lines {hit['start_line']}~{hit['end_line']})")
-        if "snippet" in hit:
-            print(f"    代碼預覽:\n{hit['snippet']}")
+# 2. 調用圖譜分析
+callers = engine.callers("resolve_stage2_uri", tier="snippet")
+callees = engine.callees("compile_stage1", tier="snippet")
+impact = engine.impact("ReleasePublisher", max_depth=2)
 
-# 2. 獲取知識庫空間狀態
+# 3. 知識庫狀態與索引維護
 status = engine.status()
-print(f"總註冊空間數: {status['total_spaces']}")
-
-# 3. 觸發增量掃描與索引構建
-engine.scan_all()
-engine.build_index_all()
+diffs = engine.scan()
+indices = engine.build_index()
 ```
 
 ---
 
-## 5. 常見情境操作指南 (Cookbook)
+## 5. 相關規範與技能手冊
 
-### 💡 情境 1：新專案初次建立知識庫索引
-```bash
-# 1. 掃描專案檔案與提取 AST 符號
-python yscb.py knowledge-db scan
-
-# 2. 構建 BM25 倒排索引
-python yscb.py knowledge-db index
-
-# 3. 檢查知識庫狀態確保索引已建立
-python yscb.py knowledge-db status
-```
-
-### 💡 情境 2：排查問題時秒級定位函式與切片確認
-```bash
-# 秒級搜尋目標函式定義，直接查看行號與周邊代碼
-python yscb.py knowledge-db search "check_project_protocol" --ftype=py -s
-```
-
-### 💡 情境 3：探索特定架構規範或 SOP 指引
-```bash
-# 定向檢索 Markdown 文檔中的規範章節
-python yscb.py knowledge-db search "Dogfooding 雙軌閉環" --ftype=md -s
-```
+- **探索規範指南**：[`.agents/skills/knowledge-db-search/SKILL.md`](../agents-workflow/assets/skills/knowledge-db-search/SKILL.md)
+- **指令權限對照**：[`.agents/skills/yscb-cli-guild/SKILL.md`](../agents-workflow/assets/skills/yscb-cli-guild/SKILL.md)

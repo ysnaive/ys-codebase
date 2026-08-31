@@ -1,8 +1,8 @@
 ##### CLI 指令 Default-Deny 守門查核 (core: CLI Execution & Safety Guardrails)
 
-Agent 檢視當前 Session 執行的所有 CLI 指令，核對是否符合 `AgentsCliGuild.md` 推薦清單（**採「異常過濾呈遞」原則，僅詳列不合規項目**）：
+Agent 檢視當前 Session 執行的所有 CLI 指令，核對是否符合 `yscb-cli-guild` Skill 推薦清單（**採「異常過濾呈遞」原則，僅詳列不合規項目**）：
 
-- [ ] **CLI 查表合規**：檢查執行的每一個 `python yscb.py` 指令是否符合 `AgentsCliGuild.md` 推薦情境。
+- [ ] **CLI 查表合規**：檢查執行的每一個 `python yscb.py` 指令是否符合 `yscb-cli-guild` Skill 推薦情境。
 - [ ] **Default-Deny 守門**：是否有未授權執行未列指令或命中 `🚨 絕對禁止/不適用情境` 之情事。
 
 **📋 標定產出格式 (Standard Output Format)**：

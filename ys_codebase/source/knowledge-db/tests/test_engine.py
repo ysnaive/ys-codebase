@@ -135,17 +135,41 @@ class TestEngine(YSCBTestCase):
             self.assertTrue(link_range.endswith("#L10)"))
 
     @require(Requirement.LOGIC)
+    def test_compute_dynamic_snippet_lines_curve(self):
+        """驗證 compute_dynamic_snippet_lines 在 4 段階梯區間之動態行數計算 (12500 預算體系)"""
+        from knowledge_db.engine import compute_dynamic_snippet_lines
+
+        # 1. 0 ~ 5000 字元: 30 行
+        self.assertEqual(compute_dynamic_snippet_lines(0), 30)
+        self.assertEqual(compute_dynamic_snippet_lines(2500), 30)
+        self.assertEqual(compute_dynamic_snippet_lines(4999), 30)
+
+        # 2. 5000 ~ 9000 字元: 30 -> 10 行線性遞減
+        self.assertEqual(compute_dynamic_snippet_lines(5000), 30)
+        self.assertEqual(compute_dynamic_snippet_lines(7000), 20)
+        self.assertEqual(compute_dynamic_snippet_lines(9000), 10)
+
+        # 3. 9000 ~ 11000 字元: 10 行
+        self.assertEqual(compute_dynamic_snippet_lines(10000), 10)
+        self.assertEqual(compute_dynamic_snippet_lines(10999), 10)
+
+        # 4. 11000 ~ 12500 字元: 0 行 (強制無切片)
+        self.assertEqual(compute_dynamic_snippet_lines(11000), 0)
+        self.assertEqual(compute_dynamic_snippet_lines(12000), 0)
+        self.assertEqual(compute_dynamic_snippet_lines(12500), 0)
+
+    @require(Requirement.LOGIC)
     def test_format_search_output_modes_and_budget(self):
-        """FT-08: 驗證 format_search_output 之 simple, detail, auto, md 模式與 3500 字元預算守門"""
+        """FT-08: 驗證 format_search_output 之 simple, detail, auto, md 模式與 12500 字元預算及保底 5 項目守門"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
             src_dir.mkdir(parents=True)
-            for i in range(1, 20):
-                (src_dir / f"mod_{i:02d}.py").write_text(
-                    f"class ServiceNode{i}:\n    '''Docstring for service node {i}'''\n    def run_{i}(self):\n        pass\n",
-                    encoding="utf-8",
-                )
+            for i in range(1, 40):
+                lines = [f"class ServiceNode{i}:", f"    '''Docstring for service node {i}'''"]
+                for m in range(1, 15):
+                    lines.append(f"    def run_method_{m}(self):\n        return {m} * {i}")
+                (src_dir / f"mod_{i:02d}.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
             space_cfg = SpaceConfig(name="test_space", include=[str(src_dir)])
             engine = KnowledgeEngine(
@@ -153,8 +177,8 @@ class TestEngine(YSCBTestCase):
                 contributes_data={"spaces": {"test_space": space_cfg.to_dict()}},
             )
 
-            results = engine.search("ServiceNode", space="test_space", limit=20, snippet=True)
-            self.assertGreaterEqual(len(results), 5)
+            results = engine.search("ServiceNode", space="test_space", limit=40, snippet=True)
+            self.assertGreaterEqual(len(results), 10)
 
             # 1. Simple 模式
             out_simple = engine.format_search_output(results, query="ServiceNode", detail_mode="simple", snippet=False)
@@ -173,7 +197,11 @@ class TestEngine(YSCBTestCase):
             self.assertIn("### 🔍 知識庫檢索: `ServiceNode`", out_md)
             self.assertIn("- **#01**", out_md)
 
-            # 4. Limit=auto 自適應斷層與 3500 字元預算
+            # 4. Limit=auto 自適應斷層與 12500 字元平滑預算守門，且至少包含 5 個檔案節點
             out_auto = engine.format_search_output(results, query="ServiceNode", detail_mode="detail", snippet=True, limit_mode="auto")
-            self.assertLessEqual(len(out_auto), 4500)  # 完成當前區塊後停止
+            self.assertIn("#05", out_auto)
+            self.assertLessEqual(len(out_auto), 16000)  # 完成當前區塊後停止
+
+
+
 

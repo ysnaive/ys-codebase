@@ -1,16 +1,3 @@
-`__@{BEGIN_HTML_ANNOTATION}__`
-
-Phase 6 執行指引：
-1. 目標：實機執行自動化測試、記錄真實日誌 (Execution Log)、完成 UX/人工驗證，確認實作品質 100% 達標。
-2. Test-First 前置定稿回溯：測試項目已於 Phase 2 初始化、Phase 4 剛性定稿，本階段嚴禁憑空新增未定義測試。
-3. 無 Log 即未驗證鐵律：若 CLI 測試受阻，嚴禁標記 Passed；必須標記 [未實機編譯/僅靜態檢查] 並呈遞精確指令請開發者於控制台執行回填。
-4. UX / 手動測試 Checkpoint 強制等待關卡：CLI 自動化測試 100% 通過後，嚴禁自行推進至 Phase 7！必須呈遞測試結果並明確詢問開發者進行 UX 驗證，等待明確回覆「UX 驗證通過/指示免測」後方可將 P06 標記為 Passed。
-5. 衍生問題處理：測試中若發現非本次範疇之缺陷，開立 sub_XX 衍生型子計畫（預設 Fast Track）。
-
-`__@{PHASE06_AGENTS_GUILD}__`
-
-`__@{END_HTML_ANNOTATION}__`
-
 # 測試計畫與驗證報告 (Test Plan & Verification)
 
 `__@{PHASEXX_HEADER}__`
