@@ -62,7 +62,7 @@ class TestArtifactCompiler(YSCBTestCase):
         token_values = [t.get("value") for t in tokens]
         self.assertIn("PHASEXX_HEADER", token_values)
         self.assertIn("WORKFLOW_SOP_STANDARDS", token_values)
-        self.assertIn("WORKFLOW_DOCS_STANDARDS", token_values)
+        self.assertIn("DEVELOPMENT_STANDARDS", token_values)
         self.assertIn("DYNAMIC_CONTEXT_MAP", token_values)
         self.assertIn("BEGIN_HTML_ANNOTATION", token_values)
         self.assertIn("END_HTML_ANNOTATION", token_values)
@@ -184,7 +184,7 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertTrue(stage1_res["success"])
         base_names = [it["base_name"] for it in stage1_res["resolved_items"]]
         self.assertIn("AgentsStandards.md", base_names)
-        self.assertIn("DevelopmentStandards.md", base_names)
+        self.assertTrue(any("development-sop" in str(it.get("cache_uri", "")) for it in stage1_res["resolved_items"]))
 
         # 2. 驗證 enable_agents_md 開關在 release_all 中之守門邏輯
         orig_cfg_fn = self.publisher._get_project_config
@@ -413,9 +413,57 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertIn("知識庫檢索效益評測", injected_res)
         self.assertIn("CLI Default-Deny 守門查核", injected_res)
 
+    def test_ft_09_skill_directory_scan_and_token_expansion(self):
+        """FT-09: 驗證目錄級 Skill 掃描、保持子目錄結構與 Token 展開。"""
+        with tempfile.TemporaryDirectory(prefix="test_aw_skill_") as tmp_dir:
+            # 建立 Skill 目錄結構
+            skill_root = os.path.join(tmp_dir, "test-skill")
+            os.makedirs(os.path.join(skill_root, "references"), exist_ok=True)
+            
+            with open(os.path.join(skill_root, "SKILL.md"), "w", encoding="utf-8") as f:
+                f.write("---\nname: test-skill\ndescription: Test Skill\n---\n# Main\n`__@{TEST_TOKEN}__`")
+            with open(os.path.join(skill_root, "references", "sub.md"), "w", encoding="utf-8") as f:
+                f.write("# Sub Reference\n`__@{TEST_TOKEN}__`")
+
+            # 測試 _scan_directory_files
+            scanned = self.compiler._scan_directory_files(skill_root)
+            rel_paths = [s[0] for s in scanned]
+            self.assertIn("SKILL.md", rel_paths)
+            self.assertIn("references/sub.md", rel_paths)
+
+            # 模擬 export 與 insert
+            mock_export = {
+                "type": "skill",
+                "name": "test-skill",
+                "source": skill_root,
+                "description": "Test Skill"
+            }
+            mock_insert = [{
+                "token": "TEST_TOKEN",
+                "value": "EXPANDED_TOKEN_BODY",
+                "mode": "replace"
+            }]
+
+            # 驗證編譯邏輯
+            skill_files = self.compiler._scan_directory_files(skill_root)
+            for rel_f, abs_f, raw_text in skill_files:
+                stage1 = self.compiler.resolve_single_artifact(raw_text, mock_insert)
+                self.assertNotIn("`__@{TEST_TOKEN}__`", stage1)
+                self.assertIn("EXPANDED_TOKEN_BODY", stage1)
+
+    def test_et_05_empty_or_nonexistent_skill_directory_handling(self):
+        """ET-05: 驗證 Skill 目錄為空或不存在時安全返回空清單，不拋出未捕獲例外。"""
+        empty_res = self.compiler._scan_directory_files("/non/existent/skill/dir")
+        self.assertEqual(empty_res, [])
+
+        with tempfile.TemporaryDirectory(prefix="test_aw_empty_skill_") as tmp_dir:
+            scanned_empty = self.compiler._scan_directory_files(tmp_dir)
+            self.assertEqual(scanned_empty, [])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

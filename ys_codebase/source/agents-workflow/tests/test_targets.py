@@ -32,9 +32,21 @@ class TestReleaseTargets(YSCBTestCase):
         self.publisher = ReleasePublisher(compiler=self.compiler)
         try:
             from core import config
+            config.delete("agents-workflow", "release_targets", local=True)
+            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
             config.reload()
         except Exception:
             pass
+
+    def tearDown(self):
+        try:
+            from core import config
+            config.delete("agents-workflow", "release_targets", local=True)
+            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
+            config.reload()
+        except Exception:
+            pass
+        super().tearDown()
 
     def test_ft_01_manifest_targets_discovery(self):
         """FT-01: 驗證 manifest.json 中 antigravity, claude, codex 三大 target 均被正確解析。"""
@@ -71,6 +83,7 @@ class TestReleaseTargets(YSCBTestCase):
         self.assertEqual(projections.get("workflow", {}).get("target_dir"), "project://.claude/commands")
         self.assertEqual(projections.get("template", {}).get("target_dir"), "project://.claude/.yscb/templates")
         self.assertEqual(projections.get("standard", {}).get("target_dir"), "project://.claude/.yscb/standards")
+        self.assertEqual(projections.get("skill", {}).get("target_dir"), "project://.claude/skills/{export.name}")
 
         # 驗證 deployment_map 計算
         stage1_res = self.compiler.compile_stage1()
@@ -84,14 +97,15 @@ class TestReleaseTargets(YSCBTestCase):
         self.mark_passed()
 
     def test_ft_04_codex_projections_and_materialization(self):
-        """FT-04: 驗證 codex target 投影拓撲映射正確包含 .codex/workflows 與 .codex/.yscb/。"""
+        """FT-04: 驗證 codex target 官方投影拓撲映射正確對齊 .agents/。"""
         targets = {t["name"]: t for t in self.compiler.get_release_targets()}
         codex_target = targets.get("codex", {})
         
         projections = codex_target.get("projections", {})
-        self.assertEqual(projections.get("workflow", {}).get("target_dir"), "project://.codex/workflows")
-        self.assertEqual(projections.get("template", {}).get("target_dir"), "project://.codex/.yscb/templates")
-        self.assertEqual(projections.get("standard", {}).get("target_dir"), "project://.codex/.yscb/standards")
+        self.assertEqual(projections.get("workflow", {}).get("target_dir"), "project://.agents/workflows")
+        self.assertEqual(projections.get("template", {}).get("target_dir"), "project://.agents/.yscb/templates")
+        self.assertEqual(projections.get("standard", {}).get("target_dir"), "project://.agents/.yscb/standards")
+        self.assertEqual(projections.get("skill", {}).get("target_dir"), "project://.agents/skills/{export.name}")
 
         # 驗證 deployment_map 計算
         stage1_res = self.compiler.compile_stage1()

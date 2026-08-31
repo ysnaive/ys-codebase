@@ -25,8 +25,9 @@
 宣告本模組所提供、需由發布引擎編譯物化至專案目錄的資產檔案。
 
 - **欄位說明**：
-  - `type` (`string`，必填)：資產分類，可為 `"standard"`（標準規範）、`"workflow"`（工作流）或 `"template"`（計畫模板）。
-  - `source` (`string`，必填)：資產實體來源之語意 URI（例 `module://agents-workflow/assets/workflows/NewPlan.md`）。
+  - `type` (`string`，必填)：資產分類，可為 `"standard"`（標準規範）、`"workflow"`（工作流）、`"template"`（計畫模板）或 `"skill"`（領域技能包）。
+  - `name` (`string`，當 `type="skill"` 時推薦)：Skill 識別名稱（如 `knowledge-db`），供 `{export.name}` 巨集替換。
+  - `source` (`string`，必填)：資產實體來源之語意 URI（例 `module://agents-workflow/assets/workflows/NewPlan.md` 或目錄級 `module://knowledge-db/assets/skills/knowledge-db`）。
   - `description` (`string`，選填)：資產用途摘要（將作為發布時 Header 巨集 `{export.description}` 之插值來源）。
 
 ```json
@@ -46,6 +47,12 @@
       "type": "template",
       "source": "module://agents-workflow/assets/templates/P00_semantic_requirements.md",
       "description": "Phase 0 語意需求模板"
+    },
+    {
+      "type": "skill",
+      "name": "knowledge-db",
+      "source": "module://knowledge-db/assets/skills/knowledge-db",
+      "description": "知識庫檢索與代碼探索指南"
     }
   ]
 }
@@ -123,7 +130,7 @@
       "type": "const",
       "token": "RETRO_CHECK_ITEMS",
       "mode": "below",
-      "value": "##### CLI 指令 Default-Deny 守門查核 (core: CLI Execution & Safety Guardrails)\n- **CLI 執行全量查核**：檢查 Session 中調用的每一個指令是否 100% 符合 `AgentsCliGuild.md` 推薦清單。\n- **Default-Deny 阻斷有效性**：是否有未授權執行未列指令或違反禁止情境之情事。"
+      "value": "##### CLI 指令 Default-Deny 守門查核 (core: CLI Execution & Safety Guardrails)\n- **CLI 執行全量查核**：檢查 Session 中調用的每一個指令是否 100% 符合 `yscb-cli-guild` Skill 推薦清單。\n- **Default-Deny 阻斷有效性**：是否有未授權執行未列指令或違反禁止情境之情事。"
     }
   ]
 }
@@ -135,10 +142,11 @@
 定義特定 IDE 或環境的發布投影規則。
 
 - **欄位說明**：
-  - `name` (`string`，必填)：發布 Target 識別碼（例 `antigravity`、`cursor`）。
+  - `name` (`string`，必填)：發布 Target 識別碼（例 `antigravity`、`claude`、`codex`）。
   - `description` (`string`，選填)：Target 說明。
+  - `agents_md` (`string`，選填)：Target 專屬規範軟合併目標路徑（例 `project://AGENTS.md` 或 `project://CLAUDE.md`）。為空字串 `""` 或省略時不輸出規範檔。
   - `projections` (`object`，必填)：針對不同資產 `type` 定義輸出路徑與格式：
-    - `target_dir` (`string`)：目標輸出目錄之路徑（例 `.agents/workflows`）。
+    - `target_dir` (`string`)：目標輸出目錄之路徑（支援 `{export.name}` / `{export.basename}` 巨集，例 `project://.agents/skills/{export.name}`）。
     - `extension` (`string`)：目標檔案副檔名（預設 `.md`）。
     - `header` (`list[string]`, 可選)：檔案開頭注入之 Frontmatter 標頭，支援 `{export.description}` 等元數據插值。
 
@@ -148,6 +156,7 @@
     {
       "name": "antigravity",
       "description": "Google Antigravity IDE 原生 Slash Commands 與標準規範輸出",
+      "agents_md": "project://AGENTS.md",
       "projections": {
         "workflow": {
           "target_dir": "project://.agents/workflows",
@@ -164,6 +173,10 @@
         },
         "standard": {
           "target_dir": "project://.agents/.yscb/standards",
+          "extension": ".md"
+        },
+        "skill": {
+          "target_dir": "project://.agents/skills/{export.name}",
           "extension": ".md"
         }
       }

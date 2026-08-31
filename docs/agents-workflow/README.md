@@ -51,9 +51,11 @@
 ## 4. 釋出目標體系 (`release_target` Contributes)
 
 模組支援宣告 `release_target`，定義不同開發環境（如 Google Antigravity IDE、Claude Code 等）的資產投影規則：
-- **`projections`**：定義 `workflow`、`template`、`standard` 的目標目錄、副檔名與純文字/陣列 `header` 模板。
-- **巨集插值**：`header` 支援 `{export.description}`、`{export.name}`、`{target.name}` 等巨集變數動態替換。
-- **原子交易發布**：由 `ReleasePublisher` 基於 `storage://` 執行雙階 Diff 防護（Stage 0 來源指紋短路 + Stage 4 落地內容比對），大幅消除模組 reload 與重複發布的無效 File I/O，並依 `enable_agents_md` 軟合併專案根目錄 `AGENTS.md`。
+- **`projections`**：定義 `workflow`、`template`、`standard` 與 `skill` 的目標目錄、副檔名與純文字/陣列 `header` 模板。
+- **`skill` 領域技能包**：支援目錄級 Skill 套件導出與發布，保留內部 `references/`、`scripts/` 結構並以 `{export.name}` 巨集插值投影至 `.agents/skills/<name>/`。
+- **`agents_md` 規範投影**：支援宣告 Target 專屬規範檔案路徑（如 `project://AGENTS.md` 或 `project://CLAUDE.md`），以 `AgentsStandards.md` 內容執行軟合併。
+- **巨集插值**：`target_dir` 與 `header` 支援 `{export.description}`、`{export.name}`、`{export.basename}`、`{target.name}` 等巨集變數動態替換。
+- **原子交易發布**：由 `ReleasePublisher` 基於 `storage://` 執行雙階 Diff 防護（Stage 0 來源指紋短路 + Stage 4 落地內容比對），大幅消除模組 reload 與重複發布的無效 File I/O，並依 Target 之 `agents_md` 宣告軟合併對應規則檔。
 
 ---
 

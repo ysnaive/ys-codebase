@@ -30,7 +30,7 @@ except ImportError:
     uri = None
     ExecutionContext = None
 
-# Global Placeholder Pattern Constants (Strict Backtick Format)
+FENCED_CODE_BLOCK_REGEX = re.compile(r"```[\s\S]*?```")
 CODE_SPAN_REGEX = re.compile(r"(`[^`\r\n]+`)")
 UNENCLOSED_TAG_REGEX = re.compile(r"__[@#\$]\{\s*[^}]+\s*\}__")
 
@@ -50,7 +50,9 @@ def check_unenclosed_tags(content: str, doc_name: str = "") -> None:
     """檢查並輸出未被反引號包裹的裸佔位符警示 (Unenclosed Placeholder Warning Gate)。"""
     if not content:
         return
-    clean_text = CODE_SPAN_REGEX.sub("", content)
+    # 先排除多行代碼區塊 (``` ... ```)，再排除行內代碼 (` ... `)
+    clean_text = FENCED_CODE_BLOCK_REGEX.sub("", content)
+    clean_text = CODE_SPAN_REGEX.sub("", clean_text)
     matches = UNENCLOSED_TAG_REGEX.findall(clean_text)
     if matches:
         for m in dict.fromkeys(matches):
@@ -80,21 +82,21 @@ class ArtifactCompiler:
         # 定位模組根目錄 (source/agents-workflow 或 modules/agents-workflow)
         self.module_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    def _read_file_content(self, path_or_uri: str) -> str:
-        """安全讀取語意 URI 或本機檔案文字，支援 module.root 與 module.source.root 自適應降級。"""
+    def _resolve_source_path(self, path_or_uri: str) -> str:
+        """解析語意 URI 或相對路徑至本機實體檔案/目錄路徑。"""
         if not path_or_uri:
             return ""
 
-        # 1. 直接嘗試語意 URI
+        # 1. 嘗試 URI resolve
         if uri and "://" in path_or_uri:
-            if uri.exists(path_or_uri):
-                try:
-                    return uri.read_text(path_or_uri)
-                except Exception:
-                    pass
+            try:
+                real_p = uri.resolve(path_or_uri, interactive=False)
+                if os.path.exists(real_p):
+                    return real_p
+            except Exception:
+                pass
 
-
-        # 2. 本地模組相對路徑嘗試 (自包含 fallback)
+        # 2. 嘗試本地模組相對路徑 (自包含 fallback)
         sub_path = path_or_uri
         if "://" in path_or_uri:
             parts = path_or_uri.split("://", 1)[1]
@@ -103,19 +105,63 @@ class ArtifactCompiler:
                 sub_path = rel_p
 
         local_cand = os.path.join(self.module_root, sub_path.replace("/", os.sep))
-        if os.path.isfile(local_cand):
-            try:
-                with open(local_cand, "r", encoding="utf-8") as f:
-                    return f.read()
-            except Exception:
-                pass
+        if os.path.exists(local_cand):
+            return local_cand
 
-        # 3. 實體路徑嘗試
-        real_p = uri.resolve(path_or_uri) if (uri and "://" in path_or_uri) else path_or_uri
-        if os.path.isfile(real_p):
+        # 3. 實體路徑直接檢查
+        if os.path.exists(path_or_uri):
+            return path_or_uri
+
+        return ""
+
+    def _scan_directory_files(self, dir_path_or_uri: str) -> List[Tuple[str, str, str]]:
+        """
+        遞迴掃描指定目錄路徑（支援語意 URI 或實體路徑）下的所有檔案。
+        
+        Returns:
+            List of (rel_path, abs_path, content_str)
+        """
+        real_dir = self._resolve_source_path(dir_path_or_uri)
+        if not real_dir or not os.path.isdir(real_dir):
+            return []
+
+        results: List[Tuple[str, str, str]] = []
+        for root, _, files in os.walk(real_dir):
+            for fname in sorted(files):
+                abs_f = os.path.join(root, fname)
+                rel_f = os.path.relpath(abs_f, real_dir).replace("\\", "/")
+                content = ""
+                try:
+                    with open(abs_f, "r", encoding="utf-8") as f:
+                        content = f.read()
+                except Exception:
+                    try:
+                        with open(abs_f, "rb") as f:
+                            content = f.read().decode("utf-8", errors="replace")
+                    except Exception:
+                        content = ""
+                results.append((rel_f, abs_f, content))
+        return results
+
+    def _read_file_content(self, path_or_uri: str) -> str:
+        """安全讀取語意 URI 或本機檔案文字，支援 module.root 與 module.source.root 自適應降級。"""
+        real_p = self._resolve_source_path(path_or_uri)
+        if real_p and os.path.isfile(real_p):
             try:
                 with open(real_p, "r", encoding="utf-8") as f:
                     return f.read()
+            except Exception:
+                try:
+                    with open(real_p, "rb") as f:
+                        return f.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+
+        # 直接嘗試 URI read_text (若存在虛擬 storage)
+        if uri and "://" in path_or_uri:
+            try:
+                if uri.exists(path_or_uri):
+                    return uri.read_text(path_or_uri)
             except Exception:
                 pass
 
@@ -252,7 +298,10 @@ class ArtifactCompiler:
                         combined_pieces.extend(below_blocks)
 
                     if combined_pieces:
-                        combined_str = "\n\n".join(combined_pieces).rstrip("\r\n") + "\n"
+                        if all(p.lstrip().startswith("|") for p in combined_pieces):
+                            combined_str = "\n".join(combined_pieces).rstrip("\r\n") + "\n"
+                        else:
+                            combined_str = "\n\n".join(combined_pieces).rstrip("\r\n") + "\n"
                     else:
                         combined_str = ""
 
@@ -297,10 +346,38 @@ class ArtifactCompiler:
         """Stage 1: 解算內容佔位符別名。"""
         return self.resolve_single_artifact(content, inserts, context=context)
 
+    def _write_cache_file(self, cache_uri: str, content: str) -> str:
+        """寫入中繼快取檔案 (支援 storage/cache URI 與本地 fallback)。"""
+        written = False
+        if uri:
+            try:
+                uri.makedirs(os.path.dirname(cache_uri), exist_ok=True)
+                uri.write_text(cache_uri, content)
+                written = True
+            except Exception:
+                written = False
+        if not written:
+            if uri:
+                try:
+                    local_cache = uri.resolve(cache_uri)
+                except Exception:
+                    yscb_root = uri._get_yscb_root()
+                    sub_rel = cache_uri.replace("cache://agents-workflow/resolved_contents/", "")
+                    local_cache = os.path.join(yscb_root, ".cache", "agents-workflow", "resolved_contents", sub_rel.replace("/", os.sep))
+            else:
+                sub_rel = cache_uri.replace("cache://agents-workflow/resolved_contents/", "")
+                local_cache = os.path.join(os.path.dirname(os.path.dirname(self.module_root)), ".cache", "agents-workflow", "resolved_contents", sub_rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(local_cache), exist_ok=True)
+            with open(local_cache, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+            return local_cache
+        return cache_uri
+
     def compile_stage1(self) -> Dict[str, Any]:
         """
         執行 Stage 1 全量段落佔位符解算：
         將所有 export 項目物化寫入 cache.root://agents-workflow/resolved_contents/。
+        支援單檔與目錄級 (Skill Package) 遞迴掃描與 Stage 1 展開。
         """
         data = self.get_contributes_data()
         exports = data.get("export", [])
@@ -317,9 +394,7 @@ class ArtifactCompiler:
                 continue
             exp_type = exp.get("type", "template")
             source_p = exp.get("source", "")
-            base_name = os.path.basename(source_p.replace("\\", "/"))
-            if not base_name:
-                continue
+            exp_name = exp.get("name", "")
 
             folder_map = {
                 "standard": "standards",
@@ -327,52 +402,75 @@ class ArtifactCompiler:
                 "workflow": "workflows",
                 "workflows": "workflows",
                 "template": "templates",
-                "templates": "templates"
+                "templates": "templates",
+                "skill": "skills",
+                "skills": "skills"
             }
             sub_folder = folder_map.get(exp_type, "templates")
 
-            raw_content = self._read_file_content(source_p)
-            if not raw_content:
+            real_src_path = self._resolve_source_path(source_p)
+            if not real_src_path or not os.path.exists(real_src_path):
                 errors.append(f"Cannot read export source: {source_p}")
                 continue
 
-            try:
-                ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
-                stage1_content = self.resolve_single_artifact(raw_content, inserts, context=ctx)
+            is_directory = os.path.isdir(real_src_path)
 
-                cache_uri = f"{cache_target_root}/{sub_folder}/{base_name}"
-                written = False
-                if uri:
+            if is_directory:
+                skill_files = self._scan_directory_files(source_p)
+                if not skill_files:
+                    errors.append(f"Skill directory is empty: {source_p}")
+                    continue
+
+                skill_pkg_name = exp_name or os.path.basename(source_p.rstrip("/\\"))
+                for rel_f, abs_f, raw_text in skill_files:
                     try:
-                        uri.makedirs(f"{cache_target_root}/{sub_folder}", exist_ok=True)
-                        uri.write_text(cache_uri, stage1_content)
-                        written = True
-                    except Exception:
-                        written = False
+                        ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
+                        if rel_f.endswith((".md", ".txt", ".json", ".yaml", ".yml", ".sh")):
+                            stage1_content = self.resolve_single_artifact(raw_text, inserts, context=ctx)
+                        else:
+                            stage1_content = raw_text
 
-                if not written:
-                    if uri:
-                        try:
-                            local_cache = uri.resolve(cache_uri)
-                        except Exception:
-                            yscb_root = uri._get_yscb_root()
-                            local_cache = os.path.join(yscb_root, ".cache", "agents-workflow", "resolved_contents", sub_folder, base_name)
-                    else:
-                        local_cache = os.path.join(os.path.dirname(os.path.dirname(self.module_root)), ".cache", "agents-workflow", "resolved_contents", sub_folder, base_name)
-                    os.makedirs(os.path.dirname(local_cache), exist_ok=True)
-                    with open(local_cache, "w", encoding="utf-8") as f:
-                        f.write(stage1_content)
-                    cache_uri = local_cache
+                        cache_uri = f"{cache_target_root}/{sub_folder}/{skill_pkg_name}/{rel_f}"
+                        actual_cache = self._write_cache_file(cache_uri, stage1_content)
 
-                resolved_items.append({
-                    "export": exp,
-                    "sub_folder": sub_folder,
-                    "base_name": base_name,
-                    "cache_uri": cache_uri,
-                    "content": stage1_content
-                })
-            except Exception as e:
-                errors.append(f"Failed Stage 1 for {base_name}: {e}")
+                        resolved_items.append({
+                            "export": exp,
+                            "sub_folder": sub_folder,
+                            "base_name": os.path.basename(rel_f),
+                            "rel_path": rel_f,
+                            "cache_uri": actual_cache,
+                            "content": stage1_content,
+                            "is_skill": True,
+                            "skill_name": skill_pkg_name
+                        })
+                    except Exception as e:
+                        errors.append(f"Failed Stage 1 for {skill_pkg_name}/{rel_f}: {e}")
+            else:
+                base_name = os.path.basename(source_p.replace("\\", "/"))
+                raw_content = self._read_file_content(source_p)
+                if not raw_content:
+                    errors.append(f"Cannot read export source: {source_p}")
+                    continue
+
+                try:
+                    ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
+                    stage1_content = self.resolve_single_artifact(raw_content, inserts, context=ctx)
+
+                    cache_uri = f"{cache_target_root}/{sub_folder}/{base_name}"
+                    actual_cache = self._write_cache_file(cache_uri, stage1_content)
+
+                    resolved_items.append({
+                        "export": exp,
+                        "sub_folder": sub_folder,
+                        "base_name": base_name,
+                        "rel_path": base_name,
+                        "cache_uri": actual_cache,
+                        "content": stage1_content,
+                        "is_skill": (exp_type in ("skill", "skills")),
+                        "skill_name": exp_name or os.path.splitext(base_name)[0]
+                    })
+                except Exception as e:
+                    errors.append(f"Failed Stage 1 for {base_name}: {e}")
 
         return {
             "success": len(errors) == 0,
@@ -472,6 +570,18 @@ class ArtifactCompiler:
                     print(f"[compiler:warning] Failed to resolve project URI '{tag_uri}' in '{os.path.basename(current_dst_path)}': {e}", file=sys.stderr)
             return tag_uri
 
+        def _replace_in_fenced_block(match: re.Match) -> str:
+            block_text = match.group(0)
+            has_local = "__#{" in block_text
+            has_proj = "__${" in block_text
+            if not has_local and not has_proj:
+                return block_text
+            if has_local:
+                block_text = LOCAL_URI_INNER_REGEX.sub(lambda m: _resolve_local_uri(m.group(1).strip()), block_text)
+            if has_proj:
+                block_text = PROJECT_URI_INNER_REGEX.sub(lambda m: _resolve_project_uri(m.group(1).strip()), block_text)
+            return block_text
+
         def _replace_in_code_span(match: re.Match) -> str:
             span_text = match.group(0)
             inner = span_text[1:-1]
@@ -497,7 +607,8 @@ class ArtifactCompiler:
 
             return f"`{inner}`"
 
-        return CODE_SPAN_REGEX.sub(_replace_in_code_span, content)
+        res_fenced = FENCED_CODE_BLOCK_REGEX.sub(_replace_in_fenced_block, content)
+        return CODE_SPAN_REGEX.sub(_replace_in_code_span, res_fenced)
 
     def compile_all(self) -> Dict[str, Any]:
         """相容性別名：執行 Stage 1 快取物化編譯。"""

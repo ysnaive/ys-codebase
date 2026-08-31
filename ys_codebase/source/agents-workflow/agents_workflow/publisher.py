@@ -196,29 +196,43 @@ class ReleasePublisher:
 
         for it in resolved_items:
             exp = it.get("export", {})
-            exp_type = exp.get("type", "template")  # workflow, template, standard
+            exp_type = exp.get("type", "template")  # workflow, template, standard, skill
             source_uri = exp.get("source", "")
             base_name = it.get("base_name", "")
             sub_folder = it.get("sub_folder", "templates")
+            is_skill = it.get("is_skill", False) or exp_type in ("skill", "skills")
+            skill_name = it.get("skill_name", exp.get("name", os.path.splitext(base_name)[0]))
+            rel_path = it.get("rel_path", base_name)
 
             # 檢查 projections 是否有對應配置
             proj_rule = projections.get(exp_type, {})
             if not proj_rule:
-                # 嘗試單複數容錯 (standards vs standard)
+                # 嘗試單複數容錯 (standards vs standard, skills vs skill)
                 for k, v in projections.items():
                     if k.rstrip("s") == exp_type.rstrip("s"):
                         proj_rule = v
                         break
 
             if not proj_rule:
-                # 預設 fallback 輸出到 .agents/<sub_folder>/
-                target_dir_uri = f"project://.agents/{sub_folder}"
+                # 預設 fallback 輸出到 .agents/<sub_folder>/ 或 .agents/skills/{export.name}
+                if is_skill:
+                    target_dir_uri = f"project://.agents/skills/{skill_name}"
+                else:
+                    target_dir_uri = f"project://.agents/{sub_folder}"
                 ext = ".md"
                 header_tpl = None
             else:
-                target_dir_uri = proj_rule.get("target_dir", f"project://.agents/{sub_folder}")
+                raw_target_dir = proj_rule.get("target_dir", f"project://.agents/{sub_folder}")
                 ext = proj_rule.get("extension", ".md")
                 header_tpl = proj_rule.get("header")
+
+                # 支援 target_dir 巨集插值 ({export.name}, {export.basename}, {target.name})
+                target_dir_uri = (
+                    raw_target_dir
+                    .replace("{export.name}", skill_name)
+                    .replace("{export.basename}", os.path.splitext(base_name)[0])
+                    .replace("{target.name}", target_cfg.get("name", ""))
+                )
 
             # 解析目標絕對目錄
             target_dir_abs = ""
@@ -237,43 +251,58 @@ class ReleasePublisher:
                 else:
                     target_dir_abs = os.path.join(proj_root, target_dir_uri.replace("/", os.sep))
 
-            # 計算目標檔案名稱 (替換副檔名)
+            # 計算目標檔案名稱與路徑
             file_main_name = os.path.splitext(base_name)[0]
-            target_filename = f"{file_main_name}{ext}"
-            target_abs_path = os.path.normpath(os.path.join(target_dir_abs, target_filename))
+            if is_skill:
+                # 保留 Skill 內部相對路徑 (如 SKILL.md 或 references/sub.md)
+                target_abs_path = os.path.normpath(os.path.join(target_dir_abs, rel_path.replace("/", os.sep)))
+            else:
+                target_filename = f"{file_main_name}{ext}"
+                target_abs_path = os.path.normpath(os.path.join(target_dir_abs, target_filename))
 
-            # 註冊完整來源 URI 與標準短名
-            if source_uri:
-                deployment_map[source_uri] = target_abs_path
-            deployment_map[f"{sub_folder}/{base_name}"] = target_abs_path
-            deployment_map[base_name] = target_abs_path
+            # 註冊完整來源 URI 與標準別名
+            if is_skill:
+                if source_uri:
+                    deployment_map[f"{source_uri.rstrip('/')}/{rel_path}"] = target_abs_path
+                    if rel_path in ("SKILL.md", base_name):
+                        deployment_map[source_uri] = target_abs_path
+                deployment_map[f"skills/{skill_name}/{rel_path}"] = target_abs_path
+                if rel_path in ("SKILL.md", base_name):
+                    deployment_map[f"skills/{skill_name}"] = target_abs_path
+                    deployment_map[skill_name] = target_abs_path
+            else:
+                if source_uri:
+                    deployment_map[source_uri] = target_abs_path
+                deployment_map[f"{sub_folder}/{base_name}"] = target_abs_path
+                deployment_map[base_name] = target_abs_path
 
             target_items.append({
                 "source_uri": source_uri,
                 "base_name": base_name,
+                "rel_path": rel_path,
                 "sub_folder": sub_folder,
                 "target_abs_path": target_abs_path,
-                "header_tpl": header_tpl,
+                "header_tpl": header_tpl if (not is_skill or rel_path in ("SKILL.md", base_name)) else None,
                 "content": it.get("content", ""),
-                "export": exp
+                "export": exp,
+                "is_skill": is_skill
             })
 
         return deployment_map, target_items
 
-    def render_header(
-        self,
-        export_item: Dict[str, Any],
-        header_tpl: Any,
-        target_name: str
-    ) -> str:
-        """解析純文字/陣列 header 模板，動態替換 {export.*} 巨集。"""
-        if not header_tpl:
+    def render_header(self, export_item: Dict[str, Any], header_template: Optional[Any], target_name: str) -> str:
+        """
+        將 release_target 宣告之 header 模板進行動態巨集替換。
+        """
+        if not header_template:
             return ""
 
-        if isinstance(header_tpl, list):
-            raw_template = "\n".join(str(x) for x in header_tpl)
+        if isinstance(header_template, list):
+            raw_template = "\n".join(str(x) for x in header_template)
+        elif isinstance(header_template, str):
+            raw_template = header_template
         else:
-            raw_template = str(header_tpl)
+            return ""
 
         source_p = export_item.get("source", "")
         base_name = os.path.basename(source_p.replace("\\", "/"))
@@ -298,50 +327,60 @@ class ReleasePublisher:
         res = re.sub(r"\{(?:export|target)\.[A-Za-z0-9_]+\}", "", res)
         return res.strip() + "\n\n" if res.strip() else ""
 
-    def _soft_merge_agents_md(self, dev_standards_content: str, proj_root: str, force: bool = False) -> Tuple[bool, bool]:
+    def _soft_merge_agents_text(self, existing_text: str, dev_standards_content: str) -> str:
+        """
+        純文字軟合併演算法 (Pure String Soft-Merge).
+        將新標準內容注入至 YSCB 標記區塊，保留其他章節。
+        """
+        injected_section = f"{AGENTS_MD_BEGIN}\n{dev_standards_content.strip()}\n{AGENTS_MD_END}"
+        if not existing_text:
+            return (
+                f"{injected_section}\n\n"
+                f"## 4. 專案特化工程規範 (Project Specific Standards)\n"
+                f"*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n"
+            )
+
+        pattern = re.compile(
+            re.escape(AGENTS_MD_BEGIN) + r".*?" + re.escape(AGENTS_MD_END),
+            re.DOTALL
+        )
+
+        if pattern.search(existing_text):
+            return pattern.sub(lambda _: injected_section, existing_text)
+        else:
+            return injected_section + "\n\n" + existing_text
+
+    def _soft_merge_agents_md(self, dev_standards_content: str, proj_root_or_file: str, force: bool = False) -> Tuple[bool, bool]:
         """
         執行 AGENTS.md 軟合併注入，保留自定義章節。
         Returns:
             (success: bool, written: bool)
         """
-        target_file = os.path.join(proj_root, "AGENTS.md")
-        injected_section = f"{AGENTS_MD_BEGIN}\n{dev_standards_content.strip()}\n{AGENTS_MD_END}"
+        if os.path.isdir(proj_root_or_file) or not proj_root_or_file.endswith(".md"):
+            target_file = os.path.join(proj_root_or_file, "AGENTS.md")
+        else:
+            target_file = proj_root_or_file
 
-        if not os.path.isfile(target_file):
-            # 若不存在，建立全新 AGENTS.md
-            full_content = (
-                f"{injected_section}\n\n"
-                f"## 4. 專案特化工程規範 (Project Specific Standards)\n"
-                f"*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n"
-            )
-            with open(target_file, "w", encoding="utf-8", newline="\n") as f:
-                f.write(full_content)
-            return True, True
+        existing = ""
+        if os.path.isfile(target_file):
+            try:
+                with open(target_file, "r", encoding="utf-8") as f:
+                    existing = f.read()
+            except Exception:
+                existing = ""
 
-        # 若已存在，讀取並執行正則軟合併
+        new_content = self._soft_merge_agents_text(existing, dev_standards_content)
+
+        if not force and os.path.isfile(target_file) and new_content == existing:
+            return True, False
+
         try:
-            with open(target_file, "r", encoding="utf-8") as f:
-                existing = f.read()
-
-            pattern = re.compile(
-                re.escape(AGENTS_MD_BEGIN) + r".*?" + re.escape(AGENTS_MD_END),
-                re.DOTALL
-            )
-
-            if pattern.search(existing):
-                new_content = pattern.sub(lambda _: injected_section, existing)
-            else:
-                # 若無標籤，追加在最前或特定標題後
-                new_content = injected_section + "\n\n" + existing
-
-            if not force and new_content == existing:
-                return True, False
-
+            os.makedirs(os.path.dirname(target_file), exist_ok=True)
             with open(target_file, "w", encoding="utf-8", newline="\n") as f:
                 f.write(new_content)
             return True, True
         except Exception as e:
-            print(f"[publisher:warning] Failed soft-merge AGENTS.md: {e}", file=sys.stderr)
+            print(f"[publisher:warning] Failed soft-merge {target_file}: {e}", file=sys.stderr)
             return False, False
 
     def release_all(self, force: bool = False, interactive: bool = False) -> Dict[str, Any]:
@@ -351,11 +390,10 @@ class ReleasePublisher:
         Stage 1: 內容佔位符展開 (compile_stage1)
         Stage 2: 提前解算所有已啟用 Target 之檔案實體路徑與渲染內容 (分流 Project 與 Local 集合)
         Stage 3: 原子寫入 storage:// (Project 軌, project:// 格式) 與 cache:// (Local 軌, 絕對路徑格式)
-        Stage 4: 落地端檔案內容比對與增量輸出（含 AGENTS.md 軟合併與純 LF 寫入）
+        Stage 4: 落地端檔案內容比對與增量輸出（含 agents_md 軟合併與純 LF 寫入）
         """
         cfg = self._get_project_config()
         active_target_names: List[str] = cfg.get("release_targets", ["antigravity"])
-        enable_agents_md: bool = cfg.get("enable_agents_md", True)
 
         # 取得專案根目錄
         proj_root = os.getcwd()
@@ -401,6 +439,8 @@ class ReleasePublisher:
             except Exception:
                 pass
 
+        all_registered_targets = {t["name"]: t for t in self.get_registered_targets() if "name" in t}
+
         # 評估是否可全短路 (Stage 0 Short-Circuit)
         can_short_circuit = True
         total_short_circuited_files: List[str] = []
@@ -429,10 +469,14 @@ class ReleasePublisher:
                             break
                         total_short_circuited_files.append(l_abs)
 
-            if enable_agents_md:
-                agents_md_file = os.path.join(proj_root, "AGENTS.md")
-                if not os.path.isfile(agents_md_file):
-                    can_short_circuit = False
+            for t_name in active_target_names:
+                t_cfg = all_registered_targets.get(t_name, {})
+                a_md = t_cfg.get("agents_md")
+                if a_md and str(a_md).strip():
+                    a_abs = self._resolve_project_uri(str(a_md).strip(), proj_root)
+                    if not os.path.isfile(a_abs):
+                        can_short_circuit = False
+                        break
 
             if not (proj_targets or local_targets):
                 can_short_circuit = False
@@ -467,7 +511,6 @@ class ReleasePublisher:
             }
 
         resolved_items = stage1_res.get("resolved_items", [])
-        all_registered_targets = {t["name"]: t for t in self.get_registered_targets() if "name" in t}
 
         # --- 步驟 2 (提前解算): 為所有已啟用 Target 解算檔案清單與內容 ---
         precomputed_project_files: Dict[str, str] = {}
@@ -503,6 +546,35 @@ class ReleasePublisher:
                     precomputed_project_files[dst_abs] = final_text
                 else:
                     precomputed_local_files[dst_abs] = final_text
+
+            # 處理該 Target 的 agents_md 規範投影 (若有設定且非空)
+            agents_md_uri = target_cfg.get("agents_md")
+            if agents_md_uri and str(agents_md_uri).strip():
+                if not agents_standards_content:
+                    for r_item in resolved_items:
+                        if "AgentsStandards" in r_item.get("base_name", ""):
+                            agents_standards_content = r_item.get("content", "")
+                            break
+
+                if agents_standards_content:
+                    target_agents_abs = self._resolve_project_uri(str(agents_md_uri).strip(), proj_root)
+                    rendered_agents_content = self.compiler.resolve_stage2_uri(
+                        agents_standards_content, target_agents_abs, dep_map
+                    )
+                    existing_agents_text = ""
+                    if os.path.isfile(target_agents_abs):
+                        try:
+                            with open(target_agents_abs, "r", encoding="utf-8") as f:
+                                existing_agents_text = f.read()
+                        except Exception:
+                            existing_agents_text = ""
+
+                    final_agents_text = self._soft_merge_agents_text(existing_agents_text, rendered_agents_content)
+                    precomputed_all_files[target_agents_abs] = final_agents_text
+                    if is_proj_target:
+                        precomputed_project_files[target_agents_abs] = final_agents_text
+                    else:
+                        precomputed_local_files[target_agents_abs] = final_agents_text
 
         # --- 步驟 1 (過往清理): 雙軌舊檔案比對 ---
         old_proj_files: Set[str] = {
@@ -594,31 +666,6 @@ class ReleasePublisher:
                 f.write(content)
             written_count += 1
 
-        # 執行 AGENTS.md 軟合併 (若啟用 enable_agents_md)
-        if enable_agents_md:
-            if not agents_standards_content:
-                for r_item in resolved_items:
-                    if "AgentsStandards" in r_item.get("base_name", ""):
-                        agents_standards_content = r_item.get("content", "")
-                        break
-
-            if agents_standards_content:
-                target_agents_abs = os.path.join(proj_root, "AGENTS.md")
-                rendered_agents_content = agents_standards_content
-                if active_target_names:
-                    main_target_cfg = all_registered_targets.get(active_target_names[0], {})
-                    if main_target_cfg:
-                        dep_map_main, _ = self.build_deployment_map(main_target_cfg, resolved_items)
-                        rendered_agents_content = self.compiler.resolve_stage2_uri(
-                            agents_standards_content, target_agents_abs, dep_map_main
-                        )
-                else:
-                    rendered_agents_content = self.compiler.resolve_stage2_uri(
-                        agents_standards_content, target_agents_abs, {}
-                    )
-
-                self._soft_merge_agents_md(rendered_agents_content, proj_root, force=force)
-
         # 執行 project://.gitignore 軟合併同步 (傳入本次發布之精確檔案清單)
         gitignore_res = self.sync_gitignore(
             active_targets=active_target_names,
@@ -677,10 +724,12 @@ class ReleasePublisher:
                 except Exception:
                     pass
 
-        # 2. 針對個別發布檔案轉換為相對路徑 (100% 精確檔案路徑，不濃縮任何目錄)
+        # 2. 針對個別發布檔案轉換為相對路徑 (100% 精確檔案路徑，不濃縮任何目錄，略過常駐規則檔)
         for f_abs in file_list:
             if isinstance(f_abs, str) and f_abs.startswith("project://"):
                 f_abs = self._resolve_project_uri(f_abs, proj_root)
+            if os.path.basename(f_abs) in ("AGENTS.md", "CLAUDE.md"):
+                continue
             try:
                 rel = os.path.relpath(f_abs, proj_root).replace("\\", "/")
                 if not rel.startswith("../") and not rel.startswith("/"):

@@ -1,9 +1,17 @@
 {
+  "export": [
+    {
+      "type": "skill",
+      "name": "yscb-module-dev",
+      "source": "module://dev/assets/skills/yscb-module-dev",
+      "description": "生態系模組開發與 Dogfooding 閉環指南。當進行 YSCB 生態系模組代碼修改、新增功能、執行沙盒測試 (dev test)、安裝除錯 (@build) 或版本晉升與發布 (bump/release) 時觸發。"
+    }
+  ],
   "insert": [
     {
-      "type": "uri",
-      "token": "AGENTS_STANDARDS",
-      "value": "module://dev/assets/standards/DevAgentsStandards.md",
+      "type": "const",
+      "token": "AGENTS_SKILL_ROUTING",
+      "value": "| **生態系模組開發 / 多模組熱調試 (Dogfooding)** | `yscb-module-dev` |",
       "mode": "below"
     }
   ]

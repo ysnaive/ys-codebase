@@ -86,29 +86,66 @@ class CodeSnippet:
     is_truncated: bool = False
     error: Optional[str] = None
 
-    def format_text(self, prefix: str = "    ") -> str:
-        """格式化為帶有行號對齊的純文字區塊"""
+    def get_lines(self, max_lines: Optional[int] = None) -> List[Tuple[int, str]]:
+        """
+        獲取裁切後的代碼行清單。
+        若提供 max_lines 且小於現有行數，則以 target_line 為焦點保留最關鍵區塊。
+        """
+        if not self.lines:
+            return []
+        if max_lines is None or max_lines >= len(self.lines):
+            return list(self.lines)
+        if max_lines <= 0:
+            return []
+
+        # 尋找 target_line 在 lines 中的索引位置
+        target_idx = 0
+        for idx, (ln, _) in enumerate(self.lines):
+            if ln == self.target_line:
+                target_idx = idx
+                break
+
+        # 以 target_line 為焦點向前後展開
+        half = max_lines // 2
+        start_idx = max(0, target_idx - half)
+        end_idx = start_idx + max_lines
+        if end_idx > len(self.lines):
+            end_idx = len(self.lines)
+            start_idx = max(0, end_idx - max_lines)
+
+        return self.lines[start_idx:end_idx]
+
+    def format_text(self, prefix: str = "    ", max_lines: Optional[int] = None) -> str:
+        """格式化為帶有行號對齊的純文字區塊 (支援動態 max_lines 裁切)"""
         if self.error:
             return f"{prefix}[Snippet Unavailable: {self.error}]"
-        if not self.lines:
+        if not self.lines or (max_lines is not None and max_lines <= 0):
             return ""
 
-        max_line_num = max(ln for ln, _ in self.lines)
+        effective_lines = self.get_lines(max_lines)
+        if not effective_lines:
+            return ""
+
+        max_line_num = max(ln for ln, _ in effective_lines)
         line_num_width = max(len(str(max_line_num)), 3)
 
         formatted_lines = []
-        for ln, txt in self.lines:
+        for ln, txt in effective_lines:
             pointer = " >" if ln == self.target_line else "  "
             formatted_lines.append(f"{prefix}{pointer} {ln:{line_num_width}d} | {txt}")
 
-        if self.is_truncated:
+        if self.is_truncated or (max_lines is not None and len(effective_lines) < len(self.lines)):
             formatted_lines.append(f"{prefix}   {' ' * line_num_width} | ... (lines truncated)")
 
         return "\n".join(formatted_lines)
 
+    def get_raw_code(self) -> str:
+        """取得原始代碼字串"""
+        return "\n".join(txt for _, txt in self.lines)
+
     def to_dict(self) -> Dict[str, Any]:
         """產出精簡且完備之結構化字典 (提供 raw_code 與行號區間)"""
-        raw_code = "\n".join(txt for _, txt in self.lines)
+        raw_code = self.get_raw_code()
         res: Dict[str, Any] = {
             "start_line": self.start_line,
             "end_line": self.end_line,

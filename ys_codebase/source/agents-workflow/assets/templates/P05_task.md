@@ -1,19 +1,3 @@
-`__@{BEGIN_HTML_ANNOTATION}__`
-
-Phase 5 執行指引：
-1. 目標：嚴格依照 Phase 3 的拓撲順序與 Phase 4 的 TASK 清單逐項編碼實作，同步落實微觀代碼註解與文檔交付（一等公民任務）。
-2. 嚴禁空降實作：未經 Phase 1~4 規劃並獲確認前，嚴禁直接編寫原始碼。
-3. 實作偏差三級處置：
-   - Minor (實作微調)：在 P05 偏差表登記理由後繼續推進。
-   - Moderate (內部架構調整)：更新 P02/P03/P05 並向開發者呈遞變更摘要。
-   - Major (API/行為變更)：強制停手發起 /Discuss 討論，獲確認後更新相關 Phase。
-4. 範疇保護：遇到異常優先排查本體邏輯，嚴禁擅自跨模組修改外部代碼。
-5. Checkpoint 等待關卡：完成所有代碼實作後，標記 TASK 清單並由開發者確認推進至 Phase 6。
-
-`__@{PHASE05_AGENTS_GUILD}__`
-
-`__@{END_HTML_ANNOTATION}__`
-
 # 實作任務清單 (Task Breakdown)
 
 `__@{PHASEXX_HEADER}__`
