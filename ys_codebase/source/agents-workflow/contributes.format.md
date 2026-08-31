@@ -117,7 +117,7 @@
       "type": "const",
       "token": "RETRO_CHECK_ITEMS",
       "mode": "below",
-      "value": "##### 知識庫 Search 效益評測 (knowledge-db: Search Efficiency & Ranking Quality)\n- **調用次數統計**：統計當前 Session 調用 `knowledge-db search` 總次數。\n- **調用時機合理性**：是否在未知符號/架構探索時及時調用？有無過度濫用或應調用而漏調用？\n- **效益性對比**：相較傳統 `grep_search` / `list_dir` / `view_file` 盲目翻找，估算節省之 Token、Turn 數與往返時間。\n- **演算法有效性**：檢索結果對解決問題之實質貢獻度，以及高相關內容是否排名靠前 (Top 1~3)。"
+      "value": "##### 知識庫 Search 效益評測 (knowledge-db: Search Efficiency & Ranking Quality)\n- **調用次數統計**：統計當前 Session 調用 `knowledge-db search` 總次數。\n- **調用時機合理性**：是否在未知符號/架構探索時及時調用？有無過度濫用或應調用而漏調用？\n- **效益性對比**：相較傳統文字搜尋 / 目錄走訪 / 逐檔翻讀（如 `grep_search` / `list_dir` / `view_file` / `read_file`）盲目翻找，估算節省之 Token、Turn 數與往返時間。\n- **演算法有效性**：檢索結果對解決問題之實質貢獻度，以及高相關內容是否排名靠前 (Top 1~3)。"
     },
     {
       "type": "const",
