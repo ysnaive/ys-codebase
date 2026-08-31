@@ -33,6 +33,7 @@
 | **sub_10** | **Agents-Workflow 注入內容與決策樹優化** | **Completed** | 注入剛性檢索決策樹（簽章/複合詞/語意敘述分流）、確立「定位 ➔ 定向閱讀」非暴力廣蒐哲學，並更新 Phase 0 / Research / Phase 7 JIT 引導資產。 |
 | **sub_11** | **細粒度增量熱重載與死循環修復** | **Completed** | 100% 完整清冊 JIT 嗅探根除重複熱重載死循環、單檔符號記憶體快取池、倒排索引差量打補丁 (`patch_incremental`) 與 Fast Gzip 持久化，單檔熱重載延遲降至 20~50ms (提速 50x)。 |
 
+
 ---
 
 ## 3. CLI 快速上手 (Quick Start)

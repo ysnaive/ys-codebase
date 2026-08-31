@@ -13,13 +13,13 @@
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "1.0.2.13",
-      "installed_at": "2026-08-30 19:47:04",
+      "version": "1.0.2.14",
+      "installed_at": "2026-08-31 08:36:00",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.0.1.17",
-      "installed_at": "2026-08-30 18:26:50",
+      "version": "1.0.1.18",
+      "installed_at": "2026-08-31 08:35:55",
       "provider": "./ys_codebase/release"
     }
   }
