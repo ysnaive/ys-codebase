@@ -6,12 +6,87 @@ import ast
 import logging
 import os
 from pathlib import Path
-from typing import Any, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from ..schema import LanguageType, MemberInfo, SymbolKind, UnifiedSymbol
+from ..schema import LanguageType, MemberInfo, SymbolCallSite, SymbolKind, UnifiedSymbol
 from .base import BaseParser
 
 logger = logging.getLogger("knowledge-db.parsers.python")
+
+
+class CallSiteVisitor(ast.NodeVisitor):
+    """
+    Python AST 調用點與 Import 走訪萃取器 (維護 ScopeStack 作用域棧)
+    """
+
+    def __init__(self, file_path: str, space: str):
+        self.file_path = file_path.replace("\\", "/")
+        self.space = space
+        self.scope_stack: List[str] = []
+        self.call_sites: List[SymbolCallSite] = []
+        self.imports: Dict[str, str] = {}
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            local_name = alias.asname or alias.name
+            self.imports[local_name] = alias.name
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        mod = node.module or ""
+        # 處理相對導入前綴 (例如 from . import x 或 from ..foo import y)
+        if node.level and node.level > 0:
+            prefix = "." * node.level
+            mod = f"{prefix}{mod}" if mod else prefix
+        for alias in node.names:
+            local_name = alias.asname or alias.name
+            target = f"{mod}.{alias.name}" if mod else alias.name
+            self.imports[local_name] = target
+        self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.scope_stack.append(node.name)
+        self.generic_visit(node)
+        self.scope_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.scope_stack.append(node.name)
+        self.generic_visit(node)
+        self.scope_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.scope_stack.append(node.name)
+        self.generic_visit(node)
+        self.scope_stack.pop()
+
+    def visit_Call(self, node: ast.Call) -> None:
+        callee_name, prefix = self._extract_callee_info(node.func)
+        if callee_name:
+            caller_member = ".".join(self.scope_stack) if self.scope_stack else "<module>"
+            self.call_sites.append(
+                SymbolCallSite(
+                    callee_name=callee_name,
+                    line_number=node.lineno,
+                    caller_symbol_id="",
+                    caller_member_name=caller_member,
+                    context_prefix=prefix,
+                    file_path=self.file_path,
+                    space=self.space,
+                )
+            )
+        self.generic_visit(node)
+
+    def _extract_callee_info(self, func_node: ast.AST) -> Tuple[str, str]:
+        """安全萃取被呼叫者名稱與前綴"""
+        if isinstance(func_node, ast.Name):
+            return func_node.id, ""
+        elif isinstance(func_node, ast.Attribute):
+            try:
+                prefix = ast.unparse(func_node.value)
+            except Exception:
+                prefix = ""
+            return func_node.attr, prefix
+        return "", ""
 
 
 def _get_arg_str(arg: ast.arg) -> str:
@@ -277,3 +352,30 @@ class PythonParser(BaseParser):
                 )
 
         return symbols
+
+    def extract_call_sites(self, file_path: str, content: str, space: str) -> List[SymbolCallSite]:
+        """提取 Python 檔案中的所有符號調用點"""
+        normalized_path = file_path.replace("\\", "/")
+        try:
+            tree = ast.parse(content, filename=normalized_path)
+        except Exception as e:
+            logger.debug(f"PythonParser.extract_call_sites: skipping '{normalized_path}' due to parse error: {e}")
+            return []
+
+        visitor = CallSiteVisitor(file_path=normalized_path, space=space)
+        visitor.visit(tree)
+        return visitor.call_sites
+
+    def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
+        """提取 Python 檔案中的所有檔頭 Import 映射"""
+        normalized_path = file_path.replace("\\", "/")
+        try:
+            tree = ast.parse(content, filename=normalized_path)
+        except Exception as e:
+            logger.debug(f"PythonParser.extract_imports: skipping '{normalized_path}' due to parse error: {e}")
+            return {}
+
+        visitor = CallSiteVisitor(file_path=normalized_path, space="")
+        visitor.visit(tree)
+        return visitor.imports
+

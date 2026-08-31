@@ -4,9 +4,9 @@ knowledge-db 解析器動態註冊表與調度中心 (ParserRegistry)
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
-from ..schema import UnifiedSymbol
+from ..schema import SymbolCallSite, UnifiedSymbol
 from .base import BaseParser
 from .cpp_parser import CppParser
 from .csharp_parser import CSharpParser
@@ -72,3 +72,30 @@ class ParserRegistry:
         except Exception as e:
             logger.warning(f"Unexpected error during parse_file '{file_path}' in space '{space}': {e}")
             return []
+
+    def extract_call_sites(self, file_path: str, content: str, space: str) -> List[SymbolCallSite]:
+        """
+        調度相符解析器提取符號調用點；若無匹配解析器回傳空清單 []。
+        """
+        parser = self.get_parser(file_path)
+        if parser is None:
+            return []
+        try:
+            return parser.extract_call_sites(file_path=file_path, content=content, space=space)
+        except Exception as e:
+            logger.debug(f"Error extracting call sites from '{file_path}': {e}")
+            return []
+
+    def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
+        """
+        調度相符解析器提取檔頭 Import 映射表；若無匹配解析器回傳空字典 {}。
+        """
+        parser = self.get_parser(file_path)
+        if parser is None:
+            return {}
+        try:
+            return parser.extract_imports(file_path=file_path, content=content)
+        except Exception as e:
+            logger.debug(f"Error extracting imports from '{file_path}': {e}")
+            return {}
+

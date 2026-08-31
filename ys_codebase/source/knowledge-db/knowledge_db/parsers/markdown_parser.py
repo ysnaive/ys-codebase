@@ -6,9 +6,9 @@ import logging
 import os
 from pathlib import Path
 import re
-from typing import List, Optional, Set, Union
+from typing import Dict, List, Optional, Set, Union
 
-from ..schema import LanguageType, SymbolKind, UnifiedSymbol
+from ..schema import LanguageType, SymbolCallSite, SymbolKind, UnifiedSymbol
 from .base import BaseParser
 
 logger = logging.getLogger("knowledge-db.parsers.markdown")
@@ -189,3 +189,83 @@ class MarkdownParser(BaseParser):
             )
 
         return symbols
+
+    def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
+        """提取 Markdown 內引用的外部文檔與檔案超連結映射表"""
+        imports: Dict[str, str] = {}
+        # 匹配 [Link Text](target_path.ext)
+        link_re = re.compile(r'\[([^\]]+)\]\(([^)#\s]+)(?:#[^)]*)?\)')
+        for match in link_re.finditer(content):
+            text = match.group(1).strip()
+            target = match.group(2).strip()
+            if not target.startswith("http://") and not target.startswith("https://") and not target.startswith("mailto:"):
+                # 排除純錨點或協定鏈接
+                stem = Path(target).stem
+                imports[text] = target
+                imports[stem] = target
+                imports[target] = target
+
+        return imports
+
+    def extract_call_sites(self, file_path: str, content: str, space: str) -> List[SymbolCallSite]:
+        """提取 Markdown 內容中引用的符號與程式碼引用點"""
+        normalized_path = file_path.replace("\\", "/")
+        lines = content.splitlines()
+        call_sites: List[SymbolCallSite] = []
+
+        current_heading = "<document>"
+        link_sym_re = re.compile(r'\[`?([A-Za-z0-9_$.]+)`?\]\((?:file:///)?([^)#\s]+)(?:#L?(\d+))?\)')
+        inline_code_re = re.compile(r'`([A-Za-z0-9_$]+\.[A-Za-z0-9_$]+)(?:\(\))?`')
+
+        for i, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            # 更新標題作用域
+            h_m = HEADING_PATTERN.match(stripped)
+            if h_m:
+                current_heading = h_m.group(2).strip()
+                continue
+
+            # 1. 顯式 Markdown 超連結符號: [`ClassName.method`](file.py#L123)
+            for m in link_sym_re.finditer(line):
+                sym_str = m.group(1)
+                prefix = ""
+                callee = sym_str
+                if "." in sym_str:
+                    parts = sym_str.split(".")
+                    prefix = parts[0]
+                    callee = parts[-1]
+
+                call_sites.append(
+                    SymbolCallSite(
+                        callee_name=callee,
+                        line_number=i,
+                        caller_member_name=current_heading,
+                        context_prefix=prefix,
+                        file_path=normalized_path,
+                        space=space,
+                    )
+                )
+
+            # 2. 行內反引號符號參照: `Class.method`
+            for m in inline_code_re.finditer(line):
+                sym_str = m.group(1)
+                parts = sym_str.split(".")
+                prefix = parts[0]
+                callee = parts[-1]
+
+                call_sites.append(
+                    SymbolCallSite(
+                        callee_name=callee,
+                        line_number=i,
+                        caller_member_name=current_heading,
+                        context_prefix=prefix,
+                        file_path=normalized_path,
+                        space=space,
+                    )
+                )
+
+        return call_sites
+
