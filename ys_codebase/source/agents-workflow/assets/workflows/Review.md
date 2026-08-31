@@ -21,12 +21,14 @@
 - [ ] **錯誤與異常處置**：錯誤邊界有 Warning / Error 日誌並附帶上下文資訊。
 - [ ] **高頻防衛**：嚴禁在每影格循環項目 (Update / Render / Calculate) 頻繁記錄日誌。
 
-#### 3. 知識庫 1:1 交付與文檔審查 (Knowledge Base Delivery Audit)
-- [ ] **三維錨點對齊**：對照 [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)、[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) 與 [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)，確認所有公開介面、協同機制、狀態機、資料管線與工程妥協已全數覆蓋。
-- [ ] **中觀專題手冊 (Topic Docs)**：若涉及 3 個以上狀態轉移、通訊封包、資料管線或並發同步，已建立獨立 `workflow.docs://<Module>/[topic].md`（垂直 Mermaid TD + 轉移矩陣）。
-- [ ] **工程妥協登記**：若實作包含非直觀設計或 Workaround，已於 `workflow.docs://<Module>/DESIGN_NOTES.md` 登記 `DN-XX` 與 `[!CAUTION]`。
+#### 3. 三層文檔交付與微觀代碼審查 (Three-Tier Documentation & In-Code Audit)
+- [ ] **宏觀發布日誌**：專案根目錄 [CHANGELOG.md](`__${project://CHANGELOG.md}__`) 最上方已追加本次高階變更摘要。
+- [ ] **中觀專題手冊 (Topic Docs)**：涉及 3 個以上狀態轉移、通訊協議、資料管線或並發同步時，已同步更新/建立 `workflow.docs://<Module>/[topic].md`。
+- [ ] **工程妥協登記**：若實作包含非直觀設計、效能補償或 Workaround，已於 `workflow.docs://<Module>/DESIGN_NOTES.md` 登記 `DN-XX` 與 `[!CAUTION]`。
 - [ ] **模組 README 同步**：`workflow.docs://<Module>/README.md` 已補齊最新 API 簽名與快速上手範例。
-- [ ] **全域發布日誌**：專案根目錄 [CHANGELOG.md](`__${project://CHANGELOG.md}__`) 最上方已追加本次變更摘要。
+- [ ] **微觀 Public API 註解保護**：公開介面具備標準結構化註解（說明/傳參/回傳/例外），無破壞或刪減既有註解結構。
+- [ ] **微觀 Why-Driven 行內動機註解**：複雜演算法、位元運算、數學公式與特殊常數均具備「設計動機與理由 (Why)」說明。
+- [ ] **微觀型別契約明確性**：型別標註或宣告精準，無無意義泛型逃逸。
 
 #### 4. 驗證與測試覆蓋
 - [ ] 自動化測試或 CLI 編譯 100% 通過（附帶日誌紀錄）。

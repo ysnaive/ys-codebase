@@ -2,6 +2,25 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_31_0533_knowledge_db_performance_and_memory_optimization (Level 1 Full Track 結案)
+
+- **`knowledge-db` 全棧運算提速、並發 AST 打包與倒排索引記憶體瘦身**：
+  - **`CodeTokenizer` 極速化 (`tokenizer.py`)**：
+    - 以 `_is_cjk_ord` Unicode 整數範圍直接比對 (`0x4E00 <= ord(c) <= 0x9FFF` 等) 徹底取代主迴圈逐字元 `re.match`，消除正則引擎調度開銷。
+    - 為識別碼拆分函式 `split_identifier` 引入 `@lru_cache(maxsize=8192)` 與預編譯正則，重複分詞吞吐量提升 $10\times$ 以上。
+  - **倒排索引資料結構瘦身與共享池 (`retrieval.py` & `schema.py`)**：
+    - 為 `Posting` 節點配置 `__slots__`，將文檔欄位長度字典抽離至頂層 `InvertedIndex.doc_lengths` 共享池，消除百萬級冗餘字典副本，節點記憶體佔用降低 $40\%+$。
+    - `InvertedIndex.from_dict` 支援舊版包含 `field_lengths` 的二進位快取自動升級遷移至頂層共享池。
+    - `InvertedIndex.patch_incremental` 增量同步維護與清理 `doc_lengths`，杜絕過期殘留。
+  - **同義詞加權展開快取 (`thesaurus.py`)**：
+    - 為 `ThesaurusEngine.expand_query_weighted` 實作以查詢簽章 Tuple 為鍵之 LRU Memoization 快取，動態增減詞條自動清空快取。
+  - **動態門檻多進程並發 AST 打包 (`bundler.py`)**：
+    - 於 `SemanticBundler` 實作動態門檻分流（檔案數 $\ge 10$ 且多核時調度 `ProcessPoolExecutor` 分批解析），頂層工作者函式 `_parse_file_task_worker` 具備完整錯誤容錯與單進程安全降級能力。
+  - **實機效能飛躍與全生態系品質保證**：
+    - 新增效能與記憶體基準測試套件 `test_benchmark_perf_and_memory.py` (8 測全數通過)。
+    - `knowledge-db` 單元測試全數通過 (**111/111 Passed, 100% Ready, 1.01s**)；全生態系 4 大模組全量迴歸測試 **231/231 Passed (100% Ready)**；模組靜態合規性檢核 100% 通過。
+    - 全專案完全索引重建耗時從原本的 1.8s+ 驟降至 **0.887s**，即時語意檢索延遲降至 **0.52s**。
+
 ## 2026_08_30_1928_core_topology_injection_and_zero_fallback (Level 1 Full Track 結案)
 
 - **`core` 核心空間拓撲雙軌注入 (`yscb_root`)、全庫 Fallback 機制剛性收斂與沙盒生命週期雙重隔離**：

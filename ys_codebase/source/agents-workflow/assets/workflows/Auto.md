@@ -58,7 +58,7 @@
 4. **Phase 4 (實作計畫定稿與靈魂拷問)**：
    - 產出 [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) (Confirmed)，並同步剛性定稿 [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) (Confirmed)。
 5. **Phase 5 (依序程式碼實作)**：
-   - 建立 [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)，依 P04 拓撲順序編寫程式碼與單元測試。
+   - 建立 [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)，依 P04 拓撲順序編寫程式碼與單元測試，並同步落實微觀代碼 Docstrings 與中觀文檔交付。
 - 📝 **日誌同步**：每一個 Phase 推進均同步寫入計畫內部 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)。
 
 ---
