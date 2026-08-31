@@ -16,6 +16,7 @@
 | **DN-04** | **JIT 變更嗅探與原生二進位快照 (`unified.meta.bin`)** | `scanner.py`, `engine.py` | 採用 Magic `YFP1` + `struct` 原生二進位封裝檔案清冊，反序列化耗時 < 0.1ms；檢索前執行 `os.scandir` stat 嗅探（2~3ms），Dirty 時無感背景熱自愈。 |
 | **DN-05** | **倒排節點 Slots 瘦身與頂層文檔長度共享池** | `retrieval.py` | `Posting` 配置 `__slots__` 消除 `__dict__` 記憶體負擔，`field_lengths` 字典抽離至頂層 `doc_lengths` 共享池，達成 40%+ 節點記憶體節省並支援舊快取自省升級。 |
 | **DN-06** | **Unicode 整數區間分詞與動態門檻多進程打包** | `tokenizer.py`, `bundler.py` | 以 `_is_cjk_ord` 碼點整數比對徹底取代逐字元正則；`SemanticBundler` 於檔案數 $\ge 10$ 且多核時啟用 `ProcessPoolExecutor` 並行解析。 |
+| **DN-07** | **整數池化雙向調用圖譜與四階消歧鏈接** | `linker.py`, `graph.py`, `engine.py` | 透過 `Integer String Pool` 與雙向稀疏鄰接表將調用邊快取控制在 $<150\text{KB}$；四階消歧流水線達成 95% 靜態鏈接精度，支援 JIT 差量修補與 BFS 循環防護。 |
 
 ---
 
@@ -81,4 +82,20 @@
   3. **動態門檻多進程打包**：檔案數 $\ge 10$ 且 CPU $> 1$ 時啟用 `ProcessPoolExecutor`，配合頂層模組級可 Pickle 工作者函式 `_parse_file_task_worker` 進行批次解析，單元測試沙盒與異常狀況自動安全降級。
 - **效益與驗證**：
   - 全庫完全索引重建時間從 1.8s+ 驟降至 0.887s (提速 > 50%)。
+
+---
+
+### DN-07: 整數池化雙向調用圖譜與四階消歧鏈接 (Integer Pooled Call Graph & 4-Tier Disambiguation)
+
+- **背景與根因**：
+  傳統 AST 符號檢索僅支援定義層級查詢，Agent 無法得知符號的直接調用者與間接依賴，容易退化為文字盲搜；若直接在節點保存字串物件邊，全專案數千條邊會造成記憶體與二進位快取體積嚴重膨脹。
+- **架構解法**：
+  1. **整數標識符池化 (Integer Pool)**：將全域 `symbol_id` 映射為緊湊整數 `int`，以 `Dict[int, Set[int]]` 儲存雙向鄰接表（`forward_graph` / `reverse_graph`）。
+  2. **四階消歧流水線**：結合單檔 AST `ScopeStack`、檔頭 Import 映射表、同語意空間與全域倒排上下文評分，實現高精確度靜態鏈接。
+  3. **循環調用防護**：`impact` 擴散分析強制引入 `visited_set`，杜絕遞迴死循環。
+  4. **JIT 增量熱重載同步**：`patch_incremental` 支援拔除 dirty 檔案出入度邊並注入新邊，持久化至 `unified.graph.bin.gz`。
+- **效益與驗證**：
+  - 5,000+ 條調用邊 Gzip 快取體積 $< 150\text{ KB}$。
+  - 單次 `callers`/`callees` 查詢 $< 5\text{ ms}$，影響面分析遍歷 $< 10\text{ ms}$。
+
 

@@ -45,6 +45,9 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db bundle [space|--all] 打包空間符號為 SemanticBundle")
         print("  python yscb.py knowledge-db index [space | --all] 建立/更新空間倒排索引快取")
         print("  python yscb.py knowledge-db search <query> [--snippet|-s] [--detail|-d] [--json] 多欄位 BM25 語意檢索")
+        print("  python yscb.py knowledge-db callers <symbol> [--snippet|-s] [--space=X] [--json] 查詢上游調用者 (Who calls me?)")
+        print("  python yscb.py knowledge-db callees <symbol> [--snippet|-s] [--space=X] [--json] 查詢下游被調用者 (Whom do I call?)")
+        print("  python yscb.py knowledge-db impact <symbol> [--depth=N] [--space=X] [--json] 分析重構影響面擴散拓撲")
         print("  python yscb.py knowledge-db clean [space | --all] 清理指定或全空間快取檔案")
         return 0
 
@@ -256,6 +259,109 @@ def main(argv: List[str]) -> int:
                         sym = itm.symbol
                         sym_link = engine.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
                         print(f"  {branch} #{rank:02d}.{itm_idx} {sym_link} ({sym.kind}:{sym.name}) [{itm.score:05.2f}]")
+            return 0
+
+        elif subcmd == "callers":
+            targets = [a for a in sub_argv if not a.startswith("-")]
+            if not targets:
+                print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callers 'InvertedIndex.load_binary'", file=sys.stderr)
+                return 1
+            query_str = targets[0]
+            is_snippet = "--snippet" in sub_argv or "-s" in sub_argv
+            is_json = "--json" in sub_argv
+            space_target = None
+            for a in sub_argv:
+                if a.startswith("--space="):
+                    space_target = a.split("=", 1)[1]
+
+            res = engine.act_callers(target_query=query_str, space=space_target, snippet=is_snippet)
+            if is_json:
+                print(json.dumps({
+                    "target_query": res.get("target_query"),
+                    "target_symbol": res["target_symbol"].to_dict() if res.get("target_symbol") else None,
+                    "total_callers": res.get("total_callers", 0),
+                    "callers": [
+                        {
+                            "symbol": c["symbol"].to_dict(),
+                            "call_sites": c["call_sites"],
+                            "code_snippet": c["code_snippet"].to_dict() if c.get("code_snippet") else None,
+                        }
+                        for c in res.get("callers", [])
+                    ]
+                }, indent=2, ensure_ascii=False))
+                return 0
+
+            print(engine.format_callers_output(res, snippet=is_snippet))
+            return 0
+
+        elif subcmd == "callees":
+            targets = [a for a in sub_argv if not a.startswith("-")]
+            if not targets:
+                print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callees 'KnowledgeEngine.build_unified_index'", file=sys.stderr)
+                return 1
+            query_str = targets[0]
+            is_snippet = "--snippet" in sub_argv or "-s" in sub_argv
+            is_json = "--json" in sub_argv
+            space_target = None
+            for a in sub_argv:
+                if a.startswith("--space="):
+                    space_target = a.split("=", 1)[1]
+
+            res = engine.act_callees(target_query=query_str, space=space_target, snippet=is_snippet)
+            if is_json:
+                print(json.dumps({
+                    "target_query": res.get("target_query"),
+                    "target_symbol": res["target_symbol"].to_dict() if res.get("target_symbol") else None,
+                    "total_callees": res.get("total_callees", 0),
+                    "callees": [
+                        {
+                            "symbol": c["symbol"].to_dict(),
+                            "call_sites": c["call_sites"],
+                            "code_snippet": c["code_snippet"].to_dict() if c.get("code_snippet") else None,
+                        }
+                        for c in res.get("callees", [])
+                    ]
+                }, indent=2, ensure_ascii=False))
+                return 0
+
+            print(engine.format_callees_output(res, snippet=is_snippet))
+            return 0
+
+        elif subcmd == "impact":
+            targets = [a for a in sub_argv if not a.startswith("-")]
+            if not targets:
+                print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db impact 'InvertedIndex.patch_incremental' --depth=2", file=sys.stderr)
+                return 1
+            query_str = targets[0]
+            is_json = "--json" in sub_argv
+            depth = 2
+            space_target = None
+            for a in sub_argv:
+                if a.startswith("--depth="):
+                    try:
+                        depth = int(a.split("=", 1)[1])
+                    except ValueError:
+                        pass
+                elif a.startswith("--space="):
+                    space_target = a.split("=", 1)[1]
+
+            res = engine.act_impact(target_query=query_str, depth=depth, space=space_target)
+            if is_json:
+                print(json.dumps({
+                    "target_query": res.get("target_query"),
+                    "target_symbol": res["target_symbol"].to_dict() if res.get("target_symbol") else None,
+                    "max_depth": res.get("max_depth", depth),
+                    "total_impacted_symbols": res.get("total_impacted_symbols", 0),
+                    "total_impacted_files": res.get("total_impacted_files", 0),
+                    "layers": {
+                        str(d): [s.to_dict() for s in syms]
+                        for d, syms in res.get("layers", {}).items()
+                    },
+                    "call_chains": res.get("call_chains", {}),
+                }, indent=2, ensure_ascii=False))
+                return 0
+
+            print(engine.format_impact_output(res))
             return 0
 
         elif subcmd == "clean":

@@ -2,6 +2,29 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_08_31_1026_knowledge_db_call_graph_and_reference_index (Level 1 Full Track 結案)
+
+- **`knowledge-db` 跨檔案符號調用圖譜與引用依賴拓撲索引全棧實作**：
+  - **資料模型與數值物件 (`schema.py`)**：
+    - 新增不可變值物件 `SymbolCallSite`（紀錄 caller、callee、line、scope、context_prefix）與 `CallGraphNode` 模型，具備完整的 `to_dict()` 與 `from_dict()` 序列化。
+  - **多語言 AST/狀態機調用點與 Import 萃取 (`parsers/`)**：
+    - `BaseParser` 擴充 `extract_call_sites` 與 `extract_imports` 抽象介面。
+    - `PythonParser` 實作 `CallSiteVisitor` 作用域棧 (`ScopeStack`)，走訪 `ast.Call`, `ast.Attribute`, `ast.Import`, `ast.ImportFrom` 萃取調用點與模組別名映射。
+    - `CppParser` 萃取 `#include`, `using namespace`, `using Alias` 與 `this->Init()`, `Class::Method()` 調用點。
+    - `CSharpParser` 萃取 `using Namespace`, `using Alias` 與類別方法調用點。
+    - `JsTsParser` 萃取 named/default `import`, `require` 與類別方法/函式調用點。
+    - `MarkdownParser` 萃取文檔內部超連結與 `Class.method` 符號引用點。
+  - **四階消歧拓撲鏈接器 (`linker.py`)**：
+    - 實作 `TopologyLinker` 四階消歧演算法（Tier 1 檔內/類別自省 ➔ Tier 2 顯式 Import 別名 ➔ Tier 3 同空間優先 ➔ Tier 4 全庫倒排上下文打分），未定義動態呼叫安全降級。
+  - **雙向圖索引與二進位持久化 (`graph.py`)**：
+    - 實作 `CallGraphIndex`（整數池化 Integer String Pool、雙向稀疏鄰接表 `forward_graph` / `reverse_graph`、`query_impact` BFS 循環防護、`patch_incremental` 增量修補、Pickle Protocol 5 + Gzip 高速寫盤）。
+  - **門面 SDK 與 CLI 整合 (`engine.py` & `scripts/cli.py`)**：
+    - `KnowledgeEngine` 整合 `act_callers`、`act_callees`、`act_impact` 與 JIT 變更感知熱自愈流水線。
+    - CLI 新增 `callers`, `callees`, `impact` 指令，產出 RFC 8089 可點擊直達 Markdown 連結與切片。
+  - **測試與品質保證**：
+    - 新增測試套件 `tests/test_call_graph.py` (FT-01~11, ET-01~02, PT-01 全數通過)。
+    - `knowledge-db` 全量單元測試 **125/125 Passed (100% Ready, 1.08s)**，全庫物化安裝完成。
+
 ## 2026_08_31_0533_knowledge_db_performance_and_memory_optimization (Level 1 Full Track 結案)
 
 - **`knowledge-db` 全棧運算提速、並發 AST 打包與倒排索引記憶體瘦身**：

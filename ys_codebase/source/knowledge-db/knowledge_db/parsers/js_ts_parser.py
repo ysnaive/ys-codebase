@@ -3,11 +3,11 @@ knowledge-db JavaScript / TypeScript 語意解析器 (JsTsParser)
 """
 
 import logging
-import re
 from pathlib import Path
-from typing import List, Set, Union
+import re
+from typing import Dict, List, Optional, Set, Tuple, Union
 
-from ..schema import LanguageType, MemberInfo, SymbolKind, UnifiedSymbol
+from ..schema import LanguageType, MemberInfo, SymbolCallSite, SymbolKind, UnifiedSymbol
 from .base import BaseParser
 
 logger = logging.getLogger("knowledge-db.parsers.js_ts")
@@ -317,3 +317,141 @@ class JsTsParser(BaseParser):
                 jsdoc_lines = []
 
         return symbols
+
+    def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
+        """提取 JS/TS 檔頭 import / require 映射表"""
+        imports: Dict[str, str] = {}
+        for line in content.splitlines():
+            stripped = line.strip()
+
+            # 1. import { a, b as c } from 'path'
+            imp_named_m = re.match(r"^import\s+\{([^}]+)\}\s+from\s+['\"]([^'\"]+)['\"]", stripped)
+            if imp_named_m:
+                named_part = imp_named_m.group(1)
+                mod_path = imp_named_m.group(2)
+                for item in named_part.split(","):
+                    item = item.strip()
+                    if " as " in item:
+                        orig, alias = item.split(" as ", 1)
+                        imports[alias.strip()] = f"{mod_path}.{orig.strip()}"
+                    elif item:
+                        imports[item] = f"{mod_path}.{item}"
+                continue
+
+            # 2. import * as Foo from 'path'
+            imp_all_m = re.match(r"^import\s+\*\s+as\s+([A-Za-z0-9_$]+)\s+from\s+['\"]([^'\"]+)['\"]", stripped)
+            if imp_all_m:
+                imports[imp_all_m.group(1)] = imp_all_m.group(2)
+                continue
+
+            # 3. import Foo from 'path'
+            imp_def_m = re.match(r"^import\s+([A-Za-z0-9_$]+)\s+from\s+['\"]([^'\"]+)['\"]", stripped)
+            if imp_def_m:
+                imports[imp_def_m.group(1)] = imp_def_m.group(2)
+                continue
+
+            # 4. const { a, b: c } = require('path')
+            req_named_m = re.match(r"^(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\(['\"]([^'\"]+)['\"]\)", stripped)
+            if req_named_m:
+                named_part = req_named_m.group(1)
+                mod_path = req_named_m.group(2)
+                for item in named_part.split(","):
+                    item = item.strip()
+                    if ":" in item:
+                        orig, alias = item.split(":", 1)
+                        imports[alias.strip()] = f"{mod_path}.{orig.strip()}"
+                    elif item:
+                        imports[item] = f"{mod_path}.{item}"
+                continue
+
+            # 5. const Foo = require('path')
+            req_def_m = re.match(r"^(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*require\(['\"]([^'\"]+)['\"]\)", stripped)
+            if req_def_m:
+                imports[req_def_m.group(1)] = req_def_m.group(2)
+
+        return imports
+
+    def extract_call_sites(self, file_path: str, content: str, space: str) -> List[SymbolCallSite]:
+        """提取 JS/TS 原始碼中的函式/方法調用點"""
+        normalized_path = file_path.replace("\\", "/")
+        lines = content.splitlines()
+        call_sites: List[SymbolCallSite] = []
+
+        class_stack: List[Tuple[str, int]] = []
+        func_stack: List[Tuple[str, int]] = []
+        current_brace_depth = 0
+
+        js_call_re = re.compile(r'(?:(?:\b([A-Za-z0-9_$]+)\s*\.)|\b)\b([A-Za-z0-9_$]+)\s*\(')
+        keywords = {
+            "if", "for", "while", "switch", "catch", "return", "throw", "typeof",
+            "instanceof", "import", "require", "function", "constructor", "class",
+            "interface", "type", "enum", "export", "default", "new", "await", "async",
+            "yield", "super", "delete", "void", "in", "of", "get", "set"
+        }
+
+        for i, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+                continue
+
+            open_b = line.count("{")
+            close_b = line.count("}")
+
+            # 類別進入
+            cls_m = CLASS_PATTERN.match(stripped)
+            if cls_m and not stripped.endswith(";"):
+                c_name = cls_m.group(1)
+                class_stack.append((c_name, current_brace_depth + (1 if open_b > 0 else 0)))
+
+            # 函式與方法進入
+            fn_m = FUNC_PATTERN.match(stripped) or ARROW_FUNC_PATTERN.match(stripped)
+            m_m = METHOD_PATTERN.match(stripped)
+            if fn_m and "{" in stripped:
+                f_name = fn_m.group(1) or "<anonymous>"
+                func_stack.append((f_name, current_brace_depth + 1))
+            elif m_m and "{" in stripped and m_m.group(1) not in KEYWORDS_NOT_METHODS:
+                m_name = m_m.group(1)
+                func_stack.append((m_name, current_brace_depth + 1))
+
+            curr_class = class_stack[-1][0] if class_stack else ""
+            curr_func = func_stack[-1][0] if func_stack else ""
+            if curr_class and curr_func:
+                curr_caller = f"{curr_class}.{curr_func}"
+            elif curr_class:
+                curr_caller = curr_class
+            elif curr_func:
+                curr_caller = curr_func
+            else:
+                curr_caller = "<module>"
+
+            # 提取調用點
+            if not cls_m:
+                for match in js_call_re.finditer(line):
+                    prefix = match.group(1) or ""
+                    callee = match.group(2)
+
+                    if callee in keywords or prefix in keywords:
+                        continue
+
+                    norm_prefix = "self" if prefix == "this" else prefix
+
+                    call_sites.append(
+                        SymbolCallSite(
+                            callee_name=callee,
+                            line_number=i,
+                            caller_member_name=curr_caller,
+                            context_prefix=norm_prefix,
+                            file_path=normalized_path,
+                            space=space,
+                        )
+                    )
+
+            current_brace_depth += (open_b - close_b)
+
+            while class_stack and current_brace_depth < class_stack[-1][1]:
+                class_stack.pop()
+            while func_stack and current_brace_depth < func_stack[-1][1]:
+                func_stack.pop()
+
+        return call_sites
+

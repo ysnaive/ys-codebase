@@ -14,10 +14,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .bundler import SemanticBundle, SemanticBundler
 from .exceptions import KnowledgeDBError, SpaceNotFoundError
+from .graph import CallGraphIndex
+from .linker import TopologyLinker
 from .parsers.registry import ParserRegistry
 from .retrieval import BM25Engine, CodeSnippet, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
 from .scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffDetail, ScanDiffResult
-from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
+from .schema import AggregatedFileResult, AggregatedItem, SymbolCallSite, UnifiedSymbol
 from .space import SpaceManager
 from .thesaurus import ThesaurusEngine
 from .tokenizer import CodeTokenizer
@@ -62,6 +64,7 @@ class KnowledgeEngine:
         )
         self._index_cache: Dict[str, InvertedIndex] = {}
         self._unified_index: Optional[InvertedIndex] = None
+        self._call_graph_index: Optional[CallGraphIndex] = None
         self.snippet_extractor = SnippetExtractor(workspace_root=self._get_workspace_root())
 
     def _get_workspace_root(self) -> Path:
@@ -239,18 +242,24 @@ class KnowledgeEngine:
         current_files: Optional[Dict[str, Tuple[float, int]]] = None,
     ) -> InvertedIndex:
         """
-        建置全專案空間聯集單一倒排索引，並原子持久化二進位 Gzip 快取 (unified.index.bin.gz)
-        與二進位狀態快照 (unified.meta.bin) 至磁碟。
+        建置全專案空間聯集單一倒排索引與雙向調用圖譜索引，並原子持久化二進位 Gzip 快取
+        (unified.index.bin.gz, unified.graph.bin.gz) 與二進位狀態快照 (unified.meta.bin) 至磁碟。
         """
         indices_dir = self._get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
+        graph_file = indices_dir / "unified.graph.bin.gz"
         meta_file = indices_dir / "unified.meta.bin"
 
-        if not force and bin_file.exists() and meta_file.exists():
+        if not force and bin_file.exists() and meta_file.exists() and graph_file.exists():
             try:
                 idx = InvertedIndex.load_binary(bin_file)
                 self._unified_index = idx
-                return idx
+                try:
+                    self._call_graph_index = CallGraphIndex.load_binary(graph_file)
+                except Exception as ge:
+                    logger.warning(f"Failed loading unified graph index: {ge}")
+                if self._call_graph_index is not None:
+                    return idx
             except Exception as e:
                 logger.warning(f"Failed loading unified binary index, rebuilding: {e}")
 
@@ -259,11 +268,24 @@ class KnowledgeEngine:
         idx = InvertedIndex(space_name="unified")
         idx.build_unified(bundle.symbols, tokenizer=self.tokenizer)
 
-        # 原子持久化二進位 Gzip 索引 (compresslevel=1 快速寫盤)
+        # 構建雙向調用圖譜索引 (FR-03, FR-04)
+        call_sites, imports_map = self.bundler.extract_all_call_sites_and_imports()
+        linker = TopologyLinker(
+            symbols_map=idx.symbols,
+            thesaurus=self.thesaurus_engine,
+            tokenizer=self.tokenizer,
+        )
+        edges = linker.link_call_sites(call_sites, imports_map)
+        graph_idx = CallGraphIndex()
+        for caller_id, callee_id, site in edges:
+            graph_idx.add_edge(caller_id, callee_id, site)
+
+        # 原子持久化二進位 Gzip 索引與圖索引 (compresslevel=1 快速寫盤)
         try:
             idx.save_binary(bin_file, compresslevel=1)
+            graph_idx.save_binary(graph_file, compresslevel=1)
         except Exception as e:
-            raise KnowledgeDBError(f"Failed saving unified binary index: {e}")
+            raise KnowledgeDBError(f"Failed saving unified binary index/graph: {e}")
 
         # 收集或使用現有檔案快照並持久化 (保證 100% 完整清冊)
         files_map = current_files
@@ -276,6 +298,7 @@ class KnowledgeEngine:
             logger.warning(f"Failed saving binary snapshot meta: {e}")
 
         self._unified_index = idx
+        self._call_graph_index = graph_idx
         return idx
 
     def _hot_patch_unified_index(
@@ -288,7 +311,8 @@ class KnowledgeEngine:
         1. 若記憶體 _unified_index 為空，回傳 False 降級為全量建置。
         2. 僅對 dirty 檔案呼叫 AST 解析並更新符號快取池。
         3. 調用 _unified_index.patch_incremental 進行倒排差量打補丁。
-        4. 快速原子持久化快照與二進位索引。
+        4. 調用 _call_graph_index.patch_incremental 進行調用圖譜差量修補。
+        5. 快速原子持久化快照與二進位索引。
         :return: 若修補成功回傳 True，否則 False
         """
         if self._unified_index is None:
@@ -296,7 +320,14 @@ class KnowledgeEngine:
 
         indices_dir = self._get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
+        graph_file = indices_dir / "unified.graph.bin.gz"
         meta_file = indices_dir / "unified.meta.bin"
+
+        if self._call_graph_index is None and graph_file.exists():
+            try:
+                self._call_graph_index = CallGraphIndex.load_binary(graph_file)
+            except Exception:
+                pass
 
         try:
             new_symbols_by_file, dirty_keys = self.bundler.bundle_dirty_files(diff_detail)
@@ -304,11 +335,42 @@ class KnowledgeEngine:
             for syms in new_symbols_by_file.values():
                 all_new_symbols.extend(syms)
 
+            # 找出需要移除的舊 doc_id 清單 (供圖索引差量拔除)
+            old_doc_ids: Set[str] = set()
+            dirty_paths_norm = {p.replace("\\", "/").lower() for p in dirty_keys}
+            for doc_id, sym in list(self._unified_index.symbols.items()):
+                sym_path_norm = sym.file_path.replace("\\", "/").lower()
+                sym_fn = Path(sym_path_norm).name
+                if any(
+                    sym_path_norm == p
+                    or p.endswith("/" + sym_path_norm)
+                    or sym_path_norm.endswith("/" + p)
+                    or Path(p).name == sym_fn
+                    for p in dirty_paths_norm
+                ):
+                    old_doc_ids.add(doc_id)
+
             self._unified_index.patch_incremental(
                 dirty_file_paths=dirty_keys,
                 new_symbols=all_new_symbols,
                 tokenizer=self.tokenizer,
             )
+
+            # 差量修補調用圖譜
+            if self._call_graph_index is not None:
+                dirty_sites, dirty_imports = self.bundler.extract_dirty_call_sites_and_imports(diff_detail)
+                linker = TopologyLinker(
+                    symbols_map=self._unified_index.symbols,
+                    thesaurus=self.thesaurus_engine,
+                    tokenizer=self.tokenizer,
+                )
+                new_edges = linker.link_call_sites(dirty_sites, dirty_imports)
+                self._call_graph_index.patch_incremental(
+                    dirty_file_paths=dirty_keys,
+                    new_edges=new_edges,
+                    old_symbol_ids=old_doc_ids,
+                )
+                self._call_graph_index.save_binary(graph_file, compresslevel=1)
 
             # 快速原子持久化 (compresslevel=1)
             self._unified_index.save_binary(bin_file, compresslevel=1)
@@ -317,6 +379,7 @@ class KnowledgeEngine:
         except Exception as e:
             logger.warning(f"Incremental hot patch failed: {e}, falling back to full rebuild.")
             return False
+
 
     def build_index(
         self,
@@ -390,12 +453,18 @@ class KnowledgeEngine:
 
         indices_dir = self._get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
+        graph_file = indices_dir / "unified.graph.bin.gz"
         meta_file = indices_dir / "unified.meta.bin"
 
         # 預先載入快取以利增量修補
         if self._unified_index is None and bin_file.exists() and meta_file.exists():
             try:
                 self._unified_index = InvertedIndex.load_binary(bin_file)
+            except Exception:
+                pass
+        if self._call_graph_index is None and graph_file.exists():
+            try:
+                self._call_graph_index = CallGraphIndex.load_binary(graph_file)
             except Exception:
                 pass
 
@@ -562,8 +631,8 @@ class KnowledgeEngine:
 
             self._index_cache.pop(sp_name, None)
 
-        # 4. 清理全域聯集索引與二進位快照
-        for fn in ["unified.index.bin.gz", "unified.meta.bin"]:
+        # 4. 清理全域聯集索引、圖索引與二進位快照
+        for fn in ["unified.index.bin.gz", "unified.graph.bin.gz", "unified.meta.bin"]:
             f_path = self.storage_dir / "indices" / fn
             if f_path.exists():
                 try:
@@ -571,4 +640,307 @@ class KnowledgeEngine:
                 except OSError:
                     pass
         self._unified_index = None
+        self._call_graph_index = None
+
+    def get_call_graph(self) -> CallGraphIndex:
+        """獲取已載入之全域雙向調用圖譜索引 (若未建置則自動觸發 JIT 構建)"""
+        indices_dir = self._get_indices_dir()
+        graph_file = indices_dir / "unified.graph.bin.gz"
+
+        if self._call_graph_index is None and graph_file.exists():
+            try:
+                self._call_graph_index = CallGraphIndex.load_binary(graph_file)
+            except Exception as ge:
+                logger.warning(f"Failed loading graph index: {ge}")
+
+        if self._call_graph_index is None or self._unified_index is None:
+            self.build_unified_index(force=True)
+
+        return self._call_graph_index
+
+    def _find_target_symbol(self, query: str, space: Optional[str] = None) -> Optional[UnifiedSymbol]:
+        """
+        精準或透過語意定位目標 UnifiedSymbol
+        """
+        idx = self.build_unified_index()
+        query_clean = query.strip()
+        candidates: List[UnifiedSymbol] = []
+        for sym in idx.symbols.values():
+            if space and space not in sym.spaces:
+                continue
+            if sym.name == query_clean:
+                return sym
+            if sym.name.endswith(f".{query_clean}") or query_clean.endswith(f".{sym.name}"):
+                candidates.append(sym)
+
+        if candidates:
+            return candidates[0]
+
+        # 透過 BM25 檢索尋找最高分符號
+        flt = QueryFilter(spaces=[space] if space else None, limit=5)
+        raw_results = self.bm25_engine.search(query=query_clean, index=idx, filter_cfg=flt)
+        if raw_results:
+            return raw_results[0].symbol
+
+        return None
+
+    def act_callers(
+        self,
+        target_query: str,
+        space: Optional[str] = None,
+        snippet: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        查詢指定符號之上游調用者清單 (Who calls me?) (FR-06)
+        """
+        self.search(query=target_query, space=space, limit=1)
+
+        target_sym = self._find_target_symbol(target_query, space=space)
+        if not target_sym:
+            return {
+                "target_query": target_query,
+                "target_symbol": None,
+                "callers": [],
+                "total_callers": 0,
+            }
+
+        graph = self.get_call_graph()
+        caller_ids = graph.get_callers(target_sym.id)
+
+        callers_detail = []
+        for cid in caller_ids:
+            caller_sym = self._unified_index.get_symbol(cid)
+            if not caller_sym:
+                continue
+
+            sites = graph.get_call_sites(cid, target_sym.id)
+            code_snip = None
+            if snippet:
+                target_ln = sites[0].line_number if sites else caller_sym.line_number
+                code_snip = self.snippet_extractor.extract(
+                    file_path=caller_sym.file_path,
+                    line_number=target_ln,
+                    context_before=2,
+                    context_after=3,
+                    docstring=caller_sym.docstring,
+                )
+
+            callers_detail.append({
+                "symbol": caller_sym,
+                "call_sites": [s.to_dict() for s in sites],
+                "code_snippet": code_snip,
+            })
+
+        return {
+            "target_query": target_query,
+            "target_symbol": target_sym,
+            "callers": callers_detail,
+            "total_callers": len(callers_detail),
+        }
+
+    def act_callees(
+        self,
+        target_query: str,
+        space: Optional[str] = None,
+        snippet: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        查詢指定符號內部調用之下游被調用者清單 (Whom do I call?) (FR-06)
+        """
+        self.search(query=target_query, space=space, limit=1)
+
+        target_sym = self._find_target_symbol(target_query, space=space)
+        if not target_sym:
+            return {
+                "target_query": target_query,
+                "target_symbol": None,
+                "callees": [],
+                "total_callees": 0,
+            }
+
+        graph = self.get_call_graph()
+        callee_ids = graph.get_callees(target_sym.id)
+
+        callees_detail = []
+        for cid in callee_ids:
+            callee_sym = self._unified_index.get_symbol(cid)
+            if not callee_sym:
+                continue
+
+            sites = graph.get_call_sites(target_sym.id, cid)
+            code_snip = None
+            if snippet:
+                code_snip = self.snippet_extractor.extract(
+                    file_path=callee_sym.file_path,
+                    line_number=callee_sym.line_number,
+                    context_before=2,
+                    context_after=3,
+                    docstring=callee_sym.docstring,
+                )
+
+            callees_detail.append({
+                "symbol": callee_sym,
+                "call_sites": [s.to_dict() for s in sites],
+                "code_snippet": code_snip,
+            })
+
+        return {
+            "target_query": target_query,
+            "target_symbol": target_sym,
+            "callees": callees_detail,
+            "total_callees": len(callees_detail),
+        }
+
+    def act_impact(
+        self,
+        target_query: str,
+        depth: int = 2,
+        space: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        分析目標符號之重構影響面擴散拓撲 (Blast Radius Analysis) (FR-06)
+        """
+        self.search(query=target_query, space=space, limit=1)
+
+        target_sym = self._find_target_symbol(target_query, space=space)
+        if not target_sym:
+            return {
+                "target_query": target_query,
+                "target_symbol": None,
+                "max_depth": depth,
+                "layers": {},
+                "total_impacted_symbols": 0,
+                "total_impacted_files": 0,
+            }
+
+        graph = self.get_call_graph()
+        impact_raw = graph.query_impact(target_sym.id, max_depth=depth)
+
+        layers_detail = {}
+        all_files = set()
+
+        for d, sids in impact_raw.get("layers", {}).items():
+            layer_syms = []
+            for sid in sids:
+                sym = self._unified_index.get_symbol(sid)
+                if sym:
+                    layer_syms.append(sym)
+                    all_files.add(sym.file_path)
+            layers_detail[d] = layer_syms
+
+        return {
+            "target_query": target_query,
+            "target_symbol": target_sym,
+            "max_depth": depth,
+            "layers": layers_detail,
+            "call_chains": impact_raw.get("call_chains", {}),
+            "total_impacted_symbols": impact_raw.get("total_impacted_symbols", 0),
+            "total_impacted_files": len(all_files),
+        }
+
+    def format_callers_output(self, result: Dict[str, Any], snippet: bool = True) -> str:
+        """格式化 callers 輸出為帶有 RFC 8089 可點擊連結的 Markdown 報告"""
+        target = result.get("target_symbol")
+        if not target:
+            return f"[knowledge-db] 查無相符符號: '{result.get('target_query')}'"
+
+        target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
+        lines = [
+            f"[knowledge-db] 符號 '{target.name}' 之上游調用者清單 (Callers - 共 {result.get('total_callers', 0)} 個調用來源):",
+            "-" * 80,
+            f"📍 目標符號: `{target.name}` ({target_link})",
+        ]
+
+        callers = result.get("callers", [])
+        if not callers:
+            lines.append("  (目前尚無靜態調用者)")
+            return "\n".join(lines)
+
+        for idx, item in enumerate(callers, start=1):
+            sym = item["symbol"]
+            sites = item.get("call_sites", [])
+            line_num = sites[0]["line_number"] if sites else sym.line_number
+            link_str = self.format_file_link(sym.file_path, line=line_num)
+            is_last = (idx == len(callers))
+            branch = "└──" if is_last else "├──"
+            lines.append(f"{branch} 🔹 {link_str} (`{sym.name}`)")
+
+            code_snip = item.get("code_snippet")
+            if snippet and code_snip and code_snip.lines:
+                sub_indent = "    " if is_last else "│   "
+                lines.append(code_snip.format_text(prefix=sub_indent + "  "))
+
+        return "\n".join(lines)
+
+    def format_callees_output(self, result: Dict[str, Any], snippet: bool = True) -> str:
+        """格式化 callees 輸出為帶有 RFC 8089 可點擊連結的 Markdown 報告"""
+        target = result.get("target_symbol")
+        if not target:
+            return f"[knowledge-db] 查無相符符號: '{result.get('target_query')}'"
+
+        target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
+        lines = [
+            f"[knowledge-db] 符號 '{target.name}' 內部調用之下游被調用者清單 (Callees - 共 {result.get('total_callees', 0)} 個被調用點):",
+            "-" * 80,
+            f"📍 來源符號: `{target.name}` ({target_link})",
+        ]
+
+        callees = result.get("callees", [])
+        if not callees:
+            lines.append("  (內部無跨符號調用點)")
+            return "\n".join(lines)
+
+        for idx, item in enumerate(callees, start=1):
+            sym = item["symbol"]
+            link_str = self.format_file_link(sym.file_path, line=sym.line_number)
+            is_last = (idx == len(callees))
+            branch = "└──" if is_last else "├──"
+            lines.append(f"{branch} 🔹 {link_str} (`{sym.name}`)")
+
+            code_snip = item.get("code_snippet")
+            if snippet and code_snip and code_snip.lines:
+                sub_indent = "    " if is_last else "│   "
+                lines.append(code_snip.format_text(prefix=sub_indent + "  "))
+
+        return "\n".join(lines)
+
+    def format_impact_output(self, result: Dict[str, Any]) -> str:
+        """格式化 impact 影響面分析輸出為階層樹狀圖"""
+        target = result.get("target_symbol")
+        if not target:
+            return f"[knowledge-db] 查無相符符號: '{result.get('target_query')}'"
+
+        target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
+        depth = result.get("max_depth", 2)
+        total_syms = result.get("total_impacted_symbols", 0)
+        total_files = result.get("total_impacted_files", 0)
+
+        lines = [
+            f"[knowledge-db] 符號 '{target.name}' 重構影響面擴散拓撲 (Blast Radius: {depth} 階深度, 影響 {total_syms} 個符號 / {total_files} 個檔案):",
+            "-" * 80,
+            f"📍 目標核心符號: `{target.name}` ({target_link})",
+        ]
+
+        layers = result.get("layers", {})
+        if not layers:
+            lines.append("  (未發現上游依賴影響點，修改安全)")
+            return "\n".join(lines)
+
+        sorted_depths = sorted(layers.keys())
+        for d_idx, d in enumerate(sorted_depths):
+            syms = layers[d]
+            is_last_depth = (d_idx == len(sorted_depths) - 1)
+            depth_branch = "└──" if is_last_depth else "├──"
+            tag = "🟢 1 階直接影響 (Direct Callers)" if d == 1 else f"🟡 {d} 階間接影響 (Transitive Callers Level {d})"
+            lines.append(f"{depth_branch} {tag} - {len(syms)} 個符號:")
+
+            sub_prefix = "    " if is_last_depth else "│   "
+            for s_idx, s in enumerate(syms):
+                is_last_sym = (s_idx == len(syms) - 1)
+                sub_branch = "└──" if is_last_sym else "├──"
+                link_str = self.format_file_link(s.file_path, line=s.line_number)
+                lines.append(f"{sub_prefix}{sub_branch} {link_str} (`{s.name}`)")
+
+        return "\n".join(lines)
+
 

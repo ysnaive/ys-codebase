@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 import fnmatch
 import hashlib
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .exceptions import InvalidSpaceConfigError, SchemaValidationError
 
@@ -403,4 +403,80 @@ class ThesaurusConfig:
             )
         else:
             return cls(groups=[], origin=origin)
+
+
+@dataclass(frozen=True)
+class SymbolCallSite:
+    """
+    符號調用點不可變模型 (Value Object)
+    記錄單一調用表達式所在位置、調用上下文與被調用名稱。
+    """
+    callee_name: str             # 被調用之識別碼名稱 (如 'build_index' 或 'load_binary')
+    line_number: int             # 調用所在行號 (1-based)
+    caller_symbol_id: str = ""   # 調用者所屬頂層 UnifiedSymbol ID
+    caller_member_name: str = "" # 若在類別/方法內，記錄方法名 (如 'KnowledgeEngine.act_search')
+    context_prefix: str = ""     # 調用前綴 (如 'self.', 'InvertedIndex.', 'uri.')
+    file_path: str = ""          # 相對於專案根目錄之正規化檔案路徑
+    space: str = ""              # 所屬語意空間
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "callee_name": self.callee_name,
+            "line_number": self.line_number,
+            "caller_symbol_id": self.caller_symbol_id,
+            "caller_member_name": self.caller_member_name,
+            "context_prefix": self.context_prefix,
+            "file_path": self.file_path,
+            "space": self.space,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SymbolCallSite":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("SymbolCallSite data must be a dict.")
+        return cls(
+            callee_name=str(data.get("callee_name", "")),
+            line_number=int(data.get("line_number", 0)),
+            caller_symbol_id=str(data.get("caller_symbol_id", "")),
+            caller_member_name=str(data.get("caller_member_name", "")),
+            context_prefix=str(data.get("context_prefix", "")),
+            file_path=str(data.get("file_path", "")),
+            space=str(data.get("space", "")),
+        )
+
+
+@dataclass
+class CallGraphNode:
+    """
+    調用圖譜節點模型 (持有雙向關聯清單與調用點集合)
+    """
+    symbol_id: str
+    callers: Set[str] = field(default_factory=set)      # 上游調用者 symbol_id 清單
+    callees: Set[str] = field(default_factory=set)      # 下游被調用者 symbol_id 清單
+    call_sites: List[SymbolCallSite] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol_id": self.symbol_id,
+            "callers": sorted(list(self.callers)),
+            "callees": sorted(list(self.callees)),
+            "call_sites": [cs.to_dict() for cs in self.call_sites],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CallGraphNode":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("CallGraphNode data must be a dict.")
+        raw_call_sites = data.get("call_sites", [])
+        call_sites = [
+            SymbolCallSite.from_dict(cs) if isinstance(cs, dict) else cs
+            for cs in raw_call_sites
+        ]
+        return cls(
+            symbol_id=str(data.get("symbol_id", "")),
+            callers=set(data.get("callers", [])),
+            callees=set(data.get("callees", [])),
+            call_sites=call_sites,
+        )
+
 
