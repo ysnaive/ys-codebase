@@ -8,7 +8,7 @@
 
 ## 🎯 核心原則
 
-1. **沙盒 100% 安全 (Sandbox Native Read)**：優先使用內建檔案讀取工具（如 `view_file`），不依賴需額外權限的 CLI 命令，確保在沙盒模式與完全存取模式下均能無障礙秒級執行。
+1. **沙盒 100% 安全 (Sandbox Native Read)**：優先使用 Agent 內建檔案讀取工具（如 `view_file` / `read_file` / `View`），不依賴需額外權限的 CLI 命令，確保在沙盒模式與完全存取模式下均能無障礙秒級執行。
 2. **零臆測脈絡 (Zero Speculation)**：從既有真實文檔（`CHANGELOG.md`、`coding-standards.md`、`AGENTS.md`）載入現況，不自行假設專案結構。
 3. **語意 URI 標準化 (Semantic URI Protocol)**：透過 `project://`、`workflow.docs://`、`workflow.plans://` 等標準協議精準指向各級資源。
 4. **極簡 Token 高效加載**：僅抽取專案的核心公理與最新變更，不載入無關細節。
