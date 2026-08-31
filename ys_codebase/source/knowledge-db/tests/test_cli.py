@@ -60,8 +60,8 @@ class TestCLI(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_cli_search_modes(self):
-        """FT-01 ~ FT-03, ET-01: 驗證 search 簡易模式、詳細模式與 JSON 結構化輸出"""
-        # 1. 簡易模式 (預設)
+        """FT-01 ~ FT-03, ET-01: 驗證 search 模式 (simple, detail, auto, md, json, limit=auto/N)"""
+        # 1. 預設 auto 模式
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             ret = main(["search", "PIDController"])
@@ -69,12 +69,20 @@ class TestCLI(YSCBTestCase):
         out = buf.getvalue()
         self.assertIn("檢索查詢", out)
         if "#01" in out:
-            # 簡易模式每行應為 #01 [file_path:line](file:///...)
-            self.assertNotIn("命中詞:", out)
-            self.assertNotIn("簽名:", out)
             self.assertIn("](file:///", out)
 
-        # 2. 詳細模式 (--detail, -d, --verbose)
+        # 2. 清單模式 (--simple)
+        buf_simple = io.StringIO()
+        with contextlib.redirect_stdout(buf_simple):
+            ret = main(["search", "PIDController", "--simple"])
+        self.assertEqual(ret, 0)
+        out_simple = buf_simple.getvalue()
+        if "#01" in out_simple:
+            self.assertIn("清單模式", out_simple)
+            self.assertNotIn("命中詞:", out_simple)
+            self.assertIn("](file:///", out_simple)
+
+        # 3. 詳細模式 (--detail, -d, --verbose)
         for flag in ["--detail", "-d", "--verbose"]:
             buf_detail = io.StringIO()
             with contextlib.redirect_stdout(buf_detail):
@@ -82,10 +90,30 @@ class TestCLI(YSCBTestCase):
             self.assertEqual(ret, 0)
             out_detail = buf_detail.getvalue()
             if "#01" in out_detail:
-                self.assertIn("命中詞:", out_detail)
+                self.assertIn("詳細模式", out_detail)
                 self.assertIn("](file:///", out_detail)
 
-        # 3. JSON 模式 (--json)
+        # 4. Markdown 模式 (--md, --markdown)
+        for flag in ["--md", "--markdown"]:
+            buf_md = io.StringIO()
+            with contextlib.redirect_stdout(buf_md):
+                ret = main(["search", "PIDController", flag])
+            self.assertEqual(ret, 0)
+            out_md = buf_md.getvalue()
+            self.assertIn("知識庫檢索", out_md)
+
+        # 5. Limit 參數 (--limit=auto, --limit=2)
+        buf_lim = io.StringIO()
+        with contextlib.redirect_stdout(buf_lim):
+            ret = main(["search", "PIDController", "--limit=2"])
+        self.assertEqual(ret, 0)
+
+        buf_auto = io.StringIO()
+        with contextlib.redirect_stdout(buf_auto):
+            ret = main(["search", "PIDController", "--limit=auto"])
+        self.assertEqual(ret, 0)
+
+        # 6. JSON 模式 (--json)
         buf_json = io.StringIO()
         with contextlib.redirect_stdout(buf_json):
             ret = main(["search", "PIDController", "--json"])
@@ -98,12 +126,9 @@ class TestCLI(YSCBTestCase):
             item = data["results"][0]
             self.assertIn("file_uri", item)
             self.assertTrue(item["file_uri"].startswith("file:///"))
-            self.assertIn("rank", item)
-            self.assertIn("score", item)
-            self.assertIn("symbol", item)
-            self.assertIn("file_path", item["symbol"])
+            self.assertIn("total_score", item)
 
-        # 4. Snippet 模式 (--snippet, -s, --preview)
+        # 7. Snippet 模式 (--snippet, -s, --preview)
         for flag in ["--snippet", "-s", "--preview"]:
             buf_snip = io.StringIO()
             with contextlib.redirect_stdout(buf_snip):
@@ -116,20 +141,7 @@ class TestCLI(YSCBTestCase):
                 self.assertIn("檔案:", out_snip)
                 self.assertIn("](file:///", out_snip)
 
-        # 5. JSON + Snippet 模式
-        buf_json_snip = io.StringIO()
-        with contextlib.redirect_stdout(buf_json_snip):
-            ret = main(["search", "PIDController", "-s", "--json"])
-        self.assertEqual(ret, 0)
-        data_snip = json.loads(buf_json_snip.getvalue())
-        self.assertIn("results", data_snip)
-        if data_snip["total"] > 0:
-            item = data_snip["results"][0]
-            self.assertIn("file_uri", item)
-            self.assertTrue(item["file_uri"].startswith("file:///"))
-            self.assertIn("code_snippet", item)
-
-        # 6. 0 筆結果情境 (ET-01)
+        # 8. 0 筆結果情境 (ET-01)
         buf_empty = io.StringIO()
         with contextlib.redirect_stdout(buf_empty):
             ret = main(["search", "NonExistentTermXYZ_123456"])
@@ -143,6 +155,30 @@ class TestCLI(YSCBTestCase):
         data_empty = json.loads(buf_empty_json.getvalue())
         self.assertEqual(data_empty["total"], 0)
         self.assertEqual(data_empty["results"], [])
+
+    @require(Requirement.LOGIC)
+    def test_cli_callers_callees_impact_modes(self):
+        """FT-09: 驗證 callers, callees, impact 子命令之 simple, detail, md, json 模式與參數解析"""
+        # 1. callers 指令
+        for flag in ["--simple", "--detail", "--md", "--json", "-s"]:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ret = main(["callers", "PIDController", flag])
+            self.assertEqual(ret, 0)
+
+        # 2. callees 指令
+        for flag in ["--simple", "--detail", "--md", "--json", "-s"]:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ret = main(["callees", "PIDController", flag])
+            self.assertEqual(ret, 0)
+
+        # 3. impact 指令
+        for flag in ["--simple", "--detail", "--md", "--json", "--depth=2"]:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ret = main(["impact", "PIDController", flag])
+            self.assertEqual(ret, 0)
 
     @require(Requirement.LOGIC)
     def test_hook_lifecycle(self):

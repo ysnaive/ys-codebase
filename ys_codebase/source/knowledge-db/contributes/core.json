@@ -63,6 +63,39 @@
         "單純檢視空間清單時請用 status"
       ]
     },
+    "callers": {
+      "description": "查詢調用指定函式/類別之所有上游調用者 (Callers) 與代碼切片",
+      "tier": "safe",
+      "phases": ["CONTEXT_INIT", "P00", "P01", "P02", "P03", "P04", "P05", "P06", "FT-1", "FT-2", "RESEARCH", "DISCUSS"],
+      "case_pros": [
+        "排查特定 Public API 或底層方法被哪些上游模組或函式調用 (支援 --snippet 預覽調用點)"
+      ],
+      "case_cons": [
+        "單純搜尋文檔或關鍵字時請用 search"
+      ]
+    },
+    "callees": {
+      "description": "查詢指定函式/類別內部調用了哪些下游方法 (Callees) 與依賴",
+      "tier": "safe",
+      "phases": ["CONTEXT_INIT", "P00", "P01", "P02", "P03", "P04", "P05", "P06", "FT-1", "FT-2", "RESEARCH", "DISCUSS"],
+      "case_pros": [
+        "理解特定函式或類別的內部調用鏈與子組件依賴拓撲"
+      ],
+      "case_cons": [
+        "單純搜尋文檔或關鍵字時請用 search"
+      ]
+    },
+    "impact": {
+      "description": "評估符號變更或重構時向上擴散之多階調用影響面 (Blast Radius)",
+      "tier": "safe",
+      "phases": ["CONTEXT_INIT", "P00", "P01", "P02", "P03", "P04", "P05", "P06", "FT-1", "FT-2", "RESEARCH", "DISCUSS"],
+      "case_pros": [
+        "在修改 Public API 或核心基礎組件前，評估多階層調用擴散半徑 (支援 --depth 控制階數)"
+      ],
+      "case_cons": [
+        "無關符號重構或單純閱讀單檔代碼時無需調用"
+      ]
+    },
     "clean": {
       "description": "清理指定空間或全空間之指紋、Bundle 與倒排索引快取",
       "tier": "gated",
