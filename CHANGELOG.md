@@ -2,6 +2,16 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_01_0636_agents_workflow_context_init_aggregation_and_token (Level 0 Fast Track 結案)
+
+- **`agents-workflow` ContextInit 內容聚合整理、Token 錨點補齊與 Dev Container 終端指南特化注入**：
+  - **`WORKFLOW_CONTEXTINIT` 宣告式擴充錨點**：於 `contributes/agents-workflow.json` 補齊全模組第 63 個 Token 錨點，達成 11 個 Workflow 100% 具備對稱特化擴充能力。
+  - **`ContextInit.md` 內容聚合與佔位符置入**：重構優化三步驟加載指引與熱啟動簡報，於尾部置入 `__@{WORKFLOW_CONTEXTINIT}__` 內容佔位符。
+  - **專案特化 Dev Container 終端防呆指南注入**：
+    - 建立 `config/agents-workflow/snippets/context_init_devcontainer.md`，說明原生 sub-100ms 執行保證、Persistent Terminal 常駐綁定與避免邊界逾時 Detach 之同步等待時間門檻。
+    - 於 `config/agents-workflow/contribute.json` 宣告 `WORKFLOW_CONTEXTINIT` 的 `insert` 擴充。
+  - **驗證與測試**：`agents-workflow` 47/47 單元測試 100% 通過，本地 Dogfooding `@build` 安裝與 `.agents/workflows/ContextInit.md` 物化產物驗證完成。
+
 ## 2026_09_01_0607_knowledge_db_space_token_and_skill_hardening (Level 0 Fast Track 結案)
 
 - **`knowledge-db` 宣告式空間佔位符與檢索技能剛性防護**：
