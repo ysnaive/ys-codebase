@@ -1,6 +1,6 @@
 ---
 name: development-sop
-description: 專案標準開發流程 (SOP 0~7) 與分流規範指南。當需要開立新計畫、評估分流矩陣 (Full Track/Fast Track/Umbrella)、推進或執行各階段開發任務 (P00~P07, FT-1~3)、查閱追溯鏈 (FR/DR/FT) 或模板指針時觸發。
+description: 專案標準開發流程 (SOP 0~7) 與 6 大計畫分支模式指南。當需要開立新計畫、評估計畫模式分流 (Full Track/Fast Track/Revision/Research/Umbrella/Roadmap)、推進或執行各階段開發任務 (P00~P07, FT-1~3)、查閱追溯鏈 (FR/DR/FT) 或模板指針時觸發。
 ---
 
 # 開發標準作業流程指南 (Development SOP - Main Hub)
@@ -39,16 +39,16 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ## 🌳 3. 全景 6 大計畫分支快速判定表 (Plan Taxonomy)
 
-在啟動任務時，依據以下特徵判定計畫分流：
+在啟動任務時，依據任務規模與業務特性判定計畫模式（平等評估 6 大模式，杜絕僵化層級偏見）：
 
-| 計畫類型 | 分流層級 | 適用情境與判定標準 | 產出檔案矩陣 | 詳細手冊 |
-| :--- | :---: | :--- | :--- | :---: |
-| **標準開發計畫 (Full Track)** | Level 1 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` ➔ `P01`~`P07` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track---level-1) |
-| **迅捷開發計畫 (Fast Track)** | Level 0 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track---level-0) |
-| **分類型主計畫 (Umbrella)** | Level 2 | 統籌多個子計畫（B-1 預先規劃型 / B-2 增量演進型藍圖） | `umbrella_overview` + 各子計畫目錄 | [模式詳解](./references/plan_modes.md#3-分類型主計畫-umbrella---level-2) |
-| **修訂計畫 (Revision Plan)** | 短循環 | 文檔校閱、極小註解同步，免開實體目錄保護 Token | 0 計畫文件 (僅呈遞極簡變更卡) | [模式詳解](./references/plan_modes.md#4-修訂計畫-revision-plan---短循環) |
-| **調研計畫 (Research Plan)** | 調研 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R01_{topic}` + `changelog` | [模式詳解](./references/plan_modes.md#5-調研計畫-research-plan---調研-track) |
-| **長期路線圖 (Roadmap)** | 策略資產庫 | 長期技術儲備藍圖（置於 `__${workflow.roadmap://}__`） | `roadmap.md` | [模式詳解](./references/plan_modes.md#6-長期路線圖-roadmap---策略資產庫) |
+| 計畫模式 | 核心特徵與週期 | 適用情境與判定標準 | 產出檔案矩陣 | 詳細手冊 |
+| :--- | :--- | :--- | :--- | :---: |
+| **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` ➔ `P01`~`P07` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track) |
+| **迅捷開發計畫 (Fast Track)** | 3-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track) |
+| **修訂計畫 (Revision Plan)** | 短循環極速交付 | 文檔校閱、極小註解同步、常數微調，**免開實體目錄**保護 Token | 0 計畫文件 (僅呈遞極簡變更卡) | [模式詳解](./references/plan_modes.md#4-修訂計畫-revision-plan---短循環) |
+| **調研計畫 (Research Plan)** | 調研探索 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R01_{topic}` + `changelog` | [模式詳解](./references/plan_modes.md#5-調研計畫-research-plan---調研-track) |
+| **分類型主計畫 (Umbrella)** | 跨子計畫史詩統籌 | 統籌多個子計畫（B-1 預先規劃型 / B-2 增量演進型藍圖） | `umbrella_overview` + 各子計畫目錄 | [模式詳解](./references/plan_modes.md#3-分類型主計畫-umbrella) |
+| **長期路線圖 (Roadmap)** | 策略資產庫儲備 | 全專案層級技術願景與長期技術儲備藍圖（置於 `__${workflow.roadmap://}__`） | `roadmap.md` | [模式詳解](./references/plan_modes.md#6-長期路線圖-roadmap---策略資產庫) |
 
 ---
 
@@ -81,8 +81,8 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 - Phase 5: `P05_task.md`
 - Phase 6: `P06_test_plan.md`
 - Phase 7: `P07_walkthrough.md`
-- Level 0: `fast_track_plan.md`
-- Level 2: `umbrella_overview.md`
+- Fast Track: `fast_track_plan.md`
+- Umbrella: `umbrella_overview.md`
 - 路線圖: `roadmap.md`
 - 微觀日誌: `changelog.md`
 - 現場交接: `handoff.md`
