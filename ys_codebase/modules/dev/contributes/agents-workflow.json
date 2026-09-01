@@ -11,7 +11,7 @@
     {
       "type": "const",
       "token": "AGENTS_SKILL_ROUTING",
-      "value": "| **生態系模組開發 / 多模組熱調試 (Dogfooding)** | `yscb-module-dev` |",
+      "value": "| **生態系模組開發 / 多模組熱調試 (Dogfooding)**<br/>*(修改 source/ 源碼、沙盒測試、@build 安裝或發布前)* | `yscb-module-dev` |",
       "mode": "below"
     }
   ]

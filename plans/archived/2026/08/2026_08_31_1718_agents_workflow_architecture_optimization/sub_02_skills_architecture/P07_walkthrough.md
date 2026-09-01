@@ -68,3 +68,10 @@ feat(agents-workflow): implement skills architecture and migrate documentation s
 - Transform legacy DocumentationStandards.md into modular documentation skill package
 - Update unit tests, contributes schema, and user guide documentation
 ```
+
+---
+
+## 6. 計畫結構合規檢核 (Plan Compliance Verification)
+
+- [x] **結構與註解檢核**：實機執行 `python yscb.py agents-workflow plan verify 2026_08_31_1718_agents_workflow_architecture_optimization/sub_02_skills_architecture` 驗證 100% Passed。
+

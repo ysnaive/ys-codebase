@@ -2,6 +2,13 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_01_0551_host_bootstrapper_inprocess_dispatch (Level 0 Fast Track 結案)
+
+- **`yscb.py` 宿主引導腳本同進程動態調度與零阻塞優化**：
+  - **`dispatch_module` 同進程分發實作**：以 Python 標準庫 `runpy.run_path` 取代原先的 `subprocess.run`，消除多次 Python 解釋器冷啟動開銷與非交談式/後台 Headless 環境下的 `stdin` 管道 I/O 阻塞。
+  - **現場維護與狀態碼保證**：動態維護 `sys.argv` 參數現場，精確捕獲並轉譯 `SystemExit` 狀態碼，無縫支援全模組 CLI 指令與拼寫建議。
+  - **驗證與測試**：全模組 CLI 響應時間自數秒降至 0.8s 內同步完成；`core` 54/54 與 `agents-workflow` 47/47 單元測試全數通過。
+
 ## 2026_08_31_1718_agents_workflow_architecture_optimization (sub_02_skills_architecture 結案)
 
 - **`agents-workflow` 宣告式 Skills 體系與多 Target 投影架構全面實作**：
