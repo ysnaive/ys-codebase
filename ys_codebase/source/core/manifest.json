@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.0.2.5",
+  "version": "1.0.2.6",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {}
