@@ -7,12 +7,24 @@
       "description": "知識庫語意檢索與代碼探索指南。當需要搜尋代碼或文檔、理解業務邏輯、查閱符號簽名、追蹤調用關係 (callers/callees)、評估重構影響半徑 (impact) 或進行技術調研時觸發；尤其在調用各環境之原生檔案讀取/檢視工具（View / Read 系列）或文字搜尋/目錄走訪工具（Grep / Search / List 系列）進行代碼探索前，必須強制優先觸發比對工具分流。"
     }
   ],
+  "token": [
+    {
+      "name": "KNOWLEDGE_DB_SPACE",
+      "description": "知識庫已註冊空間清單動態注入錨點（位於 knowledge-db-search/SKILL.md）"
+    }
+  ],
   "insert": [
     {
       "type": "const",
       "token": "AGENTS_SKILL_ROUTING",
       "value": "| **代碼檢索 / 閱讀探索 / 符號查簽名 / 架構調研 / 調用圖譜 / 影響面評估**<br/>*(調用各環境之檔案讀取/檢視或文字搜尋/走訪工具進行探索前；🚨 探索非明確知悉路徑之文檔強制以 search --ftype=md 為唯一第一反射取得精確路徑，嚴禁未檢索直接逐檔翻讀或盲猜讀取)* | `knowledge-db-search` |",
       "mode": "below"
+    },
+    {
+      "type": "computed",
+      "token": "KNOWLEDGE_DB_SPACE",
+      "value": "code.func://knowledge-db/knowledge_db/providers:get_knowledge_db_spaces",
+      "mode": "replace"
     },
     {
       "type": "uri",

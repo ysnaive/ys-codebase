@@ -2,6 +2,16 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_01_0607_knowledge_db_space_token_and_skill_hardening (Level 0 Fast Track 結案)
+
+- **`knowledge-db` 宣告式空間佔位符與檢索技能剛性防護**：
+  - **`KNOWLEDGE_DB_SPACE` 宣告式動態解算**：模組完全自包含地宣告 Token 與 `get_knowledge_db_spaces` computed provider，將全系統已註冊空間（`docs`, `plans`, `source`）動態編譯為 Markdown 表格並渲染至 Skill，零跨模組耦合。
+  - **檢索技能與工具分流剛性防護**：
+    - 原生搜尋工具剛性收窄：明訂 `SearchPath` 僅限單一具體檔案路徑，嚴禁目錄跨檔廣搜。
+    - 負面範例防護：於 Skill 中注入「常見探索意圖與反模式對照表 (Anti-Patterns vs Correct Patterns)」。
+    - Frontmatter 強化：注入禁止目錄搜尋之守門語意，強化 Agent 第一反射。
+  - **驗證與測試**：新增 `test_providers.py`，`knowledge-db` 130/130 單元測試 100% 通過，Dogfooding 物化驗收完成。
+
 ## 2026_09_01_0551_host_bootstrapper_inprocess_dispatch (Level 0 Fast Track 結案)
 
 - **`yscb.py` 宿主引導腳本同進程動態調度與零阻塞優化**：
