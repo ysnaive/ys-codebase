@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.0.1.19",
+  "version": "1.0.1.20",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {

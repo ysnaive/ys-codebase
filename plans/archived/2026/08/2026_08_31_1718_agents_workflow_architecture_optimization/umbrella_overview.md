@@ -2,7 +2,7 @@
 
 > 計畫名稱：agents_workflow_architecture_optimization  
 > 建立日期：2026-08-31  
-> 計畫狀態：Completed  
+> 狀態：Completed  
 > Umbrella 模式：Incremental (增量演進型)  
 > 模板版本：v1.2  
 

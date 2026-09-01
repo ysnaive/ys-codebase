@@ -1,6 +1,6 @@
 {
   "name": "dev",
-  "version": "1.0.1.8",
+  "version": "1.0.1.9",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {

@@ -13,6 +13,7 @@ import shutil
 import ast
 import zipfile
 import tempfile
+import runpy
 
 CONFIG_FILENAME: str = "yscb.config.json"
 DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release"
@@ -469,18 +470,36 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
         print("       Run 'python yscb.py --help' for available commands.")
         return 1
 
-    env = dict(os.environ)
-    env["YSCB_HOST_DIR"] = base_dir
+    os.environ["YSCB_HOST_DIR"] = base_dir
+    os.environ["PYTHONUNBUFFERED"] = "1"
 
+    orig_argv = list(sys.argv)
     try:
-        res = subprocess.run([sys.executable, target_cli, *args], env=env)
-        return res.returncode
+        sys.argv = [target_cli] + args
+        runpy.run_path(target_cli, run_name="__main__")
+        return 0
+    except SystemExit as se:
+        if se.code is None:
+            return 0
+        if isinstance(se.code, int):
+            return se.code
+        print(se.code)
+        return 1
     except Exception as e:
         print(f"[yscb] Error executing module '{module_name}': {e}")
         return 1
+    finally:
+        sys.argv = orig_argv
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(line_buffering=True)
+            sys.stderr.reconfigure(line_buffering=True)
+        except Exception:
+            pass
+
     if argv is None:
         argv = sys.argv[1:]
 
