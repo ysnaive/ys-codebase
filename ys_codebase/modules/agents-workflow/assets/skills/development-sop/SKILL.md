@@ -1,6 +1,6 @@
 ---
 name: development-sop
-description: 專案標準開發流程 (SOP 0~7) 與 6 大計畫分支模式指南。當需要開立新計畫、評估計畫模式分流 (Full Track/Fast Track/Revision/Research/Umbrella/Roadmap)、推進或執行各階段開發任務 (P00~P07, FT-1~3)、查閱追溯鏈 (FR/DR/FT) 或模板指針時觸發。
+description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/推進計畫、代碼實作、在 plans/ 建立/遷移產物 (P00~P07/RXX/changelog 等)、查閱追溯鏈或模板指針時強制觸發。
 ---
 
 # 開發標準作業流程指南 (Development SOP - Main Hub)
@@ -81,11 +81,17 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 - Phase 5: `P05_task.md`
 - Phase 6: `P06_test_plan.md`
 - Phase 7: `P07_walkthrough.md`
+- 調研報告: `RXX_research_report.md`
 - Fast Track: `fast_track_plan.md`
 - Umbrella: `umbrella_overview.md`
 - 路線圖: `roadmap.md`
 - 微觀日誌: `changelog.md`
 - 現場交接: `handoff.md`
+
+### 🚨 模板調取三大鐵律 (Template Axiom)
+1. **唯一 SSOT**：所有計畫產物模板一律直接讀取 `__${project://.agents/.yscb/templates/}__` 物化目錄，不得自造或臆測格式。
+2. **嚴禁歷史考古**：嚴禁以 `find`、`grep` 或 `view_file` 翻閱歷史封存計畫檔案當作格式參考。
+3. **無痛遷移轉換**：將外部或 Roadmap 想法遷移進計畫時，必須直接套用 `RXX_research_report.md` 標準標頭，不得直接複製舊標頭。
 
 ---
 
