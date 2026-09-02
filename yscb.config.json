@@ -13,8 +13,8 @@
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "1.0.3.2",
-      "installed_at": "2026-09-01 06:41:12",
+      "version": "1.0.3.3",
+      "installed_at": "2026-09-02 05:45:34",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {

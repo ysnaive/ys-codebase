@@ -1,0 +1,19 @@
+# 計畫變更紀錄 (Changelog)
+
+> 功能名稱：ecosystem_hot_update_git_decoupling_and_pip_governance  
+> 建立日期：2026-09-02  
+> 所屬主計畫：2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance  
+> 狀態：Executing  
+> 模板版本：v1.1  
+
+---
+
+> 按時間倒序排列。每條記錄包含日期時間、類型標籤、摘要。
+
+## 變更紀錄
+
+| 日期時間 | 類型 | 摘要 |
+| :--- | :---: | :--- |
+| 2026-09-02 05:35 | `RESEARCH` | 遷移 Roadmap 成果至計畫目錄，歸納為 R01 (安全熱更新與 JIT 自愈) 與 R02 (私有 Pip 依賴治理) 調研報告 |
+| 2026-09-02 05:33 | `SUB-PLAN` | 依開發者指示開立增量型 Umbrella 主計畫，並預排三大子計畫：sub_01 (安全熱更新與 JIT 自愈)、sub_02 (modules Git 解耦)、sub_03 (私有 Pip 相依性治理) |
+| 2026-09-02 05:33 | `PHASE` | 開立增量型 Umbrella 主計畫目錄與總覽文件 (狀態：`Executing`) |

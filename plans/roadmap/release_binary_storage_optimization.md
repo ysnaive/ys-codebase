@@ -24,6 +24,8 @@ ys_codebase/release (*.zip 二進位發布包)      2.08 MB            43 (純�
 ys_codebase/source (源碼 SSOT)                1.01 MB           166
 ```
 
+> 💡 **附註**：`ys_codebase/modules/`（運行端歷史副本）同為部署產物，其 Git 解耦策略已納入姊妹路線圖「[全生態系安全熱更新與 JIT 變更感知自愈機制](./ecosystem_safe_hot_update_and_jit_synchronization.md)」Stage 5（`modules/` 冷啟動再生與 Git 解耦），與本路線圖 `release/` 脫鉤形成對稱閉環。
+
 ### 1.3 核心根因
 1. **二進位壓縮包無 Delta Diff**：`.zip` 檔案在 Deflate 演算法下，任何源碼微調都會造成二進位 Byte Stream 雪崩效應，Git 無法進行差異壓縮，每個版本的 zip 均以 100% 完整體積寫入 Packfile。
 2. **早期版本過渡期沉澱**：早期版本在 `ys_codebase/release/` 曾有同名覆蓋（4~5 次）與刪除重命名，導致雖然當前工作目錄僅有 14 個 zip (~717 KB)，但歷史中沉澱了 **43 個獨立 zip Blobs（共 2.08 MB）**，佔 Packfile 空間 **60%+**。
@@ -77,7 +79,7 @@ git gc --prune=now --aggressive
 ## 5. 決策結論與未來實施路線圖 (Roadmap)
 
 ### 5.1 近期策略 (Current Strategy)
-- **暫緩實施**：目前 `.git` 體積為 3.03 MiB，絕對值極小，對 clone 與儲存無實質效能損耗。專案處於模組功能快速演進期，不宜進行破壞性歷史重寫。
+- **暫緩實施**：以 Packfile 絕對值為指標，50 MB 以內均屬可接受範圍。專案處於模組功能快速演進期，不宜進行破壞性歷史重寫。
 
 ### 5.2 未來啟動時機 (Trigger Conditions)
 - **觸發條件 1**：專案準備對外開源發布或建立 1.0 LTS 長期支援版本。
@@ -87,3 +89,5 @@ git gc --prune=now --aggressive
 1. **Stage 1 (解耦)**：更新 `.gitignore` 排除 `ys_codebase/release/**/*.zip`，發布管線僅追蹤 `index.json`。
 2. **Stage 2 (分發)**：對接遠端 Release Provider / 本地 Cache 機制。
 3. **Stage 3 (清洗)**：執行 `git-filter-repo` 一次性清理過往歷史冗餘，達成極致純文字輕量倉庫。
+
+> 💡 **對稱閉環**：`ys_codebase/modules/` 的 Git 解耦由姊妹路線圖「[全生態系安全熱更新與 JIT 變更感知自愈機制](./ecosystem_safe_hot_update_and_jit_synchronization.md)」Stage 5 負責實作冷啟動再生管線後排除 Git 追蹤。兩路線圖共同驅動倉庫純文字化。
