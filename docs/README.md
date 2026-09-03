@@ -69,6 +69,6 @@ graph TD
 
 | 模組名稱 | 版本 | 職責定位 | 主要進入點 |
 | :--- | :---: | :--- | :--- |
-| **`core`** | `1.0.1.0` | 系統微內核、VFS 檔案系統、套件生命週期、依賴注入與 Hook 派發 | `modules/core/scripts/cli.py` |
-| **`dev`** | `1.0.0.2` | 開發者工具箱：腳手架、靜態檢查、純淨套件打包、單元/契約測試引擎 | `modules/dev/scripts/cli.py` |
-| **`agents-workflow`** | `1.0.1.2` | 通用 Agent 工作流程框架、SOP 0~7 規範治理、Plans 工具鏈與 IDE 投影 | `modules/agents-workflow/scripts/cli.py` |
+| **`core`** | `1.0.1.0` | 系統微內核、VFS 檔案系統、套件生命週期、依賴注入與 Hook 派發 | `.modules/core/scripts/cli.py` |
+| **`dev`** | `1.0.0.2` | 開發者工具箱：腳手架、靜態檢查、純淨套件打包、單元/契約測試引擎 | `.modules/dev/scripts/cli.py` |
+| **`agents-workflow`** | `1.0.1.2` | 通用 Agent 工作流程框架、SOP 0~7 規範治理、Plans 工具鏈與 IDE 投影 | `.modules/agents-workflow/scripts/cli.py` |

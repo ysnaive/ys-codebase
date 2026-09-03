@@ -6,15 +6,25 @@
     "**/.gitattributes": true,
     "**/.gitkeep": true,
     "LICENSE": true,
-    "**/__pycache__": true
+    "**/__pycache__": true,
+    "**/.build": true,
+    "**/build": true,
+    "**/.mirror": true,
+    "**/.modules": true,
+    "**/modules": true,
+    "**/.snapshots": true
   },
   "search.exclude": {
     "**/.git": true,
     "**/.vscode": true,
     "**/__pycache__": true,
     "**/.cache/**": true,
+    "**/.build/**": true,
     "**/build/**": true,
     "**/.mirror/**": true,
+    "**/.modules/**": true,
+    "**/modules/**": true,
+    "**/.snapshots/**": true,
     "**/release/**": true
   },
   "files.watcherExclude": {
@@ -23,8 +33,11 @@
     "**/node_modules/*/**": true,
     "**/__pycache__/**": true,
     "**/.cache/**": true,
+    "**/.build/**": true,
     "**/build/**": true,
     "**/.mirror/**": true,
+    "**/.modules/**": true,
+    "**/modules/**": true,
     "**/.snapshots/**": true,
     "**/release/**": true,
     "plans/archived/**": true,

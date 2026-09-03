@@ -23,8 +23,8 @@
 | **`snapshot://`** | `yscb://.snapshots/` | **組態快照備份目錄（用於災難恢復）** | 🚫 忽略 |
 | *(開發)* **`module.source.root://`** | `yscb://source/` | **模組原始碼開發空間根目錄** | ✅ 受追蹤 |
 | *(開發)* **`module.source://`** | `yscb://source/{module}/` | **特定模組原始碼開發空間** | ✅ 受追蹤 |
-| *(開發)* **`module.build.root://`** | `yscb://build/` | **純淨安裝產物空間（本機套件發布庫）** | ✅ 受追蹤 |
-| *(開發)* **`module.build://`** | `yscb://build/{module}/{version}/` | **特定模組之純淨發布產物版本包** | ✅ 受追蹤 |
+| *(開發)* **`module.build.root://`** | `yscb://.build/` | **本地開發完整建置產物空間根目錄** | 🚫 忽略 |
+| *(開發)* **`module.build://`** | `yscb://.build/{module}/{version}/` | **特定模組之完整建置產物版本包** | 🚫 忽略 |
 
 ---
 
@@ -38,15 +38,13 @@
 | **模組層級** | `yscb://config/{module}/config.project.json`：模組專案層級設定（如 `core` 的 `project_root`）。 | `yscb://config/{module}/config.local.json`：模組本機層級覆蓋。 |
 
 ### 🛡️ 組態管理三項鐵律
-1. **`project://` 零 Fallback 鐵律**：`project_root` 預設為 `!undefined`。若設定檔缺失或為 `!undefined`，解析 `project://` 時必須直接拋出 `ValueError`，完全禁止 fallback 猜測當前目錄。
-2. **自動分發與增量補齊**：模組安裝時自動分發預設組態；若目標已存在，遞迴原地補齊新增之缺失鍵，用戶既有之自訂值 100% 保持不變。
-3. **中介層快照隔離**：框架衍生之 `contributes.merged.json` 必須輸出至 `cache://`，嚴禁污染 `config://` 目錄。
+1. **SSOT 原則**：模組預設值宣告於 `contribute.json`，專案層級覆蓋於 `config.project.json`，個人特化於 `config.local.json`。
+2. **Git 政策防護**：`config.local.json` 嚴禁入庫；`config.project.json` 必須入庫共享。
+3. **無損寫入保證**：透過 `core.config` 修改組態時，自動執行原子備份快照至 `snapshot://`。
 
 ---
 
-## 3. Dogfooding 自引用空間邊界與四步閉環 (Dogfooding Axiom)
-
-專案呈現「自引用 (Dogfooding)」狀態，開發者與 Agent 必須強制遵守以下三大空間隔離與四步閉環流水線：
+## 3. 模組開發與 Dogfooding 閉環流程 (Dogfooding Cycle)
 
 ```mermaid
 graph LR
@@ -56,7 +54,7 @@ graph LR
     classDef s4 fill:#4c1d95,stroke:#8b5cf6,stroke-width:2px,color:#fff;
 
     Stage1["空間 ① 源碼開發<br/><code>source/{module}/</code><br/><i>唯一真理來源 (SSOT)</i>"]:::s1
-    Stage2["Stage 2 打包構建<br/><code>dev build {module}</code><br/><i>產出本機 build/</i>"]:::s2
+    Stage2["Stage 2 打包構建<br/><code>dev build {module}</code><br/><i>產出本機 .build/</i>"]:::s2
     Stage3["空間 ② 測試閘門<br/><code>dev test --all</code><br/><i>100% Passed</i>"]:::s3
     Stage4["空間 ③ 自引用消費<br/><code>install {mod}@build</code><br/><i>直裝通道安全同步</i>"]:::s4
 
@@ -66,4 +64,4 @@ graph LR
 ### 🚨 三大空間隔離禁令
 1. **源碼空間 (`source/`) 為唯一 SSOT**：所有功能修改 100% 必須在 `source/` 進行。
 2. **禁止直接修改運行端 (`.modules/`)**：`.modules/` 視為編譯與部署產物，嚴禁手動直接修改。
-3. **測試未通過嚴禁發布**：實機測試未 100% 通過前，嚴禁將 `build/` 產物同步至 `.modules/`。
+3. **測試未通過嚴禁發布**：實機測試未 100% 通過前，嚴禁將 `.build/` 產物同步至 `.modules/`。

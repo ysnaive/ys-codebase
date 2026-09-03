@@ -11,9 +11,9 @@
 YS-Codebase 遵循**明文空間嚴格二分法**：
 - **明文展開空間（僅 2 處）**：
   1. `source/<module>/`：唯一源碼來源（SSOT，開發期編輯）。
-  2. `modules/<module>/`：唯一執行期純粹代碼空間（微內核直譯器執行）。
+  2. `.modules/<module>/`：唯一執行期純粹代碼空間（微內核直譯器執行）。
 - **單檔 Zip 存儲空間**：
-  - `build/<module>/<version>.build.zip`：本地開發完整建置包（含 tests/）。
+  - `.build/<module>/<version>.build.zip`：本地開發完整建置包（含 tests/）。
   - `release/<module>/<version>.zip`：發布產物純淨包（排除 tests/ 與 .yscbignore）。
   - `.mirror/<module>/<version>.zip`：離線下載鏡像快取。
 
@@ -23,25 +23,22 @@ YS-Codebase 遵循**明文空間嚴格二分法**：
 
 ### 2.1 建置包 vs. 發布包對比
 
-| 特性 | 本地建置包 (`build/`) | 發布純淨包 (`release/`) |
+| 特性 | 本地建置包 (`.build/`) | 發布純淨包 (`release/`) |
 | :--- | :--- | :--- |
 | **檔案命名** | `<version>.build.zip` (例: `1.0.0.build.zip`) | `<version>.zip` (例: `1.0.0.0.zip`) |
 | **測試目錄 (`tests/`)** | **包含**（供開發期沙盒回歸測試） | **排除**（節省頻寬與磁碟） |
 | **忽略檔案 (`.yscbignore`)** | 排除內部忽略規則 | **排除 `.yscbignore` 本身與其規則** |
-| **伴隨 Index** | `build/<module>/index.json` | `release/<module>/index.json` |
+| **伴隨 Index** | `.build/<module>/index.json` | `release/<module>/index.json` |
 
 ---
 
 ## 3. 4-Stage Atomic Reload 流水線
 
 ```text
-[Stage 1: 自癒拉取] 檢查 mirror://{mod}/{ver}.zip，缺失時自動自癒下載補齊
-         │
-[Stage 2: 解壓物化] 剛性清空 modules/{mod}/，透過 zipfile.extractall() 物化代碼
-         │
-[Stage 3: 組態治理] 掃描 modules/ 內組態模板，軟合併部署至 config/，並物理刪除 modules 內模板
-         │
-[Stage 4: 依賴注入] 聚合 contributes.merged.json，廣播 core:on_reload 生命週期事件
+[Stage 1: 依賴校驗] 檢查 core.json 與依賴模組版本約束
+[Stage 2: 解壓物化] 剛性清空 .modules/{mod}/，透過 zipfile.extractall() 物化代碼
+[Stage 3: 組態治理] 掃描 .modules/ 內組態模板，軟合併部署至 config/，並物理刪除 .modules 內模板
+[Stage 4: Hook廣播] 載入 on_install / on_reload，更新 manifests.merged.json
 ```
 
 ---

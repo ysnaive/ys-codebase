@@ -36,7 +36,7 @@ YS-Codebase 透過 `core.uri` 提供標準化虛擬檔案系統介面，實現�
 | **工具庫核心** | `yscb://` | - | 工具庫安裝根目錄 |
 | **運行端空間** | `module.root://` | `module://` | `yscb://.modules/{module}/` |
 | **源碼端空間** | `module.source.root://` | `module.source://` | `yscb://source/{module}/` |
-| **建置端空間** | `module.build.root://` | `module.build://` | `yscb://build/{module}/` |
+| **建置端空間** | `module.build.root://` | `module.build://` | `yscb://.build/{module}/` |
 | **發布端空間** | `module.release.root://` | `module.release://` | `yscb://release/{module}/` |
 | **鏡像端空間** | `module.mirror.root://` | `module.mirror://` | `yscb://.mirror/{module}/` |
 | **組態空間** | `config.root://` | `config://` | `yscb://config/{module}/` |

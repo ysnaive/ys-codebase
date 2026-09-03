@@ -62,10 +62,10 @@ python yscb.py dev build <module_name>
 python yscb.py dev build --all
 ```
 - **特性**：
-  - 打包前**一律自動物理清空**目標 `build/<mod>/` 目錄。
+  - 打包前**一律自動物理清空**目標 `.build/<mod>/` 目錄。
   - 100% 完整保留 `tests/` 與開發檔案。
   - 產物版本號標記為 `{major}.{minor}.{patch}.build`。
-  - 自動更新 `build/<mod>/index.json`。
+  - 自動更新 `.build/<mod>/index.json`。
 
 #### 💡 本機開發一鍵直裝 (`install <mod>@build`)
 當本地修改了 `source/<module>/` 程式碼並執行 `dev build <module>` 後，若希望在宿主環境直接載入最新開發建置產物進行交互調試，無需走正式 release 流程，可直接執行：
