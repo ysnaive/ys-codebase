@@ -13,7 +13,14 @@
 
 ---
 
-## 2. 條件式技能分流導航矩陣 (Conditional Skill Trigger Routing)
+## 2. 核心原則：檔案為唯一真理，對話極簡節流 (SSOT & Session Response Throttle)
+
+1. **檔案唯一真理來源 (SSOT)**：專案所有規格、代碼、架構、任務與測試成果，以實體檔案（如 `__${project://plans/}__`、`__${project://docs/}__` 等）為唯一真理載體。
+2. **對話極簡節流 (Session Response Throttle)**：凡產物已成功落檔或已有實體檔案可查者，對話 Session **嚴禁全文重複、代碼傾倒或冗長轉述**；任何時刻皆應極致精簡對話輸出（僅呈遞必要路徑、核心摘要、關鍵阻塞與下一步），嚴格節約 Token。
+
+---
+
+## 3. 條件式技能分流導航矩陣 (Conditional Skill Trigger Routing)
 
 除「零臆測原則」為全域強制遵循外，所有開發情境、工作流子步驟與工具調用均依條件分流至專屬 Skill。**執行對應動作或調用原生工具前必須強制觸發並遵循該技能手冊（工作流執行中涉及具體動作時強制複合觸發，嚴禁以工作流替代技能手冊）**：
 
@@ -22,5 +29,4 @@
 | **開立/推進計畫 / 代碼實作 / plans/ 產物維護**<br/>*(調用檔案編輯寫入工具前；🚨 模板唯一來源為 `__${project://.agents/.yscb/templates/}__`，嚴禁翻讀歷史封存)* | `development-sop` |
 | **執行任何 CLI 命令列指令**<br/>*(調用各環境之終端機/命令列執行工具時)* | `yscb-cli-guild` |
 | **編寫代碼註解 / 撰寫或維護專案文檔**<br/>*(撰寫 Docstring、維護 docs/ 或更新 README 時)* | `documentation` |
-| **實作遇阻 / 連續修復失敗 / 範疇越界**<br/>*(除錯排查卡關、非預期破壞防護時)* | `/Discuss` (工作流) |
 `__@{AGENTS_SKILL_ROUTING}__`

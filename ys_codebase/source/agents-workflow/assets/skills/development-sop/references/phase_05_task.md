@@ -15,7 +15,7 @@
 ## 🏛️ 2. 空間隔離與代碼規範鐵律
 
 1. **源碼空間唯一 SSOT**：
-   - 所有代碼修改 **100% 必須在 `source/<module>/` 進行**，嚴禁手動修改 `modules/` 或編譯產物。
+   - 所有代碼修改 **100% 必須在 `__${project://ys_codebase/source/}__`<module>/ 進行**，嚴禁手動修改運行端或編譯產物。
 2. **公開介面註解保護 (Docstring Preservation)**：
    - 重構或新增 Public API 時，**嚴禁刪減或破壞標準介面註解結構**（說明、傳參、回傳與例外規範）。
 3. **意圖導向行內註解 (Why-Driven Comments)**：
@@ -29,7 +29,7 @@
 
 | 偏差等級 | 判定條件 | 處置行動 |
 | :--- | :--- | :--- |
-| 🚨 **Critical** | 需求越界、架構翻盤、破壞全域相容性 | **強制中斷實作**，發起 `/Discuss` 進行 5-Whys 根因分析，退回 P00/P01 重新定稿。 |
+| 🚨 **Critical** | 需求越界、架構翻盤、破壞全域相容性 | **強制中斷實作**，發起 [/Discuss](`__#{module://agents-workflow/assets/workflows/Discuss.md}__`) 進行 5-Whys 根因分析，退回 P00/P01 重新定稿。 |
 | ⚠️ **Major** | 局部 API 簽名微調、新增模組內部依賴 | **暫停推進**，於當前 Turn 呈報開發者確認同意後再行修改。 |
 | ℹ️ **Minor** | 內部區域變數重命名、演算法非介面層微調 | 自主修正，並於 `P05_task.md` 之「實作偏差紀錄表」登記備查。 |
 
@@ -41,8 +41,13 @@
 
 ## 🛑 4. Phase 5 結束 Checkpoint
 
-- 所有 `TASK-XX` 與 `TASK-DOC` 均標記為完成 `[x]`。
-- 執行靜態語法合規檢查（`dev check <mod>`）。
-- 產出 `P05_task.md` 並更新 `changelog.md`。
-- 向開發者呈報實作完成摘要，結束當前 Turn 準備進入 Phase 6（測試驗證）。
+- 所有 `TASK-XX` 與 `TASK-DOC` 均標記為完成 `[x]` 並通過語法合規檢查（`dev check <mod>`）。
+- **極精簡 Session 回覆格式**：產出 `P05_task.md` 並更新 `changelog.md` 後，對話中**嚴禁全文重複、代碼傾倒或冗長轉述**，強制僅呈遞以下極簡卡片：
+  ```markdown
+  ### 📄 P05 任務實作已完成
+  - **產出文件**：[P05_task.md](__${project://plans/}__/{plan_name}/P05_task.md)
+  - **實作摘要**：[完成 TASK 計 N 項、文檔同步 N 項 / 靜態檢查通過 / 偏差處置說明]
+  - **待確認事項**：實作已完成，請問是否推進至 Phase 6（測試驗證）？
+  ```
+- **立即 End Turn 等待確認**：嚴禁跨階段連續產出。
 

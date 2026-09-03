@@ -60,11 +60,6 @@
     },
     {
       "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/Idea.md",
-      "description": "構想與靈感孵化池工作流 (Idea) — 支援自由發想、What/Why/How/Related 提案產出與一鍵立項流轉"
-    },
-    {
-      "type": "workflow",
       "source": "module://agents-workflow/assets/workflows/Auto.md",
       "description": "自動連續推進工作流 (Auto) — 支援 Phase 01~05 跳過中間 Checkpoint 連續執行直至 P06 手動驗證"
     },
@@ -181,10 +176,6 @@
     {
       "value": "WORKFLOW_RESEARCH",
       "description": "Research 工作流特化擴充注入錨點（位於 Research.md 尾部）"
-    },
-    {
-      "value": "WORKFLOW_IDEA",
-      "description": "Idea 工作流特化擴充注入錨點（位於 Idea.md 尾部）"
     },
     {
       "value": "WORKFLOW_AUTO",

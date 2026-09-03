@@ -35,7 +35,7 @@
 ## 🛡️ 4. 除錯排查與防淺層修復 (Anti-Blind Patching)
 
 - **本體優先階層**：排查錯誤優先排查當前組件內部邏輯與傳參，未排除自身問題前禁止深入下游外部模組。
-- **連續失敗阻斷**：同一問題連續 2 次修復失敗或破壞 API 簽名時，**強制停手發起 `/Discuss` 進行 5-Whys 根因分析**。
+- **連續失敗阻斷**：同一問題連續 2 次修復失敗或破壞 API 簽名時，**強制停手發起 [/Discuss](`__#{module://agents-workflow/assets/workflows/Discuss.md}__`) 進行 5-Whys 根因分析**。
 
 ---
 
@@ -45,7 +45,14 @@
 
 ## 🛑 5. Phase 6 結束 Checkpoint
 
-- 所有自動化測試 100% Passed，全系統回歸 100% Passed。
-- 人工 / UX 驗證項已獲開發者確認完成。
-- `P06_test_plan.md` 狀態更新為 **`Completed`**，更新 `changelog.md`。
-- 向開發者呈報測試驗收報告，結束當前 Turn 準備進入 Phase 7（成果展示與結案）。
+- 自動化測試 100% Passed，全系統回歸 100% Passed。
+- `P06_test_plan.md` 狀態更新為 **`Completed`**（或等待 UX 確認中）並更新 `changelog.md`。
+- **極精簡 Session 回覆格式**：對話中**嚴禁全文重複、日誌傾倒或冗長轉述**，強制僅呈遞以下極簡卡片：
+  ```markdown
+  ### 📄 P06 測試驗證回報
+  - **產出文件**：[P06_test_plan.md](__${project://plans/}__/{plan_name}/P06_test_plan.md) (Completed / 待驗收)
+  - **測試摘要**：[單元/邊界測試 N 項 100% 通過 / 全量回歸 100% 通過]
+  - **待手動驗證項**：[若有 UX/實機測試，極簡條列操作指令與預期效果；若無填「無」]
+  - **待確認事項**：[若有待驗項請開發者操作驗證；若無則詢問是否推進至 Phase 7？]
+  ```
+- **立即 End Turn 等待確認**：嚴禁跨階段連續產出。

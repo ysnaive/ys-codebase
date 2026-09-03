@@ -1,50 +1,49 @@
-`__@{DYNAMIC_CONTEXT_MAP}__`
-
 # 開發完成後審查工作流 (Review)
 
-本工作流用於功能實作完成後（通常於 Phase 7 Walkthrough 結束後或發布/結案前），進行獨立且嚴格的品質稽核、五維度品質矩陣驗收與即時修復閉環。所有階段的執行規範請嚴格遵循 [標準開發作業流程 (NewPlan)](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流用於功能實作完成後（通常於 Phase 7 Walkthrough 結案前），進行具體可驗證的品質稽核（文檔交付、測試覆蓋、計畫合規與 Commit 規範）與即時修復閉環。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
 
 ---
 
 ## 🚀 執行步驟
 
-### 步驟 1：五維度品質與規範審查矩陣 (Five Quality Pillars)
+### 步驟 1：品質與合規審查矩陣 (Quality & Compliance Matrix)
 
-#### 1. 程式碼品質與清潔度
-- [ ] **無殘留 Debug 代碼**：所有臨時性的 print/console/debug log 已清除。
-- [ ] **無死代碼**：無大段被註解掉的廢棄代碼。
-- [ ] **命名與封裝**：命名符合專案規範，封裝邊界清楚。
-- [ ] **物理/數學單位**：具體物理或數學變數顯式標註 `_{unit}` 單位後綴，且無同名覆蓋中轉。
+#### 1. 三層文檔交付審查 (Documentation Delivery Audit)
+- [ ] **宏觀發布日誌**：專案根目錄 [`CHANGELOG.md`](`__${project://CHANGELOG.md}__`) 最上方已追加本次高階變更摘要。
+- [ ] **中觀模組與專題手冊**：`__${project://docs/}__<Category>/` 模組手冊、專題手冊已同步更新；若有工程妥協已於 `DESIGN_NOTES.md` 登記 `DN-XX`。
+- [ ] **微觀代碼註解契約**：本次修改之 Public API 註解結構完整，複雜演算法具備 Why-Driven 動機註解。
 
-#### 2. 日誌與安全性
-- [ ] **關鍵進入點與重要狀態**：核心介面有適當的 Info / Debug 日誌。
-- [ ] **錯誤與異常處置**：錯誤邊界有 Warning / Error 日誌並附帶上下文資訊。
-- [ ] **高頻防衛**：嚴禁在每影格循環項目 (Update / Render / Calculate) 頻繁記錄日誌。
+#### 2. 測試與計畫合規檢核 (Verification & Plan Compliance)
+- [ ] **自動化測試**：執行專案定義之自動化測試指令全數通過。
+- [ ] **手動 / UX 驗證**：若有待手動驗證項，已獲開發者明確確認。
+- [ ] **計畫合規性檢核**：執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>`，確認計畫文件結構完整、無殘留 HTML 註解且標頭狀態合法。
 
-#### 3. 三層文檔交付與微觀代碼審查 (Three-Tier Documentation & In-Code Audit)
-- [ ] **宏觀發布日誌**：專案根目錄 [CHANGELOG.md](`__${project://CHANGELOG.md}__`) 最上方已追加本次高階變更摘要。
-- [ ] **中觀專題手冊 (Topic Docs)**：涉及 3 個以上狀態轉移、通訊協議、資料管線或並發同步時，已同步更新/建立 `workflow.docs://<Module>/[topic].md`。
-- [ ] **工程妥協登記**：若實作包含非直觀設計、效能補償或 Workaround，已於 `workflow.docs://<Module>/DESIGN_NOTES.md` 登記 `DN-XX` 與 `[!CAUTION]`。
-- [ ] **模組 README 同步**：`workflow.docs://<Module>/README.md` 已補齊最新 API 簽名與快速上手範例。
-- [ ] **微觀 Public API 註解保護**：公開介面具備標準結構化註解（說明/傳參/回傳/例外），無破壞或刪減既有註解結構。
-- [ ] **微觀 Why-Driven 行內動機註解**：複雜演算法、位元運算、數學公式與特殊常數均具備「設計動機與理由 (Why)」說明。
-- [ ] **微觀型別契約明確性**：型別標註或宣告精準，無無意義泛型逃逸。
-
-#### 4. 驗證與測試覆蓋
-- [ ] 自動化測試或 CLI 編譯 100% 通過（附帶日誌紀錄）。
-- [ ] 人工 / UX / 實機驗證已獲得開發者明確確認。
-- [ ] **計畫合規性檢核**：已實機調用 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>`，確認計畫所有文件結構完整、無殘留 HTML 註解且標頭狀態合法。
-
-#### 5. Commit 訊息規範
-- [ ] 採用 Conventional Commits 格式：`<type>(<scope>): <標題>`，簡潔且資訊完整。
+#### 3. Commit 訊息規範 (Commit Convention)
+- [ ] 採用 Conventional Commits 格式：`<type>(<scope>): <標題>`。
 
 ---
 
 ### 步驟 2：即時互動修復與回填閉環 (Interactive Resolution Loop)
 
-- **非單純報錯**：若審查中發現任何代碼瑕疵、文檔缺漏或規範偏差，Agent **絕對禁止僅僅列出問題就結束**！
-- **即時修復**：Agent 必須呈遞具體修復方案，與開發者即時討論並動手修正。
-- **回填閉環**：修復完成後，將審查結論與偏差紀錄同步寫入 [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) 與 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)。
+- **即時修復**：審查中發現任何文檔缺漏、測試未過或計畫合規偏差，禁止僅列出問題，必須呈遞修復方案並立即動手修正。
+- **回填閉環**：修復完成後，將審查結論記錄於 [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) 與 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)。
+
+---
+
+### 步驟 3：極精簡 Session 回覆格式 (Review Verdict Card)
+
+完成審查與即時修復後，對話 Session **嚴禁傾倒全部 Checkbox 清單**，強制僅呈遞以下極簡卡片並結束當前 Turn：
+
+```markdown
+### 📋 /Review 審查結果
+- **審查結論**：[✅ 全數通過 / ⚠️ 發現 N 項偏差已即時修復閉環]
+- **核驗摘要**：
+  - 文檔對齊：[CHANGELOG、docs 知識庫、代碼註解對齊完成]
+  - 測試與計畫：[自動化測試 100% 通過 / 計畫合規性檢核通過]
+  - 推薦 Commit：`[type(scope): brief message]`
+- **回填產物**：[P07_walkthrough.md](__${project://plans/}__/{plan_name}/P07_walkthrough.md)、[changelog.md](__${project://plans/}__/{plan_name}/changelog.md)
+- **待確認事項**：審查已完成，請問是否同意結果並進行結案 Commit？
+```
 
 ---
 

@@ -1,5 +1,5 @@
 {
-  "fingerprint": "73b9388edc981af94d2c9e51d7472f68d61571ad190dde7fa49673937059bc57",
+  "fingerprint": "9d6c3a8fc020e2ce06384e21dba254fe68af758a2f6dc0359da912cad9968628",
   "active_targets": [
     "antigravity"
   ],
@@ -39,7 +39,6 @@
     "project://.agents/workflows/ContextInit.md",
     "project://.agents/workflows/Continue.md",
     "project://.agents/workflows/Discuss.md",
-    "project://.agents/workflows/Idea.md",
     "project://.agents/workflows/NewPlan.md",
     "project://.agents/workflows/Pause.md",
     "project://.agents/workflows/Research.md",
@@ -48,5 +47,5 @@
     "project://.agents/workflows/SessionAnalysis.md",
     "project://AGENTS.md"
   ],
-  "updated_at": "2026-09-03 16:50:46"
+  "updated_at": "2026-09-03 18:40:31"
 }

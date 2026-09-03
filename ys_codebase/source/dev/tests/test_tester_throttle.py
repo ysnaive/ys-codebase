@@ -133,7 +133,7 @@ class TestTesterThrottleOutput(YSCBTestCase):
         self.assertTrue(os.path.isfile(auto_path), f"File not found: {auto_path}")
         with open(auto_path, "r", encoding="utf-8") as f:
             auto_content = f.read()
-        self.assertIn("dev test <module> --quiet", auto_content)
+        self.assertIn("自動化測試", auto_content)
 
         # 3. phase_06_test.md
         p06_guide_path = os.path.join(repo_root, "source", "agents-workflow", "assets", "skills", "development-sop", "references", "phase_06_test.md")

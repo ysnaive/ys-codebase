@@ -2,6 +2,34 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_03_1840_agents_workflow_session_throttle_and_standards_optimization (Completed)
+
+- **`agents-workflow@1.0.3.5` 全套引導規範、工作流與模板「極精簡 Session 回覆節流協議」與標準佔位符重構**：
+  - **確立全域對話節流公理 (Session Response Throttle Protocol)**：於 `AgentsStandards.md` 與 `development-sop` 確立「實體檔案為唯一真理 (SSOT)」，全面禁止對話全文重複、代碼傾倒與圖表傾倒；為各 SOP 階段與計畫分支全面制定 5~10 行極精簡卡片與即刻停步 (`End Turn`) 機制。
+  - **SOP 階段手冊重構 (`P00` ~ `P07` 及 `plan_modes`)**：
+    - 全面導入標準極簡 Checkpoint 卡片；產出文件路徑統一規範為 `[name](__${project://plans/}__/{plan_name}/...)`。
+    - `phase_06_test.md` 與 `Auto.md` 顯式增設「待手動驗證項」，引導 Agent 簡略條列實機/UX 測試操作與預期效果。
+    - `phase_07_walkthrough.md` 強化歷程覆盤，直接聯動 `/Review` 工作流五維審查（文檔 1:1 驗收收斂至 Review，廢除 P07 獨立冗長文檔表）。
+    - `plan_modes.md` 補齊 FT-1~3、Revision、Research (R01)、Umbrella 極簡卡片與標準佔位符。
+  - **工作流系列全面精煉 (Workflows)**：
+    - `ContextInit.md`：移除頂部 `DYNAMIC_CONTEXT_MAP`，將熱啟動簡報升級為 4 行極精簡狀態卡，杜絕靜態規則傾倒。
+    - `NewPlan.md`：移除頂部 `DYNAMIC_CONTEXT_MAP`，精簡流程啟動節點。
+    - `Auto.md`：全文通用性重構，移除特化 CLI 舉例與冗餘修飾，語意聚合精簡 ~40%，收斂為 4 步連續推進閉環。
+    - `Review.md`：移除頂部 `DYNAMIC_CONTEXT_MAP`，剔除無法客觀地毯式檢查之項目（代碼清潔度、日誌細節），聚焦三層文檔對齊、測試與計畫合規、Commit 規範三大可核驗柱石，增設審查結論卡。
+    - `SessionAnalysis.md`：確立「禁止一切主觀性評論」核心原則，僅允許客觀統計數據；為 2.1 流程自檢（全數合規單行卡 vs 異常項目根因卡）與 2.2 Token 分析提供剛性標準卡，徹底杜絕 Checkbox 清單傾倒。
+    - `Discuss.md`：移除頂部 `DYNAMIC_CONTEXT_MAP`，語意聚合為 3 步閉環，增設極精簡討論卡 (RCA Card) 並立即停步等待裁決。
+    - `Continue.md`：移除頂部 `DYNAMIC_CONTEXT_MAP`，消除層級偏見詞彙，升級為極精簡接續卡。
+    - `Pause.md`：移除頂部 `DYNAMIC_CONTEXT_MAP`，移除內嵌模板代碼改採標準 SSOT 引導，升級為極精簡交接卡。
+    - `Research.md`：移除頂部 `DYNAMIC_CONTEXT_MAP`，制定極精簡調研成果卡（三大出口路徑導引）。
+    - `Roadmap.md`：移除頂部 `DYNAMIC_CONTEXT_MAP`，修正佔位符語法，制定極精簡路線圖推薦卡。
+    - `Idea.md`：依指示正式下線並自宣告、Token 與文件完整移除。
+  - **標準標頭補齊與驗證器同步 (`header.md` & `verifier.py`)**：
+    - `header.md` 補齊生命週期狀態枚舉：`> 狀態：[Draft | Confirmed | In Progress | Passed | Completed]`。
+    - `verifier.py` 之 `PLACEHOLDER_PATTERNS` 同步升級，嚴格防呆未替換佔位符。
+  - **Dogfooding 閉環驗證與發布**：
+    - 全套 50/50 單元測試 100% 通過。
+    - 依規範執行版本晉升 `1.0.3.4` ➔ `1.0.3.5`、正式打包發布與 `python yscb.py update agents-workflow` 自部署物化至 `.agents/` 運行環境。
+
 ## 2026_09_03_1227_agents_workflow_plan_filter_and_session_analysis (Completed)
 
 - **`sub_01` `dev test` 輸出格式優化與節流模式 (`--quiet` / `-q`)**：

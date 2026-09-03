@@ -15,7 +15,7 @@
 
 ## 🚪 2. JIT 延遲建檔與分流守門
 
-1. **對話先行**：輸入 `/NewPlan` 時不立即建立實體目錄，先於對話中進行深入探討。
+1. **對話先行**：輸入 [/NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`) 時不立即建立實體目錄，先於對話中進行深入探討。
 2. **確立分流伴隨建檔**：與開發者充分討論並確認分流類型後，伴隨建立計畫目錄並產出 `P00_discuss.md` 與 `changelog.md`。
 3. **調研無痛升級**：若需求過於複雜或未知技術過多，主動建議先入調研計畫（產出 `R01` 後可無縫升級）。
 
@@ -36,7 +36,13 @@
 
 ## 🛑 4. Phase 0 結束 Checkpoint
 
-- 產出 `P00_discuss.md` 後，向開發者呈遞摘要與推薦分流類型。
-- 詢問：「請問是否同意此分流並推進至 Phase 1（規格轉譯）？」
-- **立即 End Turn 等待確認**，嚴禁跨階段連續產出。
+- **極精簡 Session 回覆格式**：產出 `P00_discuss.md` 與 `changelog.md` 後，對話中**嚴禁全文重複或冗長轉述**，強制僅呈遞以下極簡卡片：
+  ```markdown
+  ### 📄 P00 需求討論與分流確認
+  - **產出文件**：[P00_discuss.md](__${project://plans/}__/{plan_name}/P00_discuss.md)、[changelog.md](__${project://plans/}__/{plan_name}/changelog.md)
+  - **推薦分流**：[Full Track | Fast Track | Umbrella | Revision | Research]
+  - **核心決策**：[1~2 行關鍵架構定案或主要 [P00:DR-XX]]
+  - **待確認事項**：請問是否同意此分流並推進至下一階段？
+  ```
+- **立即 End Turn 等待確認**：嚴禁跨階段連續產出。
 

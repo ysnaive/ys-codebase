@@ -127,7 +127,7 @@ class PlanVerifier:
         r"\[所屬主計畫\]",
         r"\[待填寫\]",
         r"\[專案名稱\]",
-        r"\[Draft \| Confirmed \| Completed\]",
+        r"\[Draft \| Confirmed \| In Progress \| Passed \| Completed\]",
         r"\[Feature \| Refactor \| Bug Fix \| Performance \| Docs\]",
     ]
 
