@@ -20,7 +20,7 @@ class FrameworkRobustnessTest(YSCBTestCase):
         self.engine_dir = os.path.join(self.tmp_dir, "engine")
         os.makedirs(self.host_dir, exist_ok=True)
         os.makedirs(os.path.join(self.engine_dir, "config", "core"), exist_ok=True)
-        os.makedirs(os.path.join(self.engine_dir, "modules"), exist_ok=True)
+        os.makedirs(os.path.join(self.engine_dir, ".modules"), exist_ok=True)
         os.makedirs(os.path.join(self.engine_dir, ".mirror"), exist_ok=True)
         os.makedirs(os.path.join(self.engine_dir, ".snapshots"), exist_ok=True)
 

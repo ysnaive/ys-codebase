@@ -215,18 +215,25 @@ class SandboxProvisioner:
         }
         
         # Ingest installed host modules and config
-        sandbox_modules_dir = os.path.join(ctx.engine_dir, "modules")
+        sandbox_modules_dir = os.path.join(ctx.engine_dir, ".modules")
         os.makedirs(sandbox_modules_dir, exist_ok=True)
+        cand_host_modules = []
+        if uri.exists("module.root://"):
+            cand_host_modules.append(uri.resolve("module.root://"))
         if uri.exists("module://"):
-            host_modules_dir = uri.resolve("module://")
+            cand_host_modules.append(uri.resolve("module://"))
+        yscb_d = uri._get_yscb_root()
+        cand_host_modules.append(os.path.join(yscb_d, ".modules"))
+        cand_host_modules.append(os.path.join(yscb_d, "modules"))
+
+        for host_modules_dir in cand_host_modules:
             if os.path.isdir(host_modules_dir):
                 for mod_name in sorted(os.listdir(host_modules_dir)):
                     mod_src_path = os.path.join(host_modules_dir, mod_name)
                     if os.path.isdir(mod_src_path):
                         dest_mod = os.path.join(sandbox_modules_dir, mod_name)
-                        if os.path.exists(dest_mod):
-                            shutil.rmtree(dest_mod)
-                        shutil.copytree(mod_src_path, dest_mod, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                        if not os.path.exists(dest_mod):
+                            shutil.copytree(mod_src_path, dest_mod, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
         # Overlay freshly built packages from module.build:// (dev build)
         if uri.exists("module.build://"):
@@ -332,7 +339,7 @@ class SandboxProvisioner:
         """Scans sandbox engine source/ and modules/ for scripts/hook.dev.py and invokes hook_name."""
         scanned_roots = [
             os.path.join(ctx.engine_dir, "source"),
-            os.path.join(ctx.engine_dir, "modules")
+            os.path.join(ctx.engine_dir, ".modules")
         ]
         executed_hooks = set()
         for root in scanned_roots:

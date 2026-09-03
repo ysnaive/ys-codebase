@@ -28,7 +28,7 @@ _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
     {"token": "yscb.host", "type": "const", "value": "{yscb_host}"},
     {"token": "module.mirror", "type": "const", "value": "yscb://.mirror/"},
     {"token": "snapshot", "type": "const", "value": "yscb://.snapshots/"},
-    {"token": "module", "type": "const", "value": "yscb://modules/"},
+    {"token": "module", "type": "const", "value": "yscb://.modules/"},
     {"token": "config", "type": "const", "value": "yscb://config/"},
     {"token": "cache", "type": "const", "value": "yscb://.cache/"},
     {"token": "storage", "type": "const", "value": "yscb://storage/"},

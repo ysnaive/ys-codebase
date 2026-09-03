@@ -1,4 +1,6 @@
-# YS-Codebase Autonomous Internal Ignore Rules
+# === YSCB INTERNAL IGNORE BEGIN ===
+# Auto-managed by YSCB host bootstrapper. Do not edit this block manually.
+/.modules/
 /build/
 /.mirror/
 /.temp/
@@ -7,3 +9,4 @@
 *.local.json
 __pycache__/
 *.pyc
+# === YSCB INTERNAL IGNORE END ===

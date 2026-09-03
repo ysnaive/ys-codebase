@@ -27,7 +27,7 @@
     {
       "token": "module",
       "type": "const",
-      "value": "yscb://modules/",
+      "value": "yscb://.modules/",
       "description": "本地模組運行端空間根目錄"
     },
     {
