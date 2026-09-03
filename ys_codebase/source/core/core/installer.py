@@ -4,6 +4,7 @@ Includes Major Boundary Lock & Incremental Migration Trigger.
 """
 import os
 import sys
+import json
 from typing import Optional, List
 from core import uri
 from core.context import ExecutionContext
@@ -54,6 +55,7 @@ class Installer:
                 self.engine.act_migrate(module_name, old_ver, installed_ver)
                 
             self.engine.act_broadcast_event("core", "on_installed", ExecutionContext("core", "install", [module_name, installed_ver]))
+            self.sync_pip_dependencies()
             self.engine.act_unlock("install")
             print(f"[core:install] Successfully installed '{module_name}@{installed_ver}'.")
             return 0
@@ -126,6 +128,7 @@ class Installer:
             if updated_any:
                 self.engine.act_reload(clean_stage=True, inject_stage=True)
                 self.engine.act_broadcast_event("core", "on_update", ExecutionContext("core", "update", targets))
+                self.sync_pip_dependencies()
                 print(f"[core:update] Update completed successfully.")
             self.engine.act_unlock("update")
             return 0
@@ -178,6 +181,7 @@ class Installer:
         self.engine.act_unregister(module_name)
         self.engine.act_delete(module_name, clean_mirror=clean, purge=purge)
         self.engine.act_reload(clean_stage=True, inject_stage=True)
+        self.sync_pip_dependencies()
         if purge:
             print(f"[core:remove] Module '{module_name}' and all its persistent data/config purged successfully.")
         else:
@@ -251,5 +255,59 @@ class Installer:
     def cmd_reload(self) -> int:
         print("[core:reload] Reconciling runtime modules from mirror...")
         self.engine.act_reload(clean_stage=True, inject_stage=True)
+        self.sync_pip_dependencies()
         print("[core:reload] Runtime environment reconciled and refreshed successfully.")
         return 0
+
+    def sync_pip_dependencies(self) -> None:
+        """
+        收集所有已安裝模組之 pip_dependencies 宣告聯集，
+        透過 PipManager 於微環境執行 Wheel-Only 靜默物化；
+        隨後若 project://.vscode 存在，調用 IdeProjector 執行明確標記 _yscb_managed 之可復原軟合併。
+        """
+        from core.pip_manager import PipManager, PipInstallError
+        from core.ide_projector import IdeProjector
+
+        try:
+            cfg_path, cfg = self.engine._get_config()
+        except Exception:
+            return
+
+        installed = cfg.get("installed_modules", {})
+        specs: List[str] = []
+        for mod in installed.keys():
+            manifest_uri = f"module://{mod}/manifest.json"
+            if uri.exists(manifest_uri):
+                try:
+                    m_data = uri.read_json(manifest_uri)
+                    pip_deps = m_data.get("pip_dependencies", {})
+                    if isinstance(pip_deps, dict):
+                        for pkg, constraint in pip_deps.items():
+                            if constraint:
+                                specs.append(f"{pkg}{constraint}")
+                            else:
+                                specs.append(pkg)
+                except Exception:
+                    pass
+
+        yscb_abs = None
+        if "yscb_root" in cfg:
+            host_dir, _ = uri._get_host_config()
+            yscb_abs = os.path.normpath(os.path.join(host_dir, cfg["yscb_root"]))
+
+        pip_mgr = PipManager(yscb_abs)
+        if specs:
+            try:
+                pip_mgr.install_packages(specs)
+            except PipInstallError as e:
+                print(f"[core:pip] Warning: {e}")
+
+        # IDE 自動感知可復原軟合併投影 (若 project://.vscode 存在)
+        try:
+            proj_root = uri.resolve("project://", interactive=False)
+            if proj_root and os.path.isdir(proj_root):
+                ide_proj = IdeProjector(yscb_abs)
+                if ide_proj.is_vscode_configured(proj_root):
+                    ide_proj.sync_vscode_settings(proj_root)
+        except Exception:
+            pass

@@ -23,6 +23,9 @@
 | **DN-12** | JIT `!undefined` 熱更新補齊機制與自引用防護 | `source/core/core/uri.py` | 🚨 CRITICAL |
 | **DN-13** | Contributes `__provider__` 拓撲聚合與 SDK 查詢 | `source/core/core/contributes.py` | ⚠️ WARNING |
 | **DN-14** | `yscb.host://` 宿主協議常數解算與 fast-path 路由 | `source/core/core/uri.py` | 🚨 CRITICAL |
+| **DN-15** | `yscb.venv://` 私有微虛擬環境剛性隔離與 Wheel-Only 保證 | `source/core/core/pip_manager.py` | 🚨 CRITICAL |
+| **DN-16** | IDE 自動感知與 `_yscb_managed` 宣告式可復原軟合併 | `source/core/core/ide_projector.py` | ⚠️ WARNING |
+| **DN-17** | virtiofs 跨平台掛載環境符號連結動態探測與複製降級 | `source/core/core/pip_manager.py` | ⚠️ WARNING |
 
 ---
 
@@ -148,3 +151,40 @@
   2. 強制指向起手腳本 `yscb.py` 與 `yscb.config.json` 所在之專案宿主工程根目錄。
   3. 於 `uri.resolve()` 提供 O(1) fast-path 解析，並相容自引用與外部專案宿主上下文。
 - **背後考量**：當工具庫（`yscb://`）位於子目錄（如 `ys_codebase/`）時，模組與工作流需精準定位包含起手腳本的宿主根目錄，避免混淆 `project://`（受被管理目標路徑組態影響）與 `yscb://`（工具庫源碼根目錄）。
+
+---
+
+### [DN-15] `yscb.venv://` 私有微虛擬環境剛性隔離與 Wheel-Only 保證
+
+- **核心決策**：
+  1. 微環境根目錄為 `yscb://.venv/py{major}{minor}/`，強制鎖定 `include-system-site-packages = false`，達成 100% 零全域環境污染。
+  2. 呼叫 pip 安裝時強制附加 `--only-binary=:all:` 與 `--no-warn-script-location`，若無預編譯 Wheel 則直接拋出 `PipInstallError`。
+  3. `core` 模組本身保持純 Python 標準庫實作（Zero-Pip），其餘模組可自由進行 pip 宣告。
+- **背後考量**：徹底消除跨專案與宿主 Python 之全域依賴污染；避免在缺乏 gcc/clang/msvc 之容器或用戶本機嘗試編譯 C 擴充模組導致的崩潰。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在微環境安裝管線中移除 `--only-binary=:all:`！嚴禁在 `core` 模組自身引入任何第三方 pip 依賴！**
+
+---
+
+### [DN-16] IDE 自動感知與 `_yscb_managed` 宣告式可復原軟合併
+
+- **核心決策**：
+  1. 自動探測 `project://.vscode` 是否存在，若不存在完全靜默略過，絕不主動建立 `.vscode/` 目錄。
+  2. 若存在，以 `_yscb_managed` 宣告式清冊結構記錄注入之 `extraPaths`、`defaultInterpreterPath` 與排除規則（`files.watcherExclude`、`search.exclude`、`files.exclude`），100% 保留使用者既有配置，並支援乾淨無損回滾。
+- **背後考量**：避免在未配置 VS Code 之專案目錄下產生冗餘空目錄；杜絕暴力覆蓋導致使用者自訂設定遺失；避免檔案監視器因掃描微環境數萬個第三方檔案引發高負載。
+- **防禦宣告**：
+  > [!IMPORTANT]
+  > **嚴禁在 `project://.vscode` 不存在時主動創建該目錄；嚴禁以整檔覆蓋模式寫入 `settings.json`！**
+
+---
+
+### [DN-17] virtiofs 跨平台掛載環境符號連結動態探測與複製降級
+
+- **核心決策**：
+  1. 在建立微環境前，透過 `_can_symlink()` 即時探測目標目錄是否支援有效可解算的符號連結（相容 virtiofs / 容器掛載磁碟）。
+  2. 若符號連結不可解算，自動降級為複製 Python 可執行檔，並優先自 `ensurepip` 解壓預置 wheel，避免因檔案權限操作（如 `chmod`）引發 `OSError: [Errno 1] Operation not permitted`。
+- **背後考量**：Dev Container 與 Docker 掛載宿主檔案系統時，符號連結常因宿主/虛擬機路徑不同而斷鏈或拋出權限錯誤。
+- **防禦宣告**：
+  > [!WARNING]
+  > **嚴禁在 POSIX 環境中盲目假設符號連結必可解算，必須維持動態探測與降級保護！**

@@ -15,9 +15,33 @@ import zipfile
 import tempfile
 import runpy
 import re
+import platform
 
 CONFIG_FILENAME: str = "yscb.config.json"
 DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release"
+
+def _ensure_private_venv_path(yscb_dir: str) -> None:
+    """
+    極速探測 (<0.05ms) 當前 Python 版本對應之 yscb_dir/.venv/py{ver}/.../site-packages。
+    若存在且未注入 sys.path 則安全插入前端。
+    """
+    tag = f"py{sys.version_info.major}{sys.version_info.minor}"
+    if platform.system() == "Windows":
+        site_pkg = os.path.join(yscb_dir, ".venv", tag, "Lib", "site-packages")
+    else:
+        py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        site_pkg = os.path.join(yscb_dir, ".venv", tag, "lib", py_ver, "site-packages")
+
+    if os.path.isdir(site_pkg) and site_pkg not in sys.path:
+        sys.path.insert(0, site_pkg)
+
+    # 若 .venv 存在，確保 yscb_dir/.gitignore 同步包含 /.venv/ 內部忽略規則
+    venv_root = os.path.join(yscb_dir, ".venv")
+    if os.path.isdir(venv_root):
+        gi_p = os.path.join(yscb_dir, ".gitignore")
+        if not os.path.isfile(gi_p) or "/.venv/" not in open(gi_p, "r", encoding="utf-8", errors="ignore").read():
+            _generate_internal_gitignore(yscb_dir)
+
 CORE_COMMANDS: set = {
     "install",
     "update",
@@ -65,6 +89,7 @@ INTERNAL_IGNORE_PATTERNS = [
     "/.temp/",
     "/.snapshots/",
     "/.cache/",
+    "/.venv/",
     "*.local.json",
     "__pycache__/",
     "*.pyc",
@@ -710,7 +735,9 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
 
     base_dir = os.path.dirname(cfg_path)
     yscb_root = cfg["yscb_root"]
-    target_cli = os.path.normpath(os.path.join(base_dir, yscb_root, ".modules", module_name, "scripts", "cli.py"))
+    yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
+    _ensure_private_venv_path(yscb_abs)
+    target_cli = os.path.normpath(os.path.join(yscb_abs, ".modules", module_name, "scripts", "cli.py"))
 
     if not os.path.isfile(target_cli):
         # Unknown module / command -> trigger intelligent spelling suggestion
