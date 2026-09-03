@@ -14,6 +14,8 @@
 
 | 日期時間 | 類型 | 摘要 |
 | :--- | :---: | :--- |
+| 2026-09-03 11:34 | `SUB-PLAN` | 完成子計畫 sub_03 (build 解耦與 .build 空間協議更名) 全流程驗收與實機 UX 驗證，達成里程碑 3 (狀態：`Completed`) |
+| 2026-09-03 11:04 | `SUB-PLAN` | 依開發者指示插入新子計畫 sub_03 (build 解耦與 .build 空間協議更名)，原 sub_03 順延重編為 sub_04 (狀態：`In Progress`) |
 | 2026-09-03 10:58 | `SUB-PLAN` | 完成子計畫 sub_02 (modules Git 解耦與冷啟動再生) 全流程驗收與實機 UX 驗證，達成里程碑 2 (狀態：`Completed`) |
 | 2026-09-03 10:25 | `SUB-PLAN` | 啟動子計畫 sub_02 (modules Git 解耦與冷啟動再生)，完成 Phase 0 需求邊界對齊 (狀態：`In Progress`) |
 | 2026-09-03 09:36 | `SUB-PLAN` | 完成子計畫 sub_01 (安全熱更新與 JIT 自愈) 全流程驗收與實機 --sync 直裝閉環，達成里程碑 1 (狀態：`Completed`) |

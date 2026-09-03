@@ -37,10 +37,10 @@ graph TD
 | **`storage://`** | `core` | `yscb://storage/` | **Tracked** | 模組持久化儲存空間（跨模組：`storage://dev/file.json`；自省：`storage://@/data.json`） |
 | **`cache://`** | `core` | `yscb://.cache/` | **Ignored** | 模組快取與暫存空間（替代已廢除之 `temp`；沙盒：`cache://dev/sandbox/`） |
 | **`config://`** | `core` | `yscb://config/` | **Tracked** | 模組專屬設定檔空間（跨模組：`config://agents-workflow/config.project.json`） |
-| **`module://`** | `core` | `yscb://modules/` | **Installed** | 本地模組運行端空間（自省：`module://@/manifest.json`） |
+| **`module://`** | `core` | `yscb://.modules/` | **Ignored** | 本地模組運行端空間（自省：`module://@/manifest.json`，對齊 Git 忽略政策） |
 | **`module.source://`** | `dev` | `yscb://source/` | **Dev-Only** | 模組源碼開發空間（跨模組：`module.source://core/core/uri.py`） |
-| **`module.build://`** | `dev` | `yscb://build/` | **Dev-Only** | 本地開發完整建置產物空間 |
-| **`module.release://`** | `dev` | `yscb://release/` | **Dev-Only** | 模組純淨發布產物來源空間 |
+| **`module.build://`** | `dev` | `yscb://.build/` | **Ignored** | 本地開發完整建置產物空間（對齊 Git 忽略政策） |
+| **`module.release://`** | `dev` | `yscb://release/` | **Tracked** | 模組純淨發布產物來源空間 |
 | **`module.mirror://`** | `core` | `yscb://.mirror/` | **Ignored** | 本地模組壓縮鏡像庫空間 |
 
 ---

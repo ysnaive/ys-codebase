@@ -2,7 +2,19 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
-## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (In Progress - 里程碑 1 & 2 達成)
+## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (In Progress - 里程碑 1, 2 & 3 達成)
+
+- **`sub_03` 建置產物 `build/` 空間協議更名 `.build/`、Git 追蹤解耦、工具鏈對齊與 VS Code 隱藏配置**：
+  - **`module.build` 空間協議重構與零過渡純淨架構**：將 `module.build.root://` 與 `module.build://` 語意解析底層全面自 `yscb://build/` 更名為 `yscb://.build/`，對齊內部隱藏規範；堅決不加入任何舊目錄相容分支，落實零平滑遷移原則。
+  - **`yscb://.gitignore` 內部忽略軟合併更新與舊項清理**：於 `_generate_internal_gitignore` 標記區塊內注入 `/.build/`，並徹底移除舊 `/build/` 條目，維持忽略規則極致純淨；完整保護宿主自訂與其他模組規則。
+  - **生態系工具鏈全面對齊 `.build/`**：
+    - `dev.builder`：模組打包輸出目錄切換至 `module.build://`（`ys_codebase/.build/<mod>/<ver>.zip` 與 `index.json`），實機打包四大模組均成功產出至 `.build/`。
+    - `dev.testing.sandbox`：沙盒虛擬環境透過語意協議自 `.build/` 提取最新建置產物覆蓋測試。
+    - `yscb.py`：模組提取還原優先級對齊 `.build/`，徹底移除舊 `build/` 候選路徑。
+  - **最高工程規範與 IDE 開發體驗同步更新**：
+    - `docs/_project/STANDARDS.md` 空間協議表第 1 節修訂為 `yscb://.build/`，Git 追蹤政策正式標記為 `🚫 忽略`。
+    - `.vscode/settings.json`：於 `files.exclude`、`search.exclude` 與 `files.watcherExclude` 全面隱藏並排除 build、mirror、modules、snapshots。
+  - **驗證與測試**：新增 `test_build_git_decoupling.py` 專屬單元測試套件；全生態系四大模組 305/305 單元測試 100% 通過 (4.943s)；實機 UX 驗證完成。
 
 - **`sub_02` 運行端 `modules/` 空間協議更名 `.modules/`、Git 追蹤解耦、冷啟動再生管線與 JIT 自動同步自愈**：
   - **`module://` 語意空間重構與零過渡純淨架構**：將 `module://` 與 `module.root://` 實體解析底層全面自 `yscb://modules/` 更名為 `yscb://.modules/`，對齊內部隱藏目錄規範；落實零平滑遷移負擔原則，不包含任何舊目錄探測或搬移邏輯。

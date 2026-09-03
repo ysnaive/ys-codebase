@@ -17,7 +17,7 @@
 ├────────────────────────────────────────────────────────────────────────┤
 │ 底層原子操作 (Atomic Primitives)                                       │
 │   1. python yscb.py dev op-mksb [--dir=<path>]                         │
-│      ➔ 【純環境工廠】建立微型虛擬環境、複製 modules/ 與 source/、廣播 Hook│
+│      ➔ 【純環境工廠】建立微型虛擬環境、複製 .modules/ 與 source/、廣播 Hook│
 │                                                                        │
 │   2. python yscb.py dev op-test [mod | --all] [options]                │
 │      ➔ 【純執行引擎】在當前環境原地執行 TestDiscovery + TestRunner      │
@@ -35,10 +35,10 @@
 .cache/dev/sandbox/sandbox_20260826_184739_990974/
   ├── mock_downstream_project/          # 【專案空間 project://】被管理之下游業務專案
   ├── host_env/                         # 【宿主空間 host_dir】
-  │     ├── yscb.py                     # 宿主派發腳本（嚴格僅調用 modules/）
+  │     ├── yscb.py                     # 宿主派發腳本（嚴格僅調用 .modules/）
   │     ├── yscb.config.json            # 宿主設定檔 (yscb_root="./engine", installed_modules)
   │     └── engine/                     # 【工具庫空間 yscb://】
-  │           ├── modules/              # 繼承父層已安裝模組 (core, dev 等，動態讀取 manifest 版本)
+  │           ├── .modules/             # 繼承父層已安裝模組 (core, dev 等，動態讀取 manifest 版本)
   │           ├── source/               # 複製待測最新源碼
   │           ├── config/               # 模組設定檔 (config/core/config.project.json)
   │           └── .cache/               # 沙盒內部快取暫存檔案

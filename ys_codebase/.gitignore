@@ -1,7 +1,7 @@
 # === YSCB INTERNAL IGNORE BEGIN ===
 # Auto-managed by YSCB host bootstrapper. Do not edit this block manually.
 /.modules/
-/build/
+/.build/
 /.mirror/
 /.temp/
 /.snapshots/

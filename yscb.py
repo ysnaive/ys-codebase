@@ -60,7 +60,7 @@ INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
 INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
 INTERNAL_IGNORE_PATTERNS = [
     "/.modules/",
-    "/build/",
+    "/.build/",
     "/.mirror/",
     "/.temp/",
     "/.snapshots/",
@@ -426,14 +426,14 @@ def _restore_module_package(
     os.makedirs(dest_dir, exist_ok=True)
     os.makedirs(mirror_dir, exist_ok=True)
 
-    # 1. 優先檢查 yscb_abs 下的 build/ 或 release/ (特別支援 @build 開發版或最新建置產物)
+    # 1. 優先檢查 yscb_abs 下的 .build/ 或 release/ (特別支援 @build 開發版或最新建置產物)
     yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
     mirror_zip = os.path.join(mirror_dir, f"{version}.zip")
 
     build_candidates = [
-        os.path.join(yscb_abs, "build", module_name, f"{version}.zip"),
-        os.path.join(yscb_abs, "build", module_name, f"{version}"),
-        os.path.join(yscb_abs, "build", module_name),
+        os.path.join(yscb_abs, ".build", module_name, f"{version}.zip"),
+        os.path.join(yscb_abs, ".build", module_name, f"{version}"),
+        os.path.join(yscb_abs, ".build", module_name),
         os.path.join(yscb_abs, "release", module_name, f"{version}.zip"),
     ]
     found_b = next((c for c in build_candidates if os.path.exists(c)), None)
@@ -476,7 +476,7 @@ def _restore_module_package(
             os.path.join(p_abs, module_name, f"{version}"),
             os.path.join(p_abs, module_name),
             os.path.join(p_abs, "release", module_name, f"{version}.zip"),
-            os.path.join(p_abs, "build", module_name, f"{version}.zip"),
+            os.path.join(p_abs, ".build", module_name, f"{version}.zip"),
         ]
         found = next((c for c in candidates if os.path.exists(c)), None)
         if found:
