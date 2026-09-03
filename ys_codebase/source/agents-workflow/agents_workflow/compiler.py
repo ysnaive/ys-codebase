@@ -18,7 +18,7 @@ _mods_root_aw = os.path.dirname(_pkg_root_aw)
 for _cand in [
     os.path.join(_mods_root_aw, "core"),
     os.path.join(os.path.dirname(_mods_root_aw), "source", "core"),
-    os.path.join(os.path.dirname(_mods_root_aw), "modules", "core")
+    os.path.join(os.path.dirname(_mods_root_aw), ".modules", "core")
 ]:
     if os.path.isdir(_cand) and _cand not in sys.path:
         sys.path.insert(0, _cand)

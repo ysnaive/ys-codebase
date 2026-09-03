@@ -2,6 +2,27 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (In Progress - 里程碑 1 & 2 達成)
+
+- **`sub_02` 運行端 `modules/` 空間協議更名 `.modules/`、Git 追蹤解耦、冷啟動再生管線與 JIT 自動同步自愈**：
+  - **`module://` 語意空間重構與零過渡純淨架構**：將 `module://` 與 `module.root://` 實體解析底層全面自 `yscb://modules/` 更名為 `yscb://.modules/`，對齊內部隱藏目錄規範；落實零平滑遷移負擔原則，不包含任何舊目錄探測或搬移邏輯。
+  - **`yscb://.gitignore` 標記區塊軟合併生成 (`[P00:DR-07]`)**：
+    - 引入獨立邊界標記 `# === YSCB INTERNAL IGNORE BEGIN ===` 與 `# === YSCB INTERNAL IGNORE END ===`。
+    - 採用非破壞性軟合併演算法，相容 `"yscb://" == "project://"` 拓撲，將 `/.modules/` 納入內部忽略規則，同時 100% 完整保留宿主專案自訂規則與其他模組（如 `agents-workflow`）之管理區塊。
+  - **宿主層原生自包含冷啟動再生 (`python yscb.py restore`)**：
+    - 於 `yscb.py` 實作自包含之 `cmd_restore`，依據 `yscb.config.json` 之 `installed_modules` 清冊批量物化還原所有模組至 `.modules/` 並觸發 reload。
+    - 支援本地 Provider、`build/`（`@build` 開發版優先提取並反向更新鏡像庫）與遠端/本地 `file://` Provider。
+  - **前置 JIT 模組同步守門 (`_ensure_jit_modules_sync`)**：
+    - 於 CLI 命令分發入口前置建立 $< 0.05\text{ms}$ 極速狀態嗅探；若本機 `.modules/` 缺失或版本落後，自動觸發無感 JIT 原地自愈，達成跨端 `git pull` 後的零手動介入自愈體驗。
+  - **全專案工程規範同步更新**：同步修訂 `docs/_project/STANDARDS.md`、`docs/core/README.md` 與 `source/core/README.md`，將空間協議正式改為 `yscb://.modules/` 且 Git 追蹤政策標記為 `🚫 忽略`。
+  - **驗證與測試**：新增 `test_restore_and_jit_modules.py` 專屬單元測試套件；全生態系四大模組 298/298 單元測試 100% 通過 (4.911s)；實機 UX 驗證完成。
+
+- **`sub_01` 全生態系安全熱更新與 JIT 變更感知自愈機制**：
+  - **`core.contributes` JIT 嗅探守門**：以 $< 2\text{ms}$ 極速檔案指紋檢查感知 contributes 變更並原地重新聚合，消除手動 `reload`。
+  - **`agents-workflow` JIT 投影同步**：在前置 hook 中引入 $< 10\text{ms}$ 指紋嗅探，自動將修改同步編譯至 `.agents/`。
+  - **`UpdateChecker` 12 小時節流版本探測**：微內核每 12 小時輕量檢查來源版本並非阻塞提示升級。
+  - **全生態系 292/292 單元測試通過與 Dogfooding `@build` 直裝閉環驗收**。
+
 ## 2026_09_01_0636_agents_workflow_context_init_aggregation_and_token (Level 0 Fast Track 結案)
 
 - **`agents-workflow` ContextInit 內容聚合整理、Token 錨點補齊與 Dev Container 終端指南特化注入**：

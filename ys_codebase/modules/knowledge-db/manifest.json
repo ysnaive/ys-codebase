@@ -1,9 +1,0 @@
-{
-  "name": "knowledge-db",
-  "version": "1.0.1.21",
-  "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
-  "entry": "scripts/cli.py",
-  "dependencies": {
-    "core": ">=1.0.2"
-  }
-}

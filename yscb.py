@@ -14,6 +14,7 @@ import ast
 import zipfile
 import tempfile
 import runpy
+import re
 
 CONFIG_FILENAME: str = "yscb.config.json"
 DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release"
@@ -55,23 +56,74 @@ def save_config(config_path: str, data: Dict[str, Any]) -> None:
     os.replace(tmp_path, config_path)
 
 
+INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
+INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
+INTERNAL_IGNORE_PATTERNS = [
+    "/.modules/",
+    "/build/",
+    "/.mirror/",
+    "/.temp/",
+    "/.snapshots/",
+    "/.cache/",
+    "*.local.json",
+    "__pycache__/",
+    "*.pyc",
+]
+
+
 def _generate_internal_gitignore(yscb_dir: str) -> None:
-    """Generates yscb://.gitignore ensuring zero pollution to user project root."""
+    """
+    非破壞性軟合併 yscb://.gitignore 中的 YSCB 內部管理區塊。
+    支援 'yscb://' == 'project://' 之拓撲情境，完整保留宿主專案既有之自訂忽略規則
+    及其他模組（如 agents-workflow）之管理區塊，杜絕粗暴覆蓋導致的設定丟失。
+    """
     gi_path = os.path.join(yscb_dir, ".gitignore")
-    content = (
-        "# YS-Codebase Autonomous Internal Ignore Rules\n"
-        "/build/\n"
-        "/.mirror/\n"
-        "/.temp/\n"
-        "/.snapshots/\n"
-        "/.cache/\n"
-        "*.local.json\n"
-        "__pycache__/\n"
-        "*.pyc\n"
+    block_lines = [
+        INTERNAL_IGNORE_BEGIN,
+        "# Auto-managed by YSCB host bootstrapper. Do not edit this block manually.",
+    ]
+    block_lines.extend(INTERNAL_IGNORE_PATTERNS)
+    block_lines.append(INTERNAL_IGNORE_END)
+    new_block_text = "\n".join(block_lines)
+
+    existing_content = ""
+    has_existing = os.path.isfile(gi_path)
+    if has_existing:
+        try:
+            with open(gi_path, "r", encoding="utf-8") as f:
+                existing_content = f.read()
+        except Exception:
+            existing_content = ""
+
+    # 1. 檢測現有區塊標記
+    pattern_marker = re.compile(
+        rf"{re.escape(INTERNAL_IGNORE_BEGIN)}[\s\S]*?{re.escape(INTERNAL_IGNORE_END)}",
+        re.MULTILINE,
     )
+    # 2. 檢測歷史無標記之舊版規則標頭 (# YS-Codebase Autonomous Internal Ignore Rules)
+    pattern_legacy = re.compile(
+        r"# YS-Codebase Autonomous Internal Ignore Rules\n(?:(?!\n*# ===)[^\n]+\n*)*",
+        re.MULTILINE,
+    )
+
+    if pattern_marker.search(existing_content):
+        merged_content = pattern_marker.sub(new_block_text, existing_content)
+    elif pattern_legacy.search(existing_content):
+        merged_content = pattern_legacy.sub(new_block_text + "\n", existing_content)
+    else:
+        if existing_content and not existing_content.endswith("\n"):
+            merged_content = existing_content + "\n\n" + new_block_text + "\n"
+        elif existing_content:
+            merged_content = existing_content + new_block_text + "\n"
+        else:
+            merged_content = new_block_text + "\n"
+
+    if has_existing and existing_content == merged_content:
+        return
+
     try:
-        with open(gi_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        with open(gi_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(merged_content)
     except Exception:
         pass
 
@@ -82,7 +134,13 @@ def _fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
     Purges any config.*.json templates from dest_dir to maintain pure code.
     """
     os.makedirs(dest_dir, exist_ok=True)
-    
+
+    if source_url_or_path.startswith("file://"):
+        raw_p = urllib.request.url2pathname(source_url_or_path[7:])
+        while raw_p.startswith("//"):
+            raw_p = raw_p[1:]
+        source_url_or_path = raw_p
+
     if source_url_or_path.startswith(("http://", "https://")):
         # Remote HTTP Download
         req = urllib.request.Request(source_url_or_path, headers={"User-Agent": "yscb-host/2.0"})
@@ -166,7 +224,7 @@ def cmd_init(argv: List[str]) -> int:
 
     yscb_abs = os.path.normpath(os.path.join(script_dir, yscb_root_arg))
     os.makedirs(yscb_abs, exist_ok=True)
-    os.makedirs(os.path.join(yscb_abs, "modules"), exist_ok=True)
+    os.makedirs(os.path.join(yscb_abs, ".modules"), exist_ok=True)
     os.makedirs(os.path.join(yscb_abs, ".mirror"), exist_ok=True)
 
     # Generate yscb://.gitignore autonomously
@@ -180,7 +238,7 @@ def cmd_init(argv: List[str]) -> int:
 
     core_mirror_dir = os.path.join(yscb_abs, ".mirror", "core")
     os.makedirs(core_mirror_dir, exist_ok=True)
-    core_module = os.path.join(yscb_abs, "modules", "core")
+    core_module = os.path.join(yscb_abs, ".modules", "core")
 
     # Case A: Local directory provider
     p_abs = os.path.abspath(provider_arg) if not provider_arg.startswith(("http://", "https://", "file://")) else None
@@ -291,7 +349,7 @@ def cmd_init(argv: List[str]) -> int:
     print(f"[yscb] Successfully initialized environment at '{yscb_root_arg}'.")
 
     # Initial reload
-    core_cli = os.path.join(yscb_abs, "modules", "core", "scripts", "cli.py")
+    core_cli = os.path.join(yscb_abs, ".modules", "core", "scripts", "cli.py")
     if os.path.isfile(core_cli):
         print("[yscb] Triggering initial core reload...")
         return dispatch_module("core", ["reload"])
@@ -353,13 +411,210 @@ def cmd_self_update(argv: List[str]) -> int:
         return 1
 
 
+def _restore_module_package(
+    base_dir: str,
+    yscb_root: str,
+    module_name: str,
+    version: str,
+    provider_arg: str,
+    dest_dir: str,
+    mirror_dir: str
+) -> bool:
+    """
+    自 Provider、Build 或本機 Mirror 提取指定版本模組，原子解壓縮至 dest_dir。
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    os.makedirs(mirror_dir, exist_ok=True)
+
+    # 1. 優先檢查 yscb_abs 下的 build/ 或 release/ (特別支援 @build 開發版或最新建置產物)
+    yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
+    mirror_zip = os.path.join(mirror_dir, f"{version}.zip")
+
+    build_candidates = [
+        os.path.join(yscb_abs, "build", module_name, f"{version}.zip"),
+        os.path.join(yscb_abs, "build", module_name, f"{version}"),
+        os.path.join(yscb_abs, "build", module_name),
+        os.path.join(yscb_abs, "release", module_name, f"{version}.zip"),
+    ]
+    found_b = next((c for c in build_candidates if os.path.exists(c)), None)
+    if found_b:
+        is_newer_than_mirror = not os.path.isfile(mirror_zip) or (os.path.getmtime(found_b) >= os.path.getmtime(mirror_zip))
+        if version.endswith(".build") or is_newer_than_mirror:
+            try:
+                _fetch_and_extract_zip(found_b, dest_dir)
+                if os.path.isfile(found_b) and (found_b.endswith(".zip") or zipfile.is_zipfile(found_b)):
+                    try:
+                        shutil.copy2(found_b, mirror_zip)
+                    except Exception:
+                        pass
+                return True
+            except Exception:
+                pass
+
+    # 2. 檢查本地鏡像庫 (.mirror/<mod>/<ver>.zip)
+    if os.path.isfile(mirror_zip):
+        try:
+            _fetch_and_extract_zip(mirror_zip, dest_dir)
+            return True
+        except Exception:
+            pass
+
+    # 3. 檢查 Provider 路徑
+    if provider_arg.startswith("file://"):
+        raw_p = urllib.request.url2pathname(provider_arg[7:])
+        while raw_p.startswith("//"):
+            raw_p = raw_p[1:]
+        p_abs = os.path.normpath(raw_p)
+    elif not provider_arg.startswith(("http://", "https://")):
+        p_abs = os.path.normpath(os.path.join(base_dir, provider_arg))
+    else:
+        p_abs = None
+
+    if p_abs and os.path.isdir(p_abs):
+        candidates = [
+            os.path.join(p_abs, module_name, f"{version}.zip"),
+            os.path.join(p_abs, module_name, f"{version}"),
+            os.path.join(p_abs, module_name),
+            os.path.join(p_abs, "release", module_name, f"{version}.zip"),
+            os.path.join(p_abs, "build", module_name, f"{version}.zip"),
+        ]
+        found = next((c for c in candidates if os.path.exists(c)), None)
+        if found:
+            try:
+                _fetch_and_extract_zip(found, dest_dir)
+                if os.path.isfile(found) and (found.endswith(".zip") or zipfile.is_zipfile(found)):
+                    try:
+                        shutil.copy2(found, mirror_zip)
+                    except Exception:
+                        pass
+                return True
+            except Exception:
+                pass
+
+    # 4. 遠端 Provider (HTTP/HTTPS/file)
+    if provider_arg.startswith(("http://", "https://", "file://")):
+        remote_zip_url = provider_arg.rstrip("/") + f"/{module_name}/{version}.zip"
+        try:
+            _fetch_and_extract_zip(remote_zip_url, dest_dir)
+            return True
+        except Exception:
+            pass
+
+    return False
+
+
+def cmd_restore(argv: List[str]) -> int:
+    """
+    CLI 指令：python yscb.py restore [--force]
+    讀取 yscb.config.json 之 installed_modules 清冊，批量還原所有模組至 .modules/，
+    並於完成後自動觸發 core reload 重聚環境。
+    """
+    cfg_path, cfg = load_config()
+    if not cfg_path or not cfg or "yscb_root" not in cfg:
+        print("[yscb] Error: Environment not initialized. Please run 'python yscb.py init <yscbRoot>' first.")
+        return 1
+
+    base_dir = os.path.dirname(cfg_path)
+    yscb_root = cfg["yscb_root"]
+    yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
+    _generate_internal_gitignore(yscb_abs)
+
+    installed = cfg.get("installed_modules", {})
+    if not installed:
+        print("[yscb:restore] No installed_modules declared in configuration. Nothing to restore.")
+        return 0
+
+    default_provider = cfg.get("default_provider", DEFAULT_PROVIDER_URL)
+    modules_dir = os.path.join(yscb_abs, ".modules")
+    os.makedirs(modules_dir, exist_ok=True)
+
+    print(f"[yscb:restore] Restoring {len(installed)} module(s) to '{modules_dir}'...")
+    success_count = 0
+    failed_mods = []
+
+    # 確保 core 優先還原，隨後依字母排序
+    mod_keys = sorted(installed.keys(), key=lambda x: (0 if x == "core" else 1, x))
+    for mod_name in mod_keys:
+        mod_info = installed[mod_name]
+        ver = mod_info.get("version", "1.0.0.0") if isinstance(mod_info, dict) else "1.0.0.0"
+        prov = mod_info.get("provider", default_provider) if isinstance(mod_info, dict) else default_provider
+        dest = os.path.join(modules_dir, mod_name)
+        mirror = os.path.join(yscb_abs, ".mirror", mod_name)
+
+        print(f"  -> Restoring '{mod_name}@{ver}'...")
+        ok = _restore_module_package(base_dir, yscb_root, mod_name, ver, prov, dest, mirror)
+        if ok:
+            success_count += 1
+        else:
+            print(f"[yscb:restore] Error: Unable to restore module '{mod_name}@{ver}' from provider '{prov}'.")
+            failed_mods.append(mod_name)
+
+    if failed_mods:
+        print(f"[yscb:restore] Warning: Completed with {len(failed_mods)} failure(s): {', '.join(failed_mods)}")
+    else:
+        print(f"[yscb:restore] Successfully restored all {success_count} module(s).")
+
+    # 若 core 存在，觸發 reload
+    core_cli = os.path.join(modules_dir, "core", "scripts", "cli.py")
+    if os.path.isfile(core_cli):
+        print("[yscb:restore] Triggering core reload...")
+        return dispatch_module("core", ["reload"])
+
+    return 0 if not failed_mods else 1
+
+
+def _is_modules_dirty(base_dir: str, yscb_root: str, installed: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """極速嗅探 (<2ms) 檢查本機運行端 .modules/ 是否缺失或與 installed_modules 版本不符。"""
+    if not installed:
+        return False, []
+    modules_dir = os.path.join(base_dir, yscb_root, ".modules")
+    if not os.path.isdir(modules_dir):
+        return True, list(installed.keys())
+
+    dirty_mods = []
+    for mod_name, info in installed.items():
+        expected_ver = info.get("version") if isinstance(info, dict) else None
+        mod_p = os.path.join(modules_dir, mod_name)
+        mf_p = os.path.join(mod_p, "manifest.json")
+        if not os.path.isdir(mod_p) or not os.path.isfile(mf_p):
+            dirty_mods.append(mod_name)
+            continue
+        if expected_ver:
+            try:
+                with open(mf_p, "r", encoding="utf-8") as f:
+                    actual_ver = json.load(f).get("version")
+                if actual_ver != expected_ver:
+                    dirty_mods.append(mod_name)
+            except Exception:
+                dirty_mods.append(mod_name)
+
+    return len(dirty_mods) > 0, dirty_mods
+
+
+def _ensure_jit_modules_sync() -> None:
+    """JIT 模組同步守門：在命令分發前自動偵測 dirty 並執行無感原地自愈。"""
+    cfg_path, cfg = load_config()
+    if not cfg_path or not cfg or "yscb_root" not in cfg:
+        return
+    installed = cfg.get("installed_modules", {})
+    if not installed:
+        return
+    base_dir = os.path.dirname(cfg_path)
+    yscb_root = cfg["yscb_root"]
+
+    dirty, dirty_mods = _is_modules_dirty(base_dir, yscb_root, installed)
+    if dirty:
+        print(f"[yscb:jit-sync] Detected unmaterialized or outdated modules: {', '.join(dirty_mods)}. Auto-healing...")
+        cmd_restore([])
+
+
 import difflib
 
 
 def _get_installed_module_commands(base_dir: str, yscb_root: str) -> Dict[str, Dict[str, str]]:
-    """Scans installed modules in modules/ to summarize contributed CLI commands."""
+    """Scans installed modules in .modules/ to summarize contributed CLI commands."""
     summary: Dict[str, Dict[str, str]] = {}
-    modules_dir = os.path.normpath(os.path.join(base_dir, yscb_root, "modules"))
+    modules_dir = os.path.normpath(os.path.join(base_dir, yscb_root, ".modules"))
     if not os.path.isdir(modules_dir):
         return summary
 
@@ -409,6 +664,7 @@ def _print_global_help() -> None:
     core_docs = [
         ("init <root> [--provider=<url>]", "Initialize a new YSCB workspace"),
         ("self-update [--provider=<url>]", "Update yscb.py host bootstrapper script"),
+        ("restore [--force]", "Restore installed modules from provider into .modules/"),
         ("install <module>[@<version>]", "Install a module from provider"),
         ("update [<module>]", "Update installed module(s) to latest version"),
         ("remove <module> [--force]", "Remove an installed module from environment"),
@@ -454,12 +710,12 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
 
     base_dir = os.path.dirname(cfg_path)
     yscb_root = cfg["yscb_root"]
-    target_cli = os.path.normpath(os.path.join(base_dir, yscb_root, "modules", module_name, "scripts", "cli.py"))
+    target_cli = os.path.normpath(os.path.join(base_dir, yscb_root, ".modules", module_name, "scripts", "cli.py"))
 
     if not os.path.isfile(target_cli):
         # Unknown module / command -> trigger intelligent spelling suggestion
-        known_cmds = ["init", "self-update"] + list(CORE_COMMANDS)
-        modules_dir = os.path.normpath(os.path.join(base_dir, yscb_root, "modules"))
+        known_cmds = ["init", "self-update", "restore", "bootstrap"] + list(CORE_COMMANDS)
+        modules_dir = os.path.normpath(os.path.join(base_dir, yscb_root, ".modules"))
         if os.path.isdir(modules_dir):
             known_cmds.extend([d for d in os.listdir(modules_dir) if os.path.isdir(os.path.join(modules_dir, d)) and d != "core"])
         
@@ -543,14 +799,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         ret = cmd_init(argv[1:])
     elif cmd == "self-update":
         ret = cmd_self_update(argv[1:])
+    elif cmd in ("restore", "bootstrap"):
+        ret = cmd_restore(argv[1:])
     elif cmd in CORE_COMMANDS:
+        _ensure_jit_modules_sync()
         ret = dispatch_module("core", argv)
     elif cmd == "core":
+        _ensure_jit_modules_sync()
         ret = dispatch_module("core", argv[1:])
     else:
+        _ensure_jit_modules_sync()
         ret = dispatch_module(cmd, argv[1:])
 
-    if ret == 0 and cmd not in ("update", "init", "self-update"):
+    if ret == 0 and cmd not in ("update", "init", "self-update", "restore", "bootstrap"):
         _check_and_show_update_tips()
 
     return ret

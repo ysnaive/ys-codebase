@@ -35,7 +35,7 @@ if _modules_root not in sys.path and os.path.isdir(_modules_root):
 for cand_core in [
     os.path.join(_modules_root, "core"),
     os.path.join(os.path.dirname(_modules_root), "source", "core"),
-    os.path.join(os.path.dirname(_modules_root), "modules", "core")
+    os.path.join(os.path.dirname(_modules_root), ".modules", "core")
 ]:
     if os.path.isdir(cand_core) and cand_core not in sys.path:
         sys.path.insert(0, cand_core)

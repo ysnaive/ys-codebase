@@ -168,8 +168,8 @@ class TestSandboxArchitecture(YSCBTestCase):
         """Verify sandbox inherits installed host modules when not present in source/ and dispatches their hooks."""
         ctx = SandboxProvisioner.create_sandbox(copy_source=False)
         try:
-            # When copy_source=False, source/ is empty, but host modules (core, dev) are inherited into sandbox modules/
-            sandbox_core_mod = os.path.join(ctx.engine_dir, "modules", "core")
+            # When copy_source=False, source/ is empty, but host modules (core, dev) are inherited into sandbox .modules/
+            sandbox_core_mod = os.path.join(ctx.engine_dir, ".modules", "core")
             if os.path.isdir(uri.resolve("module://core")):
                 self.assertTrue(os.path.isdir(sandbox_core_mod))
                 # Verify hook in inherited module was triggered and wrote config.project.json
