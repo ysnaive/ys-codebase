@@ -72,6 +72,12 @@ with uri.module_scope("core"):
     my_contribs = contributes.get_for_current_module()
 ```
 
+### 3.3 JIT 變更嗅探與熱自愈 (JIT Freshness Gate)
+`core.contributes.get()` 內建 $< 2\text{ms}$ 檔案指紋嗅探閘門。當任何模組的 `contributes/<target>.json` 或專案級 `config/<target>/contribute.json` 被編輯修改時，下次調用 `get()` 會自動感知 dirty 並原地重新執行 `scan_and_inject()`，徹底消除手動執行 `python yscb.py reload` 的負擔。
+
+### 3.4 安裝來源 12 小時節流版本探測 (`core.update_checker`)
+微內核提供 `UpdateChecker` 服務，維護 `cache://core/update_check.json`。每隔 12 小時以 2 秒短超時輕量檢查一次 Provider 端之版本資訊；當有新版本可用時，在 CLI 執行完畢時輸出非阻塞友善提示，支援 `YSCB_NO_UPDATE_CHECK=1` 停用。
+
 ---
 
 ## 4. CLI 指令速查

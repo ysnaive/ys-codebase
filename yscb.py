@@ -492,6 +492,36 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
         sys.argv = orig_argv
 
 
+def _check_and_show_update_tips() -> None:
+    """非阻塞檢查並顯示模組更新提示 (從 cache://core/update_check.json 讀取)。"""
+    if os.environ.get("YSCB_NO_UPDATE_CHECK") == "1":
+        return
+    cfg_path, cfg = load_config()
+    if not cfg_path or not cfg or "yscb_root" not in cfg:
+        return
+    base_dir = os.path.dirname(cfg_path)
+    cache_file = os.path.join(base_dir, cfg["yscb_root"], ".cache", "core", "update_check.json")
+    if os.path.isfile(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            updates = data.get("updates", {})
+            tips = []
+            if isinstance(updates, dict):
+                for mod, info in updates.items():
+                    if isinstance(info, dict) and info.get("has_update"):
+                        cur_v = info.get("current_version", "")
+                        lat_v = info.get("latest_version", "")
+                        tips.append(
+                            f"💡 提示: 模組 '{mod}' 有新版本可用 (當前: v{cur_v}, 最新: v{lat_v})。"
+                            f" 可執行 'python yscb.py update {mod}' 進行升級。"
+                        )
+            if tips:
+                print("\n" + "\n".join(tips))
+        except Exception:
+            pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -508,16 +538,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     cmd = argv[0]
+    ret = 0
     if cmd == "init":
-        return cmd_init(argv[1:])
+        ret = cmd_init(argv[1:])
     elif cmd == "self-update":
-        return cmd_self_update(argv[1:])
+        ret = cmd_self_update(argv[1:])
     elif cmd in CORE_COMMANDS:
-        return dispatch_module("core", argv)
+        ret = dispatch_module("core", argv)
     elif cmd == "core":
-        return dispatch_module("core", argv[1:])
+        ret = dispatch_module("core", argv[1:])
     else:
-        return dispatch_module(cmd, argv[1:])
+        ret = dispatch_module(cmd, argv[1:])
+
+    if ret == 0 and cmd not in ("update", "init", "self-update"):
+        _check_and_show_update_tips()
+
+    return ret
 
 
 if __name__ == "__main__":

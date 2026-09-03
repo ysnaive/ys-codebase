@@ -7,6 +7,7 @@ from core.context import ExecutionContext
 from core.engine import AtomicEngine
 from core.contributes import ContributesAggregator
 from core.installer import Installer
+from core.update_checker import UpdateChecker
 from core import symbols
 from core.symbols import resolve_callable, parse_code_func_uri, SymbolError, InvalidSymbolURIError, SymbolNotFoundError
 
@@ -17,6 +18,7 @@ __all__ = [
     "AtomicEngine",
     "ContributesAggregator",
     "Installer",
+    "UpdateChecker",
     "symbols",
     "resolve_callable",
     "parse_code_func_uri",

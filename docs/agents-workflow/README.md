@@ -56,6 +56,7 @@
 - **`agents_md` 規範投影**：支援宣告 Target 專屬規範檔案路徑（如 `project://AGENTS.md` 或 `project://CLAUDE.md`），以 `AgentsStandards.md` 內容執行軟合併。
 - **巨集插值**：`target_dir` 與 `header` 支援 `{export.description}`、`{export.name}`、`{export.basename}`、`{target.name}` 等巨集變數動態替換。
 - **原子交易發布**：由 `ReleasePublisher` 基於 `storage://` 執行雙階 Diff 防護（Stage 0 來源指紋短路 + Stage 4 落地內容比對），大幅消除模組 reload 與重複發布的無效 File I/O，並依 Target 之 `agents_md` 宣告軟合併對應規則檔。
+- **JIT 變更感知自愈與自動投影 (`ensure_jit_release`)**：在執行任何 `agents-workflow` CLI 指令前自動檢驗來源指紋。若模組資產、模板或片段發生變更，管線會自動原子同步最新內容至 `.agents/` 等 Target 目錄與 `AGENTS.md`，徹底消除 Agent 讀取過期指令之幻覺。
 
 ---
 
