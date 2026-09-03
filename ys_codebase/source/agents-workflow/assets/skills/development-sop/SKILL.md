@@ -63,9 +63,9 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 | **Phase 2** | **架構設計** | 架構拓撲與循序流，Test-First 初始化 P06 (Draft) | [P02 手冊](./references/phase_02_architecture.md) | `P02_architecture_plan.md` |
 | **Phase 3** | **API 規格** | 公開介面簽名契約、錯誤策略與實作依賴拓撲順序 | [P03 手冊](./references/phase_03_api_spec.md) | `P03_api_spec.md` |
 | **Phase 4** | **定稿審查** | 預排 7 維度文檔衝擊、架構靈魂拷問、P04/P06 剛性定稿 | [P04 手冊](./references/phase_04_plan.md) | `P04_implementation_plan.md` |
-| **Phase 5** | **任務實作** | 依序編碼實作、微觀 Docstrings 型別契約、三大偏差處置 | [P05 手冊](./references/phase_05_task.md) | `P05_task.md` |
+| **Phase 5** | **任務實作** | 依序編碼實作、微觀註解契約、偏差處置（依動作調用對應之專屬技能） | [P05 手冊](./references/phase_05_task.md) | `P05_task.md` |
 | **Phase 6** | **測試驗證** | 實機測試執行回填、人工/UX 驗收 Checkpoint 守門 | [P06 手冊](./references/phase_06_test.md) | `P06_test_plan.md` |
-| **Phase 7** | **成果展示** | 結案報告、三層文檔 1:1 交付驗收、`CHANGELOG.md` 追加 | [P07 手冊](./references/phase_07_walkthrough.md) | `P07_walkthrough.md` |
+| **Phase 7** | **成果展示** | 結案報告、三層文檔驗收、CHANGELOG 追加（涉及文檔時調用文檔規範技能） | [P07 手冊](./references/phase_07_walkthrough.md) | `P07_walkthrough.md` |
 
 ---
 
