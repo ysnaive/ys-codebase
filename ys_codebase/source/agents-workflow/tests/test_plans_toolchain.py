@@ -265,3 +265,50 @@ class TestPlansToolchainInternal(YSCBTestCase):
         self.assertEqual(rep.status, PlanSeverity.FAIL)
         self.assertTrue(any("changelog.md" in e for e in rep.errors))
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_non_timestamp_dirs_safely_ignored_by_toolchain(self):
+        """FT-01~03 & EC-01: 驗證非時間戳目錄 (如 roadmap, archived, custom_res) 在全量檢驗與掃描中被安全略過。"""
+        # 建立合法計畫
+        valid_plan = self._create_valid_plan("2026_08_20_1200_legit_plan")
+
+        # 建立非時間戳目錄（模擬 roadmap, custom_notes, resources）
+        roadmap_dir = self.plans_dir / "roadmap"
+        roadmap_dir.mkdir(parents=True, exist_ok=True)
+        (roadmap_dir / "release_opt.md").write_text("# Roadmap Item\n", encoding="utf-8")
+
+        custom_dir = self.plans_dir / "custom_resources"
+        custom_dir.mkdir(parents=True, exist_ok=True)
+        (custom_dir / "README.md").write_text("# Resources\n", encoding="utf-8")
+
+        # 1. 驗證 PlanVerifier.verify_all_plans()
+        verifier = PlanVerifier(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            templates_dir=self.templates_dir
+        )
+        reports = verifier.verify_all_plans()
+        self.assertIn("2026_08_20_1200_legit_plan", reports)
+        self.assertNotIn("roadmap", reports)
+        self.assertNotIn("custom_resources", reports)
+        self.assertEqual(len(reports), 1)
+
+        # 2. 驗證 PlanScanner.scan_active_plans()
+        scanner = PlanScanner(plans_dir=self.plans_dir)
+        active_plans = scanner.scan_active_plans()
+        plan_names = [p["name"] for p in active_plans]
+        self.assertIn("2026_08_20_1200_legit_plan", plan_names)
+        self.assertNotIn("roadmap", plan_names)
+        self.assertNotIn("custom_resources", plan_names)
+        self.assertEqual(len(active_plans), 1)
+
+        # 3. 驗證 PlanSearcher.find_all_plans()
+        searcher = PlanSearcher(plans_dir=self.plans_dir, archive_dir=self.archive_dir)
+        found_plans = searcher.find_all_plans()
+        found_names = [p.name for p in found_plans]
+        self.assertIn("2026_08_20_1200_legit_plan", found_names)
+        self.assertNotIn("roadmap", found_names)
+        self.assertNotIn("custom_resources", found_names)
+        self.assertEqual(len(found_plans), 1)
+
+        self.mark_passed()

@@ -15,7 +15,7 @@
 ## 🧪 2. 測試執行與回填鐵律
 
 1. **隔離沙盒跑測**：
-   - 執行 `python yscb.py dev test <module>`（單元/邊界測試）與 `python yscb.py dev test --all`（全量回歸）。
+   - 執行 `python yscb.py dev test <module> --quiet`（單元/邊界測試）與 `python yscb.py dev test --all --quiet`（全量回歸）。
 2. **測試紀錄客觀回填**：
    - 在 `P06_test_plan.md` 之「測試執行紀錄表」如實填寫執行狀態（`Passed` / `Failed`）、執行時間與關鍵日誌摘要。
 3. **部署後免重複測試鐵律**：

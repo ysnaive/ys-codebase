@@ -16,7 +16,7 @@ description: 生態系模組開發與 Dogfooding 閉環指南。當進行 YSCB �
 | 空間層級 | 路徑範疇 | 空間定位與操作約束 |
 | :--- | :--- | :--- |
 | **空間 ① 源碼空間** | `source/<module>/` | 【唯一 SSOT】所有代碼、腳本、模板與工作流修改 **100% 必須在此進行**。 |
-| **空間 ② 測試空間** | `cache://dev/sandbox/` | 【品質閘門】自動化測試於隔離沙盒執行（`python yscb.py dev test <module>`），未 100% 通過嚴禁同步。 |
+| **空間 ② 測試空間** | `cache://dev/sandbox/` | 【品質閘門】自動化測試於隔離沙盒執行（`python yscb.py dev test <module> --quiet`），未 100% 通過嚴禁同步。 |
 | **空間 ③ 運行空間** | `modules/<module>/` 與 `.mirror/` | 【編譯產物】**嚴禁手動直接修改**，一律由 CLI 同步編譯物化。 |
 
 ---
@@ -26,21 +26,21 @@ description: 生態系模組開發與 Dogfooding 閉環指南。當進行 YSCB �
 ```mermaid
 graph TD
     A[編輯 source/<module>/] --> B[dev check <mod>]
-    B --> C[dev test <mod>]
+    B --> C[dev test <mod> --quiet]
     C -->|日常調試 Track A| D[install <mod>@build --force]
     C -->|版本晉升 Track B| E[dev bump-[part] <mod>]
-    E --> F[dev test <mod>]
+    E --> F[dev test <mod> --quiet]
     F --> G[dev release <mod>]
     G --> H[install <mod> --force]
 ```
 
 ### 軌道 A：日常開發調試 (Dogfooding Track)
 未獲明確版本晉升指示之日常修改：
-$$\text{編輯 } \texttt{source/} \;\longrightarrow\; \texttt{dev check <mod>} \;\longrightarrow\; \texttt{dev test <mod>} \;\longrightarrow\; \texttt{install <mod>@build --force}$$
+$$\text{編輯 } \texttt{source/} \;\longrightarrow\; \texttt{dev check <mod>} \;\longrightarrow\; \texttt{dev test <mod> --quiet} \;\longrightarrow\; \texttt{install <mod>@build --force}$$
 
 ### 軌道 B：版本晉升交付 (Release Track)
 獲開發者明確指示 bump / release / 交付結案：
-$$\texttt{dev bump-[part] <mod>} \;\longrightarrow\; \texttt{dev test <mod>} \;\longrightarrow\; \texttt{dev release <mod>} \;\longrightarrow\; \texttt{install <mod> --force}$$
+$$\texttt{dev bump-[part] <mod>} \;\longrightarrow\; \texttt{dev test <mod> --quiet} \;\longrightarrow\; \texttt{dev release <mod>} \;\longrightarrow\; \texttt{install <mod> --force}$$
 
 ---
 
