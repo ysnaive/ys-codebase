@@ -25,10 +25,12 @@
    - 遭遇任何需求語意不明、API 行為未定、或規格存在歧義之技術疑問時，**絕對禁止自行猜測**，必須立即暫停並向開發者提問釐清。
 2. **偏差熔斷 (Deviation Gate)**：
    - 實作過程若發現需要修改外部模組、破壞既有 Public API、或產生 Major/Critical 架構偏差時，必須立即停止實作並轉入 [深度歸因與防淺層修復 (Discuss)](`__#{module://agents-workflow/assets/workflows/Discuss.md}__`)。
-3. **P06 手動/UX 驗證絕對阻斷 (Mandatory UX Gate)**：
-   - 推進至 Phase 6 且 CLI 自動化測試 100% 通過後，**絕對禁止** Agent 自行將 P06 標記為 `Passed` 或擅自進入 Phase 7 結案！必須強制停步呈遞測試報告，等待開發者明確回覆「UX 驗證通過/指示免測」。
-4. **規範與文件 100% 保真**：
-   - 連續推進期間，所有對應 Phase 文件（[`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)、[`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)、[`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)、[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`)、[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)、[`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) 與計畫內部 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)）仍必須 100% 嚴格鏡像標準模板完整生成與記錄，不可略過或縮減產物。
+3. **P06 手動/UX 驗證阻斷 (Mandatory UX Gate)**：
+   - 推進至 Phase 6 且自動化測試通過後，Agent 不得自行將 P06 標記為 `Passed` 或進入 Phase 7。須停步呈遞測試報告，等待開發者確認回覆。
+4. **規範與文件保真**：
+   - 連續推進期間，所有對應 Phase 文件與內部 `changelog.md` 仍須遵循標準模板完整生成與記錄，不可略過或縮減。
+5. **動作前置技能調用**：
+   - 自動推進僅跳過階段間的等待點，不免除具體動作之技能守門。執行代碼編輯、命令執行或文檔維護前，須遵循專案準則調用對應之專屬技能，不可由工作流替代。
 
 ---
 
@@ -58,7 +60,7 @@
 4. **Phase 4 (實作計畫定稿與靈魂拷問)**：
    - 產出 [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) (Confirmed)，並同步剛性定稿 [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) (Confirmed)。
 5. **Phase 5 (依序程式碼實作)**：
-   - 建立 [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)，依 P04 拓撲順序編寫程式碼與單元測試，並同步落實微觀代碼 Docstrings 與中觀文檔交付。
+   - 建立 [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)，依 P04 拓撲順序編寫程式碼與測試，涉及源碼或文檔變更時調用對應專屬技能。
 - 📝 **日誌同步**：每一個 Phase 推進均同步寫入計畫內部 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)。
 
 ---
