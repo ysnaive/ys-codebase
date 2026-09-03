@@ -67,7 +67,7 @@
 
 ### 步驟 3：Phase 6 自動化測試與日誌登載 (Automated Verification)
 
-1. 實機執行 CLI 自動化測試（如 `python __${yscb.host://yscb.py}__ dev test <module>`）。
+1. 實機執行 CLI 自動化測試（如 `python __${yscb.host://yscb.py}__ dev test <module> --quiet`）。
 2. 將實機測試日誌摘要回填至 [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)。
 3. 若測試失敗，遵循除錯排查範疇保護鐵律進行修復；若連續 2 次修復失敗或涉及架構變更，立即觸發偏差熔斷轉入 `/Discuss`。
 

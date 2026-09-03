@@ -150,3 +150,19 @@ Summary : 59 Total, 59 Passed, 0 Failed, 0 Skipped (5.077s)
 Status  : PASSED (100% Ready)
 ======================================================================
 ```
+
+---
+
+## 7. 節流輸出模式 (Throttled Output Mode - `--quiet` / `-q`)
+
+為因應日常頻繁代碼更動後的高頻回歸測試需求，避免長篇 ASCII 診斷報表造成大量 Token I/O 浪費，Dev 測試框架提供專屬節流輸出模式：
+
+- **觸發參數**：`--quiet` 或 `-q`（例如 `python yscb.py dev test --quiet`、`python yscb.py dev test <module> -q`、`python yscb.py dev test --all -q`）。
+- **深度靜默**：徹底抑制前置沙盒構建、進度與清理日誌（`[dev:test] Pre-building...`、`Create sandbox...`、`Cleaned up sandbox...`）與通過後提示資訊。
+- **全通單行極致壓縮**：若目標測試全數通過，僅輸出單行：
+  ```text
+  Pass: 312(100.0%), Fail: 0, Skip: 0
+  ```
+- **精準失敗細節保留**：若存在失敗案例，第一行輸出統計總計，緊隨輸出 `FAILED / ERROR TEST CASES LIST:` 詳情區塊（包含錯誤訊息、檔案行號、捕獲輸出與快速重測指令 Quick Re-run）。
+- **跨進程環境變數穿透**：自動透過 `YSCB_TEST_QUIET="1"` 跨進程沙盒內部調度器穿透，確保多模組並行與單模組沙盒一致靜默。
+- **AI 調用規範**：生態系面向 Agent 之技能手冊（`yscb-module-dev`）、工作流（`Auto.md`）與標準 SOP 手冊全面強制對齊 `--quiet`，使日常開發 Token 吞吐量縮減 95% 以上。

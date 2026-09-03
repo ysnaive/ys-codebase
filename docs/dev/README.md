@@ -34,7 +34,7 @@ graph TD
 | **發布預檢** | `python yscb.py dev release-check <name> [--force\|-f]` | 獨立執行 3-Gate 發布就緒校驗（合規、不可變、單調性，支援 force 放行同版本） |
 | **純淨發布** | `python yscb.py dev release [name \| --all] [--force\|-f]` | 通過 3-Gate 後純淨打包（排除 `tests/` 與 `.yscbignore`），支援 `--force` 原地覆蓋同版本 |
 | **安全發布** | `python yscb.py dev release-git <name> "<msg>" [--force\|-f]` | 智慧感應：未發布則打包，已發布自動略過打包（加 `--force` 重新覆蓋），接續本地 git commit & tag（🚨 嚴禁 remote push） |
-| **沙盒測試** | `python yscb.py dev test [name \| --all] [--no-build] [--sync] [opts]` | 自動前置 build ➔ 配置沙盒 ➔ 跑測 ➔ 銷毀環境（支援 `--sync` 測試通過自動直裝 `@build` 本地產物） |
+| **沙盒測試** | `python yscb.py dev test [name \| --all] [--quiet] [--no-build] [--sync] [opts]` | 自動前置 build ➔ 配置沙盒 ➔ 跑測 ➔ 銷毀環境（支援 `--quiet` / `-q` 節流單行輸出、`--sync` 測試通過自動直裝 `@build` 本地產物） |
 | **原子操作** | `python yscb.py dev op-mksb [--dir=<path>]` | 手動建立微型虛擬沙盒（除錯用） |
 | **原子操作** | `python yscb.py dev op-test [name \| --all] [opts]` | 原地執行單元測試（無沙盒） |
 
