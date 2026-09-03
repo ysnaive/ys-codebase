@@ -12,7 +12,8 @@
     "**/.mirror": true,
     "**/.modules": true,
     "**/modules": true,
-    "**/.snapshots": true
+    "**/.snapshots": true,
+    "**/.venv": true
   },
   "search.exclude": {
     "**/.git": true,
@@ -25,7 +26,8 @@
     "**/.modules/**": true,
     "**/modules/**": true,
     "**/.snapshots/**": true,
-    "**/release/**": true
+    "**/release/**": true,
+    "**/.venv/**": true
   },
   "files.watcherExclude": {
     "**/.git/objects/**": true,
@@ -41,7 +43,8 @@
     "**/.snapshots/**": true,
     "**/release/**": true,
     "plans/archived/**": true,
-    "ys_codebase/storage/**": true
+    "ys_codebase/storage/**": true,
+    "**/.venv/**": true
   },
   "git.autorefresh": true,
   "git.autoRepositoryDetection": true,
@@ -51,5 +54,21 @@
     "*.md": "vscode.markdown.preview.editor"
   },
   "markdown.preview.openMarkdownLinks": "inPreview",
-  "markdown.preview.doubleClickToSwitchToEditor": true
+  "markdown.preview.doubleClickToSwitchToEditor": true,
+  "python.analysis.extraPaths": [
+    "./ys_codebase/.venv/py312/lib/python3.12/site-packages"
+  ],
+  "python.defaultInterpreterPath": "./ys_codebase/.venv/py312/bin/python",
+  "_yscb_managed": {
+    "description": "Auto-managed by YSCB host bootstrapper. Reversible via module uninstall or rollback.",
+    "extraPaths": [
+      "./ys_codebase/.venv/py312/lib/python3.12/site-packages"
+    ],
+    "defaultInterpreterPath": "./ys_codebase/.venv/py312/bin/python",
+    "excludes": {
+      "files.watcherExclude": "**/.venv/**",
+      "search.exclude": "**/.venv/**",
+      "files.exclude": "**/.venv"
+    }
+  }
 }

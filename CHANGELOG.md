@@ -24,7 +24,18 @@
     - `knowledge-db`：改向 `SESSION_ANALYSIS_CHECK_ITEMS` 注入全新精煉之 `session_analysis_check.md`，專注於工具調用統計、使用情境與效益分析。
   - **驗證與測試**：新增 `test_session_analysis_workflow.py` 並擴充 `test_plans_toolchain.py`；全生態系四大模組 305/305 單元測試 100% 通過；實機 UX 驗證完成。
 
-## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (In Progress - 里程碑 1, 2 & 3 達成)
+## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (In Progress - 里程碑 1, 2, 3 & 4 達成)
+
+- **`sub_04` YSCB 私有 Pip 微虛擬環境治理核心功能實作與 IDE 軟合併投影 (`sub_04_yscb_venv_core`)**：
+  - **私有微環境空間協議 (`yscb.venv://`)**：正式註冊並實體解算至 `yscb://.venv/`，依直譯器大/小版本分層隔離（如 `py312`），預設鎖定 `include-system-site-packages = false`，達成 100% 零全域環境污染。
+  - **純原生標準庫微內核邊界**：`core` 模組本體嚴格維持純 Python 標準庫實作，零 Pip 依賴，開箱即用。
+  - **微環境管理器 (`core.pip_manager.PipManager`)**：實作跨平台路徑適配、virtiofs 符號連結探測自愈、Wheel-Only 靜默安全安裝（`--only-binary=:all:`）與 `PipInstallError` 結構化異常治理。
+  - **IDE 自動感知與可復原軟合併 (`core.ide_projector.IdeProjector`)**：
+    - 自動探測 `project://.vscode` 目錄是否存在，不存在則完全靜默略過，達成零目錄污染。
+    - 比照 `internal yscb gitignore` 哲學，在 `project://.vscode/settings.json` 引入 `_yscb_managed` 宣告式清冊結構，軟合併 `python.analysis.extraPaths`、`python.defaultInterpreterPath`、`files.exclude`、`search.exclude` 與 `files.watcherExclude`，100% 完整保留使用者自訂設定，並支援依清冊乾淨回滾。
+  - **宿主動態嗅探與導入 (`yscb.py`)**：在指令分發入口實施 $< 0.05\text{ms}$ 極速嗅探，動態將微環境 `site-packages` 插入 `sys.path[0]`，模組源碼可直接無感 `import`。
+  - **真實生態系 Dogfooding 閉環**：於 `agents-workflow` 宣告 `watchdog>=4.0.0`，實機驗證安裝物化、`Observer` 背景多執行緒與實體檔案事件捕獲完全正常。
+  - **測試與合規**：新增 `test_venv_core.py` 測試套件涵蓋 FT-01~FT-08；全生態系 320/320 單元測試 100% 通過；實機 UX 驗證完成。
 
 - **`sub_03` 建置產物 `build/` 空間協議更名 `.build/`、Git 追蹤解耦、工具鏈對齊與 VS Code 隱藏配置**：
   - **`module.build` 空間協議重構與零過渡純淨架構**：將 `module.build.root://` 與 `module.build://` 語意解析底層全面自 `yscb://build/` 更名為 `yscb://.build/`，對齊內部隱藏規範；堅決不加入任何舊目錄相容分支，落實零平滑遷移原則。

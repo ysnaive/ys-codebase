@@ -35,6 +35,7 @@ _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
     {"token": "module.source", "type": "const", "value": "yscb://source/"},
     {"token": "module.build", "type": "const", "value": "yscb://.build/"},
     {"token": "module.release", "type": "const", "value": "yscb://release/"},
+    {"token": "yscb.venv", "type": "const", "value": "yscb://.venv/"},
 ]
 
 # Deprecated legacy schemes redirect map (Backwards Compatibility & Deprecation Warnings)

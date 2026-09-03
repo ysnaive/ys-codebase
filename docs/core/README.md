@@ -43,6 +43,7 @@ YS-Codebase 透過 `core.uri` 提供標準化虛擬檔案系統介面，實現�
 | **快取空間** | `cache.root://` | `cache://` | `yscb://.cache/{module}/` |
 | **持久儲存** | `storage.root://` | `storage://` | `yscb://storage/{module}/` |
 | **暫存/快照** | `temp://` / `snapshot://` | - | `yscb://.temp/` / `yscb://.snapshots/` |
+| **私有微環境** | `yscb.venv://` | - | `yscb://.venv/` (Git 忽略) |
 | **專案宿主** | `project://` | - | `config.project.json` (core: `project_root`) |
 
 ### 2.2 JIT `!undefined` 熱更新補齊機制
@@ -98,3 +99,21 @@ python yscb.py status
 python yscb.py rollback [snapshot_id]
 python yscb.py reload
 ```
+
+---
+
+## 5. YSCB 私有微虛擬環境治理體系 (Private Venv Architecture)
+
+針對生態系中需引入高效硬體加速或第三方套件之模組，`core` 提供私有微虛擬環境隔離基礎設施：
+
+### 5.1 剛性隔離與 Wheel-Only 保證 (`core.pip_manager`)
+- **隔離目錄**：管理 `yscb.venv://`（即 `yscb://.venv/`），依當前 Python 大小版本（`py{major}{minor}`）分層隔離，設定 `include-system-site-packages = false`，達成零全域污染。
+- **Wheel-Only 安全安裝**：呼叫 `pip` 安裝時強制附加 `--only-binary=:all:` 與 `--no-warn-script-location`，任何缺乏預編譯 Wheel 之依賴在嘗試編譯前即被安全攔截，消除本機編譯崩潰風險。
+
+### 5.2 宿主前置嗅探與動態注入 (`yscb.py`)
+- `yscb.py` 在分發任何命令前，前置執行 $< 0.05\text{ms}$ 極速嗅探；若微環境之 `site-packages` 存在且未注入，自動安全插入 `sys.path` 前端，模組代碼可直接無感 `import`。
+
+### 5.3 IDE 自動感知與可復原軟合併 (`core.ide_projector`)
+- 模組安裝/更新/還原時，自動探測 `project://.vscode` 是否存在（不存在則完全靜默略過，零目錄污染）。
+- 比照 `internal yscb gitignore` 之邊界守門哲學，在 `project://.vscode/settings.json` 引入 `_yscb_managed` 宣告式清冊，差集更新 `extraPaths` 與 `defaultInterpreterPath`，100% 完整保留使用者原有配置，並支援依清冊乾淨回滾。
+
