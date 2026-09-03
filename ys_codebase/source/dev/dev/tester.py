@@ -82,6 +82,7 @@ class Tester:
         print("  --all            Run tests across all modules in source/")
         print("  --no-build       Skip automatic pre-test hermetic build")
         print("  --keep-sandbox   Retain virtual sandbox directory upon test completion")
+        print("  --sync           After 100% test pass, auto-install local @build package to environment")
         print("  -v, --verbose    Expand verbose test method execution details")
 
     def _run_op_mksb(self, argv: List[str]) -> int:
@@ -346,13 +347,14 @@ class Tester:
         no_build = "--no-build" in argv
         is_sequential = "--sequential" in argv or "--no-parallel" in argv
         
-        # Parse -j / --jobs
+        # Parse -j / --jobs and --sync
         jobs = None
+        sync_requested = "--sync" in argv
         clean_argv = []
         idx = 0
         while idx < len(argv):
             a = argv[idx]
-            if a == "--no-build" or a == "--sequential" or a == "--no-parallel":
+            if a in ("--no-build", "--sequential", "--no-parallel", "--sync"):
                 idx += 1
                 continue
             if a.startswith("--jobs="):
@@ -393,7 +395,8 @@ class Tester:
                     no_build=no_build,
                     keep_sandbox=keep_sandbox,
                     jobs=jobs,
-                    is_nested=is_nested
+                    is_nested=is_nested,
+                    sync_requested=sync_requested
                 )
 
         # 1. Automatic pre-test Hermetic Dev Build (unless --no-build)
@@ -468,7 +471,11 @@ class Tester:
                     print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
                 else:
                     print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
-                
+
+        if ret_code == 0 and not is_nested:
+            tested_mods = [target_mod] if (target_mod and target_mod != "--all") else []
+            self._handle_post_test_sync(tested_mods, sync_requested)
+
         return ret_code
 
     def _run_parallel_test(
@@ -478,7 +485,8 @@ class Tester:
         no_build: bool = False,
         keep_sandbox: bool = False,
         jobs: Optional[int] = None,
-        is_nested: bool = False
+        is_nested: bool = False,
+        sync_requested: bool = False
     ) -> int:
         """Runs multiple modules concurrently across independent virtual sandboxes."""
         if not no_build:
@@ -593,7 +601,11 @@ class Tester:
         else:
             SandboxProvisioner.prune_sandboxes(max_keep=3)
 
-        return 0 if all_passed else 1
+        ret_code = 0 if all_passed else 1
+        if ret_code == 0 and not is_nested:
+            self._handle_post_test_sync(modules, sync_requested)
+
+        return ret_code
 
     def _run_single_module_worker(
         self,
@@ -674,3 +686,38 @@ class Tester:
             "report_data": mod_report_data,
             "sandbox_dir": sandbox_dir
         }
+
+    def _handle_post_test_sync(self, modules: List[str], sync_requested: bool) -> None:
+        """處理測試成功後的 --sync 本地直裝或友善引導提示。"""
+        if not modules:
+            return
+
+        host_dir = os.environ.get("YSCB_HOST_DIR") or os.getcwd()
+        cfg_path = os.path.join(host_dir, "yscb.config.json")
+        installed_mods = {}
+        if os.path.isfile(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                    installed_mods = cfg_data.get("installed_modules", {})
+            except Exception:
+                pass
+
+        valid_targets = [m for m in modules if m in installed_mods]
+        if not valid_targets:
+            return
+
+        yscb_py = os.path.join(host_dir, "yscb.py")
+        if sync_requested:
+            for mod in valid_targets:
+                safe_print(f"\n[dev:test:sync] Auto-installing '{mod}@build' into local environment...")
+                cmd = [sys.executable, yscb_py, "install", f"{mod}@build", "--force"]
+                res = subprocess.run(cmd, cwd=host_dir)
+                if res.returncode == 0:
+                    safe_print(f"[dev:test:sync] Successfully synced '{mod}@build'.")
+                else:
+                    safe_print(f"[dev:test:sync] Failed to sync '{mod}@build'.", file=sys.stderr)
+        else:
+            for mod in valid_targets:
+                safe_print(f"\n💡 提示: 測試通過！可執行 'python yscb.py install {mod}@build' 直裝最新產物。")
+

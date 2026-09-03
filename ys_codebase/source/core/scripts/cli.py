@@ -282,9 +282,25 @@ def main(argv=None) -> int:
         mod_name = clean_args[0] if clean_args else ""
         return installer.cmd_remove(mod_name, clean=clean, purge=purge, force=force_flag)
     elif cmd == "list":
-        return installer.cmd_list(remote=remote, provider=provider)
+        ret = installer.cmd_list(remote=remote, provider=provider)
+        try:
+            from core.update_checker import UpdateChecker
+            checker = UpdateChecker()
+            checker.check_updates(force=False)
+            checker.print_tips_if_available()
+        except Exception:
+            pass
+        return ret
     elif cmd == "status":
-        return installer.cmd_status()
+        ret = installer.cmd_status()
+        try:
+            from core.update_checker import UpdateChecker
+            checker = UpdateChecker()
+            checker.check_updates(force=False)
+            checker.print_tips_if_available()
+        except Exception:
+            pass
+        return ret
     elif cmd == "rollback":
         target = clean_args[0] if clean_args else None
         return installer.cmd_rollback(target)

@@ -1,0 +1,7 @@
+# Development ignore list
+tests/
+*.tmp
+*.bak
+.pytest_cache/
+__pycache__/
+*.pyc

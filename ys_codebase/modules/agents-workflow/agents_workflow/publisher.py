@@ -797,3 +797,18 @@ class ReleasePublisher:
             return {"updated": False, "created": False, "error": str(e), "patterns": sorted_patterns}
 
 
+def ensure_jit_release(force: bool = False) -> bool:
+    """
+    JIT 變更感知自愈管線：
+    自動檢驗來源資產新鮮度。若來源特徵指紋變更，調用 ReleasePublisher.release_all() 自動同步物化至 Target 目錄。
+    返回 True 表示有實質物化寫入，False 表示 Clean 或短路跳過。
+    """
+    try:
+        pub = ReleasePublisher()
+        res = pub.release_all(force=force)
+        return bool(res.get("success", False) and not res.get("short_circuited", False))
+    except Exception:
+        return False
+
+
+
