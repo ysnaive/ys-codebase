@@ -1,58 +1,43 @@
-`__@{DYNAMIC_CONTEXT_MAP}__`
-
 # 暫停開發與無縫交接工作流 (Pause)
 
-本 Workflow 用於開發者需要中斷工作、結束當前 Session 或切換任務時，將現場狀態、未提交進度、踩坑注意事項與下一步動作進行**「即時上下文凍結 (Context Freeze)」**。
+本工作流用於中斷工作、結束當前 Session 或切換任務時，將現場狀態、未提交進度、踩坑注意事項與下一步動作進行**即時上下文凍結 (Context Freeze)**。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
 
 ---
 
 ## 🎯 核心目標：零斷層、零疑問
 
-確保未來的自己、接手開發者或新開 Session 的 Agent，**光看計畫目錄下的 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`) 就能在 3 秒內無縫接軌**，不需要耗費大量 Token 重新猜測與探勘程式碼。
+確保未來的自己、接手開發者或新開 Session 的 Agent，光看計畫目錄下的 `handoff.md` 即可無縫接軌，無需耗費 Token 重新探勘程式碼。
 
 ---
 
 ## 🚀 執行步驟
 
-### 步驟 1：定位當前活躍 Dev Plan 目錄
-- 定位當前正在進行的計畫目錄（如 `workflow.plans://{YYYY_MM_DD_HHMM_xxx}/`）。
+### 步驟 1：定位當前進行中計畫
+檢視 `__${project://plans/}__`，定位目標計畫目錄 `__${project://plans/}__/{YYYY_MM_DD_HHMM_功能名稱}/`。
 
 ---
 
 ### 步驟 2：生成暫停交接快照 (`handoff.md`)
-- 依據標準模板 [`__${module://agents-workflow/assets/templates/handoff.md}__`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，在該計畫目錄下建立 `handoff.md`：
+讀取標準模板 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，徹底移除導引註解後落檔於計畫目錄，客觀記錄：
+1. **現場已完成事項**：具體完成之函式、邊界處理或測試。
+2. **進行中待辦**：精確記錄當前實作中斷點與待續邏輯。
+3. **踩坑與注意事項**：關鍵坑點、特殊時序或口頭共識。
+4. **下一次接手第 1 步**：極精確的重啟行動指引。
+
+---
+
+### 步驟 3：呈遞極精簡交接卡並結束對話
+
+對話 Session **嚴禁全文重複、代碼傾倒或冗長轉述**，強制僅呈遞以下極簡卡片，並**立即 End Turn**：
 
 ```markdown
-# 📌 當前進度與暫停交接現場 (Handoff Context)
-
-> 暫停時間：YYYY-MM-DD HH:MM
-> 所屬計畫：[計畫名稱]
-> 當前所在階段：[Phase X / FT-Y (狀態: Implementing / In Progress)]
-> 模板版本：v1.2
-
----
-
-## 1. 現場已完成事項
-- [x] [已完成的類別/函式/測試項目]
-- [x] [已解決的邊界問題]
-
-## 2. 現場未完成 / 進行中待辦
-- [ ] [具體檔案與函式名：目前做到哪裡、下一步要寫什麼]
-- [ ] [尚未編寫或尚未通過之驗證項目]
-
-## 3. 踩坑與注意事項 (Gotchas & Blockers)
-- ⚠️ [關鍵坑點/特殊時序/未解問題/本次討論達成的口頭共識]
-
-## 4. 下一次接手時的第 1 步 (Immediate Next Action)
-- 🚀 [極精確的重啟行動指引，例如「從 MyElement.cpp 的 render() 函式繼續實作，完成後執行 build 驗證」]
+### ⏸️ /Pause 現場上下文凍結完成
+- **交接檔案**：[handoff.md](__${project://plans/}__/{plan_name}/handoff.md)
+- **所屬計畫**：[{plan_name}](__${project://plans/}__/{plan_name}/)
+- **凍結斷點**：[Phase X 或 FT-Y (狀態)]
+- **重啟第 1 步**：[極精確的重啟行動指引]
+- **下次接手**：輸入 [/Continue](`__#{module://agents-workflow/assets/workflows/Continue.md}__`) 即可無縫接續
 ```
-
----
-
-### 步驟 3：呈遞交接摘要卡並結束對話
-- 向開發者呈遞簡短的交接摘要卡，標註 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`) 已儲存與下次重啟第 1 步。
-- 提示開發者下次可透過 [接續開發計畫工作流 (Continue)](`__#{module://agents-workflow/assets/workflows/Continue.md}__`) 秒級熱重啟。
-- **立即 End Turn 等待下次喚醒**。
 
 ---
 

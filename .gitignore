@@ -47,7 +47,6 @@ __pycache__/
 /.agents/workflows/ContextInit.md
 /.agents/workflows/Continue.md
 /.agents/workflows/Discuss.md
-/.agents/workflows/Idea.md
 /.agents/workflows/NewPlan.md
 /.agents/workflows/Pause.md
 /.agents/workflows/Research.md
