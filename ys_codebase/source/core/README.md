@@ -40,8 +40,8 @@ Core 提供語意 URI 協定，程式碼與 CLI 統一透過協定存取實體�
 | :--- | :--- | :--- |
 | **`project://`** | 由 `config.project.json` 之 `project_root` 定位 | **宿主專案空間根目錄**（受管理的專案本體） |
 | **`yscb://`** | 由 `yscb.config.json` 之 `yscb_root` 定位 | **YS-Codebase 運行端工具庫根目錄** |
-| **`module.root://`** | `yscb://modules/` | **所有已安裝模組的本機根目錄** |
-| **`module://`** | `yscb://modules/{module}/` | **當前作用中模組的運行目錄** |
+| **`module.root://`** | `yscb://.modules/` | **所有已安裝模組的本機根目錄** |
+| **`module://`** | `yscb://.modules/{module}/` | **當前作用中模組的運行目錄** |
 | **`config.root://`** | `yscb://config/` | **全域模組設定檔根目錄** |
 | **`config://`** | `yscb://config/{module}/` | **當前模組專屬設定檔目錄** |
 | **`cache.root://`** | `yscb://.cache/` | **全域模組編譯快取與中介產物目錄** |
@@ -58,7 +58,7 @@ Core 實作了「專案 vs 本機」與「全域 vs 模組」的雙維度隔離�
 - **讀取優先權**：`config.local.json` (Overlay) $\gt$ `config.project.json` (Project) $\gt$ 模組預設值。
 
 ### 2.3 模組套件管理與快照防護 (Package Management)
-- **安裝與覆蓋**：自動解壓縮模組發布包至 `modules/<name>`，並遞迴增量補齊模組組態（不破壞用戶已修改之鍵值）。
+- **安裝與覆蓋**：自動解壓縮模組發布包至 `.modules/<name>`，並遞迴增量補齊模組組態（不破壞用戶已修改之鍵值）。
 - **災難回滾**：每次執行模組安裝、更新或移除前，自動建立系統快照至 `snapshot://`，可隨時一鍵還原。
 
 ---

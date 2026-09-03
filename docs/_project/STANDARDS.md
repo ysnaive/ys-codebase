@@ -12,8 +12,8 @@
 | :--- | :--- | :--- | :---: |
 | **`project://`** | 由 `config/core/config.project.json` 之 `project_root` 解算 | **宿主專案空間**（如外部被管理的專案根目錄） | 專案自行管理 |
 | **`yscb://`** | 由 `yscb.config.json` 之 `yscb_root` 定位 | **YS-Codebase 工具庫根目錄** | ✅ 受追蹤 |
-| **`module.root://`** | `yscb://modules/` | **本地模組運行端根目錄** | ✅ 受追蹤 |
-| **`module://`** | `yscb://modules/{module}/` | **特定模組之運行端純淨代碼目錄** | ✅ 受追蹤 |
+| **`module.root://`** | `yscb://.modules/` | **本地模組運行端根目錄** | 🚫 忽略 |
+| **`module://`** | `yscb://.modules/{module}/` | **特定模組之運行端純淨代碼目錄** | 🚫 忽略 |
 | **`config.root://`** | `yscb://config/` | **全域模組設定檔根目錄** | ✅ 受追蹤 |
 | **`config://`** | `yscb://config/{module}/` | **特定模組專屬設定檔目錄** | ✅ 受追蹤 |
 | **`cache.root://`** | `yscb://.cache/` | **全域模組編譯快取與中介產物根目錄** | 🚫 忽略 |
@@ -65,5 +65,5 @@ graph LR
 
 ### 🚨 三大空間隔離禁令
 1. **源碼空間 (`source/`) 為唯一 SSOT**：所有功能修改 100% 必須在 `source/` 進行。
-2. **禁止直接修改運行端 (`modules/`)**：`modules/` 視為編譯與部署產物，嚴禁手動直接修改。
-3. **測試未通過嚴禁發布**：實機測試未 100% 通過前，嚴禁將 `build/` 產物同步至 `modules/`。
+2. **禁止直接修改運行端 (`.modules/`)**：`.modules/` 視為編譯與部署產物，嚴禁手動直接修改。
+3. **測試未通過嚴禁發布**：實機測試未 100% 通過前，嚴禁將 `build/` 產物同步至 `.modules/`。

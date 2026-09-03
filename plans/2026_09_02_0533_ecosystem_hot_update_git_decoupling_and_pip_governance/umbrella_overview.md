@@ -2,7 +2,7 @@
 
 > 計畫名稱：ecosystem_hot_update_git_decoupling_and_pip_governance  
 > 建立日期：2026-09-02  
-> 計畫狀態：In Progress  
+> 狀態：In Progress  
 > Umbrella 模式：Incremental (增量演進型)  
 > 模板版本：v1.2  
 
@@ -29,7 +29,7 @@
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_ecosystem_safe_hot_update_and_jit_synchronization` | Full Track | `Completed` | 全生態系安全熱更新與 JIT 變更感知自愈機制（依據 [R01](file:///workspace/ys-codebase/plans/2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance/R01_ecosystem_safe_hot_update_and_jit_synchronization.md)，涵蓋 core contributes JIT 自愈、agents-workflow JIT 投影同步、12 小時來源版本探測提示、dev dogfooding 閉環加固） |
-| **sub_02** | `sub_02_modules_git_decoupling` | Full Track | `Pending` | `modules/` 運行端冷啟動再生管線與 Git 追蹤解耦（含 bootstrap/restore 命令、.gitignore 配置、空間協議更新） |
+| **sub_02** | `sub_02_modules_git_decoupling` | Full Track | `Completed` | `modules/` 運行端冷啟動再生管線與 Git 追蹤解耦（含 bootstrap/restore 命令、.gitignore 配置、空間協議更新） |
 | **sub_03** | `sub_03_pip_dependency_governance_and_optional_acceleration` | Full Track | `Pending` | YSCB 私有 Pip 相依性治理體系與可選加速架構（依據 [R02](file:///workspace/ys-codebase/plans/2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance/R02_pip_dependency_governance_and_optional_acceleration.md)，含私有 .venv 隔離、dev env IDE 增量投影、knowledge-db 雙軌加速外掛與原生平穩降級） |
 
 ---
@@ -37,6 +37,6 @@
 ## 3. 主計畫里程碑與推進狀態 (Milestones)
 
 - [x] **里程碑 1 (sub_01)**：完成全生態系安全熱更新與 JIT 變更感知自愈機制，全模組消除過期快取與手動 reload 負擔。
-- [ ] **里程碑 2 (sub_02)**：完成 `modules/` 運行端冷啟動再生與 Git 追蹤解耦，達成倉庫歷史瘦身與發布產物解耦。
+- [x] **里程碑 2 (sub_02)**：完成 `modules/` 運行端冷啟動再生與 Git 追蹤解耦，達成倉庫歷史瘦身與發布產物解耦。
 - [ ] **里程碑 3 (sub_03)**：完成 YSCB 私有 Pip 相依性治理體系與可選硬體加速，實現 10x 效能躍升、IDE 智慧補全與 100% 原生安全降級。
 - [ ] **里程碑 4 (收斂結案)**：全生態系全量單元測試 100% 通過，完成整體架構審查並收斂 Umbrella 主計畫。
