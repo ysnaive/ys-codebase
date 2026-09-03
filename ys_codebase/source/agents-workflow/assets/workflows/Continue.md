@@ -1,8 +1,6 @@
-`__@{DYNAMIC_CONTEXT_MAP}__`
-
 # 接續開發計畫工作流 (Continue)
 
-本 Workflow 用於從一個**已存在但尚未完成**的開發計畫接續工作。所有階段的執行規範請嚴格遵循 [標準開發作業流程 (NewPlan)](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流用於從已存在但尚未完成的開發計畫接續工作，支援 `handoff.md` 現場快照與狀態自動恢復。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
 
 ---
 
@@ -10,10 +8,10 @@
 
 ### 步驟 1：定位目標計畫目錄與狀態掃描
 
-1. 檢視 `workflow.plans://` 計畫目錄下的進行中計畫。
+1. 檢視 `__${project://plans/}__` 進行中計畫。
 2. 若使用者未明確指定計畫名稱：
-   - 僅有一個進行中計畫 ➔ 自動定位為目標。
-   - 多個進行中計畫 ➔ 列出所有計畫名稱與狀態，詢問開發者要接續哪一個。
+   - 僅單一進行中計畫 ➔ 自動定位為目標。
+   - 多個進行中計畫 ➔ 列出清單與狀態，詢問確認。
 
 ---
 
@@ -21,22 +19,22 @@
 
 檢查目標計畫目錄下是否存在 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)：
 - **若存在 `handoff.md`**：
-  1. 優先讀取 `handoff.md`，提取其中的「現場已完成事項」、「進行中待辦」、「踩坑與注意事項」與「下一次接手第 1 步」。
+  1. 優先讀取 `handoff.md`，提取現場已完成事項、進行中待辦、注意事項與下一次接手第 1 步。
   2. 依據現場快照直接還原斷點上下文，無需漫無目的地掃描所有歷史代碼。
 - **若無 `handoff.md`**：
   - 進入步驟 3 進行標準 Track 與 Phase 結構化判定。
 
 ---
 
-### 步驟 3：判定計畫層級與 Track 模式
+### 步驟 3：判定計畫模式與進度
 
-根據工作目錄中的關鍵檔案判定計畫層級：
+根據工作目錄中的關鍵檔案判定計畫模式：
 
-| 判定依據 | 計畫層級 / Track | 進入判定分支 |
+| 判定依據 | 計畫模式 | 進入判定分支 |
 | :--- | :--- | :--- |
-| 存在 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) | **Level 2：Umbrella 分類型主計畫** | ➔ 進入 **步驟 3-U** |
-| 存在 [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`) | **Level 0：Fast Track** | ➔ 進入 **步驟 3-F** |
-| 存在 `P00` / `P01` ~ `P07` | **Level 1：Full Track (或獨立子計畫)** | ➔ 進入 **步驟 3-T** |
+| 存在 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) | **Umbrella 分類型主計畫** | ➔ 進入 **步驟 3-U** |
+| 存在 [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`) | **Fast Track 迅捷開發** | ➔ 進入 **步驟 3-F** |
+| 存在 `P00` / `P01` ~ `P07` | **Full Track 標準開發 (或子計畫)** | ➔ 進入 **步驟 3-T** |
 
 ---
 
@@ -44,8 +42,8 @@
 
 1. 讀取主計畫的 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) 與 [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)。
 2. 檢查子計畫清單矩陣：
-   - 尋找當前處於 `進行中`、`In Progress`、`Planning` 或 `未開始` 的第一個子計畫目錄 `sub_{編號}_{名稱}/`。
-   - 若所有既有子計畫均已 Completed 但主計畫尚有後續階段 ➔ 提示開發者是否開立下一個 `sub_XX` 子計畫。
+   - 尋找處於 `進行中`、`In Progress`、`Planning` 或 `未開始` 的目標子計畫目錄 `sub_{編號}_{名稱}/`。
+   - 若既有子計畫均已完成但主計畫尚有後續階段 ➔ 提示開發者是否開立下一個 `sub_XX` 子計畫。
 3. 進入當前目標子計畫目錄，檢查該子計畫是否含有 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，若無則依其檔案結構進入 **步驟 3-T** (Full Track) 或 **步驟 3-F** (Fast Track) 判定進度。
 
 ---
@@ -65,10 +63,10 @@
 | [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | ✅ | — | Phase 3 已完成，應從 Phase 4 開始 |
 | [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | — | ✅ | Phase 3 進行中，應接續 Phase 3 |
 | [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | ✅ | — | Phase 4 已定稿，應進入 Phase 5 開始實作 |
-| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | — | ✅ | Phase 4 Review 進行中 |
-| [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) | — | — | Phase 5 實作中（讀取 `[x]` / `[ ]` 定位中斷點） |
-| [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) | — | — | Phase 6 測試驗證中（檢查實測狀態與 UX 驗證關卡） |
-| [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) | — | — | Phase 7 Review 中（若已完成應已歸檔） |
+| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | — | ✅ | Phase 4 審查進行中 |
+| [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) | — | — | Phase 5 實作中（讀取清單標記定位中斷點） |
+| [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) | — | — | Phase 6 測試驗證中（檢查實測狀態與 UX 驗收關卡） |
+| [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) | — | — | Phase 7 審查中（若已完成應已歸檔） |
 
 ---
 
@@ -92,22 +90,19 @@
 
 ---
 
-### 步驟 5：呈遞接續進度簡報並確認
+### 步驟 5：呈遞接續進度卡並確認
 
-向開發者呈現接續狀態簡報：
+對話 Session **嚴禁代碼傾倒、全文重複或無關轉述**，強制僅呈遞以下極簡接續卡，並**立即 End Turn 等待確認**：
 
 ```markdown
-## 📋 計畫接續簡報
-
-- **計畫名稱**：`{目錄名稱}`
-- **計畫層級**：Level 2 Umbrella 主計畫 / Level 1 獨立 Full Track / Level 0 Fast Track / 模式 A 衍生子計畫
-- **交接快照 (Handoff)**：已載入 handoff.md / 無交接檔案（依 Phase 狀態判定）
-- **當前進度**：Phase {N} 已完成 / Phase {N} 進行中（具體位置：{區塊名稱}）
-- **關鍵注意事項 (Gotchas)**：{從 handoff.md 或 changelog 提取之踩坑點}
-- **下一步動作**：{極精確的下一步重啟行動指引}
+### 📋 /Continue 計畫接續卡
+- **計畫名稱**：[{plan_name}](__${project://plans/}__/{plan_name}/)
+- **模式與斷點**：[Full Track / Fast Track / Umbrella] ➔ [當前 Phase 或 FT-X]
+- **交接現場**：[已載入 handoff.md 現場快照 / 依產物狀態完成定位]
+- **關鍵摘要**：[1 行進度與踩坑/注意事項摘要]
+- **下一步動作**：[重啟執行之具體動作]
+- **待確認事項**：請確認是否立即從上述動作恢復執行？
 ```
-
-詢問開發者是否確認開始接續，**立即 End Turn 等待確認**。
 
 ---
 

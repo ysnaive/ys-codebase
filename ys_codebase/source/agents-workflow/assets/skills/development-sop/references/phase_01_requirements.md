@@ -35,8 +35,12 @@
 
 ## 🛑 4. Phase 1 結束 Checkpoint
 
-- 產出 `P01_requirements_spec.md` 並更新 `changelog.md`。
-- 向開發者呈遞 FR/EC 規格清單摘要。
-- 詢問：「請問是否同意規格定義並推進至 Phase 2（架構設計）？」
-- **立即 End Turn 等待確認**。
+- **極精簡 Session 回覆格式**：產出 `P01_requirements_spec.md` 並更新 `changelog.md` 後，對話中**嚴禁全文重複或冗長轉述**，強制僅呈遞以下極簡卡片：
+  ```markdown
+  ### 📄 P01 規格轉譯已落檔
+  - **產出文件**：[P01_requirements_spec.md](__${project://plans/}__/{plan_name}/P01_requirements_spec.md)
+  - **規格摘要**：[FR 清單計 N 項, EC 清單計 N 項 / 核心決策 [P01:DR-XX]]
+  - **待確認事項**：請問是否同意規格定義並推進至 Phase 2（架構設計）？
+  ```
+- **立即 End Turn 等待確認**：嚴禁跨階段連續產出。
 

@@ -1,24 +1,17 @@
-`__@{DYNAMIC_CONTEXT_MAP}__`
-
 # 深度技術調研工作流 (Research)
 
-本 Workflow 用於針對高複雜度、新技術選型、演算法可行性或跨模組大型架構演進進行深度論證與客觀對比。所有階段的執行規範請嚴格遵循 [標準開發作業流程 (NewPlan)](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流用於高複雜度、新技術選型、演算法可行性或架構演進之深度論證與客觀對比。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
 
 ---
 
 ## 🎯 核心原則與雙軌生命週期
 
-1. **觸發紀律（防 Agent 越權）**：
-   - **僅被動觸發**：獨立前置調研**僅能在開發者主動提出探討需求或下達顯式指令（如 `/Research [主題]`）時方可進行**，Agent 嚴禁在未經要求下擅自脫離當前任務發起調研。
-2. **雙軌生命週期 (Transient 快取 vs. Persistent 建檔)**：
-   - **情境 A：獨立前置調研 (Pre-research)**：未開立 Idea 或 Plan 前，隨問隨答、方案對比論證**僅保留於對話與 IDE 快取中，不主動在磁碟建立檔案**。
-   - **情境 B：正式固化建檔 (Promoted to File)**：唯有開發者明確指示「開立 Idea」或「開立 Dev Plan 進入 SOP」時，才將調研內容結構化寫入磁碟：
-     - 若已開立 Dev Plan ➔ 寫入計畫目錄下的 `R{n:2d}_{topic}.md`（如 `R01_architecture_reference.md`）。
-     - 若開立 Idea ➔ 整合進 `workflow.plans://ideas/` 對應的構想文檔中。
-3. **免除死板模板束縛 (Freedom from Rigid Templates)**：
-   - 依標準模板 [`__${module://agents-workflow/assets/templates/RXX_research_report.md}__`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 建立檔案，維持頂部標準元數據 Header，正文格式依主題特性自由排版論述（對比表、拓撲/時序圖、PoC 範例、明確結論）。
-4. **標準前綴命名規範**：
-   - 調研報告統一採用標準前綴：**`R{n:2d}_{topic}.md`**。
+1. **僅被動觸發**：獨立前置調研僅在開發者提出探討需求或下達顯式指令（如 `/Research [主題]`）時進行，嚴禁擅自發起。
+2. **雙軌生命週期**：
+   - **獨立前置調研**：未開立計畫前，隨問隨答與方案對比保留於對話與快取中，不主動在磁碟建檔。
+   - **正式固化建檔**：開發者指示立項或需正式留痕時，寫入計畫目錄下的 `R{n:2d}_{topic}.md`（如 `R01_architecture_reference.md`）。
+3. **免除死板模板束縛**：依標準模板 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 建立，維持標準元數據標頭，正文依主題自由排版論述。
+4. **標準命名前綴**：調研報告統一採用 `R{n:2d}_{topic}.md`。
 
 ---
 
@@ -26,43 +19,51 @@
 
 ```mermaid
 flowchart TD
-    Start(["開發者發起調研 / Phase 0 遇高複雜度"]) --> Step1["步驟 1: 盤點核心調研維度與待解問題"]
-    Step1 --> Step2["步驟 2: 主題深度探討與方案權衡<br/>(Pros & Cons / 業界標準 / 效能代價 / 專案相容性)"]
-    Step2 --> Step3["步驟 3: 產出專題調研報告<br/>(R{n:2d}_{topic}.md)"]
-    Step3 --> Step4["步驟 4: 收斂結論回填 P00 / P01<br/>與 Umbrella 路線圖"]
+    Start(["開發者發起調研 / 遭遇高複雜度"]) --> Step1["步驟 1: 盤點核心調研維度與待解問題"]
+    Step1 --> Step2["步驟 2: 方案探討與客觀對比<br/>(Pros & Cons / 代價評估 / 專案相容性)"]
+    Step2 --> Step3["步驟 3: 產出專題報告<br/>(R{n:2d}_{topic}.md)"]
+    Step3 --> Step4["步驟 4: 呈遞極簡調研卡與出口分流"]
     Step4 --> Done(["✅ 調研收斂完成"])
 ```
 
-### 步驟 1：盤點核心調研維度 (Problem Statement & Dimensions)
-- 與開發者共同梳理出本次調研需要攻堅的具體核心問題與技術維度。
+### 步驟 1：盤點核心調研維度
+與開發者梳理本次調研攻堅的具體核心問題、指標與技術邊界。
 
 ---
 
-### 步驟 2：主題深度探討與方案權衡 (In-Depth Exploration)
-- Agent 作為架構顧問展開開放式探討：
-  - 橫向比對業界成熟實踐與既有方案。
-  - 客觀分析不同方案的優缺點 (Pros & Cons)、資源代價與已知坑點。
-  - 結合專案現況給出客觀評價。
+### 步驟 2：方案深度探討與客觀權衡
+作為架構顧問展開開放式探討：
+- 橫向比對業界成熟實踐與方案。
+- 客觀分析候選方案優缺點 (Pros & Cons)、資源代價與潛在坑點。
+- 結合專案現況給出客觀分析，嚴禁主觀吹捧。
 
 ---
 
 ### 步驟 3：產出專題調研報告 (`R{n:2d}_{topic}.md`)
-- 達成共識後，若處於 Dev Plan 流程中，依標準模板 [`__${module://agents-workflow/assets/templates/RXX_research_report.md}__`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 建立 `R01_{主題簡稱}.md`。
-- **報告核心要素**：
-  1. 標準 Header 元數據。
-  2. 背景痛點與調研目標。
-  3. 候選方案評估矩陣 (Candidate Options Matrix)。
-  4. 關鍵維度深入分析（Mermaid 圖、PoC 程式碼或 Benchmark）。
-  5. 明確結論與推薦落地方案。
-- **產出約束**：嚴禁將模板開頭的 HTML 導引註解輸出至目標文件中。
+若需正式落檔，讀取標準模板 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`)，徹底移除導引註解後落檔：
+1. 標準元數據標頭。
+2. 背景痛點與調研目標。
+3. 候選方案評估矩陣 (Candidate Options Matrix)。
+4. 關鍵維度深入分析（架構圖、PoC 驗證或 Benchmark 數據）。
+5. 客觀結論與推薦落地方案。
 
 ---
 
-### 步驟 4：收斂結論與三大出口轉化 (Synthesis & Exit Paths)
-- 將調研形成的**核心公理、不可破壞之約束與架構決策**收斂並執行三大出口分流：
-  1. **出口 ① (即刻立項開發)**：回填至 [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)，無縫升級為實作型 Plan（直接繼承 R01 結論與背景）。
-  2. **出口 ② (沉澱為技術路線圖)**：轉化沉澱至 [`roadmap.md`](`__#{module://agents-workflow/assets/templates/roadmap.md}__`)（置於 `__${workflow.roadmap://}__`）作為專案長期技術儲備。
-  3. **出口 ③ (存檔歸檔)**：作為純知識留痕，直接歸檔至 `workflow.archived://`。
+### 步驟 4：呈遞極簡調研卡與三大出口分流
+
+對話 Session **嚴禁全文重複、圖表傾倒或代碼傾倒**，強制僅呈遞以下極簡調研卡，並**立即 End Turn 等待確認**：
+
+```markdown
+### 🔬 /Research 技術調研成果卡
+- **產出文件**：[RXX_{topic}.md](__${project://plans/}__/{plan_name}/RXX_{topic}.md)
+- **調研主題**：[1 行調研核心命題]
+- **方案結論**：推薦採取 [候選方案名稱]（核心優勢：[1 行客觀說明]）
+- **出口路徑**：
+  1. 立項開發 ➔ 升級為實作型 Plan（回填至 P00/P01）
+  2. 沉澱儲備 ➔ 登載至長期路線圖 [`roadmap.md`](`__${workflow.roadmap://}__`)
+  3. 存檔留痕 ➔ 留存於當前目錄或封存於 `__${project://plans/archived/}__`
+- **待確認事項**：請確認推薦結論或選擇後續出口路徑？
+```
 
 ---
 

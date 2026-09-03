@@ -36,8 +36,12 @@
 
 ## 🛑 4. Phase 2 結束 Checkpoint
 
-- 產出 `P02_architecture_plan.md` 與 `P06_test_plan.md` (Draft)，更新 `changelog.md`。
-- 向開發者呈遞架構拓撲圖與測試預排清單。
-- 詢問：「請問是否同意架構設計並推進至 Phase 3（API 規格）？」
-- **立即 End Turn 等待確認**。
+- **極精簡 Session 回覆格式**：產出 `P02_architecture_plan.md` 與 `P06_test_plan.md` (Draft) 並更新 `changelog.md` 後，對話中**嚴禁全文重複、傾倒圖表或冗長轉述**，強制僅呈遞以下極簡卡片：
+  ```markdown
+  ### 📄 P02 架構設計已落檔
+  - **產出文件**：[P02_architecture_plan.md](__${project://plans/}__/{plan_name}/P02_architecture_plan.md)、[P06_test_plan.md](__${project://plans/}__/{plan_name}/P06_test_plan.md) (Draft)
+  - **架構摘要**：[1~2 行組件邊界 / 核心決策 [P02:DR-XX] / FT & ET 測試預排 N 項]
+  - **待確認事項**：請問是否同意架構設計並推進至 Phase 3（API 規格）？
+  ```
+- **立即 End Turn 等待確認**：嚴禁跨階段連續產出。
 
