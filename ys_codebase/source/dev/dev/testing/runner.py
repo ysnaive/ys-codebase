@@ -347,6 +347,61 @@ class ASCIIReportFormatter:
         lines.append("=" * 70)
         return "\n".join(lines)
 
+    @staticmethod
+    def format_throttled(report_data: Dict[str, Any]) -> str:
+        """
+        將測試報告數據轉換為最大化節省 Token 的節流格式。
+        - 全數通過: "Pass: {passed}({pct:.1f}%), Fail: 0, Skip: {skipped}"
+        - 存在失敗: 統計首行 + FAILED / ERROR TEST CASES LIST 詳情
+        """
+        total = report_data.get("total", 0)
+        passed = report_data.get("passed", 0)
+        failed = report_data.get("failed", 0)
+        skipped = report_data.get("skipped", 0)
+        pct = (passed / total * 100.0) if total > 0 else 0.0
+
+        stat_line = f"Pass: {passed}({pct:.1f}%), Fail: {failed}, Skip: {skipped}"
+
+        failures_list = report_data.get("failures_list", [])
+        if failed == 0 and not failures_list:
+            return stat_line
+
+        fail_lines = [stat_line, "", "-" * 70, "FAILED / ERROR TEST CASES LIST:"]
+        if failures_list:
+            for item in failures_list:
+                m_tag = f"[{item.get('module', 'unknown')}]"
+                t_type = item.get('type', 'FAIL')
+                t_name = item.get('test', 'unknown')
+                t_msg = item.get('message', '')
+                t_loc = item.get('location', '')
+                t_re_run = item.get('rerun', '')
+                captured = item.get('captured_output', '')
+
+                fail_lines.append(f"  [!] {m_tag:<10} {t_type:<8} {t_name}")
+                if t_msg:
+                    fail_lines.append(f"      |-- Message:  {t_msg}")
+                if t_loc:
+                    fail_lines.append(f"      |-- Location: {t_loc}")
+                if captured:
+                    cap_lines = captured.splitlines()
+                    if len(cap_lines) > 20:
+                        cap_snippet = "\n          ".join(cap_lines[:10] + ["... [truncated] ..."] + cap_lines[-5:])
+                    else:
+                        cap_snippet = "\n          ".join(cap_lines)
+                    fail_lines.append(f"      |-- Output:\n          {cap_snippet}")
+                if t_re_run:
+                    fail_lines.append(f"      \\-- Quick Re-run: {t_re_run}")
+                else:
+                    fail_lines.append(f"      \\-- Quick Re-run: python yscb.py dev test --target={item.get('module')}:{t_name}")
+        else:
+            # Fallback for worker crash or unexported failures
+            for mod_info in report_data.get("modules", []):
+                for err in mod_info.get("errors", []):
+                    fail_lines.append(f"  [!] [{mod_info.get('name', 'unknown')}] ERROR: {err}")
+
+        fail_lines.append("-" * 70)
+        return "\n".join(fail_lines)
+
 
 class SafeStreamWriter:
     """Stream wrapper that handles Unicode encoding errors gracefully on Windows console."""

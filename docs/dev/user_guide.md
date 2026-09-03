@@ -153,6 +153,10 @@ python yscb.py dev test core --keep-sandbox
 
 # 展開詳細執行狀態與即時日誌（關閉靜默捕獲）
 python yscb.py dev test dev -v
+
+# 啟用節流輸出模式（全通僅輸出單行，深度靜默前置進度與清理日誌，壓縮 >95% Token I/O）
+python yscb.py dev test --all --quiet
+python yscb.py dev test core -q
 ```
 
 ### 4.2 沙盒生命週期與自動清理機制 (Sandbox Lifecycle & Cleanup)

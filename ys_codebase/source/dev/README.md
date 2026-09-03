@@ -120,6 +120,10 @@ python yscb.py dev test my-module --no-build
 
 # 傳遞 unittest 參數 (如執行特定測試檔或測試案例)
 python yscb.py dev test my-module -k test_my_feature
+
+# 啟用節流輸出模式 (全通僅輸出單行，前置日誌深度靜默，節省 95% 以上 Token I/O)
+python yscb.py dev test --all --quiet
+python yscb.py dev test my-module -q
 ```
 
 ### 3.4 純淨發布與 Git 發布流水線

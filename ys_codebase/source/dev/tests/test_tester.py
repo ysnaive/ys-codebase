@@ -71,7 +71,7 @@ class TestDevTester(YSCBTestCase):
         orig_nested = os.environ.get("YSCB_NESTED_TEST")
         os.environ["YSCB_NESTED_TEST"] = "1"
         
-        def mock_worker(mod_name, worker_idx, clean_argv, keep_sandbox=False, is_nested=False):
+        def mock_worker(mod_name, worker_idx, clean_argv, keep_sandbox=False, is_nested=False, **kwargs):
             return {
                 "module": mod_name,
                 "worker_idx": worker_idx,

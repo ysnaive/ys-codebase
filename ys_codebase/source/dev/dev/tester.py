@@ -83,6 +83,7 @@ class Tester:
         print("  --no-build       Skip automatic pre-test hermetic build")
         print("  --keep-sandbox   Retain virtual sandbox directory upon test completion")
         print("  --sync           After 100% test pass, auto-install local @build package to environment")
+        print("  -q, --quiet      Throttle output mode: compact Pass/Fail/Skip and failures only")
         print("  -v, --verbose    Expand verbose test method execution details")
 
     def _run_op_mksb(self, argv: List[str]) -> int:
@@ -102,6 +103,7 @@ class Tester:
         """In-place atomic test execution engine."""
         report_json_path = None
         quiet_report = False
+        quiet_mode = os.environ.get("YSCB_TEST_QUIET") == "1"
         target_mod = None
         test_type = None
         pattern = None
@@ -118,6 +120,8 @@ class Tester:
                 report_json_path = a.split("=", 1)[1]
             elif a == "--quiet-report":
                 quiet_report = True
+            elif a in ("-q", "--quiet"):
+                quiet_mode = True
             elif a == "--all":
                 run_all = True
             elif a == "--contract-only":
@@ -202,7 +206,7 @@ class Tester:
         all_passed = True
 
         for mod_name in modules:
-            if not verbose and not quiet_report:
+            if not verbose and not quiet_report and not quiet_mode:
                 print(f"[dev:test] {mod_name} begin test in {sandbox_id}", flush=True)
             mod_start = time.perf_counter()
             suite, contract_total, custom_total = TestDiscovery.build_suite_for_module(
@@ -215,7 +219,7 @@ class Tester:
             
             result, captured_output = runner.run_suite(suite)
             mod_duration = time.perf_counter() - mod_start
-            if not verbose and not quiet_report:
+            if not verbose and not quiet_report and not quiet_mode:
                 print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
             mod_total = result.testsRun
             mod_failed = len(result.failures) + len(result.errors)
@@ -337,7 +341,10 @@ class Tester:
                 print(f"[dev:test] Warning: Failed to export report JSON: {e}", file=sys.stderr)
 
         if not quiet_report:
-            safe_print(ASCIIReportFormatter.format_summary(report_data))
+            if quiet_mode:
+                safe_print(ASCIIReportFormatter.format_throttled(report_data))
+            else:
+                safe_print(ASCIIReportFormatter.format_summary(report_data))
         return 0 if all_passed else 1
 
     def _run_test(self, argv: List[str]) -> int:
@@ -346,6 +353,7 @@ class Tester:
         keep_sandbox = "--keep-sandbox" in argv
         no_build = "--no-build" in argv
         is_sequential = "--sequential" in argv or "--no-parallel" in argv
+        quiet_mode = "-q" in argv or "--quiet" in argv or os.environ.get("YSCB_TEST_QUIET") == "1"
         
         # Parse -j / --jobs and --sync
         jobs = None
@@ -396,12 +404,13 @@ class Tester:
                     keep_sandbox=keep_sandbox,
                     jobs=jobs,
                     is_nested=is_nested,
-                    sync_requested=sync_requested
+                    sync_requested=sync_requested,
+                    quiet_mode=quiet_mode
                 )
 
         # 1. Automatic pre-test Hermetic Dev Build (unless --no-build)
         if not no_build:
-            if not is_nested:
+            if not is_nested and not quiet_mode:
                 print("[dev:test] Pre-building modules for test execution...", flush=True)
             from dev.builder import Builder
             builder = Builder()
@@ -423,7 +432,7 @@ class Tester:
         sandbox_idx = int(os.environ.get("YSCB_SANDBOX_INDEX", "1"))
         sandbox_display_id = f"sandbox {sandbox_idx}"
         host_dir = ctx.host_dir
-        if not is_nested:
+        if not is_nested and not quiet_mode:
             print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
         
         # 3. Invoke dev op-test inside sandbox
@@ -434,6 +443,8 @@ class Tester:
         p_env = dict(os.environ)
         p_env["YSCB_TEST_SANDBOX"] = "1"
         p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
+        if quiet_mode:
+            p_env["YSCB_TEST_QUIET"] = "1"
         try:
             res = subprocess.run(
                 cmd,
@@ -458,7 +469,7 @@ class Tester:
             
         # 4. Teardown policy
         if ret_code == 0 and not keep_sandbox:
-            if not is_nested:
+            if not is_nested and not quiet_mode:
                 print(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
             if "--all" in clean_argv:
                 SandboxProvisioner.cleanup_all_sandboxes()
@@ -469,12 +480,12 @@ class Tester:
             if not is_nested:
                 if ret_code != 0:
                     print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
-                else:
+                elif not quiet_mode:
                     print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
 
         if ret_code == 0 and not is_nested:
             tested_mods = [target_mod] if (target_mod and target_mod != "--all") else []
-            self._handle_post_test_sync(tested_mods, sync_requested)
+            self._handle_post_test_sync(tested_mods, sync_requested, quiet=quiet_mode)
 
         return ret_code
 
@@ -486,11 +497,12 @@ class Tester:
         keep_sandbox: bool = False,
         jobs: Optional[int] = None,
         is_nested: bool = False,
-        sync_requested: bool = False
+        sync_requested: bool = False,
+        quiet_mode: bool = False
     ) -> int:
         """Runs multiple modules concurrently across independent virtual sandboxes."""
         if not no_build:
-            if not is_nested:
+            if not is_nested and not quiet_mode:
                 print("[dev:test] Pre-building modules for test execution...", flush=True)
             from dev.builder import Builder
             builder = Builder()
@@ -507,17 +519,18 @@ class Tester:
         worker_results: Dict[str, Dict[str, Any]] = {}
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    self._run_single_module_worker,
-                    mod_name,
-                    worker_idx=idx + 1,
-                    clean_argv=clean_argv,
-                    keep_sandbox=keep_sandbox,
-                    is_nested=is_nested
-                ): mod_name
-                for idx, mod_name in enumerate(modules)
-            }
+            futures = {}
+            for idx, mod_name in enumerate(modules):
+                kw = {
+                    "worker_idx": idx + 1,
+                    "clean_argv": clean_argv,
+                    "keep_sandbox": keep_sandbox,
+                    "is_nested": is_nested,
+                }
+                if quiet_mode:
+                    kw["quiet_mode"] = True
+                f = executor.submit(self._run_single_module_worker, mod_name, **kw)
+                futures[f] = mod_name
             for future in concurrent.futures.as_completed(futures):
                 mod_name = futures[future]
                 try:
@@ -593,7 +606,10 @@ class Tester:
         }
 
         if not is_nested:
-            safe_print(ASCIIReportFormatter.format_summary(final_report))
+            if quiet_mode:
+                safe_print(ASCIIReportFormatter.format_throttled(final_report))
+            else:
+                safe_print(ASCIIReportFormatter.format_summary(final_report))
 
         if all_passed and not keep_sandbox:
             if "--all" in clean_argv:
@@ -603,7 +619,7 @@ class Tester:
 
         ret_code = 0 if all_passed else 1
         if ret_code == 0 and not is_nested:
-            self._handle_post_test_sync(modules, sync_requested)
+            self._handle_post_test_sync(modules, sync_requested, quiet=quiet_mode)
 
         return ret_code
 
@@ -613,14 +629,15 @@ class Tester:
         worker_idx: int,
         clean_argv: List[str],
         keep_sandbox: bool = False,
-        is_nested: bool = False
+        is_nested: bool = False,
+        quiet_mode: bool = False
     ) -> Dict[str, Any]:
         """Worker executing a single module inside an isolated sandbox."""
         ctx = SandboxProvisioner.create_sandbox()
         sandbox_dir = ctx.sandbox_dir
         sandbox_display_id = f"sandbox {worker_idx}"
         host_dir = ctx.host_dir
-        if not is_nested:
+        if not is_nested and not quiet_mode:
             safe_print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
             safe_print(f"[dev:test] {mod_name} begin test in {sandbox_display_id}", flush=True)
 
@@ -635,6 +652,8 @@ class Tester:
         p_env["YSCB_TEST_SANDBOX"] = "1"
         p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
         p_env["YSCB_SANDBOX_INDEX"] = str(worker_idx)
+        if quiet_mode:
+            p_env["YSCB_TEST_QUIET"] = "1"
 
         mod_report_data = None
         ret_code = 1
@@ -652,7 +671,7 @@ class Tester:
             )
             ret_code = res.returncode
             mod_duration = time.perf_counter() - mod_start
-            if not is_nested:
+            if not is_nested and not quiet_mode:
                 safe_print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
                 if res.stdout:
                     safe_print(res.stdout, end="", flush=True)
@@ -668,7 +687,7 @@ class Tester:
 
         # Granular cleanup policy
         if ret_code == 0 and not keep_sandbox:
-            if not is_nested:
+            if not is_nested and not quiet_mode:
                 print(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
             SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
         else:
@@ -676,7 +695,7 @@ class Tester:
             if not is_nested:
                 if ret_code != 0:
                     print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}", flush=True)
-                else:
+                elif not quiet_mode:
                     print(f"[dev:test] Sandbox preserved at: {sandbox_dir}", flush=True)
 
         return {
@@ -687,7 +706,7 @@ class Tester:
             "sandbox_dir": sandbox_dir
         }
 
-    def _handle_post_test_sync(self, modules: List[str], sync_requested: bool) -> None:
+    def _handle_post_test_sync(self, modules: List[str], sync_requested: bool, quiet: bool = False) -> None:
         """處理測試成功後的 --sync 本地直裝或友善引導提示。"""
         if not modules:
             return
@@ -718,6 +737,7 @@ class Tester:
                 else:
                     safe_print(f"[dev:test:sync] Failed to sync '{mod}@build'.", file=sys.stderr)
         else:
-            for mod in valid_targets:
-                safe_print(f"\n💡 提示: 測試通過！可執行 'python yscb.py install {mod}@build' 直裝最新產物。")
+            if not quiet:
+                for mod in valid_targets:
+                    safe_print(f"\n💡 提示: 測試通過！可執行 'python yscb.py install {mod}@build' 直裝最新產物。")
 

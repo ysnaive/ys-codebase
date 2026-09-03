@@ -625,16 +625,16 @@ class PlanVerifier:
         results: Dict[str, PlanReport] = {}
         if self.plans_dir.exists():
             for item in sorted(self.plans_dir.iterdir(), key=lambda x: x.name):
-                if item.is_dir() and not item.name.startswith(".") and item.name != "archived":
+                if item.is_dir() and not item.name.startswith(".") and re.match(r"^\d{4}_\d{2}_\d{2}", item.name):
                     results[item.name] = self.verify_plan(item)
 
         if include_archived and self.archive_dir.exists():
             for y in sorted(self.archive_dir.iterdir(), key=lambda x: x.name):
-                if y.is_dir():
+                if y.is_dir() and re.match(r"^\d{4}$", y.name):
                     for m in sorted(y.iterdir(), key=lambda x: x.name):
-                        if m.is_dir():
+                        if m.is_dir() and re.match(r"^\d{2}$", m.name):
                             for p in sorted(m.iterdir(), key=lambda x: x.name):
-                                if p.is_dir() and not p.name.startswith("."):
+                                if p.is_dir() and not p.name.startswith(".") and re.match(r"^\d{4}_\d{2}_\d{2}", p.name):
                                     results[f"archived/{y.name}/{m.name}/{p.name}"] = self.verify_plan(p)
 
         return results

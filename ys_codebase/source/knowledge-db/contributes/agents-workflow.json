@@ -46,8 +46,8 @@
     },
     {
       "type": "uri",
-      "token": "RETRO_CHECK_ITEMS",
-      "value": "module://knowledge-db/assets/retro_check.md",
+      "token": "SESSION_ANALYSIS_CHECK_ITEMS",
+      "value": "module://knowledge-db/assets/session_analysis_check.md",
       "mode": "below"
     }
   ]

@@ -58,27 +58,24 @@ class PlanSearcher:
         """
         plans: List[Path] = []
 
-        # 1. 進行中計畫
+        # 1. 進行中計畫 (必須符合時間戳前綴 YYYY_MM_DD)
         if self.plans_dir.is_dir():
             for item in self.plans_dir.iterdir():
                 if item.is_dir() and not item.name.startswith("."):
-                    if year or month:
-                        match = re.match(r"^(\d{4})_(\d{2})_", item.name)
-                        if match:
-                            y, m = match.group(1), match.group(2)
-                            if (year is None or y == year) and (month is None or m == month):
-                                plans.append(item)
-                    else:
-                        plans.append(item)
+                    match = re.match(r"^(\d{4})_(\d{2})_", item.name)
+                    if match:
+                        y, m = match.group(1), match.group(2)
+                        if (year is None or y == year) and (month is None or m == month):
+                            plans.append(item)
 
         # 2. 歷史歸檔計畫 archive_dir/YYYY/MM/
         if self.archive_dir.is_dir():
             for y_dir in sorted(self.archive_dir.iterdir(), reverse=True):
-                if y_dir.is_dir() and (year is None or y_dir.name == year):
+                if y_dir.is_dir() and re.match(r"^\d{4}$", y_dir.name) and (year is None or y_dir.name == year):
                     for m_dir in sorted(y_dir.iterdir(), reverse=True):
-                        if m_dir.is_dir() and (month is None or m_dir.name == month):
+                        if m_dir.is_dir() and re.match(r"^\d{2}$", m_dir.name) and (month is None or m_dir.name == month):
                             for p_dir in sorted(m_dir.iterdir(), reverse=True):
-                                if p_dir.is_dir() and not p_dir.name.startswith("."):
+                                if p_dir.is_dir() and not p_dir.name.startswith(".") and re.match(r"^\d{4}_\d{2}_\d{2}", p_dir.name):
                                     plans.append(p_dir)
 
         return plans

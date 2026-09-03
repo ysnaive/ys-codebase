@@ -2,6 +2,28 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_03_1227_agents_workflow_plan_filter_and_session_analysis (Completed)
+
+- **`sub_01` `dev test` 輸出格式優化與節流模式 (`--quiet` / `-q`)**：
+  - **節流模式核心實作**：於 `dev test` 與 `dev op-test` 引入 `--quiet` 與 `-q` 命令列開關；在所有測試 100% 通過時僅輸出單行 `Pass: {n}({percent:.1f}%), Fail: {n}, Skip: {n}`，極致節省高頻回歸測試時的 Token I/O 消耗（壓縮率達 95% 以上）。
+  - **深度靜默前置日誌**：徹底抑制前置沙盒構建、沙盒建立與清理日誌（`[dev:test] Pre-building...`、`Create sandbox...`、`Cleaned up sandbox...`）與通過後提示；未傳入節流旗標時 100% 維持完整 ASCII 診斷表格相容。
+  - **失敗詳情精確保留**：若存在測試失敗，除首行統計外，完整輸出 `FAILED / ERROR TEST CASES LIST:` 詳情區塊（Message、Location、Quick Re-run）。
+  - **環境變數跨沙盒穿透**：注入 `YSCB_TEST_QUIET="1"`，使單模組與 `--all` 多模組平行沙盒執行均達成一致靜默與聚合。
+  - **AI 手冊與工作流全面對齊**：`yscb-module-dev`、`Auto.md`、`development-sop` 等指引中 AI 建議測試指令全面升級為 `--quiet`。
+  - **驗證與測試**：新增 `test_tester_throttle.py` 單元測試；全生態系 312/312 單元測試 100% 通過；實機 UX 驗證完成。
+
+- **`agents-workflow` 計畫目錄正則過濾 Bug 修復與 `SessionAnalysis` 工作流重構**：
+  - **計畫目錄正則收斂 (Bug Fix)**：修復 `PlanVerifier`、`PlanScanner` 與 `PlanSearcher` 將 `plans/roadmap/`、`archived/` 等非計畫目錄誤判為進行中計畫之瑕疵，全面改以白名單正則 `r"^\d{4}_\d{2}_\d{2}"` 判定合法計畫，非時間戳資源目錄完全安全略過，使 `python yscb.py agents-workflow plan check` 全庫診斷 100% 通過。
+  - **對話歷程分析工作流重構 (`SessionAnalysis`)**：
+    - 將原 `/Retro` 工作流全面重構命名為 `/SessionAnalysis`。
+    - 去除過度形容詞與環境特化資訊，聚合為「流程與紀律自檢（異常過濾呈遞模式）」、「四大維度行為與 Token 消耗分析（Skills / Workflows / CLI 含 I/O / Other）」與「模組特化評測」。
+    - 移除首部 `DYNAMIC_CONTEXT_MAP`，維持工作流首部純淨與專注度。
+    - 佔位符重命名：`WORKFLOW_RETRO` ➔ `WORKFLOW_SESSIONANALYSIS`，`RETRO_CHECK_ITEMS` ➔ `SESSION_ANALYSIS_CHECK_ITEMS`。
+  - **跨模組解耦與注入對齊**：
+    - `core`：移除 `RETRO_CHECK_ITEMS` 注入並刪除 `retro_check.md`，不再進行 CLI 冗餘合規審查。
+    - `knowledge-db`：改向 `SESSION_ANALYSIS_CHECK_ITEMS` 注入全新精煉之 `session_analysis_check.md`，專注於工具調用統計、使用情境與效益分析。
+  - **驗證與測試**：新增 `test_session_analysis_workflow.py` 並擴充 `test_plans_toolchain.py`；全生態系四大模組 305/305 單元測試 100% 通過；實機 UX 驗證完成。
+
 ## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (In Progress - 里程碑 1, 2 & 3 達成)
 
 - **`sub_03` 建置產物 `build/` 空間協議更名 `.build/`、Git 追蹤解耦、工具鏈對齊與 VS Code 隱藏配置**：

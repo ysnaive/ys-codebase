@@ -3,6 +3,7 @@ PlanScanner — 進行中開發計畫狀態掃描與矩陣渲染服務。
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 
@@ -139,12 +140,10 @@ class PlanScanner:
             return []
 
         results = []
-        # 篩選非隱藏目錄，並明確排除封存目錄 (archived 或 workflow.archived://) 與 roadmap 儲備庫 (roadmap 或 workflow.roadmap://)
-        archived_dir = _resolve_uri_path("workflow.archived://")
-        roadmap_dir = _resolve_uri_path("workflow.roadmap://")
+        # 僅掃描符合時間戳命名規範之活躍計畫目錄 (r"^\d{4}_\d{2}_\d{2}")
         plan_dirs = [
             d for d in self.plans_dir.iterdir()
-            if d.is_dir() and not d.name.startswith(".") and d.name not in ("archived", "roadmap") and (not archived_dir or d.resolve() != archived_dir) and (not roadmap_dir or d.resolve() != roadmap_dir)
+            if d.is_dir() and not d.name.startswith(".") and re.match(r"^\d{4}_\d{2}_\d{2}", d.name)
         ]
 
         for p_dir in sorted(plan_dirs, key=lambda x: x.name, reverse=True):
