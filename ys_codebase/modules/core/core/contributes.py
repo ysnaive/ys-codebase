@@ -4,9 +4,10 @@ Rigid Topology & Zero Speculation: strictly scans installed modules in module://
 Standard Directory: module://<donor>/contributes/<target>.json
 Project Overrides: config://<target>/config.project.json
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import os
 import copy
+import time
 import logging
 from core import uri
 
@@ -34,18 +35,137 @@ def _tag_provider(data: Any, donor_name: str) -> Any:
     return data
 
 
+def _get_contributes_meta_uri() -> str:
+    """返回 contributes 快照元資料存儲 URI。"""
+    return "cache://core/contributes.meta.json"
+
+
+def _scan_contributes_inputs() -> Dict[str, Tuple[float, int]]:
+    """
+    掃描所有影響 contributes 聚合之輸入檔案，取得其實體絕對路徑與 (mtime, size) 快照。
+    比對檔案包含：
+    - yscb.config.json
+    - module://*/contributes/*.json 與 module://*/contributes.json
+    - config://*/contribute.json
+    """
+    files_snapshot: Dict[str, Tuple[float, int]] = {}
+
+    # 1. 宿主設定 yscb.config.json
+    try:
+        cfg_p = uri.resolve("project://yscb.config.json", interactive=False)
+        if os.path.isfile(cfg_p):
+            st = os.stat(cfg_p)
+            files_snapshot[cfg_p] = (st.st_mtime, st.st_size)
+    except Exception:
+        pass
+
+    # 2. 模組層級 contributes
+    if uri.exists("module://"):
+        try:
+            installed = uri.listdir("module://")
+            for donor in installed:
+                donor_contrib_dir = f"module://{donor}/contributes"
+                if uri.exists(donor_contrib_dir) and uri.isdir(donor_contrib_dir):
+                    try:
+                        for fname in uri.listdir(donor_contrib_dir):
+                            if fname.endswith(".json"):
+                                f_uri = f"{donor_contrib_dir}/{fname}"
+                                try:
+                                    f_p = uri.resolve(f_uri, interactive=False)
+                                    if os.path.isfile(f_p):
+                                        st = os.stat(f_p)
+                                        files_snapshot[f_p] = (st.st_mtime, st.st_size)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
+                donor_unified = f"module://{donor}/contributes.json"
+                if uri.exists(donor_unified):
+                    try:
+                        f_p = uri.resolve(donor_unified, interactive=False)
+                        if os.path.isfile(f_p):
+                            st = os.stat(f_p)
+                            files_snapshot[f_p] = (st.st_mtime, st.st_size)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # 3. 專案特化 config://*/contribute.json
+    if uri.exists("config://"):
+        try:
+            targets = uri.listdir("config://")
+            for tgt in targets:
+                p_uri = f"config://{tgt}/contribute.json"
+                if uri.exists(p_uri):
+                    try:
+                        f_p = uri.resolve(p_uri, interactive=False)
+                        if os.path.isfile(f_p):
+                            st = os.stat(f_p)
+                            files_snapshot[f_p] = (st.st_mtime, st.st_size)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    return files_snapshot
+
+
+def _is_contributes_dirty(target_module: Optional[str] = None) -> Tuple[bool, Dict[str, Tuple[float, int]]]:
+    """
+    嗅探 JIT 快照是否 dirty：
+    1. 若指定 target_module，且其 cache://{target_module}/contributes.merged.json 缺失，直接視為 dirty。
+    2. 檢查 cache://core/contributes.meta.json 是否存在。
+    3. 比對即時掃描之檔案 (mtime, size) 與快取清單。
+    返回 (is_dirty, current_snapshot)。
+    """
+    if target_module:
+        target_cache_uri = f"cache://{target_module}/contributes.merged.json"
+        if not uri.exists(target_cache_uri):
+            return True, {}
+
+    meta_uri = _get_contributes_meta_uri()
+    if not uri.exists(meta_uri):
+        return True, {}
+
+    try:
+        meta_data = uri.read_json(meta_uri)
+        if not isinstance(meta_data, dict) or "files" not in meta_data:
+            return True, {}
+        cached_files = meta_data["files"]
+    except Exception:
+        return True, {}
+
+    current_snapshot = _scan_contributes_inputs()
+    if set(current_snapshot.keys()) != set(cached_files.keys()):
+        return True, current_snapshot
+
+    for p, (cur_mtime, cur_size) in current_snapshot.items():
+        cached_val = cached_files.get(p)
+        if not cached_val or len(cached_val) < 2:
+            return True, current_snapshot
+        cached_mtime, cached_size = cached_val[0], cached_val[1]
+        if cur_mtime != cached_mtime or cur_size != cached_size:
+            return True, current_snapshot
+
+    return False, current_snapshot
+
+
 def get(target_module: str, key: Optional[str] = None, default: Any = None) -> Any:
     """
-    標準 Contributes 查詢 SDK:
+    標準 Contributes 查詢 SDK (支援 JIT 變更嗅探與熱自愈):
     查詢指定目標模組之已合併 Contributes 字典或特定鍵值。
     
-    1. 優先從 cache://{target_module}/contributes.merged.json 讀取。
-    2. 若快取不存在或損毀，自動調用 scan_and_inject() 即時自愈聚合。
-    3. 若指定 key 則返回該特定欄位，否則返回全字典。
+    1. 執行 JIT 嗅探 (_is_contributes_dirty)，檢查輸入檔案與快取狀態。
+    2. 若未變更 (Clean)，優先從 cache://{target_module}/contributes.merged.json 讀取。
+    3. 若 dirty 或快取損毀，自動調用 scan_and_inject() 即時自愈聚合並更新快照。
+    4. 若指定 key 則返回該特定欄位，否則返回全字典。
     """
     cache_file = f"cache://{target_module}/contributes.merged.json"
+    is_dirty, _ = _is_contributes_dirty(target_module)
     data = None
-    if uri.exists(cache_file):
+    if not is_dirty and uri.exists(cache_file):
         try:
             data = uri.read_json(cache_file)
         except Exception:
@@ -201,6 +321,19 @@ class ContributesAggregator:
                             os.remove(target_p)
                     except Exception:
                         pass
+
+        # 6. 持久化 contributes.meta.json 快照 (JIT Freshness Snapshot)
+        try:
+            meta_uri = _get_contributes_meta_uri()
+            current_snapshot = _scan_contributes_inputs()
+            meta_payload = {
+                "updated_at": time.time(),
+                "files": {k: [v[0], v[1]] for k, v in current_snapshot.items()}
+            }
+            uri.makedirs("cache://core", exist_ok=True)
+            uri.write_json(meta_uri, meta_payload)
+        except Exception as e:
+            logger.warning(f"Failed to update contributes.meta.json: {e}")
 
         return aggregated
 

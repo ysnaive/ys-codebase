@@ -454,6 +454,11 @@ def main(args: List[str]) -> int:
     cmd = args[0].lower()
     sub_args = args[1:]
 
+    # JIT 變更感知自愈前置檢查 (release/compile 除外，避免重複執行發布)
+    if cmd not in ("release", "publish", "compile", "build"):
+        from agents_workflow.publisher import ensure_jit_release
+        ensure_jit_release()
+
     if cmd in ("--init-default", "init-default", "init"):
         return cmd_init_default(sub_args)
     elif cmd in ("release", "publish"):
