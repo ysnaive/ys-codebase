@@ -5,6 +5,7 @@
 /.temp/
 /.snapshots/
 /.cache/
+/.venv/
 *.local.json
 __pycache__/
 *.pyc

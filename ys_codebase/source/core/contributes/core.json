@@ -47,6 +47,12 @@
       "type": "const",
       "value": "yscb://storage/",
       "description": "模組持久化儲存空間根目錄 (Git 追蹤)"
+    },
+    {
+      "token": "yscb.venv",
+      "type": "const",
+      "value": "yscb://.venv/",
+      "description": "YSCB 私有微虛擬環境空間根目錄 (Git 忽略)"
     }
   ],
   "commands": {

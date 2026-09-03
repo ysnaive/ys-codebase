@@ -25,6 +25,7 @@
 | *(開發)* **`module.source://`** | `yscb://source/{module}/` | **特定模組原始碼開發空間** | ✅ 受追蹤 |
 | *(開發)* **`module.build.root://`** | `yscb://.build/` | **本地開發完整建置產物空間根目錄** | 🚫 忽略 |
 | *(開發)* **`module.build://`** | `yscb://.build/{module}/{version}/` | **特定模組之完整建置產物版本包** | 🚫 忽略 |
+| **`yscb.venv://`** | `yscb://.venv/` | **YSCB 私有微虛擬環境空間根目錄** | 🚫 忽略 |
 
 ---
 
