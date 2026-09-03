@@ -29,7 +29,7 @@ graph TD
 ## 2. 接收端實作標準
 
 若模組 `A` 想監聽來自模組 `B` 派發的生命週期事件，必須遵循以下兩大規則：
-1. **檔案路徑**：`modules/{A}/scripts/hook.{B}.py`（原始碼中位於 `source/{A}/scripts/hook.{B}.py`）。
+1. **檔案路徑**：`.modules/{A}/scripts/hook.{B}.py`（原始碼中位於 `source/{A}/scripts/hook.{B}.py`）。
 2. **函式定義**：函式名稱嚴格對齊事件名稱，接收唯一參數 `context`。
 
 ---

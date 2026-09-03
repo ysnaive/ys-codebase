@@ -50,5 +50,5 @@ def migrate(ctx: ExecutionContext) -> bool:
    - `yscb update` 預設限制在同一個 Major 內進行（`^current_version`）。
    - 若要跨 Major 升級，必須明確執行 `yscb install <mod>@<new_major>`。
 4. **全原子 Snapshot 回滾防護**：
-   - 升級開始前，引擎自動對 `modules/`, `config/`, `storage/`, `yscb.config.json` 建立快照。
+   - 升級開始前，引擎自動對 `.modules/`, `config/`, `storage/`, `yscb.config.json` 建立快照。
    - 若任何階梯的 `migrate()` 回傳 `False` 或拋出例外，升級立即中斷，並**100% 自動還原代碼、配置與持久化資料**。

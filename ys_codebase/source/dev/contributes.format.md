@@ -24,7 +24,7 @@
     {
       "token": "module.build",
       "type": "const",
-      "value": "yscb://build/",
+      "value": "yscb://.build/",
       "description": "本地開發完整建置產物空間根目錄"
     },
     {

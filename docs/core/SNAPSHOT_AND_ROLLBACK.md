@@ -11,7 +11,7 @@ YS-Codebase 的套件管理器採用「**不可變鏡像庫 (Immutable Mirror) +
 
 1. **不可變版本庫 (`mirror://<mod>/<ver>/`)**：所有下載或建置之模組產物一旦進入鏡像庫即不可被竄改。
 2. **雙層組態快照 (`snapshot://<snap_id>/`)**：在進行任何可能變更系統狀態的操作（`install`, `update`, `remove`）前，原子備份宿主環境組態 (`yscb.config.json`) 與模組專屬設定目錄 (`config.root://`)。
-3. **完美回滾閉環**：若安裝過程失敗或使用者調用 `rollback`，系統同步還原宿主設定與模組設定，並透過 `act_reload()` 自不可變鏡像庫重新物化 `modules/` 運行目錄。
+3. **完美回滾閉環**：若安裝過程失敗或使用者調用 `rollback`，系統同步還原宿主設定與模組設定，並透過 `act_reload()` 自不可變鏡像庫重新物化 `.modules/` 運行目錄。
 
 ```mermaid
 sequenceDiagram
@@ -20,7 +20,7 @@ sequenceDiagram
     participant Eng as AtomicEngine
     participant Snap as snapshot://{snap_id}/
     participant Mirror as mirror://{mod}/{ver}/
-    participant Runtime as modules/ & config/
+    participant Runtime as .modules/ & config/
 
     Note over CLI,Runtime: 階段 1: 建立雙層快照
     CLI->>Eng: act_snapshot(tag)
@@ -33,7 +33,7 @@ sequenceDiagram
     Eng->>Runtime: 1. 覆蓋還原 yscb.config.json
     Eng->>Runtime: 2. 完整清空並覆蓋還原 config.root://
     Eng->>Mirror: 3. act_reload() 讀取不可變鏡像
-    Mirror->>Runtime: 重新物化 modules/ 目錄
+    Mirror->>Runtime: 重新物化 .modules/ 目錄
     Eng-->>CLI: 達成 100% 純淨無殘留回滾
 ```
 

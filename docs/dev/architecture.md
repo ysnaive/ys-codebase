@@ -31,7 +31,7 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 3. 核心建置與校驗引擎層 (Engine & Core Services Layer)                      │
 │    • dev/builder.py: Builder                                                │
-│      - build_module() (自動清空 build/<mod>/，保留 tests/)                  │
+│      - build_module() (自動清空 .build/<mod>/，保留 tests/)                 │
 │      - package_release() (純淨打包，3-Revision 滑動窗口淘汰，index.json SSOT)│
 │    • dev/checker.py: Checker                                                │
 │      - check_module() (靜態合規性、entry 實體存在性、依賴格式校驗)          │

@@ -1,5 +1,6 @@
 # YS-Codebase Autonomous Internal Ignore Rules
-/build/
+/.modules/
+/.build/
 /.mirror/
 /.temp/
 /.snapshots/
