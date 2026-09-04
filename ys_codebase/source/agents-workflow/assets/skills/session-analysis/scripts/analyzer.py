@@ -71,18 +71,25 @@ def parse_transcript_slice(transcript_path: Path) -> Tuple[List[Dict[str, Any]],
 
     # Identify trigger points of session-analysis
     trigger_indices = []
+    last_user_input_idx = -1
     for i, entry in enumerate(all_entries):
         stype = entry.get("type")
         content = entry.get("content", "") or ""
         # Check if user invoked session analysis
-        if stype == "USER_INPUT" and ("SessionAnalysis" in content or "session-analysis" in content or "analyzer.py" in content):
-            trigger_indices.append(i)
+        if stype == "USER_INPUT":
+            last_user_input_idx = i
+            if "SessionAnalysis" in content or "session-analysis" in content or "analyzer.py" in content:
+                trigger_indices.append(i)
+                continue
         # Check if planner invoked analyzer script
         for tc in entry.get("tool_calls", []):
             args = tc.get("args", {})
             cmd = args.get("CommandLine", "")
             if "analyzer.py" in cmd or "analyze_session.py" in cmd:
-                if i not in trigger_indices:
+                # Avoid duplicate trigger if already registered for the current user input turn
+                if trigger_indices and trigger_indices[-1] == last_user_input_idx:
+                    continue
+                if not trigger_indices or trigger_indices[-1] != i:
                     trigger_indices.append(i)
 
     if not trigger_indices:
@@ -192,7 +199,14 @@ def analyze_slice(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     thinking_tokens = int(dynamic_tokens * 0.25)
 
     context_window_est = system_prompt_fixed_baseline + dynamic_tokens
-    system_fixed_pct = (system_prompt_fixed_baseline / max(1, context_window_est)) * 100
+    denom = max(1, context_window_est)
+    system_fixed_pct = (system_prompt_fixed_baseline / denom) * 100
+    dynamic_pct = (dynamic_tokens / denom) * 100
+    read_pct = (read_tokens / denom) * 100
+    write_pct = (write_tokens / denom) * 100
+    cli_pct = (cli_tokens / denom) * 100
+    dialogue_pct = (dialogue_tokens / denom) * 100
+    thinking_pct = (thinking_tokens / denom) * 100
 
     return {
         "model_steps": model_steps,
@@ -208,11 +222,17 @@ def analyze_slice(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
             "system_fixed": system_prompt_fixed_baseline,
             "system_fixed_pct": round(system_fixed_pct, 1),
             "dynamic_tokens": dynamic_tokens,
+            "dynamic_pct": round(dynamic_pct, 1),
             "read_tokens": read_tokens,
+            "read_pct": round(read_pct, 1),
             "write_tokens": write_tokens,
+            "write_pct": round(write_pct, 1),
             "cli_tokens": cli_tokens,
+            "cli_pct": round(cli_pct, 1),
             "dialogue_tokens": dialogue_tokens,
+            "dialogue_pct": round(dialogue_pct, 1),
             "thinking_tokens": thinking_tokens,
+            "thinking_pct": round(thinking_pct, 1),
         }
     }
 
@@ -248,18 +268,18 @@ def format_markdown_report(metrics: Dict[str, Any], scope_desc: str) -> str:
 
 ### 📊 行為統計與 Token 視窗分佈 (Dimension Breakdown)
 - **實時 Context 視窗預估**：約 `{t["context_window"]:,}` Tokens
-  - **系統固定上下文 (System Prompt)**：約 `{t["system_fixed"]:,}` Tokens (`{t["system_fixed_pct"]}%`) *(純靜態恆定，Prompt Cache 命中率 ~99%+)*
-  - **動態累積上下文 (Dynamic Context)**：約 `{t["dynamic_tokens"]:,}` Tokens
+  - **系統固定上下文 (System Prompt)**：約 `{t["system_fixed"]:,}` Tokens (`{t["system_fixed_pct"]:.1f}%`) *(純靜態恆定，Prompt Cache 命中率 ~99%+)*
+  - **動態累積上下文 (Dynamic Context)**：約 `{t["dynamic_tokens"]:,}` Tokens (`{t["dynamic_pct"]:.1f}%`)
 - **模型實際推論輪次 (Planner Steps)**：`{metrics["model_steps"]}` 輪 *(嚴格排除 Tool Output 雜訊)*
 - **使用者輸入 (User Inputs)**：`{metrics["user_inputs"]}` 次
-- **外部指令調用 (CLI)**：約 `{t["cli_tokens"]:,}` Tokens | 執行 `{metrics["cli_count"]}` 次
+- **外部指令調用 (CLI)**：約 `{t["cli_tokens"]:,}` Tokens (`{t["cli_pct"]:.1f}%`) | 執行 `{metrics["cli_count"]}` 次
 - **Skills 觸發**：`{len(metrics["skills_triggered"])}` 項：`[{skills_str}]`
-- **Workflows 調用**：`{len(metrics["workflows_called"])}` 項：`[{workflows_str}]`
+- **Workflows 觸發**：`{len(metrics["workflows_called"])}` 項：`[{workflows_str}]`
 - **細部操作吞吐**：
-  - **Read (檔案檢視)**：約 `{t["read_tokens"]:,}` Tokens | 調用 `{read_calls}` 次
-  - **Write (代碼寫入/編輯)**：約 `{t["write_tokens"]:,}` Tokens | 產出 `{write_calls}` 次
-  - **Thinking (思考推導估算)**：約 `{t["thinking_tokens"]:,}` Tokens
-  - **Dialogue (對話互動)**：約 `{t["dialogue_tokens"]:,}` Tokens
+  - **Read (檔案檢視)**：約 `{t["read_tokens"]:,}` Tokens (`{t["read_pct"]:.1f}%`) | 調用 `{read_calls}` 次
+  - **Write (代碼寫入/編輯)**：約 `{t["write_tokens"]:,}` Tokens (`{t["write_pct"]:.1f}%`) | 產出 `{write_calls}` 次
+  - **Thinking (思考推導估算)**：約 `{t["thinking_tokens"]:,}` Tokens (`{t["thinking_pct"]:.1f}%`)
+  - **Dialogue (對話互動)**：約 `{t["dialogue_tokens"]:,}` Tokens (`{t["dialogue_pct"]:.1f}%`)
 
 ### 🧩 模組特化評測 (Modular Evaluations)
 - **知識庫檢索效益 (knowledge-db)**：

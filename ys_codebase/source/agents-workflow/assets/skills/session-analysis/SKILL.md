@@ -92,16 +92,17 @@ python __${module://agents-workflow/assets/skills/session-analysis/scripts/analy
 ### 📊 行為統計與 Token 視窗分佈 (Dimension Breakdown)
 - **實時 Context 視窗預估**：約 `[N]` Tokens
   - **系統固定上下文 (System Prompt)**：約 `[S_fixed]` Tokens (`[S_pct]%`) *(Prompt Cache 命中率 ~99%+)*
-  - **動態累積上下文 (Dynamic Context)**：約 `[S_dynamic]` Tokens
+  - **動態累積上下文 (Dynamic Context)**：約 `[S_dynamic]` Tokens (`[D_pct]%`)
 - **模型實際推論輪次 (Planner Steps)**：`[count]` 輪
 - **使用者輸入 (User Inputs)**：`[count]` 次
-- **外部指令調用 (CLI)**：約 `[C_tok]` Tokens | 執行 `[count]` 次
+- **外部指令調用 (CLI)**：約 `[C_tok]` Tokens (`[C_pct]%`) | 執行 `[count]` 次
 - **Skills 觸發**：`[count]` 項：`[清單]`
+- **Workflows 觸發**：`[count]` 項：`[清單]`
 - **細部操作吞吐**：
-  - **Read (檔案檢視)**：約 `[R_tok]` Tokens | 調用 `[count]` 次
-  - **Write (代碼寫入/編輯)**：約 `[W_tok]` Tokens | 產出 `[count]` 次
-  - **Thinking (思考推導估算)**：約 `[T_tok]` Tokens
-  - **Dialogue (對話互動)**：約 `[D_tok]` Tokens
+  - **Read (檔案檢視)**：約 `[R_tok]` Tokens (`[R_pct]%`) | 調用 `[count]` 次
+  - **Write (代碼寫入/編輯)**：約 `[W_tok]` Tokens (`[W_pct]%`) | 產出 `[count]` 次
+  - **Thinking (思考推導估算)**：約 `[T_tok]` Tokens (`[T_pct]%`)
+  - **Dialogue (對話互動)**：約 `[D_tok]` Tokens (`[D_pct]%`)
 
 ### 🧩 模組特化評測 (Modular Evaluations)
 - [模組特化指標 / 若無填「無模組特化指標」]
