@@ -306,6 +306,28 @@ def main(argv=None) -> int:
         return installer.cmd_rollback(target)
     elif cmd == "reload":
         return installer.cmd_reload()
+    elif cmd == "event":
+        sub_cmd = clean_args[0] if clean_args else "list"
+        if sub_cmd == "list":
+            from core import events
+            contributed = events.get_contributed_events()
+            print("=" * 70)
+            print("  YS-Codebase - Ecosystem Event Registry")
+            print("=" * 70)
+            if not contributed:
+                print("  (No contributed events found)")
+            else:
+                for mod_name, ev_list in sorted(contributed.items()):
+                    print(f"\n[{mod_name}]")
+                    for ev in ev_list:
+                        ename = ev.get("name", "")
+                        edesc = ev.get("description", "")
+                        print(f"  {ename:<25} {edesc}")
+            print("\n" + "=" * 70)
+            return 0
+        else:
+            print(f"[core:event] Unknown subcommand '{sub_cmd}'. Available: list")
+            return 1
     else:
         print(f"[core] Unknown command '{cmd}'. Run 'python yscb.py core --help' for available commands.")
         return 1

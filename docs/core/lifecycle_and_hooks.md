@@ -13,14 +13,14 @@ graph TD
     classDef emit fill:#1e3a8a,stroke:#3b82f6,stroke-width:2px,color:#fff;
     classDef recv fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#fff;
 
-    Emitter["發起端模組 (例: <code>core</code> 或 <code>dev</code>)<br/>調用 <code>act_broadcast_event(emit_mod, event, ctx)</code> 或 <code>SandboxProvisioner</code>"]:::emit
+    Emitter["發起端 (例: <code>yscb.py</code> 宿主、<code>core</code>、<code>dev</code>)<br/>調用 <code>core.events.broadcast(event, ctx, emit_module)</code>"]:::emit
     
-    subgraph Receiver ["接收端模組 (例: custom_mod 或 core)"]
+    subgraph Receiver ["接收端模組 (例: agents-workflow 或 custom_mod)"]
         HookFile["對接檔案：<code>scripts/hook.{emit_module}.py</code><br/>（例：<code>scripts/hook.core.py</code>, <code>scripts/hook.dev.py</code>）"]:::recv
-        Handler["回呼函式：<code>def on_installed(context): ...</code> / <code>def on_test_setup(context): ...</code>"]:::recv
+        Handler["回呼函式：<code>def on_pre_cli_dispatch(ctx): ...</code> / <code>def on_reload(ctx): ...</code> / <code>def on_test_setup(ctx): ...</code>"]:::recv
     end
 
-    Emitter -->|動態掃描所有已安裝模組或沙盒源碼| HookFile
+    Emitter -->|動態掃描運行端模組或自訂 search_roots| HookFile
     HookFile --> Handler
 ```
 
@@ -28,19 +28,27 @@ graph TD
 
 ## 2. 接收端實作標準
 
-若模組 `A` 想監聽來自模組 `B` 派發的生命週期事件，必須遵循以下兩大規則：
+若模組 `A` 想監聽來自發起端 `B`（預設為 `core`）派發的生命週期事件，必須遵循以下兩大規則：
 1. **檔案路徑**：`.modules/{A}/scripts/hook.{B}.py`（原始碼中位於 `source/{A}/scripts/hook.{B}.py`）。
-2. **函式定義**：函式名稱嚴格對齊事件名稱，接收唯一參數 `context`。
+2. **函式定義**：函式名稱支援 `on_{event_name}` 與 `{event_name}` 雙向匹配，接收唯一參數 `context`（型別為 `ExecutionContext`）。
 
 ---
 
-## 3. 兩大核心發起端 Hook 規範
+## 3. 核心發起端 Hook 規範
 
-### 3.1 核心運行期 Hook：`scripts/hook.core.py`
-由 `core` 模組在執行模組生命週期操作時廣播：
+### 3.1 核心與宿主生命週期 Hook：`scripts/hook.core.py`
+由 `yscb.py` 宿主與 `core` 模組在執行命令分發或模組生命週期操作時透過 `core.events.broadcast()` 廣播：
 ```python
 # source/my_module/scripts/hook.core.py
 from core.uri import ExecutionContext
+
+def on_pre_cli_dispatch(context: ExecutionContext) -> bool:
+    """在 CLI 命令分發前觸發，提供自癒與前置檢查（如 JIT 投影物化同步）"""
+    return True
+
+def on_post_cli_dispatch(context: ExecutionContext) -> None:
+    """在 CLI 命令分發完成後觸發"""
+    pass
 
 def on_installed(context: ExecutionContext) -> None:
     """當 core 完成本模組安裝或依賴安裝時觸發"""

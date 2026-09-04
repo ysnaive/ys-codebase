@@ -43,3 +43,20 @@ def on_reload(ctx=None) -> None:
             print(f"[agents-workflow:hook] Auto-release failed on reload: {res.get('error', 'Unknown')}")
     except Exception as e:
         print(f"[agents-workflow:hook] Auto-release on reload failed: {e}")
+
+
+def on_pre_cli_dispatch(ctx=None) -> bool:
+    """
+    在 CLI 命令分發前觸發，呼叫 ensure_jit_release()。
+    若來源特徵指紋變更，原地執行 release_all(force=False) 自癒物化至 Targets；
+    若無變更 (Clean)，<1ms 極速短路跳過。
+
+    :return: 是否發生實質物化寫入
+    """
+    try:
+        from agents_workflow.publisher import ensure_jit_release
+        return ensure_jit_release()
+    except Exception as e:
+        print(f"[agents-workflow:hook] Warning: Failed during on_pre_cli_dispatch: {e}", file=sys.stderr)
+        return False
+

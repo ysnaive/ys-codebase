@@ -51,7 +51,8 @@ CORE_COMMANDS: set = {
     "rollback",
     "reload",
     "uri",
-    "config"
+    "config",
+    "event"
 }
 
 
@@ -633,6 +634,106 @@ def _ensure_jit_modules_sync() -> None:
         cmd_restore([])
 
 
+def _ensure_jit_lifecycle_pre(cmd: str) -> None:
+    """JIT 生命週期前置管線：微環境注入、運行端自愈，並觸發 pre_cli_dispatch 事件。"""
+    if cmd in ("init", "self-update", "restore", "bootstrap"):
+        return
+    cfg_path, cfg = load_config()
+    if not cfg_path or not cfg or "yscb_root" not in cfg:
+        return
+
+    base_dir = os.path.dirname(cfg_path)
+    os.environ["YSCB_HOST_DIR"] = base_dir
+    yscb_root = cfg["yscb_root"]
+    yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
+    _ensure_private_venv_path(yscb_abs)
+    _ensure_jit_modules_sync()
+
+    try:
+        mod_core = os.path.join(yscb_abs, ".modules", "core")
+        if os.path.isdir(os.path.join(mod_core, "core")) and mod_core not in sys.path:
+            sys.path.insert(0, mod_core)
+        from core import events, uri
+        uri.set_host_dir(base_dir)
+        uri.set_yscb_root(yscb_abs)
+        events.broadcast("pre_cli_dispatch", emit_module="core")
+    except Exception:
+        pass
+
+
+def _ensure_jit_lifecycle_post(cmd: str, ret_code: int = 0) -> None:
+    """JIT 生命週期後置管線：觸發 post_cli_dispatch 事件與更新提示檢查。"""
+    if cmd in ("init", "self-update", "restore", "bootstrap"):
+        return
+    cfg_path, cfg = load_config()
+    if not cfg_path or not cfg or "yscb_root" not in cfg:
+        return
+
+    base_dir = os.path.dirname(cfg_path)
+    yscb_root = cfg["yscb_root"]
+    yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
+
+    try:
+        mod_core = os.path.join(yscb_abs, ".modules", "core")
+        if os.path.isdir(os.path.join(mod_core, "core")) and mod_core not in sys.path:
+            sys.path.insert(0, mod_core)
+        from core import events, uri
+        uri.set_host_dir(base_dir)
+        uri.set_yscb_root(yscb_abs)
+        events.broadcast("post_cli_dispatch", emit_module="core")
+    except Exception:
+        pass
+
+    if ret_code == 0 and cmd not in ("update", "init", "self-update", "restore", "bootstrap"):
+        _check_and_show_update_tips()
+
+
+def cmd_event(argv: List[str]) -> int:
+    """處理 'python yscb.py event <subcommand>'。"""
+    if not argv or argv[0] in ("-h", "--help"):
+        print("USAGE:")
+        print("  python yscb.py event list              List all contributed events across modules")
+        return 0
+
+    sub = argv[0]
+    if sub == "list":
+        cfg_path, cfg = load_config()
+        if not cfg_path or not cfg or "yscb_root" not in cfg:
+            print("[yscb:event] Error: Environment not initialized. Run 'python yscb.py init <root>' first.")
+            return 1
+        base_dir = os.path.dirname(cfg_path)
+        yscb_root = cfg["yscb_root"]
+        yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
+        mod_core = os.path.join(yscb_abs, ".modules", "core")
+        if os.path.isdir(os.path.join(mod_core, "core")) and mod_core not in sys.path:
+            sys.path.insert(0, mod_core)
+        try:
+            from core import events, uri
+            uri.set_host_dir(base_dir)
+            uri.set_yscb_root(yscb_abs)
+            contributed = events.get_contributed_events()
+            print("=" * 70)
+            print("  YS-Codebase - Ecosystem Event Registry")
+            print("=" * 70)
+            if not contributed:
+                print("  (No contributed events found)")
+            else:
+                for mod_name, ev_list in sorted(contributed.items()):
+                    print(f"\n[{mod_name}]")
+                    for ev in ev_list:
+                        ename = ev.get("name", "")
+                        edesc = ev.get("description", "")
+                        print(f"  {ename:<25} {edesc}")
+            print("\n" + "=" * 70)
+            return 0
+        except Exception as e:
+            print(f"[yscb:event] Error listing events: {e}")
+            return 1
+    else:
+        print(f"[yscb:event] Unknown subcommand '{sub}'. Available: list")
+        return 1
+
+
 import difflib
 
 
@@ -697,6 +798,7 @@ def _print_global_help() -> None:
         ("status", "Health check and runtime diagnostic report"),
         ("reload", "Reconcile and refresh runtime environment"),
         ("rollback", "Revert environment to the previous snapshot state"),
+        ("event list", "List all contributed events across modules"),
     ]
     for cmd, desc in core_docs:
         print(f"  {cmd:<35} {desc}")
@@ -821,6 +923,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     cmd = argv[0]
+    _ensure_jit_lifecycle_pre(cmd)
+
     ret = 0
     if cmd == "init":
         ret = cmd_init(argv[1:])
@@ -828,19 +932,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         ret = cmd_self_update(argv[1:])
     elif cmd in ("restore", "bootstrap"):
         ret = cmd_restore(argv[1:])
+    elif cmd == "event":
+        ret = cmd_event(argv[1:])
     elif cmd in CORE_COMMANDS:
-        _ensure_jit_modules_sync()
         ret = dispatch_module("core", argv)
     elif cmd == "core":
-        _ensure_jit_modules_sync()
         ret = dispatch_module("core", argv[1:])
     else:
-        _ensure_jit_modules_sync()
         ret = dispatch_module(cmd, argv[1:])
 
-    if ret == 0 and cmd not in ("update", "init", "self-update", "restore", "bootstrap"):
-        _check_and_show_update_tips()
-
+    _ensure_jit_lifecycle_post(cmd, ret)
     return ret
 
 

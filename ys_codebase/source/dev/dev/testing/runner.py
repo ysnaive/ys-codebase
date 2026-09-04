@@ -70,6 +70,8 @@ def filter_suite(
         # 3. 4-tier Taxonomy filter against @require(Requirement)
         method = getattr(test_case, method_name, None)
         req = getattr(method, "__requirement__", None) if method else None
+        if req is None:
+            req = getattr(test_case.__class__, "__requirement__", None)
 
         if req is None:
             category = "logic"

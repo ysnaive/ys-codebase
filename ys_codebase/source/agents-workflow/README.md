@@ -17,7 +17,7 @@ graph TD
     IDE["AI Agent / IDE 介面<br/><code>/Slash-Commands & AGENTS.md</code>"]:::main
 
     subgraph WorkflowModule ["Agents-Workflow 模組 (module:agents-workflow)"]
-        Workflows["工作流引擎 (Workflows)<br/><i>/NewPlan, /Auto, /Review, /Retro, /Discuss</i>"]:::sub
+        Workflows["工作流引擎 (Workflows)<br/><i>/NewPlan, /Auto, /Discuss</i>"]:::sub
         PlanManager["開發計畫管理 (Plans Toolchain)<br/><i>SOP 0~7 / 6 大分支拓撲 / plan verify</i>"]:::sub
         Compiler["動態 Token 編譯器 (ArtifactCompiler)<br/><i>佔位符解析 / 拓撲聚合</i>"]:::sub
         Publisher["發布物工廠 (ReleasePublisher)<br/><i>IDE 規範物化 / AGENTS.md 注入</i>"]:::sub
@@ -34,15 +34,13 @@ graph TD
 
 ## 2. 核心工作流與 Slash Commands 導航 (Workflows Guide)
 
-模組官方提供以下標準化 Slash Commands，引導 Agent 與開發者在不同場景下進行精準協同：
+模組官方提供以下標準化 Slash Commands，引導 Agent 與開發者在不同場景下進行精準協同（Review 審查與 Session 分析已內化為獨立技能與 SOP 閘門，無需獨立 Slash Command）：
 
 | Slash 指令 | 工作流名稱 | 核心職責與適用情境 |
 | :--- | :--- | :--- |
 | **`/ContextInit`** | 上下文熱啟動 | 全新對話開始時，快速加載專案行為準則、變更歷史、CLI 權限手冊與進行中計畫大綱。 |
 | **`/NewPlan`** | 標準開發作業流程 | 開啟新功能或重構任務。採**延遲建檔守門**，討論 P00 確定分流後自動開立對應計畫目錄。 |
 | **`/Auto`** | 自動連續推進模式 | 於 Phase 01~05 授權 Agent 跳過中間 Checkpoint 連續推進，直至 P06 手動/UX 驗證絕對阻斷。 |
-| **`/Review`** | 開發完成品質審查 | 代碼完成後進行五維度品質矩陣驗收（功能、邊界、效能、知識庫 1:1 交付與代碼整潔度）。 |
-| **`/Retro`** | 開發歷程自檢評測 | 稽核當前對話歷史之紀律合規性（三大原則、問答 $\neq$ 推進、檢索效益、CLI 守門查核）。 |
 | **`/Discuss`** | 深度歸因與範疇保護 | 實作遇阻、連續修復失敗或涉及跨模組時強制暫停，啟動 5-Whys 根因分析與範疇防護。 |
 | **`/Continue`** | 中斷現場斷點接續 | 接手既有計畫或中斷任務，自動讀取 `handoff.md` 與最新 Phase 狀態恢復開發現場。 |
 | **`/Pause`** | 暫停開發與現場凍結 | 需暫停工作或切換對話時，自動產出 `handoff.md` 達成零斷層交接。 |

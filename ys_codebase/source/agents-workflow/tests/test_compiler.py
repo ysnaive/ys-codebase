@@ -367,32 +367,31 @@ class TestArtifactCompiler(YSCBTestCase):
         idx_below2 = res.index("### Below Block 2")
         self.assertTrue(idx_above < idx_replace < idx_below1 < idx_below2)
 
-    def test_sub_08_session_analysis_workflow_export_and_token(self):
-        """SUB-08: 驗證 /SessionAnalysis 工作流資產導出、SESSION_ANALYSIS_CHECK_ITEMS Token 宣告與未注入自動 Purge / 注入渲染。"""
+    def test_sub_08_session_analysis_skill_export_and_token(self):
+        """SUB-08: 驗證 session-analysis 技能資產導出、SESSION_ANALYSIS_CHECK_ITEMS Token 宣告與未注入自動 Purge / 注入渲染。"""
         data = self.compiler.get_contributes_data()
         exports = data.get("export", [])
         tokens = data.get("token", [])
 
         # 1. 驗證 export 與 token 註冊
         export_sources = [e.get("source") for e in exports]
-        self.assertIn("module://agents-workflow/assets/workflows/SessionAnalysis.md", export_sources)
+        self.assertIn("module://agents-workflow/assets/skills/session-analysis", export_sources)
+        self.assertNotIn("module://agents-workflow/assets/workflows/SessionAnalysis.md", export_sources)
         token_values = [t.get("value") for t in tokens]
         self.assertIn("SESSION_ANALYSIS_CHECK_ITEMS", token_values)
-        self.assertIn("WORKFLOW_SESSIONANALYSIS", token_values)
+        self.assertNotIn("WORKFLOW_SESSIONANALYSIS", token_values)
 
         # 2. 驗證 Stage 1 編譯成功
         res = self.compiler.compile_stage1()
         self.assertTrue(res["success"])
         resolved_list = res.get("resolved_items", [])
-        sa_item = next((item for item in resolved_list if item.get("base_name") == "SessionAnalysis.md"), None)
+        sa_item = next((item for item in resolved_list if item.get("skill_name") == "session-analysis" and item.get("base_name") == "SKILL.md"), None)
         self.assertIsNotNone(sa_item)
         sa_content = sa_item["content"]
 
-        # 3. 驗證核心文檔溯源標頭與無殘留 Token 標籤
-        self.assertIn("對話階段歷程分析工作流 (SessionAnalysis)", sa_content)
-        self.assertIn("文檔根因溯源", sa_content)
+        # 3. 驗證核心內容與無殘留 Token 標籤
+        self.assertIn("對話階段歷程分析技能指南 (Session Analysis Skill)", sa_content)
         self.assertNotIn("`__@{SESSION_ANALYSIS_CHECK_ITEMS}__`", sa_content)
-        self.assertNotIn("`__@{WORKFLOW_SESSIONANALYSIS}__`", sa_content)
 
         # 4. 驗證模擬 Donor 注入 SESSION_ANALYSIS_CHECK_ITEMS
         raw_text = "# Session Analysis Test\n\n`__@{SESSION_ANALYSIS_CHECK_ITEMS}__`\n\n# End"

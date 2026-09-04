@@ -10,6 +10,7 @@ from core import uri
 from core.context import ExecutionContext
 from core.engine import AtomicEngine
 from core import semver
+from core import events
 
 class Installer:
     def __init__(self):
@@ -54,7 +55,7 @@ class Installer:
                 print(f"[core:install] Running migration ladder for '{module_name}' ({old_ver} -> {installed_ver})...")
                 self.engine.act_migrate(module_name, old_ver, installed_ver)
                 
-            self.engine.act_broadcast_event("core", "on_installed", ExecutionContext("core", "install", [module_name, installed_ver]))
+            events.broadcast("on_installed", ExecutionContext("core", "install", [module_name, installed_ver]), emit_module="core")
             self.sync_pip_dependencies()
             self.engine.act_unlock("install")
             print(f"[core:install] Successfully installed '{module_name}@{installed_ver}'.")
@@ -127,7 +128,7 @@ class Installer:
             
             if updated_any:
                 self.engine.act_reload(clean_stage=True, inject_stage=True)
-                self.engine.act_broadcast_event("core", "on_update", ExecutionContext("core", "update", targets))
+                events.broadcast("on_update", ExecutionContext("core", "update", targets), emit_module="core")
                 self.sync_pip_dependencies()
                 print(f"[core:update] Update completed successfully.")
             self.engine.act_unlock("update")
@@ -176,7 +177,7 @@ class Installer:
                 print(f"[core:remove] Warning: Force removing '{module_name}' required by: {', '.join(dependents)}.")
             
         print(f"[core:remove] Removing module '{module_name}'...")
-        self.engine.act_broadcast_event("core", "on_remove", ExecutionContext("core", "remove", [module_name]))
+        events.broadcast("on_remove", ExecutionContext("core", "remove", [module_name]), emit_module="core")
         self.engine.act_snapshot(f"pre_remove_{module_name}")
         self.engine.act_unregister(module_name)
         self.engine.act_delete(module_name, clean_mirror=clean, purge=purge)

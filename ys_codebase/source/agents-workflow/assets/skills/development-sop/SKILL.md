@@ -42,7 +42,7 @@ description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/�
 | **回歸/效能測試** | `RT-{XX}` / `PT-{XX}` | `RT-01`, `PT-01` | 全系統既有功能回歸 / 效能量測測試案例 |
 | **UX / 缺陷紀錄** | `UX-{XX}` / `BUG-{XX}` | `UX-01`, `BUG-01` | 開發者實機 UX 驗證項 / 測試過程發現之缺陷 |
 
-$$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR/EC} \;\longrightarrow\; \texttt{[\{Phase\}:DR-XX]} \;\longrightarrow\; \texttt{API 簽名} \;\longrightarrow\; \texttt{程式碼} \;\longrightarrow\; \texttt{FT/ET/RT 測試}$$
+$$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR/EC} \;\longrightarrow\; \texttt{[\{Phase\}:DR-XX]} \;\longrightarrow\; \texttt{API 簽名} \;\longrightarrow\; \texttt{程式碼} \;\longrightarrow\; \texttt{FT/ET/RT 測試} \;\longrightarrow\; \texttt{Review 審查} \;\longrightarrow\; \texttt{P07 成果}$$
 
 ---
 
@@ -52,8 +52,8 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 | 計畫模式 | 核心特徵與週期 | 適用情境與判定標準 | 產出檔案矩陣 | 詳細手冊 |
 | :--- | :--- | :--- | :--- | :---: |
-| **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` ➔ `P01`~`P07` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track) |
-| **迅捷開發計畫 (Fast Track)** | 3-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track) |
+| **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` ➔ `P01`~`P06` ➔ `Review` ➔ `P07` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track) |
+| **迅捷開發計畫 (Fast Track)** | 4-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` (含 Review 核驗) + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track) |
 | **修訂計畫 (Revision Plan)** | 短循環極速交付 | 文檔校閱、極小註解同步、常數微調，**免開實體目錄**保護 Token | 0 計畫文件 (僅呈遞極簡變更卡) | [模式詳解](./references/plan_modes.md#3-修訂計畫-revision-plan---短循環) |
 | **調研計畫 (Research Plan)** | 調研探索 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R01_{topic}` + `changelog` | [模式詳解](./references/plan_modes.md#4-調研計畫-research-plan---調研-track) |
 | **分類型主計畫 (Umbrella)** | 跨子計畫史詩統籌 | 統籌多個子計畫（B-1 預先規劃型 / B-2 增量演進型藍圖） | `umbrella_overview` + 各子計畫目錄 | [模式詳解](./references/plan_modes.md#5-分類型主計畫-umbrella) |
@@ -61,11 +61,11 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ---
 
-## 🧭 5. Full Track SOP 0~7 階段導航矩陣
+## 🧭 5. Full Track SOP 階段導航矩陣
 
 推進各階段時，請查閱對應之專屬作業手冊：
 
-| 階段 | 專屬作業手冊 | 產出檔案 |
+| 階段 | 專屬作業手冊 | 產出檔案 / 卡片 |
 | :---: | :---: | :---: |
 | **Phase 0** | [P00 需求討論](./references/phase_00_discuss.md) | `P00_discuss.md` |
 | **Phase 1** | [P01 規格轉譯](./references/phase_01_requirements.md) | `P01_requirements_spec.md` |
@@ -74,6 +74,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 | **Phase 4** | [P04 定稿審查](./references/phase_04_plan.md) | `P04_implementation_plan.md` |
 | **Phase 5** | [P05 任務實作](./references/phase_05_task.md) | `P05_task.md` |
 | **Phase 6** | [P06 測試驗證](./references/phase_06_test.md) | `P06_test_plan.md` |
+| **Review** | [SOP 結案審查](./references/review_gate.md) | Review Verdict 審查卡 |
 | **Phase 7** | [P07 成果展示](./references/phase_07_walkthrough.md) | `P07_walkthrough.md` |
 
 ---

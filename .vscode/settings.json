@@ -1,4 +1,5 @@
 {
+  "terminal.integrated.enablePersistentSessions": false,
   "files.exclude": {
     "**/.git": true,
     "**/.vscode": true,
