@@ -40,6 +40,7 @@ from agents_workflow.compiler import ArtifactCompiler
 PROJECT_MANIFEST_STORAGE_URI = "storage://agents-workflow/release_manifest.json"
 LOCAL_MANIFEST_CACHE_URI = "cache://agents-workflow/release_manifest.json"
 MANIFEST_STORAGE_URI = PROJECT_MANIFEST_STORAGE_URI
+SHA1_CACHE_URI = "cache://agents-workflow/source_sha1_cache.json"
 AGENTS_MD_BEGIN = "<!-- YSCB_AGENTS_BEGIN -->"
 AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
 GITIGNORE_BEGIN_MARKER = "# === YSCB AGENTS_WORKFLOW IGNORE BEGIN ==="
@@ -52,6 +53,29 @@ class ReleasePublisher:
     def __init__(self, compiler: Optional[ArtifactCompiler] = None, host_dir: Optional[str] = None):
         self.compiler = compiler or ArtifactCompiler(host_dir=host_dir)
         self.host_dir = host_dir
+        self._sha1_cache_dirty = False
+        self._sha1_cache: Dict[str, List[Any]] = self._load_sha1_cache()
+        self._sources_digest_cache: Optional[bytes] = None
+
+    def _load_sha1_cache(self) -> Dict[str, List[Any]]:
+        """載入持久化之來源檔案 SHA-1 快取 (cache://)。"""
+        if uri and uri.exists(SHA1_CACHE_URI):
+            try:
+                data = uri.read_json(SHA1_CACHE_URI)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        return {}
+
+    def _save_sha1_cache(self) -> None:
+        """若有異動，將來源檔案 SHA-1 快取持久化至 cache://。"""
+        if getattr(self, "_sha1_cache_dirty", False) and uri:
+            try:
+                uri.write_json(SHA1_CACHE_URI, self._sha1_cache)
+                self._sha1_cache_dirty = False
+            except Exception:
+                pass
 
     def _to_project_uri(self, abs_path: str, proj_root: str) -> str:
         """將本機實體絕對路徑轉換為 project:// 語意協議路徑。"""
@@ -124,6 +148,64 @@ class ReleasePublisher:
 
         return cfg
 
+    def _get_source_file_sha1(self, path_or_uri: str) -> str:
+        """計算來源檔案 SHA-1，支援 (mtime_ns, size) Stat-First 快取加速。"""
+        real_p = self.compiler._resolve_source_path(path_or_uri)
+        if real_p and os.path.isfile(real_p):
+            try:
+                st = os.stat(real_p)
+                cached = self._sha1_cache.get(real_p)
+                if cached and len(cached) >= 3 and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+                    return str(cached[2])
+                content = self.compiler._read_file_content(path_or_uri)
+                sha1_val = hashlib.sha1(content.encode("utf-8")).hexdigest()
+                self._sha1_cache[real_p] = [st.st_mtime_ns, st.st_size, sha1_val]
+                self._sha1_cache_dirty = True
+                return sha1_val
+            except Exception:
+                pass
+        content = self.compiler._read_file_content(path_or_uri)
+        return hashlib.sha1(content.encode("utf-8")).hexdigest()
+
+    def _get_sources_digest(self) -> bytes:
+        """計算來源端所有靜態資源與宣告（manifest, contributes, export, insert）之綜合 SHA-256 摘要。"""
+        if self._sources_digest_cache is not None:
+            return self._sources_digest_cache
+
+        hasher = hashlib.sha256()
+
+        # 1. 模組自身 manifest.json
+        try:
+            manifest_p = os.path.join(self.compiler.module_root, "manifest.json")
+            if os.path.isfile(manifest_p):
+                sha1_val = self._get_source_file_sha1(manifest_p)
+                hasher.update(b"manifest.json:")
+                hasher.update(sha1_val.encode("utf-8"))
+        except Exception:
+            pass
+
+        # 2. Contributes 資料 (export, insert, token, release_target)
+        contrib = self.compiler.get_contributes_data()
+        hasher.update(json.dumps(contrib, sort_keys=True).encode("utf-8"))
+
+        # 3. 實體來源檔案特徵 (路徑與 SHA-1 快取)
+        for exp in contrib.get("export", []):
+            src = exp.get("source", "")
+            if src:
+                sha1_val = self._get_source_file_sha1(src)
+                hasher.update(src.encode("utf-8"))
+                hasher.update(sha1_val.encode("utf-8"))
+
+        for ins in contrib.get("insert", []):
+            src = ins.get("source") or (ins.get("value") if ins.get("type") == "uri" else "")
+            if src:
+                sha1_val = self._get_source_file_sha1(str(src))
+                hasher.update(str(src).encode("utf-8"))
+                hasher.update(sha1_val.encode("utf-8"))
+
+        self._sources_digest_cache = hasher.digest()
+        return self._sources_digest_cache
+
     def compute_source_fingerprint(self, target_names: Optional[List[str]] = None) -> str:
         """
         計算來源端綜合特徵指紋 (SHA-256 Hex Digest)。
@@ -138,32 +220,8 @@ class ReleasePublisher:
             cfg["release_targets"] = sorted(list(target_names))
         hasher.update(json.dumps(cfg, sort_keys=True).encode("utf-8"))
 
-        # 2. 模組自身版本與 Contributes 資料 (export, insert, token, release_target)
-        try:
-            manifest_p = os.path.join(self.compiler.module_root, "manifest.json")
-            if os.path.isfile(manifest_p):
-                with open(manifest_p, "r", encoding="utf-8") as f:
-                    hasher.update(f.read().encode("utf-8"))
-        except Exception:
-            pass
-
-        contrib = self.compiler.get_contributes_data()
-        hasher.update(json.dumps(contrib, sort_keys=True).encode("utf-8"))
-
-        # 3. 實體來源檔案特徵 (路徑與 SHA-1)
-        for exp in contrib.get("export", []):
-            src = exp.get("source", "")
-            if src:
-                content = self.compiler._read_file_content(src)
-                hasher.update(src.encode("utf-8"))
-                hasher.update(hashlib.sha1(content.encode("utf-8")).hexdigest().encode("utf-8"))
-
-        for ins in contrib.get("insert", []):
-            src = ins.get("source") or (ins.get("value") if ins.get("type") == "uri" else "")
-            if src:
-                content = self.compiler._read_file_content(str(src))
-                hasher.update(str(src).encode("utf-8"))
-                hasher.update(hashlib.sha1(content.encode("utf-8")).hexdigest().encode("utf-8"))
+        # 2. 來源資產綜合摘要 (具備 stat 快照與單次調用快取)
+        hasher.update(self._get_sources_digest())
 
         return hasher.hexdigest()
 
@@ -415,12 +473,8 @@ class ReleasePublisher:
         local_targets = [t for t in active_target_names if t not in proj_tier_targets]
 
         # -------------------------------------------------------------
-        # Stage 0: 來源指紋提前短路檢查 (Source Fingerprint Gate)
+        # Stage 0: 來源指紋提前短路檢查 (Source Fingerprint Gate & Stat-First)
         # -------------------------------------------------------------
-        proj_fingerprint = self.compute_source_fingerprint(proj_targets) if proj_targets else ""
-        local_fingerprint = self.compute_source_fingerprint(local_targets) if local_targets else ""
-        combined_fingerprint = self.compute_source_fingerprint(active_target_names)
-
         old_proj_manifest = self._load_manifest(PROJECT_MANIFEST_STORAGE_URI)
         old_local_manifest = self._load_manifest(LOCAL_MANIFEST_CACHE_URI)
 
@@ -440,6 +494,11 @@ class ReleasePublisher:
                 pass
 
         all_registered_targets = {t["name"]: t for t in self.get_registered_targets() if "name" in t}
+
+        # Stage 0.1: 極速來源指紋計算 (Stat-First 快取初篩與 sources_digest 共享)
+        proj_fingerprint = self.compute_source_fingerprint(proj_targets) if proj_targets else ""
+        local_fingerprint = self.compute_source_fingerprint(local_targets) if local_targets else ""
+        combined_fingerprint = self.compute_source_fingerprint(active_target_names)
 
         # 評估是否可全短路 (Stage 0 Short-Circuit)
         can_short_circuit = True
@@ -482,6 +541,7 @@ class ReleasePublisher:
                 can_short_circuit = False
 
         if can_short_circuit and total_short_circuited_files:
+            self._save_sha1_cache()
             return {
                 "success": True,
                 "short_circuited": True,
@@ -619,6 +679,7 @@ class ReleasePublisher:
                 "fingerprint": proj_fingerprint,
                 "active_targets": proj_targets,
                 "published_files": sorted_proj_uris,
+                "combined_fingerprint": combined_fingerprint,
                 "updated_at": updated_at_proj
             }
             if new_proj_manifest != old_proj_manifest:
@@ -642,6 +703,7 @@ class ReleasePublisher:
                 "fingerprint": local_fingerprint,
                 "active_targets": local_targets,
                 "published_files": sorted_local_files,
+                "combined_fingerprint": combined_fingerprint,
                 "updated_at": updated_at_local
             }
             if new_local_manifest != old_local_manifest:
@@ -673,6 +735,7 @@ class ReleasePublisher:
             proj_root=proj_root
         )
 
+        self._save_sha1_cache()
         return {
             "success": True,
             "short_circuited": False,
