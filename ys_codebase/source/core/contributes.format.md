@@ -10,6 +10,7 @@
 | :--- | :--- | :--- |
 | **`uri_schemes`** | 註冊自訂語意 URI 協議（例 `workflow.plans://`, `knowledge.storage://`） | `array[object]` |
 | **`commands`** | 註冊 CLI 子指令、描述、使用情境 (Pros) 與防呆條款 (Cons) | `object[string, object]` |
+| **`events`** | 宣告該模組派送之生命週期或自訂事件清冊（中繼資料查表） | `array[object]` |
 
 ---
 
@@ -83,6 +84,21 @@ source/<module>/contributes/core.json
   - `"conditional"`: 🟡 階段條件指令（需滿足特定 SOP 階段或除錯前置條件）。
   - `"gated"`: 🔴 🚨 授權守門指令（高危、發布、版本遞增或覆蓋安裝），必須在開發者 Prompt 顯式指示授權下方可調用。
 - `phases` (`array[string]`，可選，預設 `[]`): 適用之 SOP 階段清單（例 `["P05", "P06", "FT-2"]`），供 JIT 指令引導動態過濾。
+
+### 3.3 事件清冊宣告 (`events`)
+```json
+{
+  "events": [
+    { "pre_cli_dispatch": "在 CLI 執行各模組指令前觸發，提供自癒與生命週期檢查" },
+    { "post_cli_dispatch": "在 CLI 執行結束後觸發，提供更新檢查提示" },
+    { "on_reload": "當核心模組被重載後觸發" }
+  ]
+}
+```
+
+#### `events` 說明：
+- 型別：`list[dict[str, str]]`（格式為 `[{"<name>": "description"}]`）。
+- **非執行期依賴**：程式層無任何執行期阻斷或分發依賴，僅供 `python yscb.py event list` CLI 快速查表與手冊索引。建議任何會派送事件的模組皆提供該資訊。
 
 
 ---

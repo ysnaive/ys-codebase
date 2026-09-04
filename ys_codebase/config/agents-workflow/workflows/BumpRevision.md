@@ -1,5 +1,8 @@
 # 專案版本晉升與發布工作流 (BumpRevision)
 
+> [!CAUTION]
+> **🔴 授權守門：嚴禁 Agent 自主觸發，僅限開發者顯式輸入 `/BumpRevision` 時執行。日常開發一律維持 `@build` 直裝。**
+
 本 Workflow 為專案特化工作流，用於掃描 [yscb.config.json](`__${project://yscb.config.json}__`) 中的已安裝模組清單 (`installed_modules`)，自動篩選所有處於 `@build` 本機開發狀態的模組，並依序執行版本晉升 (Version Bump)、正式打包 (Release) 與自部署更新 (Update)。
 
 ---

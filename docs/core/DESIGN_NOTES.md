@@ -26,6 +26,7 @@
 | **DN-15** | `yscb.venv://` 私有微虛擬環境剛性隔離與 Wheel-Only 保證 | `source/core/core/pip_manager.py` | 🚨 CRITICAL |
 | **DN-16** | IDE 自動感知與 `_yscb_managed` 宣告式可復原軟合併 | `source/core/core/ide_projector.py` | ⚠️ WARNING |
 | **DN-17** | virtiofs 跨平台掛載環境符號連結動態探測與複製降級 | `source/core/core/pip_manager.py` | ⚠️ WARNING |
+| **DN-18** | 微內核獨立事件總線 (core.events) 與 Engine 徹底解耦 | `source/core/core/events.py` | 🚨 CRITICAL |
 
 ---
 
@@ -188,3 +189,16 @@
 - **防禦宣告**：
   > [!WARNING]
   > **嚴禁在 POSIX 環境中盲目假設符號連結必可解算，必須維持動態探測與降級保護！**
+
+---
+
+### [DN-18] 微內核獨立事件總線 (`core.events`) 與 Engine 徹底解耦
+
+- **核心決策**：
+  1. 將事件廣播管線獨立實作於 `source/core/core/events.py`，徹底剔除 `Engine.act_broadcast_event` 舊門面。
+  2. 宿主入口（`yscb.py`）、微內核安裝器（`installer.py`）與各模組（如 `dev.testing.sandbox`）全面直接調用 `core.events.broadcast()`，不得依賴重型 `Engine` 實例。
+  3. 支援 `search_roots` 動態搜尋路徑注入（如沙盒臨時模組目錄），並透過單一契約 `scripts/hook.{emit_module}.py` 對接，函式名支援 `on_{event}` 與 `{event}` 雙向彈性匹配。
+- **背後考量**：若事件廣播依賴 `Engine` 實例，宿主在 CLI 冷啟動階段執行生命週期廣播（如 `pre_cli_dispatch`）前就必須初始化完整 `Engine`（包含依賴注入、路徑掃描、狀態快照），造成嚴重冷啟動延遲與狀態循環依賴；解耦後事件總線成為無狀態純淨微核心管線。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `core.events` 內反向導入 `Engine` 或在事件派發前隱式初始化 `Engine`！嚴禁於模組內重複實作 Ad-hoc Hook 派發邏輯！**

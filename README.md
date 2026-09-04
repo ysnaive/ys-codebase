@@ -68,8 +68,7 @@ graph TD
 
 ### 3.2 `agents-workflow` 工作流模組安裝與設定 (Agents-Workflow Setup)
 
-#### 📌 模組功能概述
-`agents-workflow` 提供 AI Agent 協同開發工作流，包含 **SOP 0~7 生命週期**、**6 大計畫分支**（Fast Track、Full Track、Umbrella 等）、**10 大 Slash Commands**（如 `/NewPlan`, `/Auto`, `/Review`, `/Retro`, `/Discuss` 等）與行為防呆規範。
+`agents-workflow` 提供 AI Agent 協同開發工作流，包含 **SOP 生命週期**（含 Review 結案審查閘門）、**6 大計畫分支**（Fast Track、Full Track、Umbrella 等）、**7 大 Slash Commands**（如 `/NewPlan`, `/Auto`, `/Discuss` 等）與行為防呆規範。
 
 #### 🚀 安裝與設定步驟
 

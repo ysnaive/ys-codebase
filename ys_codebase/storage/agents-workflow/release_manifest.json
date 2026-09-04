@@ -1,5 +1,5 @@
 {
-  "fingerprint": "9d6c3a8fc020e2ce06384e21dba254fe68af758a2f6dc0359da912cad9968628",
+  "fingerprint": "f1f0fd5f3025a1aa3a2ade543a8162345354fa22eeb6133e407c12a225a9f3d7",
   "active_targets": [
     "antigravity"
   ],
@@ -29,9 +29,13 @@
     "project://.agents/skills/development-sop/references/phase_06_test.md",
     "project://.agents/skills/development-sop/references/phase_07_walkthrough.md",
     "project://.agents/skills/development-sop/references/plan_modes.md",
+    "project://.agents/skills/development-sop/references/review_gate.md",
     "project://.agents/skills/documentation/SKILL.md",
     "project://.agents/skills/documentation/references/author_guide_and_checklist.md",
     "project://.agents/skills/knowledge-db-search/SKILL.md",
+    "project://.agents/skills/session-analysis/SKILL.md",
+    "project://.agents/skills/session-analysis/references/evaluation_guide.md",
+    "project://.agents/skills/session-analysis/scripts/analyzer.py",
     "project://.agents/skills/yscb-cli-guild/SKILL.md",
     "project://.agents/skills/yscb-module-dev/SKILL.md",
     "project://.agents/workflows/Auto.md",
@@ -42,10 +46,8 @@
     "project://.agents/workflows/NewPlan.md",
     "project://.agents/workflows/Pause.md",
     "project://.agents/workflows/Research.md",
-    "project://.agents/workflows/Review.md",
     "project://.agents/workflows/Roadmap.md",
-    "project://.agents/workflows/SessionAnalysis.md",
     "project://AGENTS.md"
   ],
-  "updated_at": "2026-09-03 18:40:31"
+  "updated_at": "2026-09-04 09:28:37"
 }

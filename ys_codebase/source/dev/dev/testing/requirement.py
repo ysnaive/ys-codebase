@@ -35,23 +35,28 @@ def is_network_available(timeout: float = 1.5) -> bool:
     except Exception:
         return False
 
-def require(requirement: Requirement) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def require(requirement: Requirement) -> Callable[[Any], Any]:
     """
     Condition requirement decorator.
+    Supports decorating both test methods and test classes.
     1. Attaches __requirement__ metadata for test suite filtering (e.g. --type=logic).
     2. Automatically triggers unittest.SkipTest if runtime environment lacks requirement.
     """
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        @functools.wraps(func)
+    def decorator(target: Any) -> Any:
+        if isinstance(target, type):
+            setattr(target, "__requirement__", requirement)
+            return target
+
+        @functools.wraps(target)
         def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
             net_available = globals().get("is_network_available", is_network_available)
             req_val = requirement.value if hasattr(requirement, "value") else int(requirement)
             if bool(req_val & Requirement.NETWORK.value) and not net_available():
                 raise unittest.SkipTest("[Auto-Skipped] Test requires active Network connection.")
-            return func(self, *args, **kwargs)
+            return target(self, *args, **kwargs)
         
         # Attach requirement attribute to wrapper and original func for inspection
         setattr(wrapper, "__requirement__", requirement)
-        setattr(func, "__requirement__", requirement)
+        setattr(target, "__requirement__", requirement)
         return wrapper
     return decorator

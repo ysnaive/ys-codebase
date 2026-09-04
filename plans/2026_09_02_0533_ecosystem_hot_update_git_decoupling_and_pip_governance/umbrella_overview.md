@@ -32,7 +32,7 @@
 | **sub_02** | `sub_02_modules_git_decoupling` | Full Track | `Completed` | `modules/` 運行端冷啟動再生管線與 Git 追蹤解耦（含 bootstrap/restore 命令、.gitignore 配置、空間協議更新） |
 | **sub_03** | `sub_03_build_git_decoupling` | Full Track | `Completed` | `build/` 建置產物 Git 追蹤解耦與空間協議更名為 `.build/`（含協議重構、.gitignore 配置、工具鏈對齊、空間協議更新） |
 | **sub_04** | `sub_04_yscb_venv_core` | Full Track | `Completed` | YSCB 私有 Pip 微環境治理核心功能實作（依據 [R02](file:///workspace/ys-codebase/plans/2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance/R02_pip_dependency_governance_and_optional_acceleration.md) Stage 1 & 2，涵蓋 `yscb://.venv/` 空間協議、私有隔離管理器 `pip_manager`、Wheel-Only 靜默安裝、`yscb.py` 宿主分發與 `sys.path` 動態注入、`dev env` CLI 指令與 IDE 設定增量投影） |
-| **sub_05** | `sub_05_modules_migration_and_optimization` | Full Track | `Pending` | 現有模組實作遷移與雙軌加速優化（依據 [R02](file:///workspace/ys-codebase/plans/2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance/R02_pip_dependency_governance_and_optional_acceleration.md) Stage 3 & 4，涵蓋現有模組 `manifest.json` 依賴宣告遷移、`knowledge-db` 雙軌加速外掛試點與原生平穩降級兜底、`dev` 沙盒環境對接與合規檢查、全生態系全量驗收） |
+| **sub_05** | `sub_05_jit_self_healing_integration` | Full Track | `Completed` | JIT 熱更新與自癒機制整合（貫徹子計畫職責單一與零混雜原則，聚焦生態系 JIT 熱更新與自癒機制的整合與管線收斂） |
 
 ---
 
@@ -42,4 +42,4 @@
 - [x] **里程碑 2 (sub_02)**：完成 `modules/` 運行端冷啟動再生與 Git 追蹤解耦，達成倉庫歷史瘦身與發布產物解耦。
 - [x] **里程碑 3 (sub_03)**：完成 `build/` 建置產物 Git 追蹤解耦與 `.build/` 空間協議重構，徹底消除開發打包對 Git 歷史之冗餘污染。
 - [x] **里程碑 4 (sub_04)**：完成 YSCB 私有微環境核心功能實作與 IDE 增量投影，建立底層隔離與宿主動態注入基礎設施。
-- [ ] **里程碑 5 (sub_05)**：完成現有模組實作遷移與雙軌加速優化，落實 100% 原生安全降級與全生態系端到端驗收。
+- [x] **里程碑 5 (sub_05)**：完成 JIT 熱更新與自癒機制整合（微內核 core.events 解耦、宿主生命週期管線收斂、模組 Ad-hoc 攔截清理、event list CLI 建立；後續採增量添加，不預設進度）。

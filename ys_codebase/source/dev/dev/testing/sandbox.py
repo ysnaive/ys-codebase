@@ -7,9 +7,8 @@ import json
 import uuid
 import shutil
 import zipfile
-import importlib.util
 from typing import Dict, Any, Optional, List, Tuple
-from core import uri
+from core import uri, events
 
 class SandboxContext:
     """Sandbox operational context facade passed to module test hooks."""
@@ -304,7 +303,12 @@ class SandboxProvisioner:
                     shutil.copytree(curr_source, dest_source, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
         # 4. Dispatch on_test_setup hooks across both sandbox source/ and modules/
-        SandboxProvisioner._dispatch_test_hooks(ctx, "on_test_setup")
+        scanned_roots = [
+            os.path.join(ctx.engine_dir, "source"),
+            os.path.join(ctx.engine_dir, ".modules")
+        ]
+        with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
+            events.broadcast("on_test_setup", context=ctx, emit_module="dev", search_roots=scanned_roots)
 
         return ctx
 
@@ -326,39 +330,15 @@ class SandboxProvisioner:
 
         try:
             ctx = SandboxContext(sandbox_dir)
-            SandboxProvisioner._dispatch_test_hooks(ctx, "on_test_teardown")
+            scanned_roots = [
+                os.path.join(ctx.engine_dir, "source"),
+                os.path.join(ctx.engine_dir, ".modules")
+            ]
+            with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
+                events.broadcast("on_test_teardown", context=ctx, emit_module="dev", search_roots=scanned_roots)
             shutil.rmtree(sandbox_dir)
             return True
         except Exception as e:
             if not force:
                 print(f"[dev:sandbox] Warning: Failed to clean sandbox '{sandbox_dir}': {e}", file=sys.stderr)
             return False
-
-    @staticmethod
-    def _dispatch_test_hooks(ctx: SandboxContext, hook_name: str) -> None:
-        """Scans sandbox engine source/ and modules/ for scripts/hook.dev.py and invokes hook_name."""
-        scanned_roots = [
-            os.path.join(ctx.engine_dir, "source"),
-            os.path.join(ctx.engine_dir, ".modules")
-        ]
-        executed_hooks = set()
-        for root in scanned_roots:
-            if not os.path.isdir(root):
-                continue
-            for mod_name in sorted(os.listdir(root)):
-                if mod_name in executed_hooks:
-                    continue
-                hook_file = os.path.join(root, mod_name, "scripts", "hook.dev.py")
-                if os.path.isfile(hook_file):
-                    executed_hooks.add(mod_name)
-                    try:
-                        spec = importlib.util.spec_from_file_location(f"{mod_name}_hook_dev", hook_file)
-                        if spec and spec.loader:
-                            mod = importlib.util.module_from_spec(spec)
-                            spec.loader.exec_module(mod)
-                            fn = getattr(mod, hook_name, None)
-                            if callable(fn):
-                                with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
-                                    fn(ctx)
-                    except Exception as e:
-                        print(f"[dev:sandbox] Warning: Hook '{mod_name}:scripts/hook.dev.py:{hook_name}' failed: {e}", file=sys.stderr)
