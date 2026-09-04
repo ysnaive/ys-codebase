@@ -2,6 +2,17 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (Executing)
+
+- **`sub_05_jit_self_healing_integration` (Completed)**：
+  - **微內核生命週期事件總線解耦 (`core.events`)**：建立獨立事件總線模組，提供 `broadcast(event_name, context, emit_module, search_roots)` 與 `get_contributed_events()`；徹底移除 `Engine.act_broadcast_event` 舊門面，達成宿主與微內核完全解耦。
+  - **標準 Hook 尋址契約**：確立 `module://<module>/scripts/hook.<Sender>.py` 規範，支援函式名 `on_{event_name}` 與 `{event_name}` 雙向彈性匹配。
+  - **宿主生命週期管線收斂 (`yscb.py`)**：於命令分發前執行微環境注入、運行端自愈與 `pre_cli_dispatch` 廣播；分發後執行 `post_cli_dispatch` 廣播與更新提示；自舉命令自動短路。
+  - **模組 Ad-hoc 攔截清理**：`agents-workflow` 的 `ensure_jit_release()` 遷移至 `hook.core.py::on_pre_cli_dispatch`，並從 `scripts/cli.py` 徹底剔除 Ad-hoc 入口攔截。
+  - **沙盒跑測總線收斂**：`dev.testing.sandbox` 移除重複之 `_dispatch_test_hooks`，改呼叫 `core.events.broadcast(..., emit_module="dev")`。
+  - **事件清冊中繼資料與 CLI**：擴充 `contributes.events` 宣告格式規範 (`list[{"<name>": "description"}]`) 與 `source/core/contribute.json`，新增 `python yscb.py event list` CLI 指令。
+  - **版本晉升與發布**：全生態系測試 100% 通過 (`384/384 Passed`)，依規範完成版本晉升：`core@1.0.3.1`、`dev@1.0.1.12`、`agents-workflow@1.0.3.6`。
+
 ## 2026_09_03_1840_agents_workflow_session_throttle_and_standards_optimization (Completed)
 
 - **`agents-workflow@1.0.3.5` 全套引導規範、工作流與模板「極精簡 Session 回覆節流協議」與標準佔位符重構**：

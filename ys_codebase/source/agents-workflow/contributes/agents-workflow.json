@@ -24,6 +24,12 @@
       "description": "專案標準開發流程 (SOP 0~7) 與分流規範指南。當需要開立新計畫、評估分流矩陣 (Full Track/Fast Track/Umbrella)、推進或執行各階段開發任務 (P00~P07, FT-1~3)、查閱追溯鏈 (FR/DR/FT) 或模板指針時觸發。"
     },
     {
+      "type": "skill",
+      "name": "session-analysis",
+      "source": "module://agents-workflow/assets/skills/session-analysis",
+      "description": "🚨 授權守門技能。完全禁止 Agent 主動觸發！"
+    },
+    {
       "type": "workflow",
       "source": "module://agents-workflow/assets/workflows/ContextInit.md",
       "description": "上下文熱啟動流程"
@@ -50,11 +56,6 @@
     },
     {
       "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/Review.md",
-      "description": "開發完成後品質與細節審查工作流 (Review) — 包含五維度品質矩陣驗收與即時修復閉環"
-    },
-    {
-      "type": "workflow",
       "source": "module://agents-workflow/assets/workflows/Research.md",
       "description": "深度技術調研工作流 (Research) — 適用於高複雜度技術探索、方案選型對比與 R01 專題調研報告產出"
     },
@@ -67,11 +68,6 @@
       "type": "workflow",
       "source": "module://agents-workflow/assets/workflows/Roadmap.md",
       "description": "技術路線圖智能推薦工作流 (Roadmap) — 探索長期技術儲備並推薦適合當前專案情境之主題"
-    },
-    {
-      "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/SessionAnalysis.md",
-      "description": "對話階段歷程分析工作流 (SessionAnalysis) — 支援流程自檢、四維度 (Skills/Workflows/CLI/Other) 觸發與 Token 分析及模組自檢"
     },
     {
       "type": "template",
@@ -170,10 +166,6 @@
       "description": "Discuss 工作流特化擴充注入錨點（位於 Discuss.md 尾部）"
     },
     {
-      "value": "WORKFLOW_REVIEW",
-      "description": "Review 工作流特化擴充注入錨點（位於 Review.md 尾部）"
-    },
-    {
       "value": "WORKFLOW_RESEARCH",
       "description": "Research 工作流特化擴充注入錨點（位於 Research.md 尾部）"
     },
@@ -184,10 +176,6 @@
     {
       "value": "WORKFLOW_ROADMAP",
       "description": "Roadmap 工作流特化擴充注入錨點（位於 Roadmap.md 尾部）"
-    },
-    {
-      "value": "WORKFLOW_SESSIONANALYSIS",
-      "description": "SessionAnalysis 工作流特化擴充注入錨點（位於 SessionAnalysis.md 尾部）"
     },
     {
       "value": "WORKFLOW_CONTEXTINIT",

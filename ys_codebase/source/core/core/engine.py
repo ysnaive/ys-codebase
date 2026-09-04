@@ -21,6 +21,7 @@ from core import uri
 from core.context import ExecutionContext
 from core import semver
 from core.contributes import ContributesAggregator
+from core import events
 
 class AtomicEngine:
     def __init__(self):
@@ -815,7 +816,7 @@ class AtomicEngine:
         # Stage 4: 依賴注入與事件廣播
         if inject_stage:
             self.contributes_aggregator.scan_and_inject(clean=True)
-            self.act_broadcast_event("core", "on_reload", ExecutionContext("core", "reload", []))
+            events.broadcast("on_reload", ExecutionContext("core", "reload", []), emit_module="core")
 
     def act_snapshot(self, tag: Optional[str] = None) -> str:
         """
@@ -939,37 +940,6 @@ class AtomicEngine:
                     raise RuntimeError(f"Migration step '{script_rel}' failed for module '{module_name}': {e}")
                     
         return True
-
-    def act_broadcast_event(
-        self, 
-        emit_module: str, 
-        event_name: str, 
-        context: Optional[ExecutionContext] = None
-    ) -> Dict[str, Any]:
-        results = {}
-        if not uri.exists("module://"):
-            return results
-            
-        ctx = context or ExecutionContext(emit_module, event_name, [])
-        for mod in uri.listdir("module://"):
-            hook_file_uri = f"module://{mod}/scripts/hook.{emit_module}.py"
-            if uri.exists(hook_file_uri):
-                hook_real_path = uri.resolve(hook_file_uri)
-                mod_key = f"_yscb_hook_{mod}_{emit_module}"
-                try:
-                    spec = importlib.util.spec_from_file_location(mod_key, hook_real_path)
-                    if spec and spec.loader:
-                        hook_mod = importlib.util.module_from_spec(spec)
-                        sys.modules[mod_key] = hook_mod
-                        spec.loader.exec_module(hook_mod)
-                        hook_func = getattr(hook_mod, "on_event", None) or getattr(hook_mod, event_name, None)
-                        if callable(hook_func):
-                            h_res = hook_func(ctx)
-                            results[mod] = h_res if h_res is not None else "success"
-                except Exception as e:
-                    results[mod] = f"warning: {e}"
-                    print(f"[core:events] Warning: Hook '{mod}:hook.{emit_module}.py' failed on '{event_name}': {e}", file=sys.stderr)
-        return results
 
     def act_get_installed_commands_summary(self) -> Dict[str, Dict[str, str]]:
         """

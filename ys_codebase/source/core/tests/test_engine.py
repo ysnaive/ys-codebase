@@ -6,7 +6,7 @@ import time
 from dev.testing import YSCBTestCase, require, Requirement
 from core.engine import AtomicEngine
 from core.uri import ExecutionContext
-from core import uri
+from core import uri, events
 
 @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
 class TestCoreEngine(YSCBTestCase):
@@ -203,7 +203,7 @@ def on_test_event(context):
         
         # Broadcast event
         ctx = ExecutionContext("dev", "test_cmd", ["arg1"])
-        results = self.engine.act_broadcast_event("dev", "on_test_event", ctx)
+        results = events.broadcast("on_test_event", ctx, emit_module="dev")
         
         # 1. Receiver succeeded
         self.assertEqual(results.get("mock_receiver"), "success")

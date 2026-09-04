@@ -132,8 +132,41 @@ class TestSandboxArchitecture(YSCBTestCase):
             with open(os.path.join(broken_mod_dir, "hook.dev.py"), "w", encoding="utf-8") as f:
                 f.write("def on_test_setup(context):\n    raise RuntimeError('Deliberate hook failure')\n")
             
-            # Dispatching hooks should not throw an unhandled exception
-            SandboxProvisioner._dispatch_test_hooks(ctx, "on_test_setup")
+            # Dispatching hooks via core.events.broadcast should not throw an unhandled exception
+            from core import events, uri
+            scanned_roots = [
+                os.path.join(ctx.engine_dir, "source"),
+                os.path.join(ctx.engine_dir, ".modules")
+            ]
+            with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
+                res = events.broadcast("on_test_setup", context=ctx, emit_module="dev", search_roots=scanned_roots)
+            self.assertIn("mock_broken_hook", res)
+            self.assertTrue(str(res["mock_broken_hook"]).startswith("warning:"))
+        finally:
+            SandboxProvisioner.cleanup_sandbox(ctx.sandbox_dir, force=True)
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_dev_sandbox_hook_convergence(self):
+        """FT-06: Verify SandboxProvisioner dispatches on_test_setup via core.events.broadcast."""
+        self.assertFalse(hasattr(SandboxProvisioner, "_dispatch_test_hooks"), "_dispatch_test_hooks should be removed from SandboxProvisioner")
+        ctx = SandboxProvisioner.create_sandbox()
+        try:
+            flag_file = os.path.join(ctx.sandbox_dir, "setup_fired.flag")
+            mod_dir = os.path.join(ctx.engine_dir, "source", "mock_hook_mod", "scripts")
+            os.makedirs(mod_dir, exist_ok=True)
+            with open(os.path.join(mod_dir, "hook.dev.py"), "w", encoding="utf-8") as f:
+                f.write(f"def on_test_setup(context):\n    with open('{flag_file}', 'w') as f: f.write('OK')\n    return 'OK'\n")
+            
+            from core import events, uri
+            scanned_roots = [
+                os.path.join(ctx.engine_dir, "source"),
+                os.path.join(ctx.engine_dir, ".modules")
+            ]
+            with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
+                res = events.broadcast("on_test_setup", context=ctx, emit_module="dev", search_roots=scanned_roots)
+            self.assertEqual(res.get("mock_hook_mod"), "OK")
+            self.assertTrue(os.path.isfile(flag_file))
         finally:
             SandboxProvisioner.cleanup_sandbox(ctx.sandbox_dir, force=True)
         self.mark_passed()

@@ -143,6 +143,14 @@
         "更新專案或本機組態: python yscb.py config set <module> <key> <value> [--local]"
       ]
     }
-  }
+  },
+  "events": [
+    { "pre_cli_dispatch": "在 CLI 執行各模組指令前觸發，提供自癒與生命週期檢查" },
+    { "post_cli_dispatch": "在 CLI 執行結束後觸發，提供更新檢查提示" },
+    { "on_reload": "當核心模組被重載後觸發" },
+    { "on_installed": "當模組安裝完成後觸發" },
+    { "on_update": "當模組更新完成後觸發" },
+    { "on_remove": "當模組移除前觸發" }
+  ]
 }
 

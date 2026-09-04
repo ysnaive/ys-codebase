@@ -37,9 +37,13 @@ __pycache__/
 /.agents/skills/development-sop/references/phase_06_test.md
 /.agents/skills/development-sop/references/phase_07_walkthrough.md
 /.agents/skills/development-sop/references/plan_modes.md
+/.agents/skills/development-sop/references/review_gate.md
 /.agents/skills/documentation/SKILL.md
 /.agents/skills/documentation/references/author_guide_and_checklist.md
 /.agents/skills/knowledge-db-search/SKILL.md
+/.agents/skills/session-analysis/SKILL.md
+/.agents/skills/session-analysis/references/evaluation_guide.md
+/.agents/skills/session-analysis/scripts/analyzer.py
 /.agents/skills/yscb-cli-guild/SKILL.md
 /.agents/skills/yscb-module-dev/SKILL.md
 /.agents/workflows/Auto.md
@@ -50,7 +54,5 @@ __pycache__/
 /.agents/workflows/NewPlan.md
 /.agents/workflows/Pause.md
 /.agents/workflows/Research.md
-/.agents/workflows/Review.md
 /.agents/workflows/Roadmap.md
-/.agents/workflows/SessionAnalysis.md
 # === YSCB AGENTS_WORKFLOW IGNORE END ===
