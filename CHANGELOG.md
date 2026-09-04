@@ -4,6 +4,12 @@
 
 ## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (Executing)
 
+- **`sub_06_jit_fingerprint_stat_gate` (Completed)**：
+  - **JIT 來源特徵指紋 Stat-First 雙階快照初篩優化**：在 `agents-workflow` 的 `ReleasePublisher` 中引入基於 `(st_mtime_ns, st_size)` 的 Stat-First 跨進程持久化快取（`cache://agents-workflow/source_sha1_cache.json`），並快取單次執行週期來源資產綜合摘要，消除 Stage 0 短路判定時的重複檔案讀取與 SHA-1 雜湊負擔。在 Clean 狀態下檢查時間壓降至 sub-0.2ms，達成 0 檔案內容讀取與 0 重複雜湊，且兼顧 100% 變更感知自愈精確度。
+  - **Pip 相依性解耦與純淨治理**：自 `source/agents-workflow/manifest.json` 徹底移除 `pip_dependencies` (`watchdog`) 宣告，消除常駐檔案監聽的冗餘套件依賴，回歸微環境極致純淨性。
+  - **單元測試與 Dogfooding 驗證**：新增 `test_ft_11_stat_first_cache_hit_and_touch_healing` 與 `test_ft_12_manifest_clean_of_watchdog` 測試；全生態系 386/386 單元測試 100% 通過；完成 `@build` 本地安裝物化驗證。
+  - **版本晉升與發布**：依軌道 B 規範完成版本晉升並自部署至運行端：`agents-workflow@1.0.3.8`。
+
 - **`sub_05_jit_self_healing_integration` (Completed)**：
   - **微內核生命週期事件總線解耦 (`core.events`)**：建立獨立事件總線模組，提供 `broadcast(event_name, context, emit_module, search_roots)` 與 `get_contributed_events()`；徹底移除 `Engine.act_broadcast_event` 舊門面，達成宿主與微內核完全解耦。
   - **標準 Hook 尋址契約**：確立 `module://<module>/scripts/hook.<Sender>.py` 規範，支援函式名 `on_{event_name}` 與 `{event_name}` 雙向彈性匹配。

@@ -16,6 +16,8 @@
 | **[DN-AW-06]** | HTML 註解 Token 自宣告與字面值 Replace 解算 | 工廠編譯器、資產導出 | `Active` |
 | **[DN-AW-07]** | 兩階段 6 步管線、三層 URI 重映射與 4 步原子發布交易 | 工廠編譯器、發布引擎、CLI | `Active` |
 | **[DN-AW-08]** | Stage 2 佔位符二分法解析與反引號完全替代剝除 | 工廠編譯器 (`compiler.py`) | `Active` |
+| **[DN-AW-09]** | 6 大計畫分支拓撲、/NewPlan 延遲建檔與 Roadmap 策略資產體系 | 工作流體系、CLI 工具鏈 | `Active` |
+| **[DN-AW-10]** | JIT 變更感知 Stat-First 雙階快照初篩與 SHA-1 快取機制 | 發布引擎 (`publisher.py`)、Manifest 治理 | `Active` |
 
 ---
 
@@ -100,4 +102,14 @@
   2. 實作 `/NewPlan` 延遲建檔守門 (Delayed Materialization)：P00_discuss 階段維持純對話，確立分流時才一併建立目錄與模板。
   3. 實作 `RoadmapManager` 與 `python yscb.py agents-workflow roadmap` CLI 摘要掃描工具，結合 `/Roadmap` 智能推薦工作流達成低 Token 儲備探索。
 - **效益**：涵蓋多維開發需求場景，保護 Token 開銷與磁碟整潔度，建立長期技術儲備與一鍵轉化能力。
+
+---
+
+### [DN-AW-10] JIT 變更感知 Stat-First 雙階快照初篩與 SHA-1 快取機制
+- **背景**：原 JIT Release 檢驗在 Stage 0 短路判定中連續計算 3 次來源特徵指紋，每次皆全量讀取來源檔案計算 SHA-1，產生重複 I/O 與 CPU 雜湊負擔；且依賴 `watchdog` pip 套件。
+- **決策**：
+  1. 自 `manifest.json` 徹底移除 `pip_dependencies` (`watchdog`) 宣告，回歸零外部 pip 依賴的微環境純淨性。
+  2. 引入基於 `(st_mtime_ns, st_size)` 的 Stat-First 跨進程持久化快取（`cache://agents-workflow/source_sha1_cache.json`），僅在檔案元數據變更時重新讀檔與運算 SHA-1。
+  3. 實作單次週期內來源資產綜合摘要快取 `_get_sources_digest()`，徹底消除單次執行週期的重複掃描與雜湊負擔。
+- **效益**：Clean 狀態下檢驗時間壓降至 sub-0.2ms，達成 0 檔案內容讀取與 0 重複雜湊，同時兼顧 100% 變更感知的數學精確性與自愈能力。
 

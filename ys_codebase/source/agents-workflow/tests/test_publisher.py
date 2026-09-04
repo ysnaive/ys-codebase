@@ -315,6 +315,48 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertIn("skills/my-skill", dep_map)
         self.assertIn("skills/my-skill/references/guide.md", dep_map)
 
+    @require(Requirement.ENV)
+    def test_ft_11_stat_first_cache_hit_and_touch_healing(self):
+        """FT-11: 驗證 Stat-First SHA-1 快取持久化、二次查詢快取命中與 touch 變更自愈。"""
+        from agents_workflow.publisher import SHA1_CACHE_URI
+
+        # 首次發布建立基礎
+        res1 = self.publisher.release_all(force=True)
+        self.assertTrue(res1["success"])
+
+        # 驗證 SHA-1 快取已持久化至 cache://
+        if uri:
+            self.assertTrue(uri.exists(SHA1_CACHE_URI))
+            cache_data = uri.read_json(SHA1_CACHE_URI)
+            self.assertIsInstance(cache_data, dict)
+            self.assertGreater(len(cache_data), 0)
+
+        # 二次發布應直接短路
+        res2 = self.publisher.release_all(force=False)
+        self.assertTrue(res2["short_circuited"])
+
+        # 模擬 touch: 更新 manifest.json 的 mtime 但保持內容不變
+        manifest_p = os.path.join(self.compiler.module_root, "manifest.json")
+        if os.path.isfile(manifest_p):
+            stat_before = os.stat(manifest_p)
+            new_mtime = stat_before.st_mtime + 5.0
+            os.utime(manifest_p, (new_mtime, new_mtime))
+
+            # 觸發發布：fingerprint 應不變並維持 short_circuited
+            res3 = self.publisher.release_all(force=False)
+            self.assertTrue(res3["success"])
+            self.assertTrue(res3["short_circuited"])
+            self.assertEqual(res3["fingerprint"], res1["fingerprint"])
+
+    def test_ft_12_manifest_clean_of_watchdog(self):
+        """FT-12: 驗證 agents-workflow manifest.json 已解耦清理 watchdog 相依性。"""
+        manifest_p = os.path.join(self.compiler.module_root, "manifest.json")
+        self.assertTrue(os.path.isfile(manifest_p))
+        with open(manifest_p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        pip_deps = data.get("pip_dependencies", {})
+        self.assertNotIn("watchdog", pip_deps)
+
 
 if __name__ == "__main__":
     unittest.main()
