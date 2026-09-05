@@ -17,6 +17,17 @@
   - **Checker 靜態相依性合規性檢驗**：擴充 `source/dev/dev/checker.py` 檢驗 `manifest.json` 中 `pip_dependencies` 結構必須為非空套件名稱映射字典約束。
   - **單元與邊界測試全覆蓋**：新增 `test_pip_adaptation.py` 驗證 FT-01~04 與 ET-01~02，修復沙盒 hook 路徑跳脫與 build 清理殘留；dev 模組 72/72 單元測試 100% 通過。
 
+- **`sub_03_dev_test_output_purification_and_info_aggregation` (Completed)**：
+  - **統一 JSON IPC 跨進程交換與輸出解耦**：單模組與平行測試全面採用 `--report-json` 導出測試數據，由宿主調度器作為唯一的格式化渲染端，達成內外層職責解耦。
+  - **雙模式輸出純化與警告收斂**：
+    - `--quiet` / `-q` 模式下，全量屏蔽子進程 stdout/stderr；全數通過時嚴格僅輸出單行統計（`Pass: 78(100.0%), Fail: 0, Skip: 0`）；崩潰時精準擷取 stderr tail（後 20 行）供快速診斷。
+    - 一般模式下，子進程非致命沙盒警告（如未解 URI 編譯警告）收斂折疊為 `[*] Notices: N sandbox warning(s) captured`，並支援 `--verbose` 展開原始串流。
+  - **沙盒黑盒子與高保真原則**：沙盒內部生命週期 Hook（如 JIT 預發布與自癒物化）維持自然運行，嚴禁粗暴短路業務邏輯。
+  - **宿主防穿透剛性守門**：
+    - `dev op-test` 於宿主環境直接調用時剛性阻斷（Gate 0），提示改用 `dev test` 進入沙盒。
+    - `YSCBTestCase.setUp` 在無法向上解析出合法沙盒目錄時強制拋出 `SecurityError`，徹底拔除回退至 `os.getcwd()` 的漏洞，守護專案根目錄零污染。
+  - **測試與文件完備**：新增 `test_output_purification.py` 完整覆蓋 FT-01~04 與 ET-01~02；更新 `docs/dev/testing_guide.md` 與 `docs/dev/DESIGN_NOTES.md` `[DN-DEV-07]`；dev 模組 78/78 測試 100% 通過。
+
 ## 2026_09_05_1025_knowledge_db_refactor (Executing)
 
 - **`sub_01_universal_ast_and_contributed_tree_sitter` (Completed)**：

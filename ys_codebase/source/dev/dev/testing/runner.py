@@ -263,7 +263,7 @@ class OutputCapturer:
 
 class ASCIIReportFormatter:
     @staticmethod
-    def format_summary(report_data: Dict[str, Any]) -> str:
+    def format_summary(report_data: Dict[str, Any], warnings_count: int = 0) -> str:
         lines = [
             "=" * 70,
             "YS-Codebase Test Execution Diagnostic Report",
@@ -276,6 +276,8 @@ class ASCIIReportFormatter:
         no_build = report_data.get("no_build", False)
         build_str = "No-build (Fast)" if no_build else "Hermetic Build"
         lines.append(f"[*] Mode: {filter_mode} | Target: {target_scope} | Build: {build_str}")
+        if warnings_count > 0:
+            lines.append(f"[*] Notices: {warnings_count} sandbox warning(s) captured (suppressed, run with --verbose to inspect)")
         lines.append("-" * 70)
 
         # 2. Module Tree Block
@@ -434,8 +436,6 @@ class TestRunner:
         self.keep_sandbox = keep_sandbox
 
     def run_suite(self, suite: unittest.TestSuite) -> Tuple[unittest.TestResult, str]:
-        orig_sandbox = os.environ.get("YSCB_TEST_SANDBOX")
-        os.environ["YSCB_TEST_SANDBOX"] = "1"
         if self.keep_sandbox:
             os.environ["YSCB_TEST_KEEP_SANDBOX"] = "1"
         else:
@@ -453,7 +453,3 @@ class TestRunner:
                 YSCBTestCase.cleanup_shared_sandbox()
             except Exception:
                 pass
-            if orig_sandbox is not None:
-                os.environ["YSCB_TEST_SANDBOX"] = orig_sandbox
-            else:
-                os.environ.pop("YSCB_TEST_SANDBOX", None)

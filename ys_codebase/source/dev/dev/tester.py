@@ -101,6 +101,20 @@ class Tester:
 
     def _run_op_test(self, argv: List[str]) -> int:
         """In-place atomic test execution engine."""
+        # Gate 0: Block direct host execution to prevent sandbox leakage
+        is_sandbox_env = (
+            os.environ.get("YSCB_TEST_SANDBOX") == "1"
+            and (
+                os.path.basename(os.getcwd()) == "host_env"
+                or os.path.isdir(os.path.join(os.getcwd(), "engine"))
+                or (os.environ.get("YSCB_SANDBOX_DIR") and os.path.isdir(os.environ.get("YSCB_SANDBOX_DIR")))
+            )
+        )
+        if not is_sandbox_env:
+            print("[dev:test] Security Guard Blocked: 'dev op-test' is an internal in-place runner and cannot be executed directly on the host workspace.", file=sys.stderr)
+            print("           Please use 'python yscb.py dev test <module>' to run tests inside an authenticated virtual sandbox.", file=sys.stderr)
+            return 1
+
         report_json_path = None
         quiet_report = False
         quiet_mode = os.environ.get("YSCB_TEST_QUIET") == "1"
@@ -354,6 +368,7 @@ class Tester:
         no_build = "--no-build" in argv
         is_sequential = "--sequential" in argv or "--no-parallel" in argv
         quiet_mode = "-q" in argv or "--quiet" in argv or os.environ.get("YSCB_TEST_QUIET") == "1"
+        verbose = "-v" in argv or "--verbose" in argv
         
         # Parse -j / --jobs and --sync
         jobs = None
@@ -436,16 +451,23 @@ class Tester:
         if not is_nested and not quiet_mode:
             print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
         
-        # 3. Invoke dev op-test inside sandbox
+        # 3. Invoke dev op-test inside sandbox via JSON IPC
         sandbox_yscb = os.path.join(host_dir, "yscb.py")
+        report_json_path = os.path.join(ctx.engine_dir, "report_single.json")
         op_test_args = [a for a in clean_argv if a != "test"]
+        op_test_args.extend([f"--report-json={report_json_path}", "--quiet-report"])
         cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + op_test_args
         
         p_env = dict(os.environ)
         p_env["YSCB_TEST_SANDBOX"] = "1"
+        p_env["YSCB_SANDBOX_DIR"] = sandbox_dir
         p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
         if quiet_mode:
             p_env["YSCB_TEST_QUIET"] = "1"
+
+        report_data = None
+        ret_code = 1
+        res = None
         try:
             res = subprocess.run(
                 cmd,
@@ -458,15 +480,43 @@ class Tester:
                 errors="replace"
             )
             ret_code = res.returncode
-            if not is_nested:
-                if res.stdout:
-                    safe_print(res.stdout, end="", flush=True)
-                if res.stderr:
-                    safe_print(res.stderr, end="", file=sys.stderr, flush=True)
+            if os.path.isfile(report_json_path):
+                try:
+                    with open(report_json_path, "r", encoding="utf-8") as rf:
+                        report_data = json.load(rf)
+                except Exception:
+                    pass
         except Exception as e:
             if not is_nested:
                 safe_print(f"[dev:test] Subprocess execution error: {e}", file=sys.stderr)
             ret_code = 1
+
+        # Output shielding & dual-mode rendering
+        if not is_nested:
+            if verbose:
+                if res and res.stdout:
+                    safe_print(res.stdout, end="", flush=True)
+                if res and res.stderr:
+                    safe_print(res.stderr, end="", file=sys.stderr, flush=True)
+                if report_data:
+                    safe_print(ASCIIReportFormatter.format_summary(report_data))
+            elif quiet_mode:
+                if report_data:
+                    safe_print(ASCIIReportFormatter.format_throttled(report_data))
+                else:
+                    safe_print(f"Pass: 0, Fail: 1, Skip: 0")
+                    if res and res.stderr:
+                        tail = "\n".join(res.stderr.strip().splitlines()[-20:])
+                        safe_print(f"\n[dev:test] Subprocess execution failed with code {ret_code}:\n{tail}", file=sys.stderr)
+            else:
+                if report_data:
+                    w_lines = [l for l in ((res.stderr if res else "") or "").splitlines() if l.strip()]
+                    safe_print(ASCIIReportFormatter.format_summary(report_data, warnings_count=len(w_lines)))
+                else:
+                    safe_print(f"[dev:test] Subprocess execution failed with code {ret_code}.", file=sys.stderr)
+                    if res and res.stderr:
+                        tail = "\n".join(res.stderr.strip().splitlines()[-20:])
+                        safe_print(f"[dev:test] Stderr tail:\n{tail}", file=sys.stderr)
             
         # 4. Teardown policy
         if ret_code == 0 and not keep_sandbox:
@@ -606,11 +656,12 @@ class Tester:
             "failures_list": failures_list
         }
 
+        total_warnings = sum(w.get("warnings_count", 0) for w in worker_results.values() if w)
         if not is_nested:
             if quiet_mode:
                 safe_print(ASCIIReportFormatter.format_throttled(final_report))
             else:
-                safe_print(ASCIIReportFormatter.format_summary(final_report))
+                safe_print(ASCIIReportFormatter.format_summary(final_report, warnings_count=total_warnings))
 
         if all_passed and not keep_sandbox:
             if "--all" in clean_argv:
@@ -638,6 +689,7 @@ class Tester:
         sandbox_dir = ctx.sandbox_dir
         sandbox_display_id = f"sandbox {worker_idx}"
         host_dir = ctx.host_dir
+        verbose = "-v" in clean_argv or "--verbose" in clean_argv
         if not is_nested and not quiet_mode:
             safe_print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
             safe_print(f"[dev:test] {mod_name} begin test in {sandbox_display_id}", flush=True)
@@ -651,6 +703,7 @@ class Tester:
         cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + op_test_args
         p_env = dict(os.environ)
         p_env["YSCB_TEST_SANDBOX"] = "1"
+        p_env["YSCB_SANDBOX_DIR"] = sandbox_dir
         p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
         p_env["YSCB_SANDBOX_INDEX"] = str(worker_idx)
         if quiet_mode:
@@ -658,6 +711,7 @@ class Tester:
 
         mod_report_data = None
         ret_code = 1
+        res = None
         mod_start = time.perf_counter()
         try:
             res = subprocess.run(
@@ -674,10 +728,11 @@ class Tester:
             mod_duration = time.perf_counter() - mod_start
             if not is_nested and not quiet_mode:
                 safe_print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
-                if res.stdout:
-                    safe_print(res.stdout, end="", flush=True)
-                if res.stderr:
-                    safe_print(res.stderr, end="", file=sys.stderr, flush=True)
+                if verbose:
+                    if res.stdout:
+                        safe_print(res.stdout, end="", flush=True)
+                    if res.stderr:
+                        safe_print(res.stderr, end="", file=sys.stderr, flush=True)
             if os.path.isfile(report_json_path):
                 with open(report_json_path, "r", encoding="utf-8") as rf:
                     mod_report_data = json.load(rf)
@@ -699,12 +754,14 @@ class Tester:
                 elif not quiet_mode:
                     print(f"[dev:test] Sandbox preserved at: {sandbox_dir}", flush=True)
 
+        w_count = len([l for l in ((res.stderr if res else "") or "").splitlines() if l.strip()])
         return {
             "module": mod_name,
             "worker_idx": worker_idx,
             "returncode": ret_code,
             "report_data": mod_report_data,
-            "sandbox_dir": sandbox_dir
+            "sandbox_dir": sandbox_dir,
+            "warnings_count": w_count
         }
 
     def _handle_post_test_sync(self, modules: List[str], sync_requested: bool, quiet: bool = False) -> None:
@@ -717,8 +774,8 @@ class Tester:
         installed_mods = {}
         if os.path.isfile(cfg_path):
             try:
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    cfg_data = json.load(f)
+                with open(cfg_path, "r", encoding="utf-8") as rf:
+                    cfg_data = json.load(rf)
                     installed_mods = cfg_data.get("installed_modules", {})
             except Exception:
                 pass
@@ -740,5 +797,5 @@ class Tester:
         else:
             if not quiet:
                 for mod in valid_targets:
-                    safe_print(f"\n💡 提示: 測試通過！可執行 'python yscb.py install {mod}@build' 直裝最新產物。")
+                    safe_print(f"\n[*] Hint: Tests passed! Run 'python yscb.py install {mod}@build' to install the built package.")
 
