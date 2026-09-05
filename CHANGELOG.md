@@ -2,6 +2,14 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_05_1300_core_dev_toolchain_upgrade (Executing)
+
+- **`sub_01_core_pip_sdk_and_environment_export` (Completed)**：
+  - **Core 導出微環境 PipManager SDK 契約**：於 `source/core/core/__init__.py` 的 `__all__` 中正式導出 `PipManager`、`PipInstallError` 與 `pip_manager` 模組，支援標準匯入契約 `from core import PipManager, PipInstallError`。
+  - **規格正規化工具函式 (`parse_pip_dependencies`)**：在 `PipManager` 實作靜態方法 `parse_pip_dependencies`，支援字典與清單格式相依性宣告之空白過濾、型態防禦與順序去重，消除跨模組手刻解析與重複代碼。
+  - **安裝器依賴收斂**：重構 `Installer.sync_pip_dependencies` 改調用 `PipManager.parse_pip_dependencies`。
+  - **文件與測試健全化**：新增 `docs/core/DESIGN_NOTES.md` 之 `[DN-19]`、更新 `source/core/README.md` 與 `docs/core/API_REFERENCE.md`；新增單元測試 `test_pip_manager_sdk.py`，全生態系 123/123 單元測試 100% 通過。
+
 ## 2026_09_05_1025_knowledge_db_refactor (Executing)
 
 - **`sub_01_universal_ast_and_contributed_tree_sitter` (Completed)**：

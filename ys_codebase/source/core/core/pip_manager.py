@@ -41,6 +41,45 @@ class PipManager:
         return os.getcwd()
 
     @staticmethod
+    def parse_pip_dependencies(pip_deps: Any) -> List[str]:
+        """
+        將 manifest.json 中的 pip_dependencies 宣告正規化為合法的 pip 規格字串清單。
+        支援輸入格式：
+          1. 字典格式：{"pkg": ">=1.0.0", "pkg2": ""} -> ["pkg>=1.0.0", "pkg2"]
+          2. 清單格式：["pkg>=1.0.0", "pkg2"] -> ["pkg>=1.0.0", "pkg2"]
+        行為保證：
+          - 輸入 None、非字典非清單或空結構時安全回傳 [] (EC-01)
+          - 自動去除首尾空白，過濾空字串與無效項目 (EC-02)
+          - 保持首次出現順序之去重 (Order-preserving deduplication)
+        """
+        if not pip_deps:
+            return []
+
+        specs: List[str] = []
+        if isinstance(pip_deps, dict):
+            for pkg, constraint in pip_deps.items():
+                if not pkg or not str(pkg).strip():
+                    continue
+                pkg_clean = str(pkg).strip()
+                if constraint is not None and str(constraint).strip():
+                    spec = f"{pkg_clean}{str(constraint).strip()}"
+                else:
+                    spec = pkg_clean
+                specs.append(spec)
+        elif isinstance(pip_deps, list):
+            for item in pip_deps:
+                if item is not None and str(item).strip():
+                    specs.append(str(item).strip())
+
+        seen = set()
+        deduped: List[str] = []
+        for s in specs:
+            if s not in seen:
+                seen.add(s)
+                deduped.append(s)
+        return deduped
+
+    @staticmethod
     def get_current_py_tag() -> str:
         """回傳當前直譯器的大/小版本標籤，例如 'py310' 或 'py311'。"""
         return f"py{sys.version_info.major}{sys.version_info.minor}"
