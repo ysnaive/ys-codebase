@@ -38,7 +38,9 @@ from .schema import (
     UnifiedSymbol,
 )
 from .embedding import EmbeddingService, VectorIndex
+from .formatter import ResultFormatter, UniversalRedundancyFilter
 from .hybrid import HybridSearchEngine
+from .pipeline import IndexingPipeline
 from .space import SpaceManager
 from .tokenizer import CodeTokenizer, MultilingualTokenizer
 
@@ -79,5 +81,8 @@ __all__ = [
     "BM25Engine",
     "QueryFilter",
     "SearchResult",
+    "ResultFormatter",
+    "UniversalRedundancyFilter",
+    "IndexingPipeline",
     "KnowledgeEngine",
 ]

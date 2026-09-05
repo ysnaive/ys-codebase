@@ -142,23 +142,23 @@ class TestEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_compute_dynamic_snippet_lines_curve(self):
-        """驗證 compute_dynamic_snippet_lines 在 4 段階梯區間之動態行數計算 (12500 預算體系)"""
+        """驗證 compute_dynamic_snippet_lines 在 4 段階梯區間之動態行數計算 (8000 預算體系)"""
         from knowledge_db.engine import compute_dynamic_snippet_lines
 
         self.assertEqual(compute_dynamic_snippet_lines(0), 30)
         self.assertEqual(compute_dynamic_snippet_lines(2500), 30)
-        self.assertEqual(compute_dynamic_snippet_lines(4999), 30)
+        self.assertEqual(compute_dynamic_snippet_lines(3499), 30)
 
-        self.assertEqual(compute_dynamic_snippet_lines(5000), 30)
-        self.assertEqual(compute_dynamic_snippet_lines(7000), 20)
-        self.assertEqual(compute_dynamic_snippet_lines(9000), 10)
+        self.assertEqual(compute_dynamic_snippet_lines(3500), 30)
+        self.assertEqual(compute_dynamic_snippet_lines(4750), 20)
+        self.assertEqual(compute_dynamic_snippet_lines(6000), 10)
 
-        self.assertEqual(compute_dynamic_snippet_lines(10000), 10)
-        self.assertEqual(compute_dynamic_snippet_lines(10999), 10)
+        self.assertEqual(compute_dynamic_snippet_lines(6500), 10)
+        self.assertEqual(compute_dynamic_snippet_lines(6999), 10)
 
-        self.assertEqual(compute_dynamic_snippet_lines(11000), 0)
-        self.assertEqual(compute_dynamic_snippet_lines(12000), 0)
-        self.assertEqual(compute_dynamic_snippet_lines(12500), 0)
+        self.assertEqual(compute_dynamic_snippet_lines(7000), 0)
+        self.assertEqual(compute_dynamic_snippet_lines(7500), 0)
+        self.assertEqual(compute_dynamic_snippet_lines(8000), 0)
 
         self.mark_passed()
 
@@ -200,10 +200,164 @@ class TestEngine(YSCBTestCase):
 
             out_auto = engine.format_search_output(results, query="ServiceNode", detail_mode="detail", snippet=True, limit_mode="auto")
             self.assertIn("#05", out_auto)
-            self.assertLessEqual(len(out_auto), 16000)
+            self.assertLessEqual(len(out_auto), 10000)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_redundancy_filter(self):
+        """FT-01: 驗證 UniversalRedundancyFilter 全域重複資訊剔除與保底防禦"""
+        from knowledge_db.formatter import UniversalRedundancyFilter
+
+        f = UniversalRedundancyFilter()
+
+        # 1. 驗證 Python Docstring 區塊剔除
+        py_lines = [
+            (10, "def calculate_velocity(mass, acceleration):"),
+            (11, '    """'),
+            (12, "    計算牛頓第二運動定律速度向量。"),
+            (13, '    """'),
+            (14, "    force = mass * acceleration"),
+            (15, "    return force"),
+        ]
+        purified_py = f.purify_lines(
+            py_lines,
+            target_line=10,
+            symbol_name="calculate_velocity",
+            signature="def calculate_velocity(mass, acceleration)",
+            docstring_summary="計算牛頓第二運動定律速度向量。",
+            language="python",
+        )
+        line_nums = [ln for ln, _ in purified_py]
+        self.assertIn(10, line_nums)
+        self.assertIn(14, line_nums)
+        self.assertIn(15, line_nums)
+        self.assertNotIn(11, line_nums)
+        self.assertNotIn(12, line_nums)
+        self.assertNotIn(13, line_nums)
+
+        # 2. 驗證 Markdown 重疊 # Heading 剔除
+        md_lines = [
+            (20, "## 快速上手手冊"),
+            (21, "本手冊引導您如何初始化與調用引擎。"),
+            (22, "### 基本設定"),
+            (23, "請確認 storage 目錄存在。"),
+        ]
+        purified_md = f.purify_lines(
+            md_lines,
+            target_line=20,
+            symbol_name="快速上手手冊",
+            signature="## 快速上手手冊",
+            language="markdown",
+        )
+        md_nums = [ln for ln, _ in purified_md]
+        self.assertNotIn(20, md_nums)  # 標頭與名稱重疊，應剔除
+        self.assertIn(21, md_nums)
+        self.assertIn(22, md_nums)
+
+        # 3. 驗證 License 樣板與連續空行剔除
+        lic_lines = [
+            (1, "# SPDX-License-Identifier: MIT"),
+            (2, "# Copyright (c) 2026 DeepMind Robotics"),
+            (3, ""),
+            (4, ""),
+            (5, ""),
+            (6, "class RobotBase: pass"),
+        ]
+        purified_lic = f.purify_lines(
+            lic_lines,
+            target_line=6,
+            symbol_name="RobotBase",
+            language="python",
+        )
+        lic_nums = [ln for ln, _ in purified_lic]
+        self.assertNotIn(1, lic_nums)
+        self.assertNotIn(2, lic_nums)
+        self.assertIn(6, lic_nums)
+        # 連續空行最多保留 1 行
+        empty_count = sum(1 for _, txt in purified_lic if not txt.strip())
+        self.assertLessEqual(empty_count, 1)
+
+        # 4. EC-05 保底驗證：若切片全為被過濾項，保底保留 target_line
+        only_doc = [
+            (10, '"""'),
+            (11, "純文件無代碼"),
+            (12, '"""'),
+        ]
+        fallback = f.purify_lines(only_doc, target_line=10, docstring_summary="純文件無代碼")
+        self.assertGreaterEqual(len(fallback), 1)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_8000_char_budget_decay(self):
+        """FT-02: 驗證 8,000 字元預算上限與平滑衰減計算器"""
+        from knowledge_db.formatter import AUTO_BUDGET_CHARS, compute_dynamic_snippet_lines
+
+        self.assertEqual(AUTO_BUDGET_CHARS, 8000)
+
+        # < 3500 字元: 30 行
+        self.assertEqual(compute_dynamic_snippet_lines(1000), 30)
+        self.assertEqual(compute_dynamic_snippet_lines(3499), 30)
+
+        # 3500 ~ 6000 字元: 30 -> 10 線性平滑遞減
+        mid_val = compute_dynamic_snippet_lines(4750)
+        self.assertGreater(mid_val, 10)
+        self.assertLess(mid_val, 30)
+
+        # 6000 ~ 7000 字元: 10 行
+        self.assertEqual(compute_dynamic_snippet_lines(6000), 10)
+        self.assertEqual(compute_dynamic_snippet_lines(6999), 10)
+
+        # >= 7000 字元: 0 行
+        self.assertEqual(compute_dynamic_snippet_lines(7000), 0)
+        self.assertEqual(compute_dynamic_snippet_lines(8500), 0)
+
+        self.mark_passed()
+
+    @require(Requirement.WORKFLOW)
+    def test_indexing_pipeline_delegation(self):
+        """FT-04: 驗證 IndexingPipeline 與 KnowledgeEngine 門面解耦委派"""
+        from knowledge_db.pipeline import IndexingPipeline
+        from knowledge_db.formatter import ResultFormatter
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            src_dir = temp_path / "src"
+            src_dir.mkdir(parents=True)
+            (src_dir / "service.py").write_text("class PipelineService:\n    def execute(self): return 42\n", encoding="utf-8")
+
+            space_cfg = SpaceConfig(name="pipe_space", include=[str(src_dir)])
+            engine = KnowledgeEngine(
+                storage_dir=temp_path / "storage",
+                contributes_data={"spaces": {"pipe_space": space_cfg.to_dict()}},
+            )
+
+            self.assertIsInstance(engine.pipeline, IndexingPipeline)
+            self.assertIsInstance(engine.formatter, ResultFormatter)
+
+            # 驗證 pipeline build_unified_index
+            idx = engine.build_unified_index(force=True)
+            self.assertIsNotNone(idx)
+            self.assertIn("PipelineService", [s.name for s in idx.symbols.values()])
+
+            # 驗證 search 委派正常
+            results = engine.search("PipelineService", space="pipe_space")
+            self.assertGreaterEqual(len(results), 1)
+
+            # 驗證 callers/callees/impact 委派正常
+            callers_res = engine.act_callers("PipelineService")
+            self.assertIn("callers", callers_res)
+
+            callees_res = engine.act_callees("PipelineService")
+            self.assertIn("callees", callees_res)
+
+            impact_res = engine.act_impact("PipelineService")
+            self.assertIn("layers", impact_res)
 
         self.mark_passed()
 
 
 if __name__ == "__main__":
     unittest.main()
+

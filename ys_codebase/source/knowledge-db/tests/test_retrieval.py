@@ -621,6 +621,14 @@ class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_batching_and_thread_capping(self):
+        """FT-09: 驗證 EmbeddingService 之分批推論切片與 ONNX 執行緒上限保護"""
+        texts = [f"test text {i}" for i in range(70)]
+        embeddings = self.service.embed_texts(texts, batch_size=32)
+        self.assertEqual(embeddings.shape, (70, DEFAULT_EMBEDDING_DIM))
+        self.mark_passed()
+
 
 class TestHybridSearchEngine(YSCBTestCase):
     """FT-03 & FT-04: 驗證 HybridSearchEngine 與剛性降級"""

@@ -24,6 +24,17 @@ logger = logging.getLogger("knowledge-db.bundler")
 PARALLEL_BUNDLE_THRESHOLD = 10
 
 
+_worker_registry: Optional[ParserRegistry] = None
+
+
+def _get_worker_registry() -> ParserRegistry:
+    """獲取或初始化工作進程專屬的單例 ParserRegistry，避免重複讀取與編譯 Tree-sitter S-Expression"""
+    global _worker_registry
+    if _worker_registry is None:
+        _worker_registry = ParserRegistry(register_defaults=True)
+    return _worker_registry
+
+
 def _parse_file_task_worker(
     task: Tuple[str, str, str, List[str]]
 ) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
@@ -35,7 +46,7 @@ def _parse_file_task_worker(
     c_key, f_path_str, relpath, sorted_spaces = task
     primary_space = sorted_spaces[0] if sorted_spaces else "unified"
     try:
-        registry = ParserRegistry(register_defaults=True)
+        registry = _get_worker_registry()
         with open(f_path_str, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         symbols = registry.parse_file(file_path=relpath, content=content, space=primary_space)
@@ -442,11 +453,12 @@ class SemanticBundler:
 
         for c_key, (f_path, relpath, sp_set) in unique_files.items():
             primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
+            cached_syms = self._file_symbols_cache.get(c_key)
             try:
                 with open(f_path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
                 sites = self.parser_registry.extract_call_sites(
-                    file_path=relpath, content=content, space=primary_space
+                    file_path=relpath, content=content, space=primary_space, symbols=cached_syms
                 )
                 imps = self.parser_registry.extract_imports(
                     file_path=relpath, content=content
@@ -489,11 +501,12 @@ class SemanticBundler:
                 continue
 
             primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
+            cached_syms = self._file_symbols_cache.get(c_key)
             try:
                 with open(f_path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
                 sites = self.parser_registry.extract_call_sites(
-                    file_path=relpath, content=content, space=primary_space
+                    file_path=relpath, content=content, space=primary_space, symbols=cached_syms
                 )
                 imps = self.parser_registry.extract_imports(
                     file_path=relpath, content=content
