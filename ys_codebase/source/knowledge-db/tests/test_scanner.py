@@ -1,5 +1,5 @@
 """
-Unit Tests for knowledge-db FingerprintScanner, Two-Stage Incremental Diff, and Atomic Persistence.
+Unit and Workflow Tests for knowledge-db FingerprintScanner, Two-Stage Incremental Diff, and Atomic Persistence.
 """
 
 import json
@@ -22,7 +22,7 @@ from knowledge_db.space import SpaceManager
 
 
 class TestScanner(YSCBTestCase):
-    @require(Requirement.LOGIC)
+    @require(Requirement.WORKFLOW)
     def test_ft_06_stage_1_unchanged_fast_path(self):
         """FT-06: 驗證 Stage 1 (mtime+size) 初篩比對與 UNCHANGED 極速判定"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -51,7 +51,9 @@ class TestScanner(YSCBTestCase):
             self.assertEqual(len(diff2.unchanged), 1)
             self.assertFalse(diff2.has_changes)
 
-    @require(Requirement.LOGIC)
+        self.mark_passed()
+
+    @require(Requirement.WORKFLOW)
     def test_ft_07_stage_2_touch_file_sha1_match(self):
         """FT-07: 驗證 Stage 2 校驗：touch 檔案時比對 SHA1 一致僅更新快取 mtime 並標記 UNCHANGED (EC-04)"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -86,7 +88,9 @@ class TestScanner(YSCBTestCase):
             fps = scanner.load_fingerprints("test_space")
             self.assertAlmostEqual(fps["app.py"].mtime, new_mtime, places=1)
 
-    @require(Requirement.LOGIC)
+        self.mark_passed()
+
+    @require(Requirement.WORKFLOW)
     def test_ft_08_diff_detection_added_modified_deleted(self):
         """FT-08: 驗證檔案增量偵測：新增 (ADDED)、修改 (MODIFIED)、刪除 (DELETED)"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -114,7 +118,6 @@ class TestScanner(YSCBTestCase):
             file_new = src_dir / "new.py"
             file_new.write_text("new file content", encoding="utf-8")
 
-            # 稍微延遲並更新內容以確保 mtime 與內容均變更
             file_mod.write_text("modified new content", encoding="utf-8")
             os.remove(str(file_del))
 
@@ -132,7 +135,9 @@ class TestScanner(YSCBTestCase):
             self.assertEqual(len(diff2.unchanged), 1)
             self.assertEqual(diff2.unchanged[0].relpath, "keep.py")
 
-    @require(Requirement.LOGIC)
+        self.mark_passed()
+
+    @require(Requirement.WORKFLOW)
     def test_ft_09_scan_all_spaces_and_atomic_save(self):
         """FT-09: 驗證 scan_all_spaces 全空間聯集掃描與原子寫入持久化"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -170,7 +175,9 @@ class TestScanner(YSCBTestCase):
             self.assertTrue(fp_a.exists())
             self.assertTrue(fp_b.exists())
 
-    @require(Requirement.LOGIC)
+        self.mark_passed()
+
+    @require(Requirement.WORKFLOW)
     def test_et_01_corrupted_cache_self_healing(self):
         """ET-01: 驗證指紋快取檔案損毀時自癒重置為全量掃描並修復 (EC-03)"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -183,7 +190,6 @@ class TestScanner(YSCBTestCase):
             space_dir = storage_dir / "spaces" / "corrupt_space"
             space_dir.mkdir(parents=True)
 
-            # 人為寫入損毀的 JSON 內容
             corrupt_file = space_dir / "fingerprints.json"
             corrupt_file.write_text("NOT A VALID JSON {{{", encoding="utf-8")
 
@@ -191,11 +197,15 @@ class TestScanner(YSCBTestCase):
             sm = SpaceManager(storage_dir=storage_dir, contributes_data={"spaces": {"corrupt_space": space_cfg.to_dict()}})
             scanner = FingerprintScanner(sm)
 
-            # 執行掃描: 應自癒降級為全量掃描 (Added=1)
             diff = scanner.scan_space(space_cfg)
             self.assertEqual(len(diff.added), 1)
 
-            # 驗證 fingerprints.json 已被修復為合法 JSON
             with open(corrupt_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self.assertIn("test.py", data)
+
+        self.mark_passed()
+
+
+if __name__ == "__main__":
+    unittest.main()

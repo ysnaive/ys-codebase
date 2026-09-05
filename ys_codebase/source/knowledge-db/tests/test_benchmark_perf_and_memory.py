@@ -29,18 +29,16 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
         """FT-01: 驗證 Unicode 整數區間比對與極限符號/Emoji 分詞防禦"""
         tok = CodeTokenizer()
 
-        # 1. CJK 判定
         self.assertTrue(tok.is_cjk("中"))
         self.assertTrue(tok.is_cjk("文"))
-        self.assertTrue(tok.is_cjk("あ")) # Hiragana
-        self.assertTrue(tok.is_cjk("ア")) # Katakana
-        self.assertTrue(tok.is_cjk("한")) # Hangul
+        self.assertTrue(tok.is_cjk("あ"))
+        self.assertTrue(tok.is_cjk("ア"))
+        self.assertTrue(tok.is_cjk("한"))
         self.assertFalse(tok.is_cjk("A"))
         self.assertFalse(tok.is_cjk("1"))
         self.assertFalse(tok.is_cjk("_"))
         self.assertFalse(tok.is_cjk(""))
 
-        # 2. Emoji 與極限 Unicode 字元安全分詞
         res = tok.tokenize("Hello 🚀 世界 ⚡ TestController_v2 測試！ 123 😊")
         self.assertIn("hello", res)
         self.assertIn("世", res)
@@ -51,25 +49,26 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
         self.assertIn("testcontroller_v2", res)
         self.assertIn("123", res)
 
-    @require(Requirement.LOGIC)
+        self.mark_passed()
+
+    @require(Requirement.PERF)
     def test_tokenizer_split_identifier_lru_cache(self):
-        """FT-02: 驗證識別碼拆分 LRU 快取命中與等價性"""
+        """FT-02: 驗證識別碼拆分 LRU 快取命中與等價性 (PERF)"""
         tok = CodeTokenizer()
 
-        # 首次拆分
         r1 = tok.split_identifier("PIDVelocityManager")
         self.assertEqual(r1, ["pid", "velocity", "manager", "pidvelocitymanager"])
 
-        # 二次拆分 (命中快取)
         r2 = tok.split_identifier("PIDVelocityManager")
         self.assertEqual(r1, r2)
 
-        # 吞吐量壓測 (10,000 次重複調用應極速返回)
         t0 = time.perf_counter()
         for _ in range(10000):
             tok.split_identifier("PIDVelocityManager")
         elapsed = time.perf_counter() - t0
         self.assertLess(elapsed, 0.2, f"10,000 cached split_identifier should take < 200ms, took {elapsed*1000:.2f}ms")
+
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_posting_slots_and_memory_savings(self):
@@ -80,10 +79,11 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
         self.assertEqual(p.space, "core")
         self.assertEqual(p.spaces, ["core", "unified"])
 
-        # 驗證無 __dict__，且無法動態附加未在 __slots__ 定義之屬性
         self.assertFalse(hasattr(p, "__dict__"))
         with self.assertRaises(AttributeError):
             p.arbitrary_attr = "invalid"
+
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_inverted_index_doc_lengths_top_level(self):
@@ -113,12 +113,10 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
         idx.add_symbol(sym1, tok, space="test")
         idx.add_symbol(sym2, tok, space="test")
 
-        # 頂層 doc_lengths 應收錄文檔長度
         self.assertIn("sym_1", idx.doc_lengths)
         self.assertIn("sym_2", idx.doc_lengths)
         self.assertGreater(idx.doc_lengths["sym_1"]["name"], 0)
 
-        # 增量打補丁刪除
         sym3 = UnifiedSymbol(
             id="sym_3",
             name="PIDControllerV2",
@@ -129,16 +127,16 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
         )
         idx.patch_incremental(dirty_file_paths={"src/pid.py"}, new_symbols=[sym3], tokenizer=tok)
 
-        # 舊符號應自 doc_lengths 與 symbols 移除，新符號應加入
         self.assertNotIn("sym_1", idx.doc_lengths)
         self.assertNotIn("sym_2", idx.doc_lengths)
         self.assertIn("sym_3", idx.doc_lengths)
         self.assertEqual(idx.doc_count, 1)
 
+        self.mark_passed()
+
     @require(Requirement.LOGIC)
     def test_inverted_index_legacy_cache_migration(self):
         """FT-05: 驗證 InvertedIndex 舊版包含 field_lengths 之快取自動遷移"""
-        # 模擬舊版二進位字典結構 (doc_lengths 缺失，但 Posting 含有 field_lengths)
         legacy_data = {
             "space_name": "legacy",
             "doc_count": 1,
@@ -166,12 +164,12 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
             },
         }
 
-        # 載入舊版結構
         idx = InvertedIndex.from_dict(legacy_data)
         self.assertEqual(idx.doc_count, 1)
         self.assertIn("doc_legacy", idx.doc_lengths)
         self.assertEqual(idx.doc_lengths["doc_legacy"]["name"], 3)
 
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_bundler_worker_parsing(self):
@@ -179,20 +177,21 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             test_file = Path(temp_dir) / "test_sample.py"
             test_file.write_text("class SampleWorkerClass:\n    pass\n", encoding="utf-8")
-            
+
             task = ("test_key", str(test_file.resolve()), "test_sample.py", ["unified"])
             c_key, sym_dicts, err = _parse_file_task_worker(task)
-            
+
             self.assertEqual(c_key, "test_key")
             self.assertIsNone(err)
             self.assertEqual(len(sym_dicts), 1)
             self.assertEqual(sym_dicts[0]["name"], "SampleWorkerClass")
 
-            # 測試檔案不存在容錯
             task_err = ("err_key", "non_existent.py", "non_existent.py", ["unified"])
             c_key_e, sym_dicts_e, err_e = _parse_file_task_worker(task_err)
             self.assertEqual(c_key_e, "err_key")
             self.assertIsNotNone(err_e)
+
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_bm25_search_scoring_correctness(self):
@@ -231,3 +230,9 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
         self.assertGreater(len(results), 0)
         self.assertEqual(results[0].symbol.id, "sym_1")
         self.assertGreater(results[0].score, 0.5)
+
+        self.mark_passed()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -14,6 +14,8 @@
 
 | 日期時間 | 類型 | 摘要 |
 | :--- | :---: | :--- |
+| 2026-09-05 15:10 | `SUB-DONE` | 子計畫 sub_04 (Test Suite Aggregation & Purification) 圓滿結案，里程碑 4 達成 |
+| 2026-09-05 14:58 | `SUB-PLAN` | 插入子計畫 sub_04 (Test Suite Aggregation & Purification)，進入 Phase 0 |
 | 2026-09-05 14:57 | `SUB-DONE` | 子計畫 sub_03 (NetworkX Call Graph & Impact Analysis) 圓滿結案，里程碑 3 達成 |
 | 2026-09-05 14:39 | `SUB-PLAN` | 開立子計畫 sub_03 (NetworkX Call Graph & Impact Analysis)，進入 Phase 0 |
 | 2026-09-05 11:32 | `PHASE` | 子計畫 sub_01 (Universal AST & Contributed Tree-Sitter) 圓滿結案，里程碑 1 達成 |
