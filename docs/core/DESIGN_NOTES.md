@@ -202,3 +202,16 @@
 - **防禦宣告**：
   > [!CAUTION]
   > **嚴禁在 `core.events` 內反向導入 `Engine` 或在事件派發前隱式初始化 `Engine`！嚴禁於模組內重複實作 Ad-hoc Hook 派發邏輯！**
+
+---
+
+### [DN-19] PipManager SDK 公開導出與順序去重相依性解析器
+
+- **核心決策**：
+  1. 將 `PipManager`、`PipInstallError` 與 `pip_manager` 模組正式導出至 `core.__all__`，支援標準匯入契約 `from core import PipManager, PipInstallError`。
+  2. 於 `PipManager` 實作標準靜態方法 `parse_pip_dependencies(pip_deps: Any) -> List[str]`，支援將字典（`{"pkg": ">=1.0.0"}`）或清單（`["pkg>=1.0.0"]`）正規化為乾淨、已順序去重之 pip 規格字串清單。
+- **背後考量**：下游模組（如 `dev` 工具鏈在建置虛擬基環境/沙盒前適配 build 版依賴）需要統一、強健的 pip 工具 SDK，若由各模組手刻正則或字典遍歷容易發生邊界條件例外（例如 None 值、首尾空白未清理、重複套件多次調用 pip）；收斂至 `PipManager` 達成 DRY 與高保真。
+- **防禦宣告**：
+  > [!IMPORTANT]
+  > **解析模組 `pip_dependencies` 宣告時嚴禁各模組自造正則或手刻字串拼接，必須統一調用 `PipManager.parse_pip_dependencies()`！**
+

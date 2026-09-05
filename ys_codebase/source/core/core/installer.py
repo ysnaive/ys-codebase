@@ -275,21 +275,18 @@ class Installer:
             return
 
         installed = cfg.get("installed_modules", {})
-        specs: List[str] = []
+        raw_specs: List[str] = []
         for mod in installed.keys():
             manifest_uri = f"module://{mod}/manifest.json"
             if uri.exists(manifest_uri):
                 try:
                     m_data = uri.read_json(manifest_uri)
                     pip_deps = m_data.get("pip_dependencies", {})
-                    if isinstance(pip_deps, dict):
-                        for pkg, constraint in pip_deps.items():
-                            if constraint:
-                                specs.append(f"{pkg}{constraint}")
-                            else:
-                                specs.append(pkg)
+                    raw_specs.extend(PipManager.parse_pip_dependencies(pip_deps))
                 except Exception:
                     pass
+
+        specs = PipManager.parse_pip_dependencies(raw_specs)
 
         yscb_abs = None
         if "yscb_root" in cfg:

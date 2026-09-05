@@ -12,6 +12,8 @@ from core.update_checker import UpdateChecker
 from core import events
 from core import symbols
 from core.symbols import resolve_callable, parse_code_func_uri, SymbolError, InvalidSymbolURIError, SymbolNotFoundError
+from core import pip_manager
+from core.pip_manager import PipManager, PipInstallError
 
 __all__ = [
     "uri",
@@ -27,5 +29,8 @@ __all__ = [
     "parse_code_func_uri",
     "SymbolError",
     "InvalidSymbolURIError",
-    "SymbolNotFoundError"
+    "SymbolNotFoundError",
+    "pip_manager",
+    "PipManager",
+    "PipInstallError",
 ]
