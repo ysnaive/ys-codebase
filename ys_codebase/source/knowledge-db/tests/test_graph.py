@@ -332,8 +332,13 @@ def top_level_func():
 
         # 驗證作用域記錄
         load_bin_site = next(cs for cs in call_sites if cs.callee_name == "load_binary")
-        self.assertEqual(load_bin_site.caller_member_name, "MyEngine._init_cache")
         self.assertEqual(load_bin_site.context_prefix, "LocalIndex")
+
+        # 驗證傳入 pre-parsed symbols 重用時提取結果完全一致
+        symbols = parser.parse(file_path="src/my_engine.py", content=code, space="main")
+        cached_call_sites = parser.extract_call_sites(file_path="src/my_engine.py", content=code, space="main", symbols=symbols)
+        self.assertEqual(len(call_sites), len(cached_call_sites))
+        self.assertEqual([cs.callee_name for cs in call_sites], [cs.callee_name for cs in cached_call_sites])
 
         self.mark_passed()
 

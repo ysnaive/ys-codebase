@@ -4,7 +4,7 @@ knowledge-db 多語言解析器基礎抽象類別 (BaseParser)
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 
 from ..schema import SymbolCallSite, UnifiedSymbol
 
@@ -30,12 +30,19 @@ class BaseParser(ABC):
         :return: 提取之 UnifiedSymbol 清單
         """
 
-    def extract_call_sites(self, file_path: str, content: str, space: str) -> List[SymbolCallSite]:
+    def extract_call_sites(
+        self,
+        file_path: str,
+        content: str,
+        space: str,
+        symbols: Optional[List[UnifiedSymbol]] = None,
+    ) -> List[SymbolCallSite]:
         """
         提取檔案文字內容中的符號調用點清單 (預設回傳空清單，特定語言解析器覆寫)。
         :param file_path: 正規化相對檔案路徑
         :param content: 檔案內容
         :param space: 所屬空間名稱
+        :param symbols: 可選之預解析 UnifiedSymbol 清單，傳入時重用避免二次 AST 解析
         :return: List[SymbolCallSite]
         """
         return []

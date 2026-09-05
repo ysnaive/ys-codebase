@@ -38,7 +38,7 @@
 | **sub_15** | **多語言分詞與 FastEmbed 複合語意檢索** | **Completed** | MultilingualTokenizer CJK 與程式碼混排分詞、輕量 FastEmbed ONNX 向量推論 (`EmbeddingService`)、Pickle Protocol 5 向量快取 (`VectorIndex`) 與 RRF 倒數排名融合。 |
 | **sub_16** | **NetworkX DiGraph 調用圖譜與 AST 符號微型語法** | **Completed** | NetworkX 圖論核心、FQN 作用域拓撲消歧、多語言提取協議 (`LanguageTopologyProtocol`) 與增強型 AST 選擇器微型語法 (`SymbolSelector`)。 |
 | **sub_17** | **測試套件聚合純化、0 Unknown 與 4-Tier 分流** | **Completed** | 20 個分散測試檔收斂至 12 個高內聚套件、100% 補齊 `self.mark_passed()` 根除 UNKNOWN、4-Tier 需求分流標註與日常快測迴圈保護。 |
-
+| **sub_18** | **管線門面職責解耦、8,000 字元預算衰減與全域切片去重純化** | **Completed** | `engine.py` 瘦身 80.8% (338 行) 解耦出 `pipeline.py` 與 `formatter.py`；CLI 預算由 12,500 收斂為 8,000 字元並以階梯平滑衰減；以 `UniversalRedundancyFilter` 徹底剔除 Docstring、重疊 Heading、License 與空白行。 |
 
 ---
 

@@ -79,6 +79,14 @@
     - 日常開發預設執行 `LOGIC + ENV`，確保回饋循環敏捷。
   - **文檔與設計決策更新**：更新 `docs/knowledge-db/README.md`、`docs/knowledge-db/DESIGN_NOTES.md` (`[DN-10]`, `[DN-11]`)。
 
+- **`sub_05_pipeline_engine_refactor_and_dogfooding` (Completed)**：
+  - **管線門面職責三向解耦 (`formatter.py` & `pipeline.py`)**：將 1,765 行龐大單體 `engine.py` 拆分為專責呈現格式化的 `formatter.py`、專責索引生命週期與查詢協調的 `pipeline.py`，並將 `engine.py` 瘦身 80.8% 至 338 行輕量門面 Facade，100% 委派底層子系統且維持所有 Public API 簽名與常數向後相容。
+  - **8,000 字元預算上限與階梯平滑動態衰減**：CLI 輸出上限由 12,500 字元收斂為 8,000 字元；實作 4 段階梯平滑衰減曲線（<3500: 30 行，3500~6000: 30->10 行線性衰減，6000~7000: 10 行，>=7000: 0 行切片），並提供保底 5 項目守門。
+  - **全域通用切片重複資訊剔除 (`UniversalRedundancyFilter`)**：徹底過濾程式碼切片已摘要呈現之 Docstring、Markdown 切片重疊之 `# Heading`、License 樣板與連續空白行，保留目標定義行，大幅提升 LLM 與終端上下文資訊密度。
+  - **向量推論安全防護與 AST 單次走訪優化**：ONNX Runtime 限制執行緒上限 `min(2, max(1, cpu//2))` 與分批推論時間片讓渡 (`batch_size=64`, sleep 5ms)，剛性杜絕 100% CPU 飽和與凍結；`VectorIndex.save_binary` 降級至 `compresslevel=1`；Worker 內 ParserRegistry 單例快取與調用點提取重用符號，消滅二次 AST 解析，231 檔索引熱建置由數分鐘卡死壓降至 10.4 秒平穩完成。
+  - **測試套件 100% 通過與本地物化閉環**：新增 `test_redundancy_filter`、`test_8000_char_budget_decay`、`test_indexing_pipeline_delegation` 與 `test_batching_and_thread_capping`；全模組 124/124 單元測試 100% 通過（0 Fail, 0 Skip, 0 Unknown）；透過 `python yscb.py install knowledge-db@build --force` 完成 Track A 本地安裝物化與 UX-01 實機檢索驗收。
+  - **設計決策與手冊更新**：於 `docs/knowledge-db/DESIGN_NOTES.md` 登錄 `[DN-12]` 與 `[DN-13]`；更新 `docs/knowledge-db/README.md`。
+
 
 
 ## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (Executing)

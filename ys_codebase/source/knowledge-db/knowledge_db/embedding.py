@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import pickle
 import re
+import time
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
@@ -49,15 +50,28 @@ class EmbeddingService:
     def _init_model(self) -> None:
         """嘗試加載 FastEmbed ONNX 模型；若未安裝或失敗則安全降級"""
         try:
+            # 限制 ONNX 與 OpenMP 執行緒上限，防止全核心 100% 狂飆導致系統排程飢餓或硬體重開機
+            cpu_cnt = os.cpu_count() or 1
+            max_threads = min(2, max(1, cpu_cnt // 2))
+            os.environ["OMP_NUM_THREADS"] = str(max_threads)
+            os.environ["ONNXRUNTIME_INTRA_OP_NUM_THREADS"] = str(max_threads)
+
             from fastembed import TextEmbedding
 
             os.makedirs(self.cache_dir, exist_ok=True)
-            self._model = TextEmbedding(
-                model_name=self.model_name,
-                cache_dir=str(self.cache_dir),
-            )
+            try:
+                self._model = TextEmbedding(
+                    model_name=self.model_name,
+                    cache_dir=str(self.cache_dir),
+                    threads=max_threads,
+                )
+            except TypeError:
+                self._model = TextEmbedding(
+                    model_name=self.model_name,
+                    cache_dir=str(self.cache_dir),
+                )
             self._is_available = True
-            logger.debug(f"EmbeddingService initialized with model '{self.model_name}'")
+            logger.debug(f"EmbeddingService initialized with model '{self.model_name}' (threads={max_threads})")
         except Exception as e:
             self._is_available = False
             self._model = None
@@ -96,9 +110,10 @@ class EmbeddingService:
         t = t.replace("_", " ").replace(".", " ").replace("/", " ").replace("\\", " ").lower()
         return " ".join(t.split())
 
-    def embed_texts(self, texts: List[str]) -> np.ndarray:
+    def embed_texts(self, texts: List[str], batch_size: int = 64) -> np.ndarray:
         """
         批次計算文字嵌入向量清單，傳回 (N, dim) 之 L2-Normalized 矩陣。
+        採用 batch_size 切片與微幅時間片讓渡 (sleep 5ms)，杜絕 CPU 100% 飽和與系統凍結。
         若不可用時回傳空矩陣。
         """
         if not texts:
@@ -111,9 +126,15 @@ class EmbeddingService:
             return np.vstack(vectors).astype(np.float32)
 
         try:
-            # FastEmbed embed 回傳 generator of numpy arrays
-            embeddings_gen = self._model.embed(preprocessed)
-            embeddings_list = list(embeddings_gen)
+            embeddings_list: List[np.ndarray] = []
+            total_items = len(preprocessed)
+            for i in range(0, total_items, batch_size):
+                chunk = preprocessed[i : i + batch_size]
+                chunk_gen = self._model.embed(chunk, batch_size=batch_size)
+                embeddings_list.extend(list(chunk_gen))
+                if i + batch_size < total_items:
+                    time.sleep(0.005)
+
             mat = np.vstack(embeddings_list).astype(np.float32)
             # L2 正規化
             norms = np.linalg.norm(mat, axis=1, keepdims=True)
@@ -230,15 +251,15 @@ class VectorIndex:
             results.append((self.doc_ids[idx], float(sims[idx])))
         return results
 
-    def save_binary(self, cache_file: Union[str, Path]) -> None:
-        """使用 Pickle Protocol 5 + Gzip 儲存向量快取"""
+    def save_binary(self, cache_file: Union[str, Path], compresslevel: int = 1) -> None:
+        """使用 Pickle Protocol 5 + Gzip 儲存向量快取 (預設 compresslevel=1 快速寫盤)"""
         cache_path = Path(cache_file)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "doc_ids": self.doc_ids,
             "vectors": self.vectors,
         }
-        with gzip.open(cache_path, "wb", compresslevel=6) as f:
+        with gzip.open(cache_path, "wb", compresslevel=compresslevel) as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     @classmethod

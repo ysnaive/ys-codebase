@@ -14,6 +14,7 @@
 
 | 日期時間 | 類型 | 摘要 |
 | :--- | :---: | :--- |
+| 2026-09-05 15:16 | `SUB-PLAN` | 啟動子計畫 sub_05 (Pipeline Engine Refactor & Dogfooding)，進入 Phase 0 |
 | 2026-09-05 15:10 | `SUB-DONE` | 子計畫 sub_04 (Test Suite Aggregation & Purification) 圓滿結案，里程碑 4 達成 |
 | 2026-09-05 14:58 | `SUB-PLAN` | 插入子計畫 sub_04 (Test Suite Aggregation & Purification)，進入 Phase 0 |
 | 2026-09-05 14:57 | `SUB-DONE` | 子計畫 sub_03 (NetworkX Call Graph & Impact Analysis) 圓滿結案，里程碑 3 達成 |

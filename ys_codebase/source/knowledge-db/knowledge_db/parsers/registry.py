@@ -226,15 +226,28 @@ class ParserRegistry:
             logger.warning(f"Unexpected error during parse_file '{file_path}' in space '{space}': {e}")
             return []
 
-    def extract_call_sites(self, file_path: str, content: str, space: str) -> List[SymbolCallSite]:
+    def extract_call_sites(
+        self,
+        file_path: str,
+        content: str,
+        space: str = "unified",
+        symbols: Optional[List[UnifiedSymbol]] = None,
+    ) -> List[SymbolCallSite]:
         """
         調度相符解析器提取符號調用點；若無匹配解析器回傳空清單 []。
+        支援傳入預解析之 symbols 實例，避免 TreeSitterDriver 內部重複執行 parse()。
         """
         parser = self.get_parser(file_path)
         if parser is None:
             return []
         try:
-            return parser.extract_call_sites(file_path=file_path, content=content, space=space)
+            return parser.extract_call_sites(file_path=file_path, content=content, space=space, symbols=symbols)
+        except TypeError:
+            try:
+                return parser.extract_call_sites(file_path=file_path, content=content, space=space)
+            except Exception as e:
+                logger.debug(f"Error extracting call sites from '{file_path}': {e}")
+                return []
         except Exception as e:
             logger.debug(f"Error extracting call sites from '{file_path}': {e}")
             return []
