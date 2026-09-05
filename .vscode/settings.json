@@ -56,15 +56,11 @@
   },
   "markdown.preview.openMarkdownLinks": "inPreview",
   "markdown.preview.doubleClickToSwitchToEditor": true,
-  "python.analysis.extraPaths": [
-    "./ys_codebase/.venv/py312/lib/python3.12/site-packages"
-  ],
+  "python.analysis.extraPaths": [],
   "python.defaultInterpreterPath": "./ys_codebase/.venv/py312/bin/python",
   "_yscb_managed": {
     "description": "Auto-managed by YSCB host bootstrapper. Reversible via module uninstall or rollback.",
-    "extraPaths": [
-      "./ys_codebase/.venv/py312/lib/python3.12/site-packages"
-    ],
+    "extraPaths": [],
     "defaultInterpreterPath": "./ys_codebase/.venv/py312/bin/python",
     "excludes": {
       "files.watcherExclude": "**/.venv/**",
