@@ -109,9 +109,10 @@ from dev.testing import require, Requirement
 
 class Requirement(Flag):
     NONE = 0
-    LOGIC = auto()     # 純內部單元邏輯
-    HOST_CLI = auto()  # 需呼叫 yscb.py 子程序
-    NETWORK = auto()   # 需對外聯網連線（無網路時自動 Skip）
+    LOGIC = auto()     # 純內部單元邏輯 (預設快測)
+    ENV = auto()       # 需輕量模擬環境/URI (預設快測)
+    WORKFLOW = auto()  # 需多行程/實體沙盒 E2E 重型流程 (預設排除，需 --workflow 或 --all-types)
+    PERF = auto()      # 效能基準評測 (預設排除，需 --perf 或 --all-types)
 ```
 
 ---
@@ -196,3 +197,38 @@ Status  : PASSED (100% Ready)
 ### 8.3 沙盒銷毀安全斷開保護 (`_unlink_projected_venv`)
 - **斷開防護**：`cleanup_sandbox` 在銷毀沙盒調用 `shutil.rmtree` 之前，強制調用 `_unlink_projected_venv` 檢查並以 `os.rmdir` (Windows Junction) 或 `os.unlink` (POSIX Symlink) 安全斷開重析點。
 - **零損毀鐵律**：徹底阻絕 `shutil.rmtree` 遍歷刪除宿主微環境實體目錄與依賴套件，達成宿主環境 100% 零污染與零損毀。
+
+---
+
+## 9. 4-Tier 測試分流與測試案例純化規範 (4-Tier Taxonomy & Test Suite Purification)
+
+隨著專案長期演進與頻繁迭代，測試套件需定期實施純化與凝聚，維護測試極速回饋與架構整潔：
+
+### 9.1 4-Tier 分流標準與過濾規則
+
+| 層級 (Tier) | 標記 (`@require`) | 執行成本 | 涵蓋範疇 | 執行策略 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Logic** | `Requirement.LOGIC` | 微秒級 (~0.1ms) | 純單元計算、資料結構轉換、解析器、演算法 | **預設納入** (`python yscb.py dev test`) |
+| **Env** | `Requirement.ENV` | 毫秒級 (~1-10ms) | URI 解析、輕量快取讀寫、設定讀取、記憶體 Mock | **預設納入** (`python yscb.py dev test`) |
+| **Workflow** | `Requirement.WORKFLOW` | 秒級 (~1-10s) | 實體微型虛擬沙盒重佈、多進程執行、跨進程 IPC、E2E 流程 | **預設排除**，需 `--workflow` 或 `--all-types` |
+| **Perf** | `Requirement.PERF` | 數十毫秒至秒級 | 基準效能測試、高頻迭代延遲壓測、負載比對 | **預設排除**，需 `--perf` 或 `--all-types` |
+
+> 💡 **目標導向釘選 (Target Pinning)**：當開發者指定 `--target=<mod>:<case>` 時，自動穿透分流過濾，無條件執行指定測試。
+
+### 9.2 測試凝聚與零碎檔案整併原則
+1. **反微型破碎原則**：嚴禁為每次微小修復或單一 PR 開立僅含 1~2 個案例的零散測試檔（如 `test_foo_sync.py`、`test_bar_patch.py`）。
+2. **高內聚整併**：類似或緊密相關之組件測試，強制依功能主題整併至核心測試檔（以獨立 `TestCase` 類別或精確命名的測試方法組織），共用前置 `setUp` 與 Mock 物件，杜絕重複模組導入與重複 Mock 負載。
+3. **零邏輯遺失**：純化過程中所有斷言覆蓋率與異常邊界必須 100% 完整保留。
+
+### 9.3 雙軌驗證指南 (Dual-Track Workflow)
+- **日常開發快測 (Inner Loop)**：
+  ```bash
+  python yscb.py dev test <module> --quiet
+  ```
+  僅執行 `LOGIC + ENV`，秒級極速完成，全通過僅輸出單行統計。
+- **發布/階段驗收全量回歸 (Outer Loop / Gatekeeper)**：
+  ```bash
+  python yscb.py dev test <module> --all-types
+  ```
+  執行 100% 完整測試（包含多進程沙盒與壓測），確保無架構級回歸。
+

@@ -299,6 +299,8 @@ class ASCIIReportFormatter:
                     tax_parts.append(f"Workflow: {mod_info['workflow_passed']}")
                 if mod_info.get("perf_passed", 0) > 0:
                     tax_parts.append(f"Perf: {mod_info['perf_passed']}")
+                if mod_info.get("unknown", 0) > 0:
+                    tax_parts.append(f"Unknown: {mod_info['unknown']}")
                 tax_str = f" [{', '.join(tax_parts)}]" if tax_parts else ""
                 lines.append(f"    \\-- [Custom]   Custom Tests ........... ({mod_info['custom_passed']}/{mod_info['custom_total']}){tax_str}")
             else:
@@ -343,10 +345,14 @@ class ASCIIReportFormatter:
         total = report_data.get("total", 0)
         passed = report_data.get("passed", 0)
         failed = report_data.get("failed", 0)
+        unknown = report_data.get("unknown", 0)
         skipped = report_data.get("skipped", 0)
         duration = report_data.get("duration", 0.0)
         overall = "PASSED (100% Ready)" if failed == 0 else "FAILED"
-        lines.append(f"Summary : {total} Total, {passed} Passed, {failed} Failed, {skipped} Skipped ({duration:.3f}s)")
+        if unknown > 0:
+            lines.append(f"Summary : {total} Total, {passed} Passed, {failed} Failed, {unknown} Unknown, {skipped} Skipped ({duration:.3f}s)")
+        else:
+            lines.append(f"Summary : {total} Total, {passed} Passed, {failed} Failed, {skipped} Skipped ({duration:.3f}s)")
         lines.append(f"Status  : {overall}")
         lines.append("=" * 70)
         return "\n".join(lines)
@@ -355,16 +361,20 @@ class ASCIIReportFormatter:
     def format_throttled(report_data: Dict[str, Any]) -> str:
         """
         將測試報告數據轉換為最大化節省 Token 的節流格式。
-        - 全數通過: "Pass: {passed}({pct:.1f}%), Fail: 0, Skip: {skipped}"
+        - 全數通過: "Pass: {passed}({pct:.1f}%), Fail: 0, Skip: {skipped}" (有 unknown 時附加 Unknown: {unknown})
         - 存在失敗: 統計首行 + FAILED / ERROR TEST CASES LIST 詳情
         """
         total = report_data.get("total", 0)
         passed = report_data.get("passed", 0)
         failed = report_data.get("failed", 0)
+        unknown = report_data.get("unknown", 0)
         skipped = report_data.get("skipped", 0)
         pct = (passed / total * 100.0) if total > 0 else 0.0
 
-        stat_line = f"Pass: {passed}({pct:.1f}%), Fail: {failed}, Skip: {skipped}"
+        if unknown > 0:
+            stat_line = f"Pass: {passed}({pct:.1f}%), Fail: {failed}, Unknown: {unknown}, Skip: {skipped}"
+        else:
+            stat_line = f"Pass: {passed}({pct:.1f}%), Fail: {failed}, Skip: {skipped}"
 
         failures_list = report_data.get("failures_list", [])
         if failed == 0 and not failures_list:

@@ -51,6 +51,7 @@ class TestVenvCore(YSCBTestCase):
 
         resolved_sub = uri.resolve("yscb.venv://py310/site-packages")
         self.assertTrue(resolved_sub.endswith(os.path.join(".venv", "py310", "site-packages")))
+        self.mark_passed()
 
     def test_ft_02_pip_manager_paths(self):
         """FT-02: Verify PipManager paths and version partitioning."""
@@ -72,6 +73,7 @@ class TestVenvCore(YSCBTestCase):
             self.assertTrue(site_pkg.endswith(os.path.join("Lib", "site-packages")))
         else:
             self.assertTrue(site_pkg.endswith(os.path.join("lib", "python3.10", "site-packages")))
+        self.mark_passed()
 
     @patch("subprocess.run")
     def test_ft_03_install_packages_flags(self, mock_run):
@@ -103,6 +105,7 @@ class TestVenvCore(YSCBTestCase):
             with self.assertRaises(PipInstallError) as ctx:
                 mgr.install_packages(["dummy-no-wheel"])
             self.assertIn("Wheel-Only installation failed", str(ctx.exception))
+        self.mark_passed()
 
     def test_ft_04_internal_gitignore_contains_venv(self):
         """FT-04: Verify _generate_internal_gitignore includes /.venv/."""
@@ -118,6 +121,7 @@ class TestVenvCore(YSCBTestCase):
         self.assertIn("/.modules/", content)
         self.assertIn("/.build/", content)
         self.assertIn(yscb.INTERNAL_IGNORE_END, content)
+        self.mark_passed()
 
     def test_ft_05_sys_path_injection(self):
         """FT-05: Verify _ensure_private_venv_path dynamically injects site-packages."""
@@ -135,6 +139,7 @@ class TestVenvCore(YSCBTestCase):
         # Clean up
         if site_dir in sys.path:
             sys.path.remove(site_dir)
+        self.mark_passed()
 
     def test_ft_06_ide_projector_skip_when_no_vscode(self):
         """FT-06: Verify IdeProjector silently skips when project://.vscode does not exist."""
@@ -148,6 +153,7 @@ class TestVenvCore(YSCBTestCase):
         self.assertFalse(result)
         # Ensure .vscode was NOT created
         self.assertFalse(os.path.exists(os.path.join(proj_root, ".vscode")))
+        self.mark_passed()
 
     def test_ft_07_ide_projector_soft_merge_and_revert(self):
         """FT-07: Verify explicit _yscb_managed marking and reversible soft-merge."""
@@ -192,6 +198,7 @@ class TestVenvCore(YSCBTestCase):
         self.assertNotIn("_yscb_managed", reverted)
         self.assertTrue(reverted["custom.user.setting"])
         self.assertEqual(reverted.get("python.analysis.extraPaths"), ["/opt/custom/lib"])
+        self.mark_passed()
 
     def test_ft_08_installer_sync_pip_dependencies(self):
         """FT-08: Verify Installer.sync_pip_dependencies reads manifests and triggers installation."""
@@ -200,5 +207,6 @@ class TestVenvCore(YSCBTestCase):
             with patch.object(IdeProjector, "sync_vscode_settings") as mock_sync:
                 installer.sync_pip_dependencies()
                 self.assertIsNotNone(installer)
+        self.mark_passed()
 
 

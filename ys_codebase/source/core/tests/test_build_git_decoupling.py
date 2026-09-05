@@ -71,6 +71,7 @@ class TestBuildGitDecoupling(YSCBTestCase):
         self.assertNotIn("\n/build/\n", c2)
         self.assertEqual(c2.count(yscb.INTERNAL_IGNORE_BEGIN), 1)
         self.assertEqual(c2.count(yscb.INTERNAL_IGNORE_END), 1)
+        self.mark_passed()
 
     def test_ft_02_uri_resolution_to_dot_build(self):
         """FT-02: Verify module.build:// and fallback resolve to yscb://.build/."""
@@ -79,6 +80,7 @@ class TestBuildGitDecoupling(YSCBTestCase):
 
         bld_core = uri.resolve("module.build://core")
         self.assertTrue(os.path.join(".build", "core") in bld_core)
+        self.mark_passed()
 
     def test_ft_03_builder_outputs_to_dot_build(self):
         """FT-03: Verify Builder resolves module.build:// correctly under current uri scheme."""
@@ -87,6 +89,7 @@ class TestBuildGitDecoupling(YSCBTestCase):
         real_path = uri.resolve(mod_build_root)
         self.assertTrue(".build" in real_path)
         self.assertTrue(real_path.endswith(os.path.join(".build", "mock_mod")) or real_path.endswith(os.path.join(".build", "mock_mod") + os.sep))
+        self.mark_passed()
 
     def test_ft_04_restore_prioritizes_dot_build(self):
         """FT-04: Verify _restore_module_package prioritizes .build/ over build/."""
@@ -125,6 +128,7 @@ class TestBuildGitDecoupling(YSCBTestCase):
         with open(os.path.join(dest_dir, "marker.txt"), "r", encoding="utf-8") as f:
             content = f.read().strip()
         self.assertEqual(content, "from_dot_build")
+        self.mark_passed()
 
     def test_ft_05_standards_doc_check(self):
         """FT-05: Verify STANDARDS.md marks module.build as 🚫 忽略 and maps to yscb://.build/."""
@@ -145,6 +149,7 @@ class TestBuildGitDecoupling(YSCBTestCase):
             self.assertIn("yscb://.build/", content)
             self.assertIn("module.build.root://", content)
             self.assertIn("🚫 忽略", content)
+        self.mark_passed()
 
     def test_et_01_nonexistent_dot_build_auto_create(self):
         """ET-01: Verify resolving module.build:// on non-existent path works gracefully."""
@@ -154,6 +159,7 @@ class TestBuildGitDecoupling(YSCBTestCase):
         # uri.makedirs should cleanly create it
         uri.makedirs("module.build://some_clean_mod/1.0.0.build")
         self.assertTrue(os.path.isdir(res))
+        self.mark_passed()
 
     def test_pt_01_uri_resolve_perf(self):
         """PT-01: Verify uri.resolve('module.build://') latency is sub-millisecond."""
@@ -163,6 +169,7 @@ class TestBuildGitDecoupling(YSCBTestCase):
         elapsed = (time.perf_counter() - start) / 100
         # Must be well under 1ms (typically <0.02ms)
         self.assertLess(elapsed, 0.001)
+        self.mark_passed()
 
 
 if __name__ == "__main__":

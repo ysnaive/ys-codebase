@@ -123,3 +123,51 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
             if old_val is not None:
                 os.environ["YSCB_TEST_SANDBOX"] = old_val
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_execution_status_classification_in_teardown(self):
+        """Verify tearDown classifies: Passed, Failed, and uncalled mark_passed without exception as UNKNOWN."""
+        from io import StringIO
+        import sys
+
+        class StatusDemoCase(YSCBTestCase):
+            def test_explicit_passed(self):
+                self.mark_passed()
+
+            def test_no_mark_no_error(self):
+                pass  # no mark_passed and no exception -> should be UNKNOWN
+
+            def test_raises_failure(self):
+                raise AssertionError("Deliberate failure")
+
+        # 1. Explicit Passed
+        case_passed = StatusDemoCase("test_explicit_passed")
+        case_passed.setUp()
+        case_passed._callTestMethod(getattr(case_passed, "test_explicit_passed"))
+        case_passed.tearDown()
+        self.assertEqual(case_passed.execution_status, "PASSED")
+
+        # 2. No mark passed and no exception -> UNKNOWN (without outputting [Test Failed])
+        captured_out = StringIO()
+        orig_out = sys.stdout
+        case_unknown = StatusDemoCase("test_no_mark_no_error")
+        case_unknown.setUp()
+        try:
+            sys.stdout = captured_out
+            case_unknown._callTestMethod(getattr(case_unknown, "test_no_mark_no_error"))
+            case_unknown.tearDown()
+        finally:
+            sys.stdout = orig_out
+        self.assertEqual(case_unknown.execution_status, "UNKNOWN")
+        self.assertNotIn("[Test Failed]", captured_out.getvalue())
+
+        # 3. Raises Failure -> FAILED
+        case_failed = StatusDemoCase("test_raises_failure")
+        case_failed.setUp()
+        with self.assertRaises(AssertionError):
+            case_failed._callTestMethod(getattr(case_failed, "test_raises_failure"))
+        case_failed.tearDown()
+        self.assertEqual(case_failed.execution_status, "FAILED")
+
+        self.mark_passed()
+

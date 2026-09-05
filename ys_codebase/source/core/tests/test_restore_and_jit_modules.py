@@ -72,6 +72,7 @@ class TestRestoreAndJitModules(YSCBTestCase):
         self.assertIn("/.modules/", c2)
         self.assertEqual(c2.count(yscb.INTERNAL_IGNORE_BEGIN), 1)
         self.assertEqual(c2.count(yscb.INTERNAL_IGNORE_END), 1)
+        self.mark_passed()
 
     def test_ft_02_semantic_uri_resolution_to_dot_modules(self):
         """FT-02: Verify module:// resolves to yscb://.modules/."""
@@ -80,6 +81,7 @@ class TestRestoreAndJitModules(YSCBTestCase):
 
         core_mod = uri.resolve("module://core")
         self.assertTrue(core_mod.endswith(os.path.join(".modules", "core")) or core_mod.endswith(os.path.join(".modules", "core") + os.sep))
+        self.mark_passed()
 
     def test_ft_03_and_04_restore_and_dirty_detection(self):
         """FT-03 & FT-04: Verify _is_modules_dirty and cmd_restore cycle."""
@@ -146,6 +148,7 @@ class TestRestoreAndJitModules(YSCBTestCase):
         # Verify Clean state
         is_dirty_after, _ = yscb._is_modules_dirty(self.host_dir, "engine", installed)
         self.assertFalse(is_dirty_after)
+        self.mark_passed()
 
     def test_et_01_empty_installed_modules_restore(self):
         """ET-01: Verify cmd_restore handles empty installed_modules safely without crashing."""
@@ -163,6 +166,7 @@ class TestRestoreAndJitModules(YSCBTestCase):
             self.assertEqual(ret, 0)
         finally:
             os.chdir(orig_cwd)
+        self.mark_passed()
 
     def test_et_02_corrupted_provider_restore_handling(self):
         """ET-02: Verify restore handles unresolvable provider gracefully."""
@@ -185,6 +189,7 @@ class TestRestoreAndJitModules(YSCBTestCase):
             self.assertEqual(ret, 1)
         finally:
             os.chdir(orig_cwd)
+        self.mark_passed()
 
     def test_pt_01_clean_state_jit_sniff_latency(self):
         """PT-01: Benchmark _is_modules_dirty executes in <2ms under clean state."""
@@ -206,6 +211,7 @@ class TestRestoreAndJitModules(YSCBTestCase):
         elapsed_avg_ms = ((time.perf_counter() - t0) / 100) * 1000
 
         self.assertLess(elapsed_avg_ms, 2.0, f"Average JIT sniff took {elapsed_avg_ms:.3f}ms, exceeding 2ms threshold")
+        self.mark_passed()
 
 
 if __name__ == "__main__":

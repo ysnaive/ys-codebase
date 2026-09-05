@@ -2,7 +2,7 @@
 
 > 計畫名稱：core_dev_toolchain_upgrade  
 > 建立日期：2026-09-05  
-> 狀態：In Progress  
+> 狀態：Completed  
 > Umbrella 模式：Pre-planned (預先規劃型)  
 > 模板版本：v1.2  
 
@@ -31,6 +31,7 @@
 | **sub_01** | `sub_01_core_pip_sdk_and_environment_export` | Full Track | `Completed` | `core` 開放 `PipManager`、`PipInstallError` 與微環境解析等 SDK 介面，支援路徑靈活配置與標準契約導出。 |
 | **sub_02** | `sub_02_dev_toolchain_pip_adaptation_and_sandbox_integration` | Full Track | `Completed` | `dev` 工具鏈升級，支援建置虛擬基環境前對當前 build 版進行 pip 適配，沙盒環境相依性繼承，以及 `dev check` 合規檢查。 |
 | **sub_03** | `sub_03_dev_test_output_purification_and_info_aggregation` | Full Track | `Completed` | `dev test` 跑測信息純化、沙盒 JIT 短路隔離、stderr 洩漏修復與雙模式（--quiet 及一般模式）信息聚合策略實作。 |
+| **sub_04** | `sub_04_core_dev_test_case_purification` | Full Track | `Completed` | `core` 與 `dev` 測試案例深度純化、相似/重複案例合併淘汰、長耗時高負重測試遷移至 WORKFLOW 分類。 |
 
 ---
 
@@ -40,3 +41,4 @@
 - [x] **里程碑 2 (sub_02)**：`dev` 工具鏈完成 build 版 pip 適配與沙盒微環境整合，具備 pip 依賴之模組沙盒跑測 100% 通過。
 - [x] **里程碑 3 (Final Verification & Docs)**：全生態系端到端回歸驗證通過，更新 `docs/core` 與 `docs/dev` 相關知識庫文檔，結案歸檔。
 - [x] **里程碑 4 (sub_03)**：`dev test` 完成跑測信息純化與聚合重構，沙盒噪訊 100% 消除，`--quiet` 與一般模式信息聚合驗證通過。
+- [x] **里程碑 5 (sub_04)**：`core` 與 `dev` 模組完成測試案例純化，日常回歸執行效率顯著提升，100% 契約覆蓋與零回歸驗證。

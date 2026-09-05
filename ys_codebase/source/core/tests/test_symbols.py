@@ -40,6 +40,7 @@ class TestSymbolsProtocol(YSCBTestCase):
         self.assertEqual(mod2, "core")
         self.assertEqual(sub2, "symbols")
         self.assertEqual(fn2, "resolve_callable")
+        self.mark_passed()
 
     def test_st_02_parse_code_func_uri_invalid(self):
         """ST-02: 驗證無效 URI 格式防禦 (EC-01)。"""
@@ -58,6 +59,7 @@ class TestSymbolsProtocol(YSCBTestCase):
         # 空函式名
         with self.assertRaises(InvalidSymbolURIError):
             parse_code_func_uri("code.func://agents-workflow/providers:")
+        self.mark_passed()
 
     def test_st_03_resolve_callable_package_import(self):
         """ST-01: 驗證透過已加載 package / sys.modules 解析 Callable。"""
@@ -68,6 +70,7 @@ class TestSymbolsProtocol(YSCBTestCase):
         # 驗證快取命中
         fn_cached = resolve_callable("code.func://core/symbols:parse_code_func_uri")
         self.assertIs(fn, fn_cached)
+        self.mark_passed()
 
     def test_st_04_resolve_callable_not_found(self):
         """ST-03: 驗證模組不存在或函式不存在防禦 (EC-02)。"""
@@ -78,6 +81,7 @@ class TestSymbolsProtocol(YSCBTestCase):
         # 模組存在但函式不存在
         with self.assertRaises(SymbolNotFoundError):
             resolve_callable("code.func://core/symbols:non_existent_func_xyz", use_cache=False)
+        self.mark_passed()
 
 
 if __name__ == "__main__":
