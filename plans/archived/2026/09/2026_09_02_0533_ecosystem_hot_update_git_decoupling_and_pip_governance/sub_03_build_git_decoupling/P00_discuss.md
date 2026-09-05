@@ -8,7 +8,7 @@
 
 ---
 
-## 1. 需求背景與邊界 (Context & Boundaries)
+## 1. 使用者原始需求與意圖 (Context & Boundaries)
 
 - **背景與動機**：
   - 現行系統中，各模組透過 `dev build` 命令產出之發布版本包與索引檔案存放在 `build/` 目錄中（如 `build/core/1.0.2.build.zip`）。
