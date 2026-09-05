@@ -14,6 +14,7 @@
 | **DN-DEV-04** | 本地發布流水線解耦 Git 乾淨限制之純淨打包哲學 | `source/dev/dev/releaser.py` | 💡 INFO |
 | **DN-DEV-05** | 本地建置產物直裝通道 (@build) 與宣告式工程規範連動注入 | `source/core/core/engine.py`<br/>`source/dev/manifest.json` | 💡 INFO |
 | **DN-DEV-06** | Build 版 pip 相依性適配與沙盒微環境零拷貝投影 | `source/dev/dev/testing/sandbox.py`<br/>`source/dev/dev/checker.py` | 💡 INFO |
+| **DN-DEV-07** | 沙盒測試輸出純化、信息聚合與宿主防穿透剛性守門 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/runner.py`<br/>`source/dev/dev/testing/case.py` | 💡 INFO |
 
 ---
 
@@ -61,6 +62,21 @@
   2. **3-Tier 投影管線**：沙盒環境透過 Windows Junction (免管理者權限、sub-1ms 完成) 或 POSIX Symlink 穿透宿主微環境；若於 virtiofs / 容器掛載磁碟等受限環境，平滑降級為 `.pth` 檔案指標，保證 100% 跨平台相容。
   3. **沙盒清理防護**：在 `cleanup_sandbox` 調用 `shutil.rmtree` 前，強制調用 `_unlink_projected_venv` 解開重析點/符號連結，徹底阻斷遍歷刪除宿主微環境之風險。
 - **背後考量**：兼顧沙盒高保真測試能力與極致效能（零拷貝、零重複網路下載），同時剛性保證宿主微環境之完整性與純淨度。
+
+---
+
+### [DN-DEV-07] 沙盒測試輸出純化、信息聚合與宿主防穿透剛性守門
+
+- **核心決策**：
+  1. **IPC JSON 結構化解耦**：單模組與平行測試全面採用 `--report-json` 跨進程交換測試結果，外層宿主調度器作為唯一渲染終端，徹底解耦內層沙盒日誌與宿主終端輸出。
+  2. **雙模式輸出純化與信息聚合**：
+     - `--quiet` / `-q` 模式：子進程 stdout/stderr 全量屏蔽；測試全數通過時嚴格維持單行統計（`Pass: X(100.0%), Fail: 0, Skip: 0`）；崩潰或非 0 返回碼時精準擷取 stderr tail（後 20 行）供快速診斷。
+     - 一般模式：子進程之非致命警告（如沙盒未配置專案 URI 之編譯期警告）以 `[*] Notices: N sandbox warning(s) captured (suppressed, run with --verbose to inspect)` 收斂折疊，杜絕數十行警告洗版。
+  3. **沙盒黑盒子與高保真原則**：沙盒內部生命週期 Hook（如 JIT 預發布與自癒物化）維持自然運行，嚴禁粗暴短路業務邏輯；輸出純化由宿主調度器之輸出捕獲與格式化看板完成。
+  4. **宿主防穿透剛性守門**：
+     - `dev op-test` 於宿主環境直接調用時剛性阻斷（Gate 0），提示改用 `dev test` 進入沙盒。
+     - `YSCBTestCase.setUp` 在無法向上解析出合法沙盒目錄時強制拋出 `SecurityError`，徹底拔除回退至 `os.getcwd()` 的漏洞，守護專案根目錄零污染。
+- **背後考量**：徹底根除沙盒穿透造成的專案目錄污染，並極大化節約開發與 Agent 協同的終端日誌 Token 吞吐量。
 
 
 
