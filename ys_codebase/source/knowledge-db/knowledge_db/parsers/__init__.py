@@ -3,26 +3,40 @@ knowledge-db parsers package
 """
 
 from .base import BaseParser
-from .cpp_parser import CppParser
-from .csharp_parser import CSharpParser
-from .css_parser import CssParser
-from .html_parser import HtmlParser
-from .js_ts_parser import JsTsParser
-from .markdown_parser import MarkdownParser
-from .python_parser import PythonParser
-from .registry import ParserRegistry
+from .registry import (
+    CppParser,
+    CSharpParser,
+    JsTsParser,
+    LanguageRegistry,
+    MarkdownParser,
+    ParserRegistry,
+    PythonParser,
+)
 from .spice_parser import LogicalLine, SpiceParser
+from .treesitter import TreeSitterDriver
+
+try:
+    from .html_parser import HtmlParser
+except ImportError:
+    HtmlParser = None
+
+try:
+    from .css_parser import CssParser
+except ImportError:
+    CssParser = None
 
 __all__ = [
     "BaseParser",
+    "TreeSitterDriver",
     "ParserRegistry",
+    "LanguageRegistry",
     "PythonParser",
     "MarkdownParser",
     "CppParser",
     "CSharpParser",
+    "JsTsParser",
     "SpiceParser",
     "LogicalLine",
-    "JsTsParser",
     "HtmlParser",
     "CssParser",
 ]

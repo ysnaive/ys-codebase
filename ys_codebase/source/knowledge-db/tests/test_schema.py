@@ -15,6 +15,7 @@ from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 from knowledge_db.exceptions import InvalidSpaceConfigError, SchemaValidationError
 from knowledge_db.schema import (
+    LanguageConfig,
     LanguageType,
     MemberInfo,
     SpaceConfig,
@@ -159,3 +160,87 @@ class TestSchema(YSCBTestCase):
         self.assertIn("FSM", th_cfg.groups[0])
         d_th = th_cfg.to_dict()
         self.assertEqual(len(d_th["groups"]), 2)
+
+    @require(Requirement.LOGIC)
+    def test_ft_04_universal_ast_hierarchy_and_fqn(self):
+        """FT-04: 驗證 Universal AST 遞迴階層 (parent_id/children)、FQN 與 search_payload (FR-01, FR-02)"""
+        # 1. 建立子方法符號
+        method_sym = UnifiedSymbol(
+            id="method_hash_1",
+            name="connect",
+            kind=SymbolKind.METHOD.value,
+            file_path="pkg/db.py",
+            line_number=20,
+            end_line=30,
+            language=LanguageType.PYTHON.value,
+            signature="def connect(self, timeout: int = 10) -> bool:",
+            docstring="建立連線",
+            fqn="pkg.db.DatabaseClient.connect",
+            scope_path="DatabaseClient",
+            parent_id="class_hash_1",
+            parameters=({"name": "timeout", "type": "int", "default": 10},),
+            return_type="bool",
+            search_payload="DatabaseClient.connect def connect(timeout: int = 10) -> bool 建立連線",
+        )
+
+        # 2. 建立父類別符號 (持有子方法)
+        class_sym = UnifiedSymbol(
+            id="class_hash_1",
+            name="DatabaseClient",
+            kind=SymbolKind.CLASS.value,
+            file_path="pkg/db.py",
+            line_number=10,
+            end_line=50,
+            language=LanguageType.PYTHON.value,
+            signature="class DatabaseClient:",
+            docstring="資料庫客戶端",
+            fqn="pkg.db.DatabaseClient",
+            children=(method_sym,),
+            search_payload="DatabaseClient class DatabaseClient 資料庫客戶端",
+        )
+
+        # 驗證屬性與向後相容 members
+        self.assertEqual(class_sym.fqn, "pkg.db.DatabaseClient")
+        self.assertEqual(len(class_sym.children), 1)
+        self.assertEqual(len(class_sym.members), 1)
+        self.assertEqual(class_sym.children[0].name, "connect")
+        self.assertEqual(class_sym.children[0].parent_id, "class_hash_1")
+        self.assertEqual(class_sym.children[0].return_type, "bool")
+        self.assertEqual(len(class_sym.children[0].parameters), 1)
+        self.assertEqual(class_sym.children[0].parameters[0]["name"], "timeout")
+
+        # 3. 雙向無損序列化與反序列化
+        d = class_sym.to_dict()
+        self.assertEqual(d["fqn"], "pkg.db.DatabaseClient")
+        self.assertEqual(len(d["children"]), 1)
+        self.assertEqual(d["children"][0]["fqn"], "pkg.db.DatabaseClient.connect")
+
+        restored = UnifiedSymbol.from_dict(d)
+        self.assertEqual(restored.fqn, "pkg.db.DatabaseClient")
+        self.assertEqual(len(restored.children), 1)
+        self.assertEqual(restored.children[0].name, "connect")
+        self.assertEqual(restored.children[0].fqn, "pkg.db.DatabaseClient.connect")
+        self.assertEqual(restored.children[0].parent_id, "class_hash_1")
+
+    @require(Requirement.LOGIC)
+    def test_ft_05_language_config_serialization(self):
+        """FT-05: 驗證 LanguageConfig 模型與 contributes 外掛配置解析 (FR-03)"""
+        cfg_data = {
+            "id": "rust",
+            "name": "Rust Language",
+            "extensions": [".rs"],
+            "mode": "tree_sitter",
+            "grammar": "tree_sitter_rust",
+            "query_file": "module://my-mod/assets/queries/rust.scm",
+            "custom_kinds": [{"kind": "trait", "category": "interface"}],
+        }
+        lang_cfg = LanguageConfig.from_dict(cfg_data)
+        self.assertEqual(lang_cfg.id, "rust")
+        self.assertEqual(lang_cfg.extensions, (".rs",))
+        self.assertEqual(lang_cfg.mode, "tree_sitter")
+        self.assertEqual(lang_cfg.grammar, "tree_sitter_rust")
+        self.assertEqual(len(lang_cfg.custom_kinds), 1)
+
+        d = lang_cfg.to_dict()
+        self.assertEqual(d["id"], "rust")
+        self.assertEqual(d["extensions"], [".rs"])
