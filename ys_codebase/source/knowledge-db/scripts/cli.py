@@ -162,8 +162,19 @@ def main(argv: List[str]) -> int:
 
             lexical_only = "--lexical-only" in sub_argv
 
+            # 支援以 SymbolSelector 解析具有類型前綴或調用限定的結構化查詢 (FR-04)
+            from knowledge_db.selector import SymbolSelector
+            parsed_sel = SymbolSelector.parse(query_str)
+            search_query = query_str
+            if parsed_sel.target_kinds and not kind_filter:
+                kind_filter = list(parsed_sel.target_kinds)
+                search_query = f"{parsed_sel.scope}.{parsed_sel.identifier}" if parsed_sel.scope else parsed_sel.identifier
+            elif parsed_sel.is_callable and not kind_filter:
+                kind_filter = ["function", "method"]
+                search_query = f"{parsed_sel.scope}.{parsed_sel.identifier}" if parsed_sel.scope else parsed_sel.identifier
+
             results = engine.search(
-                query=query_str,
+                query=search_query,
                 space=space_filter,
                 kinds=kind_filter,
                 languages=lang_filter,

@@ -877,14 +877,23 @@ class KnowledgeEngine:
 
     def _find_target_symbol(self, query: str, space: Optional[str] = None) -> Optional[UnifiedSymbol]:
         """
-        精準或透過語意定位目標 UnifiedSymbol
+        精準、透過 SymbolSelector 微型語法或語意定位目標 UnifiedSymbol
         """
         idx = self.build_unified_index()
         query_clean = query.strip()
+        if not query_clean:
+            return None
+
+        # 1. 優先透過全方位 SymbolSelector 解析微型語法精準匹配 (FR-04)
+        from .selector import SymbolSelector
+        pool = [sym for sym in idx.symbols.values() if (not space or space in sym.spaces)]
+        matches = SymbolSelector.find_matches(query_clean, pool)
+        if matches:
+            return matches[0]
+
+        # 2. 既有相容後備比對
         candidates: List[UnifiedSymbol] = []
-        for sym in idx.symbols.values():
-            if space and space not in sym.spaces:
-                continue
+        for sym in pool:
             if sym.name == query_clean:
                 return sym
             if sym.name.endswith(f".{query_clean}") or query_clean.endswith(f".{sym.name}"):
@@ -893,7 +902,7 @@ class KnowledgeEngine:
         if candidates:
             return candidates[0]
 
-        # 透過 BM25 檢索尋找最高分符號
+        # 3. 透過 BM25 檢索尋找最高分符號
         flt = QueryFilter(spaces=[space] if space else None, limit=5)
         raw_results = self.bm25_engine.search(query=query_clean, index=idx, filter_cfg=flt)
         if raw_results:
