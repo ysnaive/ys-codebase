@@ -7,8 +7,10 @@ import json
 import uuid
 import shutil
 import zipfile
+import platform
+import stat
 from typing import Dict, Any, Optional, List, Tuple
-from core import uri, events
+from core import uri, events, PipManager
 
 class SandboxContext:
     """Sandbox operational context facade passed to module test hooks."""
@@ -184,15 +186,168 @@ class SandboxProvisioner:
             return 0
 
     @staticmethod
-    def create_sandbox(target_dir: Optional[str] = None, copy_source: bool = True) -> SandboxContext:
+    def adapt_build_pip_dependencies(
+        target_modules: Optional[List[str]] = None,
+        quiet: bool = False
+    ) -> List[str]:
+        """
+        在建置虛擬基環境之前，掃描當前 build 版（module.build://）或 source 模組中的
+        manifest.json 之 pip_dependencies 宣告，調用 core.PipManager 於宿主微環境完成靜默物化。
+
+        Args:
+            target_modules: 可選，指定模組名稱清單。為 None 或包含 '--all' 時掃描全數。
+            quiet: 是否靜默執行。
+
+        Returns:
+            List[str]: 本次已適配/物化之 pip 規格字串清單。
+        """
+        scan_modules: List[str] = []
+        if target_modules is not None and "--all" not in target_modules:
+            scan_modules = [m for m in target_modules if m and not m.startswith("-")]
+        else:
+            cand_modules = set()
+            if uri.exists("module.build://"):
+                b_dir = uri.resolve("module.build://")
+                if os.path.isdir(b_dir):
+                    for m in os.listdir(b_dir):
+                        if os.path.isdir(os.path.join(b_dir, m)):
+                            cand_modules.add(m)
+            if uri.exists("module.source://"):
+                s_dir = uri.resolve("module.source://")
+                if os.path.isdir(s_dir):
+                    for m in os.listdir(s_dir):
+                        if os.path.isdir(os.path.join(s_dir, m)):
+                            cand_modules.add(m)
+            scan_modules = sorted(cand_modules)
+
+        all_specs: List[str] = []
+        for mod_name in scan_modules:
+            m_data = None
+            if uri.exists("module.build://"):
+                mod_b_dir = os.path.join(uri.resolve("module.build://"), mod_name)
+                if os.path.isdir(mod_b_dir):
+                    zips = [f for f in os.listdir(mod_b_dir) if f.endswith(".zip")]
+                    if zips:
+                        latest_zip = os.path.join(mod_b_dir, sorted(zips)[-1])
+                        try:
+                            with zipfile.ZipFile(latest_zip, "r") as zf:
+                                if "manifest.json" in zf.namelist():
+                                    with zf.open("manifest.json") as mf:
+                                        m_data = json.load(mf)
+                        except Exception:
+                            pass
+
+            if m_data is None:
+                src_uri = f"module.source://{mod_name}"
+                if uri.exists(src_uri):
+                    src_manifest = os.path.join(uri.resolve(src_uri), "manifest.json")
+                    if os.path.isfile(src_manifest):
+                        try:
+                            with open(src_manifest, "r", encoding="utf-8") as f:
+                                m_data = json.load(f)
+                        except Exception:
+                            pass
+
+            if m_data and "pip_dependencies" in m_data:
+                parsed = PipManager.parse_pip_dependencies(m_data.get("pip_dependencies"))
+                all_specs.extend(parsed)
+
+        seen = set()
+        deduped: List[str] = []
+        for spec in all_specs:
+            if spec not in seen:
+                seen.add(spec)
+                deduped.append(spec)
+
+        if deduped:
+            yscb_d = uri._get_yscb_root()
+            pm = PipManager(yscb_d)
+            pm.install_packages(deduped)
+
+        return deduped
+
+    @staticmethod
+    def _unlink_projected_venv(sandbox_engine_dir: str) -> None:
+        """Safely unlinks/removes Junction or Symlink for sandbox engine/.venv without affecting host."""
+        sandbox_venv = os.path.join(sandbox_engine_dir, ".venv")
+        if not os.path.lexists(sandbox_venv):
+            return
+        try:
+            if os.path.islink(sandbox_venv):
+                os.unlink(sandbox_venv)
+                return
+            if platform.system() == "Windows":
+                st = os.lstat(sandbox_venv)
+                if getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                    os.rmdir(sandbox_venv)
+                    return
+        except Exception as e:
+            print(f"[dev:sandbox] Warning: Failed to unlink projected venv: {e}", file=sys.stderr)
+
+    @staticmethod
+    def _project_venv(host_yscb_dir: str, sandbox_engine_dir: str) -> bool:
+        """
+        跨平台零拷貝投影宿主微環境至沙盒 engine/.venv。
+        Windows: 優先調用 _winapi.CreateJunction。
+        POSIX: 優先調用 os.symlink。
+        降級兜底: 若引發 OSError，建立輕量 site-packages 並寫入 host_venv.pth。
+        """
+        host_venv_dir = os.path.join(host_yscb_dir, ".venv")
+        if not os.path.exists(host_venv_dir):
+            return False
+
+        sandbox_venv_dir = os.path.join(sandbox_engine_dir, ".venv")
+        if os.path.lexists(sandbox_venv_dir):
+            SandboxProvisioner._unlink_projected_venv(sandbox_engine_dir)
+            if os.path.exists(sandbox_venv_dir):
+                shutil.rmtree(sandbox_venv_dir, ignore_errors=True)
+
+        if platform.system() == "Windows":
+            try:
+                import _winapi
+                _winapi.CreateJunction(os.path.abspath(host_venv_dir), os.path.abspath(sandbox_venv_dir))
+                return True
+            except OSError:
+                pass
+        else:
+            try:
+                os.symlink(os.path.abspath(host_venv_dir), os.path.abspath(sandbox_venv_dir), target_is_directory=True)
+                return True
+            except OSError:
+                pass
+
+        try:
+            pm_host = PipManager(host_yscb_dir)
+            host_site_pkg = pm_host.get_site_packages_dir()
+
+            pm_sb = PipManager(sandbox_engine_dir)
+            sb_site_pkg = pm_sb.get_site_packages_dir()
+            os.makedirs(sb_site_pkg, exist_ok=True)
+
+            pth_file = os.path.join(sb_site_pkg, "host_venv.pth")
+            with open(pth_file, "w", encoding="utf-8") as f:
+                f.write(host_site_pkg + "\n")
+            return True
+        except Exception as e:
+            print(f"[dev:sandbox] Warning: Failed to project venv with .pth fallback: {e}", file=sys.stderr)
+            return False
+
+    @staticmethod
+    def create_sandbox(target_dir: Optional[str] = None, copy_source: bool = True, target_modules: Optional[List[str]] = None) -> SandboxContext:
         """
         Builds a full-fidelity micro virtual environment:
-        1. Creates mock_downstream_project/, host_env/, mock_provider/
-        2. Configures host_env/yscb.config.json (yscb_root="./engine", default_provider=...)
-        3. Ingests source/ into host_env/engine/source/
-        4. Copies host runner yscb.py into host_env/
-        5. Dispatches scripts/hook.dev.py : on_test_setup(context)
+        1. Adapts build pip dependencies into host venv
+        2. Creates mock_downstream_project/, host_env/, mock_provider/
+        3. Configures host_env/yscb.config.json (yscb_root="./engine", default_provider=...)
+        4. Ingests source/ into host_env/engine/source/
+        5. Projects host venv into sandbox engine/.venv
+        6. Copies host runner yscb.py into host_env/
+        7. Dispatches scripts/hook.dev.py : on_test_setup(context)
         """
+        # Materialize pip dependencies from build/source manifests (host environment only)
+        if os.environ.get("YSCB_TEST_SANDBOX") != "1":
+            SandboxProvisioner.adapt_build_pip_dependencies(target_modules=target_modules, quiet=True)
+
         if not target_dir:
             from datetime import datetime
             SandboxProvisioner.prune_sandboxes(max_keep=3)
@@ -302,7 +457,13 @@ class SandboxProvisioner:
                         shutil.rmtree(dest_source)
                     shutil.copytree(curr_source, dest_source, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
-        # 4. Dispatch on_test_setup hooks across both sandbox source/ and modules/
+        # 4. Project host venv into sandbox engine/.venv
+        host_d, _ = uri._get_host_config()
+        host_yscb_d = uri._get_yscb_root()
+        cand_host_venv = host_yscb_d if os.path.exists(os.path.join(host_yscb_d, ".venv")) else host_d
+        SandboxProvisioner._project_venv(cand_host_venv, ctx.engine_dir)
+
+        # 5. Dispatch on_test_setup hooks across both sandbox source/ and modules/
         scanned_roots = [
             os.path.join(ctx.engine_dir, "source"),
             os.path.join(ctx.engine_dir, ".modules")
@@ -336,6 +497,7 @@ class SandboxProvisioner:
             ]
             with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
                 events.broadcast("on_test_teardown", context=ctx, emit_module="dev", search_roots=scanned_roots)
+            SandboxProvisioner._unlink_projected_venv(ctx.engine_dir)
             shutil.rmtree(sandbox_dir)
             return True
         except Exception as e:

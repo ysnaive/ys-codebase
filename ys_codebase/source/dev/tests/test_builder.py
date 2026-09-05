@@ -3,6 +3,7 @@ Official test suite for dev.builder.Builder with Full Zip Single-File packaging.
 Uses mock modules to eliminate side-effects and official module coupling.
 """
 import os
+import shutil
 import zipfile
 from dev.testing import YSCBTestCase, require, Requirement
 from dev.builder import Builder
@@ -56,6 +57,9 @@ class TestDevBuilder(YSCBTestCase):
 
     def test_revision_purge_deletes_old_zip(self):
         """FT-03: Verify 3-Revision sliding window and cross-triplet convergence on mock module."""
+        rel_uri = "module.release://mock_purge_pkg"
+        if uri.exists(rel_uri):
+            shutil.rmtree(uri.resolve(rel_uri), ignore_errors=True)
         self.create_mock_source_module("mock_purge_pkg", "1.0.0.1")
         # Package 1.0.0.1, 1.0.0.2, 1.0.0.3
         self.builder.package_release("mock_purge_pkg", "1.0.0.1")

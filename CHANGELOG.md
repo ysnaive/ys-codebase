@@ -10,6 +10,13 @@
   - **安裝器依賴收斂**：重構 `Installer.sync_pip_dependencies` 改調用 `PipManager.parse_pip_dependencies`。
   - **文件與測試健全化**：新增 `docs/core/DESIGN_NOTES.md` 之 `[DN-19]`、更新 `source/core/README.md` 與 `docs/core/API_REFERENCE.md`；新增單元測試 `test_pip_manager_sdk.py`，全生態系 123/123 單元測試 100% 通過。
 
+- **`sub_02_dev_toolchain_pip_adaptation_and_sandbox_integration` (Completed)**：
+  - **3-Tier 微環境沙盒雙軌投影管線 (`_project_venv`)**：於 `dev.testing.sandbox` 實作 Windows Junction (`_winapi.CreateJunction`)、POSIX Symlink (`os.symlink`) 與 `.pth` 檔案指標三階平滑降級投影機制，達成跨平台零管理員權限、sub-1ms 瞬時投影，沙盒無縫感知宿主微環境套件。
+  - **Build 版與模組 Pip 相依性沙盒預適配 (`adapt_build_pip_dependencies`)**：在沙盒建置前自動掃描待測模組之來源或 release zip manifest，透過 `core.PipManager` 靜默正規化並安裝物化 pip 相依性；加入 `YSCB_TEST_SANDBOX` 防遞迴守門，杜絕沙盒內部巢狀跑測時的重複 pip 調用。
+  - **沙盒安全斷開機制 (`_unlink_projected_venv`)**：於 `cleanup_sandbox` 銷毀沙盒實體前，強制先行安全斷開 Junction/Symlink 連結，防止 `shutil.rmtree` 遞迴誤刪宿主微環境。
+  - **Checker 靜態相依性合規性檢驗**：擴充 `source/dev/dev/checker.py` 檢驗 `manifest.json` 中 `pip_dependencies` 結構必須為非空套件名稱映射字典約束。
+  - **單元與邊界測試全覆蓋**：新增 `test_pip_adaptation.py` 驗證 FT-01~04 與 ET-01~02，修復沙盒 hook 路徑跳脫與 build 清理殘留；dev 模組 72/72 單元測試 100% 通過。
+
 ## 2026_09_05_1025_knowledge_db_refactor (Executing)
 
 - **`sub_01_universal_ast_and_contributed_tree_sitter` (Completed)**：

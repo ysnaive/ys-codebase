@@ -427,7 +427,8 @@ class Tester:
                         return 1
         
         # 2. Provision virtual sandbox (resolves from build:// -> mirror:// -> provider)
-        ctx = SandboxProvisioner.create_sandbox()
+        cand_targets = ["--all"] if is_all else ([target_mod] if target_mod else None)
+        ctx = SandboxProvisioner.create_sandbox(target_modules=cand_targets)
         sandbox_dir = ctx.sandbox_dir
         sandbox_idx = int(os.environ.get("YSCB_SANDBOX_INDEX", "1"))
         sandbox_display_id = f"sandbox {sandbox_idx}"
