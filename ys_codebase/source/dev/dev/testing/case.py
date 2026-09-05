@@ -36,8 +36,15 @@ class YSCBTestCase(unittest.TestCase):
     _shared_sandbox_ctx: Optional[SandboxContext] = None
     _is_isolated_sandbox: bool = False
     _test_passed: bool
+    _has_exception: bool = False
+    _execution_status: str = "UNKNOWN"
     _orig_sys_path: List[str]
     _orig_env: Dict[str, str]
+
+    @property
+    def execution_status(self) -> str:
+        """Current test execution status: 'PASSED', 'FAILED', or 'UNKNOWN'."""
+        return self._execution_status
 
     @classmethod
     def cleanup_shared_sandbox(cls) -> None:
@@ -54,6 +61,15 @@ class YSCBTestCase(unittest.TestCase):
         """Class-level teardown: defensive fallback (no-op in session-level mode)."""
         pass
 
+    def _callTestMethod(self, method: Any) -> Any:
+        """Wrap test method execution to reliably capture unhandled exceptions."""
+        try:
+            return super()._callTestMethod(method)
+        except BaseException:
+            self._has_exception = True
+            self._execution_status = "FAILED"
+            raise
+
     def setUp(self) -> None:
         """Test setup: create or reuse virtual environment and backup environment."""
         # Gate 3: Intercept insecure host direct execution
@@ -64,6 +80,8 @@ class YSCBTestCase(unittest.TestCase):
             )
 
         self._test_passed = False
+        self._has_exception = False
+        self._execution_status = "UNKNOWN"
         self._orig_sys_path = list(sys.path)
         self._orig_env = dict(os.environ)
 
@@ -108,29 +126,44 @@ class YSCBTestCase(unittest.TestCase):
         self.sandbox_uri = f"cache://dev/sandbox/{self.sandbox_id}"
 
     def tearDown(self) -> None:
-        """Test teardown: restore environment and cleanup isolated sandbox according to policy."""
+        """Test teardown: restore environment and classify execution status (Passed / Failed / Unknown)."""
         sys.path[:] = self._orig_sys_path
         os.environ.clear()
         os.environ.update(self._orig_env)
-        
+
+        # 狀態分類檢查：沒呼叫 mark_passed() 又沒有拋出異常的，歸類到 UNKNOWN
+        if self._has_exception:
+            self._execution_status = "FAILED"
+        elif self._test_passed:
+            self._execution_status = "PASSED"
+        else:
+            self._execution_status = "UNKNOWN"
+
         keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
         if self._is_isolated_sandbox:
-            if self._test_passed and not keep_all:
+            if self._execution_status == "PASSED" and not keep_all:
                 SandboxProvisioner.cleanup_sandbox(self.sandbox_dir, force=True)
-            else:
-                if not self._test_passed:
-                    print(f"\n[Test Failed] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
-                elif keep_all:
-                    print(f"\n[Sandbox Kept] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
+            elif self._execution_status == "FAILED":
+                print(f"\n[Test Failed] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
+            elif self._execution_status == "UNKNOWN":
+                # 未明確標記 passed 也未失敗：安全清理沙盒
+                if not keep_all:
+                    SandboxProvisioner.cleanup_sandbox(self.sandbox_dir, force=True)
+            elif keep_all:
+                print(f"\n[Sandbox Kept] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
         else:
-            if not self._test_passed:
+            if self._execution_status == "FAILED":
                 print(f"\n[Test Failed] Shared virtual sandbox preserved at: {self.sandbox_dir}")
+            elif self._execution_status == "UNKNOWN":
+                # 歸類為 UNKNOWN：嚴禁輸出 [Test Failed]，避免假失敗日誌污染與重複洗版
+                pass
             elif keep_all:
                 print(f"\n[Sandbox Kept] Shared virtual sandbox preserved at: {self.sandbox_dir}")
 
     def mark_passed(self) -> None:
         """Mark that current test method executed to completion successfully."""
         self._test_passed = True
+        self._execution_status = "PASSED"
 
     def create_mock_package(
         self,

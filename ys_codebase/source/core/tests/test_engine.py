@@ -85,6 +85,7 @@ class TestCoreEngine(YSCBTestCase):
         self.assertIn("Circular dependency detected", str(ctx.exception))
         self.mark_passed()
 
+    @require(Requirement.WORKFLOW)
     def test_snapshot_and_restore(self):
         """Verify snapshot creation and disaster recovery rollback."""
         cfg_path, orig_cfg = self.engine._get_config()
@@ -103,6 +104,7 @@ class TestCoreEngine(YSCBTestCase):
         uri.rmtree(f"snapshot://{snap_id}")
         self.mark_passed()
 
+    @require(Requirement.WORKFLOW)
     def test_inter_process_lock_and_auto_healing(self):
         """Verify process lock exclusivity and 10s auto-healing on stale locks."""
         self.engine.act_unlock("test_op")

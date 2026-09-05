@@ -49,6 +49,7 @@ class FrameworkRobustnessTest(YSCBTestCase):
             uri.resolve("relative/path/not/uri")
         with self.assertRaises(ValueError):
             uri.resolve("unknown_scheme://foo")
+        self.mark_passed()
 
     def test_context_managers_auto_restore(self):
         # 1. Test module_scope
@@ -62,6 +63,7 @@ class FrameworkRobustnessTest(YSCBTestCase):
         with uri.host_scope(self.host_dir):
             self.assertEqual(uri.get_host_dir(), os.path.normpath(self.host_dir))
         self.assertEqual(uri.get_host_dir(), orig_host)
+        self.mark_passed()
 
     def test_context_manager_exception_safety(self):
         orig_mod = uri.get_module_context()
@@ -71,6 +73,7 @@ class FrameworkRobustnessTest(YSCBTestCase):
         except RuntimeError:
             pass
         self.assertEqual(uri.get_module_context(), orig_mod)
+        self.mark_passed()
 
     def test_dual_layer_snapshot_and_restore(self):
         with unittest.mock.patch("core.uri._get_yscb_root", return_value=self.engine_dir):
@@ -104,6 +107,7 @@ class FrameworkRobustnessTest(YSCBTestCase):
                 with open(cfg_p, "r", encoding="utf-8") as f:
                     m_data = json.load(f)
                 self.assertEqual(m_data.get("project_root"), "original_val")
+        self.mark_passed()
 
     def test_execution_context_ssot_immutability(self):
         ctx = ExecutionContext("core", "test_cmd", ["arg1"], {"key": "val"})
@@ -111,6 +115,7 @@ class FrameworkRobustnessTest(YSCBTestCase):
         self.assertEqual(ctx.command, "test_cmd")
         with self.assertRaises(Exception):
             ctx.module_name = "mutated"  # Frozen dataclass check
+        self.mark_passed()
 
 if __name__ == "__main__":
     unittest.main()

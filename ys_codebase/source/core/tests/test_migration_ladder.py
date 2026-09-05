@@ -39,6 +39,7 @@ class TestMigrationLadder(YSCBTestCase):
         # Execute migration 1.0.0.0 -> 1.3.0.0
         res = self.engine.act_migrate(self.test_mod, "1.0.0.0", "1.3.0.0")
         self.assertTrue(res)
+        self.mark_passed()
 
     def test_migration_script_failure_raises_runtime_error(self):
         # Create a failing migration script
@@ -48,6 +49,7 @@ class TestMigrationLadder(YSCBTestCase):
 
         with self.assertRaises(RuntimeError):
             self.engine.act_migrate(self.test_mod, "1.0.0.0", "1.1.0.0")
+        self.mark_passed()
 
 if __name__ == "__main__":
     unittest.main()

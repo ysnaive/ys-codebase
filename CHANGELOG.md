@@ -2,7 +2,7 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
-## 2026_09_05_1300_core_dev_toolchain_upgrade (Executing)
+## 2026_09_05_1300_core_dev_toolchain_upgrade (Completed)
 
 - **`sub_01_core_pip_sdk_and_environment_export` (Completed)**：
   - **Core 導出微環境 PipManager SDK 契約**：於 `source/core/core/__init__.py` 的 `__all__` 中正式導出 `PipManager`、`PipInstallError` 與 `pip_manager` 模組，支援標準匯入契約 `from core import PipManager, PipInstallError`。
@@ -27,6 +27,23 @@
     - `dev op-test` 於宿主環境直接調用時剛性阻斷（Gate 0），提示改用 `dev test` 進入沙盒。
     - `YSCBTestCase.setUp` 在無法向上解析出合法沙盒目錄時強制拋出 `SecurityError`，徹底拔除回退至 `os.getcwd()` 的漏洞，守護專案根目錄零污染。
   - **測試與文件完備**：新增 `test_output_purification.py` 完整覆蓋 FT-01~04 與 ET-01~02；更新 `docs/dev/testing_guide.md` 與 `docs/dev/DESIGN_NOTES.md` `[DN-DEV-07]`；dev 模組 78/78 測試 100% 通過。
+
+- **`sub_04_core_dev_test_case_purification` (Completed)**：
+  - **測試套件純化與碎片化小檔根除**：
+    - Dev 模組：將 `test_tester_sync.py` 與 `test_tester_throttle.py` 完整整併至核心 `test_tester.py`，刪除舊零碎測試檔。
+    - Core 模組：新建 `test_cli_router.py`，完整吸收 `test_cli_help.py` 與 `test_cli_guild.py`；將 `test_contributes_jit.py` 併入 `test_contributes.py`；精簡緊湊化 `test_pip_manager_sdk.py` 同質案例；徹底清除舊檔。
+  - **4-Tier 分流機制 (Logic / Env / Workflow / Perf)**：
+    - 將 `test_sandbox.py` 與 `test_engine.py` 中 7 個高耗時實體沙盒、多進程執行與跨進程鎖案例標註為 `@require(Requirement.WORKFLOW)`；效能基準測試標註為 `@require(Requirement.PERF)`。
+    - 預設模式（`python yscb.py dev test --quiet`）僅執行 `LOGIC + ENV`，大幅縮短日常跑測回饋時間（`dev` 降至 ~2.5s，`core` ~4s）。
+    - 支援 `--all-types` 與 `--workflow` 供發布與守門時進行 100% 全量回歸驗證（0 邏輯遺失）。
+  - **YSCBTestCase 三態執行分類與 Unknown 數量回報**：
+    - 覆寫 `_callTestMethod` 捕獲未處理例外，於 `tearDown()` 建立 `PASSED` / `FAILED` / `UNKNOWN` 精確分類；未顯式標註 `mark_passed()` 且無異常之案例歸類為 `UNKNOWN`，徹底杜絕假失敗沙盒提示污染 stdout。
+    - 規避 Python `unittest.TestSuite` 執行後清空測試實例機制，於測試前保留實例引用，並於 Summary 統計（一般模式與節流模式）精準支援 `Unknown: N` 數量回報。
+  - **測試修復與版本發布 (`core@1.0.3.3`)**：
+    - 修復 `source/core/tests/` 8 個測試套件計 43 處方法，補齊 `self.mark_passed()`，達成 `core` 快測 118/118 100% Passed 且 Unknown: 0。
+    - 晉升並發布 `core@1.0.3.3`。
+  - **測試與文件完備**：新增單元測試 `test_execution_status_classification_in_teardown` 與 `test_format_throttled_with_unknown`；更新 `docs/dev/testing_guide.md`（新增第 9 節）與 `docs/dev/DESIGN_NOTES.md` (`[DN-DEV-08]`)；全量測試 100% 通過。
+
 
 ## 2026_09_05_1025_knowledge_db_refactor (Executing)
 

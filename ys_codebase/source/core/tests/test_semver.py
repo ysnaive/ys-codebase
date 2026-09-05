@@ -41,6 +41,7 @@ class SemVerCoreTest(YSCBTestCase):
         self.assertEqual(v_pre.minor, 0)
         self.assertEqual(v_pre.patch, 0)
         self.assertEqual(v_pre.prerelease, "beta.1")
+        self.mark_passed()
 
     def test_parse_semver_build_tag(self):
         # 本地開發包 .build 標籤
@@ -50,12 +51,14 @@ class SemVerCoreTest(YSCBTestCase):
         self.assertEqual(v_build.patch, 1)
         self.assertEqual(v_build.revision, "build")
         self.assertTrue(v_build.is_build)
+        self.mark_passed()
 
     def test_parse_malformed_semver_raises_value_error(self):
         malformed = ["1.0", "v1.x.y", "invalid", "", "1.2.3.4.5", "1.a.3"]
         for bad in malformed:
             with self.assertRaises(ValueError, msg=f"Should raise on '{bad}'"):
                 parse_semver(bad)
+        self.mark_passed()
 
     def test_numerical_ordering_and_comparison(self):
         # 1.10.0 MUST be greater than 1.9.0 (消滅字串排序缺陷)
@@ -77,6 +80,7 @@ class SemVerCoreTest(YSCBTestCase):
         # 正式版高於 Prerelease
         self.assertEqual(compare_semver("1.0.0", "1.0.0-beta"), 1)
         self.assertEqual(compare_semver("1.0.0-alpha", "1.0.0-beta"), -1)
+        self.mark_passed()
 
     def test_bump_version(self):
         # Major 升級 (重置 minor, patch, revision)
@@ -87,6 +91,7 @@ class SemVerCoreTest(YSCBTestCase):
         self.assertEqual(bump_version("1.2.3.4", "patch"), "1.2.4.0")
         # Revision 升級 (日常微調)
         self.assertEqual(bump_version("1.2.3.4", "revision"), "1.2.3.5")
+        self.mark_passed()
 
     def test_sorted_list_and_find_best(self):
         versions = ["1.8.0.0", "1.10.0.0", "1.9.0.0", "2.0.0.0", "1.9.1.0"]
@@ -97,6 +102,7 @@ class SemVerCoreTest(YSCBTestCase):
         self.assertEqual(find_best_version(versions, "<2.0.0.0"), "1.10.0.0")
         self.assertEqual(find_best_version(versions, ">=1.9.0.0, <2.0.0.0"), "1.10.0.0")
         self.assertEqual(find_best_version(versions, ">=3.0.0.0"), None)
+        self.mark_passed()
 
     def test_constraint_matching(self):
         # 大於 / 等於
@@ -119,6 +125,7 @@ class SemVerCoreTest(YSCBTestCase):
         # 相容版本 ~=
         self.assertTrue(match_constraint("1.2.5.0", "~=1.2.0"))
         self.assertFalse(match_constraint("2.0.0.0", "~=1.2.0"))
+        self.mark_passed()
 
 
 if __name__ == "__main__":
