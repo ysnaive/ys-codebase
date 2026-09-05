@@ -37,9 +37,10 @@ from .schema import (
     ThesaurusGroup,
     UnifiedSymbol,
 )
+from .embedding import EmbeddingService, VectorIndex
+from .hybrid import HybridSearchEngine
 from .space import SpaceManager
-from .thesaurus import ThesaurusEngine
-from .tokenizer import CodeTokenizer
+from .tokenizer import CodeTokenizer, MultilingualTokenizer
 
 __all__ = [
     "KnowledgeDBError",
@@ -69,7 +70,10 @@ __all__ = [
     "SemanticBundle",
     "SemanticBundler",
     "CodeTokenizer",
-    "ThesaurusEngine",
+    "MultilingualTokenizer",
+    "EmbeddingService",
+    "VectorIndex",
+    "HybridSearchEngine",
     "Posting",
     "InvertedIndex",
     "BM25Engine",

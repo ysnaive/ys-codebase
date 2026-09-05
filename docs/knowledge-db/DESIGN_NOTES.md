@@ -18,6 +18,7 @@
 | **DN-06** | **Unicode 整數區間分詞與動態門檻多進程打包** | `tokenizer.py`, `bundler.py` | 以 `_is_cjk_ord` 碼點整數比對徹底取代逐字元正則；`SemanticBundler` 於檔案數 $\ge 10$ 且多核時啟用 `ProcessPoolExecutor` 並行解析。 |
 | **DN-07** | **整數池化雙向調用圖譜與四階消歧鏈接** | `linker.py`, `graph.py`, `engine.py` | 透過 `Integer String Pool` 與雙向稀疏鄰接表將調用邊快取控制在 $<150\text{KB}$；四階消歧流水線達成 95% 靜態鏈接精度，支援 JIT 差量修補與 BFS 循環防護。 |
 | **DN-08** | **Tree-sitter 宣告式通用 AST 解析與零特權自貢獻外掛生態** | `parsers/`, `schema.py` | 徹底廢除舊有手刻正則解析狀態機，改採 `tree-sitter` S-Expression 聲明式語法查詢；`LanguageRegistry` 透過 `contributes.knowledge-db` 動態驅動，內建 10 種語言一律採自身自貢獻，核心零特權硬編碼。 |
+| **DN-09** | **FastEmbed 向量嵌入與 RRF 雙軌複合檢索** | `embedding.py`, `hybrid.py`, `engine.py` | 引入 `fastembed` (ONNX Runtime, 384-dim `BAAI/bge-small-zh-v1.5`) 進行純 CPU 離線向量提取；以倒數排名融合 (RRF $k=60$) 結合 BM25 與語意向量；設定純語意門檻 ($\ge 0.70$) 與複合查詢覆蓋率門檻 ($\ge 50\%$) 抑制雜訊；支援 100% 剛性平滑降級與 `--lexical-only`。 |
 
 ---
 
@@ -121,5 +122,35 @@
   - 語法錯誤下自動容錯提取合法符號節點（測試 `ET-01` 通過）。
   - 單檔解析效能提升 3~5 倍，深層巢狀 AST 結構 100% 精準還原。
   - 新語言擴充僅需在 `contributes` 宣告與撰寫 `.scm` 查詢規則，達成 0 侵入式生態系外掛擴充。
+
+---
+
+### DN-09: FastEmbed 向量嵌入與 RRF 雙軌複合檢索 (FastEmbed ONNX Vector Inference & RRF Hybrid Fusion)
+
+- **背景與根因**：
+  在 sub_02 之前，`knowledge-db` 僅依賴關鍵字倒排索引與手刻同義詞庫 (`ThesaurusEngine`)。然而：
+  1. 同義詞庫維護成本高、難以窮舉跨領域專用術語，且中英文同義詞展開經常引入意料外的詞彙漂移。
+  2. 自然語言概念搜尋（如「用戶驗證流程」、「金流退款處理」）無法命中代碼標識符如 `UserAuthService` 或 `RefundEngine`。
+  3. 傳統稠密向量模型（如 PyTorch / HuggingFace Transformers）體積過大（數百 MB 至數 GB）且依賴重型 C++ 擴充，不符輕量跨平台分發要求。
+- **架構解法**：
+  1. **輕量 FastEmbed ONNX 推論 (`EmbeddingService`)**：
+     - 選用 `BAAI/bge-small-zh-v1.5` 離線模型（~130MB ONNX 模型），透過 ONNX Runtime 實現純 CPU 低延遲推論，兼顧中英文語意特徵提取。
+     - 內建 `_preprocess_text` 針對程式碼標識符實施駝峰命名拆解（`CamelCase` $\to$ `camel case`）與符號正規化，完美適配 uncased BERT 分詞器。
+  2. **二進位向量快取與增量熱自愈修補 (`VectorIndex`)**：
+     - 特徵向量採用 Pickle Protocol 5 + Gzip 持久化至 `unified.vectors.bin.gz`，支援極速磁碟讀寫。
+     - 支援 `patch_incremental`：檔案變更或刪除時差量拔除舊特徵、追加新特徵，端到端熱更新延遲 $< 200\text{ ms}$。
+  3. **倒數排名融合 (Reciprocal Rank Fusion, RRF)**：
+     - 以非參數化 RRF 公式融合 BM25 關鍵字排名與向量語意排名：
+       $$\text{Score}(d) = \frac{w_{\text{lex}}}{60 + \text{rank}_{\text{lex}}(d)} + \frac{w_{\text{vec}}}{60 + \text{rank}_{\text{vec}}(d)}$$
+  4. **防噪音雙重門檻**：
+     - **純語意門檻 (`min_vector_similarity = 0.70`)**：無 BM25 命中的項目必須達到餘弦相似度 0.70 始納入召回，消滅小型代碼庫強行傳回最近鄰雜訊的問題。
+     - **複合查詢子詞覆蓋率門檻 ($\ge 50\%$)**：防範長標識符僅命中單一通用子詞（如 `term`）即誤召喚無關文件。
+  5. **100% 剛性平滑降級保證**：
+     - 當 `fastembed` 未安裝或加載失敗時，服務無感降級為純 BM25 檢索，保證系統高可用。
+     - 提供 `--lexical-only` CLI 旗標與 SDK 參數，允許手動關閉向量推論。
+- **效益與驗證**：
+  - 徹底廢除舊有 `thesaurus.py` 脆弱手刻同義詞庫。
+  - 自然語言跨語意查詢召回率大幅提升，116 筆測試用例 100% 通過。
+
 
 

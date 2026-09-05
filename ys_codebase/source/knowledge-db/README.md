@@ -1,13 +1,13 @@
 # YS-Codebase Knowledge-DB 知識庫與語意檢索模組 (Knowledge Database & Retrieval Engine)
 
 > 模組名稱：`knowledge-db`  
-> 職責定位：知識庫與符號檢索引擎。提供多語言 AST 符號解析、增量指紋比對、多欄位 BM25 檢索、調用圖譜分析 (Callers/Callees/Impact)、軟工同義詞庫與 AST 代碼切片預覽。
+> 職責定位：知識庫與符號檢索引擎。提供多語言 AST 符號解析、增量指紋比對、多語言分詞 (MultilingualTokenizer)、BM25 + FastEmbed ONNX 雙軌向量 RRF 複合檢索 (HybridSearchEngine)、調用圖譜分析 (Callers/Callees/Impact) 與 AST 代碼切片預覽。
 
 ---
 
 ## 1. 模組架構全景 (Architecture Overview)
 
-`knowledge-db` 模組提供代碼與文檔的解析、索引與多維檢索流水線：
+`knowledge-db` 模組提供代碼與文檔的解析、索引與多維複合檢索流水線：
 
 ```mermaid
 graph TD
@@ -19,8 +19,8 @@ graph TD
     subgraph KnowledgeDBModule ["Knowledge-DB 模組 (module:knowledge-db)"]
         Scanner["指紋掃描 (Scanner)<br/><i>mtime / SHA-256 增量比對</i>"]:::sub
         Parsers["聲明式 AST 符號解析 (Tree-sitter & LanguageRegistry)<br/><i>零特權 Contributed 擴充，支援 Python, C, C++, C#, JS/TS, Markdown, SPICE 等</i>"]:::sub
-        Tokenizer["分詞與同義詞 (Tokenizer & Thesaurus)<br/><i>駝峰/蛇形分詞 / 軟工詞庫</i>"]:::sub
-        Retrieval["BM25 檢索引擎 (Retrieval Engine)<br/><i>倒排索引 / 檔案類型過濾</i>"]:::sub
+        Tokenizer["中英混雜分詞 (MultilingualTokenizer)<br/><i>CJK 1/2-gram / 駝峰蛇形拆解</i>"]:::sub
+        Retrieval["複合檢索引擎 (HybridSearchEngine)<br/><i>BM25 倒排索引 + FastEmbed ONNX 向量 RRF 融合 (100% 剛性降級)</i>"]:::sub
         Graph["調用圖譜引擎 (Call Graph Engine)<br/><i>Callers / Callees / Impact</i>"]:::sub
     end
 
@@ -47,11 +47,11 @@ graph TD
 
 ## 3. CLI 指令集速查與範例 (CLI Reference)
 
-### 3.1 語意檢索與切片瀏覽 (`search`)
+### 3.1 複合檢索與切片瀏覽 (`search`)
 
 ```bash
-# 1. 極簡大綱檢索 (預設無 flag 即為 simple)
-python yscb.py knowledge-db search 'ThesaurusEngine' --json
+# 1. 極簡大綱檢索 (BM25 + 向量語意 RRF 融合，預設無 flag 即為 simple)
+python yscb.py knowledge-db search 'HybridSearchEngine' --json
 
 # 2. 內文切片檢索 (Agent 唯一首選 - 帶 AST 代碼切片)
 python yscb.py knowledge-db search '編譯 佔位符 resolve' --json -s
@@ -59,6 +59,9 @@ python yscb.py knowledge-db search '編譯 佔位符 resolve' --json -s
 # 3. 兩階段副檔名定向過濾
 python yscb.py knowledge-db search 'SOP 0~7' --ftype=md --json -s          # 文檔脈絡
 python yscb.py knowledge-db search 'resolve_uri' --ftype=c,cpp,py --json -s # 程式碼實作
+
+# 4. 強制純詞彙檢索 (繞過向量推論，剛性降級)
+python yscb.py knowledge-db search 'PIDController' --lexical-only --json -s
 ```
 
 ### 3.2 調用圖譜與影響面分析 (`callers`, `callees`, `impact`)

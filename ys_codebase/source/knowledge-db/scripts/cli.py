@@ -43,7 +43,7 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db status               列出所有註冊空間、快取與索引狀態")
         print("  python yscb.py knowledge-db scan [space | --all] 執行增量/全量檔案指紋掃描")
         print("  python yscb.py knowledge-db bundle [space|--all] 打包空間符號為 SemanticBundle")
-        print("  python yscb.py knowledge-db search <query> [--preview|-s | --detail|-d | --simple] [--limit=auto|N] [--[json|md]] 多欄位 BM25 語意檢索 (預設 simple 大綱)")
+        print("  python yscb.py knowledge-db search <query> [--preview|-s | --detail|-d | --simple] [--limit=auto|N] [--lexical-only] [--[json|md]] 多欄位複合/語意檢索 (預設 simple 大綱)")
         print("  python yscb.py knowledge-db callers <symbol> [--preview|-s | --detail|-d | --simple] [--space=X] [--[json|md]] 查詢上游調用者 (Who calls me?)")
         print("  python yscb.py knowledge-db callees <symbol> [--preview|-s | --detail|-d | --simple] [--space=X] [--[json|md]] 查詢下游被調用者 (Whom do I call?)")
         print("  python yscb.py knowledge-db impact <symbol> [--depth=N] [--detail|-d | --simple] [--space=X] [--[json|md]] 分析重構影響面擴散拓撲")
@@ -157,8 +157,10 @@ def main(argv: List[str]) -> int:
                     is_md = True
 
             is_snippet = (tier == "snippet") or (tier == "detail" and any(x in sub_argv for x in ("-s", "--snippet", "--preview")))
-            detail_mode = "detail" if tier == "detail" else "simple"
+            detail_mode = "detail" if tier == "detail" else ("auto" if tier == "snippet" else "simple")
             fetch_limit = 50 if limit_val == "auto" else max(1, int(limit_val))
+
+            lexical_only = "--lexical-only" in sub_argv
 
             results = engine.search(
                 query=query_str,
@@ -169,6 +171,7 @@ def main(argv: List[str]) -> int:
                 limit=fetch_limit,
                 snippet=is_snippet,
                 auto_rebuild=not no_auto,
+                lexical_only=lexical_only,
             )
 
             if is_json:

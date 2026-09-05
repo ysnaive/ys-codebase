@@ -20,7 +20,6 @@ from knowledge_db.retrieval import (
     SearchResult,
 )
 from knowledge_db.schema import LanguageType, MemberInfo, SymbolKind, UnifiedSymbol
-from knowledge_db.thesaurus import ThesaurusEngine
 from knowledge_db.tokenizer import CodeTokenizer
 
 
@@ -28,7 +27,7 @@ class TestRetrieval(YSCBTestCase):
     def setUp(self):
         super().setUp()
         self.tokenizer = CodeTokenizer()
-        self.thesaurus = ThesaurusEngine()
+        self.thesaurus = None
 
         # 準備一組測試符號
         self.sym_pid = UnifiedSymbol(

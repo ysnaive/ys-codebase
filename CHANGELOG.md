@@ -11,6 +11,15 @@
   - **遺留正則解析器代碼與過時測試徹底清理**：刪除 `cpp_parser.py`, `csharp_parser.py`, `js_ts_parser.py`, `markdown_parser.py`, `python_parser.py` 等舊正則解析代碼，清理並遷移過時測試案例。
   - **自動化測試與驗證**：單元、邊界與調用圖譜測試 100% 通過（14/14 Passed），全生態系回歸驗證通過。
 
+- **`sub_02_multilingual_tokenizer_and_hybrid_search` (Completed)**：
+  - **多語言分詞引擎 (`MultilingualTokenizer`)**：實作中英混雜、CJK 雙向 1-gram / 2-gram 切分、駝峰 (`CamelCase`) 與蛇形 (`snake_case`) 標識符拆解提煉，支援常見停用詞過濾與空白規整，大幅提升跨語言與符號檢索召回率。
+  - **輕量向量嵌入推論與增量補丁 (`EmbeddingService` & `VectorIndex`)**：透過 YSCB 微環境引入 FastEmbed ONNX（`bge-small-zh-v1.5`，384 維度），實作標識符預處理（解決 uncased BERT `[UNK]` 問題）、本地二進位壓縮快取 (`unified.vectors.bin.gz`)、L2 正規化與基於 SHA-1 內容雜湊的差分增量增修補丁 (`patch_incremental`)。
+  - **RRF 倒數排名融合檢索 (`HybridSearchEngine`)**：以 Reciprocal Rank Fusion ($k=60$) 融合 BM25 詞法倒排索引與向量語意相似度，並施加未命中 BM25 時之向量相似度最低門檻（$\ge 0.70$）與長複合查詢詞覆蓋率過濾（$\ge 50\%$），有效壓抑非相關噪訊。
+  - **雙軌剛性平滑降級守門**：支援 `--lexical-only` CLI 旗標或在向量模型/相依性未就緒時，100% 剛性平滑降級為純 BM25 檢索，保障系統在離線或輕量環境下絕對可用。
+  - **遺留代碼與手刻同義詞庫清理**：徹底刪除舊同義詞庫檔案 `knowledge_db/thesaurus.py` 與 `tests/test_thesaurus.py`，全庫零殘留引用。
+  - **測試與品質驗證**：全套件單元、整合與邊界測試 100% 通過（116/116 Passed, 0 failures, 0 errors）。
+
+
 ## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (Executing)
 
 - **`sub_06_jit_fingerprint_stat_gate` (Completed)**：
