@@ -20,11 +20,13 @@ from dev.testing.requirement import Requirement, require
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.graph import CallGraphIndex
 from knowledge_db.linker import TopologyLinker
-from knowledge_db.parsers.cpp_parser import CppParser
-from knowledge_db.parsers.csharp_parser import CSharpParser
-from knowledge_db.parsers.js_ts_parser import JsTsParser
-from knowledge_db.parsers.markdown_parser import MarkdownParser
-from knowledge_db.parsers.python_parser import PythonParser
+from knowledge_db.parsers import (
+    CppParser,
+    CSharpParser,
+    JsTsParser,
+    MarkdownParser,
+    PythonParser,
+)
 from knowledge_db.schema import (
     CallGraphNode,
     LanguageType,

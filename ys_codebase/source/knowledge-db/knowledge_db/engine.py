@@ -101,7 +101,10 @@ class KnowledgeEngine:
         self._index_cache: Dict[str, InvertedIndex] = {}
         self._unified_index: Optional[InvertedIndex] = None
         self._call_graph_index: Optional[CallGraphIndex] = None
-        self.snippet_extractor = SnippetExtractor(workspace_root=self._get_workspace_root())
+        self.snippet_extractor = SnippetExtractor(
+            workspace_root=self._get_workspace_root(),
+            space_manager=self.space_manager,
+        )
 
     def _get_workspace_root(self) -> Path:
         try:
@@ -585,6 +588,7 @@ class KnowledgeEngine:
                     context_before=2,
                     context_after=8,
                     docstring=r.symbol.docstring,
+                    space=r.space,
                 )
                 results_with_snippets.append(
                     SearchResult(
@@ -616,6 +620,7 @@ class KnowledgeEngine:
                     context_before=2,
                     context_after=8,
                     docstring=itm.symbol.docstring,
+                    space=file_res.spaces[0] if file_res.spaces else None,
                 )
                 updated_items.append(
                     AggregatedItem(

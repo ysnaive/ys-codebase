@@ -1,4 +1,83 @@
 {
+  "languages": {
+    "python": {
+      "id": "python",
+      "name": "Python",
+      "extensions": [".py", ".pyi"],
+      "mode": "tree_sitter",
+      "grammar": "tree_sitter_python",
+      "query_file": "assets/queries/python.scm"
+    },
+    "c": {
+      "id": "c",
+      "name": "C",
+      "extensions": [".c", ".h"],
+      "mode": "tree_sitter",
+      "grammar": "tree_sitter_c",
+      "query_file": "assets/queries/c.scm"
+    },
+    "cpp": {
+      "id": "cpp",
+      "name": "C++",
+      "extensions": [".cpp", ".cxx", ".cc", ".hpp", ".hxx", ".hh"],
+      "mode": "tree_sitter",
+      "grammar": "tree_sitter_cpp",
+      "query_file": "assets/queries/cpp.scm"
+    },
+    "javascript": {
+      "id": "javascript",
+      "name": "JavaScript",
+      "extensions": [".js", ".jsx", ".mjs", ".cjs"],
+      "mode": "tree_sitter",
+      "grammar": "tree_sitter_javascript",
+      "query_file": "assets/queries/javascript.scm"
+    },
+    "typescript": {
+      "id": "typescript",
+      "name": "TypeScript",
+      "extensions": [".ts", ".tsx"],
+      "mode": "tree_sitter",
+      "grammar": "tree_sitter_typescript:language_typescript",
+      "query_file": "assets/queries/typescript.scm"
+    },
+    "c_sharp": {
+      "id": "c_sharp",
+      "name": "C#",
+      "extensions": [".cs"],
+      "mode": "tree_sitter",
+      "grammar": "tree_sitter_c_sharp",
+      "query_file": "assets/queries/c_sharp.scm"
+    },
+    "markdown": {
+      "id": "markdown",
+      "name": "Markdown",
+      "extensions": [".md", ".markdown"],
+      "mode": "tree_sitter",
+      "grammar": "tree_sitter_markdown",
+      "query_file": "assets/queries/markdown.scm"
+    },
+    "spice": {
+      "id": "spice",
+      "name": "SPICE",
+      "extensions": [".sp", ".cir", ".cdl", ".netlist"],
+      "mode": "custom",
+      "parser_entry": "knowledge_db.parsers.spice_parser:SpiceParser"
+    },
+    "html": {
+      "id": "html",
+      "name": "HTML",
+      "extensions": [".html", ".htm"],
+      "mode": "custom",
+      "parser_entry": "knowledge_db.parsers.html_parser:HtmlParser"
+    },
+    "css": {
+      "id": "css",
+      "name": "CSS",
+      "extensions": [".css", ".scss", ".sass", ".less"],
+      "mode": "custom",
+      "parser_entry": "knowledge_db.parsers.css_parser:CssParser"
+    }
+  },
   "thesaurus": [
     ["建立", "創建", "初始化", "建置", "構建", "create", "init", "initialize", "new", "build", "construct", "make"],
     ["搜尋", "檢索", "查詢", "尋找", "探測", "search", "query", "find", "lookup", "retrieval", "scan"],

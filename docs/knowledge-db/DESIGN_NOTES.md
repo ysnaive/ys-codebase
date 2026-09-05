@@ -17,6 +17,7 @@
 | **DN-05** | **倒排節點 Slots 瘦身與頂層文檔長度共享池** | `retrieval.py` | `Posting` 配置 `__slots__` 消除 `__dict__` 記憶體負擔，`field_lengths` 字典抽離至頂層 `doc_lengths` 共享池，達成 40%+ 節點記憶體節省並支援舊快取自省升級。 |
 | **DN-06** | **Unicode 整數區間分詞與動態門檻多進程打包** | `tokenizer.py`, `bundler.py` | 以 `_is_cjk_ord` 碼點整數比對徹底取代逐字元正則；`SemanticBundler` 於檔案數 $\ge 10$ 且多核時啟用 `ProcessPoolExecutor` 並行解析。 |
 | **DN-07** | **整數池化雙向調用圖譜與四階消歧鏈接** | `linker.py`, `graph.py`, `engine.py` | 透過 `Integer String Pool` 與雙向稀疏鄰接表將調用邊快取控制在 $<150\text{KB}$；四階消歧流水線達成 95% 靜態鏈接精度，支援 JIT 差量修補與 BFS 循環防護。 |
+| **DN-08** | **Tree-sitter 宣告式通用 AST 解析與零特權自貢獻外掛生態** | `parsers/`, `schema.py` | 徹底廢除舊有手刻正則解析狀態機，改採 `tree-sitter` S-Expression 聲明式語法查詢；`LanguageRegistry` 透過 `contributes.knowledge-db` 動態驅動，內建 10 種語言一律採自身自貢獻，核心零特權硬編碼。 |
 
 ---
 
@@ -97,5 +98,28 @@
 - **效益與驗證**：
   - 5,000+ 條調用邊 Gzip 快取體積 $< 150\text{ KB}$。
   - 單次 `callers`/`callees` 查詢 $< 5\text{ ms}$，影響面分析遍歷 $< 10\text{ ms}$。
+
+---
+
+### DN-08: Tree-sitter 宣告式通用 AST 解析與零特權自貢獻外掛生態 (Tree-sitter Universal AST & Zero-Privilege Contributed Plugins)
+
+- **背景與根因**：
+  早期解析器採用原生 `ast`（僅限 Python）與大量手刻正則狀態機（`cpp_parser.py`, `csharp_parser.py`, `js_ts_parser.py` 等）。面對現代語言之深層巢狀類別/函式、複合泛型、巨集預處理、異步語法與語法殘缺容錯時，正則解析不僅維護成本極高，更容易發生括號失衡、簽名截斷與調用點漏判；此外，所有內建語言硬編碼於 `ParserRegistry`，外掛模組無法以統一規格貢獻新語言。
+- **架構解法**：
+  1. **Tree-sitter 宣告式驅動器 (`TreeSitterDriver`)**：
+     - 引入高效 C 底層繫結之 `tree-sitter`，支援漸進式容錯 AST 解析。
+     - 語言查詢邏輯 100% 抽離為標準 S-Expression (`assets/queries/*.scm`)，包含符號定義（`@symbol.name`, `@definition.*`）、調用點（`@call.site`, `@call.name`）與檔頭引用（`@import.stmt`）。
+  2. **零特權外掛自貢獻架構 (Zero-Privilege Dogfooding)**：
+     - `LanguageRegistry` 動態讀取 `contributes.knowledge-db.languages` 宣告，依副檔名與優先級動態實例化並分發驅動。
+     - `knowledge-db` 模組本身不享有核心特權，其內建之 10 種語言支援（Python, C, C++, C#, JS/TS, Markdown, SPICE, HTML, CSS）全數在自身 `contributes/knowledge-db.json` 宣告自貢獻物化。
+  3. **遞迴階層符號模型 (`UnifiedSymbol`)**：
+     - 新增 `parent_id`、`children`、結構化搜尋負載 `search_payload`、FQN 全限定名與結構化簽名參數清單。
+     - 保留向後相容之 `members` 轉接層，無縫相容既有倒排檢索與調用拓撲引擎。
+  4. **遺留代碼徹底清除**：
+     - 徹底移除 `parsers/` 下所有手刻正則舊檔與過時測試用例，全生態系單元測試 100% 遷移。
+- **效益與驗證**：
+  - 語法錯誤下自動容錯提取合法符號節點（測試 `ET-01` 通過）。
+  - 單檔解析效能提升 3~5 倍，深層巢狀 AST 結構 100% 精準還原。
+  - 新語言擴充僅需在 `contributes` 宣告與撰寫 `.scm` 查詢規則，達成 0 侵入式生態系外掛擴充。
 
 

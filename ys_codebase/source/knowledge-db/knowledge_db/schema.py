@@ -90,7 +90,50 @@ class MemberInfo:
 
 
 @dataclass(frozen=True)
+class LanguageConfig:
+    """YSCB contributes.knowledge_db 語言宣告規格模型"""
+    id: str
+    name: str
+    extensions: Tuple[str, ...]
+    mode: str = "tree_sitter"  # "tree_sitter" | "custom"
+    grammar: Optional[str] = None
+    query_file: Optional[str] = None
+    parser_entry: Optional[str] = None
+    custom_kinds: Tuple[Dict[str, str], ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "extensions": list(self.extensions),
+            "mode": self.mode,
+            "grammar": self.grammar,
+            "query_file": self.query_file,
+            "parser_entry": self.parser_entry,
+            "custom_kinds": [dict(k) for k in self.custom_kinds],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "LanguageConfig":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("LanguageConfig data must be a dict.")
+        if "id" not in data or "extensions" not in data:
+            raise SchemaValidationError("LanguageConfig requires 'id' and 'extensions'.")
+        return cls(
+            id=str(data["id"]),
+            name=str(data.get("name", data["id"])),
+            extensions=tuple(str(e) for e in data.get("extensions", [])),
+            mode=str(data.get("mode", "tree_sitter")),
+            grammar=data.get("grammar"),
+            query_file=data.get("query_file"),
+            parser_entry=data.get("parser_entry"),
+            custom_kinds=tuple(dict(k) for k in data.get("custom_kinds", [])),
+        )
+
+
+@dataclass(frozen=True)
 class UnifiedSymbol:
+    """通用階層化代碼與文檔符號模型 (一等公民符號節點，支援任意巢狀層級)"""
     id: str
     name: str
     kind: str
@@ -100,8 +143,23 @@ class UnifiedSymbol:
     docstring: str = ""
     signature: str = ""
     end_line: int = 0
-    members: List[MemberInfo] = field(default_factory=list)
+    fqn: str = ""
+    scope_path: str = ""
+    parent_id: Optional[str] = None
+    children: Tuple["UnifiedSymbol", ...] = ()
+    parameters: Tuple[Dict[str, Any], ...] = ()
+    return_type: str = ""
+    search_payload: str = ""
+    visibility: str = "public"
+    members: Tuple[Any, ...] = ()
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        # 階層與向後相容同步處理
+        if not self.children and self.members:
+            object.__setattr__(self, "children", tuple(self.members))
+        elif not self.members and self.children:
+            object.__setattr__(self, "members", tuple(self.children))
 
     @property
     def spaces(self) -> List[str]:
@@ -117,12 +175,18 @@ class UnifiedSymbol:
     @classmethod
     def compute_id(cls, space: str, file_path: str, name: str, kind: str, line_number: int) -> str:
         """計算唯一 SHA1 雜湊識別碼"""
-        # 正規化 file_path (forward slashes)
         normalized_path = file_path.replace("\\", "/")
         raw = f"{space}:{normalized_path}:{name}:{kind}:{line_number}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> Dict[str, Any]:
+        members_data = []
+        for m in (self.children or self.members):
+            if hasattr(m, "to_dict"):
+                members_data.append(m.to_dict())
+            elif isinstance(m, dict):
+                members_data.append(m)
+
         return {
             "id": self.id,
             "name": self.name,
@@ -133,7 +197,15 @@ class UnifiedSymbol:
             "language": self.language,
             "docstring": self.docstring,
             "signature": self.signature,
-            "members": [m.to_dict() for m in self.members],
+            "fqn": self.fqn,
+            "scope_path": self.scope_path,
+            "parent_id": self.parent_id,
+            "children": [c.to_dict() if hasattr(c, "to_dict") else c for c in self.children],
+            "parameters": [dict(p) for p in self.parameters],
+            "return_type": self.return_type,
+            "search_payload": self.search_payload,
+            "visibility": self.visibility,
+            "members": members_data,
             "metadata": dict(self.metadata),
         }
 
@@ -146,11 +218,56 @@ class UnifiedSymbol:
             if key not in data:
                 raise SchemaValidationError(f"UnifiedSymbol missing required field '{key}'.")
 
-        members_raw = data.get("members", [])
-        members = [
-            MemberInfo.from_dict(m) if isinstance(m, dict) else m
-            for m in members_raw
-        ]
+        children_raw = data.get("children", [])
+        if not children_raw and "members" in data:
+            children_raw = data.get("members", [])
+
+        children: List[Any] = []
+        members: List[Any] = []
+        for m in children_raw:
+            if isinstance(m, dict):
+                if "file_path" in m or "language" in m or "children" in m:
+                    c_sym = cls.from_dict(m)
+                    children.append(c_sym)
+                    members.append(c_sym)
+                else:
+                    mem = MemberInfo.from_dict(m)
+                    members.append(mem)
+                    children.append(cls(
+                        id=f"{data['id']}::{mem.name}",
+                        name=mem.name,
+                        kind=mem.kind,
+                        file_path=data["file_path"],
+                        line_number=mem.line_number,
+                        end_line=mem.line_number,
+                        language=data["language"],
+                        signature=mem.signature,
+                        docstring=mem.docstring,
+                        visibility=mem.visibility,
+                        parent_id=data["id"],
+                    ))
+            elif isinstance(m, cls):
+                children.append(m)
+                members.append(m)
+            elif isinstance(m, MemberInfo):
+                members.append(m)
+                children.append(cls(
+                    id=f"{data['id']}::{m.name}",
+                    name=m.name,
+                    kind=m.kind,
+                    file_path=data["file_path"],
+                    line_number=m.line_number,
+                    end_line=m.line_number,
+                    language=data["language"],
+                    signature=m.signature,
+                    docstring=m.docstring,
+                    visibility=m.visibility,
+                    parent_id=data["id"],
+                ))
+
+        params_raw = data.get("parameters", [])
+        parameters = tuple(dict(p) for p in params_raw if isinstance(p, dict))
+
         return cls(
             id=str(data["id"]),
             name=str(data["name"]),
@@ -161,7 +278,15 @@ class UnifiedSymbol:
             language=str(data["language"]),
             docstring=str(data.get("docstring", "")),
             signature=str(data.get("signature", "")),
-            members=members,
+            fqn=str(data.get("fqn", "")),
+            scope_path=str(data.get("scope_path", "")),
+            parent_id=data.get("parent_id"),
+            children=tuple(children),
+            parameters=parameters,
+            return_type=str(data.get("return_type", "")),
+            search_payload=str(data.get("search_payload", "")),
+            visibility=str(data.get("visibility", "public")),
+            members=tuple(members),
             metadata=dict(data.get("metadata", {})),
         )
 
