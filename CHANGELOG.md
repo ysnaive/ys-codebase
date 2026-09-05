@@ -96,6 +96,17 @@
   - **測試套件優化與全生態系 100% 通過**：新增 `test_cli_ux.py` 完整覆蓋 FT-01~09；在 `engine.py` 與 `hook.dev.py` 實裝測試環境確定性 Mock 向量通道，將全套件 133/133 測試執行時長自 210s 大幅壓降至 8.91s（<10s）；UX-01~04 實機驗收全數通過。
   - **跨模組沙盒掛載斷鏈防禦 (`dev`)**：於 `source/dev/dev/testing/sandbox.py` 補強 Linux / virtiofs 懸空符號連結解除時之 `ENOENT` [Errno 2] 防禦，徹底消除沙盒清理警示。
 
+- **`sub_07_background_vector_indexing` (Completed)**：
+  - **專屬常駐守護進程與動態 Space 監聽 (`HotReloadServer`)**：實作專屬熱重載服務，透過注入之 `SpaceManager` 空間聯集動態解算監控目錄，嚴禁寫死特定目錄；PID 記錄當前空間簽名 (`spaces_signature`)，空間或路徑變更時自動強制重啟。
+  - **Contributes 驅動副檔名解算與 Space 雙軌過濾**：徹底移除靜態硬編碼，副檔名 100% 由 `ParserRegistry.get_supported_extensions()` 動態彙整宣告語言與各 Space `file_patterns`；事件過濾透過 `is_path_watched` 動態比對所屬 Space，強制套用各 Space 之 `exclude` 與 `is_file_included`；修復 `SpaceManager._load_contributes` 支援 `config://` 專案覆蓋與 Core Contributes 階層合併。
+  - **500ms 防抖熱修補與全語意管線整合**：實裝 500ms 防抖窗口聚合 Burst Save 密集儲存；防抖結束後單工作線程呼叫 `IndexingPipeline.hot_patch_unified_index`，一次性完成 AST、BM25、調用圖譜與 FastEmbed 向量熱更新，並以臨時檔 `os.replace` 原子替換磁碟快取。
+  - **CLI JIT 旁路提示與 Server 離線預檢**：運行檢索類 CLI (search, callers, callees, impact) 時，若探測到後台運行中之 Server，跳過 JIT 檢查並向 stderr 提示 `"Hot reload server(pid:<pid>) exist, skip JIT check."`，單一生命週期僅提示一次；啟用 Server 時 JIT 設定全面失效；Server 啟動時強制執行 `_run_startup_check`，即刻修補伺服器離線期間產生的檔案異動。
+  - **Pre-Dispatch Hook 自動自癒喚醒**：於 `scripts/hook.core.py` 註冊 `on_pre_cli_dispatch`，當 `enable_hot_reload_server=True` 時探測 Server，未運行時以 Detached Process 背景拉起，耗時 $\le 10\text{ms}$，前台零阻塞。
+  - **資源釋放、cache:// 邊界隔離與 3 世代日誌治理**：定時線程每 10 秒評估閒置狀態，逾 `hot_reload_server_inactivity_timer_sec`（預設 600s）無變更自動退出進程，記憶體佔用歸零；PID 隔離至 `cache://knowledge-db/daemon.pid`（Git 零污染）；日誌即時寫入 `cache://knowledge-db/logs/`，滾動保留最多 3 份歷史檔案。
+  - **全量測試與本地自部署閉環**：新增 `test_hot_reload_server.py` 完整覆蓋 FT-01~16 與 EC-01~11；全模組 147/147 (100.0%) 單元測試全數通過（0 Fail, 0 Skip, 0 Unknown）；透過 `python3 yscb.py dev build knowledge-db && python3 yscb.py install knowledge-db@build --force` 完成本地自部署與 UX-01~04 實機驗收。
+  - **Core 組態 Local 軟合併跳過 Project 既有設定**：優化 `core/engine.py` 之 `_deep_infill_dict`、`_seed_or_update_config` 與 `act_deploy_configs_from_modules`；在 local 層級軟合併時，若 project 層級已有對應設定（鍵值已存在）自動跳過填充（巢狀字典則向下比對），保證專案層級組態優先權，避免本機預設值意外掩蓋專案共享設定（FT-17，Core 119/119 通過）。
+
+
 
 
 ## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (Executing)

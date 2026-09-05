@@ -284,4 +284,56 @@ def on_test_event(context):
         uri.rmtree("config://mock_deploy_mod")
         self.mark_passed()
 
+    def test_local_config_infill_skips_project_keys(self):
+        """FT-17: 驗證 local 層級軟合併時，若 project 已有對應設定則自動跳過。"""
+        # 1. 直接測試 _deep_infill_dict 行為
+        base = {"existing_local": "val_local"}
+        template = {
+            "existing_local": "def_local",
+            "in_proj": "def_in_proj",
+            "only_local": "def_only_local",
+            "nested": {
+                "sub_proj": 1,
+                "sub_local": 2,
+            },
+        }
+        project_data = {
+            "in_proj": "custom_proj",
+            "nested": {
+                "sub_proj": 99,
+            },
+        }
+
+        result, changed = self.engine._deep_infill_dict(base, template, project_data=project_data)
+        self.assertTrue(changed)
+        self.assertEqual(result["existing_local"], "val_local")
+        self.assertNotIn("in_proj", result)
+        self.assertEqual(result["only_local"], "def_only_local")
+        self.assertNotIn("sub_proj", result["nested"])
+        self.assertEqual(result["nested"]["sub_local"], 2)
+
+        # 2. 測試 act_deploy_configs_from_modules 端到端部署行為
+        mod_dir = "module://mock_deploy_infill"
+        cfg_tpl_dir = f"{mod_dir}/configurable"
+        uri.makedirs(cfg_tpl_dir, exist_ok=True)
+        uri.write_json(f"{cfg_tpl_dir}/config.project.json", {"shared_key": "proj_val", "override_me": "from_proj"})
+        uri.write_json(f"{cfg_tpl_dir}/config.local.json", {"local_only": "loc_val", "override_me": "from_loc_tpl"})
+
+        self.engine.act_register("mock_deploy_infill", "1.0.0.0", "mock_prov")
+        self.engine.act_deploy_configs_from_modules()
+
+        deployed_proj = uri.read_json("config://mock_deploy_infill/config.project.json")
+        deployed_local = uri.read_json("config://mock_deploy_infill/config.local.json")
+
+        self.assertEqual(deployed_proj.get("override_me"), "from_proj")
+        self.assertEqual(deployed_local.get("local_only"), "loc_val")
+        self.assertNotIn("override_me", deployed_local)
+
+        # Cleanup
+        self.engine.act_unregister("mock_deploy_infill")
+        uri.rmtree(mod_dir)
+        uri.rmtree("config://mock_deploy_infill")
+        self.mark_passed()
+
+
 

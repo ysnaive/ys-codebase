@@ -180,6 +180,34 @@ class TestSpaceManager(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_configurable_config_templates_exist(self):
+        """驗證 knowledge-db 模組內建 configurable/config.project.json 與 config.local.json 包含所有新增組態預設值"""
+        proj_tpl = Path(_pkg_root) / "configurable" / "config.project.json"
+        local_tpl = Path(_pkg_root) / "configurable" / "config.local.json"
+
+        self.assertTrue(proj_tpl.exists(), f"Configurable template {proj_tpl} must exist")
+        self.assertTrue(local_tpl.exists(), f"Configurable template {local_tpl} must exist")
+
+        with open(proj_tpl, "r", encoding="utf-8") as f:
+            proj_data = json.load(f)
+        self.assertIn("enable_vector_search", proj_data)
+        self.assertIn("embedding_model", proj_data)
+        # 本地效能與背景服務偏好不應預設在 project
+        self.assertNotIn("enable_hot_reload_server", proj_data)
+        self.assertNotIn("hot_reload_server_inactivity_timer_sec", proj_data)
+        self.assertNotIn("jit_vector_timeout_seconds", proj_data)
+        self.assertNotIn("max_threads", proj_data)
+
+        with open(local_tpl, "r", encoding="utf-8") as f:
+            local_data = json.load(f)
+        self.assertIn("jit_vector_timeout_seconds", local_data)
+        self.assertIn("max_threads", local_data)
+        self.assertIn("enable_hot_reload_server", local_data)
+        self.assertIn("hot_reload_server_inactivity_timer_sec", local_data)
+
+        self.mark_passed()
+
 
 class TestKnowledgeDBProviders(YSCBTestCase):
     """驗證 Token Providers 與空間速查表輸出"""

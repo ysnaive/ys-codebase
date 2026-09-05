@@ -22,6 +22,8 @@
 | **DN-10** | **NetworkX 有向圖拓撲、FQN 消歧幽靈關聯根除與全方位符號選擇器** | `graph.py`, `linker.py`, `selector.py`, `protocol.py` | 引入 `networkx.DiGraph` 替換手刻鄰接表，支援精確前驅追蹤與多階影響面剪枝；四階消歧緊扣 Universal AST FQN 與 Import 作用域，杜絕跨檔案同名幽靈關聯；實作 `SymbolSelector` 微型語法 (`[kind] [scope.]name[()]`) 達成 CLI 與 API 高維度精確定位。 |
 | **DN-11** | **測試套件聚合拓撲、三態分類純化與 4-Tier 需求分流** | `tests/` | 收斂 20 個測試檔為 12 個高內聚模組；全面補齊 `self.mark_passed()` 將 115+ UNKNOWN 徹底歸零；標註 LOGIC/WORKFLOW/PERF 需求分流。 |
 | **DN-12** | **管線門面解耦、8,000 字元預算動態衰減與全域切片去重純化** | `formatter.py`, `pipeline.py`, `engine.py` | `engine.py` 瘦身 80.8% 轉為輕量 Facade (338 行)；輸出上限由 12,500 收斂為 8,000 字元並實作階梯平滑衰減；以 `UniversalRedundancyFilter` 徹底剔除 Docstring、重疊 Heading、License 與空白行，極大化資訊密度。 |
+| **DN-14** | **JIT 10 符號動態探針、向量熔斷降級、CPU 自適應防飢餓與 CLI UX** | `config.py`, `pipeline.py`, `cli.py` | 實作 10 符號動態探針與 5 秒超時熔斷退回純 BM25；支援 local 向量開關、自訂模型與 CPU 執行緒自適應；屏蔽 HF 雜訊並保障 `--json` 純淨。 |
+| **DN-15** | **專屬 HotReloadServer、Watchdog 500ms 防抖、Pre-dispatch 喚醒與日誌治理** | `daemon.py`, `hook.core.py`, `config.py` | 專屬後台服務整併 AST/BM25/Graph/Vector 熱修補；支援 hook 自動喚醒、閒置超時自動關閉；PID 隔離至 `cache://`、3 代滾動日誌與版本變更強制重啟。 |
 
 ---
 
@@ -284,3 +286,57 @@
 - **效益與驗證**：
   - 9/9 新增 CLI UX 測試 (`TestCLIOptimizationAndUX`) 與 133/133 全量測試 100% 通過。
 
+---
+
+### DN-15: 專屬 HotReloadServer、Watchdog 500ms 防抖熱修補、Pre-dispatch 勾點自動喚醒與 3 世代日誌治理 (Dedicated Server, Watcher & Lifecycle Hook)
+
+- **背景與根因**：
+  1. 既有 JIT 變更感知僅在使用者發起檢索時被動觸發，若變更符號量大，首發搜尋仍需等待或熔斷降級。
+  2. 若改為常駐服務，手動啟動繁瑣且長時間佔用 250MB~380MB 記憶體。
+  3. PID 與日誌若寫入 `storage/` 會被 Git 追蹤，造成儲存庫污染。
+  4. 模組更新（如 `@build` 安裝）後若 Server 未重啟，會繼續執行舊代碼產生靜態語意漂移。
+- **架構解法**：
+  1. **動態 Space 監聽、500ms 防抖熱修補與空間簽名失配重啟**：
+     - 常駐服務監聽目錄 100% 由注入之 `SpaceManager` 空間聯集定義動態解算（`resolve_space_include`），嚴禁寫死特定目錄。
+     - PID 記錄當前空間清單與結構化 Hash 簽名 (`spaces_signature`)；在每次 `ensure_running` 探測時，若發現空間定義或路徑變更，強制終止舊 Server 並以最新空間目錄重啟。
+     - 實裝 500ms 防抖緩衝窗口聚合 Burst Save 事件；防抖到期後單工作線程呼叫 `IndexingPipeline.hot_patch_unified_index`，一次性完成 AST、BM25、Graph 與 Vector 全語意熱修補，並以臨時檔 `os.replace` 原子替換磁碟快取。
+  2. **YSCB Pre-Dispatch Hook 自動自癒喚醒**：
+     - 於 `scripts/hook.core.py` 註冊 `on_pre_cli_dispatch`。
+     - 當 `enable_hot_reload_server=True` 時探測 Server 狀態，未運行時以 Detached Process 背景拉起，耗時 $\le 10\text{ms}$，前台零阻塞且零手動啟動負擔。
+  3. **CLI 運行時後台 Server 探測與 JIT 旁路提示**：
+     - 運行相關 CLI (search, callers, callees, impact) 時，若探測到後台運行中之 Server，強制跳過 JIT 檢查並向 stderr 提示 `"Hot reload server(pid:<pid>) exist, skip JIT check."`，徹底杜絕前台 I/O 與推論延遲。
+  4. **Server 啟動離線預檢熱修補**：
+     - Server 啟動掛載 Watchdog 之前，強制執行 `_run_startup_check`（與 JIT 相同之 `check_invalidation` 檢查），即刻修補伺服器離線期間產生的檔案異動，不留任何熱修補盲區。
+  5. **Server 啟用時 JIT 設定全面失效**：
+     - 當 `enable_hot_reload_server=True` 時，組態中之 `jit_vector_timeout_seconds` 等 JIT 設定視為無效（邏輯失效且 `resolve_jit_vector_timeout()` 返回 `None`），由 Server 在背景全權負責無時間限制之向量推論與更新。
+  6. **閒置超時自動關閉 (Inactivity Auto-Shutdown)**：
+     - 維護 `last_activity_time`，每 10 秒評估一次。持續 `hot_reload_server_inactivity_timer_sec`（預設 600s）無檔案變更，Server 自動退出進程並釋放 100% 記憶體。
+  7. **PID 與日誌 cache:// 空間隔離與 3 世代滾動**：
+     - PID 強制存放於 `cache://knowledge-db/daemon.pid`；即時日誌存放於 `cache://knowledge-db/logs/`，每次 PID 生命週期為 1 單位，自動滾動保留最多 3 份歷史記錄。
+  8. **版本感知強制重啟守門**：
+     - PID 記錄啟動當下的模組版本號。Hook 探測若發現目前模組版本與 PID 記錄失配，自動強制終止舊進程並重啟，杜絕熱代碼漂移。
+- **效益與驗證**：
+  - 14/14 `TestHotReloadServer` 測試與全模組 147/147 (100.0%) 測試通過（0 Fail、0 Skip、0 Unknown）。
+
+---
+
+### DN-16: Contributes 驅動之動態副檔名解算、Space 排除/包含雙軌初篩與階層覆蓋 (Contributes-Driven Dynamic Extensions & Space Filter Hierarchy)
+
+- **背景與根因**：
+  1. `daemon.py` 原本硬編碼了靜態副檔名集合（`SUPPORTED_WATCH_EXTENSIONS`）與忽略目錄（`IGNORED_DIR_NAMES`），背離了 Contributes-Driven 核心體系。
+  2. 寫死副檔名會導致：漏掉 SPICE (`.sp`, `.cir`)、HTML (`.html`)、CSS (`.css`) 等內建語言，且第三方或擴充模組新增自訂語言時 Watcher 完全不感知。
+  3. 寫死忽略目錄會導致：無法套用各 Space 在 `SpaceConfig.exclude` 中宣告的專屬排除規則（如 `tests/fixtures/*`），且忽視了 `file_patterns`。
+  4. `SpaceManager._load_contributes` 在傳入自訂目錄時未與 Core Contributes 進行階層合併，且未優先支援 `config://knowledge-db/contribute.json` 專案覆蓋。
+- **架構解法**：
+  1. **動態副檔名解算 (`resolve_watch_extensions`)**：
+     - `ParserRegistry` 實裝 `get_supported_extensions()`，100% 自 `contributes.knowledge_db.languages` 聚合所有已宣告語言之副檔名集合。
+     - `resolve_watch_extensions` 動態聯集 `ParserRegistry`、`.json` 與所有 Active Space 的 `file_patterns`，徹底移除任何硬編碼。
+  2. **動態 Space Include / Exclude 雙軌判定 (`is_path_watched`)**：
+     - 第一層：快篩作業系統與 Runtime VCS 忽略目錄（`.git`, `.venv`, `__pycache__`, `.pytest_cache`）。
+     - 第二層：快篩動態支援副檔名集合。
+     - 第三層：動態比對所屬 Space，強制檢驗 `FingerprintScanner._is_excluded(rel_path, sp.exclude)` 與 `sp.is_file_included(filename)`；針對根目錄兜底監聽亦動態套用全 Space exclude 規則。
+  3. **雙軌階層 Space 聚合修復 (`SpaceManager._load_contributes`)**：
+     - 統一支援 `_get_config_path("contribute.json")`（自動相容 `config://` 與自訂目錄）。
+     - 實作「Core Contributes（基底）+ 專案 `contribute.json`（覆蓋）」雙軌階層合併，確保專案層級既可覆蓋特定 Space，又完整保留 Donor 模組貢獻的空間與同義詞庫。
+- **效益與驗證**：
+  - 147/147 (100.0%) 全模組測試 100% 通過，0 Failed, 0 Unknown, 0 Skipped。

@@ -40,6 +40,7 @@
 | **sub_17** | **測試套件聚合純化、0 Unknown 與 4-Tier 分流** | **Completed** | 20 個分散測試檔收斂至 12 個高內聚套件、100% 補齊 `self.mark_passed()` 根除 UNKNOWN、4-Tier 需求分流標註與日常快測迴圈保護。 |
 | **sub_18** | **管線門面職責解耦、8,000 字元預算衰減與全域切片去重純化** | **Completed** | `engine.py` 瘦身 80.8% (338 行) 解耦出 `pipeline.py` 與 `formatter.py`；CLI 預算由 12,500 收斂為 8,000 字元並以階梯平滑衰減；以 `UniversalRedundancyFilter` 徹底剔除 Docstring、重疊 Heading、License 與空白行。 |
 | **sub_19** | **CLI 體驗重構、JIT 動態探針熔斷降級與雙層組態支援** | **Completed** | Local/Project 雙層組態 (`KnowledgeDBConfig`)、JIT 10 符號動態探針與 5 秒超時熔斷、ANSI 階層彩色與純淨 `--json` 分流、手動 index 雙軌 5 階段進度、二進位索引狀態精確檢核與測試向量 Mock 提速 (<10s)。 |
+| **sub_20** | **專屬 HotReloadServer、Watchdog 500ms 防抖與 Hook 喚醒** | **Completed** | 專屬後台守護進程整併 AST/BM25/Graph/Vector 熱修補、YSCB pre-dispatch 勾點自動喚醒、閒置超時自動退出與 3 世代滾動日誌治理。 |
 
 ---
 
@@ -78,6 +79,16 @@ python yscb.py knowledge-db impact "InvertedIndex.patch_incremental" --depth=2
 
 # 10. 清理特定或全空間之指紋、Bundle 與倒排索引快取
 python yscb.py knowledge-db clean --all
+
+# 11. 熱重載守護進程管理 (Hot Reload Server Daemon)
+python yscb.py knowledge-db daemon status   # 檢視守護進程狀態與日誌路徑
+python yscb.py knowledge-db daemon start    # 背景手動啟動守護進程
+python yscb.py knowledge-db daemon stop     # 優雅終止守護進程並清除鎖檔
+python yscb.py knowledge-db daemon watch    # 啟動前台監視模式 (適合除錯與即時觀測)
+
+# 12. 啟用自動喚醒組態 (Pre-dispatch 自動拉起，無手動負擔)
+python yscb.py config set knowledge-db enable_hot_reload_server true --local
+python yscb.py config set knowledge-db hot_reload_server_inactivity_timer_sec 600 --local
 ```
 
 ---

@@ -49,12 +49,18 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db callers <symbol> [--preview|-s | --detail|-d | --simple] [--space=X] [--[json|md]] 查詢上游調用者 (Who calls me?)")
         print("  python yscb.py knowledge-db callees <symbol> [--preview|-s | --detail|-d | --simple] [--space=X] [--[json|md]] 查詢下游被調用者 (Whom do I call?)")
         print("  python yscb.py knowledge-db impact <symbol> [--depth=N] [--detail|-d | --simple] [--space=X] [--[json|md]] 分析重構影響面擴散拓撲")
+        print("  python yscb.py knowledge-db daemon [start|stop|status|watch] 管理或監視專屬熱重載守護進程")
         print("  python yscb.py knowledge-db clean [space | --all] 清理指定或全空間快取檔案")
         return 0
 
     subcmd = argv[0]
     sub_argv = argv[1:]
     engine = KnowledgeEngine()
+
+    # 運行相關 CLI 時，若後台有運行 server，提示並跳過 JIT [FR-12]
+    if subcmd in ("search", "find", "s", "callers", "callees", "impact"):
+        from knowledge_db.daemon import check_and_notify_hot_reload_server
+        check_and_notify_hot_reload_server()
 
     try:
         if subcmd == "status":
@@ -82,6 +88,69 @@ def main(argv: List[str]) -> int:
                 print(f"    來源目錄數: {sp.get('include_count', 0)}, 指紋快取檔案: {sp.get('cached_files', sp.get('fingerprint_cached_files', 0))} 檔, 倒排索引: {idx_str}")
             print("-" * 80)
             return 0
+
+        elif subcmd == "daemon":
+            action = sub_argv[0] if sub_argv and not sub_argv[0].startswith("-") else "status"
+            workspace_root = None
+            for a in sub_argv:
+                if a.startswith("--workspace-root="):
+                    workspace_root = a.split("=", 1)[1]
+
+            from knowledge_db.daemon import HotReloadServer
+
+            if action == "status":
+                st = HotReloadServer.status(workspace_root=workspace_root)
+                styler = TerminalStyler(sys.stdout)
+                if "--json" in sub_argv:
+                    print(json.dumps(st, ensure_ascii=False, indent=2))
+                else:
+                    running_str = styler.symbol("運行中 (Active)") if st["running"] else styler.warn("未運行 (Inactive)")
+                    print(f"[knowledge-db:daemon] 守護進程狀態: {running_str}")
+                    print(f"  - 模組版本: {st['current_module_version']}")
+                    if st["running"]:
+                        print(f"  - PID: {st['pid']}")
+                        print(f"  - 啟動版本: {st['version']}")
+                        if st.get("spaces"):
+                            print(f"  - 監聽空間: {', '.join(st['spaces'])} (簽名: {st.get('spaces_signature')})")
+                        if st.get("log_file"):
+                            print(f"  - 日誌檔案: {styler.path(st['log_file'])}")
+                    else:
+                        if st.get("current_spaces"):
+                            print(f"  - 當前空間: {', '.join(st['current_spaces'])} (簽名: {st.get('current_spaces_signature')})")
+                    print(f"  - 工作目錄: {st['workspace_root']}")
+                return 0
+
+            elif action == "start":
+                ok = HotReloadServer.ensure_running(workspace_root=workspace_root)
+                if ok:
+                    st = HotReloadServer.status(workspace_root=workspace_root)
+                    print(f"[knowledge-db:daemon] 守護進程已在背景啟動 (PID: {st.get('pid')})。")
+                    if st.get("log_file"):
+                        print(f"  日誌檔案: {st.get('log_file')}")
+                    return 0
+                else:
+                    print("[knowledge-db:daemon] 守護進程啟動失敗，請檢查日誌或組態。", file=sys.stderr)
+                    return 1
+
+            elif action == "stop":
+                ok = HotReloadServer.stop(workspace_root=workspace_root)
+                if ok:
+                    print("[knowledge-db:daemon] 守護進程已成功停止。")
+                    return 0
+                else:
+                    print("[knowledge-db:daemon] 守護進程停止失敗或無運行中實例。", file=sys.stderr)
+                    return 1
+
+            elif action in ("watch", "run-foreground"):
+                if action == "watch":
+                    print("[knowledge-db:daemon] 啟動前台監視模式 (Ctrl+C 退出)...")
+                srv = HotReloadServer(workspace_root=workspace_root)
+                srv.run_foreground()
+                return 0
+
+            else:
+                print(f"[knowledge-db:daemon] 未知動作 '{action}'，支援: start, stop, status, watch", file=sys.stderr)
+                return 1
 
         elif subcmd == "scan":
             force = "--force" in sub_argv
