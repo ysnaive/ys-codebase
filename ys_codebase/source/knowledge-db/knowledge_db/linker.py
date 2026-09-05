@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .schema import SymbolCallSite, SymbolKind, UnifiedSymbol
-from .thesaurus import ThesaurusEngine
 from .tokenizer import CodeTokenizer
 
 logger = logging.getLogger("knowledge-db.linker")
@@ -25,11 +24,11 @@ class TopologyLinker:
     def __init__(
         self,
         symbols_map: Dict[str, UnifiedSymbol],
-        thesaurus: Optional[ThesaurusEngine] = None,
+        thesaurus: Optional[Any] = None,
         tokenizer: Optional[CodeTokenizer] = None,
     ):
         self.symbols_map = symbols_map
-        self.thesaurus = thesaurus or ThesaurusEngine()
+        self.thesaurus = thesaurus
         self.tokenizer = tokenizer or CodeTokenizer()
 
         # 預構建高速多維索引

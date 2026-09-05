@@ -4,6 +4,7 @@ knowledge-db 統一門面 SDK (engine.py)
 100% 採用純 Python 原生標準庫 (Zero External Dependency)
 """
 
+from collections import defaultdict
 import json
 import logging
 import os
@@ -21,8 +22,9 @@ from .retrieval import BM25Engine, CodeSnippet, InvertedIndex, QueryFilter, Sear
 from .scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffDetail, ScanDiffResult
 from .schema import AggregatedFileResult, AggregatedItem, SymbolCallSite, UnifiedSymbol
 from .space import SpaceManager
-from .thesaurus import ThesaurusEngine
-from .tokenizer import CodeTokenizer
+from .embedding import EmbeddingService, VectorIndex
+from .hybrid import HybridSearchEngine
+from .tokenizer import CodeTokenizer, MultilingualTokenizer
 
 logger = logging.getLogger("knowledge-db.engine")
 
@@ -77,16 +79,15 @@ class KnowledgeEngine:
         project_config: Optional[Union[str, Path, Dict[str, Any]]] = None,
         contributes_data: Optional[Dict[str, Any]] = None,
         field_weights: Optional[Dict[str, float]] = None,
+        embedding_mock_mode: bool = False,
     ):
         self.space_manager = SpaceManager(
             config_dir=config_dir,
             storage_dir=storage_dir,
             contributes_data=contributes_data,
         )
-        self.tokenizer = CodeTokenizer()
-        self.thesaurus_engine = ThesaurusEngine(
-            custom_groups=self.space_manager.load_thesaurus()
-        )
+        self.tokenizer = MultilingualTokenizer()
+        self.thesaurus_engine = None
         self.parser_registry = ParserRegistry()
         self.scanner = FingerprintScanner(self.space_manager)
         self.bundler = SemanticBundler(
@@ -95,8 +96,16 @@ class KnowledgeEngine:
         )
         self.bm25_engine = BM25Engine(
             tokenizer=self.tokenizer,
-            thesaurus=self.thesaurus_engine,
+            thesaurus=None,
             field_weights=field_weights,
+        )
+        models_dir = self.space_manager.storage_dir / "models" if hasattr(self.space_manager, "storage_dir") else None
+        mock_mode = embedding_mock_mode
+        self.embedding_service = EmbeddingService(cache_dir=models_dir, mock_mode=mock_mode)
+        self.hybrid_engine = HybridSearchEngine(
+            inverted_index=None,
+            embedding_service=self.embedding_service,
+            bm25_engine=self.bm25_engine,
         )
         self._index_cache: Dict[str, InvertedIndex] = {}
         self._unified_index: Optional[InvertedIndex] = None
@@ -299,6 +308,12 @@ class KnowledgeEngine:
                     self._call_graph_index = CallGraphIndex.load_binary(graph_file)
                 except Exception as ge:
                     logger.warning(f"Failed loading unified graph index: {ge}")
+                vector_file = indices_dir / "unified.vectors.bin.gz"
+                if vector_file.exists():
+                    try:
+                        self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
+                    except Exception as ve:
+                        logger.warning(f"Failed loading unified vector index: {ve}")
                 if self._call_graph_index is not None:
                     return idx
             except Exception as e:
@@ -313,7 +328,7 @@ class KnowledgeEngine:
         call_sites, imports_map = self.bundler.extract_all_call_sites_and_imports()
         linker = TopologyLinker(
             symbols_map=idx.symbols,
-            thesaurus=self.thesaurus_engine,
+            thesaurus=None,
             tokenizer=self.tokenizer,
         )
         edges = linker.link_call_sites(call_sites, imports_map)
@@ -327,6 +342,24 @@ class KnowledgeEngine:
             graph_idx.save_binary(graph_file, compresslevel=1)
         except Exception as e:
             raise KnowledgeDBError(f"Failed saving unified binary index/graph: {e}")
+
+        # 若 EmbeddingService 可用，構建並持久化向量特徵索引
+        vector_file = indices_dir / "unified.vectors.bin.gz"
+        if self.embedding_service.is_available and idx.symbols:
+            try:
+                sym_items = list(idx.symbols.items())
+                doc_ids = [k for k, _ in sym_items]
+                texts = [
+                    f"{sym.name} {sym.signature} {sym.docstring}".strip()
+                    for _, sym in sym_items
+                ]
+                vectors = self.embedding_service.embed_texts(texts)
+                vec_idx = VectorIndex()
+                vec_idx.build(doc_ids, vectors)
+                vec_idx.save_binary(vector_file)
+                self.hybrid_engine.vector_index = vec_idx
+            except Exception as e:
+                logger.warning(f"Failed building/saving vector index: {e}")
 
         # 收集或使用現有檔案快照並持久化 (保證 100% 完整清冊)
         files_map = current_files
@@ -402,7 +435,7 @@ class KnowledgeEngine:
                 dirty_sites, dirty_imports = self.bundler.extract_dirty_call_sites_and_imports(diff_detail)
                 linker = TopologyLinker(
                     symbols_map=self._unified_index.symbols,
-                    thesaurus=self.thesaurus_engine,
+                    thesaurus=None,
                     tokenizer=self.tokenizer,
                 )
                 new_edges = linker.link_call_sites(dirty_sites, dirty_imports)
@@ -412,6 +445,38 @@ class KnowledgeEngine:
                     old_symbol_ids=old_doc_ids,
                 )
                 self._call_graph_index.save_binary(graph_file, compresslevel=1)
+
+            # 差量修補向量索引
+            vector_file = indices_dir / "unified.vectors.bin.gz"
+            if (
+                (self.hybrid_engine.vector_index is None or self.hybrid_engine.vector_index.vectors is None)
+                and vector_file.exists()
+            ):
+                try:
+                    self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
+                except Exception as ve:
+                    logger.warning(f"Failed loading vector index for hot patch: {ve}")
+
+            if (
+                self.hybrid_engine.vector_index is not None
+                and self.hybrid_engine.vector_index.vectors is not None
+                and self.embedding_service.is_available
+            ):
+                new_texts = [
+                    f"{sym.name} {sym.signature} {sym.docstring}".strip()
+                    for sym in all_new_symbols
+                ]
+                new_vecs = self.embedding_service.embed_texts(new_texts) if new_texts else None
+                new_ids = [sym.id for sym in all_new_symbols]
+                self.hybrid_engine.vector_index.patch_incremental(
+                    removed_doc_ids=old_doc_ids,
+                    new_doc_ids=new_ids,
+                    new_vectors=new_vecs,
+                )
+                try:
+                    self.hybrid_engine.vector_index.save_binary(vector_file)
+                except Exception as ve:
+                    logger.warning(f"Failed saving patched vector index: {ve}")
 
             # 快速原子持久化 (compresslevel=1)
             self._unified_index.save_binary(bin_file, compresslevel=1)
@@ -485,6 +550,7 @@ class KnowledgeEngine:
         auto_rebuild: bool = True,
         verbose: bool = True,
         aggregate: bool = True,
+        lexical_only: bool = False,
     ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
         """
         全域聯集多欄位加權語意檢索 (支援 JIT 變更嗅探、自動背景熱自愈、空間與副檔名篩選、Top-N 檔案聚合與延遲代碼切片提取)。
@@ -496,6 +562,7 @@ class KnowledgeEngine:
         bin_file = indices_dir / "unified.index.bin.gz"
         graph_file = indices_dir / "unified.graph.bin.gz"
         meta_file = indices_dir / "unified.meta.bin"
+        vector_file = indices_dir / "unified.vectors.bin.gz"
 
         # 預先載入快取以利增量修補
         if self._unified_index is None and bin_file.exists() and meta_file.exists():
@@ -508,6 +575,12 @@ class KnowledgeEngine:
                 self._call_graph_index = CallGraphIndex.load_binary(graph_file)
             except Exception:
                 pass
+        if self.hybrid_engine.vector_index is None or len(self.hybrid_engine.vector_index.doc_ids) == 0:
+            if vector_file.exists():
+                try:
+                    self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
+                except Exception:
+                    pass
 
         # 1. JIT 變更感知與自動增量熱自愈 (FR-01, FR-03, FR-04, FR-05)
         if auto_rebuild:
@@ -546,6 +619,12 @@ class KnowledgeEngine:
             if bin_file.exists():
                 try:
                     self._unified_index = InvertedIndex.load_binary(bin_file)
+                    vector_file = indices_dir / "unified.vectors.bin.gz"
+                    if vector_file.exists():
+                        try:
+                            self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
+                        except Exception as ve:
+                            logger.warning(f"Failed loading unified vector index: {ve}")
                 except Exception as e:
                     logger.warning(f"Failed loading unified binary index: {e}, rebuilding...")
                     self.build_unified_index(force=True)
@@ -575,7 +654,40 @@ class KnowledgeEngine:
         )
 
         if not aggregate:
-            raw_results = self.bm25_engine.search(query=query, index=unified_index, filter_cfg=flt)
+            if not lexical_only and self.hybrid_engine.is_vector_available:
+                self.hybrid_engine.inverted_index = unified_index
+                self.hybrid_engine.bm25_engine = self.bm25_engine
+                hybrid_hits = self.hybrid_engine.search(
+                    query=query,
+                    limit=limit,
+                    file_types=target_ftypes,
+                    lexical_only=False,
+                )
+                raw_results = []
+                for h in hybrid_hits:
+                    sym = h["symbol"]
+                    if sym is None:
+                        continue
+                    if target_spaces and not any(s in target_spaces for s in getattr(sym, "spaces", [])):
+                        continue
+                    if kinds and sym.kind not in kinds:
+                        continue
+                    if languages and sym.language not in languages:
+                        continue
+                    if h["score"] <= 0:
+                        continue
+                    raw_results.append(
+                        SearchResult(
+                            symbol=sym,
+                            score=h["score"],
+                            matched_terms=h.get("matched_terms", []),
+                            space=sym.spaces[0] if getattr(sym, "spaces", None) else "",
+                            snippet=sym.docstring or "",
+                        )
+                    )
+            else:
+                raw_results = self.bm25_engine.search(query=query, index=unified_index, filter_cfg=flt)
+
             if not snippet:
                 return raw_results
 
@@ -603,7 +715,67 @@ class KnowledgeEngine:
             return results_with_snippets
 
         # 預設聚合模式 (FR-04, FR-05)
-        raw_agg_results = self.bm25_engine.search_aggregated(query=query, index=unified_index, filter_cfg=flt)
+        if not lexical_only and self.hybrid_engine.is_vector_available:
+            self.hybrid_engine.inverted_index = unified_index
+            self.hybrid_engine.bm25_engine = self.bm25_engine
+            hybrid_agg_hits = self.hybrid_engine.search(
+                query=query,
+                limit=max(limit * 3, 30),
+                file_types=target_ftypes,
+                lexical_only=False,
+            )
+            file_items: Dict[str, List[AggregatedItem]] = defaultdict(list)
+            file_scores: Dict[str, List[float]] = defaultdict(list)
+            file_spaces: Dict[str, Set[str]] = defaultdict(set)
+            file_lang: Dict[str, str] = {}
+
+            for h in hybrid_agg_hits:
+                sym = h["symbol"]
+                if sym is None:
+                    continue
+                if target_spaces and not any(s in target_spaces for s in getattr(sym, "spaces", [])):
+                    continue
+                if kinds and sym.kind not in kinds:
+                    continue
+                if languages and sym.language not in languages:
+                    continue
+                if h["score"] <= 0:
+                    continue
+
+                fp = sym.file_path
+                file_scores[fp].append(h["score"])
+                if len(file_items[fp]) < 3:
+                    file_items[fp].append(
+                        AggregatedItem(
+                            symbol=sym,
+                            score=h["score"],
+                            matched_terms=h.get("matched_terms", []),
+                            snippet=sym.docstring or "",
+                        )
+                    )
+                for sp in getattr(sym, "spaces", []):
+                    file_spaces[fp].add(sp)
+                if not file_lang.get(fp):
+                    file_lang[fp] = sym.language
+
+            raw_agg_results = []
+            alpha = 0.2
+            for fp, scores in file_scores.items():
+                sorted_scores = sorted(scores, reverse=True)
+                total_s = sorted_scores[0] + alpha * sum(sorted_scores[1:])
+                raw_agg_results.append(
+                    AggregatedFileResult(
+                        file_path=fp,
+                        total_score=total_s,
+                        items=file_items[fp],
+                        spaces=list(file_spaces[fp]),
+                        language=file_lang.get(fp, ""),
+                    )
+                )
+            raw_agg_results.sort(key=lambda x: x.total_score, reverse=True)
+            raw_agg_results = raw_agg_results[:limit]
+        else:
+            raw_agg_results = self.bm25_engine.search_aggregated(query=query, index=unified_index, filter_cfg=flt)
 
         if not snippet:
             return raw_agg_results
@@ -1362,7 +1534,7 @@ class KnowledgeEngine:
         filtered_results: List[AggregatedFileResult] = list(results)
         if limit_mode == "auto":
             top_score = results[0].total_score
-            min_thresh = max(0.5, top_score * 0.20)
+            min_thresh = top_score * 0.20 if top_score < 0.5 else max(0.5, top_score * 0.20)
             adapted = []
             for i, r in enumerate(results):
                 if r.total_score < min_thresh:
