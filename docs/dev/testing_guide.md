@@ -153,19 +153,28 @@ Status  : PASSED (100% Ready)
 
 ---
 
-## 7. 節流輸出模式 (Throttled Output Mode - `--quiet` / `-q`)
+## 7. 測試輸出純化、信息聚合與節流模式 (Output Purification & Aggregation)
 
-為因應日常頻繁代碼更動後的高頻回歸測試需求，避免長篇 ASCII 診斷報表造成大量 Token I/O 浪費，Dev 測試框架提供專屬節流輸出模式：
+為因應日常頻繁代碼更動後的高頻跑測需求，徹底杜絕子進程警告日誌外洩、避免 Token 浪費並守護專案目錄安全，Dev 測試框架建立了一致的信息聚合與防護體系：
 
-- **觸發參數**：`--quiet` 或 `-q`（例如 `python yscb.py dev test --quiet`、`python yscb.py dev test <module> -q`、`python yscb.py dev test --all -q`）。
-- **深度靜默**：徹底抑制前置沙盒構建、進度與清理日誌（`[dev:test] Pre-building...`、`Create sandbox...`、`Cleaned up sandbox...`）與通過後提示資訊。
-- **全通單行極致壓縮**：若目標測試全數通過，僅輸出單行：
-  ```text
-  Pass: 312(100.0%), Fail: 0, Skip: 0
-  ```
-- **精準失敗細節保留**：若存在失敗案例，第一行輸出統計總計，緊隨輸出 `FAILED / ERROR TEST CASES LIST:` 詳情區塊（包含錯誤訊息、檔案行號、捕獲輸出與快速重測指令 Quick Re-run）。
-- **跨進程環境變數穿透**：自動透過 `YSCB_TEST_QUIET="1"` 跨進程沙盒內部調度器穿透，確保多模組並行與單模組沙盒一致靜默。
-- **AI 調用規範**：生態系面向 Agent 之技能手冊（`yscb-module-dev`）、工作流（`Auto.md`）與標準 SOP 手冊全面強制對齊 `--quiet`，使日常開發 Token 吞吐量縮減 95% 以上。
+- **統一 JSON IPC 跨進程交換**：單模組與平行測試全面採用 `--report-json` 導出測試數據，由宿主調度器作為唯一的格式化渲染端，達成內外層職責解耦。
+- **節流輸出模式 (`--quiet` / `-q`)**：
+  - **深度靜默**：全量屏蔽子進程 stdout/stderr 與所有前置構建/清理日誌。
+  - **全通單行極致壓縮**：若測試 100% 通過，嚴格僅輸出單行：
+    ```text
+    Pass: 78(100.0%), Fail: 0, Skip: 0
+    ```
+  - **精準失敗細節保留**：若有失敗案例，第一行輸出統計總計，緊隨輸出 `FAILED / ERROR TEST CASES LIST:` 詳情區塊（含錯誤訊息、行號、捕獲輸出與快速重測指令）。
+  - **崩潰尾部診斷**：若沙盒進程遭遇非預期致命錯誤（無 report JSON 且非 0 返回碼），自動提取子進程 stderr 尾部 20 行切片呈遞，避免靜默吞沒除錯資訊。
+- **一般模式信息聚合 (Information Collation)**：
+  - 子進程產生的沙盒編譯或環境警告（例如未配置專案 URI 的編譯警告）不再原始傾倒洗版，而是由看板統計收斂折疊：
+    ```text
+    [*] Notices: 42 sandbox warning(s) captured (suppressed, run with --verbose to inspect)
+    ```
+  - 若需檢視詳細警告內容，可附加 `--verbose` / `-v` 展開原始串流。
+- **宿主防穿透剛性守門 (Host Contamination Guardrails)**：
+  - **`dev op-test` 宿主阻斷**：禁止在宿主專案根目錄直接執行 `op-test`，強制阻斷並導引使用 `dev test <module>` 進入合法沙盒。
+  - **`YSCBTestCase.setUp` 沙盒路徑硬校驗**：若無法向上探測出合法 `host_env` 沙盒結構，強制拋出 `SecurityError`，徹底拔除回退至 `os.getcwd()` 的漏洞，杜絕測試產物洩漏至專案真實目錄。
 
 ---
 

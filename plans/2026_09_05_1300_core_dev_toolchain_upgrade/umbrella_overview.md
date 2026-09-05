@@ -29,12 +29,14 @@
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_core_pip_sdk_and_environment_export` | Full Track | `Completed` | `core` 開放 `PipManager`、`PipInstallError` 與微環境解析等 SDK 介面，支援路徑靈活配置與標準契約導出。 |
-| **sub_02** | `sub_02_dev_toolchain_pip_adaptation_and_sandbox_integration` | Full Track | `Pending` | `dev` 工具鏈升級，支援建置虛擬基環境前對當前 build 版進行 pip 適配，沙盒環境相依性繼承，以及 `dev check` 合規檢查。 |
+| **sub_02** | `sub_02_dev_toolchain_pip_adaptation_and_sandbox_integration` | Full Track | `Completed` | `dev` 工具鏈升級，支援建置虛擬基環境前對當前 build 版進行 pip 適配，沙盒環境相依性繼承，以及 `dev check` 合規檢查。 |
+| **sub_03** | `sub_03_dev_test_output_purification_and_info_aggregation` | Full Track | `Completed` | `dev test` 跑測信息純化、沙盒 JIT 短路隔離、stderr 洩漏修復與雙模式（--quiet 及一般模式）信息聚合策略實作。 |
 
 ---
 
 ## 3. 主計畫里程碑與推進狀態 (Milestones)
 
 - [x] **里程碑 1 (sub_01)**：`core` 模組正式導出 Pip 工具鏈 SDK 與微環境契約，單元測試通過並完成版本發布與熱重載。
-- [ ] **里程碑 2 (sub_02)**：`dev` 工具鏈完成 build 版 pip 適配與沙盒微環境整合，具備 pip 依賴之模組沙盒跑測 100% 通過。
-- [ ] **里程碑 3 (Final Verification & Docs)**：全生態系端到端回歸驗證通過，更新 `docs/core` 與 `docs/dev` 相關知識庫文檔，結案歸檔。
+- [x] **里程碑 2 (sub_02)**：`dev` 工具鏈完成 build 版 pip 適配與沙盒微環境整合，具備 pip 依賴之模組沙盒跑測 100% 通過。
+- [x] **里程碑 3 (Final Verification & Docs)**：全生態系端到端回歸驗證通過，更新 `docs/core` 與 `docs/dev` 相關知識庫文檔，結案歸檔。
+- [x] **里程碑 4 (sub_03)**：`dev test` 完成跑測信息純化與聚合重構，沙盒噪訊 100% 消除，`--quiet` 與一般模式信息聚合驗證通過。

@@ -81,23 +81,23 @@ class YSCBTestCase(unittest.TestCase):
         else:
             self._is_isolated_sandbox = False
             if YSCBTestCase._shared_sandbox_ctx is None:
-                if os.environ.get("YSCB_TEST_SANDBOX") == "1":
-                    curr_cwd = os.getcwd()
-                    sb_dir = os.path.dirname(curr_cwd) if os.path.basename(curr_cwd) == "host_env" else curr_cwd
-                    env_sb = os.environ.get("YSCB_SANDBOX_DIR")
-                    if env_sb and os.path.isdir(env_sb):
-                        sb_dir = os.path.abspath(env_sb)
-                    else:
-                        curr = os.path.abspath(os.getcwd())
-                        sb_dir = curr
-                        while curr and curr != os.path.dirname(curr):
-                            if (os.path.basename(curr).startswith("sandbox_") and os.path.isdir(os.path.join(curr, "host_env"))) or (os.path.isdir(os.path.join(curr, "host_env")) and os.path.isdir(os.path.join(curr, "mock_provider"))):
-                                sb_dir = curr
-                                break
-                            curr = os.path.dirname(curr)
-                    YSCBTestCase._shared_sandbox_ctx = SandboxContext(sb_dir)
+                sb_dir = None
+                env_sb = os.environ.get("YSCB_SANDBOX_DIR")
+                if env_sb and os.path.isdir(env_sb) and os.path.isdir(os.path.join(env_sb, "host_env")):
+                    sb_dir = os.path.abspath(env_sb)
                 else:
-                    YSCBTestCase._shared_sandbox_ctx = SandboxProvisioner.create_sandbox()
+                    curr = os.path.abspath(os.getcwd())
+                    while curr and curr != os.path.dirname(curr):
+                        if (os.path.basename(curr).startswith("sandbox_") and os.path.isdir(os.path.join(curr, "host_env"))) or (os.path.isdir(os.path.join(curr, "host_env")) and os.path.isdir(os.path.join(curr, "mock_provider"))):
+                            sb_dir = curr
+                            break
+                        curr = os.path.dirname(curr)
+                if not sb_dir or not os.path.isdir(os.path.join(sb_dir, "host_env")):
+                    raise SecurityError(
+                        f"[dev:test] Security Guard Blocked: Unable to resolve an authentic virtual sandbox directory from '{os.getcwd()}'. "
+                        "Running tests directly on the host workspace is strictly forbidden to prevent environment contamination."
+                    )
+                YSCBTestCase._shared_sandbox_ctx = SandboxContext(sb_dir)
             self.ctx = YSCBTestCase._shared_sandbox_ctx
 
         self.sandbox_dir = self.ctx.sandbox_dir
