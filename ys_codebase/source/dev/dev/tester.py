@@ -210,6 +210,7 @@ class Tester:
             "total": 0,
             "passed": 0,
             "failed": 0,
+            "unknown": 0,
             "skipped": 0,
             "duration": 0.0,
             "failures_list": []
@@ -231,6 +232,17 @@ class Tester:
                 contract_only=contract_only
             )
             
+            def _extract_tests(node: Any) -> List[unittest.TestCase]:
+                collected = []
+                if isinstance(node, unittest.TestSuite):
+                    for sub in node:
+                        collected.extend(_extract_tests(sub))
+                elif isinstance(node, unittest.TestCase):
+                    collected.append(node)
+                return collected
+
+            all_test_instances = _extract_tests(suite)
+
             result, captured_output = runner.run_suite(suite)
             mod_duration = time.perf_counter() - mod_start
             if not verbose and not quiet_report and not quiet_mode:
@@ -253,34 +265,36 @@ class Tester:
             contract_passed = max(0, contract_total - contract_failed - contract_skipped)
             custom_passed = max(0, custom_total - custom_failed - custom_skipped)
 
-            # Taxonomy breakdown for custom passed tests
+            # Taxonomy breakdown for custom passed tests and unknown tally
             logic_passed = 0
             env_passed = 0
             workflow_passed = 0
             perf_passed = 0
+            mod_unknown = 0
             
             failed_test_objs = set(c for c, _ in result.failures + result.errors)
             skipped_test_objs = set(c for c, _ in result.skipped)
             
-            def _tally_custom(node: Any):
-                nonlocal logic_passed, env_passed, workflow_passed, perf_passed
-                if isinstance(node, unittest.TestSuite):
-                    for sub in node:
-                        _tally_custom(sub)
-                elif isinstance(node, unittest.TestCase):
-                    if "Contract" in node.__class__.__name__:
-                        return
-                    if node not in failed_test_objs and node not in skipped_test_objs:
-                        cat = get_test_category(node)
-                        if cat == "logic":
-                            logic_passed += 1
-                        elif cat == "env":
-                            env_passed += 1
-                        elif cat == "workflow":
-                            workflow_passed += 1
-                        elif cat == "perf":
-                            perf_passed += 1
-            _tally_custom(suite)
+            for test_case in all_test_instances:
+                if test_case in failed_test_objs or test_case in skipped_test_objs:
+                    continue
+                st = getattr(test_case, "execution_status", None) or getattr(test_case, "_execution_status", None)
+                if st == "UNKNOWN":
+                    mod_unknown += 1
+                    continue
+                if "Contract" in test_case.__class__.__name__:
+                    continue
+                cat = get_test_category(test_case)
+                if cat == "logic":
+                    logic_passed += 1
+                elif cat == "env":
+                    env_passed += 1
+                elif cat == "workflow":
+                    workflow_passed += 1
+                elif cat == "perf":
+                    perf_passed += 1
+
+            mod_explicit_passed = max(0, mod_passed - mod_unknown)
 
             err_msgs = []
             for test_case, tb in result.failures:
@@ -336,12 +350,14 @@ class Tester:
                 "env_passed": env_passed,
                 "workflow_passed": workflow_passed,
                 "perf_passed": perf_passed,
+                "unknown": mod_unknown,
                 "errors": err_msgs
             }
             report_data["modules"].append(mod_info)
             report_data["total"] += mod_total
-            report_data["passed"] += mod_passed
+            report_data["passed"] += mod_explicit_passed
             report_data["failed"] += mod_failed
+            report_data["unknown"] += mod_unknown
             report_data["skipped"] += mod_skipped
 
         report_data["duration"] = time.perf_counter() - start_time
@@ -604,6 +620,7 @@ class Tester:
         total_tests = 0
         total_passed = 0
         total_failed = 0
+        total_unknown = 0
         total_skipped = 0
         failures_list = []
         filter_mode = "Default (LOGIC + ENV)"
@@ -621,6 +638,7 @@ class Tester:
                 total_tests += rep.get("total", 0)
                 total_passed += rep.get("passed", 0)
                 total_failed += rep.get("failed", 0)
+                total_unknown += rep.get("unknown", 0)
                 total_skipped += rep.get("skipped", 0)
                 failures_list.extend(rep.get("failures_list", []))
             else:
@@ -638,6 +656,7 @@ class Tester:
                     "env_passed": 0,
                     "workflow_passed": 0,
                     "perf_passed": 0,
+                    "unknown": 0,
                     "errors": [f"Execution failed with code {w_res.get('returncode') if w_res else 1}"]
                 })
                 total_failed += 1
@@ -651,6 +670,7 @@ class Tester:
             "total": total_tests,
             "passed": total_passed,
             "failed": total_failed,
+            "unknown": total_unknown,
             "skipped": total_skipped,
             "duration": parallel_duration,
             "failures_list": failures_list

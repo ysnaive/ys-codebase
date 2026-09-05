@@ -46,6 +46,7 @@ class TestRemoteZipBootstrap(YSCBTestCase):
             f.write(b"NOT_A_VALID_ZIP_HEADER_DATA_12345")
             
         self.assertFalse(zipfile.is_zipfile(bad_zip))
+        self.mark_passed()
 
     def test_local_provider_isomorphic_zip_ingestion(self):
         """FT-05 & ET-03: Verify downloading and ingesting module from local zip provider."""
@@ -74,6 +75,7 @@ class TestRemoteZipBootstrap(YSCBTestCase):
         with zipfile.ZipFile(real_zip, "r") as zf:
             self.assertIn("manifest.json", zf.namelist())
             self.assertIn("scripts/cli.py", zf.namelist())
+        self.mark_passed()
 
     def test_modules_pure_code_after_reload(self):
         """FT-06: Verify config.*.json templates are stripped from modules/ upon reload."""
@@ -128,6 +130,7 @@ class TestRemoteZipBootstrap(YSCBTestCase):
         finally:
             self.engine.act_unregister("evil_mod")
             uri.rmtree("module.mirror://evil_mod")
+        self.mark_passed()
 
     def test_zip_slip_blocked_on_host_fetch_and_extract(self):
         """Security: Verify yscb._fetch_and_extract_zip blocks Zip Slip."""
@@ -159,3 +162,4 @@ class TestRemoteZipBootstrap(YSCBTestCase):
             yscb_mod._fetch_and_extract_zip(zip_path, target_dir)
             
         self.assertIn("Zip Slip vulnerability detected", str(ctx.exception))
+        self.mark_passed()

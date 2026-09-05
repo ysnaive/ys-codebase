@@ -19,7 +19,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         super().setUp()
         self.tester = Tester()
 
-    @require(Requirement.ENV)
+    @require(Requirement.WORKFLOW)
     def test_op_mksb_atomic_provisioning(self):
         """FT-01: Verify dev op-mksb creates full micro virtual environment with core hook setup."""
         ctx = SandboxProvisioner.create_sandbox()
@@ -146,7 +146,7 @@ class TestSandboxArchitecture(YSCBTestCase):
             SandboxProvisioner.cleanup_sandbox(ctx.sandbox_dir, force=True)
         self.mark_passed()
 
-    @require(Requirement.ENV)
+    @require(Requirement.WORKFLOW)
     def test_dev_sandbox_hook_convergence(self):
         """FT-06: Verify SandboxProvisioner dispatches on_test_setup via core.events.broadcast."""
         self.assertFalse(hasattr(SandboxProvisioner, "_dispatch_test_hooks"), "_dispatch_test_hooks should be removed from SandboxProvisioner")
@@ -197,7 +197,7 @@ class TestSandboxArchitecture(YSCBTestCase):
             self.assertIn("scripts/hook.dev.py", zf.namelist(), "scripts/hook.dev.py was unexpectedly excluded from build artifact!")
         self.mark_passed()
 
-    @require(Requirement.ENV)
+    @require(Requirement.WORKFLOW)
     def test_third_party_host_module_inheritance(self):
         """Verify sandbox inherits installed host modules when not present in source/ and dispatches their hooks."""
         ctx = SandboxProvisioner.create_sandbox(copy_source=False)

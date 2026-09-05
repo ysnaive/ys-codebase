@@ -1,9 +1,17 @@
+"""
+CLI Routing, Help, UX and Defensive Guild Unit Tests.
+Consolidates previous test_cli_help and test_cli_guild suites.
+100% Python Standard Library.
+"""
+import io
 import os
 import sys
 import unittest
+import importlib.util
+from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from core import uri
 from core.providers import (
     get_agents_cli_guild,
     get_phase_cli_guild,
@@ -12,11 +20,88 @@ from core.providers import (
     get_phase07_cli_guild,
 )
 from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import require, Requirement
+
+
+def _load_yscb_module():
+    host_d, _ = uri._get_host_config()
+    candidates = [
+        os.path.join(host_d, "yscb.py"),
+        os.path.join(uri._get_yscb_root(), "yscb.py"),
+        os.path.join(os.path.dirname(uri._get_yscb_root()), "yscb.py"),
+        os.path.abspath("yscb.py")
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            spec = importlib.util.spec_from_file_location("yscb", c)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                return mod
+    raise FileNotFoundError("Cannot locate yscb.py host script")
+
+
+yscb = _load_yscb_module()
+
+
+class TestCLIHelpAndUX(YSCBTestCase):
+    """CLI Help, Banner Formatting and Spelling Suggestion Unit Tests."""
+
+    @require(Requirement.LOGIC)
+    def test_global_help_output_structure(self):
+        """FT-02: Verifies that _print_global_help outputs Banner, Usage, Core & Module commands."""
+        f = io.StringIO()
+        with redirect_stdout(f):
+            yscb._print_global_help()
+        out = f.getvalue()
+        
+        # Assertions for Banner & Sections
+        self.assertIn("YS-Codebase - Ultra-Thin Modular Microkernel CLI", out)
+        self.assertIn("USAGE:", out)
+        self.assertIn("CORE COMMANDS:", out)
+        self.assertIn("MODULE COMMANDS:", out)
+        self.assertIn("GLOBAL OPTIONS:", out)
+        
+        # Assertions for Core Commands (including init)
+        self.assertIn("init <root>", out)
+        self.assertIn("install <module>", out)
+        self.assertIn("status", out)
+        self.assertIn("reload", out)
+        self.assertIn("rollback", out)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_spelling_suggestion_algorithm(self):
+        """FT-04: Verifies difflib-based intelligent spelling suggestion."""
+        known = ["init", "install", "update", "remove", "list", "status", "rollback", "reload", "dev"]
+        
+        # Close typos
+        self.assertEqual(yscb._suggest_command("relod", known), "reload")
+        self.assertEqual(yscb._suggest_command("stauts", known), "status")
+        self.assertEqual(yscb._suggest_command("instll", known), "install")
+        self.assertEqual(yscb._suggest_command("updat", known), "update")
+        
+        # Far-off strings (no match)
+        self.assertIsNone(yscb._suggest_command("completely_unrelated_xyz", known))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_unknown_command_dispatch_with_suggestion(self):
+        """ET-02: Verifies error message and suggestion on unknown command execution."""
+        f_err = io.StringIO()
+        with redirect_stdout(f_err):
+            code = yscb.dispatch_module("relod", [])
+        self.assertEqual(code, 1)
+        err_out = f_err.getvalue()
+        self.assertIn("Error: Unknown command or module 'relod'", err_out)
+        self.assertIn("Did you mean 'reload'?", err_out)
+        self.mark_passed()
 
 
 class TestCliGuildProvider(YSCBTestCase):
     """測試 CLI 防呆手冊動態產生、三級權限分級與 Phase JIT 過濾邏輯。"""
 
+    @require(Requirement.LOGIC)
     def test_filter_and_formatting(self):
         """FT-01: 驗證有定義 pros/cons 正常生成，支援 tier 標籤 (🟢/🟡/🔴)，無定義之指令自動排除。"""
         fake_commands = {
@@ -59,6 +144,7 @@ class TestCliGuildProvider(YSCBTestCase):
         self.assertNotIn("dummy_plain", output)
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
     def test_phase_aware_jit_filtering(self):
         """FT-02: 驗證 get_phase_cli_guild 能精準依據 Phase 過濾推薦指令與守門紅線。"""
         fake_commands = {
@@ -106,6 +192,7 @@ class TestCliGuildProvider(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
     def test_defensive_string_coercion(self):
         """ET-01: 驗證 case_pros / case_cons 為單一字串時自動防禦轉換為列表，tier 缺失時 fallback 為 conditional。"""
         fake_commands = {
@@ -126,6 +213,7 @@ class TestCliGuildProvider(YSCBTestCase):
         self.assertIn("單一字串禁止情境", output)
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
     def test_empty_fallback(self):
         """ET-02: 驗證全系統無任何防呆指令時回傳安全提示。"""
         with patch("core.contributes.get", return_value={}):

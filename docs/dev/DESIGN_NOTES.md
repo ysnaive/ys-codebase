@@ -15,6 +15,7 @@
 | **DN-DEV-05** | 本地建置產物直裝通道 (@build) 與宣告式工程規範連動注入 | `source/core/core/engine.py`<br/>`source/dev/manifest.json` | 💡 INFO |
 | **DN-DEV-06** | Build 版 pip 相依性適配與沙盒微環境零拷貝投影 | `source/dev/dev/testing/sandbox.py`<br/>`source/dev/dev/checker.py` | 💡 INFO |
 | **DN-DEV-07** | 沙盒測試輸出純化、信息聚合與宿主防穿透剛性守門 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/runner.py`<br/>`source/dev/dev/testing/case.py` | 💡 INFO |
+| **DN-DEV-08** | 核心與工具鏈測試案例純化、凝聚與 4-Tier 分流機制 | `source/dev/dev/testing/runner.py`<br/>`source/core/tests/`<br/>`source/dev/tests/` | 💡 INFO |
 
 ---
 
@@ -77,6 +78,21 @@
      - `dev op-test` 於宿主環境直接調用時剛性阻斷（Gate 0），提示改用 `dev test` 進入沙盒。
      - `YSCBTestCase.setUp` 在無法向上解析出合法沙盒目錄時強制拋出 `SecurityError`，徹底拔除回退至 `os.getcwd()` 的漏洞，守護專案根目錄零污染。
 - **背後考量**：徹底根除沙盒穿透造成的專案目錄污染，並極大化節約開發與 Agent 協同的終端日誌 Token 吞吐量。
+
+---
+
+### [DN-DEV-08] 核心與工具鏈測試案例純化、凝聚與 4-Tier 分流機制
+
+- **核心決策**：
+  1. **測試凝聚與破碎檔案根除**：淘汰因各別小 PR 或 bugfix 衍生之微型測試檔（如 `test_tester_sync.py`、`test_tester_throttle.py`、`test_cli_help.py`、`test_cli_guild.py`、`test_contributes_jit.py`），依領域凝聚至主要組件測試套件（如 `test_tester.py`、`test_cli_router.py`、`test_contributes.py`），共用 `setUp` 與 Mock 資源，降低模組導入開銷與維護認知負擔。
+  2. **同質解析案例緊湊化**：針對 `parse_pip_dependencies` 等多參數組合測試，將同質案例整併為規格矩陣測試，100% 完整保留所有正逆向與邊界斷言（零邏輯遺失鐵律）。
+  3. **4-Tier 分流機制 (Logic / Env / Workflow / Perf)**：
+     - 將耗時達數秒之實體沙盒佈建、多進程執行與 E2E 工作流測試（如 `test_sandbox.py` 與 `test_engine.py` 之重型沙盒案例）顯式標註為 `@require(Requirement.WORKFLOW)`。
+     - 基準壓測標註為 `@require(Requirement.PERF)`。
+     - 測試探索器（`TestDiscovery`）預設僅收集 `Requirement.LOGIC | Requirement.ENV`，使日常開發迴圈（`dev test --quiet`）回饋時間降至秒級（2~3 秒內完成）。
+     - 提供 `--workflow` 與 `--all-types` 指令在發布與守門驗收時執行完整全量回歸。
+- **背後考量**：在保持 100% 測試斷言覆蓋率與零品質妥協的前提下，根治測試套件隨專案迭代肥大化、日常跑測過度緩慢所產生的開發者摩擦。
+
 
 
 
