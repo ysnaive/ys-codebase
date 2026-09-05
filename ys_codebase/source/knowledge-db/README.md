@@ -127,7 +127,32 @@ indices = engine.build_index()
 
 ---
 
-## 5. 相關規範與技能手冊
+## 5. 組態配置項目 (Configuration Reference)
+
+本模組支援於 `yscb.config.json` (Project-level) 或 `yscb.config.local.json` (Local-level，優先度高於 Project) 設定 `knowledge-db` 命名空間參數：
+
+```json
+{
+  "knowledge-db": {
+    "enable_vector_search": true,
+    "embedding_model": "BAAI/bge-small-zh-v1.5",
+    "jit_vector_timeout_seconds": 5.0,
+    "max_threads": "auto"
+  }
+}
+```
+
+| 設定鍵值 (Key) | 預設值 (Default) | 型態與說明 |
+| :--- | :--- | :--- |
+| `enable_vector_search` | `true` | `bool` / `str`。是否啟用 FastEmbed 向量語意檢索與特徵提取。設為 `false` 則跳過向量化並強制使用純 BM25 模式。 |
+| `embedding_model` | `"BAAI/bge-small-zh-v1.5"` | `str`。指定 FastEmbed ONNX 嵌入模型名稱。支援中英多語言。 |
+| `jit_vector_timeout_seconds` | `5.0` | `float`。JIT 增量索引時 10 符號動態探針之超時臨界值。若預估向量推論時長超過此值，自動熔斷退回純 BM25 模式並輸出引導提示。 |
+| `max_threads` | `"auto"` | `str` / `int`。向量推論與 ONNXRuntime 執行緒防飢餓保護機制。預設 `"auto"` 為環境 CPU 數量之一半 (`os.cpu_count() // 2`)，防止資源耗盡。 |
+
+---
+
+## 6. 相關規範與技能手冊
 
 - **探索規範指南**：[`.agents/skills/knowledge-db-search/SKILL.md`](../agents-workflow/assets/skills/knowledge-db-search/SKILL.md)
 - **指令權限對照**：[`.agents/skills/yscb-cli-guild/SKILL.md`](../agents-workflow/assets/skills/yscb-cli-guild/SKILL.md)
+

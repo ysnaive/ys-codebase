@@ -281,6 +281,10 @@ class SandboxProvisioner:
                 if getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
                     os.rmdir(sandbox_venv)
                     return
+        except (FileNotFoundError, OSError) as e:
+            if getattr(e, "errno", None) == 2:  # ENOENT: target already gone
+                return
+            print(f"[dev:sandbox] Warning: Failed to unlink projected venv: {e}", file=sys.stderr)
         except Exception as e:
             print(f"[dev:sandbox] Warning: Failed to unlink projected venv: {e}", file=sys.stderr)
 
@@ -312,7 +316,14 @@ class SandboxProvisioner:
         else:
             try:
                 os.symlink(os.path.abspath(host_venv_dir), os.path.abspath(sandbox_venv_dir), target_is_directory=True)
-                return True
+                if os.path.exists(sandbox_venv_dir):
+                    return True
+                # Broken symlink on virtiofs mount, clean it up safely and fall through to .pth fallback
+                try:
+                    if os.path.islink(sandbox_venv_dir):
+                        os.unlink(sandbox_venv_dir)
+                except Exception:
+                    pass
             except OSError:
                 pass
 

@@ -34,6 +34,7 @@ if module_dir not in sys.path:
 
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.exceptions import KnowledgeDBError, SpaceNotFoundError
+from knowledge_db.formatter import TerminalStyler
 
 
 def main(argv: List[str]) -> int:
@@ -43,6 +44,7 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db status               列出所有註冊空間、快取與索引狀態")
         print("  python yscb.py knowledge-db scan [space | --all] 執行增量/全量檔案指紋掃描")
         print("  python yscb.py knowledge-db bundle [space|--all] 打包空間符號為 SemanticBundle")
+        print("  python yscb.py knowledge-db index [--force] [space|--all] 建置全域倒排索引、圖譜與向量特徵快取")
         print("  python yscb.py knowledge-db search <query> [--preview|-s | --detail|-d | --simple] [--limit=auto|N] [--lexical-only] [--[json|md]] 多欄位複合/語意檢索 (預設 simple 大綱)")
         print("  python yscb.py knowledge-db callers <symbol> [--preview|-s | --detail|-d | --simple] [--space=X] [--[json|md]] 查詢上游調用者 (Who calls me?)")
         print("  python yscb.py knowledge-db callees <symbol> [--preview|-s | --detail|-d | --simple] [--space=X] [--[json|md]] 查詢下游被調用者 (Whom do I call?)")
@@ -57,13 +59,24 @@ def main(argv: List[str]) -> int:
     try:
         if subcmd == "status":
             st = engine.status()
+            styler = TerminalStyler(sys.stdout)
             print(f"[knowledge-db] 系統狀態摘要 (共 {st['total_spaces']} 個空間，{st['thesaurus_groups']} 組同義詞):")
-            print(f"  - 存儲空間根目錄: {st['storage_dir']}")
+            print(f"  - 存儲空間根目錄: {styler.path(st['storage_dir'])}")
+            unified_str = styler.symbol("已建立") if st.get("has_unified_index") else styler.warn("未建立")
+            print(f"  - 全域倒排索引: {unified_str}")
+            if not st.get("enable_vector_search"):
+                vec_str = styler.line("已停用 (依組態停用向量檢索)")
+            elif st.get("has_vector_index"):
+                vec_str = styler.symbol(f"已建立 (模型: {st.get('embedding_model')})")
+            else:
+                vec_str = styler.warn("未建立")
+            print(f"  - 向量特徵索引: {vec_str}")
             print("-" * 80)
             for name, sp in st["spaces"].items():
                 pat_str = f" [patterns: {', '.join(sp['file_patterns'])}]" if sp.get('file_patterns') else " [all files]"
-                idx_str = "已建立" if (sp.get('has_index') or sp.get('index_cached')) else "未建立"
-                print(f"  - 空間: {name} (來源: {sp.get('origin', 'unknown')}){pat_str}")
+                is_idx = sp.get('has_index') or sp.get('index_cached') or st.get("has_unified_index")
+                idx_str = styler.symbol("已建立") if is_idx else styler.warn("未建立")
+                print(f"  - 空間: {styler.path(name)} (來源: {sp.get('origin', 'unknown')}){pat_str}")
                 if sp.get("description"):
                     print(f"    說明: {sp['description']}")
                 print(f"    來源目錄數: {sp.get('include_count', 0)}, 指紋快取檔案: {sp.get('cached_files', sp.get('fingerprint_cached_files', 0))} 檔, 倒排索引: {idx_str}")
@@ -104,7 +117,7 @@ def main(argv: List[str]) -> int:
             targets = [a for a in sub_argv if not a.startswith("-")]
             space_target = targets[0] if targets and "--all" not in sub_argv else None
 
-            indices = engine.build_index(space=space_target, force=force)
+            indices = engine.build_index(space=space_target, force=force, interactive=True)
             print(f"[knowledge-db] 倒排索引建置完成 (共 {len(indices)} 個空間):")
             for sp_name, idx in indices.items():
                 print(f"  - 空間 '{sp_name}': {idx.doc_count} 篇文檔符號，{len(idx.index)} 個 Term 索引詞")

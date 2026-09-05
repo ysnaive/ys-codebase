@@ -176,6 +176,43 @@ class UniversalRedundancyFilter:
         return cleaned
 
 
+class TerminalStyler:
+    """終端 ANSI 色彩樣式器，支援 TTY 偵測與 NO_COLOR 去色守門。"""
+
+    def __init__(self, stream: Any = None):
+        if stream is None:
+            import sys
+            stream = sys.stdout
+        self.stream = stream
+        is_atty = getattr(stream, "isatty", lambda: False)()
+        no_color = bool(os.getenv("NO_COLOR", ""))
+        self.enabled = is_atty and not no_color
+
+    def path(self, text: str) -> str:
+        """亮藍色"""
+        return f"\033[94m{text}\033[0m" if self.enabled else text
+
+    def symbol(self, text: str) -> str:
+        """亮綠色"""
+        return f"\033[92m{text}\033[0m" if self.enabled else text
+
+    def kind(self, text: str) -> str:
+        """亮黃色"""
+        return f"\033[93m{text}\033[0m" if self.enabled else text
+
+    def line(self, text: str) -> str:
+        """亮青色"""
+        return f"\033[96m{text}\033[0m" if self.enabled else text
+
+    def warn(self, text: str) -> str:
+        """亮黃色加粗"""
+        return f"\033[1;93m{text}\033[0m" if self.enabled else text
+
+    def err(self, text: str) -> str:
+        """亮紅色加粗"""
+        return f"\033[1;91m{text}\033[0m" if self.enabled else text
+
+
 class ResultFormatter:
     """
     knowledge-db 呈現層格式化器
@@ -187,10 +224,12 @@ class ResultFormatter:
         space_manager: Optional[Any] = None,
         workspace_root: Optional[Path] = None,
         redundancy_filter: Optional[UniversalRedundancyFilter] = None,
+        styler: Optional[TerminalStyler] = None,
     ):
         self.space_manager = space_manager
         self.workspace_root = workspace_root
         self.redundancy_filter = redundancy_filter or UniversalRedundancyFilter()
+        self.styler = styler or TerminalStyler()
 
     def _get_workspace_root(self) -> Path:
         if self.workspace_root:
@@ -437,14 +476,14 @@ class ResultFormatter:
             else:
                 # Text / ANSI 終端格式
                 if mode == "simple":
-                    node_lines.append(f"#{rank:02d} 檔案: {file_link}")
+                    node_lines.append(f"#{rank:02d} 檔案: {self.styler.path(file_link)}")
                     for itm_idx, itm in enumerate(res.items, start=1):
                         is_last = (itm_idx == len(res.items))
                         branch = "└──" if is_last else "├──"
                         pipe = "   " if is_last else "│  "
                         sym = itm.symbol
                         line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
-                        node_lines.append(f"  {branch} {sym.kind.upper()}: {sym.name} ({line_range})")
+                        node_lines.append(f"  {branch} {self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)} {self.styler.line(f'({line_range})')}")
                         if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
                             pure_lines = self.redundancy_filter.purify_lines(
                                 itm.code_snippet.lines,
@@ -462,14 +501,14 @@ class ResultFormatter:
                                     mark = ">" if ln == itm.code_snippet.target_line else " "
                                     node_lines.append(f"  {pipe}   {mark} {ln:{width}d} | {code}")
                 elif mode == "detail":
-                    node_lines.append(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} ({len(res.items)} 個命中項目, {res.language})")
+                    node_lines.append(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {self.styler.path(file_link)} ({len(res.items)} 個命中項目, {res.language})")
                     for itm_idx, itm in enumerate(res.items, start=1):
                         is_last = (itm_idx == len(res.items))
                         branch = "└──" if is_last else "├──"
                         pipe = "   " if is_last else "│  "
                         sym = itm.symbol
                         line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
-                        node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {sym.kind.upper()}: {sym.name} ({line_range})")
+                        node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)} {self.styler.line(f'({line_range})')}")
                         if sym.signature:
                             node_lines.append(f"  {pipe}   簽名: {sym.signature}")
                         if itm.code_snippet and itm.code_snippet.docstring_summary:
@@ -498,14 +537,14 @@ class ResultFormatter:
                     node_lines.append("-" * 85)
                 else:  # auto
                     if snippet:
-                        node_lines.append(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} ({len(res.items)} 個命中項目, {res.language})")
+                        node_lines.append(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {self.styler.path(file_link)} ({len(res.items)} 個命中項目, {res.language})")
                         for itm_idx, itm in enumerate(res.items, start=1):
                             is_last = (itm_idx == len(res.items))
                             branch = "└──" if is_last else "├──"
                             pipe = "   " if is_last else "│  "
                             sym = itm.symbol
                             line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
-                            node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {sym.kind.upper()}: {sym.name} ({line_range})")
+                            node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)} {self.styler.line(f'({line_range})')}")
                             if sym.signature:
                                 node_lines.append(f"  {pipe}   簽名: {sym.signature}")
                             if itm.code_snippet and itm.code_snippet.docstring_summary:
@@ -534,15 +573,15 @@ class ResultFormatter:
                         if len(res.items) == 1:
                             sym = res.items[0].symbol
                             sym_link = self.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
-                            node_lines.append(f"#{rank:02d} 檔案: {sym_link} ({sym.kind}:{sym.name}) [{res.total_score:05.2f}]")
+                            node_lines.append(f"#{rank:02d} 檔案: {self.styler.path(sym_link)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}) [{res.total_score:05.2f}]")
                         else:
-                            node_lines.append(f"#{rank:02d} 檔案: {file_link} (總分: {res.total_score:05.2f}, {len(res.items)} 項命中):")
+                            node_lines.append(f"#{rank:02d} 檔案: {self.styler.path(file_link)} (總分: {res.total_score:05.2f}, {len(res.items)} 項命中):")
                             for itm_idx, itm in enumerate(res.items, start=1):
                                 is_last = (itm_idx == len(res.items))
                                 branch = "└──" if is_last else "├──"
                                 sym = itm.symbol
                                 sym_link = self.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
-                                node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} {sym_link} ({sym.kind}:{sym.name}) [{itm.score:05.2f}]")
+                                node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} {self.styler.path(sym_link)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}) [{itm.score:05.2f}]")
 
             lines.extend(node_lines)
             rendered_nodes += 1
@@ -685,13 +724,13 @@ class ResultFormatter:
                 site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
                 site_info = f" [調用點: {', '.join(site_strs)}]" if site_strs else ""
                 if mode == "simple":
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}){site_info}")
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
                         if formatted_snip:
                             node_lines.append(formatted_snip)
                 elif mode == "detail":
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind.upper()}: {sym.name})")
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)})")
                     if sym.signature:
                         node_lines.append(f"{pipe}   簽名: {sym.signature}")
                     if sites:
@@ -705,7 +744,7 @@ class ResultFormatter:
                             node_lines.append(f"{pipe}   調用代碼切片:")
                             node_lines.append(formatted_snip)
                 else:  # auto
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}){site_info}")
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
                         if formatted_snip:
@@ -851,13 +890,13 @@ class ResultFormatter:
                 site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
                 site_info = f" [調用點: {', '.join(site_strs)}]" if site_strs else ""
                 if mode == "simple":
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}){site_info}")
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
                         if formatted_snip:
                             node_lines.append(formatted_snip)
                 elif mode == "detail":
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind.upper()}: {sym.name})")
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)})")
                     if sym.signature:
                         node_lines.append(f"{pipe}   簽名: {sym.signature}")
                     if sites:
@@ -868,10 +907,11 @@ class ResultFormatter:
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
                         if formatted_snip:
+                            node_lines.append(formatted_snip)
                             node_lines.append(f"{pipe}   被調用代碼切片:")
                             node_lines.append(formatted_snip)
                 else:  # auto
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {link_str} ({sym.kind}:{sym.name}){site_info}")
+                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}){site_info}")
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
                         if formatted_snip:
@@ -984,14 +1024,14 @@ class ResultFormatter:
                         lines.append(f"- **#{rendered_nodes+1:02d}** 檔案: {link_str} (`{s.kind}`: **{s.name}**)")
                 else:
                     if mode == "detail":
-                        lines.append(f"{sub_prefix}{sub_branch} #{rendered_nodes+1:02d} 檔案: {link_str} ({s.kind.upper()}: {s.name})")
+                        lines.append(f"{sub_prefix}{sub_branch} #{rendered_nodes+1:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(s.kind.upper())}: {self.styler.symbol(s.name)})")
                         if s.signature:
                             lines.append(f"{sub_prefix}{sub_pipe}   簽名: {s.signature}")
                         if s.docstring:
                             doc_sum = s.docstring.strip().split("\n")[0]
                             lines.append(f"{sub_prefix}{sub_pipe}   摘要: {doc_sum}")
                     else:
-                        lines.append(f"{sub_prefix}{sub_branch} #{rendered_nodes+1:02d} 檔案: {link_str} ({s.kind}:{s.name})")
+                        lines.append(f"{sub_prefix}{sub_branch} #{rendered_nodes+1:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(s.kind)}:{self.styler.symbol(s.name)})")
 
                 rendered_nodes += 1
 
