@@ -91,58 +91,53 @@ class SpaceManager:
         """讀取模組聯動注入之 Contributes 資料 (100% 由 core.contributes SDK 與專案特化 contribute.json 驅動)"""
         result: Dict[str, Any] = {"spaces": {}, "thesaurus": [], "aliases": {}, "related": []}
 
-        # 1. 自訂注入 (測試或隔離環境)
+        # 1. 載入基底 (自訂注入 或 核心 SDK / 內建模組宣告)
         if self._custom_contributes_data is not None:
             if isinstance(self._custom_contributes_data, dict):
                 result["spaces"].update(self._custom_contributes_data.get("spaces", {}))
                 result["thesaurus"].extend(self._custom_contributes_data.get("thesaurus", []))
                 result["aliases"].update(self._custom_contributes_data.get("aliases", {}))
                 result["related"].extend(self._custom_contributes_data.get("related", []))
-
-        # 2. 自訂 config_dir 之 contribute.json (若指定)
-        if self._custom_config_dir:
-            contrib_file = self._custom_config_dir / "contribute.json"
-            if contrib_file.exists():
-                try:
-                    with open(contrib_file, "r", encoding="utf-8", errors="replace") as f:
-                        c_data = json.load(f)
-                    if isinstance(c_data, dict):
-                        result["spaces"].update(c_data.get("spaces", {}))
-                        result["thesaurus"].extend(c_data.get("thesaurus", []))
-                        result["aliases"].update(c_data.get("aliases", {}))
-                        result["related"].extend(c_data.get("related", []))
-                except Exception as e:
-                    logger.warning(f"Failed to read custom contribute.json: {e}")
-            return result
-
-        if self._custom_contributes_data is not None:
-            return result
-
-        # 3. 核心 SDK 聚合結果
-        try:
-            from core import contributes
-            data = contributes.get("knowledge-db")
-            if isinstance(data, dict):
-                result["spaces"].update(data.get("spaces", {}))
-                result["thesaurus"].extend(data.get("thesaurus", []))
-                result["aliases"].update(data.get("aliases", {}))
-                result["related"].extend(data.get("related", []))
-        except Exception as e:
-            logger.warning(f"Failed to read contributes via core SDK: {e}")
-
-        # 4. 模組內建宣告之安全降級載入 (當尚未部署至 core 或單元測試直接運行時)
-        if not result["thesaurus"] and not result["aliases"] and not result["related"]:
+        else:
+            # 核心 SDK 聚合結果
             try:
-                mod_contrib = Path(__file__).resolve().parent.parent / "contributes" / "knowledge-db.json"
-                if mod_contrib.exists():
-                    with open(mod_contrib, "r", encoding="utf-8", errors="replace") as f:
-                        m_data = json.load(f)
-                    if isinstance(m_data, dict):
-                        result["thesaurus"].extend(m_data.get("thesaurus", []))
-                        result["aliases"].update(m_data.get("aliases", {}))
-                        result["related"].extend(m_data.get("related", []))
+                from core import contributes
+                data = contributes.get("knowledge-db")
+                if isinstance(data, dict):
+                    result["spaces"].update(data.get("spaces", {}))
+                    result["thesaurus"].extend(data.get("thesaurus", []))
+                    result["aliases"].update(data.get("aliases", {}))
+                    result["related"].extend(data.get("related", []))
             except Exception as e:
-                logger.debug(f"Failed to fallback load module default contributes: {e}")
+                logger.warning(f"Failed to read contributes via core SDK: {e}")
+
+            # 模組內建宣告之安全降級載入 (當尚未部署至 core 或單元測試直接運行時)
+            if not result["thesaurus"] and not result["aliases"] and not result["related"]:
+                try:
+                    mod_contrib = Path(__file__).resolve().parent.parent / "contributes" / "knowledge-db.json"
+                    if mod_contrib.exists():
+                        with open(mod_contrib, "r", encoding="utf-8", errors="replace") as f:
+                            m_data = json.load(f)
+                        if isinstance(m_data, dict):
+                            result["thesaurus"].extend(m_data.get("thesaurus", []))
+                            result["aliases"].update(m_data.get("aliases", {}))
+                            result["related"].extend(m_data.get("related", []))
+                except Exception as e:
+                    logger.debug(f"Failed to fallback load module default contributes: {e}")
+
+        # 2. 專案特化 contribute.json 階層疊加覆蓋 (支援 _custom_config_dir 與 config://knowledge-db/)
+        contrib_file = self._get_config_path("contribute.json")
+        if contrib_file and contrib_file.exists():
+            try:
+                with open(contrib_file, "r", encoding="utf-8", errors="replace") as f:
+                    c_data = json.load(f)
+                if isinstance(c_data, dict):
+                    result["spaces"].update(c_data.get("spaces", {}))
+                    result["thesaurus"].extend(c_data.get("thesaurus", []))
+                    result["aliases"].update(c_data.get("aliases", {}))
+                    result["related"].extend(c_data.get("related", []))
+            except Exception as e:
+                logger.warning(f"Failed to read project contribute.json '{contrib_file}': {e}")
 
         return result
 

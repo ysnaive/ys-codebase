@@ -11,6 +11,7 @@ import os
 import sys
 import json
 import time
+import copy
 import shutil
 import zipfile
 import urllib.request
@@ -439,18 +440,36 @@ class AtomicEngine:
             if force or not uri.exists(mirror_zip):
                 self.act_download(mod, ver, provider_url)
 
-    def _deep_infill_dict(self, base: Dict[str, Any], template: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    def _deep_infill_dict(
+        self,
+        base: Dict[str, Any],
+        template: Dict[str, Any],
+        project_data: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Dict[str, Any], bool]:
         changed = False
         result = dict(base)
+        proj = project_data if isinstance(project_data, dict) else {}
+
         for k, v in template.items():
             if k not in result:
-                result[k] = v
-                changed = True
+                if k in proj:
+                    if isinstance(v, dict) and isinstance(proj[k], dict):
+                        sub_res, sub_changed = self._deep_infill_dict({}, v, project_data=proj[k])
+                        if sub_res:
+                            result[k] = sub_res
+                            changed = True
+                    else:
+                        continue
+                else:
+                    result[k] = copy.deepcopy(v)
+                    changed = True
             elif isinstance(result[k], dict) and isinstance(v, dict):
-                sub_res, sub_changed = self._deep_infill_dict(result[k], v)
+                sub_proj = proj.get(k) if isinstance(proj.get(k), dict) else None
+                sub_res, sub_changed = self._deep_infill_dict(result[k], v, project_data=sub_proj)
                 result[k] = sub_res
                 if sub_changed:
                     changed = True
+
         return result, changed
 
     def _seed_or_update_config(self, module_name: str, template_dir_or_uri: str) -> None:
@@ -460,29 +479,43 @@ class AtomicEngine:
         cfg_proj_uri = f"config://{module_name}/config.project.json"
         cfg_local_uri = f"config://{module_name}/config.local.json"
 
+        proj_data: Dict[str, Any] = {}
         if uri.exists(tpl_proj_uri):
             tpl_proj_data = uri.read_json(tpl_proj_uri)
             if not uri.exists(cfg_proj_uri):
                 uri.makedirs(f"config://{module_name}", exist_ok=True)
                 uri.write_json(cfg_proj_uri, tpl_proj_data)
+                proj_data = tpl_proj_data if isinstance(tpl_proj_data, dict) else {}
             else:
                 curr_data = uri.read_json(cfg_proj_uri)
                 if isinstance(curr_data, dict) and isinstance(tpl_proj_data, dict):
                     infilled_data, changed = self._deep_infill_dict(curr_data, tpl_proj_data)
                     if changed:
                         uri.write_json(cfg_proj_uri, infilled_data)
+                    proj_data = infilled_data
+                elif isinstance(curr_data, dict):
+                    proj_data = curr_data
+        elif uri.exists(cfg_proj_uri):
+            curr_data = uri.read_json(cfg_proj_uri)
+            if isinstance(curr_data, dict):
+                proj_data = curr_data
 
         if uri.exists(tpl_local_uri):
             tpl_local_data = uri.read_json(tpl_local_uri)
-            if not uri.exists(cfg_local_uri):
+            if not isinstance(tpl_local_data, dict):
+                tpl_local_data = {}
+
+            curr_local_data: Dict[str, Any] = {}
+            if uri.exists(cfg_local_uri):
+                curr = uri.read_json(cfg_local_uri)
+                if isinstance(curr, dict):
+                    curr_local_data = curr
+
+            # local level 軟合併時，需同時考慮如果 project 中已有對應設定，就跳過
+            infilled_data, changed = self._deep_infill_dict(curr_local_data, tpl_local_data, project_data=proj_data)
+            if changed or not uri.exists(cfg_local_uri):
                 uri.makedirs(f"config://{module_name}", exist_ok=True)
-                uri.write_json(cfg_local_uri, tpl_local_data)
-            else:
-                curr_data = uri.read_json(cfg_local_uri)
-                if isinstance(curr_data, dict) and isinstance(tpl_local_data, dict):
-                    infilled_data, changed = self._deep_infill_dict(curr_data, tpl_local_data)
-                    if changed:
-                        uri.write_json(cfg_local_uri, infilled_data)
+                uri.write_json(cfg_local_uri, infilled_data, indent=2)
 
     def act_deploy_configs_from_modules(self) -> None:
         """
@@ -508,25 +541,31 @@ class AtomicEngine:
             cfg_tpl_dir = f"{mod_runtime_dir}/configurable"
             if uri.exists(cfg_tpl_dir) and uri.isdir(cfg_tpl_dir):
                 try:
-                    for tmpl_file in uri.listdir(cfg_tpl_dir):
-                        if not tmpl_file.endswith(".json"):
-                            continue
-                        
+                    raw_files = [f for f in uri.listdir(cfg_tpl_dir) if f.endswith(".json")]
+                    # 排序確保 project 先於 local 處理
+                    tmpl_files = sorted(raw_files, key=lambda x: (1 if "local" in x else 0, x))
+                    for tmpl_file in tmpl_files:
                         tmpl_uri = f"{cfg_tpl_dir}/{tmpl_file}"
                         try:
                             tmpl_data = uri.read_json(tmpl_uri)
                         except Exception:
                             continue
 
+                        is_local = False
+                        proj_pair_uri = None
                         if tmpl_file == "contribute.json":
                             target_cfg_uri = f"config://{mod}/contribute.json"
                         elif tmpl_file == "config.local.json":
                             target_cfg_uri = f"config://{mod}/config.local.json"
+                            is_local = True
+                            proj_pair_uri = f"config://{mod}/config.project.json"
                         elif tmpl_file == "config.project.json":
                             target_cfg_uri = f"config://{mod}/config.project.json"
                         elif tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
                             sub_name = tmpl_file[len("config."):-len(".local.json")]
                             target_cfg_uri = f"config://{mod}/config.{sub_name}.local.json"
+                            is_local = True
+                            proj_pair_uri = f"config://{mod}/config.{sub_name}.project.json"
                         elif tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
                             sub_name = tmpl_file[len("config."):-len(".project.json")]
                             target_cfg_uri = f"config://{mod}/config.{sub_name}.project.json"
@@ -540,7 +579,14 @@ class AtomicEngine:
                             except Exception:
                                 target_data = {}
 
-                        merged_data, changed = self._deep_infill_dict(target_data, tmpl_data)
+                        proj_data = None
+                        if is_local and proj_pair_uri and uri.exists(proj_pair_uri):
+                            try:
+                                proj_data = uri.read_json(proj_pair_uri)
+                            except Exception:
+                                proj_data = None
+
+                        merged_data, changed = self._deep_infill_dict(target_data, tmpl_data, project_data=proj_data)
 
                         if changed or not uri.exists(target_cfg_uri):
                             uri.makedirs(f"config://{mod}", exist_ok=True)
@@ -557,23 +603,28 @@ class AtomicEngine:
                     pass
 
             # 2. 向下相容掃描模組根目錄殘留之 config.*.json
-            for tmpl_file in uri.listdir(mod_runtime_dir):
-                if not (tmpl_file.startswith("config.") and tmpl_file.endswith(".json")):
-                    continue
-
+            raw_root_files = [f for f in uri.listdir(mod_runtime_dir) if f.startswith("config.") and f.endswith(".json")]
+            root_files = sorted(raw_root_files, key=lambda x: (1 if "local" in x else 0, x))
+            for tmpl_file in root_files:
                 tmpl_uri = f"{mod_runtime_dir}/{tmpl_file}"
                 try:
                     tmpl_data = uri.read_json(tmpl_uri)
                 except Exception:
                     continue
 
+                is_local = False
+                proj_pair_uri = None
                 if tmpl_file == "config.local.json":
                     target_cfg_uri = f"config://{mod}/config.local.json"
+                    is_local = True
+                    proj_pair_uri = f"config://{mod}/config.project.json"
                 elif tmpl_file == "config.project.json":
                     target_cfg_uri = f"config://{mod}/config.project.json"
                 elif tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
                     sub_name = tmpl_file[len("config."):-len(".local.json")]
                     target_cfg_uri = f"config://{mod}/config.{sub_name}.local.json"
+                    is_local = True
+                    proj_pair_uri = f"config://{mod}/config.{sub_name}.project.json"
                 elif tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
                     sub_name = tmpl_file[len("config."):-len(".project.json")]
                     target_cfg_uri = f"config://{mod}/config.{sub_name}.project.json"
@@ -587,7 +638,14 @@ class AtomicEngine:
                     except Exception:
                         target_data = {}
 
-                merged_data, changed = self._deep_infill_dict(target_data, tmpl_data)
+                proj_data = None
+                if is_local and proj_pair_uri and uri.exists(proj_pair_uri):
+                    try:
+                        proj_data = uri.read_json(proj_pair_uri)
+                    except Exception:
+                        proj_data = None
+
+                merged_data, changed = self._deep_infill_dict(target_data, tmpl_data, project_data=proj_data)
 
                 if changed or not uri.exists(target_cfg_uri):
                     uri.makedirs(f"config://{mod}", exist_ok=True)

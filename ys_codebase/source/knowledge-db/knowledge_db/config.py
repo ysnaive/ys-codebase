@@ -15,6 +15,8 @@ DEFAULT_ENABLE_VECTOR_SEARCH: bool = True
 DEFAULT_EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
 DEFAULT_JIT_VECTOR_TIMEOUT_SECONDS: float = 5.0
 DEFAULT_MAX_THREADS: str = "auto"
+DEFAULT_ENABLE_HOT_RELOAD_SERVER: bool = False
+DEFAULT_HOT_RELOAD_SERVER_INACTIVITY_TIMER_SEC: int = 600
 
 
 @dataclass
@@ -23,6 +25,8 @@ class KnowledgeDBConfig:
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     jit_vector_timeout_seconds: float = DEFAULT_JIT_VECTOR_TIMEOUT_SECONDS
     max_threads: Union[str, int] = DEFAULT_MAX_THREADS
+    enable_hot_reload_server: bool = DEFAULT_ENABLE_HOT_RELOAD_SERVER
+    hot_reload_server_inactivity_timer_sec: int = DEFAULT_HOT_RELOAD_SERVER_INACTIVITY_TIMER_SEC
 
     @classmethod
     def load(
@@ -46,8 +50,16 @@ class KnowledgeDBConfig:
 
         # 1. 嘗試透過 core.config 載入
         try:
-            from core.config import Config
-            core_cfg = Config.get_all("knowledge-db")
+            from core import config as core_cfg_mod
+            if hasattr(core_cfg_mod, "get_all"):
+                core_cfg = core_cfg_mod.get_all("knowledge-db")
+            elif hasattr(core_cfg_mod, "ConfigManager"):
+                core_cfg = core_cfg_mod.ConfigManager.get_all("knowledge-db")
+            elif hasattr(core_cfg_mod, "Config"):
+                core_cfg = core_cfg_mod.Config.get_all("knowledge-db")
+            else:
+                core_cfg = None
+
             if isinstance(core_cfg, dict):
                 merged_data.update(core_cfg)
         except Exception:
@@ -114,12 +126,39 @@ class KnowledgeDBConfig:
         else:
             threads_val = DEFAULT_MAX_THREADS
 
+        enable_server = merged_data.get("enable_hot_reload_server", DEFAULT_ENABLE_HOT_RELOAD_SERVER)
+        if isinstance(enable_server, str):
+            enable_server = enable_server.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            enable_server = bool(enable_server)
+
+        inactivity_val = merged_data.get("hot_reload_server_inactivity_timer_sec", DEFAULT_HOT_RELOAD_SERVER_INACTIVITY_TIMER_SEC)
+        try:
+            inactivity_sec = int(inactivity_val)
+            if inactivity_sec <= 0:
+                inactivity_sec = DEFAULT_HOT_RELOAD_SERVER_INACTIVITY_TIMER_SEC
+        except (ValueError, TypeError):
+            inactivity_sec = DEFAULT_HOT_RELOAD_SERVER_INACTIVITY_TIMER_SEC
+
         return cls(
             enable_vector_search=enable_vec,
             embedding_model=model_name,
             jit_vector_timeout_seconds=timeout_sec,
             max_threads=threads_val,
+            enable_hot_reload_server=enable_server,
+            hot_reload_server_inactivity_timer_sec=inactivity_sec,
         )
+
+    @property
+    def is_jit_effective(self) -> bool:
+        """當啟用 HotReloadServer 時，JIT 機制邏輯上全面失效，由 Server 常駐接管 [FR-14]。"""
+        return not self.enable_hot_reload_server
+
+    def resolve_jit_vector_timeout(self) -> Optional[float]:
+        """若啟用 Server，JIT 設定視為無效 (回傳 None)；未啟用時回傳配置之 timeout 秒數 [FR-14]。"""
+        if self.enable_hot_reload_server:
+            return None
+        return self.jit_vector_timeout_seconds
 
     def resolve_threads(self) -> int:
         """解析 max_threads：auto 時返回 max(1, cpu_count // 2)，若 <= 0 亦回退至 auto，手動正整數截斷於 [1, cpu_count]"""

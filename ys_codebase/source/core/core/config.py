@@ -316,3 +316,6 @@ reload = ConfigManager.reload
 list_modules = ConfigManager.list_modules
 get_config_path = ConfigManager.get_config_path
 
+# 相容別名
+Config = ConfigManager
+
