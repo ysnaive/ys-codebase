@@ -153,10 +153,11 @@ class TestSandboxArchitecture(YSCBTestCase):
         ctx = SandboxProvisioner.create_sandbox()
         try:
             flag_file = os.path.join(ctx.sandbox_dir, "setup_fired.flag")
+            flag_file_escaped = flag_file.replace("\\", "/")
             mod_dir = os.path.join(ctx.engine_dir, "source", "mock_hook_mod", "scripts")
             os.makedirs(mod_dir, exist_ok=True)
             with open(os.path.join(mod_dir, "hook.dev.py"), "w", encoding="utf-8") as f:
-                f.write(f"def on_test_setup(context):\n    with open('{flag_file}', 'w') as f: f.write('OK')\n    return 'OK'\n")
+                f.write(f"def on_test_setup(context):\n    with open('{flag_file_escaped}', 'w') as f: f.write('OK')\n    return 'OK'\n")
             
             from core import events, uri
             scanned_roots = [

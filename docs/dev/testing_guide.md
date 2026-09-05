@@ -166,3 +166,24 @@ Status  : PASSED (100% Ready)
 - **精準失敗細節保留**：若存在失敗案例，第一行輸出統計總計，緊隨輸出 `FAILED / ERROR TEST CASES LIST:` 詳情區塊（包含錯誤訊息、檔案行號、捕獲輸出與快速重測指令 Quick Re-run）。
 - **跨進程環境變數穿透**：自動透過 `YSCB_TEST_QUIET="1"` 跨進程沙盒內部調度器穿透，確保多模組並行與單模組沙盒一致靜默。
 - **AI 調用規範**：生態系面向 Agent 之技能手冊（`yscb-module-dev`）、工作流（`Auto.md`）與標準 SOP 手冊全面強制對齊 `--quiet`，使日常開發 Token 吞吐量縮減 95% 以上。
+
+---
+
+## 8. 沙盒微環境雙軌零拷貝投影與 Build 版 Pip 相依性適配 (Venv Projection & Build-Pip Adaptation)
+
+為支援微環境與 `pip_dependencies` 相依性治理架構，`SandboxProvisioner` 在虛擬基環境中引入了雙軌零拷貝投影與預先適配管線：
+
+### 8.1 Pip 相依性事前靜默物化 (`adapt_build_pip_dependencies`)
+- **掃描觸角**：在建立虛擬基環境之前，掃描待測模組當前 build 版（`module.build://` 內之最新 `.zip`）或 `source/` 中的 `manifest.json` 之 `pip_dependencies` 宣告。
+- **宿主物化**：透過 `core.PipManager.parse_pip_dependencies` 解析正規化規格字串，並調用宿主 `PipManager.install_packages` 於宿主微環境完成靜默安裝物化。
+- **靜態防護**：`dev check` 同步擴充 `_check_pip_dependencies` 靜態檢核，保證 `manifest.json` 中 `pip_dependencies` 必須為字典且鍵值型態合規。
+
+### 8.2 3-Tier 零拷貝微環境穿透管線 (`_project_venv`)
+沙盒透過 `_project_venv` 將宿主微環境零拷貝投影至沙盒 `engine/.venv`，使沙盒能無縫使用所有依賴輪子：
+- **Tier 1 (Windows)**：優先調用 `_winapi.CreateJunction` 建立目錄重析點（Junction），無需 Administrator 管理員權限，耗時 $\le 1\text{ms}$。
+- **Tier 2 (POSIX)**：優先調用 `os.symlink` 建立目錄符號連結。
+- **Tier 3 (降級兜底)**：針對 virtiofs、容器掛載磁碟或 exFAT 等不支援重析點/連結的極端環境，自動捕獲 `OSError` 降級為在沙盒 `engine/.venv` 建立輕量 `site-packages` 目錄並寫入 `host_venv.pth` 指向宿主 `site-packages`。
+
+### 8.3 沙盒銷毀安全斷開保護 (`_unlink_projected_venv`)
+- **斷開防護**：`cleanup_sandbox` 在銷毀沙盒調用 `shutil.rmtree` 之前，強制調用 `_unlink_projected_venv` 檢查並以 `os.rmdir` (Windows Junction) 或 `os.unlink` (POSIX Symlink) 安全斷開重析點。
+- **零損毀鐵律**：徹底阻絕 `shutil.rmtree` 遍歷刪除宿主微環境實體目錄與依賴套件，達成宿主環境 100% 零污染與零損毀。
