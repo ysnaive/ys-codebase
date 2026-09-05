@@ -201,6 +201,31 @@ is_valid = semver.match_constraint("1.2.5", ">=1.0.0, <2.0.0")  # True
 best = semver.find_best_version(["1.0.0", "1.1.0", "1.2.5", "2.0.0"], "<2.0.0")  # "1.2.5"
 ```
 
+### 4.4 私有微環境與 Pip 管理 SDK (`core.PipManager`)
+
+```python
+from core import PipManager, PipInstallError
+
+# 1. 規格正規化與去重 (免實例化靜態工具)
+specs = PipManager.parse_pip_dependencies({
+    "fastembed": ">=0.5.0",
+    "tree-sitter": "",
+})
+# specs -> ["fastembed>=0.5.0", "tree-sitter"]
+
+# 2. 微環境路徑解析
+mgr = PipManager()  # 自動解析當前專案或傳入自定義 yscb_dir
+venv_dir = mgr.get_venv_dir()           # .venv/py310
+py_exec = mgr.get_python_executable()   # .venv/py310/bin/python 或 Scripts/python.exe
+site_pkg = mgr.get_site_packages_dir()  # .venv/py310/.../site-packages
+
+# 3. 靜默安裝套件 (Wheel-Only 安全隔離)
+try:
+    mgr.install_packages(["fastembed>=0.5.0"])
+except PipInstallError as e:
+    print(f"安裝失敗: {e}")
+```
+
 ---
 
 ## 5. 常見情境操作指南 (Cookbook)

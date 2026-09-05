@@ -95,3 +95,50 @@ from core.symbols import resolve_callable, parse_code_func_uri, InvalidSymbolURI
 
 ### 4.3 `clear_callable_cache() -> None`
 - **說明**：清理符號解析器之內部 Callable 物件快取。
+
+---
+
+## 5. `core.pip_manager` 子模組
+
+```python
+from core import PipManager, PipInstallError
+```
+
+### 5.1 `PipManager` (私有微虛擬環境管理器)
+
+```python
+class PipManager:
+    def __init__(self, yscb_dir: Optional[str] = None):
+        """初始化 PipManager，yscb_dir 未提供時自動向上探測 yscb.config.json。"""
+
+    @staticmethod
+    def parse_pip_dependencies(pip_deps: Any) -> List[str]:
+        """
+        將 manifest.json 之 pip_dependencies (dict 或 list) 正規化為去重之 pip 規格字串清單。
+        - 異常輸入（None、空字典、非預期型態）安全返回 []
+        - 自動 strip 空白並保持原始順序去重
+        """
+
+    @staticmethod
+    def get_current_py_tag() -> str:
+        """回傳當前直譯器的大/小版本標籤，例如 'py310'。"""
+
+    def get_venv_dir(self, py_tag: Optional[str] = None) -> str:
+        """取得微環境根目錄 (yscb_dir/.venv/py{ver})。"""
+
+    def get_python_executable(self, py_tag: Optional[str] = None) -> str:
+        """跨平台取得微環境 Python 可執行檔絕對路徑。"""
+
+    def get_site_packages_dir(self, py_tag: Optional[str] = None) -> str:
+        """跨平台取得微環境 site-packages 絕對路徑。"""
+
+    def ensure_venv(self, py_tag: Optional[str] = None) -> str:
+        """微環境就緒與加固，若不存在則以純 Python 標準庫建立。"""
+
+    def install_packages(self, specs: List[str], py_tag: Optional[str] = None) -> None:
+        """於微環境執行 Wheel-Only 靜默安裝。"""
+```
+
+### 5.2 `PipInstallError` (安裝異常)
+- **說明**：當私有微環境調用 pip 安裝失敗時拋出之結構化異常，包含 `returncode`、`stdout`、`stderr`。
+

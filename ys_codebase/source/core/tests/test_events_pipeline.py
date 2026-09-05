@@ -23,10 +23,11 @@ class TestEventsPipeline(YSCBTestCase):
         mod_scripts = "module://mock_listener/scripts"
         uri.makedirs(mod_scripts)
         flag_file = "module://mock_listener/event.flag"
+        resolved_flag = uri.resolve(flag_file).replace("\\", "/")
         
         hook_code = f"""
 def on_pre_cli_dispatch(ctx):
-    with open("{uri.resolve(flag_file)}", "w") as f:
+    with open("{resolved_flag}", "w") as f:
         f.write("DISPATCHED:" + ctx.command)
     return "ok"
 
