@@ -34,6 +34,16 @@ def _ensure_private_venv_path(yscb_dir: str) -> None:
 
     if os.path.isdir(site_pkg) and site_pkg not in sys.path:
         sys.path.insert(0, site_pkg)
+        pth_file = os.path.join(site_pkg, "host_venv.pth")
+        if os.path.isfile(pth_file):
+            try:
+                with open(pth_file, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        target = line.strip()
+                        if target and os.path.isdir(target) and target not in sys.path:
+                            sys.path.insert(0, target)
+            except Exception:
+                pass
 
     # 若 .venv 存在，確保 yscb_dir/.gitignore 同步包含 /.venv/ 內部忽略規則
     venv_root = os.path.join(yscb_dir, ".venv")

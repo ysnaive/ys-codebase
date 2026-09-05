@@ -15,6 +15,7 @@ def on_test_setup(context: Any) -> None:
     """
     Called before module test suite execution in the virtual sandbox.
     """
+    os.environ["KNOWLEDGE_DB_MOCK_EMBEDDING"] = "1"
     sb_str = getattr(context, "sandbox_dir", None)
     if not sb_str:
         sb_str = getattr(context, "root_dir", getattr(context, "sandbox_path", str(context)))
@@ -32,4 +33,6 @@ def on_test_teardown(context: Any) -> None:
     """
     Called after module test suite execution finishes in the virtual sandbox.
     """
+    os.environ.pop("KNOWLEDGE_DB_MOCK_EMBEDDING", None)
     logger.debug(f"[hook.dev] Teardown knowledge-db sandbox for: {context}")
+

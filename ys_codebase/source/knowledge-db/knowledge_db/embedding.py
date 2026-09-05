@@ -22,6 +22,24 @@ DEFAULT_EMBEDDING_DIM = 384
 DEFAULT_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
 
 
+def resolve_max_threads(max_threads: Union[str, int, None] = None) -> int:
+    """計算 CPU 執行緒上限：auto 採用 cpu_count//2 (至少1)，整數截斷於 [1, cpu_count]"""
+    cpu_cnt = os.cpu_count() or 1
+    if max_threads is None or max_threads == "auto":
+        return max(1, cpu_cnt // 2)
+    if isinstance(max_threads, str):
+        if max_threads.lower() == "auto":
+            return max(1, cpu_cnt // 2)
+        try:
+            val = int(max_threads)
+            return max(1, min(val, cpu_cnt))
+        except ValueError:
+            return max(1, cpu_cnt // 2)
+    if isinstance(max_threads, (int, float)):
+        return max(1, min(int(max_threads), cpu_cnt))
+    return max(1, cpu_cnt // 2)
+
+
 class EmbeddingService:
     """
     向量推論服務：
@@ -34,36 +52,71 @@ class EmbeddingService:
         self,
         model_name: str = DEFAULT_MODEL_NAME,
         cache_dir: Optional[Union[str, Path]] = None,
+        max_threads: Optional[Union[str, int]] = None,
         mock_mode: bool = False,
     ):
         self.model_name = model_name
         self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "knowledge-db" / "models"
+        self.max_threads = max_threads or "auto"
         self.mock_mode = mock_mode
         self._model: Optional[Any] = None
         self._is_available: bool = False
-
+        self._suppress_hf_warnings()
         if not self.mock_mode:
             self._init_model()
         else:
             self._is_available = True
 
+    @staticmethod
+    def _suppress_hf_warnings() -> None:
+        """屏蔽 Hugging Face Hub 與 Transformers 未認證警告與非必要日誌 (FR-06)"""
+        os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+        for lib in ("huggingface_hub", "transformers", "fastembed"):
+            try:
+                logging.getLogger(lib).setLevel(logging.ERROR)
+            except Exception:
+                pass
+
+    @staticmethod
+    def list_supported_models() -> List[Dict[str, Any]]:
+        """回傳 FastEmbed 支援之文字嵌入模型清單"""
+        try:
+            from fastembed import TextEmbedding
+            return list(TextEmbedding.list_supported_models())
+        except Exception:
+            return [{"model": DEFAULT_MODEL_NAME, "dim": DEFAULT_EMBEDDING_DIM, "description": "Default BAAI model"}]
+
     def _init_model(self) -> None:
         """嘗試加載 FastEmbed ONNX 模型；若未安裝或失敗則安全降級"""
-        try:
-            # 限制 ONNX 與 OpenMP 執行緒上限，防止全核心 100% 狂飆導致系統排程飢餓或硬體重開機
-            cpu_cnt = os.cpu_count() or 1
-            max_threads = min(2, max(1, cpu_cnt // 2))
-            os.environ["OMP_NUM_THREADS"] = str(max_threads)
-            os.environ["ONNXRUNTIME_INTRA_OP_NUM_THREADS"] = str(max_threads)
+        self._suppress_hf_warnings()
 
+        try:
             from fastembed import TextEmbedding
+
+            # 2. 模型白名單合法性比對與優雅降級 (EC-01)
+            try:
+                supported_models = [m["model"] for m in TextEmbedding.list_supported_models()]
+                if self.model_name not in supported_models:
+                    logger.warning(
+                        f"Requested model '{self.model_name}' is not in FastEmbed supported list. "
+                        f"Falling back to default '{DEFAULT_MODEL_NAME}'."
+                    )
+                    self.model_name = DEFAULT_MODEL_NAME
+            except Exception as e:
+                logger.debug(f"Failed to check supported models list: {e}")
+
+            # 3. 限制 ONNX 與 OpenMP 執行緒上限，採用 CPU 數之一半 (FR-08, EC-07)
+            threads_count = resolve_max_threads(self.max_threads)
+            os.environ["OMP_NUM_THREADS"] = str(threads_count)
+            os.environ["ONNXRUNTIME_INTRA_OP_NUM_THREADS"] = str(threads_count)
 
             os.makedirs(self.cache_dir, exist_ok=True)
             try:
                 self._model = TextEmbedding(
                     model_name=self.model_name,
                     cache_dir=str(self.cache_dir),
-                    threads=max_threads,
+                    threads=threads_count,
                 )
             except TypeError:
                 self._model = TextEmbedding(
@@ -71,7 +124,7 @@ class EmbeddingService:
                     cache_dir=str(self.cache_dir),
                 )
             self._is_available = True
-            logger.debug(f"EmbeddingService initialized with model '{self.model_name}' (threads={max_threads})")
+            logger.debug(f"EmbeddingService initialized with model '{self.model_name}' (threads={threads_count})")
         except Exception as e:
             self._is_available = False
             self._model = None
@@ -145,6 +198,32 @@ class EmbeddingService:
             vectors = [self._generate_mock_vector(t) for t in preprocessed]
             return np.vstack(vectors).astype(np.float32)
 
+    def embed_texts_probe(
+        self,
+        texts: List[str],
+        probe_size: int = 10,
+        total_count: Optional[int] = None,
+    ) -> Any:
+        """
+        執行前 probe_size 個文字之微基準推論探針。
+        若指定 total_count，回傳 (probe_vectors, est_total)；
+        若未指定 total_count，回傳 (probe_vectors, elapsed, unit_sec)。
+        """
+        if not texts:
+            empty_vecs = np.empty((0, DEFAULT_EMBEDDING_DIM), dtype=np.float32)
+            return (empty_vecs, 0.0) if total_count is not None else (empty_vecs, 0.0, 0.0)
+
+        probe_chunk = texts[:probe_size]
+        t0 = time.perf_counter()
+        probe_vectors = self.embed_texts(probe_chunk)
+        elapsed = time.perf_counter() - t0
+        unit_sec = (elapsed / len(probe_chunk)) if probe_chunk else 0.0
+
+        if total_count is not None:
+            est_total = unit_sec * total_count
+            return probe_vectors, est_total
+        return probe_vectors, elapsed, unit_sec
+
     def embed_query(self, query: str) -> np.ndarray:
         """計算單一查詢語句之特徵向量 (shape: (dim,))"""
         res = self.embed_texts([query])
@@ -176,16 +255,42 @@ class VectorIndex:
     向量特徵索引池與二進位快取容器
     """
 
-    def __init__(self):
+    def __init__(self, model_name: Optional[str] = None, dim: Optional[int] = None):
         self.doc_ids: List[str] = []
         self.vectors: Optional[np.ndarray] = None
         self._doc_id_to_idx: Dict[str, int] = {}
+        self.model_name: Optional[str] = model_name
+        self.dim: Optional[int] = dim
 
-    def build(self, doc_ids: List[str], vectors: np.ndarray) -> None:
+    def build(
+        self,
+        doc_ids: List[str],
+        vectors: np.ndarray,
+        model_name: Optional[str] = None,
+        dim: Optional[int] = None,
+    ) -> None:
         """建置或替換當前向量索引"""
         self.doc_ids = list(doc_ids)
         self.vectors = vectors.astype(np.float32)
         self._doc_id_to_idx = {doc_id: i for i, doc_id in enumerate(self.doc_ids)}
+        if model_name:
+            self.model_name = model_name
+        if dim:
+            self.dim = dim
+        elif self.vectors.ndim > 1:
+            self.dim = self.vectors.shape[1]
+
+    def is_compatible_with(self, model_name: Optional[str], dim: Optional[int] = None) -> bool:
+        """檢核當前快取之模型名稱與維度是否相容 (EC-02)"""
+        if self.vectors is None:
+            return False
+        if self.model_name and model_name and self.model_name != model_name:
+            return False
+        if dim is not None and self.dim is not None and self.dim != dim:
+            return False
+        if dim is not None and self.vectors.ndim > 1 and self.vectors.shape[1] != dim:
+            return False
+        return True
 
     def patch_incremental(
         self,
@@ -225,7 +330,7 @@ class VectorIndex:
             merged_vectors = current_vectors
             merged_doc_ids = keep_doc_ids
 
-        self.build(merged_doc_ids, merged_vectors)
+        self.build(merged_doc_ids, merged_vectors, model_name=self.model_name, dim=self.dim)
 
     def search(self, query_vec: np.ndarray, top_k: int = 50) -> List[Tuple[str, float]]:
         """
@@ -252,19 +357,22 @@ class VectorIndex:
         return results
 
     def save_binary(self, cache_file: Union[str, Path], compresslevel: int = 1) -> None:
-        """使用 Pickle Protocol 5 + Gzip 儲存向量快取 (預設 compresslevel=1 快速寫盤)"""
+        """使用 Pickle Protocol 5 + Gzip 儲存向量快取 (含 model_name 與 dim 元資料)"""
         cache_path = Path(cache_file)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
+        dim_val = self.dim or (self.vectors.shape[1] if self.vectors is not None and self.vectors.ndim > 1 else DEFAULT_EMBEDDING_DIM)
         data = {
             "doc_ids": self.doc_ids,
             "vectors": self.vectors,
+            "model_name": self.model_name,
+            "dim": dim_val,
         }
         with gzip.open(cache_path, "wb", compresslevel=compresslevel) as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     @classmethod
     def load_binary(cls, cache_file: Union[str, Path]) -> "VectorIndex":
-        """自 Protocol 5 Gzip 快取還原向量索引"""
+        """自 Protocol 5 Gzip 快取還原向量索引與元資料"""
         cache_path = Path(cache_file)
         idx = cls()
         if not cache_path.exists():
@@ -274,8 +382,10 @@ class VectorIndex:
                 data = pickle.load(f)
             doc_ids = data.get("doc_ids", [])
             vectors = data.get("vectors")
+            model_name = data.get("model_name")
+            dim = data.get("dim")
             if doc_ids and vectors is not None:
-                idx.build(doc_ids, vectors)
+                idx.build(doc_ids, vectors, model_name=model_name, dim=dim)
         except Exception as e:
             logger.warning(f"Failed to load vector cache from '{cache_path}': {e}")
         return idx

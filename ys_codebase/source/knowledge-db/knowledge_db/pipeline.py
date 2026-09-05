@@ -32,6 +32,31 @@ from .tokenizer import MultilingualTokenizer
 logger = logging.getLogger("knowledge-db.pipeline")
 
 
+class HotPatchResult(tuple):
+    """
+    熱修補結果元組 (success, vector_degraded, degrade_notice)
+    繼承 tuple 支援解構 (success, degraded, notice)，
+    同時實現 __bool__ 回傳 self[0]，支援 `if res:` 判斷。
+    """
+    def __new__(cls, success: bool, vector_degraded: bool = False, degrade_notice: Optional[str] = None):
+        return super().__new__(cls, (bool(success), bool(vector_degraded), degrade_notice))
+
+    @property
+    def success(self) -> bool:
+        return self[0]
+
+    @property
+    def vector_degraded(self) -> bool:
+        return self[1]
+
+    @property
+    def degrade_notice(self) -> Optional[str]:
+        return self[2]
+
+    def __bool__(self) -> bool:
+        return bool(self[0])
+
+
 class IndexingPipeline:
     """多空間索引建置、JIT 增量熱補丁、持久化與檢索拓撲流水線"""
 
@@ -45,6 +70,7 @@ class IndexingPipeline:
         embedding_service: EmbeddingService,
         hybrid_engine: HybridSearchEngine,
         snippet_extractor: Optional[SnippetExtractor] = None,
+        config: Optional[Any] = None,
     ):
         self.space_manager = space_manager
         self.bundler = bundler
@@ -54,6 +80,16 @@ class IndexingPipeline:
         self.embedding_service = embedding_service
         self.hybrid_engine = hybrid_engine
         self.snippet_extractor = snippet_extractor or SnippetExtractor(space_manager=space_manager)
+
+        if config is None:
+            try:
+                from .config import KnowledgeDBConfig
+                config = KnowledgeDBConfig.load()
+            except Exception:
+                config = None
+        self.config = config
+        self._vector_degraded: bool = False
+        self._last_degrade_notice: Optional[str] = None
 
         self._index_cache: Dict[str, InvertedIndex] = {}
         self._unified_index: Optional[InvertedIndex] = None
@@ -92,15 +128,27 @@ class IndexingPipeline:
         self,
         force: bool = False,
         current_files: Optional[Dict[str, Tuple[float, int]]] = None,
+        interactive: bool = False,
+        progress_callback: Optional[Any] = None,
     ) -> InvertedIndex:
         """
         建置全專案空間聯集單一倒排索引與雙向調用圖譜索引，並原子持久化二進位 Gzip 快取
         (unified.index.bin.gz, unified.graph.bin.gz) 與二進位狀態快照 (unified.meta.bin) 至磁碟。
+        支援 interactive=True 或 progress_callback 回報 5 階段進度與精確耗時。
         """
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
         graph_file = indices_dir / "unified.graph.bin.gz"
         meta_file = indices_dir / "unified.meta.bin"
+
+        def _report(stage: int, name: str, elapsed_ms: float):
+            if progress_callback:
+                try:
+                    progress_callback(stage, name, elapsed_ms)
+                except Exception:
+                    pass
+            if interactive:
+                print(f"[{stage}/5] {name} (耗時 {elapsed_ms:.1f}ms)", file=sys.stderr, flush=True)
 
         if not force and bin_file.exists() and meta_file.exists() and graph_file.exists():
             try:
@@ -121,12 +169,21 @@ class IndexingPipeline:
             except Exception as e:
                 logger.warning(f"Failed loading unified binary index, rebuilding: {e}")
 
-        # 全域聯集去重打包
+        t_all_start = time.time()
+
+        # Stage 1: AST 解析與全域去重打包
+        t0 = time.time()
         bundle = self.bundler.bundle_union()
+        _report(1, "AST 符號解析與全域打包", (time.time() - t0) * 1000)
+
+        # Stage 2: BM25 倒排索引建立
+        t0 = time.time()
         idx = InvertedIndex(space_name="unified")
         idx.build_unified(bundle.symbols, tokenizer=self.tokenizer)
+        _report(2, f"BM25 倒排索引建置 ({idx.doc_count} 符號)", (time.time() - t0) * 1000)
 
-        # 構建雙向調用圖譜索引
+        # Stage 3: 雙向調用圖譜建立與符號鏈結
+        t0 = time.time()
         call_sites, imports_map = self.bundler.extract_all_call_sites_and_imports()
         linker = TopologyLinker(
             symbols_map=idx.symbols,
@@ -137,17 +194,15 @@ class IndexingPipeline:
         graph_idx = CallGraphIndex()
         for caller_id, callee_id, site in edges:
             graph_idx.add_edge(caller_id, callee_id, site)
+        _report(3, f"雙向調用圖譜建置 ({len(edges)} 條調用邊)", (time.time() - t0) * 1000)
 
-        # 原子持久化二進位 Gzip 索引與圖索引 (compresslevel=1 快速寫盤)
-        try:
-            idx.save_binary(bin_file, compresslevel=1)
-            graph_idx.save_binary(graph_file, compresslevel=1)
-        except Exception as e:
-            raise KnowledgeDBError(f"Failed saving unified binary index/graph: {e}")
-
-        # 若 EmbeddingService 可用，構建並持久化向量特徵索引
+        # Stage 4: 向量特徵嵌入建置
+        t0 = time.time()
         vector_file = indices_dir / "unified.vectors.bin.gz"
-        if self.embedding_service.is_available and idx.symbols:
+        enable_vec = getattr(self.config, "enable_vector_search", True)
+        if not enable_vec:
+            _report(4, "向量特徵嵌入 (已依組態停用，略過)", (time.time() - t0) * 1000)
+        elif self.embedding_service.is_available:
             try:
                 sym_items = list(idx.symbols.items())
                 doc_ids = [k for k, _ in sym_items]
@@ -155,15 +210,33 @@ class IndexingPipeline:
                     f"{sym.name} {sym.signature} {sym.docstring}".strip()
                     for _, sym in sym_items
                 ]
-                vectors = self.embedding_service.embed_texts(texts)
-                vec_idx = VectorIndex()
+                model_name = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
+                if texts:
+                    vectors = self.embedding_service.embed_texts(texts)
+                    dim = vectors.shape[1] if hasattr(vectors, "shape") and len(vectors.shape) > 1 else None
+                else:
+                    import numpy as np
+                    dim = 384
+                    vectors = np.zeros((0, dim), dtype=np.float32)
+                vec_idx = VectorIndex(model_name=model_name, dim=dim)
                 vec_idx.build(doc_ids, vectors)
                 vec_idx.save_binary(vector_file)
                 self.hybrid_engine.vector_index = vec_idx
+                _report(4, f"向量特徵嵌入建置 ({len(doc_ids)} 符號向量)", (time.time() - t0) * 1000)
             except Exception as e:
                 logger.warning(f"Failed building/saving vector index: {e}")
+                _report(4, f"向量特徵嵌入建置失敗: {e}", (time.time() - t0) * 1000)
+        else:
+            _report(4, "向量特徵嵌入 (FastEmbed 不可用，略過)", (time.time() - t0) * 1000)
 
-        # 收集或使用現有檔案快照並持久化 (保證 100% 完整清冊)
+        # Stage 5: 二進位索引與快照原子持久化
+        t0 = time.time()
+        try:
+            idx.save_binary(bin_file, compresslevel=1)
+            graph_idx.save_binary(graph_file, compresslevel=1)
+        except Exception as e:
+            raise KnowledgeDBError(f"Failed saving unified binary index/graph: {e}")
+
         files_map = current_files
         if files_map is None:
             files_map = bundle.metadata.get("files_map", {})
@@ -172,6 +245,11 @@ class IndexingPipeline:
             BinarySnapshotManager.save(meta_file, files_map)
         except Exception as e:
             logger.warning(f"Failed saving binary snapshot meta: {e}")
+        _report(5, "二進位索引與快照原子持久化", (time.time() - t0) * 1000)
+
+        if interactive:
+            total_elapsed = (time.time() - t_all_start) * 1000
+            print(f"[knowledge-db] 全域索引建置完成，總耗時 {total_elapsed:.1f}ms", file=sys.stderr, flush=True)
 
         self._unified_index = idx
         self._call_graph_index = graph_idx
@@ -181,17 +259,25 @@ class IndexingPipeline:
         self,
         diff_detail: ScanDiffDetail,
         full_files_map: Dict[str, Tuple[float, int]],
-    ) -> bool:
+        timeout_seconds: Optional[float] = None,
+    ) -> HotPatchResult:
         """
-        執行極速增量熱自愈修補管線：
-        1. 若記憶體 _unified_index 為空，回傳 False 降級為全量建置。
+        執行極速增量熱自愈修補管線 (包含 JIT 10 符號動態探針與臨界值熔斷)：
+        1. 若記憶體 _unified_index 為空，回傳 HotPatchResult(False) 降級為全量建置。
         2. 僅對 dirty 檔案呼叫 AST 解析並更新符號快取池。
         3. 調用 _unified_index.patch_incremental 進行倒排差量打補丁。
         4. 調用 _call_graph_index.patch_incremental 進行調用圖譜差量修補。
-        5. 快速原子持久化快照與二進位索引。
+        5. 若啟用向量檢索：
+           - 若向量快取遺失或與配置模型維度不符，安全熔斷降級回退純 BM25，輸出引導提示。
+           - 若待向量化符號 N <= 10，直接推論並更新。
+           - 若 N > 10，以首批 10 符號動態探針實測耗時，若預估 > timeout_seconds 立即熔斷降級回退純 BM25。
+        6. 快速原子持久化快照與二進位索引。
         """
         if self._unified_index is None:
-            return False
+            return HotPatchResult(False, False, None)
+
+        if timeout_seconds is None:
+            timeout_seconds = getattr(self.config, "jit_vector_timeout_seconds", 5.0)
 
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
@@ -246,53 +332,128 @@ class IndexingPipeline:
                 )
                 self._call_graph_index.save_binary(graph_file, compresslevel=1)
 
-            # 差量修補向量索引
+            # 差量修補向量索引與 JIT 10 符號動態探針
             vector_file = indices_dir / "unified.vectors.bin.gz"
-            if (
-                (self.hybrid_engine.vector_index is None or self.hybrid_engine.vector_index.vectors is None)
-                and vector_file.exists()
-            ):
-                try:
-                    self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
-                except Exception as ve:
-                    logger.warning(f"Failed loading vector index for hot patch: {ve}")
+            vector_degraded = False
+            degrade_notice: Optional[str] = None
+            enable_vec = getattr(self.config, "enable_vector_search", True)
 
-            if (
-                self.hybrid_engine.vector_index is not None
-                and self.hybrid_engine.vector_index.vectors is not None
-                and self.embedding_service.is_available
-            ):
-                new_texts = [
-                    f"{sym.name} {sym.signature} {sym.docstring}".strip()
-                    for sym in all_new_symbols
-                ]
-                new_vecs = self.embedding_service.embed_texts(new_texts) if new_texts else None
-                new_ids = [sym.id for sym in all_new_symbols]
-                self.hybrid_engine.vector_index.patch_incremental(
-                    removed_doc_ids=old_doc_ids,
-                    new_doc_ids=new_ids,
-                    new_vectors=new_vecs,
-                )
-                try:
-                    self.hybrid_engine.vector_index.save_binary(vector_file)
-                except Exception as ve:
-                    logger.warning(f"Failed saving patched vector index: {ve}")
+            if not enable_vec:
+                # 向量語意檢索已停用，不執行向量更新與提示
+                pass
+            else:
+                if (
+                    (self.hybrid_engine.vector_index is None or self.hybrid_engine.vector_index.vectors is None)
+                    and vector_file.exists()
+                ):
+                    try:
+                        self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
+                    except Exception as ve:
+                        logger.warning(f"Failed loading vector index for hot patch: {ve}")
+
+                vec_idx = self.hybrid_engine.vector_index
+                expected_model = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
+
+                if vec_idx is None or vec_idx.vectors is None or not vector_file.exists():
+                    vector_degraded = True
+                    degrade_notice = (
+                        "[knowledge-db:notice] 向量索引未建立已降級（本次使用純 BM25 模式）。"
+                        "請執行 `python yscb.py knowledge-db index` 重建向量索引，"
+                        "或於 yscb.config.json / yscb.config.local.json 設定 `knowledge-db.enable_vector_search: false` 關閉向量語意搜尋。"
+                    )
+                elif hasattr(vec_idx, "is_compatible_with") and not vec_idx.is_compatible_with(expected_model, getattr(vec_idx, "dim", 384)):
+                    vector_degraded = True
+                    degrade_notice = (
+                        f"[knowledge-db:notice] 向量快取與當前模型 '{expected_model}' 不相容已降級（本次使用純 BM25 模式）。"
+                        "請執行 `python yscb.py knowledge-db index` 重建向量索引，"
+                        "或於 yscb.config.json / yscb.config.local.json 設定 `knowledge-db.enable_vector_search: false` 關閉向量語意搜尋。"
+                    )
+                elif self.embedding_service.is_available:
+                    new_texts = [
+                        f"{sym.name} {sym.signature} {sym.docstring}".strip()
+                        for sym in all_new_symbols
+                    ]
+                    num_symbols = len(new_texts)
+                    if num_symbols == 0:
+                        vec_idx.patch_incremental(
+                            removed_doc_ids=old_doc_ids,
+                            new_doc_ids=[],
+                            new_vectors=None,
+                        )
+                        try:
+                            vec_idx.save_binary(vector_file)
+                        except Exception as ve:
+                            logger.warning(f"Failed saving patched vector index: {ve}")
+                    elif num_symbols <= 10:
+                        try:
+                            new_vecs = self.embedding_service.embed_texts(new_texts)
+                            new_ids = [sym.id for sym in all_new_symbols]
+                            vec_idx.patch_incremental(
+                                removed_doc_ids=old_doc_ids,
+                                new_doc_ids=new_ids,
+                                new_vectors=new_vecs,
+                            )
+                            vec_idx.save_binary(vector_file)
+                        except Exception as ve:
+                            logger.warning(f"Failed patching vector index for <=10 symbols: {ve}")
+                            vector_degraded = True
+                            degrade_notice = f"[knowledge-db:notice] 向量更新失敗已降級為純 BM25 模式: {ve}"
+                    else:
+                        # N > 10，執行 10 符號動態探針
+                        try:
+                            probe_texts = new_texts[:10]
+                            probe_vecs, est_total = self.embedding_service.embed_texts_probe(probe_texts, total_count=num_symbols)
+                            if est_total > timeout_seconds:
+                                vector_degraded = True
+                                degrade_notice = (
+                                    f"[knowledge-db:notice] 待向量化符號過多（{num_symbols} 個，預估耗時 {est_total:.1f}s > {timeout_seconds:.1f}s）已熔斷降級（本次使用純 BM25 模式）。"
+                                    "請執行 `python yscb.py knowledge-db index` 重建/更新向量索引，"
+                                    "或於 yscb.config.json / yscb.config.local.json 設定 `knowledge-db.enable_vector_search: false` 關閉向量語意搜尋。"
+                                )
+                                # 熔斷：不將不完整向量寫入磁碟，但完成 BM25 與圖譜更新
+                            else:
+                                remaining_texts = new_texts[10:]
+                                remaining_vecs = self.embedding_service.embed_texts(remaining_texts) if remaining_texts else None
+                                import numpy as np
+                                if probe_vecs is not None and remaining_vecs is not None:
+                                    full_vecs = np.vstack([probe_vecs, remaining_vecs])
+                                elif probe_vecs is not None:
+                                    full_vecs = probe_vecs
+                                else:
+                                    full_vecs = remaining_vecs
+
+                                new_ids = [sym.id for sym in all_new_symbols]
+                                vec_idx.patch_incremental(
+                                    removed_doc_ids=old_doc_ids,
+                                    new_doc_ids=new_ids,
+                                    new_vectors=full_vecs,
+                                )
+                                vec_idx.save_binary(vector_file)
+                        except Exception as ve:
+                            logger.warning(f"Dynamic probe or inference failed: {ve}")
+                            vector_degraded = True
+                            degrade_notice = f"[knowledge-db:notice] 向量推論異常已降級為純 BM25 模式: {ve}"
 
             self._unified_index.save_binary(bin_file, compresslevel=1)
             BinarySnapshotManager.save(meta_file, full_files_map)
-            return True
+            self._vector_degraded = vector_degraded
+            self._last_degrade_notice = degrade_notice
+            return HotPatchResult(True, vector_degraded, degrade_notice)
         except Exception as e:
             logger.warning(f"Incremental hot patch failed: {e}, falling back to full rebuild.")
-            return False
+            self._vector_degraded = False
+            self._last_degrade_notice = None
+            return HotPatchResult(False, False, None)
 
     def build_index(
         self,
         space: Optional[str] = None,
         force: bool = False,
+        interactive: bool = False,
     ) -> Dict[str, InvertedIndex]:
         """建置空間倒排索引並原子持久化二進位 Gzip 快取至磁碟。"""
         if space is None:
-            idx = self.build_unified_index(force=force)
+            idx = self.build_unified_index(force=force, interactive=interactive)
             return {"unified": idx}
 
         sp = self.space_manager.get_space(space)
@@ -435,8 +596,16 @@ class IndexingPipeline:
                     )
                 t0 = time.time()
                 patched = False
+                vector_degraded = False
+                degrade_notice = None
                 if bin_file.exists() and self._unified_index is not None and diff_detail.has_changes:
-                    patched = self.hot_patch_unified_index(diff_detail, full_files_map)
+                    res = self.hot_patch_unified_index(diff_detail, full_files_map)
+                    if isinstance(res, tuple):
+                        patched = res[0]
+                        vector_degraded = res[1] if len(res) > 1 else False
+                        degrade_notice = res[2] if len(res) > 2 else None
+                    else:
+                        patched = bool(res)
 
                 if not patched:
                     self.build_unified_index(force=True, current_files=full_files_map)
@@ -448,6 +617,8 @@ class IndexingPipeline:
                         file=sys.stderr,
                         flush=True,
                     )
+                if degrade_notice:
+                    print(degrade_notice, file=sys.stderr, flush=True)
 
         if self._unified_index is None:
             if bin_file.exists():
@@ -480,8 +651,16 @@ class IndexingPipeline:
             limit=limit,
         )
 
+        enable_vec = getattr(self.config, "enable_vector_search", True)
+        can_use_vector = (
+            enable_vec
+            and not getattr(self, "_vector_degraded", False)
+            and not lexical_only
+            and self.hybrid_engine.is_vector_available
+        )
+
         if not aggregate:
-            if not lexical_only and self.hybrid_engine.is_vector_available:
+            if can_use_vector:
                 self.hybrid_engine.inverted_index = unified_index
                 self.hybrid_engine.bm25_engine = self.bm25_engine
                 hybrid_hits = self.hybrid_engine.search(
@@ -540,7 +719,7 @@ class IndexingPipeline:
             return results_with_snippets
 
         # 預設聚合模式
-        if not lexical_only and self.hybrid_engine.is_vector_available:
+        if can_use_vector:
             self.hybrid_engine.inverted_index = unified_index
             self.hybrid_engine.bm25_engine = self.bm25_engine
             hybrid_agg_hits = self.hybrid_engine.search(

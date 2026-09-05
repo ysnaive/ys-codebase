@@ -7,6 +7,7 @@ knowledge-db 統一門面 SDK (engine.py)
 from collections import defaultdict
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -53,7 +54,7 @@ class KnowledgeEngine:
         project_config: Optional[Union[str, Path, Dict[str, Any]]] = None,
         contributes_data: Optional[Dict[str, Any]] = None,
         field_weights: Optional[Dict[str, float]] = None,
-        embedding_mock_mode: bool = False,
+        embedding_mock_mode: Optional[bool] = None,
     ):
         self.space_manager = SpaceManager(
             config_dir=config_dir,
@@ -73,9 +74,29 @@ class KnowledgeEngine:
             thesaurus=None,
             field_weights=field_weights,
         )
+
+        from .config import KnowledgeDBConfig
+        self.config = KnowledgeDBConfig.load(
+            local_config=local_config,
+            project_config=project_config,
+            workspace_root=self._get_workspace_root(),
+        )
+
         models_dir = self.space_manager.storage_dir / "models" if hasattr(self.space_manager, "storage_dir") else None
-        mock_mode = embedding_mock_mode
-        self.embedding_service = EmbeddingService(cache_dir=models_dir, mock_mode=mock_mode)
+        if embedding_mock_mode is not None:
+            mock_mode = embedding_mock_mode
+        else:
+            mock_mode = (
+                os.environ.get("KNOWLEDGE_DB_MOCK_EMBEDDING") == "1"
+                or os.environ.get("YSCB_MOCK_EMBEDDING") == "1"
+                or os.environ.get("YSCB_TEST_SANDBOX") == "1"
+            )
+        self.embedding_service = EmbeddingService(
+            cache_dir=models_dir,
+            mock_mode=mock_mode,
+            model_name=self.config.embedding_model,
+            max_threads=self.config.resolve_threads(),
+        )
         self.hybrid_engine = HybridSearchEngine(
             inverted_index=None,
             embedding_service=self.embedding_service,
@@ -96,6 +117,7 @@ class KnowledgeEngine:
             embedding_service=self.embedding_service,
             hybrid_engine=self.hybrid_engine,
             snippet_extractor=self.snippet_extractor,
+            config=self.config,
         )
         self.formatter = ResultFormatter(
             space_manager=self.space_manager,
@@ -183,22 +205,35 @@ class KnowledgeEngine:
         self,
         force: bool = False,
         current_files: Optional[Dict[str, Tuple[float, int]]] = None,
+        interactive: bool = False,
+        progress_callback: Optional[Any] = None,
     ) -> InvertedIndex:
-        return self.pipeline.build_unified_index(force=force, current_files=current_files)
+        return self.pipeline.build_unified_index(
+            force=force,
+            current_files=current_files,
+            interactive=interactive,
+            progress_callback=progress_callback,
+        )
 
     def _hot_patch_unified_index(
         self,
         diff_detail: ScanDiffDetail,
         full_files_map: Dict[str, Tuple[float, int]],
-    ) -> bool:
-        return self.pipeline.hot_patch_unified_index(diff_detail, full_files_map)
+        timeout_seconds: Optional[float] = None,
+    ) -> Any:
+        return self.pipeline.hot_patch_unified_index(
+            diff_detail=diff_detail,
+            full_files_map=full_files_map,
+            timeout_seconds=timeout_seconds,
+        )
 
     def build_index(
         self,
         space: Optional[str] = None,
         force: bool = False,
+        interactive: bool = False,
     ) -> Dict[str, InvertedIndex]:
-        return self.pipeline.build_index(space=space, force=force)
+        return self.pipeline.build_index(space=space, force=force, interactive=interactive)
 
     def clean(self, space: Optional[str] = None) -> None:
         self.pipeline.clean(space=space)
@@ -208,10 +243,16 @@ class KnowledgeEngine:
     # ----------------------------------------------------------------------
 
     def status(self) -> Dict[str, Any]:
-        """獲取全系統空間、指紋快取、同義詞與倒排索引統計摘要。"""
+        """獲取全系統空間、指紋快取、同義詞、全域倒排索引與向量快取統計摘要。"""
         spaces = self.space_manager.load_spaces()
         thesaurus_groups = self.space_manager.load_thesaurus()
         indices_dir = self.pipeline.get_indices_dir()
+
+        bin_unified = indices_dir / "unified.index.bin.gz"
+        json_unified = indices_dir / "unified.index.json"
+        has_unified_index = bin_unified.exists() or json_unified.exists()
+        bin_vectors = indices_dir / "unified.vectors.bin.gz"
+        has_vector_index = bin_vectors.exists()
 
         space_details = {}
         for sp_name, sp in spaces.items():
@@ -220,7 +261,7 @@ class KnowledgeEngine:
 
             bin_idx = indices_dir / f"{sp_name}.index.bin.gz"
             json_idx = indices_dir / f"{sp_name}.index.json"
-            has_index = bin_idx.exists() or json_idx.exists()
+            has_index = bin_idx.exists() or json_idx.exists() or has_unified_index
 
             space_details[sp_name] = {
                 "origin": sp.origin,
@@ -232,16 +273,16 @@ class KnowledgeEngine:
                 "cached_files": cached_files,
                 "fingerprint_cached_files": cached_files,
                 "has_index": has_index,
+                "index_cached": has_index,
             }
-
-        bin_unified = indices_dir / "unified.index.bin.gz"
-        json_unified = indices_dir / "unified.index.json"
-        has_unified_index = bin_unified.exists() or json_unified.exists()
 
         return {
             "total_spaces": len(spaces),
             "spaces": space_details,
             "has_unified_index": has_unified_index,
+            "has_vector_index": has_vector_index,
+            "enable_vector_search": getattr(self.config, "enable_vector_search", True),
+            "embedding_model": getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5"),
             "thesaurus_groups": len(thesaurus_groups),
             "storage_dir": str(self.storage_dir),
         }
