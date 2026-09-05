@@ -18,7 +18,7 @@ graph TD
 
     subgraph KnowledgeDBModule ["Knowledge-DB 模組 (module:knowledge-db)"]
         Scanner["指紋掃描 (Scanner)<br/><i>mtime / SHA-256 增量比對</i>"]:::sub
-        Parsers["AST 符號解析 (AST Parsers)<br/><i>Python, C, C++, C#, SPICE, Markdown</i>"]:::sub
+        Parsers["聲明式 AST 符號解析 (Tree-sitter & LanguageRegistry)<br/><i>零特權 Contributed 擴充，支援 Python, C, C++, C#, JS/TS, Markdown, SPICE 等</i>"]:::sub
         Tokenizer["分詞與同義詞 (Tokenizer & Thesaurus)<br/><i>駝峰/蛇形分詞 / 軟工詞庫</i>"]:::sub
         Retrieval["BM25 檢索引擎 (Retrieval Engine)<br/><i>倒排索引 / 檔案類型過濾</i>"]:::sub
         Graph["調用圖譜引擎 (Call Graph Engine)<br/><i>Callers / Callees / Impact</i>"]:::sub

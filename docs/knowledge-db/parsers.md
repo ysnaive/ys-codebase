@@ -2,17 +2,19 @@
 
 > 模組名稱：`knowledge-db`  
 > 核心模組：`knowledge_db.parsers`  
-> 依賴：100% Python 原生標準庫 (Zero External Dependency)  
+> 核心引擎：`tree-sitter` S-Expression 宣告式查詢驅動器 (`TreeSitterDriver`)  
+> 架構原則：100% 透過 `contributes.knowledge_db` 動態驅動 (Zero-Privilege Dogfooding)  
 
 ---
 
 ## 📌 1. 概述與解析器架構
 
-`knowledge-db` 解析器子系統負責將各類原始碼（Python, C/C++, C#）與 Markdown 文檔轉譯為統一語意資料模型 [`UnifiedSymbol`](./architecture.md#2-統一符號資料模型-unifiedsymbol)。
+`knowledge-db` 解析器子系統負責將各類原始碼（Python, C/C++, C#, JS/TS, Markdown, SPICE 等）轉譯為統一巢狀語意資料模型 [`UnifiedSymbol`](./architecture.md#2-統一符號資料模型-unifiedsymbol)。
 
 ### 架構層次
-- **`BaseParser`**：所有語言解析器之抽象基底類別，定義 `can_parse(file_path)` 與 `parse(file_path, content, space)`。
-- **`ParserRegistry`**：動態外掛註冊與調度分發中心，支援依優先權覆蓋與副檔名分發。
+- **`BaseParser`**：所有語言解析器之抽象基底類別，定義 `can_parse(file_path)`、`parse(file_path, content, space)`、`extract_call_sites` 與 `extract_imports`。
+- **`TreeSitterDriver`**：通用聲明式 AST 解析驅動器，透過載入指定語言之 S-Expression (`assets/queries/*.scm`) 語法規則，自動完成符號樹建構、階層推導、呼叫點解析與檔頭 import 提取。
+- **`LanguageRegistry` / `ParserRegistry`**：動態外掛註冊中心，完全由 `contributes.knowledge_db.languages` 驅動，模組內建語言亦透過自貢獻 (`contributes/knowledge-db.json`) 物化，核心無特權代碼。
 
 ---
 
@@ -20,13 +22,14 @@
 
 | 解析器名稱 | 支援副檔名 | 核心解析技術 | 提取語意維度 |
 | :--- | :--- | :--- | :--- |
-| **`PythonParser`** | `.py`, `.pyi` | Python 原生 `ast` 模組 | Class, Function, AsyncFunction, Method, Decorator, Docstring, Signature (含型別標註與預設值), MemberInfo |
-| **`MarkdownParser`** | `.md`, `.markdown` | 語意狀態機 (純正則) | H1~H4 標題節點 (`DOC_HEADING_1~4`), 表格 (`DOC_TABLE`), 區塊摘要 (`DOC_SECTION`) |
-| **`CppParser`** | `.cpp`, `.hpp`, `.h`, `.c`, `.cc`, `.cxx` | 語意狀態機 + 巨集掃描器 | Class, Struct, Enum, Function, `#define` 巨集, Doxygen 註解 (`///`, `/** */`) |
-| **`CSharpParser`** | `.cs` | 語意狀態機 + XML Doc 提取器 | Namespace, Class, Interface, Struct, Method, Property, XML `<summary>` 註解 |
-| **`JsTsParser`** | `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.mts`, `.cts` | 語意狀態機 + JSDoc 提取器 | Class, Interface, Type Alias, Enum, Function, Arrow Function, Class Method, JSDoc 註解 |
-| **`HtmlParser`** | `.html`, `.htm` | 語意標籤正則狀態機 | `<title>`, `<h1>`~`<h6>`, `#id` 選擇器, HTML5 語意標籤 (`<main>`, `<section>` 等), HTML 註解 |
-| **`CssParser`** | `.css`, `.scss`, `.less` | 選擇器與變數正則狀態機 | Class 選擇器 (`.class`), ID 選擇器 (`#id`), CSS 變數 (`--var`), SASS (`$var`), LESS (`@var`), `@keyframes` |
+| **`PythonParser`** | `.py`, `.pyi` | Tree-sitter (`tree_sitter_python`) + `python.scm` | Module, Class, Method, Function, Decorator, Parameters, Docstring, Return Type, Call Sites, Imports |
+| **`MarkdownParser`** | `.md`, `.markdown` | Tree-sitter (`tree_sitter_markdown`) + `markdown.scm` | Headings (H1~H6), Blockquote, Code Blocks, Links (`DOC_LINK`), Call Sites (`DOC_CALL_SITE`) |
+| **`CppParser`** | `.cpp`, `.hpp`, `.h`, `.c`, `.cc`, `.cxx` | Tree-sitter (`tree_sitter_cpp`, `tree_sitter_c`) | Class, Struct, Enum, Function, Method, Doxygen/Comments, Call Sites (`->`, `::`), Imports (`#include`, `using`) |
+| **`CSharpParser`** | `.cs` | Tree-sitter (`tree_sitter_c_sharp`) + `c_sharp.scm` | Namespace, Class, Interface, Struct, Method, Property, XML Doc, Call Sites, Imports (`using`) |
+| **`JsTsParser`** | `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs` | Tree-sitter (`tree_sitter_typescript`) + `typescript.scm` | Class, Interface, Type Alias, Enum, Function, Method, JSDoc, Call Sites, Imports (`import`, `require`) |
+| **`SpiceParser`** | `.cir`, `.sp`, `.spice`, `.net` | 自訂自貢獻解析器 (`SpiceParser`) | Subcircuit (`.subckt`), Model (`.model`), Component Instance, Directives, Parameters |
+| **`HtmlParser`** | `.html`, `.htm` | 自訂自貢獻解析器 (`HtmlParser`) | `<title>`, `<h1>`~`<h6>`, `#id` 選擇器, HTML5 語意標籤, HTML 註解 |
+| **`CssParser`** | `.css`, `.scss`, `.less` | 自訂自貢獻解析器 (`CssParser`) | Class 選擇器 (`.class`), ID 選擇器 (`#id`), CSS 變數 (`--var`), `@keyframes` |
 
 ---
 

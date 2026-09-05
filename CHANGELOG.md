@@ -2,6 +2,15 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_05_1025_knowledge_db_refactor (Executing)
+
+- **`sub_01_universal_ast_and_contributed_tree_sitter` (Completed)**：
+  - **Tree-sitter 宣告式通用 AST 解析引擎 (`TreeSitterDriver`)**：引入聲明式 S-Expression 查詢解析器（`python.scm`, `cpp.scm`, `c.scm`, `javascript.scm`, `typescript.scm`, `c_sharp.scm`, `markdown.scm`），提供結構化 FQN、Docstring、結構化參數簽名、調用點與檔頭 import 提取，全面取代舊手刻正則狀態機。
+  - **零特權外掛自貢獻架構 (Zero-Privilege Dogfooding)**：重構 `LanguageRegistry` / `ParserRegistry`，全數語言由 `contributes.knowledge-db` 宣告動態加載；模組自身內建支援之 10 種語言（含自訂 SPICE, HTML, CSS）一律透過自身 `contributes/knowledge-db.json` 自貢獻物化，消除核心特權硬編碼。
+  - **遞迴階層符號模型與向後相容適配**：升級 `UnifiedSymbol` 為遞迴階層結構，支援 `parent_id`、`children`、結構化搜尋載荷 `search_payload` 與 `members` 轉接層，100% 相容既有檢索與調用拓撲邏輯。
+  - **遺留正則解析器代碼與過時測試徹底清理**：刪除 `cpp_parser.py`, `csharp_parser.py`, `js_ts_parser.py`, `markdown_parser.py`, `python_parser.py` 等舊正則解析代碼，清理並遷移過時測試案例。
+  - **自動化測試與驗證**：單元、邊界與調用圖譜測試 100% 通過（14/14 Passed），全生態系回歸驗證通過。
+
 ## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (Executing)
 
 - **`sub_06_jit_fingerprint_stat_gate` (Completed)**：

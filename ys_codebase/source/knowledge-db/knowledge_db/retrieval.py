@@ -164,11 +164,17 @@ class CodeSnippet:
 class SnippetExtractor:
     """原始碼片段延遲提取器 (安全切片讀取、符號邊界感知與編碼容錯)"""
 
-    def __init__(self, workspace_root: Optional[Union[str, Path]] = None, max_lines: int = 30):
+    def __init__(
+        self,
+        workspace_root: Optional[Union[str, Path]] = None,
+        max_lines: int = 30,
+        space_manager: Optional[Any] = None,
+    ):
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self.max_lines = max_lines
+        self.space_manager = space_manager
 
-    def resolve_file_path(self, file_path: Union[str, Path]) -> Path:
+    def resolve_file_path(self, file_path: Union[str, Path], space: Optional[str] = None) -> Path:
         """解析檔案為實體絕對路徑"""
         p = Path(file_path)
         if p.is_absolute() and p.exists():
@@ -186,6 +192,20 @@ class SnippetExtractor:
             cand = self.workspace_root / p
             if cand.exists():
                 return cand
+        if self.space_manager:
+            try:
+                spaces_to_check = [self.space_manager.get_space(space)] if space else self.space_manager.get_union_spaces()
+                for sp in spaces_to_check:
+                    for root in self.space_manager.resolve_space_include(sp.name):
+                        if root.is_file():
+                            if root.name == p.name:
+                                return root
+                        else:
+                            cand = root / p
+                            if cand.exists():
+                                return cand
+            except Exception:
+                pass
         cand_cwd = Path.cwd() / p
         if cand_cwd.exists():
             return cand_cwd
@@ -199,9 +219,10 @@ class SnippetExtractor:
         context_before: int = 2,
         context_after: int = 8,
         docstring: str = "",
+        space: Optional[str] = None,
     ) -> CodeSnippet:
         """自實體檔案安全切片讀取原始碼區塊 (支援完整符號邊界感知)。"""
-        real_path = self.resolve_file_path(file_path)
+        real_path = self.resolve_file_path(file_path, space=space)
         doc_summary = docstring.strip().split("\n")[0] if docstring else ""
 
         if not real_path.is_file():
