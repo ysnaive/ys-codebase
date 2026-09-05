@@ -34,6 +34,10 @@
 | **sub_11** | **細粒度增量熱重載與死循環修復** | **Completed** | 100% 完整清冊 JIT 嗅探根除重複熱重載死循環、單檔符號記憶體快取池、倒排索引差量打補丁 (`patch_incremental`) 與 Fast Gzip 持久化，單檔熱重載延遲降至 20~50ms (提速 50x)。 |
 | **sub_12** | **全棧運算提速、並發 AST 打包與倒排索引記憶體瘦身** | **Completed** | `CodeTokenizer` Unicode 整數區間比對與 LRU 識別碼快取、`Posting` `__slots__` 與頂層 `doc_lengths` 共享池 (記憶體瘦身 40%+)、同義詞加權展開快取、`SemanticBundler` 動態門檻多進程並發解析與舊快取平滑自省遷移。 |
 | **sub_13** | **跨檔案符號調用圖譜與引用依賴拓撲索引** | **Completed** | `SymbolCallSite` 模型、Python AST 作用域走訪器、`TopologyLinker` 四階消歧鏈接、`CallGraphIndex` 整數池化雙向圖索引、Gzip 二進位快取 (`unified.graph.bin.gz`)、JIT 增量熱自愈修補，以及 `callers`、`callees`、`impact` CLI 指令與 RFC 8089 輸出。 |
+| **sub_14** | **Universal AST 與 Contributed Tree-Sitter 擴展** | **Completed** | 通用 AST 資料模型 (`children`, `parent_id`, `fqn`, `search_payload`)、外掛式 Tree-Sitter 語法樹適配器 (`LanguageConfig`) 與宣告式外掛擴展。 |
+| **sub_15** | **多語言分詞與 FastEmbed 複合語意檢索** | **Completed** | MultilingualTokenizer CJK 與程式碼混排分詞、輕量 FastEmbed ONNX 向量推論 (`EmbeddingService`)、Pickle Protocol 5 向量快取 (`VectorIndex`) 與 RRF 倒數排名融合。 |
+| **sub_16** | **NetworkX DiGraph 調用圖譜與 AST 符號微型語法** | **Completed** | NetworkX 圖論核心、FQN 作用域拓撲消歧、多語言提取協議 (`LanguageTopologyProtocol`) 與增強型 AST 選擇器微型語法 (`SymbolSelector`)。 |
+| **sub_17** | **測試套件聚合純化、0 Unknown 與 4-Tier 分流** | **Completed** | 20 個分散測試檔收斂至 12 個高內聚套件、100% 補齊 `self.mark_passed()` 根除 UNKNOWN、4-Tier 需求分流標註與日常快測迴圈保護。 |
 
 
 ---

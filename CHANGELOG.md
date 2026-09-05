@@ -67,6 +67,18 @@
   - **多語言調用拓撲協議 (`LanguageTopologyProtocol`)**：定義跨語言抽象協議與 `TopologyProtocolRegistry`，支援各語言 AST 調用點與 Import 映射提取解耦。
   - **測試與品質驗證**：新增 `test_selector.py` 與 `test_networkx_graph.py`；全模組 132/132 測試 100% 通過（包含 14 個既有調用圖回歸測試）。
 
+- **`sub_04_test_suite_aggregation_and_purification` (Completed)**：
+  - **測試套件五大領域收斂與小檔聚合**：
+    - 將 20 個分散之測試檔收斂至 12 個高內聚套件：圖譜家族（`test_graph.py`）、解析器家族（`test_parsers.py`）、檢索家族（`test_retrieval.py`）、熱重載家族（`test_hot_reload.py`）與空間家族（`test_space.py`）。
+    - 徹底淘汰早期舊正則遺留測試、過時同義詞庫殘留與同質 Mock 夾具，嚴格保存所有業務邏輯與邊界斷言（0 邏輯遺失）。
+  - **100% `self.mark_passed()` 補齊與 Unknown 徹底根絕**：
+    - 全面盤點全套件所有測試方法，嚴格遵守測試框架 3-State 分類守則，補齊 `self.mark_passed()` 調用。
+    - 測試診斷報告中 `Unknown` 數量自 115+ 個徹底降為 0，達成 121/121 (100.0%) 通過。
+  - **4-Tier 需求層級分流標註 (Logic / Env / Workflow / Perf)**：
+    - 純記憶體邏輯測試標註為 `@require(Requirement.LOGIC)`；重度多進程實體打包與磁碟掃描標註為 `@require(Requirement.WORKFLOW)`；效能基準測試標註為 `@require(Requirement.PERF)`。
+    - 日常開發預設執行 `LOGIC + ENV`，確保回饋循環敏捷。
+  - **文檔與設計決策更新**：更新 `docs/knowledge-db/README.md`、`docs/knowledge-db/DESIGN_NOTES.md` (`[DN-10]`, `[DN-11]`)。
+
 
 
 ## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (Executing)

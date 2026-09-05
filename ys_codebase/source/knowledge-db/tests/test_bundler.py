@@ -1,5 +1,5 @@
 """
-Unit Tests for knowledge-db SemanticBundler and SemanticBundle.
+Unit and Workflow Tests for knowledge-db SemanticBundler and SemanticBundle.
 """
 
 import json
@@ -55,7 +55,9 @@ class TestBundler(YSCBTestCase):
         self.assertEqual(restored.symbols[0].name, "TestEngine")
         self.assertEqual(restored.thesaurus, [["引擎", "engine"]])
 
-    @require(Requirement.LOGIC)
+        self.mark_passed()
+
+    @require(Requirement.WORKFLOW)
     def test_ft_08_bundler_bundle_export_and_import(self):
         """FT-08: 驗證 SemanticBundler 空間解析、原子導出與載入還原 (EC-07)"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -94,7 +96,9 @@ class TestBundler(YSCBTestCase):
             self.assertEqual(imported_bundle.space_name, "multi_lang_space")
             self.assertEqual(len(imported_bundle.symbols), len(bundle.symbols))
 
-    @require(Requirement.LOGIC)
+        self.mark_passed()
+
+    @require(Requirement.WORKFLOW)
     def test_et_01_import_corrupted_bundle_error(self):
         """ET-01: 驗證載入損毀或不存在的 Bundle 檔案拋出 KnowledgeDBError (EC-05)"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -102,12 +106,16 @@ class TestBundler(YSCBTestCase):
             sm = SpaceManager(storage_dir=temp_path)
             bundler = SemanticBundler(sm)
 
-            # 檔案不存在
             with self.assertRaises(KnowledgeDBError):
                 bundler.import_bundle(temp_path / "non_existent.bundle.json")
 
-            # 檔案損毀
             corrupt_file = temp_path / "corrupt.bundle.json"
             corrupt_file.write_text("INVALID JSON {{", encoding="utf-8")
             with self.assertRaises(KnowledgeDBError):
                 bundler.import_bundle(corrupt_file)
+
+        self.mark_passed()
+
+
+if __name__ == "__main__":
+    unittest.main()
