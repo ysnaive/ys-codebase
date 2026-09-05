@@ -198,6 +198,8 @@ class Checker:
                                 file_path="manifest.json",
                             )
                         )
+
+            self._check_pip_dependencies(name, m_data, report)
         except Exception as e:
             report.issues.append(
                 CheckIssue(
@@ -207,6 +209,48 @@ class Checker:
                     file_path="manifest.json",
                 )
             )
+
+    def _check_pip_dependencies(self, name: str, m_data: Dict[str, Any], report: CheckReport) -> None:
+        """
+        檢核 manifest.json 中 pip_dependencies 欄位：
+        - 若存在，必須為 dict 型態 (否則 CheckIssue FAIL)
+        - 鍵名必須為合法的非空套件名稱 (否則 CheckIssue FAIL)
+        - 約束值必須為字串或 None (否則 CheckIssue FAIL)
+        """
+        if "pip_dependencies" not in m_data:
+            return
+
+        pip_deps = m_data.get("pip_dependencies")
+        if not isinstance(pip_deps, dict):
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.FAIL,
+                    category="MANIFEST",
+                    message="'pip_dependencies' field must be an object (dict).",
+                    file_path="manifest.json",
+                )
+            )
+            return
+
+        for pkg_name, spec in pip_deps.items():
+            if not isinstance(pkg_name, str) or not pkg_name.strip():
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="MANIFEST",
+                        message=f"Invalid package name in 'pip_dependencies': '{pkg_name}'. Must be a non-empty string.",
+                        file_path="manifest.json",
+                    )
+                )
+            elif spec is not None and not isinstance(spec, str):
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="MANIFEST",
+                        message=f"Invalid version specification for package '{pkg_name}' in 'pip_dependencies': expected string or null, got {type(spec).__name__}.",
+                        file_path="manifest.json",
+                    )
+                )
 
     def _check_core_injection(self, name: str, real_dir: str, report: CheckReport) -> None:
         if name == "core":

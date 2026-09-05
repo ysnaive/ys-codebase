@@ -13,6 +13,7 @@
 | **DN-DEV-03** | 三階測試指令解耦與完全對標虛擬沙盒隔離 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/sandbox.py` | 💡 INFO |
 | **DN-DEV-04** | 本地發布流水線解耦 Git 乾淨限制之純淨打包哲學 | `source/dev/dev/releaser.py` | 💡 INFO |
 | **DN-DEV-05** | 本地建置產物直裝通道 (@build) 與宣告式工程規範連動注入 | `source/core/core/engine.py`<br/>`source/dev/manifest.json` | 💡 INFO |
+| **DN-DEV-06** | Build 版 pip 相依性適配與沙盒微環境零拷貝投影 | `source/dev/dev/testing/sandbox.py`<br/>`source/dev/dev/checker.py` | 💡 INFO |
 
 ---
 
@@ -50,5 +51,16 @@
   1. `core.engine.PackageManager` 特例處理 `@build` revision：當版本約束包含 `build` 時，強制直連 `module.build://` 下載 `*.build.zip`，未建置時拋出清楚的引導提示，徹底終結本地開發需先手動 release 的繁瑣流程。
   2. `dev` 模組透過 `contributes["agents-workflow"]`（`mode: "below"`）向 `WORKFLOW_SOP_STANDARDS` 注入專案特化工程規範（`DevEngineeringStandards.md`），收斂三層空間 SSOT、沙盒除錯加速與禁止 Agent 主動 release/install 鐵律。
 - **背後考量**：落實「零侵入宣告式擴充」架構哲學，並提供流暢安全的自引用 (Dogfooding) 開發體驗。
+
+---
+
+### [DN-DEV-06] Build 版 pip 相依性適配與沙盒微環境零拷貝投影
+
+- **核心決策**：
+  1. **靜默物化**：在 `create_sandbox` 建立沙盒前，透過 `adapt_build_pip_dependencies` 掃描待測模組之 build/source manifest 中 `pip_dependencies` 宣告，調用 `core.PipManager` 於宿主微環境完成靜默物化。
+  2. **3-Tier 投影管線**：沙盒環境透過 Windows Junction (免管理者權限、sub-1ms 完成) 或 POSIX Symlink 穿透宿主微環境；若於 virtiofs / 容器掛載磁碟等受限環境，平滑降級為 `.pth` 檔案指標，保證 100% 跨平台相容。
+  3. **沙盒清理防護**：在 `cleanup_sandbox` 調用 `shutil.rmtree` 前，強制調用 `_unlink_projected_venv` 解開重析點/符號連結，徹底阻斷遍歷刪除宿主微環境之風險。
+- **背後考量**：兼顧沙盒高保真測試能力與極致效能（零拷貝、零重複網路下載），同時剛性保證宿主微環境之完整性與純淨度。
+
 
 
