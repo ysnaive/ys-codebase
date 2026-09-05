@@ -1,6 +1,7 @@
 """
-knowledge-db 代碼標識符與 CJK 中文混合分詞器 (CodeTokenizer)
-100% 採用純 Python 原生標準庫 (Zero External Dependency)
+knowledge-db 多語言混雜分詞器 (MultilingualTokenizer / CodeTokenizer)
+支援中英混雜、CJK 字符、駝峰/蛇形標識符與程式碼標記分詞。
+100% 採用純 Python 原生標準庫 (Zero External Dependency)。
 """
 
 import functools
@@ -67,6 +68,12 @@ def _split_identifier_cached(identifier: str) -> Tuple[str, ...]:
         if p:
             tokens.append(p)
 
+    # 對點號切分的各個片段加入單獨小寫標識符
+    for seg in re.split(r"[.\s]+", identifier):
+        clean_seg = _CLEAN_ALPHA.sub("", seg.lower())
+        if clean_seg and clean_seg not in tokens and len(clean_seg) > 1:
+            tokens.append(clean_seg)
+
     # 若拆解出多個子 token，保留整體小寫標識符
     clean_raw = identifier.lower().replace("-", "_")
     if clean_raw not in tokens and len(clean_raw) > 1:
@@ -78,15 +85,17 @@ def _split_identifier_cached(identifier: str) -> Tuple[str, ...]:
     return tuple(tokens)
 
 
-class CodeTokenizer:
-    """程式碼標識符與 CJK 中文 1-gram / 2-gram 混合分詞器"""
+class MultilingualTokenizer:
+    """
+    多語言混雜分詞器 (支援中英混雜、CJK 1/2-gram、駝峰蛇形標識符拆解)
+    """
 
     def __init__(self, stopwords: Optional[Set[str]] = None):
         self.stopwords = stopwords if stopwords is not None else DEFAULT_STOPWORDS
 
     @classmethod
     def is_cjk(cls, char: str) -> bool:
-        """檢查單一字元是否為 CJK 中文字元 (向後相容)"""
+        """檢查單一字元是否為 CJK 東亞字元"""
         if not char:
             return False
         return _is_cjk_ord(ord(char[0]))
@@ -105,6 +114,7 @@ class CodeTokenizer:
     def tokenize(self, text: str) -> List[str]:
         """
         對輸入字串進行混合分詞，輸出標準小寫 Token 清單。
+        支援無縫處理中英混排邊界 (如 '解析InvertedIndex倒排索引')。
         """
         if not text or not isinstance(text, str):
             return []
@@ -117,7 +127,7 @@ class CodeTokenizer:
             ch = text[i]
             code = ord(ch)
 
-            # 1. 處理 CJK 中文字元連續區塊 (純整數比對)
+            # 1. 處理 CJK 東亞文字連續區塊
             if _is_cjk_ord(code):
                 cjk_start = i
                 while i < n and _is_cjk_ord(ord(text[i])):
@@ -135,15 +145,15 @@ class CodeTokenizer:
                         bi_gram = cjk_chunk[j:j + 2]
                         tokens.append(bi_gram)
 
-                # 若區塊長度在 3~6 之間，亦加入整詞
+                # 3~6 字元整詞
                 if 2 < len(cjk_chunk) <= 6:
                     tokens.append(cjk_chunk)
                 continue
 
             # 2. 處理 ASCII / 代碼識別碼連續區塊
-            if ch.isalnum() or ch == "_":
+            if ch.isascii() and (ch.isalnum() or ch == "_"):
                 ident_start = i
-                while i < n and (text[i].isalnum() or text[i] == "_"):
+                while i < n and text[i].isascii() and (text[i].isalnum() or text[i] == "_"):
                     i += 1
                 ident_chunk = text[ident_start:i]
 
@@ -153,7 +163,11 @@ class CodeTokenizer:
                         tokens.append(st)
                 continue
 
-            # 3. 其他非字母數字（標點符號、空白、特殊字元等），直接跳過
+            # 3. 其他非字母數字（標點、空白、特殊符號），前進一位
             i += 1
 
         return tokens
+
+
+# 向後相容別名
+CodeTokenizer = MultilingualTokenizer

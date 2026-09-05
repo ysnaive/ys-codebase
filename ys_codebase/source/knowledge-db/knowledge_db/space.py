@@ -229,22 +229,25 @@ class SpaceManager:
     ) -> Any:
         """
         工廠方法：自 core.contributes 體系載入並聚合所有同義詞、別名與關聯詞，
-        並可選擇性疊加 extra_config，最後裝配返回 ThesaurusEngine 實例。
+        並可選擇性疊加 extra_config，最後裝配返回 ThesaurusEngine 實例 (已過時，安全降級)。
         """
-        from .thesaurus import ThesaurusEngine
-        cfg = self.load_thesaurus_config()
-        engine = ThesaurusEngine(config=cfg)
-        if extra_config:
-            if extra_config.groups:
-                for g in extra_config.groups:
-                    engine.add_group(g)
-            if extra_config.aliases:
-                for src, tgts in extra_config.aliases.items():
-                    engine.add_alias(src, tgts)
-            if extra_config.related:
-                for rg in extra_config.related:
-                    engine.add_related_group(rg)
-        return engine
+        try:
+            from .thesaurus import ThesaurusEngine
+            cfg = self.load_thesaurus_config()
+            engine = ThesaurusEngine(config=cfg)
+            if extra_config:
+                if extra_config.groups:
+                    for g in extra_config.groups:
+                        engine.add_group(g)
+                if extra_config.aliases:
+                    for src, tgts in extra_config.aliases.items():
+                        engine.add_alias(src, tgts)
+                if extra_config.related:
+                    for rg in extra_config.related:
+                        engine.add_related_group(rg)
+            return engine
+        except ImportError:
+            return None
 
 
     def get_space(self, name: str) -> SpaceConfig:

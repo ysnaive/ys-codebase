@@ -155,5 +155,30 @@ print(snippet.format_text())
 2. **快取根目錄零 Fallback 守門 (Zero Fallback Guardrail)**：
    - `SpaceManager._get_storage_root()` 嚴格遵循語意協議 `cache://knowledge-db/`，禁止任何隱式退化至 CWD 之相對路徑，杜絕在專案宿主根目錄意外產生 `.cache/` 殘留目錄。
 
+---
+
+## 🚀 9. FastEmbed 向量嵌入與 RRF 雙軌複合檢索引擎 (HybridSearchEngine & RRF Fusion)
+
+`knowledge-db@1.0.3.0` (sub_02) 全面升級至 BM25 + 向量語意雙軌倒數排名融合 (RRF) 複合檢索：
+
+1. **多語言分詞 (`MultilingualTokenizer`)**：
+   - 支援中英混雜、CJK 1/2-gram 滑動窗口與駝峰/蛇形標識符拆解。
+   - 解決中英無空格黏連、小數點標識符切分與停用詞過濾。
+2. **FastEmbed ONNX 向量嵌入服務 (`EmbeddingService` & `VectorIndex`)**：
+   - 基於 `BAAI/bge-small-zh-v1.5` 模型 (384 維度)，透過 ONNX Runtime 純 CPU 離線推論。
+   - 向量特徵二進位快取：使用 Pickle Protocol 5 + Gzip 持久化至 `unified.vectors.bin.gz`。
+   - 支援增量熱自愈修補 (`VectorIndex.patch_incremental`)：檔案修改或刪除時差量拔除舊特徵、追加新特徵。
+3. **倒數排名融合演算法 (Reciprocal Rank Fusion, RRF)**：
+   - 融合公式：
+     $$\text{Score}_{\text{RRF}}(d) = \frac{w_{\text{lex}}}{k + \text{rank}_{\text{lex}}(d)} + \frac{w_{\text{vec}}}{k + \text{rank}_{\text{vec}}(d)}$$
+     其中預設 $k=60$，$w_{\text{lex}}=0.5$，$w_{\text{vec}}=0.5$。
+4. **雙重防呆與雜訊過濾守門**：
+   - **純語意門檻守門 (`min_vector_similarity = 0.70`)**：若候選項目無任何 BM25 關鍵字命中，必須達到餘弦相似度門檻始納入召回，徹底防止小型程式碼庫因向量近鄰誤召無關程式碼。
+   - **複合查詢子詞覆蓋率門檻 (`coverage >= 0.50`)**：針對長標識符未完全命中時，防範單一通用子詞誤召喚。
+5. **100% 剛性平滑降級守門**：
+   - 若 `fastembed` 套件未安裝或模型加載失敗，系統無死鎖平滑退化為純 BM25 檢索。
+   - CLI 與 SDK 支援 `--lexical-only` / `lexical_only=True` 參數，允許手動強制作為純關鍵字倒排檢索。
+
+
 
 

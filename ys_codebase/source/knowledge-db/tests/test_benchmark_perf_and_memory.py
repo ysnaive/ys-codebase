@@ -18,7 +18,6 @@ from dev.testing.requirement import Requirement, require
 from knowledge_db.bundler import _parse_file_task_worker, SemanticBundler
 from knowledge_db.retrieval import BM25Engine, InvertedIndex, Posting, QueryFilter
 from knowledge_db.schema import UnifiedSymbol, WeightedToken
-from knowledge_db.thesaurus import ThesaurusEngine
 from knowledge_db.tokenizer import _is_cjk_ord, _split_identifier_cached, CodeTokenizer
 
 
@@ -173,27 +172,6 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
         self.assertIn("doc_legacy", idx.doc_lengths)
         self.assertEqual(idx.doc_lengths["doc_legacy"]["name"], 3)
 
-    @require(Requirement.LOGIC)
-    def test_thesaurus_expand_query_weighted_lru_cache(self):
-        """FT-06: 驗證同義詞展開加權與 LRU 快取機制"""
-        engine = ThesaurusEngine()
-        engine.add_group(["pid", "controller", "proportional"])
-
-        # 首次查詢
-        r1 = engine.expand_query_weighted(["pid"])
-        terms1 = [t.term for t in r1]
-        self.assertIn("pid", terms1)
-        self.assertIn("controller", terms1)
-
-        # 二次查詢 (快取命中)
-        r2 = engine.expand_query_weighted(["pid"])
-        self.assertEqual(r1, r2)
-
-        # 動態新增群組後快取應自動清空更新
-        engine.add_group(["pid", "feedback"])
-        r3 = engine.expand_query_weighted(["pid"])
-        terms3 = [t.term for t in r3]
-        self.assertIn("feedback", terms3)
 
     @require(Requirement.LOGIC)
     def test_bundler_worker_parsing(self):

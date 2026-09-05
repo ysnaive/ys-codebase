@@ -19,8 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .exceptions import KnowledgeDBError, SchemaValidationError
 from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol, WeightedToken
-from .thesaurus import ThesaurusEngine
-from .tokenizer import CodeTokenizer
+from .tokenizer import CodeTokenizer, MultilingualTokenizer
 
 logger = logging.getLogger("knowledge-db.retrieval")
 
@@ -593,13 +592,13 @@ class BM25Engine:
     def __init__(
         self,
         tokenizer: Optional[CodeTokenizer] = None,
-        thesaurus: Optional[ThesaurusEngine] = None,
+        thesaurus: Optional[Any] = None,
         field_weights: Optional[Dict[str, float]] = None,
         k1: float = 1.5,
         b: float = 0.75,
     ):
         self.tokenizer = tokenizer or CodeTokenizer()
-        self.thesaurus = thesaurus or ThesaurusEngine()
+        self.thesaurus = thesaurus
         self.field_weights = field_weights or dict(self.DEFAULT_WEIGHTS)
         self.k1 = k1
         self.b = b
@@ -640,16 +639,18 @@ class BM25Engine:
         raw_query = query.strip()
         allowed_ftypes = self._normalize_ftypes(flt.ftypes)
 
-        # 1. 分詞與加權同義詞/別名/關聯詞擴展 (三階加權展開)
+        # 1. 分詞與詞彙加權
         base_tokens = self.tokenizer.tokenize(raw_query)
         if not base_tokens:
             return []
 
-        if hasattr(self.thesaurus, "expand_query_weighted"):
+        if self.thesaurus is not None and hasattr(self.thesaurus, "expand_query_weighted"):
             weighted_tokens = self.thesaurus.expand_query_weighted(base_tokens)
-        else:
+        elif self.thesaurus is not None and hasattr(self.thesaurus, "expand_query"):
             expanded_raw = self.thesaurus.expand_query(base_tokens)
             weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in expanded_raw]
+        else:
+            weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in base_tokens]
 
         # 2. 候選文檔計分累加器: doc_id -> (score, matched_terms, posting)
         doc_scores: Dict[str, float] = defaultdict(float)
@@ -707,9 +708,17 @@ class BM25Engine:
 
         # 4. 條件過濾與結果封裝
         results: List[SearchResult] = []
+        clean_raw_no_punct = re.sub(r"[^a-z0-9]", "", clean_raw_query)
         for doc_id, score in doc_scores.items():
             if score < flt.min_score:
                 continue
+
+            # 標識符拆解子詞覆蓋率過濾：若未完全匹配原始標識符，且查詢包含多個子詞，需滿足覆蓋率門檻
+            if len(base_tokens) >= 3:
+                matches = doc_matches[doc_id]
+                has_exact = (clean_raw_query in matches) or (clean_raw_no_punct in matches)
+                if not has_exact and (len(matches) / len(base_tokens)) < 0.5:
+                    continue
 
             sym = index.get_symbol(doc_id)
             if not sym:
@@ -780,11 +789,13 @@ class BM25Engine:
         if not base_tokens:
             return []
 
-        if hasattr(self.thesaurus, "expand_query_weighted"):
+        if self.thesaurus is not None and hasattr(self.thesaurus, "expand_query_weighted"):
             weighted_tokens = self.thesaurus.expand_query_weighted(base_tokens)
-        else:
+        elif self.thesaurus is not None and hasattr(self.thesaurus, "expand_query"):
             expanded_raw = self.thesaurus.expand_query(base_tokens)
             weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in expanded_raw]
+        else:
+            weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in base_tokens]
 
         # 2. 候選文檔計分累加器
         doc_scores: Dict[str, float] = defaultdict(float)

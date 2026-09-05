@@ -12,8 +12,7 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from knowledge_db.tokenizer import CodeTokenizer
-from knowledge_db.thesaurus import ThesaurusEngine
+from knowledge_db.tokenizer import CodeTokenizer, MultilingualTokenizer
 
 
 class TestTokenizer(YSCBTestCase):
@@ -79,43 +78,25 @@ class TestTokenizer(YSCBTestCase):
         self.assertEqual(tok.tokenize("!@#$%^&*()_+=-`~[]{}|;':\",.<>?/"), [])
 
     @require(Requirement.LOGIC)
-    def test_thesaurus_merging_and_query_expansion(self):
-        """驗證軟工同義詞庫載入、自訂詞庫無衝突合併與雙向查詢擴展 (EC-05)。"""
-        # 1. 透過 SpaceManager 載入初始詞庫
-        from knowledge_db.space import SpaceManager
-        sm = SpaceManager()
-        engine = sm.create_thesaurus_engine()
-        syns_create = engine.get_synonyms("建立")
-        self.assertIn("create", syns_create)
-        self.assertIn("init", syns_create)
+    def test_multilingual_tokenizer_advanced(self):
+        """FT-01: 驗證 MultilingualTokenizer 中英混排無縫切分與向後相容性。"""
+        tok = MultilingualTokenizer()
 
-        syns_search = engine.get_synonyms("search")
-        self.assertIn("搜尋", syns_search)
-        self.assertIn("query", syns_search)
+        # 1. 中英/CJK 無空格混排邊界切分
+        res1 = tok.tokenize("解析InvertedIndex倒排索引")
+        self.assertIn("inverted", res1)
+        self.assertIn("index", res1)
+        self.assertIn("invertedindex", res1)
+        self.assertIn("解析", res1)
+        self.assertIn("倒排", res1)
+        self.assertIn("索引", res1)
 
-        # 2. 自訂詞庫合併
-        custom_groups = [
-            ["自駕", "autonomous", "auto_pilot"],
-            ["底盤", "chassis", "drivetrain"],
-        ]
-        from knowledge_db.schema import ThesaurusConfig
-        engine_with_custom = sm.create_thesaurus_engine(
-            extra_config=ThesaurusConfig(groups=custom_groups)
-        )
-        syns_auto = engine_with_custom.get_synonyms("自駕")
-        self.assertIn("autonomous", syns_auto)
-        self.assertIn("auto_pilot", syns_auto)
+        # 2. 類別別名等價性
+        self.assertIs(CodeTokenizer, MultilingualTokenizer)
+        self.assertTrue(tok.is_cjk("中"))
+        self.assertFalse(tok.is_cjk("A"))
 
-        # 3. 查詢展開測試
-        query_tokens = ["搜尋", "底盤"]
-        expanded = engine_with_custom.expand_query(query_tokens)
-        self.assertIn("search", expanded)
-        self.assertIn("query", expanded)
-        self.assertIn("chassis", expanded)
-        self.assertIn("drivetrain", expanded)
-
-        # 4. 防無窮迴圈與集合防禦
-        cyclic_engine = ThesaurusEngine(custom_groups=[["a", "b"], ["b", "c"], ["c", "a"]])
-        expanded_cyclic = cyclic_engine.expand_query(["a"])
-        self.assertLessEqual(len(expanded_cyclic), 10)
-        self.assertEqual(len(expanded_cyclic), len(set(expanded_cyclic)))
+        # 3. 點號與命名空間標識符
+        parts = tok.split_identifier("TreeSitterDriver.extract_imports")
+        self.assertIn("treesitterdriver", parts)
+        self.assertIn("imports", parts)
