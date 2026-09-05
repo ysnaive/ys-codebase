@@ -2,6 +2,14 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_05_1450_knowledge_db_benchmark_evaluation (Completed)
+
+- **Knowledge-DB 雙基準測試綜合評估與審計報告 (`R01_knowledge_db_benchmark_research.md`)**：
+  - **客觀審計與數據校準**：針對 `benchmark_1_core` 與 `benchmark_2_ecosystem` 進行獨立交叉審計，評估 4 位受測 Agent 之實際執行軌跡與指標；確認 knowledge-db 在 Token 消耗上具備 **25%~38%** 之穩定節省效益，工具調用縮減約 **40%~50%**，端到端工具提速約 **2.0×~3.0×**。
+  - **結構性優勢實證**：實證確認 AST 語意切片可有效避免大檔案（如 900 行 `daemon.py`）分段走訪之視窗耗損，且在語意概念探索（如聚合機制）上顯著超越傳統詞法 grep。
+  - **Ground Truth 偏差校正**：記錄並修正 Benchmark 1 Q1.1 之簽名定義偏差（實際為 `pip_deps: List[str]` 而非 `deps: Dict[str, str]`）。
+  - **資產完整歸檔**：完整納入兩次基準測試之測試題目、提示詞、答題結果與評估報告至計畫資產包中封存。
+
 ## 2026_09_05_1300_core_dev_toolchain_upgrade (Completed)
 
 - **`sub_01_core_pip_sdk_and_environment_export` (Completed)**：
