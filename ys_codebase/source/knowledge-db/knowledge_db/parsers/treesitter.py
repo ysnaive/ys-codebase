@@ -445,7 +445,13 @@ class TreeSitterDriver(BaseParser):
             )
         ]
 
-    def extract_call_sites(self, file_path: str, content: str, space: str) -> List[SymbolCallSite]:
+    def extract_call_sites(
+        self,
+        file_path: str,
+        content: str,
+        space: str,
+        symbols: Optional[List[UnifiedSymbol]] = None,
+    ) -> List[SymbolCallSite]:
         normalized_path = file_path.replace("\\", "/")
         if not content or not content.strip() or self._parser is None or self._query is None:
             return []
@@ -500,8 +506,8 @@ class TreeSitterDriver(BaseParser):
         cursor = tree_sitter.QueryCursor(self._query)
         matches = cursor.matches(tree.root_node)
 
-        # 萃取 symbols 用於定位調用者
-        symbols = self.parse(file_path=file_path, content=content, space=space)
+        # 萃取 symbols 用於定位調用者 (若呼叫端已提供則直接重用，避免二次 AST 解析)
+        target_symbols = symbols if symbols is not None else self.parse(file_path=file_path, content=content, space=space)
 
         for _, captures in matches:
             if "call.name" not in captures or not captures["call.name"]:
@@ -534,7 +540,7 @@ class TreeSitterDriver(BaseParser):
 
             # 定位所屬調用者方法/函式 (最內層優先)
             caller_name = "<module>"
-            matching_syms = [s for s in symbols if s.line_number <= line_no <= s.end_line]
+            matching_syms = [s for s in target_symbols if s.line_number <= line_no <= s.end_line]
             matching_syms.sort(key=lambda s: (s.end_line - s.line_number))
             for sym in matching_syms:
                 if sym.kind in ("method", "function"):

@@ -20,6 +20,8 @@
 | **DN-08** | **Tree-sitter 宣告式通用 AST 解析與零特權自貢獻外掛生態** | `parsers/`, `schema.py` | 徹底廢除舊有手刻正則解析狀態機，改採 `tree-sitter` S-Expression 聲明式語法查詢；`LanguageRegistry` 透過 `contributes.knowledge-db` 動態驅動，內建 10 種語言一律採自身自貢獻，核心零特權硬編碼。 |
 | **DN-09** | **FastEmbed 向量嵌入與 RRF 雙軌複合檢索** | `embedding.py`, `hybrid.py`, `engine.py` | 引入 `fastembed` (ONNX Runtime, 384-dim `BAAI/bge-small-zh-v1.5`) 進行純 CPU 離線向量提取；以倒數排名融合 (RRF $k=60$) 結合 BM25 與語意向量；設定純語意門檻 ($\ge 0.70$) 與複合查詢覆蓋率門檻 ($\ge 50\%$) 抑制雜訊；支援 100% 剛性平滑降級與 `--lexical-only`。 |
 | **DN-10** | **NetworkX 有向圖拓撲、FQN 消歧幽靈關聯根除與全方位符號選擇器** | `graph.py`, `linker.py`, `selector.py`, `protocol.py` | 引入 `networkx.DiGraph` 替換手刻鄰接表，支援精確前驅追蹤與多階影響面剪枝；四階消歧緊扣 Universal AST FQN 與 Import 作用域，杜絕跨檔案同名幽靈關聯；實作 `SymbolSelector` 微型語法 (`[kind] [scope.]name[()]`) 達成 CLI 與 API 高維度精確定位。 |
+| **DN-11** | **測試套件聚合拓撲、三態分類純化與 4-Tier 需求分流** | `tests/` | 收斂 20 個測試檔為 12 個高內聚模組；全面補齊 `self.mark_passed()` 將 115+ UNKNOWN 徹底歸零；標註 LOGIC/WORKFLOW/PERF 需求分流。 |
+| **DN-12** | **管線門面解耦、8,000 字元預算動態衰減與全域切片去重純化** | `formatter.py`, `pipeline.py`, `engine.py` | `engine.py` 瘦身 80.8% 轉為輕量 Facade (338 行)；輸出上限由 12,500 收斂為 8,000 字元並實作階梯平滑衰減；以 `UniversalRedundancyFilter` 徹底剔除 Docstring、重疊 Heading、License 與空白行，極大化資訊密度。 |
 
 ---
 
@@ -202,3 +204,54 @@
 - **效益與驗證**：
   - `dev test knowledge-db` 執行回報 `Pass: 121 (100.0%), Fail: 0, Unknown: 0, Skip: 0`，測試報告純淨度達到 100%。
   - 重複冗餘夾具與正則遺留測試徹底清除，全部業務邏輯斷言 100% 零遺漏保存。
+
+---
+
+### DN-12: 管線門面職責分離、8,000 字元預算動態衰減與全域切片重複資訊剔除 (Pipeline-Facade Decoupling, 8000-Char Budget Decay & Universal Redundancy Purge)
+
+- **背景與根因**：
+  1. `engine.py` 膨脹至 1,765 行，兼具管線建置、拓撲分析、格式化呈現、CLI 輸出預算裁切與門面 API，違反單一職責原則。
+  2. 原 12,500 字元 CLI 輸出預算偏大且切片充斥已呈現資訊之重複項（例如程式碼切片夾帶 Docstring、Markdown 切片夾帶重疊之 `# Heading`、License 樣板與連續空白行），稀釋了終端與 LLM 上下文內的有效資訊密度。
+- **架構解法**：
+  1. **職責徹底三向解耦**：
+     - `formatter.py`: 專責結果聚合金字塔、終端 ANSI 上色、Markdown 排版、動態切片行數計算器、全域重複資訊過濾器 (`UniversalRedundancyFilter`)。
+     - `pipeline.py`: 專責索引建置編排 (`IndexingPipeline`)、JIT 增量嗅探、向量索引與雙向調用圖譜整合、查詢協調。
+     - `engine.py`: 瘦身為輕量統一 Facade ($\le 450$ 行，實作 338 行)，100% 委派 pipeline 與 formatter，維持對外 API 完全向後相容。
+  2. **8,000 字元動態預算階梯衰減**：
+     - 預算上限調降為 8,000 字元。
+     - 動態衰減曲線：$<3,500$ 字元保留 30 行切片；$3,500\sim 6,000$ 字元平滑線性衰減至 10 行；$6,000\sim 7,000$ 字元維持 10 行；$\ge 7,000$ 字元切片歸零（僅呈現元資料與保底 5 項目）。
+  3. **全域通用切片重複資訊剔除 (`UniversalRedundancyFilter`)**：
+     - 程式碼切片自動過濾已摘要呈現之 Docstring（Python `"""`、C/JS `/* */`）。
+     - Markdown 切片自動剔除與符號名稱或簽名重疊之 `# Heading` 標題行。
+     - 自動剔除版權與 License 樣板（SPDX、Copyright、Apache/MIT）。
+     - 自動壓縮 2 行以上連續空白行。
+     - 嚴格保底：至少保留目標定義行 `target_line`。
+- **效益與驗證**：
+  - `engine.py` 由 1,765 行減至 338 行（瘦身 80.8%）。
+  - CLI 與 LLM 輸出資訊密度大幅增加，終端檢索體驗俐落緊湊。
+  - 123/123 測試用例 100% 通過。
+
+---
+
+### DN-13: 向量推論防護、AST 單次走訪優化與索引寫盤純化 (Vector Inference Safeguards, AST Single-Pass & Fast Index Serialization)
+
+- **背景與根因**：
+  在 Phase 6 實機驗證（UX-01）與大規模代碼庫（200+ 檔案、數千個符號）建置時：
+  1. `FastEmbed` 底層 ONNX Runtime 預設吃滿本機 100% CPU，連續推論數千個符號致排程飢餓、DPC 軟中斷逾時與硬體保護重開機。
+  2. `bundler` 在多進程 Worker 內部逐檔重複初始化 `ParserRegistry`，重複讀取並編譯 7 套 Tree-sitter S-Expression `.scm` 數百次。
+  3. `extract_call_sites` 內部再次呼叫 `self.parse()`，全專案檔案 AST 被重複解析 3 遍。
+  4. `VectorIndex.save_binary` 硬編碼 `compresslevel=6` 壓縮百萬級 float32 陣列，產生極高 CPU 運算負擔。
+- **架構解法**：
+  1. **ONNX 執行緒硬上限與環境變數注入**：
+     - 在 `EmbeddingService._init_model` 初始化時，設定 `OMP_NUM_THREADS` 與 `ONNXRUNTIME_INTRA_OP_NUM_THREADS` 為 `min(2, max(1, cpu_count // 2))`，並透過 `threads=max_threads` 傳入 ONNX Session，剛性杜絕 100% CPU 搶佔。
+  2. **分批推論與時間片讓渡**：
+     - `embed_texts` 採用 `batch_size=64` 切片推論，每批次微幅調用 `time.sleep(0.005)` 主動讓出時間片給 OS 排程器與 UI/中斷。
+  3. **向量快取寫盤壓縮等級降級**：
+     - `VectorIndex.save_binary` 預設改為 `compresslevel=1`，消除浮點陣列高壓縮比的無意義 CPU 浪費，磁碟寫入延遲降低 80%+。
+  4. **Worker 內解析器單例快取 (`_get_worker_registry`)**：
+     - 多進程工作者模組層級維持單例 `ParserRegistry`，進程生命週期僅初始化與編譯 `.scm` 查詢檔一次，消滅數千次磁碟 I/O。
+  5. **調用點提取 AST 符號重用 (`extract_call_sites`)**：
+     - `extract_call_sites` 擴充 `symbols: Optional[List[UnifiedSymbol]] = None` 參數；`bundler` 調用時傳入 `self._file_symbols_cache` 已提取之符號實例，徹底消除調用點提取時的二次 AST 解析。
+- **效益與驗證**：
+  - 實機 231 個檔案 hot-rebuild 索引由數分鐘且 CPU 卡死，壓降至僅 **10.4 秒** 平穩完成，全系統 0 凍結、0 卡頓。
+  - 全套件 124/124 單元與契約測試 100% 通過（0 Fail、0 Skip、0 Unknown）。
