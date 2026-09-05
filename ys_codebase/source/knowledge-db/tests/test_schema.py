@@ -62,6 +62,8 @@ class TestSchema(YSCBTestCase):
         with self.assertRaises(SchemaValidationError):
             MemberInfo.from_dict({"name": "only_name"})
 
+        self.mark_passed()
+
     @require(Requirement.LOGIC)
     def test_ft_02_unified_symbol_and_id_computation(self):
         """FT-02: 驗證 UnifiedSymbol 不可變性、SHA1 唯一 ID 計算與序列化"""
@@ -73,8 +75,7 @@ class TestSchema(YSCBTestCase):
             kind="class",
             line_number=15,
         )
-        self.assertEqual(len(computed_id), 40)  # SHA-1 hex 長度為 40
-        # 相同輸入雜湊必須完全一致
+        self.assertEqual(len(computed_id), 40)
         computed_id2 = UnifiedSymbol.compute_id(
             space="core_symbols",
             file_path="source/core/engine.py",
@@ -115,6 +116,8 @@ class TestSchema(YSCBTestCase):
         # 4. 不可變性測試 (frozen=True)
         with self.assertRaises(Exception):
             sym.name = "ModifiedEngine"  # type: ignore
+
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_ft_03_space_and_thesaurus_config(self):
@@ -161,6 +164,8 @@ class TestSchema(YSCBTestCase):
         d_th = th_cfg.to_dict()
         self.assertEqual(len(d_th["groups"]), 2)
 
+        self.mark_passed()
+
     @require(Requirement.LOGIC)
     def test_ft_04_universal_ast_hierarchy_and_fqn(self):
         """FT-04: 驗證 Universal AST 遞迴階層 (parent_id/children)、FQN 與 search_payload (FR-01, FR-02)"""
@@ -199,7 +204,6 @@ class TestSchema(YSCBTestCase):
             search_payload="DatabaseClient class DatabaseClient 資料庫客戶端",
         )
 
-        # 驗證屬性與向後相容 members
         self.assertEqual(class_sym.fqn, "pkg.db.DatabaseClient")
         self.assertEqual(len(class_sym.children), 1)
         self.assertEqual(len(class_sym.members), 1)
@@ -221,6 +225,8 @@ class TestSchema(YSCBTestCase):
         self.assertEqual(restored.children[0].name, "connect")
         self.assertEqual(restored.children[0].fqn, "pkg.db.DatabaseClient.connect")
         self.assertEqual(restored.children[0].parent_id, "class_hash_1")
+
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_ft_05_language_config_serialization(self):
@@ -244,3 +250,9 @@ class TestSchema(YSCBTestCase):
         d = lang_cfg.to_dict()
         self.assertEqual(d["id"], "rust")
         self.assertEqual(d["extensions"], [".rs"])
+
+        self.mark_passed()
+
+
+if __name__ == "__main__":
+    unittest.main()

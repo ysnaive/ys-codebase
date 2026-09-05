@@ -58,6 +58,8 @@ class TestCLI(YSCBTestCase):
         # 8. 未知指令 (EC-06)
         self.assertEqual(main(["unknown_cmd_xyz"]), 1)
 
+        self.mark_passed()
+
     @require(Requirement.LOGIC)
     def test_cli_search_modes(self):
         """FT-01 ~ FT-03, ET-01: 驗證 search 模式 (simple, detail, auto, md, json, limit=auto/N)"""
@@ -156,6 +158,8 @@ class TestCLI(YSCBTestCase):
         self.assertEqual(data_empty["total"], 0)
         self.assertEqual(data_empty["results"], [])
 
+        self.mark_passed()
+
     @require(Requirement.LOGIC)
     def test_cli_callers_callees_impact_modes(self):
         """FT-09: 驗證 callers, callees, impact 子命令之 simple, detail, md, json 模式與參數解析"""
@@ -180,6 +184,8 @@ class TestCLI(YSCBTestCase):
                 ret = main(["impact", "PIDController", flag])
             self.assertEqual(ret, 0)
 
+        self.mark_passed()
+
     @require(Requirement.LOGIC)
     def test_hook_lifecycle(self):
         """FT-08: 驗證 hook.dev.py 測試前置與後置鉤子正常執行"""
@@ -189,3 +195,9 @@ class TestCLI(YSCBTestCase):
             self.assertTrue(indices_dir.exists())
 
             _hook_dev.on_test_teardown(temp_dir)
+
+        self.mark_passed()
+
+
+if __name__ == "__main__":
+    unittest.main()

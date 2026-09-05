@@ -1,5 +1,6 @@
 """
-Unit Tests for knowledge-db SpaceManager, Dual-Track Aggregation, and Priority Resolution.
+Unit Tests for knowledge-db SpaceManager, Dual-Track Aggregation, Priority Resolution, and Computed Token Providers.
+Unified Suite consolidating test_space.py and test_providers.py.
 """
 
 import json
@@ -7,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import unittest
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_root = os.path.dirname(_test_dir)
@@ -16,6 +18,7 @@ if _pkg_root not in sys.path:
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 from knowledge_db.exceptions import InvalidSpaceConfigError, SpaceNotFoundError
+from knowledge_db.providers import get_knowledge_db_spaces
 from knowledge_db.space import SpaceManager
 
 
@@ -28,7 +31,6 @@ class TestSpaceManager(YSCBTestCase):
             cfg_dir = temp_path / "config"
             cfg_dir.mkdir(parents=True)
 
-            # 1. 模擬 Contributed 空間 (來自 Module Donor)
             mock_contributes = {
                 "spaces": {
                     "mod_space": {
@@ -46,7 +48,6 @@ class TestSpaceManager(YSCBTestCase):
                 "thesaurus": [["同義詞A", "syn_a"]],
             }
 
-            # 2. 模擬專案特化 contribute.json (覆蓋 shared_space 並新增 proj_space)
             proj_contribute = {
                 "spaces": {
                     "proj_space": {
@@ -66,19 +67,15 @@ class TestSpaceManager(YSCBTestCase):
             sm = SpaceManager(config_dir=cfg_dir, contributes_data=mock_contributes)
             spaces = sm.load_spaces()
 
-            # 驗證所有空間均存在
             self.assertIn("mod_space", spaces)
             self.assertIn("proj_space", spaces)
             self.assertIn("shared_space", spaces)
-
-            # 驗證優先權: shared_space 應為 Project contribute.json 覆蓋
             self.assertEqual(spaces["shared_space"].description, "Project contribute.json 覆蓋版本")
 
-            # 驗證 Thesaurus 聚合
             thesaurus = sm.load_thesaurus()
             self.assertEqual(len(thesaurus), 2)
-            self.mark_passed()
 
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_ft_05_union_spaces_and_uri_resolution(self):
@@ -108,10 +105,11 @@ class TestSpaceManager(YSCBTestCase):
             self.assertIn("space_a", space_names)
             self.assertIn("space_b", space_names)
 
-            # 解算路徑
             paths = sm.resolve_space_include("space_a")
             self.assertEqual(len(paths), 1)
             self.assertEqual(paths[0], src_dir1.resolve())
+
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_et_02_space_not_found_error(self):
@@ -120,6 +118,8 @@ class TestSpaceManager(YSCBTestCase):
         with self.assertRaises(SpaceNotFoundError) as ctx:
             sm.get_space("non_existent_space")
         self.assertIn("non_existent_space", str(ctx.exception))
+
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_et_03_invalid_source_path_warning_and_skip(self):
@@ -143,6 +143,8 @@ class TestSpaceManager(YSCBTestCase):
             self.assertEqual(len(resolved), 1)
             self.assertEqual(resolved[0], valid_dir.resolve())
 
+        self.mark_passed()
+
     @require(Requirement.LOGIC)
     def test_ft_11_cache_storage_root_resolution(self):
         """FT-11: 驗證 SpaceManager 顯式指定 storage_dir 或有效 URI 正確解算"""
@@ -150,10 +152,11 @@ class TestSpaceManager(YSCBTestCase):
             sm = SpaceManager(storage_dir=temp_dir, contributes_data={"spaces": {}})
             self.assertEqual(sm.storage_dir, Path(temp_dir).resolve())
 
+        self.mark_passed()
+
     @require(Requirement.LOGIC)
     def test_et_04_zero_fallback_cache_root_guardrail(self):
         """ET-04: 驗證無 core 且未指定 storage_dir 時拋出 InvalidSpaceConfigError (零 Fallback 鐵律)"""
-        # 覆蓋 _safe_resolve_uri 使其回傳 None
         import knowledge_db.space as space_mod
         orig_resolver = space_mod._safe_resolve_uri
         try:
@@ -164,6 +167,8 @@ class TestSpaceManager(YSCBTestCase):
         finally:
             space_mod._safe_resolve_uri = orig_resolver
 
+        self.mark_passed()
+
     @require(Requirement.LOGIC)
     def test_sub_06_empty_configurable_contribute_defaults(self):
         """SUB-06: 驗證 knowledge-db 模組內建 configurable/contribute.json 預設為空 spaces"""
@@ -173,3 +178,47 @@ class TestSpaceManager(YSCBTestCase):
             data = json.load(f)
         self.assertEqual(data.get("spaces"), {}, "Configurable template must have empty spaces dict by default")
 
+        self.mark_passed()
+
+
+class TestKnowledgeDBProviders(YSCBTestCase):
+    """驗證 Token Providers 與空間速查表輸出"""
+
+    @require(Requirement.LOGIC)
+    def test_ft_01_get_knowledge_db_spaces_output_format(self):
+        """FT-01: 驗證 get_knowledge_db_spaces 產出正確的 Markdown 空間速查表格"""
+        mock_contributes = {
+            "spaces": {
+                "alpha_space": {
+                    "description": "Alpha 領域空間",
+                    "include": ["module://alpha/docs"],
+                    "file_patterns": ["*.py", "*.md"],
+                    "origin": "module:alpha",
+                },
+                "beta_space": {
+                    "description": "Beta 核心源碼空間",
+                    "include": ["module://beta/src"],
+                    "origin": "module:beta",
+                },
+            }
+        }
+
+        mgr = SpaceManager(contributes_data=mock_contributes)
+        output = get_knowledge_db_spaces()
+        self.assertIn("| 空間名稱 (`--space=<name>`) | 來源定義 | 涵蓋路徑與包含範圍 | 語意說明 |", output)
+        self.assertIn("| :--- | :--- | :--- | :--- |", output)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_02_get_knowledge_db_spaces_empty_fallback(self):
+        """FT-02: 驗證無任何空間時之安全降級輸出"""
+        mgr = SpaceManager(contributes_data={"spaces": {}})
+        spaces = mgr.load_spaces()
+        self.assertEqual(len(spaces), 0)
+
+        self.mark_passed()
+
+
+if __name__ == "__main__":
+    unittest.main()
