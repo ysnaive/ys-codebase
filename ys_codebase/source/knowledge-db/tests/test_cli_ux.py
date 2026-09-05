@@ -74,6 +74,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         stage4 = [name for stg, name in stages_called if stg == 4]
         self.assertTrue(len(stage4) > 0)
         self.assertIn("略過", stage4[0])
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_embedding_model_config_and_fallback(self):
@@ -94,6 +95,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         models = EmbeddingService.list_supported_models()
         self.assertIsInstance(models, list)
         self.assertTrue(len(models) > 0)
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_vector_index_model_mismatch_invalidation(self):
@@ -122,6 +124,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
             self.assertEqual(loaded_idx.model_name, "BAAI/bge-small-zh-v1.5")
             self.assertEqual(loaded_idx.dim, 384)
             self.assertEqual(len(loaded_idx.doc_ids), 2)
+            self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_jit_dynamic_probe_and_fuse(self):
@@ -184,6 +187,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
             self.assertIsNotNone(res.degrade_notice)
             self.assertIn("熔斷降級", res.degrade_notice)
             self.assertIn("knowledge-db:notice", res.degrade_notice)
+            self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_dual_track_progress_reporter(self):
@@ -211,6 +215,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         self.assertIn("[4/5] 向量特徵嵌入", output)
         self.assertIn("[5/5] 二進位索引與快照原子持久化", output)
         self.assertIn("總耗時", output)
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_help_and_status_recognition(self):
@@ -239,6 +244,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         status_out = status_buf.getvalue()
         self.assertIn("已建立", status_out)
         self.assertIn("全域倒排索引: 已建立", status_out)
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_json_stdout_purity_and_hf_warning_suppression(self):
@@ -265,6 +271,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         parsed = json.loads(raw_stdout)
         self.assertIn("query", parsed)
         self.assertIn("results", parsed)
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_terminal_styler_no_color(self):
@@ -300,6 +307,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         styler_pipe = TerminalStyler(stream=fake_pipe)
         self.assertFalse(styler_pipe.enabled)
         self.assertEqual(styler_pipe.path("test.py"), "test.py")
+        self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_cpu_max_threads_adaptation(self):
@@ -329,3 +337,4 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         # 5. 合法整數指定 (例如 1)
         cfg_one = KnowledgeDBConfig(max_threads=1)
         self.assertEqual(cfg_one.resolve_threads(), 1)
+        self.mark_passed()

@@ -8,7 +8,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from ..schema import LanguageConfig, SymbolCallSite, UnifiedSymbol
 from .base import BaseParser
@@ -197,6 +197,32 @@ class ParserRegistry:
         """
         self._parsers.append((priority, parser))
         self._parsers.sort(key=lambda x: x[0], reverse=True)
+
+    def get_supported_extensions(self) -> Set[str]:
+        """動態彙整當前註冊的所有語言所宣告之副檔名集合 (全小寫，含前導點號)。"""
+        exts: Set[str] = set()
+        for cfg in self._language_configs.values():
+            for e in cfg.extensions:
+                ext_clean = str(e).strip().lower()
+                if not ext_clean.startswith("."):
+                    ext_clean = "." + ext_clean
+                exts.add(ext_clean)
+        for _, parser in self._parsers:
+            if hasattr(parser, "SUPPORTED_EXTENSIONS") and isinstance(parser.SUPPORTED_EXTENSIONS, (set, list, tuple)):
+                for e in parser.SUPPORTED_EXTENSIONS:
+                    ext_clean = str(e).strip().lower()
+                    if not ext_clean.startswith("."):
+                        ext_clean = "." + ext_clean
+                    exts.add(ext_clean)
+        return exts
+
+    def get_language_configs(self) -> Dict[str, LanguageConfig]:
+        """取得當前註冊的所有語言規格配置映射表。"""
+        return dict(self._language_configs)
+
+    def is_supported_file(self, file_path: Union[str, Path]) -> bool:
+        """判定目標檔案是否有對應之語意解析器。"""
+        return self.get_parser(file_path) is not None
 
     def get_parser(self, file_path: Union[str, Path]) -> Optional[BaseParser]:
         """

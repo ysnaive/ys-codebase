@@ -277,7 +277,10 @@ class IndexingPipeline:
             return HotPatchResult(False, False, None)
 
         if timeout_seconds is None:
-            timeout_seconds = getattr(self.config, "jit_vector_timeout_seconds", 5.0)
+            if self.config and hasattr(self.config, "resolve_jit_vector_timeout"):
+                timeout_seconds = self.config.resolve_jit_vector_timeout()
+            else:
+                timeout_seconds = getattr(self.config, "jit_vector_timeout_seconds", 5.0)
 
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
@@ -403,7 +406,7 @@ class IndexingPipeline:
                         try:
                             probe_texts = new_texts[:10]
                             probe_vecs, est_total = self.embedding_service.embed_texts_probe(probe_texts, total_count=num_symbols)
-                            if est_total > timeout_seconds:
+                            if timeout_seconds is not None and est_total > timeout_seconds:
                                 vector_degraded = True
                                 degrade_notice = (
                                     f"[knowledge-db:notice] 待向量化符號過多（{num_symbols} 個，預估耗時 {est_total:.1f}s > {timeout_seconds:.1f}s）已熔斷降級（本次使用純 BM25 模式）。"
@@ -578,7 +581,13 @@ class IndexingPipeline:
                 except Exception:
                     pass
 
-        # 1. JIT 變更感知與自動增量熱自愈
+        # 1. JIT 變更感知與自動增量熱自愈 [FR-12]
+        if auto_rebuild:
+            from .daemon import check_and_notify_hot_reload_server
+            is_srv_running, srv_info = check_and_notify_hot_reload_server()
+            if is_srv_running and srv_info is not None:
+                auto_rebuild = False
+
         if auto_rebuild:
             is_dirty, scanned_count, reason, full_files_map, diff_detail = self.scanner.check_invalidation(
                 snapshot_path=meta_file
