@@ -60,7 +60,13 @@
   - **RRF 倒數排名融合檢索 (`HybridSearchEngine`)**：以 Reciprocal Rank Fusion ($k=60$) 融合 BM25 詞法倒排索引與向量語意相似度，並施加未命中 BM25 時之向量相似度最低門檻（$\ge 0.70$）與長複合查詢詞覆蓋率過濾（$\ge 50\%$），有效壓抑非相關噪訊。
   - **雙軌剛性平滑降級守門**：支援 `--lexical-only` CLI 旗標或在向量模型/相依性未就緒時，100% 剛性平滑降級為純 BM25 檢索，保障系統在離線或輕量環境下絕對可用。
   - **遺留代碼與手刻同義詞庫清理**：徹底刪除舊同義詞庫檔案 `knowledge_db/thesaurus.py` 與 `tests/test_thesaurus.py`，全庫零殘留引用。
-  - **測試與品質驗證**：全套件單元、整合與邊界測試 100% 通過（116/116 Passed, 0 failures, 0 errors）。
+- **`sub_03_networkx_call_graph_and_impact_analysis` (Completed)**：
+  - **NetworkX 工業級有向圖拓撲 (`CallGraphIndex`)**：引入 `networkx` 作為核心圖儲存與拓撲走訪引擎，替換手刻整數池與雙向 set 字典；節點為符號 ID，邊保存 `SymbolCallSite`，直接透過 `G.predecessors` 與 `G.successors` 達成 sub-毫秒級雙向檢索。
+  - **FQN 作用域消歧與幽靈關聯根除 (`TopologyLinker`)**：結合 Universal AST 階層 FQN、父子作用域與 Import 映射表重構消歧演算法；收緊全域候選判定，無 Import 的跨模組裸調用嚴格判定為未鏈接邊，徹底杜絕跨檔案同名方法幽靈關聯。
+  - **全方位 AST 符號結構化選擇器 (`SymbolSelector`)**：實作完備的微型語法解析器，支援類型前綴（`class`, `struct`, `interface`, `enum`, `fn`/`def`, `type`, `const`）、階層範疇（`foo.a`）與可調用標記（`()`）之任意正交複合組合；CLI 指令（`callers`, `callees`, `impact`, `search`）全面支援該選擇器進行目標符號精確消歧與高維度定位。
+  - **多語言調用拓撲協議 (`LanguageTopologyProtocol`)**：定義跨語言抽象協議與 `TopologyProtocolRegistry`，支援各語言 AST 調用點與 Import 映射提取解耦。
+  - **測試與品質驗證**：新增 `test_selector.py` 與 `test_networkx_graph.py`；全模組 132/132 測試 100% 通過（包含 14 個既有調用圖回歸測試）。
+
 
 
 ## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (Executing)
