@@ -60,30 +60,57 @@ flowchart TD
 
 ---
 
-## 3. 雙向圖索引與二進位持久化 (`CallGraphIndex`)
+## 3. NetworkX 雙向有向圖與二進位持久化 (`CallGraphIndex`)
 
-- **整數池化 (Integer String Pool)**：
-  - 符號字串 ID 映射為遞增整數 `int`，鄰接表僅以 `Dict[int, Set[int]]` 儲存出入度邊，全專案 5,000+ 條調用邊在記憶體中佔用 $< 5\text{ MB}$。
+- **NetworkX DiGraph 工業級圖模型**：
+  - 採用 `networkx.DiGraph` 作為核心拓撲資料結構，節點為符號 ID，邊保存 `call_sites` 調用點資料。
+  - 直接透過 `G.predecessors(v)` 與 `G.successors(u)` 達成 sub-毫秒級雙向檢索。
 - **Protocol 5 + Gzip 高速寫盤**：
   - 持久化儲存於 `cache://knowledge-db/indices/unified.graph.bin.gz`，檔案體積 $< 150\text{ KB}$，反序列化載入耗時 $< 5\text{ ms}$。
 - **JIT 增量熱修補 (`patch_incremental`)**：
-  - 檔案變更時，差量拔除舊檔案作為 Caller 與 Callee 的雙向鄰接邊，重新注入新調用邊，端到端熱自愈耗時僅需 20~50ms。
+  - 檔案變更時，差量拔除舊檔案作為 Caller 與 Callee 的雙向邊，重新注入新調用邊，端到端熱自愈耗時僅需 20~50ms。
 
 ---
 
-## 4. CLI 工具指令說明
+## 4. 全方位 AST 符號結構化選擇器 (SymbolSelector)
+
+CLI 指令（`callers`, `callees`, `impact`, `search`）支援更完備的結構化微型語法，調用者可提供精確層次資訊定位目標：
+
+| 語法模式 | 範例 | 說明 |
+| :--- | :--- | :--- |
+| **名稱** | `foo` | 任何名為 `foo` 的符號節點 |
+| **範疇.名稱** | `Foo.bar` | 在 `Foo` 範疇（類別/模組/父節點）中名為 `bar` 的節點 |
+| **可調用尾碼** | `run()` / `Worker.run()` | 限定符號類型為可調用（Function / Method）之節點 |
+| **類型前綴** | `class Foo` | 限定為類別節點 |
+| | `struct Point` | 限定為結構節點 |
+| | `interface IService` | 限定為介面節點 |
+| | `enum Color` | 限定為列舉節點 |
+| | `fn init()` / `def init()` | 限定為函式/方法 |
+| | `type ID` / `const MAX` / `var count` | 限定為別名、常數或變數 |
+| **正交複合** | `class Engine.setup()` | 在 `Engine` 類別內名為 `setup` 的可調用方法 |
+| | `struct Point.x` | 在 `Point` 結構內名為 `x` 的成員 |
+
+---
+
+## 5. 多語言調用拓撲協議 (LanguageTopologyProtocol)
+
+系統透過 `LanguageTopologyProtocol` 抽象協議將各語言的 AST 調用點與 Import 映射萃取解耦，支援 Python、JavaScript/TypeScript、C/C++、C# 等語言外掛註冊至 `TopologyProtocolRegistry`。
+
+---
+
+## 6. CLI 指令人體工學輸出 (Ergonomic CLI Usage)
 
 ```bash
-# 1. 查詢誰調用了目標符號 (Upstream Callers)
-python yscb.py knowledge-db callers "InvertedIndex.load_binary" -s
+# 查詢誰調用了 TopologyLinker 的 resolve_call_site 方法 (支援 SymbolSelector)
+python yscb.py knowledge-db callers "TopologyLinker.resolve_call_site()" --snippet
 
-# 2. 查詢目標符號內部調用了哪些底層符號 (Downstream Callees)
-python yscb.py knowledge-db callees "KnowledgeEngine.build_unified_index" -s
+# 查詢特定結構的下游調用
+python yscb.py knowledge-db callees "struct Point"
 
-# 3. 分析目標符號重構時的影響擴散半徑 (Blast Radius Impact)
-python yscb.py knowledge-db impact "InvertedIndex.patch_incremental" --depth=2
+# 分析特定類別重構的多階擴散影響面
+python yscb.py knowledge-db impact "class CallGraphIndex" --depth=2
 
-# 4. 輸出結構化 JSON 格式 (供自動化工具鏈串接)
+# 輸出結構化 JSON 格式 (供自動化工具鏈串接)
 python yscb.py knowledge-db callers "InvertedIndex.load_binary" --json
 python yscb.py knowledge-db impact "InvertedIndex.patch_incremental" --depth=3 --json
 ```
