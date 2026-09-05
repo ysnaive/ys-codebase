@@ -255,3 +255,32 @@
 - **效益與驗證**：
   - 實機 231 個檔案 hot-rebuild 索引由數分鐘且 CPU 卡死，壓降至僅 **10.4 秒** 平穩完成，全系統 0 凍結、0 卡頓。
   - 全套件 124/124 單元與契約測試 100% 通過（0 Fail、0 Skip、0 Unknown）。
+
+---
+
+### DN-14: JIT 10 符號動態探針、向量熔斷降級、CPU 執行緒自適應防飢餓與 CLI 體驗優化 (JIT Dynamic Probe, Vector Fuse Fallback & CLI UX)
+
+- **背景與根因**：
+  1. JIT 差量熱更新在大規模增量變更時若直接執行向量化，可能導致檢索命令卡頓數秒以上，失去 JIT 極速熱感。
+  2. 使用者可能需要選擇關閉向量檢索或自訂模型，但缺乏 Project/Local 層級組態支援。
+  3. CPU 執行緒防飢餓限制在多核高階機器上固定為 2 核心稍嫌保守，且無法依環境調整。
+  4. Hugging Face Hub 在無 Token 認證時會噴出警示，污染純淨 CLI 與 `--json` stdout 輸出。
+  5. 手動 `index` 建置缺乏清楚的階段進度反饋，且 `knowledge-db status` 存在索引已建立卻誤報未建立之假警報。
+- **架構解法**：
+  1. **Local/Project 雙層組態與型態安全防護 (`KnowledgeDBConfig`)**：
+     - 支援 `enable_vector_search`、`embedding_model`、`jit_vector_timeout_seconds`、`max_threads`。
+     - 型態安全轉換：支援字串布林與自動型態回退。
+  2. **JIT 10 符號動態探針與臨界值熔斷 (Dynamic Probe & Fuse)**：
+     - 變更符號 $\le 10$ 個時直接向量化；$> 10$ 個時以首批 10 符號實測耗時，推估全量時長。
+     - 若預估超過 `jit_vector_timeout_seconds` (預設 5.0s)，自動熔斷退回純 BM25 模式，輸出導引提示至 stderr，保證檢索響應不卡頓。
+  3. **CPU 執行緒自適應防飢餓機制 (`resolve_max_threads`)**：
+     - 預設 `"auto"` 取環境 CPU 數之一半 (`cpu_count // 2`)，提供自適應並行保護。
+  4. **HF Hub 警示屏蔽與 `--json` 輸出純淨化**：
+     - 在嵌入服務載入前設定 `HF_HUB_DISABLE_SYMLINKS_WARNING=1` 並過濾特定 Warning。
+     - 引導提示與進度全面分流至 `stderr`，確保 `--json` 模式下 `stdout` 100% 機器可解析。
+  5. **手動 index 雙軌 5 階段進度呈現與 status 索引狀態精確校驗**：
+     - 手動 `index` 時於 stderr 呈現 5 階段耗時與符號/圖譜統計。
+     - `status()` 精準判定 `unified.index.bin.gz` 與 `unified.vectors.bin.gz`，消除假警報。
+- **效益與驗證**：
+  - 9/9 新增 CLI UX 測試 (`TestCLIOptimizationAndUX`) 與 133/133 全量測試 100% 通過。
+

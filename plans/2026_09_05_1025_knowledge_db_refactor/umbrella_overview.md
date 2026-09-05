@@ -2,7 +2,7 @@
 
 > 計畫名稱：knowledge_db_refactor  
 > 建立日期：2026-09-05  
-> 狀態：In Progress  
+> 狀態：Completed  
 > Umbrella 模式：Pre-planned (預先規劃型)  
 > 模板版本：v1.2  
 
@@ -28,6 +28,7 @@
 | **sub_03** | `sub_03_networkx_call_graph_and_impact_analysis` | Full Track | `Completed` | **基於 NetworkX 的符號拓撲分析**：引入 `networkx`；利用 FQN 與 Import 作用域重構 `linker.py`（消除幽靈關聯）；重構 `graph.py` 提升 callers/callees 與多階 impact分析精度。 |
 | **sub_04** | `sub_04_test_suite_aggregation_and_purification` | Full Track | `Completed` | **測試套件聚合與純化**：整併同質與碎片化測試檔案，移除性質重複與過時測試；全面補齊 `self.mark_passed()` 根除 115+ Unknown 狀態；標註 4-Tier 分流機制。 |
 | **sub_05** | `sub_05_pipeline_engine_refactor_and_dogfooding` | Full Track | `Completed` | **流水線解耦與生態系驗收**：拆解 1,800 行 Monolithic `engine.py` 為 Pipeline 架構；核驗對外 CLI 契約；全套件純化測試 100% 回歸；完成 Dogfooding 閉環與發布。 |
+| **sub_06** | `sub_06_cli_ux_flow_refactor_and_optimization` | Full Track | `Completed` | **CLI UX 與流程重構**：Local 級向量搜尋開關、JIT 5秒臨界值評估與優雅降級、雙軌進度呈現、HF Hub 雜訊屏蔽、說明文件與 status 判定修復。 |
 
 ---
 
@@ -38,3 +39,5 @@
 - [x] **里程碑 3 (圖譜強化)**：完成基於 NetworkX 與 FQN 的精確調用拓撲與影響面分析 (sub_03)
 - [x] **里程碑 4 (測試純化)**：完成測試案例聚合純化、同質重複消除與 Unknown 狀態根絕 (sub_04)
 - [x] **里程碑 5 (架構收斂)**：完成 Pipeline 引擎解耦、全系統單元測試回歸、Dogfooding 驗證與正式打包發布 (sub_05)
+- [x] **里程碑 6 (體驗昇華)**：完成 CLI UX 與流程重構、Local 級向量搜尋開關、JIT 5秒臨界值評估與優雅降級 (sub_06)
+

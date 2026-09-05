@@ -87,6 +87,15 @@
   - **測試套件 100% 通過與本地物化閉環**：新增 `test_redundancy_filter`、`test_8000_char_budget_decay`、`test_indexing_pipeline_delegation` 與 `test_batching_and_thread_capping`；全模組 124/124 單元測試 100% 通過（0 Fail, 0 Skip, 0 Unknown）；透過 `python yscb.py install knowledge-db@build --force` 完成 Track A 本地安裝物化與 UX-01 實機檢索驗收。
   - **設計決策與手冊更新**：於 `docs/knowledge-db/DESIGN_NOTES.md` 登錄 `[DN-12]` 與 `[DN-13]`；更新 `docs/knowledge-db/README.md`。
 
+- **`sub_06_cli_ux_flow_refactor_and_optimization` (Completed)**：
+  - **Local/Project 雙層組態與多階型態回退 (`KnowledgeDBConfig`)**：支援專案與本機層級組態注入（`enable_vector_search`、`embedding_model`、`jit_vector_timeout_seconds`、`max_threads`）；實作強韌型態轉換防禦，字串布林與自訂數值均可安全解析，非合法設定安全回退預設值。
+  - **JIT 10 符號動態探針推估與臨界值熔斷 (Dynamic Probe & Fuse)**：針對增量變更，當待向量化符號 $> 10$ 個時，先以首批 10 符號實測向量化延遲，動態推估全量推論時長；若預估耗時超過 `jit_vector_timeout_seconds`（預設 5.0s），安全熔斷退回純 BM25 詞法檢索並於 stderr 拋出導引提示，消滅 JIT 查詢卡頓。
+  - **CPU 執行緒自適應防飢餓與模型切換失效機制**：`max_threads` 預設採 `"auto"` 自適應取 CPU 數之一半 (`cpu_count // 2`)，解除硬編碼 2 執行緒瓶頸；模型變更時自動偵測向量快取標頭，不符時即刻標記失效並平滑降級重建，避免維度不相容崩潰。
+  - **HF Hub 警示屏蔽、ANSI 階層色彩與 `--json` stdout 純淨化**：靜默屏蔽 Hugging Face Hub 未授權存取警示；實作 `TerminalStyler` 支援 ANSI 彩色階層樹狀渲染與 `NO_COLOR` / 非 TTY 自動去色；全量雜訊日誌分流至 stderr，確保 `--json` 輸出時 stdout 為 100% 機器可解析之純淨 JSON。
+  - **手動 `index` 雙軌 5 階段進度指示與 status 狀態精確校驗**：手動索引建置提供即時 5 階段進度指示與詳細耗時統整報告；`knowledge-db status` 精確識別二進位倒排索引檔案，根絕索引已建立卻誤報未建之假警報。
+  - **測試套件優化與全生態系 100% 通過**：新增 `test_cli_ux.py` 完整覆蓋 FT-01~09；在 `engine.py` 與 `hook.dev.py` 實裝測試環境確定性 Mock 向量通道，將全套件 133/133 測試執行時長自 210s 大幅壓降至 8.91s（<10s）；UX-01~04 實機驗收全數通過。
+  - **跨模組沙盒掛載斷鏈防禦 (`dev`)**：於 `source/dev/dev/testing/sandbox.py` 補強 Linux / virtiofs 懸空符號連結解除時之 `ENOENT` [Errno 2] 防禦，徹底消除沙盒清理警示。
+
 
 
 ## 2026_09_02_0533_ecosystem_hot_update_git_decoupling_and_pip_governance (Executing)
