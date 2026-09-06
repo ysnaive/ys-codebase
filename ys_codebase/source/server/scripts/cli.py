@@ -37,8 +37,14 @@ def _resolve_enable_console(
 
 
 def _get_yscb_root() -> str:
-    # yscb_root is current workspace or parent of .cache
-    return os.environ.get("YSCB_HOST_DIR", os.getcwd())
+    try:
+        from core import uri
+        return uri.resolve("yscb://")
+    except Exception:
+        cand = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if os.path.isdir(os.path.join(cand, ".modules")) or os.path.isdir(os.path.join(cand, "source")):
+            return cand
+        return os.environ.get("YSCB_HOST_DIR", os.getcwd())
 
 
 def _read_daemon_state(yscb_root: str) -> Optional[ServerDaemonState]:
@@ -83,6 +89,10 @@ def _handle_start(args: List[str], yscb_root: str) -> int:
         return 0
 
     cfg = ServerConfig.load(workspace_root=yscb_root)
+    if not cfg.enable:
+        print("[Server] Server is disabled in configuration ('enable': false). Aborting start.")
+        return 1
+
     enable_console = _resolve_enable_console(parsed.console, parsed.daemon, cfg.enable_console)
     ttl = parsed.ttl if parsed.ttl is not None else cfg.idle_timeout_sec
 
@@ -93,10 +103,16 @@ def _handle_start(args: List[str], yscb_root: str) -> int:
         return 0
     else:
         # Background detached mode
+        core_dir = os.path.join(yscb_root, ".modules", "core")
+        if not os.path.isdir(core_dir):
+            core_dir = os.path.join(yscb_root, "source", "core")
+        server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         cmd = [
             sys.executable,
             "-c",
-            f"import sys; sys.path.insert(0, r'{os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}'); "
+            f"import sys; "
+            f"sys.path.insert(0, r'{core_dir}'); "
+            f"sys.path.insert(0, r'{server_dir}'); "
             f"from server.master import MasterSupervisor; MasterSupervisor(r'{yscb_root}', idle_timeout_sec={ttl}).start(foreground=True)",
         ]
         pid = spawn_detached(cmd, cwd=yscb_root)
@@ -150,7 +166,11 @@ def _handle_stop(args: List[str], yscb_root: str) -> int:
 def _handle_status(args: List[str], yscb_root: str) -> int:
     state = _read_daemon_state(yscb_root)
     if not state or not is_process_alive(state.pid):
-        print("[Server] Status: Stopped (No active daemon found).")
+        cfg = ServerConfig.load(workspace_root=yscb_root)
+        if not cfg.enable:
+            print("[Server] Status: Disabled ('enable': false in config).")
+        else:
+            print("[Server] Status: Stopped (No active daemon found).")
         return 0
 
     info = _http_request(state, "/api/status", method="GET", timeout=1.5)

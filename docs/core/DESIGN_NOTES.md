@@ -27,6 +27,8 @@
 | **DN-16** | IDE 自動感知與 `_yscb_managed` 宣告式可復原軟合併 | `source/core/core/ide_projector.py` | ⚠️ WARNING |
 | **DN-17** | virtiofs 跨平台掛載環境符號連結動態探測與複製降級 | `source/core/core/pip_manager.py` | ⚠️ WARNING |
 | **DN-18** | 微內核獨立事件總線 (core.events) 與 Engine 徹底解耦 | `source/core/core/events.py` | 🚨 CRITICAL |
+| **DN-20** | 統一虛擬檔案系統 (core.vfs) 微內核與 URI 單向依賴、同目錄原子寫入 | `source/core/core/vfs/` | 🚨 CRITICAL |
+| **DN-21** | 宿主入口極簡瘦身、業務下沉至微內核與全域 Help 動態聚合引擎 | `yscb.py`<br/>`source/core/core/installer.py`<br/>`source/core/core/contributes.py` | 🚨 CRITICAL |
 
 ---
 
@@ -215,5 +217,18 @@
 - **防禦宣告**：
   > [!IMPORTANT]
   > **全生態系模組檔案存取優先使用 `core.vfs`；原子寫入暫存檔嚴禁建立於系統全域臨時目錄（如 `/tmp`），必須維持同目錄同分區原則！**
+
+---
+
+### [DN-21] 宿主入口極簡瘦身、業務下沉至微內核與全域 Help 動態聚合引擎
+
+- **核心決策**：
+  1. **宿主入口單純路由化**：`yscb.py` 徹底精簡至 ~280 行純淨單檔，僅承擔執行環境注入（私有 `.venv`、安全 Token `YSCB_HOST_DISPATCH_TOKEN`）、雙管道路由（管道 B: HTTP IPC 熱轉發 / 管道 A: 進程內冷啟動）與 Exit Code 剛性透傳。
+  2. **業務邏輯全面下沉**：批量模組還原 (`cmd_restore`)、Zip 解壓縮安全守衛與 `.gitignore` 宣告式維護全數下沉至 `core.installer`；全生態系指令清冊動態聚合下沉至 `core.contributes.print_global_help()`。
+  3. **向後相容最小安全代理**：宿主保留對 `core.installer` 與 `core.events` 的薄代理函式，在相容既有調用契約的前提下達成 0 業務侵入。
+- **背後考量**：避免宿主腳本持續單體膨脹導致維護性惡化，將業務能力回歸微內核與宣告式拓撲，貫徹微內核高凝聚、宿主薄路由的架構原則。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `yscb.py` 宿主腳本內重度實作業務邏輯！任何新增之套件管理、全域查詢或規則生成邏輯必須下沉至 `core` 或對應模組！**
 
 
