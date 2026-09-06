@@ -246,3 +246,69 @@ class TestDevChecker(YSCBTestCase):
             if os.path.exists(tmp_mod_dir):
                 shutil.rmtree(tmp_mod_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
+    def test_valid_optional_manifest(self):
+        """FT-03: 驗證合法的 optional 欄位通過 check_module 檢驗"""
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_valid_opt_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write(
+                    '{\n'
+                    '  "name": "mock_valid_opt_mod",\n'
+                    '  "version": "1.0.0.0",\n'
+                    '  "entry": "scripts/cli.py",\n'
+                    '  "dependencies": ["core"],\n'
+                    '  "optional": {\n'
+                    '    "server": {\n'
+                    '      "version": ">=1.0.0",\n'
+                    '      "hint": "提供常駐背景服務"\n'
+                    '    }\n'
+                    '  }\n'
+                    '}\n'
+                )
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+
+            report = self.checker.check_module("mock_valid_opt_mod")
+            self.assertTrue(report.passed, f"Expected pass, got errors: {report.errors}")
+            self.assertFalse(report.has_fails)
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_invalid_optional_manifest(self):
+        """FT-04: 驗證不合規的 optional 結構 (非 dict、缺 hint 等) 被精確攔截 [FAIL]"""
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_invalid_opt_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write(
+                    '{\n'
+                    '  "name": "mock_invalid_opt_mod",\n'
+                    '  "version": "1.0.0.0",\n'
+                    '  "entry": "scripts/cli.py",\n'
+                    '  "dependencies": ["core"],\n'
+                    '  "optional": {\n'
+                    '    "server": {\n'
+                    '      "version": ">=1.0.0"\n'
+                    '    }\n'
+                    '  }\n'
+                    '}\n'
+                )
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+
+            report = self.checker.check_module("mock_invalid_opt_mod")
+            self.assertFalse(report.passed)
+            self.assertTrue(report.has_fails)
+            self.assertTrue(any("missing non-empty string 'hint'" in e for e in report.errors))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+

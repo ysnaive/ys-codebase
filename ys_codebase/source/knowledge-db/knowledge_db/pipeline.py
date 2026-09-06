@@ -651,12 +651,6 @@ class IndexingPipeline:
 
         # 1. JIT 變更感知與自動增量熱自愈 [FR-12]
         if auto_rebuild:
-            from .daemon import check_and_notify_hot_reload_server
-            is_srv_running, srv_info = check_and_notify_hot_reload_server()
-            if is_srv_running and srv_info is not None:
-                auto_rebuild = False
-
-        if auto_rebuild:
             is_dirty, scanned_count, reason, full_files_map, diff_detail = self.scanner.check_invalidation(
                 snapshot_path=meta_file
             )
