@@ -99,7 +99,8 @@ class MasterSupervisor:
             self.watcher = ModulesWatcher(modules_dir, on_change_callback=self.restart_worker)
             self.watcher.start()
 
-        # 5. Start Service Workers
+        # 5. Discover and Start Service Workers
+        self._discover_service_workers()
         self.service_manager.start_all({"yscb_root": self.yscb_root})
 
         # 6. Start Idle TTL checker thread
@@ -120,6 +121,13 @@ class MasterSupervisor:
 
         return os.getpid()
 
+    def _discover_service_workers(self) -> None:
+        """Dynamically discovers and registers pluggable service workers from domain modules."""
+        try:
+            from knowledge_db.service import KnowledgeDBServiceWorker
+            self.service_manager.register(KnowledgeDBServiceWorker(self.yscb_root))
+        except Exception:
+            pass
 
     def stop(self, force: bool = False) -> None:
         """Stops the master supervisor and all child workers."""

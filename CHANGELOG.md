@@ -2,6 +2,15 @@
 
 ## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
 
+### sub_04_knowledge_db_service_worker_and_pipeline (Testing / Verification Gate)
+- **知識庫常駐服務 Worker 納管、微內核原語對齊與記憶體快取 mtime 微秒級熱自癒**：
+  - **收斂為 `KnowledgeDBServiceWorker`**：繼承 `server.service.BaseServiceWorker`（命名為 `"knowledge-db-watcher"`），依賴 `server` Master 託管生命週期，支援 500ms 防抖變更聚合與增量熱修補。
+  - **徹底移除 `knowledge-db daemon` 子命令**：自 `scripts/cli.py` 刪除 `daemon` 子命令與相關說明文案，不再向後相容；精簡 `daemon.py`，全面廢除自製 `HotReloadServer`、PID 鎖檔、Console 視窗與自製進程管理。
+  - **Worker 預熱事件與記憶體快取 Eager Preload**：響應 `server_worker_warming` 核心事件，`KnowledgeEngine.pre_warm()` 提前將 FastEmbed 向量模型單例與倒排索引/圖譜快照載入記憶體。
+  - **微秒級 mtime 快取比對與熱自癒**：`_GLOBAL_INDEX_CACHE` 維護 `unified_mtime` 與 `graph_mtime`，查詢前以微秒級精度比對磁碟快照 mtime，偵測到背景熱修補時就地熱刷新記憶體快照。
+  - **微內核底層原語全面對齊**：二進位快照持久化全面對齊 `core.vfs.write_bytes(atomic=True)`；排他鎖全面採用 `core.platform.lock.InterProcessLock`。
+  - **全套測試 100% 通過**：`TestServiceWorker` FT-01~06 全數通過，`knowledge-db` 全模組 140/140 單元測試 100% 通過，並通過 `dev check knowledge-db` 靜態合規檢驗。
+
 ### sub_03_server_module_daemon_supervisor (Verified)
 - **全新通用常駐服務模組 (server) 落地與微內核跨平台原語 (core.platform)**：
   - **微內核跨平台原語 (`core.platform`)**：實作 `spawn_detached`（無窗口/無 tty 脫鉤拉起進程）、`is_process_alive`（精確排除 Linux 殭屍進程 `Z`/`X` 與 non-blocking waitpid 收割）、`kill_process_tree`（遞迴收割整棵進程樹杜絕孤兒進程）與 `InterProcessLock`（跨平台 POSIX flock / Windows msvcrt 跨進程排他鎖）。
