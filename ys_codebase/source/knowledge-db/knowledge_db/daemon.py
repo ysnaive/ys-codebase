@@ -184,26 +184,13 @@ class HotReloadServer:
     @classmethod
     def get_cache_dir(cls, workspace_root: Optional[Union[str, Path]] = None) -> Path:
         """解析 cache://knowledge-db 實體目錄 (yscb://.cache/knowledge-db)。"""
-        root = Path(workspace_root or cls._find_workspace_root()).resolve()
-        try:
-            from core.uri import resolve
-            p = resolve("cache://knowledge-db", interactive=False)
-            if p:
-                cache_path = Path(p).resolve()
-                cache_path.mkdir(parents=True, exist_ok=True)
-                return cache_path
-        except Exception:
-            pass
-
-        # 降級備用解析
-        for candidate in [root / "ys_codebase" / ".cache" / "knowledge-db", root / ".cache" / "knowledge-db"]:
-            if (candidate.parent).exists() or candidate.exists():
-                candidate.mkdir(parents=True, exist_ok=True)
-                return candidate
-
-        fallback = root / ".cache" / "knowledge-db"
-        fallback.mkdir(parents=True, exist_ok=True)
-        return fallback
+        from core.uri import resolve
+        p = resolve("cache://knowledge-db", interactive=False)
+        if not p:
+            raise RuntimeError("Failed to resolve 'cache://knowledge-db' via core.uri.")
+        cache_path = Path(p).resolve()
+        cache_path.mkdir(parents=True, exist_ok=True)
+        return cache_path
 
     @classmethod
     def get_pid_file(cls, workspace_root: Optional[Union[str, Path]] = None) -> Path:
@@ -222,11 +209,30 @@ class HotReloadServer:
         """跨平台探測進程是否存活。"""
         if pid <= 0:
             return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+        if sys.platform == "win32":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not h_proc:
+                ERROR_ACCESS_DENIED = 5
+                if kernel32.GetLastError() == ERROR_ACCESS_DENIED:
+                    return True
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if kernel32.GetExitCodeProcess(h_proc, ctypes.byref(code)):
+                    return code.value == STILL_ACTIVE
+                return False
+            finally:
+                kernel32.CloseHandle(h_proc)
+        else:
+            try:
+                os.kill(pid, 0)
+                return True
+            except OSError:
+                return False
 
     @classmethod
     def is_running(cls, workspace_root: Optional[Union[str, Path]] = None) -> Tuple[bool, Optional[DaemonInfo]]:
@@ -382,27 +388,25 @@ class HotReloadServer:
             else:
                 return True
 
-        # 背景啟動新進程 (Detached)
+        # 背景啟動新進程 (Detached，強制限定 yscb.py 為唯一入口)
         yscb_py = root / "yscb.py"
-        if yscb_py.is_file():
-            cmd = [
-                sys.executable,
-                str(yscb_py),
-                "knowledge-db",
-                "daemon",
-                "run-foreground",
-                f"--workspace-root={root}",
-            ]
-        else:
-            cli_path = Path(__file__).resolve().parent.parent / "scripts" / "cli.py"
-            cmd = [
-                sys.executable,
-                str(cli_path),
-                "daemon",
-                "run-foreground",
-                "--workspace-root",
-                str(root),
-            ]
+        if not yscb_py.is_file():
+            host_dir = os.environ.get("YSCB_HOST_DIR")
+            if host_dir and (Path(host_dir) / "yscb.py").is_file():
+                yscb_py = Path(host_dir) / "yscb.py"
+            else:
+                raise FileNotFoundError(
+                    f"yscb.py not found at '{root}'. yscb.py is the sole entry point for background daemon execution."
+                )
+
+        cmd = [
+            sys.executable,
+            str(yscb_py),
+            "knowledge-db",
+            "daemon",
+            "run-foreground",
+            f"--workspace-root={root}",
+        ]
 
         try:
             # 跨平台建立完全分離的背景進程
@@ -447,12 +451,23 @@ class HotReloadServer:
             return True
 
         target_pid = info.pid
-        try:
-            # 優先發送 SIGTERM
-            sig = getattr(signal, "SIGTERM", signal.SIGINT)
-            os.kill(target_pid, sig)
-        except OSError:
-            pass
+        if sys.platform == "win32":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_TERMINATE = 0x0001
+            h_proc = kernel32.OpenProcess(PROCESS_TERMINATE, False, target_pid)
+            if h_proc:
+                try:
+                    kernel32.TerminateProcess(h_proc, 1)
+                finally:
+                    kernel32.CloseHandle(h_proc)
+        else:
+            try:
+                # 優先發送 SIGTERM
+                sig = getattr(signal, "SIGTERM", signal.SIGINT)
+                os.kill(target_pid, sig)
+            except OSError:
+                pass
 
         # 等待進程退出，最多 2 秒
         for _ in range(20):
@@ -460,12 +475,13 @@ class HotReloadServer:
             if not cls.is_pid_alive(target_pid):
                 break
         else:
-            # 強制 SIGKILL
-            try:
-                kill_sig = getattr(signal, "SIGKILL", signal.SIGTERM)
-                os.kill(target_pid, kill_sig)
-            except OSError:
-                pass
+            if sys.platform != "win32":
+                # 強制 SIGKILL
+                try:
+                    kill_sig = getattr(signal, "SIGKILL", signal.SIGTERM)
+                    os.kill(target_pid, kill_sig)
+                except OSError:
+                    pass
 
         if pid_file.is_file():
             try:
@@ -518,7 +534,12 @@ class HotReloadServer:
             srv_logger.removeHandler(h)
 
         try:
-            fh = logging.FileHandler(str(self.log_file_path), encoding="utf-8")
+            class FlushingFileHandler(logging.FileHandler):
+                def emit(self, record):
+                    super().emit(record)
+                    self.flush()
+
+            fh = FlushingFileHandler(str(self.log_file_path), encoding="utf-8")
             fmt = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
             fh.setFormatter(fmt)
             srv_logger.addHandler(fh)

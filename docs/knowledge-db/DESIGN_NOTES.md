@@ -340,3 +340,25 @@
      - 實作「Core Contributes（基底）+ 專案 `contribute.json`（覆蓋）」雙軌階層合併，確保專案層級既可覆蓋特定 Space，又完整保留 Donor 模組貢獻的空間與同義詞庫。
 - **效益與驗證**：
   - 147/147 (100.0%) 全模組測試 100% 通過，0 Failed, 0 Unknown, 0 Skipped。
+
+---
+
+### DN-17: Windows 守護進程 Win32 API 存活探測、Console Ctrl+C 廣播誤殺根絕與 yscb.py 唯一入口收斂 (Windows Daemon Win32 Process Probing, Console Ctrl+C Broadcast Elimination & yscb.py Single Entry Point)
+
+- **背景與根因**：
+  1. **Windows `os.kill(pid, 0)` 語意陷阱**：POSIX 下 `kill(pid, 0)` 僅檢測進程存在性，但在 Windows 上 Python 映射至 `signal.CTRL_C_EVENT = 0`，底層調用 `GenerateConsoleCtrlEvent`。若目標進程為 Detached Process，發送 Ctrl+C 觸發 `WinError 87`（引發 `<built-in function kill> returned a result with an exception set`）；若在同一控制台下，會向整個控制台廣播 Ctrl+C，導致背景進程自我中斷或前台測試進程遭 `KeyboardInterrupt` 誤殺。
+  2. **PID 檔案連鎖誤刪**：`start()` 後父進程探測 `is_running()`，因 `is_pid_alive()` 異常誤判守護進程已死，立即刪除剛生成的 `daemon.pid`，造成後續狀態查詢始終為 `Inactive` (PID: None)。
+  3. **快取目錄降級污染**：`get_cache_dir` 存在舊版路徑降級搜尋與 `root / ".cache"` 兜底，背離了 `cache.root://` SSOT 規範，存在污染專案根目錄之風險。
+  4. **背景進程日誌緩衝遺失**：預設 `logging.FileHandler` 存在系統 I/O 緩衝，進程異常退出時未 flush 的關鍵錯誤日誌遺失。
+- **架構解法**：
+  1. **Win32 原生 API 探測與終止 (`HotReloadServer.is_pid_alive` & `stop`)**：
+     - Windows 平台使用 `ctypes` 調用 `kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)` 搭配 `kernel32.GetExitCodeProcess` 檢查 `STILL_ACTIVE = 259`；若返回 `ERROR_ACCESS_DENIED (5)` 判定進程存活。
+     - 停止進程在 Windows 下改用 `kernel32.TerminateProcess`，徹底消滅對 Windows 調用 `os.kill` 造成的廣播災難。
+  2. **完全移除降級回補與 yscb.py 唯一入口收斂**：
+     - `get_cache_dir` 徹底移除降級候選搜尋清單與 `root / ".cache"` 兜底，100% 收斂為 `core.uri.resolve("cache://knowledge-db")`。
+     - 背景守護進程啟動強制以 `yscb.py` 為唯一入口，刪除退回調用 `cli.py` 之非標準路徑。
+  3. **日誌即時 Flush (`FlushingFileHandler`)**：
+     - 在 `_setup_logger` 引入 `FlushingFileHandler`，於每次 `emit` 後即時 `self.flush()`，確保崩潰前所有訊息均已完整落盤。
+- **效益與驗證**：
+  - 148/148 (100.0%) 單元與邊界測試 100% 通過，Windows 控制台廣播誤殺徹底消滅，守護進程穩定啟動與退出。
+
