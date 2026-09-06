@@ -755,11 +755,33 @@ class HotReloadServer:
             )
 
             if diff_detail.has_changes:
-                res = pipeline.hot_patch_unified_index(diff_detail, full_files_map, timeout_seconds=float('inf'))
+                res = None
+                try:
+                    res = pipeline.hot_patch_unified_index(diff_detail, full_files_map, timeout_seconds=float('inf'))
+                except Exception as pe:
+                    if self.file_logger:
+                        self.file_logger.warning(f"Hot patch threw exception: {pe}, falling back to full rebuild.")
+
+                patched = bool(res[0]) if isinstance(res, (tuple, list)) and len(res) > 0 else bool(res)
+                if not patched:
+                    if self.file_logger:
+                        self.file_logger.info(
+                            "Hot patch unhandled or returned False, executing fallback full rebuild to ensure consistency..."
+                        )
+                    try:
+                        pipeline.build_unified_index(force=True, current_files=full_files_map)
+                        patched = True
+                        if self.file_logger:
+                            self.file_logger.info("Fallback full rebuild completed successfully.")
+                    except Exception as fe:
+                        if self.file_logger:
+                            self.file_logger.error(f"Fallback full rebuild failed: {fe}", exc_info=True)
+
                 elapsed_ms = (time.time() - t0) * 1000
+                diff_summary = f"{len(diff_detail.added)} added, {len(diff_detail.modified)} modified, {len(diff_detail.deleted)} deleted"
                 if self.file_logger:
                     self.file_logger.info(
-                        f"Hot patch completed in {elapsed_ms:.1f}ms ({scanned_count} files checked). Patched: {bool(res)}"
+                        f"Hot patch completed in {elapsed_ms:.1f}ms ({scanned_count} files checked: {diff_summary}). Patched: {patched}"
                     )
             else:
                 elapsed_ms = (time.time() - t0) * 1000
@@ -832,9 +854,19 @@ class HotReloadServer:
                 if self.file_logger:
                     self.file_logger.info(f"Startup check: Detected changes while offline ({reason}), applying hot patch...")
                 if diff_detail.has_changes:
-                    pipeline.hot_patch_unified_index(diff_detail, full_files_map, timeout_seconds=float('inf'))
+                    res = None
+                    try:
+                        res = pipeline.hot_patch_unified_index(diff_detail, full_files_map, timeout_seconds=float('inf'))
+                    except Exception as pe:
+                        if self.file_logger:
+                            self.file_logger.warning(f"Startup check hot patch threw exception: {pe}")
+                    patched = bool(res[0]) if isinstance(res, (tuple, list)) and len(res) > 0 else bool(res)
+                    if not patched:
+                        if self.file_logger:
+                            self.file_logger.info("Startup check: Hot patch unhandled/failed, falling back to full rebuild...")
+                        pipeline.build_unified_index(force=True, current_files=full_files_map)
                 else:
-                    pipeline.build_unified_index(force=True)
+                    pipeline.build_unified_index(force=True, current_files=full_files_map)
                 if self.file_logger:
                     self.file_logger.info(f"Startup check: Hot patch completed in {(time.time() - t0)*1000:.1f}ms.")
             else:

@@ -1,6 +1,16 @@
 # 專案變更歷史 (Changelog)
 
-本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
+## 2026_09_06_1358_knowledge_db_hot_reload_fix (Completed)
+
+- **knowledge-db 熱重載新增與修改檔案靜默 no-op 修復與物理級 SSOT (`P07_walkthrough.md`)**：
+  - **倒排索引磁碟懶加載 (`load_binary`)**：解決 `IndexingPipeline.hot_patch_unified_index` 在冷啟動或記憶體無快取時，因 `_unified_index is None` 直接短路返回 `False` 的靜默失效問題。
+  - **Daemon 熱修補失敗剛性雙重兜底 (`build_unified_index`)**：在 `HotReloadServer._execute_debounced_patch` 與 `_run_startup_check` 中，增量熱修補回傳 `False` 或遭遇例外時強制觸發全量自癒重建，徹底消除未更新盲區。
+  - **結構化可觀測性日誌**：輸出結構化 diff 計數日誌 (`N added, N modified, N deleted`)，修補失敗或降級全量重建時明確記錄原因。
+  - **路線 2：物理級單一真理來源 (Physical SSOT)**：
+    - 徹底廢除 `spaces/<space>/fingerprints.json` 實體檔案與序列化，不再生成任何 JSON 指紋檔案。
+    - `FingerprintScanner.scan_space` 與 `scan_all_spaces` 改以 `unified.meta.bin` (`BinarySnapshotManager`) 為唯一快照基準進行微秒級增量比對與原子持久化。
+    - `KnowledgeEngine.status()` 改由 `unified.meta.bin` 二進位快照動態反查空間快取檔案數，徹底解決 7 天快取時間差導致的狀態撕裂。
+  - **測試套件純化與版本晉升**：移除過時 JSON 指紋測試，更新二進位快照驗證；全模組 151/151 單元測試 100% 通過；發布晉升為 `knowledge-db@1.0.2.2`。
 
 ## 2026_09_06_1105_knowledge_db_windows_daemon_fix (Completed)
 

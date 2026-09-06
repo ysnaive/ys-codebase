@@ -16,7 +16,7 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from knowledge_db.scanner import FileFingerprint, FingerprintScanner
+from knowledge_db.scanner import BinarySnapshotManager, FileFingerprint, FingerprintScanner
 from knowledge_db.schema import SpaceConfig
 from knowledge_db.space import SpaceManager
 
@@ -53,42 +53,6 @@ class TestScanner(YSCBTestCase):
 
         self.mark_passed()
 
-    @require(Requirement.WORKFLOW)
-    def test_ft_07_stage_2_touch_file_sha1_match(self):
-        """FT-07: 驗證 Stage 2 校驗：touch 檔案時比對 SHA1 一致僅更新快取 mtime 並標記 UNCHANGED (EC-04)"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            src_dir = temp_path / "src"
-            src_dir.mkdir(parents=True)
-            storage_dir = temp_path / "storage"
-
-            file1 = src_dir / "app.py"
-            file1.write_text("def run(): pass", encoding="utf-8")
-
-            space_cfg = SpaceConfig(name="test_space", include=[str(src_dir)])
-            sm = SpaceManager(storage_dir=storage_dir, contributes_data={"spaces": {"test_space": space_cfg.to_dict()}})
-            scanner = FingerprintScanner(sm)
-
-            # 首次掃描
-            scanner.scan_space(space_cfg)
-
-            # 模擬 touch 檔案 (修改 mtime 但內容不變)
-            old_stat = file1.stat()
-            new_mtime = old_stat.st_mtime + 100.0
-            os.utime(str(file1), (new_mtime, new_mtime))
-
-            # 再次掃描: Stage 1 不符進入 Stage 2，SHA1 一致 ➔ 標記 UNCHANGED
-            diff = scanner.scan_space(space_cfg)
-            self.assertEqual(len(diff.added), 0)
-            self.assertEqual(len(diff.modified), 0)
-            self.assertEqual(len(diff.deleted), 0)
-            self.assertEqual(len(diff.unchanged), 1)
-
-            # 驗證快取中 mtime 已更新
-            fps = scanner.load_fingerprints("test_space")
-            self.assertAlmostEqual(fps["app.py"].mtime, new_mtime, places=1)
-
-        self.mark_passed()
 
     @require(Requirement.WORKFLOW)
     def test_ft_08_diff_detection_added_modified_deleted(self):
@@ -169,17 +133,23 @@ class TestScanner(YSCBTestCase):
             self.assertEqual(len(results["space_a"].added), 1)
             self.assertEqual(len(results["space_b"].added), 1)
 
-            # 驗證實體 fingerprints.json 是否正確寫入
+            # 驗證實體 unified.meta.bin 是否正確寫入 (SSOT)，且嚴格不生成 fingerprints.json
+            meta_bin = storage_dir / "indices" / "unified.meta.bin"
+            self.assertTrue(meta_bin.exists())
+            loaded = BinarySnapshotManager.load(meta_bin)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(len(loaded), 2)
+
             fp_a = storage_dir / "spaces" / "space_a" / "fingerprints.json"
             fp_b = storage_dir / "spaces" / "space_b" / "fingerprints.json"
-            self.assertTrue(fp_a.exists())
-            self.assertTrue(fp_b.exists())
+            self.assertFalse(fp_a.exists())
+            self.assertFalse(fp_b.exists())
 
         self.mark_passed()
 
     @require(Requirement.WORKFLOW)
     def test_et_01_corrupted_cache_self_healing(self):
-        """ET-01: 驗證指紋快取檔案損毀時自癒重置為全量掃描並修復 (EC-03)"""
+        """ET-01: 驗證二進位快照檔案損毀時自癒重置為全量掃描並修復"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -187,11 +157,11 @@ class TestScanner(YSCBTestCase):
             (src_dir / "test.py").write_text("content", encoding="utf-8")
 
             storage_dir = temp_path / "storage"
-            space_dir = storage_dir / "spaces" / "corrupt_space"
-            space_dir.mkdir(parents=True)
+            indices_dir = storage_dir / "indices"
+            indices_dir.mkdir(parents=True)
 
-            corrupt_file = space_dir / "fingerprints.json"
-            corrupt_file.write_text("NOT A VALID JSON {{{", encoding="utf-8")
+            corrupt_file = indices_dir / "unified.meta.bin"
+            corrupt_file.write_bytes(b"CORRUPTED_NON_MAGIC_DATA")
 
             space_cfg = SpaceConfig(name="corrupt_space", include=[str(src_dir)])
             sm = SpaceManager(storage_dir=storage_dir, contributes_data={"spaces": {"corrupt_space": space_cfg.to_dict()}})
@@ -200,9 +170,10 @@ class TestScanner(YSCBTestCase):
             diff = scanner.scan_space(space_cfg)
             self.assertEqual(len(diff.added), 1)
 
-            with open(corrupt_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self.assertIn("test.py", data)
+            # 驗證自癒覆蓋寫入合法的二進位快照
+            loaded = BinarySnapshotManager.load(corrupt_file)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(len(loaded), 1)
 
         self.mark_passed()
 

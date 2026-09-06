@@ -27,6 +27,8 @@ from knowledge_db.config import (
 import importlib.util
 
 from knowledge_db.daemon import DaemonInfo, HotReloadServer
+from knowledge_db.retrieval import InvertedIndex
+from knowledge_db.scanner import ScanDiffDetail
 from scripts.cli import main
 
 
@@ -524,5 +526,75 @@ class TestHotReloadServer(YSCBTestCase):
         md_file = self.root_path / "custom" / "doc.md"
         self.assertFalse(server.is_path_watched(md_file))
 
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_hot_patch_lazy_loads_inverted_index(self):
+        """FT-01: 驗證 IndexingPipeline.hot_patch_unified_index 在 _unified_index 為 None 時自動自磁碟懶加載"""
+        indices_dir = self.root_path / "indices"
+        indices_dir.mkdir(parents=True, exist_ok=True)
+        bin_file = indices_dir / "unified.index.bin.gz"
+
+        idx = InvertedIndex(space_name="unified")
+        idx.save_binary(bin_file)
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.get_indices_dir.return_value = indices_dir
+        mock_pipeline._unified_index = None
+        mock_pipeline._call_graph_index = None
+        mock_pipeline.config = None
+        mock_pipeline.bundler.bundle_dirty_files.return_value = ({}, set())
+
+        from knowledge_db.pipeline import IndexingPipeline
+        res = IndexingPipeline.hot_patch_unified_index(
+            mock_pipeline,
+            diff_detail=ScanDiffDetail(),
+            full_files_map={},
+        )
+        self.assertTrue(res.patched)
+        self.assertIsNotNone(mock_pipeline._unified_index)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_debounced_patch_fallback_full_rebuild(self):
+        """FT-02 & FT-03: 驗證 HotReloadServer._execute_debounced_patch 熱修補失敗時剛性兜底全量自癒重建與 diff 明細日誌"""
+        mock_pipeline = MagicMock()
+        diff = ScanDiffDetail(added={"/a.py"}, modified={"/b.py"}, deleted={"/c.py"})
+        mock_pipeline.scanner.check_invalidation.return_value = (True, 3, "test", {}, diff)
+        mock_pipeline.hot_patch_unified_index.return_value = (False, False, None)
+
+        server = HotReloadServer(workspace_root=self.root_path, pipeline=mock_pipeline)
+        server.file_logger = MagicMock()
+
+        server._pending_dirty_paths.add(str(self.root_path / "a.py"))
+        server._execute_debounced_patch()
+
+        mock_pipeline.hot_patch_unified_index.assert_called_once()
+        mock_pipeline.build_unified_index.assert_called_once_with(force=True, current_files={})
+        log_calls = [c[0][0] for c in server.file_logger.info.call_args_list]
+        self.assertTrue(any("1 added, 1 modified, 1 deleted" in msg for msg in log_calls))
+        self.assertTrue(any("Fallback full rebuild completed successfully" in msg for msg in log_calls))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_corrupted_binary_cache_fallback(self):
+        """ET-01: 驗證磁碟二進位快取損毀時懶加載安全捕獲異常並回退 False"""
+        indices_dir = self.root_path / "indices"
+        indices_dir.mkdir(parents=True, exist_ok=True)
+        bin_file = indices_dir / "unified.index.bin.gz"
+        bin_file.write_bytes(b"INVALID_GZIP_CORRUPTED_BYTES")
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.get_indices_dir.return_value = indices_dir
+        mock_pipeline._unified_index = None
+
+        from knowledge_db.pipeline import IndexingPipeline
+        res = IndexingPipeline.hot_patch_unified_index(
+            mock_pipeline,
+            diff_detail=ScanDiffDetail(),
+            full_files_map={},
+        )
+        self.assertFalse(res.patched)
+        self.assertIsNone(mock_pipeline._unified_index)
         self.mark_passed()
 

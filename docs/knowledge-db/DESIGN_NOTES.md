@@ -362,3 +362,40 @@
 - **效益與驗證**：
   - 148/148 (100.0%) 單元與邊界測試 100% 通過，Windows 控制台廣播誤殺徹底消滅，守護進程穩定啟動與退出。
 
+---
+
+### DN-18: 熱重載倒排索引磁碟懶加載、Daemon 雙重兜底全量自癒重建與可觀測性強化 (Hot Reload Lazy Loading, Dual Fallback Full Rebuild & Observability)
+
+- **背景與根因**：
+  1. **冷啟動記憶體快取真空**：當 `HotReloadServer` 背景守護進程啟動且離線檔案無變更時，`pipeline._unified_index` 在記憶體中保持 `None`。
+  2. **熱修補無條件短路**：當檔案系統變更觸發防抖後，`hot_patch_unified_index` 檢查 `if self._unified_index is None:` 即無條件返回 `HotPatchResult(False)`，未嘗試自磁碟讀取既有 `unified.index.bin.gz` 快取。
+  3. **Daemon 缺乏自癒兜底機制**：`_execute_debounced_patch` 與 `_run_startup_check` 在熱修補回傳 `False` 或拋出異常時，未如 CLI 前台般降級執行 `build_unified_index(force=True)`，僅記錄 `Patched: False` 即結案，導致磁碟快照持續停滯。
+  4. **CLI JIT 旁路放大盲區**：前台 CLI 探測到守護進程在線時旁路 JIT 檢查，直接讀取磁碟上的過期快取，導致新增與修改檔案陷入持續檢索不到的永久盲區 (`total: 0`)。
+- **架構解法**：
+  1. **倒排索引磁碟懶加載 (`hot_patch_unified_index`)**：
+     - 在 `hot_patch_unified_index` 入口處檢查：若 `self._unified_index is None` 且 `bin_file.exists()`，自動調用 `InvertedIndex.load_binary(bin_file)` 還原倒排表與符號池至記憶體，與 `CallGraphIndex` 及 `VectorIndex` 的磁碟還原邏輯對齊。
+     - 若還原異常（如檔案損毀），安全捕獲警告並回傳 `False` 由上層兜底。
+  2. **Daemon 雙重剛性自癒兜底 (`_execute_debounced_patch` & `_run_startup_check`)**：
+     - 當增量熱修補回傳 `False` 或遭遇未處理例外時，Daemon 強制執行 `pipeline.build_unified_index(force=True, current_files=full_files_map)` 全量重建自癒，保證磁碟產物物理更新。
+  3. **結構化可觀測性日誌**：
+     - 於熱修補完成時，日誌精確記錄變更分類（`N added, N modified, N deleted`）；在觸發全量兜底重建時明確輸出原因日誌。
+- **效益與驗證**：
+  - 新增 FT-01~03 與 ET-01 單元測試，既有與新增測試 100% 通過，徹底消除冷啟動熱修補靜默失效與檢索盲區。
+
+---
+
+### [DN-19] 物理級單一真理來源 (Physical SSOT)：廢除 JSON 指紋檔全權收斂至二進位快照
+
+- **背景與動機**：
+  - 歷史架構中，空間指紋曾以 `spaces/<space>/fingerprints.json` 形式儲存，而背景 HotReloadServer 與 JIT 變更嗅探則使用原生二進位快照 `indices/unified.meta.bin` (`BinarySnapshotManager`, Magic: `YFP1`)。
+  - 兩套機制並存造成物理級狀態撕裂：前台 `engine.status()` 讀取過期 JSON 指紋呈現數天前之檔案計數，造成開發者對索引新鮮度之強烈誤判。
+- **架構重構與拍板 (路線 2)**：
+  1. **徹底廢除 `fingerprints.json`**：
+     - 磁碟不再寫入任何 `fingerprints.json`。
+     - 移除舊版 SHA-1 內容比對與 JSON 損毀自癒測試。
+  2. **SDK 全面收斂至 `unified.meta.bin`**：
+     - `FingerprintScanner.scan_space` 與 `scan_all_spaces` 直接以 `unified.meta.bin` 為快照基準進行極速增量比對，並以原子替換更新二進位快照。
+     - `KnowledgeEngine.status()` 改由 `unified.meta.bin` 載入全域快照，動態匹配各空間之 `include`/`exclude`/`file_patterns` 即時統計，微秒級完成且 100% 反映真實索引狀態。
+     - 既有 `load_fingerprints` 介面轉為自二進位快照反查相容層，確保下游相容性。
+- **效益與驗證**：
+  - 系統快取狀態達到 100% 物理級 SSOT，消弭記憶體與磁碟、前台與背景守護進程間的一切狀態歧異。

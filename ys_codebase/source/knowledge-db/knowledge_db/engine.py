@@ -31,7 +31,7 @@ from .hybrid import HybridSearchEngine
 from .parsers.registry import ParserRegistry
 from .pipeline import IndexingPipeline
 from .retrieval import BM25Engine, CodeSnippet, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
-from .scanner import FingerprintScanner, ScanDiffDetail, ScanDiffResult
+from .scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffDetail, ScanDiffResult
 from .schema import AggregatedFileResult, AggregatedItem, SymbolCallSite, UnifiedSymbol
 from .space import SpaceManager
 from .tokenizer import MultilingualTokenizer
@@ -253,11 +253,18 @@ class KnowledgeEngine:
         has_unified_index = bin_unified.exists() or json_unified.exists()
         bin_vectors = indices_dir / "unified.vectors.bin.gz"
         has_vector_index = bin_vectors.exists()
+        meta_bin = indices_dir / "unified.meta.bin"
+        cached_snapshot = BinarySnapshotManager.load(meta_bin) if meta_bin.exists() else None
 
         space_details = {}
         for sp_name, sp in spaces.items():
-            fps = self.scanner.load_fingerprints(sp_name)
-            cached_files = len(fps)
+            if cached_snapshot:
+                cached_files = sum(
+                    1 for p in cached_snapshot
+                    if self.scanner._file_belongs_to_space(p, sp)
+                )
+            else:
+                cached_files = 0
 
             bin_idx = indices_dir / f"{sp_name}.index.bin.gz"
             json_idx = indices_dir / f"{sp_name}.index.json"

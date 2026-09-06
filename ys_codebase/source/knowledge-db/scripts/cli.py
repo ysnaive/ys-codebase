@@ -85,7 +85,7 @@ def main(argv: List[str]) -> int:
                 print(f"  - 空間: {styler.path(name)} (來源: {sp.get('origin', 'unknown')}){pat_str}")
                 if sp.get("description"):
                     print(f"    說明: {sp['description']}")
-                print(f"    來源目錄數: {sp.get('include_count', 0)}, 指紋快取檔案: {sp.get('cached_files', sp.get('fingerprint_cached_files', 0))} 檔, 倒排索引: {idx_str}")
+                print(f"    來源目錄數: {sp.get('include_count', 0)}, 快取檔案: {sp.get('cached_files', sp.get('fingerprint_cached_files', 0))} 檔, 倒排索引: {idx_str}")
             print("-" * 80)
             return 0
 
