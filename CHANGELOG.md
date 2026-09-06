@@ -1,5 +1,22 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_06_1635_knowledge_db_embedding_model_name_fix (Completed)
+
+- **knowledge-db 向量模型名稱錯誤修復與別名自動補全正規化 (`fast_track_plan.md`)**：
+  - **標準名稱修正**：修正 `config/knowledge-db/config.project.json` 與 `source/knowledge-db/configurable/config.project.json` 之 `"embedding_model"` 為標準合格名稱 `"BAAI/bge-small-zh-v1.5"`，解決遺漏 `BAAI/` 前綴導致 FastEmbed 白名單比對失敗的警告。
+  - **智慧別名補全與正規化**：於 `EmbeddingService` 與 `KnowledgeDBConfig.load()` 實作 `normalize_model_name`，自動補全 `bge-*`（補齊 `BAAI/`）與 `paraphrase-*` / `all-*`（補齊 `sentence-transformers/`）縮寫別名；並在 FastEmbed 初始化時針對末尾名稱進行模糊相容比對，徹底杜絕噪音日誌。
+  - **測試套件驗證**：於 `test_cli_ux.py` 增設別名補全與正規化單元測試；全模組 160/160 單元測試 100% 通過。
+
+## 2026_09_06_1625_knowledge_db_server_console_option (Completed)
+
+- **knowledge-db 守護進程 Server Console 開啟選項支援與雙模式啟動分流 (`fast_track_plan.md`)**：
+  - **組態欄位與型態防禦 (`KnowledgeDBConfig`)**：新增 `enable_server_console: bool = False`（常數 `DEFAULT_ENABLE_SERVER_CONSOLE = False`），於 `load()` 實作嚴格型態防禦轉型，支援布林值、字串 ("true"/"false"/"1"/"0") 以及向後相容別名 `hot_reload_server_console`。
+  - **守護進程啟動雙模式分流 (`ensure_running`)**：
+    - **預設隱藏背景模式 (`enable_server_console: False`)**：Windows 下透過 WMI `Win32_Process.Create` 託管拉起，徹底突破 Job Object 約束且無任何彈窗干擾。
+    - **可見視窗觀測模式 (`enable_server_console: True` 或 CLI `--console`)**：Windows 下透過 PowerShell `Start-Process` 拉起獨立 Console 視窗，提供即時 stdout/stderr 日誌串流輸出，便利除錯觀測。
+  - **CLI 命令與本機組態適配**：於 `yscb.py knowledge-db daemon start` 子命令新增 `--console` 與 `--no-console` 覆寫參數；於 `config.local.json` 顯式配置 `"enable_server_console": false`。
+  - **測試套件與驗證**：新增 `FT-23` 測試案例覆蓋組態防禦解析與啟動分流驗證；全模組 160/160 單元測試 100% 通過。
+
 ## 2026_09_06_1500_knowledge_db_watch_scope_and_process_cleanup (Completed)
 
 - **knowledge-db 監聽過濾範疇收斂、四層剛性進程防護與進程洩漏治理 (`fast_track_plan.md`)**：

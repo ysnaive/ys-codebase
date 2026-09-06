@@ -544,10 +544,20 @@ class HotReloadServer:
             return False
 
     @classmethod
+    def resolve_console_enabled(cls, workspace_root: Optional[Union[str, Path]] = None) -> bool:
+        """解析當前組態中是否啟用 server console [FR-10]。"""
+        try:
+            cfg = KnowledgeDBConfig.load(workspace_root=workspace_root)
+            return bool(getattr(cfg, "enable_server_console", False))
+        except Exception:
+            return False
+
+    @classmethod
     def ensure_running(
         cls,
         workspace_root: Optional[Union[str, Path]] = None,
         space_manager: Optional[Any] = None,
+        enable_console: Optional[bool] = None,
     ) -> bool:
         """
         若未運行則以 Detached 背景進程啟動 Server；
@@ -560,6 +570,11 @@ class HotReloadServer:
         """
         root = Path(workspace_root or cls._find_workspace_root()).resolve()
         lock_file = cls.get_lock_file(root)
+
+        if enable_console is None:
+            show_console = cls.resolve_console_enabled(root)
+        else:
+            show_console = bool(enable_console)
 
         with DaemonLock(lock_file):
             current_ver = cls.get_module_version()
@@ -624,16 +639,27 @@ class HotReloadServer:
             # Windows Job Object Breakaway 防禦：
             # 當前台 CLI 處於 IDE / CI / Task Runner 之 Windows Job Object 且無 Breakaway 權限時，
             # 一般 subprocess.Popen 會被限制在同一個 Job 內，一旦 CLI 父進程結束即遭 Windows 自動連帶處決。
-            # 透過 WMI (Win32_Process.Create) 將進程委託由 WmiPrvSE 服務託管拉起，徹底突破 Job Object 約束常駐。
+            # 依據 show_console 決策：
+            # - False (預設)：透過 WMI (Win32_Process.Create) 隱藏拉起，徹底突破 Job Object 約束常駐且不彈窗。
+            # - True：透過 Start-Process 開啟獨立可見之 Console 視窗，提供即時日誌輸出觀測。
             if sys.platform == "win32" and os.environ.get("YSCB_TEST_SANDBOX") != "1":
                 try:
-                    full_cmd = subprocess.list2cmdline(cmd)
-                    ps_cmd_arg = full_cmd.replace("'", "''")
                     ps_root_arg = str(root).replace("'", "''")
-                    ps_script = (
-                        f"$arg = @{{ CommandLine = '{ps_cmd_arg}'; CurrentDirectory = '{ps_root_arg}' }}; "
-                        f"(Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $arg).ProcessId"
-                    )
+                    if show_console:
+                        ps_exe_arg = str(daemon_exe).replace("'", "''")
+                        arg_list = subprocess.list2cmdline(cmd[1:]).replace("'", "''")
+                        ps_script = (
+                            f"(Start-Process -FilePath '{ps_exe_arg}' "
+                            f"-ArgumentList '{arg_list}' "
+                            f"-WorkingDirectory '{ps_root_arg}' -PassThru).Id"
+                        )
+                    else:
+                        full_cmd = subprocess.list2cmdline(cmd)
+                        ps_cmd_arg = full_cmd.replace("'", "''")
+                        ps_script = (
+                            f"$arg = @{{ CommandLine = '{ps_cmd_arg}'; CurrentDirectory = '{ps_root_arg}' }}; "
+                            f"(Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $arg).ProcessId"
+                        )
                     out = subprocess.check_output(
                         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
                         text=True,
@@ -644,7 +670,7 @@ class HotReloadServer:
                     if raw_pid.isdigit() and int(raw_pid) > 0:
                         target_pid = int(raw_pid)
                 except Exception as we:
-                    logger.debug(f"[knowledge-db:daemon] WMI CIM spawn skipped or fallback: {we}")
+                    logger.debug(f"[knowledge-db:daemon] Process spawn via PowerShell skipped or fallback: {we}")
 
             if target_pid is None:
                 try:
@@ -652,17 +678,19 @@ class HotReloadServer:
                     child_env["KNOWLEDGE_DB_DAEMON_PROCESS"] = "1"
 
                     popen_kwargs: Dict[str, Any] = {
-                        "stdout": subprocess.DEVNULL,
-                        "stderr": subprocess.DEVNULL,
+                        "stdout": None if show_console else subprocess.DEVNULL,
+                        "stderr": None if show_console else subprocess.DEVNULL,
                         "stdin": subprocess.DEVNULL,
                         "cwd": str(root),
                         "env": child_env,
                     }
                     if sys.platform == "win32":
-                        popen_kwargs["creationflags"] = (
-                            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-                            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-                        )
+                        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+                        if show_console:
+                            flags |= getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+                        else:
+                            flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+                        popen_kwargs["creationflags"] = flags
                     else:
                         popen_kwargs["start_new_session"] = True
 

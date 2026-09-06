@@ -17,6 +17,7 @@ DEFAULT_JIT_VECTOR_TIMEOUT_SECONDS: float = 5.0
 DEFAULT_MAX_THREADS: str = "auto"
 DEFAULT_ENABLE_HOT_RELOAD_SERVER: bool = False
 DEFAULT_HOT_RELOAD_SERVER_INACTIVITY_TIMER_SEC: int = 600
+DEFAULT_ENABLE_SERVER_CONSOLE: bool = False
 
 
 @dataclass
@@ -27,6 +28,7 @@ class KnowledgeDBConfig:
     max_threads: Union[str, int] = DEFAULT_MAX_THREADS
     enable_hot_reload_server: bool = DEFAULT_ENABLE_HOT_RELOAD_SERVER
     hot_reload_server_inactivity_timer_sec: int = DEFAULT_HOT_RELOAD_SERVER_INACTIVITY_TIMER_SEC
+    enable_server_console: bool = DEFAULT_ENABLE_SERVER_CONSOLE
 
     @classmethod
     def load(
@@ -107,6 +109,11 @@ class KnowledgeDBConfig:
         model_name = str(merged_data.get("embedding_model") or DEFAULT_EMBEDDING_MODEL).strip()
         if not model_name:
             model_name = DEFAULT_EMBEDDING_MODEL
+        elif "/" not in model_name:
+            if model_name.lower().startswith("bge-"):
+                model_name = f"BAAI/{model_name}"
+            elif model_name.lower().startswith("paraphrase-") or model_name.lower().startswith("all-"):
+                model_name = f"sentence-transformers/{model_name}"
 
         timeout_val = merged_data.get("jit_vector_timeout_seconds", DEFAULT_JIT_VECTOR_TIMEOUT_SECONDS)
         try:
@@ -140,6 +147,14 @@ class KnowledgeDBConfig:
         except (ValueError, TypeError):
             inactivity_sec = DEFAULT_HOT_RELOAD_SERVER_INACTIVITY_TIMER_SEC
 
+        enable_console_val = merged_data.get("enable_server_console")
+        if enable_console_val is None:
+            enable_console_val = merged_data.get("hot_reload_server_console", DEFAULT_ENABLE_SERVER_CONSOLE)
+        if isinstance(enable_console_val, str):
+            enable_console = enable_console_val.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            enable_console = bool(enable_console_val)
+
         return cls(
             enable_vector_search=enable_vec,
             embedding_model=model_name,
@@ -147,6 +162,7 @@ class KnowledgeDBConfig:
             max_threads=threads_val,
             enable_hot_reload_server=enable_server,
             hot_reload_server_inactivity_timer_sec=inactivity_sec,
+            enable_server_console=enable_console,
         )
 
     @property

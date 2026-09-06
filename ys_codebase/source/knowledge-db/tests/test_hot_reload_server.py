@@ -817,4 +817,93 @@ class TestHotReloadServer(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_enable_server_console_config_and_launch_mode(self):
+        """FT-23: 驗證 enable_server_console 組態防禦解析與 ensure_running 啟動分流 (FR-10)"""
+        # 1. 驗證預設常數與預設值
+        cfg_def = KnowledgeDBConfig()
+        self.assertFalse(cfg_def.enable_server_console)
+
+        # 2. 驗證型態防禦解析 (支援 enable_server_console 與 hot_reload_server_console 鍵名)
+        cfg_true = KnowledgeDBConfig.load(local_config={"enable_server_console": True})
+        self.assertTrue(cfg_true.enable_server_console)
+
+        cfg_str_true = KnowledgeDBConfig.load(local_config={"enable_server_console": "true"})
+        self.assertTrue(cfg_str_true.enable_server_console)
+
+        cfg_str_false = KnowledgeDBConfig.load(local_config={"enable_server_console": "false"})
+        self.assertFalse(cfg_str_false.enable_server_console)
+
+        cfg_alias = KnowledgeDBConfig.load(local_config={"hot_reload_server_console": True})
+        self.assertTrue(cfg_alias.enable_server_console)
+
+        # 3. 驗證 resolve_console_enabled
+        with patch.object(KnowledgeDBConfig, "load", return_value=KnowledgeDBConfig(enable_server_console=True)):
+            self.assertTrue(HotReloadServer.resolve_console_enabled(self.root_path))
+        with patch.object(KnowledgeDBConfig, "load", return_value=KnowledgeDBConfig(enable_server_console=False)):
+            self.assertFalse(HotReloadServer.resolve_console_enabled(self.root_path))
+
+        # 4. 驗證 ensure_running 啟動分流 (Popen 參數)
+        names, current_sig = HotReloadServer.get_current_spaces_signature(workspace_root=self.root_path)
+        ready_info = DaemonInfo(
+            pid=77889,
+            start_time=time.time(),
+            version=HotReloadServer.get_module_version(),
+            workspace_root=str(self.root_path),
+            log_file="",
+            spaces=names,
+            spaces_signature=current_sig,
+            status="ready",
+        )
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.pid = 77889
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+
+            # A. enable_console=True 模式
+            calls = 0
+
+            def _fake_running_console(root):
+                nonlocal calls
+                calls += 1
+                return (calls > 1), ready_info if calls > 1 else None
+
+            with patch.object(HotReloadServer, "is_running", side_effect=_fake_running_console):
+                with patch.dict(os.environ, {"YSCB_TEST_SANDBOX": "1"}):
+                    res = HotReloadServer.ensure_running(self.root_path, enable_console=True)
+                    self.assertTrue(res)
+                    mock_popen.assert_called_once()
+                    _, kwargs = mock_popen.call_args
+                    self.assertIsNone(kwargs["stdout"])
+                    self.assertIsNone(kwargs["stderr"])
+                    if sys.platform == "win32":
+                        self.assertTrue(bool(kwargs["creationflags"] & 0x00000010))
+
+            mock_popen.reset_mock()
+
+            # B. enable_console=False 模式
+            calls = 0
+
+            def _fake_running_no_console(root):
+                nonlocal calls
+                calls += 1
+                return (calls > 1), ready_info if calls > 1 else None
+
+            with patch.object(HotReloadServer, "is_running", side_effect=_fake_running_no_console):
+                with patch.dict(os.environ, {"YSCB_TEST_SANDBOX": "1"}):
+                    res = HotReloadServer.ensure_running(self.root_path, enable_console=False)
+                    self.assertTrue(res)
+                    mock_popen.assert_called_once()
+                    _, kwargs = mock_popen.call_args
+                    import subprocess
+                    self.assertEqual(kwargs["stdout"], subprocess.DEVNULL)
+                    self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
+                    if sys.platform == "win32":
+                        self.assertTrue(bool(kwargs["creationflags"] & 0x00000008))
+
+        self.mark_passed()
+
+
 
