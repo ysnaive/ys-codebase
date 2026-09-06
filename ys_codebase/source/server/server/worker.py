@@ -8,11 +8,22 @@ stream interception, intercepts SystemExit, and implements lazy module loading.
 
 import argparse
 import importlib
+import importlib.util
 import json
 import os
+import platform
 import sys
 import time
 from typing import Any, Dict, List, Optional
+
+
+def _ensure_venv(yscb_root: str) -> None:
+    tag, sys_name = f"py{sys.version_info.major}{sys.version_info.minor}", platform.system()
+    sub = os.path.join(".venv", tag, "Lib", "site-packages") if sys_name == "Windows" else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+    site_pkg = os.path.join(yscb_root, sub)
+    if os.path.isdir(site_pkg) and site_pkg not in sys.path:
+        sys.path.insert(0, site_pkg)
+
 
 # Bootstrap python path to include source and core
 _cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +46,7 @@ class WarmWorker:
 
     def __init__(self, yscb_root: str, emit_packet_fn: Any) -> None:
         self.yscb_root = os.path.abspath(yscb_root)
+        _ensure_venv(self.yscb_root)
         self.emit_packet_fn = emit_packet_fn
         self._is_running = True
 
@@ -84,32 +96,50 @@ class WarmWorker:
                 os.environ.update(env)
 
             # Security guard injection
-            token = os.environ.get(GUARD_ENV_TOKEN, "server_worker_internal_token")
-            os.environ[GUARD_ENV_TOKEN] = token
-            os.environ[GUARD_ENV_HOST] = self.yscb_root
+            host_dir = os.environ.get(GUARD_ENV_HOST)
+            if not host_dir or not os.path.isdir(host_dir):
+                cand = os.path.dirname(self.yscb_root)
+                host_dir = cand if os.path.isfile(os.path.join(cand, "yscb.config.json")) else self.yscb_root
+            os.environ[GUARD_ENV_HOST] = host_dir
+            os.environ[GUARD_ENV_TOKEN] = os.environ.get(GUARD_ENV_TOKEN, "yscb_auth_dispatch")
 
-            # Lazy load target module entry point
-            cli_module_name = f"{module}.scripts.cli"
-            try:
-                mod = importlib.import_module(cli_module_name)
-            except ModuleNotFoundError:
-                # Fallback to source directory if running in source/dev mode
-                source_modules_dir = os.path.join(self.yscb_root, "source")
-                if source_modules_dir not in sys.path:
-                    sys.path.insert(0, source_modules_dir)
-                mod = importlib.import_module(f"{module}.scripts.cli")
+            # Lazy load target module entry point via robust spec loader
+            target_cli = os.path.join(self.yscb_root, ".modules", module, "scripts", "cli.py")
+            if not os.path.isfile(target_cli):
+                target_cli = os.path.join(self.yscb_root, "source", module, "scripts", "cli.py")
+            if not os.path.isfile(target_cli):
+                raise ModuleNotFoundError(f"CLI script not found for module '{module}' at '{target_cli}'")
 
-            if not hasattr(mod, "process"):
+            mod_root = os.path.dirname(os.path.dirname(os.path.abspath(target_cli)))
+            if mod_root not in sys.path:
+                sys.path.insert(0, mod_root)
+            core_dir = os.path.join(self.yscb_root, ".modules", "core")
+            if os.path.isdir(core_dir) and core_dir not in sys.path:
+                sys.path.insert(0, core_dir)
+
+            spec = importlib.util.spec_from_file_location(f"yscb_mod_{module.replace('-', '_')}_cli", target_cli)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot load spec from {target_cli}")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+
+            fn = getattr(mod, "process", getattr(mod, "main", None))
+            if not callable(fn):
                 streamer.write("stderr", f"Error: Module '{module}' does not export 'process(args)'\n")
                 exit_code = 1
             else:
+                orig_argv = list(sys.argv)
+                sys.argv = [target_cli] + args
                 with streamer:
                     try:
-                        ret = mod.process(args)
-                        exit_code = ret if isinstance(ret, int) else 0
+                        ret = fn(args)
+                        exit_code = int(ret) if ret is not None else 0
                     except SystemExit as se:
                         # Intercept SystemExit to keep worker alive!
                         exit_code = se.code if isinstance(se.code, int) else (1 if se.code else 0)
+                    finally:
+                        sys.argv = orig_argv
 
         except Exception as ex:
             streamer.write("stderr", f"[Server Worker Error] {type(ex).__name__}: {str(ex)}\n")

@@ -10,6 +10,7 @@ import http.server
 import json
 import logging
 import os
+import platform
 import queue
 import secrets
 import subprocess
@@ -237,14 +238,21 @@ class MasterSupervisor:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
-        # Ensure child worker has access to source and modules
+        # Ensure child worker has access to source, modules, and private .venv
+        tag, sys_name = f"py{sys.version_info.major}{sys.version_info.minor}", platform.system()
+        sub = os.path.join(".venv", tag, "Lib", "site-packages") if sys_name == "Windows" else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+        site_pkg = os.path.join(self.yscb_root, sub)
+
         py_paths = [
             self.yscb_root,
             os.path.join(self.yscb_root, ".modules"),
+            os.path.join(self.yscb_root, ".modules", "core"),
             os.path.join(self.yscb_root, "source"),
             os.path.join(self.yscb_root, "source", "core"),
             os.path.join(self.yscb_root, "source", "server"),
         ]
+        if os.path.isdir(site_pkg):
+            py_paths.insert(0, site_pkg)
         curr_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = os.pathsep.join([p for p in py_paths if os.path.isdir(p)] + ([curr_pp] if curr_pp else []))
 
@@ -331,6 +339,8 @@ class MasterSupervisor:
 
 def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
     class DispatcherHTTPHandler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
         def log_message(self, format, *args):
             # Suppress default stdout request logging
             pass
@@ -389,13 +399,15 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                     self.wfile.write(b'{"error": "Invalid JSON"}\n')
                     return
 
-                # Check workspace root isolation
+                # Check workspace root isolation (matches either yscb_root or parent host dir)
                 req_root = req_data.get("yscb_root")
-                if req_root and os.path.abspath(req_root) != supervisor.yscb_root:
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b'{"error": "Workspace Root Mismatch"}\n')
-                    return
+                if req_root:
+                    req_abs = os.path.abspath(req_root)
+                    if req_abs != supervisor.yscb_root and req_abs != os.path.dirname(supervisor.yscb_root):
+                        self.send_response(400)
+                        self.end_headers()
+                        self.wfile.write(b'{"error": "Workspace Root Mismatch"}\n')
+                        return
 
                 # Send 200 chunked response
                 self.send_response(200)
@@ -413,6 +425,7 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                         pass
 
                 supervisor.dispatch_task(req_data, chunk_emitter)
+                self.close_connection = True
                 # Send terminal 0 chunk
                 try:
                     self.wfile.write(b"0\r\n\r\n")

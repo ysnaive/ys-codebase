@@ -11,6 +11,7 @@ try:
 except ImportError:
     core_config = None
 
+DEFAULT_ENABLE: bool = True
 DEFAULT_ENABLE_CONSOLE: bool = False
 DEFAULT_IDLE_TIMEOUT_SEC: float = 900.0
 
@@ -34,6 +35,7 @@ def _parse_bool(val: Any, default: bool = False) -> bool:
 
 @dataclass
 class ServerConfig:
+    enable: bool = DEFAULT_ENABLE
     enable_console: bool = DEFAULT_ENABLE_CONSOLE
     idle_timeout_sec: float = DEFAULT_IDLE_TIMEOUT_SEC
 
@@ -59,6 +61,7 @@ class ServerConfig:
         if override_dict and isinstance(override_dict, dict):
             raw_cfg.update(override_dict)
 
+        enable_val = _parse_bool(raw_cfg.get("enable"), DEFAULT_ENABLE)
         enable_console_val = _parse_bool(raw_cfg.get("enable_console"), DEFAULT_ENABLE_CONSOLE)
         raw_ttl = raw_cfg.get("idle_timeout_sec", DEFAULT_IDLE_TIMEOUT_SEC)
         try:
@@ -67,6 +70,7 @@ class ServerConfig:
             idle_timeout_sec_val = DEFAULT_IDLE_TIMEOUT_SEC
 
         return cls(
+            enable=enable_val,
             enable_console=enable_console_val,
             idle_timeout_sec=idle_timeout_sec_val,
         )
