@@ -88,6 +88,11 @@ def broadcast(
     return results
 
 
+# Backward compatible alias for broadcast
+emit = broadcast
+
+
+
 def get_contributed_events() -> Dict[str, List[Dict[str, str]]]:
     """
     聚合全系統各模組派送之事件清冊（中繼資料查表）。

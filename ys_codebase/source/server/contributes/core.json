@@ -1,0 +1,36 @@
+{
+  "commands": {
+    "start": {
+      "description": "Start the persistent server daemon",
+      "tier": "safe",
+      "phases": ["P05", "P06", "FT-2"],
+      "case_pros": [
+        "手動啟動常駐守護進程，支援前台 (--console) 與背景 (--daemon)"
+      ]
+    },
+    "stop": {
+      "description": "Stop the running persistent server daemon",
+      "tier": "safe",
+      "phases": ["P05", "P06", "FT-2"],
+      "case_pros": [
+        "優雅停止常駐守護進程，支援強殺兜底 (--force)"
+      ]
+    },
+    "status": {
+      "description": "Inspect persistent server daemon and worker status",
+      "tier": "safe",
+      "phases": ["P05", "P06", "FT-2"],
+      "case_pros": [
+        "檢視 Master、Worker PID、動態 Port 與 Idle TTL 狀態"
+      ]
+    },
+    "reload": {
+      "description": "Hot reload warm worker subprocess",
+      "tier": "safe",
+      "phases": ["P05", "P06", "FT-2"],
+      "case_pros": [
+        "手動重啟 Worker 子進程，刷新 Python 代碼記憶體"
+      ]
+    }
+  }
+}
