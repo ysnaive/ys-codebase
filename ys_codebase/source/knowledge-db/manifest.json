@@ -4,7 +4,8 @@
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.0.2"
+    "core": ">=1.0.2",
+    "server": ">=1.0.0"
   },
   "pip_dependencies": {
     "tree-sitter": ">=0.21.0",
