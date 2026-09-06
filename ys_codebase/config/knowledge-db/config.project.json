@@ -1,4 +1,4 @@
 {
   "enable_vector_search": true,
-  "embedding_model": "bge-small-zh-v1.5"
+  "embedding_model": "BAAI/bge-small-zh-v1.5"
 }

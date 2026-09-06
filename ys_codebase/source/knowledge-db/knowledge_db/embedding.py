@@ -48,6 +48,21 @@ class EmbeddingService:
     3. 內建 Mock 模式，供沙盒與單元測試環境極速離線驗證。
     """
 
+    @classmethod
+    def normalize_model_name(cls, model_name: Optional[str]) -> str:
+        """
+        正規化向量模型名稱，自動為常見縮寫補齊 vendor 前綴 (如 'bge-small-zh-v1.5' -> 'BAAI/bge-small-zh-v1.5')。
+        """
+        if not model_name or not str(model_name).strip():
+            return DEFAULT_MODEL_NAME
+        name = str(model_name).strip()
+        if "/" not in name:
+            if name.lower().startswith("bge-"):
+                return f"BAAI/{name}"
+            elif name.lower().startswith("paraphrase-") or name.lower().startswith("all-"):
+                return f"sentence-transformers/{name}"
+        return name
+
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL_NAME,
@@ -55,7 +70,7 @@ class EmbeddingService:
         max_threads: Optional[Union[str, int]] = None,
         mock_mode: bool = False,
     ):
-        self.model_name = model_name
+        self.model_name = self.normalize_model_name(model_name)
         self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "knowledge-db" / "models"
         self.max_threads = max_threads or "auto"
         self.mock_mode = mock_mode
@@ -96,13 +111,22 @@ class EmbeddingService:
 
             # 2. 模型白名單合法性比對與優雅降級 (EC-01)
             try:
+                self.model_name = self.normalize_model_name(self.model_name)
                 supported_models = [m["model"] for m in TextEmbedding.list_supported_models()]
                 if self.model_name not in supported_models:
-                    logger.warning(
-                        f"Requested model '{self.model_name}' is not in FastEmbed supported list. "
-                        f"Falling back to default '{DEFAULT_MODEL_NAME}'."
-                    )
-                    self.model_name = DEFAULT_MODEL_NAME
+                    matched = None
+                    for sm in supported_models:
+                        if sm.split("/")[-1].lower() == self.model_name.lower():
+                            matched = sm
+                            break
+                    if matched:
+                        self.model_name = matched
+                    else:
+                        logger.warning(
+                            f"Requested model '{self.model_name}' is not in FastEmbed supported list. "
+                            f"Falling back to default '{DEFAULT_MODEL_NAME}'."
+                        )
+                        self.model_name = DEFAULT_MODEL_NAME
             except Exception as e:
                 logger.debug(f"Failed to check supported models list: {e}")
 
