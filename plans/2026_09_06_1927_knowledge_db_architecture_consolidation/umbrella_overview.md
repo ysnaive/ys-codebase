@@ -23,6 +23,8 @@
 | **sub_02** | `sub_02_core_vfs_unified_virtual_file_system` | Full Track | `Completed` | Core VFS 統一虛擬檔案系統：物件導向 VirtualPath、語意空間整合、跨平台路徑正規化、原子寫入與沙盒防護 |
 | **sub_03** | `sub_03_server_module_daemon_supervisor` | Full Track | `Completed` | Server 常駐服務守護中樞：Master-Worker 進程模型、生命週期管理、跨平台進程隔離與健康自癒 |
 | **sub_04** | `sub_04_knowledge_db_service_worker_and_pipeline` | Full Track | `Completed` | Knowledge-DB 常駐服務 Worker 與管線重構：ServiceWorker 納管、core.platform/vfs 對齊、倒排與向量記憶體快取加速 |
+| **sub_05** | `sub_05_optional_manifest_and_daemon_cleanup` | Full Track | `Completed` | Manifest optional 擴充規格與工具鏈提示、徹底刪除 daemon.py/hook 與相依純化 |
+| **sub_06** | `sub_06_server_console_config` | Full Track | `Completed` | Server 組態管理整合：enable_console 預設 false、CLI --console 除錯優先覆蓋與測試 |
 
 ---
 
@@ -32,4 +34,6 @@
 - [x] **里程碑 2**：完成 sub_02 Core VFS 統一虛擬檔案系統建置與 URI 解耦遷移 (Phase 0~7)
 - [x] **里程碑 3**：完成 sub_03 Server 模組常駐守護進程與 core.platform 原語落地 (Phase 0~7)
 - [x] **里程碑 4**：完成 sub_04 Knowledge-DB ServiceWorker 納管、原語對齊與記憶體快取加速 (Phase 0~7)
-- [ ] **里程碑 5**：完成全模組生態系回歸驗證、統一發布至 v1.1.0 (server v1.0.0) 結案並恢復運行端
+- [x] **里程碑 5**：完成 sub_05 Manifest optional 規格、工具鏈提示與 daemon.py 徹底清理 (Phase 0~7)
+- [x] **里程碑 6**：完成 sub_06 Server enable_console 組態與 CLI 優先級覆蓋 (Phase 0~7)
+- [ ] **里程碑 7**：完成全模組生態系回歸驗證、統一發布至 v1.1.0 (server v1.0.0) 結案並恢復運行端

@@ -14,7 +14,26 @@ from typing import Any, Dict, List, Optional
 
 from core.guard import guard_dispatch
 from core.platform import is_process_alive, kill_process_tree, spawn_detached
+from server.config import ServerConfig
 from server.master import MasterSupervisor, ServerDaemonState
+
+
+def _resolve_enable_console(
+    console_arg: Optional[bool],
+    daemon_arg: Optional[bool],
+    config_val: bool = False,
+) -> bool:
+    """
+    啟動模式優先級決策：
+    1. console_arg 為 True -> True (CLI --console 強制覆蓋除錯)
+    2. daemon_arg 為 True -> False (CLI --daemon 強制覆蓋背景)
+    3. 皆未指定 (None) -> config_val
+    """
+    if console_arg is True:
+        return True
+    if daemon_arg is True:
+        return False
+    return bool(config_val)
 
 
 def _get_yscb_root() -> str:
@@ -52,9 +71,10 @@ def _http_request(state: ServerDaemonState, path: str, method: str = "GET", payl
 
 def _handle_start(args: List[str], yscb_root: str) -> int:
     parser = argparse.ArgumentParser(prog="server start", description="Start persistent server daemon")
-    parser.add_argument("--console", action="store_true", help="Run server in foreground console mode")
-    parser.add_argument("--daemon", action="store_true", default=True, help="Run server detached in background (default)")
-    parser.add_argument("--ttl", type=float, default=900.0, help="Idle timeout in seconds (0 to disable)")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--console", action="store_true", default=None, help="Force foreground console mode (for debugging)")
+    mode_group.add_argument("--daemon", action="store_true", default=None, help="Force detached background daemon mode")
+    parser.add_argument("--ttl", type=float, default=None, help="Idle timeout in seconds (0 to disable, default: config)")
     parsed = parser.parse_args(args)
 
     state = _read_daemon_state(yscb_root)
@@ -62,9 +82,13 @@ def _handle_start(args: List[str], yscb_root: str) -> int:
         print(f"[Server] Daemon is already running (PID: {state.pid}, Port: {state.port}).")
         return 0
 
-    if parsed.console:
-        print(f"[*] Starting Server in foreground console mode (Root: {yscb_root})...")
-        sup = MasterSupervisor(yscb_root=yscb_root, idle_timeout_sec=parsed.ttl)
+    cfg = ServerConfig.load(workspace_root=yscb_root)
+    enable_console = _resolve_enable_console(parsed.console, parsed.daemon, cfg.enable_console)
+    ttl = parsed.ttl if parsed.ttl is not None else cfg.idle_timeout_sec
+
+    if enable_console:
+        print(f"[*] Starting Server in foreground console mode (Root: {yscb_root}, TTL: {ttl}s)...")
+        sup = MasterSupervisor(yscb_root=yscb_root, idle_timeout_sec=ttl)
         sup.start(foreground=True)
         return 0
     else:
@@ -73,7 +97,7 @@ def _handle_start(args: List[str], yscb_root: str) -> int:
             sys.executable,
             "-c",
             f"import sys; sys.path.insert(0, r'{os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}'); "
-            f"from server.master import MasterSupervisor; MasterSupervisor(r'{yscb_root}', idle_timeout_sec={parsed.ttl}).start(foreground=True)",
+            f"from server.master import MasterSupervisor; MasterSupervisor(r'{yscb_root}', idle_timeout_sec={ttl}).start(foreground=True)",
         ]
         pid = spawn_detached(cmd, cwd=yscb_root)
         print(f"[Server] Starting background daemon (PID: {pid})...")
@@ -181,7 +205,7 @@ def process(args: List[str]) -> int:
     if not args or args[0] in ("-h", "--help", "help"):
         print("Usage: python yscb.py server <command> [options]")
         print("Commands:")
-        print("  start     Start the persistent server daemon (--daemon, --console, --ttl)")
+        print("  start     Start the persistent server daemon ([--daemon | --console], --ttl)")
         print("  stop      Stop the running persistent server daemon (--force)")
         print("  status    Inspect persistent server daemon and worker status")
         print("  reload    Hot reload warm worker subprocess")

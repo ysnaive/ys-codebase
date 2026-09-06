@@ -14,6 +14,10 @@
 
 | 日期時間 | 類型 | 摘要 |
 | :--- | :---: | :--- |
+| 2026-09-07 02:21 | `SUB-DONE` | 子計畫 sub_06 完成 SOP Review 審查與 P07 Walkthrough，子計畫正式 Completed 結案 (里程碑 6 完成) |
+| 2026-09-07 02:08 | `SUB-PLAN` | 開立子計畫 sub_06 (server_console_config)，完成 Phase 0 需求討論與決策 (狀態：`Confirmed`) |
+| 2026-09-07 02:00 | `SUB-DONE` | 子計畫 sub_05 完成 SOP Review 審查與 P07 Walkthrough，子計畫正式 Completed 結案 (里程碑 5 完成) |
+| 2026-09-07 01:45 | `SUB-PLAN` | 開立子計畫 sub_05 (optional_manifest_and_daemon_cleanup)，進入 Phase 0 架構討論 (狀態：`In Progress`) |
 | 2026-09-07 01:00 | `SUB-DONE` | 子計畫 sub_04 完成 SOP Review 審查與 P07 Walkthrough，子計畫正式 Completed 結案 |
 | 2026-09-07 00:20 | `SUB-PLAN` | 開立子計畫 sub_04 (knowledge_db_service_worker_and_pipeline)，進入 Phase 0 架構討論 (狀態：`Completed`) |
 | 2026-09-07 00:05 | `SUB-DONE` | 子計畫 sub_03 完成 SOP Review 審查與 P07 Walkthrough，子計畫正式 Completed 結案 |
