@@ -28,14 +28,16 @@ class TestServerConfig(YSCBTestCase):
     """Server 組態與 Console 啟動模式測試套件"""
 
     def test_default_config(self):
-        """FT-01: 驗證 ServerConfig 預設值為 enable_console=False 與 TTL=900.0"""
+        """FT-01: 驗證 ServerConfig 預設值為 enable=True, enable_console=False 與 TTL=900.0"""
         cfg = ServerConfig()
+        self.assertTrue(cfg.enable)
         self.assertFalse(cfg.enable_console)
         self.assertEqual(cfg.idle_timeout_sec, 900.0)
 
         # 自 load() 預設無設定時載入
         with patch("core.config.get_all", return_value={}):
             loaded = ServerConfig.load()
+            self.assertTrue(loaded.enable)
             self.assertFalse(loaded.enable_console)
             self.assertEqual(loaded.idle_timeout_sec, 900.0)
 
@@ -109,6 +111,15 @@ class TestServerConfig(YSCBTestCase):
         with self.assertRaises(SystemExit):
             # argparse parse_args 於衝突時拋出 SystemExit(2)
             _handle_start(["--console", "--daemon"], "/dummy/root")
+
+        self.mark_passed()
+
+    def test_server_disabled_blocks_start(self):
+        """FT-06: 驗證當 config 中 enable=False 時，_handle_start 拒絕啟動並返回 1"""
+        with patch.object(_server_cli, "_read_daemon_state", return_value=None):
+            with patch("server.config.ServerConfig.load", return_value=ServerConfig(enable=False)):
+                code = _handle_start([], "/dummy/root")
+                self.assertEqual(code, 1)
 
         self.mark_passed()
 

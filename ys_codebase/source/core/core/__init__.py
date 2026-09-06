@@ -5,8 +5,8 @@ from core import uri
 from core import semver
 from core.context import ExecutionContext
 from core.engine import AtomicEngine
-from core.contributes import ContributesAggregator
-from core.installer import Installer
+from core.contributes import ContributesAggregator, print_global_help
+from core.installer import Installer, generate_internal_gitignore
 from core import update_checker
 from core.update_checker import UpdateChecker
 from core import events
@@ -27,7 +27,9 @@ __all__ = [
     "ExecutionContext",
     "AtomicEngine",
     "ContributesAggregator",
+    "print_global_help",
     "Installer",
+    "generate_internal_gitignore",
     "UpdateChecker",
     "events",
     "symbols",

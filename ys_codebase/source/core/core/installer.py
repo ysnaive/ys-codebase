@@ -12,6 +12,138 @@ from core.engine import AtomicEngine
 from core import semver
 from core import events
 
+INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
+INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
+INTERNAL_IGNORE_PATTERNS = [
+    "/.modules/",
+    "/.build/",
+    "/.mirror/",
+    "/.temp/",
+    "/.snapshots/",
+    "/.cache/",
+    "/.venv/",
+    "*.local.json",
+    "__pycache__/",
+    "*.pyc",
+]
+
+
+def generate_internal_gitignore(yscb_dir: str) -> None:
+    """
+    非破壞性軟合併 yscb://.gitignore 中的 YSCB 內部管理區塊。
+    支援 'yscb://' == 'project://' 之拓撲情境，完整保留宿主專案既有之自訂忽略規則
+    及其他模組之管理區塊，杜絕粗暴覆蓋導致的設定丟失。
+    """
+    import re
+    gi_path = os.path.join(yscb_dir, ".gitignore")
+    block_lines = [
+        INTERNAL_IGNORE_BEGIN,
+        "# Auto-managed by YSCB host bootstrapper. Do not edit this block manually.",
+    ]
+    block_lines.extend(INTERNAL_IGNORE_PATTERNS)
+    block_lines.append(INTERNAL_IGNORE_END)
+    new_block_text = "\n".join(block_lines)
+
+    existing_content = ""
+    has_existing = os.path.isfile(gi_path)
+    if has_existing:
+        try:
+            with open(gi_path, "r", encoding="utf-8") as f:
+                existing_content = f.read()
+        except Exception:
+            existing_content = ""
+
+    pattern_marker = re.compile(
+        rf"{re.escape(INTERNAL_IGNORE_BEGIN)}[\s\S]*?{re.escape(INTERNAL_IGNORE_END)}",
+        re.MULTILINE,
+    )
+    pattern_legacy = re.compile(
+        r"# YS-Codebase Autonomous Internal Ignore Rules\n(?:(?!\n*# ===)[^\n]+\n*)*",
+        re.MULTILINE,
+    )
+
+    if pattern_marker.search(existing_content):
+        merged_content = pattern_marker.sub(new_block_text, existing_content)
+    elif pattern_legacy.search(existing_content):
+        merged_content = pattern_legacy.sub(new_block_text + "\n", existing_content)
+    else:
+        if existing_content and not existing_content.endswith("\n"):
+            merged_content = existing_content + "\n\n" + new_block_text + "\n"
+        elif existing_content:
+            merged_content = existing_content + new_block_text + "\n"
+        else:
+            merged_content = new_block_text + "\n"
+
+    if has_existing and existing_content == merged_content:
+        return
+
+    try:
+        with open(gi_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(merged_content)
+    except Exception:
+        pass
+
+
+def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
+    """從本機路徑或遠端 URL 提取 Zip 壓縮檔至 dest_dir，嚴防 Zip Slip。"""
+    import urllib.request
+    import tempfile
+    import shutil
+    import zipfile
+
+    os.makedirs(dest_dir, exist_ok=True)
+
+    if source_url_or_path.startswith("file://"):
+        raw_p = urllib.request.url2pathname(source_url_or_path[7:])
+        while raw_p.startswith("//"):
+            raw_p = raw_p[1:]
+        source_url_or_path = raw_p
+
+    if source_url_or_path.startswith(("http://", "https://")):
+        req = urllib.request.Request(source_url_or_path, headers={"User-Agent": "yscb-core/2.0"})
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_f:
+            tmp_path = tmp_f.name
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                with open(tmp_path, "wb") as out_f:
+                    shutil.copyfileobj(resp, out_f)
+            if not zipfile.is_zipfile(tmp_path):
+                raise RuntimeError(f"Downloaded payload from '{source_url_or_path}' is not a valid zip file.")
+            with zipfile.ZipFile(tmp_path, "r") as zf:
+                if zf.testzip() is not None:
+                    raise RuntimeError(f"Corrupted zip archive from '{source_url_or_path}'.")
+                dest_dir_abs = os.path.abspath(dest_dir)
+                for member in zf.infolist():
+                    target_path = os.path.abspath(os.path.join(dest_dir_abs, member.filename))
+                    if not target_path.startswith(dest_dir_abs + os.sep) and target_path != dest_dir_abs:
+                        raise RuntimeError(f"Zip Slip vulnerability detected: '{member.filename}'")
+                zf.extractall(dest_dir)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+    else:
+        file_path = os.path.abspath(source_url_or_path)
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Source file or directory '{source_url_or_path}' does not exist.")
+        if os.path.isdir(file_path):
+            shutil.copytree(file_path, dest_dir, dirs_exist_ok=True)
+        elif zipfile.is_zipfile(file_path):
+            with zipfile.ZipFile(file_path, "r") as zf:
+                if zf.testzip() is not None:
+                    raise RuntimeError(f"Corrupted zip archive from '{source_url_or_path}'.")
+                dest_dir_abs = os.path.abspath(dest_dir)
+                for member in zf.infolist():
+                    target_path = os.path.abspath(os.path.join(dest_dir_abs, member.filename))
+                    if not target_path.startswith(dest_dir_abs + os.sep) and target_path != dest_dir_abs:
+                        raise RuntimeError(f"Zip Slip vulnerability detected: '{member.filename}'")
+                zf.extractall(dest_dir)
+        else:
+            raise RuntimeError(f"Source path '{source_url_or_path}' is neither a directory nor a valid zip file.")
+
+
 class Installer:
     def __init__(self):
         self.engine = AtomicEngine()
@@ -301,8 +433,169 @@ class Installer:
         print("[core:reload] Reconciling runtime modules from mirror...")
         self.engine.act_reload(clean_stage=True, inject_stage=True)
         self.sync_pip_dependencies()
+        try:
+            cfg_path, cfg = self.engine._get_config()
+            host_dir, _ = uri._get_host_config()
+            yscb_abs = os.path.normpath(os.path.join(host_dir, cfg.get("yscb_root", ".")))
+            generate_internal_gitignore(yscb_abs)
+        except Exception:
+            pass
         print("[core:reload] Runtime environment reconciled and refreshed successfully.")
         return 0
+
+    def cmd_restore(self, force: bool = False, provider: Optional[str] = None) -> int:
+        """
+        CLI 指令：python yscb.py restore [--force]
+        讀取 yscb.config.json 之 installed_modules 清冊，批量還原所有模組至 .modules/，
+        並於完成後自動觸發 reload 重聚環境。
+        """
+        cfg_path, cfg = self.engine._get_config()
+        if not cfg_path or not cfg:
+            print("[core:restore] Error: Configuration not found.")
+            return 1
+
+        host_dir, _ = uri._get_host_config()
+        yscb_abs = os.path.normpath(os.path.join(host_dir, cfg.get("yscb_root", ".")))
+        generate_internal_gitignore(yscb_abs)
+
+        installed = cfg.get("installed_modules", {})
+        if not installed:
+            print("[core:restore] No installed_modules declared in configuration. Nothing to restore.")
+            return 0
+
+        default_provider = cfg.get("default_provider", "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release")
+        modules_dir = os.path.join(yscb_abs, ".modules")
+        os.makedirs(modules_dir, exist_ok=True)
+
+        print(f"[core:restore] Restoring {len(installed)} module(s) to '{modules_dir}'...")
+        success_count = 0
+        failed_mods = []
+
+        # 確保 core 優先還原，隨後依字母排序
+        mod_keys = sorted(installed.keys(), key=lambda x: (0 if x == "core" else 1, x))
+        for mod_name in mod_keys:
+            mod_info = installed[mod_name]
+            ver = mod_info.get("version", "1.0.0.0") if isinstance(mod_info, dict) else "1.0.0.0"
+            prov = provider or (mod_info.get("provider", default_provider) if isinstance(mod_info, dict) else default_provider)
+            dest = os.path.join(modules_dir, mod_name)
+            mirror = os.path.join(yscb_abs, ".mirror", mod_name)
+
+            if not force and os.path.isdir(dest) and os.path.isfile(os.path.join(dest, "manifest.json")):
+                print(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
+                success_count += 1
+                continue
+
+            print(f"  -> Restoring '{mod_name}@{ver}'...")
+            ok = self._restore_module_package(host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror)
+            if ok:
+                success_count += 1
+            else:
+                print(f"[core:restore] Error: Unable to restore module '{mod_name}@{ver}' from provider '{prov}'.")
+                failed_mods.append(mod_name)
+
+        if failed_mods:
+            print(f"[core:restore] Warning: Completed with {len(failed_mods)} failure(s): {', '.join(failed_mods)}")
+        else:
+            print(f"[core:restore] Successfully restored all {success_count} module(s).")
+
+        # 觸發 reload
+        print("[core:restore] Triggering reload...")
+        self.cmd_reload()
+        return 0 if not failed_mods else 1
+
+    def _restore_module_package(
+        self,
+        base_dir: str,
+        yscb_root: str,
+        module_name: str,
+        version: str,
+        provider_arg: str,
+        dest_dir: str,
+        mirror_dir: str,
+    ) -> bool:
+        """自 Provider、Build 或本機 Mirror 提取指定版本模組，原子解壓縮至 dest_dir。"""
+        import zipfile
+        import shutil
+        os.makedirs(dest_dir, exist_ok=True)
+        os.makedirs(mirror_dir, exist_ok=True)
+
+        yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
+        mirror_zip = os.path.join(mirror_dir, f"{version}.zip")
+
+        # 1. 優先檢查 yscb_abs 下的 .build/ 或 release/
+        build_candidates = [
+            os.path.join(yscb_abs, ".build", module_name, f"{version}.zip"),
+            os.path.join(yscb_abs, ".build", module_name, f"{version}.build.zip"),
+            os.path.join(yscb_abs, ".build", module_name, f"{version}"),
+            os.path.join(yscb_abs, ".build", module_name),
+            os.path.join(yscb_abs, "release", module_name, f"{version}.zip"),
+        ]
+        found_b = next((c for c in build_candidates if os.path.exists(c)), None)
+        if found_b:
+            is_newer = not os.path.isfile(mirror_zip) or (os.path.getmtime(found_b) >= os.path.getmtime(mirror_zip))
+            if version.endswith(".build") or is_newer:
+                try:
+                    fetch_and_extract_zip(found_b, dest_dir)
+                    if os.path.isfile(found_b) and (found_b.endswith(".zip") or zipfile.is_zipfile(found_b)):
+                        try:
+                            shutil.copy2(found_b, mirror_zip)
+                        except Exception:
+                            pass
+                    return True
+                except Exception:
+                    pass
+
+        # 2. 檢查本地鏡像庫 (.mirror/<mod>/<ver>.zip)
+        if os.path.isfile(mirror_zip):
+            try:
+                fetch_and_extract_zip(mirror_zip, dest_dir)
+                return True
+            except Exception:
+                pass
+
+        # 3. 檢查 Provider 路徑 (local folder)
+        if provider_arg.startswith("file://"):
+            import urllib.request
+            raw_p = urllib.request.url2pathname(provider_arg[7:])
+            while raw_p.startswith("//"):
+                raw_p = raw_p[1:]
+            p_abs = os.path.normpath(raw_p)
+        elif not provider_arg.startswith(("http://", "https://")):
+            p_abs = os.path.normpath(os.path.join(base_dir, provider_arg))
+        else:
+            p_abs = None
+
+        if p_abs and os.path.isdir(p_abs):
+            candidates = [
+                os.path.join(p_abs, module_name, f"{version}.zip"),
+                os.path.join(p_abs, module_name, f"{version}"),
+                os.path.join(p_abs, module_name),
+                os.path.join(p_abs, "release", module_name, f"{version}.zip"),
+                os.path.join(p_abs, ".build", module_name, f"{version}.zip"),
+            ]
+            found = next((c for c in candidates if os.path.exists(c)), None)
+            if found:
+                try:
+                    fetch_and_extract_zip(found, dest_dir)
+                    if os.path.isfile(found) and (found.endswith(".zip") or zipfile.is_zipfile(found)):
+                        try:
+                            shutil.copy2(found, mirror_zip)
+                        except Exception:
+                            pass
+                    return True
+                except Exception:
+                    pass
+
+        # 4. 遠端 Provider (HTTP/HTTPS)
+        if provider_arg.startswith(("http://", "https://", "file://")):
+            remote_zip_url = provider_arg.rstrip("/") + f"/{module_name}/{version}.zip"
+            try:
+                fetch_and_extract_zip(remote_zip_url, dest_dir)
+                return True
+            except Exception:
+                pass
+
+        return False
 
     def sync_pip_dependencies(self) -> None:
         """

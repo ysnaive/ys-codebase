@@ -25,6 +25,8 @@
 | **sub_04** | `sub_04_knowledge_db_service_worker_and_pipeline` | Full Track | `Completed` | Knowledge-DB 常駐服務 Worker 與管線重構：ServiceWorker 納管、core.platform/vfs 對齊、倒排與向量記憶體快取加速 |
 | **sub_05** | `sub_05_optional_manifest_and_daemon_cleanup` | Full Track | `Completed` | Manifest optional 擴充規格與工具鏈提示、徹底刪除 daemon.py/hook 與相依純化 |
 | **sub_06** | `sub_06_server_console_config` | Full Track | `Completed` | Server 組態管理整合：enable_console 預設 false、CLI --console 除錯優先覆蓋與測試 |
+| **sub_07** | `sub_07_yscb_host_slimming_and_dual_channel_dispatch` | Full Track | `Completed` | yscb 宿主入口極簡瘦身與雙管道派發架構：業務全面下沉至 core、全域 Help 動態聚合、雙管道 (IPC/in-proc) 路由與 Exit Code 透傳 |
+| **sub_08** | `sub_08_knowledge_db_search_acceleration_and_worker_singleton` | Full Track | `Planned` | Knowledge-DB 檢索性能極致加速：Worker 常駐單例化 (KnowledgeEngine Singleton)、啟動預熱機制 (Pre-warm Index Cache)、Watcher 事件驅動快取感知 (取代每次主動全庫 stat 嗅探) |
 
 ---
 
@@ -36,4 +38,7 @@
 - [x] **里程碑 4**：完成 sub_04 Knowledge-DB ServiceWorker 納管、原語對齊與記憶體快取加速 (Phase 0~7)
 - [x] **里程碑 5**：完成 sub_05 Manifest optional 規格、工具鏈提示與 daemon.py 徹底清理 (Phase 0~7)
 - [x] **里程碑 6**：完成 sub_06 Server enable_console 組態與 CLI 優先級覆蓋 (Phase 0~7)
-- [ ] **里程碑 7**：完成全模組生態系回歸驗證、統一發布至 v1.1.0 (server v1.0.0) 結案並恢復運行端
+- [x] **里程碑 7**：完成 sub_07 yscb 入口極簡瘦身與雙管道派發架構 (Phase 0~7)
+- [ ] **里程碑 8**：完成 sub_08 Knowledge-DB 檢索性能極致加速與 Worker 單例化 (Phase 0~7)
+- [ ] **里程碑 9**：完成全模組生態系回歸驗證、統一發布至 v1.1.0 (server v1.0.0) 結案並恢復運行端
+

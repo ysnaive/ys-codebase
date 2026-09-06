@@ -208,18 +208,8 @@ def process(args: List[str]) -> int:
             pass
 
     if not args or args[0] in ("-h", "--help", "help"):
-        print("YS-Codebase Core Module CLI")
-        print("Commands:")
-        print("  install <module>[@version] [--provider=<source>]")
-        print("  update [module] [--provider=<source>]")
-        print("  remove <module> [--clean] [--purge] [--force]")
-        print("  list [--remote]")
-        print("  status")
-        print("  rollback [snapshot_id]")
-        print("  reload")
-        print("  uri <list|resolve|to-uri|check>")
-        print("  config <list|get|set|reload>")
-        return 0
+        from core.contributes import print_global_help
+        return print_global_help()
 
     cmd = args[0]
     cmd_args = args[1:]
@@ -296,6 +286,11 @@ def process(args: List[str]) -> int:
     elif cmd == "rollback":
         target = clean_args[0] if clean_args else None
         return installer.cmd_rollback(target)
+    elif cmd in ("restore", "bootstrap"):
+        return installer.cmd_restore(force=force_flag, provider=provider)
+    elif cmd == "help":
+        from core.contributes import print_global_help
+        return print_global_help()
     elif cmd == "reload":
         return installer.cmd_reload()
     elif cmd == "event":

@@ -345,3 +345,99 @@ class ContributesAggregator:
                 base[k].extend(x for x in v if x not in base[k])
             else:
                 base[k] = v
+
+
+def print_global_help() -> int:
+    """
+    動態聚合並格式化輸出 YSCB 全域指令清單：
+    1. CORE COMMANDS
+    2. MODULE COMMANDS (遍歷已安裝模組之 contributes/core.json 與 manifest.json)
+    3. GLOBAL OPTIONS
+    """
+    print("=" * 70)
+    print("  YS-Codebase - Ultra-Thin Modular Microkernel CLI")
+    print("=" * 70)
+    print("\nUSAGE:")
+    print("  python yscb.py <command> [options]")
+    print("  python yscb.py <module> <subcommand> [options]")
+
+    print("\nCORE COMMANDS:")
+    core_docs = [
+        ("init <root> [--provider=<url>]", "Initialize a new YSCB workspace"),
+        ("self-update [--provider=<url>]", "Update yscb.py host bootstrapper script"),
+        ("restore [--force]", "Restore installed modules from provider into .modules/"),
+        ("install <module>[@<version>]", "Install a module from provider"),
+        ("update [<module>]", "Update installed module(s) to latest version"),
+        ("remove <module> [--force]", "Remove an installed module from environment"),
+        ("list", "List all installed modules, versions and providers"),
+        ("status", "Health check and runtime diagnostic report"),
+        ("reload", "Reconcile and refresh runtime environment"),
+        ("rollback", "Revert environment to the previous snapshot state"),
+        ("event list", "List all contributed events across modules"),
+    ]
+    for cmd, desc in core_docs:
+        print(f"  {cmd:<35} {desc}")
+
+    print("\nMODULE COMMANDS:")
+    has_module_cmds = False
+    if uri.exists("module://"):
+        try:
+            installed = sorted(uri.listdir("module://"))
+            for mod_name in installed:
+                if mod_name == "core":
+                    continue
+                cmds: Dict[str, str] = {}
+                # 1. 檢查 module://<mod>/contributes/core.json
+                contrib_core_uri = f"module://{mod_name}/contributes/core.json"
+                if uri.exists(contrib_core_uri):
+                    try:
+                        c_data = uri.read_json(contrib_core_uri)
+                        if isinstance(c_data, dict):
+                            cmd_map = c_data.get("commands", {})
+                            if isinstance(cmd_map, dict):
+                                for c_name, c_info in cmd_map.items():
+                                    desc = ""
+                                    if isinstance(c_info, dict):
+                                        desc = c_info.get("description", "")
+                                    elif isinstance(c_info, str):
+                                        desc = c_info
+                                    cmds[c_name] = desc
+                    except Exception:
+                        pass
+
+                # 2. 檢查 module://<mod>/manifest.json 中的 contributes
+                manifest_uri = f"module://{mod_name}/manifest.json"
+                if uri.exists(manifest_uri):
+                    try:
+                        m_data = uri.read_json(manifest_uri)
+                        if isinstance(m_data, dict):
+                            m_contrib = m_data.get("contributes", {})
+                            if isinstance(m_contrib, dict):
+                                m_cmds = m_contrib.get("commands", {})
+                                if isinstance(m_cmds, dict):
+                                    for c_name, c_info in m_cmds.items():
+                                        if c_name not in cmds:
+                                            desc = c_info.get("description", "") if isinstance(c_info, dict) else str(c_info)
+                                            cmds[c_name] = desc
+                            if not cmds and "entry" in m_data:
+                                mod_desc = m_data.get("description", f"{mod_name} module entry")
+                                cmds["run"] = mod_desc
+                    except Exception:
+                        pass
+
+                if cmds:
+                    has_module_cmds = True
+                    print(f"  [{mod_name}]")
+                    for subcmd, desc in sorted(cmds.items()):
+                        full_cmd = f"  {mod_name} {subcmd}"
+                        print(f"  {full_cmd:<33} {desc}")
+        except Exception:
+            pass
+
+    if not has_module_cmds:
+        print("  (No additional module commands available. Use 'install <module>' to add capabilities.)")
+
+    print("\nGLOBAL OPTIONS:")
+    print("  -h, --help                          Show this help message and exit")
+    print("=" * 70)
+    return 0

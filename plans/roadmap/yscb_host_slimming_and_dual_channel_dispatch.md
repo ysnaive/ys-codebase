@@ -2,7 +2,7 @@
 
 > 主題：宿主入口極簡瘦身與雙管道派發架構  
 > 歸檔日期：2026-09-06  
-> 狀態：Proposed  
+> 狀態：Implemented (已於 sub_07_yscb_host_slimming_and_dual_channel_dispatch 全面實作並落地)  
 
 ---
 

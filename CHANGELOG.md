@@ -2,6 +2,17 @@
 
 ## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
 
+### sub_07_yscb_host_slimming_and_dual_channel_dispatch (Verified)
+- **宿主入口極限瘦身、雙管道路由派發與 Contributes Help 動態聚合**：
+  - **宿主入口極簡瘦身 (`yscb.py`)**：精簡至 283 行薄客戶端，業務邏輯（模組發現、環境防護、雙管道路由）全面下沉至 `core.dispatch`。
+  - **動態聚合全域 Help (`core.help`)**：解析生態系各模組 `contributes/cli.commands.json`，全域動態渲染模組指令手冊與選項說明，消除宿主寫死指令的耦合維護成本。
+  - **雙管道路由架構 (`core.dispatch`)**：
+    - **IPC 管道 (`core.dispatch.client`)**：若 `server` 守護進程運行且 `enable: true`，以 Socket IPC 極速轉發命令至常駐進程，跳過直譯器冷啟動與依賴重複加載。
+    - **In-process 管道 (`core.dispatch.inprocess`)**：若無 `server` 或 `enable: false`，平滑退化至原創進程內派發，注入安全守門 Token。
+  - **Exit Code 透傳與狀態碼剛性契約**：無論走 IPC 或進程內派發，均 100% 精確透傳目標模組返回碼與 SystemExit 代碼。
+  - **Server 模組專案預設組態補齊**：補齊 `configurable/config.project.json`（`enable: true`, `enable_console: false`, `idle_timeout_sec: 900.0`），實測驗證熱派發任務計數累加與 TTL 重置。
+  - **全生態系 5 大模組單元/回歸測試 100% 通過**。
+
 ### sub_04_knowledge_db_service_worker_and_pipeline (Testing / Verification Gate)
 - **知識庫常駐服務 Worker 納管、微內核原語對齊與記憶體快取 mtime 微秒級熱自癒**：
   - **收斂為 `KnowledgeDBServiceWorker`**：繼承 `server.service.BaseServiceWorker`（命名為 `"knowledge-db-watcher"`），依賴 `server` Master 託管生命週期，支援 500ms 防抖變更聚合與增量熱修補。
