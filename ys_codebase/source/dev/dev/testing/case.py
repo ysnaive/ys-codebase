@@ -207,7 +207,7 @@ class YSCBTestCase(unittest.TestCase):
         scripts_dir = os.path.join(src_dir, "scripts")
         os.makedirs(scripts_dir, exist_ok=True)
         cli_content = files.get("scripts/cli.py") if files and "scripts/cli.py" in files else (
-            "def main():\n    pass\n"
+            "from typing import List\n\ndef process(args: List[str]) -> int:\n    return 0\n"
         )
         with open(os.path.join(scripts_dir, "cli.py"), "w", encoding="utf-8") as f:
             f.write(cli_content)

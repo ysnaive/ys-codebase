@@ -14,32 +14,7 @@ import os
 import argparse
 from typing import List, Dict, Optional
 
-# Windows 控制台 UTF-8 安全輸出保護
-if sys.stdout and hasattr(sys.stdout, 'buffer'):
-    try:
-        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    except Exception:
-        pass
-
-# Ensure package directory and sibling modules (e.g. core) are importable
-_script_dir = os.path.dirname(os.path.abspath(__file__))
-_pkg_root = os.path.dirname(_script_dir)
-_modules_root = os.path.dirname(_pkg_root)
-
-if _pkg_root not in sys.path:
-    sys.path.insert(0, _pkg_root)
-if _modules_root not in sys.path and os.path.isdir(_modules_root):
-    sys.path.insert(0, _modules_root)
-
-# 自動探測並掛載 core 模組路徑
-for cand_core in [
-    os.path.join(_modules_root, "core"),
-    os.path.join(os.path.dirname(_modules_root), "source", "core"),
-    os.path.join(os.path.dirname(_modules_root), ".modules", "core")
-]:
-    if os.path.isdir(cand_core) and cand_core not in sys.path:
-        sys.path.insert(0, cand_core)
-
+from core.guard import guard_dispatch
 from agents_workflow.compiler import ArtifactCompiler
 from agents_workflow.initializer import WorkflowInitializer
 from agents_workflow.publisher import ReleasePublisher
@@ -446,7 +421,15 @@ Commands:
 """)
 
 
-def main(args: List[str]) -> int:
+def process(args: List[str]) -> int:
+    guard_dispatch("agents-workflow")
+
+    if sys.stdout and hasattr(sys.stdout, "buffer"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     if not args or args[0] in ("-h", "--help", "help"):
         print_help()
         return 0
@@ -484,7 +467,3 @@ def main(args: List[str]) -> int:
             return cmd_init_default(all_init_args)
         print(f"[agents-workflow] Unknown command '{cmd}'. See --help.")
         return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

@@ -1,5 +1,5 @@
 {
-  "fingerprint": "8cf24755ba7d0b3524e55327bce99116e98166a4223a220b3719acce68972bf2",
+  "fingerprint": "eea1a00b1c9dc50b428da8bc3ae131857f2d886558407629852c70cc121247e4",
   "active_targets": [
     "antigravity"
   ],
@@ -49,6 +49,6 @@
     "project://.agents/workflows/Roadmap.md",
     "project://AGENTS.md"
   ],
-  "combined_fingerprint": "8cf24755ba7d0b3524e55327bce99116e98166a4223a220b3719acce68972bf2",
-  "updated_at": "2026-09-06 10:07:36"
+  "combined_fingerprint": "eea1a00b1c9dc50b428da8bc3ae131857f2d886558407629852c70cc121247e4",
+  "updated_at": "2026-09-06 12:57:52"
 }
