@@ -737,3 +737,84 @@ class TestHotReloadServer(YSCBTestCase):
         HotReloadServer.set_process_title("test: test-daemon")
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_hook_ignores_daemon_process_and_subcommands(self):
+        """FT-20: 驗證 hook.core.py 在守護進程內部與 daemon 子命令時短路返回，杜絕遞迴死鎖 (EC-06, FR-02)"""
+        import importlib.util
+        hook_path = Path(__file__).resolve().parent.parent / "scripts" / "hook.core.py"
+        spec = importlib.util.spec_from_file_location("test_hook_core_deadlock", str(hook_path))
+        hook_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook_mod)
+
+        # 1. 守護進程標記時返回 False
+        with patch.dict(os.environ, {"KNOWLEDGE_DB_DAEMON_PROCESS": "1", "YSCB_TEST_SANDBOX": "0"}):
+            self.assertFalse(hook_mod.on_pre_cli_dispatch())
+
+        # 2. daemon 命令參數時返回 False
+        with patch.dict(os.environ, {"KNOWLEDGE_DB_DAEMON_PROCESS": "0", "YSCB_TEST_SANDBOX": "0"}):
+            with patch.object(sys, "argv", ["yscb.py", "knowledge-db", "daemon", "start"]):
+                self.assertFalse(hook_mod.on_pre_cli_dispatch())
+            with patch.object(sys, "argv", ["yscb.py", "knowledge-db", "daemon", "run-foreground"]):
+                self.assertFalse(hook_mod.on_pre_cli_dispatch())
+            with patch.object(sys, "argv", ["yscb.py", "knowledge-db", "daemon", "stop"]):
+                self.assertFalse(hook_mod.on_pre_cli_dispatch())
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_logger_foreground_stream_and_package_routing(self):
+        """FT-21: 驗證 _setup_logger 支援前台 stdout 串流與 knowledge_db 套件日誌聚合留痕 (FR-10)"""
+        server = HotReloadServer(workspace_root=self.root_path)
+        logger = server._setup_logger(is_foreground=True)
+
+        # 驗證掛載了 StreamHandler
+        has_stream = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in logger.handlers)
+        self.assertTrue(has_stream)
+
+        # 驗證 knowledge_db 套件層級掛載了 FlushingFileHandler
+        pkg_logger = logging.getLogger("knowledge_db")
+        has_pkg_file = any(isinstance(h, logging.FileHandler) for h in pkg_logger.handlers)
+        self.assertTrue(has_pkg_file)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ensure_running_injects_daemon_env_and_fast_probe(self):
+        """FT-22: 驗證 ensure_running 在 Popen 注入 KNOWLEDGE_DB_DAEMON_PROCESS 並極速探測成功 (FR-02)"""
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.pid = 44556
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+
+            names, current_sig = HotReloadServer.get_current_spaces_signature(workspace_root=self.root_path)
+            calls = 0
+            ready_info = DaemonInfo(
+                pid=44556,
+                start_time=time.time(),
+                version=HotReloadServer.get_module_version(),
+                workspace_root=str(self.root_path),
+                log_file="",
+                spaces=names,
+                spaces_signature=current_sig,
+                status="ready",
+            )
+
+            def _fake_is_running(root):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return False, None
+                return True, ready_info
+
+            with patch.object(HotReloadServer, "is_running", side_effect=_fake_is_running):
+                res = HotReloadServer.ensure_running(self.root_path)
+                self.assertTrue(res)
+                mock_popen.assert_called_once()
+                # 驗證環境變數傳遞
+                _, kwargs = mock_popen.call_args
+                self.assertIn("env", kwargs)
+                self.assertEqual(kwargs["env"].get("KNOWLEDGE_DB_DAEMON_PROCESS"), "1")
+
+        self.mark_passed()
+
+

@@ -399,3 +399,26 @@
      - 既有 `load_fingerprints` 介面轉為自二進位快照反查相容層，確保下游相容性。
 - **效益與驗證**：
   - 系統快取狀態達到 100% 物理級 SSOT，消弭記憶體與磁碟、前台與背景守護進程間的一切狀態歧異。
+
+---
+
+### [DN-20] Hook 遞迴死鎖解除、Windows Job Object Breakaway 突破與守護進程全域即時日誌留痕
+
+- **背景與動機**：
+  - 模組熱重載守護進程出現三大下游故障：
+    1. **第二次啟動必然逾時**：`hook.core.py` 於 `pre_cli_dispatch` 無差別調用 `ensure_running()`，導致背景守護進程被拉起時遞迴觸發 hook 並嘗試獲取父進程持有的 `DaemonLock` 造成死鎖；父進程 8 秒超時後誤殺存活進程。此外在 Windows 下，若前台 CLI 處於 IDE / CI / Task Runner 之 Job Object 且無 Breakaway 授權時，一般 `Popen` 進程在父進程結束時會被 Windows 連帶處決。
+    2. **無即時日誌**：`_setup_logger()` 僅配置私有 logger 之 `FlushingFileHandler` 且關閉 propagate，未提供 `sys.stdout` 的 `StreamHandler`，終端前台運行為黑屏狀態，且 `pipeline` 與 `scanner` 之索引日誌無法被寫入 daemon 日誌。
+    3. **無 daemon 索引延遲極高**：因前述進程無法常駐，CLI 檢索退化至冷啟動 JIT 重載 FastEmbed 模型（耗時數秒）。
+- **架構決策與修復**：
+  1. **Hook 遞迴排除與雙保險標記**：
+     - `hook.core.py` 嚴格短路排除 `daemon` 子命令與 `--daemon-process`，並檢驗 `KNOWLEDGE_DB_DAEMON_PROCESS` 環境變數，杜絕子進程在 CLI 生命週期勾點遞迴競爭 `DaemonLock`。
+  2. **Windows Job Object Breakaway (WMI 託管)**：
+     - 在非沙盒 Windows 環境下，`ensure_running()` 優先透過 WMI (`Win32_Process.Create`) 委託系統 `WmiPrvSE` 服務拉起背景進程，徹底擺脫母體 CLI 的 Job Object 約束，保證 CLI 結束後背景守護進程穩定常駐。
+  3. **非阻塞高頻短輪詢 (0.05s)**：
+     - 將啟動探測改為 0.05s 輪詢，一旦子進程寫入 `status="ready"`（通常 < 0.4s）立即返回 `True`；連續呼叫直接複用既有 PID，單例防重無阻塞。
+  4. **前台 stdout 串流與套件級日誌聚合**：
+     - `_setup_logger` 支援 `FlushingStreamHandler(sys.stdout)`，在互動模式或前台模式下即時串流終端；並將 `FlushingFileHandler` 同步綁定至 `knowledge_db` 套件層級 logger，使全套管線與掃描器熱修補日誌無漏留痕。
+- **效益與驗證**：
+  - 新增 FT-20、FT-21、FT-22 單元測試，159 項自訂與契約測試 100% 通過。
+  - 實機驗證多次連續啟動無逾時、無死鎖、單例穩定複用，JIT 自動跳過使檢索延遲降至 sub-50ms。
+
