@@ -1,5 +1,22 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_06_1500_knowledge_db_watch_scope_and_process_cleanup (Completed)
+
+- **knowledge-db 監聽過濾範疇收斂、四層剛性進程防護與進程洩漏治理 (`fast_track_plan.md`)**：
+  - **監聽過濾範疇嚴格收斂 (`is_path_watched`)**：徹底移除 `HotReloadServer.is_path_watched` 對 `workspace_root` 任意檔案的寬鬆兜底機制，嚴格限定變更檔案必須隸屬至少一個解析 Space 之 `include` 實體根目錄（且未被 exclude 排除），杜絕專案根目錄無關檔案（如 `.vscode/settings.json`, `.cache/`, `node_modules/`）觸發幽靈防抖與「無變更」空轉日誌循環。
+  - **四層剛性進程防護體系 (Four-Tier Process Safeguard)**：
+    - **Tier 1 (父進程即時預註冊)**：父進程在 `subprocess.Popen` 返回瞬間立即寫入 `daemon.pid`（`status="starting"`），徹底消除子進程啟動載入函式庫期間（2~3 秒）外界探測不到進程的真空盲區。
+    - **Tier 2 (跨進程互斥鎖 `daemon.lock`)**：實作 `DaemonLock`（Windows `msvcrt.locking` / POSIX `fcntl.flock`），確保同一工作區同一時間僅有一進程調度啟動/重啟，並行或連續 CLI 呼叫自動序列化。
+    - **Tier 3 (超時剛性熔斷強殺)**：探測等待上限放寬至 8.0 秒（80 * 0.1s），若遭遇極端高峰或死鎖導致進程超過 8 秒仍未進入 `ready`，立即發動 `kill_process_tree` 強行處決整棵進程樹，絕不放生殭屍孤兒進程，清理 PID 檔並安全回退。
+    - **Tier 4 (進程樹強殺 `kill_process_tree`)**：在 Windows 全面使用 `taskkill /F /T /PID` 徹底處決目標進程及其所有衍生子進程樹，消滅殘留進程。
+  - **可觀測性改善**：於防抖日誌輸出觸發熱修補之 dirty 檔案名稱清單，杜絕盲盒除錯。
+  - **全平台進程高辨識度命名體系 (`get_daemon_executable` & `set_process_title`)**：
+    - **Windows**：建立專用 `cache://knowledge-db/bin/yscb-knowledge-db-daemon.exe` 執行檔，使 Windows 工作管理員（處理程序與詳細資料頁籤）直接顯示 `yscb-knowledge-db-daemon`，並透過 `SetThreadDescription` 與 `SetConsoleTitleW` 設定清晰標題，徹底取代通用含糊的 `python.exe`。
+    - **Linux**：建立專用 `yscb-knowledge-db-daemon` 執行檔，並透過 `prctl(PR_SET_NAME)` 原生修改 `/proc/self/comm`，讓 `ps`、`top`、`htop` 與 `pgrep` 精準顯示 `yscb-kdb-daemon`。
+    - **macOS**：建立專用 `yscb-knowledge-db-daemon` 執行檔，並透過 `pthread_setname_np` 設定執行緒名稱，於活動監視器 (Activity Monitor) 呈現清楚名稱。
+    - **通用相容**：啟動自動支援 `setproctitle`（若環境已安裝）。
+  - **測試套件與實機驗證**：新增/更新單元測試覆蓋非 Space 檔案過濾、四層剛性防護、超時熔斷處決、進程樹強殺與跨平台名稱設置；全模組 156/156 單元測試 100% 通過；實機腳本驗證連續快速兩次 `ensure_running` 精確維持 1 個進程，零洩漏。
+
 ## 2026_09_06_1358_knowledge_db_hot_reload_fix (Completed)
 
 - **knowledge-db 熱重載新增與修改檔案靜默 no-op 修復與物理級 SSOT (`P07_walkthrough.md`)**：
