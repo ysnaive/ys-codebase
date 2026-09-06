@@ -79,16 +79,6 @@ python yscb.py knowledge-db impact "InvertedIndex.patch_incremental" --depth=2
 
 # 10. 清理特定或全空間之指紋、Bundle 與倒排索引快取
 python yscb.py knowledge-db clean --all
-
-# 11. 熱重載守護進程管理 (Hot Reload Server Daemon)
-python yscb.py knowledge-db daemon status   # 檢視守護進程狀態與日誌路徑
-python yscb.py knowledge-db daemon start    # 背景手動啟動守護進程
-python yscb.py knowledge-db daemon stop     # 優雅終止守護進程並清除鎖檔
-python yscb.py knowledge-db daemon watch    # 啟動前台監視模式 (適合除錯與即時觀測)
-
-# 12. 啟用自動喚醒組態 (Pre-dispatch 自動拉起，無手動負擔)
-python yscb.py config set knowledge-db enable_hot_reload_server true --local
-python yscb.py config set knowledge-db hot_reload_server_inactivity_timer_sec 600 --local
 ```
 
 ---

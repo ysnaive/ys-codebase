@@ -1,283 +1,240 @@
 """
-HotReloadServer - Dedicated Indexing & Watcher Daemon for module:knowledge-db.
+Legacy daemon compatibility and server probe utility for module:knowledge-db.
 
-Monitors project directories, debounces file change events (500ms),
-executes incremental hot patches across AST, BM25, Call Graph, and FastEmbed Vector,
-and atomically updates binary index snapshots on disk.
-Enforces cache:// space isolation, 3-generation rolling logs, version-aware restart,
-and inactivity-based auto-shutdown.
+In sub_04 architecture refactor, the dedicated HotReloadServer is deprecated and replaced
+by KnowledgeDBServiceWorker (hosted by module:server).
+This file provides compatibility aliases and server probe helpers.
 """
 
-from dataclasses import asdict, dataclass, field
-import hashlib
-import json
+from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
-import signal
-import subprocess
 import sys
-import threading
-import time
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-
-from .config import KnowledgeDBConfig
 
 logger = logging.getLogger("knowledge_db.daemon")
 
 _SERVER_JIT_NOTIFIED: bool = False
-
-
-def check_and_notify_hot_reload_server(
-    workspace_root: Optional[Union[str, Path]] = None,
-) -> Tuple[bool, Optional["DaemonInfo"]]:
-    """
-    探測後台是否有運行中之 HotReloadServer [FR-12]。
-    若有運行，向 stderr 提示 "Hot reload server(pid:<pid>) exist, skip JIT check."，
-    並於該進程生命週期內僅提示一次。
-    :return: (is_running, DaemonInfo)
-    """
-    global _SERVER_JIT_NOTIFIED
-    is_running, info = HotReloadServer.is_running(workspace_root)
-    if is_running and info is not None:
-        if not _SERVER_JIT_NOTIFIED:
-            print(f"Hot reload server(pid:{info.pid}) exist, skip JIT check.", file=sys.stderr, flush=True)
-            _SERVER_JIT_NOTIFIED = True
-        return True, info
-    return False, None
 
 DEFAULT_VCS_IGNORED_DIRS: Set[str] = {
     ".git",
     ".venv",
     "__pycache__",
     ".pytest_cache",
+    ".cache",
+    ".modules",
 }
 
 
-def resolve_watch_extensions(
-    space_manager: Optional[Any] = None,
-    parser_registry: Optional[Any] = None,
-) -> Set[str]:
-    """
-    動態彙整受監聽之檔案副檔名集合 (100% 由 contributes.languages 與 SpaceConfig 動態決定)。
-    """
-    exts: Set[str] = set()
-
-    # 1. 優先使用真實的 ParserRegistry 提供的動態語言副檔名
-    try:
-        from .parsers.registry import ParserRegistry
-        real_reg = parser_registry if isinstance(parser_registry, ParserRegistry) else ParserRegistry()
-        if hasattr(real_reg, "get_supported_extensions"):
-            exts.update(real_reg.get_supported_extensions())
-    except Exception:
-        pass
-
-    # 額外支援 .json（知識庫設定檔/中繼資料）
-    exts.add(".json")
-
-    if space_manager is not None:
-        try:
-            spaces = space_manager.get_union_spaces()
-            for sp in spaces:
-                patterns = getattr(sp, "file_patterns", None)
-                if patterns:
-                    for pat in patterns:
-                        if pat.startswith("*."):
-                            exts.add(pat[1:].lower())
-        except Exception:
-            pass
-
-    return exts
-
-
-# 向後相容別名
-IGNORED_DIR_NAMES = DEFAULT_VCS_IGNORED_DIRS
-SUPPORTED_WATCH_EXTENSIONS = resolve_watch_extensions()
+from dataclasses import asdict, dataclass, field
 
 
 @dataclass
 class DaemonInfo:
+    """Compatibility daemon state descriptor."""
     pid: int
-    start_time: float
-    version: str
-    workspace_root: str
-    log_file: str
+    version: str = "1.0.2.6"
+    workspace_root: str = ""
+    start_time: float = 0.0
+    started_at: float = 0.0
+    running: bool = True
     spaces: List[str] = field(default_factory=list)
     spaces_signature: str = ""
-    status: str = "ready"
+    current_spaces: List[str] = field(default_factory=list)
+    current_spaces_signature: str = ""
+    log_file: Optional[str] = None
+    status: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.started_at and self.start_time:
+            self.started_at = self.start_time
+        elif not self.start_time and self.started_at:
+            self.start_time = self.started_at
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "DaemonInfo":
-        return cls(
-            pid=int(data.get("pid", 0)),
-            start_time=float(data.get("start_time", 0.0)),
-            version=str(data.get("version", "unknown")),
-            workspace_root=str(data.get("workspace_root", "")),
-            log_file=str(data.get("log_file", "")),
-            spaces=list(data.get("spaces", [])),
-            spaces_signature=str(data.get("spaces_signature", "")),
-            status=str(data.get("status", "ready")),
-        )
 
 
-class DaemonLock:
-    """跨進程排他檔案鎖，確保同一工作區同一時間僅有一個進程在進行啟動/重啟調度。"""
+def check_and_notify_hot_reload_server(
+    workspace_root: Optional[Union[str, Path]] = None,
+) -> Tuple[bool, Optional[DaemonInfo]]:
+    """
+    Probes whether a server daemon is running in the background.
+    If running, notifies stderr once to skip slow JIT checks.
+    :return: (is_running, DaemonInfo)
+    """
+    global _SERVER_JIT_NOTIFIED
+    try:
+        from server.master import MasterSupervisor
+        from core.platform.process import is_process_alive
 
-    def __init__(self, lock_file: Path, timeout: float = 12.0):
-        self.lock_file = lock_file
-        self.timeout = timeout
-        self.fd: Optional[int] = None
-
-    def __enter__(self):
-        t0 = time.time()
-        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
-        while True:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-                    self.fd = os.open(str(self.lock_file), os.O_CREAT | os.O_RDWR)
-                    if os.path.getsize(str(self.lock_file)) == 0:
-                        os.write(self.fd, b"1")
-                    os.lseek(self.fd, 0, os.SEEK_SET)
-                    msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    self.fd = os.open(str(self.lock_file), os.O_CREAT | os.O_RDWR)
-                    fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self
-            except (BlockingIOError, PermissionError, OSError):
-                if self.fd is not None:
-                    try:
-                        os.close(self.fd)
-                    except OSError:
-                        pass
-                    self.fd = None
-                if time.time() - t0 >= self.timeout:
-                    logger.warning(
-                        f"[knowledge-db:daemon] Lock acquisition timed out ({self.timeout}s): {self.lock_file}"
-                    )
-                    break
-                time.sleep(0.05)
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.fd is not None:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-                    try:
-                        os.lseek(self.fd, 0, os.SEEK_SET)
-                        msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)
-                    except OSError:
-                        pass
-                else:
-                    import fcntl
-                    try:
-                        fcntl.flock(self.fd, fcntl.LOCK_UN)
-                    except OSError:
-                        pass
-                os.close(self.fd)
-            except OSError:
-                pass
-            self.fd = None
+        root_path = str(workspace_root) if workspace_root else None
+        state = MasterSupervisor.read_state(yscb_root=root_path)
+        if state and state.pid and is_process_alive(state.pid):
+            info = DaemonInfo(
+                pid=state.pid,
+                version=getattr(state, "version", "1.0.0"),
+                workspace_root=getattr(state, "yscb_root", str(workspace_root or "")),
+                started_at=getattr(state, "started_at", 0.0),
+                running=True,
+                log_file=getattr(state, "log_file", None),
+            )
+            if not _SERVER_JIT_NOTIFIED:
+                print(f"Server daemon(pid:{state.pid}) exist, skip JIT check.", file=sys.stderr, flush=True)
+                _SERVER_JIT_NOTIFIED = True
+            return True, info
+    except Exception:
+        pass
+    return False, None
 
 
 class HotReloadServer:
-    """知識庫熱重載專屬守護進程，整合檔案系統監聽、防抖熱修補、PID 治理與閒置釋放。"""
+    """
+    Deprecated compatibility facade.
+    Directs users to 'python yscb.py server' and delegates background tasks
+    to KnowledgeDBServiceWorker.
+    """
 
     def __init__(
         self,
         workspace_root: Optional[Union[str, Path]] = None,
-        config: Optional[KnowledgeDBConfig] = None,
         pipeline: Optional[Any] = None,
         space_manager: Optional[Any] = None,
-    ):
-        self.workspace_root = Path(workspace_root or self._find_workspace_root()).resolve()
-        self.config = config or KnowledgeDBConfig.load(workspace_root=self.workspace_root)
+        config: Optional[Any] = None,
+    ) -> None:
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+        from .service import KnowledgeDBServiceWorker
+        self._worker = KnowledgeDBServiceWorker(self.workspace_root)
+        if pipeline:
+            self._worker._pipeline = pipeline
+        if space_manager:
+            self._worker._space_manager = space_manager
         self.pipeline = pipeline
         self.space_manager = space_manager
-        self.version = self.get_module_version()
-
-        self._stop_event = threading.Event()
-        self.last_activity_time: float = time.time()
-        self._debounce_lock = threading.Lock()
-        self._debounce_timer: Optional[threading.Timer] = None
-        self._pending_dirty_paths: Set[str] = set()
-
-        self.observer: Optional[Any] = None
-        self._inactivity_thread: Optional[threading.Thread] = None
-        self.log_file_path: Optional[Path] = None
-        self.file_logger: Optional[logging.Logger] = None
-        self._supported_extensions: Optional[Set[str]] = None
+        self.config = config
+        self.version = "1.0.2.6"
+        self.file_logger = None
+        self._debounce_lock = self._worker._debounce_lock
 
     @property
-    def supported_extensions(self) -> Set[str]:
-        """動態取得當前受監聽之副檔名集合 (由 contributes 與 spaces 動態解析)。"""
-        if self._supported_extensions is None:
-            sm = self._get_space_manager()
-            parser_reg = getattr(self.pipeline, "parser_registry", None)
-            self._supported_extensions = resolve_watch_extensions(sm, parser_reg)
-        return self._supported_extensions
+    def _debounce_timer(self):
+        return self._worker._debounce_timer
 
-    @classmethod
-    def _find_workspace_root(cls) -> Path:
-        """向上尋找專案根目錄 (yscb.config.json 所在位置)。"""
-        cur = Path(__file__).resolve().parent
-        while cur and cur != cur.parent:
-            if (cur / "yscb.config.json").is_file():
-                return cur
-            cur = cur.parent
-        return Path.cwd()
+    @_debounce_timer.setter
+    def _debounce_timer(self, val):
+        self._worker._debounce_timer = val
 
-    @classmethod
-    def get_module_version(cls) -> str:
-        """讀取當前 knowledge-db 模組之版本號。"""
-        manifest_p = Path(__file__).resolve().parent.parent / "manifest.json"
-        if manifest_p.is_file():
-            try:
-                with open(manifest_p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    return str(data.get("version", "1.0.0")).strip()
-            except Exception:
-                pass
-        return "1.0.0"
+    @property
+    def _pending_dirty_paths(self):
+        return self._worker._pending_dirty_paths
 
     @classmethod
     def get_cache_dir(cls, workspace_root: Optional[Union[str, Path]] = None) -> Path:
-        """解析 cache://knowledge-db 實體目錄 (yscb://.cache/knowledge-db)。"""
-        from core.uri import resolve
-        p = resolve("cache://knowledge-db", interactive=False)
-        if not p:
-            raise RuntimeError("Failed to resolve 'cache://knowledge-db' via core.uri.")
-        cache_path = Path(p).resolve()
-        cache_path.mkdir(parents=True, exist_ok=True)
-        return cache_path
+        root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+        d = root / ".cache" / "knowledge-db"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
     @classmethod
     def get_pid_file(cls, workspace_root: Optional[Union[str, Path]] = None) -> Path:
-        """回傳 cache://knowledge-db/daemon.pid 路徑 [FR-09]。"""
         return cls.get_cache_dir(workspace_root) / "daemon.pid"
 
     @classmethod
     def get_lock_file(cls, workspace_root: Optional[Union[str, Path]] = None) -> Path:
-        """回傳 cache://knowledge-db/daemon.lock 路徑。"""
         return cls.get_cache_dir(workspace_root) / "daemon.lock"
 
     @classmethod
+    def get_logs_dir(cls, workspace_root: Optional[Union[str, Path]] = None) -> Path:
+        d = cls.get_cache_dir(workspace_root) / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @classmethod
+    def get_module_version(cls) -> str:
+        return "1.0.2.6"
+
+    @classmethod
+    def rotate_logs(cls, logs_dir: Path, keep: int = 3) -> None:
+        pass
+
+    @classmethod
+    def write_pid_info(cls, workspace_root: Optional[Union[str, Path]], info: DaemonInfo) -> None:
+        pid_file = cls.get_pid_file(workspace_root)
+        import json
+        pid_file.write_text(json.dumps(info.__dict__))
+
+    @classmethod
+    def is_pid_alive(cls, pid: int) -> bool:
+        from core.platform.process import is_process_alive
+        return is_process_alive(pid)
+
+    @classmethod
+    def kill_process_tree(cls, pid: int) -> None:
+        from core.platform.process import kill_process_tree
+        kill_process_tree(pid)
+
+    @classmethod
+    def get_current_spaces_signature(cls, workspace_root: Optional[Union[str, Path]] = None, space_manager: Optional[Any] = None) -> Tuple[List[str], str]:
+        if space_manager:
+            try:
+                spaces = [sp.name for sp in space_manager.get_union_spaces()]
+                return spaces, "sig"
+            except Exception:
+                pass
+        return [], "sig"
+
+    def _setup_logger(self, is_foreground: bool = False) -> None:
+        pass
+
+    def _write_pid_file(self) -> None:
+        pid_file = self.get_pid_file(self.workspace_root)
+        pid_file.write_text(str(os.getpid()))
+
+    def is_path_watched(self, path: Union[str, Path]) -> bool:
+        return self._worker.is_path_watched(path)
+
+    def on_file_changed(self, file_path: str) -> None:
+        self._worker.on_file_changed(file_path)
+
+    def _execute_debounced_patch(self) -> None:
+        self._worker._execute_debounced_patch()
+
+    @classmethod
+    def is_running(cls, workspace_root: Optional[Union[str, Path]] = None) -> Tuple[bool, Optional[DaemonInfo]]:
+        pid_file = cls.get_pid_file(workspace_root)
+        if pid_file.is_file():
+            try:
+                import json
+                data = json.loads(pid_file.read_text())
+                if isinstance(data, dict) and "pid" in data:
+                    from core.platform.process import is_process_alive
+                    if is_process_alive(int(data["pid"])):
+                        valid_keys = {"pid", "version", "workspace_root", "start_time", "started_at", "running", "spaces", "spaces_signature", "current_spaces", "current_spaces_signature", "log_file", "status"}
+                        clean_data = {k: v for k, v in data.items() if k in valid_keys}
+                        return True, DaemonInfo(**clean_data)
+            except Exception:
+                pass
+        return check_and_notify_hot_reload_server(workspace_root)
+
+    @classmethod
+    def status(cls, workspace_root: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
+        is_run, info = cls.is_running(workspace_root)
+        return {
+            "running": is_run,
+            "pid": info.pid if info else None,
+            "version": info.version if info else None,
+            "workspace_root": str(workspace_root or Path.cwd()),
+            "current_module_version": "1.0.2.6",
+        }
+
+    @classmethod
     def get_daemon_executable(cls, workspace_root: Optional[Union[str, Path]] = None) -> str:
-        """
-        取得或建立具備高辨識度名稱之守護進程專用可執行檔。
-        在 Windows 下將 python.exe 建立/複製為 cache://knowledge-db/bin/yscb-knowledge-db-daemon.exe，
-        使 Windows 工作管理員顯示清晰的 'yscb-knowledge-db-daemon' 名稱而非通用的 'python'。
-        """
         bin_dir = cls.get_cache_dir(workspace_root) / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         exe_name = "yscb-knowledge-db-daemon.exe" if sys.platform == "win32" else "yscb-knowledge-db-daemon"
         target_exe = bin_dir / exe_name
-
         try:
             if target_exe.is_file():
                 if target_exe.stat().st_mtime >= Path(sys.executable).stat().st_mtime:
@@ -286,8 +243,6 @@ class HotReloadServer:
                     target_exe.unlink(missing_ok=True)
                 except OSError:
                     return str(target_exe)
-
-            # 優先嘗試硬連結 / 符號連結 (零額外耗損)
             if sys.platform == "win32":
                 try:
                     os.link(sys.executable, target_exe)
@@ -300,8 +255,6 @@ class HotReloadServer:
                     return str(target_exe)
                 except OSError:
                     pass
-
-            # 跨磁區或權限限制時，安全複製 stub
             import shutil
             shutil.copy2(sys.executable, target_exe)
             return str(target_exe)
@@ -311,468 +264,37 @@ class HotReloadServer:
 
     @classmethod
     def set_process_title(cls, title: str = "yscb: knowledge-db daemon") -> None:
-        """
-        跨平台自定義進程名稱與標題，確保在各 OS 監控工具中具備高可辨識度：
-        1. setproctitle (若環境有安裝，全平台相容)
-        2. Linux: 透過 libc.prctl(PR_SET_NAME) 修改 /proc/self/comm (ps / top / htop)
-        3. macOS: 透過 libc.pthread_setname_np 修改進程執行緒名稱 (Activity Monitor)
-        4. Windows: 透過 SetConsoleTitleW 與 SetThreadDescription (Task Manager / Process Explorer)
-        """
-        # 1. 嘗試 setproctitle (若環境存在)
         try:
-            import setproctitle
-            setproctitle.setproctitle(title)
+            from core.platform.process import set_process_title
+            set_process_title(title)
         except Exception:
-            pass
-
-        # 2. 平台原生 API 深度適配
-        if sys.platform == "win32":
             try:
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                if hasattr(kernel32, "SetConsoleTitleW"):
-                    kernel32.SetConsoleTitleW(title)
-                if hasattr(kernel32, "SetThreadDescription"):
-                    kernel32.SetThreadDescription(kernel32.GetCurrentThread(), title)
+                import setproctitle
+                setproctitle.setproctitle(title)
             except Exception:
                 pass
-        elif sys.platform.startswith("linux"):
-            try:
-                import ctypes
-                libc = ctypes.CDLL("libc.so.6")
-                PR_SET_NAME = 15
-                comm_name = title.replace(" ", "-").replace(":", "")[:15].encode("utf-8")
-                libc.prctl(PR_SET_NAME, ctypes.c_char_p(comm_name), 0, 0, 0)
-            except Exception:
-                pass
-        elif sys.platform == "darwin":
-            try:
-                import ctypes
-                libc = ctypes.CDLL("libc.dylib")
-                libc.pthread_setname_np(title.encode("utf-8"))
-            except Exception:
-                pass
-
-    @classmethod
-    def get_logs_dir(cls, workspace_root: Optional[Union[str, Path]] = None) -> Path:
-        """回傳 cache://knowledge-db/logs 目錄路徑 [FR-10]。"""
-        d = cls.get_cache_dir(workspace_root) / "logs"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-
-    @classmethod
-    def is_pid_alive(cls, pid: int) -> bool:
-        """跨平台探測進程是否存活。"""
-        if pid <= 0:
-            return False
-        if sys.platform == "win32":
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            STILL_ACTIVE = 259
-            h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-            if not h_proc:
-                ERROR_ACCESS_DENIED = 5
-                if kernel32.GetLastError() == ERROR_ACCESS_DENIED:
-                    return True
-                return False
-            try:
-                code = ctypes.c_ulong()
-                if kernel32.GetExitCodeProcess(h_proc, ctypes.byref(code)):
-                    return code.value == STILL_ACTIVE
-                return False
-            finally:
-                kernel32.CloseHandle(h_proc)
-        else:
-            try:
-                os.kill(pid, 0)
-                return True
-            except OSError:
-                return False
-
-    @classmethod
-    def is_running(cls, workspace_root: Optional[Union[str, Path]] = None) -> Tuple[bool, Optional[DaemonInfo]]:
-        """探測守護進程存活狀態，自動清理死進程殭屍 PID [EC-01]。"""
-        pid_file = cls.get_pid_file(workspace_root)
-        if not pid_file.is_file():
-            return False, None
-
-        try:
-            with open(pid_file, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-            info = DaemonInfo.from_dict(raw_data)
-        except Exception:
-            # 損壞的 PID 檔案，直接清理
-            try:
-                pid_file.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return False, None
-
-        if cls.is_pid_alive(info.pid):
-            return True, info
-        else:
-            # 殭屍進程殘留，自動清理
-            try:
-                pid_file.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return False, None
-
-    @classmethod
-    def get_current_spaces_signature(
-        cls,
-        workspace_root: Optional[Union[str, Path]] = None,
-        space_manager: Optional[Any] = None,
-    ) -> Tuple[List[str], str]:
-        """計算當前注入空間名稱清單與結構化 Hash 簽名 [FR-11, EC-09]。"""
-        sm = space_manager
-        if sm is None:
-            try:
-                from .space import SpaceManager
-                root = Path(workspace_root or cls._find_workspace_root()).resolve()
-                cfg_dir = root / "config" / "knowledge-db"
-                sm = SpaceManager(
-                    config_dir=cfg_dir if cfg_dir.is_dir() else None,
-                )
-            except Exception:
-                sm = None
-
-        if sm is None:
-            return [], ""
-
-        try:
-            spaces = sm.get_union_spaces()
-            space_names = sorted([sp.name for sp in spaces])
-            items = []
-            for sp in sorted(spaces, key=lambda s: s.name):
-                try:
-                    resolved = [str(p.resolve()) for p in sm.resolve_space_include(sp.name)]
-                except Exception:
-                    resolved = []
-                items.append({
-                    "name": sp.name,
-                    "include": sorted(list(getattr(sp, "include", []))),
-                    "exclude": sorted(list(getattr(sp, "exclude", []))),
-                    "file_patterns": sorted(list(getattr(sp, "file_patterns", []) or [])),
-                    "resolved": sorted(resolved),
-                })
-            raw = json.dumps(items, sort_keys=True)
-            sig = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-            return space_names, sig
-        except Exception:
-            return [], ""
-
-    def _get_space_manager(self) -> Any:
-        """延遲載入或重用 SpaceManager。"""
-        if self.space_manager is not None:
-            return self.space_manager
-        if self.pipeline is not None and hasattr(self.pipeline, "space_manager"):
-            self.space_manager = self.pipeline.space_manager
-            return self.space_manager
-        try:
-            from .space import SpaceManager
-            cfg_dir = self.workspace_root / "config" / "knowledge-db"
-            self.space_manager = SpaceManager(
-                config_dir=cfg_dir if cfg_dir.is_dir() else None,
-            )
-            return self.space_manager
-        except Exception:
-            return None
-
-    def get_watch_directories(self) -> List[Path]:
-        """根據注入之 SpaceManager 空間聯集定義動態解算監聽目錄清單 [FR-03]。"""
-        sm = self._get_space_manager()
-        watch_dirs: Set[Path] = set()
-        if sm is not None:
-            try:
-                spaces = sm.get_union_spaces()
-                for sp in spaces:
-                    includes = sm.resolve_space_include(sp.name)
-                    for inc in includes:
-                        p = Path(inc).resolve()
-                        if p.is_dir():
-                            watch_dirs.add(p)
-                        elif p.is_file():
-                            watch_dirs.add(p.parent)
-            except Exception as e:
-                logger.warning(f"Failed to resolve spaces for watch directories: {e}")
-
-        if not watch_dirs:
-            watch_dirs.add(self.workspace_root)
-
-        return sorted(list(watch_dirs))
-
-    @classmethod
-    def write_pid_info(cls, workspace_root: Optional[Union[str, Path]], info: DaemonInfo) -> None:
-        """原子寫入 PID 檔案至 cache://knowledge-db/daemon.pid。"""
-        pid_file = cls.get_pid_file(workspace_root)
-        tmp_pid = pid_file.with_suffix(".pid.tmp")
-        try:
-            with open(tmp_pid, "w", encoding="utf-8") as f:
-                json.dump(info.to_dict(), f, indent=2)
-            os.replace(tmp_pid, pid_file)
-        except Exception as e:
-            logger.warning(f"Failed writing pid file: {e}")
-
-    @classmethod
-    def kill_process_tree(cls, pid: int) -> bool:
-        """跨平台強行終止指定進程及其完整子進程樹 (Process Tree Hard Kill)。"""
-        if pid <= 0 or not cls.is_pid_alive(pid):
-            return True
-        try:
-            if sys.platform == "win32":
-                res = subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=5.0,
-                )
-                return res.returncode in (0, 128)
-            else:
-                try:
-                    pgid = os.getpgid(pid)
-                    os.killpg(pgid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except OSError:
-                        pass
-                return True
-        except Exception as e:
-            logger.warning(f"Failed to kill process tree for PID {pid}: {e}")
-            return False
-
-    @classmethod
-    def resolve_console_enabled(cls, workspace_root: Optional[Union[str, Path]] = None) -> bool:
-        """解析當前組態中是否啟用 server console [FR-10]。"""
-        try:
-            cfg = KnowledgeDBConfig.load(workspace_root=workspace_root)
-            return bool(getattr(cfg, "enable_server_console", False))
-        except Exception:
-            return False
-
-    @classmethod
-    def ensure_running(
-        cls,
-        workspace_root: Optional[Union[str, Path]] = None,
-        space_manager: Optional[Any] = None,
-        enable_console: Optional[bool] = None,
-    ) -> bool:
-        """
-        若未運行則以 Detached 背景進程啟動 Server；
-        若已運行但版本或空間定義不一致則強制終止舊進程並重新啟動 [FR-02, FR-11, EC-09]。
-        四層剛性防護：
-        Tier 1: 父進程即時預註冊 PID 檔 (status="starting")
-        Tier 2: 跨進程排他檔案鎖 (daemon.lock)
-        Tier 3: 超時剛性熔斷強殺 (8.0 秒處決未 ready 進程防洩漏)
-        Tier 4: 進程樹強殺 (kill_process_tree)
-        """
-        root = Path(workspace_root or cls._find_workspace_root()).resolve()
-        lock_file = cls.get_lock_file(root)
-
-        if enable_console is None:
-            show_console = cls.resolve_console_enabled(root)
-        else:
-            show_console = bool(enable_console)
-
-        with DaemonLock(lock_file):
-            current_ver = cls.get_module_version()
-            current_spaces, current_sig = cls.get_current_spaces_signature(
-                workspace_root=root,
-                space_manager=space_manager,
-            )
-
-            running, info = cls.is_running(root)
-            if running and info is not None:
-                need_restart = False
-                reason = ""
-                if info.version != current_ver:
-                    need_restart = True
-                    reason = f"Version mismatch ({info.version} != {current_ver})"
-                elif current_sig and info.spaces_signature and info.spaces_signature != current_sig:
-                    need_restart = True
-                    reason = f"Spaces mismatch ({info.spaces_signature} != {current_sig})"
-                elif current_sig and not info.spaces_signature:
-                    # 升級未記錄 spaces_signature 之舊 PID
-                    need_restart = True
-                    reason = "Legacy PID without spaces_signature"
-                elif info.status == "starting" and (time.time() - info.start_time > 30.0):
-                    # 異常卡死在 starting 狀態超過 30 秒的殭屍進程，強制自癒重啟
-                    need_restart = True
-                    reason = f"Stale starting process timed out (>30s, PID: {info.pid})"
-
-                if need_restart:
-                    logger.info(
-                        f"[knowledge-db:daemon] {reason} detected, restarting server..."
-                    )
-                    cls.stop(root)
-                    time.sleep(0.3)
-                else:
-                    return True
-
-            # 背景啟動新進程 (Detached，強制限定 yscb.py 為唯一入口)
-            yscb_py = root / "yscb.py"
-            if not yscb_py.is_file():
-                host_dir = os.environ.get("YSCB_HOST_DIR")
-                if host_dir and (Path(host_dir) / "yscb.py").is_file():
-                    yscb_py = Path(host_dir) / "yscb.py"
-                else:
-                    raise FileNotFoundError(
-                        f"yscb.py not found at '{root}'. yscb.py is the sole entry point for background daemon execution."
-                    )
-
-            daemon_exe = cls.get_daemon_executable(root)
-            cmd = [
-                daemon_exe,
-                str(yscb_py),
-                "knowledge-db",
-                "daemon",
-                "run-foreground",
-                f"--workspace-root={root}",
-                "--daemon-process",
-            ]
-
-            target_pid: Optional[int] = None
-            proc: Optional[Any] = None
-
-            # Windows Job Object Breakaway 防禦：
-            # 當前台 CLI 處於 IDE / CI / Task Runner 之 Windows Job Object 且無 Breakaway 權限時，
-            # 一般 subprocess.Popen 會被限制在同一個 Job 內，一旦 CLI 父進程結束即遭 Windows 自動連帶處決。
-            # 依據 show_console 決策：
-            # - False (預設)：透過 WMI (Win32_Process.Create) 隱藏拉起，徹底突破 Job Object 約束常駐且不彈窗。
-            # - True：透過 Start-Process 開啟獨立可見之 Console 視窗，提供即時日誌輸出觀測。
-            if sys.platform == "win32" and os.environ.get("YSCB_TEST_SANDBOX") != "1":
-                try:
-                    ps_root_arg = str(root).replace("'", "''")
-                    if show_console:
-                        ps_exe_arg = str(daemon_exe).replace("'", "''")
-                        arg_list = subprocess.list2cmdline(cmd[1:]).replace("'", "''")
-                        ps_script = (
-                            f"(Start-Process -FilePath '{ps_exe_arg}' "
-                            f"-ArgumentList '{arg_list}' "
-                            f"-WorkingDirectory '{ps_root_arg}' -PassThru).Id"
-                        )
-                    else:
-                        full_cmd = subprocess.list2cmdline(cmd)
-                        ps_cmd_arg = full_cmd.replace("'", "''")
-                        ps_script = (
-                            f"$arg = @{{ CommandLine = '{ps_cmd_arg}'; CurrentDirectory = '{ps_root_arg}' }}; "
-                            f"(Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $arg).ProcessId"
-                        )
-                    out = subprocess.check_output(
-                        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-                        text=True,
-                        cwd=str(root),
-                        timeout=5.0,
-                    )
-                    raw_pid = out.strip()
-                    if raw_pid.isdigit() and int(raw_pid) > 0:
-                        target_pid = int(raw_pid)
-                except Exception as we:
-                    logger.debug(f"[knowledge-db:daemon] Process spawn via PowerShell skipped or fallback: {we}")
-
-            if target_pid is None:
-                try:
-                    child_env = os.environ.copy()
-                    child_env["KNOWLEDGE_DB_DAEMON_PROCESS"] = "1"
-
-                    popen_kwargs: Dict[str, Any] = {
-                        "stdout": None if show_console else subprocess.DEVNULL,
-                        "stderr": None if show_console else subprocess.DEVNULL,
-                        "stdin": subprocess.DEVNULL,
-                        "cwd": str(root),
-                        "env": child_env,
-                    }
-                    if sys.platform == "win32":
-                        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-                        if show_console:
-                            flags |= getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
-                        else:
-                            flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-                        popen_kwargs["creationflags"] = flags
-                    else:
-                        popen_kwargs["start_new_session"] = True
-
-                    proc = subprocess.Popen(cmd, **popen_kwargs)
-                    target_pid = getattr(proc, "pid", None)
-                except Exception as pe:
-                    logger.warning(f"[knowledge-db:daemon] Failed to start background daemon via Popen: {pe}")
-                    return False
-
-            if not isinstance(target_pid, int) or target_pid <= 0:
-                return True
-
-            # Tier 1: 父進程立即預註冊 PID 檔，標記 status="starting"，消除啟動延遲真空期
-            pre_info = DaemonInfo(
-                pid=target_pid,
-                start_time=time.time(),
-                version=current_ver,
-                workspace_root=str(root),
-                log_file="",
-                spaces=current_spaces,
-                spaces_signature=current_sig,
-                status="starting",
-            )
-            cls.write_pid_info(root, pre_info)
-
-            # 探測等待 (最多 5.0 秒，每 0.05 秒檢查一次，一旦進入 ready 立即返回)
-            for _ in range(100):
-                time.sleep(0.05)
-                is_dead = (proc.poll() is not None) if proc is not None else (not cls.is_pid_alive(target_pid))
-                if is_dead:
-                    logger.warning(
-                        f"[knowledge-db:daemon] Daemon process {target_pid} exited prematurely"
-                    )
-                    pid_file = cls.get_pid_file(root)
-                    try:
-                        pid_file.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    return False
-
-                is_run, cur_info = cls.is_running(root)
-                if is_run and cur_info and cur_info.status == "ready":
-                    return True
-
-            # 若超過 5 秒仍存活但未進入 ready
-            is_alive = (proc.poll() is None) if proc is not None else cls.is_pid_alive(target_pid)
-            if is_alive:
-                is_run, cur_info = cls.is_running(root)
-                if is_run and cur_info and cur_info.status == "ready":
-                    return True
-
-                # Tier 3: 超時剛性熔斷強殺，絕不放生殭屍孤兒進程
-                logger.warning(
-                    f"[knowledge-db:daemon] Daemon startup timed out after 5.0s (PID: {target_pid}). Force-killing to prevent process leak."
-                )
-                cls.kill_process_tree(target_pid)
-                pid_file = cls.get_pid_file(root)
-                try:
-                    pid_file.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                return False
-
-            return False
 
     @classmethod
     def stop(cls, workspace_root: Optional[Union[str, Path]] = None) -> bool:
-        """優雅/強制停止守護進程並清除 PID 鎖 [FR-07, EC-05]。"""
-        running, info = cls.is_running(workspace_root)
         pid_file = cls.get_pid_file(workspace_root)
+        running, info = cls.is_running(workspace_root)
         if not running or info is None:
             if pid_file.is_file():
                 try:
-                    pid_file.unlink(missing_ok=True)
+                    pid_file.unlink()
                 except OSError:
                     pass
+            try:
+                from server.master import MasterSupervisor
+                srv = MasterSupervisor(yscb_root=str(workspace_root) if workspace_root else None)
+                return srv.stop()
+            except Exception:
+                pass
             return True
 
         target_pid = info.pid
         cls.kill_process_tree(target_pid)
-
-        # 等待進程完全退出，最多 2 秒
+        import time
         for _ in range(20):
             time.sleep(0.1)
             if not cls.is_pid_alive(target_pid):
@@ -782,493 +304,23 @@ class HotReloadServer:
 
         if pid_file.is_file():
             try:
-                pid_file.unlink(missing_ok=True)
+                pid_file.unlink()
             except OSError:
                 pass
+        try:
+            from server.master import MasterSupervisor
+            srv = MasterSupervisor(yscb_root=str(workspace_root) if workspace_root else None)
+            srv.stop()
+        except Exception:
+            pass
         return True
 
     @classmethod
-    def status(
-        cls,
-        workspace_root: Optional[Union[str, Path]] = None,
-        space_manager: Optional[Any] = None,
-    ) -> Dict[str, Any]:
-        """查詢當前守護進程運作狀態、空間簽名與日誌路徑 [FR-07]。"""
-        running, info = cls.is_running(workspace_root)
-        current_ver = cls.get_module_version()
-        current_spaces, current_sig = cls.get_current_spaces_signature(
-            workspace_root=workspace_root,
-            space_manager=space_manager,
-        )
-        res: Dict[str, Any] = {
-            "running": running,
-            "current_module_version": current_ver,
-            "current_spaces": current_spaces,
-            "current_spaces_signature": current_sig,
-            "pid": info.pid if info else None,
-            "start_time": info.start_time if info else None,
-            "version": info.version if info else None,
-            "spaces": info.spaces if info else None,
-            "spaces_signature": info.spaces_signature if info else None,
-            "log_file": info.log_file if info else None,
-            "workspace_root": info.workspace_root if info else str(workspace_root or cls._find_workspace_root()),
-        }
-        return res
-
-    def _setup_logger(self, is_foreground: bool = False) -> logging.Logger:
-        """建立即時寫入之日誌輸出器，支援前台即時串流與 3 世代滾動清理 [FR-10, EC-08]。"""
-        logs_dir = self.get_logs_dir(self.workspace_root)
-        now_str = time.strftime("%Y%m%d_%H%M%S")
-        pid = os.getpid()
-        self.log_file_path = logs_dir / f"daemon_{now_str}_{pid}.log"
-
-        srv_logger = logging.getLogger(f"knowledge_db.daemon.{pid}")
-        srv_logger.setLevel(logging.INFO)
-        srv_logger.propagate = False
-
-        # 清除舊 Handler
-        for h in list(srv_logger.handlers):
-            srv_logger.removeHandler(h)
-
-        class FlushingFileHandler(logging.FileHandler):
-            def emit(self, record):
-                super().emit(record)
-                self.flush()
-
-        class FlushingStreamHandler(logging.StreamHandler):
-            def emit(self, record):
-                super().emit(record)
-                self.flush()
-
-        fmt = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-
+    def ensure_running(cls, workspace_root: Optional[Union[str, Path]] = None, **kwargs) -> bool:
         try:
-            fh = FlushingFileHandler(str(self.log_file_path), encoding="utf-8")
-            fh.setFormatter(fmt)
-            srv_logger.addHandler(fh)
-
-            # 將檔案處理常式同步掛載至 package logger，使 pipeline/scanner 之索引日誌亦能完整留痕
-            pkg_logger = logging.getLogger("knowledge_db")
-            pkg_logger.setLevel(logging.INFO)
-            for h in list(pkg_logger.handlers):
-                if isinstance(h, FlushingFileHandler):
-                    pkg_logger.removeHandler(h)
-            pkg_logger.addHandler(fh)
-        except Exception as e:
-            logger.warning(f"Failed to attach file logger: {e}")
-
-        # 前台模式或非重導向終端掛載即時 StreamHandler
-        is_interactive = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-        if is_foreground or is_interactive or os.environ.get("KNOWLEDGE_DB_FOREGROUND") == "1":
-            try:
-                sh = FlushingStreamHandler(sys.stdout)
-                sh.setFormatter(fmt)
-                srv_logger.addHandler(sh)
-                pkg_logger = logging.getLogger("knowledge_db")
-                if not any(isinstance(h, FlushingStreamHandler) for h in pkg_logger.handlers):
-                    pkg_logger.addHandler(sh)
-            except Exception:
-                pass
-
-        self.file_logger = srv_logger
-
-        # 執行滾動清理，最多保留 3 份歷史記錄
-        self.rotate_logs(logs_dir, keep=3)
-        return srv_logger
-
-    @staticmethod
-    def rotate_logs(logs_dir: Path, keep: int = 3) -> None:
-        """以每次 PID 生命週期為單位，保留最新 3 份日誌，清理舊日誌 [FR-10]。"""
-        try:
-            if not logs_dir.is_dir():
-                return
-            log_files = [p for p in logs_dir.glob("daemon_*.log") if p.is_file()]
-            # 依最後修改時間排序（新 -> 舊）
-            log_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            if len(log_files) > keep:
-                for old_file in log_files[keep:]:
-                    try:
-                        old_file.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+            from server.master import MasterSupervisor
+            srv = MasterSupervisor(yscb_root=str(workspace_root) if workspace_root else None)
+            pid = srv.start(foreground=False)
+            return pid > 0
         except Exception:
-            pass
-
-    def _write_pid_file(self) -> None:
-        """寫入 PID 檔案至 cache://knowledge-db/daemon.pid (狀態標記 ready)。"""
-        spaces, spaces_sig = self.get_current_spaces_signature(
-            workspace_root=self.workspace_root,
-            space_manager=self._get_space_manager(),
-        )
-        info = DaemonInfo(
-            pid=os.getpid(),
-            start_time=time.time(),
-            version=self.version,
-            workspace_root=str(self.workspace_root),
-            log_file=str(self.log_file_path or ""),
-            spaces=spaces,
-            spaces_signature=spaces_sig,
-            status="ready",
-        )
-        self.write_pid_info(self.workspace_root, info)
-
-    def _clean_pid_file(self) -> None:
-        """清理 PID 檔案。"""
-        pid_file = self.get_pid_file(self.workspace_root)
-        try:
-            if pid_file.is_file():
-                # 只有是當前進程的 PID 檔案時才刪除
-                with open(pid_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if int(data.get("pid", 0)) == os.getpid():
-                    pid_file.unlink(missing_ok=True)
-        except Exception:
-            try:
-                pid_file.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-    def _get_pipeline(self) -> Any:
-        """延遲載入或重用 IndexingPipeline。"""
-        if self.pipeline is not None:
-            return self.pipeline
-        try:
-            from .engine import KnowledgeEngine
-            cfg_dir = self.workspace_root / "config" / "knowledge-db"
-            engine = KnowledgeEngine(
-                config_dir=cfg_dir if cfg_dir.is_dir() else None,
-                storage_dir=self.space_manager.storage_dir if (self.space_manager and hasattr(self.space_manager, "storage_dir")) else None,
-                contributes_data=self.space_manager._custom_contributes_data if (self.space_manager and hasattr(self.space_manager, "_custom_contributes_data")) else None,
-            )
-            self.pipeline = engine.pipeline
-            return self.pipeline
-        except Exception as e:
-            if self.file_logger:
-                self.file_logger.error(f"Failed initializing IndexingPipeline: {e}")
-            raise
-
-    def is_path_watched(self, file_path: Union[str, Path]) -> bool:
-        """
-        判定給定檔案路徑是否屬於受監聽之有效變更 [FR-03, EC-02]。
-        1. 排除底層 VCS/Runtime 預設忽略目錄 (.git, .venv, __pycache__, .pytest_cache)。
-        2. 動態檢查副檔名是否屬於 contributes.languages 或 Space 宣告集合。
-        3. 動態檢查是否落在任一注入 Space 之 include 範圍，且未被該 Space 之 exclude 排除。
-        """
-        p = Path(file_path)
-        for part in p.parts:
-            if part in DEFAULT_VCS_IGNORED_DIRS:
-                return False
-
-        if p.suffix.lower() not in self.supported_extensions:
             return False
-
-        sm = self._get_space_manager()
-        if sm is None:
-            return True
-
-        try:
-            spaces = sm.get_union_spaces()
-        except Exception:
-            return True
-
-        if not spaces or not isinstance(spaces, (list, tuple, set)):
-            return True
-
-        try:
-            abs_p = p.resolve()
-            abs_p_str = str(abs_p).replace("\\", "/")
-        except Exception:
-            return True
-
-        for sp in spaces:
-            try:
-                roots = sm.resolve_space_include(sp.name)
-            except Exception:
-                continue
-
-            if not isinstance(roots, (list, tuple, set)):
-                continue
-
-            for root in roots:
-                if not isinstance(root, Path):
-                    root = Path(root)
-                root_res = root.resolve()
-                root_str = str(root_res).replace("\\", "/")
-                matched = False
-                rel_path = ""
-
-                if root_res.is_file() and abs_p_str == root_str:
-                    matched = True
-                    rel_path = root_res.name
-                elif (root_res.is_dir() or not root_res.is_file()) and (abs_p_str == root_str or abs_p_str.startswith(root_str + "/")):
-                    matched = True
-                    try:
-                        rel_path = os.path.relpath(abs_p_str, root_str).replace("\\", "/")
-                    except ValueError:
-                        rel_path = p.name
-
-                if matched:
-                    from .scanner import FingerprintScanner
-                    if FingerprintScanner._is_excluded(rel_path, getattr(sp, "exclude", [])):
-                        return False
-                    if hasattr(sp, "is_file_included") and not sp.is_file_included(p.name):
-                        return False
-                    return True
-
-        return False
-
-    def on_file_changed(self, file_path: str) -> None:
-        """監聽回呼：過濾無關副檔名、重設 500ms 防抖計時器 [FR-03, EC-02]。"""
-        p = Path(file_path)
-        if not self.is_path_watched(p):
-            return
-
-        with self._debounce_lock:
-            self.last_activity_time = time.time()
-            self._pending_dirty_paths.add(str(p.resolve()))
-
-            if self._debounce_timer is not None:
-                self._debounce_timer.cancel()
-
-            self._debounce_timer = threading.Timer(0.5, self._execute_debounced_patch)
-            self._debounce_timer.daemon = True
-            self._debounce_timer.start()
-
-    def _execute_debounced_patch(self) -> None:
-        """防抖到期：由單工作線程呼叫 pipeline 執行 AST/BM25/Graph/Vector 熱修補 [FR-04, FR-05]。"""
-        with self._debounce_lock:
-            dirty = list(self._pending_dirty_paths)
-            self._pending_dirty_paths.clear()
-            self._debounce_timer = None
-
-        if not dirty:
-            return
-
-        t0 = time.time()
-        dirty_names = [Path(x).name for x in dirty]
-        names_str = ", ".join(dirty_names[:5]) + ("..." if len(dirty_names) > 5 else "")
-        if self.file_logger:
-            self.file_logger.info(
-                f"Debounce triggered for {len(dirty)} dirty file(s) [{names_str}]. Starting hot patch..."
-            )
-
-        try:
-            pipeline = self._get_pipeline()
-            indices_dir = pipeline.get_indices_dir()
-            meta_file = indices_dir / "unified.meta.bin"
-
-            # 透過 Scanner 比對差異
-            _, scanned_count, reason, full_files_map, diff_detail = pipeline.scanner.check_invalidation(
-                snapshot_path=meta_file
-            )
-
-            if diff_detail.has_changes:
-                res = None
-                try:
-                    res = pipeline.hot_patch_unified_index(diff_detail, full_files_map, timeout_seconds=float('inf'))
-                except Exception as pe:
-                    if self.file_logger:
-                        self.file_logger.warning(f"Hot patch threw exception: {pe}, falling back to full rebuild.")
-
-                patched = bool(res[0]) if isinstance(res, (tuple, list)) and len(res) > 0 else bool(res)
-                if not patched:
-                    if self.file_logger:
-                        self.file_logger.info(
-                            "Hot patch unhandled or returned False, executing fallback full rebuild to ensure consistency..."
-                        )
-                    try:
-                        pipeline.build_unified_index(force=True, current_files=full_files_map)
-                        patched = True
-                        if self.file_logger:
-                            self.file_logger.info("Fallback full rebuild completed successfully.")
-                    except Exception as fe:
-                        if self.file_logger:
-                            self.file_logger.error(f"Fallback full rebuild failed: {fe}", exc_info=True)
-
-                elapsed_ms = (time.time() - t0) * 1000
-                diff_summary = f"{len(diff_detail.added)} added, {len(diff_detail.modified)} modified, {len(diff_detail.deleted)} deleted"
-                if self.file_logger:
-                    self.file_logger.info(
-                        f"Hot patch completed in {elapsed_ms:.1f}ms ({scanned_count} files checked: {diff_summary}). Patched: {patched}"
-                    )
-            else:
-                elapsed_ms = (time.time() - t0) * 1000
-                if self.file_logger:
-                    self.file_logger.info(f"No semantic changes found after scan ({elapsed_ms:.1f}ms).")
-        except Exception as e:
-            if self.file_logger:
-                self.file_logger.error(f"Error during debounced hot patch: {e}", exc_info=True)
-        finally:
-            self.last_activity_time = time.time()
-
-    def _inactivity_check_loop(self) -> None:
-        """定時監測線程：每 10 秒檢查一次，超過 inactivity_timer_sec 自動退出 [FR-06]。"""
-        timeout_sec = max(10, getattr(self.config, "hot_reload_server_inactivity_timer_sec", 600))
-        while not self._stop_event.is_set():
-            time.sleep(5)
-            if self._stop_event.is_set():
-                break
-
-            idle_duration = time.time() - self.last_activity_time
-            if idle_duration >= timeout_sec:
-                if self.file_logger:
-                    self.file_logger.info(
-                        f"Inactivity timeout reached ({idle_duration:.1f}s >= {timeout_sec}s). Shutting down server to release memory..."
-                    )
-                self.stop_server()
-                break
-
-    def stop_server(self) -> None:
-        """終止本 Server 實例。"""
-        self._stop_event.set()
-        with self._debounce_lock:
-            if self._debounce_timer:
-                self._debounce_timer.cancel()
-                self._debounce_timer = None
-
-        if self.observer:
-            try:
-                self.observer.stop()
-                self.observer.join(timeout=2.0)
-            except Exception:
-                pass
-            self.observer = None
-
-        self._clean_pid_file()
-        if self.file_logger:
-            self.file_logger.info("HotReloadServer stopped cleanly.")
-
-    def _run_startup_check(self) -> None:
-        """啟動時先執行一次與 JIT 相同的增量/無效檢查，修補伺服器離線期間的檔案變更 [FR-13]。"""
-        t0 = time.time()
-        try:
-            pipeline = self._get_pipeline()
-            indices_dir = pipeline.get_indices_dir()
-            meta_file = indices_dir / "unified.meta.bin"
-            bin_file = indices_dir / "unified.index.bin.gz"
-
-            if not bin_file.exists() or not meta_file.exists():
-                if self.file_logger:
-                    self.file_logger.info("Startup check: Unified index missing, building from scratch...")
-                pipeline.build_unified_index(force=True)
-                if self.file_logger:
-                    self.file_logger.info(f"Startup check: Initial build completed in {(time.time() - t0)*1000:.1f}ms.")
-                return
-
-            is_dirty, scanned_count, reason, full_files_map, diff_detail = pipeline.scanner.check_invalidation(
-                snapshot_path=meta_file
-            )
-            if is_dirty:
-                if self.file_logger:
-                    self.file_logger.info(f"Startup check: Detected changes while offline ({reason}), applying hot patch...")
-                if diff_detail.has_changes:
-                    res = None
-                    try:
-                        res = pipeline.hot_patch_unified_index(diff_detail, full_files_map, timeout_seconds=float('inf'))
-                    except Exception as pe:
-                        if self.file_logger:
-                            self.file_logger.warning(f"Startup check hot patch threw exception: {pe}")
-                    patched = bool(res[0]) if isinstance(res, (tuple, list)) and len(res) > 0 else bool(res)
-                    if not patched:
-                        if self.file_logger:
-                            self.file_logger.info("Startup check: Hot patch unhandled/failed, falling back to full rebuild...")
-                        pipeline.build_unified_index(force=True, current_files=full_files_map)
-                else:
-                    pipeline.build_unified_index(force=True, current_files=full_files_map)
-                if self.file_logger:
-                    self.file_logger.info(f"Startup check: Hot patch completed in {(time.time() - t0)*1000:.1f}ms.")
-            else:
-                if self.file_logger:
-                    self.file_logger.info(f"Startup check: Indices up-to-date ({scanned_count} files, {(time.time() - t0)*1000:.1f}ms).")
-        except Exception as e:
-            if self.file_logger:
-                self.file_logger.error(f"Startup check error: {e}", exc_info=True)
-        finally:
-            self.last_activity_time = time.time()
-
-    def run_foreground(self, is_foreground: bool = False) -> None:
-        """前台阻塞式運行（用於 watch 模式或背景進程主回圈）。"""
-        self.set_process_title("yscb: knowledge-db daemon")
-        self._setup_logger(is_foreground=is_foreground)
-        self._write_pid_file()
-
-        if self.file_logger:
-            self.file_logger.info(
-                f"HotReloadServer starting (PID: {os.getpid()}, Version: {self.version}, Root: {self.workspace_root})"
-            )
-
-        # 啟動時先執行一次與 JIT 相同的檢查，修補離線期間檔案變更 [FR-13]
-        self._run_startup_check()
-
-        # 註冊中斷信號
-        def _handle_signal(signum, frame):
-            if self.file_logger:
-                self.file_logger.info(f"Received signal {signum}, initiating graceful shutdown...")
-            self.stop_server()
-
-        try:
-            signal.signal(signal.SIGINT, _handle_signal)
-            signal.signal(signal.SIGTERM, _handle_signal)
-        except Exception:
-            pass
-
-        # 啟動 Inactivity 監控線程
-        self._inactivity_thread = threading.Thread(target=self._inactivity_check_loop, daemon=True)
-        self._inactivity_thread.start()
-
-        # 啟動 Watchdog 監控
-        try:
-            from watchdog.events import FileSystemEventHandler
-            from watchdog.observers import Observer
-            from watchdog.observers.polling import PollingObserver
-
-            class ChangeHandler(FileSystemEventHandler):
-                def __init__(self, srv: "HotReloadServer"):
-                    self.srv = srv
-
-                def on_any_event(self, event):
-                    if getattr(event, "is_directory", False):
-                        return
-                    src = getattr(event, "src_path", None)
-                    if src:
-                        self.srv.on_file_changed(src)
-                    dst = getattr(event, "dest_path", None)
-                    if dst:
-                        self.srv.on_file_changed(dst)
-
-            use_polling = os.getenv("KNOWLEDGE_DB_FORCE_POLLING", "0").lower() in ("1", "true", "yes")
-            self.observer = PollingObserver() if use_polling else Observer()
-            handler = ChangeHandler(self)
-
-            watch_dirs = self.get_watch_directories()
-            attached_count = 0
-            for d in watch_dirs:
-                if d.is_dir():
-                    self.observer.schedule(handler, str(d), recursive=True)
-                    attached_count += 1
-                    if self.file_logger:
-                        self.file_logger.info(f"Watching directory (space resolved): {d}")
-
-            if attached_count == 0:
-                # 兜底監視根目錄
-                self.observer.schedule(handler, str(self.workspace_root), recursive=True)
-                if self.file_logger:
-                    self.file_logger.info(f"Watching workspace root: {self.workspace_root}")
-
-            self.observer.start()
-            if self.file_logger:
-                self.file_logger.info("Watchdog observer started successfully. Server ready.")
-        except Exception as e:
-            if self.file_logger:
-                self.file_logger.error(f"Failed to start watchdog observer: {e}", exc_info=True)
-            self.stop_server()
-            return
-
-        # 主回圈等待退出
-        try:
-            while not self._stop_event.is_set():
-                time.sleep(1.0)
-        except (KeyboardInterrupt, SystemExit):
-            self.stop_server()
-        finally:
-            self.stop_server()

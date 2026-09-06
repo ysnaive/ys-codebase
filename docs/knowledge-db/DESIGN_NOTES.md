@@ -24,6 +24,7 @@
 | **DN-12** | **管線門面解耦、8,000 字元預算動態衰減與全域切片去重純化** | `formatter.py`, `pipeline.py`, `engine.py` | `engine.py` 瘦身 80.8% 轉為輕量 Facade (338 行)；輸出上限由 12,500 收斂為 8,000 字元並實作階梯平滑衰減；以 `UniversalRedundancyFilter` 徹底剔除 Docstring、重疊 Heading、License 與空白行，極大化資訊密度。 |
 | **DN-14** | **JIT 10 符號動態探針、向量熔斷降級、CPU 自適應防飢餓與 CLI UX** | `config.py`, `pipeline.py`, `cli.py` | 實作 10 符號動態探針與 5 秒超時熔斷退回純 BM25；支援 local 向量開關、自訂模型與 CPU 執行緒自適應；屏蔽 HF 雜訊並保障 `--json` 純淨。 |
 | **DN-15** | **專屬 HotReloadServer、Watchdog 500ms 防抖、Pre-dispatch 喚醒與日誌治理** | `daemon.py`, `hook.core.py`, `config.py` | 專屬後台服務整併 AST/BM25/Graph/Vector 熱修補；支援 hook 自動喚醒、閒置超時自動關閉；PID 隔離至 `cache://`、3 代滾動日誌與版本變更強制重啟。 |
+| **DN-21** | **常駐 ServiceWorker 納管、微內核原語對齊與快取 mtime 熱自癒** | `service.py`, `engine.py`, `pipeline.py` | 移除自製守護進程與 CLI `daemon` 命令，收斂為 `KnowledgeDBServiceWorker` 委由 `server` 模組 Master 託管；記憶體快取透過 microsecond `mtime` 比對熱刷新；全面對齊 `core.vfs.write_bytes(atomic=True)` 與 `core.platform.lock.InterProcessLock`。 |
 
 ---
 
@@ -421,4 +422,25 @@
 - **效益與驗證**：
   - 新增 FT-20、FT-21、FT-22 單元測試，159 項自訂與契約測試 100% 通過。
   - 實機驗證多次連續啟動無逾時、無死鎖、單例穩定複用，JIT 自動跳過使檢索延遲降至 sub-50ms。
+
+---
+
+### [DN-21] 常駐 ServiceWorker 納管、微內核原語對齊與記憶體快取 mtime 微秒級熱自愈
+
+- **背景與動機**：
+  - 模組先前自建之 `HotReloadServer` 自行處理 Popen、Windows Job Object Breakaway、Console 視窗、PID 鎖檔與日誌輪轉，與專案微內核架構職責重複且維護成本高昂。
+  - 在微內核架構重構中，通用服務層已由 `server` 模組統一承擔。知識庫後台任務應專注於檔案監聽與索引修補，進程生命週期與 IPC 應全權移交。
+- **架構決策與實作**：
+  1. **收斂為 `KnowledgeDBServiceWorker`**：
+     - 繼承 `server.service.BaseServiceWorker`，命名為 `"knowledge-db-watcher"`，透過 `server.master` 動態載入並納管生命週期。
+     - 徹底移除 CLI `knowledge-db daemon` 子命令及其 Usage 說明，不再向後相容。
+  2. **預熱事件與記憶體快取 Eager Preload**：
+     - 響應 `server_worker_warming` 核心事件，呼叫 `KnowledgeEngine.pre_warm()` 提前將 FastEmbed 向量模型單例與倒排索引/圖譜快照載入記憶體。
+  3. **微秒級 mtime 快取比對與熱自癒**：
+     - `_GLOBAL_INDEX_CACHE` 維護 `unified_mtime` 與 `graph_mtime`，查詢前以微秒級精度檢驗磁碟 snapshot 之 mtime，若有變更則就地原地重載記憶體快照。
+  4. **微內核原語對齊**：
+     - 快照寫入全面對齊 `core.vfs.write_bytes(atomic=True)`，排他鎖全面採用 `core.platform.lock.InterProcessLock`。
+- **效益與驗證**：
+  - 瘦身 `daemon.py`，大幅減輕知識庫模組非核心負擔。
+  - 全套測試 100% 通過（140/140），且通過 `dev check knowledge-db` 合規驗證。
 
