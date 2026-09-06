@@ -199,6 +199,48 @@ class Checker:
                             )
                         )
 
+            opt = m_data.get("optional")
+            if opt is not None:
+                if not isinstance(opt, dict):
+                    report.issues.append(
+                        CheckIssue(
+                            severity=CheckSeverity.FAIL,
+                            category="MANIFEST",
+                            message="'optional' field must be an object/dict mapping module names to config.",
+                            file_path="manifest.json",
+                        )
+                    )
+                else:
+                    for opt_mod, opt_cfg in opt.items():
+                        if not isinstance(opt_cfg, dict):
+                            report.issues.append(
+                                CheckIssue(
+                                    severity=CheckSeverity.FAIL,
+                                    category="MANIFEST",
+                                    message=f"Optional module '{opt_mod}' configuration must be an object with 'version' and 'hint'.",
+                                    file_path="manifest.json",
+                                )
+                            )
+                        else:
+                            if "version" not in opt_cfg or not isinstance(opt_cfg["version"], str) or not opt_cfg["version"].strip():
+                                report.issues.append(
+                                    CheckIssue(
+                                        severity=CheckSeverity.FAIL,
+                                        category="MANIFEST",
+                                        message=f"Optional module '{opt_mod}' missing non-empty string 'version'.",
+                                        file_path="manifest.json",
+                                    )
+                                )
+                            if "hint" not in opt_cfg or not isinstance(opt_cfg["hint"], str) or not opt_cfg["hint"].strip():
+                                report.issues.append(
+                                    CheckIssue(
+                                        severity=CheckSeverity.FAIL,
+                                        category="MANIFEST",
+                                        message=f"Optional module '{opt_mod}' missing non-empty string 'hint'.",
+                                        file_path="manifest.json",
+                                    )
+                                )
+
             self._check_pip_dependencies(name, m_data, report)
         except Exception as e:
             report.issues.append(

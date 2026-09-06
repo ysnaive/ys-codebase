@@ -45,11 +45,6 @@ def process(args: List[str]) -> int:
     sub_argv = args[1:]
     engine = KnowledgeEngine()
 
-    # 運行相關 CLI 時，若後台有運行 server，提示並跳過 JIT [FR-12]
-    if subcmd in ("search", "find", "s", "callers", "callees", "impact"):
-        from knowledge_db.daemon import check_and_notify_hot_reload_server
-        check_and_notify_hot_reload_server()
-
     try:
         if subcmd == "status":
             st = engine.status()
