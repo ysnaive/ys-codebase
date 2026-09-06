@@ -79,6 +79,7 @@ class TestServerModule(YSCBTestCase):
 
         finish_pkt = [p for p in packets if p["type"] == "task_finish"][0]
         self.assertEqual(finish_pkt["exit_code"], 0)
+        self.mark_passed()
 
     def test_warm_worker_pre_warm_events(self):
         """FT-06: WarmWorker emits warming and ready events via core.events."""
@@ -97,6 +98,7 @@ class TestServerModule(YSCBTestCase):
         event_names = [e[0] for e in captured_events]
         self.assertIn("server_worker_warming", event_names)
         self.assertIn("server_worker_ready", event_names)
+        self.mark_passed()
 
 
     def test_warm_worker_system_exit_interception(self):
@@ -116,6 +118,7 @@ class TestServerModule(YSCBTestCase):
         finish_packets = [p for p in packets if p.get("type") == "task_finish"]
         self.assertEqual(len(finish_packets), 1)
         self.assertEqual(finish_packets[0]["exit_code"], 42)
+        self.mark_passed()
 
     def test_service_manager_lifecycle(self):
         """FT-08: ServiceManager unifies service lifecycle with server."""
@@ -134,6 +137,7 @@ class TestServerModule(YSCBTestCase):
 
         mgr.stop_all()
         self.assertTrue(svc.stopped)
+        self.mark_passed()
 
     def test_modules_watcher_detection(self):
         """FT-10: ModulesWatcher detects file changes under .modules."""
@@ -157,6 +161,7 @@ class TestServerModule(YSCBTestCase):
             self.assertGreater(len(change_notified), 0)
         finally:
             watcher.stop()
+        self.mark_passed()
 
     def test_master_supervisor_http_and_lifecycle(self):
         """FT-09 & FT-11: MasterSupervisor initializes dynamic port, writes state, responds to HTTP, and stops cleanly."""
@@ -186,6 +191,7 @@ class TestServerModule(YSCBTestCase):
             sup.stop()
 
         self.assertFalse(os.path.exists(sup.state_file))
+        self.mark_passed()
 
 
 if __name__ == "__main__":
