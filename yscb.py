@@ -839,6 +839,116 @@ def _suggest_command(unknown_cmd: str, candidate_pool: List[str]) -> Optional[st
     return matches[0] if matches else None
 
 
+def _try_hot_dispatch(module_name: str, args: List[str], base_dir: str, yscb_root: str) -> Optional[int]:
+    """
+    嘗試透過 Localhost HTTP 將指令熱派發至常駐 Server。
+    若 Server 未啟動、連線失敗或超時，回傳 None 觸發本地冷啟動降級。
+    """
+    # 自循環旁路：管理指令強制冷啟動
+    if module_name == "server":
+        return None
+
+    state_file = os.path.join(base_dir, yscb_root, ".cache", "server", "daemon.json")
+    if not os.path.isfile(state_file):
+        return None
+
+    try:
+        with open(state_file, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        port = state.get("port")
+        token = state.get("token")
+        if not port or not token:
+            return None
+
+        import urllib.request
+        import urllib.error
+
+        url = f"http://127.0.0.1:{port}/api/dispatch"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "module": module_name,
+            "args": args,
+            "cwd": os.getcwd(),
+            "yscb_root": os.path.abspath(base_dir),
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+        exit_code = 0
+        with urllib.request.urlopen(req, timeout=120.0) as resp:
+            buffer = ""
+            while True:
+                chunk = resp.read(1024)
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", errors="replace")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        packet = json.loads(line)
+                        p_type = packet.get("type")
+                        if p_type == "terminal_stream":
+                            text = packet.get("text", "")
+                            if packet.get("stream") == "stderr":
+                                sys.stderr.write(text)
+                                sys.stderr.flush()
+                            else:
+                                sys.stdout.write(text)
+                                sys.stdout.flush()
+                        elif p_type == "task_finish":
+                            exit_code = packet.get("exit_code", 0)
+                    except Exception:
+                        pass
+        return exit_code
+    except Exception:
+        # Transparent fallback to cold execution
+        return None
+
+
+def _maybe_auto_spawn_server(base_dir: str, yscb_root: str) -> None:
+    """在背景非同步按需拉起 Server 守護進程，不阻塞當前命令。"""
+    state_file = os.path.join(base_dir, yscb_root, ".cache", "server", "daemon.json")
+    if os.path.isfile(state_file):
+        return
+
+    # Check if server module exists in .modules or source
+    server_mod = os.path.join(base_dir, yscb_root, ".modules", "server")
+    server_src = os.path.join(base_dir, yscb_root, "source", "server")
+    if not os.path.isdir(server_mod) and not os.path.isdir(server_src):
+        return
+
+    try:
+        cmd = [sys.executable, sys.argv[0], "server", "start", "--daemon"]
+        if sys.platform == "win32":
+            subprocess.Popen(
+                cmd,
+                cwd=base_dir,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
+            )
+        else:
+            subprocess.Popen(
+                cmd,
+                cwd=base_dir,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
+            )
+    except Exception:
+        pass
+
+
 def dispatch_module(module_name: str, args: List[str]) -> int:
     cfg_path, cfg = load_config()
     if not cfg_path or not cfg or "yscb_root" not in cfg:
@@ -848,8 +958,20 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
     base_dir = os.path.dirname(cfg_path)
     yscb_root = cfg["yscb_root"]
     yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
+
+    # 1. 優先嘗試熱調度 (若命中則直接返回 exit code)
+    hot_res = _try_hot_dispatch(module_name, args, base_dir, yscb_root)
+    if hot_res is not None:
+        return hot_res
+
+    # 2. 若未命中且非 server 指令，按需背景非同步拉起 Server
+    if module_name != "server":
+        _maybe_auto_spawn_server(base_dir, yscb_root)
+
+    # 3. 本地冷啟動降級執行原流程
     _ensure_private_venv_path(yscb_abs)
     target_cli = os.path.normpath(os.path.join(yscb_abs, ".modules", module_name, "scripts", "cli.py"))
+
 
     if not os.path.isfile(target_cli):
         # Unknown module / command -> trigger intelligent spelling suggestion

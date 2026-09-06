@@ -1,0 +1,14 @@
+"""
+Core Platform - Cross-Platform OS & Process Abstraction SDK.
+"""
+
+from core.platform.lock import InterProcessLock, LockAcquisitionError
+from core.platform.process import is_process_alive, kill_process_tree, spawn_detached
+
+__all__ = [
+    "spawn_detached",
+    "is_process_alive",
+    "kill_process_tree",
+    "InterProcessLock",
+    "LockAcquisitionError",
+]

@@ -19,6 +19,7 @@ from core import guard
 from core.guard import guard_dispatch
 from core import vfs
 from core.vfs import VirtualPath
+from core import platform
 
 __all__ = [
     "uri",
@@ -42,5 +43,7 @@ __all__ = [
     "guard_dispatch",
     "vfs",
     "VirtualPath",
+    "platform",
 ]
+
 
