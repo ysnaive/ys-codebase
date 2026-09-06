@@ -46,6 +46,10 @@ class HotPatchResult(tuple):
         return self[0]
 
     @property
+    def patched(self) -> bool:
+        return self[0]
+
+    @property
     def vector_degraded(self) -> bool:
         return self[1]
 
@@ -273,6 +277,17 @@ class IndexingPipeline:
            - 若 N > 10，以首批 10 符號動態探針實測耗時，若預估 > timeout_seconds 立即熔斷降級回退純 BM25。
         6. 快速原子持久化快照與二進位索引。
         """
+        indices_dir = self.get_indices_dir()
+        bin_file = indices_dir / "unified.index.bin.gz"
+        graph_file = indices_dir / "unified.graph.bin.gz"
+        meta_file = indices_dir / "unified.meta.bin"
+
+        if self._unified_index is None and bin_file.exists():
+            try:
+                self._unified_index = InvertedIndex.load_binary(bin_file)
+            except Exception as e:
+                logger.warning(f"Failed loading binary inverted index for hot patch: {e}")
+
         if self._unified_index is None:
             return HotPatchResult(False, False, None)
 
@@ -281,11 +296,6 @@ class IndexingPipeline:
                 timeout_seconds = self.config.resolve_jit_vector_timeout()
             else:
                 timeout_seconds = getattr(self.config, "jit_vector_timeout_seconds", 5.0)
-
-        indices_dir = self.get_indices_dir()
-        bin_file = indices_dir / "unified.index.bin.gz"
-        graph_file = indices_dir / "unified.graph.bin.gz"
-        meta_file = indices_dir / "unified.meta.bin"
 
         if self._call_graph_index is None and graph_file.exists():
             try:

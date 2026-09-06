@@ -140,7 +140,7 @@ class FileFingerprint:
     source_root: str
     mtime: float
     size: int
-    sha1: str
+    sha1: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -155,16 +155,12 @@ class FileFingerprint:
     def from_dict(cls, data: Dict[str, Any]) -> "FileFingerprint":
         if not isinstance(data, dict):
             raise FingerprintCorruptedError("Fingerprint record must be a dict.")
-        required = ["relpath", "source_root", "mtime", "size", "sha1"]
-        for k in required:
-            if k not in data:
-                raise FingerprintCorruptedError(f"Fingerprint missing required key '{k}'.")
         return cls(
-            relpath=str(data["relpath"]),
-            source_root=str(data["source_root"]),
-            mtime=float(data["mtime"]),
-            size=int(data["size"]),
-            sha1=str(data["sha1"]),
+            relpath=str(data.get("relpath", "")),
+            source_root=str(data.get("source_root", "")),
+            mtime=float(data.get("mtime", 0.0)),
+            size=int(data.get("size", 0)),
+            sha1=str(data.get("sha1", "")),
         )
 
 
@@ -183,75 +179,74 @@ class ScanDiffResult:
 
 class FingerprintScanner:
     """
-    雙階增量指紋比對掃描器：
-    Stage 1: mtime + size 輕量初篩 (零 I/O、零 SHA1 計算)
-    Stage 2: SHA1 內容校驗 (變更比對、touch 判定、增修刪差異計算)
+    原生物理級二進位增量快照掃描器 (SSOT: unified.meta.bin)。
+    全面收斂至 BinarySnapshotManager，提供微秒級比對與原子持久化，徹底廢除 JSON 指紋檔。
     """
 
     def __init__(self, space_manager: SpaceManager):
         self.space_manager = space_manager
 
+    def _file_belongs_to_space(self, canonical_path: str, sp: SpaceConfig) -> bool:
+        """檢查給定正規化絕對路徑是否屬於指定的 SpaceConfig"""
+        norm_path = canonical_path.replace("\\", "/")
+        source_roots = self.space_manager.resolve_space_include(sp.name)
+        for s_root in source_roots:
+            if s_root.is_file():
+                if norm_path == str(s_root.resolve()).replace("\\", "/"):
+                    return not self._is_excluded(s_root.name, sp.exclude) and sp.is_file_included(s_root.name)
+            else:
+                norm_root = str(s_root.resolve()).replace("\\", "/")
+                if not norm_root.endswith("/"):
+                    norm_root += "/"
+                if norm_path.startswith(norm_root):
+                    rel = norm_path[len(norm_root):]
+                    filename = os.path.basename(rel)
+                    if not self._is_excluded(rel, sp.exclude) and sp.is_file_included(filename):
+                        return True
+        return False
+
+    def _relpath_for_space(self, canonical_path: str, sp: SpaceConfig) -> str:
+        """取得給定正規化絕對路徑在指定 SpaceConfig 下的相對路徑"""
+        norm_path = canonical_path.replace("\\", "/")
+        source_roots = self.space_manager.resolve_space_include(sp.name)
+        for s_root in source_roots:
+            if s_root.is_file():
+                if norm_path == str(s_root.resolve()).replace("\\", "/"):
+                    return s_root.name
+            else:
+                norm_root = str(s_root.resolve()).replace("\\", "/")
+                if not norm_root.endswith("/"):
+                    norm_root += "/"
+                if norm_path.startswith(norm_root):
+                    return norm_path[len(norm_root):]
+        return os.path.basename(norm_path)
+
     def load_fingerprints(self, space_name: str) -> Dict[str, FileFingerprint]:
         """
-        載入指定空間之指紋快取檔案 (fingerprints.json)。
-        若檔案不存在回傳空字典；若損毀則發出 Warning 並自癒重置為空字典 (EC-03)。
+        [相容性介面] 自 unified.meta.bin 二進位快照反查指定空間之檔案指紋清單。
+        若快照不存在則回傳空字典。
         """
-        storage_dir = self.space_manager.get_space_storage_dir(space_name)
-        fp_file = storage_dir / "fingerprints.json"
-
-        if not fp_file.exists():
+        snapshot_path = self.space_manager.storage_dir / "indices" / "unified.meta.bin"
+        cached_map = BinarySnapshotManager.load(snapshot_path)
+        if not cached_map:
             return {}
 
-        try:
-            with open(fp_file, "r", encoding="utf-8", errors="replace") as f:
-                data = json.load(f)
-
-            if not isinstance(data, dict):
-                raise FingerprintCorruptedError("fingerprints.json top-level must be a dictionary.")
-
-            fingerprints: Dict[str, FileFingerprint] = {}
-            for relpath, fp_raw in data.items():
-                if isinstance(fp_raw, dict):
-                    fingerprints[relpath] = FileFingerprint.from_dict(fp_raw)
-            return fingerprints
-        except Exception as e:
-            logger.warning(
-                f"Fingerprint cache for space '{space_name}' corrupted ({e}), self-healing with clean rebuild."
-            )
-            return {}
+        sp = self.space_manager.get_space(space_name)
+        res: Dict[str, FileFingerprint] = {}
+        for canon_path, (mtime, size) in cached_map.items():
+            if self._file_belongs_to_space(canon_path, sp):
+                rel = self._relpath_for_space(canon_path, sp)
+                res[rel] = FileFingerprint(
+                    relpath=rel,
+                    source_root="",
+                    mtime=mtime,
+                    size=size,
+                )
+        return res
 
     def save_fingerprints(self, space_name: str, fingerprints: Dict[str, FileFingerprint]) -> None:
-        """
-        以原子寫入方式 (tempfile + os.replace) 持久化指紋快取至 storage://knowledge-db/spaces/<space>/fingerprints.json。
-        """
-        storage_dir = self.space_manager.get_space_storage_dir(space_name)
-        storage_dir.mkdir(parents=True, exist_ok=True)
-        target_file = storage_dir / "fingerprints.json"
-
-        serialized = {k: v.to_dict() for k, v in fingerprints.items()}
-
-        # 在同目錄建立暫存檔以確保原子 replace 跨檔案系統安全
-        temp_fd, temp_path = tempfile.mkstemp(dir=str(storage_dir), prefix="fp_tmp_", suffix=".json")
-        try:
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-                json.dump(serialized, f, indent=2, ensure_ascii=False)
-            os.replace(temp_path, str(target_file))
-        except Exception as e:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-            raise e
-
-    @staticmethod
-    def _compute_sha1(file_path: Path) -> str:
-        """分塊讀取檔案計算 SHA-1 雜湊 (64KB chunks)"""
-        hasher = hashlib.sha1()
-        with open(file_path, "rb") as f:
-            while chunk := f.read(65536):
-                hasher.update(chunk)
-        return hasher.hexdigest()
+        """[Deprecated] 空實作；已徹底廢除 fingerprints.json，改由 unified.meta.bin 唯一託管。"""
+        pass
 
     @staticmethod
     def _is_excluded(relpath: str, exclude_patterns: List[str]) -> bool:
@@ -261,7 +256,6 @@ class FingerprintScanner:
             norm_pat = pat.replace("\\", "/")
             if fnmatch.fnmatch(norm_rel, norm_pat) or fnmatch.fnmatch(f"/{norm_rel}", norm_pat):
                 return True
-            # 也支援對檔名直接比對
             filename = os.path.basename(norm_rel)
             if fnmatch.fnmatch(filename, norm_pat):
                 return True
@@ -269,32 +263,30 @@ class FingerprintScanner:
 
     def scan_space(self, space_config: SpaceConfig, force: bool = False) -> ScanDiffResult:
         """
-        對單一空間執行雙階增量指紋比對。
+        對單一空間執行增量快照比對 (SSOT: unified.meta.bin)。
         """
         space_name = space_config.name
-        old_fps = self.load_fingerprints(space_name)
-        new_fps: Dict[str, FileFingerprint] = {}
-        diff = ScanDiffResult(space_name=space_name)
+        snapshot_path = self.space_manager.storage_dir / "indices" / "unified.meta.bin"
+        cached_map = BinarySnapshotManager.load(snapshot_path)
+        if cached_map is None or force:
+            cached_map = {}
 
+        diff = ScanDiffResult(space_name=space_name)
         source_roots = self.space_manager.resolve_space_include(space_name)
-        visited_relpaths: Set[str] = set()
+        current_space_files: Dict[str, Tuple[float, int]] = {}
 
         for source_root in source_roots:
             if source_root.is_file():
-                # 單一檔案來源
                 files_to_check = [source_root]
                 base_dir = source_root.parent
             else:
-                # 目錄來源
                 files_to_check = []
                 base_dir = source_root
                 for root_dir, dirs, files in os.walk(str(source_root)):
-                    # 排除目錄檢查
                     rel_dir = os.path.relpath(root_dir, str(base_dir)).replace("\\", "/")
                     if rel_dir != "." and self._is_excluded(rel_dir + "/", space_config.exclude):
                         dirs.clear()
                         continue
-
                     for file in files:
                         files_to_check.append(Path(root_dir) / file)
 
@@ -304,18 +296,14 @@ class FingerprintScanner:
                 except ValueError:
                     relpath = file_path.name
 
-                if relpath in visited_relpaths:
-                    continue
-
-                # 檢查 exclude
                 if self._is_excluded(relpath, space_config.exclude):
                     continue
-
-                # 檢查 file_patterns (EC-01: 未定義預設 include all)
                 if not space_config.is_file_included(file_path.name):
                     continue
 
-                visited_relpaths.add(relpath)
+                canonical_key = str(file_path.resolve()).replace("\\", "/")
+                if canonical_key in current_space_files:
+                    continue
 
                 try:
                     stat_res = file_path.stat()
@@ -325,72 +313,39 @@ class FingerprintScanner:
 
                 mtime = stat_res.st_mtime
                 size = stat_res.st_size
-                old_fp = old_fps.get(relpath)
+                current_space_files[canonical_key] = (mtime, size)
 
-                if not force and old_fp is not None:
-                    # Stage 1: 初篩比對 mtime 與 size
-                    if old_fp.mtime == mtime and old_fp.size == size:
-                        diff.unchanged.append(old_fp)
-                        new_fps[relpath] = old_fp
-                        continue
+                fp = FileFingerprint(
+                    relpath=relpath,
+                    source_root=str(base_dir),
+                    mtime=mtime,
+                    size=size,
+                )
 
-                    # Stage 2: 深入比對 SHA1 雜湊
-                    try:
-                        sha1 = self._compute_sha1(file_path)
-                    except (OSError, PermissionError) as e:
-                        logger.warning(f"Failed reading file content '{file_path}': {e}")
-                        continue
-
-                    if sha1 == old_fp.sha1:
-                        # 內容未變，僅更新快取中的 mtime/size (EC-04)
-                        updated_fp = FileFingerprint(
-                            relpath=relpath,
-                            source_root=str(base_dir),
-                            mtime=mtime,
-                            size=size,
-                            sha1=sha1,
-                        )
-                        diff.unchanged.append(updated_fp)
-                        new_fps[relpath] = updated_fp
+                if not force and canonical_key in cached_map:
+                    cached_mtime, cached_size = cached_map[canonical_key]
+                    if cached_mtime == mtime and cached_size == size:
+                        diff.unchanged.append(fp)
                     else:
-                        # 內容確實修改
-                        mod_fp = FileFingerprint(
-                            relpath=relpath,
-                            source_root=str(base_dir),
-                            mtime=mtime,
-                            size=size,
-                            sha1=sha1,
-                        )
-                        diff.modified.append(mod_fp)
-                        new_fps[relpath] = mod_fp
+                        diff.modified.append(fp)
                 else:
-                    # 全新檔案或 force 掃描
-                    try:
-                        sha1 = self._compute_sha1(file_path)
-                    except (OSError, PermissionError) as e:
-                        logger.warning(f"Failed reading new file '{file_path}': {e}")
-                        continue
+                    diff.added.append(fp)
 
-                    new_fp = FileFingerprint(
-                        relpath=relpath,
-                        source_root=str(base_dir),
-                        mtime=mtime,
-                        size=size,
-                        sha1=sha1,
-                    )
-                    if old_fp is None:
-                        diff.added.append(new_fp)
-                    else:
-                        diff.modified.append(new_fp)
-                    new_fps[relpath] = new_fp
+        # 檢驗刪除檔案：cached_map 中屬於該空間但目前磁碟已不存在者
+        for cached_key in list(cached_map.keys()):
+            if self._file_belongs_to_space(cached_key, space_config):
+                if cached_key not in current_space_files:
+                    del_rel = self._relpath_for_space(cached_key, space_config)
+                    diff.deleted.append(del_rel)
 
-        # 檢驗刪除檔案
-        for old_relpath in old_fps:
-            if old_relpath not in visited_relpaths:
-                diff.deleted.append(old_relpath)
-
-        # 原子持久化新指紋庫
-        self.save_fingerprints(space_name, new_fps)
+        # 原子持久化至二進位快照 (更新當前空間的檔案映射，移除已刪除者)
+        updated_map = dict(cached_map)
+        for del_rel in diff.deleted:
+            for k in list(updated_map.keys()):
+                if self._file_belongs_to_space(k, space_config) and self._relpath_for_space(k, space_config) == del_rel:
+                    updated_map.pop(k, None)
+        updated_map.update(current_space_files)
+        BinarySnapshotManager.save(snapshot_path, updated_map)
 
         return diff
 
