@@ -15,6 +15,9 @@ from core.symbols import resolve_callable, parse_code_func_uri, SymbolError, Inv
 from core import pip_manager
 from core.pip_manager import PipManager, PipInstallError
 
+from core import guard
+from core.guard import guard_dispatch
+
 __all__ = [
     "uri",
     "semver",
@@ -33,4 +36,7 @@ __all__ = [
     "pip_manager",
     "PipManager",
     "PipInstallError",
+    "guard",
+    "guard_dispatch",
 ]
+

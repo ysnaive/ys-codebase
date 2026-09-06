@@ -6,19 +6,7 @@ import os
 import json
 from typing import List
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-module_dir = os.path.dirname(current_dir)
-modules_root = os.path.dirname(module_dir)
-
-if os.path.isdir(modules_root):
-    for m in os.listdir(modules_root):
-        m_p = os.path.join(modules_root, m)
-        if os.path.isdir(m_p) and m_p not in sys.path:
-            sys.path.insert(0, m_p)
-
-if module_dir not in sys.path:
-    sys.path.insert(0, module_dir)
-
+from core.guard import guard_dispatch
 from core import uri
 from core import semver
 from dev.scaffold import Scaffolder
@@ -53,8 +41,16 @@ def _handle_bump(subcmd: str, sub_argv: List[str]) -> int:
         print(f"[dev:{subcmd}] Error bumping version for '{mod_name}': {e}", file=sys.stderr)
         return 1
 
-def main(argv: List[str]) -> int:
-    if not argv or argv[0] in ("-h", "--help", "help"):
+def process(args: List[str]) -> int:
+    guard_dispatch("dev")
+
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    if not args or args[0] in ("-h", "--help", "help"):
         print("[dev] YS-Codebase Developer Tools")
         print("Usage:")
         print("  python yscb.py dev create <name> [--desc=\"...\"]")
@@ -69,8 +65,8 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py dev op-test [name | --all] [options]")
         return 0
 
-    subcmd = argv[0]
-    sub_argv = argv[1:]
+    subcmd = args[0]
+    sub_argv = args[1:]
 
     if subcmd == "create":
         if not sub_argv:
@@ -251,6 +247,3 @@ def main(argv: List[str]) -> int:
     else:
         print(f"[dev] Unknown subcommand '{subcmd}'. Use --help for available commands.")
         return 1
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

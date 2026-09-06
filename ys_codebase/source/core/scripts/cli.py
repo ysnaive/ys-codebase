@@ -5,20 +5,7 @@ import sys
 import os
 from typing import List
 
-# Add parent directory to sys.path so 'core' package can be imported directly
-current_dir = os.path.dirname(os.path.abspath(__file__))
-module_dir = os.path.dirname(current_dir)
-modules_root = os.path.dirname(module_dir)
-
-if os.path.isdir(modules_root):
-    for m in os.listdir(modules_root):
-        m_p = os.path.join(modules_root, m)
-        if os.path.isdir(m_p) and m_p not in sys.path:
-            sys.path.insert(0, m_p)
-
-if module_dir not in sys.path:
-    sys.path.insert(0, module_dir)
-
+from core.guard import guard_dispatch
 from core.installer import Installer
 from core import uri
 from core import config
@@ -211,11 +198,16 @@ def cmd_uri(args: List[str]) -> int:
         return 1
 
 
-def main(argv=None) -> int:
-    if argv is None:
-        argv = sys.argv[1:]
-        
-    if not argv or argv[0] in ("-h", "--help", "help"):
+def process(args: List[str]) -> int:
+    guard_dispatch("core")
+
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    if not args or args[0] in ("-h", "--help", "help"):
         print("YS-Codebase Core Module CLI")
         print("Commands:")
         print("  install <module>[@version] [--provider=<source>]")
@@ -229,13 +221,13 @@ def main(argv=None) -> int:
         print("  config <list|get|set|reload>")
         return 0
 
-    cmd = argv[0]
-    args = argv[1:]
+    cmd = args[0]
+    cmd_args = args[1:]
     
     if cmd == "uri":
-        return cmd_uri(args)
+        return cmd_uri(cmd_args)
     elif cmd == "config":
-        return cmd_config(args)
+        return cmd_config(cmd_args)
 
 
     # Parse provider flag if present
@@ -247,7 +239,7 @@ def main(argv=None) -> int:
     force_flag = False
     version = None
     
-    for a in args:
+    for a in cmd_args:
         if a.startswith("--provider="):
             provider = a.split("=", 1)[1].strip("\"'")
         elif a.startswith("--version="):
@@ -331,6 +323,3 @@ def main(argv=None) -> int:
     else:
         print(f"[core] Unknown command '{cmd}'. Run 'python yscb.py core --help' for available commands.")
         return 1
-
-if __name__ == "__main__":
-    sys.exit(main())

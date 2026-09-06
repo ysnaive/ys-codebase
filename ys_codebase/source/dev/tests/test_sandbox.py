@@ -351,7 +351,7 @@ class TestSandboxArchitecture(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_raw_test_mod", "version": "1.0.0.0", "entry": "scripts/cli.py"}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def main(): pass')
+                f.write('def process(args):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "tests", "test_raw.py"), "w", encoding="utf-8") as f:
                 f.write('import unittest\nclass TestRawDirect(unittest.TestCase):\n    def test_a(self): pass\n')
 

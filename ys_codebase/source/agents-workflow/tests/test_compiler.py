@@ -155,10 +155,10 @@ class TestArtifactCompiler(YSCBTestCase):
 
     def test_st_07_cli_release_and_target_commands(self):
         """ST-07: 驗證 CLI release 與 release-target 系列指令。"""
-        code_release = cli.main(["release"])
+        code_release = cli.process(["release"])
         self.assertEqual(code_release, 0)
 
-        code_list = cli.main(["release-target", "--list"])
+        code_list = cli.process(["release-target", "--list"])
         self.assertEqual(code_list, 0)
 
     def test_ft_08_computed_token_resolution(self):

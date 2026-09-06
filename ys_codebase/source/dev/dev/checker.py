@@ -300,6 +300,8 @@ class Checker:
                     file_path="scripts/cli.py",
                 )
             )
+        else:
+            self._check_cli_compliance(name, cli_path, report)
 
         # 2. Check for scattered config.*.json at root
         for item in os.listdir(real_dir):
@@ -357,6 +359,114 @@ class Checker:
                     category="STRUCTURE",
                     message="Module lacks 'contributes.format.md' documentation.",
                     file_path="contributes.format.md",
+                )
+            )
+
+    def _check_cli_compliance(self, name: str, cli_path: str, report: CheckReport) -> None:
+        """
+        以 AST 靜態檢核 scripts/cli.py 的合規性：
+        1. 必須宣告函式 def process(args)
+        2. 絕對不可有 def main(...)
+        3. 絕對不可有 if __name__ == '__main__':
+        4. 頂層節點除 Docstring、Import、ImportFrom、FunctionDef、ClassDef 外，
+           嚴禁任何未包覆在 func/class 內的執行陳述式。
+        """
+        try:
+            with open(cli_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            tree = ast.parse(content, filename=cli_path)
+        except Exception as e:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.FAIL,
+                    category="SYNTAX",
+                    message=f"Syntax error in 'scripts/cli.py': {e}",
+                    file_path="scripts/cli.py",
+                )
+            )
+            return
+
+        has_process_func = False
+        has_main_func = False
+        has_if_name_main = False
+        invalid_top_level_nodes = []
+
+        for node in tree.body:
+            # 頂層節點白名單過濾
+            if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef)):
+                continue
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name == "process":
+                    has_process_func = True
+                elif node.name == "main":
+                    has_main_func = True
+                continue
+            elif isinstance(node, ast.Expr):
+                # 僅允許作為字串常量（如 module docstring）
+                if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                    continue
+                else:
+                    invalid_top_level_nodes.append((getattr(node, "lineno", 0), "top-level expression"))
+            elif isinstance(node, ast.If):
+                # 檢測是否為 if __name__ == '__main__':
+                is_name_main = False
+                if isinstance(node.test, ast.Compare):
+                    left = node.test.left
+                    if isinstance(left, ast.Name) and left.id == "__name__":
+                        for comp in node.test.comparators:
+                            if isinstance(comp, ast.Constant) and comp.value == "__main__":
+                                is_name_main = True
+                                break
+                if is_name_main:
+                    has_if_name_main = True
+                else:
+                    invalid_top_level_nodes.append((getattr(node, "lineno", 0), "top-level if-statement"))
+            else:
+                stmt_type = type(node).__name__
+                invalid_top_level_nodes.append((getattr(node, "lineno", 0), f"top-level statement '{stmt_type}'"))
+
+        # 檢測規則 1: 必須宣告 process
+        if not has_process_func:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.FAIL,
+                    category="STRUCTURE",
+                    message="Missing required entry function 'def process(args)' in 'scripts/cli.py'.",
+                    file_path="scripts/cli.py",
+                )
+            )
+
+        # 檢測規則 2: 禁絕 main
+        if has_main_func:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.FAIL,
+                    category="STRUCTURE",
+                    message="Forbidden function 'main' found in 'scripts/cli.py'. Module CLI entries must only declare 'def process(args)'.",
+                    file_path="scripts/cli.py",
+                )
+            )
+
+        # 檢測規則 3: 禁絕 if __name__ == '__main__':
+        if has_if_name_main:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.FAIL,
+                    category="STRUCTURE",
+                    message="Forbidden 'if __name__ == \"__main__\":' execution block found in 'scripts/cli.py'. Module CLI must be purely importable.",
+                    file_path="scripts/cli.py",
+                )
+            )
+
+        # 檢測規則 4: 禁絕未包覆在 func/class 之頂層執行內容
+        for lineno, desc in invalid_top_level_nodes:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.FAIL,
+                    category="ANTIPATTERN",
+                    message=f"Forbidden {desc} outside function/class at line {lineno} in 'scripts/cli.py'. All executable statements must be enclosed inside functions or classes.",
+                    file_path="scripts/cli.py",
+                    line_number=lineno,
                 )
             )
 

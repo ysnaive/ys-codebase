@@ -38,24 +38,31 @@ class Scaffolder:
         cli_content = f'''"""
 CLI Entry point for module {name}.
 """
+from typing import List
 import sys
 import os
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
-
+from core.guard import guard_dispatch
 from core import uri
 
-def main(argv=None) -> int:
-    if argv is None:
-        argv = sys.argv[1:]
-    print(f"[{name}] Executing command with args: " + " ".join(argv))
-    return 0
 
-if __name__ == "__main__":
-    sys.exit(main())
+def process(args: List[str]) -> int:
+    guard_dispatch("{name}")
+
+    # Windows console UTF-8 protection
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(current_dir)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+
+    print(f"[{name}] Executing command with args: " + " ".join(args))
+    return 0
 '''
         uri.write_text(f"{target_src_uri}/scripts/cli.py", cli_content)
         
