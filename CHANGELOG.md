@@ -2,6 +2,17 @@
 
 ## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
 
+### sub_03_server_module_daemon_supervisor (Verified)
+- **全新通用常駐服務模組 (server) 落地與微內核跨平台原語 (core.platform)**：
+  - **微內核跨平台原語 (`core.platform`)**：實作 `spawn_detached`（無窗口/無 tty 脫鉤拉起進程）、`is_process_alive`（精確排除 Linux 殭屍進程 `Z`/`X` 與 non-blocking waitpid 收割）、`kill_process_tree`（遞迴收割整棵進程樹杜絕孤兒進程）與 `InterProcessLock`（跨平台 POSIX flock / Windows msvcrt 跨進程排他鎖）。
+  - **Master-Worker 雙進程模型 (方案 C)**：Master 掌理 Localhost HTTP (`127.0.0.1:0`)、隨機 Token 認證、PID 鎖檔與生命週期；Worker 子進程常駐預熱 Python 環境，單隊列序列化調用 `process(args)`，攔截 `SystemExit` 確保進程不滅。
+  - **模組零感知與延遲加載 (Lazy Load on Dispatch)**：Worker 啟動時不預加載任何領域模組；派發時按需載入，調用 A 模組絕不加載 B 模組，杜絕依賴污染。
+  - **500ms 防抖分流串流協議 (`DebouncedIOStreamer`)**：攔截 stdout/stderr，以 500ms 防抖緩衝合併，透過 NDJSON 封包分流 `terminal_stream`（終端串流區塊）與 `task_finish`（任務退出狀態碼）。
+  - **Worker 重啟式熱重載 (`ModulesWatcher`)**：即時監聽 `.modules/` 變更，Master 自動終止舊 Worker 並重啟全新乾淨 Worker，徹底排除 Python reload 記憶體殘留問題。
+  - **統一生命週期與共享自毀 (Shared 15m Idle TTL)**：Server 預設開啟 15 分鐘空閒超時自毀；`BaseServiceWorker`（如 Watchdog）生命週期 100% 綁定並跟隨 Server 配置，共同進退。
+  - **宿主入口雙軌調度 (`yscb.py`)**：整合四大耦合邊界（軟依賴探測、自循環旁路、按需非同步拉起、極簡 HTTP 串流客戶端）。
+  - **全生態系 190/190 自動化測試全數通過**。
+
 ### sub_02_core_vfs_unified_virtual_file_system (Verified)
 - **微內核統一虛擬檔案系統 (core.vfs) 落地與語意 URI 單向解耦**：
   - **VFS 與 URI 單向依賴純淨解耦**：`core.uri` 定位為純字串定址協議 SSOT，完全不反向相依於 `core.vfs`；`core.vfs` 作為生態系唯一微內核檔案存取中樞，單向相依於 `core.uri.resolve` 將語意 URI 解析為實體路徑。`core.uri` 原有之 IO helpers 向上相容無損轉發至 `core.vfs`。
