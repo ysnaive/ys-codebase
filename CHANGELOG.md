@@ -1,5 +1,16 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
+
+### sub_01_cli_dispatch_and_core_guard_sdk (Verified)
+- **生態系 CLI 串接協議重構與微內核守門 SDK (Core Guard Dispatch)**：
+  - **Core 守門 SDK (`core.guard.guard_dispatch`)**：建立生態系通用守門 SDK，模組 CLI 函式首行調用；自動驗證 `YSCB_HOST_DISPATCH_TOKEN` 與宿主環境，攔截非法繞道調用並輸出標準指令引導與 Exit Code 126 熔斷，支援 `YSCB_TESTING=1` 測試模式豁免。
+  - **模組 CLI 標準進入點重構 (`process(args: List[str]) -> int`)**：全模組（`core`、`dev`、`agents-workflow`、`knowledge-db`）之 `scripts/cli.py` 全量遷移至純宣告式架構，嚴禁 `main()` 進入點與 `if __name__ == '__main__':` 執行塊，禁絕任何頂層裸執行陳述式。
+  - **骨架生成規範升級 (`dev.scaffold.Scaffolder`)**：`dev create` 生成之 `scripts/cli.py` 預先宣告標準 `process(args)` 簽名並掛載 Core 守門 SDK。
+  - **AST 靜態語法合規檢核管線 (`dev.checker.Checker`)**：於 `dev check` 與發布 Gate 1 增設 AST 語法樹合規檢驗，嚴格保障進入點存在 `process`、無 `main` 且頂層純淨無副作用。
+  - **宿主動態派發適配 (`yscb.py`)**：`dispatch_module` 改以 `importlib.util` 動態載入並優先調用 `process(args)`（保留過渡期相容 `main(args)`），注入授權 Token 並原樣透傳退出碼。
+  - **全生態系驗證與回歸測試**：全生態系 4 大模組共 437 個單元測試 100% PASS。
+
 ## 2026_09_06_1635_knowledge_db_embedding_model_name_fix (Completed)
 
 - **knowledge-db 向量模型名稱錯誤修復與別名自動補全正規化 (`fast_track_plan.md`)**：

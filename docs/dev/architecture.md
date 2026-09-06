@@ -71,7 +71,7 @@
 
 1. **Gate 1 (靜態合規性檢驗)**：
    - 驗證 `manifest.json` 欄位完整性與 SemVer 語意格式。
-   - 驗證 `scripts/cli.py` 實體檔案存在、具備 `main(argv)` 進入點且 Python AST 語法無解析錯誤。
+   - 驗證 `scripts/cli.py` 實體檔案存在、宣告 `process(args)` 進入點、嚴禁 `main`、純宣告式頂層且 Python AST 語法無解析錯誤。
 2. **Gate 2 (版本不可變性檢驗 - Immutability)**：
    - 檢查 `release/<mod>/<target_version>.zip` 是否已存在。若在庫已有同名四元版本，立即拋出 `ReleaseVersionExistsError` 阻斷，嚴禁無聲覆蓋。
 3. **Gate 3 (版本單調遞增檢驗 - Monotonicity)**：

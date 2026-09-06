@@ -13,7 +13,7 @@ python yscb.py dev create <module_name> [--desc="<description>"]
 ```
 - **產出檔案**：
   - `source/<module_name>/manifest.json`：模組宣告清單（預設版本 `1.0.0.0`）。
-  - `source/<module_name>/scripts/cli.py`：標準 CLI 路由進入點（具備 `main(argv)`）。
+  - `source/<module_name>/scripts/cli.py`：標準 CLI 路由進入點（具備 `process(args)` 與守門 SDK）。
   - `source/<module_name>/<module_name>/__init__.py`：核心 Python 套件目錄。
   - `source/<module_name>/.yscbignore`：發布打包過濾規則。
   - `source/<module_name>/tests/test_basic.py`：初始單元測試檔案。

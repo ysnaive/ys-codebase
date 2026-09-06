@@ -7,38 +7,27 @@ import os
 import sys
 from typing import List
 
-# Windows 控制台 UTF-8 編碼保護
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
-if hasattr(sys.stderr, "reconfigure"):
-    try:
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
-
-current_dir = os.path.dirname(os.path.abspath(__file__))
-module_dir = os.path.dirname(current_dir)
-modules_root = os.path.dirname(module_dir)
-
-if os.path.isdir(modules_root):
-    for m in os.listdir(modules_root):
-        m_p = os.path.join(modules_root, m)
-        if os.path.isdir(m_p) and m_p not in sys.path:
-            sys.path.insert(0, m_p)
-
-if module_dir not in sys.path:
-    sys.path.insert(0, module_dir)
-
+from core.guard import guard_dispatch
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.exceptions import KnowledgeDBError, SpaceNotFoundError
 from knowledge_db.formatter import TerminalStyler
 
 
-def main(argv: List[str]) -> int:
-    if not argv or argv[0] in ("-h", "--help", "help"):
+def process(args: List[str]) -> int:
+    guard_dispatch("knowledge-db")
+
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    if not args or args[0] in ("-h", "--help", "help"):
         print("[knowledge-db] YS-Codebase Knowledge Database & Semantic Retrieval")
         print("Usage:")
         print("  python yscb.py knowledge-db status               列出所有註冊空間、快取與索引狀態")
@@ -53,8 +42,8 @@ def main(argv: List[str]) -> int:
         print("  python yscb.py knowledge-db clean [space | --all] 清理指定或全空間快取檔案")
         return 0
 
-    subcmd = argv[0]
-    sub_argv = argv[1:]
+    subcmd = args[0]
+    sub_argv = args[1:]
     engine = KnowledgeEngine()
 
     # 運行相關 CLI 時，若後台有運行 server，提示並跳過 JIT [FR-12]
@@ -820,7 +809,3 @@ def main(argv: List[str]) -> int:
     except Exception as e:
         print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
         return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

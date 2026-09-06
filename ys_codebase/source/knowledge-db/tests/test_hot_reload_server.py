@@ -29,7 +29,7 @@ import importlib.util
 from knowledge_db.daemon import DaemonInfo, HotReloadServer
 from knowledge_db.retrieval import InvertedIndex
 from knowledge_db.scanner import ScanDiffDetail
-from scripts.cli import main
+from scripts.cli import process
 
 
 def _load_hook_core():
@@ -277,7 +277,7 @@ class TestHotReloadServer(YSCBTestCase):
         # status 指令輸出 JSON 測試
         f_out = io.StringIO()
         with patch("sys.stdout", f_out):
-            ret = main(["daemon", "status", "--json", f"--workspace-root={self.root_path}"])
+            ret = process(["daemon", "status", "--json", f"--workspace-root={self.root_path}"])
         self.assertEqual(ret, 0)
         out_json = json.loads(f_out.getvalue())
         self.assertFalse(out_json["running"])
@@ -286,7 +286,7 @@ class TestHotReloadServer(YSCBTestCase):
         # stop 指令（無實例時仍應回傳 0 成功）
         f_out2 = io.StringIO()
         with patch("sys.stdout", f_out2):
-            ret2 = main(["daemon", "stop", f"--workspace-root={self.root_path}"])
+            ret2 = process(["daemon", "stop", f"--workspace-root={self.root_path}"])
         self.assertEqual(ret2, 0)
 
         self.mark_passed()

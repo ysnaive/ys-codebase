@@ -865,14 +865,37 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
         print("       Run 'python yscb.py --help' for available commands.")
         return 1
 
+    core_dir = os.path.normpath(os.path.join(yscb_abs, ".modules", "core"))
+    if os.path.isdir(core_dir) and core_dir not in sys.path:
+        sys.path.insert(0, core_dir)
+
+    module_dir = os.path.dirname(os.path.dirname(target_cli))
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+
     os.environ["YSCB_HOST_DIR"] = base_dir
+    os.environ["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"
     os.environ["PYTHONUNBUFFERED"] = "1"
 
     orig_argv = list(sys.argv)
     try:
         sys.argv = [target_cli] + args
-        runpy.run_path(target_cli, run_name="__main__")
-        return 0
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(f"yscb_module_{module_name.replace('-', '_')}_cli", target_cli)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load module spec from {target_cli}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+
+        if hasattr(mod, "process") and callable(mod.process):
+            res = mod.process(args)
+            return int(res) if res is not None else 0
+        elif hasattr(mod, "main") and callable(mod.main):
+            res = mod.main(args)
+            return int(res) if res is not None else 0
+        else:
+            raise AttributeError(f"Module '{module_name}' CLI does not define 'process(args)' entrypoint.")
     except SystemExit as se:
         if se.code is None:
             return 0
