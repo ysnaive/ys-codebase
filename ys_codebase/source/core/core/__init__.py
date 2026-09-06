@@ -17,6 +17,8 @@ from core.pip_manager import PipManager, PipInstallError
 
 from core import guard
 from core.guard import guard_dispatch
+from core import vfs
+from core.vfs import VirtualPath
 
 __all__ = [
     "uri",
@@ -38,5 +40,7 @@ __all__ = [
     "PipInstallError",
     "guard",
     "guard_dispatch",
+    "vfs",
+    "VirtualPath",
 ]
 

@@ -25,9 +25,11 @@ for _cand in [
 
 try:
     from core import uri
+    from core import vfs
     from core.context import ExecutionContext
 except ImportError:
     uri = None
+    vfs = None
     ExecutionContext = None
 
 FENCED_CODE_BLOCK_REGEX = re.compile(r"```[\s\S]*?```")
@@ -132,8 +134,11 @@ class ArtifactCompiler:
                 rel_f = os.path.relpath(abs_f, real_dir).replace("\\", "/")
                 content = ""
                 try:
-                    with open(abs_f, "r", encoding="utf-8") as f:
-                        content = f.read()
+                    if vfs:
+                        content = vfs.read_text(abs_f)
+                    else:
+                        with open(abs_f, "r", encoding="utf-8") as f:
+                            content = f.read()
                 except Exception:
                     try:
                         with open(abs_f, "rb") as f:
@@ -146,8 +151,10 @@ class ArtifactCompiler:
     def _read_file_content(self, path_or_uri: str) -> str:
         """安全讀取語意 URI 或本機檔案文字，支援 module.root 與 module.source.root 自適應降級。"""
         real_p = self._resolve_source_path(path_or_uri)
-        if real_p and os.path.isfile(real_p):
+        if real_p and (vfs.is_file(real_p) if vfs else os.path.isfile(real_p)):
             try:
+                if vfs:
+                    return vfs.read_text(real_p)
                 with open(real_p, "r", encoding="utf-8") as f:
                     return f.read()
             except Exception:
@@ -158,7 +165,13 @@ class ArtifactCompiler:
                     pass
 
         # 直接嘗試 URI read_text (若存在虛擬 storage)
-        if uri and "://" in path_or_uri:
+        if vfs and "://" in path_or_uri:
+            try:
+                if vfs.exists(path_or_uri):
+                    return vfs.read_text(path_or_uri)
+            except Exception:
+                pass
+        elif uri and "://" in path_or_uri:
             try:
                 if uri.exists(path_or_uri):
                     return uri.read_text(path_or_uri)
@@ -349,7 +362,13 @@ class ArtifactCompiler:
     def _write_cache_file(self, cache_uri: str, content: str) -> str:
         """寫入中繼快取檔案 (支援 storage/cache URI 與本地 fallback)。"""
         written = False
-        if uri:
+        if vfs:
+            try:
+                vfs.write_text(cache_uri, content, atomic=True)
+                written = True
+            except Exception:
+                written = False
+        elif uri:
             try:
                 uri.makedirs(os.path.dirname(cache_uri), exist_ok=True)
                 uri.write_text(cache_uri, content)
