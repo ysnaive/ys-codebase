@@ -19,15 +19,24 @@ def on_pre_cli_dispatch(ctx: Optional[Any] = None) -> bool:
     """
     在 CLI 命令分發前觸發 [FR-02]：
     1. 檢驗是否處於測試沙盒環境，若處於沙盒則強制禁用常駐 Server (EC-06)。
-    2. 載入 KnowledgeDBConfig，若 enable_hot_reload_server == True：
+    2. 避免在背景守護進程內部遞迴調用自身 (防死鎖)，或在執行 daemon 管理命令時搶先拉起。
+    3. 載入 KnowledgeDBConfig，若 enable_hot_reload_server == True：
        - 調用 HotReloadServer.ensure_running() 確保 Server 存活。
        - 若版本變更自動重啟 (FR-11)。
-    3. 耗時 <= 10ms，不阻塞前台 CLI 響應。
+    4. 耗時 <= 10ms，不阻塞前台 CLI 響應。
 
     :return: 是否喚醒或重啟了 Server
     """
     # 1. 測試沙盒環境隔離 (EC-06)
     if os.environ.get("YSCB_TEST_SANDBOX") == "1":
+        return False
+
+    # 2. 避免在背景守護進程內部遞迴調用自身 (防死鎖)
+    if os.environ.get("KNOWLEDGE_DB_DAEMON_PROCESS") == "1":
+        return False
+
+    # 3. 避免在執行 daemon 子命令時搶先由 hook 拉起背景進程
+    if any(arg in ("daemon", "run-foreground", "watch", "stop", "status", "--daemon-process") for arg in sys.argv):
         return False
 
     try:

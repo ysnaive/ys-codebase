@@ -582,6 +582,10 @@ class HotReloadServer:
                     # 升級未記錄 spaces_signature 之舊 PID
                     need_restart = True
                     reason = "Legacy PID without spaces_signature"
+                elif info.status == "starting" and (time.time() - info.start_time > 30.0):
+                    # 異常卡死在 starting 狀態超過 30 秒的殭屍進程，強制自癒重啟
+                    need_restart = True
+                    reason = f"Stale starting process timed out (>30s, PID: {info.pid})"
 
                 if need_restart:
                     logger.info(
@@ -611,72 +615,87 @@ class HotReloadServer:
                 "daemon",
                 "run-foreground",
                 f"--workspace-root={root}",
+                "--daemon-process",
             ]
 
-            try:
-                # 跨平台建立完全分離的背景進程
-                popen_kwargs: Dict[str, Any] = {
-                    "stdout": subprocess.DEVNULL,
-                    "stderr": subprocess.DEVNULL,
-                    "stdin": subprocess.DEVNULL,
-                    "cwd": str(root),
-                }
-                if sys.platform == "win32":
-                    popen_kwargs["creationflags"] = (
-                        getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-                        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+            target_pid: Optional[int] = None
+            proc: Optional[Any] = None
+
+            # Windows Job Object Breakaway 防禦：
+            # 當前台 CLI 處於 IDE / CI / Task Runner 之 Windows Job Object 且無 Breakaway 權限時，
+            # 一般 subprocess.Popen 會被限制在同一個 Job 內，一旦 CLI 父進程結束即遭 Windows 自動連帶處決。
+            # 透過 WMI (Win32_Process.Create) 將進程委託由 WmiPrvSE 服務託管拉起，徹底突破 Job Object 約束常駐。
+            if sys.platform == "win32" and os.environ.get("YSCB_TEST_SANDBOX") != "1":
+                try:
+                    full_cmd = subprocess.list2cmdline(cmd)
+                    ps_cmd_arg = full_cmd.replace("'", "''")
+                    ps_root_arg = str(root).replace("'", "''")
+                    ps_script = (
+                        f"$arg = @{{ CommandLine = '{ps_cmd_arg}'; CurrentDirectory = '{ps_root_arg}' }}; "
+                        f"(Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $arg).ProcessId"
                     )
-                else:
-                    popen_kwargs["start_new_session"] = True
+                    out = subprocess.check_output(
+                        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                        text=True,
+                        cwd=str(root),
+                        timeout=5.0,
+                    )
+                    raw_pid = out.strip()
+                    if raw_pid.isdigit() and int(raw_pid) > 0:
+                        target_pid = int(raw_pid)
+                except Exception as we:
+                    logger.debug(f"[knowledge-db:daemon] WMI CIM spawn skipped or fallback: {we}")
 
-                proc = subprocess.Popen(cmd, **popen_kwargs)
+            if target_pid is None:
+                try:
+                    child_env = os.environ.copy()
+                    child_env["KNOWLEDGE_DB_DAEMON_PROCESS"] = "1"
 
-                # 單元測試 Mock 防禦
-                if not isinstance(getattr(proc, "pid", None), int):
-                    return True
-
-                # Tier 1: 父進程立即預註冊 PID 檔，標記 status="starting"，消除啟動延遲真空期
-                pre_info = DaemonInfo(
-                    pid=proc.pid,
-                    start_time=time.time(),
-                    version=current_ver,
-                    workspace_root=str(root),
-                    log_file="",
-                    spaces=current_spaces,
-                    spaces_signature=current_sig,
-                    status="starting",
-                )
-                cls.write_pid_info(root, pre_info)
-
-                # 探測等待 (最多 8.0 秒，每 0.1 秒檢查一次)
-                for _ in range(80):
-                    time.sleep(0.1)
-                    if proc.poll() is not None:
-                        logger.warning(
-                            f"[knowledge-db:daemon] Daemon process {proc.pid} exited prematurely with code {proc.poll()}"
+                    popen_kwargs: Dict[str, Any] = {
+                        "stdout": subprocess.DEVNULL,
+                        "stderr": subprocess.DEVNULL,
+                        "stdin": subprocess.DEVNULL,
+                        "cwd": str(root),
+                        "env": child_env,
+                    }
+                    if sys.platform == "win32":
+                        popen_kwargs["creationflags"] = (
+                            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+                            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
                         )
-                        pid_file = cls.get_pid_file(root)
-                        try:
-                            pid_file.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                        return False
+                    else:
+                        popen_kwargs["start_new_session"] = True
 
-                    is_run, cur_info = cls.is_running(root)
-                    if is_run and cur_info and cur_info.status == "ready":
-                        return True
+                    proc = subprocess.Popen(cmd, **popen_kwargs)
+                    target_pid = getattr(proc, "pid", None)
+                except Exception as pe:
+                    logger.warning(f"[knowledge-db:daemon] Failed to start background daemon via Popen: {pe}")
+                    return False
 
-                # 若超過 8 秒仍存活但未進入 ready
-                if proc.poll() is None:
-                    is_run, cur_info = cls.is_running(root)
-                    if is_run and cur_info and cur_info.status == "ready":
-                        return True
+            if not isinstance(target_pid, int) or target_pid <= 0:
+                return True
 
-                    # Tier 3: 超時剛性熔斷強殺，絕不放生殭屍孤兒進程
+            # Tier 1: 父進程立即預註冊 PID 檔，標記 status="starting"，消除啟動延遲真空期
+            pre_info = DaemonInfo(
+                pid=target_pid,
+                start_time=time.time(),
+                version=current_ver,
+                workspace_root=str(root),
+                log_file="",
+                spaces=current_spaces,
+                spaces_signature=current_sig,
+                status="starting",
+            )
+            cls.write_pid_info(root, pre_info)
+
+            # 探測等待 (最多 5.0 秒，每 0.05 秒檢查一次，一旦進入 ready 立即返回)
+            for _ in range(100):
+                time.sleep(0.05)
+                is_dead = (proc.poll() is not None) if proc is not None else (not cls.is_pid_alive(target_pid))
+                if is_dead:
                     logger.warning(
-                        f"[knowledge-db:daemon] Daemon startup timed out after 8.0s (PID: {proc.pid}). Force-killing to prevent process leak."
+                        f"[knowledge-db:daemon] Daemon process {target_pid} exited prematurely"
                     )
-                    cls.kill_process_tree(proc.pid)
                     pid_file = cls.get_pid_file(root)
                     try:
                         pid_file.unlink(missing_ok=True)
@@ -684,10 +703,30 @@ class HotReloadServer:
                         pass
                     return False
 
+                is_run, cur_info = cls.is_running(root)
+                if is_run and cur_info and cur_info.status == "ready":
+                    return True
+
+            # 若超過 5 秒仍存活但未進入 ready
+            is_alive = (proc.poll() is None) if proc is not None else cls.is_pid_alive(target_pid)
+            if is_alive:
+                is_run, cur_info = cls.is_running(root)
+                if is_run and cur_info and cur_info.status == "ready":
+                    return True
+
+                # Tier 3: 超時剛性熔斷強殺，絕不放生殭屍孤兒進程
+                logger.warning(
+                    f"[knowledge-db:daemon] Daemon startup timed out after 5.0s (PID: {target_pid}). Force-killing to prevent process leak."
+                )
+                cls.kill_process_tree(target_pid)
+                pid_file = cls.get_pid_file(root)
+                try:
+                    pid_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 return False
-            except Exception as e:
-                logger.warning(f"[knowledge-db:daemon] Failed to start background daemon: {e}")
-                return False
+
+            return False
 
     @classmethod
     def stop(cls, workspace_root: Optional[Union[str, Path]] = None) -> bool:
@@ -748,8 +787,8 @@ class HotReloadServer:
         }
         return res
 
-    def _setup_logger(self) -> logging.Logger:
-        """建立即時寫入之日誌輸出器，並觸發 3 世代滾動清理 [FR-10, EC-08]。"""
+    def _setup_logger(self, is_foreground: bool = False) -> logging.Logger:
+        """建立即時寫入之日誌輸出器，支援前台即時串流與 3 世代滾動清理 [FR-10, EC-08]。"""
         logs_dir = self.get_logs_dir(self.workspace_root)
         now_str = time.strftime("%Y%m%d_%H%M%S")
         pid = os.getpid()
@@ -763,18 +802,45 @@ class HotReloadServer:
         for h in list(srv_logger.handlers):
             srv_logger.removeHandler(h)
 
-        try:
-            class FlushingFileHandler(logging.FileHandler):
-                def emit(self, record):
-                    super().emit(record)
-                    self.flush()
+        class FlushingFileHandler(logging.FileHandler):
+            def emit(self, record):
+                super().emit(record)
+                self.flush()
 
+        class FlushingStreamHandler(logging.StreamHandler):
+            def emit(self, record):
+                super().emit(record)
+                self.flush()
+
+        fmt = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+        try:
             fh = FlushingFileHandler(str(self.log_file_path), encoding="utf-8")
-            fmt = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
             fh.setFormatter(fmt)
             srv_logger.addHandler(fh)
+
+            # 將檔案處理常式同步掛載至 package logger，使 pipeline/scanner 之索引日誌亦能完整留痕
+            pkg_logger = logging.getLogger("knowledge_db")
+            pkg_logger.setLevel(logging.INFO)
+            for h in list(pkg_logger.handlers):
+                if isinstance(h, FlushingFileHandler):
+                    pkg_logger.removeHandler(h)
+            pkg_logger.addHandler(fh)
         except Exception as e:
             logger.warning(f"Failed to attach file logger: {e}")
+
+        # 前台模式或非重導向終端掛載即時 StreamHandler
+        is_interactive = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+        if is_foreground or is_interactive or os.environ.get("KNOWLEDGE_DB_FOREGROUND") == "1":
+            try:
+                sh = FlushingStreamHandler(sys.stdout)
+                sh.setFormatter(fmt)
+                srv_logger.addHandler(sh)
+                pkg_logger = logging.getLogger("knowledge_db")
+                if not any(isinstance(h, FlushingStreamHandler) for h in pkg_logger.handlers):
+                    pkg_logger.addHandler(sh)
+            except Exception:
+                pass
 
         self.file_logger = srv_logger
 
@@ -1092,10 +1158,10 @@ class HotReloadServer:
         finally:
             self.last_activity_time = time.time()
 
-    def run_foreground(self) -> None:
+    def run_foreground(self, is_foreground: bool = False) -> None:
         """前台阻塞式運行（用於 watch 模式或背景進程主回圈）。"""
         self.set_process_title("yscb: knowledge-db daemon")
-        self._setup_logger()
+        self._setup_logger(is_foreground=is_foreground)
         self._write_pid_file()
 
         if self.file_logger:

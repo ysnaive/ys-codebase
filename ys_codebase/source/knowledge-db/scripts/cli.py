@@ -145,7 +145,7 @@ def main(argv: List[str]) -> int:
                 if action == "watch":
                     print("[knowledge-db:daemon] 啟動前台監視模式 (Ctrl+C 退出)...")
                 srv = HotReloadServer(workspace_root=workspace_root)
-                srv.run_foreground()
+                srv.run_foreground(is_foreground=(action == "watch" or (hasattr(sys.stdout, "isatty") and sys.stdout.isatty())))
                 return 0
 
             else:
