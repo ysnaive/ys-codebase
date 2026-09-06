@@ -25,6 +25,7 @@
 | **DN-14** | **JIT 10 符號動態探針、向量熔斷降級、CPU 自適應防飢餓與 CLI UX** | `config.py`, `pipeline.py`, `cli.py` | 實作 10 符號動態探針與 5 秒超時熔斷退回純 BM25；支援 local 向量開關、自訂模型與 CPU 執行緒自適應；屏蔽 HF 雜訊並保障 `--json` 純淨。 |
 | **DN-15** | **專屬 HotReloadServer、Watchdog 500ms 防抖、Pre-dispatch 喚醒與日誌治理** | `daemon.py`, `hook.core.py`, `config.py` | 專屬後台服務整併 AST/BM25/Graph/Vector 熱修補；支援 hook 自動喚醒、閒置超時自動關閉；PID 隔離至 `cache://`、3 代滾動日誌與版本變更強制重啟。 |
 | **DN-21** | **常駐 ServiceWorker 納管、微內核原語對齊與快取 mtime 熱自癒** | `service.py`, `engine.py`, `pipeline.py` | 移除自製守護進程與 CLI `daemon` 命令，收斂為 `KnowledgeDBServiceWorker` 委由 `server` 模組 Master 託管；記憶體快取透過 microsecond `mtime` 比對熱刷新；全面對齊 `core.vfs.write_bytes(atomic=True)` 與 `core.platform.lock.InterProcessLock`。 |
+| **DN-22** | **死碼清理與冷熱啟動零感知架構 (Optional 插槽化)** | `service.py`, `pipeline.py`, `manifest.json` | 徹底刪除 `daemon.py` 與 `hook.core.py`，業務邏輯對冷/熱啟動零感知；`manifest.json` 引入 `optional` 欄位並將 `server` 轉為非強制選用擴充模組。 |
 
 ---
 
@@ -443,4 +444,34 @@
 - **效益與驗證**：
   - 瘦身 `daemon.py`，大幅減輕知識庫模組非核心負擔。
   - 全套測試 100% 通過（140/140），且通過 `dev check knowledge-db` 合規驗證。
+
+---
+
+### [DN-22] 領域模組對冷/熱啟動零感知架構與 Optional 依賴插槽化
+
+- **背景與動機**：
+  - 在完成 sub_04 引入 `KnowledgeDBServiceWorker` 並納管至 `server` 模組後，歷史遺留的 `daemon.py` 與 `hook.core.py` 仍殘留在知識庫源碼中，造成死碼與架構冗餘。
+  - 此外，`knowledge-db` 在本質上是一個獨立的檢索與知識庫分析工具，`server` 的常駐自癒為加速擴充功能，而非不可或缺的硬性相依（Hard Dependency）。若強制將 `server` 列在 `dependencies` 中，將破壞最小化運行與靈活部署原則。
+- **架構決策與實作**：
+  1. **冷/熱啟動零感知原則 (Zero-Awareness of Daemon/Cold-Hot)**：
+     - 徹底刪除 `knowledge_db/daemon.py` 與 `scripts/hook.core.py`。
+     - 領域模組不再感知自身是在前台一次性 CLI 執行（冷模式 JIT 自癒）或在背景常駐進程執行（由 `server.master` 託管之 worker），業務管線只專注於 `process(args)`。
+     - `pipeline.py` 檢索流水線移除對 `daemon.py` 的輪詢與探測邏輯，純粹回歸檔案變更檢測。
+  2. **Manifest `optional` 欄位規範與安裝提示**：
+     - `manifest.json` 新增 `optional` 欄位規範：
+       ```json
+       "optional": {
+         "server": {
+           "version": ">=1.0.0",
+           "hint": "提供常駐背景檔案監聽熱自癒與極速預熱派發"
+         }
+       }
+       ```
+     - `core.installer` 於下載工具鏈安裝完成後，若發現有 `optional` 模組尚未安裝，自動提示其功能說明與建議安裝指令。
+     - `dev.checker` 擴充靜態合規性檢核，驗證 `optional` 物件結構（需包含 `version` 與 `hint` 且為字串）。
+  3. **動態弱引用與 Fallback 保證**：
+     - `knowledge_db/service.py` 內建抽象 `BaseServiceWorker` fallback 機制，即便環境未安裝 `server` 模組，`knowledge-db` 亦完全不拋出 `ImportError`，以 JIT 冷模式 100% 獨立運行。
+- **效益與驗證**：
+  - 源碼徹底消除死碼 600+ 行，架構邊界純淨化。
+  - 單元測試 140/140 PASSED (100%)，`dev check` 合規檢驗 100% PASSED。
 

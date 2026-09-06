@@ -5,7 +5,7 @@ Includes Major Boundary Lock & Incremental Migration Trigger.
 import os
 import sys
 import json
-from typing import Optional, List
+from typing import Optional, List, Dict, Tuple, Any
 from core import uri
 from core.context import ExecutionContext
 from core.engine import AtomicEngine
@@ -15,6 +15,49 @@ from core import events
 class Installer:
     def __init__(self):
         self.engine = AtomicEngine()
+
+    def _check_optional_dependencies(self, module_name: str) -> None:
+        """
+        走訪已安裝模組之 manifest.json 中宣告的 optional 擴充模組。
+        若工作區尚未安裝該模組，於終端輸出結構化建議卡片與安裝指令引導。
+        """
+        try:
+            manifest_uri = f"module://{module_name}/manifest.json"
+            if not uri.exists(manifest_uri):
+                return
+            m_data = uri.read_json(manifest_uri)
+            if not isinstance(m_data, dict):
+                return
+            optional_deps = m_data.get("optional", {})
+            if not isinstance(optional_deps, dict) or not optional_deps:
+                return
+
+            cfg_path, cfg = self.engine._get_config()
+            installed = cfg.get("installed_modules", {})
+
+            missing_optionals: List[Tuple[str, str, str]] = []
+            for opt_mod, opt_info in optional_deps.items():
+                if opt_mod in installed and uri.exists(f"module://{opt_mod}"):
+                    continue
+                ver_range = ""
+                hint = ""
+                if isinstance(opt_info, dict):
+                    ver_range = str(opt_info.get("version", ""))
+                    hint = str(opt_info.get("hint", ""))
+                elif isinstance(opt_info, str):
+                    ver_range = opt_info
+                missing_optionals.append((opt_mod, ver_range, hint))
+
+            if missing_optionals:
+                print("\n[*] 偵測到可用的擴充模組 (Optional Modules):")
+                for opt_mod, ver_range, hint in missing_optionals:
+                    ver_str = f" ({ver_range})" if ver_range else ""
+                    hint_str = f": {hint}" if hint else ""
+                    print(f"    - {opt_mod}{ver_str}{hint_str}")
+                    print(f"      (可執行: python yscb.py install {opt_mod} 啟用完整能力)")
+                print()
+        except Exception:
+            pass
 
     def cmd_install(self, module_name: str, version: Optional[str] = None, provider: Optional[str] = None, force: bool = False) -> int:
         if not module_name:
@@ -59,6 +102,7 @@ class Installer:
             self.sync_pip_dependencies()
             self.engine.act_unlock("install")
             print(f"[core:install] Successfully installed '{module_name}@{installed_ver}'.")
+            self._check_optional_dependencies(module_name)
             return 0
         except Exception as e:
             self.engine.act_unlock("install")
