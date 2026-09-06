@@ -2,6 +2,15 @@
 
 本檔案記錄 `ys-codebase` 專案的所有高階功能、規範與架構變更。以開發計畫 (Dev Plan) 目錄名稱為版本區分單位。
 
+## 2026_09_06_1105_knowledge_db_windows_daemon_fix (Completed)
+
+- **knowledge-db Windows 守護進程啟動失敗、進程誤殺與降級架構清理 (`fast_track_plan.md`)**：
+  - **Win32 原生 API 存活探測與終止**：在 `daemon.py` 針對 Windows 平台全面切換為 Win32 原生 API (`kernel32.OpenProcess` 搭配 `kernel32.GetExitCodeProcess` 檢查 `STILL_ACTIVE = 259`；`kernel32.TerminateProcess` 終止進程)，徹底根絕跨控制台發送 Ctrl+C 導致的 Detached 進程崩潰 (WinError 87) 與控制台廣播 `KeyboardInterrupt` 誤殺。
+  - **完全刪除快取降級回補**：徹底移除 `get_cache_dir` 內部的舊路徑降級搜尋與 `root / ".cache"` 兜底，剛性收斂為 `core.uri.resolve("cache://knowledge-db")`，杜絕版控目錄污染。
+  - **yscb.py 唯一入口收斂**：守護進程啟動強制以 `yscb.py` 為唯一入口，刪除退回調用 `cli.py` 之非標準分支。
+  - **即時日誌 Flush (`FlushingFileHandler`)**：引入 `FlushingFileHandler` 確保背景進程異常退出時所有錯誤訊息即時完整落盤。
+  - **模板同步與品質驗證**：補齊 `configurable/config.local.json` 模板；全模組 148/148 單元與邊界測試 100% 通過。
+
 ## 2026_09_05_1450_knowledge_db_benchmark_evaluation (Completed)
 
 - **Knowledge-DB 雙基準測試綜合評估與審計報告 (`R01_knowledge_db_benchmark_research.md`)**：
