@@ -9,6 +9,7 @@ import os
 import json
 from typing import Optional, List, Dict, Any
 from core.pip_manager import PipManager
+from core import vfs
 
 
 class IdeProjector:
@@ -58,10 +59,10 @@ class IdeProjector:
         settings_path = os.path.join(vscode_dir, "settings.json")
 
         settings: Dict[str, Any] = {}
-        if os.path.isfile(settings_path):
+        if vfs.is_file(settings_path):
             try:
-                with open(settings_path, "r", encoding="utf-8") as f:
-                    settings = json.load(f)
+                data = vfs.read_json(settings_path)
+                settings = data if isinstance(data, dict) else {}
             except Exception:
                 # 若檔案存在但格式非標準 JSON，為防破壞原檔，暫不覆蓋或安全略過
                 settings = {}
@@ -144,19 +145,10 @@ class IdeProjector:
         }
 
         # 5. 原子寫入
-        tmp_settings = settings_path + ".tmp"
         try:
-            with open(tmp_settings, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=2, ensure_ascii=False)
-                f.write("\n")
-            os.replace(tmp_settings, settings_path)
+            vfs.write_json(settings_path, settings, indent=2, atomic=True)
             return True
         except Exception:
-            if os.path.exists(tmp_settings):
-                try:
-                    os.remove(tmp_settings)
-                except Exception:
-                    pass
             return False
 
     def revert_vscode_settings(self, proj_root: str) -> bool:
@@ -167,12 +159,13 @@ class IdeProjector:
             return False
 
         settings_path = os.path.join(proj_root, ".vscode", "settings.json")
-        if not os.path.isfile(settings_path):
+        if not vfs.is_file(settings_path):
             return False
 
         try:
-            with open(settings_path, "r", encoding="utf-8") as f:
-                settings = json.load(f)
+            settings = vfs.read_json(settings_path)
+            if not isinstance(settings, dict):
+                return False
         except Exception:
             return False
 
@@ -203,12 +196,8 @@ class IdeProjector:
                 settings[sec].pop(pattern, None)
 
         # 寫回
-        tmp_settings = settings_path + ".tmp"
         try:
-            with open(tmp_settings, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=2, ensure_ascii=False)
-                f.write("\n")
-            os.replace(tmp_settings, settings_path)
+            vfs.write_json(settings_path, settings, indent=2, atomic=True)
             return True
         except Exception:
             return False

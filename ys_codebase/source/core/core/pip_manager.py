@@ -11,6 +11,7 @@ import venv
 import platform
 import subprocess
 from typing import Optional, List, Dict, Any
+from core import vfs
 
 
 class PipInstallError(RuntimeError):
@@ -194,17 +195,15 @@ class PipManager:
 
         # 驗證並加固 pyvenv.cfg (EC-01 / NFR-01)
         cfg_path = os.path.join(venv_dir, "pyvenv.cfg")
-        if os.path.isfile(cfg_path):
+        if vfs.is_file(cfg_path):
             try:
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    content = f.read()
+                content = vfs.read_text(cfg_path)
                 if "include-system-site-packages = true" in content:
                     content = content.replace(
                         "include-system-site-packages = true",
                         "include-system-site-packages = false",
                     )
-                    with open(cfg_path, "w", encoding="utf-8") as f:
-                        f.write(content)
+                    vfs.write_text(cfg_path, content, atomic=True)
             except Exception:
                 pass
 
@@ -239,10 +238,9 @@ class PipManager:
         new_block = "\n".join(block_lines)
 
         content = ""
-        if os.path.isfile(gi_path):
+        if vfs.is_file(gi_path):
             try:
-                with open(gi_path, "r", encoding="utf-8") as f:
-                    content = f.read()
+                content = vfs.read_text(gi_path)
             except Exception:
                 pass
 
@@ -255,8 +253,7 @@ class PipManager:
 
         if final_content != content:
             try:
-                with open(gi_path, "w", encoding="utf-8") as f:
-                    f.write(final_content)
+                vfs.write_text(gi_path, final_content, atomic=True)
             except Exception:
                 pass
 

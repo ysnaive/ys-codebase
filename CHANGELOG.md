@@ -2,6 +2,15 @@
 
 ## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
 
+### sub_02_core_vfs_unified_virtual_file_system (Verified)
+- **微內核統一虛擬檔案系統 (core.vfs) 落地與語意 URI 單向解耦**：
+  - **VFS 與 URI 單向依賴純淨解耦**：`core.uri` 定位為純字串定址協議 SSOT，完全不反向相依於 `core.vfs`；`core.vfs` 作為生態系唯一微內核檔案存取中樞，單向相依於 `core.uri.resolve` 將語意 URI 解析為實體路徑。`core.uri` 原有之 IO helpers 向上相容無損轉發至 `core.vfs`。
+  - **後端插槽化抽象與 OSBackend 實作**：於 `core/core/vfs/` 定義 `VFSBackend` 抽象介面並實作具體 `OSBackend`，涵蓋跨平台路徑規範化、目錄穿越防逃逸邊界檢核（`assert_safe_path`），並預留未來 `MemoryBackend` 擴充插槽。
+  - **同分區原子寫入防護 (`atomic_write`)**：在目標檔案同級目錄生成隱藏暫存檔，寫入並呼叫 `flush` 與 `os.fsync` 後調用 `os.replace` 原子覆蓋，徹底防止跨磁區掛載引發之 `EXDEV` 錯誤與斷電半寫入損毀。
+  - **物件導向 VirtualPath 介面**：實作 `VirtualPath`，支援類似 pathlib.Path 的 `/` 路徑拼接運算子、鏈式方法調用與語意 URI 串接。
+  - **全生態系 AST 原生檔案讀寫掃描與平滑遷移**：研發 `scripts/scan_native_io.py` 工具盤點模組 229 個原生 IO 點；完成 `core` 模組內部原生讀寫自舉遷移（原生 open 降至 2 處 fallback），並平滑升級 `agents-workflow`、`dev` 與 `knowledge-db` 核心檔案存取點。
+  - **全模組 100% 測試守門**：全生態系 4 大模組共 445 個單元測試 100% 通過（`agents-workflow`: 74, `core`: 130, `dev`: 81, `knowledge-db`: 160）。
+
 ### sub_01_cli_dispatch_and_core_guard_sdk (Verified)
 - **生態系 CLI 串接協議重構與微內核守門 SDK (Core Guard Dispatch)**：
   - **Core 守門 SDK (`core.guard.guard_dispatch`)**：建立生態系通用守門 SDK，模組 CLI 函式首行調用；自動驗證 `YSCB_HOST_DISPATCH_TOKEN` 與宿主環境，攔截非法繞道調用並輸出標準指令引導與 Exit Code 126 熔斷，支援 `YSCB_TESTING=1` 測試模式豁免。
