@@ -230,15 +230,15 @@ def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
     Reads contributed URI schemes from merged cache.
     """
     merged_cfg = os.path.join(yscb_dir, ".cache", "core", "contributes.merged.json")
-    if os.path.isfile(merged_cfg):
-        try:
-            with open(merged_cfg, "r", encoding="utf-8") as f:
-                data = json.load(f)
+    try:
+        from core import vfs
+        if vfs.is_file(merged_cfg):
+            data = vfs.read_json(merged_cfg)
             schemes = data.get("uri_schemes", [])
             if isinstance(schemes, list) and len(schemes) > 0:
                 return schemes
-        except Exception:
-            pass
+    except Exception:
+        pass
     return _BOOTSTRAP_FALLBACK_SCHEMES
 
 
@@ -357,12 +357,13 @@ def reconcile_undefined_uri(
             
             # 定位設定檔並寫入
             mod_proj_cfg = os.path.join(yscb_dir, "config", provider_name, "config.project.json")
-            os.makedirs(os.path.dirname(mod_proj_cfg), exist_ok=True)
+            from core import vfs
             cfg_data = {}
-            if os.path.isfile(mod_proj_cfg):
+            if vfs.is_file(mod_proj_cfg):
                 try:
-                    with open(mod_proj_cfg, "r", encoding="utf-8") as f:
-                        cfg_data = json.load(f)
+                    cfg_data = vfs.read_json(mod_proj_cfg)
+                    if not isinstance(cfg_data, dict):
+                        cfg_data = {}
                 except Exception:
                     cfg_data = {}
             
@@ -375,15 +376,14 @@ def reconcile_undefined_uri(
                 curr = curr[k]
             curr[keys[-1]] = input_val
             
-            with open(mod_proj_cfg, "w", encoding="utf-8") as f:
-                json.dump(cfg_data, f, indent=2, ensure_ascii=False)
+            vfs.write_json(mod_proj_cfg, cfg_data, indent=2, atomic=True)
             
             print(f"[{provider_name}] 已成功寫入設定檔: '{binding_key}' = '{input_val}'")
             
             # 若實體目錄不存在，自動建立
-            if not os.path.exists(resolved_target):
+            if not vfs.exists(resolved_target):
                 try:
-                    os.makedirs(resolved_target, exist_ok=True)
+                    vfs.makedirs(resolved_target, exist_ok=True)
                     print(f"[{provider_name}] 目錄不存在，已自動建立: {resolved_target}")
                 except Exception:
                     pass
@@ -606,106 +606,74 @@ def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
     return norm
 
 
-# --- First-Class VFS IO Helpers ---
+# --- VFS Delegated IO Helpers (Backward Compatibility) ---
 
-def exists(uri: str) -> bool:
-    try:
-        p = resolve(uri, interactive=False)
-        return os.path.exists(p)
-    except Exception:
-        return False
+def exists(uri_or_path: str) -> bool:
+    """檢查 URI 或路徑是否存在 (委派至 core.vfs)。"""
+    from core import vfs
+    return vfs.exists(uri_or_path)
 
-def isfile(uri: str) -> bool:
-    try:
-        p = resolve(uri, interactive=False)
-        return os.path.isfile(p)
-    except Exception:
-        return False
+def isfile(uri_or_path: str) -> bool:
+    """檢查 URI 或路徑是否為檔案 (委派至 core.vfs)。"""
+    from core import vfs
+    return vfs.is_file(uri_or_path)
 
 is_file = isfile
 
-def isdir(uri: str) -> bool:
-    try:
-        p = resolve(uri, interactive=False)
-        return os.path.isdir(p)
-    except Exception:
-        return False
+def isdir(uri_or_path: str) -> bool:
+    """檢查 URI 或路徑是否為目錄 (委派至 core.vfs)。"""
+    from core import vfs
+    return vfs.is_dir(uri_or_path)
 
 is_dir = isdir
 
-def remove(uri_str: str) -> None:
-    try:
-        p = resolve(uri_str, interactive=False)
-        if os.path.isdir(p):
-            shutil.rmtree(p)
-        elif os.path.exists(p):
-            os.remove(p)
-    except Exception:
-        pass
+def remove(uri_or_path: str) -> None:
+    """刪除指定 URI 或路徑 (委派至 core.vfs)。"""
+    from core import vfs
+    vfs.remove(uri_or_path, missing_ok=True)
 
-def read_text(uri: str, encoding: str = "utf-8") -> str:
-    p = resolve(uri, interactive=False)
-    with open(p, "r", encoding=encoding) as f:
-        return f.read()
+def read_text(uri_or_path: str, encoding: str = "utf-8") -> str:
+    """讀取純文字內容 (委派至 core.vfs)。"""
+    from core import vfs
+    return vfs.read_text(uri_or_path, encoding=encoding)
 
-def write_text(uri: str, content: str, encoding: str = "utf-8") -> None:
-    p = resolve(uri, interactive=False)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w", encoding=encoding) as f:
-        f.write(content)
+def write_text(uri_or_path: str, content: str, encoding: str = "utf-8") -> None:
+    """寫入純文字內容 (委派至 core.vfs，預設 atomic 防護)。"""
+    from core import vfs
+    vfs.write_text(uri_or_path, content, encoding=encoding, atomic=True)
 
-def read_json(uri: str, encoding: str = "utf-8") -> Any:
-    p = resolve(uri, interactive=False)
-    with open(p, "r", encoding=encoding) as f:
-        return json.load(f)
+def read_json(uri_or_path: str, encoding: str = "utf-8") -> Any:
+    """讀取並解析 JSON 檔案 (委派至 core.vfs)。"""
+    from core import vfs
+    return vfs.read_json(uri_or_path, encoding=encoding)
 
-def write_json(uri: str, data: Any, indent: int = 2, encoding: str = "utf-8") -> None:
-    p = resolve(uri, interactive=False)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w", encoding=encoding) as f:
-        json.dump(data, f, indent=indent, ensure_ascii=False)
+def write_json(uri_or_path: str, data: Any, indent: int = 2, encoding: str = "utf-8") -> None:
+    """序列化並寫入 JSON 檔案 (委派至 core.vfs，預設 atomic 防護)。"""
+    from core import vfs
+    vfs.write_json(uri_or_path, data, indent=indent, encoding=encoding, atomic=True)
 
-def makedirs(uri: str, exist_ok: bool = True) -> None:
-    p = resolve(uri, interactive=False)
-    os.makedirs(p, exist_ok=exist_ok)
+def makedirs(uri_or_path: str, exist_ok: bool = True) -> None:
+    """遞迴建立目錄樹 (委派至 core.vfs)。"""
+    from core import vfs
+    vfs.makedirs(uri_or_path, exist_ok=exist_ok)
 
-def listdir(uri: str) -> List[str]:
-    p = resolve(uri, interactive=False)
-    return os.listdir(p)
-
-def _safe_copytree(src: str, dst: str) -> None:
-    os.makedirs(dst, exist_ok=True)
-    seen_lower = set()
-    for item in sorted(os.listdir(src)):
-        if item.lower() in seen_lower:
-            continue
-        seen_lower.add(item.lower())
-        s = os.path.join(src, item)
-        d = os.path.join(dst, item)
-        if os.path.isdir(s):
-            _safe_copytree(s, d)
-        else:
-            shutil.copy2(s, d)
-
+def listdir(uri_or_path: str) -> List[str]:
+    """列舉目錄子項目 (委派至 core.vfs)。"""
+    from core import vfs
+    return vfs.listdir(uri_or_path)
 
 def copy(src_uri: str, dst_uri: str) -> None:
-    src_p = resolve(src_uri, interactive=False)
-    dst_p = resolve(dst_uri, interactive=False)
-    if os.path.isdir(src_p):
-        if os.path.exists(dst_p):
-            shutil.rmtree(dst_p, ignore_errors=True)
-        _safe_copytree(src_p, dst_p)
-    else:
-        os.makedirs(os.path.dirname(dst_p), exist_ok=True)
-        shutil.copy2(src_p, dst_p)
+    """複製檔案或目錄 (委派至 core.vfs)。"""
+    from core import vfs
+    vfs.copy(src_uri, dst_uri)
 
 def move(src_uri: str, dst_uri: str) -> None:
-    src_p = resolve(src_uri, interactive=False)
-    dst_p = resolve(dst_uri, interactive=False)
-    os.makedirs(os.path.dirname(dst_p), exist_ok=True)
-    shutil.move(src_p, dst_p)
+    """移動檔案或目錄 (委派至 core.vfs)。"""
+    from core import vfs
+    vfs.move(src_uri, dst_uri)
 
-def rmtree(uri: str) -> None:
-    p = resolve(uri, interactive=False)
-    if os.path.exists(p):
-        shutil.rmtree(p, ignore_errors=True)
+def rmtree(uri_or_path: str) -> None:
+    """遞迴刪除目錄樹 (委派至 core.vfs)。"""
+    from core import vfs
+    vfs.rmtree(uri_or_path, ignore_errors=True)
+
