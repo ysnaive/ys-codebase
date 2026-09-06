@@ -121,10 +121,18 @@ def main(argv: List[str]) -> int:
                 return 0
 
             elif action == "start":
-                ok = HotReloadServer.ensure_running(workspace_root=workspace_root)
+                console_opt: Optional[bool] = None
+                if "--console" in sub_argv:
+                    console_opt = True
+                elif "--no-console" in sub_argv:
+                    console_opt = False
+
+                ok = HotReloadServer.ensure_running(workspace_root=workspace_root, enable_console=console_opt)
                 if ok:
                     st = HotReloadServer.status(workspace_root=workspace_root)
-                    print(f"[knowledge-db:daemon] 守護進程已在背景啟動 (PID: {st.get('pid')})。")
+                    is_con = console_opt if console_opt is not None else HotReloadServer.resolve_console_enabled(workspace_root)
+                    mode_str = " (可見視窗模式)" if is_con else ""
+                    print(f"[knowledge-db:daemon] 守護進程已啟動{mode_str} (PID: {st.get('pid')})。")
                     if st.get("log_file"):
                         print(f"  日誌檔案: {st.get('log_file')}")
                     return 0

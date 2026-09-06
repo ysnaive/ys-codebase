@@ -86,12 +86,24 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         )
         self.assertEqual(cfg.embedding_model, custom_model)
 
-        # 2. 非法或不存在之模型平滑處理 (EC-01)
+        # 2. 驗證縮寫與別名自動補全 (如 'bge-small-zh-v1.5' -> 'BAAI/bge-small-zh-v1.5')
+        cfg_short = KnowledgeDBConfig.load(
+            local_config={"knowledge-db": {"embedding_model": "bge-small-zh-v1.5"}}
+        )
+        self.assertEqual(cfg_short.embedding_model, "BAAI/bge-small-zh-v1.5")
+        self.assertEqual(EmbeddingService.normalize_model_name("bge-small-zh-v1.5"), "BAAI/bge-small-zh-v1.5")
+        self.assertEqual(EmbeddingService.normalize_model_name("BAAI/bge-small-zh-v1.5"), "BAAI/bge-small-zh-v1.5")
+        self.assertEqual(
+            EmbeddingService.normalize_model_name("paraphrase-multilingual-MiniLM-L12-v2"),
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        )
+
+        # 3. 非法或不存在之模型平滑處理 (EC-01)
         srv = EmbeddingService(model_name="nonexistent/fake-model-xyz", mock_mode=True)
         self.assertIsNotNone(srv)
         self.assertEqual(srv.model_name, "nonexistent/fake-model-xyz")
 
-        # 3. 驗證支援清單查詢介面存在且不拋錯
+        # 4. 驗證支援清單查詢介面存在且不拋錯
         models = EmbeddingService.list_supported_models()
         self.assertIsInstance(models, list)
         self.assertTrue(len(models) > 0)
