@@ -526,6 +526,12 @@ class TestHotReloadServer(YSCBTestCase):
         md_file = self.root_path / "custom" / "doc.md"
         self.assertFalse(server.is_path_watched(md_file))
 
+        # 情境 F: 位於 workspace_root 但非 Space include 根目錄之檔案嚴格過濾 (杜絕防抖空轉)
+        other_dir = self.root_path / "other"
+        other_dir.mkdir(parents=True, exist_ok=True)
+        self.assertFalse(server.is_path_watched(other_dir / "config.json"))
+        self.assertFalse(server.is_path_watched(self.root_path / ".vscode" / "settings.json"))
+
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -596,5 +602,138 @@ class TestHotReloadServer(YSCBTestCase):
         )
         self.assertFalse(res.patched)
         self.assertIsNone(mock_pipeline._unified_index)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ensure_running_four_tier_safeguards(self):
+        """FT-15: 驗證 ensure_running 四層進程防護 (Tier 1 預註冊, Tier 2 daemon.lock, Tier 3 超時熔斷處決, Tier 4 單例不重啟)"""
+        from knowledge_db.daemon import DaemonLock
+
+        lock_file = HotReloadServer.get_lock_file(self.root_path)
+        pid_file = HotReloadServer.get_pid_file(self.root_path)
+
+        # 1. 驗證 DaemonLock 互斥鎖正常工作
+        with DaemonLock(lock_file) as lk1:
+            self.assertIsNotNone(lk1.fd)
+
+        # 2. 驗證 ensure_running 啟動子進程時之 Tier 1 預註冊與單例保護
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            mock_proc.poll.return_value = None
+            mock_proc.communicate.return_value = (b"", b"")
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
+
+            names, current_sig = HotReloadServer.get_current_spaces_signature(workspace_root=self.root_path)
+            calls = 0
+            ready_info = DaemonInfo(
+                pid=12345,
+                start_time=time.time(),
+                version=HotReloadServer.get_module_version(),
+                workspace_root=str(self.root_path),
+                log_file="",
+                spaces=names,
+                spaces_signature=current_sig,
+                status="ready",
+            )
+
+            def _fake_is_running(root):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return False, None
+                return True, ready_info
+
+            with patch.object(HotReloadServer, "is_running", side_effect=_fake_is_running):
+                with patch.object(HotReloadServer, "is_pid_alive", return_value=True):
+                    res = HotReloadServer.ensure_running(self.root_path)
+                    self.assertTrue(res)
+                    mock_popen.assert_called_once()
+
+                    # 驗證 PID 檔案存在且包含 pid 12345
+                    self.assertTrue(pid_file.is_file())
+
+                    # 連續執行第二次 ensure_running (驗證單例保護：不得再次 Popen)
+                    mock_popen.reset_mock()
+                    res2 = HotReloadServer.ensure_running(self.root_path)
+                    self.assertTrue(res2)
+                    mock_popen.assert_not_called()
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ensure_running_timeout_hard_kill(self):
+        """FT-16: 驗證 ensure_running 在子進程逾時未進入 ready 時發動 Tier 3 剛性強殺並清理 PID 檔"""
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.pid = 99988
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+
+            with patch.object(HotReloadServer, "kill_process_tree") as mock_kill:
+                calls = 0
+                def _fake_is_running(root):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        return False, None
+                    return True, DaemonInfo(
+                        pid=99988,
+                        start_time=time.time(),
+                        version=HotReloadServer.get_module_version(),
+                        workspace_root=str(self.root_path),
+                        log_file="",
+                        status="starting",
+                    )
+
+                with patch.object(HotReloadServer, "is_running", side_effect=_fake_is_running):
+                    with patch("time.sleep", return_value=None):
+                        res = HotReloadServer.ensure_running(self.root_path)
+                        self.assertFalse(res)
+                        mock_kill.assert_called_with(99988)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_stop_invokes_kill_process_tree(self):
+        """FT-17: 驗證 HotReloadServer.stop() 透過 kill_process_tree 強制終止進程樹並清理 PID 檔"""
+        pid_file = HotReloadServer.get_pid_file(self.root_path)
+        info = DaemonInfo(
+            pid=77777,
+            start_time=time.time(),
+            version=HotReloadServer.get_module_version(),
+            workspace_root=str(self.root_path),
+            log_file="",
+            status="ready",
+        )
+        HotReloadServer.write_pid_info(self.root_path, info)
+        self.assertTrue(pid_file.is_file())
+
+        with patch.object(HotReloadServer, "is_running", return_value=(True, info)):
+            with patch.object(HotReloadServer, "kill_process_tree") as mock_kill:
+                with patch.object(HotReloadServer, "is_pid_alive", return_value=False):
+                    res = HotReloadServer.stop(self.root_path)
+                    self.assertTrue(res)
+                    mock_kill.assert_called_with(77777)
+                    self.assertFalse(pid_file.is_file())
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_get_daemon_executable_high_recognizability(self):
+        """FT-18: 驗證 get_daemon_executable 建立具備高辨識度名稱之專用可執行檔"""
+        exe_path = HotReloadServer.get_daemon_executable(self.root_path)
+        self.assertTrue(os.path.isfile(exe_path))
+        if sys.platform == "win32":
+            self.assertTrue(exe_path.endswith("yscb-knowledge-db-daemon.exe"))
+        else:
+            self.assertTrue(exe_path.endswith("yscb-knowledge-db-daemon"))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_set_process_title_cross_platform(self):
+        """FT-19: 驗證 set_process_title 跨平台標題設置安全無例外執行"""
+        HotReloadServer.set_process_title("test: test-daemon")
         self.mark_passed()
 
