@@ -11,6 +11,21 @@
 
 ## 2026_09_07_0831_quality_update (In Progress)
 
+### sub_03_contributes_schema_and_rigid_validation (Verified)
+- **Contributes 依賴注入宣告架構升級、輕量 Schema DSL 剛性驗證與全生態系契約落地**：
+  - **純標準庫輕量 Schema DSL (`core.validator.ContributesValidator`)**：零第三方依賴（嚴禁 pydantic / jsonschema），支援結構化型別標記（`str!`, `int?`, `bool? = false`）、受限列舉（`enum(a, b)`）、通配映射（`"*"`）、遞迴指針（`$TypeName`）與型別別名（`_types`）。
+  - **智能拼寫診斷 (Did you mean)**：內建 Levenshtein 距離演算法，鍵名或列舉值拼寫相近時主動提示相近合法鍵名，大幅降低第三方整合認知摩擦。
+  - **核心 CLI 指令與 Public SDK**：新增 `contributes list` 列出全生態系註冊之擴充點清冊；新增 `contributes check`（支援全庫掃描、單檔檢查、語意 URI 與 `--format` 模式）；導出 Public SDK `get_format()`, `validate()`, `list_points()`。
+  - **單向邊界剛性阻斷 (Strict Egress, Tolerant Ingress)**：`dev check` 與 `contributes check` 實施靜態合規阻斷，攔截未宣告擴充點、型別錯誤與跨目標越權注入；運行期 `ContributesAggregator` 採容錯防禦，記錄錯誤但保留動態欄位相容測試 JIT 快照。
+  - **5 大模組生態系契約落地與腳手架升級**：`core`, `server`, `dev`, `agents-workflow`, `knowledge-db` 全面建立 `_format.json`（Ingress 契約）與 `_manifest.md`（Egress 導覽手冊）；`dev create` 自動預置契約檔案；清理舊 `phases` 殘留欄位。
+  - **全套測試 100% 通過**：新增 FT-01~08 單元/整合測試，全生態系 5 大模組 441/441 測試全數綠燈（Fail: 0）；實機 UX 驗收通過。
+
+### sub_02_all_modules_cli_migration_and_legacy_removal (Verified)
+- **全模組 CLI 精確命令合約遷移與向後相容過渡層徹底清除**：
+  - **全領域模組全面遷移**：`dev`, `knowledge-db`, `agents-workflow` 全面改寫為 `def <cmd_name>(cmd_bags: CmdBags) -> int` 活躍執行合約，移除 `argparse` 與自製參數解析。
+  - **向後相容過渡層剛性清除**：在全模組遷移完成後，徹底刪除 `core.commands` 內部對舊版 `mod.process(args)` 的退化相容代碼，全生態系 100% 封閉舊合約，實現零技術債留存。
+  - **全套測試 100% 通過**：全模組單元測試與契約測試全數通過，實機 UX 驗收通過。
+
 ### sub_01_core_commands_and_dispatch_architecture (Verified)
 - **core.commands 活躍執行合約、PEP 562 Lazy Loading、雙管道派發與同構遞迴指令樹重構**：
   - **微內核延遲載入 (PEP 562 Lazy Exports)**：淨化 `core/__init__.py` 頂層 eager imports，改以 `__getattr__` 按需加載，將 `core` 冷啟動導入耗時由 ~77ms 降至 <1ms，徹底消除不必要之重型模組加載。

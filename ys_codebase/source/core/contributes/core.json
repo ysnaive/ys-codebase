@@ -179,7 +179,7 @@
       "list": {
         "description": "List all installed modules, versions and providers",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "options": {
           "scope": {
             "remote": {
@@ -209,7 +209,7 @@
       "status": {
         "description": "Health check and runtime diagnostic report",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "options": {},
         "usage": {
           "pros": [
@@ -253,12 +253,12 @@
       "uri": {
         "description": "Manage and resolve YSCB canonical semantic URIs",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "cmd": {
           "list": {
             "description": "List all registered semantic URI schemes",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "options": {},
             "usage": {
               "pros": [
@@ -270,7 +270,7 @@
           "resolve": {
             "description": "Resolve semantic URI to absolute physical path",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "args": {
               "uri": {
                 "description": "Semantic URI string to resolve (e.g. project://AGENTS.md)",
@@ -288,7 +288,7 @@
           "to-uri": {
             "description": "Convert absolute physical path to semantic URI",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "args": {
               "path": {
                 "description": "Absolute filesystem path to convert",
@@ -306,7 +306,7 @@
           "check": {
             "description": "Health check all registered URI schemes",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "options": {},
             "usage": {
               "pros": [
@@ -326,12 +326,12 @@
       "config": {
         "description": "YS-Codebase module configuration manager",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "cmd": {
           "list": {
             "description": "List module configurations",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "options": {
               "output_format": {
                 "json": {
@@ -367,7 +367,7 @@
           "get": {
             "description": "Get effective configuration value",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "args": {
               "module": {
                 "description": "Target module name",
@@ -396,7 +396,7 @@
           "set": {
             "description": "Set configuration value",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "args": {
               "module": {
                 "description": "Target module name",
@@ -429,7 +429,7 @@
           "reload": {
             "description": "Reload cached configuration",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "args": {
               "module": {
                 "description": "Target module name to reload (default: all)",
@@ -474,12 +474,12 @@
       "event": {
         "description": "Ecosystem Event Registry and Inspector",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "cmd": {
           "list": {
             "description": "List all registered events and hooks in the ecosystem",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "options": {},
             "usage": {
               "pros": [
@@ -492,6 +492,63 @@
         "usage": {
           "pros": [
             "檢視全系統已註冊之生命週期事件"
+          ],
+          "cons": []
+        }
+      },
+      "contributes": {
+        "description": "Contributes schema validation and inspection manager",
+        "tier": "safe",
+        "server_compatible": true,
+        "cmd": {
+          "list": {
+            "description": "List all registered contribute points across ecosystem",
+            "tier": "safe",
+            "server_compatible": true,
+            "options": {
+              "filter": {
+                "module": {
+                  "description": "Filter by target module name",
+                  "alias": ["m"]
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視全系統或特定模組目前開放的擴充點契約: python yscb.py contributes list [--module=<mod>]"
+              ],
+              "cons": []
+            }
+          },
+          "check": {
+            "description": "Rigidly validate module contributes definitions against format schemas",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "target_or_uri": {
+                "description": "Target module name or semantic URI (e.g. module.source://dev/contributes/core.json)",
+                "required": false
+              }
+            },
+            "options": {
+              "mode": {
+                "format": {
+                  "description": "Validate _format.json schema itself (Meta-Check)",
+                  "alias": ["f"]
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢查模組貢獻格式與邊界合法性: python yscb.py contributes check [<module> | <file_uri>]"
+              ],
+              "cons": []
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "Contributes 擴充宣告與 Schema 剛性檢驗管理"
           ],
           "cons": []
         }

@@ -159,8 +159,11 @@ def _try_hot_dispatch(module_name: str, cmd_name: str, args: List[str], yscb_abs
 def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
     """
     在背景非同步按需拉起 Server 守護進程。
-    僅在 server 模組存在、非 server/dev 指令、且 config/server/config.project.json enable != false 時觸發。
+    僅在 server 模組存在、非 server/dev 指令、非測試環境、且 config/server/config.project.json enable != false 時觸發。
     """
+    if os.environ.get("YSCB_TESTING") == "1" or os.environ.get("YSCB_TEST_SANDBOX") == "1":
+        return
+
     state_file = os.path.join(yscb_abs, ".cache", "server", "daemon.json")
     if os.path.isfile(state_file):
         try:
@@ -368,6 +371,11 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         argv = sys.argv[1:]
 
     host_dir, yscb_abs = _get_yscb_root()
+    if "YSCB_HOST_DIR" not in os.environ:
+        os.environ["YSCB_HOST_DIR"] = host_dir
+    if "YSCB_HOST_DISPATCH_TOKEN" not in os.environ:
+        os.environ["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"
+
     registry = _load_registry(yscb_abs)
 
     # 1. 空參數或全域 --help
