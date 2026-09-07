@@ -411,6 +411,40 @@ def event(cmd_bags: CmdBags) -> int:
         return 1
 
 
+def contributes_list(cmd_bags: CmdBags) -> int:
+    """List registered contribute points."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    from core.commands import contributes_cmd
+    mod_filter = cmd_bags.get_option_value("module") or cmd_bags.get_option_value("m")
+    if not mod_filter and cmd_bags.args:
+        mod_filter = cmd_bags.args[0]
+    return contributes_cmd.list_contributes(mod_filter)
+
+
+def contributes_check(cmd_bags: CmdBags) -> int:
+    """Check contributes against schema."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    from core.commands import contributes_cmd
+    target = cmd_bags.args[0] if cmd_bags.args else None
+    is_format = cmd_bags.has_option("format")
+    return contributes_cmd.check_contributes(target, is_format_check=is_format)
+
+
+def contributes(cmd_bags: CmdBags) -> int:
+    """Contributes Schema Validation and Inspection Manager (Group Dispatcher)."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    sub_cmd = cmd_bags.args[0] if cmd_bags.args else "list"
+    if sub_cmd == "list":
+        return contributes_list(cmd_bags)
+    elif sub_cmd == "check":
+        return contributes_check(cmd_bags)
+    else:
+        return contributes_cmd.cmd(cmd_bags)
+
+
 # Legacy test compatibility aliases
 def cmd_config(cmd_bags: Any) -> int:
     return config(cmd_bags)
@@ -454,3 +488,7 @@ def cmd_restore(cmd_bags: Any) -> int:
 
 def cmd_event(cmd_bags: Any) -> int:
     return event(cmd_bags)
+
+
+def cmd_contributes(cmd_bags: Any) -> int:
+    return contributes(cmd_bags)

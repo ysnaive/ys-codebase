@@ -26,7 +26,7 @@
       "create": {
         "description": "Create a new module skeleton (source/<name>)",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "name": {
             "description": "Module name",
@@ -57,7 +57,7 @@
       "check": {
         "description": "Validate module structure and manifest compliance",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "module": {
             "description": "Module name to check (omit for all modules)",
@@ -89,7 +89,7 @@
       "build": {
         "description": "Build dev package (.build.zip with tests)",
         "tier": "conditional",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "module": {
             "description": "Module name to build (omit for all modules)",
@@ -173,7 +173,7 @@
       "release": {
         "description": "Package and release pure module (.zip to release/)",
         "tier": "gated",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "module": {
             "description": "Module name to release (omit for all modules)",
@@ -207,7 +207,7 @@
       "release-check": {
         "description": "Run 3-Gate verification on release readiness without packaging",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "module": {
             "description": "Module name to verify",
@@ -263,7 +263,7 @@
       "bump-major": {
         "description": "Increment module major version (X.0.0.0)",
         "tier": "gated",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "module": {
             "description": "Module name",
@@ -282,7 +282,7 @@
       "bump-minor": {
         "description": "Increment module minor version (x.Y.0.0)",
         "tier": "gated",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "module": {
             "description": "Module name",
@@ -301,7 +301,7 @@
       "bump-patch": {
         "description": "Increment module patch version (x.y.Z.0)",
         "tier": "gated",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "module": {
             "description": "Module name",
@@ -320,7 +320,7 @@
       "bump-revision": {
         "description": "Increment module build revision version (x.y.z.R)",
         "tier": "gated",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "module": {
             "description": "Module name",

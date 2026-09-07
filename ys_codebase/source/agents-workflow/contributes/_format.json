@@ -1,0 +1,55 @@
+{
+  "_types": {
+    "ExportAssetDef": {
+      "type": "enum(standard, workflow, template, skill)!",
+      "name": "str?",
+      "source": "str!",
+      "description": "str?"
+    },
+    "TokenAnchorDef": {
+      "value": "str?",
+      "name": "str?",
+      "description": "str?"
+    },
+    "ContentInsertDef": {
+      "type": "enum(uri, const, computed)? = const",
+      "token": "str!",
+      "value": "str!",
+      "mode": "enum(replace, below, above)? = replace"
+    },
+    "ReleaseTargetDef": {
+      "name": "str!",
+      "description": "str?",
+      "agents_md": "str?",
+      "projections": "dict[str, any]!"
+    }
+  },
+
+  "export": {
+    "description": "宣告導出供發布與物化投影之資產檔案（標準、工作流、模板、技能包）",
+    "format": [
+      "$ExportAssetDef"
+    ]
+  },
+
+  "token": {
+    "description": "宣告模板與工作流中可供其他模組掛載注入的語意 Token 錨點",
+    "format": [
+      "$TokenAnchorDef"
+    ]
+  },
+
+  "insert": {
+    "description": "宣告向特定 Token 錨點注入具體內容（支援 URI、常數文字與動態函式）",
+    "format": [
+      "$ContentInsertDef"
+    ]
+  },
+
+  "release_target": {
+    "description": "宣告 IDE 與特定工作環境之發布投影目標規則",
+    "format": [
+      "$ReleaseTargetDef"
+    ]
+  }
+}

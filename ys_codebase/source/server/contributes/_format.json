@@ -1,0 +1,17 @@
+{
+  "_types": {
+    "ServiceWorkerDef": {
+      "name": "str!",
+      "worker_class": "str!",
+      "description": "str?",
+      "auto_start": "bool? = true"
+    }
+  },
+
+  "services": {
+    "description": "向常駐 Server Worker 註冊背景微服務或檔案監聽 Worker",
+    "format": [
+      "$ServiceWorkerDef"
+    ]
+  }
+}

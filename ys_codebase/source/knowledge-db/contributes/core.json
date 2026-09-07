@@ -27,7 +27,7 @@
       "scan": {
         "description": "執行指定空間或全空間聯集增量指紋掃描",
         "tier": "conditional",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "space": {
             "description": "空間名稱 (若省略則掃描全空間)",
@@ -54,7 +54,7 @@
       "bundle": {
         "description": "執行指定空間或全空間聯集之多語言語意打包與導出",
         "tier": "conditional",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "space": {
             "description": "空間名稱 (若省略則打包全空間)",
@@ -81,7 +81,7 @@
       "index": {
         "description": "建置與快取指定空間或全空間聯集之多欄位倒排索引",
         "tier": "conditional",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "space": {
             "description": "空間名稱 (若省略則索引全空間)",

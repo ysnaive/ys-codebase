@@ -30,6 +30,7 @@
 | **DN-20** | 統一虛擬檔案系統 (core.vfs) 微內核與 URI 單向依賴、同目錄原子寫入 | `source/core/core/vfs/` | 🚨 CRITICAL |
 | **DN-21** | 宿主入口極簡瘦身、業務下沉至微內核與全域 Help 動態聚合引擎 | `yscb.py`<br/>`source/core/core/installer.py`<br/>`source/core/core/contributes.py` | 🚨 CRITICAL |
 | **DN-22** | 核心命令活躍合約、PEP 562 微內核延遲載入與對稱生命週期 Hook | `source/core/core/commands/`<br/>`source/core/core/__init__.py`<br/>`yscb.py` | 🚨 CRITICAL |
+| **DN-23** | Contributes 宣告式契約、輕量 Schema DSL 與剛性校驗引擎 | `source/core/core/validator.py`<br/>`source/core/core/contributes.py`<br/>`source/core/core/commands/contributes_cmd.py` | 🚨 CRITICAL |
 
 ---
 
@@ -246,5 +247,18 @@
   > [!IMPORTANT]
   > **先驅模組不得殘留 `process(args)` 函式；舊版相容過渡層為暫存債務，嚴禁在新開發模組中引入舊版合約！**
 
+---
 
+### [DN-23] Contributes 宣告式契約、輕量 Schema DSL 與剛性校驗引擎
 
+- **核心決策**：
+  1. **100% 純標準庫與輕量型別 DSL**：零第三方依賴（嚴禁 pydantic / jsonschema）。在 `core.validator` 內建型別 DSL 解析器，支援強型別標記（`str!`, `int?`, `bool? = false`）、受限集合（`enum(a, b)`）、通配鍵比對（`"*"`）、遞迴指標（`$TypeName`）與自訂型別別名清冊（`_types`）。
+  2. **單向依賴邊界與剛性阻斷 (Strict Egress, Tolerant Ingress)**：
+     - **Egress 靜態阻斷**：`contributes check` 與 `dev check` 對所有注入宣告實施剛性阻斷，攔截未宣告之擴充點（未知鍵）、型別不符以及跨目標越權注入。
+     - **Ingress 容錯防禦**：運行期 `ContributesAggregator` 進行動態快照聚合時，遇未知擴充點記錄錯誤但安全保留鍵值，避免阻斷既有動態擴充或測試環境 JIT 欄位。
+  3. **智能拼寫診斷 (Did you mean)**：內建輕量 Levenshtein 距離演算法，當鍵名或枚舉值出現相近拼寫錯誤時，主動給予具體糾錯建議，大幅降低第三方模組整合認知摩擦。
+  4. **全生態系 First-Class 語意契約**：各模組於 `contributes/` 內維持 `_format.json`（Ingress 契約）與 `_manifest.md`（Egress 導覽手冊），達成模組能力自描述與雙向契約閉環。
+- **背後考量**：傳統依賴注入缺乏形式化契約驗證，容易引發「無聲失效」、「運行期鍵名拼錯崩潰」與「跨模組越權污染」；透過輕量宣告式 DSL 與靜態/運行期雙重守門，在零依賴約束下實現企業級剛性架構治理。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 Core 微內核中引入任何外部驗證器依賴！模組擴充注入嚴格依賴 `_format.json` 契約宣告，禁止未經 Schema 註冊隨意跨模組注入私有資料！**
