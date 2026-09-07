@@ -8,6 +8,7 @@ single warm worker subprocess lifecycle, idle TTL auto-shutdown, and serialized 
 from dataclasses import asdict, dataclass
 import http.server
 import json
+import importlib
 import logging
 import os
 import platform
@@ -20,9 +21,28 @@ import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+logger = logging.getLogger(__name__)
+
 from core.platform import is_process_alive, kill_process_tree, InterProcessLock
 from server.service import ServiceManager
 from server.watcher import ModulesWatcher
+
+
+def _ensure_venv(yscb_root: str) -> None:
+    tag, sys_name = f"py{sys.version_info.major}{sys.version_info.minor}", platform.system()
+    sub = os.path.join(".venv", tag, "Lib", "site-packages") if sys_name == "Windows" else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+    site_pkg = os.path.join(yscb_root, sub)
+    if os.path.isdir(site_pkg) and site_pkg not in sys.path:
+        sys.path.insert(0, site_pkg)
+        pth = os.path.join(site_pkg, "host_venv.pth")
+        if os.path.isfile(pth):
+            try:
+                for line in open(pth, "r", encoding="utf-8", errors="ignore"):
+                    t = line.strip()
+                    if t and os.path.isdir(t) and t not in sys.path:
+                        sys.path.insert(0, t)
+            except Exception:
+                pass
 
 
 @dataclass
@@ -50,6 +70,7 @@ class MasterSupervisor:
         enable_watcher: bool = True,
     ) -> None:
         self.yscb_root = os.path.abspath(yscb_root)
+        _ensure_venv(self.yscb_root)
         self.idle_timeout_sec = idle_timeout_sec
         self.enable_watcher = enable_watcher
 
@@ -123,12 +144,47 @@ class MasterSupervisor:
         return os.getpid()
 
     def _discover_service_workers(self) -> None:
-        """Dynamically discovers and registers pluggable service workers from domain modules."""
+        """Dynamically discovers and registers pluggable service workers from domain modules via core SDK."""
         try:
-            from knowledge_db.service import KnowledgeDBServiceWorker
-            self.service_manager.register(KnowledgeDBServiceWorker(self.yscb_root))
-        except Exception:
-            pass
+            from core import contributes
+            server_contrib = contributes.get("server", default={})
+        except Exception as e:
+            logger.warning(f"[Server] Failed loading server contributes via core SDK: {e}")
+            return
+
+        services_config = server_contrib.get("services", [])
+        if isinstance(services_config, dict):
+            services_config = [services_config]
+
+        for item in services_config:
+            if not isinstance(item, dict):
+                continue
+            worker_cls_path = item.get("worker_class")
+            donor_mod = item.get("__provider__", "unknown")
+            name = item.get("name", f"{donor_mod}-worker")
+            desc = item.get("description", "")
+            if not worker_cls_path:
+                continue
+
+            for mod_cand in [
+                os.path.join(self.yscb_root, ".modules", donor_mod),
+                os.path.join(self.yscb_root, "source", donor_mod),
+            ]:
+                if os.path.isdir(mod_cand) and mod_cand not in sys.path:
+                    sys.path.insert(0, mod_cand)
+
+            try:
+                if ":" in worker_cls_path:
+                    mod_path, cls_name = worker_cls_path.split(":", 1)
+                else:
+                    mod_path, cls_name = worker_cls_path.rsplit(".", 1)
+                mod = importlib.import_module(mod_path)
+                cls = getattr(mod, cls_name)
+                worker_instance = cls(self.yscb_root)
+                self.service_manager.register(worker_instance, provider=donor_mod, description=desc)
+                logger.info(f"[Server Service] Registered worker '{name}' from module '{donor_mod}'")
+            except Exception as ex:
+                logger.warning(f"[Server Service] Failed to instantiate worker '{name}' from module '{donor_mod}': {ex}")
 
     def stop(self, force: bool = False) -> None:
         """Stops the master supervisor and all child workers."""

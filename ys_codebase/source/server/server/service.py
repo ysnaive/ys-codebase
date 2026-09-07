@@ -50,11 +50,21 @@ class ServiceManager:
 
     def __init__(self) -> None:
         self._services: Dict[str, BaseServiceWorker] = {}
+        self._metadata: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
 
-    def register(self, worker: BaseServiceWorker) -> None:
+    def register(
+        self,
+        worker: BaseServiceWorker,
+        provider: str = "core",
+        description: str = "",
+    ) -> None:
         with self._lock:
             self._services[worker.name] = worker
+            self._metadata[worker.name] = {
+                "provider": provider,
+                "description": description,
+            }
 
     def start_all(self, context: Dict[str, Any]) -> None:
         with self._lock:
@@ -76,9 +86,15 @@ class ServiceManager:
         status_list: List[Dict[str, Any]] = []
         with self._lock:
             for name, worker in self._services.items():
+                meta = self._metadata.get(name, {})
                 try:
                     alive = worker.health_check()
                 except Exception:
                     alive = False
-                status_list.append({"name": name, "alive": alive})
+                status_list.append({
+                    "name": name,
+                    "provider": meta.get("provider", "unknown"),
+                    "description": meta.get("description", ""),
+                    "alive": alive,
+                })
         return status_list

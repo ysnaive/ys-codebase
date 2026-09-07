@@ -475,3 +475,34 @@
   - 源碼徹底消除死碼 600+ 行，架構邊界純淨化。
   - 單元測試 140/140 PASSED (100%)，`dev check` 合規檢驗 100% PASSED。
 
+---
+
+### [DN-23] Watcher 背景接管自癒與前台搜尋 0ms 略過同步掃描
+
+- **背景與動機**：
+  - 歷史架構中，每次執行搜尋時前台管線（`Pipeline.search`）均會主動檢查是否有變更並觸發 JIT 掃描與同步重建。
+  - 當引入背景常駐 Watcher 時，前台同步掃描會與背景 Watcher 的 500ms 防抖修補發生競爭狀態（Race Condition），導致搜尋調用被無謂阻塞達 1.7 秒以上，違背常駐服務加速的初衷。
+- **架構決策與實作**：
+  1. **職責明確劃分**：
+     - 當背景 Watcher 啟動時，於 `.knowledge_db/indices/` 寫入常駐標記 `.watcher_active`。
+     - 前台搜尋管線探測到 `.watcher_active` 存在且無 dirty flag 時，前台 0ms 直接略過同步掃描與熱修補，100% 將磁碟變更自癒交由背景 Watcher 防抖執行。
+  2. **非阻塞記憶體快照就地重載**：
+     - 前台僅比對快照二進位檔案之微秒級 `mtime`；若背景已完成熱修補，前台僅在記憶體原地重載快照，檢索響應重回 sub-50ms 瞬發。
+- **效益與驗證**：
+  - 徹底消除前台與背景 Watcher 的防抖競態，前台查詢 0ms 阻塞。
+
+---
+
+### [DN-24] SpaceManager 空間路徑與 Contributes 記憶化快取加速 (_include_cache)
+
+- **背景與動機**：
+  - 實機量測 `knowledge-db status` 指令耗時高達 7.1 秒。經子操作 Profiling 剖析，瓶頸並非檔案快照反序列化或向量加載，而是 `status()` 計算各 Space 所屬檔案數量時，對 293 個快照檔案 x 3 個空間重複執行了 879 次 `_file_belongs_to_space`。
+  - 每次調用深入 `SpaceManager.resolve_space_include`，重複解析 `core.contributes.get("knowledge-db")` 並調用 `Path.resolve()` 2600+ 次。
+- **架構決策與實作**：
+  1. **記憶化快取 (`_include_cache`)**：
+     - 在 `SpaceManager` 引入 `self._include_cache: Dict[Tuple[str, tuple], List[Path]] = {}`。
+     - 首次解析 space 的 includes/excludes 清單後予以快取，同一次進程或生命週期內後續比對直接自記憶體提取已解析之絕對路徑。
+- **效益與驗證**：
+  - `knowledge-db status` 執行總耗時由 7.1 秒暴降至 0.14 秒，核心統計計算僅耗時 14 毫秒，效能提升達 50 倍以上。
+
+

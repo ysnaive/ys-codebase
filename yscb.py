@@ -99,7 +99,7 @@ def cmd_init(argv: List[str]) -> int:
 
 def _try_hot_dispatch(module_name: str, args: List[str], base_dir: str, yscb_root: str) -> Optional[int]:
     """管道 B：透過 Localhost HTTP 將指令熱派發至常駐 Server。"""
-    if module_name == "server": return None
+    if module_name in ("server", "dev", "core"): return None
     cfg_file = os.path.join(base_dir, yscb_root, "config", "server", "config.project.json")
     if os.path.isfile(cfg_file):
         try:
@@ -110,6 +110,14 @@ def _try_hot_dispatch(module_name: str, args: List[str], base_dir: str, yscb_roo
     if not os.path.isfile(state_file): return None
     try:
         with open(state_file, "r", encoding="utf-8") as f: state = json.load(f)
+        pid = state.get("pid")
+        if pid and hasattr(os, "kill"):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                try: os.remove(state_file)
+                except OSError: pass
+                return None
         port, token = state.get("port"), state.get("token")
         yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
         url, headers = f"http://127.0.0.1:{port}/api/dispatch", {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -235,7 +243,7 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
     hot_res = _try_hot_dispatch(module_name, args, base_dir, cfg["yscb_root"])
     if hot_res is not None: return hot_res
 
-    if module_name != "server": _maybe_auto_spawn_server(base_dir, cfg["yscb_root"])
+    if module_name not in ("server", "dev"): _maybe_auto_spawn_server(base_dir, cfg["yscb_root"])
 
     _ensure_private_venv_path(yscb_abs)
     target_cli = os.path.normpath(os.path.join(yscb_abs, ".modules", module_name, "scripts", "cli.py"))
