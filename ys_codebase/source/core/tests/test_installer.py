@@ -208,3 +208,23 @@ class TestCoreInstaller(YSCBTestCase):
         if os.path.isdir(target_dir):
             shutil.rmtree(target_dir)
         self.mark_passed()
+
+    def test_update_skips_build_version(self):
+        """TASK-06: 驗證 cmd_update 自動跳過 @build 開發中版本，防範降級覆蓋。"""
+        import io
+        from contextlib import redirect_stdout
+
+        self.installer.engine.act_register("mock_dev_mod", "1.0.0.build", "local")
+
+        f_out = io.StringIO()
+        with redirect_stdout(f_out):
+            res = self.installer.cmd_update("mock_dev_mod")
+        out = f_out.getvalue()
+
+        self.assertEqual(res, 0)
+        self.assertIn("is a development build", out)
+        self.assertIn("skipping update", out)
+
+        # Cleanup
+        self.installer.engine.act_unregister("mock_dev_mod")
+        self.mark_passed()

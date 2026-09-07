@@ -266,6 +266,12 @@ class Installer:
             for mod in targets:
                 cur_ver = installed.get(mod, {}).get("version", "1.0.0.0")
                 cur_t = semver.parse_semver(cur_ver)
+
+                # 🚨 守門防呆：若當前安裝為開發中之 @build 版本，嚴格略過更新，防範降級覆蓋
+                if cur_t.is_build or cur_ver == "build" or str(cur_ver).endswith(".build"):
+                    print(f"[core:update] Module '{mod}' is a development build (v{cur_ver}), skipping update.")
+                    continue
+
                 # Major Boundary Lock: constrain update within same major (e.g. ^1.0.0.0)
                 major_constraint = f"^{cur_t.major}.{cur_t.minor}.{cur_t.patch}"
                 latest_ver = cur_ver
@@ -274,7 +280,6 @@ class Installer:
                 candidate_dirs = [
                     os.path.join(provider_url, "release", mod),
                     os.path.join(provider_url, mod),
-                    os.path.join(provider_url, "build", mod)
                 ]
                 
                 found_versions: List[str] = []
@@ -287,8 +292,18 @@ class Installer:
                     ok, res = self.engine.act_fetch(provider_url, f"{mod}/index.json")
                     if ok and isinstance(res, dict) and "versions" in res:
                         found_versions = res["versions"]
+
+                # 過濾候選版本，排除任何 .build 開發版本
+                clean_versions: List[str] = []
+                for v in found_versions:
+                    try:
+                        vt = semver.parse_semver(v)
+                        if not vt.is_build and not str(v).endswith(".build"):
+                            clean_versions.append(v)
+                    except Exception:
+                        pass
                         
-                best_v = semver.find_best_version(found_versions, major_constraint)
+                best_v = semver.find_best_version(clean_versions, major_constraint)
                 if best_v:
                     latest_ver = best_v
 
