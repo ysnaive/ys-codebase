@@ -2,7 +2,7 @@
 
 > 計畫名稱：2026_09_06_1927_knowledge_db_architecture_consolidation  
 > 建立日期：2026-09-06  
-> 狀態：Draft  
+> 狀態：Completed  
 > Umbrella 模式：Incremental (增量演進型)  
 > 模板版本：v1.2  
 
@@ -44,5 +44,5 @@
 - [x] **里程碑 8**：完成 sub_08 Knowledge-DB 檢索性能極致加速與 Worker 單例化 (Phase 0~7)
 - [x] **里程碑 9**：完成 sub_09 架構技術債全數修復與模組邊界清理 (Phase 0~7)
 - [x] **里程碑 10**：完成 sub_10 Server 模組變更路徑熱重載雙軌分流與 Master 自重啟機制 (Phase 0~7)
-- [ ] **里程碑 11**：完成全模組生態系回歸驗證、統一發布至 v1.1.0 (server v1.0.0) 結案並恢復運行端
+- [x] **里程碑 11**：完成全模組生態系回歸驗證、自部署結案並恢復運行端
 
