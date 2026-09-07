@@ -2,7 +2,7 @@
 
 > 計畫名稱：品質更新 (Quality Update)  
 > 建立日期：2026-09-07  
-> 狀態：In Progress  
+> 狀態：Completed  
 > Umbrella 模式：Incremental (增量演進型)  
 > 模板版本：v1.2  
 
@@ -20,7 +20,7 @@
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_core_commands_and_dispatch_architecture` | Full Track | `Completed` | 1. `core/__init__.py` Lazy Loading 淨化<br/>2. `core.commands` 引擎實作（新 schema、正交校驗、CmdBags、Help 攔截、`server_compatible`）<br/>3. `yscb.py` 瘦身下沉（除 `init` 外全轉派 `core.commands`）<br/>4. 暫時性向後相容層（優先 `cmd(cmd_bags)`，fallback `process(args)`）<br/>5. `core` 與 `server` 先驅模組遷移驗證 |
-| **sub_02** | `sub_02_all_modules_cli_migration_and_legacy_removal` | Full Track | `Pending` | 1. 其餘領域模組全面遷移（`dev`, `knowledge-db`, `agents-workflow`）改寫為 `cmd(cmd_bags)`<br/>2. 🚨 **關鍵剛性守門：全面遷移完成後，徹底刪除 `core.commands` 內部向後相容過渡層，全生態系 100% 封閉舊 `process(args)` 契約** |
+| **sub_02** | `sub_02_all_modules_cli_migration_and_legacy_removal` | Full Track | `Completed` | 1. 其餘領域模組全面遷移（`dev`, `knowledge-db`, `agents-workflow`）改寫為 `cmd(cmd_bags)`<br/>2. 🚨 **關鍵剛性守門：全面遷移完成後，徹底刪除 `core.commands` 內部向後相容過渡層，全生態系 100% 封閉舊 `process(args)` 契約** |
 
 ---
 
@@ -44,4 +44,4 @@
 
 - [x] **里程碑 1**：完成 CLI 問題深入討論，確立 `core.commands` 與兩階段遷移架構
 - [x] **里程碑 2**：完成 sub_01（`core.commands` 核心架構、過渡相容層與先驅模組遷移）
-- [ ] **里程碑 3**：完成 sub_02（全模組遷移、**向後相容層徹底刪除**、全生態系測試 100% 通過與結案）
+- [x] **里程碑 3**：完成 sub_02（全模組遷移、**向後相容層徹底刪除**、全生態系測試 100% 通過與結案）
