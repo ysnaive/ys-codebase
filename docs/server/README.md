@@ -37,3 +37,13 @@ python yscb.py server reload
 # 優雅停止 Server 守護進程 (支援強殺兜底 --force)
 python yscb.py server stop [--force]
 ```
+
+---
+
+## 3. 即時 Flush 日誌與歷史滾動自癒 (Real-time Logging)
+
+Server 模組內建高可靠的集中式即時 flush 日誌機制：
+- **運行中即時日誌**：`cache://server/log`（實體路徑為 `.cache/server/log`），所有寫入即時 `flush()`，斷電崩潰零丟失。
+- **歷史運行檔案**：`{YYYY}_{MM}_{DD}_{HH}.{MM}.{SS}_log`，每次優雅關閉或異常重啟時自動歸檔，嚴格滾動保留最新 5 份。
+- **異常中斷自癒**：新 Server 啟動若發現未正常歸檔之舊日誌，優先解析首行 `server start at time "..."` 時間戳轉存歷史並執行滾動，再行開啟新日誌。
+- **詳盡規格手冊**：參見 [realtime_logging.md](realtime_logging.md)。

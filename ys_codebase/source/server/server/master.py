@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 from core import vfs
 from core.platform import is_process_alive, kill_process_tree, InterProcessLock, ensure_private_venv, spawn_detached
+from server.logger import ServerLogger
 from server.service import ServiceManager
 from server.watcher import ModulesWatcher
 
@@ -62,6 +63,7 @@ class MasterSupervisor:
         self.state_file = os.path.join(self.yscb_root, ".cache", "server", "daemon.json")
         self.lock_file = os.path.join(self.yscb_root, ".cache", "server", "daemon.lock")
 
+        self.logger = ServerLogger(self.yscb_root)
         self.service_manager = ServiceManager()
         self.watcher: Optional[ModulesWatcher] = None
 
@@ -86,15 +88,21 @@ class MasterSupervisor:
                 return state.pid
             # If lock held by dead process, cleanup and proceed
 
+        # 0. Crash recovery & fresh realtime log initialization
+        start_ts = self.logger.recover_and_open()
+        self.logger.info(f"Starting MasterSupervisor (PID: {os.getpid()}, Root: {self.yscb_root}, Idle TTL: {self.idle_timeout_sec}s, StartTime: {start_ts})")
+
         self._is_running = True
         self._last_active_time = time.time()
 
         # 1. Start HTTP Server on dynamic port 127.0.0.1:0
         self._httpd = _create_http_server(self)
         self.port = self._httpd.server_address[1]
+        self.logger.info(f"HTTP Server listening on 127.0.0.1:{self.port}")
 
         # 2. Spawn initial Warm Worker
         self._spawn_worker()
+        self.logger.info(f"Initial Warm Worker spawned (PID: {self._worker_proc.pid if self._worker_proc else 0})")
 
         # 3. Write daemon.json state file
         self._write_state()
@@ -104,10 +112,13 @@ class MasterSupervisor:
             modules_dir = os.path.join(self.yscb_root, ".modules")
             self.watcher = ModulesWatcher(modules_dir, on_change_callback=self.on_modules_changed, debounce_sec=0.5)
             self.watcher.start()
+            self.logger.info(f"ModulesWatcher active on {modules_dir}")
 
         # 5. Discover and Start Service Workers
         self._discover_service_workers()
         self.service_manager.start_all({"yscb_root": self.yscb_root})
+        service_names = [s.get("name") for s in self.service_manager.get_status()]
+        self.logger.info(f"Service Workers started: {service_names}")
 
         # 6. Start Idle TTL checker thread
         if self.idle_timeout_sec > 0:
@@ -172,6 +183,7 @@ class MasterSupervisor:
 
     def stop(self, force: bool = False) -> None:
         """Stops the master supervisor and all child workers."""
+        self.logger.info(f"Stopping MasterSupervisor (PID: {os.getpid()}, Force: {force})...")
         self._is_running = False
 
         if self.watcher:
@@ -197,10 +209,13 @@ class MasterSupervisor:
             self._httpd = None
 
         self._cleanup_state()
+        self.logger.archive_and_close()
 
     def restart_worker(self) -> int:
         """Terminates existing worker and spawns a fresh worker subprocess."""
         with self._worker_lock:
+            old_pid = self._worker_proc.pid if self._worker_proc else 0
+            self.logger.info(f"Restarting Warm Worker (terminating old PID: {old_pid})...")
             if self._worker_proc:
                 try:
                     kill_process_tree(self._worker_proc.pid, timeout_sec=1.5)
@@ -210,6 +225,7 @@ class MasterSupervisor:
 
             new_pid = self._spawn_worker_locked()
             self._write_state()
+            self.logger.info(f"Fresh Warm Worker spawned (PID: {new_pid})")
             return new_pid
 
     def on_modules_changed(self, affected_modules: Optional[Set[str]] = None) -> None:
@@ -218,6 +234,7 @@ class MasterSupervisor:
         - If 'server' or 'core' changed: triggers restart_server()
         - Otherwise: triggers restart_worker()
         """
+        self.logger.info(f"ModulesWatcher detected change in modules: {affected_modules}")
         if affected_modules and ("server" in affected_modules or "core" in affected_modules):
             logger.info(f"[Server] Detected core/server module update ({affected_modules}). Triggering Master self-restart...")
             self.restart_server()
@@ -230,6 +247,7 @@ class MasterSupervisor:
         Gracefully restarts the entire Server daemon (Master + Worker).
         Cleans up current Master instance and spawns a fresh detached Master daemon.
         """
+        self.logger.info("Initiating graceful MasterSupervisor self-restart...")
         def _do_restart():
             try:
                 # 1. Stop current Master resources
@@ -269,6 +287,10 @@ class MasterSupervisor:
         self._last_active_time = time.time()
         self._tasks_executed += 1
 
+        target_mod = req_data.get("module", "unknown")
+        cmd_args = req_data.get("args", [])
+        self.logger.info(f"Task dispatch requested: module='{target_mod}', args={cmd_args}")
+
         with self._worker_lock:
             if not self._worker_proc or not is_process_alive(self._worker_proc.pid):
                 self._spawn_worker_locked()
@@ -290,6 +312,7 @@ class MasterSupervisor:
             proc.stdin.write(req_line.encode("utf-8"))
             proc.stdin.flush()
         except Exception as e:
+            self.logger.error(f"Failed to write task payload to worker stdin: {e}", exc_info=e)
             chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(e)})
             return 1
 
@@ -299,6 +322,7 @@ class MasterSupervisor:
             try:
                 line = proc.stdout.readline()
                 if not line:
+                    self.logger.error(f"Worker stdout closed unexpectedly during dispatch for module='{target_mod}'")
                     chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": "Worker stdout closed unexpectedly"})
                     return 1
 
@@ -307,12 +331,23 @@ class MasterSupervisor:
                     continue
 
                 packet = json.loads(line_str)
+                # Intercept IPC log packet from Worker
+                if packet.get("type") == "log":
+                    lvl = packet.get("level", "INFO")
+                    comp = packet.get("component", "worker")
+                    msg = packet.get("msg", "")
+                    self.logger.log(lvl, msg, component=comp)
+                    continue
+
                 chunk_emitter(packet)
 
                 if packet.get("type") == "task_finish":
                     exit_code = packet.get("exit_code", 0)
+                    dur_ms = packet.get("duration_ms", 0.0)
+                    self.logger.info(f"Task dispatch finished: module='{target_mod}', exit_code={exit_code}, duration={dur_ms:.1f}ms")
                     break
             except Exception as ex:
+                self.logger.error(f"Exception during worker stream reading: {ex}", exc_info=ex)
                 chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(ex)})
                 return 1
 
@@ -364,11 +399,20 @@ class MasterSupervisor:
         def _read_ready():
             nonlocal ready_received
             try:
-                line = proc.stdout.readline()
-                if line:
-                    data = json.loads(line.decode("utf-8", errors="replace").strip())
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    if not line_str:
+                        continue
+                    data = json.loads(line_str)
+                    if data.get("type") == "log":
+                        self.logger.log(data.get("level", "INFO"), data.get("msg", ""), component=data.get("component", "worker"))
+                        continue
                     if data.get("type") == "worker_ready":
                         ready_received = True
+                        break
             except Exception:
                 pass
 
@@ -378,7 +422,6 @@ class MasterSupervisor:
 
         return proc.pid
 
-
     def _idle_ttl_loop(self) -> None:
         while self._is_running:
             time.sleep(2.0)
@@ -386,6 +429,7 @@ class MasterSupervisor:
                 break
             idle_seconds = time.time() - self._last_active_time
             if self.idle_timeout_sec > 0 and idle_seconds >= self.idle_timeout_sec:
+                self.logger.info(f"Idle TTL ({self.idle_timeout_sec}s) reached. Initiating automatic shutdown...")
                 logging.info(f"[Server Master] Idle TTL ({self.idle_timeout_sec}s) reached. Shutting down...")
                 # Run shutdown in a separate thread so it doesn't block the loop
                 threading.Thread(target=self.stop, daemon=True).start()
@@ -440,6 +484,7 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
             auth_header = self.headers.get("Authorization", "")
             expected = f"Bearer {supervisor.token}"
             if auth_header != expected:
+                supervisor.logger.warning(f"HTTP Unauthorized access attempt to {self.path}")
                 self.send_response(403)
                 self.end_headers()
                 self.wfile.write(b'{"error": "Unauthorized"}\n')
@@ -447,6 +492,7 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
             return True
 
         def do_GET(self):
+            t0 = time.time()
             parsed = urlparse(self.path)
             if parsed.path == "/api/status":
                 if not self._authenticate():
@@ -470,11 +516,15 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                dur_ms = (time.time() - t0) * 1000.0
+                supervisor.logger.info(f"HTTP GET /api/status -> 200 ({dur_ms:.1f}ms)")
             else:
                 self.send_response(404)
                 self.end_headers()
+                supervisor.logger.warning(f"HTTP GET {parsed.path} -> 404 Not Found")
 
         def do_POST(self):
+            t0 = time.time()
             parsed = urlparse(self.path)
             if not self._authenticate():
                 return
@@ -488,6 +538,7 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                     self.send_response(400)
                     self.end_headers()
                     self.wfile.write(b'{"error": "Invalid JSON"}\n')
+                    supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid JSON")
                     return
 
                 # Check workspace root isolation (matches either yscb_root or parent host dir)
@@ -498,6 +549,7 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                         self.send_response(400)
                         self.end_headers()
                         self.wfile.write(b'{"error": "Workspace Root Mismatch"}\n')
+                        supervisor.logger.warning(f"HTTP POST /api/dispatch -> 400 Workspace Root Mismatch ({req_abs})")
                         return
 
                 # Send 200 chunked response
@@ -523,6 +575,8 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                     self.wfile.flush()
                 except Exception:
                     pass
+                dur_ms = (time.time() - t0) * 1000.0
+                supervisor.logger.info(f"HTTP POST /api/dispatch -> 200 ({dur_ms:.1f}ms)")
 
             elif parsed.path == "/api/reload":
                 new_pid = supervisor.restart_worker()
@@ -532,6 +586,8 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
                 self.wfile.write(resp)
+                dur_ms = (time.time() - t0) * 1000.0
+                supervisor.logger.info(f"HTTP POST /api/reload -> 200 ({dur_ms:.1f}ms, New PID: {new_pid})")
 
             elif parsed.path == "/api/shutdown":
                 resp = json.dumps({"status": "shutting_down"}).encode("utf-8")
@@ -540,10 +596,13 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 self.send_header("Content-Length", str(len(resp)))
                 self.end_headers()
                 self.wfile.write(resp)
+                dur_ms = (time.time() - t0) * 1000.0
+                supervisor.logger.info(f"HTTP POST /api/shutdown -> 200 ({dur_ms:.1f}ms)")
                 threading.Thread(target=supervisor.stop, daemon=True).start()
 
             else:
                 self.send_response(404)
                 self.end_headers()
+                supervisor.logger.warning(f"HTTP POST {parsed.path} -> 404 Not Found")
 
     return http.server.ThreadingHTTPServer(("127.0.0.1", 0), DispatcherHTTPHandler)

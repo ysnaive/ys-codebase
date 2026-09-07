@@ -1,5 +1,14 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_07_1251_server_realtime_logging (Completed)
+
+- **Server 即時 Flush 日誌架構、異常中斷自癒與歷史滾動保留機制**：
+  - **即時 Flush 日誌落檔 (`ServerLogger`)**：落檔於 `cache://server/log` (`.cache/server/log`)，每次寫入強制 `flush()` 保證即時性與 OS Page Cache 刷新；首行格式寫入時間基準標誌 `server start at time "{YYYY}_{MM}_{DD}_{HH}.{MM}.{SS}"`。
+  - **異常中斷自癒與歷史滾動清理**：啟動時自動偵測舊日誌，優先解析首行時間戳轉存為歷史檔 `{timestamp}_log`（解析失敗退化為 `mtime`），並滾動清理保留最新 $\le 5$ 份，避免磁碟無限制增長。
+  - **集中式日誌排程與 IPC 匯流**：Master 進程獨佔日誌檔案控制代碼，Worker 透過 IPC ndjson `{"type": "log"}` 封包匯流集中寫入，避免跨進程檔案鎖衝突。
+  - **Core 模組更新偏差修復 (`core:update`)**：修復 `update` 忽略 `@build` 開發版與候選版本過濾之缺陷，保護本地調試版本不被誤覆蓋降級。
+  - **全套測試 100% 通過**：Server 模組新增 FT-01~08 及回歸測試 RT-01 全部通過（31/31）；Core 模組全量回歸測試全部通過（163/163）；實機 UX 驗收通過。
+
 ## 2026_09_07_0831_quality_update (In Progress)
 
 ### sub_01_core_commands_and_dispatch_architecture (Verified)

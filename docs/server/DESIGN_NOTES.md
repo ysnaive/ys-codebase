@@ -9,6 +9,8 @@
 | **[DN-05]** | Server 組態管理與 Console 啟動優先級分流 | `server/config.py`, `scripts/cli.py` | Low |
 | **[DN-06]** | Worker 進程級模組快取與標準預熱事件廣播 | `server/worker.py` | Low |
 | **[DN-07]** | Contributes Server 宣告規範與 Background Services 狀態可觀測性 | `server/service.py`, `scripts/cli.py` | Low |
+| **[DN-08]** | 雙軌模組熱重載 (Worker 重啟 vs Master 自重啟) 與路徑感知規範 | `server/watcher.py`, `server/master.py` | Low |
+| **[DN-09]** | 即時 Flush 日誌架構、異常中斷自癒與歷史滾動清理機制 | `server/logger.py`, `server/master.py`, `server/worker.py` | Low |
 
 ---
 
@@ -56,3 +58,10 @@
      - 若 `affected_modules` 包含 `server` 或 `core`：調用 `MasterSupervisor.restart_server()`，透過 `core.platform.spawn_detached` 重新拉起全新 Master 進程，並安全釋放鎖、狀態與 HTTP 資源後平滑退出舊進程。
      - 若僅包含其他領域模組：僅調用 `restart_worker()` 重啟 Worker 子進程，保持 Master 進程與 HTTP 端口連線零中斷。
 
+### [DN-09] 即時 Flush 日誌架構、異常中斷自癒與歷史滾動清理機制
+- **背景**：Server 常駐進程在背景默默運行，過去輸出僅重定向至 `/dev/null` 或依賴 Console 前台，缺乏可靠的磁碟日誌；同時若遭遇強殺崩潰或斷電，未 flush 的緩衝區將完全遺失，重啟後殘留的舊日誌亦無法有序追溯。
+- **決策**：
+  1. 實作 `ServerLogger`，日誌固定寫入 `cache://server/log`（`.cache/server/log`），所有寫入行強制 `flush()`，保證 OS Page Cache 刷新。
+  2. 首行寫入時間基準標誌 `server start at time "{YYYY}_{MM}_{DD}_{HH}.{MM}.{SS}"`。
+  3. 新 Server 啟動時執行異常自癒：偵測未正常歸檔之舊 log，優先解析其首行時間戳（失敗退化 mtime）轉存歷史檔 `{timestamp}_log`，並自動滾動保留最新 5 份。
+  4. Master 集中管理日誌寫入 Handle，Worker 透過 IPC stdout 串流以 `{"type": "log"}` 發送封包由 Master 攔截寫入，杜絕跨進程並發檔案鎖爭搶。
