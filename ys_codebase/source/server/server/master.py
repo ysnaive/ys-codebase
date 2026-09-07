@@ -23,26 +23,10 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-from core.platform import is_process_alive, kill_process_tree, InterProcessLock
+from core import vfs
+from core.platform import is_process_alive, kill_process_tree, InterProcessLock, ensure_private_venv
 from server.service import ServiceManager
 from server.watcher import ModulesWatcher
-
-
-def _ensure_venv(yscb_root: str) -> None:
-    tag, sys_name = f"py{sys.version_info.major}{sys.version_info.minor}", platform.system()
-    sub = os.path.join(".venv", tag, "Lib", "site-packages") if sys_name == "Windows" else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
-    site_pkg = os.path.join(yscb_root, sub)
-    if os.path.isdir(site_pkg) and site_pkg not in sys.path:
-        sys.path.insert(0, site_pkg)
-        pth = os.path.join(site_pkg, "host_venv.pth")
-        if os.path.isfile(pth):
-            try:
-                for line in open(pth, "r", encoding="utf-8", errors="ignore"):
-                    t = line.strip()
-                    if t and os.path.isdir(t) and t not in sys.path:
-                        sys.path.insert(0, t)
-            except Exception:
-                pass
 
 
 @dataclass
@@ -70,8 +54,8 @@ class MasterSupervisor:
         enable_watcher: bool = True,
     ) -> None:
         self.yscb_root = os.path.abspath(yscb_root)
-        _ensure_venv(self.yscb_root)
-        self.idle_timeout_sec = idle_timeout_sec
+        self.idle_timeout_sec = float(idle_timeout_sec)
+        ensure_private_venv(self.yscb_root)
         self.enable_watcher = enable_watcher
 
         self.token = secrets.token_hex(16)
@@ -377,8 +361,7 @@ class MasterSupervisor:
             idle_timeout_sec=self.idle_timeout_sec,
             tasks_executed=self._tasks_executed,
         )
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(asdict(state), f, indent=2)
+        vfs.write_json(self.state_file, asdict(state), indent=2, atomic=True)
 
     def _cleanup_state(self) -> None:
         try:

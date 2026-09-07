@@ -14,6 +14,9 @@
 
 | 日期時間 | 類型 | 摘要 |
 | :--- | :---: | :--- |
+| 2026-09-07 08:01 | `SUB-DONE` | 子計畫 sub_09 完成 SOP Review 審查與 P07 Walkthrough，子計畫正式 Completed 結案 (里程碑 9 完成) |
+| 2026-09-07 07:38 | `SUB-PLAN` | 開立子計畫 sub_09 (architecture_debt_remediation)，全數規劃修復審查發現之 14 項架構債 (狀態：`Draft`) |
+| 2026-09-07 07:15 | `SUB-DONE` | 子計畫 sub_08 完成 SOP Review 審查與 P07 Walkthrough，子計畫正式 Completed 結案 (里程碑 8 完成) |
 | 2026-09-07 02:28 | `SUB-PLAN` | 開立子計畫 sub_07 (yscb_host_slimming_and_dual_channel_dispatch)，完成 Phase 0 需求討論與決策 (狀態：`In Progress`) |
 | 2026-09-07 02:21 | `SUB-DONE` | 子計畫 sub_06 完成 SOP Review 審查與 P07 Walkthrough，子計畫正式 Completed 結案 (里程碑 6 完成) |
 | 2026-09-07 02:08 | `SUB-PLAN` | 開立子計畫 sub_06 (server_console_config)，完成 Phase 0 需求討論與決策 (狀態：`Confirmed`) |

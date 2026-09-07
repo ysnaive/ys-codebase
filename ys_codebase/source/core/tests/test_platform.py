@@ -80,6 +80,37 @@ class TestCorePlatform(YSCBTestCase):
         self.assertTrue(reacquired.acquire(blocking=False))
         reacquired.release()
 
+    def test_ensure_private_venv(self):
+        """FT-03: ensure_private_venv injects site-packages and resolves host_venv.pth."""
+        from core.platform import ensure_private_venv
+        import platform
+
+        tag = f"py{sys.version_info.major}{sys.version_info.minor}"
+        sys_name = platform.system()
+        sub = (
+            os.path.join(".venv", tag, "Lib", "site-packages")
+            if sys_name == "Windows"
+            else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+        )
+        fake_site = os.path.join(self.temp_dir.name, sub)
+        os.makedirs(fake_site, exist_ok=True)
+
+        extra_pth_target = os.path.join(self.temp_dir.name, "extra_lib")
+        os.makedirs(extra_pth_target, exist_ok=True)
+        pth_file = os.path.join(fake_site, "host_venv.pth")
+        with open(pth_file, "w", encoding="utf-8") as f:
+            f.write(extra_pth_target + "\n")
+
+        ensure_private_venv(self.temp_dir.name)
+        self.assertIn(fake_site, sys.path)
+        self.assertIn(extra_pth_target, sys.path)
+
+        # Cleanup sys.path to avoid pollution
+        if fake_site in sys.path:
+            sys.path.remove(fake_site)
+        if extra_pth_target in sys.path:
+            sys.path.remove(extra_pth_target)
+
 
 if __name__ == "__main__":
     unittest.main()
