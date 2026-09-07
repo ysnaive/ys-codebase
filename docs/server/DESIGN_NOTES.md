@@ -48,3 +48,11 @@
   2. `ServiceManager` 透過 `core.contributes.get("server")` 動態發現並拉起背景服務，並持有 provider 與 description 元數據。
   3. `server status` 格式化輸出包含 Process Info、Service Counters 以及 Background Services 清冊（含狀態與模組歸屬），提升運維透明度。
 
+### [DN-08] 雙軌模組熱重載 (Worker 重啟 vs Master 自重啟) 與路徑感知規範
+- **背景**：既有 `ModulesWatcher` 監控 `.modules/` 變動時，無差別呼叫 `restart_worker`。當 `knowledge-db` 等領域模組更新時重啟 Worker 能完美刷新，但當 `server` 本體或 `core` 底層模組更新時，Master 進程記憶體中已載入的 Python 代碼無法刷新。
+- **決策**：
+  1. `ModulesWatcher` 比對 mtime 快照時精確解析變動檔案所屬頂層模組目錄 `affected_modules: Set[str]`，並加入 500ms 批次變更防抖。
+  2. 實作雙軌重載分流：
+     - 若 `affected_modules` 包含 `server` 或 `core`：調用 `MasterSupervisor.restart_server()`，透過 `core.platform.spawn_detached` 重新拉起全新 Master 進程，並安全釋放鎖、狀態與 HTTP 資源後平滑退出舊進程。
+     - 若僅包含其他領域模組：僅調用 `restart_worker()` 重啟 Worker 子進程，保持 Master 進程與 HTTP 端口連線零中斷。
+

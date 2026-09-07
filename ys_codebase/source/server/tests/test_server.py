@@ -248,6 +248,57 @@ class TestServerModule(YSCBTestCase):
             self.assertIn("server_worker_warming", calls)
         self.mark_passed()
 
+    def test_modules_watcher_affected_modules(self):
+        """FT-01: ModulesWatcher extracts affected module names and supports arguments."""
+        modules_dir = os.path.join(self.root_dir, ".modules")
+        kdb_dir = os.path.join(modules_dir, "knowledge-db")
+        os.makedirs(kdb_dir, exist_ok=True)
+
+        notified_modules = []
+
+        def on_change(affected):
+            notified_modules.append(affected)
+
+        watcher = ModulesWatcher(modules_dir=modules_dir, on_change_callback=on_change, poll_interval_sec=0.1, debounce_sec=0.1)
+        watcher.start()
+
+        try:
+            time.sleep(0.15)
+            with open(os.path.join(kdb_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "knowledge-db"}')
+            time.sleep(0.35)
+            self.assertGreater(len(notified_modules), 0)
+            self.assertIn("knowledge-db", notified_modules[0])
+        finally:
+            watcher.stop()
+        self.mark_passed()
+
+    def test_watcher_reload_dispatch_worker(self):
+        """FT-02: Non-server module change dispatches to restart_worker."""
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        with unittest.mock.patch.object(sup, "restart_worker") as mock_worker, \
+             unittest.mock.patch.object(sup, "restart_server") as mock_server:
+            sup.on_modules_changed({"knowledge-db", "dev"})
+            mock_worker.assert_called_once()
+            mock_server.assert_not_called()
+        self.mark_passed()
+
+    def test_watcher_reload_dispatch_server(self):
+        """FT-03: server or core module change dispatches to restart_server."""
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        with unittest.mock.patch.object(sup, "restart_worker") as mock_worker, \
+             unittest.mock.patch.object(sup, "restart_server") as mock_server:
+            sup.on_modules_changed({"server"})
+            mock_server.assert_called_once()
+            mock_worker.assert_not_called()
+
+        with unittest.mock.patch.object(sup, "restart_worker") as mock_worker, \
+             unittest.mock.patch.object(sup, "restart_server") as mock_server:
+            sup.on_modules_changed({"core", "knowledge-db"})
+            mock_server.assert_called_once()
+            mock_worker.assert_not_called()
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

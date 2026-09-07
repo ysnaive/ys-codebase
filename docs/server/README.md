@@ -14,7 +14,7 @@
    - **Warm Worker**：常駐預熱子進程，單隊列序列化執行業務模組，攔截 `SystemExit` 保證進程不死。
 3. **500ms 防抖分流串流協議**：攔截模組 `sys.stdout`/`sys.stderr`，以 500ms 防抖緩衝發送 `terminal_stream` 與 `task_finish` NDJSON 封包。
 4. **按需延遲加載 (Lazy Load on Dispatch)**：Worker 啟動時不預載入任何業務模組；派發 A 模組絕不加載 B 模組，杜絕依賴交叉污染。
-5. **模組熱重載 (Hot Reload)**：自動監控 `.modules/` 變動，變更時直接殺死舊 Worker 並重啟全新 Worker，100% 杜絕 Python reload 幽靈 Bug。
+5. **雙軌模組熱重載 (Hot Reload)**：自動監控 `.modules/` 變動並精確解析模組歸屬；領域模組變動直接重啟全新 Worker，`server`/`core` 模組變動自動優雅重啟整個 Server (Master + Worker)，100% 杜絕 Python reload 幽靈 Bug 與記憶體殘留。
 6. **統一生命週期自毀 (15m Idle TTL)**：支援配置空閒自毀，無操作 15 分鐘後 Master 與所有 Service Worker 一同優雅關閉，零資源浪費。
 
 ---
