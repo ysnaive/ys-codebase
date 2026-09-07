@@ -21,7 +21,7 @@ from knowledge_db.service import KnowledgeDBServiceWorker, resolve_watch_extensi
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.pipeline import IndexingPipeline, _GLOBAL_INDEX_CACHE
 from knowledge_db.retrieval import InvertedIndex
-from scripts.cli import process
+from scripts.cli import process, get_engine
 
 
 class TestServiceWorker(YSCBTestCase):
@@ -181,4 +181,64 @@ class TestServiceWorker(YSCBTestCase):
         lock_file = self.root_path / "snapshot.lock"
         with InterProcessLock(str(lock_file)) as lock:
             self.assertTrue(lock.is_locked)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_singleton_engine(self):
+        """FT-02: 驗證 KnowledgeEngine 單例化：get_engine() 多次調用返回同一實例物件"""
+        e1 = get_engine()
+        e2 = get_engine()
+        self.assertIs(e1, e2)
+        self.assertIsInstance(e1, KnowledgeEngine)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_watcher_dirty_flag_stat_bypass(self):
+        """FT-04: 驗證 Watcher Dirty Flag：未標記 dirty 時，pipeline.search() 0ms 跳過 stat 走訪"""
+        indices_dir = self.root_path / "indices"
+        indices_dir.mkdir(parents=True, exist_ok=True)
+        bin_file = indices_dir / "unified.index.bin.gz"
+
+        idx = InvertedIndex()
+        idx.save_binary(bin_file)
+
+        sm = MagicMock()
+        sm.storage_dir = self.root_path
+        pipeline = IndexingPipeline(
+            space_manager=sm,
+            bundler=MagicMock(),
+            scanner=MagicMock(),
+            tokenizer=MagicMock(),
+            bm25_engine=MagicMock(),
+            embedding_service=MagicMock(),
+            hybrid_engine=MagicMock(),
+        )
+        pipeline._unified_index = idx
+
+        # 模擬 Watcher 活躍且 dirty flag 不存在
+        active_file = indices_dir / ".watcher_active"
+        import json
+        with open(active_file, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(), "start_time": time.time()}, f)
+
+        dirty_file = indices_dir / ".watcher_dirty"
+        if dirty_file.exists():
+            dirty_file.unlink()
+
+        # 呼叫 search，驗證 scanner.check_invalidation 未被調用（直接跳過 stat 走訪）
+        pipeline.search(query="test_query", auto_rebuild=True)
+        self.assertFalse(pipeline.scanner.check_invalidation.called)
+
+        # 模擬檔案發生未防抖變更，寫入 dirty flag；Watcher 活躍期間前台搜尋依然保持 0ms 非阻塞
+        with open(dirty_file, "w", encoding="utf-8") as f:
+            f.write("dirty")
+
+        pipeline.search(query="test_query", auto_rebuild=True)
+        self.assertFalse(pipeline.scanner.check_invalidation.called)
+
+        # 模擬 Watcher 停止運行（無背景服務），前台 search 恢復同步執行 check_invalidation
+        active_file.unlink()
+        pipeline.scanner.check_invalidation.return_value = (False, 0, "no changes", {}, MagicMock(has_changes=False))
+        pipeline.search(query="test_query", auto_rebuild=True)
+        self.assertTrue(pipeline.scanner.check_invalidation.called)
         self.mark_passed()

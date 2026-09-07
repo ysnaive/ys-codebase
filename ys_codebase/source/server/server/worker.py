@@ -49,6 +49,7 @@ class WarmWorker:
         _ensure_venv(self.yscb_root)
         self.emit_packet_fn = emit_packet_fn
         self._is_running = True
+        self._module_cache: Dict[str, Any] = {}
 
     def pre_warm(self) -> None:
         """Emits warming events and pre-warms core runtime."""
@@ -57,6 +58,7 @@ class WarmWorker:
 
         try:
             events.broadcast("server_worker_warming", {"worker_pid": pid, "start_time": start_t}, emit_module="server")
+            events.broadcast("worker_warming", {"worker_pid": pid, "start_time": start_t}, emit_module="server")
         except Exception:
             pass
 
@@ -103,32 +105,36 @@ class WarmWorker:
             os.environ[GUARD_ENV_HOST] = host_dir
             os.environ[GUARD_ENV_TOKEN] = os.environ.get(GUARD_ENV_TOKEN, "yscb_auth_dispatch")
 
-            # Lazy load target module entry point via robust spec loader
-            target_cli = os.path.join(self.yscb_root, ".modules", module, "scripts", "cli.py")
-            if not os.path.isfile(target_cli):
-                target_cli = os.path.join(self.yscb_root, "source", module, "scripts", "cli.py")
-            if not os.path.isfile(target_cli):
-                raise ModuleNotFoundError(f"CLI script not found for module '{module}' at '{target_cli}'")
+            # Check module cache first to avoid re-executing scripts/cli.py on every request
+            mod = self._module_cache.get(module)
+            if mod is None:
+                target_cli = os.path.join(self.yscb_root, ".modules", module, "scripts", "cli.py")
+                if not os.path.isfile(target_cli):
+                    target_cli = os.path.join(self.yscb_root, "source", module, "scripts", "cli.py")
+                if not os.path.isfile(target_cli):
+                    raise ModuleNotFoundError(f"CLI script not found for module '{module}' at '{target_cli}'")
 
-            mod_root = os.path.dirname(os.path.dirname(os.path.abspath(target_cli)))
-            if mod_root not in sys.path:
-                sys.path.insert(0, mod_root)
-            core_dir = os.path.join(self.yscb_root, ".modules", "core")
-            if os.path.isdir(core_dir) and core_dir not in sys.path:
-                sys.path.insert(0, core_dir)
+                mod_root = os.path.dirname(os.path.dirname(os.path.abspath(target_cli)))
+                if mod_root not in sys.path:
+                    sys.path.insert(0, mod_root)
+                core_dir = os.path.join(self.yscb_root, ".modules", "core")
+                if os.path.isdir(core_dir) and core_dir not in sys.path:
+                    sys.path.insert(0, core_dir)
 
-            spec = importlib.util.spec_from_file_location(f"yscb_mod_{module.replace('-', '_')}_cli", target_cli)
-            if spec is None or spec.loader is None:
-                raise ImportError(f"Cannot load spec from {target_cli}")
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = mod
-            spec.loader.exec_module(mod)
+                spec = importlib.util.spec_from_file_location(f"yscb_mod_{module.replace('-', '_')}_cli", target_cli)
+                if spec is None or spec.loader is None:
+                    raise ImportError(f"Cannot load spec from {target_cli}")
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = mod
+                spec.loader.exec_module(mod)
+                self._module_cache[module] = mod
 
             fn = getattr(mod, "process", getattr(mod, "main", None))
             if not callable(fn):
                 streamer.write("stderr", f"Error: Module '{module}' does not export 'process(args)'\n")
                 exit_code = 1
             else:
+                target_cli = getattr(mod, "__file__", "")
                 orig_argv = list(sys.argv)
                 sys.argv = [target_cli] + args
                 with streamer:

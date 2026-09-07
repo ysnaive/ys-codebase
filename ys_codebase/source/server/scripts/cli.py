@@ -193,9 +193,11 @@ def _handle_status(args: List[str], yscb_root: str) -> int:
     services = info.get("services", [])
     if services:
         print("----------------------------------------------------------------------")
-        print("[*] Background Services:")
+        print(f"[*] Background Services ({len(services)} registered):")
         for svc in services:
-            print(f"    • {svc['name']}: {'Running' if svc['alive'] else 'Stopped'}")
+            prov = f" (module: {svc.get('provider')})" if svc.get("provider") else ""
+            status_txt = "RUNNING" if svc.get("alive") else "STOPPED"
+            print(f"    ├── [{svc['name']}]{prov} : {status_txt}")
     print("======================================================================")
     return 0
 

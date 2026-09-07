@@ -115,7 +115,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
     def _get_pipeline(self) -> Any:
         if self._pipeline is None:
             from .engine import KnowledgeEngine
-            engine = KnowledgeEngine(workspace_root=self.workspace_root)
+            engine = KnowledgeEngine()
             self._pipeline = engine.pipeline
         return self._pipeline
 
@@ -174,6 +174,11 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
 
         with self._debounce_lock:
             self._pending_dirty_paths.add(str(p.resolve()))
+            try:
+                indices_dir = self._get_pipeline().get_indices_dir()
+                (indices_dir / ".watcher_dirty").touch(exist_ok=True)
+            except Exception:
+                pass
             if self._debounce_timer is not None:
                 self._debounce_timer.cancel()
 
@@ -187,6 +192,17 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             dirty = list(self._pending_dirty_paths)
             self._pending_dirty_paths.clear()
             self._debounce_timer = None
+
+        try:
+            indices_dir = self._get_pipeline().get_indices_dir()
+            dirty_flag = indices_dir / ".watcher_dirty"
+            if dirty_flag.exists():
+                try:
+                    dirty_flag.unlink()
+                except OSError:
+                    pass
+        except Exception:
+            pass
 
         if not dirty or not self._is_running:
             return
@@ -228,6 +244,14 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             self.workspace_root = Path.cwd().resolve()
 
         self._is_running = True
+        try:
+            indices_dir = self._get_pipeline().get_indices_dir()
+            active_file = indices_dir / ".watcher_active"
+            import json
+            with open(active_file, "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "time": time.time()}, f)
+        except Exception:
+            pass
 
         try:
             from watchdog.events import FileSystemEventHandler
@@ -277,6 +301,14 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
     def stop(self) -> None:
         """Stops the file observer and releases background resources."""
         self._is_running = False
+
+        try:
+            indices_dir = self._get_pipeline().get_indices_dir()
+            active_file = indices_dir / ".watcher_active"
+            if active_file.exists():
+                active_file.unlink()
+        except Exception:
+            pass
 
         with self._debounce_lock:
             if self._debounce_timer:

@@ -193,6 +193,61 @@ class TestServerModule(YSCBTestCase):
         self.assertFalse(os.path.exists(sup.state_file))
         self.mark_passed()
 
+    def test_worker_module_cache(self):
+        """FT-01: Verify WarmWorker._module_cache avoids re-executing modules."""
+        worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
+        self.assertEqual(len(worker._module_cache), 0)
+
+        # Create a dummy module with execution counter
+        mod_dir = os.path.join(self.root_dir, ".modules", "test_cache", "scripts")
+        os.makedirs(mod_dir, exist_ok=True)
+        with open(os.path.join(mod_dir, "cli.py"), "w", encoding="utf-8") as f:
+            f.write("EXEC_COUNT = 0\n"
+                    "def process(args):\n"
+                    "    global EXEC_COUNT\n"
+                    "    EXEC_COUNT += 1\n"
+                    "    return EXEC_COUNT\n")
+
+        # First call: loads module
+        res1 = worker.execute_task("test_cache", [], cwd=self.root_dir)
+        self.assertEqual(res1, 1)
+        self.assertIn("test_cache", worker._module_cache)
+
+        # Second call: reuses cached module, EXEC_COUNT increments in memory
+        res2 = worker.execute_task("test_cache", [], cwd=self.root_dir)
+        self.assertEqual(res2, 2)
+        self.mark_passed()
+
+    def test_service_manager_metadata_and_status(self):
+        """FT-05 & FT-06: Verify ServiceManager records provider, description and status."""
+        sm = ServiceManager()
+        mock = MockService(name="kdb-watcher")
+        sm.register(mock, provider="knowledge-db", description="Test file watcher")
+
+        status = sm.get_status()
+        self.assertEqual(len(status), 1)
+        self.assertEqual(status[0]["name"], "kdb-watcher")
+        self.assertEqual(status[0]["provider"], "knowledge-db")
+        self.assertEqual(status[0]["description"], "Test file watcher")
+        self.assertFalse(status[0]["alive"])
+
+        sm.start_all({})
+        self.assertTrue(sm.get_status()[0]["alive"])
+
+        sm.stop_all()
+        self.assertFalse(sm.get_status()[0]["alive"])
+        self.mark_passed()
+
+    def test_worker_warming_event(self):
+        """FT-03: Verify WarmWorker broadcasts server_worker_warming and worker_warming."""
+        worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
+        with unittest.mock.patch.object(events, "broadcast") as mock_broadcast:
+            worker.pre_warm()
+            calls = [c.args[0] for c in mock_broadcast.call_args_list if c.args]
+            self.assertIn("worker_warming", calls)
+            self.assertIn("server_worker_warming", calls)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

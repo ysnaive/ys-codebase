@@ -13,6 +13,15 @@ from knowledge_db.exceptions import KnowledgeDBError, SpaceNotFoundError
 from knowledge_db.formatter import TerminalStyler
 
 
+def get_engine() -> KnowledgeEngine:
+    """取得進程級唯一 KnowledgeEngine 單例，惰性初始化並全域複用。"""
+    inst = getattr(get_engine, "_instance", None)
+    if inst is None:
+        inst = KnowledgeEngine()
+        setattr(get_engine, "_instance", inst)
+    return inst
+
+
 def process(args: List[str]) -> int:
     guard_dispatch("knowledge-db")
 
@@ -43,7 +52,7 @@ def process(args: List[str]) -> int:
 
     subcmd = args[0]
     sub_argv = args[1:]
-    engine = KnowledgeEngine()
+    engine = get_engine()
 
     try:
         if subcmd == "status":

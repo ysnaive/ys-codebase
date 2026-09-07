@@ -53,6 +53,7 @@ class SpaceManager:
         self._custom_config_dir = Path(config_dir).resolve() if config_dir else None
         self._custom_storage_dir = Path(storage_dir).resolve() if storage_dir else None
         self._custom_contributes_data = contributes_data
+        self._include_cache: Dict[str, List[Path]] = {}
 
     def _get_config_path(self, filename: str) -> Optional[Path]:
         """取得指定設定檔之實體路徑"""
@@ -145,6 +146,7 @@ class SpaceManager:
         """
         載入並聚合所有來源 (Contributes 體系：模組 Contributes + 專案特化 contribute.json) 之空間清單。
         """
+        self._include_cache.clear()
         spaces: Dict[str, SpaceConfig] = {}
 
         contrib_data = self._load_contributes()
@@ -271,6 +273,9 @@ class SpaceManager:
         將空間宣告之 include 語意 URI 清單解算為本機實體絕對路徑清單。
         過濾不存在的路徑並發出 Warning 日誌 (EC-02)。
         """
+        if space_name in self._include_cache:
+            return self._include_cache[space_name]
+
         space_config = self.get_space(space_name)
         resolved_paths: List[Path] = []
         seen = set()
@@ -291,6 +296,7 @@ class SpaceManager:
             else:
                 logger.warning(f"Space '{space_name}' include path does not exist or cannot be resolved: '{uri_item}'")
 
+        self._include_cache[space_name] = resolved_paths
         return resolved_paths
 
     def get_space_storage_dir(self, space_name: str) -> Path:
