@@ -24,10 +24,12 @@ from core.context import ExecutionContext
 from core import semver
 from core.contributes import ContributesAggregator
 from core import events
+from core.platform import InterProcessLock
 
 class AtomicEngine:
     def __init__(self):
         self.contributes_aggregator = ContributesAggregator()
+        self._active_locks: Dict[str, InterProcessLock] = {}
 
     def _get_config(self) -> Tuple[str, Dict[str, Any]]:
         host_dir, _ = uri._get_host_config()
@@ -80,40 +82,29 @@ class AtomicEngine:
 
     def act_lock(self, operation: str, timeout: float = 10.0) -> None:
         """
-        Acquire inter-process lock on cache://.yscb.lock using OS-level atomic creation (os.O_CREAT | os.O_EXCL).
+        Acquire inter-process lock on cache://.yscb.lock using core.platform.InterProcessLock.
         """
         lock_uri = "cache://.yscb.lock"
         lock_path = uri.resolve(lock_uri)
         uri.makedirs("cache://", exist_ok=True)
-        
-        now = time.time()
-        if vfs.exists(lock_path):
-            try:
-                lock_info = vfs.read_json(lock_path)
-                lock_time = lock_info.get("timestamp", 0) if isinstance(lock_info, dict) else 0
-                if now - lock_time > timeout:
-                    vfs.remove(lock_path)
-            except Exception:
-                try:
-                    vfs.remove(lock_path)
-                except Exception:
-                    pass
 
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump({"pid": os.getpid(), "timestamp": now, "operation": operation}, f)
-        except FileExistsError:
+        lock = InterProcessLock(lock_path)
+        if not lock.acquire(blocking=True, timeout_sec=timeout):
             raise BlockingIOError(f"Another yscb process is currently holding the lock for operation '{operation}'.")
+        self._active_locks[operation] = lock
 
     def act_unlock(self, operation: str) -> None:
         """Release inter-process lock on cache://.yscb.lock."""
-        lock_uri = "cache://.yscb.lock"
-        if uri.exists(lock_uri):
+        lock = self._active_locks.pop(operation, None)
+        if lock is not None:
+            lock.release()
+        else:
+            lock_uri = "cache://.yscb.lock"
             try:
                 lock_p = uri.resolve(lock_uri)
                 if os.path.exists(lock_p):
-                    os.remove(lock_p)
+                    temp_lock = InterProcessLock(lock_p)
+                    temp_lock.release()
             except Exception:
                 pass
 

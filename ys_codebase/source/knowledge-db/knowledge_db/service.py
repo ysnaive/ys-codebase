@@ -114,9 +114,8 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
 
     def _get_pipeline(self) -> Any:
         if self._pipeline is None:
-            from .engine import KnowledgeEngine
-            engine = KnowledgeEngine()
-            self._pipeline = engine.pipeline
+            from .engine import get_engine
+            self._pipeline = get_engine().pipeline
         return self._pipeline
 
     def _get_supported_extensions(self) -> Set[str]:
@@ -154,12 +153,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     if abs_p_str == root_str or abs_p_str.startswith(root_str + "/"):
                         return True
         except Exception:
-            return True
-
-        if self.workspace_root:
-            ws_root_str = str(self.workspace_root.resolve()).replace("\\", "/")
-            if abs_p_str == ws_root_str or abs_p_str.startswith(ws_root_str + "/"):
-                return True
+            return False
 
         return False
 

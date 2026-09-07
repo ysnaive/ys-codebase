@@ -34,7 +34,8 @@ class VFS:
         :param scheme: 協議前綴 (例如 'mem', 'virtual')
         :param backend: VFSBackend 具體實例
         """
-        self._scheme_backends[scheme] = backend
+        clean_scheme = scheme.replace("://", "").rstrip(":")
+        self._scheme_backends[clean_scheme] = backend
 
     def get_backend(self, path_or_uri: Union[str, Any]) -> VFSBackend:
         """
@@ -188,17 +189,23 @@ class VFS:
 
     def copy(self, src: Union[str, Any], dst: Union[str, Any]) -> None:
         """複製檔案或目錄。"""
+        src_backend = self.get_backend(src)
+        dst_backend = self.get_backend(dst)
+        if src_backend is not dst_backend:
+            raise NotImplementedError("Cross-backend copy is not supported in VFS.")
         src_resolved = self.resolve_path(src)
         dst_resolved = self.resolve_path(dst)
-        backend = self.get_backend(src)
-        backend.copy(src_resolved, dst_resolved)
+        src_backend.copy(src_resolved, dst_resolved)
 
     def move(self, src: Union[str, Any], dst: Union[str, Any]) -> None:
         """移動檔案或目錄。"""
+        src_backend = self.get_backend(src)
+        dst_backend = self.get_backend(dst)
+        if src_backend is not dst_backend:
+            raise NotImplementedError("Cross-backend move is not supported in VFS.")
         src_resolved = self.resolve_path(src)
         dst_resolved = self.resolve_path(dst)
-        backend = self.get_backend(src)
-        backend.move(src_resolved, dst_resolved)
+        src_backend.move(src_resolved, dst_resolved)
 
     @contextmanager
     def atomic_write(

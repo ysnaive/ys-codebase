@@ -15,6 +15,8 @@ CORE_COMMANDS: set = {
     "rollback", "reload", "restore", "bootstrap", "uri", "config", "event", "help"
 }
 
+_MODULE_CACHE: Dict[str, Any] = {}
+
 
 def _ensure_private_venv_path(yscb_dir: str) -> None:
     """極速探測 (<0.05ms) 私有微環境 site-packages 並安全插入 sys.path。"""
@@ -26,9 +28,10 @@ def _ensure_private_venv_path(yscb_dir: str) -> None:
         pth = os.path.join(site_pkg, "host_venv.pth")
         if os.path.isfile(pth):
             try:
-                for line in open(pth, "r", encoding="utf-8", errors="ignore"):
-                    t = line.strip()
-                    if t and os.path.isdir(t) and t not in sys.path: sys.path.insert(0, t)
+                with open(pth, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        t = line.strip()
+                        if t and os.path.isdir(t) and t not in sys.path: sys.path.insert(0, t)
             except Exception: pass
 
 
@@ -123,7 +126,8 @@ def _try_hot_dispatch(module_name: str, args: List[str], base_dir: str, yscb_roo
         url, headers = f"http://127.0.0.1:{port}/api/dispatch", {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         req = urllib.request.Request(url, data=json.dumps({"module": module_name, "args": args, "cwd": os.getcwd(), "yscb_root": state.get("root", yscb_abs)}).encode("utf-8"), headers=headers, method="POST")
         exit_code = 0
-        with urllib.request.urlopen(req, timeout=120.0) as resp:
+        timeout_sec = float(os.environ.get("YSCB_DISPATCH_TIMEOUT", "120.0"))
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             buf = ""
             while True:
                 chunk = resp.read(1024)
@@ -225,11 +229,29 @@ def _ensure_jit_lifecycle_post(cmd: str, exit_code: int = 0) -> None:
         except Exception: pass
 
 
+def _read_module_manifest_version(manifest_path: str) -> Optional[str]:
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("version") if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 def _is_modules_dirty(base_dir: str, yscb_root: str, installed: Dict[str, Any]) -> Tuple[bool, List[str]]:
     if not installed: return False, []
     mod_d = os.path.join(base_dir, yscb_root, ".modules")
     if not os.path.isdir(mod_d): return True, list(installed.keys())
-    dirty = [m for m, i in installed.items() if not os.path.isdir(os.path.join(mod_d, m)) or not os.path.isfile(os.path.join(mod_d, m, "manifest.json")) or (isinstance(i, dict) and i.get("version") and json.load(open(os.path.join(mod_d, m, "manifest.json"), "r", encoding="utf-8")).get("version") != i.get("version"))]
+    dirty = []
+    for m, i in installed.items():
+        m_dir = os.path.join(mod_d, m)
+        mf_file = os.path.join(m_dir, "manifest.json")
+        if not os.path.isdir(m_dir) or not os.path.isfile(mf_file):
+            dirty.append(m)
+        elif isinstance(i, dict) and i.get("version"):
+            mf_ver = _read_module_manifest_version(mf_file)
+            if mf_ver != i.get("version"):
+                dirty.append(m)
     return bool(dirty), dirty
 
 
@@ -264,11 +286,15 @@ def dispatch_module(module_name: str, args: List[str]) -> int:
     orig_argv = list(sys.argv)
     try:
         sys.argv = [target_cli] + args
-        spec = importlib.util.spec_from_file_location(f"yscb_mod_{module_name.replace('-', '_')}_cli", target_cli)
-        if spec is None or spec.loader is None: raise ImportError(f"Cannot load spec from {target_cli}")
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = mod
-        spec.loader.exec_module(mod)
+        if target_cli in _MODULE_CACHE:
+            mod = _MODULE_CACHE[target_cli]
+        else:
+            spec = importlib.util.spec_from_file_location(f"yscb_mod_{module_name.replace('-', '_')}_cli", target_cli)
+            if spec is None or spec.loader is None: raise ImportError(f"Cannot load spec from {target_cli}")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            _MODULE_CACHE[target_cli] = mod
         fn = getattr(mod, "process", getattr(mod, "main", None))
         if callable(fn):
             res = fn(args)
@@ -291,7 +317,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not argv or argv[0] in ("-h", "--help", "help"): return _print_global_help()
     cmd = argv[0]
     _ensure_jit_lifecycle_pre(cmd)
-    ret = cmd_init(argv[1:]) if cmd == "init" else (cmd_event(argv[1:]) if cmd == "event" else (dispatch_module("core", argv) if cmd in CORE_COMMANDS else (dispatch_module("core", argv[1:]) if cmd == "core" else dispatch_module(cmd, argv[1:]))))
+    if cmd == "init":
+        ret = cmd_init(argv[1:])
+    elif cmd == "event":
+        ret = cmd_event(argv[1:])
+    elif cmd in CORE_COMMANDS:
+        ret = dispatch_module("core", argv)
+    elif cmd == "core":
+        ret = dispatch_module("core", argv[1:])
+    else:
+        ret = dispatch_module(cmd, argv[1:])
     _ensure_jit_lifecycle_post(cmd, ret)
     return ret
 

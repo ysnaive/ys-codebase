@@ -32,17 +32,4 @@
 | **代碼檢索 / 閱讀探索 / 符號查簽名 / 架構調研 / 調用圖譜 / 影響面評估**<br/>*(調用各環境之檔案讀取/檢視或文字搜尋/走訪工具進行探索前；🚨 探索非明確知悉路徑之文檔強制以 search --ftype=md 為唯一第一反射取得精確路徑，嚴禁未檢索直接逐檔翻讀或盲猜讀取)* | `knowledge-db-search` |
 <!-- YSCB_AGENTS_END -->
 
----
-
-## 🚨 重構期全域特殊管制紀律 (Global Architecture Refactor Freeze)
-
-> **當前專案狀態**：sub_01（CLI 串接與守門 SDK）已完成並全數完成 revision bump；**自當前時點（正式架構重構階段）起，正式啟動全生態系重構凍結與禁止自部署管制**。
-
-1. **嚴禁本地 `@build` 版自部署 (Strict Ban on Local `@build` Deployments)**：
-   - 於架構重構正式啟動後，**絕對禁止**執行 `python yscb.py install <module>@build` 或任何形式的運行端本地直裝與自部署。
-   - 杜絕重構期半成品代碼污染 `.modules/` 運行端與快取狀態。
-2. **全模組升級與恢復運行目標 (Ecosystem Target Release Gate)**：
-   - 現有核心與領域模組（`core`、`dev`、`agents-workflow`、`knowledge-db`）於整體架構更新與遷移完成後，**全數統一晉升發布至 `v1.1.0`**。
-   - 全新通用服務模組 `server` 正式發布至 **`v1.0.0`**。
-   - 唯有在全模組新版本發布完成且通過回歸驗收後，方可解除部署管制並全面恢復運行端。
 

@@ -72,6 +72,7 @@ class TestServiceWorker(YSCBTestCase):
         )
         mock_pipeline.hot_patch_unified_index.return_value = (True, False, None)
         worker._pipeline = mock_pipeline
+        worker.is_path_watched = MagicMock(return_value=True)
 
         # 觸發檔案變更
         test_file = str(self.root_path / "test.py")
@@ -241,4 +242,37 @@ class TestServiceWorker(YSCBTestCase):
         pipeline.scanner.check_invalidation.return_value = (False, 0, "no changes", {}, MagicMock(has_changes=False))
         pipeline.search(query="test_query", auto_rebuild=True)
         self.assertTrue(pipeline.scanner.check_invalidation.called)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_is_path_watched_strict_filtering(self):
+        """FT-02: 驗證 is_path_watched 徹底移除 workspace_root 兜底，非空間目錄一律返回 False (H-02)"""
+        worker = KnowledgeDBServiceWorker(workspace_root=self.root_path)
+
+        # 模擬 SpaceManager 僅包含特定目錄
+        space_dir = self.root_path / "source" / "my_module"
+        space_dir.mkdir(parents=True, exist_ok=True)
+        dummy_space = MagicMock(name="my_space")
+
+        mock_sm = MagicMock()
+        mock_sm.get_union_spaces.return_value = [dummy_space]
+        mock_sm.resolve_space_include.return_value = [str(space_dir)]
+        worker._space_manager = mock_sm
+        worker._supported_extensions = {".py", ".md", ".json"}
+
+        # 空間內合法副檔名 -> True
+        self.assertTrue(worker.is_path_watched(space_dir / "foo.py"))
+
+        # 位於 workspace_root 但非空間 include（如 .cache 或根目錄檔案）-> 嚴格返回 False
+        self.assertFalse(worker.is_path_watched(self.root_path / ".cache" / "server" / "daemon.json"))
+        self.assertFalse(worker.is_path_watched(self.root_path / "random_root_file.py"))
+        self.assertFalse(worker.is_path_watched(self.root_path / ".git" / "COMMIT_EDITMSG"))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_worker_shares_engine_pipeline(self):
+        """FT-06: 驗證 KnowledgeDBServiceWorker._get_pipeline() 共享 get_engine().pipeline (M-05)"""
+        worker = KnowledgeDBServiceWorker(workspace_root=self.root_path)
+        p = worker._get_pipeline()
+        self.assertIs(p, get_engine().pipeline)
         self.mark_passed()

@@ -2,6 +2,17 @@
 
 ## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
 
+### sub_09_architecture_debt_remediation (Verified)
+- **架構技術債全數收斂修復、微內核原語統一、進程單例共享與並發防禦**：
+  - **Core 進程鎖統一 (`core.engine`)**：`AtomicEngine.act_lock/act_unlock` 廢除自製 JSON 檔案鎖，全面遷移至 `core.platform.InterProcessLock`，徹底消除雙軌並存與競態窗口。
+  - **嚴格空間路徑過濾 (`knowledge_db.service`)**：`is_path_watched` 徹底移除 `workspace_root` 寬鬆兜底與例外兜底，非註冊空間路徑（如 `.cache`, `.git` 等）一律返回 `False`，對齊 sub_08 規格宣告。
+  - **虛擬環境路徑解析下沉 (`core.platform.venv`)**：於 `core.platform` 下沉定義 `ensure_private_venv`，跨平台統一 site-packages 定位與 `host_venv.pth` 遞迴注入，解決 `server.worker` 遺漏 `.pth` 解析與三處代碼重複問題。
+  - **Master 守護狀態原子落檔 (`server.master`)**：`_write_state` 改採 `core.vfs.write_json(..., atomic=True)`，確保 `daemon.json` 原子覆蓋，避免並發讀取空檔案。
+  - **宿主冷啟動模組快取與 FD 洩漏修復 (`yscb.py`)**：引入 `_MODULE_CACHE` 避免重複 `exec_module`；修復 `_is_modules_dirty` 推導式中裸 open FD 洩漏；支援 `YSCB_DISPATCH_TIMEOUT` 動態自訂逾時；展開 `main()` 四層嵌套三元運算符。
+  - **KnowledgeEngine 進程級單例全域共享 (`knowledge_db.engine`)**：導出線程安全的 `get_engine()` 工廠，`KnowledgeDBServiceWorker` 與 CLI 共享唯一實例，消除 Worker 進程內雙重 Engine 記憶體開銷；清理 7 個未使用的 Formatter 內部常數導入。
+  - **並發保護與契約健全 (`pipeline.py`, `service.py`, `vfs.py`, `guard.py`)**：為 `_GLOBAL_INDEX_CACHE` 加入 `_CACHE_LOCK = threading.RLock()`；補齊 `BaseServiceWorker.start(context)` 字典契約文件；`VFS.copy/move` 補齊跨 Backend 操作防禦（拋出 `NotImplementedError`）；補齊 Guard Token 安全邊界說明。
+  - **全生態系 5 大模組 463/463 測試 100% 通過**：Core 142/142, Server 20/20, Knowledge-DB 144/144, Dev 83/83, Agents-Workflow 74/74 全數通過。
+
 ### sub_08_knowledge_db_search_acceleration_and_worker_singleton (Verified)
 - **搜尋效能加速、Worker 模組快取、Watcher 背景自癒與 Service 可觀測性**：
   - **Worker 進程級模組快取 (`_module_cache`)**：在 `server.worker` 實作模組快取字典，消除跨命令重複調用時 `exec_module` 的重複開銷，實現零重載瞬發響應。

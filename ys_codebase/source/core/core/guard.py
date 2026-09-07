@@ -1,6 +1,12 @@
 """
 Core Security Gatekeeper SDK.
 Provides runtime dispatch validation to prevent unauthorized direct invocation of internal module scripts.
+
+Security Boundary & Design Contract:
+- The dispatch token (GUARD_ENV_TOKEN) is a cooperative architectural guard designed
+  to guide developers and tooling through the unified host entry point (yscb.py).
+- It is NOT intended as a cryptographic security boundary against reverse engineering or
+  malicious code execution within the same environment.
 """
 
 import os
