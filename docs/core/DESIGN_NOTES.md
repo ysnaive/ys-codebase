@@ -29,6 +29,7 @@
 | **DN-18** | 微內核獨立事件總線 (core.events) 與 Engine 徹底解耦 | `source/core/core/events.py` | 🚨 CRITICAL |
 | **DN-20** | 統一虛擬檔案系統 (core.vfs) 微內核與 URI 單向依賴、同目錄原子寫入 | `source/core/core/vfs/` | 🚨 CRITICAL |
 | **DN-21** | 宿主入口極簡瘦身、業務下沉至微內核與全域 Help 動態聚合引擎 | `yscb.py`<br/>`source/core/core/installer.py`<br/>`source/core/core/contributes.py` | 🚨 CRITICAL |
+| **DN-22** | 核心命令活躍合約、PEP 562 微內核延遲載入與對稱生命週期 Hook | `source/core/core/commands/`<br/>`source/core/core/__init__.py`<br/>`yscb.py` | 🚨 CRITICAL |
 
 ---
 
@@ -230,5 +231,20 @@
 - **防禦宣告**：
   > [!CAUTION]
   > **嚴禁在 `yscb.py` 宿主腳本內重度實作業務邏輯！任何新增之套件管理、全域查詢或規則生成邏輯必須下沉至 `core` 或對應模組！**
+
+---
+
+### [DN-22] 核心命令活躍合約、PEP 562 微內核延遲載入與對稱生命週期 Hook
+
+- **核心決策**：
+  1. **微內核 PEP 562 延遲載入**：`core/__init__.py` 透過 `__getattr__` 實作按需動態加載，保留 `TYPE_CHECKING` 靜態型別提示。單獨導入 `core.commands` 時不喚醒 `AtomicEngine`、`Installer`、`PipManager` 等重型子模組，冷啟動耗時自 ~77ms 降至 $\le 5\text{ms}$。
+  2. **正交群組命名空間與互斥約束**：CLI Option 在 contributes 中透過 orthogonal groups 分組，由 `OptionResolver` 執行互斥檢驗 (EC-02) 與別名標準化；解析結果封裝為不可變強型別 `CmdBags`。
+  3. **精確命令合約與雙軌靜默退化**：模組 CLI 遷移為 `def <cmd_name>(cmd_bags: CmdBags) -> int` 函式模型；未遷移模組靜默退化至 `mod.process(args)`（無 warning 輸出），並於 `sub_02` 結案前剛性刪除。
+  4. **對稱生命週期 Hook 下沉**：`pre_cli_dispatch` 與 `post_cli_dispatch` 生命週期 Hook 自宿主移至 `core.commands.dispatcher` 內部（含 Worker 熱派發環境與本地冷派發環境），確保 Hook 永遠在命令執行的真實上下文中生效。
+- **背後考量**：解除全生態系模組對 argparse 的分散依賴，提供統一且結構化的 CLI 體驗；同時將派發核心完全下沉至微內核，使宿主 `yscb.py` 達成極致薄化。
+- **防禦宣告**：
+  > [!IMPORTANT]
+  > **先驅模組不得殘留 `process(args)` 函式；舊版相容過渡層為暫存債務，嚴禁在新開發模組中引入舊版合約！**
+
 
 

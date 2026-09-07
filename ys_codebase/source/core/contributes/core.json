@@ -56,92 +56,446 @@
     }
   ],
   "commands": {
-    "install": {
-      "description": "Install a module from provider or local build package (@build)",
-      "tier": "gated",
-      "phases": ["P07", "FT-3"],
-      "case_pros": [
-        "安裝新模組能力至環境中",
-        "本地模組自引用調試: install <mod>@build --force (不更新無關模組)"
-      ],
-      "case_cons": [
-        "🚨 嚴禁在未授權情況下，於開發過程連動 release 指令自部署，應使用 build + install <mod>@build 部署開發版"
-      ]
-    },
-    "update": {
-      "description": "Update installed module(s) to latest version",
-      "tier": "gated",
-      "phases": [],
-      "case_pros": [
-        "升級已安裝之模組版本"
-      ],
-      "case_cons": [
-        "🚨 嚴禁在未獲升級指示前擅自更新"
-      ]
-    },
-    "remove": {
-      "description": "Remove an installed module from environment",
-      "tier": "gated",
-      "phases": [],
-      "case_pros": [
-        "清理不再使用之模組"
-      ],
-      "case_cons": [
-        "🚨 嚴禁擅自移除 core 或使用中之依賴模組"
-      ]
-    },
-    "list": {
-      "description": "List all installed modules, versions and providers",
-      "tier": "safe",
-      "phases": ["CONTEXT_INIT", "P00", "RESEARCH"],
-      "case_pros": [
-        "檢視當前環境已安裝之模組清冊與版本"
-      ]
-    },
-    "status": {
-      "description": "Health check and runtime diagnostic report",
-      "tier": "safe",
-      "phases": ["CONTEXT_INIT", "P00", "RESEARCH"],
-      "case_pros": [
-        "環境健康診斷與自我修復檢查"
-      ]
-    },
-    "reload": {
-      "description": "Reconcile and refresh runtime environment",
-      "tier": "safe",
-      "phases": ["P05", "FT-2"],
-      "case_pros": [
-        "重新聚合 contributes 並觸發模組 on_reload Hook"
-      ]
-    },
-    "rollback": {
-      "description": "Revert environment to the previous snapshot state",
-      "tier": "gated",
-      "phases": ["DISCUSS"],
-      "case_pros": [
-        "當前環境損毀時回滾至前一快照"
-      ],
-      "case_cons": [
-        "🚨 嚴禁未經確認擅自回滾環境"
-      ]
-    },
-    "uri": {
-      "description": "Resolve canonical semantic URI to physical path",
-      "tier": "safe",
-      "phases": ["CONTEXT_INIT", "P00", "P02", "P05"],
-      "case_pros": [
-        "動態解析語意 URI (如 python yscb.py uri resolve project://AGENTS.md)"
-      ]
-    },
-    "config": {
-      "description": "YS-Codebase module configuration manager (list, get, set, reload)",
-      "tier": "safe",
-      "phases": ["CONTEXT_INIT", "P00", "P02"],
-      "case_pros": [
-        "檢視專案或模組設定狀態: python yscb.py config list [--mod=<module>]",
-        "查詢特定組態值: python yscb.py config get <module> [key]",
-        "更新專案或本機組態: python yscb.py config set <module> <key> <value> [--local]"
-      ]
+    "module_alias": [],
+    "description": "YS-Codebase Core Microkernel Manager",
+    "cmd": {
+      "install": {
+        "description": "Install a module from provider or local build package (@build)",
+        "tier": "gated",
+        "server_compatible": false,
+        "args": {
+          "module": {
+            "description": "Module name or specifier (e.g. core@1.0.0)",
+            "required": true
+          }
+        },
+        "options": {
+          "install_mode": {
+            "force": {
+              "description": "Force reinstall module package",
+              "alias": ["f"]
+            }
+          },
+          "source": {
+            "provider": {
+              "description": "Module provider URL or path",
+              "alias": ["p"],
+              "args": {
+                "url": {
+                  "description": "Provider URL or path"
+                }
+              }
+            },
+            "version": {
+              "description": "Module version specifier",
+              "alias": ["v"],
+              "args": {
+                "ver": {
+                  "description": "Version string"
+                }
+              }
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "安裝新模組能力至環境中",
+            "本地模組自引用調試: install <mod>@build --force (不更新無關模組)"
+          ],
+          "cons": [
+            "🚨 嚴禁在未授權情況下，於開發過程連動 release 指令自部署，應使用 build + install <mod>@build 部署開發版"
+          ]
+        }
+      },
+      "update": {
+        "description": "Update installed module(s) to latest version",
+        "tier": "gated",
+        "server_compatible": false,
+        "args": {
+          "module": {
+            "description": "Module name to update (updates all if omitted)",
+            "required": false
+          }
+        },
+        "options": {
+          "source": {
+            "provider": {
+              "description": "Module provider URL or path",
+              "alias": ["p"],
+              "args": {
+                "url": {
+                  "description": "Provider URL or path"
+                }
+              }
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "升級已安裝之模組版本"
+          ],
+          "cons": [
+            "🚨 嚴禁在未獲升級指示前擅自更新"
+          ]
+        }
+      },
+      "remove": {
+        "description": "Remove an installed module from environment",
+        "tier": "gated",
+        "server_compatible": false,
+        "args": {
+          "module": {
+            "description": "Module name to remove",
+            "required": true
+          }
+        },
+        "options": {
+          "remove_mode": {
+            "clean": {
+              "description": "Clean configuration and cache files",
+              "alias": []
+            },
+            "purge": {
+              "description": "Purge storage and all module data completely",
+              "alias": []
+            }
+          },
+          "flags": {
+            "force": {
+              "description": "Force removal without prompt",
+              "alias": ["f"]
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "清理不再使用之模組"
+          ],
+          "cons": [
+            "🚨 嚴禁擅自移除 core 或使用中之依賴模組"
+          ]
+        }
+      },
+      "list": {
+        "description": "List all installed modules, versions and providers",
+        "tier": "safe",
+        "server_compatible": false,
+        "options": {
+          "scope": {
+            "remote": {
+              "description": "Query remote provider package list",
+              "alias": ["r"]
+            }
+          },
+          "filter": {
+            "provider": {
+              "description": "Filter by provider URL or path",
+              "alias": ["p"],
+              "args": {
+                "url": {
+                  "description": "Provider URL or path"
+                }
+              }
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "檢視當前環境已安裝之模組清冊與版本"
+          ],
+          "cons": []
+        }
+      },
+      "status": {
+        "description": "Health check and runtime diagnostic report",
+        "tier": "safe",
+        "server_compatible": false,
+        "options": {},
+        "usage": {
+          "pros": [
+            "環境健康診斷與自我修復檢查"
+          ],
+          "cons": []
+        }
+      },
+      "reload": {
+        "description": "Reconcile and refresh runtime environment",
+        "tier": "safe",
+        "server_compatible": false,
+        "options": {},
+        "usage": {
+          "pros": [
+            "重新聚合 contributes 並觸發模組 on_reload Hook"
+          ],
+          "cons": []
+        }
+      },
+      "rollback": {
+        "description": "Revert environment to the previous snapshot state",
+        "tier": "gated",
+        "server_compatible": false,
+        "args": {
+          "snapshot": {
+            "description": "Snapshot identifier to rollback to",
+            "required": false
+          }
+        },
+        "options": {},
+        "usage": {
+          "pros": [
+            "當前環境損毀時回滾至前一快照"
+          ],
+          "cons": [
+            "🚨 嚴禁未經確認擅自回滾環境"
+          ]
+        }
+      },
+      "uri": {
+        "description": "Manage and resolve YSCB canonical semantic URIs",
+        "tier": "safe",
+        "server_compatible": false,
+        "cmd": {
+          "list": {
+            "description": "List all registered semantic URI schemes",
+            "tier": "safe",
+            "server_compatible": false,
+            "options": {},
+            "usage": {
+              "pros": [
+                "檢視環境中所有已註冊的 URI 協定與解析路徑"
+              ],
+              "cons": []
+            }
+          },
+          "resolve": {
+            "description": "Resolve semantic URI to absolute physical path",
+            "tier": "safe",
+            "server_compatible": false,
+            "args": {
+              "uri": {
+                "description": "Semantic URI string to resolve (e.g. project://AGENTS.md)",
+                "required": true
+              }
+            },
+            "options": {},
+            "usage": {
+              "pros": [
+                "動態解析語意 URI 至實體絕對路徑"
+              ],
+              "cons": []
+            }
+          },
+          "to-uri": {
+            "description": "Convert absolute physical path to semantic URI",
+            "tier": "safe",
+            "server_compatible": false,
+            "args": {
+              "path": {
+                "description": "Absolute filesystem path to convert",
+                "required": true
+              }
+            },
+            "options": {},
+            "usage": {
+              "pros": [
+                "將實體檔案路徑反向推導為正規化語意 URI"
+              ],
+              "cons": []
+            }
+          },
+          "check": {
+            "description": "Health check all registered URI schemes",
+            "tier": "safe",
+            "server_compatible": false,
+            "options": {},
+            "usage": {
+              "pros": [
+                "檢查全系統 URI 協定之可用性與有效性"
+              ],
+              "cons": []
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "語意 URI 系統管理與解析 (例如 python yscb.py uri resolve project://AGENTS.md)"
+          ],
+          "cons": []
+        }
+      },
+      "config": {
+        "description": "YS-Codebase module configuration manager",
+        "tier": "safe",
+        "server_compatible": false,
+        "cmd": {
+          "list": {
+            "description": "List module configurations",
+            "tier": "safe",
+            "server_compatible": false,
+            "options": {
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              },
+              "scope": {
+                "local": {
+                  "description": "Operate on local machine overlay configuration",
+                  "alias": []
+                }
+              },
+              "filter": {
+                "mod": {
+                  "description": "Target module name",
+                  "alias": ["m"],
+                  "args": {
+                    "module": {
+                      "description": "Module name"
+                    }
+                  }
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視專案或模組設定清單: python yscb.py config list [--mod=<module>]"
+              ],
+              "cons": []
+            }
+          },
+          "get": {
+            "description": "Get effective configuration value",
+            "tier": "safe",
+            "server_compatible": false,
+            "args": {
+              "module": {
+                "description": "Target module name",
+                "required": true
+              },
+              "key": {
+                "description": "Configuration key path",
+                "required": false
+              }
+            },
+            "options": {
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "查詢特定組態值: python yscb.py config get <module> [key]"
+              ],
+              "cons": []
+            }
+          },
+          "set": {
+            "description": "Set configuration value",
+            "tier": "safe",
+            "server_compatible": false,
+            "args": {
+              "module": {
+                "description": "Target module name",
+                "required": true
+              },
+              "key": {
+                "description": "Configuration key",
+                "required": true
+              },
+              "value": {
+                "description": "Configuration value",
+                "required": true
+              }
+            },
+            "options": {
+              "scope": {
+                "local": {
+                  "description": "Save to local machine overlay (config.local.json)",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "更新專案或本機組態: python yscb.py config set <module> <key> <value> [--local]"
+              ],
+              "cons": []
+            }
+          },
+          "reload": {
+            "description": "Reload cached configuration",
+            "tier": "safe",
+            "server_compatible": false,
+            "args": {
+              "module": {
+                "description": "Target module name to reload (default: all)",
+                "required": false
+              }
+            },
+            "options": {},
+            "usage": {
+              "pros": [
+                "重新載入組態快取: python yscb.py config reload [module]"
+              ],
+              "cons": []
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "模組組態管理: python yscb.py config list / get / set / reload"
+          ],
+          "cons": []
+        }
+      },
+      "restore": {
+        "description": "Restore missing installed modules from mirror or provider",
+        "tier": "safe",
+        "server_compatible": false,
+        "options": {
+          "flags": {
+            "force": {
+              "description": "Force restore/reinstall modules",
+              "alias": ["f"]
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "修復或補齊環境中缺失之模組"
+          ],
+          "cons": []
+        }
+      },
+      "event": {
+        "description": "Ecosystem Event Registry and Inspector",
+        "tier": "safe",
+        "server_compatible": false,
+        "cmd": {
+          "list": {
+            "description": "List all registered events and hooks in the ecosystem",
+            "tier": "safe",
+            "server_compatible": false,
+            "options": {},
+            "usage": {
+              "pros": [
+                "檢視全系統已註冊之生命週期事件清冊"
+              ],
+              "cons": []
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "檢視全系統已註冊之生命週期事件"
+          ],
+          "cons": []
+        }
+      }
     }
   },
   "events": [

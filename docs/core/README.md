@@ -8,7 +8,7 @@
 
 ## 1. Core 微內核架構設計 (Microkernel Architecture)
 
-`core` 模組由六大核心子系統組成：
+`core` 模組由七大核心子系統組成：
 
 ```mermaid
 graph TD
@@ -21,6 +21,7 @@ graph TD
         Engine["AtomicEngine 引擎<br/><code>core.engine</code><br/><i>12 大原子操作、OS 原子鎖與雙層快照</i>"]:::sub
         Installer["套件生命週期調度器<br/><code>core.installer</code><br/><i>安裝、更新、移除、快照回滾</i>"]:::sub
         Contributes["Contribute 依賴注入器<br/><code>core.contributes</code><br/><i>__provider__ 自動標記、拓撲排序聚合與查詢 SDK</i>"]:::sub
+        Commands["Commands 核心命令引擎<br/><code>core.commands</code><br/><i>Schema 解析、正交分組、CmdBags 容器、雙管道分流與對稱 Hook</i>"]:::sub
     end
 ```
 
