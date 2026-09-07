@@ -99,5 +99,45 @@ tests/
 .pytest_cache/
 '''
         uri.write_text(f"{target_src_uri}/.yscbignore", ignore_content)
+
+        # 6. Create contributes/_format.json, contributes/_manifest.md, and sample contributes/core.json
+        format_content = {
+            "_types": {},
+            "sample_point": {
+                "description": f"Contribution point provided by {name}",
+                "format": {
+                    "item_name": "str!",
+                    "enabled": "bool? = true"
+                }
+            }
+        }
+        uri.write_json(f"{target_src_uri}/contributes/_format.json", format_content)
+
+        manifest_content = f"""# {name} Contributes Manifest
+
+> 本清冊記錄 `{name}` 模組對外貢獻之擴充能力與協議。
+
+## 1. 外部注入清冊 (Egress Contributions)
+- `core.json`: 向微內核註冊之 CLI 指令。
+"""
+        uri.write_text(f"{target_src_uri}/contributes/_manifest.md", manifest_content)
+
+        core_contrib_content = {
+            "commands": {
+                "description": final_desc,
+                "cmd": {
+                    "hello": {
+                        "description": f"Say hello from {name}",
+                        "tier": "safe",
+                        "server_compatible": True,
+                        "usage": {
+                            "pros": [f"執行 {name} 基礎打招呼指令"],
+                            "cons": []
+                        }
+                    }
+                }
+            }
+        }
+        uri.write_json(f"{target_src_uri}/contributes/core.json", core_contrib_content)
         
         return True, f"Successfully created module '{name}' at {target_src_uri}."

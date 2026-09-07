@@ -32,12 +32,12 @@
       "plan": {
         "description": "Dev Plans 專案開發計畫管理工具鏈",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "cmd": {
           "archive": {
             "description": "將已完成之 Dev Plan 安全歸檔至 workflow.archived://",
             "tier": "gated",
-            "server_compatible": false,
+            "server_compatible": true,
             "args": {
               "plan_name": {
                 "description": "目標計畫目錄名稱",
@@ -64,7 +64,7 @@
           "status": {
             "description": "掃描並輸出進行中之 Dev Plans 狀態矩陣 (ASCII 表格)",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "usage": {
               "pros": [
                 "檢視進行中計畫狀態與階段: plan status"
@@ -74,7 +74,7 @@
           "search": {
             "description": "搜尋 Dev Plans 內部之決策紀錄 (DR) 或全文關鍵字",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "args": {
               "query": {
                 "description": "搜尋關鍵字",
@@ -127,7 +127,7 @@
           "check": {
             "description": "合規性診斷 Dev Plans 文件結構、標題與 Header 元數據",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "args": {
               "plan_name": {
                 "description": "指定計畫名稱 (若省略則檢查全部進行中計畫)",
@@ -156,7 +156,7 @@
           "verify": {
             "description": "合規性診斷 Dev Plans (check 之同義指令)",
             "tier": "safe",
-            "server_compatible": false,
+            "server_compatible": true,
             "args": {
               "plan_name": {
                 "description": "指定計畫名稱 (若省略則檢查全部進行中計畫)",
@@ -192,7 +192,7 @@
       "release": {
         "description": "執行工作流資產 4-Step 原子發布交易至所有 active release targets",
         "tier": "gated",
-        "server_compatible": false,
+        "server_compatible": true,
         "options": {
           "force": {
             "force": {
@@ -213,7 +213,7 @@
       "release-target": {
         "description": "檢視與管理工作流發布目標清冊 (Release Targets)",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "action": {
             "description": "操作動作 (list, add, remove)",
@@ -254,7 +254,7 @@
       "compile": {
         "description": "執行 Stage 1 中繼工廠編譯管線 (展開變數至 cache.root://)",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "usage": {
           "pros": [
             "測試編譯或除錯 Stage 1 中繼資產: compile"
@@ -264,7 +264,7 @@
       "roadmap": {
         "description": "檢視或探索專案長期技術儲備與策略路線圖 (Roadmaps)",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "args": {
           "topic": {
             "description": "指定路線圖主題或檔名",
@@ -288,7 +288,7 @@
       "tokens": {
         "description": "檢視全系統已註冊之 Token 錨點清單與語意 URI 說明",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "usage": {
           "pros": [
             "檢視全系統可用的 Token 錨點清單: tokens"
@@ -298,7 +298,7 @@
       "list": {
         "description": "檢視當前已安裝模組清冊與 agents-workflow 導出規範清單",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "usage": {
           "pros": [
             "檢視當前環境已安裝之模組清冊與版本"

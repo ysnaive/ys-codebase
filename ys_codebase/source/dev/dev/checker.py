@@ -307,17 +307,37 @@ class Checker:
                     file_path="contributes/core.json",
                 )
             )
-        else:
+
+        contrib_dir = os.path.join(real_dir, "contributes")
+        if not os.path.exists(contrib_dir) or not os.path.isdir(contrib_dir):
+            return
+
+        from core.validator import ContributesValidator
+        from core import contributes as core_contrib
+
+        # 1. Meta-Check: _format.json if present
+        fmt_path = os.path.join(contrib_dir, "_format.json")
+        if os.path.exists(fmt_path):
             try:
-                with open(core_contribute_path, "r", encoding="utf-8") as f:
-                    c_data = json.load(f)
-                if not any(k in c_data for k in ("commands", "uri_schemes")):
+                with open(fmt_path, "r", encoding="utf-8") as f:
+                    fmt_data = json.load(f)
+                meta_res = ContributesValidator.validate_format_schema(fmt_data)
+                for err in meta_res.errors:
+                    report.issues.append(
+                        CheckIssue(
+                            severity=CheckSeverity.FAIL,
+                            category="CONTRIBUTES",
+                            message=f"Invalid _format.json schema: [{err.path}] {err.message}",
+                            file_path="contributes/_format.json",
+                        )
+                    )
+                for w in meta_res.warnings:
                     report.issues.append(
                         CheckIssue(
                             severity=CheckSeverity.WARN,
                             category="CONTRIBUTES",
-                            message="'contributes/core.json' has no 'commands' or 'uri_schemes' declared.",
-                            file_path="contributes/core.json",
+                            message=f"_format.json note: [{w.path}] {w.message}",
+                            file_path="contributes/_format.json",
                         )
                     )
             except Exception as e:
@@ -325,8 +345,60 @@ class Checker:
                     CheckIssue(
                         severity=CheckSeverity.FAIL,
                         category="CONTRIBUTES",
-                        message=f"Invalid JSON in 'contributes/core.json': {e}",
-                        file_path="contributes/core.json",
+                        message=f"Syntax error in 'contributes/_format.json': {e}",
+                        file_path="contributes/_format.json",
+                    )
+                )
+
+        # 2. Ingress & Egress Boundary Check on <target>.json
+        try:
+            files = [f for f in os.listdir(contrib_dir) if f.endswith(".json")]
+        except Exception:
+            files = []
+
+        for fname in files:
+            if fname.startswith("_"):
+                continue  # Special schema / metadata file
+            target = fname[:-5]
+            f_path = os.path.join(contrib_dir, fname)
+            try:
+                with open(f_path, "r", encoding="utf-8") as f:
+                    c_data = json.load(f)
+            except Exception as e:
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="CONTRIBUTES",
+                        message=f"Syntax error in 'contributes/{fname}': {e}",
+                        file_path=f"contributes/{fname}",
+                    )
+                )
+                continue
+
+            target_fmt = core_contrib.get_format(target)
+            if target_fmt is None:
+                # Target has not declared _format.json yet (gradual tolerance)
+                continue
+
+            val_res = ContributesValidator.validate(target, c_data, donor_mod=name, format_schema=target_fmt, strict_points=True)
+            for err in val_res.errors:
+                hint = f" ({err.suggestion})" if err.suggestion else ""
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="CONTRIBUTES",
+                        message=f"Schema violation in 'contributes/{fname}': [{err.path}] {err.message}{hint}",
+                        file_path=f"contributes/{fname}",
+                    )
+                )
+            for w in val_res.warnings:
+                hint = f" ({w.suggestion})" if w.suggestion else ""
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.WARN,
+                        category="CONTRIBUTES",
+                        message=f"Schema warning in 'contributes/{fname}': [{w.path}] {w.message}{hint}",
+                        file_path=f"contributes/{fname}",
                     )
                 )
 

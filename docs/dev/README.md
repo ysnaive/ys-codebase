@@ -46,3 +46,4 @@ graph TD
 - [完整使用手冊 (user_guide.md)](./user_guide.md)：CLI 指令詳細用法、參數說明與範例。
 - [發布產物治理專題手冊 (topics/release_governance.md)](./topics/release_governance.md)：時序滑動窗口原理、跨三元組收斂、實體 SSOT 索引機制。
 - [沙盒測試指南 (testing_guide.md)](./testing_guide.md)：沙盒架構、測試發現與契約測試規範。
+- [模組貢獻擴充架構與語法參考手冊 (reference/contributes_format.md)](./reference/contributes_format.md)：第三方模組開發者專屬之 Contributes 架構、Ingress/Egress 邊界與 `_format.json` Schema DSL 規範。

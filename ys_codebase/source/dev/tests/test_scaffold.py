@@ -23,6 +23,9 @@ class TestDevScaffolder(YSCBTestCase):
         self.assertTrue(uri.exists(f"{src_uri}/scripts/cli.py"))
         self.assertTrue(uri.exists(f"{src_uri}/{mod_name}/__init__.py"))
         self.assertTrue(uri.exists(f"{src_uri}/.yscbignore"))
+        self.assertTrue(uri.exists(f"{src_uri}/contributes/_format.json"))
+        self.assertTrue(uri.exists(f"{src_uri}/contributes/_manifest.md"))
+        self.assertTrue(uri.exists(f"{src_uri}/contributes/core.json"))
         
         # Cleanup created source
         uri.rmtree(src_uri)

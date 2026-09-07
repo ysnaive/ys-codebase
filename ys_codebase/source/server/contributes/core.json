@@ -59,7 +59,7 @@
       "status": {
         "description": "Inspect persistent server daemon and worker status",
         "tier": "safe",
-        "server_compatible": false,
+        "server_compatible": true,
         "options": {},
         "usage": {
           "pros": [
