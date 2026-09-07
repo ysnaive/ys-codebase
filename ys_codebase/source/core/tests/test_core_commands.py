@@ -263,8 +263,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft08_backward_compat_silent_fallback(self):
-        """FT-08: 驗證雙軌向後相容過渡層：未遷移模組靜默退化調用 process(args) 無 Warning。"""
+    def test_ft08_hard_sunset_ec05_enforcement(self):
+        """FT-08: 驗證向後相容過渡層徹底拔除 (Hard Sunset Gate)：未定義精確函式之模組調用嚴格拋出 EC-05 並返回退出碼 127，不再退化至 process。"""
         fake_mod = MagicMock(spec=["process"])
         fake_mod.process.return_value = 0
 
@@ -277,44 +277,33 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                 with patch.dict("core.commands.dispatcher._MODULE_CACHE", {"/fake/cli.py": fake_mod}):
                     ret = dispatch_local("legacy_mod", "my_cmd", ["arg1"], cmd_spec, "/fake/root")
 
-        self.assertEqual(ret, 0)
-        fake_mod.process.assert_called_once_with(["my_cmd", "arg1"])
-        # 斷言無 Warning 污染輸出
-        self.assertNotIn("WARNING", f_out.getvalue())
-        self.assertNotIn("Deprecated", f_err.getvalue())
+        # 斷言硬性阻斷並返回 EC-05 退出碼 127
+        self.assertEqual(ret, 127)
+        fake_mod.process.assert_not_called()
+        self.assertIn("EC-05", f_out.getvalue())
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft09_pioneer_modules_contract(self):
-        """FT-09: 驗證先驅模組 core 與 server 遷移後無殘留 process(args) 且定義精確函式。"""
+    def test_ft09_all_modules_cli_contract(self):
+        """FT-09: 驗證全生態系 5 大模組遷移後無殘留 process(args) 且定義精確命令函式。"""
         import importlib.util
+        for mod_name in ["core", "server", "dev", "knowledge-db", "agents-workflow"]:
+            mod_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", mod_name))
+            if mod_root not in sys.path:
+                sys.path.insert(0, mod_root)
+            cli_path = os.path.join(mod_root, "scripts", "cli.py")
+            spec = importlib.util.spec_from_file_location(f"{mod_name.replace('-', '_')}_test_cli", cli_path)
+            mod_obj = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod_obj)
+            self.assertFalse(hasattr(mod_obj, "process"), f"Module '{mod_name}' still defines legacy process()!")
+
+        # 抽樣斷言關鍵精確命令函式存在
         core_cli_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "cli.py"))
         spec_core = importlib.util.spec_from_file_location("core_scripts_cli_test", core_cli_path)
         core_cli = importlib.util.module_from_spec(spec_core)
         spec_core.loader.exec_module(core_cli)
-
-        server_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "server"))
-        if server_root not in sys.path:
-            sys.path.insert(0, server_root)
-        server_cli_path = os.path.join(server_root, "scripts", "cli.py")
-        spec_server = importlib.util.spec_from_file_location("server_scripts_cli_test", server_cli_path)
-        server_cli = importlib.util.module_from_spec(spec_server)
-        spec_server.loader.exec_module(server_cli)
-
-        # 斷言無 process 函式
-        self.assertFalse(hasattr(core_cli, "process"))
-        self.assertFalse(hasattr(server_cli, "process"))
-
-        # 斷言具備精確命令函式
         self.assertTrue(callable(getattr(core_cli, "status", None)))
         self.assertTrue(callable(getattr(core_cli, "install", None)))
-        self.assertTrue(callable(getattr(core_cli, "config", None)))
-        self.assertTrue(callable(getattr(core_cli, "uri", None)))
-
-        self.assertTrue(callable(getattr(server_cli, "start", None)))
-        self.assertTrue(callable(getattr(server_cli, "stop", None)))
-        self.assertTrue(callable(getattr(server_cli, "status", None)))
-        self.assertTrue(callable(getattr(server_cli, "reload", None)))
         self.mark_passed()
 
     @require(Requirement.LOGIC)

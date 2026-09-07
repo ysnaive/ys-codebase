@@ -290,12 +290,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     _ensure_private_venv_path(yscb_abs)
 
-    # 優先注入 source/core 與 .modules/core 至 sys.path 前端
-    for c in [os.path.join(yscb_abs, ".modules", "core"), os.path.join(yscb_abs, "source", "core")]:
-        if os.path.isdir(c):
-            if c in sys.path:
-                sys.path.remove(c)
-            sys.path.insert(0, c)
+    # =========================================================================
+    # 🚨 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
+    # 本專案嚴格遵循：虛擬機測試 (dev test) -> install @build -> 實機測試 流程。
+    # 運行時 (Runtime) 僅允許載入 .modules/ 運行時空間，嚴禁直接運行開發環境 (source/) 程式碼。
+    # 絕對禁止對此邏輯進行任何 fallback 至 source/ 或向 sys.path 插入 source/ 空間之刪改！
+    # =========================================================================
+    core_runtime_dir = os.path.join(yscb_abs, ".modules", "core")
+    if os.path.isdir(core_runtime_dir):
+        if core_runtime_dir in sys.path:
+            sys.path.remove(core_runtime_dir)
+        sys.path.insert(0, core_runtime_dir)
 
     os.environ["YSCB_HOST_DIR"] = host_dir
     os.environ["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"

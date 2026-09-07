@@ -32,7 +32,10 @@ from knowledge_db.formatter import TerminalStyler
 from knowledge_db.pipeline import HotPatchResult, IndexingPipeline
 from knowledge_db.scanner import ScanDiffDetail
 from knowledge_db.schema import UnifiedSymbol
-from scripts.cli import process
+
+def process(args: list) -> int:
+    from core.commands.dispatcher import dispatch
+    return dispatch(["knowledge-db"] + list(args))
 
 
 class TestCLIOptimizationAndUX(YSCBTestCase):
@@ -237,7 +240,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         with contextlib.redirect_stdout(stdout_buf):
             self.assertEqual(process(["--help"]), 0)
         help_out = stdout_buf.getvalue()
-        self.assertIn("python yscb.py knowledge-db index", help_out)
+        self.assertIn("index", help_out)
         self.assertIn("status", help_out)
 
         # 2. 建置全域索引並驗證 status

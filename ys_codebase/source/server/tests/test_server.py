@@ -107,10 +107,10 @@ class TestServerModule(YSCBTestCase):
         worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: packets.append(p))
 
         # Create a mock module that raises SystemExit(42)
-        mock_mod_dir = os.path.join(self.root_dir, "source", "mock_exit", "scripts")
+        mock_mod_dir = os.path.join(self.root_dir, ".modules", "mock_exit", "scripts")
         os.makedirs(mock_mod_dir, exist_ok=True)
         with open(os.path.join(mock_mod_dir, "cli.py"), "w", encoding="utf-8") as f:
-            f.write("def process(args):\n    import sys\n    sys.exit(42)\n")
+            f.write("def help(cmd_bags):\n    import sys\n    sys.exit(42)\n")
 
         exit_code = worker.execute_task(module="mock_exit", args=[], cwd=self.root_dir)
         self.assertEqual(exit_code, 42)
@@ -203,7 +203,7 @@ class TestServerModule(YSCBTestCase):
         os.makedirs(mod_dir, exist_ok=True)
         with open(os.path.join(mod_dir, "cli.py"), "w", encoding="utf-8") as f:
             f.write("EXEC_COUNT = 0\n"
-                    "def process(args):\n"
+                    "def help(cmd_bags):\n"
                     "    global EXEC_COUNT\n"
                     "    EXEC_COUNT += 1\n"
                     "    return EXEC_COUNT\n")

@@ -49,21 +49,16 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
 
     registry = CommandsRegistry()
 
-    # 搜尋路徑：優先 source/，次為 .modules/
-    search_dirs = [
-        os.path.join(yscb_abs, "source"),
-        os.path.join(yscb_abs, ".modules"),
-    ]
-
-    scanned_modules = set()
-
-    for sdir in search_dirs:
-        if not os.path.isdir(sdir):
-            continue
-        for mod_name in os.listdir(sdir):
-            if mod_name in scanned_modules:
-                continue
-            mod_path = os.path.join(sdir, mod_name)
+    # =========================================================================
+    # 🚨 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
+    # 本專案嚴格遵循：虛擬機測試 (dev test) -> install @build -> 實機測試 流程。
+    # 僅允許 .modules 運行時空間載入 contributes，嚴禁直接運行或掃描開發環境 (source/) 程式碼。
+    # 絕對禁止對此邏輯進行任何 fallback 或加入 source/ 空間之刪改！
+    # =========================================================================
+    modules_dir = os.path.join(yscb_abs, ".modules")
+    if os.path.isdir(modules_dir):
+        for mod_name in os.listdir(modules_dir):
+            mod_path = os.path.join(modules_dir, mod_name)
             if not os.path.isdir(mod_path):
                 continue
 
@@ -80,7 +75,6 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
                             data = json.load(f)
                             if "commands" in data and isinstance(data["commands"], dict):
                                 registry.register_module(mod_name, data["commands"])
-                                scanned_modules.add(mod_name)
                                 break
                     except Exception:
                         pass
@@ -162,15 +156,75 @@ def _try_hot_dispatch(module_name: str, cmd_name: str, args: List[str], yscb_abs
         return None
 
 
+def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
+    """
+    在背景非同步按需拉起 Server 守護進程。
+    僅在 server 模組存在、非 server/dev 指令、且 config/server/config.project.json enable != false 時觸發。
+    """
+    state_file = os.path.join(yscb_abs, ".cache", "server", "daemon.json")
+    if os.path.isfile(state_file):
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                st = json.load(f)
+            pid = st.get("pid")
+            if pid and hasattr(os, "kill"):
+                try:
+                    os.kill(pid, 0)
+                    return  # 守護進程活躍，無須重複拉起
+                except OSError:
+                    try:
+                        os.remove(state_file)
+                    except OSError:
+                        pass
+        except Exception:
+            return
+
+    # 🚨 剛性架構約束：僅允許 .modules 運行時空間，禁止任何 fallback
+    if not os.path.isdir(os.path.join(yscb_abs, ".modules", "server")):
+        return
+
+    cfg_file = os.path.join(yscb_abs, "config", "server", "config.project.json")
+    if os.path.isfile(cfg_file):
+        try:
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                if json.load(f).get("enable") is False:
+                    return
+        except Exception:
+            pass
+
+    try:
+        import subprocess
+        flags = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+            if sys.platform == "win32"
+            else 0
+        )
+        yscb_py = os.path.join(host_dir, "yscb.py")
+        if not os.path.isfile(yscb_py):
+            yscb_py = sys.argv[0]
+        subprocess.Popen(
+            [sys.executable, yscb_py, "server", "start", "--daemon"],
+            cwd=host_dir,
+            creationflags=flags,
+            start_new_session=(sys.platform != "win32"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except Exception:
+        pass
+
+
 def _find_module_cli(module_name: str, yscb_abs: str) -> Optional[str]:
-    """定位目標模組之 scripts/cli.py。"""
-    candidates = [
-        os.path.join(yscb_abs, "source", module_name, "scripts", "cli.py"),
-        os.path.join(yscb_abs, ".modules", module_name, "scripts", "cli.py"),
-    ]
-    for c in candidates:
-        if os.path.isfile(c):
-            return os.path.normpath(c)
+    """
+    定位目標模組之 scripts/cli.py。
+    🚨 剛性架構約束：僅允許 .modules 運行時空間，嚴禁直接運行開發環境 (source/) 程式碼，禁止任何 fallback。
+    """
+    target = os.path.join(yscb_abs, ".modules", module_name, "scripts", "cli.py")
+    if os.path.isfile(target):
+        return os.path.normpath(target)
     return None
 
 
@@ -196,7 +250,7 @@ def dispatch_local(
     1. 觸發 pre_cli_dispatch Hook
     2. OptionResolver 解析參數與互斥檢查
     3. 載入目標模組 scripts/cli.py
-    4. 調用精確函式或靜默退化至 process(args)
+    4. 調用精確命令函式
     5. 觸發 post_cli_dispatch Hook
     """
     # FR-10: 對稱觸發 pre_cli_dispatch Hook
@@ -232,11 +286,13 @@ def dispatch_local(
         print(f"[yscb] Error: Cannot find CLI entrypoint for module '{module_name}'.")
         return 1
 
-    # 注入模組根目錄與 core 至 sys.path
+    # =========================================================================
+    # 🚨 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
+    # 僅注入 .modules/<module> 與 .modules/core 運行時空間至 sys.path。
+    # 嚴禁直接運行開發環境 (source/) 程式碼，禁止在此向 sys.path 插入 source/ 空間！
+    # =========================================================================
     mod_root = os.path.dirname(os.path.dirname(target_cli))
-    core_dir = os.path.join(yscb_abs, "source", "core")
-    if not os.path.isdir(core_dir):
-        core_dir = os.path.join(yscb_abs, ".modules", "core")
+    core_dir = os.path.join(yscb_abs, ".modules", "core")
 
     for p in [core_dir, mod_root]:
         if os.path.isdir(p) and p not in sys.path:
@@ -263,41 +319,32 @@ def dispatch_local(
     try:
         sys.argv = [target_cli] + raw_args
 
-        # FR-08: 雙軌向後相容過渡層（未宣告 commands contributes 之舊模組，靜默退化至 process）
-        if cmd_spec is None and hasattr(mod, "process") and callable(getattr(mod, "process")):
-            ret = mod.process(cmd_path + raw_args)
-            exit_code = int(ret) if ret is not None else 0
-        else:
-            # 優先尋找階層下劃線精確函式 (如 uri_list)
-            fn = getattr(mod, func_name, None)
-            if not callable(fn) and len(cmd_path) > 1:
-                # 檢查頂層函式 (例如 cli.uri，若其能自行處理 sub_cmd)
-                top_fn = getattr(mod, primary_cmd, None)
-                if callable(top_fn):
-                    combined_args = cmd_path[1:] + positional_args
-                    sub_bags = CmdBags(raw_cmd=raw_cmd_str, command=primary_cmd, args=combined_args, options=resolved_options)
-                    fn = lambda _: top_fn(sub_bags)
+        # 優先尋找階層下劃線精確函式 (如 uri_list)
+        fn = getattr(mod, func_name, None)
+        if not callable(fn) and len(cmd_path) > 1:
+            # 檢查頂層函式 (例如 cli.uri，若其能自行處理 sub_cmd)
+            top_fn = getattr(mod, primary_cmd, None)
+            if callable(top_fn):
+                combined_args = cmd_path[1:] + positional_args
+                sub_bags = CmdBags(raw_cmd=raw_cmd_str, command=primary_cmd, args=combined_args, options=resolved_options)
+                fn = lambda _: top_fn(sub_bags)
 
-            if callable(fn):
-                ret = fn(cmd_bags)
-                exit_code = int(ret) if ret is not None else 0
-            elif cmd_spec and cmd_spec.cmd:
-                # 純分支且無自身函式，自動降級渲染子指令 Help
-                disp_cmd = " ".join(cmd_path)
-                print(HelpRenderer.render_cmd_help(module_name, disp_cmd, cmd_spec))
-                exit_code = 0
-            elif hasattr(mod, "process") and callable(getattr(mod, "process")):
-                # FR-08: 雙軌向後相容過渡層（靜默退化，無 warning 污染）
-                ret = mod.process(cmd_path + raw_args)
-                exit_code = int(ret) if ret is not None else 0
-            else:
-                # EC-05: 既無精確函式亦無 process 接口
-                disp_cmd = " ".join(cmd_path)
-                print(
-                    f"[yscb] Error (EC-05): Module '{module_name}' CLI script does not define "
-                    f"command function '{func_name}(cmd_bags)' nor fallback 'process(args)'."
-                )
-                return 127
+        if callable(fn):
+            ret = fn(cmd_bags)
+            exit_code = int(ret) if ret is not None else 0
+        elif cmd_spec and cmd_spec.cmd:
+            # 純分支且無自身函式，自動降級渲染子指令 Help
+            disp_cmd = " ".join(cmd_path)
+            print(HelpRenderer.render_cmd_help(module_name, disp_cmd, cmd_spec))
+            exit_code = 0
+        else:
+            # EC-05: 既無精確函式亦非純分支 (Hard Sunset: 徹底移除 process fallback)
+            disp_cmd = " ".join(cmd_path)
+            print(
+                f"[yscb] Error (EC-05): Module '{module_name}' CLI script does not define "
+                f"command function '{func_name}(cmd_bags)'."
+            )
+            return 127
     except SystemExit as se:
         exit_code = se.code if isinstance(se.code, int) else (0 if se.code is None else 1)
     except Exception as e:
@@ -379,30 +426,14 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     cmd_path, cmd_spec, sub_args = registry.resolve_command_path(module_name, target_tokens)
 
     if not cmd_path:
-        # 指令未知檢查
-        cli_cand = _find_module_cli(module_name, yscb_abs)
-        has_legacy_process = False
-        if cli_cand:
-            try:
-                with open(cli_cand, "r", encoding="utf-8", errors="ignore") as f:
-                    if "def process(" in f.read():
-                        has_legacy_process = True
-            except Exception:
-                pass
-
-        if not has_legacy_process:
-            unknown_token = target_tokens[0]
-            cand_list = list(mod_spec.commands.keys()) if (mod_spec and mod_spec.commands) else []
-            sugg = _suggest_command(unknown_token, cand_list)
-            print(f"[yscb] Error: Unknown command '{unknown_token}' for module '{module_name}'.")
-            if sugg:
-                print(f"       Did you mean '{sugg}'?")
-            print(f"       Run 'python yscb.py {module_name} --help' for available commands.")
-            return 1
-        else:
-            cmd_path = [target_tokens[0]]
-            cmd_spec = None
-            sub_args = target_tokens[1:]
+        unknown_token = target_tokens[0]
+        cand_list = list(mod_spec.commands.keys()) if (mod_spec and mod_spec.commands) else []
+        sugg = _suggest_command(unknown_token, cand_list)
+        print(f"[yscb] Error: Unknown command '{unknown_token}' for module '{module_name}'.")
+        if sugg:
+            print(f"       Did you mean '{sugg}'?")
+        print(f"       Run 'python yscb.py {module_name} --help' for available commands.")
+        return 1
 
     cmd_disp_name = " ".join(cmd_path)
 
@@ -460,6 +491,10 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         if hot_res is not None:
             return hot_res
         # EC-04: 熱派發通訊失敗或常駐離線，透明降級至本地冷派發
+
+    # 非 server / dev 指令在背景按需喚醒 Server 常駐進程
+    if module_name not in ("server", "dev"):
+        _maybe_auto_spawn_server(host_dir, yscb_abs)
 
     # 10. 本地冷派發執行
     return dispatch_local(
