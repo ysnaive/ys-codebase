@@ -18,13 +18,13 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 from core import vfs
-from core.platform import is_process_alive, kill_process_tree, InterProcessLock, ensure_private_venv
+from core.platform import is_process_alive, kill_process_tree, InterProcessLock, ensure_private_venv, spawn_detached
 from server.service import ServiceManager
 from server.watcher import ModulesWatcher
 
@@ -102,7 +102,7 @@ class MasterSupervisor:
         # 4. Start ModulesWatcher
         if self.enable_watcher:
             modules_dir = os.path.join(self.yscb_root, ".modules")
-            self.watcher = ModulesWatcher(modules_dir, on_change_callback=self.restart_worker)
+            self.watcher = ModulesWatcher(modules_dir, on_change_callback=self.on_modules_changed, debounce_sec=0.5)
             self.watcher.start()
 
         # 5. Discover and Start Service Workers
@@ -211,6 +211,58 @@ class MasterSupervisor:
             new_pid = self._spawn_worker_locked()
             self._write_state()
             return new_pid
+
+    def on_modules_changed(self, affected_modules: Optional[Set[str]] = None) -> None:
+        """
+        Dual-channel reload dispatcher:
+        - If 'server' or 'core' changed: triggers restart_server()
+        - Otherwise: triggers restart_worker()
+        """
+        if affected_modules and ("server" in affected_modules or "core" in affected_modules):
+            logger.info(f"[Server] Detected core/server module update ({affected_modules}). Triggering Master self-restart...")
+            self.restart_server()
+        else:
+            logger.info(f"[Server] Detected domain module update ({affected_modules or 'unknown'}). Reloading Warm Worker...")
+            self.restart_worker()
+
+    def restart_server(self) -> None:
+        """
+        Gracefully restarts the entire Server daemon (Master + Worker).
+        Cleans up current Master instance and spawns a fresh detached Master daemon.
+        """
+        def _do_restart():
+            try:
+                # 1. Stop current Master resources
+                self.stop()
+            except Exception as e:
+                logger.warning(f"[Server] Error stopping daemon during restart: {e}")
+
+            # 2. Spawn detached new Master daemon
+            try:
+                core_dir = os.path.join(self.yscb_root, ".modules", "core")
+                if not os.path.isdir(core_dir):
+                    core_dir = os.path.join(self.yscb_root, "source", "core")
+                server_dir = os.path.join(self.yscb_root, ".modules", "server")
+                if not os.path.isdir(server_dir):
+                    server_dir = os.path.join(self.yscb_root, "source", "server")
+
+                cmd = [
+                    sys.executable,
+                    "-c",
+                    f"import sys; "
+                    f"sys.path.insert(0, r'{core_dir}'); "
+                    f"sys.path.insert(0, r'{server_dir}'); "
+                    f"from server.master import MasterSupervisor; MasterSupervisor(r'{self.yscb_root}', idle_timeout_sec={self.idle_timeout_sec}, enable_watcher={self.enable_watcher}).start(foreground=True)",
+                ]
+                spawn_detached(cmd, cwd=self.yscb_root)
+            except Exception as ex:
+                logger.error(f"[Server] Failed to spawn new Master daemon: {ex}")
+            finally:
+                # 3. Exit current process
+                os._exit(0)
+
+        t = threading.Thread(target=_do_restart, daemon=True, name="server-self-restart")
+        t.start()
 
     def dispatch_task(self, req_data: Dict[str, Any], chunk_emitter: Any) -> int:
         """Dispatches a CLI task to the warm worker sequentially."""

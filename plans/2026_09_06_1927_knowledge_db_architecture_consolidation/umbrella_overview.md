@@ -28,6 +28,7 @@
 | **sub_07** | `sub_07_yscb_host_slimming_and_dual_channel_dispatch` | Full Track | `Completed` | yscb 宿主入口極簡瘦身與雙管道派發架構：業務全面下沉至 core、全域 Help 動態聚合、雙管道 (IPC/in-proc) 路由與 Exit Code 透傳 |
 | **sub_08** | `sub_08_knowledge_db_search_acceleration_and_worker_singleton` | Full Track | `Completed` | Knowledge-DB 檢索性能極致加速：Worker 常駐單例化 (KnowledgeEngine Singleton)、啟動預熱機制 (Pre-warm Index Cache)、Watcher 事件驅動快取感知 (取代每次主動全庫 stat 嗅探) |
 | **sub_09** | `sub_09_architecture_debt_remediation` | Full Track | `Completed` | 架構技術債全數收斂修復：消除雙軌鎖 (H-01) 與寬鬆兜底 (H-02)、進程單例共享 (M-05)、VFS 原子狀態 (M-02)、FD 洩漏與快取 (M-03/04)、並發安全與契約完備 (L/D 系列) |
+| **sub_10** | `sub_10_server_hot_reload_dispatch_and_master_self_restart` | Full Track | `Completed` | Server 熱重載分流與 Master 自重啟：ModulesWatcher 變更路徑模組感知、非 server 模組單重啟 Worker、server/core 本體更新自動重啟整個 Server |
 
 ---
 
@@ -42,5 +43,6 @@
 - [x] **里程碑 7**：完成 sub_07 yscb 入口極簡瘦身與雙管道派發架構 (Phase 0~7)
 - [x] **里程碑 8**：完成 sub_08 Knowledge-DB 檢索性能極致加速與 Worker 單例化 (Phase 0~7)
 - [x] **里程碑 9**：完成 sub_09 架構技術債全數修復與模組邊界清理 (Phase 0~7)
-- [ ] **里程碑 10**：完成全模組生態系回歸驗證、統一發布至 v1.1.0 (server v1.0.0) 結案並恢復運行端
+- [x] **里程碑 10**：完成 sub_10 Server 模組變更路徑熱重載雙軌分流與 Master 自重啟機制 (Phase 0~7)
+- [ ] **里程碑 11**：完成全模組生態系回歸驗證、統一發布至 v1.1.0 (server v1.0.0) 結案並恢復運行端
 
