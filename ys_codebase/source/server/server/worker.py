@@ -66,6 +66,13 @@ class WarmWorker:
         except Exception:
             pass
 
+        self.emit_packet_fn({
+            "type": "log",
+            "level": "INFO",
+            "component": "worker",
+            "msg": f"Warm worker pre_warm completed in {duration_ms:.1f}ms (PID: {pid})",
+        })
+
 
     def execute_task(
         self,
@@ -121,6 +128,12 @@ class WarmWorker:
 
         except Exception as ex:
             streamer.write("stderr", f"[Server Worker Error] {type(ex).__name__}: {str(ex)}\n")
+            self.emit_packet_fn({
+                "type": "log",
+                "level": "ERROR",
+                "component": "worker",
+                "msg": f"Task execution failed for module='{module}', args={args}: {type(ex).__name__}: {str(ex)}",
+            })
             exit_code = 1
         finally:
             try:
