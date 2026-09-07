@@ -2,6 +2,15 @@
 
 ## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
 
+### sub_10_server_hot_reload_dispatch_and_master_self_restart (Verified)
+- **Server 模組熱重載雙軌分流、變更路徑模組感知與 Master 優雅自重啟**：
+  - **模組變更路徑精確感知 (`ModulesWatcher`)**：比對 mtime 快照時分析新增、修改或刪除之檔案路徑，精確提取相對於 `.modules/` 之受影響模組目錄集合（`affected_modules: Set[str]`），並支援 500ms 批次變更防抖與回調簽名向下相容。
+  - **雙軌重載分流機制 (`MasterSupervisor.on_modules_changed`)**：
+    - 若 `affected_modules` 僅包含其他領域模組（如 `knowledge-db`, `dev`, `agents-workflow`）：僅觸發 `restart_worker()` 重啟 Worker 子進程，Master PID 與 HTTP 端口連線 100% 保持穩定無感。
+    - 若 `affected_modules` 包含核心或守護模組（`server`, `core`）：自動觸發 `restart_server()`，重啟整個 Server 進程樹（Master + Worker），杜絕 Master 進程 Python 代碼記憶體殘留。
+  - **Master 優雅自重啟機制 (`MasterSupervisor.restart_server`)**：於背景線程依序執行 `stop()`（停止 watcher、結束 service workers、關閉 HTTP socket、釋放狀態鎖與清理 `daemon.json`），再透過 `core.platform.spawn_detached` 重新拉起全新 Master 進程並優雅退出舊進程。
+  - **自動化測試 100% 通過**：新增 FT-01 ~ FT-03 覆蓋路徑模組解析、無參/有參回調相容、領域模組 Worker 重啟分流與核心模組 Master 自重啟分流；Server 模組 23/23 測試全數通過。
+
 ### sub_09_architecture_debt_remediation (Verified)
 - **架構技術債全數收斂修復、微內核原語統一、進程單例共享與並發防禦**：
   - **Core 進程鎖統一 (`core.engine`)**：`AtomicEngine.act_lock/act_unlock` 廢除自製 JSON 檔案鎖，全面遷移至 `core.platform.InterProcessLock`，徹底消除雙軌並存與競態窗口。
