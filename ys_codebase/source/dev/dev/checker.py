@@ -433,11 +433,13 @@ class Checker:
         has_if_name_main = False
         invalid_top_level_nodes = []
 
+        declared_funcs = set()
         for node in tree.body:
             # 頂層節點白名單過濾
             if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef)):
                 continue
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                declared_funcs.add(node.name)
                 if node.name == "process":
                     has_process_func = True
                 elif node.name == "main":
@@ -467,8 +469,23 @@ class Checker:
                 stmt_type = type(node).__name__
                 invalid_top_level_nodes.append((getattr(node, "lineno", 0), f"top-level statement '{stmt_type}'"))
 
-        # 檢測規則 1: 必須宣告 process
-        if not has_process_func:
+        # 檢測規則 1: 必須宣告 process，或宣告新版 commands.cmd 定義之精確命令函式
+        is_new_contract = False
+        module_dir = os.path.dirname(os.path.dirname(os.path.abspath(cli_path)))
+        contrib_file = os.path.join(module_dir, "contributes", "core.json")
+        if os.path.isfile(contrib_file):
+            try:
+                import json
+                with open(contrib_file, "r", encoding="utf-8") as f:
+                    cdata = json.load(f)
+                    cmd_map = cdata.get("commands", {}).get("cmd", {})
+                    if isinstance(cmd_map, dict) and cmd_map:
+                        if any(cmd_name in declared_funcs or f"cmd_{cmd_name}" in declared_funcs for cmd_name in cmd_map):
+                            is_new_contract = True
+            except Exception:
+                pass
+
+        if not has_process_func and not is_new_contract:
             report.issues.append(
                 CheckIssue(
                     severity=CheckSeverity.FAIL,
