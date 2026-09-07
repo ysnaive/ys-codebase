@@ -1,5 +1,18 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_07_0831_quality_update (In Progress)
+
+### sub_01_core_commands_and_dispatch_architecture (Verified)
+- **core.commands 活躍執行合約、PEP 562 Lazy Loading、雙管道派發與同構遞迴指令樹重構**：
+  - **微內核延遲載入 (PEP 562 Lazy Exports)**：淨化 `core/__init__.py` 頂層 eager imports，改以 `__getattr__` 按需加載，將 `core` 冷啟動導入耗時由 ~77ms 降至 <1ms，徹底消除不必要之重型模組加載。
+  - **全新 Contributes Commands 規範**：重構 `commands` schema，徹底剝除 `phases` 耦合；引入 `tier`、`server_compatible`、`args` 參數字典、`options` 正交群組與 `usage (pros/cons)`；完全移除 `has_value`，全面改以 `args` 字典定義參數與 `choice` 列舉約束。
+  - **強型別 `CmdBags` 結構化封裝**：定義 `CmdBags` 與 `CmdOption` 不可變 dataclass，提供 `has_option` 與 `get_option` API，自動注入呼叫端，模組 CLI 實作完全免除 `argparse` 與手工剖析。
+  - **全生態系統一 Help 攔截與渲染 (`HelpRenderer`)**：全域攔截 `--help / -h / help`，動態生成指令階層說明、安全等級、Visual Arguments (`<param=[a | b]>`)、Orthogonal Options 與 Pros/Cons 規範指南。
+  - **同構遞迴指令樹與階層式派發 (`CommandsRegistry` & `dispatcher`)**：指令節點同構遞迴嵌套，支援純葉子、純分支（自動輸出 SUBCOMMANDS 清單）與可呼叫複合分支（Hybrid）；實作端約定以底線平鋪命名函式（如 `uri_list`、`config_get`）。
+  - **雙管道分流與對稱生命週期 Hook**：依據指令級 `server_compatible` 動態分流至 HTTP IPC 熱派發或本地冷派發；將 `pre_cli_dispatch` / `post_cli_dispatch` 生命週期 Hook 對稱下沉至執行環境內觸發。
+  - **雙軌向後相容過渡層**：對未宣告 commands 之舊模組或未遷移模組，靜默退化至 `mod.process(args)`，無 warning 污染；先驅模組 `core` 與 `server` 100% 遷移並驗收。
+  - **全套測試 100% 通過**：新增 FT-01~11、ET-01~08、PT-01、RT-01；`core` (162/162) 與 `server` (23/23) 測試全數綠燈；開發者 UX 實機驗收通過。
+
 ## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
 
 ### sub_10_server_hot_reload_dispatch_and_master_self_restart (Verified)

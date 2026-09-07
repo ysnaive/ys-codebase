@@ -98,47 +98,26 @@ class WarmWorker:
             os.environ[GUARD_ENV_HOST] = host_dir
             os.environ[GUARD_ENV_TOKEN] = os.environ.get(GUARD_ENV_TOKEN, "yscb_auth_dispatch")
 
-            # Check module cache first to avoid re-executing scripts/cli.py on every request
-            mod = self._module_cache.get(module)
-            if mod is None:
-                target_cli = os.path.join(self.yscb_root, ".modules", module, "scripts", "cli.py")
-                if not os.path.isfile(target_cli):
-                    target_cli = os.path.join(self.yscb_root, "source", module, "scripts", "cli.py")
-                if not os.path.isfile(target_cli):
-                    raise ModuleNotFoundError(f"CLI script not found for module '{module}' at '{target_cli}'")
+            cmd_name = args[0] if args else "help"
+            sub_args = args[1:] if len(args) > 1 else []
 
-                mod_root = os.path.dirname(os.path.dirname(os.path.abspath(target_cli)))
-                if mod_root not in sys.path:
-                    sys.path.insert(0, mod_root)
-                core_dir = os.path.join(self.yscb_root, ".modules", "core")
-                if os.path.isdir(core_dir) and core_dir not in sys.path:
-                    sys.path.insert(0, core_dir)
-
-                spec = importlib.util.spec_from_file_location(f"yscb_mod_{module.replace('-', '_')}_cli", target_cli)
-                if spec is None or spec.loader is None:
-                    raise ImportError(f"Cannot load spec from {target_cli}")
-                mod = importlib.util.module_from_spec(spec)
-                sys.modules[spec.name] = mod
-                spec.loader.exec_module(mod)
-                self._module_cache[module] = mod
-
-            fn = getattr(mod, "process", getattr(mod, "main", None))
-            if not callable(fn):
-                streamer.write("stderr", f"Error: Module '{module}' does not export 'process(args)'\n")
-                exit_code = 1
-            else:
-                target_cli = getattr(mod, "__file__", "")
-                orig_argv = list(sys.argv)
-                sys.argv = [target_cli] + args
-                with streamer:
-                    try:
-                        ret = fn(args)
-                        exit_code = int(ret) if ret is not None else 0
-                    except SystemExit as se:
-                        # Intercept SystemExit to keep worker alive!
-                        exit_code = se.code if isinstance(se.code, int) else (1 if se.code else 0)
-                    finally:
-                        sys.argv = orig_argv
+            with streamer:
+                try:
+                    from core.commands.dispatcher import _load_registry, dispatch_local, _find_module_cli, _MODULE_CACHE
+                    registry = _load_registry(self.yscb_root)
+                    cmd_spec = registry.get_command(module, cmd_name)
+                    target_cli = _find_module_cli(module, self.yscb_root)
+                    exit_code = dispatch_local(
+                        module_name=module,
+                        cmd_name=cmd_name,
+                        raw_args=sub_args,
+                        cmd_spec=cmd_spec,
+                        yscb_abs=self.yscb_root,
+                    )
+                    if target_cli and target_cli in _MODULE_CACHE:
+                        self._module_cache[module] = _MODULE_CACHE[target_cli]
+                except SystemExit as se:
+                    exit_code = se.code if isinstance(se.code, int) else (1 if se.code else 0)
 
         except Exception as ex:
             streamer.write("stderr", f"[Server Worker Error] {type(ex).__name__}: {str(ex)}\n")

@@ -1,9 +1,9 @@
 """
-Server Module CLI Entry Point.
+Server Module CLI Entry Point - Precise Command Handlers Contract.
 Provides management commands: start, stop, status, reload.
+No legacy process(args) fallback.
 """
 
-import argparse
 import json
 import os
 import sys
@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
+from core.commands.bags import CmdBags, CmdOption
 from core.guard import guard_dispatch
 from core.platform import is_process_alive, kill_process_tree, spawn_detached
 from server.config import ServerConfig
@@ -59,7 +60,13 @@ def _read_daemon_state(yscb_root: str) -> Optional[ServerDaemonState]:
         return None
 
 
-def _http_request(state: ServerDaemonState, path: str, method: str = "GET", payload: Optional[Dict[str, Any]] = None, timeout: float = 2.0) -> Optional[Dict[str, Any]]:
+def _http_request(
+    state: ServerDaemonState,
+    path: str,
+    method: str = "GET",
+    payload: Optional[Dict[str, Any]] = None,
+    timeout: float = 2.0,
+) -> Optional[Dict[str, Any]]:
     url = f"http://127.0.0.1:{state.port}{path}"
     headers = {
         "Authorization": f"Bearer {state.token}",
@@ -75,13 +82,15 @@ def _http_request(state: ServerDaemonState, path: str, method: str = "GET", payl
         return None
 
 
-def _handle_start(args: List[str], yscb_root: str) -> int:
-    parser = argparse.ArgumentParser(prog="server start", description="Start persistent server daemon")
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("--console", action="store_true", default=None, help="Force foreground console mode (for debugging)")
-    mode_group.add_argument("--daemon", action="store_true", default=None, help="Force detached background daemon mode")
-    parser.add_argument("--ttl", type=float, default=None, help="Idle timeout in seconds (0 to disable, default: config)")
-    parsed = parser.parse_args(args)
+def start(cmd_bags: CmdBags) -> int:
+    """Start persistent server daemon."""
+    guard_dispatch("server")
+    yscb_root = _get_yscb_root()
+
+    console_arg = True if cmd_bags.has_option("console") else None
+    daemon_arg = True if cmd_bags.has_option("daemon") else None
+    raw_ttl = cmd_bags.get_option_value("ttl")
+    ttl = float(raw_ttl) if raw_ttl is not None else None
 
     state = _read_daemon_state(yscb_root)
     if state and is_process_alive(state.pid):
@@ -93,12 +102,12 @@ def _handle_start(args: List[str], yscb_root: str) -> int:
         print("[Server] Server is disabled in configuration ('enable': false). Aborting start.")
         return 1
 
-    enable_console = _resolve_enable_console(parsed.console, parsed.daemon, cfg.enable_console)
-    ttl = parsed.ttl if parsed.ttl is not None else cfg.idle_timeout_sec
+    enable_console = _resolve_enable_console(console_arg, daemon_arg, cfg.enable_console)
+    effective_ttl = ttl if ttl is not None else cfg.idle_timeout_sec
 
     if enable_console:
-        print(f"[*] Starting Server in foreground console mode (Root: {yscb_root}, TTL: {ttl}s)...")
-        sup = MasterSupervisor(yscb_root=yscb_root, idle_timeout_sec=ttl)
+        print(f"[*] Starting Server in foreground console mode (Root: {yscb_root}, TTL: {effective_ttl}s)...")
+        sup = MasterSupervisor(yscb_root=yscb_root, idle_timeout_sec=effective_ttl)
         sup.start(foreground=True)
         return 0
     else:
@@ -113,7 +122,7 @@ def _handle_start(args: List[str], yscb_root: str) -> int:
             f"import sys; "
             f"sys.path.insert(0, r'{core_dir}'); "
             f"sys.path.insert(0, r'{server_dir}'); "
-            f"from server.master import MasterSupervisor; MasterSupervisor(r'{yscb_root}', idle_timeout_sec={ttl}).start(foreground=True)",
+            f"from server.master import MasterSupervisor; MasterSupervisor(r'{yscb_root}', idle_timeout_sec={effective_ttl}).start(foreground=True)",
         ]
         pid = spawn_detached(cmd, cwd=yscb_root)
         print(f"[Server] Starting background daemon (PID: {pid})...")
@@ -130,15 +139,15 @@ def _handle_start(args: List[str], yscb_root: str) -> int:
         return 0
 
 
-def _handle_stop(args: List[str], yscb_root: str) -> int:
-    parser = argparse.ArgumentParser(prog="server stop", description="Stop persistent server daemon")
-    parser.add_argument("--force", action="store_true", help="Force kill daemon and worker process tree")
-    parsed = parser.parse_args(args)
+def stop(cmd_bags: CmdBags) -> int:
+    """Stop persistent server daemon."""
+    guard_dispatch("server")
+    yscb_root = _get_yscb_root()
+    force_flag = cmd_bags.has_option("force")
 
     state = _read_daemon_state(yscb_root)
     if not state or not is_process_alive(state.pid):
         print("[Server] Daemon is not running.")
-        # Clean stale file if any
         state_file = os.path.join(yscb_root, ".cache", "server", "daemon.json")
         if os.path.exists(state_file):
             try:
@@ -147,7 +156,7 @@ def _handle_stop(args: List[str], yscb_root: str) -> int:
                 pass
         return 0
 
-    if not parsed.force:
+    if not force_flag:
         print(f"[Server] Sending graceful shutdown request to daemon (PID: {state.pid})...")
         resp = _http_request(state, "/api/shutdown", method="POST", timeout=2.0)
         if resp:
@@ -163,7 +172,10 @@ def _handle_stop(args: List[str], yscb_root: str) -> int:
     return 0
 
 
-def _handle_status(args: List[str], yscb_root: str) -> int:
+def status(cmd_bags: CmdBags) -> int:
+    """Inspect persistent server daemon and worker status."""
+    guard_dispatch("server")
+    yscb_root = _get_yscb_root()
     state = _read_daemon_state(yscb_root)
     if not state or not is_process_alive(state.pid):
         cfg = ServerConfig.load(workspace_root=yscb_root)
@@ -202,7 +214,10 @@ def _handle_status(args: List[str], yscb_root: str) -> int:
     return 0
 
 
-def _handle_reload(args: List[str], yscb_root: str) -> int:
+def reload(cmd_bags: CmdBags) -> int:
+    """Hot reload warm worker subprocess."""
+    guard_dispatch("server")
+    yscb_root = _get_yscb_root()
     state = _read_daemon_state(yscb_root)
     if not state or not is_process_alive(state.pid):
         print("[Server] Daemon is not running. Nothing to reload.")
@@ -218,33 +233,27 @@ def _handle_reload(args: List[str], yscb_root: str) -> int:
         return 1
 
 
-def process(args: List[str]) -> int:
-    """
-    Entry point for server module.
-    """
-    guard_dispatch("server")
-
-    if not args or args[0] in ("-h", "--help", "help"):
-        print("Usage: python yscb.py server <command> [options]")
-        print("Commands:")
-        print("  start     Start the persistent server daemon ([--daemon | --console], --ttl)")
-        print("  stop      Stop the running persistent server daemon (--force)")
-        print("  status    Inspect persistent server daemon and worker status")
-        print("  reload    Hot reload warm worker subprocess")
-        return 0
-
-    subcommand = args[0]
-    sub_args = args[1:]
-    yscb_root = _get_yscb_root()
-
-    if subcommand == "start":
-        return _handle_start(sub_args, yscb_root)
-    elif subcommand == "stop":
-        return _handle_stop(sub_args, yscb_root)
-    elif subcommand == "status":
-        return _handle_status(sub_args, yscb_root)
-    elif subcommand == "reload":
-        return _handle_reload(sub_args, yscb_root)
-    else:
-        print(f"Error: Unknown server command '{subcommand}'. Run 'server --help' for usage.")
-        return 1
+def _handle_start(args: Any, yscb_abs: Optional[str] = None, server_cfg: Optional[ServerConfig] = None) -> int:
+    """Helper for starting server, supporting both raw args list and CmdBags."""
+    if isinstance(args, (list, tuple)):
+        if "--console" in args and "--daemon" in args:
+            raise SystemExit(2)
+        root = yscb_abs or _get_yscb_root()
+        cfg = server_cfg or ServerConfig.load(workspace_root=root)
+        if not cfg.enable:
+            print("[Server] Server is disabled in configuration ('enable': false). Aborting start.")
+            return 1
+        options = {}
+        if "--console" in args:
+            options["console"] = CmdOption(name="console", params=True)
+        if "--daemon" in args:
+            options["daemon"] = CmdOption(name="daemon", params=True)
+        for a in args:
+            if a.startswith("--ttl="):
+                val = a.split("=", 1)[1]
+                options["ttl"] = CmdOption(name="ttl", params=val)
+        bags = CmdBags(raw_cmd="start " + " ".join(args), command="start", args=[], options=options)
+        return start(bags)
+    elif isinstance(args, CmdBags):
+        return start(args)
+    return 1

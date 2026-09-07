@@ -26,6 +26,21 @@ def _format_tier_badge(tier: str) -> str:
     return "🟡 階段條件"
 
 
+def _extract_command_items(raw_dict: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+    res = []
+    if "cmd" in raw_dict and isinstance(raw_dict["cmd"], dict):
+        donor = raw_dict.get("__provider__", "core")
+        for k, v in raw_dict["cmd"].items():
+            if isinstance(v, dict):
+                b = dict(v)
+                b.setdefault("__provider__", donor)
+                res.append((k, b))
+    for k, v in raw_dict.items():
+        if k not in ("module_alias", "description", "cmd") and isinstance(v, dict):
+            res.append((k, v))
+    return res
+
+
 def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
     """
     動態編譯全系統已宣告之 contributes.core.commands 為三級權限 Markdown 防呆對照表。
@@ -45,15 +60,16 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
     # 2. 依 __provider__ 分組搜集
     grouped_commands: Dict[str, List[Tuple[str, str, str, List[str], List[str]]]] = {}
 
-    for cmd_name, cmd_body in sorted(all_commands.items()):
+    for cmd_name, cmd_body in sorted(_extract_command_items(all_commands), key=lambda x: x[0]):
         if not isinstance(cmd_body, dict):
             continue
 
         donor = cmd_body.get("__provider__", "core")
         desc = str(cmd_body.get("description", "")).strip()
         tier = _normalize_tier(cmd_body.get("tier"))
-        raw_pros = cmd_body.get("case_pros", [])
-        raw_cons = cmd_body.get("case_cons", [])
+        usage = cmd_body.get("usage", {})
+        raw_pros = usage.get("pros", cmd_body.get("case_pros", [])) if isinstance(usage, dict) else cmd_body.get("case_pros", [])
+        raw_cons = usage.get("cons", cmd_body.get("case_cons", [])) if isinstance(usage, dict) else cmd_body.get("case_cons", [])
 
         case_pros: List[str] = []
         if isinstance(raw_pros, str):
@@ -139,7 +155,7 @@ def get_phase_cli_guild(context: Optional[Any] = None, phase: Optional[str] = No
     recommended_cmds: List[str] = []
     gated_warnings: List[str] = []
 
-    for cmd_name, cmd_body in sorted(all_commands.items()):
+    for cmd_name, cmd_body in sorted(_extract_command_items(all_commands), key=lambda x: x[0]):
         if not isinstance(cmd_body, dict):
             continue
 
@@ -161,7 +177,8 @@ def get_phase_cli_guild(context: Optional[Any] = None, phase: Optional[str] = No
 
         if is_match:
             badge = _format_tier_badge(tier)
-            raw_pros = cmd_body.get("case_pros", [])
+            usage = cmd_body.get("usage", {})
+            raw_pros = usage.get("pros", cmd_body.get("case_pros", [])) if isinstance(usage, dict) else cmd_body.get("case_pros", [])
             pros_summary = ""
             if isinstance(raw_pros, list) and raw_pros:
                 pros_summary = f"（{raw_pros[0]}）"
