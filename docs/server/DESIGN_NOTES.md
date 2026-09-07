@@ -7,6 +7,8 @@
 | **[DN-03]** | yscb 宿主四大耦合邊界 | `yscb.py` | Low |
 | **[DN-04]** | 統一生命週期與共享 15 分鐘自毀 (TTL) | `server/master.py`, `server/service.py` | Low |
 | **[DN-05]** | Server 組態管理與 Console 啟動優先級分流 | `server/config.py`, `scripts/cli.py` | Low |
+| **[DN-06]** | Worker 進程級模組快取與標準預熱事件廣播 | `server/worker.py` | Low |
+| **[DN-07]** | Contributes Server 宣告規範與 Background Services 狀態可觀測性 | `server/service.py`, `scripts/cli.py` | Low |
 
 ---
 
@@ -32,3 +34,17 @@
   1. 引入 `ServerConfig` 資料類別對接 `core.config.get("server", "enable_console", False)`，組態預設 `enable_console: false` 走靜默脫鉤背景常駐。
   2. `server start` 實作優先級仲裁：CLI `--console` 顯式參數（強制前台除錯）> CLI `--daemon` 顯式參數（強制背景常駐）> 設定檔 `enable_console` > 預設 `False`。
   3. CLI 採用 `add_mutually_exclusive_group()` 嚴格防止 `--console` 與 `--daemon` 同時傳入衝突。
+
+### [DN-06] Worker 進程級模組快取與標準預熱事件廣播
+- **背景**：Worker 進程在每次派發任務時若重新執行 `importlib.util.module_from_spec` 與 `exec_module`，會產生無謂的直譯解析與符號重複評估開銷；且重型模組（如向量推論、倒排索引）若在首次請求才冷加載，會造成初次調用顯著卡頓。
+- **決策**：
+  1. 在 `Worker._module_cache` 實作模組級進程記憶體快取，首次執行後快取 `cli_module`，跨任務調用直接提取執行 `process()`。
+  2. 於 Worker 初始化完成後透過微內核標準廣播原語 `core.events.broadcast("worker_warming", emit_module="server")` 發送預熱廣播，讓各領域模組（如 `knowledge-db`）自定義 Pre-warm 邏輯。
+
+### [DN-07] Contributes Server 宣告規範與 Background Services 狀態可觀測性
+- **背景**：既有 ServiceWorker 依賴硬編碼或全量掃描所有模組代碼，缺乏宣告式標準擴充介面；同時 `server status` 缺乏對背景服務運行健康狀態之可觀測性。
+- **決策**：
+  1. 制定 `contributes/server.json` 規範，各模組透過純宣告方式聲明 `service_worker` 類別路徑、名稱與描述。
+  2. `ServiceManager` 透過 `core.contributes.get("server")` 動態發現並拉起背景服務，並持有 provider 與 description 元數據。
+  3. `server status` 格式化輸出包含 Process Info、Service Counters 以及 Background Services 清冊（含狀態與模組歸屬），提升運維透明度。
+

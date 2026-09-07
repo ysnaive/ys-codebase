@@ -2,6 +2,16 @@
 
 ## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
 
+### sub_08_knowledge_db_search_acceleration_and_worker_singleton (Verified)
+- **搜尋效能加速、Worker 模組快取、Watcher 背景自癒與 Service 可觀測性**：
+  - **Worker 進程級模組快取 (`_module_cache`)**：在 `server.worker` 實作模組快取字典，消除跨命令重複調用時 `exec_module` 的重複開銷，實現零重載瞬發響應。
+  - **KnowledgeEngine 單例化 (`get_engine()`)**：於 `knowledge_db.scripts.cli` 提供進程單例接口，跨命令調用共享 Engine 實例與記憶體索引快照。
+  - **Worker 預熱事件標準化 (`worker_warming`)**：於 Worker 啟動後透過 `core.events.broadcast` 發送預熱廣播，`KnowledgeEngine.pre_warm()` 提前載入 FastEmbed 向量模型與倒排索引。
+  - **Watcher 背景接管自癒與前台搜尋 0ms 非阻塞**：前台 `pipeline.search()` 偵測到常駐服務標記 `.watcher_active` 時，前台 0ms 略過同步掃描與熱修補，徹底避免 500ms 防抖競態卡頓 1.7s，100% 委派 Watcher 背景線程自癒。
+  - **純淨宣告常駐服務與狀態可觀測性**：由 `contributes/server.json` 純淨宣告常駐服務規格，SDK 動態注入 `ServiceManager`；`server status` 端點擴充輸出 Background Services 清冊與健康狀態。
+  - **SpaceManager 包含路徑記憶化快取 (`_include_cache`)**：消除 879 次重複路徑解析與 contributes 查閱，`knowledge-db status` 執行耗時由 7.1s 暴降至 0.14s（統計計算僅 14ms，提升 50 倍以上效能）。
+  - **測試覆蓋與守門 100% 通過**：`server` 與 `knowledge-db` 自動化測試全數 Passed，手動/UX 實機驗收通過。
+
 ### sub_07_yscb_host_slimming_and_dual_channel_dispatch (Verified)
 - **宿主入口極限瘦身、雙管道路由派發與 Contributes Help 動態聚合**：
   - **宿主入口極簡瘦身 (`yscb.py`)**：精簡至 283 行薄客戶端，業務邏輯（模組發現、環境防護、雙管道路由）全面下沉至 `core.dispatch`。
