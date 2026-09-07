@@ -21,7 +21,11 @@ from knowledge_db.service import KnowledgeDBServiceWorker, resolve_watch_extensi
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.pipeline import IndexingPipeline, _GLOBAL_INDEX_CACHE
 from knowledge_db.retrieval import InvertedIndex
-from scripts.cli import process, get_engine
+from scripts.cli import get_engine
+
+def process(args: list) -> int:
+    from core.commands.dispatcher import dispatch
+    return dispatch(["knowledge-db"] + list(args))
 
 
 class TestServiceWorker(YSCBTestCase):

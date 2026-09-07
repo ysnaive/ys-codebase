@@ -18,7 +18,11 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from scripts.cli import process
+
+def process(args: list) -> int:
+    from core.commands.dispatcher import dispatch
+    return dispatch(["knowledge-db"] + list(args))
+
 
 # 動態加載 hook.dev.py
 _hook_path = os.path.join(_pkg_root, "scripts", "hook.dev.py")

@@ -135,6 +135,8 @@ class HelpRenderer:
         args_str = " ".join([cls.format_arg_placeholder(a) for a in cmd_spec.args.values()])
         usage_args = f" {args_str}" if args_str else ""
         subcmd_ph = " <subcommand>" if cmd_spec.cmd and not cmd_spec.args else ""
+        has_options = bool(cmd_spec.groups or cmd_spec.canonical_options)
+        options_ph = " [options]" if has_options else ""
         lines = [
             "=" * 80,
             f"Command: python yscb.py {module_name} {cmd_name}",
@@ -144,7 +146,7 @@ class HelpRenderer:
             f"Server Mode: {'✅ Hot IPC Compatible' if cmd_spec.server_compatible else 'Local Cold Run Only'}",
             "",
             "USAGE:",
-            f"  python yscb.py {module_name} {cmd_name}{subcmd_ph}{usage_args} [options]",
+            f"  python yscb.py {module_name} {cmd_name}{subcmd_ph}{usage_args}{options_ph}",
         ]
 
         # 渲染子指令清單 (SUBCOMMANDS)
@@ -204,6 +206,10 @@ class HelpRenderer:
                 aliases_part = f" (alias: {', '.join(['-' + a if len(a) == 1 else '--' + a for a in opt_spec.alias])})" if opt_spec.alias else ""
                 opt_flag = f"--{opt_name}{val_suffix}"
                 lines.append(f"    {opt_flag:<30} {opt_spec.description}{aliases_part}")
+        elif not cmd_spec.cmd:
+            lines.append("")
+            lines.append("OPTIONS:")
+            lines.append("  (No options available)")
 
         # 渲染 Usage Pros & Cons
         if cmd_spec.usage_pros:
