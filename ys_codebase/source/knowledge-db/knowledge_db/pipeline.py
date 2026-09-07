@@ -29,6 +29,8 @@ from .schema import AggregatedFileResult, AggregatedItem, SymbolCallSite, Unifie
 from .space import SpaceManager
 from .tokenizer import MultilingualTokenizer
 
+import threading
+
 logger = logging.getLogger("knowledge-db.pipeline")
 
 _GLOBAL_INDEX_CACHE: Dict[str, Any] = {
@@ -39,6 +41,7 @@ _GLOBAL_INDEX_CACHE: Dict[str, Any] = {
     "vector_index": None,
     "vector_mtime": 0.0,
 }
+_CACHE_LOCK = threading.RLock()
 
 
 class HotPatchResult(tuple):
@@ -157,10 +160,11 @@ class IndexingPipeline:
         if bin_file.exists():
             try:
                 mtime = bin_file.stat().st_mtime
-                if force_reload or _GLOBAL_INDEX_CACHE["unified_index"] is None or mtime > _GLOBAL_INDEX_CACHE["unified_mtime"]:
-                    _GLOBAL_INDEX_CACHE["unified_index"] = InvertedIndex.load_binary(bin_file)
-                    _GLOBAL_INDEX_CACHE["unified_mtime"] = mtime
-                self._unified_index = _GLOBAL_INDEX_CACHE["unified_index"]
+                with _CACHE_LOCK:
+                    if force_reload or _GLOBAL_INDEX_CACHE["unified_index"] is None or mtime > _GLOBAL_INDEX_CACHE["unified_mtime"]:
+                        _GLOBAL_INDEX_CACHE["unified_index"] = InvertedIndex.load_binary(bin_file)
+                        _GLOBAL_INDEX_CACHE["unified_mtime"] = mtime
+                    self._unified_index = _GLOBAL_INDEX_CACHE["unified_index"]
             except Exception as e:
                 logger.warning(f"Failed loading unified index cache: {e}")
 
@@ -168,10 +172,11 @@ class IndexingPipeline:
         if load_graph and graph_file.exists():
             try:
                 mtime = graph_file.stat().st_mtime
-                if force_reload or _GLOBAL_INDEX_CACHE["graph_index"] is None or mtime > _GLOBAL_INDEX_CACHE["graph_mtime"]:
-                    _GLOBAL_INDEX_CACHE["graph_index"] = CallGraphIndex.load_binary(graph_file)
-                    _GLOBAL_INDEX_CACHE["graph_mtime"] = mtime
-                self._call_graph_index = _GLOBAL_INDEX_CACHE["graph_index"]
+                with _CACHE_LOCK:
+                    if force_reload or _GLOBAL_INDEX_CACHE["graph_index"] is None or mtime > _GLOBAL_INDEX_CACHE["graph_mtime"]:
+                        _GLOBAL_INDEX_CACHE["graph_index"] = CallGraphIndex.load_binary(graph_file)
+                        _GLOBAL_INDEX_CACHE["graph_mtime"] = mtime
+                    self._call_graph_index = _GLOBAL_INDEX_CACHE["graph_index"]
             except Exception as e:
                 logger.warning(f"Failed loading graph index cache: {e}")
 
@@ -179,11 +184,12 @@ class IndexingPipeline:
         if load_vectors and vector_file.exists():
             try:
                 mtime = vector_file.stat().st_mtime
-                if force_reload or _GLOBAL_INDEX_CACHE["vector_index"] is None or mtime > _GLOBAL_INDEX_CACHE["vector_mtime"]:
-                    _GLOBAL_INDEX_CACHE["vector_index"] = VectorIndex.load_binary(vector_file)
-                    _GLOBAL_INDEX_CACHE["vector_mtime"] = mtime
-                if _GLOBAL_INDEX_CACHE["vector_index"] is not None:
-                    self.hybrid_engine.vector_index = _GLOBAL_INDEX_CACHE["vector_index"]
+                with _CACHE_LOCK:
+                    if force_reload or _GLOBAL_INDEX_CACHE["vector_index"] is None or mtime > _GLOBAL_INDEX_CACHE["vector_mtime"]:
+                        _GLOBAL_INDEX_CACHE["vector_index"] = VectorIndex.load_binary(vector_file)
+                        _GLOBAL_INDEX_CACHE["vector_mtime"] = mtime
+                    if _GLOBAL_INDEX_CACHE["vector_index"] is not None:
+                        self.hybrid_engine.vector_index = _GLOBAL_INDEX_CACHE["vector_index"]
             except Exception as e:
                 logger.warning(f"Failed loading vector index cache: {e}")
 
@@ -316,13 +322,14 @@ class IndexingPipeline:
 
         self._unified_index = idx
         self._call_graph_index = graph_idx
-        _GLOBAL_INDEX_CACHE["unified_index"] = idx
-        _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
-        _GLOBAL_INDEX_CACHE["graph_index"] = graph_idx
-        _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
-        if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
-            _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
-            _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
+        with _CACHE_LOCK:
+            _GLOBAL_INDEX_CACHE["unified_index"] = idx
+            _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
+            _GLOBAL_INDEX_CACHE["graph_index"] = graph_idx
+            _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
+            if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
+                _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
+                _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
         return idx
 
     def hot_patch_unified_index(
@@ -516,13 +523,14 @@ class IndexingPipeline:
 
             self._unified_index.save_binary(bin_file, compresslevel=1)
             BinarySnapshotManager.save(meta_file, full_files_map)
-            _GLOBAL_INDEX_CACHE["unified_index"] = self._unified_index
-            _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
-            _GLOBAL_INDEX_CACHE["graph_index"] = self._call_graph_index
-            _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
-            if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
-                _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
-                _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
+            with _CACHE_LOCK:
+                _GLOBAL_INDEX_CACHE["unified_index"] = self._unified_index
+                _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
+                _GLOBAL_INDEX_CACHE["graph_index"] = self._call_graph_index
+                _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
+                if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
+                    _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
+                    _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
             self._vector_degraded = vector_degraded
             self._last_degrade_notice = degrade_notice
             return HotPatchResult(True, vector_degraded, degrade_notice)

@@ -17,14 +17,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 
-def _ensure_venv(yscb_root: str) -> None:
-    tag, sys_name = f"py{sys.version_info.major}{sys.version_info.minor}", platform.system()
-    sub = os.path.join(".venv", tag, "Lib", "site-packages") if sys_name == "Windows" else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
-    site_pkg = os.path.join(yscb_root, sub)
-    if os.path.isdir(site_pkg) and site_pkg not in sys.path:
-        sys.path.insert(0, site_pkg)
-
-
 # Bootstrap python path to include source and core
 _cur_dir = os.path.dirname(os.path.abspath(__file__))
 _server_dir = os.path.dirname(_cur_dir)
@@ -35,6 +27,7 @@ for _p in [_server_dir, _source_dir, os.path.join(_source_dir, "core")]:
 
 from core import events
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
+from core.platform import ensure_private_venv
 from server.streamer import DebouncedIOStreamer
 
 
@@ -46,7 +39,7 @@ class WarmWorker:
 
     def __init__(self, yscb_root: str, emit_packet_fn: Any) -> None:
         self.yscb_root = os.path.abspath(yscb_root)
-        _ensure_venv(self.yscb_root)
+        ensure_private_venv(self.yscb_root)
         self.emit_packet_fn = emit_packet_fn
         self._is_running = True
         self._module_cache: Dict[str, Any] = {}

@@ -31,7 +31,15 @@ class BaseServiceWorker(ABC):
 
     @abstractmethod
     def start(self, context: Dict[str, Any]) -> None:
-        """Starts background work in a thread or subprocess."""
+        """
+        Starts background work in a thread or subprocess.
+
+        Args:
+            context: Server daemon execution context dictionary containing:
+                - "yscb_root" (str): Absolute path to the YSCB project root directory.
+                - "workspace_root" (str, optional): Host workspace root directory.
+                - "config" (dict, optional): Server and module configuration dict.
+        """
         pass
 
     @abstractmethod

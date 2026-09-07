@@ -174,3 +174,21 @@ class TestVFS(YSCBTestCase):
 
         uri.remove(compat_file)
         self.assertFalse(uri.exists(compat_file))
+
+    def test_cross_backend_protection(self):
+        """FT-07: 驗證 VFS.copy 與 VFS.move 跨不同 Backend 時拋出 NotImplementedError。"""
+        from core.vfs import VFS
+        from core.vfs.os_backend import OSBackend
+
+        custom_vfs = VFS()
+        dummy = OSBackend()
+        custom_vfs.register_backend("dummy://", dummy)
+
+        src_path = os.path.join(self.test_dir, "test_src.txt")
+        custom_vfs.write_text(src_path, "hello")
+
+        with self.assertRaises(NotImplementedError):
+            custom_vfs.copy(src_path, "dummy://target.txt")
+
+        with self.assertRaises(NotImplementedError):
+            custom_vfs.move(src_path, "dummy://target.txt")
