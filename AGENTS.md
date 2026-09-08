@@ -33,3 +33,4 @@
 <!-- YSCB_AGENTS_END -->
 
 
+- 調用 cli 指令時，必須使用 RunPersistent: true，且指令格式須為單行字串，嚴禁夾帶換行字元。
