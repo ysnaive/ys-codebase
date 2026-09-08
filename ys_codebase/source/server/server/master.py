@@ -114,11 +114,8 @@ class MasterSupervisor:
             self.watcher.start()
             self.logger.info(f"ModulesWatcher active on {modules_dir}")
 
-        # 5. Discover and Start Service Workers
-        self._discover_service_workers()
+        # 5. Service Workers (Master is pure control plane; domain services run in Worker pre-warm)
         self.service_manager.start_all({"yscb_root": self.yscb_root})
-        service_names = [s.get("name") for s in self.service_manager.get_status()]
-        self.logger.info(f"Service Workers started: {service_names}")
 
         # 6. Start Idle TTL checker thread
         if self.idle_timeout_sec > 0:
@@ -137,49 +134,6 @@ class MasterSupervisor:
             self._http_thread.start()
 
         return os.getpid()
-
-    def _discover_service_workers(self) -> None:
-        """Dynamically discovers and registers pluggable service workers from domain modules via core SDK."""
-        try:
-            from core import contributes
-            server_contrib = contributes.get("server", default={})
-        except Exception as e:
-            logger.warning(f"[Server] Failed loading server contributes via core SDK: {e}")
-            return
-
-        services_config = server_contrib.get("services", [])
-        if isinstance(services_config, dict):
-            services_config = [services_config]
-
-        for item in services_config:
-            if not isinstance(item, dict):
-                continue
-            worker_cls_path = item.get("worker_class")
-            donor_mod = item.get("__provider__", "unknown")
-            name = item.get("name", f"{donor_mod}-worker")
-            desc = item.get("description", "")
-            if not worker_cls_path:
-                continue
-
-            for mod_cand in [
-                os.path.join(self.yscb_root, ".modules", donor_mod),
-                os.path.join(self.yscb_root, "source", donor_mod),
-            ]:
-                if os.path.isdir(mod_cand) and mod_cand not in sys.path:
-                    sys.path.insert(0, mod_cand)
-
-            try:
-                if ":" in worker_cls_path:
-                    mod_path, cls_name = worker_cls_path.split(":", 1)
-                else:
-                    mod_path, cls_name = worker_cls_path.rsplit(".", 1)
-                mod = importlib.import_module(mod_path)
-                cls = getattr(mod, cls_name)
-                worker_instance = cls(self.yscb_root)
-                self.service_manager.register(worker_instance, provider=donor_mod, description=desc)
-                logger.info(f"[Server Service] Registered worker '{name}' from module '{donor_mod}'")
-            except Exception as ex:
-                logger.warning(f"[Server Service] Failed to instantiate worker '{name}' from module '{donor_mod}': {ex}")
 
     def stop(self, force: bool = False) -> None:
         """Stops the master supervisor and all child workers."""
