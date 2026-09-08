@@ -11,6 +11,19 @@
 
 ## 2026_09_07_0831_quality_update (In Progress)
 
+### sub_04_yscb_module_dev_skill_refinement (Verified)
+- **yscb-module-dev 技能手冊全方位品質升級、7 大缺失能力補齊、四大視角隔離與 dev check 剛性檢核**：
+  - **技能手冊全方位品質升級與實質修復**：修正 `SKILL.md` 全面改以「觸發時機」分流導航；修正 `cli_and_commands.md` 標題序號至 3.2，補齊 `dev create` 章節；修正 `testing_and_sandbox.md` 所有測試範例，全面補齊 `self.mark_passed()` 與正確測試狀態約定；修正 `acceptance_checklist.md` 標題精確化，徹底消除跨視角路徑污染；修訂 `contributes_guide.md` Host 視角備註與 `module://` 引用語意。
+  - **7 大關鍵缺失能力全面補齊**：收錄 `dev create module` 腳手架預置規範、`scripts/hook.dev.py` 沙盒生命週期鉤子指南、4-tier 測試標籤體系（Contract / Hermetic / Integration / Stateful）、AST 靜態檢核紅線清冊、`configurable/` 檔案命名與語法規範、版本晉升三步驟工作流、以及在開發者明確授權下之發布一鍵管線。
+  - **四大文檔視角嚴格隔離**：確立並剛性遵循「維護標準 `docs://`」、「維護 `<module>/docs/user_guild.md`」、「維護 `<module>/docs/dev_guild.md`」與「維護 `<module>/docs/install_guild.md`」四大視角，嚴禁跨視角污染或暴露 Host 源碼路徑。
+  - **`dev check` 管線 5 項機器自動化剛性守門**：
+    1. `_check_contributes_manifest`: 檢核 `contributes/_manifest.md` 存在性並淘汰舊版殘留。
+    2. `_check_test_method_mark_passed`: 透過 AST 靜態掃描測試方法體，遺漏 `self.mark_passed()` 觸發 WARN 告警防假測試。
+    3. `_check_sandbox_hook_compliance`: 檢查 `scripts/hook.dev.py` 語法、攔截頂層散落語句並校驗鉤子簽名。
+    4. `_check_docs_path_pollution`: 掃描模組下第三方手冊，嚴禁出現 `project://source/` 等本機開發路徑硬編碼。
+    5. `_check_configurable_naming`: 強制檢核 `configurable/` 檔案命名格式與 Python 語法有效性。
+  - **全套測試 100% 通過**：新增 FT-10~14 單元測試，`dev` 模組 88/88 測試全數綠燈；`dev check --all` 生態系 5 大模組 0 失敗；全生態系回歸測試全數通過；開發者免測審查通過。
+
 ### sub_03_contributes_schema_and_rigid_validation (Verified)
 - **Contributes 依賴注入宣告架構升級、輕量 Schema DSL 剛性驗證與全生態系契約落地**：
   - **純標準庫輕量 Schema DSL (`core.validator.ContributesValidator`)**：零第三方依賴（嚴禁 pydantic / jsonschema），支援結構化型別標記（`str!`, `int?`, `bool? = false`）、受限列舉（`enum(a, b)`）、通配映射（`"*"`）、遞迴指針（`$TypeName`）與型別別名（`_types`）。

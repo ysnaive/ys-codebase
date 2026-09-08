@@ -117,8 +117,14 @@ class Checker:
         # 4. Check AST Syntax, Zero Probing & Anti-patterns in Python files
         self._check_source_files(name, real_dir, report)
 
-        # 5. Check Test Classes (YSCBTestCase inheritance)
+        # 5. Check Test Classes (YSCBTestCase inheritance & mark_passed)
         self._check_test_classes(name, real_dir, report)
+
+        # 6. Check Sandbox Lifecycle Hooks (scripts/hook.dev.py)
+        self._check_sandbox_hooks(name, real_dir, report)
+
+        # 7. Check Documentation Path Pollution
+        self._check_docs_pollution(name, real_dir, report)
 
         return report
 
@@ -433,6 +439,15 @@ class Checker:
         cfg_dir = os.path.join(real_dir, "configurable")
         if os.path.isdir(cfg_dir):
             for cfg_f in os.listdir(cfg_dir):
+                if not (cfg_f.startswith("config.") and cfg_f.endswith(".json")):
+                    report.issues.append(
+                        CheckIssue(
+                            severity=CheckSeverity.WARN,
+                            category="STRUCTURE",
+                            message=f"Non-standard configuration template naming in 'configurable/{cfg_f}'. Expected pattern 'config.*.json'.",
+                            file_path=f"configurable/{cfg_f}",
+                        )
+                    )
                 if cfg_f.endswith(".json"):
                     cfg_full = os.path.join(cfg_dir, cfg_f)
                     try:
@@ -464,14 +479,26 @@ class Checker:
                         )
                     )
 
-        # 5. Check contributes.format.md presence
-        fmt_doc = os.path.join(real_dir, "contributes.format.md")
-        if not os.path.exists(fmt_doc):
+        # 5. Check contributes/_manifest.md presence
+        contrib_dir = os.path.join(real_dir, "contributes")
+        if os.path.isdir(contrib_dir):
+            manifest_doc = os.path.join(contrib_dir, "_manifest.md")
+            if not os.path.exists(manifest_doc):
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="CONTRIBUTES",
+                        message="Module defines 'contributes/' directory but lacks 'contributes/_manifest.md' declaration index.",
+                        file_path="contributes/_manifest.md",
+                    )
+                )
+        legacy_fmt_doc = os.path.join(real_dir, "contributes.format.md")
+        if os.path.exists(legacy_fmt_doc):
             report.issues.append(
                 CheckIssue(
                     severity=CheckSeverity.WARN,
-                    category="STRUCTURE",
-                    message="Module lacks 'contributes.format.md' documentation.",
+                    category="CONTRIBUTES",
+                    message="Legacy 'contributes.format.md' detected. Please migrate to 'contributes/_manifest.md'.",
                     file_path="contributes.format.md",
                 )
             )
@@ -748,6 +775,37 @@ class Checker:
                                             line_number=node.lineno,
                                         )
                                     )
+                                else:
+                                    # AST Static Inspection: Check self.mark_passed() in test_* methods
+                                    for item in node.body:
+                                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith("test_"):
+                                            is_none_req = False
+                                            for dec in getattr(item, "decorator_list", []):
+                                                if isinstance(dec, ast.Call):
+                                                    f_name = getattr(dec.func, "id", getattr(dec.func, "attr", ""))
+                                                    if f_name == "require" and dec.args:
+                                                        if "NONE" in _extract_tokens(dec.args[0]):
+                                                            is_none_req = True
+                                                            break
+                                            if not is_none_req:
+                                                has_mark = False
+                                                for sub_n in ast.walk(item):
+                                                    if isinstance(sub_n, ast.Call):
+                                                        cf = sub_n.func
+                                                        if isinstance(cf, ast.Attribute) and cf.attr == "mark_passed":
+                                                            if isinstance(cf.value, ast.Name) and cf.value.id == "self":
+                                                                has_mark = True
+                                                                break
+                                                if not has_mark:
+                                                    report.issues.append(
+                                                        CheckIssue(
+                                                            severity=CheckSeverity.WARN,
+                                                            category="STRUCTURE",
+                                                            message=f"Test method '{item.name}' in tests/{t_file}:{item.lineno} lacks 'self.mark_passed()' call. Unhandled tests will be marked as UNKNOWN in test runner.",
+                                                            file_path=f"tests/{t_file}",
+                                                            line_number=item.lineno,
+                                                        )
+                                                    )
                             _check_require_node(node, t_file)
                         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                             _check_require_node(node, t_file)
@@ -760,6 +818,109 @@ class Checker:
                             file_path=f"tests/{t_file}",
                         )
                     )
+
+    def _check_sandbox_hooks(self, name: str, real_dir: str, report: CheckReport) -> None:
+        """
+        Verify compliance of 'scripts/hook.dev.py' lifecycle hook script.
+        Enforces:
+        1. Syntax validity via AST parsing.
+        2. Forbidden top-level executable statements (only imports, defs, classes, or docstrings allowed).
+        3. Mandatory function signatures for on_test_setup / on_test_teardown (must accept context argument).
+        """
+        hook_path = os.path.join(real_dir, "scripts", "hook.dev.py")
+        if not os.path.exists(hook_path):
+            return
+
+        rel_p = "scripts/hook.dev.py"
+        try:
+            with open(hook_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            tree = ast.parse(content, filename=hook_path)
+        except SyntaxError as se:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.FAIL,
+                    category="SYNTAX",
+                    message=f"SyntaxError in {rel_p}:{se.lineno}: {se.msg}",
+                    file_path=rel_p,
+                    line_number=se.lineno,
+                )
+            )
+            return
+        except Exception as e:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.FAIL,
+                    category="SYNTAX",
+                    message=f"Error parsing {rel_p}: {e}",
+                    file_path=rel_p,
+                )
+            )
+            return
+
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if node.name in ("on_test_setup", "on_test_teardown"):
+                        total_args = len(node.args.args) + (1 if node.args.vararg else 0)
+                        if total_args < 1:
+                            report.issues.append(
+                                CheckIssue(
+                                    severity=CheckSeverity.FAIL,
+                                    category="STRUCTURE",
+                                    message=f"Hook function '{node.name}' in {rel_p}:{node.lineno} must accept at least 1 parameter ('context').",
+                                    file_path=rel_p,
+                                    line_number=node.lineno,
+                                )
+                            )
+            elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                continue
+            elif isinstance(node, ast.Assign):
+                continue
+            else:
+                stmt_type = type(node).__name__
+                lineno = getattr(node, "lineno", 0)
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="ANTIPATTERN",
+                        message=f"Forbidden top-level statement '{stmt_type}' in {rel_p}:{lineno}. Hook scripts must only declare imports, functions, or classes.",
+                        file_path=rel_p,
+                        line_number=lineno,
+                    )
+                )
+
+    def _check_docs_pollution(self, name: str, real_dir: str, report: CheckReport) -> None:
+        """
+        Scan module's 'docs/' folder to detect hardcoded local development paths.
+        Enforces documentation perspective boundaries:
+        Third-party guides must use semantic URIs (e.g. 'module://<mod>/') instead of 'project://source/'.
+        """
+        docs_dir = os.path.join(real_dir, "docs")
+        if not os.path.isdir(docs_dir):
+            return
+
+        for root, _, files in os.walk(docs_dir):
+            for f in files:
+                if not f.endswith(".md"):
+                    continue
+                full_p = os.path.join(root, f)
+                rel_p = os.path.relpath(full_p, real_dir).replace("\\", "/")
+                try:
+                    with open(full_p, "r", encoding="utf-8", errors="replace") as df:
+                        for lineno, line in enumerate(df, start=1):
+                            if "project://source/" in line:
+                                report.issues.append(
+                                    CheckIssue(
+                                        severity=CheckSeverity.WARN,
+                                        category="DOCUMENTATION",
+                                        message=f"Documentation path pollution: Hardcoded 'project://source/' detected in '{rel_p}:{lineno}'. Downstream developers have no source/ directory; use 'module://<mod>/' semantic URI instead.",
+                                        file_path=rel_p,
+                                        line_number=lineno,
+                                    )
+                                )
+                except Exception:
+                    pass
 
 
     def check_all(self) -> Dict[str, CheckReport]:

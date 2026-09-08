@@ -312,3 +312,132 @@ class TestDevChecker(YSCBTestCase):
             if os.path.exists(tmp_mod_dir):
                 shutil.rmtree(tmp_mod_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
+    def test_ft10_contributes_manifest_check(self):
+        """FT-10: 驗證 contributes/ 缺少 _manifest.md 時判定 FAIL，存在 legacy format 時判定 WARN"""
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_ft10_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(tmp_mod_dir, "contributes"), exist_ok=True)
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_ft10_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+
+            # 1. 缺少 _manifest.md 應觸發 FAIL
+            report = self.checker.check_module("mock_ft10_mod")
+            self.assertFalse(report.passed)
+            self.assertTrue(any("lacks 'contributes/_manifest.md'" in e for e in report.errors))
+
+            # 2. 補上 _manifest.md 並加入舊版 contributes.format.md
+            with open(os.path.join(tmp_mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
+                f.write("# Manifest\n")
+            with open(os.path.join(tmp_mod_dir, "contributes.format.md"), "w", encoding="utf-8") as f:
+                f.write("# Legacy\n")
+
+            report2 = self.checker.check_module("mock_ft10_mod")
+            self.assertTrue(report2.passed)
+            self.assertTrue(any("Legacy 'contributes.format.md' detected" in w for w in report2.warnings))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_ft11_test_method_mark_passed_warn(self):
+        """FT-11: 驗證測試方法體未呼叫 self.mark_passed() 時觸發 WARN 提示"""
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_ft11_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(tmp_mod_dir, "tests"), exist_ok=True)
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_ft11_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+            with open(os.path.join(tmp_mod_dir, "tests", "test_missing.py"), "w", encoding="utf-8") as f:
+                f.write(
+                    'from dev.testing.case import YSCBTestCase\n'
+                    'class TestMissingPass(YSCBTestCase):\n'
+                    '    def test_without_mark(self):\n'
+                    '        self.assertTrue(True)\n'
+                )
+
+            report = self.checker.check_module("mock_ft11_mod")
+            self.assertTrue(report.has_warns)
+            self.assertTrue(any("lacks 'self.mark_passed()'" in w for w in report.warnings))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_ft12_sandbox_hook_compliance(self):
+        """FT-12: 驗證 hook.dev.py 函式缺少參數或頂層存在執行語句時判定 FAIL"""
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_ft12_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_ft12_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+            with open(os.path.join(tmp_mod_dir, "scripts", "hook.dev.py"), "w", encoding="utf-8") as f:
+                f.write('def on_test_setup():\n    pass\n')
+
+            report = self.checker.check_module("mock_ft12_mod")
+            self.assertFalse(report.passed)
+            self.assertTrue(any("must accept at least 1 parameter" in e for e in report.errors))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_ft13_docs_path_pollution_warn(self):
+        """FT-13: 驗證 docs/ 第三方文檔出現 project://source/ 硬編碼時觸發 WARN"""
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_ft13_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(tmp_mod_dir, "docs"), exist_ok=True)
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_ft13_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+            with open(os.path.join(tmp_mod_dir, "docs", "dev_guild.md"), "w", encoding="utf-8") as f:
+                f.write('# Dev Guild\nEdit files in project://source/mock_ft13_mod/ to start.\n')
+
+            report = self.checker.check_module("mock_ft13_mod")
+            self.assertTrue(report.has_warns)
+            self.assertTrue(any("Documentation path pollution" in w for w in report.warnings))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_ft14_configurable_naming_check(self):
+        """FT-14: 驗證 configurable/ 內包含非 config.*.json 命名之檔案時觸發 WARN"""
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_ft14_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(tmp_mod_dir, "configurable"), exist_ok=True)
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_ft14_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+            with open(os.path.join(tmp_mod_dir, "configurable", "custom_template.json"), "w", encoding="utf-8") as f:
+                f.write('{"key": "value"}\n')
+
+            report = self.checker.check_module("mock_ft14_mod")
+            self.assertTrue(report.has_warns)
+            self.assertTrue(any("Non-standard configuration template naming" in w for w in report.warnings))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+
+
