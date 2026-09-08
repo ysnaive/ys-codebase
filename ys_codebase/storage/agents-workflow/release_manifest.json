@@ -1,5 +1,5 @@
 {
-  "fingerprint": "9ca86446a409ba17e0ca3c2c7832e55691fc289618bb90547c6d63807f1c4d21",
+  "fingerprint": "6c64dafaf6dc634d17a1c4f71e593a7a68ac2b4af3b5dc20439a9041ee316e30",
   "active_targets": [
     "antigravity"
   ],
@@ -38,6 +38,10 @@
     "project://.agents/skills/session-analysis/scripts/analyzer.py",
     "project://.agents/skills/yscb-cli-guild/SKILL.md",
     "project://.agents/skills/yscb-module-dev/SKILL.md",
+    "project://.agents/skills/yscb-module-dev/references/acceptance_checklist.md",
+    "project://.agents/skills/yscb-module-dev/references/cli_and_commands.md",
+    "project://.agents/skills/yscb-module-dev/references/contributes_guide.md",
+    "project://.agents/skills/yscb-module-dev/references/testing_and_sandbox.md",
     "project://.agents/workflows/Auto.md",
     "project://.agents/workflows/BumpRevision.md",
     "project://.agents/workflows/ContextInit.md",
@@ -49,6 +53,6 @@
     "project://.agents/workflows/Roadmap.md",
     "project://AGENTS.md"
   ],
-  "combined_fingerprint": "9ca86446a409ba17e0ca3c2c7832e55691fc289618bb90547c6d63807f1c4d21",
-  "updated_at": "2026-09-07 13:14:40"
+  "combined_fingerprint": "6c64dafaf6dc634d17a1c4f71e593a7a68ac2b4af3b5dc20439a9041ee316e30",
+  "updated_at": "2026-09-08 11:25:34"
 }

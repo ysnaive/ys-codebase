@@ -50,6 +50,7 @@ def process(args: List[str]) -> int:
 '''
         report = self._check_code(code)
         self.assertEqual(report.status, CheckSeverity.PASS, f"Unexpected failures: {report.errors}")
+        self.mark_passed()
 
     def test_checker_missing_process(self):
         """FT-06: Missing process(args) function fails."""
@@ -64,6 +65,7 @@ def execute(args):
         report = self._check_code(code)
         self.assertEqual(report.status, CheckSeverity.FAIL)
         self.assertTrue(any("Missing required entry function 'def process(args)'" in err for err in report.errors))
+        self.mark_passed()
 
     def test_checker_forbidden_main(self):
         """FT-07: Forbidden main function or __main__ block fails."""
@@ -96,6 +98,7 @@ if __name__ == '__main__':
         report2 = self._check_code(code2)
         self.assertEqual(report2.status, CheckSeverity.FAIL)
         self.assertTrue(any("Forbidden 'if __name__ == \"__main__\":'" in err for err in report2.errors))
+        self.mark_passed()
 
     def test_checker_toplevel_statements(self):
         """FT-08: Forbidden executable statements outside function/class fail."""
@@ -115,6 +118,7 @@ def process(args):
         self.assertEqual(report.status, CheckSeverity.FAIL)
         errors_str = " ".join(report.errors)
         self.assertIn("outside function/class", errors_str)
+        self.mark_passed()
 
 
 if __name__ == "__main__":
