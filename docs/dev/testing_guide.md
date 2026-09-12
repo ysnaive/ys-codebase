@@ -122,7 +122,7 @@ class Requirement(Flag):
 當執行 `dev op-test` 時，測試探索引擎會自動組裝兩階段測試：
 1. **Phase 1: Auto-Contract 自動契約測試**：
    - 契約 1 (`Manifest` 必填欄位與 SemVer 合規)。
-   - 契約 2 (`scripts/cli.py` 存在且具備 `main(argv)` 進入點)。
+   - 契約 2 (`scripts/cli.py` 存在且宣告 `process(args)` 進入點、無 `main` 與頂層裸語句)。
    - 契約 3 (`Builder` 純淨打包驗證)。
 2. **Phase 2: 自訂業務測試 (Custom Tests)**：
    - 載入 `source/<module>/tests/test_*.py`。

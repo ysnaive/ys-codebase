@@ -103,7 +103,7 @@ class TestCliGuildProvider(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_filter_and_formatting(self):
-        """FT-01: 驗證有定義 pros/cons 正常生成，支援 tier 標籤 (🟢/🟡/🔴)，無定義之指令自動排除。"""
+        """FT-01: 驗證有定義 pros/cons 正常生成，支援 tier 標籤 ([SAFE]/[CONDITIONAL]/[GATED])，無定義之指令自動排除。"""
         fake_commands = {
             "test": {
                 "description": "Run module tests",
@@ -133,8 +133,8 @@ class TestCliGuildProvider(YSCBTestCase):
             output = get_agents_cli_guild()
 
         # 斷言三級權限標籤
-        self.assertIn("🟢 自主安全", output)
-        self.assertIn("🔴 授權守門", output)
+        self.assertIn("[SAFE] 自主安全", output)
+        self.assertIn("[GATED] 授權守門", output)
         self.assertIn("`python yscb.py dev test`", output)
         self.assertIn("`python yscb.py dev release`", output)
         self.assertIn("開發中跑測", output)
@@ -178,13 +178,13 @@ class TestCliGuildProvider(YSCBTestCase):
             p5_output = get_phase05_cli_guild()
             self.assertIn("python yscb.py dev check", p5_output)
             self.assertIn("python yscb.py dev test", p5_output)
-            self.assertIn("🚨 嚴禁執行 `python yscb.py dev release`", p5_output)
+            self.assertIn("[GATED] 嚴禁執行 `python yscb.py dev release`", p5_output)
 
             # Phase 6 JIT
             p6_output = get_phase06_cli_guild()
             self.assertIn("python yscb.py dev test", p6_output)
             self.assertNotIn("python yscb.py dev check", p6_output)
-            self.assertIn("🚨 嚴禁執行 `python yscb.py dev release`", p6_output)
+            self.assertIn("[GATED] 嚴禁執行 `python yscb.py dev release`", p6_output)
 
             # Phase 7 JIT
             p7_output = get_phase07_cli_guild()
@@ -207,7 +207,7 @@ class TestCliGuildProvider(YSCBTestCase):
         with patch("core.contributes.get", return_value=fake_commands):
             output = get_agents_cli_guild()
 
-        self.assertIn("🟡 階段條件", output)
+        self.assertIn("[CONDITIONAL] 階段條件", output)
         self.assertIn("`python yscb.py install`", output)
         self.assertIn("單一字串適用情境", output)
         self.assertIn("單一字串禁止情境", output)

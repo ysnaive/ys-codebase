@@ -1,0 +1,5 @@
+# Development ignore list
+tests/
+*.tmp
+*.bak
+.pytest_cache/

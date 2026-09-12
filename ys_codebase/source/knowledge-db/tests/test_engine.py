@@ -195,7 +195,7 @@ class TestEngine(YSCBTestCase):
             self.assertIn("代碼切片", out_detail)
 
             out_md = engine.format_search_output(results, query="ServiceNode", detail_mode="simple", format_type="md")
-            self.assertIn("### 🔍 知識庫檢索: `ServiceNode`", out_md)
+            self.assertIn("###  知識庫檢索: `ServiceNode`", out_md)
             self.assertIn("- **#01**", out_md)
 
             out_auto = engine.format_search_output(results, query="ServiceNode", detail_mode="detail", snippet=True, limit_mode="auto")

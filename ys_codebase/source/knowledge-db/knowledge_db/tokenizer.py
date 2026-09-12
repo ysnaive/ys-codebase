@@ -105,9 +105,9 @@ class MultilingualTokenizer:
         """
         將程式碼標識符進行駝峰與底線拆解。
         例如：
-          - 'PIDController' ➔ ['pid', 'controller', 'pidcontroller']
-          - 'getHTTPResponse' ➔ ['get', 'http', 'response', 'gethttpresponse']
-          - 'user_id_v5' ➔ ['user', 'id', 'v5', 'user_id_v5']
+          - 'PIDController' -> ['pid', 'controller', 'pidcontroller']
+          - 'getHTTPResponse' -> ['get', 'http', 'response', 'gethttpresponse']
+          - 'user_id_v5' -> ['user', 'id', 'v5', 'user_id_v5']
         """
         return list(_split_identifier_cached(identifier))
 

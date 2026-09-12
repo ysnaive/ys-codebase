@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import pickle
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -76,11 +77,12 @@ class EmbeddingService:
         self.mock_mode = mock_mode
         self._model: Optional[Any] = None
         self._is_available: bool = False
+        self._init_attempted: bool = False
+        self._init_lock = threading.Lock()
         self._suppress_hf_warnings()
-        if not self.mock_mode:
-            self._init_model()
-        else:
+        if self.mock_mode:
             self._is_available = True
+            self._init_attempted = True
 
     @staticmethod
     def _suppress_hf_warnings() -> None:
@@ -155,8 +157,25 @@ class EmbeddingService:
             logger.info(f"FastEmbed model unavailable ({e}). Fallback to BM25-only mode.")
 
     @property
+    def dimension(self) -> int:
+        """回傳當前模型嵌入維度"""
+        return DEFAULT_EMBEDDING_DIM
+
+    def _ensure_model(self) -> None:
+        """嘗試按需加載 FastEmbed ONNX 模型 (Lazy Loading)"""
+        if self.mock_mode or self._model is not None or self._init_attempted:
+            return
+        with self._init_lock:
+            if self.mock_mode or self._model is not None or self._init_attempted:
+                return
+            self._init_attempted = True
+            self._init_model()
+
+    @property
     def is_available(self) -> bool:
-        """回傳當前環境向量推論服務是否就緒可用"""
+        """回傳當前環境向量推論服務是否就緒可用 (按需惰性探測加載)"""
+        if not self._is_available and not self._init_attempted and not self.mock_mode:
+            self._ensure_model()
         return self._is_available
 
     def _generate_mock_vector(self, text: str, dim: int = DEFAULT_EMBEDDING_DIM) -> np.ndarray:

@@ -7,6 +7,7 @@
 /.cache/
 /.venv/
 *.local.json
+!**/configurable/*.local.json
 __pycache__/
 *.pyc
 
@@ -46,6 +47,10 @@ __pycache__/
 /.agents/skills/session-analysis/scripts/analyzer.py
 /.agents/skills/yscb-cli-guild/SKILL.md
 /.agents/skills/yscb-module-dev/SKILL.md
+/.agents/skills/yscb-module-dev/references/acceptance_checklist.md
+/.agents/skills/yscb-module-dev/references/cli_and_commands.md
+/.agents/skills/yscb-module-dev/references/contributes_guide.md
+/.agents/skills/yscb-module-dev/references/testing_and_sandbox.md
 /.agents/workflows/Auto.md
 /.agents/workflows/BumpRevision.md
 /.agents/workflows/ContextInit.md

@@ -1,6 +1,7 @@
 """
 Official test suite for core.installer.Installer.
 """
+import os
 from dev.testing import YSCBTestCase, require, Requirement
 from core.installer import Installer
 from core import uri
@@ -140,4 +141,90 @@ class TestCoreInstaller(YSCBTestCase):
 
         # Cleanup
         self.installer.cmd_remove(mod_name, force=True, purge=True)
+        self.mark_passed()
+
+    def test_optional_dependencies_hint(self):
+        """FT-01: 驗證模組宣告 optional 且未安裝時，安裝器提示擴充模組建議與指令"""
+        import io
+        import shutil
+        from contextlib import redirect_stdout
+
+        mod_name = "mock_opt_host"
+        uri.makedirs(f"module://{mod_name}")
+        uri.write_json(f"module://{mod_name}/manifest.json", {
+            "name": mod_name,
+            "version": "1.0.0",
+            "dependencies": {"core": ">=1.0.0"},
+            "optional": {
+                "mock_uninstalled_ext": {
+                    "version": ">=1.0.0",
+                    "hint": "提供額外擴充能力"
+                }
+            }
+        })
+
+        f_out = io.StringIO()
+        with redirect_stdout(f_out):
+            self.installer._check_optional_dependencies(mod_name)
+        out = f_out.getvalue()
+        self.assertIn("偵測到可用的擴充模組", out)
+        self.assertIn("mock_uninstalled_ext (>=1.0.0)", out)
+        self.assertIn("python yscb.py install mock_uninstalled_ext", out)
+
+        # Cleanup
+        target_dir = uri.resolve(f"module://{mod_name}")
+        if os.path.isdir(target_dir):
+            shutil.rmtree(target_dir)
+        self.mark_passed()
+
+    def test_optional_dependencies_already_installed(self):
+        """FT-02: 驗證模組宣告 optional 且已安裝時，靜默跳過無提示"""
+        import io
+        import shutil
+        from contextlib import redirect_stdout
+
+        mod_name = "mock_opt_host_installed"
+        uri.makedirs(f"module://{mod_name}")
+        uri.write_json(f"module://{mod_name}/manifest.json", {
+            "name": mod_name,
+            "version": "1.0.0",
+            "dependencies": {"core": ">=1.0.0"},
+            "optional": {
+                "core": {
+                    "version": ">=1.0.0",
+                    "hint": "核心模組"
+                }
+            }
+        })
+
+        f_out = io.StringIO()
+        with redirect_stdout(f_out):
+            self.installer._check_optional_dependencies(mod_name)
+        out = f_out.getvalue()
+        self.assertNotIn("偵測到可用的擴充模組", out)
+
+        # Cleanup
+        target_dir = uri.resolve(f"module://{mod_name}")
+        if os.path.isdir(target_dir):
+            shutil.rmtree(target_dir)
+        self.mark_passed()
+
+    def test_update_skips_build_version(self):
+        """TASK-06: 驗證 cmd_update 自動跳過 @build 開發中版本，防範降級覆蓋。"""
+        import io
+        from contextlib import redirect_stdout
+
+        self.installer.engine.act_register("mock_dev_mod", "1.0.0.build", "local")
+
+        f_out = io.StringIO()
+        with redirect_stdout(f_out):
+            res = self.installer.cmd_update("mock_dev_mod")
+        out = f_out.getvalue()
+
+        self.assertEqual(res, 0)
+        self.assertIn("is a development build", out)
+        self.assertIn("skipping update", out)
+
+        # Cleanup
+        self.installer.engine.act_unregister("mock_dev_mod")
         self.mark_passed()

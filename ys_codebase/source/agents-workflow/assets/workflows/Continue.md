@@ -4,14 +4,14 @@
 
 ---
 
-## 🚀 執行步驟
+## 執行步驟
 
 ### 步驟 1：定位目標計畫目錄與狀態掃描
 
 1. 檢視 `__${project://plans/}__` 進行中計畫。
 2. 若使用者未明確指定計畫名稱：
-   - 僅單一進行中計畫 ➔ 自動定位為目標。
-   - 多個進行中計畫 ➔ 列出清單與狀態，詢問確認。
+   - 僅單一進行中計畫 -> 自動定位為目標。
+   - 多個進行中計畫 -> 列出清單與狀態，詢問確認。
 
 ---
 
@@ -32,9 +32,9 @@
 
 | 判定依據 | 計畫模式 | 進入判定分支 |
 | :--- | :--- | :--- |
-| 存在 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) | **Umbrella 分類型主計畫** | ➔ 進入 **步驟 3-U** |
-| 存在 [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`) | **Fast Track 迅捷開發** | ➔ 進入 **步驟 3-F** |
-| 存在 `P00` / `P01` ~ `P07` | **Full Track 標準開發 (或子計畫)** | ➔ 進入 **步驟 3-T** |
+| 存在 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) | **Umbrella 分類型主計畫** | -> 進入 **步驟 3-U** |
+| 存在 [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`) | **Fast Track 迅捷開發** | -> 進入 **步驟 3-F** |
+| 存在 `P00` / `P01` ~ `P07` | **Full Track 標準開發 (或子計畫)** | -> 進入 **步驟 3-T** |
 
 ---
 
@@ -43,7 +43,7 @@
 1. 讀取主計畫的 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) 與 [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)。
 2. 檢查子計畫清單矩陣：
    - 尋找處於 `進行中`、`In Progress`、`Planning` 或 `未開始` 的目標子計畫目錄 `sub_{編號}_{名稱}/`。
-   - 若既有子計畫均已完成但主計畫尚有後續階段 ➔ 提示開發者是否開立下一個 `sub_XX` 子計畫。
+   - 若既有子計畫均已完成但主計畫尚有後續階段 -> 提示開發者是否開立下一個 `sub_XX` 子計畫。
 3. 進入當前目標子計畫目錄，檢查該子計畫是否含有 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，若無則依其檔案結構進入 **步驟 3-T** (Full Track) 或 **步驟 3-F** (Fast Track) 判定進度。
 
 ---
@@ -54,16 +54,16 @@
 
 | 已存在的最新檔案 | 檔案狀態為 `Confirmed` / `Passed` | 檔案狀態為 `Discussing` / `Draft` / `Pending` | 判定結果 |
 | :--- | :---: | :---: | :--- |
-| [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) | ✅ | — | Phase 0 已確認，尚未進行分流或進入 Phase 1 |
-| [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) | — | ✅ | Phase 0 需求討論進行中 |
-| [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) | ✅ | — | Phase 1 已完成，應從 Phase 2 開始 |
-| [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) | — | ✅ | Phase 1 進行中，應接續 Phase 1 |
-| [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) | ✅ | — | Phase 2 已完成，應從 Phase 3 開始 |
-| [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) | — | ✅ | Phase 2 進行中，應接續 Phase 2 |
-| [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | ✅ | — | Phase 3 已完成，應從 Phase 4 開始 |
-| [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | — | ✅ | Phase 3 進行中，應接續 Phase 3 |
-| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | ✅ | — | Phase 4 已定稿，應進入 Phase 5 開始實作 |
-| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | — | ✅ | Phase 4 審查進行中 |
+| [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) | [PASS] | — | Phase 0 已確認，尚未進行分流或進入 Phase 1 |
+| [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) | — | [PASS] | Phase 0 需求討論進行中 |
+| [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) | [PASS] | — | Phase 1 已完成，應從 Phase 2 開始 |
+| [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) | — | [PASS] | Phase 1 進行中，應接續 Phase 1 |
+| [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) | [PASS] | — | Phase 2 已完成，應從 Phase 3 開始 |
+| [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) | — | [PASS] | Phase 2 進行中，應接續 Phase 2 |
+| [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | [PASS] | — | Phase 3 已完成，應從 Phase 4 開始 |
+| [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | — | [PASS] | Phase 3 進行中，應接續 Phase 3 |
+| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | [PASS] | — | Phase 4 已定稿，應進入 Phase 5 開始實作 |
+| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | — | [PASS] | Phase 4 審查進行中 |
 | [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) | — | — | Phase 5 實作中（讀取清單標記定位中斷點） |
 | [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) | — | — | Phase 6 測試驗證中（檢查實測狀態與 UX 驗收關卡） |
 | [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) | — | — | Phase 7 審查中（若已完成應已歸檔） |
@@ -95,9 +95,9 @@
 對話 Session **嚴禁代碼傾倒、全文重複或無關轉述**，強制僅呈遞以下極簡接續卡，並**立即 End Turn 等待確認**：
 
 ```markdown
-### 📋 /Continue 計畫接續卡
+### /Continue 計畫接續卡
 - **計畫名稱**：[{plan_name}](__${project://plans/}__/{plan_name}/)
-- **模式與斷點**：[Full Track / Fast Track / Umbrella] ➔ [當前 Phase 或 FT-X]
+- **模式與斷點**：[Full Track / Fast Track / Umbrella] -> [當前 Phase 或 FT-X]
 - **交接現場**：[已載入 handoff.md 現場快照 / 依產物狀態完成定位]
 - **關鍵摘要**：[1 行進度與踩坑/注意事項摘要]
 - **下一步動作**：[重啟執行之具體動作]

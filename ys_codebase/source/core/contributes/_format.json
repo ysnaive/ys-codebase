@@ -1,0 +1,67 @@
+{
+  "_types": {
+    "ArgDef": {
+      "description": "str!",
+      "required": "bool? = false",
+      "choice": "list[str]?",
+      "choices": "list[str]?"
+    },
+    "OptionDef": {
+      "description": "str!",
+      "alias": "list[str]?",
+      "args": {
+        "*": "$ArgDef"
+      }
+    },
+    "CommandNode": {
+      "description": "str!",
+      "tier": "enum(safe, conditional, gated)? = conditional",
+      "server_compatible": "bool? = false",
+      "args": {
+        "*": "$ArgDef"
+      },
+      "options": {
+        "*": {
+          "*": "$OptionDef"
+        }
+      },
+      "usage": {
+        "pros": "list[str]?",
+        "cons": "list[str]?"
+      },
+      "cmd": {
+        "*": "$CommandNode"
+      }
+    }
+  },
+
+  "uri_schemes": {
+    "description": "註冊自訂語意 URI 協議（例 workflow.plans://, knowledge.storage://）",
+    "format": [
+      {
+        "token": "str!",
+        "type": "enum(config, const, module)!",
+        "value": "str!",
+        "description": "str?"
+      }
+    ]
+  },
+
+  "commands": {
+    "description": "註冊 CLI 模組指令樹、權限分級與防呆情境",
+    "format": {
+      "module_alias": "list[str]?",
+      "description": "str?",
+      "cmd": {
+        "*": "$CommandNode"
+      }
+    }
+  },
+
+  "events": {
+    "description": "宣告模組派送之生命週期或自訂事件清冊",
+    "format": [
+      "dict[str, str]"
+    ]
+  }
+}

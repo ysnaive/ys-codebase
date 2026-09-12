@@ -1,0 +1,17 @@
+{
+  "_types": {
+    "CheckRuleDef": {
+      "name": "str!",
+      "description": "str!",
+      "severity": "enum(PASS, WARN, FAIL)? = WARN",
+      "checker_func": "str!"
+    }
+  },
+
+  "custom_checks": {
+    "description": "向 dev check 靜態合規引擎註冊領域專屬靜態檢查規則",
+    "format": [
+      "$CheckRuleDef"
+    ]
+  }
+}

@@ -134,7 +134,7 @@ class TestWorkflowInitializer(YSCBTestCase):
     def test_ft_04_cli_invocation_with_path_override(self):
         """FT-05: 驗證 CLI 指令解析 --init-default 與 --path-* 參數。"""
         custom_docs = os.path.join(self.temp_dir, "my_custom_docs")
-        ret = cli.main(["--init-default", "-y", f"--path-docs={custom_docs}"])
+        ret = cli.init(["-y", f"--path-docs={custom_docs}"])
         self.assertEqual(ret, 0)
         self.assertTrue(os.path.isdir(custom_docs))
         self.mark_passed()
@@ -178,7 +178,7 @@ class TestWorkflowInitializer(YSCBTestCase):
             self.assertEqual(len(res.get("created_dirs", [])), 0)
 
             # CLI 進入點亦應回傳非 0 狀態碼
-            ret = cli.main(["--init-default", "-y"])
+            ret = cli.init(["-y"])
             self.assertEqual(ret, 1)
         finally:
             if orig_proj_root:

@@ -98,11 +98,11 @@ class WorkflowInitializer:
         is_project_defined, proj_err = self.check_project_protocol()
         if not is_project_defined:
             print("\n" + "=" * 75, file=sys.stderr)
-            print("[agents-workflow:init] 🚨 錯誤：依賴協議 'project://' 尚未定義！", file=sys.stderr)
+            print("[agents-workflow:init] [!] 錯誤：依賴協議 'project://' 尚未定義！", file=sys.stderr)
             print("=" * 75, file=sys.stderr)
             print("agents-workflow 依賴專案根目錄協議 'project://' 來定位 plans 與 docs 目錄。", file=sys.stderr)
             print("當前 core.project_root 未配置或為 !undefined。\n", file=sys.stderr)
-            print("💡 建議解決步驟：", file=sys.stderr)
+            print("[*] 建議解決步驟：", file=sys.stderr)
             print("  1. 請先執行以下指令設定專案根目錄 (例如指定當前目錄或專案路徑)：", file=sys.stderr)
             print("     python yscb.py config set core project_root .\n", file=sys.stderr)
             print("  2. 或於終端執行協議解析以進行及時熱更新補齊：", file=sys.stderr)
