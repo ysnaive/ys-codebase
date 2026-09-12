@@ -9,7 +9,7 @@
 
 `__@{END_HTML_ANNOTATION}__`
 
-# 📌 當前進度與暫停交接現場 (Handoff Context)
+# 當前進度與暫停交接現場 (Handoff Context)
 
 > 暫停時間：[YYYY-MM-DD HH:MM]  
 > 所屬計畫：[計畫名稱]  
@@ -34,11 +34,11 @@
 ---
 
 ## 3. 踩坑與注意事項 (Gotchas & Blockers)
-- ⚠️ [關鍵坑點/特殊時序/未解問題/本次討論達成的口頭共識]
+- [WARN] [關鍵坑點/特殊時序/未解問題/本次討論達成的口頭共識]
 
 ---
 
 ## 4. 下一次接手時的第 1 步 (Immediate Next Action)
-- 🚀 [極精確的重啟行動指引，例如「從 xx 函式繼續實作，完成後執行 test 驗證」]
+-  [極精確的重啟行動指引，例如「從 xx 函式繼續實作，完成後執行 test 驗證」]
 
 `__@{HANDOFF_TEMPLATE}__`

@@ -4,13 +4,13 @@
 
 ---
 
-## 🎯 核心目標：零斷層、零疑問
+## 核心目標：零斷層、零疑問
 
 確保未來的自己、接手開發者或新開 Session 的 Agent，光看計畫目錄下的 `handoff.md` 即可無縫接軌，無需耗費 Token 重新探勘程式碼。
 
 ---
 
-## 🚀 執行步驟
+## 執行步驟
 
 ### 步驟 1：定位當前進行中計畫
 檢視 `__${project://plans/}__`，定位目標計畫目錄 `__${project://plans/}__/{YYYY_MM_DD_HHMM_功能名稱}/`。
@@ -31,7 +31,7 @@
 對話 Session **嚴禁全文重複、代碼傾倒或冗長轉述**，強制僅呈遞以下極簡卡片，並**立即 End Turn**：
 
 ```markdown
-### ⏸️ /Pause 現場上下文凍結完成
+### [PAUSE] /Pause 現場上下文凍結完成
 - **交接檔案**：[handoff.md](__${project://plans/}__/{plan_name}/handoff.md)
 - **所屬計畫**：[{plan_name}](__${project://plans/}__/{plan_name}/)
 - **凍結斷點**：[Phase X 或 FT-Y (狀態)]

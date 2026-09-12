@@ -11,6 +11,14 @@
 
 ## 2026_09_07_0831_quality_update (In Progress)
 
+### sub_05_terminal_encoding_legacy_cleanup_and_ascii_purification (Verified)
+- **終端編碼防護、舊版殘留清理、特殊字元徹底捨棄與測試狀態閉環**：
+  - **特殊字元與 Emoji 全面捨棄淨化**：將全生態系 CLI 輸出、說明文件、Tokens 錨點與日誌中的 Emoji/特殊字元全面替換為標準 ASCII 括弧標籤（`[SAFE]`, `[CONDITIONAL]`, `[GATED]`, `[PASS]`, `[WARN]`, `[!]` 等），徹底杜絕跨終端字元編碼異常。
+  - **Windows Console UTF-8 輸出防護**：於 `yscb.py` 進入點與 `dispatcher.py` 實施 `sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)`，保障 Windows CP950 終端輸出安全。
+  - **沙盒並發安全鎖與測試沙盒隔離**：於 `SandboxProvisioner` 與 `tester.py` 建立 `_ACTIVE_SANDBOXES` 與 `_PIP_LOCK`，防範多模組並發測試時的沙盒互刪與 pip 競爭衝突。
+  - **舊版殘留檔案清理**：徹底刪除舊版 `contributes.format.md`（core, server, knowledge-db）與 `source/knowledge-db/configurable/contribute.json`。
+  - **全套測試 100% 通過與狀態標記閉環**：補齊 `agents-workflow` (44 處) 與 `core` (17 處) 缺失之 `self.mark_passed()`；`dev check --all` 達成 0 Warning / 5 通過；`dev test --all` 511 測試 100% 通過（511 Passed, 0 Failed, 0 Unknown）。
+
 ### sub_04_yscb_module_dev_skill_refinement (Verified)
 - **yscb-module-dev 技能手冊全方位品質升級、7 大缺失能力補齊、四大視角隔離與 dev check 剛性檢核**：
   - **技能手冊全方位品質升級與實質修復**：修正 `SKILL.md` 全面改以「觸發時機」分流導航；修正 `cli_and_commands.md` 標題序號至 3.2，補齊 `dev create` 章節；修正 `testing_and_sandbox.md` 所有測試範例，全面補齊 `self.mark_passed()` 與正確測試狀態約定；修正 `acceptance_checklist.md` 標題精確化，徹底消除跨視角路徑污染；修訂 `contributes_guide.md` Host 視角備註與 `module://` 引用語意。

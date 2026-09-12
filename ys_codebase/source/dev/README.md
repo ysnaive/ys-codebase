@@ -193,7 +193,7 @@ class TestMyModuleFeature(YSCBTestCase):
 
 ## 5. 常見開發者操作指南 (Cookbook)
 
-### 💡 情境 1：從零開發自訂模組並本地試用 (軌道 A)
+### [*] 情境 1：從零開發自訂模組並本地試用 (軌道 A)
 ```bash
 # 1. 建立模組骨架
 python yscb.py dev create my-helper --desc="輔助自動化工具"
@@ -210,7 +210,7 @@ python yscb.py install my-helper@build --force
 python yscb.py my-helper --help
 ```
 
-### 💡 情境 2：正式晉升版本並發布交付 (軌道 B)
+### [*] 情境 2：正式晉升版本並發布交付 (軌道 B)
 ```bash
 # 1. 遞增版本號 (例如發布 Revision 更新)
 python yscb.py dev bump-revision my-helper

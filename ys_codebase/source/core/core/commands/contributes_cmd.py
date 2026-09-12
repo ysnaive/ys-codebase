@@ -54,12 +54,12 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
         if not uri.exists(fmt_uri):
             fmt_uri = f"module://{mod_name}/contributes/_format.json"
         if not uri.exists(fmt_uri):
-            print(f"[core:contributes] ❌ Error: Format schema not found for module '{mod_name}' at '{fmt_uri}'.")
+            print(f"[core:contributes] [FAIL] Error: Format schema not found for module '{mod_name}' at '{fmt_uri}'.")
             return 1
         try:
             data = uri.read_json(fmt_uri)
         except Exception as e:
-            print(f"[core:contributes] ❌ Error reading '{fmt_uri}': {e}")
+            print(f"[core:contributes] [FAIL] Error reading '{fmt_uri}': {e}")
             return 1
         res = ContributesValidator.validate_format_schema(data)
         print(res.format_report(file_label=fmt_uri))
@@ -71,10 +71,10 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
         try:
             p = uri.resolve(file_uri, interactive=False) if "://" in file_uri else os.path.abspath(file_uri)
             if not os.path.isfile(p):
-                print(f"[core:contributes] ❌ File not found: {file_uri}")
+                print(f"[core:contributes] [FAIL] File not found: {file_uri}")
                 return 1
         except Exception as e:
-            print(f"[core:contributes] ❌ Invalid path/URI '{file_uri}': {e}")
+            print(f"[core:contributes] [FAIL] Invalid path/URI '{file_uri}': {e}")
             return 1
 
         fname = os.path.basename(p)
@@ -88,7 +88,7 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
         target_mod = fname[:-5]
         target_format = contributes.get_format(target_mod)
         if target_format is None:
-            print(f"[core:contributes] ⚠️ Target module '{target_mod}' does not define a _format.json schema. Skipping validation.")
+            print(f"[core:contributes] [WARN] Target module '{target_mod}' does not define a _format.json schema. Skipping validation.")
             return 0
 
         data = uri.read_json(file_uri) if "://" in file_uri else uri.read_json(p)
@@ -127,7 +127,7 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
             try:
                 data = uri.read_json(f_uri)
             except Exception as e:
-                print(f"❌ [{f_uri}] JSON syntax error: {e}")
+                print(f"[FAIL] [{f_uri}] JSON syntax error: {e}")
                 all_passed = False
                 continue
 
@@ -138,10 +138,10 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
                 all_passed = False
 
     if all_passed:
-        print(f"\n✅ All contributes definitions are valid! (Checked {checked_files_count} file(s))\n")
+        print(f"\n[PASS] All contributes definitions are valid! (Checked {checked_files_count} file(s))\n")
         return 0
     else:
-        print(f"\n❌ Contributes validation failed. Please address the errors above.\n")
+        print(f"\n[FAIL] Contributes validation failed. Please address the errors above.\n")
         return 1
 
 

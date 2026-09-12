@@ -270,8 +270,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     """
     if hasattr(sys.stdout, "reconfigure"):
         try:
-            sys.stdout.reconfigure(line_buffering=True)
-            sys.stderr.reconfigure(line_buffering=True)
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
         except Exception:
             pass
 

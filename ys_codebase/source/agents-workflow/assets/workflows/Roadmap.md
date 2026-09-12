@@ -4,7 +4,7 @@
 
 ---
 
-## 🎯 核心原則
+## 核心原則
 
 1. **CLI 優先掃描 (CLI-First Scan)**：優先調用 `python __${yscb.host://yscb.py}__ agents-workflow roadmap` 獲取結構化元數據與問題背景，嚴禁盲目逐檔全讀。
 2. **客觀事實匹配 (Context-Aware Matching)**：結合專案當前 `plan status` 與最新 `CHANGELOG.md`，客觀評估各主題先決條件是否成熟，嚴禁主觀臆測。
@@ -12,7 +12,7 @@
 
 ---
 
-## 🚀 執行步驟
+## 執行步驟
 
 ### 步驟 1：調取 Roadmap 儲備庫摘要
 - **執行指令**：`python __${yscb.host://yscb.py}__ agents-workflow roadmap`
@@ -35,7 +35,7 @@
 對話 Session **嚴禁逐檔全文傾倒或冗長主觀論述**，強制僅呈遞以下極簡推薦卡，並**立即 End Turn 等待指示**：
 
 ```markdown
-### 🗺️ /Roadmap 路線圖推薦卡
+### [ROADMAP] /Roadmap 路線圖推薦卡
 - **儲備庫現況**：共掃描到 `[count]` 項技術儲備
 - **推薦啟動項**：[{topic}.md](__${workflow.roadmap://}__{topic}.md)（狀態：`[Backlog / Ready]`）
 - **核心效益**：[1 行客觀效益說明]

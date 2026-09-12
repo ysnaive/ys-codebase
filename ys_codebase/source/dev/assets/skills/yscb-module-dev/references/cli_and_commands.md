@@ -4,7 +4,7 @@
 
 ---
 
-## 💻 1. 強型別 `CmdBags` 活躍執行合約
+## 1. 強型別 `CmdBags` 活躍執行合約
 
 YS-Codebase 生態系已全面廢除舊式 `argparse` 與手工字串剖析，所有 CLI 命令統一採用強型別 `CmdBags` 活躍執行合約。
 
@@ -47,7 +47,7 @@ def my_command(cmd_bags: CmdBags) -> int:
 
 ---
 
-## ⚖️ 2. CLI 實作與 Contributes 宣告對稱性規範 (Implementation & Declaration Symmetry)
+## 2. CLI 實作與 Contributes 宣告對稱性規範 (Implementation & Declaration Symmetry)
 
 模組在 `scripts/cli.py` 實作的任何 CLI 行為，必須與自身 `contributes/core.json` 保持剛性雙向對稱：
 
@@ -62,7 +62,7 @@ def my_command(cmd_bags: CmdBags) -> int:
    - 選項若需接收值，必須透過子 `args` 字典定義（純旗標選項則省略子 `args`）。
    - 選項的別名清單 (`alias`) 與說明必須與代碼解析邏輯 100% 一致。
 4. **使用指引 (`usage.pros` / `usage.cons`) 語意客觀性**：
-   - 宣告節點必須包含 `usage.pros`（適用/推薦情境）與 `usage.cons`（🚨 絕對禁止/濫用情境），為 `--help` 渲染與 Agent 決策提供剛性界限。
+   - 宣告節點必須包含 `usage.pros`（適用/推薦情境）與 `usage.cons`（[!] 絕對禁止/濫用情境），為 `--help` 渲染與 Agent 決策提供剛性界限。
 5. **權限分級 (`tier`) 客觀評定**：
    - `safe`（自主安全）：無副作用的純讀取/查詢指令。
    - `conditional`（階段條件）：特定流程或開發階段中調用之指令。
@@ -72,7 +72,7 @@ def my_command(cmd_bags: CmdBags) -> int:
 
 ---
 
-## 🌲 3. 同構指令樹與平鋪命名規範
+## 3. 同構指令樹與平鋪命名規範
 
 ### 3.1 平鋪函式命名約定 (Flat Function Convention)
 為避免多層類別嵌套帶來的呼叫開銷與複雜度，實作端約定以**底線平鋪命名**函式：
@@ -91,7 +91,7 @@ def my_command(cmd_bags: CmdBags) -> int:
 
 ---
 
-## ⚡ 4. 微內核延遲載入規範 (PEP 562 Lazy Loading)
+## 4. 微內核延遲載入規範 (PEP 562 Lazy Loading)
 
 為確保 CLI 冷啟動耗時保持在極速 $<1\text{ms}$，生態系模組必須遵守 PEP 562 延遲載入規範：
 
@@ -101,7 +101,7 @@ def my_command(cmd_bags: CmdBags) -> int:
 
 ---
 
-## 🛠️ 5. Dev 工具鏈 CLI 指令全景矩陣
+## [TOOL] 5. Dev 工具鏈 CLI 指令全景矩陣
 
 `dev` 模組提供全生命週期的開發者工具鏈：
 
@@ -145,7 +145,7 @@ python yscb.py dev check <mod_name> --json
 # 開發建置打包 (產出 project://.build/<mod>/<ver>.build.zip，包含 tests/ 與 hook.dev.py)
 python yscb.py dev build <mod_name>
 
-# 語意化版本單向遞增 (Major.Minor.Patch.Revision) - 🚨 僅限開發者明確指示時
+# 語意化版本單向遞增 (Major.Minor.Patch.Revision) - [!] 僅限開發者明確指示時
 python yscb.py dev bump-revision <mod_name>  # 日常修復、文檔修訂 (1.0.0.0 -> 1.0.0.1)
 python yscb.py dev bump-patch <mod_name>     # 向下相容 Bug 修復 (1.0.0.0 -> 1.0.1.0)
 python yscb.py dev bump-minor <mod_name>     # 向下相容新功能 (1.0.0.0 -> 1.1.0.0)
@@ -168,7 +168,7 @@ python yscb.py dev test <mod_name> -k test_ft_01
 python yscb.py dev test <mod_name> --target=TestMyMod.test_ft_01
 ```
 
-### 5.5 發布流水線 (🔴 授權守門)
+### 5.5 發布流水線 ([GATED] 授權守門)
 ```bash
 # 1. 發布前 3-Gate 校驗 (靜態合規、測試通過標記、依賴拓撲；不進行打包)
 python yscb.py dev release-check <mod_name>
@@ -186,7 +186,7 @@ python yscb.py dev release-git <mod_name> "feat: 完成特定功能"
 
 ---
 
-## 🔄 6. 伺服器常駐守護進程協同與自動自癒
+## 6. 伺服器常駐守護進程協同與自動自癒
 
 本節深化 [SKILL.md 軌道 A](../SKILL.md#軌道-a本地開發調試-dogfooding-track) 中提及的 Server 自癒機制。若開發的模組包含常駐背景服務（如 Service Worker 或生命週期 Watcher）：
 

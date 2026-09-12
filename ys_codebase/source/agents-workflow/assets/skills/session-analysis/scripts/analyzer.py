@@ -246,9 +246,9 @@ def format_markdown_report(metrics: Dict[str, Any], scope_desc: str) -> str:
 
     # Guardrails audit
     if not gated:
-        guardrail_card = "- **紀律自檢**：✅ 核心紀律全數合規 (0 異常)"
+        guardrail_card = "- **紀律自檢**：[PASS] 核心紀律全數合規 (0 異常)"
     else:
-        guardrail_card = f"- **紀律自檢**：⚠️ 發現 {len(gated)} 項授權守門指令調用\n"
+        guardrail_card = f"- **紀律自檢**：[WARN] 發現 {len(gated)} 項授權守門指令調用\n"
         for cmd in gated:
             guardrail_card += f"    - **指令**：`{cmd}` (需核實是否獲開發者顯式授權)\n"
 
@@ -258,15 +258,15 @@ def format_markdown_report(metrics: Dict[str, Any], scope_desc: str) -> str:
     read_calls = tc.get("view_file", 0)
     write_calls = tc.get("write_to_file", 0) + tc.get("replace_file_content", 0) + tc.get("multi_replace_file_content", 0)
 
-    report = f"""# 🔍 對話階段歷程分析報告 (Session Analysis Report)
+    report = f"""#  對話階段歷程分析報告 (Session Analysis Report)
 
 > **分析範圍**：{scope_desc}  
 > **環境探針**：Google Antigravity (原生 transcript.jsonl 精準解析)
 
-### 📌 流程與紀律自檢 (Guardrails Audit)
+### 流程與紀律自檢 (Guardrails Audit)
 {guardrail_card}
 
-### 📊 行為統計與 Token 視窗分佈 (Dimension Breakdown)
+### 行為統計與 Token 視窗分佈 (Dimension Breakdown)
 - **實時 Context 視窗預估**：約 `{t["context_window"]:,}` Tokens
   - **系統固定上下文 (System Prompt)**：約 `{t["system_fixed"]:,}` Tokens (`{t["system_fixed_pct"]:.1f}%`) *(純靜態恆定，Prompt Cache 命中率 ~99%+)*
   - **動態累積上下文 (Dynamic Context)**：約 `{t["dynamic_tokens"]:,}` Tokens (`{t["dynamic_pct"]:.1f}%`)
@@ -281,7 +281,7 @@ def format_markdown_report(metrics: Dict[str, Any], scope_desc: str) -> str:
   - **Thinking (思考推導估算)**：約 `{t["thinking_tokens"]:,}` Tokens (`{t["thinking_pct"]:.1f}%`)
   - **Dialogue (對話互動)**：約 `{t["dialogue_tokens"]:,}` Tokens (`{t["dialogue_pct"]:.1f}%`)
 
-### 🧩 模組特化評測 (Modular Evaluations)
+### 模組特化評測 (Modular Evaluations)
 - **知識庫檢索效益 (knowledge-db)**：
   - **調用次數**：`search`: {kdb["search"]} 次, `callers`/`callees`: {kdb["callers"] + kdb["callees"]} 次, `impact`: {kdb["impact"]} 次, `status`: {kdb["status"]} 次
   - **效益估算**：精確切片檢索預估節省約 `{(kdb["search"] + kdb["callers"]) * 7500:,}` Tokens 全庫走訪消耗

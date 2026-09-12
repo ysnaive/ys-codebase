@@ -29,14 +29,14 @@
 
 ---
 
-## 4. 📚 知識庫文檔交付驗收對齊表 (Documentation Delivery Audit)
+## 4.  知識庫文檔交付驗收對齊表 (Documentation Delivery Audit)
 
 | 維度 | 文件路徑 | 交付狀態 | 驗收重點 |
 | :--- | :--- | :---: | :--- |
-| **模組手冊** | `docs/<Module>/README.md` | ✅ 已交付 | |
-| **專題手冊** | `docs/<Module>/[topic].md` | ✅ 已交付 | |
-| **設計決策** | `docs/<Module>/DESIGN_NOTES.md` | ✅ 已交付 | |
-| **發布日誌** | `CHANGELOG.md` | ✅ 已交付 | |
+| **模組手冊** | `docs/<Module>/README.md` | [PASS] 已交付 | |
+| **專題手冊** | `docs/<Module>/[topic].md` | [PASS] 已交付 | |
+| **設計決策** | `docs/<Module>/DESIGN_NOTES.md` | [PASS] 已交付 | |
+| **發布日誌** | `CHANGELOG.md` | [PASS] 已交付 | |
 
 ---
 

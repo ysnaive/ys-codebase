@@ -42,6 +42,7 @@ class TestRoadmapManager(YSCBTestCase):
 
         summary = mgr.format_summary_table(items)
         self.assertIn("目前無任何待啟動之 Roadmap 技術儲備", summary)
+        self.mark_passed()
 
     def test_standard_roadmap_parsing(self):
         """FT-01: 標準 Roadmap 檔案 Header 與問題背景提取。"""
@@ -90,6 +91,7 @@ class TestRoadmapManager(YSCBTestCase):
         found = mgr.get_roadmap("二進位發布包優化")
         self.assertIsNotNone(found)
         self.assertEqual(found.filename, "binary_optimization.md")
+        self.mark_passed()
 
     def test_non_standard_roadmap_fallback(self):
         """ET-01 / EC-04: 非標準格式自動 fallback 預覽不崩潰。"""
@@ -109,6 +111,7 @@ class TestRoadmapManager(YSCBTestCase):
         self.assertEqual(item.topic, "free_idea")
         self.assertFalse(item.has_valid_header)
         self.assertIn("這是一篇沒有標準引用標頭的長期技術筆記", item.problem_summary)
+        self.mark_passed()
 
     def test_cli_roadmap_invocation(self):
         """FT-02: 測試 CLI cmd_roadmap 分發。"""
@@ -125,3 +128,4 @@ class TestRoadmapManager(YSCBTestCase):
 
         ret = cmd_roadmap(["--list"])
         self.assertEqual(ret, 0)
+        self.mark_passed()
