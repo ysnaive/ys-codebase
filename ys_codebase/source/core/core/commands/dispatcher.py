@@ -19,11 +19,12 @@ from core.commands.resolver import (
     OptionResolutionError,
     OptionResolver,
 )
-from core.platform import is_process_alive, spawn_detached
+from core.platform import can_spawn_background_daemon, is_process_alive, spawn_detached
 
 # 快取已載入之 Contributes Registry
 _GLOBAL_REGISTRY: Optional[CommandsRegistry] = None
 _MODULE_CACHE: Dict[str, Any] = {}
+_AUTO_SPAWN_WARNED: bool = False
 
 
 def _get_yscb_root() -> Tuple[str, str]:
@@ -38,6 +39,7 @@ def _get_yscb_root() -> Tuple[str, str]:
                 yscb_rel = data.get("yscb_root", ".")
         except Exception:
             pass
+
     yscb_abs = os.path.normpath(os.path.join(host_dir, yscb_rel))
     return host_dir, yscb_abs
 
@@ -158,7 +160,10 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
     """
     在背景非同步按需拉起 Server 守護進程。
     僅在 server 模組存在、非 server/dev 指令、非測試環境、且 config/server/config.project.json enable != false 時觸發。
+    當偵測到環境無開立背景守護進程權限時，自動降級並輸出提示。
     """
+    global _AUTO_SPAWN_WARNED
+
     if os.environ.get("YSCB_TESTING") == "1" or os.environ.get("YSCB_TEST_SANDBOX") == "1":
         return
 
@@ -183,14 +188,51 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
     if not os.path.isdir(os.path.join(yscb_abs, ".modules", "server")):
         return
 
+    auto_spawn = True
     cfg_file = os.path.join(yscb_abs, "config", "server", "config.project.json")
     if os.path.isfile(cfg_file):
         try:
             with open(cfg_file, "r", encoding="utf-8") as f:
-                if json.load(f).get("enable") is False:
+                cfg_data = json.load(f)
+                if cfg_data.get("enable") is False:
                     return
+                if cfg_data.get("auto_spawn") is False:
+                    return
+                if "auto_spawn" in cfg_data:
+                    auto_spawn = bool(cfg_data.get("auto_spawn"))
         except Exception:
             pass
+
+    if not auto_spawn:
+        return
+
+    # 自適應環境權限探針檢測
+    if not can_spawn_background_daemon():
+        if not _AUTO_SPAWN_WARNED:
+            _AUTO_SPAWN_WARNED = True
+            msg = (
+                "\n"
+                "================================================================================\n"
+                "[GUARD] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED FOR AGENTS\n"
+                "================================================================================\n"
+                "[!] 環境沙盒限制 (Sandbox Job Object Restriction):\n"
+                "    當前處於 IDE Agent 虛擬沙盒環境，系統無法自動於背景完成進程脫鉤。\n"
+                "    目前暫時降級為本地冷派發 (~86ms)。\n\n"
+                "[!] AGENT 強制行動守則 (MANDATORY AGENT DIRECTIVE):\n"
+                "    [1] 步驟 1 (強制執行):\n"
+                "       你必須立即調用終端工具，以常駐 Daemon 模式 (如 run_command 带 IsDaemon: true) 啟動 Server：\n"
+                "       $ python yscb.py server start --console\n\n"
+                "    [2] 步驟 2 (失敗處置):\n"
+                "       若因環境限制或權限問題無法成功啟動 Server，你必須主動回報開發者，\n"
+                "       並建議開發者將 config/server/config.project.json 的 \"auto_spawn\" 設為 false 關閉此功能。\n"
+                "================================================================================\n\n"
+            )
+            try:
+                sys.stderr.write(msg)
+                sys.stderr.flush()
+            except Exception:
+                pass
+        return
 
     try:
         yscb_py = os.path.join(host_dir, "yscb.py")

@@ -13,6 +13,72 @@ import sys
 import time
 from typing import Dict, List, Optional
 
+_CAN_SPAWN_DAEMON_CACHE: Optional[bool] = None
+
+
+def can_spawn_background_daemon(force_reprobe: bool = False) -> bool:
+    """
+    Probes whether the current execution environment allows spawning a persistent
+    background daemon process detached from the parent process group / Job Object.
+
+    Args:
+        force_reprobe: If True, bypasses the in-memory cache and re-probes the environment.
+
+    Returns:
+        bool: True if background daemon spawning is supported, False otherwise.
+    """
+    global _CAN_SPAWN_DAEMON_CACHE
+    if _CAN_SPAWN_DAEMON_CACHE is not None and not force_reprobe:
+        return _CAN_SPAWN_DAEMON_CACHE
+
+    if os.environ.get("YSCB_NO_DAEMON") in ("1", "true", "True"):
+        _CAN_SPAWN_DAEMON_CACHE = False
+        return False
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.GetCurrentProcess.restype = ctypes.c_void_p
+            k32.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_bool)]
+            k32.IsProcessInJob.restype = ctypes.c_bool
+
+            in_job = ctypes.c_bool(False)
+            res = k32.IsProcessInJob(k32.GetCurrentProcess(), None, ctypes.byref(in_job))
+            if res and not in_job.value:
+                _CAN_SPAWN_DAEMON_CACHE = True
+                return True
+
+            CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+            creationflags = 0
+            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            if hasattr(subprocess, "DETACHED_PROCESS"):
+                creationflags |= subprocess.DETACHED_PROCESS
+            flags_with_breakaway = creationflags | CREATE_BREAKAWAY_FROM_JOB
+
+            try:
+                probe_proc = subprocess.Popen(
+                    [sys.executable, "-c", "pass"],
+                    creationflags=flags_with_breakaway,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+                probe_proc.wait(timeout=2.0)
+                _CAN_SPAWN_DAEMON_CACHE = True
+                return True
+            except OSError:
+                _CAN_SPAWN_DAEMON_CACHE = False
+                return False
+        except Exception:
+            _CAN_SPAWN_DAEMON_CACHE = False
+            return False
+    else:
+        _CAN_SPAWN_DAEMON_CACHE = True
+        return True
+
 
 def spawn_detached(
     cmd: List[str],

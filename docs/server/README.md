@@ -47,3 +47,35 @@ Server 模組內建高可靠的集中式即時 flush 日誌機制：
 - **歷史運行檔案**：`{YYYY}_{MM}_{DD}_{HH}.{MM}.{SS}_log`，每次優雅關閉或異常重啟時自動歸檔，嚴格滾動保留最新 5 份。
 - **異常中斷自癒**：新 Server 啟動若發現未正常歸檔之舊日誌，優先解析首行 `server start at time "..."` 時間戳轉存歷史並執行滾動，再行開啟新日誌。
 - **詳盡規格手冊**：參見 [realtime_logging.md](realtime_logging.md)。
+
+---
+
+## 4. 組態管理與 IDE Agents 使用指南 (Configuration & Agents Guide)
+
+### 4.1 組態設定 (`config://server/config.project.json`)
+
+```json
+{
+  "enable": true,
+  "enable_console": false,
+  "idle_timeout_sec": 900.0,
+  "auto_spawn": true
+}
+```
+
+- `enable`: 是否啟用 server 模組能力（預設 `true`）。
+- `auto_spawn`: 是否在執行非 server 指令時於背景自動喚醒常駐進程（預設 `true`）。若手動關閉 (`false`)，系統將保持純冷派發。
+- `idle_timeout_sec`: 空閒超時自毀時間（秒，預設 `900.0`）。
+
+### 4.2 IDE Agent 沙盒環境最佳實踐
+
+在 IDE Agent（如 Antigravity / Cursor / Claude Code）環境下，因 Windows Job Object 沙盒未開啟 Breakaway 權限，單次 CLI 命令結束時背景進程會被 OS 連帶收割。
+系統內建自適應環境探針，自動降級為本地極速冷派發（~86ms）並輸出引導提示。
+
+若 IDE Agent 希望享受 Hot-IPC（<10ms）極速派發：
+- **推薦做法**：透過 IDE 背景常駐任務機制（例如 Antigravity `run_command(IsDaemon: true)` 或 VS Code Task），在會話啟動時執行：
+  ```bash
+  python yscb.py server start --console
+  ```
+- 如此 Server 即成為長效常駐服務，後續所有 CLI 調用均會自動透過 `_try_hot_dispatch` 享受 Hot-IPC 加速。
+

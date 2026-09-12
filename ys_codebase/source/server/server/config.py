@@ -14,6 +14,7 @@ except ImportError:
 DEFAULT_ENABLE: bool = True
 DEFAULT_ENABLE_CONSOLE: bool = False
 DEFAULT_IDLE_TIMEOUT_SEC: float = 900.0
+DEFAULT_AUTO_SPAWN: bool = True
 
 
 def _parse_bool(val: Any, default: bool = False) -> bool:
@@ -38,6 +39,7 @@ class ServerConfig:
     enable: bool = DEFAULT_ENABLE
     enable_console: bool = DEFAULT_ENABLE_CONSOLE
     idle_timeout_sec: float = DEFAULT_IDLE_TIMEOUT_SEC
+    auto_spawn: bool = DEFAULT_AUTO_SPAWN
 
     @classmethod
     def load(
@@ -63,6 +65,7 @@ class ServerConfig:
 
         enable_val = _parse_bool(raw_cfg.get("enable"), DEFAULT_ENABLE)
         enable_console_val = _parse_bool(raw_cfg.get("enable_console"), DEFAULT_ENABLE_CONSOLE)
+        auto_spawn_val = _parse_bool(raw_cfg.get("auto_spawn"), DEFAULT_AUTO_SPAWN)
         raw_ttl = raw_cfg.get("idle_timeout_sec", DEFAULT_IDLE_TIMEOUT_SEC)
         try:
             idle_timeout_sec_val = float(raw_ttl)
@@ -73,4 +76,5 @@ class ServerConfig:
             enable=enable_val,
             enable_console=enable_console_val,
             idle_timeout_sec=idle_timeout_sec_val,
+            auto_spawn=auto_spawn_val,
         )

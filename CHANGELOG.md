@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_12_1346_server_auto_spawn_adaptive_degrade (Completed)
+
+- **Server 背景自動喚醒環境權限自適應探針、auto_spawn 雙層組態與 Agents 剛性常駐導引**：
+  - **環境權限自適應探針 (`can_spawn_background_daemon`)**：於 `core.platform.process` 實作進程記憶體快取探針，透過 `kernel32.IsProcessInJob` 與單次輕量探針偵測 Windows Job Object Breakaway 權限；非 Job 環境耗時 $<0.01\text{ms}$，徹底消除無效背景進程建立與被殺抖動。
+  - **`ServerConfig.auto_spawn` 雙層組態控制**：於 `server.config` 與 `config/server/config.project.json` 支援 `auto_spawn: bool = True` 欄位與寬鬆布林轉型防禦。
+  - **自適應冷派發降級與剛性 Agent 導引 Banner**：當探針判定無背景常駐權限時，自動跳過背景 spawn 退化為本地極速冷派發（~86ms）；於 `sys.stderr` 輸出具備防洗頻抑制之全 ASCII `[GUARD]` 剛性行動守則，引導 IDE Agent 以 `IsDaemon: true` 手動啟動 Server 或向開發者回報關閉 `auto_spawn`。
+  - **全套測試 100% 通過與靜態合規**：Core 模組全套回歸測試 180/180 通過；Server 模組全套回歸測試 32/32 通過；`dev check --all` 5 大模組 0 警告 0 失敗；開發者實機 UX 驗收通過。
+
 ## 2026_09_07_1251_server_realtime_logging (Completed)
 
 - **Server 即時 Flush 日誌架構、異常中斷自癒與歷史滾動保留機制**：

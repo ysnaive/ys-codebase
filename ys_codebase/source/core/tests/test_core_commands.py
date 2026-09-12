@@ -505,6 +505,115 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("sub_b", cmd_help)
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft11_maybe_auto_spawn_server_auto_spawn_disabled(self):
+        """FT-11: 驗證 auto_spawn: false 時 _maybe_auto_spawn_server 靜默跳過無輸出且不拉起。"""
+        import tempfile
+        from core.commands import dispatcher
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server_mod = os.path.join(tmp_dir, ".modules", "server")
+            os.makedirs(server_mod, exist_ok=True)
+            cfg_dir = os.path.join(tmp_dir, "config", "server")
+            os.makedirs(cfg_dir, exist_ok=True)
+            cfg_file = os.path.join(cfg_dir, "config.project.json")
+            with open(cfg_file, "w", encoding="utf-8") as f:
+                f.write('{"enable": true, "auto_spawn": false}')
+
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("YSCB_TESTING", "YSCB_TEST_SANDBOX")}
+            stderr_buf = io.StringIO()
+            with patch.dict(os.environ, clean_env, clear=True):
+                with patch("core.commands.dispatcher.spawn_detached") as mock_spawn:
+                    with patch("core.commands.dispatcher.can_spawn_background_daemon") as mock_probe:
+                        with redirect_stderr(stderr_buf):
+                            dispatcher._maybe_auto_spawn_server(tmp_dir, tmp_dir)
+                        mock_probe.assert_not_called()
+                        mock_spawn.assert_not_called()
+                        self.assertEqual(stderr_buf.getvalue(), "")
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft12_maybe_auto_spawn_server_probe_false_warning(self):
+        """FT-12: 驗證探針判定 False 時輸出 stderr 警告與 IDE Agent 常駐指引，且不拉起。"""
+        import tempfile
+        from core.commands import dispatcher
+
+        dispatcher._AUTO_SPAWN_WARNED = False
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server_mod = os.path.join(tmp_dir, ".modules", "server")
+            os.makedirs(server_mod, exist_ok=True)
+            cfg_dir = os.path.join(tmp_dir, "config", "server")
+            os.makedirs(cfg_dir, exist_ok=True)
+            cfg_file = os.path.join(cfg_dir, "config.project.json")
+            with open(cfg_file, "w", encoding="utf-8") as f:
+                f.write('{"enable": true, "auto_spawn": true}')
+
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("YSCB_TESTING", "YSCB_TEST_SANDBOX")}
+            stderr_buf = io.StringIO()
+            with patch.dict(os.environ, clean_env, clear=True):
+                with patch("core.commands.dispatcher.spawn_detached") as mock_spawn:
+                    with patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=False):
+                        with redirect_stderr(stderr_buf):
+                            dispatcher._maybe_auto_spawn_server(tmp_dir, tmp_dir)
+                        mock_spawn.assert_not_called()
+                        out = stderr_buf.getvalue()
+                        self.assertIn("[GUARD] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED", out)
+                        self.assertIn("auto_spawn", out)
+                        self.assertIn("AGENT", out)
+                        self.assertIn("server start --console", out)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft13_maybe_auto_spawn_server_warning_debounce(self):
+        """FT-13: 驗證 stderr 警告在單次進程內具備防洗頻抑制，重複調用僅警告一次。"""
+        import tempfile
+        from core.commands import dispatcher
+
+        dispatcher._AUTO_SPAWN_WARNED = False
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server_mod = os.path.join(tmp_dir, ".modules", "server")
+            os.makedirs(server_mod, exist_ok=True)
+
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("YSCB_TESTING", "YSCB_TEST_SANDBOX")}
+            stderr_buf = io.StringIO()
+            with patch.dict(os.environ, clean_env, clear=True):
+                with patch("core.commands.dispatcher.spawn_detached"):
+                    with patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=False):
+                        with redirect_stderr(stderr_buf):
+                            # 第一次呼叫 -> 產生警告
+                            dispatcher._maybe_auto_spawn_server(tmp_dir, tmp_dir)
+                            first_out = stderr_buf.getvalue()
+                            # 第二次呼叫 -> 被抑制
+                            dispatcher._maybe_auto_spawn_server(tmp_dir, tmp_dir)
+                            second_out = stderr_buf.getvalue()
+
+                        self.assertEqual(first_out, second_out)
+                        self.assertEqual(second_out.count("[GUARD] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED"), 1)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft14_maybe_auto_spawn_server_probe_true_spawns(self):
+        """FT-14: 驗證探針判定 True 時正常呼叫 spawn_detached。"""
+        import tempfile
+        from core.commands import dispatcher
+
+        dispatcher._AUTO_SPAWN_WARNED = False
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server_mod = os.path.join(tmp_dir, ".modules", "server")
+            os.makedirs(server_mod, exist_ok=True)
+
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("YSCB_TESTING", "YSCB_TEST_SANDBOX")}
+            with patch.dict(os.environ, clean_env, clear=True):
+                with patch("core.commands.dispatcher.spawn_detached") as mock_spawn:
+                    with patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=True):
+                        dispatcher._maybe_auto_spawn_server(tmp_dir, tmp_dir)
+                        mock_spawn.assert_called_once()
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

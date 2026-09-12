@@ -124,6 +124,33 @@ class TestCorePlatform(YSCBTestCase):
         self.assertIsInstance(result, bool)
         self.mark_passed()
 
+    def test_can_spawn_background_daemon(self):
+        """FT-05: can_spawn_background_daemon probes environment and caches result."""
+        from core.platform import can_spawn_background_daemon
+
+        # 1. Direct call returns bool
+        res1 = can_spawn_background_daemon(force_reprobe=True)
+        self.assertIsInstance(res1, bool)
+
+        # 2. Cached call returns identical result without reprobing
+        res2 = can_spawn_background_daemon(force_reprobe=False)
+        self.assertEqual(res1, res2)
+
+        # 3. Environment override YSCB_NO_DAEMON
+        old_val = os.environ.get("YSCB_NO_DAEMON")
+        try:
+            os.environ["YSCB_NO_DAEMON"] = "1"
+            res_override = can_spawn_background_daemon(force_reprobe=True)
+            self.assertFalse(res_override)
+        finally:
+            if old_val is not None:
+                os.environ["YSCB_NO_DAEMON"] = old_val
+            else:
+                os.environ.pop("YSCB_NO_DAEMON", None)
+            can_spawn_background_daemon(force_reprobe=True)
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()
