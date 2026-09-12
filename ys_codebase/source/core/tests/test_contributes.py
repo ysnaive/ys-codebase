@@ -76,7 +76,7 @@ class TestCoreContributes(YSCBTestCase):
     def test_cli_guild_dynamic_generation(self):
         """FT-05: Verify core.providers.get_agents_cli_guild outputs Markdown table via SDK."""
         table_md = providers.get_agents_cli_guild()
-        self.assertIn("| 指令名稱 | 推薦/適用情境 (Pros) | 🚨 絕對禁止/不適用情境 (Cons) |", table_md)
+        self.assertIn("| 權限分級 | 指令名稱 | 推薦/適用情境 (Pros) | 限制與守門條件 (Cons) |", table_md)
         self.assertIn("`python yscb.py install`", table_md)
         self.mark_passed()
 

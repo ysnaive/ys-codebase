@@ -83,7 +83,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                     },
                     "usage": {
                         "pros": ["快速執行單元測試"],
-                        "cons": ["🚨 嚴禁未編譯直接執行"]
+                        "cons": ["[!] 嚴禁未編譯直接執行"]
                     }
                 }
             }
@@ -109,7 +109,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertFalse(cmd.canonical_options["fast"].takes_value)
         self.assertEqual(cmd.canonical_options["file"].alias, ["o"])
         self.assertIn("快速執行單元測試", cmd.usage_pros)
-        self.assertIn("🚨 嚴禁未編譯直接執行", cmd.usage_cons)
+        self.assertIn("[!] 嚴禁未編譯直接執行", cmd.usage_cons)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -215,7 +215,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("ARGUMENTS:", cmd_help)
         self.assertIn("<mode=[auto | safe]>", cmd_help)
         self.assertIn("Check mode (choices: auto, safe) [required]", cmd_help)
-        self.assertIn("🟢 自主安全", cmd_help)
+        self.assertIn("[SAFE] 自主安全", cmd_help)
         self.assertIn("Hot IPC Compatible", cmd_help)
         self.assertIn("--strict", cmd_help)
         self.assertIn("靜態檢查代碼", cmd_help)

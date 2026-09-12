@@ -51,7 +51,7 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
     registry = CommandsRegistry()
 
     # =========================================================================
-    # 🚨 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
+    # [!] 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
     # 本專案嚴格遵循：虛擬機測試 (dev test) -> install @build -> 實機測試 流程。
     # 僅允許 .modules 運行時空間載入 contributes，嚴禁直接運行或掃描開發環境 (source/) 程式碼。
     # 絕對禁止對此邏輯進行任何 fallback 或加入 source/ 空間之刪改！
@@ -179,7 +179,7 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
         except Exception:
             return
 
-    # 🚨 剛性架構約束：僅允許 .modules 運行時空間，禁止任何 fallback
+    # [!] 剛性架構約束：僅允許 .modules 運行時空間，禁止任何 fallback
     if not os.path.isdir(os.path.join(yscb_abs, ".modules", "server")):
         return
 
@@ -207,7 +207,7 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
 def _find_module_cli(module_name: str, yscb_abs: str) -> Optional[str]:
     """
     定位目標模組之 scripts/cli.py。
-    🚨 剛性架構約束：僅允許 .modules 運行時空間，嚴禁直接運行開發環境 (source/) 程式碼，禁止任何 fallback。
+    [!] 剛性架構約束：僅允許 .modules 運行時空間，嚴禁直接運行開發環境 (source/) 程式碼，禁止任何 fallback。
     """
     target = os.path.join(yscb_abs, ".modules", module_name, "scripts", "cli.py")
     if os.path.isfile(target):
@@ -274,7 +274,7 @@ def dispatch_local(
         return 1
 
     # =========================================================================
-    # 🚨 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
+    # [!] 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
     # 僅注入 .modules/<module> 與 .modules/core 運行時空間至 sys.path。
     # 嚴禁直接運行開發環境 (source/) 程式碼，禁止在此向 sys.path 插入 source/ 空間！
     # =========================================================================
@@ -351,6 +351,13 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     核心命令引擎入口函式。
     統一攔截 argv，完成路由分流、--help 渲染、雙管道派發與精確調用。
     """
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except Exception:
+            pass
+
     if argv is None:
         argv = sys.argv[1:]
 

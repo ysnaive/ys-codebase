@@ -37,9 +37,9 @@ def guard_dispatch(module_name: str) -> None:
         guide_cmd = f"python yscb.py {module_name} {forward_args}".strip()
 
         print("\n" + "=" * 66, file=sys.stderr)
-        print(f"🚨 [YSCB Security Guard] 禁止直接繞道調用內部模組 '{module_name}'！", file=sys.stderr)
-        print(f"❌ 非法嘗試：{invoked_cmd}", file=sys.stderr)
-        print("👉 請一律透過專案唯一宿主入口調用：", file=sys.stderr)
+        print(f"[!] [YSCB Security Guard] 禁止直接繞道調用內部模組 '{module_name}'！", file=sys.stderr)
+        print(f"[FAIL] 非法嘗試：{invoked_cmd}", file=sys.stderr)
+        print("--> 請一律透過專案唯一宿主入口調用：", file=sys.stderr)
         print(f"   {guide_cmd}", file=sys.stderr)
         print("=" * 66 + "\n", file=sys.stderr)
         sys.exit(126)

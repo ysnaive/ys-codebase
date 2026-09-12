@@ -112,7 +112,7 @@ def start(cmd_bags: CmdBags) -> int:
         return 0
     else:
         # Background detached mode
-        # 🚨 剛性架構約束：僅允許 .modules/core 運行時空間，禁止任何 fallback
+        # [!] 剛性架構約束：僅允許 .modules/core 運行時空間，禁止任何 fallback
         core_dir = os.path.join(yscb_root, ".modules", "core").replace("\\", "/")
         server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
         root_dir = os.path.abspath(yscb_root).replace("\\", "/")

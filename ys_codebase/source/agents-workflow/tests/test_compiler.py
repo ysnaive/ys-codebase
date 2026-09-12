@@ -66,12 +66,14 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertIn("DYNAMIC_CONTEXT_MAP", token_values)
         self.assertIn("BEGIN_HTML_ANNOTATION", token_values)
         self.assertIn("END_HTML_ANNOTATION", token_values)
+        self.mark_passed()
 
     def test_st_01_stage1_cache_output(self):
         """ST-01: 驗證 Stage 1 快取物化寫入 cache.root:// 並回傳結構化項目清單。"""
         res = self.compiler.compile_stage1()
         self.assertTrue(res["success"])
         self.assertGreaterEqual(len(res["resolved_items"]), 16)
+        self.mark_passed()
 
     def test_st_02_release_target_header_macro_interpolation(self):
         """ST-02: 驗證純文字/陣列 Header 巨集模板動態替換與 KeyError 容錯。"""
@@ -97,6 +99,7 @@ class TestArtifactCompiler(YSCBTestCase):
         header_tpl_missing = "--- \n info: {export.non_existent} \n ---"
         rendered_missing = self.publisher.render_header(export_item, header_tpl_missing, "antigravity")
         self.assertNotIn("{export.non_existent}", rendered_missing)
+        self.mark_passed()
 
     def test_st_03_release_target_manager_and_orphan(self):
         """ST-03: 驗證 ReleaseTargetManager 查詢清單與 ORPHAN 標註。"""
@@ -104,6 +107,7 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertGreaterEqual(len(targets), 1)
         names = [t["name"] for t in targets]
         self.assertIn("antigravity", names)
+        self.mark_passed()
 
     def test_st_04_three_tier_uri_resolution(self):
         """ST-04: 驗證三層 URI 重映射與相對路徑計算 (正斜線 / 格式)。"""
@@ -128,12 +132,14 @@ class TestArtifactCompiler(YSCBTestCase):
         
         # Tier 3 驗證 (安全降級)
         self.assertIn("unknown://foo/bar", resolved)
+        self.mark_passed()
 
     def test_st_05_atomic_release_transaction(self):
         """ST-05: 驗證原子 4 步發布交易。"""
         res = self.publisher.release_all()
         self.assertTrue(res["success"])
         self.assertGreaterEqual(res["published_count"], 16)
+        self.mark_passed()
 
     def test_st_06_agents_md_soft_merge(self):
         """ST-06: 驗證 AGENTS.md 軟合併無損保護。"""
@@ -152,6 +158,7 @@ class TestArtifactCompiler(YSCBTestCase):
             self.assertNotIn("Old Rules", merged)
             self.assertIn("## 4. Custom", merged)
             self.assertIn("Custom Rule", merged)
+        self.mark_passed()
 
     def test_st_07_cli_release_and_target_commands(self):
         """ST-07: 驗證 CLI release 與 release-target 系列指令。"""
@@ -160,6 +167,7 @@ class TestArtifactCompiler(YSCBTestCase):
 
         code_list = cli.release_target(["--list"])
         self.assertEqual(code_list, 0)
+        self.mark_passed()
 
     def test_ft_08_computed_token_resolution(self):
         """FT-08: 驗證 type: 'computed' 與 code.func:// 動態調用解算。"""
@@ -176,6 +184,7 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertNotIn("`__@{DYNAMIC_CONTEXT_MAP}__`", resolved)
         self.assertIn("專案語意 URI 即時解析地圖", resolved)
         self.assertIn("project://", resolved)
+        self.mark_passed()
 
     def test_ft_09_dual_standards_and_publisher_config_flags(self):
         """FT-09: 驗證雙標準資產、enable_agents_md 開關與空 release_targets 發布。"""
@@ -212,6 +221,7 @@ class TestArtifactCompiler(YSCBTestCase):
             self.assertEqual(res_empty_target["published_count"], 0)
         finally:
             self.publisher._get_project_config = orig_cfg_fn
+        self.mark_passed()
 
     def test_ft_10_dev_engineering_standards_injection(self):
         """FT-10: 驗證 dev 模組之 DevEngineeringStandards.md 能透過 below 模式注入至 DevelopmentStandards.md。"""
@@ -227,6 +237,7 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertNotIn("`__@{WORKFLOW_SOP_STANDARDS}__`", resolved)
         self.assertIn("### YS-Codebase 模組開發專案特化工程規範", resolved)
         self.assertIn("嚴禁 Agent 主動發布與覆蓋宿主安裝", resolved)
+        self.mark_passed()
 
     def test_ft_11_on_reload_hook_triggers_release_all(self):
         """FT-11: 驗證 hook.core.py 之 on_reload 能自動調用 ReleasePublisher.release_all。"""
@@ -242,6 +253,8 @@ class TestArtifactCompiler(YSCBTestCase):
         with patch("agents_workflow.publisher.ReleasePublisher.release_all") as mock_rel:
             mock_rel.return_value = {"success": True, "published_count": 24, "active_targets": ["antigravity"]}
             hook_mod.on_reload(None)
+        self.mark_passed()
+
     def test_ft_12_project_uri_placeholder_root_and_sub_dir(self):
         """FT-12: 驗證 __${uri}__ 以專案根目錄為基準點展開為純淨相對路徑 (root 與子目錄，純佔位符剝除反引號)。"""
         raw_text = "Root: `__${project://yscb.py}__`\nSub: `__${project://tools/sub/cli.py}__`\n"
@@ -250,6 +263,7 @@ class TestArtifactCompiler(YSCBTestCase):
         resolved = self.compiler.resolve_stage2_uri(raw_text, dst_path, deployment_map)
         self.assertIn("Root: yscb.py", resolved)
         self.assertIn("Sub: tools/sub/cli.py", resolved)
+        self.mark_passed()
 
     def test_ft_13_inline_code_block_expansion(self):
         """FT-13: 驗證代碼塊內部穿插文字時，僅替換佔位符本體並保留外層反引號與前後文字。"""
@@ -264,6 +278,7 @@ class TestArtifactCompiler(YSCBTestCase):
         dst_path = os.path.join(self.compiler.module_root, "dummy.md")
         stage2_res = self.compiler.resolve_stage2_uri(stage2_raw, dst_path, {})
         self.assertEqual(stage2_res.strip(), "Run: `python yscb.py plan status`")
+        self.mark_passed()
 
     def test_sub_02_stage2_standalone_and_markdown_links(self):
         """SUB-02: 驗證 Stage 2 佔位符二分法解析與 Markdown 超連結完全替代。"""
@@ -287,6 +302,7 @@ class TestArtifactCompiler(YSCBTestCase):
         raw_spaces = "[NewPlan](`__#{ module://agents-workflow/assets/workflows/NewPlan.md }__`)"
         res_spaces = self.compiler.resolve_stage2_uri(raw_spaces, dst_path, deployment_map)
         self.assertEqual(res_spaces, "[NewPlan](./NewPlan.md)")
+        self.mark_passed()
 
     def test_ft_14_unenclosed_placeholder_warning_and_preservation(self):
         """FT-14: 驗證未被反引號包裹的裸佔位符絕對不被展開，且輸出警示。"""
@@ -310,6 +326,7 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertNotIn("EXPANDED", stage2_res)
         # 斷言輸出 Warning 提示
         self.assertIn("[compiler:warning] Unenclosed placeholder tag", err_output)
+        self.mark_passed()
 
     def test_sub_06_agents_standards_token_and_contributes(self):
         """SUB-06: 驗證 AGENTS_STANDARDS token 宣告與 knowledge-db 貢獻注入。"""
@@ -328,6 +345,7 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertIn("Knowledge Standards", res)
         self.assertIn("Injected Content", res)
         self.assertNotIn("__@{AGENTS_STANDARDS}__", res)
+        self.mark_passed()
 
     def test_sub_07_multi_donor_insert_aggregation(self):
         """SUB-07: 驗證同一個 Token 錨點支援多模組 (Multi-Donor) 同時注入 (above, replace, below 拓撲聚合)。"""
@@ -366,6 +384,7 @@ class TestArtifactCompiler(YSCBTestCase):
         idx_below1 = res.index("### Below Block 1")
         idx_below2 = res.index("### Below Block 2")
         self.assertTrue(idx_above < idx_replace < idx_below1 < idx_below2)
+        self.mark_passed()
 
     def test_sub_08_session_analysis_skill_export_and_token(self):
         """SUB-08: 驗證 session-analysis 技能資產導出、SESSION_ANALYSIS_CHECK_ITEMS Token 宣告與未注入自動 Purge / 注入渲染。"""
@@ -405,6 +424,7 @@ class TestArtifactCompiler(YSCBTestCase):
         injected_res = self.compiler.resolve_single_artifact(raw_text, mock_inserts)
         self.assertNotIn("`__@{SESSION_ANALYSIS_CHECK_ITEMS}__`", injected_res)
         self.assertIn("知識庫檢索效益評測", injected_res)
+        self.mark_passed()
 
     def test_ft_09_skill_directory_scan_and_token_expansion(self):
         """FT-09: 驗證目錄級 Skill 掃描、保持子目錄結構與 Token 展開。"""
@@ -443,6 +463,7 @@ class TestArtifactCompiler(YSCBTestCase):
                 stage1 = self.compiler.resolve_single_artifact(raw_text, mock_insert)
                 self.assertNotIn("`__@{TEST_TOKEN}__`", stage1)
                 self.assertIn("EXPANDED_TOKEN_BODY", stage1)
+        self.mark_passed()
 
     def test_et_05_empty_or_nonexistent_skill_directory_handling(self):
         """ET-05: 驗證 Skill 目錄為空或不存在時安全返回空清單，不拋出未捕獲例外。"""
@@ -452,6 +473,7 @@ class TestArtifactCompiler(YSCBTestCase):
         with tempfile.TemporaryDirectory(prefix="test_aw_empty_skill_") as tmp_dir:
             scanned_empty = self.compiler._scan_directory_files(tmp_dir)
             self.assertEqual(scanned_empty, [])
+        self.mark_passed()
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ logger = logging.getLogger("knowledge-db.graph")
 class CallGraphIndex:
     """
     雙向調用圖譜索引
-    以 networkx.DiGraph 為核心資料模型，管理符號調用邊 (Caller ➔ Callee)，
+    以 networkx.DiGraph 為核心資料模型，管理符號調用邊 (Caller -> Callee)，
     支援高精度多階影響面分析 (query_impact) 與 JIT 增量熱重載修補。
     """
 
@@ -50,7 +50,7 @@ class CallGraphIndex:
         callee_symbol_id: str,
         call_site: Optional[SymbolCallSite] = None,
     ) -> None:
-        """建立 caller ➔ callee 雙向調用邊"""
+        """建立 caller -> callee 雙向調用邊"""
         if not caller_symbol_id or not callee_symbol_id:
             return
 

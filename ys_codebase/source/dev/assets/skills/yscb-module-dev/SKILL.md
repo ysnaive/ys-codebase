@@ -9,7 +9,7 @@ description: 生態系模組開發與 Dogfooding 閉環指南。當進行 YSCB �
 
 ---
 
-## 🏛️ 1. 核心公理與三層空間隔離矩陣 (3-Tier Space Matrix)
+## 1. 核心公理與三層空間隔離矩陣 (3-Tier Space Matrix)
 
 進行生態系模組開發時，必須強制遵守三大空間隔離邊界：
 
@@ -21,7 +21,7 @@ description: 生態系模組開發與 Dogfooding 閉環指南。當進行 YSCB �
 
 ---
 
-## 🚀 2. 雙軌開發與 Dogfooding 閉環心智模型 (Dual-Track Pipeline)
+## 2. 雙軌開發與 Dogfooding 閉環心智模型 (Dual-Track Pipeline)
 
 ```mermaid
 graph TD
@@ -46,14 +46,14 @@ graph TD
 
 ### 軌道 B：版本晉升交付 (Release Track)
 > [!CAUTION]
-> **🔴 授權守門 (Gated Authority) — 嚴禁 Agent 自主觸發**：
+> **[GATED] 授權守門 (Gated Authority) — 嚴禁 Agent 自主觸發**：
 > **僅在開發者明確指示**（顯式要求「執行版本晉升」、「bump 版本」或「release 模組」）時方可進行。未獲開發者明確指示前，嚴禁自行假設需求或擅自進入軌道 B。
 
 - **流水線**：`dev bump-<tier> <mod>` $\rightarrow$ `dev test <mod> -q` $\rightarrow$ `dev release-check <mod>` $\rightarrow$ `dev release <mod>` $\rightarrow$ `install <mod> --force`
 
 ---
 
-## 🛡️ 3. 剛性守門鐵律 (Rigid Guardrails - 絕對禁止條款)
+## [GUARD] 3. 剛性守門鐵律 (Rigid Guardrails - 絕對禁止條款)
 
 1. **SSOT 修改唯一性**：任何業務邏輯、腳本、設定檔或資產變更，**100% 必須在 `project://source/<module>/` 進行**；嚴禁直接編輯 `project://.modules/` 或 `project://.agents/` 等運行端編譯產物。
 2. **嚴禁未授權正式發布**：**嚴禁 Agent 自主觸發軌道 B**。唯有在開發者明確指示時方可執行 `dev bump-*` 或 `dev release`；未獲指示前，一律強制維持在軌道 A (`@build`)。
@@ -63,7 +63,7 @@ graph TD
 
 ---
 
-## 🧭 4. 專題手冊分流導航矩陣 (Reference Navigation Matrix)
+## 4. 專題手冊分流導航矩陣 (Reference Navigation Matrix)
 
 所有模組開發動作均依**觸發時機**剛性分流查閱專屬專題手冊：
 
@@ -74,4 +74,4 @@ graph TD
 | **宣告擴充點 (Host) / 注入能力 (Donor) / Schema 撰寫** | [Contributes 擴充注入與 Schema 規範指南](./references/contributes_guide.md) | 輕量 Schema DSL 語法、`module://` 語意 URI 查找 Host 契約、Donor 注入結構規範、Did you mean 智能糾錯 |
 | **撰寫測試案例 / 4-tier 分類 / 沙盒鉤子 / 跑測節流** | [測試工程實踐與沙盒機制指南](./references/testing_and_sandbox.md) | `YSCBTestCase` 範式、`mark_passed()` 狀態閉環、`@require` 4-tier 分類、`hook.dev.py` 沙盒鉤子、專屬斷言庫 |
 | **代碼交付前靜態檢核 / 四大文檔視角隔離 / AST 紅線排查** | [模組開發品質與驗收標準](./references/acceptance_checklist.md) | 四大文檔視角垂直展開隔離、AST 檢核紅線清冊、`configurable/` 規範、`_manifest.md` 檢查 |
-| **版本晉升 / 正式發布 (🚨 僅限開發者明確指示時)** | [CLI 活躍合約與指令手冊: 軌道 B](./references/cli_and_commands.md#55-發布流水線-授權守門) | `release-check` 獨立預檢、`release` 打包、`release-git` 本機一鍵發布管線 |
+| **版本晉升 / 正式發布 ([!] 僅限開發者明確指示時)** | [CLI 活躍合約與指令手冊: 軌道 B](./references/cli_and_commands.md#55-發布流水線-授權守門) | `release-check` 獨立預檢、`release` 打包、`release-git` 本機一鍵發布管線 |

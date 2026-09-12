@@ -4,7 +4,7 @@
 
 ---
 
-## 🎯 1. 核心定位與職責
+## 1. 核心定位與職責
 
 - **實機跑測與回填**：100% 依據 `P06_test_plan.md` 執行自動化測試與回歸測試，客觀回填測試日誌。
 - **人工 / UX 驗收守門**：若包含人機介面、CLI 輸出或終端交互變更，強制等待開發者驗收確認。
@@ -12,7 +12,7 @@
 
 ---
 
-## 🧪 2. 測試執行與回填鐵律
+## 2. 測試執行與回填鐵律
 
 1. **隔離沙盒跑測**：
    - 執行 `python yscb.py dev test <module> --quiet`（單元/邊界測試）與 `python yscb.py dev test --all --quiet`（全量回歸）。
@@ -23,7 +23,7 @@
 
 ---
 
-## 🚨 3. 人工 / UX 驗證 Checkpoint 守門
+## [!] 3. 人工 / UX 驗證 Checkpoint 守門
 
 - 若測試計畫中定義了 `UX-{XX}` 人工驗證項目：
   - **嚴禁 Agent 自行標記為通過**。
@@ -37,7 +37,7 @@
 
 ---
 
-## 🛡️ 4. 除錯排查與防淺層修復 (Anti-Blind Patching)
+## [GUARD] 4. 除錯排查與防淺層修復 (Anti-Blind Patching)
 
 - **本體優先階層**：排查錯誤優先排查當前組件內部邏輯與傳參，未排除自身問題前禁止深入下游外部模組。
 - **連續失敗阻斷**：同一問題連續 2 次修復失敗或破壞 API 簽名時，**強制停手發起 [/Discuss](`__#{module://agents-workflow/assets/workflows/Discuss.md}__`) 進行 5-Whys 根因分析**。
@@ -48,13 +48,13 @@
 
 ---
 
-## 🛑 5. Phase 6 結束 Checkpoint
+## [!] 5. Phase 6 結束 Checkpoint
 
 - 自動化測試 100% Passed，全系統回歸 100% Passed。
 - `P06_test_plan.md` 狀態更新為 **`Completed`**（手動驗收項目全數標定為 `[測試通過]` 或 `[跳過/免測]`），並更新 `changelog.md`。
 - **極精簡 Session 回覆格式**：對話中**嚴禁全文重複、日誌傾倒或冗長轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
-  ### 📄 P06 測試驗證回報
+  ###  P06 測試驗證回報
   - **產出文件**：[P06_test_plan.md](__${project://plans/}__/{plan_name}/P06_test_plan.md) (Completed / 待驗收)
   - **測試摘要**：[單元/邊界測試 N 項 100% 通過 / 全量回歸 100% 通過]
   - **手動/UX 驗收項目**：[若有 UX 項目，條列項目與操作預期；若無填「無」]

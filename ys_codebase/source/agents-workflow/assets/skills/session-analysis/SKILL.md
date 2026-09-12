@@ -1,6 +1,6 @@
 ---
 name: session-analysis
-description: 🚨 授權守門技能。完全禁止 Agent 主動觸發！
+description: [!] 授權守門技能。完全禁止 Agent 主動觸發！
 ---
 
 # 對話階段歷程分析技能指南 (Session Analysis Skill)
@@ -8,12 +8,12 @@ description: 🚨 授權守門技能。完全禁止 Agent 主動觸發！
 本技能定義對話歷程自檢、行為統計、Token 視窗分佈評估與改進建議提取的標準規範。
 
 > [!CAUTION]
-> **🚨 授權守門鐵律 (Authorization Gatekeeper)**  
+> **[!] 授權守門鐵律 (Authorization Gatekeeper)**  
 > **本技能完全禁止 Agent 主動觸發！** 僅限開發者顯式要求進行歷程分析、對話評測或統計自檢時方可手動執行。
 
 ---
 
-## 🎯 1. 核心原則與分析範圍
+## 1. 核心原則與分析範圍
 
 1. **嚴格禁止主觀性評論 (Strictly Objective Statistics)**：
    - 除最後「優化建議」外，全篇報告**嚴禁任何主觀形容詞、褒貶或吹捧評語**（如「良好」、「優異」、「適宜」等），僅允許客觀數據、次數、百分比與事實描述。
@@ -25,7 +25,7 @@ description: 🚨 授權守門技能。完全禁止 Agent 主動觸發！
 
 ---
 
-## 🚀 2. 執行步驟與工具優先序
+## 2. 執行步驟與工具優先序
 
 ```mermaid
 flowchart TD
@@ -54,12 +54,12 @@ python __${module://agents-workflow/assets/skills/session-analysis/scripts/analy
 
 ---
 
-## 📋 3. 核心評估項目大綱
+## 3. 核心評估項目大綱
 
 ### 3.1 流程與紀律自檢 (Guardrails Audit)
 - 零臆測公理（不確定細節向開發者釐清，無主觀發散）。
 - SSOT 檔案真理與對話極簡節流公理（嚴禁對話全文重複、代碼傾倒）。
-- CLI 權限分級（🟢 自主安全 / 🟡 階段條件 / 🔴 授權守門，無越界操作）。
+- CLI 權限分級（[SAFE] 自主安全 / [CONDITIONAL] 階段條件 / [GATED] 授權守門，無越界操作）。
 - Checkpoint 停步與單 Turn 邊界紀律。
 
 ### 3.2 行為與 Token 視窗分佈 (Dimension Breakdown)
@@ -76,20 +76,20 @@ python __${module://agents-workflow/assets/skills/session-analysis/scripts/analy
 
 ---
 
-## 🛑 4. 成果摘要卡標準格式 (Summary Card Template)
+## [!] 4. 成果摘要卡標準格式 (Summary Card Template)
 
 向開發者呈遞以下結構化卡片並結束當前 Turn：
 
 ```markdown
-# 🔍 對話階段歷程分析報告 (Session Analysis Report)
+# 對話階段歷程分析報告 (Session Analysis Report)
 
 > **分析範圍**：[上次分析後 (Step X) ~ 本次分析前 (Step Y) / 對話開頭 ~ 本次分析前]  
 > **評估方式**：[Antigravity 專用腳本解析 / 通用產物降級手動評估]
 
-### 📌 流程與紀律自檢 (Guardrails Audit)
-[全數合規：✅ 核心紀律全數合規 (0 異常) / 存在偏差：條列異常項、客觀事實與文檔根因]
+### 流程與紀律自檢 (Guardrails Audit)
+[全數合規：[PASS] 核心紀律全數合規 (0 異常) / 存在偏差：條列異常項、客觀事實與文檔根因]
 
-### 📊 行為統計與 Token 視窗分佈 (Dimension Breakdown)
+### 行為統計與 Token 視窗分佈 (Dimension Breakdown)
 - **實時 Context 視窗預估**：約 `[N]` Tokens
   - **系統固定上下文 (System Prompt)**：約 `[S_fixed]` Tokens (`[S_pct]%`) *(Prompt Cache 命中率 ~99%+)*
   - **動態累積上下文 (Dynamic Context)**：約 `[S_dynamic]` Tokens (`[D_pct]%`)
@@ -104,10 +104,10 @@ python __${module://agents-workflow/assets/skills/session-analysis/scripts/analy
   - **Thinking (思考推導估算)**：約 `[T_tok]` Tokens (`[T_pct]%`)
   - **Dialogue (對話互動)**：約 `[D_tok]` Tokens (`[D_pct]%`)
 
-### 🧩 模組特化評測 (Modular Evaluations)
+### 模組特化評測 (Modular Evaluations)
 - [模組特化指標 / 若無填「無模組特化指標」]
 
-### 💡 工作流優化建議 (Optimization Insights)
+### [*] 工作流優化建議 (Optimization Insights)
 1. [優化建議 1]
 2. [優化建議 2]
 ```

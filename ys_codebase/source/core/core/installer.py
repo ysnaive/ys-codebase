@@ -267,7 +267,7 @@ class Installer:
                 cur_ver = installed.get(mod, {}).get("version", "1.0.0.0")
                 cur_t = semver.parse_semver(cur_ver)
 
-                # 🚨 守門防呆：若當前安裝為開發中之 @build 版本，嚴格略過更新，防範降級覆蓋
+                # [!] 守門防呆：若當前安裝為開發中之 @build 版本，嚴格略過更新，防範降級覆蓋
                 if cur_t.is_build or cur_ver == "build" or str(cur_ver).endswith(".build"):
                     print(f"[core:update] Module '{mod}' is a development build (v{cur_ver}), skipping update.")
                     continue

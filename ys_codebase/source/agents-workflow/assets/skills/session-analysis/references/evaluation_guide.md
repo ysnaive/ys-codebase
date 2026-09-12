@@ -4,7 +4,7 @@
 
 ---
 
-## 🧭 1. 通用降級手動評估方案 (Universal Fallback Protocol)
+## 1. 通用降級手動評估方案 (Universal Fallback Protocol)
 
 當在非 Antigravity 環境（如 Cursor, Windsurf, VS Code, Roo Code, 終端 CLI）執行分析工具腳本 `scripts/analyzer.py` 回報不支援時，Agent **必須依據本章節通則進行專案產物自檢**：
 
@@ -18,14 +18,14 @@
 2. **計畫與歷程核驗 (Plan Changelog)**：
    - 檢查 `plans/<active_plan>/changelog.md`，核對階段流轉紀錄是否完整、決策標籤 (`[Phase:DR-XX]`) 是否依法登記。
 3. **授權守門與紀律核驗 (Guardrails Audit)**：
-   - 檢視終端執行歷程，確認是否有未授權調用 🔴 授權守門指令（如 `dev bump`、`dev release`、`remove`、`rollback`）。
+   - 檢視終端執行歷程，確認是否有未授權調用 [GATED] 授權守門指令（如 `dev bump`、`dev release`、`remove`、`rollback`）。
    - 核對是否遵循「零臆測」、「SSOT 對話節流」、「單 Turn 邊界」三大核心原則。
 4. **Context 視窗與資源定性估算**：
    - 依據當前活躍上下文與近期檔案讀取量，客觀推估活躍 Context 規模（通常約 30k ~ 100k Tokens），並明確標記 System Prompt 佔比。
 
 ---
 
-## ⚠️ 2. 四大核心坑點與防禦公理 (The 4 Pitfalls & Guardrails)
+## [WARN] 2. 四大核心坑點與防禦公理 (The 4 Pitfalls & Guardrails)
 
 ### 坑點 1：誤將日誌行數或 Tool Output 視為 Steps 數
 - **現象**：許多日誌或記錄中包含大量 Tool Output（如 `VIEW_FILE` 輸出、`RUN_COMMAND` 終端回傳）。若直接取日誌總行數作為 Steps，會把工具回傳誤當成模型重新發起 API 呼叫。

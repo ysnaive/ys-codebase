@@ -4,17 +4,17 @@
 
 ---
 
-## 🎯 1. 核心定位與觸發節點
+## 1. 核心定位與觸發節點
 
 1. **SOP 標準必經步驟**：本步驟為 SOP 標準生命週期的獨立品質閘門，非可選動作。
 2. **強制連鎖觸發時機**：
    - **Full Track**：P06 自動化測試 100% 通過，且手動/UX 驗證項已與開發者確認並標註為 `[測試通過]` 或 `[跳過/免測]` 後，**強制立即進入 Review 步驟**。
    - **Fast Track**：FT-2 實作與測試通過後，**強制立即進入 Review 步驟**。
-3. **🚨 守門禁令**：未完成 Review 審查並呈遞 `Review Verdict Card` 前，**絕對禁止直接產出 `P07_walkthrough.md` 或宣稱任務結案**！
+3. **[!] 守門禁令**：未完成 Review 審查並呈遞 `Review Verdict Card` 前，**絕對禁止直接產出 `P07_walkthrough.md` 或宣稱任務結案**！
 
 ---
 
-## 🔍 2. 品質與合規審查矩陣 (Quality & Compliance Matrix)
+## 2. 品質與合規審查矩陣 (Quality & Compliance Matrix)
 
 ### 2.1 三層文檔交付審查 (Documentation Delivery Audit)
 - [ ] **宏觀發布日誌**：專案根目錄 [`CHANGELOG.md`](`__${project://CHANGELOG.md}__`) 最上方預擬或追加本次高階變更摘要。
@@ -31,20 +31,20 @@
 
 ---
 
-## 🛠️ 3. 即時修復與回填閉環 (Interactive Resolution Loop)
+## [TOOL] 3. 即時修復與回填閉環 (Interactive Resolution Loop)
 
 - **即時修復原則**：審查中發現任何文檔缺漏、測試未過或計畫合規偏差，**禁止僅口頭列出問題**，必須呈遞具體修復方案並立即動手修正。
 - **回填閉環**：修復完成後，將審查結論與修復項目記錄於微觀日誌 [`changelog.md`](`__${project://plans/}__/{plan_name}/changelog.md`)，並供後續 P07 / FT-3 結案引用。
 
 ---
 
-## 🛑 4. SOP Review 結束 Checkpoint (Review Verdict Card)
+## [!] 4. SOP Review 結束 Checkpoint (Review Verdict Card)
 
 完成審查與即時修復後，對話 Session **嚴禁傾倒全部 Checkbox 清單**，強制僅呈遞以下極簡卡片：
 
 ```markdown
-### 📋 SOP Review 審查結果
-- **審查結論**：[✅ 全數通過 / ⚠️ 發現 N 項偏差已即時修復閉環]
+### SOP Review 審查結果
+- **審查結論**：[[PASS] 全數通過 / [WARN] 發現 N 項偏差已即時修復閉環]
 - **核驗摘要**：
   - 文檔對齊：[CHANGELOG、docs 知識庫、代碼註解對齊完成]
   - 測試與計畫：[自動化測試 100% 通過 / UX 驗收標註完成 / 計畫合規性檢核通過]

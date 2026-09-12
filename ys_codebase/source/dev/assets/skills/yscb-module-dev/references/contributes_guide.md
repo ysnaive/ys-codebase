@@ -4,7 +4,7 @@
 
 ---
 
-## 🏛️ 1. 雙向邊界哲學 (Strict Egress, Tolerant Ingress)
+## 1. 雙向邊界哲學 (Strict Egress, Tolerant Ingress)
 
 YS-Codebase 採用微內核外掛架構，模組間的能力擴充與依賴注入透過 `contributes/` 宣告完成：
 
@@ -20,7 +20,7 @@ YS-Codebase 採用微內核外掛架構，模組間的能力擴充與依賴注�
 
 ---
 
-## 📐 2. `_format.json` Schema DSL 語法規範
+## 2. `_format.json` Schema DSL 語法規範
 
 YSCB 內建純標準庫實現的輕量 Schema DSL (`core.validator.ContributesValidator`)，零第三方依賴（嚴禁引入 pydantic 或 jsonschema）。
 
@@ -75,7 +75,7 @@ YSCB 內建純標準庫實現的輕量 Schema DSL (`core.validator.ContributesVa
 
 ---
 
-## 🔍 3. 如何查找其他模組的 Contributes 定義
+## 3. 如何查找其他模組的 Contributes 定義
 
 當模組作為 Donor 欲向其他模組貢獻能力時，**嚴禁盲猜欄位結構**。下游第三方開發端不會有目標模組的源碼（`source`）目錄，必須依循標準 `module://` 語意 URI 或 CLI 探索方法查找目標 Host 的定義：
 
@@ -104,7 +104,7 @@ python yscb.py knowledge-db search --ftype=md "_manifest"
 
 ---
 
-## 📝 4. Donor 注入檔案撰寫範式
+## 4. Donor 注入檔案撰寫範式
 
 當查明目標模組的擴充點規格後，Donor 在自身目錄建立宣告檔案：
 
@@ -146,7 +146,7 @@ python yscb.py knowledge-db search --ftype=md "_manifest"
 
 ---
 
-## 🛠️ 5. 合規檢查與智能診斷工具鏈
+## [TOOL] 5. 合規檢查與智能診斷工具鏈
 
 ### 5.1 執行靜態合規驗證
 ```bash

@@ -214,11 +214,11 @@ class Releaser:
         4 步發布與版本控制安全流水線 (dev release-git <mod> "<msg>" [--force]):
         1. 調用 Tester 執行 dev test <mod>（失敗即中斷）。
         2. 檢查目標版本是否已發布：
-           - 若尚未發布：調用 release_check ➔ release_module。
+           - 若尚未發布：調用 release_check -> release_module。
            - 若已發布且無 --force：略過打包動作，直接推進至本地 Git 提交。
-           - 若已發布且傳入 --force：強制調用 release_check(force=True) ➔ release_module(force=True) 覆蓋打包。
+           - 若已發布且傳入 --force：強制調用 release_check(force=True) -> release_module(force=True) 覆蓋打包。
         3. 本地 Git 提交：git add -A -> git commit -m commit_msg -> git tag [-f] -a "<mod>/v<ver>" -m commit_msg。
-        🚨 防呆約束：嚴禁調用 git push，所有操作僅於本地端完成。
+        [!] 防呆約束：嚴禁調用 git push，所有操作僅於本地端完成。
         """
         if not commit_msg or not commit_msg.strip():
             return False, "Commit message cannot be empty for release-git."

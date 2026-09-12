@@ -17,11 +17,11 @@ class HelpRenderer:
     def _tier_badge(tier: str) -> str:
         tier_lower = tier.lower()
         if tier_lower in ("safe", "green"):
-            return "🟢 自主安全 (safe)"
+            return "[SAFE] 自主安全 (safe)"
         elif tier_lower in ("gated", "danger", "red"):
-            return "🔴 授權守門 (gated)"
+            return "[GATED] 授權守門 (gated)"
         elif tier_lower in ("conditional", "warn", "warning", "yellow"):
-            return "🟡 階段條件 (conditional)"
+            return "[CONDITIONAL] 階段條件 (conditional)"
         return f"[{tier}]"
 
     @classmethod
@@ -143,7 +143,7 @@ class HelpRenderer:
             "=" * 80,
             f"Description: {cmd_spec.description}",
             f"Security   : {cls._tier_badge(cmd_spec.tier)}",
-            f"Server Mode: {'✅ Hot IPC Compatible' if cmd_spec.server_compatible else 'Local Cold Run Only'}",
+            f"Server Mode: {'[HOT-IPC] Hot IPC Compatible' if cmd_spec.server_compatible else '[COLD-RUN] Local Cold Run Only'}",
             "",
             "USAGE:",
             f"  python yscb.py {module_name} {cmd_name}{subcmd_ph}{usage_args}{options_ph}",
@@ -216,13 +216,13 @@ class HelpRenderer:
             lines.append("")
             lines.append("RECOMMENDED USAGE (Pros):")
             for pro in cmd_spec.usage_pros:
-                lines.append(f"  ✅ {pro}")
+                lines.append(f"  [+] {pro}")
 
         if cmd_spec.usage_cons:
             lines.append("")
             lines.append("RESTRICTIONS & GATES (Cons):")
             for con in cmd_spec.usage_cons:
-                lines.append(f"  🚨 {con}")
+                lines.append(f"  [-] {con}")
 
         lines.append("=" * 80)
         return "\n".join(lines)
