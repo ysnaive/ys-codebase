@@ -4,7 +4,7 @@
 
 ---
 
-## 🎯 1. 核心定位與職責
+## 1. 核心定位與職責
 
 - **模組邊界與職責劃分**：定義組件職責，確立依賴單向性，杜絕循環依賴。
 - **動態流程設計**：以循序圖或資料管線流向圖清晰表達跨物件協同機制。
@@ -12,7 +12,7 @@
 
 ---
 
-## 📐 2. 架構設計與圖表規範
+## 2. 架構設計與圖表規範
 
 - **圖表排版優先級**：
   $$\text{Markdown 表格} \succ \text{垂直 Mermaid (TD / TB)} \succ \text{橫向 Mermaid (LR)} \succ \text{純文字 ASCII 表格}$$
@@ -21,7 +21,7 @@
 
 ---
 
-## 🧪 3. `P06_test_plan.md` (Draft) 同步初始化鐵律
+## 3. `P06_test_plan.md` (Draft) 同步初始化鐵律
 
 在 Phase 2 完成時，**必須同步建立並初始化 `P06_test_plan.md`（狀態：`Draft`）**：
 - 將 `P01` 定義之 `FR-XX` 映射至 `FT-XX`（功能測試）。
@@ -34,11 +34,11 @@
 
 ---
 
-## 🛑 4. Phase 2 結束 Checkpoint
+## [!] 4. Phase 2 結束 Checkpoint
 
 - **極精簡 Session 回覆格式**：產出 `P02_architecture_plan.md` 與 `P06_test_plan.md` (Draft) 並更新 `changelog.md` 後，對話中**嚴禁全文重複、傾倒圖表或冗長轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
-  ### 📄 P02 架構設計已落檔
+  ###  P02 架構設計已落檔
   - **產出文件**：[P02_architecture_plan.md](__${project://plans/}__/{plan_name}/P02_architecture_plan.md)、[P06_test_plan.md](__${project://plans/}__/{plan_name}/P06_test_plan.md) (Draft)
   - **架構摘要**：[1~2 行組件邊界 / 核心決策 [P02:DR-XX] / FT & ET 測試預排 N 項]
   - **待確認事項**：請問是否同意架構設計並推進至 Phase 3（API 規格）？

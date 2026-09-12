@@ -171,12 +171,14 @@ class TestSpaceManager(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_sub_06_empty_configurable_contribute_defaults(self):
-        """SUB-06: 驗證 knowledge-db 模組內建 configurable/contribute.json 預設為空 spaces"""
-        cfg_template = Path(_pkg_root) / "configurable" / "contribute.json"
-        self.assertTrue(cfg_template.exists(), f"Configurable template {cfg_template} must exist")
-        with open(cfg_template, "r", encoding="utf-8") as f:
+        """SUB-06: 驗證 knowledge-db 模組內建 contributes/knowledge-db.json 存在且包含完整語意配置"""
+        mod_contrib = Path(_pkg_root) / "contributes" / "knowledge-db.json"
+        self.assertTrue(mod_contrib.exists(), f"Module contributes {mod_contrib} must exist")
+        with open(mod_contrib, "r", encoding="utf-8") as f:
             data = json.load(f)
-        self.assertEqual(data.get("spaces"), {}, "Configurable template must have empty spaces dict by default")
+        self.assertIn("languages", data)
+        self.assertIn("thesaurus", data)
+        self.assertIn("aliases", data)
 
         self.mark_passed()
 

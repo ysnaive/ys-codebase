@@ -9,7 +9,7 @@ description: 專案文檔與知識庫架構規範指南。當有閱讀、搜尋�
 
 ---
 
-## 🎯 核心定位：兩套系統的職責劃分
+## 核心定位：兩套系統的職責劃分
 
 | 系統 | 語意定位 | 職責與生命週期 | 內容性質 |
 | :--- | :--- | :--- | :--- |
@@ -21,7 +21,7 @@ description: 專案文檔與知識庫架構規範指南。當有閱讀、搜尋�
 
 ---
 
-## 🌐 軟體工程 7 大抽象知識維度（知識檢索地圖）
+## 軟體工程 7 大抽象知識維度（知識檢索地圖）
 
 知識庫檔案按 `<Category>`（代表業務領域、架構子系統或多層命名空間，支援單層如 `core` 或多層如 `Render/Layout/FlexEngine`）進行組織：
 
@@ -33,11 +33,11 @@ description: 專案文檔與知識庫架構規範指南。當有閱讀、搜尋�
 | **④ 介面合約與承諾** | 前置/後置條件、錯誤型態、輸入輸出 Schema | 程式碼 Docstrings / Public Headers | 查閱 API 參數、回傳型別與例外契約 |
 | **⑤ 工程妥協與防坑** | 為效能/平台限制而採取的反直覺設計 (Non-obvious) | `__${workflow.docs://}__/<Category>/DESIGN_NOTES.md`<br>*(DN-XX + `[!CAUTION]`)* | 避免破壞有意為之的防坑或效能設計 |
 | **⑥ 人因操作引導** | 快速上手、配置矩陣、典型範例 (Cookbook)、故障排查 | `__${workflow.docs://}__/<Category>/README.md`<br>`__${workflow.docs://_project/CLI_SPECIFICATION.md}__` | 查閱指令用法、配置參數與快速上手 |
-| **⑦ 架構演進歷史** | 重大架構重構歷史（痛點 ➔ 改變 ➔ 參照 Plan） | `__${workflow.docs://}__/<Category>/CHANGELOG.md`<br>`__${workflow.docs://CHANGELOG.md}__` | 了解子系統或專案全局歷史重大架構轉折 |
+| **⑦ 架構演進歷史** | 重大架構重構歷史（痛點 -> 改變 -> 參照 Plan） | `__${workflow.docs://}__/<Category>/CHANGELOG.md`<br>`__${workflow.docs://CHANGELOG.md}__` | 了解子系統或專案全局歷史重大架構轉折 |
 
 ---
 
-## ✍️ 文檔作者指南 (Author's Guide & Checklist)
+## 文檔作者指南 (Author's Guide & Checklist)
 
 當您需要**新增、撰寫、更新文檔**或執行**三層文檔交付對齊**時，請參閱作者手冊：
 - [文檔撰寫與作者指引 (references/author_guide_and_checklist.md)](./references/author_guide_and_checklist.md)：包含文檔歸屬判定決策樹、中觀專題手冊 5 大情境、三層交付閉環、超連結點擊性規範、YAML Frontmatter Schema 與作者自檢核對清單。

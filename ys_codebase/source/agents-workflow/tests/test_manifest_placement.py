@@ -72,6 +72,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
             )
             self.assertNotIn(":", p.replace("project://", ""))
             self.assertNotIn("\\", p)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_02_local_target_saves_absolute_paths_in_cache(self):
@@ -97,6 +98,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
                 f"Expected path in cache manifest to be an absolute path, got: '{p}'"
             )
             self.assertFalse(p.startswith("project://"))
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_03_mixed_targets_dual_channel_manifests(self):
@@ -112,6 +114,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         self.assertEqual(proj_data.get("active_targets"), ["antigravity"])
         for p in proj_data.get("published_files", []):
             self.assertTrue(p.startswith("project://"))
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_04_legacy_absolute_path_manifest_tolerance(self):
@@ -131,7 +134,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         }
         uri.write_json(PROJECT_MANIFEST_STORAGE_URI, fake_legacy)
 
-        # 執行發布 ➔ 不應拋出 FileNotFoundError 或路徑崩潰
+        # 執行發布 -> 不應拋出 FileNotFoundError 或路徑崩潰
         res = self.publisher.release_all(force=False)
         self.assertTrue(res["success"])
 
@@ -139,6 +142,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         new_data = uri.read_json(PROJECT_MANIFEST_STORAGE_URI)
         for p in new_data.get("published_files", []):
             self.assertTrue(p.startswith("project://"))
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_05_line_endings_are_pure_lf(self):
@@ -161,6 +165,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
                     raw_bytes,
                     f"File '{abs_p}' contains CRLF (\\r\\n) but expected pure LF (\\n)."
                 )
+        self.mark_passed()
 
 
 if __name__ == "__main__":

@@ -19,29 +19,27 @@ import importlib.util
 from typing import Dict, Any, List, Optional, Tuple, Set
 
 from core import uri
+from core import vfs
 from core.context import ExecutionContext
 from core import semver
 from core.contributes import ContributesAggregator
 from core import events
+from core.platform import InterProcessLock
 
 class AtomicEngine:
     def __init__(self):
         self.contributes_aggregator = ContributesAggregator()
+        self._active_locks: Dict[str, InterProcessLock] = {}
 
     def _get_config(self) -> Tuple[str, Dict[str, Any]]:
         host_dir, _ = uri._get_host_config()
         cfg_path = os.path.join(host_dir, "yscb.config.json")
-        if not os.path.isfile(cfg_path):
+        if not vfs.is_file(cfg_path):
             raise FileNotFoundError(f"Configuration file not found: {cfg_path}")
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            return cfg_path, json.load(f)
+        return cfg_path, vfs.read_json(cfg_path)
 
     def _save_config(self, cfg_path: str, data: Dict[str, Any]) -> None:
-        tmp_path = cfg_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(tmp_path, cfg_path)
+        vfs.write_json(cfg_path, data, indent=2, atomic=True)
 
     def act_fetch(self, provider_url: str, relative_path: str) -> Tuple[bool, Any]:
         """
@@ -60,9 +58,11 @@ class AtomicEngine:
                     local_target = local_target_bld
             
         if os.path.exists(local_target):
-            if relative_path.endswith(".json") and os.path.isfile(local_target):
-                with open(local_target, "r", encoding="utf-8") as f:
-                    return True, json.load(f)
+            if relative_path.endswith(".json") and vfs.is_file(local_target):
+                try:
+                    return True, vfs.read_json(local_target)
+                except Exception as e:
+                    return False, str(e)
             return True, local_target
 
         # 2. Remote HTTP Provider
@@ -82,41 +82,29 @@ class AtomicEngine:
 
     def act_lock(self, operation: str, timeout: float = 10.0) -> None:
         """
-        Acquire inter-process lock on cache://.yscb.lock using OS-level atomic creation (os.O_CREAT | os.O_EXCL).
+        Acquire inter-process lock on cache://.yscb.lock using core.platform.InterProcessLock.
         """
         lock_uri = "cache://.yscb.lock"
         lock_path = uri.resolve(lock_uri)
         uri.makedirs("cache://", exist_ok=True)
-        
-        now = time.time()
-        if os.path.exists(lock_path):
-            try:
-                with open(lock_path, "r", encoding="utf-8") as f:
-                    lock_info = json.load(f)
-                lock_time = lock_info.get("timestamp", 0)
-                if now - lock_time > timeout:
-                    os.remove(lock_path)
-            except Exception:
-                try:
-                    os.remove(lock_path)
-                except Exception:
-                    pass
 
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump({"pid": os.getpid(), "timestamp": now, "operation": operation}, f)
-        except FileExistsError:
+        lock = InterProcessLock(lock_path)
+        if not lock.acquire(blocking=True, timeout_sec=timeout):
             raise BlockingIOError(f"Another yscb process is currently holding the lock for operation '{operation}'.")
+        self._active_locks[operation] = lock
 
     def act_unlock(self, operation: str) -> None:
         """Release inter-process lock on cache://.yscb.lock."""
-        lock_uri = "cache://.yscb.lock"
-        if uri.exists(lock_uri):
+        lock = self._active_locks.pop(operation, None)
+        if lock is not None:
+            lock.release()
+        else:
+            lock_uri = "cache://.yscb.lock"
             try:
                 lock_p = uri.resolve(lock_uri)
                 if os.path.exists(lock_p):
-                    os.remove(lock_p)
+                    temp_lock = InterProcessLock(lock_p)
+                    temp_lock.release()
             except Exception:
                 pass
 
@@ -220,28 +208,26 @@ class AtomicEngine:
             raise FileNotFoundError(f"Cannot find release package for module '{module_name}@{version}' in provider '{provider_url}'.")
 
         remote_zip_url = provider_url.rstrip("/") + f"/{module_name}/{version}.zip"
-        tmp_zip = dest_zip_real + ".tmp"
         try:
             req = urllib.request.Request(remote_zip_url, headers={"User-Agent": "yscb-core/2.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
-                with open(tmp_zip, "wb") as f:
+                with vfs.atomic_write(dest_zip_real, mode="wb") as f:
                     shutil.copyfileobj(resp, f)
-                    
-            if not zipfile.is_zipfile(tmp_zip):
+
+            if not zipfile.is_zipfile(dest_zip_real):
                 raise RuntimeError(f"Downloaded file from '{remote_zip_url}' is not a valid zip archive.")
-                
-            with zipfile.ZipFile(tmp_zip, "r") as zf:
+
+            with zipfile.ZipFile(dest_zip_real, "r") as zf:
                 if zf.testzip() is not None:
                     raise RuntimeError(f"Corrupted zip archive downloaded from '{remote_zip_url}'.")
-            os.replace(tmp_zip, dest_zip_real)
             return dest_zip_uri
         except Exception as e:
-            if os.path.exists(tmp_zip):
+            if vfs.exists(dest_zip_real):
                 try:
-                    os.remove(tmp_zip)
+                    vfs.remove(dest_zip_real)
                 except Exception:
                     pass
-            raise FileNotFoundError(f"Failed to download module '{module_name}@{version}' from '{remote_zip_url}': {e}")
+            raise RuntimeError(f"Failed to download module '{module_name}@{version}' from '{remote_zip_url}': {e}")
 
     def act_register(self, module_name: str, version: str, provider_url: str) -> None:
         cfg_path, cfg = self._get_config()
@@ -341,16 +327,15 @@ class AtomicEngine:
                 candidate_indexes.append(os.path.join(p_abs, "build", module_name, "index.json"))
 
             for idx_p in candidate_indexes:
-                if os.path.isfile(idx_p):
+                if vfs.is_file(idx_p):
                     try:
-                        with open(idx_p, "r", encoding="utf-8") as f:
-                            idx_data = json.load(f)
-                        vers = idx_data.get("versions", [])
+                        idx_data = vfs.read_json(idx_p)
+                        vers = idx_data.get("versions", []) if isinstance(idx_data, dict) else []
                         best_v = semver.find_best_version(vers, version_constraint)
                         if best_v:
                             mod_dir = os.path.dirname(idx_p)
                             zip_p = os.path.join(mod_dir, f"{best_v}.zip")
-                            if os.path.isfile(zip_p):
+                            if vfs.is_file(zip_p):
                                 with zipfile.ZipFile(zip_p, "r") as zf:
                                     return json.loads(zf.read("manifest.json").decode("utf-8"))
                     except Exception:
@@ -363,18 +348,22 @@ class AtomicEngine:
             if is_build_req:
                 candidate_dirs.append(os.path.join(p_abs, "build", module_name))
             for c_dir in candidate_dirs:
-                if os.path.isdir(c_dir):
-                    versions = [v for v in os.listdir(c_dir) if os.path.isdir(os.path.join(c_dir, v))]
+                if vfs.is_dir(c_dir):
+                    versions = [v for v in vfs.listdir(c_dir) if vfs.is_dir(os.path.join(c_dir, v))]
                     best_ver = semver.find_best_version(versions, version_constraint)
-                    if best_ver and os.path.isfile(os.path.join(c_dir, best_ver, "manifest.json")):
-                        with open(os.path.join(c_dir, best_ver, "manifest.json"), "r", encoding="utf-8") as f:
-                            return json.load(f)
+                    if best_ver and vfs.is_file(os.path.join(c_dir, best_ver, "manifest.json")):
+                        try:
+                            return vfs.read_json(os.path.join(c_dir, best_ver, "manifest.json"))
+                        except Exception:
+                            pass
                     direct_mf = os.path.join(c_dir, "manifest.json")
-                    if os.path.isfile(direct_mf):
-                        with open(direct_mf, "r", encoding="utf-8") as f:
-                            m_data = json.load(f)
-                        if semver.match_constraint(m_data.get("version", "1.0.0.0"), version_constraint):
-                            return m_data
+                    if vfs.is_file(direct_mf):
+                        try:
+                            m_data = vfs.read_json(direct_mf)
+                            if isinstance(m_data, dict) and semver.match_constraint(m_data.get("version", "1.0.0.0"), version_constraint):
+                                return m_data
+                        except Exception:
+                            pass
 
         # 3. Tier 3: Remote lookup via index.json
         ok, res = self.act_fetch(provider_url, f"{module_name}/index.json")

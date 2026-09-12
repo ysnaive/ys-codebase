@@ -190,6 +190,59 @@ def get_for_current_module(key: Optional[str] = None, default: Any = None) -> An
     return get(curr_mod, key=key, default=default)
 
 
+def get_format(module: str) -> Optional[Dict[str, Any]]:
+    """讀取並返回指定目標模組之 contributes/_format.json 字典，若不存在則返回 None。"""
+    fmt_uri = f"module://{module}/contributes/_format.json"
+    if not uri.exists(fmt_uri):
+        fmt_uri = f"module.source://{module}/contributes/_format.json"
+    if uri.exists(fmt_uri):
+        try:
+            data = uri.read_json(fmt_uri)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            logger.warning(f"Failed to read format schema for '{module}' at '{fmt_uri}': {e}")
+    return None
+
+
+def validate(target_module: str, payload: Dict[str, Any], donor_module: str = "") -> Any:
+    """便捷 SDK: 自動定位 target_module 之 _format.json 並執行剛性校驗。"""
+    from core.validator import ContributesValidator
+    fmt = get_format(target_module)
+    return ContributesValidator.validate(target_module, payload, donor_mod=donor_module, format_schema=fmt, strict_points=True)
+
+
+def list_points(module: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    查詢生態系開放之擴充點清單。
+    回傳 [{"module": str, "point": str, "description": str, "format_type": str}, ...]
+    """
+    installed = [module] if module else (uri.listdir("module://") if uri.exists("module://") else [])
+    if not installed and uri.exists("module.source://"):
+        try:
+            installed = uri.listdir("module.source://")
+        except Exception:
+            installed = []
+    results: List[Dict[str, Any]] = []
+    for mod in installed:
+        fmt = get_format(mod)
+        if not fmt:
+            continue
+        for k, v in fmt.items():
+            if k.startswith("_"):
+                continue
+            desc = v.get("description", "") if isinstance(v, dict) else ""
+            f_spec = v.get("format") if isinstance(v, dict) else v
+            f_type = "list" if isinstance(f_spec, list) else ("dict" if isinstance(f_spec, dict) else str(f_spec))
+            results.append({
+                "module": mod,
+                "point": k,
+                "description": desc,
+                "format_type": f_type
+            })
+    return results
+
+
 class ContributesAggregator:
     """
     Contributes 雙階聚合引擎：
@@ -235,7 +288,7 @@ class ContributesAggregator:
             if uri.exists(donor_contrib_dir) and uri.isdir(donor_contrib_dir):
                 try:
                     for filename in uri.listdir(donor_contrib_dir):
-                        if not filename.endswith(".json"):
+                        if not filename.endswith(".json") or filename.startswith("_"):
                             continue
                         target = filename[:-5]
                         if target not in aggregated:
@@ -245,8 +298,16 @@ class ContributesAggregator:
                         try:
                             c_data = uri.read_json(target_file_uri)
                             if isinstance(c_data, dict):
+                                # 剛性邊界與 Schema 校驗過濾
+                                val_res = validate(target, c_data, donor_module=donor)
+                                if not val_res.is_valid:
+                                    logger.warning(f"Contributes validation failed for donor '{donor}' -> target '{target}':")
+                                    for err in val_res.errors:
+                                        logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
+                                valid_body = val_res.payload if val_res.payload is not None else c_data
+
                                 tagged_body = {}
-                                for c_key, c_val in c_data.items():
+                                for c_key, c_val in valid_body.items():
                                     if isinstance(c_val, list):
                                         tagged_body[c_key] = [
                                             _tag_provider(item, donor) if isinstance(item, dict) else item 
@@ -257,10 +318,10 @@ class ContributesAggregator:
                                     else:
                                         tagged_body[c_key] = c_val
                                 self._deep_merge(aggregated[target], tagged_body)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                        except Exception as e:
+                            logger.warning(f"Failed to read contributes file '{target_file_uri}': {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to scan donor contributes dir '{donor_contrib_dir}': {e}")
 
             # 單一 contributes.json 輔助支援
             donor_unified_file = f"module://{donor}/contributes.json"
@@ -288,7 +349,7 @@ class ContributesAggregator:
                     pass
 
         # 4. 階層 ②：專案層級特化注入 (Project Contribute Overrides)
-        # 🚨 剛性禁止 contribute.local.json，檢測到時輸出警告日誌並忽略。
+        # [!] 剛性禁止 contribute.local.json，檢測到時輸出警告日誌並忽略。
         all_targets = list(aggregated.keys())
         for target in all_targets:
             local_contrib_uri = f"config://{target}/contribute.local.json"
@@ -303,7 +364,13 @@ class ContributesAggregator:
                         # contribute.json 可直接為該目標之擴充內容，或嵌套於 target 鍵下
                         target_overlay = c_data.get(target, c_data)
                         if isinstance(target_overlay, dict):
-                            self._deep_merge(aggregated[target], target_overlay)
+                            val_res = validate(target, target_overlay, donor_module="project_override")
+                            if not val_res.is_valid:
+                                logger.warning(f"Contributes validation failed for project override 'config://{target}/contribute.json':")
+                                for err in val_res.errors:
+                                    logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
+                            valid_overlay = val_res.payload if val_res.payload is not None else target_overlay
+                            self._deep_merge(aggregated[target], valid_overlay)
                 except Exception as e:
                     logger.warning(f"Failed to read project contribute override '{proj_contrib_uri}': {e}")
 
@@ -345,3 +412,99 @@ class ContributesAggregator:
                 base[k].extend(x for x in v if x not in base[k])
             else:
                 base[k] = v
+
+
+def print_global_help() -> int:
+    """
+    動態聚合並格式化輸出 YSCB 全域指令清單：
+    1. CORE COMMANDS
+    2. MODULE COMMANDS (遍歷已安裝模組之 contributes/core.json 與 manifest.json)
+    3. GLOBAL OPTIONS
+    """
+    print("=" * 70)
+    print("  YS-Codebase - Ultra-Thin Modular Microkernel CLI")
+    print("=" * 70)
+    print("\nUSAGE:")
+    print("  python yscb.py <command> [options]")
+    print("  python yscb.py <module> <subcommand> [options]")
+
+    print("\nCORE COMMANDS:")
+    core_docs = [
+        ("init <root> [--provider=<url>]", "Initialize a new YSCB workspace"),
+        ("self-update [--provider=<url>]", "Update yscb.py host bootstrapper script"),
+        ("restore [--force]", "Restore installed modules from provider into .modules/"),
+        ("install <module>[@<version>]", "Install a module from provider"),
+        ("update [<module>]", "Update installed module(s) to latest version"),
+        ("remove <module> [--force]", "Remove an installed module from environment"),
+        ("list", "List all installed modules, versions and providers"),
+        ("status", "Health check and runtime diagnostic report"),
+        ("reload", "Reconcile and refresh runtime environment"),
+        ("rollback", "Revert environment to the previous snapshot state"),
+        ("event list", "List all contributed events across modules"),
+    ]
+    for cmd, desc in core_docs:
+        print(f"  {cmd:<35} {desc}")
+
+    print("\nMODULE COMMANDS:")
+    has_module_cmds = False
+    if uri.exists("module://"):
+        try:
+            installed = sorted(uri.listdir("module://"))
+            for mod_name in installed:
+                if mod_name == "core":
+                    continue
+                cmds: Dict[str, str] = {}
+                # 1. 檢查 module://<mod>/contributes/core.json
+                contrib_core_uri = f"module://{mod_name}/contributes/core.json"
+                if uri.exists(contrib_core_uri):
+                    try:
+                        c_data = uri.read_json(contrib_core_uri)
+                        if isinstance(c_data, dict):
+                            cmd_map = c_data.get("commands", {})
+                            if isinstance(cmd_map, dict):
+                                for c_name, c_info in cmd_map.items():
+                                    desc = ""
+                                    if isinstance(c_info, dict):
+                                        desc = c_info.get("description", "")
+                                    elif isinstance(c_info, str):
+                                        desc = c_info
+                                    cmds[c_name] = desc
+                    except Exception:
+                        pass
+
+                # 2. 檢查 module://<mod>/manifest.json 中的 contributes
+                manifest_uri = f"module://{mod_name}/manifest.json"
+                if uri.exists(manifest_uri):
+                    try:
+                        m_data = uri.read_json(manifest_uri)
+                        if isinstance(m_data, dict):
+                            m_contrib = m_data.get("contributes", {})
+                            if isinstance(m_contrib, dict):
+                                m_cmds = m_contrib.get("commands", {})
+                                if isinstance(m_cmds, dict):
+                                    for c_name, c_info in m_cmds.items():
+                                        if c_name not in cmds:
+                                            desc = c_info.get("description", "") if isinstance(c_info, dict) else str(c_info)
+                                            cmds[c_name] = desc
+                            if not cmds and "entry" in m_data:
+                                mod_desc = m_data.get("description", f"{mod_name} module entry")
+                                cmds["run"] = mod_desc
+                    except Exception:
+                        pass
+
+                if cmds:
+                    has_module_cmds = True
+                    print(f"  [{mod_name}]")
+                    for subcmd, desc in sorted(cmds.items()):
+                        full_cmd = f"  {mod_name} {subcmd}"
+                        print(f"  {full_cmd:<33} {desc}")
+        except Exception:
+            pass
+
+    if not has_module_cmds:
+        print("  (No additional module commands available. Use 'install <module>' to add capabilities.)")
+
+    print("\nGLOBAL OPTIONS:")
+    print("  -h, --help                          Show this help message and exit")
+    print("=" * 70)
+    return 0

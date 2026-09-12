@@ -1,0 +1,54 @@
+{
+  "_types": {
+    "SpaceDef": {
+      "description": "str?",
+      "include": "list[str]!",
+      "exclude": "list[str]?",
+      "file_patterns": "list[str]?"
+    },
+    "LanguageDef": {
+      "id": "str!",
+      "name": "str!",
+      "extensions": "list[str]!",
+      "mode": "enum(tree_sitter, custom)!",
+      "grammar": "str?",
+      "query_file": "str?",
+      "parser_entry": "str?"
+    }
+  },
+
+  "spaces": {
+    "description": "向 knowledge-db 註冊自訂語意檢索空間與檔案走訪規則",
+    "format": {
+      "*": "$SpaceDef"
+    }
+  },
+
+  "thesaurus": {
+    "description": "向語意檢索器注入領域同義詞庫映射",
+    "format": [
+      "list[str]"
+    ]
+  },
+
+  "languages": {
+    "description": "向知識庫註冊支援的程式語言、AST Parser 與副檔名對映",
+    "format": {
+      "*": "$LanguageDef"
+    }
+  },
+
+  "aliases": {
+    "description": "註冊同義詞別名簡稱映射 (Alias Map)",
+    "format": {
+      "*": "list[str]"
+    }
+  },
+
+  "related": {
+    "description": "註冊語意相關詞清冊清單 (Semantic Clusters)",
+    "format": [
+      "list[str]"
+    ]
+  }
+}

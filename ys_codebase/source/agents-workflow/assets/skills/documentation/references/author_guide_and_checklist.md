@@ -4,32 +4,32 @@
 
 ---
 
-## 🌳 1. 文檔歸屬判定樹 (Decision Tree)
+## 1. 文檔歸屬判定樹 (Decision Tree)
 
 ```text
 Q1: 這是「歷史探索過程」還是「當前系統事實」？
-    ├─ 探索/任務/爭辯 ➔ 【`__${workflow.plans://}__`】(結案後凍結)
-    └─ 當前系統事實 ➔ 進入 Q2
+    ├─ 探索/任務/爭辯 -> 【`__${workflow.plans://}__`】(結案後凍結)
+    └─ 當前系統事實 -> 進入 Q2
 
 Q2: 這是屬於「全域宏觀拓撲」還是「特定分類 (<Category>)」？
-    ├─ 全域宏觀 ➔ 【`__${workflow.docs://_project/}__`*.md】
-    └─ 特定分類/領域路徑 (<Category>，如 core 或 Render/Layout/FlexEngine) ➔ 進入 Q3
+    ├─ 全域宏觀 -> 【`__${workflow.docs://_project/}__`*.md】
+    └─ 特定分類/領域路徑 (<Category>，如 core 或 Render/Layout/FlexEngine) -> 進入 Q3
 
 Q3: 這是「單一函式微觀簽名」還是「多實體協同/流向/機制」？
-    ├─ 單一函式簽名 ➔ 【程式碼 Docstrings】
-    └─ 跨實體協同/資料流/狀態 ➔ 進入 Q4
+    ├─ 單一函式簽名 -> 【程式碼 Docstrings】
+    └─ 跨實體協同/資料流/狀態 -> 進入 Q4
 
 Q4: 內部機制是否涉及「狀態轉換 / 深度資料管線 / 超過 1 頁」？
-    ├─ 否 (極簡介面/單純轉發) ➔ 【`__${workflow.docs://}__/<Category>/README.md`】
-    └─ 是 (存在中觀動態機制) ➔ 【`__${workflow.docs://}__/<Category>/[topic].md`】(強制獨立專題手冊！)
+    ├─ 否 (極簡介面/單純轉發) -> 【`__${workflow.docs://}__/<Category>/README.md`】
+    └─ 是 (存在中觀動態機制) -> 【`__${workflow.docs://}__/<Category>/[topic].md`】(強制獨立專題手冊！)
 
 Q5: 是否包含「反直覺妥協 / Workaround / 效能硬體限制」？
-    └─ 是 ➔ 【`__${workflow.docs://}__/<Category>/DESIGN_NOTES.md`】(強制登記 DN-XX + CAUTION！)
+    └─ 是 -> 【`__${workflow.docs://}__/<Category>/DESIGN_NOTES.md`】(強制登記 DN-XX + CAUTION！)
 ```
 
 ---
 
-## 🔬 2. 中觀專題手冊 5 大抽象情境 (Topic Docs Archetypes)
+## [RESEARCH] 2. 中觀專題手冊 5 大抽象情境 (Topic Docs Archetypes)
 
 中觀專題手冊（`__${workflow.docs://}__/<Category>/[topic].md`）解決**「Docstrings 放不下，README 裝不下」**的架構斷層，適用於各層級模組與子系統：
 
@@ -43,7 +43,7 @@ Q5: 是否包含「反直覺妥協 / Workaround / 效能硬體限制」？
 
 ---
 
-## 🧭 3. 三層文檔交付架構與三維錨點驗收 (Three-Tier Delivery & Anchors)
+## 3. 三層文檔交付架構與三維錨點驗收 (Three-Tier Delivery & Anchors)
 
 - **三層文檔交付模型 (Three-Tier Delivery Model)**：
   - **宏觀層 (Macro)**：專案全域發布日誌（`__${workflow.docs://CHANGELOG.md}__`），記錄高階發布與架構演進。
@@ -55,7 +55,7 @@ Q5: 是否包含「反直覺妥協 / Workaround / 效能硬體限制」？
 
 ---
 
-## 📐 4. 文檔撰寫實作規範
+## 4. 文檔撰寫實作規範
 
 ### 4.1 超連結規範：Markdown 可點擊性優先 (Clickability First)
 - 文檔正文超連結**一律使用相對於當前檔案的標準相對路徑**（例：`[全域架構](../_project/ARCHITECTURE.md)`、`[核心機制](./pipeline.md)`），確保 IDE 原生點擊跳轉。
@@ -89,7 +89,7 @@ last_updated: "YYYY-MM-DD"
 
 ---
 
-## ✅ 5. 文檔更新與添加自我核對清單 (Documentation Checklist)
+## [PASS] 5. 文檔更新與添加自我核對清單 (Documentation Checklist)
 
 在每次撰寫、修改或結案提交文檔前，請逐一自檢以下項目：
 

@@ -46,7 +46,7 @@ class TestSessionAnalysisSkill(YSCBTestCase):
             content = f.read()
 
         self.assertIn("name: session-analysis", content)
-        self.assertIn("🚨 授權守門技能。完全禁止 Agent 主動觸發！", content)
+        self.assertIn("[!] 授權守門技能。完全禁止 Agent 主動觸發！", content)
         self.assertIn("上次分析後 (不包含) ~ 本次分析前 (不包含)", content)
         self.assertIn("步驟 1：強制優先執行分析工具腳本", content)
         self.assertIn("analyzer.py", content)

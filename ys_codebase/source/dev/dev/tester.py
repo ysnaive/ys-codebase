@@ -579,6 +579,9 @@ class Tester:
                     print(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", file=sys.stderr)
                     return 1
 
+        from dev.testing.sandbox import SandboxProvisioner
+        SandboxProvisioner.adapt_build_pip_dependencies(target_modules=modules, quiet=True)
+
         cpu_limit = os.cpu_count() or 4
         max_workers = jobs if (jobs and jobs > 0) else min(cpu_limit, len(modules))
 

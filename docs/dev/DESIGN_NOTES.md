@@ -16,6 +16,7 @@
 | **DN-DEV-06** | Build 版 pip 相依性適配與沙盒微環境零拷貝投影 | `source/dev/dev/testing/sandbox.py`<br/>`source/dev/dev/checker.py` | 💡 INFO |
 | **DN-DEV-07** | 沙盒測試輸出純化、信息聚合與宿主防穿透剛性守門 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/runner.py`<br/>`source/dev/dev/testing/case.py` | 💡 INFO |
 | **DN-DEV-08** | 核心與工具鏈測試案例純化、凝聚與 4-Tier 分流機制 | `source/dev/dev/testing/runner.py`<br/>`source/core/tests/`<br/>`source/dev/tests/` | 💡 INFO |
+| **DN-DEV-09** | Contributes 靜態合規攔截與腳手架契約自動化建立 | `source/dev/dev/checker.py`<br/>`source/dev/dev/scaffold.py` | 💡 INFO |
 
 ---
 
@@ -93,6 +94,17 @@
      - 提供 `--workflow` 與 `--all-types` 指令在發布與守門驗收時執行完整全量回歸。
 - **背後考量**：在保持 100% 測試斷言覆蓋率與零品質妥協的前提下，根治測試套件隨專案迭代肥大化、日常跑測過度緩慢所產生的開發者摩擦。
 
+---
 
+### [DN-DEV-09] Contributes 靜態合規攔截與腳手架契約自動化建立
 
+- **核心決策**：
+  1. **靜態合規攔截 (`dev.checker`)**：
+     - 在 `_check_core_injection` 中整合 `core.validator.ContributesValidator`，自動走訪待檢模組之 `contributes/` 目錄。
+     - **Meta-Check**：檢核 `_format.json` 語法與型別表達式有效性，攔截格式畸形與非法 DSL。
+     - **Ingress/Egress 邊界檢核**：對所有 `<target>.json` 執行嚴格校驗，凡出現未宣告之擴充點（未知鍵）、型別不符或跨模組越權注入，一律標定為 `CheckSeverity.FAIL`，在靜態檢查階段剛性阻斷。
+  2. **腳手架契約原生化 (`dev.scaffold`)**：
+     - `dev create` 骨架生成器自動包含標準 `contributes/_format.json`（預設空物件）與 `contributes/_manifest.md`（包含 Ingress/Egress 契約手冊超連結指針與標準格式說明）。
+     - 確保任何新建立之模組出廠即具備自描述能力與靜態檢查 100% 合規。
+- **背後考量**：將 Contributes 契約校驗提前至靜態檢查與腳手架階段，杜絕模組將錯誤宣告打包發布至運行期，達成由源頭保證生態系架構整潔度的目標。
 

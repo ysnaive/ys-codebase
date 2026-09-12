@@ -29,7 +29,19 @@ from .schema import AggregatedFileResult, AggregatedItem, SymbolCallSite, Unifie
 from .space import SpaceManager
 from .tokenizer import MultilingualTokenizer
 
+import threading
+
 logger = logging.getLogger("knowledge-db.pipeline")
+
+_GLOBAL_INDEX_CACHE: Dict[str, Any] = {
+    "unified_index": None,
+    "unified_mtime": 0.0,
+    "graph_index": None,
+    "graph_mtime": 0.0,
+    "vector_index": None,
+    "vector_mtime": 0.0,
+}
+_CACHE_LOCK = threading.RLock()
 
 
 class HotPatchResult(tuple):
@@ -127,6 +139,59 @@ class IndexingPipeline:
         p = self.storage_dir / "indices"
         p.mkdir(parents=True, exist_ok=True)
         return p
+
+    def _ensure_indices_loaded(
+        self,
+        load_graph: bool = True,
+        load_vectors: bool = True,
+        force_reload: bool = False,
+    ) -> None:
+        """
+        微秒級比對磁碟快照 mtime，自動熱更新記憶體快取或從磁碟載入 [FR-04, P00:DR-05]。
+        在常駐進程環境下實現全域快取復用，避免每次 CLI 呼叫重複進行 gzip 反序列化。
+        """
+        global _GLOBAL_INDEX_CACHE
+        indices_dir = self.get_indices_dir()
+        bin_file = indices_dir / "unified.index.bin.gz"
+        graph_file = indices_dir / "unified.graph.bin.gz"
+        vector_file = indices_dir / "unified.vectors.bin.gz"
+
+        # 1. 倒排索引
+        if bin_file.exists():
+            try:
+                mtime = bin_file.stat().st_mtime
+                with _CACHE_LOCK:
+                    if force_reload or _GLOBAL_INDEX_CACHE["unified_index"] is None or mtime > _GLOBAL_INDEX_CACHE["unified_mtime"]:
+                        _GLOBAL_INDEX_CACHE["unified_index"] = InvertedIndex.load_binary(bin_file)
+                        _GLOBAL_INDEX_CACHE["unified_mtime"] = mtime
+                    self._unified_index = _GLOBAL_INDEX_CACHE["unified_index"]
+            except Exception as e:
+                logger.warning(f"Failed loading unified index cache: {e}")
+
+        # 2. 調用圖譜
+        if load_graph and graph_file.exists():
+            try:
+                mtime = graph_file.stat().st_mtime
+                with _CACHE_LOCK:
+                    if force_reload or _GLOBAL_INDEX_CACHE["graph_index"] is None or mtime > _GLOBAL_INDEX_CACHE["graph_mtime"]:
+                        _GLOBAL_INDEX_CACHE["graph_index"] = CallGraphIndex.load_binary(graph_file)
+                        _GLOBAL_INDEX_CACHE["graph_mtime"] = mtime
+                    self._call_graph_index = _GLOBAL_INDEX_CACHE["graph_index"]
+            except Exception as e:
+                logger.warning(f"Failed loading graph index cache: {e}")
+
+        # 3. 向量索引
+        if load_vectors and vector_file.exists():
+            try:
+                mtime = vector_file.stat().st_mtime
+                with _CACHE_LOCK:
+                    if force_reload or _GLOBAL_INDEX_CACHE["vector_index"] is None or mtime > _GLOBAL_INDEX_CACHE["vector_mtime"]:
+                        _GLOBAL_INDEX_CACHE["vector_index"] = VectorIndex.load_binary(vector_file)
+                        _GLOBAL_INDEX_CACHE["vector_mtime"] = mtime
+                    if _GLOBAL_INDEX_CACHE["vector_index"] is not None:
+                        self.hybrid_engine.vector_index = _GLOBAL_INDEX_CACHE["vector_index"]
+            except Exception as e:
+                logger.warning(f"Failed loading vector index cache: {e}")
 
     def build_unified_index(
         self,
@@ -257,6 +322,14 @@ class IndexingPipeline:
 
         self._unified_index = idx
         self._call_graph_index = graph_idx
+        with _CACHE_LOCK:
+            _GLOBAL_INDEX_CACHE["unified_index"] = idx
+            _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
+            _GLOBAL_INDEX_CACHE["graph_index"] = graph_idx
+            _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
+            if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
+                _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
+                _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
         return idx
 
     def hot_patch_unified_index(
@@ -366,6 +439,7 @@ class IndexingPipeline:
 
                 vec_idx = self.hybrid_engine.vector_index
                 expected_model = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
+                expected_dim = getattr(self.embedding_service, "dimension", getattr(vec_idx, "dim", 512))
 
                 if vec_idx is None or vec_idx.vectors is None or not vector_file.exists():
                     vector_degraded = True
@@ -374,10 +448,10 @@ class IndexingPipeline:
                         "請執行 `python yscb.py knowledge-db index` 重建向量索引，"
                         "或於 yscb.config.json / yscb.config.local.json 設定 `knowledge-db.enable_vector_search: false` 關閉向量語意搜尋。"
                     )
-                elif hasattr(vec_idx, "is_compatible_with") and not vec_idx.is_compatible_with(expected_model, getattr(vec_idx, "dim", 384)):
+                elif hasattr(vec_idx, "is_compatible_with") and not vec_idx.is_compatible_with(expected_model, expected_dim):
                     vector_degraded = True
                     degrade_notice = (
-                        f"[knowledge-db:notice] 向量快取與當前模型 '{expected_model}' 不相容已降級（本次使用純 BM25 模式）。"
+                        f"[knowledge-db:notice] 向量快取與當前模型 '{expected_model}' (維度要求: {expected_dim}) 不相容已降級（本次使用純 BM25 模式）。"
                         "請執行 `python yscb.py knowledge-db index` 重建向量索引，"
                         "或於 yscb.config.json / yscb.config.local.json 設定 `knowledge-db.enable_vector_search: false` 關閉向量語意搜尋。"
                     )
@@ -449,6 +523,14 @@ class IndexingPipeline:
 
             self._unified_index.save_binary(bin_file, compresslevel=1)
             BinarySnapshotManager.save(meta_file, full_files_map)
+            with _CACHE_LOCK:
+                _GLOBAL_INDEX_CACHE["unified_index"] = self._unified_index
+                _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
+                _GLOBAL_INDEX_CACHE["graph_index"] = self._call_graph_index
+                _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
+                if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
+                    _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
+                    _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
             self._vector_degraded = vector_degraded
             self._last_degrade_notice = degrade_notice
             return HotPatchResult(True, vector_degraded, degrade_notice)
@@ -548,6 +630,23 @@ class IndexingPipeline:
     # 檢索編排與拓撲分析 (Search & Graph Actions)
     # ----------------------------------------------------------------------
 
+    def _is_watcher_active(self) -> bool:
+        """檢查是否有背景 Watcher 正在守護檔案系統。"""
+        indices_dir = self.get_indices_dir()
+        active_file = indices_dir / ".watcher_active"
+        if not active_file.exists():
+            return False
+        try:
+            with open(active_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            pid = data.get("pid", 0)
+            if not pid:
+                return False
+            from core.platform import is_process_alive
+            return is_process_alive(pid)
+        except Exception:
+            return False
+
     def search(
         self,
         query: str,
@@ -574,70 +673,59 @@ class IndexingPipeline:
         meta_file = indices_dir / "unified.meta.bin"
         vector_file = indices_dir / "unified.vectors.bin.gz"
 
-        if self._unified_index is None and bin_file.exists() and meta_file.exists():
-            try:
-                self._unified_index = InvertedIndex.load_binary(bin_file)
-            except Exception:
-                pass
-        if self._call_graph_index is None and graph_file.exists():
-            try:
-                self._call_graph_index = CallGraphIndex.load_binary(graph_file)
-            except Exception:
-                pass
-        if self.hybrid_engine.vector_index is None or len(self.hybrid_engine.vector_index.doc_ids) == 0:
-            if vector_file.exists():
-                try:
-                    self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
-                except Exception:
-                    pass
+        self._ensure_indices_loaded(load_graph=True, load_vectors=True)
 
         # 1. JIT 變更感知與自動增量熱自愈 [FR-12]
         if auto_rebuild:
-            from .daemon import check_and_notify_hot_reload_server
-            is_srv_running, srv_info = check_and_notify_hot_reload_server()
-            if is_srv_running and srv_info is not None:
-                auto_rebuild = False
-
-        if auto_rebuild:
-            is_dirty, scanned_count, reason, full_files_map, diff_detail = self.scanner.check_invalidation(
-                snapshot_path=meta_file
+            watcher_active = self._is_watcher_active()
+            skip_full_stat = (
+                watcher_active
+                and bin_file.exists()
+                and self._unified_index is not None
             )
-            if not bin_file.exists():
-                is_dirty = True
-                reason = "Unified index missing"
 
-            if is_dirty:
-                if verbose:
-                    print(
-                        f"[knowledge-db:auto-rebuild] Detected changes ({reason}), hot-rebuilding index...",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                t0 = time.time()
-                patched = False
-                vector_degraded = False
-                degrade_notice = None
-                if bin_file.exists() and self._unified_index is not None and diff_detail.has_changes:
-                    res = self.hot_patch_unified_index(diff_detail, full_files_map)
-                    if isinstance(res, tuple):
-                        patched = res[0]
-                        vector_degraded = res[1] if len(res) > 1 else False
-                        degrade_notice = res[2] if len(res) > 2 else None
-                    else:
-                        patched = bool(res)
+            if skip_full_stat:
+                is_dirty = False
+            else:
+                is_dirty, scanned_count, reason, full_files_map, diff_detail = self.scanner.check_invalidation(
+                    snapshot_path=meta_file
+                )
+                if not bin_file.exists():
+                    is_dirty = True
+                    reason = "Unified index missing"
 
-                if not patched:
-                    self.build_unified_index(force=True, current_files=full_files_map)
+                if is_dirty:
+                    if verbose:
+                        print(
+                            f"[knowledge-db:auto-rebuild] Detected changes ({reason}), hot-rebuilding index...",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    t0 = time.time()
+                    patched = False
+                    vector_degraded = False
+                    degrade_notice = None
+                    if bin_file.exists() and self._unified_index is not None and diff_detail.has_changes:
+                        res = self.hot_patch_unified_index(diff_detail, full_files_map)
+                        if isinstance(res, tuple):
+                            patched = res[0]
+                            vector_degraded = res[1] if len(res) > 1 else False
+                            degrade_notice = res[2] if len(res) > 2 else None
+                        else:
+                            patched = bool(res)
 
-                elapsed_ms = max(1, int((time.time() - t0) * 1000))
-                if verbose:
-                    print(
-                        f"[knowledge-db:auto-rebuild] Index updated in {elapsed_ms}ms ({scanned_count} files).",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                if degrade_notice:
-                    print(degrade_notice, file=sys.stderr, flush=True)
+                    if not patched:
+                        self.build_unified_index(force=True, current_files=full_files_map)
+
+                    elapsed_ms = max(1, int((time.time() - t0) * 1000))
+                    if verbose:
+                        print(
+                            f"[knowledge-db:auto-rebuild] Index updated in {elapsed_ms}ms ({scanned_count} files).",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    if degrade_notice:
+                        print(degrade_notice, file=sys.stderr, flush=True)
 
         if self._unified_index is None:
             if bin_file.exists():
@@ -839,11 +927,7 @@ class IndexingPipeline:
         indices_dir = self.get_indices_dir()
         graph_file = indices_dir / "unified.graph.bin.gz"
 
-        if self._call_graph_index is None and graph_file.exists():
-            try:
-                self._call_graph_index = CallGraphIndex.load_binary(graph_file)
-            except Exception as ge:
-                logger.warning(f"Failed loading graph index: {ge}")
+        self._ensure_indices_loaded(load_graph=True, load_vectors=False)
 
         if self._call_graph_index is None or self._unified_index is None:
             self.build_unified_index(force=True)

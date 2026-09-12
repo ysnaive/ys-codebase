@@ -1,0 +1,48 @@
+# 分類型主計畫總覽 (Umbrella Overview)
+
+> 計畫名稱：2026_09_06_1927_knowledge_db_architecture_consolidation  
+> 建立日期：2026-09-06  
+> 狀態：Completed  
+> Umbrella 模式：Incremental (增量演進型)  
+> 模板版本：v1.2  
+
+---
+
+## 1. 主計畫願景與目標 (Vision & Goals)
+
+- **核心願景**：統整修復近期 `knowledge-db` 系統在各項功能擴展與運行過程中所遭遇之整體架構問題，建立高內聚、低耦合、穩定健壯之系統架構。
+- **架構邊界**：涵蓋 `source/knowledge-db` 核心模組之服務架構、生命週期管控、管線排程、快取與索引狀態維護及跨進程通訊，採增量演進滾動拆分推進各子計畫。
+
+---
+
+## 2. 子計畫拆分與執行矩陣 (Sub-Plan Breakdown)
+
+| 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
+| :---: | :--- | :---: | :---: | :--- |
+| **sub_01** | `sub_01_cli_dispatch_and_core_guard_sdk` | Full Track | `Completed` | CLI 串接系統改造：規範宣告 process(args)、禁絕 main、Core 守門 SDK、dev create 骨架預裝與 dev check 靜態檢驗 |
+| **sub_02** | `sub_02_core_vfs_unified_virtual_file_system` | Full Track | `Completed` | Core VFS 統一虛擬檔案系統：物件導向 VirtualPath、語意空間整合、跨平台路徑正規化、原子寫入與沙盒防護 |
+| **sub_03** | `sub_03_server_module_daemon_supervisor` | Full Track | `Completed` | Server 常駐服務守護中樞：Master-Worker 進程模型、生命週期管理、跨平台進程隔離與健康自癒 |
+| **sub_04** | `sub_04_knowledge_db_service_worker_and_pipeline` | Full Track | `Completed` | Knowledge-DB 常駐服務 Worker 與管線重構：ServiceWorker 納管、core.platform/vfs 對齊、倒排與向量記憶體快取加速 |
+| **sub_05** | `sub_05_optional_manifest_and_daemon_cleanup` | Full Track | `Completed` | Manifest optional 擴充規格與工具鏈提示、徹底刪除 daemon.py/hook 與相依純化 |
+| **sub_06** | `sub_06_server_console_config` | Full Track | `Completed` | Server 組態管理整合：enable_console 預設 false、CLI --console 除錯優先覆蓋與測試 |
+| **sub_07** | `sub_07_yscb_host_slimming_and_dual_channel_dispatch` | Full Track | `Completed` | yscb 宿主入口極簡瘦身與雙管道派發架構：業務全面下沉至 core、全域 Help 動態聚合、雙管道 (IPC/in-proc) 路由與 Exit Code 透傳 |
+| **sub_08** | `sub_08_knowledge_db_search_acceleration_and_worker_singleton` | Full Track | `Completed` | Knowledge-DB 檢索性能極致加速：Worker 常駐單例化 (KnowledgeEngine Singleton)、啟動預熱機制 (Pre-warm Index Cache)、Watcher 事件驅動快取感知 (取代每次主動全庫 stat 嗅探) |
+| **sub_09** | `sub_09_architecture_debt_remediation` | Full Track | `Completed` | 架構技術債全數收斂修復：消除雙軌鎖 (H-01) 與寬鬆兜底 (H-02)、進程單例共享 (M-05)、VFS 原子狀態 (M-02)、FD 洩漏與快取 (M-03/04)、並發安全與契約完備 (L/D 系列) |
+| **sub_10** | `sub_10_server_hot_reload_dispatch_and_master_self_restart` | Full Track | `Completed` | Server 熱重載分流與 Master 自重啟：ModulesWatcher 變更路徑模組感知、非 server 模組單重啟 Worker、server/core 本體更新自動重啟整個 Server |
+
+---
+
+## 3. 主計畫里程碑與推進狀態 (Milestones)
+
+- [x] **里程碑 1**：完成 sub_01 CLI 串接系統改造與 Core 守門 SDK 實裝 (Phase 0~7)
+- [x] **里程碑 2**：完成 sub_02 Core VFS 統一虛擬檔案系統建置與 URI 解耦遷移 (Phase 0~7)
+- [x] **里程碑 3**：完成 sub_03 Server 模組常駐守護進程與 core.platform 原語落地 (Phase 0~7)
+- [x] **里程碑 4**：完成 sub_04 Knowledge-DB ServiceWorker 納管、原語對齊與記憶體快取加速 (Phase 0~7)
+- [x] **里程碑 5**：完成 sub_05 Manifest optional 規格、工具鏈提示與 daemon.py 徹底清理 (Phase 0~7)
+- [x] **里程碑 6**：完成 sub_06 Server enable_console 組態與 CLI 優先級覆蓋 (Phase 0~7)
+- [x] **里程碑 7**：完成 sub_07 yscb 入口極簡瘦身與雙管道派發架構 (Phase 0~7)
+- [x] **里程碑 8**：完成 sub_08 Knowledge-DB 檢索性能極致加速與 Worker 單例化 (Phase 0~7)
+- [x] **里程碑 9**：完成 sub_09 架構技術債全數修復與模組邊界清理 (Phase 0~7)
+- [x] **里程碑 10**：完成 sub_10 Server 模組變更路徑熱重載雙軌分流與 Master 自重啟機制 (Phase 0~7)
+- [x] **里程碑 11**：完成全模組生態系回歸驗證、自部署結案並恢復運行端
+

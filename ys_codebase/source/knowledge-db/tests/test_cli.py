@@ -18,7 +18,11 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from scripts.cli import main
+
+def process(args: list) -> int:
+    from core.commands.dispatcher import dispatch
+    return dispatch(["knowledge-db"] + list(args))
+
 
 # 動態加載 hook.dev.py
 _hook_path = os.path.join(_pkg_root, "scripts", "hook.dev.py")
@@ -32,31 +36,31 @@ class TestCLI(YSCBTestCase):
     def test_cli_all_commands(self):
         """FT-07: 驗證 CLI 6 大子指令路由與執行 (status, scan, bundle, index, search, clean)"""
         # 1. 說明指令
-        self.assertEqual(main([]), 0)
-        self.assertEqual(main(["--help"]), 0)
+        self.assertEqual(process([]), 0)
+        self.assertEqual(process(["--help"]), 0)
 
         # 2. status 指令
-        self.assertEqual(main(["status"]), 0)
+        self.assertEqual(process(["status"]), 0)
 
         # 3. scan 指令
-        self.assertEqual(main(["scan", "--all"]), 0)
+        self.assertEqual(process(["scan", "--all"]), 0)
 
         # 4. bundle 指令
-        self.assertEqual(main(["bundle", "--all"]), 0)
+        self.assertEqual(process(["bundle", "--all"]), 0)
 
         # 5. index 指令
-        self.assertEqual(main(["index", "--all"]), 0)
+        self.assertEqual(process(["index", "--all"]), 0)
 
         # 6. search 指令
-        self.assertEqual(main(["search", "PIDController"]), 0)
+        self.assertEqual(process(["search", "PIDController"]), 0)
         # 空檢索參數防禦
-        self.assertEqual(main(["search"]), 1)
+        self.assertEqual(process(["search"]), 1)
 
         # 7. clean 指令
-        self.assertEqual(main(["clean", "--all"]), 0)
+        self.assertEqual(process(["clean", "--all"]), 0)
 
         # 8. 未知指令 (EC-06)
-        self.assertEqual(main(["unknown_cmd_xyz"]), 1)
+        self.assertEqual(process(["unknown_cmd_xyz"]), 1)
 
         self.mark_passed()
 
@@ -66,7 +70,7 @@ class TestCLI(YSCBTestCase):
         # 1. 預設 auto 模式
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            ret = main(["search", "PIDController"])
+            ret = process(["search", "PIDController"])
         self.assertEqual(ret, 0)
         out = buf.getvalue()
         self.assertIn("檢索查詢", out)
@@ -76,7 +80,7 @@ class TestCLI(YSCBTestCase):
         # 2. 清單模式 (--simple)
         buf_simple = io.StringIO()
         with contextlib.redirect_stdout(buf_simple):
-            ret = main(["search", "PIDController", "--simple"])
+            ret = process(["search", "PIDController", "--simple"])
         self.assertEqual(ret, 0)
         out_simple = buf_simple.getvalue()
         if "#01" in out_simple:
@@ -88,7 +92,7 @@ class TestCLI(YSCBTestCase):
         for flag in ["--detail", "-d", "--verbose"]:
             buf_detail = io.StringIO()
             with contextlib.redirect_stdout(buf_detail):
-                ret = main(["search", "PIDController", flag])
+                ret = process(["search", "PIDController", flag])
             self.assertEqual(ret, 0)
             out_detail = buf_detail.getvalue()
             if "#01" in out_detail:
@@ -99,7 +103,7 @@ class TestCLI(YSCBTestCase):
         for flag in ["--md", "--markdown"]:
             buf_md = io.StringIO()
             with contextlib.redirect_stdout(buf_md):
-                ret = main(["search", "PIDController", flag])
+                ret = process(["search", "PIDController", flag])
             self.assertEqual(ret, 0)
             out_md = buf_md.getvalue()
             self.assertIn("知識庫檢索", out_md)
@@ -107,18 +111,18 @@ class TestCLI(YSCBTestCase):
         # 5. Limit 參數 (--limit=auto, --limit=2)
         buf_lim = io.StringIO()
         with contextlib.redirect_stdout(buf_lim):
-            ret = main(["search", "PIDController", "--limit=2"])
+            ret = process(["search", "PIDController", "--limit=2"])
         self.assertEqual(ret, 0)
 
         buf_auto = io.StringIO()
         with contextlib.redirect_stdout(buf_auto):
-            ret = main(["search", "PIDController", "--limit=auto"])
+            ret = process(["search", "PIDController", "--limit=auto"])
         self.assertEqual(ret, 0)
 
         # 6. JSON 模式 (--json)
         buf_json = io.StringIO()
         with contextlib.redirect_stdout(buf_json):
-            ret = main(["search", "PIDController", "--json"])
+            ret = process(["search", "PIDController", "--json"])
         self.assertEqual(ret, 0)
         data = json.loads(buf_json.getvalue())
         self.assertEqual(data["query"], "PIDController")
@@ -134,7 +138,7 @@ class TestCLI(YSCBTestCase):
         for flag in ["--snippet", "-s", "--preview"]:
             buf_snip = io.StringIO()
             with contextlib.redirect_stdout(buf_snip):
-                ret = main(["search", "PIDController", flag])
+                ret = process(["search", "PIDController", flag])
             self.assertEqual(ret, 0)
             out_snip = buf_snip.getvalue()
             self.assertIn("檢索查詢", out_snip)
@@ -146,13 +150,13 @@ class TestCLI(YSCBTestCase):
         # 8. 0 筆結果情境 (ET-01)
         buf_empty = io.StringIO()
         with contextlib.redirect_stdout(buf_empty):
-            ret = main(["search", "NonExistentTermXYZ_123456"])
+            ret = process(["search", "NonExistentTermXYZ_123456"])
         self.assertEqual(ret, 0)
         self.assertIn("未找到符合的結果", buf_empty.getvalue())
 
         buf_empty_json = io.StringIO()
         with contextlib.redirect_stdout(buf_empty_json):
-            ret = main(["search", "NonExistentTermXYZ_123456", "--json"])
+            ret = process(["search", "NonExistentTermXYZ_123456", "--json"])
         self.assertEqual(ret, 0)
         data_empty = json.loads(buf_empty_json.getvalue())
         self.assertEqual(data_empty["total"], 0)
@@ -167,21 +171,21 @@ class TestCLI(YSCBTestCase):
         for flag in ["--simple", "--detail", "--md", "--json", "-s"]:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                ret = main(["callers", "PIDController", flag])
+                ret = process(["callers", "PIDController", flag])
             self.assertEqual(ret, 0)
 
         # 2. callees 指令
         for flag in ["--simple", "--detail", "--md", "--json", "-s"]:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                ret = main(["callees", "PIDController", flag])
+                ret = process(["callees", "PIDController", flag])
             self.assertEqual(ret, 0)
 
         # 3. impact 指令
         for flag in ["--simple", "--detail", "--md", "--json", "--depth=2"]:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                ret = main(["impact", "PIDController", flag])
+                ret = process(["impact", "PIDController", flag])
             self.assertEqual(ret, 0)
 
         self.mark_passed()

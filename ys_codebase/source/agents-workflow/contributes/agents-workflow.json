@@ -27,7 +27,7 @@
       "type": "skill",
       "name": "session-analysis",
       "source": "module://agents-workflow/assets/skills/session-analysis",
-      "description": "🚨 授權守門技能。完全禁止 Agent 主動觸發！"
+      "description": "[!] 授權守門技能。完全禁止 Agent 主動觸發！"
     },
     {
       "type": "workflow",

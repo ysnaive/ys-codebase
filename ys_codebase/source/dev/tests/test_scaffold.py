@@ -23,6 +23,9 @@ class TestDevScaffolder(YSCBTestCase):
         self.assertTrue(uri.exists(f"{src_uri}/scripts/cli.py"))
         self.assertTrue(uri.exists(f"{src_uri}/{mod_name}/__init__.py"))
         self.assertTrue(uri.exists(f"{src_uri}/.yscbignore"))
+        self.assertTrue(uri.exists(f"{src_uri}/contributes/_format.json"))
+        self.assertTrue(uri.exists(f"{src_uri}/contributes/_manifest.md"))
+        self.assertTrue(uri.exists(f"{src_uri}/contributes/core.json"))
         
         # Cleanup created source
         uri.rmtree(src_uri)
@@ -40,3 +43,21 @@ class TestDevScaffolder(YSCBTestCase):
         
         uri.rmtree(f"module.source://{mod_name}")
         self.mark_passed()
+
+    def test_scaffold_cli_format(self):
+        """FT-04: Verify scaffolded scripts/cli.py conforms to process(args) and guard_dispatch."""
+        mod_name = "test_mod_scaffold_fmt"
+        ok, msg = self.scaffolder.create_module(mod_name)
+        self.assertTrue(ok, f"Scaffold failed: {msg}")
+
+        src_uri = f"module.source://{mod_name}"
+        cli_content = uri.read_text(f"{src_uri}/scripts/cli.py")
+
+        self.assertIn("def process(args: List[str]) -> int:", cli_content)
+        self.assertIn('guard_dispatch("test_mod_scaffold_fmt")', cli_content)
+        self.assertNotIn("def main(", cli_content)
+        self.assertNotIn("__main__", cli_content)
+
+        uri.rmtree(src_uri)
+        self.mark_passed()
+

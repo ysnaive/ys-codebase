@@ -9,19 +9,13 @@ import json
 import logging
 import os
 from pathlib import Path
+import threading
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .bundler import SemanticBundle, SemanticBundler
 from .embedding import EmbeddingService, VectorIndex
 from .exceptions import KnowledgeDBError, SpaceNotFoundError
 from .formatter import (
-    AUTO_BUDGET_CHARS,
-    AUTO_DECAY_START_CHARS,
-    AUTO_DECAY_MIN_CHARS,
-    AUTO_NO_SNIPPET_CHARS,
-    AUTO_MAX_SNIPPET_LINES,
-    AUTO_MIN_SNIPPET_LINES,
-    AUTO_MIN_RENDERED_ITEMS,
     compute_dynamic_snippet_lines,
     ResultFormatter,
     UniversalRedundancyFilter,
@@ -382,3 +376,41 @@ class KnowledgeEngine:
         space: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self.pipeline.act_impact(target_query, depth=depth, space=space)
+
+    @classmethod
+    def pre_warm(cls, workspace_root: Optional[Union[str, Path]] = None) -> None:
+        """
+        響應 server_worker_warming 事件，預熱 FastEmbed 模型與索引快取 [FR-03, P00:DR-03]。
+        """
+        try:
+            logger.info("Pre-warming knowledge-db engine...")
+            engine = get_engine()
+            engine.pipeline._ensure_indices_loaded(load_graph=True, load_vectors=True)
+            if hasattr(engine, "embedding_service") and engine.embedding_service:
+                if not getattr(engine.embedding_service, "mock_mode", False):
+                    engine.embedding_service._ensure_model()
+            logger.info("Knowledge-db engine pre-warmed successfully.")
+        except Exception as e:
+            logger.warning(f"Knowledge-db engine pre-warm warning: {e}")
+
+
+_GLOBAL_ENGINE_INSTANCE: Optional[KnowledgeEngine] = None
+_ENGINE_LOCK = threading.Lock()
+
+
+def get_engine() -> KnowledgeEngine:
+    """取得進程級唯一 KnowledgeEngine 單例，惰性初始化並全域複用。"""
+    global _GLOBAL_ENGINE_INSTANCE
+    if _GLOBAL_ENGINE_INSTANCE is None:
+        with _ENGINE_LOCK:
+            if _GLOBAL_ENGINE_INSTANCE is None:
+                _GLOBAL_ENGINE_INSTANCE = KnowledgeEngine()
+    return _GLOBAL_ENGINE_INSTANCE
+
+
+# 註冊預熱事件監聽 (Soft Dependency)
+try:
+    from core.events import on
+    on("server_worker_warming", lambda payload: KnowledgeEngine.pre_warm())
+except Exception:
+    pass

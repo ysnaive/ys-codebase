@@ -1,31 +1,160 @@
 """
-Core Module CLI Dispatcher.
+Core Module CLI Entrypoint - Precise Command Handlers Contract.
+No legacy process(args) fallback.
 """
-import sys
+import builtins
 import os
-from typing import List
+import sys
+from typing import Any, List, Optional
 
-# Add parent directory to sys.path so 'core' package can be imported directly
-current_dir = os.path.dirname(os.path.abspath(__file__))
-module_dir = os.path.dirname(current_dir)
-modules_root = os.path.dirname(module_dir)
-
-if os.path.isdir(modules_root):
-    for m in os.listdir(modules_root):
-        m_p = os.path.join(modules_root, m)
-        if os.path.isdir(m_p) and m_p not in sys.path:
-            sys.path.insert(0, m_p)
-
-if module_dir not in sys.path:
-    sys.path.insert(0, module_dir)
-
+from core.commands.bags import CmdBags, CmdOption
+from core.guard import guard_dispatch
 from core.installer import Installer
-from core import uri
-from core import config
+from core import config as core_config
+from core import uri as core_uri
 
 
-def cmd_config(args: List[str]) -> int:
-    if not args or args[0] in ("-h", "--help", "help"):
+def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
+    """Normalize input into CmdBags for compatibility with direct list invocations."""
+    if isinstance(cmd_bags, CmdBags):
+        return cmd_bags
+    if isinstance(cmd_bags, (builtins.list, tuple)):
+        args = []
+        options = {}
+        for a in cmd_bags:
+            if a.startswith("--"):
+                if "=" in a:
+                    k, v = a[2:].split("=", 1)
+                    options[k] = CmdOption(name=k, params=v)
+                else:
+                    k = a[2:]
+                    options[k] = CmdOption(name=k, params=True)
+            elif a.startswith("-") and len(a) > 1:
+                k = a[1:]
+                options[k] = CmdOption(name=k, params=True)
+            else:
+                args.append(a)
+        raw_cmd_str = " ".join([str(x) for x in cmd_bags])
+        return CmdBags(raw_cmd=raw_cmd_str, command=default_cmd, args=args, options=options)
+    return CmdBags(raw_cmd="", command=default_cmd)
+
+
+def config_list(cmd_bags: CmdBags) -> int:
+    """List module configurations."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    mod_filter = cmd_bags.get_option_value("mod")
+
+    mods = [mod_filter] if mod_filter else core_config.list_modules()
+    if not mods:
+        print("[core:config] No configuration found for any module.")
+        return 0
+
+    summary = {}
+    for m in mods:
+        summary[m] = {
+            "config": core_config.get_all(m),
+            "has_project_config": os.path.isfile(core_config.get_config_path(m, local=False)),
+            "has_local_config": os.path.isfile(core_config.get_config_path(m, local=True)),
+        }
+
+    if json_output:
+        import json
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        return 0
+
+    print("\nYS-Codebase Module Configurations:")
+    print("=" * 80)
+    for m, info in summary.items():
+        local_flag_txt = "[LOCAL OVERLAY]" if info["has_local_config"] else "[PROJECT]"
+        print(f"[*] Module: {m} {local_flag_txt}")
+        print(f"    |-- Project: {core_config.get_config_path(m, local=False)}")
+        if info["has_local_config"]:
+            print(f"    |-- Local  : {core_config.get_config_path(m, local=True)}")
+        cfg_items = info["config"]
+        if isinstance(cfg_items, dict) and cfg_items:
+            for k, v in cfg_items.items():
+                print(f"    • {k}: {v}")
+        else:
+            print("    • (empty)")
+    print("=" * 80)
+    return 0
+
+
+def config_get(cmd_bags: CmdBags) -> int:
+    """Get effective configuration value."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    if not cmd_bags.args:
+        print("[core:config] Error: Module name required. (e.g. 'config get agents-workflow paths.plans')")
+        return 1
+    mod_name = cmd_bags.args[0]
+    key = cmd_bags.args[1] if len(cmd_bags.args) > 1 else None
+    json_output = cmd_bags.has_option("json")
+
+    val = core_config.get(mod_name, key)
+    if json_output or isinstance(val, (dict, builtins.list)):
+        import json
+        print(json.dumps(val, indent=2, ensure_ascii=False))
+    else:
+        print(val)
+    return 0
+
+
+def config_set(cmd_bags: CmdBags) -> int:
+    """Set configuration value."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    if len(cmd_bags.args) < 3:
+        print("[core:config] Error: Module name, key, and value required. (e.g. 'config set core project_root ./ [--local]')")
+        return 1
+
+    mod_name, key, raw_val = cmd_bags.args[0], cmd_bags.args[1], cmd_bags.args[2]
+    local_flag = cmd_bags.has_option("local")
+
+    val = raw_val
+    if raw_val.lower() == "true":
+        val = True
+    elif raw_val.lower() == "false":
+        val = False
+    elif raw_val.lower() in ("none", "null"):
+        val = None
+    elif raw_val.isdigit():
+        val = int(raw_val)
+    elif raw_val.startswith(("[", "{")) and raw_val.endswith(("]", "}")):
+        import json
+        try:
+            val = json.loads(raw_val)
+        except Exception:
+            val = raw_val
+
+    try:
+        core_config.set(mod_name, key, val, local=local_flag)
+        tier_name = "config.local.json" if local_flag else "config.project.json"
+        print(f"[core:config] Successfully set '{key}' = {val} in '{tier_name}' for module '{mod_name}'.")
+        return 0
+    except Exception as e:
+        print(f"[core:config] Error setting config: {e}")
+        return 1
+
+
+def config_reload(cmd_bags: CmdBags) -> int:
+    """Reload cached configuration."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    mod_name = cmd_bags.args[0] if cmd_bags.args else None
+    core_config.reload(mod_name)
+    print(f"[core:config] Reloaded configuration cache for {'all modules' if not mod_name else mod_name}.")
+    return 0
+
+
+def config(cmd_bags: CmdBags) -> int:
+    """YS-Codebase Module Configuration Manager (Group Dispatcher)."""
+    cmd_bags = _normalize_bags(cmd_bags)
+    args = cmd_bags.args
+
+    if not args:
         print("YS-Codebase Module Configuration Manager")
         print("Usage:")
         print("  config list [--mod=<module>] [--json]        List module configurations")
@@ -35,116 +164,94 @@ def cmd_config(args: List[str]) -> int:
         return 0
 
     sub_cmd = args[0]
-    sub_args = args[1:]
-
-    json_output = "--json" in sub_args
-    clean_sub_args = [a for a in sub_args if a != "--json"]
-
+    sub_bags = CmdBags(raw_cmd=cmd_bags.raw_cmd, command=sub_cmd, args=args[1:], options=cmd_bags.options)
     if sub_cmd == "list":
-        mod_filter = None
-        for a in clean_sub_args:
-            if a.startswith("--mod="):
-                mod_filter = a.split("=", 1)[1].strip("\"'")
-
-        mods = [mod_filter] if mod_filter else config.list_modules()
-        if not mods:
-            print("[core:config] No configuration found for any module.")
-            return 0
-
-        summary = {}
-        for m in mods:
-            summary[m] = {
-                "config": config.get_all(m),
-                "has_project_config": os.path.isfile(config.get_config_path(m, local=False)),
-                "has_local_config": os.path.isfile(config.get_config_path(m, local=True))
-            }
-
-        if json_output:
-            import json
-            print(json.dumps(summary, indent=2, ensure_ascii=False))
-            return 0
-
-        print("\nYS-Codebase Module Configurations:")
-        print("=" * 80)
-        for m, info in summary.items():
-            local_flag = "[LOCAL OVERLAY]" if info["has_local_config"] else "[PROJECT]"
-            print(f"[*] Module: {m} {local_flag}")
-            print(f"    |-- Project: {config.get_config_path(m, local=False)}")
-            if info["has_local_config"]:
-                print(f"    |-- Local  : {config.get_config_path(m, local=True)}")
-            cfg_items = info["config"]
-            if isinstance(cfg_items, dict) and cfg_items:
-                for k, v in cfg_items.items():
-                    print(f"    • {k}: {v}")
-            else:
-                print("    • (empty)")
-        print("=" * 80)
-        return 0
-
+        return config_list(sub_bags)
     elif sub_cmd == "get":
-        if not clean_sub_args:
-            print("[core:config] Error: Module name required. (e.g. 'config get agents-workflow paths.plans')")
-            return 1
-        mod_name = clean_sub_args[0]
-        key = clean_sub_args[1] if len(clean_sub_args) > 1 else None
-
-        val = config.get(mod_name, key)
-        if json_output or isinstance(val, (dict, list)):
-            import json
-            print(json.dumps(val, indent=2, ensure_ascii=False))
-        else:
-            print(val)
-        return 0
-
+        return config_get(sub_bags)
     elif sub_cmd == "set":
-        local_flag = "--local" in clean_sub_args
-        set_args = [a for a in clean_sub_args if a != "--local"]
-        if len(set_args) < 3:
-            print("[core:config] Error: Module name, key, and value required. (e.g. 'config set core project_root ./ [--local]')")
-            return 1
-
-        mod_name, key, raw_val = set_args[0], set_args[1], set_args[2]
-
-        # 型別防禦自動解析
-        val = raw_val
-        if raw_val.lower() == "true":
-            val = True
-        elif raw_val.lower() == "false":
-            val = False
-        elif raw_val.lower() == "none" or raw_val.lower() == "null":
-            val = None
-        elif raw_val.isdigit():
-            val = int(raw_val)
-        elif raw_val.startswith(("[", "{")) and raw_val.endswith(("]", "}")):
-            import json
-            try:
-                val = json.loads(raw_val)
-            except Exception:
-                val = raw_val
-
-        try:
-            config.set(mod_name, key, val, local=local_flag)
-            tier_name = "config.local.json" if local_flag else "config.project.json"
-            print(f"[core:config] Successfully set '{key}' = {val} in '{tier_name}' for module '{mod_name}'.")
-            return 0
-        except Exception as e:
-            print(f"[core:config] Error setting config: {e}")
-            return 1
-
+        return config_set(sub_bags)
     elif sub_cmd == "reload":
-        mod_name = clean_sub_args[0] if clean_sub_args else None
-        config.reload(mod_name)
-        print(f"[core:config] Reloaded configuration cache for {'all modules' if not mod_name else mod_name}.")
-        return 0
-
+        return config_reload(sub_bags)
     else:
         print(f"[core:config] Unknown sub-command '{sub_cmd}'. Run 'python yscb.py config --help' for help.")
         return 1
 
 
-def cmd_uri(args: List[str]) -> int:
+def uri_list(cmd_bags: CmdBags) -> int:
+    """List all registered semantic URI schemes."""
+    guard_dispatch("core")
+    schemes = core_uri.list_registered_schemes_summary()
+    print("\nYS-Codebase Registered URI Schemes Catalog:")
+    print("=" * 110)
+    print(f"{'SCHEME':<23} {'TYPE':<8} {'PROVIDER':<12} {'RAW TARGET / VALUE':<28} {'RESOLVED PATH'}")
+    print("-" * 110)
+    for s in schemes:
+        token_str = f"{s['token']}://"
+        stype = s.get("type", "const")
+        provider = s.get("provider", "core")
+        raw_val = s.get("value", "")
+        res_path = s.get("resolved_path", "")
+        print(f"{token_str:<23} {stype:<8} {provider:<12} {raw_val:<28} {res_path}")
+    print("=" * 110)
+    return 0
 
-    if not args or args[0] in ("-h", "--help", "help"):
+
+def uri_resolve(cmd_bags: CmdBags) -> int:
+    """Resolve semantic URI to absolute physical path."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    if not cmd_bags.args:
+        print("[core:uri] Error: URI string required.")
+        return 1
+    try:
+        res = core_uri.resolve(cmd_bags.args[0], interactive=True)
+        print(res)
+        return 0
+    except Exception as e:
+        print(f"[core:uri] Error: {e}")
+        return 1
+
+
+def uri_to_uri(cmd_bags: CmdBags) -> int:
+    """Convert absolute path to semantic URI."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    if not cmd_bags.args:
+        print("[core:uri] Error: Absolute path required.")
+        return 1
+    try:
+        res = core_uri.to_uri(cmd_bags.args[0])
+        print(res)
+        return 0
+    except Exception as e:
+        print(f"[core:uri] Error: {e}")
+        return 1
+
+
+def uri_check(cmd_bags: CmdBags) -> int:
+    """Health check all registered URI schemes."""
+    guard_dispatch("core")
+    schemes = core_uri.list_registered_schemes_summary()
+    print("\nYS-Codebase URI Health Check:")
+    print("-" * 80)
+    healthy = True
+    for s in schemes:
+        status = "OK" if not s["resolved_path"].startswith("!undefined") else "UNDEFINED"
+        if status == "UNDEFINED":
+            healthy = False
+        print(f"[*] {s['token'] + '://':<18} -> {s['resolved_path']} [{status}]")
+    print("-" * 80)
+    print(f"Overall URI Status: {'HEALTHY' if healthy else 'WARNING (!undefined schemes present)'}")
+    return 0
+
+
+def uri(cmd_bags: CmdBags) -> int:
+    """YS-Codebase Semantic URI VFS CLI (Group Dispatcher)."""
+    cmd_bags = _normalize_bags(cmd_bags)
+    args = cmd_bags.args
+
+    if not args:
         print("YS-Codebase Semantic URI VFS CLI")
         print("Usage:")
         print("  uri list / uri --list             List all registered semantic URI schemes")
@@ -154,183 +261,234 @@ def cmd_uri(args: List[str]) -> int:
         return 0
 
     sub_cmd = args[0]
-    sub_args = args[1:]
-
+    sub_bags = CmdBags(raw_cmd=cmd_bags.raw_cmd, command=sub_cmd, args=args[1:], options=cmd_bags.options)
     if sub_cmd in ("list", "--list", "-l"):
-        schemes = uri.list_registered_schemes_summary()
-        print("\nYS-Codebase Registered URI Schemes Catalog:")
-        print("=" * 110)
-        print(f"{'SCHEME':<23} {'TYPE':<8} {'PROVIDER':<12} {'RAW TARGET / VALUE':<28} {'RESOLVED PATH'}")
-        print("-" * 110)
-        for s in schemes:
-            token_str = f"{s['token']}://"
-            stype = s.get("type", "const")
-            provider = s.get("provider", "core")
-            raw_val = s.get("value", "")
-            res_path = s.get("resolved_path", "")
-            print(f"{token_str:<23} {stype:<8} {provider:<12} {raw_val:<28} {res_path}")
-        print("=" * 110)
-        return 0
+        return uri_list(sub_bags)
     elif sub_cmd == "resolve":
-        if not sub_args:
-            print("[core:uri] Error: URI string required.")
-            return 1
-        try:
-            res = uri.resolve(sub_args[0], interactive=True)
-            print(res)
-            return 0
-        except Exception as e:
-            print(f"[core:uri] Error: {e}")
-            return 1
+        return uri_resolve(sub_bags)
     elif sub_cmd == "to-uri":
-        if not sub_args:
-            print("[core:uri] Error: Absolute path required.")
-            return 1
-        try:
-            res = uri.to_uri(sub_args[0])
-            print(res)
-            return 0
-        except Exception as e:
-            print(f"[core:uri] Error: {e}")
-            return 1
+        return uri_to_uri(sub_bags)
     elif sub_cmd == "check":
-        schemes = uri.list_registered_schemes_summary()
-        print("\nYS-Codebase URI Health Check:")
-        print("-" * 80)
-        healthy = True
-        for s in schemes:
-            status = "OK" if not s['resolved_path'].startswith("!undefined") else "UNDEFINED"
-            if status == "UNDEFINED":
-                healthy = False
-            print(f"[*] {s['token'] + '://':<18} -> {s['resolved_path']} [{status}]")
-        print("-" * 80)
-        print(f"Overall URI Status: {'HEALTHY' if healthy else 'WARNING (!undefined schemes present)'}")
-        return 0
+        return uri_check(sub_bags)
     else:
         print(f"[core:uri] Unknown sub-command '{sub_cmd}'. Run 'python yscb.py uri --help' for help.")
         return 1
 
 
-def main(argv=None) -> int:
-    if argv is None:
-        argv = sys.argv[1:]
-        
-    if not argv or argv[0] in ("-h", "--help", "help"):
-        print("YS-Codebase Core Module CLI")
-        print("Commands:")
-        print("  install <module>[@version] [--provider=<source>]")
-        print("  update [module] [--provider=<source>]")
-        print("  remove <module> [--clean] [--purge] [--force]")
-        print("  list [--remote]")
-        print("  status")
-        print("  rollback [snapshot_id]")
-        print("  reload")
-        print("  uri <list|resolve|to-uri|check>")
-        print("  config <list|get|set|reload>")
-        return 0
 
-    cmd = argv[0]
-    args = argv[1:]
-    
-    if cmd == "uri":
-        return cmd_uri(args)
-    elif cmd == "config":
-        return cmd_config(args)
-
-
-    # Parse provider flag if present
-    provider = None
-    clean = False
-    purge = False
-    remote = False
-    clean_args = []
-    force_flag = False
-    version = None
-    
-    for a in args:
-        if a.startswith("--provider="):
-            provider = a.split("=", 1)[1].strip("\"'")
-        elif a.startswith("--version="):
-            version = a.split("=", 1)[1].strip("\"'")
-        elif a == "--force":
-            force_flag = True
-        elif a == "--clean":
-            clean = True
-        elif a == "--purge":
-            purge = True
-        elif a == "--remote":
-            remote = True
-        else:
-            clean_args.append(a)
-
-    installer = Installer()
-    
-    if cmd == "install":
-        if not clean_args:
-            print("[core:install] Error: Module name is required.")
-            return 1
-        module_spec = clean_args[0]
-        if "@" in module_spec:
-            module_name, version = module_spec.split("@", 1)
-        else:
-            module_name = module_spec
-        return installer.cmd_install(module_name, version=version, provider=provider, force=force_flag)
-    elif cmd == "update":
-        mod_name = clean_args[0] if clean_args else None
-        return installer.cmd_update(mod_name, provider=provider)
-    elif cmd == "remove":
-        mod_name = clean_args[0] if clean_args else ""
-        return installer.cmd_remove(mod_name, clean=clean, purge=purge, force=force_flag)
-    elif cmd == "list":
-        ret = installer.cmd_list(remote=remote, provider=provider)
-        try:
-            from core.update_checker import UpdateChecker
-            checker = UpdateChecker()
-            checker.check_updates(force=False)
-            checker.print_tips_if_available()
-        except Exception:
-            pass
-        return ret
-    elif cmd == "status":
-        ret = installer.cmd_status()
-        try:
-            from core.update_checker import UpdateChecker
-            checker = UpdateChecker()
-            checker.check_updates(force=False)
-            checker.print_tips_if_available()
-        except Exception:
-            pass
-        return ret
-    elif cmd == "rollback":
-        target = clean_args[0] if clean_args else None
-        return installer.cmd_rollback(target)
-    elif cmd == "reload":
-        return installer.cmd_reload()
-    elif cmd == "event":
-        sub_cmd = clean_args[0] if clean_args else "list"
-        if sub_cmd == "list":
-            from core import events
-            contributed = events.get_contributed_events()
-            print("=" * 70)
-            print("  YS-Codebase - Ecosystem Event Registry")
-            print("=" * 70)
-            if not contributed:
-                print("  (No contributed events found)")
-            else:
-                for mod_name, ev_list in sorted(contributed.items()):
-                    print(f"\n[{mod_name}]")
-                    for ev in ev_list:
-                        ename = ev.get("name", "")
-                        edesc = ev.get("description", "")
-                        print(f"  {ename:<25} {edesc}")
-            print("\n" + "=" * 70)
-            return 0
-        else:
-            print(f"[core:event] Unknown subcommand '{sub_cmd}'. Available: list")
-            return 1
-    else:
-        print(f"[core] Unknown command '{cmd}'. Run 'python yscb.py core --help' for available commands.")
+def install(cmd_bags: CmdBags) -> int:
+    """Install a module from provider or local build package (@build)."""
+    guard_dispatch("core")
+    if not cmd_bags.args:
+        print("[core:install] Error: Module name is required.")
         return 1
 
-if __name__ == "__main__":
-    sys.exit(main())
+    module_spec = cmd_bags.args[0]
+    version = cmd_bags.get_option_value("version")
+    if "@" in module_spec:
+        module_name, version = module_spec.split("@", 1)
+    else:
+        module_name = module_spec
+
+    provider = cmd_bags.get_option_value("provider")
+    force_flag = cmd_bags.has_option("force")
+
+    installer = Installer()
+    return installer.cmd_install(module_name, version=version, provider=provider, force=force_flag)
+
+
+def update(cmd_bags: CmdBags) -> int:
+    """Update installed module(s) to latest version."""
+    guard_dispatch("core")
+    mod_name = cmd_bags.args[0] if cmd_bags.args else None
+    provider = cmd_bags.get_option_value("provider")
+    installer = Installer()
+    return installer.cmd_update(mod_name, provider=provider)
+
+
+def remove(cmd_bags: CmdBags) -> int:
+    """Remove an installed module from environment."""
+    guard_dispatch("core")
+    mod_name = cmd_bags.args[0] if cmd_bags.args else ""
+    clean = cmd_bags.has_option("clean")
+    purge = cmd_bags.has_option("purge")
+    force_flag = cmd_bags.has_option("force")
+    installer = Installer()
+    return installer.cmd_remove(mod_name, clean=clean, purge=purge, force=force_flag)
+
+
+def list(cmd_bags: CmdBags) -> int:
+    """List all installed modules, versions and providers."""
+    guard_dispatch("core")
+    remote = cmd_bags.has_option("remote")
+    provider = cmd_bags.get_option_value("provider")
+    installer = Installer()
+    ret = installer.cmd_list(remote=remote, provider=provider)
+    try:
+        from core.update_checker import UpdateChecker
+        checker = UpdateChecker()
+        checker.check_updates(force=False)
+        checker.print_tips_if_available()
+    except Exception:
+        pass
+    return ret
+
+
+def status(cmd_bags: CmdBags) -> int:
+    """Health check and runtime diagnostic report."""
+    guard_dispatch("core")
+    installer = Installer()
+    ret = installer.cmd_status()
+    try:
+        from core.update_checker import UpdateChecker
+        checker = UpdateChecker()
+        checker.check_updates(force=False)
+        checker.print_tips_if_available()
+    except Exception:
+        pass
+    return ret
+
+
+def reload(cmd_bags: CmdBags) -> int:
+    """Reconcile and refresh runtime environment."""
+    guard_dispatch("core")
+    installer = Installer()
+    return installer.cmd_reload()
+
+
+def rollback(cmd_bags: CmdBags) -> int:
+    """Revert environment to the previous snapshot state."""
+    guard_dispatch("core")
+    target = cmd_bags.args[0] if cmd_bags.args else None
+    installer = Installer()
+    return installer.cmd_rollback(target)
+
+
+def restore(cmd_bags: CmdBags) -> int:
+    """Restore missing installed modules from mirror or provider."""
+    guard_dispatch("core")
+    force_flag = cmd_bags.has_option("force")
+    provider = cmd_bags.get_option_value("provider")
+    installer = Installer()
+    return installer.cmd_restore(force=force_flag, provider=provider)
+
+
+def bootstrap(cmd_bags: CmdBags) -> int:
+    """Bootstrap alias for restore."""
+    return restore(cmd_bags)
+
+
+def event_list(cmd_bags: CmdBags) -> int:
+    """List all registered ecosystem events."""
+    guard_dispatch("core")
+    from core import events
+    contributed = events.get_contributed_events()
+    print("=" * 70)
+    print("  YS-Codebase - Ecosystem Event Registry")
+    print("=" * 70)
+    if not contributed:
+        print("  (No contributed events found)")
+    else:
+        for mod_name, ev_list in sorted(contributed.items()):
+            print(f"\n[{mod_name}]")
+            for ev in ev_list:
+                ename = ev.get("name", "")
+                edesc = ev.get("description", "")
+                print(f"  {ename:<25} {edesc}")
+    print("\n" + "=" * 70)
+    return 0
+
+
+def event(cmd_bags: CmdBags) -> int:
+    """Ecosystem Event Registry and Inspector (Group Dispatcher)."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    sub_cmd = cmd_bags.args[0] if cmd_bags.args else "list"
+    if sub_cmd == "list":
+        return event_list(cmd_bags)
+    else:
+        print(f"[core:event] Unknown subcommand '{sub_cmd}'. Available: list")
+        return 1
+
+
+def contributes_list(cmd_bags: CmdBags) -> int:
+    """List registered contribute points."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    from core.commands import contributes_cmd
+    mod_filter = cmd_bags.get_option_value("module") or cmd_bags.get_option_value("m")
+    if not mod_filter and cmd_bags.args:
+        mod_filter = cmd_bags.args[0]
+    return contributes_cmd.list_contributes(mod_filter)
+
+
+def contributes_check(cmd_bags: CmdBags) -> int:
+    """Check contributes against schema."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    from core.commands import contributes_cmd
+    target = cmd_bags.args[0] if cmd_bags.args else None
+    is_format = cmd_bags.has_option("format")
+    return contributes_cmd.check_contributes(target, is_format_check=is_format)
+
+
+def contributes(cmd_bags: CmdBags) -> int:
+    """Contributes Schema Validation and Inspection Manager (Group Dispatcher)."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    sub_cmd = cmd_bags.args[0] if cmd_bags.args else "list"
+    if sub_cmd == "list":
+        return contributes_list(cmd_bags)
+    elif sub_cmd == "check":
+        return contributes_check(cmd_bags)
+    else:
+        return contributes_cmd.cmd(cmd_bags)
+
+
+# Legacy test compatibility aliases
+def cmd_config(cmd_bags: Any) -> int:
+    return config(cmd_bags)
+
+
+def cmd_uri(cmd_bags: Any) -> int:
+    return uri(cmd_bags)
+
+
+def cmd_install(cmd_bags: Any) -> int:
+    return install(cmd_bags)
+
+
+def cmd_update(cmd_bags: Any) -> int:
+    return update(cmd_bags)
+
+
+def cmd_remove(cmd_bags: Any) -> int:
+    return remove(cmd_bags)
+
+
+def cmd_list(cmd_bags: Any) -> int:
+    return list(cmd_bags)
+
+
+def cmd_status(cmd_bags: Any) -> int:
+    return status(cmd_bags)
+
+
+def cmd_reload(cmd_bags: Any) -> int:
+    return reload(cmd_bags)
+
+
+def cmd_rollback(cmd_bags: Any) -> int:
+    return rollback(cmd_bags)
+
+
+def cmd_restore(cmd_bags: Any) -> int:
+    return restore(cmd_bags)
+
+
+def cmd_event(cmd_bags: Any) -> int:
+    return event(cmd_bags)
+
+
+def cmd_contributes(cmd_bags: Any) -> int:
+    return contributes(cmd_bags)

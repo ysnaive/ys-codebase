@@ -7,9 +7,9 @@
 ## 1. 標準開發計畫 (Full Track)
 
 - **適用場景**：單一功能重構、新增複雜模組能力、涉及 Public API 介面變更，或代碼修改行數預估 $> 100$ 行。
-- **生命週期**：完整經歷 Phase 0 ➔ Phase 7 八大階段。
+- **生命週期**：完整經歷 Phase 0 -> Phase 7 八大階段。
 - **產出檔案清單**：
-  - `P00_discuss.md` ➔ `P01_requirements_spec.md` ➔ `P02_architecture_plan.md` ➔ `P03_api_spec.md` ➔ `P04_implementation_plan.md` ➔ `P05_task.md` ➔ `P06_test_plan.md` ➔ `P07_walkthrough.md`
+  - `P00_discuss.md` -> `P01_requirements_spec.md` -> `P02_architecture_plan.md` -> `P03_api_spec.md` -> `P04_implementation_plan.md` -> `P05_task.md` -> `P06_test_plan.md` -> `P07_walkthrough.md`
   - 微觀日誌：`changelog.md`（隨建檔初始化並逐 Phase 登記）。
 - **剛性要求**：嚴禁跳過任何 Phase（除獲授權執行 [/Auto](`__#{module://agents-workflow/assets/workflows/Auto.md}__`) 連續推進外）；產出各階段文檔後，**強制僅呈遞專屬極簡卡片（嚴禁對話全文重複或傾倒）**，並立即 End Turn 等待確認。
 
@@ -26,14 +26,14 @@
 - **生命週期與極精簡回覆卡**：
   - **FT-1 (規劃階段)**：確認 4 大守門清單，定義修改範圍與驗證指令，產出 `fast_track_plan.md`。
     ```markdown
-    ### 📄 FT-1 迅捷計畫已落檔
+    ###  FT-1 迅捷計畫已落檔
     - **產出文件**：[fast_track_plan.md](__${project://plans/}__/{plan_name}/fast_track_plan.md)
     - **變更清單**：[預計修改檔案計 N 個 / 守門條件全部合規]
     - **待確認事項**：請確認 4 大守門條件無誤，是否授權進入 FT-2（編碼與驗證）？
     ```
   - **FT-2 (實作階段)**：直接編碼實作，執行單元測試並回填結果。
     ```markdown
-    ### 📄 FT-2 實作與測試通過
+    ###  FT-2 實作與測試通過
     - **產出文件**：[fast_track_plan.md](__${project://plans/}__/{plan_name}/fast_track_plan.md)
     - **驗證摘要**：[測試 100% 通過 / 實際修改 N 行 ($\le 100$ 行)]
     - **下一步**：實作驗證完成，強制進入 SOP Review 審查步驟
@@ -41,13 +41,13 @@
   - **Review (審查階段)**：依據 [review_gate.md](./review_gate.md) 執行三層文檔核驗、合規檢核與 Commit 規範，輸出 `Review Verdict Card`。
   - **FT-3 (結案階段)**：審查通過後，回填結案紀錄至 `fast_track_plan.md`，追加 [`__${project://CHANGELOG.md}__`](`__${project://CHANGELOG.md}__`)，結案交付。
     ```markdown
-    ### 📄 FT-3 迅捷開發已結案
+    ###  FT-3 迅捷開發已結案
     - **產出文件**：[fast_track_plan.md](__${project://plans/}__/{plan_name}/fast_track_plan.md)、[CHANGELOG.md](__${project://CHANGELOG.md}__)
     - **結案摘要**：[高階成果摘要 / 通過 Review 審查 / 測試 100% 通過]
     - **推薦 Commit**：`[type(scope): brief message]`
     - **後續動作**：[任務已圓滿完成，可依需求執行 commit 或進行下一項任務]
     ```
-- 🚨 **強制升級機制**：實作中若代碼超標（$> 100$ 行）或意外觸碰 Public API 變更，強制中斷並升級為 Full Track！
+- [!] **強制升級機制**：實作中若代碼超標（$> 100$ 行）或意外觸碰 Public API 變更，強制中斷並升級為 Full Track！
 
 ---
 
@@ -61,7 +61,7 @@
   3. 執行 `@build` 安裝與熱發布（若涉及生態系模組）。
   4. **極精簡 Session 回覆格式**：
      ```markdown
-     ### 📄 Revision 修訂完成回報
+     ###  Revision 修訂完成回報
      - **修改檔案**：[檔案 1](__${project://...}__)、[檔案 2](__${project://...}__)
      - **修訂摘要**：[1~2 行變更說明 / 測試驗證通過]
      - **推薦 Commit**：`[type(scope): brief message]`
@@ -74,10 +74,10 @@
 
 - **適用場景**：高複雜度未知技術探索、多候選方案選型評估、跨平台 API 可行性驗證。
 - **生命週期與產出**：
-  - `P00_discuss.md` ➔ `R01_{topic}_research.md` ➔ `changelog.md`。
+  - `P00_discuss.md` -> `R01_{topic}_research.md` -> `changelog.md`。
 - **R01 極精簡 Session 回覆格式**：
   ```markdown
-  ### 📄 R01 調研報告已落檔
+  ###  R01 調研報告已落檔
   - **產出文件**：[R01_{topic}_research.md](__${project://plans/}__/{plan_name}/R01_{topic}_research.md)、[changelog.md](__${project://plans/}__/{plan_name}/changelog.md)
   - **調研結論**：[1~2 行方案選型評估結論 / 推薦採納方案]
   - **推薦出口**：[出口 ① 立即實作 (升級 P01) | 出口 ② 路線圖儲備 | 出口 ③ 結案存檔]
@@ -101,12 +101,12 @@
   - 各子計畫目錄：`sub_01_{name}/`、`sub_02_{name}/`（各自具備獨立的 `P00~P07` 與 `changelog.md`）。
 - **極精簡 Session 回覆格式**：
   ```markdown
-  ### 📄 Umbrella 主計畫已開立
+  ###  Umbrella 主計畫已開立
   - **產出文件**：[umbrella_overview.md](__${project://plans/}__/{plan_name}/umbrella_overview.md)
   - **藍圖摘要**：[規劃子計畫計 N 個 / 執行模式 (Blueprint/Evolutionary)]
   - **待確認事項**：請問是否同意主計畫藍圖，並授權啟動首個子計畫？
   ```
-- 🚨 **最多兩層約束**：主計畫 ➔ 子計畫，**絕對禁止三層或更多層嵌套**。
+- [!] **最多兩層約束**：主計畫 -> 子計畫，**絕對禁止三層或更多層嵌套**。
 
 ---
 

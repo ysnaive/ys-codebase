@@ -1,0 +1,9 @@
+{
+  "name": "server",
+  "version": "1.0.0.0",
+  "description": "A YS-Codebase module",
+  "entry": "scripts/cli.py",
+  "dependencies": {
+    "core": ">=1.1.0"
+  }
+}

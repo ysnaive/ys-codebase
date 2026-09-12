@@ -9,6 +9,7 @@ import shutil
 import zipfile
 import platform
 import stat
+import threading
 from typing import Dict, Any, Optional, List, Tuple
 from core import uri, events, PipManager
 
@@ -85,6 +86,9 @@ class SandboxContext:
 
 class SandboxProvisioner:
     """Sandbox environment lifecycle manager and provisioner (dev op-mksb engine)."""
+    _ACTIVE_SANDBOXES = set()
+    _PIP_LOCK = threading.Lock()
+    _ADAPTED_SPECS = set()
 
     @staticmethod
     def prune_sandboxes(
@@ -115,6 +119,10 @@ class SandboxProvisioner:
                 return 0
 
             exclude_set = set(exclude or [])
+            for active_p in SandboxProvisioner._ACTIVE_SANDBOXES:
+                exclude_set.add(active_p)
+                exclude_set.add(os.path.basename(active_p))
+
             entries = [
                 d for d in os.listdir(sandbox_parent)
                 if d.startswith("sandbox_")
@@ -168,6 +176,10 @@ class SandboxProvisioner:
                 return 0
 
             exclude_set = set(exclude or [])
+            for active_p in SandboxProvisioner._ACTIVE_SANDBOXES:
+                exclude_set.add(active_p)
+                exclude_set.add(os.path.basename(active_p))
+
             entries = [
                 d for d in os.listdir(sandbox_parent)
                 if d.startswith("sandbox_")
@@ -260,9 +272,13 @@ class SandboxProvisioner:
                 deduped.append(spec)
 
         if deduped:
-            yscb_d = uri._get_yscb_root()
-            pm = PipManager(yscb_d)
-            pm.install_packages(deduped)
+            with SandboxProvisioner._PIP_LOCK:
+                to_install = [s for s in deduped if s not in SandboxProvisioner._ADAPTED_SPECS]
+                if to_install:
+                    yscb_d = uri._get_yscb_root()
+                    pm = PipManager(yscb_d)
+                    pm.install_packages(to_install)
+                    SandboxProvisioner._ADAPTED_SPECS.update(to_install)
 
         return deduped
 
@@ -367,6 +383,7 @@ class SandboxProvisioner:
             sandbox_id = f"sandbox_{ts}_{unique_hex}"
             target_dir = uri.resolve(f"cache://dev/sandbox/{sandbox_id}")
             
+        SandboxProvisioner._ACTIVE_SANDBOXES.add(os.path.abspath(target_dir))
         ctx = SandboxContext(target_dir)
         for d in [ctx.sandbox_dir, ctx.project_dir, ctx.host_dir, ctx.engine_dir, ctx.provider_dir]:
             os.makedirs(d, exist_ok=True)
@@ -487,12 +504,13 @@ class SandboxProvisioner:
     @staticmethod
     def cleanup_sandbox(sandbox_dir: str, force: bool = False, is_harness_cleanup: bool = False) -> bool:
         """Tears down the virtual sandbox safely with active running sandbox guardrail."""
+        target_abs = os.path.abspath(sandbox_dir)
+        SandboxProvisioner._ACTIVE_SANDBOXES.discard(target_abs)
         if not os.path.exists(sandbox_dir):
             return True
 
         # Guardrail: protect active harness sandbox from accidental child test case deletion
         if not is_harness_cleanup and os.environ.get("YSCB_TEST_SANDBOX") == "1":
-            target_abs = os.path.abspath(sandbox_dir)
             active_sb = os.environ.get("YSCB_SANDBOX_DIR")
             if active_sb and os.path.abspath(active_sb) == target_abs:
                 return True

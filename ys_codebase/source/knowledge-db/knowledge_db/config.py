@@ -9,6 +9,11 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+try:
+    from core import vfs
+except ImportError:
+    vfs = None
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_ENABLE_VECTOR_SEARCH: bool = True
@@ -70,10 +75,9 @@ class KnowledgeDBConfig:
         # 2. 搜尋實體目錄之 yscb.config.json 與 yscb.config.local.json
         for fname in ["yscb.config.json", "yscb.config.local.json"]:
             p = root_path / fname
-            if p.is_file():
+            if (vfs.is_file(str(p)) if vfs else p.is_file()):
                 try:
-                    with open(p, "r", encoding="utf-8", errors="replace") as f:
-                        raw = json.load(f)
+                    raw = vfs.read_json(str(p)) if vfs else json.loads(p.read_text(encoding="utf-8"))
                     if isinstance(raw, dict):
                         kdb_sec = raw.get("knowledge-db")
                         if isinstance(kdb_sec, dict):
@@ -86,12 +90,14 @@ class KnowledgeDBConfig:
             if isinstance(cfg_in, dict):
                 return cfg_in.get("knowledge-db", cfg_in)
             elif isinstance(cfg_in, (str, Path)):
-                p = Path(cfg_in)
-                if p.is_file():
-                    with open(p, "r", encoding="utf-8", errors="replace") as f:
-                        data = json.load(f)
+                p_str = str(cfg_in)
+                if (vfs.is_file(p_str) if vfs else Path(p_str).is_file()):
+                    try:
+                        data = vfs.read_json(p_str) if vfs else json.loads(Path(p_str).read_text(encoding="utf-8"))
                         if isinstance(data, dict):
                             return data.get("knowledge-db", data)
+                    except Exception:
+                        pass
             return {}
 
         if project_config:

@@ -13,6 +13,7 @@ import unittest
 from contextlib import contextmanager
 from typing import List, Optional, Dict, Any, Tuple, Iterator
 from core import uri
+from core import vfs
 from dev.testing.requirement import Requirement
 from dev.testing.sandbox import SandboxContext, SandboxProvisioner
 
@@ -207,7 +208,7 @@ class YSCBTestCase(unittest.TestCase):
         scripts_dir = os.path.join(src_dir, "scripts")
         os.makedirs(scripts_dir, exist_ok=True)
         cli_content = files.get("scripts/cli.py") if files and "scripts/cli.py" in files else (
-            "def main():\n    pass\n"
+            "from typing import List\n\ndef process(args: List[str]) -> int:\n    return 0\n"
         )
         with open(os.path.join(scripts_dir, "cli.py"), "w", encoding="utf-8") as f:
             f.write(cli_content)
@@ -244,15 +245,17 @@ class YSCBTestCase(unittest.TestCase):
 
     def assertFileExists(self, path_or_uri: str, msg: str = "") -> None:
         """Assert physical file or semantic URI exists."""
-        real_path = uri.resolve(path_or_uri) if ("://" in str(path_or_uri)) else path_or_uri
-        self.assertTrue(os.path.exists(real_path), msg or f"File not found: {path_or_uri}")
+        self.assertTrue(vfs.exists(path_or_uri), msg or f"File not found: {path_or_uri}")
 
     def assertJsonEquals(self, expected: Dict[str, Any], path_or_uri: str, msg: str = "") -> None:
         """Read JSON file from path/URI and assert contents equal expected dict."""
         self.assertFileExists(path_or_uri, msg)
-        real_path = uri.resolve(path_or_uri) if ("://" in str(path_or_uri)) else path_or_uri
-        with open(real_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            data = vfs.read_json(path_or_uri)
+        except Exception:
+            real_path = uri.resolve(path_or_uri) if ("://" in str(path_or_uri)) else path_or_uri
+            with open(real_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
         self.assertEqual(data, expected, msg or f"JSON mismatch at {path_or_uri}")
 
     @contextmanager

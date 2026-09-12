@@ -23,7 +23,7 @@ class BaseModuleContractTestCase(YSCBTestCase):
         self.mark_passed()
 
     def test_contract_entrypoint_valid(self) -> None:
-        """Contract 2: Validate scripts/cli.py entrypoint exists, parses and has main(argv)."""
+        """Contract 2: Validate scripts/cli.py entrypoint exists, parses and conforms to process(args)."""
         from dev.checker import Checker
         checker = Checker()
         passed, errors = checker.check_module(self.module_name)
