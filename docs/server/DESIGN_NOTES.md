@@ -11,6 +11,7 @@
 | **[DN-07]** | Contributes Server 宣告規範與 Background Services 狀態可觀測性 | `server/service.py`, `scripts/cli.py` | Low |
 | **[DN-08]** | 雙軌模組熱重載 (Worker 重啟 vs Master 自重啟) 與路徑感知規範 | `server/watcher.py`, `server/master.py` | Low |
 | **[DN-09]** | 即時 Flush 日誌架構、異常中斷自癒與歷史滾動清理機制 | `server/logger.py`, `server/master.py`, `server/worker.py` | Low |
+| **[DN-10]** | 環境權限自適應探針、auto_spawn 組態與 IDE Agent 常駐導引 | `core/platform/process.py`, `core/commands/dispatcher.py`, `server/config.py` | Low |
 
 ---
 
@@ -65,3 +66,11 @@
   2. 首行寫入時間基準標誌 `server start at time "{YYYY}_{MM}_{DD}_{HH}.{MM}.{SS}"`。
   3. 新 Server 啟動時執行異常自癒：偵測未正常歸檔之舊 log，優先解析其首行時間戳（失敗退化 mtime）轉存歷史檔 `{timestamp}_log`，並自動滾動保留最新 5 份。
   4. Master 集中管理日誌寫入 Handle，Worker 透過 IPC stdout 串流以 `{"type": "log"}` 發送封包由 Master 攔截寫入，杜絕跨進程並發檔案鎖爭搶。
+
+### [DN-10] 環境權限自適應探針、auto_spawn 組態與 IDE Agent 常駐導引
+- **背景**：IDE Agent (如 Antigravity / Cursor / Claude Code) 在執行工具命令時，通常運行於未開啟 Breakaway 權限的 Windows Job Object 沙盒中，命令結束時整棵進程樹會被強制收割。這導致背景自動拉起的 Server 進程在單次命令結束時立即遭殺死，形成每次 CLI 呼叫重複拉起又被殺死的無效進程開銷。
+- **決策**：
+  1. 於 `core.platform.process` 實作 `can_spawn_background_daemon()` 探針與進程級記憶體快取，在 Windows 下透過 `IsProcessInJob` 與 1 次輕量探針偵測 Job Object Breakaway 權限。
+  2. 於 `ServerConfig` 與 `config/server/config.project.json` 支援 `auto_spawn: bool = True` 配置（預設為 `true`）。
+  3. 當 `auto_spawn` 為 true 但探針檢測無背景權限時，自動降級至本地極速冷派發（~86ms），並透過 `sys.stderr` 輸出具備防洗頻抑制的環境診斷提示與 IDE Agents 常駐指引（建議透過 `IsDaemon: true` / Background Task 啟動 `python yscb.py server start --console`）。
+
