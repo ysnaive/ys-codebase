@@ -76,6 +76,7 @@ class TestVFS(YSCBTestCase):
         self.assertFalse(self.backend.exists(moved_path))
         self.backend.remove(sub_dir)
         self.assertFalse(self.backend.exists(sub_dir))
+        self.mark_passed()
 
     def test_atomic_write(self):
         """FT-02: 驗證原子寫入確保寫入完成後原子取代且同分區無 EXDEV。"""
@@ -87,6 +88,7 @@ class TestVFS(YSCBTestCase):
             f.write("Updated Atomic State")
 
         self.assertEqual(self.backend.read_text(target_file), "Updated Atomic State")
+        self.mark_passed()
 
     def test_atomic_write_failure_cleanup(self):
         """ET-02: 驗證原子寫入過程中異常時臨時檔安全清理且目標檔保持完整。"""
@@ -107,6 +109,7 @@ class TestVFS(YSCBTestCase):
         # 斷言目錄下無殘留之 .tmp 暫存檔
         tmp_files = [f for f in os.listdir(self.test_dir) if ".tmp." in f]
         self.assertEqual(tmp_files, [], "Temporary files must be cleaned up on failure.")
+        self.mark_passed()
 
     def test_auto_makedirs(self):
         """ET-03: 驗證目標路徑父目錄不存在時寫入能自動遞迴建立目錄。"""
@@ -114,6 +117,7 @@ class TestVFS(YSCBTestCase):
         self.backend.write_text(nested_file, "Auto Created Directory Content")
         self.assertTrue(self.backend.exists(nested_file))
         self.assertEqual(self.backend.read_text(nested_file), "Auto Created Directory Content")
+        self.mark_passed()
 
     def test_safe_path_escape(self):
         """ET-01: 驗證 assert_safe_path 邊界防逃逸 (偵測 ../ 逃逸拋出 PermissionError)。"""
@@ -123,6 +127,7 @@ class TestVFS(YSCBTestCase):
 
         with self.assertRaises(PermissionError):
             self.backend.write_text(outside_path, "Exploit")
+        self.mark_passed()
 
     def test_vfs_uri_resolution(self):
         """FT-03: 驗證 VFS 核心中樞透過 core.uri.resolve 支援語意 URI。"""
@@ -133,6 +138,7 @@ class TestVFS(YSCBTestCase):
         self.assertEqual(vfs.read_text(cache_test_uri), "VFS URI Integration Test")
         vfs.remove(cache_test_uri)
         self.assertFalse(vfs.exists(cache_test_uri))
+        self.mark_passed()
 
     def test_virtual_path(self):
         """FT-04: 驗證 VirtualPath 物件導向介面與 / 路徑拼接。"""
@@ -159,6 +165,7 @@ class TestVFS(YSCBTestCase):
         self.assertTrue(uri_vp.exists())
         self.assertEqual(uri_vp.read_json(), {"status": "ok"})
         uri_vp.unlink()
+        self.mark_passed()
 
     def test_uri_compatibility_delegation(self):
         """FT-05: 驗證 core.uri 既有 IO helpers 向上相容無損轉發至 core.vfs。"""
@@ -174,6 +181,7 @@ class TestVFS(YSCBTestCase):
 
         uri.remove(compat_file)
         self.assertFalse(uri.exists(compat_file))
+        self.mark_passed()
 
     def test_cross_backend_protection(self):
         """FT-07: 驗證 VFS.copy 與 VFS.move 跨不同 Backend 時拋出 NotImplementedError。"""
@@ -192,3 +200,4 @@ class TestVFS(YSCBTestCase):
 
         with self.assertRaises(NotImplementedError):
             custom_vfs.move(src_path, "dummy://target.txt")
+        self.mark_passed()

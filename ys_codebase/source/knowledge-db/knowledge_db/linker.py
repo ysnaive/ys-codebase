@@ -148,7 +148,7 @@ class TopologyLinker:
         # Tier 2: 檔頭 Import 映射表精準匹配 (Explicit Imports & FQN)
         # =========================================================================
         if prefix and prefix in imports:
-            # 情況 A: 前綴是導入的類別或別名 (例如 from foo import InvertedIndex ➔ InvertedIndex.load_binary)
+            # 情況 A: 前綴是導入的類別或別名 (例如 from foo import InvertedIndex -> InvertedIndex.load_binary)
             imported_target = imports[prefix]  # 如 'knowledge_db.retrieval.InvertedIndex'
             target_class = imported_target.split(".")[-1]
 
@@ -166,7 +166,7 @@ class TopologyLinker:
                     return best.id
 
         if not prefix and callee in imports:
-            # 情況 B: 直接導入的函式或類別 (例如 from foo import act_search ➔ act_search())
+            # 情況 B: 直接導入的函式或類別 (例如 from foo import act_search -> act_search())
             imported_target = imports[callee]
 
             # 2.3 透過 FQN 精確查找

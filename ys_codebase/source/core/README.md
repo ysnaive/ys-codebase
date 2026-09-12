@@ -230,7 +230,7 @@ except PipInstallError as e:
 
 ## 5. 常見情境操作指南 (Cookbook)
 
-### 💡 情境 1：新專案初次接入 YSCB
+### [*] 情境 1：新專案初次接入 YSCB
 當在一個全新的專案中引入 YSCB 時，只需兩步完成環境綁定：
 ```bash
 # 1. 綁定宿主專案根目錄 (注意：路徑必須為相對於 yscb.host 即 yscb.py 所在目錄之路徑)
@@ -240,13 +240,13 @@ python yscb.py config set core project_root ./
 python yscb.py uri check
 ```
 
-### 💡 情境 2：指定本機離線 Release 套件庫安裝
+### [*] 情境 2：指定本機離線 Release 套件庫安裝
 在無外網或離線環境下，直接指定本地封裝目錄安裝：
 ```bash
 python yscb.py install agents-workflow --provider=./my_offline_packages/release
 ```
 
-### 💡 情境 3：個人專屬配置不進版本庫
+### [*] 情境 3：個人專屬配置不進版本庫
 若某台開發機需要特化的暫存路徑或調試參數：
 ```bash
 python yscb.py config set core debug_mode true --local

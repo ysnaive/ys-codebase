@@ -40,13 +40,13 @@ class ValidationResult:
         header = f"Contributes Validation Report: {file_label}" if file_label else "Contributes Validation Report"
         lines.append(f"=== {header} ===")
         if self.is_valid and not self.warnings:
-            lines.append("✅ All definitions are valid.")
+            lines.append("[PASS] All definitions are valid.")
             return "\n".join(lines)
         for issue in self.issues:
-            icon = "❌" if issue.severity == "ERROR" else "⚠️"
+            icon = "[FAIL]" if issue.severity == "ERROR" else "[WARN]"
             line = f"{icon} [{issue.path}] {issue.message}"
             if issue.suggestion:
-                line += f"\n   💡 {issue.suggestion}"
+                line += f"\n   [*] {issue.suggestion}"
             lines.append(line)
         return "\n".join(lines)
 

@@ -176,7 +176,7 @@ class UpdateChecker:
                     cur_v = info.get("current_version", "")
                     lat_v = info.get("latest_version", "")
                     tips.append(
-                        f"💡 提示: 模組 '{mod}' 有新版本可用 (當前: v{cur_v}, 最新: v{lat_v})。"
+                        f"[*] 提示: 模組 '{mod}' 有新版本可用 (當前: v{cur_v}, 最新: v{lat_v})。"
                         f" 可執行 'python yscb.py update {mod}' 進行升級。"
                     )
         return tips

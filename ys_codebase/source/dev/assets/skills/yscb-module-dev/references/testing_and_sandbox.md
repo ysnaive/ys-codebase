@@ -4,7 +4,7 @@
 
 ---
 
-## 🏛️ 1. 隔離沙盒機制 (Testing Engine Sandbox)
+## 1. 隔離沙盒機制 (Testing Engine Sandbox)
 
 為確保模組測試的純淨性與確定性，`dev test` 採用**拋棄式虛擬沙盒**機制：
 
@@ -30,7 +30,7 @@ graph LR
 
 ---
 
-## 🧪 2. 測試案例撰寫與 `YSCBTestCase` 基類
+## 2. 測試案例撰寫與 `YSCBTestCase` 基類
 
 所有模組測試案例**必須**繼承 `dev.testing.YSCBTestCase`（`dev check` 會剛性攔截直接繼承 `unittest.TestCase` 之測試）。
 
@@ -77,14 +77,14 @@ class TestMyModuleCore(YSCBTestCase):
         """FT-01: 驗證正常輸入下轉換成功且輸出完整。"""
         result = self.my_transform(self.test_data)
         self.assertIn("key", result)
-        self.mark_passed()  # 🚨 必須顯式標記通過！
+        self.mark_passed()  # [!] 必須顯式標記通過！
 
     @require(Requirement.LOGIC)
     def test_et_01_none_input_raises_value_error(self):
         """ET-01: 驗證傳入 None 時能拋出防禦性例外。"""
         with self.assertRaises(ValueError):
             self.my_transform(None)
-        self.mark_passed()  # 🚨 異常路徑驗證完成後亦須標記通過！
+        self.mark_passed()  # [!] 異常路徑驗證完成後亦須標記通過！
 ```
 
 ### 2.4 `YSCBTestCase` 專屬斷言與輔助工具庫
@@ -106,7 +106,7 @@ class TestMyModuleCore(YSCBTestCase):
 
 ---
 
-## 🏷️ 3. 4-Tier 測試分類與沙盒隔離機制
+## 3. 4-Tier 測試分類與沙盒隔離機制
 
 透過 `@require(Requirement.XXX)` 裝飾器可對測試類別或測試方法進行分級標註：
 
@@ -143,7 +143,7 @@ def test_ft_destructive_cleanup(self): ...
 
 ---
 
-## 🪝 4. 虛擬沙盒生命週期鉤子 (`scripts/hook.dev.py`)
+## 4. 虛擬沙盒生命週期鉤子 (`scripts/hook.dev.py`)
 
 當模組在沙盒中跑測需要客製化準備（如預設快取目錄、注入 Mock 環境變數、初始化模擬 DB 或種子資料）時，可在模組內宣告 `scripts/hook.dev.py`：
 
@@ -177,7 +177,7 @@ def on_test_teardown(context: Any) -> None:
 
 ---
 
-## ⚡ 5. 高效跑測與 Token 節流技巧
+## 5. 高效跑測與 Token 節流技巧
 
 在 Agent 開發情境下，高效跑測與減少終端輸出至關重要：
 
@@ -223,7 +223,7 @@ python yscb.py dev test <mod_name> -q --no-build -k test_ft_01
 
 ---
 
-## 🚫 6. 測試防呆鐵律與調用禁忌
+## [X] 6. 測試防呆鐵律與調用禁忌
 
 1. **嚴禁無端執行 `--all`**：
    日常單一模組開發中，**絕對禁止**濫用 `python yscb.py dev test --all`。全量測試僅限於結案前跨模組回歸驗證或開發者明確指示時使用。

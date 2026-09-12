@@ -349,7 +349,7 @@ class ContributesAggregator:
                     pass
 
         # 4. 階層 ②：專案層級特化注入 (Project Contribute Overrides)
-        # 🚨 剛性禁止 contribute.local.json，檢測到時輸出警告日誌並忽略。
+        # [!] 剛性禁止 contribute.local.json，檢測到時輸出警告日誌並忽略。
         all_targets = list(aggregated.keys())
         for target in all_targets:
             local_contrib_uri = f"config://{target}/contribute.local.json"

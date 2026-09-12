@@ -4,7 +4,7 @@
 
 ---
 
-## 🎯 1. 核心定位與職責
+## 1. 核心定位與職責
 
 - **角色定位**：扮演技術顧問與架構把關者，主動向開發者釐清模糊邊界，挖掘隱含需求與相依風險。
 - **零臆測防呆**：
@@ -13,7 +13,7 @@
 
 ---
 
-## 🚪 2. JIT 延遲建檔與分流守門
+## 2. JIT 延遲建檔與分流守門
 
 1. **對話先行**：輸入 [/NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`) 時不立即建立實體目錄，先於對話中進行深入探討。
 2. **確立分流伴隨建檔**：與開發者充分討論並確認分流類型後，伴隨建立計畫目錄並產出 `P00_discuss.md` 與 `changelog.md`。
@@ -21,7 +21,7 @@
 
 ---
 
-## 📝 3. `P00_discuss.md` 產出核心規範
+## 3. `P00_discuss.md` 產出核心規範
 
 - **背景與動機**：記錄問題痛點、系統現狀與業務價值。
 - **需求釐清清單**：記錄問答記錄，確保雙方對邊界達成 100% 共識。
@@ -34,11 +34,11 @@
 
 ---
 
-## 🛑 4. Phase 0 結束 Checkpoint
+## [!] 4. Phase 0 結束 Checkpoint
 
 - **極精簡 Session 回覆格式**：產出 `P00_discuss.md` 與 `changelog.md` 後，對話中**嚴禁全文重複或冗長轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
-  ### 📄 P00 需求討論與分流確認
+  ###  P00 需求討論與分流確認
   - **產出文件**：[P00_discuss.md](__${project://plans/}__/{plan_name}/P00_discuss.md)、[changelog.md](__${project://plans/}__/{plan_name}/changelog.md)
   - **推薦分流**：[Full Track | Fast Track | Umbrella | Revision | Research]
   - **核心決策**：[1~2 行關鍵架構定案或主要 [P00:DR-XX]]

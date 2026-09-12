@@ -78,18 +78,18 @@ graph TD
 
 ### 4.1 核心三大公理 (Core Axioms)
 1. **零臆測 (Zero Speculation)**：任何不確定的技術細節，必須與開發者釐清後才能推進，嚴禁自行假設。
-2. **剛性追溯 (Traceability)**：從需求到測試 100% 具備可回溯鏈條（`P00` ➔ `FR/EC` ➔ `[{Phase}:DR-XX]` ➔ `API 簽名` ➔ `程式碼` ➔ `FT/ET 測試`）。
+2. **剛性追溯 (Traceability)**：從需求到測試 100% 具備可回溯鏈條（`P00` -> `FR/EC` -> `[{Phase}:DR-XX]` -> `API 簽名` -> `程式碼` -> `FT/ET 測試`）。
 3. **分級管控 (Graduated Control)**：依任務屬性精確匹配 Level 0、Level 1、Level 2 或專題分流。
 
 ### 4.2 執行與推進紀律（絕對禁止條款）
 - **嚴禁連發**：單次 Turn 最多執行一個 Phase 或獨立動作，產出階段文件後強制 End Turn 等待確認。
 - **Checkpoint 強制等待**：產出 Phase 文件後，必須等待開發者明確給出推進指令，嚴禁自行假設通過。
 - **「問答 $\neq$ 推進」防呆條款**：
-  - 開發者提供局部解答/意見回饋 ➔ Agent **僅可更新當前 Phase 文件**，呈遞修改摘要並二次確認，**絕對禁止直接跨入下一階段**。
+  - 開發者提供局部解答/意見回饋 -> Agent **僅可更新當前 Phase 文件**，呈遞修改摘要並二次確認，**絕對禁止直接跨入下一階段**。
   - 只有接收到明確定稿指令（如「確認」、「通過」、「進入 Phase X」）方可推進。
 - **除錯範疇保護**：堅持「由近及遠、本體優先」，連續 2 次修復失敗或涉及跨模組時強制停步發起 `/Discuss` 進行 5-Whys 根因分析。
 - **確定性讀檔阻斷**：當讀取規範指定之確定性檔案失敗時，**絕對禁止**自主發起模糊搜尋來掩蓋缺陷，必須直接暴露真實報錯。
-- **CLI 指令 Default-Deny**：查核權限等級（🟢 自主安全 / 🟡 階段條件 / 🔴 授權守門），未列情境一律禁止執行。
+- **CLI 指令 Default-Deny**：查核權限等級（[SAFE] 自主安全 / [CONDITIONAL] 階段條件 / [GATED] 授權守門），未列情境一律禁止執行。
 
 ---
 
@@ -154,7 +154,7 @@ python yscb.py agents-workflow release-target --remove claude --proj
 
 ## 6. 常見情境操作指南 (Cookbook)
 
-### 💡 情境 1：全新專案接入 Agent 工作流
+### [*] 情境 1：全新專案接入 Agent 工作流
 ```bash
 # 1. 確保 project:// 已綁定宿主專案根目錄 (注意：路徑必須為「相對於 yscb.host (yscb.py 所在目錄)」之路徑，例：位於同層則為 ./)
 python yscb.py config set core project_root ./
@@ -169,7 +169,7 @@ python yscb.py agents-workflow release-target --add antigravity --proj
 python yscb.py agents-workflow release
 ```
 
-### 💡 情境 2：推進計畫與結案前合規驗證
+### [*] 情境 2：推進計畫與結案前合規驗證
 ```bash
 # 1. 在對話中輸入 /NewPlan 啟動需求討論與分流
 

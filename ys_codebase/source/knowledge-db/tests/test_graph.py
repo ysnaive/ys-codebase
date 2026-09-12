@@ -73,7 +73,7 @@ class TestNetworkXCallGraphAndLinker(YSCBTestCase):
     def test_query_impact_layers(self):
         """FT-02: 驗證多階影響面分析 (query_impact) 精確層級與調用鏈"""
         graph = CallGraphIndex()
-        # 鏈條: A ➔ B ➔ Target, C ➔ Target, D ➔ A
+        # 鏈條: A -> B -> Target, C -> Target, D -> A
         graph.add_edge("A", "B")
         graph.add_edge("B", "Target")
         graph.add_edge("C", "Target")
@@ -98,7 +98,7 @@ class TestNetworkXCallGraphAndLinker(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_cyclic_graph_resilience(self):
-        """FT-03 / EC-01: 驗證循環調用圖譜 (A ➔ B ➔ C ➔ A) 走訪不陷入死循環且正確剪枝"""
+        """FT-03 / EC-01: 驗證循環調用圖譜 (A -> B -> C -> A) 走訪不陷入死循環且正確剪枝"""
         graph = CallGraphIndex()
         graph.add_edge("A", "B")
         graph.add_edge("B", "C")
@@ -443,13 +443,13 @@ def top_level_func():
     def test_ft_05_call_graph_impact_and_cycle_protection(self):
         """FT-05: 驗證 query_impact 影響面分析與循環調用防護 (EC-02)"""
         graph = CallGraphIndex()
-        # 構造循環: A ➔ B ➔ C ➔ A, 且 D ➔ B
+        # 構造循環: A -> B -> C -> A, 且 D -> B
         graph.add_edge("A", "B")
         graph.add_edge("B", "C")
         graph.add_edge("C", "A")
         graph.add_edge("D", "B")
 
-        # 查詢改動 B 的影響面 (誰依賴 B? ➔ 直接: A, D; 間接: C)
+        # 查詢改動 B 的影響面 (誰依賴 B? -> 直接: A, D; 間接: C)
         impact = graph.query_impact("B", max_depth=3)
         self.assertEqual(impact["target_id"], "B")
         self.assertEqual(set(impact["layers"].get(1, [])), {"A", "D"})

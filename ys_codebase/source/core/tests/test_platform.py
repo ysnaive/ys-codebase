@@ -39,12 +39,14 @@ class TestCorePlatform(YSCBTestCase):
         killed = kill_process_tree(pid, timeout_sec=2.0)
         self.assertTrue(killed)
         self.assertFalse(is_process_alive(pid))
+        self.mark_passed()
 
     def test_is_process_alive_invalid(self):
         """FT-01: Invalid or non-existent PID returns False."""
         self.assertFalse(is_process_alive(0))
         self.assertFalse(is_process_alive(-1))
         self.assertFalse(is_process_alive(99999999))
+        self.mark_passed()
 
     def test_inter_process_lock_mutual_exclusion(self):
         """FT-03: InterProcessLock prevents concurrent acquisition on the same file."""
@@ -67,6 +69,7 @@ class TestCorePlatform(YSCBTestCase):
         self.assertTrue(lock2.acquire(blocking=False))
         self.assertTrue(lock2.is_locked)
         lock2.release()
+        self.mark_passed()
 
     def test_inter_process_lock_context_manager(self):
         """FT-03: InterProcessLock context manager auto acquires and releases."""
@@ -79,6 +82,7 @@ class TestCorePlatform(YSCBTestCase):
         reacquired = InterProcessLock(self.lock_path)
         self.assertTrue(reacquired.acquire(blocking=False))
         reacquired.release()
+        self.mark_passed()
 
     def test_ensure_private_venv(self):
         """FT-03: ensure_private_venv injects site-packages and resolves host_venv.pth."""
@@ -110,6 +114,7 @@ class TestCorePlatform(YSCBTestCase):
             sys.path.remove(fake_site)
         if extra_pth_target in sys.path:
             sys.path.remove(extra_pth_target)
+        self.mark_passed()
 
 
 if __name__ == "__main__":

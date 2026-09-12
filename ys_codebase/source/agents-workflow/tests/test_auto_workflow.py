@@ -49,6 +49,7 @@ class TestAutoWorkflow(YSCBTestCase):
         self.assertIn("步驟 3：Phase 6 自動化測試與日誌登載", content)
         self.assertIn("步驟 4：抵達 P06 UX/手動驗證 Checkpoint", content)
         self.assertIn("__@{WORKFLOW_AUTO}__", content)
+        self.mark_passed()
 
     def test_ft_02_manifest_export_and_token(self):
         """FT-02: 驗證 contributes/agents-workflow.json 正確註冊 Auto.md 導出與 WORKFLOW_AUTO token 錨點。"""
@@ -69,6 +70,7 @@ class TestAutoWorkflow(YSCBTestCase):
 
         token_values = [t.get("value") for t in tokens]
         self.assertIn("WORKFLOW_AUTO", token_values, "contributes/agents-workflow.json 必須註冊 WORKFLOW_AUTO token")
+        self.mark_passed()
 
 
     def test_ft_03_compilation_and_placeholder_resolution(self):
@@ -84,6 +86,7 @@ class TestAutoWorkflow(YSCBTestCase):
         self.assertIsNotNone(auto_item, "Stage 1 解析產物中必須包含 Auto.md")
         auto_content = auto_item.get("content", "")
         self.assertIn("自動連續推進工作流 (Auto)", auto_content)
+        self.mark_passed()
 
     def test_et_01_et_02_et_03_edge_cases_in_specification(self):
         """ET-01 ~ ET-03: 驗證 Auto.md 規範中明確包含 Phase 0、Fast Track 與 Phase 6 UX 邊界條款。"""
@@ -99,6 +102,7 @@ class TestAutoWorkflow(YSCBTestCase):
 
         # ET-03: P06 UX 阻斷
         self.assertIn("Agent 自行將 P06 標記為 `Passed` 或擅自進入 Phase 7 結案", content)
+        self.mark_passed()
 
 
 if __name__ == "__main__":

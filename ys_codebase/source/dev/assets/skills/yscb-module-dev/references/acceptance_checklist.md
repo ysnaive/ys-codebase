@@ -9,7 +9,7 @@
 
 ---
 
-## 🎯 1. 核心定位：超越機械檢查的語意防禦
+## 1. 核心定位：超越機械檢查的語意防禦
 
 `dev check` 與 `contributes check` 負責驗證語法、Schema 格式、URI 協議與 AST 靜態紅線（機械合規）；本注意事項旨在提示開發者與 Agent 關注**「功能實作自洽性、契約對齊與文檔完整性」**：
 
@@ -18,12 +18,12 @@
 
 ---
 
-## 📋 2. 模組品質維度矩陣 (Module Quality Dimensions)
+## 2. 模組品質維度矩陣 (Module Quality Dimensions)
 
 ### 維度 ①：四大文檔視角同步與嚴格隔離 (The 4 Documentation Perspectives)
 
 > [!CAUTION]
-> **🚨 鐵律：嚴禁橫跨視角撰寫文檔 (Strict Perspective Isolation)**  
+> **[!] 鐵律：嚴禁橫跨視角撰寫文檔 (Strict Perspective Isolation)**  
 > 各文檔目標讀者之**運行環境、心智模型與可用工具鏈截然不同**。撰寫或同步文檔時，必須 100% 拘束於該受眾之視角與權限邊界，**嚴禁將底層架構洩漏給終端使用者，或將僅本地源碼庫才擁有的路徑與工具強加給第三方**。
 
 #### 視角 1：本地儲存庫開發者手冊 (`docs://<module>/`)
@@ -79,7 +79,7 @@
 
 ---
 
-## 🛡️ 3. `dev check` AST 靜態檢核紅線清冊 (Rigid Checker Redlines)
+## [GUARD] 3. `dev check` AST 靜態檢核紅線清冊 (Rigid Checker Redlines)
 
 `dev check` 執行深層 AST 靜態語法樹掃描，以下違規將直接觸發 `FAIL` 或 `WARN` 攔截：
 
@@ -104,7 +104,7 @@
 
 ---
 
-## 📋 4. 模組功能品質速查核對表 (Module Quality Quick Check)
+## 4. 模組功能品質速查核對表 (Module Quality Quick Check)
 
 在完成模組功能開發或代碼異動後，請逐一核對以下品質要點：
 
