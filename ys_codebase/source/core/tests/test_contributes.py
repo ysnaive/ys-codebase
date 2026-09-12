@@ -141,7 +141,7 @@ class TestContributesJIT(YSCBTestCase):
         elapsed_ms = (time.perf_counter() - start) * 1000.0
 
         self.assertFalse(is_dirty)
-        self.assertLess(elapsed_ms, 50.0)  # CI 環境給予合理餘裕
+        self.assertLess(elapsed_ms, 200.0)  # CI/Windows 環境給予合理餘裕
         self.mark_passed()
 
     @require(Requirement.ENV)

@@ -5,7 +5,10 @@ knowledge-db 模組之 Computed Token Providers
 """
 
 from typing import Any, Dict, List, Optional
-from .space import SpaceManager
+try:
+    from .space import SpaceManager
+except ImportError:
+    from knowledge_db.space import SpaceManager
 
 
 def get_knowledge_db_spaces(context: Optional[Any] = None, **kwargs: Any) -> str:

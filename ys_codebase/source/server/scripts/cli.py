@@ -113,15 +113,16 @@ def start(cmd_bags: CmdBags) -> int:
     else:
         # Background detached mode
         # 🚨 剛性架構約束：僅允許 .modules/core 運行時空間，禁止任何 fallback
-        core_dir = os.path.join(yscb_root, ".modules", "core")
-        server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        core_dir = os.path.join(yscb_root, ".modules", "core").replace("\\", "/")
+        server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
+        root_dir = os.path.abspath(yscb_root).replace("\\", "/")
         cmd = [
             sys.executable,
             "-c",
             f"import sys; "
-            f"sys.path.insert(0, r'{core_dir}'); "
-            f"sys.path.insert(0, r'{server_dir}'); "
-            f"from server.master import MasterSupervisor; MasterSupervisor(r'{yscb_root}', idle_timeout_sec={effective_ttl}).start(foreground=True)",
+            f"sys.path.insert(0, '{core_dir}'); "
+            f"sys.path.insert(0, '{server_dir}'); "
+            f"from server.master import MasterSupervisor; MasterSupervisor('{root_dir}', idle_timeout_sec={effective_ttl}).start(foreground=True)",
         ]
         pid = spawn_detached(cmd, cwd=yscb_root)
         print(f"[Server] Starting background daemon (PID: {pid})...")
