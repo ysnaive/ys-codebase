@@ -116,6 +116,14 @@ class TestCorePlatform(YSCBTestCase):
             sys.path.remove(extra_pth_target)
         self.mark_passed()
 
+    def test_set_process_title(self):
+        """FT-04: set_process_title runs cross-platform without raising exceptions."""
+        from core.platform import set_process_title
+        # Should execute cleanly without raising any exceptions
+        result = set_process_title("yscb test runner")
+        self.assertIsInstance(result, bool)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()
