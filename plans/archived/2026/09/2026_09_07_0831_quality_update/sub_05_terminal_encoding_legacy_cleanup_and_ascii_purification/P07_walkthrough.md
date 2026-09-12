@@ -33,6 +33,7 @@
 | `source/knowledge-db/tests/test_space.py` | Modify | 更新測試以驗證 `contributes/knowledge-db.json` |
 | `source/agents-workflow/tests/*.py` | Modify | 補齊 44 處 `self.mark_passed()` |
 | `source/core/tests/*.py` | Modify | 補齊 17 處 `self.mark_passed()`，微調效能測試門檻 |
+| `source/{server,knowledge-db,agents-workflow,dev}/manifest.json` | Modify | 更新 core 相依版本約束至 `>=1.1.0` |
 | `source/*/contributes.format.md` | Delete | 清理舊版廢棄格式文檔 |
 | `source/knowledge-db/configurable/contribute.json` | Delete | 清理舊版非標準設定檔 |
 

@@ -151,6 +151,12 @@ class WarmWorker:
 
 def worker_main(yscb_root: str, in_stream=None, out_stream=None) -> None:
     """Entry point for warm worker subprocess loop reading from stdin and writing to stdout."""
+    try:
+        from core.platform import set_process_title
+        set_process_title("yscb server: worker")
+    except Exception:
+        pass
+
     in_io = in_stream or sys.stdin
     out_io = out_stream or sys.stdout
 
