@@ -19,6 +19,7 @@ from core.commands.resolver import (
     OptionResolutionError,
     OptionResolver,
 )
+from core.platform import is_process_alive, spawn_detached
 
 # 快取已載入之 Contributes Registry
 _GLOBAL_REGISTRY: Optional[CommandsRegistry] = None
@@ -102,15 +103,12 @@ def _try_hot_dispatch(module_name: str, cmd_name: str, args: List[str], yscb_abs
         with open(state_file, "r", encoding="utf-8") as f:
             state = json.load(f)
         pid = state.get("pid")
-        if pid and hasattr(os, "kill"):
+        if not pid or not is_process_alive(pid):
             try:
-                os.kill(pid, 0)
+                os.remove(state_file)
             except OSError:
-                try:
-                    os.remove(state_file)
-                except OSError:
-                    pass
-                return None
+                pass
+            return None
 
         port, token = state.get("port"), state.get("token")
         url = f"http://127.0.0.1:{port}/api/dispatch"
@@ -170,11 +168,10 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
             with open(state_file, "r", encoding="utf-8") as f:
                 st = json.load(f)
             pid = st.get("pid")
-            if pid and hasattr(os, "kill"):
-                try:
-                    os.kill(pid, 0)
+            if pid:
+                if is_process_alive(pid):
                     return  # 守護進程活躍，無須重複拉起
-                except OSError:
+                else:
                     try:
                         os.remove(state_file)
                     except OSError:
@@ -196,25 +193,12 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
             pass
 
     try:
-        import subprocess
-        flags = (
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-            if sys.platform == "win32"
-            else 0
-        )
         yscb_py = os.path.join(host_dir, "yscb.py")
         if not os.path.isfile(yscb_py):
             yscb_py = sys.argv[0]
-        subprocess.Popen(
+        spawn_detached(
             [sys.executable, yscb_py, "server", "start", "--daemon"],
             cwd=host_dir,
-            creationflags=flags,
-            start_new_session=(sys.platform != "win32"),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
         )
     except Exception:
         pass

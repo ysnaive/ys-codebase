@@ -145,15 +145,19 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
                 real_file_path = uri.resolve(f_uri)
                 if os.path.isfile(real_file_path):
                     mod_unique_key = f"_yscb_code_{mod_pkg}_{subpath.replace('/', '_')}"
+                    dot_name = subpath.replace("/", ".")
+                    full_mod_name = dot_name if dot_name.startswith(f"{mod_pkg}.") else f"{mod_pkg}.{dot_name}"
                     try:
-                        spec = importlib.util.spec_from_file_location(mod_unique_key, real_file_path)
+                        spec = importlib.util.spec_from_file_location(full_mod_name, real_file_path)
                         if spec and spec.loader:
-                            # Ensure module root is on sys.path for potential sub-imports
                             mod_dir = os.path.dirname(real_file_path)
-                            if mod_dir not in sys.path:
-                                sys.path.insert(0, mod_dir)
+                            mod_parent = os.path.dirname(mod_dir)
+                            for p_cand in (mod_dir, mod_parent):
+                                if p_cand and p_cand not in sys.path:
+                                    sys.path.insert(0, p_cand)
 
                             mod_obj = importlib.util.module_from_spec(spec)
+                            sys.modules[full_mod_name] = mod_obj
                             sys.modules[mod_unique_key] = mod_obj
                             spec.loader.exec_module(mod_obj)
                             loaded_mod = mod_obj
