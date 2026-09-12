@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 from core import vfs
-from core.platform import is_process_alive, kill_process_tree, InterProcessLock, ensure_private_venv, spawn_detached
+from core.platform import is_process_alive, kill_process_tree, InterProcessLock, ensure_private_venv, set_process_title, spawn_detached
 from server.logger import ServerLogger
 from server.service import ServiceManager
 from server.watcher import ModulesWatcher
@@ -89,7 +89,8 @@ class MasterSupervisor:
                 return state.pid
             # If lock held by dead process, cleanup and proceed
 
-        # 0. Crash recovery & fresh realtime log initialization
+        # 0. Set identifiable process title & crash recovery & fresh realtime log initialization
+        set_process_title("yscb server")
         start_ts = self.logger.recover_and_open()
         self.logger.info(f"Starting MasterSupervisor (PID: {os.getpid()}, Root: {self.yscb_root}, Idle TTL: {self.idle_timeout_sec}s, StartTime: {start_ts})")
 
@@ -349,6 +350,10 @@ class MasterSupervisor:
         curr_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = os.pathsep.join([p for p in py_paths if os.path.isdir(p)] + ([curr_pp] if curr_pp else []))
 
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
         proc = subprocess.Popen(
             cmd,
             cwd=self.yscb_root,
@@ -356,6 +361,7 @@ class MasterSupervisor:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            creationflags=creationflags,
             bufsize=0,
         )
         self._worker_proc = proc

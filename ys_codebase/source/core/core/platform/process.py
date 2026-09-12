@@ -40,6 +40,8 @@ def spawn_detached(
             creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
         if hasattr(subprocess, "DETACHED_PROCESS"):
             creationflags |= subprocess.DETACHED_PROCESS
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags |= subprocess.CREATE_NO_WINDOW
 
         CREATE_BREAKAWAY_FROM_JOB = 0x01000000
         flags_with_breakaway = creationflags | CREATE_BREAKAWAY_FROM_JOB
@@ -78,6 +80,73 @@ def spawn_detached(
         )
 
     return proc.pid
+
+
+def set_process_title(title: str) -> bool:
+    """
+    Sets the human-readable process title/name in a cross-platform manner.
+
+    Supports:
+    - setproctitle module (Linux/macOS/Windows, if installed)
+    - Linux native prctl(PR_SET_NAME) via ctypes (standard library)
+    - macOS / BSD native libc setprogname via ctypes (standard library)
+    - Windows SetConsoleTitleW via ctypes (standard library)
+
+    Args:
+        title: Target process title (e.g. 'yscb server', 'yscb server: worker').
+
+    Returns:
+        bool: True if at least one naming mechanism succeeded, False otherwise.
+    """
+    success = False
+
+    # 1. Try setproctitle if available
+    try:
+        import setproctitle
+        setproctitle.setproctitle(title)
+        success = True
+    except Exception:
+        pass
+
+    # 2. Linux native prctl(PR_SET_NAME)
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+            import ctypes.util
+            libc_name = ctypes.util.find_library("c") or "libc.so.6"
+            libc = ctypes.CDLL(libc_name)
+            PR_SET_NAME = 15
+            byte_name = title.encode("utf-8")[:15]
+            if libc.prctl(PR_SET_NAME, ctypes.c_char_p(byte_name), 0, 0, 0) == 0:
+                success = True
+        except Exception:
+            pass
+
+    # 3. macOS / BSD native setprogname
+    elif sys.platform == "darwin" or "bsd" in sys.platform:
+        try:
+            import ctypes
+            import ctypes.util
+            libc_name = ctypes.util.find_library("c")
+            if libc_name:
+                libc = ctypes.CDLL(libc_name)
+                if hasattr(libc, "setprogname"):
+                    libc.setprogname(ctypes.c_char_p(title.encode("utf-8")))
+                    success = True
+        except Exception:
+            pass
+
+    # 4. Windows console title
+    elif sys.platform == "win32":
+        try:
+            import ctypes
+            if hasattr(ctypes, "windll") and hasattr(ctypes.windll, "kernel32"):
+                ctypes.windll.kernel32.SetConsoleTitleW(str(title))
+                success = True
+        except Exception:
+            pass
+
+    return success
 
 
 def is_process_alive(pid: int) -> bool:
