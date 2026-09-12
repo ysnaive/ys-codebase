@@ -75,14 +75,15 @@ class MasterSupervisor:
         self._tasks_executed = 0
         self._is_running = False
         self._httpd: Optional[http.server.HTTPServer] = None
+        self._lock: Optional[InterProcessLock] = None
         self.port = 0
 
     def start(self, foreground: bool = False) -> int:
         """Starts the master supervisor."""
         os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
 
-        lock = InterProcessLock(self.lock_file)
-        if not lock.acquire(blocking=False):
+        self._lock = InterProcessLock(self.lock_file)
+        if not self._lock.acquire(blocking=False):
             state = self.read_state()
             if state and is_process_alive(state.pid):
                 return state.pid
@@ -162,6 +163,13 @@ class MasterSupervisor:
                 pass
             self._httpd = None
 
+        if self._lock:
+            try:
+                self._lock.release()
+            except Exception:
+                pass
+            self._lock = None
+
         self._cleanup_state()
         self.logger.archive_and_close()
 
@@ -218,13 +226,17 @@ class MasterSupervisor:
                 if not os.path.isdir(server_dir):
                     server_dir = os.path.join(self.yscb_root, "source", "server")
 
+                core_p = os.path.abspath(core_dir).replace("\\", "/")
+                server_p = os.path.abspath(server_dir).replace("\\", "/")
+                root_p = os.path.abspath(self.yscb_root).replace("\\", "/")
+
                 cmd = [
                     sys.executable,
                     "-c",
                     f"import sys; "
-                    f"sys.path.insert(0, r'{core_dir}'); "
-                    f"sys.path.insert(0, r'{server_dir}'); "
-                    f"from server.master import MasterSupervisor; MasterSupervisor(r'{self.yscb_root}', idle_timeout_sec={self.idle_timeout_sec}, enable_watcher={self.enable_watcher}).start(foreground=True)",
+                    f"sys.path.insert(0, '{core_p}'); "
+                    f"sys.path.insert(0, '{server_p}'); "
+                    f"from server.master import MasterSupervisor; MasterSupervisor('{root_p}', idle_timeout_sec={self.idle_timeout_sec}, enable_watcher={self.enable_watcher}).start(foreground=True)",
                 ]
                 spawn_detached(cmd, cwd=self.yscb_root)
             except Exception as ex:

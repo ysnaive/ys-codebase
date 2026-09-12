@@ -41,16 +41,30 @@ def spawn_detached(
         if hasattr(subprocess, "DETACHED_PROCESS"):
             creationflags |= subprocess.DETACHED_PROCESS
 
-        proc = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            env=current_env,
-            creationflags=creationflags,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-        )
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+        flags_with_breakaway = creationflags | CREATE_BREAKAWAY_FROM_JOB
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                env=current_env,
+                creationflags=flags_with_breakaway,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
+            )
+        except OSError:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                env=current_env,
+                creationflags=creationflags,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
+            )
     else:
         proc = subprocess.Popen(
             cmd,

@@ -264,9 +264,34 @@ class OSBackend(VFSBackend):
             file_obj.close()
             file_obj = None
 
-            # 原子替換
-            os.replace(tmp_path, norm_target)
-            success = True
+            # 原子替換 (針對 Windows 檔案鎖/索引競態提供漸進重試與回退防護)
+            if sys.platform == "win32":
+                import time
+                max_retries = 10
+                for attempt in range(max_retries):
+                    try:
+                        os.replace(tmp_path, norm_target)
+                        success = True
+                        break
+                    except (PermissionError, OSError):
+                        if attempt < max_retries - 1:
+                            time.sleep(0.05 * (attempt + 1))
+                        else:
+                            try:
+                                if os.path.exists(norm_target):
+                                    os.remove(norm_target)
+                                os.replace(tmp_path, norm_target)
+                                success = True
+                            except Exception:
+                                shutil.copy2(tmp_path, norm_target)
+                                try:
+                                    os.remove(tmp_path)
+                                except Exception:
+                                    pass
+                                success = True
+            else:
+                os.replace(tmp_path, norm_target)
+                success = True
         finally:
             if file_obj is not None and not file_obj.closed:
                 try:
