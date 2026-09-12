@@ -123,6 +123,24 @@ class TestServerConfig(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_auto_spawn_config(self):
+        """FT-07: 驗證 ServerConfig.auto_spawn 預設為 True，並支援覆蓋與防禦解析"""
+        # 1. 預設值為 True
+        cfg_def = ServerConfig()
+        self.assertTrue(cfg_def.auto_spawn)
+
+        # 2. override_dict 支援自訂
+        cfg_false = ServerConfig.load(override_dict={"auto_spawn": False})
+        self.assertFalse(cfg_false.auto_spawn)
+
+        cfg_str_false = ServerConfig.load(override_dict={"auto_spawn": "false"})
+        self.assertFalse(cfg_str_false.auto_spawn)
+
+        cfg_true = ServerConfig.load(override_dict={"auto_spawn": "true"})
+        self.assertTrue(cfg_true.auto_spawn)
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

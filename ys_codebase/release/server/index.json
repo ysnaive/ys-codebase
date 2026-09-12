@@ -2,6 +2,7 @@
   "name": "server",
   "description": "A YS-Codebase module",
   "versions": [
-    "1.0.0.0"
+    "1.0.0.0",
+    "1.0.0.1"
   ]
 }

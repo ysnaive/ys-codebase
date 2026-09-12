@@ -1,5 +1,6 @@
 {
   "enable": true,
   "enable_console": false,
-  "idle_timeout_sec": 900.0
+  "idle_timeout_sec": 900.0,
+  "auto_spawn": true
 }
