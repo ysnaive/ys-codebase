@@ -9,6 +9,7 @@ import json
 import time
 import urllib.request
 from core import uri
+from core import vfs
 from core import semver
 
 DEFAULT_CACHE_URI: str = "cache://core/update_check.json"
@@ -33,17 +34,16 @@ class UpdateChecker:
         self.config_path = config_path
 
     def _load_config(self) -> Dict[str, Any]:
-        if self.config_path and os.path.isfile(self.config_path):
+        if self.config_path and vfs.is_file(self.config_path):
             try:
-                with open(self.config_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                data = vfs.read_json(self.config_path)
+                return data if isinstance(data, dict) else {}
             except Exception:
                 return {}
         try:
-            cfg_p = uri.resolve("project://yscb.config.json", interactive=False)
-            if os.path.isfile(cfg_p):
-                with open(cfg_p, "r", encoding="utf-8") as f:
-                    return json.load(f)
+            if vfs.is_file("project://yscb.config.json"):
+                data = vfs.read_json("project://yscb.config.json")
+                return data if isinstance(data, dict) else {}
         except Exception:
             pass
         return {}
@@ -140,10 +140,9 @@ class UpdateChecker:
                 os.path.join(resolved_p, "build", module_name, "index.json"),
             ]
             for cp in cand_paths:
-                if os.path.isfile(cp):
+                if vfs.is_file(cp):
                     try:
-                        with open(cp, "r", encoding="utf-8") as f:
-                            idx = json.load(f)
+                        idx = vfs.read_json(cp)
                         if isinstance(idx, dict) and "versions" in idx and isinstance(idx["versions"], list):
                             return semver.find_best_version(idx["versions"])
                     except Exception:
@@ -177,7 +176,7 @@ class UpdateChecker:
                     cur_v = info.get("current_version", "")
                     lat_v = info.get("latest_version", "")
                     tips.append(
-                        f"💡 提示: 模組 '{mod}' 有新版本可用 (當前: v{cur_v}, 最新: v{lat_v})。"
+                        f"[*] 提示: 模組 '{mod}' 有新版本可用 (當前: v{cur_v}, 最新: v{lat_v})。"
                         f" 可執行 'python yscb.py update {mod}' 進行升級。"
                     )
         return tips

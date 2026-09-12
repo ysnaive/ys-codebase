@@ -20,10 +20,25 @@ def _normalize_tier(raw_tier: Any) -> str:
 
 def _format_tier_badge(tier: str) -> str:
     if tier == "safe":
-        return "🟢 自主安全"
+        return "[SAFE] 自主安全"
     elif tier == "gated":
-        return "🔴 授權守門"
-    return "🟡 階段條件"
+        return "[GATED] 授權守門"
+    return "[CONDITIONAL] 階段條件"
+
+
+def _extract_command_items(raw_dict: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+    res = []
+    if "cmd" in raw_dict and isinstance(raw_dict["cmd"], dict):
+        donor = raw_dict.get("__provider__", "core")
+        for k, v in raw_dict["cmd"].items():
+            if isinstance(v, dict):
+                b = dict(v)
+                b.setdefault("__provider__", donor)
+                res.append((k, b))
+    for k, v in raw_dict.items():
+        if k not in ("module_alias", "description", "cmd") and isinstance(v, dict):
+            res.append((k, v))
+    return res
 
 
 def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
@@ -32,7 +47,7 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
 
     過濾規則：
     - 若指令之 case_pros 與 case_cons 兩者皆無定義或皆為空（空字串/空陣列），自動排除於清單中。
-    - 依權限分級（🟢 自主安全 ➔ 🟡 階段條件 ➔ 🔴 授權守門）與模組名稱排序輸出。
+    - 依權限分級（[SAFE] 自主安全 -> [CONDITIONAL] 階段條件 -> [GATED] 授權守門）與模組名稱排序輸出。
 
     :param context: 可選之編譯期上下文（由 agents-workflow compiler 提供）
     :return: 格式化完成之三級權限 Markdown 防呆手冊文字
@@ -40,20 +55,21 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
     # 1. 透過標準 SDK 取得全系統已合併之 core commands
     all_commands = contributes.get("core", "commands", default={})
     if not isinstance(all_commands, dict) or not all_commands:
-        return "| 權限分級 | 指令名稱 | 推薦/適用情境 (Pros) | 🚨 絕對禁止/不適用情境 (Cons) |\n| :---: | :--- | :--- | :--- |\n| - | *(目前無已註冊之 CLI 防呆指令)* | - | - |"
+        return "| 權限分級 | 指令名稱 | 推薦/適用情境 (Pros) | 限制與守門條件 (Cons) |\n| :---: | :--- | :--- | :--- |\n| - | *(目前無已註冊之 CLI 防呆指令)* | - | - |"
 
     # 2. 依 __provider__ 分組搜集
     grouped_commands: Dict[str, List[Tuple[str, str, str, List[str], List[str]]]] = {}
 
-    for cmd_name, cmd_body in sorted(all_commands.items()):
+    for cmd_name, cmd_body in sorted(_extract_command_items(all_commands), key=lambda x: x[0]):
         if not isinstance(cmd_body, dict):
             continue
 
         donor = cmd_body.get("__provider__", "core")
         desc = str(cmd_body.get("description", "")).strip()
         tier = _normalize_tier(cmd_body.get("tier"))
-        raw_pros = cmd_body.get("case_pros", [])
-        raw_cons = cmd_body.get("case_cons", [])
+        usage = cmd_body.get("usage", {})
+        raw_pros = usage.get("pros", cmd_body.get("case_pros", [])) if isinstance(usage, dict) else cmd_body.get("case_pros", [])
+        raw_cons = usage.get("cons", cmd_body.get("case_cons", [])) if isinstance(usage, dict) else cmd_body.get("case_cons", [])
 
         case_pros: List[str] = []
         if isinstance(raw_pros, str):
@@ -76,7 +92,7 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
         grouped_commands[donor].append((cmd_name, desc, tier, case_pros, case_cons))
 
     if not grouped_commands:
-        return "| 權限分級 | 指令名稱 | 推薦/適用情境 (Pros) | 🚨 絕對禁止/不適用情境 (Cons) |\n| :---: | :--- | :--- | :--- |\n| - | *(目前無已註冊之 CLI 防呆指令)* | - | - |"
+        return "| 權限分級 | 指令名稱 | 推薦/適用情境 (Pros) | 限制與守門條件 (Cons) |\n| :---: | :--- | :--- | :--- |\n| - | *(目前無已註冊之 CLI 防呆指令)* | - | - |"
 
     # 3. 排序模組 (core 最先，其餘字母序)
     ordered_donors = (["core"] if "core" in grouped_commands else []) + sorted([d for d in grouped_commands if d != "core"])
@@ -91,13 +107,13 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
 
             # Pros 格式化
             if pros:
-                pros_str = "<br/>".join([f"✅ {p}" if not p.startswith("✅") else p for p in pros])
+                pros_str = "<br/>".join([f"[+] {p}" if not p.startswith("[+]") else p for p in pros])
             else:
-                pros_str = f"✅ {desc}" if desc else "✅ 通用呼叫"
+                pros_str = f"[+] {desc}" if desc else "[+] 通用呼叫"
 
             # Cons 格式化
             if cons:
-                cons_str = "<br/>".join([f"🚨 {c}" if not c.startswith("🚨") else c for c in cons])
+                cons_str = "<br/>".join([f"[-] {c}" if not c.startswith("[-]") else c for c in cons])
             else:
                 cons_str = "*(無特殊禁止事項)*"
 
@@ -108,7 +124,7 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
             all_rows.append((tier_order.get(tier, 1), badge, full_cmd, pros_str, cons_str))
 
     lines: List[str] = []
-    lines.append("| 權限分級 | 指令名稱 | 推薦/適用情境 (Pros) | 🚨 絕對禁止/不適用情境 (Cons) |")
+    lines.append("| 權限分級 | 指令名稱 | 推薦/適用情境 (Pros) | 限制與守門條件 (Cons) |")
     lines.append("| :---: | :--- | :--- | :--- |")
 
     for _, badge, full_cmd, pros_str, cons_str in all_rows:
@@ -139,7 +155,7 @@ def get_phase_cli_guild(context: Optional[Any] = None, phase: Optional[str] = No
     recommended_cmds: List[str] = []
     gated_warnings: List[str] = []
 
-    for cmd_name, cmd_body in sorted(all_commands.items()):
+    for cmd_name, cmd_body in sorted(_extract_command_items(all_commands), key=lambda x: x[0]):
         if not isinstance(cmd_body, dict):
             continue
 
@@ -161,7 +177,8 @@ def get_phase_cli_guild(context: Optional[Any] = None, phase: Optional[str] = No
 
         if is_match:
             badge = _format_tier_badge(tier)
-            raw_pros = cmd_body.get("case_pros", [])
+            usage = cmd_body.get("usage", {})
+            raw_pros = usage.get("pros", cmd_body.get("case_pros", [])) if isinstance(usage, dict) else cmd_body.get("case_pros", [])
             pros_summary = ""
             if isinstance(raw_pros, list) and raw_pros:
                 pros_summary = f"（{raw_pros[0]}）"
@@ -179,17 +196,17 @@ def get_phase_cli_guild(context: Optional[Any] = None, phase: Optional[str] = No
             elif isinstance(raw_cons, str) and raw_cons:
                 con_summary = raw_cons
 
-            gated_warnings.append(f"- 🚨 嚴禁執行 `{full_cmd}`（{con_summary}）")
+            gated_warnings.append(f"- [GATED] 嚴禁執行 `{full_cmd}`（{con_summary}）")
 
     if not recommended_cmds and not gated_warnings:
         return ""
 
     out_lines: List[str] = []
     if recommended_cmds:
-        out_lines.append("- **🛠️ 當前階段推薦 CLI 指令 (Recommended CLI)**：")
+        out_lines.append("- **[RECOMMENDED] 當前階段推薦 CLI 指令 (Recommended CLI)**：")
         out_lines.extend([f"  {rc}" for rc in recommended_cmds])
     if gated_warnings:
-        out_lines.append("- **🚨 授權守門與紅線禁忌 (Gated & Prohibited)**：")
+        out_lines.append("- **[GATED] 授權守門與紅線禁忌 (Gated & Prohibited)**：")
         out_lines.extend([f"  {gw}" for gw in gated_warnings[:3]])
 
     return "\n".join(out_lines)

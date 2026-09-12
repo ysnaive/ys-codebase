@@ -59,7 +59,7 @@ def get_dynamic_context_map(context: Optional[Any] = None) -> str:
     # 組裝 Markdown 表格
     lines = [
         "> [!NOTE]",
-        "> ### 🧭 專案語意 URI 即時解析地圖 (JIT Dynamic Context)",
+        "> ###  專案語意 URI 即時解析地圖 (JIT Dynamic Context)",
         "> 本專案已註冊之語意 URI 實體路徑如下：",
         "> ",
         "> | 語意 URI 協議 | 當前專案實體路徑 (相對於專案根目錄) | 狀態 |",
@@ -70,6 +70,6 @@ def get_dynamic_context_map(context: Optional[Any] = None) -> str:
         lines.append(f"> | {scheme_tag} | `{rel_path}` | `{st}` |")
 
     lines.append("> ")
-    lines.append("> 🛠️ **CLI 動態解析指令**：`python yscb.py uri resolve <uri>`（例：`python yscb.py uri resolve project://AGENTS.md`）")
+    lines.append("> [TOOL] **CLI 動態解析指令**：`python yscb.py uri resolve <uri>`（例：`python yscb.py uri resolve project://AGENTS.md`）")
 
     return "\n".join(lines)

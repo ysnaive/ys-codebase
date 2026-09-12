@@ -9,7 +9,7 @@ description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/�
 
 ---
 
-## 📁 1. 工作目錄與空間協議規範 (Workspace Protocols)
+## 1. 工作目錄與空間協議規範 (Workspace Protocols)
 
 - **進行中計畫 (Active Plans)**：`__${project://plans/}__/{YYYY_MM_DD_HHMM_功能名稱}/`
 - **歷史封存計畫 (Archived Plans)**：`__${project://plans/archived/}__/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`
@@ -17,11 +17,11 @@ description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/�
 - **日誌分離鐵律**：
   - `__${project://plans/}__/<plan>/changelog.md`（微觀日誌）：記錄階段流轉、DR 決策與偏差，建檔時**必須伴隨初始化**。
   - [`__${project://CHANGELOG.md}__`](`__${project://CHANGELOG.md}__`)（宏觀日誌）：僅於 Phase 7 / FT-3 結案時追加高階變更摘要。
-- 🚨 **巢狀子計畫最多兩層約束**：僅允許「主計畫 ➔ 子計畫（`sub_{編號}_{目的}/`）」，**絕對禁止三層或更多層嵌套**。
+- [!] **巢狀子計畫最多兩層約束**：僅允許「主計畫 -> 子計畫（`sub_{編號}_{目的}/`）」，**絕對禁止三層或更多層嵌套**。
 
 ---
 
-## 🛑 2. 極精簡 Session 回覆節流規範 (Session Response Throttle Protocol)
+## [!] 2. 極精簡 Session 回覆節流規範 (Session Response Throttle Protocol)
 
 遵循全域最高行為公理，執行任何計畫或階段推進時嚴格執行對話節流：
 1. **實體檔案為唯一真理 (SSOT)**：所有架構、規格、代碼、任務與測試細節均落檔於實體 Markdown，禁止在 Session 對話重複轉述。
@@ -30,7 +30,7 @@ description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/�
 
 ---
 
-## 🔗 3. 跨文件剛性追溯鏈 (Traceability Matrix)
+## 3. 跨文件剛性追溯鏈 (Traceability Matrix)
 
 | ID 類別 | 前綴格式 | 範例 | 說明 |
 | :--- | :--- | :--- | :--- |
@@ -46,13 +46,13 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ---
 
-## 🌳 4. 全景 6 大計畫分支快速判定表 (Plan Taxonomy)
+## 4. 全景 6 大計畫分支快速判定表 (Plan Taxonomy)
 
 在啟動任務時，依據任務規模與業務特性判定計畫模式（平等評估 6 大模式，杜絕僵化層級偏見）：
 
 | 計畫模式 | 核心特徵與週期 | 適用情境與判定標準 | 產出檔案矩陣 | 詳細手冊 |
 | :--- | :--- | :--- | :--- | :---: |
-| **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` ➔ `P01`~`P06` ➔ `Review` ➔ `P07` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track) |
+| **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` -> `P01`~`P06` -> `Review` -> `P07` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track) |
 | **迅捷開發計畫 (Fast Track)** | 4-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` (含 Review 核驗) + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track) |
 | **修訂計畫 (Revision Plan)** | 短循環極速交付 | 文檔校閱、極小註解同步、常數微調，**免開實體目錄**保護 Token | 0 計畫文件 (僅呈遞極簡變更卡) | [模式詳解](./references/plan_modes.md#3-修訂計畫-revision-plan---短循環) |
 | **調研計畫 (Research Plan)** | 調研探索 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R01_{topic}` + `changelog` | [模式詳解](./references/plan_modes.md#4-調研計畫-research-plan---調研-track) |
@@ -61,7 +61,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ---
 
-## 🧭 5. Full Track SOP 階段導航矩陣
+## 5. Full Track SOP 階段導航矩陣
 
 推進各階段時，請查閱對應之專屬作業手冊：
 
@@ -79,7 +79,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ---
 
-## 📋 6. 全階段模板指針 (Template Pointers)
+## 6. 全階段模板指針 (Template Pointers)
 
 執行計畫落檔時，直接由下方對應模板路徑讀取（落檔時徹底剝除頂部 HTML 導引註解 `<!-- ... -->`）：
 
@@ -98,7 +98,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 - **微觀日誌**：[`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)
 - **現場交接**：[`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)
 
-### 🚨 模板調取三大鐵律 (Template Axiom)
+### [!] 模板調取三大鐵律 (Template Axiom)
 1. **唯一 SSOT**：所有計畫產物模板一律直接讀取上方條列之模板路徑，不得自造或臆測格式。
 2. **嚴禁歷史考古**：嚴禁以 `find`、`grep` 或 `view_file` 翻閱歷史封存計畫檔案當作格式參考。
 3. **無痛遷移轉換**：將外部或 Roadmap 想法遷移進計畫時，必須直接套用標準標頭，不得直接複製舊標頭。

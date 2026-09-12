@@ -26,81 +26,306 @@
     }
   ],
   "commands": {
-    "roadmap": {
-      "description": "Scan and format long-term strategic roadmaps summary and status",
-      "tier": "safe",
-      "phases": ["CONTEXT_INIT", "P00", "RESEARCH"],
-      "case_pros": [
-        "檢視或探索長期技術儲備: agents-workflow roadmap"
-      ]
-    },
-    "init": {
-      "description": "One-click workflow URI protocols and directories initialization",
-      "tier": "gated",
-      "phases": [],
-      "case_pros": [
-        "專案初次建立或重新初始化 agents-workflow 工作流環境"
-      ],
-      "case_cons": [
-        "🚨 嚴禁在已有工作流配置的環境重複手動執行 init"
-      ]
-    },
-    "plan": {
-      "description": "Dev Plans management toolchain (status, archive, search, check)",
-      "tier": "safe",
-      "phases": ["CONTEXT_INIT", "P00", "P06", "P07", "FT-3"],
-      "case_pros": [
-        "檢視計畫狀態: agents-workflow plan status",
-        "搜尋歷史計畫: agents-workflow plan search <query>",
-        "合規性檢核計畫: agents-workflow plan check",
-        "依開發者明確指示封存計畫: agents-workflow plan archive <plan_dir>"
-      ],
-      "case_cons": [
-        "🚨 嚴禁 Agent 主動或擅自執行 plan archive (除非開發者明確指示歸檔)"
-      ]
-    },
-    "release": {
-      "description": "Execute 4-step atomic release transaction for all active targets",
-      "tier": "gated",
-      "phases": ["P07", "FT-3"],
-      "case_pros": [
-        "模組通過測試後編譯發布工作流資產至各 release_target (如 .agents/)"
-      ],
-      "case_cons": [
-        "🚨 嚴禁在未獲發布授權前擅自執行"
-      ]
-    },
-    "release-target": {
-      "description": "Manage release targets (list, add, remove)",
-      "tier": "safe",
-      "phases": ["P00"],
-      "case_pros": [
-        "檢視或管理工作流發布目標清冊"
-      ]
-    },
-    "compile": {
-      "description": "Run Stage 1 artifact compilation into cache.root://",
-      "tier": "safe",
-      "phases": ["P05", "FT-2"],
-      "case_pros": [
-        "測試編譯或除錯 Stage 1 中繼資產"
-      ]
-    },
-    "tokens": {
-      "description": "List all registered token anchors and descriptions",
-      "tier": "safe",
-      "phases": ["P00", "P02", "RESEARCH"],
-      "case_pros": [
-        "檢視全系統可用的 Token 錨點清單"
-      ]
-    },
-    "list": {
-      "description": "List all declared export standards, workflows, and templates",
-      "tier": "safe",
-      "phases": ["CONTEXT_INIT", "P00", "RESEARCH"],
-      "case_pros": [
-        "檢視 agents-workflow 導出之規範、工作流與模板清單"
-      ]
+    "module_alias": [],
+    "description": "YS-Codebase Multi-Agent Workflow, Standards, Templates & Dev Plans Subsystem",
+    "cmd": {
+      "plan": {
+        "description": "Dev Plans 專案開發計畫管理工具鏈",
+        "tier": "safe",
+        "server_compatible": true,
+        "cmd": {
+          "archive": {
+            "description": "將已完成之 Dev Plan 安全歸檔至 workflow.archived://",
+            "tier": "gated",
+            "server_compatible": true,
+            "args": {
+              "plan_name": {
+                "description": "目標計畫目錄名稱",
+                "required": true
+              }
+            },
+            "options": {
+              "force": {
+                "force": {
+                  "description": "強制覆蓋歸檔",
+                  "alias": ["f"]
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "依開發者明確指示封存計畫: plan archive <plan_dir>"
+              ],
+              "cons": [
+                "[!] 嚴禁 Agent 主動或擅自執行 plan archive (除非開發者明確指示歸檔)"
+              ]
+            }
+          },
+          "status": {
+            "description": "掃描並輸出進行中之 Dev Plans 狀態矩陣 (ASCII 表格)",
+            "tier": "safe",
+            "server_compatible": true,
+            "usage": {
+              "pros": [
+                "檢視進行中計畫狀態與階段: plan status"
+              ]
+            }
+          },
+          "search": {
+            "description": "搜尋 Dev Plans 內部之決策紀錄 (DR) 或全文關鍵字",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "query": {
+                "description": "搜尋關鍵字",
+                "required": false
+              }
+            },
+            "options": {
+              "type": {
+                "dr": {
+                  "description": "僅搜尋 Decision Records (DR)"
+                }
+              },
+              "filter_year": {
+                "year": {
+                  "description": "依年份過濾 (如 2026)",
+                  "args": {
+                    "val": {
+                      "description": "年份"
+                    }
+                  }
+                }
+              },
+              "filter_month": {
+                "month": {
+                  "description": "依月份過濾 (如 08)",
+                  "args": {
+                    "val": {
+                      "description": "月份"
+                    }
+                  }
+                }
+              },
+              "limit": {
+                "limit": {
+                  "description": "結果筆數限制 (預設: 20/25)",
+                  "args": {
+                    "val": {
+                      "description": "筆數"
+                    }
+                  }
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "搜尋歷史計畫或決策紀錄: plan search <query>"
+              ]
+            }
+          },
+          "check": {
+            "description": "合規性診斷 Dev Plans 文件結構、標題與 Header 元數據",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "plan_name": {
+                "description": "指定計畫名稱 (若省略則檢查全部進行中計畫)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "all": {
+                  "description": "包含歷史封存目錄",
+                  "alias": ["a"]
+                }
+              },
+              "format": {
+                "json": {
+                  "description": "以 JSON 格式輸出診斷報告"
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "合規性檢核計畫: plan check [plan_name]"
+              ]
+            }
+          },
+          "verify": {
+            "description": "合規性診斷 Dev Plans (check 之同義指令)",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "plan_name": {
+                "description": "指定計畫名稱 (若省略則檢查全部進行中計畫)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "all": {
+                  "description": "包含歷史封存目錄",
+                  "alias": ["a"]
+                }
+              },
+              "format": {
+                "json": {
+                  "description": "以 JSON 格式輸出診斷報告"
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "合規性檢核計畫: plan verify [plan_name]"
+              ]
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "Dev Plans 專案開發計畫管理工具鏈"
+          ]
+        }
+      },
+      "release": {
+        "description": "執行工作流資產 4-Step 原子發布交易至所有 active release targets",
+        "tier": "gated",
+        "server_compatible": true,
+        "options": {
+          "force": {
+            "force": {
+              "description": "強制完整發布，略過 diff 快取",
+              "alias": ["f"]
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "模組通過測試後編譯發布工作流資產至各 release_target (如 .agents/)"
+          ],
+          "cons": [
+            "[!] 嚴禁在未獲發布授權前擅自執行"
+          ]
+        }
+      },
+      "release-target": {
+        "description": "檢視與管理工作流發布目標清冊 (Release Targets)",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "action": {
+            "description": "操作動作 (list, add, remove)",
+            "required": false,
+            "choice": ["list", "add", "remove"]
+          }
+        },
+        "options": {
+          "action_opt": {
+            "list": {
+              "description": "列出發布目標清單",
+              "alias": ["l"]
+            },
+            "add": {
+              "description": "新增發布目標",
+              "args": {
+                "target": {
+                  "description": "目標名稱"
+                }
+              }
+            },
+            "remove": {
+              "description": "移除發布目標",
+              "args": {
+                "target": {
+                  "description": "目標名稱"
+                }
+              }
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "檢視或管理工作流發布目標清冊: release-target"
+          ]
+        }
+      },
+      "compile": {
+        "description": "執行 Stage 1 中繼工廠編譯管線 (展開變數至 cache.root://)",
+        "tier": "safe",
+        "server_compatible": true,
+        "usage": {
+          "pros": [
+            "測試編譯或除錯 Stage 1 中繼資產: compile"
+          ]
+        }
+      },
+      "roadmap": {
+        "description": "檢視或探索專案長期技術儲備與策略路線圖 (Roadmaps)",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "topic": {
+            "description": "指定路線圖主題或檔名",
+            "required": false
+          }
+        },
+        "options": {
+          "display": {
+            "list": {
+              "description": "列出所有路線圖摘要表格",
+              "alias": ["l"]
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "檢視或探索長期技術儲備: roadmap"
+          ]
+        }
+      },
+      "tokens": {
+        "description": "檢視全系統已註冊之 Token 錨點清單與語意 URI 說明",
+        "tier": "safe",
+        "server_compatible": true,
+        "usage": {
+          "pros": [
+            "檢視全系統可用的 Token 錨點清單: tokens"
+          ]
+        }
+      },
+      "list": {
+        "description": "檢視當前已安裝模組清冊與 agents-workflow 導出規範清單",
+        "tier": "safe",
+        "server_compatible": true,
+        "usage": {
+          "pros": [
+            "檢視當前環境已安裝之模組清冊與版本"
+          ]
+        }
+      },
+      "init": {
+        "description": "一鍵初始化工作流目錄結構與 URI 協議",
+        "tier": "gated",
+        "server_compatible": false,
+        "options": {
+          "auto": {
+            "yes": {
+              "description": "自動確認模式",
+              "alias": ["y"]
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "專案初次建立或重新初始化工作流環境: init"
+          ],
+          "cons": [
+            "[!] 嚴禁在已有工作流配置的環境重複手動執行 init"
+          ]
+        }
+      }
     }
   }
 }

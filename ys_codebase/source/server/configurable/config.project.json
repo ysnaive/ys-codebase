@@ -1,0 +1,5 @@
+{
+  "enable": true,
+  "enable_console": false,
+  "idle_timeout_sec": 900.0
+}

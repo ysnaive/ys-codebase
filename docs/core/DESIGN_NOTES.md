@@ -27,6 +27,10 @@
 | **DN-16** | IDE 自動感知與 `_yscb_managed` 宣告式可復原軟合併 | `source/core/core/ide_projector.py` | ⚠️ WARNING |
 | **DN-17** | virtiofs 跨平台掛載環境符號連結動態探測與複製降級 | `source/core/core/pip_manager.py` | ⚠️ WARNING |
 | **DN-18** | 微內核獨立事件總線 (core.events) 與 Engine 徹底解耦 | `source/core/core/events.py` | 🚨 CRITICAL |
+| **DN-20** | 統一虛擬檔案系統 (core.vfs) 微內核與 URI 單向依賴、同目錄原子寫入 | `source/core/core/vfs/` | 🚨 CRITICAL |
+| **DN-21** | 宿主入口極簡瘦身、業務下沉至微內核與全域 Help 動態聚合引擎 | `yscb.py`<br/>`source/core/core/installer.py`<br/>`source/core/core/contributes.py` | 🚨 CRITICAL |
+| **DN-22** | 核心命令活躍合約、PEP 562 微內核延遲載入與對稱生命週期 Hook | `source/core/core/commands/`<br/>`source/core/core/__init__.py`<br/>`yscb.py` | 🚨 CRITICAL |
+| **DN-23** | Contributes 宣告式契約、輕量 Schema DSL 與剛性校驗引擎 | `source/core/core/validator.py`<br/>`source/core/core/contributes.py`<br/>`source/core/core/commands/contributes_cmd.py` | 🚨 CRITICAL |
 
 ---
 
@@ -205,13 +209,56 @@
 
 ---
 
-### [DN-19] PipManager SDK 公開導出與順序去重相依性解析器
+### [DN-20] 統一虛擬檔案系統 (core.vfs) 微內核與 URI 單向依賴、同目錄原子寫入
 
 - **核心決策**：
-  1. 將 `PipManager`、`PipInstallError` 與 `pip_manager` 模組正式導出至 `core.__all__`，支援標準匯入契約 `from core import PipManager, PipInstallError`。
-  2. 於 `PipManager` 實作標準靜態方法 `parse_pip_dependencies(pip_deps: Any) -> List[str]`，支援將字典（`{"pkg": ">=1.0.0"}`）或清單（`["pkg>=1.0.0"]`）正規化為乾淨、已順序去重之 pip 規格字串清單。
-- **背後考量**：下游模組（如 `dev` 工具鏈在建置虛擬基環境/沙盒前適配 build 版依賴）需要統一、強健的 pip 工具 SDK，若由各模組手刻正則或字典遍歷容易發生邊界條件例外（例如 None 值、首尾空白未清理、重複套件多次調用 pip）；收斂至 `PipManager` 達成 DRY 與高保真。
+  1. **微內核封裝與單向依賴**：VFS 完整封裝於 `core/core/vfs/`，維持 `core` 作為生態系唯一微內核定位。`core.uri` 作為底層純字串語意協議定址器，不反向依賴 `core.vfs`；`core.vfs` 單向依賴 `core.uri.resolve` 將語意 URI 解算為實體路徑。`core.uri` 原有之 IO helpers 轉發至 `core.vfs` 保持 100% 向下相容。
+  2. **同分區原子寫入**：`OSBackend.atomic_write` 強制在目標檔案之同級目錄生成 `.tmp` 暫存檔，寫入後執行 flush 與 `os.fsync`，最後以 `os.replace` 原子覆蓋，杜絕跨分區 `EXDEV` 錯誤與半寫入損毀。
+  3. **沙盒安全防逃逸邊界**：`assert_safe_path` 嚴格檢驗路徑穿越 (`..`)，防止惡意 escape 邊界。
+- **背後考量**：過去模組各自散落使用原生 `open()`、`pathlib` 與自造原子寫入，缺乏統一安全防逃逸與跨平台路徑規範；且跨磁區 `os.replace` 在容器掛載環境下易引發 `EXDEV` 崩潰。收斂於 `core.vfs` 提供全生態系統一保障。
 - **防禦宣告**：
   > [!IMPORTANT]
-  > **解析模組 `pip_dependencies` 宣告時嚴禁各模組自造正則或手刻字串拼接，必須統一調用 `PipManager.parse_pip_dependencies()`！**
+  > **全生態系模組檔案存取優先使用 `core.vfs`；原子寫入暫存檔嚴禁建立於系統全域臨時目錄（如 `/tmp`），必須維持同目錄同分區原則！**
 
+---
+
+### [DN-21] 宿主入口極簡瘦身、業務下沉至微內核與全域 Help 動態聚合引擎
+
+- **核心決策**：
+  1. **宿主入口單純路由化**：`yscb.py` 徹底精簡至 ~280 行純淨單檔，僅承擔執行環境注入（私有 `.venv`、安全 Token `YSCB_HOST_DISPATCH_TOKEN`）、雙管道路由（管道 B: HTTP IPC 熱轉發 / 管道 A: 進程內冷啟動）與 Exit Code 剛性透傳。
+  2. **業務邏輯全面下沉**：批量模組還原 (`cmd_restore`)、Zip 解壓縮安全守衛與 `.gitignore` 宣告式維護全數下沉至 `core.installer`；全生態系指令清冊動態聚合下沉至 `core.contributes.print_global_help()`。
+  3. **向後相容最小安全代理**：宿主保留對 `core.installer` 與 `core.events` 的薄代理函式，在相容既有調用契約的前提下達成 0 業務侵入。
+- **背後考量**：避免宿主腳本持續單體膨脹導致維護性惡化，將業務能力回歸微內核與宣告式拓撲，貫徹微內核高凝聚、宿主薄路由的架構原則。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `yscb.py` 宿主腳本內重度實作業務邏輯！任何新增之套件管理、全域查詢或規則生成邏輯必須下沉至 `core` 或對應模組！**
+
+---
+
+### [DN-22] 核心命令活躍合約、PEP 562 微內核延遲載入與對稱生命週期 Hook
+
+- **核心決策**：
+  1. **微內核 PEP 562 延遲載入**：`core/__init__.py` 透過 `__getattr__` 實作按需動態加載，保留 `TYPE_CHECKING` 靜態型別提示。單獨導入 `core.commands` 時不喚醒 `AtomicEngine`、`Installer`、`PipManager` 等重型子模組，冷啟動耗時自 ~77ms 降至 $\le 5\text{ms}$。
+  2. **正交群組命名空間與互斥約束**：CLI Option 在 contributes 中透過 orthogonal groups 分組，由 `OptionResolver` 執行互斥檢驗 (EC-02) 與別名標準化；解析結果封裝為不可變強型別 `CmdBags`。
+  3. **精確命令合約與雙軌靜默退化**：模組 CLI 遷移為 `def <cmd_name>(cmd_bags: CmdBags) -> int` 函式模型；未遷移模組靜默退化至 `mod.process(args)`（無 warning 輸出），並於 `sub_02` 結案前剛性刪除。
+  4. **對稱生命週期 Hook 下沉**：`pre_cli_dispatch` 與 `post_cli_dispatch` 生命週期 Hook 自宿主移至 `core.commands.dispatcher` 內部（含 Worker 熱派發環境與本地冷派發環境），確保 Hook 永遠在命令執行的真實上下文中生效。
+- **背後考量**：解除全生態系模組對 argparse 的分散依賴，提供統一且結構化的 CLI 體驗；同時將派發核心完全下沉至微內核，使宿主 `yscb.py` 達成極致薄化。
+- **防禦宣告**：
+  > [!IMPORTANT]
+  > **先驅模組不得殘留 `process(args)` 函式；舊版相容過渡層為暫存債務，嚴禁在新開發模組中引入舊版合約！**
+
+---
+
+### [DN-23] Contributes 宣告式契約、輕量 Schema DSL 與剛性校驗引擎
+
+- **核心決策**：
+  1. **100% 純標準庫與輕量型別 DSL**：零第三方依賴（嚴禁 pydantic / jsonschema）。在 `core.validator` 內建型別 DSL 解析器，支援強型別標記（`str!`, `int?`, `bool? = false`）、受限集合（`enum(a, b)`）、通配鍵比對（`"*"`）、遞迴指標（`$TypeName`）與自訂型別別名清冊（`_types`）。
+  2. **單向依賴邊界與剛性阻斷 (Strict Egress, Tolerant Ingress)**：
+     - **Egress 靜態阻斷**：`contributes check` 與 `dev check` 對所有注入宣告實施剛性阻斷，攔截未宣告之擴充點（未知鍵）、型別不符以及跨目標越權注入。
+     - **Ingress 容錯防禦**：運行期 `ContributesAggregator` 進行動態快照聚合時，遇未知擴充點記錄錯誤但安全保留鍵值，避免阻斷既有動態擴充或測試環境 JIT 欄位。
+  3. **智能拼寫診斷 (Did you mean)**：內建輕量 Levenshtein 距離演算法，當鍵名或枚舉值出現相近拼寫錯誤時，主動給予具體糾錯建議，大幅降低第三方模組整合認知摩擦。
+  4. **全生態系 First-Class 語意契約**：各模組於 `contributes/` 內維持 `_format.json`（Ingress 契約）與 `_manifest.md`（Egress 導覽手冊），達成模組能力自描述與雙向契約閉環。
+- **背後考量**：傳統依賴注入缺乏形式化契約驗證，容易引發「無聲失效」、「運行期鍵名拼錯崩潰」與「跨模組越權污染」；透過輕量宣告式 DSL 與靜態/運行期雙重守門，在零依賴約束下實現企業級剛性架構治理。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 Core 微內核中引入任何外部驗證器依賴！模組擴充注入嚴格依賴 `_format.json` 契約宣告，禁止未經 Schema 註冊隨意跨模組注入私有資料！**

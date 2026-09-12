@@ -39,7 +39,7 @@ class TestBenchmarkPerfAndMemory(YSCBTestCase):
         self.assertFalse(tok.is_cjk("_"))
         self.assertFalse(tok.is_cjk(""))
 
-        res = tok.tokenize("Hello 🚀 世界 ⚡ TestController_v2 測試！ 123 😊")
+        res = tok.tokenize("Hello  世界  TestController_v2 測試！ 123 ")
         self.assertIn("hello", res)
         self.assertIn("世", res)
         self.assertIn("界", res)

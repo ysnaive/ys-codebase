@@ -21,6 +21,11 @@ try:
 except ImportError:
     uri = None
 
+try:
+    from core import vfs
+except ImportError:
+    vfs = None
+
 
 class ConfigManager:
     """微內核設定管理器：負責模組組態之雙層合併、自愈快取與原子讀寫。"""
@@ -107,16 +112,23 @@ class ConfigManager:
         if not os.path.isfile(filepath):
             return {}
         try:
-            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                data = json.load(f)
-                return data if isinstance(data, dict) else {}
+            if vfs:
+                data = vfs.read_json(filepath)
+            else:
+                with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                    data = json.load(f)
+            return data if isinstance(data, dict) else {}
         except Exception as e:
             logger.warning(f"Failed to read or parse config file '{filepath}': {e}")
             return {}
 
     @classmethod
     def _atomic_write_json(cls, filepath: str, data: Dict[str, Any]) -> None:
-        """原子寫入 JSON 檔案並確保目錄存在。"""
+        """原子寫入 JSON 檔案並確保目錄存在 (優先使用 core.vfs 原子寫入)。"""
+        if vfs:
+            vfs.write_json(filepath, data, indent=2, encoding="utf-8", atomic=True)
+            return
+
         target_dir = os.path.dirname(filepath)
         os.makedirs(target_dir, exist_ok=True)
 

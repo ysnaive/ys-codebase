@@ -69,6 +69,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
             manifest_data = uri.read_json(MANIFEST_STORAGE_URI)
             self.assertEqual(manifest_data.get("fingerprint"), res["fingerprint"])
             self.assertEqual(len(manifest_data.get("published_files", [])), res["published_count"])
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_02_short_circuit_when_no_change(self):
@@ -77,13 +78,14 @@ class TestReleasePublisherDiff(YSCBTestCase):
         res1 = self.publisher.release_all(force=True)
         self.assertTrue(res1["success"])
 
-        # 第 2 次：無變更發布 ➔ 應短路
+        # 第 2 次：無變更發布 -> 應短路
         res2 = self.publisher.release_all(force=False)
         self.assertTrue(res2["success"])
         self.assertTrue(res2["short_circuited"])
         self.assertEqual(res2["written_count"], 0)
         self.assertEqual(res2["skipped_count"], res1["published_count"])
         self.assertEqual(res2["fingerprint"], res1["fingerprint"])
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_03_incremental_write_on_partial_change(self):
@@ -113,6 +115,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
             # 只有被竄改的檔案被重新寫入，其餘檔案跳過寫入
             self.assertEqual(res2["written_count"], 1)
             self.assertEqual(res2["skipped_count"], len(target_files) - 1)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_04_forced_release_overwrites_all(self):
@@ -126,6 +129,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertFalse(res_forced["short_circuited"])
         self.assertEqual(res_forced["written_count"], res_forced["published_count"])
         self.assertEqual(res_forced["skipped_count"], 0)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_05_agents_md_soft_merge_diff(self):
@@ -143,12 +147,12 @@ class TestReleasePublisherDiff(YSCBTestCase):
         with open(agents_path, "w", encoding="utf-8") as f:
             f.write(content_a)
 
-        # 第一次注入相同內容 ➔ 應跳過寫入 (written == False)
+        # 第一次注入相同內容 -> 應跳過寫入 (written == False)
         success, written = self.publisher._soft_merge_agents_md("Standard Body", proj_root, force=False)
         self.assertTrue(success)
         self.assertFalse(written)
 
-        # 第二次注入新內容 ➔ 應寫入 (written == True)
+        # 第二次注入新內容 -> 應寫入 (written == True)
         success, written = self.publisher._soft_merge_agents_md("New Standard Body", proj_root, force=False)
         self.assertTrue(success)
         self.assertTrue(written)
@@ -157,6 +161,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
             updated_text = f.read()
         self.assertIn("New Standard Body", updated_text)
         self.assertIn("## Custom Footer", updated_text)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_06_cli_release_with_force_flag(self):
@@ -172,6 +177,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         # 帶 --force 參數
         code3 = cmd_release(["--force"])
         self.assertEqual(code3, 0)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_et_01_short_circuit_invalidated_when_file_missing(self):
@@ -192,13 +198,14 @@ class TestReleasePublisherDiff(YSCBTestCase):
             if os.path.isfile(deleted_file):
                 os.remove(deleted_file)
 
-            # 再次調用 (force=False) ➔ 應檢測到檔案缺失，短路失效並補齊
+            # 再次調用 (force=False) -> 應檢測到檔案缺失，短路失效並補齊
             res2 = self.publisher.release_all(force=False)
             self.assertTrue(res2["success"])
             self.assertFalse(res2["short_circuited"])
             self.assertTrue(os.path.isfile(deleted_file))
             # 只有缺失的檔案被寫入，其餘檔案跳過寫入
             self.assertEqual(res2["written_count"], 1)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_et_02_target_configuration_change_triggers_republish(self):
@@ -210,6 +217,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         # 驗證相同環境下兩次計算指紋完全一致
         fp2 = self.publisher.compute_source_fingerprint()
         self.assertEqual(fp1, fp2)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_07_custom_agents_md_projection(self):
@@ -230,6 +238,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         content = open(claude_md, "r", encoding="utf-8").read()
         self.assertIn("YSCB_AGENTS_BEGIN", content)
         self.assertIn("YSCB_AGENTS_END", content)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_08_empty_agents_md_skips_output(self):
@@ -246,6 +255,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         }
         dep_map, items = self.publisher.build_deployment_map(temp_target, [])
         self.assertEqual(len(items), 0)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_09_multi_target_shared_agents_md(self):
@@ -267,6 +277,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         # 確保只有一組 YSCB 標記區間
         self.assertEqual(content.count("<!-- YSCB_AGENTS_BEGIN -->"), 1)
         self.assertEqual(content.count("<!-- YSCB_AGENTS_END -->"), 1)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_10_skill_projection_and_deployment_map(self):
@@ -314,6 +325,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         # 斷言 deployment_map 包含主入口與子檔案
         self.assertIn("skills/my-skill", dep_map)
         self.assertIn("skills/my-skill/references/guide.md", dep_map)
+        self.mark_passed()
 
     @require(Requirement.ENV)
     def test_ft_11_stat_first_cache_hit_and_touch_healing(self):
@@ -347,6 +359,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
             self.assertTrue(res3["success"])
             self.assertTrue(res3["short_circuited"])
             self.assertEqual(res3["fingerprint"], res1["fingerprint"])
+        self.mark_passed()
 
     def test_ft_12_manifest_clean_of_watchdog(self):
         """FT-12: 驗證 agents-workflow manifest.json 已解耦清理 watchdog 相依性。"""
@@ -356,6 +369,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
             data = json.load(f)
         pip_deps = data.get("pip_dependencies", {})
         self.assertNotIn("watchdog", pip_deps)
+        self.mark_passed()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,144 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_07_1251_server_realtime_logging (Completed)
+
+- **Server 即時 Flush 日誌架構、異常中斷自癒與歷史滾動保留機制**：
+  - **即時 Flush 日誌落檔 (`ServerLogger`)**：落檔於 `cache://server/log` (`.cache/server/log`)，每次寫入強制 `flush()` 保證即時性與 OS Page Cache 刷新；首行格式寫入時間基準標誌 `server start at time "{YYYY}_{MM}_{DD}_{HH}.{MM}.{SS}"`。
+  - **異常中斷自癒與歷史滾動清理**：啟動時自動偵測舊日誌，優先解析首行時間戳轉存為歷史檔 `{timestamp}_log`（解析失敗退化為 `mtime`），並滾動清理保留最新 $\le 5$ 份，避免磁碟無限制增長。
+  - **集中式日誌排程與 IPC 匯流**：Master 進程獨佔日誌檔案控制代碼，Worker 透過 IPC ndjson `{"type": "log"}` 封包匯流集中寫入，避免跨進程檔案鎖衝突。
+  - **Core 模組更新偏差修復 (`core:update`)**：修復 `update` 忽略 `@build` 開發版與候選版本過濾之缺陷，保護本地調試版本不被誤覆蓋降級。
+  - **全套測試 100% 通過**：Server 模組新增 FT-01~08 及回歸測試 RT-01 全部通過（31/31）；Core 模組全量回歸測試全部通過（163/163）；實機 UX 驗收通過。
+
+## 2026_09_07_0831_quality_update (In Progress)
+
+### sub_05_terminal_encoding_legacy_cleanup_and_ascii_purification (Verified)
+- **終端編碼防護、舊版殘留清理、特殊字元徹底捨棄與測試狀態閉環**：
+  - **特殊字元與 Emoji 全面捨棄淨化**：將全生態系 CLI 輸出、說明文件、Tokens 錨點與日誌中的 Emoji/特殊字元全面替換為標準 ASCII 括弧標籤（`[SAFE]`, `[CONDITIONAL]`, `[GATED]`, `[PASS]`, `[WARN]`, `[!]` 等），徹底杜絕跨終端字元編碼異常。
+  - **Windows Console UTF-8 輸出防護**：於 `yscb.py` 進入點與 `dispatcher.py` 實施 `sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)`，保障 Windows CP950 終端輸出安全。
+  - **沙盒並發安全鎖與測試沙盒隔離**：於 `SandboxProvisioner` 與 `tester.py` 建立 `_ACTIVE_SANDBOXES` 與 `_PIP_LOCK`，防範多模組並發測試時的沙盒互刪與 pip 競爭衝突。
+  - **舊版殘留檔案清理**：徹底刪除舊版 `contributes.format.md`（core, server, knowledge-db）與 `source/knowledge-db/configurable/contribute.json`。
+  - **全套測試 100% 通過與狀態標記閉環**：補齊 `agents-workflow` (44 處) 與 `core` (17 處) 缺失之 `self.mark_passed()`；`dev check --all` 達成 0 Warning / 5 通過；`dev test --all` 511 測試 100% 通過（511 Passed, 0 Failed, 0 Unknown）。
+
+### sub_04_yscb_module_dev_skill_refinement (Verified)
+- **yscb-module-dev 技能手冊全方位品質升級、7 大缺失能力補齊、四大視角隔離與 dev check 剛性檢核**：
+  - **技能手冊全方位品質升級與實質修復**：修正 `SKILL.md` 全面改以「觸發時機」分流導航；修正 `cli_and_commands.md` 標題序號至 3.2，補齊 `dev create` 章節；修正 `testing_and_sandbox.md` 所有測試範例，全面補齊 `self.mark_passed()` 與正確測試狀態約定；修正 `acceptance_checklist.md` 標題精確化，徹底消除跨視角路徑污染；修訂 `contributes_guide.md` Host 視角備註與 `module://` 引用語意。
+  - **7 大關鍵缺失能力全面補齊**：收錄 `dev create module` 腳手架預置規範、`scripts/hook.dev.py` 沙盒生命週期鉤子指南、4-tier 測試標籤體系（Contract / Hermetic / Integration / Stateful）、AST 靜態檢核紅線清冊、`configurable/` 檔案命名與語法規範、版本晉升三步驟工作流、以及在開發者明確授權下之發布一鍵管線。
+  - **四大文檔視角嚴格隔離**：確立並剛性遵循「維護標準 `docs://`」、「維護 `<module>/docs/user_guild.md`」、「維護 `<module>/docs/dev_guild.md`」與「維護 `<module>/docs/install_guild.md`」四大視角，嚴禁跨視角污染或暴露 Host 源碼路徑。
+  - **`dev check` 管線 5 項機器自動化剛性守門**：
+    1. `_check_contributes_manifest`: 檢核 `contributes/_manifest.md` 存在性並淘汰舊版殘留。
+    2. `_check_test_method_mark_passed`: 透過 AST 靜態掃描測試方法體，遺漏 `self.mark_passed()` 觸發 WARN 告警防假測試。
+    3. `_check_sandbox_hook_compliance`: 檢查 `scripts/hook.dev.py` 語法、攔截頂層散落語句並校驗鉤子簽名。
+    4. `_check_docs_path_pollution`: 掃描模組下第三方手冊，嚴禁出現 `project://source/` 等本機開發路徑硬編碼。
+    5. `_check_configurable_naming`: 強制檢核 `configurable/` 檔案命名格式與 Python 語法有效性。
+  - **全套測試 100% 通過**：新增 FT-10~14 單元測試，`dev` 模組 88/88 測試全數綠燈；`dev check --all` 生態系 5 大模組 0 失敗；全生態系回歸測試全數通過；開發者免測審查通過。
+
+### sub_03_contributes_schema_and_rigid_validation (Verified)
+- **Contributes 依賴注入宣告架構升級、輕量 Schema DSL 剛性驗證與全生態系契約落地**：
+  - **純標準庫輕量 Schema DSL (`core.validator.ContributesValidator`)**：零第三方依賴（嚴禁 pydantic / jsonschema），支援結構化型別標記（`str!`, `int?`, `bool? = false`）、受限列舉（`enum(a, b)`）、通配映射（`"*"`）、遞迴指針（`$TypeName`）與型別別名（`_types`）。
+  - **智能拼寫診斷 (Did you mean)**：內建 Levenshtein 距離演算法，鍵名或列舉值拼寫相近時主動提示相近合法鍵名，大幅降低第三方整合認知摩擦。
+  - **核心 CLI 指令與 Public SDK**：新增 `contributes list` 列出全生態系註冊之擴充點清冊；新增 `contributes check`（支援全庫掃描、單檔檢查、語意 URI 與 `--format` 模式）；導出 Public SDK `get_format()`, `validate()`, `list_points()`。
+  - **單向邊界剛性阻斷 (Strict Egress, Tolerant Ingress)**：`dev check` 與 `contributes check` 實施靜態合規阻斷，攔截未宣告擴充點、型別錯誤與跨目標越權注入；運行期 `ContributesAggregator` 採容錯防禦，記錄錯誤但保留動態欄位相容測試 JIT 快照。
+  - **5 大模組生態系契約落地與腳手架升級**：`core`, `server`, `dev`, `agents-workflow`, `knowledge-db` 全面建立 `_format.json`（Ingress 契約）與 `_manifest.md`（Egress 導覽手冊）；`dev create` 自動預置契約檔案；清理舊 `phases` 殘留欄位。
+  - **全套測試 100% 通過**：新增 FT-01~08 單元/整合測試，全生態系 5 大模組 441/441 測試全數綠燈（Fail: 0）；實機 UX 驗收通過。
+
+### sub_02_all_modules_cli_migration_and_legacy_removal (Verified)
+- **全模組 CLI 精確命令合約遷移與向後相容過渡層徹底清除**：
+  - **全領域模組全面遷移**：`dev`, `knowledge-db`, `agents-workflow` 全面改寫為 `def <cmd_name>(cmd_bags: CmdBags) -> int` 活躍執行合約，移除 `argparse` 與自製參數解析。
+  - **向後相容過渡層剛性清除**：在全模組遷移完成後，徹底刪除 `core.commands` 內部對舊版 `mod.process(args)` 的退化相容代碼，全生態系 100% 封閉舊合約，實現零技術債留存。
+  - **全套測試 100% 通過**：全模組單元測試與契約測試全數通過，實機 UX 驗收通過。
+
+### sub_01_core_commands_and_dispatch_architecture (Verified)
+- **core.commands 活躍執行合約、PEP 562 Lazy Loading、雙管道派發與同構遞迴指令樹重構**：
+  - **微內核延遲載入 (PEP 562 Lazy Exports)**：淨化 `core/__init__.py` 頂層 eager imports，改以 `__getattr__` 按需加載，將 `core` 冷啟動導入耗時由 ~77ms 降至 <1ms，徹底消除不必要之重型模組加載。
+  - **全新 Contributes Commands 規範**：重構 `commands` schema，徹底剝除 `phases` 耦合；引入 `tier`、`server_compatible`、`args` 參數字典、`options` 正交群組與 `usage (pros/cons)`；完全移除 `has_value`，全面改以 `args` 字典定義參數與 `choice` 列舉約束。
+  - **強型別 `CmdBags` 結構化封裝**：定義 `CmdBags` 與 `CmdOption` 不可變 dataclass，提供 `has_option` 與 `get_option` API，自動注入呼叫端，模組 CLI 實作完全免除 `argparse` 與手工剖析。
+  - **全生態系統一 Help 攔截與渲染 (`HelpRenderer`)**：全域攔截 `--help / -h / help`，動態生成指令階層說明、安全等級、Visual Arguments (`<param=[a | b]>`)、Orthogonal Options 與 Pros/Cons 規範指南。
+  - **同構遞迴指令樹與階層式派發 (`CommandsRegistry` & `dispatcher`)**：指令節點同構遞迴嵌套，支援純葉子、純分支（自動輸出 SUBCOMMANDS 清單）與可呼叫複合分支（Hybrid）；實作端約定以底線平鋪命名函式（如 `uri_list`、`config_get`）。
+  - **雙管道分流與對稱生命週期 Hook**：依據指令級 `server_compatible` 動態分流至 HTTP IPC 熱派發或本地冷派發；將 `pre_cli_dispatch` / `post_cli_dispatch` 生命週期 Hook 對稱下沉至執行環境內觸發。
+  - **雙軌向後相容過渡層**：對未宣告 commands 之舊模組或未遷移模組，靜默退化至 `mod.process(args)`，無 warning 污染；先驅模組 `core` 與 `server` 100% 遷移並驗收。
+  - **全套測試 100% 通過**：新增 FT-01~11、ET-01~08、PT-01、RT-01；`core` (162/162) 與 `server` (23/23) 測試全數綠燈；開發者 UX 實機驗收通過。
+
+## 2026_09_06_1927_knowledge_db_architecture_consolidation (In Progress)
+
+### sub_10_server_hot_reload_dispatch_and_master_self_restart (Verified)
+- **Server 模組熱重載雙軌分流、變更路徑模組感知與 Master 優雅自重啟**：
+  - **模組變更路徑精確感知 (`ModulesWatcher`)**：比對 mtime 快照時分析新增、修改或刪除之檔案路徑，精確提取相對於 `.modules/` 之受影響模組目錄集合（`affected_modules: Set[str]`），並支援 500ms 批次變更防抖與回調簽名向下相容。
+  - **雙軌重載分流機制 (`MasterSupervisor.on_modules_changed`)**：
+    - 若 `affected_modules` 僅包含其他領域模組（如 `knowledge-db`, `dev`, `agents-workflow`）：僅觸發 `restart_worker()` 重啟 Worker 子進程，Master PID 與 HTTP 端口連線 100% 保持穩定無感。
+    - 若 `affected_modules` 包含核心或守護模組（`server`, `core`）：自動觸發 `restart_server()`，重啟整個 Server 進程樹（Master + Worker），杜絕 Master 進程 Python 代碼記憶體殘留。
+  - **Master 優雅自重啟機制 (`MasterSupervisor.restart_server`)**：於背景線程依序執行 `stop()`（停止 watcher、結束 service workers、關閉 HTTP socket、釋放狀態鎖與清理 `daemon.json`），再透過 `core.platform.spawn_detached` 重新拉起全新 Master 進程並優雅退出舊進程。
+  - **自動化測試 100% 通過**：新增 FT-01 ~ FT-03 覆蓋路徑模組解析、無參/有參回調相容、領域模組 Worker 重啟分流與核心模組 Master 自重啟分流；Server 模組 23/23 測試全數通過。
+
+### sub_09_architecture_debt_remediation (Verified)
+- **架構技術債全數收斂修復、微內核原語統一、進程單例共享與並發防禦**：
+  - **Core 進程鎖統一 (`core.engine`)**：`AtomicEngine.act_lock/act_unlock` 廢除自製 JSON 檔案鎖，全面遷移至 `core.platform.InterProcessLock`，徹底消除雙軌並存與競態窗口。
+  - **嚴格空間路徑過濾 (`knowledge_db.service`)**：`is_path_watched` 徹底移除 `workspace_root` 寬鬆兜底與例外兜底，非註冊空間路徑（如 `.cache`, `.git` 等）一律返回 `False`，對齊 sub_08 規格宣告。
+  - **虛擬環境路徑解析下沉 (`core.platform.venv`)**：於 `core.platform` 下沉定義 `ensure_private_venv`，跨平台統一 site-packages 定位與 `host_venv.pth` 遞迴注入，解決 `server.worker` 遺漏 `.pth` 解析與三處代碼重複問題。
+  - **Master 守護狀態原子落檔 (`server.master`)**：`_write_state` 改採 `core.vfs.write_json(..., atomic=True)`，確保 `daemon.json` 原子覆蓋，避免並發讀取空檔案。
+  - **宿主冷啟動模組快取與 FD 洩漏修復 (`yscb.py`)**：引入 `_MODULE_CACHE` 避免重複 `exec_module`；修復 `_is_modules_dirty` 推導式中裸 open FD 洩漏；支援 `YSCB_DISPATCH_TIMEOUT` 動態自訂逾時；展開 `main()` 四層嵌套三元運算符。
+  - **KnowledgeEngine 進程級單例全域共享 (`knowledge_db.engine`)**：導出線程安全的 `get_engine()` 工廠，`KnowledgeDBServiceWorker` 與 CLI 共享唯一實例，消除 Worker 進程內雙重 Engine 記憶體開銷；清理 7 個未使用的 Formatter 內部常數導入。
+  - **並發保護與契約健全 (`pipeline.py`, `service.py`, `vfs.py`, `guard.py`)**：為 `_GLOBAL_INDEX_CACHE` 加入 `_CACHE_LOCK = threading.RLock()`；補齊 `BaseServiceWorker.start(context)` 字典契約文件；`VFS.copy/move` 補齊跨 Backend 操作防禦（拋出 `NotImplementedError`）；補齊 Guard Token 安全邊界說明。
+  - **全生態系 5 大模組 463/463 測試 100% 通過**：Core 142/142, Server 20/20, Knowledge-DB 144/144, Dev 83/83, Agents-Workflow 74/74 全數通過。
+
+### sub_08_knowledge_db_search_acceleration_and_worker_singleton (Verified)
+- **搜尋效能加速、Worker 模組快取、Watcher 背景自癒與 Service 可觀測性**：
+  - **Worker 進程級模組快取 (`_module_cache`)**：在 `server.worker` 實作模組快取字典，消除跨命令重複調用時 `exec_module` 的重複開銷，實現零重載瞬發響應。
+  - **KnowledgeEngine 單例化 (`get_engine()`)**：於 `knowledge_db.scripts.cli` 提供進程單例接口，跨命令調用共享 Engine 實例與記憶體索引快照。
+  - **Worker 預熱事件標準化 (`worker_warming`)**：於 Worker 啟動後透過 `core.events.broadcast` 發送預熱廣播，`KnowledgeEngine.pre_warm()` 提前載入 FastEmbed 向量模型與倒排索引。
+  - **Watcher 背景接管自癒與前台搜尋 0ms 非阻塞**：前台 `pipeline.search()` 偵測到常駐服務標記 `.watcher_active` 時，前台 0ms 略過同步掃描與熱修補，徹底避免 500ms 防抖競態卡頓 1.7s，100% 委派 Watcher 背景線程自癒。
+  - **純淨宣告常駐服務與狀態可觀測性**：由 `contributes/server.json` 純淨宣告常駐服務規格，SDK 動態注入 `ServiceManager`；`server status` 端點擴充輸出 Background Services 清冊與健康狀態。
+  - **SpaceManager 包含路徑記憶化快取 (`_include_cache`)**：消除 879 次重複路徑解析與 contributes 查閱，`knowledge-db status` 執行耗時由 7.1s 暴降至 0.14s（統計計算僅 14ms，提升 50 倍以上效能）。
+  - **測試覆蓋與守門 100% 通過**：`server` 與 `knowledge-db` 自動化測試全數 Passed，手動/UX 實機驗收通過。
+
+### sub_07_yscb_host_slimming_and_dual_channel_dispatch (Verified)
+- **宿主入口極限瘦身、雙管道路由派發與 Contributes Help 動態聚合**：
+  - **宿主入口極簡瘦身 (`yscb.py`)**：精簡至 283 行薄客戶端，業務邏輯（模組發現、環境防護、雙管道路由）全面下沉至 `core.dispatch`。
+  - **動態聚合全域 Help (`core.help`)**：解析生態系各模組 `contributes/cli.commands.json`，全域動態渲染模組指令手冊與選項說明，消除宿主寫死指令的耦合維護成本。
+  - **雙管道路由架構 (`core.dispatch`)**：
+    - **IPC 管道 (`core.dispatch.client`)**：若 `server` 守護進程運行且 `enable: true`，以 Socket IPC 極速轉發命令至常駐進程，跳過直譯器冷啟動與依賴重複加載。
+    - **In-process 管道 (`core.dispatch.inprocess`)**：若無 `server` 或 `enable: false`，平滑退化至原創進程內派發，注入安全守門 Token。
+  - **Exit Code 透傳與狀態碼剛性契約**：無論走 IPC 或進程內派發，均 100% 精確透傳目標模組返回碼與 SystemExit 代碼。
+  - **Server 模組專案預設組態補齊**：補齊 `configurable/config.project.json`（`enable: true`, `enable_console: false`, `idle_timeout_sec: 900.0`），實測驗證熱派發任務計數累加與 TTL 重置。
+  - **全生態系 5 大模組單元/回歸測試 100% 通過**。
+
+### sub_04_knowledge_db_service_worker_and_pipeline (Testing / Verification Gate)
+- **知識庫常駐服務 Worker 納管、微內核原語對齊與記憶體快取 mtime 微秒級熱自癒**：
+  - **收斂為 `KnowledgeDBServiceWorker`**：繼承 `server.service.BaseServiceWorker`（命名為 `"knowledge-db-watcher"`），依賴 `server` Master 託管生命週期，支援 500ms 防抖變更聚合與增量熱修補。
+  - **徹底移除 `knowledge-db daemon` 子命令**：自 `scripts/cli.py` 刪除 `daemon` 子命令與相關說明文案，不再向後相容；精簡 `daemon.py`，全面廢除自製 `HotReloadServer`、PID 鎖檔、Console 視窗與自製進程管理。
+  - **Worker 預熱事件與記憶體快取 Eager Preload**：響應 `server_worker_warming` 核心事件，`KnowledgeEngine.pre_warm()` 提前將 FastEmbed 向量模型單例與倒排索引/圖譜快照載入記憶體。
+  - **微秒級 mtime 快取比對與熱自癒**：`_GLOBAL_INDEX_CACHE` 維護 `unified_mtime` 與 `graph_mtime`，查詢前以微秒級精度比對磁碟快照 mtime，偵測到背景熱修補時就地熱刷新記憶體快照。
+  - **微內核底層原語全面對齊**：二進位快照持久化全面對齊 `core.vfs.write_bytes(atomic=True)`；排他鎖全面採用 `core.platform.lock.InterProcessLock`。
+  - **全套測試 100% 通過**：`TestServiceWorker` FT-01~06 全數通過，`knowledge-db` 全模組 140/140 單元測試 100% 通過，並通過 `dev check knowledge-db` 靜態合規檢驗。
+
+### sub_03_server_module_daemon_supervisor (Verified)
+- **全新通用常駐服務模組 (server) 落地與微內核跨平台原語 (core.platform)**：
+  - **微內核跨平台原語 (`core.platform`)**：實作 `spawn_detached`（無窗口/無 tty 脫鉤拉起進程）、`is_process_alive`（精確排除 Linux 殭屍進程 `Z`/`X` 與 non-blocking waitpid 收割）、`kill_process_tree`（遞迴收割整棵進程樹杜絕孤兒進程）與 `InterProcessLock`（跨平台 POSIX flock / Windows msvcrt 跨進程排他鎖）。
+  - **Master-Worker 雙進程模型 (方案 C)**：Master 掌理 Localhost HTTP (`127.0.0.1:0`)、隨機 Token 認證、PID 鎖檔與生命週期；Worker 子進程常駐預熱 Python 環境，單隊列序列化調用 `process(args)`，攔截 `SystemExit` 確保進程不滅。
+  - **模組零感知與延遲加載 (Lazy Load on Dispatch)**：Worker 啟動時不預加載任何領域模組；派發時按需載入，調用 A 模組絕不加載 B 模組，杜絕依賴污染。
+  - **500ms 防抖分流串流協議 (`DebouncedIOStreamer`)**：攔截 stdout/stderr，以 500ms 防抖緩衝合併，透過 NDJSON 封包分流 `terminal_stream`（終端串流區塊）與 `task_finish`（任務退出狀態碼）。
+  - **Worker 重啟式熱重載 (`ModulesWatcher`)**：即時監聽 `.modules/` 變更，Master 自動終止舊 Worker 並重啟全新乾淨 Worker，徹底排除 Python reload 記憶體殘留問題。
+  - **統一生命週期與共享自毀 (Shared 15m Idle TTL)**：Server 預設開啟 15 分鐘空閒超時自毀；`BaseServiceWorker`（如 Watchdog）生命週期 100% 綁定並跟隨 Server 配置，共同進退。
+  - **宿主入口雙軌調度 (`yscb.py`)**：整合四大耦合邊界（軟依賴探測、自循環旁路、按需非同步拉起、極簡 HTTP 串流客戶端）。
+  - **全生態系 190/190 自動化測試全數通過**。
+
+### sub_02_core_vfs_unified_virtual_file_system (Verified)
+- **微內核統一虛擬檔案系統 (core.vfs) 落地與語意 URI 單向解耦**：
+  - **VFS 與 URI 單向依賴純淨解耦**：`core.uri` 定位為純字串定址協議 SSOT，完全不反向相依於 `core.vfs`；`core.vfs` 作為生態系唯一微內核檔案存取中樞，單向相依於 `core.uri.resolve` 將語意 URI 解析為實體路徑。`core.uri` 原有之 IO helpers 向上相容無損轉發至 `core.vfs`。
+  - **後端插槽化抽象與 OSBackend 實作**：於 `core/core/vfs/` 定義 `VFSBackend` 抽象介面並實作具體 `OSBackend`，涵蓋跨平台路徑規範化、目錄穿越防逃逸邊界檢核（`assert_safe_path`），並預留未來 `MemoryBackend` 擴充插槽。
+  - **同分區原子寫入防護 (`atomic_write`)**：在目標檔案同級目錄生成隱藏暫存檔，寫入並呼叫 `flush` 與 `os.fsync` 後調用 `os.replace` 原子覆蓋，徹底防止跨磁區掛載引發之 `EXDEV` 錯誤與斷電半寫入損毀。
+  - **物件導向 VirtualPath 介面**：實作 `VirtualPath`，支援類似 pathlib.Path 的 `/` 路徑拼接運算子、鏈式方法調用與語意 URI 串接。
+  - **全生態系 AST 原生檔案讀寫掃描與平滑遷移**：研發 `scripts/scan_native_io.py` 工具盤點模組 229 個原生 IO 點；完成 `core` 模組內部原生讀寫自舉遷移（原生 open 降至 2 處 fallback），並平滑升級 `agents-workflow`、`dev` 與 `knowledge-db` 核心檔案存取點。
+  - **全模組 100% 測試守門**：全生態系 4 大模組共 445 個單元測試 100% 通過（`agents-workflow`: 74, `core`: 130, `dev`: 81, `knowledge-db`: 160）。
+
+### sub_01_cli_dispatch_and_core_guard_sdk (Verified)
+- **生態系 CLI 串接協議重構與微內核守門 SDK (Core Guard Dispatch)**：
+  - **Core 守門 SDK (`core.guard.guard_dispatch`)**：建立生態系通用守門 SDK，模組 CLI 函式首行調用；自動驗證 `YSCB_HOST_DISPATCH_TOKEN` 與宿主環境，攔截非法繞道調用並輸出標準指令引導與 Exit Code 126 熔斷，支援 `YSCB_TESTING=1` 測試模式豁免。
+  - **模組 CLI 標準進入點重構 (`process(args: List[str]) -> int`)**：全模組（`core`、`dev`、`agents-workflow`、`knowledge-db`）之 `scripts/cli.py` 全量遷移至純宣告式架構，嚴禁 `main()` 進入點與 `if __name__ == '__main__':` 執行塊，禁絕任何頂層裸執行陳述式。
+  - **骨架生成規範升級 (`dev.scaffold.Scaffolder`)**：`dev create` 生成之 `scripts/cli.py` 預先宣告標準 `process(args)` 簽名並掛載 Core 守門 SDK。
+  - **AST 靜態語法合規檢核管線 (`dev.checker.Checker`)**：於 `dev check` 與發布 Gate 1 增設 AST 語法樹合規檢驗，嚴格保障進入點存在 `process`、無 `main` 且頂層純淨無副作用。
+  - **宿主動態派發適配 (`yscb.py`)**：`dispatch_module` 改以 `importlib.util` 動態載入並優先調用 `process(args)`（保留過渡期相容 `main(args)`），注入授權 Token 並原樣透傳退出碼。
+  - **全生態系驗證與回歸測試**：全生態系 4 大模組共 437 個單元測試 100% PASS。
+
 ## 2026_09_06_1635_knowledge_db_embedding_model_name_fix (Completed)
 
 - **knowledge-db 向量模型名稱錯誤修復與別名自動補全正規化 (`fast_track_plan.md`)**：

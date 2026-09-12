@@ -324,7 +324,7 @@ class ResultFormatter:
         """
         if not results:
             if format_type == "md":
-                return f"### 🔍 知識庫檢索: `{query}` (未找到符合的結果)"
+                return f"###  知識庫檢索: `{query}` (未找到符合的結果)"
             return f"[knowledge-db] 檢索查詢: '{query}' (未找到符合的結果)"
 
         # 1. 自適應分數斷層過濾
@@ -358,7 +358,7 @@ class ResultFormatter:
         desc_tag = f"，{mode_desc}" if mode_desc else ""
 
         if is_md:
-            header = f"### 🔍 知識庫檢索: `{query}` (共找到 {total_nodes} 個檔案節點{desc_tag}):\n"
+            header = f"###  知識庫檢索: `{query}` (共找到 {total_nodes} 個檔案節點{desc_tag}):\n"
         else:
             header = f"[knowledge-db] 檢索查詢: '{query}' (共找到 {total_nodes} 個檔案節點{desc_tag}):"
 
@@ -596,7 +596,7 @@ class ResultFormatter:
 
         if budget_reached and remaining_count > 0:
             if is_md:
-                lines.append(f"\n> 💡 *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個檔案結果；可附加 `--limit=N` 查看更多)*")
+                lines.append(f"\n> [*] *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個檔案結果；可附加 `--limit=N` 查看更多)*")
             else:
                 lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個檔案結果；可附加 --limit=<N> 查看完整輸出)")
 
@@ -615,7 +615,7 @@ class ResultFormatter:
         is_md = (format_type == "md")
         if not target:
             if is_md:
-                return f"### 📞 調用源查詢: `{result.get('target_query')}` (未找到相符符號)"
+                return f"###  調用源查詢: `{result.get('target_query')}` (未找到相符符號)"
             return f"[knowledge-db] 查無相符目標符號: '{result.get('target_query')}'"
 
         mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
@@ -634,8 +634,8 @@ class ResultFormatter:
         desc_tag = f"，{mode_desc}" if mode_desc else ""
 
         if is_md:
-            header = f"### 📞 調用源追蹤 (Callers): `{target.name}` (共找到 {total_callers} 個調用來源{desc_tag}):\n\n"
-            header += f"- **📍 目標符號**: `{target.name}` ({target.kind}) 檔案: {target_link}"
+            header = f"###  調用源追蹤 (Callers): `{target.name}` (共找到 {total_callers} 個調用來源{desc_tag}):\n\n"
+            header += f"- ** 目標符號**: `{target.name}` ({target.kind}) 檔案: {target_link}"
             if target.signature:
                 header += f"\n  - **簽名**: `{target.signature}`"
             lines = [header, ""]
@@ -644,7 +644,7 @@ class ResultFormatter:
             lines = [
                 header,
                 "-" * 85,
-                f"📍 目標符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
+                f" 目標符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
             ]
             if mode == "detail" and target.signature:
                 lines.append(f"   簽名: {target.signature}")
@@ -762,7 +762,7 @@ class ResultFormatter:
 
         if budget_reached and remaining_count > 0:
             if is_md:
-                lines.append(f"\n> 💡 *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 `--limit=N` 查看更多)*")
+                lines.append(f"\n> [*] *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 `--limit=N` 查看更多)*")
             else:
                 lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 --limit=<N> 查看完整輸出)")
 
@@ -781,7 +781,7 @@ class ResultFormatter:
         is_md = (format_type == "md")
         if not target:
             if is_md:
-                return f"### 🎯 下游被調用者查詢: `{result.get('target_query')}` (未找到相符符號)"
+                return f"###  下游被調用者查詢: `{result.get('target_query')}` (未找到相符符號)"
             return f"[knowledge-db] 查無相符目標符號: '{result.get('target_query')}'"
 
         mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
@@ -800,8 +800,8 @@ class ResultFormatter:
         desc_tag = f"，{mode_desc}" if mode_desc else ""
 
         if is_md:
-            header = f"### 🎯 下游被調用者追蹤 (Callees): `{target.name}` (共調用 {total_callees} 個內部組件{desc_tag}):\n\n"
-            header += f"- **📍 目標符號**: `{target.name}` ({target.kind}) 檔案: {target_link}"
+            header = f"###  下游被調用者追蹤 (Callees): `{target.name}` (共調用 {total_callees} 個內部組件{desc_tag}):\n\n"
+            header += f"- ** 目標符號**: `{target.name}` ({target.kind}) 檔案: {target_link}"
             if target.signature:
                 header += f"\n  - **簽名**: `{target.signature}`"
             lines = [header, ""]
@@ -810,7 +810,7 @@ class ResultFormatter:
             lines = [
                 header,
                 "-" * 85,
-                f"📍 目標符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
+                f" 目標符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
             ]
             if mode == "detail" and target.signature:
                 lines.append(f"   簽名: {target.signature}")
@@ -929,7 +929,7 @@ class ResultFormatter:
 
         if budget_reached and remaining_count > 0:
             if is_md:
-                lines.append(f"\n> 💡 *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 `--limit=N` 查看更多)*")
+                lines.append(f"\n> [*] *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 `--limit=N` 查看更多)*")
             else:
                 lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 --limit=<N> 查看完整輸出)")
 
@@ -947,7 +947,7 @@ class ResultFormatter:
         is_md = (format_type == "md")
         if not target:
             if is_md:
-                return f"### 💥 影響面拓撲查詢: `{result.get('target_query')}` (未找到相符符號)"
+                return f"###  影響面拓撲查詢: `{result.get('target_query')}` (未找到相符符號)"
             return f"[knowledge-db] 查無相符目標符號: '{result.get('target_query')}'"
 
         mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
@@ -963,16 +963,16 @@ class ResultFormatter:
         desc_tag = f"，{mode_desc}" if mode_desc else ""
 
         if is_md:
-            header = f"### 💥 重構影響面擴散拓撲 (Impact Analysis): `{target.name}`{desc_tag}\n\n"
-            header += f"- **📍 目標核心符號**: `{target.name}` ({target.kind}) 檔案: {target_link}\n"
-            header += f"- **📊 影響半徑**: 擴散深度 `{depth}` 階，波及 `{total_syms}` 個符號 / `{total_files}` 個實體檔案"
+            header = f"###  重構影響面擴散拓撲 (Impact Analysis): `{target.name}`{desc_tag}\n\n"
+            header += f"- ** 目標核心符號**: `{target.name}` ({target.kind}) 檔案: {target_link}\n"
+            header += f"- ** 影響半徑**: 擴散深度 `{depth}` 階，波及 `{total_syms}` 個符號 / `{total_files}` 個實體檔案"
             lines = [header, ""]
         else:
             header = f"[knowledge-db] 符號 '{target.name}' 重構影響面擴散拓撲 (Blast Radius: {depth} 階深度, 影響 {total_syms} 個符號 / {total_files} 個檔案{desc_tag}):"
             lines = [
                 header,
                 "-" * 85,
-                f"📍 目標核心符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
+                f" 目標核心符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
             ]
             if mode == "detail" and target.signature:
                 lines.append(f"   簽名: {target.signature}")
@@ -999,7 +999,7 @@ class ResultFormatter:
             if is_md:
                 lines.append(f"#### 階層 {d}：{tag_name} ({len(syms)} 個符號)")
             else:
-                icon = "🟢" if d == 1 else "🟡"
+                icon = "[SAFE]" if d == 1 else "[CONDITIONAL]"
                 lines.append(f"{depth_branch} {icon} {tag_name} - {len(syms)} 個符號:")
 
             sub_prefix = "    " if is_last_depth else "│   "
@@ -1047,7 +1047,7 @@ class ResultFormatter:
 
         if budget_reached and remaining_count > 0:
             if is_md:
-                lines.append(f"\n> 💡 *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個受影響符號；可附加 `--limit=N` 查看更多)*")
+                lines.append(f"\n> [*] *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個受影響符號；可附加 `--limit=N` 查看更多)*")
             else:
                 lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個受影響符號；可附加 --limit=<N> 查看完整輸出)")
 

@@ -24,6 +24,8 @@
 | **DN-12** | **管線門面解耦、8,000 字元預算動態衰減與全域切片去重純化** | `formatter.py`, `pipeline.py`, `engine.py` | `engine.py` 瘦身 80.8% 轉為輕量 Facade (338 行)；輸出上限由 12,500 收斂為 8,000 字元並實作階梯平滑衰減；以 `UniversalRedundancyFilter` 徹底剔除 Docstring、重疊 Heading、License 與空白行，極大化資訊密度。 |
 | **DN-14** | **JIT 10 符號動態探針、向量熔斷降級、CPU 自適應防飢餓與 CLI UX** | `config.py`, `pipeline.py`, `cli.py` | 實作 10 符號動態探針與 5 秒超時熔斷退回純 BM25；支援 local 向量開關、自訂模型與 CPU 執行緒自適應；屏蔽 HF 雜訊並保障 `--json` 純淨。 |
 | **DN-15** | **專屬 HotReloadServer、Watchdog 500ms 防抖、Pre-dispatch 喚醒與日誌治理** | `daemon.py`, `hook.core.py`, `config.py` | 專屬後台服務整併 AST/BM25/Graph/Vector 熱修補；支援 hook 自動喚醒、閒置超時自動關閉；PID 隔離至 `cache://`、3 代滾動日誌與版本變更強制重啟。 |
+| **DN-21** | **常駐 ServiceWorker 納管、微內核原語對齊與快取 mtime 熱自癒** | `service.py`, `engine.py`, `pipeline.py` | 移除自製守護進程與 CLI `daemon` 命令，收斂為 `KnowledgeDBServiceWorker` 委由 `server` 模組 Master 託管；記憶體快取透過 microsecond `mtime` 比對熱刷新；全面對齊 `core.vfs.write_bytes(atomic=True)` 與 `core.platform.lock.InterProcessLock`。 |
+| **DN-22** | **死碼清理與冷熱啟動零感知架構 (Optional 插槽化)** | `service.py`, `pipeline.py`, `manifest.json` | 徹底刪除 `daemon.py` 與 `hook.core.py`，業務邏輯對冷/熱啟動零感知；`manifest.json` 引入 `optional` 欄位並將 `server` 轉為非強制選用擴充模組。 |
 
 ---
 
@@ -421,4 +423,86 @@
 - **效益與驗證**：
   - 新增 FT-20、FT-21、FT-22 單元測試，159 項自訂與契約測試 100% 通過。
   - 實機驗證多次連續啟動無逾時、無死鎖、單例穩定複用，JIT 自動跳過使檢索延遲降至 sub-50ms。
+
+---
+
+### [DN-21] 常駐 ServiceWorker 納管、微內核原語對齊與記憶體快取 mtime 微秒級熱自愈
+
+- **背景與動機**：
+  - 模組先前自建之 `HotReloadServer` 自行處理 Popen、Windows Job Object Breakaway、Console 視窗、PID 鎖檔與日誌輪轉，與專案微內核架構職責重複且維護成本高昂。
+  - 在微內核架構重構中，通用服務層已由 `server` 模組統一承擔。知識庫後台任務應專注於檔案監聽與索引修補，進程生命週期與 IPC 應全權移交。
+- **架構決策與實作**：
+  1. **收斂為 `KnowledgeDBServiceWorker`**：
+     - 繼承 `server.service.BaseServiceWorker`，命名為 `"knowledge-db-watcher"`，透過 `server.master` 動態載入並納管生命週期。
+     - 徹底移除 CLI `knowledge-db daemon` 子命令及其 Usage 說明，不再向後相容。
+  2. **預熱事件與記憶體快取 Eager Preload**：
+     - 響應 `server_worker_warming` 核心事件，呼叫 `KnowledgeEngine.pre_warm()` 提前將 FastEmbed 向量模型單例與倒排索引/圖譜快照載入記憶體。
+  3. **微秒級 mtime 快取比對與熱自癒**：
+     - `_GLOBAL_INDEX_CACHE` 維護 `unified_mtime` 與 `graph_mtime`，查詢前以微秒級精度檢驗磁碟 snapshot 之 mtime，若有變更則就地原地重載記憶體快照。
+  4. **微內核原語對齊**：
+     - 快照寫入全面對齊 `core.vfs.write_bytes(atomic=True)`，排他鎖全面採用 `core.platform.lock.InterProcessLock`。
+- **效益與驗證**：
+  - 瘦身 `daemon.py`，大幅減輕知識庫模組非核心負擔。
+  - 全套測試 100% 通過（140/140），且通過 `dev check knowledge-db` 合規驗證。
+
+---
+
+### [DN-22] 領域模組對冷/熱啟動零感知架構與 Optional 依賴插槽化
+
+- **背景與動機**：
+  - 在完成 sub_04 引入 `KnowledgeDBServiceWorker` 並納管至 `server` 模組後，歷史遺留的 `daemon.py` 與 `hook.core.py` 仍殘留在知識庫源碼中，造成死碼與架構冗餘。
+  - 此外，`knowledge-db` 在本質上是一個獨立的檢索與知識庫分析工具，`server` 的常駐自癒為加速擴充功能，而非不可或缺的硬性相依（Hard Dependency）。若強制將 `server` 列在 `dependencies` 中，將破壞最小化運行與靈活部署原則。
+- **架構決策與實作**：
+  1. **冷/熱啟動零感知原則 (Zero-Awareness of Daemon/Cold-Hot)**：
+     - 徹底刪除 `knowledge_db/daemon.py` 與 `scripts/hook.core.py`。
+     - 領域模組不再感知自身是在前台一次性 CLI 執行（冷模式 JIT 自癒）或在背景常駐進程執行（由 `server.master` 託管之 worker），業務管線只專注於 `process(args)`。
+     - `pipeline.py` 檢索流水線移除對 `daemon.py` 的輪詢與探測邏輯，純粹回歸檔案變更檢測。
+  2. **Manifest `optional` 欄位規範與安裝提示**：
+     - `manifest.json` 新增 `optional` 欄位規範：
+       ```json
+       "optional": {
+         "server": {
+           "version": ">=1.0.0",
+           "hint": "提供常駐背景檔案監聽熱自癒與極速預熱派發"
+         }
+       }
+       ```
+     - `core.installer` 於下載工具鏈安裝完成後，若發現有 `optional` 模組尚未安裝，自動提示其功能說明與建議安裝指令。
+     - `dev.checker` 擴充靜態合規性檢核，驗證 `optional` 物件結構（需包含 `version` 與 `hint` 且為字串）。
+  3. **動態弱引用與 Fallback 保證**：
+     - `knowledge_db/service.py` 內建抽象 `BaseServiceWorker` fallback 機制，即便環境未安裝 `server` 模組，`knowledge-db` 亦完全不拋出 `ImportError`，以 JIT 冷模式 100% 獨立運行。
+- **效益與驗證**：
+  - 源碼徹底消除死碼 600+ 行，架構邊界純淨化。
+  - 單元測試 140/140 PASSED (100%)，`dev check` 合規檢驗 100% PASSED。
+
+---
+
+### [DN-23] Watcher 背景接管自癒與前台搜尋 0ms 略過同步掃描
+
+- **背景與動機**：
+  - 歷史架構中，每次執行搜尋時前台管線（`Pipeline.search`）均會主動檢查是否有變更並觸發 JIT 掃描與同步重建。
+  - 當引入背景常駐 Watcher 時，前台同步掃描會與背景 Watcher 的 500ms 防抖修補發生競爭狀態（Race Condition），導致搜尋調用被無謂阻塞達 1.7 秒以上，違背常駐服務加速的初衷。
+- **架構決策與實作**：
+  1. **職責明確劃分**：
+     - 當背景 Watcher 啟動時，於 `.knowledge_db/indices/` 寫入常駐標記 `.watcher_active`。
+     - 前台搜尋管線探測到 `.watcher_active` 存在且無 dirty flag 時，前台 0ms 直接略過同步掃描與熱修補，100% 將磁碟變更自癒交由背景 Watcher 防抖執行。
+  2. **非阻塞記憶體快照就地重載**：
+     - 前台僅比對快照二進位檔案之微秒級 `mtime`；若背景已完成熱修補，前台僅在記憶體原地重載快照，檢索響應重回 sub-50ms 瞬發。
+- **效益與驗證**：
+  - 徹底消除前台與背景 Watcher 的防抖競態，前台查詢 0ms 阻塞。
+
+---
+
+### [DN-24] SpaceManager 空間路徑與 Contributes 記憶化快取加速 (_include_cache)
+
+- **背景與動機**：
+  - 實機量測 `knowledge-db status` 指令耗時高達 7.1 秒。經子操作 Profiling 剖析，瓶頸並非檔案快照反序列化或向量加載，而是 `status()` 計算各 Space 所屬檔案數量時，對 293 個快照檔案 x 3 個空間重複執行了 879 次 `_file_belongs_to_space`。
+  - 每次調用深入 `SpaceManager.resolve_space_include`，重複解析 `core.contributes.get("knowledge-db")` 並調用 `Path.resolve()` 2600+ 次。
+- **架構決策與實作**：
+  1. **記憶化快取 (`_include_cache`)**：
+     - 在 `SpaceManager` 引入 `self._include_cache: Dict[Tuple[str, tuple], List[Path]] = {}`。
+     - 首次解析 space 的 includes/excludes 清單後予以快取，同一次進程或生命週期內後續比對直接自記憶體提取已解析之絕對路徑。
+- **效益與驗證**：
+  - `knowledge-db status` 執行總耗時由 7.1 秒暴降至 0.14 秒，核心統計計算僅耗時 14 毫秒，效能提升達 50 倍以上。
+
 

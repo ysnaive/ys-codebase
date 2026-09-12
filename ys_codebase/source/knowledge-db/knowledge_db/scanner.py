@@ -77,18 +77,22 @@ class BinarySnapshotManager:
             buffer.extend(entry)
             buffer.extend(path_bytes)
 
-        temp_fd, temp_path = tempfile.mkstemp(dir=str(target_path.parent), prefix="meta_tmp_", suffix=".bin")
         try:
-            with os.fdopen(temp_fd, "wb") as f:
-                f.write(buffer)
-            os.replace(temp_path, str(target_path))
-        except Exception as e:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-            raise e
+            from core.vfs import write_bytes
+            write_bytes(target_path, buffer, atomic=True)
+        except Exception:
+            temp_fd, temp_path = tempfile.mkstemp(dir=str(target_path.parent), prefix="meta_tmp_", suffix=".bin")
+            try:
+                with os.fdopen(temp_fd, "wb") as f:
+                    f.write(buffer)
+                os.replace(temp_path, str(target_path))
+            except Exception as e:
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
+                raise e
 
     @classmethod
     def load(cls, snapshot_path: Union[str, Path]) -> Optional[Dict[str, Tuple[float, int]]]:

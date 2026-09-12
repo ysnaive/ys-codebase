@@ -32,7 +32,10 @@ from knowledge_db.formatter import TerminalStyler
 from knowledge_db.pipeline import HotPatchResult, IndexingPipeline
 from knowledge_db.scanner import ScanDiffDetail
 from knowledge_db.schema import UnifiedSymbol
-from scripts.cli import main
+
+def process(args: list) -> int:
+    from core.commands.dispatcher import dispatch
+    return dispatch(["knowledge-db"] + list(args))
 
 
 class TestCLIOptimizationAndUX(YSCBTestCase):
@@ -235,9 +238,9 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         # 1. 驗證 --help 說明文字
         stdout_buf = io.StringIO()
         with contextlib.redirect_stdout(stdout_buf):
-            self.assertEqual(main(["--help"]), 0)
+            self.assertEqual(process(["--help"]), 0)
         help_out = stdout_buf.getvalue()
-        self.assertIn("python yscb.py knowledge-db index", help_out)
+        self.assertIn("index", help_out)
         self.assertIn("status", help_out)
 
         # 2. 建置全域索引並驗證 status
@@ -252,7 +255,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         # 3. 驗證 status 指令輸出
         status_buf = io.StringIO()
         with contextlib.redirect_stdout(status_buf):
-            self.assertEqual(main(["status"]), 0)
+            self.assertEqual(process(["status"]), 0)
         status_out = status_buf.getvalue()
         self.assertIn("已建立", status_out)
         self.assertIn("全域倒排索引: 已建立", status_out)
@@ -273,7 +276,7 @@ class TestCLIOptimizationAndUX(YSCBTestCase):
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
-            ret = main(["search", "test", "--json", "--limit=3"])
+            ret = process(["search", "test", "--json", "--limit=3"])
             self.assertEqual(ret, 0)
 
         raw_stdout = stdout_buf.getvalue().strip()

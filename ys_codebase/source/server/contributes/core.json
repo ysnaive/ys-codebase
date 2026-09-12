@@ -1,0 +1,85 @@
+{
+  "commands": {
+    "module_alias": [],
+    "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
+    "cmd": {
+      "start": {
+        "description": "Start the persistent server daemon",
+        "tier": "safe",
+        "server_compatible": false,
+        "options": {
+          "mode": {
+            "console": {
+              "description": "Force foreground console mode (for debugging)",
+              "alias": ["c"]
+            },
+            "daemon": {
+              "description": "Force detached background daemon mode",
+              "alias": ["d"]
+            }
+          },
+          "timeout": {
+            "ttl": {
+              "description": "Idle timeout in seconds (0 to disable, default: config)",
+              "alias": ["t"],
+              "args": {
+                "seconds": {
+                  "description": "Idle timeout in seconds"
+                }
+              }
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "手動啟動常駐守護進程，支援前台 (--console) 與背景 (--daemon)"
+          ],
+          "cons": []
+        }
+      },
+      "stop": {
+        "description": "Stop the running persistent server daemon",
+        "tier": "safe",
+        "server_compatible": false,
+        "options": {
+          "mode": {
+            "force": {
+              "description": "Force kill daemon and worker process tree",
+              "alias": ["f"]
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "優雅停止常駐守護進程，支援強殺兜底 (--force)"
+          ],
+          "cons": []
+        }
+      },
+      "status": {
+        "description": "Inspect persistent server daemon and worker status",
+        "tier": "safe",
+        "server_compatible": true,
+        "options": {},
+        "usage": {
+          "pros": [
+            "檢視 Master、Worker PID、動態 Port 與 Idle TTL 狀態"
+          ],
+          "cons": []
+        }
+      },
+      "reload": {
+        "description": "Hot reload warm worker subprocess",
+        "tier": "safe",
+        "server_compatible": false,
+        "options": {},
+        "usage": {
+          "pros": [
+            "手動重啟 Worker 子進程，刷新 Python 代碼記憶體"
+          ],
+          "cons": []
+        }
+      }
+    }
+  }
+}
