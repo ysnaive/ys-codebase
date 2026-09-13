@@ -9,6 +9,14 @@
   - **Windows 符號連結警告前置抑制**：自動配置 `HF_HUB_DISABLE_SYMLINKS_WARNING=1`，防止 Windows 無符號連結權限時傾倒大段警告。
   - **全套測試 100% 通過與文檔完備**：重構 `test_retrieval.py` 測試套件，淘汰過期常數並補齊 FT-10~13；`knowledge-db` 全套 148/148 測試全數通過（148 Passed, 0 Failed）；`dev check` 0 警告 0 錯誤；更新 `docs/knowledge-db/README.md` 補充 VC++ 14.4x 環境指引。
 
+### sub_02_host_and_core_distribution_lifecycle (Verified)
+- **Host 起手腳本遠端發布庫自更新修復、動態 Core 版本探測、init 自癒與快取即時失效**：
+  - **DEFAULT_PROVIDER_URL 修正與 self-update 宿主自更新恢復**：預設 URL 修正為官方發布庫 `.../release`，`self-update` 自動去除 `/release` 錨定儲存庫根目錄之 `yscb.py`，支援 `--url` 自訂覆寫與備份原子替換回滾防禦；確立 `init` 與 `self-update` 為唯二純宿主自舉指令，支援獨立結構化 `-h`/`--help` 渲染。
+  - **動態 Core 版本探測與自包含 Semver 解析**：`cmd_init` 支援自本地目錄或遠端 `index.json` 動態解算最高 semver 版本，徹底取代硬編碼 `1.0.0.0.zip`；全新工作區未指定 `yscb_root` 時預設為 `".yscb"`。
+  - **`init --fix` 健全度檢查、core 缺失自癒與連鎖 Reload**：工作區已具備組態時，若 core 模組完好則提示已就緒（不重複下載刷新，`--force` 可強制覆蓋）；若 core 模組缺失或損壞則自動自癒修復並連鎖觸發 `core reload`。
+  - **Git 忽略規則防護與快取即時失效**：`INTERNAL_IGNORE_PATTERNS` 納入 `yscb.py.bak` 與 `*.bak`；`UpdateChecker` 實作 `invalidate_cache`，於模組安裝與升級成功後即時清除過期快取。
+  - **全套測試 100% 通過與計畫合規驗證**：新增 `TestDistributionLifecycle` 單元測試套件（FT-01 ~ FT-09 共 9/9 Passed）；5 大模組 `dev check` 全數通過（0 警告 0 失敗）；計畫合規性檢核（`plan verify`）通過；開發者實機 UX 驗收通過。
+
 ## 2026_09_12_1346_server_auto_spawn_adaptive_degrade (Completed)
 
 - **Server 背景自動喚醒環境權限自適應探針、auto_spawn 雙層組態與 Agents 剛性常駐導引**：

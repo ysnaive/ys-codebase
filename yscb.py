@@ -3,6 +3,7 @@ YS-Codebase Ultra-Thin Single-File Host Bootstrapper & Thin Router.
 100% Python Standard Library, Zero Third-Party Dependencies.
 """
 from typing import Any, Dict, List, Optional, Tuple
+import ast
 import difflib
 import importlib.util
 import json
@@ -15,13 +16,14 @@ import urllib.request
 import zipfile
 
 CONFIG_FILENAME: str = "yscb.config.json"
-DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release"
+DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/release"
 INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
 INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
 
 CORE_COMMANDS: set = {
     "install", "update", "remove", "list", "status",
-    "rollback", "reload", "restore", "bootstrap", "uri", "config", "event", "help"
+    "rollback", "reload", "restore", "bootstrap", "uri", "config", "event", "help",
+    "self-update"
 }
 
 _MODULE_CACHE: Dict[str, Any] = {}
@@ -95,35 +97,346 @@ def _fetch_and_extract_zip(source: str, dest_dir: str) -> None:
         _extract_safe_zip(source, dest_dir)
 
 
-def cmd_init(argv: List[str]) -> int:
-    """唯一入口職責 ①：極簡自舉：初始化工作區並解壓 core 模組。"""
+def _resolve_self_update_target_url(provider: str, custom_url: Optional[str] = None) -> str:
+    """解算 self-update 目標 URL，智慧錨定至 repo 根目錄之 yscb.py。"""
+    if custom_url:
+        return custom_url
+    p = (provider or DEFAULT_PROVIDER_URL).strip().rstrip("/")
+    if p.endswith(".py") or (not p.startswith(("http://", "https://", "file://")) and os.path.isfile(p)):
+        return p
+    if "/release" in p:
+        prefix = p.split("/release")[0]
+        return f"{prefix}/yscb.py"
+    if not p.startswith(("http://", "https://")):
+        parent_candidate = os.path.join(os.path.dirname(p), "yscb.py")
+        if os.path.isfile(parent_candidate):
+            return parent_candidate
+        return os.path.join(p, "yscb.py")
+    return f"{p}/yscb.py"
+
+
+def _render_self_update_help() -> str:
+    """渲染 self-update 指令幫助訊息。"""
+    lines = [
+        "=" * 80,
+        "Command: python yscb.py self-update",
+        "=" * 80,
+        "Description: Upgrade yscb.py host bootstrapper from repository root",
+        "Security   : [SAFE] 自主安全 (safe)",
+        "Server Mode: [COLD-RUN] Local Cold Run Only",
+        "",
+        "USAGE:",
+        "  python yscb.py self-update [options]",
+        "",
+        "OPTIONS:",
+        "  -- [Group: source]",
+        "    --url <target_url>             Custom URL to download yscb.py",
+        "",
+        "GLOBAL OPTIONS:",
+        "  -h, --help                     Show this help message and exit",
+        "",
+        "RECOMMENDED USAGE (Pros):",
+        "  [+] 升級宿主工程起手腳本 yscb.py 至最新版本",
+        "=" * 80,
+    ]
+    return "\n".join(lines)
+
+
+def cmd_self_update(argv: List[str]) -> int:
+    """自遠端 Provider 或指定 URL 更新 yscb.py 本體。"""
+    if "-h" in argv or "--help" in argv or (argv and argv[0] == "help"):
+        print(_render_self_update_help())
+        return 0
     provider = DEFAULT_PROVIDER_URL
-    clean_argv = [a for a in argv if not a.startswith("--provider=")]
+    custom_url = None
+    for arg in argv:
+        if arg.startswith("--provider="):
+            provider = arg.split("=", 1)[1].strip("\"'")
+        elif arg.startswith("--url="):
+            custom_url = arg.split("=", 1)[1].strip("\"'")
+
+    target_url = _resolve_self_update_target_url(provider, custom_url)
+    print(f"[yscb] Checking for latest yscb.py from: {target_url}")
+
+    current_file = os.path.abspath(__file__)
+    tmp_file = current_file + ".tmp"
+    bak_file = current_file + ".bak"
+
+    try:
+        if os.path.isfile(target_url):
+            with open(target_url, "r", encoding="utf-8") as f:
+                content = f.read()
+        elif target_url.startswith("file://"):
+            file_path = urllib.request.url2pathname(target_url[7:])
+            while file_path.startswith("//"):
+                file_path = file_path[1:]
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        else:
+            req = urllib.request.Request(target_url, headers={"User-Agent": "yscb-host/2.0"})
+            if "127.0.0.1" in target_url or "localhost" in target_url:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(req, timeout=10) as resp:
+                    content = resp.read().decode("utf-8")
+            else:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    content = resp.read().decode("utf-8")
+    except Exception as e:
+        print(f"[yscb] Error: Failed to download update from {target_url}: {e}")
+        return 1
+
+    try:
+        ast.parse(content, filename="yscb.py")
+    except SyntaxError as e:
+        print(f"[yscb] Error: Downloaded script has invalid Python syntax: {e}")
+        return 1
+
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(content)
+        shutil.copyfile(current_file, bak_file)
+        os.replace(tmp_file, current_file)
+        print(f"[yscb] yscb.py updated successfully (backup saved at {os.path.basename(bak_file)}).")
+        return 0
+    except Exception as e:
+        print(f"[yscb] Error: Failed to replace script: {e}")
+        if os.path.exists(tmp_file):
+            try:
+                os.remove(tmp_file)
+            except Exception:
+                pass
+        return 1
+
+
+def _parse_simple_semver(v_str: str) -> Tuple[int, int, int, int, bool]:
+    """輕量 4-tuple semver 解析器：返回 (major, minor, patch, revision, is_build)。"""
+    raw = str(v_str).strip()
+    is_build = raw == "build" or raw.endswith(".build")
+    if raw.endswith(".build"):
+        raw = raw[:-6]
+    elif raw == "build":
+        return (0, 0, 0, 0, True)
+
+    parts: List[int] = []
+    for token in raw.split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+
+    while len(parts) < 4:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2], parts[3], is_build)
+
+
+def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    動態探測 Provider 中的最新 core 模組。
+    返回 (version_str, package_path_or_url)。
+    """
+    p = (provider or DEFAULT_PROVIDER_URL).strip().rstrip("/")
+    # 1. 本地目錄探測
+    if not p.startswith(("http://", "https://")):
+        cand_dirs = [
+            os.path.join(p, "core"),
+            os.path.join(p, "release", "core"),
+            os.path.join(p),
+        ]
+        found_versions: Dict[str, str] = {}
+        for c_dir in cand_dirs:
+            if not os.path.isdir(c_dir):
+                continue
+            idx_p = os.path.join(c_dir, "index.json")
+            if os.path.isfile(idx_p):
+                try:
+                    with open(idx_p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and isinstance(data.get("versions"), list):
+                        for v in data["versions"]:
+                            zip_cand = os.path.join(c_dir, f"{v}.zip")
+                            if os.path.isfile(zip_cand):
+                                found_versions[v] = zip_cand
+                except Exception:
+                    pass
+            for f in os.listdir(c_dir):
+                if f.endswith(".zip"):
+                    v_name = f[:-4]
+                    found_versions[v_name] = os.path.join(c_dir, f)
+                elif os.path.isdir(os.path.join(c_dir, f)) and os.path.isfile(os.path.join(c_dir, f, "manifest.json")):
+                    try:
+                        with open(os.path.join(c_dir, f, "manifest.json"), "r", encoding="utf-8") as mf:
+                            m_data = json.load(mf)
+                        v_name = m_data.get("version", f)
+                        found_versions[v_name] = os.path.join(c_dir, f)
+                    except Exception:
+                        pass
+
+        if found_versions:
+            clean_pairs = []
+            for v, path in found_versions.items():
+                parsed = _parse_simple_semver(v)
+                if not parsed[4]:
+                    clean_pairs.append((parsed, v, path))
+            if clean_pairs:
+                clean_pairs.sort(key=lambda x: x[0], reverse=True)
+                return clean_pairs[0][1], clean_pairs[0][2]
+            all_pairs = sorted([(_parse_simple_semver(v), v, pth) for v, pth in found_versions.items()], key=lambda x: x[0], reverse=True)
+            return all_pairs[0][1], all_pairs[0][2]
+
+        for c_dir in [os.path.join(p, "core"), p]:
+            if os.path.isdir(c_dir) and os.path.isfile(os.path.join(c_dir, "manifest.json")):
+                try:
+                    with open(os.path.join(c_dir, "manifest.json"), "r", encoding="utf-8") as mf:
+                        m_data = json.load(mf)
+                    return m_data.get("version", "1.0.0.0"), c_dir
+                except Exception:
+                    return "1.0.0.0", c_dir
+        return None, None
+
+    # 2. 遠端 HTTP/HTTPS 探測
+    try:
+        idx_url = f"{p}/core/index.json"
+        req = urllib.request.Request(idx_url, headers={"User-Agent": "yscb-host/2.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("versions"), list):
+            clean_versions = [v for v in data["versions"] if not _parse_simple_semver(v)[4]]
+            if clean_versions:
+                best_v = sorted(clean_versions, key=_parse_simple_semver, reverse=True)[0]
+                return best_v, f"{p}/core/{best_v}.zip"
+    except Exception:
+        pass
+
+    return "1.1.0.1", f"{p}/core/1.1.0.1.zip"
+
+
+def _is_core_healthy(core_module_dir: str) -> Tuple[bool, Optional[str]]:
+    """檢測 core 模組安裝是否正常完整。"""
+    manifest_path = os.path.join(core_module_dir, "manifest.json")
+    if not os.path.isdir(core_module_dir) or not os.path.isfile(manifest_path):
+        return False, None
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as mf:
+            data = json.load(mf)
+        ver = data.get("version")
+        entry = data.get("entry", "scripts/cli.py")
+        if not ver or not os.path.isfile(os.path.join(core_module_dir, entry)):
+            return False, None
+        return True, ver
+    except Exception:
+        return False, None
+
+
+def _render_init_help() -> str:
+    """渲染 init 指令幫助訊息。"""
+    lines = [
+        "=" * 80,
+        "Command: python yscb.py init",
+        "=" * 80,
+        "Description: Initialize workspace and unpack core module",
+        "Security   : [SAFE] 自主安全 (safe)",
+        "Server Mode: [COLD-RUN] Local Cold Run Only",
+        "",
+        "USAGE:",
+        "  python yscb.py init [root] [options]",
+        "",
+        "ARGUMENTS:",
+        "  [root]                         Target directory for YSCB environment (default: .yscb) [optional]",
+        "",
+        "OPTIONS:",
+        "  -- [Group: mode]",
+        "    --fix                          Check and repair damaged or missing core module",
+        "    --force                        Force re-download and re-unpack core module",
+        "  -- [Group: source]",
+        "    --provider <url>               Module provider URL or path (alias: -p)",
+        "",
+        "GLOBAL OPTIONS:",
+        "  -h, --help                     Show this help message and exit",
+        "",
+        "RECOMMENDED USAGE (Pros):",
+        "  [+] 初次引入 YSCB 或自癒修復核心運行時環境",
+        "=" * 80,
+    ]
+    return "\n".join(lines)
+
+
+def cmd_init(argv: List[str]) -> int:
+    """唯一入口職責 ①：極簡自舉：初始化工作區或自癒修復並解壓 core 模組。"""
+    if "-h" in argv or "--help" in argv or (argv and argv[0] == "help"):
+        print(_render_init_help())
+        return 0
+    is_fix = "--fix" in argv
+    is_force = "--force" in argv
+    clean_argv = [a for a in argv if a not in ("--fix", "--force") and not a.startswith("--provider=")]
+    provider = DEFAULT_PROVIDER_URL
+    has_explicit_provider = False
     for a in argv:
         if a.startswith("--provider="):
             provider = a.split("=", 1)[1].strip("\"'")
-    yscb_root = clean_argv[0] if clean_argv else "."
-    base_dir, cfg_path = os.path.abspath(os.getcwd()), os.path.join(os.path.abspath(os.getcwd()), CONFIG_FILENAME)
+            has_explicit_provider = True
+
+    base_dir = os.path.abspath(os.getcwd())
+    cfg_path = os.path.join(base_dir, CONFIG_FILENAME)
+    has_cfg = os.path.isfile(cfg_path)
+
+    if has_cfg:
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception as e:
+            print(f"[yscb] Error: Configuration at '{cfg_path}' is corrupted: {e}")
+            return 1
+
+        cfg_yscb_root = cfg.get("yscb_root", clean_argv[0] if clean_argv else ".yscb")
+        cfg_provider = provider if has_explicit_provider else cfg.get("default_provider", provider)
+        yscb_abs = os.path.normpath(os.path.join(base_dir, cfg_yscb_root))
+        core_module_dir = os.path.join(yscb_abs, ".modules", "core")
+        is_healthy, current_ver = _is_core_healthy(core_module_dir)
+
+        if is_fix and is_healthy and not is_force:
+            print(f"[yscb] Core module at '{cfg_yscb_root}' is already healthy (core@{current_ver}). No repair needed.")
+            return 0
+
+        if is_fix or not is_healthy:
+            print(f"[yscb] Repairing core module at '{cfg_yscb_root}' from provider '{cfg_provider}'...")
+            ver, source = _discover_latest_core(cfg_provider)
+            if not source or not ver:
+                print(f"[yscb] Error: Cannot locate core package in provider '{cfg_provider}'.")
+                return 1
+            os.makedirs(os.path.join(yscb_abs, ".mirror", "core"), exist_ok=True)
+            _fetch_and_extract_zip(source, core_module_dir)
+            if "installed_modules" not in cfg or not isinstance(cfg["installed_modules"], dict):
+                cfg["installed_modules"] = {}
+            cfg["installed_modules"]["core"] = {
+                "version": ver,
+                "installed_at": "fix",
+                "provider": cfg_provider,
+            }
+            cfg["default_provider"] = cfg_provider
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            print(f"[yscb] Successfully repaired core (core@{ver}). Triggering initial reload...")
+            _ensure_private_venv_path(yscb_abs)
+            if core_module_dir not in sys.path:
+                sys.path.insert(0, core_module_dir)
+            os.environ["YSCB_HOST_DIR"] = base_dir
+            os.environ["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"
+            return dispatch_module("core", ["reload"])
+        else:
+            print(f"[yscb] Error: Configuration already exists at '{cfg_path}'. Use 'python yscb.py init --fix' to repair or reinstall core.")
+            return 1
+
+    # 全新初始化
+    yscb_root = clean_argv[0] if clean_argv else ".yscb"
     yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
-    if os.path.exists(cfg_path):
-        print(f"[yscb] Error: Configuration already exists at '{cfg_path}'.")
-        return 1
-    os.makedirs(os.path.join(yscb_abs, ".mirror", "core"), exist_ok=True)
-    candidates = [
-        os.path.join(provider, "core", "1.0.0.0.zip"),
-        os.path.join(provider, "release", "core", "1.0.0.0.zip"),
-        os.path.join(provider, "core"),
-    ]
-    source = (
-        next((c for c in candidates if os.path.exists(c)), None)
-        if os.path.isdir(provider)
-        else (provider.rstrip("/") + "/core/1.0.0.0.zip" if provider.startswith(("http://", "https://")) else None)
-    )
-    if not source:
+    print(f"[yscb] Initializing environment at '{yscb_root}'...")
+    ver, source = _discover_latest_core(provider)
+    if not source or not ver:
         print(f"[yscb] Error: Cannot locate core package in provider '{provider}'.")
         return 1
-    print(f"[yscb] Initializing environment at '{yscb_root}'...")
-    _fetch_and_extract_zip(source, os.path.join(yscb_abs, ".modules", "core"))
+
+    os.makedirs(os.path.join(yscb_abs, ".mirror", "core"), exist_ok=True)
+    core_module_dir = os.path.join(yscb_abs, ".modules", "core")
+    _fetch_and_extract_zip(source, core_module_dir)
     with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -131,7 +444,7 @@ def cmd_init(argv: List[str]) -> int:
                 "default_provider": provider,
                 "installed_modules": {
                     "core": {
-                        "version": "1.0.0.0",
+                        "version": ver,
                         "installed_at": "init",
                         "provider": provider,
                     }
@@ -142,7 +455,12 @@ def cmd_init(argv: List[str]) -> int:
             ensure_ascii=False,
         )
         f.write("\n")
-    print("[yscb] Successfully initialized. Triggering initial reload...")
+    print(f"[yscb] Successfully initialized (core@{ver}). Triggering initial reload...")
+    _ensure_private_venv_path(yscb_abs)
+    if core_module_dir not in sys.path:
+        sys.path.insert(0, core_module_dir)
+    os.environ["YSCB_HOST_DIR"] = base_dir
+    os.environ["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"
     return dispatch_module("core", ["reload"])
 
 
@@ -278,9 +596,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
-    # 1. 唯一入口職責 ①：init 自舉
+    # 1. 唯一入口職責 ①：自舉指令 (init, self-update 為唯二不經由 core 轉發的自舉)
     if argv and argv[0] == "init":
         return cmd_init(argv[1:])
+    if argv and argv[0] == "self-update":
+        return cmd_self_update(argv[1:])
 
     # 2. 唯一入口職責 ②：探測私有微環境 (.venv) 與設定安全邊界
     cfg_path, cfg = load_config()
@@ -311,7 +631,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         from core.commands import dispatch
         return dispatch(argv)
     except ImportError as e:
-        print(f"[yscb] Error: Environment not initialized or core module missing ({e}). Run 'python yscb.py init <yscbRoot>' first.")
+        print(f"[yscb] Error: Environment not initialized or core module missing ({e}). Run 'python yscb.py init' or 'python yscb.py init --fix' first.")
         return 1
 
 

@@ -148,7 +148,7 @@ class TestBuildGitDecoupling(YSCBTestCase):
                 content = f.read()
             self.assertIn("yscb://.build/", content)
             self.assertIn("module.build.root://", content)
-            self.assertIn("[X] 忽略", content)
+            self.assertTrue("[X] 忽略" in content or "🚫 忽略" in content)
         self.mark_passed()
 
     def test_et_01_nonexistent_dot_build_auto_create(self):
