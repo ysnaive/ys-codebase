@@ -285,7 +285,7 @@ class IndexingPipeline:
                     dim = vectors.shape[1] if hasattr(vectors, "shape") and len(vectors.shape) > 1 else None
                 else:
                     import numpy as np
-                    dim = 384
+                    dim = self.embedding_service.dimension
                     vectors = np.zeros((0, dim), dtype=np.float32)
                 vec_idx = VectorIndex(model_name=model_name, dim=dim)
                 vec_idx.build(doc_ids, vectors)
@@ -296,7 +296,11 @@ class IndexingPipeline:
                 logger.warning(f"Failed building/saving vector index: {e}")
                 _report(4, f"向量特徵嵌入建置失敗: {e}", (time.time() - t0) * 1000)
         else:
-            _report(4, "向量特徵嵌入 (FastEmbed 不可用，略過)", (time.time() - t0) * 1000)
+            reason_str = ""
+            last_err = getattr(self.embedding_service, "last_error", None)
+            if last_err and isinstance(last_err, dict):
+                reason_str = f" ({last_err.get('error_type')}: {last_err.get('message')})"
+            _report(4, f"向量特徵嵌入 (FastEmbed 不可用{reason_str}，略過)", (time.time() - t0) * 1000)
 
         # Stage 5: 二進位索引與快照原子持久化
         t0 = time.time()
@@ -452,7 +456,7 @@ class IndexingPipeline:
                     vector_degraded = True
                     degrade_notice = (
                         f"[knowledge-db:notice] 向量快取與當前模型 '{expected_model}' (維度要求: {expected_dim}) 不相容已降級（本次使用純 BM25 模式）。"
-                        "請執行 `python yscb.py knowledge-db index` 重建向量索引，"
+                        "請執行 `python yscb.py knowledge-db index --force` 重建向量索引，"
                         "或於 yscb.config.json / yscb.config.local.json 設定 `knowledge-db.enable_vector_search: false` 關閉向量語意搜尋。"
                     )
                 elif self.embedding_service.is_available:
