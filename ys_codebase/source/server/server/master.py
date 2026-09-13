@@ -471,6 +471,11 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                     return
                 worker_pid = supervisor._worker_proc.pid if supervisor._worker_proc else 0
                 idle_left = max(0.0, supervisor.idle_timeout_sec - (time.time() - supervisor._last_active_time))
+                watcher_status = {
+                    "enabled": supervisor.enable_watcher,
+                    "active": (supervisor.watcher is not None and supervisor.watcher.is_running),
+                    "monitored_dir": supervisor.watcher.modules_dir if supervisor.watcher else None,
+                }
                 status_payload = {
                     "status": "running",
                     "state": "ready" if is_process_alive(worker_pid) else "restarting",
@@ -481,6 +486,7 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                     "tasks_executed": supervisor._tasks_executed,
                     "idle_seconds_left": idle_left,
                     "services": supervisor.service_manager.get_status(),
+                    "watcher": watcher_status,
                 }
                 body = json.dumps(status_payload).encode("utf-8")
                 self.send_response(200)

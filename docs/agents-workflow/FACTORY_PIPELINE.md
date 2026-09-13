@@ -77,5 +77,5 @@
 1. **步驟 1 (過往發布狀態獨立清理 - Pruning)**：分別讀取 Project 與 Local 歷史紀錄，比對全量物化檔案集合，精確刪除已停用 Target 或已刪除資產之實體檔案。
 2. **步驟 2 (提前解算新清單與分流集合)**：對所有已啟用的 Release Targets 提前完整解算目標檔案映射，並標註 Project 軌與 Local 軌歸屬清冊。
 3. **步驟 3 (原子寫入雙軌 Manifest)**：分別將 Project 軌 (`project://` 格式) 寫入 `storage://`，將 Local 軌 (絕對路徑格式) 寫入 `cache://`。
-4. **步驟 4 (物理落地與增量軟合併)**：比對磁碟現有內容執行增量寫入；所有檔案寫入顯式傳入 `newline="\n"`，與根目錄 `.gitattributes` 配合確保全專案純 LF 換行；若 `enable_agents_md: true`，對根目錄 `AGENTS.md` 執行無損軟合併。
+4. **步驟 4 (物理落地與增量軟合併)**：比對磁碟現有內容執行增量寫入；所有檔案寫入顯式傳入 `newline="\n"`，與根目錄 `.gitattributes` 配合確保全專案純 LF 換行；若 `enable_agents_md: true`，對根目錄 `AGENTS.md` 執行無損軟合併（管理區塊由中央標準庫單向注入以杜絕過期技能殘留，外部專案特化章節 100% 保留；專案特化技能擴充請透過 `config/agents-workflow/contribute.json` 宣告注入）。
 

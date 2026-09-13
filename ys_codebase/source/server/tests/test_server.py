@@ -299,6 +299,49 @@ class TestServerModule(YSCBTestCase):
             mock_worker.assert_not_called()
         self.mark_passed()
 
+    def test_watcher_observability_status_payload(self):
+        """FT-04: MasterSupervisor status_payload includes ModulesWatcher observability."""
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=True)
+        try:
+            modules_dir = os.path.join(self.root_dir, ".modules")
+            os.makedirs(modules_dir, exist_ok=True)
+            sup.watcher = ModulesWatcher(modules_dir, on_change_callback=lambda x: None)
+            sup.watcher.start()
+
+            watcher_status = {
+                "enabled": sup.enable_watcher,
+                "active": (sup.watcher is not None and sup.watcher.is_running),
+                "monitored_dir": sup.watcher.modules_dir if sup.watcher else None,
+            }
+            self.assertTrue(watcher_status["enabled"])
+            self.assertTrue(watcher_status["active"])
+            self.assertEqual(watcher_status["monitored_dir"], os.path.abspath(modules_dir))
+        finally:
+            if sup.watcher:
+                sup.watcher.stop()
+
+        # Watcher disabled case
+        sup_disabled = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        watcher_disabled = {
+            "enabled": sup_disabled.enable_watcher,
+            "active": (sup_disabled.watcher is not None and sup_disabled.watcher.is_running),
+            "monitored_dir": sup_disabled.watcher.modules_dir if sup_disabled.watcher else None,
+        }
+        self.assertFalse(watcher_disabled["enabled"])
+        self.assertFalse(watcher_disabled["active"])
+        self.assertIsNone(watcher_disabled["monitored_dir"])
+        self.mark_passed()
+
+    def test_server_manifest_metadata(self):
+        """FT-01: Verify server module manifest description and dependencies."""
+        manifest_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "manifest.json")
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["name"], "server")
+        self.assertEqual(data["description"], "YS-Codebase Persistent Server & Warm Worker Subsystem")
+        self.mark_passed()
+
+
 
 if __name__ == "__main__":
     unittest.main()

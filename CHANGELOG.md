@@ -1,6 +1,6 @@
 # 專案變更歷史 (Changelog)
 
-## 2026_09_13_1648_downstream_feedback_remediation (In Progress)
+## 2026_09_13_1648_downstream_feedback_remediation (Completed)
 
 ### sub_01_knowledge_db_embedding_and_diagnostics (Verified)
 - **FastEmbed 向量嵌入動態維度解析、DEFAULT_EMBEDDING_DIM 徹底淘汰與異常可觀測性強化**：
@@ -22,6 +22,22 @@
   - **組態階層防遮蔽守門 (SSOT 回歸)**：徹底移除 `knowledge-db` 在 `configurable/` 中的 `config.local.json` 模板，將運作預設值 (`jit_vector_timeout_seconds`, `max_threads`, `enable_hot_reload_server`, `hot_reload_server_inactivity_timer_sec`) 整合至 `config.project.json`；強化 `core.engine` 之 `_seed_or_update_config` 與 `act_deploy_configs_from_modules` 防禦機制，當 local infill 資料為空字典時絕不自動產生本機 `config.local.json`，徹底杜絕預設本機設定遮蔽團隊專案設定之缺陷。
   - **Hook 生命週期可觀測性強化**：於 `core.events:broadcast()` 增加 `verbose` 參數並支援自適應環境變數 (`YSCB_VERBOSE=1`, `YSCB_DEBUG=1`) 與命令列參數 (`--verbose`, `--debug`)；在 verbose 模式下輸出結構化執行狀態日誌 `[core:events]`，遇例外時輸出完整異常 Traceback 至 `sys.stderr`；於 `core.commands.dispatcher:_ensure_hooks()` 支援回傳結果字典 `Dict[str, Any]`，並於 verbose 模式下輸出分派完成摘要 `[core:dispatcher]`。
   - **全套測試 100% 通過與 Dogfooding 驗證**：新增 `TestConfigAndHookObservability` 單元測試套件（FT-01 與 FT-02 2/2 Passed）；`core` 全套 191/191 測試通過；`knowledge-db` 全套 148/148 測試通過；`dev check --all` 5 大模組全數通過；實機 Dogfooding 安裝與 `--verbose` / quiet 輸出驗證全數通過。
+
+### sub_04_server_dependency_and_architecture_migration (Verified)
+- **Server 依賴宣告完備、徹底移除舊版 Server 影響 (零向後相容包袱)、ModulesWatcher 可觀測性強化與架構專題手冊**：
+  - **模組宣告與中繼資料完備**：完善 `source/server/manifest.json` 描述為 `"YS-Codebase Persistent Server & Warm Worker Subsystem"`；核對 `knowledge-db` 之 `optional.server` 依賴宣告。
+  - **舊版 Server 影響徹底移除 (Zero Backward Compatibility)**：依指示不進行向後相容，維持最新版本純粹性；從 `source/knowledge-db/configurable/config.project.json` 及 `config/knowledge-db/config.project.json` 徹底刪除 `enable_hot_reload_server` 與 `hot_reload_server_inactivity_timer_sec`；從 `KnowledgeDBConfig` 徹底移除 `enable_hot_reload_server`、`hot_reload_server_inactivity_timer_sec`、`enable_server_console` 欄位與常數，移除 `is_jit_effective` 舊屬性，簡化 `resolve_jit_vector_timeout`，杜絕任何過渡向後相容負贅。
+  - **Modules Watcher 狀態可觀測性強化**：於 `ModulesWatcher` 封裝 `is_running` 唯讀屬性；於 `server.master` 之 `/api/status` 注入 `watcher` 狀態字典（包含 `enabled`, `active`, `monitored_dir`）；於 `server.scripts.cli:status` 輸出 `[*] Modules Watcher: ACTIVE (Monitoring .modules/)`。
+  - **專案知識庫標準對齊與架構專題手冊**：遵循 `/documentation` 標準撰寫 `docs/server/hot_reload_architecture_migration.md` 架構專題手冊，純粹記錄常駐中樞、Warm Worker、ModulesWatcher 與領域背景服務掛載協調機制，杜絕廢棄歷史參數與 diff 殘留；同步更新 `docs/knowledge-db/DESIGN_NOTES.md` (DN-15) 與雙向導航 README。
+  - **全套測試 100% 通過與 Dogfooding 驗證**：新增 `test_watcher_observability_status_payload`、`test_server_manifest_metadata` (server) 與 `test_ft_02_knowledgedb_config_purity` (knowledge-db)；`server` 測試 34/34 通過；`knowledge-db` 測試 149/149 通過；`dev check --all` 5 大模組全數通過；`server status` 實機即時呈現 Modules Watcher 狀態；計畫合規檢核 100% Passed。
+
+### sub_05_agents_workflow_managed_blocks_and_standards (Verified)
+- **專案特化技能宣告式擴充規範、管理區塊純粹單向覆寫、工作流相對路徑校準與狀態解析增強**：
+  - **專案特化技能宣告式擴充導引 (SSOT 原則)**：於 `AgentsStandards.md` 注入規範導引，指導下游專案一律透過 `config/agents-workflow/contribute.json` 宣告 `insert` 至 `AGENTS_SKILL_ROUTING` 錨點（宣告式一等公民，升級自動編譯注入，杜絕物化檔案衝突）；徹底消除字串反向猜測比對之不可判定性與殭屍過期技能復活風險。
+  - **管理區塊純粹單向覆寫與外部章節 100% 保留**：`publisher.py` 之 `_soft_merge_agents_text` 保持對管理區塊 `<!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->` 的單向純粹標準注入，徹底淘汰廢棄舊技能；外部自訂規範章節（如 `## 4. 專案特化工程規範`）100% 完整保留且具備多次發布冪等性 (Idempotent)。
+  - **工作流超連結相對路徑校準**：校準 `ContextInit.md` 內之 Markdown 語法鏈接為 `__#{project://...}__` 與 `__#{workflow.docs://...}__`，Stage 2 解算為相對於當前工作流檔案之正確相對路徑（`../../AGENTS.md`、`../../CHANGELOG.md`、`../../docs/_project/STANDARDS.md`），消滅導航失效與 404，純終端 CLI 命令保持 `__${...}__` 語意。
+  - **Fast Track 狀態掃描增強**：於 `scanner.py` 補齊 Fast Track 狀態解析支援 `Passed`、`Review`、`In Progress` 等標準狀態，消除 `plan status` 顯示 `Unknown` 之缺陷。
+  - **全套測試 100% 通過與 Dogfooding 驗證**：新增 `test_ft_13_soft_merge_single_source_and_external_preservation` 與 `test_ft_14_contextinit_workflow_relative_links`；`agents-workflow` 測試 76/76 通過；`dev check --all` 5 大模組全數通過；`agents-workflow release --force` 成功物化 48 檔案且無變更時精確命中 Stage 0 短路 (0 I/O)；登錄 `[DN-AW-11]` 與更新 `FACTORY_PIPELINE.md`。
 
 ## 2026_09_12_1346_server_auto_spawn_adaptive_degrade (Completed)
 

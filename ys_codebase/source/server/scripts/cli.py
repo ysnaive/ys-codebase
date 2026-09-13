@@ -202,6 +202,17 @@ def status(cmd_bags: CmdBags) -> int:
     print(f"[*] Tasks Handled : {info.get('tasks_executed')}")
     print(f"[*] Idle TTL Left : {ttl_str}")
 
+    watcher = info.get("watcher")
+    if watcher:
+        if not watcher.get("enabled"):
+            w_str = "DISABLED"
+        elif watcher.get("active"):
+            dir_str = f" (Monitoring {os.path.basename(watcher.get('monitored_dir') or '.modules')}/)"
+            w_str = f"ACTIVE{dir_str}"
+        else:
+            w_str = "STOPPED"
+        print(f"[*] Modules Watcher: {w_str}")
+
     services = info.get("services", [])
     if services:
         print("----------------------------------------------------------------------")
