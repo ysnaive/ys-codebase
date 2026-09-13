@@ -26,7 +26,7 @@
 | :--- | :--- |
 | **開立/推進計畫 / 代碼實作 / plans/ 產物維護**<br/>*(調用檔案編輯寫入工具前；[!] 模板唯一來源為 `__${project://.agents/.yscb/templates/}__`，嚴禁翻讀歷史封存)* | `development-sop` |
 | **執行任何 CLI 命令列指令**<br/>*(調用各環境之終端機/命令列執行工具時)* | `yscb-cli-guild` |
-| **編寫代碼註解 / 撰寫或維護專案文檔**<br/>*(撰寫 Docstring、維護 docs/ 或更新 README 時)* | `documentation` |
+| **編寫代碼註解 / 撰寫或維護專案文檔 / Review 階段三層文檔對齊**<br/>*(撰寫 Docstring、維護 docs/、更新 README 或 Review 交付前)* | `documentation` |
 `__@{AGENTS_SKILL_ROUTING}__`
 
 > [!NOTE]

@@ -1,8 +1,9 @@
 {
   "name": "server",
-  "description": "A YS-Codebase module",
+  "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "versions": [
     "1.0.0.0",
-    "1.0.0.1"
+    "1.0.0.1",
+    "1.0.0.2"
   ]
 }
