@@ -1,7 +1,7 @@
 {
   "name": "server",
   "version": "1.0.0.1",
-  "description": "A YS-Codebase module",
+  "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
     "core": ">=1.1.0"

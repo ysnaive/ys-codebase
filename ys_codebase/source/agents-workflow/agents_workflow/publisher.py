@@ -388,7 +388,8 @@ class ReleasePublisher:
     def _soft_merge_agents_text(self, existing_text: str, dev_standards_content: str) -> str:
         """
         純文字軟合併演算法 (Pure String Soft-Merge).
-        將新標準內容注入至 YSCB 標記區塊，保留其他章節。
+        將新標準內容單向注入至 YSCB 標記區塊，保留外部自定義章節。
+        專案特化技能擴充請透過 config/agents-workflow/contribute.json 宣告式注入。
         """
         injected_section = f"{AGENTS_MD_BEGIN}\n{dev_standards_content.strip()}\n{AGENTS_MD_END}"
         if not existing_text:

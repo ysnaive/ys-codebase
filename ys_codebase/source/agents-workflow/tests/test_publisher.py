@@ -371,6 +371,69 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertNotIn("watchdog", pip_deps)
         self.mark_passed()
 
+    def test_ft_13_soft_merge_single_source_and_external_preservation(self):
+        """FT-13: 驗證發布軟合併為單向標準覆寫（杜絕廢棄舊技能殘留），同時 100% 保留外部自定義章節。"""
+        std_content = (
+            "# Agent 專案行為準則與防呆紀律規範 (Agents Standards)\n\n"
+            "## 2. 條件式技能分流導航矩陣\n\n"
+            "| 任務情境 | 強制觸發之技能 |\n"
+            "| :--- | :--- |\n"
+            "| **新版系統任務 A** | `development-sop` |\n"
+        )
+        existing_text = (
+            "<!-- YSCB_AGENTS_BEGIN -->\n"
+            "# Agent 專案行為準則與防呆紀律規範 (Agents Standards)\n\n"
+            "## 2. 條件式技能分流導航矩陣\n\n"
+            "| 任務情境 | 強制觸發之技能 |\n"
+            "| :--- | :--- |\n"
+            "| **已優化廢棄之舊系統任務** | `legacy-skill` |\n"
+            "<!-- YSCB_AGENTS_END -->\n\n"
+            "## 4. 專案特化工程規範\n"
+            "- 自訂外部規範附錄\n"
+        )
+        # 第一次合併：管理區塊由新標準純粹更新（舊廢棄技能不再殘留），外部章節完整保留
+        merged_1 = self.publisher._soft_merge_agents_text(existing_text, std_content)
+        self.assertIn("**新版系統任務 A**", merged_1)
+        self.assertNotIn("`legacy-skill`", merged_1)  # 杜絕殭屍舊技能復活
+        self.assertIn("## 4. 專案特化工程規範", merged_1)  # 外部章節保留
+        self.assertIn("- 自訂外部規範附錄", merged_1)
+
+        # 第二次合併 (冪等性驗證)
+        merged_2 = self.publisher._soft_merge_agents_text(merged_1, std_content)
+        self.assertEqual(merged_1, merged_2)
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_14_contextinit_workflow_relative_links(self):
+        """FT-14: 驗證 ContextInit.md 編譯後鏈接解析為相對於目前檔案之相對路徑而非 project_root 裸路徑。"""
+        res1 = self.compiler.compile_stage1()
+        self.assertTrue(res1.get("success", False))
+
+        context_init_item = None
+        for item in res1.get("resolved_items", []):
+            if "ContextInit" in item.get("base_name", ""):
+                context_init_item = item
+                break
+        self.assertIsNotNone(context_init_item)
+
+        dummy_dest = os.path.join(os.getcwd(), ".agents", "workflows", "ContextInit.md")
+        cur_dir = os.path.dirname(dummy_dest)
+        dep_map = {}
+        stage2_text = self.compiler.resolve_stage2_uri(context_init_item["content"], dummy_dest, dep_map)
+
+        if uri:
+            expected_agents = os.path.relpath(uri.resolve("project://AGENTS.md", interactive=False), cur_dir).replace("\\", "/")
+            expected_changelog = os.path.relpath(uri.resolve("project://CHANGELOG.md", interactive=False), cur_dir).replace("\\", "/")
+            expected_standards = os.path.relpath(uri.resolve("workflow.docs://_project/STANDARDS.md", interactive=False), cur_dir).replace("\\", "/")
+
+            self.assertIn(f"[`AGENTS.md`]({expected_agents})", stage2_text)
+            self.assertIn(f"[`CHANGELOG.md`]({expected_changelog})", stage2_text)
+            self.assertIn(f"[`STANDARDS.md`]({expected_standards})", stage2_text)
+
+        self.assertNotIn("__#{project://AGENTS.md}__", stage2_text)
+        self.assertNotIn("__${project://AGENTS.md}__", stage2_text)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()
