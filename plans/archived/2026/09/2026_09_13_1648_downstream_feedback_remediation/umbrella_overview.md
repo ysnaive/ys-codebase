@@ -27,6 +27,7 @@
 | **sub_03** | `sub_03_config_hierarchy_and_hook_observability` | Fast Track | `Completed` | 🟠 config.local 預設值遮蔽 project 修復、🟠 pre_cli_dispatch 等 hook 例外與回傳值可觀測性 (debug/verbose 模式) |
 | **sub_04** | `sub_04_server_dependency_and_architecture_migration` | Fast Track | `Completed` | 🟠 server 依賴宣告、熱重載遷移指引、徹底移除舊版 server 影響維持純粹性、Worker Watcher 狀態可觀測性 |
 | **sub_05** | `sub_05_agents_workflow_managed_blocks_and_standards` | Fast Track | `Completed` | 🟠 release 覆寫管理區塊時保留自訂擴充列、🟡 舊 managed 檔案清理與 ContextInit.md 引用校準 |
+| **sub_06** | `sub_06_agents_workflow_path_placeholder_refactoring` | Fast Track | `Completed` | 🟠 __${uri}__ 語意擴充，支援 __$(起始錨點){uri}__ 動態指定相對路徑起點，維持 project:// 預設映射與 #/$ 語意明確化 |
 
 ---
 
@@ -38,3 +39,4 @@
 - [x] **里程碑 4**：完成 sub_04 server 依賴宣告、架構遷移說明、徹底移除舊版 server 影響維持純粹與 Watcher 診斷完備
 - [x] **里程碑 5**：完成 sub_05 管理區塊保留機制與舊檔案清理
 - [x] **里程碑 6**：全模組回歸驗證與結案審查
+- [x] **里程碑 7**：完成 sub_06 agents-workflow 路徑佔位符重構 (__$(起始錨點){uri}__ 與語意明確化)

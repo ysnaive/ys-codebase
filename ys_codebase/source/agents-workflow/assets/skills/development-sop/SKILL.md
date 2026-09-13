@@ -61,9 +61,11 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ---
 
-## 5. Full Track SOP 階段導航矩陣
+## 5. Full Track SOP 階段導航矩陣 (Mandatory Navigation Matrix)
 
-推進各階段時，請查閱對應之專屬作業手冊：
+> [!IMPORTANT]
+> **🚨 階段前置閱讀鐵律 (Mandatory Phase Reference Read)**：  
+> 開始任何一個階段（Phase 0~7 / Review 閘門 / Fast Track 各步驟）前，**強制必須先精讀下方導航矩陣對應之專屬作業手冊（分流 Reference）**，嚴禁憑記憶盲目推進或跳過階段指針！
 
 | 階段 | 專屬作業手冊 | 產出檔案 / 卡片 |
 | :---: | :---: | :---: |
