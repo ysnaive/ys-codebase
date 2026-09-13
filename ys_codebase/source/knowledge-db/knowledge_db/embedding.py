@@ -16,10 +16,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
+# 預設抑制 Windows 上 Hugging Face Hub 的符號連結權限警告 (WinError 1314)
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 logger = logging.getLogger("knowledge-db.embedding")
 
-# 預設嵌入維度 (bge-small / MiniLM 標準)
-DEFAULT_EMBEDDING_DIM = 384
 DEFAULT_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
 
 
@@ -47,6 +48,7 @@ class EmbeddingService:
     1. 封裝 FastEmbed (ONNX Runtime) 執行純本地離線特徵提取。
     2. 具備 100% 異常捕獲與 is_available 動態置標，保證零死鎖平滑降級。
     3. 內建 Mock 模式，供沙盒與單元測試環境極速離線驗證。
+    4. 統一以實際加載之模型實例屬性為維度唯一真理來源 (SSOT)。
     """
 
     @classmethod
@@ -58,9 +60,10 @@ class EmbeddingService:
             return DEFAULT_MODEL_NAME
         name = str(model_name).strip()
         if "/" not in name:
-            if name.lower().startswith("bge-"):
+            name_lower = name.lower()
+            if name_lower.startswith("bge-"):
                 return f"BAAI/{name}"
-            elif name.lower().startswith("paraphrase-") or name.lower().startswith("all-"):
+            elif name_lower.startswith("paraphrase-") or name_lower.startswith("all-"):
                 return f"sentence-transformers/{name}"
         return name
 
@@ -79,10 +82,13 @@ class EmbeddingService:
         self._is_available: bool = False
         self._init_attempted: bool = False
         self._init_lock = threading.Lock()
+        self._dimension: Optional[int] = None
+        self.last_error: Optional[Dict[str, Any]] = None
         self._suppress_hf_warnings()
         if self.mock_mode:
             self._is_available = True
             self._init_attempted = True
+            self._resolve_dimension_mock()
 
     @staticmethod
     def _suppress_hf_warnings() -> None:
@@ -102,7 +108,29 @@ class EmbeddingService:
             from fastembed import TextEmbedding
             return list(TextEmbedding.list_supported_models())
         except Exception:
-            return [{"model": DEFAULT_MODEL_NAME, "dim": DEFAULT_EMBEDDING_DIM, "description": "Default BAAI model"}]
+            return [{"model": DEFAULT_MODEL_NAME, "description": "Default BAAI model"}]
+
+    def _resolve_dimension_mock(self) -> int:
+        """Mock 模式下以模型規格或名稱解析維度"""
+        try:
+            from fastembed import TextEmbedding
+            dim = TextEmbedding.get_embedding_size(self.model_name)
+            if isinstance(dim, int) and dim > 0:
+                self._dimension = dim
+                return dim
+        except Exception:
+            pass
+        name = self.model_name.lower()
+        if "large" in name:
+            dim = 1024
+        elif "base" in name:
+            dim = 768
+        elif "minilm" in name:
+            dim = 384
+        else:
+            dim = 512
+        self._dimension = dim
+        return dim
 
     def _init_model(self) -> None:
         """嘗試加載 FastEmbed ONNX 模型；若未安裝或失敗則安全降級"""
@@ -149,17 +177,40 @@ class EmbeddingService:
                     model_name=self.model_name,
                     cache_dir=str(self.cache_dir),
                 )
+
+            # 統一以實際加載之模型實例原生屬性為唯一真理來源 (SSOT)
+            dim = getattr(self._model, "embedding_size", None)
+            if dim is None or not isinstance(dim, int) or dim <= 0:
+                try:
+                    sample_vec = next(self._model.embed(["probe"]))
+                    dim = int(len(sample_vec))
+                except Exception:
+                    dim = TextEmbedding.get_embedding_size(self.model_name)
+            self._dimension = int(dim)
             self._is_available = True
-            logger.debug(f"EmbeddingService initialized with model '{self.model_name}' (threads={threads_count})")
+            self.last_error = None
+            logger.debug(f"EmbeddingService initialized with model '{self.model_name}' (dim={self._dimension}, threads={threads_count})")
         except Exception as e:
             self._is_available = False
             self._model = None
-            logger.info(f"FastEmbed model unavailable ({e}). Fallback to BM25-only mode.")
+            self.last_error = {
+                "error_type": type(e).__name__,
+                "message": str(e),
+                "timestamp": time.time(),
+            }
+            logger.info(f"FastEmbed model unavailable ({type(e).__name__}: {e}). Fallback to BM25-only mode.")
 
     @property
     def dimension(self) -> int:
-        """回傳當前模型嵌入維度"""
-        return DEFAULT_EMBEDDING_DIM
+        """回傳當前模型嵌入維度 (以實際加載之模型實例屬性為 SSOT)"""
+        if self._dimension is not None:
+            return self._dimension
+        if self.mock_mode:
+            return self._resolve_dimension_mock()
+        self._ensure_model()
+        if self._dimension is not None:
+            return self._dimension
+        return self._resolve_dimension_mock()
 
     def _ensure_model(self) -> None:
         """嘗試按需加載 FastEmbed ONNX 模型 (Lazy Loading)"""
@@ -178,17 +229,18 @@ class EmbeddingService:
             self._ensure_model()
         return self._is_available
 
-    def _generate_mock_vector(self, text: str, dim: int = DEFAULT_EMBEDDING_DIM) -> np.ndarray:
+    def _generate_mock_vector(self, text: str, dim: Optional[int] = None) -> np.ndarray:
         """針對輸入字串生成確定性 (Deterministic) 單位正規化向量 (供測試或沙盒使用)"""
+        target_dim = dim if dim is not None else self.dimension
         if not text:
-            vec = np.zeros(dim, dtype=np.float32)
+            vec = np.zeros(target_dim, dtype=np.float32)
             vec[0] = 1.0
             return vec
 
         # 以 md5 雜湊作為確定性隨機種子
         seed = int(hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()[:8], 16)
         rng = np.random.RandomState(seed)
-        raw_vec = rng.randn(dim).astype(np.float32)
+        raw_vec = rng.randn(target_dim).astype(np.float32)
         norm = np.linalg.norm(raw_vec)
         if norm > 0:
             raw_vec /= norm
@@ -213,7 +265,7 @@ class EmbeddingService:
         若不可用時回傳空矩陣。
         """
         if not texts:
-            return np.empty((0, DEFAULT_EMBEDDING_DIM), dtype=np.float32)
+            return np.empty((0, self.dimension), dtype=np.float32)
 
         preprocessed = [self._preprocess_text(t) for t in texts]
 
@@ -253,7 +305,7 @@ class EmbeddingService:
         若未指定 total_count，回傳 (probe_vectors, elapsed, unit_sec)。
         """
         if not texts:
-            empty_vecs = np.empty((0, DEFAULT_EMBEDDING_DIM), dtype=np.float32)
+            empty_vecs = np.empty((0, self.dimension), dtype=np.float32)
             return (empty_vecs, 0.0) if total_count is not None else (empty_vecs, 0.0, 0.0)
 
         probe_chunk = texts[:probe_size]
@@ -272,7 +324,7 @@ class EmbeddingService:
         res = self.embed_texts([query])
         if len(res) > 0:
             return res[0]
-        return np.zeros(DEFAULT_EMBEDDING_DIM, dtype=np.float32)
+        return np.zeros(self.dimension, dtype=np.float32)
 
     def compute_similarity(self, query_vec: np.ndarray, doc_vecs: np.ndarray) -> np.ndarray:
         """
@@ -347,7 +399,7 @@ class VectorIndex:
                 self.build(new_doc_ids, new_vectors)
             return
 
-        dim = self.vectors.shape[1] if self.vectors.ndim > 1 else DEFAULT_EMBEDDING_DIM
+        dim = self.vectors.shape[1] if (self.vectors is not None and self.vectors.ndim > 1) else (self.dim or 0)
 
         # 1. 找出保留的 doc_ids 與其索引
         keep_indices = []
@@ -403,7 +455,7 @@ class VectorIndex:
         """使用 Pickle Protocol 5 + Gzip 儲存向量快取 (含 model_name 與 dim 元資料)"""
         cache_path = Path(cache_file)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        dim_val = self.dim or (self.vectors.shape[1] if self.vectors is not None and self.vectors.ndim > 1 else DEFAULT_EMBEDDING_DIM)
+        dim_val = self.dim or (self.vectors.shape[1] if self.vectors is not None and self.vectors.ndim > 1 else None)
         data = {
             "doc_ids": self.doc_ids,
             "vectors": self.vectors,
@@ -432,3 +484,4 @@ class VectorIndex:
         except Exception as e:
             logger.warning(f"Failed to load vector cache from '{cache_path}': {e}")
         return idx
+

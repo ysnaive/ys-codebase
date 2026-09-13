@@ -19,7 +19,7 @@ import numpy as np
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from knowledge_db.embedding import DEFAULT_EMBEDDING_DIM, EmbeddingService, VectorIndex
+from knowledge_db.embedding import EmbeddingService, VectorIndex
 from knowledge_db.hybrid import DEFAULT_RRF_K, HybridSearchEngine
 from knowledge_db.retrieval import (
     BM25Engine,
@@ -572,7 +572,7 @@ class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
         texts = ["hello world", "inverted index search", "中文倒排索引檢索"]
         embeddings = self.service.embed_texts(texts)
 
-        self.assertEqual(embeddings.shape, (3, DEFAULT_EMBEDDING_DIM))
+        self.assertEqual(embeddings.shape, (3, self.service.dimension))
         for vec in embeddings:
             norm = np.linalg.norm(vec)
             self.assertAlmostEqual(norm, 1.0, places=4)
@@ -616,7 +616,7 @@ class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
         """ET-02: 512+ tokens 超長內容之安全切片與特徵提煉"""
         long_text = "token " * 1000
         vec = self.service.embed_query(long_text)
-        self.assertEqual(vec.shape, (DEFAULT_EMBEDDING_DIM,))
+        self.assertEqual(vec.shape, (self.service.dimension,))
         self.assertAlmostEqual(np.linalg.norm(vec), 1.0, places=4)
 
         self.mark_passed()
@@ -626,7 +626,59 @@ class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
         """FT-09: 驗證 EmbeddingService 之分批推論切片與 ONNX 執行緒上限保護"""
         texts = [f"test text {i}" for i in range(70)]
         embeddings = self.service.embed_texts(texts, batch_size=32)
-        self.assertEqual(embeddings.shape, (70, DEFAULT_EMBEDDING_DIM))
+        self.assertEqual(embeddings.shape, (70, self.service.dimension))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_dynamic_dimension_without_constant(self):
+        """FT-10: 驗證 DEFAULT_EMBEDDING_DIM 徹底淘汰，dimension 動態解析為 512 (SSOT)"""
+        import knowledge_db.embedding as emb_mod
+        # 剛性保證無 DEFAULT_EMBEDDING_DIM 殘留
+        self.assertFalse(hasattr(emb_mod, "DEFAULT_EMBEDDING_DIM"))
+        # 驗證預設模型為 512 維
+        self.assertEqual(self.service.dimension, 512)
+        # 驗證自訂不同規格模型
+        minilm_svc = EmbeddingService(model_name="sentence-transformers/all-MiniLM-L6-v2", mock_mode=True)
+        self.assertEqual(minilm_svc.dimension, 384)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_embedding_last_error_capture(self):
+        """FT-11: 驗證 FastEmbed 載入失敗時 last_error 結構化封裝與安全降級"""
+        # 透過無效模型路徑強制引發初始化失敗
+        failing_svc = EmbeddingService(model_name="invalid/non-existent-model", mock_mode=False)
+        # 模擬 _init_model 捕獲異常
+        failing_svc._init_attempted = True
+        failing_svc._is_available = False
+        failing_svc.last_error = {
+            "error_type": "ImportError",
+            "message": "Fake FastEmbed missing DLL (WinError 1114)",
+            "timestamp": 12345.0,
+        }
+        self.assertFalse(failing_svc.is_available)
+        self.assertIsNotNone(failing_svc.last_error)
+        self.assertEqual(failing_svc.last_error["error_type"], "ImportError")
+        self.assertIn("WinError 1114", failing_svc.last_error["message"])
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_model_name_normalization(self):
+        """FT-12: 驗證 normalize_model_name 自動補齊前綴與容錯"""
+        self.assertEqual(EmbeddingService.normalize_model_name("bge-small-zh-v1.5"), "BAAI/bge-small-zh-v1.5")
+        self.assertEqual(EmbeddingService.normalize_model_name("all-MiniLM-L6-v2"), "sentence-transformers/all-MiniLM-L6-v2")
+        self.assertEqual(EmbeddingService.normalize_model_name("BAAI/bge-small-zh-v1.5"), "BAAI/bge-small-zh-v1.5")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_vector_index_dimension_compatibility(self):
+        """FT-13: 驗證 VectorIndex.is_compatible_with 維度動態相容檢核"""
+        idx = VectorIndex(model_name="BAAI/bge-small-zh-v1.5", dim=512)
+        idx.build(["doc_1"], np.ones((1, 512), dtype=np.float32))
+        self.assertTrue(idx.is_compatible_with("BAAI/bge-small-zh-v1.5", 512))
+        # 維度不相容檢核阻斷 (如舊 384 vs 當前 512)
+        self.assertFalse(idx.is_compatible_with("BAAI/bge-small-zh-v1.5", 384))
+        # 模型不相容檢核阻斷
+        self.assertFalse(idx.is_compatible_with("sentence-transformers/all-MiniLM-L6-v2", 512))
         self.mark_passed()
 
 
