@@ -39,6 +39,13 @@
   - **Fast Track 狀態掃描增強**：於 `scanner.py` 補齊 Fast Track 狀態解析支援 `Passed`、`Review`、`In Progress` 等標準狀態，消除 `plan status` 顯示 `Unknown` 之缺陷。
   - **全套測試 100% 通過與 Dogfooding 驗證**：新增 `test_ft_13_soft_merge_single_source_and_external_preservation` 與 `test_ft_14_contextinit_workflow_relative_links`；`agents-workflow` 測試 76/76 通過；`dev check --all` 5 大模組全數通過；`agents-workflow release --force` 成功物化 48 檔案且無變更時精確命中 Stage 0 短路 (0 I/O)；登錄 `[DN-AW-11]` 與更新 `FACTORY_PIPELINE.md`。
 
+### sub_06_agents_workflow_path_placeholder_refactoring (Verified)
+- **__${uri}__ 語意擴充、新語法 __$(起始錨點){uri}__ 動態指定相對路徑起點與 #/$ 語法語意明確化**：
+  - **# 與 $ 佔位符語法語意精確分流**：確立 `#` 為自身相對路徑佔位符（轉譯為相對於產出目標檔案自身目錄 `cur_dir`，專用於 Markdown 超連結）；確立 `$` 為錨點相對路徑佔位符（轉譯為相對於指定起始錨點之相對路徑）。
+  - **`__${uri}__` 語意擴充與起始錨點新語法 (`__$(起始錨點){uri}__`)**：原不輸入錨點的 `__${uri}__` 維持 100% 向後相容，預設相對於 `project://`（專案根目錄）進行映射；擴充新語法 `__$(起始錨點){uri}__`，支援在括號內指定起始錨點（可為目錄路徑、檔案路徑或語意 URI，如 `module.source://`、`project://docs` 等），解算目標 `uri` 相對於該錨點的路徑；空括號 `__$(){uri}__` 容錯退化為預設 `project://`。
+  - **二分法完全支援與裸標籤防溢警示**：Standalone 模式（純佔位符）完全替代並剝除外層反引號，Inline 穿插代碼模式維持外層代碼反引號；更新 `UNENCLOSED_TAG_REGEX`，精確攔截裸露未包裹之 `__$(anchor){uri}__` 標籤並輸出警示。
+  - **全套測試 100% 通過與文檔完備**：於 `test_compiler.py` 新增 FT-17、FT-18、FT-19 單元測試覆蓋多維度場景；`agents-workflow` 全套 79/79 測試通過；`dev check agents-workflow` 0 警告 0 錯誤；更新 `FACTORY_PIPELINE.md` 與 `DESIGN_NOTES.md` (`[DN-AW-12]`)。
+
 ## 2026_09_12_1346_server_auto_spawn_adaptive_degrade (Completed)
 
 - **Server 背景自動喚醒環境權限自適應探針、auto_spawn 雙層組態與 Agents 剛性常駐導引**：

@@ -304,6 +304,98 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertEqual(res_spaces, "[NewPlan](./NewPlan.md)")
         self.mark_passed()
 
+    def test_ft_17_project_uri_custom_anchor_syntax(self):
+        """FT-17: 驗證 __$(起始錨點){uri}__ 語意擴充，支援自訂起始錨點並正確解算相對路徑。"""
+        with tempfile.TemporaryDirectory() as tmp_proj:
+            host_dir = os.path.normpath(tmp_proj).replace("\\", "/")
+            dst_path = f"{host_dir}/.agents/workflows/ContextInit.md"
+            deployment_map = {
+                "workflow.workflows://Auto.md": f"{host_dir}/.agents/workflows/Auto.md",
+                "workflow.workflows://ContextInit.md": dst_path,
+                "module.source://core/setup.py": f"{host_dir}/source/core/setup.py"
+            }
+            os.makedirs(f"{host_dir}/.agents/workflows", exist_ok=True)
+            os.makedirs(f"{host_dir}/source/core", exist_ok=True)
+
+            compiler = ArtifactCompiler(host_dir=host_dir)
+
+            # 1. 預設無錨點：相對於 project_root (維持既有 project:// 映射相容)
+            raw_default = "Default: `__${workflow.workflows://Auto.md}__`"
+            res_default = compiler.resolve_stage2_uri(raw_default, dst_path, deployment_map)
+            self.assertIn("Default: .agents/workflows/Auto.md", res_default)
+
+            # 2. 自訂錨點為目錄 (如 .agents/workflows)
+            raw_with_dir_anchor = "AnchorDir: `__$(.agents/workflows){workflow.workflows://Auto.md}__`"
+            res_dir = compiler.resolve_stage2_uri(raw_with_dir_anchor, dst_path, deployment_map)
+            self.assertIn("AnchorDir: Auto.md", res_dir)
+
+            # 3. 自訂錨點為檔案 (如 module.source://core/setup.py)，自動取其 dirname
+            raw_with_file_anchor = "AnchorFile: `__$(module.source://core/setup.py){workflow.workflows://Auto.md}__`"
+            res_file = compiler.resolve_stage2_uri(raw_with_file_anchor, dst_path, deployment_map)
+            self.assertIn("AnchorFile: ../../.agents/workflows/Auto.md", res_file)
+
+            # 4. 自訂錨點為另一目錄層級，計算跨目錄相對路徑
+            raw_cross = "Cross: `__$(.agents){module.source://core/setup.py}__`"
+            res_cross = compiler.resolve_stage2_uri(raw_cross, dst_path, deployment_map)
+            self.assertIn("Cross: ../source/core/setup.py", res_cross)
+
+            # 5. 空括號錨點 __$(){uri}__ 退化為預設 project_root
+            raw_empty_anchor = "EmptyAnchor: `__$(){workflow.workflows://Auto.md}__`"
+            res_empty = compiler.resolve_stage2_uri(raw_empty_anchor, dst_path, deployment_map)
+            self.assertIn("EmptyAnchor: .agents/workflows/Auto.md", res_empty)
+
+        self.mark_passed()
+
+    def test_ft_18_project_uri_custom_anchor_standalone_and_inline(self):
+        """FT-18: 驗證 __$(起始錨點){uri}__ 在 Standalone (剝除反引號) 與 Inline (保留反引號) 穿插情境。"""
+        with tempfile.TemporaryDirectory() as tmp_proj:
+            host_dir = os.path.normpath(tmp_proj).replace("\\", "/")
+            dst_path = f"{host_dir}/.agents/workflows/ContextInit.md"
+            deployment_map = {
+                "workflow.workflows://Auto.md": f"{host_dir}/.agents/workflows/Auto.md",
+            }
+            os.makedirs(f"{host_dir}/.agents/workflows", exist_ok=True)
+            compiler = ArtifactCompiler(host_dir=host_dir)
+
+            # 1. Standalone：外層反引號應被剝除
+            raw_standalone = "[Auto Link](`__$(.agents/workflows){workflow.workflows://Auto.md}__`)"
+            res_standalone = compiler.resolve_stage2_uri(raw_standalone, dst_path, deployment_map)
+            self.assertEqual(res_standalone, "[Auto Link](Auto.md)")
+
+            # 2. 帶空格 Standalone
+            raw_spaces = "[Auto Link](`__$(  .agents/workflows  ){  workflow.workflows://Auto.md  }__`)"
+            res_spaces = compiler.resolve_stage2_uri(raw_spaces, dst_path, deployment_map)
+            self.assertEqual(res_spaces, "[Auto Link](Auto.md)")
+
+            # 3. Inline 穿插代碼：保留外層反引號
+            raw_inline = "Command: `run __$(.agents/workflows){workflow.workflows://Auto.md}__ --now`"
+            res_inline = compiler.resolve_stage2_uri(raw_inline, dst_path, deployment_map)
+            self.assertEqual(res_inline, "Command: `run Auto.md --now`")
+
+            # 4. Fenced Code Block：代碼塊內替換且不破壞 code fence
+            raw_fenced = "```bash\ncat __$(.agents/workflows){workflow.workflows://Auto.md}__\n```"
+            res_fenced = compiler.resolve_stage2_uri(raw_fenced, dst_path, deployment_map)
+            self.assertIn("cat Auto.md", res_fenced)
+            self.assertTrue(res_fenced.startswith("```bash\n") and res_fenced.endswith("\n```"))
+
+        self.mark_passed()
+
+    def test_ft_19_unenclosed_tags_warning_with_anchor_syntax(self):
+        """FT-19: 驗證 check_unenclosed_tags 能精確攔截裸露未包裹之 __$(anchor){uri}__ 標籤。"""
+        from agents_workflow.compiler import check_unenclosed_tags
+        old_stderr = sys.stderr
+        captured = io.StringIO()
+        try:
+            sys.stderr = captured
+            # 裸露標籤
+            check_unenclosed_tags("Here is an unenclosed tag: __$(docs){project://README.md}__", doc_name="test.md")
+            output = captured.getvalue()
+            self.assertIn("[compiler:warning]", output)
+            self.assertIn("__$(docs){project://README.md}__", output)
+        finally:
+            sys.stderr = old_stderr
+        self.mark_passed()
+
     def test_ft_14_unenclosed_placeholder_warning_and_preservation(self):
         """FT-14: 驗證未被反引號包裹的裸佔位符絕對不被展開，且輸出警示。"""
         raw_text = "Bare token: __@{MY_TOKEN}__ and Bare URI: __${project://yscb.py}__\n"

@@ -17,8 +17,11 @@
 ## 2. 品質與合規審查矩陣 (Quality & Compliance Matrix)
 
 ### 2.1 三層文檔交付審查 (Documentation Delivery Audit)
+- [!] **文檔更新前強制觸發技能**：在執行 Review Gate 之三層文檔核驗與更新前，**強制必須先觸發並精讀 [`documentation`](`__#{module://agents-workflow/assets/skills/documentation/SKILL.md}__`) 技能手冊**，嚴格對齊專案知識庫 7 大知識維度與作者指引。
 - [ ] **宏觀發布日誌**：專案根目錄 [`CHANGELOG.md`](`__${project://CHANGELOG.md}__`) 最上方預擬或追加本次高階變更摘要。
-- [ ] **中觀模組與專題手冊**：`docs<Category>/` 模組手冊、專題手冊已同步更新；若有工程妥協或關鍵決策已於 `DESIGN_NOTES.md` 登記 `DN-XX`。
+- [ ] **中觀模組與專題手冊 (優先更新載體，嚴防 DN 膨脹)**：
+  - **優先更新載體**：更新文檔時應優先從 `docs/<Category>/README.md` 模組手冊或專題手冊 (`docs/<Category>/[topic].md`) 下手更新架構、流程與功能資訊，嚴禁在 DN 一直增量！
+  - **Design Notes 邊界防膨脹守門 (DN Anti-Bloat Axiom)**：`DESIGN_NOTES.md` (`DN-XX`) 僅限存放「真正高度特例、非直觀工程妥協、或從架構/專題設計文檔無法直觀看出的非直覺設計與防坑坑點」，不得作為一般架構描述、普通功能介紹或日常變更紀錄的傾倒處。
 - [ ] **微觀代碼註解契約**：本次修改之 Public API 註解結構完整，複雜演算法具備 Why-Driven 動機註解。
 
 ### 2.2 測試與計畫合規檢核 (Verification & Plan Compliance)

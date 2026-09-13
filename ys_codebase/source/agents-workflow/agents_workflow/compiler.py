@@ -34,14 +34,14 @@ except ImportError:
 
 FENCED_CODE_BLOCK_REGEX = re.compile(r"```[\s\S]*?```")
 CODE_SPAN_REGEX = re.compile(r"(`[^`\r\n]+`)")
-UNENCLOSED_TAG_REGEX = re.compile(r"__[@#\$]\{\s*[^}]+\s*\}__")
+UNENCLOSED_TAG_REGEX = re.compile(r"__(?:[@#]\{\s*[^}]+\s*\}|\$(?:\([^)]*\))?\{\s*[^}]+\s*\})__")
 
 TOKEN_ANCHOR_INNER_REGEX = re.compile(r"__@\{\s*([A-Za-z0-9_]+)\s*\}__")
 LOCAL_URI_INNER_REGEX = re.compile(r"__#\{\s*([^}]+)\s*\}__")
-PROJECT_URI_INNER_REGEX = re.compile(r"__\$\{\s*([^}]+)\s*\}__")
+PROJECT_URI_INNER_REGEX = re.compile(r"__\$(?:\(\s*([^)]*?)\s*\))?\{\s*([^}]+)\s*\}__")
 
 LOCAL_URI_EXACT_REGEX = re.compile(r"^__#\{\s*([^}]+)\s*\}__$")
-PROJECT_URI_EXACT_REGEX = re.compile(r"^__\$\{\s*([^}]+)\s*\}__$")
+PROJECT_URI_EXACT_REGEX = re.compile(r"^__\$(?:\(\s*([^)]*?)\s*\))?\{\s*([^}]+)\s*\}__$")
 
 # Legacy compatibility alias
 TOKEN_ANCHOR_REGEX = re.compile(r"`__@\{\s*([A-Za-z0-9_]+)\s*\}__`")
@@ -506,9 +506,9 @@ class ArtifactCompiler:
         deployment_map: Dict[str, str]
     ) -> str:
         """
-        Stage 2: 依三層重映射階層動態轉譯 `__#{uri}__` (自身相對路徑) 與 `__${uri}__` (專案根目錄相對路徑)。
+        Stage 2: 依三層重映射階層動態轉譯 `__#{uri}__` (自身相對路徑) 與 `__${uri}__` / `__$(anchor){uri}__` (錨點/專案相對路徑)。
         - `__#{uri}__`: 相對於 current_dst_path 所在目錄 (cur_dir)，適用於 Markdown 內部超連結。
-        - `__${uri}__`: 相對於專案根目錄 (project_root)，適用於 Shell 命令列與專案路徑參照。
+        - `__${uri}__` / `__$(anchor){uri}__`: 相對於起始錨點 (預設為 project_root，或由 anchor 指定)，適用於 Shell 命令列與專案/跨組件路徑參照。
         """
         if not content:
             return ""
@@ -517,13 +517,15 @@ class ArtifactCompiler:
 
         # 獲取 project_root
         project_root = None
-        if uri:
+        if self.host_dir:
+            project_root = os.path.normpath(os.path.abspath(self.host_dir))
+        elif uri:
             try:
                 project_root = os.path.normpath(os.path.abspath(uri.resolve("project://", interactive=False)))
             except Exception:
                 pass
         if not project_root:
-            project_root = os.path.normpath(os.path.abspath(self.host_dir or os.getcwd()))
+            project_root = os.path.normpath(os.path.abspath(os.getcwd()))
 
         # 檢查未包裹標籤警示
         check_unenclosed_tags(content, doc_name=os.path.basename(current_dst_path))
@@ -560,52 +562,95 @@ class ArtifactCompiler:
             print(f"[compiler:warning] Unresolved semantic URI tag: '{tag_uri}' in '{os.path.basename(current_dst_path)}'", file=sys.stderr)
             return tag_uri
 
-        def _resolve_project_uri(tag_uri: str) -> str:
+        def _resolve_anchor_dir(anchor_str: Optional[str]) -> str:
+            """解析起始錨點為實體基底目錄。預設為 project_root。"""
+            if not anchor_str:
+                return project_root
+
+            anchor_abs = None
+            # 1. 嘗試命中 deployment_map
+            if deployment_map:
+                if anchor_str in deployment_map:
+                    anchor_abs = deployment_map[anchor_str]
+                else:
+                    for s_key, cand_abs in deployment_map.items():
+                        if anchor_str.endswith(s_key) or s_key.endswith(anchor_str):
+                            anchor_abs = cand_abs
+                            break
+
+            # 2. 嘗試語意協議解析
+            if not anchor_abs and uri and "://" in anchor_str:
+                try:
+                    anchor_abs = uri.resolve(anchor_str, interactive=False)
+                except Exception:
+                    pass
+
+            # 3. 嘗試以 project_root 相對路徑解算
+            if not anchor_abs:
+                anchor_abs = os.path.normpath(os.path.join(project_root, anchor_str))
+
+            anchor_abs = os.path.normpath(os.path.abspath(anchor_abs))
+            if os.path.isdir(anchor_abs):
+                return anchor_abs
+            elif os.path.isfile(anchor_abs):
+                return os.path.dirname(anchor_abs)
+            else:
+                _, ext = os.path.splitext(anchor_abs)
+                return os.path.dirname(anchor_abs) if ext else anchor_abs
+
+        def _resolve_project_uri(tag_uri: str, anchor: Optional[str] = None) -> str:
             # --- Tier 1: Target 部署投影映射優先 ---
-            if deployment_map and tag_uri in deployment_map:
-                t_abs = deployment_map[tag_uri]
-                if t_abs:
-                    try:
-                        rel_p = os.path.relpath(t_abs, project_root).replace("\\", "/")
-                        if rel_p == "." or rel_p == "./":
-                            rel_p = ""
-                        elif rel_p.startswith("./"):
-                            rel_p = rel_p[2:]
-                        return rel_p
-                    except Exception:
-                        return t_abs.replace("\\", "/")
+            t_abs = None
+            if deployment_map:
+                if tag_uri in deployment_map:
+                    t_abs = deployment_map[tag_uri]
+                else:
+                    for s_key, cand_abs in deployment_map.items():
+                        if tag_uri.endswith(s_key) or s_key.endswith(tag_uri):
+                            t_abs = cand_abs
+                            break
 
             # --- Tier 2: 專案級語意協議 ---
-            if uri and "://" in tag_uri:
+            if not t_abs and uri and "://" in tag_uri:
                 try:
-                    real_p = uri.resolve(tag_uri, interactive=False)
-                    rel_p = os.path.relpath(real_p, project_root).replace("\\", "/")
-                    if rel_p == "." or rel_p == "./":
-                        rel_p = ""
-                    elif rel_p.startswith("./"):
-                        rel_p = rel_p[2:]
-                    return rel_p
+                    t_abs = uri.resolve(tag_uri, interactive=False)
                 except Exception as e:
                     print(f"[compiler:warning] Failed to resolve project URI '{tag_uri}' in '{os.path.basename(current_dst_path)}': {e}", file=sys.stderr)
+
+            if t_abs:
+                try:
+                    base_dir = _resolve_anchor_dir(anchor)
+                    rel_p = os.path.relpath(t_abs, base_dir).replace("\\", "/")
+                    if not anchor and (rel_p == "." or rel_p == "./"):
+                        return ""
+                    if rel_p.startswith("./"):
+                        rel_p = rel_p[2:]
+                    return rel_p
+                except Exception:
+                    return t_abs.replace("\\", "/")
+
             return tag_uri
 
         def _replace_in_fenced_block(match: re.Match) -> str:
             block_text = match.group(0)
             has_local = "__#{" in block_text
-            has_proj = "__${" in block_text
+            has_proj = "__${" in block_text or "__$(" in block_text
             if not has_local and not has_proj:
                 return block_text
             if has_local:
                 block_text = LOCAL_URI_INNER_REGEX.sub(lambda m: _resolve_local_uri(m.group(1).strip()), block_text)
             if has_proj:
-                block_text = PROJECT_URI_INNER_REGEX.sub(lambda m: _resolve_project_uri(m.group(1).strip()), block_text)
+                block_text = PROJECT_URI_INNER_REGEX.sub(
+                    lambda m: _resolve_project_uri(m.group(2).strip(), anchor=m.group(1).strip() if m.group(1) else None),
+                    block_text
+                )
             return block_text
 
         def _replace_in_code_span(match: re.Match) -> str:
             span_text = match.group(0)
             inner = span_text[1:-1]
             has_local = "__#{" in inner
-            has_proj = "__${" in inner
+            has_proj = "__${" in inner or "__$(" in inner
             if not has_local and not has_proj:
                 return span_text
 
@@ -616,13 +661,17 @@ class ArtifactCompiler:
 
             m_proj_exact = PROJECT_URI_EXACT_REGEX.fullmatch(inner.strip())
             if m_proj_exact:
-                return _resolve_project_uri(m_proj_exact.group(1).strip())
+                anchor = m_proj_exact.group(1).strip() if m_proj_exact.group(1) else None
+                return _resolve_project_uri(m_proj_exact.group(2).strip(), anchor=anchor)
 
             # 2. 穿插類型（如命令列或複合代碼區塊）：替換內部佔位符並保留外層反引號
             if has_local:
                 inner = LOCAL_URI_INNER_REGEX.sub(lambda m: _resolve_local_uri(m.group(1).strip()), inner)
             if has_proj:
-                inner = PROJECT_URI_INNER_REGEX.sub(lambda m: _resolve_project_uri(m.group(1).strip()), inner)
+                inner = PROJECT_URI_INNER_REGEX.sub(
+                    lambda m: _resolve_project_uri(m.group(2).strip(), anchor=m.group(1).strip() if m.group(1) else None),
+                    inner
+                )
 
             return f"`{inner}`"
 
