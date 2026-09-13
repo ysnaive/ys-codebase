@@ -257,13 +257,30 @@ def _find_module_cli(module_name: str, yscb_abs: str) -> Optional[str]:
     return None
 
 
-def _ensure_hooks(hook_name: str) -> None:
+def _ensure_hooks(hook_name: str, verbose: Optional[bool] = None) -> Dict[str, Any]:
     """觸發對稱生命週期 Hook。"""
+    is_verbose = (
+        verbose
+        if verbose is not None
+        else (
+            os.environ.get("YSCB_VERBOSE") == "1"
+            or os.environ.get("YSCB_DEBUG") == "1"
+            or "--verbose" in sys.argv
+            or "--debug" in sys.argv
+        )
+    )
     try:
         from core import events
-        events.broadcast(hook_name, emit_module="core")
-    except Exception:
-        pass
+        res = events.broadcast(hook_name, emit_module="core", verbose=is_verbose)
+        if is_verbose and res:
+            print(f"[core:dispatcher] Hooks for '{hook_name}' completed: {res}", file=sys.stderr)
+        return res
+    except Exception as e:
+        if is_verbose:
+            import traceback
+            print(f"[core:dispatcher] Warning: Failed to trigger hook '{hook_name}': {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        return {}
 
 
 def dispatch_local(
@@ -283,7 +300,12 @@ def dispatch_local(
     5. 觸發 post_cli_dispatch Hook
     """
     # FR-10: 對稱觸發 pre_cli_dispatch Hook
-    _ensure_hooks("pre_cli_dispatch")
+    is_verbose = (
+        os.environ.get("YSCB_VERBOSE") == "1"
+        or os.environ.get("YSCB_DEBUG") == "1"
+        or any(arg in ("--verbose", "--debug") for arg in raw_args)
+    )
+    _ensure_hooks("pre_cli_dispatch", verbose=is_verbose)
 
     if isinstance(cmd_name, list):
         cmd_path = [str(c) for c in cmd_name]
@@ -383,7 +405,7 @@ def dispatch_local(
     finally:
         sys.argv = orig_argv
         # FR-10: 對稱觸發 post_cli_dispatch Hook
-        _ensure_hooks("post_cli_dispatch")
+        _ensure_hooks("post_cli_dispatch", verbose=is_verbose)
 
     return exit_code
 
@@ -402,6 +424,11 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
 
     if argv is None:
         argv = sys.argv[1:]
+
+    if "--verbose" in argv:
+        os.environ["YSCB_VERBOSE"] = "1"
+    if "--debug" in argv:
+        os.environ["YSCB_DEBUG"] = "1"
 
     host_dir, yscb_abs = _get_yscb_root()
     if "YSCB_HOST_DIR" not in os.environ:

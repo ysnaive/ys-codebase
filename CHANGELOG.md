@@ -17,6 +17,12 @@
   - **Git 忽略規則防護與快取即時失效**：`INTERNAL_IGNORE_PATTERNS` 納入 `yscb.py.bak` 與 `*.bak`；`UpdateChecker` 實作 `invalidate_cache`，於模組安裝與升級成功後即時清除過期快取。
   - **全套測試 100% 通過與計畫合規驗證**：新增 `TestDistributionLifecycle` 單元測試套件（FT-01 ~ FT-09 共 9/9 Passed）；5 大模組 `dev check` 全數通過（0 警告 0 失敗）；計畫合規性檢核（`plan verify`）通過；開發者實機 UX 驗收通過。
 
+### sub_03_config_hierarchy_and_hook_observability (Verified)
+- **組態階層防遮蔽守門 (Config Hierarchy Shadowing Remediation) 與 Hook 生命週期可觀測性強化 (Hook Observability)**：
+  - **組態階層防遮蔽守門 (SSOT 回歸)**：徹底移除 `knowledge-db` 在 `configurable/` 中的 `config.local.json` 模板，將運作預設值 (`jit_vector_timeout_seconds`, `max_threads`, `enable_hot_reload_server`, `hot_reload_server_inactivity_timer_sec`) 整合至 `config.project.json`；強化 `core.engine` 之 `_seed_or_update_config` 與 `act_deploy_configs_from_modules` 防禦機制，當 local infill 資料為空字典時絕不自動產生本機 `config.local.json`，徹底杜絕預設本機設定遮蔽團隊專案設定之缺陷。
+  - **Hook 生命週期可觀測性強化**：於 `core.events:broadcast()` 增加 `verbose` 參數並支援自適應環境變數 (`YSCB_VERBOSE=1`, `YSCB_DEBUG=1`) 與命令列參數 (`--verbose`, `--debug`)；在 verbose 模式下輸出結構化執行狀態日誌 `[core:events]`，遇例外時輸出完整異常 Traceback 至 `sys.stderr`；於 `core.commands.dispatcher:_ensure_hooks()` 支援回傳結果字典 `Dict[str, Any]`，並於 verbose 模式下輸出分派完成摘要 `[core:dispatcher]`。
+  - **全套測試 100% 通過與 Dogfooding 驗證**：新增 `TestConfigAndHookObservability` 單元測試套件（FT-01 與 FT-02 2/2 Passed）；`core` 全套 191/191 測試通過；`knowledge-db` 全套 148/148 測試通過；`dev check --all` 5 大模組全數通過；實機 Dogfooding 安裝與 `--verbose` / quiet 輸出驗證全數通過。
+
 ## 2026_09_12_1346_server_auto_spawn_adaptive_degrade (Completed)
 
 - **Server 背景自動喚醒環境權限自適應探針、auto_spawn 雙層組態與 Agents 剛性常駐導引**：
