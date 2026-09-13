@@ -502,7 +502,7 @@ class AtomicEngine:
 
             # local level 軟合併時，需同時考慮如果 project 中已有對應設定，就跳過
             infilled_data, changed = self._deep_infill_dict(curr_local_data, tpl_local_data, project_data=proj_data)
-            if changed or not uri.exists(cfg_local_uri):
+            if (changed or not uri.exists(cfg_local_uri)) and infilled_data:
                 uri.makedirs(f"config://{module_name}", exist_ok=True)
                 uri.write_json(cfg_local_uri, infilled_data, indent=2)
 
@@ -578,8 +578,9 @@ class AtomicEngine:
                         merged_data, changed = self._deep_infill_dict(target_data, tmpl_data, project_data=proj_data)
 
                         if changed or not uri.exists(target_cfg_uri):
-                            uri.makedirs(f"config://{mod}", exist_ok=True)
-                            uri.write_json(target_cfg_uri, merged_data, indent=2)
+                            if not is_local or merged_data:
+                                uri.makedirs(f"config://{mod}", exist_ok=True)
+                                uri.write_json(target_cfg_uri, merged_data, indent=2)
 
                         uri.remove(tmpl_uri)
 
@@ -637,8 +638,9 @@ class AtomicEngine:
                 merged_data, changed = self._deep_infill_dict(target_data, tmpl_data, project_data=proj_data)
 
                 if changed or not uri.exists(target_cfg_uri):
-                    uri.makedirs(f"config://{mod}", exist_ok=True)
-                    uri.write_json(target_cfg_uri, merged_data, indent=2)
+                    if not is_local or merged_data:
+                        uri.makedirs(f"config://{mod}", exist_ok=True)
+                        uri.write_json(target_cfg_uri, merged_data, indent=2)
 
                 uri.remove(tmpl_uri)
 
