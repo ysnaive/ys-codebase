@@ -290,35 +290,23 @@
 
 ---
 
-### DN-15: 專屬 HotReloadServer、Watchdog 500ms 防抖熱修補、Pre-dispatch 勾點自動喚醒與 3 世代日誌治理 (Dedicated Server, Watcher & Lifecycle Hook)
+### DN-15: 500ms 防抖熱修補、Service Worker 協同與背景全棧增量索引 (Debounced Service Worker & Incremental Indexing)
 
 - **背景與根因**：
-  1. 既有 JIT 變更感知僅在使用者發起檢索時被動觸發，若變更符號量大，首發搜尋仍需等待或熔斷降級。
-  2. 若改為常駐服務，手動啟動繁瑣且長時間佔用 250MB~380MB 記憶體。
-  3. PID 與日誌若寫入 `storage/` 會被 Git 追蹤，造成儲存庫污染。
-  4. 模組更新（如 `@build` 安裝）後若 Server 未重啟，會繼續執行舊代碼產生靜態語意漂移。
+  1. 既有 JIT 變更感知在使用者發起檢索時被動觸發，若變更符號量大，首發搜尋仍需等待或熔斷降級。
+  2. 若改為背景常駐執行，必須避免頻繁 I/O 與多次重覆觸發，且需精確掌握空間定義範圍。
 - **架構解法**：
-  1. **動態 Space 監聽、500ms 防抖熱修補與空間簽名失配重啟**：
-     - 常駐服務監聽目錄 100% 由注入之 `SpaceManager` 空間聯集定義動態解算（`resolve_space_include`），嚴禁寫死特定目錄。
-     - PID 記錄當前空間清單與結構化 Hash 簽名 (`spaces_signature`)；在每次 `ensure_running` 探測時，若發現空間定義或路徑變更，強制終止舊 Server 並以最新空間目錄重啟。
-     - 實裝 500ms 防抖緩衝窗口聚合 Burst Save 事件；防抖到期後單工作線程呼叫 `IndexingPipeline.hot_patch_unified_index`，一次性完成 AST、BM25、Graph 與 Vector 全語意熱修補，並以臨時檔 `os.replace` 原子替換磁碟快取。
-  2. **YSCB Pre-Dispatch Hook 自動自癒喚醒**：
-     - 於 `scripts/hook.core.py` 註冊 `on_pre_cli_dispatch`。
-     - 當 `enable_hot_reload_server=True` 時探測 Server 狀態，未運行時以 Detached Process 背景拉起，耗時 $\le 10\text{ms}$，前台零阻塞且零手動啟動負擔。
-  3. **CLI 運行時後台 Server 探測與 JIT 旁路提示**：
-     - 運行相關 CLI (search, callers, callees, impact) 時，若探測到後台運行中之 Server，強制跳過 JIT 檢查並向 stderr 提示 `"Hot reload server(pid:<pid>) exist, skip JIT check."`，徹底杜絕前台 I/O 與推論延遲。
-  4. **Server 啟動離線預檢熱修補**：
-     - Server 啟動掛載 Watchdog 之前，強制執行 `_run_startup_check`（與 JIT 相同之 `check_invalidation` 檢查），即刻修補伺服器離線期間產生的檔案異動，不留任何熱修補盲區。
-  5. **Server 啟用時 JIT 設定全面失效**：
-     - 當 `enable_hot_reload_server=True` 時，組態中之 `jit_vector_timeout_seconds` 等 JIT 設定視為無效（邏輯失效且 `resolve_jit_vector_timeout()` 返回 `None`），由 Server 在背景全權負責無時間限制之向量推論與更新。
-  6. **閒置超時自動關閉 (Inactivity Auto-Shutdown)**：
-     - 維護 `last_activity_time`，每 10 秒評估一次。持續 `hot_reload_server_inactivity_timer_sec`（預設 600s）無檔案變更，Server 自動退出進程並釋放 100% 記憶體。
-  7. **PID 與日誌 cache:// 空間隔離與 3 世代滾動**：
-     - PID 強制存放於 `cache://knowledge-db/daemon.pid`；即時日誌存放於 `cache://knowledge-db/logs/`，每次 PID 生命週期為 1 單位，自動滾動保留最多 3 份歷史記錄。
-  8. **版本感知強制重啟守門**：
-     - PID 記錄啟動當下的模組版本號。Hook 探測若發現目前模組版本與 PID 記錄失配，自動強制終止舊進程並重啟，杜絕熱代碼漂移。
+  1. **動態 Space 監聽與 500ms 防抖熱修補**：
+     - 背景服務監聽目錄 100% 由注入之 `SpaceManager` 空間聯集定義動態解算（`resolve_space_include`），嚴禁寫死特定目錄。
+     - 實裝 500ms 防抖緩衝窗口聚合 Burst Save 事件；防抖到期後呼叫 `IndexingPipeline.hot_patch_unified_index`，一次性完成 AST、BM25、Graph 與 Vector 全語意熱修補，並以臨時檔 `os.replace` 原子替換磁碟快取。
+  2. **Service Worker 協議標準化與常駐調度**：
+     - 實作 `KnowledgeDBServiceWorker` 協議，納入 `server` 平台模組之 `BaseServiceWorker` 統一調度，由生態系守護中樞統一管理 Warm Worker 與背景服務生命週期。
+  3. **啟動離線預檢熱修補**：
+     - 背景服務啟動掛載 Watchdog 之前，強制執行 `_run_startup_check`（`check_invalidation` 檢查），即刻修補離線期間產生的檔案異動，不留任何熱修補盲區。
+  4. **JIT 逾時動態解析與純粹組態**：
+     - 透過 `resolve_jit_vector_timeout()` 取得配置之 `jit_vector_timeout_seconds`（預設 5.0s），在前台查詢遭遇海量異動時依逾時閾值自動安全熔斷降級為 BM25 檢索，保持最新組態純粹性。
 - **效益與驗證**：
-  - 14/14 `TestHotReloadServer` 測試與全模組 147/147 (100.0%) 測試通過（0 Fail、0 Skip、0 Unknown）。
+  - `knowledge-db` 全模組測試 149/149 100% 通過（0 Fail、0 Skip、0 Unknown）。
 
 ---
 

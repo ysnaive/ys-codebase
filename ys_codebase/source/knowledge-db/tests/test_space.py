@@ -195,11 +195,29 @@ class TestSpaceManager(YSCBTestCase):
             proj_data = json.load(f)
         self.assertIn("enable_vector_search", proj_data)
         self.assertIn("embedding_model", proj_data)
-        self.assertIn("enable_hot_reload_server", proj_data)
-        self.assertIn("hot_reload_server_inactivity_timer_sec", proj_data)
         self.assertIn("jit_vector_timeout_seconds", proj_data)
         self.assertIn("max_threads", proj_data)
+        self.assertNotIn("enable_hot_reload_server", proj_data)
+        self.assertNotIn("hot_reload_server_inactivity_timer_sec", proj_data)
 
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_02_knowledgedb_config_purity(self):
+        """FT-02: 驗證 KnowledgeDBConfig 維持最新版純粹性，無舊版 server 屬性與向後相容欄位"""
+        from knowledge_db.config import KnowledgeDBConfig
+        cfg = KnowledgeDBConfig()
+        self.assertFalse(hasattr(cfg, "enable_hot_reload_server"))
+        self.assertFalse(hasattr(cfg, "hot_reload_server_inactivity_timer_sec"))
+        self.assertFalse(hasattr(cfg, "enable_server_console"))
+        self.assertFalse(hasattr(cfg, "is_jit_effective"))
+        self.assertEqual(cfg.resolve_jit_vector_timeout(), 5.0)
+
+        loaded = KnowledgeDBConfig.load(
+            project_config={"knowledge-db": {"enable_hot_reload_server": True, "jit_vector_timeout_seconds": 8.0}}
+        )
+        self.assertFalse(hasattr(loaded, "enable_hot_reload_server"))
+        self.assertEqual(loaded.resolve_jit_vector_timeout(), 8.0)
         self.mark_passed()
 
 

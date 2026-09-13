@@ -33,6 +33,11 @@ class ModulesWatcher:
         self._thread: Optional[threading.Thread] = None
         self._last_snapshot: Dict[str, float] = {}
 
+    @property
+    def is_running(self) -> bool:
+        """Return whether the watcher thread is currently running."""
+        return self._is_running
+
     def start(self) -> None:
         if self._is_running:
             return

@@ -18,7 +18,7 @@
 當使用者輸入 `/ContextInit` 或 Agent 偵測到是全新的對話 Session 時，Agent **必須順序執行**以下加載步驟：
 
 ### 步驟 1：[!] 加載專案行為準則與防呆紀律 (Mandatory Standards Read)
-- **讀取檔案**：[`AGENTS.md`](`__${project://AGENTS.md}__`) *(或 [`AgentsStandards.md`](`__#{module://agents-workflow/assets/standards/AgentsStandards.md}__`))*
+- **讀取檔案**：[`AGENTS.md`](`__#{project://AGENTS.md}__`) *(或 [`AgentsStandards.md`](`__#{module://agents-workflow/assets/standards/AgentsStandards.md}__`))*
 - **強制提取要點**：
   - **核心準則**：零臆測、**檔案唯一真理與對話極簡節流 (SSOT & Throttle)**、條件技能分流導航。
   - **[!] 執行紀律（絕對禁止條款）**：
@@ -32,8 +32,8 @@
 ### 步驟 2：加載 CLI 指令手冊與專案演進脈絡
 - **讀取檔案**：
   - 指令防呆情境手冊：[`yscb-cli-guild`](`__#{module://agents-workflow/assets/skills/yscb-cli-guild/SKILL.md}__`)
-  - 專案最新變更日誌：[`CHANGELOG.md`](`__${project://CHANGELOG.md}__`) (前 2 ~ 3 個區塊)
-  - 專案特化命名規範：[`STANDARDS.md`](`__${workflow.docs://_project/STANDARDS.md}__`) *(若專案未獨立提供則略過)*
+  - 專案最新變更日誌：[`CHANGELOG.md`](`__#{project://CHANGELOG.md}__`) (前 2 ~ 3 個區塊)
+  - 專案特化命名規範：[`STANDARDS.md`](`__#{workflow.docs://_project/STANDARDS.md}__`) *(若專案未獨立提供則略過)*
 - **提取要點**：
   - 掌握 CLI 三級權限分級（[SAFE] 自主安全 / [CONDITIONAL] 階段條件 / [GATED] 授權守門）。
   - 瞭解專案最近完成了哪些 Dev Plan 與架構優化。

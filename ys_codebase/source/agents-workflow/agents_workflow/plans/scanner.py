@@ -80,12 +80,12 @@ class PlanScanner:
             track_type = "Fast Track"
             target_ft = ft_plan if ft_plan.exists() else legacy_ft_plan
             content = target_ft.read_text(encoding="utf-8", errors="ignore")
-            for st in ["Completed", "Reviewing", "Implementing", "Planning", "Draft", "Confirmed"]:
+            for st in ["Completed", "Passed", "Reviewing", "Review", "In Progress", "Implementing", "Planning", "Draft", "Confirmed", "Pending"]:
                 if f"狀態：{st}" in content or f"狀態: {st}" in content or f"Status: {st}" in content or f"status: {st.lower()}" in content.lower():
                     status = st
                     break
             if status == "Unknown":
-                for st in ["Completed", "Reviewing", "Implementing", "Planning"]:
+                for st in ["Completed", "Passed", "Reviewing", "Review", "In Progress", "Implementing", "Planning"]:
                     if st in content:
                         status = st
                         break

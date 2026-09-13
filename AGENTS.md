@@ -30,6 +30,10 @@
 | **編寫代碼註解 / 撰寫或維護專案文檔**<br/>*(撰寫 Docstring、維護 docs/ 或更新 README 時)* | `documentation` |
 | **生態系模組開發 / 多模組熱調試 (Dogfooding)**<br/>*(修改 project://source/ 源碼、沙盒測試、@build 安裝或發布前)* | `yscb-module-dev` |
 | **代碼檢索 / 閱讀探索 / 符號查簽名 / 架構調研 / 調用圖譜 / 影響面評估**<br/>*(調用各環境之檔案讀取/檢視或文字搜尋/走訪工具進行探索前；[!] 探索非明確知悉路徑之文檔強制以 search --ftype=md 為唯一第一反射取得精確路徑，嚴禁未檢索直接逐檔翻讀或盲猜讀取)* | `knowledge-db-search` |
+
+> [!NOTE]
+> **專案特化技能擴充導引 (Project Contributed Routing)**：  
+> 若當前專案需擴充特化條件技能，請於專案組態 `config/agents-workflow/contribute.json` 宣告 `insert` 至 `AGENTS_SKILL_ROUTING` 錨點（宣告式一等公民，升級自動編譯注入，杜絕物化檔案衝突）。
 <!-- YSCB_AGENTS_END -->
 
 

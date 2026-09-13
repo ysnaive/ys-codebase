@@ -18,6 +18,7 @@
 | **[DN-AW-08]** | Stage 2 佔位符二分法解析與反引號完全替代剝除 | 工廠編譯器 (`compiler.py`) | `Active` |
 | **[DN-AW-09]** | 6 大計畫分支拓撲、/NewPlan 延遲建檔與 Roadmap 策略資產體系 | 工作流體系、CLI 工具鏈 | `Active` |
 | **[DN-AW-10]** | JIT 變更感知 Stat-First 雙階快照初篩與 SHA-1 快取機制 | 發布引擎 (`publisher.py`)、Manifest 治理 | `Active` |
+| **[DN-AW-11]** | 專案特化技能宣告式擴充規範、管理區塊純粹單向覆寫與工作流相對路徑校準 | 規範標準、發布引擎、工作流資產 | `Active` |
 
 ---
 
@@ -112,4 +113,16 @@
   2. 引入基於 `(st_mtime_ns, st_size)` 的 Stat-First 跨進程持久化快取（`cache://agents-workflow/source_sha1_cache.json`），僅在檔案元數據變更時重新讀檔與運算 SHA-1。
   3. 實作單次週期內來源資產綜合摘要快取 `_get_sources_digest()`，徹底消除單次執行週期的重複掃描與雜湊負擔。
 - **效益**：Clean 狀態下檢驗時間壓降至 sub-0.2ms，達成 0 檔案內容讀取與 0 重複雜湊，同時兼顧 100% 變更感知的數學精確性與自愈能力。
+
+---
+
+### [DN-AW-11] 專案特化技能宣告式擴充規範、管理區塊純粹單向覆寫與工作流相對路徑校準
+- **背景**：
+  1. 下游專案需在 `AGENTS.md` 擴充專案特化技能分流。若發布引擎嘗試以「純文字啟發式比對」反向猜測並保留自訂列，存在數學上的不可判定性（無法區分新版官方廢棄/整併之舊系統列與使用者自訂列），必然會導致已被廢棄的過期舊技能被永遠誤判復活（殭屍技能殘留）。
+  2. `ContextInit.md` 中指向 `AGENTS.md`、`CHANGELOG.md` 與 `STANDARDS.md` 的 Markdown 超連結誤用 `__${project://...}__` 標籤，Stage 2 解算為相對於 `project_root` 之裸路徑，在以工作流檔案為基準的 Markdown 檢視下無法直接點擊跳轉。
+- **決策**：
+  1. **捨棄啟發式字串猜測，回歸宣告式 Project Contributes**：`_soft_merge_agents_text` 保持對系統管理區塊 `<!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->` 的純粹單向覆寫，杜絕廢棄舊技能殘留；專案特化技能擴充全面導引至 `config/agents-workflow/contribute.json`，透過 `AGENTS_SKILL_ROUTING` 錨點以 `insert` 模式在一等公民層級宣告注入；外部自訂章節（如 `## 4. 專案特化工程規範`）100% 完整保留。
+  2. **校準工作流超連結為相對路徑**：將 `ContextInit.md` 內之 Markdown 語法鏈接校準為 `__#{project://...}__` 與 `__#{workflow.docs://...}__`， Stage 2 解算為相對於當前工作流之正確相對路徑（`../../AGENTS.md` 等），保留純終端 CLI 命令使用 `__${...}__`。
+- **效益**：徹底消除文字猜測帶來的殭屍技能復活風險，維持 YSCB 產物工廠之 SSOT 唯一真理宣告原則，同時修復工作流超連結導航。
+
 

@@ -79,3 +79,10 @@ Server 模組內建高可靠的集中式即時 flush 日誌機制：
   ```
 - 如此 Server 即成為長效常駐服務，後續所有 CLI 調用均會自動透過 `_try_hot_dispatch` 享受 Hot-IPC 加速。
 
+---
+
+## 5. 相關架構專題手冊 (Architecture Topics)
+
+- [熱重載與常駐 Worker 架構專題](hot_reload_architecture_migration.md)：常駐中樞、Warm Worker、ModulesWatcher 與領域背景服務掛載協調機制。
+
+
