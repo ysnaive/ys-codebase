@@ -23,7 +23,7 @@
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_knowledge_db_embedding_and_diagnostics` | Full Track | `Completed` | 🔴 向量維度動態解析 (移除寫死 384)、🟠 FastEmbed 原生例外診斷、🟡 HF symlink warning 抑制與 index --help 修正 |
-| **sub_02** | `sub_02_host_and_core_distribution_lifecycle` | Full Track | `Pending` | 🔴 DEFAULT_PROVIDER_URL 與 self-update 404 修復、🔴 yscb init 自適應最新 core、🔴 modules/ vs .modules/ 換手與相容性檢查、🟡 yscb.py.bak gitignore 與 update_check 刷新 |
+| **sub_02** | `sub_02_host_and_core_distribution_lifecycle` | Full Track | `Completed` | 🔴 DEFAULT_PROVIDER_URL 與 self-update 404 修復、🔴 yscb init 自適應最新 core、🔴 modules/ vs .modules/ 換手與相容性檢查、🟡 yscb.py.bak gitignore 與 update_check 刷新 |
 | **sub_03** | `sub_03_config_hierarchy_and_hook_observability` | Fast Track | `Pending` | 🟠 config.local 預設值遮蔽 project 修復、🟠 pre_cli_dispatch 等 hook 例外與回傳值可觀測性 (debug/verbose 模式) |
 | **sub_04** | `sub_04_server_dependency_and_architecture_migration` | Fast Track | `Pending` | 🟠 server 依賴宣告、熱重載遷移指引、enable_hot_reload_server 組態清理、Worker Watcher 狀態可觀測性 |
 | **sub_05** | `sub_05_agents_workflow_managed_blocks_and_standards` | Fast Track | `Pending` | 🟠 release 覆寫管理區塊時保留自訂擴充列、🟡 舊 managed 檔案清理與 ContextInit.md 引用校準 |
@@ -33,7 +33,7 @@
 ## 3. 主計畫里程碑與推進狀態 (Milestones)
 
 - [x] **里程碑 1**：完成 sub_01 向量嵌入維度動態解析與診斷強化，解除向量檢索降級阻斷
-- [ ] **里程碑 2**：完成 sub_02 發布提供者、self-update、版本換手與 init 自適應機制修復
+- [x] **里程碑 2**：完成 sub_02 發布提供者、self-update、版本換手與 init 自適應機制修復
 - [ ] **里程碑 3**：完成 sub_03 組態層級與 hook 例外可觀測性修復
 - [ ] **里程碑 4**：完成 sub_04 server 依賴宣告、架構遷移說明與 Watcher 診斷完備
 - [ ] **里程碑 5**：完成 sub_05 管理區塊保留機制與舊檔案清理

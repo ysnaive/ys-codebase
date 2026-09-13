@@ -57,15 +57,15 @@
   "markdown.preview.openMarkdownLinks": "inPreview",
   "markdown.preview.doubleClickToSwitchToEditor": true,
   "python.analysis.extraPaths": [
-    "./ys_codebase/.venv/py312/Lib/site-packages"
+    "./ys_codebase/.venv/py312/lib/python3.12/site-packages"
   ],
-  "python.defaultInterpreterPath": "./ys_codebase/.venv/py312/Scripts/python.exe",
+  "python.defaultInterpreterPath": "./ys_codebase/.venv/py312/bin/python",
   "_yscb_managed": {
     "description": "Auto-managed by YSCB host bootstrapper. Reversible via module uninstall or rollback.",
     "extraPaths": [
-      "./ys_codebase/.venv/py312/Lib/site-packages"
+      "./ys_codebase/.venv/py312/lib/python3.12/site-packages"
     ],
-    "defaultInterpreterPath": "./ys_codebase/.venv/py312/Scripts/python.exe",
+    "defaultInterpreterPath": "./ys_codebase/.venv/py312/bin/python",
     "excludes": {
       "files.watcherExclude": "**/.venv/**",
       "search.exclude": "**/.venv/**",

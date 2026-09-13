@@ -25,6 +25,8 @@ INTERNAL_IGNORE_PATTERNS = [
     "*.local.json",
     "__pycache__/",
     "*.pyc",
+    "yscb.py.bak",
+    "*.bak",
 ]
 
 
@@ -232,6 +234,11 @@ class Installer:
                 
             events.broadcast("on_installed", ExecutionContext("core", "install", [module_name, installed_ver]), emit_module="core")
             self.sync_pip_dependencies()
+            try:
+                from core.update_checker import UpdateChecker
+                UpdateChecker().invalidate_cache(module_name)
+            except Exception:
+                pass
             self.engine.act_unlock("install")
             print(f"[core:install] Successfully installed '{module_name}@{installed_ver}'.")
             self._check_optional_dependencies(module_name)
@@ -321,6 +328,13 @@ class Installer:
                 self.engine.act_reload(clean_stage=True, inject_stage=True)
                 events.broadcast("on_update", ExecutionContext("core", "update", targets), emit_module="core")
                 self.sync_pip_dependencies()
+                try:
+                    from core.update_checker import UpdateChecker
+                    checker = UpdateChecker()
+                    for m in targets:
+                        checker.invalidate_cache(m)
+                except Exception:
+                    pass
                 print(f"[core:update] Update completed successfully.")
             self.engine.act_unlock("update")
             return 0

@@ -65,6 +65,27 @@ class UpdateChecker:
         except Exception:
             pass
 
+    def invalidate_cache(self, module_name: Optional[str] = None) -> None:
+        """
+        及時失效更新快取：
+        - 若 module_name 為 None：重設快取，清空所有更新項目。
+        - 若提供 module_name：自快取 updates 字典中移除該模組並回存。
+        """
+        if not uri.exists(self.cache_uri):
+            return
+        cached = self._load_cache()
+        if module_name is None:
+            new_data = {"last_checked_at": 0.0, "updates": {}}
+        else:
+            updates = cached.get("updates", {})
+            if isinstance(updates, dict) and module_name in updates:
+                del updates[module_name]
+            new_data = {
+                "last_checked_at": cached.get("last_checked_at", 0.0),
+                "updates": updates
+            }
+        self._save_cache(new_data)
+
     def check_updates(self, force: bool = False) -> Dict[str, Any]:
         """
         檢查各已安裝模組是否有新版本可用。

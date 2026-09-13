@@ -65,6 +65,25 @@ Core 實作了「專案 vs 本機」與「全域 vs 模組」的雙維度隔離�
 
 ## 3. CLI 指令集速查與範例 (CLI Reference & Cookbook)
 
+### 3.0 宿主自舉與環境初始化 (Host & Environment Lifecycle)
+
+```bash
+# 全新初始化 YSCB 工作區 (若未指定路徑，預設建立 .yscb 工具目錄)
+python yscb.py init
+
+# 指定工具目錄進行全新初始化
+python yscb.py init ./ys_codebase
+
+# 自癒修復損毀或缺失的 core 核心模組 (完成後連鎖自動觸發 reload 刷新環境)
+python yscb.py init --fix
+
+# 自官方遠端發布庫升級 yscb.py 宿主起手腳本 (自動錨定 repo 根目錄)
+python yscb.py self-update
+
+# 指定自訂 URL 升級 yscb.py
+python yscb.py self-update --url=https://example.com/yscb.py
+```
+
 ### 3.1 套件與模組管理 (Package Management)
 
 ```bash
