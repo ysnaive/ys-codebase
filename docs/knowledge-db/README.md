@@ -121,3 +121,12 @@ engine.clean(space="project_main")
 - 📦 **語意打包引擎指南**：[bundler.md](./bundler.md)
 - 🔤 **分詞與同義詞指南**：[tokenizer.md](./tokenizer.md)
 - 🔍 **語意檢索引擎指南**：[retrieval.md](./retrieval.md)
+
+---
+
+## 6. 向量嵌入與環境配置 (Vector Embedding & Environment)
+
+- **動態維度解析 (Dynamic Dimension Resolution)**：`EmbeddingService` 徹底淘汰硬編碼常數，統一以實際加載之 FastEmbed 模型實例原生屬性 (`model.embedding_size`) 作為唯一真理來源（預設 `BAAI/bge-small-zh-v1.5` 為 512 維），保證快取比對與檢索維度完全相容。
+- **Windows / Anaconda 環境需求**：ONNX Runtime 依賴 Microsoft Visual C++ 2015-2022 執行期（VC++ runtime $\ge 14.4x$）。若遇 `WinError 1114`（動態連結庫初始化例行程序失敗），可透過 `conda install -c conda-forge vc14_runtime` 或安裝官方最新 VC++ Redistributable 修復。
+- **符號連結權限警告抑制**：系統已預設配置 `HF_HUB_DISABLE_SYMLINKS_WARNING=1`，防止在 Windows 非管理員模式下觸發 Hugging Face Hub 的 `WinError 1314` 符號連結警告。
+

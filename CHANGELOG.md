@@ -1,5 +1,14 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_13_1648_downstream_feedback_remediation (In Progress)
+
+### sub_01_knowledge_db_embedding_and_diagnostics (Verified)
+- **FastEmbed 向量嵌入動態維度解析、DEFAULT_EMBEDDING_DIM 徹底淘汰與異常可觀測性強化**：
+  - **動態維度解析與常數徹底淘汰 (SSOT)**：徹底刪除 `DEFAULT_EMBEDDING_DIM = 384` 硬編碼常數（零特例），統一以實際加載之 FastEmbed 模型實例原生屬性 `self._model.embedding_size`（`BAAI/bge-small-zh-v1.5` 為 512 維）為維度唯一真理來源，徹底根除每次檢索被誤判維度不符而退回純 BM25 的關鍵缺陷。
+  - **FastEmbed 載入失敗結構化異常暴露 (`last_error`)**：`EmbeddingService` 封裝 `last_error` 結構化記錄載入或推論失敗原因，在降級通知與日誌中精確輸出底層例外（如 Anaconda 下 VC++ runtime `WinError 1114`），不再靜默吞掉。
+  - **Windows 符號連結警告前置抑制**：自動配置 `HF_HUB_DISABLE_SYMLINKS_WARNING=1`，防止 Windows 無符號連結權限時傾倒大段警告。
+  - **全套測試 100% 通過與文檔完備**：重構 `test_retrieval.py` 測試套件，淘汰過期常數並補齊 FT-10~13；`knowledge-db` 全套 148/148 測試全數通過（148 Passed, 0 Failed）；`dev check` 0 警告 0 錯誤；更新 `docs/knowledge-db/README.md` 補充 VC++ 14.4x 環境指引。
+
 ## 2026_09_12_1346_server_auto_spawn_adaptive_degrade (Completed)
 
 - **Server 背景自動喚醒環境權限自適應探針、auto_spawn 雙層組態與 Agents 剛性常駐導引**：
