@@ -15,7 +15,8 @@ def broadcast(
     event_name: str,
     context: Optional[Any] = None,
     emit_module: str = "core",
-    search_roots: Optional[List[str]] = None
+    search_roots: Optional[List[str]] = None,
+    verbose: Optional[bool] = None
 ) -> Dict[str, Any]:
     """
     向模組廣播生命週期事件，動態尋址 scripts/hook.{emit_module}.py。
@@ -24,10 +25,22 @@ def broadcast(
     :param context: 執行期上下文物件，預設自動建立 ExecutionContext
     :param emit_module: 事件發送者名稱，用於定位 hook.{emit_module}.py，預設為 "core"
     :param search_roots: 自訂掃描根目錄列表；若為 None 則預設掃描 module:// 運行端
+    :param verbose: 是否啟用詳細日誌；若為 None 則自適應偵測環境變數與命令列參數
     :return: 執行結果字典 { module_name: result_or_status }
     """
     results: Dict[str, Any] = {}
     ctx = context if context is not None else ExecutionContext(emit_module, event_name, [])
+
+    is_verbose = (
+        verbose
+        if verbose is not None
+        else (
+            os.environ.get("YSCB_VERBOSE") == "1"
+            or os.environ.get("YSCB_DEBUG") == "1"
+            or "--verbose" in sys.argv
+            or "--debug" in sys.argv
+        )
+    )
 
     targets: List[tuple[str, str]] = []  # [(mod_name, hook_real_path)]
 
@@ -81,9 +94,14 @@ def broadcast(
                 if callable(hook_func):
                     h_res = hook_func(ctx)
                     results[mod_name] = h_res if h_res is not None else "success"
+                    if is_verbose:
+                        print(f"[{emit_module}:events] Hook '{mod_name}:hook.{emit_module}.py' executed '{event_name}' -> {results[mod_name]}", file=sys.stderr)
         except Exception as e:
             results[mod_name] = f"warning: {e}"
             print(f"[{emit_module}:events] Warning: Hook '{mod_name}:hook.{emit_module}.py' failed on '{event_name}': {e}", file=sys.stderr)
+            if is_verbose:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
 
     return results
 

@@ -1,4 +1,8 @@
 {
   "enable_vector_search": true,
-  "embedding_model": "BAAI/bge-small-zh-v1.5"
+  "embedding_model": "BAAI/bge-small-zh-v1.5",
+  "jit_vector_timeout_seconds": 5.0,
+  "max_threads": "auto",
+  "enable_hot_reload_server": false,
+  "hot_reload_server_inactivity_timer_sec": 600
 }
