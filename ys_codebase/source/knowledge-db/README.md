@@ -77,20 +77,20 @@ python yscb.py knowledge-db callees compile_stage1 --json -s
 python yscb.py knowledge-db impact ReleasePublisher --depth=2 --json
 ```
 
-### 3.3 知識庫狀態與維護管理 (`status`, `scan`, `bundle`, `index`, `clean`)
+### 3.3 知識庫狀態、模型與維護管理 (`status`, `index`, `model`, `clean`)
 
 ```bash
-# 查詢全系統註冊空間、指紋快取與索引狀態
+# 查詢全系統註冊空間、指紋快取、索引狀態與模型狀態 (支援 --scan / --diff 比對增量指紋)
 python yscb.py knowledge-db status
+python yscb.py knowledge-db status --scan
 
-# 執行增量檔案指紋掃描
-python yscb.py knowledge-db scan
-
-# 建置或更新空間倒排索引快取
+# 一鍵全管線索引建置 (掃描 -> Bundle 提取 -> 倒排索引 -> 向量特徵)，支援導出 Bundle
 python yscb.py knowledge-db index
+python yscb.py knowledge-db index --export ./output/project.bundle.json
 
-# 導出語意符號 SemanticBundle 發布包
-python yscb.py knowledge-db bundle
+# 向量推論模型管理 (查詢模型狀態與顯式預載)
+python yscb.py knowledge-db model status
+python yscb.py knowledge-db model download
 
 # 清理指定空間或全空間快取檔案
 python yscb.py knowledge-db clean --all

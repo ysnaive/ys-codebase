@@ -90,6 +90,7 @@ class KnowledgeEngine:
             mock_mode=mock_mode,
             model_name=self.config.embedding_model,
             max_threads=self.config.resolve_threads(),
+            enable_vector_search=getattr(self.config, "enable_vector_search", True),
         )
         self.hybrid_engine = HybridSearchEngine(
             inverted_index=None,
@@ -226,7 +227,10 @@ class KnowledgeEngine:
         space: Optional[str] = None,
         force: bool = False,
         interactive: bool = False,
+        export_path: Optional[Union[str, Path]] = None,
     ) -> Dict[str, InvertedIndex]:
+        if export_path:
+            self.bundle(space=space, export_path=export_path)
         return self.pipeline.build_index(space=space, force=force, interactive=interactive)
 
     def clean(self, space: Optional[str] = None) -> None:
@@ -236,9 +240,17 @@ class KnowledgeEngine:
     # 生命週期與空間操作
     # ----------------------------------------------------------------------
 
-    def status(self) -> Dict[str, Any]:
-        """獲取全系統空間、指紋快取、同義詞、全域倒排索引與向量快取統計摘要。"""
+    def status(
+        self,
+        space: Optional[str] = None,
+        scan: bool = False,
+        force_scan: bool = False,
+    ) -> Dict[str, Any]:
+        """獲取全系統空間、指紋快取、同義詞、全域倒排索引與向量快取統計摘要，支援可選差異掃描。"""
         spaces = self.space_manager.load_spaces()
+        if space is not None:
+            sp = self.space_manager.get_space(space)
+            spaces = {sp.name: sp}
         thesaurus_groups = self.space_manager.load_thesaurus()
         indices_dir = self.pipeline.get_indices_dir()
 
@@ -277,6 +289,10 @@ class KnowledgeEngine:
                 "index_cached": has_index,
             }
 
+        scan_diff = None
+        if scan:
+            scan_diff = self.scan(space=space, force=force_scan)
+
         return {
             "total_spaces": len(spaces),
             "spaces": space_details,
@@ -284,9 +300,26 @@ class KnowledgeEngine:
             "has_vector_index": has_vector_index,
             "enable_vector_search": getattr(self.config, "enable_vector_search", True),
             "embedding_model": getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5"),
+            "model_downloaded": self.embedding_service.is_model_downloaded(),
             "thesaurus_groups": len(thesaurus_groups),
             "storage_dir": str(self.storage_dir),
+            "scan_diff": scan_diff,
         }
+
+    def model_status(self) -> Dict[str, Any]:
+        """獲取當前向量推論模型狀態清冊。"""
+        return {
+            "model_name": self.embedding_service.model_name,
+            "cache_dir": str(self.embedding_service.cache_dir),
+            "is_downloaded": self.embedding_service.is_model_downloaded(),
+            "is_available": self.embedding_service.is_available,
+            "dimension": self.embedding_service.dimension,
+            "enable_vector_search": getattr(self.config, "enable_vector_search", True),
+        }
+
+    def model_download(self, force: bool = False) -> bool:
+        """顯式下載或預熱向量模型權重。"""
+        return self.embedding_service.download_model(force=force)
 
     def scan(self, space: Optional[str] = None, force: bool = False) -> Dict[str, ScanDiffResult]:
         """執行指紋增量掃描，回傳各空間之檔案變更統計差異清冊。"""

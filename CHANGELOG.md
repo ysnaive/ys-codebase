@@ -1,5 +1,27 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_14_0455_downstream_feedback_remediation (In Progress)
+
+### sub_01_knowledge_db_cli_options_and_filtering (Verified)
+- **CLI 選項值提取修正 (`get_option_value`)、檢索正交過濾群組解耦與數值參數解析容錯**：
+  - **選項值純字串提取 (SSOT)**：全面將 `knowledge-db` 之 `search`、`callers`、`callees`、`impact`、`bundle` 選項提取由 `bags.get_option()` 遷移至 `bags.get_option_value()`，徹底解決 `CmdOption` 物件被 `str()` 轉型為物件表達式導致 `--space`、`--ftype`、`--kind`、`--lang` 等篩選全面失效之關鍵缺陷（ISSUE-01）。
+  - **正交篩選互斥限制解綁**：於 `contributes/core.json` 將 `search` 的 `ftype` 選項由 `"scope"` 群組獨立劃分至 `"filter"` 群組，解除同群組互斥限制，全面支援 `--space docs --ftype md` 複合篩選（ISSUE-03）。
+  - **數值參數解析容錯強化**：於 `callers`、`callees`、`impact` 統一支援 `"auto"` 及整數型別轉換容錯，徹底防禦 `ValueError`。
+  - **全套測試 100% 通過與文檔對齊**：於 `tests/test_cli.py` 新增 FT-10 單元測試；`knowledge-db` 全套 150/150 測試通過（150 Passed, 0 Failed）；`dev check` 0 警告 0 錯誤；更新 `docs/knowledge-db/retrieval.md` 補充複合檢索指南。
+
+### sub_02_core_contributes_dispatcher_remediation (Verified)
+- **Core Contributes 群組分發器未知子指令防呆、未定義調用徹底消除與參數切片正規化**：
+  - **未知子指令優雅防呆與未定義變數消除 (SSOT)**：徹底移除 `core/scripts/cli.py` 中 `contributes()` 於未定義範疇嘗試調用不存在之 `contributes_cmd.cmd(cmd_bags)`，消除 `NameError` 與執行期例外（ISSUE-02）；當使用者輸入未知子指令時，輸出標準友善提示訊息（`Available: list, check`）並優雅返回狀態碼 1。
+  - **子指令參數切片正規化 (`sub_bags`)**：建立 `sub_bags` 傳遞切片後參數 `args[1:]` 至 `contributes_list` 與 `contributes_check`，確保 `contributes list <mod>` 能精準鎖定特定模組契約清冊，消除 `args[0]` 指令名與參數歧義。
+  - **全套測試 100% 通過與防呆驗證**：於 `tests/test_contributes_cmd.py` 擴充 FT-08 單元測試覆蓋無參數、`list`、`check` 與未知子指令防呆；`core` 全套 192/192 測試全數通過（192 Passed, 0 Failed）；`dev check` 0 警告 0 錯誤；實機驗證 `contributes get ...` 防呆生效。
+
+### sub_03_knowledge_db_cli_consolidation_and_model_management (Verified)
+- **Knowledge-DB CLI 指令邊界整合、8 大標準指令集收斂、離線向量模型探針先行與 Agent 剛性防呆引導**：
+  - **零向下相容包袱之 8 大標準指令集收斂 (SSOT)**：徹底刪除過度碎片化之頂層 `scan` 與 `bundle` 指令；將 `scan` 併入 `status`（支援 `status --scan` / `--diff` 增量指紋比對）；將 `bundle` 併入 `index`（支援一鍵全管線索引建置與 `index --export <path>` 導出語意 Bundle）；新增獨立 `model` 指令群組（`model status` / `model download`），確立 8 大正交標準指令集（`status`, `index`, `search`, `callers`, `callees`, `impact`, `clean`, `model`）。
+  - **本地模型探針先行 (Probe First)**：`EmbeddingService` 於推論前先以純本機路徑檢查 `.onnx` 權重檔案；未就緒時絕不發起任何 Hugging Face Hub 未認證網路連線，立即平滑退回純 BM25 詞彙檢索，延遲保持在 $< 500\text{ms}$，杜絕網路阻塞與逾時崩潰。
+  - **AI Agent 剛性防呆通道**：當檢索觸發降級且組態設定 `enable_vector_search: true` 時，強制於 `sys.stderr` 輸出引導：`[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？`，分離 stdout 檢索結果並明確阻斷 Agent 盲目重試。
+  - **全套測試 100% 通過與文檔對齊**：單元測試擴充覆蓋 FT-01 ~ FT-06、ET-01、RT-01（`knowledge-db` 157/157 Passed, 100% Ready）；`dev check` 0 警告 0 錯誤；更新 `docs/knowledge-db/README.md`、`retrieval.md` 與 `DESIGN_NOTES.md` (`[DN-25]`)。
+
 ## 2026_09_13_1648_downstream_feedback_remediation (Completed)
 
 ### sub_01_knowledge_db_embedding_and_diagnostics (Verified)
