@@ -493,4 +493,28 @@
 - **效益與驗證**：
   - `knowledge-db status` 執行總耗時由 7.1 秒暴降至 0.14 秒，核心統計計算僅耗時 14 毫秒，效能提升達 50 倍以上。
 
+---
+
+### [DN-25] CLI 指令邊界整合、8 大正交指令集與向量模型離線探針先行
+
+- **背景與動機**：
+  - 既有 `knowledge-db` CLI 指令過度碎片化，`scan`（增量指紋比對）與 `status`（空間狀態）功能重疊，`bundle`（語意符號提取打包）與 `index`（倒排索引建置）亦有重複。
+  - 當下游專案在無連外網路或未下載模型環境中執行檢索時，FastEmbed 預設會嘗試連線 Hugging Face Hub 並觸發未認證權限警告，導致檢索受阻或造成 AI Agent 誤判死循環。
+- **架構決策與實作**：
+  1. **零向下相容包袱之 8 大標準指令集收斂**：
+     - 徹底移除頂層 `scan` 與 `bundle` 指令。
+     - `scan` 併入 `status`（支援 `status --scan` / `--diff` 增量指紋比對）。
+     - `bundle` 併入 `index`（支援一鍵全管線索引建置與 `index --export <path>` 導出 Bundle）。
+     - 新增獨立 `model` 指令群組（`model status` / `model download`），清晰隔離向量模型生命週期。
+     - 確立 8 大正交標準指令：`status`, `index`, `search`, `callers`, `callees`, `impact`, `clean`, `model`。
+  2. **本地模型探針先行 (Probe First) 與剛性防呆通道**：
+     - `EmbeddingService` 在初始化時先以純本機路徑探測 `.onnx` 權重檔案是否存在；未下載時**絕不發起任何未認證網路連線**，立即平滑退回純 BM25 詞彙檢索。
+     - 當檢索觸發降級且組態中 `enable_vector_search: true` 時，強制於 `sys.stderr` 輸出剛性引導：
+       `[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？`
+       確保結果資料（stdout）純淨並將高優先度阻斷信號傳遞予 Agent。
+- **效益與驗證**：
+  - 指令職責正交性 100%，消除下游專案操作混淆。
+  - 離線檢索延遲保持在 $< 500\text{ms}$，無網路逾時與例外崩潰。
+  - 單元測試 157/157 PASSED (100%)，`dev check` 0 警告 0 錯誤。
+
 

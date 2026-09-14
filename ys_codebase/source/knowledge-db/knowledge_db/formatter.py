@@ -212,6 +212,10 @@ class TerminalStyler:
         """亮紅色加粗"""
         return f"\033[1;91m{text}\033[0m" if self.enabled else text
 
+    def bold(self, text: str) -> str:
+        """加粗字元"""
+        return f"\033[1m{text}\033[0m" if self.enabled else text
+
 
 class ResultFormatter:
     """

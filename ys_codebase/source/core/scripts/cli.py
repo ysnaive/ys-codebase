@@ -436,13 +436,22 @@ def contributes(cmd_bags: CmdBags) -> int:
     """Contributes Schema Validation and Inspection Manager (Group Dispatcher)."""
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
-    sub_cmd = cmd_bags.args[0] if cmd_bags.args else "list"
+    args = cmd_bags.args
+    sub_cmd = args[0] if args else "list"
+    sub_args = args[1:] if args else []
+    sub_bags = CmdBags(
+        raw_cmd=cmd_bags.raw_cmd,
+        command=sub_cmd,
+        args=sub_args,
+        options=cmd_bags.options,
+    )
     if sub_cmd == "list":
-        return contributes_list(cmd_bags)
+        return contributes_list(sub_bags)
     elif sub_cmd == "check":
-        return contributes_check(cmd_bags)
+        return contributes_check(sub_bags)
     else:
-        return contributes_cmd.cmd(cmd_bags)
+        print(f"[core:contributes] Unknown subcommand '{sub_cmd}'. Available: list, check", file=sys.stderr)
+        return 1
 
 
 # Legacy test compatibility aliases

@@ -46,38 +46,39 @@
 
 ## 3. CLI 快速上手 (Quick Start)
 
+系統收斂為 8 大正交標準指令集：`status`, `index`, `search`, `callers`, `callees`, `impact`, `clean`, `model`。
+
 ```bash
-# 1. 查看所有已註冊空間、快取與索引狀態
+# 1. 查看所有已註冊空間、快取、索引狀態與增量指紋差異 (--scan / --diff)
 python yscb.py knowledge-db status
+python yscb.py knowledge-db status --scan
 
-# 2. 執行全空間聯集或指定空間增量指紋掃描
-python yscb.py knowledge-db scan --all
-python yscb.py knowledge-db scan project_main --force
-
-# 3. 執行空間語意符號打包與 Bundle 導出
-python yscb.py knowledge-db bundle project_main
-
-# 4. 預先建置並快取空間倒排索引與調用圖譜
+# 2. 一鍵全管線索引建置 (掃描 -> Bundle 提取 -> 倒排索引 -> 向量特徵)，支援導出 Bundle
 python yscb.py knowledge-db index --all
+python yscb.py knowledge-db index --export ./output/project.bundle.json
 
-# 5. 執行多欄位加權 BM25 語意檢索 (預設為簡易單行排版，支援自動懶建置索引)
+# 3. 向量推論模型生命週期管理 (狀態查詢與顯式預載)
+python yscb.py knowledge-db model status
+python yscb.py knowledge-db model download
+
+# 4. 執行多欄位加權 BM25 語意檢索 (預設為簡易單行排版，支援自動懶建置索引)
 python yscb.py knowledge-db search PIDController
 python yscb.py knowledge-db search "狀態機更新" --kind=class --limit=5
 
-# 6. 代碼/文檔分流檢索 (--ftype 與 --snippet 預覽代碼區塊與 Docstring 摘要)
-python yscb.py knowledge-db search "PIDController" --ftype=c,cpp,py -s
+# 5. 代碼/文檔分流檢索 (--ftype 與 --snippet 預覽代碼區塊與 Docstring 摘要)
+python yscb.py knowledge-db search "PIDController" --ftype=py -s
 python yscb.py knowledge-db search "開發規範" --ftype=md -s
 
-# 7. 查詢符號上游調用者 (Who calls me?)
+# 6. 查詢符號上游調用者 (Who calls me?)
 python yscb.py knowledge-db callers "InvertedIndex.load_binary" -s
 
-# 8. 查詢符號內部調用之下游被調用者 (Whom do I call?)
+# 7. 查詢符號內部調用之下游被調用者 (Whom do I call?)
 python yscb.py knowledge-db callees "KnowledgeEngine.build_unified_index" -s
 
-# 9. 分析重構影響面擴散拓撲 (Blast Radius Impact)
+# 8. 分析重構影響面擴散拓撲 (Blast Radius Impact)
 python yscb.py knowledge-db impact "InvertedIndex.patch_incremental" --depth=2
 
-# 10. 清理特定或全空間之指紋、Bundle 與倒排索引快取
+# 9. 清理特定或全空間之指紋、Bundle 與倒排索引快取
 python yscb.py knowledge-db clean --all
 ```
 
