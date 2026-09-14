@@ -15,66 +15,27 @@
         "description": "查看知識庫空間狀態、指紋快取、同義詞與索引統計",
         "tier": "safe",
         "server_compatible": true,
+        "args": {
+          "space": {
+            "description": "空間名稱 (若省略則顯示全空間)",
+            "required": false
+          }
+        },
+        "options": {
+          "mode": {
+            "scan": {
+              "description": "執行空間指紋掃描並顯示異動差異",
+              "alias": ["diff"]
+            }
+          }
+        },
         "usage": {
           "pros": [
-            "日常檢視知識庫已註冊空間與快取狀態"
+            "日常檢視知識庫已註冊空間與快取狀態",
+            "透過 --scan / --diff 比對程式碼與文檔變更"
           ],
           "cons": [
             "執行大量資料庫重構或打包時"
-          ]
-        }
-      },
-      "scan": {
-        "description": "執行指定空間或全空間聯集增量指紋掃描",
-        "tier": "conditional",
-        "server_compatible": true,
-        "args": {
-          "space": {
-            "description": "空間名稱 (若省略則掃描全空間)",
-            "required": false
-          }
-        },
-        "options": {
-          "scope": {
-            "all": {
-              "description": "掃描全空間",
-              "alias": ["a"]
-            }
-          }
-        },
-        "usage": {
-          "pros": [
-            "比對程式碼與文檔變更並更新指紋庫"
-          ],
-          "cons": [
-            "測試期間無需頻繁手動掃描"
-          ]
-        }
-      },
-      "bundle": {
-        "description": "執行指定空間或全空間聯集之多語言語意打包與導出",
-        "tier": "conditional",
-        "server_compatible": true,
-        "args": {
-          "space": {
-            "description": "空間名稱 (若省略則打包全空間)",
-            "required": false
-          }
-        },
-        "options": {
-          "scope": {
-            "all": {
-              "description": "打包全空間",
-              "alias": ["a"]
-            }
-          }
-        },
-        "usage": {
-          "pros": [
-            "建置與發布空間之 SemanticBundle 發布包"
-          ],
-          "cons": [
-            "僅查詢檢索時無需重複完整打包"
           ]
         }
       },
@@ -100,11 +61,22 @@
               "description": "強制重建全量索引與特徵快取",
               "alias": ["f"]
             }
+          },
+          "export": {
+            "export": {
+              "description": "同時導出語意 Bundle 至指定 JSON 檔案路徑",
+              "args": {
+                "path": {
+                  "description": "導出檔案路徑"
+                }
+              }
+            }
           }
         },
         "usage": {
           "pros": [
-            "預熱檢索快取加速大規模檢索"
+            "預熱檢索快取加速大規模檢索",
+            "透過 --export 導出語意 Bundle 發布包"
           ],
           "cons": [
             "檢索 search 指令已內建自動懶索引建置"
@@ -151,7 +123,9 @@
                   "description": "空間名稱"
                 }
               }
-            },
+            }
+          },
+          "filter": {
             "ftype": {
               "description": "篩選檔案類型 (如 md, py)",
               "args": {
@@ -377,6 +351,56 @@
           "cons": [
             "日常常規操作無需隨意清理快取"
           ]
+        }
+      },
+      "model": {
+        "description": "管理向量嵌入推論模型（檢視狀態或顯式下載權重）",
+        "tier": "safe",
+        "server_compatible": true,
+        "cmd": {
+          "status": {
+            "description": "檢視本地向量模型權重快取目錄、檔案狀態與維度",
+            "tier": "safe",
+            "server_compatible": true,
+            "options": {
+              "format": {
+                "json": {
+                  "description": "以 JSON 格式輸出"
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視本地向量模型是否已下載就緒"
+              ],
+              "cons": []
+            }
+          },
+          "download": {
+            "description": "顯式下載 FastEmbed 向量模型權重至本地快取",
+            "tier": "conditional",
+            "server_compatible": true,
+            "options": {
+              "force": {
+                "force": {
+                  "description": "強制覆蓋重新下載",
+                  "alias": ["f"]
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "在前置部署或離線環境準備時顯式預載模型"
+              ],
+              "cons": []
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "管理向量模型生命週期"
+          ],
+          "cons": []
         }
       }
     }

@@ -34,7 +34,7 @@ _spec.loader.exec_module(_hook_dev)
 class TestCLI(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_cli_all_commands(self):
-        """FT-07: 驗證 CLI 6 大子指令路由與執行 (status, scan, bundle, index, search, clean)"""
+        """FT-07: 驗證 CLI 8 大子指令路由與執行 (status, index, search, callers, callees, impact, clean, model)"""
         # 1. 說明指令
         self.assertEqual(process([]), 0)
         self.assertEqual(process(["--help"]), 0)
@@ -42,26 +42,148 @@ class TestCLI(YSCBTestCase):
         # 2. status 指令
         self.assertEqual(process(["status"]), 0)
 
-        # 3. scan 指令
-        self.assertEqual(process(["scan", "--all"]), 0)
-
-        # 4. bundle 指令
-        self.assertEqual(process(["bundle", "--all"]), 0)
-
-        # 5. index 指令
+        # 3. index 指令
         self.assertEqual(process(["index", "--all"]), 0)
 
-        # 6. search 指令
+        # 4. search 指令
         self.assertEqual(process(["search", "PIDController"]), 0)
         # 空檢索參數防禦
         self.assertEqual(process(["search"]), 1)
 
-        # 7. clean 指令
+        # 5. callers 指令
+        self.assertEqual(process(["callers", "PIDController"]), 0)
+
+        # 6. callees 指令
+        self.assertEqual(process(["callees", "PIDController"]), 0)
+
+        # 7. impact 指令
+        self.assertEqual(process(["impact", "PIDController"]), 0)
+
+        # 8. model 指令
+        self.assertEqual(process(["model", "status"]), 0)
+
+        # 9. clean 指令
         self.assertEqual(process(["clean", "--all"]), 0)
 
-        # 8. 未知指令 (EC-06)
-        self.assertEqual(process(["unknown_cmd_xyz"]), 1)
+        # 10. 未知指令 (EC-06)
+        self.assertNotEqual(process(["unknown_cmd_xyz"]), 0)
 
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_removed_commands(self):
+        """FT-01, EC-05: 驗證舊指令 (scan, bundle) 已徹底移除，調用時返回非 0 退出碼"""
+        self.assertNotEqual(process(["scan", "--all"]), 0)
+        self.assertNotEqual(process(["bundle", "--all"]), 0)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_status_with_scan(self):
+        """FT-02: 驗證 status --scan / status --diff 正常輸出空間指紋統計與變更"""
+        buf_scan = io.StringIO()
+        with contextlib.redirect_stdout(buf_scan):
+            ret = process(["status", "--scan"])
+        self.assertEqual(ret, 0)
+        out_scan = buf_scan.getvalue()
+        self.assertIn("系統狀態摘要", out_scan)
+        self.assertIn("增量指紋比對結果", out_scan)
+
+        buf_diff = io.StringIO()
+        with contextlib.redirect_stdout(buf_diff):
+            ret = process(["status", "--diff"])
+        self.assertEqual(ret, 0)
+        out_diff = buf_diff.getvalue()
+        self.assertIn("增量指紋比對結果", out_diff)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_index_pipeline_and_export(self):
+        """FT-03, EC-04: 驗證 index 一鍵全管線建置，以及 index --export <path> 導出 Bundle"""
+        ret = process(["index", "--all"])
+        self.assertEqual(ret, 0)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            export_file = Path(tmp_dir) / "nested" / "bundle_export.json"
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ret = process(["index", "--export", str(export_file)])
+            self.assertEqual(ret, 0)
+            self.assertTrue(export_file.exists())
+            with open(export_file, "r", encoding="utf-8") as f:
+                bundle_data = json.load(f)
+            self.assertIn("symbols", bundle_data)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_model_subcommands(self):
+        """FT-04: 驗證 model status 與 model download 正常運作，權重資訊輸出精確"""
+        # 1. model status 格式化文字
+        buf_text = io.StringIO()
+        with contextlib.redirect_stdout(buf_text):
+            ret = process(["model", "status"])
+        self.assertEqual(ret, 0)
+        out_text = buf_text.getvalue()
+        self.assertIn("向量推論模型狀態", out_text)
+        self.assertIn("模型名稱", out_text)
+        self.assertIn("快取目錄", out_text)
+
+        # 2. model status --json
+        buf_json = io.StringIO()
+        with contextlib.redirect_stdout(buf_json):
+            ret = process(["model", "status", "--json"])
+        self.assertEqual(ret, 0)
+        st_data = json.loads(buf_json.getvalue())
+        self.assertIn("model_name", st_data)
+        self.assertIn("cache_dir", st_data)
+        self.assertIn("is_downloaded", st_data)
+        self.assertIn("dimension", st_data)
+
+        # 3. model download
+        from unittest.mock import patch
+        with patch("knowledge_db.embedding.EmbeddingService.download_model", return_value=True):
+            ret = process(["model", "download"])
+            self.assertEqual(ret, 0)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_search_smooth_fallback(self):
+        """FT-05, EC-01: 驗證本地無模型時 search 絕不連網發 HF 請求，平滑且靜默退回 BM25"""
+        from knowledge_db.embedding import EmbeddingService
+        with tempfile.TemporaryDirectory() as empty_cache:
+            svc = EmbeddingService(cache_dir=empty_cache, mock_mode=False, enable_vector_search=False)
+            self.assertFalse(svc.is_model_downloaded())
+            self.assertFalse(svc.is_available)
+            self.assertIsNotNone(svc.last_error)
+            self.assertEqual(svc.last_error["error_type"], "ModelNotFoundLocally")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_guard_directive_output(self):
+        """FT-06: 驗證當 enable_vector_search: true 但無模型時，stderr 輸出 [GUARD] 提示"""
+        from knowledge_db.embedding import EmbeddingService
+        with tempfile.TemporaryDirectory() as empty_cache:
+            err_buf = io.StringIO()
+            with contextlib.redirect_stderr(err_buf):
+                svc = EmbeddingService(cache_dir=empty_cache, mock_mode=False, enable_vector_search=True)
+                _ = svc.is_available
+            err_out = err_buf.getvalue()
+            expected_guard = "[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？"
+            self.assertIn(expected_guard, err_out)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_offline_zero_crash(self):
+        """ET-01, EC-02, NFR-01: 驗證離線模式下模型缺失探針秒級生效，檢索無逾時、無卡頓與無例外崩潰"""
+        import time
+        from knowledge_db.embedding import EmbeddingService
+        with tempfile.TemporaryDirectory() as empty_cache:
+            t0 = time.perf_counter()
+            svc = EmbeddingService(cache_dir=empty_cache, mock_mode=False, enable_vector_search=True)
+            _ = svc.is_available
+            elapsed = time.perf_counter() - t0
+            self.assertLess(elapsed, 0.5, "Probe should complete sub-second without network timeout")
+            self.assertFalse(svc.is_available)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -203,5 +325,44 @@ class TestCLI(YSCBTestCase):
         self.mark_passed()
 
 
+    @require(Requirement.LOGIC)
+    def test_cli_options_extraction_and_orthogonal_filter(self):
+        """FT-10: 驗證 CLI options 正確提取純字串值與 --space 和 --ftype 正交複合篩選 (ISSUE-01, ISSUE-03)"""
+        # 1. 驗證 --space 與 --ftype 複合使用，不再引發互斥衝突 EC-02
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ret = process(["search", "PIDController", "--space", "core", "--ftype", "py", "--lexical-only"])
+        self.assertEqual(ret, 0)
+
+        # 2. 驗證 search 帶 --kind, --lang, --limit 正常提取
+        buf_search = io.StringIO()
+        with contextlib.redirect_stdout(buf_search):
+            ret = process(["search", "PIDController", "--kind", "class", "--lang", "python", "--limit", "3", "--json"])
+        self.assertEqual(ret, 0)
+        data = json.loads(buf_search.getvalue())
+        self.assertIn("results", data)
+
+        # 3. 驗證 callers 帶 --limit 正常提取數值
+        buf_callers = io.StringIO()
+        with contextlib.redirect_stdout(buf_callers):
+            ret = process(["callers", "PIDController", "--limit", "5", "--json"])
+        self.assertEqual(ret, 0)
+
+        # 4. 驗證 callees 帶 --limit 正常提取數值
+        buf_callees = io.StringIO()
+        with contextlib.redirect_stdout(buf_callees):
+            ret = process(["callees", "PIDController", "--limit", "5", "--json"])
+        self.assertEqual(ret, 0)
+
+        # 5. 驗證 impact 帶 --depth 與 --limit 正常提取數值
+        buf_impact = io.StringIO()
+        with contextlib.redirect_stdout(buf_impact):
+            ret = process(["impact", "PIDController", "--depth", "3", "--limit", "5", "--json"])
+        self.assertEqual(ret, 0)
+
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()
+

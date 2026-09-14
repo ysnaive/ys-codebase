@@ -62,7 +62,11 @@ def status(cmd_bags: Any) -> int:
     engine = get_engine()
 
     try:
-        st = engine.status()
+        scan_mode = bags.has_option("scan") or bags.has_option("diff")
+        targets = bags.args
+        space_target = bags.get_option_value("space") or (targets[0] if targets and not (bags.has_option("all") or bags.has_option("a")) else None)
+
+        st = engine.status(space=space_target, scan=scan_mode)
         styler = TerminalStyler(sys.stdout)
         print(f"[knowledge-db] 系統狀態摘要 (共 {st['total_spaces']} 個空間，{st['thesaurus_groups']} 組同義詞):")
         print(f"  - 存儲空間根目錄: {styler.path(st['storage_dir'])}")
@@ -75,6 +79,8 @@ def status(cmd_bags: Any) -> int:
         else:
             vec_str = styler.warn("未建立")
         print(f"  - 向量特徵索引: {vec_str}")
+        model_str = styler.symbol("已下載") if st.get("model_downloaded") else styler.warn("未下載 (離線時自動降級 BM25)")
+        print(f"  - 向量模型權重: {model_str}")
         print("-" * 80)
         for name, sp in st["spaces"].items():
             pat_str = f" [patterns: {', '.join(sp['file_patterns'])}]" if sp.get('file_patterns') else " [all files]"
@@ -85,66 +91,17 @@ def status(cmd_bags: Any) -> int:
                 print(f"    說明: {sp['description']}")
             print(f"    來源目錄數: {sp.get('include_count', 0)}, 快取檔案: {sp.get('cached_files', sp.get('fingerprint_cached_files', 0))} 檔, 倒排索引: {idx_str}")
         print("-" * 80)
-        return 0
-    except SpaceNotFoundError as e:
-        print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
-        return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
-    except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
 
+        if scan_mode and st.get("scan_diff"):
+            diffs = st["scan_diff"]
+            print("[knowledge-db] 增量指紋比對結果:")
+            for sp_name, diff in diffs.items():
+                print(
+                    f"  - 空間 '{sp_name}': Added={len(diff.added)}, Modified={len(diff.modified)}, "
+                    f"Deleted={len(diff.deleted)}, Unchanged={len(diff.unchanged)}"
+                )
+            print("-" * 80)
 
-def scan(cmd_bags: Any) -> int:
-    """執行指定空間或全空間聯集增量指紋掃描。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "scan")
-    engine = get_engine()
-
-    try:
-        force = bags.has_option("force")
-        targets = bags.args
-        space_target = targets[0] if targets and not (bags.has_option("all") or bags.has_option("a")) else None
-
-        results = engine.scan(space=space_target, force=force)
-        scope_desc = f"空間 '{space_target}'" if space_target else f"全空間聯集 ({len(results)} 個空間)"
-        print(f"[knowledge-db] {scope_desc} 增量指紋掃描完成:")
-        for sp_name, diff in results.items():
-            print(
-                f"  - {sp_name}: Added={len(diff.added)}, Modified={len(diff.modified)}, "
-                f"Deleted={len(diff.deleted)}, Unchanged={len(diff.unchanged)}"
-            )
-        return 0
-    except SpaceNotFoundError as e:
-        print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
-        return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
-    except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
-
-
-def bundle(cmd_bags: Any) -> int:
-    """執行指定空間或全空間聯集之多語言語意打包與導出。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "bundle")
-    engine = get_engine()
-
-    try:
-        targets = bags.args
-        space_target = targets[0] if targets and not (bags.has_option("all") or bags.has_option("a")) else None
-        out_arg = str(bags.get_option("output")) if bags.get_option("output") else None
-
-        bundles = engine.bundle(space=space_target, export_path=out_arg)
-        print(f"[knowledge-db] 語意打包完成 (共 {len(bundles)} 個空間):")
-        for b in bundles:
-            print(f"  - 空間 '{b.space_name}': 打包 {len(b.symbols)} 個符號，{len(b.thesaurus)} 組同義詞")
         return 0
     except SpaceNotFoundError as e:
         print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
@@ -168,17 +125,92 @@ def index(cmd_bags: Any) -> int:
         force = bags.has_option("force") or bags.has_option("f")
         targets = bags.args
         space_target = targets[0] if targets and not (bags.has_option("all") or bags.has_option("a")) else None
+        export_arg = bags.get_option_value("export")
 
-        indices = engine.build_index(space=space_target, force=force, interactive=True)
+        indices = engine.build_index(space=space_target, force=force, interactive=True, export_path=export_arg)
         print(f"[knowledge-db] 倒排索引建置完成 (共 {len(indices)} 個空間):")
         for sp_name, idx in indices.items():
             print(f"  - 空間 '{sp_name}': {idx.doc_count} 篇文檔符號，{len(idx.index)} 個 Term 索引詞")
+        if export_arg:
+            print(f"  - 語意 Bundle 已導出至: {export_arg}")
         return 0
     except SpaceNotFoundError as e:
         print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
         return 1
     except KnowledgeDBError as e:
         print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
+        return 1
+
+
+def model(cmd_bags: Any) -> int:
+    """向量模型管理群組分發器。"""
+    guard_dispatch("knowledge-db")
+    _setup_stream_encodings()
+    bags = _normalize_bags(cmd_bags, "model")
+    sub_cmd = bags.args[0] if bags.args else "status"
+    if sub_cmd == "status":
+        sub_bags = CmdBags(raw_cmd=bags.raw_cmd, command="status", args=bags.args[1:], options=bags.options)
+        return model_status(sub_bags)
+    elif sub_cmd in ("download", "pull"):
+        sub_bags = CmdBags(raw_cmd=bags.raw_cmd, command="download", args=bags.args[1:], options=bags.options)
+        return model_download(sub_bags)
+    else:
+        print(f"[knowledge-db] 未知 model 子指令: '{sub_cmd}'。可用子指令: status, download", file=sys.stderr)
+        return 1
+
+
+def model_status(cmd_bags: Any) -> int:
+    """檢視本地向量模型權重快取目錄、檔案狀態與維度。"""
+    guard_dispatch("knowledge-db")
+    _setup_stream_encodings()
+    bags = _normalize_bags(cmd_bags, "model status")
+    engine = get_engine()
+    try:
+        st = engine.model_status()
+        if bags.has_option("json"):
+            print(json.dumps(st, indent=2, ensure_ascii=False))
+            return 0
+
+        styler = TerminalStyler(sys.stdout)
+        print("[knowledge-db] 向量推論模型狀態:")
+        print(f"  - 模型名稱: {styler.bold(st['model_name'])}")
+        print(f"  - 快取目錄: {styler.path(st['cache_dir'])}")
+        dl_str = styler.symbol("已就緒") if st.get("is_downloaded") else styler.warn("未下載")
+        print(f"  - 本地權重: {dl_str}")
+        av_str = styler.symbol("可用") if st.get("is_available") else styler.warn("不可用 (將降級至 BM25)")
+        print(f"  - 服務狀態: {av_str}")
+        print(f"  - 向量維度: {st['dimension']}")
+        return 0
+    except KnowledgeDBError as e:
+        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
+        return 1
+
+
+def model_download(cmd_bags: Any) -> int:
+    """顯式下載 FastEmbed 向量模型權重至本地快取。"""
+    guard_dispatch("knowledge-db")
+    _setup_stream_encodings()
+    bags = _normalize_bags(cmd_bags, "model download")
+    engine = get_engine()
+    try:
+        force = bags.has_option("force") or bags.has_option("f")
+        print(f"[knowledge-db] 開始準備下載/載入向量模型 '{engine.embedding_service.model_name}' (force={force})...")
+        success = engine.model_download(force=force)
+        if success:
+            st = engine.model_status()
+            print(f"[knowledge-db] 向量模型下載成功，已就緒可用 (維度: {st['dimension']})。")
+            return 0
+        else:
+            print("[knowledge-db] 向量模型下載未完成。", file=sys.stderr)
+            return 1
+    except KnowledgeDBError as e:
+        print(f"[knowledge-db] 下載失敗: {e}", file=sys.stderr)
         return 1
     except Exception as e:
         print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
@@ -199,13 +231,13 @@ def search(cmd_bags: Any) -> int:
             return 1
 
         query_str = " ".join(queries)
-        space_filter = str(bags.get_option("space")) if bags.get_option("space") else None
-        kind_filter = [str(bags.get_option("kind"))] if bags.get_option("kind") else None
-        lang_filter = [str(bags.get_option("lang"))] if bags.get_option("lang") else None
-        ftype_filter = str(bags.get_option("ftype")) if bags.get_option("ftype") else None
+        space_filter = bags.get_option_value("space")
+        kind_filter = [bags.get_option_value("kind")] if bags.get_option_value("kind") else None
+        lang_filter = [bags.get_option_value("lang")] if bags.get_option_value("lang") else None
+        ftype_filter = bags.get_option_value("ftype")
         
         limit_val: Union[int, str] = "auto"
-        l_opt = bags.get_option("limit")
+        l_opt = bags.get_option_value("limit")
         if l_opt:
             l_val = str(l_opt).strip()
             if l_val.lower() == "auto":
@@ -362,7 +394,7 @@ def callers(cmd_bags: Any) -> int:
             print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callers 'InvertedIndex.load_binary'", file=sys.stderr)
             return 1
         query_str = targets[0]
-        space_target = str(bags.get_option("space")) if bags.get_option("space") else None
+        space_target = bags.get_option_value("space")
         
         tier = "simple"
         if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
@@ -375,12 +407,16 @@ def callers(cmd_bags: Any) -> int:
         is_json = bags.has_option("json")
         is_md = bags.has_option("md") or bags.has_option("markdown")
         limit_val: Union[int, str] = "auto"
-        l_opt = bags.get_option("limit")
+        l_opt = bags.get_option_value("limit")
         if l_opt:
-            try:
-                limit_val = int(str(l_opt).strip())
-            except ValueError:
+            l_val = str(l_opt).strip()
+            if l_val.lower() == "auto":
                 limit_val = "auto"
+            else:
+                try:
+                    limit_val = int(l_val)
+                except ValueError:
+                    limit_val = "auto"
 
         is_snippet = (tier == "snippet") or (tier == "detail" and (bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")))
         detail_mode = "detail" if tier == "detail" else "simple"
@@ -521,7 +557,7 @@ def callees(cmd_bags: Any) -> int:
             print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callees 'InvertedIndex.patch_incremental'", file=sys.stderr)
             return 1
         query_str = targets[0]
-        space_target = str(bags.get_option("space")) if bags.get_option("space") else None
+        space_target = bags.get_option_value("space")
 
         tier = "simple"
         if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
@@ -534,12 +570,16 @@ def callees(cmd_bags: Any) -> int:
         is_json = bags.has_option("json")
         is_md = bags.has_option("md") or bags.has_option("markdown")
         limit_val: Union[int, str] = "auto"
-        l_opt = bags.get_option("limit")
+        l_opt = bags.get_option_value("limit")
         if l_opt:
-            try:
-                limit_val = int(str(l_opt).strip())
-            except ValueError:
+            l_val = str(l_opt).strip()
+            if l_val.lower() == "auto":
                 limit_val = "auto"
+            else:
+                try:
+                    limit_val = int(l_val)
+                except ValueError:
+                    limit_val = "auto"
 
         is_snippet = (tier == "snippet") or (tier == "detail" and (bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")))
         detail_mode = "detail" if tier == "detail" else "simple"
@@ -680,9 +720,9 @@ def impact(cmd_bags: Any) -> int:
             print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db impact 'InvertedIndex.patch_incremental' --depth=2", file=sys.stderr)
             return 1
         query_str = targets[0]
-        space_target = str(bags.get_option("space")) if bags.get_option("space") else None
+        space_target = bags.get_option_value("space")
         depth = 2
-        d_opt = bags.get_option("depth")
+        d_opt = bags.get_option_value("depth")
         if d_opt:
             try:
                 depth = int(str(d_opt).strip())
@@ -698,12 +738,16 @@ def impact(cmd_bags: Any) -> int:
         is_json = bags.has_option("json")
         is_md = bags.has_option("md") or bags.has_option("markdown")
         limit_val: Union[int, str] = "auto"
-        l_opt = bags.get_option("limit")
+        l_opt = bags.get_option_value("limit")
         if l_opt:
-            try:
-                limit_val = int(str(l_opt).strip())
-            except ValueError:
+            l_val = str(l_opt).strip()
+            if l_val.lower() == "auto":
                 limit_val = "auto"
+            else:
+                try:
+                    limit_val = int(l_val)
+                except ValueError:
+                    limit_val = "auto"
 
         detail_mode = "detail" if tier == "detail" else "simple"
         res = engine.act_impact(target_query=query_str, depth=depth, space=space_target)

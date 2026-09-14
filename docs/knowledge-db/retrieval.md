@@ -49,7 +49,10 @@ python yscb.py knowledge-db search PIDController
 # 2. 限定空間檢索
 python yscb.py knowledge-db search "狀態機更新" --space=project_main
 
-# 3. 限定符號類型或程式語言
+# 3. 複合空間與檔案類型篩選
+python yscb.py knowledge-db search "README" --space=docs --ftype=md
+
+# 4. 限定符號類型或程式語言
 python yscb.py knowledge-db search "Controller" --kind=class --lang=cpp --limit=5
 ```
 
@@ -175,8 +178,11 @@ print(snippet.format_text())
 4. **雙重防呆與雜訊過濾守門**：
    - **純語意門檻守門 (`min_vector_similarity = 0.70`)**：若候選項目無任何 BM25 關鍵字命中，必須達到餘弦相似度門檻始納入召回，徹底防止小型程式碼庫因向量近鄰誤召無關程式碼。
    - **複合查詢子詞覆蓋率門檻 (`coverage >= 0.50`)**：針對長標識符未完全命中時，防範單一通用子詞誤召喚。
-5. **100% 剛性平滑降級守門**：
-   - 若 `fastembed` 套件未安裝或模型加載失敗，系統無死鎖平滑退化為純 BM25 檢索。
+5. **100% 剛性平滑降級守門與 Agent 剛性防呆引導**：
+   - **本地探針先行 (Probe First)**：`EmbeddingService` 於推論前先以純本機路徑檢查 `.onnx` 權重檔案，未就緒時絕不發起 Hugging Face Hub 未認證網路請求，立即平滑退回純 BM25 檢索。
+   - **Agent 剛性防呆引導**：當檢索降級且組態設定 `enable_vector_search: true` 時，強制於 `sys.stderr` 輸出引導：
+     `[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？`
+   - **顯式模型管理 (`model` CLI)**：提供 `model status` 查詢模型檔案與維度，`model download` 顯式下載預載權重。
    - CLI 與 SDK 支援 `--lexical-only` / `lexical_only=True` 參數，允許手動強制作為純關鍵字倒排檢索。
 
 

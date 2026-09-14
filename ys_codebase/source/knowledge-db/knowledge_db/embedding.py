@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
+from .exceptions import KnowledgeDBError
+
 # 預設抑制 Windows 上 Hugging Face Hub 的符號連結權限警告 (WinError 1314)
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
@@ -73,11 +75,13 @@ class EmbeddingService:
         cache_dir: Optional[Union[str, Path]] = None,
         max_threads: Optional[Union[str, int]] = None,
         mock_mode: bool = False,
+        enable_vector_search: bool = True,
     ):
         self.model_name = self.normalize_model_name(model_name)
         self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "knowledge-db" / "models"
         self.max_threads = max_threads or "auto"
         self.mock_mode = mock_mode
+        self.enable_vector_search = enable_vector_search
         self._model: Optional[Any] = None
         self._is_available: bool = False
         self._init_attempted: bool = False
@@ -132,9 +136,123 @@ class EmbeddingService:
         self._dimension = dim
         return dim
 
-    def _init_model(self) -> None:
-        """嘗試加載 FastEmbed ONNX 模型；若未安裝或失敗則安全降級"""
+    def is_model_downloaded(self) -> bool:
+        """檢查本地快取目錄中特定模型權重目錄與檔案是否存在。
+
+        Returns:
+            bool: 若權重目錄存在且包含至少一個模型權重檔 (.onnx) 則回傳 True，否則 False。
+        """
+        if not self.cache_dir.exists():
+            return False
+
+        model_short = self.model_name.split("/")[-1].lower()
+        model_clean = self.model_name.replace("/", "--").lower()
+
+        try:
+            # 1. 優先檢查匹配模型名稱之子目錄 (FastEmbed/HuggingFace 格式)
+            matching_dirs = [
+                d for d in self.cache_dir.iterdir()
+                if d.is_dir() and (model_short in d.name.lower() or model_clean in d.name.lower())
+            ]
+            if matching_dirs:
+                for d in matching_dirs:
+                    onnx_files = [f for f in d.rglob("*.onnx") if f.is_file() and f.stat().st_size > 0]
+                    if onnx_files:
+                        return True
+
+            # 2. 檢查 cache_dir 全域是否有該模型對應之非空 .onnx 權重檔案
+            all_onnx = [f for f in self.cache_dir.rglob("*.onnx") if f.is_file() and f.stat().st_size > 0]
+            for f in all_onnx:
+                path_str = str(f).lower()
+                if model_short in path_str or model_clean in path_str:
+                    return True
+
+            # 若整個快取目錄內檔案少且存在任意非空 .onnx
+            sub_entries = list(self.cache_dir.iterdir())
+            if all_onnx and len(sub_entries) <= 3:
+                return True
+        except Exception as e:
+            logger.debug(f"Error while probing local model weights: {e}")
+
+        return False
+
+    def download_model(self, force: bool = False) -> bool:
+        """顯式下載 FastEmbed 模型權重至本地快取。
+
+        Args:
+            force: 若為 True 則強制覆蓋現有權重重新下載。
+
+        Returns:
+            bool: 下載成功回傳 True。
+
+        Raises:
+            KnowledgeDBError: 下載失敗或網路不可達時拋出。
+        """
         self._suppress_hf_warnings()
+        if not force and self.is_model_downloaded():
+            self._ensure_model()
+            return True
+
+        threads_count = resolve_max_threads(self.max_threads)
+        os.environ["OMP_NUM_THREADS"] = str(threads_count)
+        os.environ["ONNXRUNTIME_INTRA_OP_NUM_THREADS"] = str(threads_count)
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        try:
+            from fastembed import TextEmbedding
+            self.model_name = self.normalize_model_name(self.model_name)
+            try:
+                self._model = TextEmbedding(
+                    model_name=self.model_name,
+                    cache_dir=str(self.cache_dir),
+                    threads=threads_count,
+                )
+            except TypeError:
+                self._model = TextEmbedding(
+                    model_name=self.model_name,
+                    cache_dir=str(self.cache_dir),
+                )
+            dim = getattr(self._model, "embedding_size", None)
+            if dim is None or not isinstance(dim, int) or dim <= 0:
+                try:
+                    sample_vec = next(self._model.embed(["probe"]))
+                    dim = int(len(sample_vec))
+                except Exception:
+                    dim = TextEmbedding.get_embedding_size(self.model_name)
+            self._dimension = int(dim)
+            self._is_available = True
+            self._init_attempted = True
+            self.last_error = None
+            logger.info(f"Successfully downloaded/loaded FastEmbed model '{self.model_name}' (dim={self._dimension})")
+            return True
+        except Exception as e:
+            self._is_available = False
+            self.last_error = {
+                "error_type": type(e).__name__,
+                "message": str(e),
+                "timestamp": time.time(),
+            }
+            raise KnowledgeDBError(f"Failed to download FastEmbed model '{self.model_name}': {e}") from e
+
+    def _init_model(self) -> None:
+        """嘗試加載 FastEmbed ONNX 模型；本地探針先行，若未下載則平滑降級為 BM25 模式。"""
+        self._suppress_hf_warnings()
+
+        # 1. 本地模型權重探針先行 (P02:DR-02, FR-05, FR-06)
+        if not self.is_model_downloaded():
+            self._is_available = False
+            self._model = None
+            self.last_error = {
+                "error_type": "ModelNotFoundLocally",
+                "message": f"Vector model '{self.model_name}' not found locally in '{self.cache_dir}'",
+                "timestamp": time.time(),
+            }
+            logger.info("[knowledge-db:embedding] Vector model not found locally. Gracefully fallback to BM25.")
+            if self.enable_vector_search:
+                import sys
+                sys.stderr.write("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？\n")
+                sys.stderr.flush()
+            return
 
         try:
             from fastembed import TextEmbedding
@@ -198,7 +316,11 @@ class EmbeddingService:
                 "message": str(e),
                 "timestamp": time.time(),
             }
-            logger.info(f"FastEmbed model unavailable ({type(e).__name__}: {e}). Fallback to BM25-only mode.")
+            logger.info(f"[knowledge-db:embedding] Vector model unavailable ({type(e).__name__}: {e}). Gracefully fallback to BM25.")
+            if self.enable_vector_search:
+                import sys
+                sys.stderr.write("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？\n")
+                sys.stderr.flush()
 
     @property
     def dimension(self) -> int:
