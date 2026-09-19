@@ -558,10 +558,14 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                             dispatcher._maybe_auto_spawn_server(tmp_dir, tmp_dir)
                         mock_spawn.assert_not_called()
                         out = stderr_buf.getvalue()
-                        self.assertIn("[GUARD] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED", out)
+                        self.assertIn("[BLOCKER] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED", out)
                         self.assertIn("auto_spawn", out)
                         self.assertIn("AGENT", out)
                         self.assertIn("server start --console", out)
+                        self.assertIn("方案 A", out)
+                        self.assertIn("方案 B", out)
+                        self.assertIn("方案 C", out)
+                        self.assertIn("(不推薦)", out)
 
         self.mark_passed()
 
@@ -590,7 +594,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                             second_out = stderr_buf.getvalue()
 
                         self.assertEqual(first_out, second_out)
-                        self.assertEqual(second_out.count("[GUARD] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED"), 1)
+                        self.assertEqual(second_out.count("[BLOCKER] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED"), 1)
 
         self.mark_passed()
 
