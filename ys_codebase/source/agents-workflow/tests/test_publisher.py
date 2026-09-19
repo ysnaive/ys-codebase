@@ -406,33 +406,43 @@ class TestReleasePublisherDiff(YSCBTestCase):
     @require(Requirement.ENV)
     def test_ft_14_contextinit_workflow_relative_links(self):
         """FT-14: 驗證 ContextInit.md 編譯後鏈接解析為相對於目前檔案之相對路徑而非 project_root 裸路徑。"""
-        res1 = self.compiler.compile_stage1()
-        self.assertTrue(res1.get("success", False))
+        from core import config
+        orig_docs = config.get("agents-workflow", "paths.docs")
+        try:
+            config.set("agents-workflow", "paths.docs", "project://docs", local=False)
+            res1 = self.compiler.compile_stage1()
+            self.assertTrue(res1.get("success", False))
 
-        context_init_item = None
-        for item in res1.get("resolved_items", []):
-            if "ContextInit" in item.get("base_name", ""):
-                context_init_item = item
-                break
-        self.assertIsNotNone(context_init_item)
+            context_init_item = None
+            for item in res1.get("resolved_items", []):
+                if "ContextInit" in item.get("base_name", ""):
+                    context_init_item = item
+                    break
+            self.assertIsNotNone(context_init_item)
 
-        dummy_dest = os.path.join(os.getcwd(), ".agents", "workflows", "ContextInit.md")
-        cur_dir = os.path.dirname(dummy_dest)
-        dep_map = {}
-        stage2_text = self.compiler.resolve_stage2_uri(context_init_item["content"], dummy_dest, dep_map)
+            dummy_dest = os.path.join(os.getcwd(), ".agents", "workflows", "ContextInit.md")
+            cur_dir = os.path.dirname(dummy_dest)
+            dep_map = {}
+            stage2_text = self.compiler.resolve_stage2_uri(context_init_item["content"], dummy_dest, dep_map)
 
-        if uri:
-            expected_agents = os.path.relpath(uri.resolve("project://AGENTS.md", interactive=False), cur_dir).replace("\\", "/")
-            expected_changelog = os.path.relpath(uri.resolve("project://CHANGELOG.md", interactive=False), cur_dir).replace("\\", "/")
-            expected_standards = os.path.relpath(uri.resolve("workflow.docs://_project/STANDARDS.md", interactive=False), cur_dir).replace("\\", "/")
+            if uri:
+                expected_agents = os.path.relpath(uri.resolve("project://AGENTS.md", interactive=False), cur_dir).replace("\\", "/")
+                expected_changelog = os.path.relpath(uri.resolve("project://CHANGELOG.md", interactive=False), cur_dir).replace("\\", "/")
+                expected_standards = os.path.relpath(uri.resolve("workflow.docs://_project/STANDARDS.md", interactive=False), cur_dir).replace("\\", "/")
 
-            self.assertIn(f"[`AGENTS.md`]({expected_agents})", stage2_text)
-            self.assertIn(f"[`CHANGELOG.md`]({expected_changelog})", stage2_text)
-            self.assertIn(f"[`STANDARDS.md`]({expected_standards})", stage2_text)
+                self.assertIn(f"[`AGENTS.md`]({expected_agents})", stage2_text)
+                self.assertIn(f"[`CHANGELOG.md`]({expected_changelog})", stage2_text)
+                self.assertIn(f"[`STANDARDS.md`]({expected_standards})", stage2_text)
 
-        self.assertNotIn("__#{project://AGENTS.md}__", stage2_text)
-        self.assertNotIn("__${project://AGENTS.md}__", stage2_text)
-        self.mark_passed()
+            self.assertNotIn("__#{project://AGENTS.md}__", stage2_text)
+            self.assertNotIn("__${project://AGENTS.md}__", stage2_text)
+            self.mark_passed()
+        finally:
+            if orig_docs is not None and not str(orig_docs).startswith("!undefined"):
+                config.set("agents-workflow", "paths.docs", orig_docs, local=False)
+            else:
+                config.delete("agents-workflow", "paths.docs", local=False)
+            config.reload()
 
 
 if __name__ == "__main__":

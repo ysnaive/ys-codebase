@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_09_19_1433_server_daemon_agent_directive_refinement (Completed)
+
+- **Server 背景自動喚醒 Agent 前置阻斷引導重構與 Agents Standards 核心原則擴充**：
+  - **Server 常駐守護進程前置阻斷 Banner 重構 (`[BLOCKER]`)**：全面重構 `core.commands.dispatcher` 之 `_maybe_auto_spawn_server` 提示詞模板。將語意由「降級通知」改為置頂之「嚴格阻斷約束 (`[BLOCKER]`)」，徹底消滅「已降級為冷派發 (~86ms)」所導致之語意消毒偏誤；抽象化終端工具描述為通用「背景/常駐模式 (Background/Daemon task)」，消除特定 IDE 平台洩漏；重構異常處置方案為向開發者回報並請示處置（外部啟動 / 評估關閉 auto_spawn / (不推薦) 冷派發繼續），嚴禁 Agent 自行擅改專案共享組態。
+  - **Agents Standards 核心原則第 4 條擴充 (SSOT 注入)**：於 `AgentsStandards.md` 補充核心公理「4. 嚴禁淺層敷衍與架構債逃逸 (Zero Shallow Patches & Architecture Integrity Axiom)」，定義 4 大反模式紅線清單（異常掩蓋、死代碼/特例硬編碼、測試自欺、規格組態敷衍）與次要衍生問題處置鐵律（停手 $\to$ 深度歸因 $\to$ 範疇保護，強制發起 `/Discuss` 請示）；發布時自動雙向注入至專案根目錄 `AGENTS.md`。
+  - **單元測試環境隔離與 100% 綠燈驗證**：深度歸因並修復 `test_initializer.py` 測試殘留臨時路徑引發 Windows 跨槽 `ValueError` 之測試污染；更新 `test_core_commands.py` 斷言；`core` (192/192) 與 `agents-workflow` (79/79) 全套單元測試 100% 通過；`dev check` 0 警告 0 錯誤；`plan verify` 100% 通過。
+
 ## 2026_09_14_0455_downstream_feedback_remediation (In Progress)
 
 ### sub_01_knowledge_db_cli_options_and_filtering (Verified)
