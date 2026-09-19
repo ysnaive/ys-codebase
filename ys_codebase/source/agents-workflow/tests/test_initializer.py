@@ -33,22 +33,25 @@ class TestWorkflowInitializer(YSCBTestCase):
         self.initializer = WorkflowInitializer()
         
         # Backup config.project.json for airtight rollback
+        from core import config
+        self._cfg_path = config.get_config_path("agents-workflow", local=False)
         self._cfg_backup = None
-        self._cfg_path = os.path.join(self.sandbox_project_dir, "..", "config", "agents-workflow", "config.project.json")
         if os.path.isfile(self._cfg_path):
             with open(self._cfg_path, "r", encoding="utf-8") as f:
                 self._cfg_backup = f.read()
 
     def tearDown(self):
-        super().tearDown()
+        if self._cfg_backup and os.path.isfile(self._cfg_path):
+            with open(self._cfg_path, "w", encoding="utf-8") as f:
+                f.write(self._cfg_backup)
+            from core import config
+            config.reload()
         if os.path.exists(self.temp_dir):
             try:
                 shutil.rmtree(self.temp_dir)
             except Exception:
                 pass
-        if self._cfg_backup and os.path.isfile(self._cfg_path):
-            with open(self._cfg_path, "w", encoding="utf-8") as f:
-                f.write(self._cfg_backup)
+        super().tearDown()
 
     @require(Requirement.LOGIC)
     def test_ft_01_manifest_and_template_structure(self):
