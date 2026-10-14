@@ -253,3 +253,19 @@ class TestCoreURI(YSCBTestCase):
         self.assertTrue(isinstance(ConfigManager._get_yscb_root(), str))
         self.mark_passed()
 
+    def test_undefined_uri_quick_fix_hints(self):
+        """FT-01, FT-02: Verify format_undefined_uri_hint and UndefinedURIError Quick fix hints."""
+        h_proj = uri.format_undefined_uri_hint("project", "core", "project_root")
+        self.assertIn("python yscb.py config set core project_root ./", h_proj)
+
+        h_wf = uri.format_undefined_uri_hint("workflow.plans", "agents-workflow", "paths.plans")
+        self.assertIn("python yscb.py agents-workflow init --default -y", h_wf)
+
+        h_custom = uri.format_undefined_uri_hint("custom.data", "my-mod", "data_dir")
+        self.assertEqual(h_custom, "python yscb.py config set my-mod data_dir <path>")
+
+        err = uri.UndefinedURIError("workflow.docs", "agents-workflow", "paths.docs")
+        self.assertIn("Semantic URI 'workflow.docs://' is undefined (!undefined).", str(err))
+        self.assertIn("Quick fix: python yscb.py agents-workflow init --default -y", str(err))
+        self.mark_passed()
+

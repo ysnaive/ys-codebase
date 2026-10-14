@@ -5,6 +5,25 @@
 
 ---
 
+## 0. 下游專案 5 分鐘快速上手 (Quickstart)
+
+```bash
+# 1. 啟動背景常駐守護進程 (一般終端環境；輸出結構化啟動參數橫幅)
+python yscb.py server start
+
+# [IDE Agent 環境專用] 若在受限沙盒終端中，請透過 IDE 背景常駐任務 (Daemon Task) 執行：
+python yscb.py server start --console
+# (若當前沙盒環境不支援背景常駐任務，請先執行：python yscb.py config set server auto_spawn false --local)
+
+# 2. 檢視 Master/Worker PID、Port、Uptime、Idle TTL 倒數與背景服務清冊
+python yscb.py server status
+
+# 3. 優雅停止常駐進程並檢視本次運行統計總結報告 (Uptime / Tasks Handled / Archived Log)
+python yscb.py server stop
+```
+
+---
+
 ## 1. 模組架構全景 (Architecture Overview)
 
 `server` 模組採用嚴格的「Master 控制平面 + WarmWorker 資料平面」雙進程隔離模型：
@@ -60,7 +79,7 @@ graph TD
 Worker 在啟動時依序初始化各 ServiceWorker，並透過 `worker_ready` 封包將服務清單與狀態回傳 Master 供 `server start` 橫幅與 `server status` 呈現。
 
 ### 2.3 檔案監視與自癒重載 (ModulesWatcher)
-- 監視 `project://.modules/` 運行空間變更。
+- 監視 `yscb://.modules/`（即 `module://` 運行空間）變更。
 - **領域模組變更**（如 `knowledge-db`）：觸發 Worker 子進程優雅重啟，sub-500ms 完成刷新。
 - **核心模組變更**（如 `core`、`server`）：觸發 Master 自重啟整棵進程樹。
 
@@ -81,7 +100,18 @@ Worker 在啟動時依序初始化各 ServiceWorker，並透過 `worker_ready` �
 
 ---
 
-## 4. 相關技術文件
+## 4. 組態配置與常見情境操作指南 (Configuration & Cookbook)
 
-- [Server 模組總覽手冊 (`docs/server/README.md`)](../../../docs/server/README.md)
-- [Server 設計決策與工程手冊 (`docs/server/DESIGN_NOTES.md`)](../../../docs/server/DESIGN_NOTES.md)
+### 4.1 組態設定 (`config://server/config.project.json`)
+
+```bash
+# 調整無操作空閒超時自毀秒數 (預設 900.0 秒 = 15 分鐘)
+python yscb.py config set server idle_timeout_sec 1800
+
+# 若不希望執行一般指令時自動於背景喚醒常駐進程，可關閉 auto_spawn
+python yscb.py config set server auto_spawn false
+```
+
+### 4.2 查閱即時與歷史運行日誌
+- **即時日誌路徑**：`python yscb.py uri resolve cache://server/log`（預設位於 `.cache/server/log`）。
+- **歷史歸檔日誌**：每次停止或重啟時自動歸檔為 `.cache/server/{YYYY}_{MM}_{DD}_{HH}.{MM}.{SS}_log`（自動滾動保留最新 5 份）。

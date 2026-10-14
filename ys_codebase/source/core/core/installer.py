@@ -193,6 +193,34 @@ class Installer:
         except Exception:
             pass
 
+    def _print_onboarding_guide(self, module_name: str) -> None:
+        """
+        讀取 module://{module_name}/manifest.json 中選填之 'onboarding' 步驟清單，
+        於模組安裝完成後輸出結構化 Next Steps 引導卡片。
+        """
+        try:
+            manifest_uri = f"module://{module_name}/manifest.json"
+            if not uri.exists(manifest_uri):
+                return
+            m_data = uri.read_json(manifest_uri)
+            if not isinstance(m_data, dict):
+                return
+            raw_steps = m_data.get("onboarding")
+            if not isinstance(raw_steps, list):
+                return
+            steps = [s.strip() for s in raw_steps if isinstance(s, str) and s.strip()]
+            if not steps:
+                return
+
+            print(f"\n[*] Next Steps for '{module_name}':")
+            for idx, step in enumerate(steps, 1):
+                print(f"    {idx}. {step}")
+            readme_uri = f"module://{module_name}/README.md"
+            if uri.exists(readme_uri):
+                print(f"    * Quickstart & Manual: .modules/{module_name}/README.md")
+        except Exception:
+            pass
+
     def cmd_install(self, module_name: str, version: Optional[str] = None, provider: Optional[str] = None, force: bool = False) -> int:
         if not module_name:
             print("[core:install] Error: Module name is required.")
@@ -241,6 +269,7 @@ class Installer:
                 pass
             self.engine.act_unlock("install")
             print(f"[core:install] Successfully installed '{module_name}@{installed_ver}'.")
+            self._print_onboarding_guide(module_name)
             self._check_optional_dependencies(module_name)
             return 0
         except Exception as e:

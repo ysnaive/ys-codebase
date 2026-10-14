@@ -168,3 +168,51 @@ class TestRemoteZipBootstrap(YSCBTestCase):
             yscb_mod._fetch_and_extract_zip("non_existent_source_12345.xyz", target_dir)
 
         self.mark_passed()
+
+    def test_installer_onboarding_guide_output(self):
+        """FT-04, EC-01: Verify Installer._print_onboarding_guide outputs Next Steps when onboarding is defined."""
+        import io
+        from contextlib import redirect_stdout
+        from core.installer import Installer
+
+        inst = Installer()
+        mod_name = "mock_onboard_mod"
+        mod_dir = uri.resolve(f"module://{mod_name}")
+        os.makedirs(mod_dir, exist_ok=True)
+        try:
+            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "name": mod_name,
+                        "version": "1.0.0.0",
+                        "entry": "scripts/cli.py",
+                        "dependencies": {"core": ">=1.0.0"},
+                        "onboarding": [
+                            "Run init: python yscb.py mock_onboard_mod init",
+                            "Check status: python yscb.py mock_onboard_mod status",
+                        ],
+                    },
+                    f,
+                )
+            with open(os.path.join(mod_dir, "README.md"), "w", encoding="utf-8") as f:
+                f.write("# Mock Onboard README\n")
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                inst._print_onboarding_guide(mod_name)
+            out = buf.getvalue()
+            self.assertIn(f"[*] Next Steps for '{mod_name}':", out)
+            self.assertIn("1. Run init: python yscb.py mock_onboard_mod init", out)
+            self.assertIn(f".modules/{mod_name}/README.md", out)
+
+            # EC-01: Module without onboarding field produces no output
+            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": mod_name, "version": "1.0.0.0"}, f)
+            buf2 = io.StringIO()
+            with redirect_stdout(buf2):
+                inst._print_onboarding_guide(mod_name)
+            self.assertEqual(buf2.getvalue(), "")
+        finally:
+            if os.path.exists(mod_dir):
+                shutil.rmtree(mod_dir, ignore_errors=True)
+        self.mark_passed()

@@ -5,6 +5,34 @@
 
 ---
 
+## 0. 下游專案 5 分鐘快速上手 (Quickstart)
+
+> [!CAUTION]
+> **[Pre-flight Check] AI Agent 初始化確認**：初次為下游專案設定 `knowledge-db` 前，請先向開發者確認：**① 欲納入檢索的原始碼目錄（如 `src/`, `lib/`）與副檔名**，以及 **② 是否下載本地 ONNX 向量模型（或關閉向量檢索改用輕量極速之純 BM25 模式）**。
+
+```bash
+# 1. 設定專案源碼掃描空間 (注意鍵名為 include)
+# [Linux / macOS (bash/zsh)]：
+python yscb.py config set knowledge-db spaces.source.include '["project://src", "project://lib"]'
+python yscb.py config set knowledge-db spaces.source.file_patterns '["*.py", "*.cpp", "*.h", "*.ts", "*.js"]'
+# [Windows (PowerShell / CMD)] 請使用雙引號搭配反斜線跳脫內層雙引號：
+# python yscb.py config set knowledge-db spaces.source.include "[\"project://src\", \"project://lib\"]"
+
+# 2. 配置向量模型 (二選一：預載本地 ONNX 權重，或關閉向量檢索改用輕量純 BM25)
+python yscb.py knowledge-db model download
+# [輕量極速模式] 免下載向量模型，直接使用純 BM25 詞彙檢索：
+# python yscb.py config set knowledge-db enable_vector_search false
+
+# 3. 一鍵建立全管線索引 (增量指紋掃描 -> AST 提取 -> BM25 倒排索引 -> 向量特徵)
+python yscb.py knowledge-db index
+
+# 4. 開始語意檢索與調用圖譜探索 (Agent 推薦加 --json -s 取得高密度代碼切片)
+python yscb.py knowledge-db search "核心業務關鍵字" --json -s
+python yscb.py knowledge-db callers <symbol_name> --json -s
+```
+
+---
+
 ## 1. 模組架構全景 (Architecture Overview)
 
 `knowledge-db` 模組提供代碼與文檔的解析、索引與多維複合檢索流水線：
@@ -56,9 +84,9 @@ python yscb.py knowledge-db search 'HybridSearchEngine' --json
 # 2. 內文切片檢索 (Agent 唯一首選 - 帶 AST 代碼切片)
 python yscb.py knowledge-db search '編譯 佔位符 resolve' --json -s
 
-# 3. 兩階段副檔名定向過濾
-python yscb.py knowledge-db search 'SOP 0~7' --ftype=md --json -s          # 文檔脈絡
-python yscb.py knowledge-db search 'resolve_uri' --ftype=c,cpp,py --json -s # 程式碼實作
+# 3. 兩階段副檔名與空間定向過濾
+python yscb.py knowledge-db search 'SOP 0~7' --ftype=md --json -s                 # 文檔脈絡
+python yscb.py knowledge-db search 'resolve_uri' --space=source --ftype=py -s    # 指定空間與語言
 
 # 4. 強制純詞彙檢索 (繞過向量推論，剛性降級)
 python yscb.py knowledge-db search 'PIDController' --lexical-only --json -s
@@ -106,7 +134,7 @@ from knowledge_db.engine import KnowledgeEngine
 # 初始化門面引擎 (自動感知已註冊空間與同義詞庫)
 engine = KnowledgeEngine()
 
-# 1. 多欄位 BM25 檢索
+# 1. 多欄位複合檢索
 results = engine.search(
     query="ExecutionContext",
     limit=5,
@@ -121,33 +149,41 @@ impact = engine.impact("ReleasePublisher", max_depth=2)
 
 # 3. 知識庫狀態與索引維護
 status = engine.status()
-diffs = engine.scan()
 indices = engine.build_index()
 ```
 
 ---
 
-## 5. 組態配置項目 (Configuration Reference)
+## 5. 組態配置項目與自訂空間指南 (Configuration & Spaces Reference)
 
-本模組支援於 `yscb.config.json` (Project-level) 或 `yscb.config.local.json` (Local-level，優先度高於 Project) 設定 `knowledge-db` 命名空間參數：
+本模組之組態位於 `config://knowledge-db/config.project.json`（團隊共享）與 `config://knowledge-db/config.local.json`（個人本機覆蓋），建議直接透過 `python yscb.py config set knowledge-db <key> <val>` 進行操作：
 
 ```json
 {
-  "knowledge-db": {
-    "enable_vector_search": true,
-    "embedding_model": "BAAI/bge-small-zh-v1.5",
-    "jit_vector_timeout_seconds": 5.0,
-    "max_threads": "auto"
+  "enable_vector_search": true,
+  "embedding_model": "BAAI/bge-small-zh-v1.5",
+  "jit_vector_timeout_seconds": 5.0,
+  "max_threads": "auto",
+  "spaces": {
+    "source": {
+      "description": "專案核心原始碼空間",
+      "include": ["project://src", "project://lib"],
+      "exclude": ["**/__pycache__/**", "**/node_modules/**"],
+      "file_patterns": ["*.py", "*.c", "*.cpp", "*.h", "*.ts", "*.js"]
+    }
   }
 }
 ```
 
 | 設定鍵值 (Key) | 預設值 (Default) | 型態與說明 |
 | :--- | :--- | :--- |
-| `enable_vector_search` | `true` | `bool` / `str`。是否啟用 FastEmbed 向量語意檢索與特徵提取。設為 `false` 則跳過向量化並強制使用純 BM25 模式。 |
-| `embedding_model` | `"BAAI/bge-small-zh-v1.5"` | `str`。指定 FastEmbed ONNX 嵌入模型名稱。支援中英多語言。 |
-| `jit_vector_timeout_seconds` | `5.0` | `float`。JIT 增量索引時 10 符號動態探針之超時臨界值。若預估向量推論時長超過此值，自動熔斷退回純 BM25 模式並輸出引導提示。 |
-| `max_threads` | `"auto"` | `str` / `int`。向量推論與 ONNXRuntime 執行緒防飢餓保護機制。預設 `"auto"` 為環境 CPU 數量之一半 (`os.cpu_count() // 2`)，防止資源耗盡。 |
+| `enable_vector_search` | `true` | `bool`。是否啟用 FastEmbed 向量語意檢索與特徵提取。設為 `false` 則跳過向量化並強制使用純 BM25 模式。 |
+| `embedding_model` | `"BAAI/bge-small-zh-v1.5"` | `str`。指定 FastEmbed ONNX 嵌入模型名稱（512 維，支援中英多語言）。 |
+| `jit_vector_timeout_seconds` | `5.0` | `float`。JIT 增量索引時 10 符號動態探針之超時臨界值。超過此值自動熔斷退回純 BM25 模式。 |
+| `max_threads` | `"auto"` | `str` / `int`。向量推論與 ONNXRuntime 執行緒上限。預設 `"auto"` 為 CPU 核心數之一半。 |
+| `spaces.<name>.include` | `[]` | `List[str]`。必填，欲納入掃描之語意 URI 目錄或檔案清單（如 `["project://src"]`）。 |
+| `spaces.<name>.exclude` | `[]` | `List[str]`。選填，排除之 Glob 模式清單（如 `["**/__pycache__/**"]`）。 |
+| `spaces.<name>.file_patterns` | `[]` | `List[str]`。選填，檔案副檔名 Glob 過濾（未宣告或為空時預設全包含）。 |
 
 ---
 
