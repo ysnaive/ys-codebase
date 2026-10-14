@@ -16,7 +16,12 @@ from core.commands.bags import CmdBags, CmdOption
 from core.guard import guard_dispatch
 from core.platform import is_process_alive, kill_process_tree, spawn_detached
 from server.config import ServerConfig
-from server.master import MasterSupervisor, ServerDaemonState
+from server.master import (
+    MasterSupervisor,
+    ServerDaemonState,
+    format_shutdown_summary,
+    format_startup_banner,
+)
 
 
 def _resolve_enable_console(
@@ -90,11 +95,28 @@ def start(cmd_bags: CmdBags) -> int:
     console_arg = True if cmd_bags.has_option("console") else None
     daemon_arg = True if cmd_bags.has_option("daemon") else None
     raw_ttl = cmd_bags.get_option_value("ttl")
-    ttl = float(raw_ttl) if raw_ttl is not None else None
+    ttl = None
+    if raw_ttl is not None:
+        try:
+            ttl = float(raw_ttl)
+            if ttl < 0:
+                raise ValueError("TTL must be non-negative")
+        except ValueError:
+            print(f"[Server] Error: Invalid TTL value '{raw_ttl}'. Must be a non-negative number.", file=sys.stderr)
+            return 1
 
     state = _read_daemon_state(yscb_root)
     if state and is_process_alive(state.pid):
         print(f"[Server] Daemon is already running (PID: {state.pid}, Port: {state.port}).")
+        status_info = _http_request(state, "/api/status") or {
+            "pid": state.pid,
+            "worker_pid": state.worker_pid,
+            "port": state.port,
+            "root": state.root,
+            "idle_timeout_sec": state.idle_timeout_sec,
+            "log_file": os.path.join(state.root, ".cache", "server", "log"),
+        }
+        print(format_startup_banner(status_info))
         return 0
 
     cfg = ServerConfig.load(workspace_root=yscb_root)
@@ -132,7 +154,15 @@ def start(cmd_bags: CmdBags) -> int:
             time.sleep(0.1)
             state = _read_daemon_state(yscb_root)
             if state and is_process_alive(state.pid):
-                print(f"[Server] Daemon successfully started (PID: {state.pid}, Port: {state.port}).")
+                status_info = _http_request(state, "/api/status") or {
+                    "pid": state.pid,
+                    "worker_pid": state.worker_pid,
+                    "port": state.port,
+                    "root": state.root,
+                    "idle_timeout_sec": state.idle_timeout_sec,
+                    "log_file": os.path.join(state.root, ".cache", "server", "log"),
+                }
+                print(format_startup_banner(status_info))
                 return 0
 
         print("[Server] Daemon started but readiness probe timed out.")
@@ -159,16 +189,30 @@ def stop(cmd_bags: CmdBags) -> int:
     if not force_flag:
         print(f"[Server] Sending graceful shutdown request to daemon (PID: {state.pid})...")
         resp = _http_request(state, "/api/shutdown", method="POST", timeout=2.0)
+        summary = (resp or {}).get("summary")
         if resp:
             for _ in range(20):
                 time.sleep(0.1)
                 if not is_process_alive(state.pid):
-                    print("[Server] Daemon stopped gracefully.")
+                    if summary:
+                        print(format_shutdown_summary(summary))
+                    else:
+                        print("[Server] Daemon stopped gracefully.")
                     return 0
 
     print(f"[Server] Terminating process tree for PID: {state.pid}...")
     kill_process_tree(state.pid, timeout_sec=2.0)
-    print("[Server] Daemon stopped.")
+    uptime = time.time() - state.start_time
+    fallback_summary = {
+        "pid": state.pid,
+        "worker_pid": state.worker_pid,
+        "uptime_seconds": uptime,
+        "tasks_executed": state.tasks_executed,
+        "services_stopped": 0,
+        "reason": "Force CLI termination" if force_flag else "Graceful shutdown timeout (forced)",
+        "archive_log": os.path.join(state.root, ".cache", "server", "log"),
+    }
+    print(format_shutdown_summary(fallback_summary))
     return 0
 
 
@@ -191,6 +235,14 @@ def status(cmd_bags: CmdBags) -> int:
         return 1
 
     ttl_str = f"{info['idle_seconds_left']:.1f}s" if state.idle_timeout_sec > 0 else "Disabled (Persistent)"
+    uptime = info.get("uptime_seconds")
+    if uptime is not None:
+        mins = int(uptime // 60)
+        secs = uptime % 60
+        uptime_str = f"{mins}m {secs:.1f}s ({uptime:.1f}s)" if mins > 0 else f"{uptime:.1f}s"
+    else:
+        uptime_str = "N/A"
+
     print("======================================================================")
     print("YS-Codebase Server Daemon Status")
     print("======================================================================")
@@ -199,8 +251,10 @@ def status(cmd_bags: CmdBags) -> int:
     print(f"[*] Worker PID    : {info.get('worker_pid')} ({'Alive' if is_process_alive(info.get('worker_pid', 0)) else 'Restarting'})")
     print(f"[*] Port          : {info.get('port')}")
     print(f"[*] Workspace Root: {info.get('root')}")
+    print(f"[*] Uptime        : {uptime_str}")
     print(f"[*] Tasks Handled : {info.get('tasks_executed')}")
     print(f"[*] Idle TTL Left : {ttl_str}")
+    print(f"[*] Real-time Log : {info.get('log_file', os.path.join(state.root, '.cache', 'server', 'log'))}")
 
     watcher = info.get("watcher")
     if watcher:

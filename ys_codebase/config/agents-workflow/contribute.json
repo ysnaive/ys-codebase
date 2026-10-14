@@ -1,8 +1,9 @@
 {
   "export": [
     {
-      "type": "workflow",
-      "source": "config://agents-workflow/workflows/BumpRevision.md",
+      "type": "skill",
+      "name": "bump-revision",
+      "source": "config://agents-workflow/skills/bump-revision",
       "description": "🔴 授權守門。嚴禁 Agent 自主觸發，僅限開發者顯式輸入 /BumpRevision 時執行"
     }
   ],

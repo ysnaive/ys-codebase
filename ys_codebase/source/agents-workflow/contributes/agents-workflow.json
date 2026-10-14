@@ -30,43 +30,51 @@
       "description": "[!] 授權守門技能。完全禁止 Agent 主動觸發！"
     },
     {
-      "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/ContextInit.md",
+      "type": "skill",
+      "name": "context-init",
+      "source": "module://agents-workflow/assets/skills/context-init",
       "description": "上下文熱啟動流程"
     },
     {
-      "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/NewPlan.md",
+      "type": "skill",
+      "name": "new-plan",
+      "source": "module://agents-workflow/assets/skills/new-plan",
       "description": "標準開發作業流程 (NewPlan) — 定義專案從需求到發布的完整規範與三大分流管控"
     },
     {
-      "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/Continue.md",
+      "type": "skill",
+      "name": "continue",
+      "source": "module://agents-workflow/assets/skills/continue",
       "description": "接續中斷或已存在的開發計畫工作流 (Continue) — 支援 handoff.md 現場交接與狀態自動恢復"
     },
     {
-      "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/Pause.md",
+      "type": "skill",
+      "name": "pause",
+      "source": "module://agents-workflow/assets/skills/pause",
       "description": "暫停開發與無縫交接工作流 (Pause) — 現場狀態凍結、生成 handoff.md 達成零斷層接手"
     },
     {
-      "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/Discuss.md",
+      "type": "skill",
+      "name": "discuss",
+      "source": "module://agents-workflow/assets/skills/discuss",
       "description": "深度歸因與防淺層修復工作流 (Discuss) — 實作/測試遇阻時的強制暫停、根因追溯與範疇保護機制"
     },
     {
-      "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/Research.md",
+      "type": "skill",
+      "name": "research",
+      "source": "module://agents-workflow/assets/skills/research",
       "description": "深度技術調研工作流 (Research) — 適用於高複雜度技術探索、方案選型對比與 R01 專題調研報告產出"
     },
     {
-      "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/Auto.md",
+      "type": "skill",
+      "name": "auto",
+      "source": "module://agents-workflow/assets/skills/auto",
       "description": "自動連續推進工作流 (Auto) — 支援 Phase 01~05 跳過中間 Checkpoint 連續執行直至 P06 手動驗證"
     },
     {
-      "type": "workflow",
-      "source": "module://agents-workflow/assets/workflows/Roadmap.md",
+      "type": "skill",
+      "name": "roadmap",
+      "source": "module://agents-workflow/assets/skills/roadmap",
       "description": "技術路線圖智能推薦工作流 (Roadmap) — 探索長期技術儲備並推薦適合當前專案情境之主題"
     },
     {
@@ -416,15 +424,6 @@
       "description": "Google Antigravity IDE 原生 Slash Commands 與標準規範輸出",
       "agents_md": "project://AGENTS.md",
       "projections": {
-        "workflow": {
-          "target_dir": "project://.agents/workflows",
-          "extension": ".md",
-          "header": [
-            "---",
-            "description: {export.description}",
-            "---"
-          ]
-        },
         "template": {
           "target_dir": "project://.agents/.yscb/templates",
           "extension": ".md"
@@ -444,15 +443,6 @@
       "description": "Anthropic Claude Code 原生 Slash Commands 與標準規範輸出",
       "agents_md": "project://CLAUDE.md",
       "projections": {
-        "workflow": {
-          "target_dir": "project://.claude/commands",
-          "extension": ".md",
-          "header": [
-            "---",
-            "description: {export.description}",
-            "---"
-          ]
-        },
         "template": {
           "target_dir": "project://.claude/.yscb/templates",
           "extension": ".md"
@@ -472,15 +462,6 @@
       "description": "OpenAI Codex CLI / VS Code Extension 原生工作流與標準規範輸出",
       "agents_md": "project://AGENTS.md",
       "projections": {
-        "workflow": {
-          "target_dir": "project://.agents/workflows",
-          "extension": ".md",
-          "header": [
-            "---",
-            "description: {export.description}",
-            "---"
-          ]
-        },
         "template": {
           "target_dir": "project://.agents/.yscb/templates",
           "extension": ".md"

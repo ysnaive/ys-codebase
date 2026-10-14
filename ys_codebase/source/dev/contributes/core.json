@@ -146,6 +146,45 @@
               }
             }
           },
+          "parallel": {
+            "jobs": {
+              "description": "Number of parallel test worker processes",
+              "alias": ["j"],
+              "args": {
+                "num": {
+                  "description": "Job count"
+                }
+              }
+            }
+          },
+          "target": {
+            "target": {
+              "description": "Specific test target class or method (e.g. TestClass.test_method)",
+              "args": {
+                "spec": {
+                  "description": "Target test specification"
+                }
+              }
+            }
+          },
+          "type": {
+            "type": {
+              "description": "Filter test type (logic, env, workflow, perf, all)",
+              "args": {
+                "name": {
+                  "description": "Type name"
+                }
+              }
+            }
+          },
+          "execution": {
+            "sync": {
+              "description": "Run tests synchronously in main process"
+            },
+            "keep-sandbox": {
+              "description": "Preserve virtual test sandbox directory after run"
+            }
+          },
           "verbosity": {
             "quiet": {
               "description": "Quiet mode (suppress verbose logs)",
@@ -210,11 +249,17 @@
         "server_compatible": true,
         "args": {
           "module": {
-            "description": "Module name to verify",
-            "required": true
+            "description": "Module name to verify (omit for all modules)",
+            "required": false
           }
         },
         "options": {
+          "scope": {
+            "all": {
+              "description": "Check release readiness for all modules",
+              "alias": ["a"]
+            }
+          },
           "force": {
             "force": {
               "description": "Force check override",
@@ -239,10 +284,21 @@
           },
           "message": {
             "description": "Git commit message",
-            "required": true
+            "required": false
           }
         },
         "options": {
+          "message": {
+            "msg": {
+              "description": "Git commit message",
+              "alias": ["m"],
+              "args": {
+                "text": {
+                  "description": "Commit message"
+                }
+              }
+            }
+          },
           "force": {
             "force": {
               "description": "Force release-git override",
@@ -346,6 +402,7 @@
             "required": false
           }
         },
+        "options": {},
         "usage": {
           "cons": [
             "[!] 內部原子操作，嚴禁 Agent 主動手動調用"
@@ -362,6 +419,7 @@
             "required": false
           }
         },
+        "options": {},
         "usage": {
           "cons": [
             "[!] 內部原子操作，嚴禁 Agent 主動手動調用"

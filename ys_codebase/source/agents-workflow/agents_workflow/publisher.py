@@ -149,8 +149,23 @@ class ReleasePublisher:
         return cfg
 
     def _get_source_file_sha1(self, path_or_uri: str) -> str:
-        """計算來源檔案 SHA-1，支援 (mtime_ns, size) Stat-First 快取加速。"""
+        """計算來源檔案或目錄 SHA-1，支援 (mtime_ns, size) Stat-First 快取加速與目錄遞迴雜湊。"""
         real_p = self.compiler._resolve_source_path(path_or_uri)
+        if real_p and os.path.isdir(real_p):
+            hasher = hashlib.sha1()
+            for root, _, files in sorted(os.walk(real_p)):
+                for f in sorted(files):
+                    fp = os.path.join(root, f)
+                    rel = os.path.relpath(fp, real_p).replace("\\", "/")
+                    hasher.update(rel.encode("utf-8"))
+                    try:
+                        with open(fp, "rb") as rf:
+                            while chunk := rf.read(65536):
+                                hasher.update(chunk)
+                    except Exception:
+                        pass
+            return hasher.hexdigest()
+
         if real_p and os.path.isfile(real_p):
             try:
                 st = os.stat(real_p)
@@ -657,6 +672,31 @@ class ReleasePublisher:
                     os.remove(f_rem)
                 except Exception as e:
                     print(f"[publisher:warning] Failed removing stale file {f_rem}: {e}", file=sys.stderr)
+
+        # 自動清理已除役之 legacy workflows 目錄 (.agents/workflows 與 .claude/commands)
+        for legacy_rel in [".agents/workflows", ".claude/commands"]:
+            legacy_dir = os.path.normpath(os.path.join(proj_root, legacy_rel))
+            if os.path.isdir(legacy_dir):
+                try:
+                    for root, dirs, files in os.walk(legacy_dir, topdown=False):
+                        for f in files:
+                            fp = os.path.join(root, f)
+                            if fp not in current_published_set:
+                                try:
+                                    os.remove(fp)
+                                    files_to_remove.add(fp)
+                                except Exception:
+                                    pass
+                        for d in dirs:
+                            dp = os.path.join(root, d)
+                            try:
+                                os.rmdir(dp)
+                            except Exception:
+                                pass
+                    if os.path.isdir(legacy_dir) and not os.listdir(legacy_dir):
+                        os.rmdir(legacy_dir)
+                except Exception:
+                    pass
 
         # --- 步驟 3 (更新持久清單): 分流寫入 storage:// 與 cache:// ---
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

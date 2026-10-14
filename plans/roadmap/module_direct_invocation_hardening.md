@@ -2,7 +2,7 @@
 
 > 主題：模組防繞道調用與執行期剛性入口守衛架構  
 > 歸檔日期：2026-09-06  
-> 狀態：Proposed  
+> 狀態：Implemented (已於 yscb.py 與 core.platform 入口驗證守衛全面落地)  
 
 ---
 

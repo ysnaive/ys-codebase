@@ -246,11 +246,6 @@ class AtomicEngine:
             del cfg["installed_modules"][module_name]
             self._save_config(cfg_path, cfg)
 
-    def act_delete(self, module_name: str) -> None:
-        mirror_uri = f"mirror://{module_name}"
-        if uri.exists(mirror_uri):
-            uri.rmtree(mirror_uri)
-
     def _parse_dependencies(self, raw_deps: Any) -> Dict[str, str]:
         if isinstance(raw_deps, dict):
             return {k: str(v) for k, v in raw_deps.items()}
@@ -425,7 +420,7 @@ class AtomicEngine:
 
     def act_prepare(self, target_list: List[Tuple[str, str]], provider_url: str, force: bool = False) -> None:
         for mod, ver in target_list:
-            mirror_zip = f"mirror://{mod}/{ver}.zip"
+            mirror_zip = f"module.mirror://{mod}/{ver}.zip"
             if force or not uri.exists(mirror_zip):
                 self.act_download(mod, ver, provider_url)
 
@@ -645,113 +640,7 @@ class AtomicEngine:
                 uri.remove(tmpl_uri)
 
 
-    def _clean_module_cache(self, module_name: str) -> None:
-        """
-        物理清空指定模組之快取空間 (cache://{module_name}/)。
-        """
-        cache_uri = f"cache://{module_name}"
-        if uri.exists(cache_uri):
-            try:
-                uri.rmtree(cache_uri)
-            except Exception:
-                pass
 
-    def act_delete(self, module_name: str, clean_mirror: bool = False, purge: bool = False) -> None:
-        """
-        刪除指定模組資產與相關狀態 (生命週期治理)。
-        - 自動清空 cache://{module_name}/
-        - clean_mirror=True: 刪除 module.mirror://{module_name}/
-        - purge=True: 強制物理刪除 storage://{module_name}/ 與 config://{module_name}/
-        """
-        # 1. 自動物理清理快取空間
-        self._clean_module_cache(module_name)
-
-        # 2. 清理本地鏡像庫
-        if clean_mirror:
-            mirror_uri = f"module.mirror://{module_name}"
-            if uri.exists(mirror_uri):
-                uri.rmtree(mirror_uri)
-
-        # 3. 深度清除 (Purge)
-        if purge:
-            # 刪除持久化儲存 (具備目錄邊界防護)
-            storage_uri = f"storage://{module_name}"
-            if uri.exists(storage_uri):
-                try:
-                    p = uri.resolve(storage_uri)
-                    storage_root = uri.resolve("storage://")
-                    if os.path.abspath(p).startswith(os.path.abspath(storage_root) + os.sep):
-                        shutil.rmtree(p, ignore_errors=True)
-                except Exception:
-                    pass
-
-            # 刪除模組設定檔
-            config_uri = f"config://{module_name}"
-            if uri.exists(config_uri):
-                try:
-                    p = uri.resolve(config_uri)
-                    config_root = uri.resolve("config://")
-                    if os.path.abspath(p).startswith(os.path.abspath(config_root) + os.sep):
-                        shutil.rmtree(p, ignore_errors=True)
-                except Exception:
-                    pass
-
-    def act_reload(self, clean_stage: bool = True, inject_stage: bool = True) -> None:
-        """
-        4-Stage Atomic Reload Pipeline:
-        Stage 1 (自癒拉取) -> Stage 2 (解壓物化) -> Stage 3 (組態治理) -> Stage 4 (依賴注入與事件廣播)
-        """
-        cfg_path, cfg = self._get_config()
-        installed = cfg.get("installed_modules", {})
-        default_prov = cfg.get("default_provider", "")
-        
-        # Stage 1: 拉取/還原壓縮來源檔 (若 module.mirror:// 缺少單檔 zip，自癒補齊)
-        for mod, meta in installed.items():
-            ver = meta.get("version", "1.0.0.0")
-            prov = meta.get("provider") or default_prov
-            mirror_zip = f"module.mirror://{mod}/{ver}.zip"
-            if not uri.exists(mirror_zip):
-                try:
-                    self.act_download(mod, ver, prov)
-                except Exception:
-                    pass
-
-        # Stage 2: 解壓並部署至 modules/
-        if clean_stage and uri.exists("module://"):
-            for mod in uri.listdir("module://"):
-                if mod != "core" and mod not in installed:
-                    uri.rmtree(f"module://{mod}")
-                    # 卸載殘留清理快取
-                    self._clean_module_cache(mod)
-
-        for mod, meta in installed.items():
-            ver = meta.get("version", "1.0.0.0")
-            mirror_zip = f"module.mirror://{mod}/{ver}.zip"
-            runtime_dst = f"module://{mod}/"
-            real_dst = uri.resolve(runtime_dst)
-            
-            if uri.exists(mirror_zip):
-                real_zip = uri.resolve(mirror_zip)
-                if os.path.exists(real_dst):
-                    shutil.rmtree(real_dst, ignore_errors=True)
-                with zipfile.ZipFile(real_zip, "r") as zf:
-                    real_dst_abs = os.path.abspath(real_dst)
-                    for member in zf.infolist():
-                        target_path = os.path.abspath(os.path.join(real_dst_abs, member.filename))
-                        if not target_path.startswith(real_dst_abs + os.sep) and target_path != real_dst_abs:
-                            raise RuntimeError(
-                                f"Zip Slip vulnerability detected: '{member.filename}' in mirror '{mirror_zip}' "
-                                f"attempts to extract outside destination '{real_dst}'."
-                            )
-                    zf.extractall(real_dst)
-            elif uri.exists(f"module.mirror://{mod}/{ver}/"):
-                mirror_src = f"module.mirror://{mod}/{ver}/"
-                if os.path.exists(real_dst):
-                    shutil.rmtree(real_dst, ignore_errors=True)
-                uri.copy(mirror_src, runtime_dst)
-
-        # Stage 3: 掃描並部署組態 (原子提取並無條件清除模板)
-        self.act_deploy_configs_from_modules()
 
     def _clean_module_cache(self, module_name: str) -> None:
 
@@ -998,10 +887,24 @@ class AtomicEngine:
         summary: Dict[str, Dict[str, str]] = {}
         from core import contributes
         all_commands = contributes.get("core", "commands", default={})
-        if not isinstance(all_commands, dict):
+        modules_bucket = all_commands.get("__modules__")
+        if isinstance(modules_bucket, dict) and modules_bucket:
+            for donor, cmds_block in modules_bucket.items():
+                if donor == "core" or not isinstance(cmds_block, dict):
+                    continue
+                cmds = cmds_block.get("cmd", cmds_block) if isinstance(cmds_block, dict) else {}
+                if isinstance(cmds, dict):
+                    for cmd_name, cmd_body in cmds.items():
+                        if isinstance(cmd_body, dict):
+                            desc = str(cmd_body.get("description", f"{cmd_name} command"))
+                            if donor not in summary:
+                                summary[donor] = {}
+                            summary[donor][cmd_name] = desc
             return summary
-            
-        for cmd_name, cmd_body in sorted(all_commands.items()):
+
+        # Fallback to flattened cmd dictionary or top-level items
+        cmds_dict = all_commands.get("cmd") if isinstance(all_commands.get("cmd"), dict) else all_commands
+        for cmd_name, cmd_body in sorted(cmds_dict.items()):
             if isinstance(cmd_body, dict):
                 donor = cmd_body.get("__provider__", "core")
                 if donor == "core":

@@ -1,3 +1,10 @@
+---
+title: Knowledge Database 模組手冊
+category: overview
+module: knowledge-db
+updated_at: 2026-10-14
+---
+
 # Knowledge Database 模組手冊 (Knowledge-DB Overview)
 
 > 模組名稱：`knowledge-db`  

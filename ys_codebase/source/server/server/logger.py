@@ -24,17 +24,18 @@ class ServerLogger:
     """
 
     TIME_FORMAT: str = "%Y_%m_%d_%H.%M.%S"
-    HIST_REGEX: re.Pattern = re.compile(r"^\d{4}_\d{2}_\d{2}_\d{2}\.\d{2}\.\d{2}_log$")
+    HIST_REGEX: re.Pattern = re.compile(r"^\d{4}_\d{2}_\d{2}_\d{2}\.\d{2}\.\d{2}(?:_\d{2,})?_log$")
     MAX_HIST_FILES: int = 5
     START_BANNER_PREFIX: str = 'server start at time "'
 
-    def __init__(self, yscb_root: str, log_dir: Optional[str] = None) -> None:
+    def __init__(self, yscb_root: str, log_dir: Optional[str] = None, echo_console: bool = False) -> None:
         """
         Initializes ServerLogger instance.
 
         Args:
             yscb_root: Absolute or relative path to YSCB root workspace.
             log_dir: Optional custom log directory path. Defaults to yscb_root/.cache/server.
+            echo_console: If True, echoes written log lines directly to sys.stdout.
         """
         self.yscb_root = os.path.abspath(yscb_root)
         if log_dir:
@@ -48,6 +49,7 @@ class ServerLogger:
         self._lock = threading.RLock()
         self._file = None
         self.start_time_str: Optional[str] = None
+        self.echo_console: bool = echo_console
 
     @property
     def log_file_path(self) -> str:
@@ -242,6 +244,22 @@ class ServerLogger:
             self.clean_rolling_history()
             return archive_path
 
+    def get_expected_archive_path(self) -> str:
+        """
+        Calculates and returns the target archive path where the current log will be moved on shutdown.
+        """
+        arch_ts = self.start_time_str or self.extract_start_time_from_header(self.log_file)
+        if not arch_ts:
+            try:
+                if os.path.exists(self.log_file):
+                    mtime = os.path.getmtime(self.log_file)
+                    arch_ts = datetime.fromtimestamp(mtime).strftime(self.TIME_FORMAT)
+                else:
+                    arch_ts = datetime.now().strftime(self.TIME_FORMAT)
+            except Exception:
+                arch_ts = datetime.now().strftime(self.TIME_FORMAT)
+        return self._resolve_safe_archive_path(arch_ts)
+
     def write_raw(self, line: str) -> None:
         """
         Thread-safely writes raw string line and immediately flushes to disk.
@@ -255,6 +273,12 @@ class ServerLogger:
 
             self._file.write(line)
             self._file.flush()
+            if getattr(self, "echo_console", False):
+                try:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                except Exception:
+                    pass
 
     def log(
         self,

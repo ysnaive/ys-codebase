@@ -143,13 +143,18 @@ class SemanticBundler:
             p_res = uri.resolve("project://", interactive=False)
             if p_res:
                 proj_root = Path(p_res).resolve()
-                return os.path.relpath(str(f_path.resolve()), str(proj_root)).replace("\\", "/")
+                rel = os.path.relpath(str(f_path.resolve()), str(proj_root)).replace("\\", "/")
+                if not rel.startswith(".."):
+                    return rel
         except Exception:
             pass
         try:
-            return os.path.relpath(str(f_path), str(fallback_base)).replace("\\", "/")
+            rel = os.path.relpath(str(f_path), str(fallback_base)).replace("\\", "/")
+            if not rel.startswith(".."):
+                return rel
         except Exception:
-            return f_path.name
+            pass
+        return f_path.name
 
     def bundle_space(
         self,

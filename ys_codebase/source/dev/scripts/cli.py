@@ -80,9 +80,9 @@ def create(cmd_bags: Any) -> int:
         return 1
     name = bags.args[0]
     desc = "A YS-Codebase module"
-    desc_opt = bags.get_option("desc")
-    if desc_opt:
-        desc = str(desc_opt).strip('\"')
+    desc_val = bags.get_option_value("desc")
+    if desc_val:
+        desc = str(desc_val).strip('\"')
     scaffolder = Scaffolder()
     ok, msg = scaffolder.create_module(name, desc)
     print(f"[dev:create] {msg}")
@@ -220,15 +220,37 @@ def release_check(cmd_bags: Any) -> int:
     """Run 3-Gate verification on release readiness without packaging."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "release-check")
-    if bags.has_option("all") or bags.has_option("a"):
-        print("[dev:release-check] Error: 'release-check' only supports checking a single module. '--all' is not supported.", file=sys.stderr)
-        return 1
     force = bags.has_option("force") or bags.has_option("f")
+    releaser = Releaser()
+
+    if bags.has_option("all") or bags.has_option("a"):
+        src_root = uri.resolve("module.source://")
+        modules = [
+            d for d in sorted(os.listdir(src_root))
+            if os.path.isdir(os.path.join(src_root, d)) and not d.startswith(".")
+        ]
+        all_passed = True
+        print(f"[dev:release-check] Checking release readiness for all {len(modules)} modules...")
+        for mod_name in modules:
+            passed, errors = releaser.release_check(mod_name, force=force)
+            if passed:
+                print(f"  [*] Module '{mod_name}': READY (All 3 Gates Passed)")
+            else:
+                all_passed = False
+                print(f"  [!] Module '{mod_name}': FAILED")
+                for err in errors:
+                    print(f"      - {err}")
+        if all_passed:
+            print("[dev:release-check] All modules are READY for release.")
+            return 0
+        else:
+            print("[dev:release-check] One or more modules FAILED release check.", file=sys.stderr)
+            return 1
+
     if not bags.args:
-        print("[dev:release-check] Usage: python yscb.py dev release-check <module_name> [--force|-f]")
+        print("[dev:release-check] Usage: python yscb.py dev release-check <module_name> [--all|-a] [--force|-f]")
         return 1
     mod_name = bags.args[0]
-    releaser = Releaser()
     passed, errors = releaser.release_check(mod_name, force=force)
     if passed:
         msg_suffix = " (Force Override mode)" if force else ""
@@ -246,7 +268,7 @@ def release_git(cmd_bags: Any) -> int:
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "release-git")
     force = bags.has_option("force") or bags.has_option("f")
-    commit_msg = bags.get_option("msg") or bags.get_option("m")
+    commit_msg = bags.get_option_value("msg") or bags.get_option_value("m")
     if len(bags.args) < 1 or (not commit_msg and len(bags.args) < 2):
         print("[dev:release-git] Usage: python yscb.py dev release-git <module_name> \"<commit message>\" [--force|-f]")
         return 1

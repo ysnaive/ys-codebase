@@ -29,7 +29,7 @@
 
 | 偏差等級 | 判定條件 | 處置行動 |
 | :--- | :--- | :--- |
-| [!] **Critical** | 需求越界、架構翻盤、破壞全域相容性 | **強制中斷實作**，發起 [/Discuss](`__#{module://agents-workflow/assets/workflows/Discuss.md}__`) 進行 5-Whys 根因分析，退回 P00/P01 重新定稿。 |
+| [!] **Critical** | 需求越界、架構翻盤、破壞全域相容性 | **強制中斷實作**，發起 [/discuss](`__#{module://agents-workflow/assets/skills/discuss/SKILL.md}__`) 進行 5-Whys 根因分析，退回 P00/P01 重新定稿。 |
 | [WARN] **Major** | 局部 API 簽名微調、新增模組內部依賴 | **暫停推進**，於當前 Turn 呈報開發者確認同意後再行修改。 |
 | ℹ️ **Minor** | 內部區域變數重命名、演算法非介面層微調 | 自主修正，並於 `P05_task.md` 之「實作偏差紀錄表」登記備查。 |
 

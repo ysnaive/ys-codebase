@@ -31,14 +31,18 @@ class PipManager:
 
     def _resolve_yscb_root(self) -> str:
         """解析當前 yscb_root 目錄。"""
-        # 若當前模組在 ys_codebase/source/core/core/ 下，向上尋找 yscb.config.json 或使用上兩層
+        try:
+            from core import uri
+            return uri._get_yscb_root()
+        except Exception:
+            pass
+        # 向上尋找 yscb.config.json 或使用上兩層
         cur = os.path.abspath(os.path.dirname(__file__))
         while cur and cur != os.path.dirname(cur):
             cfg_p = os.path.join(cur, "yscb.config.json")
             if os.path.isfile(cfg_p):
                 return cur
             cur = os.path.dirname(cur)
-        # 兜底回當前工作目錄
         return os.getcwd()
 
     @staticmethod
@@ -214,6 +218,13 @@ class PipManager:
 
     def _ensure_gitignore(self) -> None:
         """確保 yscb_dir/.gitignore 存在且包含 /.venv/ 內部忽略規則。"""
+        try:
+            from core.installer import generate_internal_gitignore
+            generate_internal_gitignore(self.yscb_dir)
+            return
+        except Exception:
+            pass
+
         gi_path = os.path.join(self.yscb_dir, ".gitignore")
         begin = "# === YSCB INTERNAL IGNORE BEGIN ==="
         end = "# === YSCB INTERNAL IGNORE END ==="

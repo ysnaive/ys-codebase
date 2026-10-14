@@ -41,6 +41,11 @@ class SemVerCoreTest(YSCBTestCase):
         self.assertEqual(v_pre.minor, 0)
         self.assertEqual(v_pre.patch, 0)
         self.assertEqual(v_pre.prerelease, "beta.1")
+        self.assertEqual(str(v_pre), "2.0.0-beta.1")
+
+        # Prerelease 帶非零 revision
+        v_pre_rev = parse_semver("1.2.3.4-alpha.1")
+        self.assertEqual(str(v_pre_rev), "1.2.3.4-alpha.1")
         self.mark_passed()
 
     def test_parse_semver_build_tag(self):

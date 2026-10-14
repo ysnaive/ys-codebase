@@ -15,7 +15,7 @@
 
 ## 2. JIT 延遲建檔與分流守門
 
-1. **對話先行**：輸入 [/NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`) 時不立即建立實體目錄，先於對話中進行深入探討。
+1. **對話先行**：輸入 [/new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 時不立即建立實體目錄，先於對話中進行深入探討。
 2. **確立分流伴隨建檔**：與開發者充分討論並確認分流類型後，伴隨建立計畫目錄並產出 `P00_discuss.md` 與 `changelog.md`。
 3. **調研無痛升級**：若需求過於複雜或未知技術過多，主動建議先入調研計畫（產出 `R01` 後可無縫升級）。
 

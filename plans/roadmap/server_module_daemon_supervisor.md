@@ -2,7 +2,7 @@
 
 > 主題：獨立 Server 模組與常駐服務守護架構  
 > 歸檔日期：2026-09-06  
-> 狀態：Proposed  
+> 狀態：Implemented (已於 server 模組與 Master/Worker 雙進程架構全面落地)  
 
 ---
 

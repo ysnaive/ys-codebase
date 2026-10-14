@@ -2,7 +2,7 @@
   "_types": {
     "ArgDef": {
       "description": "str!",
-      "required": "bool? = false",
+      "required": "bool? = true",
       "choice": "list[str]?",
       "choices": "list[str]?"
     },

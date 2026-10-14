@@ -1,3 +1,9 @@
+---
+title: 全專案核心工程規範與邊界架構
+category: standards
+updated_at: 2026-10-14
+---
+
 # 全專案核心工程規範與邊界架構 (Project Standards & Boundary Architecture)
 
 > 本文件為 YS-Codebase 全專案的最高工程規範與架構準則，定義空間協議、組態矩陣與開發防呆邊界。
@@ -6,26 +12,29 @@
 
 ## 1. 語意空間協議清單 (Semantic Space Protocols)
 
-系統嚴格劃分四大核心空間與開發專屬空間，杜絕脆弱的相對路徑與環境漂移：
+系統嚴格劃分核心空間、模組空間與工作流協議，杜絕脆弱的相對路徑與環境漂移（SSOT 唯一真理來源為 `python yscb.py uri list`）：
 
-| 語意 URI 協議 | 實體解析路徑 | 空間定義與職責 | Git 追蹤政策 |
-| :--- | :--- | :--- | :---: |
-| **`project://`** | 由 `config/core/config.project.json` 之 `project_root` 解算 | **宿主專案空間**（如外部被管理的專案根目錄） | 專案自行管理 |
-| **`yscb://`** | 由 `yscb.config.json` 之 `yscb_root` 定位 | **YS-Codebase 工具庫根目錄** | ✅ 受追蹤 |
-| **`module.root://`** | `yscb://.modules/` | **本地模組運行端根目錄** | 🚫 忽略 |
-| **`module://`** | `yscb://.modules/{module}/` | **特定模組之運行端純淨代碼目錄** | 🚫 忽略 |
-| **`config.root://`** | `yscb://config/` | **全域模組設定檔根目錄** | ✅ 受追蹤 |
-| **`config://`** | `yscb://config/{module}/` | **特定模組專屬設定檔目錄** | ✅ 受追蹤 |
-| **`cache.root://`** | `yscb://.cache/` | **全域模組編譯快取與中介產物根目錄** | 🚫 忽略 |
-| **`cache://`** | `yscb://.cache/{module}/` | **特定模組專屬快取目錄** | 🚫 忽略 |
-| **`mirror://`** | `yscb://.mirror/` | **本地端模組鏡像庫（版本化備份）** | 🚫 忽略 |
-| **`temp://`** | `yscb://.temp/` | **系統隔離暫存區（含鎖與測試沙盒）** | 🚫 忽略 |
-| **`snapshot://`** | `yscb://.snapshots/` | **組態快照備份目錄（用於災難恢復）** | 🚫 忽略 |
-| *(開發)* **`module.source.root://`** | `yscb://source/` | **模組原始碼開發空間根目錄** | ✅ 受追蹤 |
-| *(開發)* **`module.source://`** | `yscb://source/{module}/` | **特定模組原始碼開發空間** | ✅ 受追蹤 |
-| *(開發)* **`module.build.root://`** | `yscb://.build/` | **本地開發完整建置產物空間根目錄** | 🚫 忽略 |
-| *(開發)* **`module.build://`** | `yscb://.build/{module}/{version}/` | **特定模組之完整建置產物版本包** | 🚫 忽略 |
-| **`yscb.venv://`** | `yscb://.venv/` | **YSCB 私有微虛擬環境空間根目錄** | 🚫 忽略 |
+| 語意 URI 協議 | 提供者 | 實體解析路徑 | 空間定義與職責 | Git 追蹤政策 |
+| :--- | :---: | :--- | :--- | :---: |
+| **`project://`** | `core` | 由 `config/core/config.project.json` 之 `project_root` 解算 | **宿主專案根目錄**（被管理之專案工作空間） | 專案自行管理 |
+| **`yscb://`** | `core` | 由 `yscb.config.json` 之 `yscb_root` 定位 | **YS-Codebase 核心程式庫目錄** (`ys_codebase/`) | ✅ 受追蹤 |
+| **`yscb.host://`** | `core` | 由 `yscb.config.json` 之 `yscb_host` 定位 | **YS-Codebase 宿主環境根目錄** | ✅ 受追蹤 |
+| **`module://`** | `core` | `yscb://.modules/` | **本機模組運行端目錄** | 🚫 忽略 |
+| **`module.mirror://`** | `core` | `yscb://.mirror/` | **本機端模組鏡像庫（版本化快照備份）** | 🚫 忽略 |
+| **`config://`** | `core` | `yscb://config/` | **全域與模組設定檔根目錄** | ✅ 受追蹤 |
+| **`cache://`** | `core` | `yscb://.cache/` | **全域與模組編譯快取與中介產物根目錄** | 🚫 忽略 |
+| **`storage://`** | `core` | `yscb://storage/` | **跨環境共享持久化資料空間** | ✅ 受追蹤 |
+| **`snapshot://`** | `core` | `yscb://.snapshots/` | **組態快照備份目錄（用於災難恢復與回滾）** | 🚫 忽略 |
+| **`yscb.venv://`** | `core` | `yscb://.venv/` | **YSCB 私有微虛擬環境空間根目錄** | 🚫 忽略 |
+| **`module.source://`** | `dev` | `yscb://source/` | **模組原始碼開發空間（SSOT 源碼）** | ✅ 受追蹤 |
+| **`module.build.root://`** | `dev` | `yscb://.build/` | **本地開發完整建置產物空間根目錄** | 🚫 忽略 |
+| **`module.build://`** | `dev` | `yscb://.build/` | **本地開發完整建置產物空間** | 🚫 忽略 |
+| **`module.release://`** | `dev` | `yscb://release/` | **本機發布產物準備空間** | 🚫 忽略 |
+| **`knowledge.storage://`** | `knowledge-db` | `cache://knowledge-db/` | **知識庫 AST 與向量快取專用空間** | 🚫 忽略 |
+| **`workflow.plans://`** | `agents-workflow` | `project://plans/` | **工作流開發與推進計畫空間** | 專案自行管理 |
+| **`workflow.docs://`** | `agents-workflow` | `project://docs/` | **專案知識庫與架構文檔空間** | 專案自行管理 |
+| **`workflow.roadmap://`** | `agents-workflow` | `project://plans/roadmap/` | **長期演進藍圖與策略主題空間** | 專案自行管理 |
+| **`workflow.archived://`** | `agents-workflow` | `project://plans/archived/` | **歷史歸檔計畫空間** | 專案自行管理 |
 
 ---
 

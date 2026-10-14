@@ -1,6 +1,11 @@
+---
+name: auto
+description: 自動連續推進工作流 (Auto)。支援 Phase 01~05 跳過中間 Checkpoint 連續執行直至 P06 手動驗證。
+---
+
 # 自動連續推進工作流 (Auto)
 
-本工作流用於 Full Track 或 Umbrella 子計畫處於 Phase 01 ~ 05 時，跳過中間 Checkpoint 連續推進至 Phase 6 手動/UX 驗證守門點。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流用於 Full Track 或 Umbrella 子計畫處於 Phase 01 ~ 05 時，跳過中間 Checkpoint 連續推進至 Phase 6 手動/UX 驗證守門點。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
 
 ---
 
@@ -18,7 +23,7 @@
 
 執行連續推進時強制遵守以下熔斷機制，一旦觸發立即暫停：
 1. **零臆測熔斷**：需求語意不明或規格存在歧義時，禁止自行假設，立即暫停釐清。
-2. **偏差熔斷**：產生 Major/Critical 架構或 API 偏差時，立即轉入 [/Discuss](`__#{module://agents-workflow/assets/workflows/Discuss.md}__`)。
+2. **偏差熔斷**：產生 Major/Critical 架構或 API 偏差時，立即轉入 [/discuss](`__#{module://agents-workflow/assets/skills/discuss/SKILL.md}__`)。
 3. **P06 手動/UX 驗證阻斷**：抵達 Phase 6 且自動化測試通過後，嚴禁自行標記 Passed 或進入 Phase 7，強制停步等待開發者驗收。
 4. **文件保真與技能調用**：各 Phase 文件與 `changelog.md` 仍須完整生成；執行具體動作時遵循專案準則調用專屬技能。
 
@@ -41,7 +46,7 @@
 
 ### 步驟 3：Phase 6 自動化測試
 1. 執行專案定義之自動化測試指令。
-2. 測試結果回填至 [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)。若遇連續失敗觸發偏差熔斷轉入 [/Discuss](`__#{module://agents-workflow/assets/workflows/Discuss.md}__`)。
+2. 測試結果回填至 [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)。若遇連續失敗觸發偏差熔斷轉入 [/discuss](`__#{module://agents-workflow/assets/skills/discuss/SKILL.md}__`)。
 
 ### 步驟 4：抵達 P06 手動/UX 驗證 Checkpoint（強制等待）
 1. 自動化測試 100% 通過。
@@ -61,3 +66,4 @@
 ---
 
 `__@{WORKFLOW_AUTO}__`
+

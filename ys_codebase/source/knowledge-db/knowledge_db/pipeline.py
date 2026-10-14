@@ -391,13 +391,15 @@ class IndexingPipeline:
             for doc_id, sym in list(self._unified_index.symbols.items()):
                 sym_path_norm = sym.file_path.replace("\\", "/").lower()
                 sym_fn = Path(sym_path_norm).name
-                if any(
-                    sym_path_norm == p
-                    or p.endswith("/" + sym_path_norm)
-                    or sym_path_norm.endswith("/" + p)
-                    or Path(p).name == sym_fn
-                    for p in dirty_paths_norm
-                ):
+                matched = False
+                for p in dirty_paths_norm:
+                    if sym_path_norm == p or p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p):
+                        matched = True
+                        break
+                    if "/" not in p and sym_fn == p:
+                        matched = True
+                        break
+                if matched:
                     old_doc_ids.add(doc_id)
 
             self._unified_index.patch_incremental(
@@ -620,7 +622,12 @@ class IndexingPipeline:
 
             self._index_cache.pop(sp_name, None)
 
-        for fn in ["unified.index.bin.gz", "unified.graph.bin.gz", "unified.meta.bin"]:
+        for fn in [
+            "unified.index.bin.gz",
+            "unified.graph.bin.gz",
+            "unified.meta.bin",
+            "unified.vectors.bin.gz",
+        ]:
             f_path = self.storage_dir / "indices" / fn
             if f_path.exists():
                 try:
@@ -629,6 +636,8 @@ class IndexingPipeline:
                     pass
         self._unified_index = None
         self._call_graph_index = None
+        self.hybrid_engine.vector_index = VectorIndex()
+        _GLOBAL_INDEX_CACHE.clear()
 
     # ----------------------------------------------------------------------
     # 檢索編排與拓撲分析 (Search & Graph Actions)
@@ -650,34 +659,22 @@ class IndexingPipeline:
             return is_process_alive(pid)
         except Exception:
             return False
-
-    def search(
+    def _ensure_jit_index_ready(
         self,
-        query: str,
-        space: Optional[Union[str, List[str]]] = None,
-        kinds: Optional[List[str]] = None,
-        languages: Optional[List[str]] = None,
-        ftypes: Optional[Union[str, List[str]]] = None,
-        min_score: float = 0.01,
-        limit: int = 10,
-        snippet: bool = False,
-        context_lines: int = 3,
+        require_vectors: bool = False,
         auto_rebuild: bool = True,
-        verbose: bool = True,
-        aggregate: bool = True,
-        lexical_only: bool = False,
-    ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
-        """全域聯集多欄位加權語意檢索 (支援 JIT 變更嗅探、自動背景熱自愈、空間與副檔名篩選)"""
-        if not query or not query.strip():
-            return []
-
+        verbose: bool = False,
+    ) -> InvertedIndex:
+        """
+        確保記憶體倒排索引與調用圖譜處於最新就緒狀態 (支援 JIT 變更感知與自動熱自愈)。
+        若 require_vectors=False，僅載入與修補倒排與圖譜索引，跳過向量推論，極大化查詢速度。
+        """
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
-        graph_file = indices_dir / "unified.graph.bin.gz"
         meta_file = indices_dir / "unified.meta.bin"
         vector_file = indices_dir / "unified.vectors.bin.gz"
 
-        self._ensure_indices_loaded(load_graph=True, load_vectors=True)
+        self._ensure_indices_loaded(load_graph=True, load_vectors=require_vectors)
 
         # 1. JIT 變更感知與自動增量熱自愈 [FR-12]
         if auto_rebuild:
@@ -707,13 +704,11 @@ class IndexingPipeline:
                         )
                     t0 = time.time()
                     patched = False
-                    vector_degraded = False
                     degrade_notice = None
                     if bin_file.exists() and self._unified_index is not None and diff_detail.has_changes:
                         res = self.hot_patch_unified_index(diff_detail, full_files_map)
                         if isinstance(res, tuple):
                             patched = res[0]
-                            vector_degraded = res[1] if len(res) > 1 else False
                             degrade_notice = res[2] if len(res) > 2 else None
                         else:
                             patched = bool(res)
@@ -735,7 +730,7 @@ class IndexingPipeline:
             if bin_file.exists():
                 try:
                     self._unified_index = InvertedIndex.load_binary(bin_file)
-                    if vector_file.exists():
+                    if require_vectors and vector_file.exists():
                         try:
                             self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
                         except Exception as ve:
@@ -746,7 +741,41 @@ class IndexingPipeline:
             else:
                 self.build_unified_index(force=True)
 
-        unified_index = self._unified_index
+        return self._unified_index
+
+    def search(
+        self,
+        query: str,
+        space: Optional[Union[str, List[str]]] = None,
+        kinds: Optional[List[str]] = None,
+        languages: Optional[List[str]] = None,
+        ftypes: Optional[List[str]] = None,
+        min_score: float = 0.0,
+        limit: int = 10,
+        snippet: bool = False,
+        context_lines: int = 3,
+        auto_rebuild: bool = True,
+        verbose: bool = False,
+        aggregate: bool = True,
+        lexical_only: bool = False,
+    ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
+        """全域聯集多欄位加權語意檢索 (支援 JIT 變更嗅探、自動背景熱自愈、空間與副檔名篩選)"""
+        if not query or not query.strip():
+            return []
+
+        enable_vec = getattr(self.config, "enable_vector_search", True)
+        can_use_vector = (
+            enable_vec
+            and not getattr(self, "_vector_degraded", False)
+            and not lexical_only
+            and self.hybrid_engine.is_vector_available
+        )
+
+        unified_index = self._ensure_jit_index_ready(
+            require_vectors=can_use_vector,
+            auto_rebuild=auto_rebuild,
+            verbose=verbose,
+        )
         if not unified_index or unified_index.doc_count == 0:
             return []
 
@@ -778,6 +807,9 @@ class IndexingPipeline:
                     query=query,
                     limit=limit,
                     file_types=target_ftypes,
+                    spaces=target_spaces,
+                    kinds=kinds,
+                    languages=languages,
                     lexical_only=False,
                 )
                 raw_results = []
@@ -837,6 +869,9 @@ class IndexingPipeline:
                 query=query,
                 limit=max(limit * 3, 30),
                 file_types=target_ftypes,
+                spaces=target_spaces,
+                kinds=kinds,
+                languages=languages,
                 lexical_only=False,
             )
             file_items: Dict[str, List[AggregatedItem]] = defaultdict(list)
@@ -975,7 +1010,7 @@ class IndexingPipeline:
         snippet: bool = True,
     ) -> Dict[str, Any]:
         """查詢指定符號之上游調用者清單 (Who calls me?)"""
-        self.search(query=target_query, space=space, limit=1)
+        self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True)
 
         target_sym = self.find_target_symbol(target_query, space=space)
         if not target_sym:
@@ -1027,7 +1062,7 @@ class IndexingPipeline:
         snippet: bool = True,
     ) -> Dict[str, Any]:
         """查詢指定符號內部調用之下游被調用者清單 (Whom do I call?)"""
-        self.search(query=target_query, space=space, limit=1)
+        self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True)
 
         target_sym = self.find_target_symbol(target_query, space=space)
         if not target_sym:
@@ -1079,7 +1114,7 @@ class IndexingPipeline:
         space: Optional[str] = None,
     ) -> Dict[str, Any]:
         """分析目標符號之重構影響面擴散拓撲 (Blast Radius Analysis)"""
-        self.search(query=target_query, space=space, limit=1)
+        self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True)
 
         target_sym = self.find_target_symbol(target_query, space=space)
         if not target_sym:

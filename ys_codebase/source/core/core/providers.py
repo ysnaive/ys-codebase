@@ -57,10 +57,22 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
     if not isinstance(all_commands, dict) or not all_commands:
         return "| 權限分級 | 指令名稱 | 推薦/適用情境 (Pros) | 限制與守門條件 (Cons) |\n| :---: | :--- | :--- | :--- |\n| - | *(目前無已註冊之 CLI 防呆指令)* | - | - |"
 
-    # 2. 依 __provider__ 分組搜集
+    # 2. 依 __provider__ 分組搜集 (優先遍歷 __modules__ 分桶以杜絕同名指令覆蓋)
     grouped_commands: Dict[str, List[Tuple[str, str, str, List[str], List[str]]]] = {}
 
-    for cmd_name, cmd_body in sorted(_extract_command_items(all_commands), key=lambda x: x[0]):
+    modules_bucket = all_commands.get("__modules__")
+    if isinstance(modules_bucket, dict) and modules_bucket:
+        raw_items: List[Tuple[str, Dict[str, Any]]] = []
+        for donor_name, donor_cmds in modules_bucket.items():
+            if isinstance(donor_cmds, dict):
+                for c_name, c_spec in _extract_command_items(donor_cmds):
+                    c_body = dict(c_spec)
+                    c_body.setdefault("__provider__", donor_name)
+                    raw_items.append((c_name, c_body))
+    else:
+        raw_items = _extract_command_items(all_commands)
+
+    for cmd_name, cmd_body in sorted(raw_items, key=lambda x: (x[1].get("__provider__", ""), x[0])):
         if not isinstance(cmd_body, dict):
             continue
 

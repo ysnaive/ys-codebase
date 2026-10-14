@@ -97,6 +97,11 @@ class TestContributesCmdAndSDK(YSCBTestCase):
         self.assertIn("Unknown subcommand 'get'", err_msg)
         self.assertIn("Available: list, check", err_msg)
 
+        # 5. list 帶 --module 選項參數 (FR-02)
+        from core.commands.bags import CmdOption
+        ret = cli_contributes(CmdBags(args=["list"], options={"module": CmdOption(name="module", params="core")}))
+        self.assertEqual(ret, 0)
+
         self.mark_passed()
 
 

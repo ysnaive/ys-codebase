@@ -1,6 +1,11 @@
+---
+name: context-init
+description: 上下文熱啟動流程。當全新對話 Session 開始、需要重新加載專案規範與環境上下文時觸發。
+---
+
 # 專案上下文初始化流程 (ContextInit)
 
-本 Workflow 用於在全新對話 (Session / Chat) 開始時，快速加載專案的核心架構、歷史變更、程式碼規範與 Agent 紀律。確保 Agent 即使在大語言模型上下文重置後，也能 100% 掌握專案默契與工程標準。
+本 Skill 用於在全新對話 (Session / Chat) 開始時，快速加載專案的核心架構、歷史變更、程式碼規範與 Agent 紀律。確保 Agent 即使在大語言模型上下文重置後，也能 100% 掌握專案默契與工程標準。
 
 ---
 
@@ -26,8 +31,8 @@
     - 「問答 $\neq$ 推進」防呆條款、嚴禁空降實作。
     - 除錯排查由近及遠與範疇保護鐵律。
   - **[GUARD] CLI 指令 Default-Deny 守門鐵律**：嚴格查表比對，未列指令絕對禁止擅自調用。
-  - ** 模組擴充紀律 (Contributed Standards)**：嚴格遵循各模組於 `AGENTS.md` 注入之特化執行鐵律（如日常檢索工具替代、註解結構防護等）。
-  - [*] **提示**：SOP 0~7 完整生命週期與模板規範已完整收錄於 [`development-sop`](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)，於開立或推進計畫時（如 [/NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)、[/Continue](`__#{module://agents-workflow/assets/workflows/Continue.md}__`)）按需精讀。
+  - **模組擴充紀律 (Contributed Standards)**：嚴格遵循各模組於 `AGENTS.md` 注入之特化執行鐵律（如日常檢索工具替代、註解結構防護等）。
+  - [*] **提示**：SOP 0~7 完整生命週期與模板規範已完整收錄於 [`development-sop`](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)，於開立或推進計畫時（如 [/NewPlan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)、[/Continue](`__#{module://agents-workflow/assets/skills/continue/SKILL.md}__`)）按需精讀。
 
 ### 步驟 2：加載 CLI 指令手冊與專案演進脈絡
 - **讀取檔案**：
@@ -42,7 +47,7 @@
 - **調取狀態指令**：`python __${yscb.host://yscb.py}__ agents-workflow plan status`
 - **輕量載入與防呆鐵律**：
   - [!] **嚴禁批次深入閱讀**：在 ContextInit 階段**絕對禁止批次或深入讀取 `workflow.plans://` 各計畫內的詳細文件**（如 P00~P07），僅需調取 `plan status` 大綱掌握全貌即可，避免浪費 Prompt Token 與上下文污染。
-  - **按需接手原則**：只有在後續收到開發者明確指示「接續/接手特定計畫開發」時，方可在 [/Continue](`__#{module://agents-workflow/assets/workflows/Continue.md}__`) 流程中深入讀取該 Plan 目錄與 `handoff.md`。
+  - **按需接手原則**：只有在後續收到開發者明確指示「接續/接手特定計畫開發」時，方可在 [/Continue](`__#{module://agents-workflow/assets/skills/continue/SKILL.md}__`) 流程中深入讀取該 Plan 目錄與 `handoff.md`。
 - **提取要點**：
   - 快速掌握當前是否有進行中計畫及其所處 Phase。
 
@@ -63,3 +68,4 @@
 ---
 
 `__@{WORKFLOW_CONTEXTINIT}__`
+

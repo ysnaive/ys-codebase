@@ -189,21 +189,27 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
         return
 
     auto_spawn = True
-    cfg_file = os.path.join(yscb_abs, "config", "server", "config.project.json")
-    if os.path.isfile(cfg_file):
-        try:
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                cfg_data = json.load(f)
-                if cfg_data.get("enable") is False:
-                    return
-                if cfg_data.get("auto_spawn") is False:
-                    return
-                if "auto_spawn" in cfg_data:
-                    auto_spawn = bool(cfg_data.get("auto_spawn"))
-        except Exception:
-            pass
+    enabled = True
 
-    if not auto_spawn:
+    # 依序讀取 project 與 local 雙層組態 (P00:DR-02)
+    proj_cfg_file = os.path.join(yscb_abs, "config", "server", "config.project.json")
+    local_cfg_file = os.path.join(yscb_abs, "config", "server", "config.local.json")
+
+    for cfg_file in (proj_cfg_file, local_cfg_file):
+        if os.path.isfile(cfg_file):
+            try:
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                    if not isinstance(cfg_data, dict):
+                        continue
+                    if "enable" in cfg_data:
+                        enabled = bool(cfg_data["enable"])
+                    if "auto_spawn" in cfg_data:
+                        auto_spawn = bool(cfg_data["auto_spawn"])
+            except Exception:
+                pass
+
+    if not enabled or not auto_spawn:
         return
 
     # 自適應環境權限探針檢測

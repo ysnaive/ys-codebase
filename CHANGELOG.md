@@ -1,5 +1,40 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_14_1224_deep_audit_and_ecosystem_refinement (Completed)
+
+### sub_01_host_and_core_foundation_remediation (Verified)
+- **Host 與 Core 基礎設施修復、雙層分桶指令隔離與語意 URI 高頻快取**：
+  - **Contributes 雙層分桶隔離 (`__modules__`)**：於 `ContributesAggregator` 保留頂層平鋪向後相容的同時，引入 `__modules__` 依模組分桶儲存 `commands`，並讓 `get_agents_cli_guild` 優先遍歷 `__modules__`，徹底根除跨模組同名頂層指令（如 `status`、`clean`、`list`、`release`）互相覆蓋污染之缺陷；同步補齊 `contributes list --module` 與 `restore --provider` 契約宣告並對齊 `ArgDef.required` 預設值。
+  - **語意 URI 記憶體快取與目錄穿越防禦**：於 `core.uri` 引入 `(yscb_dir, mtime)` 記憶體快取 `_SCHEMES_CACHE`（命中延遲 $<0.1\text{ms}$），支援 `config://` 反向 `to_uri()` 推導，並以 `target_base + os.sep` 精準阻斷同前綴兄弟目錄穿越漏洞 (`EC-05`)。
+  - **微內核基礎服務清理與宿主參數增強**：清理 `AtomicEngine` 108 行重複定義死代碼並支援 `module.mirror://` 解析；統一委派 `PipManager` 與 `IdeProjector` 至標準根目錄與 `.gitignore` 管理；`_maybe_auto_spawn_server` 支援雙層組態路徑讀取；修復 `semver` 含預發布標籤時保留非零 revision；強化 `yscb.py` 對空格與等號傳參之雙語法解析；登錄 `[DN-26]`。
+
+### sub_02_dev_and_server_reliability_remediation (Verified)
+- **Dev 工具鏈契約修復、Server 控制/資料平面解耦與 IPC 並發安全加固**：
+  - **Dev CLI 選項提取與靜態檢查強化**：全面將 `dev/scripts/cli.py` 中誤用 `get_option()` 修正為 `get_option_value()`，修復 `dev create` 寫入物件表達式與模板鍵名不匹配之缺陷；將 `-k`、`--target`、`-j` 正確串接至 `ModuleTester`；為 `release-check` 擴充 `--all` 全模組批次檢查；強化 `ModuleChecker` 具名指令校驗並正式接線 `manifest.json` 之 `custom_checks`；登錄 `[DN-DEV-03]`。
+  - **Server Master/WarmWorker 職責純化與 IPC 互斥鎖定**：將 `ServiceManager` 背景服務託管由 `MasterSupervisor` 遷移至 `WarmWorker` 子進程並經 `worker_ready` 封包回報狀態，嚴守 Master 純控制平面架構；於 Master 引入 `_dispatch_lock` 序列化 Stdio IPC 讀寫，拉起專屬執行緒持續排空 `proc.stderr` 根除 64KB Pipe 滿溢死鎖，並在終止時完整關閉 stdio 管道防止 FD 洩漏；擴充 `ServerLogger` 歷史清理正則支援 `_01` 序號後綴；登錄 `[DN-11]`。
+
+### sub_03_knowledge_db_and_workflow_engine_remediation (Verified)
+- **Knowledge-DB 增量修補精準化、前置檢索過濾與 Agents-Workflow 目錄雜湊修復**：
+  - **增量修補路徑正規化與前置空間過濾**：於 `InvertedIndex.patch_incremental` 引入 `_canonical_path()` 正規化比對，根除 `Path(p).name` 連坐誤刪跨目錄同名檔案符號之缺陷；於 `HybridSearchEngine` 實作前置 `spaces`、`kinds`、`languages` 過濾，解決後置過濾導致之 Top-K 截斷空集合問題。
+  - **向量推論純淨化與圖譜查詢解耦**：非 Mock 模式下推論失敗回傳 `[]` 杜絕偽雜湊向量污染；`pipeline.clean()` 完整清除 `unified.vectors.bin.gz`；抽取 `_ensure_jit_index_ready()` 使 `act_callers` / `callees` / `impact` 免除無謂向量模型載入；修正 `callees -d` 切片重複輸出；登錄 `[DN-26]`。
+  - **Agents-Workflow 目錄級 SHA-1 與驗證器增強**：`ReleasePublisher._get_source_file_sha1` 支援目錄遞迴遍歷 SHA-1 聚合，修復 Skill 目錄 Stage 0 快取盲區；`ArtifactCompiler` 修復 Stage 2 連結反引號剝除、保留路徑尾斜線與沙盒降級；`PlanVerifier` 擴充合法狀態集合並支援動態章節標題對齊；登錄 `[DN-AW-13]`。
+
+### sub_04_docs_standards_and_docstring_alignment (Verified)
+- **全專案知識庫 (`docs/`)、5 大模組 README、設計決策與長期路線圖 100% 對齊**：
+  - **全域規範與模組手冊同步**：校準 `docs/_project/STANDARDS.md` 與實機 15 項語意 URI 協議 1:1 吻合，清除已淘汰之 `*.root://`、`module.mirror://`、`temp://` 描述；建立 `ys_codebase/source/server/README.md`；全面清除 `docs/knowledge-db/` 中已除役之 `scan` 與 `bundle` CLI 教學；修正 `docs/core/` 與 `docs/dev/` 設計筆記與 Skill 範例；更新 `plans/roadmap/` 已實作項目狀態為 `Implemented` 並支援 `--status` 篩選。
+
+### sub_05_agents_workflow_skill_unification (Verified)
+- **[延伸 2.a] `agents-workflow` 資產分類純化（除役 `workflow` 全面統一為 `skill`）**：
+  - **Schema 與編譯器純化**：`_format.json` 之 `ExportAssetDef.type` 純化為 `enum(standard, template, skill)!`；`ArtifactCompiler` 內建向後相容轉譯將外部 `type: "workflow"` 無損轉為 `"skill"`。
+  - **內建與專案資產全面升級**：將 `assets/workflows/` 下 8 大流程（`auto`, `context-init`, `continue`, `discuss`, `new-plan`, `pause`, `research`, `roadmap`）與專案級 `bump-revision` 全面遷移至標準 `skills/<name>/SKILL.md` 架構並移除舊目錄。
+  - **Target 投影收斂與自動清理**：`antigravity`、`claude`、`codex` 全面移除 `projections.workflow`；`ReleasePublisher` 在發布交易時自動偵測並物理清理歷史遺留之 `.agents/workflows/` 與 `.claude/commands/` 目錄；登錄 `[DN-AW-14]`。
+
+### sub_06_downstream_cli_ux_and_server_feedback (Verified)
+- **[延伸 2.b] 下游 UX/DX 優化與 Server 全週期可觀測性反饋強化**：
+  - **Server 啟動參數橫幅 (`format_startup_banner`)**：於 `server start`（含背景脫鉤與 `--console` 前台模式）輸出結構化 ASCII 橫幅，即時呈現運行模式、Master/Worker PID、Port、Idle TTL、Modules Watcher 狀態、託管背景服務清冊與即時日誌路徑。
+  - **Console 實時日誌回顯與停機總結報告 (`format_shutdown_summary`)**：`ServerLogger` 支援 `echo_console=True` 於 `--console` 模式同步回顯日誌至 `stdout`；`MasterSupervisor` 追蹤 `uptime_seconds` 與 `tasks_executed`，於 `server stop` 輸出完整運行總結報告（運行時長、累計處理任務數、停止服務數與歸檔日誌路徑）；登錄 `[DN-12]`。
+  - **全生態系單元測試與靜態檢查 100% 通過**：5 大模組共 **552 項單元測試 100% 通過**（`Pass: 552, Fail: 0`），`dev check --all` 5/5 通過（0 Warnings, 0 Errors），`plan verify` 100% 通過。
+
 ## 2026_09_19_1433_server_daemon_agent_directive_refinement (Completed)
 
 - **Server 背景自動喚醒 Agent 前置阻斷引導重構與 Agents Standards 核心原則擴充**：

@@ -292,7 +292,22 @@ class Installer:
                 found_versions: List[str] = []
                 for c_dir in candidate_dirs:
                     if os.path.isdir(c_dir):
-                        found_versions.extend([v for v in os.listdir(c_dir) if os.path.isdir(os.path.join(c_dir, v))])
+                        for entry in os.listdir(c_dir):
+                            full_p = os.path.join(c_dir, entry)
+                            if os.path.isdir(full_p):
+                                found_versions.append(entry)
+                            elif entry.endswith(".zip") and not entry.endswith(".build.zip"):
+                                found_versions.append(entry[:-4])
+                        # Also check index.json in candidate directory
+                        idx_file = os.path.join(c_dir, "index.json")
+                        if os.path.isfile(idx_file):
+                            try:
+                                with open(idx_file, "r", encoding="utf-8") as f:
+                                    idx_data = json.load(f)
+                                    if isinstance(idx_data, dict) and "versions" in idx_data:
+                                        found_versions.extend(idx_data["versions"])
+                            except Exception:
+                                pass
                 
                 if not found_versions:
                     # Remote lookup
@@ -492,7 +507,7 @@ class Installer:
             print("[core:restore] No installed_modules declared in configuration. Nothing to restore.")
             return 0
 
-        default_provider = cfg.get("default_provider", "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release")
+        default_provider = cfg.get("default_provider", "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release")
         modules_dir = os.path.join(yscb_abs, ".modules")
         os.makedirs(modules_dir, exist_ok=True)
 

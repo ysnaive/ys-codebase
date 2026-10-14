@@ -1,6 +1,11 @@
+---
+name: continue
+description: 接續中斷或已存在的開發計畫工作流 (Continue)。支援 handoff.md 現場交接與狀態自動恢復。
+---
+
 # 接續開發計畫工作流 (Continue)
 
-本工作流用於從已存在但尚未完成的開發計畫接續工作，支援 `handoff.md` 現場快照與狀態自動恢復。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流用於從已存在但尚未完成的開發計畫接續工作，支援 `handoff.md` 現場快照與狀態自動恢復。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
 
 ---
 
@@ -62,48 +67,40 @@
 | [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) | — | [PASS] | Phase 2 進行中，應接續 Phase 2 |
 | [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | [PASS] | — | Phase 3 已完成，應從 Phase 4 開始 |
 | [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | — | [PASS] | Phase 3 進行中，應接續 Phase 3 |
-| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | [PASS] | — | Phase 4 已定稿，應進入 Phase 5 開始實作 |
-| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | — | [PASS] | Phase 4 審查進行中 |
-| [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) | — | — | Phase 5 實作中（讀取清單標記定位中斷點） |
-| [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) | — | — | Phase 6 測試驗證中（檢查實測狀態與 UX 驗收關卡） |
-| [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) | — | — | Phase 7 審查中（若已完成應已歸檔） |
+| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | [PASS] | — | Phase 4 已完成，應進入 Phase 5 編碼實作 |
+| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | — | [PASS] | Phase 4 進行中，應接續 Phase 4 |
+| [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) | [PASS] | — | Phase 5 實作已完成，應進入 Phase 6 測試 |
+| [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) | — | [PASS] | Phase 5 實作進行中，應接續 Phase 5 任務 |
+| [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) | [PASS] | — | Phase 6 測試已全部通過，應進入 Phase 7 結案 |
+| [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) | — | [PASS] | Phase 6 測試進行中，應接續執行未通過測試 |
 
 ---
 
 #### 步驟 3-F：Fast Track 進度判定
 
-根據 [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`) 的狀態欄位判定：
-
-| 狀態 | 判定結果 |
-| :--- | :--- |
-| `Planning` | FT-1 變更規劃進行中 |
-| `Implementing` | FT-2 程式碼實作進行中（檢查清單標記定位具體進度） |
-| `Reviewing` | FT-3 品質審查與驗證進行中 |
-| `Completed` | 已完成（待歸檔） |
+若存在 [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`)：
+1. 讀取 `fast_track_plan.md`。
+2. 檢查「實作任務清單」與「測試驗證清單」的 Checkbox 完成度：
+   - 尚有未勾選的任務 -> 接續該任務實作。
+   - 任務全數勾選但測試未勾選 -> 執行測試驗證。
+   - 測試全數通過 -> 推進至結案發布。
 
 ---
 
-### 步驟 4：載入計畫上下文與決策脈絡
+### 步驟 4：呈遞接續狀態卡並確認下一步
 
-1. 優先讀取工作目錄中的 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)（若為子計畫亦需讀取主目錄之 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`)），掌握關鍵決策 (`[{Phase}:DR-XX]`) 與演進歷程。
-2. 讀取當前 Phase 對應之文件內容，明確當前核心任務。
-
----
-
-### 步驟 5：呈遞接續進度卡並確認
-
-對話 Session **嚴禁代碼傾倒、全文重複或無關轉述**，強制僅呈遞以下極簡接續卡，並**立即 End Turn 等待確認**：
+對話 Session **嚴禁代碼傾倒、全文重複或無關推論**，強制僅向開發者呈遞以下極簡接續狀態卡，並等待確認或直接進入下一個動作：
 
 ```markdown
-### /Continue 計畫接續卡
-- **計畫名稱**：[{plan_name}](__${project://plans/}__/{plan_name}/)
-- **模式與斷點**：[Full Track / Fast Track / Umbrella] -> [當前 Phase 或 FT-X]
-- **交接現場**：[已載入 handoff.md 現場快照 / 依產物狀態完成定位]
-- **關鍵摘要**：[1 行進度與踩坑/注意事項摘要]
-- **下一步動作**：[重啟執行之具體動作]
-- **待確認事項**：請確認是否立即從上述動作恢復執行？
+### [CONTINUE] /Continue 計畫狀態已恢復
+- **目標計畫**：[{plan_name}](__${project://plans/}__/{plan_name}/)
+- **計畫模式**：[Full Track / Fast Track / Umbrella 子計畫]
+- **當前斷點**：[Phase X: 檔案名稱 (狀態: Confirmed / In Progress)]
+- **恢復依據**：[已成功載入 handoff.md 現場快照 / 依產出物檔案結構判定]
+- **下一步動作**：[極精簡說明接下來立即執行的 1 項具體動作]
 ```
 
 ---
 
 `__@{WORKFLOW_CONTINUE}__`
+

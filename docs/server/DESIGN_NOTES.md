@@ -1,3 +1,10 @@
+---
+title: Server 模組設計決策與工程註記
+category: design_notes
+module: server
+updated_at: 2026-10-14
+---
+
 # Server 模組設計決策與工程註記 (DESIGN_NOTES.md)
 
 | 決策編號 | 標題 / 主題 | 影響檔案 | 風險等級 |
@@ -12,6 +19,8 @@
 | **[DN-08]** | 雙軌模組熱重載 (Worker 重啟 vs Master 自重啟) 與路徑感知規範 | `server/watcher.py`, `server/master.py` | Low |
 | **[DN-09]** | 即時 Flush 日誌架構、異常中斷自癒與歷史滾動清理機制 | `server/logger.py`, `server/master.py`, `server/worker.py` | Low |
 | **[DN-10]** | 環境權限自適應探針、auto_spawn 組態與 IDE Agent 常駐導引 | `core/platform/process.py`, `core/commands/dispatcher.py`, `server/config.py` | Low |
+| **[DN-11]** | Master 純控制平面解耦、Worker 服務託管與 IPC 互斥鎖定 | `server/master.py`, `server/worker.py`, `server/logger.py` | Low |
+| **[DN-12]** | 啟動參數橫幅、Console 日誌實時回顯與停機總結報告可觀測性架構 | `server/master.py`, `server/logger.py`, `scripts/cli.py` | Low |
 
 ---
 
@@ -73,4 +82,27 @@
   1. 於 `core.platform.process` 實作 `can_spawn_background_daemon()` 探針與進程級記憶體快取，在 Windows 下透過 `IsProcessInJob` 與 1 次輕量探針偵測 Job Object Breakaway 權限。
   2. 於 `ServerConfig` 與 `config/server/config.project.json` 支援 `auto_spawn: bool = True` 配置（預設為 `true`）。
   3. 當 `auto_spawn` 為 true 但探針檢測無背景權限時，自動降級至本地極速冷派發（~86ms），並透過 `sys.stderr` 輸出具備防洗頻抑制的環境診斷提示與 IDE Agents 常駐指引（建議透過 `IsDaemon: true` / Background Task 啟動 `python yscb.py server start --console`）。
+
+---
+
+### [DN-11] Master 純控制平面解耦、Worker 服務託管與 IPC 互斥鎖定
+- **背景**：原設計中 `MasterSupervisor` 混雜了領域背景服務（如 KnowledgeDBServiceWorker）之生命週期調度，違反微內核「Master 為純控制平面」架構界限；同時多個 HTTP 請求並發時，Worker Stdio IPC 缺乏序列化保護易發生交錯，且 Worker 大量 Stderr 輸出容易填滿作業系統 64KB Pipe Buffer 造成死鎖。
+- **決策**：
+  1. **職責純化與服務託管**：Master 剝離領域 Worker 初始化，僅保留通用程序調度；背景領域服務（`ServiceManager`）改由 `WarmWorker` 獨立託管與啟動，並在 `worker_ready` 封包中將服務狀態回傳 Master，供 `/api/status` 查詢。
+  2. **IPC 原子鎖定與 Stderr 持續排空**：Master 引入 `_dispatch_lock` 序列化所有對 Worker stdin/stdout 的操作；啟動 Worker 時拉起專屬 Daemon 執行緒排空 `proc.stderr`，終結 Pipe 阻塞；在終止 Worker 時安全關閉所有 stdio 管道。
+  3. **滾動日誌檔案後綴防呆**：`ServerLogger` 擴充 `HIST_REGEX` 支援 `_01` 等序號後綴，確保異常重啟產生的歷史檔案能正確納入滾動清理。
+
+---
+
+### [DN-12] 啟動參數橫幅、Console 日誌實時回顯與停機總結報告可觀測性架構
+- **背景**：原 `server start` 於背景脫鉤啟動後終端僅有一行冷淡文字，缺乏啟動參數（PID、Port、TTL、監聽目錄、背景服務清冊、即時日誌路徑）之全局可觀測性；`--console` 前台模式缺乏實時日誌終端回顯；`server stop` 關閉時缺乏本次運行的統計總結（Uptime、累計處理任務數、服務終止數與歸檔日誌路徑）。
+- **決策**：
+  1. **結構化 ASCII 啟動橫幅**：實作 `format_startup_banner()`，於背景啟動脫鉤前及前台模式統一打印對齊的 ASCII 橫幅（嚴格包含 `[Server] Daemon successfully started!` 保持測試相容）；當已在運行中再次呼叫 `server start` 時，輸出提示並附帶運行現況橫幅。
+  2. **Console 實時日誌回顯**：`ServerLogger` 支援 `echo_console: bool = False` 參數；當以 `--console` 前台啟動時，日誌除強制寫入 `.cache/server/log` 外，同步 Tee 輸出至 `sys.stdout`，實現即時串流觀測。
+  3. **停機總結報告**：`MasterSupervisor` 於啟動時記錄 `self._start_time`，並於 `/api/status` 與 `/api/shutdown` API Payload 注入 `uptime_seconds` 與 `tasks_executed` 統計；`format_shutdown_summary()` 格式化停機報告（嚴格包含 `[Server] Daemon stopped gracefully.` 保持測試相容），清晰回饋運行時長、任務數與日誌歸檔實體路徑。
+
+> [!CAUTION]
+> `format_startup_banner()` 輸出字串必須保留 `[Server] Daemon successfully started!`，且 `format_shutdown_summary()` 必須保留 `[Server] Daemon stopped gracefully.` 子字串，否則將破壞既有 CLI 契約測試與自動化腳本的啟動/停機狀態判讀。
+
+
 

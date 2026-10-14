@@ -74,6 +74,46 @@ class ServiceManager:
                 "description": description,
             }
 
+    def load_from_contributes(self, yscb_root: str) -> None:
+        """
+        Dynamically loads and registers services declared in contributes/server.json across modules.
+        """
+        try:
+            import json
+            modules_dir = os.path.join(yscb_root, ".modules")
+            if os.path.isdir(modules_dir):
+                for mod_name in sorted(os.listdir(modules_dir)):
+                    srv_json = os.path.join(modules_dir, mod_name, "contributes", "server.json")
+                    if os.path.isfile(srv_json):
+                        try:
+                            with open(srv_json, "r", encoding="utf-8") as f:
+                                sdata = json.load(f)
+                                for item in sdata.get("services", []):
+                                    self._load_service_item(item, provider=mod_name)
+                        except Exception as ex:
+                            logging.warning(f"[Server Service] Error reading {srv_json}: {ex}")
+        except Exception as e:
+            logging.warning(f"[Server Service] Failed to load contributes services: {e}")
+
+    def _load_service_item(self, item: Dict[str, Any], provider: str = "unknown") -> None:
+        worker_cls_str = item.get("worker_class")
+        if not worker_cls_str or not isinstance(worker_cls_str, str):
+            return
+        try:
+            import importlib
+            if ":" in worker_cls_str:
+                mod_path, cls_name = worker_cls_str.split(":", 1)
+            elif "." in worker_cls_str:
+                mod_path, cls_name = worker_cls_str.rsplit(".", 1)
+            else:
+                return
+            mod = importlib.import_module(mod_path)
+            cls_obj = getattr(mod, cls_name)
+            instance = cls_obj()
+            self.register(instance, provider=provider, description=item.get("description", ""))
+        except Exception as e:
+            logging.error(f"[Server Service] Failed to instantiate service '{item.get('name')}': {e}")
+
     def start_all(self, context: Dict[str, Any]) -> None:
         with self._lock:
             for name, worker in self._services.items():

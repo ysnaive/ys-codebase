@@ -162,4 +162,9 @@ class TestRemoteZipBootstrap(YSCBTestCase):
             yscb_mod._fetch_and_extract_zip(zip_path, target_dir)
             
         self.assertIn("Zip Slip vulnerability detected", str(ctx.exception))
+
+        # Test invalid source raises FileNotFoundError (FR-07)
+        with self.assertRaises(FileNotFoundError):
+            yscb_mod._fetch_and_extract_zip("non_existent_source_12345.xyz", target_dir)
+
         self.mark_passed()

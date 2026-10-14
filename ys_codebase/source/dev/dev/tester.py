@@ -162,7 +162,7 @@ class Tester:
                 if idx + 1 < len(argv):
                     pattern = argv[idx + 1]
                     idx += 1
-            elif a.startswith("-k="):
+            elif a.startswith(("-k=", "--k=", "--pattern=")):
                 pattern = a.split("=", 1)[1]
             elif not a.startswith("-"):
                 target_mod = a
@@ -174,9 +174,10 @@ class Tester:
             return 1
 
         if target:
-            target_mod_match = target.split(":", 1)[0]
-            if target_mod_match:
-                target_mod = target_mod_match
+            if ":" in target:
+                target_mod_match = target.split(":", 1)[0]
+                if target_mod_match:
+                    target_mod = target_mod_match
 
         if not target_mod and not run_all:
             target_mod = "core"
@@ -421,8 +422,12 @@ class Tester:
             idx += 1
 
         target_mod = next((a for a in clean_argv if not a.startswith("-") and a != "test"), None)
-        is_all = "--all" in clean_argv or target_mod == "--all"
         target_param = next((a for a in clean_argv if a.startswith("--target=")), None)
+        if not target_mod and target_param:
+            target_val = target_param.split("=", 1)[1]
+            if ":" in target_val:
+                target_mod = target_val.split(":", 1)[0]
+        is_all = "--all" in clean_argv or target_mod == "--all"
 
         # Multi-module parallel dispatch if --all (or multiple modules) and not sequential and no single target
         if is_all and not is_sequential and not target_param:

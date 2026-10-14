@@ -39,15 +39,13 @@ Core 提供語意 URI 協定，程式碼與 CLI 統一透過協定存取實體�
 | 語意 URI 協議 | 預設解析目標 | 職責與說明 |
 | :--- | :--- | :--- |
 | **`project://`** | 由 `config.project.json` 之 `project_root` 定位 | **宿主專案空間根目錄**（受管理的專案本體） |
-| **`yscb://`** | 由 `yscb.config.json` 之 `yscb_root` 定位 | **YS-Codebase 運行端工具庫根目錄** |
-| **`module.root://`** | `yscb://.modules/` | **所有已安裝模組的本機根目錄** |
+| **`yscb://`** | 由 `yscb.config.json` 之 `yscb_root` 定位 | **YS-Codebase 核心程式庫目錄** (`ys_codebase/`) |
+| **`yscb.host://`** | 由 `yscb.config.json` 之 `yscb_host` 定位 | **YS-Codebase 宿主環境根目錄** |
 | **`module://`** | `yscb://.modules/{module}/` | **當前作用中模組的運行目錄** |
-| **`config.root://`** | `yscb://config/` | **全域模組設定檔根目錄** |
+| **`module.mirror://`** | `yscb://.mirror/` | **本地端模組鏡像快照備份** |
 | **`config://`** | `yscb://config/{module}/` | **當前模組專屬設定檔目錄** |
-| **`cache.root://`** | `yscb://.cache/` | **全域模組編譯快取與中介產物目錄** |
 | **`cache://`** | `yscb://.cache/{module}/` | **當前模組專屬快取目錄** |
-| **`temp://`** | `yscb://.temp/` | **系統暫存與測試隔離空間** |
-| **`mirror://`** | `yscb://.mirror/` | **本地端模組封裝鏡像備份** |
+| **`storage://`** | `yscb://storage/` | **跨環境共享持久化資料空間** |
 | **`snapshot://`** | `yscb://.snapshots/` | **系統組態快照備份（用於災難恢復）** |
 
 ### 2.2 2x2 組態矩陣邊界 (Configuration Matrix)

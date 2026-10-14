@@ -462,6 +462,17 @@
               "description": "Force restore/reinstall modules",
               "alias": ["f"]
             }
+          },
+          "source": {
+            "provider": {
+              "description": "Custom provider source URL",
+              "alias": ["p"],
+              "args": {
+                "url": {
+                  "description": "Provider URL"
+                }
+              }
+            }
           }
         },
         "usage": {
@@ -509,7 +520,12 @@
               "filter": {
                 "module": {
                   "description": "Filter by target module name",
-                  "alias": ["m"]
+                  "alias": ["m"],
+                  "args": {
+                    "mod": {
+                      "description": "Target module name"
+                    }
+                  }
                 }
               }
             },

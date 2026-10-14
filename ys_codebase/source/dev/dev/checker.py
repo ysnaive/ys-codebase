@@ -126,6 +126,9 @@ class Checker:
         # 7. Check Documentation Path Pollution
         self._check_docs_pollution(name, real_dir, report)
 
+        # 8. Check Custom Contributed Rules
+        self._check_custom_rules(name, real_dir, report)
+
         return report
 
     def _check_manifest(self, name: str, real_dir: str, report: CheckReport) -> None:
@@ -568,8 +571,9 @@ class Checker:
                 stmt_type = type(node).__name__
                 invalid_top_level_nodes.append((getattr(node, "lineno", 0), f"top-level statement '{stmt_type}'"))
 
-        # 檢測規則 1: 必須宣告 process，或宣告新版 commands.cmd 定義之精確命令函式
-        is_new_contract = False
+        # 檢測規則 1: 具名命令函式或相容 process(args)
+        has_cmd_contract = False
+        missing_cmd_funcs = []
         module_dir = os.path.dirname(os.path.dirname(os.path.abspath(cli_path)))
         contrib_file = os.path.join(module_dir, "contributes", "core.json")
         if os.path.isfile(contrib_file):
@@ -579,20 +583,47 @@ class Checker:
                     cdata = json.load(f)
                     cmd_map = cdata.get("commands", {}).get("cmd", {})
                     if isinstance(cmd_map, dict) and cmd_map:
-                        if any(cmd_name in declared_funcs or f"cmd_{cmd_name}" in declared_funcs for cmd_name in cmd_map):
-                            is_new_contract = True
+                        has_cmd_contract = True
+
+                        def _collect_leaves(d: dict, pfx: str = "") -> list:
+                            leaves = []
+                            for k, v in d.items():
+                                if isinstance(v, dict) and isinstance(v.get("cmd"), dict) and v["cmd"]:
+                                    leaves.extend(_collect_leaves(v["cmd"], pfx=f"{pfx}{k}_"))
+                                else:
+                                    leaves.append((f"{pfx}{k}", k))
+                            return leaves
+
+                        all_leaves = _collect_leaves(cmd_map)
+                        for full_cmd, leaf_k in all_leaves:
+                            full_fn = full_cmd.replace("-", "_")
+                            leaf_fn = leaf_k.replace("-", "_")
+                            candidates = {full_fn, f"cmd_{full_fn}", leaf_fn, f"cmd_{leaf_fn}"}
+                            if not any(c in declared_funcs for c in candidates):
+                                missing_cmd_funcs.append(full_cmd)
             except Exception:
                 pass
 
-        if not has_process_func and not is_new_contract:
-            report.issues.append(
-                CheckIssue(
-                    severity=CheckSeverity.FAIL,
-                    category="STRUCTURE",
-                    message="Missing required entry function 'def process(args)' in 'scripts/cli.py'.",
-                    file_path="scripts/cli.py",
+        if has_cmd_contract:
+            if missing_cmd_funcs:
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="STRUCTURE",
+                        message=f"Missing required command handler functions in 'scripts/cli.py': {', '.join(missing_cmd_funcs)}.",
+                        file_path="scripts/cli.py",
+                    )
                 )
-            )
+        else:
+            if not has_process_func:
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="STRUCTURE",
+                        message="Missing required entry function 'def process(args)' in 'scripts/cli.py'.",
+                        file_path="scripts/cli.py",
+                    )
+                )
 
         # 檢測規則 2: 禁絕 main
         if has_main_func:
@@ -666,8 +697,18 @@ class Checker:
                     )
                     continue
 
-                # AST string literal inspections
+                # AST string literal inspections (excluding module/function/class docstrings)
+                doc_nodes = set()
+                if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant):
+                    doc_nodes.add(tree.body[0].value)
+                for n in ast.walk(tree):
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        if n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant):
+                            doc_nodes.add(n.body[0].value)
+
                 for node in ast.walk(tree):
+                    if node in doc_nodes:
+                        continue
                     # Check string constants in AST
                     if isinstance(node, ast.Constant) and isinstance(node.value, str):
                         s_val = node.value
@@ -922,6 +963,30 @@ class Checker:
                 except Exception:
                     pass
 
+
+    def _check_custom_rules(self, name: str, real_dir: str, report: CheckReport) -> None:
+        try:
+            from core import contributes
+            rules = contributes.get("dev", "custom_checks")
+            if not rules or not isinstance(rules, list):
+                return
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                c_func = rule.get("checker_func")
+                if not c_func or not isinstance(c_func, str):
+                    continue
+                try:
+                    import importlib
+                    if "." in c_func:
+                        mod_path, func_name = c_func.rsplit(".", 1)
+                        mod = importlib.import_module(mod_path)
+                        fn = getattr(mod, func_name)
+                        fn(name, real_dir, report)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def check_all(self) -> Dict[str, CheckReport]:
         results = {}

@@ -11,7 +11,7 @@
 - **產出檔案清單**：
   - `P00_discuss.md` -> `P01_requirements_spec.md` -> `P02_architecture_plan.md` -> `P03_api_spec.md` -> `P04_implementation_plan.md` -> `P05_task.md` -> `P06_test_plan.md` -> `P07_walkthrough.md`
   - 微觀日誌：`changelog.md`（隨建檔初始化並逐 Phase 登記）。
-- **剛性要求**：嚴禁跳過任何 Phase（除獲授權執行 [/Auto](`__#{module://agents-workflow/assets/workflows/Auto.md}__`) 連續推進外）；產出各階段文檔後，**強制僅呈遞專屬極簡卡片（嚴禁對話全文重複或傾倒）**，並立即 End Turn 等待確認。
+- **剛性要求**：嚴禁跳過任何 Phase（除獲授權執行 [/auto](`__#{module://agents-workflow/assets/skills/auto/SKILL.md}__`) 連續推進外）；產出各階段文檔後，**強制僅呈遞專屬極簡卡片（嚴禁對話全文重複或傾倒）**，並立即 End Turn 等待確認。
 
 ---
 
@@ -116,5 +116,5 @@
 - **實體位置**：`__${workflow.roadmap://}__`（實體路徑 `__${project://plans/roadmap/roadmap.md}__`）。
 - **流轉機制**：
   - 平時持續沉澱與維護技術想法。
-  - 開發者調用 [/Roadmap](`__#{module://agents-workflow/assets/workflows/Roadmap.md}__`) 時，Agent 智慧探索當前代碼脈絡並推薦最適合當前專案情境之主題。
+  - 開發者調用 [/roadmap](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 時，Agent 智慧探索當前代碼脈絡並推薦最適合當前專案情境之主題。
   - 獲選主題可一鍵流轉立項為 Full Track、Research 或 Umbrella 開發計畫。
