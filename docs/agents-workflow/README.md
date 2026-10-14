@@ -66,11 +66,14 @@ updated_at: 2026-10-14
 
 ---
 
-## 5. 動態計算 Token 與行為準則擴充 (Tokens & Standards Injection)
+## 5. 核心 Token 與行為準則擴充 (Tokens & Standards Injection)
 
-模組支援宣告式 Token 錨點與動態計算 Provider：
+模組支援宣告式 Token 錨點供生態系模組或專案組態擴充：
+- **`PHASEXX_HEADER`**：共用計畫標頭插槽，提供標準標頭與後台模型 (`> 模型：[模型名稱]`) 溯源支援。
+- **`WORKFLOW_SOP_STANDARDS`**：SOP 標準開發流程擴充錨點。
 - **`AGENTS_SKILL_ROUTING` / `AGENTS_STANDARDS`**：位於 `AgentsStandards.md` 之擴充錨點，支援子模組或專案組態透過 `insert` 注入專屬技能分流與行為準則。
-- **`DYNAMIC_CONTEXT_MAP`**：由 `code.func://agents-workflow/providers:get_dynamic_context_map` 即時生成當前專案活躍語意 URI 解析地圖，注入 `context-init/SKILL.md`。
+- **`AGENTS_CLI_GUILD`**：位於 `yscb-cli-guild` 之擴充錨點，供第三方模組追加專屬 CLI 操作情境手冊。
+- **`SESSION_ANALYSIS_CHECK_ITEMS`**：位於 `session-analysis` 之對話審計項目擴充錨點。
 - **`spaces.docs` 貢獻**：透過 `contributes/knowledge-db.json` 向知識庫微內核宣告 `workflow.docs://` 文檔空間。
 
 ---
@@ -113,7 +116,7 @@ python yscb.py agents-workflow plan status
 python yscb.py agents-workflow plan search --dr [--year=YYYY] [--month=MM] [--limit=N]
 python yscb.py agents-workflow plan search "關鍵字" [--limit=N]
 
-# 稽核計畫文件合規性與 Header 規範 (偵測未剝除之 AGENT_GUIDANCE 註解與章節標題對齊)
+# 稽核計畫文件合規性、模型標頭、佔位符與 Checkbox 完成度（--all 檢核所有活躍計畫）
 python yscb.py agents-workflow plan verify [plan_name] [--all]
 
 # 安全歸檔已完成計畫至 workflow.archived://YYYY/MM/ (具備 4 重守門與 handoff 清理)

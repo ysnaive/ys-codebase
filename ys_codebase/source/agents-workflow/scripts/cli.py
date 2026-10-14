@@ -327,10 +327,10 @@ def plan_search(cmd_bags: Any) -> int:
     bags = _normalize_bags(cmd_bags, "plan_search")
     is_dr = bags.has_option("dr")
     limit = 20 if not is_dr else 25
-    year = str(bags.get_option("year")) if bags.get_option("year") else None
-    month = str(bags.get_option("month")) if bags.get_option("month") else None
+    year = str(bags.get_option_value("year")) if bags.get_option_value("year") else None
+    month = str(bags.get_option_value("month")) if bags.get_option_value("month") else None
     
-    l_opt = bags.get_option("limit")
+    l_opt = bags.get_option_value("limit")
     if l_opt:
         try:
             limit = int(str(l_opt).strip())

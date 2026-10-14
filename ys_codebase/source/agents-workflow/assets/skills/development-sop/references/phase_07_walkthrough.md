@@ -1,33 +1,49 @@
 # Phase 7: 成果展示與結案報告 (P07 Walkthrough Guide)
 
-本手冊定義 Phase 7 成果展示、開發歷程總結、全域發布日誌追加與結案交付規範。
+本手冊定義 Phase 7 成果展示、SOP Review 三層文檔審查、合規檢核、開發歷程總結、全域發布日誌追加與結案交付規範。
 
 ---
 
-## 1. 核心定位與前置條件
+## 1. 核心定位與三步結案管線 (3-Step Closure Pipeline)
 
-- **[!] 前置守門條件**：進入 Phase 7 前，**必須已通過 SOP [Review Gate](./review_gate.md) 步驟並產出 Review Verdict 審查卡**。嚴禁未經審查直接建立結案報告！
-- **產出結案報告**：建立 `P07_walkthrough.md`，全面總結變更成果、測試數據、SOP Review 審查結論與推薦 Commit 訊息。
-- **發布日誌追加**：於專案全域 [`__${project://CHANGELOG.md}__`](`__${project://CHANGELOG.md}__`) 追加高階變更條目。
+進入 Phase 7 時，依序執行以下三步結案管線，確保文檔對齊、品質合規並產出結案報告：
+
+```mermaid
+flowchart TD
+    Start(["P06 UX 驗證完成"]) --> Step1["步驟 1: SOP Review 三層文檔交付對齊<br/>(CHANGELOG / docs 知識庫 / 代碼 Docstring)"]
+    Step1 --> Step2["步驟 2: 代碼清理與計畫合規檢核<br/>(plan verify 100% Passed)"]
+    Step2 --> Step3["步驟 3: 撰寫 P07 結案報告與全域發布日誌<br/>(P07_walkthrough.md & CHANGELOG.md)"]
+    Step3 --> Card(["呈遞 P07 結案卡等待指示"])
+```
+
+### 步驟 1：SOP Review 三層文檔交付對齊 (Documentation Delivery Audit)
+- [!] **文檔更新前強制觸發技能**：在執行三層文檔核驗與更新前，**強制必須先觸發並精讀 [`documentation`](`__#{module://agents-workflow/assets/skills/documentation/SKILL.md}__`) 技能手冊**，嚴格對齊專案知識庫 7 大知識維度與作者指引。
+- [ ] **宏觀發布日誌**：專案根目錄 [`CHANGELOG.md`](`__#{project://CHANGELOG.md}__`) 最上方預擬或追加本次高階變更摘要。
+- [ ] **中觀模組與專題手冊 (優先更新載體，嚴防 DN 膨脹)**：
+  - **優先更新載體**：更新文檔時應優先從 `docs/<Category>/README.md` 模組手冊或專題手冊 (`docs/<Category>/[topic].md`) 下手更新架構、流程與功能資訊，嚴禁在 DN 一直增量！
+  - **Design Notes 邊界防膨脹守門 (DN Anti-Bloat Axiom)**：`DESIGN_NOTES.md` (`DN-XX`) 僅限存放「真正高度特例、非直觀工程妥協、或從架構/專題設計文檔無法直觀看出的非直覺設計與防坑坑點」，不得作為一般架構描述、普通功能介紹或日常變更紀錄的傾倒處。
+- [ ] **微觀代碼註解契約**：本次修改之 Public API 註解結構完整，複雜演算法具備 Why-Driven 動機註解。
+
+### 步驟 2：代碼清理與計畫合規檢核 (Quality & Plan Compliance Verification)
+- [ ] **代碼清理**：無死代碼、無除錯 print/log、無敷衍之 quick-and-dirty hack。
+- [ ] **測試完整覆蓋**：所有單元測試與整合測試 100% 通過，無跳過或被破壞之斷言。
+- [ ] **計畫合規性檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>`，確認計畫文件結構完整、無未填寫之 `[...]` 佔位符、無未勾選 Checkbox 且標頭模型與狀態合法（100% Passed）。
+
+### 步驟 3：撰寫結案報告與全域發布日誌 (Walkthrough & Global Changelog)
+- 讀取模板 [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`)，落檔於計畫目錄（狀態標記為 `Completed`）。
+- 檢視 `P05` 實作偏差紀錄表，確認所有 Minor/Major 偏差均已妥善解決並閉環。
+- 回填變更清單、測試結果、三層文檔對齊清冊與推薦 Commit 訊息。
+- 於計畫目錄內 `changelog.md` 記錄結案。
 
 ---
 
-## 2. 開發歷程覆盤與審查結論回填
-
-結案報告撰寫時執行歷程覆盤並回填 Review 審查結論：
-1. **需求與實作對齊 (Requirement Alignment)**：核對 `P00` 原始需求與最終交付成果是否 100% 對齊。
-2. **偏差紀錄閉環 (Deviation Closure)**：檢視 `P05` 實作偏差紀錄表，確認所有 Minor/Major 偏差均已妥善解決並閉環。
-3. **Review 審查結論回填**：將 SOP Review 步驟中核驗之三層文檔對齊清冊、測試通過率（含手動 UX 二元標定項目）如實回填於 `P07_walkthrough.md`。
-
----
-
-## 3. 發布邊界與 Commit 紀律
+## 2. 發布邊界與 Commit 紀律
 
 - **生態系模組發布邊界鐵律**：
   - Phase 7 結案時，模組物化**一律僅能維持軌道 A（`@build` 直裝）**。
   - **[!] 嚴禁自主升版發布**：嚴禁 Agent 在結案階段擅自調用 `dev bump` 或 `dev release`（此為 [GATED] 授權守門級別，必須獲開發者顯式指示方可執行）。
 - **計畫目錄歸檔紀律**：
-  - 開發計畫目錄預設留存於 `__${project://plans/}__` 原位，**嚴禁 Agent 自行執行 `plan archive` 或主動搬移目錄**（除非開發者明確下達歸檔指令）。
+  - 開發計畫目錄預設留存於 `__${project://plans}__` 原位，**嚴禁 Agent 自行執行 `plan archive` 或主動搬移目錄**（除非開發者明確下達歸檔指令）。
 - **推薦 Commit 訊息**：
   - 結案報告尾部提供符合 Conventional Commits 規範之推薦 Commit 訊息，供開發者直接採用。
 
@@ -37,13 +53,13 @@
 
 ---
 
-## [!] 4. Phase 7 結束 Checkpoint
+## [!] 3. Phase 7 結束 Checkpoint
 
-- `P07_walkthrough.md` 建立完成（狀態 `Completed`），全域 [`__${project://CHANGELOG.md}__`](`__${project://CHANGELOG.md}__`) 追加完成，`changelog.md` 記錄結案。
+- `P07_walkthrough.md` 建立完成（狀態 `Completed`），全域 [`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`) 追加完成，`changelog.md` 記錄結案。
 - **極精簡 Session 回覆格式**：對話中**嚴禁全文重複、傾倒完整結案報告或大篇幅轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
   ###  P07 開發成果已結案
-  - **產出文件**：[P07_walkthrough.md](__${project://plans/}__/{plan_name}/P07_walkthrough.md)、[changelog.md](__${project://plans/}__/{plan_name}/changelog.md)、[CHANGELOG.md](__${project://CHANGELOG.md}__)
+  - **產出文件**：[P07_walkthrough.md](__${project://plans}__/{plan_name}/P07_walkthrough.md)、[changelog.md](__${project://plans}__/{plan_name}/changelog.md)、[CHANGELOG.md](__${project://CHANGELOG.md}__)
   - **結案摘要**：[1~2 行高階成果 / 通過 SOP Review 審查與合規檢核]
   - **推薦 Commit**：`[type(scope): brief message]`
   - **後續動作**：[計畫已圓滿結案，可依需求執行 commit、plan archive 或依指示進行對話歷程評測]

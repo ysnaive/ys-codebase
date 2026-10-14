@@ -281,6 +281,7 @@ class ContributesAggregator:
         # 2. 初始化所有已安裝模組 targets 字典
         for mod in installed_modules:
             aggregated[mod] = {}
+        core_modules_commands: Dict[str, Any] = {}
 
         # 3. 階層 ①：依拓撲順序搜集模組層級 contributes/<target>.json
         for donor in ordered_donors:
@@ -320,11 +321,12 @@ class ContributesAggregator:
                                 
                                 # 保留按 donor 隔離之 commands 分桶，徹底防禦跨模組同名指令覆蓋 (P00:DR-01)
                                 if target == "core" and "commands" in tagged_body:
-                                    if "__modules__" not in aggregated[target].setdefault("commands", {}):
-                                        aggregated[target]["commands"]["__modules__"] = {}
-                                    aggregated[target]["commands"]["__modules__"][donor] = tagged_body["commands"]
+                                    import copy
+                                    core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
 
                                 self._deep_merge(aggregated[target], tagged_body)
+                                if target == "core" and core_modules_commands:
+                                    aggregated[target].setdefault("commands", {})["__modules__"] = core_modules_commands
                         except Exception as e:
                             logger.warning(f"Failed to read contributes file '{target_file_uri}': {e}")
                 except Exception as e:

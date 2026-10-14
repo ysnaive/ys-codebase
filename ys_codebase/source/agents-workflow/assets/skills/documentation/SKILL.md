@@ -33,7 +33,7 @@ description: 專案文檔與知識庫架構規範指南。當有閱讀、搜尋�
 | **④ 介面合約與承諾** | 前置/後置條件、錯誤型態、輸入輸出 Schema | 程式碼 Docstrings / Public Headers | 查閱 API 參數、回傳型別與例外契約 |
 | **⑤ 工程妥協與防坑** | 為效能/平台限制而採取的反直覺設計 (Non-obvious) | `__${workflow.docs://}__/<Category>/DESIGN_NOTES.md`<br>*(DN-XX + `[!CAUTION]`)* | 避免破壞有意為之的防坑或效能設計 |
 | **⑥ 人因操作引導** | 快速上手、配置矩陣、典型範例 (Cookbook)、故障排查 | `__${workflow.docs://}__/<Category>/README.md`<br>`__${workflow.docs://_project/CLI_SPECIFICATION.md}__` | 查閱指令用法、配置參數與快速上手 |
-| **⑦ 架構演進歷史** | 重大架構重構歷史（痛點 -> 改變 -> 參照 Plan） | `__${workflow.docs://}__/<Category>/CHANGELOG.md`<br>`__${workflow.docs://CHANGELOG.md}__` | 了解子系統或專案全局歷史重大架構轉折 |
+| **⑦ 架構演進歷史** | 重大架構重構歷史（痛點 -> 改變 -> 參照 Plan） | `__${workflow.docs://}__/<Category>/CHANGELOG.md`<br>`__${project://CHANGELOG.md}__` | 了解子系統或專案全局歷史重大架構轉折 |
 
 ---
 

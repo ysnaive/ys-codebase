@@ -188,7 +188,7 @@ python yscb.py dev release-git <mod_name> "feat: 完成特定功能"
 
 ## 6. 伺服器常駐守護進程協同與自動自癒
 
-本節深化 [SKILL.md 軌道 A](../SKILL.md#軌道-a本地開發調試-dogfooding-track) 中提及的 Server 自癒機制。若開發的模組包含常駐背景服務（如 Service Worker 或生命週期 Watcher）：
+本節深化 [SKILL.md 軌道 A](../SKILL.md#軌道-a日常開發調試-dogfooding-track) 中提及的 Server 自癒機制。若開發的模組包含常駐背景服務（如 Service Worker 或生命週期 Watcher）：
 
 1. **`server_compatible` 旗標**：在命令宣告中標記 `server_compatible: true`，支援透過 IPC HTTP 高速熱派發至常駐 Worker。
 2. **Server 背景自動熱重載機制 (`ModulesWatcher`)**：

@@ -36,14 +36,13 @@
     ###  FT-2 實作與測試通過
     - **產出文件**：[fast_track_plan.md](__${project://plans/}__/{plan_name}/fast_track_plan.md)
     - **驗證摘要**：[測試 100% 通過 / 實際修改 N 行 ($\le 100$ 行)]
-    - **下一步**：實作驗證完成，強制進入 SOP Review 審查步驟
+    - **下一步**：實作驗證完成，進入 FT-3 結案階段（包含 SOP Review 三層文檔與合規審查）
     ```
-  - **Review (審查階段)**：依據 [review_gate.md](./review_gate.md) 執行三層文檔核驗、合規檢核與 Commit 規範，輸出 `Review Verdict Card`。
-  - **FT-3 (結案階段)**：審查通過後，回填結案紀錄至 `fast_track_plan.md`，追加 [`__${project://CHANGELOG.md}__`](`__${project://CHANGELOG.md}__`)，結案交付。
+  - **FT-3 (SOP 審查與結案階段)**：執行三層文檔核驗（CHANGELOG、docs、微觀註解）、測試 100% 通過、實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 合規檢核通過，回填結案紀錄至 `fast_track_plan.md`，追加 [`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`)，結案交付。
     ```markdown
     ###  FT-3 迅捷開發已結案
-    - **產出文件**：[fast_track_plan.md](__${project://plans/}__/{plan_name}/fast_track_plan.md)、[CHANGELOG.md](__${project://CHANGELOG.md}__)
-    - **結案摘要**：[高階成果摘要 / 通過 Review 審查 / 測試 100% 通過]
+    - **產出文件**：[fast_track_plan.md](__${project://plans}__/{plan_name}/fast_track_plan.md)、[CHANGELOG.md](__${project://CHANGELOG.md}__)
+    - **結案摘要**：[高階成果摘要 / 通過 SOP 審查與合規檢核 / 測試 100% 通過]
     - **推薦 Commit**：`[type(scope): brief message]`
     - **後續動作**：[任務已圓滿完成，可依需求執行 commit 或進行下一項任務]
     ```

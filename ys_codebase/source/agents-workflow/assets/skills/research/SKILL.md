@@ -5,7 +5,7 @@ description: 深度技術調研工作流 (Research)。適用於高複雜度技�
 
 # 深度技術調研工作流 (Research)
 
-本工作流用於高複雜度、新技術選型、演算法可行性或架構演進之深度論證與客觀對比。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
+本工作流用於高複雜度、新技術選型、演算法可行性或架構演進之深度論證與客觀對比。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
 
 ---
 
@@ -45,12 +45,14 @@ flowchart TD
 ---
 
 ### 步驟 3：產出專題調研報告 (`R{n:2d}_{topic}.md`)
-若需正式落檔，讀取標準模板 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`)，徹底移除導引註解後落檔：
-1. 標準元數據標頭。
+若需正式落檔，讀取標準模板 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`)，填寫真實標頭與 `> 模型：` 名稱後落檔：
+1. 標準元數據標頭（含 `> 模型：[模型名稱]`）。
 2. 背景痛點與調研目標。
 3. 候選方案評估矩陣 (Candidate Options Matrix)。
 4. 關鍵維度深入分析（架構圖、PoC 驗證或 Benchmark 數據）。
 5. 客觀結論與推薦落地方案。
+
+`__@{RESEARCH_AGENTS_GUILD}__`
 
 ---
 
@@ -59,17 +61,13 @@ flowchart TD
 對話 Session **嚴禁全文重複、圖表傾倒或代碼傾倒**，強制僅呈遞以下極簡調研卡，並**立即 End Turn 等待確認**：
 
 ```markdown
-### [RESEARCH] /Research 技術調研成果卡
-- **產出文件**：[RXX_{topic}.md](__${project://plans/}__/{plan_name}/RXX_{topic}.md)
+### 🔬 R01 調研報告已落檔
+- **產出文件**：[R01_{topic}_research.md](__${project://plans}__/{plan_name}/R01_{topic}_research.md)、[changelog.md](__${project://plans}__/{plan_name}/changelog.md)
 - **調研主題**：[1 行調研核心命題]
-- **方案結論**：推薦採取 [候選方案名稱]（核心優勢：[1 行客觀說明]）
-- **後續出口**：
-  1. 轉入 [/NewPlan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 開立計畫實作
-  2. 轉入 [Roadmap](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 納入長期演進儲備
-  3. 保留成果不進行後續動作
+- **調研結論**：[1~2 行方案選型評估結論 / 推薦採納方案]
+- **推薦出口**：
+  1. 出口 ① 立即實作：轉入 [/NewPlan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 或原地追加 P01~P07 升級實作計畫
+  2. 出口 ② 路線圖儲備：轉入 [Roadmap](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 納入長期演進儲備
+  3. 出口 ③ 放棄結案：方案不可行或成本過高，記錄原因後於 R01 登記結案
+- **待確認事項**：請問是否採納此結論，並選擇何種流轉出口？
 ```
-
----
-
-`__@{WORKFLOW_RESEARCH}__`
-

@@ -2,8 +2,6 @@
 
 `__@{PHASEXX_HEADER}__`
 
-`__@{PHASE04_HEADER}__`
-
 > 模板版本：v1.4  
 
 ---
@@ -44,5 +42,3 @@
 ## 5. 決策定稿 (Confirmed Decision Records)
 
 - **[P04:DR-01]** 
-
-`__@{PHASE04_TEMPLATE}__`

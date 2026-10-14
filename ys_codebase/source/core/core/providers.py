@@ -28,6 +28,7 @@ def _format_tier_badge(tier: str) -> str:
 
 def _extract_command_items(raw_dict: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
     res = []
+    seen = set()
     if "cmd" in raw_dict and isinstance(raw_dict["cmd"], dict):
         donor = raw_dict.get("__provider__", "core")
         for k, v in raw_dict["cmd"].items():
@@ -35,9 +36,11 @@ def _extract_command_items(raw_dict: Dict[str, Any]) -> List[Tuple[str, Dict[str
                 b = dict(v)
                 b.setdefault("__provider__", donor)
                 res.append((k, b))
+                seen.add(k)
     for k, v in raw_dict.items():
-        if k not in ("module_alias", "description", "cmd") and isinstance(v, dict):
+        if k not in ("module_alias", "description", "cmd", "__provider__") and k not in seen and isinstance(v, dict):
             res.append((k, v))
+            seen.add(k)
     return res
 
 
@@ -64,19 +67,26 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
     if isinstance(modules_bucket, dict) and modules_bucket:
         raw_items: List[Tuple[str, Dict[str, Any]]] = []
         for donor_name, donor_cmds in modules_bucket.items():
+            if donor_name == "__provider__":
+                continue
             if isinstance(donor_cmds, dict):
                 for c_name, c_spec in _extract_command_items(donor_cmds):
                     c_body = dict(c_spec)
-                    c_body.setdefault("__provider__", donor_name)
+                    c_body["__provider__"] = donor_name
                     raw_items.append((c_name, c_body))
     else:
         raw_items = _extract_command_items(all_commands)
 
+    seen_donor_cmd = set()
     for cmd_name, cmd_body in sorted(raw_items, key=lambda x: (x[1].get("__provider__", ""), x[0])):
         if not isinstance(cmd_body, dict):
             continue
 
         donor = cmd_body.get("__provider__", "core")
+        if (donor, cmd_name) in seen_donor_cmd:
+            continue
+        seen_donor_cmd.add((donor, cmd_name))
+
         desc = str(cmd_body.get("description", "")).strip()
         tier = _normalize_tier(cmd_body.get("tier"))
         usage = cmd_body.get("usage", {})
@@ -167,11 +177,29 @@ def get_phase_cli_guild(context: Optional[Any] = None, phase: Optional[str] = No
     recommended_cmds: List[str] = []
     gated_warnings: List[str] = []
 
-    for cmd_name, cmd_body in sorted(_extract_command_items(all_commands), key=lambda x: x[0]):
+    modules_bucket = all_commands.get("__modules__")
+    if isinstance(modules_bucket, dict) and modules_bucket:
+        raw_items_phase: List[Tuple[str, Dict[str, Any]]] = []
+        for donor_name, donor_cmds in modules_bucket.items():
+            if donor_name == "__provider__":
+                continue
+            if isinstance(donor_cmds, dict):
+                for c_name, c_spec in _extract_command_items(donor_cmds):
+                    c_body = dict(c_spec)
+                    c_body["__provider__"] = donor_name
+                    raw_items_phase.append((c_name, c_body))
+    else:
+        raw_items_phase = _extract_command_items(all_commands)
+
+    seen_phase_cmd = set()
+    for cmd_name, cmd_body in sorted(raw_items_phase, key=lambda x: (x[1].get("__provider__", ""), x[0])):
         if not isinstance(cmd_body, dict):
             continue
 
         donor = cmd_body.get("__provider__", "core")
+        if (donor, cmd_name) in seen_phase_cmd:
+            continue
+        seen_phase_cmd.add((donor, cmd_name))
         full_cmd = f"python yscb.py {cmd_name}" if donor == "core" else f"python yscb.py {donor} {cmd_name}"
         desc = str(cmd_body.get("description", "")).strip()
         tier = _normalize_tier(cmd_body.get("tier"))

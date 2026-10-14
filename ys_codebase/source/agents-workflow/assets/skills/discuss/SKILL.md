@@ -5,7 +5,7 @@ description: 深度歸因與防淺層修復工作流 (Discuss)。實作/測試�
 
 # 深度歸因與防淺層修復工作流 (Discuss)
 
-本工作流為開發過程（特別是 Phase 5 實作與 Phase 6 測試）遇非預期錯誤、測試失敗或範疇越界時的**強制停手與深度歸因機制**，杜絕盲目試錯與淺層修補。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
+本工作流為開發過程（特別是 Phase 5 實作與 Phase 6 測試）遇非預期錯誤、測試失敗或範疇越界時的**強制停手與深度歸因機制**，杜絕盲目試錯與淺層修補。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
 
 ---
 
@@ -59,8 +59,3 @@ description: 深度歸因與防淺層修復工作流 (Discuss)。實作/測試�
 1. **決策記錄**：於當前計畫之 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`) 或對應 Phase 文件登載標準 `[{Phase}:DR-XX]` 決策記錄。
 2. **產物回填**：若影響架構或任務，回填更新 [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)、[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) 或 [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)。
 3. **恢復執行**：依共識方案恢復實作或測試推進。
-
----
-
-`__@{WORKFLOW_DISCUSS}__`
-

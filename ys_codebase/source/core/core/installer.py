@@ -269,8 +269,9 @@ class Installer:
                 pass
             self.engine.act_unlock("install")
             print(f"[core:install] Successfully installed '{module_name}@{installed_ver}'.")
-            self._print_onboarding_guide(module_name)
-            self._check_optional_dependencies(module_name)
+            if old_ver == "0.0.0.0":
+                self._print_onboarding_guide(module_name)
+                self._check_optional_dependencies(module_name)
             return 0
         except Exception as e:
             self.engine.act_unlock("install")

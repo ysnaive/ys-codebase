@@ -2,8 +2,6 @@
 
 `__@{PHASEXX_HEADER}__`
 
-`__@{PHASE02_HEADER}__`
-
 > 模板版本：v1.2  
 
 ---
@@ -11,7 +9,7 @@
 ## 1. 模組架構分層與職責邊界 (Layered Architecture)
 
 ```text
-{{ ... }}
+[待填寫]
 ```
 
 ---
@@ -36,5 +34,3 @@ sequenceDiagram
 ## 4. 架構決策記錄 (Architecture Decision Records)
 
 - **[P02:DR-01]** 
-
-`__@{PHASE02_TEMPLATE}__`

@@ -2,8 +2,6 @@
 
 `__@{PHASEXX_HEADER}__`
 
-`__@{PHASE01_HEADER}__`
-
 > 依據 P00：[P00_discuss.md](./P00_discuss.md)  
 > 模板版本：v1.5  
 
@@ -36,5 +34,3 @@
 ## 4. 知識庫與踩坑紀錄查閱 (Known Gotchas & CAUTIONs)
 
 - **`[!NOTE]`** 
-
-`__@{PHASE01_TEMPLATE}__`

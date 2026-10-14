@@ -46,7 +46,7 @@ Q5: 是否包含「反直覺妥協 / Workaround / 效能硬體限制」？
 ## 3. 三層文檔交付架構與三維錨點驗收 (Three-Tier Delivery & Anchors)
 
 - **三層文檔交付模型 (Three-Tier Delivery Model)**：
-  - **宏觀層 (Macro)**：專案全域發布日誌（`__${workflow.docs://CHANGELOG.md}__`），記錄高階發布與架構演進。
+  - **宏觀層 (Macro)**：專案全域發布日誌（`__${project://CHANGELOG.md}__`），記錄高階發布與架構演進。
   - **中觀層 (Meso)**：分類/領域手冊 (`__${workflow.docs://}__/<Category>/README.md`)、專題手冊 (`__${workflow.docs://}__/<Category>/[topic].md`) 與設計決策 (`__${workflow.docs://}__/<Category>/DESIGN_NOTES.md`)。
   - **微觀層 (Micro)**：原始碼內部 Public API Docstring、型別契約與複雜演算法 Why-Driven 行內動機註解。
 - **Phase 4 預先盤點 (Impact Plan)**：在 `P04` 定稿前，主動盤點宏觀日誌、中觀手冊與微觀契約，輸出文檔衝擊清單。
@@ -98,7 +98,7 @@ last_updated: "YYYY-MM-DD"
 - [ ] **3. 可點擊性與路徑有效性 (Clickability)**：所有 Markdown 連結均使用有效相對路徑，無死鏈或硬編碼主機絕對路徑。
 - [ ] **4. 防坑邊界留痕 (DN-XX & CAUTION)**：若實作涉及反直覺妥協、硬體/平台繞道或特定常數，已在 `__${workflow.docs://}__/<Category>/DESIGN_NOTES.md` 登記條目並標註 `[!CAUTION]`。
 - [ ] **5. 三層文檔交付對齊 (3-Tier Delivery)**：
-  - [ ] 宏觀：涉及版本重大變更時已於全域 `__${workflow.docs://CHANGELOG.md}__` 登記。
+  - [ ] 宏觀：涉及版本重大變更時已於全域 `__${project://CHANGELOG.md}__` 登記。
   - [ ] 中觀：涉及 Public API 或資料流轉向時已同步更新 `__${workflow.docs://}__/<Category>/`。
   - [ ] 微觀：程式碼 Public API 介面註解 (Docstrings) 與型別契約 100% 完整。
 

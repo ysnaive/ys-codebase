@@ -51,6 +51,8 @@ description: 上下文熱啟動流程。當全新對話 Session 開始、需要�
 - **提取要點**：
   - 快速掌握當前是否有進行中計畫及其所處 Phase。
 
+`__@{WORKFLOW_CONTEXTINIT}__`
+
 ---
 
 ## 輸出成果：極精簡熱啟動狀態卡 (Context Warmup Card)
@@ -64,8 +66,3 @@ description: 上下文熱啟動流程。當全新對話 Session 開始、需要�
 - **進行中計畫**：[當前進行中計畫名稱與 Phase / 或無進行中計畫]
 - **待命就緒**：已掌握全專案規範，請問今天準備進行什麼任務？
 ```
-
----
-
-`__@{WORKFLOW_CONTEXTINIT}__`
-

@@ -19,8 +19,9 @@
 | **[DN-AW-09]** | 6 大計畫分支拓撲、/NewPlan 延遲建檔與 Roadmap 策略資產體系 | 工作流體系、CLI 工具鏈 | `Active` |
 | **[DN-AW-10]** | JIT 變更感知 Stat-First 雙階快照初篩與 SHA-1 快取機制 | 發布引擎 (`publisher.py`)、Manifest 治理 | `Active` |
 | **[DN-AW-11]** | 專案特化技能宣告式擴充規範、管理區塊純粹單向覆寫與工作流相對路徑校準 | 規範標準、發布引擎、工作流資產 | `Active` |
-| **[DN-AW-12]** | __${uri}__ 語意擴充：__$(起始錨點){uri}__ 動態指定相對路徑起點與 #/$ 語法語意明確化 | 工廠編譯器 (`compiler.py`) | `Active` |
 | **[DN-AW-13]** | 目錄資產 SHA-1 遞迴遍歷雜湊、未配置沙盒 URI 降級與裸露標籤合規防護 | 發布引擎、工廠編譯器、驗證器 | `Active` |
+| **[DN-AW-14]** | agents-workflow 資產分類純化：除役 workflow 類型全面統一為 skill | 規格定義、編譯器、發布引擎 | `Active` |
+| **[DN-AW-15]** | 工作流全量內容審計、模型溯源欄位、Review 內化與 Token 語意收斂 | 模板體系、驗證器、SOP 工作流 | `Active` |
 
 ---
 
@@ -170,6 +171,22 @@
 
 > [!CAUTION]
 > 切勿刪除 `compiler.py` 中將 `"workflow"` 自動轉譯為 `"skill"` 的向後相容邏輯，否則尚未升級 `contribute.json` 的外部下游模組在宣告 `type: "workflow"` 時將無法投影；同時新增內建資產時一律放置於 `assets/skills/<name>/SKILL.md`，嚴禁再次建立 `assets/workflows/`。
+
+---
+
+### [DN-AW-15] 工作流全量內容審計、模型溯源欄位、Review 內化與 Token 語意收斂
+- **背景**：
+  1. 早期 `contributes/agents-workflow.json` 定義了 60+ 個零散 Token，包含多數從未被第三方擴充使用之歷史過期佔位符（如已廢除之 `DEVELOPMENT_STANDARDS` 造成 `new-plan` 雙重注入整份標準、`BEGIN_HTML_ANNOTATION` 殘留等）。
+  2. 隨著多模型協作與模型換代，開發計畫各階段產物缺乏作者與執行者模型標記，無法追溯規劃與編碼的模型來源（例如 P00/P01 規劃者為 Gemini 4 Argon，後續實作者為 Gemini 3.8 Flash）。
+  3. 原將 Review 作為獨立階段（P06 -> Review Gate -> P07）造成多餘的 Checkpoint 停頓等待，拖沓推進節奏，本質上 Review 應內化為 Phase 7 / FT-3 的剛性前置管線。
+  4. `PlanVerifier.verify_all_plans()` 過去會掃描已封存之歷史計畫，但已封存目錄代表過去歷史事實，不應因新規則的加入而被迫回溯修改，且全量驗證時亦無必要檢查封存目錄。
+- **決策**：
+  1. **Token 語意收斂與死代碼清理**：`contributes/agents-workflow.json` 收斂至核心 6 大 Token，刪除未使用的 `providers.py`。
+  2. **模型溯源標頭與佔位符防護**：標準模板 Header 統一新增 `> 模型：[模型名稱]` 欄位，`PlanVerifier` 將其納入剛性檢查 (`has_model`)，並擴充 `[模型名稱]` / `[Model Name]` 佔位符攔截；所有非 Phase 模板徹底剝除頂部 HTML 註解導引，實現純淨模板。
+  3. **Review 內化併回 P07 / FT-3**：廢除獨立 `review_gate.md` 與中間斷點，於 Phase 7 (`phase_07_walkthrough.md`) 與 Fast Track FT-3 內化三步結案管線（Step 1: 三層文檔交付對齊 $\to$ Step 2: 代碼清理與 `plan verify` 合規檢核 $\to$ Step 3: P07 結案報告撰寫與全域發布日誌追加），兼具高推進效率與剛性防漏檢。
+  4. **驗證器封存邊界劃分與 Checkbox 嚴格檢查**：`PlanVerifier.verify_all_plans()` 移除歷史封存目錄掃描，專注於活躍計畫目錄；當計畫狀態標記為 `Completed` 或 `Concluded` 時，若仍有未勾選之待辦 Checkbox (`- [ ]`)，直接標記為 `FAIL`。
+- **效益**：工作流模組 Token 與資產內聚度大幅提升，消除冗餘雙重注入與中間停頓，計畫檔案具備清晰的模型溯源脈絡，封存邊界與完成度檢核更加健全可靠。
+
 
 
 

@@ -28,12 +28,28 @@ class PlanDestinationExistsError(PlansToolchainError):
     pass
 
 
+from pathlib import Path
+from typing import Optional
+
+def _resolve_uri_path(uri_str: str, default_fallback: Optional[str] = None) -> Optional[Path]:
+    """安全解析語意 URI，若無 core 上下文或解析失敗則回傳 default_fallback 或 None。"""
+    try:
+        from core.uri import resolve
+        resolved = resolve(uri_str)
+        return Path(resolved).resolve()
+    except Exception:
+        if default_fallback:
+            return Path(default_fallback).resolve()
+        return None
+
+
 from .archiver import PlanArchiver
 from .scanner import PlanScanner
 from .searcher import PlanSearcher
 from .verifier import PlanVerifier, PlanSeverity, PlanIssue, PlanReport
 
 __all__ = [
+    "_resolve_uri_path",
     "PlansToolchainError",
     "PlanNotFoundError",
     "PlanFormatError",

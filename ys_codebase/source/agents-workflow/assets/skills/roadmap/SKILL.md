@@ -5,7 +5,7 @@ description: 技術路線圖智能推薦工作流 (Roadmap)。探索長期技術
 
 # 技術路線圖探索與智能推薦工作流 (Roadmap)
 
-本工作流用於掃描專案之長期技術儲備庫 (`__${workflow.roadmap://}__`)，結合目前專案架構進度與模組狀態，客觀推薦最適合當前啟動之路線圖主題。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
+本工作流用於掃描專案之長期技術儲備庫 (`__${workflow.roadmap://}__`)，結合目前專案架構進度與模組狀態，客觀推薦最適合當前啟動之路線圖主題。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
 
 ---
 
@@ -55,8 +55,3 @@ description: 技術路線圖智能推薦工作流 (Roadmap)。探索長期技術
 當開發者確認啟動時：
 1. 引導進入 [/new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 流程。
 2. 新計畫自動讀取該 Roadmap 檔案，直接將問題背景、方案對比與 SOP 繼承為新計畫之基礎，達成無縫立項。
-
----
-
-`__@{WORKFLOW_ROADMAP}__`
-

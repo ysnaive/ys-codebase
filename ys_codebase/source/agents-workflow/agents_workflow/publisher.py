@@ -189,13 +189,18 @@ class ReleasePublisher:
 
         hasher = hashlib.sha256()
 
-        # 1. 模組自身 manifest.json
+        # 1. 模組自身 manifest.json 與編譯/發布引擎代碼 (compiler.py, publisher.py)
         try:
-            manifest_p = os.path.join(self.compiler.module_root, "manifest.json")
-            if os.path.isfile(manifest_p):
-                sha1_val = self._get_source_file_sha1(manifest_p)
-                hasher.update(b"manifest.json:")
-                hasher.update(sha1_val.encode("utf-8"))
+            for code_rel in (
+                "manifest.json",
+                os.path.join("agents_workflow", "compiler.py"),
+                os.path.join("agents_workflow", "publisher.py"),
+            ):
+                code_p = os.path.join(self.compiler.module_root, code_rel)
+                if os.path.isfile(code_p):
+                    sha1_val = self._get_source_file_sha1(code_p)
+                    hasher.update(f"{code_rel}:".encode("utf-8"))
+                    hasher.update(sha1_val.encode("utf-8"))
         except Exception:
             pass
 

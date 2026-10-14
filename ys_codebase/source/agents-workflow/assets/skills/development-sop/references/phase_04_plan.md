@@ -15,11 +15,11 @@
 ## 2. 文檔衝擊預先盤點清冊
 
 在 `P04` 中必須顯式建立文檔衝擊清冊：
-- **宏觀層**：[`__${project://CHANGELOG.md}__`](`__${project://CHANGELOG.md}__`) 變更摘要。
+- **宏觀層**：[`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`) 變更摘要。
 - **中觀層**：
-  - 是否新增/修改模組手冊 (`__${project://docs/}__`<Category>/README.md)？
-  - 是否需獨立中觀專題手冊 (`__${project://docs/}__`<Category>/[topic].md)？
-  - 是否涉及反直覺妥協需登記設計決策 (`__${project://docs/}__`<Category>/DESIGN_NOTES.md + `[!CAUTION]`)？
+  - 是否新增/修改模組手冊 (`__${project://docs}__/<Category>/README.md`)？
+  - 是否需獨立中觀專題手冊 (`__${project://docs}__/<Category>/[topic].md`)？
+  - 是否涉及反直覺妥協需登記設計決策 (`__${project://docs}__/<Category>/DESIGN_NOTES.md` + `[!CAUTION]`)？
 - **微觀層**：原始碼 Public API 介面註解與 Why-Driven 動機註解。
 
 ---
@@ -29,8 +29,6 @@
 - 審查 Phase 2 預排之 `P06` 測試案例，補齊執行指令、測試檔案與斷言條件。
 - 將 `P06_test_plan.md` 狀態由 `Draft` 修改為 **`Confirmed`**。
 - 嚴格守門：測試計畫未 Confirmed 前，**絕對禁止進入 Phase 5 寫任何一行程式碼**。
-
----
 
 `__@{PHASE04_AGENTS_GUILD}__`
 

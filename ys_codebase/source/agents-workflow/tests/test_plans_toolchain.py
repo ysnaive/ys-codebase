@@ -73,14 +73,14 @@ class TestPlansToolchainInternal(YSCBTestCase):
             encoding="utf-8"
         )
         (p_dir / "P00_semantic_requirements.md").write_text(
-            "# 語意需求說明書\n\n> 功能名稱：Demo Feature\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n\n"
+            "# 語意需求說明書\n\n> 功能名稱：Demo Feature\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n> 模型：Gemini Flash\n\n"
             "## 1. 使用者原始需求與意圖 (User Intent)\n- **原始陳述**：需求\n\n"
             "## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n- **[P00:DR-01]** 決策\n\n"
             "## 3. 開放議題與確認紀錄\n- [x] 無\n",
             encoding="utf-8"
         )
         (p_dir / "P07_walkthrough.md").write_text(
-            "# 交付說明書\n\n> 功能名稱：Demo Feature\n> 建立日期：2026-08-20\n> 狀態：Completed\n\n## 1. 交付成果總覽\n",
+            "# 交付說明書\n\n> 功能名稱：Demo Feature\n> 建立日期：2026-08-20\n> 狀態：Completed\n> 模型：Gemini Flash\n\n## 1. 交付成果總覽\n",
             encoding="utf-8"
         )
         return p_dir
@@ -101,7 +101,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
 
         # 2. 移除 P00 的必要章節標題 -> FAIL
         (p_dir / "P00_semantic_requirements.md").write_text(
-            "# 語意需求說明書\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n\n"
+            "# 語意需求說明書\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n> 模型：Gemini Flash\n\n"
             "## 1. 使用者原始需求與意圖\n(缺少第 2 與第 3 節標題)\n",
             encoding="utf-8"
         )
@@ -122,7 +122,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
 
         # 建立 P06 但缺少 FT-/ET- 測試清單 -> FAIL
         (p_dir / "P06_test_plan.md").write_text(
-            "# 測試計畫\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Draft\n\n"
+            "# 測試計畫\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Draft\n> 模型：Gemini Flash\n\n"
             "## 1. 測試策略與驗證維度\n\n## 2. 測試案例清冊 (Test Cases Matrix)\n(無 FT 前綴)\n\n"
             "## 3. 測試執行紀錄\n\n## 4. 人工 / UX 驗證 Checkpoint\n",
             encoding="utf-8"
@@ -145,7 +145,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
 
         # 子計畫缺少「所屬主計畫」-> FAIL
         (sub_dir / "P00_semantic_requirements.md").write_text(
-            "# 語意需求說明書\n\n> 功能名稱：Child\n> 建立日期：2026-08-20\n> 狀態：Draft\n\n"
+            "# 語意需求說明書\n\n> 功能名稱：Child\n> 建立日期：2026-08-20\n> 狀態：Draft\n> 模型：Gemini Flash\n\n"
             "## 1. 使用者原始需求與意圖 (User Intent)\n\n## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n\n## 3. 開放議題與確認紀錄\n",
             encoding="utf-8"
         )
@@ -165,7 +165,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
         p_dir = self.plans_dir / "2026_08_20_1200_no_changelog"
         p_dir.mkdir(parents=True, exist_ok=True)
         (p_dir / "P00_semantic_requirements.md").write_text(
-            "> 功能名稱：NoChangelog\n> 建立日期：2026-08-20\n> 狀態：Draft\n",
+            "> 功能名稱：NoChangelog\n> 建立日期：2026-08-20\n> 狀態：Draft\n> 模型：Gemini Flash\n",
             encoding="utf-8"
         )
 
@@ -211,7 +211,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
 
         # 包含 HTML 註解 -> FAIL
         (p_dir / "P00_semantic_requirements.md").write_text(
-            "# 語意需求說明書\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n\n"
+            "# 語意需求說明書\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n> 模型：Gemini Flash\n\n"
             "<!-- 這是未清除的指引或註解 -->\n\n"
             "## 1. 使用者原始需求與意圖 (User Intent)\n\n## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n\n## 3. 開放議題與確認紀錄\n",
             encoding="utf-8"
@@ -227,7 +227,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
         # 建立一個未通過的計畫（缺少章節）
         p_dir = self._create_valid_plan("2026_08_20_1200_gate_test")
         (p_dir / "P00_semantic_requirements.md").write_text(
-            "# 語意需求\n> 功能名稱：Broken\n> 建立日期：2026-08-20\n> 狀態：Draft\n\n(缺少必填章節)\n",
+            "# 語意需求\n> 功能名稱：Broken\n> 建立日期：2026-08-20\n> 狀態：Draft\n> 模型：Gemini Flash\n\n(缺少必填章節)\n",
             encoding="utf-8"
         )
         (self.workspace_root / "CHANGELOG.md").write_text(
@@ -311,4 +311,62 @@ class TestPlansToolchainInternal(YSCBTestCase):
         self.assertNotIn("custom_resources", found_names)
         self.assertEqual(len(found_plans), 1)
 
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_plan_verifier_missing_model_fails(self):
+        """FT-08: 驗證未包含 [模型] 欄位之計畫標頭會被判定為 FAIL。"""
+        p_dir = self.plans_dir / "2026_08_20_1200_no_model"
+        p_dir.mkdir(parents=True, exist_ok=True)
+        (p_dir / "changelog.md").write_text(
+            "# Changelog\n\n| 日期時間 | 類型 | 摘要 |\n| :--- | :---: | :--- |\n| 2026-08-20 12:00 | `INIT` | 初始化 |\n",
+            encoding="utf-8"
+        )
+        (p_dir / "P00_semantic_requirements.md").write_text(
+            "# 語意需求說明書\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n\n"
+            "## 1. 使用者原始需求與意圖 (User Intent)\n- **原始陳述**：需求\n\n"
+            "## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n- **[P00:DR-01]** 決策\n\n"
+            "## 3. 開放議題與確認紀錄\n- [x] 無\n",
+            encoding="utf-8"
+        )
+        verifier = PlanVerifier(plans_dir=self.plans_dir, templates_dir=self.templates_dir)
+        rep = verifier.verify_plan("2026_08_20_1200_no_model")
+        self.assertEqual(rep.status, PlanSeverity.FAIL)
+        self.assertTrue(any("模型" in e for e in rep.errors))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_plan_verifier_completed_unchecked_checkbox_fails(self):
+        """FT-09: 驗證狀態為 Completed 但包含未勾選 Checkbox (- [ ]) 之計畫判定為 FAIL。"""
+        p_dir = self._create_valid_plan("2026_08_20_1200_unchecked_plan")
+        (p_dir / "P05_task.md").write_text(
+            "# 實作任務清單\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Completed\n> 模型：Gemini Flash\n\n"
+            "## 1. 實作任務清單 (Task Breakdown)\n- [x] TASK-01 完成\n- [ ] TASK-02 遺漏未做\n\n"
+            "## 2. 實作偏差紀錄表 (Implementation Deviations)\n| 任務編號 | 偏差等級 | 偏離描述與決策理由 | 處置方式 / 記錄 |\n| - | - | 無偏差 | - |\n",
+            encoding="utf-8"
+        )
+        verifier = PlanVerifier(plans_dir=self.plans_dir, templates_dir=self.templates_dir)
+        rep = verifier.verify_plan("2026_08_20_1200_unchecked_plan")
+        self.assertEqual(rep.status, PlanSeverity.FAIL)
+        self.assertTrue(any("未勾選之待辦 Checkbox" in e for e in rep.errors))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_plan_verifier_verify_all_skips_archive(self):
+        """FT-10: 驗證 verify_all_plans() 僅掃描活躍計畫目錄，排除歸檔目錄。"""
+        self._create_valid_plan("2026_08_20_1200_active_plan")
+        # 建立歸檔目錄中的破損計畫
+        archived_broken = self.archive_dir / "2025" / "12" / "2025_12_01_1000_broken_archived"
+        archived_broken.mkdir(parents=True, exist_ok=True)
+        (archived_broken / "P00_discuss.md").write_text("# 舊歷史\n> 無合法標頭\n", encoding="utf-8")
+
+        verifier = PlanVerifier(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            templates_dir=self.templates_dir
+        )
+        reports = verifier.verify_all_plans()
+        self.assertIn("2026_08_20_1200_active_plan", reports)
+        self.assertEqual(len(reports), 1)
+        self.assertNotIn("2025_12_01_1000_broken_archived", reports)
         self.mark_passed()
