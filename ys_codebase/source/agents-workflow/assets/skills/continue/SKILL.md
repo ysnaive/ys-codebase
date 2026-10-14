@@ -5,7 +5,7 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue)。支�
 
 # 接續開發計畫工作流 (Continue)
 
-本工作流用於從已存在但尚未完成的開發計畫接續工作，支援 `handoff.md` 現場快照與狀態自動恢復。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
+本工作流用於從已存在但尚未完成的開發計畫接續工作，支援 `handoff.md` 現場快照與狀態自動恢復。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
 
 ---
 
@@ -99,8 +99,3 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue)。支�
 - **恢復依據**：[已成功載入 handoff.md 現場快照 / 依產出物檔案結構判定]
 - **下一步動作**：[極精簡說明接下來立即執行的 1 項具體動作]
 ```
-
----
-
-`__@{WORKFLOW_CONTINUE}__`
-

@@ -11,12 +11,12 @@ description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/�
 
 ## 1. 工作目錄與空間協議規範 (Workspace Protocols)
 
-- **進行中計畫 (Active Plans)**：`__${project://plans/}__/{YYYY_MM_DD_HHMM_功能名稱}/`
-- **歷史封存計畫 (Archived Plans)**：`__${project://plans/archived/}__/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`
+- **進行中計畫 (Active Plans)**：`__${project://plans}__/{YYYY_MM_DD_HHMM_功能名稱}/`
+- **歷史封存計畫 (Archived Plans)**：`__${project://plans/archived}__/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`
 - **長期策略路線圖 (Roadmap)**：`__${workflow.roadmap://}__`
 - **日誌分離鐵律**：
-  - `__${project://plans/}__/<plan>/changelog.md`（微觀日誌）：記錄階段流轉、DR 決策與偏差，建檔時**必須伴隨初始化**。
-  - [`__${project://CHANGELOG.md}__`](`__${project://CHANGELOG.md}__`)（宏觀日誌）：僅於 Phase 7 / FT-3 結案時追加高階變更摘要。
+  - `__${project://plans}__/<plan>/changelog.md`（微觀日誌）：記錄階段流轉、DR 決策與偏差，建檔時**必須伴隨初始化**。
+  - [`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`)（宏觀日誌）：僅於 Phase 7 / FT-3 結案時追加高階變更摘要。
 - [!] **巢狀子計畫最多兩層約束**：僅允許「主計畫 -> 子計畫（`sub_{編號}_{目的}/`）」，**絕對禁止三層或更多層嵌套**。
 
 ---
@@ -37,12 +37,12 @@ description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/�
 | **功能需求** | `FR-{XX}` | `FR-01` | 定義於 `P01`，1:1 追溯至 `P00` 原始語意 |
 | **邊界條件** | `EC-{XX}` | `EC-01` | 定義於 `P01`，涵蓋異常輸入、邊界與防禦行為 |
 | **非功能需求** | `NFR-{XX}` | `NFR-01` | 定義於 `P01`，涵蓋效能、資源、安全與指標約束 |
-| **決策紀錄** | `[{Phase}:DR-XX]` | `[P01:DR-01]` | 各階段關鍵架構與技術決策，Phase 前綴保證唯一 |
+| **決策紀錄** | `[{Phase}:DR-XX]` | `[P01:DR-XX]` | 各階段關鍵架構與技術決策，Phase 前綴保證唯一 |
 | **功能/邊界測試** | `FT-{XX}` / `ET-{XX}` | `FT-01`, `ET-01` | 對應 `FR-XX` / `EC-XX` 之測試案例 |
 | **回歸/效能測試** | `RT-{XX}` / `PT-{XX}` | `RT-01`, `PT-01` | 全系統既有功能回歸 / 效能量測測試案例 |
 | **UX / 缺陷紀錄** | `UX-{XX}` / `BUG-{XX}` | `UX-01`, `BUG-01` | 開發者實機 UX 驗證項 / 測試過程發現之缺陷 |
 
-$$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR/EC} \;\longrightarrow\; \texttt{[\{Phase\}:DR-XX]} \;\longrightarrow\; \texttt{API 簽名} \;\longrightarrow\; \texttt{程式碼} \;\longrightarrow\; \texttt{FT/ET/RT 測試} \;\longrightarrow\; \texttt{Review 審查} \;\longrightarrow\; \texttt{P07 成果}$$
+$$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR/EC} \;\longrightarrow\; \texttt{[\{Phase\}:DR-XX]} \;\longrightarrow\; \texttt{API 簽名} \;\longrightarrow\; \texttt{程式碼} \;\longrightarrow\; \texttt{FT/ET/RT 測試} \;\longrightarrow\; \texttt{P07 成果與 SOP 審查}$$
 
 ---
 
@@ -52,8 +52,8 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 | 計畫模式 | 核心特徵與週期 | 適用情境與判定標準 | 產出檔案矩陣 | 詳細手冊 |
 | :--- | :--- | :--- | :--- | :---: |
-| **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` -> `P01`~`P06` -> `Review` -> `P07` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track) |
-| **迅捷開發計畫 (Fast Track)** | 4-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` (含 Review 核驗) + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track) |
+| **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` -> `P01`~`P06` -> `P07 (含 SOP Review)` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track) |
+| **迅捷開發計畫 (Fast Track)** | 3-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` (含 Review 核驗) + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track) |
 | **修訂計畫 (Revision Plan)** | 短循環極速交付 | 文檔校閱、極小註解同步、常數微調，**免開實體目錄**保護 Token | 0 計畫文件 (僅呈遞極簡變更卡) | [模式詳解](./references/plan_modes.md#3-修訂計畫-revision-plan---短循環) |
 | **調研計畫 (Research Plan)** | 調研探索 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R01_{topic}` + `changelog` | [模式詳解](./references/plan_modes.md#4-調研計畫-research-plan---調研-track) |
 | **分類型主計畫 (Umbrella)** | 跨子計畫史詩統籌 | 統籌多個子計畫（B-1 預先規劃型 / B-2 增量演進型藍圖） | `umbrella_overview` + 各子計畫目錄 | [模式詳解](./references/plan_modes.md#5-分類型主計畫-umbrella) |
@@ -65,7 +65,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 > [!IMPORTANT]
 > **🚨 階段前置閱讀鐵律 (Mandatory Phase Reference Read)**：  
-> 開始任何一個階段（Phase 0~7 / Review 閘門 / Fast Track 各步驟）前，**強制必須先精讀下方導航矩陣對應之專屬作業手冊（分流 Reference）**，嚴禁憑記憶盲目推進或跳過階段指針！
+> 開始任何一個階段（Phase 0~7 / Fast Track 各步驟）前，**強制必須先精讀下方導航矩陣對應之專屬作業手冊（分流 Reference）**，嚴禁憑記憶盲目推進或跳過階段指針！
 
 | 階段 | 專屬作業手冊 | 產出檔案 / 卡片 |
 | :---: | :---: | :---: |
@@ -76,14 +76,13 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 | **Phase 4** | [P04 定稿審查](./references/phase_04_plan.md) | `P04_implementation_plan.md` |
 | **Phase 5** | [P05 任務實作](./references/phase_05_task.md) | `P05_task.md` |
 | **Phase 6** | [P06 測試驗證](./references/phase_06_test.md) | `P06_test_plan.md` |
-| **Review** | [SOP 結案審查](./references/review_gate.md) | Review Verdict 審查卡 |
-| **Phase 7** | [P07 成果展示](./references/phase_07_walkthrough.md) | `P07_walkthrough.md` |
+| **Phase 7** | [P07 結案與 SOP 審查](./references/phase_07_walkthrough.md) | `P07_walkthrough.md` |
 
 ---
 
 ## 6. 全階段模板指針 (Template Pointers)
 
-執行計畫落檔時，直接由下方對應模板路徑讀取（落檔時徹底剝除頂部 HTML 導引註解 `<!-- ... -->`）：
+執行計畫落檔時，直接由下方對應模板路徑讀取（落檔時務必將頂部標頭 `[...]` 佔位符全數替換為真實資訊，並在 `> 模型：` 欄位填入當前執行之 AI 後台模型名稱，且嚴禁包含任何 `<!-- ... -->` HTML 註解）：
 
 - **Phase 0**：[`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)
 - **Phase 1**：[`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)

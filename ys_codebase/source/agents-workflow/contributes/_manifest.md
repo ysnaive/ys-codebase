@@ -5,20 +5,19 @@
 ## 1. 外部注入清冊 (Egress Contributions)
 
 ### 1.1 `core.json`（微內核指令與 URI 擴充）
-- **語意 URI**：`workflow.plans://`（指向活躍計畫空間）、`workflow.standards://`、`workflow.templates://`。
+- **語意 URI**：`workflow.plans://`（活躍計畫空間）、`workflow.archived://`（封存歷史空間）、`workflow.docs://`（專案文檔空間）、`workflow.roadmap://`（路線圖空間）。
 - **CLI 指令樹**：
-  - `plans status`: 檢視當前活躍計畫進度與階段。
-  - `plans search`: 語意檢索歷史與活躍計畫。
-  - `plans verify`: 計畫合規性校驗。
-  - `plans archive`: 結案計畫封存歸檔。
-  - `workflow release`: 投影編譯規範資產至指定 target（如 antigravity）。
+  - `plan status` / `plan search` / `plan check` / `plan verify` / `plan archive`：Dev Plans 計畫生命週期管理工具鏈。
+  - `release` / `compile` / `list` / `tokens` / `release-target`：工作流與技能多目標編譯發布系統。
+  - `roadmap`：長期技術路線圖管理與推薦。
+  - `init`：工作流目錄結構與協議一鍵初始化。
 
 ### 1.2 `agents-workflow.json`（自身資產導出）
-- 導出 `NewPlan`, `Auto`, `Continue`, `Pause` 等標準工作流。
-- 導出 P00~P07 計畫模板與 `AgentsStandards` 核心規範。
+- 導出 12 大領域與工作流純 Skill 技能包（`.agents/skills/` 或 `.claude/skills/`）。
+- 導出 15 個標準計畫模板（P00~P07、Fast Track、Umbrella、Roadmap、Changelog 等）與 `AgentsStandards` 核心規範。
 
 ## 2. 開放擴充點清冊 (Ingress Points)
-- `export`: 允許其他領域模組導出 Skill、模板或標準資產。
-- `token`: 宣告模板可注入錨點。
+- `export`: 允許其他領域模組導出 Skill、模板或標準規範資產。
+- `token`: 宣告動態注入錨點（如 `PHASEXX_HEADER`、`AGENTS_SKILL_ROUTING` 等）。
 - `insert`: 允許向特定錨點注入內容。
-- `release_target`: 允許擴充第三方 IDE 或目標平台投影規則。
+- `release_target`: 允許擴充第三方 IDE 或目標平台投影規則（如 `antigravity`, `claude`, `codex`）。

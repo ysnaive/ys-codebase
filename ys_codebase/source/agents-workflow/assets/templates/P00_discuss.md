@@ -2,8 +2,6 @@
 
 `__@{PHASEXX_HEADER}__`
 
-`__@{PHASE00_HEADER}__`
-
 > 計畫類型：[Feature | Refactor | Bug Fix | Performance | Docs | Revision | Research]  
 > 模板版本：v1.2  
 
@@ -26,5 +24,3 @@
 ## 3. 開放議題與確認紀錄
 
 - [ ] 
-
-`__@{PHASE00_TEMPLATE}__`

@@ -349,11 +349,8 @@ class ArtifactCompiler:
             has_remaining = any(TOKEN_ANCHOR_INNER_REGEX.search(cs) for cs in code_spans)
             if not has_remaining:
                 break
-
         return resolved_text
 
-        # Step 5: 保持 __#{uri}__ 語意標籤原樣，返回純淨中繼字串
-        return resolved_text
 
     def resolve_stage1_content(self, content: str, inserts: List[Dict[str, Any]], context: Optional[Any] = None) -> str:
         """Stage 1: 解算內容佔位符別名。"""
@@ -573,20 +570,21 @@ class ArtifactCompiler:
                         res = res + "/"
                     return res
 
-            # 嘗試正規化短名匹配
-            for s_key, t_abs in deployment_map.items():
-                if tag_uri.endswith(s_key) or s_key.endswith(tag_uri):
-                    try:
-                        rel_p = os.path.relpath(t_abs, cur_dir).replace("\\", "/")
-                        res = rel_p if rel_p.startswith(".") else f"./{rel_p}"
-                        if tag_uri.endswith("/") and not res.endswith("/"):
-                            res = res + "/"
-                        return res
-                    except Exception:
-                        res = t_abs.replace("\\", "/")
-                        if tag_uri.endswith("/") and not res.endswith("/"):
-                            res = res + "/"
-                        return res
+            # 嘗試正規化短名匹配（僅限 module://、config:// 或純短名，嚴禁攔截 project:// 與 workflow.*://）
+            if not tag_uri.startswith(("project://", "workflow.", "yscb.")):
+                for s_key, t_abs in deployment_map.items():
+                    if tag_uri.endswith(s_key) or s_key.endswith(tag_uri):
+                        try:
+                            rel_p = os.path.relpath(t_abs, cur_dir).replace("\\", "/")
+                            res = rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                            if tag_uri.endswith("/") and not res.endswith("/"):
+                                res = res + "/"
+                            return res
+                        except Exception:
+                            res = t_abs.replace("\\", "/")
+                            if tag_uri.endswith("/") and not res.endswith("/"):
+                                res = res + "/"
+                            return res
 
             # --- Tier 2: 專案級語意協議 ---
             if uri and "://" in tag_uri:
@@ -610,11 +608,11 @@ class ArtifactCompiler:
                 return project_root
 
             anchor_abs = None
-            # 1. 嘗試命中 deployment_map
+            # 1. 嘗試命中 deployment_map（僅限 module://、config:// 或純短名）
             if deployment_map:
                 if anchor_str in deployment_map:
                     anchor_abs = deployment_map[anchor_str]
-                else:
+                elif not anchor_str.startswith(("project://", "workflow.", "yscb.")):
                     for s_key, cand_abs in deployment_map.items():
                         if anchor_str.endswith(s_key) or s_key.endswith(anchor_str):
                             anchor_abs = cand_abs
@@ -641,12 +639,12 @@ class ArtifactCompiler:
                 return os.path.dirname(anchor_abs) if ext else anchor_abs
 
         def _resolve_project_uri(tag_uri: str, anchor: Optional[str] = None) -> str:
-            # --- Tier 1: Target 部署投影映射優先 ---
+            # --- Tier 1: Target 部署投影映射優先（僅限 module://、config:// 或純短名） ---
             t_abs = None
             if deployment_map:
                 if tag_uri in deployment_map:
                     t_abs = deployment_map[tag_uri]
-                else:
+                elif not tag_uri.startswith(("project://", "workflow.", "yscb.")):
                     for s_key, cand_abs in deployment_map.items():
                         if tag_uri.endswith(s_key) or s_key.endswith(tag_uri):
                             t_abs = cand_abs
@@ -698,6 +696,7 @@ class ArtifactCompiler:
                     lambda m: _resolve_project_uri(m.group(2).strip(), anchor=m.group(1).strip() if m.group(1) else None),
                     block_text
                 )
+            block_text = re.sub(r"(?<![a-zA-Z0-9_\+\-]:)/{2,}", "/", block_text)
             return block_text
 
         def _replace_in_code_span(match: re.Match) -> str:
@@ -726,13 +725,20 @@ class ArtifactCompiler:
                     lambda m: _resolve_project_uri(m.group(2).strip(), anchor=m.group(1).strip() if m.group(1) else None),
                     inner
                 )
+            inner = re.sub(r"(?<![a-zA-Z0-9_\+\-]:)/{2,}", "/", inner)
 
             return f"`{inner}`"
 
         res_fenced = FENCED_CODE_BLOCK_REGEX.sub(_replace_in_fenced_block, content)
         res_spans = CODE_SPAN_REGEX.sub(_replace_in_code_span, res_fenced)
-        # 清理 Markdown 超連結括號內殘留的多餘反引號: [text](`path`) -> [text](path)
-        res_clean = re.sub(r"\]\(`([^`\r\n]+)`\)", r"](\1)", res_spans)
+        # 清理 Markdown 超連結括號內殘留的多餘反引號與連續斜線: [text](`path`) -> [text](path)
+        def _clean_md_link(match: re.Match) -> str:
+            path = match.group(1)
+            if not re.match(r"^[a-zA-Z0-9_\+\-]+://", path):
+                path = re.sub(r"/{2,}", "/", path)
+            return f"]({path})"
+
+        res_clean = re.sub(r"\]\(`?([^`\r\n\)]+)`?\)", _clean_md_link, res_spans)
         return res_clean
 
     resolve_stage2_uris = resolve_stage2_uri

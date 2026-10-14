@@ -96,14 +96,7 @@ class PlanReport:
         raise IndexError("PlanReport index out of range (0=passed, 1=errors)")
 
 
-def _resolve_uri_path(uri: str) -> Optional[Path]:
-    """安全解析語意 URI，若無 core 上下文則回傳 None。"""
-    try:
-        from core.uri import resolve
-        resolved = resolve(uri)
-        return Path(resolved).resolve()
-    except Exception:
-        return None
+from . import _resolve_uri_path
 
 
 class PlanVerifier:
@@ -122,14 +115,18 @@ class PlanVerifier:
 
     # 模板佔位符正則（未替換即違規）
     PLACEHOLDER_PATTERNS = [
-        r"\[YYYY-MM-DD\]",
+        r"\[YYYY-MM-DD(?:\s+HH:MM)?\]",
         r"\[功能名稱\]",
         r"\[計畫名稱\]",
         r"\[所屬主計畫\]",
         r"\[待填寫\]",
         r"\[專案名稱\]",
-        r"\[Draft \| Confirmed \| In Progress \| Passed \| Completed\]",
+        r"\[模型名稱\]",
+        r"\[Model Name\]",
+        r"\[主題名稱\]",
+        r"\[Draft \|(?:\s*Discussing \|)?\s*Confirmed \| In Progress \| Passed \| Completed\]",
         r"\[Feature \| Refactor \| Bug Fix \| Performance \| Docs\]",
+        r"\{\{\s*\.\.\.\s*\}\}",
     ]
 
     def __init__(
@@ -144,19 +141,12 @@ class PlanVerifier:
         if plans_dir is not None:
             self.plans_dir = Path(plans_dir).resolve()
         else:
-            res_plans = _resolve_uri_path("workflow.plans://")
-            self.plans_dir = res_plans if res_plans else Path.cwd() / "plans"
+            self.plans_dir = _resolve_uri_path("workflow.plans://", default_fallback="plans")
 
         if archive_dir is not None:
             self.archive_dir = Path(archive_dir).resolve()
         else:
-            res_arch = _resolve_uri_path("workflow.archived://")
-            if res_arch:
-                self.archive_dir = res_arch
-            elif (Path.cwd() / "plans" / "archive").is_dir():
-                self.archive_dir = Path.cwd() / "plans" / "archive"
-            else:
-                self.archive_dir = Path.cwd() / "archive_plans"
+            self.archive_dir = _resolve_uri_path("workflow.archived://", default_fallback="plans/archived")
 
         if templates_dir is not None:
             self.templates_dir = Path(templates_dir).resolve()
@@ -220,22 +210,9 @@ class PlanVerifier:
                 tmpl_path = cand
 
         if not tmpl_path:
-            # 嘗試透過 ArtifactCompiler 動態解析模板內容
-            try:
-                from ..compiler import ArtifactCompiler
-                compiler = ArtifactCompiler()
-                content = compiler.compile_artifact("template", template_name)
-                if content:
-                    for line in content.splitlines():
-                        line_s = line.strip()
-                        if line_s.startswith("##") or line_s.startswith("###"):
-                            norm = self.normalize_header_title(line_s)
-                            if norm and len(norm) >= 2:
-                                headers.append(norm)
-                    self._template_headers_cache[template_name] = headers
-                    return headers
-            except Exception:
-                pass
+            cand = Path(__file__).resolve().parent.parent / "assets" / "templates" / template_name
+            if cand.exists():
+                tmpl_path = cand
 
 
         if tmpl_path and tmpl_path.exists():
@@ -387,6 +364,22 @@ class PlanVerifier:
                         message="'changelog.md' 尚無任何已記錄之變更或 Phase 推進條目。",
                     )
                 )
+
+            # 檢查佔位符 (排除行內代碼反引號)
+            for pat in self.PLACEHOLDER_PATTERNS:
+                for idx, line in enumerate(lines, 1):
+                    line_clean = re.sub(r"`.*?`", "", line)
+                    if re.search(pat, line_clean):
+                        report.issues.append(
+                            PlanIssue(
+                                severity=PlanSeverity.FAIL,
+                                file_name=rel_file_name,
+                                line_number=idx,
+                                category="PLACEHOLDER",
+                                message=f"檢測到未替換之模板佔位符：'{re.search(pat, line_clean).group(0)}'。",
+                            )
+                        )
+                        break
         except Exception as e:
             report.issues.append(
                 PlanIssue(
@@ -456,17 +449,21 @@ class PlanVerifier:
 
 
         # 2. Header 元數據檢查 (FR-03)
+        is_handoff = os.path.basename(rel_file_name) == "handoff.md"
         headers = self.parse_plan_header(lines)
         has_name = any(k in headers for k in [
-            "功能名稱", "計畫名稱", "name", "title", "調研主題", "topic", "subject", "主題"
+            "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題"
         ])
         has_date = any(k in headers for k in [
-            "建立日期", "完成日期", "date", "created_at", "日期", "time", "timestamp"
+            "建立日期", "完成日期", "暫停時間", "date", "created_at", "日期", "time", "timestamp"
         ])
         has_status = any(k in headers for k in [
-            "狀態", "status", "調研狀態", "research_status", "plan_status", "計畫狀態", "進度"
+            "狀態", "status", "調研狀態", "research_status", "plan_status", "計畫狀態", "進度", "當前所在階段"
         ])
-        has_parent = any(k in headers for k in ["所屬主計畫", "parent_plan", "主計畫", "parent"])
+        has_parent = any(k in headers for k in ["所屬主計畫", "所屬計畫", "parent_plan", "主計畫", "parent"])
+        has_model = any(k in headers for k in [
+            "模型", "model", "ai_model", "ai-model", "模型名稱", "model_name"
+        ])
 
         if not has_name:
             report.issues.append(
@@ -474,7 +471,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="Header Blockquote 缺少 [功能名稱] (或 [調研主題]) 欄位。",
+                    message="Header Blockquote 缺少 [功能名稱] (或 [調研主題] / [所屬計畫]) 欄位。",
                 )
             )
         if not has_date:
@@ -483,7 +480,16 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="Header Blockquote 缺少 [建立日期] 欄位。",
+                    message="Header Blockquote 缺少 [建立日期] (或 [暫停時間]) 欄位。",
+                )
+            )
+        if not has_model:
+            report.issues.append(
+                PlanIssue(
+                    severity=PlanSeverity.FAIL,
+                    file_name=rel_file_name,
+                    category="HEADER",
+                    message="Header Blockquote 缺少 [模型] (或 model) 欄位，必須記錄撰寫/執行該檔案之後台模型名稱。",
                 )
             )
         if not has_status:
@@ -492,10 +498,10 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="Header Blockquote 缺少 [狀態] 欄位。",
+                    message="Header Blockquote 缺少 [狀態] (或 [當前所在階段]) 欄位。",
                 )
             )
-        else:
+        elif not is_handoff:
             # 校驗狀態合法性
             status_val = (
                 headers.get("狀態")
@@ -512,9 +518,24 @@ class PlanVerifier:
                         severity=PlanSeverity.FAIL,
                         file_name=rel_file_name,
                         category="HEADER",
-                        message=f"狀態值 '{status_val}' 非合法狀態（合法值：Draft, Confirmed, In Progress, Passed, Completed 等）。",
+                        message=f"狀態值 '{status_val}' 非合法狀態（合法值：Draft, Discussing, Confirmed, In Progress, Passed, Completed 等）。",
                     )
                 )
+            elif status_val in ("completed", "concluded"):
+                unchecked_lines = [
+                    idx for idx, line in enumerate(non_code_lines, 1)
+                    if re.search(r"^\s*-\s*\[\s*\]\s+", line)
+                ]
+                if unchecked_lines:
+                    report.issues.append(
+                        PlanIssue(
+                            severity=PlanSeverity.FAIL,
+                            file_name=rel_file_name,
+                            line_number=unchecked_lines[0],
+                            category="CHECKLIST",
+                            message=f"計畫狀態為 '{status_val}'，但檔案中仍包含 {len(unchecked_lines)} 處未勾選之待辦 Checkbox (- [ ])。結案前必須全數完成或妥善處置。",
+                        )
+                    )
 
         if is_sub_plan and not has_parent:
             report.issues.append(
@@ -611,7 +632,7 @@ class PlanVerifier:
         # Stage 4: Verify Markdown Files in Root
         is_sub = p.name.startswith("sub_")
         for md in sorted(p.glob("*.md")):
-            if md.name in ("changelog.md", "handoff.md"):
+            if md.name == "changelog.md":
                 continue
             self._verify_markdown_file(md, md.name, is_sub, report)
 
@@ -622,7 +643,7 @@ class PlanVerifier:
                 sub_changelog = sub / "changelog.md"
                 self._check_changelog_content(sub_changelog, f"{sub.name}/changelog.md", report)
                 for sub_md in sorted(sub.glob("*.md")):
-                    if sub_md.name in ("changelog.md", "handoff.md"):
+                    if sub_md.name == "changelog.md":
                         continue
                     self._verify_markdown_file(
                         sub_md, f"{sub.name}/{sub_md.name}", True, report
@@ -640,22 +661,13 @@ class PlanVerifier:
 
     def verify_all_plans(self, include_archived: bool = False) -> Dict[str, PlanReport]:
         """
-        全量檢核所有活躍（及歷史）計畫。
+        全量檢核所有活躍計畫（已封存計畫視為歷史存檔，不進行檢查）。
         """
         results: Dict[str, PlanReport] = {}
         if self.plans_dir.exists():
             for item in sorted(self.plans_dir.iterdir(), key=lambda x: x.name):
                 if item.is_dir() and not item.name.startswith(".") and re.match(r"^\d{4}_\d{2}_\d{2}", item.name):
                     results[item.name] = self.verify_plan(item)
-
-        if include_archived and self.archive_dir.exists():
-            for y in sorted(self.archive_dir.iterdir(), key=lambda x: x.name):
-                if y.is_dir() and re.match(r"^\d{4}$", y.name):
-                    for m in sorted(y.iterdir(), key=lambda x: x.name):
-                        if m.is_dir() and re.match(r"^\d{2}$", m.name):
-                            for p in sorted(m.iterdir(), key=lambda x: x.name):
-                                if p.is_dir() and not p.name.startswith(".") and re.match(r"^\d{4}_\d{2}_\d{2}", p.name):
-                                    results[f"archived/{y.name}/{m.name}/{p.name}"] = self.verify_plan(p)
 
         return results
 

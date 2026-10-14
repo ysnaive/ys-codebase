@@ -2,8 +2,6 @@
 
 `__@{PHASEXX_HEADER}__`
 
-`__@{PHASE03_HEADER}__`
-
 > 模板版本：v1.2  
 
 ---
@@ -27,5 +25,3 @@
 
 ```text
 ```
-
-`__@{PHASE03_TEMPLATE}__`
