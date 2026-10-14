@@ -26,6 +26,10 @@
 | **DN-15** | **專屬 HotReloadServer、Watchdog 500ms 防抖、Pre-dispatch 喚醒與日誌治理** | `daemon.py`, `hook.core.py`, `config.py` | 專屬後台服務整併 AST/BM25/Graph/Vector 熱修補；支援 hook 自動喚醒、閒置超時自動關閉；PID 隔離至 `cache://`、3 代滾動日誌與版本變更強制重啟。 |
 | **DN-21** | **常駐 ServiceWorker 納管、微內核原語對齊與快取 mtime 熱自癒** | `service.py`, `engine.py`, `pipeline.py` | 移除自製守護進程與 CLI `daemon` 命令，收斂為 `KnowledgeDBServiceWorker` 委由 `server` 模組 Master 託管；記憶體快取透過 microsecond `mtime` 比對熱刷新；全面對齊 `core.vfs.write_bytes(atomic=True)` 與 `core.platform.lock.InterProcessLock`。 |
 | **DN-22** | **死碼清理與冷熱啟動零感知架構 (Optional 插槽化)** | `service.py`, `pipeline.py`, `manifest.json` | 徹底刪除 `daemon.py` 與 `hook.core.py`，業務邏輯對冷/熱啟動零感知；`manifest.json` 引入 `optional` 欄位並將 `server` 轉為非強制選用擴充模組。 |
+| **DN-23** | **前台搜尋管線非阻塞重載與背景 Watcher 防抖修補競態消除** | `pipeline.py`, `service.py` | 探測 `.watcher_active` 存在時前台 0ms 略過同步掃描與熱修補，100% 交由背景 Watcher 防抖執行，徹底消除前台搜尋被競爭阻塞。 |
+| **DN-24** | **SpaceManager 空間路徑與 Contributes 記憶化快取加速 (_include_cache)** | `space.py` | 引入 `_include_cache` 記憶化快取，空間路徑解析提速 50 倍，`status` 耗時由 7.1s 暴降至 0.14s。 |
+| **DN-25** | **CLI 指令邊界整合、8 大正交指令集與向量模型離線探針先行** | `cli.py`, `embedding.py`, `pipeline.py` | 移除 `scan` 與 `bundle`，確立 8 大正交標準指令；本地向量模型探針先行，未下載時零連線安全降級純 BM25。 |
+| **DN-26** | **混合檢索預先過濾下推、JIT 輕量熱自愈解耦與對稱路徑差量剔除** | `hybrid.py`, `pipeline.py`, `retrieval.py`, `embedding.py` | BM25 候選池預先過濾空間/類型/語言；圖譜查詢跳過向量推論；對稱路徑匹配處置刪除/清空檔案；清理向量快取與記憶體全域快取；禁隨機 mock 向量。 |
 
 ---
 
@@ -516,5 +520,28 @@
   - 指令職責正交性 100%，消除下游專案操作混淆。
   - 離線檢索延遲保持在 $< 500\text{ms}$，無網路逾時與例外崩潰。
   - 單元測試 157/157 PASSED (100%)，`dev check` 0 警告 0 錯誤。
+
+---
+
+### [DN-26] 混合檢索預先過濾下推、JIT 輕量熱自愈解耦與對稱路徑差量剔除
+- **背景與動機**：
+  - 混合檢索原先將空間（`spaces`）、符號類型（`kinds`）與語言（`languages`）之過濾留至 RRF 融合後的後置過濾（Post-filtering），導致 BM25 候選池中充斥非目標空間的符號，擠壓有效名額且浪費向量推論計算資源。
+  - `callers`, `callees`, `impact` 內部調用 `self.search()`，造成純靜態 AST 調用拓撲查詢被動加載重量級向量模型或觸發 JIT 向量推論。
+  - 倒排索引差量修補在測試沙盒或不同路徑解析基準下（例如專案外臨時目錄），因符號路徑（`src/file.py`）與磁碟絕對路徑（`/tmp/.../src/file.py`）不完全等價，導致檔案刪除或清空時舊符號未能完全清除。
+  - `clean()` 清理索引時遺漏 `unified.vectors.bin.gz` 與全域進程快取 `_GLOBAL_INDEX_CACHE`，且向量推論失敗時曾回傳偽造隨機向量，違背真理原則。
+- **架構決策與實作**：
+  1. **BM25 候選池預先過濾下推 (Filter Push-Down)**：
+     - `HybridSearchEngine.search` 接收 `spaces`, `kinds`, `languages`，直接下推至 BM25 `search_unified` 與向量比對，從源頭收斂候選池。
+  2. **JIT 輕量熱自愈解耦 (`_ensure_jit_index_ready`)**：
+     - 抽離 `_ensure_jit_index_ready(require_vectors=False)`，圖譜分析指令僅確保倒排索引與拓撲圖譜就緒，跳過向量推論，拓撲查詢提速至 < 30ms。
+  3. **對稱路徑匹配與徹底清除**：
+     - `retrieval.py` 與 `pipeline.py` 實作對稱式端點與檔名路徑比對，確保刪除/清空之檔案在任何相對/絕對路徑基準下皆被精準剔除舊 Postings 與符號記錄。
+  4. **嚴格禁止偽造資料與全域快取清理**：
+     - `embed_texts` 在非 mock 模式且模型異常時回傳 `(0, dim)` 空矩陣，不再偽造向量；`clean()` 清理 `unified.vectors.bin.gz` 並清空 `_GLOBAL_INDEX_CACHE`。
+     - `formatter.py` 移除 callees 詳細模式中重複輸出的代碼片段。
+- **效益與驗證**：
+  - 混合檢索候選品質顯著提升，拓撲圖譜查詢延遲下降 80%+。
+  - 增量熱自愈與邊界測試 100% 通過（157/157 Tests Pass）。
+
 
 

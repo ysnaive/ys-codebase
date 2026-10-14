@@ -497,13 +497,15 @@ class InvertedIndex:
         for doc_id, sym in list(self.symbols.items()):
             sym_path_norm = sym.file_path.replace("\\", "/").lower()
             sym_filename = Path(sym_path_norm).name
-            if any(
-                sym_path_norm == p
-                or p.endswith("/" + sym_path_norm)
-                or sym_path_norm.endswith("/" + p)
-                or Path(p).name == sym_filename
-                for p in dirty_paths_norm
-            ):
+            matched = False
+            for p in dirty_paths_norm:
+                if sym_path_norm == p or p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p):
+                    matched = True
+                    break
+                if "/" not in p and sym_filename == p:
+                    matched = True
+                    break
+            if matched:
                 doc_ids_to_remove.append(doc_id)
 
         doc_ids_set = set(doc_ids_to_remove)

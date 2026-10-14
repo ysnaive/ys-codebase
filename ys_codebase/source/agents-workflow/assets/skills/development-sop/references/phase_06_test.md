@@ -40,7 +40,7 @@
 ## [GUARD] 4. 除錯排查與防淺層修復 (Anti-Blind Patching)
 
 - **本體優先階層**：排查錯誤優先排查當前組件內部邏輯與傳參，未排除自身問題前禁止深入下游外部模組。
-- **連續失敗阻斷**：同一問題連續 2 次修復失敗或破壞 API 簽名時，**強制停手發起 [/Discuss](`__#{module://agents-workflow/assets/workflows/Discuss.md}__`) 進行 5-Whys 根因分析**。
+- **連續失敗阻斷**：同一問題連續 2 次修復失敗或破壞 API 簽名時，**強制停手發起 [/discuss](`__#{module://agents-workflow/assets/skills/discuss/SKILL.md}__`) 進行 5-Whys 根因分析**。
 
 ---
 

@@ -1,3 +1,10 @@
+---
+title: contributes.knowledge-db 擴充點注入指南
+category: guide
+module: knowledge-db
+updated_at: 2026-10-14
+---
+
 # `contributes.knowledge-db` 擴充點注入指南 (Contributes Guide)
 
 > 本文件指導 YS-Codebase 生態中的 Donor 模組如何透過 `contributes.knowledge-db` 宣告並注入自訂空間 (Spaces) 與同義詞庫 (Thesaurus)。
@@ -6,18 +13,18 @@
 
 ## 1. 注入途徑與格式 (Injection Pathways)
 
-### 途徑 A：獨立貢獻檔案 (`module://<donor>/contributes.knowledge-db.json`)【推薦】
+### 途徑 A：獨立貢獻檔案 (`module://<donor>/contributes/knowledge-db.json`)【推薦】
 
-在模組根目錄建立 `contributes.knowledge-db.json`：
+在模組 `contributes/` 目錄下建立 `knowledge-db.json`：
 
 ```json
 {
   "spaces": {
     "agents_workflow_docs": {
-      "description": "agents-workflow 工作流規範與文檔空間",
+      "description": "agents-workflow 規範與技能空間",
       "include": [
         "module://agents-workflow/assets/standards",
-        "module://agents-workflow/assets/workflows"
+        "module://agents-workflow/assets/skills"
       ],
       "exclude": [
         "**/__pycache__/**"

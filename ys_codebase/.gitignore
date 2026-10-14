@@ -11,4 +11,6 @@
 *.local.json
 __pycache__/
 *.pyc
+yscb.py.bak
+*.bak
 # === YSCB INTERNAL IGNORE END ===

@@ -415,11 +415,13 @@ class ArtifactCompiler:
             source_p = exp.get("source", "")
             exp_name = exp.get("name", "")
 
+            if exp_type in ("workflow", "workflows"):
+                print(f"[compiler:notice] Legacy export type 'workflow' for '{source_p}' automatically converted to 'skill'", file=sys.stderr)
+                exp_type = "skill"
+
             folder_map = {
                 "standard": "standards",
                 "standards": "standards",
-                "workflow": "workflows",
-                "workflows": "workflows",
                 "template": "templates",
                 "templates": "templates",
                 "skill": "skills",
@@ -433,6 +435,31 @@ class ArtifactCompiler:
                 continue
 
             is_directory = os.path.isdir(real_src_path)
+
+            if exp_type in ("skill", "skills") and not is_directory:
+                skill_pkg_name = exp_name or os.path.splitext(os.path.basename(source_p.rstrip("/\\")))[0]
+                raw_text = self._read_file_content(source_p)
+                if not raw_text:
+                    errors.append(f"Cannot read export source: {source_p}")
+                    continue
+                try:
+                    ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
+                    stage1_content = self.resolve_single_artifact(raw_text, inserts, context=ctx)
+                    cache_uri = f"{cache_target_root}/skills/{skill_pkg_name}/SKILL.md"
+                    actual_cache = self._write_cache_file(cache_uri, stage1_content)
+                    resolved_items.append({
+                        "export": exp,
+                        "sub_folder": "skills",
+                        "base_name": "SKILL.md",
+                        "rel_path": "SKILL.md",
+                        "cache_uri": actual_cache,
+                        "content": stage1_content,
+                        "is_skill": True,
+                        "skill_name": skill_pkg_name
+                    })
+                except Exception as e:
+                    errors.append(f"Failed Stage 1 for legacy workflow {skill_pkg_name}: {e}")
+                continue
 
             if is_directory:
                 skill_files = self._scan_directory_files(source_p)
@@ -536,25 +563,40 @@ class ArtifactCompiler:
                 target_abs = deployment_map[tag_uri]
                 try:
                     rel_p = os.path.relpath(target_abs, cur_dir).replace("\\", "/")
-                    return rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                    res = rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                    if tag_uri.endswith("/") and not res.endswith("/"):
+                        res = res + "/"
+                    return res
                 except Exception:
-                    return target_abs.replace("\\", "/")
+                    res = target_abs.replace("\\", "/")
+                    if tag_uri.endswith("/") and not res.endswith("/"):
+                        res = res + "/"
+                    return res
 
             # 嘗試正規化短名匹配
             for s_key, t_abs in deployment_map.items():
                 if tag_uri.endswith(s_key) or s_key.endswith(tag_uri):
                     try:
                         rel_p = os.path.relpath(t_abs, cur_dir).replace("\\", "/")
-                        return rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                        res = rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                        if tag_uri.endswith("/") and not res.endswith("/"):
+                            res = res + "/"
+                        return res
                     except Exception:
-                        return t_abs.replace("\\", "/")
+                        res = t_abs.replace("\\", "/")
+                        if tag_uri.endswith("/") and not res.endswith("/"):
+                            res = res + "/"
+                        return res
 
             # --- Tier 2: 專案級語意協議 ---
             if uri and "://" in tag_uri:
                 try:
                     real_p = uri.resolve(tag_uri, interactive=False)
                     rel_p = os.path.relpath(real_p, cur_dir).replace("\\", "/")
-                    return rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                    res = rel_p if rel_p.startswith(".") else f"./{rel_p}"
+                    if tag_uri.endswith("/") and not res.endswith("/"):
+                        res = res + "/"
+                    return res
                 except Exception:
                     pass
 
@@ -615,7 +657,14 @@ class ArtifactCompiler:
                 try:
                     t_abs = uri.resolve(tag_uri, interactive=False)
                 except Exception as e:
-                    print(f"[compiler:warning] Failed to resolve project URI '{tag_uri}' in '{os.path.basename(current_dst_path)}': {e}", file=sys.stderr)
+                    if tag_uri.startswith("workflow.docs://"):
+                        t_abs = os.path.join(project_root, "docs", tag_uri[len("workflow.docs://"):])
+                    elif tag_uri.startswith("workflow.plans://"):
+                        t_abs = os.path.join(project_root, "plans", tag_uri[len("workflow.plans://"):])
+                    elif tag_uri.startswith("workflow.archived://"):
+                        t_abs = os.path.join(project_root, "plans", "archive", tag_uri[len("workflow.archived://"):])
+                    else:
+                        print(f"[compiler:warning] Failed to resolve project URI '{tag_uri}' in '{os.path.basename(current_dst_path)}': {e}", file=sys.stderr)
 
             if t_abs:
                 try:
@@ -625,9 +674,14 @@ class ArtifactCompiler:
                         return ""
                     if rel_p.startswith("./"):
                         rel_p = rel_p[2:]
+                    if tag_uri.endswith("/") and not rel_p.endswith("/") and rel_p != "":
+                        rel_p = rel_p + "/"
                     return rel_p
                 except Exception:
-                    return t_abs.replace("\\", "/")
+                    res = t_abs.replace("\\", "/")
+                    if tag_uri.endswith("/") and not res.endswith("/"):
+                        res = res + "/"
+                    return res
 
             return tag_uri
 
@@ -676,7 +730,12 @@ class ArtifactCompiler:
             return f"`{inner}`"
 
         res_fenced = FENCED_CODE_BLOCK_REGEX.sub(_replace_in_fenced_block, content)
-        return CODE_SPAN_REGEX.sub(_replace_in_code_span, res_fenced)
+        res_spans = CODE_SPAN_REGEX.sub(_replace_in_code_span, res_fenced)
+        # 清理 Markdown 超連結括號內殘留的多餘反引號: [text](`path`) -> [text](path)
+        res_clean = re.sub(r"\]\(`([^`\r\n]+)`\)", r"](\1)", res_spans)
+        return res_clean
+
+    resolve_stage2_uris = resolve_stage2_uri
 
     def compile_all(self) -> Dict[str, Any]:
         """相容性別名：執行 Stage 1 快取物化編譯。"""

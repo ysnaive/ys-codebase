@@ -53,6 +53,10 @@ _MODULE_MAP = {
     "VirtualPath": ("core.vfs", "VirtualPath"),
     "platform": ("core.platform", None),
     "commands": ("core.commands", None),
+    "config": ("core.config", None),
+    "validator": ("core.validator", None),
+    "providers": ("core.providers", None),
+    "ide_projector": ("core.ide_projector", None),
 }
 
 
@@ -81,6 +85,7 @@ __all__ = [
     "Installer",
     "generate_internal_gitignore",
     "UpdateChecker",
+    "update_checker",
     "events",
     "symbols",
     "resolve_callable",
@@ -97,4 +102,8 @@ __all__ = [
     "VirtualPath",
     "platform",
     "commands",
+    "config",
+    "validator",
+    "providers",
+    "ide_projector",
 ]

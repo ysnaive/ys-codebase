@@ -225,17 +225,25 @@ def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
 
 
 
+_SCHEMES_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+
+
 def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
     """
-    Reads contributed URI schemes from merged cache.
+    Reads contributed URI schemes from merged cache with in-memory (mtime, data) cache.
     """
     merged_cfg = os.path.join(yscb_dir, ".cache", "core", "contributes.merged.json")
     try:
         from core import vfs
         if vfs.is_file(merged_cfg):
+            mtime = os.path.getmtime(merged_cfg)
+            cached = _SCHEMES_CACHE.get(yscb_dir)
+            if cached and cached[0] == mtime:
+                return cached[1]
             data = vfs.read_json(merged_cfg)
             schemes = data.get("uri_schemes", [])
             if isinstance(schemes, list) and len(schemes) > 0:
+                _SCHEMES_CACHE[yscb_dir] = (mtime, schemes)
                 return schemes
     except Exception:
         pass
@@ -377,6 +385,11 @@ def reconcile_undefined_uri(
             curr[keys[-1]] = input_val
             
             vfs.write_json(mod_proj_cfg, cfg_data, indent=2, atomic=True)
+            try:
+                from core import config
+                config.reload(provider_name)
+            except Exception:
+                pass
             
             print(f"[{provider_name}] 已成功寫入設定檔: '{binding_key}' = '{input_val}'")
             
@@ -509,7 +522,8 @@ def resolve(
                 if rel:
                     resolved_path = os.path.normpath(os.path.join(target_base, rel))
                     # Security Sandbox Guard (EC-02): Prevent path traversal escaping target_base
-                    if not resolved_path.startswith(target_base) and ".." in rel:
+                    is_safe = (resolved_path == target_base) or resolved_path.startswith(target_base + os.sep)
+                    if not is_safe and ".." in rel:
                         raise PermissionError(f"Path traversal detected in URI '{uri}': escaped root '{target_base}'.")
                     return resolved_path
                 return os.path.normpath(target_base)
@@ -581,10 +595,12 @@ def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
             
     check_order: List[Tuple[str, str]] = []
     for token, scheme in token_map.items():
-        if scheme.get("type") == "const":
+        stype = scheme.get("type")
+        if stype in ("const", "config"):
             try:
                 base_p = resolve(f"{token}://", current_module=mod, interactive=False)
-                check_order.append((base_p, f"{token}://"))
+                if base_p:
+                    check_order.append((base_p, f"{token}://"))
             except Exception:
                 pass
                 

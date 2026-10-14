@@ -415,12 +415,12 @@ class TestReleasePublisherDiff(YSCBTestCase):
 
             context_init_item = None
             for item in res1.get("resolved_items", []):
-                if "ContextInit" in item.get("base_name", ""):
+                if item.get("skill_name") == "context-init" or "context-init" in item.get("export", {}).get("name", ""):
                     context_init_item = item
                     break
             self.assertIsNotNone(context_init_item)
 
-            dummy_dest = os.path.join(os.getcwd(), ".agents", "workflows", "ContextInit.md")
+            dummy_dest = os.path.join(os.getcwd(), ".agents", "skills", "context-init", "SKILL.md")
             cur_dir = os.path.dirname(dummy_dest)
             dep_map = {}
             stage2_text = self.compiler.resolve_stage2_uri(context_init_item["content"], dummy_dest, dep_map)

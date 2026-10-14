@@ -112,32 +112,32 @@ python yscb.py agents-workflow plan search "CLI 權限"
 python yscb.py agents-workflow plan archive 2026_08_29_2035_my_feature
 
 # 一鍵初始化工作流目錄與語意空間協議
-python yscb.py agents-workflow plan --init-default
+python yscb.py agents-workflow init --default [-y]
 ```
 
 ### 5.2 長期策略路線圖 (Roadmap Management)
 
 ```bash
-# 列出所有長期策略路線圖摘要表格
-python yscb.py agents-workflow roadmap --list
+# 列出所有長期策略路線圖摘要表格 (支援 --status 過濾)
+python yscb.py agents-workflow roadmap [--list] [--status=Candidate]
 
 # 檢視特定主題路線圖詳細內容
 python yscb.py agents-workflow roadmap caching_strategy
 ```
 
-### 5.3 工作流編譯與發布 (Compiler & Publisher)
+### 5.3 技能編譯與發布 (Compiler & Publisher)
 
 ```bash
-# 執行 Stage 1 佔位符解析與工作流資產編譯
+# 執行 Stage 1 佔位符解析與技能資產編譯
 python yscb.py agents-workflow compile
 
-# 執行多目標 IDE 發布物 4 步原子發布流水線 (物化 AGENTS.md 與 workflows)
-python yscb.py agents-workflow release
+# 執行多目標 IDE 發布物 4 步原子發布流水線 (物化 AGENTS.md 與 skills)
+python yscb.py agents-workflow release [--force]
 
 # 檢視所有已註冊的動態 Token 錨點
 python yscb.py agents-workflow tokens
 
-# 列出當前匯出的標準規範、工作流與模板清單
+# 列出當前匯出的標準規範、技能與模板清單
 python yscb.py agents-workflow list
 
 # 查詢可用工作環境 Target 清單 (如 antigravity, claude, codex 等)
@@ -160,12 +160,12 @@ python yscb.py agents-workflow release-target --remove claude --proj
 python yscb.py config set core project_root ./
 
 # 2. 一鍵初始化工作流目錄結構 (plans/, docs/, plans/roadmap/, plans/archived/)
-python yscb.py agents-workflow plan --init-default
+python yscb.py agents-workflow init --default -y
 
 # 3. 啟用目標 IDE / 工作環境 (如 Google Antigravity)
 python yscb.py agents-workflow release-target --add antigravity --proj
 
-# 4. 發布標準規範與工作流至專案根目錄與目標環境 (生成 AGENTS.md 與 .agents/)
+# 4. 發布標準規範與技能至專案根目錄與目標環境 (生成 AGENTS.md 與 .agents/skills/)
 python yscb.py agents-workflow release
 ```
 

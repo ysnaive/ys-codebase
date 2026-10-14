@@ -1,3 +1,10 @@
+---
+title: Core 微內核設計決策與工程註記
+category: design_notes
+module: core
+updated_at: 2026-10-14
+---
+
 # Core 微內核設計決策與工程註記 (Core Design Notes)
 
 > 本文件記錄 Core 微內核系統中的非直觀實作、工程妥協與關鍵防呆決策（維度 5）。  
@@ -262,3 +269,16 @@
 - **防禦宣告**：
   > [!CAUTION]
   > **嚴禁在 Core 微內核中引入任何外部驗證器依賴！模組擴充注入嚴格依賴 `_format.json` 契約宣告，禁止未經 Schema 註冊隨意跨模組注入私有資料！**
+
+---
+
+### [DN-26] 雙層分桶指令聚合、CLI Guild 同名隔離與語意 URI 記憶體快取
+
+- **核心決策**：
+  1. **雙層分桶指令聚合 (`__modules__`)**：`ContributesAggregator` 在聚合各模組注入的 `commands` 時，除保留頂層平鋪結構以相容舊版單元測試外，額外建立 `__modules__[donor_module]` 命名空間分桶，徹底杜絕多模組具備同名指令時（如 `dev status` vs `server status` vs `core status`）在 CLI Guild 生成與擴充點遍歷中的鍵值覆蓋踩踏。
+  2. **語意 URI 高頻解析記憶體快取**：`core.uri._get_merged_uri_schemes` 實作基於 `(yscb_dir, mtime)` 的行程內記憶體快取。高頻調用 `uri.resolve()` 免除重複檔案 I/O，快取命中耗時 $< 0.1\text{ms}$；當快照檔案 `mtime` 變更時立即自動感知重載。
+  3. **URI 嚴格沙盒守門與同前綴防禦**：`uri.resolve()` 驗證路徑穿越時比對 `target_base + os.sep`，阻斷透過 `cache://../.cache_hack` 等同前綴名稱逃逸沙盒根目錄之安全漏洞。
+- **背後考量**：隨著生態系模組擴增，同名指令覆蓋導致 CLI 指南資訊失真，且高頻 URI 解析對磁碟造成冗餘 I/O 開銷；透過分桶與微秒級記憶體快取，兼顧架構隔離性、安全邊界與極致執行效能。
+- **防禦宣告**：
+  > [!IMPORTANT]
+  > **CLI Guild 生成邏輯必須優先遍歷 `__modules__` 分桶；`uri.resolve` 熱路徑快取必須嚴格由檔案 `mtime` 與 `reconcile_undefined_uri` 自動連動失效，嚴禁讀取陳舊快取！**

@@ -391,9 +391,12 @@ class EmbeddingService:
 
         preprocessed = [self._preprocess_text(t) for t in texts]
 
-        if self.mock_mode or not self.is_available or self._model is None:
+        if self.mock_mode:
             vectors = [self._generate_mock_vector(t) for t in preprocessed]
             return np.vstack(vectors).astype(np.float32)
+
+        if not self.is_available or self._model is None:
+            return np.empty((0, self.dimension), dtype=np.float32)
 
         try:
             embeddings_list: List[np.ndarray] = []
@@ -411,9 +414,11 @@ class EmbeddingService:
             norms[norms == 0] = 1.0
             return mat / norms
         except Exception as e:
-            logger.warning(f"Error during embed_texts: {e}. Fallback to mock vectors.")
-            vectors = [self._generate_mock_vector(t) for t in preprocessed]
-            return np.vstack(vectors).astype(np.float32)
+            logger.warning(f"Error during embed_texts: {e}.")
+            if self.mock_mode:
+                vectors = [self._generate_mock_vector(t) for t in preprocessed]
+                return np.vstack(vectors).astype(np.float32)
+            return np.empty((0, self.dimension), dtype=np.float32)
 
     def embed_texts_probe(
         self,

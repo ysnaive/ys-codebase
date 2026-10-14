@@ -1,3 +1,10 @@
+---
+title: Dev 開發者工具鏈設計決策與工程註記
+category: design_notes
+module: dev
+updated_at: 2026-10-14
+---
+
 # Dev 開發者工具鏈設計決策與工程註記 (Dev Design Notes)
 
 > 本文件記錄 Dev 開發者模組與測試框架中的非直觀實作、工程妥協與關鍵防呆決策（維度 5）。
@@ -17,6 +24,7 @@
 | **DN-DEV-07** | 沙盒測試輸出純化、信息聚合與宿主防穿透剛性守門 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/runner.py`<br/>`source/dev/dev/testing/case.py` | 💡 INFO |
 | **DN-DEV-08** | 核心與工具鏈測試案例純化、凝聚與 4-Tier 分流機制 | `source/dev/dev/testing/runner.py`<br/>`source/core/tests/`<br/>`source/dev/tests/` | 💡 INFO |
 | **DN-DEV-09** | Contributes 靜態合規攔截與腳手架契約自動化建立 | `source/dev/dev/checker.py`<br/>`source/dev/dev/scaffold.py` | 💡 INFO |
+| **DN-DEV-10** | 模組骨架微內核合約對齊、測試模式解析與命令靜態檢查雙軌容錯 | `source/dev/dev/scaffold.py`<br/>`source/dev/dev/tester.py`<br/>`source/dev/dev/checker.py`<br/>`source/dev/dev/releaser.py` | 💡 INFO |
 
 ---
 
@@ -107,4 +115,19 @@
      - `dev create` 骨架生成器自動包含標準 `contributes/_format.json`（預設空物件）與 `contributes/_manifest.md`（包含 Ingress/Egress 契約手冊超連結指針與標準格式說明）。
      - 確保任何新建立之模組出廠即具備自描述能力與靜態檢查 100% 合規。
 - **背後考量**：將 Contributes 契約校驗提前至靜態檢查與腳手架階段，杜絕模組將錯誤宣告打包發布至運行期，達成由源頭保證生態系架構整潔度的目標。
+
+---
+
+### [DN-DEV-10] 模組骨架微內核合約對齊、測試模式解析與命令靜態檢查雙軌容錯
+
+- **核心決策**：
+  1. **骨架契約現代化**：`dev create` 自動產出符合微內核最新合約之腳手架（`def hello(cmd_bags: Any) -> int`、`class TestBasic(YSCBTestCase): def test_sample: self.mark_passed()`、四位版號 `"0.1.0.0"`），消除舊版 `args` 傳參與漏標 `mark_passed()` 導致的虛假失敗現場殘留。
+  2. **測試模式與標的健全解析**：`dev.tester` 支援 `-k <pattern>`、`--pattern=`、`-k=` 等多種標準引數形態，並修復 `--target` 在未包含冒號時誤將 target 賦值為空模組名稱的邊界 Bug，支援精確解析 `mod:Class.method`。
+  3. **命令靜態檢查雙軌容錯 (`dev.checker`)**：
+     - 若 `contributes/core.json` 顯式宣告非空 `commands.cmd`，強制要求 `scripts/cli.py` 實作具名葉節點函式（破折號轉底線），不再以通用 `process` 掩蓋未實作命令。
+     - 若未宣告 `commands.cmd`（例如最小化 Mock 測試模組），平滑維持 `process(args)` 既有合約相容。
+     - 語法檢查排除模組首行或類別頂層的 AST Docstring 節點，防止將文檔中的範例文字誤判為生產代碼反模式。
+  4. **批次發布預檢支援**：`dev release-check --all` 支援一鍵對全生態系所有現有模組進行 Gate 1~3 批次防呆預檢。
+- **背後考量**：統一微內核契約、防呆邊界與測試篩選體驗，在兼顧歷史相容性的同時大幅提高工具鏈穩定度與開發者體驗。
+
 

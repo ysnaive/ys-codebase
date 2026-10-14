@@ -19,6 +19,8 @@
 | **[DN-AW-09]** | 6 大計畫分支拓撲、/NewPlan 延遲建檔與 Roadmap 策略資產體系 | 工作流體系、CLI 工具鏈 | `Active` |
 | **[DN-AW-10]** | JIT 變更感知 Stat-First 雙階快照初篩與 SHA-1 快取機制 | 發布引擎 (`publisher.py`)、Manifest 治理 | `Active` |
 | **[DN-AW-11]** | 專案特化技能宣告式擴充規範、管理區塊純粹單向覆寫與工作流相對路徑校準 | 規範標準、發布引擎、工作流資產 | `Active` |
+| **[DN-AW-12]** | __${uri}__ 語意擴充：__$(起始錨點){uri}__ 動態指定相對路徑起點與 #/$ 語法語意明確化 | 工廠編譯器 (`compiler.py`) | `Active` |
+| **[DN-AW-13]** | 目錄資產 SHA-1 遞迴遍歷雜湊、未配置沙盒 URI 降級與裸露標籤合規防護 | 發布引擎、工廠編譯器、驗證器 | `Active` |
 
 ---
 
@@ -138,5 +140,36 @@
      - 引入新語法 `__$(起始錨點){uri}__`：支援在括號內指定起始錨點（可為目錄、檔案或語意 URI），計算目標 `uri` 相對於該錨點的路徑；空括號 `__$(){uri}__` 容錯退化為 `project://`。
   3. **二分法完全支援**：Standalone 模式完全剝除外層反引號，Inline 穿插模式維持外層代碼反引號；`UNENCLOSED_TAG_REGEX` 健全攔截裸露標籤防止外溢。
 - **效益**：兼具向後相容與高度彈性的路徑解算能力，消滅跨目錄與跨模組資產引用的路徑硬編碼負贅。
+
+---
+
+### [DN-AW-13] 目錄資產 SHA-1 遞迴遍歷雜湊、未配置沙盒 URI 降級與裸露標籤合規防護
+- **背景**：
+  1. `publisher.py` 的 `_get_source_file_sha1` 於遇到目錄型資產（如 Skill 套件目錄）時，直接調用 `open()` 拋出 `IsADirectoryError` 或返回固定偽雜湊，導致目錄型資產每次皆被判定為 Dirty，觸發多餘的 Auto-release 重建。
+  2. 單元測試或未配置 `workflow.*://` 協議的沙盒環境下，編譯器拋出未捕獲例外；Markdown 超連結中的反引號殘留（`[text](`path`)`）破壞連結點擊體驗。
+  3. 裸露未包裹反引號之佔位符若被非預期替換，破壞了合約 `FT-14` 的裸露佔位符安全防護。
+- **決策**：
+  1. **目錄 SHA-1 遞迴聚合**：`_get_source_file_sha1` 偵測為目錄時，遞迴排序遍歷目錄下所有檔案計算 SHA-1 聚合摘要，使 Skill 套件享有精準的 JIT 快取短路。
+  2. **沙盒降級與 Markdown 清理**：編譯器在沙盒未配置 `workflow.docs://` 等協議時，安全回退為專案相對路徑；自動清理 Markdown 連結括號內殘留反引號。
+  3. **嚴守 FT-14 合約**：裸露未包裹反引號之佔位符 100% 原樣保留並輸出 Warning，維持語意邊界純淨。
+  4. **驗證器狀態擴充**：`verifier.py` 擴充合法狀態列舉集合，並優化 `archive_dir` 回退邏輯。
+- **效益**：發布引擎對 Skill 目錄資產之 JIT 判定精確度達到 100%，消除每次自動發布的冗餘 I/O，同時提升沙盒與測試相容性。
+
+---
+
+### [DN-AW-14] agents-workflow 資產分類純化：除役 workflow 類型全面統一為 skill
+- **背景**：
+  1. 專案早期同時存在 `workflow`（單一 Markdown 流程指令）與 `skill`（包含 `SKILL.md`、子目錄與參考手冊之功能包），導致概念冗餘、Agent 認知負擔過高，以及下游不同 Target（如 Antigravity `.agents/workflows` vs `.agents/skills`）的多軌目錄分裂。
+  2. 延伸計畫 2.a 要求資產分類純化，徹底除役 `workflow` 類型，全面遷移為 `skill`。
+- **決策**：
+  1. **Schema 純化**：`_format.json` 的 `ExportAssetDef.type` 純化為 `enum(standard, template, skill)!`，從 Schema 層級廢除 `workflow`。
+  2. **編譯器向後相容轉譯**：`compiler.py` 在載入階段自動將宣告 `type: "workflow"` 無損轉譯為 `type: "skill"`，並將單檔工作流自動包裹為標準單檔 Skill 結構，確保下游第三方模組平滑升級。
+  3. **內建資產全面升級**：將 `assets/workflows/` 下的 8 大流程（`auto`, `context-init`, `continue`, `discuss`, `new-plan`, `pause`, `research`, `roadmap`）重構為帶有標準 YAML frontmatter 的 `assets/skills/<name>/SKILL.md` 目錄結構；專案級 `BumpRevision` 同步遷移至 `config/agents-workflow/skills/bump-revision/SKILL.md`。
+  4. **Target 投影收斂與舊目錄清理**：`release_target`（antigravity, claude, codex）全面移除 `projections.workflow`，統一只保留 `standard`, `template`, `skill`；`publisher.py` 在發布交易時自動探測並清理 `.agents/workflows/` 與 `.claude/commands/` 殘留目錄與歷史檔案，達成零雙軌、零殘留。
+- **效益**：Agent 開發與調用架構實現 100% 純 Skill 體系，目錄結構高度簡約一致，消除過往指令集與技能集的分類混淆。
+
+> [!CAUTION]
+> 切勿刪除 `compiler.py` 中將 `"workflow"` 自動轉譯為 `"skill"` 的向後相容邏輯，否則尚未升級 `contribute.json` 的外部下游模組在宣告 `type: "workflow"` 時將無法投影；同時新增內建資產時一律放置於 `assets/skills/<name>/SKILL.md`，嚴禁再次建立 `assets/workflows/`。
+
 
 

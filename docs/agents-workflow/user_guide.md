@@ -1,6 +1,13 @@
+---
+title: Agents Workflow 使用者與操作指南 (User Guide)
+category: guide
+module: agents-workflow
+updated_at: 2026-10-14
+---
+
 # Agents Workflow 使用者與操作指南 (User Guide)
 
-本文件提供 `agents-workflow` 模組的完整操作指引，特別針對 **Dev Plans 開發計畫工具鏈**（`plan archive`, `plan status`, `plan search`, `plan verify`）之日常操作與工程規範進行深度說明。
+本文件提供 `agents-workflow` 模組的完整操作指引，特別針對 **Dev Plans 開發計畫工具鏈**（`plan archive`, `plan status`, `plan search`, `plan verify`）與純 Skill 發布治理進行深度說明。
 
 ---
 
@@ -15,9 +22,6 @@ YS-Codebase 將所有開發計畫管理功能收斂為原生 CLI 子指令，零
 ```bash
 # 掃描並展示進行中開發計畫狀態矩陣
 python yscb.py agents-workflow plan status
-
-# 亦支援快速別名
-python yscb.py agents-workflow plan-status
 ```
 
 > [!NOTE]
@@ -28,9 +32,9 @@ python yscb.py agents-workflow plan-status
 ==========================================================================================
 計畫名稱 / 子計畫                                           | Track 模式        | 當前狀態             | 位置
 ==========================================================================================
-2026_08_25_2200_agents_workflow_migration            | Umbrella        | In Progress      | plans/
-  └─ sub_01_core_skeleton_migration                  | Full Track      | Completed        | plans/
-  └─ sub_08_plans_cli_toolchain_migration            | Full Track      | Phase 7          | plans/
+2026_10_14_1224_deep_audit_and_ecosystem_refinement   | Umbrella        | Completed        | plans/
+  └─ sub_01_host_and_core_foundation_remediation      | Full Track      | Completed        | plans/
+  └─ sub_06_downstream_cli_ux_and_server_feedback     | Full Track      | Completed        | plans/
 ==========================================================================================
 ```
 
@@ -46,12 +50,9 @@ python yscb.py agents-workflow plan archive 2026_08_20_1200_demo_feature
 
 # 強制歸檔（略過 Completed 標記與 CHANGELOG 記載檢查）
 python yscb.py agents-workflow plan archive 2026_08_20_1200_demo_feature --force
-
-# 亦支援快速別名
-python yscb.py agents-workflow plan-archive 2026_08_20_1200_demo_feature
 ```
 
-#### 🛡️ 4 重守門安全防護
+#### 4 重守門安全防護
 1. **完成狀態守門**：檢查 `P07_walkthrough.md`、`fast_track_plan.md` 或 `umbrella_overview.md` 是否標記 `Completed`。
 2. **CHANGELOG 登載守門**：核對專案根目錄 `CHANGELOG.md` 是否已記載該計畫發布紀錄。
 3. **現場快照清理**：自動偵測並物理刪除殘留的暫時性交接快照 `handoff.md`。
@@ -67,14 +68,11 @@ python yscb.py agents-workflow plan-archive 2026_08_20_1200_demo_feature
 # 1. 檢索架構決策記錄 (DR模式，正則結構化擷取並自動去重)
 python yscb.py agents-workflow plan search --dr
 python yscb.py agents-workflow plan search "URI" --dr
-python yscb.py agents-workflow plan search --dr --year=2026 --month=08 --limit=15
+python yscb.py agents-workflow plan search --dr --year=2026 --month=10 --limit=15
 
 # 2. 跨計畫全文程式碼檢索（展示匹配行號與前後上下文）
 python yscb.py agents-workflow plan search "PlanArchiver"
 python yscb.py agents-workflow plan search "VFS" --limit=10
-
-# 亦支援快速別名
-python yscb.py agents-workflow plan-search --dr
 ```
 
 #### 輸出範例 (DR 模式)
@@ -91,25 +89,23 @@ Plan 名稱 / 來源檔案                           | DR ID / 標題           
 
 ### 1.4 計畫規範與合規性稽核 (`plan verify`)
 
-全面稽核 Markdown 文件是否符合開發標準規範，及早發現模板指引殘留與格式缺失。
+全面稽核 Markdown 文件是否符合開發標準規範，及早發現模板指引殘留、Header 元數據缺失與章節標題漂移。
 
 ```bash
 # 稽核所有進行中計畫
 python yscb.py agents-workflow plan verify
 
 # 稽核指定計畫
-python yscb.py agents-workflow plan verify 2026_08_25_2200_agents_workflow_migration
+python yscb.py agents-workflow plan verify 2026_10_14_1224_deep_audit_and_ecosystem_refinement
 
 # 一併稽核歷史封存計畫
 python yscb.py agents-workflow plan verify --all
-
-# 亦支援快速別名
-python yscb.py agents-workflow plan-verify
 ```
 
 #### 稽核重點
 - **指引過濾檢查**：偵測 Markdown 檔案內是否殘留 `<!-- AGENT_GUIDANCE -->` 模板指引註解未剝除。
-- **Header 元數據檢查**：驗證 Markdown 開頭 Blockquote 是否齊備 `功能名稱`、`建立日期` 與 `狀態` 欄位。
+- **Header 元數據檢查**：驗證 Markdown 開頭 Blockquote 是否齊備 `功能名稱`（或 `計畫名稱`）、`建立日期` 與 `狀態`（或 `計畫狀態`）欄位。
+- **動態章節標題對齊**：動態讀取 `.agents/.yscb/templates/` 下的標準模板，校驗計畫產物是否遺漏必填的一級/二級章節標題。
 - **子計畫遞迴覆蓋**：自動深入 `sub_*` 目錄進行遞迴稽核。
 
 ---
@@ -119,8 +115,8 @@ python yscb.py agents-workflow plan-verify
 掃描並條列 `workflow.roadmap://`（預設為 `plans/roadmap/`）儲備庫中的長期技術藍圖與策略資產。
 
 ```bash
-# 條列所有 Roadmap 主題摘要對照表
-python yscb.py agents-workflow roadmap
+# 條列所有 Roadmap 主題摘要對照表（支援 --status 過濾）
+python yscb.py agents-workflow roadmap [--list] [--status=Candidate]
 
 # 檢視指定主題之詳細背景與路徑
 python yscb.py agents-workflow roadmap release_binary_storage_optimization
@@ -128,7 +124,7 @@ python yscb.py agents-workflow roadmap release_binary_storage_optimization
 
 ---
 
-## 2. 工作流程資產發布與組態治理
+## 2. 技能資產發布與組態治理
 
 ### 2.1 專案組態開關 (`config.project.json`)
 位於 `config://agents-workflow/config.project.json`：
@@ -144,19 +140,19 @@ python yscb.py agents-workflow roadmap release_binary_storage_optimization
   "enable_project_changelog": true
 }
 ```
-- **`release_targets`**：預設為空清單 `[]`。手動指定欲啟用的 Target（例 `["antigravity"]`），發布時將資產投影輸出至對應目錄與各 Target 宣告之 `agents_md` 規範檔案路徑。
+- **`release_targets`**：預設為空清單 `[]`。指定欲啟用的 Target（例 `["antigravity"]`），發布時將資產投影輸出至對應目錄與各 Target 宣告之 `agents_md` 規範檔案路徑。
 - **`enable_project_changelog`**：控制是否啟用全專案 `project://CHANGELOG.md` 結案登載與歸檔守門要求。
 
-### 2.2 一鍵工作流初始化 (`--init-default`)
+### 2.2 一鍵工作流初始化 (`init --default`)
 ```bash
-# 初始化 workflow.plans://, workflow.archived://, workflow.docs:// 目錄結構與組態
-python yscb.py agents-workflow --init-default -y
+# 初始化 workflow.plans://, workflow.archived://, workflow.docs://, workflow.roadmap:// 目錄結構與組態
+python yscb.py agents-workflow init --default -y
 ```
 
 ### 2.3 原子發布交易 (`release`)
 ```bash
 # 執行 4 步原子交易發布至各 Target 投影目錄並軟合併規範檔案
-python yscb.py agents-workflow release [target_name]
+python yscb.py agents-workflow release [target_name] [--force]
 ```
 - **特性**：
   - 若 `release_targets` 為空 `[]`，安全略過投影目錄寫入（`Published files: 0`）。
@@ -164,49 +160,50 @@ python yscb.py agents-workflow release [target_name]
 
 ### 2.4 多平台 Release Targets 矩陣與管理 (`release-target`)
 
-`agents-workflow` 原生支援多種 AI 程式碼助理與 IDE 之發布投影拓撲：
+`agents-workflow` 原生支援多種 AI 程式碼助理與 IDE 之純 Skill 發布投影拓撲：
 
-| Target 名稱 | 適用平台 / IDE | Workflows 投影目錄 | Skills 投影目錄 | Templates / Standards | 規則檔支援 |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`antigravity`** | Google Antigravity IDE | `.agents/workflows/{name}.md` | `.agents/skills/{export.name}/` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
-| **`claude`** | Anthropic Claude Code | `.claude/commands/{name}.md` | `.claude/skills/{export.name}/` | `.claude/.yscb/templates/`, `.claude/.yscb/standards/` | `CLAUDE.md` (軟合併) |
-| **`codex`** | OpenAI Codex (CLI / VS Code) | `.agents/workflows/{name}.md` | `.agents/skills/{export.name}/` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
+| Target 名稱 | 適用平台 / IDE | Skills 投影目錄 | Templates / Standards | 規則檔支援 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`antigravity`** | Google Antigravity IDE | `.agents/skills/{export.name}/` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
+| **`claude`** | Anthropic Claude Code | `.claude/skills/{export.name}/` | `.claude/.yscb/templates/`, `.claude/.yscb/standards/` | `CLAUDE.md` (軟合併) |
+| **`codex`** | OpenAI Codex (CLI / VS Code) | `.agents/skills/{export.name}/` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
 
 #### CLI Target 管理指令
 ```bash
 # 檢視當前已宣告與已啟用的 Targets 清單
-python yscb.py agents-workflow release-target list
+python yscb.py agents-workflow release-target --list
 
-# 啟用指定 Target 並自動執行發布物化
-python yscb.py agents-workflow release-target add claude
-python yscb.py agents-workflow release-target add codex
+# 啟用指定 Target 並自動執行發布物化 (加 --proj 寫入團隊共享組態)
+python yscb.py agents-workflow release-target --add claude [--proj]
+python yscb.py agents-workflow release-target --add codex [--proj]
 
 # 停用指定 Target 並自動清理歷史檔案
-python yscb.py agents-workflow release-target remove claude
+python yscb.py agents-workflow release-target --remove claude [--proj]
 ```
 
 ---
 
-## 3. CLI 指令防呆手冊與 Default-Deny 守門機制 (Agents CLI Guild)
+## 3. CLI 指令防呆手冊與 Default-Deny 守門機制 (`yscb-cli-guild`)
 
-### 3.1 宣告式 CLI 防呆指南 (`AgentsCliGuild.md`)
-由 `agents-workflow` 導出並物化至 `.agents/.yscb/standards/AgentsCliGuild.md`。透過 Core 模組動態 Token `AGENTS_CLI_GUILD`，自動收集所有已安裝模組在 `contributes.core.commands` 中宣告的推薦情境 (`case_pros`) 與禁止情境 (`case_cons`)。
+### 3.1 宣告式 CLI 防呆技能 (`yscb-cli-guild/SKILL.md`)
+由 `agents-workflow` 導出並物化至 `.agents/skills/yscb-cli-guild/SKILL.md`。透過 Core 模組動態 Token `AGENTS_CLI_GUILD`，自動收集所有已安裝模組在 `contributes.core.commands`（經 `__modules__` 雙層分桶隔離）中宣告的權限等級、推薦情境 (`case_pros`) 與禁止情境 (`case_cons`)。
 
 ### 3.2 Agent 調用守門鐵律
-1. **查表比對 (Look Up & Match)**：Agent 執行任何 `python yscb.py` 命令前必須比對 `AgentsCliGuild.md`。
-2. **Default-Deny 閉環 (Default-Deny Gate)**：若欲執行之命令未列於表、無對應推薦欄位、或命中 `🚨 絕對禁止/不適用情境`，Agent 絕對禁止擅自執行，必須向開發者呈遞調用意圖與完整命令列，獲明確授權後方可執行。
+1. **查表比對 (Look Up & Match)**：Agent 執行任何 `python yscb.py` 命令前必須比對 `yscb-cli-guild` 技能手冊。
+2. **Default-Deny 閉環 (Default-Deny Gate)**：若欲執行之命令未列於表、無對應推薦欄位、或命中 `[GATED]` / `[!] 絕對禁止/不適用情境`，Agent 絕對禁止擅自執行，必須向開發者呈遞調用意圖與完整命令列，獲明確授權後方可執行。
 
 ---
 
-## 4. 模板佔位符三層語意體系 (Three-Tier Placeholder System)
+## 4. 模板佔位符語意體系 (Placeholder System)
 
-編譯器在執行資產 Stage 1 與 Stage 2 編譯時，支援三大結構化語意佔位符：
+編譯器在執行資產 Stage 1 與 Stage 2 編譯時，支援結構化語意佔位符：
 
 | 佔位符 | 語意分類 | 解析基準點 | 適用情境與範例 |
 | :--- | :--- | :--- | :--- |
 | **`` `__@{token}__` ``** | **文件內容佔位符** | Stage 1 內容狀態機 | 常數注入、模板片段嵌入、`code.func://` 動態計算產出（例：`` `__@{AGENTS_CLI_GUILD}__` ``）。 |
-| **`` `__#{uri}__` ``** | **自身相對路徑佔位符** | 當前 Markdown 文件所在目錄 (`cur_doc_dir`) | Markdown 文本內部超連結導航（例：`[標準](`__#{module://.../DevStandards.md}__`)` ➔ `[標準](../.yscb/standards/DevStandards.md)`）。 |
-| **`` `__${uri}__` ``** | **專案根目錄相對路徑佔位符** | 專案根目錄 (`project://`) | 終端機 Shell 執行指令與專案相對路徑參照（例：`` `python __${yscb.host://yscb.py}__ run` `` ➔ `` `python yscb.py run` ``，子目錄自適應為 `` `python tools/yscb.py run` ``）。 |
+| **`` `__#{uri}__` ``** | **自身相對路徑佔位符** | 當前 Markdown 文件所在目錄 (`cur_doc_dir`) | Markdown 文本內部超連結導航（例：`[標準](`__#{module://.../SKILL.md}__`)` $\to$ `[標準](../development-sop/SKILL.md)`）。 |
+| **`` `__${uri}__` ``** | **專案根目錄相對路徑佔位符** | 專案根目錄 (`project://`) | 終端機 Shell 執行指令與專案相對路徑參照（例：`` `python __${yscb.host://yscb.py}__ run` `` $\to$ `` `python yscb.py run` ``）。 |
+| **`` `__$(起始錨點){uri}__` ``** | **動態起點相對路徑佔位符** | 指定之起始錨點目錄 (`anchor`) | 跨目錄或特定基準點相對路徑計算（例：`` `__$(project://docs){workflow.docs://core/README.md}__` `` $\to$ `core/README.md`）。 |
 
 ### 4.1 反引號包裹與穿插展開
 - **強制包裹**：佔位符必須由反引號（代碼塊 `` `...` ``）包裹方可被解析。
@@ -215,10 +212,10 @@ python yscb.py agents-workflow release-target remove claude
 
 ---
 
-## 5. 自動連續推進工作流 (Auto Workflow)
+## 5. 自動連續推進技能 (`auto` Skill)
 
 ### 5.1 核心定位與觸發時機
-`/Auto` 為可在 **Phase 01 ~ Phase 05** 之間觸發的連續推進指令。當開發者確認需求（Phase 0 完成）後，下達 `/Auto` 授權 Agent 在無技術歧義與無爭議的前提下，跳過中間各 Phase 的強制 Checkpoint 等待，自動連續產出各階段規範與代碼實作，直達 Phase 6 手動/UX 驗證前。
+`/Auto`（對應 `auto` 技能）為可在 **Phase 01 ~ Phase 05** 之間觸發的連續推進模式。當開發者確認需求（Phase 0 完成）後，下達 `/Auto` 授權 Agent 在無技術歧義與無爭議的前提下，跳過中間各 Phase 的強制 Checkpoint 等待，自動連續產出各階段規範與代碼實作，直達 Phase 6 手動/UX 驗證前。
 
 ### 5.2 適用範圍與分流
 - **Full Track (Level 1)**：進行中計畫。

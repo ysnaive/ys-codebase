@@ -187,18 +187,14 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             self._pending_dirty_paths.clear()
             self._debounce_timer = None
 
-        try:
-            indices_dir = self._get_pipeline().get_indices_dir()
-            dirty_flag = indices_dir / ".watcher_dirty"
-            if dirty_flag.exists():
-                try:
-                    dirty_flag.unlink()
-                except OSError:
-                    pass
-        except Exception:
-            pass
-
         if not dirty or not self._is_running:
+            try:
+                indices_dir = self._get_pipeline().get_indices_dir()
+                dirty_flag = indices_dir / ".watcher_dirty"
+                if dirty_flag.exists():
+                    dirty_flag.unlink()
+            except Exception:
+                pass
             return
 
         try:
@@ -225,6 +221,14 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                         logger.error(f"Fallback full rebuild failed: {fe}", exc_info=True)
         except Exception as e:
             logger.error(f"Error during debounced hot patch: {e}", exc_info=True)
+        finally:
+            try:
+                indices_dir = self._get_pipeline().get_indices_dir()
+                dirty_flag = indices_dir / ".watcher_dirty"
+                if dirty_flag.exists():
+                    dirty_flag.unlink()
+            except Exception:
+                pass
 
     def start(self, context: Dict[str, Any]) -> None:
         """Starts background file watcher using watchdog Observer."""

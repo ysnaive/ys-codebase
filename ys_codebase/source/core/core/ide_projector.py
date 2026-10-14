@@ -22,6 +22,11 @@ class IdeProjector:
         self.pip_mgr = PipManager(self.yscb_dir)
 
     def _resolve_yscb_root(self) -> str:
+        try:
+            from core import uri
+            return uri._get_yscb_root()
+        except Exception:
+            pass
         cur = os.path.abspath(os.path.dirname(__file__))
         while cur and cur != os.path.dirname(cur):
             cfg_p = os.path.join(cur, "yscb.config.json")

@@ -25,7 +25,8 @@ class VersionTuple(NamedTuple):
 
     def __str__(self) -> str:
         if self.prerelease:
-            base = f"{self.major}.{self.minor}.{self.patch}"
+            rev_part = f".{self.revision}" if str(self.revision) not in ("0", "") else ""
+            base = f"{self.major}.{self.minor}.{self.patch}{rev_part}"
             return f"{base}-{self.prerelease}"
         return f"{self.major}.{self.minor}.{self.patch}.{self.revision}"
 

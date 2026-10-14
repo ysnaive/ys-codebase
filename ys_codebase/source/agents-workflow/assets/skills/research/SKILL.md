@@ -1,6 +1,11 @@
+---
+name: research
+description: 深度技術調研工作流 (Research)。適用於高複雜度技術探索、方案選型對比與 R01 專題調研報告產出。
+---
+
 # 深度技術調研工作流 (Research)
 
-本工作流用於高複雜度、新技術選型、演算法可行性或架構演進之深度論證與客觀對比。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流用於高複雜度、新技術選型、演算法可行性或架構演進之深度論證與客觀對比。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
 
 ---
 
@@ -58,13 +63,13 @@ flowchart TD
 - **產出文件**：[RXX_{topic}.md](__${project://plans/}__/{plan_name}/RXX_{topic}.md)
 - **調研主題**：[1 行調研核心命題]
 - **方案結論**：推薦採取 [候選方案名稱]（核心優勢：[1 行客觀說明]）
-- **出口路徑**：
-  1. 立項開發 -> 升級為實作型 Plan（回填至 P00/P01）
-  2. 沉澱儲備 -> 登載至長期路線圖 [`roadmap.md`](`__${workflow.roadmap://}__`)
-  3. 存檔留痕 -> 留存於當前目錄或封存於 `__${project://plans/archived/}__`
-- **待確認事項**：請確認推薦結論或選擇後續出口路徑？
+- **後續出口**：
+  1. 轉入 [/NewPlan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 開立計畫實作
+  2. 轉入 [Roadmap](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 納入長期演進儲備
+  3. 保留成果不進行後續動作
 ```
 
 ---
 
 `__@{WORKFLOW_RESEARCH}__`
+

@@ -29,6 +29,7 @@ from core import events
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
 from core.platform import ensure_private_venv
 from server.streamer import DebouncedIOStreamer
+from server.service import ServiceManager
 
 
 
@@ -43,6 +44,7 @@ class WarmWorker:
         self.emit_packet_fn = emit_packet_fn
         self._is_running = True
         self._module_cache: Dict[str, Any] = {}
+        self.service_manager = ServiceManager()
 
     def pre_warm(self) -> None:
         """Emits warming events and pre-warms core runtime."""
@@ -59,6 +61,18 @@ class WarmWorker:
         modules_dir = os.path.join(self.yscb_root, ".modules")
         if modules_dir not in sys.path:
             sys.path.insert(0, modules_dir)
+
+        # Host and start background services in Worker
+        try:
+            self.service_manager.load_from_contributes(self.yscb_root)
+            self.service_manager.start_all({"yscb_root": self.yscb_root})
+        except Exception as e:
+            self.emit_packet_fn({
+                "type": "log",
+                "level": "WARNING",
+                "component": "worker",
+                "msg": f"Failed to initialize background services: {e}",
+            })
 
         duration_ms = (time.time() - start_t) * 1000.0
         try:
@@ -112,7 +126,14 @@ class WarmWorker:
                 try:
                     from core.commands.dispatcher import _load_registry, dispatch_local, _find_module_cli, _MODULE_CACHE
                     registry = _load_registry(self.yscb_root)
-                    cmd_spec = registry.get_command(module, cmd_name)
+                    cmd_path, cmd_spec, sub_args = registry.resolve_command_path(module, args)
+                    if not cmd_path:
+                        cmd_name = args[0] if args else "help"
+                        sub_args = args[1:] if len(args) > 1 else []
+                        cmd_spec = registry.get_command(module, cmd_name)
+                    else:
+                        cmd_name = cmd_path
+
                     target_cli = _find_module_cli(module, self.yscb_root)
                     exit_code = dispatch_local(
                         module_name=module,
@@ -171,36 +192,43 @@ def worker_main(yscb_root: str, in_stream=None, out_stream=None) -> None:
     worker = WarmWorker(yscb_root=yscb_root, emit_packet_fn=emit_fn)
     worker.pre_warm()
 
-    # Notify master that worker is ready
-    emit_fn({"type": "worker_ready", "worker_pid": os.getpid()})
+    # Notify master that worker is ready, including hosted services status
+    emit_fn({
+        "type": "worker_ready",
+        "worker_pid": os.getpid(),
+        "services": worker.service_manager.get_status(),
+    })
 
-    while True:
-        try:
-            line = in_io.readline()
-            if not line:
+    try:
+        while True:
+            try:
+                line = in_io.readline()
+                if not line:
+                    break
+
+                line = line.strip()
+                if not line:
+                    continue
+
+                req = json.loads(line)
+                cmd = req.get("action")
+                if cmd == "exit":
+                    break
+
+                if cmd == "dispatch":
+                    worker.execute_task(
+                        module=req["module"],
+                        args=req.get("args", []),
+                        cwd=req.get("cwd", yscb_root),
+                        env=req.get("env"),
+                    )
+
+            except (KeyboardInterrupt, BrokenPipeError):
                 break
-
-            line = line.strip()
-            if not line:
-                continue
-
-            req = json.loads(line)
-            cmd = req.get("action")
-            if cmd == "exit":
-                break
-
-            if cmd == "dispatch":
-                worker.execute_task(
-                    module=req["module"],
-                    args=req.get("args", []),
-                    cwd=req.get("cwd", yscb_root),
-                    env=req.get("env"),
-                )
-
-        except (KeyboardInterrupt, BrokenPipeError):
-            break
-        except Exception as err:
-            emit_fn({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(err)})
+            except Exception as err:
+                emit_fn({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(err)})
+    finally:
+        worker.service_manager.stop_all(timeout_sec=1.5)
 
 
 if __name__ == "__main__":
