@@ -1,22 +1,9 @@
-`__@{BEGIN_HTML_ANNOTATION}__`
-
-現場凍結交接指引：
-1. 目標：中斷工作或切換任務時，將現場狀態、未提交進度、踩坑注意事項與下一步動作進行即時上下文凍結 (Context Freeze)。
-2. 零斷層接手：確保接手開發者或新 Session Agent 光看 handoff.md 即可在 3 秒內無縫接手，無需猜測探勘。
-3. 結構要點：清楚記錄現場已完成事項、未完成待辦、關鍵踩坑注意與重啟第 1 步。
-
-`__@{HANDOFF_AGENTS_GUILD}__`
-
-`__@{END_HTML_ANNOTATION}__`
-
 # 當前進度與暫停交接現場 (Handoff Context)
 
 > 暫停時間：[YYYY-MM-DD HH:MM]  
 > 所屬計畫：[計畫名稱]  
 > 當前所在階段：[Phase X / FT-Y (狀態: Implementing / In Progress)]  
-
-`__@{HANDOFF_HEADER}__`
-
+> 模型：[模型名稱]  
 > 模板版本：v1.2  
 
 ---
@@ -39,6 +26,4 @@
 ---
 
 ## 4. 下一次接手時的第 1 步 (Immediate Next Action)
--  [極精確的重啟行動指引，例如「從 xx 函式繼續實作，完成後執行 test 驗證」]
-
-`__@{HANDOFF_TEMPLATE}__`
+- [極精確的重啟行動指引，例如「從 xx 函式繼續實作，完成後執行 test 驗證」]

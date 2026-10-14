@@ -62,10 +62,10 @@ class TestArtifactCompiler(YSCBTestCase):
         token_values = [t.get("value") for t in tokens]
         self.assertIn("PHASEXX_HEADER", token_values)
         self.assertIn("WORKFLOW_SOP_STANDARDS", token_values)
-        self.assertIn("DEVELOPMENT_STANDARDS", token_values)
-        self.assertIn("DYNAMIC_CONTEXT_MAP", token_values)
-        self.assertIn("BEGIN_HTML_ANNOTATION", token_values)
-        self.assertIn("END_HTML_ANNOTATION", token_values)
+        self.assertIn("AGENTS_STANDARDS", token_values)
+        self.assertIn("AGENTS_SKILL_ROUTING", token_values)
+        self.assertIn("AGENTS_CLI_GUILD", token_values)
+        self.assertIn("SESSION_ANALYSIS_CHECK_ITEMS", token_values)
         self.mark_passed()
 
     def test_st_01_stage1_cache_output(self):
@@ -171,19 +171,22 @@ class TestArtifactCompiler(YSCBTestCase):
 
     def test_ft_08_computed_token_resolution(self):
         """FT-08: 驗證 type: 'computed' 與 code.func:// 動態調用解算。"""
+        from unittest import mock
         raw_text = "# Header\n\n`__@{DYNAMIC_CONTEXT_MAP}__`\n\n# Body"
-        inserts = [
-            {
-                "type": "computed",
-                "token": "DYNAMIC_CONTEXT_MAP",
-                "value": "code.func://agents-workflow/providers:get_dynamic_context_map",
-                "mode": "replace"
-            }
-        ]
-        resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
-        self.assertNotIn("`__@{DYNAMIC_CONTEXT_MAP}__`", resolved)
-        self.assertIn("專案語意 URI 即時解析地圖", resolved)
-        self.assertIn("project://", resolved)
+        with mock.patch("core.symbols.resolve_callable") as mock_resolve:
+            mock_resolve.return_value = lambda ctx: "### 專案語意 URI 即時解析地圖\n- project://"
+            inserts = [
+                {
+                    "type": "computed",
+                    "token": "DYNAMIC_CONTEXT_MAP",
+                    "value": "code.func://mock:get_map",
+                    "mode": "replace"
+                }
+            ]
+            resolved = self.compiler.resolve_single_artifact(raw_text, inserts)
+            self.assertNotIn("`__@{DYNAMIC_CONTEXT_MAP}__`", resolved)
+            self.assertIn("專案語意 URI 即時解析地圖", resolved)
+            self.assertIn("project://", resolved)
         self.mark_passed()
 
     def test_ft_09_dual_standards_and_publisher_config_flags(self):

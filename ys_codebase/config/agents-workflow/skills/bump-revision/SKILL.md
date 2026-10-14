@@ -8,7 +8,7 @@ description: 🔴 授權守門。嚴禁 Agent 自主觸發，僅限開發者顯�
 > [!CAUTION]
 > **🔴 授權守門：嚴禁 Agent 自主觸發，僅限開發者顯式輸入 `/BumpRevision` 時執行。日常開發一律維持 `@build` 直裝。**
 
-本工作流為專案特化工作流，用於掃描 [yscb.config.json](`__${project://yscb.config.json}__`) 中的已安裝模組清單 (`installed_modules`)，自動篩選所有處於 `@build` 本機開發狀態的模組，並依序執行版本晉升 (Version Bump)、正式打包 (Release) 與自部署更新 (Update)。
+本工作流為專案特化工作流，用於掃描 [yscb.config.json](`__#{project://yscb.config.json}__`) 中的已安裝模組清單 (`installed_modules`)，自動篩選所有處於 `@build` 本機開發狀態的模組，並依序執行版本晉升 (Version Bump)、正式打包 (Release) 與自部署更新 (Update)。
 
 ---
 
@@ -20,7 +20,7 @@ description: 🔴 授權守門。嚴禁 Agent 自主觸發，僅限開發者顯�
    - 預設升級等級為 `revision` (`python yscb.py dev bump-revision <module>`)。
    - 支援開發者於指令中顯式指定特定模組之升級等級（如 `/BumpRevision core:patch knowledge-db:minor`）。
 3. **安全發布與免測部署 (No Redundant Post-Install Tests)**：
-   - 打包發布後直接調用 `python yscb.py update <module>` 進行物化同步，無需且嚴禁重複調用測試。
+   - 打包發布後直接調用 `python yscb.py install <module> --force` 進行正式版物化切換（因 `update` 指令對 `@build` 開發版設有防降級略過保護），無需且嚴禁重複調用測試。
 
 ---
 
@@ -35,7 +35,7 @@ flowchart TD
     Decide --> Pipeline["步驟 3: 依序執行軌道 B 發布流水線"]
     subgraph TrackB ["軌道 B 閉環流水線 (針對每個目標模組)"]
         B1["python yscb.py dev bump-[level] <mod>"] --> B2["python yscb.py dev release <mod>"]
-        B2 --> B3["python yscb.py update <mod>"]
+        B2 --> B3["python yscb.py install <mod> --force"]
     end
     Pipeline --> TrackB
     TrackB --> Report["步驟 4: 呈遞版本晉升與發布摘要卡"]
@@ -43,7 +43,7 @@ flowchart TD
 
 ### 步驟 1：掃描 `yscb.config.json` 與篩選目標模組 (Scan & Filter)
 
-1. 檢視專案根目錄之 [yscb.config.json](`__${project://yscb.config.json}__`)。
+1. 檢視專案根目錄之 [yscb.config.json](`__#{project://yscb.config.json}__`)。
 2. 檢查 `installed_modules` 物件中的各模組 `version` 欄位。
 3. 篩選所有版本包含 `.build` 或 `@build` 的模組清單（例：`"core": { "version": "1.0.2.build" }`）。
 4. 若無任何 `@build` 模組，向開發者呈報：「目前所有模組皆已為正式發布版本，無需執行版本晉升」，並結束流程。
@@ -62,9 +62,9 @@ flowchart TD
 
 ---
 
-### 步驟 3：依序執行版本晉升、發布與更新 (Bump, Release & Update)
+### 步驟 3：依序執行版本晉升、發布與更新 (Bump, Release & Install)
 
-依模組依賴拓撲順序（`core` ➔ `knowledge-db` ➔ `agents-workflow` ➔ `dev`）依序對每一個目標模組執行以下指令：
+依模組依賴拓撲順序（`core` ➔ `server` ➔ `knowledge-db` ➔ `agents-workflow` ➔ `dev`）依序對每一個目標模組執行以下指令：
 
 1. **版本遞增**：
    ```bash
@@ -74,9 +74,9 @@ flowchart TD
    ```bash
    python yscb.py dev release <module>
    ```
-3. **本機自部署更新**：
+3. **本機正式版切換安裝**：
    ```bash
-   python yscb.py update <module>
+   python yscb.py install <module> --force
    ```
 
 ---

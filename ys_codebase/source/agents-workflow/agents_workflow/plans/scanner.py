@@ -8,14 +8,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 
 
-def _resolve_uri_path(uri: str) -> Optional[Path]:
-    """安全解析語意 URI，若無 core 上下文則回傳 None。"""
-    try:
-        from core.uri import resolve
-        resolved = resolve(uri)
-        return Path(resolved).resolve()
-    except Exception:
-        return None
+from . import _resolve_uri_path
 
 
 class PlanScanner:

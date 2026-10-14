@@ -1,5 +1,5 @@
 {
-  "fingerprint": "ac8d38f9a64764903a9bcaa244771ff5573bcf2fda8342ba55cc7de27de17a96",
+  "fingerprint": "bd525418218115909af6526954e2e2af56f76e41fd83225b6f4884cb1e9059dc",
   "active_targets": [
     "antigravity"
   ],
@@ -33,7 +33,6 @@
     "project://.agents/skills/development-sop/references/phase_06_test.md",
     "project://.agents/skills/development-sop/references/phase_07_walkthrough.md",
     "project://.agents/skills/development-sop/references/plan_modes.md",
-    "project://.agents/skills/development-sop/references/review_gate.md",
     "project://.agents/skills/discuss/SKILL.md",
     "project://.agents/skills/documentation/SKILL.md",
     "project://.agents/skills/documentation/references/author_guide_and_checklist.md",
@@ -53,6 +52,6 @@
     "project://.agents/skills/yscb-module-dev/references/testing_and_sandbox.md",
     "project://AGENTS.md"
   ],
-  "combined_fingerprint": "ac8d38f9a64764903a9bcaa244771ff5573bcf2fda8342ba55cc7de27de17a96",
-  "updated_at": "2026-10-14 16:09:17"
+  "combined_fingerprint": "bd525418218115909af6526954e2e2af56f76e41fd83225b6f4884cb1e9059dc",
+  "updated_at": "2026-10-14 17:41:52"
 }

@@ -2,8 +2,6 @@
 
 `__@{PHASEXX_HEADER}__`
 
-`__@{PHASE07_HEADER}__`
-
 > 模板版本：v1.4  
 
 ---
@@ -29,14 +27,19 @@
 
 ---
 
-## 4.  知識庫文檔交付驗收對齊表 (Documentation Delivery Audit)
+## 4. SOP Review 三層文檔與品質審查 (Three-Tier Review)
 
+### 4.1 三層文檔交付對齊表
 | 維度 | 文件路徑 | 交付狀態 | 驗收重點 |
 | :--- | :--- | :---: | :--- |
-| **模組手冊** | `docs/<Module>/README.md` | [PASS] 已交付 | |
-| **專題手冊** | `docs/<Module>/[topic].md` | [PASS] 已交付 | |
-| **設計決策** | `docs/<Module>/DESIGN_NOTES.md` | [PASS] 已交付 | |
-| **發布日誌** | `CHANGELOG.md` | [PASS] 已交付 | |
+| **宏觀 (Macro)** | `CHANGELOG.md` | [PASS] 已追加版本摘要 | 發布亮點與變更歷史同步 |
+| **中觀 (Meso)** | `docs/<Module>/README.md` | [PASS] 已交付/更新 | 模組手冊、架構與使用說明 |
+| **中觀 (Meso)** | `docs/<Module>/DESIGN_NOTES.md` | [PASS] 已登記 `[DN-...]` | 核心架構決策與設計脈絡 |
+| **微觀 (Micro)** | 源碼 Public API / 函式註解 | [PASS] 100% 對齊 | 嚴格維護 Docstring，標註偏差理由 |
+
+### 4.2 品質與清理檢核
+- [ ] **代碼清理**：無死代碼、無除錯 print/log、無敷衍之 quick-and-dirty hack。
+- [ ] **測試完整覆蓋**：所有單元測試與整合測試 100% 通過，無跳過或被破壞之斷言。
 
 ---
 
@@ -50,5 +53,4 @@
 ## 6. 計畫結構合規檢核 (Plan Compliance Verification)
 
 - [ ] **結構與註解檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` (或 `plan check`) 驗證 100% Passed。
-
-`__@{PHASE07_TEMPLATE}__`
+- [ ] **完成狀態確認**：所有前置階段、代碼實作、SOP 審查與測試驗證均已落實完成。

@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_14_1650_agents_workflow_audit_and_consolidation (Completed)
+
+- **`agents-workflow` 全量內容審計、語意聚合整併、模型標頭溯源與 P07 內化 SOP Review 管線**：
+  - **標準模板標頭新增 `> 模型：[模型名稱]` 與純淨化**：更新 `header.md` 與全套 15 份標準模板新增 `> 模型：[模型名稱]` 欄位以記錄各階段撰寫/執行之 AI 後台模型，全面清除模板內殘留之 `<!-- ... -->` HTML 導引註解與廢棄 Token 插槽。
+  - **Review 階段無縫併回 `P07` / `FT-3` 三步結案管線**：移除獨立的 `review_gate.md` 與 `Review -> P07` 中間斷點，於 `phase_07_walkthrough.md` 與 `P07_walkthrough.md` 內化「三層文檔交付對齊（強制前置觸發 `documentation` 技能 + DN 防膨脹守門）$\to$ 代碼清理與 `plan verify` 合規檢核 $\to$ 撰寫結案報告與全域 `CHANGELOG.md`」。
+  - **驗證器範疇收斂與剛性守門 (`PlanVerifier`)**：移除 `verify_all_plans()` 對 `workflow.archived://` 封存計畫的掃描（僅檢核活躍計畫），新增 `model` 標頭必填與佔位符攔截、`Completed` 狀態下未勾選 `- [ ]` Checkbox 剛性阻斷，並將 `handoff.md` 納入標頭與佔位符檢核。
+  - **語意聚合、編譯器修復與跨模組 CLI 防呆表去重**：重構 `new-plan/SKILL.md` 為輕量 6 大分支導航入口（消除 `DEVELOPMENT_STANDARDS` 雙重注入與雙 Frontmatter 污染）；清理 `contributes/agents-workflow.json` 46 個冗餘死 Token，精準註冊 16 個活躍擴充錨點並刪除死代碼 `agents_workflow/providers.py`；修復 `compiler.py` Stage 2 Tier 1 短名後綴劫持與行內雙斜線（`plans//`、`docs//`），將 `compiler.py` / `publisher.py` 納入 Stage 0 指紋；修復 `core/contributes.py` 與 `core/providers.py` 之 `__modules__` 深拷貝隔離與去重；經零前置資訊 Subagent 盲測驗證通過，全生態系 **558/558 測試 100% 通過**；登錄 `[DN-AW-15]`。
+
 ## 2026_10_14_1554_downstream_onboarding_and_ux_guidance (Completed)
 
 - **全生態系下游使用者與 AI Agent 導入引導 (UX/DX) 全面重構、CLI 下一步橫幅與語意 URI 自癒提示**：

@@ -5,7 +5,7 @@ description: 自動連續推進工作流 (Auto)。支援 Phase 01~05 跳過中�
 
 # 自動連續推進工作流 (Auto)
 
-本工作流用於 Full Track 或 Umbrella 子計畫處於 Phase 01 ~ 05 時，跳過中間 Checkpoint 連續推進至 Phase 6 手動/UX 驗證守門點。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
+本工作流用於 Full Track 或 Umbrella 子計畫處於 Phase 01 ~ 05 時，跳過中間 Checkpoint 連續推進至 Phase 6 手動/UX 驗證守門點。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
 
 ---
 
@@ -32,7 +32,7 @@ description: 自動連續推進工作流 (Auto)。支援 Phase 01~05 跳過中�
 ## 執行步驟
 
 ### 步驟 1：掃描計畫與狀態判定
-1. 檢視 `__${project://plans/}__` 定位進行中之計畫。
+1. 檢視 `__${project://plans}__` 定位進行中之計畫。
 2. 檢查當前階段（若處於 Phase 0 或 Fast Track，提示不適用並中斷）。
 
 ### 步驟 2：連續推進閉環 (Phase 01 -> 05)
@@ -52,18 +52,13 @@ description: 自動連續推進工作流 (Auto)。支援 Phase 01~05 跳過中�
 1. 自動化測試 100% 通過。
 2. **極精簡 Session 回覆格式**：對話 Session **嚴禁全文重複、代碼傾倒或日誌傾倒**，強制僅呈遞以下極簡卡片：
    ```markdown
-   ###  /Auto 連續推進完成 (抵達 P06 驗證 Checkpoint)
-   - **產出文件**：[P06_test_plan.md](__${project://plans/}__/{plan_name}/P06_test_plan.md) (Completed / 待驗收)
+   ### 🚦 /Auto 連續推進完成 (抵達 P06 驗證 Checkpoint)
+   - **產出文件**：[P06_test_plan.md](__${project://plans}__/{plan_name}/P06_test_plan.md) (Completed / 待驗收)
    - **推進摘要**：Phase 01 ~ Phase 05 已連續產出並定稿；自動化測試 100% 通過
    - **手動/UX 驗收項目**：[若有 UX 項目，條列項目與操作預期；若無填「無」]
-   - **待確認事項**：[若有 UX 項目請確認驗收結果為 [測試通過] 或是 [跳過/免測]；確認完成後將強制進入 SOP Review 審查步驟]
+   - **待確認事項**：[若有 UX 項目請確認驗收結果為 [測試通過] 或是 [跳過/免測]；確認完成後將進入 Phase 7 (P07 成果展示與 SOP Review 結案)]
    ```
 3. **[!] 立即 End Turn 等待開發者回覆**：絕對禁止自行將 P06 標記為 Passed 或擅自推進。
-4. **接續推進硬性約束 (SOP Review Gate)**：
-   - 開發者確認 UX 驗證結果（無論為 `[測試通過]` 或是 `[跳過/免測]`）後，**唯一法定下一步為強制觸發 SOP [Review Gate](`__#{module://agents-workflow/assets/skills/development-sop/references/review_gate.md}__`)**。
-   - **[!] 守門禁令**：**嚴禁跳過 SOP Review 步驟直接產出 `P07_walkthrough.md` 或宣稱結案**；必須執行三層文檔對齊與合規檢核並產出 `Review Verdict Card` 後，方可推進至 Phase 7。
-
----
-
-`__@{WORKFLOW_AUTO}__`
-
+4. **接續推進硬性約束**：
+   - 開發者確認 UX 驗證結果（無論為 `[測試通過]` 或是 `[跳過/免測]`）後，**唯一法定下一步為進入 [Phase 7 (P07 結案與 SOP 審查)](`__#{module://agents-workflow/assets/skills/development-sop/references/phase_07_walkthrough.md}__`)**。
+   - P07 內化三層文檔對齊、測試完整性與 `plan verify` 合規檢核，確認 100% Passed 後方可產出 `P07_walkthrough.md` 結案。
