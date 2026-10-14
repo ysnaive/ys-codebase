@@ -1,3 +1,10 @@
+---
+title: knowledge-db 語意打包引擎指南
+category: guide
+module: knowledge-db
+updated_at: 2026-10-14
+---
+
 # knowledge-db 語意打包引擎指南 (Semantic Bundler Guide)
 
 > 模組名稱：`knowledge-db`  
@@ -66,17 +73,14 @@
 
 ---
 
-## 🛠️ 3. CLI 打包指令
+## 🛠️ 3. CLI 導出指令 (依據 DN-25 收斂)
 
-```powershell
-# 1. 為特定空間進行打包與導出
-python yscb.py knowledge-db bundle project_main
+```bash
+# 1. 建立全域索引並導出完整 SemanticBundle 至指定路徑
+python yscb.py knowledge-db index --export exports/bundle.json
 
-# 2. 為全空間聯集執行批次打包
-python yscb.py knowledge-db bundle --all
-
-# 3. 指定自訂輸出檔案路徑
-python yscb.py knowledge-db bundle project_main --output=exports/main_release.bundle.json
+# 2. 針對特定空間建立索引並導出
+python yscb.py knowledge-db index --space=source --export exports/source.bundle.json
 ```
 
 ---

@@ -75,12 +75,12 @@ class TestReleaseTargets(YSCBTestCase):
         self.mark_passed()
 
     def test_ft_03_claude_projections_and_materialization(self):
-        """FT-03: 驗證 claude target 投影拓撲映射正確包含 .claude/commands 與 .claude/.yscb/。"""
+        """FT-03: 驗證 claude target 投影拓撲映射正確包含 .claude/skills/ 與 .claude/.yscb/。"""
         targets = {t["name"]: t for t in self.compiler.get_release_targets()}
         claude_target = targets.get("claude", {})
         
         projections = claude_target.get("projections", {})
-        self.assertEqual(projections.get("workflow", {}).get("target_dir"), "project://.claude/commands")
+        self.assertNotIn("workflow", projections)
         self.assertEqual(projections.get("template", {}).get("target_dir"), "project://.claude/.yscb/templates")
         self.assertEqual(projections.get("standard", {}).get("target_dir"), "project://.claude/.yscb/standards")
         self.assertEqual(projections.get("skill", {}).get("target_dir"), "project://.claude/skills/{export.name}")
@@ -91,18 +91,18 @@ class TestReleaseTargets(YSCBTestCase):
         resolved_items = stage1_res.get("resolved_items", [])
         dep_map, target_items = self.publisher.build_deployment_map(claude_target, resolved_items)
         
-        # 斷言工作流路徑指向 commands
-        workflow_paths = [p for p in dep_map.values() if os.path.basename(os.path.dirname(p)) == "commands"]
-        self.assertGreater(len(workflow_paths), 0)
+        # 斷言 Skill 路徑指向 skills
+        skill_paths = [p for p in dep_map.values() if "skills" in p]
+        self.assertGreater(len(skill_paths), 0)
         self.mark_passed()
 
     def test_ft_04_codex_projections_and_materialization(self):
-        """FT-04: 驗證 codex target 官方投影拓撲映射正確對齊 .agents/。"""
+        """FT-04: 驗證 codex target 官方投影拓撲映射正確對齊 .agents/skills/。"""
         targets = {t["name"]: t for t in self.compiler.get_release_targets()}
         codex_target = targets.get("codex", {})
         
         projections = codex_target.get("projections", {})
-        self.assertEqual(projections.get("workflow", {}).get("target_dir"), "project://.agents/workflows")
+        self.assertNotIn("workflow", projections)
         self.assertEqual(projections.get("template", {}).get("target_dir"), "project://.agents/.yscb/templates")
         self.assertEqual(projections.get("standard", {}).get("target_dir"), "project://.agents/.yscb/standards")
         self.assertEqual(projections.get("skill", {}).get("target_dir"), "project://.agents/skills/{export.name}")
@@ -113,9 +113,9 @@ class TestReleaseTargets(YSCBTestCase):
         resolved_items = stage1_res.get("resolved_items", [])
         dep_map, target_items = self.publisher.build_deployment_map(codex_target, resolved_items)
         
-        # 斷言工作流路徑指向 workflows
-        workflow_paths = [p for p in dep_map.values() if os.path.basename(os.path.dirname(p)) == "workflows"]
-        self.assertGreater(len(workflow_paths), 0)
+        # 斷言 Skill 路徑指向 skills
+        skill_paths = [p for p in dep_map.values() if "skills" in p]
+        self.assertGreater(len(skill_paths), 0)
         self.mark_passed()
 
     def test_ft_05_local_by_default_and_proj_flag(self):

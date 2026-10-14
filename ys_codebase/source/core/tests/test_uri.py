@@ -64,6 +64,9 @@ class TestCoreURI(YSCBTestCase):
         with uri.module_scope("core"):
             with self.assertRaises(PermissionError):
                 uri.resolve("storage://@/../../../../../../etc/passwd")
+            # 驗證同前綴兄弟目錄穿越攻擊防禦 (EC-05)
+            with self.assertRaises(PermissionError):
+                uri.resolve("storage://../storage_sibling/hack.txt")
         self.mark_passed()
 
     def test_deprecated_scheme_redirection_warning(self):

@@ -218,7 +218,7 @@ class YSCBTestCase(unittest.TestCase):
         with open(os.path.join(tests_dir, "__init__.py"), "w", encoding="utf-8") as f:
             f.write('"""Mock test package."""\n')
         with open(os.path.join(tests_dir, "test_dummy.py"), "w", encoding="utf-8") as f:
-            f.write("from dev.testing.case import YSCBTestCase\nclass DummyMockTest(YSCBTestCase):\n    def test_mock_pass(self): pass\n")
+            f.write("from dev.testing.case import YSCBTestCase\nclass DummyMockTest(YSCBTestCase):\n    def test_mock_pass(self):\n        self.mark_passed()\n")
 
         if files:
             for rel_p, content in files.items():

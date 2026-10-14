@@ -1,3 +1,10 @@
+---
+title: 四段式版本規範說明書
+category: specification
+module: core
+updated_at: 2026-10-14
+---
+
 # 四段式版本規範說明書 (SemVer v4 Specification)
 
 > 適用模組：`core`  

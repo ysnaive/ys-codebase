@@ -1,7 +1,7 @@
 {
   "_types": {
     "ExportAssetDef": {
-      "type": "enum(standard, workflow, template, skill)!",
+      "type": "enum(standard, template, skill)!",
       "name": "str?",
       "source": "str!",
       "description": "str?"

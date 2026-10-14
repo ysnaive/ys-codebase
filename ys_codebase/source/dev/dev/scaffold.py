@@ -26,7 +26,7 @@ class Scaffolder:
         # 1. Create manifest.json
         uri.write_json(f"{target_src_uri}/manifest.json", {
             "name": name,
-            "version": "0.1.0",
+            "version": "0.1.0.0",
             "description": final_desc,
             "entry": "scripts/cli.py",
             "dependencies": {
@@ -38,12 +38,19 @@ class Scaffolder:
         cli_content = f'''"""
 CLI Entry point for module {name}.
 """
-from typing import List
+from typing import List, Any
 import sys
 import os
 
 from core.guard import guard_dispatch
+from core.commands import CmdBags
 from core import uri
+
+
+def hello(cmd_bags: Any) -> int:
+    guard_dispatch("{name}")
+    print(f"[{name}] Hello from YSCB module {name}!")
+    return 0
 
 
 def process(args: List[str]) -> int:
@@ -71,20 +78,24 @@ def process(args: List[str]) -> int:
         init_content = f'''"""
 {name} package initialization.
 """
-__version__ = "0.1.0"
+__version__ = "0.1.0.0"
 '''
         uri.write_text(f"{target_src_uri}/{pkg_name}/__init__.py", init_content)
         
         # 4. Create tests/__init__.py and tests/test_basic.py
-        uri.write_text(f"{target_src_uri}/tests/__init__.py", '"""\nTest package.\n"""\n')
+        uri.write_text(f"{target_src_uri}/tests/__init__.py", '"""\\nTest package.\\n"""\\n')
         test_content = f'''"""
 Basic test for {name}.
 """
 import unittest
+from dev.testing import YSCBTestCase
 
-class TestBasic(unittest.TestCase):
+
+class TestBasic(YSCBTestCase):
     def test_sample(self):
         self.assertTrue(True)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

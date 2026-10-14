@@ -20,6 +20,7 @@ from server.worker import WarmWorker
 
 class TestServerLogging(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root_dir = self.temp_dir.name
         self.cache_dir = os.path.join(self.root_dir, ".cache", "server")
@@ -27,6 +28,7 @@ class TestServerLogging(YSCBTestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+        super().tearDown()
 
     def test_logger_write_and_flush(self):
         """FT-01: ServerLogger writes start banner, formatted lines, and flushes immediately."""

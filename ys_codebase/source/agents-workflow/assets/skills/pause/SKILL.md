@@ -1,6 +1,11 @@
+---
+name: pause
+description: 暫停開發與無縫交接工作流 (Pause)。現場狀態凍結、生成 handoff.md 達成零斷層接手。
+---
+
 # 暫停開發與無縫交接工作流 (Pause)
 
-本工作流用於中斷工作、結束當前 Session 或切換任務時，將現場狀態、未提交進度、踩坑注意事項與下一步動作進行**即時上下文凍結 (Context Freeze)**。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流用於中斷工作、結束當前 Session 或切換任務時，將現場狀態、未提交進度、踩坑注意事項與下一步動作進行**即時上下文凍結 (Context Freeze)**。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
 
 ---
 
@@ -36,9 +41,10 @@
 - **所屬計畫**：[{plan_name}](__${project://plans/}__/{plan_name}/)
 - **凍結斷點**：[Phase X 或 FT-Y (狀態)]
 - **重啟第 1 步**：[極精確的重啟行動指引]
-- **下次接手**：輸入 [/Continue](`__#{module://agents-workflow/assets/workflows/Continue.md}__`) 即可無縫接續
+- **下次接手**：輸入 [/Continue](`__#{module://agents-workflow/assets/skills/continue/SKILL.md}__`) 即可無縫接續
 ```
 
 ---
 
 `__@{WORKFLOW_PAUSE}__`
+

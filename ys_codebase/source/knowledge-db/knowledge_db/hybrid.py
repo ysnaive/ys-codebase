@@ -82,6 +82,9 @@ class HybridSearchEngine:
         query: str,
         limit: int = 10,
         file_types: Optional[List[str]] = None,
+        spaces: Optional[List[str]] = None,
+        kinds: Optional[List[str]] = None,
+        languages: Optional[List[str]] = None,
         lexical_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """
@@ -95,15 +98,38 @@ class HybridSearchEngine:
         # 1. 執行 BM25 倒排檢索 (擷取足夠候選集供融合)
         fetch_limit = max(limit * 3, 30)
         bm25_hits: List[Dict[str, Any]] = []
+        symbols_map = getattr(self.inverted_index, "symbols", {}) if self.inverted_index else {}
         if self.inverted_index is not None and hasattr(self.inverted_index, "search"):
-            bm25_hits = self.inverted_index.search(
+            raw_hits = self.inverted_index.search(
                 query=query,
                 limit=fetch_limit,
                 file_types=file_types,
             )
+            if spaces or kinds or languages:
+                filtered_hits = []
+                for h in raw_hits:
+                    sym = symbols_map.get(h["doc_id"])
+                    if not sym:
+                        continue
+                    if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
+                        continue
+                    if kinds and sym.kind not in kinds:
+                        continue
+                    if languages and sym.language not in languages:
+                        continue
+                    filtered_hits.append(h)
+                bm25_hits = filtered_hits
+            else:
+                bm25_hits = raw_hits
         elif self.bm25_engine is not None and self.inverted_index is not None:
             from .retrieval import QueryFilter
-            flt = QueryFilter(ftypes=file_types, limit=fetch_limit)
+            flt = QueryFilter(
+                spaces=spaces,
+                kinds=kinds,
+                languages=languages,
+                ftypes=file_types,
+                limit=fetch_limit,
+            )
             raw_res = self.bm25_engine.search(query=query, index=self.inverted_index, filter_cfg=flt)
             bm25_hits = [
                 {
@@ -113,8 +139,6 @@ class HybridSearchEngine:
                 }
                 for r in raw_res
             ]
-
-        symbols_map = getattr(self.inverted_index, "symbols", {}) if self.inverted_index else {}
 
         # 2. 若指定 lexical_only 或向量管線未就緒，執行 100% 剛性平滑降級
         if lexical_only or not self.is_vector_available:
@@ -148,7 +172,7 @@ class HybridSearchEngine:
                 })
             return results
 
-        # 依 file_types 與純語意相似度門檻過濾向量候選集
+        # 依 file_types、spaces、kinds、languages 與純語意相似度門檻過濾向量候選集
         filtered_vector_hits = []
         lexical_doc_ids = {hit["doc_id"] for hit in bm25_hits}
         for doc_id, sim in raw_vector_hits:
@@ -159,6 +183,12 @@ class HybridSearchEngine:
                 ext = sym.file_path.split(".")[-1].lower() if "." in sym.file_path else ""
                 if ext not in file_types and f".{ext}" not in file_types:
                     continue
+            if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
+                continue
+            if kinds and sym.kind not in kinds:
+                continue
+            if languages and sym.language not in languages:
+                continue
             # 若該符號無任何 BM25 關鍵字命中，必須達到純語意門檻才視為召回，避免小庫弱相關噪音誤報
             if doc_id not in lexical_doc_ids and sim < self.min_vector_similarity:
                 continue

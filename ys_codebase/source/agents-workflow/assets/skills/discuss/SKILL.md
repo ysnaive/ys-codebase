@@ -1,6 +1,11 @@
+---
+name: discuss
+description: 深度歸因與防淺層修復工作流 (Discuss)。實作/測試遇阻時的強制暫停、根因追溯與範疇保護機制。
+---
+
 # 深度歸因與防淺層修復工作流 (Discuss)
 
-本工作流為開發過程（特別是 Phase 5 實作與 Phase 6 測試）遇非預期錯誤、測試失敗或範疇越界時的**強制停手與深度歸因機制**，杜絕盲目試錯與淺層修補。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流為開發過程（特別是 Phase 5 實作與 Phase 6 測試）遇非預期錯誤、測試失敗或範疇越界時的**強制停手與深度歸因機制**，杜絕盲目試錯與淺層修補。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
 
 ---
 
@@ -58,3 +63,4 @@
 ---
 
 `__@{WORKFLOW_DISCUSS}__`
+

@@ -93,8 +93,10 @@ def _fetch_and_extract_zip(source: str, dest_dir: str) -> None:
                     pass
     elif os.path.isdir(source):
         shutil.copytree(source, dest_dir, dirs_exist_ok=True)
-    elif zipfile.is_zipfile(source):
+    elif os.path.isfile(source) and zipfile.is_zipfile(source):
         _extract_safe_zip(source, dest_dir)
+    else:
+        raise FileNotFoundError(f"[yscb] Error: Package source '{source}' not found or is not a valid zip archive.")
 
 
 def _resolve_self_update_target_url(provider: str, custom_url: Optional[str] = None) -> str:
@@ -149,11 +151,20 @@ def cmd_self_update(argv: List[str]) -> int:
         return 0
     provider = DEFAULT_PROVIDER_URL
     custom_url = None
-    for arg in argv:
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
         if arg.startswith("--provider="):
             provider = arg.split("=", 1)[1].strip("\"'")
+        elif arg in ("--provider", "-p") and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            provider = argv[i + 1].strip("\"'")
+            i += 1
         elif arg.startswith("--url="):
             custom_url = arg.split("=", 1)[1].strip("\"'")
+        elif arg == "--url" and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            custom_url = argv[i + 1].strip("\"'")
+            i += 1
+        i += 1
 
     target_url = _resolve_self_update_target_url(provider, custom_url)
     print(f"[yscb] Checking for latest yscb.py from: {target_url}")
@@ -365,13 +376,27 @@ def cmd_init(argv: List[str]) -> int:
         return 0
     is_fix = "--fix" in argv
     is_force = "--force" in argv
-    clean_argv = [a for a in argv if a not in ("--fix", "--force") and not a.startswith("--provider=")]
     provider = DEFAULT_PROVIDER_URL
     has_explicit_provider = False
-    for a in argv:
+    clean_argv: List[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--fix", "--force"):
+            i += 1
+            continue
         if a.startswith("--provider="):
             provider = a.split("=", 1)[1].strip("\"'")
             has_explicit_provider = True
+        elif a in ("--provider", "-p") and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            provider = argv[i + 1].strip("\"'")
+            has_explicit_provider = True
+            i += 1
+        elif a.startswith("-"):
+            pass
+        else:
+            clean_argv.append(a)
+        i += 1
 
     base_dir = os.path.abspath(os.getcwd())
     cfg_path = os.path.join(base_dir, CONFIG_FILENAME)

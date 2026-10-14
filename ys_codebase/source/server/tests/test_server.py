@@ -45,6 +45,7 @@ class MockService(BaseServiceWorker):
 
 class TestServerModule(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root_dir = self.temp_dir.name
         self.cache_dir = os.path.join(self.root_dir, ".cache", "server")
@@ -52,6 +53,7 @@ class TestServerModule(YSCBTestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+        super().tearDown()
 
     def test_debounced_streamer(self):
         """FT-05: DebouncedIOStreamer captures output, debounces, and emits structured packets."""
@@ -341,6 +343,60 @@ class TestServerModule(YSCBTestCase):
         self.assertEqual(data["description"], "YS-Codebase Persistent Server & Warm Worker Subsystem")
         self.mark_passed()
 
+    def test_format_startup_banner_and_shutdown_summary(self):
+        """FT-15: Verify startup banner and shutdown summary formatting functions."""
+        from server.master import format_startup_banner, format_shutdown_summary
+
+        mock_info = {
+            "pid": 9991,
+            "worker_pid": 9992,
+            "port": 54321,
+            "root": "/mock/workspace",
+            "state": "ready",
+            "idle_seconds_left": 800.0,
+            "idle_timeout_sec": 900.0,
+            "log_file": "/mock/workspace/.cache/server/log",
+            "services": [{"name": "search-sync", "provider": "knowledge-db", "alive": True}],
+            "watcher": {"enabled": True, "active": True, "monitored_dir": "/mock/workspace/.modules"},
+        }
+        banner = format_startup_banner(mock_info)
+        self.assertIn("[Server] Daemon successfully started!", banner)
+        self.assertIn("Master PID      : 9991", banner)
+        self.assertIn("Worker PID      : 9992 (State: READY)", banner)
+        self.assertIn("Listening Port  : 54321", banner)
+        self.assertIn("Workspace Root  : /mock/workspace", banner)
+        self.assertIn("Idle Timeout    : 900.0s", banner)
+        self.assertIn("Modules Watcher : ACTIVE", banner)
+        self.assertIn("Background Svcs : 1 registered (search-sync)", banner)
+        self.assertIn("Real-time Log   : /mock/workspace/.cache/server/log", banner)
+
+        mock_summary = {
+            "pid": 9991,
+            "worker_pid": 9992,
+            "uptime_seconds": 125.4,
+            "tasks_executed": 7,
+            "services_stopped": 1,
+            "reason": "Graceful CLI shutdown request",
+            "archive_log": "/mock/workspace/.cache/server/2026_10_14_14.00.00_log",
+        }
+        summary_txt = format_shutdown_summary(mock_summary)
+        self.assertIn("[Server] Daemon stopped gracefully.", summary_txt)
+        self.assertIn("Total Uptime    : 2m 5.4s (125.4s)", summary_txt)
+        self.assertIn("Tasks Handled   : 7 tasks executed", summary_txt)
+        self.assertIn("Services Stopped: 1 background services terminated", summary_txt)
+        self.assertIn("Shutdown Reason : Graceful CLI shutdown request", summary_txt)
+        self.assertIn("Archived Log    : /mock/workspace/.cache/server/2026_10_14_14.00.00_log", summary_txt)
+        self.mark_passed()
+
+    def test_status_and_shutdown_api_payloads(self):
+        """FT-16: Verify MasterSupervisor get_status_dict and shutdown summary enrichment."""
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0)
+        status_dict = sup.get_status_dict()
+        self.assertIn("start_time", status_dict)
+        self.assertIn("uptime_seconds", status_dict)
+        self.assertIn("log_file", status_dict)
+        self.assertGreaterEqual(status_dict["uptime_seconds"], 0.0)
+        self.mark_passed()
 
 
 if __name__ == "__main__":

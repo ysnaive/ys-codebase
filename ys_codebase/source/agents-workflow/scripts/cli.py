@@ -249,6 +249,8 @@ def list(cmd_bags: Any) -> int:
         t = exp.get("type", "template")
         src = exp.get("source", "")
         desc = exp.get("description", "")
+        if "__${" in desc or "__#{" in desc:
+            desc = compiler.resolve_stage2_uri(desc, "list", {})
         print(f"{t:<12} {src:<45} {desc}")
     print("-" * 80)
     return 0

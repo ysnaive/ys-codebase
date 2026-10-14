@@ -911,7 +911,6 @@ class ResultFormatter:
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
                         if formatted_snip:
-                            node_lines.append(formatted_snip)
                             node_lines.append(f"{pipe}   被調用代碼切片:")
                             node_lines.append(formatted_snip)
                 else:  # auto

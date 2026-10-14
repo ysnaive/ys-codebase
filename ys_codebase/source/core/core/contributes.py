@@ -317,6 +317,13 @@ class ContributesAggregator:
                                         tagged_body[c_key] = _tag_provider(c_val, donor)
                                     else:
                                         tagged_body[c_key] = c_val
+                                
+                                # 保留按 donor 隔離之 commands 分桶，徹底防禦跨模組同名指令覆蓋 (P00:DR-01)
+                                if target == "core" and "commands" in tagged_body:
+                                    if "__modules__" not in aggregated[target].setdefault("commands", {}):
+                                        aggregated[target]["commands"]["__modules__"] = {}
+                                    aggregated[target]["commands"]["__modules__"][donor] = tagged_body["commands"]
+
                                 self._deep_merge(aggregated[target], tagged_body)
                         except Exception as e:
                             logger.warning(f"Failed to read contributes file '{target_file_uri}': {e}")

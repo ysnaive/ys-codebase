@@ -1,5 +1,5 @@
 {
-  "fingerprint": "7c0c8d7a134d4d12b28528cd352b48b7b9c77587bc8759088bb3571140a3105f",
+  "fingerprint": "5693c87caca5778c2007ac938d124b83e4d86fcebcff7ae495b1a306aad09ef0",
   "active_targets": [
     "antigravity"
   ],
@@ -19,6 +19,10 @@
     "project://.agents/.yscb/templates/handoff.md",
     "project://.agents/.yscb/templates/roadmap.md",
     "project://.agents/.yscb/templates/umbrella_overview.md",
+    "project://.agents/skills/auto/SKILL.md",
+    "project://.agents/skills/bump-revision/SKILL.md",
+    "project://.agents/skills/context-init/SKILL.md",
+    "project://.agents/skills/continue/SKILL.md",
     "project://.agents/skills/development-sop/SKILL.md",
     "project://.agents/skills/development-sop/references/phase_00_discuss.md",
     "project://.agents/skills/development-sop/references/phase_01_requirements.md",
@@ -30,9 +34,14 @@
     "project://.agents/skills/development-sop/references/phase_07_walkthrough.md",
     "project://.agents/skills/development-sop/references/plan_modes.md",
     "project://.agents/skills/development-sop/references/review_gate.md",
+    "project://.agents/skills/discuss/SKILL.md",
     "project://.agents/skills/documentation/SKILL.md",
     "project://.agents/skills/documentation/references/author_guide_and_checklist.md",
     "project://.agents/skills/knowledge-db-search/SKILL.md",
+    "project://.agents/skills/new-plan/SKILL.md",
+    "project://.agents/skills/pause/SKILL.md",
+    "project://.agents/skills/research/SKILL.md",
+    "project://.agents/skills/roadmap/SKILL.md",
     "project://.agents/skills/session-analysis/SKILL.md",
     "project://.agents/skills/session-analysis/references/evaluation_guide.md",
     "project://.agents/skills/session-analysis/scripts/analyzer.py",
@@ -42,17 +51,8 @@
     "project://.agents/skills/yscb-module-dev/references/cli_and_commands.md",
     "project://.agents/skills/yscb-module-dev/references/contributes_guide.md",
     "project://.agents/skills/yscb-module-dev/references/testing_and_sandbox.md",
-    "project://.agents/workflows/Auto.md",
-    "project://.agents/workflows/BumpRevision.md",
-    "project://.agents/workflows/ContextInit.md",
-    "project://.agents/workflows/Continue.md",
-    "project://.agents/workflows/Discuss.md",
-    "project://.agents/workflows/NewPlan.md",
-    "project://.agents/workflows/Pause.md",
-    "project://.agents/workflows/Research.md",
-    "project://.agents/workflows/Roadmap.md",
     "project://AGENTS.md"
   ],
-  "combined_fingerprint": "7c0c8d7a134d4d12b28528cd352b48b7b9c77587bc8759088bb3571140a3105f",
-  "updated_at": "2026-09-19 14:53:49"
+  "combined_fingerprint": "5693c87caca5778c2007ac938d124b83e4d86fcebcff7ae495b1a306aad09ef0",
+  "updated_at": "2026-10-14 15:08:08"
 }

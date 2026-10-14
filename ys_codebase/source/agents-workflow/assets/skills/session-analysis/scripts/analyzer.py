@@ -30,7 +30,9 @@ def find_antigravity_transcript(conversation_id: Optional[str] = None, explicit_
 
     # Base directory for Antigravity IDE
     candidate_bases = [
+        Path.home() / ".gemini" / "antigravity" / "brain",
         Path.home() / ".gemini" / "antigravity-ide" / "brain",
+        Path("/home/developer/.gemini/antigravity/brain"),
         Path("/home/developer/.gemini/antigravity-ide/brain"),
     ]
 

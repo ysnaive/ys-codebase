@@ -18,3 +18,9 @@
 
 ### 1.2 `agents-workflow.json`（規範注入）
 - 向 `AGENTS_STANDARDS` Token 錨點注入開發者專屬工程規範與 Dogfooding 守則。
+
+## 2. 內部擴充清冊 (Ingress Contributions)
+
+### 2.1 `custom_checks`（領域專屬靜態檢查規則）
+- 允許其他生態系模組向 `dev check` 靜態合規引擎動態註冊領域專屬靜態檢查規則 (`CheckRuleDef`: name, description, severity, checker_func)。
+

@@ -71,7 +71,7 @@ class CommandsRegistry:
         if isinstance(args_raw, dict):
             for arg_name, arg_data in args_raw.items():
                 if isinstance(arg_data, dict):
-                    choice_val = arg_data.get("choice")
+                    choice_val = arg_data.get("choices") if "choices" in arg_data else arg_data.get("choice")
                     if isinstance(choice_val, list):
                         choice_list = [str(c) for c in choice_val]
                     elif choice_val:
@@ -90,7 +90,7 @@ class CommandsRegistry:
             for item in args_raw:
                 if isinstance(item, dict) and "name" in item:
                     aname = item["name"]
-                    choice_val = item.get("choice")
+                    choice_val = item.get("choices") if "choices" in item else item.get("choice")
                     choice_list = [str(c) for c in choice_val] if isinstance(choice_val, list) else None
                     res[aname] = ArgSpec(
                         name=aname,

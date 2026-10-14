@@ -1,6 +1,11 @@
+---
+name: roadmap
+description: 技術路線圖智能推薦工作流 (Roadmap)。探索長期技術儲備並推薦適合當前專案情境之主題。
+---
+
 # 技術路線圖探索與智能推薦工作流 (Roadmap)
 
-本工作流用於掃描專案之長期技術儲備庫 (`__${workflow.roadmap://}__`)，結合目前專案架構進度與模組狀態，客觀推薦最適合當前啟動之路線圖主題。執行規範遵循 [NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`)。
+本工作流用於掃描專案之長期技術儲備庫 (`__${workflow.roadmap://}__`)，結合目前專案架構進度與模組狀態，客觀推薦最適合當前啟動之路線圖主題。執行規範遵循 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
 
 ---
 
@@ -40,7 +45,7 @@
 - **推薦啟動項**：[{topic}.md](__${workflow.roadmap://}__{topic}.md)（狀態：`[Backlog / Ready]`）
 - **核心效益**：[1 行客觀效益說明]
 - **匹配理由**：[1 行當前專案相容或前置條件已成熟之客觀依據]
-- **待確認事項**：請問是否針對此主題正式轉入 [/NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`) 開立計畫？
+- **待確認事項**：請問是否針對此主題正式轉入 [/new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 開立計畫？
 ```
 
 ---
@@ -48,9 +53,10 @@
 ### 步驟 4：流轉立項 (Promotion to Dev Plan)
 
 當開發者確認啟動時：
-1. 引導進入 [/NewPlan](`__#{module://agents-workflow/assets/workflows/NewPlan.md}__`) 流程。
+1. 引導進入 [/new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 流程。
 2. 新計畫自動讀取該 Roadmap 檔案，直接將問題背景、方案對比與 SOP 繼承為新計畫之基礎，達成無縫立項。
 
 ---
 
 `__@{WORKFLOW_ROADMAP}__`
+

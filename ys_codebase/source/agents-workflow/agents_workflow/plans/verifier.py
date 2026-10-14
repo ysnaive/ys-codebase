@@ -111,7 +111,8 @@ class PlanVerifier:
 
     VALID_STATUSES = {
         "draft", "confirmed", "in progress", "in_progress",
-        "passed", "completed", "active", "archived", "pending", "review"
+        "passed", "completed", "active", "archived", "pending", "review",
+        "discussing", "planning", "executing", "concluded", "aborted", "cancelled"
     }
 
     VALID_CHANGELOG_TYPES = {
@@ -150,7 +151,12 @@ class PlanVerifier:
             self.archive_dir = Path(archive_dir).resolve()
         else:
             res_arch = _resolve_uri_path("workflow.archived://")
-            self.archive_dir = res_arch if res_arch else Path.cwd() / "archive_plans"
+            if res_arch:
+                self.archive_dir = res_arch
+            elif (Path.cwd() / "plans" / "archive").is_dir():
+                self.archive_dir = Path.cwd() / "plans" / "archive"
+            else:
+                self.archive_dir = Path.cwd() / "archive_plans"
 
         if templates_dir is not None:
             self.templates_dir = Path(templates_dir).resolve()
@@ -253,7 +259,13 @@ class PlanVerifier:
         """將計畫檔案對齊至標準模板名稱。"""
         base = os.path.basename(file_name)
         if base.startswith("P00_"):
-            return "P00_semantic_requirements.md"
+            if self.templates_dir and (self.templates_dir / base).exists():
+                return base
+            if self.templates_dir and (self.templates_dir / "P00_discuss.md").exists():
+                return "P00_discuss.md"
+            if self.templates_dir and (self.templates_dir / "P00_semantic_requirements.md").exists():
+                return "P00_semantic_requirements.md"
+            return "P00_semantic_requirements.md" if "semantic" in base else "P00_discuss.md"
         elif base.startswith("P01_"):
             return "P01_requirements_spec.md"
         elif base.startswith("P02_"):
@@ -452,7 +464,7 @@ class PlanVerifier:
             "建立日期", "完成日期", "date", "created_at", "日期", "time", "timestamp"
         ])
         has_status = any(k in headers for k in [
-            "狀態", "status", "調研狀態", "research_status", "plan_status", "進度"
+            "狀態", "status", "調研狀態", "research_status", "plan_status", "計畫狀態", "進度"
         ])
         has_parent = any(k in headers for k in ["所屬主計畫", "parent_plan", "主計畫", "parent"])
 
@@ -485,7 +497,15 @@ class PlanVerifier:
             )
         else:
             # 校驗狀態合法性
-            status_val = headers.get("狀態", headers.get("status", "")).lower()
+            status_val = (
+                headers.get("狀態")
+                or headers.get("status")
+                or headers.get("計畫狀態")
+                or headers.get("調研狀態")
+                or headers.get("research_status")
+                or headers.get("plan_status")
+                or ""
+            ).lower()
             if status_val and status_val not in self.VALID_STATUSES:
                 report.issues.append(
                     PlanIssue(
