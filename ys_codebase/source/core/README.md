@@ -5,6 +5,26 @@
 
 ---
 
+## 0. 下游專案 5 分鐘快速上手 (Quickstart)
+
+```bash
+# 1. 全新工作區單檔自舉 (自動建立 .yscb 工具目錄、寫入 yscb.config.json 並自線上來源解壓 core 模組)
+python yscb.py init
+
+# 2. 綁定宿主專案根目錄 (路徑相對於 yscb.py 所在目錄)
+python yscb.py config set core project_root ./
+
+# 3. 檢查語意 URI 健康度 (若有 !undefined 協議將自動提示 [Quick Fix] 指令)
+python yscb.py uri check
+
+# 4. 安裝生態系擴充模組 (安裝後自動顯示該模組之 Next Steps 引導)
+python yscb.py install agents-workflow
+python yscb.py install knowledge-db
+python yscb.py install server
+```
+
+---
+
 ## 1. 模組架構全景 (Architecture Overview)
 
 `core` 模組提供 YS-Codebase 運行的基礎設施：
@@ -17,8 +37,8 @@ graph TD
     CLI["CLI 入口<br/><code>python yscb.py</code>"]:::main
 
     subgraph CoreModule ["Core 核心模組 (module:core)"]
-        Installer["套件生命週期管理 (Installer)<br/><i>安裝 / 升級 / 移除 / 快照回滾</i>"]:::sub
-        URI["語意空間虛擬檔案系統 (URI VFS)<br/><i>跨平台路徑解析</i>"]:::sub
+        Installer["套件生命週期管理 (Installer)<br/><i>安裝 / 升級 / 移除 / 快照回滾 / Onboarding 引導</i>"]:::sub
+        URI["語意空間虛擬檔案系統 (URI VFS)<br/><i>跨平台路徑解析 / !undefined 自癒提示</i>"]:::sub
         Config["2x2 組態矩陣管理 (Config)<br/><i>專案設定 / 本機覆蓋</i>"]:::sub
         SemVer["語意化版本引擎 (SemVer)<br/><i>約束比對 / 依賴解析</i>"]:::sub
     end
@@ -34,17 +54,22 @@ graph TD
 ## 2. 核心機制說明 (Core Mechanisms)
 
 ### 2.1 語意空間虛擬檔案系統 (Semantic URI VFS)
-Core 提供語意 URI 協定，程式碼與 CLI 統一透過協定存取實體目錄，避免相對路徑依賴：
+Core 提供內建語意 URI 協定，並支援各擴充模組透過 `contributes/core.json` 動態註冊專屬協定（如 `agents-workflow` 注入之 `workflow.plans://`、`workflow.docs://` 等，可隨時執行 `python yscb.py uri list` 檢視全清單）：
 
 | 語意 URI 協議 | 預設解析目標 | 職責與說明 |
 | :--- | :--- | :--- |
 | **`project://`** | 由 `config.project.json` 之 `project_root` 定位 | **宿主專案空間根目錄**（受管理的專案本體） |
-| **`yscb://`** | 由 `yscb.config.json` 之 `yscb_root` 定位 | **YS-Codebase 核心程式庫目錄** (`ys_codebase/`) |
-| **`yscb.host://`** | 由 `yscb.config.json` 之 `yscb_host` 定位 | **YS-Codebase 宿主環境根目錄** |
-| **`module://`** | `yscb://.modules/{module}/` | **當前作用中模組的運行目錄** |
+| **`yscb.host://`** | 由 `yscb.config.json` 所在目錄定位 | **YS-Codebase 宿主入口腳本 (`yscb.py`) 所在目錄** |
+| **`yscb://`** | 由 `yscb.config.json` 錨定（預設 `.yscb/`） | **YSCB 工具與運行空間根目錄** |
+| **`yscb.venv://`** | `yscb://.venv/` | **隔離之 Python 虛擬微環境根目錄** |
+| **`module://`** | `yscb://.modules/{module}/` | **當前作用中模組的運行目錄（支援 `module://@/` 自省）** |
 | **`module.mirror://`** | `yscb://.mirror/` | **本地端模組鏡像快照備份** |
-| **`config://`** | `yscb://config/{module}/` | **當前模組專屬設定檔目錄** |
-| **`cache://`** | `yscb://.cache/{module}/` | **當前模組專屬快取目錄** |
+| **`module.source://`** | `yscb://source/` | **模組源碼開發空間目錄（`dev create` 預設建立位置）** |
+| **`module.build://`** | `yscb://.build/` | **模組開發打包暫存目錄** |
+| **`module.release://`** | `yscb://release/` | **模組正式發布包產出目錄** |
+| **`config://`** | `yscb://config/{module}/` | **模組專屬設定檔目錄（支援 `config://@/` 自省）** |
+| **`cache://`** | `yscb://.cache/{module}/` | **模組專屬快取目錄（支援 `cache://@/` 自省）** |
+| **`temp://`** | `yscb://.temp/` | **系統暫態工作目錄** |
 | **`storage://`** | `yscb://storage/` | **跨環境共享持久化資料空間** |
 | **`snapshot://`** | `yscb://.snapshots/` | **系統組態快照備份（用於災難恢復）** |
 
@@ -66,10 +91,10 @@ Core 實作了「專案 vs 本機」與「全域 vs 模組」的雙維度隔離�
 ### 3.0 宿主自舉與環境初始化 (Host & Environment Lifecycle)
 
 ```bash
-# 全新初始化 YSCB 工作區 (若未指定路徑，預設建立 .yscb 工具目錄)
+# 全新初始化 YSCB 工作區 (預設建立 .yscb 工具目錄並生成 yscb.config.json)
 python yscb.py init
 
-# 指定工具目錄進行全新初始化
+# 指定自訂工具目錄進行全新初始化
 python yscb.py init ./ys_codebase
 
 # 自癒修復損毀或缺失的 core 核心模組 (完成後連鎖自動觸發 reload 刷新環境)

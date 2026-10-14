@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_14_1554_downstream_onboarding_and_ux_guidance (Completed)
+
+- **全生態系下游使用者與 AI Agent 導入引導 (UX/DX) 全面重構、CLI 下一步橫幅與語意 URI 自癒提示**：
+  - **全域與 5 大模組隨包 `README.md` 實戰重構（維度 A）**：全面翻新根目錄 `README.md`、`docs/README.md` 與 `ys_codebase/source/{core,dev,server,knowledge-db,agents-workflow}/README.md`，補齊 `server` 模組全景與宿主目錄拓撲圖（`.yscb`、`yscb.config.json`、`module://` 對照），增設「5 分鐘快速上手 (Quickstart)」、AI Agent `[Pre-flight Check]` 互動確認提示、`agents-workflow` 各 IDE Target（`antigravity` / `claude` / `codex`）物化產物對照表、`knowledge-db` 跨平台（Bash vs Windows PowerShell/CMD）JSON 陣列設定範例與輕量純 BM25 模式說明，並經零前置上下文 Subagent 盲測驗證 100% 無盲區理解。
+  - **CLI 生命週期「下一步引導 (`Next Steps Banner`)」（維度 B）**：於 `yscb.py` 新增 `_print_init_next_steps` 在全新 `init` 後自動輸出 3 步引導；於 5 大模組 `manifest.json` 引入選填 `"onboarding": List[str]` 欄位（由 `dev/checker.py` 執行靜態合規檢查），透過 `Installer._print_onboarding_guide` 在 `install` 完成後自動輸出結構化 `[*] Next Steps for '<module>':` 卡片。
+  - **`!undefined` 語意 URI 可操作自癒提示（維度 C）**：於 `core/uri.py` 新增 `format_undefined_uri_hint` 並擴充 `UndefinedURIError` 與 `uri check`（`[Quick Fix]` 區塊），針對 `project://`、`workflow.*://` 及模組協議自動提示精確的修復 CLI 指令；新增單元測試覆蓋，全生態系 **555/555 測試 100% 通過**；登錄 `[DN-27]`。
+
 ## 2026_10_14_1224_deep_audit_and_ecosystem_refinement (Completed)
 
 ### sub_01_host_and_core_foundation_remediation (Verified)

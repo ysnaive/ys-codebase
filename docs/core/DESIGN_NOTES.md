@@ -282,3 +282,15 @@ updated_at: 2026-10-14
 - **防禦宣告**：
   > [!IMPORTANT]
   > **CLI Guild 生成邏輯必須優先遍歷 `__modules__` 分桶；`uri.resolve` 熱路徑快取必須嚴格由檔案 `mtime` 與 `reconcile_undefined_uri` 自動連動失效，嚴禁讀取陳舊快取！**
+
+---
+
+### [DN-27] 宣告式模組 Onboarding 引導 (`manifest.json` -> `onboarding`) 與 `!undefined` URI 自癒提示
+
+- **核心決策**：
+  1. **宣告式 Post-Install Onboarding 引導**：於模組 `manifest.json` 引入選填欄位 `"onboarding": List[str]`（由 `dev.checker` 靜態校驗必須為非空字串陣列）。`Installer.cmd_install` 完成模組安裝後調用 `_print_onboarding_guide(module_name)`，動態讀取該欄位並渲染 `[*] Next Steps for '<module>':` 操作卡片與隨包手冊位置（`.modules/<module>/README.md`）；同時 `yscb.py init` 於全新自舉完成後輸出工作區啟動指引。
+  2. **`!undefined` 語意協議自癒提示 (`format_undefined_uri_hint`)**：於 `core.uri` 實作 `format_undefined_uri_hint(scheme, provider, binding)`，針對未定義之 `project://`、`workflow.*://` 或一般模組協議動態生成可直接複製執行的 CLI 修復指令，並同時附加於 `UndefinedURIError` 例外訊息尾部與 `uri check` 診斷報告底部之 `[Quick Fix]` 區塊。
+- **背後考量**：下游使用者或 AI Agent 初次安裝模組或遭遇 `!undefined` 阻斷時，若僅輸出底層狀態或錯誤名稱，需額外翻找文檔方知下一步指令；透過宣告式 `onboarding` 與結構化 `Quick fix` 提示，在保持微內核零業務耦合的前提下實現零斷層引導。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **`UndefinedURIError` 擴充 `Quick fix:` 時，必須 100% 保留原有 `Semantic URI '{scheme}://' is undefined (!undefined)...` 前綴結構，嚴禁刪除或改寫既有錯誤主幹以免破壞單元測試契約！**

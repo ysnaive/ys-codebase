@@ -1,31 +1,60 @@
 # YS-Codebase Agents-Workflow 工作流與規範模組 (AI Agent Workflow Engine)
 
 > 模組名稱：`agents-workflow`  
-> 職責定位：AI Agent 工作流框架。提供 Slash Commands 工作流、SOP 0~7 開發流程、計畫管理、行為規範與動態 Token 注入機制。
+> 職責定位：AI Agent 技能與工作流框架。提供純 Skill 技能包體系 (`SKILL.md`)、SOP 0~7 開發流程、計畫管理、行為規範與動態 Token 注入機制。
+
+---
+
+## 0. 下游專案 5 分鐘快速上手 (Quickstart)
+
+> [!CAUTION]
+> **[Pre-flight Check] AI Agent 初始化確認**：初次設定前，請先與開發者確認：**① 是否使用預設工作流目錄（`plans/`, `docs/`, `plans/archived/`, `plans/roadmap/`）**，以及 **② 開發者使用的目標 IDE 環境（`antigravity`, `claude`, `codex`）**。
+
+```bash
+# 1. 一鍵初始化工作流目錄結構與語意協議 (自動建立 plans/, docs/, plans/archived/, plans/roadmap/)
+python yscb.py agents-workflow init --default -y
+
+# 2. 啟用目標開發環境 (--proj 寫入團隊共享設定，執行時會自動觸發完整原子發布！)
+python yscb.py agents-workflow release-target --add antigravity --proj
+
+# (選用) 若專案僅使用 Claude Code，可啟用 claude 並移除預設啟用的 antigravity (會自動清理舊產物)：
+# python yscb.py agents-workflow release-target --add claude --proj
+# python yscb.py agents-workflow release-target --remove antigravity --proj
+
+# 3. 驗證已匯出之 Skills 清單與當前計畫狀態
+python yscb.py agents-workflow list
+python yscb.py agents-workflow plan status
+```
+
+| Target 名稱 | 適用 AI 開發環境 | 根目錄規範入口檔 | Skills 投影目錄 | 模板與標準參考目錄 |
+| :--- | :--- | :--- | :--- | :--- |
+| `antigravity` | Google Antigravity IDE | `AGENTS.md` | `.agents/skills/<name>/SKILL.md` | `.agents/.yscb/{templates,standards}/` |
+| `claude` | Anthropic Claude Code | `CLAUDE.md` | `.claude/skills/<name>/SKILL.md` | `.claude/.yscb/{templates,standards}/` |
+| `codex` | OpenAI Codex CLI / IDE | `AGENTS.md` | `.agents/skills/<name>/SKILL.md` | `.agents/.yscb/{templates,standards}/` |
 
 ---
 
 ## 1. 模組架構全景 (Architecture Overview)
 
-`agents-workflow` 模組提供 AI Agent 協同開發工作流與規範體系：
+`agents-workflow` 模組提供 AI Agent 協同開發技能與規範體系：
 
 ```mermaid
 graph TD
     classDef main fill:#4c1d95,stroke:#8b5cf6,stroke-width:2px,color:#fff;
     classDef sub fill:#0f766e,stroke:#14b8a6,stroke-width:2px,color:#fff;
 
-    IDE["AI Agent / IDE 介面<br/><code>/Slash-Commands & AGENTS.md</code>"]:::main
+    IDE["AI Agent / IDE 介面<br/><code>.agents/skills/ & AGENTS.md</code>"]:::main
 
     subgraph WorkflowModule ["Agents-Workflow 模組 (module:agents-workflow)"]
-        Workflows["工作流引擎 (Workflows)<br/><i>/NewPlan, /Auto, /Discuss</i>"]:::sub
+        Skills["純 Skill 技能引擎 (Skills)<br/><i>new-plan, auto, discuss, development-sop...</i>"]:::sub
         PlanManager["開發計畫管理 (Plans Toolchain)<br/><i>SOP 0~7 / 6 大分支拓撲 / plan verify</i>"]:::sub
         Compiler["動態 Token 編譯器 (ArtifactCompiler)<br/><i>佔位符解析 / 拓撲聚合</i>"]:::sub
-        Publisher["發布物工廠 (ReleasePublisher)<br/><i>IDE 規範物化 / AGENTS.md 注入</i>"]:::sub
+        Publisher["發布物工廠 (ReleasePublisher)<br/><i>IDE 技能物化 / AGENTS.md 軟合併</i>"]:::sub
     end
 
-    IDE --> Workflows
+    IDE --> Skills
     IDE --> PlanManager
-    Workflows --> PlanManager
+    Skills --> PlanManager
     PlanManager --> Compiler
     Compiler --> Publisher
 ```

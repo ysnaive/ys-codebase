@@ -54,16 +54,46 @@ class UndefinedModuleContextError(ValueError):
         super().__init__(message or default_msg)
 
 
+def format_undefined_uri_hint(
+    scheme: str,
+    provider: Optional[str] = None,
+    binding: Optional[str] = None,
+) -> str:
+    """
+    針對未定義 (!undefined) 之語意 URI 協議生成可直接複製執行的 CLI 修復指令提示。
+
+    Args:
+        scheme: 協議名稱（不含 '://'，如 'project' 或 'workflow.plans'）。
+        provider: 宣告該協議之模組名稱（預設 'core'）。
+        binding: 綁定之組態鍵路徑（如 'project_root' 或 'paths.plans'）。
+
+    Returns:
+        str: 單行可執行之 CLI 修復建議字串。
+    """
+    prov = provider or "core"
+    bind = binding or ("project_root" if scheme == "project" else "unknown")
+    if scheme == "project" or (prov == "core" and bind == "project_root"):
+        return "python yscb.py config set core project_root ./"
+    if prov == "agents-workflow" or scheme.startswith("workflow."):
+        return (
+            f"python yscb.py agents-workflow init --default -y "
+            f"(or: python yscb.py config set {prov} {bind} <path>)"
+        )
+    return f"python yscb.py config set {prov} {bind} <path>"
+
+
 class UndefinedURIError(ValueError):
     """當語意協議未設定 (!undefined) 且處於非互動環境或拒絕補齊時拋出之結構化異常。"""
     def __init__(self, scheme: str, provider: Optional[str] = None, binding: Optional[str] = None, message: Optional[str] = None):
         self.scheme = scheme
         self.provider = provider or "core"
         self.binding = binding or "unknown"
+        quick_fix = format_undefined_uri_hint(self.scheme, self.provider, self.binding)
         default_msg = (
             f"Semantic URI '{scheme}://' is undefined (!undefined). "
             f"Provider: '{self.provider}', Config Binding: '{self.binding}'. "
-            f"Please configure it in config://{self.provider}/config.project.json."
+            f"Please configure it in config://{self.provider}/config.project.json. "
+            f"Quick fix: {quick_fix}"
         )
         super().__init__(message or default_msg)
 

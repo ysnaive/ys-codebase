@@ -236,13 +236,27 @@ def uri_check(cmd_bags: CmdBags) -> int:
     print("\nYS-Codebase URI Health Check:")
     print("-" * 80)
     healthy = True
+    quick_fixes: List[str] = []
     for s in schemes:
         status = "OK" if not s["resolved_path"].startswith("!undefined") else "UNDEFINED"
         if status == "UNDEFINED":
             healthy = False
+            hint_fn = getattr(core_uri, "format_undefined_uri_hint", None)
+            if callable(hint_fn):
+                hint_cmd = hint_fn(
+                    s.get("token", ""),
+                    s.get("provider", "core"),
+                    s.get("value", "unknown"),
+                )
+                if hint_cmd not in quick_fixes:
+                    quick_fixes.append(hint_cmd)
         print(f"[*] {s['token'] + '://':<18} -> {s['resolved_path']} [{status}]")
     print("-" * 80)
     print(f"Overall URI Status: {'HEALTHY' if healthy else 'WARNING (!undefined schemes present)'}")
+    if quick_fixes:
+        print("\n[Quick Fix] Run the following command(s) to initialize undefined schemes:")
+        for qf in quick_fixes:
+            print(f"  + {qf}")
     return 0
 
 

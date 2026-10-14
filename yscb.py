@@ -486,7 +486,23 @@ def cmd_init(argv: List[str]) -> int:
         sys.path.insert(0, core_module_dir)
     os.environ["YSCB_HOST_DIR"] = base_dir
     os.environ["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"
-    return dispatch_module("core", ["reload"])
+    rc = dispatch_module("core", ["reload"])
+    if rc == 0:
+        _print_init_next_steps(yscb_root)
+    return rc
+
+
+def _print_init_next_steps(yscb_root: str) -> None:
+    """於全新工作區初始化完成後輸出結構化 Next Steps 引導卡片。"""
+    print("\n" + "-" * 72)
+    print("[Next Steps] YS-Codebase Workspace Onboarding Guide:")
+    print(f"  1. Bind host project root : python yscb.py config set core project_root ./")
+    print(f"  2. Verify URI health      : python yscb.py uri check")
+    print(f"  3. Install core ecosystem : python yscb.py install agents-workflow")
+    print(f"                              python yscb.py install knowledge-db")
+    print(f"                              python yscb.py install server")
+    print(f"  * Documentation           : {yscb_root}/.modules/core/README.md")
+    print("-" * 72)
 
 
 def _generate_internal_gitignore(yscb_dir: str) -> None:

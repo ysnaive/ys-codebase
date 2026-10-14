@@ -5,5 +5,10 @@
   "entry": "scripts/cli.py",
   "dependencies": {
     "core": ">=1.1.0"
-  }
+  },
+  "onboarding": [
+    "Start background daemon (or use --console in IDE background task): python yscb.py server start",
+    "Inspect live server & worker status: python yscb.py server status",
+    "Stop daemon and view session summary: python yscb.py server stop"
+  ]
 }

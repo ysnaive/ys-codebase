@@ -5,6 +5,28 @@
 
 ---
 
+## 0. 擴充模組開發 5 分鐘快速上手 (Quickstart)
+
+```bash
+# 1. 建立全新擴充模組骨架 (自動建立於 module.source://my-module，即預設 .yscb/source/my-module/)
+python yscb.py dev create my-module --desc="我的自訂擴充模組"
+
+# 查詢新模組源碼的實體絕對路徑以便編輯代碼
+python yscb.py uri resolve module.source://my-module
+
+# 2. 執行 8 步靜態架構與契約合規檢查
+python yscb.py dev check my-module
+
+# 3. 執行隔離沙盒單元測試與自動契約測試
+python yscb.py dev test my-module
+
+# 4. 本地 @build 通道熱安裝並實機驗證 CLI
+python yscb.py install my-module@build --force
+python yscb.py my-module --help
+```
+
+---
+
 ## 1. 工具鏈架構全景 (Architecture Overview)
 
 `dev` 模組提供模組開發所需的工具鏈：
@@ -37,9 +59,9 @@ graph TD
 
 在 YS-Codebase 生態系中，模組開發嚴格遵循三大空間隔離與雙軌流水線：
 
-- **空間 ① 源碼開發空間 (`source/<module>/`)**：【唯一真理來源 (SSOT)】所有自訂邏輯、腳本、設定均在此編寫。
+- **空間 ① 源碼開發空間 (`module.source://<module>/`，對應 `yscb://source/<module>/`)**：【唯一真理來源 (SSOT)】所有自訂邏輯、腳本、設定均在此編寫。
 - **空間 ② 測試驗證空間 (`cache://dev/sandbox/`)**：【品質守門】由 `dev test` 自動於拋棄式沙盒中驗證，未 100% 通過前嚴禁部署。
-- **空間 ③ 運行消費空間 (`modules/<module>/`)**：【部署運行產物】由 CLI 透過 `install` 物化部署，嚴禁直接手動修改。
+- **空間 ③ 運行消費空間 (`module://<module>/`，對應 `yscb://.modules/<module>/`)**：【部署運行產物】由 CLI 透過 `install` 物化部署，嚴禁直接手動修改。
 
 ```mermaid
 graph LR
@@ -68,10 +90,10 @@ graph LR
 ### 3.1 模組建立與靜態合規檢查
 
 ```bash
-# 建立全新模組標準骨架 (自動生成 manifest.json, scripts/cli.py, contributes.json 與測試目錄)
+# 建立全新模組標準骨架 (自動生成 manifest.json, scripts/cli.py, contributes/core.json 與測試目錄)
 python yscb.py dev create my-module --desc="我的自訂擴充模組"
 
-# 靜態合規檢查 (驗證 manifest.json 格式、語意 URI 規範與 scripts 語法)
+# 靜態合規檢查 (驗證 manifest.json 格式、onboarding 宣告、語意 URI 規範與 scripts 語法)
 python yscb.py dev check my-module
 
 # 檢查所有源碼模組之合規性
@@ -90,7 +112,7 @@ python yscb.py dev check --all
 | **Revision (第 4 位)** | `python yscb.py dev bump-revision <mod>` | **日常除錯與增修**（向下相容的小型修復與優化） |
 
 ```bash
-# 開發建置打包 (產出 build/<mod>/<ver>/<ver>.build.zip，包含 tests/)
+# 開發建置打包 (產出 yscb://.build/<mod>/<ver>/<ver>.build.zip，包含 tests/)
 python yscb.py dev build my-module
 
 # 語意化版本單向遞增 (自動更新 source/<mod>/manifest.json)
@@ -129,8 +151,9 @@ python yscb.py dev test my-module -q
 ### 3.4 純淨發布與 Git 發布流水線
 
 ```bash
-# 發布預檢 (執行 3-Gate 就緒校驗：靜態合規、不可變性防護、版本單調性)
+# 發布預檢 (執行 3-Gate 就緒校驗：靜態合規、不可變性防護、版本單調性；支援 --all 全模組預檢)
 python yscb.py dev release-check my-module
+python yscb.py dev release-check --all
 
 # 純淨發布打包 (排除 tests/ 與 .yscbignore，產出純淨發布包至 release/ 目錄)
 python yscb.py dev release my-module

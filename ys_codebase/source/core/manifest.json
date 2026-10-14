@@ -3,5 +3,10 @@
   "version": "1.1.0.4",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
-  "dependencies": {}
+  "dependencies": {},
+  "onboarding": [
+    "Bind host project root: python yscb.py config set core project_root ./",
+    "Check semantic URI status: python yscb.py uri check",
+    "Explore installed modules: python yscb.py status"
+  ]
 }
