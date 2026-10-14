@@ -15,11 +15,11 @@ graph TD
     classDef sub fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
     
     subgraph CoreModule ["Core 微內核系統 (module:core)"]
-        VFS["First-Class VFS & URI<br/><code>core.uri</code><br/><i>語意路徑解算、JIT 熱補齊、自省清冊與原子 I/O</i>"]:::sub
+        VFS["First-Class VFS & URI<br/><code>core.uri</code><br/><i>語意路徑解算、JIT 熱補齊、Quick Fix 提示、自省清冊與原子 I/O</i>"]:::sub
         SemVer["SemVer 2.0.0 運算器<br/><code>core.semver</code><br/><i>數值排序、約束匹配與依賴求解</i>"]:::sub
         Context["執行上下文 SSOT<br/><code>core.context</code><br/><i>不可變 ExecutionContext 載體</i>"]:::sub
         Engine["AtomicEngine 引擎<br/><code>core.engine</code><br/><i>12 大原子操作、OS 原子鎖與雙層快照</i>"]:::sub
-        Installer["套件生命週期調度器<br/><code>core.installer</code><br/><i>安裝、更新、移除、快照回滾</i>"]:::sub
+        Installer["套件生命週期調度器<br/><code>core.installer</code><br/><i>安裝、更新、移除、快照回滾與 Onboarding Next Steps 引導</i>"]:::sub
         Contributes["Contribute 依賴注入器<br/><code>core.contributes</code><br/><i>__provider__ 自動標記、拓撲排序聚合與查詢 SDK</i>"]:::sub
         Commands["Commands 核心命令引擎<br/><code>core.commands</code><br/><i>Schema 解析、正交分組、CmdBags 容器、雙管道分流與對稱 Hook</i>"]:::sub
     end
@@ -47,12 +47,12 @@ YS-Codebase 透過 `core.uri` 提供標準化虛擬檔案系統介面，實現�
 | **私有微環境** | `yscb.venv://` | - | `yscb://.venv/` (Git 忽略) |
 | **專案宿主** | `project://` | - | `config.project.json` (core: `project_root`) |
 
-### 2.2 JIT `!undefined` 熱更新補齊機制
+### 2.2 JIT `!undefined` 熱更新補齊與可操作自癒提示 (`format_undefined_uri_hint`)
 當 `uri.resolve()` 遇到未配置或為 `!undefined` 的協議時，會在互動 TTY 環境自動彈出熱補齊選單：
 - `-y <path>`：輸入路徑（以 `yscb://` 為相對基準，支援 `../` 或語意協議），自動原子寫回 `config.project.json` 並熱刷新快取繼續運行。
 - `-n`：安全終止操作。
 - `--help`：展開全系統可用協議清冊與狀態。
-- **非 TTY / 靜態檢查**：直接拋出結構化 `UndefinedURIError`。
+- **非 TTY / 靜態檢查與可操作自癒提示**：直接拋出結構化 `UndefinedURIError`，並透過 `format_undefined_uri_hint()` 自動附帶精確的 `Quick fix: <cli_cmd>` 修復指令（例如 `project://` 提示 `python yscb.py config set core project_root ./`、`workflow.*://` 提示 `python yscb.py agents-workflow init --default`）；`python yscb.py uri check` 亦同步輸出 `[Quick Fix]` 修復指令區塊。
 
 ---
 

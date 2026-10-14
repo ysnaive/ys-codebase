@@ -5,5 +5,10 @@
   "entry": "scripts/cli.py",
   "dependencies": {
     "core": ">=1.1.0"
-  }
+  },
+  "onboarding": [
+    "[Pre-flight] Initialize default workflow paths (plans/, docs/, roadmap/, archived/): python yscb.py agents-workflow init --default -y",
+    "[Pre-flight] Enable target IDE environment (e.g. antigravity, claude, codex): python yscb.py agents-workflow release-target --add antigravity --proj",
+    "Publish AGENTS.md & skills to project workspace: python yscb.py agents-workflow release"
+  ]
 }

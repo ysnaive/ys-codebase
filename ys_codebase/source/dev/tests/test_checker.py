@@ -440,4 +440,37 @@ class TestDevChecker(YSCBTestCase):
             if os.path.exists(tmp_mod_dir):
                 shutil.rmtree(tmp_mod_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
+    def test_ft15_manifest_onboarding_validation(self):
+        """FT-05, EC-02: 驗證 manifest.json 中 onboarding 欄位合法通過，非字串陣列則觸發 FAIL"""
+        src_root = uri.resolve("module.source://")
+        tmp_mod_dir = os.path.join(src_root, "mock_ft15_mod")
+        try:
+            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
+            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+
+            # 1. Valid onboarding list of non-empty strings -> PASS
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write(
+                    '{"name": "mock_ft15_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", '
+                    '"dependencies": ["core"], "onboarding": ["Step 1: python yscb.py status"]}'
+                )
+            report_ok = self.checker.check_module("mock_ft15_mod")
+            self.assertTrue(report_ok.passed, f"Expected pass, got: {report_ok.errors}")
+
+            # 2. Invalid onboarding (not a list of non-empty strings) -> FAIL
+            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write(
+                    '{"name": "mock_ft15_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", '
+                    '"dependencies": ["core"], "onboarding": [""]}'
+                )
+            report_bad = self.checker.check_module("mock_ft15_mod")
+            self.assertFalse(report_bad.passed)
+            self.assertTrue(any("'onboarding' field in manifest.json" in e for e in report_bad.errors))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_mod_dir):
+                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+
 

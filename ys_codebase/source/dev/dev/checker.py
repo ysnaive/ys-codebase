@@ -250,6 +250,18 @@ class Checker:
                                     )
                                 )
 
+            onboarding = m_data.get("onboarding")
+            if onboarding is not None:
+                if not isinstance(onboarding, list) or any(not isinstance(item, str) or not item.strip() for item in onboarding):
+                    report.issues.append(
+                        CheckIssue(
+                            severity=CheckSeverity.FAIL,
+                            category="MANIFEST",
+                            message="'onboarding' field in manifest.json must be a list of non-empty strings.",
+                            file_path="manifest.json",
+                        )
+                    )
+
             self._check_pip_dependencies(name, m_data, report)
         except Exception as e:
             report.issues.append(

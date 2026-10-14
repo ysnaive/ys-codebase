@@ -5,5 +5,10 @@
   "entry": "scripts/cli.py",
   "dependencies": {
     "core": ">=1.1.0"
-  }
+  },
+  "onboarding": [
+    "Create a new module scaffold: python yscb.py dev create <module-name> --desc=\"My module\"",
+    "Run compliance static checks: python yscb.py dev check --all",
+    "Run isolated sandbox tests: python yscb.py dev test --all --quiet"
+  ]
 }
