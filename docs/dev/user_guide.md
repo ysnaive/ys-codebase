@@ -1,3 +1,23 @@
+---
+target: "Dev"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/dev/scripts/cli.py"
+  - "yscb://source/dev/dev/scaffold.py"
+  - "yscb://source/dev/dev/checker.py"
+  - "yscb://source/dev/dev/builder.py"
+  - "yscb://source/dev/dev/tester.py"
+  - "yscb://source/dev/dev/releaser.py"
+related_docs:
+  - "./README.md"
+  - "./architecture.md"
+  - "./testing_guide.md"
+  - "./topics/release_governance.md"
+  - "./DESIGN_NOTES.md"
+last_updated: "2026-10-15"
+---
+
 # Dev 開發者工具鏈使用指南 (User Guide)
 
 > 本手冊提供 `dev` 模組所有 CLI 指令的詳細參數說明、使用情境與操作範例。
@@ -12,20 +32,27 @@
 python yscb.py dev create <module_name> [--desc="<description>"]
 ```
 - **產出檔案**：
-  - `source/<module_name>/manifest.json`：模組宣告清單（預設版本 `1.0.0.0`）。
-  - `source/<module_name>/scripts/cli.py`：標準 CLI 路由進入點（具備 `process(args)` 與守門 SDK）。
-  - `source/<module_name>/<module_name>/__init__.py`：核心 Python 套件目錄。
+  - `source/<module_name>/manifest.json`：模組宣告清單（預設版本 `"0.1.0.0"`，自動宣告依賴 `"core": ">=1.0.0"`）。
+  - `source/<module_name>/scripts/cli.py`：標準雙軌 CLI 路由進入點（內建對應 `core.json` 的具名函式 `def hello(cmd_bags: Any) -> int`、向下相容 `def process(args: List[str]) -> int` 與 `guard_dispatch` 守門 SDK）。
+  - `source/<module_name>/<module_name>/__init__.py`：核心 Python 套件目錄（`__version__ = "0.1.0.0"`）。
+  - `source/<module_name>/contributes/_format.json`：模組對外開放之擴充點 Schema 宣告（Ingress 契約）。
+  - `source/<module_name>/contributes/_manifest.md`：模組對外貢獻能力清冊索引。
+  - `source/<module_name>/contributes/core.json`：向微內核註冊之 CLI 指令宣告（預設含 `hello` 安全測試指令）。
   - `source/<module_name>/.yscbignore`：發布打包過濾規則。
-  - `source/<module_name>/tests/test_basic.py`：初始單元測試檔案。
+  - `source/<module_name>/tests/__init__.py` 與 `tests/test_basic.py`：初始單元測試檔案（繼承 `YSCBTestCase` 並內建 `self.mark_passed()`）。
 
 ### 1.2 靜態合規檢查 (`dev check`)
-檢查模組宣告與進入點是否合規。
+檢查模組宣告、Contributes 契約與進入點是否通過 8 步合規管線。
 ```bash
 # 檢查單一模組
 python yscb.py dev check core
 
-# 掃描檢查 source/ 下所有模組
+# 掃描檢查 source/ 下所有模組（省略模組名或帶 --all|-a）
 python yscb.py dev check --all
+
+# 輸出結構化 JSON 診斷報告（供 CI 或 Agent 程式化解析）
+python yscb.py dev check <module_name> --json
+python yscb.py dev check --all --json
 ```
 
 ---
@@ -76,16 +103,21 @@ python yscb.py install <module_name>@build --force
 
 
 ### 3.2 發布就緒預檢 (`dev release-check`)
-獨立執行 3-Gate 發布守門檢驗，確認模組是否已就緒發布：
+獨立執行 3-Gate 發布守門檢驗，確認單一或全生態系模組是否已就緒發布：
 ```bash
-# 標準預檢
+# 單一模組標準預檢
 python yscb.py dev release-check <module_name>
 
-# 強制覆蓋模式預檢（放行同版本衝突）
+# 批次預檢 source/ 下所有模組
+python yscb.py dev release-check --all
+python yscb.py dev release-check -a
+
+# 強制覆蓋模式預檢（放行同版本衝突，可搭配單一模組或 --all|-a）
 python yscb.py dev release-check <module_name> --force
+python yscb.py dev release-check --all --force
 ```
-- **注意**：本指令專注於單一模組發布審查，**明確拒絕 `--all` 參數**。
-- **檢查項目**：Gate 1 靜態合規性、Gate 2 版本庫未重複（`--force` 時放行）、Gate 3 版本號嚴格大於在庫最高 revision（`--force` 時允許同版本原地覆蓋，但歷史舊版本回退仍被阻斷）。
+- **支援範圍**：支援單一模組預檢，亦支援 `--all` / `-a` 一鍵對 `source/` 下所有現有模組執行批次 Gate 1~3 防呆預檢。
+- **檢查項目**：Gate 1 靜態合規性（8 步檢核無 `FAIL`）、Gate 2 版本庫未重複（`--force` 時放行）、Gate 3 版本號嚴格大於在庫最高 revision（`--force` 時允許同版本原地覆蓋，但歷史舊版本回退仍被阻斷）。
 
 ### 3.3 純淨正式發布 (`dev release`)
 執行 3-Gate 校驗通過後，產出純淨發布包並實施產物治理：

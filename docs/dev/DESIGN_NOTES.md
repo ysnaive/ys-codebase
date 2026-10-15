@@ -1,13 +1,24 @@
 ---
-title: Dev 開發者工具鏈設計決策與工程註記
-category: design_notes
-module: dev
-updated_at: 2026-10-14
+target: "Dev"
+doc_type: "design_notes"
+status: "active"
+source_paths:
+  - "yscb://source/dev/dev/testing/case.py"
+  - "yscb://source/dev/dev/testing/sandbox.py"
+  - "yscb://source/dev/dev/testing/discovery.py"
+  - "yscb://source/dev/dev/tester.py"
+  - "yscb://source/dev/dev/checker.py"
+related_docs:
+  - "./README.md"
+  - "./architecture.md"
+  - "./user_guide.md"
+  - "./testing_guide.md"
+last_updated: "2026-10-15"
 ---
 
 # Dev 開發者工具鏈設計決策與工程註記 (Dev Design Notes)
 
-> 本文件記錄 Dev 開發者模組與測試框架中的非直觀實作、工程妥協與關鍵防呆決策（維度 5）。
+> 本文件記錄 `dev` 開發者模組與沙盒測試框架中的**反直覺實作、平台相容性妥協與關鍵防呆邊界（維度 ⑤）**。常規架構與 CLI 規格請參閱 [architecture.md](./architecture.md)、[user_guide.md](./user_guide.md) 與 [testing_guide.md](./testing_guide.md)。
 
 ---
 
@@ -15,119 +26,72 @@ updated_at: 2026-10-14
 
 | 決策編號 | 標題 / 主題 | 影響檔案 | 風險等級 |
 | :--- | :--- | :--- | :---: |
-| **DN-DEV-01** | 執行期 Auto-Contract 動態契約合成 | `source/dev/dev/testing/contract.py` | 💡 INFO |
-| **DN-DEV-02** | 測試失敗現場自動保留機制 | `source/dev/dev/testing/case.py` | 💡 INFO |
-| **DN-DEV-03** | 三階測試指令解耦與完全對標虛擬沙盒隔離 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/sandbox.py` | 💡 INFO |
-| **DN-DEV-04** | 本地發布流水線解耦 Git 乾淨限制之純淨打包哲學 | `source/dev/dev/releaser.py` | 💡 INFO |
-| **DN-DEV-05** | 本地建置產物直裝通道 (@build) 與宣告式工程規範連動注入 | `source/core/core/engine.py`<br/>`source/dev/manifest.json` | 💡 INFO |
-| **DN-DEV-06** | Build 版 pip 相依性適配與沙盒微環境零拷貝投影 | `source/dev/dev/testing/sandbox.py`<br/>`source/dev/dev/checker.py` | 💡 INFO |
-| **DN-DEV-07** | 沙盒測試輸出純化、信息聚合與宿主防穿透剛性守門 | `source/dev/dev/tester.py`<br/>`source/dev/dev/testing/runner.py`<br/>`source/dev/dev/testing/case.py` | 💡 INFO |
-| **DN-DEV-08** | 核心與工具鏈測試案例純化、凝聚與 4-Tier 分流機制 | `source/dev/dev/testing/runner.py`<br/>`source/core/tests/`<br/>`source/dev/tests/` | 💡 INFO |
-| **DN-DEV-09** | Contributes 靜態合規攔截與腳手架契約自動化建立 | `source/dev/dev/checker.py`<br/>`source/dev/dev/scaffold.py` | 💡 INFO |
-| **DN-DEV-10** | 模組骨架微內核合約對齊、測試模式解析與命令靜態檢查雙軌容錯 | `source/dev/dev/scaffold.py`<br/>`source/dev/dev/tester.py`<br/>`source/dev/dev/checker.py`<br/>`source/dev/dev/releaser.py` | 💡 INFO |
+| **DN-DEV-01** *(原 DN-DEV-02)* | 測試失敗現場自動保留與顯式 `self.mark_passed()` 防呆契約 | `source/dev/dev/testing/case.py`<br/>`source/dev/dev/checker.py` | `[!WARNING]` |
+| **DN-DEV-02** *(原 DN-DEV-06)* | 沙盒微環境 3-Tier 零拷貝投影與 `shutil.rmtree` 前強制斷開防護 | `source/dev/dev/testing/sandbox.py` | `[!CAUTION]` |
+| **DN-DEV-03** *(原 DN-DEV-07.4)* | 宿主環境防穿透三道剛性守門鎖與禁止 `os.getcwd()` 回退鐵律 | `source/dev/dev/testing/case.py`<br/>`source/dev/dev/testing/discovery.py`<br/>`source/dev/dev/tester.py` | `[!CAUTION]` |
+| **DN-DEV-04** *(原 DN-DEV-10.3)* | Checker AST 靜態分析之首行 Docstring 節點豁免與 CLI 入口雙軌容錯 | `source/dev/dev/checker.py` | `[!WARNING]` |
 
 ---
 
-### [DN-DEV-01] 執行期 Auto-Contract 動態契約合成
+### [DN-DEV-01] (原 DN-DEV-02) 測試失敗現場自動保留與顯式 `self.mark_passed()` 防呆契約
 
-- **核心決策**：不要求開發者在每個模組手動撰寫重複的 `test_manifest.py` 或 `test_cli.py`，而是由 `dev.testing.contract.create_contract_suite_for_module(mod)` 在測試收集時，使用 `type(f"{mod_camel}AutoContractTestCase", (YSCBTestCase,), ...)` 動態合成契約測試類別。
-- **背後考量**：大幅減輕新模組開發負擔，同時對所有模組實施 100% 強制性的品質守門。
+> [!WARNING]
+> **防呆契約：測試方法結尾必須顯式呼叫 `self.mark_passed()`**  
+> 在 `YSCBTestCase` 中，未拋出例外但漏寫 `self.mark_passed()` 的測試方法（除顯式標記 `@require(Requirement.NONE)` 外），其執行狀態將被歸類為 `"UNKNOWN"`，並會在 `dev check` 靜態檢核（`_check_test_classes`）時觸發 `[WARN]` 告警。修改或新增測試案例時，請務必於斷言結束處呼叫 `self.mark_passed()`。
 
----
-
-### [DN-DEV-02] 測試失敗現場自動保留機制
-
-- **核心決策**：在 `YSCBTestCase.tearDown()` 中，唯有當測試方法顯式呼叫 `self.mark_passed()` 時才清理沙盒。若遇到未捕獲例外或斷言失敗，沙盒目錄原封不動保留在 `cache://dev/sandbox/sandbox_<timestamp>` 並將絕對路徑印至終端。
-- **背後考量**：避免測試出錯時現場被銷毀導致無法重現或除錯。
-
----
-
-### [DN-DEV-03] 三階測試指令解耦與完全對標虛擬沙盒隔離
-
-- **核心決策**：將測試命令解耦為 `dev op-mksb` (環境工廠)、`dev op-test` (原地單元執行器) 與 `dev test` (組合門面)。`yscb.py` 嚴格僅調用 `modules/`，沙盒建置時完整複製父層 `modules/` 與 `installed_modules` 配置，徹底終結二度沙盒遞迴與父層污染。
-- **背後考量**：徹底分離「外層沙盒調度」與「內層測試執行」職責，既保證端到端測試環境純淨度，又提供開發者手動除錯的原子能力。
+- **反直覺設計與三態分類 (`PASSED` / `FAILED` / `UNKNOWN`)**：
+  - Python 標準 `unittest.TestCase.tearDown()` 無法直接且跨版本一致地判定當前測試方法是否因斷言失敗而中斷。為此，`YSCBTestCase` 結合 `_callTestMethod` 例外攔截與顯式 `self.mark_passed()` 標記：
+    1. **`FAILED`（拋出未捕獲例外或斷言失敗）**：若為專屬獨立沙盒 (`_is_isolated_sandbox=True`)，**刻意不執行 `cleanup_sandbox`**，將故障現場原封不動保留於 `cache://dev/sandbox/sandbox_<timestamp>` 並印出完整路徑供事後除錯。
+    2. **`PASSED`（顯式呼叫 `self.mark_passed()` 且無例外）**：於 `tearDown()` 安全清理獨立沙盒（除非指定 `--keep-sandbox`）。
+    3. **`UNKNOWN`（無例外但漏呼叫 `self.mark_passed()`）**：安全清理獨立沙盒且**不印出 `[Test Failed]` 假警報**，避免終端洗版，並交由 `dev check` AST 靜態檢查攔截提醒。
 
 ---
 
-### [DN-DEV-04] 本地發布流水線解耦 Git 乾淨限制之純淨打包哲學
+### [DN-DEV-02] (原 DN-DEV-06) 沙盒微環境 3-Tier 零拷貝投影與 `shutil.rmtree` 前強制斷開防護
 
-- **核心決策**：在 `dev.releaser` 中移除強制檢查 `git status --porcelain` 的守門限制。本地發布純粹產出單檔 Zip 至 `release/<mod>/<ver>.zip` 並維護 `index.json`，由開發者自主掌控何時 Commit / Push 遠端。若處於非 Git 倉庫，流水線自動安全跳過 Git 操作而不拋出例外。
-- **背後考量**：將「本機發布打包」與「遠端版本庫推送」的職責正交解耦，大幅提升本地模組迭代、測試與離線協同的流暢度。
+> [!CAUTION]
+> **致命損毀紅線：銷毀沙盒前絕對禁止直接對沙盒根目錄呼叫 `shutil.rmtree`！**  
+> 沙盒內的 `host_env/engine/.venv` 是透過目錄重析點（Windows Junction）或符號連結（POSIX Symlink）指向宿主真實 `.venv`。若未先執行 `SandboxProvisioner._unlink_projected_venv(sandbox_dir)` 即直接呼叫 `shutil.rmtree`，在某些平台或 Python 版本下將穿透重析點，**遞迴刪空宿主微環境的所有第三方套件**！任何清理沙盒之路徑必須統一經由 `SandboxProvisioner.cleanup_sandbox()`。
 
----
-
-### [DN-DEV-05] 本地建置產物直裝通道 (@build) 與宣告式工程規範連動注入
-
-- **核心決策**：
-  1. `core.engine.PackageManager` 特例處理 `@build` revision：當版本約束包含 `build` 時，強制直連 `module.build://` 下載 `*.build.zip`，未建置時拋出清楚的引導提示，徹底終結本地開發需先手動 release 的繁瑣流程。
-  2. `dev` 模組透過 `contributes["agents-workflow"]`（`mode: "below"`）向 `WORKFLOW_SOP_STANDARDS` 注入專案特化工程規範（`DevEngineeringStandards.md`），收斂三層空間 SSOT、沙盒除錯加速與禁止 Agent 主動 release/install 鐵律。
-- **背後考量**：落實「零侵入宣告式擴充」架構哲學，並提供流暢安全的自引用 (Dogfooding) 開發體驗。
-
----
-
-### [DN-DEV-06] Build 版 pip 相依性適配與沙盒微環境零拷貝投影
-
-- **核心決策**：
-  1. **靜默物化**：在 `create_sandbox` 建立沙盒前，透過 `adapt_build_pip_dependencies` 掃描待測模組之 build/source manifest 中 `pip_dependencies` 宣告，調用 `core.PipManager` 於宿主微環境完成靜默物化。
-  2. **3-Tier 投影管線**：沙盒環境透過 Windows Junction (免管理者權限、sub-1ms 完成) 或 POSIX Symlink 穿透宿主微環境；若於 virtiofs / 容器掛載磁碟等受限環境，平滑降級為 `.pth` 檔案指標，保證 100% 跨平台相容。
-  3. **沙盒清理防護**：在 `cleanup_sandbox` 調用 `shutil.rmtree` 前，強制調用 `_unlink_projected_venv` 解開重析點/符號連結，徹底阻斷遍歷刪除宿主微環境之風險。
-- **背後考量**：兼顧沙盒高保真測試能力與極致效能（零拷貝、零重複網路下載），同時剛性保證宿主微環境之完整性與純淨度。
+- **工程妥協與 3-Tier 零拷貝投影 (`_project_venv`)**：
+  - 若為每個測試沙盒實體複製 `.venv` 或重新執行 `pip install`，單次沙盒建立將耗時數十秒並耗費大量磁碟 I/O。`SandboxProvisioner` 採用事前於宿主靜默物化（`adapt_build_pip_dependencies`）+ 3-Tier 零拷貝投影：
+    1. **Tier 1 (Windows Junction)**：優先調用 `_winapi.CreateJunction` 建立目錄重析點，免 Administrator 權限且耗時 $\le 1\text{ms}$。
+    2. **Tier 2 (POSIX Symlink)**：優先調用 `os.symlink` 建立目錄符號連結。
+    3. **Tier 3 (`.pth` 降級兜底)**：在 virtiofs、容器跨系統掛載或 exFAT 等不支援重析點/Symlink 的環境自動捕獲 `OSError`，於沙盒建立輕量 `site-packages/host_venv.pth` 寫入宿主 `site-packages` 絕對路徑。
+- **強制斷開協議 (`_unlink_projected_venv`)**：
+  - `cleanup_sandbox` 在執行 `shutil.rmtree` 前，強制先行檢測 `host_env/engine/.venv`：若為 Junction / Symlink 則僅以 `os.rmdir` / `os.unlink` 解除連結節點本身，確保宿主 `.venv` 100% 零損毀。
 
 ---
 
-### [DN-DEV-07] 沙盒測試輸出純化、信息聚合與宿主防穿透剛性守門
+### [DN-DEV-03] (原 DN-DEV-07.4) 宿主環境防穿透三道剛性守門鎖與禁止 `os.getcwd()` 回退鐵律
 
-- **核心決策**：
-  1. **IPC JSON 結構化解耦**：單模組與平行測試全面採用 `--report-json` 跨進程交換測試結果，外層宿主調度器作為唯一渲染終端，徹底解耦內層沙盒日誌與宿主終端輸出。
-  2. **雙模式輸出純化與信息聚合**：
-     - `--quiet` / `-q` 模式：子進程 stdout/stderr 全量屏蔽；測試全數通過時嚴格維持單行統計（`Pass: X(100.0%), Fail: 0, Skip: 0`）；崩潰或非 0 返回碼時精準擷取 stderr tail（後 20 行）供快速診斷。
-     - 一般模式：子進程之非致命警告（如沙盒未配置專案 URI 之編譯期警告）以 `[*] Notices: N sandbox warning(s) captured (suppressed, run with --verbose to inspect)` 收斂折疊，杜絕數十行警告洗版。
-  3. **沙盒黑盒子與高保真原則**：沙盒內部生命週期 Hook（如 JIT 預發布與自癒物化）維持自然運行，嚴禁粗暴短路業務邏輯；輸出純化由宿主調度器之輸出捕獲與格式化看板完成。
-  4. **宿主防穿透剛性守門**：
-     - `dev op-test` 於宿主環境直接調用時剛性阻斷（Gate 0），提示改用 `dev test` 進入沙盒。
-     - `YSCBTestCase.setUp` 在無法向上解析出合法沙盒目錄時強制拋出 `SecurityError`，徹底拔除回退至 `os.getcwd()` 的漏洞，守護專案根目錄零污染。
-- **背後考量**：徹底根除沙盒穿透造成的專案目錄污染，並極大化節約開發與 Agent 協同的終端日誌 Token 吞吐量。
+> [!CAUTION]
+> **安全紅線：嚴禁在 `YSCBTestCase.setUp` 中加入回退至 `os.getcwd()` 的容錯邏輯，亦嚴禁在宿主目錄直接解除 `YSCB_TEST_SANDBOX` 檢查！**  
+> 測試案例常包含檔案刪除、組態覆寫與模組卸載等破壞性操作。一旦沙盒路徑解析失敗並回退至 `os.getcwd()`，測試將直接在真實專案根目錄執行，造成專案源碼與宿主環境遭受不可逆的覆寫與污染。
 
----
-
-### [DN-DEV-08] 核心與工具鏈測試案例純化、凝聚與 4-Tier 分流機制
-
-- **核心決策**：
-  1. **測試凝聚與破碎檔案根除**：淘汰因各別小 PR 或 bugfix 衍生之微型測試檔（如 `test_tester_sync.py`、`test_tester_throttle.py`、`test_cli_help.py`、`test_cli_guild.py`、`test_contributes_jit.py`），依領域凝聚至主要組件測試套件（如 `test_tester.py`、`test_cli_router.py`、`test_contributes.py`），共用 `setUp` 與 Mock 資源，降低模組導入開銷與維護認知負擔。
-  2. **同質解析案例緊湊化**：針對 `parse_pip_dependencies` 等多參數組合測試，將同質案例整併為規格矩陣測試，100% 完整保留所有正逆向與邊界斷言（零邏輯遺失鐵律）。
-  3. **4-Tier 分流機制 (Logic / Env / Workflow / Perf)**：
-     - 將耗時達數秒之實體沙盒佈建、多進程執行與 E2E 工作流測試（如 `test_sandbox.py` 與 `test_engine.py` 之重型沙盒案例）顯式標註為 `@require(Requirement.WORKFLOW)`。
-     - 基準壓測標註為 `@require(Requirement.PERF)`。
-     - 測試探索器（`TestDiscovery`）預設僅收集 `Requirement.LOGIC | Requirement.ENV`，使日常開發迴圈（`dev test --quiet`）回饋時間降至秒級（2~3 秒內完成）。
-     - 提供 `--workflow` 與 `--all-types` 指令在發布與守門驗收時執行完整全量回歸。
-- **背後考量**：在保持 100% 測試斷言覆蓋率與零品質妥協的前提下，根治測試套件隨專案迭代肥大化、日常跑測過度緩慢所產生的開發者摩擦。
+- **三道剛性守門鎖 (Triple-Lock Guard)**：
+  1. **第 1 鎖（靜態 AST 門禁 `Checker._check_test_classes`）**：掃描 `tests/test_*.py`，凡 `Test*` 類別直接繼承 `unittest.TestCase` 而非 `YSCBTestCase` 者，直接判定 `CheckSeverity.FAIL` 阻斷。
+  2. **第 2 鎖（動態加載門禁 `TestDiscovery` & `Tester` Gate 0）**：
+     - `dev op-test` 若偵測到在真實宿主工作區直接被呼叫（非沙盒環境），立即剛性阻斷並引導改用 `dev test`。
+     - `TestDiscovery` 動態載入測試類別時檢驗 MRO 繼承鏈，非 `YSCBTestCase` 子類直接拋出 `TypeError` 拒絕掛載。
+  3. **第 3 鎖（執行期入口門禁 `YSCBTestCase.setUp`）**：
+     - 強制檢驗 `os.environ.get("YSCB_TEST_SANDBOX") == "1"`。
+     - 強制由 `YSCB_SANDBOX_DIR` 或向上遍歷目錄結構驗證是否存在合法的 `host_env/` 沙盒特徵；若無法解析出真實沙盒目錄，**立即拋出 `SecurityError` 終止執行，絕不回退至 `os.getcwd()`**。
 
 ---
 
-### [DN-DEV-09] Contributes 靜態合規攔截與腳手架契約自動化建立
+### [DN-DEV-04] (原 DN-DEV-10.3) Checker AST 靜態分析之首行 Docstring 節點豁免與 CLI 入口雙軌容錯
 
-- **核心決策**：
-  1. **靜態合規攔截 (`dev.checker`)**：
-     - 在 `_check_core_injection` 中整合 `core.validator.ContributesValidator`，自動走訪待檢模組之 `contributes/` 目錄。
-     - **Meta-Check**：檢核 `_format.json` 語法與型別表達式有效性，攔截格式畸形與非法 DSL。
-     - **Ingress/Egress 邊界檢核**：對所有 `<target>.json` 執行嚴格校驗，凡出現未宣告之擴充點（未知鍵）、型別不符或跨模組越權注入，一律標定為 `CheckSeverity.FAIL`，在靜態檢查階段剛性阻斷。
-  2. **腳手架契約原生化 (`dev.scaffold`)**：
-     - `dev create` 骨架生成器自動包含標準 `contributes/_format.json`（預設空物件）與 `contributes/_manifest.md`（包含 Ingress/Egress 契約手冊超連結指針與標準格式說明）。
-     - 確保任何新建立之模組出廠即具備自描述能力與靜態檢查 100% 合規。
-- **背後考量**：將 Contributes 契約校驗提前至靜態檢查與腳手架階段，杜絕模組將錯誤宣告打包發布至運行期，達成由源頭保證生態系架構整潔度的目標。
+> [!WARNING]
+> **維護注意事項：勿移除 `_check_source_files` 的 Docstring 節點豁免或 `_check_cli_compliance` 的雙軌分支**  
+> 1. 移除 Docstring AST 豁免會導致模組、類別或函式文檔註解中撰寫的 URI 範例（如說明禁止使用 `module.source://`）被誤判為 Zero-Probing 違規。  
+> 2. 移除 `process(args)` 雙軌容錯將導致未宣告 `contributes/core.json` 的輕量測試 Mock 模組（如 `create_mock_source_module` 產物）全數合規檢核失敗。
 
----
-
-### [DN-DEV-10] 模組骨架微內核合約對齊、測試模式解析與命令靜態檢查雙軌容錯
-
-- **核心決策**：
-  1. **骨架契約現代化**：`dev create` 自動產出符合微內核最新合約之腳手架（`def hello(cmd_bags: Any) -> int`、`class TestBasic(YSCBTestCase): def test_sample: self.mark_passed()`、四位版號 `"0.1.0.0"`），消除舊版 `args` 傳參與漏標 `mark_passed()` 導致的虛假失敗現場殘留。
-  2. **測試模式與標的健全解析**：`dev.tester` 支援 `-k <pattern>`、`--pattern=`、`-k=` 等多種標準引數形態，並修復 `--target` 在未包含冒號時誤將 target 賦值為空模組名稱的邊界 Bug，支援精確解析 `mod:Class.method`。
-  3. **命令靜態檢查雙軌容錯 (`dev.checker`)**：
-     - 若 `contributes/core.json` 顯式宣告非空 `commands.cmd`，強制要求 `scripts/cli.py` 實作具名葉節點函式（破折號轉底線），不再以通用 `process` 掩蓋未實作命令。
-     - 若未宣告 `commands.cmd`（例如最小化 Mock 測試模組），平滑維持 `process(args)` 既有合約相容。
-     - 語法檢查排除模組首行或類別頂層的 AST Docstring 節點，防止將文檔中的範例文字誤判為生產代碼反模式。
-  4. **批次發布預檢支援**：`dev release-check --all` 支援一鍵對全生態系所有現有模組進行 Gate 1~3 批次防呆預檢。
-- **背後考量**：統一微內核契約、防呆邊界與測試篩選體驗，在兼顧歷史相容性的同時大幅提高工具鏈穩定度與開發者體驗。
+- **設計細節與雙軌相容**：
+  1. **AST Docstring 節點精準豁免 (`_check_source_files`)**：
+     - 在掃描字串常數（`ast.Constant`）是否違反 Zero-Probing（存取 `module.source://`）或直接讀寫底層設定檔（`config.project.json`、`contributes.merged.json`）前，先行收集 `Module`、`ClassDef`、`FunctionDef` / `AsyncFunctionDef` 主體首個 `ast.Expr` 字串常數節點（`doc_nodes`）並予以跳過，兼顧嚴格靜態防護與完整 Docstring 範例撰寫自由。
+  2. **CLI 入口雙軌命令契約 (`_check_cli_compliance`)**：
+     - **軌道 A（具名命令契約）**：當模組於 `contributes/core.json` 宣告了非空的 `commands.cmd` 樹狀結構時，`Checker` 強制要求 `scripts/cli.py` 必須定義對應的所有葉節點具名函式（破折號 `-` 轉底線 `_`），防止宣告了 CLI 指令卻僅以空殼 `process` 掩蓋未實作邏輯。
+     - **軌道 B（傳統/Mock 入口相容）**：當模組未定義 `contributes/core.json` 或無 `commands.cmd`（例如沙盒動態合成之最小化 Mock 模組）時，平滑回退為驗證 `def process(args)` 入口函式存在性。
 
 

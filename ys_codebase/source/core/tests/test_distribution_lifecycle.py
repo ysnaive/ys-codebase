@@ -33,20 +33,22 @@ class TestDistributionLifecycle(YSCBTestCase):
         super().tearDown()
 
     def test_resolve_self_update_url(self):
-        """FT-01: 驗證 DEFAULT_PROVIDER_URL 為官方庫且 _resolve_self_update_target_url 正確錨定 repo 根目錄。"""
-        self.assertIn("ysnaive/ys-codebase", yscb.DEFAULT_PROVIDER_URL)
+        """FT-01: 驗證 DEFAULT_PROVIDER_URL 與 DEFAULT_SELF_UPDATE_URL 職責分離且優先權正確。"""
+        self.assertEqual(yscb.DEFAULT_PROVIDER_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release")
+        self.assertEqual(yscb.DEFAULT_SELF_UPDATE_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py")
 
-        # 1. 官方 release URL -> repo 根目錄 yscb.py
-        target = yscb._resolve_self_update_target_url("https://raw.githubusercontent.com/ysnaive/ys-codebase/main/release")
-        self.assertEqual(target, "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py")
+        # 1. 預設返回官方自更新 URL（不因 provider 變更而改變）
+        target = yscb._resolve_self_update_target_url()
+        self.assertEqual(target, yscb.DEFAULT_SELF_UPDATE_URL)
 
-        # 2. 任意含 /release 的 Provider URL
         target2 = yscb._resolve_self_update_target_url("https://example.com/repo/release")
-        self.assertEqual(target2, "https://example.com/repo/yscb.py")
+        self.assertEqual(target2, yscb.DEFAULT_SELF_UPDATE_URL)
 
-        # 3. 顯式指定 --url 覆寫
+        # 2. 顯式指定 custom_url 覆寫
         target3 = yscb._resolve_self_update_target_url("https://ignored.com/release", custom_url="https://custom.com/test_yscb.py")
         self.assertEqual(target3, "https://custom.com/test_yscb.py")
+
+        self.mark_passed()
 
         self.mark_passed()
 

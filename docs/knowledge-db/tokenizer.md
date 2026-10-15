@@ -1,25 +1,42 @@
-# knowledge-db 分詞與同義詞擴展指南 (Tokenizer & Thesaurus Guide)
+---
+target: "Knowledge-DB/Tokenizer"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/knowledge-db/knowledge_db/tokenizer.py"
+  - "yscb://source/knowledge-db/knowledge_db/thesaurus.py"
+  - "yscb://source/knowledge-db/contributes/knowledge-db.json"
+related_docs:
+  - "./README.md"
+  - "./retrieval.md"
+  - "./contributes_guide.md"
+last_updated: "2026-10-15"
+---
+
+# knowledge-db 多語言分詞與同義詞擴展指南 (Tokenizer & Thesaurus Guide)
 
 > 模組名稱：`knowledge-db`  
-> 核心模組：`knowledge_db.tokenizer`、`knowledge_db.thesaurus`  
+> 核心模組：`knowledge_db.tokenizer` (`MultilingualTokenizer` / `CodeTokenizer`)、`knowledge_db.thesaurus` (`ThesaurusEngine`)  
 > 依賴：100% Python 原生標準庫 (Zero External Dependency)  
 
 ---
 
-## 📌 1. 概述與混合分詞架構
+## 📌 1. 概述與多語言混合分詞架構 (`MultilingualTokenizer` / `CodeTokenizer`)
 
-`knowledge-db` 分詞子系統專為軟體工程代碼標識符與中英文文檔設計，不依賴外部 C 擴展或第三方字典（如 jieba/nltk），具備極致純淨度與跨平台確定性。
+`knowledge-db` 分詞子系統專為軟體工程代碼標識符與中英文混排文檔設計，主類別為 **`MultilingualTokenizer`**（並保留 **`CodeTokenizer = MultilingualTokenizer`** 作為完全等價之向後相容別名）。分詞核心不依賴外部 C 擴展或第三方字典（如 jieba/nltk），具備極致純淨度與跨平台確定性。
 
-### 核心分詞策略 (`CodeTokenizer`)
-1. **代碼標識符拆解 (CamelCase & SnakeCase)**：
+### 核心分詞策略 (`MultilingualTokenizer`)
+1. **中英無空格混排邊界切分 (Mixed CJK & ASCII Boundary Splitting)**：
+   - 單次線性掃描 (`tokenize`) 自動識別東亞字元區塊與 ASCII 代碼識別碼區塊之交界，無需空格即可精確剝離中英黏連字串（例如：`"解析InvertedIndex倒排索引"` $\to$ 自動切分為中文區塊 `"解析"`、識別碼區塊 `"InvertedIndex"` 與中文區塊 `"倒排索引"`）。
+2. **代碼標識符拆解 (CamelCase, SnakeCase & Dot-Segments)**：
    - 駝峰拆解：`PIDController` ➔ `["pid", "controller", "pidcontroller"]`
    - 縮寫保護：`getHTTPResponse` ➔ `["get", "http", "response", "gethttpresponse"]`
-   - 底線拆解：`user_id_v5` ➔ `["user", "id", "v5", "user_id_v5"]`
-   - **LRU Memoization 快取 (`@lru_cache(maxsize=8192)`)**：為 `split_identifier` 建立具名標識符拆分快取與預編譯正則，重複分詞吞吐量提升 $10\times$ 以上。
-2. **CJK 中文字元 Unicode 整數區間高速比對 + 1/2-gram 滑動窗口**：
-   - **整數比對 (`_is_cjk_ord`)**：以 Unicode 碼點整數範圍直接判定（`0x4E00 <= ord(c) <= 0x9FFF`、日文假名 `0x3040..0x30FF`、韓文音節 `0xAC00..0xD7AF`），徹底消除主迴圈逐字元 `re.match` 之正則引擎調度開銷。
-   - 兼顧單字召回率與詞組精確度：`"狀態機更新"` ➔ `["狀", "態", "機", "狀態", "態機", "更新", "狀態機"]`
-3. **停用詞過濾與標點過濾**：
+   - 底線與點號拆解：`user_id_v5` ➔ `["user", "id", "v5", "user_id_v5"]`
+   - **LRU Memoization 快取 (`@lru_cache(maxsize=8192)`)**：為 `_split_identifier_cached` 建立具名標識符拆分快取與預編譯正則，重複分詞吞吐量提升 $10\times$ 以上。
+3. **CJK 中文字元 Unicode 整數區間高速比對 + 1/2-gram 滑動窗口**：
+   - **整數比對 (`_is_cjk_ord`)**：以 Unicode 碼點整數範圍直接判定（`0x4E00 <= ord(c) <= 0x9FFF`、擴展區 `0x3400..0x4DBF`、日文平片假名 `0x3040..0x30FF`、韓文音節 `0xAC00..0xD7AF`），徹底消除主迴圈逐字元 `re.match` 之正則引擎調度開銷。
+   - **多粒度 N-gram 提取**：兼顧單字召回率（1-gram）、雙字詞組精確度（2-gram 滑動窗口）與 $3\sim 6$ 字元連續整詞保留：`"狀態機更新"` ➔ `["狀", "態", "機", "更", "新", "狀態", "態機", "機更", "更新", "狀態機更新"]`。
+4. **停用詞過濾與標點過濾**：
    - 自動過濾中英文高頻功能詞（`在`, `的`, `與`, `the`, `is`, `for`, `with` 等）。
 
 ---
@@ -62,13 +79,12 @@
 ## 💻 3. Python SDK 使用範例
 
 ```python
-from knowledge_db.tokenizer import CodeTokenizer
+from knowledge_db.tokenizer import MultilingualTokenizer, CodeTokenizer
 from knowledge_db.space import SpaceManager
-from knowledge_db.thesaurus import ThesaurusEngine
 
-# 1. 混合分詞
-tokenizer = CodeTokenizer()
-tokens = tokenizer.tokenize("在 PIDController 中計算速度")
+# 1. 多語言中英混排分詞 (MultilingualTokenizer 與 CodeTokenizer 完全等價)
+tokenizer = MultilingualTokenizer()
+tokens = tokenizer.tokenize("在PIDController中計算速度")
 print("Tokens:", tokens)
 
 # 2. 透過 SpaceManager 工廠裝配完整詞庫之 ThesaurusEngine

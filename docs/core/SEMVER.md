@@ -1,16 +1,23 @@
 ---
-title: 四段式版本規範說明書
-category: specification
-module: core
-updated_at: 2026-10-14
+target: "Core"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/semver.py"
+  - "yscb://source/core/core/installer.py"
+related_docs:
+  - "./README.md"
+  - "./MIGRATION_LADDER.md"
+  - "./API_REFERENCE.md"
+last_updated: "2026-10-15"
 ---
 
 # 四段式版本規範說明書 (SemVer v4 Specification)
 
 > 適用模組：`core`  
 > 模組路徑：`source/core/core/semver.py`  
-> 知識庫維度：維度 3（中觀專題手冊 Topic Docs）  
-> 最後更新：2026-08-25  
+> 知識庫維度：維度 ③（中觀專題手冊 Topic Docs）  
+> 最後更新：2026-10-15  
 
 ---
 
@@ -24,7 +31,8 @@ $$\text{Format: } \text{major}.\text{minor}.\text{patch}.\text{revision}[-\text{
 - **`minor` (次版本號)**：向下相容的功能新增、擴充 API（例如：`1.0.0.0` ➔ `1.1.0.0`）。
 - **`patch` (修訂號)**：向下相容的問題修復、內部最佳化（例如：`1.0.0.0` ➔ `1.0.1.0`）。
 - **`revision` (構建修訂號)**：
-  - **數值修訂號**（如 `1.0.0.1`）：微小 Bugfix 或緊急熱修復，**尾號在比較時不具獨立大小意義**。
+  - **數值修訂號**（如 `1.0.0.1`）：微小 Bugfix 或緊急熱修復，**尾號在日常三元安裝與依賴求解中不具獨立大小比較意義**。
+  - **單一 Revision 保留原則**：`module.release://` 發布庫中針對相同 `X.Y.Z` 僅允許保留單一最新 Revision 產物，避免微小修訂號並存造成版本庫混亂。
   - **`build` 標記**（如 `1.0.0.build`）：本地開發未發布產物。
 - **`prerelease` (預發布標籤)**：可選字串（如 `2.0.0-beta.1`）。
 
@@ -42,7 +50,7 @@ $$\text{Format: } \text{major}.\text{minor}.\text{patch}.\text{revision}[-\text{
 
 ---
 
-## 3. 範圍約束與運算子支援
+## 3. 範圍約束與同 Major 升級鎖定原則
 
 | 運算子 | 語意說明 | 範例 | 匹配範圍 |
 | :--- | :--- | :--- | :--- |
@@ -52,3 +60,7 @@ $$\text{Format: } \text{major}.\text{minor}.\text{patch}.\text{revision}[-\text{
 | `<`, `<=` | 小於 / 小於等於 | `<2.0.0` | 小於 `2.0.0.0` |
 | `~=`, `^` | 相容性範圍 (同 Major 鎖定) | `^1.0.0` | `>=1.0.0.0, <2.0.0.0` |
 | `*`, `None` | 通配符號 | `*` | 任意版本 |
+
+### 3.1 同 Major 安全升級鎖定
+- CLI 執行 `python yscb.py update` 時，預設僅在同一個 Major 主版本內（`^current_version`）尋找最新 Minor/Patch/Revision 進行安全升級。
+- 跨 Major 破壞性升級必須顯式指定版本（如 `python yscb.py install <module>@<new_major>`），防止自動更新意外拉入不相容 API 變更。

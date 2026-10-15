@@ -1,5 +1,14 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_15_1154_clean_install_feedback_remediation (Completed)
+
+- **純淨安裝環境下游反饋 4 項缺陷修復、常數職責解耦、軟剝離保護與設定引導校準**：
+  - **宿主自更新與套件 Provider 常數分離（方案 C）**：於 `yscb.py` 將官方自更新常數 `DEFAULT_SELF_UPDATE_URL` (`main/yscb.py`) 與套件來源 `DEFAULT_PROVIDER_URL` (`main/ys_codebase/release`) 徹底拆分，完全消除過往基於路徑分割推導的黑魔法，保證 `init` 與 `self-update` 自舉路徑 100% 準確；登錄 `[DN-28]`。
+  - **`release-target` CLI 雙向語法相容與契約補齊**：於 `agents-workflow/contributes/core.json` 補齊 `release-target` 之 `target` 參數與 `target_tier` (`--proj` / `--project`) 選項宣告；重構 `scripts/cli.py:release_target`，雙向相容 `--add <target>` / `add <target>` 以及 `--remove <target>` / `remove <target>`，並加入型別防禦阻斷布林物件滲漏。
+  - **規範入口檔軟剝離 (Soft-Unmerge) 演算法與非破壞留存**：於 `ReleasePublisher` 實作 `_soft_unmerge_agents_text`，切換 Release Target 觸發陳舊檔案清理時，僅精準剝離 `<!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->` 託管區塊；若使用者包含自訂規範，絕不調用 `os.remove` 刪檔，僅寫回純淨使用者自訂文字，徹底消除 Target 變更誤刪 `AGENTS.md` / `CLAUDE.md` 災情；登錄 `[DN-AW-16]`。
+  - **知識庫空間設定 SSOT 修正與文檔對齊**：全面校準 `README.md`、`source/knowledge-db/README.md`、`manifest.json` 與 `docs/knowledge-db/contributes_guide.md`，將誤導之 `config set ... spaces` 指引修正為標準宣告式 `config/knowledge-db/contribute.json`，消除 downstream agent 認知摩擦。
+  - **全生態系單元與回歸測試 100% 通過**：新增單元測試 FT-01 ~ FT-06；全生態系 5 大模組共 **562/562 測試 100% 通過** (`Pass: 562, Fail: 0`)。
+
 ## 2026_10_14_1650_agents_workflow_audit_and_consolidation (Completed)
 
 - **`agents-workflow` 全量內容審計、語意聚合整併、模型標頭溯源與 P07 內化 SOP Review 管線**：

@@ -1,3 +1,20 @@
+---
+target: "Core"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb.host://yscb.py"
+  - "yscb://source/core/core/commands/dispatcher.py"
+  - "yscb://source/core/core/commands/resolver.py"
+  - "yscb://source/core/core/commands/bags.py"
+related_docs:
+  - "./README.md"
+  - "./contributes_architecture.md"
+  - "./lifecycle_and_hooks.md"
+  - "./DESIGN_NOTES.md"
+last_updated: "2026-10-15"
+---
+
 # Core Commands 架構與 CLI 派發合約手冊 (Core Commands Architecture)
 
 > 模組名稱：`core.commands`  
@@ -6,9 +23,9 @@
 
 ---
 
-## 1. 架構概覽 (Architecture Overview)
+## 1. 架構概覽與宿主職責邊界 (Architecture Overview & Thin Host Boundary)
 
-`core.commands` 作為微內核標準 CLI 派發中樞，取代傳統各模組自造 `argparse` 與宿主腳本硬編碼黑名單的做法。
+`core.commands` 作為微內核標準 CLI 派發中樞，取代傳統各模組自造 `argparse` 與宿主腳本硬編碼邏輯的做法。
 
 ```text
 yscb.py (Thin Host) ──► core.commands.dispatch()
@@ -27,10 +44,18 @@ yscb.py (Thin Host) ──► core.commands.dispatch()
            OptionResolver (Orthogonal Groups & CmdBags)
                               ▼
            Module Contract: def cmd_name(cmd_bags: CmdBags)
-           (Fallback: mod.process(args) for unmigrated modules)
                               ▼
            post_cli_dispatch Hook (core.events)
 ```
+
+### 1.1 `yscb.py` 極簡薄宿主 (Thin Host) 職責邊界（原 `DN-21`）
+為杜絕入口腳本單體膨脹，`yscb.py` 嚴格限制為**純標準庫薄路由與自舉器**，僅承擔以下三項最小職責：
+1. **唯二冷自舉指令 (`init` / `self-update`)**：在不依賴 `.modules/core` 存在的前提下，完成全新工作區初始化、`core` 模組修復解壓（`init --fix`）與宿主腳本自身升級。
+2. **執行環境嗅探與安全邊界注入**：前置極速探測（$< 0.05\text{ms}$）並掛載私有微環境 `yscb.venv://` 之 `site-packages` 與 `.modules/core`，注入 `YSCB_HOST_DIR` 與派發授權權杖 `YSCB_HOST_DISPATCH_TOKEN`。
+3. **全量委派微內核 (`core.commands.dispatch`)**：除自舉外的**所有业务能力**（包含批量模組還原 `cmd_restore`、`.gitignore` 宣告式區段維護、全域 `--help` 動態指令樹聚合、雙管道 HTTP IPC / 本地冷派發與對稱生命週期 Hook `pre_cli_dispatch` / `post_cli_dispatch`）100% 下沉至 `core` 微內核執行，並剛性透傳 Exit Code。
+
+> [!CAUTION]
+> **嚴禁在 `yscb.py` 宿主腳本內堆疊業務邏輯！** 任何新增之套件管理、全域查詢或規則生成能力，一律下沉至 `core`（如 `core.installer`、`core.contributes`、`core.commands`）或對應擴充模組。
 
 ---
 
@@ -202,6 +227,4 @@ def config(cmd_bags: CmdBags) -> int:
     return 0
 ```
 
-### 雙軌向後相容過渡層 (Backward Compatibility)
-若目標模組尚未遷移為精確函式模式，派發器靜默退化至舊契約 `mod.process(args)`（無 warning 輸出）。本過渡層為暫存債務，於 `sub_02` 全模組遷移完成後剛性移除。
 

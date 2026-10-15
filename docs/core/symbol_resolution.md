@@ -1,5 +1,5 @@
 ---
-target: "Core/Symbols"
+target: "Core"
 doc_type: "topic"
 status: "active"
 source_paths:
@@ -7,13 +7,13 @@ source_paths:
 related_docs:
   - "./API_REFERENCE.md"
   - "./README.md"
-last_updated: "2026-08-26"
+last_updated: "2026-10-15"
 ---
 
 # 符號解析與動態模組載入機制 (Symbol Resolution & Loading)
 
 > 所屬模組：`module:core`  
-> 抽象維度：維度 3（中觀動態機制與多物件協同）  
+> 抽象維度：維度 ③（中觀動態機制與多物件協同）  
 
 ---
 
@@ -60,7 +60,7 @@ code.func://<module_name>/<subpath>:<function_name>
                             ▼
     ┌──────────────────────────────────────────────────┐
     │ 軌道 2: VFS Spec Import (檔案降級)               │
-    │ 透過 uri.resolve 尋找 module.root:// / source/   │
+    │ 透過 uri.resolve 尋找 module:// 或 module.source://│
     │ 實體 .py 檔案，使用 spec_from_file_location 載入 │
     └───────────────────────┬──────────────────────────┘
                             │

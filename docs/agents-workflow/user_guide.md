@@ -1,8 +1,18 @@
 ---
-title: Agents Workflow 使用者與操作指南 (User Guide)
-category: guide
-module: agents-workflow
-updated_at: 2026-10-14
+target: "Agents-Workflow/UserGuide"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/agents-workflow/agents_workflow/commands.py"
+  - "yscb://source/agents-workflow/agents_workflow/plans/verifier.py"
+  - "yscb://source/agents-workflow/agents_workflow/plans/archiver.py"
+  - "yscb://source/agents-workflow/agents_workflow/plans/status.py"
+  - "yscb://source/agents-workflow/agents_workflow/plans/searcher.py"
+related_docs:
+  - "./README.md"
+  - "./FACTORY_PIPELINE.md"
+  - "./DESIGN_NOTES.md"
+last_updated: "2026-10-15"
 ---
 
 # Agents Workflow 使用者與操作指南 (User Guide)
@@ -89,24 +99,25 @@ Plan 名稱 / 來源檔案                           | DR ID / 標題           
 
 ### 1.4 計畫規範與合規性稽核 (`plan verify`)
 
-全面稽核 Markdown 文件是否符合開發標準規範，及早發現模板指引殘留、Header 元數據缺失與章節標題漂移。
+由 `PlanVerifier` 全面稽核活躍計畫之 Markdown 文件是否符合開發標準規範，及早攔截模板佔位符殘留、模型標頭缺失、未完成待辦項與章節標題漂移。
 
 ```bash
-# 稽核所有進行中計畫
+# 稽核所有活躍進行中計畫（預設行為，與 --all 等價）
 python yscb.py agents-workflow plan verify
 
-# 稽核指定計畫
+# 稽核指定活躍計畫
 python yscb.py agents-workflow plan verify 2026_10_14_1224_deep_audit_and_ecosystem_refinement
 
-# 一併稽核歷史封存計畫
+# 顯式指定檢核所有活躍計畫（僅掃描 workflow.plans:// 活躍計畫，不掃描歷史封存目錄）
 python yscb.py agents-workflow plan verify --all
 ```
 
-#### 稽核重點
-- **指引過濾檢查**：偵測 Markdown 檔案內是否殘留 `<!-- AGENT_GUIDANCE -->` 模板指引註解未剝除。
-- **Header 元數據檢查**：驗證 Markdown 開頭 Blockquote 是否齊備 `功能名稱`（或 `計畫名稱`）、`建立日期` 與 `狀態`（或 `計畫狀態`）欄位。
-- **動態章節標題對齊**：動態讀取 `.agents/.yscb/templates/` 下的標準模板，校驗計畫產物是否遺漏必填的一級/二級章節標題。
-- **子計畫遞迴覆蓋**：自動深入 `sub_*` 目錄進行遞迴稽核。
+#### `PlanVerifier` 核心檢核規則
+- **僅掃描活躍計畫邊界**：`verify_all_plans()`（含 `--all`）專注於檢核 `workflow.plans://` 下之活躍開發計畫（自動排除 `archived/` 與 `roadmap/`），不回溯掃描歷史已歸檔封存計畫。
+- **Header 元數據與 `> 模型：` 標頭強制檢核**：驗證 Markdown 開頭 Blockquote 是否齊備 `功能名稱`（或 `計畫名稱`）、`建立日期`、`狀態`（或 `計畫狀態`）以及 **`> 模型：[實際模型名稱]`**（`has_model` 剛性檢查，確保多模型協作溯源脈絡）。
+- **未填寫佔位符與指引攔截**：偵測檔案內是否殘留 `<!-- AGENT_GUIDANCE -->` 模板指引註解，或未替換之模板佔位符（如 `[模型名稱]`、`[Model Name]`、`[YYYY-MM-DD]`、`[專案/功能名稱]` 等）。
+- **`Completed` / `Concluded` 狀態未勾選 `- [ ]` 阻斷**：當文件標頭狀態標記為 `Completed` 或 `Concluded` 時，若內文仍存在任何未勾選之待辦 Checkbox（`- [ ]`），直接判定為 `FAIL` 阻斷通過。
+- **動態章節標題對齊與子計畫遞迴覆蓋**：動態比對 `.agents/.yscb/templates/` 標準模板的一級/二級章節標題，並自動深入 `sub_*` 子計畫目錄遞迴執行全套稽核。
 
 ---
 

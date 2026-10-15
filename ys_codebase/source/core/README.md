@@ -1,3 +1,20 @@
+---
+target: "Core"
+doc_type: "readme"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/__init__.py"
+  - "yscb://source/core/core/uri.py"
+  - "yscb://source/core/core/config.py"
+  - "yscb://source/core/core/semver.py"
+  - "yscb://source/core/core/pip_manager.py"
+related_docs:
+  - "../../../docs/core/README.md"
+  - "../../../docs/core/DESIGN_NOTES.md"
+  - "../../../docs/_project/STANDARDS.md"
+last_updated: "2026-10-15"
+---
+
 # YS-Codebase Core 核心基礎設施模組 (Infrastructure & Package Manager)
 
 > 模組名稱：`core`  
@@ -54,7 +71,7 @@ graph TD
 ## 2. 核心機制說明 (Core Mechanisms)
 
 ### 2.1 語意空間虛擬檔案系統 (Semantic URI VFS)
-Core 提供內建語意 URI 協定，並支援各擴充模組透過 `contributes/core.json` 動態註冊專屬協定（如 `agents-workflow` 注入之 `workflow.plans://`、`workflow.docs://` 等，可隨時執行 `python yscb.py uri list` 檢視全清單）：
+Core 提供內建語意 URI 協定（Scheme B 正交協定），並支援各擴充模組透過 `contributes/core.json` 動態註冊專屬協定（如 `agents-workflow` 注入之 `workflow.plans://`、`workflow.docs://` 等，可隨時執行 `python yscb.py uri list` 檢視全清單）：
 
 | 語意 URI 協議 | 預設解析目標 | 職責與說明 |
 | :--- | :--- | :--- |
@@ -62,15 +79,14 @@ Core 提供內建語意 URI 協定，並支援各擴充模組透過 `contributes
 | **`yscb.host://`** | 由 `yscb.config.json` 所在目錄定位 | **YS-Codebase 宿主入口腳本 (`yscb.py`) 所在目錄** |
 | **`yscb://`** | 由 `yscb.config.json` 錨定（預設 `.yscb/`） | **YSCB 工具與運行空間根目錄** |
 | **`yscb.venv://`** | `yscb://.venv/` | **隔離之 Python 虛擬微環境根目錄** |
-| **`module://`** | `yscb://.modules/{module}/` | **當前作用中模組的運行目錄（支援 `module://@/` 自省）** |
+| **`module://`** | `yscb://.modules/{module}/` | **當前作用中模組的運行目錄（支援 `module://@/` 自省，相容 `module.install://`）** |
 | **`module.mirror://`** | `yscb://.mirror/` | **本地端模組鏡像快照備份** |
 | **`module.source://`** | `yscb://source/` | **模組源碼開發空間目錄（`dev create` 預設建立位置）** |
 | **`module.build://`** | `yscb://.build/` | **模組開發打包暫存目錄** |
 | **`module.release://`** | `yscb://release/` | **模組正式發布包產出目錄** |
 | **`config://`** | `yscb://config/{module}/` | **模組專屬設定檔目錄（支援 `config://@/` 自省）** |
-| **`cache://`** | `yscb://.cache/{module}/` | **模組專屬快取目錄（支援 `cache://@/` 自省）** |
-| **`temp://`** | `yscb://.temp/` | **系統暫態工作目錄** |
-| **`storage://`** | `yscb://storage/` | **跨環境共享持久化資料空間** |
+| **`cache://`** | `yscb://.cache/{module}/` | **模組專屬快取與暫態工作目錄（支援 `cache://@/` 自省）** |
+| **`storage://`** | `yscb://storage/` | **跨環境共享持久化資料空間（支援 `storage://@/` 自省）** |
 | **`snapshot://`** | `yscb://.snapshots/` | **系統組態快照備份（用於災難恢復）** |
 
 ### 2.2 2x2 組態矩陣邊界 (Configuration Matrix)

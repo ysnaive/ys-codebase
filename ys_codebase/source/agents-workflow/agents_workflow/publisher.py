@@ -429,6 +429,32 @@ class ReleasePublisher:
         else:
             return injected_section + "\n\n" + existing_text
 
+    def _soft_unmerge_agents_text(self, existing_text: str) -> str:
+        """
+        純文字軟剝離演算法 (Pure String Soft-Unmerge).
+        精準移除 YSCB 託管區塊與空自訂樣板，保留使用者自定義內容。
+        """
+        if not existing_text:
+            return ""
+
+        # 1. 剝離 <!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->
+        pattern = re.compile(
+            re.escape(AGENTS_MD_BEGIN) + r".*?" + re.escape(AGENTS_MD_END),
+            re.DOTALL
+        )
+        cleaned = pattern.sub("", existing_text).strip()
+
+        # 2. 剝離空樣板「## 4. 專案特化工程規範...」
+        empty_boilerplate = (
+            r"##\s*4\.\s*專案特化工程規範\s*\(Project\s*Specific\s*Standards\)\s*"
+            r"\*\(專案特化工程規範填寫於此，不受中央標準庫覆蓋\)\*"
+        )
+        without_boilerplate = re.sub(empty_boilerplate, "", cleaned, flags=re.DOTALL).strip()
+        if not without_boilerplate:
+            return ""
+
+        return cleaned
+
     def _soft_merge_agents_md(self, dev_standards_content: str, proj_root_or_file: str, force: bool = False) -> Tuple[bool, bool]:
         """
         執行 AGENTS.md 軟合併注入，保留自定義章節。
@@ -674,6 +700,19 @@ class ReleasePublisher:
         for f_rem in files_to_remove:
             if os.path.isfile(f_rem):
                 try:
+                    base_name = os.path.basename(f_rem)
+                    is_agents_md = base_name in ("AGENTS.md", "CLAUDE.md") or any(
+                        t_cfg.get("agents_md") and f_rem.endswith(os.path.normpath(str(t_cfg.get("agents_md")).replace("project://", "").replace("/", os.sep)))
+                        for t_cfg in all_registered_targets.values()
+                    )
+                    if is_agents_md:
+                        with open(f_rem, "r", encoding="utf-8") as f:
+                            curr_text = f.read()
+                        remaining = self._soft_unmerge_agents_text(curr_text)
+                        if remaining:
+                            with open(f_rem, "w", encoding="utf-8", newline="\n") as f:
+                                f.write(remaining + "\n")
+                            continue
                     os.remove(f_rem)
                 except Exception as e:
                     print(f"[publisher:warning] Failed removing stale file {f_rem}: {e}", file=sys.stderr)

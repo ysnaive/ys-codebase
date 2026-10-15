@@ -1,8 +1,19 @@
 ---
-title: YS-Codebase 系統架構與全域知識地圖
-category: overview
-module: _project
-updated_at: 2026-10-14
+target: "Project"
+doc_type: "readme"
+status: "active"
+source_paths:
+  - "yscb.py"
+  - "ys_codebase/source/"
+related_docs:
+  - "README.md"
+  - "docs/_project/STANDARDS.md"
+  - "docs/core/README.md"
+  - "docs/server/README.md"
+  - "docs/knowledge-db/README.md"
+  - "docs/agents-workflow/README.md"
+  - "docs/dev/README.md"
+last_updated: "2026-10-15"
 ---
 
 # YS-Codebase 系統架構與全域知識地圖 (System Overview & Architecture Map)
@@ -71,22 +82,27 @@ graph TD
 | **維度 2：核心規範** | [STANDARDS.md](./_project/STANDARDS.md) | 全專案 15 項語意空間協議、2x2 組態邊界、Dogfooding 自引用三層空間與標準閉環流水線 |
 | **維度 2：核心內核** | [core/README.md](./core/README.md) | Core 微內核架構、AtomicEngine 12 原子操作、First-Class VFS SDK 與套件管理 |
 | **維度 3：專題手冊** | [core/uri_protocols.md](./core/uri_protocols.md) | 語意 URI 協議規範、`project://` 零 Fallback 阻斷與 `!undefined` 自癒提示機制 |
+| **維度 3：專題手冊** | [core/contributes_architecture.md](./core/contributes_architecture.md) | Contributes 雙階拓撲聚合、`__provider__` 溯源、`__modules__` 分桶與 `core.validator` Schema 驗證引擎 |
 | **維度 3：專題手冊** | [core/lifecycle_and_hooks.md](./core/lifecycle_and_hooks.md) | 命名空間 Hook 對接規範 (`hook.{emit_module}.py`)、`ExecutionContext` 介面與例外隔離 |
-| **維度 5：工程妥協** | [core/DESIGN_NOTES.md](./core/DESIGN_NOTES.md) | Core 微內核關鍵工程決策與設計註記 (`DN-01` ~ `DN-27`) |
+| **維度 5：工程妥協** | [core/DESIGN_NOTES.md](./core/DESIGN_NOTES.md) | Core 微內核關鍵工程妥協與防坑守則 (`DN-01` ~ `DN-12`) |
 | **維度 2：常駐中樞** | [server/README.md](./server/README.md) | Server Master/WarmWorker 雙進程架構、啟動參數橫幅、Console 回顯與停機統計總結 |
-| **維度 3：專題手冊** | [server/hot_reload_architecture_migration.md](./server/hot_reload_architecture_migration.md) | 雙軌模組熱重載、WarmWorker `ServiceManager` 背景服務託管與 IPC 協調機制 |
+| **維度 3：專題手冊** | [server/daemon_architecture.md](./server/daemon_architecture.md) | Master-Worker 雙進程模型、崩潰自癒、500ms 防抖串流協議與預熱事件廣播 |
+| **維度 3：專題手冊** | [server/hot_reload_and_services.md](./server/hot_reload_and_services.md) | 雙軌模組熱重載、WarmWorker `ServiceManager` 背景服務託管與 IPC 協調機制 |
 | **維度 3：專題手冊** | [server/realtime_logging.md](./server/realtime_logging.md) | `ServerLogger` 即時 Flush 日誌、異常中斷自癒與 5 代歷史滾動規格 |
-| **維度 5：工程妥協** | [server/DESIGN_NOTES.md](./server/DESIGN_NOTES.md) | Server 常駐模組關鍵設計決策與註記 (`DN-01` ~ `DN-12`) |
+| **維度 5：工程妥協** | [server/DESIGN_NOTES.md](./server/DESIGN_NOTES.md) | Server 常駐模組關鍵工程妥協與防坑守則 (`DN-01` ~ `DN-04`) |
 | **維度 2：知識檢索** | [knowledge-db/README.md](./knowledge-db/README.md) | Knowledge-DB 8 大標準指令、多語言 AST 解析、BM25 + ONNX 向量混合檢索與調用圖譜 |
-| **維度 3：專題手冊** | [knowledge-db/retrieval.md](./knowledge-db/retrieval.md) | 混合檢索引擎、前置空間過濾、離線模型探針與三級複雜度輸出矩陣 |
-| **維度 5：工程妥協** | [knowledge-db/DESIGN_NOTES.md](./knowledge-db/DESIGN_NOTES.md) | Knowledge-DB 關鍵設計決策與註記 (`DN-01` ~ `DN-26`) |
-| **維度 2：工作流規範** | [agents-workflow/README.md](./agents-workflow/README.md) | 通用 Agent 技能與工作流框架、純 Skill 資產架構、佔位符語法與 Release Target 投影 |
+| **維度 3：專題手冊** | [knowledge-db/architecture.md](./knowledge-db/architecture.md) | 全系統靜態架構分層、`UnifiedSymbol` 模型與 `unified.meta.bin` 原生二進位快照 |
+| **維度 3：專題手冊** | [knowledge-db/retrieval.md](./knowledge-db/retrieval.md) | 混合檢索引擎、8,000 字元動態預算裁切、前置空間過濾與三級複雜度輸出矩陣 |
+| **維度 3：專題手冊** | [knowledge-db/incremental_hot_reload.md](./knowledge-db/incremental_hot_reload.md) | `KnowledgeDBServiceWorker` 500ms 防抖熱自癒、`.watcher_active` 零阻塞旁路與雙重兜底 |
+| **維度 5：工程妥協** | [knowledge-db/DESIGN_NOTES.md](./knowledge-db/DESIGN_NOTES.md) | Knowledge-DB 關鍵工程妥協與防坑守則 (`DN-01` ~ `DN-06`) |
+| **維度 2：工作流規範** | [agents-workflow/README.md](./agents-workflow/README.md) | 通用 Agent 技能與工作流框架、純 Skill 資產架構、6 大計畫分支與 Release Target 投影 |
 | **維度 3：專題手冊** | [agents-workflow/user_guide.md](./agents-workflow/user_guide.md) | Dev Plans 工具鏈完整操作手冊（`status`, `search`, `verify`, `archive`）與 Target 管理 |
-| **維度 3：專題手冊** | [agents-workflow/FACTORY_PIPELINE.md](./agents-workflow/FACTORY_PIPELINE.md) | 協議產物工廠化、兩階段 6 步語意管線與雙軌 Manifest 原子交易 |
-| **維度 5：工程妥協** | [agents-workflow/DESIGN_NOTES.md](./agents-workflow/DESIGN_NOTES.md) | Agents-Workflow 關鍵設計決策與註記 (`DN-AW-01` ~ `DN-AW-14`) |
+| **維度 3：專題手冊** | [agents-workflow/FACTORY_PIPELINE.md](./agents-workflow/FACTORY_PIPELINE.md) | 協議產物工廠化、Stage 0 Stat-First 快照、兩階段 6 步語意管線與雙軌 Manifest 原子交易 |
+| **維度 5：工程妥協** | [agents-workflow/DESIGN_NOTES.md](./agents-workflow/DESIGN_NOTES.md) | Agents-Workflow 關鍵工程妥協與防坑守則 (`DN-AW-01` ~ `DN-AW-06`) |
 | **維度 2：開發工具** | [dev/README.md](./dev/README.md) | Dev 工具鏈架構、Scaffold 模組建立、Checker 規範檢驗、Builder 純淨打包與沙盒測試 |
+| **維度 3：專題手冊** | [dev/architecture.md](./dev/architecture.md) | Checker 8 步靜態合規檢核管線、3-Gate 發布守門、滑動窗口與 Contributes 雙向擴充 |
 | **維度 3：專題手冊** | [dev/testing_guide.md](./dev/testing_guide.md) | `YSCBTestCase` 隔離沙盒生命週期、Auto-Contract 自動契約合成與多進程並行跑測 |
-| **維度 5：工程妥協** | [dev/DESIGN_NOTES.md](./dev/DESIGN_NOTES.md) | Dev 開發者工具鏈關鍵設計決策與註記 (`DN-DEV-01` ~ `DN-DEV-03`) |
+| **維度 5：工程妥協** | [dev/DESIGN_NOTES.md](./dev/DESIGN_NOTES.md) | Dev 開發者工具鏈關鍵工程妥協與防坑守則 (`DN-DEV-01` ~ `DN-DEV-04`) |
 
 ---
 

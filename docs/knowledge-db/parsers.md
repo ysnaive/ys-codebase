@@ -1,3 +1,18 @@
+---
+target: "Knowledge-DB/Parsers"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/knowledge-db/knowledge_db/parsers/registry.py"
+  - "yscb://source/knowledge-db/knowledge_db/parsers/tree_sitter_driver.py"
+  - "yscb://source/knowledge-db/knowledge_db/schema.py"
+related_docs:
+  - "./README.md"
+  - "./architecture.md"
+  - "./contributes_guide.md"
+last_updated: "2026-10-15"
+---
+
 # knowledge-db 多語言語意解析器使用指南 (Parsers Guide)
 
 > 模組名稱：`knowledge-db`  

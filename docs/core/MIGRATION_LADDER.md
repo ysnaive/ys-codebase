@@ -1,9 +1,22 @@
+---
+target: "Core"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/engine.py"
+related_docs:
+  - "./README.md"
+  - "./SEMVER.md"
+  - "./SNAPSHOT_AND_ROLLBACK.md"
+last_updated: "2026-10-15"
+---
+
 # 模組增量資料遷移與階梯調用手冊 (Migration Ladder Subsystem)
 
 > 適用模組：`core`  
 > 模組路徑：`source/core/core/engine.py`  
-> 知識庫維度：維度 3（中觀專題手冊 Topic Docs）  
-> 最後更新：2026-08-25  
+> 知識庫維度：維度 ③（中觀專題手冊 Topic Docs）  
+> 最後更新：2026-10-15  
 
 ---
 

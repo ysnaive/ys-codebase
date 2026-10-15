@@ -219,6 +219,10 @@
             "description": "操作動作 (list, add, remove)",
             "required": false,
             "choice": ["list", "add", "remove"]
+          },
+          "target": {
+            "description": "目標名稱 (如 claude, antigravity)",
+            "required": false
           }
         },
         "options": {
@@ -243,11 +247,19 @@
                 }
               }
             }
+          },
+          "target_tier": {
+            "proj": {
+              "description": "作用於專案層級 (config.project.json)",
+              "alias": ["project"]
+            }
           }
         },
         "usage": {
           "pros": [
-            "檢視或管理工作流發布目標清冊: release-target"
+            "檢視或管理工作流發布目標清冊: release-target",
+            "啟用目標: release-target --add claude --proj (或 add claude --proj)",
+            "移除目標: release-target --remove claude --proj (或 remove claude --proj)"
           ]
         }
       },

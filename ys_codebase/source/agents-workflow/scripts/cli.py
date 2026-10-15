@@ -126,11 +126,61 @@ def release(cmd_bags: Any) -> int:
 
 
 def release_target(cmd_bags: Any) -> int:
-    """管理 release-target 清單與狀態（支援 --proj 旗標）。"""
+    """管理 release-target 清單與狀態（相容 --add/add 與 --remove/remove，支援 --proj 旗標）。"""
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "release-target")
 
+    is_proj = bags.has_option("proj") or bags.has_option("project")
+    tier_label = "PROJECT" if is_proj else "LOCAL"
+
+    # 1. 優先判斷 Add 語法（支援 --add <t> 或 add <t>）
+    is_add = bags.has_option("add") or (bool(bags.args) and bags.args[0] in ("add", "--add"))
+    if is_add:
+        opt_val = bags.get_option_value("add")
+        target_name = (
+            opt_val if isinstance(opt_val, str) and opt_val.strip() else None
+        ) or (
+            bags.args[1] if bags.args and bags.args[0] in ("add", "--add") and len(bags.args) > 1 else None
+        ) or (
+            bags.args[0] if bags.args and bags.args[0] not in ("add", "--add") else None
+        )
+        if not target_name or not isinstance(target_name, str) or not target_name.strip():
+            print("[agents-workflow] Error: Missing target name for --add. Usage: release-target --add <target> [--proj]")
+            return 1
+        print(f"[agents-workflow] Adding release target '{target_name}' ({tier_label}) and triggering atomic release...")
+        ok = ReleaseTargetManager.add_target(target_name, is_project=is_proj)
+        if ok:
+            print(f"[agents-workflow] Target '{target_name}' enabled ({tier_label}) and released successfully.")
+            return 0
+        else:
+            print(f"[agents-workflow] Failed enabling target '{target_name}' ({tier_label}).")
+            return 1
+
+    # 2. 優先判斷 Remove 語法（支援 --remove <t> 或 remove <t>）
+    is_remove = bags.has_option("remove") or (bool(bags.args) and bags.args[0] in ("remove", "--remove", "--rm"))
+    if is_remove:
+        opt_val = bags.get_option_value("remove")
+        target_name = (
+            opt_val if isinstance(opt_val, str) and opt_val.strip() else None
+        ) or (
+            bags.args[1] if bags.args and bags.args[0] in ("remove", "--remove", "--rm") and len(bags.args) > 1 else None
+        ) or (
+            bags.args[0] if bags.args and bags.args[0] not in ("remove", "--remove", "--rm") else None
+        )
+        if not target_name or not isinstance(target_name, str) or not target_name.strip():
+            print("[agents-workflow] Error: Missing target name for --remove. Usage: release-target --remove <target> [--proj]")
+            return 1
+        print(f"[agents-workflow] Removing release target '{target_name}' ({tier_label}) and triggering atomic release...")
+        ok = ReleaseTargetManager.remove_target(target_name, is_project=is_proj)
+        if ok:
+            print(f"[agents-workflow] Target '{target_name}' removed ({tier_label}) and cleaned successfully.")
+            return 0
+        else:
+            print(f"[agents-workflow] Failed removing target '{target_name}' ({tier_label}).")
+            return 1
+
+    # 3. 預設行為：若指定 list 旗標或無其他動作，執行目標清冊輸出
     action = bags.args[0] if bags.args else None
     if not action or action in ("--list", "list", "-l") or bags.has_option("list") or bags.has_option("l"):
         targets = ReleaseTargetManager.list_targets()
@@ -147,40 +197,8 @@ def release_target(cmd_bags: Any) -> int:
         print("-" * 88)
         return 0
 
-    is_proj = bags.has_option("proj") or bags.has_option("project")
-    tier_label = "PROJECT" if is_proj else "LOCAL"
-    target_name = bags.args[1] if len(bags.args) > 1 else (str(bags.get_option("add")) if bags.get_option("add") else (str(bags.get_option("remove")) if bags.get_option("remove") else None))
-
-    if action in ("--add", "add") or bags.has_option("add"):
-        t_name = target_name or (bags.args[0] if len(bags.args) > 0 and action != "add" else None)
-        if not t_name:
-            print("[agents-workflow] Error: Missing target name for --add. Usage: release-target --add <target> [--proj]")
-            return 1
-        print(f"[agents-workflow] Adding release target '{t_name}' ({tier_label}) and triggering atomic release...")
-        ok = ReleaseTargetManager.add_target(t_name, is_project=is_proj)
-        if ok:
-            print(f"[agents-workflow] Target '{t_name}' enabled ({tier_label}) and released successfully.")
-            return 0
-        else:
-            print(f"[agents-workflow] Failed enabling target '{t_name}' ({tier_label}).")
-            return 1
-
-    elif action in ("--remove", "remove", "--rm") or bags.has_option("remove"):
-        t_name = target_name or (bags.args[0] if len(bags.args) > 0 and action != "remove" else None)
-        if not t_name:
-            print("[agents-workflow] Error: Missing target name for --remove. Usage: release-target --remove <target> [--proj]")
-            return 1
-        print(f"[agents-workflow] Removing release target '{t_name}' ({tier_label}) and triggering atomic release...")
-        ok = ReleaseTargetManager.remove_target(t_name, is_project=is_proj)
-        if ok:
-            print(f"[agents-workflow] Target '{t_name}' removed ({tier_label}) and cleaned successfully.")
-            return 0
-        else:
-            print(f"[agents-workflow] Failed removing target '{t_name}' ({tier_label}).")
-            return 1
-    else:
-        print(f"[agents-workflow] Unknown release-target option '{action}'. Use list, add <t> [--proj], or remove <t> [--proj].")
-        return 1
+    print(f"[agents-workflow] Unknown release-target option '{action}'. Use list, add <t> [--proj], or remove <t> [--proj].")
+    return 1
 
 
 def compile(cmd_bags: Any) -> int:

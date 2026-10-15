@@ -1,12 +1,41 @@
+---
+target: "Core"
+doc_type: "readme"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/__init__.py"
+  - "yscb://source/core/core/uri.py"
+  - "yscb://source/core/core/engine.py"
+  - "yscb://source/core/core/installer.py"
+  - "yscb://source/core/core/contributes.py"
+  - "yscb://source/core/core/commands/"
+related_docs:
+  - "./contributes_architecture.md"
+  - "./uri_protocols.md"
+  - "./cli_commands_architecture.md"
+  - "./vfs.md"
+  - "./ZIP_PACKAGE_SPEC.md"
+  - "./SNAPSHOT_AND_ROLLBACK.md"
+  - "./MIGRATION_LADDER.md"
+  - "./SEMVER.md"
+  - "./lifecycle_and_hooks.md"
+  - "./symbol_resolution.md"
+  - "./platform.md"
+  - "./API_REFERENCE.md"
+  - "./DESIGN_NOTES.md"
+  - "../_project/STANDARDS.md"
+last_updated: "2026-10-15"
+---
+
 # Core 微內核架構手冊 (Core Microkernel Overview)
 
 > 模組名稱：`core`  
-> 模組版本：`1.0.0`  
+> 模組版本：`1.1.0`  
 > 職責定位：YS-Codebase 系統微內核基礎設施、套件生命週期、VFS 檔案系統、語意 URI 系統、SemVer 運算與依賴注入引擎。
 
 ---
 
-## 1. Core 微內核架構設計 (Microkernel Architecture)
+## 1. Core 微內核架構設計與專題導航 (Microkernel Architecture & Topic Navigation)
 
 `core` 模組由七大核心子系統組成：
 
@@ -15,37 +44,56 @@ graph TD
     classDef sub fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
     
     subgraph CoreModule ["Core 微內核系統 (module:core)"]
-        VFS["First-Class VFS & URI<br/><code>core.uri</code><br/><i>語意路徑解算、JIT 熱補齊、Quick Fix 提示、自省清冊與原子 I/O</i>"]:::sub
+        VFS["First-Class VFS & URI<br/><code>core.uri</code> / <code>core.vfs</code><br/><i>語意路徑解算、JIT 熱補齊、Quick Fix 提示、自省清冊與原子 I/O</i>"]:::sub
         SemVer["SemVer 2.0.0 運算器<br/><code>core.semver</code><br/><i>數值排序、約束匹配與依賴求解</i>"]:::sub
         Context["執行上下文 SSOT<br/><code>core.context</code><br/><i>不可變 ExecutionContext 載體</i>"]:::sub
         Engine["AtomicEngine 引擎<br/><code>core.engine</code><br/><i>12 大原子操作、OS 原子鎖與雙層快照</i>"]:::sub
         Installer["套件生命週期調度器<br/><code>core.installer</code><br/><i>安裝、更新、移除、快照回滾與 Onboarding Next Steps 引導</i>"]:::sub
-        Contributes["Contribute 依賴注入器<br/><code>core.contributes</code><br/><i>__provider__ 自動標記、拓撲排序聚合與查詢 SDK</i>"]:::sub
+        Contributes["Contribute 依賴注入器<br/><code>core.contributes</code> / <code>core.validator</code><br/><i>__provider__ 標記、__modules__ 分桶、拓撲聚合與 Schema 驗證</i>"]:::sub
         Commands["Commands 核心命令引擎<br/><code>core.commands</code><br/><i>Schema 解析、正交分組、CmdBags 容器、雙管道分流與對稱 Hook</i>"]:::sub
     end
 ```
 
+### 1.1 中觀專題手冊與知識庫導航 (Topic Documentation Map)
+
+| 專題手冊 / 規範文件 | 知識維度 | 核心涵蓋內容 |
+| :--- | :---: | :--- |
+| [Contributes 依賴注入與 Schema 驗證手冊](./contributes_architecture.md) | 維度 ③ | 雙階拓撲聚合、`__provider__` 溯源、`__modules__` 分桶、`core.validator` 輕量 Schema DSL 與 `_manifest.md` 雙向契約 |
+| [語意 URI 協議與動態解析專題手冊](./uri_protocols.md) | 維度 ③ | Scheme B 正交協議清單、`@/` 當前模組自省、`yscb.host://` Fast-path 與 `project://` 零 Fallback 規範 |
+| [統一虛擬檔案系統手冊 (VFS)](./vfs.md) | 維度 ③ | `core.vfs` 單向相依架構、`VirtualPath`、同目錄原子寫入與防逃逸沙盒邊界 |
+| [Core Commands 架構與 CLI 派發合約手冊](./cli_commands_architecture.md) | 維度 ③ | `yscb.py` Thin Host 職責邊界、同構遞迴指令樹、正交選項分組與強型別 `CmdBags` 合約 |
+| [命名空間 Hook 與生命週期事件手冊](./lifecycle_and_hooks.md) | 維度 ③ | `core.events` 獨立事件總線、`scripts/hook.{emit_module}.py` 對接與模組資料 `--purge` 治理 |
+| [Zip 套件規格與同構自舉管線手冊](./ZIP_PACKAGE_SPEC.md) | 維度 ③ | 明文空間二分法、4-Stage Atomic Reload 管線、組態遞迴增量補齊與安裝產物驗證 |
+| [雙層組態快照與原子回滾手冊](./SNAPSHOT_AND_ROLLBACK.md) | 維度 ③ | 不可變鏡像庫與 `snapshot://` 雙層原子快照還原機制 |
+| [模組增量資料遷移與階梯調用手冊](./MIGRATION_LADDER.md) | 維度 ③ | 跨 Minor 版本 `scripts/migrations/{major}.{minor}.x.py` 階梯調用與回滾保護 |
+| [四段式版本規範說明書 (SemVer v4)](./SEMVER.md) | 維度 ③ | `major.minor.patch.revision` 四段式排序、比較規則與同 Major 升級鎖定 |
+| [符號解析與動態模組載入機制](./symbol_resolution.md) | 維度 ③ | `code.func://` 協議語法與雙軌動態載入器 (`core.symbols`) |
+| [Core Platform 跨平台底層原語手冊](./platform.md) | 維度 ③ | 背景脫鉤進程管理 (`spawn_detached`、`kill_process_tree`) 與跨平台進程鎖 (`InterProcessLock`) |
+| [Core 模組 API 規格手冊](./API_REFERENCE.md) | 維度 ④ | `core` 公開子模組 API 簽名與回傳契約速查 |
+| [Core 微內核設計決策與工程註記](./DESIGN_NOTES.md) | 維度 ⑤ | 12 項關鍵反直覺工程妥協、防坑不變量與 `[!CAUTION]` 紅線 (`DN-01 ~ DN-12`) |
+
 ---
 
-## 2. 語意 URI 協定與 First-Class VFS SDK (`core.uri`)
+## 2. 語意 URI 協定與 First-Class VFS SDK (`core.uri` & `core.vfs`)
 
-YS-Codebase 透過 `core.uri` 提供標準化虛擬檔案系統介面，實現實體路徑與語意抽象的完全解耦：
+YS-Codebase 透過 `core.uri` 與 `core.vfs` 提供標準化虛擬檔案系統介面，全面採用 **Scheme B（全量 Root 化正交命名 + `@/` 自省語法）**，徹底廢除舊版 `*.root://` 與 `temp://`：
 
-### 2.1 六大核心空間語意協議表
-| 空間類型 | 根空間協議 (Root) | 模組專屬空間協議 (Scoped) | 實體預設位置 |
-| :--- | :--- | :--- | :--- |
-| **工具庫核心** | `yscb://` | - | 工具庫安裝根目錄 |
-| **運行端空間** | `module.root://` | `module://` | `yscb://.modules/{module}/` |
-| **源碼端空間** | `module.source.root://` | `module.source://` | `yscb://source/{module}/` |
-| **建置端空間** | `module.build.root://` | `module.build://` | `yscb://.build/{module}/` |
-| **發布端空間** | `module.release.root://` | `module.release://` | `yscb://release/{module}/` |
-| **鏡像端空間** | `module.mirror.root://` | `module.mirror://` | `yscb://.mirror/{module}/` |
-| **組態空間** | `config.root://` | `config://` | `yscb://config/{module}/` |
-| **快取空間** | `cache.root://` | `cache://` | `yscb://.cache/{module}/` |
-| **持久儲存** | `storage.root://` | `storage://` | `yscb://storage/{module}/` |
-| **暫存/快照** | `temp://` / `snapshot://` | - | `yscb://.temp/` / `yscb://.snapshots/` |
-| **私有微環境** | `yscb.venv://` | - | `yscb://.venv/` (Git 忽略) |
-| **專案宿主** | `project://` | - | `config.project.json` (core: `project_root`) |
+### 2.1 標準核心空間語意協議表 (Scheme B)
+| 空間類型 | 標準正交協議 (Canonical Root) | 當前模組自省語法 (`@/`) | 跨模組顯式尋址範例 | 實體預設位置 |
+| :--- | :--- | :--- | :--- | :--- |
+| **工具庫核心** | `yscb://` | - | `yscb://config/` | 工具庫安裝根目錄 (`{yscb_root}`) |
+| **宿主工程根** | `yscb.host://` | - | `yscb.host://yscb.py` | 宿主 `yscb.py` 與 `yscb.config.json` 所在目錄 |
+| **目標專案根** | `project://` | - | `project://AGENTS.md` | `config://core/config.project.json` (`project_root`) |
+| **運行端空間** | `module://` *(別名相容 `module.install://`)* | `module://@/` | `module://core/manifest.json` | `yscb://.modules/{module}/` |
+| **源碼端空間** | `module.source://` | `module.source://@/` | `module.source://core/core/uri.py` | `yscb://source/{module}/` |
+| **建置端空間** | `module.build://` | `module.build://@/` | `module.build://core/1.0.0.build.zip` | `yscb://.build/{module}/` |
+| **發布端空間** | `module.release://` | `module.release://@/` | `module.release://core/index.json` | `yscb://release/{module}/` |
+| **鏡像端空間** | `module.mirror://` | `module.mirror://@/` | `module.mirror://core/1.0.0.0.zip` | `yscb://.mirror/{module}/` |
+| **組態空間** | `config://` | `config://@/` | `config://core/config.project.json` | `yscb://config/{module}/` |
+| **快取與暫存** | `cache://` *(全面取代舊 `temp://`)* | `cache://@/` | `cache://core/contributes.merged.json` | `yscb://.cache/{module}/` |
+| **持久儲存** | `storage://` | `storage://@/` | `storage://dev/state.json` | `yscb://storage/{module}/` |
+| **原子快照** | `snapshot://` | - | `snapshot://snap_1724578900/` | `yscb://.snapshots/` |
+| **私有微環境** | `yscb.venv://` | - | `yscb.venv://py310/` | `yscb://.venv/` (Git 忽略) |
 
 ### 2.2 JIT `!undefined` 熱更新補齊與可操作自癒提示 (`format_undefined_uri_hint`)
 當 `uri.resolve()` 遇到未配置或為 `!undefined` 的協議時，會在互動 TTY 環境自動彈出熱補齊選單：
@@ -58,8 +106,10 @@ YS-Codebase 透過 `core.uri` 提供標準化虛擬檔案系統介面，實現�
 
 ## 3. 微內核 Contribute 依賴注入與查詢 SDK (`core.contributes`)
 
-### 3.1 `__provider__` 拓撲聚合
-在微內核搜集 donor 模組 contributes 時，自動為 Dict 與 List[Dict] 項目注入 `"__provider__": donor_name`，並依模組安裝之拓撲排序有序合併。
+> 詳細聚合機制、`_format.json` 型別簽名 DSL 與 `_manifest.md` 契約規範請參閱專題手冊：[Contributes 依賴注入、拓撲聚合與宣告式 Schema 驗證手冊](./contributes_architecture.md)。
+
+### 3.1 `__provider__` 拓撲聚合與 `__modules__` 同名指令分桶
+在微內核搜集 donor 模組 contributes 時，自動為 Dict 與 List[Dict] 項目注入 `"__provider__": donor_name`，依模組安裝之拓撲排序有序合併，並於 `commands["__modules__"][donor]` 建立分桶隔離，防範跨模組同名指令覆蓋。
 
 ### 3.2 標準查詢 SDK
 ```python
@@ -91,10 +141,14 @@ python yscb.py uri resolve <path_or_uri>    # 解析特定語意 URI 為實體�
 python yscb.py uri to-uri <abs_path>        # 將實體路徑反查轉換為語意 URI
 python yscb.py uri check                    # 全量語意協議健康檢查
 
-# 2. 套件生命週期管理
+# 2. Contributes 擴充點自省與剛性校驗
+python yscb.py contributes list             # 列出全系統開放之擴充點清冊 (_format.json)
+python yscb.py contributes check [module]   # 校驗模組 contributes 宣告是否符合目標 Schema
+
+# 3. 套件生命週期管理
 python yscb.py install <module>[@version] [--provider="<source>"] [--force]
 python yscb.py update [<module>] [--provider="<source>"]
-python yscb.py remove <module> [--clean]
+python yscb.py remove <module> [--clean] [--purge]
 python yscb.py list
 python yscb.py status
 python yscb.py rollback [snapshot_id]

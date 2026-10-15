@@ -444,8 +444,117 @@ class TestReleasePublisherDiff(YSCBTestCase):
                 config.delete("agents-workflow", "paths.docs", local=False)
             config.reload()
 
+    @require(Requirement.LOGIC)
+    def test_ft_15_soft_unmerge_agents_text(self):
+        """FT-04: 驗證 _soft_unmerge_agents_text 正確剝離 YSCB 託管標記與空樣板，完整保留自訂內容。"""
+        from agents_workflow.publisher import AGENTS_MD_BEGIN, AGENTS_MD_END
+
+        # 1. 空字串防護
+        self.assertEqual(self.publisher._soft_unmerge_agents_text(""), "")
+
+        # 2. 僅含 YSCB 託管區塊與空自訂樣板 -> 剝離為空
+        default_tpl = (
+            f"{AGENTS_MD_BEGIN}\n"
+            f"# Agent 專案行為準則\n"
+            f"{AGENTS_MD_END}\n\n"
+            f"## 4. 專案特化工程規範 (Project Specific Standards)\n"
+            f"*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n"
+        )
+        self.assertEqual(self.publisher._soft_unmerge_agents_text(default_tpl), "")
+
+        # 3. 含使用者自訂章節 -> 剝離 YSCB 區塊，自訂章節完好保留
+        custom_tpl = (
+            f"{AGENTS_MD_BEGIN}\n"
+            f"# Agent 專案行為準則\n"
+            f"{AGENTS_MD_END}\n\n"
+            f"## 4. 專案特化工程規範 (Project Specific Standards)\n"
+            f"*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n\n"
+            f"- 專案自訂規則 1：全庫禁止使用未受保護之裸 SQL\n"
+        )
+        unmerged = self.publisher._soft_unmerge_agents_text(custom_tpl)
+        self.assertNotIn(AGENTS_MD_BEGIN, unmerged)
+        self.assertNotIn(AGENTS_MD_END, unmerged)
+        self.assertIn("專案自訂規則 1", unmerged)
+        self.assertIn("## 4. 專案特化工程規範", unmerged)
+
+        # 4. 頭部自訂內容 -> 完好保留
+        pre_custom = (
+            f"# My Company Guidelines\n\n"
+            f"{AGENTS_MD_BEGIN}\n# Core Rules\n{AGENTS_MD_END}\n"
+        )
+        unmerged_pre = self.publisher._soft_unmerge_agents_text(pre_custom)
+        self.assertEqual(unmerged_pre, "# My Company Guidelines")
+
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_16_prune_stale_agents_md(self):
+        """FT-05 & FT-06: 整合驗證切換 Target 移除 antigravity 時，AGENTS.md 之軟剝離保護與純淨清理。"""
+        from core import config
+
+        proj_root = uri.resolve("project://", interactive=False) if uri else os.getcwd()
+        agents_md_path = os.path.join(proj_root, "AGENTS.md")
+
+        try:
+            # 1. 啟用 antigravity 發布 AGENTS.md
+            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
+            config.reload()
+            res1 = self.publisher.release_all(force=True)
+            self.assertTrue(res1["success"])
+            self.assertTrue(os.path.isfile(agents_md_path))
+
+            # 2. 追加使用者自訂內容 (模擬 FT-05: 使用者編輯過 AGENTS.md)
+            with open(agents_md_path, "a", encoding="utf-8") as f:
+                f.write("\n## 5. 使用者自訂重要守則\n- 嚴禁更動生產資料庫連線\n")
+
+            # 3. 切換 Target 為 claude (antigravity 變為陳舊)
+            config.set("agents-workflow", "release_targets", ["claude"], local=False)
+            config.reload()
+            res2 = self.publisher.release_all(force=True)
+            self.assertTrue(res2["success"])
+
+            # FT-05 斷言：檔案不被刪除，YSCB 區塊被剝離，自訂內容完好保留
+            self.assertTrue(os.path.isfile(agents_md_path))
+            with open(agents_md_path, "r", encoding="utf-8") as f:
+                saved_text = f.read()
+            self.assertNotIn("<!-- YSCB_AGENTS_BEGIN -->", saved_text)
+            self.assertIn("使用者自訂重要守則", saved_text)
+            self.assertIn("嚴禁更動生產資料庫連線", saved_text)
+
+            # 4. 再次切回 antigravity (恢復官方完整樣板)
+            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
+            config.reload()
+            res3 = self.publisher.release_all(force=True)
+            self.assertTrue(res3["success"])
+
+            # 人為重設 AGENTS.md 為純粹預設樣板 (模擬 FT-06: 完全無自訂內容)
+            default_content = (
+                "<!-- YSCB_AGENTS_BEGIN -->\n"
+                "# Agent 專案行為準則\n"
+                "<!-- YSCB_AGENTS_END -->\n\n"
+                "## 4. 專案特化工程規範 (Project Specific Standards)\n"
+                "*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n"
+            )
+            with open(agents_md_path, "w", encoding="utf-8") as f:
+                f.write(default_content)
+
+            # 5. 切換 Target 為 claude
+            config.set("agents-workflow", "release_targets", ["claude"], local=False)
+            config.reload()
+            res4 = self.publisher.release_all(force=True)
+            self.assertTrue(res4["success"])
+
+            # FT-06 斷言：無自訂內容之陳舊 AGENTS.md 被乾淨清理刪除
+            self.assertFalse(os.path.isfile(agents_md_path))
+
+            self.mark_passed()
+        finally:
+            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
+            config.reload()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

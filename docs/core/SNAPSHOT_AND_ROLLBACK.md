@@ -1,7 +1,20 @@
+---
+target: "Core"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/engine.py"
+related_docs:
+  - "./README.md"
+  - "./ZIP_PACKAGE_SPEC.md"
+  - "./MIGRATION_LADDER.md"
+last_updated: "2026-10-15"
+---
+
 # 雙層組態快照與原子回滾手冊 (Dual-Layer Snapshot & Rollback)
 
 > 所屬模組：`module:core` (`source/core/core/engine.py`)  
-> 機制分類：維度 3（專題機制 / 狀態機與類事務管理）  
+> 機制分類：維度 ③（專題機制 / 狀態機與類事務管理）  
 
 ---
 
@@ -9,8 +22,8 @@
 
 YS-Codebase 的套件管理器採用「**不可變鏡像庫 (Immutable Mirror) + 雙層組態快照 (Dual-Layer Snapshot)**」的原子還原模型：
 
-1. **不可變版本庫 (`mirror://<mod>/<ver>/`)**：所有下載或建置之模組產物一旦進入鏡像庫即不可被竄改。
-2. **雙層組態快照 (`snapshot://<snap_id>/`)**：在進行任何可能變更系統狀態的操作（`install`, `update`, `remove`）前，原子備份宿主環境組態 (`yscb.config.json`) 與模組專屬設定目錄 (`config.root://`)。
+1. **不可變版本庫 (`module.mirror://<mod>/<ver>.zip`)**：所有下載或建置之模組產物一旦進入鏡像庫即不可被竄改。
+2. **全量狀態與雙層組態快照 (`snapshot://<snap_id>/`)**：在進行任何可能變更系統狀態的操作（`install`, `update`, `remove`）前，原子備份宿主環境組態 (`yscb.config.json`)、模組設定目錄 (`config://`)、持久化資料 (`storage://`) 與運行空間 (`module://`)。
 3. **完美回滾閉環**：若安裝過程失敗或使用者調用 `rollback`，系統同步還原宿主設定與模組設定，並透過 `act_reload()` 自不可變鏡像庫重新物化 `.modules/` 運行目錄。
 
 ```mermaid
@@ -19,19 +32,19 @@ sequenceDiagram
     actor CLI as 套件安裝 / 升級 / 回滾
     participant Eng as AtomicEngine
     participant Snap as snapshot://{snap_id}/
-    participant Mirror as mirror://{mod}/{ver}/
+    participant Mirror as module.mirror://{mod}/{ver}.zip
     participant Runtime as .modules/ & config/
 
     Note over CLI,Runtime: 階段 1: 建立雙層快照
     CLI->>Eng: act_snapshot(tag)
     Eng->>Snap: 1. 備份 yscb.config.json
-    Eng->>Snap: 2. 遞迴備份 config.root:// 至 snap_dir/config/
+    Eng->>Snap: 2. 遞迴備份 config:// 與 storage:// 至 snap_dir/
     Eng-->>CLI: 回傳 snapshot_id
 
     Note over CLI,Runtime: 階段 2: 執行變更 (若失敗或手動回滾)
     CLI->>Eng: act_restore_snapshot(snapshot_id)
     Eng->>Runtime: 1. 覆蓋還原 yscb.config.json
-    Eng->>Runtime: 2. 完整清空並覆蓋還原 config.root://
+    Eng->>Runtime: 2. 完整清空並覆蓋還原 config:// 與 storage://
     Eng->>Mirror: 3. act_reload() 讀取不可變鏡像
     Mirror->>Runtime: 重新物化 .modules/ 目錄
     Eng-->>CLI: 達成 100% 純淨無殘留回滾

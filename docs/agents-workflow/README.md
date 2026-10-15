@@ -1,8 +1,16 @@
 ---
-title: Agents Workflow 模組手冊
-category: overview
-module: agents-workflow
-updated_at: 2026-10-14
+target: "Agents-Workflow"
+doc_type: "readme"
+status: "active"
+source_paths:
+  - "yscb://source/agents-workflow/agents_workflow/commands.py"
+  - "yscb://source/agents-workflow/agents_workflow/compiler.py"
+  - "yscb://source/agents-workflow/agents_workflow/publisher.py"
+related_docs:
+  - "./FACTORY_PIPELINE.md"
+  - "./user_guide.md"
+  - "./DESIGN_NOTES.md"
+last_updated: "2026-10-15"
 ---
 
 # Agents Workflow 模組 (General Agents Workflow Framework)
@@ -13,7 +21,8 @@ updated_at: 2026-10-14
 
 ## 1. 核心定位與資產架構
 
-模組徹底剝離特定專案特化規則，採用 100% 純 Skill 分類架構（`standard`, `template`, `skill`），提供通用抽象資產：
+模組徹底剝離特定專案特化規則，採用 100% 純 Skill 分類架構（`standard`, `template`, `skill`），提供通用抽象資產與計畫生命周期治理：
+
 - **規範 (`assets/standards/`)**：
   - `AgentsStandards.md`：Agent 通用核心原則、防呆紀律與條件式技能分流導航矩陣（自動注入至 `AGENTS.md`）。
 - **技能 (`assets/skills/<name>/SKILL.md`)**：
@@ -21,6 +30,9 @@ updated_at: 2026-10-14
   - **領域與規範技能**：`development-sop`（SOP 0~7 與 6 大分支指南，含 `references/` 規範明細）、`documentation`（知識庫 3 層架構與 7 大維度指南）、`yscb-cli-guild`（CLI 指令防呆與權限矩陣）、`yscb-module-dev`（生態系模組開發與 Dogfooding 閉環）。
 - **模板 (`assets/templates/`)**：
   - 14 大標準模板庫（`P00_discuss`, `P01`~`P07`, `fast_track_plan`, `umbrella_overview`, `changelog`, `RXX_research_report`, `handoff`, `roadmap`）與共用標頭。
+- **6 大計畫分支拓撲與 `/NewPlan` 延遲建檔守門 (Delayed Materialization)**：
+  - **6 大計畫分支**：依據規模、風險與任務性質劃分為 **Full Track**（Level 1，標準 SOP 0~7）、**Fast Track**（Level 0，4 維度綜合規模判定：預估總變動行數 $\le 100$、零 Public API 變更、零核心狀態機修改、零資料庫/組態 Schema 變更）、**Umbrella**（Level 2，跨模組主計畫與 `sub_XX` 子計畫，支援模式 B-1 預先規劃型與模式 B-2 增量演進型）、**修訂計畫 (Revision Track)**（4 步短循環原地校訂，免開立目錄）、**調研計畫 (Research Track)**（3 步深度調研與 `R01` 報告產出，支援三大出口轉化）以及 **Roadmap**（`workflow.roadmap://` 長期技術策略資產儲備與智能推薦轉化）。
+  - **延遲建檔守門**：觸發 `/NewPlan` 進入 `P00` 需求討論階段時維持純對話，**嚴禁預先建立實體目錄**；待需求收斂並確立分流等級後，方一次性建立計畫目錄與對應初始模板，杜絕討論中止遺留空殼垃圾目錄。
 - **擴充手冊**：[`contributes/_manifest.md`](../../ys_codebase/source/agents-workflow/contributes/_manifest.md) 官方擴充宣告格式規格書。
 
 ---

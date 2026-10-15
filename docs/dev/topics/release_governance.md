@@ -1,3 +1,18 @@
+---
+target: "Dev"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/dev/dev/builder.py"
+  - "yscb://source/dev/dev/releaser.py"
+  - "yscb://source/core/core/semver.py"
+related_docs:
+  - "../README.md"
+  - "../architecture.md"
+  - "../user_guide.md"
+last_updated: "2026-10-15"
+---
+
 # 發布產物治理與版本時序滑動窗口深度解析 (Release Governance & Retention Policy)
 
 > 本專題文檔深度解析 YS-Codebase 的發布產物治理哲學、3-Revision 時序滑動窗口演算法、跨三元組收斂機制與索引 SSOT 同步架構。

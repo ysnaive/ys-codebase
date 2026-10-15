@@ -224,6 +224,37 @@ class TestCliGuildProvider(YSCBTestCase):
         self.assertEqual(p_output, "")
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_self_update_url(self):
+        """FT-01: 驗證自更新常數職責分離與 URL 解析優先權。"""
+        # 1. 常數驗證
+        self.assertEqual(
+            yscb.DEFAULT_PROVIDER_URL,
+            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release"
+        )
+        self.assertEqual(
+            yscb.DEFAULT_SELF_UPDATE_URL,
+            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
+        )
+
+        # 2. 預設返回 DEFAULT_SELF_UPDATE_URL
+        self.assertEqual(
+            yscb._resolve_self_update_target_url(),
+            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
+        )
+        self.assertEqual(
+            yscb._resolve_self_update_target_url(provider="https://custom.provider.com/release"),
+            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
+        )
+
+        # 3. 指定 custom_url 時正確覆寫
+        custom = "https://example.com/mirrors/yscb.py"
+        self.assertEqual(
+            yscb._resolve_self_update_target_url(custom_url=custom),
+            custom
+        )
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,16 @@
 ---
-title: 全專案核心工程規範與邊界架構
-category: standards
-updated_at: 2026-10-14
+target: "Project/Standards"
+doc_type: "overview"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/uri.py"
+  - "yscb://source/core/core/engine.py"
+  - "yscb://source/core/core/config.py"
+related_docs:
+  - "../core/README.md"
+  - "../core/uri_protocols.md"
+  - "../core/ZIP_PACKAGE_SPEC.md"
+last_updated: "2026-10-15"
 ---
 
 # 全專案核心工程規範與邊界架構 (Project Standards & Boundary Architecture)
@@ -27,9 +36,8 @@ updated_at: 2026-10-14
 | **`snapshot://`** | `core` | `yscb://.snapshots/` | **組態快照備份目錄（用於災難恢復與回滾）** | 🚫 忽略 |
 | **`yscb.venv://`** | `core` | `yscb://.venv/` | **YSCB 私有微虛擬環境空間根目錄** | 🚫 忽略 |
 | **`module.source://`** | `dev` | `yscb://source/` | **模組原始碼開發空間（SSOT 源碼）** | ✅ 受追蹤 |
-| **`module.build.root://`** | `dev` | `yscb://.build/` | **本地開發完整建置產物空間根目錄** | 🚫 忽略 |
 | **`module.build://`** | `dev` | `yscb://.build/` | **本地開發完整建置產物空間** | 🚫 忽略 |
-| **`module.release://`** | `dev` | `yscb://release/` | **本機發布產物準備空間** | 🚫 忽略 |
+| **`module.release://`** | `dev` | `yscb://release/` | **本機發布產物準備空間** | ✅ 受追蹤 |
 | **`knowledge.storage://`** | `knowledge-db` | `cache://knowledge-db/` | **知識庫 AST 與向量快取專用空間** | 🚫 忽略 |
 | **`workflow.plans://`** | `agents-workflow` | `project://plans/` | **工作流開發與推進計畫空間** | 專案自行管理 |
 | **`workflow.docs://`** | `agents-workflow` | `project://docs/` | **專案知識庫與架構文檔空間** | 專案自行管理 |
@@ -47,10 +55,13 @@ updated_at: 2026-10-14
 | **全域層級** | `yscb.config.json`：宣告 `yscb_root`、預設 `default_provider` 與 `installed_modules` 清冊。 | `yscb.config.local.json`：本機覆蓋設定。 |
 | **模組層級** | `yscb://config/{module}/config.project.json`：模組專案層級設定（如 `core` 的 `project_root`）。 | `yscb://config/{module}/config.local.json`：模組本機層級覆蓋。 |
 
-### 🛡️ 組態管理三項鐵律
-1. **SSOT 原則**：模組預設值宣告於 `contribute.json`，專案層級覆蓋於 `config.project.json`，個人特化於 `config.local.json`。
+### 🛡️ 組態管理與打包物化四項鐵律
+1. **SSOT 原則**：模組預設組態模板宣告於 `source/{module}/configurable/`（或 `contribute.json`），專案層級覆蓋於 `config.project.json`，個人特化於 `config.local.json`。
 2. **Git 政策防護**：`config.local.json` 嚴禁入庫；`config.project.json` 必須入庫共享。
 3. **無損寫入保證**：透過 `core.config` 修改組態時，自動執行原子備份快照至 `snapshot://`。
+4. **模組組態遞迴原地增量補齊與產物驗證（原 `DN-03`）**：
+   - 當模組版本更新並在組態模板中新增欄位時，安裝或 `reload` 流程（`AtomicEngine._deep_infill_dict`）會對 `config://{module}/` 執行遞迴比對，**僅自動補齊缺失鍵，使用者已修改之既有設定值 100% 原地保留不覆蓋**。
+   - 打包與安裝產物驗證：單檔 Zip 下載與物化時強制驗證 Archive CRC 完整性與 Zip Slip 路徑邊界；組態部署完成後無條件從 `module://{module}/` 物理剝除組態模板與 `.yscbignore`。
 
 ---
 

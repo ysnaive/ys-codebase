@@ -160,17 +160,20 @@ graph TD
 > 2. **向量檢索模式**：詢問是否要下載本地 ONNX 向量模型（`model download`，約 130MB，支援語意混合檢索），或關閉向量檢索改用輕量極速之純 BM25 詞彙模式？
 
 2. **設定專案源碼掃描空間 (`spaces.source`)**：
-   ```bash
-   # [Linux / macOS (bash/zsh)] 設定源碼包含目錄 (注意鍵名為 include)：
-   python yscb.py config set knowledge-db spaces.source.include '["project://src", "project://lib"]'
-
-   # [Windows (PowerShell / CMD)] 請使用雙引號搭配反斜線跳脫內層雙引號：
-   python yscb.py config set knowledge-db spaces.source.include "[\"project://src\", \"project://lib\"]"
-
-   # (選用) 設定排除規則與副檔名過濾
-   python yscb.py config set knowledge-db spaces.source.exclude '["**/__pycache__/**", "**/node_modules/**"]'
-   python yscb.py config set knowledge-db spaces.source.file_patterns '["*.py", "*.cpp", "*.h", "*.ts", "*.js"]'
+   在 `config/knowledge-db/contribute.json` 設定專案原始碼掃描範圍（若檔案不存在可直接建立，注意鍵名為 `include`）：
+   ```json
+   {
+     "spaces": {
+       "source": {
+         "description": "專案核心原始碼空間",
+         "include": ["project://src", "project://lib"],
+         "exclude": ["**/__pycache__/**", "**/node_modules/**"],
+         "file_patterns": ["*.py", "*.cpp", "*.h", "*.ts", "*.js"]
+       }
+     }
+   }
    ```
+   *(註：`spaces` 為擴充點宣告，統一由 `config/knowledge-db/contribute.json` 託管；運作組態如 `enable_vector_search` 則由 `config set` 管理)*
 
 3. **配置向量模型（二選一）**：
    ```bash

@@ -1,8 +1,15 @@
 ---
-title: 協議產物工廠流水線規範 (Factory Pipeline Specification)
-category: architecture
-module: agents-workflow
-updated_at: 2026-10-14
+target: "Agents-Workflow/Pipeline"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/agents-workflow/agents_workflow/compiler.py"
+  - "yscb://source/agents-workflow/agents_workflow/publisher.py"
+related_docs:
+  - "./README.md"
+  - "./user_guide.md"
+  - "./DESIGN_NOTES.md"
+last_updated: "2026-10-15"
 ---
 
 # 協議產物工廠流水線規範 (Factory Pipeline Specification)
@@ -43,7 +50,7 @@ flowchart TD
 ### 2.1 語法語意精確分流 (`#` vs `$`)
 1. **`__#{uri}__`（自身相對路徑佔位符）**：
    - 轉譯為相對於**目前生成目標檔案所在目錄** (`cur_dir`) 之相對路徑。
-   - 專為 Markdown 內部檔案超連結跳轉（如 `[Link](__#{uri}__)`）設計。
+   - 專為 Markdown 內部檔案超連結跳轉（如 `[Link](`__#{uri}__`)`）設計。
 2. **`__${uri}__` / `__$(起始錨點){uri}__`（錨點相對路徑佔位符）**：
    - **預設形式 (`__${uri}__`)**：相對於**專案根目錄** (`project://`)，專為終端命令列（如 `python __${project://yscb.py}__ run`）與專案根層級參照設計。
    - **擴充錨點語法 (`__$(起始錨點){uri}__`)**：動態指定相對路徑之起始基準點。起始錨點可為目錄路徑、檔案路徑（自動取其所在目錄）或語意協議（如 `__$(module.source://){uri}__`、`__$(project://docs){uri}__`），解算目標 `uri` 相對於該起始錨點之相對路徑；若給予空括號 `__$(){uri}__` 則退化為預設 `project://` 映射。
@@ -88,8 +95,12 @@ flowchart TD
    - **路徑格式**：使用本機實體絕對路徑。
 
 ### 3.2 4 步原子發布交易流水線
-0. **階段 0 (來源端雙軌指紋短路 - Stage 0)**：計算來源資產（`assets/`，含目錄型 Skill 遞迴遍歷 SHA-1 聚合）、`manifest.json`、專案組態與 Target 規則之綜合 SHA-256 指紋。若 `force=False` 且雙軌指紋相符且各軌檔案皆完好存在，**立即提前返回 (0 I/O，耗時 ~1ms)**。
-1. **步驟 1 (過往發布狀態與舊版目錄清理 - Pruning)**：分別讀取 Project 與 Local 歷史紀錄，比對全量物化檔案集合，精確刪除已停用 Target 或已刪除資產之實體檔案，並自動清理除役之 `.agents/workflows/` 與 `.claude/commands/` 殘留目錄。
+0. **階段 0 (來源端 Stat-First 雙階快照比對與指紋短路 - Stage 0)**：
+   - **Stat-First 雙階快照 (`source_sha1_cache.json`)**：基於檔案元數據 `(st_mtime_ns, st_size)` 建立跨進程持久化快取（`cache://agents-workflow/source_sha1_cache.json`），僅當檔案元數據變動時才重新讀取內容計算 SHA-1（目錄型 Skill 資產則遞迴排序遍歷內部檔案計算聚合 SHA-1），並於單次執行週期內透過 `_get_sources_digest()` 快取綜合摘要。
+   - **零 I/O 極速短路**：綜合來源資產、`manifest.json`、專案組態與 Target 規則產出 SHA-256 指紋。若 `force=False` 且雙軌指紋相符且各軌落地檔案皆完好存在，**立即提前返回 (0 檔案內容讀取，耗時 < 0.2ms)**。
+1. **步驟 1 (孤兒拔除、舊版目錄清理與規範軟剝離 - Pruning & Soft-Unmerge)**：
+   - **孤兒資產拔除与舊目錄清理**：分別讀取 Project 與 Local 歷史 Manifest 紀錄，對比新解算之目標檔案集合，精確拔除已停用 Target 或已移除資產之孤兒實體檔案，並自動清理除役之 `.agents/workflows/` 與 `.claude/commands/` 殘留目錄。
+   - **根目錄規範入口檔軟剝離 (`_soft_unmerge_agents_text`)**：當停用或切換 Target 導致 `AGENTS.md` / `CLAUDE.md` 被列入待移除集合時，**嚴禁無差別執行 `os.remove()`**。引擎會先執行非破壞性軟剝離，僅移除 `<!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->` 系統託管區塊：若剝離後仍存有開發者自訂規範內容，則將乾淨的自訂內容寫回原檔並解除託管；唯有剩餘內容為空或僅含未修改之預設佔位樣板時，方安全執行物理刪除。
 2. **步驟 2 (提前解算新清單與分流集合)**：對所有已啟用的 Release Targets 提前完整解算目標檔案映射，並標註 Project 軌與 Local 軌歸屬清冊。
 3. **步驟 3 (原子寫入雙軌 Manifest)**：分別將 Project 軌 (`project://` 格式) 寫入 `storage://`，將 Local 軌 (絕對路徑格式) 寫入 `cache://`。
-4. **步驟 4 (物理落地與增量軟合併)**：比對磁碟現有內容執行增量寫入；所有檔案寫入顯式傳入 `newline="\n"`，與根目錄 `.gitattributes` 配合確保全專案純 LF 換行；若 `enable_agents_md: true`，對根目錄 `AGENTS.md` 執行無損軟合併（管理區塊由中央標準庫單向注入以杜絕過期技能殘留，外部專案特化章節 100% 保留；專案特化技能擴充請透過 `config/agents-workflow/contribute.json` 宣告注入）。
+4. **步驟 4 (物理落地與增量軟合併)**：比對磁碟現有內容執行增量寫入；所有檔案寫入顯式傳入 `newline="\n"`，與根目錄 `.gitattributes` 配合確保全專案純 LF 換行；若 `enable_agents_md: true`，對目標規範入口檔（`AGENTS.md` / `CLAUDE.md`）執行 `_soft_merge_agents_text` 無損軟合併（管理區塊由中央標準庫單向覆寫注入以杜絕過期技能殘留，外部專案特化章節 100% 保留；專案特化技能擴充請透過 `config/agents-workflow/contribute.json` 宣告注入）。

@@ -1,6 +1,21 @@
+---
+target: "Core"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/events.py"
+  - "yscb://source/core/core/context.py"
+  - "yscb://source/core/core/engine.py"
+related_docs:
+  - "./README.md"
+  - "./cli_commands_architecture.md"
+  - "./DESIGN_NOTES.md"
+last_updated: "2026-10-15"
+---
+
 # 命名空間 Hook 與生命週期事件手冊 (Namespaced Hooks & Lifecycle Events)
 
-> 本手冊為維度 3 中觀專題手冊，定義 YS-Codebase 精準命名空間 Hook 對接規範、`ExecutionContext` 介面、`core` 運行期事件廣播與 `dev` 測試前置 Hook (`scripts/hook.dev.py`) 調度機制。
+> 本手冊為維度 ③ 中觀專題手冊，定義 YS-Codebase 精準命名空間 Hook 對接規範、`ExecutionContext` 介面、`core` 運行期事件廣播與 `dev` 測試前置 Hook (`scripts/hook.dev.py`) 調度機制。
 
 ---
 
