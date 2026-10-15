@@ -1,547 +1,129 @@
+---
+target: "Knowledge-DB"
+doc_type: "design_notes"
+status: "active"
+source_paths:
+  - "yscb://source/knowledge-db/knowledge_db/space.py"
+  - "yscb://source/knowledge-db/knowledge_db/pipeline.py"
+  - "yscb://source/knowledge-db/knowledge_db/embedding.py"
+  - "yscb://source/knowledge-db/knowledge_db/bundler.py"
+  - "yscb://source/knowledge-db/knowledge_db/retrieval.py"
+  - "yscb://source/knowledge-db/knowledge_db/service.py"
+  - "yscb://source/knowledge-db/scripts/cli.py"
+related_docs:
+  - "./README.md"
+  - "./architecture.md"
+  - "./retrieval.md"
+  - "./incremental_hot_reload.md"
+  - "./call_graph_and_reference_index.md"
+last_updated: "2026-10-15"
+---
+
 # knowledge-db 設計決策與工程妥協手冊 (Design Notes)
 
 > 模組名稱：`knowledge-db`  
-> 建立日期：2026-08-28  
-> 維護規範：凡涉及非直觀架構妥協、二進位協議選型、效能取捨或安全性限制，必須在此登錄 `DN-XX` 編號。  
+> 職責定位：記錄 `knowledge-db` 模組中屬於「維度 ⑤ 工程妥協與防坑」之非直覺設計、硬體/作業系統排程保護、快取競態規避與安全邊界。  
+> 維護規範：所有維護者與 Agent 在修改相關底層邏輯前，**必須強制閱讀本文件**，避免因看似「簡化」的重構而破壞既有防坑約束。
 
 ---
 
-## 登錄索引表
+## 登錄決策清單 (Decision Registry)
 
-| 決策編號 | 決策主題 | 影響子系統 | 關鍵約束 / 取捨 |
-| :---: | :--- | :--- | :--- |
-| **DN-01** | **符號池分離去重與 Protocol 5 Gzip 快取** | `retrieval.py` | 倒排索引取消 Posting 內嵌 Symbol，改為頂層 `symbols` 符號池；本地快取使用 `pickle` Protocol 5 + `gzip` L6，達成 99.5% 體積縮減與 < 20ms 讀取。 |
-| **DN-02** | **本地端快取物理隔離 (`cache://knowledge-db/`)** | `space.py`, `engine.py` | 所有指紋、倒排索引與 Bundle 產物 100% 留存於 `.cache/knowledge-db/`，利用 `.gitignore` 徹底防止 AST 符號與索引污染 Git。 |
-| **DN-03** | **雙階增量指紋比對 (Two-Stage Fingerprint)** | `scanner.py` | 先比對 `mtime + size`，未命中或變更時才讀取計算 `SHA1`，避免全庫頻繁磁碟 I/O。 |
-| **DN-04** | **JIT 變更嗅探與原生二進位快照 (`unified.meta.bin`)** | `scanner.py`, `engine.py` | 採用 Magic `YFP1` + `struct` 原生二進位封裝檔案清冊，反序列化耗時 < 0.1ms；檢索前執行 `os.scandir` stat 嗅探（2~3ms），Dirty 時無感背景熱自愈。 |
-| **DN-05** | **倒排節點 Slots 瘦身與頂層文檔長度共享池** | `retrieval.py` | `Posting` 配置 `__slots__` 消除 `__dict__` 記憶體負擔，`field_lengths` 字典抽離至頂層 `doc_lengths` 共享池，達成 40%+ 節點記憶體節省並支援舊快取自省升級。 |
-| **DN-06** | **Unicode 整數區間分詞與動態門檻多進程打包** | `tokenizer.py`, `bundler.py` | 以 `_is_cjk_ord` 碼點整數比對徹底取代逐字元正則；`SemanticBundler` 於檔案數 $\ge 10$ 且多核時啟用 `ProcessPoolExecutor` 並行解析。 |
-| **DN-07** | **整數池化雙向調用圖譜與四階消歧鏈接** | `linker.py`, `graph.py`, `engine.py` | 透過 `Integer String Pool` 與雙向稀疏鄰接表將調用邊快取控制在 $<150\text{KB}$；四階消歧流水線達成 95% 靜態鏈接精度，支援 JIT 差量修補與 BFS 循環防護。 |
-| **DN-08** | **Tree-sitter 宣告式通用 AST 解析與零特權自貢獻外掛生態** | `parsers/`, `schema.py` | 徹底廢除舊有手刻正則解析狀態機，改採 `tree-sitter` S-Expression 聲明式語法查詢；`LanguageRegistry` 透過 `contributes.knowledge-db` 動態驅動，內建 10 種語言一律採自身自貢獻，核心零特權硬編碼。 |
-| **DN-09** | **FastEmbed 向量嵌入與 RRF 雙軌複合檢索** | `embedding.py`, `hybrid.py`, `engine.py` | 引入 `fastembed` (ONNX Runtime, 384-dim `BAAI/bge-small-zh-v1.5`) 進行純 CPU 離線向量提取；以倒數排名融合 (RRF $k=60$) 結合 BM25 與語意向量；設定純語意門檻 ($\ge 0.70$) 與複合查詢覆蓋率門檻 ($\ge 50\%$) 抑制雜訊；支援 100% 剛性平滑降級與 `--lexical-only`。 |
-| **DN-10** | **NetworkX 有向圖拓撲、FQN 消歧幽靈關聯根除與全方位符號選擇器** | `graph.py`, `linker.py`, `selector.py`, `protocol.py` | 引入 `networkx.DiGraph` 替換手刻鄰接表，支援精確前驅追蹤與多階影響面剪枝；四階消歧緊扣 Universal AST FQN 與 Import 作用域，杜絕跨檔案同名幽靈關聯；實作 `SymbolSelector` 微型語法 (`[kind] [scope.]name[()]`) 達成 CLI 與 API 高維度精確定位。 |
-| **DN-11** | **測試套件聚合拓撲、三態分類純化與 4-Tier 需求分流** | `tests/` | 收斂 20 個測試檔為 12 個高內聚模組；全面補齊 `self.mark_passed()` 將 115+ UNKNOWN 徹底歸零；標註 LOGIC/WORKFLOW/PERF 需求分流。 |
-| **DN-12** | **管線門面解耦、8,000 字元預算動態衰減與全域切片去重純化** | `formatter.py`, `pipeline.py`, `engine.py` | `engine.py` 瘦身 80.8% 轉為輕量 Facade (338 行)；輸出上限由 12,500 收斂為 8,000 字元並實作階梯平滑衰減；以 `UniversalRedundancyFilter` 徹底剔除 Docstring、重疊 Heading、License 與空白行，極大化資訊密度。 |
-| **DN-14** | **JIT 10 符號動態探針、向量熔斷降級、CPU 自適應防飢餓與 CLI UX** | `config.py`, `pipeline.py`, `cli.py` | 實作 10 符號動態探針與 5 秒超時熔斷退回純 BM25；支援 local 向量開關、自訂模型與 CPU 執行緒自適應；屏蔽 HF 雜訊並保障 `--json` 純淨。 |
-| **DN-15** | **專屬 HotReloadServer、Watchdog 500ms 防抖、Pre-dispatch 喚醒與日誌治理** | `daemon.py`, `hook.core.py`, `config.py` | 專屬後台服務整併 AST/BM25/Graph/Vector 熱修補；支援 hook 自動喚醒、閒置超時自動關閉；PID 隔離至 `cache://`、3 代滾動日誌與版本變更強制重啟。 |
-| **DN-21** | **常駐 ServiceWorker 納管、微內核原語對齊與快取 mtime 熱自癒** | `service.py`, `engine.py`, `pipeline.py` | 移除自製守護進程與 CLI `daemon` 命令，收斂為 `KnowledgeDBServiceWorker` 委由 `server` 模組 Master 託管；記憶體快取透過 microsecond `mtime` 比對熱刷新；全面對齊 `core.vfs.write_bytes(atomic=True)` 與 `core.platform.lock.InterProcessLock`。 |
-| **DN-22** | **死碼清理與冷熱啟動零感知架構 (Optional 插槽化)** | `service.py`, `pipeline.py`, `manifest.json` | 徹底刪除 `daemon.py` 與 `hook.core.py`，業務邏輯對冷/熱啟動零感知；`manifest.json` 引入 `optional` 欄位並將 `server` 轉為非強制選用擴充模組。 |
-| **DN-23** | **前台搜尋管線非阻塞重載與背景 Watcher 防抖修補競態消除** | `pipeline.py`, `service.py` | 探測 `.watcher_active` 存在時前台 0ms 略過同步掃描與熱修補，100% 交由背景 Watcher 防抖執行，徹底消除前台搜尋被競爭阻塞。 |
-| **DN-24** | **SpaceManager 空間路徑與 Contributes 記憶化快取加速 (_include_cache)** | `space.py` | 引入 `_include_cache` 記憶化快取，空間路徑解析提速 50 倍，`status` 耗時由 7.1s 暴降至 0.14s。 |
-| **DN-25** | **CLI 指令邊界整合、8 大正交指令集與向量模型離線探針先行** | `cli.py`, `embedding.py`, `pipeline.py` | 移除 `scan` 與 `bundle`，確立 8 大正交標準指令；本地向量模型探針先行，未下載時零連線安全降級純 BM25。 |
-| **DN-26** | **混合檢索預先過濾下推、JIT 輕量熱自愈解耦與對稱路徑差量剔除** | `hybrid.py`, `pipeline.py`, `retrieval.py`, `embedding.py` | BM25 候選池預先過濾空間/類型/語言；圖譜查詢跳過向量推論；對稱路徑匹配處置刪除/清空檔案；清理向量快取與記憶體全域快取；禁隨機 mock 向量。 |
+| 決策編號 | 標題 / 主題 (含歷史編號對照) | 影響檔案 | 風險等級 |
+| :---: | :--- | :--- | :---: |
+| **DN-01** | `cache://knowledge-db/` 零 Fallback 隔離與 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)* | `space.py`, `retrieval.py`, `graph.py`, `embedding.py` | 🚨 CRITICAL |
+| **DN-02** | ONNX 執行緒硬上限、時間片主動讓渡 (`sleep(0.005)`)、向量低壓縮寫盤 (`compresslevel=1`) 與多進程 AST 單次走訪 *(原 DN-13 + DN-06.3)* | `embedding.py`, `bundler.py`, `parsers/` | 🚨 CRITICAL |
+| **DN-03** | JIT 10 符號動態探針熔斷、離線 `.onnx` 權重探針先行 (`[GUARD]`) 與 `--json` 純淨通道保護 *(原 DN-14 + DN-25.2)* | `pipeline.py`, `embedding.py`, `config.py`, `scripts/cli.py` | 🚨 CRITICAL |
+| **DN-04** | 背景 Watcher `.watcher_active` 零阻塞旁路與 `_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新 *(原 DN-21 + DN-23)* | `pipeline.py`, `service.py` | ⚠️ WARNING |
+| **DN-05** | `SpaceManager._include_cache` 空間路徑解析記憶化防退化 *(原 DN-24)* | `space.py`, `engine.py` | ⚠️ WARNING |
+| **DN-06** | 圖譜查詢輕量 JIT 解耦 (`require_vectors=False`)、差量修補對稱路徑剔除與零偽造向量鐵律 *(原 DN-26)* | `pipeline.py`, `retrieval.py`, `embedding.py` | 🚨 CRITICAL |
 
 ---
 
-## 詳細設計決策說明
+## 詳細設計決策與防坑邊界
 
-### DN-01: 符號池分離去重與 Protocol 5 Gzip 快取 (Symbol Pool Normalization)
+### [DN-01] `cache://knowledge-db/` 零 Fallback 隔離與 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)*
 
 - **背景與根因**：
-  在早期設計中，`Posting` 倒排節點直接持有 `symbol: UnifiedSymbol` 物件。在多欄位分詞後，單一符號會出現在數十至數百個 Term 的 Posting 清單中，導致 JSON 序列化時產生巨大重複拷貝（94 KB 源碼文檔產生 55.35 MB 索引檔案，膨脹超過 500 倍）。
-- **架構解法**：
-  1. **符號池解耦**：`InvertedIndex` 頂層維護 `symbols: Dict[str, UnifiedSymbol]`，每個符號僅存 1 份；`Posting` 僅記錄 `doc_id`。
-  2. **二進位 Gzip 序列化**：使用純 Python 3.9+ 原生標準庫 `pickle.HIGHEST_PROTOCOL` (Protocol 5) 配合 `gzip.compress` (Level 6)，儲存為 `.index.bin.gz`。
-- **效益與驗證**：
-  - 磁碟檔案體積由 55.35 MB 暴降至 253.89 KB（縮減 99.53%）。
-  - 反序列化載入耗時由 ~850 ms 降低至 < 20 ms。
-  - 檢索階段透過 `index.symbols[doc_id]` 以 $O(1)$ 複雜度還原完整符號。
+  1. 早期 `get_cache_dir` 曾保留舊版候選路徑搜尋或 `Path.cwd() / ".cache"` 隱式降級兜底；在跨目錄調用、沙盒測試或自引用環境下，極易於宿主根目錄或非預期工作目錄產生殘留 `.cache/` 污染。
+  2. 倒排索引 (`unified.index.bin.gz`)、調用圖譜 (`unified.graph.bin.gz`) 與向量索引 (`unified.vectors.bin.gz`) 為追求 $< 20\text{ ms}$ 的反序列化速度，採用了 Python `pickle` Protocol 5，而 `pickle.loads` 對不可信來源具有任意代碼執行風險。
+- **工程妥協與解法**：
+  1. **快取路徑零 Fallback 收斂**：`SpaceManager._get_storage_root()` 完全移除所有相對路徑猜測與 `root / ".cache"` 兜底，100% 剛性透過 `core.uri.resolve("cache://knowledge-db")` 解析物理路徑。
+  2. **二進位與跨機傳輸職責分離**：`pickle` 二進位快取嚴格限定於本機受保護之 `cache://knowledge-db/indices/` 目錄讀寫（並透過 `core.vfs.write_bytes(atomic=True)` 原子替換）；凡涉及跨環境分享或外部導出（`index --export`），一律使用純 JSON Schema 之 `SemanticBundle` (`.bundle.json`)。
+
+> [!CAUTION]
+> **嚴禁在 `SpaceManager` 或任何索引讀寫邏輯中加入 `os.getcwd()` / `Path.cwd()` 降級兜底路徑，且嚴禁對外部匯入檔案 (`import_bundle`) 調用 `pickle.loads`！** 違反此邊界將造成宿主目錄污染與反序列化安全漏洞。
 
 ---
 
-### DN-02: 本地端快取物理隔離 (`cache://knowledge-db/`)
-
-- **背景**：AST 與倒排索引屬於本機計算生成之衍生快取，不應提交至版本控制。
-- **解法**：全面統一至 `cache://knowledge-db/`（對應專案根目錄 `.cache/knowledge-db/`）。
-- **安全邊界**：`pickle` 二進位快取僅限定存取本地 `.cache/` 空間，嚴禁用於不可信網路傳輸；外部導出維持純 JSON 之 `SemanticBundle`。
-
----
-
-### DN-04: JIT 變更嗅探與原生二進位快照 (Just-In-Time Smart Healing)
+### [DN-02] ONNX 執行緒硬上限、時間片主動讓渡 (`sleep(0.005)`)、向量低壓縮寫盤 (`compresslevel=1`) 與多進程 AST 單次走訪 *(原 DN-13 + DN-06.3)*
 
 - **背景與根因**：
-  跨開發者協作或 Git pull 後，若開發者忘記手動執行 `python yscb.py knowledge-db index`，檢索結果將嚴重失真或遺漏新符號。但若將索引存入 `storage://`（納入 Git 追蹤），每次修改均會造成二進位 Git Conflict 且快速膨脹 Repository 體積。
-- **架構解法**：
-  1. **維持 `cache://` 儲存**：索引與快照清冊 100% 維持在本地 `.cache/knowledge-db/`，受 `.gitignore` 隔離。
-  2. **原生二進位快照 (`unified.meta.bin`)**：透過 Magic `YFP1` 與 Python 原生 `struct` 封裝 `{canonical_path: (mtime, size)}`，讀取耗時 $< 0.1\text{ ms}$。
-  3. **JIT 查詢時智能感知**：在 `engine.search()` 入口呼叫 `os.scandir` 比對檔案系統 stat（耗時 $2\sim 3\text{ ms}$）。若發現 1+ 個檔案異動，自動於背景執行熱重建並向 `sys.stderr` 輸出簡明提示。
-- **效益與驗證**：
-  - 徹底根絕異地代碼過期問題，無論開發者如何切換分支或修改代碼，搜尋永遠 100% 最新。
-  - 不污染 `--json` 結構化輸出，兼顧極致效能與開發體驗。
+  在 200+ 檔案、數千個符號的全庫索引重建實機壓測中，曾觸發嚴重的系統級卡死與效能退化：
+  1. `FastEmbed` 底層 ONNX Runtime 預設搶佔本機 100% 邏輯核心，連續推論數千個符號時造成 OS 排程器飢餓、Windows DPC 軟中斷逾時甚至硬體保護重開機。
+  2. 浮點數陣列 (`float32` 向量矩陣) 具高熵值特性，若對 `VectorIndex.save_binary` 使用預設 `compresslevel=6` Gzip 壓縮，會耗費極高 CPU 時間卻僅獲得極低壓縮率收益。
+  3. 多進程 `ProcessPoolExecutor` 若在每次任務內部重新實例化 `ParserRegistry`，會導致重複編譯 Tree-sitter `.scm` 語法查詢數百次；同時若 `extract_call_sites` 內部再次調用 `self.parse()`，會導致全庫 AST 被重複解析 3 遍。
+- **工程妥協與解法**：
+  1. **ONNX 執行緒硬上限**：在 `EmbeddingService._init_model` 初始化時，將預設 `"auto"` 執行緒數限制為 `min(2, max(1, cpu_count // 2))`，同步寫入 `OMP_NUM_THREADS`、`ONNXRUNTIME_INTRA_OP_NUM_THREADS` 並傳遞 `threads=max_threads` 予 ONNX Session。
+  2. **批次切片與主動時間片讓渡**：`embed_texts` 以 `batch_size=64` 分批推論，每完成一批次強制調用 `time.sleep(0.005)`（5 毫秒），主動將 CPU 時間片讓渡予 OS 排程器與前台 UI。
+  3. **向量快取 `compresslevel=1` 低壓縮高速寫盤**：`VectorIndex.save_binary` 與增量熱修補統一採用 `gzip.compress(..., compresslevel=1)`，消除浮點陣列高壓縮比之無效 CPU 燃燒，寫盤延遲降低 80%+。
+  4. **Worker 進程級單例與 AST 單次走訪復用**：`SemanticBundler` 於檔案數 $\ge 10$ 且多核時啟用 `ProcessPoolExecutor`，透過頂層 `_get_worker_registry()` 維持進程內單例 `ParserRegistry`（每個 Worker 僅編譯 `.scm` 一次）；`extract_call_sites` 接收已提取之 `symbols` 實例，徹底根除二次 AST 解析。
+
+> [!CAUTION]
+> **嚴禁移除 `EmbeddingService.embed_texts` 批次迴圈內的 `time.sleep(0.005)`、嚴禁解除 ONNX 執行緒上限，且嚴禁將 `VectorIndex` 的 Gzip 壓縮等級調高至 6！** 這些看似微小的常數是防止大型專案索引建置時主機 CPU 100% 鎖死與硬體保護重啟的關鍵防線。
 
 ---
 
-### DN-05: 倒排節點 Slots 瘦身與頂層文檔長度共享池 (Slots Memory Slimming & Shared doc_lengths)
+### [DN-03] JIT 10 符號動態探針熔斷、離線 `.onnx` 權重探針先行 (`[GUARD]`) 與 `--json` 純淨通道保護 *(原 DN-14 + DN-25.2)*
 
 - **背景與根因**：
-  在百萬級倒排索引節點中，每個 `Posting` 物件預設帶有 `__dict__` 雜湊表開銷，且重複保存了與文檔相關的各欄位長度字典 `field_lengths`，造成大量記憶體浪費。
-- **架構解法**：
-  1. **Slots 約束**：`Posting` 明確宣告 `__slots__ = ('doc_id', 'field_freqs', 'space', 'spaces')`，根除實例字典開銷。
-  2. **頂層共享長度池**：將文檔長度提升至 `InvertedIndex.doc_lengths: Dict[str, Dict[str, int]]` 統一管理，單一文檔僅存一份。
-  3. **舊快取自省升級**：反序列化時若遇舊版快取結構，自動萃取並遷移至頂層 `doc_lengths`。
-- **效益與驗證**：
-  - 節點記憶體開銷降低 40%+。
-  - 增量打補丁與檢索評分無縫向下相容。
+  1. 當開發者切換大型 Git 分支導致數百個符號同時變更時，若前台 `search` 的 JIT 熱修補直接對全數變更符號執行 CPU 向量推論，會導致 CLI 檢索卡頓數秒至數十秒。
+  2. 在未下載向量模型或無外網環境下，`FastEmbed` 預設會向 Hugging Face Hub 發起未認證網路請求並拋出連線逾時或 Symlink 權限警告 (`WinError 1314`)，不僅阻塞檢索，其輸出的雜訊更會直接污染 `--json` 的 `stdout` 結構化串流，導致呼叫端 AI Agent 解析 JSON 失敗。
+- **工程妥協與解法**：
+  1. **JIT 10 符號動態探針與超時熔斷 (Dynamic Probe & Fuse)**：在 `hot_patch_unified_index` 中，當新增/修改符號數 $\le 10$ 時直接完成向量化；當 $> 10$ 個時，先以**首批 10 個符號實測推論耗時**並線性推估全量耗時。若預估總時長超過 `jit_vector_timeout_seconds`（預設 `5.0s`），立即觸發熔斷跳過剩餘向量推論，無縫退回純 BM25 模式。
+  2. **本地 `.onnx` 權重探針先行 (Probe First)**：`EmbeddingService` 初始化前先以純本機檔案系統探測 `.onnx` 權重是否存在；若未下載則**絕不發起任何網路連線**，立即降級為純 BM25 檢索。
+  3. **Agent 剛性防呆信號與 `stdout` 純淨隔離**：設定 `HF_HUB_DISABLE_SYMLINKS_WARNING=1` 屏蔽第三方庫警告；所有 JIT 重建進度、熔斷提示與模型缺失之 `[GUARD]` 阻斷指引（提示開發者執行 `model download` 或關閉 `enable_vector_search`）**100% 強制導向 `sys.stderr`**，確保 `--json` 模式下 `stdout` 永遠保持 100% 純淨 JSON。
+
+> [!WARNING]
+> **任何新增於檢索、掃描或熱修補管線中的狀態提示、進度條或降級警告，一律強制寫入 `sys.stderr`，絕對禁止在業務管線中使用預設 `print()` 輸出至 `sys.stdout`！** 否則將直接破壞 AI Agent 工具鏈的 `--json` 解析契約。
 
 ---
 
-### DN-06: Unicode 整數區間分詞與動態門檻多進程打包 (Unicode Range Tokenization & Parallel Bundling)
+### [DN-04] 背景 Watcher `.watcher_active` 零阻塞旁路與 `_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新 *(原 DN-21 + DN-23)*
 
 - **背景與根因**：
-  原分詞主迴圈中針對每個字元反覆調用 `re.match(r'[\u4e00-\u9fff]')`，在大文本分詞時 CPU 開銷主要被正則引擎調度所佔據；全庫大型 AST 解析在多核心環境下串行執行未能充分發揮多核算力。
-- **架構解法**：
-  1. **Unicode 整數區間比對 (`_is_cjk_ord`)**：透過 `0x4E00 <= ord(c) <= 0x9FFF`、假名 `0x3040..0x30FF`、諺文 `0xAC00..0xD7AF` 整數比對，消除正則呼叫。
-  2. **具名標識符 LRU 快取**：為 `split_identifier` 提供 `@lru_cache(maxsize=8192)` 與預編譯正則。
-  3. **動態門檻多進程打包**：檔案數 $\ge 10$ 且 CPU $> 1$ 時啟用 `ProcessPoolExecutor`，配合頂層模組級可 Pickle 工作者函式 `_parse_file_task_worker` 進行批次解析，單元測試沙盒與異常狀況自動安全降級。
-- **效益與驗證**：
-  - 全庫完全索引重建時間從 1.8s+ 驟降至 0.887s (提速 > 50%)。
+  當 `server` 常駐模組託管 `KnowledgeDBServiceWorker` 在背景執行 Watchdog 500ms 防抖監聽時，若前台 `IndexingPipeline.search()` 每次仍照常執行同步 `os.scandir` 與 `hot_patch_unified_index`，前台進程會與背景 Watcher 發生磁碟寫入與重算競態 (Race Condition)，導致前台搜尋被無謂阻塞 $1.7\text{s}$ 以上。同時，常駐 Worker 進程內若不感知磁碟快取檔案更新，會持續回傳舊的記憶體索引。
+- **工程妥協與解法**：
+  1. **`.watcher_active` 與 `.watcher_dirty` 雙信標協調**：`KnowledgeDBServiceWorker` 啟動時於 `indices/` 建立 `.watcher_active`（收到檔案變更防抖期間建立 `.watcher_dirty`，修補完成後移除）。當前台檢索管線探測到 `.watcher_active` 存在且無 `.watcher_dirty` 時，**前台 0ms 直接旁路略過同步掃描與熱修補**，100% 交由背景 Watcher 負責。
+  2. **`_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新**：進程級全域快取 `_GLOBAL_INDEX_CACHE` 同時保存 `unified_index`、`graph_index`、`vector_index` 及其對應磁碟檔案之浮點數 `st_mtime`。每次查詢前以微秒級精度比對磁碟 `*.bin.gz` 的 `mtime`，一旦背景完成原子替換 (`core.vfs.write_bytes(atomic=True)`)，記憶體立即原地熱重載最新索引。
+
+> [!CAUTION]
+> **修改 `KnowledgeDBServiceWorker.start/stop` 或 `_execute_debounced_patch` 時，必須確保 `finally` 區塊嚴格清理 `.watcher_active` 與 `.watcher_dirty` 信標檔！** 若異常殘留 `.watcher_active` 而背景 Watcher 實際已退出，將導致前台 JIT 變更感知被永久旁路而無法自癒。
 
 ---
 
-### DN-07: 整數池化雙向調用圖譜與四階消歧鏈接 (Integer Pooled Call Graph & 4-Tier Disambiguation)
+### [DN-05] `SpaceManager._include_cache` 空間路徑解析記憶化防退化 *(原 DN-24)*
 
 - **背景與根因**：
-  傳統 AST 符號檢索僅支援定義層級查詢，Agent 無法得知符號的直接調用者與間接依賴，容易退化為文字盲搜；若直接在節點保存字串物件邊，全專案數千條邊會造成記憶體與二進位快取體積嚴重膨脹。
-- **架構解法**：
-  1. **整數標識符池化 (Integer Pool)**：將全域 `symbol_id` 映射為緊湊整數 `int`，以 `Dict[int, Set[int]]` 儲存雙向鄰接表（`forward_graph` / `reverse_graph`）。
-  2. **四階消歧流水線**：結合單檔 AST `ScopeStack`、檔頭 Import 映射表、同語意空間與全域倒排上下文評分，實現高精確度靜態鏈接。
-  3. **循環調用防護**：`impact` 擴散分析強制引入 `visited_set`，杜絕遞迴死循環。
-  4. **JIT 增量熱重載同步**：`patch_incremental` 支援拔除 dirty 檔案出入度邊並注入新邊，持久化至 `unified.graph.bin.gz`。
-- **效益與驗證**：
-  - 5,000+ 條調用邊 Gzip 快取體積 $< 150\text{ KB}$。
-  - 單次 `callers`/`callees` 查詢 $< 5\text{ ms}$，影響面分析遍歷 $< 10\text{ ms}$。
+  在 `KnowledgeEngine.status()` 或多空間歸屬判定 (`_file_belongs_to_space`) 中，系統需針對 `unified.meta.bin` 內的數百個檔案逐一比對所有空間。若每次呼叫 `SpaceManager.resolve_space_include(space_name)` 皆重新調用 `core.contributes.get("knowledge-db")` 與 `Path.resolve()`，在 300 檔 $\times$ 3 空間規模下會觸發超過 2,600 次高成本磁碟系統呼叫，導致 `status` 耗時暴增至 $7.1\text{s}$。
+- **工程妥協與解法**：
+  - 在 `SpaceManager` 實例內部引入 `self._include_cache: Dict[Tuple[str, tuple], List[Path]] = {}`，以 `(space_name, tuple(space.include))` 為快取鍵。首次解析出實體絕對路徑清單後即駐留記憶體，使 `status` 總耗時由 $7.1\text{s}$ 驟降至 $0.14\text{s}$（提速 50 倍以上）。
+
+> [!WARNING]
+> **切勿在迴圈內部重複實例化 `SpaceManager()` 或繞過 `self._include_cache` 直接解析語意 URI！** 若動態更新了空間配置（如呼叫 `register_space`），必須同步清空 `_include_cache` 以維持快取一致性。
 
 ---
 
-### DN-08: Tree-sitter 宣告式通用 AST 解析與零特權自貢獻外掛生態 (Tree-sitter Universal AST & Zero-Privilege Contributed Plugins)
+### [DN-06] 圖譜查詢輕量 JIT 解耦 (`require_vectors=False`)、差量修補對稱路徑剔除與零偽造向量鐵律 *(原 DN-26)*
 
 - **背景與根因**：
-  早期解析器採用原生 `ast`（僅限 Python）與大量手刻正則狀態機（`cpp_parser.py`, `csharp_parser.py`, `js_ts_parser.py` 等）。面對現代語言之深層巢狀類別/函式、複合泛型、巨集預處理、異步語法與語法殘缺容錯時，正則解析不僅維護成本極高，更容易發生括號失衡、簽名截斷與調用點漏判；此外，所有內建語言硬編碼於 `ParserRegistry`，外掛模組無法以統一規格貢獻新語言。
-- **架構解法**：
-  1. **Tree-sitter 宣告式驅動器 (`TreeSitterDriver`)**：
-     - 引入高效 C 底層繫結之 `tree-sitter`，支援漸進式容錯 AST 解析。
-     - 語言查詢邏輯 100% 抽離為標準 S-Expression (`assets/queries/*.scm`)，包含符號定義（`@symbol.name`, `@definition.*`）、調用點（`@call.site`, `@call.name`）與檔頭引用（`@import.stmt`）。
-  2. **零特權外掛自貢獻架構 (Zero-Privilege Dogfooding)**：
-     - `LanguageRegistry` 動態讀取 `contributes.knowledge-db.languages` 宣告，依副檔名與優先級動態實例化並分發驅動。
-     - `knowledge-db` 模組本身不享有核心特權，其內建之 10 種語言支援（Python, C, C++, C#, JS/TS, Markdown, SPICE, HTML, CSS）全數在自身 `contributes/knowledge-db.json` 宣告自貢獻物化。
-  3. **遞迴階層符號模型 (`UnifiedSymbol`)**：
-     - 新增 `parent_id`、`children`、結構化搜尋負載 `search_payload`、FQN 全限定名與結構化簽名參數清單。
-     - 保留向後相容之 `members` 轉接層，無縫相容既有倒排檢索與調用拓撲引擎。
-  4. **遺留代碼徹底清除**：
-     - 徹底移除 `parsers/` 下所有手刻正則舊檔與過時測試用例，全生態系單元測試 100% 遷移。
-- **效益與驗證**：
-  - 語法錯誤下自動容錯提取合法符號節點（測試 `ET-01` 通過）。
-  - 單檔解析效能提升 3~5 倍，深層巢狀 AST 結構 100% 精準還原。
-  - 新語言擴充僅需在 `contributes` 宣告與撰寫 `.scm` 查詢規則，達成 0 侵入式生態系外掛擴充。
+  1. `callers`、`callees`、`impact` 本質為純靜態 AST 語法樹與圖論拓撲查詢，早期因共用 `search()` 預設入口，導致查詢調用關係時被動觸發重量級 FastEmbed ONNX 模型載入與向量 JIT 推論。
+  2. 在沙盒測試或跨目錄解析基準下，符號內部記錄之相對路徑（如 `src/foo.py`）與磁碟掃描傳入之絕對路徑（如 `/tmp/.../src/foo.py`）格式不完全等價，若僅做單向字串相等比對，會導致檔案刪除或清空時舊符號殘留於倒排索引中（幽靈符號）。
+  3. 當向量模型未載入或推論失敗時，若為求表面陣列維度匹配而回傳隨機或全零 dummy 向量，將嚴重扭曲餘弦相似度排名，違反專案「零淺層敷衍」核心原則。
+- **工程妥協與解法**：
+  1. **圖譜查詢輕量 JIT 解耦**：`IndexingPipeline` 抽離 `_ensure_jit_index_ready(require_vectors=False)`；執行 `act_callers`、`act_callees`、`act_impact` 時強制傳入 `require_vectors=False`，僅確保倒排索引與 `CallGraphIndex` 就緒並完全跳過向量推論，將拓撲分析延遲壓制於 $< 30\text{ ms}$。
+  2. **對稱式路徑匹配剔除**：`InvertedIndex.patch_incremental` 與 `IndexingPipeline` 實作正規化路徑與後綴端點之對稱式匹配 (`_paths_match`)，確保無論傳入相對或絕對路徑，`deleted` 與 `modified` 檔案之舊 Postings、符號池記錄與圖譜邊皆被 100% 乾淨拔除。
+  3. **零偽造向量與全域快取徹底清理**：`EmbeddingService.embed_texts` 在非測試 mock 模式且模型不可用時，剛性回傳 `np.empty((0, dim), dtype=np.float32)` 空矩陣，嚴禁生成偽造向量；`clean()` 除刪除磁碟檔案外，強制清理 `unified.vectors.bin.gz` 並重置 `_GLOBAL_INDEX_CACHE` 所有記憶體指標與 `mtime`。
 
----
-
-### DN-09: FastEmbed 向量嵌入與 RRF 雙軌複合檢索 (FastEmbed ONNX Vector Inference & RRF Hybrid Fusion)
-
-- **背景與根因**：
-  在 sub_02 之前，`knowledge-db` 僅依賴關鍵字倒排索引與手刻同義詞庫 (`ThesaurusEngine`)。然而：
-  1. 同義詞庫維護成本高、難以窮舉跨領域專用術語，且中英文同義詞展開經常引入意料外的詞彙漂移。
-  2. 自然語言概念搜尋（如「用戶驗證流程」、「金流退款處理」）無法命中代碼標識符如 `UserAuthService` 或 `RefundEngine`。
-  3. 傳統稠密向量模型（如 PyTorch / HuggingFace Transformers）體積過大（數百 MB 至數 GB）且依賴重型 C++ 擴充，不符輕量跨平台分發要求。
-- **架構解法**：
-  1. **輕量 FastEmbed ONNX 推論 (`EmbeddingService`)**：
-     - 選用 `BAAI/bge-small-zh-v1.5` 離線模型（~130MB ONNX 模型），透過 ONNX Runtime 實現純 CPU 低延遲推論，兼顧中英文語意特徵提取。
-     - 內建 `_preprocess_text` 針對程式碼標識符實施駝峰命名拆解（`CamelCase` $\to$ `camel case`）與符號正規化，完美適配 uncased BERT 分詞器。
-  2. **二進位向量快取與增量熱自愈修補 (`VectorIndex`)**：
-     - 特徵向量採用 Pickle Protocol 5 + Gzip 持久化至 `unified.vectors.bin.gz`，支援極速磁碟讀寫。
-     - 支援 `patch_incremental`：檔案變更或刪除時差量拔除舊特徵、追加新特徵，端到端熱更新延遲 $< 200\text{ ms}$。
-  3. **倒數排名融合 (Reciprocal Rank Fusion, RRF)**：
-     - 以非參數化 RRF 公式融合 BM25 關鍵字排名與向量語意排名：
-       $$\text{Score}(d) = \frac{w_{\text{lex}}}{60 + \text{rank}_{\text{lex}}(d)} + \frac{w_{\text{vec}}}{60 + \text{rank}_{\text{vec}}(d)}$$
-  4. **防噪音雙重門檻**：
-     - **純語意門檻 (`min_vector_similarity = 0.70`)**：無 BM25 命中的項目必須達到餘弦相似度 0.70 始納入召回，消滅小型代碼庫強行傳回最近鄰雜訊的問題。
-     - **複合查詢子詞覆蓋率門檻 ($\ge 50\%$)**：防範長標識符僅命中單一通用子詞（如 `term`）即誤召喚無關文件。
-  5. **100% 剛性平滑降級保證**：
-     - 當 `fastembed` 未安裝或加載失敗時，服務無感降級為純 BM25 檢索，保證系統高可用。
-     - 提供 `--lexical-only` CLI 旗標與 SDK 參數，允許手動關閉向量推論。
-- **效益與驗證**：
-  - 徹底廢除舊有 `thesaurus.py` 脆弱手刻同義詞庫。
-  - 自然語言跨語意查詢召回率大幅提升，116 筆測試用例 100% 通過。
-
----
-
-### DN-10: NetworkX DiGraph 調用圖譜拓撲、FQN 消歧與 AST 符號微型語法 (NetworkX DiGraph Call Graph Topology, FQN Disambiguation & AST Micro-Syntax)
-
-- **背景與根因**：
-  在 sub_03 之前，調用圖譜使用手刻整數池字典，缺乏正規圖論演算法支援（如環路剪枝、最短路徑、拓撲排序）。同時：
-  1. 符號缺乏跨檔案 FQN 與 Import 作用域消歧，常將同名函式（如 `service_a.run` 與 `service_b.run`）誤連成幽靈邊。
-  2. 調用者查詢僅支援成員單名，無法透過類別限定或型態標記精準過濾目標節點。
-- **架構解法**：
-  1. **NetworkX DiGraph 圖論核心 (`CallGraphIndex`)**：
-     - 全面遷移至 NetworkX `DiGraph`，節點與邊持有結構化 `SymbolCallSite` 屬性字典，序列化支援 Gzip Protocol 5 二進位壓縮快取 (`unified.graph.bin.gz`)。
-     - 具備自動訪點剪枝演算法，環路圖譜（如 $A \to B \to C \to A$）安全走訪不陷入死循環。
-  2. **FQN 與 Import 作用域拓撲消歧 (`TopologyLinker`)**：
-     - 基於 AST 提取之檔案級 Import 表進行作用域校驗；未顯式 import 之同名裸調用判定為 `None`，徹底根絕跨檔幽靈關聯。
-  3. **完備 AST 符號選擇器微型語法 (`SymbolSelector`)**：
-     - 語法定義：`[kind] [scope.]name[()]`。
-     - 支援 `class Foo`, `struct Point`, `interface IService`, `enum Color`, `fn run()`, `const MAX`, `Foo.bar()` 等直覺過濾。
-  4. **多語言調用拓撲協議 (`LanguageTopologyProtocol`)**：
-     - 抽象 `LanguageTopologyProtocol` 與 `TopologyProtocolRegistry`，透過 Tree-Sitter 語法樹統一多語言調用點與引用提取。
-- **效益與驗證**：
-  - 徹底消滅跨檔案同名幽靈邊，調用關聯 100% 真實可靠。
-  - 500 節點 / 2000 調用邊圖譜在 Gzip 下體積 $< 150\text{KB}$，多階影響面分析平均延遲 $< 10\text{ms}$。
-
----
-
-### DN-11: 測試套件聚合拓撲、三態分類純化與 4-Tier 需求分流 (Test Suite Aggregation Topology, 3-State Classification Purification & 4-Tier Filtering)
-
-- **背景與根因**：
-  隨著知識庫功能持續擴充，測試目錄出現嚴重碎片化：
-  1. 測試檔案膨脹至 20 個，充斥同質微型小檔（如 `test_networkx_graph.py` 與 `test_call_graph.py`、`test_spice_parser.py` 與 `test_web_parsers.py`）。
-  2. 既有測試案例普遍未依據測試框架契約調用 `self.mark_passed()`，導致高達 115+ 個測試案例在報告中被歸類為 `UNKNOWN` 假未驗雜訊。
-  3. 缺乏執行分流標註，日常快測與重型多進程打包、壓測混雜執行，拖慢開發反饋循環。
-- **架構解法**：
-  1. **測試套件五大領域高內聚聚合**：
-     - 圖譜家族：`test_call_graph.py` + `test_networkx_graph.py` $\to$ `test_graph.py`。
-     - 解析器家族：`test_parsers.py` + `test_spice_parser.py` + `test_web_parsers.py` $\to$ `test_parsers.py`。
-     - 檢索家族：`test_retrieval.py` + `test_search_aggregation.py` + `test_tokenizer.py` + `test_hybrid.py` $\to$ `test_retrieval.py`。
-     - 熱重載家族：`test_incremental_hot_reload.py` + `test_jit_hot_healing.py` $\to$ `test_hot_reload.py`。
-     - 空間家族：`test_space.py` + `test_providers.py` $\to$ `test_space.py`。
-     - 測試檔總數由 20 個收斂至 12 個，完全符合 $\le 12$ 指標約束。
-  2. **100% `self.mark_passed()` 契約補齊**：
-     - 全套件所有測試方法逐一落地 `self.mark_passed()`，嚴格履行三態分類守則，將假未驗 `UNKNOWN` 計數徹底清零。
-  3. **4-Tier 需求層級分流標註**：
-     - 純記憶體邏輯標註 `@require(Requirement.LOGIC)`（日常預設執行）。
-     - 重度多進程實體打包、全量磁碟走訪標註 `@require(Requirement.WORKFLOW)`。
-     - 效能走勢與吞吐量基準標註 `@require(Requirement.PERF)`。
-- **效益與驗證**：
-  - `dev test knowledge-db` 執行回報 `Pass: 121 (100.0%), Fail: 0, Unknown: 0, Skip: 0`，測試報告純淨度達到 100%。
-  - 重複冗餘夾具與正則遺留測試徹底清除，全部業務邏輯斷言 100% 零遺漏保存。
-
----
-
-### DN-12: 管線門面職責分離、8,000 字元預算動態衰減與全域切片重複資訊剔除 (Pipeline-Facade Decoupling, 8000-Char Budget Decay & Universal Redundancy Purge)
-
-- **背景與根因**：
-  1. `engine.py` 膨脹至 1,765 行，兼具管線建置、拓撲分析、格式化呈現、CLI 輸出預算裁切與門面 API，違反單一職責原則。
-  2. 原 12,500 字元 CLI 輸出預算偏大且切片充斥已呈現資訊之重複項（例如程式碼切片夾帶 Docstring、Markdown 切片夾帶重疊之 `# Heading`、License 樣板與連續空白行），稀釋了終端與 LLM 上下文內的有效資訊密度。
-- **架構解法**：
-  1. **職責徹底三向解耦**：
-     - `formatter.py`: 專責結果聚合金字塔、終端 ANSI 上色、Markdown 排版、動態切片行數計算器、全域重複資訊過濾器 (`UniversalRedundancyFilter`)。
-     - `pipeline.py`: 專責索引建置編排 (`IndexingPipeline`)、JIT 增量嗅探、向量索引與雙向調用圖譜整合、查詢協調。
-     - `engine.py`: 瘦身為輕量統一 Facade ($\le 450$ 行，實作 338 行)，100% 委派 pipeline 與 formatter，維持對外 API 完全向後相容。
-  2. **8,000 字元動態預算階梯衰減**：
-     - 預算上限調降為 8,000 字元。
-     - 動態衰減曲線：$<3,500$ 字元保留 30 行切片；$3,500\sim 6,000$ 字元平滑線性衰減至 10 行；$6,000\sim 7,000$ 字元維持 10 行；$\ge 7,000$ 字元切片歸零（僅呈現元資料與保底 5 項目）。
-  3. **全域通用切片重複資訊剔除 (`UniversalRedundancyFilter`)**：
-     - 程式碼切片自動過濾已摘要呈現之 Docstring（Python `"""`、C/JS `/* */`）。
-     - Markdown 切片自動剔除與符號名稱或簽名重疊之 `# Heading` 標題行。
-     - 自動剔除版權與 License 樣板（SPDX、Copyright、Apache/MIT）。
-     - 自動壓縮 2 行以上連續空白行。
-     - 嚴格保底：至少保留目標定義行 `target_line`。
-- **效益與驗證**：
-  - `engine.py` 由 1,765 行減至 338 行（瘦身 80.8%）。
-  - CLI 與 LLM 輸出資訊密度大幅增加，終端檢索體驗俐落緊湊。
-  - 123/123 測試用例 100% 通過。
-
----
-
-### DN-13: 向量推論防護、AST 單次走訪優化與索引寫盤純化 (Vector Inference Safeguards, AST Single-Pass & Fast Index Serialization)
-
-- **背景與根因**：
-  在 Phase 6 實機驗證（UX-01）與大規模代碼庫（200+ 檔案、數千個符號）建置時：
-  1. `FastEmbed` 底層 ONNX Runtime 預設吃滿本機 100% CPU，連續推論數千個符號致排程飢餓、DPC 軟中斷逾時與硬體保護重開機。
-  2. `bundler` 在多進程 Worker 內部逐檔重複初始化 `ParserRegistry`，重複讀取並編譯 7 套 Tree-sitter S-Expression `.scm` 數百次。
-  3. `extract_call_sites` 內部再次呼叫 `self.parse()`，全專案檔案 AST 被重複解析 3 遍。
-  4. `VectorIndex.save_binary` 硬編碼 `compresslevel=6` 壓縮百萬級 float32 陣列，產生極高 CPU 運算負擔。
-- **架構解法**：
-  1. **ONNX 執行緒硬上限與環境變數注入**：
-     - 在 `EmbeddingService._init_model` 初始化時，設定 `OMP_NUM_THREADS` 與 `ONNXRUNTIME_INTRA_OP_NUM_THREADS` 為 `min(2, max(1, cpu_count // 2))`，並透過 `threads=max_threads` 傳入 ONNX Session，剛性杜絕 100% CPU 搶佔。
-  2. **分批推論與時間片讓渡**：
-     - `embed_texts` 採用 `batch_size=64` 切片推論，每批次微幅調用 `time.sleep(0.005)` 主動讓出時間片給 OS 排程器與 UI/中斷。
-  3. **向量快取寫盤壓縮等級降級**：
-     - `VectorIndex.save_binary` 預設改為 `compresslevel=1`，消除浮點陣列高壓縮比的無意義 CPU 浪費，磁碟寫入延遲降低 80%+。
-  4. **Worker 內解析器單例快取 (`_get_worker_registry`)**：
-     - 多進程工作者模組層級維持單例 `ParserRegistry`，進程生命週期僅初始化與編譯 `.scm` 查詢檔一次，消滅數千次磁碟 I/O。
-  5. **調用點提取 AST 符號重用 (`extract_call_sites`)**：
-     - `extract_call_sites` 擴充 `symbols: Optional[List[UnifiedSymbol]] = None` 參數；`bundler` 調用時傳入 `self._file_symbols_cache` 已提取之符號實例，徹底消除調用點提取時的二次 AST 解析。
-- **效益與驗證**：
-  - 實機 231 個檔案 hot-rebuild 索引由數分鐘且 CPU 卡死，壓降至僅 **10.4 秒** 平穩完成，全系統 0 凍結、0 卡頓。
-  - 全套件 124/124 單元與契約測試 100% 通過（0 Fail、0 Skip、0 Unknown）。
-
----
-
-### DN-14: JIT 10 符號動態探針、向量熔斷降級、CPU 執行緒自適應防飢餓與 CLI 體驗優化 (JIT Dynamic Probe, Vector Fuse Fallback & CLI UX)
-
-- **背景與根因**：
-  1. JIT 差量熱更新在大規模增量變更時若直接執行向量化，可能導致檢索命令卡頓數秒以上，失去 JIT 極速熱感。
-  2. 使用者可能需要選擇關閉向量檢索或自訂模型，但缺乏 Project/Local 層級組態支援。
-  3. CPU 執行緒防飢餓限制在多核高階機器上固定為 2 核心稍嫌保守，且無法依環境調整。
-  4. Hugging Face Hub 在無 Token 認證時會噴出警示，污染純淨 CLI 與 `--json` stdout 輸出。
-  5. 手動 `index` 建置缺乏清楚的階段進度反饋，且 `knowledge-db status` 存在索引已建立卻誤報未建立之假警報。
-- **架構解法**：
-  1. **Local/Project 雙層組態與型態安全防護 (`KnowledgeDBConfig`)**：
-     - 支援 `enable_vector_search`、`embedding_model`、`jit_vector_timeout_seconds`、`max_threads`。
-     - 型態安全轉換：支援字串布林與自動型態回退。
-  2. **JIT 10 符號動態探針與臨界值熔斷 (Dynamic Probe & Fuse)**：
-     - 變更符號 $\le 10$ 個時直接向量化；$> 10$ 個時以首批 10 符號實測耗時，推估全量時長。
-     - 若預估超過 `jit_vector_timeout_seconds` (預設 5.0s)，自動熔斷退回純 BM25 模式，輸出導引提示至 stderr，保證檢索響應不卡頓。
-  3. **CPU 執行緒自適應防飢餓機制 (`resolve_max_threads`)**：
-     - 預設 `"auto"` 取環境 CPU 數之一半 (`cpu_count // 2`)，提供自適應並行保護。
-  4. **HF Hub 警示屏蔽與 `--json` 輸出純淨化**：
-     - 在嵌入服務載入前設定 `HF_HUB_DISABLE_SYMLINKS_WARNING=1` 並過濾特定 Warning。
-     - 引導提示與進度全面分流至 `stderr`，確保 `--json` 模式下 `stdout` 100% 機器可解析。
-  5. **手動 index 雙軌 5 階段進度呈現與 status 索引狀態精確校驗**：
-     - 手動 `index` 時於 stderr 呈現 5 階段耗時與符號/圖譜統計。
-     - `status()` 精準判定 `unified.index.bin.gz` 與 `unified.vectors.bin.gz`，消除假警報。
-- **效益與驗證**：
-  - 9/9 新增 CLI UX 測試 (`TestCLIOptimizationAndUX`) 與 133/133 全量測試 100% 通過。
-
----
-
-### DN-15: 500ms 防抖熱修補、Service Worker 協同與背景全棧增量索引 (Debounced Service Worker & Incremental Indexing)
-
-- **背景與根因**：
-  1. 既有 JIT 變更感知在使用者發起檢索時被動觸發，若變更符號量大，首發搜尋仍需等待或熔斷降級。
-  2. 若改為背景常駐執行，必須避免頻繁 I/O 與多次重覆觸發，且需精確掌握空間定義範圍。
-- **架構解法**：
-  1. **動態 Space 監聽與 500ms 防抖熱修補**：
-     - 背景服務監聽目錄 100% 由注入之 `SpaceManager` 空間聯集定義動態解算（`resolve_space_include`），嚴禁寫死特定目錄。
-     - 實裝 500ms 防抖緩衝窗口聚合 Burst Save 事件；防抖到期後呼叫 `IndexingPipeline.hot_patch_unified_index`，一次性完成 AST、BM25、Graph 與 Vector 全語意熱修補，並以臨時檔 `os.replace` 原子替換磁碟快取。
-  2. **Service Worker 協議標準化與常駐調度**：
-     - 實作 `KnowledgeDBServiceWorker` 協議，納入 `server` 平台模組之 `BaseServiceWorker` 統一調度，由生態系守護中樞統一管理 Warm Worker 與背景服務生命週期。
-  3. **啟動離線預檢熱修補**：
-     - 背景服務啟動掛載 Watchdog 之前，強制執行 `_run_startup_check`（`check_invalidation` 檢查），即刻修補離線期間產生的檔案異動，不留任何熱修補盲區。
-  4. **JIT 逾時動態解析與純粹組態**：
-     - 透過 `resolve_jit_vector_timeout()` 取得配置之 `jit_vector_timeout_seconds`（預設 5.0s），在前台查詢遭遇海量異動時依逾時閾值自動安全熔斷降級為 BM25 檢索，保持最新組態純粹性。
-- **效益與驗證**：
-  - `knowledge-db` 全模組測試 149/149 100% 通過（0 Fail、0 Skip、0 Unknown）。
-
----
-
-### DN-16: Contributes 驅動之動態副檔名解算、Space 排除/包含雙軌初篩與階層覆蓋 (Contributes-Driven Dynamic Extensions & Space Filter Hierarchy)
-
-- **背景與根因**：
-  1. `daemon.py` 原本硬編碼了靜態副檔名集合（`SUPPORTED_WATCH_EXTENSIONS`）與忽略目錄（`IGNORED_DIR_NAMES`），背離了 Contributes-Driven 核心體系。
-  2. 寫死副檔名會導致：漏掉 SPICE (`.sp`, `.cir`)、HTML (`.html`)、CSS (`.css`) 等內建語言，且第三方或擴充模組新增自訂語言時 Watcher 完全不感知。
-  3. 寫死忽略目錄會導致：無法套用各 Space 在 `SpaceConfig.exclude` 中宣告的專屬排除規則（如 `tests/fixtures/*`），且忽視了 `file_patterns`。
-  4. `SpaceManager._load_contributes` 在傳入自訂目錄時未與 Core Contributes 進行階層合併，且未優先支援 `config://knowledge-db/contribute.json` 專案覆蓋。
-- **架構解法**：
-  1. **動態副檔名解算 (`resolve_watch_extensions`)**：
-     - `ParserRegistry` 實裝 `get_supported_extensions()`，100% 自 `contributes.knowledge_db.languages` 聚合所有已宣告語言之副檔名集合。
-     - `resolve_watch_extensions` 動態聯集 `ParserRegistry`、`.json` 與所有 Active Space 的 `file_patterns`，徹底移除任何硬編碼。
-  2. **動態 Space Include / Exclude 雙軌判定 (`is_path_watched`)**：
-     - 第一層：快篩作業系統與 Runtime VCS 忽略目錄（`.git`, `.venv`, `__pycache__`, `.pytest_cache`）。
-     - 第二層：快篩動態支援副檔名集合。
-     - 第三層：動態比對所屬 Space，強制檢驗 `FingerprintScanner._is_excluded(rel_path, sp.exclude)` 與 `sp.is_file_included(filename)`；針對根目錄兜底監聽亦動態套用全 Space exclude 規則。
-  3. **雙軌階層 Space 聚合修復 (`SpaceManager._load_contributes`)**：
-     - 統一支援 `_get_config_path("contribute.json")`（自動相容 `config://` 與自訂目錄）。
-     - 實作「Core Contributes（基底）+ 專案 `contribute.json`（覆蓋）」雙軌階層合併，確保專案層級既可覆蓋特定 Space，又完整保留 Donor 模組貢獻的空間與同義詞庫。
-- **效益與驗證**：
-  - 147/147 (100.0%) 全模組測試 100% 通過，0 Failed, 0 Unknown, 0 Skipped。
-
----
-
-### DN-17: Windows 守護進程 Win32 API 存活探測、Console Ctrl+C 廣播誤殺根絕與 yscb.py 唯一入口收斂 (Windows Daemon Win32 Process Probing, Console Ctrl+C Broadcast Elimination & yscb.py Single Entry Point)
-
-- **背景與根因**：
-  1. **Windows `os.kill(pid, 0)` 語意陷阱**：POSIX 下 `kill(pid, 0)` 僅檢測進程存在性，但在 Windows 上 Python 映射至 `signal.CTRL_C_EVENT = 0`，底層調用 `GenerateConsoleCtrlEvent`。若目標進程為 Detached Process，發送 Ctrl+C 觸發 `WinError 87`（引發 `<built-in function kill> returned a result with an exception set`）；若在同一控制台下，會向整個控制台廣播 Ctrl+C，導致背景進程自我中斷或前台測試進程遭 `KeyboardInterrupt` 誤殺。
-  2. **PID 檔案連鎖誤刪**：`start()` 後父進程探測 `is_running()`，因 `is_pid_alive()` 異常誤判守護進程已死，立即刪除剛生成的 `daemon.pid`，造成後續狀態查詢始終為 `Inactive` (PID: None)。
-  3. **快取目錄降級污染**：`get_cache_dir` 存在舊版路徑降級搜尋與 `root / ".cache"` 兜底，背離了 `cache.root://` SSOT 規範，存在污染專案根目錄之風險。
-  4. **背景進程日誌緩衝遺失**：預設 `logging.FileHandler` 存在系統 I/O 緩衝，進程異常退出時未 flush 的關鍵錯誤日誌遺失。
-- **架構解法**：
-  1. **Win32 原生 API 探測與終止 (`HotReloadServer.is_pid_alive` & `stop`)**：
-     - Windows 平台使用 `ctypes` 調用 `kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)` 搭配 `kernel32.GetExitCodeProcess` 檢查 `STILL_ACTIVE = 259`；若返回 `ERROR_ACCESS_DENIED (5)` 判定進程存活。
-     - 停止進程在 Windows 下改用 `kernel32.TerminateProcess`，徹底消滅對 Windows 調用 `os.kill` 造成的廣播災難。
-  2. **完全移除降級回補與 yscb.py 唯一入口收斂**：
-     - `get_cache_dir` 徹底移除降級候選搜尋清單與 `root / ".cache"` 兜底，100% 收斂為 `core.uri.resolve("cache://knowledge-db")`。
-     - 背景守護進程啟動強制以 `yscb.py` 為唯一入口，刪除退回調用 `cli.py` 之非標準路徑。
-  3. **日誌即時 Flush (`FlushingFileHandler`)**：
-     - 在 `_setup_logger` 引入 `FlushingFileHandler`，於每次 `emit` 後即時 `self.flush()`，確保崩潰前所有訊息均已完整落盤。
-- **效益與驗證**：
-  - 148/148 (100.0%) 單元與邊界測試 100% 通過，Windows 控制台廣播誤殺徹底消滅，守護進程穩定啟動與退出。
-
----
-
-### DN-18: 熱重載倒排索引磁碟懶加載、Daemon 雙重兜底全量自癒重建與可觀測性強化 (Hot Reload Lazy Loading, Dual Fallback Full Rebuild & Observability)
-
-- **背景與根因**：
-  1. **冷啟動記憶體快取真空**：當 `HotReloadServer` 背景守護進程啟動且離線檔案無變更時，`pipeline._unified_index` 在記憶體中保持 `None`。
-  2. **熱修補無條件短路**：當檔案系統變更觸發防抖後，`hot_patch_unified_index` 檢查 `if self._unified_index is None:` 即無條件返回 `HotPatchResult(False)`，未嘗試自磁碟讀取既有 `unified.index.bin.gz` 快取。
-  3. **Daemon 缺乏自癒兜底機制**：`_execute_debounced_patch` 與 `_run_startup_check` 在熱修補回傳 `False` 或拋出異常時，未如 CLI 前台般降級執行 `build_unified_index(force=True)`，僅記錄 `Patched: False` 即結案，導致磁碟快照持續停滯。
-  4. **CLI JIT 旁路放大盲區**：前台 CLI 探測到守護進程在線時旁路 JIT 檢查，直接讀取磁碟上的過期快取，導致新增與修改檔案陷入持續檢索不到的永久盲區 (`total: 0`)。
-- **架構解法**：
-  1. **倒排索引磁碟懶加載 (`hot_patch_unified_index`)**：
-     - 在 `hot_patch_unified_index` 入口處檢查：若 `self._unified_index is None` 且 `bin_file.exists()`，自動調用 `InvertedIndex.load_binary(bin_file)` 還原倒排表與符號池至記憶體，與 `CallGraphIndex` 及 `VectorIndex` 的磁碟還原邏輯對齊。
-     - 若還原異常（如檔案損毀），安全捕獲警告並回傳 `False` 由上層兜底。
-  2. **Daemon 雙重剛性自癒兜底 (`_execute_debounced_patch` & `_run_startup_check`)**：
-     - 當增量熱修補回傳 `False` 或遭遇未處理例外時，Daemon 強制執行 `pipeline.build_unified_index(force=True, current_files=full_files_map)` 全量重建自癒，保證磁碟產物物理更新。
-  3. **結構化可觀測性日誌**：
-     - 於熱修補完成時，日誌精確記錄變更分類（`N added, N modified, N deleted`）；在觸發全量兜底重建時明確輸出原因日誌。
-- **效益與驗證**：
-  - 新增 FT-01~03 與 ET-01 單元測試，既有與新增測試 100% 通過，徹底消除冷啟動熱修補靜默失效與檢索盲區。
-
----
-
-### [DN-19] 物理級單一真理來源 (Physical SSOT)：廢除 JSON 指紋檔全權收斂至二進位快照
-
-- **背景與動機**：
-  - 歷史架構中，空間指紋曾以 `spaces/<space>/fingerprints.json` 形式儲存，而背景 HotReloadServer 與 JIT 變更嗅探則使用原生二進位快照 `indices/unified.meta.bin` (`BinarySnapshotManager`, Magic: `YFP1`)。
-  - 兩套機制並存造成物理級狀態撕裂：前台 `engine.status()` 讀取過期 JSON 指紋呈現數天前之檔案計數，造成開發者對索引新鮮度之強烈誤判。
-- **架構重構與拍板 (路線 2)**：
-  1. **徹底廢除 `fingerprints.json`**：
-     - 磁碟不再寫入任何 `fingerprints.json`。
-     - 移除舊版 SHA-1 內容比對與 JSON 損毀自癒測試。
-  2. **SDK 全面收斂至 `unified.meta.bin`**：
-     - `FingerprintScanner.scan_space` 與 `scan_all_spaces` 直接以 `unified.meta.bin` 為快照基準進行極速增量比對，並以原子替換更新二進位快照。
-     - `KnowledgeEngine.status()` 改由 `unified.meta.bin` 載入全域快照，動態匹配各空間之 `include`/`exclude`/`file_patterns` 即時統計，微秒級完成且 100% 反映真實索引狀態。
-     - 既有 `load_fingerprints` 介面轉為自二進位快照反查相容層，確保下游相容性。
-- **效益與驗證**：
-  - 系統快取狀態達到 100% 物理級 SSOT，消弭記憶體與磁碟、前台與背景守護進程間的一切狀態歧異。
-
----
-
-### [DN-20] Hook 遞迴死鎖解除、Windows Job Object Breakaway 突破與守護進程全域即時日誌留痕
-
-- **背景與動機**：
-  - 模組熱重載守護進程出現三大下游故障：
-    1. **第二次啟動必然逾時**：`hook.core.py` 於 `pre_cli_dispatch` 無差別調用 `ensure_running()`，導致背景守護進程被拉起時遞迴觸發 hook 並嘗試獲取父進程持有的 `DaemonLock` 造成死鎖；父進程 8 秒超時後誤殺存活進程。此外在 Windows 下，若前台 CLI 處於 IDE / CI / Task Runner 之 Job Object 且無 Breakaway 授權時，一般 `Popen` 進程在父進程結束時會被 Windows 連帶處決。
-    2. **無即時日誌**：`_setup_logger()` 僅配置私有 logger 之 `FlushingFileHandler` 且關閉 propagate，未提供 `sys.stdout` 的 `StreamHandler`，終端前台運行為黑屏狀態，且 `pipeline` 與 `scanner` 之索引日誌無法被寫入 daemon 日誌。
-    3. **無 daemon 索引延遲極高**：因前述進程無法常駐，CLI 檢索退化至冷啟動 JIT 重載 FastEmbed 模型（耗時數秒）。
-- **架構決策與修復**：
-  1. **Hook 遞迴排除與雙保險標記**：
-     - `hook.core.py` 嚴格短路排除 `daemon` 子命令與 `--daemon-process`，並檢驗 `KNOWLEDGE_DB_DAEMON_PROCESS` 環境變數，杜絕子進程在 CLI 生命週期勾點遞迴競爭 `DaemonLock`。
-  2. **Windows Job Object Breakaway (WMI 託管)**：
-     - 在非沙盒 Windows 環境下，`ensure_running()` 優先透過 WMI (`Win32_Process.Create`) 委託系統 `WmiPrvSE` 服務拉起背景進程，徹底擺脫母體 CLI 的 Job Object 約束，保證 CLI 結束後背景守護進程穩定常駐。
-  3. **非阻塞高頻短輪詢 (0.05s)**：
-     - 將啟動探測改為 0.05s 輪詢，一旦子進程寫入 `status="ready"`（通常 < 0.4s）立即返回 `True`；連續呼叫直接複用既有 PID，單例防重無阻塞。
-  4. **前台 stdout 串流與套件級日誌聚合**：
-     - `_setup_logger` 支援 `FlushingStreamHandler(sys.stdout)`，在互動模式或前台模式下即時串流終端；並將 `FlushingFileHandler` 同步綁定至 `knowledge_db` 套件層級 logger，使全套管線與掃描器熱修補日誌無漏留痕。
-- **效益與驗證**：
-  - 新增 FT-20、FT-21、FT-22 單元測試，159 項自訂與契約測試 100% 通過。
-  - 實機驗證多次連續啟動無逾時、無死鎖、單例穩定複用，JIT 自動跳過使檢索延遲降至 sub-50ms。
-
----
-
-### [DN-21] 常駐 ServiceWorker 納管、微內核原語對齊與記憶體快取 mtime 微秒級熱自愈
-
-- **背景與動機**：
-  - 模組先前自建之 `HotReloadServer` 自行處理 Popen、Windows Job Object Breakaway、Console 視窗、PID 鎖檔與日誌輪轉，與專案微內核架構職責重複且維護成本高昂。
-  - 在微內核架構重構中，通用服務層已由 `server` 模組統一承擔。知識庫後台任務應專注於檔案監聽與索引修補，進程生命週期與 IPC 應全權移交。
-- **架構決策與實作**：
-  1. **收斂為 `KnowledgeDBServiceWorker`**：
-     - 繼承 `server.service.BaseServiceWorker`，命名為 `"knowledge-db-watcher"`，透過 `server.master` 動態載入並納管生命週期。
-     - 徹底移除 CLI `knowledge-db daemon` 子命令及其 Usage 說明，不再向後相容。
-  2. **預熱事件與記憶體快取 Eager Preload**：
-     - 響應 `server_worker_warming` 核心事件，呼叫 `KnowledgeEngine.pre_warm()` 提前將 FastEmbed 向量模型單例與倒排索引/圖譜快照載入記憶體。
-  3. **微秒級 mtime 快取比對與熱自癒**：
-     - `_GLOBAL_INDEX_CACHE` 維護 `unified_mtime` 與 `graph_mtime`，查詢前以微秒級精度檢驗磁碟 snapshot 之 mtime，若有變更則就地原地重載記憶體快照。
-  4. **微內核原語對齊**：
-     - 快照寫入全面對齊 `core.vfs.write_bytes(atomic=True)`，排他鎖全面採用 `core.platform.lock.InterProcessLock`。
-- **效益與驗證**：
-  - 瘦身 `daemon.py`，大幅減輕知識庫模組非核心負擔。
-  - 全套測試 100% 通過（140/140），且通過 `dev check knowledge-db` 合規驗證。
-
----
-
-### [DN-22] 領域模組對冷/熱啟動零感知架構與 Optional 依賴插槽化
-
-- **背景與動機**：
-  - 在完成 sub_04 引入 `KnowledgeDBServiceWorker` 並納管至 `server` 模組後，歷史遺留的 `daemon.py` 與 `hook.core.py` 仍殘留在知識庫源碼中，造成死碼與架構冗餘。
-  - 此外，`knowledge-db` 在本質上是一個獨立的檢索與知識庫分析工具，`server` 的常駐自癒為加速擴充功能，而非不可或缺的硬性相依（Hard Dependency）。若強制將 `server` 列在 `dependencies` 中，將破壞最小化運行與靈活部署原則。
-- **架構決策與實作**：
-  1. **冷/熱啟動零感知原則 (Zero-Awareness of Daemon/Cold-Hot)**：
-     - 徹底刪除 `knowledge_db/daemon.py` 與 `scripts/hook.core.py`。
-     - 領域模組不再感知自身是在前台一次性 CLI 執行（冷模式 JIT 自癒）或在背景常駐進程執行（由 `server.master` 託管之 worker），業務管線只專注於 `process(args)`。
-     - `pipeline.py` 檢索流水線移除對 `daemon.py` 的輪詢與探測邏輯，純粹回歸檔案變更檢測。
-  2. **Manifest `optional` 欄位規範與安裝提示**：
-     - `manifest.json` 新增 `optional` 欄位規範：
-       ```json
-       "optional": {
-         "server": {
-           "version": ">=1.0.0",
-           "hint": "提供常駐背景檔案監聽熱自癒與極速預熱派發"
-         }
-       }
-       ```
-     - `core.installer` 於下載工具鏈安裝完成後，若發現有 `optional` 模組尚未安裝，自動提示其功能說明與建議安裝指令。
-     - `dev.checker` 擴充靜態合規性檢核，驗證 `optional` 物件結構（需包含 `version` 與 `hint` 且為字串）。
-  3. **動態弱引用與 Fallback 保證**：
-     - `knowledge_db/service.py` 內建抽象 `BaseServiceWorker` fallback 機制，即便環境未安裝 `server` 模組，`knowledge-db` 亦完全不拋出 `ImportError`，以 JIT 冷模式 100% 獨立運行。
-- **效益與驗證**：
-  - 源碼徹底消除死碼 600+ 行，架構邊界純淨化。
-  - 單元測試 140/140 PASSED (100%)，`dev check` 合規檢驗 100% PASSED。
-
----
-
-### [DN-23] Watcher 背景接管自癒與前台搜尋 0ms 略過同步掃描
-
-- **背景與動機**：
-  - 歷史架構中，每次執行搜尋時前台管線（`Pipeline.search`）均會主動檢查是否有變更並觸發 JIT 掃描與同步重建。
-  - 當引入背景常駐 Watcher 時，前台同步掃描會與背景 Watcher 的 500ms 防抖修補發生競爭狀態（Race Condition），導致搜尋調用被無謂阻塞達 1.7 秒以上，違背常駐服務加速的初衷。
-- **架構決策與實作**：
-  1. **職責明確劃分**：
-     - 當背景 Watcher 啟動時，於 `.knowledge_db/indices/` 寫入常駐標記 `.watcher_active`。
-     - 前台搜尋管線探測到 `.watcher_active` 存在且無 dirty flag 時，前台 0ms 直接略過同步掃描與熱修補，100% 將磁碟變更自癒交由背景 Watcher 防抖執行。
-  2. **非阻塞記憶體快照就地重載**：
-     - 前台僅比對快照二進位檔案之微秒級 `mtime`；若背景已完成熱修補，前台僅在記憶體原地重載快照，檢索響應重回 sub-50ms 瞬發。
-- **效益與驗證**：
-  - 徹底消除前台與背景 Watcher 的防抖競態，前台查詢 0ms 阻塞。
-
----
-
-### [DN-24] SpaceManager 空間路徑與 Contributes 記憶化快取加速 (_include_cache)
-
-- **背景與動機**：
-  - 實機量測 `knowledge-db status` 指令耗時高達 7.1 秒。經子操作 Profiling 剖析，瓶頸並非檔案快照反序列化或向量加載，而是 `status()` 計算各 Space 所屬檔案數量時，對 293 個快照檔案 x 3 個空間重複執行了 879 次 `_file_belongs_to_space`。
-  - 每次調用深入 `SpaceManager.resolve_space_include`，重複解析 `core.contributes.get("knowledge-db")` 並調用 `Path.resolve()` 2600+ 次。
-- **架構決策與實作**：
-  1. **記憶化快取 (`_include_cache`)**：
-     - 在 `SpaceManager` 引入 `self._include_cache: Dict[Tuple[str, tuple], List[Path]] = {}`。
-     - 首次解析 space 的 includes/excludes 清單後予以快取，同一次進程或生命週期內後續比對直接自記憶體提取已解析之絕對路徑。
-- **效益與驗證**：
-  - `knowledge-db status` 執行總耗時由 7.1 秒暴降至 0.14 秒，核心統計計算僅耗時 14 毫秒，效能提升達 50 倍以上。
-
----
-
-### [DN-25] CLI 指令邊界整合、8 大正交指令集與向量模型離線探針先行
-
-- **背景與動機**：
-  - 既有 `knowledge-db` CLI 指令過度碎片化，`scan`（增量指紋比對）與 `status`（空間狀態）功能重疊，`bundle`（語意符號提取打包）與 `index`（倒排索引建置）亦有重複。
-  - 當下游專案在無連外網路或未下載模型環境中執行檢索時，FastEmbed 預設會嘗試連線 Hugging Face Hub 並觸發未認證權限警告，導致檢索受阻或造成 AI Agent 誤判死循環。
-- **架構決策與實作**：
-  1. **零向下相容包袱之 8 大標準指令集收斂**：
-     - 徹底移除頂層 `scan` 與 `bundle` 指令。
-     - `scan` 併入 `status`（支援 `status --scan` / `--diff` 增量指紋比對）。
-     - `bundle` 併入 `index`（支援一鍵全管線索引建置與 `index --export <path>` 導出 Bundle）。
-     - 新增獨立 `model` 指令群組（`model status` / `model download`），清晰隔離向量模型生命週期。
-     - 確立 8 大正交標準指令：`status`, `index`, `search`, `callers`, `callees`, `impact`, `clean`, `model`。
-  2. **本地模型探針先行 (Probe First) 與剛性防呆通道**：
-     - `EmbeddingService` 在初始化時先以純本機路徑探測 `.onnx` 權重檔案是否存在；未下載時**絕不發起任何未認證網路連線**，立即平滑退回純 BM25 詞彙檢索。
-     - 當檢索觸發降級且組態中 `enable_vector_search: true` 時，強制於 `sys.stderr` 輸出剛性引導：
-       `[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？`
-       確保結果資料（stdout）純淨並將高優先度阻斷信號傳遞予 Agent。
-- **效益與驗證**：
-  - 指令職責正交性 100%，消除下游專案操作混淆。
-  - 離線檢索延遲保持在 $< 500\text{ms}$，無網路逾時與例外崩潰。
-  - 單元測試 157/157 PASSED (100%)，`dev check` 0 警告 0 錯誤。
-
----
-
-### [DN-26] 混合檢索預先過濾下推、JIT 輕量熱自愈解耦與對稱路徑差量剔除
-- **背景與動機**：
-  - 混合檢索原先將空間（`spaces`）、符號類型（`kinds`）與語言（`languages`）之過濾留至 RRF 融合後的後置過濾（Post-filtering），導致 BM25 候選池中充斥非目標空間的符號，擠壓有效名額且浪費向量推論計算資源。
-  - `callers`, `callees`, `impact` 內部調用 `self.search()`，造成純靜態 AST 調用拓撲查詢被動加載重量級向量模型或觸發 JIT 向量推論。
-  - 倒排索引差量修補在測試沙盒或不同路徑解析基準下（例如專案外臨時目錄），因符號路徑（`src/file.py`）與磁碟絕對路徑（`/tmp/.../src/file.py`）不完全等價，導致檔案刪除或清空時舊符號未能完全清除。
-  - `clean()` 清理索引時遺漏 `unified.vectors.bin.gz` 與全域進程快取 `_GLOBAL_INDEX_CACHE`，且向量推論失敗時曾回傳偽造隨機向量，違背真理原則。
-- **架構決策與實作**：
-  1. **BM25 候選池預先過濾下推 (Filter Push-Down)**：
-     - `HybridSearchEngine.search` 接收 `spaces`, `kinds`, `languages`，直接下推至 BM25 `search_unified` 與向量比對，從源頭收斂候選池。
-  2. **JIT 輕量熱自愈解耦 (`_ensure_jit_index_ready`)**：
-     - 抽離 `_ensure_jit_index_ready(require_vectors=False)`，圖譜分析指令僅確保倒排索引與拓撲圖譜就緒，跳過向量推論，拓撲查詢提速至 < 30ms。
-  3. **對稱路徑匹配與徹底清除**：
-     - `retrieval.py` 與 `pipeline.py` 實作對稱式端點與檔名路徑比對，確保刪除/清空之檔案在任何相對/絕對路徑基準下皆被精準剔除舊 Postings 與符號記錄。
-  4. **嚴格禁止偽造資料與全域快取清理**：
-     - `embed_texts` 在非 mock 模式且模型異常時回傳 `(0, dim)` 空矩陣，不再偽造向量；`clean()` 清理 `unified.vectors.bin.gz` 並清空 `_GLOBAL_INDEX_CACHE`。
-     - `formatter.py` 移除 callees 詳細模式中重複輸出的代碼片段。
-- **效益與驗證**：
-  - 混合檢索候選品質顯著提升，拓撲圖譜查詢延遲下降 80%+。
-  - 增量熱自愈與邊界測試 100% 通過（157/157 Tests Pass）。
-
-
-
+> [!CAUTION]
+> **嚴禁在 `EmbeddingService` 推論失敗時回傳隨機數或零向量充當 Fallback，且嚴禁在圖譜拓撲指令 (`callers`/`callees`/`impact`) 中開啟 `require_vectors=True`！**

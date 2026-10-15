@@ -11,12 +11,17 @@
 > **[Pre-flight Check] AI Agent 初始化確認**：初次為下游專案設定 `knowledge-db` 前，請先向開發者確認：**① 欲納入檢索的原始碼目錄（如 `src/`, `lib/`）與副檔名**，以及 **② 是否下載本地 ONNX 向量模型（或關閉向量檢索改用輕量極速之純 BM25 模式）**。
 
 ```bash
-# 1. 設定專案源碼掃描空間 (注意鍵名為 include)
-# [Linux / macOS (bash/zsh)]：
-python yscb.py config set knowledge-db spaces.source.include '["project://src", "project://lib"]'
-python yscb.py config set knowledge-db spaces.source.file_patterns '["*.py", "*.cpp", "*.h", "*.ts", "*.js"]'
-# [Windows (PowerShell / CMD)] 請使用雙引號搭配反斜線跳脫內層雙引號：
-# python yscb.py config set knowledge-db spaces.source.include "[\"project://src\", \"project://lib\"]"
+# 1. 設定專案源碼掃描空間 (於 config/knowledge-db/contribute.json 宣告)
+# 若檔案不存在可直接建立，注意鍵名為 include：
+# {
+#   "spaces": {
+#     "source": {
+#       "description": "專案核心原始碼空間",
+#       "include": ["project://src", "project://lib"],
+#       "file_patterns": ["*.py", "*.cpp", "*.h", "*.ts", "*.js"]
+#     }
+#   }
+# }
 
 # 2. 配置向量模型 (二選一：預載本地 ONNX 權重，或關閉向量檢索改用輕量純 BM25)
 python yscb.py knowledge-db model download
@@ -45,11 +50,11 @@ graph TD
     CLI["CLI 入口<br/><code>python yscb.py knowledge-db &lt;command&gt;</code>"]:::main
 
     subgraph KnowledgeDBModule ["Knowledge-DB 模組 (module:knowledge-db)"]
-        Scanner["指紋掃描 (Scanner)<br/><i>mtime / SHA-256 增量比對</i>"]:::sub
-        Parsers["聲明式 AST 符號解析 (Tree-sitter & LanguageRegistry)<br/><i>零特權 Contributed 擴充，支援 Python, C, C++, C#, JS/TS, Markdown, SPICE 等</i>"]:::sub
+        Scanner["極速快照與熱自癒 (BinarySnapshotManager & Watcher)<br/><i>os.scandir + unified.meta.bin (Magic YFP1) / 500ms 防抖</i>"]:::sub
+        Parsers["聲明式 AST 符號解析 (Tree-sitter & LanguageRegistry)<br/><i>零特權 Contributed 擴充，支援 Python, C, C++, C#, JS/TS, Markdown, SPICE 等 10 大語言</i>"]:::sub
         Tokenizer["中英混雜分詞 (MultilingualTokenizer)<br/><i>CJK 1/2-gram / 駝峰蛇形拆解</i>"]:::sub
-        Retrieval["複合檢索引擎 (HybridSearchEngine)<br/><i>BM25 倒排索引 + FastEmbed ONNX 向量 RRF 融合 (100% 剛性降級)</i>"]:::sub
-        Graph["調用圖譜引擎 (Call Graph Engine)<br/><i>Callers / Callees / Impact</i>"]:::sub
+        Retrieval["複合檢索引擎 (HybridSearchEngine)<br/><i>BM25 預先過濾下推 + FastEmbed ONNX 向量 (預設 512-dim) RRF 融合</i>"]:::sub
+        Graph["調用圖譜引擎 (Call Graph Engine)<br/><i>networkx.DiGraph / Callers / Callees / Impact</i>"]:::sub
     end
 
     CLI --> Scanner
@@ -156,14 +161,32 @@ indices = engine.build_index()
 
 ## 5. 組態配置項目與自訂空間指南 (Configuration & Spaces Reference)
 
-本模組之組態位於 `config://knowledge-db/config.project.json`（團隊共享）與 `config://knowledge-db/config.local.json`（個人本機覆蓋），建議直接透過 `python yscb.py config set knowledge-db <key> <val>` 進行操作：
+### 5.1 運作組態設定 (`config.project.json`)
+
+本模組之運作組態位於 `config://knowledge-db/config.project.json`（團隊共享）與 `config://knowledge-db/config.local.json`（個人本機覆蓋），建議直接透過 `python yscb.py config set knowledge-db <key> <val>` 進行操作：
 
 ```json
 {
   "enable_vector_search": true,
   "embedding_model": "BAAI/bge-small-zh-v1.5",
   "jit_vector_timeout_seconds": 5.0,
-  "max_threads": "auto",
+  "max_threads": "auto"
+}
+```
+
+| 設定鍵值 (Key) | 預設值 (Default) | 型態與說明 |
+| :--- | :--- | :--- |
+| `enable_vector_search` | `true` | `bool`。是否啟用 FastEmbed 向量語意檢索與特徵提取。設為 `false` 則跳過向量化並強制使用純 BM25 模式。 |
+| `embedding_model` | `"BAAI/bge-small-zh-v1.5"` | `str`。指定 FastEmbed ONNX 嵌入模型名稱（512 維，支援中英多語言）。 |
+| `jit_vector_timeout_seconds` | `5.0` | `float`。JIT 增量索引時 10 符號動態探針之超時臨界值。超過此值自動熔斷退回純 BM25 模式。 |
+| `max_threads` | `"auto"` | `str` / `int`。向量推論與 ONNXRuntime 執行緒上限。預設 `"auto"` 為 CPU 核心數之一半。 |
+
+### 5.2 自訂空間與宣告式擴充 (`contribute.json`)
+
+專案原始碼掃描空間 (`spaces`) 屬於宣告式擴充點，統一由專案特化 `config/knowledge-db/contribute.json` 託管：
+
+```json
+{
   "spaces": {
     "source": {
       "description": "專案核心原始碼空間",
@@ -175,20 +198,17 @@ indices = engine.build_index()
 }
 ```
 
-| 設定鍵值 (Key) | 預設值 (Default) | 型態與說明 |
-| :--- | :--- | :--- |
-| `enable_vector_search` | `true` | `bool`。是否啟用 FastEmbed 向量語意檢索與特徵提取。設為 `false` 則跳過向量化並強制使用純 BM25 模式。 |
-| `embedding_model` | `"BAAI/bge-small-zh-v1.5"` | `str`。指定 FastEmbed ONNX 嵌入模型名稱（512 維，支援中英多語言）。 |
-| `jit_vector_timeout_seconds` | `5.0` | `float`。JIT 增量索引時 10 符號動態探針之超時臨界值。超過此值自動熔斷退回純 BM25 模式。 |
-| `max_threads` | `"auto"` | `str` / `int`。向量推論與 ONNXRuntime 執行緒上限。預設 `"auto"` 為 CPU 核心數之一半。 |
-| `spaces.<name>.include` | `[]` | `List[str]`。必填，欲納入掃描之語意 URI 目錄或檔案清單（如 `["project://src"]`）。 |
-| `spaces.<name>.exclude` | `[]` | `List[str]`。選填，排除之 Glob 模式清單（如 `["**/__pycache__/**"]`）。 |
-| `spaces.<name>.file_patterns` | `[]` | `List[str]`。選填，檔案副檔名 Glob 過濾（未宣告或為空時預設全包含）。 |
+| 空間宣告欄位 (Field) | 必填 | 型態與說明 |
+| :--- | :---: | :--- |
+| `description` | 否 | `str`。空間用途說明。 |
+| `include` | **是** | `List[str]`。欲納入掃描之語意 URI 目錄或檔案清單（如 `["project://src"]`）。 |
+| `exclude` | 否 | `List[str]`。排除之 Glob 模式清單（如 `["**/__pycache__/**"]`）。 |
+| `file_patterns` | 否 | `List[str]`。檔案副檔名 Glob 過濾（未宣告或為空時預設全包含）。 |
 
 ---
 
 ## 6. 相關規範與技能手冊
 
-- **探索規範指南**：[`.agents/skills/knowledge-db-search/SKILL.md`](../agents-workflow/assets/skills/knowledge-db-search/SKILL.md)
+- **探索規範指南**：[`.agents/skills/knowledge-db-search/SKILL.md`](./assets/skills/knowledge-db-search/SKILL.md)
 - **指令權限對照**：[`.agents/skills/yscb-cli-guild/SKILL.md`](../agents-workflow/assets/skills/yscb-cli-guild/SKILL.md)
 

@@ -1,3 +1,16 @@
+---
+target: "Core"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/platform/process.py"
+  - "yscb://source/core/core/platform/lock.py"
+related_docs:
+  - "./README.md"
+  - "./DESIGN_NOTES.md"
+last_updated: "2026-10-15"
+---
+
 # Core Platform 跨平台底層原語手冊 (core.platform)
 
 > 所屬模組：`core`  

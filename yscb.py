@@ -16,7 +16,8 @@ import urllib.request
 import zipfile
 
 CONFIG_FILENAME: str = "yscb.config.json"
-DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/release"
+DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release"
+DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
 INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
 INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
 
@@ -99,22 +100,17 @@ def _fetch_and_extract_zip(source: str, dest_dir: str) -> None:
         raise FileNotFoundError(f"[yscb] Error: Package source '{source}' not found or is not a valid zip archive.")
 
 
-def _resolve_self_update_target_url(provider: str, custom_url: Optional[str] = None) -> str:
-    """解算 self-update 目標 URL，智慧錨定至 repo 根目錄之 yscb.py。"""
+def _resolve_self_update_target_url(provider: Optional[str] = None, custom_url: Optional[str] = None) -> str:
+    """
+    解算 self-update 目標 URL。
+    優先順序：
+    1. custom_url（由 --url 傳入）
+    2. DEFAULT_SELF_UPDATE_URL
+    註：provider 參數保留僅為相容歷史調用簽名，不再做字串切割推導。
+    """
     if custom_url:
         return custom_url
-    p = (provider or DEFAULT_PROVIDER_URL).strip().rstrip("/")
-    if p.endswith(".py") or (not p.startswith(("http://", "https://", "file://")) and os.path.isfile(p)):
-        return p
-    if "/release" in p:
-        prefix = p.split("/release")[0]
-        return f"{prefix}/yscb.py"
-    if not p.startswith(("http://", "https://")):
-        parent_candidate = os.path.join(os.path.dirname(p), "yscb.py")
-        if os.path.isfile(parent_candidate):
-            return parent_candidate
-        return os.path.join(p, "yscb.py")
-    return f"{p}/yscb.py"
+    return DEFAULT_SELF_UPDATE_URL
 
 
 def _render_self_update_help() -> str:
@@ -166,7 +162,7 @@ def cmd_self_update(argv: List[str]) -> int:
             i += 1
         i += 1
 
-    target_url = _resolve_self_update_target_url(provider, custom_url)
+    target_url = _resolve_self_update_target_url(custom_url=custom_url)
     print(f"[yscb] Checking for latest yscb.py from: {target_url}")
 
     current_file = os.path.abspath(__file__)

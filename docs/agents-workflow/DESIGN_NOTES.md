@@ -1,192 +1,109 @@
+---
+target: "Agents-Workflow"
+doc_type: "design_notes"
+status: "active"
+source_paths:
+  - "yscb://source/agents-workflow/agents_workflow/compiler.py"
+  - "yscb://source/agents-workflow/agents_workflow/publisher.py"
+  - "yscb://source/agents-workflow/agents_workflow/initializer.py"
+  - "yscb://source/agents-workflow/config.project.json"
+related_docs:
+  - "./README.md"
+  - "./FACTORY_PIPELINE.md"
+  - "./user_guide.md"
+last_updated: "2026-10-15"
+---
+
 # 設計決策與工程妥協 (Design Notes)
 
-本文件記錄 `agents-workflow` 模組中的核心設計決策、邊界取捨與歷史妥協。
+本文件專注記錄 `agents-workflow` 模組在實作中採取的**工程妥協、反直覺設計與防坑邊界（知識庫維度 ⑤）**。常規架構與操作指引請參閱 [README.md](./README.md)、[FACTORY_PIPELINE.md](./FACTORY_PIPELINE.md) 與 [user_guide.md](./user_guide.md)。
 
 ---
 
 ## 登錄索引表
 
-| 編號 | 決策 / 妥協主題 | 影響範圍 | 狀態 |
-| :--- | :--- | :--- | :---: |
-| **[DN-AW-01]** | 協議產物工廠化與宣告式 Contributes 替代硬編碼 | 模組架構、微內核整合 | `Active` |
-| **[DN-AW-02]** | 多輪遞迴狀態機之自指死鎖防護與標籤清除機制 | 工廠編譯器 (`compiler.py`) | `Active` |
-| **[DN-AW-03]** | 統一靜態資產空間收納至 `assets/` | 目錄結構、Manifest 規格 | `Active` |
-| **[DN-AW-04]** | 佔位符 Markdown 可視化語法選型與殘留抹除策略 | 工廠編譯器、全量資產庫 | `Active` |
-| **[DN-AW-05]** | 組態模板 `!undefined` 剛性解耦與推薦預設值封裝 | 組態治理、一鍵初始化引擎 | `Active` |
-| **[DN-AW-06]** | HTML 註解 Token 自宣告與字面值 Replace 解算 | 工廠編譯器、資產導出 | `Active` |
-| **[DN-AW-07]** | 兩階段 6 步管線、三層 URI 重映射與 4 步原子發布交易 | 工廠編譯器、發布引擎、CLI | `Active` |
-| **[DN-AW-08]** | Stage 2 佔位符二分法解析與反引號完全替代剝除 | 工廠編譯器 (`compiler.py`) | `Active` |
-| **[DN-AW-09]** | 6 大計畫分支拓撲、/NewPlan 延遲建檔與 Roadmap 策略資產體系 | 工作流體系、CLI 工具鏈 | `Active` |
-| **[DN-AW-10]** | JIT 變更感知 Stat-First 雙階快照初篩與 SHA-1 快取機制 | 發布引擎 (`publisher.py`)、Manifest 治理 | `Active` |
-| **[DN-AW-11]** | 專案特化技能宣告式擴充規範、管理區塊純粹單向覆寫與工作流相對路徑校準 | 規範標準、發布引擎、工作流資產 | `Active` |
-| **[DN-AW-13]** | 目錄資產 SHA-1 遞迴遍歷雜湊、未配置沙盒 URI 降級與裸露標籤合規防護 | 發布引擎、工廠編譯器、驗證器 | `Active` |
-| **[DN-AW-14]** | agents-workflow 資產分類純化：除役 workflow 類型全面統一為 skill | 規格定義、編譯器、發布引擎 | `Active` |
-| **[DN-AW-15]** | 工作流全量內容審計、模型溯源欄位、Review 內化與 Token 語意收斂 | 模板體系、驗證器、SOP 工作流 | `Active` |
+| 編號 | 原編號對照 | 決策 / 妥協與防坑主題 | 影響範圍 | 狀態 |
+| :--- | :--- | :--- | :--- | :---: |
+| **[DN-AW-01]** | 原 `DN-AW-02` + `DN-AW-04` | 5-Step 編譯狀態機防自指死鎖與 `make_purge_regex` 整行空白換行吞噬 | 工廠編譯器 (`compiler.py`) | `Active` |
+| **[DN-AW-02]** | 原 `DN-AW-05` | `config.project.json` 靜態模板剛性保持 `"!undefined"` 與預設值延遲物化 | 組態治理、`WorkflowInitializer` | `Active` |
+| **[DN-AW-03]** | 原 `DN-AW-08` + `DN-AW-13` | Stage 2 `EXACT_REGEX` 反引號剝除 vs 行內保留、`FT-14` 裸標籤契約與沙盒 URI 回退 | 工廠編譯器 (`compiler.py`) | `Active` |
+| **[DN-AW-04]** | 原 `DN-AW-10` + `DN-AW-13` | JIT 變更偵測零外部依賴與目錄型資產（Skill 資料夾）遞迴排序聚合 SHA-1 | 發布引擎 (`publisher.py`) | `Active` |
+| **[DN-AW-05]** | 原 `DN-AW-14` | `compiler.py` 對舊版 `type: "workflow"` 自動無縫轉譯為 `"skill"` 與遺留目錄清理 | 工廠編譯器、發布引擎 | `Active` |
+| **[DN-AW-06]** | 原 `DN-AW-11` + `DN-AW-16` | `AGENTS.md` / `CLAUDE.md` 單向覆寫防殭屍技能復活與移除 Target 軟剝離保護 | 發布引擎 (`publisher.py`) | `Active` |
 
 ---
 
-### [DN-AW-01] 協議產物工廠化與宣告式 Contributes 替代硬編碼
-- **背景**：原 SOP 規格將特定專案的特化工程規範（如 Dogfooding 等）硬編碼於標準檔案中，破壞了工作流模組的通用抽象性。
-- **決策**：引入宣告式 `export`、`insert` 與 `token` 體系，將規範與模板轉化為工廠原料，允許第三方模組動態向錨點注入自定義內容。
-- **效益**：模組 100% 純淨通用，可開箱供任何 YSCB 下游專案使用。
-
----
-
-### [DN-AW-02] 多輪遞迴狀態機之自指死鎖防護與標籤清除機制
-- **背景**：當注入片段本身包含同名 Token 或多模組連續 below 追加時，易造成無窮遞迴展開或殘留未解算標籤。
-- **決策**：在單次注入時將內容視為原子字面值，禁止本輪自指展開；並在 Step 3 依 Step 1 快照乾淨抹除殘留錨點標籤。
-- **效益**：徹底保證收斂性，防止無窮死鎖。
-
----
-
-### [DN-AW-03] 統一靜態資產空間收納至 `assets/`
-- **背景**：模組根目錄分散存在 `standards/`、`workflows/`、`templates/`，內聚度偏低。
-- **決策**：將三者統籌收納於 `assets/` 子目錄下，保持模組根目錄乾淨清爽。
-
----
-
-### [DN-AW-04] 佔位符 Markdown 可視化語法選型與殘留抹除策略
-- **背景**：原 HTML 註解格式（`<!-- __TOKEN__ -->`）在 Markdown 渲染模式下被隱藏，不易於肉眼審閱模板結構與未展開錨點。
-- **決策**：
-  1. 全面重構為原生可視語法：插入佔位符 `__@{token}__`（主動注入）與路徑佔位符 `__#{uri}__`（被動參照）。
-  2. 抹除正則工廠 `make_purge_regex` 採用 `r"([ \t]*__@\{\s*" + re.escape(token_name) + r"\s*\}__[ \t]*\r?\n?)"`，自動吞噬行首縮排與行尾換行，確保抹除後文檔不留多餘空行。
-  3. `__#{uri}__` 於編譯階段 100% 原樣保留，作為 Markdown 文檔的語意參照與路徑錨點。
-
----
-
-### [DN-AW-05] 組態模板 `!undefined` 剛性解耦與推薦預設值封裝
-- **背景**：若將預設路徑（如 `.agent_workflow/plans`）直接寫死在 `config.project.json` 模板中，將破壞微內核「未配置即 `!undefined`」的零臆測鐵律。
-- **決策**：
-  1. `config.project.json` 模板中 `paths` 欄位剛性保持 `"!undefined"`，並保留 `ide: []` 等未來擴充欄位。
-  2. 將一鍵初始化推薦路徑（`project://.agent_workflow/plans` 等）封裝於 `WorkflowInitializer` 類別中。
-  3. 僅當使用者顯式執行 `--init-default` 並確認後，才由引導引擎原子寫入 `config.project.json` 並刷新 Core URI 快取。
-
----
-
-### [DN-AW-06] HTML 註解 Token 自宣告與字面值 Replace 解算
-- **背景**：當模板或標準文檔需要動態產生原生 HTML 註解（如 `<!-- slide -->` 或隱藏標記）時，直接寫入 HTML 註解會在某些 Markdown 編輯器被過濾或混淆。
-- **決策**：
-  1. 宣告 `BEGIN_HTML_ANNOTATION` 與 `END_HTML_ANNOTATION` Token。
-  2. 在 `manifest.json` 中配置 `type: "const"` 與 `mode: "replace"`，分別替換為字面值 `<!--` 與 `-->`。
-  3. 編譯期由工廠狀態機原子替換，解算後產生合規 HTML 註解。
-
----
-
-### [DN-AW-07] 兩階段 6 步管線、三層 URI 重映射與 4 步原子發布交易
-- **背景**：
-  1. 原 `exports/` 目錄直接輸出在模組根目錄下，造成安裝與源碼空間污染。
-  2. 模組原始資產維持語意 URI 解耦（如 `module.root://`），但 Agent 工具 (`view_file`) 與人眼預覽需要相對於落地檔案的實體相對路徑。
-  3. 多 Release Target 發布時，若發布中途異常可能造成孤立殘留檔案或中斷損毀。
-- **決策**：
-  1. 拆解為標準 6 步語意編譯發布管線：Stage 1 專注解算內容並寫入 `cache.root://agents-workflow/resolved_contents/`，Stage 2 依啟用之 `release_targets` 解析發布拓撲並計算相對路徑。
-  2. 實作三層重映射階層：Tier 1 (發布拓撲映射表) ➔ Tier 2 (Core 專案級協議) ➔ Tier 3 (未知協議安全降級)。
-  3. 實作基於 `storage://agents-workflow/release_manifest.json` 的 4 步原子發布交易（過往清理 ➔ 提前解算 ➔ 持久紀錄 ➔ 目錄落地與 `AGENTS.md` 軟合併）。
-- **效益**：模組安裝目錄保持 100% 純淨，Agent 模板尋址盲區徹底消除，多環境發布具備交易級安全保證。
- 
----
-
-### [DN-AW-08] Stage 2 佔位符二分法解析與反引號完全替代剝除
-- **背景**：
-  原 Stage 2 URI 解析實作對所有命中 `CODE_SPAN_REGEX` 的代碼塊無差別包回反引號（`f"\`{inner}\`"`）。導致純佔位符（非穿插類型，如 `[Link](\`__#{uri}__\`)`）在解算後錯誤殘留反引號（`[Link](\`../path.md\`)`），破壞 Markdown 超連結規範與點擊跳轉；同時工作流中讀檔指引誤用 `__#{...}__` 導致 Agent 在根目錄 CWD 執行 `view_file` 時發生 404。
-- **決策**：
-  1. 在 `compiler.resolve_stage2_uri` 中引入 Standalone 純佔位符判定（`LOCAL_URI_EXACT_REGEX` / `PROJECT_URI_EXACT_REGEX`），純佔位符解算後直接返回純路徑字串（完全替代並剝除外層反引號）。
-  2. 行內穿插代碼（如命令列 `python __${...}__ run`）解算內部佔位符後維持外層代碼反引號。
-  3. 工作流中面向 Agent 讀檔與終端執行的檔案動線，全面切換為 `__${...}__` (Project Relative URI)，確保專案根目錄直達可讀。
-- **效益**：Markdown 超連結符合 100% CommonMark 規範，徹底消滅 Agent 初始化 404 與非預期搜尋開銷。
-
----
-
-### [DN-AW-09] 6 大計畫分支拓撲、/NewPlan 延遲建檔與 Roadmap 策略資產體系
-- **背景**：
-  1. 原 Fast Track 僅以「檔案數 $\le 2$」為硬性判斷標準，出現「10 檔共修 50 行被阻擋，而 1 檔修改 2000 行卻誤判進入 Fast Track」的規模盲點。
-  2. 原 SOP 缺乏修訂計畫（邊校驗邊改短循環）、調研計畫（非代碼技術選型）與長期策略資產（Roadmap 儲備庫）。
-  3. 原 `/NewPlan` 觸發即立即開立目錄與模板，若討論途中切換或放棄會遺留無效垃圾目錄。
-- **決策**：
-  1. 建立 6 大計畫分支矩陣：Full Track (Level 1)、Fast Track (Level 0, 4 維度綜合規模判定)、Umbrella (Level 2, 模式 B-1 預先規劃型 vs 模式 B-2 增量演進型)、修訂計畫 (4 步短循環免開目錄)、調研計畫 (3 步調研與三大出口轉化)、Roadmap (長期策略資產)。
-  2. 實作 `/NewPlan` 延遲建檔守門 (Delayed Materialization)：P00_discuss 階段維持純對話，確立分流時才一併建立目錄與模板。
-  3. 實作 `RoadmapManager` 與 `python yscb.py agents-workflow roadmap` CLI 摘要掃描工具，結合 `/Roadmap` 智能推薦工作流達成低 Token 儲備探索。
-- **效益**：涵蓋多維開發需求場景，保護 Token 開銷與磁碟整潔度，建立長期技術儲備與一鍵轉化能力。
-
----
-
-### [DN-AW-10] JIT 變更感知 Stat-First 雙階快照初篩與 SHA-1 快取機制
-- **背景**：原 JIT Release 檢驗在 Stage 0 短路判定中連續計算 3 次來源特徵指紋，每次皆全量讀取來源檔案計算 SHA-1，產生重複 I/O 與 CPU 雜湊負擔；且依賴 `watchdog` pip 套件。
-- **決策**：
-  1. 自 `manifest.json` 徹底移除 `pip_dependencies` (`watchdog`) 宣告，回歸零外部 pip 依賴的微環境純淨性。
-  2. 引入基於 `(st_mtime_ns, st_size)` 的 Stat-First 跨進程持久化快取（`cache://agents-workflow/source_sha1_cache.json`），僅在檔案元數據變更時重新讀檔與運算 SHA-1。
-  3. 實作單次週期內來源資產綜合摘要快取 `_get_sources_digest()`，徹底消除單次執行週期的重複掃描與雜湊負擔。
-- **效益**：Clean 狀態下檢驗時間壓降至 sub-0.2ms，達成 0 檔案內容讀取與 0 重複雜湊，同時兼顧 100% 變更感知的數學精確性與自愈能力。
-
----
-
-### [DN-AW-11] 專案特化技能宣告式擴充規範、管理區塊純粹單向覆寫與工作流相對路徑校準
-- **背景**：
-  1. 下游專案需在 `AGENTS.md` 擴充專案特化技能分流。若發布引擎嘗試以「純文字啟發式比對」反向猜測並保留自訂列，存在數學上的不可判定性（無法區分新版官方廢棄/整併之舊系統列與使用者自訂列），必然會導致已被廢棄的過期舊技能被永遠誤判復活（殭屍技能殘留）。
-  2. `ContextInit.md` 中指向 `AGENTS.md`、`CHANGELOG.md` 與 `STANDARDS.md` 的 Markdown 超連結誤用 `__${project://...}__` 標籤，Stage 2 解算為相對於 `project_root` 之裸路徑，在以工作流檔案為基準的 Markdown 檢視下無法直接點擊跳轉。
-- **決策**：
-  1. **捨棄啟發式字串猜測，回歸宣告式 Project Contributes**：`_soft_merge_agents_text` 保持對系統管理區塊 `<!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->` 的純粹單向覆寫，杜絕廢棄舊技能殘留；專案特化技能擴充全面導引至 `config/agents-workflow/contribute.json`，透過 `AGENTS_SKILL_ROUTING` 錨點以 `insert` 模式在一等公民層級宣告注入；外部自訂章節（如 `## 4. 專案特化工程規範`）100% 完整保留。
-  2. **校準工作流超連結為相對路徑**：將 `ContextInit.md` 內之 Markdown 語法鏈接校準為 `__#{project://...}__` 與 `__#{workflow.docs://...}__`， Stage 2 解算為相對於當前工作流之正確相對路徑（`../../AGENTS.md` 等），保留純終端 CLI 命令使用 `__${...}__`。
-- **效益**：徹底消除文字猜測帶來的殭屍技能復活風險，維持 YSCB 產物工廠之 SSOT 唯一真理宣告原則，同時修復工作流超連結導航。
-
----
-
-### [DN-AW-12] __${uri}__ 語意擴充：__$(起始錨點){uri}__ 動態指定相對路徑起點與 #/$ 語法語意明確化
-- **背景**：
-  1. 原 Stage 2 路徑佔位符中，`__#{uri}__` 恆定解算為自身相對路徑（相對於產出目標目錄 `cur_dir`），而 `__${uri}__` 恆定解算為相對於專案根目錄 (`project_root`)。
-  2. 當工作流、文檔或跨目錄結構需要在不同層級之間生成相對路徑時，缺乏指定特定錨點（如 `module.source://`、`project://docs` 或特定子目錄）作為相對路徑起點之語法能力。
-- **決策**：
-  1. **語法語意精確分流**：明確定義 `#` 為「自身相對路徑佔位符」（相對於輸出目標檔案目錄，供 Markdown 超連結跳轉），`$` 為「錨點/絕對相對路徑佔位符」（相對於指定錨點或專案根目錄）。
-  2. **`__${uri}__` 語意擴充與新語法 `__$(起始錨點){uri}__`**：
-     - 原不輸入起始錨點的 `__${uri}__` 維持 100% 向後相容，預設以 `project://` 為起始錨點映射。
-     - 引入新語法 `__$(起始錨點){uri}__`：支援在括號內指定起始錨點（可為目錄、檔案或語意 URI），計算目標 `uri` 相對於該錨點的路徑；空括號 `__$(){uri}__` 容錯退化為 `project://`。
-  3. **二分法完全支援**：Standalone 模式完全剝除外層反引號，Inline 穿插模式維持外層代碼反引號；`UNENCLOSED_TAG_REGEX` 健全攔截裸露標籤防止外溢。
-- **效益**：兼具向後相容與高度彈性的路徑解算能力，消滅跨目錄與跨模組資產引用的路徑硬編碼負贅。
-
----
-
-### [DN-AW-13] 目錄資產 SHA-1 遞迴遍歷雜湊、未配置沙盒 URI 降級與裸露標籤合規防護
-- **背景**：
-  1. `publisher.py` 的 `_get_source_file_sha1` 於遇到目錄型資產（如 Skill 套件目錄）時，直接調用 `open()` 拋出 `IsADirectoryError` 或返回固定偽雜湊，導致目錄型資產每次皆被判定為 Dirty，觸發多餘的 Auto-release 重建。
-  2. 單元測試或未配置 `workflow.*://` 協議的沙盒環境下，編譯器拋出未捕獲例外；Markdown 超連結中的反引號殘留（`[text](`path`)`）破壞連結點擊體驗。
-  3. 裸露未包裹反引號之佔位符若被非預期替換，破壞了合約 `FT-14` 的裸露佔位符安全防護。
-- **決策**：
-  1. **目錄 SHA-1 遞迴聚合**：`_get_source_file_sha1` 偵測為目錄時，遞迴排序遍歷目錄下所有檔案計算 SHA-1 聚合摘要，使 Skill 套件享有精準的 JIT 快取短路。
-  2. **沙盒降級與 Markdown 清理**：編譯器在沙盒未配置 `workflow.docs://` 等協議時，安全回退為專案相對路徑；自動清理 Markdown 連結括號內殘留反引號。
-  3. **嚴守 FT-14 合約**：裸露未包裹反引號之佔位符 100% 原樣保留並輸出 Warning，維持語意邊界純淨。
-  4. **驗證器狀態擴充**：`verifier.py` 擴充合法狀態列舉集合，並優化 `archive_dir` 回退邏輯。
-- **效益**：發布引擎對 Skill 目錄資產之 JIT 判定精確度達到 100%，消除每次自動發布的冗餘 I/O，同時提升沙盒與測試相容性。
-
----
-
-### [DN-AW-14] agents-workflow 資產分類純化：除役 workflow 類型全面統一為 skill
-- **背景**：
-  1. 專案早期同時存在 `workflow`（單一 Markdown 流程指令）與 `skill`（包含 `SKILL.md`、子目錄與參考手冊之功能包），導致概念冗餘、Agent 認知負擔過高，以及下游不同 Target（如 Antigravity `.agents/workflows` vs `.agents/skills`）的多軌目錄分裂。
-  2. 延伸計畫 2.a 要求資產分類純化，徹底除役 `workflow` 類型，全面遷移為 `skill`。
-- **決策**：
-  1. **Schema 純化**：`_format.json` 的 `ExportAssetDef.type` 純化為 `enum(standard, template, skill)!`，從 Schema 層級廢除 `workflow`。
-  2. **編譯器向後相容轉譯**：`compiler.py` 在載入階段自動將宣告 `type: "workflow"` 無損轉譯為 `type: "skill"`，並將單檔工作流自動包裹為標準單檔 Skill 結構，確保下游第三方模組平滑升級。
-  3. **內建資產全面升級**：將 `assets/workflows/` 下的 8 大流程（`auto`, `context-init`, `continue`, `discuss`, `new-plan`, `pause`, `research`, `roadmap`）重構為帶有標準 YAML frontmatter 的 `assets/skills/<name>/SKILL.md` 目錄結構；專案級 `BumpRevision` 同步遷移至 `config/agents-workflow/skills/bump-revision/SKILL.md`。
-  4. **Target 投影收斂與舊目錄清理**：`release_target`（antigravity, claude, codex）全面移除 `projections.workflow`，統一只保留 `standard`, `template`, `skill`；`publisher.py` 在發布交易時自動探測並清理 `.agents/workflows/` 與 `.claude/commands/` 殘留目錄與歷史檔案，達成零雙軌、零殘留。
-- **效益**：Agent 開發與調用架構實現 100% 純 Skill 體系，目錄結構高度簡約一致，消除過往指令集與技能集的分類混淆。
+### [DN-AW-01] (原 DN-AW-02 + DN-AW-04) 5-Step 編譯狀態機防自指死鎖與 `make_purge_regex` 整行空白換行吞噬
+- **工程背景與坑點**：
+  1. 當注入片段本身包含同名 Token，或多個模組對同一錨點連續執行 `below` / `above` 追加時，若在當輪直接對注入內容遞迴正則替換，極易引發無窮自指死鎖或殘留未解算標籤。
+  2. 錨點標籤行（如 `__@{TOKEN_NAME}__`）在解算完畢後若僅單純替換掉標籤字串本身，會導致生成出的 Markdown 文件在原錨點位置遺留多餘的空白縮排行與空行，破壞 Markdown 表格或列表結構。
+- **妥協與防禦設計**：
+  1. **單輪字面量展開 + Step 3 從 Step 1 快照挖空**：5-Step 狀態機在 Step 1 先擷取當輪現存 Token 快照，Step 2 執行注入時將新內容視為原子字面量（禁止本輪自指展開，留待下一輪 Iteration 處理），並在 Step 3 嚴格依據 Step 1 快照精準挖空已處理之錨點標籤，徹底保證多輪展開的收斂性。
+  2. **吞噬整行空白與換行 (`make_purge_regex`)**：標籤抹除正則強制採用 `r"([ \t]*__@\{\s*" + re.escape(token_name) + r"\s*\}__[ \t]*\r?\n?)"`，在抹除標籤時一併吞噬行首縮排空白與行尾換行符。
 
 > [!CAUTION]
-> 切勿刪除 `compiler.py` 中將 `"workflow"` 自動轉譯為 `"skill"` 的向後相容邏輯，否則尚未升級 `contribute.json` 的外部下游模組在宣告 `type: "workflow"` 時將無法投影；同時新增內建資產時一律放置於 `assets/skills/<name>/SKILL.md`，嚴禁再次建立 `assets/workflows/`。
+> 切勿將 `make_purge_regex` 簡化為僅匹配 `__@{...}__` 本身，否則所有包含未注入插槽的模板與 Skill 產物都會殘留空白斷行，導致 Markdown 表格斷裂與排版劣化；亦嚴禁移除 Step 1 快照機制改為原地遞迴替換，否則將失去自指死鎖防護。
 
 ---
 
-### [DN-AW-15] 工作流全量內容審計、模型溯源欄位、Review 內化與 Token 語意收斂
-- **背景**：
-  1. 早期 `contributes/agents-workflow.json` 定義了 60+ 個零散 Token，包含多數從未被第三方擴充使用之歷史過期佔位符（如已廢除之 `DEVELOPMENT_STANDARDS` 造成 `new-plan` 雙重注入整份標準、`BEGIN_HTML_ANNOTATION` 殘留等）。
-  2. 隨著多模型協作與模型換代，開發計畫各階段產物缺乏作者與執行者模型標記，無法追溯規劃與編碼的模型來源（例如 P00/P01 規劃者為 Gemini 4 Argon，後續實作者為 Gemini 3.8 Flash）。
-  3. 原將 Review 作為獨立階段（P06 -> Review Gate -> P07）造成多餘的 Checkpoint 停頓等待，拖沓推進節奏，本質上 Review 應內化為 Phase 7 / FT-3 的剛性前置管線。
-  4. `PlanVerifier.verify_all_plans()` 過去會掃描已封存之歷史計畫，但已封存目錄代表過去歷史事實，不應因新規則的加入而被迫回溯修改，且全量驗證時亦無必要檢查封存目錄。
-- **決策**：
-  1. **Token 語意收斂與死代碼清理**：`contributes/agents-workflow.json` 收斂至核心 6 大 Token，刪除未使用的 `providers.py`。
-  2. **模型溯源標頭與佔位符防護**：標準模板 Header 統一新增 `> 模型：[模型名稱]` 欄位，`PlanVerifier` 將其納入剛性檢查 (`has_model`)，並擴充 `[模型名稱]` / `[Model Name]` 佔位符攔截；所有非 Phase 模板徹底剝除頂部 HTML 註解導引，實現純淨模板。
-  3. **Review 內化併回 P07 / FT-3**：廢除獨立 `review_gate.md` 與中間斷點，於 Phase 7 (`phase_07_walkthrough.md`) 與 Fast Track FT-3 內化三步結案管線（Step 1: 三層文檔交付對齊 $\to$ Step 2: 代碼清理與 `plan verify` 合規檢核 $\to$ Step 3: P07 結案報告撰寫與全域發布日誌追加），兼具高推進效率與剛性防漏檢。
-  4. **驗證器封存邊界劃分與 Checkbox 嚴格檢查**：`PlanVerifier.verify_all_plans()` 移除歷史封存目錄掃描，專注於活躍計畫目錄；當計畫狀態標記為 `Completed` 或 `Concluded` 時，若仍有未勾選之待辦 Checkbox (`- [ ]`)，直接標記為 `FAIL`。
-- **效益**：工作流模組 Token 與資產內聚度大幅提升，消除冗餘雙重注入與中間停頓，計畫檔案具備清晰的模型溯源脈絡，封存邊界與完成度檢核更加健全可靠。
+### [DN-AW-02] (原 DN-AW-05) `config.project.json` 靜態模板剛性保持 `"!undefined"` 與預設值延遲物化
+- **工程背景與坑點**：
+  若為求方便而將預設推薦路徑（如 `project://plans`、`project://docs`）直接寫死在模組源碼的 `config.project.json` 靜態模板中，會導致任何尚未初始化的新專案在載入模組時即被隱式綁定預設路徑，破壞微內核「未配置即 `!undefined`」的零臆測與延遲物化契約。
+- **妥協與防禦設計**：
+  1. 模組內的 `config.project.json` 靜態模板中，`paths` 下所有欄位（`plans`, `archived`, `docs`, `roadmap`）必須嚴格保持 `"!undefined"`。
+  2. 所有推薦預設路徑統一封裝於 `WorkflowInitializer` (`initializer.py`) 內部，僅當使用者或 Agent 顯式執行 `agents-workflow init --default` 時，才由初始化器原子寫入專案組態並刷新 Core URI 快取。
 
+> [!WARNING]
+> 嚴禁在模組源碼的 `config.project.json` 中將 `"!undefined"` 改為具體預設路徑字串，否則將破壞微內核未初始化偵測契約與對應的沙盒隔離測試。
 
+---
 
+### [DN-AW-03] (原 DN-AW-08 + DN-AW-13) Stage 2 `EXACT_REGEX` 反引號剝除 vs 行內保留、`FT-14` 裸標籤契約與沙盒 URI 回退
+- **工程背景與坑點**：
+  1. Markdown 連結若寫為 `` [Link](`__#{uri}__`) ``，若 Stage 2 對所有匹配 `CODE_SPAN_REGEX` 的片段無差別包回外層反引號，會產生 `[Link](`../path.md`)` 導致 CommonMark 超連結失效；反之，若對命令列 `` `python __${uri}__ run` `` 剝除反引號，則會破壞行內代碼塊格式。
+  2. 在單元測試或未執行 `init` 的空沙盒環境中，`workflow.docs://` 等協議處於 `!undefined` 狀態，若直接調用 `core.uri.resolve()` 並任由例外拋出，將導致 Stage 2 整批編譯崩潰。
+- **妥協與防禦設計**：
+  1. **Standalone vs Inline 二分法**：在 `compiler.resolve_stage2_uri` 中以 `EXACT_REGEX`（`LOCAL_URI_EXACT_REGEX` / `PROJECT_URI_EXACT_REGEX`）識別「整個反引號內僅含單一佔位符」的獨立路徑，解算後**直接剝除外層反引號**；若反引號內含有前後綴指令文字（Inline），則僅替換內部佔位符並**保留外層反引號**。
+  2. **`FT-14` 裸標籤原樣保留契約**：任何未被反引號包裹的裸露佔位符（由 `UNENCLOSED_TAG_REGEX` 偵測）一律不予展開，原樣保留並輸出 `[compiler:warning]` 警示。
+  3. **未配置沙盒 URI 安全回退**：當 Stage 2 解析 `workflow.*://` 遭遇未定義或無法解析的沙盒環境時，捕獲例外並安全降級回退為專案相對路徑，防止編譯管線崩潰。
 
+> [!CAUTION]
+> 嚴禁移除 `UNENCLOSED_TAG_REGEX` 裸標籤攔截或將裸露佔位符納入自動替換，否則文檔中作為教學說明展示的裸語法字串會被意外竄改（違反 `FT-14` 合約）；修改 `resolve_stage2_uri` 時亦必須維持 Standalone 剝除反引號與沙盒回退保護。
+
+---
+
+### [DN-AW-04] (原 DN-AW-10 + DN-AW-13) JIT 變更偵測零外部依賴與目錄型資產（Skill 資料夾）遞迴排序聚合 SHA-1
+- **工程背景與坑點**：
+  1. CLI 每次啟動前的 `ensure_jit_release` 若引入外部 `watchdog` 等檔案監控依賴，會破壞 YSCB 核心模組「零外部 pip 依賴」的微環境純淨性；而每次全量重算檔案雜湊則會造成冗餘 I/O。
+  2. 進入純 Skill 架構後，導出資產常為包含 `SKILL.md` 與 `references/` 子目錄的**資料夾**。若 `_get_source_file_sha1` 直接對資產路徑呼叫 `open()`，遇到目錄型 Skill 將拋出 `IsADirectoryError` 或被迫返回固定偽雜湊，導致每次 CLI 執行都誤判為 Dirty 而重跑完整發布。
+- **妥協與防禦設計**：
+  1. **零外部依賴 Stat-First 快取**：嚴禁引入 `watchdog`，完全基於標準庫 `os.stat` 之 `(st_mtime_ns, st_size)` 搭配 `source_sha1_cache.json` 進行極速變更偵測。
+  2. **目錄遞迴排序聚合 SHA-1 (`_get_source_file_sha1`)**：當 `_get_source_file_sha1` 偵測目標路徑為目錄時，自動遞迴並以確定性字典序排序遍歷目錄下所有子檔案，將各檔案之相對路徑與內容 SHA-1 聚合計算出單一目錄級 SHA-1 指紋。
+
+> [!CAUTION]
+> 嚴禁在 `manifest.json` 重新引入 `watchdog` 等外部套件；修改 `_get_source_file_sha1` 時必須保留對 `os.path.isdir()` 的遞迴排序聚合邏輯，否則任何對 Skill 內部 `references/*.md` 的修改都將無法觸發 JIT 自動同步（或引發 `IsADirectoryError` 崩潰）。
+
+---
+
+### [DN-AW-05] (原 DN-AW-14) `compiler.py` 對舊版 `type: "workflow"` 自動無縫轉譯為 `"skill"` 與遺留目錄清理
+- **工程背景與坑點**：
+  雖然 `agents-workflow` 已全面廢除 `workflow` 資產分類並統一收斂為 `skill`（`_format.json` Schema 僅允許 `standard | template | skill`），但外部或下游專案的舊版模組 `contribute.json` 與歷史測試案例可能仍宣告 `"type": "workflow"`，且升級前的專案工作區可能殘留舊版 `.agents/workflows/` 或 `.claude/commands/` 實體目錄。
+- **妥協與防禦設計**：
+  1. **載入期無縫轉譯**：`compiler.py` 在搜集 `export` 資產時，若偵測到 `type == "workflow"`，自動在記憶體中將其無縫轉譯為 `type = "skill"` 並補齊標準 Skill 屬性，確保下游舊版配置零報錯平滑相容。
+  2. **遺留目錄自動清理**：`publisher.py` 在執行原子發布 Pruning 階段時，自動探測並物理清除歷史遺留之 `.agents/workflows/` 與 `.claude/commands/` 目錄。
+
+> [!WARNING]
+> 切勿因為 `_format.json` 已移除 `"workflow"` 列舉，就連帶刪除 `compiler.py` 中將 `"workflow"` 自動轉譯為 `"skill"` 的相容分支，否則未同步升級之外部模組與向後相容測試將立即中斷。
+
+---
+
+### [DN-AW-06] (原 DN-AW-11 + DN-AW-16) `AGENTS.md` / `CLAUDE.md` 單向覆寫防殭屍技能復活與移除 Target 軟剝離保護
+- **工程背景與坑點**：
+  1. **啟用時合併坑點（殭屍技能復活）**：若 `_soft_merge_agents_text` 嘗試用「啟發式文字比對」去猜測並保留 `<!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->` 區塊內的自訂表格列，在數學上無法區分「使用者手動新增的列」與「官方新版已廢棄除役的舊技能列」，必然導致已被官方刪除的舊技能永遠殘留復活。
+  2. **停用時刪除坑點（誤刪使用者自訂規範）**：當使用者透過 `release-target --remove` 停用某個 Target 時，`AGENTS.md` 或 `CLAUDE.md` 會進入待移除清單 `files_to_remove`。若直接呼叫 `os.remove()`，會將開發者在託管區塊外部撰寫的專案特化規範一併物理抹除，造成嚴重資料遺失。
+- **妥協與防禦設計**：
+  1. **託管區塊純粹單向覆寫 (`_soft_merge_agents_text`)**：對於 `<!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->` 內部區塊，強制執行 100% 中央標準庫單向覆寫（專案特化技能路由一律改由 `config/agents-workflow/contribute.json` 注入 `AGENTS_SKILL_ROUTING` 錨點），區塊外部的使用者自訂章節則 100% 原樣保留。
+  2. **停用時非破壞性軟剝離 (`_soft_unmerge_agents_text`)**：移除 Target 清理 `agents_md` 檔案時，強制先執行 `_soft_unmerge_agents_text` 剝離託管區塊。若剝離後仍有非預設樣板的使用者自訂文字，僅將自訂文字寫回檔案並保留於磁碟；唯有剝離後為空或僅剩未修改之預設佔位樣板時，才允許呼叫 `os.remove()`。
+
+> [!CAUTION]
+> 嚴禁在 `_soft_merge_agents_text` 的託管區塊內加入啟發式行級 Diff 保留邏輯（必引發殭屍技能殘留）；更**絕對禁止**在 `publisher.py` 清理陳舊 `agents_md` 檔案時繞過 `_soft_unmerge_agents_text` 直接調用 `os.remove()`，否則將直接摧毀開發者在根目錄 `AGENTS.md` / `CLAUDE.md` 中維護的專案自訂規範！

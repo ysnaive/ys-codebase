@@ -1,3 +1,18 @@
+---
+target: "Core"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/vfs/__init__.py"
+  - "yscb://source/core/core/vfs/os_backend.py"
+  - "yscb://source/core/core/vfs/path.py"
+related_docs:
+  - "./README.md"
+  - "./uri_protocols.md"
+  - "./DESIGN_NOTES.md"
+last_updated: "2026-10-15"
+---
+
 # 統一虛擬檔案系統手冊 (Unified Virtual File System - VFS)
 
 本手冊說明 YS-Codebase 核心虛擬檔案系統 (`core.vfs`) 之分層架構、後端插槽化、原子寫入保證與 API 使用範例。

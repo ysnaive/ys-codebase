@@ -130,8 +130,8 @@ graph TD
 # 查詢所有進行中與已完成計畫之狀態大綱
 python yscb.py agents-workflow plan status
 
-# 檢核指定計畫之 Markdown 結構完整性、追溯鏈合規性與註解剝除狀態
-python yscb.py agents-workflow plan verify 2026_08_29_2035_my_feature
+# 檢核指定活躍計畫（或加 --all 檢核所有活躍計畫）之模型標頭、佔位符、Completed 未勾選 Checkbox 與章節合規性
+python yscb.py agents-workflow plan verify [plan_name] [--all]
 python yscb.py agents-workflow plan check 2026_08_29_2035_my_feature
 
 # 依關鍵字搜尋歷史與進行中計畫
