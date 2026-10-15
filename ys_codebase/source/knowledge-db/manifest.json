@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.1.0.4",
+  "version": "1.1.0.6",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -26,7 +26,7 @@
     "watchdog": ">=4.0.0"
   },
   "onboarding": [
-    "[Pre-flight] Configure project source directories: python yscb.py config set knowledge-db spaces.source.include '[\"project://src\"]'",
+    "[Pre-flight] Configure project source directories in config/knowledge-db/contribute.json (spaces.source.include)",
     "Optional - Download local ONNX vector model (or use lightweight BM25 via config set knowledge-db enable_vector_search false): python yscb.py knowledge-db model download",
     "Build unified AST & BM25/vector index: python yscb.py knowledge-db index",
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" --json -s"

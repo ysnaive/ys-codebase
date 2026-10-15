@@ -1,3 +1,22 @@
+---
+target: "Dev"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/dev/dev/tester.py"
+  - "yscb://source/dev/dev/testing/case.py"
+  - "yscb://source/dev/dev/testing/sandbox.py"
+  - "yscb://source/dev/dev/testing/contract.py"
+  - "yscb://source/dev/dev/testing/requirement.py"
+  - "yscb://source/dev/dev/testing/runner.py"
+related_docs:
+  - "./README.md"
+  - "./architecture.md"
+  - "./user_guide.md"
+  - "./DESIGN_NOTES.md"
+last_updated: "2026-10-15"
+---
+
 # Dev 測試框架與沙盒指南 (Testing Framework & Sandbox Guide)
 
 > 本手冊為維度 3 中觀專題手冊，定義 YS-Codebase 測試體系、三階 CLI 指令架構、完全對標微型虛擬環境 (`SandboxProvisioner`)、`scripts/hook.dev.py` 測試自治 Hook 與 `YSCBTestCase` 測試基類。
@@ -80,9 +99,9 @@ def on_test_setup(context: Any) -> None:
 
 ---
 
-## 4. 核心測試基類：`YSCBTestCase`
+## 4. 核心測試基類：`YSCBTestCase` 與沙盒治理機制
 
-所有單元與整合測試均應繼承 `dev.testing.YSCBTestCase`：
+所有單元與整合測試均強制繼承 `dev.testing.YSCBTestCase`：
 
 ```python
 from dev.testing import YSCBTestCase, require, Requirement
@@ -103,30 +122,45 @@ class TestMyFeature(YSCBTestCase):
         self.mark_passed()
 ```
 
-### 4.1 需求條件裝飾器 (`@require`)
+### 4.1 需求條件裝飾器 (`@require`) 與 `Requirement` 旗標
 ```python
 from dev.testing import require, Requirement
 
 class Requirement(Flag):
     NONE = 0
-    LOGIC = auto()     # 純內部單元邏輯 (預設快測)
-    ENV = auto()       # 需輕量模擬環境/URI (預設快測)
-    WORKFLOW = auto()  # 需多行程/實體沙盒 E2E 重型流程 (預設排除，需 --workflow 或 --all-types)
-    PERF = auto()      # 效能基準評測 (預設排除，需 --perf 或 --all-types)
+    LOGIC = auto()            # 純內部單元邏輯 (預設快測)
+    ENV = auto()              # 需輕量模擬環境/URI/VFS (預設快測)
+    NETWORK = auto()          # 需主動外部網路連線 (離線時自動 SkipTest)
+    WORKFLOW = auto()         # 需多行程/實體沙盒 E2E 重型流程 (預設排除，需 --workflow 或 --all-types)
+    PERF = auto()             # 效能基準評測 (預設排除，需 --perf 或 --all-types)
+    ISOLATED_SANDBOX = auto() # 正交隔離旗標：要求為該測試方法建立獨立專屬沙盒並於 tearDown 即時銷毀
 ```
+
+### 4.2 Session-Level 共用沙盒 vs. 專屬獨立沙盒 (`ISOLATED_SANDBOX`)
+- **預設 Session-Level 共用沙盒**：同一次 `TestRunner.run_suite()` 內的測試方法預設跨類別共用同一個沙盒實例 (`YSCBTestCase._shared_sandbox_ctx`)，消除在 Windows NTFS / 容器環境反覆建立與銷毀目錄的 I/O 開銷，並於整個 TestSuite 結束時由 `cleanup_shared_sandbox()` 統一清理。
+- **方法級專屬獨立沙盒 (`@require(Requirement.ISOLATED_SANDBOX)`)**：針對涉及破壞性寫入、模組卸載/重裝或建置產物覆蓋之測試方法，可組合標記（如 `@require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)`）。`setUp()` 將為該方法單獨調用 `SandboxProvisioner.create_sandbox()`，並在 `tearDown()`（測試通過且未指定 `--keep-sandbox` 時）立即銷毀該獨立沙盒，杜絕跨測試狀態污染。
+
+### 4.3 3 個沙盒滾動修剪與全量通過清理 (Rolling Prune & Full-Pass Flush)
+- **滾動修剪 (`SandboxProvisioner.prune_sandboxes(max_keep=3)`)**：`cache://dev/sandbox/` 嚴格限制最多保留 **3 個** 歷史沙盒（如因測試失敗自動保留或 `--keep-sandbox` 留存之現場）。當沙盒數量超過 3 個時，系統自動依時間戳由舊至新物理刪除最舊的沙盒（排除當前執行中沙盒 `_ACTIVE_SANDBOXES`）。
+- **全量通過清理 (Full-Pass Flush)**：當執行全模組回歸測試 `python yscb.py dev test --all` 且 100% 通過 (Exit Code 0) 時，系統自動清空 `cache://dev/sandbox/` 下所有殘留的歷史除錯沙盒；單模組跑測 (`dev test <mod>`) 通過時僅清理當次沙盒。
+
+### 4.4 Mock 源碼模組動態合成 (`create_mock_source_module`)
+- 在測試 `Builder`、`Releaser`、版本滑動窗口或 `Checker` 等底層工具鏈邏輯時，應調用 `self.create_mock_source_module(name="mock_pkg", version="1.0.0.0", deps=..., files=...)` 於沙盒 `source/<name>` 動態生成合規的輕量 Mock 模組（含 `manifest.json`、`scripts/cli.py` 與 `tests/test_dummy.py`）。
+- **零副作用隔離原則**：嚴禁在單元測試中直接對真實官方模組（`core`, `dev`, `agents-workflow`）執行破壞性打包或升版操作，防止官方模組演進時引發測試耦合失敗。
 
 ---
 
-## 5. 兩階段測試探索 (Two-Phase TestDiscovery)
+## 5. 兩階段測試探索與動態契約合成 (Two-Phase TestDiscovery & Auto-Contract)
 
-當執行 `dev op-test` 時，測試探索引擎會自動組裝兩階段測試：
-1. **Phase 1: Auto-Contract 自動契約測試**：
-   - 契約 1 (`Manifest` 必填欄位與 SemVer 合規)。
-   - 契約 2 (`scripts/cli.py` 存在且宣告 `process(args)` 進入點、無 `main` 與頂層裸語句)。
-   - 契約 3 (`Builder` 純淨打包驗證)。
+當執行 `dev op-test`（或由 `dev test` 調度）時，測試探索引擎自動組裝兩階段測試：
+1. **Phase 1: Auto-Contract 執行期動態契約合成 (`dev/testing/contract.py`)**：
+   - 不要求開發者在每個模組手動複製樣板測試檔，而是由 `make_contract_suite(module_name)`（原 `create_contract_suite_for_module`）於測試收集期使用 `type(f"{module_name.capitalize()}AutoContractTestCase", (BaseModuleContractTestCase,), {"module_name": module_name})` 動態合成 `YSCBTestCase` 子類：
+     - **契約 1 (`test_contract_manifest_schema`)**：驗證 `manifest.json` 必填欄位 (`name`, `version`, `entry`) 與模組名稱一致性。
+     - **契約 2 (`test_contract_entrypoint_valid`)**：調用 `Checker.check_module` 驗證 8 步靜態合規與雙軌命令契約（若 `contributes/core.json` 宣告 `commands.cmd` 則強制驗證 `scripts/cli.py` 實作對應具名函式；若未宣告則相容驗證 `def process(args)` 入口，且嚴禁 `main` 與頂層裸執行語句）。
+     - **契約 3 (`test_contract_clean_build`)**：調用 `Builder.build_module(clean=True)` 驗證無塵建置打包能力。
 2. **Phase 2: 自訂業務測試 (Custom Tests)**：
    - 載入 `source/<module>/tests/test_*.py`。
-   - 支援 `--type=<logic|host_cli|network>` 與 `-k <pattern>` 遞迴深度篩選。
+   - 支援 `--logical`、`--env`、`--workflow`、`--perf`、`--all-types` 分流旗標，以及 `-k <pattern>` / `--target=<mod>:<Class.method>` 精準篩選。
 
 ---
 

@@ -1,296 +1,179 @@
 ---
-title: Core 微內核設計決策與工程註記
-category: design_notes
-module: core
-updated_at: 2026-10-14
+target: "Core"
+doc_type: "design_notes"
+status: "active"
+source_paths:
+  - "yscb.host://yscb.py"
+  - "yscb://source/core/core/__init__.py"
+  - "yscb://source/core/core/uri.py"
+  - "yscb://source/core/core/vfs/"
+  - "yscb://source/core/core/engine.py"
+  - "yscb://source/core/core/contributes.py"
+  - "yscb://source/core/core/pip_manager.py"
+  - "yscb://source/core/core/ide_projector.py"
+  - "yscb://source/core/core/events.py"
+related_docs:
+  - "./README.md"
+  - "./contributes_architecture.md"
+  - "./uri_protocols.md"
+  - "./vfs.md"
+  - "./cli_commands_architecture.md"
+  - "./ZIP_PACKAGE_SPEC.md"
+  - "../_project/STANDARDS.md"
+last_updated: "2026-10-15"
 ---
 
 # Core 微內核設計決策與工程註記 (Core Design Notes)
 
-> 本文件記錄 Core 微內核系統中的非直觀實作、工程妥協與關鍵防呆決策（維度 5）。  
-> 所有維護者與 Agent 在修改相關邏輯前，**必須強制閱讀本文件**！
+> 本文件記錄 Core 微內核系統中的非直觀實作、工程妥協與關鍵防呆決策（維度 ⑤）。  
+> 常規架構機制已下沉至對應中觀專題手冊；所有維護者與 Agent 在修改微內核代碼前，**必須強制閱讀本文件並恪守防禦紅線**！
 
 ---
 
 ## 登錄決策清單 (Decision Registry)
 
-| 決策編號 | 標題 / 主題 | 影響檔案 | 風險等級 |
-| :--- | :--- | :--- | :---: |
-| **DN-01** | `project://` 顯式配置與零 Fallback 阻斷 | `source/core/core/uri.py` | 🚨 CRITICAL |
-| **DN-02** | 依賴注入中介層快照存於 `cache://` | `source/core/core/contributes.py` | ⚠️ WARNING |
-| **DN-03** | 模組組態遞迴原地增量補齊 | `source/core/core/engine.py` | ⚠️ WARNING |
-| **DN-04** | 命名空間 Hook 對接與例外隔離 | `source/core/core/engine.py` | 💡 INFO |
-| **DN-05** | 宿主組態實體路徑解耦 (脫離 project://) | `source/core/core/engine.py` | 🚨 CRITICAL |
-| **DN-06** | `yscb://` 常數自定位與零猜測阻斷 | `source/core/core/uri.py` | 🚨 CRITICAL |
-| **DN-07** | OS 核心原子鎖保護與 10s 自修復機制 | `source/core/core/engine.py` | ⚠️ WARNING |
-| **DN-08** | 剛性拓撲回歸與 6 大軟相容全面清除 | 全域多模組 | 🚨 CRITICAL |
-| **DN-09** | 四段式版本尾號不具比較性與單一 Revision 淘汰 | `source/core/core/semver.py`<br/>`source/dev/dev/builder.py` | 🚨 CRITICAL |
-| **DN-10** | 同 Major 升級鎖定原則 | `source/core/core/installer.py`<br/>`source/core/core/engine.py` | ⚠️ WARNING |
-| **DN-11** | 模組運行空間純粹化與 config 模板自動剝除 | `source/core/core/engine.py` | 💡 INFO |
-| **DN-12** | JIT `!undefined` 熱更新補齊機制與自引用防護 | `source/core/core/uri.py` | 🚨 CRITICAL |
-| **DN-13** | Contributes `__provider__` 拓撲聚合與 SDK 查詢 | `source/core/core/contributes.py` | ⚠️ WARNING |
-| **DN-14** | `yscb.host://` 宿主協議常數解算與 fast-path 路由 | `source/core/core/uri.py` | 🚨 CRITICAL |
-| **DN-15** | `yscb.venv://` 私有微虛擬環境剛性隔離與 Wheel-Only 保證 | `source/core/core/pip_manager.py` | 🚨 CRITICAL |
-| **DN-16** | IDE 自動感知與 `_yscb_managed` 宣告式可復原軟合併 | `source/core/core/ide_projector.py` | ⚠️ WARNING |
-| **DN-17** | virtiofs 跨平台掛載環境符號連結動態探測與複製降級 | `source/core/core/pip_manager.py` | ⚠️ WARNING |
-| **DN-18** | 微內核獨立事件總線 (core.events) 與 Engine 徹底解耦 | `source/core/core/events.py` | 🚨 CRITICAL |
-| **DN-20** | 統一虛擬檔案系統 (core.vfs) 微內核與 URI 單向依賴、同目錄原子寫入 | `source/core/core/vfs/` | 🚨 CRITICAL |
-| **DN-21** | 宿主入口極簡瘦身、業務下沉至微內核與全域 Help 動態聚合引擎 | `yscb.py`<br/>`source/core/core/installer.py`<br/>`source/core/core/contributes.py` | 🚨 CRITICAL |
-| **DN-22** | 核心命令活躍合約、PEP 562 微內核延遲載入與對稱生命週期 Hook | `source/core/core/commands/`<br/>`source/core/core/__init__.py`<br/>`yscb.py` | 🚨 CRITICAL |
-| **DN-23** | Contributes 宣告式契約、輕量 Schema DSL 與剛性校驗引擎 | `source/core/core/validator.py`<br/>`source/core/core/contributes.py`<br/>`source/core/core/commands/contributes_cmd.py` | 🚨 CRITICAL |
+| 決策編號 | 原編號對照 | 標題 / 主題 | 影響檔案 | 風險等級 |
+| :--- | :---: | :--- | :--- | :---: |
+| **[DN-01](#dn-01-project-顯式組態與嚴禁-osgetcwd-隱式回退防污染-原-dn-01)** | `DN-01` | `project://` 顯式組態與嚴禁 `os.getcwd()` 隱式回退防污染 | `source/core/core/uri.py` | 🚨 CAUTION |
+| **[DN-02](#dn-02-contributes-快照寫入-cache-與零空檔物化-原-dn-02)** | `DN-02` | Contributes 快照寫入 `cache://` 與零空檔物化 | `source/core/core/contributes.py` | ⚠️ WARNING |
+| **[DN-03](#dn-03-atomicengine-宿主組態與-project-解耦不變量-原-dn-05)** | `DN-05` | `AtomicEngine` 宿主組態與 `project://` 解耦不變量 | `source/core/core/engine.py` | 🚨 CAUTION |
+| **[DN-04](#dn-04-yscb-常數自定位與嚴禁向上攀爬目錄樹-原-dn-06)** | `DN-06` | `yscb://` 常數自定位與嚴禁向上攀爬目錄樹 | `source/core/core/uri.py` | 🚨 CAUTION |
+| **[DN-05](#dn-05-osocreat--osoexcl-原子鎖與-10-秒-stale-lock-自癒閾值-原-dn-07)** | `DN-07` | `os.O_CREAT \| os.O_EXCL` 原子鎖與 10 秒 Stale Lock 自癒閾值 | `source/core/core/engine.py`<br/>`source/core/core/platform/` | ⚠️ WARNING |
+| **[DN-06](#dn-06-act_reload-解壓安裝時無條件物理剝離-modulesmod-內之組態模板與-yscbignore-原-dn-11)** | `DN-11` | `act_reload` 解壓安裝時無條件物理剝離 `.modules/<mod>/` 內之組態模板與 `.yscbignore` | `source/core/core/engine.py` | ⚠️ WARNING |
+| **[DN-07](#dn-07-jit-undefined-相對基準防遞迴死鎖與-undefinedurierror-前綴契約-原-dn-12--dn-27)** | `DN-12`<br/>`DN-27` | JIT `!undefined` 相對基準、防遞迴死鎖與 `UndefinedURIError` 前綴契約 | `source/core/core/uri.py` | 🚨 CAUTION |
+| **[DN-08](#dn-08-微內核零-pip-純標準庫鐵律與-yscbvenv-強制---only-binaryall-防編譯風暴-原-dn-15--dn-23)** | `DN-15`<br/>`DN-23` | 微內核零 Pip 純標準庫鐵律與 `yscb.venv://` 強制 `--only-binary=:all:` 防編譯風暴 | `source/core/core/pip_manager.py`<br/>`source/core/core/validator.py` | 🚨 CAUTION |
+| **[DN-09](#dn-09-vs-code-零目錄污染與-_yscb_managed-差集追蹤軟合併-原-dn-16)** | `DN-16` | VS Code 零目錄污染與 `_yscb_managed` 差集追蹤軟合併 | `source/core/core/ide_projector.py` | ⚠️ WARNING |
+| **[DN-10](#dn-10-virtiofs-容器掛載點-_can_symlink-動態探測與實體拷貝降級-原-dn-17)** | `DN-17` | `virtiofs` 容器掛載點 `_can_symlink()` 動態探測與實體拷貝降級 | `source/core/core/pip_manager.py` | ⚠️ WARNING |
+| **[DN-11](#dn-11-core__init__py-pep-562-延遲載入與-coreevents-零-atomicengine-反向依賴-原-dn-18--dn-22)** | `DN-18`<br/>`DN-22` | `core/__init__.py` PEP 562 延遲載入與 `core.events` 零 `AtomicEngine` 反向依賴 | `source/core/core/__init__.py`<br/>`source/core/core/events.py` | 🚨 CAUTION |
+| **[DN-12](#dn-12-vfs-同目錄原子替換防同前綴穿越mtime-快取與宿主自更新-url-物理正交分離-原-dn-20--dn-26--dn-28)** | `DN-20`<br/>`DN-26`<br/>`DN-28` | VFS 同目錄原子替換、防同前綴穿越、`mtime` 快取與宿主自更新 URL 物理正交分離 | `source/core/core/vfs/`<br/>`source/core/core/uri.py`<br/>`yscb.py` | 🚨 CAUTION |
 
 ---
 
-### [DN-01] `project://` 顯式配置與零 Fallback 阻斷
+### [DN-01] `project://` 顯式組態與嚴禁 `os.getcwd()` 隱式回退防污染 (原 `DN-01`)
 
-- **核心決策**：`project://` 協議不屬於微內核自舉最小集。其解析嚴格依賴 `yscb://config/core/config.project.json` 中配置之 `project_root`。預設為 `!undefined`。若檔案不存在或為 `!undefined`，在非互動模式下必須拋出 `UndefinedURIError`。
-- **背後考量**：若微內核在未配置時隱式猜測當前工作目錄（`os.getcwd()`），在跨 CLI、不同 IDE 以及自引用環境中，會產生難以排查的路徑漂移與跨目錄覆蓋問題。
+- **核心決策**：`project://` 協議不屬於微內核自舉最小集，其解析嚴格依賴 `config://core/config.project.json` 中顯式配置之 `project_root`（預設為 `"!undefined"`）。若未配置或為 `"!undefined"`，在非互動模式下強制拋出 `UndefinedURIError`。
+- **背後考量**：若微內核在未配置時隱式猜測當前工作目錄（`os.getcwd()`），在跨目錄調用 CLI、不同 IDE 工作區以及沙盒自引用環境中，會產生難以排查的路徑漂移與跨目錄檔案覆蓋災難。
 - **防禦宣告**：
   > [!CAUTION]
-  > **嚴禁在此處新增任何 `os.getcwd()` 或父目錄猜測 Fallback 代碼！**
+  > **嚴禁在 `core.uri` 解析 `project://` 時新增任何 `os.getcwd()` 或父目錄猜測 Fallback 代碼！**
 
 ---
 
-### [DN-02] 依賴注入中介層快照存於 `cache://`
+### [DN-02] Contributes 快照寫入 `cache://` 與零空檔物化 (原 `DN-02`)
 
-- **核心決策**：`ContributesAggregator.scan_and_inject()` 的物化快照輸出至 `cache.root://{target}/contributes.merged.json`，且當模組未接收任何注入時不落地空檔。
-- **背後考量**：`config://` 是受 Git 追蹤的使用者/專案設定空間，若將框架衍生的中介檔案寫入 `config/`，會污染專案設定庫並產生無意義的 Git Diff。
-- **防禦宣告**：
-  > [!IMPORTANT]
-  > 中介層快照屬於衍生快取，嚴禁寫入 `config://` 目錄。
-
----
-
-### [DN-03] 模組組態遞迴原地增量補齊
-
-- **核心決策**：當模組在 `source/` 提供之預設組態新增了欄位時，物化安裝或 `reload` 會進行遞迴比對，自動補齊缺失鍵，但既有設定值 100% 保持不變。
-- **背後考量**：防止套件版本更新時覆蓋使用者已調整的自訂設定。
-
----
-
-### [DN-04] 命名空間 Hook 對接與例外隔離
-
-- **核心決策**：Hook 檔案採用 `scripts/hook.{emit_module}.py`，Core 調度時實施 `try-except` 隔離。
-- **背後考量**：明確權責，避免單一外掛模組的語法錯誤或崩潰導致整體 CLI 安裝或更新流程卡死。
-
----
-
-### [DN-05] 宿主組態實體路徑解耦 (脫離 `project://`)
-
-- **核心決策**：`AtomicEngine` 內部所有對 `yscb.config.json` 的讀寫、清冊維護與快照還原，一律依賴宿主目錄實體路徑（透過 `_get_host_config()`），嚴禁調用 `project://`。
-- **背後考量**：`project://` 代表被管理的外部下游專案根目錄（預設未配置），而 `yscb.config.json` 是工具庫自身的基礎設施，兩者在架構職責上完全隔離。
-
----
-
-### [DN-06] `yscb://` 常數自定位與零猜測阻斷
-
-- **核心決策**：`yscb://` 直接以 `core.uri` 代碼位置（`__file__` 往上 3 層）常數自定位；宿主 Context 顯式傳遞；徹底移除動態向上爬目錄迴圈與 `os.getcwd()` 猜測。
-- **背後考量**：徹底根除環境路徑漂移與跨目錄執行時的隱性 Bug，貫徹「零臆測 (Zero Speculation)」鐵律。
-
----
-
-### [DN-07] OS 核心原子鎖保護與 10s 自修復機制
-
-- **核心決策**：`AtomicEngine.act_lock` 使用作業系統核心層標誌 `os.O_CREAT | os.O_EXCL` 建立 `temp://.yscb.lock`，由 OS 核心提供剛性互斥保證。
-- **背後考量**：在單進程同步調度模型下，10s 超時判定僅用於前次執行非正常中斷崩潰後的自動容災修復 (Self-Healing)，正常執行流程中 `os.O_EXCL` 提供 100% 互斥安全。
-
----
-
-### [DN-08] 剛性拓撲回歸與 6 大軟相容全面清除
-
-- **核心決策**：全面清除代碼中的 6 大軟相容退化點：
-  1. `yscb.py:load_config` 移除向上爬樹，剛性錨定同層目錄。
-  2. `contributes.py` 嚴格僅讀取 `modules/` 運行空間產物，徹底移除對 `source/` 的穿透 fallback。
-  3. `contributes.py` 移除對 `project://` 的穿透 fallback，僅讀取模組專屬 `config.root://`。
-  4. `uri.resolve()` 嚴格攔截非標準 URI 與非絕對路徑，拋出 `ValueError`。
-  5. `installer.py` 移除 `default_provider` 硬編碼後門。
-  6. `sandbox.py` 剛性定位宿主 `yscb.py`。
-- **防禦宣告**：
-  > [!CAUTION]
-  > 專案嚴格遵守剛性拓撲原則，禁止為規避局部報錯而擅自引入跨空間穿透與動態猜測代碼。
-
----
-
-### [DN-09] 四段式版本尾號不具比較性與單一 Revision 淘汰
-
-- **核心決策**：四段式版本尾號 `revision` 在日常三元安裝與依賴求解中不具獨立比較意義；`release/` 發布庫中針對相同 `X.Y.Z` 僅允許保留單一最新 Revision 產物。
-- **背後考量**：避免多個微小修訂號並存導致來源庫混亂與版本求解複雜度爆炸，常態性以三元語意版本進行發布與消費。
-
----
-
-### [DN-10] 同 Major 升級鎖定原則
-
-- **核心決策**：CLI 執行 `update` 時，預設僅在同一個 Major 主版本內尋找最新 Minor/Patch/Revision 進行安全升級；跨 Major 破壞性升級必須顯式指定版本或執行 `install <module>@<new_major>`。
-- **背後考量**：防止自動更新意外拉入破壞性 API 變更導致專案中斷。
-
----
-
-### [DN-11] 模組運行空間純粹化與 config 模板自動剝除
-
-- **核心決策**：模組在運行空間（`modules/<module>/`）內部嚴禁留存任何 `config.*.json` 模板或 `.yscbignore` 檔案；`act_reload` 在掃描提取組態至 `config/` 後，無條件實體刪除模組目錄下的模板。
-- **背後考量**：徹底避免執行期代碼、外部套件或下游應用誤讀模組內的預設模板而產生組態分叉。
-
----
-
-### [DN-12] JIT `!undefined` 熱更新補齊機制與自引用防護
-
-- **核心決策**：
-  1. 當 `uri.resolve()` 遇到未定義（`!undefined`）之協議時，在 TTY 終端主動提示 `[-y <path> / -n / --help]`。
-  2. 使用者輸入 `-y <path>` 時，相對路徑一律以 `yscb://`（工具庫根目錄）為基準展開，支援連鎖未定義依賴遞迴解算。
-  3. 自動將輸入值寫回所屬模組（`__provider__`）之 `config.project.json` 並刷新記憶體 URI 快取，無縫繼續原呼叫。
-  4. 建立 `_reconciling_tokens: Set[str]`，當檢測到自引用或循環依賴時立即拋出 `CyclicURIDependencyError` 阻斷無窮迴圈。
-  5. 在非 TTY（CI/CD、背景任務、靜態分析）或 `interactive=False` 模式下，直接拋出結構化 `UndefinedURIError`。
-- **防禦宣告**：
-  > [!IMPORTANT]
-  > JIT 補齊嚴格以 `yscb://` 為相對起始基準，嚴禁擅自回退為 `os.getcwd()` 或 `project://`。
-
----
-
-### [DN-13] Contributes `__provider__` 拓撲聚合與 SDK 查詢
-
-- **核心決策**：
-  1. 在微內核 `scan_and_inject()` 搜集 donor 模組 contributes 時，自動遞迴為 Dict 與 List[Dict] 項目注入 `"__provider__": donor_name`。若物件已顯式宣告 `__provider__` 則予以保留不覆蓋。
-  2. 依據已安裝模組之依賴拓撲順序 (Topological Order) 有序合併，保證底層基礎設施優先註冊，擴充模組後續追加。
-  3. 提供標準微內核查詢 SDK `core.contributes.get(target_module, key=None, default=None)` 與 `get_for_current_module()`，內建自愈快取。
-- **背後考量**：徹底解決下游外掛模組無法溯源能力提供者、合併順序非決定性以及缺乏標準查詢 API 的痛點。
-
----
-
-### [DN-14] `yscb.host://` 宿主協議常數解算與 fast-path 路由
-
-- **核心決策**：
-  1. 引入 `yscb.host://` 一等公民常數協議，類型為 `const`，模板值為 `{yscb_host}`。
-  2. 強制指向起手腳本 `yscb.py` 與 `yscb.config.json` 所在之專案宿主工程根目錄。
-  3. 於 `uri.resolve()` 提供 O(1) fast-path 解析，並相容自引用與外部專案宿主上下文。
-- **背後考量**：當工具庫（`yscb://`）位於子目錄（如 `ys_codebase/`）時，模組與工作流需精準定位包含起手腳本的宿主根目錄，避免混淆 `project://`（受被管理目標路徑組態影響）與 `yscb://`（工具庫源碼根目錄）。
-
----
-
-### [DN-15] `yscb.venv://` 私有微虛擬環境剛性隔離與 Wheel-Only 保證
-
-- **核心決策**：
-  1. 微環境根目錄為 `yscb://.venv/py{major}{minor}/`，強制鎖定 `include-system-site-packages = false`，達成 100% 零全域環境污染。
-  2. 呼叫 pip 安裝時強制附加 `--only-binary=:all:` 與 `--no-warn-script-location`，若無預編譯 Wheel 則直接拋出 `PipInstallError`。
-  3. `core` 模組本身保持純 Python 標準庫實作（Zero-Pip），其餘模組可自由進行 pip 宣告。
-- **背後考量**：徹底消除跨專案與宿主 Python 之全域依賴污染；避免在缺乏 gcc/clang/msvc 之容器或用戶本機嘗試編譯 C 擴充模組導致的崩潰。
-- **防禦宣告**：
-  > [!CAUTION]
-  > **嚴禁在微環境安裝管線中移除 `--only-binary=:all:`！嚴禁在 `core` 模組自身引入任何第三方 pip 依賴！**
-
----
-
-### [DN-16] IDE 自動感知與 `_yscb_managed` 宣告式可復原軟合併
-
-- **核心決策**：
-  1. 自動探測 `project://.vscode` 是否存在，若不存在完全靜默略過，絕不主動建立 `.vscode/` 目錄。
-  2. 若存在，以 `_yscb_managed` 宣告式清冊結構記錄注入之 `extraPaths`、`defaultInterpreterPath` 與排除規則（`files.watcherExclude`、`search.exclude`、`files.exclude`），100% 保留使用者既有配置，並支援乾淨無損回滾。
-- **背後考量**：避免在未配置 VS Code 之專案目錄下產生冗餘空目錄；杜絕暴力覆蓋導致使用者自訂設定遺失；避免檔案監視器因掃描微環境數萬個第三方檔案引發高負載。
-- **防禦宣告**：
-  > [!IMPORTANT]
-  > **嚴禁在 `project://.vscode` 不存在時主動創建該目錄；嚴禁以整檔覆蓋模式寫入 `settings.json`！**
-
----
-
-### [DN-17] virtiofs 跨平台掛載環境符號連結動態探測與複製降級
-
-- **核心決策**：
-  1. 在建立微環境前，透過 `_can_symlink()` 即時探測目標目錄是否支援有效可解算的符號連結（相容 virtiofs / 容器掛載磁碟）。
-  2. 若符號連結不可解算，自動降級為複製 Python 可執行檔，並優先自 `ensurepip` 解壓預置 wheel，避免因檔案權限操作（如 `chmod`）引發 `OSError: [Errno 1] Operation not permitted`。
-- **背後考量**：Dev Container 與 Docker 掛載宿主檔案系統時，符號連結常因宿主/虛擬機路徑不同而斷鏈或拋出權限錯誤。
+- **核心決策**：`ContributesAggregator.scan_and_inject()` 的物化快照統一輸出至 `cache://{target}/contributes.merged.json`（連同指紋元資料 `cache://core/contributes.meta.json`）；且當目標模組未接收任何注入（空字典）時不落地空檔（若舊檔存在則自動清理）。
+- **背後考量**：`config://` 是受 Git 追蹤的使用者/專案設定空間。若將框架動態衍生的聚合中介快照寫入 `config://`，會嚴重污染專案版本庫並產生無意義的 Git Diff。
 - **防禦宣告**：
   > [!WARNING]
-  > **嚴禁在 POSIX 環境中盲目假設符號連結必可解算，必須維持動態探測與降級保護！**
+  > **Contributes 聚合快照屬於衍生快取，嚴禁寫入 `config://` 目錄；無注入資料之模組嚴禁物化空 JSON 檔案！**
 
 ---
 
-### [DN-18] 微內核獨立事件總線 (`core.events`) 與 Engine 徹底解耦
+### [DN-03] `AtomicEngine` 宿主組態與 `project://` 解耦不變量 (原 `DN-05`)
 
-- **核心決策**：
-  1. 將事件廣播管線獨立實作於 `source/core/core/events.py`，徹底剔除 `Engine.act_broadcast_event` 舊門面。
-  2. 宿主入口（`yscb.py`）、微內核安裝器（`installer.py`）與各模組（如 `dev.testing.sandbox`）全面直接調用 `core.events.broadcast()`，不得依賴重型 `Engine` 實例。
-  3. 支援 `search_roots` 動態搜尋路徑注入（如沙盒臨時模組目錄），並透過單一契約 `scripts/hook.{emit_module}.py` 對接，函式名支援 `on_{event}` 與 `{event}` 雙向彈性匹配。
-- **背後考量**：若事件廣播依賴 `Engine` 實例，宿主在 CLI 冷啟動階段執行生命週期廣播（如 `pre_cli_dispatch`）前就必須初始化完整 `Engine`（包含依賴注入、路徑掃描、狀態快照），造成嚴重冷啟動延遲與狀態循環依賴；解耦後事件總線成為無狀態純淨微核心管線。
+- **核心決策**：`AtomicEngine` 內部所有對宿主配置 `yscb.config.json` 的讀寫、安裝清冊維護與快照還原，一律依賴宿主目錄實體路徑（透過 `uri._get_host_config()` 定位 `yscb.host://`），嚴禁調用 `project://`。
+- **背後考量**：`project://` 代表被管理的外部下游專案根目錄（在 `yscb.py init` 初期預設為 `!undefined`），而 `yscb.config.json` 是工具庫自身的宿主基礎設施，兩者在生命週期與架構職責上必須 100% 正交隔離。
 - **防禦宣告**：
   > [!CAUTION]
-  > **嚴禁在 `core.events` 內反向導入 `Engine` 或在事件派發前隱式初始化 `Engine`！嚴禁於模組內重複實作 Ad-hoc Hook 派發邏輯！**
+  > **嚴禁在 `AtomicEngine` 讀寫 `yscb.config.json` 時透過 `project://` 解算路徑，否則將導致新工作區未配置 `project_root` 前無法安裝或重載任何模組！**
 
 ---
 
-### [DN-20] 統一虛擬檔案系統 (core.vfs) 微內核與 URI 單向依賴、同目錄原子寫入
+### [DN-04] `yscb://` 常數自定位與嚴禁向上攀爬目錄樹 (原 `DN-06`)
 
-- **核心決策**：
-  1. **微內核封裝與單向依賴**：VFS 完整封裝於 `core/core/vfs/`，維持 `core` 作為生態系唯一微內核定位。`core.uri` 作為底層純字串語意協議定址器，不反向依賴 `core.vfs`；`core.vfs` 單向依賴 `core.uri.resolve` 將語意 URI 解算為實體路徑。`core.uri` 原有之 IO helpers 轉發至 `core.vfs` 保持 100% 向下相容。
-  2. **同分區原子寫入**：`OSBackend.atomic_write` 強制在目標檔案之同級目錄生成 `.tmp` 暫存檔，寫入後執行 flush 與 `os.fsync`，最後以 `os.replace` 原子覆蓋，杜絕跨分區 `EXDEV` 錯誤與半寫入損毀。
-  3. **沙盒安全防逃逸邊界**：`assert_safe_path` 嚴格檢驗路徑穿越 (`..`)，防止惡意 escape 邊界。
-- **背後考量**：過去模組各自散落使用原生 `open()`、`pathlib` 與自造原子寫入，缺乏統一安全防逃逸與跨平台路徑規範；且跨磁區 `os.replace` 在容器掛載環境下易引發 `EXDEV` 崩潰。收斂於 `core.vfs` 提供全生態系統一保障。
-- **防禦宣告**：
-  > [!IMPORTANT]
-  > **全生態系模組檔案存取優先使用 `core.vfs`；原子寫入暫存檔嚴禁建立於系統全域臨時目錄（如 `/tmp`），必須維持同目錄同分區原則！**
-
----
-
-### [DN-21] 宿主入口極簡瘦身、業務下沉至微內核與全域 Help 動態聚合引擎
-
-- **核心決策**：
-  1. **宿主入口單純路由化**：`yscb.py` 徹底精簡至 ~280 行純淨單檔，僅承擔執行環境注入（私有 `.venv`、安全 Token `YSCB_HOST_DISPATCH_TOKEN`）、雙管道路由（管道 B: HTTP IPC 熱轉發 / 管道 A: 進程內冷啟動）與 Exit Code 剛性透傳。
-  2. **業務邏輯全面下沉**：批量模組還原 (`cmd_restore`)、Zip 解壓縮安全守衛與 `.gitignore` 宣告式維護全數下沉至 `core.installer`；全生態系指令清冊動態聚合下沉至 `core.contributes.print_global_help()`。
-  3. **向後相容最小安全代理**：宿主保留對 `core.installer` 與 `core.events` 的薄代理函式，在相容既有調用契約的前提下達成 0 業務侵入。
-- **背後考量**：避免宿主腳本持續單體膨脹導致維護性惡化，將業務能力回歸微內核與宣告式拓撲，貫徹微內核高凝聚、宿主薄路由的架構原則。
+- **核心決策**：`yscb://` 在未顯式注入記憶體/環境變數作用域時，直接以 `core.uri` 代碼物理位置（`__file__` 往上 3 層）常數自定位；宿主設定 `yscb.config.json` 僅檢查顯式候選位置（`injected_host`、`dirname(yscb_dir)`、`yscb_dir`），徹底移除動態向上攀爬目錄樹（`while parent != curr`）與 `os.getcwd()` 猜測。
+- **背後考量**：動態向上攀爬目錄樹會在巢狀子專案或沙盒測試失敗殘留目錄時誤綁定外層宿主，違反「零臆測 (Zero Speculation)」鐵律。
 - **防禦宣告**：
   > [!CAUTION]
-  > **嚴禁在 `yscb.py` 宿主腳本內重度實作業務邏輯！任何新增之套件管理、全域查詢或規則生成邏輯必須下沉至 `core` 或對應模組！**
+  > **嚴禁在 `core.uri` 或 `yscb.py:load_config` 中引入向上遞迴爬樹 (`while` loop) 尋找設定檔的隱式搜尋邏輯！**
 
 ---
 
-### [DN-22] 核心命令活躍合約、PEP 562 微內核延遲載入與對稱生命週期 Hook
+### [DN-05] `os.O_CREAT | os.O_EXCL` 原子鎖與 10 秒 Stale Lock 自癒閾值 (原 `DN-07`)
 
-- **核心決策**：
-  1. **微內核 PEP 562 延遲載入**：`core/__init__.py` 透過 `__getattr__` 實作按需動態加載，保留 `TYPE_CHECKING` 靜態型別提示。單獨導入 `core.commands` 時不喚醒 `AtomicEngine`、`Installer`、`PipManager` 等重型子模組，冷啟動耗時自 ~77ms 降至 $\le 5\text{ms}$。
-  2. **正交群組命名空間與互斥約束**：CLI Option 在 contributes 中透過 orthogonal groups 分組，由 `OptionResolver` 執行互斥檢驗 (EC-02) 與別名標準化；解析結果封裝為不可變強型別 `CmdBags`。
-  3. **精確命令合約與雙軌靜默退化**：模組 CLI 遷移為 `def <cmd_name>(cmd_bags: CmdBags) -> int` 函式模型；未遷移模組靜默退化至 `mod.process(args)`（無 warning 輸出），並於 `sub_02` 結案前剛性刪除。
-  4. **對稱生命週期 Hook 下沉**：`pre_cli_dispatch` 與 `post_cli_dispatch` 生命週期 Hook 自宿主移至 `core.commands.dispatcher` 內部（含 Worker 熱派發環境與本地冷派發環境），確保 Hook 永遠在命令執行的真實上下文中生效。
-- **背後考量**：解除全生態系模組對 argparse 的分散依賴，提供統一且結構化的 CLI 體驗；同時將派發核心完全下沉至微內核，使宿主 `yscb.py` 達成極致薄化。
+- **核心決策**：`AtomicEngine.act_lock` 與跨進程互斥機制基於作業系統原語（`os.O_CREAT | os.O_EXCL` 及 `core.platform.InterProcessLock`）於 `cache://.yscb.lock` 建立排他鎖，並配置 `10.0s` 超時與陳舊鎖（Stale Lock）自癒閾值。
+- **背後考量**：在多終端或背景代理並發執行套件操作時，必須由 OS 核心保證原子互斥；同時若前次進程遭強制 `SIGKILL` 中斷導致鎖殘留，10 秒閾值與檔案鎖釋放機制可確保系統自動容災恢復而不致永久死鎖。
 - **防禦宣告**：
-  > [!IMPORTANT]
-  > **先驅模組不得殘留 `process(args)` 函式；舊版相容過渡層為暫存債務，嚴禁在新開發模組中引入舊版合約！**
+  > [!WARNING]
+  > **嚴禁使用非原子的「先 `os.path.exists` 再 `open('w')`」模式實作進程鎖，以免產生 TOCTOU 競爭條件 (Race Condition)！**
 
 ---
 
-### [DN-23] Contributes 宣告式契約、輕量 Schema DSL 與剛性校驗引擎
+### [DN-06] `act_reload` 解壓安裝時無條件物理剝離 `.modules/<mod>/` 內之組態模板與 `.yscbignore` (原 `DN-11`)
 
-- **核心決策**：
-  1. **100% 純標準庫與輕量型別 DSL**：零第三方依賴（嚴禁 pydantic / jsonschema）。在 `core.validator` 內建型別 DSL 解析器，支援強型別標記（`str!`, `int?`, `bool? = false`）、受限集合（`enum(a, b)`）、通配鍵比對（`"*"`）、遞迴指標（`$TypeName`）與自訂型別別名清冊（`_types`）。
-  2. **單向依賴邊界與剛性阻斷 (Strict Egress, Tolerant Ingress)**：
-     - **Egress 靜態阻斷**：`contributes check` 與 `dev check` 對所有注入宣告實施剛性阻斷，攔截未宣告之擴充點（未知鍵）、型別不符以及跨目標越權注入。
-     - **Ingress 容錯防禦**：運行期 `ContributesAggregator` 進行動態快照聚合時，遇未知擴充點記錄錯誤但安全保留鍵值，避免阻斷既有動態擴充或測試環境 JIT 欄位。
-  3. **智能拼寫診斷 (Did you mean)**：內建輕量 Levenshtein 距離演算法，當鍵名或枚舉值出現相近拼寫錯誤時，主動給予具體糾錯建議，大幅降低第三方模組整合認知摩擦。
-  4. **全生態系 First-Class 語意契約**：各模組於 `contributes/` 內維持 `_format.json`（Ingress 契約）與 `_manifest.md`（Egress 導覽手冊），達成模組能力自描述與雙向契約閉環。
-- **背後考量**：傳統依賴注入缺乏形式化契約驗證，容易引發「無聲失效」、「運行期鍵名拼錯崩潰」與「跨模組越權污染」；透過輕量宣告式 DSL 與靜態/運行期雙重守門，在零依賴約束下實現企業級剛性架構治理。
+- **核心決策**：模組運行空間（`module://<module>/`，即 `.modules/<module>/`）內部嚴禁留存任何 `configurable/`、`config.*.json` 組態模板或 `.yscbignore` 檔案；`act_reload` 在 Stage 3 掃描並將缺失組態增量補齊至 `config://<module>/` 後，無條件物理刪除 `.modules/<module>/` 內的模板檔案與目錄。
+- **背後考量**：徹底杜絕執行期程式碼、外部套件或下游應用誤讀 `.modules/` 內的預設組態模板，確保 `config://` 為執行期組態的唯一真理來源 (SSOT)。
 - **防禦宣告**：
-  > [!CAUTION]
-  > **嚴禁在 Core 微內核中引入任何外部驗證器依賴！模組擴充注入嚴格依賴 `_format.json` 契約宣告，禁止未經 Schema 註冊隨意跨模組注入私有資料！**
+  > [!WARNING]
+  > **嚴禁在 `.modules/<module>/` 運行空間保留 `config.*.json` 或 `.yscbignore`；任何組態讀取一律透過 `core.config` 或 `config://` 協議存取！**
 
 ---
 
-### [DN-26] 雙層分桶指令聚合、CLI Guild 同名隔離與語意 URI 記憶體快取
+### [DN-07] JIT `!undefined` 相對基準、防遞迴死鎖與 `UndefinedURIError` 前綴契約 (原 `DN-12` + `DN-27`)
 
 - **核心決策**：
-  1. **雙層分桶指令聚合 (`__modules__`)**：`ContributesAggregator` 在聚合各模組注入的 `commands` 時，除保留頂層平鋪結構以相容舊版單元測試外，額外建立 `__modules__[donor_module]` 命名空間分桶，徹底杜絕多模組具備同名指令時（如 `dev status` vs `server status` vs `core status`）在 CLI Guild 生成與擴充點遍歷中的鍵值覆蓋踩踏。
-  2. **語意 URI 高頻解析記憶體快取**：`core.uri._get_merged_uri_schemes` 實作基於 `(yscb_dir, mtime)` 的行程內記憶體快取。高頻調用 `uri.resolve()` 免除重複檔案 I/O，快取命中耗時 $< 0.1\text{ms}$；當快照檔案 `mtime` 變更時立即自動感知重載。
-  3. **URI 嚴格沙盒守門與同前綴防禦**：`uri.resolve()` 驗證路徑穿越時比對 `target_base + os.sep`，阻斷透過 `cache://../.cache_hack` 等同前綴名稱逃逸沙盒根目錄之安全漏洞。
-- **背後考量**：隨著生態系模組擴增，同名指令覆蓋導致 CLI 指南資訊失真，且高頻 URI 解析對磁碟造成冗餘 I/O 開銷；透過分桶與微秒級記憶體快取，兼顧架構隔離性、安全邊界與極致執行效能。
-- **防禦宣告**：
-  > [!IMPORTANT]
-  > **CLI Guild 生成邏輯必須優先遍歷 `__modules__` 分桶；`uri.resolve` 熱路徑快取必須嚴格由檔案 `mtime` 與 `reconcile_undefined_uri` 自動連動失效，嚴禁讀取陳舊快取！**
-
----
-
-### [DN-27] 宣告式模組 Onboarding 引導 (`manifest.json` -> `onboarding`) 與 `!undefined` URI 自癒提示
-
-- **核心決策**：
-  1. **宣告式 Post-Install Onboarding 引導**：於模組 `manifest.json` 引入選填欄位 `"onboarding": List[str]`（由 `dev.checker` 靜態校驗必須為非空字串陣列）。`Installer.cmd_install` 完成模組安裝後調用 `_print_onboarding_guide(module_name)`，動態讀取該欄位並渲染 `[*] Next Steps for '<module>':` 操作卡片與隨包手冊位置（`.modules/<module>/README.md`）；同時 `yscb.py init` 於全新自舉完成後輸出工作區啟動指引。
-  2. **`!undefined` 語意協議自癒提示 (`format_undefined_uri_hint`)**：於 `core.uri` 實作 `format_undefined_uri_hint(scheme, provider, binding)`，針對未定義之 `project://`、`workflow.*://` 或一般模組協議動態生成可直接複製執行的 CLI 修復指令，並同時附加於 `UndefinedURIError` 例外訊息尾部與 `uri check` 診斷報告底部之 `[Quick Fix]` 區塊。
-- **背後考量**：下游使用者或 AI Agent 初次安裝模組或遭遇 `!undefined` 阻斷時，若僅輸出底層狀態或錯誤名稱，需額外翻找文檔方知下一步指令；透過宣告式 `onboarding` 與結構化 `Quick fix` 提示，在保持微內核零業務耦合的前提下實現零斷層引導。
+  1. **相對路徑剛性基準**：當 `uri.resolve()` 觸發互動式 JIT 補齊且使用者輸入 `-y <relative_path>`（或設定檔內存儲相對路徑）時，一律強制以 `yscb://`（工具庫根目錄）為基準展開，嚴禁使用 `os.getcwd()`。
+  2. **防自引用死鎖 (`_reconciling_tokens`)**：解算連鎖依賴時維護 `_reconciling_tokens: Set[str]`，一旦偵測到循環或自引用（如將 `project://` 設為 `project://sub`）立即拋出 `CyclicURIDependencyError`。
+  3. **例外訊息結構契約**：`UndefinedURIError` 透過 `format_undefined_uri_hint()` 在訊息尾部附加 `Quick fix: <cli_cmd>` 時，必須 100% 保留原有 `Semantic URI '{scheme}://' is undefined (!undefined)...` 前綴字串。
+- **背後考量**：保持相對路徑基準恆定可避免工作目錄切換引發路徑偏移；而保留 `UndefinedURIError` 標準前綴可確保下游與單元測試的正則斷言契約不因體驗優化而破裂。
 - **防禦宣告**：
   > [!CAUTION]
-  > **`UndefinedURIError` 擴充 `Quick fix:` 時，必須 100% 保留原有 `Semantic URI '{scheme}://' is undefined (!undefined)...` 前綴結構，嚴禁刪除或改寫既有錯誤主幹以免破壞單元測試契約！**
+  > **JIT 補齊相對路徑嚴禁回退至 `os.getcwd()`；修改 `UndefinedURIError` 提示訊息時，嚴禁刪除或改寫 `Semantic URI '{scheme}://' is undefined (!undefined).` 前綴結構！**
+
+---
+
+### [DN-08] 微內核零 Pip 純標準庫鐵律與 `yscb.venv://` 強制 `--only-binary=:all:` 防編譯風暴 (原 `DN-15` + `DN-23`)
+
+- **核心決策**：
+  1. **Core 100% 純標準庫 (Zero-Pip)**：`core` 微內核自身（含 `core.validator` 輕量 Schema DSL 驗證引擎、`core.vfs`、`core.uri`、`yscb.py`）強制 100% 使用 Python 標準庫實作，零第三方套件依賴（嚴禁引入 `pydantic`、`jsonschema` 等）。
+  2. **私有微環境剛性隔離與預編譯 Wheel 強制約束**：擴充模組宣告之第三方依賴統一由 `core.pip_manager` 安裝至 `yscb.venv://`（`.venv/py{major}{minor}/`，鎖定 `include-system-site-packages = false`），且調用 `pip install` 時強制附加 `--only-binary=:all:` 與 `--no-warn-script-location`；若目標套件缺乏預編譯 Wheel 則立即拋出 `PipInstallError` 阻斷。
+- **背後考量**：微內核零依賴確保 `yscb.py` 在任何裸機 Python 環境皆可冷自舉；強制 `--only-binary=:all:` 則徹底防止在無 C/C++ 編譯工具鏈（gcc/clang/MSVC）的容器或使用者端觸發源碼編譯風暴與卡死。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `core` 模組自身引入任何第三方 Pip 依賴！嚴禁在 `PipManager.install_packages` 中移除 `--only-binary=:all:` 旗標！**
+
+---
+
+### [DN-09] VS Code 零目錄污染與 `_yscb_managed` 差集追蹤軟合併 (原 `DN-16`)
+
+- **核心決策**：`core.ide_projector` 在同步 IDE Python 路徑時，先探測 `project://.vscode` 是否存在；若不存在則**完全靜默略過**，絕不主動建立 `.vscode/` 目錄。若存在，則於 `project://.vscode/settings.json` 內以 `_yscb_managed` 宣告式清冊記錄由 YSCB 注入之 `extraPaths`、`defaultInterpreterPath` 與排除規則，執行差集軟合併。
+- **背後考量**：避免在非 VS Code 使用者的專案中製造無用空目錄污染；同時杜絕整檔覆蓋導致開發者自訂的 IDE 設定遺失，並支援模組卸載時依 `_yscb_managed` 精確無損回滾。
+- **防禦宣告**：
+  > [!WARNING]
+  > **嚴禁在 `project://.vscode` 不存在時主動建立該目錄；嚴禁以整檔覆蓋模式寫入 `settings.json`！**
+
+---
+
+### [DN-10] `virtiofs` 容器掛載點 `_can_symlink()` 動態探測與實體拷貝降級 (原 `DN-17`)
+
+- **核心決策**：`PipManager` 在建立私有微環境前，強制透過 `_can_symlink()` 在目標目錄實測符號連結是否可正常建立並解算；若在 Docker / Dev Container 的 `virtiofs` 或跨系統掛載磁碟區探測失敗，自動降級為實體檔案拷貝（`copies=True`）並自 `ensurepip` 解壓預置 Wheel。
+- **背後考量**：容器掛載宿主檔案系統時，POSIX 符號連結常因宿主與容器內部絕對路徑不一致而形成斷鏈，或在權限受限的掛載點拋出 `OSError: [Errno 1] Operation not permitted`。
+- **防禦宣告**：
+  > [!WARNING]
+  > **嚴禁在 POSIX 環境中盲目假設符號連結必可解算，建立微環境時必須維持 `_can_symlink()` 動態探測與實體拷貝降級保護！**
+
+---
+
+### [DN-11] `core/__init__.py` PEP 562 延遲載入與 `core.events` 零 `AtomicEngine` 反向依賴 (原 `DN-18` + `DN-22`)
+
+- **核心決策**：
+  1. **PEP 562 按需延遲載入**：`core/__init__.py` 透過模組級 `__getattr__` 動態延遲載入重型子系統（`AtomicEngine`、`Installer`、`PipManager` 等），僅在 `TYPE_CHECKING` 下保留靜態型別導入，使 CLI 熱路徑單獨導入 `core.commands` 或 `core.uri` 的冷啟動耗時維持在 $< 5\text{ms}$。
+  2. **`core.events` 零 `AtomicEngine` 反向依賴**：事件廣播管線獨立實作於 `core.events.broadcast()`，不依賴任何 `AtomicEngine` 實例。
+- **背後考量**：若 `core/__init__.py` 頂層急切導入所有子模組，或 `core.events` 在派發 `pre_cli_dispatch` 前反向導入並實例化 `AtomicEngine`，將迫使每次輕量 CLI 呼叫都執行全量模組掃描與引擎初始化，造成 $> 70\text{ms}$ 的冷啟動退化與循環依賴。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `core/__init__.py` 頂層直接 `import` 重型子模組（必須維持 `__getattr__` 延遲映射）！嚴禁在 `core.events` 內反向導入或隱式初始化 `AtomicEngine`！**
+
+---
+
+### [DN-12] VFS 同目錄原子替換、防同前綴穿越、`mtime` 快取與宿主自更新 URL 物理正交分離 (原 `DN-20` + `DN-26` + `DN-28`)
+
+- **核心決策**：
+  1. **VFS 同目錄臨時檔 `os.replace` 防跨磁碟區 `EXDEV`**：`OSBackend.atomic_write` 強制在目標檔案之**同級目錄**生成 `.tmp` 臨時檔，完成 `flush()` 與 `os.fsync()` 後執行 `os.replace` 原子替換，嚴禁使用系統 `/tmp`。
+  2. **`target_base + os.sep` 防同前綴兄弟目錄穿越**：`uri.resolve()` 與 `OSBackend.assert_safe_path` 檢驗路徑逃逸時，強制比對 `resolved_path == target_base or resolved_path.startswith(target_base + os.sep)`，阻斷利用 `cache://../.cache_hack` 等同前綴兄弟目錄名稱繞過 `startswith(target_base)` 的安全漏洞。
+  3. **URI 協議清冊 `(yscb_dir, mtime)` 記憶體快取自動失效**：`core.uri._get_merged_uri_schemes` 以 `contributes.merged.json` 之 `mtime` 作為快取鍵（命中耗時 $< 0.1\text{ms}$），檔案更新時自動失效重載。
+  4. **`DEFAULT_SELF_UPDATE_URL` 與 `DEFAULT_PROVIDER_URL` 物理正交分離**：宿主 `yscb.py` 將腳本自更新網址 `DEFAULT_SELF_UPDATE_URL` 與套件來源 `DEFAULT_PROVIDER_URL` 定義為兩個完全獨立的常數，`_resolve_self_update_target_url()` 僅接受顯式 `--url` 覆寫。
+- **背後考量**：容器環境中 `/tmp` 與工作區常處於不同掛載分區，跨區 `os.replace` 會直接拋出 `EXDEV` 崩潰；而將宿主自更新 URL 與套件 Provider URL 物理拆離，可防止因套件庫目錄結構調整（如 `ys_codebase/release`）或字串切割推導（`split("/release")`）導致 `self-update` 404 損毀。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **原子寫入臨時檔嚴禁建立於系統 `/tmp`！路徑邊界校驗必須包含 `+ os.sep`！嚴禁在 `yscb.py` 中對 `provider` 參數進行字串切分來推導 `yscb.py` 自更新網址！**

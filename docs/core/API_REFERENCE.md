@@ -1,7 +1,26 @@
+---
+target: "Core"
+doc_type: "overview"
+status: "active"
+source_paths:
+  - "yscb://source/core/core/semver.py"
+  - "yscb://source/core/core/context.py"
+  - "yscb://source/core/core/uri.py"
+  - "yscb://source/core/core/symbols.py"
+  - "yscb://source/core/core/pip_manager.py"
+related_docs:
+  - "./README.md"
+  - "./uri_protocols.md"
+  - "./vfs.md"
+  - "./symbol_resolution.md"
+  - "./SEMVER.md"
+last_updated: "2026-10-15"
+---
+
 # Core 模組 API 規格手冊 (Core API Reference)
 
 > 所屬模組：`module:core`  
-> 抽象維度：維度 2（微觀物件與 API 簽名規格）  
+> 抽象維度：維度 ④（介面合約與 API 簽名規格）  
 
 ---
 

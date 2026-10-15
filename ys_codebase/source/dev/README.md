@@ -1,3 +1,23 @@
+---
+target: "Dev"
+doc_type: "readme"
+status: "active"
+source_paths:
+  - "yscb://source/dev/manifest.json"
+  - "yscb://source/dev/scripts/cli.py"
+  - "yscb://source/dev/dev/scaffold.py"
+  - "yscb://source/dev/dev/checker.py"
+  - "yscb://source/dev/dev/builder.py"
+  - "yscb://source/dev/dev/tester.py"
+  - "yscb://source/dev/dev/releaser.py"
+related_docs:
+  - "../../../docs/dev/README.md"
+  - "../../../docs/dev/architecture.md"
+  - "../../../docs/dev/user_guide.md"
+  - "../../../docs/dev/testing_guide.md"
+last_updated: "2026-10-15"
+---
+
 # YS-Codebase Dev 開發者工具箱模組 (Developer Toolchain)
 
 > 模組名稱：`dev`  
@@ -90,14 +110,18 @@ graph LR
 ### 3.1 模組建立與靜態合規檢查
 
 ```bash
-# 建立全新模組標準骨架 (自動生成 manifest.json, scripts/cli.py, contributes/core.json 與測試目錄)
+# 建立全新模組標準骨架 (預設版號 "0.1.0.0"，自動生成 manifest.json, scripts/cli.py, contributes/{_format.json,_manifest.md,core.json} 與 tests/)
 python yscb.py dev create my-module --desc="我的自訂擴充模組"
 
-# 靜態合規檢查 (驗證 manifest.json 格式、onboarding 宣告、語意 URI 規範與 scripts 語法)
+# 靜態合規檢查 (執行 8 步檢核管線：驗證 manifest.json 格式、Contributes 契約、語意 URI Zero-Probing 與 scripts 語法)
 python yscb.py dev check my-module
 
 # 檢查所有源碼模組之合規性
 python yscb.py dev check --all
+
+# 以結構化 JSON 格式輸出檢查結果 (供 CI 或 Agent 讀取)
+python yscb.py dev check my-module --json
+python yscb.py dev check --all --json
 ```
 
 ### 3.2 構建打包與版本管理
@@ -204,12 +228,14 @@ class TestMyModuleFeature(YSCBTestCase):
         # 透過語意 URI 存取模組資產
         manifest_uri = "module://manifest.json"
         self.assertTrue(uri.exists(manifest_uri))
+        self.mark_passed()
 
     def test_et_01_invalid_input_guardrail(self):
         """ET-01: 驗證異常輸入時能正確拋出例外防禦。"""
         with self.assertRaises(ValueError):
             # 呼叫受測函式
             pass
+        self.mark_passed()
 ```
 
 ---

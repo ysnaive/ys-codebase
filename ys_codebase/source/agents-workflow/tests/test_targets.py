@@ -207,6 +207,90 @@ class TestReleaseTargets(YSCBTestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
+    def test_ft_05_release_target_cli_syntax(self):
+        """FT-02 & FT-03: 驗證 release-target 支援 --add / add 以及 --remove / remove 雙向語法與 --proj 旗標。"""
+        import importlib.util
+        from unittest.mock import patch
+        from core.commands.bags import CmdBags, CmdOption
+
+        cli_path = os.path.join(_pkg_root, "scripts", "cli.py")
+        spec = importlib.util.spec_from_file_location("aw_cli_mod", cli_path)
+        cli_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli_mod)
+
+        # 1. 驗證 --add claude --proj (選項帶值)
+        bags_opt_add = CmdBags(
+            raw_cmd="release-target --add claude --proj",
+            command="release-target",
+            args=[],
+            options={
+                "add": CmdOption(name="add", params="claude"),
+                "proj": CmdOption(name="proj", params=True),
+            }
+        )
+        with patch.object(ReleaseTargetManager, "add_target", return_value=True) as mock_add:
+            ret = cli_mod.release_target(bags_opt_add)
+            self.assertEqual(ret, 0)
+            mock_add.assert_called_once_with("claude", is_project=True)
+
+        # 2. 驗證 add claude --proj (位置引數)
+        bags_pos_add = CmdBags(
+            raw_cmd="release-target add claude --proj",
+            command="release-target",
+            args=["add", "claude"],
+            options={
+                "proj": CmdOption(name="proj", params=True),
+            }
+        )
+        with patch.object(ReleaseTargetManager, "add_target", return_value=True) as mock_add:
+            ret = cli_mod.release_target(bags_pos_add)
+            self.assertEqual(ret, 0)
+            mock_add.assert_called_once_with("claude", is_project=True)
+
+        # 3. 驗證 --remove claude --proj (選項帶值)
+        bags_opt_rm = CmdBags(
+            raw_cmd="release-target --remove claude --proj",
+            command="release-target",
+            args=[],
+            options={
+                "remove": CmdOption(name="remove", params="claude"),
+                "proj": CmdOption(name="proj", params=True),
+            }
+        )
+        with patch.object(ReleaseTargetManager, "remove_target", return_value=True) as mock_rm:
+            ret = cli_mod.release_target(bags_opt_rm)
+            self.assertEqual(ret, 0)
+            mock_rm.assert_called_once_with("claude", is_project=True)
+
+        # 4. 驗證 remove claude --proj (位置引數)
+        bags_pos_rm = CmdBags(
+            raw_cmd="release-target remove claude --proj",
+            command="release-target",
+            args=["remove", "claude"],
+            options={
+                "proj": CmdOption(name="proj", params=True),
+            }
+        )
+        with patch.object(ReleaseTargetManager, "remove_target", return_value=True) as mock_rm:
+            ret = cli_mod.release_target(bags_pos_rm)
+            self.assertEqual(ret, 0)
+            mock_rm.assert_called_once_with("claude", is_project=True)
+
+        # 5. 邊界測試：缺少目標名稱時報錯 (EC-02)
+        bags_missing = CmdBags(
+            raw_cmd="release-target --add",
+            command="release-target",
+            args=[],
+            options={
+                "add": CmdOption(name="add", params=True),
+            }
+        )
+        ret_missing = cli_mod.release_target(bags_missing)
+        self.assertEqual(ret_missing, 1)
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

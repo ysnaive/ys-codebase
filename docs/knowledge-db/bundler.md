@@ -1,8 +1,15 @@
 ---
-title: knowledge-db 語意打包引擎指南
-category: guide
-module: knowledge-db
-updated_at: 2026-10-14
+target: "Knowledge-DB/Bundler"
+doc_type: "topic"
+status: "active"
+source_paths:
+  - "yscb://source/knowledge-db/knowledge_db/bundler.py"
+  - "yscb://source/knowledge-db/knowledge_db/schema.py"
+related_docs:
+  - "./README.md"
+  - "./architecture.md"
+  - "./parsers.md"
+last_updated: "2026-10-15"
 ---
 
 # knowledge-db 語意打包引擎指南 (Semantic Bundler Guide)
