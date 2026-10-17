@@ -13,6 +13,7 @@
 2. **檔案為唯一真理，對話極簡節流 (SSOT & Session Response Throttle)**：
    - **檔案唯一真理來源 (SSOT)**：專案所有規格、代碼、架構、任務與測試成果，以實體檔案（如 `__${project://plans/}__`、`__${project://docs/}__` 等）為唯一真理載體。
    - **對話極簡節流 (Session Response Throttle)**：凡產物已成功落檔或已有實體檔案可查者，對話 Session **嚴禁全文重複、代碼傾倒或冗長轉述**；任何時刻皆應極致精簡對話輸出（僅呈遞必要路徑、核心摘要、關鍵阻塞與下一步），嚴格節約 Token。
+   - **首行與跨模型修訂錨點 (Model Identity Anchor)**：每次對話回覆**首行**強制輸出 `> {model}` 標註當前模型名稱並以此填入建檔 `> 模型：` 標頭；修改既有計畫文檔時，若當前模型與該檔建檔模型不同，須於修訂或增改處**尾行**附加 `> {model}`。
 3. **嚴禁淺層敷衍與架構債逃逸 (Zero Shallow Patches & Architecture Integrity Axiom)**：
    - **根因導向，嚴禁敷衍 (RCA First)**：嚴禁為求表面編譯通過、測試全綠或掩蓋警告，而採用死代碼、無意義 mock、降低型別約束、靜默吞掉例外或硬編碼特例等敷衍修補 (Quick-and-dirty hacks)。
    - **敷衍修補反模式紅線清單 (Anti-Patterns)**（不限於程式碼，涵蓋測試、規格、文檔與組態）：
