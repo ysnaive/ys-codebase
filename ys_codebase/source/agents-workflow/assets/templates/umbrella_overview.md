@@ -2,9 +2,9 @@
 
 > 計畫名稱：[計畫名稱]  
 > 建立日期：[YYYY-MM-DD]  
-> 計畫狀態：[Planning | Executing | Completed]  
+> 計畫狀態：[Planning | In Progress | Completed]  
 > Umbrella 模式：[Pre-planned (預先規劃型) | Incremental (增量演進型)]  
-> 模型：[模型名稱]  
+> 模型：[平台宣告之模型名稱；無法確認填 Unknown]  
 > 模板版本：v1.2  
 
 ---

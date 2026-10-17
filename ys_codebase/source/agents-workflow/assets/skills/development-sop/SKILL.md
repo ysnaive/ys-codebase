@@ -1,6 +1,6 @@
 ---
 name: development-sop
-description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/推進計畫、代碼實作、在 plans/ 建立/遷移產物 (P00~P07/RXX/changelog 等)、查閱追溯鏈或模板指針時強制觸發。
+description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/推進計畫、代碼實作、在 `__${project://plans/}__` 建立/遷移產物 (P00~P07/RXX/changelog 等)、查閱追溯鏈或模板指針時強制觸發。
 ---
 
 # 開發標準作業流程指南 (Development SOP - Main Hub)
@@ -16,7 +16,7 @@ description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/�
 - **長期策略路線圖 (Roadmap)**：`__${workflow.roadmap://}__`
 - **日誌分離鐵律**：
   - `__${project://plans}__/<plan>/changelog.md`（微觀日誌）：記錄階段流轉、DR 決策與偏差，建檔時**必須伴隨初始化**。
-  - [`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`)（宏觀日誌）：僅於 Phase 7 / FT-3 結案時追加高階變更摘要。
+  - [`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`)（宏觀日誌）：僅於 Phase 7 / FP-03 結案時追加高階變更摘要。
 - [!] **巢狀子計畫最多兩層約束**：僅允許「主計畫 -> 子計畫（`sub_{編號}_{目的}/`）」，**絕對禁止三層或更多層嵌套**。
 
 ---
@@ -37,10 +37,11 @@ description: 專案標準開發流程 (SOP 0~7) 與 6 大分支指南。開立/�
 | **功能需求** | `FR-{XX}` | `FR-01` | 定義於 `P01`，1:1 追溯至 `P00` 原始語意 |
 | **邊界條件** | `EC-{XX}` | `EC-01` | 定義於 `P01`，涵蓋異常輸入、邊界與防禦行為 |
 | **非功能需求** | `NFR-{XX}` | `NFR-01` | 定義於 `P01`，涵蓋效能、資源、安全與指標約束 |
-| **決策紀錄** | `[{Phase}:DR-XX]` | `[P01:DR-XX]` | 各階段關鍵架構與技術決策，Phase 前綴保證唯一 |
+| **決策紀錄** | `[{Phase}:DR-XX]` | `[P01:DR-XX]`, `[FP-01:DR-01]`, `[REV-01:DR-01]` | 各階段、步驟或修訂關鍵架構與技術決策，Phase/步驟/修訂前綴保證唯一 |
 | **功能/邊界測試** | `FT-{XX}` / `ET-{XX}` | `FT-01`, `ET-01` | 對應 `FR-XX` / `EC-XX` 之測試案例 |
 | **回歸/效能測試** | `RT-{XX}` / `PT-{XX}` | `RT-01`, `PT-01` | 全系統既有功能回歸 / 效能量測測試案例 |
 | **UX / 缺陷紀錄** | `UX-{XX}` / `BUG-{XX}` | `UX-01`, `BUG-01` | 開發者實機 UX 驗證項 / 測試過程發現之缺陷 |
+| **修訂紀錄** | `REV-{XX}` | `REV-01` | 定義於 `revision_log.md`，記錄非業務邏輯之 UI/UX/DX、參數或文檔修訂條目 |
 
 $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR/EC} \;\longrightarrow\; \texttt{[\{Phase\}:DR-XX]} \;\longrightarrow\; \texttt{API 簽名} \;\longrightarrow\; \texttt{程式碼} \;\longrightarrow\; \texttt{FT/ET/RT 測試} \;\longrightarrow\; \texttt{P07 成果與 SOP 審查}$$
 
@@ -54,10 +55,10 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 | :--- | :--- | :--- | :--- | :---: |
 | **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` -> `P01`~`P06` -> `P07 (含 SOP Review)` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track) |
 | **迅捷開發計畫 (Fast Track)** | 3-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` (含 Review 核驗) + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track) |
-| **修訂計畫 (Revision Plan)** | 短循環極速交付 | 文檔校閱、極小註解同步、常數微調，**免開實體目錄**保護 Token | 0 計畫文件 (僅呈遞極簡變更卡) | [模式詳解](./references/plan_modes.md#3-修訂計畫-revision-plan---短循環) |
-| **調研計畫 (Research Plan)** | 調研探索 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R01_{topic}` + `changelog` | [模式詳解](./references/plan_modes.md#4-調研計畫-research-plan---調研-track) |
-| **分類型主計畫 (Umbrella)** | 跨子計畫史詩統籌 | 統籌多個子計畫（B-1 預先規劃型 / B-2 增量演進型藍圖） | `umbrella_overview` + 各子計畫目錄 | [模式詳解](./references/plan_modes.md#5-分類型主計畫-umbrella) |
-| **長期路線圖 (Roadmap)** | 策略資產庫儲備 | 全專案層級技術願景與長期技術儲備藍圖（置於 `__${workflow.roadmap://}__`） | `roadmap.md` | [模式詳解](./references/plan_modes.md#6-長期路線圖-roadmap---策略資產庫) |
+| **修訂計畫 (Revision Plan)** | 正交修訂留檔閉環 | **不牽涉核心業務邏輯**之 UI/UX/DX 表層微調、靜態參數調整、文檔調整（可無衍生來源獨立開立，或衍生附掛於既有主計畫/子計畫） | `[P00] + [RXX] + revision_log + changelog`（獨立）或於既有計畫追加 `revision_log` | [模式詳解](./references/plan_modes.md#3-修訂計畫-revision-plan---正交修訂與留檔) |
+| **調研計畫 (Research Plan)** | 調研探索 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R{NN}_{topic}` + `changelog` | [模式詳解](./references/plan_modes.md#4-調研計畫-research-plan---調研-track) |
+| **分類型主計畫 (Umbrella)** | 跨子計畫史詩統籌 | 統籌多個子計畫（預先規劃型 / 增量演進型藍圖） | `umbrella_overview` + 各子計畫目錄 | [模式詳解](./references/plan_modes.md#5-分類型主計畫-umbrella) |
+| **長期路線圖 (Roadmap)** | 策略資產庫儲備 | 全專案層級技術願景與長期技術儲備藍圖（置於 `__${workflow.roadmap://}__`） | `{topic}.md` | [模式詳解](./references/plan_modes.md#6-長期路線圖-roadmap---策略資產庫) |
 
 ---
 
@@ -82,7 +83,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ## 6. 全階段模板指針 (Template Pointers)
 
-執行計畫落檔時，直接由下方對應模板路徑讀取（落檔時務必將頂部標頭 `[...]` 佔位符全數替換為真實資訊，並在 `> 模型：` 欄位填入當前執行之 AI 後台模型名稱，且嚴禁包含任何 `<!-- ... -->` HTML 註解）：
+執行計畫落檔時，直接由下方對應模板路徑讀取（落檔時務必將頂部標頭 `[...]` 佔位符全數替換為真實資訊，並依核心原則「模型紀錄」填寫 `> 模型：`（僅採平台當輪宣告之名稱，無法確認填 `Unknown`），且嚴禁包含任何 `<!-- ... -->` HTML 註解）：
 
 - **Phase 0**：[`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)
 - **Phase 1**：[`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)
@@ -92,6 +93,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 - **Phase 5**：[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)
 - **Phase 6**：[`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)
 - **Phase 7**：[`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`)
+- **修訂紀錄**：[`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`)
 - **調研報告**：[`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`)
 - **Fast Track**：[`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`)
 - **Umbrella**：[`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`)

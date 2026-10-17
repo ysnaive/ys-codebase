@@ -47,6 +47,7 @@ from .archiver import PlanArchiver
 from .scanner import PlanScanner
 from .searcher import PlanSearcher
 from .verifier import PlanVerifier, PlanSeverity, PlanIssue, PlanReport
+from .status import PlanStatusResolver
 
 __all__ = [
     "_resolve_uri_path",
@@ -62,5 +63,6 @@ __all__ = [
     "PlanSeverity",
     "PlanIssue",
     "PlanReport",
+    "PlanStatusResolver",
 ]
 

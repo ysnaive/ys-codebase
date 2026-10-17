@@ -18,10 +18,10 @@
 
 | 維度 | 文件路徑 | 變更類型 | 交付內容與重點 |
 | :--- | :--- | :---: | :--- |
-| **模組手冊** | `docs/<Module>/README.md` | New / Modify | 模組概覽與快速上手 |
-| **專題手冊** | `docs/<Module>/[topic].md` | New / Modify | 核心機制、資料流或狀態機 |
-| **設計決策** | `docs/<Module>/DESIGN_NOTES.md` | Modify | 登記 DN-XX 工程妥協與防坑邊界 |
-| **發布日誌** | `CHANGELOG.md` | Modify | 記錄本版本發布摘要 |
+| **模組手冊** | `__${workflow.docs://}__/<Module>/README.md` | New / Modify | 模組概覽與快速上手 |
+| **專題手冊** | `__${workflow.docs://}__/<Module>/[topic].md` | New / Modify | 核心機制、資料流或狀態機 |
+| **設計決策** | `__${workflow.docs://}__/<Module>/DESIGN_NOTES.md` | Modify | 登記 DN-XX 工程妥協與防坑邊界 |
+| **發布日誌** | `__${project://CHANGELOG.md}__` | Modify | 記錄本版本發布摘要 |
 
 ---
 

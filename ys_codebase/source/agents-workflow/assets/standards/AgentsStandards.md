@@ -13,7 +13,7 @@
 2. **檔案為唯一真理，對話極簡節流 (SSOT & Session Response Throttle)**：
    - **檔案唯一真理來源 (SSOT)**：專案所有規格、代碼、架構、任務與測試成果，以實體檔案（如 `__${project://plans/}__`、`__${project://docs/}__` 等）為唯一真理載體。
    - **對話極簡節流 (Session Response Throttle)**：凡產物已成功落檔或已有實體檔案可查者，對話 Session **嚴禁全文重複、代碼傾倒或冗長轉述**；任何時刻皆應極致精簡對話輸出（僅呈遞必要路徑、核心摘要、關鍵阻塞與下一步），嚴格節約 Token。
-   - **首行與跨模型修訂錨點 (Model Identity Anchor)**：每次對話回覆**首行**強制輸出 `> {model}` 標註當前模型名稱並以此填入建檔 `> 模型：` 標頭；修改既有計畫文檔時，若當前模型與該檔建檔模型不同，須於修訂或增改處**尾行**附加 `> {model}`。
+   - **模型紀錄 (Model Record)**：建立計畫檔時，`> 模型：` 填入**當輪平台明確宣告**的模型名稱，原樣照抄（含推理強度）、不改寫、不補全；無明確宣告或無法確認時填 `Unknown`。**嚴禁**從既有計畫檔、對話摘要、先前回覆或自身認知反推模型名稱。接手既有計畫時不得修改該檔既有 `> 模型：`，改於 `changelog.md` 新增事件列，並於「模型」欄記錄當輪宣告的模型。
 3. **嚴禁淺層敷衍與架構債逃逸 (Zero Shallow Patches & Architecture Integrity Axiom)**：
    - **根因導向，嚴禁敷衍 (RCA First)**：嚴禁為求表面編譯通過、測試全綠或掩蓋警告，而採用死代碼、無意義 mock、降低型別約束、靜默吞掉例外或硬編碼特例等敷衍修補 (Quick-and-dirty hacks)。
    - **敷衍修補反模式紅線清單 (Anti-Patterns)**（不限於程式碼，涵蓋測試、規格、文檔與組態）：
@@ -33,9 +33,9 @@
 
 | 任務情境、業務意圖與原生工具調用攔截 (Trigger Condition & Action Gate) | 強制觸發之技能 (Mandatory Skill) |
 | :--- | :--- |
-| **開立/推進計畫 / 代碼實作 / plans/ 產物維護**<br/>*(調用檔案編輯寫入工具前；[!] 模板唯一來源為 `__${project://.agents/.yscb/templates/}__`，嚴禁翻讀歷史封存)* | `development-sop` |
+| **開立/推進計畫 / 代碼實作 / `__${project://plans/}__` 產物維護**<br/>*(調用檔案編輯寫入工具前；[!] 模板唯一來源請查閱 [`development-sop`](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`) 指針，嚴禁翻讀歷史封存)* | `development-sop` |
 | **執行任何 CLI 命令列指令**<br/>*(調用各環境之終端機/命令列執行工具時)* | `yscb-cli-guild` |
-| **編寫代碼註解 / 撰寫或維護專案文檔 / Phase 7 (P07 / FT-3) 三層文檔對齊**<br/>*(撰寫 Docstring、維護 docs/、更新 README 或結案審查前)* | `documentation` |
+| **編寫代碼註解 / 撰寫或維護專案文檔 / Phase 7 (P07 / FP-03) 三層文檔對齊**<br/>*(撰寫 Docstring、維護 `__${workflow.docs://}__`、更新 README 或結案審查前)* | `documentation` |
 `__@{AGENTS_SKILL_ROUTING}__`
 
 > [!NOTE]

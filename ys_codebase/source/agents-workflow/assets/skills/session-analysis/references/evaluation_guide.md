@@ -16,9 +16,9 @@
 1. **變更邊界核驗 (Git Diff)**：
    - 執行 `git status -s` 與 `git diff --stat`，客觀統計本次任務涉及之修改檔案清單與代碼行數。
 2. **計畫與歷程核驗 (Plan Changelog)**：
-   - 檢查 `plans/<active_plan>/changelog.md`，核對階段流轉紀錄是否完整、決策標籤 (`[Phase:DR-XX]`) 是否依法登記。
+   - 檢查 `__${project://plans/}__/<active_plan>/changelog.md`，核對階段流轉紀錄是否完整、決策標籤 (`[Phase:DR-XX]`) 是否依法登記。
 3. **授權守門與紀律核驗 (Guardrails Audit)**：
-   - 檢視終端執行歷程，確認是否有未授權調用 [GATED] 授權守門指令（如 `dev bump`、`dev release`、`remove`、`rollback`）。
+   - 檢視終端執行歷程，確認是否有未授權調用 🔴 授權守門指令（如 `dev bump`、`dev release`、`remove`、`rollback`）。
    - 核對是否遵循「零臆測」、「SSOT 對話節流」、「單 Turn 邊界」三大核心原則。
 4. **Context 視窗與資源定性估算**：
    - 依據當前活躍上下文與近期檔案讀取量，客觀推估活躍 Context 規模（通常約 30k ~ 100k Tokens），並明確標記 System Prompt 佔比。

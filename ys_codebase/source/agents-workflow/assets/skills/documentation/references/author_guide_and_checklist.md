@@ -72,7 +72,7 @@ target: "[分類路徑或 Namespace，例：Core/Config 或 Render/Layout/FlexEn
 doc_type: "readme | topic | design_notes | changelog | overview"
 status: "draft | active | deprecated | archived"
 source_paths:
-  - "yscb://source/core/yscb_core/config.py"
+  - "src/<module>/config.py"
 related_docs:
   - "../_project/STANDARDS.md"
 last_updated: "YYYY-MM-DD"

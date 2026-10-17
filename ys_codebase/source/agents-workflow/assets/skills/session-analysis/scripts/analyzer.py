@@ -32,8 +32,6 @@ def find_antigravity_transcript(conversation_id: Optional[str] = None, explicit_
     candidate_bases = [
         Path.home() / ".gemini" / "antigravity" / "brain",
         Path.home() / ".gemini" / "antigravity-ide" / "brain",
-        Path("/home/developer/.gemini/antigravity/brain"),
-        Path("/home/developer/.gemini/antigravity-ide/brain"),
     ]
 
     for base in candidate_bases:
@@ -128,7 +126,6 @@ def analyze_slice(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     user_inputs = 0
     tool_counts = {}
     skills_triggered = set()
-    workflows_called = set()
     kdb_stats = {"search": 0, "callers": 0, "callees": 0, "impact": 0, "status": 0}
     cli_commands = []
     gated_commands_detected = []
@@ -186,10 +183,6 @@ def analyze_slice(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
                     m = re.search(r"skills/([^/]+)/", fpath)
                     if m:
                         skills_triggered.add(m.group(1))
-                if "workflows/" in fpath:
-                    m = re.search(r"workflows/([^/]+)\.md", fpath)
-                    if m:
-                        workflows_called.add(m.group(1))
 
     # Token estimations
     system_prompt_fixed_baseline = 7800
@@ -215,7 +208,6 @@ def analyze_slice(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
         "user_inputs": user_inputs,
         "tool_counts": tool_counts,
         "skills_triggered": sorted(list(skills_triggered)),
-        "workflows_called": sorted(list(workflows_called)),
         "kdb_stats": kdb_stats,
         "cli_count": len(cli_commands),
         "gated_commands": gated_commands_detected,
@@ -255,10 +247,18 @@ def format_markdown_report(metrics: Dict[str, Any], scope_desc: str) -> str:
             guardrail_card += f"    - **指令**：`{cmd}` (需核實是否獲開發者顯式授權)\n"
 
     skills_str = ", ".join(metrics["skills_triggered"]) if metrics["skills_triggered"] else "無"
-    workflows_str = ", ".join(metrics["workflows_called"]) if metrics["workflows_called"] else "無"
 
     read_calls = tc.get("view_file", 0)
     write_calls = tc.get("write_to_file", 0) + tc.get("replace_file_content", 0) + tc.get("multi_replace_file_content", 0)
+
+    if sum(kdb.values()) > 0:
+        modular_section = (
+            f"- **知識庫檢索效益 (knowledge-db)**：\n"
+            f"  - **調用次數**：`search`: {kdb['search']} 次, `callers`/`callees`: {kdb['callers'] + kdb['callees']} 次, `impact`: {kdb['impact']} 次, `status`: {kdb['status']} 次\n"
+            f"  - **效益估算**：精確切片檢索預估節省約 `{(kdb['search'] + kdb['callers']) * 7500:,}` Tokens 全庫走訪消耗"
+        )
+    else:
+        modular_section = "- 無模組特化指標"
 
     report = f"""#  對話階段歷程分析報告 (Session Analysis Report)
 
@@ -276,7 +276,6 @@ def format_markdown_report(metrics: Dict[str, Any], scope_desc: str) -> str:
 - **使用者輸入 (User Inputs)**：`{metrics["user_inputs"]}` 次
 - **外部指令調用 (CLI)**：約 `{t["cli_tokens"]:,}` Tokens (`{t["cli_pct"]:.1f}%`) | 執行 `{metrics["cli_count"]}` 次
 - **Skills 觸發**：`{len(metrics["skills_triggered"])}` 項：`[{skills_str}]`
-- **Workflows 觸發**：`{len(metrics["workflows_called"])}` 項：`[{workflows_str}]`
 - **細部操作吞吐**：
   - **Read (檔案檢視)**：約 `{t["read_tokens"]:,}` Tokens (`{t["read_pct"]:.1f}%`) | 調用 `{read_calls}` 次
   - **Write (代碼寫入/編輯)**：約 `{t["write_tokens"]:,}` Tokens (`{t["write_pct"]:.1f}%`) | 產出 `{write_calls}` 次
@@ -284,9 +283,7 @@ def format_markdown_report(metrics: Dict[str, Any], scope_desc: str) -> str:
   - **Dialogue (對話互動)**：約 `{t["dialogue_tokens"]:,}` Tokens (`{t["dialogue_pct"]:.1f}%`)
 
 ### 模組特化評測 (Modular Evaluations)
-- **知識庫檢索效益 (knowledge-db)**：
-  - **調用次數**：`search`: {kdb["search"]} 次, `callers`/`callees`: {kdb["callers"] + kdb["callees"]} 次, `impact`: {kdb["impact"]} 次, `status`: {kdb["status"]} 次
-  - **效益估算**：精確切片檢索預估節省約 `{(kdb["search"] + kdb["callers"]) * 7500:,}` Tokens 全庫走訪消耗
+{modular_section}
 """
     return report
 

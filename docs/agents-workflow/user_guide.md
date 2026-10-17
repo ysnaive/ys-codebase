@@ -12,7 +12,7 @@ related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-17"
 ---
 
 # Agents Workflow 使用者與操作指南 (User Guide)
@@ -27,7 +27,11 @@ YS-Codebase 將所有開發計畫管理功能收斂為原生 CLI 子指令，零
 
 ### 1.1 計畫狀態矩陣掃描 (`plan status`)
 
-掃描當前專案活躍進行中的開發計畫（`workflow.plans://`），即時解析各計畫之 Track 類型（Umbrella, Fast Track, Full Track, Phase 0）與當前 Phase 狀態，並以樹狀縮排展示子計畫階層。
+掃描當前專案活躍進行中的開發計畫（`workflow.plans://`），即時解析各計畫之 Track 類型（`Umbrella`, `Fast Track`, `Full Track`, `Revision`, `Phase 0`）與當前 Phase 狀態，並以樹狀縮排展示子計畫階層。
+
+- **正交修訂計畫 (`revision_log.md`) 掃描規則**：
+  - **附隨型修訂**：當 `revision_log.md` 附隨於既有計畫（`Full Track`、`Fast Track`、`Umbrella` 或 `sub_XX` 子計畫）時，**不影響**原主計畫或子計畫的 Track 顯示與狀態判定。
+  - **獨立型修訂**：當計畫目錄不含 `umbrella_overview.md`、`fast_track_plan.md` 與 `P01+`，而由 `revision_log.md` 單獨組成（或搭配前置 `P00` / `RXX`）時，`Track 模式` 顯示為 `Revision`。
 
 ```bash
 # 掃描並展示進行中開發計畫狀態矩陣
@@ -45,6 +49,7 @@ python yscb.py agents-workflow plan status
 2026_10_14_1224_deep_audit_and_ecosystem_refinement   | Umbrella        | Completed        | plans/
   └─ sub_01_host_and_core_foundation_remediation      | Full Track      | Completed        | plans/
   └─ sub_06_downstream_cli_ux_and_server_feedback     | Full Track      | Completed        | plans/
+2026_10_17_0900_ui_spacing_and_docs_polish            | Revision        | In Progress      | plans/
 ==========================================================================================
 ```
 
@@ -63,7 +68,7 @@ python yscb.py agents-workflow plan archive 2026_08_20_1200_demo_feature --force
 ```
 
 #### 4 重守門安全防護
-1. **完成狀態守門**：檢查 `P07_walkthrough.md`、`fast_track_plan.md` 或 `umbrella_overview.md` 是否標記 `Completed`。
+1. **完成狀態與附隨修訂守門**：檢查主計畫完成產物（`P07_walkthrough.md`、`fast_track_plan.md`、`umbrella_overview.md` 或獨立修訂計畫之 `revision_log.md`）是否標記 `Completed`；同時額外巡檢計畫根目錄與所有 `sub_*` 子計畫目錄，若存在任何 `revision_log.md` 未標記為 `Completed`，將拋出 `PlanIncompleteError` 強制阻斷歸檔（除非加上 `--force`）。
 2. **CHANGELOG 登載守門**：核對專案根目錄 `CHANGELOG.md` 是否已記載該計畫發布紀錄。
 3. **現場快照清理**：自動偵測並物理刪除殘留的暫時性交接快照 `handoff.md`。
 4. **目的地衝突防護**：若 `workflow.archived://{YYYY}/{MM}/{plan_name}/` 已存在同名目錄，強制阻斷防止覆蓋。
@@ -114,10 +119,10 @@ python yscb.py agents-workflow plan verify --all
 
 #### `PlanVerifier` 核心檢核規則
 - **僅掃描活躍計畫邊界**：`verify_all_plans()`（含 `--all`）專注於檢核 `workflow.plans://` 下之活躍開發計畫（自動排除 `archived/` 與 `roadmap/`），不回溯掃描歷史已歸檔封存計畫。
-- **Header 元數據與 `> 模型：` 標頭強制檢核**：驗證 Markdown 開頭 Blockquote 是否齊備 `功能名稱`（或 `計畫名稱`）、`建立日期`、`狀態`（或 `計畫狀態`）以及 **`> 模型：[實際模型名稱]`**（`has_model` 剛性檢查，確保多模型協作溯源脈絡）。
-- **未填寫佔位符與指引攔截**：偵測檔案內是否殘留 `<!-- AGENT_GUIDANCE -->` 模板指引註解，或未替換之模板佔位符（如 `[模型名稱]`、`[Model Name]`、`[YYYY-MM-DD]`、`[專案/功能名稱]` 等）。
+- **Header 元數據與 `> 模型：` 標頭強制檢核**：驗證 Markdown 開頭 Blockquote 是否齊備 `功能名稱`（或 `計畫名稱`）、`建立日期`、`狀態`（或 `計畫狀態`）以及 **`> 模型：`**（`has_model` 剛性檢查；填入平台當輪宣告之名稱，無法確認填 `Unknown`）。驗證器僅檢查欄位存在，**不驗證名稱真偽**，且不得據此反推模型。
+- **未填寫佔位符與指引攔截**：偵測檔案內是否殘留 `<!-- AGENT_GUIDANCE -->` 模板指引註解，或未替換之模板佔位符（如 `[平台宣告之模型名稱；無法確認填 Unknown]`、`[模型名稱]`、`[Model Name]`、`[YYYY-MM-DD]`、`[專案/功能名稱]`、`[修訂主題簡述]`、`[UI/UX/DX | Parameter | Docs]` 等）。
 - **`Completed` / `Concluded` 狀態未勾選 `- [ ]` 阻斷**：當文件標頭狀態標記為 `Completed` 或 `Concluded` 時，若內文仍存在任何未勾選之待辦 Checkbox（`- [ ]`），直接判定為 `FAIL` 阻斷通過。
-- **動態章節標題對齊與子計畫遞迴覆蓋**：動態比對 `.agents/.yscb/templates/` 標準模板的一級/二級章節標題，並自動深入 `sub_*` 子計畫目錄遞迴執行全套稽核。
+- **動態章節標題對齊、修訂條目檢核與子計畫遞迴覆蓋**：動態比對 `.agents/.yscb/templates/` 標準模板的一級/二級章節標題（針對 `revision_log.md` 自動豁免動態條目子標題 `### [REV-XX]` 並強制檢核至少包含一筆 `[REV-XX]` 修訂紀錄），且自動深入 `sub_*` 子計畫目錄遞迴執行全套稽核。
 
 ---
 

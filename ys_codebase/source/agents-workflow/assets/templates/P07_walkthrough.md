@@ -32,10 +32,10 @@
 ### 4.1 三層文檔交付對齊表
 | 維度 | 文件路徑 | 交付狀態 | 驗收重點 |
 | :--- | :--- | :---: | :--- |
-| **宏觀 (Macro)** | `CHANGELOG.md` | [PASS] 已追加版本摘要 | 發布亮點與變更歷史同步 |
-| **中觀 (Meso)** | `docs/<Module>/README.md` | [PASS] 已交付/更新 | 模組手冊、架構與使用說明 |
-| **中觀 (Meso)** | `docs/<Module>/DESIGN_NOTES.md` | [PASS] 已登記 `[DN-...]` | 核心架構決策與設計脈絡 |
-| **微觀 (Micro)** | 源碼 Public API / 函式註解 | [PASS] 100% 對齊 | 嚴格維護 Docstring，標註偏差理由 |
+| **宏觀 (Macro)** | `__${project://CHANGELOG.md}__` | 待填寫 | 發布亮點與變更歷史同步 |
+| **中觀 (Meso)** | `__${workflow.docs://}__/<Module>/README.md` | 待填寫 | 模組手冊、架構與使用說明 |
+| **中觀 (Meso)** | `__${workflow.docs://}__/<Module>/DESIGN_NOTES.md` | 待填寫（無反直覺妥協填「免更」） | 核心架構決策與反直覺設計妥協（防膨脹守門） |
+| **微觀 (Micro)** | 源碼 Public API / 函式註解 | 待填寫 | 嚴格維護 Docstring，標註動機理由 |
 
 ### 4.2 品質與清理檢核
 - [ ] **代碼清理**：無死代碼、無除錯 print/log、無敷衍之 quick-and-dirty hack。

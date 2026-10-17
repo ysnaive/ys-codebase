@@ -23,7 +23,7 @@ description: 暫停開發與無縫交接工作流 (Pause)。現場狀態凍結�
 ---
 
 ### 步驟 2：生成暫停交接快照 (`handoff.md`)
-讀取標準模板 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，完整填寫標頭（含 `> 模型：` 名稱）後落檔於計畫目錄，客觀記錄：
+讀取標準模板 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，完整填寫標頭（含 `> 模型：`，依模型紀錄規則填平台宣告名稱或 `Unknown`）後落檔於計畫目錄，客觀記錄：
 1. **現場已完成事項**：具體完成之函式、邊界處理或測試。
 2. **進行中待辦**：精確記錄當前實作中斷點與待續邏輯。
 3. **踩坑與注意事項**：關鍵坑點、特殊時序或口頭共識。
@@ -39,7 +39,7 @@ description: 暫停開發與無縫交接工作流 (Pause)。現場狀態凍結�
 ### [PAUSE] /Pause 現場上下文凍結完成
 - **交接檔案**：[handoff.md](__${project://plans}__/{plan_name}/handoff.md)
 - **所屬計畫**：[{plan_name}](__${project://plans}__/{plan_name}/)
-- **凍結斷點**：[Phase X 或 FT-Y (狀態)]
+- **凍結斷點**：[Phase X 或 FP-0Y (狀態)]
 - **重啟第 1 步**：[極精確的重啟行動指引]
 - **下次接手**：輸入 [/Continue](`__#{module://agents-workflow/assets/skills/continue/SKILL.md}__`) 即可無縫接續
 ```

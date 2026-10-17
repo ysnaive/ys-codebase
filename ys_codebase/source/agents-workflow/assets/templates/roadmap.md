@@ -2,8 +2,8 @@
 
 > 主題：[主題名稱]  
 > 歸檔日期：[YYYY-MM-DD]  
-> 狀態：[Backlog | Proposed | Deferred | In Progress]  
-> 模型：[模型名稱]  
+> 狀態：[Backlog | Proposed | Ready | Deferred | In Progress]  
+> 模型：[平台宣告之模型名稱；無法確認填 Unknown]  
 
 ---
 

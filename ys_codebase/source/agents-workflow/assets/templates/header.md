@@ -2,4 +2,4 @@
 > 建立日期：[YYYY-MM-DD]  
 > 所屬主計畫：[所屬主計畫]  
 > 狀態：[Draft | Discussing | Confirmed | In Progress | Passed | Completed]  
-> 模型：[模型名稱]  
+> 模型：[平台宣告之模型名稱；無法確認填 Unknown]  

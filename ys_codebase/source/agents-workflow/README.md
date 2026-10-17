@@ -94,7 +94,7 @@ graph TD
     Check -- "總行數 <= 100 且 0 API 變更" --> FT["Level 0: 迅捷計畫 (Fast Track)<br/><code>fast_track_plan.md</code> (FT-1~FT-3)"]:::l0
     Check -- "一般功能 / 架構重構 / > 100 行" --> Full["Level 1: 標準計畫 (Full Track)<br/><code>P00~P07 + changelog</code> (SOP 0~7)"]:::l1
     Check -- "大型主題 / 跨模組統籌" --> Umb["Level 2: 分類型主計畫 (Umbrella)<br/><code>umbrella_overview.md + sub_XX</code>"]:::l2
-    Check -- "純文檔校閱 / 極短修訂" --> Rev["修訂計畫 (Revision Track)<br/><code>0 計畫檔案 (原地極小修訂)</code>"]:::other
+    Check -- "UI/UX/DX / 參數 / 文檔 (獨立或附掛)" --> Rev["修訂計畫 (Revision Track)<br/><code>revision_log.md (REV-XX 收斂留檔)</code>"]:::other
     Check -- "純技術選型 / 演算法測評" --> Res["調研計畫 (Research Track)<br/><code>P00 + R01 調研報告</code>"]:::other
     Check -- "跨版本長期儲備" --> Road["長期策略路線圖 (Roadmap)<br/><code>workflow.roadmap://</code>"]:::other
 ```
