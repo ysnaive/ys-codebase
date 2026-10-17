@@ -21,7 +21,7 @@
       "type": "skill",
       "name": "development-sop",
       "source": "module://agents-workflow/assets/skills/development-sop",
-      "description": "專案標準開發流程 (SOP 0~7) 與分流規範指南。當需要開立新計畫、評估分流矩陣 (Full Track/Fast Track/Umbrella)、推進或執行各階段開發任務 (P00~P07, FT-1~3)、查閱追溯鏈 (FR/DR/FT) 或模板指針時觸發。"
+      "description": "專案標準開發流程 (SOP 0~7) 與 6 大分支指南。當需要開立新計畫、評估分流矩陣、推進或執行各階段開發任務 (P00~P07, FP-01~03)、查閱追溯鏈或模板指針時觸發。"
     },
     {
       "type": "skill",
@@ -39,7 +39,7 @@
       "type": "skill",
       "name": "new-plan",
       "source": "module://agents-workflow/assets/skills/new-plan",
-      "description": "標準開發作業流程 (NewPlan) — 定義專案從需求到發布的完整規範與三大分流管控"
+      "description": "標準開立新計畫流程 (NewPlan) — 當需要開立新計畫並進行分流評估與延遲建檔時觸發"
     },
     {
       "type": "skill",
@@ -63,13 +63,13 @@
       "type": "skill",
       "name": "research",
       "source": "module://agents-workflow/assets/skills/research",
-      "description": "深度技術調研工作流 (Research) — 適用於高複雜度技術探索、方案選型對比與 R01 專題調研報告產出"
+      "description": "深度技術調研工作流 (Research) — 適用於高複雜度技術探索、方案選型對比與 R{NN} 專題調研報告產出"
     },
     {
       "type": "skill",
       "name": "auto",
       "source": "module://agents-workflow/assets/skills/auto",
-      "description": "自動連續推進工作流 (Auto) — 支援 Phase 01~05 跳過中間 Checkpoint 連續執行直至 P06 手動驗證"
+      "description": "自動連續推進工作流 (Auto) — 支援 Phase 00 (Confirmed) 或 01~05 跳過中間 Checkpoint 連續執行直至 P06 手動驗證"
     },
     {
       "type": "skill",
@@ -146,6 +146,11 @@
       "type": "template",
       "source": "module://agents-workflow/assets/templates/handoff.md",
       "description": "現場凍結交接模板"
+    },
+    {
+      "type": "template",
+      "source": "module://agents-workflow/assets/templates/revision_log.md",
+      "description": "修訂紀錄書模板"
     }
   ],
   "token": [

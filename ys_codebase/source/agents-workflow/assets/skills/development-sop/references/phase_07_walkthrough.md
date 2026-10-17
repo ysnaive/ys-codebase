@@ -20,7 +20,7 @@ flowchart TD
 - [!] **文檔更新前強制觸發技能**：在執行三層文檔核驗與更新前，**強制必須先觸發並精讀 [`documentation`](`__#{module://agents-workflow/assets/skills/documentation/SKILL.md}__`) 技能手冊**，嚴格對齊專案知識庫 7 大知識維度與作者指引。
 - [ ] **宏觀發布日誌**：專案根目錄 [`CHANGELOG.md`](`__#{project://CHANGELOG.md}__`) 最上方預擬或追加本次高階變更摘要。
 - [ ] **中觀模組與專題手冊 (優先更新載體，嚴防 DN 膨脹)**：
-  - **優先更新載體**：更新文檔時應優先從 `docs/<Category>/README.md` 模組手冊或專題手冊 (`docs/<Category>/[topic].md`) 下手更新架構、流程與功能資訊，嚴禁在 DN 一直增量！
+  - **優先更新載體**：更新文檔時應優先從 `__${workflow.docs://}__/<Category>/README.md` 模組手冊或專題手冊 (`__${workflow.docs://}__/<Category>/[topic].md`) 下手更新架構、流程與功能資訊，嚴禁在 DN 一直增量！
   - **Design Notes 邊界防膨脹守門 (DN Anti-Bloat Axiom)**：`DESIGN_NOTES.md` (`DN-XX`) 僅限存放「真正高度特例、非直觀工程妥協、或從架構/專題設計文檔無法直觀看出的非直覺設計與防坑坑點」，不得作為一般架構描述、普通功能介紹或日常變更紀錄的傾倒處。
 - [ ] **微觀代碼註解契約**：本次修改之 Public API 註解結構完整，複雜演算法具備 Why-Driven 動機註解。
 
@@ -37,11 +37,12 @@ flowchart TD
 
 ---
 
-## 2. 發布邊界與 Commit 紀律
+## 2. 發布邊界、後續修訂與 Commit 紀律
 
-- **生態系模組發布邊界鐵律**：
-  - Phase 7 結案時，模組物化**一律僅能維持軌道 A（`@build` 直裝）**。
-  - **[!] 嚴禁自主升版發布**：嚴禁 Agent 在結案階段擅自調用 `dev bump` 或 `dev release`（此為 [GATED] 授權守門級別，必須獲開發者顯式指示方可執行）。
+- **發布與升版授權邊界**：
+  - **[!] 嚴禁自主升版或對外發布**：Phase 7 結案僅代表開發與內部驗證完成；未獲開發者顯式指示前，嚴禁 Agent 擅自執行版本號晉升或正式對外打包發布指令。
+- **結案後表層修訂 (`revision_log.md`) 銜接**：
+  - 若結案後開發者針對本計畫功能提出 UI/UX/DX 表層微調、靜態參數調整或文檔修正（不涉及核心業務邏輯變更），可直接於本計畫目錄下建立或更新 [`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`) 進行正交修訂留檔。
 - **計畫目錄歸檔紀律**：
   - 開發計畫目錄預設留存於 `__${project://plans}__` 原位，**嚴禁 Agent 自行執行 `plan archive` 或主動搬移目錄**（除非開發者明確下達歸檔指令）。
 - **推薦 Commit 訊息**：
@@ -62,6 +63,6 @@ flowchart TD
   - **產出文件**：[P07_walkthrough.md](__${project://plans}__/{plan_name}/P07_walkthrough.md)、[changelog.md](__${project://plans}__/{plan_name}/changelog.md)、[CHANGELOG.md](__${project://CHANGELOG.md}__)
   - **結案摘要**：[1~2 行高階成果 / 通過 SOP Review 審查與合規檢核]
   - **推薦 Commit**：`[type(scope): brief message]`
-  - **後續動作**：[計畫已圓滿結案，可依需求執行 commit、plan archive 或依指示進行對話歷程評測]
+  - **後續動作**：[計畫已圓滿結案，可依需求開啟 revision_log.md 進行後續微調、執行 commit 或 plan archive]
   ```
 - **立即 End Turn 等待指示**。

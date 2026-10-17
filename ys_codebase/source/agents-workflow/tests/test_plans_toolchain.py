@@ -57,6 +57,14 @@ class TestPlansToolchainInternal(YSCBTestCase):
             "# 測試計畫與驗證報告\n\n## 1. 測試策略與驗證維度\n\n## 2. 測試案例清冊 (Test Cases Matrix)\n\n## 3. 測試執行紀錄\n\n## 4. 人工 / UX 驗證 Checkpoint\n",
             encoding="utf-8"
         )
+        (self.templates_dir / "revision_log.md").write_text(
+            "# 修訂紀錄 (Revision Log) — [專案/功能名稱]\n\n"
+            "## 1. 修訂背景與來源範疇 (Revision Scope)\n\n"
+            "## 2. 修訂條目清冊 (Revision Items)\n\n"
+            "### [REV-01] [修訂主題簡述]\n\n"
+            "## 3. 修訂收斂與驗證確認 (Verification & Closure)\n",
+            encoding="utf-8"
+        )
 
     def tearDown(self):
         super().tearDown()
@@ -370,3 +378,170 @@ class TestPlansToolchainInternal(YSCBTestCase):
         self.assertEqual(len(reports), 1)
         self.assertNotIn("2025_12_01_1000_broken_archived", reports)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_plan_scanner_revision_track_and_orthogonal_attachment(self):
+        """FT-11: 驗證獨立修訂計畫識別為 Revision Track，且附隨型修訂不干擾原主計畫 Track 與狀態。"""
+        # 1. 獨立修訂計畫（僅含 revision_log.md + changelog.md）
+        rev_only_dir = self.plans_dir / "2026_10_17_0900_standalone_rev"
+        rev_only_dir.mkdir(parents=True, exist_ok=True)
+        (rev_only_dir / "changelog.md").write_text("# Changelog\n| 日期時間 | 類型 | 摘要 |\n| --- | --- | --- |\n| 2026-10-17 | `INIT` | init |\n", encoding="utf-8")
+        (rev_only_dir / "revision_log.md").write_text(
+            "# 修訂紀錄\n\n> 功能名稱：UI Polish\n> 建立日期：2026-10-17\n> 狀態：In Progress\n> 模型：Gemini Flash\n",
+            encoding="utf-8"
+        )
+
+        # 2. 獨立修訂計畫（含 P00 + revision_log.md）
+        rev_p00_dir = self.plans_dir / "2026_10_17_0930_p00_plus_rev"
+        rev_p00_dir.mkdir(parents=True, exist_ok=True)
+        (rev_p00_dir / "changelog.md").write_text("# Changelog\n| 日期時間 | 類型 | 摘要 |\n| --- | --- | --- |\n| 2026-10-17 | `INIT` | init |\n", encoding="utf-8")
+        (rev_p00_dir / "P00_discuss.md").write_text("> 功能名稱：RevWithP00\n> 建立日期：2026-10-17\n> 狀態：Confirmed\n> 模型：Gemini Flash\n", encoding="utf-8")
+        (rev_p00_dir / "revision_log.md").write_text("> 功能名稱：RevWithP00\n> 建立日期：2026-10-17\n> 狀態：Completed\n> 模型：Gemini Flash\n", encoding="utf-8")
+
+        # 3. Full Track 主計畫附隨 revision_log.md (In Progress) -> 不影響主計畫 Completed 狀態
+        full_dir = self._create_valid_plan("2026_10_17_1000_full_with_rev")
+        (full_dir / "P01_requirements_spec.md").write_text("> 功能名稱：Full\n> 建立日期：2026-10-17\n> 狀態：Confirmed\n> 模型：Gemini Flash\n", encoding="utf-8")
+        (full_dir / "revision_log.md").write_text("> 功能名稱：Full\n> 建立日期：2026-10-17\n> 狀態：In Progress\n> 模型：Gemini Flash\n", encoding="utf-8")
+
+        scanner = PlanScanner(plans_dir=self.plans_dir)
+        self.assertEqual(scanner.get_plan_info(rev_only_dir), ("Revision", "In Progress"))
+        self.assertEqual(scanner.get_plan_info(rev_p00_dir), ("Revision", "Completed"))
+        self.assertEqual(scanner.get_plan_info(full_dir), ("Full Track", "Completed"))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_plan_verifier_revision_log_compliance(self):
+        """FT-12: 驗證 PlanVerifier 對 revision_log.md 的標頭、動態章節與 [REV-XX] 條目檢核。"""
+        rev_dir = self.plans_dir / "2026_10_17_1100_verify_rev"
+        rev_dir.mkdir(parents=True, exist_ok=True)
+        (rev_dir / "changelog.md").write_text(
+            "# Changelog\n\n| 日期時間 | 類型 | 摘要 |\n| :--- | :---: | :--- |\n| 2026-10-17 11:00 | `INIT` | 初始化 |\n",
+            encoding="utf-8"
+        )
+        (rev_dir / "revision_log.md").write_text(
+            "# 修訂紀錄 (Revision Log) — 視覺與參數微調\n\n"
+            "> 功能名稱：視覺與參數微調\n"
+            "> 建立日期：2026-10-17\n"
+            "> 狀態：Completed\n"
+            "> 模型：Gemini Flash\n\n"
+            "## 1. 修訂背景與來源範疇 (Revision Scope)\n"
+            "- **修訂來源與關聯脈絡**：獨立修訂計畫\n\n"
+            "## 2. 修訂條目清冊 (Revision Items)\n\n"
+            "### [REV-01] 調整按鈕間距與提示文字\n"
+            "- **修訂類型**：`UI/UX/DX`\n"
+            "- **涉及檔案**：`ui/button.py`\n"
+            "- **修訂內容摘要**：\n  - 將間距由 4px 調整為 8px。\n\n"
+            "## 3. 修訂收斂與驗證確認 (Verification & Closure)\n"
+            "- [x] 所有修訂條目已定案。\n",
+            encoding="utf-8"
+        )
+
+        verifier = PlanVerifier(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            templates_dir=self.templates_dir
+        )
+        # 1. 合規 revision_log.md -> PASS (動態 ### [REV-01] 標題不應誤觸 TEMPLATE 缺失)
+        rep_pass = verifier.verify_plan("2026_10_17_1100_verify_rev")
+        self.assertEqual(rep_pass.status, PlanSeverity.PASS)
+
+        # 2. 移除 [REV-01] 條目 -> 觸發 ID_MATRIX FAIL
+        (rev_dir / "revision_log.md").write_text(
+            "# 修訂紀錄 (Revision Log) — 視覺與參數微調\n\n"
+            "> 功能名稱：視覺與參數微調\n"
+            "> 建立日期：2026-10-17\n"
+            "> 狀態：In Progress\n"
+            "> 模型：Gemini Flash\n\n"
+            "## 1. 修訂背景與來源範疇 (Revision Scope)\n\n"
+            "## 2. 修訂條目清冊 (Revision Items)\n(尚未填寫 REV 條目)\n\n"
+            "## 3. 修訂收斂與驗證確認 (Verification & Closure)\n",
+            encoding="utf-8"
+        )
+        rep_fail = verifier.verify_plan("2026_10_17_1100_verify_rev")
+        self.assertEqual(rep_fail.status, PlanSeverity.FAIL)
+        self.assertTrue(any("ID_MATRIX" in e for e in rep_fail.errors))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_plan_archiver_revision_log_completion_gate(self):
+        """FT-13 & ET-03: 驗證獨立修訂計畫歸檔與附隨修訂紀錄 (含子計畫) 未 Completed 阻斷歸檔。"""
+        # 1. 獨立修訂計畫 Completed -> 順利歸檔
+        rev_plan = "2026_10_17_1200_standalone_rev_archive"
+        rev_dir = self.plans_dir / rev_plan
+        rev_dir.mkdir(parents=True, exist_ok=True)
+        (rev_dir / "changelog.md").write_text(
+            "# Changelog\n\n| 日期時間 | 類型 | 摘要 |\n| :--- | :---: | :--- |\n| 2026-10-17 12:00 | `INIT` | 初始化 |\n",
+            encoding="utf-8"
+        )
+        (rev_dir / "revision_log.md").write_text(
+            "# 修訂紀錄 (Revision Log) — 獨立修訂\n\n"
+            "> 功能名稱：獨立修訂\n> 建立日期：2026-10-17\n> 狀態：Completed\n> 模型：Gemini Flash\n\n"
+            "## 1. 修訂背景與來源範疇 (Revision Scope)\n\n"
+            "## 2. 修訂條目清冊 (Revision Items)\n\n### [REV-01] 調整參數\n\n"
+            "## 3. 修訂收斂與驗證確認 (Verification & Closure)\n- [x] 完成\n",
+            encoding="utf-8"
+        )
+
+        # 2. 主計畫 P07 Completed，但 sub_01 下附隨 revision_log.md 為 In Progress -> 阻斷歸檔
+        umb_plan = "2026_10_17_1230_main_with_incomplete_sub_rev"
+        umb_dir = self._create_valid_plan(umb_plan)
+        (umb_dir / "umbrella_overview.md").write_text(
+            "# 主計畫總覽\n\n> 計畫名稱：Umbrella\n> 建立日期：2026-10-17\n> 狀態：Completed\n> 模型：Gemini Flash\n",
+            encoding="utf-8"
+        )
+        sub_dir = umb_dir / "sub_01_ui"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        (sub_dir / "changelog.md").write_text(
+            "# Changelog\n\n| 日期時間 | 類型 | 摘要 |\n| :--- | :---: | :--- |\n| 2026-10-17 12:30 | `INIT` | 子計畫 |\n",
+            encoding="utf-8"
+        )
+        (sub_dir / "revision_log.md").write_text(
+            "# 修訂紀錄 (Revision Log) — 子計畫修訂\n\n"
+            "> 功能名稱：子計畫修訂\n> 所屬主計畫：2026_10_17_1230_main_with_incomplete_sub_rev\n"
+            "> 建立日期：2026-10-17\n> 狀態：In Progress\n> 模型：Gemini Flash\n\n"
+            "## 1. 修訂背景與來源範疇 (Revision Scope)\n\n"
+            "## 2. 修訂條目清冊 (Revision Items)\n\n### [REV-01] 微調樣式\n\n"
+            "## 3. 修訂收斂與驗證確認 (Verification & Closure)\n- [ ] 待確認\n",
+            encoding="utf-8"
+        )
+
+        self.changelog_file.write_text(
+            f"# Changelog\n\n## {rev_plan}\n\n## {umb_plan}\n",
+            encoding="utf-8"
+        )
+
+        archiver = PlanArchiver(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            project_root=self.workspace_root
+        )
+        # 覆寫內部 verifier 之 templates_dir 以對齊測試沙盒
+        archiver.verifier = PlanVerifier(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            templates_dir=self.templates_dir
+        )
+
+        # 獨立修訂計畫 Completed 應成功歸檔
+        res_rev = archiver.archive_plan(rev_plan, force=False)
+        self.assertTrue(res_rev["success"])
+
+        # 附隨子計畫 revision_log.md 未 Completed 應拋出 PlanIncompleteError
+        with self.assertRaises(PlanIncompleteError) as ctx:
+            archiver.archive_plan(umb_plan, force=False)
+        self.assertIn("revision_log.md", str(ctx.exception))
+
+        # 將子計畫 revision_log.md 改為 Completed 並勾選 Checkbox 後應可順利歸檔
+        (sub_dir / "revision_log.md").write_text(
+            "# 修訂紀錄 (Revision Log) — 子計畫修訂\n\n"
+            "> 功能名稱：子計畫修訂\n> 所屬主計畫：2026_10_17_1230_main_with_incomplete_sub_rev\n"
+            "> 建立日期：2026-10-17\n> 狀態：Completed\n> 模型：Gemini Flash\n\n"
+            "## 1. 修訂背景與來源範疇 (Revision Scope)\n\n"
+            "## 2. 修訂條目清冊 (Revision Items)\n\n### [REV-01] 微調樣式\n\n"
+            "## 3. 修訂收斂與驗證確認 (Verification & Closure)\n- [x] 已確認\n",
+            encoding="utf-8"
+        )
+        res_umb = archiver.archive_plan(umb_plan, force=False)
+        self.assertTrue(res_umb["success"])
+        self.mark_passed()
+

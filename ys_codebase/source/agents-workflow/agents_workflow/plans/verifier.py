@@ -100,17 +100,12 @@ from . import _resolve_uri_path
 
 
 class PlanVerifier:
-    """開發計畫文件合規性稽核引擎 (5-Stage Verification Pipeline)。"""
+    """開發計畫文件合規性稽核引擎 (4-Stage Verification Pipeline)。"""
 
     VALID_STATUSES = {
         "draft", "confirmed", "in progress", "in_progress",
         "passed", "completed", "active", "archived", "pending", "review",
         "discussing", "planning", "executing", "concluded", "aborted", "cancelled"
-    }
-
-    VALID_CHANGELOG_TYPES = {
-        "INIT", "DECISION", "PHASE", "REVIEW", "DEVIATION",
-        "DOCS", "REFACTOR", "FEAT", "FIX", "TEST", "ARCHIVE", "PASS"
     }
 
     # 模板佔位符正則（未替換即違規）
@@ -124,8 +119,11 @@ class PlanVerifier:
         r"\[模型名稱\]",
         r"\[Model Name\]",
         r"\[主題名稱\]",
+        r"\[修訂主題簡述\]",
+        r"\[UI/UX/DX\s*\|\s*Parameter\s*\|\s*Docs\]",
+        r"\[檔案路徑\]",
         r"\[Draft \|(?:\s*Discussing \|)?\s*Confirmed \| In Progress \| Passed \| Completed\]",
-        r"\[Feature \| Refactor \| Bug Fix \| Performance \| Docs\]",
+        r"\[Feature \| Refactor \| Bug Fix \| Performance \| Docs(?: \| Revision \| Research)?\]",
         r"\{\{\s*\.\.\.\s*\}\}",
     ]
 
@@ -162,6 +160,63 @@ class PlanVerifier:
             self.templates_dir = res_tmpl
 
         self._template_headers_cache: Dict[str, List[str]] = {}
+        self._dynamic_placeholders_cache: Optional[List[str]] = None
+
+    def get_dynamic_placeholders(self) -> List[str]:
+        """動態自模板目錄提取標頭佔位符正則模式清單。"""
+        if self._dynamic_placeholders_cache is not None:
+            return self._dynamic_placeholders_cache
+
+        patterns: List[str] = []
+        tmpl_dir = self.templates_dir
+        if not tmpl_dir or not tmpl_dir.exists():
+            tmpl_dir = Path(__file__).resolve().parent.parent / "assets" / "templates"
+
+        if tmpl_dir and tmpl_dir.exists():
+            try:
+                for tmpl_file in tmpl_dir.glob("*.md"):
+                    content = tmpl_file.read_text(encoding="utf-8", errors="ignore")
+                    lines = content.splitlines()[:35]
+                    for line in lines:
+                        line_s = line.strip()
+                        if line_s.startswith(">"):
+                            matches = re.findall(r"\[([^\]\r\n]+)\]", line_s)
+                            for m in matches:
+                                m_clean = m.strip()
+                                if ("|" in m_clean or re.search(r"[\u4e00-\u9fa5]", m_clean)) and not re.match(r"^REV-\d+", m_clean):
+                                    if "|" in m_clean:
+                                        parts = [re.escape(p.strip()) for p in m_clean.split("|")]
+                                        pat = r"\[\s*" + r"\s*\|\s*".join(parts) + r"\s*\]"
+                                    else:
+                                        pat = r"\[" + re.escape(m_clean) + r"\]"
+                                    try:
+                                        re.compile(pat)
+                                        patterns.append(pat)
+                                    except re.error:
+                                        pass
+            except Exception:
+                pass
+
+        seen = set()
+        unique_patterns = []
+        for p in patterns:
+            if p not in seen:
+                seen.add(p)
+                unique_patterns.append(p)
+
+        self._dynamic_placeholders_cache = unique_patterns
+        return self._dynamic_placeholders_cache
+
+    def get_all_placeholder_patterns(self) -> List[str]:
+        """獲取靜態與動態合併之全量佔位符正則清單。"""
+        dyn = self.get_dynamic_placeholders()
+        seen = set(self.PLACEHOLDER_PATTERNS)
+        res = list(self.PLACEHOLDER_PATTERNS)
+        for p in dyn:
+            if p not in seen:
+                seen.add(p)
+                res.append(p)
+        return res
 
     @staticmethod
     def parse_plan_header(lines: List[str]) -> Dict[str, str]:
@@ -221,8 +276,10 @@ class PlanVerifier:
                 for line in content.splitlines():
                     line_s = line.strip()
                     if line_s.startswith("#"):
-                        # 僅擷取二級與三級核心章節標題
+                        # 僅擷取二級與三級核心章節標題（排除 [REV-XX] 動態修訂條目標題）
                         if line_s.startswith("##") or line_s.startswith("###"):
+                            if re.search(r"\[REV-\d+\]", line_s, re.IGNORECASE):
+                                continue
                             norm = self.normalize_header_title(line_s)
                             if norm and len(norm) >= 2:
                                 headers.append(norm)
@@ -257,12 +314,14 @@ class PlanVerifier:
             return "P06_test_plan.md"
         elif base.startswith("P07_"):
             return "P07_walkthrough.md"
-        elif base.startswith("R") and base.endswith(".md") and "research" in base:
+        elif re.match(r"^R\d{2}_.+\.md$", base, re.IGNORECASE):
             return "RXX_research_report.md"
         elif base in ("fast_track_plan.md", "FT_plan.md"):
             return "fast_track_plan.md"
         elif base == "umbrella_overview.md":
             return "umbrella_overview.md"
+        elif base == "revision_log.md":
+            return "revision_log.md"
         elif base == "handoff.md":
             return "handoff.md"
         elif base == "changelog.md":
@@ -366,7 +425,7 @@ class PlanVerifier:
                 )
 
             # 檢查佔位符 (排除行內代碼反引號)
-            for pat in self.PLACEHOLDER_PATTERNS:
+            for pat in self.get_all_placeholder_patterns():
                 for idx, line in enumerate(lines, 1):
                     line_clean = re.sub(r"`.*?`", "", line)
                     if re.search(pat, line_clean):
@@ -433,7 +492,7 @@ class PlanVerifier:
                 )
             )
 
-        for pat in self.PLACEHOLDER_PATTERNS:
+        for pat in self.get_all_placeholder_patterns():
             for idx, line in enumerate(non_code_lines, 1):
                 if re.search(pat, line):
                     report.issues.append(
@@ -575,15 +634,27 @@ class PlanVerifier:
 
         # 4. 標準 ID 矩陣與測試規劃合規 (FR-02)
         if rel_file_name.endswith("P06_test_plan.md"):
-            # 檢查是否具備 FT-XX 或 ET-XX 測試案例
-            has_ft = any("FT-" in l or "ET-" in l or "RT-" in l for l in lines)
+            # 檢查是否具備 FT-XX 或 ET-XX 或 RT-XX 測試案例
+            has_ft = any(re.search(r"\b(FT|ET|RT)-\d{2}\b", l) for l in lines)
             if not has_ft:
                 report.issues.append(
                     PlanIssue(
                         severity=PlanSeverity.FAIL,
                         file_name=rel_file_name,
                         category="ID_MATRIX",
-                        message="'P06_test_plan.md' 測試案例清冊缺少具備 'FT-XX' 或 'ET-XX' 前綴之測試項目。",
+                        message="'P06_test_plan.md' 測試案例清冊缺少具備 'FT-XX'、'ET-XX' 或 'RT-XX' 前綴之測試項目。",
+                    )
+                )
+        elif rel_file_name.endswith("revision_log.md"):
+            # 檢查是否具備 [REV-XX] 修訂條目
+            has_rev = any(re.search(r"\[REV-\d+\]", l) for l in lines)
+            if not has_rev:
+                report.issues.append(
+                    PlanIssue(
+                        severity=PlanSeverity.FAIL,
+                        file_name=rel_file_name,
+                        category="ID_MATRIX",
+                        message="'revision_log.md' 修訂紀錄清單缺少具備 '[REV-XX]' 前綴之修訂條目。",
                     )
                 )
 

@@ -12,9 +12,9 @@ description: 自動連續推進工作流 (Auto)。支援 Phase 01~05 跳過中�
 ## 適用情境與觸發時機
 
 - **適用情境**：進行中之 Full Track 計畫或 Umbrella 活躍子計畫。
-- **觸發時機**：處於 Phase 01 ~ Phase 05 時輸入 `/Auto`。
+- **觸發時機**：處於 Phase 00 (Confirmed) 或 Phase 01 ~ Phase 05 時輸入 `/Auto`。
 - **排除情境**：
-  - **Phase 0**：需求邊界必須由開發者確認定稿。
+  - **Phase 0 未確認**：`P00_discuss.md` 處於 Draft / Discussing 時需求邊界必須先由開發者確認定稿 (`Confirmed`) 方可觸發 `/Auto`。
   - **Fast Track**：流程極簡，無多階段等待需求。
 
 ---
@@ -33,7 +33,7 @@ description: 自動連續推進工作流 (Auto)。支援 Phase 01~05 跳過中�
 
 ### 步驟 1：掃描計畫與狀態判定
 1. 檢視 `__${project://plans}__` 定位進行中之計畫。
-2. 檢查當前階段（若處於 Phase 0 或 Fast Track，提示不適用並中斷）。
+2. 檢查當前階段（若處於 Phase 0 未 Confirmed 或 Fast Track，提示不適用並中斷；若 P00 處於 Confirmed 則直接自 Phase 1 啟動連續推進）。
 
 ### 步驟 2：連續推進閉環 (Phase 01 -> 05)
 從當前斷點依序連續產出並定稿各階段產物，跳過中間等待點：
@@ -53,12 +53,13 @@ description: 自動連續推進工作流 (Auto)。支援 Phase 01~05 跳過中�
 2. **極精簡 Session 回覆格式**：對話 Session **嚴禁全文重複、代碼傾倒或日誌傾倒**，強制僅呈遞以下極簡卡片：
    ```markdown
    ### 🚦 /Auto 連續推進完成 (抵達 P06 驗證 Checkpoint)
-   - **產出文件**：[P06_test_plan.md](__${project://plans}__/{plan_name}/P06_test_plan.md) (Completed / 待驗收)
+   - **產出文件**：[P06_test_plan.md](__${project://plans}__/{plan_name}/P06_test_plan.md) (Passed / 待驗收)
    - **推進摘要**：Phase 01 ~ Phase 05 已連續產出並定稿；自動化測試 100% 通過
    - **手動/UX 驗收項目**：[若有 UX 項目，條列項目與操作預期；若無填「無」]
    - **待確認事項**：[若有 UX 項目請確認驗收結果為 [測試通過] 或是 [跳過/免測]；確認完成後將進入 Phase 7 (P07 成果展示與 SOP Review 結案)]
    ```
 3. **[!] 立即 End Turn 等待開發者回覆**：絕對禁止自行將 P06 標記為 Passed 或擅自推進。
-4. **接續推進硬性約束**：
+4. **接續推進與表層修訂分流硬性約束**：
    - 開發者確認 UX 驗證結果（無論為 `[測試通過]` 或是 `[跳過/免測]`）後，**唯一法定下一步為進入 [Phase 7 (P07 結案與 SOP 審查)](`__#{module://agents-workflow/assets/skills/development-sop/references/phase_07_walkthrough.md}__`)**。
+   - 若開發者在 P06 期間不再反饋邏輯 Bug 或錯誤行為，轉而開始要求微調 UI/UX/DX、參數或文檔，Agent 應主動提問確認業務核心是否已無問題，並建議先進入 P07 結案審查後再建立 [`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`) 進行修訂。
    - P07 內化三層文檔對齊、測試完整性與 `plan verify` 合規檢核，確認 100% Passed 後方可產出 `P07_walkthrough.md` 結案。
