@@ -32,8 +32,8 @@ flowchart TD
     Trigger["開發者顯式要求對話分析"] --> Step1["步驟 1: 強制優先執行專用分析腳本"]
     Step1 --> Run["python scripts/analyzer.py"]
     Run --> Check{"腳本執行結果"}
-    Check -- 成功 (Antigravity 環境) --> Out1["直接獲取精準解析數據，產出摘要卡"]
-    Check -- 回報不支援 (非 Antigravity) --> Step2["步驟 2: 強制閱讀 references/evaluation_guide.md"]
+    Check -- "成功 (Antigravity 環境)" --> Out1["直接獲取精準解析數據，產出摘要卡"]
+    Check -- "回報不支援 (非 Antigravity)" --> Step2["步驟 2: 強制閱讀 references/evaluation_guide.md"]
     Step2 --> Manual["遵循四大坑點防呆，依 Git & Plans 通則自行計算"]
     Manual --> Out2["手動填入數據，產出摘要卡"]
 ```
@@ -50,7 +50,7 @@ python __${module://agents-workflow/assets/skills/session-analysis/scripts/analy
 ### 步驟 2：環境降級與手動計算通則 (Fallback)
 
 - 若腳本輸出：`[session-analysis] 錯誤：目前環境非 Antigravity IDE 或未檢測到有效 transcript 日誌`：
-- **Agent 必須強制閱讀 [`references/evaluation_guide.md`](./references/evaluation_guide.md)**，遵循四大坑點防呆（防步驟誤計、防浮誇乘算、防範圍混淆、防主觀評語），依據 `git status`、`git diff` 與 `plans/` 微觀日誌進行客觀自檢與手動填報。
+- **Agent 必須強制閱讀 [`references/evaluation_guide.md`](./references/evaluation_guide.md)**，遵循四大坑點防呆（防步驟誤計、防浮誇乘算、防範圍混淆、防主觀評語），依據 `git status`、`git diff` 與 `__${project://plans/}__` 微觀日誌進行客觀自檢與手動填報。
 
 ---
 
@@ -59,14 +59,14 @@ python __${module://agents-workflow/assets/skills/session-analysis/scripts/analy
 ### 3.1 流程與紀律自檢 (Guardrails Audit)
 - 零臆測公理（不確定細節向開發者釐清，無主觀發散）。
 - SSOT 檔案真理與對話極簡節流公理（嚴禁對話全文重複、代碼傾倒）。
-- CLI 權限分級（[SAFE] 自主安全 / [CONDITIONAL] 階段條件 / [GATED] 授權守門，無越界操作）。
+- CLI 權限分級（🟢 自主安全 / 🟡 階段條件 / 🔴 授權守門，無越界操作）。
 - Checkpoint 停步與單 Turn 邊界紀律。
 
 ### 3.2 行為與 Token 視窗分佈 (Dimension Breakdown)
 - 實時 Context 視窗規模與 System Prompt 佔比（標明 Prompt Cache 命中機制）。
 - 模型真實推論輪次 (Planner Steps)。
 - 工具調用（Read / Write / CLI）頻次與字元吞吐。
-- 技能與工作流觸發清冊。
+- 技能觸發清冊。
 
 ### 3.3 模組特化評測 (Modular Evaluations)
 `__@{SESSION_ANALYSIS_CHECK_ITEMS}__`
@@ -97,7 +97,6 @@ python __${module://agents-workflow/assets/skills/session-analysis/scripts/analy
 - **使用者輸入 (User Inputs)**：`[count]` 次
 - **外部指令調用 (CLI)**：約 `[C_tok]` Tokens (`[C_pct]%`) | 執行 `[count]` 次
 - **Skills 觸發**：`[count]` 項：`[清單]`
-- **Workflows 觸發**：`[count]` 項：`[清單]`
 - **細部操作吞吐**：
   - **Read (檔案檢視)**：約 `[R_tok]` Tokens (`[R_pct]%`) | 調用 `[count]` 次
   - **Write (代碼寫入/編輯)**：約 `[W_tok]` Tokens (`[W_pct]%`) | 產出 `[count]` 次

@@ -1,5 +1,31 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_17_1326_model_record_rule_revision (Completed，保留待下游驗證後歸檔)
+
+- **模型紀錄規則修訂：平台宣告為唯一來源、嚴禁由檔案反推、事件粒度記入 changelog**：
+  - **規則重寫 (`AgentsStandards.md` 核心原則 2)**：以「模型紀錄 (Model Record)」取代 `commit:cc94797c` 之「對話首行 + 內文尾行 `> {model}`」規則；`> 模型：` 僅採當輪平台明確宣告之名稱（原樣、含推理強度），無法確認填 `Unknown`，嚴禁自既有計畫檔、摘要或先前回覆反推；接手既有計畫時不改檔頭，改記於 `changelog.md`。
+  - **模板與技能對齊**：`header.md`、`handoff.md`、`roadmap.md`、`umbrella_overview.md`、`RXX_research_report.md` 佔位符改為 `[平台宣告之模型名稱；無法確認填 Unknown]`；`changelog.md` 模板新增「模型」欄（既有 3 欄日誌相容）；`development-sop`、`pause`、`research` 技能措辭同步。
+  - **根因依據**：本機對話日誌顯示新模型因規則誘導讀取計畫檔標頭、並經壓縮摘要固化，連續誤報他模型名稱；登錄 `[DN-AW-08]`。
+  - **範疇邊界**：本期不含來源標記、開發者宣告與平台探針；`PlanVerifier` 未改動（僅檢查欄位存在）。新增 `tests/test_plans_model_record.py`（FT-01 ~ FT-03）。
+
+## 2026_10_17_1133_workflow_optimization (In Progress)
+
+### sub_01_workflow_audit_remediation (Completed)
+- **通用工作流全量審計全面修復、Plans 工具鏈標頭解析 SSOT、時序防呆與 41 檔全資產純化**：
+  - **Plans 工具鏈狀態解析 SSOT (`PlanStatusResolver`)**：新建 `agents_workflow/plans/status.py` 實作標準標頭解析器，嚴格限定於 Markdown 前 35 行 blockquote 提取狀態標頭並進行正規化，正文任何處出現 "Completed" 100% 免疫；重構 `scanner.py` 與 `archiver.py` 全面轉向 SSOT 驅動，解決 C-1、C-2 與 FT-02。
+  - **歸檔防呆時序與 Research Track 判定**：`PlanArchiver` 強制將目的地目錄衝突檢查前置於暫時性交接快照清理，確保目標衝突時 `handoff.md` 物理留存（FT-08）；`PlanScanner` 支援 Research Track 狀態（Concluded / Draft）客觀回報。
+  - **驗證器動態佔位符與調研檔映射放寬 (`PlanVerifier`)**：放寬調研檔名映射為 `^R\d{2}_.+\.md$`，即便檔名無 "research" 亦精確映射至 `RXX_research_report.md`；收緊測試 ID 判定為正則 `\b(FT|ET|RT)-\d{2}\b`；實作 `get_all_placeholder_patterns` 動態自模板目錄提取佔位符，精準攔截 `[調研主題/所屬功能]` 等未替換字串；清理死代碼 `VALID_CHANGELOG_TYPES` 並對齊 docstring。
+  - **規範與全技能手冊標準化**：`AgentsStandards.md` 模板指針指向 `development-sop/SKILL.md` 語意佔位符；Fast Track 步驟全面更名為 `FP-01/02/03` (Fast Phase)；P06 狀態機對齊 `Draft -> Confirmed -> In Progress -> Passed -> Completed`；`continue` 支援完整 6 分支判定與 `P07` 結案列；`auto` 支援 `P00 Confirmed` 觸發；`plan_modes` 明確 Revision 4 大熔斷條件、排除 Bug Fix、支援重開與解除 verify 對附掛修訂之阻塞；Roadmap 描述統一為每主題一檔 `{topic}.md` 並對齊狀態枚舉；`session-analysis` 移除已廢除之獨立 `Workflows` 維度、修復 Mermaid 邊標籤裸括號並去特化 `analyzer.py`。
+  - **全模板佔位符統一與貢獻清冊同步**：`fast_track_plan.md`、`P04`、`P05`、`P07`、`revision_log.md` 全面將硬編碼 `docs/`、`plans/`、`CHANGELOG.md` 收斂為 `__${workflow.docs://}__`、`__${project://plans/}__`、`__${project://CHANGELOG.md}__` 語意佔位符；`handoff.md` 更新為 `FP-0Y (狀態: In Progress)`；`author_guide_and_checklist.md` 移除私有路徑殘留；登錄 `[DN-AW-07]`；全模組 97 項測試 100% 通過。
+
+## 2026_10_17_1035_revision_plan_orthogonal_refactoring (Completed)
+
+- **修訂計畫 (`Revision Plan`) 正交化定位重構、`revision_log.md` 留檔強制化、P06 業務分流引導與通用 SOP 去特化純化**：
+  - **正交修訂模式與 `revision_log.md` 標準模板落地**：全面廢除舊版「0 計畫檔」無留檔修訂，新增 `revision_log.md` 標準模板並註冊匯出至 `.agents/.yscb/templates/revision_log.md`；支援「獨立修訂計畫（無衍生來源，或搭配前置 `P00` / `RXX`）」與「衍生/附掛於既有計畫（Full Track、Fast Track、Umbrella 主計畫或 `sub_XX` 子計畫）」雙軌正交模式，採用 `### [REV-XX]` 結構並強制同條目多輪微調原地收斂。
+  - **Dev Plans 工具鏈正交支援 (`PlanScanner` / `PlanVerifier` / `PlanArchiver`)**：`PlanScanner` 針對獨立修訂計畫顯示 Track 為 `"Revision"`，附掛於既有計畫時則保持正交不干擾原計畫 Track 與狀態；`PlanVerifier` 支援 `revision_log.md` 標頭模型檢核、佔位符攔截、動態 `### [REV-\d+]` 標題豁免與至少一筆 `[REV-\d+]` 條目檢核；`PlanArchiver` 支援獨立修訂歸檔，並在歸檔前強制檢核根目錄與所有 `sub_*` 子計畫之 `revision_log.md` 均已標記為 `Completed`。
+  - **Phase 6 業務核心測試聚焦與主動分流詢問機制**：於 `phase_06_test.md` 與 `auto/SKILL.md` 明定 P06 專注於核心業務與控制流驗證；當開發者不再反饋邏輯 Bug 而轉向要求 UI/UX/DX、靜態參數或文檔微調時，Agent 強制主動詢問是否確認核心業務無誤並先進入 P07 結案後再開啟 `revision_log.md` 修訂。
+  - **通用工作流框架去特化與盲測驗證**：全面移除 `agents-workflow` 通用模板與 `development-sop` 中殘留的本專案自引用特化詞彙（`@build`、`dev test`、`dev check`、`dev bump`、`dev release`、`ys_codebase/source/`）；經 4 組零提示無上下文 Sub-Agents 盲測 100% 精準命中，`agents-workflow` 模組 **88/88 單元測試 100% 通過**。
+
 ## 2026_10_15_1154_clean_install_feedback_remediation (Completed)
 
 - **純淨安裝環境下游反饋 4 項缺陷修復、常數職責解耦、軟剝離保護與設定引導校準**：

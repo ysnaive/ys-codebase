@@ -2,8 +2,8 @@
 
 > 暫停時間：[YYYY-MM-DD HH:MM]  
 > 所屬計畫：[計畫名稱]  
-> 當前所在階段：[Phase X / FT-Y (狀態: Implementing / In Progress)]  
-> 模型：[模型名稱]  
+> 當前所在階段：[Phase X / FP-0Y (狀態: In Progress)]  
+> 模型：[平台宣告之模型名稱；無法確認填 Unknown]  
 > 模板版本：v1.2  
 
 ---

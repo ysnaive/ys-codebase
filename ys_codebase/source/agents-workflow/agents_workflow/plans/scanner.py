@@ -43,21 +43,26 @@ class PlanScanner:
         legacy_p00_req = plan_dir / "P00_semantic_requirements.md"
         p01_req = plan_dir / "P01_requirements_spec.md"
         umbrella = plan_dir / "umbrella_overview.md"
+        rev_log = plan_dir / "revision_log.md"
         master_roadmaps = list(plan_dir.glob("master_plan_*.md"))
 
         track_type = "Unknown"
         status = "Unknown"
 
+        from .status import PlanStatusResolver
+
         # 1. Umbrella 判定
         if umbrella.exists() or len(master_roadmaps) > 0:
             track_type = "Umbrella"
             target_doc = umbrella if umbrella.exists() else master_roadmaps[0]
-            content = target_doc.read_text(encoding="utf-8", errors="ignore")
-            for st in ["Completed", "In Progress", "Implementing", "Planning", "Discussing", "Draft", "Phase 0"]:
-                if f"狀態：{st}" in content or f"狀態: {st}" in content or f"Status: {st}" in content or f"status: {st.lower()}" in content.lower():
-                    status = st
-                    break
-            if status == "Unknown":
+            raw_status = PlanStatusResolver.get_doc_header_status(target_doc)
+            if raw_status in ("completed", "concluded"):
+                status = "Completed"
+            elif raw_status in ("in progress", "executing", "implementing"):
+                status = "In Progress"
+            elif raw_status in ("planning", "discussing", "draft", "phase 0"):
+                status = "Planning" if raw_status == "planning" else raw_status.title()
+            else:
                 sub_dirs = [d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")]
                 if sub_dirs:
                     sub_statuses = [self.get_plan_info(sd)[1] for sd in sub_dirs]
@@ -72,51 +77,83 @@ class PlanScanner:
         elif ft_plan.exists() or legacy_ft_plan.exists():
             track_type = "Fast Track"
             target_ft = ft_plan if ft_plan.exists() else legacy_ft_plan
-            content = target_ft.read_text(encoding="utf-8", errors="ignore")
-            for st in ["Completed", "Passed", "Reviewing", "Review", "In Progress", "Implementing", "Planning", "Draft", "Confirmed", "Pending"]:
-                if f"狀態：{st}" in content or f"狀態: {st}" in content or f"Status: {st}" in content or f"status: {st.lower()}" in content.lower():
-                    status = st
-                    break
-            if status == "Unknown":
-                for st in ["Completed", "Passed", "Reviewing", "Review", "In Progress", "Implementing", "Planning"]:
-                    if st in content:
-                        status = st
-                        break
+            raw_status = PlanStatusResolver.get_doc_header_status(target_ft)
+            if raw_status in ("completed", "concluded"):
+                status = "Completed"
+            elif raw_status == "passed":
+                status = "Passed"
+            elif raw_status in ("in progress", "implementing"):
+                status = "In Progress"
+            elif raw_status in ("confirmed", "planning", "draft", "pending"):
+                status = raw_status.title()
+            elif raw_status == "unknown":
+                status = "Planning"
+            else:
+                status = raw_status.title()
 
         # 3. Full Track 判定
         elif p01_req.exists():
             track_type = "Full Track"
             p07_file = plan_dir / "P07_walkthrough.md"
+            p06_file = plan_dir / "P06_test_plan.md"
+            p05_file = plan_dir / "P05_task.md"
+            p04_file = plan_dir / "P04_implementation_plan.md"
+            p03_file = plan_dir / "P03_api_spec.md"
+            p02_file = plan_dir / "P02_architecture_plan.md"
+
             if p07_file.exists():
-                p07_content = p07_file.read_text(encoding="utf-8", errors="ignore")
-                if "Completed" in p07_content or "狀態：Completed" in p07_content or "狀態: Completed" in p07_content:
+                if PlanStatusResolver.is_doc_completed(p07_file):
                     status = "Completed"
                 else:
                     status = "Reviewing/Phase 7"
-            elif (plan_dir / "P06_test_plan.md").exists() and (plan_dir / "P05_task.md").exists():
+            elif p06_file.exists() and p05_file.exists() and PlanStatusResolver.get_doc_header_status(p06_file) in ("in progress", "passed", "completed"):
                 status = "Testing/Phase 6"
-            elif (plan_dir / "P05_task.md").exists():
+            elif p05_file.exists():
                 status = "Implementing/Phase 5"
-            elif (plan_dir / "P04_implementation_plan.md").exists():
+            elif p04_file.exists():
                 status = "Reviewing/Phase 4"
-            elif (plan_dir / "P03_api_spec.md").exists():
+            elif p03_file.exists():
                 status = "Designing/Phase 3"
-            elif (plan_dir / "P02_architecture_plan.md").exists():
+            elif p02_file.exists():
                 status = "Designing/Phase 2"
             else:
                 status = "Planning/Phase 1"
 
-        # 4. Phase 0 判定
-        elif p00_req.exists():
+        # 4. 獨立修訂計畫 (Revision) 判定 (若附掛於 1~3 主計畫則不會進入此分支，保持正交不影響原計畫狀態)
+        elif rev_log.exists():
+            track_type = "Revision"
+            raw_status = PlanStatusResolver.get_doc_header_status(rev_log)
+            if raw_status in ("completed", "concluded"):
+                status = "Completed"
+            elif raw_status == "passed":
+                status = "Passed"
+            elif raw_status in ("in progress", "implementing"):
+                status = "In Progress"
+            elif raw_status in ("confirmed", "draft", "pending"):
+                status = raw_status.title()
+            else:
+                status = "In Progress"
+
+        # 5. Research 調研 Track 判定
+        elif any(f.is_file() and re.match(r"^R\d{2}_.+\.md$", f.name, re.IGNORECASE) for f in plan_dir.iterdir() if f.is_file()):
+            track_type = "Research"
+            if PlanStatusResolver.is_research_completed(plan_dir):
+                status = "Concluded"
+            else:
+                status = "Draft"
+
+        # 6. Phase 0 判定
+        elif p00_req.exists() or legacy_p00_req.exists():
             track_type = "Phase 0"
-            content = p00_req.read_text(encoding="utf-8", errors="ignore")
-            if "狀態：Confirmed" in content or "狀態: Confirmed" in content or "status: confirmed" in content.lower():
+            target_p00 = p00_req if p00_req.exists() else legacy_p00_req
+            raw_status = PlanStatusResolver.get_doc_header_status(target_p00)
+            if raw_status in ("confirmed", "passed", "completed"):
                 status = "P00 Confirmed"
             else:
                 status = "P00 Discussing"
 
-        # 5. 檢查暫停快照
-        if (plan_dir / "handoff.md").exists() and status != "Completed":
+        # 7. 檢查暫停快照
+        if (plan_dir / "handoff.md").exists() and status not in ("Completed", "Concluded"):
             status = f"{status} (Paused)"
 
         return track_type, status
