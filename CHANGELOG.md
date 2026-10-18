@@ -8,7 +8,13 @@
   - **根因依據**：本機對話日誌顯示新模型因規則誘導讀取計畫檔標頭、並經壓縮摘要固化，連續誤報他模型名稱；登錄 `[DN-AW-08]`。
   - **範疇邊界**：本期不含來源標記、開發者宣告與平台探針；`PlanVerifier` 未改動（僅檢查欄位存在）。新增 `tests/test_plans_model_record.py`（FT-01 ~ FT-03）。
 
-## 2026_10_17_1133_workflow_optimization (In Progress)
+## 2026_10_17_1133_workflow_optimization (Completed)
+
+### sub_02_workflow_architecture_and_prompt_refinement (Completed)
+- **工作流流程架構閉環、跨軌道轉型規範、三層 5 列文檔表對稱與提示詞契約純化**：
+  - **`context-init` 模型紀錄規則對齊與 `yscb-cli-guild` 三級權限定義 (`FR-01`, `FR-08`)**：移除 `context-init/SKILL.md` 殘留之舊「首行強制輸出模型錨點」指令，對齊 `AgentsStandards.md` 模型紀錄規範；於 `yscb-cli-guild/SKILL.md` 明確定義 `[SAFE] 自主安全` / `[CONDITIONAL] 階段條件` / `[GATED] 授權守門` 三級守門契約，並同步 `context-init` 與 `session-analysis` 之權限標籤。
+  - **`handoff.md` 消費後即刻銷毀、Umbrella 主從狀態連動與跨軌道清理 (`FR-02`, `FR-03`, `FR-04`)**：於 `continue/SKILL.md` 明定讀取 `handoff.md` 恢復斷點後立即刪除該快照 (`Consume & Delete`)，並於 `pause/SKILL.md` 明定 Umbrella 子計畫交接檔置於 `sub_{編號}_{名稱}/handoff.md`；於 `plan_modes.md`、`development-sop`、`phase_00`、`phase_07` 定義 Umbrella 主從狀態與里程碑回寫規則；明定 Fast Track 升級 Full Track 時強制刪除原 `fast_track_plan.md`、Revision 熔斷區分獨立修訂原地升級與附掛修訂結算/回滾另開計畫、Research 三大出口統一標記 `Concluded`、Roadmap 補齊 `In Progress` $\to$ `Completed` 狀態閉環。
+  - **結案 `plan verify` 最終守門時序、`/discuss` 三大範疇出口與模板對稱純化 (`FR-05`, `FR-06`, `FR-07`, `FR-08`)**：調換 `phase_07_walkthrough.md` 步驟 2/3 順序並校準 `P07`、`fast_track_plan`、`revision_log` 結案清單，使 `plan verify` 成為落檔設為 `Completed` 且勾選全數 `[x]` 後之最終守門；於 `discuss/SKILL.md` 補齊次要問題三大範疇出口與 `P00~P06` / `fast_track_plan.md` 回填鏈；將 `P04 §4` 改為無 Checkbox 有序清單（消除與 `P05` 重工並保留標題 100% 相容動態章節檢核），統一 `P04 §2` 與 `P07 §4.1` 為三層 5 列文檔表 (`<Category>`)，於既有章節內對齊 `P00`/`P01`/`P03`/`roadmap`/`changelog` 模板並於 `development-sop §6` 明定各產物落檔預設標頭狀態；新增單元測試 `FT-04` ~ `FT-06`，全模組 **103/103 測試 100% 通過**。
 
 ### sub_01_workflow_audit_remediation (Completed)
 - **通用工作流全量審計全面修復、Plans 工具鏈標頭解析 SSOT、時序防呆與 41 檔全資產純化**：

@@ -19,6 +19,9 @@
 ```python
 ```
 
+- **錯誤與例外契約 (Error & Exception Contracts)**：
+- **階段決策紀錄**：`[P03:DR-01]` 
+
 ---
 
 ## 3. 依賴拓撲與實作順序 (Implementation Topology)
