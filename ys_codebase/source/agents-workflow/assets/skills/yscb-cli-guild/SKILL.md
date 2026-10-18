@@ -18,6 +18,10 @@ description: YSCB CLI 指令防呆與語意情境對照指南。當需要查詢�
 
 ## 2. CLI 權限分級矩陣與情境對照 (Permission Matrix)
 
+- **`[SAFE] 自主安全`**：唯讀查詢、狀態診斷、計畫檢核與沙盒單元跑測指令，Agent 可依任務需求自主安全調用。
+- **`[CONDITIONAL] 階段條件`**：具特定前置時序約束之指令，必須嚴格滿足表中「限制與守門條件」方可調用。
+- **`[GATED] 授權守門`**：涉及版本晉升 (`bump-*`)、正式發布 (`release*`)、環境變更或刪除之高風險指令，**未獲開發者於當前對話顯式授權前絕對禁止主動執行**（Default-Deny）。
+
 <!-- YSCB_AGENTS_CLI_GUILD_BEGIN -->
 `__@{AGENTS_CLI_GUILD}__`
 <!-- YSCB_AGENTS_CLI_GUILD_END -->

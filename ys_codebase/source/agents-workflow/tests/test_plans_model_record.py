@@ -115,5 +115,76 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertIn(MODEL_PLACEHOLDER, header)
         changelog_tpl = (assets / "templates" / "changelog.md").read_text(encoding="utf-8")
         self.assertIn("| 日期時間 | 類型 | 模型 | 摘要 |", changelog_tpl)
+        self.assertNotIn("(狀態：`Discussing`)", changelog_tpl)
         self.mark_passed()
+
+    def test_ft_04_sub02_context_init_and_cli_guild_alignment(self):
+        """FT-04 (sub_02 FR-01, FR-08): context-init 移除首行模型錨點並對齊權限標籤，yscb-cli-guild 含三級權限定義。"""
+        assets = _pkg_root / "assets"
+        ctx_init = (assets / "skills" / "context-init" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("首行強制輸出當前模型識別錨點", ctx_init)
+        self.assertIn("Unknown", ctx_init)
+        self.assertIn("[SAFE] 自主安全", ctx_init)
+
+        cli_guild = (assets / "skills" / "yscb-cli-guild" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("[SAFE] 自主安全", cli_guild)
+        self.assertIn("[CONDITIONAL] 階段條件", cli_guild)
+        self.assertIn("[GATED] 授權守門", cli_guild)
+
+        sess_analysis = (assets / "skills" / "session-analysis" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("[SAFE] 自主安全", sess_analysis)
+        self.mark_passed()
+
+    def test_ft_05_sub02_handoff_and_umbrella_lifecycle(self):
+        """FT-05 (sub_02 FR-02, FR-03, FR-04): continue/pause handoff 銷毀與子計畫路徑、Umbrella 主從連動與跨軌道清理。"""
+        assets = _pkg_root / "assets"
+        cont = (assets / "skills" / "continue" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Consume & Delete", cont)
+        self.assertIn("強制立即刪除該已消費之 `handoff.md`", cont)
+
+        pause = (assets / "skills" / "pause" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("sub_{編號}_{名稱}/handoff.md", pause)
+
+        plan_modes = (
+            assets / "skills" / "development-sop" / "references" / "plan_modes.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("強制刪除原 `fast_track_plan.md`", plan_modes)
+        self.assertIn("附掛於既有已結案計畫之修訂觸發熔斷", plan_modes)
+        self.assertIn("主從計畫狀態連動規則", plan_modes)
+
+        roadmap_tpl = (assets / "templates" / "roadmap.md").read_text(encoding="utf-8")
+        self.assertIn("Completed]", roadmap_tpl)
+        self.assertNotIn("全庫歷史物件量化分析", roadmap_tpl)
+        self.mark_passed()
+
+    def test_ft_06_sub02_templates_and_verify_ordering(self):
+        """FT-06 (sub_02 FR-05, FR-06, FR-07, FR-08): P04/P07 三層 5 列文檔表與無 Checkbox P04 §4，以及 P07/discuss 閉環。"""
+        assets = _pkg_root / "assets"
+        p00_tpl = (assets / "templates" / "P00_discuss.md").read_text(encoding="utf-8")
+        self.assertIn("架構影響範圍", p00_tpl)
+        self.assertNotIn("- [ ]", p00_tpl)
+
+        p04_tpl = (assets / "templates" / "P04_implementation_plan.md").read_text(encoding="utf-8")
+        self.assertIn("<Category>/README.md", p04_tpl)
+        self.assertIn("<Category>/[topic].md", p04_tpl)
+        self.assertIn("<Category>/DESIGN_NOTES.md", p04_tpl)
+        self.assertIn("微觀註解", p04_tpl)
+        self.assertNotIn("- [ ] **TASK-", p04_tpl)
+        self.assertIn("1. **TASK-01**", p04_tpl)
+
+        p07_tpl = (assets / "templates" / "P07_walkthrough.md").read_text(encoding="utf-8")
+        self.assertIn("<Category>/README.md", p07_tpl)
+        self.assertIn("<Category>/[topic].md", p07_tpl)
+        self.assertIn("<Category>/DESIGN_NOTES.md", p07_tpl)
+
+        p07_ref = (
+            assets / "skills" / "development-sop" / "references" / "phase_07_walkthrough.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("步驟 3：執行計畫合規檢核最終守門", p07_ref)
+
+        discuss = (assets / "skills" / "discuss" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("三大範疇裁定出口", discuss)
+        self.assertIn("fast_track_plan.md", discuss)
+        self.mark_passed()
+
 

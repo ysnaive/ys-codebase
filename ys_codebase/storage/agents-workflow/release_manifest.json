@@ -1,5 +1,5 @@
 {
-  "fingerprint": "5e1adff3b4231c9a366039f2f7071352528d1ab1d6023ff406a33b72869486fa",
+  "fingerprint": "c812ad3e1a9f48a50c044501a7f1e7d188002619af56ee7b3626eb9d8d21e96d",
   "active_targets": [
     "antigravity"
   ],
@@ -53,6 +53,6 @@
     "project://.agents/skills/yscb-module-dev/references/testing_and_sandbox.md",
     "project://AGENTS.md"
   ],
-  "combined_fingerprint": "5e1adff3b4231c9a366039f2f7071352528d1ab1d6023ff406a33b72869486fa",
-  "updated_at": "2026-10-17 13:58:43"
+  "combined_fingerprint": "c812ad3e1a9f48a50c044501a7f1e7d188002619af56ee7b3626eb9d8d21e96d",
+  "updated_at": "2026-10-18 11:06:51"
 }
