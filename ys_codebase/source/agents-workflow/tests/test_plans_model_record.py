@@ -118,21 +118,18 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertNotIn("(狀態：`Discussing`)", changelog_tpl)
         self.mark_passed()
 
-    def test_ft_04_sub02_context_init_and_cli_guild_alignment(self):
-        """FT-04 (sub_02 FR-01, FR-08): context-init 移除首行模型錨點並對齊權限標籤，yscb-cli-guild 含三級權限定義。"""
+    def test_ft_04_sub02_context_init_and_cli_guide_alignment(self):
+        """FT-04 (sub_02 FR-01, FR-08): context-init 移除首行模型錨點並對齊權限標籤，yscb-cli-guide 含三級權限定義。"""
         assets = _pkg_root / "assets"
         ctx_init = (assets / "skills" / "context-init" / "SKILL.md").read_text(encoding="utf-8")
         self.assertNotIn("首行強制輸出當前模型識別錨點", ctx_init)
         self.assertIn("Unknown", ctx_init)
         self.assertIn("[SAFE] 自主安全", ctx_init)
 
-        cli_guild = (assets / "skills" / "yscb-cli-guild" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("[SAFE] 自主安全", cli_guild)
-        self.assertIn("[CONDITIONAL] 階段條件", cli_guild)
-        self.assertIn("[GATED] 授權守門", cli_guild)
-
-        sess_analysis = (assets / "skills" / "session-analysis" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("[SAFE] 自主安全", sess_analysis)
+        cli_guide = (assets / "skills" / "yscb-cli-guide" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("[SAFE] 自主安全", cli_guide)
+        self.assertIn("[CONDITIONAL] 階段條件", cli_guide)
+        self.assertIn("[GATED] 授權守門", cli_guide)
         self.mark_passed()
 
     def test_ft_05_sub02_handoff_and_umbrella_lifecycle(self):
@@ -238,3 +235,61 @@ class TestModelRecordRule(YSCBTestCase):
             self.assertLess(content.index("`Completed`"), content.index("plan verify"),
                             f"{name}: 應先更新 Completed 狀態，最後執行 plan verify")
         self.mark_passed()
+
+    def test_ft_08_sub04_skill_optimizer_and_pure_skills_refinement(self):
+        """FT-08 (sub_04 REV-01 & REV-02): 驗證 session-analysis 廢除、skill-optimizer 去特化註冊與全部 12 技能負向邊界合規。"""
+        import json
+        from agents_workflow.compiler import FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        assets = _pkg_root / "assets"
+        skills_dir = assets / "skills"
+        contrib = json.loads((_pkg_root / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+
+        # 1. session-analysis 必須已完全廢除，skill-optimizer 必須已註冊
+        self.assertFalse((skills_dir / "session-analysis").exists())
+        export_names = {item.get("name") for item in contrib["export"] if "name" in item}
+        token_names = {item["value"] for item in contrib["token"]}
+        self.assertNotIn("session-analysis", export_names)
+        self.assertNotIn("SESSION_ANALYSIS_CHECK_ITEMS", token_names)
+        self.assertIn("skill-optimizer", export_names)
+        self.assertIn("SKILL_OPTIMIZER_STANDARDS", token_names)
+
+        # 2. 全部 12 個技能皆具備雙軌結構化邊界 (環境攔截型採三段式『觸發情境：/排除情境：』；主動指令型採『僅於顯式輸入』) 與常見踩坑指南 (Gotchas)
+        expected_skills = {
+            "auto", "context-init", "continue", "development-sop", "discuss",
+            "documentation", "new-plan", "pause", "research", "roadmap",
+            "skill-optimizer", "yscb-cli-guide",
+        }
+        command_driven_skills = {"auto", "pause", "continue", "context-init", "skill-optimizer"}
+        ambient_skills = expected_skills - command_driven_skills
+        actual_skills = {p.name for p in skills_dir.iterdir() if p.is_dir()}
+        self.assertEqual(actual_skills, expected_skills)
+
+        for s_name in ambient_skills:
+            skill_md = (skills_dir / s_name / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("觸發情境：", skill_md, f"{s_name}/SKILL.md 缺少三段式『觸發情境：』描述")
+            self.assertIn("排除情境：", skill_md, f"{s_name}/SKILL.md 缺少三段式『排除情境：』描述")
+            self.assertIn("## 常見踩坑指南 (Gotchas)", skill_md, f"{s_name}/SKILL.md 缺少 Gotchas 章節")
+
+        for s_name in command_driven_skills:
+            skill_md = (skills_dir / s_name / "SKILL.md").read_text(encoding="utf-8")
+            first_lines = "\n".join(skill_md.splitlines()[:4])
+            self.assertIn("僅於顯式輸入", first_lines, f"{s_name}/SKILL.md 缺少主動指令型『僅於顯式輸入』契約")
+            self.assertNotIn("(或 /", first_lines, f"{s_name}/SKILL.md description 不應含過度相容大小寫變體")
+            self.assertIn("## 常見踩坑指南 (Gotchas)", skill_md, f"{s_name}/SKILL.md 缺少 Gotchas 章節")
+
+        # 3. 驗證 skill-optimizer 及其 references 不含 ys-codebase 內部特化教學 (Zero Specialization Pollution)
+        for md_path in (skills_dir / "skill-optimizer").rglob("*.md"):
+            text = md_path.read_text(encoding="utf-8")
+            self.assertNotIn("不要加反引號", text, f"{md_path.name} 不得含特化錯誤教學")
+            self.assertNotIn("compiler.py", text, f"{md_path.name} 不得耦合特定專案內部檔名")
+
+        # 4. 驗證所有技能與參考檔零未包覆反引號之動態標籤 (0 unenclosed tag warnings)
+        for md_path in skills_dir.rglob("*.md"):
+            text = md_path.read_text(encoding="utf-8")
+            clean_text = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", text))
+            unenclosed = UNENCLOSED_TAG_REGEX.findall(clean_text)
+            self.assertEqual(unenclosed, [], f"{md_path} 存在未以單反引號包覆之語意標籤: {unenclosed}")
+
+        self.mark_passed()
+

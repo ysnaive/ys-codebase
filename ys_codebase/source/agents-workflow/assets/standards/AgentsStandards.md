@@ -34,7 +34,7 @@
 | 任務情境、業務意圖與原生工具調用攔截 (Trigger Condition & Action Gate) | 強制觸發之技能 (Mandatory Skill) |
 | :--- | :--- |
 | **開立/推進計畫 / 代碼實作 / `__${project://plans/}__` 產物維護**<br/>*(調用檔案編輯寫入工具前；[!] 模板唯一來源請查閱 [`development-sop`](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`) 指針，嚴禁翻讀歷史封存；生命週期工作流（開立 / 接續 / 暫停 / 連續推進 / 遇阻歸因）由 `development-sop` 分流至對應技能)* | `development-sop` |
-| **執行任何 CLI 命令列指令**<br/>*(調用各環境之終端機/命令列執行工具時)* | `yscb-cli-guild` |
+| **執行任何 CLI 命令列指令**<br/>*(調用各環境之終端機/命令列執行工具時)* | `yscb-cli-guide` |
 | **編寫代碼註解 / 撰寫或維護專案文檔 / Phase 7 (P07 / FP-03) 三層文檔對齊**<br/>*(撰寫 Docstring、維護 `__${workflow.docs://}__`、更新 README 或結案審查前)* | `documentation` |
 `__@{AGENTS_SKILL_ROUTING}__`
 

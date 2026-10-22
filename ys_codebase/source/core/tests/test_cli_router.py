@@ -1,6 +1,6 @@
 """
-CLI Routing, Help, UX and Defensive Guild Unit Tests.
-Consolidates previous test_cli_help and test_cli_guild suites.
+CLI Routing, Help, UX and Defensive Guide Unit Tests.
+Consolidates previous test_cli_help and test_cli_guide suites.
 100% Python Standard Library.
 """
 import io
@@ -13,11 +13,11 @@ from unittest.mock import patch
 
 from core import uri
 from core.providers import (
-    get_agents_cli_guild,
-    get_phase_cli_guild,
-    get_phase05_cli_guild,
-    get_phase06_cli_guild,
-    get_phase07_cli_guild,
+    get_agents_cli_guide,
+    get_phase_cli_guide,
+    get_phase05_cli_guide,
+    get_phase06_cli_guide,
+    get_phase07_cli_guide,
 )
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
@@ -98,7 +98,7 @@ class TestCLIHelpAndUX(YSCBTestCase):
         self.mark_passed()
 
 
-class TestCliGuildProvider(YSCBTestCase):
+class TestCliGuideProvider(YSCBTestCase):
     """測試 CLI 防呆手冊動態產生、三級權限分級與 Phase JIT 過濾邏輯。"""
 
     @require(Requirement.LOGIC)
@@ -130,7 +130,7 @@ class TestCliGuildProvider(YSCBTestCase):
         }
 
         with patch("core.contributes.get", return_value=fake_commands):
-            output = get_agents_cli_guild()
+            output = get_agents_cli_guide()
 
         # 斷言三級權限標籤
         self.assertIn("[SAFE] 自主安全", output)
@@ -146,7 +146,7 @@ class TestCliGuildProvider(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_phase_aware_jit_filtering(self):
-        """FT-02: 驗證 get_phase_cli_guild 能精準依據 Phase 過濾推薦指令與守門紅線。"""
+        """FT-02: 驗證 get_phase_cli_guide 能精準依據 Phase 過濾推薦指令與守門紅線。"""
         fake_commands = {
             "test": {
                 "description": "Run module tests",
@@ -175,19 +175,19 @@ class TestCliGuildProvider(YSCBTestCase):
 
         with patch("core.contributes.get", return_value=fake_commands):
             # Phase 5 JIT
-            p5_output = get_phase05_cli_guild()
+            p5_output = get_phase05_cli_guide()
             self.assertIn("python yscb.py dev check", p5_output)
             self.assertIn("python yscb.py dev test", p5_output)
             self.assertIn("[GATED] 嚴禁執行 `python yscb.py dev release`", p5_output)
 
             # Phase 6 JIT
-            p6_output = get_phase06_cli_guild()
+            p6_output = get_phase06_cli_guide()
             self.assertIn("python yscb.py dev test", p6_output)
             self.assertNotIn("python yscb.py dev check", p6_output)
             self.assertIn("[GATED] 嚴禁執行 `python yscb.py dev release`", p6_output)
 
             # Phase 7 JIT
-            p7_output = get_phase07_cli_guild()
+            p7_output = get_phase07_cli_guide()
             self.assertIn("python yscb.py dev release", p7_output)
 
         self.mark_passed()
@@ -205,7 +205,7 @@ class TestCliGuildProvider(YSCBTestCase):
         }
 
         with patch("core.contributes.get", return_value=fake_commands):
-            output = get_agents_cli_guild()
+            output = get_agents_cli_guide()
 
         self.assertIn("[CONDITIONAL] 階段條件", output)
         self.assertIn("`python yscb.py install`", output)
@@ -217,8 +217,8 @@ class TestCliGuildProvider(YSCBTestCase):
     def test_empty_fallback(self):
         """ET-02: 驗證全系統無任何防呆指令時回傳安全提示。"""
         with patch("core.contributes.get", return_value={}):
-            output = get_agents_cli_guild()
-            p_output = get_phase_cli_guild(phase="P05")
+            output = get_agents_cli_guide()
+            p_output = get_phase_cli_guide(phase="P05")
 
         self.assertIn("目前無已註冊之 CLI 防呆指令", output)
         self.assertEqual(p_output, "")

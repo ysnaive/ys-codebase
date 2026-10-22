@@ -2,6 +2,14 @@
 
 本手冊定義 Phase 5 編碼實作階段之任務編排、空間隔離鐵律、代碼註解規範與實作偏差處置標準。
 
+```markdown
+Phase 05 執行檢核表：
+- [ ] 1. 讀取 P05_task.md 模板，依 P04 建立 [TASK-XX] 實作任務清單
+- [ ] 2. 依序完成源碼實作、補齊 Docstring 與單元測試，每完成一項即勾選 P05_task.md 對應任務
+- [ ] 3. 如實記錄任何 Minor 偏差（若遇 Major/Critical 偏差立即依矩陣暫停或轉 /discuss）
+- [ ] 4. 將 P05_task.md 狀態更新為 Completed、更新 changelog.md，呈遞狀態卡並立即 End Turn
+```
+
 ---
 
 ## 1. 核心定位與職責
@@ -33,7 +41,7 @@
 | [WARN] **Major** | 局部 API 簽名微調、新增模組內部依賴 | **暫停推進**，於當前 Turn 呈報開發者確認同意後再行修改。 |
 | ℹ️ **Minor** | 內部區域變數重命名、演算法非介面層微調 | 自主修正，並於 `P05_task.md` 之「實作偏差紀錄表」登記備查。 |
 
-`__@{PHASE05_AGENTS_GUILD}__`
+`__@{PHASE05_AGENTS_GUIDE}__`
 
 ---
 

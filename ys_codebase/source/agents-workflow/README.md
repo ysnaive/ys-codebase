@@ -63,7 +63,7 @@ graph TD
 
 ## 2. 核心工作流與 Slash Commands 導航 (Workflows Guide)
 
-模組官方提供以下標準化 Slash Commands，引導 Agent 與開發者在不同場景下進行精準協同（Review 審查與 Session 分析已內化為獨立技能與 SOP 閘門，無需獨立 Slash Command）：
+模組官方提供以下標準化 Slash Commands，引導 Agent 與開發者在不同場景下進行精準協同（Review 審查已內化為 SOP 結案閘門，無需獨立 Slash Command）：
 
 | Slash 指令 | 工作流名稱 | 核心職責與適用情境 |
 | :--- | :--- | :--- |
@@ -75,6 +75,7 @@ graph TD
 | **`/Pause`** | 暫停開發與現場凍結 | 需暫停工作或切換對話時，自動產出 `handoff.md` 達成零斷層交接。 |
 | **`/Research`** | 深度技術調研工作流 | 適用於高複雜度技術探索、方案選型對比與 R01 專題調研報告產出，可無縫升級實作計畫。 |
 | **`/Roadmap`** | 長期路線圖智能推薦 | 掃描 `workflow.roadmap://` 長期技術儲備，客觀匹配情境並一鍵轉化為 Dev Plan。 |
+| **`/SkillOptimizer`** | 技能審查與優化工作流 | 針對既有 `SKILL.md` 與 `references/` 執行五維度靜態診斷、無損重構與 A/B 基準評測生成。 |
 
 ---
 

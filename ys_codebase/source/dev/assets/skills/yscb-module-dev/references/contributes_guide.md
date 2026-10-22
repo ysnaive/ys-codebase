@@ -1,4 +1,4 @@
-# 生態系 Contributes 擴充注入與 Schema 規範指南 (Contributes & Schema Guild)
+# 生態系 Contributes 擴充注入與 Schema 規範指南 (Contributes & Schema Guide)
 
 本手冊定義 YSCB 模組間 Contributes 依賴注入機制、輕量 Schema DSL 語法、定義檔查找方法與 Ingress/Egress 契約規範。
 

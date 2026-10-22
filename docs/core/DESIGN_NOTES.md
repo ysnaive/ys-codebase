@@ -45,7 +45,7 @@ last_updated: "2026-10-15"
 | **[DN-09](#dn-09-vs-code-零目錄污染與-_yscb_managed-差集追蹤軟合併-原-dn-16)** | `DN-16` | VS Code 零目錄污染與 `_yscb_managed` 差集追蹤軟合併 | `source/core/core/ide_projector.py` | ⚠️ WARNING |
 | **[DN-10](#dn-10-virtiofs-容器掛載點-_can_symlink-動態探測與實體拷貝降級-原-dn-17)** | `DN-17` | `virtiofs` 容器掛載點 `_can_symlink()` 動態探測與實體拷貝降級 | `source/core/core/pip_manager.py` | ⚠️ WARNING |
 | **[DN-11](#dn-11-core__init__py-pep-562-延遲載入與-coreevents-零-atomicengine-反向依賴-原-dn-18--dn-22)** | `DN-18`<br/>`DN-22` | `core/__init__.py` PEP 562 延遲載入與 `core.events` 零 `AtomicEngine` 反向依賴 | `source/core/core/__init__.py`<br/>`source/core/core/events.py` | 🚨 CAUTION |
-| **[DN-12](#dn-12-vfs-同目錄原子替換防同前綴穿越mtime-快取與宿主自更新-url-物理正交分離-原-dn-20--dn-26--dn-28)** | `DN-20`<br/>`DN-26`<br/>`DN-28` | VFS 同目錄原子替換、防同前綴穿越、`mtime` 快取與宿主自更新 URL 物理正交分離 | `source/core/core/vfs/`<br/>`source/core/core/uri.py`<br/>`yscb.py` | 🚨 CAUTION |
+| **[DN-12](#dn-12-vfs-同目錄原子替換防同前綴穿越mtime-快取與宿主自更新-url-物理正交分離-原-dn-20--dn-26--dn-28)** | `DN-20`<br/>`DN-26`<br/>`DN-28` | VFS 同目錄原子替換、防同前綴穿越、`mtime` 快取、宿主自更新 URL 分離與零盲猜自舉 | `source/core/core/vfs/`<br/>`source/core/core/uri.py`<br/>`yscb.py` | 🚨 CAUTION |
 
 ---
 
@@ -178,7 +178,8 @@ last_updated: "2026-10-15"
   2. **`target_base + os.sep` 防同前綴兄弟目錄穿越**：`uri.resolve()` 與 `OSBackend.assert_safe_path` 檢驗路徑逃逸時，強制比對 `resolved_path == target_base or resolved_path.startswith(target_base + os.sep)`，阻斷利用 `cache://../.cache_hack` 等同前綴兄弟目錄名稱繞過 `startswith(target_base)` 的安全漏洞。
   3. **URI 協議清冊 `(yscb_dir, mtime)` 記憶體快取自動失效**：`core.uri._get_merged_uri_schemes` 以 `contributes.merged.json` 之 `mtime` 作為快取鍵（命中耗時 $< 0.1\text{ms}$），檔案更新時自動失效重載。
   4. **`DEFAULT_SELF_UPDATE_URL` 與 `DEFAULT_PROVIDER_URL` 物理正交分離**：宿主 `yscb.py` 將腳本自更新網址 `DEFAULT_SELF_UPDATE_URL` 與套件來源 `DEFAULT_PROVIDER_URL` 定義為兩個完全獨立的常數，`_resolve_self_update_target_url()` 僅接受顯式 `--url` 覆寫。
-- **背後考量**：容器環境中 `/tmp` 與工作區常處於不同掛載分區，跨區 `os.replace` 會直接拋出 `EXDEV` 崩潰；而將宿主自更新 URL 與套件 Provider URL 物理拆離，可防止因套件庫目錄結構調整（如 `ys_codebase/release`）或字串切割推導（`split("/release")`）導致 `self-update` 404 損毀。
+  5. **宿主自適應重建與零盲猜 Fallback 鐵律**：當下游專案 clone 至新設備（`yscb.config.json` 存在但 `.modules/core` 尚未物化）時，`yscb.py` 僅依組態中已知的確定性 `provider` 與 `version` 下載 `core` 並觸發 `restore`；若來源遺失或 `_discover_latest_core` 探測失敗，一律回傳 `(None, None)` 並輸出明確修復指引，**嚴禁硬編碼退回特定版本（如 `"1.1.0.1"` 或 `"1.0.0.0"`）或私自 fallback 至 `DEFAULT_PROVIDER_URL`**。
+- **背後考量**：容器環境中 `/tmp` 與工作區常處於不同掛載分區，跨區 `os.replace` 會直接拋出 `EXDEV` 崩潰；將宿主自更新 URL 與套件 Provider URL 物理拆離，可防止因套件庫目錄結構調整導致 `self-update` 404 損毀；而禁止跨版本/跨來源盲猜 fallback 可避免靜默載入與組態不符之舊版套件造成環境狀態分裂。
 - **防禦宣告**：
   > [!CAUTION]
-  > **原子寫入臨時檔嚴禁建立於系統 `/tmp`！路徑邊界校驗必須包含 `+ os.sep`！嚴禁在 `yscb.py` 中對 `provider` 參數進行字串切分來推導 `yscb.py` 自更新網址！**
+  > **原子寫入臨時檔嚴禁建立於系統 `/tmp`！路徑邊界校驗必須包含 `+ os.sep`！嚴禁在 `yscb.py` 中對 `provider` 參數進行字串切分來推導 `yscb.py` 自更新網址，或於探測/還原失敗時硬編碼偽造預設版本號！**

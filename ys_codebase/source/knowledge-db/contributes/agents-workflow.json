@@ -4,7 +4,7 @@
       "type": "skill",
       "name": "knowledge-db-search",
       "source": "module://knowledge-db/assets/skills/knowledge-db-search",
-      "description": "知識庫語意檢索與代碼探索指南。當需要搜尋代碼或文檔、理解業務邏輯、查閱符號簽名、追蹤調用關係 (callers/callees)、評估重構影響半徑 (impact) 或進行技術調研時觸發；尤其在調用各環境之原生檔案讀取/檢視工具（View / Read 系列）或文字搜尋/目錄走訪工具（Grep / Search / List 系列）進行代碼探索前，必須強制優先觸發比對工具分流。"
+      "description": "透過 knowledge-db CLI (search / callers / callees / impact) 檢索專案文檔與程式碼 AST 切片、查閱符號簽名、追蹤上下游調用圖譜並輸出重構影響半徑分析。觸發情境：探索未知程式碼或知識庫文檔路徑、理解業務邏輯、查詢函式被誰呼叫 (callers) 或呼叫了誰 (callees)、評估修改影響範圍 (impact) 或準備調用原生檔案讀取與搜尋工具前。排除情境：已知單一明確檔案路徑且僅需進行局部字串精確替換、修改或撰寫系統知識庫文檔（改用 documentation）。"
     }
   ],
   "token": [
@@ -28,26 +28,20 @@
     },
     {
       "type": "uri",
-      "token": "RESEARCH_AGENTS_GUILD",
-      "value": "module://knowledge-db/assets/research_guild.md",
+      "token": "RESEARCH_AGENTS_GUIDE",
+      "value": "module://knowledge-db/assets/research_guide.md",
       "mode": "below"
     },
     {
       "type": "uri",
-      "token": "PHASE00_AGENTS_GUILD",
-      "value": "module://knowledge-db/assets/phase00_guild.md",
+      "token": "PHASE00_AGENTS_GUIDE",
+      "value": "module://knowledge-db/assets/phase00_guide.md",
       "mode": "below"
     },
     {
       "type": "uri",
-      "token": "PHASE07_AGENTS_GUILD",
-      "value": "module://knowledge-db/assets/phase07_guild.md",
-      "mode": "below"
-    },
-    {
-      "type": "uri",
-      "token": "SESSION_ANALYSIS_CHECK_ITEMS",
-      "value": "module://knowledge-db/assets/session_analysis_check.md",
+      "token": "PHASE07_AGENTS_GUIDE",
+      "value": "module://knowledge-db/assets/phase07_guide.md",
       "mode": "below"
     }
   ]

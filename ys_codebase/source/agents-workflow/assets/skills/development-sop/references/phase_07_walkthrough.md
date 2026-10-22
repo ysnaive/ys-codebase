@@ -2,6 +2,13 @@
 
 本手冊定義 Phase 7 成果展示、SOP Review 三層文檔審查、合規檢核、開發歷程總結、全域發布日誌追加與結案交付規範。
 
+```markdown
+Phase 07 三步結案檢核表：
+- [ ] 步驟 1 (SOP Review 三層文檔交付對齊)：對照 P04 文檔衝擊盤點，同步更新宏觀 CHANGELOG.md、中觀知識庫 (`__${workflow.docs://}__`) 與微觀 Docstring
+- [ ] 步驟 2 (撰寫 P07 結案報告與全域發布日誌)：產出 P07_walkthrough.md (Completed)、更新計畫 changelog.md 與專案總體 CHANGELOG.md
+- [ ] 步驟 3 (執行計畫合規檢核最終守門)：實機執行 plan verify 確認追溯鏈、Checkbox 與標頭狀態 100% 合規
+```
+
 ---
 
 ## 1. 核心定位與三步結案管線 (3-Step Closure Pipeline)
@@ -52,7 +59,7 @@ flowchart TD
 
 ---
 
-`__@{PHASE07_AGENTS_GUILD}__`
+`__@{PHASE07_AGENTS_GUIDE}__`
 
 ---
 

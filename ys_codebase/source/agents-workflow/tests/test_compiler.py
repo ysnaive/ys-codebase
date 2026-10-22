@@ -64,8 +64,8 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertIn("WORKFLOW_SOP_STANDARDS", token_values)
         self.assertIn("AGENTS_STANDARDS", token_values)
         self.assertIn("AGENTS_SKILL_ROUTING", token_values)
-        self.assertIn("AGENTS_CLI_GUILD", token_values)
-        self.assertIn("SESSION_ANALYSIS_CHECK_ITEMS", token_values)
+        self.assertIn("AGENTS_CLI_GUIDE", token_values)
+        self.assertNotIn("SESSION_ANALYSIS_CHECK_ITEMS", token_values)
         self.mark_passed()
 
     def test_st_01_stage1_cache_output(self):
@@ -481,44 +481,24 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertTrue(idx_above < idx_replace < idx_below1 < idx_below2)
         self.mark_passed()
 
-    def test_sub_08_session_analysis_skill_export_and_token(self):
-        """SUB-08: 驗證 session-analysis 技能資產導出、SESSION_ANALYSIS_CHECK_ITEMS Token 宣告與未注入自動 Purge / 注入渲染。"""
+    def test_sub_08_session_analysis_skill_retired(self):
+        """SUB-08 (REV-01): 驗證 session-analysis 技能與 SESSION_ANALYSIS_CHECK_ITEMS Token 已徹底除役。"""
         data = self.compiler.get_contributes_data()
         exports = data.get("export", [])
         tokens = data.get("token", [])
 
-        # 1. 驗證 export 與 token 註冊
         export_sources = [e.get("source") for e in exports]
-        self.assertIn("module://agents-workflow/assets/skills/session-analysis", export_sources)
+        self.assertNotIn("module://agents-workflow/assets/skills/session-analysis", export_sources)
         self.assertNotIn("module://agents-workflow/assets/workflows/SessionAnalysis.md", export_sources)
         token_values = [t.get("value") for t in tokens]
-        self.assertIn("SESSION_ANALYSIS_CHECK_ITEMS", token_values)
+        self.assertNotIn("SESSION_ANALYSIS_CHECK_ITEMS", token_values)
         self.assertNotIn("WORKFLOW_SESSIONANALYSIS", token_values)
 
-        # 2. 驗證 Stage 1 編譯成功
         res = self.compiler.compile_stage1()
         self.assertTrue(res["success"])
         resolved_list = res.get("resolved_items", [])
-        sa_item = next((item for item in resolved_list if item.get("skill_name") == "session-analysis" and item.get("base_name") == "SKILL.md"), None)
-        self.assertIsNotNone(sa_item)
-        sa_content = sa_item["content"]
-
-        # 3. 驗證核心內容與無殘留 Token 標籤
-        self.assertIn("對話階段歷程分析技能指南 (Session Analysis Skill)", sa_content)
-        self.assertNotIn("`__@{SESSION_ANALYSIS_CHECK_ITEMS}__`", sa_content)
-
-        # 4. 驗證模擬 Donor 注入 SESSION_ANALYSIS_CHECK_ITEMS
-        raw_text = "# Session Analysis Test\n\n`__@{SESSION_ANALYSIS_CHECK_ITEMS}__`\n\n# End"
-        mock_inserts = [
-            {
-                "token": "SESSION_ANALYSIS_CHECK_ITEMS",
-                "value": "#### 2.3 知識庫檢索效益評測 (knowledge-db)\n- 調用次數: 5 次",
-                "mode": "below"
-            }
-        ]
-        injected_res = self.compiler.resolve_single_artifact(raw_text, mock_inserts)
-        self.assertNotIn("`__@{SESSION_ANALYSIS_CHECK_ITEMS}__`", injected_res)
-        self.assertIn("知識庫檢索效益評測", injected_res)
+        sa_item = next((item for item in resolved_list if item.get("skill_name") == "session-analysis"), None)
+        self.assertIsNone(sa_item)
         self.mark_passed()
 
     def test_ft_09_skill_directory_scan_and_token_expansion(self):

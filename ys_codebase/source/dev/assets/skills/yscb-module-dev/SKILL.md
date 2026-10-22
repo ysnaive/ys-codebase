@@ -1,9 +1,9 @@
 ---
 name: yscb-module-dev
-description: 生態系模組開發與 Dogfooding 閉環指南。當進行 YSCB 生態系模組骨架建立 (dev create)、代碼修改、新增功能、執行沙盒測試 (dev test)、安裝除錯 (@build) 或版本晉升與發布 (bump/release) 時觸發。
+description: 管理 YSCB 生態系模組於源碼空間 (project://source/)、測試沙盒與運行空間之開發閉環，執行模組骨架建立 (dev create)、靜態合規檢查 (dev check)、沙盒測試 (dev test)、本機熱部署 (@build) 與版本發布，並提供 Contributes、CLI 合約與驗收參考指引。觸發情境：新增或修改模組源碼、配置 manifest.json / contributes/*.json、執行模組沙盒測試、安裝 @build 驗證或打包發布模組。排除情境：一般開發計畫文件推進（改用 development-sop）、純執行全自動版本號批次晉升腳本（改用 bump-revision）。
 ---
 
-# 生態系模組開發與 Dogfooding 閉環指南 (Module Dev & Dogfooding Guild)
+# 生態系模組開發與 Dogfooding 閉環指南 (Module Dev & Dogfooding Guide)
 
 本手冊定義 YSCB 生態系模組開發的三大空間隔離規範、雙軌流水線心智模型與剛性守門鐵律，並作為主題分流引流樞紐 (Main Hub)。
 

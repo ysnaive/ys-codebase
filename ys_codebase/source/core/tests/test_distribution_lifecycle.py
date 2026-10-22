@@ -108,9 +108,10 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.mark_passed()
 
     def test_discover_latest_core_remote(self):
-        """FT-04: 驗證遠端 Provider index.json 成功解析最新版本，異常時安全兜底。"""
+        """FT-04: 驗證遠端 Provider index.json 成功解析最新版本，異常時不偽造 fallback。"""
         # 1. 模擬遠端正常返回 index.json
         mock_resp = MagicMock()
+        mock_resp.__enter__.return_value = mock_resp
         mock_resp.read.return_value = json.dumps({
             "name": "core",
             "versions": ["1.0.0.0", "1.1.0.0", "1.1.0.1", "1.2.0.0.build"]
@@ -121,11 +122,11 @@ class TestDistributionLifecycle(YSCBTestCase):
             self.assertEqual(ver, "1.1.0.1")
             self.assertEqual(url, "https://remote.test/release/core/1.1.0.1.zip")
 
-        # 2. 模擬遠端連線異常時兜底
+        # 2. 模擬遠端連線異常時回傳 (None, None)，嚴禁硬編碼 "1.1.0.1" fallback
         with patch("urllib.request.urlopen", side_effect=Exception("Network error")):
             ver_fallback, url_fallback = yscb._discover_latest_core("https://remote.test/release")
-            self.assertEqual(ver_fallback, "1.1.0.1")
-            self.assertEqual(url_fallback, "https://remote.test/release/core/1.1.0.1.zip")
+            self.assertIsNone(ver_fallback)
+            self.assertIsNone(url_fallback)
 
         self.mark_passed()
 

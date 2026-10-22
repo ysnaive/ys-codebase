@@ -1,6 +1,19 @@
 # 專案變更歷史 (Changelog)
 
-## 2026_10_22_0843_downstream_feedback_and_optimizations (In Progress)
+## 2026_10_22_0843_downstream_feedback_and_optimizations (Completed)
+
+### sub_04_agents_workflow_refinement (Completed)
+- **`agents-workflow` 技能體系優化、去特化 `skill-optimizer` 引入、全庫 `guide` 正名與雙軌 `description` 架構重構**：
+  - **廢除 `session-analysis` 技能 (`REV-01`)**：物理移除 `session-analysis` 技能資產、`SESSION_ANALYSIS_CHECK_ITEMS` Token 與 `knowledge-db` 對應注入片段，清理無效的特定平台日誌分析工作流。
+  - **選擇性融合外部 SKILL 優化包與通用技能去特化 (`REV-02`)**：引入 `skill-optimizer` 技能與 3 份參考手冊（`audit-rubric.md`、`refactoring-patterns.md`、`ab-eval-guide.md`）並註冊 `SKILL_OPTIMIZER_STANDARDS` 擴充錨點；徹底剝除外部包中 `ys-codebase` 內部特化教學（Zero Specialization Pollution）；為全部通用技能植入進度檢核表與 `## 常見踩坑指南 (Gotchas)`，並為長篇參考檔補齊頂部目錄（TOC）。
+  - **全庫 `guild` $\to$ `guide` 拼字正名 (`REV-03`)**：將 `yscb-cli-guild` 技能、`AGENTS_CLI_GUILD` / `PHASE00_AGENTS_GUILD`~`PHASE07_AGENTS_GUILD` / `RESEARCH_AGENTS_GUILD` Token、`core/providers.py` 中 `get_*_cli_guild` 函式、以及 `knowledge-db` 之 `*_guild.md` 注入資產與 `docs/` 文檔全數正名為 `guide`。
+  - **確立 `description` 雙軌結構化邊界規範與全 15 項技能重構 (`REV-04`, `REV-05`)**：於 `skill-optimizer` 確立「高密度高召回、自包含具體可觀測（禁依賴外部未知脈絡）」與雙軌邊界（「環境攔截型技能」採 `核心用途 → 觸發情境 → 排除情境` 三段式；「主動指令型技能」如 `auto`、`pause`、`continue`、`context-init`、`bump-revision`、`skill-optimizer` 採極致精簡指令契約並由中樞技能 `development-sop` 按需導流）；清理 `plans/roadmap/` 5 份已完工舊檔並校準 3 份有效技術儲備。新增 `FT-08` 單元測試，`agents-workflow` 109/109 測試 100% 通過。
+
+### sub_03_overall_ux_refinement (Completed)
+- **入口檔 `yscb.py` 與 `core` 整體使用 UX 打磨、自適應重建與零盲猜純化**：
+  - **全指令觸發新版檢查與入口檔版本自檢 (`REV-01`)**：將 `UpdateChecker` 非阻塞版本檢查移至 `core.commands.dispatcher.dispatch` 結尾，使所有 CLI 指令皆能觸發提示；於 `yscb.py` 新增 `__version__` 並實作 `_check_host_script_update` 語意版本比對與 `[CRITICAL UPDATE]` / `[AGENT BLOCKER]` 阻斷提示（強制要求 AI Agent 暫停請示開發者是否執行 `self-update`）；`self-update` 完成時自動呼叫 `UpdateChecker().invalidate_cache("yscb.py")`。
+  - **新設備 Clone 自適應重建與確定性來源強制守門 (`REV-02`)**：當 `yscb.config.json` 存在但 `.modules/core` 尚未物化時，`yscb.py` 嚴格依組態指定之 `provider` 與 `version` 下載解壓 `core` 並自動觸發 `restore` 重建運行環境；若來源遺失或無法存取則立即阻斷並輸出明確三步修復指引，嚴禁跨版本猜測。
+  - **唯一入口檔 `yscb.py` 精簡與拔除隱蔽式 Fallback (`REV-03`)**：提取 `_read_json_dict`、`_write_json_lf`、`_normalize_local_path`、`_parse_flag_options`、`_activate_runtime_env`、`_render_box_help`、`_extract_and_cache_mirror` 等內部共用工具函式（自 882 行精簡至 762 行，零邏輯/安全性變更），並徹底拔除 `F-01` ~ `F-04` 隱蔽式 fallback；更新 `[DN-12]`，`core` 209/209 測試 100% 通過。
 
 ### sub_02_cross_platform_git_dirty_remediation (Completed)
 - **跨平台（Linux / Windows）交替執行 YSCB 不再污染 Git 工作區（回應下游跨平台回饋）**：

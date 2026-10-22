@@ -98,6 +98,58 @@ class TestUpdateChecker(YSCBTestCase):
             self.assertIsNone(res)
         self.mark_passed()
 
+    def test_host_script_update_detection_and_agent_blocker_tip(self):
+        """REV-01: 驗證入口檔 yscb.py __version__ 語意版本比對、特化 AGENT BLOCKER 提示與 self-update 快取清除。"""
+        # 在 temp_dir 建立本機 yscb.py (1.1.0.5) 與來源端 yscb.py (1.1.0.6)
+        local_yscb = os.path.join(self.temp_dir, "yscb.py")
+        with open(local_yscb, "w", encoding="utf-8") as f:
+            f.write('__version__: str = "1.1.0.5"\n')
+
+        remote_yscb = os.path.join(self.prov_dir, "yscb.py")
+        with open(remote_yscb, "w", encoding="utf-8") as f:
+            f.write('__version__: str = "1.1.0.6"\n')
+
+        checker = UpdateChecker(
+            cache_uri=self.cache_uri,
+            throttle_seconds=10,
+            config_path=self.cfg_path,
+        )
+        updates = checker.check_updates(force=True)
+        self.assertIn("yscb.py", updates)
+        self.assertEqual(updates["yscb.py"]["current_version"], "1.1.0.5")
+        self.assertEqual(updates["yscb.py"]["latest_version"], "1.1.0.6")
+        self.assertTrue(updates["yscb.py"]["has_update"])
+
+        tips = checker.get_tips(updates)
+        self.assertGreaterEqual(len(tips), 2)
+        self.assertIn("[CRITICAL UPDATE]", tips[0])
+        self.assertIn("python yscb.py self-update", tips[0])
+        self.assertIn("[AGENT BLOCKER]", tips[0])
+
+        # 驗證 invalidate_cache("yscb.py") 僅清除 yscb.py 條目
+        checker.invalidate_cache("yscb.py")
+        cached_after = checker._load_cache()
+        self.assertNotIn("yscb.py", cached_after.get("updates", {}))
+        self.assertIn("core", cached_after.get("updates", {}))
+        self.mark_passed()
+
+    def test_dispatcher_triggers_update_check_on_any_command(self):
+        """REV-01: 驗證 dispatcher.dispatch 在執行任意指令後均會觸發 _maybe_check_and_print_updates。"""
+        from core.commands import dispatcher
+        from core.commands.registry import CommandsRegistry
+
+        reg = CommandsRegistry()
+        reg.register_module("any_mod", {"cmd": {"ping": {"description": "Ping", "server_compatible": False}}})
+
+        with patch("core.commands.dispatcher._load_registry", return_value=reg):
+            with patch("core.commands.dispatcher.dispatch_local", return_value=0):
+                with patch("core.commands.dispatcher._maybe_auto_spawn_server"):
+                    with patch("core.commands.dispatcher._maybe_check_and_print_updates") as mock_chk:
+                        rc = dispatcher.dispatch(["any_mod", "ping"])
+                        self.assertEqual(rc, 0)
+                        mock_chk.assert_called_once()
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,13 @@
 
 本手冊定義 Phase 6 測試執行、回填規範、UX 驗收 Checkpoint 守門、業務測試與表層修訂分界引導及盲目修補阻斷鐵律。
 
+```markdown
+Phase 06 執行檢核表：
+- [ ] 1. 執行全套自動化測試套件（FT / ET / RT / PT）並確認 100% 通過
+- [ ] 2. 將實測數據與通過狀態回填至 P06_test_plan.md，標頭狀態設為 Passed
+- [ ] 3. 更新 changelog.md，呈遞 P06 測試驗證回報卡並立即 End Turn 等待開發者驗收
+```
+
 ---
 
 ## 1. 核心定位與職責
@@ -48,7 +55,7 @@
 - **本體優先階層**：排查錯誤優先排查當前組件內部邏輯與傳參，未排除自身問題前禁止深入下游外部模組。
 - **連續失敗阻斷**：同一問題連續 2 次修復失敗或破壞 API 簽名時，**強制停手發起 [/discuss](`__#{module://agents-workflow/assets/skills/discuss/SKILL.md}__`) 進行 5-Whys 根因分析**。
 
-`__@{PHASE06_AGENTS_GUILD}__`
+`__@{PHASE06_AGENTS_GUIDE}__`
 
 ---
 

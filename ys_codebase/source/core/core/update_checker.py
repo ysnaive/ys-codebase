@@ -4,6 +4,7 @@ YS-Codebase Update Checker with 12-Hour Throttling & Non-Blocking Tips.
 """
 from typing import Dict, Any, List, Optional
 import os
+import re
 import sys
 import json
 import time
@@ -15,6 +16,9 @@ from core import semver
 DEFAULT_CACHE_URI: str = "cache://core/update_check.json"
 DEFAULT_THROTTLE_SECONDS: int = 43200  # 12 小時
 DEFAULT_TIMEOUT_SECONDS: float = 2.0
+DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
+HOST_SCRIPT_KEY: str = "yscb.py"
+_VERSION_RE = re.compile(r"""^__version__\s*(?::\s*str\s*)?=\s*['"]([^'"]+)['"]""", re.MULTILINE)
 
 
 class UpdateChecker:
@@ -133,12 +137,113 @@ class UpdateChecker:
                     except Exception:
                         pass
 
+        # 探測入口檔 yscb.py 版本
+        host_update = self._check_host_script_update(cfg)
+        if host_update:
+            updates[HOST_SCRIPT_KEY] = host_update
+
         new_cache_data = {
             "last_checked_at": now,
             "updates": updates
         }
         self._save_cache(new_cache_data)
         return updates
+
+    @staticmethod
+    def _extract_script_version(content: str) -> Optional[str]:
+        """自 yscb.py 原始碼文字中提取 __version__ 字串。"""
+        if not content:
+            return None
+        m = _VERSION_RE.search(content)
+        return m.group(1).strip() if m else None
+
+    def _get_local_host_script_version(self) -> Optional[str]:
+        """讀取本機工作區入口檔 yscb.py 之 __version__。"""
+        candidates: List[str] = []
+        if self.config_path:
+            candidates.append(os.path.join(os.path.dirname(os.path.abspath(self.config_path)), "yscb.py"))
+        host_env = os.environ.get("YSCB_HOST_DIR")
+        if host_env:
+            candidates.append(os.path.join(host_env, "yscb.py"))
+        try:
+            proj_root = uri.resolve("project://", interactive=False)
+            candidates.append(os.path.join(proj_root, "yscb.py"))
+        except Exception:
+            pass
+
+        for cand in candidates:
+            if vfs.is_file(cand):
+                try:
+                    return self._extract_script_version(vfs.read_text(cand))
+                except Exception:
+                    pass
+        return None
+
+    def _fetch_latest_host_script_version(self, cfg: Dict[str, Any]) -> Optional[str]:
+        """探測來源端最新 yscb.py 之 __version__（支援本地路徑與遠端 HTTP）。"""
+        self_update_url = cfg.get("self_update_url") if isinstance(cfg, dict) else None
+        default_provider = cfg.get("default_provider", "") if isinstance(cfg, dict) else ""
+
+        if not self_update_url and default_provider and not str(default_provider).startswith(("http://", "https://")):
+            resolved_p = str(default_provider)
+            if not os.path.isabs(resolved_p):
+                base_d = (
+                    os.path.dirname(os.path.abspath(self.config_path))
+                    if self.config_path
+                    else os.environ.get("YSCB_HOST_DIR", os.getcwd())
+                )
+                resolved_p = os.path.normpath(os.path.join(base_d, resolved_p))
+            for cand in (
+                os.path.join(resolved_p, "yscb.py"),
+                os.path.join(os.path.dirname(resolved_p), "yscb.py"),
+                os.path.join(os.path.dirname(os.path.dirname(resolved_p)), "yscb.py"),
+            ):
+                if vfs.is_file(cand):
+                    try:
+                        ver = self._extract_script_version(vfs.read_text(cand))
+                        if ver:
+                            return ver
+                    except Exception:
+                        pass
+
+        target_url = str(self_update_url or DEFAULT_SELF_UPDATE_URL).strip()
+        if not target_url.startswith(("http://", "https://")):
+            if vfs.is_file(target_url):
+                try:
+                    return self._extract_script_version(vfs.read_text(target_url))
+                except Exception:
+                    pass
+            return None
+
+        try:
+            req = urllib.request.Request(target_url, headers={"User-Agent": "yscb-update-checker/1.0"})
+            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                if resp.status == 200:
+                    text = resp.read().decode("utf-8", errors="replace")
+                    return self._extract_script_version(text)
+        except Exception:
+            pass
+        return None
+
+    def _check_host_script_update(self, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """比對本機與來源端 yscb.py 版本，若有新版則回傳更新資訊字典。"""
+        cur_ver = self._get_local_host_script_version()
+        if not cur_ver or cur_ver == "build" or cur_ver.endswith(".build"):
+            return None
+        latest_ver = self._fetch_latest_host_script_version(cfg)
+        if not latest_ver:
+            return None
+        try:
+            if semver.compare_semver(latest_ver, cur_ver) > 0:
+                return {
+                    "current_version": cur_ver,
+                    "latest_version": latest_ver,
+                    "has_update": True,
+                    "is_host_script": True,
+                }
+        except Exception:
+            pass
+        return None
 
     def _fetch_latest_version(self, module_name: str, provider_url: str) -> Optional[str]:
         if not provider_url:
@@ -192,7 +297,21 @@ class UpdateChecker:
 
         tips: List[str] = []
         if isinstance(updates, dict):
+            host_info = updates.get(HOST_SCRIPT_KEY)
+            if isinstance(host_info, dict) and host_info.get("has_update"):
+                cur_v = host_info.get("current_version", "")
+                lat_v = host_info.get("latest_version", "")
+                tips.append(
+                    "================================================================================\n"
+                    f"[!] [CRITICAL UPDATE] 宿主入口檔 'yscb.py' 有新版本可用 (當前: v{cur_v}, 最新: v{lat_v})！\n"
+                    "    強烈建議立即執行 'python yscb.py self-update' 更新入口檔。\n"
+                    "    [AGENT BLOCKER] 若由 AI Agent 觸發本指令，你必須【立即暫停當前任務】，\n"
+                    "    優先向開發者請示是否要立即執行 'python yscb.py self-update' 更新入口檔！\n"
+                    "================================================================================"
+                )
             for mod, info in updates.items():
+                if mod == HOST_SCRIPT_KEY:
+                    continue
                 if isinstance(info, dict) and info.get("has_update"):
                     cur_v = info.get("current_version", "")
                     lat_v = info.get("latest_version", "")

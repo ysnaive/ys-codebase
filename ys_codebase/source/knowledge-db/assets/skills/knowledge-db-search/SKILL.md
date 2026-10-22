@@ -1,9 +1,9 @@
 ---
 name: knowledge-db-search
-description: 知識庫語意檢索與代碼探索指南。當需要搜尋代碼或文檔、理解業務邏輯、查閱符號簽名、追蹤調用關係 (callers/callees)、評估重構影響半徑 (impact) 或進行技術調研時觸發。[!] 絕對禁止對目錄調用 grep_search/search 等原生工具進行跨檔文字廣搜；全庫探索、調用排查與測試搜尋強制以 knowledge-db 指令為唯一第一反射。
+description: 透過 knowledge-db CLI (search / callers / callees / impact) 檢索專案文檔與程式碼 AST 切片、查閱符號簽名、追蹤上下游調用圖譜並輸出重構影響半徑分析。觸發情境：探索未知程式碼或知識庫文檔路徑、理解業務邏輯、查詢函式被誰呼叫 (callers) 或呼叫了誰 (callees)、評估修改影響範圍 (impact) 或準備調用原生檔案讀取與搜尋工具前。排除情境：已知單一明確檔案路徑且僅需進行局部字串精確替換、修改或撰寫系統知識庫文檔（改用 documentation）。
 ---
 
-# 知識庫語意檢索與代碼探索指南 (Knowledge-DB Search & Exploration Guild)
+# 知識庫語意檢索與代碼探索指南 (Knowledge-DB Search & Exploration Guide)
 
 本手冊定義 YSCB 專案中代碼閱讀、架構探索、調用圖譜與重構影響面分析之工具分流矩陣與檢索紀律。Agent 執行檢索時一律使用 `--json`（閱讀切片加帶 `-s`）。
 

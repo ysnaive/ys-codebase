@@ -2,6 +2,14 @@
 
 本手冊定義 Phase 4 實作計畫定稿階段之文檔衝擊盤點、架構質詢與測試計畫定稿規範。
 
+```markdown
+Phase 04 執行檢核表：
+- [ ] 1. 依據 P03 之 DAG 拓撲，在 P04_implementation_plan.md 逐檔列出具體變更計畫
+- [ ] 2. 完成宏觀／中觀／微觀知識庫文檔衝擊盤點表
+- [ ] 3. [!] 補齊 P06_test_plan.md 所有測試案例細節（FT/ET/RT/UX），並將 P06 標頭狀態改為 Confirmed
+- [ ] 4. 更新 changelog.md，呈遞 P04 狀態卡並立即 End Turn
+```
+
 ---
 
 ## 1. 核心定位與職責
@@ -30,7 +38,7 @@
 - 將 `P06_test_plan.md` 狀態由 `Draft` 修改為 **`Confirmed`**。
 - 嚴格守門：測試計畫未 Confirmed 前，**絕對禁止進入 Phase 5 寫任何一行程式碼**。
 
-`__@{PHASE04_AGENTS_GUILD}__`
+`__@{PHASE04_AGENTS_GUIDE}__`
 
 ---
 

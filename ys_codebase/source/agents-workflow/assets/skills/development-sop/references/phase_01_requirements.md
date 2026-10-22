@@ -2,6 +2,14 @@
 
 本手冊定義 Phase 1 規格轉譯階段之需求分類、剛性標籤定義與品質守門規範。
 
+```markdown
+Phase 01 執行檢核表：
+- [ ] 1. 讀取已 Confirmed 之 P00_discuss.md 與 P01_requirements_spec.md 模板
+- [ ] 2. 逐項編列 FR-XX、EC-XX、NFR-XX 並記錄階段決策 [P01:DR-XX]
+- [ ] 3. 檢查是否有未定義清楚的邊界（若有歧義立即暫停提問，禁止臆測或範疇蔓延）
+- [ ] 4. 寫入 P01_requirements_spec.md、更新 changelog.md，輸出狀態卡並立即 End Turn
+```
+
 ---
 
 ## 1. 核心定位與職責
@@ -28,7 +36,7 @@
 - **驗收條件**：於 §1 表格「詳細規格與驗收條件 (Acceptance Criteria)」欄內，為每個 FR 寫明客觀可驗證之驗收條件。
 - **階段決策 ([P01:DR-XX])**：記錄規格定義過程中確定的邊界取捨決策，登載於對應 FR/EC 條目內或計畫 `changelog.md`。
 
-`__@{PHASE01_AGENTS_GUILD}__`
+`__@{PHASE01_AGENTS_GUIDE}__`
 
 ---
 

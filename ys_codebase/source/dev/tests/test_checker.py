@@ -406,8 +406,8 @@ class TestDevChecker(YSCBTestCase):
                 f.write('{"name": "mock_ft13_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
                 f.write('def process(args):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "docs", "dev_guild.md"), "w", encoding="utf-8") as f:
-                f.write('# Dev Guild\nEdit files in project://source/mock_ft13_mod/ to start.\n')
+            with open(os.path.join(tmp_mod_dir, "docs", "dev_guide.md"), "w", encoding="utf-8") as f:
+                f.write('# Dev Guide\nEdit files in project://source/mock_ft13_mod/ to start.\n')
 
             report = self.checker.check_module("mock_ft13_mod")
             self.assertTrue(report.has_warns)
