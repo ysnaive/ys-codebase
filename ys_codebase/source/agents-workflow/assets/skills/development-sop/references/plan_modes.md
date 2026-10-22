@@ -38,7 +38,7 @@
     - **驗證摘要**：[測試 100% 通過 / 實際修改 N 行 ($\le 100$ 行)]
     - **下一步**：實作驗證完成，進入 FP-03 結案階段（包含 SOP Review 三層文檔與合規審查）
     ```
-  - **FP-03 (SOP 審查與結案階段)**：執行三層文檔核驗（CHANGELOG、docs、微觀註解）、測試 100% 通過、實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 合規檢核通過，回填結案紀錄至 `fast_track_plan.md`，追加 [`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`)，結案交付。
+  - **FP-03 (SOP 審查與結案階段)**：執行三層文檔核驗（CHANGELOG、docs、微觀註解）、測試 100% 通過、實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 合規檢核通過，回填結案紀錄至 `fast_track_plan.md`，追加 [`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`)，結案交付（若為 Umbrella 子計畫，同步回寫父目錄 `umbrella_overview.md` 與主目錄 `changelog.md`）。
     ```markdown
     ###  FP-03 迅捷開發已結案
     - **產出文件**：[fast_track_plan.md](__${project://plans}__/{plan_name}/fast_track_plan.md)、[CHANGELOG.md](__${project://CHANGELOG.md}__)
@@ -46,7 +46,7 @@
     - **推薦 Commit**：`[type(scope): brief message]`
     - **後續動作**：[任務已圓滿完成，可依需求執行 commit 或進行下一項任務]
     ```
-- [!] **強制升級機制**：實作中若代碼超標（$> 100$ 行）或意外觸碰 Public API 變更，強制中斷並升級為 Full Track！
+- [!] **強制升級機制**：實作中若代碼超標（$> 100$ 行）或意外觸碰 Public API 變更，強制中斷並升級為 Full Track：將已釐清需求轉入 `P00_discuss.md` / `P01_requirements_spec.md`，**強制刪除原 `fast_track_plan.md`**（避免 `plan status` 與 `/continue` 優先匹配誤判為 Fast Track），並記錄於 `changelog.md`！
 
 ---
 
@@ -62,6 +62,9 @@
     2. 變更或擴充 Public API 簽名契約。
     3. 引入跨模組新依賴。
     4. 代碼修改行數超過 50 行。
+  - **熔斷後舊產物雙軌處置**：
+    - **獨立修訂計畫**：將內容轉入同目錄新軌道檔案，刪除未完成之 `revision_log.md` 或將已完成項標記 `Completed` 結算。
+    - **附掛於既有已結案計畫之修訂觸發熔斷**：嚴禁在原已結案目錄塞入 `fast_track_plan.md` 或 `P01~P07`；須將已完成表層微調於 `revision_log.md` 標記 `Completed` 結算或回滾刪除，再另開新計畫或新 `sub_XX`。
   - **Bug Fix 剛性排除**：凡涉及邏輯錯誤修復 (Bug Fix)，不論代碼行數多寡，**嚴禁採用 Revision 模式**，必須開立 Fast Track 或 Full Track。
 - **正交雙軌存在型態（強制實體留檔，禁止無留檔修改）**：
   1. **獨立修訂計畫（無衍生來源）**：
@@ -101,10 +104,10 @@
   - **推薦出口**：[出口 ① 立即實作 (升級 P01) | 出口 ② 路線圖儲備 | 出口 ③ 結案存檔]
   - **待確認事項**：請問是否採納此結論，並選擇何種流轉出口？
   ```
-- **三大無痛出口轉化機制**：
+- **三大無痛出口轉化機制**（任一出口拍板時，均須先將 `R{NN}_{topic}.md` 標頭更新為 `Concluded`）：
   - **出口 ① 立即實作**：調研結論明確可行，原地追加 `P01~P07` 升級為實作計畫。
   - **出口 ② 技術儲備**：結論可行但當前無即時需求，轉化為 `__${workflow.roadmap://}__/{topic}.md` 長期路線圖儲備。
-  - **出口 ③ 放棄結案**：方案不可行或成本過高，記錄原因後於調研報告標記 `Concluded` 登記結案。
+  - **出口 ③ 放棄結案**：方案不可行或成本過高，記錄原因後登記結案，並同步將 `P00_discuss.md` 標記為 `Confirmed` / `Completed`。
 
 ---
 
@@ -115,8 +118,13 @@
   - **預先規劃型 (Pre-planned Blueprint)**：立項時已能明確拆分出全部子計畫清單（`sub_01`、`sub_02`...）。
   - **增量演進型 (Incremental Evolutionary)**：探索型大任務，先立項 `sub_01`，其餘子計畫隨開發動態滾動開立與驗收。
 - **目錄結構與產出檔案**：
-  - 主目錄：`__${project://plans/}__/{plan_name}/umbrella_overview.md`
+  - 主目錄：`__${project://plans/}__/{plan_name}/umbrella_overview.md` + `changelog.md`（必備）；主計畫級 `P00_discuss.md` / `R{NN}_*.md` 為選配。
   - 各子計畫目錄：`sub_01_{name}/`、`sub_02_{name}/`（各自具備獨立的 `P00~P07` 與 `changelog.md`）。
+  - **主從計畫狀態連動規則**：
+    1. 首個 `sub_XX` 啟動時，主計畫標頭轉為 `In Progress`。
+    2. 新建 `sub_XX` 時，登記於 `umbrella_overview.md` §2 子計畫矩陣。
+    3. `sub_XX` 結案時，同步更新父目錄 `umbrella_overview.md`（§2 子計畫狀態、§3 里程碑勾選 `[x]`）與主目錄 `changelog.md`。
+    4. 全部子計畫完成且無後續階段時，主計畫標頭轉為 `Completed`。
 - **極精簡 Session 回覆格式**：
   ```markdown
   ###  Umbrella 主計畫已開立

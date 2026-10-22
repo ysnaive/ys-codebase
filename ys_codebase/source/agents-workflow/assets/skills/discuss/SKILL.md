@@ -40,7 +40,7 @@ description: 深度歸因與防淺層修復工作流 (Discuss)。實作/測試�
 2. **5-Whys 根因**：分析架構、時序或資料狀態為何流入該錯誤分支，追溯本質根因而非表面現象。
 
 ### 步驟 2：呈遞修復方案矩陣與討論卡
-呈遞 2~3 種具體修復方案（分析各自影響範圍與 Trade-offs）。
+呈遞 2~3 種具體修復方案（分析各自影響範圍與 Trade-offs）。若觸發原因為「次要衍生問題 / 範疇越界」，候選方案須對接 `AgentsStandards.md` 核心原則 3「次要衍生問題處置鐵律」之三大範疇裁定出口：① 擴充當前計畫範疇進行標準修復、② 維持當前範疇並另闢新計畫 / 子計畫、③ 登錄至 Roadmap 長期技術儲備。
 對話 Session **嚴禁代碼傾倒、日誌全文傾倒或冗長論述**，強制僅呈遞以下極簡討論卡，並**立即 End Turn 等待開發者決策**：
 
 ```markdown
@@ -57,5 +57,5 @@ description: 深度歸因與防淺層修復工作流 (Discuss)。實作/測試�
 ### 步驟 3：決策固化與恢復執行
 獲得開發者指示後：
 1. **決策記錄**：於當前計畫之 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`) 或對應 Phase 文件登載標準 `[{Phase}:DR-XX]` 決策記錄。
-2. **產物回填**：若影響架構或任務，回填更新 [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)、[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) 或 [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)。
+2. **產物回填**：依決策影響層級同步回填完整溯源鏈：需求邊界 → `P00` / [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)；架構與 API → [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) / [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)；實作與測試 → [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) / [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) / [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)；Fast Track → [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`)。
 3. **恢復執行**：依共識方案恢復實作或測試推進。

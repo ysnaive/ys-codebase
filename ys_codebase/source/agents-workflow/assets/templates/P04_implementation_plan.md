@@ -18,9 +18,10 @@
 
 | 維度 | 文件路徑 | 變更類型 | 交付內容與重點 |
 | :--- | :--- | :---: | :--- |
-| **模組手冊** | `__${workflow.docs://}__/<Module>/README.md` | New / Modify | 模組概覽與快速上手 |
-| **專題手冊** | `__${workflow.docs://}__/<Module>/[topic].md` | New / Modify | 核心機制、資料流或狀態機 |
-| **設計決策** | `__${workflow.docs://}__/<Module>/DESIGN_NOTES.md` | Modify | 登記 DN-XX 工程妥協與防坑邊界 |
+| **模組手冊** | `__${workflow.docs://}__/<Category>/README.md` | New / Modify | 模組概覽與快速上手 |
+| **專題手冊** | `__${workflow.docs://}__/<Category>/[topic].md` | New / Modify | 核心機制、資料流或狀態機 |
+| **設計決策** | `__${workflow.docs://}__/<Category>/DESIGN_NOTES.md` | Modify | 登記 DN-XX 工程妥協與防坑邊界 |
+| **微觀註解** | 源碼檔案 Docstrings | Modify | 同步更新關鍵介面契約與模組 Docstring |
 | **發布日誌** | `__${project://CHANGELOG.md}__` | Modify | 記錄本版本發布摘要 |
 
 ---
@@ -34,8 +35,8 @@
 
 ## 4. 實作任務清單 (Task Breakdown & Topological Sequence)
 
-- [ ] **TASK-01**：
-- [ ] **TASK-02**：
+1. **TASK-01**：
+2. **TASK-02**：
 
 ---
 

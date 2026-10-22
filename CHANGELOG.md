@@ -1,5 +1,19 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_22_0843_downstream_feedback_and_optimizations (In Progress)
+
+### sub_02_cross_platform_git_dirty_remediation (Completed)
+- **跨平台（Linux / Windows）交替執行 YSCB 不再污染 Git 工作區（回應下游跨平台回饋）**：
+  - **`release_manifest.json` 移出受追蹤區 (`FR-01`, `FR-02`)**：`ReleasePublisher` 之 Project 軌物化清單改存 `cache://agents-workflow/project_release_manifest.json`，發布時自動遷移並刪除舊版 `storage://agents-workflow/release_manifest.json`（升級後需提交一次刪除）；不新增任何 `.gitignore` 規則；目錄型資產 SHA-1 計算前將 UTF-8 文字 CRLF 正規化為 LF，二進位檔維持原始 bytes。
+  - **`.vscode/settings.json` 跨平台恆定與 VFS LF 保證 (`FR-03`, `FR-04`, `REV-01`, `REV-02`)**：`python.analysis.extraPaths` 同時注入 POSIX 與 Windows 雙 site-packages 路徑；停止寫入 `python.defaultInterpreterPath` 並清理舊 YSCB 託管值（以實際微環境根目錄判定，保留使用者自訂與專案自有 `.venv` 直譯器）；內容無異動時跳過寫盤；`settings.json` 為含註解之 JSONC 或解析失敗時輸出警告並略過同步（不以空字典覆寫）；`OSBackend` 文字寫入固定 `newline="\n"` 確保跨平台 LF 一致。新增 `PipManager.get_cross_platform_site_packages_dirs()`；登錄 `[DN-09]` 更新與 `[DN-AW-09]`。
+  - **補齊 `2026_10_17_1133 sub_02` 遺失之工作流資產**：前計畫宣稱完成但未提交之技能 / SOP / 模板變更（Umbrella 主從狀態連動、Research `Concluded` 出口、Roadmap `Completed` 閉環、`/auto` 免 `P06 (Draft)`、結案 `plan verify` 最終守門時序、落檔預設標頭狀態等）依原 FR-01~FR-08 全數恢復並新增 `FT-07` 覆蓋；修正 `core` 已過時之 `module.build.root://` 文檔斷言。`core` 204/204、`agents-workflow` 108/108 測試通過並完成 `@build` 自部署。
+
+### sub_01_knowledge_db_callers_and_parsers_remediation (Completed)
+- **`knowledge-db` 調用圖譜與多語言解析器全面修復（回應 `uitk.net` 下游回饋）**：
+  - **修復 `callers --json` 崩潰 (`FR-01`)**：統一 `IndexingPipeline.act_callers` 之 `symbol` 與 `caller_symbol` 鍵名，並修正 `scripts/cli.py:callers` 三級 `--json` 模式（`simple` / `preview` / `detail`），解決有命中結果時拋出 `KeyError: 'caller_symbol'` 之錯誤。
+  - **預設排除文檔引用並補齊 `--ftype` 篩選 (`FR-02`)**：`find_target_symbol`、`act_callers`、`act_callees` 與 `act_impact` 預設排除 Markdown 文檔節點（`markdown` / `doc_*`），避免規格書連結干擾程式碼調用與重構爆炸半徑；同步為 `callers`、`callees`、`impact` 增補 `--ftype` 參數支援。
+  - **C# 與多語言 AST 解析及四階消歧強化 (`FR-03`, `FR-04`, `FR-05`)**：擴充 `c_sharp.scm`（`record`、區域函式、泛型調用、`?.` 條件存取）、`cpp.scm`（C++17 巢狀命名空間、模板函式/方法）與 `c.scm`（結構指標 `field_expression` 調用）；於 `TreeSitterDriver` 萃取類別繼承與介面 `metadata["base_types"]`、支援 `property`/`constructor` 內調用歸屬與 `base`/`super` 識別；升級 `TopologyLinker` 支援 `Class.Method` 雙段索引、隱式 `this` 與繼承鏈方法解析、保留可調用單元遞迴自調用邊，並於 `IndexingPipeline` 實作介面與實作類別同名方法雙向契約展開聚合；全模組 **158/158 單元測試 100% 通過**。
+
 ## 2026_10_17_1326_model_record_rule_revision (Completed，保留待下游驗證後歸檔)
 
 - **模型紀錄規則修訂：平台宣告為唯一來源、嚴禁由檔案反推、事件粒度記入 changelog**：

@@ -71,3 +71,6 @@ flowchart TD
   3. 出口 ③ 放棄結案：方案不可行或成本過高，記錄原因後於調研報告標記 Concluded 登記結案
 - **待確認事項**：請問是否採納此結論，並選擇何種流轉出口？
 ```
+
+> [!IMPORTANT]
+> **出口拍板狀態閉環**：開發者拍板任一出口（①、②、③）時，均須先將 `R{NN}_{topic}.md` 標頭狀態更新為 `Concluded` 再執行流轉；出口 ③ 同步將 `P00_discuss.md` 標記為 `Confirmed` / `Completed`。

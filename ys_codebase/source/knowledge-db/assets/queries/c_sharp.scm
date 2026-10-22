@@ -11,6 +11,10 @@
   name: (identifier) @symbol.name
 ) @definition.struct
 
+(record_declaration
+  name: (identifier) @symbol.name
+) @definition.struct
+
 (enum_declaration
   name: (identifier) @symbol.name
 ) @definition.enum
@@ -29,6 +33,12 @@
   type: (_)? @symbol.return_type
 ) @definition.method
 
+(local_function_statement
+  name: (identifier) @symbol.name
+  parameters: (parameter_list) @symbol.signature
+  type: (_)? @symbol.return_type
+) @definition.function
+
 (constructor_declaration
   name: (identifier) @symbol.name
   parameters: (parameter_list) @symbol.signature
@@ -42,8 +52,28 @@
 (invocation_expression
   function: [
     (identifier) @call.name
+    (generic_name
+      (identifier) @call.name
+    )
     (member_access_expression
       name: (identifier) @call.name
+    )
+    (member_access_expression
+      name: (generic_name
+        (identifier) @call.name
+      )
+    )
+    (conditional_access_expression
+      (member_binding_expression
+        name: (identifier) @call.name
+      )
+    )
+    (conditional_access_expression
+      (member_binding_expression
+        name: (generic_name
+          (identifier) @call.name
+        )
+      )
     )
   ]
 ) @call.site

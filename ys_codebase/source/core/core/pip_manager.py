@@ -116,6 +116,24 @@ class PipManager:
             py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
         return os.path.join(venv_dir, "lib", py_ver, "site-packages")
 
+    def get_cross_platform_site_packages_dirs(self, py_tag: Optional[str] = None) -> List[str]:
+        """跨平台取得微環境 site-packages 雙平台候選路徑集合 (POSIX + Windows)。
+
+        回傳清單順序恆定 (POSIX 優先，次為 Windows)。
+        """
+        venv_dir = self.get_venv_dir(py_tag)
+        tag = py_tag or self.get_current_py_tag()
+        if tag.startswith("py") and len(tag) >= 4:
+            major = tag[2]
+            minor = tag[3:]
+            py_ver = f"python{major}.{minor}"
+        else:
+            py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+
+        posix_path = os.path.join(venv_dir, "lib", py_ver, "site-packages")
+        win_path = os.path.join(venv_dir, "Lib", "site-packages")
+        return [posix_path, win_path]
+
     @staticmethod
     def _can_symlink(dir_path: str) -> bool:
         """檢測目標目錄是否支援有效符號連結 (相容 virtiofs / 跨平台掛載環境)。"""

@@ -2,9 +2,9 @@
 Release Publisher for agents-workflow.
 Executes the 4-Step Atomic Release Transaction:
 0. Pre-check source fingerprint for early short-circuit (Zero-I/O optimization)
-1. Prune legacy published files recorded in storage://agents-workflow/release_manifest.json
+1. Prune legacy published files recorded in cache://agents-workflow/project_release_manifest.json (auto-migrated from legacy storage://)
 2. Pre-compute deployment topology & rendered content for all active release_targets
-3. Persist latest published file manifest and fingerprint to storage://
+3. Persist latest published file manifest and fingerprint to cache:// (host-local, git-ignored)
 4. Materialize physical files (with in-memory diff check) & perform AGENTS.md soft-merge.
 100% Python Standard Library, Zero Third-Party Dependency.
 """
@@ -37,9 +37,10 @@ except ImportError:
 from agents_workflow.compiler import ArtifactCompiler
 
 
-PROJECT_MANIFEST_STORAGE_URI = "storage://agents-workflow/release_manifest.json"
+PROJECT_MANIFEST_CACHE_URI = "cache://agents-workflow/project_release_manifest.json"
 LOCAL_MANIFEST_CACHE_URI = "cache://agents-workflow/release_manifest.json"
-MANIFEST_STORAGE_URI = PROJECT_MANIFEST_STORAGE_URI
+# 舊版 Project 軌清單位置（位於 Git 追蹤之 storage://），僅供遷移讀取與清理，嚴禁再寫入
+LEGACY_PROJECT_MANIFEST_STORAGE_URI = "storage://agents-workflow/release_manifest.json"
 SHA1_CACHE_URI = "cache://agents-workflow/source_sha1_cache.json"
 AGENTS_MD_BEGIN = "<!-- YSCB_AGENTS_BEGIN -->"
 AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
@@ -111,6 +112,13 @@ class ReleasePublisher:
                     return data
             except Exception:
                 pass
+        if uri and manifest_uri == PROJECT_MANIFEST_CACHE_URI and uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI):
+            try:
+                data = uri.read_json(LEGACY_PROJECT_MANIFEST_STORAGE_URI)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
         return {}
 
     def _save_manifest(self, manifest_uri: str, data: Dict[str, Any]) -> bool:
@@ -122,6 +130,25 @@ class ReleasePublisher:
             except Exception:
                 pass
         return False
+
+    def _migrate_legacy_storage_manifest(self) -> None:
+        """舊版 storage:// 物化清單平滑遷移至 cache:// 並物理清理舊檔與空目錄。"""
+        if not uri:
+            return
+        try:
+            if uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI):
+                if not uri.exists(PROJECT_MANIFEST_CACHE_URI):
+                    legacy_data = uri.read_json(LEGACY_PROJECT_MANIFEST_STORAGE_URI)
+                    if isinstance(legacy_data, dict):
+                        uri.write_json(PROJECT_MANIFEST_CACHE_URI, legacy_data)
+                uri.remove(LEGACY_PROJECT_MANIFEST_STORAGE_URI)
+                legacy_dir = "storage://agents-workflow"
+                if uri.exists(legacy_dir):
+                    abs_dir = uri.resolve(legacy_dir, interactive=False)
+                    if os.path.isdir(abs_dir) and not os.listdir(abs_dir):
+                        os.rmdir(abs_dir)
+        except Exception:
+            pass
 
     def _get_project_config(self) -> Dict[str, Any]:
         """讀取 config://agents-workflow 設定檔（自動計算 Local 與 Project 之 release_targets 聯集）。"""
@@ -149,7 +176,7 @@ class ReleasePublisher:
         return cfg
 
     def _get_source_file_sha1(self, path_or_uri: str) -> str:
-        """計算來源檔案或目錄 SHA-1，支援 (mtime_ns, size) Stat-First 快取加速與目錄遞迴雜湊。"""
+        """計算來源檔案或目錄 SHA-1，支援 (mtime_ns, size) Stat-First 快取加速、目錄遞迴雜湊與文字 CRLF->LF 正規化。"""
         real_p = self.compiler._resolve_source_path(path_or_uri)
         if real_p and os.path.isdir(real_p):
             hasher = hashlib.sha1()
@@ -160,8 +187,15 @@ class ReleasePublisher:
                     hasher.update(rel.encode("utf-8"))
                     try:
                         with open(fp, "rb") as rf:
-                            while chunk := rf.read(65536):
-                                hasher.update(chunk)
+                            raw = rf.read()
+                        try:
+                            # 嘗試以 UTF-8 解碼並正規化 CRLF -> LF
+                            text = raw.decode("utf-8")
+                            norm_bytes = text.replace("\r\n", "\n").encode("utf-8")
+                            hasher.update(norm_bytes)
+                        except UnicodeDecodeError:
+                            # 二進位檔案安全降級：維持原始 bytes
+                            hasher.update(raw)
                     except Exception:
                         pass
             return hasher.hexdigest()
@@ -173,14 +207,16 @@ class ReleasePublisher:
                 if cached and len(cached) >= 3 and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
                     return str(cached[2])
                 content = self.compiler._read_file_content(path_or_uri)
-                sha1_val = hashlib.sha1(content.encode("utf-8")).hexdigest()
+                norm_content = content.replace("\r\n", "\n")
+                sha1_val = hashlib.sha1(norm_content.encode("utf-8")).hexdigest()
                 self._sha1_cache[real_p] = [st.st_mtime_ns, st.st_size, sha1_val]
                 self._sha1_cache_dirty = True
                 return sha1_val
             except Exception:
                 pass
         content = self.compiler._read_file_content(path_or_uri)
-        return hashlib.sha1(content.encode("utf-8")).hexdigest()
+        norm_content = content.replace("\r\n", "\n")
+        return hashlib.sha1(norm_content.encode("utf-8")).hexdigest()
 
     def _get_sources_digest(self) -> bytes:
         """計算來源端所有靜態資源與宣告（manifest, contributes, export, insert）之綜合 SHA-256 摘要。"""
@@ -494,7 +530,7 @@ class ReleasePublisher:
         Stage 0: 來源指紋提前短路檢查 (雙軌獨立比對)
         Stage 1: 內容佔位符展開 (compile_stage1)
         Stage 2: 提前解算所有已啟用 Target 之檔案實體路徑與渲染內容 (分流 Project 與 Local 集合)
-        Stage 3: 原子寫入 storage:// (Project 軌, project:// 格式) 與 cache:// (Local 軌, 絕對路徑格式)
+        Stage 3: 原子寫入 cache:// (Project 軌 project_release_manifest.json, project:// 格式；Local 軌 release_manifest.json, 絕對路徑格式)
         Stage 4: 落地端檔案內容比對與增量輸出（含 agents_md 軟合併與純 LF 寫入）
         """
         cfg = self._get_project_config()
@@ -522,17 +558,18 @@ class ReleasePublisher:
         # -------------------------------------------------------------
         # Stage 0: 來源指紋提前短路檢查 (Source Fingerprint Gate & Stat-First)
         # -------------------------------------------------------------
-        old_proj_manifest = self._load_manifest(PROJECT_MANIFEST_STORAGE_URI)
+        old_proj_manifest = self._load_manifest(PROJECT_MANIFEST_CACHE_URI)
         old_local_manifest = self._load_manifest(LOCAL_MANIFEST_CACHE_URI)
 
-        # 檢查歷史 Manifest 遷移 (EC-05)
+        # 檢查歷史 Manifest 遷移 (EC-05 及跨平台 Working Tree 隔離遷移)
         if uri:
+            self._migrate_legacy_storage_manifest()
             try:
                 legacy_wrong_uri = "storage://core/agents-workflow/release_manifest.json"
                 if uri.exists(legacy_wrong_uri):
-                    if not uri.exists(PROJECT_MANIFEST_STORAGE_URI):
+                    if not uri.exists(PROJECT_MANIFEST_CACHE_URI):
                         legacy_data = uri.read_json(legacy_wrong_uri)
-                        uri.write_json(PROJECT_MANIFEST_STORAGE_URI, legacy_data)
+                        uri.write_json(PROJECT_MANIFEST_CACHE_URI, legacy_data)
                     uri.remove(legacy_wrong_uri)
                     legacy_dir_uri = "storage://core/agents-workflow"
                     if uri.exists(legacy_dir_uri):
@@ -742,10 +779,10 @@ class ReleasePublisher:
                 except Exception:
                     pass
 
-        # --- 步驟 3 (更新持久清單): 分流寫入 storage:// 與 cache:// ---
+        # --- 步驟 3 (更新持久清單): 分流寫入 cache:// 之 Project 軌與 Local 軌清單 ---
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1. Project 軌 (寫入 storage://，使用 project:// 協議路徑)
+        # 1. Project 軌 (寫入 cache://，使用 project:// 協議路徑；不入 Git 追蹤區)
         if proj_targets or old_proj_manifest:
             proj_uris = [self._to_project_uri(f, proj_root) for f in precomputed_project_files.keys()]
             sorted_proj_uris = sorted(proj_uris)
@@ -768,7 +805,7 @@ class ReleasePublisher:
                 "updated_at": updated_at_proj
             }
             if new_proj_manifest != old_proj_manifest:
-                self._save_manifest(PROJECT_MANIFEST_STORAGE_URI, new_proj_manifest)
+                self._save_manifest(PROJECT_MANIFEST_CACHE_URI, new_proj_manifest)
 
         # 2. Local 軌 (寫入 cache://，使用實體絕對路徑)
         if local_targets or old_local_manifest:
@@ -865,9 +902,9 @@ class ReleasePublisher:
         if published_files is not None:
             file_list = list(published_files)
         else:
-            if uri and uri.exists(MANIFEST_STORAGE_URI):
+            if uri and uri.exists(PROJECT_MANIFEST_CACHE_URI):
                 try:
-                    m_data = uri.read_json(MANIFEST_STORAGE_URI)
+                    m_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
                     file_list = m_data.get("published_files", [])
                 except Exception:
                     pass

@@ -6,6 +6,7 @@ soft-merge of private venv site-packages into .vscode/settings.json with explici
 """
 
 import os
+import sys
 import json
 from typing import Optional, List, Dict, Any
 from core.pip_manager import PipManager
@@ -44,6 +45,31 @@ class IdeProjector:
         vscode_dir = os.path.join(proj_root, ".vscode")
         return os.path.isdir(vscode_dir)
 
+    def _is_yscb_managed_interpreter(
+        self,
+        value: Any,
+        proj_root: str,
+        old_managed_value: Any = None,
+    ) -> bool:
+        """
+        判定直譯器路徑是否為 YSCB 託管值（舊版 _yscb_managed 記錄值，或位於 YSCB 私有微環境 yscb_dir/.venv/ 之下）。
+        以實際微環境根目錄做路徑前綴比對，而非字串含有 '.venv'，避免誤刪使用者專案自有之 .venv 直譯器 (EC-03)。
+        支援跨平台寫入之相對路徑（POSIX bin/python 與 Windows Scripts/python.exe 互相辨識）。
+        """
+        if not value or not isinstance(value, str):
+            return False
+        if old_managed_value and value == old_managed_value:
+            return True
+        try:
+            cand = value.replace("\\", "/")
+            if not os.path.isabs(cand):
+                cand = os.path.join(proj_root, cand)
+            abs_cand = os.path.normcase(os.path.abspath(cand))
+            venv_root = os.path.normcase(os.path.abspath(os.path.join(self.yscb_dir, ".venv")))
+            return abs_cand == venv_root or abs_cand.startswith(venv_root + os.sep)
+        except Exception:
+            return False
+
     def sync_vscode_settings(
         self,
         proj_root: str,
@@ -53,8 +79,9 @@ class IdeProjector:
         """
         若 project://.vscode 存在，原子增量更新 settings.json：
         - 於 _yscb_managed 登記 YSCB 注入清單；
-        - 更新 python.analysis.extraPaths（差集替換舊 YSCB 路徑，100% 保留使用者自訂路徑）；
-        - 更新 python.defaultInterpreterPath 指向微環境 Python（若微環境已就緒）；
+        - 更新 python.analysis.extraPaths（注入跨平台雙路徑，差集替換舊 YSCB 路徑，100% 保留使用者自訂路徑）；
+        - 停止主動寫入 host-local 的 python.defaultInterpreterPath，並主動清理舊版 YSCB 託管值（保留使用者自訂路徑）；
+        - 實作 Zero-Touch 檢驗，內容等價時跳過磁碟寫入，避免檔案 mtime 變動；
         - 若 project://.vscode 不存在則完全靜默略過，回傳 False。
         """
         if not self.is_vscode_configured(proj_root):
@@ -67,20 +94,37 @@ class IdeProjector:
         if vfs.is_file(settings_path):
             try:
                 data = vfs.read_json(settings_path)
-                settings = data if isinstance(data, dict) else {}
             except Exception:
-                # 若檔案存在但格式非標準 JSON，為防破壞原檔，暫不覆蓋或安全略過
-                settings = {}
+                # 檔案存在但非標準 JSON（如 VS Code 允許之 JSONC 註解 / 尾逗號）：
+                # 為防整檔覆寫導致使用者設定遺失，略過同步且不寫盤。
+                print(
+                    f"[core:ide] Warning: '{settings_path}' is not strict JSON (comments or trailing commas?); "
+                    "skipped VS Code settings sync to preserve user settings.",
+                    file=sys.stderr,
+                )
+                return False
+            if not isinstance(data, dict):
+                return False
+            settings = data
 
-        # 1. 決定本次欲注入的 YSCB 管理路徑
+        # 1. 決定本次欲注入的 YSCB 管理路徑 (跨平台雙路徑恆定注入)
         new_managed_paths: List[str] = []
-        site_pkg = self.pip_mgr.get_site_packages_dir(py_tag)
-        if os.path.isdir(site_pkg):
-            try:
-                rel_site = os.path.relpath(site_pkg, proj_root).replace("\\", "/")
-                new_managed_paths.append(f"./{rel_site}")
-            except Exception:
-                new_managed_paths.append(site_pkg.replace("\\", "/"))
+        venv_dir = self.pip_mgr.get_venv_dir(py_tag)
+        if os.path.isdir(venv_dir):
+            site_pkgs = self.pip_mgr.get_cross_platform_site_packages_dirs(py_tag)
+            for sp in site_pkgs:
+                try:
+                    rel_site = os.path.relpath(sp, proj_root).replace("\\", "/")
+                    if not rel_site.startswith("./") and not rel_site.startswith("../"):
+                        entry = f"./{rel_site}"
+                    else:
+                        entry = rel_site
+                    if entry not in new_managed_paths:
+                        new_managed_paths.append(entry)
+                except Exception:
+                    entry = sp.replace("\\", "/")
+                    if entry not in new_managed_paths:
+                        new_managed_paths.append(entry)
 
         # 補入額外指定之路徑 (如 source/*)
         if extra_paths:
@@ -107,25 +151,16 @@ class IdeProjector:
             if mp not in final_extra_paths:
                 final_extra_paths.append(mp)
 
-        settings["python.analysis.extraPaths"] = final_extra_paths
+        if final_extra_paths:
+            settings["python.analysis.extraPaths"] = final_extra_paths
+        else:
+            settings.pop("python.analysis.extraPaths", None)
 
-        # 3. 計算並更新 defaultInterpreterPath
-        py_exec = self.pip_mgr.get_python_executable(py_tag)
-        new_interpreter = ""
-        if os.path.isfile(py_exec):
-            try:
-                rel_py = os.path.relpath(py_exec, proj_root).replace("\\", "/")
-                new_interpreter = f"./{rel_py}"
-            except Exception:
-                new_interpreter = py_exec.replace("\\", "/")
-
+        # 3. 停止寫入 defaultInterpreterPath，並清理舊版 YSCB 託管值 (保留使用者自訂路徑)
         old_managed_interpreter = old_managed_record.get("defaultInterpreterPath")
         current_interpreter = settings.get("python.defaultInterpreterPath")
-
-        # 若使用者未自訂（或當前值等於舊的 YSCB 注入值），則更新為新微環境直譯器
-        if new_interpreter:
-            if not current_interpreter or current_interpreter == old_managed_interpreter:
-                settings["python.defaultInterpreterPath"] = new_interpreter
+        if self._is_yscb_managed_interpreter(current_interpreter, proj_root, old_managed_interpreter):
+            settings.pop("python.defaultInterpreterPath", None)
 
         # 4. 同步維護 VS Code 排除項 (避免檔案監視與搜尋開銷)
         exclude_keys = {
@@ -141,15 +176,23 @@ class IdeProjector:
                 settings[sec][pattern] = True
                 managed_excludes[sec] = pattern
 
-        # 5. 更新顯式標記區塊 _yscb_managed
+        # 5. 更新顯式標記區塊 _yscb_managed (不再記錄 defaultInterpreterPath)
         settings[self.YSCB_MANAGED_KEY] = {
             "description": "Auto-managed by YSCB host bootstrapper. Reversible via module uninstall or rollback.",
             "extraPaths": new_managed_paths,
-            "defaultInterpreterPath": new_interpreter if (settings.get("python.defaultInterpreterPath") == new_interpreter) else current_interpreter,
             "excludes": managed_excludes,
         }
 
-        # 5. 原子寫入
+        # 6. Zero-Touch 檢驗：若與現有 settings.json 內容完全等價，跳過磁碟寫入
+        if vfs.is_file(settings_path):
+            try:
+                existing_data = vfs.read_json(settings_path)
+                if existing_data == settings:
+                    return True
+            except Exception:
+                pass
+
+        # 7. 原子寫入
         try:
             vfs.write_json(settings_path, settings, indent=2, atomic=True)
             return True
@@ -190,8 +233,9 @@ class IdeProjector:
             else:
                 settings.pop("python.analysis.extraPaths", None)
 
-        # 剔除 YSCB 注入之 defaultInterpreterPath
-        if settings.get("python.defaultInterpreterPath") == managed_interpreter:
+        # 剔除 YSCB 注入之 defaultInterpreterPath (若存在舊版殘留)
+        curr_interp = settings.get("python.defaultInterpreterPath")
+        if self._is_yscb_managed_interpreter(curr_interp, proj_root, managed_interpreter):
             settings.pop("python.defaultInterpreterPath", None)
 
         # 剔除 YSCB 注入之 excludes

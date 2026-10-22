@@ -23,7 +23,7 @@ _spec_cli.loader.exec_module(cli_mod)
 cmd_release = cli_mod.cmd_release
 
 from agents_workflow.compiler import ArtifactCompiler
-from agents_workflow.publisher import ReleasePublisher, MANIFEST_STORAGE_URI
+from agents_workflow.publisher import ReleasePublisher, PROJECT_MANIFEST_CACHE_URI
 
 try:
     from core import uri
@@ -65,8 +65,8 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertTrue(len(res["fingerprint"]) > 0)
 
         # 驗證 storage:// 中記錄的 manifest
-        if uri and uri.exists(MANIFEST_STORAGE_URI):
-            manifest_data = uri.read_json(MANIFEST_STORAGE_URI)
+        if uri and uri.exists(PROJECT_MANIFEST_CACHE_URI):
+            manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
             self.assertEqual(manifest_data.get("fingerprint"), res["fingerprint"])
             self.assertEqual(len(manifest_data.get("published_files", [])), res["published_count"])
         self.mark_passed()
@@ -94,8 +94,8 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertTrue(res1["success"])
 
         # 取得其中一個已發布檔案並人為修改其內容 (模擬外部內容漂移或部分產物需要更新)
-        if uri and uri.exists(MANIFEST_STORAGE_URI):
-            manifest_data = uri.read_json(MANIFEST_STORAGE_URI)
+        if uri and uri.exists(PROJECT_MANIFEST_CACHE_URI):
+            manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
             target_files = manifest_data.get("published_files", [])
             self.assertGreater(len(target_files), 1)
 
@@ -107,7 +107,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
 
             # 透過破壞快取中的 fingerprint 迫使進入 Stage 4 比對，但非 force
             manifest_data["fingerprint"] = "stale_fake_fingerprint"
-            uri.write_json(MANIFEST_STORAGE_URI, manifest_data)
+            uri.write_json(PROJECT_MANIFEST_CACHE_URI, manifest_data)
 
             res2 = self.publisher.release_all(force=False)
             self.assertTrue(res2["success"])
@@ -187,8 +187,8 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertTrue(res1["success"])
 
         # 人為刪除其中一個已發布檔案
-        if uri and uri.exists(MANIFEST_STORAGE_URI):
-            manifest_data = uri.read_json(MANIFEST_STORAGE_URI)
+        if uri and uri.exists(PROJECT_MANIFEST_CACHE_URI):
+            manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
             target_files = manifest_data.get("published_files", [])
             self.assertGreater(len(target_files), 0)
 

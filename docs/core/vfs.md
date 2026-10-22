@@ -10,7 +10,7 @@ related_docs:
   - "./README.md"
   - "./uri_protocols.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-22"
 ---
 
 # 統一虛擬檔案系統手冊 (Unified Virtual File System - VFS)
@@ -94,14 +94,16 @@ print(new_doc.name)    # "draft.txt"
 print(new_doc.suffix)  # ".txt"
 ```
 
-### 2.3 原子寫入保證 (Atomic Write Guarantee)
+### 2.3 原子寫入與跨平台 LF 換行保證 (Atomic Write & LF Line-Ending Guarantee)
 
 ```python
 from core import vfs
 
-# 在目標同級目錄下生成暫存檔，完成後原子替換，防止寫入中斷損毀
+# 在目標同級目錄下生成暫存檔，完成後原子替換，防止寫入中斷損毀；
+# 文字模式 (write_text / atomic_write mode="w") 固定以 newline="\n" 開檔，
+# 確保 Windows 與 POSIX 寫出一致之 LF 換行（顯式傳入之 "\r\n" 原樣保留）
 with vfs.atomic_write("project://config.json", mode="w") as f:
-    f.write('{"status": "ready"}')
+    f.write('{"status": "ready"}\n')
 ```
 
 ---

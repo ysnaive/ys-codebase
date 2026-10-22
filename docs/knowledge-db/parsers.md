@@ -10,7 +10,7 @@ related_docs:
   - "./README.md"
   - "./architecture.md"
   - "./contributes_guide.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-22"
 ---
 
 # knowledge-db 多語言語意解析器使用指南 (Parsers Guide)
@@ -39,8 +39,8 @@ last_updated: "2026-10-15"
 | :--- | :--- | :--- | :--- |
 | **`PythonParser`** | `.py`, `.pyi` | Tree-sitter (`tree_sitter_python`) + `python.scm` | Module, Class, Method, Function, Decorator, Parameters, Docstring, Return Type, Call Sites, Imports |
 | **`MarkdownParser`** | `.md`, `.markdown` | Tree-sitter (`tree_sitter_markdown`) + `markdown.scm` | Headings (H1~H6), Blockquote, Code Blocks, Links (`DOC_LINK`), Call Sites (`DOC_CALL_SITE`) |
-| **`CppParser`** | `.cpp`, `.hpp`, `.h`, `.c`, `.cc`, `.cxx` | Tree-sitter (`tree_sitter_cpp`, `tree_sitter_c`) | Class, Struct, Enum, Function, Method, Doxygen/Comments, Call Sites (`->`, `::`), Imports (`#include`, `using`) |
-| **`CSharpParser`** | `.cs` | Tree-sitter (`tree_sitter_c_sharp`) + `c_sharp.scm` | Namespace, Class, Interface, Struct, Method, Property, XML Doc, Call Sites, Imports (`using`) |
+| **`CppParser`** | `.cpp`, `.hpp`, `.h`, `.c`, `.cc`, `.cxx` | Tree-sitter (`tree_sitter_cpp`, `tree_sitter_c`) | Class, Struct, Enum, Function, Method, Template, Base Classes (`base_types`), Doxygen/Comments, Call Sites (`->`, `::`), Imports (`#include`, `using`) |
+| **`CSharpParser`** | `.cs` | Tree-sitter (`tree_sitter_c_sharp`) + `c_sharp.scm` | Namespace (Block/File-scoped), Class, Record, Interface, Struct, Method, Local Function, Property, Base Types (`base_types`), XML Doc, Call Sites (`.`, `?.`, Generics), Imports (`using`) |
 | **`JsTsParser`** | `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs` | Tree-sitter (`tree_sitter_typescript`) + `typescript.scm` | Class, Interface, Type Alias, Enum, Function, Method, JSDoc, Call Sites, Imports (`import`, `require`) |
 | **`SpiceParser`** | `.cir`, `.sp`, `.spice`, `.net` | 自訂自貢獻解析器 (`SpiceParser`) | Subcircuit (`.subckt`), Model (`.model`), Component Instance, Directives, Parameters |
 | **`HtmlParser`** | `.html`, `.htm` | 自訂自貢獻解析器 (`HtmlParser`) | `<title>`, `<h1>`~`<h6>`, `#id` 選擇器, HTML5 語意標籤, HTML 註解 |

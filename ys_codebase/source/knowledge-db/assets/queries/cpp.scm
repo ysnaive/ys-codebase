@@ -12,7 +12,7 @@
 ) @definition.enum
 
 (namespace_definition
-  name: (namespace_identifier) @symbol.name
+  name: [(namespace_identifier) (nested_namespace_specifier)] @symbol.name
 ) @definition.namespace
 
 (function_definition
@@ -41,7 +41,24 @@
 (call_expression
   function: [
     (identifier) @call.name
-    (field_expression field: (field_identifier) @call.name)
-    (qualified_identifier name: (identifier) @call.name)
+    (template_function
+      name: (identifier) @call.name
+    )
+    (field_expression
+      field: (field_identifier) @call.name
+    )
+    (field_expression
+      field: (template_method
+        name: (field_identifier) @call.name
+      )
+    )
+    (qualified_identifier
+      name: (identifier) @call.name
+    )
+    (qualified_identifier
+      name: (template_function
+        name: (identifier) @call.name
+      )
+    )
   ]
 ) @call.site

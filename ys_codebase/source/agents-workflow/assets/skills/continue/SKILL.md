@@ -26,6 +26,7 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue)。支�
 - **若存在 `handoff.md`**：
   1. 優先讀取 `handoff.md`，提取現場已完成事項、進行中待辦、注意事項與下一次接手第 1 步。
   2. 依據現場快照直接還原斷點上下文，無需漫無目的地掃描所有歷史代碼。
+  3. **消費即刪除 (Consume & Delete)**：確認恢復現場後，強制立即刪除該已消費之 `handoff.md`，避免後續重複讀取殘留過期快照。
 - **若無 `handoff.md`**：
   - 進入步驟 3 進行標準 Track 與 Phase 結構化判定。
 
@@ -48,11 +49,11 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue)。支�
 
 #### 步驟 3-U：Umbrella 主計畫與子計畫定位
 
-1. 讀取主計畫的 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) 與 [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)。
+1. 讀取主計畫的 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`)（若主目錄存在 `P00_discuss.md` 或 `R{NN}_*.md` 則一併參考）。
 2. 檢查子計畫清單矩陣：
    - 尋找處於 `進行中`、`In Progress`、`Planning` 或 `未開始` 的目標子計畫目錄 `sub_{編號}_{名稱}/`。
    - 若既有子計畫均已完成但主計畫尚有後續階段 -> 提示開發者是否開立下一個 `sub_XX` 子計畫。
-3. 進入當前目標子計畫目錄，檢查該子計畫是否含有 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，若無則依其檔案結構進入 **步驟 3-T** (Full Track)、**步驟 3-F** (Fast Track) 或 **步驟 3-R** (Revision) 判定進度。
+3. 進入當前目標子計畫目錄，檢查該子計畫是否含有 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)（若有則依步驟 2 讀取並於恢復後刪除），若無則依其檔案結構進入 **步驟 3-T** (Full Track)、**步驟 3-F** (Fast Track) 或 **步驟 3-R** (Revision) 判定進度。
 
 ---
 

@@ -73,7 +73,7 @@ last_updated: "2026-10-15"
 - **`skill` 領域技能包**：支援目錄級與單檔級 Skill 套件導出與發布，保留內部 `references/`、`scripts/` 結構並以 `{export.name}` 巨集插值投影至 `.agents/skills/<name>/`。
 - **`agents_md` 規範投影**：支援宣告 Target 專屬規範檔案路徑（如 `project://AGENTS.md` 或 `project://CLAUDE.md`），以 `AgentsStandards.md` 內容執行軟合併。
 - **巨集插值**：`target_dir` 與 `header` 支援 `{export.description}`、`{export.name}`、`{export.basename}`、`{target.name}` 等巨集變數動態替換。
-- **原子交易發布與舊目錄清理**：由 `ReleasePublisher` 基於 `storage://` 執行雙階 Diff 防護（Stage 0 來源指紋短路 + Stage 4 落地內容比對），並在發布時自動偵測清理歷史遺留之 `.agents/workflows/` 與 `.claude/commands/` 目錄。
+- **原子交易發布與舊目錄清理**：由 `ReleasePublisher` 基於本地 `cache://agents-workflow/project_release_manifest.json`（不入 Git 追蹤；舊版 `storage://` 清單自動遷移並刪除）執行雙階 Diff 防護（Stage 0 來源指紋短路 + Stage 4 落地內容比對），並在發布時自動偵測清理歷史遺留之 `.agents/workflows/` 與 `.claude/commands/` 目錄。
 - **JIT 變更感知自愈與自動投影 (`ensure_jit_release`)**：在執行任何 `agents-workflow` CLI 指令前自動檢驗來源指紋（含目錄級 Skill 遞迴 SHA-1 聚合指紋）。若模組資產、模板或片段發生變更，管線會自動原子同步最新內容至 `.agents/` 等 Target 目錄與 `AGENTS.md`。
 
 ---

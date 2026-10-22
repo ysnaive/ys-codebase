@@ -360,6 +360,51 @@ class TestCLI(YSCBTestCase):
             ret = process(["impact", "PIDController", "--depth", "3", "--limit", "5", "--json"])
         self.assertEqual(ret, 0)
 
+        # 6. 驗證 callers / callees / impact 支援 --ftype 選項且 callers --json 在非空結果下正常序列化
+        for cmd in ["callers", "callees", "impact"]:
+            buf_ft = io.StringIO()
+            with contextlib.redirect_stdout(buf_ft):
+                ret = process([cmd, "PIDController", "--ftype", "py", "--json"])
+            self.assertEqual(ret, 0)
+            payload = json.loads(buf_ft.getvalue())
+            self.assertIn("target_query", payload)
+
+        # 7. 驗證 callers --json 在 total_callers > 0 時 (simple/preview/detail) 不會發生 KeyError: 'caller_symbol'
+        from unittest.mock import patch
+        from knowledge_db.schema import UnifiedSymbol
+        from knowledge_db.retrieval import CodeSnippet
+        mock_target = UnifiedSymbol(
+            id="t1", name="Panel.UpdateLayout", kind="method",
+            file_path="src/Panel.cs", line_number=10, end_line=20, language="c_sharp", signature="void UpdateLayout()"
+        )
+        mock_caller = UnifiedSymbol(
+            id="c1", name="Host.Tick", kind="method",
+            file_path="src/Host.cs", line_number=30, end_line=40, language="c_sharp", signature="void Tick()"
+        )
+        mock_res = {
+            "target_query": "Panel.UpdateLayout",
+            "target_symbol": mock_target,
+            "callers": [{
+                "symbol": mock_caller,
+                "caller_symbol": mock_caller,
+                "call_sites": [{"line_number": 35, "scope": "Host.Tick"}],
+                "code_snippet": CodeSnippet(
+                    start_line=34, end_line=36, target_line=35,
+                    lines=[(34, "public void Tick() {"), (35, "    m_Panel.UpdateLayout();"), (36, "}")],
+                ),
+            }],
+            "total_callers": 1,
+        }
+        with patch("knowledge_db.engine.KnowledgeEngine.act_callers", return_value=mock_res):
+            for flag in ["--simple", "-s", "--detail"]:
+                buf_c = io.StringIO()
+                with contextlib.redirect_stdout(buf_c):
+                    ret = process(["callers", "Panel.UpdateLayout", flag, "--json"])
+                self.assertEqual(ret, 0)
+                c_data = json.loads(buf_c.getvalue())
+                self.assertEqual(c_data["total_callers"], 1)
+                self.assertEqual(c_data["callers"][0]["caller_symbol"]["name"], "Host.Tick")
+
         self.mark_passed()
 
 

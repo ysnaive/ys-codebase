@@ -19,6 +19,7 @@
 2. **確立分流伴隨建檔**：與開發者充分討論並確認分流類型後，伴隨建立計畫目錄並產出對應初始文件（`P00_discuss.md`、`fast_track_plan.md` 或 `revision_log.md`）與 `changelog.md`。
 3. **調研或討論無痛轉入修訂**：若前置討論 (`P00`) 或調研 (`R{NN}_{topic}.md`) 收斂後確認僅涉及非業務邏輯之 UI/UX/DX、參數或文檔微調，可直接於同計畫目錄建立 `revision_log.md` 進入修訂計畫。
 4. **調研無痛升級**：若需求過於複雜或未知技術過多，主動建議先入調研計畫（產出 `R{NN}_{topic}.md` 後可無縫升級）。
+5. **Umbrella 子計畫立項登記**：於 Umbrella 下開立 `sub_XX` 時，同步登記於父目錄 `umbrella_overview.md` §2 子計畫矩陣並記錄於主目錄 `changelog.md`；首個子計畫啟動時主計畫標頭轉為 `In Progress`。
 
 ---
 

@@ -134,13 +134,18 @@ last_updated: "2026-10-15"
 
 ---
 
-### [DN-09] VS Code 零目錄污染與 `_yscb_managed` 差集追蹤軟合併 (原 `DN-16`)
+### [DN-09] VS Code 零目錄污染、跨平台雙路徑恆定與 Zero-Touch 軟合併 (原 `DN-16`)
 
-- **核心決策**：`core.ide_projector` 在同步 IDE Python 路徑時，先探測 `project://.vscode` 是否存在；若不存在則**完全靜默略過**，絕不主動建立 `.vscode/` 目錄。若存在，則於 `project://.vscode/settings.json` 內以 `_yscb_managed` 宣告式清冊記錄由 YSCB 注入之 `extraPaths`、`defaultInterpreterPath` 與排除規則，執行差集軟合併。
-- **背後考量**：避免在非 VS Code 使用者的專案中製造無用空目錄污染；同時杜絕整檔覆蓋導致開發者自訂的 IDE 設定遺失，並支援模組卸載時依 `_yscb_managed` 精確無損回滾。
+- **核心決策**：
+  1. **零目錄污染**：`core.ide_projector` 在同步 IDE Python 路徑時，先探測 `project://.vscode` 是否存在；若不存在則**完全靜默略過**，絕不主動建立 `.vscode/` 目錄。
+  2. **跨平台雙路徑併存 (`extraPaths`)**：於 `python.analysis.extraPaths` 同時注入 POSIX (`lib/pythonX.Y/site-packages`) 與 Windows (`Lib/site-packages`) 雙候選路徑。Pylance 自動忽略不存在之路徑，確保跨平台協作時版本庫 100% 恆定 0 diff。
+  3. **解耦 `python.defaultInterpreterPath`**：停止將隨作業系統變動之直譯器路徑自動寫入共用 `settings.json`，並清理舊版 YSCB 託管值，使用者自訂之直譯器 100% 保留。託管判定（`_is_yscb_managed_interpreter`）僅認「等於舊 `_yscb_managed` 記錄值」或「解析後位於 `yscb_dir/.venv/` 之下」，**不得以路徑字串含 `.venv` 判定**，否則會誤刪使用者專案自有 `.venv` 直譯器。
+  4. **Zero-Touch 寫入防護與 JSONC 防覆寫**：若計算後內容與磁碟既有 JSON 完全一致，跳過寫入，杜絕無謂的檔案 `mtime` 變更；若既有 `settings.json` 解析失敗（例如含 VS Code 允許之 JSONC 註解或尾逗號）或非 JSON 物件，輸出 stderr 警告並回傳 `False` 安全略過，絕不以空字典 `{}` 整檔覆寫。
+  5. **VFS 文字寫入固定 LF (`newline="\n"`)**：`OSBackend.write_text` 與 `atomic_write` 文字模式固定以 `newline="\n"` 開檔，防止 Windows 將 `\n` 自動轉譯為 `\r\n` 造成受追蹤設定檔跨平台位元組差異。
+- **背後考量**：避免在非 VS Code 使用者的專案中製造無用空目錄污染；同時杜絕跨平台（Windows 與 Linux）交替開發時因直譯器與 site-packages 差異導致 Git Working Tree 持續 Dirty。
 - **防禦宣告**：
   > [!WARNING]
-  > **嚴禁在 `project://.vscode` 不存在時主動建立該目錄；嚴禁以整檔覆蓋模式寫入 `settings.json`！**
+  > **嚴禁在 `project://.vscode` 不存在時主動建立該目錄；嚴禁以整檔覆蓋模式寫入 `settings.json`；嚴禁向共用 `settings.json` 寫入平台特化之單一直譯器路徑；嚴禁以 `".venv" in path` 字串比對判定託管直譯器！**
 
 ---
 

@@ -141,3 +141,19 @@ last_updated: "2026-10-15"
 
 > [!CAUTION]
 > 嚴禁恢復「由檔案標頭比對或推導當前模型」之規則；嚴禁驗證器對模型名稱做白名單校驗。
+
+---
+
+### [DN-AW-09] 來源資產換行符 LF 正規化與物化清單 `cache://` 本地隔離防 Git 污染
+
+- **工程背景與坑點**：
+  跨平台協作情境（Linux 與 Windows 交替開發）下：
+  1. Windows Git 預設 `core.autocrlf=true` 會將檔案檢出為 CRLF，導致 `_get_source_file_sha1` 計算出的 SHA-1 與 Linux (LF) 不一致，造成 `fingerprint` 與 `combined_fingerprint` 頻繁漂移。
+  2. 原先 Project 軌之發布狀態記錄於 `storage://agents-workflow/release_manifest.json`，而 `storage/` 屬版本庫追蹤範圍；一旦 fingerprint 漂移或觸發同步，自動改寫 `updated_at` 時間戳記，造成 Git 工作區非自願性陷入 Dirty（ping-pong diff）。
+- **妥協與防禦設計**：
+  1. **UTF-8 文字 CRLF $\to$ LF 正規化**：`_get_source_file_sha1` 讀取文字內容時統一將 `\r\n` 轉換為 `\n` 後再計算 SHA-1；遇到非 UTF-8 二進位檔案時安全降級維持 raw bytes 雜湊。
+  2. **物化清單本地隔離 (`cache://`)**：將 Project 軌之狀態檔遷移至 `cache://agents-workflow/project_release_manifest.json`（已在 `.gitignore` 範圍內），並在發布階段自動遷移且物理刪除舊版 `storage://` 下的遺留檔案與目錄。
+  3. **不以忽略規則掩蓋**：刻意不在 `.gitignore` 增列 `storage://` 下之任何規則（`storage://` 為受追蹤空間）；根治手段唯一為「運行期資產不寫入受追蹤空間」。升級後舊檔被刪除會產生一次性 `deleted` 差異，需提交一次。
+
+> [!CAUTION]
+> 計算來源資產 SHA-1 時嚴禁未經換行符正規化直接雜湊；嚴禁將運行期動態物化狀態清單寫入 `storage://` 等 Git 追蹤目錄。

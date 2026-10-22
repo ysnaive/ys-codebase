@@ -38,5 +38,5 @@
 
 - [ ] **SOP Review 品質矩陣**：三層文檔對齊（`__${workflow.docs://}__` 手冊、`DESIGN_NOTES.md`、微觀註解）、測試 100% 通過。
 - [ ] **日誌與發布交付**：追加 `__${project://CHANGELOG.md}__` 發布摘要。
-- [ ] **結構與註解檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 驗證 100% Passed。
-- [ ] **標頭狀態更新**：完成上述審查後，將頂部標頭 `> 狀態：` 更新為 `Completed` 結案。
+- [ ] **標頭狀態更新**：完成上述審查並將本清單其餘項勾選 `[x]` 後，將頂部標頭 `> 狀態：` 更新為 `Completed`。
+- [ ] **結構與註解檢核（最終守門）**：最後實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 驗證 100% Passed（若檢出未通過項則原地修正重驗）。

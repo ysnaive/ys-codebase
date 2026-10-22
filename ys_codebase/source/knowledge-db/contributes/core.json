@@ -201,6 +201,16 @@
                 }
               }
             }
+          },
+          "filter": {
+            "ftype": {
+              "description": "篩選檔案類型 (如 md, py, cs)",
+              "args": {
+                "ext": {
+                  "description": "副檔名"
+                }
+              }
+            }
           }
         },
         "usage": {
@@ -250,6 +260,16 @@
               "args": {
                 "name": {
                   "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "filter": {
+            "ftype": {
+              "description": "篩選檔案類型 (如 md, py, cs)",
+              "args": {
+                "ext": {
+                  "description": "副檔名"
                 }
               }
             }
@@ -312,6 +332,16 @@
               "args": {
                 "name": {
                   "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "filter": {
+            "ftype": {
+              "description": "篩選檔案類型 (如 md, py, cs)",
+              "args": {
+                "ext": {
+                  "description": "副檔名"
                 }
               }
             }

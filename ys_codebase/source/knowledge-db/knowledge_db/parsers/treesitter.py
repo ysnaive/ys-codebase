@@ -164,6 +164,32 @@ class TreeSitterDriver(BaseParser):
             pass
         return ""
 
+    def _extract_base_types(self, def_node: Any) -> List[str]:
+        """從類別/結構/介面 AST 節點提取繼承基底類別與實作介面名稱清單"""
+        base_types: List[str] = []
+        try:
+            for child in def_node.children:
+                # C#: base_list, C++: base_class_clause, TS/JS: class_heritage, Python: argument_list
+                if child.type in ("base_list", "base_class_clause", "class_heritage", "argument_list"):
+                    raw_text = child.text.decode("utf-8", errors="replace")
+                    # 移除首尾括號、冒號與常見關鍵字
+                    cleaned = re.sub(r"\b(extends|implements|public|protected|private|virtual)\b", " ", raw_text)
+                    cleaned = cleaned.strip().lstrip(":(").rstrip(")")
+                    # 移除泛型參數 <...> 內部逗號干擾，僅保留主型別名稱
+                    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+                    for part in cleaned.split(","):
+                        token = part.strip()
+                        if not token:
+                            continue
+                        # 取最末段型別短名 (如 UIToolkit.Core.VisualElement -> VisualElement)
+                        short_base = re.split(r"[.:]+", token)[-1].strip()
+                        if short_base and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", short_base):
+                            if short_base not in base_types:
+                                base_types.append(short_base)
+        except Exception:
+            pass
+        return base_types
+
     def parse(self, file_path: str, content: str, space: str) -> List[UnifiedSymbol]:
         normalized_path = file_path.replace("\\", "/")
         if not content or not content.strip():
@@ -382,14 +408,30 @@ class TreeSitterDriver(BaseParser):
             # 對於巢狀符號 (如方法)，其 name 設定為 fqn 以相容 sym_map[name] 查詢
             sym_name = item["fqn"] if item["parent_id"] else item["short_name"]
 
-            metadata = {
-                "short_name": item["short_name"],
-                "parent_scope": item["scope_path"][-1] if item["scope_path"] else "",
+            short_name_val = item["short_name"]
+            parent_scope_val = item["scope_path"][-1] if item["scope_path"] else ""
+
+            # C++ 類別外方法實作 (如 void VisualElement::UpdateLayout())：修正 short_name, parent_scope 與 kind
+            if self.config.id == "cpp" and "::" in short_name_val and item["kind"] in ("function", "method"):
+                cpp_parts = short_name_val.split("::")
+                short_name_val = cpp_parts[-1]
+                parent_scope_val = cpp_parts[-2]
+                item["kind"] = "method"
+
+            base_types: List[str] = []
+            if item["kind"] in ("class", "struct", "interface") and item.get("node") is not None:
+                base_types = self._extract_base_types(item["node"])
+
+            metadata: Dict[str, Any] = {
+                "short_name": short_name_val,
+                "parent_scope": parent_scope_val,
                 "end_line": item["end_line"],
                 "scope_path": item["scope_path"],
                 "start_byte": item["start_byte"],
                 "end_byte": item["end_byte"],
             }
+            if base_types:
+                metadata["base_types"] = base_types
 
             symbols.append(
                 UnifiedSymbol(
@@ -518,44 +560,64 @@ class TreeSitterDriver(BaseParser):
             line_no = name_node.start_point[0] + 1
             call_start_byte = name_node.start_byte
 
-            # 前綴提取
+            # 前綴提取 (透過 call_node 與 name_node 之 byte 區間精確切割，支援泛型、條件存取 ?. 與鏈式調用)
             prefix = ""
             call_node = captures.get("call.site", [name_node])[0]
-            call_text = call_node.text.decode("utf-8", errors="replace")
-            if "." in call_text:
-                parts = call_text.split("(", 1)[0].split(".")
-                if len(parts) > 1 and parts[-1].strip() == callee_name:
-                    prefix = ".".join(parts[:-1]).strip()
-            elif "->" in call_text:
-                parts = call_text.split("(", 1)[0].split("->")
-                if len(parts) > 1 and parts[-1].strip() == callee_name:
-                    prefix = "->".join(parts[:-1]).strip()
-            elif "::" in call_text:
-                parts = call_text.split("(", 1)[0].split("::")
-                if len(parts) > 1 and parts[-1].strip() == callee_name:
-                    prefix = "::".join(parts[:-1]).strip()
+            if call_node.start_byte < name_node.start_byte:
+                raw_prefix = content_bytes[call_node.start_byte : name_node.start_byte].decode(
+                    "utf-8", errors="replace"
+                ).strip()
+                # 移除末尾成員存取運算子 (?. / -> / :: / .)
+                for op in ("?.", "->", "::", "."):
+                    if raw_prefix.endswith(op):
+                        raw_prefix = raw_prefix[: -len(op)].strip()
+                        break
+                # 規範化多段運算子為 '.'
+                raw_prefix = raw_prefix.replace("?.", ".").replace("->", ".").replace("::", ".")
+                # 處理 new Object().Method() 或括號轉型 ((IPanel)x).Method()
+                if raw_prefix.startswith("(") and raw_prefix.endswith(")"):
+                    raw_prefix = raw_prefix[1:-1].strip()
+                # 若為鏈式調用如 GetService<IPanel>() 或 GetPanel()，嘗試提取泛型型別或前綴識別字
+                if raw_prefix.endswith(")"):
+                    gen_m = re.search(r"<\s*([A-Za-z_][A-Za-z0-9_.]*)\s*>\s*\([^)]*\)$", raw_prefix)
+                    if gen_m:
+                        raw_prefix = gen_m.group(1).strip()
+                    else:
+                        raw_prefix = re.sub(r"\([^)]*\)$", "", raw_prefix).strip()
+                # 移除泛型型別參數 (如 FlexLayoutEngine<T> -> FlexLayoutEngine)
+                raw_prefix = re.sub(r"<[^>]+>", "", raw_prefix).strip()
+                prefix = raw_prefix
 
-            if prefix in ("this", "this->", "this."):
+            if prefix == "this":
                 prefix = "self"
+            elif prefix in ("base", "super"):
+                prefix = "base"
+            elif prefix.startswith(("this.", "base.", "super.")):
+                prefix = "self." + prefix.split(".", 1)[1]
 
-            # 定位所屬調用者方法/函式 (最內層優先)
+            # 定位所屬調用者方法/函式/建構子/屬性 (最內層優先)
             caller_name = "<module>"
+            caller_sym_id: Optional[str] = None
             matching_syms = [s for s in target_symbols if s.line_number <= line_no <= s.end_line]
             matching_syms.sort(key=lambda s: (s.end_line - s.line_number))
             for sym in matching_syms:
-                if sym.kind in ("method", "function"):
+                if sym.kind in ("method", "function", "constructor", "property"):
+                    caller_sym_id = sym.id
                     if sym.metadata.get("parent_scope"):
                         caller_name = f"{sym.metadata['parent_scope']}.{sym.metadata.get('short_name', sym.name)}"
                     else:
                         caller_name = sym.name
                     break
-                elif sym.kind in ("class", "struct"):
-                    caller_name = sym.name
+                elif sym.kind in ("class", "struct", "interface"):
+                    caller_sym_id = sym.id
+                    caller_name = sym.metadata.get("short_name") or sym.name
+                    break
 
             call_sites.append(
                 SymbolCallSite(
                     callee_name=callee_name,
                     line_number=line_no,
+                    caller_symbol_id=caller_sym_id,
                     caller_member_name=caller_name,
                     context_prefix=prefix,
                     file_path=normalized_path,
