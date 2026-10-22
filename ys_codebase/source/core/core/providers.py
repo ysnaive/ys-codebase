@@ -1,6 +1,6 @@
 """
 YS-Codebase Core Computed Token Providers.
-Provides dynamic AGENTS_CLI_GUILD and Phase-Aware JIT CLI Guild generation from declared contributes.core.commands.
+Provides dynamic AGENTS_CLI_GUIDE and Phase-Aware JIT CLI Guide generation from declared contributes.core.commands.
 100% Python Standard Library, Zero Third-Party Dependency.
 100% SDK-Driven: powered by core.contributes.get().
 """
@@ -44,7 +44,7 @@ def _extract_command_items(raw_dict: Dict[str, Any]) -> List[Tuple[str, Dict[str
     return res
 
 
-def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
+def get_agents_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
     """
     動態編譯全系統已宣告之 contributes.core.commands 為三級權限 Markdown 防呆對照表。
 
@@ -155,7 +155,7 @@ def get_agents_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
     return "\n".join(lines)
 
 
-def get_phase_cli_guild(context: Optional[Any] = None, phase: Optional[str] = None, **kwargs: Any) -> str:
+def get_phase_cli_guide(context: Optional[Any] = None, phase: Optional[str] = None, **kwargs: Any) -> str:
     """
     依據給定之 Phase 標籤動態過濾 commands，產出適用於該階段之極簡 JIT 指令引導。
 
@@ -252,41 +252,41 @@ def get_phase_cli_guild(context: Optional[Any] = None, phase: Optional[str] = No
     return "\n".join(out_lines)
 
 
-def get_phase00_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="P00", **kwargs)
+def get_phase00_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="P00", **kwargs)
 
 
-def get_phase01_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="P01", **kwargs)
+def get_phase01_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="P01", **kwargs)
 
 
-def get_phase02_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="P02", **kwargs)
+def get_phase02_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="P02", **kwargs)
 
 
-def get_phase03_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="P03", **kwargs)
+def get_phase03_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="P03", **kwargs)
 
 
-def get_phase04_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="P04", **kwargs)
+def get_phase04_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="P04", **kwargs)
 
 
-def get_phase05_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="P05", **kwargs)
+def get_phase05_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="P05", **kwargs)
 
 
-def get_phase06_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="P06", **kwargs)
+def get_phase06_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="P06", **kwargs)
 
 
-def get_phase07_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="P07", **kwargs)
+def get_phase07_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="P07", **kwargs)
 
 
-def get_fast_track_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="FT", **kwargs)
+def get_fast_track_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="FT", **kwargs)
 
 
-def get_research_cli_guild(context: Optional[Any] = None, **kwargs: Any) -> str:
-    return get_phase_cli_guild(context, phase="RESEARCH", **kwargs)
+def get_research_cli_guide(context: Optional[Any] = None, **kwargs: Any) -> str:
+    return get_phase_cli_guide(context, phase="RESEARCH", **kwargs)

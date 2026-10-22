@@ -2,7 +2,8 @@
 
 > 主題：發布產物二進位儲存與 Git 歷史瘦身優化  
 > 歸檔日期：2026-08-29  
-> 狀態：**Paused / Backlog (列入中長期里程碑)**  
+> 狀態：Deferred  
+> 模型：Unknown  
 
 ---
 
@@ -23,8 +24,6 @@ plans/archived (全階段 SOP 計畫檔案)          2.67 MB           533
 ys_codebase/release (*.zip 二進位發布包)      2.08 MB            43 (純二進位)
 ys_codebase/source (源碼 SSOT)                1.01 MB           166
 ```
-
-> 💡 **附註**：`ys_codebase/modules/`（運行端歷史副本）同為部署產物，其 Git 解耦策略已納入姊妹路線圖「[全生態系安全熱更新與 JIT 變更感知自愈機制](./ecosystem_safe_hot_update_and_jit_synchronization.md)」Stage 5（`modules/` 冷啟動再生與 Git 解耦），與本路線圖 `release/` 脫鉤形成對稱閉環。
 
 ### 1.3 核心根因
 1. **二進位壓縮包無 Delta Diff**：`.zip` 檔案在 Deflate 演算法下，任何源碼微調都會造成二進位 Byte Stream 雪崩效應，Git 無法進行差異壓縮，每個版本的 zip 均以 100% 完整體積寫入 Packfile。
@@ -89,5 +88,3 @@ git gc --prune=now --aggressive
 1. **Stage 1 (解耦)**：更新 `.gitignore` 排除 `ys_codebase/release/**/*.zip`，發布管線僅追蹤 `index.json`。
 2. **Stage 2 (分發)**：對接遠端 Release Provider / 本地 Cache 機制。
 3. **Stage 3 (清洗)**：執行 `git-filter-repo` 一次性清理過往歷史冗餘，達成極致純文字輕量倉庫。
-
-> 💡 **對稱閉環**：`ys_codebase/modules/` 的 Git 解耦由姊妹路線圖「[全生態系安全熱更新與 JIT 變更感知自愈機制](./ecosystem_safe_hot_update_and_jit_synchronization.md)」Stage 5 負責實作冷啟動再生管線後排除 Git 追蹤。兩路線圖共同驅動倉庫純文字化。

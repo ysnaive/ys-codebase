@@ -2,6 +2,14 @@
 
 本手冊定義 Full Track / Research 計畫 Phase 0 階段之角色職責、討論防呆與 JIT 延遲建檔規範。
 
+```markdown
+Phase 00 執行檢核表：
+- [ ] 1. 釐清核心痛點、目標行為與不納入範圍（若有歧義先反問，禁止自行腦補）
+- [ ] 2. 評估變更規模並建議計畫分流模式（Full Track / Fast Track / Umbrella / Research / Revision）
+- [ ] 3. 讀取 P00_discuss.md 模板落檔（狀態設為 Discussing 或 Confirmed）並同步記錄 changelog.md
+- [ ] 4. 呈遞 P00 狀態卡並立即 End Turn 等待開發者拍板
+```
+
 ---
 
 ## 1. 核心定位與職責
@@ -32,7 +40,7 @@
 
 ---
 
-`__@{PHASE00_AGENTS_GUILD}__`
+`__@{PHASE00_AGENTS_GUIDE}__`
 
 ---
 

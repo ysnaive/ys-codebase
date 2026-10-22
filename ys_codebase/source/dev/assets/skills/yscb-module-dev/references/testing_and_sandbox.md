@@ -1,4 +1,4 @@
-# 生態系模組測試工程實踐與沙盒機制 (Testing Engineering & Sandbox Guild)
+# 生態系模組測試工程實踐與沙盒機制 (Testing Engineering & Sandbox Guide)
 
 本手冊定義 YSCB 模組單元/整合測試工程規範、`YSCBTestCase` 基類特徵、拋棄式沙盒隔離機制、生命週期鉤子與高效跑測技巧。
 

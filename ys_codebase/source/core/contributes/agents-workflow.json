@@ -2,8 +2,8 @@
   "insert": [
     {
       "type": "computed",
-      "token": "AGENTS_CLI_GUILD",
-      "value": "code.func://core/providers:get_agents_cli_guild",
+      "token": "AGENTS_CLI_GUIDE",
+      "value": "code.func://core/providers:get_agents_cli_guide",
       "mode": "replace"
     }
   ]

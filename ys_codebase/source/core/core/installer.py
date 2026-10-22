@@ -564,7 +564,14 @@ class Installer:
             if ok:
                 success_count += 1
             else:
-                print(f"[core:restore] Error: Unable to restore module '{mod_name}@{ver}' from provider '{prov}'.")
+                print(f"[core:restore] 錯誤: '{mod_name}' 模組 (v{ver}) 來源 '{prov}' 已遺失或無法存取，需手動修復。")
+                print("               建議措施為:")
+                if mod_name == "core":
+                    print("                 1. 修復核心模組並切換來源 : python yscb.py init --fix [--provider <valid_url_or_path>]")
+                else:
+                    print(f"                 1. 重新指定來源安裝該模組 : python yscb.py install {mod_name} --force [--provider <valid_url_or_path>]")
+                print("                 2. 以指定來源全量還原環境 : python yscb.py restore --force --provider <valid_url_or_path>")
+                print(f"                 3. 檢查並修正 'yscb.config.json' 中 '{mod_name}' 的 version / provider 設定")
                 failed_mods.append(mod_name)
 
         if failed_mods:

@@ -210,5 +210,5 @@ indices = engine.build_index()
 ## 6. 相關規範與技能手冊
 
 - **探索規範指南**：[`.agents/skills/knowledge-db-search/SKILL.md`](./assets/skills/knowledge-db-search/SKILL.md)
-- **指令權限對照**：[`.agents/skills/yscb-cli-guild/SKILL.md`](../agents-workflow/assets/skills/yscb-cli-guild/SKILL.md)
+- **指令權限對照**：[`.agents/skills/yscb-cli-guide/SKILL.md`](../agents-workflow/assets/skills/yscb-cli-guide/SKILL.md)
 

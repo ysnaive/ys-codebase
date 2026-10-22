@@ -1,6 +1,6 @@
 ---
 name: bump-revision
-description: 🔴 授權守門。嚴禁 Agent 自主觸發，僅限開發者顯式輸入 /BumpRevision 時執行。
+description: "🔴 授權守門：將 @build 開發模組批次執行版本號遞增、正式打包與本機安裝切換。僅於顯式輸入 /bump-revision 授權時觸發，嚴禁主動觸發。"
 ---
 
 # 專案版本晉升與發布工作流 (BumpRevision)

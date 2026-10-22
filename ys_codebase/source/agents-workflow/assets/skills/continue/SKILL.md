@@ -1,6 +1,6 @@
 ---
 name: continue
-description: 接續中斷或已存在的開發計畫工作流 (Continue)。支援 handoff.md 現場交接與狀態自動恢復。
+description: 讀取既有計畫之交接快照或階段產物以定位斷點並恢復開發進度。僅於顯式輸入 /continue 或明確指示接續既有計畫時觸發。
 ---
 
 # 接續開發計畫工作流 (Continue)
@@ -9,14 +9,34 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue)。支�
 
 ---
 
+## 適用情境與觸發時機
+
+- **適用情境**：`__${project://plans/}__` 中已有進行中之開發計畫（Full Track、Fast Track、Umbrella、Revision 或 Research）。
+- **觸發時機**：開發者輸入 `/continue`（或 `/Continue`），或指示接續特定既有計畫。
+- **排除情境（負向邊界）**：
+  - **建立全新功能計畫**：若目標計畫目錄尚不存在，請改用 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
+  - **自動連續執行多階段**：若開發者要求不經中間停頓直接跑完 Phase 01~05，請改用 [auto](`__#{module://agents-workflow/assets/skills/auto/SKILL.md}__`)。
+
+---
+
 ## 執行步驟
+
+開始執行時，請複製以下檢核表追蹤狀態恢復流程：
+
+```markdown
+/Continue 狀態恢復檢核表：
+- [ ] 步驟 1：掃描 `__${project://plans/}__` 定位單一目標計畫（多計畫時先詢問確認）
+- [ ] 步驟 2：優先檢查並讀取 handoff.md 現場交接快照（恢復後執行 Consume & Delete 立即刪除）
+- [ ] 步驟 3：若無 handoff.md，依目錄產物與標頭狀態判定計畫模式與當前 Phase 斷點
+- [ ] 步驟 4：呈遞極簡接續狀態卡並依 development-sop 規範銜接下一步動作
+```
 
 ### 步驟 1：定位目標計畫目錄與狀態掃描
 
-1. 檢視 `__${project://plans/}__` 進行中計畫。
+1. 檢視 `__${project://plans/}__` 進行中計畫（或執行 `python __${yscb.host://yscb.py}__ agents-workflow plan status`）。
 2. 若使用者未明確指定計畫名稱：
    - 僅單一進行中計畫 -> 自動定位為目標。
-   - 多個進行中計畫 -> 列出清單與狀態，詢問確認。
+   - 多個進行中計畫 -> 列出清單與狀態，詢問確認（遵守零臆測原則，禁止自行挑選）。
 
 ---
 
@@ -45,8 +65,6 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue)。支�
 | 存在 `R{NN}_*.md` (如 `R01_*.md`) | **Research 調研計畫** | -> 進入 **步驟 3-S** |
 | 僅存在 `P00_discuss.md` | **Phase 0 討論階段** | -> 進入 **步驟 3-0** |
 
----
-
 #### 步驟 3-U：Umbrella 主計畫與子計畫定位
 
 1. 讀取主計畫的 [`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`)（若主目錄存在 `P00_discuss.md` 或 `R{NN}_*.md` 則一併參考）。
@@ -55,70 +73,27 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue)。支�
    - 若既有子計畫均已完成但主計畫尚有後續階段 -> 提示開發者是否開立下一個 `sub_XX` 子計畫。
 3. 進入當前目標子計畫目錄，檢查該子計畫是否含有 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)（若有則依步驟 2 讀取並於恢復後刪除），若無則依其檔案結構進入 **步驟 3-T** (Full Track)、**步驟 3-F** (Fast Track) 或 **步驟 3-R** (Revision) 判定進度。
 
----
+#### 步驟 3-T：Full Track (P00 ~ P07) 斷點速查表
 
-#### 步驟 3-T：Full Track 進度判定
+檢視目標目錄下**最新（編號最大）**的階段檔案及其標頭狀態：
 
-根據目標工作目錄中已存在的產出物檔案及其狀態標頭判定：
+| 最新階段檔案 | 標頭為 `Confirmed` / `Passed` / `Completed` 時的下一步 | 標頭為 `Draft` / `Discussing` / `In Progress` 時的下一步 |
+| :--- | :--- | :--- |
+| [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) | Phase 0 已確認，依規模分流或進入 Phase 1 建立 `P01_requirements_spec.md` | 接續 Phase 0 與開發者釐清需求邊界與待決問題 |
+| [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) | Phase 1 已完成，讀取 `phase_02_architecture.md` 進入 Phase 2 | 接續完成 P01 需求規格轉譯與確認 |
+| [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) | Phase 2 已完成（確認 P06 Draft 已同步建立），進入 Phase 3 | 接續完成 P02 架構設計與 P06 Draft 初始化 |
+| [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | Phase 3 已完成，讀取 `phase_04_plan.md` 進入 Phase 4 | 接續完成 P03 API 規格與 DAG 依賴拓撲 |
+| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | Phase 4 已定稿（且 P06 已 Confirmed），進入 Phase 5 編碼實作 | 接續完成 P04 實作計畫定稿與文檔衝擊盤點 |
+| [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) | Phase 5 實作完成，讀取 `phase_06_test.md` 進入 Phase 6 測試驗證 | 讀取 `P05_task.md` 未勾選之 `TASK-XX` 接續編碼與單元測試 |
+| [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) | 若為 `Completed`（或 `Passed` 且開發者已驗收 UX），進入 Phase 7 結案 | 若為 `Confirmed` / `In Progress` 則執行測試套件；若為 `Passed` 待驗收則請開發者確認 UX |
+| [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) | Phase 7 已結案 (`Completed`)，可歸檔或建立 `revision_log.md` 進行後續修訂 | 接續執行 SOP Review 三層文檔對齊與 `plan verify` 合規檢核 |
 
-| 已存在的最新檔案 | 檔案狀態為 `Confirmed` / `Passed` / `Completed` | 檔案狀態為 `Discussing` / `Draft` / `In Progress` | 判定結果 |
-| :--- | :---: | :---: | :--- |
-| [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) | [PASS] | — | Phase 0 已確認，尚未進行分流或進入 Phase 1 |
-| [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) | — | [PASS] | Phase 0 需求討論進行中 |
-| [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) | [PASS] | — | Phase 1 已完成，應從 Phase 2 開始 |
-| [`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) | — | [PASS] | Phase 1 進行中，應接續 Phase 1 |
-| [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) | [PASS] | — | Phase 2 已完成，應從 Phase 3 開始 |
-| [`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) | — | [PASS] | Phase 2 進行中，應接續 Phase 2 |
-| [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | [PASS] | — | Phase 3 已完成，應從 Phase 4 開始 |
-| [`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) | — | [PASS] | Phase 3 進行中，應接續 Phase 3 |
-| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | [PASS] | — | Phase 4 已完成，應進入 Phase 5 編碼實作 |
-| [`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) | — | [PASS] | Phase 4 進行中，應接續 Phase 4 |
-| [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) | [PASS] | — | Phase 5 實作已完成，應進入 Phase 6 測試 |
-| [`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) | — | [PASS] | Phase 5 實作進行中，應接續 Phase 5 任務 |
-| [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) | [PASS] | — | Phase 6 測試已完成 (`Completed`) 或自動化通過待 UX 驗收 (`Passed`)，應進入 Phase 7 結案或確認 UX |
-| [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) | — | [PASS] | Phase 6 測試進行中 (`In Progress`) 或已定稿待測 (`Confirmed`)，應執行測試套件 |
-| [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) | [PASS] | — | Phase 7 已結案 (`Completed`)，可歸檔或於本計畫建立 `revision_log.md` 進行後續修訂 |
-| [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) | — | [PASS] | Phase 7 進行中，應接續執行 SOP Review 與結案檢核 |
+#### 步驟 3-F / 3-R / 3-S / 3-0：其他分支進度判定
 
----
-
-#### 步驟 3-F：Fast Track 進度判定
-
-若存在 [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`)：
-1. 讀取 `fast_track_plan.md`。
-2. 檢查 FP-01 規劃、FP-02 任務與測試清單、FP-03 SOP 審查之完成度：
-   - FP-01 尚未確認 -> 進行快速規劃與守門條件確認。
-   - 尚有未勾選的實作任務 -> 接續 FP-02 任務實作。
-   - 實作完成但測試未勾選 -> 執行測試套件並回填結果。
-   - 測試全數通過 -> 推進至 FP-03 結案審查與交付。
-
----
-
-#### 步驟 3-R：Revision 修訂進度判定
-
-若為獨立修訂計畫，或既有計畫主體已 `Completed` 且存在 [`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`)：
-1. 讀取 `revision_log.md`。
-2. 檢視最新 `[REV-XX]` 修訂條目與「結案與合規檢核」Checkbox 狀態：
-   - 若狀態為 `In Progress` -> 接續當前修訂條目或詢問下一個修訂需求。
-   - 若所有修訂已完成 -> 執行 `plan verify` 並將 `revision_log.md` 標記為 `Completed`。
-
----
-
-#### 步驟 3-S：Research 調研進度判定
-
-若存在調研報告 `R{NN}_{topic}.md`：
-1. 讀取調研報告，檢查標頭 `調研狀態`：
-   - 若狀態為 `Concluded` -> 調研已完成，提示開發者確認三大出口方向（立即實作 / 路線圖儲備 / 結案存檔）。
-   - 若狀態為 `Draft` 或 `In Progress` -> 接續深入調研並撰寫方案對比與決策推薦。
-
----
-
-#### 步驟 3-0：Phase 0 討論進度判定
-
-若僅存在 `P00_discuss.md` 且尚未建立其他產物：
-1. 讀取 `P00_discuss.md`，檢查標頭狀態：
-   - 若狀態為 `Confirmed` -> 需求已確認，依規模進行分流評估（Full Track / Fast Track / Umbrella / Research）。
-   - 若狀態為 `Draft` 或 `Discussing` -> 接續與開發者釐清需求與確認核心決策。
+- **步驟 3-F (Fast Track)**：讀取 `fast_track_plan.md`：`FP-01` 未確認則確認守門條件；`FP-02` 任務未勾選則接續實作與測試；測試全過則推進至 `FP-03` 結案審查。
+- **步驟 3-R (Revision)**：讀取 `revision_log.md` 最新 `[REV-XX]` 條目：若為 `In Progress` 則接續修訂或詢問下一項；若全數完成則執行 `plan verify` 並標記 `Completed`。
+- **步驟 3-S (Research)**：讀取 `R{NN}_{topic}.md` 標頭狀態：若為 `Concluded` 則提示開發者確認三大出口方向；若為 `Draft` / `In Progress` 則接續撰寫方案對比。
+- **步驟 3-0 (Phase 0)**：讀取 `P00_discuss.md`：若為 `Confirmed` 則依規模進行分流評估；若為 `Draft` / `Discussing` 則接續釐清需求。
 
 ---
 
@@ -128,9 +103,16 @@ description: 接續中斷或已存在的開發計畫工作流 (Continue)。支�
 
 ```markdown
 ### [CONTINUE] /Continue 計畫狀態已恢復
-- **目標計畫**：[{plan_name}](__${project://plans/}__/{plan_name}/)
+- **目標計畫**：[{plan_name}](`__${project://plans/}__`/{plan_name}/)
 - **計畫模式**：[Full Track / Fast Track / Umbrella 子計畫 / Revision / Research]
 - **當前斷點**：[Phase X 或檔案名稱 (狀態: Confirmed / Passed / In Progress)]
-- **恢復依據**：[已成功載入 handoff.md 現場快照 / 依產出物檔案結構判定]
-- **下一步動作**：[極精簡說明接下來立即執行的 1 項具體動作]
+- **恢復依據**：[已成功載入 handoff.md 現場快照並清除 / 依產出物檔案結構判定]
+- **下一步動作**：[極精簡說明接下來立即執行的 1 項具體動作（中途若需暫停交接可輸入 `/pause`）]
 ```
+
+---
+
+## 常見踩坑指南 (Gotchas)
+
+- **切勿略過 `handoff.md` 直接掃描全專案**：若目錄中存在 `handoff.md`，它記載了上次暫停時的環境陷阱與第一手斷點，略過它會導致重複踩坑與浪費 Token；讀取恢復後務必將其物理刪除。
+- **進入具體階段前務必補讀對應 SOP 手冊**：`continue` 僅負責「定位斷點」，實際推進某個 Phase（如 Phase 5 或 Phase 7）前，仍須按 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`) 鐵律先讀取對應的 `references/phase_0X_*.md`。

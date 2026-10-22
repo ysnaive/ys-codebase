@@ -199,13 +199,13 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 
 ---
 
-## 3. CLI 指令防呆手冊與 Default-Deny 守門機制 (`yscb-cli-guild`)
+## 3. CLI 指令防呆手冊與 Default-Deny 守門機制 (`yscb-cli-guide`)
 
-### 3.1 宣告式 CLI 防呆技能 (`yscb-cli-guild/SKILL.md`)
-由 `agents-workflow` 導出並物化至 `.agents/skills/yscb-cli-guild/SKILL.md`。透過 Core 模組動態 Token `AGENTS_CLI_GUILD`，自動收集所有已安裝模組在 `contributes.core.commands`（經 `__modules__` 雙層分桶隔離）中宣告的權限等級、推薦情境 (`case_pros`) 與禁止情境 (`case_cons`)。
+### 3.1 宣告式 CLI 防呆技能 (`yscb-cli-guide/SKILL.md`)
+由 `agents-workflow` 導出並物化至 `.agents/skills/yscb-cli-guide/SKILL.md`。透過 Core 模組動態 Token `AGENTS_CLI_GUIDE`，自動收集所有已安裝模組在 `contributes.core.commands`（經 `__modules__` 雙層分桶隔離）中宣告的權限等級、推薦情境 (`case_pros`) 與禁止情境 (`case_cons`)。
 
 ### 3.2 Agent 調用守門鐵律
-1. **查表比對 (Look Up & Match)**：Agent 執行任何 `python yscb.py` 命令前必須比對 `yscb-cli-guild` 技能手冊。
+1. **查表比對 (Look Up & Match)**：Agent 執行任何 `python yscb.py` 命令前必須比對 `yscb-cli-guide` 技能手冊。
 2. **Default-Deny 閉環 (Default-Deny Gate)**：若欲執行之命令未列於表、無對應推薦欄位、或命中 `[GATED]` / `[!] 絕對禁止/不適用情境`，Agent 絕對禁止擅自執行，必須向開發者呈遞調用意圖與完整命令列，獲明確授權後方可執行。
 
 ---
@@ -216,7 +216,7 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 
 | 佔位符 | 語意分類 | 解析基準點 | 適用情境與範例 |
 | :--- | :--- | :--- | :--- |
-| **`` `__@{token}__` ``** | **文件內容佔位符** | Stage 1 內容狀態機 | 常數注入、模板片段嵌入、`code.func://` 動態計算產出（例：`` `__@{AGENTS_CLI_GUILD}__` ``）。 |
+| **`` `__@{token}__` ``** | **文件內容佔位符** | Stage 1 內容狀態機 | 常數注入、模板片段嵌入、`code.func://` 動態計算產出（例：`` `__@{AGENTS_CLI_GUIDE}__` ``）。 |
 | **`` `__#{uri}__` ``** | **自身相對路徑佔位符** | 當前 Markdown 文件所在目錄 (`cur_doc_dir`) | Markdown 文本內部超連結導航（例：`[標準](`__#{module://.../SKILL.md}__`)` $\to$ `[標準](../development-sop/SKILL.md)`）。 |
 | **`` `__${uri}__` ``** | **專案根目錄相對路徑佔位符** | 專案根目錄 (`project://`) | 終端機 Shell 執行指令與專案相對路徑參照（例：`` `python __${yscb.host://yscb.py}__ run` `` $\to$ `` `python yscb.py run` ``）。 |
 | **`` `__$(起始錨點){uri}__` ``** | **動態起點相對路徑佔位符** | 指定之起始錨點目錄 (`anchor`) | 跨目錄或特定基準點相對路徑計算（例：`` `__$(project://docs){workflow.docs://core/README.md}__` `` $\to$ `core/README.md`）。 |

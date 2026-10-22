@@ -419,6 +419,19 @@ def dispatch_local(
     return exit_code
 
 
+def _maybe_check_and_print_updates() -> None:
+    """於任意 CLI 指令執行完畢後觸發非阻塞 12 小時節流版本檢查與提示（含 yscb.py 入口檔自檢）。"""
+    if os.environ.get("YSCB_TESTING") == "1" or os.environ.get("YSCB_TEST_SANDBOX") == "1":
+        return
+    try:
+        from core.update_checker import UpdateChecker
+        checker = UpdateChecker()
+        checker.check_updates(force=False)
+        checker.print_tips_if_available()
+    except Exception:
+        pass
+
+
 def dispatch(argv: Optional[List[str]] = None) -> int:
     """
     核心命令引擎入口函式。
@@ -566,6 +579,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     if cmd_spec is not None and cmd_spec.server_compatible:
         hot_res = _try_hot_dispatch(module_name, cmd_disp_name, sub_args, yscb_abs)
         if hot_res is not None:
+            _maybe_check_and_print_updates()
             return hot_res
         # EC-04: 熱派發通訊失敗或常駐離線，透明降級至本地冷派發
 
@@ -574,11 +588,13 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         _maybe_auto_spawn_server(host_dir, yscb_abs)
 
     # 10. 本地冷派發執行
-    return dispatch_local(
+    ret = dispatch_local(
         module_name=module_name,
         cmd_name=cmd_path,
         raw_args=sub_args,
         cmd_spec=cmd_spec,
         yscb_abs=yscb_abs,
     )
+    _maybe_check_and_print_updates()
+    return ret
 

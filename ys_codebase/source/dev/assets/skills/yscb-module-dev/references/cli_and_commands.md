@@ -1,4 +1,4 @@
-# 生態系模組 CLI 活躍合約與指令手冊 (Module CLI & Commands Guild)
+# 生態系模組 CLI 活躍合約與指令手冊 (Module CLI & Commands Guide)
 
 本手冊定義 YSCB 模組 CLI 命令合約規範、`CmdBags` 參數存取、同構指令樹派發機制與 `dev` 模組工具鏈完整操作指南。
 

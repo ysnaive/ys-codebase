@@ -337,30 +337,14 @@ def list(cmd_bags: CmdBags) -> int:
     remote = cmd_bags.has_option("remote")
     provider = cmd_bags.get_option_value("provider")
     installer = Installer()
-    ret = installer.cmd_list(remote=remote, provider=provider)
-    try:
-        from core.update_checker import UpdateChecker
-        checker = UpdateChecker()
-        checker.check_updates(force=False)
-        checker.print_tips_if_available()
-    except Exception:
-        pass
-    return ret
+    return installer.cmd_list(remote=remote, provider=provider)
 
 
 def status(cmd_bags: CmdBags) -> int:
     """Health check and runtime diagnostic report."""
     guard_dispatch("core")
     installer = Installer()
-    ret = installer.cmd_status()
-    try:
-        from core.update_checker import UpdateChecker
-        checker = UpdateChecker()
-        checker.check_updates(force=False)
-        checker.print_tips_if_available()
-    except Exception:
-        pass
-    return ret
+    return installer.cmd_status()
 
 
 def reload(cmd_bags: CmdBags) -> int:

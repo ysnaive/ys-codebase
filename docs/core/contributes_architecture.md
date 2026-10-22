@@ -70,7 +70,7 @@ graph TD
 當多個模組同時向 `core` 注入 `commands` 時，許多模組可能定義同名子指令（例如 `core status`、`dev status`、`server status`）：
 - 若僅使用頂層字典深層合併（`_deep_merge`），後載入模組的同名指令定義會覆蓋前序模組。
 - **雙層分桶設計**：聚合器在合併 `target == "core"` 的 `commands` 時，除了維持頂層平鋪結構以相容傳統查詢外，同步於 `commands["__modules__"][donor]` 建立按來源模組隔離的獨立命名空間分桶。
-- 全域 Help 渲染器與 CLI Guild 生成器優先遍歷 `commands["__modules__"]`，確保各模組同名指令的 Schema、選項與描述 100% 獨立無損。
+- 全域 Help 渲染器與 CLI Guide 生成器優先遍歷 `commands["__modules__"]`，確保各模組同名指令的 Schema、選項與描述 100% 獨立無損。
 
 ### 1.4 標準查詢 SDK 與 JIT 變更嗅探 (`core.contributes`)
 ```python

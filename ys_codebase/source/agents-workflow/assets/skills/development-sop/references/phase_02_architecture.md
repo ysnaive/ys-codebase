@@ -2,6 +2,14 @@
 
 本手冊定義 Phase 2 架構設計階段之拓撲設計、時序圖規範與 Test-First 測試初始化要求。
 
+```markdown
+Phase 02 執行檢核表：
+- [ ] 1. 讀取 P01_requirements_spec.md，確認所有 FR/EC/NFR 皆有對應架構組件承接
+- [ ] 2. 依 P02_architecture_plan.md 模板撰寫架構設計與關鍵決策 [P02:DR-XX]
+- [ ] 3. [!] 同步讀取 P06_test_plan.md 模板，初始化測試計畫草案 (狀態設為 Draft)，預先映射 FT-XX / ET-XX / RT-XX
+- [ ] 4. 更新 changelog.md，呈遞 P02 狀態卡並立即 End Turn
+```
+
 ---
 
 ## 1. 核心定位與職責
@@ -28,7 +36,7 @@
 - 將 `P01` 定義之 `EC-XX` 映射至 `ET-XX`（邊界測試）。
 - 規劃系統全量回歸測試 `RT-01`。
 
-`__@{PHASE02_AGENTS_GUILD}__`
+`__@{PHASE02_AGENTS_GUIDE}__`
 
 ---
 
