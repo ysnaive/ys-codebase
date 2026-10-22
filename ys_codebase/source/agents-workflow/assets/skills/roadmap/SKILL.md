@@ -42,7 +42,7 @@ description: 技術路線圖智能推薦工作流 (Roadmap)。探索長期技術
 ```markdown
 ### [ROADMAP] /Roadmap 路線圖推薦卡
 - **儲備庫現況**：共掃描到 `[count]` 項技術儲備
-- **推薦啟動項**：[{topic}.md](__${workflow.roadmap://}__/{topic}.md)（狀態：`[Backlog | Proposed | Ready | Deferred | In Progress]`）
+- **推薦啟動項**：[{topic}.md](__${workflow.roadmap://}__/{topic}.md)（狀態：`[Backlog | Proposed | Ready | Deferred | In Progress | Completed]`）
 - **核心效益**：[1 行客觀效益說明]
 - **匹配理由**：[1 行當前專案相容或前置條件已成熟之客觀依據]
 - **待確認事項**：請問是否針對此主題正式轉入 [/new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 開立計畫？
@@ -55,3 +55,4 @@ description: 技術路線圖智能推薦工作流 (Roadmap)。探索長期技術
 當開發者確認啟動時：
 1. 引導進入 [/new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 流程。
 2. 新計畫自動讀取該 Roadmap 檔案，直接將問題背景、方案對比與 SOP 繼承為新計畫之基礎，達成無縫立項。
+3. **狀態閉環**：立項時將該 Roadmap 檔案標頭狀態更新為 `In Progress`；對應開發計畫結案時更新為 `Completed`。

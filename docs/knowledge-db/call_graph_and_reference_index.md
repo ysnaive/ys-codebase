@@ -13,7 +13,7 @@ related_docs:
   - "./architecture.md"
   - "./parsers.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-22"
 ---
 
 # 符號調用圖譜與引用拓撲索引專題手冊 (Call Graph & Reference Index)
@@ -65,17 +65,20 @@ flowchart TD
 
 在缺乏 Runtime 動態型別的情況下，`TopologyLinker` 緊扣 Universal AST `fqn` 與檔頭 Import 作用域，透過四階消歧策略實現高精準度靜態調用鏈接並徹底根除跨檔案同名幽靈關聯：
 
-1. **Tier 1 (Self / Class & Intra-File Scope)**：
-   - 當調用前綴為 `self`、`cls` 或 `this` 時，優先在呼叫者所屬類別階層內部綁定同名方法。
-   - 當調用為裸函式呼叫且同一檔案內存在同名定義時，直接綁定檔內符號。
+1. **Tier 1 (Self / Class / Implicit `this` & Base Inheritance Scope)**：
+   - 當調用前綴為 `self`、`cls`、`this`、`base`、`super`，或為類別方法/屬性內部之隱式 `this` 裸調用（如 C# / C++ / TS 省略 `this.`）時，優先在呼叫者所屬類別、同空間 `partial class` 及 `metadata["base_types"]` 繼承基底類別鏈中尋找同名方法。
+   - 支援保留真實可調用單元（`function` / `method` / `constructor`）之遞迴自調用邊（`caller_id == callee_id`），並由 `CallGraphIndex.query_impact` 的 `visited` 集合防範環路死循環。
+   - 當調用為頂層裸函式呼叫且同一檔案內存在同名定義時，直接綁定檔內符號。
 2. **Tier 2 (Explicit Import Alias & FQN Mapping)**：
-   - 查閱 AST 提取之檔頭 `import` 映射表（例如 `from knowledge_db.retrieval import InvertedIndex as LocalIndex`）。
+   - 查閱 AST 提取之檔頭 `import` / `using` 映射表（例如 `from knowledge_db.retrieval import InvertedIndex as LocalIndex`）。
    - 當呼叫 `LocalIndex.load_binary()` 時，透過別名與目標模組路徑精準解析至 `retrieval.py` 內的 `InvertedIndex.load_binary` 符號。
 3. **Tier 3 (Unimported Bare Call Guard & Same Space Scope)**：
-   - **未顯式 Import 裸調用防呆**：針對跨檔案之同名裸調用（無 `context_prefix` 且未出現於該檔案的顯式 Import 映射表中），嚴格判定為 `None`（不建立調用邊），徹底杜絕將 `service_a.run()` 與無關檔案 `service_b.run()` 誤連成跨檔幽靈邊。
-   - 在具備合法前綴或模組引用時，優先於同一語意空間（如 `source`）內匹配。
-4. **Tier 4 (Global Context Prefix Scoring)**：
-   - 當存在多個候選者且帶有明確上下文前綴（`context_prefix`）時，比對前綴與候選者所屬類別 (`scope_path`) 或模組路徑之契合度；無法確定時安全退回 `None`，永不拋出異常或偽造調用邊。
+   - **未顯式 Import 裸調用防呆**：針對跨檔案之同名裸調用（無 `context_prefix`、非類別繼承鏈成員且未出現於該檔案的顯式 Import 映射表中），嚴格判定為 `None`（不建立調用邊），徹底杜絕將 `service_a.run()` 與無關檔案 `service_b.run()` 誤連成跨檔幽靈邊。
+   - 支援多段命名空間或成員鏈前綴（如 `UIToolkit.UI.Layout.FlexLayoutEngine.CalculateLayout`、條件存取 `m_Owner?.MarkMeasureDirty()` 與泛型調用 `GetService<IPanel>().UpdateLayout()`），優先於同一語意空間內匹配。
+4. **Tier 4 (Global Context Prefix Scoring & Interface-Implementation Contract)**：
+   - 當存在多個候選者且帶有明確上下文前綴（`context_prefix`）時，比對前綴與候選者所屬類別 (`parent_scope`) 或全限定名段落之契合度；無法確定時安全退回 `None`。
+   - **介面與實作雙向契約聚合**：執行 `callers` 與 `impact` 查詢時，管線自動透過 `base_types` 將介面方法（如 `IPanel.UpdateLayout`）與實作類別同名方法（如 `Panel.UpdateLayout`）雙向關聯展開，完整覆蓋多型調用鏈。
+   - **文檔引用預設隔離 (`--ftype`)**：`callers`、`callees` 與 `impact` 預設排除非程式碼文檔符號（`markdown` / `doc_*`），避免規格書連結干擾重構爆炸半徑；亦支援顯式傳入 `--ftype=md` 或 `--ftype=cs` 進行檔案類型正交篩選。
 
 ---
 

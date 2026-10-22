@@ -13,6 +13,7 @@ description: 標準開立新計畫流程 (NewPlan)。當需要開立新計畫並
 
 - **先討論、後建檔**：在使用者需求或核心方案未經充分討論與確認前，**嚴禁提前在 `__${project://plans/}__` 下建立目錄或實體檔案**。
 - **立項時序**：討論並收斂需求 $\to$ 決定分流模式 $\to$ 建立計畫目錄與雙星初始化（`P00`、`fast_track_plan.md` 或 `revision_log.md` + `changelog.md`；若為既有計畫之衍生修訂則直接於該計畫目錄建立 `revision_log.md`）。
+- **立項細則指針**：建檔與分流守門細節依 [phase_00_discuss.md](../development-sop/references/phase_00_discuss.md) 執行；Umbrella 新增 `sub_XX` 時之父目錄登記規則依 [plan_modes.md](../development-sop/references/plan_modes.md) §5。
 
 ---
 

@@ -383,32 +383,40 @@ class KnowledgeEngine:
     def get_call_graph(self) -> CallGraphIndex:
         return self.pipeline.get_call_graph()
 
-    def _find_target_symbol(self, query: str, space: Optional[str] = None) -> Optional[UnifiedSymbol]:
-        return self.pipeline.find_target_symbol(query, space=space)
+    def _find_target_symbol(
+        self,
+        query: str,
+        space: Optional[str] = None,
+        ftypes: Optional[Union[str, List[str]]] = None,
+    ) -> Optional[UnifiedSymbol]:
+        return self.pipeline.find_target_symbol(query, space=space, ftypes=ftypes)
 
     def act_callers(
         self,
         target_query: str,
         space: Optional[str] = None,
         snippet: bool = True,
+        ftypes: Optional[Union[str, List[str]]] = None,
     ) -> Dict[str, Any]:
-        return self.pipeline.act_callers(target_query, space=space, snippet=snippet)
+        return self.pipeline.act_callers(target_query, space=space, snippet=snippet, ftypes=ftypes)
 
     def act_callees(
         self,
         target_query: str,
         space: Optional[str] = None,
         snippet: bool = True,
+        ftypes: Optional[Union[str, List[str]]] = None,
     ) -> Dict[str, Any]:
-        return self.pipeline.act_callees(target_query, space=space, snippet=snippet)
+        return self.pipeline.act_callees(target_query, space=space, snippet=snippet, ftypes=ftypes)
 
     def act_impact(
         self,
         target_query: str,
         depth: int = 2,
         space: Optional[str] = None,
+        ftypes: Optional[Union[str, List[str]]] = None,
     ) -> Dict[str, Any]:
-        return self.pipeline.act_impact(target_query, depth=depth, space=space)
+        return self.pipeline.act_impact(target_query, depth=depth, space=space, ftypes=ftypes)
 
     @classmethod
     def pre_warm(cls, workspace_root: Optional[Union[str, Path]] = None) -> None:

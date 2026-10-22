@@ -1,6 +1,6 @@
 """
 Tests for agents-workflow Release Manifest Placement & Dual-Track Storage.
-Validates Project targets -> storage:// (project:// format),
+Validates Project targets -> cache://agents-workflow/project_release_manifest.json (project:// format),
 Local targets -> cache:// (absolute path format),
 Dual-channel pruning, legacy manifest tolerance, and pure LF normalization.
 100% Python Standard Library, Zero Third-Party Dependency.
@@ -20,7 +20,7 @@ if _pkg_root not in sys.path:
 from agents_workflow.compiler import ArtifactCompiler
 from agents_workflow.publisher import (
     ReleasePublisher,
-    PROJECT_MANIFEST_STORAGE_URI,
+    PROJECT_MANIFEST_CACHE_URI,
     LOCAL_MANIFEST_CACHE_URI
 )
 from agents_workflow.targets import ReleaseTargetManager
@@ -48,8 +48,8 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         self.publisher = ReleasePublisher(compiler=self.compiler)
 
     @require(Requirement.ENV)
-    def test_ft_01_project_target_saves_project_uris_in_storage(self):
-        """FT-01: Project Target 發布至 storage://，且全部路徑為 project:// 語意格式。"""
+    def test_ft_01_project_target_saves_project_uris_in_cache(self):
+        """FT-01: Project Target 清單寫入 cache://（不入 Git 追蹤區），且全部路徑為 project:// 語意格式。"""
         # 配置 Project targets = ['antigravity'], Local targets = []
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
         ReleaseTargetManager.save_tier_targets([], is_project=False)
@@ -58,9 +58,9 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         self.assertTrue(res["success"])
         self.assertGreater(res["published_count"], 0)
 
-        # 驗證 storage:// manifest 存在且全為 project:// 協議
-        self.assertTrue(uri.exists(PROJECT_MANIFEST_STORAGE_URI))
-        data = uri.read_json(PROJECT_MANIFEST_STORAGE_URI)
+        # 驗證 Project 軌 cache:// manifest 存在且全為 project:// 協議
+        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
+        data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
         self.assertEqual(data.get("active_targets"), ["antigravity"])
         published = data.get("published_files", [])
         self.assertGreater(len(published), 0)
@@ -68,7 +68,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         for p in published:
             self.assertTrue(
                 p.startswith("project://"),
-                f"Expected path in storage manifest to start with 'project://', got: '{p}'"
+                f"Expected path in project manifest to start with 'project://', got: '{p}'"
             )
             self.assertNotIn(":", p.replace("project://", ""))
             self.assertNotIn("\\", p)
@@ -109,8 +109,8 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
 
-        self.assertTrue(uri.exists(PROJECT_MANIFEST_STORAGE_URI))
-        proj_data = uri.read_json(PROJECT_MANIFEST_STORAGE_URI)
+        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
+        proj_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
         self.assertEqual(proj_data.get("active_targets"), ["antigravity"])
         for p in proj_data.get("published_files", []):
             self.assertTrue(p.startswith("project://"))
@@ -132,14 +132,14 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
             ],
             "updated_at": "2026-08-01 00:00:00"
         }
-        uri.write_json(PROJECT_MANIFEST_STORAGE_URI, fake_legacy)
+        uri.write_json(PROJECT_MANIFEST_CACHE_URI, fake_legacy)
 
         # 執行發布 -> 不應拋出 FileNotFoundError 或路徑崩潰
         res = self.publisher.release_all(force=False)
         self.assertTrue(res["success"])
 
-        # 發布完成後，storage manifest 應已自癒轉為 project:// 格式
-        new_data = uri.read_json(PROJECT_MANIFEST_STORAGE_URI)
+        # 發布完成後，Project 軌 manifest 應已自癒轉為 project:// 格式
+        new_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
         for p in new_data.get("published_files", []):
             self.assertTrue(p.startswith("project://"))
         self.mark_passed()
@@ -153,8 +153,8 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
 
-        # 讀取 storage manifest 取得檔案
-        data = uri.read_json(PROJECT_MANIFEST_STORAGE_URI)
+        # 讀取 Project 軌 manifest 取得檔案
+        data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
         for p_uri in data.get("published_files", []):
             abs_p = uri.resolve(p_uri, interactive=False)
             if os.path.isfile(abs_p):

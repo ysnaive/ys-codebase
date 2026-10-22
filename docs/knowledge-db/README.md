@@ -11,7 +11,7 @@ related_docs:
   - "./architecture.md"
   - "./retrieval.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-22"
 ---
 
 # Knowledge Database 模組手冊 (Knowledge-DB Overview)
@@ -70,13 +70,14 @@ python yscb.py knowledge-db search "狀態機更新" --kind=class --limit=5
 python yscb.py knowledge-db search "PIDController" --ftype=py --json -s
 python yscb.py knowledge-db search "開發規範" --ftype=md --json -s
 
-# 6. 查詢符號上游調用者 (Who calls me?)
+# 6. 查詢符號上游調用者 (Who calls me? 預設排除 Markdown 文檔引用，支援 --ftype 過濾)
 python yscb.py knowledge-db callers "InvertedIndex.load_binary" --json -s
+python yscb.py knowledge-db callers "VisualElement.MarkMeasureDirty" --ftype=cs --json -s
 
 # 7. 查詢符號內部調用之下游被調用者 (Whom do I call?)
 python yscb.py knowledge-db callees "KnowledgeEngine.build_unified_index" --json -s
 
-# 8. 分析重構影響面擴散拓撲 (Blast Radius Impact)
+# 8. 分析重構影響面擴散拓撲 (Blast Radius Impact，支援介面/實作契約聚合與 --ftype)
 python yscb.py knowledge-db impact "InvertedIndex.patch_incremental" --depth=2 --json
 
 # 9. 清理特定或全空間之二進位快照、Bundle、倒排索引、圖譜與向量快取

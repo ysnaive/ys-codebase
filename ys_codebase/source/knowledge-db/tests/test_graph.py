@@ -817,6 +817,105 @@ You can also call `InvertedIndex.load_binary` to reload cache.
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft_12_csharp_and_multilang_advanced_call_topology(self):
+        """FT-12: 驗證 C# 命名空間、隱式 this、繼承 base_types、條件存取 ?.、泛型與介面實作雙向契約及 C/C++ 拓撲"""
+        cs_interface_code = """
+namespace UIToolkit.UI.Elements {
+    public interface IPanel {
+        void UpdateLayout();
+    }
+}
+"""
+        cs_panel_code = """
+namespace UIToolkit.UI.Elements {
+    public class Panel : IPanel {
+        public void UpdateLayout() {
+            UIToolkit.UI.Layout.FlexLayoutEngine.CalculateLayout(this);
+        }
+    }
+}
+"""
+        cs_element_code = """
+namespace UIToolkit.UI.Elements {
+    public class VisualElement {
+        private VisualElement m_Parent;
+        public string Text {
+            set => m_Parent?.MarkMeasureDirty();
+        }
+        public void MarkMeasureDirty() {
+            MarkLayoutDirty();
+            m_Parent?.MarkMeasureDirty();
+        }
+        public void MarkLayoutDirty() {}
+    }
+
+    public class TextElement : VisualElement {
+        public void RefreshText() {
+            MarkMeasureDirty();
+        }
+    }
+
+    public class HostController {
+        private IPanel m_Panel;
+        public void Tick() {
+            m_Panel.UpdateLayout();
+        }
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            src_dir = root / "src"
+            storage_dir = root / ".cache" / "knowledge-db"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "IPanel.cs").write_text(cs_interface_code, encoding="utf-8")
+            (src_dir / "Panel.cs").write_text(cs_panel_code, encoding="utf-8")
+            (src_dir / "VisualElement.cs").write_text(cs_element_code, encoding="utf-8")
+            (src_dir / "Design.md").write_text("# Spec\nCalls `VisualElement.MarkMeasureDirty` in layout.\n", encoding="utf-8")
+
+            sp = SpaceConfig(name="uitk", include=[str(src_dir)], file_patterns=["*.cs", "*.md"])
+            engine = KnowledgeEngine(
+                storage_dir=storage_dir,
+                contributes_data={"spaces": {"uitk": sp.to_dict()}},
+            )
+            engine.build_unified_index(force=True)
+
+            # 1. 驗證 VisualElement.MarkMeasureDirty 的 callers：
+            # 包含：遞迴自調用 (MarkMeasureDirty)、衍生類別隱式 this (TextElement.RefreshText)、屬性 setter 條件存取 (VisualElement.Text)
+            # 且預設排除 Design.md 文檔符號！
+            res_callers = engine.act_callers("VisualElement.MarkMeasureDirty", snippet=False)
+            caller_names = {c["symbol"].name for c in res_callers["callers"]}
+            self.assertTrue(any(n.endswith("VisualElement.MarkMeasureDirty") for n in caller_names))
+            self.assertTrue(any(n.endswith("TextElement.RefreshText") for n in caller_names))
+            self.assertTrue(any(n.endswith("VisualElement.Text") for n in caller_names))
+            self.assertFalse(any(c["symbol"].language == "markdown" for c in res_callers["callers"]))
+
+            # 2. 驗證顯式 --ftype=md 時僅回傳 Markdown 引用
+            res_md_callers = engine.act_callers("VisualElement.MarkMeasureDirty", snippet=False, ftypes="md")
+            self.assertEqual(len(res_md_callers["callers"]), 1)
+            self.assertEqual(res_md_callers["callers"][0]["symbol"].language, "markdown")
+
+            # 3. 驗證 VisualElement.MarkLayoutDirty 的隱式 this 同類別調用與 2 階 impact 擴散
+            res_layout_callers = engine.act_callers("VisualElement.MarkLayoutDirty", snippet=False)
+            layout_caller_names = {c["symbol"].name for c in res_layout_callers["callers"]}
+            self.assertTrue(any(n.endswith("VisualElement.MarkMeasureDirty") for n in layout_caller_names))
+
+            res_impact = engine.act_impact("VisualElement.MarkLayoutDirty", depth=2)
+            self.assertGreaterEqual(res_impact["total_impacted_symbols"], 2)
+            layer2_names = {s.name for s in res_impact["layers"].get(2, [])}
+            self.assertTrue(any(n.endswith("TextElement.RefreshText") for n in layer2_names))
+
+            # 4. 驗證 IPanel.UpdateLayout <-> Panel.UpdateLayout 介面與實作雙向契約聚合
+            res_panel_callers = engine.act_callers("Panel.UpdateLayout", snippet=False)
+            panel_caller_names = {c["symbol"].name for c in res_panel_callers["callers"]}
+            self.assertTrue(any(n.endswith("HostController.Tick") for n in panel_caller_names))
+
+            res_ipanel_impact = engine.act_impact("IPanel.UpdateLayout", depth=2)
+            self.assertGreaterEqual(res_ipanel_impact["total_impacted_symbols"], 1)
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

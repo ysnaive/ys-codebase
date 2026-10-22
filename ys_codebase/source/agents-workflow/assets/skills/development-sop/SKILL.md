@@ -57,7 +57,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 | **迅捷開發計畫 (Fast Track)** | 3-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` (含 Review 核驗) + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track) |
 | **修訂計畫 (Revision Plan)** | 正交修訂留檔閉環 | **不牽涉核心業務邏輯**之 UI/UX/DX 表層微調、靜態參數調整、文檔調整（可無衍生來源獨立開立，或衍生附掛於既有主計畫/子計畫） | `[P00] + [RXX] + revision_log + changelog`（獨立）或於既有計畫追加 `revision_log` | [模式詳解](./references/plan_modes.md#3-修訂計畫-revision-plan---正交修訂與留檔) |
 | **調研計畫 (Research Plan)** | 調研探索 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R{NN}_{topic}` + `changelog` | [模式詳解](./references/plan_modes.md#4-調研計畫-research-plan---調研-track) |
-| **分類型主計畫 (Umbrella)** | 跨子計畫史詩統籌 | 統籌多個子計畫（預先規劃型 / 增量演進型藍圖） | `umbrella_overview` + 各子計畫目錄 | [模式詳解](./references/plan_modes.md#5-分類型主計畫-umbrella) |
+| **分類型主計畫 (Umbrella)** | 跨子計畫史詩統籌 | 統籌多個子計畫（預先規劃型 / 增量演進型藍圖） | `umbrella_overview` + `changelog` + 各子計畫目錄（主計畫級 `P00` / `R{NN}` 選配） | [模式詳解](./references/plan_modes.md#5-分類型主計畫-umbrella) |
 | **長期路線圖 (Roadmap)** | 策略資產庫儲備 | 全專案層級技術願景與長期技術儲備藍圖（置於 `__${workflow.roadmap://}__`） | `{topic}.md` | [模式詳解](./references/plan_modes.md#6-長期路線圖-roadmap---策略資產庫) |
 
 ---
@@ -105,6 +105,14 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 1. **唯一 SSOT**：所有計畫產物模板一律直接讀取上方條列之模板路徑，不得自造或臆測格式。
 2. **嚴禁歷史考古**：嚴禁以 `find`、`grep` 或 `view_file` 翻閱歷史封存計畫檔案當作格式參考。
 3. **無痛遷移轉換**：將外部或 Roadmap 想法遷移進計畫時，必須直接套用標準標頭，不得直接複製舊標頭。
+
+### 落檔預設標頭狀態 (Default Header Status)
+| 產物 | 落檔預設狀態 |
+| :--- | :--- |
+| `P00_discuss.md` | 有待確認項填 `Discussing`；已確認填 `Confirmed` |
+| `P01` ~ `P04` | 落檔即填 `Confirmed`（免雙重寫檔） |
+| `P05_task.md` / `fast_track_plan.md` / `revision_log.md` | 執行中填 `In Progress`；結案填 `Completed` |
+| `changelog.md` | 建檔填 `In Progress` 或 `Active`，全週期免回寫標頭 |
 
 ---
 

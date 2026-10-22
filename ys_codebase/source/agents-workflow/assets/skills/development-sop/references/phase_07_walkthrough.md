@@ -11,8 +11,8 @@
 ```mermaid
 flowchart TD
     Start(["P06 UX 驗證完成"]) --> Step1["步驟 1: SOP Review 三層文檔交付對齊<br/>(CHANGELOG / docs 知識庫 / 代碼 Docstring)"]
-    Step1 --> Step2["步驟 2: 代碼清理與計畫合規檢核<br/>(plan verify 100% Passed)"]
-    Step2 --> Step3["步驟 3: 撰寫 P07 結案報告與全域發布日誌<br/>(P07_walkthrough.md & CHANGELOG.md)"]
+    Step1 --> Step2["步驟 2: 撰寫 P07 結案報告與全域發布日誌<br/>(P07_walkthrough.md & CHANGELOG.md)"]
+    Step2 --> Step3["步驟 3: 執行計畫合規檢核最終守門<br/>(plan verify 100% Passed)"]
     Step3 --> Card(["呈遞 P07 結案卡等待指示"])
 ```
 
@@ -24,16 +24,18 @@ flowchart TD
   - **Design Notes 邊界防膨脹守門 (DN Anti-Bloat Axiom)**：`DESIGN_NOTES.md` (`DN-XX`) 僅限存放「真正高度特例、非直觀工程妥協、或從架構/專題設計文檔無法直觀看出的非直覺設計與防坑坑點」，不得作為一般架構描述、普通功能介紹或日常變更紀錄的傾倒處。
 - [ ] **微觀代碼註解契約**：本次修改之 Public API 註解結構完整，複雜演算法具備 Why-Driven 動機註解。
 
-### 步驟 2：代碼清理與計畫合規檢核 (Quality & Plan Compliance Verification)
-- [ ] **代碼清理**：無死代碼、無除錯 print/log、無敷衍之 quick-and-dirty hack。
-- [ ] **測試完整覆蓋**：所有單元測試與整合測試 100% 通過，無跳過或被破壞之斷言。
-- [ ] **計畫合規性檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>`，確認計畫文件結構完整、無未填寫之 `[...]` 佔位符、無未勾選 Checkbox 且標頭模型與狀態合法（100% Passed）。
-
-### 步驟 3：撰寫結案報告與全域發布日誌 (Walkthrough & Global Changelog)
+### 步驟 2：撰寫結案報告與全域發布日誌 (Walkthrough & Global Changelog)
 - 讀取模板 [`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`)，落檔於計畫目錄（狀態標記為 `Completed`）。
 - 檢視 `P05` 實作偏差紀錄表，確認所有 Minor/Major 偏差均已妥善解決並閉環。
 - 回填變更清單、測試結果、三層文檔對齊清冊與推薦 Commit 訊息。
 - 於計畫目錄內 `changelog.md` 記錄結案。
+- **Umbrella 子計畫結案回寫**：若為 Umbrella 子計畫，結案時同步更新父目錄 `umbrella_overview.md`（§2 子計畫狀態、§3 里程碑勾選 `[x]`）與主目錄 `changelog.md`；全部子計畫完成且無後續階段時，主計畫標頭轉為 `Completed`。
+- 將 `P07_walkthrough.md` 所有檢核項勾選 `[x]`、頂部標頭 `> 狀態：` 設為 `Completed` 後，方進入步驟 3。
+
+### 步驟 3：執行計畫合規檢核最終守門 (Final Compliance Verification Gate)
+- [ ] **代碼清理**：無死代碼、無除錯 print/log、無敷衍之 quick-and-dirty hack。
+- [ ] **測試完整覆蓋**：所有單元測試與整合測試 100% 通過，無跳過或被破壞之斷言。
+- [ ] **計畫合規性檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>`，確認計畫文件結構完整、無未填寫之 `[...]` 佔位符、無未勾選 Checkbox 且標頭模型與狀態合法（100% Passed）；若檢出未通過項則原地修正後重驗。
 
 ---
 

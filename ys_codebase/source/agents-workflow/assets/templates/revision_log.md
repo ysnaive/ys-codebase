@@ -21,6 +21,6 @@
 
 - [ ] **修訂與驗證完畢**：所有修訂項目均已實作並通過測試或驗證，無殘留死代碼或除錯資訊。
 - [ ] **日誌與文檔同步**：已同步更新計畫內 `changelog.md` 與相關 `__${workflow.docs://}__` 知識庫文檔；若包含使用者可感知之重要變更，依比例原則追加至專案根目錄 `__${project://CHANGELOG.md}__`。
-- [ ] **結構合規檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 驗證 100% Passed。
-- [ ] **標頭狀態更新**：完成上述檢核後，將頂部標頭 `> 狀態：` 更新為 `Completed` 結案。
+- [ ] **標頭狀態更新**：完成上述檢核並將本清單其餘項勾選 `[x]` 後，將頂部標頭 `> 狀態：` 更新為 `Completed`。
+- [ ] **結構合規檢核（最終守門）**：最後實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 驗證 100% Passed（若檢出未通過項則原地修正重驗）。
 

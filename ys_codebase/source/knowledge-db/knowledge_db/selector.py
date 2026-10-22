@@ -76,27 +76,33 @@ class ParsedSelector:
         # 3. 識別符名稱驗證 (Identifier Check)
         ident_lower = self.identifier.lower()
         sym_name_lower = sym.name.lower()
+        meta_short = (sym.metadata.get("short_name") or "").lower() if sym.metadata else ""
 
-        # 精準比對短名或全名
+        # 精準比對短名或全名 (支援 '.' 與 '::' 分隔符及 metadata.short_name)
         name_matched = False
-        if sym_name_lower == ident_lower:
+        if sym_name_lower == ident_lower or (meta_short and meta_short == ident_lower):
             name_matched = True
-        elif "." in sym.name:
-            short_name = sym.name.split(".")[-1].lower()
+        elif "." in sym.name or "::" in sym.name:
+            short_name = re.split(r"[.:]+", sym.name)[-1].lower()
             if short_name == ident_lower:
                 name_matched = True
 
         if not name_matched:
             return False
 
-        # 4. 範疇約束驗證 (Scope Check: `scope.identifier`)
+        # 4. 範疇約束驗證 (Scope Check: `scope.identifier` / `scope::identifier`)
         if self.scope:
-            scope_lower = self.scope.lower()
+            scope_lower = self.scope.lower().replace("::", ".")
             scope_matched = False
 
-            # 4.1 比對 sym.name 中的直接前綴 (e.g. sym.name == "Foo.bar", scope == "Foo")
-            if "." in sym.name:
-                sym_prefix = ".".join(sym.name.split(".")[:-1]).lower()
+            meta_parent = (sym.metadata.get("parent_scope") or "").lower() if sym.metadata else ""
+            if meta_parent and (meta_parent == scope_lower or scope_lower.endswith(f".{meta_parent}")):
+                scope_matched = True
+
+            # 4.1 比對 sym.name 中的直接前綴 (e.g. sym.name == "Foo.bar" or "Foo::bar", scope == "Foo")
+            if not scope_matched and ("." in sym.name or "::" in sym.name):
+                sym_parts = re.split(r"[.:]+", sym.name)
+                sym_prefix = ".".join(sym_parts[:-1]).lower()
                 if sym_prefix == scope_lower or sym_prefix.endswith(f".{scope_lower}"):
                     scope_matched = True
 
@@ -133,8 +139,8 @@ class SymbolSelector:
     # 正則表達式：[<kind_prefix>\s+][<scope>.]<identifier>[()]
     _PATTERN = re.compile(
         r"^(?:(?P<kind>[a-zA-Z0-9_-]+)\s+)?"       # 可選類型前綴 (e.g. 'class ', 'fn ')
-        r"(?:(?P<scope>[a-zA-Z0-9_$.]+)\.)?"     # 可選範疇 (e.g. 'Foo.', 'pkg.mod.')
-        r"(?P<name>[a-zA-Z0-9_$.]+)"              # 識別符名稱 (e.g. 'bar')
+        r"(?:(?P<scope>[a-zA-Z0-9_$:./]+)(?:\.|::))?" # 可選範疇 (e.g. 'Foo.', 'Foo::', 'pkg.mod.')
+        r"(?P<name>[a-zA-Z0-9_$]+)"                # 識別符名稱 (e.g. 'bar')
         r"(?P<callable>\(\))?$",                  # 可選調用符號 '()'
         re.IGNORECASE,
     )

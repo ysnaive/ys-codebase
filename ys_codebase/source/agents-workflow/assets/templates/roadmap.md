@@ -2,7 +2,7 @@
 
 > 主題：[主題名稱]  
 > 歸檔日期：[YYYY-MM-DD]  
-> 狀態：[Backlog | Proposed | Ready | Deferred | In Progress]  
+> 狀態：[Backlog | Proposed | Ready | Deferred | In Progress | Completed]  
 > 模型：[平台宣告之模型名稱；無法確認填 Unknown]  
 
 ---
@@ -12,7 +12,7 @@
 ### 1.1 痛點現象
 - 
 
-### 1.2 全庫歷史物件量化分析
+### 1.2 現況與影響範圍評估
 - 
 
 ### 1.3 核心根因
@@ -40,7 +40,7 @@
 
 ---
 
-## 4. 標準作業流程 (Standard Operating Procedure)
+## 4. 核心機制與落地步驟 (Implementation Mechanism & Steps)
 
 ```bash
 # 步驟 1：

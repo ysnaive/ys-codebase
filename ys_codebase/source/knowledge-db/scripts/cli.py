@@ -395,6 +395,7 @@ def callers(cmd_bags: Any) -> int:
             return 1
         query_str = targets[0]
         space_target = bags.get_option_value("space")
+        ftype_filter = bags.get_option_value("ftype")
         
         tier = "simple"
         if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
@@ -421,7 +422,7 @@ def callers(cmd_bags: Any) -> int:
         is_snippet = (tier == "snippet") or (tier == "detail" and (bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")))
         detail_mode = "detail" if tier == "detail" else "simple"
 
-        res = engine.act_callers(target_query=query_str, space=space_target, snippet=is_snippet)
+        res = engine.act_callers(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
         if is_json:
             tsym = res.get("target_symbol")
             raw_callers = res.get("callers", [])
@@ -447,20 +448,20 @@ def callers(cmd_bags: Any) -> int:
                     "callers": [
                         {
                             "caller_symbol": {
-                                "id": c["caller_symbol"].id,
-                                "name": c["caller_symbol"].name,
-                                "kind": c["caller_symbol"].kind,
-                                "file_path": engine.normalize_workspace_path(c["caller_symbol"].file_path),
-                                "file_uri": engine.to_file_uri(c["caller_symbol"].file_path, line=c["caller_symbol"].line_number),
-                                "line_number": c["caller_symbol"].line_number,
-                                "end_line": c["caller_symbol"].end_line,
-                                "signature": c["caller_symbol"].signature,
+                                "id": (c.get("symbol") or c["caller_symbol"]).id,
+                                "name": (c.get("symbol") or c["caller_symbol"]).name,
+                                "kind": (c.get("symbol") or c["caller_symbol"]).kind,
+                                "file_path": engine.normalize_workspace_path((c.get("symbol") or c["caller_symbol"]).file_path),
+                                "file_uri": engine.to_file_uri((c.get("symbol") or c["caller_symbol"]).file_path, line=(c.get("symbol") or c["caller_symbol"]).line_number),
+                                "line_number": (c.get("symbol") or c["caller_symbol"]).line_number,
+                                "end_line": (c.get("symbol") or c["caller_symbol"]).end_line,
+                                "signature": (c.get("symbol") or c["caller_symbol"]).signature,
                             },
                             "call_sites": [
                                 {
                                     "line_number": s.get("line_number"),
                                     "scope": s.get("scope"),
-                                    "file_uri": engine.to_file_uri(c["caller_symbol"].file_path, line=s.get("line_number")),
+                                    "file_uri": engine.to_file_uri((c.get("symbol") or c["caller_symbol"]).file_path, line=s.get("line_number")),
                                 }
                                 for s in c.get("call_sites", [])
                             ],
@@ -486,11 +487,11 @@ def callers(cmd_bags: Any) -> int:
                     "callers": [
                         {
                             "caller_symbol": {
-                                "name": c["caller_symbol"].name,
-                                "kind": c["caller_symbol"].kind,
-                                "file_path": engine.normalize_workspace_path(c["caller_symbol"].file_path),
-                                "line_number": c["caller_symbol"].line_number,
-                                "end_line": c["caller_symbol"].end_line,
+                                "name": (c.get("symbol") or c["caller_symbol"]).name,
+                                "kind": (c.get("symbol") or c["caller_symbol"]).kind,
+                                "file_path": engine.normalize_workspace_path((c.get("symbol") or c["caller_symbol"]).file_path),
+                                "line_number": (c.get("symbol") or c["caller_symbol"]).line_number,
+                                "end_line": (c.get("symbol") or c["caller_symbol"]).end_line,
                             },
                             "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
                             **({"code": c["code_snippet"].get_raw_code(), "code_lines": [c["code_snippet"].start_line, c["code_snippet"].end_line]} if (c.get("code_snippet") and c["code_snippet"].lines) else {}),
@@ -512,10 +513,10 @@ def callers(cmd_bags: Any) -> int:
                     "callers": [
                         {
                             "caller_symbol": {
-                                "name": c["caller_symbol"].name,
-                                "kind": c["caller_symbol"].kind,
-                                "file_path": engine.normalize_workspace_path(c["caller_symbol"].file_path),
-                                "line_number": c["caller_symbol"].line_number,
+                                "name": (c.get("symbol") or c["caller_symbol"]).name,
+                                "kind": (c.get("symbol") or c["caller_symbol"]).kind,
+                                "file_path": engine.normalize_workspace_path((c.get("symbol") or c["caller_symbol"]).file_path),
+                                "line_number": (c.get("symbol") or c["caller_symbol"]).line_number,
                             },
                             "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
                         }
@@ -558,6 +559,7 @@ def callees(cmd_bags: Any) -> int:
             return 1
         query_str = targets[0]
         space_target = bags.get_option_value("space")
+        ftype_filter = bags.get_option_value("ftype")
 
         tier = "simple"
         if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
@@ -584,7 +586,7 @@ def callees(cmd_bags: Any) -> int:
         is_snippet = (tier == "snippet") or (tier == "detail" and (bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")))
         detail_mode = "detail" if tier == "detail" else "simple"
 
-        res = engine.act_callees(target_query=query_str, space=space_target, snippet=is_snippet)
+        res = engine.act_callees(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
         if is_json:
             tsym = res.get("target_symbol")
             raw_callees = res.get("callees", [])
@@ -721,6 +723,7 @@ def impact(cmd_bags: Any) -> int:
             return 1
         query_str = targets[0]
         space_target = bags.get_option_value("space")
+        ftype_filter = bags.get_option_value("ftype")
         depth = 2
         d_opt = bags.get_option_value("depth")
         if d_opt:
@@ -750,7 +753,7 @@ def impact(cmd_bags: Any) -> int:
                     limit_val = "auto"
 
         detail_mode = "detail" if tier == "detail" else "simple"
-        res = engine.act_impact(target_query=query_str, depth=depth, space=space_target)
+        res = engine.act_impact(target_query=query_str, depth=depth, space=space_target, ftypes=ftype_filter)
         if is_json:
             tsym = res.get("target_symbol")
             if tier == "detail":

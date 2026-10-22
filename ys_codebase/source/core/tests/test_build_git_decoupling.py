@@ -131,7 +131,8 @@ class TestBuildGitDecoupling(YSCBTestCase):
         self.mark_passed()
 
     def test_ft_05_standards_doc_check(self):
-        """FT-05: Verify STANDARDS.md marks module.build as [X] 忽略 and maps to yscb://.build/."""
+        """FT-05: Verify STANDARDS.md marks module.build:// as ignored and maps to yscb://.build/.
+        Legacy *.root:// schemes were abolished (Scheme B, see docs/core/README.md), so module.build.root:// must not be documented."""
         curr = os.path.abspath(os.path.dirname(__file__))
         found = None
         for _ in range(8):
@@ -147,7 +148,8 @@ class TestBuildGitDecoupling(YSCBTestCase):
             with open(found, "r", encoding="utf-8") as f:
                 content = f.read()
             self.assertIn("yscb://.build/", content)
-            self.assertIn("module.build.root://", content)
+            self.assertIn("module.build://", content)
+            self.assertNotIn("module.build.root://", content)
             self.assertTrue("[X] 忽略" in content or "🚫 忽略" in content)
         self.mark_passed()
 

@@ -72,14 +72,18 @@ class OSBackend(VFSBackend):
         encoding: str = "utf-8",
         atomic: bool = True,
     ) -> None:
-        """寫入純文字檔案 (預設 atomic 覆蓋)。"""
+        """寫入純文字檔案 (預設 atomic 覆蓋)。
+
+        換行符一律以 LF 原樣寫出（newline="\n"），不隨作業系統轉譯為 CRLF，
+        確保受 Git 追蹤之檔案在 Windows 與 POSIX 間位元組一致；內容中顯式之 "\r\n" 亦原樣保留。
+        """
         norm_path = self.assert_safe_path(path)
         if atomic:
             with self.atomic_write(norm_path, mode="w", encoding=encoding) as f:
                 f.write(content)
         else:
             os.makedirs(os.path.dirname(norm_path), exist_ok=True)
-            with open(norm_path, "w", encoding=encoding) as f:
+            with open(norm_path, "w", encoding=encoding, newline="\n") as f:
                 f.write(content)
 
     def read_bytes(self, path: str) -> bytes:
@@ -252,7 +256,8 @@ class OSBackend(VFSBackend):
             if "b" in mode:
                 file_obj = open(tmp_path, mode)
             else:
-                file_obj = open(tmp_path, mode, encoding=encoding or "utf-8")
+                # 文字模式固定 LF 換行，杜絕 Windows 平台自動轉譯為 CRLF
+                file_obj = open(tmp_path, mode, encoding=encoding or "utf-8", newline="\n")
 
             yield file_obj
 

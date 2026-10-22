@@ -170,5 +170,5 @@ python yscb.py reload
 
 ### 5.3 IDE 自動感知與可復原軟合併 (`core.ide_projector`)
 - 模組安裝/更新/還原時，自動探測 `project://.vscode` 是否存在（不存在則完全靜默略過，零目錄污染）。
-- 比照 `internal yscb gitignore` 之邊界守門哲學，在 `project://.vscode/settings.json` 引入 `_yscb_managed` 宣告式清冊，差集更新 `extraPaths` 與 `defaultInterpreterPath`，100% 完整保留使用者原有配置，並支援依清冊乾淨回滾。
+- 比照 `internal yscb gitignore` 之邊界守門哲學，在 `project://.vscode/settings.json` 引入 `_yscb_managed` 宣告式清冊，差集更新 `extraPaths`（注入 POSIX 與 Windows 跨平台雙候選路徑以保證 0 diff 恆定性，且解耦 host-local 的 `defaultInterpreterPath` 託管寫入），100% 完整保留使用者原有配置與自訂直譯器，並具備 Zero-Touch 比對防護與依清冊乾淨回滾。
 

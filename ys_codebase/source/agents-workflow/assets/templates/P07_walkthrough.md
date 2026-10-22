@@ -33,8 +33,9 @@
 | 維度 | 文件路徑 | 交付狀態 | 驗收重點 |
 | :--- | :--- | :---: | :--- |
 | **宏觀 (Macro)** | `__${project://CHANGELOG.md}__` | 待填寫 | 發布亮點與變更歷史同步 |
-| **中觀 (Meso)** | `__${workflow.docs://}__/<Module>/README.md` | 待填寫 | 模組手冊、架構與使用說明 |
-| **中觀 (Meso)** | `__${workflow.docs://}__/<Module>/DESIGN_NOTES.md` | 待填寫（無反直覺妥協填「免更」） | 核心架構決策與反直覺設計妥協（防膨脹守門） |
+| **中觀 (Meso)** | `__${workflow.docs://}__/<Category>/README.md` | 待填寫 | 模組手冊、架構與使用說明 |
+| **中觀 (Meso)** | `__${workflow.docs://}__/<Category>/[topic].md` | 待填寫 | 專題手冊、核心機制或狀態機 |
+| **中觀 (Meso)** | `__${workflow.docs://}__/<Category>/DESIGN_NOTES.md` | 待填寫（無反直覺妥協填「免更」） | 核心架構決策與反直覺設計妥協（防膨脹守門） |
 | **微觀 (Micro)** | 源碼 Public API / 函式註解 | 待填寫 | 嚴格維護 Docstring，標註動機理由 |
 
 ### 4.2 品質與清理檢核
@@ -52,5 +53,5 @@
 
 ## 6. 計畫結構合規檢核 (Plan Compliance Verification)
 
-- [ ] **結構與註解檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` (或 `plan check`) 驗證 100% Passed。
-- [ ] **完成狀態確認**：所有前置階段、代碼實作、SOP 審查與測試驗證均已落實完成。
+- [ ] **完成狀態確認**：所有前置階段、代碼實作、SOP 審查與測試驗證均已落實完成，本檔其餘檢核項已勾選 `[x]` 且頂部標頭 `> 狀態：` 已設為 `Completed`。
+- [ ] **結構與註解檢核（最終守門）**：最後實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>` 驗證 100% Passed（若檢出未通過項則原地修正重驗）。

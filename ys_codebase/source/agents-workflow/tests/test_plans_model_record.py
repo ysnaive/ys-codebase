@@ -187,4 +187,54 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertIn("fast_track_plan.md", discuss)
         self.mark_passed()
 
+    def test_ft_07_sub02_restored_lifecycle_assets(self):
+        """FT-07 (補齊 2026_10_17_1133 sub_02 遺失資產，FR-03/04/05/06/08): 驗證先前未提交而遺失之資產規範已全數恢復。"""
+        assets = _pkg_root / "assets"
+        sop_ref = assets / "skills" / "development-sop" / "references"
 
+        standards = (assets / "standards" / "AgentsStandards.md").read_text(encoding="utf-8")
+        self.assertIn("生命週期工作流", standards)
+
+        new_plan = (assets / "skills" / "new-plan" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("phase_00_discuss.md", new_plan)
+
+        research = (assets / "skills" / "research" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("均須先將 `R{NN}_{topic}.md` 標頭狀態更新為 `Concluded`", research)
+
+        roadmap_skill = (assets / "skills" / "roadmap" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("In Progress | Completed]", roadmap_skill)
+        self.assertIn("結案時更新為 `Completed`", roadmap_skill)
+
+        sop = (assets / "skills" / "development-sop" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`umbrella_overview` + `changelog`", sop)
+        self.assertIn("落檔預設標頭狀態", sop)
+
+        self.assertIn("Umbrella 子計畫立項登記", (sop_ref / "phase_00_discuss.md").read_text(encoding="utf-8"))
+        self.assertIn("Acceptance Criteria", (sop_ref / "phase_01_requirements.md").read_text(encoding="utf-8"))
+        self.assertIn("錯誤與例外契約", (sop_ref / "phase_03_api_spec.md").read_text(encoding="utf-8"))
+        self.assertIn("Umbrella 子計畫結案回寫", (sop_ref / "phase_07_walkthrough.md").read_text(encoding="utf-8"))
+
+        plan_modes = (sop_ref / "plan_modes.md").read_text(encoding="utf-8")
+        self.assertIn("熔斷後舊產物雙軌處置", plan_modes)
+        self.assertIn("首個 `sub_XX` 啟動時", plan_modes)
+
+        cont = (assets / "skills" / "continue" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("若主目錄存在 `P00_discuss.md` 或 `R{NN}_*.md` 則一併參考", cont)
+
+        auto = (assets / "skills" / "auto" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("(Draft)", auto)
+        self.assertIn("一次建立並定稿", auto)
+
+        discuss = (assets / "skills" / "discuss" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("P06_test_plan.md", discuss)
+
+        tpl = assets / "templates"
+        self.assertIn("詳細規格與驗收條件 (Acceptance Criteria)", (tpl / "P01_requirements_spec.md").read_text(encoding="utf-8"))
+        roadmap_tpl = (tpl / "roadmap.md").read_text(encoding="utf-8")
+        self.assertIn("### 1.2 現況與影響範圍評估", roadmap_tpl)
+        self.assertIn("## 4. 核心機制與落地步驟", roadmap_tpl)
+        for name in ("P07_walkthrough.md", "fast_track_plan.md", "revision_log.md"):
+            content = (tpl / name).read_text(encoding="utf-8")
+            self.assertLess(content.index("`Completed`"), content.index("plan verify"),
+                            f"{name}: 應先更新 Completed 狀態，最後執行 plan verify")
+        self.mark_passed()

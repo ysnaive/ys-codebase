@@ -59,7 +59,7 @@ python __${module://agents-workflow/assets/skills/session-analysis/scripts/analy
 ### 3.1 流程與紀律自檢 (Guardrails Audit)
 - 零臆測公理（不確定細節向開發者釐清，無主觀發散）。
 - SSOT 檔案真理與對話極簡節流公理（嚴禁對話全文重複、代碼傾倒）。
-- CLI 權限分級（🟢 自主安全 / 🟡 階段條件 / 🔴 授權守門，無越界操作）。
+- CLI 權限分級（🟢 [SAFE] 自主安全 / 🟡 [CONDITIONAL] 階段條件 / 🔴 [GATED] 授權守門，無越界操作）。
 - Checkpoint 停步與單 Turn 邊界紀律。
 
 ### 3.2 行為與 Token 視窗分佈 (Dimension Breakdown)
