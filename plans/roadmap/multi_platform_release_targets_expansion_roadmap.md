@@ -14,10 +14,11 @@
 2. **自訂模型（GLM / DeepSeek / Qwen / Ollama）使用者存在認知斷層**：許多下游開發者使用 GLM（智譜）、DeepSeek 等模型時，不清楚 `release_target` 對應的是「中游 IDE / CLI 外殼工具（Client Harness）」而非「底層大模型（LLM）」，導致在初始化工作流時不知該啟用哪一個 Target。
 
 ### 1.2 現況與影響範圍評估
-- **架構優勢確認（100% 零 Python 源碼改動）**：
-  - 經核驗 `ReleasePublisher` (`publisher.py`) 與 `contributes/_format.json`，現有雙層編譯與發布引擎已原生支援任意 `.md` 規範入口檔路徑（含子目錄如 `project://.github/copilot-instructions.md` 之自動建目與軟合併／軟剝離）以及任意隱藏目錄之 `projections` 投影與 Stage 2 相對路徑動態重算。
+- **架構優勢確認（僅需極小化對齊 `compiler.py` 子目錄基準路徑 + 顯式 JSON 宣告）**：
+  - 經核驗 `ReleasePublisher` (`publisher.py`) 與 `contributes/_format.json`，現有發布引擎已原生支援任意 `.md` 規範入口檔路徑（含子目錄如 `project://.github/copilot-instructions.md` 之自動建目與軟合併／軟剝離）以及任意隱藏目錄之 `projections` 投影。
+  - **關鍵邊界防呆（`copilot` 子目錄 `agents_md` 相對連結基準路徑修正）**：現有 `compiler.py` (`_compile_stage2`) 在解析 `AgentsStandards.md`（`export.type == "standard"`）內的 `__#{...}__` 語意連結時，原先固定以 `project_root`（根目錄，深度 0）作為 `current_file_dir` 計算相對路徑；但 `copilot` Target 的 `agents_md` 為 `project://.github/copilot-instructions.md`（位於 `.github/` 子目錄，深度 1），若仍以根目錄計算相對連結，寫入 `.github/copilot-instructions.md` 後內文的 `.github/skills/...` 連結會在 Markdown 解析下變成 `.github/.github/skills/...` 而斷鏈。因此需於 `compiler.py` 微調約 5 行邏輯：當 `export.name == "AgentsStandards"` 時，優先以該 Target 設定的 `agents_md` 父目錄（`agents_md_path.parent`）作為 `current_file_dir` 計算相對路徑。
   - **Open Agent Standard (`.agents/` + `AGENTS.md`) 家族收斂**：Google Gemini CLI、Cline 等工具已與 Antigravity / Codex 同步採用根目錄 `AGENTS.md` + `.agents/skills/` 標準，無需重複建立冗餘目錄或複雜別名繼承機制。
-  - 因此僅需以 **0 改碼之顯式 JSON 宣告（方案 A）** 擴充 `contributes/agents-workflow.json`，並於隨包文檔與教學／配置技能中補齊「主流平台與自訂模型（GLM / DeepSeek）外殼選型對照表」，即可一步到位支援全生態系主流工具。
+  - 因此僅需以 **顯式 JSON 宣告擴充 `contributes/agents-workflow.json` ＋ `compiler.py` `agents_md.parent` 基準路徑對齊**，並於隨包文檔與教學／配置技能中補齊「主流平台與自訂模型（GLM / DeepSeek）外殼選型對照表」，即可一步到位支援全生態系主流工具。
 
 ### 1.3 核心根因
 1. `contributes/agents-workflow.json` 尚未將 Cursor、GitHub Copilot、Windsurf、OpenCode、Roo Code 等具備獨立技能投影目錄（`.cursor/`、`.github/`、`.windsurf/`、`.opencode/`、`.roo/`）之主流平台納入預設 `release_target` 清冊。
@@ -31,7 +32,7 @@
 | :--- | :--- | :--- | :--- | :---: |
 | **方案 1：維持現有 3 個 Target，由下游自行手動配置** | 下游專案自行在 `contribute.json` 撰寫 Cursor / Copilot 等投影規則 | 零改動 | 下游需自行查閱各 IDE 的 Skills 規範路徑，開箱體驗差 | ⭐️⭐️ |
 | **方案 2：修改 Python 編譯器新增 `aliases` 別名與繼承語法** | 修改 `_format.json`、`compiler.py` 與 `cli.py` 支援 Target 別名與模板繼承 | 減少 JSON 中約 15 行的重複路徑宣告 | 違反 YAGNI / KISS 原則；為極少數靜態 JSON 引入額外 Python 代碼與測試維護成本，且降低 JSON 直觀可讀性 | ⭐️⭐️⭐️ |
-| **方案 3：0 改碼顯式 JSON 宣告擴充 + 平台／模型外殼選型對照表（推薦採納）** | 直接於 `contributes/agents-workflow.json` 顯式新增 `cursor`、`copilot`、`windsurf`、`opencode`、`roo` 五大 Target，更新 `antigravity` 描述涵蓋 Gemini CLI / Cline，並於文檔補齊 GLM / DeepSeek 外殼選型指南 | 1. **100% 零 Python 源碼改動、零迴歸風險**<br/>2. **顯式宣告一目了然**，未來單一平台改路徑可獨立微調<br/>3. 徹底解決 GLM / DeepSeek 使用者選型困惑 | 僅增加約 90 行靜態 JSON 宣告與文檔表格更新 | ⭐️⭐️⭐️⭐️⭐️ |
+| **方案 3：顯式 JSON 宣告擴充 + `agents_md` 子目錄基準路徑對齊 + 平台／模型外殼選型對照表（推薦採納）** | 直接於 `contributes/agents-workflow.json` 顯式新增 `cursor`、`copilot`、`windsurf`、`opencode`、`roo` 五大 Target，微調 `compiler.py` 使 `AgentsStandards` 以 `agents_md` 父目錄計算相對連結，更新 `antigravity` 描述涵蓋 Gemini CLI / Cline，並於文檔補齊 GLM / DeepSeek 外殼選型指南 | 1. **解決 `.github/copilot-instructions.md` 子目錄相對連結深度偏移問題**<br/>2. **顯式宣告一目了然**，未來單一平台改路徑可獨立微調<br/>3. 徹底解決 GLM / DeepSeek 使用者選型困惑 | 約 90 行靜態 JSON 宣告、`compiler.py` 約 5 行基準目錄對齊與文檔表格更新 | ⭐️⭐️⭐️⭐️⭐️ |
 
 ---
 
@@ -78,10 +79,10 @@
 ## 5. 實施路線圖與里程碑 (Roadmap & Stages)
 
 ### 5.1 近期策略 (Current Strategy)
-- 列為 `Ready` 技術儲備，因屬於純宣告式 JSON 擴充與文檔同步（0 Python 邏輯變更），可單獨以 `Fast Track` 快速落地，或併入近期 `agents-workflow` 演進計畫一併交付。
+- 列為 `Ready` 技術儲備，因屬於宣告式 JSON 擴充、`compiler.py` 單點基準路徑對齊與文檔同步，可單獨以 `Fast Track` 快速落地，或併入近期 `agents-workflow` 演進計畫一併交付。
 
 ### 5.2 實施步驟 (Implementation Stages)
-1. **Stage 1（`contributes/agents-workflow.json` 宣告擴充）**：新增 `cursor`、`copilot`、`windsurf`、`opencode`、`roo` 五組 `release_target` 定義，並更新 `antigravity` 描述涵蓋 Gemini CLI 與 Cline。
-2. **Stage 2（測試驗證）**：新增單元測試驗證各新增 Target（特別是帶子目錄之 `.github/copilot-instructions.md` 與各 `.<target>/skills/`）之 Stage 2 相對路徑計算、軟合併與移除時之軟剝離行為。
+1. **Stage 1（`contributes/agents-workflow.json` 宣告擴充與 `compiler.py` 子目錄基準對齊）**：新增 `cursor`、`copilot`、`windsurf`、`opencode`、`roo` 五組 `release_target` 定義，更新 `antigravity` 描述涵蓋 Gemini CLI 與 Cline；並修正 `compiler.py` 中 `AgentsStandards` 的 Stage 2 `current_file_dir` 計算邏輯，使其以目標 Target 之 `agents_md` 父目錄（如 `project://.github/`）為基準計算相對連結（確保 `.github/copilot-instructions.md` 內之連結正確指向 `skills/...` 而非 `.github/skills/...`）。
+2. **Stage 2（測試驗證）**：新增單元測試驗證各新增 Target（特別是帶子目錄之 `.github/copilot-instructions.md` 內相對連結深度 `skills/development-sop/SKILL.md` 與各 `.<target>/skills/`）之 Stage 2 相對路徑計算、軟合併與移除時之軟剝離行為。
 3. **Stage 3（三層文檔與平台選型表對齊）**：同步更新根目錄 `README.md`、`ys_codebase/source/agents-workflow/README.md` 與 `docs/agents-workflow/user_guide.md` 之 Target 矩陣與 GLM / DeepSeek 客戶端選型提示。
 

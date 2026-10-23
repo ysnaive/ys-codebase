@@ -16,6 +16,7 @@
 
 | 日期時間 | 類型 | 模型 | 摘要 |
 | :--- | :---: | :--- | :--- |
+| 2026-10-23 10:04 | `REVISION` | Unknown | 執行宏觀交叉分析並將 testing-sop、how-to-config-yscb、how-to-yscb、skill-creator 併入主計畫重編排為 sub_01 至 sub_06 |
 | 2026-10-23 13:55 | `PHASE` | Gemini 4 Argon (Low) | 完成子計畫 sub_01_python_aci_toolchain 結案 (Completed) |
 | 2026-10-23 13:30 | `DECISION` | Gemini 4 Argon (Low) | 產出主計畫級技術調研報告 R01_cli_command_specification.md (Concluded)，定調 sub_01 與 sub_02 全週期 CLI 指令與參數契約 |
 | 2026-10-23 13:18 | `PHASE` | Gemini 4 Argon (Low) | 啟動首個子計畫 sub_01_python_aci_toolchain，主計畫狀態轉為 In Progress |
