@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_23_1314_agents_workflow_aci_and_delegation_evolution (In Progress)
+
+### sub_01_python_aci_toolchain (Completed)
+- **`agents-workflow` Python 工具鏈 (ACI) 強化：確定性狀態領航、`handoff.md` 原子閱後即焚、左移雙檔檢核與免讀盲寫追加 `changelog.md`**：
+  - **`plan status --resume` 確定性狀態領航與閱後即焚 (`FR-01` ~ `FR-03`, `EC-01`, `EC-06`)**：於 `PlanStatusResolver.resolve_next_action` 與 `PlanScanner.execute_resume` 實作狀態機領航，支援自動深入 `Umbrella` 活躍之 `sub_XX` 子計畫並推導當前斷點、下一步階段與必讀 SOP 參考檔路徑；傳入 `--resume` 時自動輸出 `handoff.md` 快照並立即以 `os.unlink()` 物理刪除 (`Consume & Delete`)，未傳時維持純唯讀；多活躍計畫未指定 `--plan` 時依零臆測原則拒絕盲猜；同步更新 `continue/SKILL.md` 對接。
+  - **`plan verify --phase` 左移雙檔協同檢核、`P01<->P06` 追溯差集比對與自癒修復指引 (`FR-04` ~ `FR-06`, `EC-02`)**：`PlanVerifier` 新增 `--phase <P00..P07|current|all>` 局部檢核、Phase 2 `P06_test_plan.md (Draft)` 存在性與 Phase 4 `Confirmed` 狀態左移檢查；新增 `extract_requirement_ids` 預先剝除 Fenced Code Blocks、HTML 註解與 `~~...~~` 刪除線後精確比對 `P01` 與 `P06` 需求覆蓋差集；全量診斷訊息補齊 `[Fix Hint: ...]` 可操作修復指引。
+  - **四步伴隨檔自癒管線與 `--log` 免讀盲寫追加 (`FR-07`, `FR-08`, `EC-03` ~ `EC-05`)**：`plan verify`（及 `plan check`）新增 `--log "<摘要>" [--type PHASE|DECISION|REVISION] [--model "<ModelName>"]`，落實四步管線（Step 1 主體檔檢核 $\to$ Step 2 伴隨檔 `changelog.md` / `P06 Draft` 自癒初始化且模型嚴格限制為 `--model` 或同階段主體檔防跨階段回溯 $\to$ Step 3 雙檔與追溯差集檢核 $\to$ Step 4 100% PASS 時以系統時間戳免讀插入 `changelog.md` 頂部並具備首列 `(類型, 摘要)` 冪等防重入保護）；同步更新 `yscb-cli-guide`、`development-sop` 與 `[DN-AW-10]`，全模組 **123/123 單元測試 100% 通過**。
+
 ## 2026_10_22_0843_downstream_feedback_and_optimizations (Completed)
 
 ### sub_04_agents_workflow_refinement (Completed)

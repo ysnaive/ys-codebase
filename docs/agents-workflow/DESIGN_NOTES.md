@@ -11,7 +11,7 @@ related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-23"
 ---
 
 # 設計決策與工程妥協 (Design Notes)
@@ -32,6 +32,8 @@ last_updated: "2026-10-15"
 | **[DN-AW-06]** | 原 `DN-AW-11` + `DN-AW-16` | `AGENTS.md` / `CLAUDE.md` 單向覆寫防殭屍技能復活與移除 Target 軟剝離保護 | 發布引擎 (`publisher.py`) | `Active` |
 | **[DN-AW-07]** | 原規劃 `DN-AW-17` | Plans 工具鏈標頭解析 SSOT、時序防呆與動態佔位符正則推導設計 | Plans 工具鏈 (`status.py`, `scanner.py`, `archiver.py`, `verifier.py`) | `Active` |
 | **[DN-AW-08]** | 新增 | 模型紀錄規則：唯一來源為平台宣告、嚴禁由檔案反推、不確定填 `Unknown`、事件粒度記入 changelog | 規範資產 (`AgentsStandards.md`)、標頭模板、`changelog.md` 模板 | `Active`（待下游驗證） |
+| **[DN-AW-09]** | 新增 | 來源資產換行符 LF 正規化與物化清單 `cache://` 本地隔離防 Git 污染 | 發布引擎 (`publisher.py`) | `Active` |
+| **[DN-AW-10]** | 新增 | ACI 四步執行管線時序、伴隨檔模型防回溯與 `P01` 刪除線/代碼塊預過濾設計 | Plans 工具鏈 (`verifier.py`, `scanner.py`, `status.py`) | `Active` |
 
 ---
 
@@ -157,3 +159,20 @@ last_updated: "2026-10-15"
 
 > [!CAUTION]
 > 計算來源資產 SHA-1 時嚴禁未經換行符正規化直接雜湊；嚴禁將運行期動態物化狀態清單寫入 `storage://` 等 Git 追蹤目錄。
+
+---
+
+### [DN-AW-10] ACI 四步執行管線時序、伴隨檔模型防回溯與 `P01` 刪除線/代碼塊預過濾設計
+
+- **工程背景與坑點**：
+  1. 若 `plan verify --phase P02 --log "..."` 在檢核主體檔 `P02_architecture_plan.md` 之前就無條件先建立伴隨檔 `P06_test_plan.md (Draft)` 或寫入 `changelog.md`，當 Agent 寫出的 `P02` 本身仍有未替換佔位符或語法缺失（`FAIL`）時，會在不合規的目錄留下半成品伴隨檔與錯誤的成功日誌；且當 Agent 修復後重跑指令時，若無防重入保護，會在 `changelog.md` 產生重複紀錄列。
+  2. 自動初始化伴隨檔（`changelog.md` 或 `P06_test_plan.md`）時，若為了填充 `> 模型：` 而跨階段去搜尋目錄下更早期的 `P00_discuss.md` 標頭，會直接違反 `[DN-AW-08]` 模型紀錄「嚴禁跨檔回推舊階段模型」的鐵律。
+  3. 在 `P01_requirements_spec.md` 中，開發者可能透過 Markdown 刪除線（如 `~~**FR-09**~~`）標記作廢需求，或在代碼塊/註解中舉例說明 `FR-99`；若直接以全文本正則提取需求 ID，會導致已作廢需求被誤判為未映射至 `P06` 的孤兒需求。
+- **妥協與防禦設計**：
+  1. **嚴格四步管線與首筆冪等防重入**：`PlanVerifier.verify_plan` 強制依序執行「Step 1 主體檔合規檢核 $\to$ Step 2 僅在 Step 1 為 0 `FAIL` 時自癒生成伴隨檔 $\to$ Step 3 雙檔協同與追溯差集檢核 $\to$ Step 4 僅在全數 `PASS` 時追加 `changelog.md`（並比對表格第一筆資料列之 `(類型, 摘要)` 實現冪等跳過）」。
+  2. **伴隨檔模型來源單向約束 (`_resolve_companion_model`)**：僅允許取用 CLI 顯式傳入之 `--model` 或當下同階段主體檔（如 `--phase P02` 時僅讀 `P02_architecture_plan.md`）之標頭模型，否則一律填 `Unknown`，絕不回溯讀取前序階段檔案。
+  3. **三層雜訊預剝除 (`extract_requirement_ids`)**：提取 `P01` 需求 ID 集合前，依序剝除 Fenced Code Blocks (`` ```[\s\S]*?``` ``)、HTML 註解 (`<!--[\s\S]*?-->`) 與 Markdown 刪除線 (`~~[\s\S]*?~~`)。
+
+> [!CAUTION]
+> 嚴禁將 `append_changelog_entry` 或 `_auto_heal_companions` 移至 Step 1 主體檔合規判定之前；嚴禁在 `_resolve_companion_model` 中加入回退搜尋 `P00_discuss.md` 等前序階段檔案之邏輯。
+

@@ -4,10 +4,11 @@ PlanVerifier — 開發計畫規範、動態模板鏡像與合規性稽核引擎
 
 import os
 import re
+from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union, Tuple
+from typing import Optional, List, Dict, Any, Union, Tuple, Set
 
 
 class PlanSeverity(str, Enum):
@@ -43,6 +44,8 @@ class PlanReport:
     plan_path: str
     status: PlanSeverity = PlanSeverity.PASS
     issues: List[PlanIssue] = field(default_factory=list)
+    companion_created: List[str] = field(default_factory=list)
+    log_status: Optional[str] = None
 
     @property
     def passed(self) -> bool:
@@ -81,6 +84,8 @@ class PlanReport:
             "issues": [i.to_dict() for i in self.issues],
             "total_errors": len(self.errors),
             "total_warns": len(self.warnings),
+            "companion_created": list(self.companion_created),
+            "log_status": self.log_status,
         }
 
     def __iter__(self):
@@ -340,7 +345,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_path,
                     category="STRUCTURE",
-                    message=f"目錄層級超過專案最大限制 2 層 (主計畫 -> 子計畫)：'{rel_path}'。",
+                    message=f"目錄層級超過專案最大限制 2 層 (主計畫 -> 子計畫)：'{rel_path}'。 [Fix Hint: 請將 '{rel_path}' 上移至主計畫直接子目錄 (sub_XX) 層級]",
                 )
             )
 
@@ -352,7 +357,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=f"{rel_path}/changelog.md" if rel_path != "." else "changelog.md",
                     category="STRUCTURE",
-                    message="缺少雙星伴隨初始化之 'changelog.md' 檔案。",
+                    message="缺少雙星伴隨初始化之 'changelog.md' 檔案。 [Fix Hint: 請建立 changelog.md 或執行 plan verify <plan> --log '<摘要>' 自動初始化並寫入日誌]",
                 )
             )
 
@@ -366,7 +371,7 @@ class PlanVerifier:
                         severity=PlanSeverity.FAIL,
                         file_name=f"{rel_path}/umbrella_overview.md" if rel_path != "." else "umbrella_overview.md",
                         category="STRUCTURE",
-                        message="分類型主計畫目錄包含子計畫，但缺少 'umbrella_overview.md' 總覽說明書。",
+                        message="分類型主計畫目錄包含子計畫，但缺少 'umbrella_overview.md' 總覽說明書。 [Fix Hint: 請讀取 umbrella_overview.md 模板於主計畫根目錄建立總覽檔]",
                     )
                 )
             else:
@@ -379,7 +384,7 @@ class PlanVerifier:
                                     severity=PlanSeverity.WARN,
                                     file_name="umbrella_overview.md",
                                     category="STRUCTURE",
-                                    message=f"實體子計畫目錄 '{sub.name}' 尚未登記於 'umbrella_overview.md' 清冊中。",
+                                    message=f"實體子計畫目錄 '{sub.name}' 尚未登記於 'umbrella_overview.md' 清冊中。 [Fix Hint: 請於 umbrella_overview.md §2 子計畫矩陣補登 '{sub.name}']",
                                 )
                             )
                 except Exception:
@@ -403,7 +408,7 @@ class PlanVerifier:
                         severity=PlanSeverity.FAIL,
                         file_name=rel_file_name,
                         category="CHANGELOG",
-                        message="'changelog.md' 缺少標準 Markdown 表格結構或無任何紀錄行。",
+                        message="'changelog.md' 缺少標準 Markdown 表格結構或無任何紀錄行。 [Fix Hint: 請參考 changelog.md 模板補齊 '| 日期時間 | 類型 | 模型 | 摘要 |' 表格]",
                     )
                 )
                 return
@@ -420,7 +425,7 @@ class PlanVerifier:
                         severity=PlanSeverity.FAIL,
                         file_name=rel_file_name,
                         category="CHANGELOG",
-                        message="'changelog.md' 尚無任何已記錄之變更或 Phase 推進條目。",
+                        message="'changelog.md' 尚無任何已記錄之變更或 Phase 推進條目。 [Fix Hint: 請執行 plan verify <plan> --log '<摘要>' 追加至少一筆變更紀錄]",
                     )
                 )
 
@@ -429,13 +434,14 @@ class PlanVerifier:
                 for idx, line in enumerate(lines, 1):
                     line_clean = re.sub(r"`.*?`", "", line)
                     if re.search(pat, line_clean):
+                        matched_ph = re.search(pat, line_clean).group(0)
                         report.issues.append(
                             PlanIssue(
                                 severity=PlanSeverity.FAIL,
                                 file_name=rel_file_name,
                                 line_number=idx,
                                 category="PLACEHOLDER",
-                                message=f"檢測到未替換之模板佔位符：'{re.search(pat, line_clean).group(0)}'。",
+                                message=f"檢測到未替換之模板佔位符：'{matched_ph}'。 [Fix Hint: 請將第 {idx} 行之 '{matched_ph}' 替換為實際值]",
                             )
                         )
                         break
@@ -445,7 +451,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="CHANGELOG",
-                    message=f"讀取 'changelog.md' 失敗：{e}",
+                    message=f"讀取 'changelog.md' 失敗：{e} [Fix Hint: 請確認 'changelog.md' 檔案權限與 UTF-8 編碼是否正常]",
                 )
             )
 
@@ -461,7 +467,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="IO",
-                    message=f"無法讀取 Markdown 檔案：{e}",
+                    message=f"無法讀取 Markdown 檔案：{e} [Fix Hint: 請確認 '{rel_file_name}' 存在且具備 UTF-8 讀取權限]",
                 )
             )
             return
@@ -488,20 +494,21 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HTML_COMMENT",
-                    message="文件中檢測到殘留的 HTML 註解 (<!-- ... -->)，依規範產出與歸檔文件嚴禁包含任何 HTML 註解。",
+                    message="文件中檢測到殘留的 HTML 註解 (<!-- ... -->)，依規範產出與歸檔文件嚴禁包含任何 HTML 註解。 [Fix Hint: 請移除檔案中所有 <!-- ... --> 註解區塊]",
                 )
             )
 
         for pat in self.get_all_placeholder_patterns():
             for idx, line in enumerate(non_code_lines, 1):
                 if re.search(pat, line):
+                    matched_ph = re.search(pat, line).group(0)
                     report.issues.append(
                         PlanIssue(
                             severity=PlanSeverity.FAIL,
                             file_name=rel_file_name,
                             line_number=idx,
                             category="PLACEHOLDER",
-                            message=f"檢測到未替換之模板佔位符：'{re.search(pat, line).group(0)}'。",
+                            message=f"檢測到未替換之模板佔位符：'{matched_ph}'。 [Fix Hint: 請將 '{rel_file_name}' 中的 '{matched_ph}' 替換為實際值]",
                         )
                     )
                     break
@@ -530,7 +537,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="Header Blockquote 缺少 [功能名稱] (或 [調研主題] / [所屬計畫]) 欄位。",
+                    message="Header Blockquote 缺少 [功能名稱] (或 [調研主題] / [所屬計畫]) 欄位。 [Fix Hint: 請於檔案前 35 行補上 '> 功能名稱：<名稱>']",
                 )
             )
         if not has_date:
@@ -539,7 +546,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="Header Blockquote 缺少 [建立日期] (或 [暫停時間]) 欄位。",
+                    message="Header Blockquote 缺少 [建立日期] (或 [暫停時間]) 欄位。 [Fix Hint: 請於檔案前 35 行補上 '> 建立日期：YYYY-MM-DD']",
                 )
             )
         if not has_model:
@@ -548,7 +555,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="Header Blockquote 缺少 [模型] (或 model) 欄位，必須記錄撰寫/執行該檔案之後台模型名稱。",
+                    message="Header Blockquote 缺少 [模型] (或 model) 欄位，必須記錄撰寫/執行該檔案之後台模型名稱。 [Fix Hint: 請於檔案前 35 行補上 '> 模型：<當輪平台宣告模型或 Unknown>']",
                 )
             )
         if not has_status:
@@ -557,7 +564,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="Header Blockquote 缺少 [狀態] (或 [當前所在階段]) 欄位。",
+                    message="Header Blockquote 缺少 [狀態] (或 [當前所在階段]) 欄位。 [Fix Hint: 請於檔案前 35 行補上 '> 狀態：Confirmed' (或對應合法狀態)]",
                 )
             )
         elif not is_handoff:
@@ -577,7 +584,7 @@ class PlanVerifier:
                         severity=PlanSeverity.FAIL,
                         file_name=rel_file_name,
                         category="HEADER",
-                        message=f"狀態值 '{status_val}' 非合法狀態（合法值：Draft, Discussing, Confirmed, In Progress, Passed, Completed 等）。",
+                        message=f"狀態值 '{status_val}' 非合法狀態（合法值：Draft, Discussing, Confirmed, In Progress, Passed, Completed 等）。 [Fix Hint: 請將 '> 狀態：' 更新為合法狀態枚舉值]",
                     )
                 )
             elif status_val in ("completed", "concluded"):
@@ -592,7 +599,7 @@ class PlanVerifier:
                             file_name=rel_file_name,
                             line_number=unchecked_lines[0],
                             category="CHECKLIST",
-                            message=f"計畫狀態為 '{status_val}'，但檔案中仍包含 {len(unchecked_lines)} 處未勾選之待辦 Checkbox (- [ ])。結案前必須全數完成或妥善處置。",
+                            message=f"計畫狀態為 '{status_val}'，但檔案中仍包含 {len(unchecked_lines)} 處未勾選之待辦 Checkbox (- [ ])。結案前必須全數完成或妥善處置。 [Fix Hint: 請將 '{rel_file_name}' 中未勾選之 '- [ ]' 更新為 '- [x]']",
                         )
                     )
 
@@ -602,7 +609,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="二級子計畫之 Header Blockquote 必須包含 [所屬主計畫] 欄位以維持追溯鏈。",
+                    message="二級子計畫之 Header Blockquote 必須包含 [所屬主計畫] 欄位以維持追溯鏈。 [Fix Hint: 請於檔案前 35 行補上 '> 所屬主計畫：<父目錄計畫名稱>']",
                 )
             )
 
@@ -628,7 +635,7 @@ class PlanVerifier:
                                 severity=PlanSeverity.FAIL,
                                 file_name=rel_file_name,
                                 category="TEMPLATE",
-                                message=f"缺少標準模板所要求之章節標題：'{exp_h}'。",
+                                message=f"缺少標準模板所要求之章節標題：'{exp_h}'。 [Fix Hint: 請對照標準模板 '{tmpl_name}' 補齊包含 '{exp_h}' 之二級/三級標題]",
                             )
                         )
 
@@ -642,7 +649,7 @@ class PlanVerifier:
                         severity=PlanSeverity.FAIL,
                         file_name=rel_file_name,
                         category="ID_MATRIX",
-                        message="'P06_test_plan.md' 測試案例清冊缺少具備 'FT-XX'、'ET-XX' 或 'RT-XX' 前綴之測試項目。",
+                        message="'P06_test_plan.md' 測試案例清冊缺少具備 'FT-XX'、'ET-XX' 或 'RT-XX' 前綴之測試項目。 [Fix Hint: 請於 P06_test_plan.md §1 表格補入至少一項如 'FT-01' 之測試案例]",
                     )
                 )
         elif rel_file_name.endswith("revision_log.md"):
@@ -654,29 +661,450 @@ class PlanVerifier:
                         severity=PlanSeverity.FAIL,
                         file_name=rel_file_name,
                         category="ID_MATRIX",
-                        message="'revision_log.md' 修訂紀錄清單缺少具備 '[REV-XX]' 前綴之修訂條目。",
+                        message="'revision_log.md' 修訂紀錄清單缺少具備 '[REV-XX]' 前綴之修訂條目。 [Fix Hint: 請於 revision_log.md §1 補入至少一項 '### [REV-01] <修訂主題>' 條目]",
                     )
                 )
 
-    def verify_plan(self, plan_path_or_name: Union[str, Path]) -> PlanReport:
+    @staticmethod
+    def extract_requirement_ids(markdown_text: str) -> Set[str]:
         """
-        對指定計畫目錄執行 5 步檢核流水線，回傳結構化 PlanReport。
+        從 P01_requirements_spec.md 文本提取有效需求 ID 集合 (FR-XX, EC-XX, NFR-XX)。
+        提取前依序預先剝除：
+          1. Fenced Code Blocks (```...```)
+          2. HTML 註解區塊 (<!--...-->)
+          3. Markdown 刪除線語法 (~~...~~) 與整行被刪除線包裹之廢止需求列
+
+        Args:
+            markdown_text: P01 原始 Markdown 內容
+
+        Returns:
+            Set[str]: 大寫標準化需求 ID 集合 (如 {'FR-01', 'EC-01', 'NFR-01'})
+        """
+        if not markdown_text:
+            return set()
+
+        # Step 1: 剝除 Fenced Code Blocks
+        cleaned = re.sub(r"```[\s\S]*?```", "", markdown_text)
+        # Step 2: 剝除 HTML 註解
+        cleaned = re.sub(r"<!--[\s\S]*?-->", "", cleaned)
+        # Step 3: 剝除 Markdown 刪除線片段 (~~...~~)
+        cleaned = re.sub(r"~~[\s\S]*?~~", "", cleaned)
+
+        matches = re.findall(r"\b(?:FR|EC|NFR)-\d+\b", cleaned, flags=re.IGNORECASE)
+        return {m.upper() for m in matches}
+
+    @staticmethod
+    def _resolve_effective_phase(target_dir: Path, phase_norm: str) -> str:
+        """
+        當 phase_norm 為 'CURRENT' 時，依據目錄現有產物與狀態動態推導當前階段代號 (如 'P02', 'P04' 等)。
+        """
+        p_up = (phase_norm or "ALL").strip().upper()
+        if p_up != "CURRENT":
+            return p_up
+        from .status import PlanStatusResolver
+
+        nav = PlanStatusResolver.resolve_next_action(target_dir)
+        cur = str(nav.get("current_phase", "")).strip().upper()
+        if cur in ("P00", "P01", "P02", "P03", "P04", "P05", "P06", "P07"):
+            return cur
+        return "ALL"
+
+    def _resolve_companion_model(
+        self,
+        target_dir: Path,
+        phase_norm: str,
+        explicit_model: Optional[str] = None,
+    ) -> str:
+        """
+        解析伴隨檔初始化時應填入之模型名稱（防呆 2：嚴禁跨階段回溯舊檔）。
+        優先取用 CLI 顯式傳入之 --model；若未傳入，僅允許讀取當下同階段主體檔之標頭模型，否則回傳 'Unknown'。
+        """
+        if explicit_model and isinstance(explicit_model, str) and explicit_model.strip():
+            val = explicit_model.strip()
+            if not (val.startswith("[") and val.endswith("]")):
+                return val
+
+        from .status import PlanStatusResolver
+
+        eff_phase = self._resolve_effective_phase(target_dir, phase_norm)
+        phase_file_map = {
+            "P00": "P00_discuss.md",
+            "P01": "P01_requirements_spec.md",
+            "P02": "P02_architecture_plan.md",
+            "P03": "P03_api_spec.md",
+            "P04": "P04_implementation_plan.md",
+            "P05": "P05_task.md",
+            "P06": "P06_test_plan.md",
+            "P07": "P07_walkthrough.md",
+        }
+        primary_fname = phase_file_map.get(eff_phase)
+        if primary_fname and (target_dir / primary_fname).is_file():
+            return PlanStatusResolver.get_doc_header_model(target_dir / primary_fname)
+
+        # 若未指定特定 P0X，僅當目錄下僅有單一主體入口檔（如 umbrella_overview.md 或 fast_track_plan.md 或 revision_log.md）時讀取該檔
+        for entry_name in ("umbrella_overview.md", "fast_track_plan.md", "revision_log.md"):
+            if (target_dir / entry_name).is_file():
+                return PlanStatusResolver.get_doc_header_model(target_dir / entry_name)
+
+        return "Unknown"
+
+    def _auto_heal_companions(
+        self,
+        target_dir: Path,
+        phase_norm: str,
+        explicit_model: Optional[str],
+        report: PlanReport,
+    ) -> None:
+        """
+        Step 2: 自動初始化缺失之伴隨檔 (changelog.md 與 P02 階段伴隨之 P06_test_plan.md Draft)。
+        僅於 Step 1 目標階段主體檔合規 (0 FAIL) 且啟用自癒時呼叫。
+        """
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        is_sub = target_dir.name.startswith("sub_")
+        parent_name = target_dir.parent.name if is_sub else "N/A (Root Plan)"
+        model_val = self._resolve_companion_model(target_dir, phase_norm, explicit_model)
+        rel_prefix = f"{target_dir.name}/" if is_sub and target_dir.resolve() != Path(report.plan_path).resolve() else ""
+
+        # 1. 若缺少 changelog.md，自動初始化
+        changelog_path = target_dir / "changelog.md"
+        if not changelog_path.exists():
+            now_min = datetime.now().strftime("%Y-%m-%d %H:%M")
+            cl_content = (
+                f"# 計畫變更紀錄 (Changelog)\n\n"
+                f"> 功能名稱：{target_dir.name}  \n"
+                f"> 建立日期：{today_str}  \n"
+                f"> 所屬主計畫：{parent_name}  \n"
+                f"> 狀態：In Progress  \n"
+                f"> 模型：{model_val}  \n\n"
+                f"> 模板版本：v1.1  \n\n"
+                f"---\n\n"
+                f"## 變更紀錄\n\n"
+                f"| 日期時間 | 類型 | 模型 | 摘要 |\n"
+                f"| :--- | :---: | :--- | :--- |\n"
+                f"| {now_min} | `PHASE` | {model_val} | 自動初始化變更日誌 (changelog.md) |\n"
+            )
+            changelog_path.write_text(cl_content, encoding="utf-8")
+            created_rel = f"{rel_prefix}changelog.md"
+            if created_rel not in report.companion_created:
+                report.companion_created.append(created_rel)
+
+        # 2. 若目標階段為 P02（或 current 為 P02）且存在 P02_architecture_plan.md 但缺少 P06_test_plan.md，自動初始化 Draft
+        p02_path = target_dir / "P02_architecture_plan.md"
+        p06_path = target_dir / "P06_test_plan.md"
+        if phase_norm.upper() in ("P02", "ALL", "CURRENT") and p02_path.is_file() and not p06_path.exists():
+            p02_model = self._resolve_companion_model(target_dir, "P02", explicit_model)
+            # 若 P01 存在，自動預先將 P01 所有需求 ID 填入 P06 Draft 表格骨架
+            p01_path = target_dir / "P01_requirements_spec.md"
+            req_ids = sorted(self.extract_requirement_ids(p01_path.read_text(encoding="utf-8", errors="ignore"))) if p01_path.is_file() else ["FR-01"]
+            if not req_ids:
+                req_ids = ["FR-01"]
+
+            case_rows = []
+            exec_rows = []
+            for idx, rid in enumerate(req_ids, 1):
+                prefix = "ET" if rid.startswith("EC-") else ("RT" if rid.startswith("NFR-") else "FT")
+                tid = f"{prefix}-{idx:02d}"
+                t_kind = "邊界測試" if prefix == "ET" else ("回歸測試" if prefix == "RT" else "單元測試")
+                case_rows.append(
+                    f"| **{tid}** | {t_kind} | 待於 Phase 4 定稿補齊 ({rid}) | {rid} | 待定稿 |"
+                )
+                exec_rows.append(f"| **{tid}** | `Pending` | 待執行 | - |")
+
+            p06_content = (
+                f"# 測試計畫與驗證報告 (Test Plan & Verification)\n\n"
+                f"> 功能名稱：{target_dir.name}  \n"
+                f"> 建立日期：{today_str}  \n"
+                f"> 所屬主計畫：{parent_name}  \n"
+                f"> 狀態：Draft  \n"
+                f"> 模型：{p02_model}  \n\n"
+                f"> 模板版本：v1.4  \n\n"
+                f"---\n\n"
+                f"## 1. 自動化測試案例清單 (Automated Test Cases)\n\n"
+                f"| 測試編號 | 測試類型 | 驗證目標與斷言 | 對應需求 | 執行指令 / 測試方法 |\n"
+                f"| :--- | :--- | :--- | :--- | :--- |\n"
+                + "\n".join(case_rows)
+                + "\n\n---\n\n"
+                f"## 2. 測試執行紀錄表 (Test Execution Log)\n\n"
+                f"| 測試編號 | 執行狀態 | 實機測試日誌摘要 / 失敗根因 | 驗證時間 |\n"
+                f"| :--- | :---: | :--- | :---: |\n"
+                + "\n".join(exec_rows)
+                + "\n\n---\n\n"
+                f"## 3. 人工 / UX 驗證 Checkpoint (UX Verification Matrix)\n\n"
+                f"| 驗證編號 | 驗證操作與預期效果 | 驗證結果標記 | 開發者確認紀錄 / 備註 |\n"
+                f"| :--- | :--- | :---: | :--- |\n"
+                f"| **UX-01** | 待於 Phase 4 定稿確認 | `Pending` | 待驗收 |\n"
+            )
+            p06_path.write_text(p06_content, encoding="utf-8")
+            created_rel = f"{rel_prefix}P06_test_plan.md"
+            if created_rel not in report.companion_created:
+                report.companion_created.append(created_rel)
+
+    def _check_cross_file_and_traceability(
+        self,
+        target_dir: Path,
+        rel_dir: str,
+        phase_norm: str,
+        report: PlanReport,
+    ) -> None:
+        """
+        Step 3: 雙檔協同狀態檢核 (P02/P04 <-> P06) 與 P01 <-> P06 追溯鏈集合差集比對 (FR-04, FR-05)。
+        """
+        from .status import PlanStatusResolver
+
+        prefix = f"{rel_dir}/" if rel_dir != "." else ""
+        p01_path = target_dir / "P01_requirements_spec.md"
+        p02_path = target_dir / "P02_architecture_plan.md"
+        p04_path = target_dir / "P04_implementation_plan.md"
+        p06_path = target_dir / "P06_test_plan.md"
+
+        p_up = phase_norm.upper()
+
+        # 1. P02 雙檔協同檢核：當檢核 P02 (或 P02 已存在且檢核 ALL/CURRENT) 時，必須存在 P06_test_plan.md
+        if p_up in ("P02", "ALL", "CURRENT") and p02_path.is_file():
+            if not p06_path.is_file():
+                report.issues.append(
+                    PlanIssue(
+                        severity=PlanSeverity.FAIL,
+                        file_name=f"{prefix}P06_test_plan.md",
+                        category="COMPANION",
+                        message=(
+                            "Phase 2 ('P02_architecture_plan.md') 已建立，但缺少同步初始化之測試計畫草案 'P06_test_plan.md'。 "
+                            "[Fix Hint: 請讀取 P06_test_plan.md 模板建立 Draft 測試計畫，或執行 plan verify <plan> --phase P02 --log '<摘要>' 自動補齊]"
+                        ),
+                    )
+                )
+
+        # 2. P04 雙檔協同檢核：當檢核 P04 (或 P04 已存在且檢核 ALL/CURRENT/P05/P06/P07) 時，P06 狀態必須已達 Confirmed 以上
+        if p_up in ("P04", "P05", "P06", "P07", "ALL", "CURRENT") and p04_path.is_file():
+            if not p06_path.is_file():
+                report.issues.append(
+                    PlanIssue(
+                        severity=PlanSeverity.FAIL,
+                        file_name=f"{prefix}P06_test_plan.md",
+                        category="COMPANION",
+                        message=(
+                            "Phase 4 ('P04_implementation_plan.md') 已建立，但缺少 'P06_test_plan.md'。 "
+                            "[Fix Hint: 請建立 P06_test_plan.md 並將狀態設為 Confirmed]"
+                        ),
+                    )
+                )
+            else:
+                p06_st = PlanStatusResolver.get_doc_header_status(p06_path)
+                if p06_st not in ("confirmed", "in progress", "passed", "completed"):
+                    report.issues.append(
+                        PlanIssue(
+                            severity=PlanSeverity.FAIL,
+                            file_name=f"{prefix}P06_test_plan.md",
+                            category="COMPANION",
+                            message=(
+                                f"Phase 4 ('P04_implementation_plan.md') 已建立，但 'P06_test_plan.md' 標頭狀態仍為 '{p06_st.title()}'（未達 Confirmed）。 "
+                                "[Fix Hint: 請補齊 P06_test_plan.md 測試細節並將頂部 '> 狀態：' 更新為 Confirmed]"
+                            ),
+                        )
+                    )
+
+        # 3. P01 <-> P06 追溯鏈集合差集比對 (當 P01 與 P06 皆存在，且處於 P04+ 或指定檢核 P04/P06/ALL/CURRENT 時)
+        should_check_traceability = False
+        if p01_path.is_file() and p06_path.is_file():
+            if p_up in ("P04", "P06", "P07"):
+                should_check_traceability = True
+            elif p_up in ("ALL", "CURRENT") and (p04_path.is_file() or PlanStatusResolver.get_doc_header_status(p06_path) in ("confirmed", "in progress", "passed", "completed")):
+                should_check_traceability = True
+
+        if should_check_traceability:
+            try:
+                p01_text = p01_path.read_text(encoding="utf-8", errors="ignore")
+                p06_text = p06_path.read_text(encoding="utf-8", errors="ignore")
+                p01_ids = self.extract_requirement_ids(p01_text)
+                if p01_ids:
+                    p06_upper = p06_text.upper()
+                    missing_ids = sorted(
+                        [rid for rid in p01_ids if not re.search(r"\b" + re.escape(rid) + r"\b", p06_upper)]
+                    )
+                    if missing_ids:
+                        missing_str = ", ".join(missing_ids)
+                        report.issues.append(
+                            PlanIssue(
+                                severity=PlanSeverity.FAIL,
+                                file_name=f"{prefix}P06_test_plan.md",
+                                category="TRACEABILITY",
+                                message=(
+                                    f"P01 需求規格書中之需求 ID 未於 'P06_test_plan.md' 完整映射（孤兒需求 ID 共 {len(missing_ids)} 項：{missing_str}）。 "
+                                    f"[Fix Hint: 請於 '{prefix}P06_test_plan.md' §1 自動化測試案例清單中補齊對應 {missing_str} 之 FT/ET/RT 測試案例]"
+                                ),
+                            )
+                        )
+            except Exception:
+                pass
+
+    def append_changelog_entry(
+        self,
+        target_dir: Path,
+        summary: str,
+        log_type: str = "PHASE",
+        model: str = "Unknown",
+    ) -> Tuple[bool, str]:
+        """
+        於 target_dir/changelog.md 表格頂部免讀盲寫插入新紀錄列 (含首筆 (類型, 摘要) 冪等防重入保護)。
+
+        Args:
+            target_dir: 目標計畫或子計畫目錄
+            summary: 變更摘要文字
+            log_type: 日誌類型標籤 (預設 PHASE)
+            model: 模型名稱 (預設 Unknown)
+
+        Returns:
+            Tuple[bool, str]: (是否實際寫入新列, 狀態碼 'appended' | 'idempotent_skipped')
+        """
+        changelog_path = target_dir / "changelog.md"
+        clean_type = log_type.strip().upper().strip("`") or "PHASE"
+        clean_summary = summary.strip().replace("\r", " ").replace("\n", " ")
+        clean_model = model.strip() if model and model.strip() else "Unknown"
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        if not changelog_path.exists():
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            is_sub = target_dir.name.startswith("sub_")
+            parent_name = target_dir.parent.name if is_sub else "N/A (Root Plan)"
+            cl_content = (
+                f"# 計畫變更紀錄 (Changelog)\n\n"
+                f"> 功能名稱：{target_dir.name}  \n"
+                f"> 建立日期：{today_str}  \n"
+                f"> 所屬主計畫：{parent_name}  \n"
+                f"> 狀態：In Progress  \n"
+                f"> 模型：{clean_model}  \n\n"
+                f"> 模板版本：v1.1  \n\n"
+                f"---\n\n"
+                f"## 變更紀錄\n\n"
+                f"| 日期時間 | 類型 | 模型 | 摘要 |\n"
+                f"| :--- | :---: | :--- | :--- |\n"
+                f"| {now_str} | `{clean_type}` | {clean_model} | {clean_summary} |\n"
+            )
+            changelog_path.write_text(cl_content, encoding="utf-8")
+            return True, "appended"
+
+        content = changelog_path.read_text(encoding="utf-8", errors="ignore")
+        lines = content.splitlines()
+
+        # 尋找表格分隔線 (如 | :--- | :---: | ...) 的位置
+        sep_idx = -1
+        for idx, line in enumerate(lines):
+            if "|" in line and re.match(r"^\|?\s*[-:]+\s*\|", line.strip()):
+                sep_idx = idx
+                break
+
+        if sep_idx == -1:
+            # 若無標準表格，於檔尾補建標準表格
+            new_row = f"| {now_str} | `{clean_type}` | {clean_model} | {clean_summary} |"
+            lines.extend([
+                "",
+                "## 變更紀錄",
+                "",
+                "| 日期時間 | 類型 | 模型 | 摘要 |",
+                "| :--- | :---: | :--- | :--- |",
+                new_row,
+            ])
+            changelog_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return True, "appended"
+
+        # 防呆 1-B：檢查第一筆資料列是否與 (clean_type, clean_summary) 完全相同（冪等防重入）
+        first_data_idx = sep_idx + 1
+        while first_data_idx < len(lines) and not lines[first_data_idx].strip():
+            first_data_idx += 1
+
+        if first_data_idx < len(lines) and "|" in lines[first_data_idx]:
+            cells = [c.strip() for c in lines[first_data_idx].strip().strip("|").split("|")]
+            if len(cells) >= 3:
+                existing_type = cells[1].strip().strip("`").upper()
+                existing_summary = cells[-1].strip()
+                if existing_type == clean_type and existing_summary == clean_summary:
+                    return False, "idempotent_skipped"
+
+        new_row = f"| {now_str} | `{clean_type}` | {clean_model} | {clean_summary} |"
+        lines.insert(sep_idx + 1, new_row)
+        changelog_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return True, "appended"
+
+
+    def _filter_files_by_phase(
+        self, target_dir: Path, phase_norm: str
+    ) -> List[Path]:
+        """根據指定之 --phase 過濾應檢核之主體 Markdown 檔案清單（不含 changelog.md）。"""
+        all_mds = [md for md in sorted(target_dir.glob("*.md")) if md.name != "changelog.md"]
+        p_up = phase_norm.upper()
+        if p_up in ("ALL", "CURRENT", ""):
+            return all_mds
+
+        phase_prefix_map = {
+            "P00": "P00_",
+            "P01": "P01_",
+            "P02": "P02_",
+            "P03": "P03_",
+            "P04": "P04_",
+            "P05": "P05_",
+            "P06": "P06_",
+            "P07": "P07_",
+        }
+        prefix = phase_prefix_map.get(p_up)
+        if not prefix:
+            return all_mds
+
+        matched = [md for md in all_mds if md.name.startswith(prefix)]
+        # P04 雙定稿時亦需一併檢核 P06_test_plan.md
+        if p_up == "P04":
+            p06_f = target_dir / "P06_test_plan.md"
+            if p06_f.is_file() and p06_f not in matched:
+                matched.append(p06_f)
+        return matched
+
+    def verify_plan(
+        self,
+        plan_path_or_name: Union[str, Path],
+        phase: str = "all",
+        log_msg: Optional[str] = None,
+        log_type: str = "PHASE",
+        model: Optional[str] = None,
+    ) -> PlanReport:
+        """
+        對指定計畫目錄執行四步檢核與伴隨檔自癒流水線，回傳結構化 PlanReport。
+        1. Step 1: 檢核目標階段主體檔合規性
+        2. Step 2: 若 Step 1 無 FAIL 且提供 log_msg (或為 P02)，自動初始化缺失之伴隨檔 (changelog.md, P06 Draft)
+        3. Step 3: 執行目錄結構、changelog、雙檔協同 (P02/P04 <-> P06) 與 P01<->P06 追溯差集比對
+        4. Step 4: 僅當 100% PASS (0 FAIL) 且提供 log_msg 時，自動以系統時間戳免讀盲寫追加 changelog.md
         """
         if isinstance(plan_path_or_name, str):
-            p = Path(plan_path_or_name)
+            raw_str = plan_path_or_name.strip()
+            p = Path(raw_str)
             if not p.is_absolute():
-                if (self.plans_dir / plan_path_or_name).is_dir():
-                    p = self.plans_dir / plan_path_or_name
-                elif (self.archive_dir / plan_path_or_name).is_dir():
-                    p = self.archive_dir / plan_path_or_name
+                if (self.plans_dir / raw_str).is_dir():
+                    p = self.plans_dir / raw_str
+                elif (self.archive_dir / raw_str).is_dir():
+                    p = self.archive_dir / raw_str
+                elif raw_str.startswith("sub_") and self.plans_dir.exists():
+                    # 支援直接傳入唯一 sub_XX 子計畫名稱 (EC-06)
+                    matched_subs = [
+                        d / raw_str
+                        for d in sorted(self.plans_dir.iterdir(), key=lambda x: x.name, reverse=True)
+                        if d.is_dir() and re.match(r"^\d{4}_\d{2}_\d{2}", d.name) and (d / raw_str).is_dir()
+                    ]
+                    if len(matched_subs) == 1:
+                        p = matched_subs[0]
+                    else:
+                        p = self.plans_dir / raw_str
                 else:
-                    p = self.plans_dir / plan_path_or_name
+                    p = self.plans_dir / raw_str
         else:
             p = plan_path_or_name
 
+        disp_name = (
+            f"{p.parent.name}/{p.name}"
+            if p.name.startswith("sub_") and p.parent != self.plans_dir
+            else p.name
+        )
+
         report = PlanReport(
-            plan_name=p.name,
-            plan_path=str(p.resolve()),
+            plan_name=disp_name,
+            plan_path=str(p.resolve()) if p.exists() else str(p),
             status=PlanSeverity.PASS,
             issues=[],
         )
@@ -688,47 +1116,93 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=".",
                     category="STRUCTURE",
-                    message=f"找不到指定的計畫目錄：'{p}'。",
+                    message=f"找不到指定的計畫目錄：'{p}'。 [Fix Hint: 請確認計畫目錄名稱或路徑是否正確]",
                 )
             )
             return report
 
-        # Stage 1: Structure & Depth Guard
-        self._check_nested_depth_and_structure(p, ".", report)
-
-        # Stage 2: Changelog Guard
-        changelog_path = p / "changelog.md"
-        self._check_changelog_content(changelog_path, "changelog.md", report)
-
-        # Stage 4: Verify Markdown Files in Root
+        phase_norm = (phase or "all").strip().upper()
         is_sub = p.name.startswith("sub_")
-        for md in sorted(p.glob("*.md")):
-            if md.name == "changelog.md":
-                continue
+        enable_auto_heal = bool(log_msg and log_msg.strip())
+
+        # 若 phase 指定具體 P00~P07，確認該階段主體檔案必須已存在
+        phase_prefix_map = {
+            "P00": "P00_discuss.md",
+            "P01": "P01_requirements_spec.md",
+            "P02": "P02_architecture_plan.md",
+            "P03": "P03_api_spec.md",
+            "P04": "P04_implementation_plan.md",
+            "P05": "P05_task.md",
+            "P06": "P06_test_plan.md",
+            "P07": "P07_walkthrough.md",
+        }
+        if phase_norm in phase_prefix_map:
+            exp_fname = phase_prefix_map[phase_norm]
+            if not any(f.name.startswith(phase_norm + "_") for f in p.glob("*.md")):
+                report.issues.append(
+                    PlanIssue(
+                        severity=PlanSeverity.FAIL,
+                        file_name=exp_fname,
+                        category="STRUCTURE",
+                        message=f"指定檢核階段 '{phase_norm}'，但目錄中找不到對應主體檔案 '{exp_fname}'。 [Fix Hint: 請先建立 '{exp_fname}' 後再執行檢核]",
+                    )
+                )
+
+        # Step 1: 檢核目標階段主體 Markdown 檔案本體合規性
+        target_mds = self._filter_files_by_phase(p, phase_norm)
+        for md in target_mds:
             self._verify_markdown_file(md, md.name, is_sub, report)
 
-        # 遞迴檢查 sub_* 目錄
-        for sub in sorted(p.iterdir(), key=lambda x: x.name):
-            if sub.is_dir() and sub.name.startswith("sub_"):
-                self._check_nested_depth_and_structure(sub, sub.name, report)
-                sub_changelog = sub / "changelog.md"
-                self._check_changelog_content(sub_changelog, f"{sub.name}/changelog.md", report)
-                for sub_md in sorted(sub.glob("*.md")):
-                    if sub_md.name == "changelog.md":
-                        continue
-                    self._verify_markdown_file(
-                        sub_md, f"{sub.name}/{sub_md.name}", True, report
-                    )
+        # Step 2: 若 Step 1 主體檔合規 (0 FAIL) 且提供 --log，自動補齊伴隨檔 (changelog.md 與 P02 伴隨之 P06 Draft)
+        if not report.has_fails and enable_auto_heal:
+            self._auto_heal_companions(p, phase_norm, model, report)
+            # 若伴隨生成了 P06_test_plan.md，對新生成之伴隨檔執行本體合規檢核
+            if "P06_test_plan.md" in report.companion_created:
+                p06_new = p / "P06_test_plan.md"
+                if p06_new.is_file() and p06_new not in target_mds:
+                    self._verify_markdown_file(p06_new, p06_new.name, is_sub, report)
 
-        # Stage 5: Aggregate Overall Status
+        # Step 3: 結構、changelog、雙檔協同 (P02/P04 <-> P06) 與 P01<->P06 追溯差集檢核
+        self._check_nested_depth_and_structure(p, ".", report)
+        changelog_path = p / "changelog.md"
+        self._check_changelog_content(changelog_path, "changelog.md", report)
+        self._check_cross_file_and_traceability(p, ".", phase_norm, report)
+
+        # 若為 Umbrella 主目錄且未指定特定單一 P0X 階段，遞迴檢查 sub_* 目錄
+        if phase_norm in ("ALL", "CURRENT"):
+            for sub in sorted(p.iterdir(), key=lambda x: x.name):
+                if sub.is_dir() and sub.name.startswith("sub_"):
+                    self._check_nested_depth_and_structure(sub, sub.name, report)
+                    sub_changelog = sub / "changelog.md"
+                    self._check_changelog_content(sub_changelog, f"{sub.name}/changelog.md", report)
+                    for sub_md in sorted(sub.glob("*.md")):
+                        if sub_md.name == "changelog.md":
+                            continue
+                        self._verify_markdown_file(
+                            sub_md, f"{sub.name}/{sub_md.name}", True, report
+                        )
+                    self._check_cross_file_and_traceability(sub, sub.name, phase_norm, report)
+
+        # Step 4: 彙總狀態，僅當 100% PASS (0 FAIL) 且提供 log_msg 時寫入 changelog.md (EC-03, EC-04)
         if report.has_fails:
             report.status = PlanSeverity.FAIL
-        elif report.has_warns:
-            report.status = PlanSeverity.WARN
+            if enable_auto_heal:
+                report.log_status = "skipped_on_fail"
         else:
-            report.status = PlanSeverity.PASS
+            if report.has_warns:
+                report.status = PlanSeverity.WARN
+            else:
+                report.status = PlanSeverity.PASS
+
+            if enable_auto_heal and log_msg:
+                resolved_model = self._resolve_companion_model(p, phase_norm, model)
+                _, l_status = self.append_changelog_entry(
+                    p, summary=log_msg, log_type=log_type, model=resolved_model
+                )
+                report.log_status = l_status
 
         return report
+
 
     def verify_all_plans(self, include_archived: bool = False) -> Dict[str, PlanReport]:
         """
