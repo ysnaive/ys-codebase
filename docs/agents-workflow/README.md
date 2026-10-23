@@ -10,7 +10,7 @@ related_docs:
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-22"
+last_updated: "2026-10-23"
 ---
 
 # Agents Workflow 模組 (General Agents Workflow Framework)
@@ -120,15 +120,15 @@ python yscb.py agents-workflow list
 python yscb.py agents-workflow compile
 
 # --- Dev Plans 工具鏈 (Plans Management Toolchain) ---
-# 掃描並輸出進行中開發計畫狀態矩陣 (ASCII 樹狀清冊)
-python yscb.py agents-workflow plan status
+# 掃描並輸出進行中開發計畫狀態矩陣，或執行斷點領航與 handoff.md 原子閱後即焚 (--resume)
+python yscb.py agents-workflow plan status [--plan <plan_name_or_subpath>] [--resume]
 
 # 跨計畫檢索決策記錄 (DR) 或全文程式碼
 python yscb.py agents-workflow plan search --dr [--year=YYYY] [--month=MM] [--limit=N]
 python yscb.py agents-workflow plan search "關鍵字" [--limit=N]
 
-# 稽核計畫文件合規性、模型標頭、佔位符與 Checkbox 完成度（--all 檢核所有活躍計畫）
-python yscb.py agents-workflow plan verify [plan_name] [--all]
+# 稽核計畫文件合規性、階段左移雙檔檢核、P01<->P06 追溯差集、伴隨檔自癒與免讀盲寫追加 changelog.md
+python yscb.py agents-workflow plan verify [plan_name_or_subpath] [--phase <P00..P07|current|all>] [--log "<摘要>" [--type PHASE|DECISION|REVISION] [--model "<ModelName>"]] [--all]
 
 # 安全歸檔已完成計畫至 workflow.archived://YYYY/MM/ (具備 4 重守門與 handoff 清理)
 python yscb.py agents-workflow plan archive <plan_name> [--force]

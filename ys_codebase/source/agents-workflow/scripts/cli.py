@@ -328,11 +328,36 @@ def plan_archive(cmd_bags: Any) -> int:
 
 
 def plan_status(cmd_bags: Any) -> int:
-    """掃描並輸出進行中之 Dev Plans 狀態矩陣 (ASCII 表格)。"""
+    """掃描並輸出進行中之 Dev Plans 狀態矩陣，或執行斷點領航與 handoff.md 原子閱後即焚 (--resume)。"""
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "plan_status")
     scanner = PlanScanner()
+
+    is_resume = bags.has_option("resume")
+    opt_plan = bags.get_option_value("plan")
+    target_plan = (
+        str(opt_plan).strip()
+        if isinstance(opt_plan, str) and opt_plan.strip()
+        else (bags.args[0] if bags.args else None)
+    )
+
+    if is_resume or target_plan:
+        if not is_resume:
+            # 未加 --resume 但指定了 --plan / plan_name：先印狀態矩陣，再印唯讀領航資訊
+            print(scanner.render_matrix_ascii())
+        res = scanner.execute_resume(
+            plan_name_or_subpath=target_plan,
+            consume_handoff=is_resume,
+        )
+        if not res.get("success", False):
+            # 若存在多個活躍計畫且未指定 --plan，先印出狀態矩陣方便使用者/Agent 確認
+            print(scanner.render_matrix_ascii())
+            print(res.get("formatted_output", ""))
+            return 1
+        print(res.get("formatted_output", ""))
+        return 0
+
     matrix_str = scanner.render_matrix_ascii()
     print(matrix_str)
     return 0
@@ -386,7 +411,7 @@ def plan_search(cmd_bags: Any) -> int:
 
 
 def plan_check(cmd_bags: Any) -> int:
-    """合規性診斷 Dev Plans 文件結構、標題與 Header 元數據。"""
+    """合規性診斷 Dev Plans 文件結構、雙檔協同、追溯差集與免讀盲寫追加 changelog.md。"""
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "plan_check")
@@ -394,9 +419,40 @@ def plan_check(cmd_bags: Any) -> int:
     is_json = bags.has_option("json")
     target_name = bags.args[0] if bags.args else None
 
+    opt_phase = bags.get_option_value("phase")
+    phase_str = str(opt_phase).strip() if isinstance(opt_phase, str) and opt_phase.strip() else "all"
+
+    opt_log = bags.get_option_value("log")
+    log_msg = str(opt_log).strip() if isinstance(opt_log, str) and opt_log.strip() else None
+
+    opt_type = bags.get_option_value("type")
+    log_type = str(opt_type).strip() if isinstance(opt_type, str) and opt_type.strip() else "PHASE"
+
+    opt_model = bags.get_option_value("model")
+    model_str = str(opt_model).strip() if isinstance(opt_model, str) and opt_model.strip() else None
+
     verifier = PlanVerifier()
+
+    # 若未指定 target_name 但傳入了 --log 或指定單一 --phase (非 all)，自動透過 PlanScanner 定位單一活躍計畫（含活躍 sub_XX）
+    if not target_name and (log_msg or phase_str.upper() not in ("ALL", "")):
+        scanner = PlanScanner()
+        t_dir, err_msg = scanner.resolve_target_plan_dir(None)
+        if err_msg or t_dir is None:
+            print(f"[agents-workflow:plan] [ERROR] {err_msg or '無法自動定位單一目標計畫，請明確傳入 <plan_name>。'}")
+            return 1
+        # 若為 Umbrella 且未指定子計畫，自動深入活躍 sub_XX
+        from agents_workflow.plans.status import PlanStatusResolver
+        nav = PlanStatusResolver.resolve_next_action(t_dir)
+        target_name = str(nav["target_plan_dir"])
+
     if target_name:
-        rep = verifier.verify_plan(target_name)
+        rep = verifier.verify_plan(
+            target_name,
+            phase=phase_str,
+            log_msg=log_msg,
+            log_type=log_type,
+            model=model_str,
+        )
         reports = {rep.plan_name: rep}
     else:
         reports = verifier.verify_all_plans(include_archived=include_all)
@@ -418,6 +474,14 @@ def plan_check(cmd_bags: Any) -> int:
     for p_name, r in reports.items():
         status_tag = f"[{r.status.value}]"
         print(f"[*] Plan: {p_name:<50} {status_tag}")
+        if r.companion_created:
+            print(f"    |-- [SELF-HEAL] 已自動初始化伴隨檔: {', '.join(r.companion_created)}")
+        if r.log_status == "appended":
+            print(f"    |-- [CHANGELOG] 已免讀自動追加變更日誌列 (Type: {log_type.upper()})")
+        elif r.log_status == "idempotent_skipped":
+            print(f"    |-- [IDEMPOTENT] 變更日誌首列已存在相同 (類型, 摘要)，略過重複寫入")
+        elif r.log_status == "skipped_on_fail":
+            print(f"    |-- [BLOCKED] 因檢核存在 FAIL，已阻斷寫入 changelog.md")
         if r.status != PlanSeverity.PASS:
             for iss in r.issues:
                 loc = f"{iss.file_name}:{iss.line_number}" if iss.line_number else iss.file_name

@@ -37,6 +37,7 @@ Phase 04 執行檢核表：
 - 審查 Phase 2 預排之 `P06` 測試案例，補齊執行指令、測試檔案與斷言條件。
 - 將 `P06_test_plan.md` 狀態由 `Draft` 修改為 **`Confirmed`**。
 - 嚴格守門：測試計畫未 Confirmed 前，**絕對禁止進入 Phase 5 寫任何一行程式碼**。
+- **左移追溯差集檢核與日誌盲寫**：定稿後執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify [plan_name] --phase P04 --log "完成 P04 實作計畫與 P06 測試計畫定稿" --model "<ModelName>"`，自動檢核 `P01` (`FR/EC/NFR`) 與 `P06` 之集合差集覆蓋率（100% 零孤兒需求 ID）並免讀追加 `changelog.md`。
 
 `__@{PHASE04_AGENTS_GUIDE}__`
 

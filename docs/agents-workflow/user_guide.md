@@ -12,7 +12,7 @@ related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-17"
+last_updated: "2026-10-23"
 ---
 
 # Agents Workflow 使用者與操作指南 (User Guide)
@@ -34,9 +34,17 @@ YS-Codebase 將所有開發計畫管理功能收斂為原生 CLI 子指令，零
   - **獨立型修訂**：當計畫目錄不含 `umbrella_overview.md`、`fast_track_plan.md` 與 `P01+`，而由 `revision_log.md` 單獨組成（或搭配前置 `P00` / `RXX`）時，`Track 模式` 顯示為 `Revision`。
 
 ```bash
-# 掃描並展示進行中開發計畫狀態矩陣
+# 1. 掃描並展示進行中開發計畫狀態矩陣 (100% 純唯讀)
 python yscb.py agents-workflow plan status
+
+# 2. 確定性狀態領航與 handoff.md 原子閱後即焚 (Consume & Delete)
+python yscb.py agents-workflow plan status --resume [--plan <plan_name_or_subpath>]
 ```
+
+- **確定性狀態領航與 `--resume` 原子閱後即焚**：
+  - `PlanStatusResolver.resolve_next_action` 自動深入 `Umbrella` 第一個未結案之活躍 `sub_XX` 子目錄，依據檔案與標頭狀態輸出 `Plan Mode`、`Current Breakpoint`、`Next Phase`、`Required Reference`（下一步必讀之 SOP 階段參考手冊路徑）與行動提示。
+  - 當傳入 `--resume` 且目標目錄存在 `handoff.md` 時，終端完整輸出快照內容後立即由 Python 呼叫 `os.unlink()` 物理刪除該檔案；未傳入 `--resume` 時維持 100% 純唯讀掃描。
+  - 若同時存在多個進行中計畫且未指定 `--plan`，為遵守零臆測原則，系統拒絕盲目挑選或刪除任何 `handoff.md`，並提示顯式傳入 `--plan`。
 
 > [!NOTE]
 > 依據設計規範，`plan status` 專注於活躍進行中計畫，**不掃描歷史封存目錄**。
@@ -110,15 +118,21 @@ Plan 名稱 / 來源檔案                           | DR ID / 標題           
 # 稽核所有活躍進行中計畫（預設行為，與 --all 等價）
 python yscb.py agents-workflow plan verify
 
-# 稽核指定活躍計畫
+# 稽核指定活躍計畫或子計畫
 python yscb.py agents-workflow plan verify 2026_10_14_1224_deep_audit_and_ecosystem_refinement
 
-# 顯式指定檢核所有活躍計畫（僅掃描 workflow.plans:// 活躍計畫，不掃描歷史封存目錄）
-python yscb.py agents-workflow plan verify --all
+# 單階段左移檢核、伴隨檔自癒 (P06 Draft / changelog.md) 與免讀盲寫追加日誌
+python yscb.py agents-workflow plan verify [plan_name_or_subpath] --phase P02 --log "完成 P02 架構設計與 P06 Draft 初始化" --model "Gemini 4 Argon (Low)"
 ```
 
-#### `PlanVerifier` 核心檢核規則
+#### `PlanVerifier` 核心檢核與自癒規則
 - **僅掃描活躍計畫邊界**：`verify_all_plans()`（含 `--all`）專注於檢核 `workflow.plans://` 下之活躍開發計畫（自動排除 `archived/` 與 `roadmap/`），不回溯掃描歷史已歸檔封存計畫。
+- **四步執行管線與 `--log` 免讀盲寫追加 (`4-Step Self-Healing & Zero-Read Log Pipeline`)**：
+  1. **Step 1 (主體檔檢核)**：先針對 `--phase <P00..P07|current|all>` 目標階段主體檔執行合規檢核。
+  2. **Step 2 (伴隨檔自癒)**：若 Step 1 無 `FAIL` 且提供 `--log`，自動從模板初始化缺失之 `changelog.md` 與 `P02` 伴隨之 `P06_test_plan.md (Draft)`（伴隨檔模型優先取 `--model`，次取同階段主體檔標頭，否則填 `Unknown`，嚴禁跨階段回溯舊檔）。
+  3. **Step 3 (雙檔協同與 `P01<->P06` 追溯差集比對)**：檢核 `P02` 時確認 `P06_test_plan.md` 存在；檢核 `P04+` 時確認 `P06_test_plan.md` 標頭狀態已達 `Confirmed` 以上，並自動提取 `P01` 之 `FR-\d+`/`EC-\d+`/`NFR-\d+`（預先剝除代碼塊、HTML 註解與 `~~...~~` 刪除線）與 `P06` 比對集合差集，精確攔截孤兒需求 ID。
+  4. **Step 4 (免讀盲寫與冪等防重入)**：僅當檢核 100% `PASS`（0 `FAIL`）時，自動以系統當前時間 `YYYY-MM-DD HH:MM` 於 `changelog.md` 表格頂部插入紀錄列，並比對首筆資料列之 `(類型, 摘要)` 防止重複寫入。
+- **自癒型可操作修復指引 (`Actionable Fix Hint`)**：所有 `FAIL` / `WARN` 診斷訊息均附帶 `[Fix Hint: ...]` 具體修復步驟。
 - **Header 元數據與 `> 模型：` 標頭強制檢核**：驗證 Markdown 開頭 Blockquote 是否齊備 `功能名稱`（或 `計畫名稱`）、`建立日期`、`狀態`（或 `計畫狀態`）以及 **`> 模型：`**（`has_model` 剛性檢查；填入平台當輪宣告之名稱，無法確認填 `Unknown`）。驗證器僅檢查欄位存在，**不驗證名稱真偽**，且不得據此反推模型。
 - **未填寫佔位符與指引攔截**：偵測檔案內是否殘留 `<!-- AGENT_GUIDANCE -->` 模板指引註解，或未替換之模板佔位符（如 `[平台宣告之模型名稱；無法確認填 Unknown]`、`[模型名稱]`、`[Model Name]`、`[YYYY-MM-DD]`、`[專案/功能名稱]`、`[修訂主題簡述]`、`[UI/UX/DX | Parameter | Docs]` 等）。
 - **`Completed` / `Concluded` 狀態未勾選 `- [ ]` 阻斷**：當文件標頭狀態標記為 `Completed` 或 `Concluded` 時，若內文仍存在任何未勾選之待辦 Checkbox（`- [ ]`），直接判定為 `FAIL` 阻斷通過。

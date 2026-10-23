@@ -35,6 +35,7 @@ Phase 02 執行檢核表：
 - 將 `P01` 定義之 `FR-XX` 映射至 `FT-XX`（功能測試）。
 - 將 `P01` 定義之 `EC-XX` 映射至 `ET-XX`（邊界測試）。
 - 規劃系統全量回歸測試 `RT-01`。
+- **CLI 自癒與免讀日誌追加**：撰寫完 `P02_architecture_plan.md` 後，可直接執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify [plan_name] --phase P02 --log "完成 P02 架構設計與 P06 Draft 初始化" --model "<ModelName>"`（若尚未手動建立 `P06_test_plan.md`，工具鏈將於 `P02` 檢核通過時自動依據 `P01` 需求 ID 初始化 `P06_test_plan.md (Draft)` 並免讀追加 `changelog.md`）。
 
 `__@{PHASE02_AGENTS_GUIDE}__`
 

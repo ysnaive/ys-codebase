@@ -14,8 +14,8 @@ description: 管理 `__${project://plans/}__` 開發計畫全生命週期 (SOP P
 - **進行中計畫 (Active Plans)**：`__${project://plans}__/{YYYY_MM_DD_HHMM_功能名稱}/`
 - **歷史封存計畫 (Archived Plans)**：`__${project://plans/archived}__/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`
 - **長期策略路線圖 (Roadmap)**：`__${workflow.roadmap://}__`
-- **日誌分離鐵律**：
-  - `__${project://plans}__/<plan>/changelog.md`（微觀日誌）：記錄階段流轉、DR 決策與偏差，建檔時**必須伴隨初始化**。
+- **日誌分離與免讀盲寫鐵律**：
+  - `__${project://plans}__/<plan>/changelog.md`（微觀日誌）：記錄階段流轉、DR 決策與偏差，建檔時**必須伴隨初始化**。推進各階段時，優先調用 `python __${yscb.host://yscb.py}__ agents-workflow plan verify [plan_name] --phase <P0X> --log "<摘要>" [--type PHASE|DECISION|REVISION] --model "<ModelName>"` 一次完成階段合規檢核、伴隨檔自癒與 `changelog.md` 免讀盲寫追加（`--log` 內文嚴禁使用雙引號 `"` 與反引號 `` ` ``，一律改用單引號 `'...'` 或方括號 `[...]`），免除手動讀取與編輯 `changelog.md` 的 Context 消耗。
   - [`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`)（宏觀日誌）：僅於 Phase 7 / FP-03 結案時追加高階變更摘要。
 - [!] **巢狀子計畫最多兩層約束**：僅允許「主計畫 -> 子計畫（`sub_{編號}_{目的}/`）」，**絕對禁止三層或更多層嵌套**。
 - **生命週期工作流中樞分流 (Lifecycle Workflow Hub Routing)**：

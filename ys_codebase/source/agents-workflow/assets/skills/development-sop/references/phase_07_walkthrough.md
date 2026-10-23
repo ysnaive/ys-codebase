@@ -42,7 +42,7 @@ flowchart TD
 ### 步驟 3：執行計畫合規檢核最終守門 (Final Compliance Verification Gate)
 - [ ] **代碼清理**：無死代碼、無除錯 print/log、無敷衍之 quick-and-dirty hack。
 - [ ] **測試完整覆蓋**：所有單元測試與整合測試 100% 通過，無跳過或被破壞之斷言。
-- [ ] **計畫合規性檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name>`，確認計畫文件結構完整、無未填寫之 `[...]` 佔位符、無未勾選 Checkbox 且標頭模型與狀態合法（100% Passed）；若檢出未通過項則原地修正後重驗。
+- [ ] **計畫合規性檢核**：實機執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify <plan_name> [--log "完成 P07 結案與 SOP 審查" --model "<ModelName>"]`，確認計畫文件結構完整、無未填寫之 `[...]` 佔位符、無未勾選 Checkbox、`P01<->P06` 需求追溯 100% 覆蓋且標頭模型與狀態合法（100% Passed）；若檢出未通過項則原地修正後重驗。
 
 ---
 
