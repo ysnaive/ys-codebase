@@ -72,11 +72,11 @@
 
 2. [步驟 2：呈遞「設定健康度報告與代寫提案卡」(Diagnosis & Draft Gate)]
    - 列出 [✅ 已就緒項目] 與 [⚠️ 待配置/異常項目]（含 `.gitignore` 之 `*.local.json` 檢查結果）
-   - 針對缺失項（如未設定專案 Role 與外部工具包邊界、或缺少某模組組態），直接基於探勘結果擬定「推薦配置草稿」（預設自動將 `.modules/` 與常見第三方目錄納入外部工具包黑盒底盤，並自啟用之 `release_target` contribute 宣告動態解析二層物化唯讀空間），明確標示目標組態層級（`config.project.json` 團隊共享 vs. `config.local.json` 本機個人，或 `config://agents-workflow/assets/` 角色邊界片段），詢問開發者是否確認由 Agent 代寫修復並執行 `agents-workflow release` 物化同步
+   - 針對缺失項（如未設定專案 Role 與外部工具包邊界、或缺少某模組組態），直接基於探勘結果擬定「推薦配置草稿」（預設自動將 `.modules/` 與常見第三方目錄納入外部工具包黑盒底盤，並自啟用之 `release_target` contribute 宣告動態解析二層物化唯讀空間），明確標示目標組態層級（`config.project.json` 團隊共享 vs. `config.local.json` 本機個人，或 `config://agents-workflow/snippets/project_role.md` 角色邊界片段），詢問開發者是否確認由 Agent 代寫修復並執行 `agents-workflow release` 物化同步
 
 3. [步驟 3：授權後直接代寫／修復配置與三步嚴格編譯驗證守門 (Guided Fix & 3-Step Verification Gate)]
    - 獲開發者確認後（如需深入某模組特殊參數則按語意連結讀取該模組隨包手冊），透過 `yscb.py config set` 或標準組態空間路徑（`config://`，嚴禁直接修改 `.modules/` 運行空間）代寫或修復組態檔
-   - 強制依序執行：① `contributes check` $\to$ ② `agents-workflow compile`（確認 0 Error / 0 Warning）$\to$ ③ `agents-workflow release` 編譯物化驗證，確認根目錄規範檔與各模組設定已 100% 生效且無異常
+   - 若修改觸及 `agents-workflow` 組態（如 `release_targets`、`contribute.json`）或第一層文檔片段（`config://agents-workflow/snippets/`、`config://agents-workflow/skills/`），強制依序自動串接執行：① `contributes check` $\to$ ② `agents-workflow compile`（確認 0 Error / 0 Warning）$\to$ ③ `agents-workflow release` 編譯物化驗證，確保根目錄規範檔與二層物化空間立即熱更新生效且無斷鏈異常
 
 4. [步驟 4：新開實戰 Session 隔離提醒 (Clean-Session Handoff Notice)]
    - 提醒開發者：「設定已完成修復並生效！為載入最新物化之 AGENTS.md 並釋放最完整的 Agent 實戰能力，請開啟『全新對話 Session』進行開發，且不要觸發 /how-to-config-yscb」
@@ -86,7 +86,7 @@
 
 1. **組件一：`AgentsStandards.md` 專案角色與主客體空間邊界錨點 (`PROJECT_ROLE_AND_BOUNDARIES`)**：
    - 於 `AgentsStandards.md` 頂部預留選配注入錨點（`PROJECT_ROLE_AND_BOUNDARIES`），專門承接下游專案之角色與空間邊界定義。
-   - **統一存放與跨平台同步規範**：下游專案之角色與空間邊界片段統一存放於 **`config://agents-workflow/assets/project_role.md`**，並於 **`config://agents-workflow/contribute.json`** 宣告 `insert` 至 `PROJECT_ROLE_AND_BOUNDARIES` 錨點（與 `skill-creator` 第一層源碼存放規範 100% 統一，編譯發布時自動同步物化至各啟用 `release_target` 宣告之 `agents_md` 託管區塊內，未配置時自動抹除空錨點）。
+   - **統一存放與跨平台同步規範（對齊現行 `config://agents-workflow/{snippets,skills}/` 扁平結構）**：下游專案之角色與空間邊界片段統一存放於 **`config://agents-workflow/snippets/project_role.md`**，並於 **`config://agents-workflow/contribute.json`** 宣告 `insert` 至 `PROJECT_ROLE_AND_BOUNDARIES` 錨點（與現行 `config/agents-workflow/contribute.json` 之 `snippets/` 與 `skills/` 第一層源碼存放慣例及 `skill-creator` 100% 統一，不額外嵌套冗餘 `assets/` 層級；編譯發布時自動同步物化至各啟用 `release_target` 宣告之 `agents_md` 託管區塊內，未配置時自動抹除空錨點）。
    - **預設外部工具包黑盒底盤與動態二層物化空間區分（防呆 1）**：
      - 當 `how-to-config-yscb` 為開發者草擬 `project_role.md` 時，預設自動將 **`module://`（`.modules/` YSCB 模組運行空間，僅查閱隨包 `README.md`）** 以及常見第三方目錄（如 `vendor/`、`third_party/`、`external/`）納入「外部工具包與黑盒依賴清單」候選草稿（禁止於排查業務邏輯時深讀其內部代碼或直接修改）。
      - 針對工作流二層物化目錄，**嚴禁硬編碼 `.agents/` 或 `.claude/`**，強制依據當前啟用之 `release_target` 在 `contributes` 中宣告的 `projections` 目標路徑動態解析，並於角色邊界中標註為**「工作流二層物化唯讀空間（按技能指引唯讀調用，嚴禁手動直接修改，所有客製化一律走第一層 `config://agents-workflow/`）」**。

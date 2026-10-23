@@ -70,7 +70,7 @@
    - 呈遞「擴充藍圖確認卡」（含推薦軌跡、目標存放位置、預計使用之語意 URI、預計掛載之錨點），強制 End Turn 等待開發者拍板
 
 3. [步驟 3：合規資產生成與單反引號語法封裝 (Compliant Asset Generation)]
-   - 依拍板藍圖於 `config://agents-workflow/assets/` 生成 SKILL.md（及按需拆分之單層 references/）或錨點注入片段
+   - 依拍板藍圖於 `config://agents-workflow/skills/<name>/SKILL.md`（及按需拆分之單層 `references/`）或 `config://agents-workflow/snippets/<name>.md` 生成第一層資產
    - 自動執行路徑語意化轉換，並強制套用單反引號包覆（`__@{token}__`、[`text`](`__#{uri}__`)、`__${uri}__`）與雙軌 description 規範
 
 4. [步驟 4：宣告式組態註冊與三步嚴格編譯驗證守門 (Declarative Registration & 3-Step Verification Gate)]
@@ -98,9 +98,9 @@
    | **B. 專案環境注意事項／工具攔截** | 涉及特定目錄、特定工具呼叫或跨階段領域規範，不遵守會違反團隊工程標準之長篇規範 | **軌跡 ②：被動環境攔截型 Skill**<br>*(新建 `SKILL.md` + 注入 `__@{AGENTS_SKILL_ROUTING}__`)* | 採用**三段式結構化 `description`**，並掛載於全域條件式分流表強制攔截 |
    | **C. 專案特定功能工作流** | 針對專案特定子系統之多步驟建置、打包、遷移或專屬業務 SOP | **軌跡 ③：功能特化型 Skill**<br>*(新建 `SKILL.md` + 註冊匯出與中樞/路由掛載)* | 屬 Slash 主動呼叫者採**極簡指令契約**；屬意圖自動觸發者採**三段式結構化邊界** |
 
-3. **核心機制二：標準存放空間 (`config://agents-workflow/assets/`)、錨點／URI 自動檢索與語法防呆**：
-   - **第一層源碼與組態唯一標準位置（去特化純淨基底）**：
-     - 專案特化 Skill 或注入片段之第一層源碼固定存放於 **`config://agents-workflow/assets/`**（例如 `config://agents-workflow/assets/skills/<name>/SKILL.md`），並於 **`config://agents-workflow/contribute.json`** 中以 `config://...` URI 宣告 `export` 與 `insert`。
+3. **核心機制二：標準存放空間 (`config://agents-workflow/{skills,snippets}/`)、錨點／URI 自動檢索與語法防呆**：
+   - **第一層源碼與組態唯一標準位置（對齊現行扁平目錄慣例與去特化純淨基底）**：
+     - 專案特化 Skill 或注入片段之第一層源碼固定存放於 **`config://agents-workflow/skills/<name>/SKILL.md`**（獨立技能）與 **`config://agents-workflow/snippets/<name>.md`**（純錨點注入片段），與本倉現行 `config/agents-workflow/contribute.json` 扁平目錄結構 100% 對齊（不額外多套一層 `assets/`），並於 **`config://agents-workflow/contribute.json`** 中以 `config://...` URI 宣告 `export` 與 `insert`。
      - 通用 `skill-creator` 嚴格保持去特化（不混入特定模組開發路徑說明），並暴露 `SKILL_CREATOR_STANDARDS` 擴充錨點供進階開發模組按需注入專屬分流選項。
    - **自動盤點可用資源**：Agent 執行 `skill-creator` 時，直接調用系統 `[SAFE]` CLI（`python yscb.py agents-workflow tokens` 與 `python yscb.py uri list`）並搭配內建參考指南（`references/extension-guide.md`）動態檢索：
      1. **系統預留之 Stage 1 注入錨點（`__@{...}__`）**：例如全域條件分流表錨點（`AGENTS_SKILL_ROUTING`）、CLI 權限表錨點（`AGENTS_CLI_GUIDE`）、熱啟動錨點（`WORKFLOW_CONTEXTINIT`）、SOP 主檔與各階段錨點（`WORKFLOW_SOP_STANDARDS`、`PHASE00_AGENTS_GUIDE` ～ `PHASE07_AGENTS_GUIDE`）、調研與技能審查錨點（`RESEARCH_AGENTS_GUIDE`、`SKILL_OPTIMIZER_STANDARDS`）。
@@ -114,7 +114,7 @@
      ```markdown
      ### 🛠️ /SkillCreator 專案擴充藍圖確認卡
      - **需求分類**：[軌跡 ① 純錨點注入 | 軌跡 ② 環境攔截型 Skill | 軌跡 ③ 功能特化型 Skill]
-     - **預計產出資產 (`config://agents-workflow/assets/`)**：[新建 Skill 名稱與參考檔規劃 / 或純注入片段說明]
+     - **預計產出資產 (`config://agents-workflow/{skills,snippets}/`)**：[新建 Skill 名稱與參考檔規劃 / 或純注入片段說明]
      - **掛載錨點 (`__@{...}__`)**：[預計於 `config://agents-workflow/contribute.json` 注入之目標錨點名稱與觸發條件]
      - **引用語意 URI (`__#{...}__` / `__${...}__`)**：[預計於內文引用之標準語意 URI 清單（同技能內部 `references/` 則採 `./references/...`）]
      - **待確認事項**：請問是否同意此擴充藍圖？確認後將生成第一層資產、寫入 `contribute.json`，並依序通過 `contributes check` 與 `compile` 檢核後執行 `agents-workflow release` 物化驗證。
