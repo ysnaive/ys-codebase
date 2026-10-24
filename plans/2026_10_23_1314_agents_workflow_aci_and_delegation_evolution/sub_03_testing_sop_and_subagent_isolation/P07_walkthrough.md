@@ -13,7 +13,7 @@
 ## 1. 變更概述 (Executive Summary)
 
 - **核心功能落地**：
-  1. **環境型技能 `testing-sop` 與漸進式揭露雙層結構 (`FR-01`, `FR-02`, `NFR-01`)**：建立主技能檔 `assets/skills/testing-sop/SKILL.md`（58 行，內建六大自動化測試建置與回歸鐵律：子系統 1:1 歸戶、實質副作用與正負雙向斷言、管線實機產出驗證、零歷史墓碑、100% 狀態隔離與沙盒零殘留、本體獨立性；Phase 06 自檢清單與 `__@{TESTING_SOP_STANDARDS}__` 錨點）與按需載入參考指南 `references/test_suite_audit_and_purification.md`（`T-01`~`T-06` 六大測試病灶體檢模型與三步純化收斂工作流）；於 `contributes/agents-workflow.json` 註冊技能與 Token，並於 `ys_codebase/config/agents-workflow/snippets/testing_guide.md` 注入本倉測試規範。
+  1. **環境型技能 `testing-sop` 與漸進式揭露雙層結構 (`FR-01`, `FR-02`, `NFR-01`)**：建立主技能檔 `assets/skills/testing-sop/SKILL.md`（58 行，內建六大自動化測試建置與回歸鐵律：子系統 1:1 歸戶、實質副作用與正負雙向斷言、管線實機產出驗證、零歷史墓碑、100% 狀態隔離與沙盒零殘留、本體獨立性；Phase 06 自檢清單與 `__@{TESTING_SOP_STANDARDS}__` 錨點）與按需載入參考指南 `references/test_suite_audit_and_purification.md`（`T-01`~`T-06` 六大測試病灶體檢模型與三步純化收斂工作流）；於 `contributes/agents-workflow.json` 註冊技能與 Token（專案層級之 `testing_guide.md` 交由 `sub_04` `/how-to-config-yscb` 動態探勘與確認後代寫）。
   2. **全鏈路引用連鎖觸發與 Phase 06 雙重守門 (`FR-03`)**：於 `AgentsStandards.md` §2 條件式技能路由表、`development-sop/SKILL.md`、`phase_04_plan.md`、`phase_05_task.md`、`phase_06_test.md`（守門 ① 子系統回歸全綠 + 守門 ② 新增測試反模式自檢）與 `plan_modes.md` (`FP-02`) 植入強制引用連鎖觸發。
   3. **三支柱門檻觸發式 Subagent 委派協定 (`FR-04` ~ `FR-06`, `EC-01` ~ `EC-04`)**：於 `research` / `discuss`（支柱一：唯讀廣域探索與 150~300 Tokens 回傳）、`auto` / `phase_05` / `phase_06`（支柱二：門檻觸發序列實作、檔案路徑傳址、二振失敗熔斷 `2-Strike Limit`、5 行結構化回傳與 `plans/` Single-Writer 鐵律）及 `phase_07` Step 1（支柱三：唯讀 Fresh-Eyes Review、`Untracked (??)` 新檔審查防護與防吹毛求疵三類硬性契約）內化委派協定，並提供無子代理環境自動降級機制。
   4. **多路線圖合流 `promote` 無損追加合併 (`FR-07`, `EC-05`)**：升級 `RoadmapManager.promote_roadmap()`，當目標計畫目錄已存在 `roadmap.md` 時自動以分隔線無損追加合併新路線圖內容並刪除來源檔案。
@@ -27,8 +27,6 @@
 | `ys_codebase/source/agents-workflow/assets/skills/testing-sop/SKILL.md` | New | 建立環境型技能主檔（六大測試鐵律、Phase 06 自檢清單與 `TESTING_SOP_STANDARDS` 錨點） |
 | `ys_codebase/source/agents-workflow/assets/skills/testing-sop/references/test_suite_audit_and_purification.md` | New | 建立存量測試集 `T-01`~`T-06` 六維度體檢模型與三步純化工作流參考手冊 |
 | `ys_codebase/source/agents-workflow/contributes/agents-workflow.json` | Modify | 註冊 `testing-sop` 技能匯出與 `TESTING_SOP_STANDARDS` Token |
-| `ys_codebase/config/agents-workflow/snippets/testing_guide.md` | New | 建立本倉專屬測試規範片段（跑測指令、紅線、子系統歸戶與 `YSCBTestCase` 契約） |
-| `ys_codebase/config/agents-workflow/contribute.json` | Modify | 注入 `testing_guide.md` 至 `TESTING_SOP_STANDARDS` 錨點 |
 | `ys_codebase/source/agents-workflow/assets/standards/AgentsStandards.md` | Modify | §2 條件式技能路由表新增 `testing-sop` 強制觸發路由列 |
 | `ys_codebase/source/agents-workflow/assets/skills/development-sop/SKILL.md` | Modify | §1 中樞分流清單新增 `testing-sop` 導航入口 |
 | `ys_codebase/source/agents-workflow/assets/skills/development-sop/references/phase_04_plan.md` | Modify | §3 植入定稿 `P06_test_plan.md` 前強制觸發 `testing-sop` 連鎖引用 |

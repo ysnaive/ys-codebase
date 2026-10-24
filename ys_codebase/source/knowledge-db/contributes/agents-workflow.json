@@ -10,6 +10,7 @@
   "token": [
     {
       "name": "KNOWLEDGE_DB_SPACE",
+      "value": "KNOWLEDGE_DB_SPACE",
       "description": "知識庫已註冊空間清單動態注入錨點（位於 knowledge-db-search/SKILL.md）"
     }
   ],
@@ -42,6 +43,18 @@
       "type": "uri",
       "token": "PHASE07_AGENTS_GUIDE",
       "value": "module://knowledge-db/assets/phase07_guide.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_CONFIG_MODULES",
+      "value": "module://knowledge-db/assets/config_guide.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_YSCB_MODULES",
+      "value": "module://knowledge-db/assets/usage_guide.md",
       "mode": "below"
     }
   ]

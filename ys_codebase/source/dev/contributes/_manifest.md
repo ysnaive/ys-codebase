@@ -20,7 +20,7 @@
   - `on_test_teardown`: 沙盒測試套件完成後清理時觸發。
 
 ### 1.2 `agents-workflow.json`（技能匯出與路由注入）
-- 匯出 `yscb-module-dev` 模組開發技能，並向 `AGENTS_SKILL_ROUTING` 錨點注入生態系模組開發與熱調試條件路由。
+- 匯出 `yscb-module-dev` 模組開發技能，並向 `AGENTS_SKILL_ROUTING`、`HOW_TO_CONFIG_MODULES` 與 `HOW_TO_YSCB_MODULES` 錨點注入生態系模組開發路由、體檢與使用指南。
 
 ## 2. 內部擴充清冊 (Ingress Contributions)
 

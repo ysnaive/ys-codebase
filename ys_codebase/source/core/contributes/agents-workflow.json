@@ -5,6 +5,18 @@
       "token": "AGENTS_CLI_GUIDE",
       "value": "code.func://core/providers:get_agents_cli_guide",
       "mode": "replace"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_CONFIG_MODULES",
+      "value": "module://core/assets/config_guide.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_YSCB_MODULES",
+      "value": "module://core/assets/usage_guide.md",
+      "mode": "below"
     }
   ]
 }

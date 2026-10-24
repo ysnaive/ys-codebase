@@ -13,6 +13,18 @@
       "token": "AGENTS_SKILL_ROUTING",
       "value": "| **生態系模組開發 / 多模組熱調試 (Dogfooding)**<br/>*(修改 project://source/ 源碼、沙盒測試、@build 安裝或發布前)* | `yscb-module-dev` |",
       "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_CONFIG_MODULES",
+      "value": "module://dev/assets/config_guide.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_YSCB_MODULES",
+      "value": "module://dev/assets/usage_guide.md",
+      "mode": "below"
     }
   ]
 }

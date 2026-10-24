@@ -90,6 +90,18 @@
       "description": "針對既有 Skill 執行靜態診斷、無損重構與 A/B 基準評測生成。僅於顯式輸入 /skill-optimizer 或明確指示審查優化 Skill 時觸發。"
     },
     {
+      "type": "skill",
+      "name": "how-to-config-yscb",
+      "source": "module://agents-workflow/assets/skills/how-to-config-yscb",
+      "description": "盤點與診斷專案內 YSCB 各模組組態、工作流空間映射及專案角色邊界設定狀況，並於確認後代寫修復配置。僅於顯式輸入 /how-to-config-yscb 或明確要求檢查與設定工具包組態時觸發。"
+    },
+    {
+      "type": "skill",
+      "name": "how-to-yscb",
+      "source": "module://agents-workflow/assets/skills/how-to-yscb",
+      "description": "切換為互動式教練角色，結合工作流核心心法與各模組標準用法速查卡及隨包手冊，引導使用者掌握工具最佳實踐。僅於顯式輸入 /how-to-yscb 或明確要求教學引導時觸發。"
+    },
+    {
       "type": "template",
       "source": "module://agents-workflow/assets/templates/P00_discuss.md",
       "description": "Phase 0 討論模板"
@@ -238,6 +250,18 @@
     {
       "value": "TESTING_SOP_STANDARDS",
       "description": "專案特化自動化測試流程、框架指令與沙盒規範注入錨點（位於 testing-sop/SKILL.md）"
+    },
+    {
+      "value": "PROJECT_ROLE_AND_BOUNDARIES",
+      "description": "專案角色定位與主客體空間邊界注入錨點（位於 AgentsStandards.md 頂部，於核心原則之前）"
+    },
+    {
+      "value": "HOW_TO_CONFIG_MODULES",
+      "description": "已安裝模組之設定與體檢指南動態注入錨點（位於 how-to-config-yscb/SKILL.md）"
+    },
+    {
+      "value": "HOW_TO_YSCB_MODULES",
+      "description": "已安裝模組之功能速查與隨包手冊索引注入錨點（位於 how-to-yscb/SKILL.md）"
     }
   ],
   "insert": [

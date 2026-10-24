@@ -293,3 +293,24 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
    - **零劇透盲審傳址**：不告知子代理本次計畫實作內容，僅提供計畫目錄路徑由子代理自行探索規格（`P01`/`P03`/`P04`）與版本控制變更（`git status --short`、`git diff HEAD` 及直讀 `Untracked` 新檔），杜絕提示詞錨定偏誤。
    - **純靜態唯讀禁跑測**：明確告知子代理嚴禁執行任何實機指令或測試運行，僅可運行唯讀工具進行靜態檢查；僅審查敷衍修補、測試反模式、需求遺漏與文檔未同步三類硬性契約，無缺失回傳 `REVIEW_STATUS: PASSED`。
    - **條件式複審**：進入 `Phase 07` 結案時，若 UX 驗收期間完全未更動生產或測試代碼，直接由主 Agent 執行常規文檔與註解審閱；若 UX 測試曾更動原始碼或核心邏輯，則強制再次派發支柱三 Subagent 進行二度冷眼盲審。
+
+---
+
+## 7. 互動式配置教練 (`/how-to-config-yscb`) 與實戰上手領航 (`/how-to-yscb`)
+
+### 7.1 專案角色邊界錨點 (`PROJECT_ROLE_AND_BOUNDARIES`)
+`AgentsStandards.md` 頂部（於 `## 1. 核心原則` 之前）提供獨立錨點 `` `__@{PROJECT_ROLE_AND_BOUNDARIES}__` ``。專案可於 `config/agents-workflow/contribute.json` 注入 `config://agents-workflow/snippets/project_role.md`，明確定義「① 專案角色與核心使命、② 第一方活躍開發範疇、③ 外部工具鏈與運行期黑盒邊界、④ 工作流物化唯讀空間」，使 Agent 於 `/context-init` 熱啟動首步即精準掌握主客體邊界，並對未配置專案自動靜默抹除（零殘留）。
+
+### 7.2 專案空間自適應配置與跨模組組態體檢教練 (`/how-to-config-yscb`)
+透過動態聚合錨點 `` `__@{HOW_TO_CONFIG_MODULES}__` `` 匯聚所有已安裝模組之 `assets/config_guide.md`，執行四步閉環：
+1. **Step 1（自動空間探勘與多模組健康檢查）**：執行 `status`、`config list`、`uri check`、`contributes check`、檢查 `.gitignore` 是否忽略 `*.local.json`，並依各模組體檢指南逐一核對。
+2. **Step 2（診斷報告與配置草案卡）**：支援**全綠健康短路 (All-Green Short-Circuit)**（全綠時不強行覆寫組態）與**第一方專案三位一體對齊 (First-Party Trinity Alignment)**（單次目錄探勘同步生成 `project_role.md`、`testing_guide.md` 與 `knowledge-db` `spaces.source.include` 草案，並嚴格區分 `config.project.json` 與 `config.local.json` 雙層階層）。
+3. **Step 3（引導寫入與三步編譯發布守門）**：確認後寫入組態，並強制通過 `contributes check` $\to$ `agents-workflow compile`（0 Error / 0 Warning）$\to$ `agents-workflow release` 三步守門。
+4. **Step 4（潔淨對話切換提示）**：提醒開發者開啟全新對話視窗以乾淨 Context 載入更新後的 `AGENTS.md` 與技能。
+
+### 7.3 生態系互動式上手與實戰領航教練 (`/how-to-yscb`)
+透過動態聚合錨點 `` `__@{HOW_TO_YSCB_MODULES}__` `` 匯聚所有已安裝模組之 `assets/usage_guide.md`：
+1. **雙入口自適應領航**：無參數呼叫時提供已安裝模組能力總覽與 `A~D` 探索切角選單；帶具體問題呼叫時直接跳過選單給出精準解答與黃金連招。
+2. **兩階段漸進式知識調度**：第一階段依內建 6 大計畫模式選型表與模組速查面板秒答；第二階段於開發者追問深層細節時，按需讀取各模組速查表底部的隨包手冊連結（`__#{module://<mod>/README.md}__`）。
+3. **純唯讀教練護欄與新對話一鍵啟動指令塊**：教練視窗嚴禁直接修改代碼或建立計畫，需要配置時轉介 `/how-to-config-yscb`，準備正式開發時提供可直接複製貼上至新對話的啟動指令塊。
+

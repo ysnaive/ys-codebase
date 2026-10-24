@@ -11,5 +11,8 @@
   - `server status`: 檢視 Master/Worker PID、Port 與 Idle TTL 倒數。
   - `server reload`: 重載 Warm Worker 子進程與模組快取。
 
+### 1.2 `agents-workflow.json`（工作流擴充）
+- 向 `HOW_TO_CONFIG_MODULES` 與 `HOW_TO_YSCB_MODULES` 錨點注入常駐服務組態體檢與使用指南。
+
 ## 2. 開放擴充點清冊 (Ingress Points)
 - `services`: 允許領域模組註冊背景常駐 Worker（例 `knowledge-db-watcher`）。
