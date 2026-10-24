@@ -85,19 +85,39 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
             print(res.format_report(file_label=file_uri))
             return 0 if res.is_valid else 1
 
-        target_mod = fname[:-5]
+        if fname == "contribute.json":
+            # For config://<target>/contribute.json or .../<target>/contribute.json, target is parent folder
+            parent_dir = os.path.dirname(p.rstrip("/\\"))
+            target_mod = os.path.basename(parent_dir)
+            donor_mod = "project"
+        else:
+            target_mod = fname[:-5]
+            donor_mod = None
+
         target_format = contributes.get_format(target_mod)
         if target_format is None:
             print(f"[core:contributes] [WARN] Target module '{target_mod}' does not define a _format.json schema. Skipping validation.")
             return 0
 
         data = uri.read_json(file_uri) if "://" in file_uri else uri.read_json(p)
-        res = ContributesValidator.validate(target_mod, data, format_schema=target_format, strict_points=True)
+        # Handle shell unwrap if payload wrapped in {target_mod: ...}
+        if isinstance(data, dict) and target_mod in data and isinstance(data[target_mod], dict):
+            data = data[target_mod]
+
+        res = ContributesValidator.validate(target_mod, data, donor_mod=donor_mod, format_schema=target_format, strict_points=True)
         print(res.format_report(file_label=file_uri))
         return 0 if res.is_valid else 1
 
     # 3. Module-level or All-modules check
-    modules_to_check = [target_or_uri] if target_or_uri else (uri.listdir("module://") if uri.exists("module://") else [])
+    if target_or_uri:
+        mod_uri = f"module://{target_or_uri}"
+        cfg_uri = f"config://{target_or_uri}/contribute.json"
+        if not uri.exists(mod_uri) and not uri.exists(cfg_uri):
+            print(f"[core:contributes] [FAIL] Module or target not found: {target_or_uri}")
+            return 1
+        modules_to_check = [target_or_uri]
+    else:
+        modules_to_check = uri.listdir("module://") if uri.exists("module://") else []
     if not modules_to_check:
         print("[core:contributes] No installed modules found to check.")
         return 0
@@ -107,35 +127,52 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
 
     for donor in modules_to_check:
         contrib_dir = f"module://{donor}/contributes"
-        if not uri.exists(contrib_dir) or not uri.isdir(contrib_dir):
-            continue
-
-        try:
-            files = uri.listdir(contrib_dir)
-        except Exception:
-            files = []
-
-        for f in files:
-            if not f.endswith(".json") or f.startswith("_"):
-                continue
-            target_mod = f[:-5]
-            target_format = contributes.get_format(target_mod)
-            if target_format is None:
-                continue
-
-            f_uri = f"{contrib_dir}/{f}"
+        if uri.exists(contrib_dir) and uri.isdir(contrib_dir):
             try:
-                data = uri.read_json(f_uri)
-            except Exception as e:
-                print(f"[FAIL] [{f_uri}] JSON syntax error: {e}")
-                all_passed = False
-                continue
+                files = uri.listdir(contrib_dir)
+            except Exception:
+                files = []
 
-            res = ContributesValidator.validate(target_mod, data, donor_mod=donor, format_schema=target_format, strict_points=True)
-            checked_files_count += 1
-            if not res.is_valid:
-                print(res.format_report(file_label=f_uri))
-                all_passed = False
+            for f in files:
+                if not f.endswith(".json") or f.startswith("_"):
+                    continue
+                target_mod = f[:-5]
+                target_format = contributes.get_format(target_mod)
+                if target_format is None:
+                    continue
+
+                f_uri = f"{contrib_dir}/{f}"
+                try:
+                    data = uri.read_json(f_uri)
+                except Exception as e:
+                    print(f"[FAIL] [{f_uri}] JSON syntax error: {e}")
+                    all_passed = False
+                    continue
+
+                res = ContributesValidator.validate(target_mod, data, donor_mod=donor, format_schema=target_format, strict_points=True)
+                checked_files_count += 1
+                if not res.is_valid:
+                    print(res.format_report(file_label=f_uri))
+                    all_passed = False
+
+        # Also check project-level config://<target>/contribute.json
+        cfg_uri = f"config://{donor}/contribute.json"
+        if uri.exists(cfg_uri):
+            target_format = contributes.get_format(donor)
+            if target_format is not None:
+                try:
+                    cfg_data = uri.read_json(cfg_uri)
+                    if isinstance(cfg_data, dict) and donor in cfg_data and isinstance(cfg_data[donor], dict):
+                        cfg_data = cfg_data[donor]
+                    res = ContributesValidator.validate(donor, cfg_data, donor_mod="project", format_schema=target_format, strict_points=True)
+                    checked_files_count += 1
+                    if not res.is_valid:
+                        print(res.format_report(file_label=cfg_uri))
+                        all_passed = False
+                except Exception as e:
+                    print(f"[FAIL] [{cfg_uri}] JSON syntax error: {e}")
+                    all_passed = False
+
 
     if all_passed:
         print(f"\n[PASS] All contributes definitions are valid! (Checked {checked_files_count} file(s))\n")

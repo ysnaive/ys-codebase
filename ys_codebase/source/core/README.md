@@ -129,6 +129,9 @@ python yscb.py self-update --url=https://example.com/yscb.py
 # 列出目前已安裝的模組
 python yscb.py list
 
+# 查詢遠端或指定 Provider 之可用套件與版本清單
+python yscb.py list --remote [--provider=<url_or_path>]
+
 # 查詢已安裝模組的健康度與狀態
 python yscb.py status
 
@@ -174,6 +177,12 @@ python yscb.py config set core project_root ./
 
 # 設定本機覆蓋組態 (寫入 config.local.json，本機專屬)
 python yscb.py config set dev sandbox_dir /tmp/my_sandbox --local
+
+# 檢視特定組態鍵之雙層來源與覆蓋狀態 (Project vs Local)
+python yscb.py config inspect core project_root
+
+# 移除指定組態鍵 (加 --local 移除本機覆蓋層)
+python yscb.py config unset dev sandbox_dir --local
 
 # 手動重載組態快取
 python yscb.py config reload

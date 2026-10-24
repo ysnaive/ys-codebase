@@ -193,6 +193,52 @@ class TestIdeProjectorCrossPlatform(YSCBTestCase):
             self.assertEqual(f.read(), original)
         self.mark_passed()
 
+    def test_ide_projector_skip_when_no_vscode(self):
+        """FT-06: Verify IdeProjector silently skips when project://.vscode does not exist."""
+        proj_root = os.path.join(self.temp_dir, "no_vscode_project")
+        os.makedirs(proj_root, exist_ok=True)
+
+        self.assertFalse(self.projector.is_vscode_configured(proj_root))
+        result = self.projector.sync_vscode_settings(proj_root)
+        self.assertFalse(result)
+        self.assertFalse(os.path.exists(os.path.join(proj_root, ".vscode")))
+        self.mark_passed()
+
+    def test_ide_projector_soft_merge_and_revert(self):
+        """FT-07: Verify explicit _yscb_managed marking and reversible soft-merge."""
+        proj_root = os.path.join(self.temp_dir, "vscode_soft_merge_project")
+        vscode_dir = os.path.join(proj_root, ".vscode")
+        os.makedirs(vscode_dir, exist_ok=True)
+
+        settings_path = os.path.join(vscode_dir, "settings.json")
+        initial_settings = {
+            "custom.user.setting": True,
+            "python.analysis.extraPaths": ["/opt/custom/lib"],
+        }
+        vfs.write_json(settings_path, initial_settings)
+
+        self.assertTrue(self.projector.is_vscode_configured(proj_root))
+        site_pkg = self.pip_mgr.get_site_packages_dir()
+        os.makedirs(site_pkg, exist_ok=True)
+
+        ok = self.projector.sync_vscode_settings(proj_root, extra_paths=["./source/core"])
+        self.assertTrue(ok)
+
+        updated = vfs.read_json(settings_path)
+        self.assertIn("_yscb_managed", updated)
+        self.assertTrue(updated["custom.user.setting"])
+        self.assertIn("/opt/custom/lib", updated["python.analysis.extraPaths"])
+        self.assertIn("./source/core", updated["python.analysis.extraPaths"])
+
+        rev_ok = self.projector.revert_vscode_settings(proj_root)
+        self.assertTrue(rev_ok)
+
+        reverted = vfs.read_json(settings_path)
+        self.assertNotIn("_yscb_managed", reverted)
+        self.assertTrue(reverted["custom.user.setting"])
+        self.assertEqual(reverted.get("python.analysis.extraPaths"), ["/opt/custom/lib"])
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

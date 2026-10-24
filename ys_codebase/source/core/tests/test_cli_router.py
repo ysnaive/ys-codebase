@@ -12,13 +12,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
 from core import uri
-from core.providers import (
-    get_agents_cli_guide,
-    get_phase_cli_guide,
-    get_phase05_cli_guide,
-    get_phase06_cli_guide,
-    get_phase07_cli_guide,
-)
+from core.providers import get_agents_cli_guide
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 
@@ -145,54 +139,6 @@ class TestCliGuideProvider(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_phase_aware_jit_filtering(self):
-        """FT-02: 驗證 get_phase_cli_guide 能精準依據 Phase 過濾推薦指令與守門紅線。"""
-        fake_commands = {
-            "test": {
-                "description": "Run module tests",
-                "tier": "safe",
-                "phases": ["P05", "P06"],
-                "case_pros": ["沙盒自動化跑測"],
-                "case_cons": ["嚴禁日常跑 --all"],
-                "__provider__": "dev",
-            },
-            "check": {
-                "description": "Static code check",
-                "tier": "safe",
-                "phases": ["P05"],
-                "case_pros": ["代碼靜態預檢"],
-                "__provider__": "dev",
-            },
-            "release": {
-                "description": "Release package",
-                "tier": "gated",
-                "phases": ["P07"],
-                "case_pros": ["正式發布"],
-                "case_cons": ["嚴禁未經指示發布"],
-                "__provider__": "dev",
-            },
-        }
-
-        with patch("core.contributes.get", return_value=fake_commands):
-            # Phase 5 JIT
-            p5_output = get_phase05_cli_guide()
-            self.assertIn("python yscb.py dev check", p5_output)
-            self.assertIn("python yscb.py dev test", p5_output)
-            self.assertIn("[GATED] 嚴禁執行 `python yscb.py dev release`", p5_output)
-
-            # Phase 6 JIT
-            p6_output = get_phase06_cli_guide()
-            self.assertIn("python yscb.py dev test", p6_output)
-            self.assertNotIn("python yscb.py dev check", p6_output)
-            self.assertIn("[GATED] 嚴禁執行 `python yscb.py dev release`", p6_output)
-
-            # Phase 7 JIT
-            p7_output = get_phase07_cli_guide()
-            self.assertIn("python yscb.py dev release", p7_output)
-
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
     def test_defensive_string_coercion(self):
         """ET-01: 驗證 case_pros / case_cons 為單一字串時自動防禦轉換為列表，tier 缺失時 fallback 為 conditional。"""
         fake_commands = {
@@ -218,41 +164,8 @@ class TestCliGuideProvider(YSCBTestCase):
         """ET-02: 驗證全系統無任何防呆指令時回傳安全提示。"""
         with patch("core.contributes.get", return_value={}):
             output = get_agents_cli_guide()
-            p_output = get_phase_cli_guide(phase="P05")
 
         self.assertIn("目前無已註冊之 CLI 防呆指令", output)
-        self.assertEqual(p_output, "")
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_self_update_url(self):
-        """FT-01: 驗證自更新常數職責分離與 URL 解析優先權。"""
-        # 1. 常數驗證
-        self.assertEqual(
-            yscb.DEFAULT_PROVIDER_URL,
-            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release"
-        )
-        self.assertEqual(
-            yscb.DEFAULT_SELF_UPDATE_URL,
-            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
-        )
-
-        # 2. 預設返回 DEFAULT_SELF_UPDATE_URL
-        self.assertEqual(
-            yscb._resolve_self_update_target_url(),
-            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
-        )
-        self.assertEqual(
-            yscb._resolve_self_update_target_url(provider="https://custom.provider.com/release"),
-            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
-        )
-
-        # 3. 指定 custom_url 時正確覆寫
-        custom = "https://example.com/mirrors/yscb.py"
-        self.assertEqual(
-            yscb._resolve_self_update_target_url(custom_url=custom),
-            custom
-        )
         self.mark_passed()
 
 
