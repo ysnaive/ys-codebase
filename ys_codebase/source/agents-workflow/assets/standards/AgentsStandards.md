@@ -2,6 +2,8 @@
 
 本文件定義 Agent 在專案內執行任務時必須遵守的通用核心原則與條件技能分流導航。
 
+`__@{PROJECT_ROLE_AND_BOUNDARIES}__`
+
 ---
 
 ## 1. 核心原則 (Core Principles)

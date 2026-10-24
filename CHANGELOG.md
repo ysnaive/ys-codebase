@@ -44,6 +44,13 @@
 
 ## 2026_10_23_1314_agents_workflow_aci_and_delegation_evolution (In Progress)
 
+### sub_04_onboarding_and_config_coaching (Completed)
+- **專案角色邊界錨點 (`PROJECT_ROLE_AND_BOUNDARIES`)、跨模組組態體檢教練 (`/how-to-config-yscb`)、互動式實戰領航教練 (`/how-to-yscb`) 與四大核心模組指南落地**：
+  - **專案角色與空間邊界錨點及母專案 Dogfooding (`FR-01`, `EC-01`)**：於 `AgentsStandards.md` 頂部（`## 1. 核心原則` 之前）增設獨立行錨點 `` `__@{PROJECT_ROLE_AND_BOUNDARIES}__` ``，未配置時自動抹除 0 殘留；於母專案建立 `ys_codebase/config/agents-workflow/snippets/project_role.md` 並註冊至 `contribute.json`，明確界定第一方活躍開發範疇、外部工具鏈黑盒與工作流物化唯讀空間；同步更新 `context-init/SKILL.md` 步驟 1 提取規則與熱啟動卡片底部 `/how-to-yscb`、`/how-to-config-yscb` 提示。
+  - **跨模組組態體檢與自適應配置教練 (`/how-to-config-yscb`) (`FR-02`, `EC-02`)**：建立主動指令型技能 `how-to-config-yscb/SKILL.md` 與 `HOW_TO_CONFIG_MODULES` 動態聚合錨點，實作四步閉環（Step 1 自動空間探勘與健康檢查 $\to$ Step 2 支援全綠健康短路 `All-Green Short-Circuit` 與單次探勘三位一體對齊草案 `First-Party Trinity Alignment` 同步生成 `project_role.md`、`testing_guide.md` 與 `knowledge-db` 檢索空間並嚴格區分 `config.project.json` 與 `config.local.json` $\to$ Step 3 引導寫入與 `contributes check` / `compile` / `release` 三步驗證守門 $\to$ Step 4 潔淨對話切換提示）。
+  - **互動式上手與實戰領航教練 (`/how-to-yscb`) 及四大核心模組片段注入 (`FR-03`, `FR-04`, `EC-03`, `EC-04`, `NFR-01`)**：建立 `how-to-yscb/SKILL.md` 與 `HOW_TO_YSCB_MODULES` 動態聚合錨點，實作雙入口自適應領航（無參數呈現模組總覽與 `A~D` 切角選單 vs. 帶問題跳過選單直接解答）、兩階段漸進式知識調度（先依內建速查面板秒答，追問深層細節時按需讀取隨包 `README.md`）、純唯讀教練護欄（組態問題轉介 `/how-to-config-yscb`）與新對話一鍵啟動指令塊；於 `core`、`dev`、`server`、`knowledge-db` 四大模組各新增 15~25 行之 `assets/config_guide.md` 與 `assets/usage_guide.md` 並完成 `contributes/agents-workflow.json` 註冊。
+  - **跨模組 Sibling Fallback、Token 雙欄位相容與宿主 NTFS 歷史大寫目錄正名 (`FR-05`, `EC-05`, `NFR-02`)**：修正 `ArtifactCompiler._resolve_source_path()` 針對跨模組 `module://<mod>/...` 自動解析至同級兄弟模組目錄；修正 `scripts/cli.py:tokens()` 同時支援 `value` 與 `name` 欄位（並為 `knowledge-db` 補齊 `value: "KNOWLEDGE_DB_SPACE"`）；對宿主 NTFS 歷史遺留大寫目錄（`source/{core,dev,server,knowledge-db}/Scripts` 與 `docs/Core`）完成一次性兩段式正名，根除跨平台 `virtiofs` 大小寫雙影與 `--sync` 解壓衝突；登錄 `[DN-AW-13]`，全生態系 5 大模組 **595/595 測試 100% 通過**並完成 `@build` 與 `release` 物化同步。
+
 ### sub_03_testing_sop_and_subagent_isolation (Completed)
 - **環境型測試規範技能 (`testing-sop`)、Phase 06 雙重守門與三支柱 Subagent 任務級上下文隔離協定落地**：
   - **環境型技能 `testing-sop` 與雙層漸進揭露結構 (`FR-01`, `FR-02`, `NFR-01`)**：建立 `assets/skills/testing-sop/SKILL.md`（58 行，內建六大自動化測試建置與回歸鐵律：子系統 1:1 歸戶、實質副作用與正負雙向斷言、管線實機產出驗證、零歷史墓碑、100% 狀態隔離與沙盒零殘留、本體獨立性；Phase 06 自檢清單與 `__@{TESTING_SOP_STANDARDS}__` 錨點）與按需載入之 `references/test_suite_audit_and_purification.md`（六大病灶 `T-01`~`T-06` 體檢與三步純化工作流）；於 `contributes/agents-workflow.json` 註冊匯出與 Token，並於 `config/agents-workflow/snippets/testing_guide.md` 掛載本倉預設測試規範。

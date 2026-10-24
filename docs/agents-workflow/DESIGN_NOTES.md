@@ -218,5 +218,22 @@ last_updated: "2026-10-24"
 > [!CAUTION]
 > 嚴禁允許 Subagent 修改 `plans/` 下任何檔案或執行實機/測試運行指令；嚴禁在派發 Reviewer Subagent 時於提示詞劇透本次實作內容；嚴禁 Reviewer Subagent 回報非三類硬性契約的主觀微調；嚴禁在 `RoadmapManager.promote_roadmap` 中直接以 `shutil.move` 覆寫既有 `roadmap.md`。
 
+---
+
+### [DN-AW-13] 跨模組多捐贈者導覽錨點 (`HOW_TO_*_MODULES`)、兩階段漸進式隨包手冊調度與跨模組 `_resolve_source_path` Sibling Fallback 防坑設計
+
+- **工程背景與坑點**：
+  1. **日常 `/context-init` 載入全模組教學與體檢矩陣的 Token 膨脹**：若將 `core`、`dev`、`server`、`knowledge-db` 的組態體檢清單與功能教學直接塞入 `AGENTS.md` 或 `context-init/SKILL.md`，每次日常開發對話都會無條件消耗上千 Token，且當未來新增或移除模組時，硬編碼於 `agents-workflow` 的教學清單會立即過時或產生死連結。
+  2. **跨模組 `module://<mod>/...` 在沙盒或尚未安裝新版 `@build` 時之本地 Fallback 錯位**：`ArtifactCompiler._resolve_source_path()` 的 Step 2 本地自包含回退邏輯，原先在解析 `module://core/assets/config_guide.md` 時僅剝除 `<mod>/` 前綴後直接拼接至 `self.module_root`（即 `agents-workflow` 目錄）。當 `core` 新增的資產尚未同步至 `.modules/core/`（或處於獨立測試沙盒）時，回退至 `agents-workflow/assets/config_guide.md` 會導致讀取失敗或誤讀同名檔案。
+  3. **`tokens` CLI 對 `name` / `value` 雙欄位顯示不一致**：部分模組（如 `knowledge-db`）在 `contributes/agents-workflow.json` 宣告 `token` 時使用 `"name"` 欄位，而 `scripts/cli.py:tokens()` 僅讀取 `tok.get("value", "")`，導致終端機輸出空白 Token 名稱。
+- **妥協與防禦設計**：
+  1. **專用主動指令型教練技能與多捐贈者 `mode: "below"` 聚合**：將組態體檢與功能導覽獨立為僅於顯式輸入時觸發的 `/how-to-config-yscb` 與 `/how-to-yscb`，並在 `AGENTS.md` 頂部僅保留精簡的 `PROJECT_ROLE_AND_BOUNDARIES` 錨點（未配置時自動抹除 0 殘留）。各模組透過 `HOW_TO_CONFIG_MODULES` 與 `HOW_TO_YSCB_MODULES` 貢獻 15~25 行精煉片段，底部以單反引號包覆之 `` [`<mod> 隨包手冊`](`__#{module://<mod>/README.md}__`) `` 實現「第一階段秒答、第二階段按需讀取隨包 `README.md`」。
+  2. **跨模組 Sibling Directory Fallback**：於 `ArtifactCompiler._resolve_source_path()` Step 2 中，當 URI scheme 為 `module://` 且 `<mod>` 非當前 `self.module_root` 目錄名時，自動檢查同級目錄 `os.path.join(os.path.dirname(self.module_root), mod_name)` 是否存在，精準定位兄弟模組源碼資產。
+  3. **Token 名稱雙欄位相容**：於 `scripts/cli.py:tokens()` 統一採用 `tok.get("value") or tok.get("name") or ""`，並於 `knowledge-db/contributes/agents-workflow.json` 同步補齊 `"value"`。
+
+> [!CAUTION]
+> 嚴禁將多模組詳細體檢表或教學長文注入 `AGENTS.md` 或 `context-init`；各模組注入 `HOW_TO_*_MODULES` 之片段中所有 `__#{...}__` 與 `__${...}__` 標籤在非代碼區塊內必須強制以單反引號包覆；嚴禁將 `_resolve_source_path` 的跨模組 `module://<other_mod>/` 回退路徑硬綁回 `agents-workflow` 自身目錄。
+
+
 
 

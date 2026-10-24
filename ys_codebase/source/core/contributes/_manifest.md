@@ -22,4 +22,4 @@
 - **生命週期事件**：`pre_cli_dispatch`, `post_cli_dispatch`, `on_reload`, `on_installed`, `on_update`, `on_remove`。
 
 ### 1.2 `agents-workflow.json`（工作流擴充）
-- 向 `agents-workflow` 註冊核心 CLI 規範與標準資產。
+- 向 `agents-workflow` 註冊核心 CLI 規範 (`AGENTS_CLI_GUIDE`)、組態體檢指南 (`HOW_TO_CONFIG_MODULES`) 與使用速查指南 (`HOW_TO_YSCB_MODULES`)。

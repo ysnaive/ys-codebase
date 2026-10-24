@@ -47,6 +47,8 @@ __pycache__/
 /.agents/skills/discuss/SKILL.md
 /.agents/skills/documentation/SKILL.md
 /.agents/skills/documentation/references/author_guide_and_checklist.md
+/.agents/skills/how-to-config-yscb/SKILL.md
+/.agents/skills/how-to-yscb/SKILL.md
 /.agents/skills/knowledge-db-search/SKILL.md
 /.agents/skills/new-plan/SKILL.md
 /.agents/skills/pause/SKILL.md

@@ -18,7 +18,7 @@
   1. **環境型技能 `testing-sop` 與漸進式揭露雙層結構 (`assets/skills/testing-sop/`)**：
      - 建立主技能檔 `assets/skills/testing-sop/SKILL.md`：採三段式環境型 Frontmatter Description（功能宣告 + `觸發情境：` + `排除情境：`），內建「六大自動化測試建置與回歸鐵律（Six Core Test Hygiene Invariants）」（① 子系統 1:1 歸戶禁建計畫名碎片檔、② 實質副作用與正負雙向斷言禁空殼/寬容放行、③ 管線實機產出驗證取代靜態文檔搜尋、④ 零歷史墓碑與舊測同步清理、⑤ 100% 狀態隔離與 `tearDown`/`try...finally` 零殘留、⑥ 本體獨立性與零跨層反向耦合）、`Phase 06` 測試品質與回歸自檢清單（Test Hygiene Gate）、預留 Stage 1 專案專屬測試流程錨點 `__@{TESTING_SOP_STANDARDS}__`，並配置情境 A（日常增量測試）與情境 B（存量測試集大掃除）按需載入分流。
      - 建立按需載入參考指南 `assets/skills/testing-sop/references/test_suite_audit_and_purification.md`：定義存量測試集六大病灶體檢模型（`T-01` 虛假放行、`T-02` 跨檔重複、`T-03` 過時墓碑、`T-04` 跨模組耦合、`T-05` 狀態污染、`T-06` 高風險漏測）、子系統 1:1 歸戶收斂映射表（Gate）與無損整併驗收工作流。
-     - 於 `contributes/agents-workflow.json` 註冊 `testing-sop` 技能匯出與 `TESTING_SOP_STANDARDS` 擴充 Token（並在 `config/agents-workflow/` 或模組層配置本倉 YSCB 預設測試規範片段以供 Dogfooding 驗證）。
+     - 於 `contributes/agents-workflow.json` 註冊 `testing-sop` 技能匯出與 `TESTING_SOP_STANDARDS` 擴充 Token（專案層級之 `config://agents-workflow/snippets/testing_guide.md` 留待 `sub_04` 執行 `/how-to-config-yscb` 時自動探勘草擬與確認後代寫）。
   2. **`AgentsStandards.md` 與 `development-sop` 引用連鎖觸發及 `Phase 06` 雙重守門**：
      - 於 `assets/standards/AgentsStandards.md` §2 條件式技能路由表新增 `testing-sop` 強制觸發路由列。
      - 於 `phase_04_plan.md`（§3 定稿 `P06_test_plan.md` 前）、`phase_05_task.md`（§2 編寫測試代碼前）、`phase_06_test.md`（頂部檢核表與 §2 測試品質與回歸雙重守門：守門 ① 子系統回歸全綠 + 守門 ② 新增測試反模式自檢）及 `plan_modes.md`（`Fast Track` `FP-02` 實作與驗證）植入 `` [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`) `` 強制引用連鎖觸發。

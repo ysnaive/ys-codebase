@@ -16,6 +16,8 @@
 
 | 日期時間 | 類型 | 模型 | 摘要 |
 | :--- | :---: | :--- | :--- |
+| 2026-10-24 16:13 | `PHASE` | Gemini 4 Argon (Low) | 完成子計畫 sub_04_onboarding_and_config_coaching (Global Step 8) 結案 |
+| 2026-10-24 14:43 | `PHASE` | Gemini 4 Argon (Low) | 啟動 Global Step 8 子計畫 [sub_04_onboarding_and_config_coaching] 並完成雙路線圖合流遷入與 P00 定稿 |
 | 2026-10-24 06:33 | `PHASE` | Gemini 4 Argon (Low) | 完成 Global Step 2 子計畫 [sub_03_testing_sop_and_subagent_isolation] 結案交付 (里程碑 3 Completed) |
 | 2026-10-24 05:52 | `PHASE` | Unknown | 啟動 Global Step 2 子計畫 [sub_03_testing_sop_and_subagent_isolation] 並完成雙路線圖合流遷入與 P00 定稿 |
 | 2026-10-24 05:45 | `PHASE` | Unknown | 完成 sub_02 (Global Step 1) 雙層儲備與 Consume-on-Promote 結案，回寫主計畫里程碑 2 |

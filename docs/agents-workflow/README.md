@@ -24,9 +24,10 @@ last_updated: "2026-10-24"
 模組徹底剝離特定專案特化規則，採用 100% 純 Skill 分類架構（`standard`, `template`, `skill`），提供通用抽象資產與計畫生命周期治理：
 
 - **規範 (`assets/standards/`)**：
-  - `AgentsStandards.md`：Agent 通用核心原則、防呆紀律與條件式技能分流導航矩陣（自動注入至 `AGENTS.md`）。
+  - `AgentsStandards.md`：Agent 通用核心原則、防呆紀律與條件式技能分流導航矩陣（自動注入至 `AGENTS.md`，頂部支援 `PROJECT_ROLE_AND_BOUNDARIES` 專案角色與空間邊界錨點注入）。
 - **技能 (`assets/skills/<name>/SKILL.md`)**：
   - **工作流與生命週期技能**：`context-init`（上下文熱啟動）、`new-plan`（標準立項與延遲建檔）、`auto`（Phase 01~05 自動連續推進）、`discuss`（深度歸因與範疇保護）、`continue`（中斷現場接續）、`pause`（現場狀態凍結）、`research`（深度技術調研）、`roadmap`（長期路線圖推薦與 `Consume-on-Promote` 晉升）、`todo`（`TODO.md` 輕量待辦與微觀技術債管理）。
+  - **互動引導與配置教練技能**：`how-to-config-yscb`（專案空間自適應探勘、多模組組態體檢與三位一體對齊教練）、`how-to-yscb`（跨模組功能導覽、6 大計畫模式選型與雙入口互動式上手教練）。
   - **領域與規範技能**：`development-sop`（SOP 0~7 與 6 大分支指南，含 `references/` 規範明細）、`testing-sop`（自動化測試建置六大鐵律、雙重守門與 `__@{TESTING_SOP_STANDARDS}__` 錨點）、`documentation`（知識庫 3 層架構與 7 大維度指南）、`yscb-cli-guide`（CLI 指令防呆與權限矩陣）、`skill-optimizer`（AI Agent 技能審查、診斷與重構工作流）、`yscb-module-dev`（生態系模組開發與 Dogfooding 閉環）。
 - **模板 (`assets/templates/`)**：
   - 16 大標準模板庫（`P00_discuss`, `P01`~`P07`, `revision_log`, `fast_track_plan`, `umbrella_overview`, `changelog`, `RXX_research_report`, `handoff`, `roadmap`, `todo`）與共用標頭。
@@ -84,7 +85,8 @@ last_updated: "2026-10-24"
 - **`PHASEXX_HEADER`**：共用計畫標頭插槽，提供標準標頭與後台模型 (`> 模型：[平台宣告之模型名稱；無法確認填 Unknown]`) 溯源支援（填寫規則見核心原則「模型紀錄」，詳見 `[DN-AW-08]`）。
 - **`WORKFLOW_SOP_STANDARDS`**：SOP 標準開發流程擴充錨點。
 - **`TESTING_SOP_STANDARDS`**：位於 `testing-sop` 之擴充錨點，供生態系模組或專案組態注入專屬測試框架指令、沙盒規範與跑測注意事項。
-- **`AGENTS_SKILL_ROUTING` / `AGENTS_STANDARDS`**：位於 `AgentsStandards.md` 之擴充錨點，支援子模組或專案組態透過 `insert` 注入專屬技能分流與行為準則。
+- **`AGENTS_SKILL_ROUTING` / `AGENTS_STANDARDS` / `PROJECT_ROLE_AND_BOUNDARIES`**：位於 `AgentsStandards.md` 之擴充錨點，支援子模組或專案組態透過 `insert` 注入專案角色與主客體空間邊界、專屬技能分流與行為準則。
+- **`HOW_TO_CONFIG_MODULES` / `HOW_TO_YSCB_MODULES`**：位於 `how-to-config-yscb` 與 `how-to-yscb` 之動態聚合錨點，自動匯聚各已安裝模組（`core`、`dev`、`server`、`knowledge-db` 等）之設定體檢片段與使用速查面板。
 - **`AGENTS_CLI_GUIDE`**：位於 `yscb-cli-guide` 之擴充錨點，供第三方模組追加專屬 CLI 操作情境手冊。
 - **`spaces.docs` 貢獻**：透過 `contributes/knowledge-db.json` 向知識庫微內核宣告 `workflow.docs://` 文檔空間。
 

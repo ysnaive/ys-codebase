@@ -550,6 +550,44 @@ class TestArtifactCompiler(YSCBTestCase):
             self.assertEqual(scanned_empty, [])
         self.mark_passed()
 
+    def test_resolve_source_path_cross_module_and_tokens_cli(self):
+        """[sub_04 FR-05]: 驗證 _resolve_source_path 跨模組 sibling fallback 與 cli.py:tokens() 相容 name/value 欄位。"""
+        with tempfile.TemporaryDirectory(prefix="test_aw_sibling_") as tmp_parent:
+            aw_dir = os.path.join(tmp_parent, "agents-workflow")
+            other_dir = os.path.join(tmp_parent, "other-mod")
+            os.makedirs(os.path.join(aw_dir, "assets"), exist_ok=True)
+            os.makedirs(os.path.join(other_dir, "assets"), exist_ok=True)
+
+            aw_file = os.path.join(aw_dir, "assets", "guide.md")
+            other_file = os.path.join(other_dir, "assets", "guide.md")
+            with open(aw_file, "w", encoding="utf-8") as f:
+                f.write("AW_CONTENT")
+            with open(other_file, "w", encoding="utf-8") as f:
+                f.write("OTHER_MOD_CONTENT")
+
+            old_root = self.compiler.module_root
+            try:
+                self.compiler.module_root = aw_dir
+                resolved = self.compiler._resolve_source_path("module://other-mod/assets/guide.md")
+                self.assertEqual(os.path.abspath(resolved), os.path.abspath(other_file))
+                self.assertEqual(self.compiler._read_file_content("module://other-mod/assets/guide.md"), "OTHER_MOD_CONTENT")
+            finally:
+                self.compiler.module_root = old_root
+
+        # 驗證 cli.py:tokens() 相容僅定義 name 或同時定義 value 之 token 條目
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.tokens([])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        for line in out.splitlines():
+            if "知識庫已註冊空間清單動態注入錨點" in line:
+                self.assertIn("KNOWLEDGE_DB_SPACE", line)
+        self.mark_passed()
+
+
 
 if __name__ == "__main__":
     unittest.main()

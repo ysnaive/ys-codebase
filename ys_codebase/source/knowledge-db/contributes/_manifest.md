@@ -23,7 +23,7 @@
 - 註冊 `knowledge-db-watcher` 背景 Worker 監聽檔案變更。
 
 ### 1.3 `agents-workflow.json`（技能注入）
-- 導出 `knowledge-db-search` 領域技能包。
+- 導出 `knowledge-db-search` 領域技能包，並向 `AGENTS_SKILL_ROUTING`、`HOW_TO_CONFIG_MODULES`、`HOW_TO_YSCB_MODULES` 及階段指南錨點注入檢索規範。
 
 ### 1.4 `knowledge-db.json`（語言註冊）
 - 註冊 10 大程式語言、AST Parser 與副檔名對映。

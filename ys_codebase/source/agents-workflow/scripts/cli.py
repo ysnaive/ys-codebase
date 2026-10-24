@@ -389,7 +389,7 @@ def tokens(cmd_bags: Any) -> int:
     print(f"{'TOKEN NAME':<32} {'DESCRIPTION'}")
     print("-" * 75)
     for tok in tokens_list:
-        val = tok.get("value", "")
+        val = tok.get("value") or tok.get("name") or ""
         desc = tok.get("description", "")
         print(f"{val:<32} {desc}")
     print("-" * 75)

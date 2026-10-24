@@ -257,13 +257,17 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertIn("skill-optimizer", export_names)
         self.assertIn("SKILL_OPTIMIZER_STANDARDS", token_names)
 
-        # 2. 全部 14 個技能皆具備雙軌結構化邊界 (環境攔截型採三段式『觸發情境：/排除情境：』；主動指令型採『僅於顯式輸入』) 與常見踩坑指南 (Gotchas)
+        # 2. 全部 16 個技能皆具備雙軌結構化邊界 (環境攔截型採三段式『觸發情境：/排除情境：』；主動指令型採『僅於顯式輸入』) 與常見踩坑指南 (Gotchas)
         expected_skills = {
             "auto", "context-init", "continue", "development-sop", "discuss",
-            "documentation", "new-plan", "pause", "research", "roadmap",
-            "skill-optimizer", "testing-sop", "todo", "yscb-cli-guide",
+            "documentation", "how-to-config-yscb", "how-to-yscb", "new-plan",
+            "pause", "research", "roadmap", "skill-optimizer", "testing-sop",
+            "todo", "yscb-cli-guide",
         }
-        command_driven_skills = {"auto", "pause", "continue", "context-init", "skill-optimizer"}
+        command_driven_skills = {
+            "auto", "pause", "continue", "context-init", "skill-optimizer",
+            "how-to-config-yscb", "how-to-yscb",
+        }
         ambient_skills = expected_skills - command_driven_skills
         actual_skills = {p.name for p in skills_dir.iterdir() if p.is_dir()}
         self.assertEqual(actual_skills, expected_skills)
@@ -372,4 +376,100 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertIn("嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查", p07_ref)
 
         self.mark_passed()
+
+    def test_ft_10_sub04_onboarding_and_config_coaching_skills(self):
+        """[sub_04 FR-01 ~ FR-05, EC-01 ~ EC-04, NFR-01]: 驗證 PROJECT_ROLE_AND_BOUNDARIES、/how-to-config-yscb、/how-to-yscb 與 4 大模組指南。"""
+        import json
+        from agents_workflow.compiler import FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        assets = _pkg_root / "assets"
+        skills_dir = assets / "skills"
+        source_root = _pkg_root.parent
+        contrib = json.loads((_pkg_root / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+
+        # 1. FR-01: PROJECT_ROLE_AND_BOUNDARIES 錨點與 context-init 導引
+        export_names = {item.get("name") for item in contrib["export"] if "name" in item}
+        token_names = {item["value"] for item in contrib["token"]}
+        self.assertIn("how-to-config-yscb", export_names)
+        self.assertIn("how-to-yscb", export_names)
+        self.assertIn("PROJECT_ROLE_AND_BOUNDARIES", token_names)
+        self.assertIn("HOW_TO_CONFIG_MODULES", token_names)
+        self.assertIn("HOW_TO_YSCB_MODULES", token_names)
+
+        standards = (assets / "standards" / "AgentsStandards.md").read_text(encoding="utf-8")
+        self.assertIn("`__@{PROJECT_ROLE_AND_BOUNDARIES}__`", standards)
+        self.assertLess(
+            standards.index("`__@{PROJECT_ROLE_AND_BOUNDARIES}__`"),
+            standards.index("## 1. 核心原則"),
+        )
+
+        ctx_init = (skills_dir / "context-init" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("專案角色與主客體空間邊界", ctx_init)
+        self.assertIn("/how-to-yscb", ctx_init)
+        self.assertIn("/how-to-config-yscb", ctx_init)
+
+        # 2. FR-02 & EC-01 & EC-02: /how-to-config-yscb 四步閉環、全綠短路、三位一體對齊與動態二層物化路徑解析
+        config_skill = (skills_dir / "how-to-config-yscb" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`__@{HOW_TO_CONFIG_MODULES}__`", config_skill)
+        self.assertIn("All-Green Short-Circuit", config_skill)
+        self.assertIn("First-Party Trinity Alignment", config_skill)
+        self.assertIn("paths.plans", config_skill)
+        self.assertIn("release_targets", config_skill)
+        self.assertIn("projections", config_skill)
+        self.assertIn("嚴禁硬編碼 `.agents/` 或 `.claude/`", config_skill)
+        self.assertIn("① 開發者角色與專案使命", config_skill)
+        self.assertIn("② 本體業務空間", config_skill)
+        self.assertIn("③ 外部工具包與黑盒依賴", config_skill)
+        self.assertIn("config.project.json", config_skill)
+        self.assertIn("config.local.json", config_skill)
+        self.assertIn("contributes check", config_skill)
+        self.assertIn("agents-workflow compile", config_skill)
+        self.assertIn("agents-workflow release", config_skill)
+
+        # 3. FR-03 & EC-03 & EC-04: /how-to-yscb 資深教練角色切換、雙入口領航 (角度 A~D)、兩階段知識調度與純唯讀教練護欄
+        howto_skill = (skills_dir / "how-to-yscb" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`__@{HOW_TO_YSCB_MODULES}__`", howto_skill)
+        self.assertIn("Coach / Mentor Persona", howto_skill)
+        self.assertIn("你想從什麼角度了解這套工具？", howto_skill)
+        self.assertIn("角度 A（全景與起手式）", howto_skill)
+        self.assertIn("角度 B（以任務找武器）", howto_skill)
+        self.assertIn("角度 C（已安裝模組探索）", howto_skill)
+        self.assertIn("角度 D（進階技巧與客製化）", howto_skill)
+        self.assertIn("/skill-creator", howto_skill)
+        self.assertIn("/skill-optimizer", howto_skill)
+        self.assertIn("入口 A", howto_skill)
+        self.assertIn("入口 B", howto_skill)
+        self.assertIn("兩階段漸進式知識調度", howto_skill)
+        self.assertIn("/how-to-config-yscb", howto_skill)
+        self.assertIn("開啟一個全新的對話視窗", howto_skill)
+
+        # 4. FR-04 & NFR-01: 檢查 4 大模組 (core, dev, server, knowledge-db) 若存在於同級目錄時之三要素指南結構、行數與單反引號語法
+        for mod_name in ("core", "dev", "server", "knowledge-db"):
+            mod_dir = source_root / mod_name
+            if not mod_dir.is_dir():
+                continue
+            mod_contrib = json.loads((mod_dir / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+            inserted_tokens = {ins.get("token") for ins in mod_contrib.get("insert", [])}
+            self.assertIn("HOW_TO_CONFIG_MODULES", inserted_tokens, f"{mod_name} 未註冊 HOW_TO_CONFIG_MODULES")
+            self.assertIn("HOW_TO_YSCB_MODULES", inserted_tokens, f"{mod_name} 未註冊 HOW_TO_YSCB_MODULES")
+
+            for guide_name in ("config_guide.md", "usage_guide.md"):
+                g_path = mod_dir / "assets" / guide_name
+                self.assertTrue(g_path.is_file(), f"缺少 {g_path}")
+                g_text = g_path.read_text(encoding="utf-8")
+                self.assertTrue(10 <= len(g_text.splitlines()) <= 25, f"{g_path} 行數 ({len(g_text.splitlines())}) 超出 15~25 行預算")
+                self.assertIn(f"(`__#{{module://{mod_name}/README.md}}__`)", g_text)
+                if guide_name == "config_guide.md":
+                    self.assertIn("① 組態項目與用途", g_text)
+                    self.assertIn("② 健康度檢查條件", g_text)
+                    self.assertIn("③ 隨包設定手冊語意連結", g_text)
+                else:
+                    self.assertIn("① 模組定位與適用時機", g_text)
+                    self.assertIn("② 標準用法速查 (Golden Recipes)", g_text)
+                    self.assertIn("③ 隨包手冊語意連結", g_text)
+                clean_g = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", g_text))
+                self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_g), [], f"{g_path} 含有未包覆單反引號之標籤")
+
+        self.mark_passed()
+
 

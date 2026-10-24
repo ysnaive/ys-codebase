@@ -98,15 +98,20 @@ class ArtifactCompiler:
             except Exception:
                 pass
 
-        # 2. 嘗試本地模組相對路徑 (自包含 fallback)
+        # 2. 嘗試本地模組相對路徑 (自包含 fallback，支援跨模組 sibling fallback)
         sub_path = path_or_uri
+        target_root = self.module_root
         if "://" in path_or_uri:
-            parts = path_or_uri.split("://", 1)[1]
+            scheme, parts = path_or_uri.split("://", 1)
             if "/" in parts:
-                _, rel_p = parts.split("/", 1)
+                mod_name, rel_p = parts.split("/", 1)
                 sub_path = rel_p
+                if scheme == "module" and mod_name and mod_name != os.path.basename(self.module_root):
+                    sibling_root = os.path.join(os.path.dirname(self.module_root), mod_name)
+                    if os.path.isdir(sibling_root):
+                        target_root = sibling_root
 
-        local_cand = os.path.join(self.module_root, sub_path.replace("/", os.sep))
+        local_cand = os.path.join(target_root, sub_path.replace("/", os.sep))
         if os.path.exists(local_cand):
             return local_cand
 
