@@ -15,18 +15,5 @@
         "**/release/**"
       ]
     }
-  },
-  "thesaurus": [
-    [
-      "知識庫",
-      "knowledge_db",
-      "knowledge_base",
-      "vector_store"
-    ],
-    [
-      "增量掃描",
-      "incremental_scan",
-      "fingerprint"
-    ]
-  ]
+  }
 }

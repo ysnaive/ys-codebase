@@ -56,7 +56,6 @@ class KnowledgeEngine:
             contributes_data=contributes_data,
         )
         self.tokenizer = MultilingualTokenizer()
-        self.thesaurus_engine = None
         self.parser_registry = ParserRegistry()
         self.scanner = FingerprintScanner(self.space_manager)
         self.bundler = SemanticBundler(
@@ -65,7 +64,6 @@ class KnowledgeEngine:
         )
         self.bm25_engine = BM25Engine(
             tokenizer=self.tokenizer,
-            thesaurus=None,
             field_weights=field_weights,
         )
 
@@ -251,7 +249,6 @@ class KnowledgeEngine:
         if space is not None:
             sp = self.space_manager.get_space(space)
             spaces = {sp.name: sp}
-        thesaurus_groups = self.space_manager.load_thesaurus()
         indices_dir = self.pipeline.get_indices_dir()
 
         bin_unified = indices_dir / "unified.index.bin.gz"
@@ -301,7 +298,6 @@ class KnowledgeEngine:
             "enable_vector_search": getattr(self.config, "enable_vector_search", True),
             "embedding_model": getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5"),
             "model_downloaded": self.embedding_service.is_model_downloaded(),
-            "thesaurus_groups": len(thesaurus_groups),
             "storage_dir": str(self.storage_dir),
             "scan_diff": scan_diff,
         }
@@ -418,6 +414,36 @@ class KnowledgeEngine:
     ) -> Dict[str, Any]:
         return self.pipeline.act_impact(target_query, depth=depth, space=space, ftypes=ftypes)
 
+    def callers(
+        self,
+        target_query: str,
+        space: Optional[str] = None,
+        snippet: bool = False,
+        ftypes: Optional[Union[str, List[str]]] = None,
+    ) -> Dict[str, Any]:
+        """查詢特定目標符號的上游調用者清單與調用點 (act_callers 之公開 SDK 別名)"""
+        return self.act_callers(target_query, space=space, snippet=snippet, ftypes=ftypes)
+
+    def callees(
+        self,
+        target_query: str,
+        space: Optional[str] = None,
+        snippet: bool = False,
+        ftypes: Optional[Union[str, List[str]]] = None,
+    ) -> Dict[str, Any]:
+        """查詢特定目標符號內部調用的下游依賴清單 (act_callees 之公開 SDK 別名)"""
+        return self.act_callees(target_query, space=space, snippet=snippet, ftypes=ftypes)
+
+    def impact(
+        self,
+        target_query: str,
+        depth: int = 2,
+        space: Optional[str] = None,
+        ftypes: Optional[Union[str, List[str]]] = None,
+    ) -> Dict[str, Any]:
+        """查詢特定目標符號的向上擴散調用影響面拓撲 (act_impact 之公開 SDK 別名)"""
+        return self.act_impact(target_query, depth=depth, space=space, ftypes=ftypes)
+
     @classmethod
     def pre_warm(cls, workspace_root: Optional[Union[str, Path]] = None) -> None:
         """
@@ -446,12 +472,14 @@ def get_engine() -> KnowledgeEngine:
         with _ENGINE_LOCK:
             if _GLOBAL_ENGINE_INSTANCE is None:
                 _GLOBAL_ENGINE_INSTANCE = KnowledgeEngine()
+    else:
+        try:
+            from .config import KnowledgeDBConfig
+            _GLOBAL_ENGINE_INSTANCE.config = KnowledgeDBConfig.load()
+            _GLOBAL_ENGINE_INSTANCE.pipeline.config = _GLOBAL_ENGINE_INSTANCE.config
+        except Exception:
+            pass
     return _GLOBAL_ENGINE_INSTANCE
 
 
-# 註冊預熱事件監聽 (Soft Dependency)
-try:
-    from core.events import on
-    on("server_worker_warming", lambda payload: KnowledgeEngine.pre_warm())
-except Exception:
-    pass
+

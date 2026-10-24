@@ -203,6 +203,43 @@ class CallGraphIndex:
             "total_impacted_symbols": total_impacted,
         }
 
+    def get_external_incoming_edges(
+        self,
+        target_symbol_ids: Set[str],
+    ) -> List[Tuple[str, str, Optional[SymbolCallSite]]]:
+        """
+        獲取外部符號指向指定目標符號集合的所有入度調用邊與調用點。
+        排除 target_symbol_ids 內部的自我調用邊。
+        :return: (caller_id, old_callee_id, call_site) 清單
+        """
+        if not target_symbol_ids:
+            return []
+
+        results: List[Tuple[str, str, Optional[SymbolCallSite]]] = []
+        if self._graph is not None:
+            for target_id in target_symbol_ids:
+                if self._graph.has_node(target_id):
+                    for caller_id in self._graph.predecessors(target_id):
+                        if caller_id not in target_symbol_ids:
+                            sites = self._graph[caller_id][target_id].get("call_sites", [])
+                            if sites:
+                                for s in sites:
+                                    results.append((caller_id, target_id, s))
+                            else:
+                                results.append((caller_id, target_id, None))
+        else:
+            for target_id in target_symbol_ids:
+                callers = self._reverse.get(target_id, set())
+                for caller_id in callers:
+                    if caller_id not in target_symbol_ids:
+                        sites = self._sites.get((caller_id, target_id), [])
+                        if sites:
+                            for s in sites:
+                                results.append((caller_id, target_id, s))
+                        else:
+                            results.append((caller_id, target_id, None))
+        return results
+
     def patch_incremental(
         self,
         dirty_file_paths: Set[str],

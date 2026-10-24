@@ -68,7 +68,7 @@ def status(cmd_bags: Any) -> int:
 
         st = engine.status(space=space_target, scan=scan_mode)
         styler = TerminalStyler(sys.stdout)
-        print(f"[knowledge-db] 系統狀態摘要 (共 {st['total_spaces']} 個空間，{st['thesaurus_groups']} 組同義詞):")
+        print(f"[knowledge-db] 系統狀態摘要 (共 {st['total_spaces']} 個空間):")
         print(f"  - 存儲空間根目錄: {styler.path(st['storage_dir'])}")
         unified_str = styler.symbol("已建立") if st.get("has_unified_index") else styler.warn("未建立")
         print(f"  - 全域倒排索引: {unified_str}")
@@ -260,7 +260,7 @@ def search(cmd_bags: Any) -> int:
         is_md = bags.has_option("md") or bags.has_option("markdown")
         lexical_only = bags.has_option("lexical-only")
 
-        is_snippet = (tier == "snippet") or (tier == "detail" and (bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")))
+        is_snippet = (tier in ("snippet", "detail")) or bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")
         detail_mode = "detail" if tier == "detail" else ("auto" if tier == "snippet" else "simple")
         fetch_limit = 50 if limit_val == "auto" else max(1, int(limit_val))
 
@@ -294,13 +294,16 @@ def search(cmd_bags: Any) -> int:
                         "file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None),
                         "total_score": round(res.total_score, 2),
                         "language": res.language,
+                        "spaces": getattr(res, "spaces", []),
                         "items": [
                             {
+                                "id": itm.symbol.id,
                                 "name": itm.symbol.name,
                                 "kind": itm.symbol.kind,
                                 "line_number": itm.symbol.line_number,
                                 "end_line": itm.symbol.end_line,
                                 "score": round(itm.score, 2),
+                                "matched_terms": getattr(itm, "matched_terms", []),
                                 "signature": itm.symbol.signature,
                                 "summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else ""),
                                 **({"code": itm.code_snippet.get_raw_code(), "code_lines": [itm.code_snippet.start_line, itm.code_snippet.end_line]} if (itm.code_snippet and itm.code_snippet.lines) else {}),
@@ -419,7 +422,7 @@ def callers(cmd_bags: Any) -> int:
                 except ValueError:
                     limit_val = "auto"
 
-        is_snippet = (tier == "snippet") or (tier == "detail" and (bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")))
+        is_snippet = (tier in ("snippet", "detail")) or bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")
         detail_mode = "detail" if tier == "detail" else "simple"
 
         res = engine.act_callers(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
@@ -583,7 +586,7 @@ def callees(cmd_bags: Any) -> int:
                 except ValueError:
                     limit_val = "auto"
 
-        is_snippet = (tier == "snippet") or (tier == "detail" and (bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")))
+        is_snippet = (tier in ("snippet", "detail")) or bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")
         detail_mode = "detail" if tier == "detail" else "simple"
 
         res = engine.act_callees(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)

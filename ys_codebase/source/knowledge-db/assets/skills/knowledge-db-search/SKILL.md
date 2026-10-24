@@ -67,7 +67,7 @@ description: 透過 knowledge-db CLI (search / callers / callees / impact) 檢�
 python __${project://yscb.py}__ knowledge-db search '編譯 佔位符 resolve' --json -s
 
 # 2. 符號大綱檢索 (無切片)
-python __${project://yscb.py}__ knowledge-db search 'ThesaurusEngine' --json
+python __${project://yscb.py}__ knowledge-db search 'HybridSearchEngine' --json
 
 # 3. 查上游調用者 (Who calls me)
 python __${project://yscb.py}__ knowledge-db callers resolve_stage2_uri --json -s

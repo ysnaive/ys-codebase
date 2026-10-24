@@ -37,6 +37,8 @@ last_updated: "2026-10-15"
 | **DN-04** | 背景 Watcher `.watcher_active` 零阻塞旁路與 `_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新 *(原 DN-21 + DN-23)* | `pipeline.py`, `service.py` | ⚠️ WARNING |
 | **DN-05** | `SpaceManager._include_cache` 空間路徑解析記憶化防退化 *(原 DN-24)* | `space.py`, `engine.py` | ⚠️ WARNING |
 | **DN-06** | 圖譜查詢輕量 JIT 解耦 (`require_vectors=False`)、差量修補對稱路徑剔除與零偽造向量鐵律 *(原 DN-26)* | `pipeline.py`, `retrieval.py`, `embedding.py` | 🚨 CRITICAL |
+| **DN-07** | 冷啟動向量載入需求區隔 (`want_vectors` vs `can_use_vector`) 解除死鎖 | `pipeline.py`, `hybrid.py` | 🚨 CRITICAL |
+| **DN-08** | 調用圖譜雙階入度邊保留 (`Identity Remap` + `TopologyLinker`) 與服務單一託管 | `graph.py`, `pipeline.py`, `hook.server.py`, `service.py` | 🚨 CRITICAL |
 
 ---
 
@@ -127,3 +129,25 @@ last_updated: "2026-10-15"
 
 > [!CAUTION]
 > **嚴禁在 `EmbeddingService` 推論失敗時回傳隨機數或零向量充當 Fallback，且嚴禁在圖譜拓撲指令 (`callers`/`callees`/`impact`) 中開啟 `require_vectors=True`！**
+
+---
+
+### [DN-07] 冷啟動向量載入需求區隔 (`want_vectors` vs `can_use_vector`) 解除死鎖
+
+- **背景與根因**：
+  在 `IndexingPipeline.search()` 中，早期邏輯於調用 `_ensure_jit_index_ready()` 前直接檢查 `can_use_vector = (... and self.hybrid_engine.is_vector_available)`。在冷啟動新進程中，磁碟上的向量快取尚未被載入，故 `is_vector_available` 恆為 `False`，導致傳入 `require_vectors=False`，進而永遠跳過磁碟向量載入，形成冷啟動向量搜尋死鎖。
+- **工程妥協與解法**：
+  區隔「預期載入需求 (`want_vectors`)」與「載入後可用判定 (`can_use_vector`)」：
+  1. 呼叫 `_ensure_jit_index_ready(require_vectors=want_vectors)`，依組態與參數意圖觸發向量載入。
+  2. 索引載入就緒後始評估 `can_use_vector = (want_vectors and self.hybrid_engine.is_vector_available)`。
+
+---
+
+### [DN-08] 調用圖譜雙階入度邊保留 (`Identity Remap` + `TopologyLinker`) 與服務單一託管
+
+- **背景與根因**：
+  1. 單一檔案增量熱修補時，若僅拔除修改檔案之舊符號並重鏈接該檔之 outgoing 邊，會導致外部未修改檔案指向該檔之 incoming edges 被誤刪丟失。直接調用 `TopologyLinker` 又因缺少外部檔案檔頭 imports 而丟棄裸函式調用。
+  2. `hook.server.py` 早期私自建立並啟動 `_watcher_instance`，與 `server.ServiceManager` 透過 `contributes/server.json` 託管之 Worker 產生雙重監聽競態。
+- **工程妥協與解法**：
+  1. **雙階入度保留**：拔除舊符號前先透過 `CallGraphIndex.get_external_incoming_edges()` 備份入度邊；符號更新後執行 Stage 1 `Identity Remap`（依同檔案路徑與符號名稱直接對映）＋ Stage 2 `TopologyLinker` 跨檔消歧回退。
+  2. **服務單一託管**：`hook.server.py` 僅保留 `pre_warm()`，背景監聽 100% 委由 `server.ServiceManager` 統一託管。

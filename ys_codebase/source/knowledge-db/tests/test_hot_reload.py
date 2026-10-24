@@ -245,6 +245,53 @@ class TestJITHotHealing(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_cold_start_vector_search_loads_disk_index(self):
+        """FT-REG: 驗證全新進程冷啟動 search 能解除死鎖並正確載入磁碟上的向量索引"""
+        import numpy as np
+        from knowledge_db.embedding import VectorIndex
+        from knowledge_db.pipeline import IndexingPipeline
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            src_dir = temp_path / "src"
+            src_dir.mkdir(parents=True)
+            storage_dir = temp_path / "storage"
+
+            file1 = src_dir / "target.py"
+            file1.write_text("class ColdStartSymbol:\n    pass\n", encoding="utf-8")
+
+            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            engine1 = KnowledgeEngine(
+                storage_dir=storage_dir,
+                contributes_data={"spaces": {"main": sp.to_dict()}},
+                embedding_mock_mode=True,
+            )
+            engine1.build_unified_index(force=True)
+
+            # 驗證向量二進位檔案存在
+            indices_dir = engine1.pipeline.get_indices_dir()
+            vec_file = indices_dir / "unified.vectors.bin.gz"
+            self.assertTrue(vec_file.exists())
+
+            # 模擬全新的進程 (Cold Start: 記憶體無快取)
+            engine2 = KnowledgeEngine(
+                storage_dir=storage_dir,
+                contributes_data={"spaces": {"main": sp.to_dict()}},
+                embedding_mock_mode=True,
+            )
+            # 此時向量索引尚未加載至記憶體
+            self.assertFalse(engine2.pipeline.hybrid_engine.is_vector_available)
+
+            # 執行搜尋 (應由 want_vectors 觸發 require_vectors=True 載入)
+            results = engine2.search("ColdStartSymbol", lexical_only=False)
+            self.assertGreater(len(results), 0)
+
+            # 驗證冷啟動後向量索引已成功加載至記憶體，未發生死鎖
+            self.assertTrue(engine2.pipeline.hybrid_engine.is_vector_available)
+
+        self.mark_passed()
+
 
 class TestIncrementalHotReload(YSCBTestCase):
     """增量檔案變更偵測與差量索引修補測試"""

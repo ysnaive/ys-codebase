@@ -32,6 +32,26 @@ _spec.loader.exec_module(_hook_dev)
 
 
 class TestCLI(YSCBTestCase):
+    def setUp(self):
+        super().setUp()
+        from scripts.cli import get_engine
+        from knowledge_db.schema import UnifiedSymbol
+        engine = get_engine()
+        if not engine.pipeline._unified_index:
+            engine.pipeline.build_unified_index()
+        sym = UnifiedSymbol(
+            id="pid_sym",
+            name="PIDController",
+            kind="class",
+            file_path="src/pid.py",
+            line_number=10,
+            end_line=20,
+            signature="class PIDController",
+            docstring="PID 控制器實作",
+            language="python",
+        )
+        engine.pipeline._unified_index.add_symbol(sym, engine.tokenizer, space="source")
+
     @require(Requirement.LOGIC)
     def test_cli_all_commands(self):
         """FT-07: 驗證 CLI 8 大子指令路由與執行 (status, index, search, callers, callees, impact, clean, model)"""
@@ -196,8 +216,8 @@ class TestCLI(YSCBTestCase):
         self.assertEqual(ret, 0)
         out = buf.getvalue()
         self.assertIn("檢索查詢", out)
-        if "#01" in out:
-            self.assertIn("](file:///", out)
+        self.assertIn("#01", out)
+        self.assertIn("](file:///", out)
 
         # 2. 清單模式 (--simple)
         buf_simple = io.StringIO()
@@ -205,10 +225,10 @@ class TestCLI(YSCBTestCase):
             ret = process(["search", "PIDController", "--simple"])
         self.assertEqual(ret, 0)
         out_simple = buf_simple.getvalue()
-        if "#01" in out_simple:
-            self.assertIn("清單模式", out_simple)
-            self.assertNotIn("命中詞:", out_simple)
-            self.assertIn("](file:///", out_simple)
+        self.assertIn("#01", out_simple)
+        self.assertIn("清單模式", out_simple)
+        self.assertNotIn("命中詞:", out_simple)
+        self.assertIn("](file:///", out_simple)
 
         # 3. 詳細模式 (--detail, -d, --verbose)
         for flag in ["--detail", "-d", "--verbose"]:
@@ -217,9 +237,9 @@ class TestCLI(YSCBTestCase):
                 ret = process(["search", "PIDController", flag])
             self.assertEqual(ret, 0)
             out_detail = buf_detail.getvalue()
-            if "#01" in out_detail:
-                self.assertIn("詳細模式", out_detail)
-                self.assertIn("](file:///", out_detail)
+            self.assertIn("#01", out_detail)
+            self.assertIn("詳細模式", out_detail)
+            self.assertIn("](file:///", out_detail)
 
         # 4. Markdown 模式 (--md, --markdown)
         for flag in ["--md", "--markdown"]:
@@ -264,10 +284,10 @@ class TestCLI(YSCBTestCase):
             self.assertEqual(ret, 0)
             out_snip = buf_snip.getvalue()
             self.assertIn("檢索查詢", out_snip)
-            if "#01" in out_snip:
-                self.assertIn("預覽模式", out_snip)
-                self.assertIn("檔案:", out_snip)
-                self.assertIn("](file:///", out_snip)
+            self.assertIn("#01", out_snip)
+            self.assertIn("預覽模式", out_snip)
+            self.assertIn("檔案:", out_snip)
+            self.assertIn("](file:///", out_snip)
 
         # 8. 0 筆結果情境 (ET-01)
         buf_empty = io.StringIO()

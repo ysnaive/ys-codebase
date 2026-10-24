@@ -8,6 +8,14 @@
 
 ## 2026_10_23_1122_ecosystem_modules_hardening_and_test_purification (In Progress)
 
+### sub_04_knowledge_db_pipeline_and_tests (Completed)
+- **`knowledge-db` 檢索管線死鎖解除、調用圖譜熱修補雙階入度保真、服務單一託管、詞庫純化與測試套件 12 檔收斂**：
+  - **冷啟動向量載入死鎖解除與多副檔名正規化 (`K-01`, `K-04`, `FR-01`, `FR-04`, `EC-01`, `EC-04`)**：分離 `pipeline.search()` 載入前需求判定（`want_vectors = enable_vec and not degraded and not lexical_only`）與載入後可用判定（`can_use_vector`），徹底解除冷啟動進程因記憶體狀態未就緒導致跳過磁碟向量載入之死鎖；於 `pipeline.search()` 呼叫 `_normalize_ftypes()` 拆解 `--ftype=c,cpp,py` 逗號與空格複合字串，並於 `hybrid.py` 補齊多副檔名 BM25 與向量候選集正交過濾；`find_target_symbol()` 改用 `_ensure_jit_index_ready(require_vectors=False)` 記憶體快取重用，大幅消除磁碟反序列化開銷；登錄 `[DN-07]`。
+  - **調用圖譜熱修補跨檔入度邊雙階保真 (`K-02`, `FR-02`, `EC-02`, `EC-03`)**：於 `CallGraphIndex` 實作外部入度調用邊提取方法 `get_external_incoming_edges()`，排除目標集合內部自我邊；於 `hot_patch_unified_index` 實作「第一階同檔案路徑與符號名稱對映 (`Identity Remap`) ＋ 第二階 `TopologyLinker` 跨檔消歧」雙階重連，保證單檔修改後外部未修改檔案之類別方法與無前綴裸函式調用（如 `from a import bar; bar()`）100% 不掉邊，符號徹底刪除時自然斷開不留幽靈邊；登錄 `[DN-08]`。
+  - **常駐背景服務單一託管、路徑純化與組態優先級 (`K-03`, `K-07`, `K-08`, `FR-03`, `FR-07`, `EC-05`)**：純化 `scripts/hook.server.py`，拔除私有 `_watcher_instance` 與重複啟動的 `KnowledgeDBServiceWorker`，背景監聽與熱自癒 100% 由 `server.ServiceManager` 透過 `contributes/server.json` 單一託管；移除 `service.py` 內部 `sys.path.insert` 注入 `source/server` 路徑與 `engine.py` 之無效 events 呼叫，嚴守 `.modules/` 運行時空間隔離；修正 `KnowledgeDBConfig.load()` 以 `core.config` 為最高優先級；於 `get_engine()` 同步熱刷新組態；於 `KnowledgeEngine` 補齊 `callers/callees/impact` 公開 SDK 別名並同步 `README.md`。
+  - **核心結構純化、同義詞死代碼移除與 CLI 契約對齊 (`K-05`, `K-06`, `FR-05`, `FR-06`)**：自 `contributes/`、`schema.py`、`space.py`、`bundler.py`、`retrieval.py`、`linker.py`、`engine.py`、`cli.py` 與 `SKILL.md` 徹底清理 `thesaurus / aliases / related` 欄位與結構，物理刪除 0 引用之 `knowledge_db/protocol.py` 與 `schema.py:CallGraphNode`；於 `contributes/core.json` 補齊 `kind`, `lang`, `limit` 等選項；修復 `scripts/cli.py` 使 `-d` 模式必然包含程式碼切片，且 `search -d --json` 輸出補齊 `id`、`matched_terms` 與 `spaces`。
+  - **測試套件純化收斂 14 檔 $\to$ 12 檔與高風險路徑補盲 (`KT-01` ~ `KT-05`, `FR-08`, `FR-09`, `NFR-01`, `NFR-02`)**：物理刪除 `test_benchmark_perf_and_memory.py` 與 `test_cli_ux.py` 2 個碎片檔並無損整併至子系統測試集；徹底重寫 `test_cli.py` 中 `if "#01" in out:` 等條件放行之虛假斷言，改為 `setUp()` 預置已知符號進行剛性非空斷言；重寫 `test_space.py` Provider 實質表格斷言；補齊冷啟動向量載入、熱修補入度保真、多副檔名過濾與單例隔離測試；全模組 **150/150 測試 100% 通過**，全生態系回歸 **193/193 通過**，並完成 `knowledge-db@build` 熱部署。
+
 ### sub_03_server_hosting_ipc_and_tests (Completed)
 - **`server` 常駐服務端模組加固、Worker IPC 管道硬隔離、兩階段優雅停機與測試套件 3 檔純化收斂**：
   - **背景服務託管引擎修復與增強 (`S-01`, `S-02`, `FR-01`, `EC-01`, `EC-02`)**：在 `server/service.py` 補齊 `import os`，接入 `core.contributes.get("server", "services")` 聚合登錄；動態將 `.modules/<provider>` 注入 `sys.path`，支援 `code.class://` 前綴去除與連字號模組名稱轉底線（優先直接匯入，相容 `knowledge_db.service:KnowledgeDBServiceWorker`）；於 `ServiceManager.register()` 與 `start_all()` 完整實作 `auto_start` 過濾控制。

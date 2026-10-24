@@ -24,31 +24,10 @@
     }
   },
 
-  "thesaurus": {
-    "description": "向語意檢索器注入領域同義詞庫映射",
-    "format": [
-      "list[str]"
-    ]
-  },
-
   "languages": {
     "description": "向知識庫註冊支援的程式語言、AST Parser 與副檔名對映",
     "format": {
       "*": "$LanguageDef"
     }
-  },
-
-  "aliases": {
-    "description": "註冊同義詞別名簡稱映射 (Alias Map)",
-    "format": {
-      "*": "list[str]"
-    }
-  },
-
-  "related": {
-    "description": "註冊語意相關詞清冊清單 (Semantic Clusters)",
-    "format": [
-      "list[str]"
-    ]
   }
 }

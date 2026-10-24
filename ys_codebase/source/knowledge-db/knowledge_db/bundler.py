@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from .exceptions import KnowledgeDBError, SchemaValidationError
 from .parsers.registry import ParserRegistry
 from .scanner import FingerprintScanner, ScanDiffDetail
-from .schema import SpaceConfig, SymbolCallSite, ThesaurusGroup, UnifiedSymbol
+from .schema import SpaceConfig, SymbolCallSite, UnifiedSymbol
 from .space import SpaceManager
 
 logger = logging.getLogger("knowledge-db.bundler")
@@ -68,7 +68,6 @@ class SemanticBundle:
     space_name: str
     created_at: str
     symbols: List[UnifiedSymbol] = field(default_factory=list)
-    thesaurus: List[ThesaurusGroup] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -78,7 +77,6 @@ class SemanticBundle:
             "created_at": self.created_at,
             "symbol_count": len(self.symbols),
             "symbols": [s.to_dict() for s in self.symbols],
-            "thesaurus": [list(g) for g in self.thesaurus],
             "metadata": dict(self.metadata),
         }
 
@@ -97,12 +95,6 @@ class SemanticBundle:
             for s in symbols_raw
         ]
 
-        thesaurus_raw = data.get("thesaurus", [])
-        thesaurus: List[ThesaurusGroup] = []
-        for g in thesaurus_raw:
-            if isinstance(g, list):
-                thesaurus.append([str(w) for w in g])
-
         metadata = dict(data.get("metadata", {}))
 
         return cls(
@@ -110,7 +102,6 @@ class SemanticBundle:
             space_name=space_name,
             created_at=created_at,
             symbols=symbols,
-            thesaurus=thesaurus,
             metadata=metadata,
         )
 
@@ -212,7 +203,6 @@ class SemanticBundler:
             except Exception as e:
                 logger.warning(f"Failed parsing file '{f_path}' during bundle: {e}")
 
-        thesaurus = self.space_manager.load_thesaurus()
         created_at = datetime.now(timezone.utc).isoformat()
 
         return SemanticBundle(
@@ -220,7 +210,6 @@ class SemanticBundler:
             space_name=space_name,
             created_at=created_at,
             symbols=all_symbols,
-            thesaurus=thesaurus,
             metadata={
                 "source_count": len(source_roots),
                 "file_count": total_files,
@@ -322,7 +311,6 @@ class SemanticBundler:
                 all_symbols.extend(file_symbols)
                 self._file_symbols_cache[c_key] = file_symbols
 
-        thesaurus = self.space_manager.load_thesaurus()
         created_at = datetime.now(timezone.utc).isoformat()
 
         files_map = {}
@@ -338,7 +326,6 @@ class SemanticBundler:
             space_name="unified",
             created_at=created_at,
             symbols=all_symbols,
-            thesaurus=thesaurus,
             metadata={
                 "total_spaces": len(target_spaces),
                 "total_files": total_files,

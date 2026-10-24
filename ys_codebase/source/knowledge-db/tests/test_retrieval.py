@@ -55,7 +55,6 @@ class TestRetrieval(YSCBTestCase):
     def setUp(self):
         super().setUp()
         self.tokenizer = CodeTokenizer()
-        self.thesaurus = None
 
         # 準備一組測試符號
         self.sym_pid = UnifiedSymbol(
@@ -123,7 +122,7 @@ class TestRetrieval(YSCBTestCase):
         index = InvertedIndex(space_name="test_space")
         index.build(self.symbols, tokenizer=self.tokenizer)
 
-        engine = BM25Engine(tokenizer=self.tokenizer, thesaurus=self.thesaurus)
+        engine = BM25Engine(tokenizer=self.tokenizer)
 
         # 1. 查詢 'PIDController' 應直擊置頂第一名 (Exact Match Boost)
         results = engine.search("PIDController", index)
@@ -146,7 +145,7 @@ class TestRetrieval(YSCBTestCase):
         """FT-06: 驗證 QueryFilter 語言、類型過濾與 limit 限制"""
         index = InvertedIndex(space_name="test_space")
         index.build(self.symbols, tokenizer=self.tokenizer)
-        engine = BM25Engine(tokenizer=self.tokenizer, thesaurus=self.thesaurus)
+        engine = BM25Engine(tokenizer=self.tokenizer)
 
         # 1. 限定語言為 markdown
         flt_md = QueryFilter(languages=["markdown"])
@@ -189,7 +188,7 @@ class TestRetrieval(YSCBTestCase):
         """ET-01: 驗證空 Query、未命中詞條與特殊字元檢索安全防禦 (EC-01, EC-02, EC-06)"""
         index = InvertedIndex(space_name="test_space")
         index.build(self.symbols, tokenizer=self.tokenizer)
-        engine = BM25Engine(tokenizer=self.tokenizer, thesaurus=self.thesaurus)
+        engine = BM25Engine(tokenizer=self.tokenizer)
 
         # 空 Query (EC-01)
         self.assertEqual(engine.search("", index), [])
@@ -237,7 +236,7 @@ class TestRetrieval(YSCBTestCase):
             self.assertEqual(len(restored.index), len(index.index))
 
             # 驗證還原後搜尋能力一致
-            engine = BM25Engine(tokenizer=self.tokenizer, thesaurus=self.thesaurus)
+            engine = BM25Engine(tokenizer=self.tokenizer)
             res = engine.search("PIDController", restored)
             self.assertGreaterEqual(len(res), 1)
             self.assertEqual(res[0].symbol.name, "PIDController")
@@ -813,6 +812,84 @@ class TestHybridSearchEngine(YSCBTestCase):
         self.assertEqual(engine.search(""), [])
         self.assertEqual(engine.search("   "), [])
         self.assertEqual(engine.search(None), [])
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_hybrid_search_multi_extension_filtering(self):
+        """FT-REG: 驗證多副檔名逗號/清單過濾在 HybridSearchEngine 正常運作"""
+        sym_cs = UnifiedSymbol(
+            id="sym_cs",
+            name="CsClass",
+            kind=SymbolKind.CLASS,
+            file_path="src/logic.cs",
+            line_number=1,
+            language="csharp",
+        )
+        symbols = dict(self.symbols)
+        symbols["sym_cs"] = sym_cs
+        engine = HybridSearchEngine(
+            inverted_index=DummyIndex(symbols=symbols, hits=[{"doc_id": "sym_a", "score": 1.0}, {"doc_id": "sym_cs", "score": 1.0}]),
+            vector_index=VectorIndex(),
+            embedding_service=self.service,
+        )
+        hits = engine.search("test", file_types=["py", "cs"], lexical_only=True)
+        self.assertGreaterEqual(len(hits), 1)
+
+        hits_str = engine.search("test", file_types="py,cs", lexical_only=True)
+        self.assertGreaterEqual(len(hits_str), 1)
+
+        hits_none = engine.search("test", file_types="cpp,md", lexical_only=True)
+        self.assertEqual(len(hits_none), 0)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_posting_slots_and_memory_savings(self):
+        """FT-PERF-01: 驗證 Posting __slots__ 屬性約束與記憶體瘦身"""
+        p = Posting(doc_id="doc_1", field_freqs={"name": 2}, space="core", spaces=["core", "unified"])
+        self.assertEqual(p.doc_id, "doc_1")
+        self.assertEqual(p.field_freqs["name"], 2)
+        self.assertEqual(p.space, "core")
+        self.assertEqual(p.spaces, ["core", "unified"])
+
+        self.assertFalse(hasattr(p, "__dict__"))
+        with self.assertRaises(AttributeError):
+            p.arbitrary_attr = "invalid"
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_inverted_index_doc_lengths_top_level(self):
+        """FT-PERF-02: 驗證 InvertedIndex 頂層 doc_lengths 共享池與增量同步"""
+        idx = InvertedIndex(space_name="test")
+        tok = CodeTokenizer()
+
+        sym1 = UnifiedSymbol(
+            id="sym_1",
+            name="PIDController",
+            kind="class",
+            file_path="src/pid.py",
+            line_number=10,
+            language="python",
+            docstring="PID 控制器實現",
+        )
+        idx.add_symbol(sym1, tok, space="test")
+        self.assertIn("sym_1", idx.doc_lengths)
+        self.assertGreater(idx.doc_lengths["sym_1"]["name"], 0)
+
+        sym3 = UnifiedSymbol(
+            id="sym_3",
+            name="PIDControllerV2",
+            kind="class",
+            file_path="src/pid.py",
+            line_number=10,
+            language="python",
+        )
+        idx.patch_incremental(dirty_file_paths={"src/pid.py"}, new_symbols=[sym3], tokenizer=tok)
+        self.assertNotIn("sym_1", idx.doc_lengths)
+        self.assertIn("sym_3", idx.doc_lengths)
+        self.assertEqual(idx.doc_count, 1)
 
         self.mark_passed()
 

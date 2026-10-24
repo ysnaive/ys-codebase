@@ -45,7 +45,6 @@ class TestEngine(YSCBTestCase):
                 storage_dir=storage_dir,
                 contributes_data={
                     "spaces": {"demo_space": space_cfg.to_dict()},
-                    "thesaurus": [["演算法", "algorithm"]],
                 },
             )
 
@@ -354,6 +353,38 @@ class TestEngine(YSCBTestCase):
 
             impact_res = engine.act_impact("PipelineService")
             self.assertIn("layers", impact_res)
+
+            # 驗證 SDK 公開別名 callers / callees / impact 介面
+            sdk_callers = engine.callers("PipelineService")
+            self.assertEqual(sdk_callers, callers_res)
+
+            sdk_callees = engine.callees("PipelineService")
+            self.assertEqual(sdk_callees, callees_res)
+
+            sdk_impact = engine.impact("PipelineService")
+            self.assertEqual(sdk_impact, impact_res)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_config_loading_priority(self):
+        """FT-REG: 驗證 KnowledgeDBConfig 載入優先級：core.config > local_config > yscb.config.local > yscb.config > project_config"""
+        from knowledge_db.config import KnowledgeDBConfig
+
+        # 1. project_config 覆蓋預設值
+        cfg1 = KnowledgeDBConfig.load(
+            project_config={"knowledge-db": {"enable_vector_search": False, "max_threads": 4}}
+        )
+        self.assertFalse(cfg1.enable_vector_search)
+        self.assertEqual(cfg1.max_threads, 4)
+
+        # 2. local_config 覆蓋 project_config
+        cfg2 = KnowledgeDBConfig.load(
+            project_config={"knowledge-db": {"enable_vector_search": False, "max_threads": 4}},
+            local_config={"knowledge-db": {"enable_vector_search": True}},
+        )
+        self.assertTrue(cfg2.enable_vector_search)
+        self.assertEqual(cfg2.max_threads, 4)
 
         self.mark_passed()
 

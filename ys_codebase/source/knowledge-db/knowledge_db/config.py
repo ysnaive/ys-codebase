@@ -49,7 +49,43 @@ class KnowledgeDBConfig:
 
         merged_data: Dict[str, Any] = {}
 
-        # 1. 嘗試透過 core.config 載入
+        # 輔助解析傳入組態
+        def _parse_cfg_input(cfg_in: Any) -> Dict[str, Any]:
+            if isinstance(cfg_in, dict):
+                return cfg_in.get("knowledge-db", cfg_in)
+            elif isinstance(cfg_in, (str, Path)):
+                p_str = str(cfg_in)
+                if (vfs.is_file(p_str) if vfs else Path(p_str).is_file()):
+                    try:
+                        data = vfs.read_json(p_str) if vfs else json.loads(Path(p_str).read_text(encoding="utf-8"))
+                        if isinstance(data, dict):
+                            return data.get("knowledge-db", data)
+                    except Exception:
+                        pass
+            return {}
+
+        # 1. 傳入之 project_config
+        if project_config:
+            merged_data.update(_parse_cfg_input(project_config))
+
+        # 2. 搜尋實體目錄之 yscb.config.json 與 yscb.config.local.json
+        for fname in ["yscb.config.json", "yscb.config.local.json"]:
+            p = root_path / fname
+            if (vfs.is_file(str(p)) if vfs else p.is_file()):
+                try:
+                    raw = vfs.read_json(str(p)) if vfs else json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        kdb_sec = raw.get("knowledge-db")
+                        if isinstance(kdb_sec, dict):
+                            merged_data.update(kdb_sec)
+                except Exception as e:
+                    logger.debug(f"Failed to read {fname}: {e}")
+
+        # 3. 傳入之 local_config (高於實體檔案)
+        if local_config:
+            merged_data.update(_parse_cfg_input(local_config))
+
+        # 4. core.config SDK 聚合結果 (最高優先級，具備動態與階層配置能力)
         try:
             from core import config as core_cfg_mod
             if hasattr(core_cfg_mod, "get_all"):
@@ -65,39 +101,6 @@ class KnowledgeDBConfig:
                 merged_data.update(core_cfg)
         except Exception:
             pass
-
-        # 2. 搜尋實體目錄之 yscb.config.json 與 yscb.config.local.json
-        for fname in ["yscb.config.json", "yscb.config.local.json"]:
-            p = root_path / fname
-            if (vfs.is_file(str(p)) if vfs else p.is_file()):
-                try:
-                    raw = vfs.read_json(str(p)) if vfs else json.loads(p.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        kdb_sec = raw.get("knowledge-db")
-                        if isinstance(kdb_sec, dict):
-                            merged_data.update(kdb_sec)
-                except Exception as e:
-                    logger.debug(f"Failed to read {fname}: {e}")
-
-        # 3. 支援外部傳入之 project_config 與 local_config
-        def _parse_cfg_input(cfg_in: Any) -> Dict[str, Any]:
-            if isinstance(cfg_in, dict):
-                return cfg_in.get("knowledge-db", cfg_in)
-            elif isinstance(cfg_in, (str, Path)):
-                p_str = str(cfg_in)
-                if (vfs.is_file(p_str) if vfs else Path(p_str).is_file()):
-                    try:
-                        data = vfs.read_json(p_str) if vfs else json.loads(Path(p_str).read_text(encoding="utf-8"))
-                        if isinstance(data, dict):
-                            return data.get("knowledge-db", data)
-                    except Exception:
-                        pass
-            return {}
-
-        if project_config:
-            merged_data.update(_parse_cfg_input(project_config))
-        if local_config:
-            merged_data.update(_parse_cfg_input(local_config))
 
         # 3. 解析型態防禦
         enable_vec = merged_data.get("enable_vector_search", DEFAULT_ENABLE_VECTOR_SEARCH)
