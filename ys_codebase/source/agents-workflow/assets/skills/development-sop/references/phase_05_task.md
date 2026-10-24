@@ -31,11 +31,6 @@ Phase 05 執行檢核表：
 4. **動作前置技能調用與測試連鎖觸發**：
    - 編輯源碼、執行測試或維護文檔前，須依專案規範調用對應之專屬技能，不可省略。
    - **撰寫或修改自動化測試腳本前，強制先觸發並遵循 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`)**，嚴格落實實質副作用斷言與 `tearDown` / `try...finally` 沙盒零殘留清理。
-5. **Subagent 支柱二委派協定（受限讀寫實作隔離）**：
-   - **門檻判定**：當處於 `/auto` 模式進入 Phase 05/06，或 `P05_task.md` 含 $\ge 3$ 個跨模組獨立任務組時，依耦合度按「單一任務或高內聚任務組（Cohesive Task Group）」**強制每次僅序列派發 1 個 Subagent**（嚴禁平行改碼；`Fast Track`、`Revision` 或 $\le 2$ 個簡單任務維持主視窗直行以規避 Token 入場稅；若運行環境不支援子代理則自動降級為主視窗內聯執行）。
-   - **路徑傳址（Pass-by-Reference）**：主視窗傳遞 `P03_api_spec.md`、`P04_implementation_plan.md`、`P05_task.md` 目標 `[TASK-XX]` 與必讀 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`) 路徑指針。
-   - **二振失敗熔斷（2-Strike Limit）**：Subagent 內部跑測遇錯最多自主嘗試修復 2 次，第 2 次仍失敗立即停手回傳 `STATUS: MAJOR_BLOCKER (Two-Strike Test Failure)` 交主視窗轉入 `/discuss`。
-   - **Single-Writer 鐵律與 5 行結構化回傳格式**：Subagent 嚴禁建立或修改 `plans/` 下任何檔案（嚴守單層星型拓撲，禁止遞迴派發子代理），僅回傳 150~300 Tokens 之 5 行結構化狀態摘要（`STATUS: <COMPLETED | MINOR_DEVIATION | MAJOR_BLOCKER | CRITICAL_BLOCKER>`、`TASK`、`MODIFIED_FILES`、`TEST_OUTCOME`、`DEVIATION_OR_BLOCKER_NOTE`），由主視窗統一更新 `P05_task.md` 與 `changelog.md`。
 
 ---
 

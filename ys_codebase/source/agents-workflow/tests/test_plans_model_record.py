@@ -346,19 +346,21 @@ class TestModelRecordRule(YSCBTestCase):
             self.assertIn("150~300 Tokens", s_text)
             self.assertIn("自動降級", s_text)
 
-        # 5. FR-05 & EC-02: 支柱二 (auto / phase_05 / phase_06 序列實作、二振失敗熔斷與 Single-Writer)
+        # 5. REV-02: 廢棄 Phase 05 實作隔離委派 (auto / phase_05 由主 Agent 直接執行，無支柱二 2-Strike 委派)
         for doc_text in ((skills_dir / "auto" / "SKILL.md").read_text(encoding="utf-8"),
                          (sop_ref / "phase_05_task.md").read_text(encoding="utf-8")):
-            self.assertIn("支柱二", doc_text)
-            self.assertIn("2-Strike Limit", doc_text)
-            self.assertIn("STATUS: MAJOR_BLOCKER (Two-Strike Test Failure)", doc_text)
-            self.assertIn("Single-Writer", doc_text)
-            self.assertIn("DEVIATION_OR_BLOCKER_NOTE", doc_text)
-            self.assertIn("自動降級", doc_text)
+            self.assertNotIn("支柱二", doc_text)
+            self.assertNotIn("2-Strike Limit", doc_text)
+            self.assertNotIn("STATUS: MAJOR_BLOCKER (Two-Strike Test Failure)", doc_text)
+            self.assertNotIn("DEVIATION_OR_BLOCKER_NOTE", doc_text)
 
-        # 6. FR-06 & EC-03 & EC-04: 支柱三 (phase_06 Pre-UX Fresh-Eyes Review、phase_07 條件式複審、Untracked 防護與三類硬性契約)
+        # 6. FR-06 & EC-03 & EC-04 & REV-02: 支柱三 (phase_06 Pre-UX 零劇透盲審傳址、純靜態唯讀禁跑測、phase_07 條件式複審、Untracked 防護與三類硬性契約)
         p06_ref = (sop_ref / "phase_06_test.md").read_text(encoding="utf-8")
+        self.assertNotIn("支柱二", p06_ref)
         self.assertIn("支柱三", p06_ref)
+        self.assertIn("不應告知子代理本次計畫實作內容，僅可提供計畫路徑由子代理進行探索", p06_ref)
+        self.assertIn("嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查", p06_ref)
+        self.assertIn("Single-Writer", p06_ref)
         self.assertIn("Untracked (??)", p06_ref)
         self.assertIn("git status --short", p06_ref)
         self.assertIn("REVIEW_STATUS: PASSED", p06_ref)
@@ -367,6 +369,7 @@ class TestModelRecordRule(YSCBTestCase):
         p07_ref = (sop_ref / "phase_07_walkthrough.md").read_text(encoding="utf-8")
         self.assertIn("支柱三", p07_ref)
         self.assertIn("條件式", p07_ref)
+        self.assertIn("嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查", p07_ref)
 
         self.mark_passed()
 
