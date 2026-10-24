@@ -16,6 +16,14 @@ class TestDevBuilder(YSCBTestCase):
         super().setUp()
         self.builder = Builder()
 
+    def tearDown(self):
+        for mod in ("mock_bld_pkg", "mock_rel_pkg", "mock_purge_pkg", "mock_idx_pkg", "mock_clean_pkg"):
+            for scheme in ("module.source://", "module.build://", "module.release://"):
+                u = f"{scheme}{mod}"
+                if uri.exists(u):
+                    shutil.rmtree(uri.resolve(u), ignore_errors=True)
+        super().tearDown()
+
     def test_clean_build_mock_module(self):
         """Verify dev build of mock module outputs to <ver>.build.zip and retains tests/."""
         self.create_mock_source_module("mock_bld_pkg", "1.2.3.4")
@@ -104,4 +112,26 @@ class TestDevBuilder(YSCBTestCase):
         index_data = uri.read_json(index_uri)
         self.assertEqual(index_data.get("name"), "mock_idx_pkg")
         self.assertIn("3.1.2.build", index_data.get("versions", []))
+        self.mark_passed()
+
+    def test_build_module_clean_flag_behavior(self):
+        """FT-10: Verify build_module respects clean flag (clean=False preserves files, clean=True clears)."""
+        self.create_mock_source_module("mock_clean_pkg", "1.0.0.0")
+        passed, msg = self.builder.build_module("mock_clean_pkg", clean=True)
+        self.assertTrue(passed, f"Build failed: {msg}")
+
+        bld_dir = uri.resolve("module.build://mock_clean_pkg")
+        extra_file = os.path.join(bld_dir, "custom_preserved.txt")
+        with open(extra_file, "w", encoding="utf-8") as f:
+            f.write("preserve me")
+
+        # Build with clean=False -> extra_file must remain
+        passed2, msg2 = self.builder.build_module("mock_clean_pkg", clean=False)
+        self.assertTrue(passed2, f"Build failed: {msg2}")
+        self.assertTrue(os.path.isfile(extra_file), "Expected extra_file to be preserved when clean=False")
+
+        # Build with clean=True -> extra_file must be removed
+        passed3, msg3 = self.builder.build_module("mock_clean_pkg", clean=True)
+        self.assertTrue(passed3, f"Build failed: {msg3}")
+        self.assertFalse(os.path.isfile(extra_file), "Expected extra_file to be wiped when clean=True")
         self.mark_passed()

@@ -38,9 +38,8 @@ class Scaffolder:
         cli_content = f'''"""
 CLI Entry point for module {name}.
 """
-from typing import List, Any
+from typing import Any
 import sys
-import os
 
 from core.guard import guard_dispatch
 from core.commands import CmdBags
@@ -50,25 +49,6 @@ from core import uri
 def hello(cmd_bags: Any) -> int:
     guard_dispatch("{name}")
     print(f"[{name}] Hello from YSCB module {name}!")
-    return 0
-
-
-def process(args: List[str]) -> int:
-    guard_dispatch("{name}")
-
-    # Windows console UTF-8 protection
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(current_dir)
-    if parent_dir not in sys.path:
-        sys.path.insert(0, parent_dir)
-
-    print(f"[{name}] Executing command with args: " + " ".join(args))
     return 0
 '''
         uri.write_text(f"{target_src_uri}/scripts/cli.py", cli_content)
@@ -83,17 +63,21 @@ __version__ = "0.1.0.0"
         uri.write_text(f"{target_src_uri}/{pkg_name}/__init__.py", init_content)
         
         # 4. Create tests/__init__.py and tests/test_basic.py
-        uri.write_text(f"{target_src_uri}/tests/__init__.py", '"""\\nTest package.\\n"""\\n')
+        uri.write_text(f"{target_src_uri}/tests/__init__.py", '"""\nTest package.\n"""\n')
         test_content = f'''"""
 Basic test for {name}.
 """
 import unittest
 from dev.testing import YSCBTestCase
+from core.commands import CmdBags
+from scripts import cli
 
 
 class TestBasic(YSCBTestCase):
     def test_sample(self):
-        self.assertTrue(True)
+        bags = CmdBags(raw_cmd="hello", command="hello", args=[], options={{}})
+        ret = cli.hello(bags)
+        self.assertEqual(ret, 0)
         self.mark_passed()
 
 

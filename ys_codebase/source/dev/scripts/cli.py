@@ -11,15 +11,10 @@ from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
 from core import uri
 from core import semver
-from dev.scaffold import Scaffolder
-from dev.checker import Checker, CheckSeverity, CheckIssue, CheckReport
-from dev.builder import Builder
-from dev.tester import Tester
-from dev.releaser import Releaser
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
-    """容錯正規化：若傳入 List[str] 則包裝為 CmdBags，支援內部測試直呼。"""
+    """容錯正規化：若傳入 List[str] 則包裝為 CmdBags，支援內部測試直呼與帶值短/長選項別名解析。"""
     if isinstance(cmd_bags, CmdBags):
         return cmd_bags
     if isinstance(cmd_bags, (list, tuple)):
@@ -27,19 +22,62 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
         raw_cmd = " ".join(args)
         opts = {}
         pos = []
-        for a in args:
+        value_options = {"k", "pattern", "m", "msg", "message", "j", "jobs", "dir", "type", "target", "desc", "report-json"}
+        alias_map = {
+            "k": "pattern",
+            "pattern": "k",
+            "m": "msg",
+            "msg": "m",
+            "message": "msg",
+            "j": "jobs",
+            "jobs": "j",
+            "a": "all",
+            "all": "a",
+            "q": "quiet",
+            "quiet": "q",
+            "v": "verbose",
+            "verbose": "v",
+            "f": "force",
+            "force": "f",
+            "no-parallel": "sequential",
+            "sequential": "no-parallel",
+            "stress": "perf",
+            "perf": "stress",
+        }
+        idx = 0
+        while idx < len(args):
+            a = args[idx]
             if a.startswith("--"):
                 k = a[2:]
+                v: Any = True
+                if "=" in k:
+                    k, val = k.split("=", 1)
+                    v = val
+                elif k in value_options and idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+                    v = args[idx + 1]
+                    idx += 1
+                opts[k] = CmdOption(name=k, params=v)
+                if k in alias_map:
+                    alt = alias_map[k]
+                    if alt not in opts:
+                        opts[alt] = CmdOption(name=alt, params=v)
+            elif a.startswith("-") and len(a) > 1:
+                k = a[1:]
                 v = True
                 if "=" in k:
                     k, val = k.split("=", 1)
                     v = val
+                elif k in value_options and idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+                    v = args[idx + 1]
+                    idx += 1
                 opts[k] = CmdOption(name=k, params=v)
-            elif a.startswith("-") and len(a) > 1:
-                k = a[1:]
-                opts[k] = CmdOption(name=k, params=True)
+                if k in alias_map:
+                    alt = alias_map[k]
+                    if alt not in opts:
+                        opts[alt] = CmdOption(name=alt, params=v)
             else:
                 pos.append(a)
+            idx += 1
         return CmdBags(raw_cmd=raw_cmd, command=default_cmd, args=pos, options=opts)
     return CmdBags(raw_cmd="", command=default_cmd, args=[], options={})
 
@@ -83,6 +121,7 @@ def create(cmd_bags: Any) -> int:
     desc_val = bags.get_option_value("desc")
     if desc_val:
         desc = str(desc_val).strip('\"')
+    from dev.scaffold import Scaffolder
     scaffolder = Scaffolder()
     ok, msg = scaffolder.create_module(name, desc)
     print(f"[dev:create] {msg}")
@@ -93,6 +132,7 @@ def check(cmd_bags: Any) -> int:
     """Validate module structure and manifest compliance."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "check")
+    from dev.checker import Checker, CheckSeverity
     checker = Checker()
     json_output = bags.has_option("json")
     check_all = bags.has_option("all") or bags.has_option("a") or not bags.args
@@ -161,6 +201,7 @@ def build(cmd_bags: Any) -> int:
     """Build dev package (.build.zip with tests)."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "build")
+    from dev.builder import Builder
     builder = Builder()
     build_all = bags.has_option("all") or bags.has_option("a") or not bags.args
 
@@ -186,6 +227,7 @@ def release(cmd_bags: Any) -> int:
     """Package and release pure module (.zip to release/)."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "release")
+    from dev.releaser import Releaser
     releaser = Releaser()
     force = bags.has_option("force") or bags.has_option("f")
     release_all = bags.has_option("all") or bags.has_option("a") or not bags.args
@@ -221,13 +263,14 @@ def release_check(cmd_bags: Any) -> int:
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "release-check")
     force = bags.has_option("force") or bags.has_option("f")
+    from dev.releaser import Releaser
     releaser = Releaser()
 
-    if bags.has_option("all") or bags.has_option("a"):
+    if bags.has_option("all") or bags.has_option("a") or not bags.args:
         src_root = uri.resolve("module.source://")
         modules = [
             d for d in sorted(os.listdir(src_root))
-            if os.path.isdir(os.path.join(src_root, d)) and not d.startswith(".")
+            if os.path.isdir(os.path.join(src_root, d)) and not d.startswith(".") and os.path.isfile(os.path.join(src_root, d, "manifest.json"))
         ]
         all_passed = True
         print(f"[dev:release-check] Checking release readiness for all {len(modules)} modules...")
@@ -247,9 +290,6 @@ def release_check(cmd_bags: Any) -> int:
             print("[dev:release-check] One or more modules FAILED release check.", file=sys.stderr)
             return 1
 
-    if not bags.args:
-        print("[dev:release-check] Usage: python yscb.py dev release-check <module_name> [--all|-a] [--force|-f]")
-        return 1
     mod_name = bags.args[0]
     passed, errors = releaser.release_check(mod_name, force=force)
     if passed:
@@ -275,6 +315,7 @@ def release_git(cmd_bags: Any) -> int:
     mod_name = bags.args[0]
     if not commit_msg:
         commit_msg = bags.args[1]
+    from dev.releaser import Releaser
     releaser = Releaser()
     ok, msg = releaser.release_git(mod_name, str(commit_msg), force=force)
     if ok:
@@ -305,18 +346,43 @@ def bump_revision(cmd_bags: Any) -> int:
     return _handle_bump("bump-revision", bags)
 
 
+def alias_map_skip(opt_name: str, options: dict) -> bool:
+    """若短別名與對應長選項同時存在於 options，略過短別名以避免重複展開。"""
+    pairs = {
+        "k": "pattern",
+        "j": "jobs",
+        "a": "all",
+        "q": "quiet",
+        "v": "verbose",
+        "f": "force",
+        "no-parallel": "sequential",
+        "stress": "perf",
+    }
+    canon = pairs.get(opt_name)
+    return bool(canon and canon in options)
+
+
 def test(cmd_bags: Any) -> int:
     """Run module tests inside an isolated sandbox."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "test")
     raw_args = ["test"]
     if bags.args:
-        raw_args.extend(bags.args)
+        sub_args = bags.args[1:] if bags.args[0] == "test" else bags.args
+        raw_args.extend(sub_args)
+    canonical_skip = {"k", "j", "a", "q", "v", "f", "no-parallel", "stress"}
+    seen_opts = set()
     for opt_name, opt in bags.options.items():
+        if opt_name in canonical_skip and alias_map_skip(opt_name, bags.options):
+            continue
+        if opt_name in seen_opts:
+            continue
+        seen_opts.add(opt_name)
         if opt.params is True:
             raw_args.append(f"--{opt_name}")
         elif opt.params is not False and opt.params is not None:
             raw_args.append(f"--{opt_name}={opt.params}")
+    from dev.tester import Tester
     tester = Tester()
     return tester.run(raw_args)
 
@@ -325,12 +391,23 @@ def op_mksb(cmd_bags: Any) -> int:
     """Internal atomic sandbox creation operation."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "op-mksb")
-    raw_args = ["op-mksb"] + bags.args
+    raw_args = ["op-mksb"]
+    if bags.args:
+        sub_args = bags.args[1:] if bags.args[0] == "op-mksb" else bags.args
+        raw_args.extend(sub_args)
+    canonical_skip = {"k", "j", "a", "q", "v", "f", "no-parallel", "stress"}
+    seen_opts = set()
     for opt_name, opt in bags.options.items():
+        if opt_name in canonical_skip and alias_map_skip(opt_name, bags.options):
+            continue
+        if opt_name in seen_opts:
+            continue
+        seen_opts.add(opt_name)
         if opt.params is True:
             raw_args.append(f"--{opt_name}")
         elif opt.params is not False and opt.params is not None:
             raw_args.append(f"--{opt_name}={opt.params}")
+    from dev.tester import Tester
     tester = Tester()
     return tester.run(raw_args)
 
@@ -339,12 +416,23 @@ def op_test(cmd_bags: Any) -> int:
     """Internal atomic test runner operation."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "op-test")
-    raw_args = ["op-test"] + bags.args
+    raw_args = ["op-test"]
+    if bags.args:
+        sub_args = bags.args[1:] if bags.args[0] == "op-test" else bags.args
+        raw_args.extend(sub_args)
+    canonical_skip = {"k", "j", "a", "q", "v", "f", "no-parallel", "stress"}
+    seen_opts = set()
     for opt_name, opt in bags.options.items():
+        if opt_name in canonical_skip and alias_map_skip(opt_name, bags.options):
+            continue
+        if opt_name in seen_opts:
+            continue
+        seen_opts.add(opt_name)
         if opt.params is True:
             raw_args.append(f"--{opt_name}")
         elif opt.params is not False and opt.params is not None:
             raw_args.append(f"--{opt_name}={opt.params}")
+    from dev.tester import Tester
     tester = Tester()
     return tester.run(raw_args)
 

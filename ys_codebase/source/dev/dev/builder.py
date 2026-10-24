@@ -198,8 +198,8 @@ class Builder:
         
         real_build_dir = uri.resolve(mod_build_root)
         
-        # 2. Automatically clean all previous build files and directories
-        if os.path.isdir(real_build_dir):
+        # 2. Automatically clean all previous build files and directories if clean=True
+        if clean and os.path.isdir(real_build_dir):
             for item in list(os.listdir(real_build_dir)):
                 p = os.path.join(real_build_dir, item)
                 if os.path.isdir(p):

@@ -2,43 +2,12 @@
 Unit tests for YSCBTestCase sandbox sharing, isolation branching, and YSCB_TEST_SANDBOX propagation.
 """
 import os
+import tempfile
 import unittest
-from dev.testing.case import YSCBTestCase
+from dev.testing.case import YSCBTestCase, SecurityError
 from dev.testing.requirement import require, Requirement
 from dev.testing.sandbox import SandboxProvisioner
-
-_shared_dirs_recorded = []
-_isolated_dirs_recorded = []
-
-class DummySharedTestCase(YSCBTestCase):
-    """Test class verifying default shared sandbox across methods."""
-    def test_method_one(self):
-        _shared_dirs_recorded.append(self.sandbox_dir)
-        self.assertTrue(os.path.isdir(self.sandbox_dir))
-        self.assertFalse(self._is_isolated_sandbox)
-        self.mark_passed()
-
-    def test_method_two(self):
-        _shared_dirs_recorded.append(self.sandbox_dir)
-        self.assertTrue(os.path.isdir(self.sandbox_dir))
-        self.assertFalse(self._is_isolated_sandbox)
-        self.mark_passed()
-
-    @require(Requirement.ISOLATED_SANDBOX)
-    def test_method_isolated(self):
-        _isolated_dirs_recorded.append(self.sandbox_dir)
-        self.assertTrue(os.path.isdir(self.sandbox_dir))
-        self.assertTrue(self._is_isolated_sandbox)
-        self.mark_passed()
-
-
-class DummySharedTestCaseB(YSCBTestCase):
-    """Second test class verifying cross-class session-level sandbox reuse."""
-    def test_method_b1(self):
-        _shared_dirs_recorded.append(self.sandbox_dir)
-        self.assertTrue(os.path.isdir(self.sandbox_dir))
-        self.assertFalse(self._is_isolated_sandbox)
-        self.mark_passed()
+from dev.checker import Checker
 
 
 class TestCaseSandboxLifecycleTest(YSCBTestCase):
@@ -56,41 +25,85 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_shared_and_isolated_sandbox_dispatch(self):
-        """FT-02, FT-03, ET-01: Verify shared vs isolated sandbox behavior in DummySharedTestCase."""
-        _shared_dirs_recorded.clear()
-        _isolated_dirs_recorded.clear()
+        """FT-02, FT-03, ET-01: Verify shared vs isolated sandbox behavior in local TestCases."""
+        shared_dirs = []
+        isolated_dirs = []
+
+        class LocalSharedTestCase(YSCBTestCase):
+            def test_method_one(self):
+                shared_dirs.append(self.sandbox_dir)
+                self.assertTrue(os.path.isdir(self.sandbox_dir))
+                self.assertFalse(self._is_isolated_sandbox)
+                self.mark_passed()
+
+            def test_method_two(self):
+                shared_dirs.append(self.sandbox_dir)
+                self.assertTrue(os.path.isdir(self.sandbox_dir))
+                self.assertFalse(self._is_isolated_sandbox)
+                self.mark_passed()
+
+            @require(Requirement.ISOLATED_SANDBOX)
+            def test_method_isolated(self):
+                isolated_dirs.append(self.sandbox_dir)
+                self.assertTrue(os.path.isdir(self.sandbox_dir))
+                self.assertTrue(self._is_isolated_sandbox)
+                self.mark_passed()
+
+        class LocalSharedTestCaseB(YSCBTestCase):
+            def test_method_b1(self):
+                shared_dirs.append(self.sandbox_dir)
+                self.assertTrue(os.path.isdir(self.sandbox_dir))
+                self.assertFalse(self._is_isolated_sandbox)
+                self.mark_passed()
 
         suite = unittest.TestSuite()
-        suite.addTest(DummySharedTestCase("test_method_one"))
-        suite.addTest(DummySharedTestCase("test_method_two"))
-        suite.addTest(DummySharedTestCase("test_method_isolated"))
-        suite.addTest(DummySharedTestCaseB("test_method_b1"))
+        suite.addTest(LocalSharedTestCase("test_method_one"))
+        suite.addTest(LocalSharedTestCase("test_method_two"))
+        suite.addTest(LocalSharedTestCase("test_method_isolated"))
+        suite.addTest(LocalSharedTestCaseB("test_method_b1"))
 
         runner = unittest.TextTestRunner(verbosity=0)
         result = runner.run(suite)
 
         self.assertTrue(result.wasSuccessful())
-        self.assertEqual(len(_shared_dirs_recorded), 3)
+        self.assertEqual(len(shared_dirs), 3)
         # Shared methods across different classes must have identical session-level sandbox_dir
-        self.assertEqual(_shared_dirs_recorded[0], _shared_dirs_recorded[1])
-        self.assertEqual(_shared_dirs_recorded[0], _shared_dirs_recorded[2])
+        self.assertEqual(shared_dirs[0], shared_dirs[1])
+        self.assertEqual(shared_dirs[0], shared_dirs[2])
         
-        self.assertEqual(len(_isolated_dirs_recorded), 1)
+        self.assertEqual(len(isolated_dirs), 1)
         # Isolated method must have a different sandbox_dir
-        self.assertNotEqual(_isolated_dirs_recorded[0], _shared_dirs_recorded[0])
+        self.assertNotEqual(isolated_dirs[0], shared_dirs[0])
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_cleanup_shared_sandbox_safe(self):
-        """FT-03: Verify cleanup_shared_sandbox resets _shared_sandbox_ctx and deletes dir."""
+        """FT-03: Verify cleanup_shared_sandbox resets _shared_sandbox_ctx and deletes directory."""
         saved_ctx = YSCBTestCase._shared_sandbox_ctx
         mock_sb = SandboxProvisioner.create_sandbox()
+        sb_dir = mock_sb.sandbox_dir
+        self.assertTrue(os.path.isdir(sb_dir))
+
         try:
             YSCBTestCase._shared_sandbox_ctx = mock_sb
-            sb_dir = mock_sb.sandbox_dir
-            self.assertTrue(os.path.isdir(sb_dir))
+            # Temporarily simulate non-harness managed mode to allow cleanup
+            old_harness = os.environ.get("YSCB_TEST_SANDBOX")
+            old_keep = os.environ.get("YSCB_TEST_KEEP_SANDBOX")
+            try:
+                os.environ["YSCB_TEST_SANDBOX"] = "0"
+                os.environ["YSCB_TEST_KEEP_SANDBOX"] = "0"
+                YSCBTestCase.cleanup_shared_sandbox()
+                self.assertIsNone(YSCBTestCase._shared_sandbox_ctx)
+                self.assertFalse(os.path.exists(sb_dir))
+            finally:
+                if old_harness is not None:
+                    os.environ["YSCB_TEST_SANDBOX"] = old_harness
+                if old_keep is not None:
+                    os.environ["YSCB_TEST_KEEP_SANDBOX"] = old_keep
         finally:
             YSCBTestCase._shared_sandbox_ctx = saved_ctx
+            if os.path.exists(sb_dir):
+                SandboxProvisioner.cleanup_sandbox(sb_dir, force=True)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -109,13 +122,16 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_security_error_when_direct_host_run(self):
         """FT-05 & ET-02: Verify SecurityError is raised if running YSCBTestCase directly outside sandbox."""
-        from dev.testing.case import SecurityError
+        class GuardCheckCase(YSCBTestCase):
+            def test_dummy(self):
+                self.mark_passed()
+
         old_val = os.environ.get("YSCB_TEST_SANDBOX")
         try:
             if "YSCB_TEST_SANDBOX" in os.environ:
                 del os.environ["YSCB_TEST_SANDBOX"]
             
-            dummy = DummySharedTestCase("test_method_one")
+            dummy = GuardCheckCase("test_dummy")
             with self.assertRaises(SecurityError) as ctx:
                 dummy.setUp()
             self.assertIn("Security Guard Blocked", str(ctx.exception))
@@ -171,3 +187,42 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_cwd_restoration_in_teardown(self):
+        """FT-06: Verify YSCBTestCase.tearDown restores CWD to self._orig_cwd."""
+        class CWDDemoCase(YSCBTestCase):
+            def test_drift(self):
+                self.mark_passed()
+
+        orig_dir = os.getcwd()
+        case = CWDDemoCase("test_drift")
+        case.setUp()
+        self.assertEqual(case._orig_cwd, orig_dir)
+
+        temp_sub = tempfile.mkdtemp()
+        try:
+            os.chdir(temp_sub)
+            self.assertEqual(os.getcwd(), temp_sub)
+            case.tearDown()
+            self.assertEqual(os.getcwd(), orig_dir, "Expected tearDown to restore original CWD")
+        finally:
+            if os.path.exists(temp_sub):
+                os.rmdir(temp_sub)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_create_mock_source_module_default_compliance(self):
+        """FT-05: Verify create_mock_source_module generates 100% compliant module passing Checker."""
+        import shutil
+        mod_name = "mock_compliant_test_mod"
+        src_path = self.create_mock_source_module(mod_name)
+        try:
+            self.assertTrue(os.path.isdir(src_path))
+            checker = Checker()
+            report = checker.check_module(mod_name)
+            self.assertTrue(report.passed, f"Default mock source module failed check: {report.errors}")
+            self.assertFalse(report.has_warns, f"Default mock source module produced warnings: {report.warnings}")
+        finally:
+            if os.path.exists(src_path):
+                shutil.rmtree(src_path, ignore_errors=True)
+        self.mark_passed()

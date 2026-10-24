@@ -42,7 +42,7 @@ def filter_suite(
             resolved_types = {"logic", "env", "workflow", "perf", "network"}
     
     if not resolved_types:
-        resolved_types = {"logic", "env"}  # Default: run logic + env tests
+        resolved_types = {"logic", "env", "network"}  # Default: run logic + env + network tests
 
     def _matches(test_case: unittest.TestCase) -> bool:
         method_name = getattr(test_case, "_testMethodName", "")
@@ -67,6 +67,9 @@ def filter_suite(
         if pattern and (pattern.lower() not in method_name.lower() and pattern.lower() not in class_name.lower()):
             return False
 
+        if class_name == "_FailedTest":
+            return True
+
         # 3. 4-tier Taxonomy filter against @require(Requirement)
         method = getattr(test_case, method_name, None)
         req = getattr(method, "__requirement__", None) if method else None
@@ -83,10 +86,10 @@ def filter_suite(
                 category = "workflow"
             elif req_val & Requirement.PERF.value:
                 category = "perf"
-            elif req_val & Requirement.NETWORK.value:
-                category = "network"
             elif req_val & Requirement.ENV.value:
                 category = "env"
+            elif req_val & Requirement.NETWORK.value:
+                category = "network"
             else:
                 category = "logic"
 
@@ -348,7 +351,7 @@ class ASCIIReportFormatter:
         unknown = report_data.get("unknown", 0)
         skipped = report_data.get("skipped", 0)
         duration = report_data.get("duration", 0.0)
-        overall = "PASSED (100% Ready)" if failed == 0 else "FAILED"
+        overall = "PASSED (100% Ready)" if (failed == 0 and unknown == 0) else "FAILED"
         if unknown > 0:
             lines.append(f"Summary : {total} Total, {passed} Passed, {failed} Failed, {unknown} Unknown, {skipped} Skipped ({duration:.3f}s)")
         else:

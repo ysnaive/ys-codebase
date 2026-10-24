@@ -85,7 +85,7 @@
 
 | 檢查範疇 | 違規態樣與反模式 (Anti-Pattern) | 嚴重度 | 處置要求與正確做法 |
 | :--- | :--- | :---: | :--- |
-| **CLI 入口** | `scripts/cli.py` 缺少 `process(args)` 且未宣告新版命令函式 | `FAIL` | 必須宣告 `def process(args)` 或對應命令函式 |
+| **CLI 入口** | `scripts/cli.py` 缺少 `contributes/core.json` 對應之具名命令函式（且無舊制相容函式） | `FAIL` | 必須宣告 `def <cmd>(cmd_bags: CmdBags) -> int` 命令處理函式 |
 | **CLI 入口** | `scripts/cli.py` 宣告 `def main(...)` | `FAIL` | 嚴禁宣告 `main()`，模組 CLI 必須為純導入型別 |
 | **CLI 入口** | `scripts/cli.py` 包含 `if __name__ == '__main__':` | `FAIL` | 嚴禁包含 `__name__` 執行塊，一律由微內核派發 |
 | **CLI 入口** | `scripts/cli.py` 頂層散落可執行陳述式 | `FAIL` | 頂層僅允許 Import、ClassDef、FunctionDef 與 Docstring |

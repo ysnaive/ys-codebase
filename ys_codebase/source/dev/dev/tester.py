@@ -134,13 +134,13 @@ class Tester:
                 report_json_path = a.split("=", 1)[1]
             elif a == "--quiet-report":
                 quiet_report = True
-            elif a in ("-q", "--quiet"):
+            elif a in ("-q", "--q", "--quiet"):
                 quiet_mode = True
-            elif a == "--all":
+            elif a in ("-a", "--a", "--all"):
                 run_all = True
             elif a == "--contract-only":
                 contract_only = True
-            elif a in ("-v", "--verbose"):
+            elif a in ("-v", "--v", "--verbose"):
                 verbose = True
             elif a == "--keep-sandbox":
                 keep_sandbox = True
@@ -168,9 +168,9 @@ class Tester:
                 target_mod = a
             idx += 1
 
-        VALID_TYPES = {"logic", "logical", "env", "host_cli", "workflow", "perf", "performance", "stress", "all", "all_types", "all-types"}
+        VALID_TYPES = {"logic", "logical", "env", "network", "host_cli", "workflow", "perf", "performance", "stress", "all", "all_types", "all-types"}
         if test_type and test_type.lower().replace("-", "_") not in {t.replace("-", "_") for t in VALID_TYPES}:
-            print(f"[dev:test] Error: Invalid test type '{test_type}'. Valid types: logic, env, workflow, perf, all")
+            print(f"[dev:test] Error: Invalid test type '{test_type}'. Valid types: logic, env, network, workflow, perf, all")
             return 1
 
         if target:
@@ -264,7 +264,6 @@ class Tester:
             custom_skipped = mod_skipped - contract_skipped
 
             contract_passed = max(0, contract_total - contract_failed - contract_skipped)
-            custom_passed = max(0, custom_total - custom_failed - custom_skipped)
 
             # Taxonomy breakdown for custom passed tests and unknown tally
             logic_passed = 0
@@ -272,6 +271,7 @@ class Tester:
             workflow_passed = 0
             perf_passed = 0
             mod_unknown = 0
+            unknown_methods = []
             
             failed_test_objs = set(c for c, _ in result.failures + result.errors)
             skipped_test_objs = set(c for c, _ in result.skipped)
@@ -282,6 +282,9 @@ class Tester:
                 st = getattr(test_case, "execution_status", None) or getattr(test_case, "_execution_status", None)
                 if st == "UNKNOWN":
                     mod_unknown += 1
+                    cls_name = test_case.__class__.__name__
+                    m_name = getattr(test_case, "_testMethodName", "")
+                    unknown_methods.append(f"{cls_name}.{m_name}" if m_name else str(test_case))
                     continue
                 if "Contract" in test_case.__class__.__name__:
                     continue
@@ -295,7 +298,11 @@ class Tester:
                 elif cat == "perf":
                     perf_passed += 1
 
+            custom_passed = max(0, custom_total - custom_failed - custom_skipped - mod_unknown)
             mod_explicit_passed = max(0, mod_passed - mod_unknown)
+
+            if mod_failed > 0 or mod_unknown > 0:
+                all_passed = False
 
             err_msgs = []
             for test_case, tb in result.failures:
@@ -339,9 +346,23 @@ class Tester:
                     "captured_output": captured_output
                 })
 
+            if mod_unknown > 0:
+                for um in unknown_methods:
+                    msg = f"{um}: execution status UNKNOWN (missing self.mark_passed())"
+                    err_msgs.append(msg)
+                    report_data["failures_list"].append({
+                        "module": mod_name,
+                        "test": um,
+                        "type": "UNKNOWN",
+                        "message": "Missing self.mark_passed()",
+                        "location": "",
+                        "rerun": f"python yscb.py dev test --target={mod_name}:{um}",
+                        "captured_output": captured_output
+                    })
+
             mod_info = {
                 "name": mod_name,
-                "passed": mod_failed == 0,
+                "passed": (mod_failed == 0 and mod_unknown == 0),
                 "duration": mod_duration,
                 "contract_total": contract_total,
                 "contract_passed": contract_passed,
@@ -384,12 +405,13 @@ class Tester:
         keep_sandbox = "--keep-sandbox" in argv
         no_build = "--no-build" in argv
         is_sequential = "--sequential" in argv or "--no-parallel" in argv
-        quiet_mode = "-q" in argv or "--quiet" in argv or os.environ.get("YSCB_TEST_QUIET") == "1"
-        verbose = "-v" in argv or "--verbose" in argv
+        quiet_mode = "-q" in argv or "--q" in argv or "--quiet" in argv or os.environ.get("YSCB_TEST_QUIET") == "1"
+        verbose = "-v" in argv or "--v" in argv or "--verbose" in argv
         
-        # Parse -j / --jobs and --sync
+        # Parse -j / --jobs and --sync and normalize -k/--pattern, -q, -v
         jobs = None
         sync_requested = "--sync" in argv
+        pattern_val = None
         clean_argv = []
         idx = 0
         while idx < len(argv):
@@ -404,7 +426,7 @@ class Tester:
                     pass
                 idx += 1
                 continue
-            if a == "-j" or a == "--jobs":
+            if a in ("-j", "--j", "--jobs"):
                 if idx + 1 < len(argv):
                     try:
                         jobs = int(argv[idx + 1])
@@ -414,12 +436,47 @@ class Tester:
                         pass
                 idx += 1
                 continue
+            if a.startswith("--j="):
+                try:
+                    jobs = int(a.split("=", 1)[1])
+                except ValueError:
+                    pass
+                idx += 1
+                continue
             if a.startswith("-j") and len(a) > 2 and a[2:].isdigit():
                 jobs = int(a[2:])
                 idx += 1
                 continue
+            if a in ("-k", "--k", "--pattern"):
+                if idx + 1 < len(argv):
+                    pattern_val = argv[idx + 1]
+                    idx += 2
+                    continue
+                idx += 1
+                continue
+            if a.startswith(("-k=", "--k=", "--pattern=")):
+                pattern_val = a.split("=", 1)[1]
+                idx += 1
+                continue
+            if a in ("-q", "--q", "--quiet"):
+                idx += 1
+                continue
+            if a in ("-v", "--v", "--verbose"):
+                idx += 1
+                continue
+            if a in ("-a", "--a"):
+                clean_argv.append("--all")
+                idx += 1
+                continue
             clean_argv.append(a)
             idx += 1
+
+        if pattern_val is not None:
+            clean_argv.append(f"--pattern={pattern_val}")
+        if quiet_mode:
+            clean_argv.append("--quiet")
+        if verbose:
+            clean_argv.append("--verbose")
 
         target_mod = next((a for a in clean_argv if not a.startswith("-") and a != "test"), None)
         target_param = next((a for a in clean_argv if a.startswith("--target=")), None)
@@ -723,7 +780,8 @@ class Tester:
             safe_print(f"[dev:test] {mod_name} begin test in {sandbox_display_id}", flush=True)
 
         sandbox_yscb = os.path.join(host_dir, "yscb.py")
-        op_test_args = [a for a in clean_argv if a != "test" and a != "--all"] + [mod_name]
+        opts_only = [a for a in clean_argv if a.startswith("-") and a != "--all"]
+        op_test_args = opts_only + [mod_name]
         
         report_json_path = os.path.join(ctx.engine_dir, f"report_{mod_name}.json")
         op_test_args.extend([f"--report-json={report_json_path}", "--quiet-report"])

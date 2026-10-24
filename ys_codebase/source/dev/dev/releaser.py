@@ -93,52 +93,52 @@ class Releaser:
                 f"({exact_rel_zip}). Duplicate release forbidden (use --force to override)."
             )
 
-        # Gate 3: Monotonicity / No Rollback
+        # Gate 3: Monotonicity / No Rollback (Global Highest across all releases of this module)
         mod_rel_root = f"module.release://{module_name}"
         if uri.exists(mod_rel_root):
             real_rel_dir = uri.resolve(mod_rel_root)
             if os.path.isdir(real_rel_dir):
-                same_triplet_versions: List[semver.VersionTuple] = []
+                all_existing_versions: List[semver.VersionTuple] = []
                 for item in os.listdir(real_rel_dir):
                     if item.endswith(".zip"):
                         item_ver = item[:-4]
                         try:
                             item_tuple = semver.parse_semver(item_ver)
-                            if item_tuple.triplet == target_tuple.triplet:
-                                same_triplet_versions.append(item_tuple)
+                            all_existing_versions.append(item_tuple)
                         except Exception:
                             pass
                 
-                if same_triplet_versions:
-                    same_triplet_versions.sort(key=functools.cmp_to_key(semver.compare_semver))
-                    highest_tuple = same_triplet_versions[-1]
-                    cmp_res = semver.compare_semver(target_tuple, highest_tuple)
+                if all_existing_versions:
+                    all_existing_versions.sort(key=functools.cmp_to_key(semver.compare_semver))
+                    global_highest = all_existing_versions[-1]
+                    cmp_res = semver.compare_semver(target_tuple, global_highest)
 
                     if not force:
                         if cmp_res <= 0:
                             errors.append(
                                 f"Gate 3 Failed (Monotonicity): Target version '{target_version}' must be strictly greater than "
-                                f"the highest existing revision '{highest_tuple}' in the same triplet."
+                                f"the highest existing version '{global_highest}' in release repository."
                             )
                     else:
                         if cmp_res < 0:
                             errors.append(
                                 f"Gate 3 Failed (Monotonicity): Target version '{target_version}' is less than "
-                                f"the highest existing revision '{highest_tuple}'. Version rollback is forbidden even with --force."
+                                f"the highest existing version '{global_highest}'. Version rollback is forbidden even with --force."
                             )
 
         return len(errors) == 0, errors
 
-    def release_module(self, module_name: str, force: bool = False) -> Tuple[bool, str]:
+    def release_module(self, module_name: str, force: bool = False, _skip_check: bool = False) -> Tuple[bool, str]:
         """
         單一模組純淨發布 (dev release <mod> [--force]):
-        1. 執行 release_check(module_name, force=force)，若未通過拋出錯誤中斷。
+        1. 若 _skip_check=False，執行 release_check(module_name, force=force)，若未通過拋出錯誤中斷。
         2. 調用 Builder.package_release(module_name, target_version)。
         """
-        passed, errors = self.release_check(module_name, force=force)
-        if not passed:
-            err_msg = "\n  - ".join(errors)
-            return False, f"Release pre-flight check failed for '{module_name}':\n  - {err_msg}"
+        if not _skip_check:
+            passed, errors = self.release_check(module_name, force=force)
+            if not passed:
+                err_msg = "\n  - ".join(errors)
+                return False, f"Release pre-flight check failed for '{module_name}':\n  - {err_msg}"
 
         src_uri = f"module.source://{module_name}"
         manifest_data = uri.read_json(f"{src_uri}/manifest.json")
@@ -146,12 +146,12 @@ class Releaser:
 
         return self.builder.package_release(module_name, target_version)
 
-    def release_all(self, force: bool = False) -> Dict[str, Tuple[bool, str]]:
+    def release_all(self, force: bool = False, skip_tests: bool = False) -> Dict[str, Tuple[bool, str]]:
         """
         全量模組依賴拓撲批次發布 (dev release --all [--force]):
         1. 讀取 source/ 下所有模組 manifest.json 中的 dependencies。
-        2. 建構 DAG 並使用 Kahn 演算法計算拓撲發布序列。
-        3. 依序調用 release_module(mod_name, force=force)。
+        2. 建構 DAG 並使用 Kahn 演算法按字母序穩定計算拓撲發布序列。
+        3. 依序調用 release_module(mod_name, force=force)；若上游失敗則下游自動標記跳過。
         """
         results: Dict[str, Tuple[bool, str]] = {}
         src_root_uri = "module.source://"
@@ -187,25 +187,39 @@ class Releaser:
                     adj_list[dep].append(m)
                     in_degree[m] += 1
 
-        # Kahn's Algorithm
-        queue = [m for m, deg in in_degree.items() if deg == 0]
+        # Kahn's Algorithm with alphabetical stability
+        queue = sorted([m for m, deg in in_degree.items() if deg == 0])
         topo_order: List[str] = []
 
         while queue:
             curr = queue.pop(0)
             topo_order.append(curr)
-            for neighbor in adj_list[curr]:
+            for neighbor in sorted(adj_list[curr]):
                 in_degree[neighbor] -= 1
                 if in_degree[neighbor] == 0:
                     queue.append(neighbor)
+                    queue.sort()
 
         if len(topo_order) != len(available_modules):
-            cyclic_mods = [m for m, deg in in_degree.items() if deg > 0]
+            cyclic_mods = sorted([m for m, deg in in_degree.items() if deg > 0])
             raise CyclicDependencyError(f"Cyclic dependency detected among modules: {cyclic_mods}")
 
-        # Execute release in topological order
+        # Execute release in topological order with failure propagation
+        failed_modules = set()
         for mod_name in topo_order:
-            results[mod_name] = self.release_module(mod_name, force=force)
+            mdata = uri.read_json(f"module.source://{mod_name}/manifest.json")
+            raw_deps = mdata.get("dependencies", {})
+            dep_names = list(raw_deps.keys()) if isinstance(raw_deps, dict) else (raw_deps if isinstance(raw_deps, list) else [])
+            failed_deps = [d for d in dep_names if d in failed_modules]
+            if failed_deps:
+                failed_modules.add(mod_name)
+                results[mod_name] = (False, f"Skipped because dependency '{failed_deps[0]}' failed release.")
+                continue
+
+            ok, msg = self.release_module(mod_name, force=force)
+            results[mod_name] = (ok, msg)
+            if not ok:
+                failed_modules.add(mod_name)
 
         return results
 
@@ -214,10 +228,10 @@ class Releaser:
         4 步發布與版本控制安全流水線 (dev release-git <mod> "<msg>" [--force]):
         1. 調用 Tester 執行 dev test <mod>（失敗即中斷）。
         2. 檢查目標版本是否已發布：
-           - 若尚未發布：調用 release_check -> release_module。
+           - 若尚未發布：調用 release_check -> release_module(_skip_check=True)。
            - 若已發布且無 --force：略過打包動作，直接推進至本地 Git 提交。
-           - 若已發布且傳入 --force：強制調用 release_check(force=True) -> release_module(force=True) 覆蓋打包。
-        3. 本地 Git 提交：git add -A -> git commit -m commit_msg -> git tag [-f] -a "<mod>/v<ver>" -m commit_msg。
+           - 若已發布且傳入 --force：強制調用 release_check(force=True) -> release_module(force=True, _skip_check=True) 覆蓋打包。
+        3. 本地 Git 提交：git add -A -> git commit -m commit_msg（攔截致命錯誤） -> git tag [-f] -a "<mod>/v<ver>" -m commit_msg。
         [!] 防呆約束：嚴禁調用 git push，所有操作僅於本地端完成。
         """
         if not commit_msg or not commit_msg.strip():
@@ -250,7 +264,7 @@ class Releaser:
                 err_details = "\n  - ".join(chk_errors)
                 return False, f"Step 2 Failed: Release readiness check failed for '{module_name}':\n  - {err_details}"
 
-            ok_pkg, msg_pkg = self.release_module(module_name, force=force)
+            ok_pkg, msg_pkg = self.release_module(module_name, force=force, _skip_check=True)
             if not ok_pkg:
                 return False, f"Step 3 Failed: Release packaging failed for '{module_name}': {msg_pkg}"
 
@@ -266,10 +280,11 @@ class Releaser:
         if c_code != 0:
             return False, f"Git add failed during release-git: {c_err}"
 
-        c_code, _, c_err = self._run_git_cmd(["commit", "-m", commit_msg])
+        c_code, c_out, c_err = self._run_git_cmd(["commit", "-m", commit_msg])
         if c_code != 0:
-            # If nothing to commit (e.g. workspace clean), continue to tag
-            pass
+            combined_err = f"{c_out}\n{c_err}".lower()
+            if "nothing to commit" not in combined_err and "working tree clean" not in combined_err:
+                return False, f"Git commit failed during release-git: {c_err or c_out}"
 
         # Local Tag (-f if force=True)
         tag_cmd = ["tag", "-f", "-a", tag_name, "-m", commit_msg] if force else ["tag", "-a", tag_name, "-m", commit_msg]

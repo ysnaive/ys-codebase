@@ -29,7 +29,7 @@ last_updated: "2026-10-15"
 | **DN-DEV-01** *(原 DN-DEV-02)* | 測試失敗現場自動保留與顯式 `self.mark_passed()` 防呆契約 | `source/dev/dev/testing/case.py`<br/>`source/dev/dev/checker.py` | `[!WARNING]` |
 | **DN-DEV-02** *(原 DN-DEV-06)* | 沙盒微環境 3-Tier 零拷貝投影與 `shutil.rmtree` 前強制斷開防護 | `source/dev/dev/testing/sandbox.py` | `[!CAUTION]` |
 | **DN-DEV-03** *(原 DN-DEV-07.4)* | 宿主環境防穿透三道剛性守門鎖與禁止 `os.getcwd()` 回退鐵律 | `source/dev/dev/testing/case.py`<br/>`source/dev/dev/testing/discovery.py`<br/>`source/dev/dev/tester.py` | `[!CAUTION]` |
-| **DN-DEV-04** *(原 DN-DEV-10.3)* | Checker AST 靜態分析之首行 Docstring 節點豁免與 CLI 入口雙軌容錯 | `source/dev/dev/checker.py` | `[!WARNING]` |
+| **DN-DEV-04** *(原 DN-DEV-10.3)* | Checker AST 靜態分析之首行 Docstring 節點豁免、CLI 入口候選集合與全庫單調防回退 | `source/dev/dev/checker.py`<br/>`source/dev/dev/releaser.py` | `[!WARNING]` |
 
 ---
 
@@ -80,18 +80,21 @@ last_updated: "2026-10-15"
 
 ---
 
-### [DN-DEV-04] (原 DN-DEV-10.3) Checker AST 靜態分析之首行 Docstring 節點豁免與 CLI 入口雙軌容錯
+### [DN-DEV-04] (原 DN-DEV-10.3) Checker AST 靜態分析 Docstring 節點豁免、CLI 入口候選集合與全庫單調防回退
 
 > [!WARNING]
-> **維護注意事項：勿移除 `_check_source_files` 的 Docstring 節點豁免或 `_check_cli_compliance` 的雙軌分支**  
+> **維護注意事項：勿移除 `_check_source_files` 的 Docstring 節點豁免或破壞 `candidates = {full_fn, primary_fn}` 與 Gate 3 單調性**  
 > 1. 移除 Docstring AST 豁免會導致模組、類別或函式文檔註解中撰寫的 URI 範例（如說明禁止使用 `module.source://`）被誤判為 Zero-Probing 違規。  
-> 2. 移除 `process(args)` 雙軌容錯將導致未宣告 `contributes/core.json` 的輕量測試 Mock 模組（如 `create_mock_source_module` 產物）全數合規檢核失敗。
+> 2. `_check_cli_compliance` 精確對齊平鋪底線全名 `full_fn` 與頂層第一段群組路由函式 `primary_fn`（`candidates = {full_fn, primary_fn}`），移除無效之 `leaf_fn` 與 `cmd_*`。  
+> 3. `Releaser` Gate 3 實施全庫最高版本（`global_highest`）單調遞增校驗，即便傳入 `--force` 亦禁止小於全庫最高版本回退。
 
 - **設計細節與雙軌相容**：
   1. **AST Docstring 節點精準豁免 (`_check_source_files`)**：
      - 在掃描字串常數（`ast.Constant`）是否違反 Zero-Probing（存取 `module.source://`）或直接讀寫底層設定檔（`config.project.json`、`contributes.merged.json`）前，先行收集 `Module`、`ClassDef`、`FunctionDef` / `AsyncFunctionDef` 主體首個 `ast.Expr` 字串常數節點（`doc_nodes`）並予以跳過，兼顧嚴格靜態防護與完整 Docstring 範例撰寫自由。
-  2. **CLI 入口雙軌命令契約 (`_check_cli_compliance`)**：
-     - **軌道 A（具名命令契約）**：當模組於 `contributes/core.json` 宣告了非空的 `commands.cmd` 樹狀結構時，`Checker` 強制要求 `scripts/cli.py` 必須定義對應的所有葉節點具名函式（破折號 `-` 轉底線 `_`），防止宣告了 CLI 指令卻僅以空殼 `process` 掩蓋未實作邏輯。
+  2. **CLI 入口命令契約 (`_check_cli_compliance`)**：
+     - **軌道 A（具名命令契約）**：當模組於 `contributes/core.json` 宣告了非空的 `commands.cmd` 樹狀結構時，`Checker` 遞迴收集所有葉節點並比對 `candidates = {full_fn, primary_fn}`，允許模組實作平鋪函式（如 `sub_run`）或頂層群組路由函式（如 `sub`）。
      - **軌道 B（傳統/Mock 入口相容）**：當模組未定義 `contributes/core.json` 或無 `commands.cmd`（例如沙盒動態合成之最小化 Mock 模組）時，平滑回退為驗證 `def process(args)` 入口函式存在性。
+  3. **Gate 3 全庫最高版本防回退 (`Releaser.release_check`)**：
+     - 盤點 `release/<mod>/` 與 `.build/<mod>/` 下所有既有版本包，計算全庫最高版本 `global_highest`。未指定 `force` 時要求 `target > global_highest`；指定 `force=True` 時僅容許 `target == global_highest` 覆蓋發布，嚴禁跨三元組版本回退（`target < global_highest`）。
 
 

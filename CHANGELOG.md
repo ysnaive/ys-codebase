@@ -2,6 +2,13 @@
 
 ## 2026_10_23_1122_ecosystem_modules_hardening_and_test_purification (In Progress)
 
+### sub_02_dev_toolchain_and_tests (Completed)
+- **`dev` 工具鏈契約加固、3-Gate 全庫防回退、`UNKNOWN` 測試剛性阻斷與測試套件 7 檔純化收斂**：
+  - **CLI 選項契約、單一 Token 子進程傳遞與 PEP 562 延遲載入 (`D-01`, `D-08`, `FR-01`, `FR-07`, `EC-01`)**：補齊 `contributes/core.json` 中 `test`、`op-test`、`op-mksb` 全選項宣告與 `events` 導覽；於 `scripts/cli.py` 正規化帶值選項與 `alias_map_skip` 防重複展開，於 `tester.py` 將 `-k <pat>` 正規化為單一 Token `--pattern=<pat>` 並支援 `--q/--v/--a/--j/--k`；於 `dev/__init__.py` 實作 PEP 562 `__getattr__` 按需延遲載入並匯出 `Releaser`。
+  - **發布流水線 3-Gate 跨三元組防回退、字母序穩定 Kahn DAG 與 `git commit` 錯誤攔截 (`D-02`, `FR-02`, `EC-02` ~ `EC-04`)**：升級 `Releaser.release_check()` Gate 3 以全庫最高版本 `global_highest` 嚴格攔截跨三元組版本回退（即使 `--force` 亦剛性阻斷）；重構 `release_all()` 採初始字母序穩定 Kahn 演算法拓撲排序，並在偵測循環依賴時拋出 `CyclicDependencyError`、上游模組失敗時自動跳過下游模組；修復 `release_git()` 嚴格攔截非 `nothing to commit` 之致命 `git commit` 失敗；`scripts/cli.py:release_check` 支援無參數預設檢核全模組。
+  - **測試引擎 `UNKNOWN > 0` 剛性阻斷、`_FailedTest` 保留與檢核器/沙盒現代化 (`D-03` ~ `D-07`, `FR-03` ~ `FR-06`, `EC-05` ~ `EC-07`)**：於 `tester.py` 與 `runner.py` 實作 `unknown > 0` 時 `all_passed = False`、扣除 `custom_passed`、報表顯示 `FAILED` 且行程回傳非零退出碼 `1`；`filter_suite()` 強制跨 `--type` 保留 `_FailedTest` 並將 `Requirement.NETWORK` 納入預設發現；`Checker._check_custom_rules()` 支援 `code.func://` 並以 `module://<donor>` 臨時注入與 `try...finally` 還原 `sys.path`、異常轉 `WARN`；`_check_core_injection()` 優先讀取 `module.source://<target>/contributes/_format.json`；`_check_cli_compliance()` 精確對齊 `candidates = {full_fn, primary_fn}`；全面汰除 `Scaffolder` 與 Mock 產生器之 `process(args)` 遺留模板；`SandboxProvisioner` 改用 `semver.parse()` 數值排序並防護損毀 Zip，`YSCBTestCase.tearDown()` 自動還原 CWD，`Builder.build_module()` 尊重 `clean` 旗標；同步校正 `yscb-module-dev` 技能手冊、`docs/dev/README.md` 與 `[DN-DEV-04]`。
+  - **測試套件 10 檔 $\to$ 7 檔純化收斂與高風險路徑補盲 (`DT-01` ~ `DT-05`, `FR-08`, `FR-09`, `NFR-01`, `NFR-02`)**：刪除 `test_cli_compliance.py`、`test_output_purification.py`、`test_pip_adaptation.py` 3 個碎片檔並無損整併至 7 個子系統測試檔；消除頂層 `DummySharedTestCase` 重複發現與共享沙盒 `mock_*` 模組／暫存檔殘留；重寫 5 處虛假／自寫自驗測試並補齊 `D-01`~`D-08` 完整回歸覆蓋，全模組 **79/79 測試 100% 通過**並完成 `dev@build` 熱部署。
+
 ### sub_01_core_microkernel_and_tests (Completed)
 - **`core` 微內核去耦合純化、CLI 驗證／熱派發／組態診斷強化與測試套件純化收斂**：
   - **微內核去耦合與死代碼清除 (`C-01`, `FR-01`, `T-03`)**：自 `core/providers.py` 移除 11 個遺留之 `get_phase*_cli_guide` 函式、自 `core/uri.py` `format_undefined_uri_hint()` 移除 `agents-workflow` 硬編碼特判，並自 `core/contributes.py` 與 `core/__init__.py` 移除已廢棄之 `print_global_help()` 死代碼與對應測試墓碑。
