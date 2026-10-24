@@ -6,7 +6,13 @@
   - **Phase 06 審查左移 (Shift-Left Pre-UX Gate)**：在完成自動化跑測、即將向開發者提出手動/UX 測試請求前，強制派發無偏誤的 Reviewer Subagent 審查本次代碼與測試（防呆 2 `git status --short` + `Untracked` 直讀，防呆 3 僅查三類硬性契約）。杜絕代碼存在淺層修補或測試反模式即呈遞 UX 驗證，避免 UX 驗收完成後因代碼被打回而重複驗證。
   - **Phase 07 條件式複審 (Conditional Re-Review Gate)**：進入 P07 結案時，若 UX 驗收期間完全未更動生產或測試代碼，直接由主 Agent 執行常規文檔與註解審閱，節約 Token；若 UX 測試或修正過程曾更動原始碼或核心邏輯，則強制於 Step 1 再派發一次支柱三 Subagent 複審。同步更新 `phase_06_test.md`、`phase_07_walkthrough.md`、`user_guide.md` 與單元測試，`agents-workflow` 131/131 測試通過並完成 `@build` 自部署。
 
-## 2026_10_23_1122_ecosystem_modules_hardening_and_test_purification (In Progress)
+## 2026_10_23_1122_ecosystem_modules_hardening_and_test_purification (Completed)
+
+### sub_05_ecosystem_integration_and_acceptance (Completed)
+- **跨模組端到端二次驗收、`dev/tester.py` 靜默環境變數隔離修正、8 份已消費 Roadmap 儲備閉環與三層文檔結案**：
+  - **跨模組靜態合規與全生態系沙盒回歸驗證 (`FR-01`, `FR-02`, `NFR-01`, `NFR-02`)**：執行 `python yscb.py contributes check`（14 份定義檔 100% Valid）與 `python yscb.py dev check --all`（5 模組 100% PASSED）；修正 `ys_codebase/source/dev/dev/tester.py` 之 `_run_op_test` 不再從父進程環境變數 `YSCB_TEST_QUIET` 繼承 `quiet_mode`（僅依自身 `argv` `-q`/`--quiet` 判定），消除 `dev test --all -q` 下內聯 `op-test` 單元測試之環境洩漏；完成四大核心模組共 43 支純化測試檔（`core`: 21、`dev`: 7、`server`: 3、`knowledge-db`: 12）與全生態系 **593/593 (100.0%)** 測試全綠通過、0 Unknown、工作區零沙盒殘留並完成 `dev@build` 熱同步。
+  - **常駐 Server 託管與多層子命令熱派發實機端到端驗收 (`FR-03`, `FR-04`, `EC-01` ~ `EC-03`)**：實機驗證 `server start` 冷啟動、`ServiceManager` 自動載入並啟動單一 `knowledge-db-watcher` 常駐服務（狀態 `RUNNING`）、多層子命令（`uri resolve`、`config get`、`contributes check`、`knowledge-db status`）透過 `_try_hot_dispatch` 熱派發、未知子命令攔截（返回非 0 退出碼）及 `server stop` 兩階段優雅停機握手與日誌歸檔閉環。
+  - **8 份已消費 Roadmap 儲備閉環與三層文檔結案對齊 (`FR-05`)**：核驗本主計畫所消費之 8 份核心模組加固與測試純化路線圖已 100% 透過 `Consume-on-Promote` 閉環歸檔於 `sub_01` ~ `sub_04` 各子計畫之 `roadmap.md`；清理 `ys_codebase/source/server/README.md` §2.2 殘留片段，完成四大模組三層文檔最終對齊與主計畫 `2026_10_23_1122` 圓滿結案。
 
 ### sub_04_knowledge_db_pipeline_and_tests (Completed)
 - **`knowledge-db` 檢索管線死鎖解除、調用圖譜熱修補雙階入度保真、服務單一託管、詞庫純化與測試套件 12 檔收斂**：
