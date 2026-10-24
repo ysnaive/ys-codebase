@@ -7,7 +7,11 @@ the server's idle TTL and shutdown policy.
 """
 
 from abc import ABC, abstractmethod
+import importlib
+import json
 import logging
+import os
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -64,22 +68,40 @@ class ServiceManager:
     def register(
         self,
         worker: BaseServiceWorker,
+        name: Optional[str] = None,
         provider: str = "core",
         description: str = "",
+        auto_start: bool = True,
     ) -> None:
         with self._lock:
-            self._services[worker.name] = worker
-            self._metadata[worker.name] = {
+            key = name or worker.name
+            self._services[key] = worker
+            self._metadata[key] = {
                 "provider": provider,
                 "description": description,
+                "auto_start": bool(auto_start),
             }
 
     def load_from_contributes(self, yscb_root: str) -> None:
         """
         Dynamically loads and registers services declared in contributes/server.json across modules.
+        Prioritizes aggregated registry from core.contributes.get('server', 'services').
         """
         try:
-            import json
+            services_data = None
+            try:
+                from core import contributes
+                services_data = contributes.get("server", "services", default=None)
+            except Exception:
+                services_data = None
+
+            if isinstance(services_data, list) and services_data:
+                for item in services_data:
+                    provider = item.get("__provider__") or item.get("_provider") or item.get("provider") or "unknown"
+                    self._load_service_item(item, provider=provider, yscb_root=yscb_root)
+                return
+
+            # Fallback to scanning .modules/*/contributes/server.json if contributes cache unavailable
             modules_dir = os.path.join(yscb_root, ".modules")
             if os.path.isdir(modules_dir):
                 for mod_name in sorted(os.listdir(modules_dir)):
@@ -89,34 +111,83 @@ class ServiceManager:
                             with open(srv_json, "r", encoding="utf-8") as f:
                                 sdata = json.load(f)
                                 for item in sdata.get("services", []):
-                                    self._load_service_item(item, provider=mod_name)
+                                    self._load_service_item(item, provider=mod_name, yscb_root=yscb_root)
                         except Exception as ex:
                             logging.warning(f"[Server Service] Error reading {srv_json}: {ex}")
         except Exception as e:
             logging.warning(f"[Server Service] Failed to load contributes services: {e}")
 
-    def _load_service_item(self, item: Dict[str, Any], provider: str = "unknown") -> None:
-        worker_cls_str = item.get("worker_class")
+    def _load_service_item(self, item: Dict[str, Any], provider: str = "unknown", yscb_root: Optional[str] = None) -> None:
+        worker_cls_str = item.get("worker_class") or item.get("entry")
         if not worker_cls_str or not isinstance(worker_cls_str, str):
             return
+
+        service_name = item.get("name") or item.get("id") or "unnamed_service"
+        auto_start = item.get("auto_start", True)
+
+        # Dynamic path injection for provider module under .modules/<provider>
+        if yscb_root and provider and provider != "unknown":
+            prov_dir = os.path.join(yscb_root, ".modules", provider)
+            if prov_dir not in sys.path:
+                sys.path.insert(0, prov_dir)
+
         try:
-            import importlib
-            if ":" in worker_cls_str:
-                mod_path, cls_name = worker_cls_str.split(":", 1)
-            elif "." in worker_cls_str:
-                mod_path, cls_name = worker_cls_str.rsplit(".", 1)
+            raw_str = worker_cls_str
+            for prefix in ("code.class://", "code.func://"):
+                if raw_str.startswith(prefix):
+                    raw_str = raw_str[len(prefix):]
+                    break
+
+            if ":" in raw_str:
+                mod_path, cls_name = raw_str.split(":", 1)
+            elif "." in raw_str:
+                mod_path, cls_name = raw_str.rsplit(".", 1)
             else:
                 return
-            mod = importlib.import_module(mod_path)
+
+            # Normalize hyphenated module prefix in path (e.g. knowledge-db/service -> knowledge_db.service)
+            mod_path = mod_path.replace("/", ".")
+            if "." in mod_path:
+                first_seg, rest = mod_path.split(".", 1)
+                mod_path = f"{first_seg.replace('-', '_')}.{rest}"
+            else:
+                mod_path = mod_path.replace("-", "_")
+
+            # Try to import directly first; if not found and prefixed by provider, attempt stripping provider prefix
+            try:
+                mod = importlib.import_module(mod_path)
+            except ModuleNotFoundError:
+                stripped = False
+                if provider and provider != "unknown":
+                    prov_norm = f"{provider.replace('-', '_')}."
+                    if mod_path.startswith(prov_norm):
+                        candidate_path = mod_path[len(prov_norm):]
+                        try:
+                            mod = importlib.import_module(candidate_path)
+                            mod_path = candidate_path
+                            stripped = True
+                        except ModuleNotFoundError:
+                            pass
+                if not stripped:
+                    raise
             cls_obj = getattr(mod, cls_name)
             instance = cls_obj()
-            self.register(instance, provider=provider, description=item.get("description", ""))
+            self.register(
+                instance,
+                name=service_name,
+                provider=provider,
+                description=item.get("description", ""),
+                auto_start=bool(auto_start),
+            )
         except Exception as e:
-            logging.error(f"[Server Service] Failed to instantiate service '{item.get('name')}': {e}")
+            logging.error(f"[Server Service] Failed to instantiate service '{service_name}': {e}")
 
     def start_all(self, context: Dict[str, Any]) -> None:
         with self._lock:
             for name, worker in self._services.items():
+                meta = self._metadata.get(name, {})
+                if not meta.get("auto_start", True):
+                    continue
                 try:
                     worker.start(context)
                 except Exception as e:

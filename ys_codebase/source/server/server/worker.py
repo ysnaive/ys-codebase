@@ -13,17 +13,9 @@ import json
 import os
 import platform
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional
-
-
-# Bootstrap python path to include source and core
-_cur_dir = os.path.dirname(os.path.abspath(__file__))
-_server_dir = os.path.dirname(_cur_dir)
-_source_dir = os.path.dirname(_server_dir)
-for _p in [_server_dir, _source_dir, os.path.join(_source_dir, "core")]:
-    if os.path.isdir(_p) and _p not in sys.path:
-        sys.path.insert(0, _p)
 
 from core import events
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
@@ -53,7 +45,6 @@ class WarmWorker:
 
         try:
             events.broadcast("server_worker_warming", {"worker_pid": pid, "start_time": start_t}, emit_module="server")
-            events.broadcast("worker_warming", {"worker_pid": pid, "start_time": start_t}, emit_module="server")
         except Exception:
             pass
 
@@ -178,28 +169,37 @@ def worker_main(yscb_root: str, in_stream=None, out_stream=None) -> None:
     except Exception:
         pass
 
+    orig_stdout = sys.stdout
+    ipc_out = out_stream or orig_stdout
     in_io = in_stream or sys.stdin
-    out_io = out_stream or sys.stdout
+
+    # Dedicated IPC output handle: redirect global sys.stdout to sys.stderr
+    # so that background service threads and external libraries calling print()
+    # will never pollute the NDJSON IPC control stream.
+    sys.stdout = sys.stderr
+
+    ipc_lock = threading.Lock()
 
     def emit_fn(packet: Dict[str, Any]) -> None:
-        try:
-            line = json.dumps(packet) + "\n"
-            out_io.write(line)
-            out_io.flush()
-        except Exception:
-            pass
-
-    worker = WarmWorker(yscb_root=yscb_root, emit_packet_fn=emit_fn)
-    worker.pre_warm()
-
-    # Notify master that worker is ready, including hosted services status
-    emit_fn({
-        "type": "worker_ready",
-        "worker_pid": os.getpid(),
-        "services": worker.service_manager.get_status(),
-    })
+        with ipc_lock:
+            try:
+                line = json.dumps(packet) + "\n"
+                ipc_out.write(line)
+                ipc_out.flush()
+            except Exception:
+                pass
 
     try:
+        worker = WarmWorker(yscb_root=yscb_root, emit_packet_fn=emit_fn)
+        worker.pre_warm()
+
+        # Notify master that worker is ready, including hosted services status
+        emit_fn({
+            "type": "worker_ready",
+            "worker_pid": os.getpid(),
+            "services": worker.service_manager.get_status(),
+        })
+
         while True:
             try:
                 line = in_io.readline()
@@ -228,7 +228,11 @@ def worker_main(yscb_root: str, in_stream=None, out_stream=None) -> None:
             except Exception as err:
                 emit_fn({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(err)})
     finally:
-        worker.service_manager.stop_all(timeout_sec=1.5)
+        try:
+            worker.service_manager.stop_all(timeout_sec=1.5)
+        except Exception:
+            pass
+        sys.stdout = orig_stdout
 
 
 if __name__ == "__main__":

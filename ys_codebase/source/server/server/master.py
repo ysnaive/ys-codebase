@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 from core import vfs
 from core.platform import is_process_alive, kill_process_tree, InterProcessLock, ensure_private_venv, set_process_title, spawn_detached
 from server.logger import ServerLogger
-from server.service import ServiceManager
 from server.watcher import ModulesWatcher
 
 
@@ -143,7 +142,6 @@ class MasterSupervisor:
         self.lock_file = os.path.join(self.yscb_root, ".cache", "server", "daemon.lock")
 
         self.logger = ServerLogger(self.yscb_root)
-        self.service_manager = ServiceManager()
         self.watcher: Optional[ModulesWatcher] = None
 
         self._worker_proc: Optional[subprocess.Popen] = None
@@ -182,7 +180,7 @@ class MasterSupervisor:
             "idle_seconds_left": idle_left,
             "idle_timeout_sec": self.idle_timeout_sec,
             "log_file": self.logger.log_file,
-            "services": self._worker_services or self.service_manager.get_status(),
+            "services": self._worker_services or [],
             "watcher": watcher_status,
         }
 
@@ -257,8 +255,6 @@ class MasterSupervisor:
             self.watcher.stop()
             self.watcher = None
 
-        self.service_manager.stop_all(timeout_sec=2.0)
-
         with self._worker_lock:
             self._kill_worker_locked(timeout_sec=2.0)
 
@@ -281,14 +277,30 @@ class MasterSupervisor:
         self.logger.archive_and_close()
 
     def _kill_worker_locked(self, timeout_sec: float = 2.0) -> None:
-        """Safely terminates child worker process and closes all pipe handles."""
+        """Safely terminates child worker process with two-stage handshake and closes all pipe handles."""
         if not self._worker_proc:
             return
         proc = self._worker_proc
+
+        # Stage 1: Graceful application-level handshake via {"action": "exit"}
+        exited_gracefully = False
         try:
-            kill_process_tree(proc.pid, timeout_sec=timeout_sec)
+            if proc.poll() is None and proc.stdin:
+                proc.stdin.write(b'{"action": "exit"}\n')
+                proc.stdin.flush()
+                wait_timeout = min(timeout_sec, 1.5)
+                proc.wait(timeout=wait_timeout)
+                exited_gracefully = True
         except Exception:
             pass
+
+        # Stage 2: OS-level process tree kill fallback if timeout or failure
+        if not exited_gracefully and proc.poll() is None:
+            try:
+                kill_process_tree(proc.pid, timeout_sec=timeout_sec)
+            except Exception:
+                pass
+
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
             if pipe:
                 try:
@@ -298,13 +310,21 @@ class MasterSupervisor:
         self._worker_proc = None
 
     def restart_worker(self) -> int:
-        """Terminates existing worker and spawns a fresh worker subprocess."""
+        """Terminates existing worker and spawns a fresh worker subprocess while syncing ServerConfig."""
         with self._worker_lock:
             old_pid = self._worker_proc.pid if self._worker_proc else 0
             self.logger.info(f"Restarting Warm Worker (terminating old PID: {old_pid})...")
             self._kill_worker_locked(timeout_sec=1.5)
 
+            try:
+                from server.config import ServerConfig
+                cfg = ServerConfig.load(workspace_root=self.yscb_root)
+                self.idle_timeout_sec = float(cfg.idle_timeout_sec)
+            except Exception:
+                pass
+
             new_pid = self._spawn_worker_locked()
+            self._last_active_time = time.time()
             self._write_state()
             self.logger.info(f"Fresh Warm Worker spawned (PID: {new_pid})")
             return new_pid
@@ -446,7 +466,7 @@ class MasterSupervisor:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
-        # Ensure child worker has access to source, modules, and private .venv
+        # Ensure child worker has access to modules and private .venv (strict isolation: no source/ paths)
         tag, sys_name = f"py{sys.version_info.major}{sys.version_info.minor}", platform.system()
         sub = os.path.join(".venv", tag, "Lib", "site-packages") if sys_name == "Windows" else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
         site_pkg = os.path.join(self.yscb_root, sub)
@@ -455,9 +475,7 @@ class MasterSupervisor:
             self.yscb_root,
             os.path.join(self.yscb_root, ".modules"),
             os.path.join(self.yscb_root, ".modules", "core"),
-            os.path.join(self.yscb_root, "source"),
-            os.path.join(self.yscb_root, "source", "core"),
-            os.path.join(self.yscb_root, "source", "server"),
+            os.path.join(self.yscb_root, ".modules", "server"),
         ]
         if os.path.isdir(site_pkg):
             py_paths.insert(0, site_pkg)
@@ -560,7 +578,7 @@ class MasterSupervisor:
             port=self.port,
             token=self.token,
             root=self.yscb_root,
-            start_time=time.time(),
+            start_time=self._start_time,
             idle_timeout_sec=self.idle_timeout_sec,
             tasks_executed=self._tasks_executed,
         )
@@ -687,7 +705,7 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
             elif parsed.path == "/api/shutdown":
                 worker_pid = supervisor._worker_proc.pid if supervisor._worker_proc else 0
                 uptime = time.time() - supervisor._start_time
-                services_count = len(supervisor._worker_services) if supervisor._worker_services else len(supervisor.service_manager.get_status())
+                services_count = len(supervisor._worker_services)
                 expected_archive = supervisor.logger.get_expected_archive_path()
                 summary = {
                     "pid": os.getpid(),

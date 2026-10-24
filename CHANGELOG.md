@@ -8,6 +8,13 @@
 
 ## 2026_10_23_1122_ecosystem_modules_hardening_and_test_purification (In Progress)
 
+### sub_03_server_hosting_ipc_and_tests (Completed)
+- **`server` 常駐服務端模組加固、Worker IPC 管道硬隔離、兩階段優雅停機與測試套件 3 檔純化收斂**：
+  - **背景服務託管引擎修復與增強 (`S-01`, `S-02`, `FR-01`, `EC-01`, `EC-02`)**：在 `server/service.py` 補齊 `import os`，接入 `core.contributes.get("server", "services")` 聚合登錄；動態將 `.modules/<provider>` 注入 `sys.path`，支援 `code.class://` 前綴去除與連字號模組名稱轉底線（優先直接匯入，相容 `knowledge_db.service:KnowledgeDBServiceWorker`）；於 `ServiceManager.register()` 與 `start_all()` 完整實作 `auto_start` 過濾控制。
+  - **Worker IPC 管道硬隔離與兩階段優雅停機 (`S-03`, `S-04`, `S-05`, `FR-02`, `FR-03`, `FR-04`, `EC-03`, `EC-04`)**：在 `server/worker.py` 實作獨立私有 `_ipc_stdout` 句柄與 `ipc_lock` 互斥鎖，並於主迴圈期間將全域 `sys.stdout` 重導向至 `sys.stderr`（`finally` 區塊恢復），徹底根除背景服務或外部庫 `print()` 雜訊污染 NDJSON 管道導致 `JSONDecodeError`；徹底移除 Worker 與 Master 中的 `source/` 源碼路徑注入，嚴守 `.modules/` 運行時空間隔離；在 `server/master.py` 實作兩階段停機協定（第一階段 Stdin `{"action": "exit"}\n` 應用層平滑握手，超時 1.5 秒自動降級為第二階段 `kill_process_tree` 強制收割進程樹）；移除 Master 上冗餘的 `self.service_manager` 實例，修復 `/api/shutdown` 端點潛在的 `AttributeError`，並修正 `_write_state()` 傳入 `self._start_time` 使 Worker 重啟後 Master Uptime 保持累計；登錄 `[DN-05]`、`[DN-06]`、`[DN-07]`。
+  - **Contributes 宣告、Reload 熱刷新與 CLI 清理 (`S-06`, `S-07`, `FR-05`, `EC-05`)**：在 `contributes/core.json` 補齊 `server_worker_warming` 與 `server_worker_ready` 之 `events` 宣告，Worker 移除重複的 `worker_warming` 舊廣播；`master.py:restart_worker()` 重載時同步調用 `ServerConfig.load()` 刷新記憶體中的 `idle_timeout_sec`；於 `scripts/cli.py` 刪除未使用的死代碼 `_handle_start()`，並為 `start` 指令新增負數 TTL 驗證防禦。
+  - **測試套件純化收斂 4 檔 $\to$ 3 檔與高風險路徑覆蓋 (`ST-01` ~ `ST-04`, `FR-06`, `FR-07`, `NFR-01`, `NFR-02`)**：物理刪除空測試檔案 `tests/test_basic.py`，全測試套件收斂為 3 個子系統測試檔（`test_server.py`, `test_server_config.py`, `test_server_logging.py`）；徹底消除自測自演的 dummy mock，`test_server_logging.py` 改為真實呼叫 `sup.dispatch_task()`；`test_server.py` 補齊真實 HTTP POST `/api/reload`、`/api/shutdown`、`/api/dispatch` (400 邊界) 以及真實攔截子進程 `env["PYTHONPATH"]` 之零 `source/` 嚴格斷言；全模組 **40/40 測試 100% 通過**，全量生態系回歸 **193/193 通過**，並完成 `server@build` 熱部署。
+
 ### sub_02_dev_toolchain_and_tests (Completed)
 - **`dev` 工具鏈契約加固、3-Gate 全庫防回退、`UNKNOWN` 測試剛性阻斷與測試套件 7 檔純化收斂**：
   - **CLI 選項契約、單一 Token 子進程傳遞與 PEP 562 延遲載入 (`D-01`, `D-08`, `FR-01`, `FR-07`, `EC-01`)**：補齊 `contributes/core.json` 中 `test`、`op-test`、`op-mksb` 全選項宣告與 `events` 導覽；於 `scripts/cli.py` 正規化帶值選項與 `alias_map_skip` 防重複展開，於 `tester.py` 將 `-k <pat>` 正規化為單一 Token `--pattern=<pat>` 並支援 `--q/--v/--a/--j/--k`；於 `dev/__init__.py` 實作 PEP 562 `__getattr__` 按需延遲載入並匯出 `Releaser`。

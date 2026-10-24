@@ -296,29 +296,3 @@ def reload(cmd_bags: CmdBags) -> int:
     else:
         print("[Server] Worker reload request failed or timed out.")
         return 1
-
-
-def _handle_start(args: Any, yscb_abs: Optional[str] = None, server_cfg: Optional[ServerConfig] = None) -> int:
-    """Helper for starting server, supporting both raw args list and CmdBags."""
-    if isinstance(args, (list, tuple)):
-        if "--console" in args and "--daemon" in args:
-            raise SystemExit(2)
-        root = yscb_abs or _get_yscb_root()
-        cfg = server_cfg or ServerConfig.load(workspace_root=root)
-        if not cfg.enable:
-            print("[Server] Server is disabled in configuration ('enable': false). Aborting start.")
-            return 1
-        options = {}
-        if "--console" in args:
-            options["console"] = CmdOption(name="console", params=True)
-        if "--daemon" in args:
-            options["daemon"] = CmdOption(name="daemon", params=True)
-        for a in args:
-            if a.startswith("--ttl="):
-                val = a.split("=", 1)[1]
-                options["ttl"] = CmdOption(name="ttl", params=val)
-        bags = CmdBags(raw_cmd="start " + " ".join(args), command="start", args=[], options=options)
-        return start(bags)
-    elif isinstance(args, CmdBags):
-        return start(args)
-    return 1

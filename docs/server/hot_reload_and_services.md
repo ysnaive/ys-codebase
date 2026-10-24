@@ -12,7 +12,7 @@ related_docs:
   - "./daemon_architecture.md"
   - "./README.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-24"
 ---
 
 # 熱重載與背景服務託管專題 (Service Workers & Hot Reload Architecture)
@@ -58,22 +58,24 @@ graph TD
 ## 2. 背景服務宣告式註冊與託管協議 (Service Worker Protocol)
 
 ### 2.1 `contributes/server.json` 宣告規範
-各領域模組無需修改 `server` 源碼，僅需透過 `contributes/server.json`（或聚合之 `contribute.json`）以純宣告方式聲明背景服務之 `id`、`entry`（類別 URI）與 `description`：
+各領域模組無需修改 `server` 源碼，僅需透過 `contributes/server.json`（或聚合之 `contribute.json`）以純宣告方式聲明背景服務之 `name`、`worker_class`（類別 URI 或連字號路徑）、`description` 與 `auto_start`：
 
 ```json
 {
   "services": [
     {
-      "id": "knowledge-db-worker",
-      "entry": "code.class://knowledge-db/service:KnowledgeDBServiceWorker",
-      "description": "Knowledge-DB Background File Watcher & Incremental Patcher"
+      "name": "knowledge-db-watcher",
+      "worker_class": "knowledge_db.service:KnowledgeDBServiceWorker",
+      "description": "知識庫即時檔案變更監聽與增量熱自癒服務",
+      "auto_start": true
     }
   ]
 }
 ```
 
-1. **動態發現與拉起**：`WarmWorker` 啟動時，`ServiceManager` 透過 `core.contributes.get("server")` 動態掃描所有已安裝模組之服務宣告，解析類別路徑並實例化啟動，同時記錄 `provider`（所屬模組）與 `description` 元數據。
+1. **動態發現與拉起**：`WarmWorker` 啟動時，`ServiceManager` 透過 `core.contributes.get("server", "services")` 動態載入所有模組之服務宣告，動態將 `.modules/<provider>` 注入 `sys.path`，支援連字號名稱正規化、相容 `code.class://` 前綴，並依 `auto_start` 旗標決定是否在 Worker 啟動時自動喚醒。
 2. **`worker_ready` 狀態回傳**：Worker 完成預熱與背景服務初始化後，於發送給 Master 的 `worker_ready` IPC 握手封包中附帶已啟動之服務清單與健康狀態，供 Master 快取並於啟動橫幅 (`format_startup_banner`) 及 `/api/status` 端點即時呈現。
+3. **兩階段停機安全卸載**：當 Server 或 Worker 關閉/重載時，Master 發送 `{"action": "exit"}` 握手，Worker 依序呼叫所有常駐服務的 `stop()` 進行資源釋放，保障資料一致性。
 
 ### 2.2 `BaseServiceWorker` 實作介面
 領域模組之背景服務類別須繼承並實作 `server.service.BaseServiceWorker` 抽象基類：

@@ -166,7 +166,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_master_supervisor_http_and_lifecycle(self):
-        """FT-09 & FT-11: MasterSupervisor initializes dynamic port, writes state, responds to HTTP, and stops cleanly."""
+        """FT-07, FT-09, FT-11: MasterSupervisor initializes dynamic port, writes state, responds to HTTP endpoints (/api/status, /api/reload, /api/shutdown, /api/dispatch), and stops cleanly."""
         sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
         pid = sup.start(foreground=False)
 
@@ -174,20 +174,49 @@ class TestServerModule(YSCBTestCase):
             self.assertGreater(sup.port, 0)
             self.assertTrue(os.path.exists(sup.state_file))
 
-            # Test unauthorized request (403)
-            url = f"http://127.0.0.1:{sup.port}/api/status"
-            req_unauth = urllib.request.Request(url)
+            # 1. Test unauthorized request (403)
+            url_status = f"http://127.0.0.1:{sup.port}/api/status"
+            req_unauth = urllib.request.Request(url_status)
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 urllib.request.urlopen(req_unauth)
             self.assertEqual(cm.exception.code, 403)
 
-            # Test authorized GET /api/status
-            req_auth = urllib.request.Request(url, headers={"Authorization": f"Bearer {sup.token}"})
+            # 2. Test authorized GET /api/status
+            auth_headers = {"Authorization": f"Bearer {sup.token}", "Content-Type": "application/json"}
+            req_auth = urllib.request.Request(url_status, headers=auth_headers)
             with urllib.request.urlopen(req_auth) as resp:
                 self.assertEqual(resp.status, 200)
                 body = json.loads(resp.read().decode("utf-8"))
                 self.assertEqual(body["status"], "running")
                 self.assertEqual(body["pid"], os.getpid())
+
+            # 3. Test POST /api/reload
+            url_reload = f"http://127.0.0.1:{sup.port}/api/reload"
+            with unittest.mock.patch.object(sup, "restart_worker", return_value=88888):
+                req_reload = urllib.request.Request(url_reload, data=b"{}", headers=auth_headers, method="POST")
+                with urllib.request.urlopen(req_reload) as resp:
+                    self.assertEqual(resp.status, 200)
+                    body = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(body["status"], "worker_restarted")
+                    self.assertEqual(body["new_worker_pid"], 88888)
+
+            # 4. Test POST /api/dispatch (EC-05: yscb_root mismatch -> 400 Bad Request)
+            url_dispatch = f"http://127.0.0.1:{sup.port}/api/dispatch"
+            bad_payload = json.dumps({"module": "dummy", "args": [], "yscb_root": "/mismatched/root"}).encode("utf-8")
+            req_dispatch_bad = urllib.request.Request(url_dispatch, data=bad_payload, headers=auth_headers, method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(req_dispatch_bad)
+            self.assertEqual(cm.exception.code, 400)
+
+            # 5. Test POST /api/shutdown (Regression test for Defect 1: no AttributeError on supervisor.service_manager)
+            url_shutdown = f"http://127.0.0.1:{sup.port}/api/shutdown"
+            req_shutdown = urllib.request.Request(url_shutdown, data=b"{}", headers=auth_headers, method="POST")
+            with urllib.request.urlopen(req_shutdown) as resp:
+                self.assertEqual(resp.status, 200)
+                body = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(body["status"], "shutting_down")
+                self.assertIn("summary", body)
+                self.assertEqual(body["summary"]["services_stopped"], 0)
 
         finally:
             sup.stop()
@@ -241,12 +270,11 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_worker_warming_event(self):
-        """FT-03: Verify WarmWorker broadcasts server_worker_warming and worker_warming."""
+        """FT-03: Verify WarmWorker broadcasts server_worker_warming."""
         worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
         with unittest.mock.patch.object(events, "broadcast") as mock_broadcast:
             worker.pre_warm()
             calls = [c.args[0] for c in mock_broadcast.call_args_list if c.args]
-            self.assertIn("worker_warming", calls)
             self.assertIn("server_worker_warming", calls)
         self.mark_passed()
 
@@ -302,7 +330,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_watcher_observability_status_payload(self):
-        """FT-04: MasterSupervisor status_payload includes ModulesWatcher observability."""
+        """FT-04: MasterSupervisor get_status_dict includes ModulesWatcher observability."""
         sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=True)
         try:
             modules_dir = os.path.join(self.root_dir, ".modules")
@@ -310,11 +338,8 @@ class TestServerModule(YSCBTestCase):
             sup.watcher = ModulesWatcher(modules_dir, on_change_callback=lambda x: None)
             sup.watcher.start()
 
-            watcher_status = {
-                "enabled": sup.enable_watcher,
-                "active": (sup.watcher is not None and sup.watcher.is_running),
-                "monitored_dir": sup.watcher.modules_dir if sup.watcher else None,
-            }
+            status = sup.get_status_dict()
+            watcher_status = status["watcher"]
             self.assertTrue(watcher_status["enabled"])
             self.assertTrue(watcher_status["active"])
             self.assertEqual(watcher_status["monitored_dir"], os.path.abspath(modules_dir))
@@ -324,11 +349,8 @@ class TestServerModule(YSCBTestCase):
 
         # Watcher disabled case
         sup_disabled = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
-        watcher_disabled = {
-            "enabled": sup_disabled.enable_watcher,
-            "active": (sup_disabled.watcher is not None and sup_disabled.watcher.is_running),
-            "monitored_dir": sup_disabled.watcher.modules_dir if sup_disabled.watcher else None,
-        }
+        status_disabled = sup_disabled.get_status_dict()
+        watcher_disabled = status_disabled["watcher"]
         self.assertFalse(watcher_disabled["enabled"])
         self.assertFalse(watcher_disabled["active"])
         self.assertIsNone(watcher_disabled["monitored_dir"])
@@ -396,6 +418,215 @@ class TestServerModule(YSCBTestCase):
         self.assertIn("uptime_seconds", status_dict)
         self.assertIn("log_file", status_dict)
         self.assertGreaterEqual(status_dict["uptime_seconds"], 0.0)
+        self.mark_passed()
+
+    def test_service_manager_load_from_contributes_and_auto_start(self):
+        """FT-01, ET-01, ET-02: load_from_contributes handles hyphenated module names, injects sys.path, and respects auto_start."""
+        from core import contributes
+        from unittest.mock import patch
+
+        mod_dir = os.path.join(self.root_dir, ".modules", "mock-kdb-service")
+        pkg_dir = os.path.join(mod_dir, "mock_kdb_service")
+        os.makedirs(pkg_dir, exist_ok=True)
+        worker_code = (
+            "from server.service import BaseServiceWorker\n"
+            "class DummyWorker(BaseServiceWorker):\n"
+            "    def __init__(self):\n"
+            "        self.started = False\n"
+            "        self.stopped = False\n"
+            "    @property\n"
+            "    def name(self):\n"
+            "        return 'dummy-worker'\n"
+            "    def start(self, ctx):\n"
+            "        self.started = True\n"
+            "    def stop(self):\n"
+            "        self.stopped = True\n"
+            "    def health_check(self):\n"
+            "        return self.started and not self.stopped\n"
+        )
+        with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
+            f.write("")
+        with open(os.path.join(pkg_dir, "worker.py"), "w", encoding="utf-8") as f:
+            f.write(worker_code)
+
+        mock_contrib = [
+            {
+                "_provider": "mock-kdb-service",
+                "name": "auto-dummy",
+                "worker_class": "code.class://mock-kdb-service/mock_kdb_service.worker.DummyWorker",
+                "description": "Auto start service",
+                "auto_start": True,
+            },
+            {
+                "_provider": "mock-kdb-service",
+                "name": "manual-dummy",
+                "worker_class": "code.class://mock-kdb-service/mock_kdb_service.worker.DummyWorker",
+                "description": "Manual start service",
+                "auto_start": False,
+            },
+        ]
+
+        mgr = ServiceManager()
+        try:
+            with patch.object(contributes, "get", return_value=mock_contrib):
+                mgr.load_from_contributes(yscb_root=self.root_dir)
+
+            # Ensure .modules/mock-kdb-service was injected into sys.path
+            self.assertIn(os.path.abspath(mod_dir), [os.path.abspath(p) for p in sys.path])
+
+            status = mgr.get_status()
+            self.assertEqual(len(status), 2)
+            names = [s["name"] for s in status]
+            self.assertIn("auto-dummy", names)
+            self.assertIn("manual-dummy", names)
+
+            # start_all respects auto_start
+            mgr.start_all({})
+            status_after = {s["name"]: s["alive"] for s in mgr.get_status()}
+            self.assertTrue(status_after["auto-dummy"])
+            self.assertFalse(status_after["manual-dummy"])
+
+            mgr.stop_all()
+            status_stop = {s["name"]: s["alive"] for s in mgr.get_status()}
+            self.assertFalse(status_stop["auto-dummy"])
+            self.assertFalse(status_stop["manual-dummy"])
+        finally:
+            if mod_dir in sys.path:
+                sys.path.remove(mod_dir)
+            if os.path.abspath(mod_dir) in sys.path:
+                sys.path.remove(os.path.abspath(mod_dir))
+        self.mark_passed()
+
+    def test_worker_main_ipc_isolation_and_exit_handshake(self):
+        """FT-02, ET-03: worker_main isolates IPC stdout via private handle, redirects sys.stdout to stderr, and handles exit."""
+        import threading
+        from server.worker import worker_main
+
+        # We simulate stdin with two commands: an echo/log command with background print, followed by exit
+        in_stream = io.BytesIO()
+        in_stream.write(json.dumps({"action": "ping"}).encode("utf-8") + b"\n")
+        in_stream.write(json.dumps({"action": "exit"}).encode("utf-8") + b"\n")
+        in_stream.seek(0)
+
+        # Intercept real sys.stdout and sys.stderr during worker_main execution
+        orig_stdout = sys.stdout
+        orig_stderr = sys.stderr
+        fake_stdout = io.StringIO()
+        fake_stderr = io.StringIO()
+        sys.stdout = fake_stdout
+        sys.stderr = fake_stderr
+
+        try:
+            # Run worker_main with out_stream=None so it wraps sys.stdout.buffer into _ipc_stdout
+            # To capture its binary IPC output, we can redirect sys.stdout to a TextIOWrapper with a BytesIO buffer
+            raw_ipc_out = io.BytesIO()
+            fake_raw_stdout = io.TextIOWrapper(raw_ipc_out, encoding="utf-8")
+            sys.stdout = fake_raw_stdout
+
+            # Simulate background stdout prints right after worker_main starts
+            def background_noise():
+                time.sleep(0.01)
+                print("BACKGROUND UNSTRUCTURED LOGGING", flush=True)
+
+            t = threading.Thread(target=background_noise)
+            t.start()
+
+            worker_main(yscb_root=self.root_dir, in_stream=in_stream, out_stream=None)
+            t.join()
+
+            fake_raw_stdout.flush()
+            raw_ipc_out.seek(0)
+            ipc_lines = [line.strip() for line in raw_ipc_out if line.strip()]
+
+            # Every line in raw_ipc_out MUST be a valid JSON packet from IPC
+            for line in ipc_lines:
+                pkt = json.loads(line.decode("utf-8"))
+                self.assertIn("type", pkt)
+
+            # The background noise MUST have gone to fake_stderr, NOT raw_ipc_out
+            stderr_val = fake_stderr.getvalue()
+            self.assertIn("BACKGROUND UNSTRUCTURED LOGGING", stderr_val)
+
+        finally:
+            sys.stdout = orig_stdout
+            sys.stderr = orig_stderr
+
+        self.mark_passed()
+
+    def test_master_supervisor_start_time_persistence(self):
+        """FT-03: MasterSupervisor preserves start_time across restart_worker."""
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        initial_start_time = 1700000000.0
+        sup._start_time = initial_start_time
+
+        # Mock worker process and restart
+        with unittest.mock.patch.object(sup, "_kill_worker_locked"), \
+             unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=12345), \
+             unittest.mock.patch.object(sup, "_write_state") as mock_write_state:
+            sup.restart_worker()
+            mock_write_state.assert_called()
+
+        self.assertEqual(sup._start_time, initial_start_time)
+        self.mark_passed()
+
+    def test_worker_and_master_zero_source_path_injection(self):
+        """FT-04: Worker and Master supervisor execution paths contain zero source/ in sys.path or env."""
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        captured_env = {}
+
+        def mock_popen(cmd, **kwargs):
+            nonlocal captured_env
+            captured_env = kwargs.get("env", {})
+            fake_proc = unittest.mock.MagicMock()
+            fake_proc.pid = 77777
+            fake_proc.poll.return_value = None
+            fake_proc.stdout.readline.return_value = b'{"type": "worker_ready", "services": []}\n'
+            fake_proc.stderr = io.BytesIO()
+            return fake_proc
+
+        with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen):
+            sup._spawn_worker_locked()
+
+        # Real assertion on the PYTHONPATH actually passed by _spawn_worker_locked to subprocess
+        self.assertIn("PYTHONPATH", captured_env)
+        pythonpath_entries = captured_env["PYTHONPATH"].split(os.pathsep)
+        for entry in pythonpath_entries:
+            norm_entry = entry.replace("\\", "/")
+            self.assertFalse(
+                "/source/" in norm_entry or norm_entry.endswith("/source"),
+                f"Illegal source/ path found in worker PYTHONPATH: {entry}",
+            )
+
+        # Verify WarmWorker sys.path initialization does not inject source/
+        worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
+        for p in sys.path:
+            norm_p = p.replace("\\", "/")
+            # sys.path should not have this root's source/ directory
+            self.assertFalse(f"{self.root_dir}/source" in norm_p)
+        self.mark_passed()
+
+    def test_master_two_stage_kill_fallback(self):
+        """ET-04: MasterSupervisor _kill_worker_locked sends exit and falls back to kill_process_tree on timeout."""
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        mock_proc = unittest.mock.MagicMock()
+        mock_proc.pid = 99999
+        mock_proc.poll.return_value = None  # Process doesn't exit on its own
+        mock_proc.wait.side_effect = Exception("timeout")
+        mock_proc.stdin = unittest.mock.MagicMock()
+        sup._worker_proc = mock_proc
+
+        with unittest.mock.patch("server.master.kill_process_tree") as mock_kill, \
+             unittest.mock.patch("time.sleep") as mock_sleep:
+            sup._kill_worker_locked(timeout_sec=1.5)
+
+            # Verify Stage 1 sent exit NDJSON
+            mock_proc.stdin.write.assert_called_with(b'{"action": "exit"}\n')
+            mock_proc.stdin.flush.assert_called()
+
+            # Verify Stage 2 fallback to kill_process_tree
+            mock_kill.assert_called_once_with(mock_proc.pid, timeout_sec=1.5)
+            self.assertIsNone(sup._worker_proc)
+
         self.mark_passed()
 
 
