@@ -6,12 +6,13 @@ source_paths:
   - "yscb://source/agents-workflow/agents_workflow/compiler.py"
   - "yscb://source/agents-workflow/agents_workflow/publisher.py"
   - "yscb://source/agents-workflow/agents_workflow/initializer.py"
+  - "yscb://source/agents-workflow/agents_workflow/roadmap.py"
   - "yscb://source/agents-workflow/config.project.json"
 related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
-last_updated: "2026-10-23"
+last_updated: "2026-10-24"
 ---
 
 # 設計決策與工程妥協 (Design Notes)
@@ -34,6 +35,7 @@ last_updated: "2026-10-23"
 | **[DN-AW-08]** | 新增 | 模型紀錄規則：唯一來源為平台宣告、嚴禁由檔案反推、不確定填 `Unknown`、事件粒度記入 changelog | 規範資產 (`AgentsStandards.md`)、標頭模板、`changelog.md` 模板 | `Active`（待下游驗證） |
 | **[DN-AW-09]** | 新增 | 來源資產換行符 LF 正規化與物化清單 `cache://` 本地隔離防 Git 污染 | 發布引擎 (`publisher.py`) | `Active` |
 | **[DN-AW-10]** | 新增 | ACI 四步執行管線時序、伴隨檔模型防回溯與 `P01` 刪除線/代碼塊預過濾設計 | Plans 工具鏈 (`verifier.py`, `scanner.py`, `status.py`) | `Active` |
+| **[DN-AW-11]** | 新增 | 雙層儲備消耗 (`Consume-on-Promote`)、`TODO.md` 單調遞增編號計數器與 `ORIGIN_SEED_FILES` 種子白名單防坑設計 | 儲備與計畫工具鏈 (`roadmap.py`, `status.py`, `scanner.py`, `verifier.py`) | `Active` |
 
 ---
 
@@ -175,4 +177,26 @@ last_updated: "2026-10-23"
 
 > [!CAUTION]
 > 嚴禁將 `append_changelog_entry` 或 `_auto_heal_companions` 移至 Step 1 主體檔合規判定之前；嚴禁在 `_resolve_companion_model` 中加入回退搜尋 `P00_discuss.md` 等前序階段檔案之邏輯。
+
+---
+
+### [DN-AW-11] 雙層儲備消耗 (`Consume-on-Promote`)、`TODO.md` 單調遞增編號計數器與 `ORIGIN_SEED_FILES` 種子白名單防坑設計
+
+- **工程背景與坑點**：
+  1. **殭屍路線圖與歷史模型污染**：過去 `plans/roadmap/{topic}.md` 在立項後常留在原目錄，或僅手動修改狀態為 `Promoted`，導致儲備庫長期堆積已立項的殭屍檔案；而在執行 `roadmap promote` 移入計畫目錄並自動建立 `changelog.md` 時，若直接拿 `roadmap.md` 標頭裡數週前舊對話寫入的 `> 模型：` 來初始化當下 `changelog.md`，會違反 `[DN-AW-08]` 模型紀錄鐵律。
+  2. **`TODO.md` 提取後之編號碰撞 (`Pop` Collision)**：`todo promote` 執行原子提取（Pop）會將已立項之 `TODO-XXX` 從 `plans/roadmap/TODO.md` 表格移除。若 `todo add` 僅依「目前表格內現存最大編號 + 1」計算新編號，當最後一筆（甚至全部）條目被 Pop 移除後，下一筆新增的待辦就會重複分配已被歷史計畫 `todo.md` 佔用的舊編號。
+  3. **計畫內種子檔 (`roadmap.md` / `todo.md`) 誤觸 `PlanVerifier` 與 `PlanStatusResolver` 攔截**：當 `roadmap.md` 或 `todo.md` 被置入活躍計畫目錄（或 `sub_XX` 子計畫目錄）作為起源種子檔時：
+     - 其標頭日期欄位可能為 `> 建立日期：` 或 `> 歸檔日期：`，狀態可能為 `Backlog` / `Ready` / `Seeded`。
+     - 若放入 `sub_XX` 子目錄，種子檔本身並無 `> 所屬主計畫：` 標頭（因其為立項前儲備資產），若 `PlanVerifier` 對子目錄下所有 `.md` 無差別強制要求 `> 所屬主計畫：`，將導致 `FAIL` 误報。
+     - `roadmap.md` 內文可能包含演進藍圖之參考勾選框 `- [ ]`，若因其狀態而觸發 `Completed` 未勾選阻斷，亦會造成假陽性。
+- **妥協與防禦設計**：
+  1. **物理移轉 (`Consume-on-Promote`) 與伴隨模型隔離**：`RoadmapManager.promote_roadmap` 強制使用 `shutil.move` 將 `plans/roadmap/{topic}.md` 物理移入目標計畫目錄並重命名為 `roadmap.md`（徹底清空儲備庫殘留），同時保留原 `roadmap.md` 標頭之歷史 `> 模型：` 不變，而新建之 `changelog.md` 則嚴格使用 CLI 傳入之當輪 `--model`（預設 `Unknown`），絕不讀取 `roadmap.md` 的舊模型。
+  2. **標頭單調遞增計數器 (`> 最後分配編號：N`)**：在 `plans/roadmap/TODO.md` 頂部 Blockquote 維護 `> 最後分配編號：N`。每次 `todo add` 取 `max(header_last_id, max_existing_table_id) + 1` 並同步回寫標頭；即使表格內所有列均被 `todo promote` 提取清空，編號依然嚴格單調遞增、永不重複。
+  3. **`ORIGIN_SEED_FILES` 種子白名單與 `Seeded` 狀態機**：於 `status.py`、`scanner.py` 與 `verifier.py` 統一註冊 `ORIGIN_SEED_FILES = {"roadmap.md", "todo.md"}`：
+     - 當目錄僅含種子檔與 `changelog.md` 時，`PlanStatusResolver` 與 `PlanScanner` 將其識別為 `Seeded`（`Seeded (Pending Plan)`），引導原地補齊規格檔。
+     - `PlanVerifier` 將 `backlog`, `proposed`, `ready`, `deferred`, `seeded` 納入合法狀態，對 `ORIGIN_SEED_FILES` 豁免 `sub_XX` 之 `> 所屬主計畫：` 檢查、豁免動態模板標題強制比對與 `Completed` 未勾選 Checkbox 檢查，僅保留基礎標頭與佔位符防呆。
+
+> [!CAUTION]
+> 嚴禁將 `TodoManager.add_todo` 的編號分配邏輯退化為僅掃描當前表格現存列（必在 `todo promote` 清空表格後發生 ID 碰撞）；嚴禁在 `RoadmapManager.promote_roadmap` 中讀取舊 `roadmap.md` 的 `> 模型：` 填入新生成的 `changelog.md`；嚴禁從 `verifier.py` 移除 `ORIGIN_SEED_FILES` 對 `sub_XX` 子計畫 `> 所屬主計畫：` 的豁免保護。
+
 

@@ -13,7 +13,7 @@
 
 ## 1. 使用者原始需求與意圖 (User Intent)
 
-- **原始陳述**：依據技術路線圖 [python_aci_toolchain_roadmap.md](../../roadmap/python_aci_toolchain_roadmap.md)，實作 `agents-workflow` Python 工具鏈 (ACI) 強化與狀態機下沉演進（`sub_01_python_aci_toolchain`）。
+- **原始陳述**：依據技術路線圖 [roadmap.md](./roadmap.md)，實作 `agents-workflow` Python 工具鏈 (ACI) 強化與狀態機下沉演進（`sub_01_python_aci_toolchain`）。
 - **核心目標**：
   1. **M1（確定性狀態領航 + `--resume` 原子閱後即焚）**：擴充 `PlanStatusResolver` / `PlanScanner` 與 `plan status [--plan <plan_name_or_subpath>] [--resume]`，自動推導目標計畫（含自動深入 Umbrella 活躍之 `sub_XX` 子計畫）下一步應執行階段與必讀參考檔路徑 (`required_reference_path`)；當傳入 `--resume` 且存在 `handoff.md` 時，完整輸出快照內容並立即呼叫 `os.unlink()` 物理刪除（未傳 `--resume` 時維持 100% 純唯讀）；精簡 `continue/SKILL.md` 優先調用 `plan status --resume` 並保留極簡沙盒唯讀 Fallback。
   2. **M2（單階段左移檢核 + `P01<->P06` 追溯差集比對 + 自癒型報錯）**：擴充 `PlanVerifier` 與 `plan verify [plan_name_or_subpath] [--phase <P00..P07|current|all>]` 支援單階段與雙檔協同檢核（`P02` 檢核 `P06_test_plan.md` 存在性、`P04` 檢核 `P06` 狀態達 `Confirmed` 以上）；實作 `P01_requirements_spec.md` (`FR-\d+`/`EC-\d+`/`NFR-\d+`) 與 `P06_test_plan.md` 集合差集比對（預先剝除 Fenced Code Blocks、HTML 註解與 `~~...~~` 刪除線）；所有 `FAIL`/`WARN` 診斷均附帶可操作修復指引 (`Actionable Fix Hint`)。

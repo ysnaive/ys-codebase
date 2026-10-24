@@ -150,7 +150,9 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertIn("主從計畫狀態連動規則", plan_modes)
 
         roadmap_tpl = (assets / "templates" / "roadmap.md").read_text(encoding="utf-8")
-        self.assertIn("Completed]", roadmap_tpl)
+        self.assertIn("[Backlog | Proposed | Ready | Deferred]", roadmap_tpl)
+        self.assertIn("> 目標範疇：", roadmap_tpl)
+        self.assertIn("> 前置解鎖條件：", roadmap_tpl)
         self.assertNotIn("全庫歷史物件量化分析", roadmap_tpl)
         self.mark_passed()
 
@@ -199,8 +201,9 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertIn("均須先將 `R{NN}_{topic}.md` 標頭狀態更新為 `Concluded`", research)
 
         roadmap_skill = (assets / "skills" / "roadmap" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("In Progress | Completed]", roadmap_skill)
-        self.assertIn("結案時更新為 `Completed`", roadmap_skill)
+        self.assertIn("[Backlog | Proposed | Ready | Deferred]", roadmap_skill)
+        self.assertIn("Consume-on-Promote", roadmap_skill)
+        self.assertIn("roadmap promote", roadmap_skill)
 
         sop = (assets / "skills" / "development-sop" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("`umbrella_overview` + `changelog`", sop)
@@ -254,11 +257,11 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertIn("skill-optimizer", export_names)
         self.assertIn("SKILL_OPTIMIZER_STANDARDS", token_names)
 
-        # 2. 全部 12 個技能皆具備雙軌結構化邊界 (環境攔截型採三段式『觸發情境：/排除情境：』；主動指令型採『僅於顯式輸入』) 與常見踩坑指南 (Gotchas)
+        # 2. 全部 13 個技能皆具備雙軌結構化邊界 (環境攔截型採三段式『觸發情境：/排除情境：』；主動指令型採『僅於顯式輸入』) 與常見踩坑指南 (Gotchas)
         expected_skills = {
             "auto", "context-init", "continue", "development-sop", "discuss",
             "documentation", "new-plan", "pause", "research", "roadmap",
-            "skill-optimizer", "yscb-cli-guide",
+            "skill-optimizer", "todo", "yscb-cli-guide",
         }
         command_driven_skills = {"auto", "pause", "continue", "context-init", "skill-optimizer"}
         ambient_skills = expected_skills - command_driven_skills

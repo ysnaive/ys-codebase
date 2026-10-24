@@ -2,7 +2,9 @@
 
 > 主題：[主題名稱]  
 > 歸檔日期：[YYYY-MM-DD]  
-> 狀態：[Backlog | Proposed | Ready | Deferred | In Progress | Completed]  
+> 狀態：[Backlog | Proposed | Ready | Deferred]  
+> 目標範疇：[涉及之模組、子系統或檔案範圍]  
+> 前置解鎖條件：[啟動本路線圖所需滿足之前置條件；若隨時可啟動填 無]  
 > 模型：[平台宣告之模型名稱；無法確認填 Unknown]  
 
 ---

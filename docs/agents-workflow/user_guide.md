@@ -8,11 +8,12 @@ source_paths:
   - "yscb://source/agents-workflow/agents_workflow/plans/archiver.py"
   - "yscb://source/agents-workflow/agents_workflow/plans/status.py"
   - "yscb://source/agents-workflow/agents_workflow/plans/searcher.py"
+  - "yscb://source/agents-workflow/agents_workflow/roadmap.py"
 related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-23"
+last_updated: "2026-10-24"
 ---
 
 # Agents Workflow 使用者與操作指南 (User Guide)
@@ -27,8 +28,11 @@ YS-Codebase 將所有開發計畫管理功能收斂為原生 CLI 子指令，零
 
 ### 1.1 計畫狀態矩陣掃描 (`plan status`)
 
-掃描當前專案活躍進行中的開發計畫（`workflow.plans://`），即時解析各計畫之 Track 類型（`Umbrella`, `Fast Track`, `Full Track`, `Revision`, `Phase 0`）與當前 Phase 狀態，並以樹狀縮排展示子計畫階層。
+掃描當前專案活躍進行中的開發計畫（`workflow.plans://`），即時解析各計畫之 Track 類型（`Umbrella`, `Fast Track`, `Full Track`, `Revision`, `Phase 0`, `Seeded`）與當前 Phase 狀態，並以樹狀縮排展示子計畫階層。
 
+- **起源種子狀態 (`Seeded`) 識別規則**：
+  - 當計畫目錄或 `sub_XX` 子計畫目錄剛由 `roadmap promote` 或 `todo promote` 建立，僅含起源種子檔（`roadmap.md` 或 `todo.md`）與 `changelog.md`、尚未補齊首份正式規格檔（`P00_discuss.md`、`fast_track_plan.md`、`revision_log.md` 或 `umbrella_overview.md`）時，`Track 模式` 顯示為 `Seeded`，`當前狀態` 顯示為 `Seeded (Pending Plan)`，`PlanStatusResolver` 會明確引導於該目錄原地補齊規格檔。
+  - 一旦補齊首份正式規格檔，起源種子檔（`roadmap.md` / `todo.md`）即轉為唯讀背景上下文，不再影響後續 Phase 狀態推導。
 - **正交修訂計畫 (`revision_log.md`) 掃描規則**：
   - **附隨型修訂**：當 `revision_log.md` 附隨於既有計畫（`Full Track`、`Fast Track`、`Umbrella` 或 `sub_XX` 子計畫）時，**不影響**原主計畫或子計畫的 Track 顯示與狀態判定。
   - **獨立型修訂**：當計畫目錄不含 `umbrella_overview.md`、`fast_track_plan.md` 與 `P01+`，而由 `revision_log.md` 單獨組成（或搭配前置 `P00` / `RXX`）時，`Track 模式` 顯示為 `Revision`。
@@ -140,16 +144,29 @@ python yscb.py agents-workflow plan verify [plan_name_or_subpath] --phase P02 --
 
 ---
 
-### 1.5 長期技術路線圖管理 (`roadmap`)
+### 1.5 雙層技術儲備與待辦管理 (`roadmap` & `todo`)
 
-掃描並條列 `workflow.roadmap://`（預設為 `plans/roadmap/`）儲備庫中的長期技術藍圖與策略資產。
+YS-Codebase 採用「宏觀路線圖（`workflow.roadmap://{topic}.md`）+ 微觀待辦帳本（`workflow.roadmap://TODO.md`）」雙層分流治理與 **立項即消耗 (`Consume-on-Promote`)** 生命週期：
+
+1. **宏觀策略路線圖 (`roadmap`)**：適用於跨模組架構演進或需多階段推進之長期藍圖。純儲備階段之有效狀態收斂為 `[Backlog | Proposed | Ready | Deferred]`，並記載 `> 目標範疇：` 與 `> 前置解鎖條件：`。當開發者拍板立項時，執行 `roadmap promote` 將 `plans/roadmap/{topic}.md` **物理移轉 (`shutil.move`)** 至新計畫目錄（或既有 `--plan` 目錄）並重命名為 `roadmap.md`，同時自動伴隨初始化 `changelog.md`。
+2. **微觀待辦帳本 (`todo`)**：適用於單一檔案微調、小範圍重構點子或次要技術債速記，統一集中於單一帳本 `workflow.roadmap://TODO.md`（由標頭 `> 最後分配編號：N` 維護單調遞增 `TODO-XXX` 編號，並由 `RoadmapManager` 自動排除不混入路線圖列表）。立項時透過 `todo promote` 支援單筆或多筆打包提取（Pop），將選中列自 `TODO.md` 原子移除並於目標計畫目錄生成 `todo.md` 起源種子檔與 `changelog.md`。
 
 ```bash
-# 條列所有 Roadmap 主題摘要對照表（支援 --status 過濾）
-python yscb.py agents-workflow roadmap [--list] [--status=Candidate]
+# 1. 宏觀路線圖列表查詢（支援 --status 過濾，自動排除 TODO.md）與單一主題檢視
+python yscb.py agents-workflow roadmap [list] [--status <Backlog|Proposed|Ready|Deferred>]
+python yscb.py agents-workflow roadmap <topic>
 
-# 檢視指定主題之詳細背景與路徑
-python yscb.py agents-workflow roadmap release_binary_storage_optimization
+# 2. 宏觀路線圖消耗立項 (Consume-on-Promote：物理移轉為計畫內 roadmap.md + 初始化 changelog.md)
+python yscb.py agents-workflow roadmap promote <topic> [--plan <dir>] [--model "<ModelName>"]
+
+# 3. 微觀待辦單行免讀盲寫追加 (自動分配單調遞增 TODO-XX 編號)
+python yscb.py agents-workflow todo add "<標題>" [--scope <範疇>] [--note "<備忘>"] [--model "<ModelName>"]
+
+# 4. 微觀待辦清單檢視與過濾
+python yscb.py agents-workflow todo list [--scope <關鍵字>]
+
+# 5. 微觀待辦單筆或多筆打包提取立項 (Pop & Seed：自 TODO.md 移除並生成計畫內 todo.md + changelog.md)
+python yscb.py agents-workflow todo promote <TODO-ID> [TODO-ID...] --slug <plan_slug> [--plan <dir>] [--model "<ModelName>"]
 ```
 
 ---

@@ -68,7 +68,7 @@ description: 針對高複雜度技術命題與多候選方案執行優劣權衡 
 - **調研結論**：[1~2 行方案選型評估結論 / 推薦採納方案]
 - **推薦出口**：
   1. 出口 ① 立即實作：轉入 [/NewPlan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 或原地追加 P01~P07 升級實作計畫
-  2. 出口 ② 路線圖儲備：轉入 [Roadmap](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 納入長期演進儲備
+  2. 出口 ② 路線圖儲備：轉入 [Roadmap](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 納入長期演進儲備（日後以 `roadmap promote` 消耗立項）或轉入 [/Todo](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`) 記錄微觀待辦
   3. 出口 ③ 放棄結案：方案不可行或成本過高，記錄原因後於調研報告標記 Concluded 登記結案
 - **待確認事項**：請問是否採納此結論，並選擇何種流轉出口？
 ```

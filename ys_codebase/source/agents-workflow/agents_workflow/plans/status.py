@@ -32,6 +32,7 @@ class PlanStatusResolver:
     ]
 
     COMPLETED_STATUS_SET = {"completed", "concluded", "passed"}
+    ORIGIN_SEED_FILES = {"roadmap.md", "todo.md"}
 
     @classmethod
     def parse_header_metadata(cls, lines: List[str], max_lines: int = 35) -> Dict[str, str]:
@@ -540,6 +541,24 @@ class PlanStatusResolver:
                     "P00 已確認 (Confirmed)，請先精讀 phase_01_requirements.md 進入 Phase 1 建立 P01_requirements_spec.md（或依分流建立對應軌道檔案）。"
                     if is_done
                     else "讀取 phase_00_discuss.md 接續與開發者釐清需求邊界並更新 P00_discuss.md。"
+                ),
+                "has_handoff": has_handoff,
+            }
+
+        # 7. 前置源頭背景資產 (Origin Seed Assets: roadmap.md / todo.md) 判定
+        seed_files = [fn for fn in ("roadmap.md", "todo.md") if (p / fn).is_file()]
+        if seed_files:
+            return {
+                "target_plan_name": p.name,
+                "target_plan_dir": p,
+                "mode": "Seeded",
+                "current_phase": "Seeded",
+                "current_status": "seeded",
+                "next_phase": "P00 (or Fast Track / Revision)",
+                "required_reference_path": f"{ref_base}/phase_00_discuss.md",
+                "next_action_hint": (
+                    f"目錄已含前置源頭資產 ({', '.join(seed_files)})，請讀取 phase_00_discuss.md（或 plan_modes.md）"
+                    f"直接於本目錄原地建立 P00_discuss.md、fast_track_plan.md 或 revision_log.md，嚴禁重複新建第二個資料夾。"
                 ),
                 "has_handoff": has_handoff,
             }

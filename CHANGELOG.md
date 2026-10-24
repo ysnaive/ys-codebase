@@ -2,6 +2,12 @@
 
 ## 2026_10_23_1314_agents_workflow_aci_and_delegation_evolution (In Progress)
 
+### sub_02_roadmap_and_todo_refactoring (Completed)
+- **`agents-workflow` 雙層技術儲備體系（`/todo` 輕量待辦帳本 + `/roadmap` 策略路線圖）與立項物理遷入 (`Consume-on-Promote`) 重構**：
+  - **Tier 1 輕量待辦帳本 (`TODO.md`) 與 `todo` CLI 工具鏈 (`FR-01` ~ `FR-03`, `EC-01` ~ `EC-03`)**：新增 `assets/templates/todo.md` 模板與 `TodoManager`（匯出於 `agents_workflow` 頂層），實作 `todo add "<title>" [--scope] [--note] [--model]` 免讀盲寫追加（於頂部 Blockquote 維護 `> 最後分配編號：N` 單調遞增計數器，即使條目全數拔空亦絕不發生歷史編號碰撞）、`todo [list] [--scope]` 唯讀檢索過濾，以及 `todo promote <todo_ids...> --slug <slug> [--plan <dir>] [--model]` 單筆／多筆打包原子剪切拔除立項（自動生成計畫內 `todo.md` 種子檔與 `changelog.md`）。
+  - **Tier 2 策略路線圖升級與 `roadmap promote` 物理搬移 (`FR-04`, `FR-05`, `EC-04`, `EC-06`)**：更新 `assets/templates/roadmap.md` 標頭增設 `> 目標範疇：` 與 `> 前置解鎖條件：` 並將儲備狀態收斂為 `[Backlog | Proposed | Ready | Deferred]`；擴充 `RoadmapManager` 自動排除 `TODO.md`、支援 `roadmap [list] --status <val>` 過濾，並實作 `roadmap promote <topic> [--plan <dir>] [--model]` 以 `shutil.move` 將路線圖物理搬移至目標計畫目錄下重命名為 `roadmap.md`，且嚴格以當輪 `--model` 初始化伴隨 `changelog.md`（隔離舊路線圖之歷史模型）。
+  - **`ORIGIN_SEED_FILES` 前置源頭資產白名單、`Seeded` 狀態領航與技能同步 (`FR-06`, `EC-05`)**：於 `PlanStatusResolver`、`PlanScanner` 與 `PlanVerifier` 註冊 `ORIGIN_SEED_FILES = {"roadmap.md", "todo.md"}`，針對僅含種子檔之目錄顯示 `Seeded` / `Seeded (Pending Plan)` 並引導原地建立初始規格檔，同時於 `PlanVerifier` 豁免種子檔之子計畫 `> 所屬主計畫：` 與動態模板章節鏡像檢核；新增 `todo/SKILL.md` 並同步更新 `roadmap`、`new-plan`、`development-sop`、`discuss`、`research`、`yscb-cli-guide` 與 `[DN-AW-11]`，全模組 **129/129 單元測試 100% 通過**。
+
 ### sub_01_python_aci_toolchain (Completed)
 - **`agents-workflow` Python 工具鏈 (ACI) 強化：確定性狀態領航、`handoff.md` 原子閱後即焚、左移雙檔檢核與免讀盲寫追加 `changelog.md`**：
   - **`plan status --resume` 確定性狀態領航與閱後即焚 (`FR-01` ~ `FR-03`, `EC-01`, `EC-06`)**：於 `PlanStatusResolver.resolve_next_action` 與 `PlanScanner.execute_resume` 實作狀態機領航，支援自動深入 `Umbrella` 活躍之 `sub_XX` 子計畫並推導當前斷點、下一步階段與必讀 SOP 參考檔路徑；傳入 `--resume` 時自動輸出 `handoff.md` 快照並立即以 `os.unlink()` 物理刪除 (`Consume & Delete`)，未傳時維持純唯讀；多活躍計畫未指定 `--plan` 時依零臆測原則拒絕盲猜；同步更新 `continue/SKILL.md` 對接。

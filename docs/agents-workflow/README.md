@@ -10,7 +10,7 @@ related_docs:
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-23"
+last_updated: "2026-10-24"
 ---
 
 # Agents Workflow 模組 (General Agents Workflow Framework)
@@ -26,13 +26,13 @@ last_updated: "2026-10-23"
 - **規範 (`assets/standards/`)**：
   - `AgentsStandards.md`：Agent 通用核心原則、防呆紀律與條件式技能分流導航矩陣（自動注入至 `AGENTS.md`）。
 - **技能 (`assets/skills/<name>/SKILL.md`)**：
-  - **工作流與生命週期技能**：`context-init`（上下文熱啟動）、`new-plan`（標準立項與延遲建檔）、`auto`（Phase 01~05 自動連續推進）、`discuss`（深度歸因與範疇保護）、`continue`（中斷現場接續）、`pause`（現場狀態凍結）、`research`（深度技術調研）、`roadmap`（長期路線圖推薦）。
+  - **工作流與生命週期技能**：`context-init`（上下文熱啟動）、`new-plan`（標準立項與延遲建檔）、`auto`（Phase 01~05 自動連續推進）、`discuss`（深度歸因與範疇保護）、`continue`（中斷現場接續）、`pause`（現場狀態凍結）、`research`（深度技術調研）、`roadmap`（長期路線圖推薦與 `Consume-on-Promote` 晉升）、`todo`（`TODO.md` 輕量待辦與微觀技術債管理）。
   - **領域與規範技能**：`development-sop`（SOP 0~7 與 6 大分支指南，含 `references/` 規範明細）、`documentation`（知識庫 3 層架構與 7 大維度指南）、`yscb-cli-guide`（CLI 指令防呆與權限矩陣）、`skill-optimizer`（AI Agent 技能審查、診斷與重構工作流）、`yscb-module-dev`（生態系模組開發與 Dogfooding 閉環）。
 - **模板 (`assets/templates/`)**：
-  - 15 大標準模板庫（`P00_discuss`, `P01`~`P07`, `revision_log`, `fast_track_plan`, `umbrella_overview`, `changelog`, `RXX_research_report`, `handoff`, `roadmap`）與共用標頭。
-- **6 大計畫分支拓撲與 `/NewPlan` 延遲建檔守門 (Delayed Materialization)**：
-  - **6 大計畫分支**：依據規模、風險與任務性質劃分為 **Full Track**（標準 SOP 0~7 八大階段）、**Fast Track**（FP-01 規劃、FP-02 實作與驗證、FP-03 SOP 審查與結案，4 大守門：代碼行數 $\le 100$、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門）、**Umbrella**（跨模組主計畫與 `sub_XX` 子計畫，支援預先規劃型 Pre-planned 與增量演進型 Incremental 兩大模式）、**修訂計畫 (Revision Track)**（正交修訂與強制留檔，適用於不牽涉核心業務邏輯之 UI/UX/DX、參數與文檔微調，排除 Bug Fix，具備 4 大升級熔斷，支援獨立開立或附掛既有計畫產出 `revision_log.md`）、**調研計畫 (Research Track)**（3 步深度調研，統一以 `R{NN}_{topic}.md` 命名產出報告，支援三大出口轉化）以及 **Roadmap**（`workflow.roadmap://` 長期技術策略資產儲備，每主題一檔 `{topic}.md`，支援智慧推薦轉化）。
-  - **延遲建檔守門**：觸發 `/NewPlan` 進入 `P00` 需求討論階段時維持純對話，**嚴禁預先建立實體目錄**；待需求收斂並確立分流等級後，方一次性建立計畫目錄與對應初始模板，杜絕討論中止遺留空殼垃圾目錄。
+  - 16 大標準模板庫（`P00_discuss`, `P01`~`P07`, `revision_log`, `fast_track_plan`, `umbrella_overview`, `changelog`, `RXX_research_report`, `handoff`, `roadmap`, `todo`）與共用標頭。
+- **6 大計畫分支拓撲、雙層儲備消耗 (`Consume-on-Promote`) 與 `/NewPlan` 延遲建檔守門 (Delayed Materialization)**：
+  - **6 大計畫分支**：依據規模、風險與任務性質劃分為 **Full Track**（標準 SOP 0~7 八大階段）、**Fast Track**（FP-01 規劃、FP-02 實作與驗證、FP-03 SOP 審查與結案，4 大守門：代碼行數 $\le 100$、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門）、**Umbrella**（跨模組主計畫與 `sub_XX` 子計畫，支援預先規劃型 Pre-planned 與增量演進型 Incremental 兩大模式）、**修訂計畫 (Revision Track)**（正交修訂與強制留檔，適用於不牽涉核心業務邏輯之 UI/UX/DX、參數與文檔微調，排除 Bug Fix，具備 4 大升級熔斷，支援獨立開立或附掛既有計畫產出 `revision_log.md`）、**調研計畫 (Research Track)**（3 步深度調研，統一以 `R{NN}_{topic}.md` 命名產出報告，支援三大出口轉化）以及 **Roadmap / Todo 雙層儲備**（`workflow.roadmap://` 宏觀策略藍圖 `{topic}.md` 與微觀待辦帳本 `TODO.md`，支援 `roadmap promote` 物理移轉與 `todo promote` 打包提取立項）。
+  - **延遲建檔與 `Seeded` 原地復用守門**：觸發 `/NewPlan` 進入 `P00` 需求討論階段時維持純對話，**嚴禁預先建立實體目錄**；若目錄已由 `roadmap promote` 或 `todo promote` 預先建立並置入起源種子檔（`roadmap.md` 或 `todo.md` + `changelog.md`），則直接於該 `Seeded` 目錄原地補齊首份正式規格檔，杜絕重複建檔與空殼垃圾目錄。
 - **擴充手冊**：[`contributes/_manifest.md`](../../ys_codebase/source/agents-workflow/contributes/_manifest.md) 官方擴充宣告格式規格書。
 
 ---
@@ -132,6 +132,16 @@ python yscb.py agents-workflow plan verify [plan_name_or_subpath] [--phase <P00.
 
 # 安全歸檔已完成計畫至 workflow.archived://YYYY/MM/ (具備 4 重守門與 handoff 清理)
 python yscb.py agents-workflow plan archive <plan_name> [--force]
+
+# --- 雙層技術儲備與待辦工具鏈 (Roadmap & Todo Toolchain) ---
+# 檢視或過濾宏觀路線圖儲備 (自動排除 TODO.md)，或執行 Consume-on-Promote 物理移轉立項
+python yscb.py agents-workflow roadmap [list|<topic>] [--status <Backlog|Proposed|Ready|Deferred>]
+python yscb.py agents-workflow roadmap promote <topic> [--plan <dir>] [--model "<ModelName>"]
+
+# 免讀盲寫追加、過濾查詢與單筆/多筆打包提取輕量待辦 (workflow.roadmap://TODO.md)
+python yscb.py agents-workflow todo add "<標題>" [--scope <範疇>] [--note "<備忘>"] [--model "<ModelName>"]
+python yscb.py agents-workflow todo list [--scope <關鍵字>]
+python yscb.py agents-workflow todo promote <TODO-ID> [TODO-ID...] --slug <plan_slug> [--plan <dir>] [--model "<ModelName>"]
 ```
 
 ---

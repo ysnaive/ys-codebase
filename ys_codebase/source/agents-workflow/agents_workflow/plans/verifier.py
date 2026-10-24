@@ -110,8 +110,11 @@ class PlanVerifier:
     VALID_STATUSES = {
         "draft", "confirmed", "in progress", "in_progress",
         "passed", "completed", "active", "archived", "pending", "review",
-        "discussing", "planning", "executing", "concluded", "aborted", "cancelled"
+        "discussing", "planning", "executing", "concluded", "aborted", "cancelled",
+        "backlog", "proposed", "ready", "deferred", "seeded"
     }
+
+    ORIGIN_SEED_FILES = {"roadmap.md", "todo.md"}
 
     # 模板佔位符正則（未替換即違規）
     PLACEHOLDER_PATTERNS = [
@@ -415,9 +418,12 @@ class PlanVerifier:
 
             # 檢查是否有至少一筆資料行 (排除 header 和 separator)
             data_rows = [
-                l for l in table_lines 
-                if not re.match(r"^\|?\s*[-:]+\s*\|", l.strip()) 
-                and not any(h in l for h in ["日期時間", "Timestamp", "類型", "Type"])
+                l for l in table_lines
+                if not re.match(r"^\|?\s*[-:]+\s*\|", l.strip())
+                and not (
+                    [c.strip() for c in l.strip().strip("|").split("|")][:1]
+                    in (["日期時間"], ["Timestamp"])
+                )
             ]
             if not data_rows:
                 report.issues.append(
@@ -515,13 +521,16 @@ class PlanVerifier:
 
 
         # 2. Header 元數據檢查 (FR-03)
-        is_handoff = os.path.basename(rel_file_name) == "handoff.md"
+        base_fname = os.path.basename(rel_file_name)
+        is_handoff = base_fname == "handoff.md"
+        is_seed_asset = base_fname.lower() in self.ORIGIN_SEED_FILES
         headers = self.parse_plan_header(lines)
         has_name = any(k in headers for k in [
             "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題"
         ])
         has_date = any(k in headers for k in [
-            "建立日期", "完成日期", "暫停時間", "date", "created_at", "日期", "time", "timestamp"
+            "建立日期", "完成日期", "暫停時間", "歸檔日期", "更新日期",
+            "date", "created_at", "updated_at", "archived_at", "日期", "time", "timestamp"
         ])
         has_status = any(k in headers for k in [
             "狀態", "status", "調研狀態", "research_status", "plan_status", "計畫狀態", "進度", "當前所在階段"
@@ -587,7 +596,7 @@ class PlanVerifier:
                         message=f"狀態值 '{status_val}' 非合法狀態（合法值：Draft, Discussing, Confirmed, In Progress, Passed, Completed 等）。 [Fix Hint: 請將 '> 狀態：' 更新為合法狀態枚舉值]",
                     )
                 )
-            elif status_val in ("completed", "concluded"):
+            elif not is_seed_asset and status_val in ("completed", "concluded"):
                 unchecked_lines = [
                     idx for idx, line in enumerate(non_code_lines, 1)
                     if re.search(r"^\s*-\s*\[\s*\]\s+", line)
@@ -603,7 +612,7 @@ class PlanVerifier:
                         )
                     )
 
-        if is_sub_plan and not has_parent:
+        if is_sub_plan and not is_seed_asset and not has_parent:
             report.issues.append(
                 PlanIssue(
                     severity=PlanSeverity.FAIL,

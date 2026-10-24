@@ -27,7 +27,9 @@ from agents_workflow.plans import (
     PlanFormatError,
     PlanIncompleteError,
     PlanDestinationExistsError,
+    PlanStatusResolver,
 )
+from agents_workflow.roadmap import RoadmapManager, TodoManager
 
 
 @require(Requirement.ENV)
@@ -544,4 +546,293 @@ class TestPlansToolchainInternal(YSCBTestCase):
         res_umb = archiver.archive_plan(umb_plan, force=False)
         self.assertTrue(res_umb["success"])
         self.mark_passed()
+
+    # =========================================================================
+    # sub_02: 雙層儲備 (Roadmap & TODO) 與 Seeded 白名單生命週期測試
+    # =========================================================================
+
+    @require(Requirement.LOGIC)
+    def test_todo_add_and_monotonic_id(self):
+        """FT-01 & ET-04: todo add 免讀盲寫追加與 > 最後分配編號：N 單調遞增防碰撞。"""
+        roadmap_dir = self.plans_dir / "roadmap"
+        mgr = TodoManager(roadmap_dir=roadmap_dir, plans_dir=self.plans_dir)
+
+        r1 = mgr.add_todo(title="清理 compiler 死代碼", scope="agents-workflow", note="來自 sub_02")
+        self.assertEqual(r1.todo_id, "TODO-01")
+
+        r2 = mgr.add_todo(title="補充 CLI 範例", scope="core", note="補充文檔")
+        self.assertEqual(r2.todo_id, "TODO-02")
+
+        # 檢查標頭 > 最後分配編號：2
+        content = mgr.todo_file.read_text(encoding="utf-8")
+        self.assertIn("> 最後分配編號：2", content)
+
+        # Pop 提取全部條目清空帳本後，再次 add_todo 必須從 TODO-03 開始，不可碰撞 TODO-01
+        pop_res = mgr.promote_todos(
+            todo_ids=["TODO-01", "TODO-02"],
+            slug="cleanup_batch",
+            model="Unknown",
+        )
+        self.assertTrue(pop_res["success"])
+        self.assertEqual(len(mgr.list_todos()), 0)
+
+        # 驗證 normalize_todo_id 正規化契約 ([P03:DR-01])
+        self.assertEqual(TodoManager.normalize_todo_id("1"), "TODO-01")
+        self.assertEqual(TodoManager.normalize_todo_id("todo-2"), "TODO-02")
+        self.assertEqual(TodoManager.normalize_todo_id("[TODO-03]"), "TODO-03")
+        self.assertIsNone(TodoManager.normalize_todo_id("invalid"))
+
+        r3 = mgr.add_todo(title="提取清空後之新條目", scope="global", note="驗證單調遞增")
+        self.assertEqual(r3.todo_id, "TODO-03")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_todo_list_and_scope_filter(self):
+        """FT-02 & ET-01: todo list 空帳本優雅返回與 --scope 過濾。"""
+        roadmap_dir = self.plans_dir / "roadmap_empty"
+        mgr = TodoManager(roadmap_dir=roadmap_dir, plans_dir=self.plans_dir)
+
+        # ET-01: 尚未建立 TODO.md 時不報錯且不寫檔
+        self.assertEqual(mgr.list_todos(), [])
+        self.assertIn("目前尚無活躍之輕量待辦項目", mgr.format_todo_table())
+        self.assertFalse(mgr.todo_file.exists())
+
+        mgr.add_todo(title="Item A", scope="agents-workflow", note="TechDebt")
+        mgr.add_todo(title="Item B", scope="knowledge-db", note="Polish")
+        mgr.add_todo(title="Item C", scope="agents-workflow", note="Idea")
+
+        aw_items = mgr.list_todos(scope_keyword="agents-workflow")
+        self.assertEqual(len(aw_items), 2)
+        polish_items = mgr.list_todos(scope_keyword="Polish")
+        self.assertEqual(len(polish_items), 1)
+        self.assertEqual(polish_items[0].todo_id, "TODO-02")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_todo_promote_batch_and_seeded_dir(self):
+        """FT-03, ET-02 & ET-03: todo promote 批次原子提取、ID/slug 防呆與 todo.md 種子生成。"""
+        roadmap_dir = self.plans_dir / "roadmap_batch"
+        mgr = TodoManager(roadmap_dir=roadmap_dir, plans_dir=self.plans_dir)
+        mgr.add_todo(title="Task 1", scope="core", note="TechDebt")
+        mgr.add_todo(title="Task 2", scope="core", note="Polish")
+        mgr.add_todo(title="Task 3", scope="core", note="Doc")
+
+        # ET-02: 包含不存在的 TODO-99 時強制阻斷且不修改原檔
+        bad_id_res = mgr.promote_todos(
+            todo_ids=["TODO-01", "TODO-99"],
+            slug="valid_slug",
+        )
+        self.assertFalse(bad_id_res["success"])
+        self.assertEqual(len(mgr.list_todos()), 3)
+
+        # ET-03: 非法 slug 強制阻斷
+        bad_slug_res = mgr.promote_todos(
+            todo_ids=["TODO-01"],
+            slug="Invalid-Slug!",
+        )
+        self.assertFalse(bad_slug_res["success"])
+        self.assertEqual(len(mgr.list_todos()), 3)
+
+        # FT-03: 正常打包提取 TODO-01 與 TODO-03
+        ok_res = mgr.promote_todos(
+            todo_ids=["TODO-01", "TODO-03"],
+            slug="core_cleanup_batch",
+            model="Unknown",
+        )
+        self.assertTrue(ok_res["success"])
+        remaining = mgr.list_todos()
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].todo_id, "TODO-02")
+
+        seed_dir = Path(ok_res["plan_dir"])
+        self.assertTrue((seed_dir / "todo.md").is_file())
+        self.assertTrue((seed_dir / "changelog.md").is_file())
+        todo_seed_text = (seed_dir / "todo.md").read_text(encoding="utf-8")
+        self.assertIn("TODO-01", todo_seed_text)
+        self.assertIn("TODO-03", todo_seed_text)
+        self.assertNotIn("TODO-02", todo_seed_text)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_roadmap_status_filter_and_exclude_todo(self):
+        """FT-04: RoadmapManager 自動排除 TODO.md 並支援 --status 過濾與擴充欄位解析。"""
+        roadmap_dir = self.plans_dir / "roadmap_filter"
+        roadmap_dir.mkdir(parents=True, exist_ok=True)
+
+        (roadmap_dir / "TODO.md").write_text("# 專案輕量待辦清單\n> 狀態：Active\n", encoding="utf-8")
+        (roadmap_dir / "topic_ready.md").write_text(
+            "# 路線圖 A\n\n"
+            "> 主題：路線圖 A\n"
+            "> 建立日期：2026-10-20\n"
+            "> 狀態：Ready\n"
+            "> 目標範疇：agents-workflow\n"
+            "> 前置解鎖條件：完成 sub_01\n"
+            "> 模型：Unknown\n\n"
+            "## 1. 問題陳述與根因量化 (Problem & Root Cause)\n"
+            "- **現況痛點**：需要自動晉升機制。\n",
+            encoding="utf-8",
+        )
+        (roadmap_dir / "topic_deferred.md").write_text(
+            "# 路線圖 B\n\n"
+            "> 主題：路線圖 B\n"
+            "> 建立日期：2026-10-21\n"
+            "> 狀態：Deferred\n"
+            "> 目標範疇：core\n"
+            "> 前置解鎖條件：無\n"
+            "> 模型：Unknown\n\n"
+            "## 1. 問題陳述與根因量化 (Problem & Root Cause)\n"
+            "- **現況痛點**：延後評估。\n",
+            encoding="utf-8",
+        )
+
+        mgr = RoadmapManager(roadmap_dir=roadmap_dir, plans_dir=self.plans_dir)
+        all_items = mgr.scan_roadmaps()
+        self.assertEqual(len(all_items), 2)
+        filenames = [it.filename for it in all_items]
+        self.assertNotIn("TODO.md", filenames)
+
+        ready_items = mgr.scan_roadmaps(status_filter="Ready")
+        self.assertEqual(len(ready_items), 1)
+        self.assertEqual(ready_items[0].filename, "topic_ready.md")
+        self.assertEqual(ready_items[0].scope, "agents-workflow")
+        self.assertEqual(ready_items[0].trigger, "完成 sub_01")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_roadmap_promote_physical_move_and_model_isolation(self):
+        """FT-05 & ET-05: roadmap promote 物理移轉 (Consume-on-Promote)、模型防回溯與防呆攔截。"""
+        roadmap_dir = self.plans_dir / "roadmap_promote_test"
+        roadmap_dir.mkdir(parents=True, exist_ok=True)
+
+        (roadmap_dir / "TODO.md").write_text("# 專案輕量待辦清單\n", encoding="utf-8")
+        src_roadmap = roadmap_dir / "future_arch.md"
+        src_roadmap.write_text(
+            "# 未來架構藍圖\n\n"
+            "> 主題：未來架構藍圖\n"
+            "> 建立日期：2026-09-01\n"
+            "> 狀態：Ready\n"
+            "> 目標範疇：agents-workflow\n"
+            "> 前置解鎖條件：無\n"
+            "> 模型：HistoricalOldModel-v1\n\n"
+            "## 1. 問題陳述與根因量化 (Problem & Root Cause)\n"
+            "- **現況痛點**：跨模組解耦。\n",
+            encoding="utf-8",
+        )
+
+        mgr = RoadmapManager(roadmap_dir=roadmap_dir, plans_dir=self.plans_dir)
+
+        # ET-05: 禁止對 TODO.md 或不存在的主題執行 roadmap promote
+        todo_err = mgr.promote_roadmap("TODO")
+        self.assertFalse(todo_err["success"])
+        missing_err = mgr.promote_roadmap("non_existent")
+        self.assertFalse(missing_err["success"])
+
+        # FT-05: 正常執行物理移轉，傳入當輪 --model "CurrentSessionModel"
+        res = mgr.promote_roadmap(
+            "future_arch",
+            model="CurrentSessionModel",
+        )
+        self.assertTrue(res["success"])
+        self.assertFalse(src_roadmap.exists())
+
+        plan_dir = Path(res["plan_dir"])
+        moved_roadmap = plan_dir / "roadmap.md"
+        companion_changelog = plan_dir / "changelog.md"
+        self.assertTrue(moved_roadmap.is_file())
+        self.assertTrue(companion_changelog.is_file())
+
+        # 驗證模型防回溯：roadmap.md 保留 HistoricalOldModel-v1，而 changelog.md 記載 CurrentSessionModel
+        self.assertIn("> 模型：HistoricalOldModel-v1", moved_roadmap.read_text(encoding="utf-8"))
+        cl_text = companion_changelog.read_text(encoding="utf-8")
+        self.assertIn("CurrentSessionModel", cl_text)
+        self.assertNotIn("HistoricalOldModel-v1", cl_text)
+
+        # 測試模糊匹配多個檔案時之阻斷保護 (EC-04)
+        (roadmap_dir / "ambig_one.md").write_text("# 模糊一\n> 主題：模糊一\n> 歸檔日期：2026-09-01\n> 狀態：Backlog\n", encoding="utf-8")
+        (roadmap_dir / "ambig_two.md").write_text("# 模糊二\n> 主題：模糊二\n> 歸檔日期：2026-09-02\n> 狀態：Backlog\n", encoding="utf-8")
+        ambig_err = mgr.promote_roadmap("ambig")
+        self.assertFalse(ambig_err["success"])
+        self.assertIn("同時匹配多個路線圖檔案", ambig_err["error"])
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_seeded_plan_status_and_verifier_whitelist(self):
+        """FT-06 & ET-06: ORIGIN_SEED_FILES 在 Seeded 目錄與 sub_XX 子計畫中之狀態識別與驗證器豁免。"""
+        roadmap_dir = self.plans_dir / "roadmap_seed_verify"
+        roadmap_dir.mkdir(parents=True, exist_ok=True)
+        (roadmap_dir / "sub_seed_topic.md").write_text(
+            "# 子計畫路線圖種子\n\n"
+            "> 主題：子計畫路線圖種子\n"
+            "> 建立日期：2026-10-01\n"
+            "> 狀態：Backlog\n"
+            "> 目標範疇：agents-workflow\n"
+            "> 前置解鎖條件：無\n"
+            "> 模型：Unknown\n\n"
+            "## 1. 問題陳述與根因量化 (Problem & Root Cause)\n"
+            "- [ ] 演進方向參考勾選框\n",
+            encoding="utf-8",
+        )
+
+        # 建立主計畫與 sub_01 子計畫目錄，並將 roadmap promote 移入 sub_01（不預填 sub_01 至 umbrella_overview.md，驗證自動補登）
+        umb_dir = self.plans_dir / "2026_10_24_1000_umb_seed_test"
+        sub_dir = umb_dir / "sub_01_seeded_child"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        (umb_dir / "umbrella_overview.md").write_text(
+            "# 主計畫總覽\n\n"
+            "> 計畫名稱：主計畫\n> 建立日期：2026-10-24\n> 狀態：In Progress\n> 模型：Unknown\n",
+            encoding="utf-8",
+        )
+        (umb_dir / "changelog.md").write_text(
+            "# Changelog\n\n| 日期時間 | 類型 | 摘要 | 模型 |\n| :--- | :---: | :--- | :--- |\n"
+            "| 2026-10-24 10:00 | `INIT` | 初始化主計畫 | `Unknown` |\n",
+            encoding="utf-8",
+        )
+
+        mgr = RoadmapManager(roadmap_dir=roadmap_dir, plans_dir=self.plans_dir)
+        prom_res = mgr.promote_roadmap(
+            "sub_seed_topic",
+            model="Unknown",
+            target_plan="2026_10_24_1000_umb_seed_test/sub_01_seeded_child",
+        )
+        self.assertTrue(prom_res["success"])
+
+        # 1. 驗證 PlanStatusResolver 將尚未建立 P00 的 sub_01 識別為 Seeded 模式
+        nav = PlanStatusResolver.resolve_next_action(sub_dir)
+        self.assertEqual(nav["mode"], "Seeded")
+        self.assertIn("Seeded", nav["current_phase"])
+        self.assertIn("roadmap.md", nav["next_action_hint"])
+
+        # 2. 驗證 PlanScanner 將 sub_01 識別為 Seeded / Seeded (Pending Plan)
+        scanner = PlanScanner(plans_dir=self.plans_dir)
+        track_type, status_str = scanner.get_plan_info(sub_dir)
+        self.assertEqual(track_type, "Seeded")
+        self.assertEqual(status_str, "Seeded (Pending Plan)")
+
+        # 3. 驗證 PlanVerifier 對 sub_01 內之 roadmap.md 豁免 > 所屬主計畫：與動態標題比對，100% PASS
+        verifier = PlanVerifier(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            templates_dir=self.templates_dir,
+        )
+        rep = verifier.verify_plan("2026_10_24_1000_umb_seed_test")
+        self.assertEqual(rep.status, PlanSeverity.PASS, f"Unexpected issues: {rep.issues}")
+
+        # 4. 驗證建立 P00_discuss.md 後，自動由 Seeded 轉入 Phase 0 主體進度 (FR-06)
+        (sub_dir / "P00_discuss.md").write_text(
+            "# 需求討論說明書\n\n"
+            "> 功能名稱：sub_01_seeded_child\n"
+            "> 所屬主計畫：2026_10_24_1000_umb_seed_test\n"
+            "> 建立日期：2026-10-24\n"
+            "> 狀態：Confirmed\n"
+            "> 模型：Unknown\n",
+            encoding="utf-8",
+        )
+        nav_after_p00 = PlanStatusResolver.resolve_next_action(sub_dir)
+        self.assertEqual(nav_after_p00["mode"], "Phase 0")
+        self.assertEqual(nav_after_p00["current_phase"], "P00")
+        track_after, status_after = scanner.get_plan_info(sub_dir)
+        self.assertEqual(track_after, "Phase 0")
+        self.assertEqual(status_after, "P00 Confirmed")
+        self.mark_passed()
+
 

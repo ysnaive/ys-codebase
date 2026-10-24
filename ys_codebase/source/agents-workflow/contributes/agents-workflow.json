@@ -69,7 +69,13 @@
       "type": "skill",
       "name": "roadmap",
       "source": "module://agents-workflow/assets/skills/roadmap",
-      "description": "掃描 `__${workflow.roadmap://}__` 長期技術儲備庫並比對專案現況成熟度，產出高契合度立項推薦卡，或將新技術提案寫入儲備庫檔案 ({topic}.md)。觸發情境：輸入 /roadmap 或 /Roadmap、詢問「接下來有哪些長期規劃可做」、或將調研成果與新構想轉入長期技術儲備 (manage/recommend roadmap items)。排除情境：直接開立需求已明確的單一短期開發任務（改用 new-plan）、接續進行中計畫（改用 continue）。"
+      "description": "掃描 `__${workflow.roadmap://}__` 宏觀技術儲備庫並比對專案現況成熟度，產出高契合度立項推薦卡、將跨模組新技術提案寫入儲備庫檔案 ({topic}.md)，或透過 roadmap promote 執行儲備消耗立項 (Consume-on-Promote)。觸發情境：輸入 /roadmap 或 /Roadmap、詢問「接下來有哪些長期規劃可做」、將宏觀調研成果轉入技術儲備或晉升路線圖立項 (manage/recommend/promote roadmap items)。排除情境：單一檔案微調或局部技術債速記（改用 todo）、直接開立需求已明確的單一短期開發任務（改用 new-plan）、接續進行中計畫（改用 continue）。"
+    },
+    {
+      "type": "skill",
+      "name": "todo",
+      "source": "module://agents-workflow/assets/skills/todo",
+      "description": "管理 `__${workflow.roadmap://TODO.md}__` 輕量級待辦與微觀技術債帳本，執行單行免讀盲寫追加 (todo add)、待辦清單檢索過濾 (todo list) 與單筆/多筆打包立項消耗 (todo promote)。觸發情境：輸入 /todo 或 /Todo、開發途中順手記錄微觀技術債/打磨點子/文檔微調、或檢視並打包提取待辦條目轉入 Fast Track / Revision / Full Track 計畫。排除情境：跨模組架構重構或需多階段推進之長期藍圖（改用 roadmap）、直接開立已明確之開發計畫（改用 new-plan）。"
     },
     {
       "type": "skill",
@@ -86,6 +92,11 @@
       "type": "template",
       "source": "module://agents-workflow/assets/templates/roadmap.md",
       "description": "Roadmap 技術路線圖模板"
+    },
+    {
+      "type": "template",
+      "source": "module://agents-workflow/assets/templates/todo.md",
+      "description": "TODO 打包立項種子清單模板"
     },
     {
       "type": "template",
