@@ -18,7 +18,6 @@ _server_cli = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_server_cli)
 
 _resolve_enable_console = _server_cli._resolve_enable_console
-_handle_start = _server_cli._handle_start
 
 from dev.testing.case import YSCBTestCase
 from server.config import ServerConfig, _parse_bool, DEFAULT_ENABLE_CONSOLE, DEFAULT_IDLE_TIMEOUT_SEC
@@ -106,20 +105,41 @@ class TestServerConfig(YSCBTestCase):
 
         self.mark_passed()
 
-    def test_cli_mutually_exclusive_args(self):
-        """EC-01: 驗證同時傳入 --console 與 --daemon 觸發互斥例外"""
-        with self.assertRaises(SystemExit):
-            # argparse parse_args 於衝突時拋出 SystemExit(2)
-            _handle_start(["--console", "--daemon"], "/dummy/root")
+    def test_cli_and_http_bad_request_guard(self):
+        """EC-01, EC-05: 驗證無效負數 TTL 阻斷啟動，以及當 Server 停用時拒絕啟動"""
+        from core.commands import CmdBags, CmdOption
+
+        # 1. 負數 TTL 阻斷
+        bags_neg = CmdBags(raw_cmd="server start", command="start", args=[], options={"ttl": CmdOption("ttl", "-10")})
+        res_neg = _server_cli.start(bags_neg)
+        self.assertEqual(res_neg, 1)
+
+        # 2. Server 停用時阻斷
+        with patch.object(_server_cli, "_read_daemon_state", return_value=None):
+            with patch("server.config.ServerConfig.load", return_value=ServerConfig(enable=False)):
+                bags = CmdBags(raw_cmd="server start", command="start", args=[], options={})
+                code = _server_cli.start(bags)
+                self.assertEqual(code, 1)
 
         self.mark_passed()
 
-    def test_server_disabled_blocks_start(self):
-        """FT-06: 驗證當 config 中 enable=False 時，_handle_start 拒絕啟動並返回 1"""
+    def test_server_reload_syncs_config_and_events_declared(self):
+        """FT-05: 驗證 contributes/core.json 聲明 events 且 CLI 四大指令合約健全"""
+        from core import uri
+        from core.commands import CmdBags
+
+        # 1. 驗證 contributes/core.json 聲明 events
+        contrib = uri.read_json("module.source://server/contributes/core.json")
+        events_list = contrib.get("events", [])
+        declared_events = {k for item in events_list if isinstance(item, dict) for k in item}
+        self.assertIn("server_worker_warming", declared_events)
+        self.assertIn("server_worker_ready", declared_events)
+
+        # 2. 驗證 stop / status / reload 在未運行時的優雅處理
         with patch.object(_server_cli, "_read_daemon_state", return_value=None):
-            with patch("server.config.ServerConfig.load", return_value=ServerConfig(enable=False)):
-                code = _handle_start([], "/dummy/root")
-                self.assertEqual(code, 1)
+            self.assertEqual(_server_cli.stop(CmdBags(raw_cmd="server stop", command="stop")), 0)
+            self.assertEqual(_server_cli.status(CmdBags(raw_cmd="server status", command="status")), 0)
+            self.assertEqual(_server_cli.reload(CmdBags(raw_cmd="server reload", command="reload")), 1)
 
         self.mark_passed()
 

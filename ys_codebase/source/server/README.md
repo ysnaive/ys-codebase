@@ -60,14 +60,24 @@ graph TD
 ## 2. 核心機制說明 (Core Mechanisms)
 
 ### 2.1 控制平面與執行平面分離 (Master vs Worker)
-- **Master 進程**：純控制平面，負責啟動參數解析、進程樹維護、`_dispatch_lock` 序列化 IPC、Worker `stderr` 持續排空與檔案變更重啟分流。Master 本身絕不直接執行重型業務任務或加載重量級領域函式庫。
-- **WarmWorker 子進程**：預熱執行環境，持有 `ServiceManager` 實例，負責實際執行由各模組註冊的長駐背景服務，並支援極速記憶體內熱派發（含 `Worker._module_cache` 與 `worker_warming` 廣播）。
+- **Master 進程**：純控制平面，負責啟動參數解析、進程樹維護、`_dispatch_lock` 序列化 IPC、Worker `stderr` 持續排空、兩階段優雅停機（NDJSON Exit 握手與 OS 進程樹收割）與檔案變更重啟分流。Master 本身絕不直接執行重型業務任務或加載重量級領域函式庫。
+- **WarmWorker 子進程**：預熱執行環境，持有獨立私有 `_ipc_stdout` 管道與 `ipc_lock`（全域 `sys.stdout` 重導向至 `stderr` 防止雜訊污染），持有 `ServiceManager` 實例，負責實際執行由各模組註冊的長駐背景服務，並支援極速記憶體內熱派發（含 `Worker._module_cache` 與 `worker_warming` 廣播）。
 
 ### 2.2 背景服務託管架構 (ServiceManager)
 各模組透過在自身 `contributes/server.json`（或 `contribute.json`）中宣告 `services` 節點，由 `WarmWorker` 自動發現並託管生命週期：
 ```json
 {
   "services": [
+    {
+      "name": "knowledge-db-watcher",
+      "worker_class": "knowledge_db.service:KnowledgeDBServiceWorker",
+      "description": "知識庫即時檔案變更監聽與增量熱自癒服務",
+      "auto_start": true
+    }
+  ]
+}
+```
+`ServiceManager` 支援動態注入 `.modules/<provider>` 至 `sys.path`，支援連字號模組名稱正規化與 `code.class://` 前綴相容，並嚴格杜絕 `source/` 源碼路徑注入。
     {
       "id": "knowledge-db-worker",
       "entry": "code.class://knowledge-db/service:KnowledgeDBServiceWorker",

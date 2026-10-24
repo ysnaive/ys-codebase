@@ -81,5 +81,13 @@
         }
       }
     }
-  }
+  },
+  "events": [
+    {
+      "server_worker_warming": "當常駐 Warm Worker 子進程啟動並開始預熱環境時觸發"
+    },
+    {
+      "server_worker_ready": "當常駐 Warm Worker 完成預熱與背景服務初始化時觸發"
+    }
+  ]
 }

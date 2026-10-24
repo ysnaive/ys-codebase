@@ -14,7 +14,7 @@ related_docs:
   - "./daemon_architecture.md"
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-24"
 ---
 
 # Server 模組工程妥協與防坑邊界 (DESIGN_NOTES.md)
@@ -27,6 +27,9 @@ last_updated: "2026-10-15"
 | **[DN-02]** (原 DN-10) | Windows Job Object 沙盒收割防禦與 `IsProcessInJob` 權限探針自動降級 | `core/platform/process.py`, `core/commands/dispatcher.py` | High |
 | **[DN-03]** (原 DN-11) | Worker `proc.stderr` OS 64KB Pipe 阻塞死鎖排空、IPC `_dispatch_lock` 與 FD 管道清理 | `server/master.py`, `server/worker.py` | High |
 | **[DN-04]** (原 DN-12) | CLI 啟動橫幅與停機報告之自動化契約錨點字串保留 | `server/master.py`, `scripts/cli.py` | Medium |
+| **[DN-05]** | Worker 私有 `_ipc_stdout` 管道隔離與全域 `stdout` 重導向防污染 | `server/worker.py` | High |
+| **[DN-06]** | Master 兩階段平滑關閉協定 (NDJSON Exit Handshake + Process Tree Harvest) | `server/master.py` | High |
+| **[DN-07]** | Server 執行期零 `source/` 嚴格沙盒路徑隔離與動態 Provider 注入 | `server/master.py`, `server/service.py` | High |
 
 ---
 
@@ -78,3 +81,35 @@ last_updated: "2026-10-15"
 
 > [!CAUTION]
 > 調整或美化 `format_startup_banner()` 與 `format_shutdown_summary()` 的排版格式時，**必須原字保留** `[Server] Daemon successfully started!` 與 `[Server] Daemon stopped gracefully.` 兩個精確子字串，否則將直接破壞既有 CLI 整合測試斷言與自動化腳本的狀態判讀契約。
+
+---
+
+### [DN-05] Worker 私有 `_ipc_stdout` 管道隔離與全域 `stdout` 重導向防污染
+- **背景與陷阱**：
+  在 Worker 進程執行任務期間，若業務模組或第三方函式庫內部存在未受控的 `print()` 或直接寫入 `sys.stdout` 的日誌，非結構化的純文字將直接竄入 NDJSON IPC 傳輸管道，導致 Master 在 `json.loads()` 時拋出 `JSONDecodeError`，損毀任務傳輸協定。
+- **工程決策**：
+  1. Worker 啟動時建立獨立私有的 `_ipc_stdout` 控制代碼（直接綁定原生底層 `sys.stdout.buffer`），所有 IPC 結構化封包均透過私有代碼序列化發送。
+  2. 將全域 `sys.stdout` 重導向至 `sys.stderr`（由 Master 專屬 daemon thread 排空並記入日誌檔），並於 `finally` 區塊恢復。
+  3. 引入 `ipc_lock` 互斥鎖，保證多執行緒發送封包時 NDJSON 行結構不交錯。
+
+> [!CAUTION]
+> 嚴禁將 `_ipc_stdout` 替換為全域 `sys.stdout`，亦嚴禁移除 `sys.stdout = sys.stderr` 重導向與 `ipc_lock` 保護，否則業務模組的 stdout 雜訊將直接摧毀 IPC 通訊。
+
+---
+
+### [DN-06] Master 兩階段平滑關閉協定 (NDJSON Exit Handshake + Process Tree Harvest)
+- **背景與陷阱**：
+  若 Master 終止 Worker 時直接調用 OS 層級之 `kill_process_tree` 或 `SIGKILL`，Worker 託管的背景服務（如檔案監聽、快取序列化）將無機會執行 `stop()` 清理，造成 lockfile 殘留或資料損毀。
+- **工程決策**：
+  實作兩階段優雅停機協定：
+  - **第一階段**：透過 Stdin 管道向 Worker 發送 `{"action": "exit"}\n` 應用層握手，並等待至多 1.5 秒讓 Worker 依序呼叫各背景服務之 `stop()`。
+  - **第二階段**：若超時未退出或管道破裂，自動降級為 `kill_process_tree` 強制收割進程樹，並徹底關閉所有 pipe。
+
+---
+
+### [DN-07] Server 執行期零 `source/` 嚴格沙盒路徑隔離與動態 Provider 注入
+- **背景與陷阱**：
+  在開發環境中，若 Master 或 Worker 的 `sys.path` 滲入 `source/` 源碼路徑，會引發「開發源碼覆蓋已發布模組」、「熱重載失效」及「沙盒測試自欺」等嚴重視線污染與架構債。
+- **工程決策**：
+  1. Master 在生成 Worker 子進程時，`PYTHONPATH` 僅允許注入根目錄、`.modules` 及私有 `.venv`，嚴格剔除所有 `source/` 目錄。
+  2. `ServiceManager` 載入第三方服務宣告時，動態將 `.modules/<provider>` 注入 `sys.path`，並相容 `code.class://` 前綴與連字號轉底線（優先直接匯入），確保生態系模組正確隔離載入。

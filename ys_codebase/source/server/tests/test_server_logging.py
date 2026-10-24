@@ -221,7 +221,11 @@ class TestServerLogging(YSCBTestCase):
         self.mark_passed()
 
     def test_worker_ipc_logging_stream(self):
-        """FT-08: Master intercepts IPC log packets from Worker stream without leaking to task chunks."""
+        """FT-06, FT-08: Master intercepts IPC log packets from Worker stream without leaking to task chunks via real dispatch_task."""
+        import json
+        import io
+        from unittest.mock import MagicMock
+
         sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=0.0, enable_watcher=False)
         sup.logger.recover_and_open()
 
@@ -229,17 +233,24 @@ class TestServerLogging(YSCBTestCase):
         def mock_chunk_emitter(pkt):
             emitted_chunks.append(pkt)
 
-        # Simulate receiving packets in dispatch stream
-        log_packet = {"type": "log", "level": "INFO", "component": "worker", "msg": "Worker pre_warm done"}
-        task_chunk = {"type": "stdout", "data": "Hello from CLI\n"}
-        task_finish = {"type": "task_finish", "exit_code": 0, "duration_ms": 15.0}
+        # Construct real NDJSON packets simulating Worker stdout stream
+        log_packet = json.dumps({"type": "log", "level": "INFO", "component": "worker", "msg": "Worker pre_warm done"}) + "\n"
+        task_chunk = json.dumps({"type": "stdout", "data": "Hello from CLI\n"}) + "\n"
+        task_finish = json.dumps({"type": "task_finish", "exit_code": 0, "duration_ms": 15.0}) + "\n"
+        stream_bytes = (log_packet + task_chunk + task_finish).encode("utf-8")
 
-        # Master stream parsing simulation
-        for pkt in [log_packet, task_chunk, task_finish]:
-            if pkt.get("type") == "log":
-                sup.logger.log(pkt.get("level", "INFO"), pkt.get("msg", ""), component=pkt.get("component", "worker"))
-            else:
-                mock_chunk_emitter(pkt)
+        mock_proc = MagicMock()
+        mock_proc.pid = 99999
+        mock_proc.stdin = io.BytesIO()
+        mock_proc.stdout = io.BytesIO(stream_bytes)
+        mock_proc.poll.return_value = None
+
+        sup._worker_proc = mock_proc
+
+        with unittest.mock.patch("server.master.is_process_alive", return_value=True):
+            # Real execution of sup.dispatch_task()
+            ret = sup.dispatch_task({"module": "dummy_mod", "args": ["arg1"]}, mock_chunk_emitter)
+            self.assertEqual(ret, 0)
 
         # Verify task chunk emitter did NOT receive log packet
         self.assertEqual(len(emitted_chunks), 2)

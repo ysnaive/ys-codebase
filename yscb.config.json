@@ -9,12 +9,12 @@
     },
     "dev": {
       "version": "1.1.0.build",
-      "installed_at": "2026-10-24 10:54:17",
+      "installed_at": "2026-10-24 12:01:38",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
       "version": "1.1.0.build",
-      "installed_at": "2026-10-24 05:35:45",
+      "installed_at": "2026-10-24 11:13:41",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
@@ -23,8 +23,8 @@
       "provider": "./ys_codebase/release"
     },
     "server": {
-      "version": "1.0.0.4",
-      "installed_at": "2026-10-15 12:54:33",
+      "version": "1.0.0.build",
+      "installed_at": "2026-10-24 12:29:17",
       "provider": "./ys_codebase/release"
     }
   }
