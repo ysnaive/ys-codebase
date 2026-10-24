@@ -25,10 +25,10 @@ flowchart TD
 
 ### 步驟 1：SOP Review 三層文檔交付對齊 (Documentation Delivery Audit 與條件式 Subagent 複審)
 - [!] **文檔更新前強制觸發技能**：在執行三層文檔核驗與更新前，**強制必須先觸發並精讀 [`documentation`](`__#{module://agents-workflow/assets/skills/documentation/SKILL.md}__`) 技能手冊**，嚴格對齊專案知識庫 7 大知識維度與作者指引。
-- [!] **支柱三：條件式唯讀 Fresh-Eyes 冷眼複審協定 (Pillar 3 Conditional Review Gate)**：
+- [!] **支柱三：條件式唯讀 Fresh-Eyes 冷眼盲審複審協定 (Pillar 3 Conditional Blind Review Gate)**：
   - **條件判定**：
-    - **情況 A（常規審閱，免派子代理）**：若在 Phase 06 手動/UX 驗證過程中**完全未改動任何原始碼與測試代碼**（因 Phase 06 請求 UX 前已完成第一輪冷眼審查），則 Phase 07 **無需重複派發 Subagent**，直接由主 Agent 執行常規三層文檔、註解對齊與自檢核對，極致節省 Token 與延遲。
-    - **情況 B（強制派發複審）**：若在 Phase 06 手動/UX 驗證過程中有**新增、修改原始碼、修復缺陷或更動核心邏輯**，則於步驟 1 **強制必須再次派發獨立 Reviewer Subagent 進行二度冷眼複審**（比照 Phase 06 審查契約，確認 UX 過程中的即時修改未引入淺層敷衍或破壞架構），通過後方可推進。
+    - **情況 A（常規審閱，免派子代理）**：若在 Phase 06 手動/UX 驗證過程中**完全未改動任何原始碼與測試代碼**（因 Phase 06 請求 UX 前已完成第一輪冷眼盲審），則 Phase 07 **無需重複派發 Subagent**，直接由主 Agent 執行常規三層文檔、註解對齊與自檢核對，極致節省 Token 與延遲。
+    - **情況 B（強制派發複審）**：若在 Phase 06 手動/UX 驗證過程中有**新增、修改原始碼、修復缺陷或更動核心邏輯**，則於步驟 1 **強制必須再次派發獨立 Reviewer Subagent 進行二度冷眼盲審**（嚴格遵守 Phase 06 之「僅提供計畫路徑由子代理探索，不劇透實作內容」與「告知子代理嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查」契約，確認 UX 過程中的即時修改未引入淺層敷衍或破壞架構），通過後方可推進。
 - [ ] **宏觀發布日誌**：專案根目錄 [`CHANGELOG.md`](`__#{project://CHANGELOG.md}__`) 最上方預擬或追加本次高階變更摘要。
 - [ ] **中觀模組與專題手冊 (優先更新載體，嚴防 DN 膨脹)**：
   - **優先更新載體**：更新文檔時應優先從 `__${workflow.docs://}__/<Category>/README.md` 模組手冊或專題手冊 (`__${workflow.docs://}__/<Category>/[topic].md`) 下手更新架構、流程與功能資訊，嚴禁在 DN 一直增量！

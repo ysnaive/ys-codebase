@@ -34,17 +34,17 @@ Phase 06 執行檢核表：
    - 在 `P06_test_plan.md` 之「測試執行紀錄表」如實填寫執行狀態（`Passed` / `Failed`）、執行時間與關鍵日誌摘要。
 3. **部署/構建後免重複測試鐵律**：
    - 通過測試並完成本地部署或物化同步後，**嚴禁無意義重複調用相同測試套件跑測**。
-4. **Subagent 支柱二與支柱三協同守門**：
-   - 當處於 `/auto` 模式或大型多任務計畫執行 Phase 06 測試驗證時，若由支柱二 Subagent 執行測試驗證，必須遵守「二振失敗熔斷（2-Strike Limit：連續 2 次修復失敗立即回傳 `STATUS: MAJOR_BLOCKER` 交還主視窗轉入 `/discuss`）」與「Single-Writer 鐵律（Subagent 嚴禁修改 `P06_test_plan.md` 或 `plans/` 下任何檔案，僅回傳 5 行結構化測試結果由主視窗回填）」。
-   - **支柱三：唯讀 Fresh-Eyes 冷眼審查協定左移 (Pillar 3 Pre-UX Review Delegation)**：
-     - **審查左移時機**：在完成自動化跑測、**即將向開發者提出手動 / UX 測試驗證請求前**，強制派發無偏誤的 Reviewer Subagent 進行客觀審查，打破主視窗近因確認偏誤（球員兼裁判）。無子代理環境自動降級為由主視窗內聯冷靜自檢。
-     - **Untracked 新檔審查防護**：Reviewer 先讀取 `P04_implementation_plan.md` 變更清單，搭配 `git status --short` 與 `git diff HEAD`，對未加入 index 之 `Untracked (??)` 新建檔案直接以檔案讀取工具檢視全文，杜絕漏審新建檔案。
-     - **防吹毛求疵三類硬性審查契約**：Reviewer 僅允許回報違反下列三類硬性契約之具體缺失：
-       1. 違反 `AGENTS.md` 核心原則 3 之淺層敷衍修補（如空白 `except` 吞錯誤、無意義 mock、放寬斷言）或違反 `testing-sop` 六大測試鐵律（如新建計畫名碎片測試檔、空殼斷言、歷史墓碑）；
-       2. `P01` 功能/邊界需求或 `P03` 介面契約未落實之遺漏；
-       3. 程式碼 Docstring 或架構契約遺漏。
-       *嚴禁回報主觀命名或排版微調；若無上述硬性缺失，強制直接回傳 `REVIEW_STATUS: PASSED`。*
-     - **UX 請求守門**：必須在 Subagent 審查通過（`REVIEW_STATUS: PASSED`）或主視窗修正缺失後，方可向開發者呈遞 UX 驗證請求，確保代碼架構與測試在人工驗收前已 100% 健全，杜絕事後返工。
+4. **支柱三：唯讀 Fresh-Eyes 冷眼盲審協定左移 (Pillar 3 Pre-UX Blind Review Delegation)**：
+   - **審查左移時機**：在完成自動化跑測、**即將向開發者提出手動 / UX 測試驗證請求前**，強制派發無偏誤的 Reviewer Subagent 進行客觀審查，打破主視窗近因確認偏誤（球員兼裁判）。無子代理環境自動降級為由主視窗內聯冷靜自檢。
+   - **零劇透盲審傳址鐵律 (Zero-Spoiler Blind Pass-by-Reference)**：**不應告知子代理本次計畫實作內容，僅可提供計畫路徑由子代理進行探索**。主視窗派發提示詞時，嚴禁摘要、提示或劇透已修改之檔案清單與實作細節，避免引發提示詞錨定偏誤（Confirmation Bias）。
+   - **純靜態唯讀審查禁令 (Static Read-Only Inspection Only)**：**應明確告知子代理嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查**（嚴禁在子代理內重複執行測試指令、建置部署或啟動任何運行進程），且嚴守 Single-Writer 鐵律禁碰 `plans/` 下任何檔案。
+   - **Untracked 新檔自主探索防護**：Reviewer 透過計畫路徑自行讀取 `P01`/`P03`/`P04` 規格文件，搭配版本控制狀態（如 `git status --short` 與 `git diff HEAD`），對未加入 index 之 `Untracked (??)` 新建檔案直接以唯讀工具檢視全文，杜絕漏審新建檔案。
+   - **防吹毛求疵三類硬性審查契約**：Reviewer 僅允許回報違反下列三類硬性契約之具體缺失：
+     1. 違反 `AGENTS.md` 核心原則 3 之淺層敷衍修補（如空白 `except` 吞錯誤、無意義 mock、放寬斷言）或違反 `testing-sop` 六大測試鐵律（如新建計畫名碎片測試檔、空殼斷言、歷史墓碑）；
+     2. `P01` 功能/邊界需求或 `P03` 介面契約未落實之遺漏；
+     3. 程式碼 Docstring 或架構契約遺漏。
+     *嚴禁回報主觀命名或排版微調；若無上述硬性缺失，強制直接回傳 `REVIEW_STATUS: PASSED`。*
+   - **UX 請求守門**：必須在 Subagent 審查通過（`REVIEW_STATUS: PASSED`）或主視窗修正缺失後，方可向開發者呈遞 UX 驗證請求，確保代碼架構與測試在人工驗收前已 100% 健全，杜絕事後返工。
 
 ---
 
