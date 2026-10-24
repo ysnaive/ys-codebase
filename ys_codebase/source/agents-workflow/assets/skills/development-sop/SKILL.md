@@ -27,6 +27,7 @@ description: 管理 `__${project://plans/}__` 開發計畫全生命週期 (SOP P
   - **專題技術調研** -> [`research`](`__#{module://agents-workflow/assets/skills/research/SKILL.md}__`)
   - **長期技術儲備盤點與收錄** -> [`roadmap`](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`)
   - **輕量待辦與微觀技術債速記 (`TODO.md`)** -> [`todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`)
+  - **自動化測試建置、Phase 06 回歸守門與測試集純化** -> [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`)
 
 ---
 

@@ -46,13 +46,18 @@ description: 針對已確認需求之計畫自動連續執行規格產出、代�
 1. 檢視 `__${project://plans}__` 定位進行中之計畫。
 2. 檢查當前階段（若處於 Phase 0 未 Confirmed 或 Fast Track，提示不適用並中斷；若 P00 處於 Confirmed 則直接自 Phase 1 啟動連續推進）。
 
-### 步驟 2：連續推進閉環 (Phase 01 -> 05)
+### 步驟 2：連續推進閉環 (Phase 01 -> 05，含 Subagent 支柱二委派協定)
 從當前斷點依序連續產出並定稿各階段產物，跳過中間等待點：
 - **Phase 1**：[`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)
 - **Phase 2**：[`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)
 - **Phase 3**：[`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)
-- **Phase 4**：[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`)、一次建立並定稿 [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) (Confirmed)
+- **Phase 4**：[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`)、一次建立並定稿 [`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) (Confirmed，強制連鎖觸發 `testing-sop`)
 - **Phase 5**：[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)，編碼實作與單元測試
+  - **[!] 支柱二：實作隔離委派協定 (Pillar 2 Delegation)**：
+    - **門檻判定**：處於 `/auto` 模式進入 Phase 05/06，或任務組 $\ge 3$ 個時，依高內聚任務組**強制每次僅序列派發 1 個 Subagent**（嚴禁平行改碼；`Fast Track`、`Revision` 或 $\le 2$ 個簡單任務維持主視窗直行；若運行環境不支援子代理則自動降級為主視窗內聯執行）。
+    - **檔案路徑傳址**：主視窗傳遞 `P03/P04/P05` 路徑指針與必讀 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`)。
+    - **二振失敗熔斷（2-Strike Limit）**：Subagent 跑測修復最多 2 次，失敗強制回傳 `STATUS: MAJOR_BLOCKER (Two-Strike Test Failure)` 轉入 `/discuss`。
+    - **Single-Writer 鐵律**：Subagent 嚴禁觸碰 `plans/`（且嚴守單層星型拓撲），僅回傳 5 行結構化狀態代碼（`STATUS: <COMPLETED | MINOR_DEVIATION | MAJOR_BLOCKER | CRITICAL_BLOCKER>`、`TASK`、`MODIFIED_FILES`、`TEST_OUTCOME`、`DEVIATION_OR_BLOCKER_NOTE`），主視窗統一寫入 `P05_task.md` 與 `changelog.md`。
 - 階段推進同步記錄至 [`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)。
 
 ### 步驟 3：Phase 6 自動化測試

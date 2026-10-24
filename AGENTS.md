@@ -37,6 +37,7 @@
 | **開立/推進計畫 / 代碼實作 / plans/ 產物維護**<br/>*(調用檔案編輯寫入工具前；[!] 模板唯一來源請查閱 [`development-sop`](.agents/skills/development-sop/SKILL.md) 指針，嚴禁翻讀歷史封存；生命週期工作流（開立 / 接續 / 暫停 / 連續推進 / 遇阻歸因）由 `development-sop` 分流至對應技能)* | `development-sop` |
 | **執行任何 CLI 命令列指令**<br/>*(調用各環境之終端機/命令列執行工具時)* | `yscb-cli-guide` |
 | **編寫代碼註解 / 撰寫或維護專案文檔 / Phase 7 (P07 / FP-03) 三層文檔對齊**<br/>*(撰寫 Docstring、維護 docs/、更新 README 或結案審查前)* | `documentation` |
+| **規劃或撰寫自動化測試 / 執行 Phase 6 (P06 / FP-02) 測試驗證與回歸 / 既有測試集體檢純化**<br/>*(定稿 P06、撰寫或修改測試代碼、執行單元/邊界/回歸測試、或審查純化 tests/ 目錄前)* | `testing-sop` |
 | **生態系模組開發 / 多模組熱調試 (Dogfooding)**<br/>*(修改 project://source/ 源碼、沙盒測試、@build 安裝或發布前)* | `yscb-module-dev` |
 | **代碼檢索 / 閱讀探索 / 符號查簽名 / 架構調研 / 調用圖譜 / 影響面評估**<br/>*(調用各環境之檔案讀取/檢視或文字搜尋/走訪工具進行探索前；[!] 探索非明確知悉路徑之文檔強制以 search --ftype=md 為唯一第一反射取得精確路徑，嚴禁未檢索直接逐檔翻讀或盲猜讀取)* | `knowledge-db-search` |
 

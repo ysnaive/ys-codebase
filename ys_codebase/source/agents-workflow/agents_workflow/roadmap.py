@@ -365,13 +365,26 @@ class RoadmapManager:
             target_dir.mkdir(parents=True, exist_ok=True)
 
         dest_roadmap = target_dir / "roadmap.md"
-        shutil.move(str(matched.path), str(dest_roadmap))
+        is_appended = False
+        if dest_roadmap.exists():
+            # 若目標目錄已存在 roadmap.md (多路線圖合流子計畫情境)，無損追加合併內容
+            existing_text = dest_roadmap.read_text(encoding="utf-8", errors="replace").rstrip()
+            incoming_text = matched.path.read_text(encoding="utf-8", errors="replace").strip()
+            dest_roadmap.write_text(
+                f"{existing_text}\n\n---\n\n# Part 合流路線圖：{matched.title}\n\n> 來源路線圖：{matched.filename}\n\n{incoming_text}\n",
+                encoding="utf-8",
+            )
+            matched.path.unlink()
+            is_appended = True
+        else:
+            shutil.move(str(matched.path), str(dest_roadmap))
 
         from .plans.verifier import PlanVerifier
         verifier = PlanVerifier(plans_dir=self.plans_dir)
+        action_verb = "追加合併至既有" if is_appended else "物理遷入為"
         verifier.append_changelog_entry(
             target_dir,
-            summary=f"自長期路線圖 [{matched.filename}] 立項物理遷入為 roadmap.md (Consume-on-Promote)",
+            summary=f"自長期路線圖 [{matched.filename}] 立項{action_verb} roadmap.md (Consume-on-Promote)",
             log_type="PHASE",
             model=clean_model,
         )
@@ -397,6 +410,7 @@ class RoadmapManager:
             "plan_name": disp_plan,
             "roadmap_path": dest_roadmap,
             "source_path": matched.path,
+            "is_appended": is_appended,
             "model": clean_model,
             "message": msg,
         }

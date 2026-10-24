@@ -1,11 +1,17 @@
-# 技術路線圖：環境型測試規範技能 (`testing-sop`)、Phase 06 連鎖守門與專案測試流程嫁接 (Roadmap)
+# 技術路線圖合流：環境型測試規範技能 (`testing-sop`) 與 Subagent 三支柱上下文隔離協定 (Merged Roadmaps)
 
-> 主題：環境型測試規範技能 (`testing-sop`)、Phase 06 連鎖守門與專案測試流程嫁接  
+> 主題：環境型測試規範技能 (`testing-sop`)、Phase 06 連鎖守門與 Subagent 三支柱任務級上下文隔離協定  
 > 歸檔日期：2026-10-23  
+> 目標範疇：agents-workflow  
+> 前置解鎖條件：已完成 sub_01 (ACI 工具鏈) 與 sub_02 (Roadmap/TODO 雙層體系)  
 > 狀態：Ready  
 > 模型：Gemini 4 Argon (Low)  
 
 ---
+
+# Part I：環境型測試規範技能 (`testing-sop`)、Phase 06 連鎖守門與專案測試流程嫁接
+
+> 原始來源：`plans/roadmap/testing_sop_and_phase06_hardening_roadmap.md`
 
 ## 1. 問題陳述與根因量化 (Problem & Root Cause)
 
@@ -113,29 +119,47 @@ AgentsStandards.md (條件式技能路由表)
 5. **`plan_modes.md`（`Fast Track` `FP-02` 實作與驗證）連鎖引用**：
    - 於 `FP-02` 測試驗證步驟同步加入 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`) 強制引用。
 
-### 4.3 組件三：結合 `how-to-config-yscb` 嫁接專案專用測試流程與注意事項
-1. **擴充 `how-to-config-yscb` 探勘與代寫項目**：
-   - 在 `how-to-config-yscb` 步驟 1（全專案設定與空間拓撲自動探勘）中，自動探勘專案的測試基建（如 `pyproject.toml` / `package.json` / `Cargo.toml` / `tests/` 目錄結構、測試執行器、沙盒基底類別與 Fixture 慣例）。
-   - 在步驟 2（設定健康度報告與代寫提案卡）中，若發現專案尚未配置專屬測試導引（`config://agents-workflow/snippets/testing_guide.md`），自動草擬包含以下四要素的專案測試導引：
-     1. **標準測試執行指令**（單一檔案／單一子系統跑測指令 vs. 全量回歸指令，及是否禁止日常全量跑測）。
-     2. **測試目錄拓撲與命名規範**（子系統測試檔對應規則）。
-     3. **沙盒隔離與基底類別契約**（如 YSCB 的 `YSCBTestCase` + `@require(Requirement.ISOLATED_SANDBOX)`，或 `pytest` 的 `tmp_path` fixture）。
-     4. **專案特殊測試紅線與注意事項**（如禁止連外網、Mock 邊界、特定資料庫／Daemon 隔離要求）。
-   - 在步驟 3（授權後代寫修復與物化驗證）中，經開發者確認後直接代寫 `config://agents-workflow/snippets/testing_guide.md`，並自動於 `config://agents-workflow/contribute.json` 宣告注入至 `TESTING_SOP_STANDARDS` 錨點（`mode: "append"`），依序執行 `contributes check` $\to$ `agents-workflow compile` $\to$ `agents-workflow release` 三步驗證完成物化。
-
 ---
 
-## 5. 實施路線圖與里程碑 (Roadmap & Stages)
+# Part II：Subagent 任務級上下文隔離與三支柱委派協定
 
-### 5.1 近期策略 (Current Strategy)
-- 列為 `Ready` 核心工作流升級提案，與 `how-to-config-yscb` 及 `skill-creator` 協同構成完整的品質守門體系（`development-sop` 管開發流程、`documentation` 管知識庫文檔、`testing-sop` 管測試建置與測試集純化）。
+> 原始來源：`plans/roadmap/subagent_task_isolation_evaluation.md`
 
-### 5.2 實施步驟 (Implementation Stages)
-1. **Stage 1（建立 `testing-sop` 技能與存量純化參考指南）**：
-   - 建立 `assets/skills/testing-sop/SKILL.md`（含六大測試鐵律與 `__@{TESTING_SOP_STANDARDS}__` 錨點）及 `assets/skills/testing-sop/references/test_suite_audit_and_purification.md`（六維度測試集體檢與收斂指南）。
-   - 於 `contributes/agents-workflow.json` 註冊 `testing-sop` 技能匯出與 `TESTING_SOP_STANDARDS` Token。
-2. **Stage 2（植入 `AgentsStandards.md` 與 `development-sop` 引用連鎖觸發與 Phase 06 守門）**：
-   - 更新 `AgentsStandards.md` 條件式技能路由表。
-   - 於 `phase_04_plan.md`、`phase_05_task.md`、`phase_06_test.md` 與 `plan_modes.md` 植入 `` [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`) `` 強制引用連鎖觸發，並強化 Phase 06 雙重驗收守門檢核表。
-3. **Stage 3（對接 `how-to-config-yscb` 專案測試流程自動探勘與嫁接）**：
-   - 於 `how-to-config-yscb` 納入 `config://agents-workflow/snippets/testing_guide.md` 自動探勘、草擬與確認後代寫注入 `TESTING_SOP_STANDARDS` 之閉環，並通過雙層編譯與 `evals/run_ab_benchmark.py` 驗證。
+## 5. 問題陳述與根因量化 (Subagent Isolation Problem & Root Cause)
+
+### 5.1 痛點現象
+在現行 `agents-workflow` 標準開發流程中，雖然檔案級狀態機（`P00`~`P07`）與跨視窗交接（`/pause` + `/continue`）已解決大部分跨階段記憶問題，但在單一主對話視窗（Main Agent Session）執行以下三種高認知負荷場景時，仍存在明顯的物理瓶頸：
+1. **廣域探索與深度調研的「搜索雜訊污染」（`/research` 與 `/discuss`）**：
+   執行跨模組調研或根因排查時，Agent 需檢索並翻閱 10~20 份源碼與外部文檔，其中 80% 屬於過程性淘汰資訊，卻永久殘留於主視窗 Context Window 中，干擾後續規格制定。
+2. **長鏈條連續實作的「上下文熵增」（`/auto` 與大型 `Phase 05`）**：
+   在 `/auto` 模式連續生成 `P01`~`P04` 後進入 `Phase 05/06`，或當 `P05_task.md` 含多個跨模組任務時，前序任務的讀取紀錄與測試失敗 Stack Trace 會快速塞爆主視窗，引發自動壓縮（Compaction）與注意力退化。
+3. **球員兼裁判的「同視窗確認偏誤（Confirmation Bias）」（`Phase 07` 結案審查）**：
+   讓剛寫完程式碼的同一個主視窗自己執行 `Phase 07` Step 1（三層文檔對齊與代碼品質審查），極易因近因記憶偏誤而流於形式勾選 `[x]`，漏抓淺層敷衍修補（Anti-Patterns）或遺漏 `P04` 承諾之文檔更新。
+
+### 5.2 架構裁決：內化「三支柱門檻觸發式 Subagent 委派協定」
+1. **三支柱高投報委派場景（Research 探索隔離 + Implement 實作隔離 + Review 冷眼審計）**：
+   - **支柱一（`/research` 與 `/discuss` 廣域探索隔離 — 純唯讀）**：將跨模組檢索、多方案探勘委派予唯讀 Subagent（支援平行或單一派發），主視窗僅接收濃縮證據與優劣對比以撰寫 `R{NN}_{topic}.md`。
+   - **支柱二（`/auto` 與大型 `Phase 05/06` 實作隔離 — 受限讀寫）**：當處於 `/auto` 模式或 `Phase 05` 含 $\ge 3$ 個跨模組任務組時，依耦合度按「單一任務或高內聚任務組（Cohesive Task Group）」**強制序列派發**實作 Subagent，將編碼與單元測試除錯 Log 隔離於子視窗；小型任務（`Fast Track`、`Revision` 或 $\le 2$ 個任務）維持主視窗直接執行以規避 Token 入場稅。
+   - **支柱三（`Phase 07` 結案三層文檔與品質審查 — 純唯讀 Fresh-Eyes Review）**：派發全新無偏誤的 Reviewer Subagent，直接對照 `P01/P03/P04` 規格與實際 `git diff` 執行挑刺審計（查核核心原則 3 敷衍修補紅線、`testing-sop` 測試反模式、三層文檔對齊與需求覆蓋度），回傳缺失清單由主視窗修正。
+2. **採用「檔案路徑傳址（Pass-by-Reference）」，剔除 `plan task-brief` 切片 CLI**：
+   - 由於 Subagent 與主視窗共享工作區檔案系統，主視窗委派時僅需在 Prompt 中傳遞 **3 行檔案路徑指針**（如 `請讀取 plans/<plan>/P03_api_spec.md、P04 與 P05 中對應 [TASK-XX] 之規格，並遵循 testing-sop...`），由 Subagent 在獨立視窗直接讀取完整規格。
+3. **單一寫入者鐵律（Single-Writer SSOT）**：
+   - 所有 `plans/` 目錄下的計畫文件（`P00`~`P07`、`R{NN}`、`changelog.md`）**100% 僅由主視窗統一寫入**，Subagent 嚴禁修改任何計畫文件，徹底保護模型紀錄規則（Model Record）與狀態一致性。
+
+### 5.3 八大安全與收斂護欄（Safety & Convergence Guardrails）
+1. **嚴格單層星型拓撲（1-Level Hub-and-Spoke）**：僅主視窗可派發 Subagent，Subagent 嚴禁再遞迴派發子代理（100% 相容 Antigravity / Claude Code / Codex 三平台限制）。
+2. **編碼強制序列、唯讀允許平行**：支柱二（修改源碼）每次僅能序列執行 1 個 Subagent，嚴禁平行改碼引發工作樹衝突；支柱一與支柱三（純唯讀探索與審查）允許平行派發。
+3. **Single-Writer 計畫檔保護**：Subagent 嚴禁建立或修改 `plans/` 下的任何檔案，確保 `> 模型：` 標頭與 `changelog.md` 100% 由主視窗管控。
+4. **極簡回傳格式約束（Return Throttle）**：強制要求 Subagent 回傳結構化摘要（控制在 150~300 Tokens 內），嚴禁將完整源碼或數百行測試通過 Log 傾倒回主視窗。
+5. **[防呆 1] 支柱二內部「二振失敗熔斷（2-Strike Limit）」**：Subagent 在執行單元測試遇錯時，**內部最多僅允許自主嘗試修復 2 次**；若第 2 次修改後測試仍未通過，嚴禁在子視窗內繼續盲目試錯燒耗 Token，必須立即停手並回傳 `STATUS: MAJOR_BLOCKER (Two-Strike Test Failure)` 與異常現場摘要交還主視窗，由主視窗無縫轉入 `/discuss`。
+6. **[防呆 2] 支柱三檢視新建檔案之 `git diff` 盲區防護**：由於 `Phase 07` Step 1 尚未執行最終 `git commit`，新建之源碼或測試檔處於 `Untracked (??)` 狀態（單跑 `git diff` 無法顯示）。強制規定 Reviewer Subagent **先讀取 `P04_implementation_plan.md` 預計變更清單，搭配 `git status --short` 與 `git diff HEAD`，並針對新增（Untracked）檔案直接讀取檔案內容進行審查**，杜絕漏審新建檔案。
+7. **[防呆 3] 支柱三「防吹毛求疵（Anti-Nitpicking）」硬性收斂邊界**：為防止 Reviewer Subagent 為交差而回報無謂的主觀風格建議導致重改迴圈，明確限制其**僅允許回報違反下列硬性契約之具體缺失**：
+   - **(1) 違反 `AGENTS.md` 核心原則 3 之淺層敷衍修補與 `testing-sop` 六大測試鐵律之反模式**（如空白 `except` 吞例外、硬編碼假資料、刪除或放寬測試斷言、新建計畫名碎片測試檔、空殼斷言）；
+   - **(2) `P01` 功能/邊界需求或 `P03` 介面契約未落實之遺漏**；
+   - **(3) `P04` 文檔衝擊盤點表列應同步但未更新之三層文檔或公開 API Docstring**。
+   - 嚴禁回報純主觀命名偏好或表層排版微調；若無上述硬性缺失，強制直接回傳 `REVIEW_STATUS: PASSED`。
+8. **[防呆 4] 對齊 `Phase 07` 最新三步結案管線時序**：支柱三植入 `phase_07_walkthrough.md` 時，嚴格維持既有三步順序：
+   - **Step 1**：執行 Pillar 3 冷眼審查 ＋ 三層文檔對齊修正與代碼清理。
+   - **Step 2**：產出 `P07_walkthrough.md`，將所有結案檢核 Checkbox 勾選為 `[x]`，並將頂部標頭 `> 狀態：` 更新為 `Completed`（同步更新根目錄 `CHANGELOG.md` 與主計畫 `umbrella_overview.md`）。
+   - **Step 3**：最後實機執行 `plan verify`（或 `plan verify --log`）完成最終合規守門與日誌盲寫。
+

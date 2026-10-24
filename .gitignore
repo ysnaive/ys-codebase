@@ -56,6 +56,8 @@ __pycache__/
 /.agents/skills/skill-optimizer/references/ab-eval-guide.md
 /.agents/skills/skill-optimizer/references/audit-rubric.md
 /.agents/skills/skill-optimizer/references/refactoring-patterns.md
+/.agents/skills/testing-sop/SKILL.md
+/.agents/skills/testing-sop/references/test_suite_audit_and_purification.md
 /.agents/skills/todo/SKILL.md
 /.agents/skills/yscb-cli-guide/SKILL.md
 /.agents/skills/yscb-module-dev/SKILL.md

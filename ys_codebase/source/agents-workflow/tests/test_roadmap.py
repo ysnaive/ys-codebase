@@ -31,7 +31,8 @@ class TestRoadmapManager(YSCBTestCase):
     def setUp(self):
         super().setUp()
         self.temp_dir = tempfile.mkdtemp(prefix="test_aw_roadmap_")
-        self.roadmap_dir = Path(self.temp_dir) / "plans" / "roadmap"
+        self.plans_dir = Path(self.temp_dir) / "plans"
+        self.roadmap_dir = self.plans_dir / "roadmap"
         self.roadmap_dir.mkdir(parents=True, exist_ok=True)
 
     def test_empty_roadmap_directory(self):
@@ -128,4 +129,33 @@ class TestRoadmapManager(YSCBTestCase):
 
         ret = cmd_roadmap(["--list"])
         self.assertEqual(ret, 0)
+        self.mark_passed()
+
+    def test_promote_roadmap_append_when_already_exists(self):
+        """[FR-07 / ET-05] 測試多路線圖合流遷入同一計畫目錄時無損追加合併。"""
+        r1_content = "# 路線圖一 (Roadmap)\n\n> 主題：路線圖一  \n> 狀態：Ready  \n\n內容一"
+        r2_content = "# 路線圖二 (Roadmap)\n\n> 主題：路線圖二  \n> 狀態：Ready  \n\n內容二"
+        (self.roadmap_dir / "r1.md").write_text(r1_content, encoding="utf-8")
+        (self.roadmap_dir / "r2.md").write_text(r2_content, encoding="utf-8")
+
+        mgr = RoadmapManager(roadmap_dir=self.roadmap_dir, plans_dir=self.plans_dir)
+        # 第一次遷入：建立新目錄並移入為 roadmap.md
+        res1 = mgr.promote_roadmap("r1", model="TestModel")
+        self.assertTrue(res1["success"])
+        self.assertFalse(res1["is_appended"])
+        plan_dir = res1["plan_dir"]
+        self.assertTrue((plan_dir / "roadmap.md").is_file())
+        self.assertFalse((self.roadmap_dir / "r1.md").exists())
+
+        # 第二次遷入：指定同一目錄 --plan，應追加合併且移除來源檔
+        res2 = mgr.promote_roadmap("r2", model="TestModel", target_plan=plan_dir)
+        self.assertTrue(res2["success"])
+        self.assertTrue(res2["is_appended"])
+        self.assertFalse((self.roadmap_dir / "r2.md").exists())
+
+        combined_text = (plan_dir / "roadmap.md").read_text(encoding="utf-8")
+        self.assertIn("路線圖一", combined_text)
+        self.assertIn("路線圖二", combined_text)
+        self.assertIn("內容一", combined_text)
+        self.assertIn("內容二", combined_text)
         self.mark_passed()
