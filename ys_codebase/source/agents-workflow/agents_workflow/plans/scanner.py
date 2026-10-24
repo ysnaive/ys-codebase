@@ -152,6 +152,11 @@ class PlanScanner:
             else:
                 status = "P00 Discussing"
 
+        # 6.5 前置源頭資產 (Seeded: roadmap.md / todo.md) 判定
+        elif (plan_dir / "roadmap.md").is_file() or (plan_dir / "todo.md").is_file():
+            track_type = "Seeded"
+            status = "Seeded (Pending Plan)"
+
         # 7. 檢查暫停快照
         if (plan_dir / "handoff.md").exists() and status not in ("Completed", "Concluded"):
             status = f"{status} (Paused)"

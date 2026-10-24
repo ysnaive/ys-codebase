@@ -28,6 +28,7 @@ __pycache__/
 /.agents/.yscb/templates/handoff.md
 /.agents/.yscb/templates/revision_log.md
 /.agents/.yscb/templates/roadmap.md
+/.agents/.yscb/templates/todo.md
 /.agents/.yscb/templates/umbrella_overview.md
 /.agents/skills/auto/SKILL.md
 /.agents/skills/bump-revision/SKILL.md
@@ -55,6 +56,7 @@ __pycache__/
 /.agents/skills/skill-optimizer/references/ab-eval-guide.md
 /.agents/skills/skill-optimizer/references/audit-rubric.md
 /.agents/skills/skill-optimizer/references/refactoring-patterns.md
+/.agents/skills/todo/SKILL.md
 /.agents/skills/yscb-cli-guide/SKILL.md
 /.agents/skills/yscb-module-dev/SKILL.md
 /.agents/skills/yscb-module-dev/references/acceptance_checklist.md

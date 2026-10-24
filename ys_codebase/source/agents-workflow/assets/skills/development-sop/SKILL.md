@@ -26,6 +26,7 @@ description: 管理 `__${project://plans/}__` 開發計畫全生命週期 (SOP P
   - **遇阻深度歸因 (連續 2 次失敗 / 範疇越界)** -> [`discuss`](`__#{module://agents-workflow/assets/skills/discuss/SKILL.md}__`)
   - **專題技術調研** -> [`research`](`__#{module://agents-workflow/assets/skills/research/SKILL.md}__`)
   - **長期技術儲備盤點與收錄** -> [`roadmap`](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`)
+  - **輕量待辦與微觀技術債速記 (`TODO.md`)** -> [`todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`)
 
 ---
 
@@ -106,6 +107,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 - **Fast Track**：[`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`)
 - **Umbrella**：[`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`)
 - **路線圖**：[`roadmap.md`](`__#{module://agents-workflow/assets/templates/roadmap.md}__`)
+- **待辦種子**：[`todo.md`](`__#{module://agents-workflow/assets/templates/todo.md}__`)
 - **微觀日誌**：[`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)
 - **現場交接**：[`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)
 

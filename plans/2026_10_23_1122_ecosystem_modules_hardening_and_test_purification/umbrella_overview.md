@@ -32,9 +32,15 @@
 
 ## 3. 主計畫里程碑與推進狀態 (Milestones)
 
-- [ ] **里程碑 1 (`sub_01`)**：完成 `core` 微內核純化、CLI 驗證／熱派發修復與 `core/tests/` 20 檔純化收斂，通過單元測試並完成 `@build` 熱部署。
-- [ ] **里程碑 2 (`sub_02`)**：完成 `dev` 工具鏈契約對齊、3-Gate 全庫防回退、`UNKNOWN` 測試剛性阻斷與 `dev/tests/` 7 檔純化收斂，通過單元測試並完成 `@build` 熱部署。
-- [ ] **里程碑 3 (`sub_03`)**：完成 `server` 背景服務託管修復、Worker IPC 隔離、優雅停機握手與 `server/tests/` 3 檔純化收斂，通過單元測試並完成 `@build` 熱部署。
-- [ ] **里程碑 4 (`sub_04`)**：完成 `knowledge-db` 冷啟動向量檢索修復、熱修補入度邊雙階保真、同義詞純化與 `knowledge-db/tests/` 12 檔純化收斂，通過單元測試並完成 `@build` 熱部署。
-- [ ] **里程碑 5 (`sub_05`)**：完成四大模組端到端整合二次驗收、8 份 Roadmap 儲備閉環遷移、三層文檔對齊與最終結案。
+> **[GLOBAL PRIORITY] 跨主計畫 4 階段 10 步全局落地順序（最高優先級執行軌道）**：
+> - **Stage 1（研發憲法與儲備工具鏈先行 — `2026_10_23_1314` 核心層）**：`1. AW/sub_02` (`/todo` 與 `roadmap promote`) $\to$ `2. AW/sub_03` (`testing-sop` 六大鐵律 + Subagent 三支柱隔離)
+> - **Stage 2（微內核與開發工具鏈加固 — 本主計畫地基層）**：`3. ECO/sub_01` (`core` 微內核與測試純化) $\to$ `4. ECO/sub_02` (`dev` 沙盒檢查與測試純化)
+> - **Stage 3（常駐服務與檢索管線加固 — 本主計畫運行層與結案）**：`5. ECO/sub_03` (`server` 託管與測試純化) $\to$ `6. ECO/sub_04` (`knowledge-db` 管線與測試純化) $\to$ `7. ECO/sub_05` (四模組聯合驗收與 8 份 Roadmap `promote` 閉環結案)
+> - **Stage 4（下游賦能與擴充造血收官 — `2026_10_23_1314` 擴充層與結案）**：`8. AW/sub_04` (`PROJECT_ROLE` + `/how-to-config-yscb` + `/how-to-yscb`) $\to$ `9. AW/sub_05` (`/skill-creator` 三軌擴充) $\to$ `10. AW/sub_06` (`agents-workflow/tests/` 純化與 6 份 Roadmap `promote` 閉環結案)
+
+- [ ] **里程碑 1 (`sub_01`) [Global Step 3]**：完成 `core` 微內核純化、CLI 驗證／熱派發修復與 `core/tests/` 20 檔純化收斂，通過單元測試並完成 `@build` 熱部署。
+- [ ] **里程碑 2 (`sub_02`) [Global Step 4]**：完成 `dev` 工具鏈契約對齊、3-Gate 全庫防回退、`UNKNOWN` 測試剛性阻斷與 `dev/tests/` 7 檔純化收斂，通過單元測試並完成 `@build` 熱部署。
+- [ ] **里程碑 3 (`sub_03`) [Global Step 5]**：完成 `server` 背景服務託管修復、Worker IPC 隔離、優雅停機握手與 `server/tests/` 3 檔純化收斂，通過單元測試並完成 `@build` 熱部署。
+- [ ] **里程碑 4 (`sub_04`) [Global Step 6]**：完成 `knowledge-db` 冷啟動向量檢索修復、熱修補入度邊雙階保真、同義詞純化與 `knowledge-db/tests/` 12 檔純化收斂，通過單元測試並完成 `@build` 熱部署。
+- [ ] **里程碑 5 (`sub_05`) [Global Step 7]**：完成四大模組端到端整合二次驗收、8 份 Roadmap 儲備閉環遷移、三層文檔對齊與最終結案。
 

@@ -24,7 +24,7 @@ from agents_workflow.plans import (
     PlanReport,
     PlansToolchainError,
 )
-from agents_workflow.roadmap import RoadmapManager
+from agents_workflow.roadmap import RoadmapManager, TodoManager
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
@@ -66,30 +66,179 @@ def _setup_stream_encodings():
             pass
 
 
+def roadmap_list(cmd_bags: Any) -> int:
+    """列出路線圖摘要表格（支援 --status 過濾，自動排除 TODO.md）。"""
+    guard_dispatch("agents-workflow")
+    _setup_stream_encodings()
+    bags = _normalize_bags(cmd_bags, "roadmap_list")
+    mgr = RoadmapManager()
+    opt_status = bags.get_option_value("status")
+    status_filter = str(opt_status).strip() if isinstance(opt_status, str) and opt_status.strip() else None
+    table_str = mgr.format_summary_table(status_filter=status_filter)
+    print(table_str)
+    return 0
+
+
+def roadmap_promote(cmd_bags: Any) -> int:
+    """將儲備路線圖物理移轉至計畫目錄並重命名為 roadmap.md (Consume-on-Promote)。"""
+    guard_dispatch("agents-workflow")
+    _setup_stream_encodings()
+    bags = _normalize_bags(cmd_bags, "roadmap_promote")
+    if not bags.args:
+        print("[agents-workflow:roadmap] Error: Missing topic to promote. Usage: roadmap promote <topic> [--plan <dir>] [--model <ModelName>]")
+        return 1
+    topic = bags.args[0]
+    opt_plan = bags.get_option_value("plan")
+    plan_dir = str(opt_plan).strip() if isinstance(opt_plan, str) and opt_plan.strip() else None
+    opt_model = bags.get_option_value("model")
+    model_str = str(opt_model).strip() if isinstance(opt_model, str) and opt_model.strip() else "Unknown"
+
+    mgr = RoadmapManager()
+    res = mgr.promote_roadmap(topic_or_file=topic, model=model_str, target_plan=plan_dir)
+    if not res.get("success", False):
+        print(f"[agents-workflow:roadmap] [ERROR] {res.get('error', 'Failed to promote roadmap')}")
+        return 1
+
+    print(res.get("message", ""))
+    return 0
+
+
 def roadmap(cmd_bags: Any) -> int:
-    """處理 `agents-workflow roadmap` CLI 指令。"""
+    """處理 `agents-workflow roadmap` CLI 指令（支援 list、promote 與單一主題查詢）。"""
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "roadmap")
     mgr = RoadmapManager()
-    topic = bags.args[0] if bags.args else None
+
+    first_arg = bags.args[0] if bags.args else None
     list_all = bags.has_option("list") or bags.has_option("l")
 
-    if topic and not list_all:
-        item = mgr.get_roadmap(topic)
+    if first_arg and first_arg.lower() == "promote" and not list_all:
+        sub_bags = CmdBags(
+            raw_cmd=bags.raw_cmd,
+            command="roadmap_promote",
+            args=bags.args[1:],
+            options=bags.options,
+        )
+        return roadmap_promote(sub_bags)
+
+    if first_arg and first_arg.lower() == "list":
+        sub_bags = CmdBags(
+            raw_cmd=bags.raw_cmd,
+            command="roadmap_list",
+            args=bags.args[1:],
+            options=bags.options,
+        )
+        return roadmap_list(sub_bags)
+
+    if first_arg and not list_all:
+        item = mgr.get_roadmap(first_arg)
         if not item:
-            print(f"[agents-workflow:roadmap] Roadmap topic '{topic}' not found in {mgr.roadmap_dir}.")
+            print(f"[agents-workflow:roadmap] Roadmap topic '{first_arg}' not found in {mgr.roadmap_dir}.")
             return 1
         print(f"\n[agents-workflow:roadmap] Topic: {item.topic} ({item.status})")
         print(f"  * Path:    {item.path}")
         print(f"  * Date:    {item.date if item.date else 'N/A'}")
+        print(f"  * Scope:   {item.scope}")
+        print(f"  * Trigger: {item.trigger}")
         print(f"  * Title:   {item.title}")
         print(f"  * Summary: {item.problem_summary}")
         return 0
     else:
-        table_str = mgr.format_summary_table()
-        print(table_str)
-        return 0
+        return roadmap_list(bags)
+
+
+def todo_add(cmd_bags: Any) -> int:
+    """免讀盲寫追加單筆 TODO 條目至 workflow.roadmap://TODO.md。"""
+    guard_dispatch("agents-workflow")
+    _setup_stream_encodings()
+    bags = _normalize_bags(cmd_bags, "todo_add")
+    if not bags.args:
+        print("[agents-workflow:todo] Error: Missing title. Usage: todo add \"<標題>\" [--scope <模組>] [--note \"<備註>\"] [--model <ModelName>]")
+        return 1
+    title = " ".join(bags.args).strip()
+    opt_scope = bags.get_option_value("scope")
+    scope = str(opt_scope).strip() if isinstance(opt_scope, str) and opt_scope.strip() else "general"
+    opt_note = bags.get_option_value("note")
+    note = str(opt_note).strip() if isinstance(opt_note, str) and opt_note.strip() else "無"
+    opt_model = bags.get_option_value("model")
+    model_str = str(opt_model).strip() if isinstance(opt_model, str) and opt_model.strip() else "Unknown"
+
+    mgr = TodoManager()
+    try:
+        item = mgr.add_todo(title=title, scope=scope, note=note, model=model_str)
+    except Exception as ex:
+        print(f"[agents-workflow:todo] [ERROR] {ex}")
+        return 1
+    print(f"[agents-workflow:todo] [SUCCESS] 已追加待辦條目 [{item.todo_id}]:")
+    print(f"  * ID:      {item.todo_id}")
+    print(f"  * Date:    {item.date}")
+    print(f"  * Scope:   {item.scope}")
+    print(f"  * Title:   {item.title}")
+    print(f"  * Note:    {item.note}")
+    return 0
+
+
+def todo_list(cmd_bags: Any) -> int:
+    """列出 workflow.roadmap://TODO.md 中之待辦條目（支援 --scope 過濾）。"""
+    guard_dispatch("agents-workflow")
+    _setup_stream_encodings()
+    bags = _normalize_bags(cmd_bags, "todo_list")
+    opt_scope = bags.get_option_value("scope")
+    scope = str(opt_scope).strip() if isinstance(opt_scope, str) and opt_scope.strip() else None
+
+    mgr = TodoManager()
+    print(mgr.format_todo_table(scope_keyword=scope))
+    return 0
+
+
+def todo_promote(cmd_bags: Any) -> int:
+    """支援單筆或多筆打包提取 TODO 條目 (Pop) 並生成 todo.md 與 changelog.md。"""
+    guard_dispatch("agents-workflow")
+    _setup_stream_encodings()
+    bags = _normalize_bags(cmd_bags, "todo_promote")
+    if not bags.args:
+        print("[agents-workflow:todo] Error: Missing TODO ID(s) to promote. Usage: todo promote <TODO-ID> [TODO-ID...] --slug <plan_slug> [--plan <dir>] [--model <ModelName>]")
+        return 1
+    opt_slug = bags.get_option_value("slug")
+    slug = str(opt_slug).strip() if isinstance(opt_slug, str) and opt_slug.strip() else None
+    opt_plan = bags.get_option_value("plan")
+    plan_dir = str(opt_plan).strip() if isinstance(opt_plan, str) and opt_plan.strip() else None
+    opt_model = bags.get_option_value("model")
+    model_str = str(opt_model).strip() if isinstance(opt_model, str) and opt_model.strip() else "Unknown"
+
+    mgr = TodoManager()
+    res = mgr.promote_todos(todo_ids=bags.args, slug=slug, model=model_str, target_plan=plan_dir)
+    if not res.get("success", False):
+        print(f"[agents-workflow:todo] [ERROR] {res.get('error', 'Failed to promote todo(s)')}")
+        return 1
+
+    print(res.get("message", ""))
+    return 0
+
+
+def todo(cmd_bags: Any) -> int:
+    """輕量級待辦與微觀技術債管理工具鏈複合入口 (TODO.md)。"""
+    guard_dispatch("agents-workflow")
+    bags = _normalize_bags(cmd_bags, "todo")
+    if not bags.args:
+        return todo_list(bags)
+    action = bags.args[0].lower()
+    sub_bags = CmdBags(
+        raw_cmd=bags.raw_cmd,
+        command=f"todo_{action}",
+        args=bags.args[1:],
+        options=bags.options,
+    )
+    if action == "add":
+        return todo_add(sub_bags)
+    elif action == "list":
+        return todo_list(sub_bags)
+    elif action == "promote":
+        return todo_promote(sub_bags)
+    else:
+        print(f"[agents-workflow:todo] Unknown todo action '{action}'. Use add, list, or promote.")
+        return 1
 
 
 def release(cmd_bags: Any) -> int:
@@ -564,4 +713,9 @@ def cmd_init_default(cmd_bags: Any) -> int:
 
 def cmd_plan(cmd_bags: Any) -> int:
     return plan(cmd_bags)
+
+
+def cmd_todo(cmd_bags: Any) -> int:
+    return todo(cmd_bags)
+
 

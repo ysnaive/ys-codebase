@@ -378,26 +378,194 @@
         }
       },
       "roadmap": {
-        "description": "檢視或探索專案長期技術儲備與策略路線圖 (Roadmaps)",
+        "description": "檢視或管理專案長期技術儲備與策略路線圖 (Roadmaps 列表查詢與 Consume-on-Promote 晉升)",
         "tier": "safe",
         "server_compatible": true,
         "args": {
+          "action_or_topic": {
+            "description": "操作動作 (list, promote) 或指定路線圖主題檔名",
+            "required": false
+          },
           "topic": {
-            "description": "指定路線圖主題或檔名",
+            "description": "當第一參數為 promote 時指定目標路線圖主題或檔名",
             "required": false
           }
         },
         "options": {
           "display": {
             "list": {
-              "description": "列出所有路線圖摘要表格",
+              "description": "列出所有路線圖摘要表格 (自動排除 TODO.md)",
               "alias": ["l"]
+            }
+          },
+          "filter_status": {
+            "status": {
+              "description": "依路線圖狀態過濾 (Backlog | Proposed | Ready | Deferred)",
+              "args": {
+                "val": {
+                  "description": "狀態值"
+                }
+              }
+            }
+          },
+          "target_plan": {
+            "plan": {
+              "description": "搭配 promote 指定既有計畫或 sub_XX 子計畫目錄",
+              "args": {
+                "val": {
+                  "description": "計畫名稱或子路徑"
+                }
+              }
+            }
+          },
+          "model_opt": {
+            "model": {
+              "description": "搭配 promote 指定當輪平台宣告之模型名稱",
+              "args": {
+                "val": {
+                  "description": "模型名稱"
+                }
+              }
             }
           }
         },
         "usage": {
           "pros": [
-            "檢視或探索長期技術儲備: roadmap"
+            "檢視或過濾長期技術儲備: roadmap [--list] [--status Ready]",
+            "晉升路線圖至計畫目錄 (Consume-on-Promote): roadmap promote <topic> [--plan <dir>] [--model '<Model>']"
+          ]
+        }
+      },
+      "todo": {
+        "description": "輕量級待辦與微觀技術債管理工具鏈 (workflow.roadmap://TODO.md 免讀盲寫與打包提取立項)",
+        "tier": "safe",
+        "server_compatible": true,
+        "cmd": {
+          "add": {
+            "description": "免讀盲寫追加單筆 TODO 條目至 workflow.roadmap://TODO.md (單調遞增編號)",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "title": {
+                "description": "待辦標題 (內文禁含雙引號與反引號)",
+                "required": true
+              }
+            },
+            "options": {
+              "scope_opt": {
+                "scope": {
+                  "description": "所屬模組或目標範疇 (預設: general)",
+                  "args": {
+                    "val": {
+                      "description": "模組或檔案範疇"
+                    }
+                  }
+                }
+              },
+              "note_opt": {
+                "note": {
+                  "description": "補充備忘與解法要點",
+                  "args": {
+                    "val": {
+                      "description": "備忘字串"
+                    }
+                  }
+                }
+              },
+              "model_opt": {
+                "model": {
+                  "description": "指定當輪平台宣告之模型名稱",
+                  "args": {
+                    "val": {
+                      "description": "模型名稱"
+                    }
+                  }
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "單行免讀追加輕量待辦: todo add '<標題>' --scope <範疇> [--note '<備忘>'] [--model '<Model>']"
+              ]
+            }
+          },
+          "list": {
+            "description": "列出 workflow.roadmap://TODO.md 中之待辦條目",
+            "tier": "safe",
+            "server_compatible": true,
+            "options": {
+              "scope_opt": {
+                "scope": {
+                  "description": "依模組、範疇或關鍵字過濾",
+                  "args": {
+                    "val": {
+                      "description": "關鍵字"
+                    }
+                  }
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視或過濾待辦清單: todo list [--scope <關鍵字>]"
+              ]
+            }
+          },
+          "promote": {
+            "description": "單筆或多筆打包提取 TODO 條目 (Pop) 並生成 todo.md 與 changelog.md",
+            "tier": "conditional",
+            "server_compatible": true,
+            "args": {
+              "todo_ids": {
+                "description": "一或多個待辦編號 (如 TODO-01 TODO-03)",
+                "required": true
+              }
+            },
+            "options": {
+              "slug_opt": {
+                "slug": {
+                  "description": "新計畫目錄名稱後綴 (snake_case，若未傳入 --plan 則必填)",
+                  "args": {
+                    "val": {
+                      "description": "plan_slug"
+                    }
+                  }
+                }
+              },
+              "target_plan": {
+                "plan": {
+                  "description": "選填移入既有計畫或 sub_XX 子計畫目錄",
+                  "args": {
+                    "val": {
+                      "description": "計畫名稱或子路徑"
+                    }
+                  }
+                }
+              },
+              "model_opt": {
+                "model": {
+                  "description": "指定當輪平台宣告之模型名稱",
+                  "args": {
+                    "val": {
+                      "description": "模型名稱"
+                    }
+                  }
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "打包提取待辦立項 (Pop & Seed): todo promote TODO-01 [TODO-02...] --slug <plan_slug> [--model '<Model>']"
+              ],
+              "cons": [
+                "[!] 僅限開發者確認將 TODO 條目轉為正式開發計畫時執行"
+              ]
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "輕量級待辦與微觀技術債管理工具鏈: todo [list|add|promote]"
           ]
         }
       },

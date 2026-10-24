@@ -13,6 +13,7 @@ description: 針對全新開發需求執行邊界訪談、6 大計畫模式 (Ful
 
 - **先討論、後建檔**：在使用者需求或核心方案未經充分討論與確認前，**嚴禁提前在 `__${project://plans/}__` 下建立目錄或實體檔案**。
 - **立項時序**：討論並收斂需求 $\to$ 決定分流模式 $\to$ 建立計畫目錄與雙星初始化（`P00`、`fast_track_plan.md` 或 `revision_log.md` + `changelog.md`；若為既有計畫之衍生修訂則直接於該計畫目錄建立 `revision_log.md`）。
+- **[防呆 1] `Seeded` 目錄原地復用鐵律 (In-Place Seeded Directory Reuse)**：若目標計畫目錄已由 `roadmap promote` 或 `todo promote` 預先建立並置入起源種子檔（`roadmap.md` 或 `todo.md`）與 `changelog.md`（此時 `plan status` 識別為 `Seeded` 模式），**嚴禁另行建立第二個帶時間戳的新目錄**！必須直接於該既有 `Seeded` 目錄內原地補齊首份正式規格檔（`P00_discuss.md`、`fast_track_plan.md` 或 `revision_log.md`），並透過 `plan verify --log` 追加進度列。
 - **立項細則指針**：建檔與分流守門細節依 [phase_00_discuss.md](../development-sop/references/phase_00_discuss.md) 執行；Umbrella 新增 `sub_XX` 時之父目錄登記規則依 [plan_modes.md](../development-sop/references/plan_modes.md) §5。
 
 ---
