@@ -104,4 +104,95 @@ class TestContributesCmdAndSDK(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.ENV)
+    def test_contributes_check_invalid_payload_returns_error(self):
+        """T-06 補盲: 驗證傳入含未知擴充點與型別錯誤的貢獻檔至 check_contributes 時回傳 1 且輸出包含 [FAIL]。"""
+        import io
+        import os
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+        from core.commands import contributes_cmd
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bad_core_json = os.path.join(tmp_dir, "core.json")
+            with open(bad_core_json, "w", encoding="utf-8") as f:
+                json.dump({
+                    "unknown_point_xyz": {"foo": "bar"},
+                    "commands": "invalid_string_instead_of_dict"
+                }, f)
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                ret = contributes_cmd.check_contributes(bad_core_json)
+            self.assertEqual(ret, 1)
+            self.assertIn("[FAIL]", buf.getvalue())
+
+        # EC-02: 指定不存在的檔案或模組名稱時回傳 1
+        self.assertEqual(contributes_cmd.check_contributes("nonexistent_module_xyz_999"), 1)
+        self.assertEqual(contributes_cmd.check_contributes("config://nonexistent_mod/contribute.json"), 1)
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_contributes_check_project_override_file(self):
+        """T-06 補盲 & FT-02 & EC-01: 驗證 check_contributes 支援 config://core/contribute.json (含包裹與未包裹兩種格式) 與模組級掃描。"""
+        import os
+        import json
+        from core import uri
+        from core.commands import contributes_cmd
+
+        cfg_core_dir = uri.resolve("config://core")
+        uri.makedirs("config://core", exist_ok=True)
+        cfg_path = os.path.join(cfg_core_dir, "contribute.json")
+        try:
+            # 1. 包裹於 {"core": ...} 頂層鍵之標準格式
+            wrapped_cfg = {
+                "core": {
+                    "commands": {
+                        "cmd": {
+                            "custom_cmd": {
+                                "description": "Custom project command",
+                                "tier": "safe"
+                            }
+                        }
+                    }
+                }
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(wrapped_cfg, f, indent=2)
+
+            # 驗證 URI 形式與實體路徑形式皆正確推導 target_mod="core" 並通過 (0)
+            self.assertEqual(contributes_cmd.check_contributes("config://core/contribute.json"), 0)
+            self.assertEqual(contributes_cmd.check_contributes(cfg_path), 0)
+            # 驗證模組級掃描亦納管 config://core/contribute.json
+            self.assertEqual(contributes_cmd.check_contributes("core"), 0)
+
+            # 2. EC-01: 未包裹頂層 "core" 鍵（直接為擴充點 dict）亦正常校驗通過
+            unwrapped_cfg = {
+                "commands": {
+                    "cmd": {
+                        "custom_cmd_unwrapped": {
+                            "description": "Unwrapped project command",
+                            "tier": "safe"
+                        }
+                    }
+                }
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(unwrapped_cfg, f, indent=2)
+            self.assertEqual(contributes_cmd.check_contributes("config://core/contribute.json"), 0)
+
+            # 3. 寫入非法型別 Payload 時單檔與模組級掃描皆返回 1
+            invalid_cfg = {"core": {"commands": "invalid_type"}}
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(invalid_cfg, f, indent=2)
+            self.assertEqual(contributes_cmd.check_contributes("config://core/contribute.json"), 1)
+            self.assertEqual(contributes_cmd.check_contributes("core"), 1)
+        finally:
+            if os.path.isfile(cfg_path):
+                os.remove(cfg_path)
+
+        self.mark_passed()
+
+
 

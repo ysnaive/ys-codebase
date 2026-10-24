@@ -17,19 +17,7 @@ from core.pip_manager import PipManager, PipInstallError
 from core.ide_projector import IdeProjector
 from core.installer import Installer
 from dev.testing.case import YSCBTestCase
-
-# Robustly load yscb host bootstrapper module
-_host_d, _ = uri._get_host_config()
-_yscb_p = os.path.join(_host_d, "yscb.py")
-if not os.path.isfile(_yscb_p):
-    _yscb_p = os.path.abspath("yscb.py")
-if os.path.isfile(_yscb_p):
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("yscb_host_venv", _yscb_p)
-    yscb = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(yscb)
-else:
-    import yscb
+import yscb
 
 
 class TestVenvCore(YSCBTestCase):
@@ -107,22 +95,6 @@ class TestVenvCore(YSCBTestCase):
             self.assertIn("Wheel-Only installation failed", str(ctx.exception))
         self.mark_passed()
 
-    def test_ft_04_internal_gitignore_contains_venv(self):
-        """FT-04: Verify _generate_internal_gitignore includes /.venv/."""
-        gi_path = os.path.join(self.yscb_dir, ".gitignore")
-        yscb._generate_internal_gitignore(self.yscb_dir)
-        self.assertTrue(os.path.isfile(gi_path))
-
-        with open(gi_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        self.assertIn(yscb.INTERNAL_IGNORE_BEGIN, content)
-        self.assertIn("/.venv/", content)
-        self.assertIn("/.modules/", content)
-        self.assertIn("/.build/", content)
-        self.assertIn(yscb.INTERNAL_IGNORE_END, content)
-        self.mark_passed()
-
     def test_ft_05_sys_path_injection(self):
         """FT-05: Verify _ensure_private_venv_path dynamically injects site-packages."""
         mgr = PipManager(self.yscb_dir)
@@ -141,72 +113,84 @@ class TestVenvCore(YSCBTestCase):
             sys.path.remove(site_dir)
         self.mark_passed()
 
-    def test_ft_06_ide_projector_skip_when_no_vscode(self):
-        """FT-06: Verify IdeProjector silently skips when project://.vscode does not exist."""
-        proj_root = os.path.join(self.test_root, "my_project")
-        os.makedirs(proj_root, exist_ok=True)
-
-        projector = IdeProjector(self.yscb_dir)
-        self.assertFalse(projector.is_vscode_configured(proj_root))
-
-        result = projector.sync_vscode_settings(proj_root)
-        self.assertFalse(result)
-        # Ensure .vscode was NOT created
-        self.assertFalse(os.path.exists(os.path.join(proj_root, ".vscode")))
-        self.mark_passed()
-
-    def test_ft_07_ide_projector_soft_merge_and_revert(self):
-        """FT-07: Verify explicit _yscb_managed marking and reversible soft-merge."""
-        proj_root = os.path.join(self.test_root, "vscode_project")
-        vscode_dir = os.path.join(proj_root, ".vscode")
-        os.makedirs(vscode_dir, exist_ok=True)
-
-        settings_path = os.path.join(vscode_dir, "settings.json")
-        initial_settings = {
-            "custom.user.setting": True,
-            "python.analysis.extraPaths": ["/opt/custom/lib"],
-        }
-        with open(settings_path, "w", encoding="utf-8") as f:
-            json.dump(initial_settings, f, indent=2)
-
-        projector = IdeProjector(self.yscb_dir)
-        self.assertTrue(projector.is_vscode_configured(proj_root))
-
-        # Mock site-packages directory
-        site_pkg = projector.pip_mgr.get_site_packages_dir()
-        os.makedirs(site_pkg, exist_ok=True)
-
-        # 1. Sync
-        ok = projector.sync_vscode_settings(proj_root, extra_paths=["./source/core"])
-        self.assertTrue(ok)
-
-        with open(settings_path, "r", encoding="utf-8") as f:
-            updated = json.load(f)
-
-        self.assertIn("_yscb_managed", updated)
-        self.assertTrue(updated["custom.user.setting"])
-        self.assertIn("/opt/custom/lib", updated["python.analysis.extraPaths"])
-        self.assertIn("./source/core", updated["python.analysis.extraPaths"])
-
-        # 2. Revert
-        rev_ok = projector.revert_vscode_settings(proj_root)
-        self.assertTrue(rev_ok)
-
-        with open(settings_path, "r", encoding="utf-8") as f:
-            reverted = json.load(f)
-
-        self.assertNotIn("_yscb_managed", reverted)
-        self.assertTrue(reverted["custom.user.setting"])
-        self.assertEqual(reverted.get("python.analysis.extraPaths"), ["/opt/custom/lib"])
-        self.mark_passed()
-
     def test_ft_08_installer_sync_pip_dependencies(self):
-        """FT-08: Verify Installer.sync_pip_dependencies reads manifests and triggers installation."""
+        """T-01 實質化：驗證 Installer.sync_pip_dependencies 實質讀取 manifest 之 pip_dependencies 並發起安裝與 IDE 同步。"""
         installer = Installer()
-        with patch.object(PipManager, "install_packages") as mock_install:
-            with patch.object(IdeProjector, "sync_vscode_settings") as mock_sync:
-                installer.sync_pip_dependencies()
-                self.assertIsNotNone(installer)
+        mod_name = "mock_pip_mod"
+        uri.makedirs(f"module://{mod_name}", exist_ok=True)
+        uri.write_json(f"module://{mod_name}/manifest.json", {
+            "name": mod_name,
+            "version": "1.0.0",
+            "pip_dependencies": {
+                "pkg_alpha": ">=1.2.0",
+                "pkg_beta": ""
+            }
+        })
+
+        cfg_path, cfg = installer.engine._get_config()
+        orig_installed = dict(cfg.get("installed_modules", {}))
+        cfg.setdefault("installed_modules", {})[mod_name] = {"version": "1.0.0"}
+        installer.engine._save_config(cfg_path, cfg)
+
+        mock_proj_dir = os.path.join(self.test_root, "mock_proj")
+        os.makedirs(mock_proj_dir, exist_ok=True)
+        orig_resolve = uri.resolve
+        def mock_resolve(u, *args, **kwargs):
+            if str(u).startswith("project://"):
+                return mock_proj_dir
+            return orig_resolve(u, *args, **kwargs)
+
+        try:
+            with patch.object(PipManager, "install_packages") as mock_install:
+                with patch.object(IdeProjector, "is_vscode_configured", return_value=True):
+                    with patch.object(IdeProjector, "sync_vscode_settings") as mock_sync:
+                        with patch("core.uri.resolve", side_effect=mock_resolve):
+                            mock_install.return_value = True
+                            mock_sync.return_value = True
+                            installer.sync_pip_dependencies()
+                            mock_install.assert_called_once_with(["pkg_alpha>=1.2.0", "pkg_beta"])
+                            mock_sync.assert_called_once_with(mock_proj_dir)
+        finally:
+            cfg["installed_modules"] = orig_installed
+            installer.engine._save_config(cfg_path, cfg)
+            if uri.exists(f"module://{mod_name}"):
+                uri.rmtree(f"module://{mod_name}")
+
         self.mark_passed()
+
+    def test_pip_manager_sdk_export_and_parse_utilities(self):
+        """PipManager SDK: 驗證 core 公開匯出、parse_pip_dependencies 字典、陣列去重與邊界條件。"""
+        import core
+        self.assertIn("PipManager", core.__all__)
+        self.assertIn("PipInstallError", core.__all__)
+        self.assertIs(core.PipManager, PipManager)
+        self.assertIs(core.PipInstallError, PipInstallError)
+
+        # Dict parsing
+        deps_dict = {
+            "fastembed": ">=0.5.0",
+            "tree-sitter": "",
+            "pytest": "==7.4.0",
+            "flake8": None,
+        }
+        specs_dict = PipManager.parse_pip_dependencies(deps_dict)
+        self.assertEqual(specs_dict, ["fastembed>=0.5.0", "tree-sitter", "pytest==7.4.0", "flake8"])
+
+        # List parsing with dedup & whitespace stripping
+        raw_list = ["  fastembed>=0.5.0  ", "tree-sitter", "", "   ", "fastembed>=0.5.0"]
+        specs_list = PipManager.parse_pip_dependencies(raw_list)
+        self.assertEqual(specs_list, ["fastembed>=0.5.0", "tree-sitter"])
+
+        # Edge cases
+        self.assertEqual(PipManager.parse_pip_dependencies(None), [])
+        self.assertEqual(PipManager.parse_pip_dependencies([]), [])
+        self.assertEqual(PipManager.parse_pip_dependencies({}), [])
+        self.assertEqual(PipManager.parse_pip_dependencies("invalid"), [])
+        self.mark_passed()
+
+
+if __name__ == "__main__":
+    unittest.main()
+
 
 

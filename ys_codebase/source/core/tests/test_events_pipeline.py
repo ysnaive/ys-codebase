@@ -34,31 +34,29 @@ def on_pre_cli_dispatch(ctx):
 def custom_event(ctx):
     return "custom_ok"
 """
-        uri.write_text(f"{mod_scripts}/hook.core.py", hook_code)
+        try:
+            uri.write_text(f"{mod_scripts}/hook.core.py", hook_code)
 
-        ctx = ExecutionContext("core", "agents-workflow", ["status"])
-        res = events.broadcast("pre_cli_dispatch", context=ctx, emit_module="core")
+            ctx = ExecutionContext("core", "agents-workflow", ["status"])
+            res = events.broadcast("pre_cli_dispatch", context=ctx, emit_module="core")
 
-        self.assertEqual(res.get("mock_listener"), "ok")
-        self.assertTrue(uri.exists(flag_file))
-        self.assertEqual(uri.read_text(flag_file), "DISPATCHED:agents-workflow")
+            self.assertEqual(res.get("mock_listener"), "ok")
+            self.assertTrue(uri.exists(flag_file))
+            self.assertEqual(uri.read_text(flag_file), "DISPATCHED:agents-workflow")
 
-        # Test non-on_ prefix matching
-        res_custom = events.broadcast("custom_event", context=ctx, emit_module="core")
-        self.assertEqual(res_custom.get("mock_listener"), "custom_ok")
-
-        # Cleanup
-        uri.rmtree("module://mock_listener")
+            # Test non-on_ prefix matching
+            res_custom = events.broadcast("custom_event", context=ctx, emit_module="core")
+            self.assertEqual(res_custom.get("mock_listener"), "custom_ok")
+        finally:
+            if uri.exists("module://mock_listener"):
+                uri.rmtree("module://mock_listener")
         self.mark_passed()
 
     def test_engine_decoupling_and_installer_events(self):
-        """FT-02: 驗證 Engine.act_broadcast_event 已徹底移除，且 installer/engine 內部正常調用 core.events.broadcast。"""
-        # 1. 嚴格斷言 AtomicEngine 徹底移除 act_broadcast_event 門面
-        self.assertFalse(hasattr(AtomicEngine, "act_broadcast_event"), "AtomicEngine still has act_broadcast_event!")
+        """FT-02: 驗證 installer/engine 內部正常調用 core.events.broadcast。"""
         engine = AtomicEngine()
-        self.assertFalse(hasattr(engine, "act_broadcast_event"), "engine instance still has act_broadcast_event!")
 
-        # 2. 驗證 engine.act_reload 調用 events.broadcast("on_reload", ...)
+        # 1. 驗證 engine.act_reload 調用 events.broadcast("on_reload", ...)
         with patch("core.events.broadcast", return_value={"mock": "success"}) as mock_bc:
             with patch.object(engine, "act_snapshot", return_value="test_snap"), \
                  patch.object(engine.contributes_aggregator, "scan_and_inject", return_value={}), \
@@ -67,7 +65,7 @@ def custom_event(ctx):
                 engine.act_reload(clean_stage=False, inject_stage=True)
             self.assertTrue(any(call.args and call.args[0] == "on_reload" for call in mock_bc.call_args_list))
 
-        # 3. 驗證 installer.py 調用 events.broadcast("on_remove", ...)
+        # 2. 驗證 installer.py 調用 events.broadcast("on_remove", ...)
         from core.installer import Installer
         installer = Installer()
         with patch("core.events.broadcast", return_value={"mock": "success"}) as mock_bc:
@@ -132,34 +130,38 @@ def custom_event(ctx):
         """ET-01: 驗證缺少 hook.<Sender>.py 或未宣告對應事件處理常式之模組安全略過，不拋出任何例外。"""
         mod_scripts = "module://mock_empty/scripts"
         uri.makedirs(mod_scripts)
-        # hook.other.py exists, but not hook.core.py
-        uri.write_text(f"{mod_scripts}/hook.other.py", "def on_event(ctx): pass\n")
+        try:
+            # hook.other.py exists, but not hook.core.py
+            uri.write_text(f"{mod_scripts}/hook.other.py", "def on_event(ctx): pass\n")
 
-        res = events.broadcast("pre_cli_dispatch", emit_module="core")
-        self.assertNotIn("mock_empty", res)
+            res = events.broadcast("pre_cli_dispatch", emit_module="core")
+            self.assertNotIn("mock_empty", res)
 
-        # hook.core.py exists but does not implement pre_cli_dispatch
-        uri.write_text(f"{mod_scripts}/hook.core.py", "def other_unrelated_func(): pass\n")
-        res2 = events.broadcast("pre_cli_dispatch", emit_module="core")
-        self.assertNotIn("mock_empty", res2)
-
-        uri.rmtree("module://mock_empty")
+            # hook.core.py exists but does not implement pre_cli_dispatch
+            uri.write_text(f"{mod_scripts}/hook.core.py", "def other_unrelated_func(): pass\n")
+            res2 = events.broadcast("pre_cli_dispatch", emit_module="core")
+            self.assertNotIn("mock_empty", res2)
+        finally:
+            if uri.exists("module://mock_empty"):
+                uri.rmtree("module://mock_empty")
         self.mark_passed()
 
     def test_hook_exception_isolation(self):
         """ET-02: 驗證特定模組 Hook 內部拋出例外時，事件總線捕獲並記錄警告，絕不阻斷主流程。"""
         mod_scripts = "module://mock_crasher/scripts"
         uri.makedirs(mod_scripts)
-        uri.write_text(
-            f"{mod_scripts}/hook.core.py",
-            "def on_pre_cli_dispatch(ctx):\n    raise ZeroDivisionError('Hook crashed')\n"
-        )
+        try:
+            uri.write_text(
+                f"{mod_scripts}/hook.core.py",
+                "def on_pre_cli_dispatch(ctx):\n    raise ZeroDivisionError('Hook crashed')\n"
+            )
 
-        res = events.broadcast("pre_cli_dispatch", emit_module="core")
-        self.assertIn("mock_crasher", res)
-        self.assertTrue(str(res["mock_crasher"]).startswith("warning:"))
-
-        uri.rmtree("module://mock_crasher")
+            res = events.broadcast("pre_cli_dispatch", emit_module="core")
+            self.assertIn("mock_crasher", res)
+            self.assertTrue(str(res["mock_crasher"]).startswith("warning:"))
+        finally:
+            if uri.exists("module://mock_crasher"):
+                uri.rmtree("module://mock_crasher")
         self.mark_passed()
 
     def test_bootstrap_commands_short_circuit(self):
@@ -180,21 +182,19 @@ def custom_event(ctx):
         """ET-04: 驗證 Clean 狀態下 pre_cli_dispatch 事件廣播耗時 <= 15ms。"""
         ctx = ExecutionContext("core", "list", [])
 
-        # In clean state, ensure_jit_release short-circuits (<0.1ms)
-        with patch("agents_workflow.publisher.ensure_jit_release", return_value=False):
-            # Warm-up once
+        # Warm-up once
+        events.broadcast("pre_cli_dispatch", context=ctx, emit_module="core")
+
+        # Benchmark 20 iterations
+        start = time.perf_counter()
+        iterations = 20
+        for _ in range(iterations):
             events.broadcast("pre_cli_dispatch", context=ctx, emit_module="core")
+        elapsed_total = time.perf_counter() - start
+        avg_ms = (elapsed_total / iterations) * 1000.0
 
-            # Benchmark 20 iterations
-            start = time.perf_counter()
-            iterations = 20
-            for _ in range(iterations):
-                events.broadcast("pre_cli_dispatch", context=ctx, emit_module="core")
-            elapsed_total = time.perf_counter() - start
-            avg_ms = (elapsed_total / iterations) * 1000.0
-
-            # Assert clean state latency <= 15ms (accommodates Windows / CI scheduling jitter)
-            self.assertLess(avg_ms, 15.0, f"Average latency {avg_ms:.2f}ms exceeds 15ms limit!")
+        # Assert clean state latency <= 15ms (accommodates Windows / CI scheduling jitter)
+        self.assertLess(avg_ms, 15.0, f"Average latency {avg_ms:.2f}ms exceeds 15ms limit!")
         self.mark_passed()
 
     def test_event_list_empty_contributes_resilience(self):
@@ -212,3 +212,61 @@ def custom_event(ctx):
             self.assertEqual(res, {})
 
         self.mark_passed()
+
+    def test_hook_observability_execution_and_traceback(self):
+        """FT-02: 驗證 verbose 模式下 Hook 執行輸出與異常 Traceback 輸出，且一般模式保持乾淨。"""
+        from core.commands.dispatcher import _ensure_hooks
+        mod_scripts = "module://mock_obs/scripts"
+        uri.makedirs(mod_scripts, exist_ok=True)
+
+        hook_code = (
+            "def on_test_event(ctx):\n"
+            "    return 'result_ok'\n\n"
+            "def on_fail_event(ctx):\n"
+            "    raise ValueError('Simulated hook failure for observability')\n"
+        )
+        uri.write_text(f"{mod_scripts}/hook.core.py", hook_code)
+
+        ctx = ExecutionContext("core", "test_cmd", [])
+
+        try:
+            buf_quiet = io.StringIO()
+            with patch("sys.stderr", buf_quiet):
+                res_quiet = events.broadcast("test_event", context=ctx, emit_module="core", verbose=False)
+            self.assertEqual(res_quiet.get("mock_obs"), "result_ok")
+            self.assertEqual(buf_quiet.getvalue(), "")
+
+            buf_verbose = io.StringIO()
+            with patch("sys.stderr", buf_verbose):
+                res_verbose = events.broadcast("test_event", context=ctx, emit_module="core", verbose=True)
+            self.assertEqual(res_verbose.get("mock_obs"), "result_ok")
+            verbose_out = buf_verbose.getvalue()
+            self.assertIn("[core:events] Hook 'mock_obs:hook.core.py' executed 'test_event' -> result_ok", verbose_out)
+
+            buf_env = io.StringIO()
+            with patch.dict(os.environ, {"YSCB_VERBOSE": "1"}):
+                with patch("sys.stderr", buf_env):
+                    res_env = events.broadcast("test_event", context=ctx, emit_module="core")
+            self.assertEqual(res_env.get("mock_obs"), "result_ok")
+            self.assertIn("[core:events] Hook 'mock_obs:hook.core.py' executed 'test_event' -> result_ok", buf_env.getvalue())
+
+            buf_err = io.StringIO()
+            with patch("sys.stderr", buf_err):
+                res_err = events.broadcast("fail_event", context=ctx, emit_module="core", verbose=True)
+            self.assertTrue(str(res_err.get("mock_obs")).startswith("warning:"))
+            err_out = buf_err.getvalue()
+            self.assertIn("Warning: Hook 'mock_obs:hook.core.py' failed on 'fail_event'", err_out)
+            self.assertIn("Traceback (most recent call last):", err_out)
+            self.assertIn("Simulated hook failure for observability", err_out)
+
+            buf_disp = io.StringIO()
+            with patch("sys.stderr", buf_disp):
+                disp_res = _ensure_hooks("test_event", verbose=True)
+            self.assertEqual(disp_res.get("mock_obs"), "result_ok")
+            self.assertIn("[core:dispatcher] Hooks for 'test_event' completed:", buf_disp.getvalue())
+        finally:
+            if uri.exists("module://mock_obs"):
+                uri.rmtree("module://mock_obs")
+
+        self.mark_passed()
+

@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_23_1122_ecosystem_modules_hardening_and_test_purification (In Progress)
+
+### sub_01_core_microkernel_and_tests (Completed)
+- **`core` 微內核去耦合純化、CLI 驗證／熱派發／組態診斷強化與測試套件純化收斂**：
+  - **微內核去耦合與死代碼清除 (`C-01`, `FR-01`, `T-03`)**：自 `core/providers.py` 移除 11 個遺留之 `get_phase*_cli_guide` 函式、自 `core/uri.py` `format_undefined_uri_hint()` 移除 `agents-workflow` 硬編碼特判，並自 `core/contributes.py` 與 `core/__init__.py` 移除已廢棄之 `print_global_help()` 死代碼與對應測試墓碑。
+  - **CLI 驗證、多層熱派發與組態診斷補齊 (`C-02` ~ `C-06`, `FR-02` ~ `FR-06`, `EC-01` ~ `EC-07`)**：擴充 `contributes_cmd.check_contributes()` 支援 `config://<target>/contribute.json` 單檔父目錄目標推導、外殼剝離與模組級聯合掃描；修復 `dispatcher._try_hot_dispatch()` 支援 `cmd_path: List[str]` 完整傳遞多層子命令路徑；實作 `Installer.cmd_list(remote=True)` 遠端套件探測並修正 `cmd_update()` 先執行 `act_reload` 再觸發 `act_migrate` 之遷移時序；新增 `config inspect`、`config unset` 與 `config list --local` CLI 指令，並於 `dispatcher.py` Step 8 統一攔截群組節點未知子命令與無參數 `HelpRenderer` 渲染；登錄 `[DN-13]`。
+  - **測試套件純化收斂與漏測補盲 (`T-01` ~ `T-06`, `FR-07` ~ `FR-10`)**：刪除 `test_contributes_help.py` 並將 7 個碎片測試檔無損收斂至對應子系統測試集；實質改寫 5 個虛假／過寬測試（`sync_pip_dependencies`、損毀 Zip 雙路徑、`act_migrate` 軌跡與跨大版本略過、`cmd_status` 雙態輸出）；清除跨模組 `agents-workflow` patch 依賴、全面補齊 `@require` 與 `tearDown`/`try...finally` 沙盒清理；新增 `contributes check` 負向攔截、`OptionResolver` `--` 終止符與布林反轉、`cmd_update` 端到端升級與 Major Lock 測試，全模組 **193/193 單元測試 100% 通過**並完成 `core@build` 熱部署。
+
 ## 2026_10_23_1314_agents_workflow_aci_and_delegation_evolution (In Progress)
 
 ### sub_03_testing_sop_and_subagent_isolation (Completed)

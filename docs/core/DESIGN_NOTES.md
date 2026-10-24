@@ -46,6 +46,7 @@ last_updated: "2026-10-15"
 | **[DN-10](#dn-10-virtiofs-容器掛載點-_can_symlink-動態探測與實體拷貝降級-原-dn-17)** | `DN-17` | `virtiofs` 容器掛載點 `_can_symlink()` 動態探測與實體拷貝降級 | `source/core/core/pip_manager.py` | ⚠️ WARNING |
 | **[DN-11](#dn-11-core__init__py-pep-562-延遲載入與-coreevents-零-atomicengine-反向依賴-原-dn-18--dn-22)** | `DN-18`<br/>`DN-22` | `core/__init__.py` PEP 562 延遲載入與 `core.events` 零 `AtomicEngine` 反向依賴 | `source/core/core/__init__.py`<br/>`source/core/core/events.py` | 🚨 CAUTION |
 | **[DN-12](#dn-12-vfs-同目錄原子替換防同前綴穿越mtime-快取與宿主自更新-url-物理正交分離-原-dn-20--dn-26--dn-28)** | `DN-20`<br/>`DN-26`<br/>`DN-28` | VFS 同目錄原子替換、防同前綴穿越、`mtime` 快取、宿主自更新 URL 分離與零盲猜自舉 | `source/core/core/vfs/`<br/>`source/core/core/uri.py`<br/>`yscb.py` | 🚨 CAUTION |
+| **[DN-13](#dn-13-宣告式群組雙軌-help-路由與-contributes-check-專案級覆寫剝殼)** | `DN-AW-13` | 宣告式群組雙軌 Help 路由與 `contributes check` 專案級覆寫剝殼 | `source/core/core/commands/` | ⚠️ WARNING |
 
 ---
 
@@ -183,3 +184,17 @@ last_updated: "2026-10-15"
 - **防禦宣告**：
   > [!CAUTION]
   > **原子寫入臨時檔嚴禁建立於系統 `/tmp`！路徑邊界校驗必須包含 `+ os.sep`！嚴禁在 `yscb.py` 中對 `provider` 參數進行字串切分來推導 `yscb.py` 自更新網址，或於探測/還原失敗時硬編碼偽造預設版本號！**
+
+---
+
+### [DN-13] 宣告式群組雙軌 Help 路由與 `contributes check` 專案級覆寫剝殼
+
+- **核心決策**：
+  1. **步驟 7 無參數預設行為保留 vs. 步驟 8 未知子指令強制攔截**：`dispatcher.py` 在分發命令時，若群組節點未帶子命令且定義了處理函式（`has_fn=True`），優先保留模組預設動作（如 `agents-workflow plan` 自動執行 `plan_status`）；但若輸入了非 `-` 開頭之未知子命令，且該節點不接受位置參數，則強制移除 `has_fn` 繞過，一律透過 `_suggest_command` 輸出錯誤並提供模糊拼寫建議。
+  2. **`core/scripts/cli.py` 內建群組函式 fallback 轉調 `HelpRenderer`**：`config`、`uri`、`event`、`contributes` 四個手動分發函式在無參數時，統一轉調 `HelpRenderer.render_cmd_help`，杜絕手寫輸出分歧。
+  3. **`contributes check` 單檔模式父目錄推導與 `<target>` 外層剝殼**：當對 `config://<target>/contribute.json` 執行檢驗時，檢驗器自動以父目錄 `<target>` 作為目標模組，並支援讀取外層包覆之 `{ "<target>": { ... } }` 結構進行驗證。
+- **背後考量**：統一全系統 CLI 體驗與模糊拼寫建議，同時兼顧跨模組預設動作與單元測試相容性；支援專案層級覆寫設定之 Schema 剛性檢查。
+- **防禦宣告**：
+  > [!WARNING]
+  > **嚴禁在 `dispatcher.py` 步驟 7 一刀切強制輸出 Help 覆蓋所有模組群組節點的無參數預設動作！專案級 `contribute.json` 驗證必須維持外層剝殼相容！**
+

@@ -83,7 +83,6 @@ class TestCoreContributes(YSCBTestCase):
     @require(Requirement.ENV)
     def test_contribute_json_override_and_local_ignored(self):
         """FT-05, EC-04: Verify project contribute.json overrides contributes, and contribute.local.json is ignored."""
-        # 1. Setup mock contribute.json in config://core/contribute.json
         proj_contrib = {
             "commands": {
                 "custom_override_cmd": {
@@ -93,34 +92,36 @@ class TestCoreContributes(YSCBTestCase):
             }
         }
         uri.makedirs("config://core", exist_ok=True)
-        uri.write_json("config://core/contribute.json", proj_contrib)
-
-        # 2. Setup mock contribute.local.json (should be ignored)
-        uri.write_json("config://core/contribute.local.json", {
-            "commands": {
-                "ignored_local_cmd": {"description": "should not appear"}
-            }
-        })
-
-        # 3. Rescan
-        res = self.aggregator.scan_and_inject()
-        core_res = res.get("core", {})
-        commands = core_res.get("commands", {})
-
-        # Assert contribute.json was merged
-        self.assertIn("custom_override_cmd", commands)
-        self.assertEqual(commands["custom_override_cmd"]["description"], "Project specific command override")
-
-        # Assert contribute.local.json was ignored
-        self.assertNotIn("ignored_local_cmd", commands)
-
-        # Cleanup
         try:
-            uri.remove("config://core/contribute.json")
-            uri.remove("config://core/contribute.local.json")
-        except Exception:
-            pass
-        self.aggregator.scan_and_inject()
+            # 1. Setup mock contribute.json in config://core/contribute.json
+            uri.write_json("config://core/contribute.json", proj_contrib)
+
+            # 2. Setup mock contribute.local.json (should be ignored)
+            uri.write_json("config://core/contribute.local.json", {
+                "commands": {
+                    "ignored_local_cmd": {"description": "should not appear"}
+                }
+            })
+
+            # 3. Rescan
+            res = self.aggregator.scan_and_inject()
+            core_res = res.get("core", {})
+            commands = core_res.get("commands", {})
+
+            # Assert contribute.json was merged
+            self.assertIn("custom_override_cmd", commands)
+            self.assertEqual(commands["custom_override_cmd"]["description"], "Project specific command override")
+
+            # Assert contribute.local.json was ignored
+            self.assertNotIn("ignored_local_cmd", commands)
+        finally:
+            for u in ("config://core/contribute.json", "config://core/contribute.local.json"):
+                if uri.exists(u):
+                    try:
+                        uri.remove(u)
+                    except Exception:
+                        pass
+            self.aggregator.scan_and_inject()
         self.mark_passed()
 
 

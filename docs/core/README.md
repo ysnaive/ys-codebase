@@ -149,10 +149,18 @@ python yscb.py contributes check [module]   # 校驗模組 contributes 宣告是
 python yscb.py install <module>[@version] [--provider="<source>"] [--force]
 python yscb.py update [<module>] [--provider="<source>"]
 python yscb.py remove <module> [--clean] [--purge]
-python yscb.py list
+python yscb.py list [--remote] [--provider="<source>"]
 python yscb.py status
 python yscb.py rollback [snapshot_id]
 python yscb.py reload
+
+# 4. 組態管理與自省 (Config CLI)
+python yscb.py config list [--local] [--mod=<module>] [--json]
+python yscb.py config get <module> [key] [--json]
+python yscb.py config set <module> <key> <val> [--local]
+python yscb.py config inspect <module> <key> [--json]
+python yscb.py config unset <module> <key> [--local]
+python yscb.py config reload [module]
 ```
 
 ---

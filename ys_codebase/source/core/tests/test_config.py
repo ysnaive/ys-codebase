@@ -13,12 +13,25 @@ from core import config
 from core import uri
 
 
+@require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
 class TestConfigManager(YSCBTestCase):
     """測試 core.config 核心管理器、雙層深層合併、mtime 自愈與 CLI 指令。"""
 
     def setUp(self):
         super().setUp()
         config.reload()
+
+    def tearDown(self):
+        # 遍歷清理所有 test_mod_* 測試建立之目錄，確保零殘留
+        for mod in ["test_mod_get", "test_mod_override", "test_mod_delete", "test_mod_cli", "test_mod_inspect", "test_mod_clean_cfg", "test_mod_raw_inspect"]:
+            cfg_dir = f"config://{mod}"
+            if uri.exists(cfg_dir):
+                uri.rmtree(cfg_dir)
+            mod_dir = f"module://{mod}"
+            if uri.exists(mod_dir):
+                uri.rmtree(mod_dir)
+        config.reload()
+        super().tearDown()
 
     def test_config_get_dot_notation(self):
         """FT-01: 驗證 Config SDK 點分隔查詢與巢狀結構解析。"""
@@ -152,6 +165,66 @@ class TestConfigManager(YSCBTestCase):
         # 測試 list
         ret_list = cmd_config(["list", f"--mod={mod}"])
         self.assertEqual(ret_list, 0)
+
+        # C-05 / FT-05 / EC-05 / EC-06: 測試 list --local、inspect 與 unset
+        import io
+        from contextlib import redirect_stdout
+        from core.commands.bags import CmdBags, CmdOption
+
+        config.set(mod, "foo.bar", "local_override_val", local=True)
+
+        # 1. config_list --local 僅輸出 local 層
+        buf_local_list = io.StringIO()
+        with redirect_stdout(buf_local_list):
+            ret_ll = cli_mod.config_list(CmdBags(
+                command="config list",
+                args=[mod],
+                options={"local": CmdOption(name="local", params=True)}
+            ))
+        self.assertEqual(ret_ll, 0)
+        self.assertIn("local_override_val", buf_local_list.getvalue())
+
+        # 2. config_inspect 輸出雙層診斷資訊與 --json 結構化輸出 (FT-05, EC-06)
+        buf_insp = io.StringIO()
+        with redirect_stdout(buf_insp):
+            ret_insp = cli_mod.config_inspect(CmdBags(
+                command="config inspect",
+                args=[mod, "foo.bar"],
+                options={"json": CmdOption(name="json", params=True)}
+            ))
+        self.assertEqual(ret_insp, 0)
+        insp_json = json.loads(buf_insp.getvalue())
+        self.assertEqual(insp_json["effective"], "local_override_val")
+        self.assertEqual(insp_json["project_value"], "hello_world")
+        self.assertEqual(insp_json["local_value"], "local_override_val")
+        self.assertTrue(insp_json["is_overridden"])
+
+        # EC-06: inspect 不存在的鍵值回傳 0 且 source 為 none
+        buf_insp_none = io.StringIO()
+        with redirect_stdout(buf_insp_none):
+            ret_insp_none = cli_mod.config_inspect(CmdBags(
+                command="config inspect",
+                args=[mod, "nonexistent.key"],
+                options={"json": CmdOption(name="json", params=True)}
+            ))
+        self.assertEqual(ret_insp_none, 0)
+        self.assertEqual(json.loads(buf_insp_none.getvalue())["source"], "none")
+
+        # 3. config_unset --local 移除 local 覆寫，並對不存在鍵值回傳 1 (FT-05, EC-05)
+        ret_unset_ok = cli_mod.config_unset(CmdBags(
+            command="config unset",
+            args=[mod, "foo.bar"],
+            options={"local": CmdOption(name="local", params=True)}
+        ))
+        self.assertEqual(ret_unset_ok, 0)
+        self.assertEqual(config.get(mod, "foo.bar"), "hello_world")
+
+        ret_unset_missing = cli_mod.config_unset(CmdBags(
+            command="config unset",
+            args=[mod, "nonexistent.key"],
+            options={}
+        ))
+        self.assertEqual(ret_unset_missing, 1)
         self.mark_passed()
 
     def test_config_get_raw_and_inspect(self):
@@ -190,6 +263,57 @@ class TestConfigManager(YSCBTestCase):
         self.assertEqual(insp_none["source"], "none")
         self.assertIsNone(insp_none["effective"])
         self.mark_passed()
+
+    def test_config_local_no_unwanted_creation_and_project_hierarchy(self):
+        """FT-01: 驗證模組部署時不預設生成空/預設 config.local.json 遮蔽 config.project.json。"""
+        from core.engine import AtomicEngine
+        mod_name = "test_mod_clean_cfg"
+        mod_uri = f"module://{mod_name}"
+        uri.makedirs(f"{mod_uri}/configurable", exist_ok=True)
+
+        proj_payload = {
+            "setting_a": "value_a",
+            "setting_b": 123
+        }
+        uri.write_json(f"{mod_uri}/configurable/config.project.json", proj_payload, indent=2)
+
+        engine = AtomicEngine()
+        cfg_path, host_cfg = engine._get_config()
+        orig_installed = dict(host_cfg.get("installed_modules", {}))
+        host_cfg.setdefault("installed_modules", {})[mod_name] = {"version": "0.1.0"}
+        engine._save_config(cfg_path, host_cfg)
+
+        try:
+            engine.act_deploy_configs_from_modules()
+
+            cfg_proj_uri = f"config://{mod_name}/config.project.json"
+            cfg_local_uri = f"config://{mod_name}/config.local.json"
+
+            self.assertTrue(uri.exists(cfg_proj_uri), "config.project.json must be materialized!")
+            loaded_proj = uri.read_json(cfg_proj_uri)
+            self.assertEqual(loaded_proj.get("setting_a"), "value_a")
+            self.assertEqual(loaded_proj.get("setting_b"), 123)
+
+            self.assertFalse(uri.exists(cfg_local_uri), "config.local.json should NOT be created automatically when empty!")
+
+            tpl_local_uri = f"module://{mod_name}/contributes/config.local.json"
+            uri.makedirs(f"module://{mod_name}/contributes", exist_ok=True)
+            uri.write_json(tpl_local_uri, {})
+            engine._seed_or_update_config(mod_name, f"module://{mod_name}/contributes")
+
+            config.reload(mod_name)
+            self.assertEqual(config.get(mod_name, "setting_a"), "value_a")
+            self.assertEqual(config.get(mod_name, "setting_b"), 123)
+
+            config.set(mod_name, "setting_a", "local_override_a", local=True)
+            self.assertEqual(config.get(mod_name, "setting_a"), "local_override_a")
+            self.assertEqual(config.get(mod_name, "setting_b"), 123)
+        finally:
+            host_cfg["installed_modules"] = orig_installed
+            engine._save_config(cfg_path, host_cfg)
+
+        self.mark_passed()
+
 
 
 

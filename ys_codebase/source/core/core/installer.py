@@ -298,6 +298,7 @@ class Installer:
         snap_id = self.engine.act_snapshot("pre_update")
         
         updated_any = False
+        migrations_to_run: List[Tuple[str, str, str]] = []
         try:
             self.engine.act_lock("update")
             for mod in targets:
@@ -363,14 +364,15 @@ class Installer:
                     print(f"[core:update] Updating '{mod}' from {cur_ver} -> {latest_ver}...")
                     self.engine.act_prepare([(mod, latest_ver)], provider_url, force=True)
                     self.engine.act_register(mod, latest_ver, provider_url)
-                    # Run migration ladder
-                    self.engine.act_migrate(mod, cur_ver, latest_ver)
+                    migrations_to_run.append((mod, cur_ver, latest_ver))
                     updated_any = True
                 else:
                     print(f"[core:update] Module '{mod}' is already up-to-date (v{cur_ver}).")
             
             if updated_any:
                 self.engine.act_reload(clean_stage=True, inject_stage=True)
+                for mod, old_v, new_v in migrations_to_run:
+                    self.engine.act_migrate(mod, old_v, new_v)
                 events.broadcast("on_update", ExecutionContext("core", "update", targets), emit_module="core")
                 self.sync_pip_dependencies()
                 try:
@@ -442,20 +444,100 @@ class Installer:
     def cmd_list(self, remote: bool = False, provider: Optional[str] = None) -> int:
         cfg_path, cfg = self.engine._get_config()
         installed = cfg.get("installed_modules", {})
-        
-        print("-" * 65)
-        print(f"{'Module Name':<20} {'Version':<10} {'Provider':<15} {'Status':<15}")
-        print("-" * 65)
-        
-        if not installed:
-            print("  (No modules installed)")
+
+        if not remote:
+            print("-" * 65)
+            print(f"{'Module Name':<20} {'Version':<10} {'Provider':<15} {'Status':<15}")
+            print("-" * 65)
+            if not installed:
+                print("  (No modules installed)")
+            else:
+                for mod, meta in installed.items():
+                    ver = meta.get("version", "unknown")
+                    prov = meta.get("provider", "local")
+                    status = "Installed" if uri.exists(f"module://{mod}") else "Missing files"
+                    print(f"{mod:<20} {ver:<10} {prov:<15} {status:<15}")
+            print("-" * 65)
+            return 0
+
+        # remote == True: 探測可用模組與最新版本
+        default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider")
+        provider_url = provider or default_provider
+        if not provider_url:
+            print("[core:list] Error: No default_provider configured and no --provider specified.")
+            return 1
+
+        print("-" * 75)
+        print(f"{'Module Name':<20} {'Latest Ver':<12} {'Provider':<25} {'Local Status':<15}")
+        print("-" * 75)
+
+        available_modules: Dict[str, str] = {}
+        # 1. 探測 provider 是否為本地目錄
+        local_base = None
+        if provider_url.startswith("file://"):
+            import urllib.request
+            local_base = urllib.request.url2pathname(provider_url[7:])
+        elif not provider_url.startswith(("http://", "https://")):
+            local_base = os.path.normpath(provider_url)
+
+        if local_base and os.path.isdir(local_base):
+            # 遍歷子目錄尋找 index.json 或 release/<mod>/index.json
+            sub_dirs = [local_base]
+            rel_dir = os.path.join(local_base, "release")
+            if os.path.isdir(rel_dir):
+                sub_dirs.append(rel_dir)
+            for search_dir in sub_dirs:
+                try:
+                    for entry in os.listdir(search_dir):
+                        e_path = os.path.join(search_dir, entry)
+                        idx_file = os.path.join(e_path, "index.json")
+                        if os.path.isfile(idx_file):
+                            try:
+                                with open(idx_file, "r", encoding="utf-8") as f:
+                                    idx_data = json.load(f)
+                                    latest = idx_data.get("latest") or (idx_data.get("versions", [None])[-1] if isinstance(idx_data.get("versions"), list) else "unknown")
+                                    if latest:
+                                        available_modules[entry] = str(latest)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+        # 2. 若為 HTTP 遠端或本地未掃描到，嘗試以 root index.json 探測
+        if not available_modules:
+            ok, res = self.engine.act_fetch(provider_url, "index.json")
+            if ok and isinstance(res, dict):
+                mods_dict = res.get("modules", {})
+                if isinstance(mods_dict, dict):
+                    for m, m_info in mods_dict.items():
+                        latest = m_info.get("latest") if isinstance(m_info, dict) else str(m_info)
+                        available_modules[m] = latest or "unknown"
+
+        # 3. 若仍為空，嘗試根據已安裝或常見模組逐一探測
+        if not available_modules:
+            candidate_mods = set(list(installed.keys()) + ["core", "dev", "server", "knowledge-db", "agents-workflow"])
+            for m in sorted(candidate_mods):
+                ok, res = self.engine.act_fetch(provider_url, f"{m}/index.json")
+                if ok and isinstance(res, dict):
+                    latest = res.get("latest") or (res.get("versions", [None])[-1] if isinstance(res.get("versions"), list) else None)
+                    if latest:
+                        available_modules[m] = str(latest)
+
+        if not available_modules:
+            print(f"  (No remote modules found at provider: {provider_url})")
+            print("-" * 75)
+            return 1
         else:
-            for mod, meta in installed.items():
-                ver = meta.get("version", "unknown")
-                prov = meta.get("provider", "local")
-                status = "Installed" if uri.exists(f"module://{mod}") else "Missing files"
-                print(f"{mod:<20} {ver:<10} {prov:<15} {status:<15}")
-        print("-" * 65)
+            for mod in sorted(available_modules.keys()):
+                latest_ver = available_modules[mod]
+                if mod in installed:
+                    loc_ver = installed[mod].get("version", "unknown")
+                    loc_status = f"Installed (v{loc_ver})"
+                else:
+                    loc_status = "Available"
+                print(f"{mod:<20} {latest_ver:<12} {provider_url:<25} {loc_status:<15}")
+
+        print("-" * 75)
         return 0
 
     def cmd_status(self) -> int:

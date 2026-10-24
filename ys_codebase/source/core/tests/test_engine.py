@@ -335,5 +335,32 @@ def on_test_event(context):
         uri.rmtree("config://mock_deploy_infill")
         self.mark_passed()
 
+    def test_dual_layer_snapshot_and_execution_context_immutability(self):
+        """Robustness: 驗證雙層快照完整還原與 ExecutionContext 屬性不可變性。"""
+        # 1. ExecutionContext 不可變性
+        ctx = ExecutionContext("core", "test_cmd", ["arg1"], {"key": "val"})
+        self.assertEqual(ctx.module_name, "core")
+        self.assertEqual(ctx.command, "test_cmd")
+        with self.assertRaises(Exception):
+            ctx.module_name = "mutated"
+
+        # 2. 雙層快照與還原
+        cfg_p = "config://core/config.project.json"
+        orig_p = uri.read_json(cfg_p) if uri.exists(cfg_p) else {}
+        snap_id = self.engine.act_snapshot("test_dual_snap")
+        try:
+            uri.write_json(cfg_p, {"project_root": "mutated_val"})
+            self.assertEqual(uri.read_json(cfg_p).get("project_root"), "mutated_val")
+            self.engine.act_restore_snapshot(snap_id)
+            restored_p = uri.read_json(cfg_p)
+            self.assertEqual(restored_p.get("project_root"), orig_p.get("project_root"))
+        finally:
+            if orig_p:
+                uri.write_json(cfg_p, orig_p)
+            uri.rmtree(f"snapshot://{snap_id}")
+
+        self.mark_passed()
+
+
 
 

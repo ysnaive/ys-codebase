@@ -285,26 +285,19 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft09_all_modules_cli_contract(self):
-        """FT-09: 驗證全生態系 5 大模組遷移後無殘留 process(args) 且定義精確命令函式。"""
+        """FT-09: 驗證 core 模組自身無殘留 process(args) 且定義精確命令函式。"""
         import importlib.util
-        for mod_name in ["core", "server", "dev", "knowledge-db", "agents-workflow"]:
-            mod_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", mod_name))
-            if mod_root not in sys.path:
-                sys.path.insert(0, mod_root)
-            cli_path = os.path.join(mod_root, "scripts", "cli.py")
-            spec = importlib.util.spec_from_file_location(f"{mod_name.replace('-', '_')}_test_cli", cli_path)
-            mod_obj = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod_obj)
-            self.assertFalse(hasattr(mod_obj, "process"), f"Module '{mod_name}' still defines legacy process()!")
-
-        # 抽樣斷言關鍵精確命令函式存在
         core_cli_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "cli.py"))
         spec_core = importlib.util.spec_from_file_location("core_scripts_cli_test", core_cli_path)
         core_cli = importlib.util.module_from_spec(spec_core)
         spec_core.loader.exec_module(core_cli)
+        self.assertFalse(hasattr(core_cli, "process"), "core cli still defines legacy process()!")
         self.assertTrue(callable(getattr(core_cli, "status", None)))
         self.assertTrue(callable(getattr(core_cli, "install", None)))
+        self.assertTrue(callable(getattr(core_cli, "config_inspect", None)))
+        self.assertTrue(callable(getattr(core_cli, "config_unset", None)))
         self.mark_passed()
+
 
     @require(Requirement.LOGIC)
     def test_ft10_symmetric_lifecycle_hooks(self):
@@ -617,6 +610,107 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                         mock_spawn.assert_called_once()
 
         self.mark_passed()
+
+    def test_hot_dispatch_subcommand_payload_and_stream(self):
+        """T-06 補盲 & FT-03 & EC-03: 驗證 _try_hot_dispatch 傳遞完整子指令路徑 Token 清單、處理串流輸出與斷線降級。"""
+        import tempfile
+        import json
+        import io
+        from core.commands.dispatcher import _try_hot_dispatch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_srv = os.path.join(tmp_dir, ".cache", "server")
+            os.makedirs(cache_srv, exist_ok=True)
+            with open(os.path.join(cache_srv, "daemon.json"), "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "port": 59999, "token": "test_token", "root": tmp_dir}, f)
+
+            captured_payload = {}
+            stream_lines = (
+                json.dumps({"type": "terminal_stream", "stream": "stdout", "text": "hot_out_ok\n"}) + "\n" +
+                json.dumps({"type": "terminal_stream", "stream": "stderr", "text": "hot_err_warn\n"}) + "\n" +
+                json.dumps({"type": "task_finish", "exit_code": 7}) + "\n"
+            ).encode("utf-8")
+
+            class DummyResp:
+                def __init__(self, data: bytes):
+                    self._buf = io.BytesIO(data)
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def read(self, n=1024):
+                    return self._buf.read(n)
+
+            def fake_urlopen(req, timeout=120.0):
+                nonlocal captured_payload
+                captured_payload = json.loads(req.data.decode("utf-8"))
+                return DummyResp(stream_lines)
+
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                with patch("core.commands.dispatcher.is_process_alive", return_value=True):
+                    with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                        res = _try_hot_dispatch("core", ["uri", "resolve"], ["project://AGENTS.md"], tmp_dir)
+                    self.assertEqual(res, 7)
+                    self.assertEqual(captured_payload.get("module"), "core")
+                    self.assertEqual(captured_payload.get("args"), ["uri", "resolve", "project://AGENTS.md"])
+                    self.assertIn("hot_out_ok", out_buf.getvalue())
+                    self.assertIn("hot_err_warn", err_buf.getvalue())
+
+            # EC-03: 連線失敗時返回 None 以便透明降級冷派發
+            with patch("urllib.request.urlopen", side_effect=OSError("Connection refused")):
+                with patch("core.commands.dispatcher.is_process_alive", return_value=True):
+                    res_fallback = _try_hot_dispatch("core", ["uri", "resolve"], ["project://AGENTS.md"], tmp_dir)
+                    self.assertIsNone(res_fallback)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_group_unknown_subcommand_interception_and_help(self):
+        """C-06 / FT-06 / ET-07: 驗證群組指令無參數時渲染 HelpRenderer，傳入未知子命令時由 Dispatcher 統一攔截並回傳 1。"""
+        out_buf = io.StringIO()
+        with redirect_stdout(out_buf):
+            ret_typo = dispatch(["uri", "reslove"])
+        self.assertEqual(ret_typo, 1)
+        out_str = out_buf.getvalue()
+        self.assertIn("Unknown subcommand 'reslove' for command 'uri'", out_str)
+        self.assertIn("Did you mean 'resolve'?", out_str)
+
+        out_cfg_typo = io.StringIO()
+        with redirect_stdout(out_cfg_typo):
+            ret_cfg_typo = dispatch(["config", "lits"])
+        self.assertEqual(ret_cfg_typo, 1)
+        self.assertIn("Unknown subcommand 'lits' for command 'config'", out_cfg_typo.getvalue())
+        self.assertIn("Did you mean 'list'?", out_cfg_typo.getvalue())
+
+        # 無參數調用群組指令輸出 AVAILABLE SUBCOMMANDS 並回傳 0
+        for grp in ("config", "uri", "event"):
+            grp_buf = io.StringIO()
+            with redirect_stdout(grp_buf):
+                ret_grp = dispatch([grp])
+            self.assertEqual(ret_grp, 0)
+            self.assertIn("AVAILABLE SUBCOMMANDS:", grp_buf.getvalue())
+
+        self.mark_passed()
+
+    def test_option_resolver_double_dash_and_bool_false(self):
+        """T-06 補盲: 驗證 OptionResolver 正確解析 -- 終止符與 --flag=false 布林反轉。"""
+        from core.commands.resolver import OptionResolver
+        from core.commands.registry import CommandSpec, OptionSpec
+        cmd_spec = CommandSpec(
+            name="dummy",
+            options={
+                "flag": OptionSpec(canonical_name="flag"),
+                "verbose": OptionSpec(canonical_name="verbose"),
+            }
+        )
+        raw_tokens = ["--flag=false", "--verbose", "--", "--not-an-option", "pos_arg"]
+        pos_args, resolved_opts = OptionResolver.resolve(cmd_spec, raw_tokens)
+
+        self.assertFalse(resolved_opts["flag"].params)
+        self.assertTrue(resolved_opts["verbose"].params)
+        self.assertEqual(pos_args, ["--not-an-option", "pos_arg"])
+        self.mark_passed()
+
 
 
 if __name__ == "__main__":

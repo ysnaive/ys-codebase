@@ -289,3 +289,189 @@ class TestDistributionLifecycle(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_restore_and_dirty_detection_cycle(self):
+        """FT-03 & FT-04: 驗證 _is_modules_dirty 與 cmd_restore 週期。"""
+        provider_dir = os.path.join(self.temp_dir, "provider")
+        os.makedirs(provider_dir, exist_ok=True)
+
+        mock_mod_name = "testmod"
+        mock_ver = "1.0.0"
+        pkg_dir = os.path.join(self.temp_dir, "src_pkg")
+        os.makedirs(pkg_dir, exist_ok=True)
+        with open(os.path.join(pkg_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": mock_mod_name, "version": mock_ver}, f)
+        os.makedirs(os.path.join(pkg_dir, "scripts"), exist_ok=True)
+        with open(os.path.join(pkg_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write("print('hello')\n")
+
+        mod_prov_dir = os.path.join(provider_dir, mock_mod_name)
+        os.makedirs(mod_prov_dir, exist_ok=True)
+        zip_p = os.path.join(mod_prov_dir, f"{mock_ver}.zip")
+        with zipfile.ZipFile(zip_p, "w") as zf:
+            for root, _, files in os.walk(pkg_dir):
+                for file in files:
+                    full_p = os.path.join(root, file)
+                    arcname = os.path.relpath(full_p, pkg_dir)
+                    zf.write(full_p, arcname)
+
+        host_dir = os.path.join(self.temp_dir, "host")
+        engine_dir = os.path.join(host_dir, "engine")
+        os.makedirs(host_dir, exist_ok=True)
+        os.makedirs(engine_dir, exist_ok=True)
+
+        installed = {
+            mock_mod_name: {
+                "version": mock_ver,
+                "provider": provider_dir
+            }
+        }
+        cfg_data = {
+            "yscb_root": "engine",
+            "default_provider": provider_dir,
+            "installed_modules": installed
+        }
+        with open(os.path.join(host_dir, "yscb.config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg_data, f, indent=2)
+
+        is_dirty, dirty_mods = yscb._is_modules_dirty(host_dir, "engine", installed)
+        self.assertTrue(is_dirty)
+        self.assertIn(mock_mod_name, dirty_mods)
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(host_dir)
+            ret = yscb.cmd_restore([])
+            self.assertEqual(ret, 0)
+        finally:
+            os.chdir(orig_cwd)
+
+        mat_mf = os.path.join(engine_dir, ".modules", mock_mod_name, "manifest.json")
+        self.assertTrue(os.path.isfile(mat_mf))
+
+        is_dirty_after, _ = yscb._is_modules_dirty(host_dir, "engine", installed)
+        self.assertFalse(is_dirty_after)
+        self.mark_passed()
+
+    def test_rev_02_auto_bootstrap_core_and_restore_on_fresh_clone(self):
+        """REV-02: 當 yscb.py 與 yscb.config.json 存在但 .modules 尚未下載時，自適應重下載 core 後觸發 restore。"""
+        provider_dir = os.path.join(self.temp_dir, "provider_clone")
+        os.makedirs(provider_dir, exist_ok=True)
+
+        for m_name, m_ver in [("core", "1.1.0.6"), ("appmod", "1.0.0.0")]:
+            pkg_dir = os.path.join(self.temp_dir, f"pkg_{m_name}")
+            os.makedirs(os.path.join(pkg_dir, "scripts"), exist_ok=True)
+            with open(os.path.join(pkg_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": m_name, "version": m_ver, "entry": "scripts/cli.py"}, f)
+            with open(os.path.join(pkg_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write("def status(cmd_bags): return 0\n")
+
+            mod_prov_dir = os.path.join(provider_dir, m_name)
+            os.makedirs(mod_prov_dir, exist_ok=True)
+            zip_p = os.path.join(mod_prov_dir, f"{m_ver}.zip")
+            with zipfile.ZipFile(zip_p, "w") as zf:
+                for root, _, files in os.walk(pkg_dir):
+                    for file in files:
+                        full_p = os.path.join(root, file)
+                        zf.write(full_p, os.path.relpath(full_p, pkg_dir))
+            with open(os.path.join(mod_prov_dir, "index.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": m_name, "versions": [m_ver]}, f)
+
+        host_dir = os.path.join(self.temp_dir, "host_fresh")
+        engine_dir = os.path.join(host_dir, "engine")
+        os.makedirs(host_dir, exist_ok=True)
+        os.makedirs(engine_dir, exist_ok=True)
+
+        installed = {
+            "core": {"version": "1.1.0.6", "provider": provider_dir},
+            "appmod": {"version": "1.0.0.0", "provider": provider_dir},
+        }
+        cfg_data = {
+            "yscb_root": "engine",
+            "default_provider": provider_dir,
+            "installed_modules": installed,
+        }
+        with open(os.path.join(host_dir, "yscb.config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg_data, f, indent=2)
+
+        def fake_dispatch_restore(mod_name, args):
+            self.assertEqual(mod_name, "core")
+            self.assertEqual(args, ["restore"])
+            yscb._bootstrap_package_from_provider(
+                host_dir, "engine", "appmod", "1.0.0.0", provider_dir,
+                os.path.join(engine_dir, ".modules", "appmod"),
+                os.path.join(engine_dir, ".mirror", "appmod"),
+            )
+            return 0
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(host_dir)
+            with patch.object(yscb, "dispatch_module", side_effect=fake_dispatch_restore):
+                ok = yscb._auto_bootstrap_and_restore_if_needed(host_dir, "engine", cfg_data, "status")
+                self.assertTrue(ok)
+        finally:
+            os.chdir(orig_cwd)
+
+        self.assertTrue(os.path.isfile(os.path.join(engine_dir, ".modules", "core", "manifest.json")))
+        self.assertTrue(os.path.isfile(os.path.join(engine_dir, ".modules", "appmod", "manifest.json")))
+        self.mark_passed()
+
+    def test_rev_02_missing_source_no_uncontrolled_fallback(self):
+        """REV-02: 當組態指定之 version/provider 來源已遺失時，禁止跨版本猜測 fallback，應阻斷並輸出手動修復建議。"""
+        import io
+        from contextlib import redirect_stdout
+
+        provider_dir = os.path.join(self.temp_dir, "provider_missing")
+        os.makedirs(os.path.join(provider_dir, "core"), exist_ok=True)
+        host_dir = os.path.join(self.temp_dir, "host_missing")
+        engine_dir = os.path.join(host_dir, "engine")
+        os.makedirs(host_dir, exist_ok=True)
+        os.makedirs(engine_dir, exist_ok=True)
+
+        cfg_data = {
+            "yscb_root": "engine",
+            "default_provider": provider_dir,
+            "installed_modules": {
+                "core": {"version": "1.1.0.6", "provider": provider_dir}
+            },
+        }
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ok = yscb._auto_bootstrap_and_restore_if_needed(host_dir, "engine", cfg_data, "status")
+
+        self.assertFalse(ok)
+        out = buf.getvalue()
+        self.assertIn("'core' 模組 (v1.1.0.6) 來源", out)
+        self.mark_passed()
+
+
+    def test_restore_prioritizes_dot_build_and_jit_lifecycle(self):
+        """FT-04, FT-05: 驗證 _restore_module_package 優先取用 .build/ 產物，且 Fresh Clone 與 Dirty 狀態精準判讀。"""
+        mock_yscb = os.path.join(self.temp_dir, "host_yscb")
+        dot_bld = os.path.join(mock_yscb, ".build", "test_mod")
+        dest_dir = os.path.join(mock_yscb, ".modules", "test_mod")
+        mirror_dir = os.path.join(mock_yscb, ".mirror", "test_mod")
+
+        os.makedirs(dot_bld, exist_ok=True)
+        dot_zip = os.path.join(dot_bld, "1.0.0.build.zip")
+        with zipfile.ZipFile(dot_zip, "w") as zf:
+            zf.writestr("manifest.json", json.dumps({"name": "test_mod", "version": "1.0.0.build"}))
+            zf.writestr("marker.txt", "from_dot_build")
+
+        ok = yscb._restore_module_package(
+            module_name="test_mod",
+            version="1.0.0.build",
+            provider_arg="none",
+            base_dir=self.temp_dir,
+            yscb_root="host_yscb",
+            dest_dir=dest_dir,
+            mirror_dir=mirror_dir
+        )
+        self.assertTrue(ok)
+        self.assertTrue(os.path.isfile(os.path.join(dest_dir, "marker.txt")))
+        with open(os.path.join(dest_dir, "marker.txt"), "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        self.assertEqual(content, "from_dot_build")
+        self.mark_passed()
+
+

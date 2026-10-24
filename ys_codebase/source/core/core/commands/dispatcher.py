@@ -92,10 +92,11 @@ def _suggest_command(unknown_cmd: str, candidate_pool: List[str]) -> Optional[st
     return matches[0] if matches else None
 
 
-def _try_hot_dispatch(module_name: str, cmd_name: str, args: List[str], yscb_abs: str) -> Optional[int]:
+def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], yscb_abs: str) -> Optional[int]:
     """
     管道 B：透過 Localhost HTTP 將 server_compatible 指令熱派發至常駐 Server Worker。
     若連線超時或失敗則返回 None，自動降級為本地冷派發。
+    支援 cmd_path_or_name 為 List[str] 或單一 str。
     """
     state_file = os.path.join(yscb_abs, ".cache", "server", "daemon.json")
     if not os.path.isfile(state_file):
@@ -118,9 +119,10 @@ def _try_hot_dispatch(module_name: str, cmd_name: str, args: List[str], yscb_abs
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+        dispatch_args = list(cmd_path_or_name) if isinstance(cmd_path_or_name, (list, tuple)) else [cmd_path_or_name]
         payload = {
             "module": module_name,
-            "args": [cmd_name] + args,
+            "args": dispatch_args + list(args),
             "cwd": os.getcwd(),
             "yscb_root": state.get("root", yscb_abs),
         }
@@ -554,30 +556,18 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
             return 0
 
     # 8. 檢查未知子指令
-    if cmd_spec and cmd_spec.cmd and sub_args and not sub_args[0].startswith("-"):
-        target_cli = _find_module_cli(module_name, yscb_abs)
-        has_fn = False
-        if target_cli:
-            func_name = "_".join(cmd_path).replace("-", "_")
-            try:
-                with open(target_cli, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-                    if f"def {func_name}(" in content or f"def cmd_{func_name}(" in content:
-                        has_fn = True
-            except Exception:
-                pass
-        if not has_fn:
-            bad_sub = sub_args[0]
-            sugg = _suggest_command(bad_sub, list(cmd_spec.cmd.keys()))
-            print(f"[yscb] Error: Unknown subcommand '{bad_sub}' for command '{cmd_disp_name}'.")
-            if sugg:
-                print(f"       Did you mean '{sugg}'?")
-            print(f"       Run 'python yscb.py {module_name} {cmd_disp_name} --help' for available subcommands.")
-            return 1
+    if cmd_spec and cmd_spec.cmd and not cmd_spec.args and sub_args and not sub_args[0].startswith("-"):
+        bad_sub = sub_args[0]
+        sugg = _suggest_command(bad_sub, list(cmd_spec.cmd.keys()))
+        print(f"[yscb] Error: Unknown subcommand '{bad_sub}' for command '{cmd_disp_name}'.")
+        if sugg:
+            print(f"       Did you mean '{sugg}'?")
+        print(f"       Run 'python yscb.py {module_name} {cmd_disp_name} --help' for available subcommands.")
+        return 1
 
     # 9. FR-06: 指令級 server_compatible 雙管道分流
     if cmd_spec is not None and cmd_spec.server_compatible:
-        hot_res = _try_hot_dispatch(module_name, cmd_disp_name, sub_args, yscb_abs)
+        hot_res = _try_hot_dispatch(module_name, cmd_path, sub_args, yscb_abs)
         if hot_res is not None:
             _maybe_check_and_print_updates()
             return hot_res

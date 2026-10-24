@@ -443,11 +443,69 @@
               ],
               "cons": []
             }
+          },
+          "inspect": {
+            "description": "Inspect effective value, source hierarchy and override status of a key",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "module": {
+                "description": "Target module name",
+                "required": true
+              },
+              "key": {
+                "description": "Configuration key to inspect",
+                "required": true
+              }
+            },
+            "options": {
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "探測特定組態覆蓋來源與有效值: python yscb.py config inspect <module> <key> [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "unset": {
+            "description": "Delete a configuration key from project or local overlay",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "module": {
+                "description": "Target module name",
+                "required": true
+              },
+              "key": {
+                "description": "Configuration key to unset",
+                "required": true
+              }
+            },
+            "options": {
+              "scope": {
+                "local": {
+                  "description": "Remove key from local machine overlay instead of project",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "刪除特定組態鍵: python yscb.py config unset <module> <key> [--local]"
+              ],
+              "cons": []
+            }
           }
         },
         "usage": {
           "pros": [
-            "模組組態管理: python yscb.py config list / get / set / reload"
+            "模組組態管理: python yscb.py config list / get / set / inspect / unset / reload"
           ],
           "cons": []
         }

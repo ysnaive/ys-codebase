@@ -11,6 +11,7 @@ from core import uri
 from core.engine import AtomicEngine
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
+import yscb as yscb_mod
 
 @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
 class TestRemoteZipBootstrap(YSCBTestCase):
@@ -40,13 +41,32 @@ class TestRemoteZipBootstrap(YSCBTestCase):
         return zip_path
 
     def test_corrupted_zip_fails_safely(self):
-        """ET-01: Verify corrupted zip payload fails safely without polluting mirror/ or modules/."""
+        """T-01 實質化：驗證損毀 Zip 傳入 fetch_and_extract_zip 及 engine.act_download 必定拋出 RuntimeError 且不殘留損毀檔案。"""
+        from unittest.mock import patch, MagicMock
+        from core.installer import fetch_and_extract_zip
+
         bad_zip = os.path.join(self.temp_dir, "bad.zip")
         with open(bad_zip, "wb") as f:
             f.write(b"NOT_A_VALID_ZIP_HEADER_DATA_12345")
-            
+
         self.assertFalse(zipfile.is_zipfile(bad_zip))
+        dest = os.path.join(self.temp_dir, "corrupted_extract")
+        with self.assertRaises(RuntimeError):
+            fetch_and_extract_zip(bad_zip, dest)
+
+        # 亦驗證透過 HTTP Provider 下載損毀 Zip 時 engine.act_download 攔截並拋出 RuntimeError，且 mirror 不殘留
+        class CorruptedResp:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return b"CORRUPTED_NON_ZIP_BYTES_PAYLOAD"
+
+        with patch("urllib.request.urlopen", return_value=CorruptedResp()):
+            with self.assertRaises(RuntimeError):
+                self.engine.act_download("corrupt_mod", "1.0.0.0", "https://example.com/release")
+
+        self.assertFalse(uri.exists("module.mirror://corrupt_mod/1.0.0.0.zip"))
         self.mark_passed()
+
 
     def test_local_provider_isomorphic_zip_ingestion(self):
         """FT-05 & ET-03: Verify downloading and ingesting module from local zip provider."""
@@ -134,23 +154,6 @@ class TestRemoteZipBootstrap(YSCBTestCase):
 
     def test_zip_slip_blocked_on_host_fetch_and_extract(self):
         """Security: Verify yscb._fetch_and_extract_zip blocks Zip Slip."""
-        import importlib.util
-        host_d, _ = uri._get_host_config()
-        candidates = [
-            os.path.join(host_d, "yscb.py"),
-            os.path.join(uri._get_yscb_root(), "yscb.py"),
-            os.path.join(os.path.dirname(uri._get_yscb_root()), "yscb.py"),
-            os.path.abspath("yscb.py")
-        ]
-        yscb_mod = None
-        for c in candidates:
-            if os.path.isfile(c):
-                spec = importlib.util.spec_from_file_location("yscb_test_load", c)
-                if spec and spec.loader:
-                    yscb_mod = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(yscb_mod)
-                    break
-                    
         self.assertIsNotNone(yscb_mod)
         zip_path = os.path.join(self.temp_dir, "evil_host.zip")
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:

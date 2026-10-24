@@ -259,13 +259,66 @@ class TestCoreURI(YSCBTestCase):
         self.assertIn("python yscb.py config set core project_root ./", h_proj)
 
         h_wf = uri.format_undefined_uri_hint("workflow.plans", "agents-workflow", "paths.plans")
-        self.assertIn("python yscb.py agents-workflow init --default -y", h_wf)
+        self.assertEqual(h_wf, "python yscb.py config set agents-workflow paths.plans <path>")
 
         h_custom = uri.format_undefined_uri_hint("custom.data", "my-mod", "data_dir")
         self.assertEqual(h_custom, "python yscb.py config set my-mod data_dir <path>")
 
         err = uri.UndefinedURIError("workflow.docs", "agents-workflow", "paths.docs")
         self.assertIn("Semantic URI 'workflow.docs://' is undefined (!undefined).", str(err))
-        self.assertIn("Quick fix: python yscb.py agents-workflow init --default -y", str(err))
+        self.assertIn("Quick fix: python yscb.py config set agents-workflow paths.docs <path>", str(err))
         self.mark_passed()
+
+    def test_invalid_uri_string_raises_value_error(self):
+        """Robustness: 驗證非法 URI 字串與未知協議拋出 ValueError。"""
+        with self.assertRaises(ValueError):
+            uri.resolve("relative/path/not/uri")
+        with self.assertRaises(ValueError):
+            uri.resolve("unknown_scheme://foo")
+        self.mark_passed()
+
+    def test_context_managers_auto_restore_and_exception_safety(self):
+        """Robustness: 驗證 module_scope 與 host_scope 上下文管理器自動復原與例外安全性。"""
+        orig_mod = uri.get_module_context()
+        with uri.module_scope("test_mod"):
+            self.assertEqual(uri.get_module_context(), "test_mod")
+        self.assertEqual(uri.get_module_context(), orig_mod)
+
+        try:
+            with uri.module_scope("temp_error_scope"):
+                raise RuntimeError("Intentional error")
+        except RuntimeError:
+            pass
+        self.assertEqual(uri.get_module_context(), orig_mod)
+        self.mark_passed()
+
+    def test_module_build_uri_resolution_and_perf(self):
+        """FT-02, ET-01, PT-01: 驗證 module.build:// 解析至 .build/ 與效能。"""
+        import time
+        bld_root = uri.resolve("module.build://")
+        self.assertTrue(".build" in bld_root)
+
+        bld_core = uri.resolve("module.build://core")
+        self.assertTrue(os.path.join(".build", "core") in bld_core)
+
+        # ET-01: 建立子目錄
+        target = "module.build://test_clean_sub_mod/1.0.0.build"
+        res = uri.resolve(target)
+        try:
+            uri.makedirs(target, exist_ok=True)
+            self.assertTrue(os.path.isdir(res))
+        finally:
+            if os.path.isdir(res):
+                os.removedirs(res)
+
+        # PT-01: 效能測試
+        start = time.perf_counter()
+        for _ in range(50):
+            uri.resolve("module.build://core")
+        elapsed = (time.perf_counter() - start) / 50
+        self.assertLess(elapsed, 0.005)
+        self.mark_passed()
+
+
+
 

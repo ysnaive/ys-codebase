@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from core import semver
     from core.context import ExecutionContext
     from core.engine import AtomicEngine
-    from core.contributes import ContributesAggregator, print_global_help
+    from core.contributes import ContributesAggregator
     from core.installer import Installer, generate_internal_gitignore
     from core import update_checker
     from core.update_checker import UpdateChecker
@@ -32,7 +32,6 @@ _MODULE_MAP = {
     "ExecutionContext": ("core.context", "ExecutionContext"),
     "AtomicEngine": ("core.engine", "AtomicEngine"),
     "ContributesAggregator": ("core.contributes", "ContributesAggregator"),
-    "print_global_help": ("core.contributes", "print_global_help"),
     "Installer": ("core.installer", "Installer"),
     "generate_internal_gitignore": ("core.installer", "generate_internal_gitignore"),
     "UpdateChecker": ("core.update_checker", "UpdateChecker"),
@@ -81,7 +80,6 @@ __all__ = [
     "ExecutionContext",
     "AtomicEngine",
     "ContributesAggregator",
-    "print_global_help",
     "Installer",
     "generate_internal_gitignore",
     "UpdateChecker",

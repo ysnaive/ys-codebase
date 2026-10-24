@@ -44,6 +44,7 @@ def config_list(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
     json_output = cmd_bags.has_option("json")
+    local_only = cmd_bags.has_option("local")
     mod_filter = cmd_bags.get_option_value("mod")
 
     mods = [mod_filter] if mod_filter else core_config.list_modules()
@@ -53,10 +54,14 @@ def config_list(cmd_bags: CmdBags) -> int:
 
     summary = {}
     for m in mods:
+        has_local = os.path.isfile(core_config.get_config_path(m, local=True))
+        if local_only and not has_local:
+            continue
+        cfg_data = core_config.get_raw(m, local=True) if local_only else core_config.get_all(m)
         summary[m] = {
-            "config": core_config.get_all(m),
+            "config": cfg_data,
             "has_project_config": os.path.isfile(core_config.get_config_path(m, local=False)),
-            "has_local_config": os.path.isfile(core_config.get_config_path(m, local=True)),
+            "has_local_config": has_local,
         }
 
     if json_output:
@@ -80,6 +85,60 @@ def config_list(cmd_bags: CmdBags) -> int:
             print("    • (empty)")
     print("=" * 80)
     return 0
+
+
+def config_inspect(cmd_bags: CmdBags) -> int:
+    """Inspect effective value, source hierarchy and override status of a key."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    if len(cmd_bags.args) < 2:
+        print("[core:config] Error: Module name and key required. (e.g. 'config inspect core project_root [--json]')")
+        return 1
+
+    mod_name, key = cmd_bags.args[0], cmd_bags.args[1]
+    json_output = cmd_bags.has_option("json")
+
+    res = core_config.inspect(mod_name, key)
+    if json_output:
+        import json
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"\nConfiguration Inspection: '{mod_name}' -> '{key}'")
+    print("-" * 60)
+    print(f"  Effective Value : {res.get('effective')}")
+    print(f"  Source Hierarchy: {res.get('source')}")
+    print(f"  Project Value   : {res.get('project_value')}")
+    print(f"  Local Value     : {res.get('local_value')}")
+    print(f"  Is Overridden   : {res.get('is_overridden')}")
+    print("-" * 60)
+    return 0
+
+
+def config_unset(cmd_bags: CmdBags) -> int:
+    """Delete a configuration key from project or local overlay."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    if len(cmd_bags.args) < 2:
+        print("[core:config] Error: Module name and key required. (e.g. 'config unset core project_root [--local]')")
+        return 1
+
+    mod_name, key = cmd_bags.args[0], cmd_bags.args[1]
+    local_flag = cmd_bags.has_option("local")
+
+    try:
+        deleted = core_config.delete(mod_name, key, local=local_flag)
+        tier_name = "config.local.json" if local_flag else "config.project.json"
+        if deleted:
+            print(f"[core:config] Successfully unset '{key}' from '{tier_name}' for module '{mod_name}'.")
+            return 0
+        else:
+            print(f"[core:config] Key '{key}' not found in '{tier_name}' for module '{mod_name}'.")
+            return 1
+    except Exception as e:
+        print(f"[core:config] Error unsetting config: {e}")
+        return 1
+
 
 
 def config_get(cmd_bags: CmdBags) -> int:
@@ -155,12 +214,12 @@ def config(cmd_bags: CmdBags) -> int:
     args = cmd_bags.args
 
     if not args:
-        print("YS-Codebase Module Configuration Manager")
-        print("Usage:")
-        print("  config list [--mod=<module>] [--json]        List module configurations")
-        print("  config get <module> [key] [--json]           Get effective configuration value")
-        print("  config set <module> <key> <val> [--local]    Set configuration value")
-        print("  config reload [module]                       Reload cached configuration")
+        from core.commands.help import HelpRenderer
+        from core.commands.dispatcher import _load_registry, _get_yscb_root
+        _, yscb_abs = _get_yscb_root()
+        reg = _load_registry(yscb_abs)
+        spec = reg.get_command("core", "config")
+        print(HelpRenderer.render_cmd_help("core", "config", spec))
         return 0
 
     sub_cmd = args[0]
@@ -171,6 +230,10 @@ def config(cmd_bags: CmdBags) -> int:
         return config_get(sub_bags)
     elif sub_cmd == "set":
         return config_set(sub_bags)
+    elif sub_cmd == "inspect":
+        return config_inspect(sub_bags)
+    elif sub_cmd == "unset":
+        return config_unset(sub_bags)
     elif sub_cmd == "reload":
         return config_reload(sub_bags)
     else:
@@ -266,12 +329,12 @@ def uri(cmd_bags: CmdBags) -> int:
     args = cmd_bags.args
 
     if not args:
-        print("YS-Codebase Semantic URI VFS CLI")
-        print("Usage:")
-        print("  uri list / uri --list             List all registered semantic URI schemes")
-        print("  uri resolve <path_or_uri>         Resolve semantic URI to absolute path")
-        print("  uri to-uri <abs_path>             Convert absolute path to semantic URI")
-        print("  uri check                         Health check all registered URI schemes")
+        from core.commands.help import HelpRenderer
+        from core.commands.dispatcher import _load_registry, _get_yscb_root
+        _, yscb_abs = _get_yscb_root()
+        reg = _load_registry(yscb_abs)
+        spec = reg.get_command("core", "uri")
+        print(HelpRenderer.render_cmd_help("core", "uri", spec))
         return 0
 
     sub_cmd = args[0]
@@ -401,7 +464,15 @@ def event(cmd_bags: CmdBags) -> int:
     """Ecosystem Event Registry and Inspector (Group Dispatcher)."""
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
-    sub_cmd = cmd_bags.args[0] if cmd_bags.args else "list"
+    if not cmd_bags.args:
+        from core.commands.help import HelpRenderer
+        from core.commands.dispatcher import _load_registry, _get_yscb_root
+        _, yscb_abs = _get_yscb_root()
+        reg = _load_registry(yscb_abs)
+        spec = reg.get_command("core", "event")
+        print(HelpRenderer.render_cmd_help("core", "event", spec))
+        return 0
+    sub_cmd = cmd_bags.args[0]
     if sub_cmd == "list":
         return event_list(cmd_bags)
     else:
@@ -435,8 +506,16 @@ def contributes(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
     args = cmd_bags.args
-    sub_cmd = args[0] if args else "list"
-    sub_args = args[1:] if args else []
+    if not args:
+        from core.commands.help import HelpRenderer
+        from core.commands.dispatcher import _load_registry, _get_yscb_root
+        _, yscb_abs = _get_yscb_root()
+        reg = _load_registry(yscb_abs)
+        spec = reg.get_command("core", "contributes")
+        print(HelpRenderer.render_cmd_help("core", "contributes", spec))
+        return 0
+    sub_cmd = args[0]
+    sub_args = args[1:]
     sub_bags = CmdBags(
         raw_cmd=cmd_bags.raw_cmd,
         command=sub_cmd,

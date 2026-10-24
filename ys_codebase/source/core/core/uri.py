@@ -74,11 +74,6 @@ def format_undefined_uri_hint(
     bind = binding or ("project_root" if scheme == "project" else "unknown")
     if scheme == "project" or (prov == "core" and bind == "project_root"):
         return "python yscb.py config set core project_root ./"
-    if prov == "agents-workflow" or scheme.startswith("workflow."):
-        return (
-            f"python yscb.py agents-workflow init --default -y "
-            f"(or: python yscb.py config set {prov} {bind} <path>)"
-        )
     return f"python yscb.py config set {prov} {bind} <path>"
 
 
