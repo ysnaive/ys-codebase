@@ -15,7 +15,11 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from knowledge_db.bundler import SemanticBundle, SemanticBundler
+from knowledge_db.bundler import (
+    _parse_file_task_worker,
+    SemanticBundle,
+    SemanticBundler,
+)
 from knowledge_db.exceptions import KnowledgeDBError
 from knowledge_db.schema import LanguageType, SpaceConfig, SymbolKind, UnifiedSymbol
 from knowledge_db.space import SpaceManager
@@ -39,7 +43,6 @@ class TestBundler(YSCBTestCase):
             space_name="test_space",
             created_at="2026-08-28T00:00:00Z",
             symbols=[sym],
-            thesaurus=[["引擎", "engine"]],
             metadata={"total_files": 1},
         )
 
@@ -53,7 +56,6 @@ class TestBundler(YSCBTestCase):
         self.assertEqual(restored.space_name, bundle.space_name)
         self.assertEqual(len(restored.symbols), 1)
         self.assertEqual(restored.symbols[0].name, "TestEngine")
-        self.assertEqual(restored.thesaurus, [["引擎", "engine"]])
 
         self.mark_passed()
 
@@ -75,7 +77,6 @@ class TestBundler(YSCBTestCase):
                 storage_dir=storage_dir,
                 contributes_data={
                     "spaces": {"multi_lang_space": space_cfg.to_dict()},
-                    "thesaurus": [["應用", "app", "application"]],
                 },
             )
 
@@ -85,7 +86,6 @@ class TestBundler(YSCBTestCase):
             bundle = bundler.bundle_space(space_cfg)
             self.assertEqual(bundle.space_name, "multi_lang_space")
             self.assertGreaterEqual(len(bundle.symbols), 2)
-            self.assertEqual(len(bundle.thesaurus), 1)
 
             # 2. 導出 Bundle 檔案
             export_path = bundler.export_bundle(bundle)
@@ -95,6 +95,28 @@ class TestBundler(YSCBTestCase):
             imported_bundle = bundler.import_bundle(export_path)
             self.assertEqual(imported_bundle.space_name, "multi_lang_space")
             self.assertEqual(len(imported_bundle.symbols), len(bundle.symbols))
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_bundler_worker_parsing(self):
+        """FT-09: 驗證頂層工作者解析函式與錯誤容錯"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_file = Path(temp_dir) / "test_sample.py"
+            test_file.write_text("class SampleWorkerClass:\n    pass\n", encoding="utf-8")
+
+            task = ("test_key", str(test_file.resolve()), "test_sample.py", ["unified"])
+            c_key, sym_dicts, err = _parse_file_task_worker(task)
+
+            self.assertEqual(c_key, "test_key")
+            self.assertIsNone(err)
+            self.assertEqual(len(sym_dicts), 1)
+            self.assertEqual(sym_dicts[0]["name"], "SampleWorkerClass")
+
+            task_err = ("err_key", "non_existent.py", "non_existent.py", ["unified"])
+            c_key_e, sym_dicts_e, err_e = _parse_file_task_worker(task_err)
+            self.assertEqual(c_key_e, "err_key")
+            self.assertIsNotNone(err_e)
 
         self.mark_passed()
 

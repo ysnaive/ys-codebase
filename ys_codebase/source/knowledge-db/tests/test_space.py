@@ -19,6 +19,7 @@ from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 from knowledge_db.exceptions import InvalidSpaceConfigError, SpaceNotFoundError
 from knowledge_db.providers import get_knowledge_db_spaces
+from knowledge_db.schema import SpaceConfig
 from knowledge_db.space import SpaceManager
 
 
@@ -71,9 +72,6 @@ class TestSpaceManager(YSCBTestCase):
             self.assertIn("proj_space", spaces)
             self.assertIn("shared_space", spaces)
             self.assertEqual(spaces["shared_space"].description, "Project contribute.json 覆蓋版本")
-
-            thesaurus = sm.load_thesaurus()
-            self.assertEqual(len(thesaurus), 2)
 
         self.mark_passed()
 
@@ -177,8 +175,8 @@ class TestSpaceManager(YSCBTestCase):
         with open(mod_contrib, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.assertIn("languages", data)
-        self.assertIn("thesaurus", data)
-        self.assertIn("aliases", data)
+        self.assertNotIn("thesaurus", data)
+        self.assertNotIn("aliases", data)
 
         self.mark_passed()
 
@@ -227,35 +225,45 @@ class TestKnowledgeDBProviders(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_ft_01_get_knowledge_db_spaces_output_format(self):
         """FT-01: 驗證 get_knowledge_db_spaces 產出正確的 Markdown 空間速查表格"""
-        mock_contributes = {
-            "spaces": {
-                "alpha_space": {
-                    "description": "Alpha 領域空間",
-                    "include": ["module://alpha/docs"],
-                    "file_patterns": ["*.py", "*.md"],
-                    "origin": "module:alpha",
-                },
-                "beta_space": {
-                    "description": "Beta 核心源碼空間",
-                    "include": ["module://beta/src"],
-                    "origin": "module:beta",
-                },
-            }
+        from unittest.mock import patch
+        mock_spaces = {
+            "alpha_space": SpaceConfig(
+                name="alpha_space",
+                description="Alpha 領域空間",
+                include=["module://alpha/docs"],
+                file_patterns=["*.py", "*.md"],
+                origin="module:alpha",
+            ),
+            "beta_space": SpaceConfig(
+                name="beta_space",
+                description="Beta 核心源碼空間",
+                include=["module://beta/src"],
+                origin="module:beta",
+            ),
         }
 
-        mgr = SpaceManager(contributes_data=mock_contributes)
-        output = get_knowledge_db_spaces()
-        self.assertIn("| 空間名稱 (`--space=<name>`) | 來源定義 | 涵蓋路徑與包含範圍 | 語意說明 |", output)
-        self.assertIn("| :--- | :--- | :--- | :--- |", output)
+        with patch("knowledge_db.providers.SpaceManager") as mock_sm_cls:
+            mock_sm_inst = mock_sm_cls.return_value
+            mock_sm_inst.load_spaces.return_value = mock_spaces
+
+            output = get_knowledge_db_spaces()
+            self.assertIn("| 空間名稱 (`--space=<name>`) | 來源定義 | 涵蓋路徑與包含範圍 | 語意說明 |", output)
+            self.assertIn("**`alpha_space`**", output)
+            self.assertIn("**`beta_space`**", output)
+            self.assertIn("Alpha 領域空間", output)
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_ft_02_get_knowledge_db_spaces_empty_fallback(self):
         """FT-02: 驗證無任何空間時之安全降級輸出"""
-        mgr = SpaceManager(contributes_data={"spaces": {}})
-        spaces = mgr.load_spaces()
-        self.assertEqual(len(spaces), 0)
+        from unittest.mock import patch
+        with patch("knowledge_db.providers.SpaceManager") as mock_sm_cls:
+            mock_sm_inst = mock_sm_cls.return_value
+            mock_sm_inst.load_spaces.return_value = {}
+
+            output = get_knowledge_db_spaces()
+            self.assertIn("*(目前無已註冊空間)*", output)
 
         self.mark_passed()
 

@@ -28,7 +28,7 @@ last_updated: "2026-10-22"
 - **全空間聯集處理 (Union Scope)**：無單一 `default_space` 強制約定，全系統以所有有效空間之聯集作為全域處理範圍，並對重疊實體檔案進行 100% 唯一解析去重。
 - **極速二進位快照與雙軌熱自癒 (`unified.meta.bin` & Hot Healing)**：採用 Magic `YFP1` + `struct` 原生二進位快照搭配 `os.scandir` 微秒級變更嗅探；支援前台 JIT 差量熱修補與背景常駐 `KnowledgeDBServiceWorker` (500ms 防抖) 自動熱自癒。
 - **Tree-sitter 宣告式 AST 解析 (Universal AST)**：基於 `TreeSitterDriver` 與 S-Expression (`.scm`) 查詢規則，透過零特權自貢獻 (`contributes.knowledge-db.languages`) 原生支援 Python、C、C++、C#、JavaScript、TypeScript、Markdown、SPICE、HTML、CSS 等 10 大語言符號與調用點提取。
-- **雙軌 RRF 複合檢索與平滑降級 (Hybrid Search)**：結合中英混排分詞 (`MultilingualTokenizer`)、三階加權同義詞擴展、多欄位加權 BM25 與 FastEmbed ONNX 離線向量推論（動態維度解析，預設 `BAAI/bge-small-zh-v1.5` 為 `512-dim`），透過倒數排名融合 (RRF $k=60$) 精準召回，並具備 100% 剛性平滑降級純 BM25 保證。
+- **雙軌 RRF 複合檢索與平滑降級 (Hybrid Search)**：結合中英混排分詞 (`MultilingualTokenizer`)、多欄位加權 BM25 與 FastEmbed ONNX 離線向量推論（動態維度解析，預設 `BAAI/bge-small-zh-v1.5` 為 `512-dim`），透過倒數排名融合 (RRF $k=60$) 精準召回，並具備 100% 剛性平滑降級純 BM25 保證。
 - **跨檔案調用圖譜與影響面分析 (Call Graph & Impact)**：基於 `networkx.DiGraph` 與四階 FQN / Import 作用域消歧，支援上游調用者 (`callers`)、下游被調用者 (`callees`) 與多階重構爆炸半徑 (`impact`) 追蹤。
 
 ---
@@ -99,7 +99,7 @@ status = engine.status()
 print("Total spaces:", status["total_spaces"])
 
 # 2. 執行多欄位複合語意搜尋 (未建索引或變更時自動觸發 JIT 熱自癒)
-results = engine.search("PID 控制器速度輸出", limit=5, tier="snippet")
+results = engine.search("PID 控制器速度輸出", limit=5, snippet=True)
 for res in results:
     sym = res.symbol
     print(f"[{res.score:.2f}] {sym.kind.upper()}: {sym.name} ({sym.file_path}:{sym.line_number})")
@@ -107,9 +107,9 @@ for res in results:
     print(f"  命中: {', '.join(res.matched_terms)}")
 
 # 3. 調用圖譜與影響面查詢 (輕量 JIT 解耦，不觸發向量推論)
-callers = engine.callers("InvertedIndex.load_binary", tier="snippet")
-callees = engine.callees("IndexingPipeline.build_unified_index", tier="snippet")
-impact = engine.impact("UnifiedSymbol", max_depth=2)
+callers = engine.callers("InvertedIndex.load_binary", snippet=True)
+callees = engine.callees("IndexingPipeline.build_unified_index", snippet=True)
+impact = engine.impact("UnifiedSymbol", depth=2)
 
 # 4. 手動全量建置索引或清理快取
 engine.build_unified_index(force=True)

@@ -280,3 +280,17 @@ class TestServiceWorker(YSCBTestCase):
         p = worker._get_pipeline()
         self.assertIs(p, get_engine().pipeline)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_hook_server_no_duplicate_watcher(self):
+        """FT-REG: 驗證 scripts/hook.server.py 僅執行 pre_warm，不重複啟動私有 watcher 實例"""
+        import importlib.util
+        hook_path = Path(_pkg_root) / "scripts" / "hook.server.py"
+        spec = importlib.util.spec_from_file_location("hook_server", hook_path)
+        hook_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook_mod)
+
+        self.assertFalse(hasattr(hook_mod, "_watcher_instance"))
+        ret = hook_mod.on_worker_warming({"workspace_root": str(self.root_path)})
+        self.assertEqual(ret, "warming_started")
+        self.mark_passed()

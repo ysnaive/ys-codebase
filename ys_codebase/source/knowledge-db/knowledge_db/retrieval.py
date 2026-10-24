@@ -594,13 +594,11 @@ class BM25Engine:
     def __init__(
         self,
         tokenizer: Optional[CodeTokenizer] = None,
-        thesaurus: Optional[Any] = None,
         field_weights: Optional[Dict[str, float]] = None,
         k1: float = 1.5,
         b: float = 0.75,
     ):
         self.tokenizer = tokenizer or CodeTokenizer()
-        self.thesaurus = thesaurus
         self.field_weights = field_weights or dict(self.DEFAULT_WEIGHTS)
         self.k1 = k1
         self.b = b
@@ -646,13 +644,7 @@ class BM25Engine:
         if not base_tokens:
             return []
 
-        if self.thesaurus is not None and hasattr(self.thesaurus, "expand_query_weighted"):
-            weighted_tokens = self.thesaurus.expand_query_weighted(base_tokens)
-        elif self.thesaurus is not None and hasattr(self.thesaurus, "expand_query"):
-            expanded_raw = self.thesaurus.expand_query(base_tokens)
-            weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in expanded_raw]
-        else:
-            weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in base_tokens]
+        weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in base_tokens]
 
         # 2. 候選文檔計分累加器: doc_id -> (score, matched_terms, posting)
         doc_scores: Dict[str, float] = defaultdict(float)
@@ -786,18 +778,12 @@ class BM25Engine:
         raw_query = query.strip()
         allowed_ftypes = self._normalize_ftypes(flt.ftypes)
 
-        # 1. 分詞與同義詞擴展 (三階加權展開)
+        # 1. 分詞與詞彙加權
         base_tokens = self.tokenizer.tokenize(raw_query)
         if not base_tokens:
             return []
 
-        if self.thesaurus is not None and hasattr(self.thesaurus, "expand_query_weighted"):
-            weighted_tokens = self.thesaurus.expand_query_weighted(base_tokens)
-        elif self.thesaurus is not None and hasattr(self.thesaurus, "expand_query"):
-            expanded_raw = self.thesaurus.expand_query(base_tokens)
-            weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in expanded_raw]
-        else:
-            weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in base_tokens]
+        weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in base_tokens]
 
         # 2. 候選文檔計分累加器
         doc_scores: Dict[str, float] = defaultdict(float)

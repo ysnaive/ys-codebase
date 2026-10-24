@@ -95,6 +95,19 @@ class HybridSearchEngine:
         if not query or not str(query).strip():
             return []
 
+        # 規範化副檔名篩選集合 (支援逗號分隔或串列，去前綴點並轉小寫)
+        norm_ftypes: Optional[Set[str]] = None
+        if file_types:
+            norm_ftypes = set()
+            raw = [file_types] if isinstance(file_types, str) else list(file_types)
+            for item in raw:
+                for part in str(item).split(","):
+                    p = part.strip().lstrip(".").lower()
+                    if p:
+                        norm_ftypes.add(p)
+            if not norm_ftypes:
+                norm_ftypes = None
+
         # 1. 執行 BM25 倒排檢索 (擷取足夠候選集供融合)
         fetch_limit = max(limit * 3, 30)
         bm25_hits: List[Dict[str, Any]] = []
@@ -103,14 +116,18 @@ class HybridSearchEngine:
             raw_hits = self.inverted_index.search(
                 query=query,
                 limit=fetch_limit,
-                file_types=file_types,
+                file_types=list(norm_ftypes) if norm_ftypes else None,
             )
-            if spaces or kinds or languages:
+            if spaces or kinds or languages or norm_ftypes:
                 filtered_hits = []
                 for h in raw_hits:
                     sym = symbols_map.get(h["doc_id"])
                     if not sym:
                         continue
+                    if norm_ftypes:
+                        ext = sym.file_path.split(".")[-1].lower() if "." in sym.file_path else ""
+                        if ext not in norm_ftypes:
+                            continue
                     if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
                         continue
                     if kinds and sym.kind not in kinds:
@@ -127,7 +144,7 @@ class HybridSearchEngine:
                 spaces=spaces,
                 kinds=kinds,
                 languages=languages,
-                ftypes=file_types,
+                ftypes=list(norm_ftypes) if norm_ftypes else None,
                 limit=fetch_limit,
             )
             raw_res = self.bm25_engine.search(query=query, index=self.inverted_index, filter_cfg=flt)
@@ -179,9 +196,9 @@ class HybridSearchEngine:
             sym = symbols_map.get(doc_id)
             if sym is None:
                 continue
-            if file_types:
+            if norm_ftypes:
                 ext = sym.file_path.split(".")[-1].lower() if "." in sym.file_path else ""
-                if ext not in file_types and f".{ext}" not in file_types:
+                if ext not in norm_ftypes:
                     continue
             if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
                 continue

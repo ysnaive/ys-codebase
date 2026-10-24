@@ -257,7 +257,6 @@ class IndexingPipeline:
         call_sites, imports_map = self.bundler.extract_all_call_sites_and_imports()
         linker = TopologyLinker(
             symbols_map=idx.symbols,
-            thesaurus=None,
             tokenizer=self.tokenizer,
         )
         edges = linker.link_call_sites(call_sites, imports_map)
@@ -388,6 +387,7 @@ class IndexingPipeline:
                 all_new_symbols.extend(syms)
 
             old_doc_ids: Set[str] = set()
+            old_symbol_info: Dict[str, Tuple[str, str, str]] = {}
             dirty_paths_norm = {p.replace("\\", "/").lower() for p in dirty_keys}
             for doc_id, sym in list(self._unified_index.symbols.items()):
                 sym_path_norm = sym.file_path.replace("\\", "/").lower()
@@ -402,6 +402,11 @@ class IndexingPipeline:
                         break
                 if matched:
                     old_doc_ids.add(doc_id)
+                    old_symbol_info[doc_id] = (
+                        sym.file_path,
+                        sym.name,
+                        getattr(sym, "qualified_name", sym.name),
+                    )
 
             self._unified_index.patch_incremental(
                 dirty_file_paths=dirty_keys,
@@ -409,18 +414,50 @@ class IndexingPipeline:
                 tokenizer=self.tokenizer,
             )
 
-            # 差量修補調用圖譜
+            # 差量修補調用圖譜 (雙階入度保留與重鏈接)
             if self._call_graph_index is not None:
+                incoming_edges = self._call_graph_index.get_external_incoming_edges(old_doc_ids)
                 dirty_sites, dirty_imports = self.bundler.extract_dirty_call_sites_and_imports(diff_detail)
                 linker = TopologyLinker(
                     symbols_map=self._unified_index.symbols,
-                    thesaurus=None,
                     tokenizer=self.tokenizer,
                 )
                 new_edges = linker.link_call_sites(dirty_sites, dirty_imports)
+
+                # Stage 1 (Identity Remap) + Stage 2 (TopologyLinker Fallback)
+                reconnected_incoming_edges: List[Tuple[str, str, Optional[SymbolCallSite]]] = []
+                new_syms_by_identity: Dict[Tuple[str, str], UnifiedSymbol] = {}
+                for sym in all_new_symbols:
+                    norm_p = sym.file_path.replace("\\", "/").lower()
+                    new_syms_by_identity[(norm_p, sym.name)] = sym
+                    if getattr(sym, "qualified_name", None):
+                        new_syms_by_identity[(norm_p, sym.qualified_name)] = sym
+
+                for caller_id, old_callee_id, site in incoming_edges:
+                    target_new_id = None
+                    # Stage 1: Identity Remap
+                    if old_callee_id in old_symbol_info:
+                        old_p, old_name, old_qname = old_symbol_info[old_callee_id]
+                        old_norm_p = old_p.replace("\\", "/").lower()
+                        new_sym = new_syms_by_identity.get((old_norm_p, old_name)) or new_syms_by_identity.get((old_norm_p, old_qname))
+                        if new_sym is not None:
+                            target_new_id = new_sym.id
+
+                    # Stage 2: TopologyLinker Fallback
+                    if not target_new_id and site is not None:
+                        try:
+                            resolved_id = linker.resolve_call_site(site)
+                            if resolved_id and resolved_id in self._unified_index.symbols:
+                                target_new_id = resolved_id
+                        except Exception as e:
+                            logger.debug(f"TopologyLinker fallback resolution failed for site {site}: {e}")
+
+                    if target_new_id:
+                        reconnected_incoming_edges.append((caller_id, target_new_id, site))
+
                 self._call_graph_index.patch_incremental(
                     dirty_file_paths=dirty_keys,
-                    new_edges=new_edges,
+                    new_edges=new_edges + reconnected_incoming_edges,
                     old_symbol_ids=old_doc_ids,
                 )
                 self._call_graph_index.save_binary(graph_file, compresslevel=1)
@@ -765,15 +802,14 @@ class IndexingPipeline:
             return []
 
         enable_vec = getattr(self.config, "enable_vector_search", True)
-        can_use_vector = (
+        want_vectors = (
             enable_vec
             and not getattr(self, "_vector_degraded", False)
             and not lexical_only
-            and self.hybrid_engine.is_vector_available
         )
 
         unified_index = self._ensure_jit_index_ready(
-            require_vectors=can_use_vector,
+            require_vectors=want_vectors,
             auto_rebuild=auto_rebuild,
             verbose=verbose,
         )
@@ -781,7 +817,7 @@ class IndexingPipeline:
             return []
 
         target_spaces = [space] if isinstance(space, str) else list(space) if space else None
-        target_ftypes = [ftypes] if isinstance(ftypes, str) else list(ftypes) if ftypes else None
+        target_ftypes = self._normalize_ftypes(ftypes)
 
         flt = QueryFilter(
             spaces=target_spaces,
@@ -792,11 +828,8 @@ class IndexingPipeline:
             limit=limit,
         )
 
-        enable_vec = getattr(self.config, "enable_vector_search", True)
         can_use_vector = (
-            enable_vec
-            and not getattr(self, "_vector_degraded", False)
-            and not lexical_only
+            want_vectors
             and self.hybrid_engine.is_vector_available
         )
 
@@ -1082,7 +1115,7 @@ class IndexingPipeline:
         ftypes: Optional[Union[str, List[str]]] = None,
     ) -> Optional[UnifiedSymbol]:
         """精準、透過 SymbolSelector 微型語法或語意定位目標 UnifiedSymbol (預設排除非程式碼文檔符號)"""
-        idx = self.build_unified_index()
+        idx = self._ensure_jit_index_ready(require_vectors=False) or self.build_unified_index()
         query_clean = query.strip()
         if not query_clean:
             return None

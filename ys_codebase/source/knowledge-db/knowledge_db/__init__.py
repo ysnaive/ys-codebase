@@ -33,8 +33,6 @@ from .schema import (
     SpaceConfig,
     SpaceOrigin,
     SymbolKind,
-    ThesaurusConfig,
-    ThesaurusGroup,
     UnifiedSymbol,
 )
 from .embedding import EmbeddingService, VectorIndex
@@ -56,8 +54,6 @@ __all__ = [
     "MemberInfo",
     "UnifiedSymbol",
     "SpaceConfig",
-    "ThesaurusConfig",
-    "ThesaurusGroup",
     "SpaceManager",
     "BinarySnapshotManager",
     "FileFingerprint",

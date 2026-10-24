@@ -21,7 +21,6 @@ from knowledge_db.schema import (
     SpaceConfig,
     SpaceOrigin,
     SymbolKind,
-    ThesaurusConfig,
     UnifiedSymbol,
 )
 
@@ -152,17 +151,6 @@ class TestSchema(YSCBTestCase):
         # 3. 缺失 include 必填欄位拋出 InvalidSpaceConfigError
         with self.assertRaises(InvalidSpaceConfigError):
             SpaceConfig.from_dict("invalid", {"description": "no include"})
-
-        # 4. ThesaurusConfig 解析
-        th_list = [
-            ["狀態機", "state_machine", "FSM"],
-            ["知識庫", "knowledge_db"],
-        ]
-        th_cfg = ThesaurusConfig.from_dict(th_list, origin="project")
-        self.assertEqual(len(th_cfg.groups), 2)
-        self.assertIn("FSM", th_cfg.groups[0])
-        d_th = th_cfg.to_dict()
-        self.assertEqual(len(d_th["groups"]), 2)
 
         self.mark_passed()
 

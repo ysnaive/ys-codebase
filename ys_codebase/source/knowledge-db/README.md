@@ -136,21 +136,21 @@ python yscb.py knowledge-db clean --all
 ```python
 from knowledge_db.engine import KnowledgeEngine
 
-# 初始化門面引擎 (自動感知已註冊空間與同義詞庫)
+# 初始化門面引擎 (自動感知已註冊空間與組態)
 engine = KnowledgeEngine()
 
 # 1. 多欄位複合檢索
 results = engine.search(
     query="ExecutionContext",
     limit=5,
-    file_types=["py"],
-    tier="snippet"  # "simple" | "snippet" | "detail"
+    ftypes=["py"],
+    snippet=True
 )
 
 # 2. 調用圖譜分析
-callers = engine.callers("resolve_stage2_uri", tier="snippet")
-callees = engine.callees("compile_stage1", tier="snippet")
-impact = engine.impact("ReleasePublisher", max_depth=2)
+callers = engine.callers("resolve_stage2_uri", snippet=True)
+callees = engine.callees("compile_stage1", snippet=True)
+impact = engine.impact("ReleasePublisher", depth=2)
 
 # 3. 知識庫狀態與索引維護
 status = engine.status()

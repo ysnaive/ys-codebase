@@ -25,11 +25,9 @@ class TopologyLinker:
     def __init__(
         self,
         symbols_map: Dict[str, UnifiedSymbol],
-        thesaurus: Optional[Any] = None,
         tokenizer: Optional[CodeTokenizer] = None,
     ):
         self.symbols_map = symbols_map
-        self.thesaurus = thesaurus
         self.tokenizer = tokenizer or CodeTokenizer()
 
         # 預構建高速多維與 FQN 索引

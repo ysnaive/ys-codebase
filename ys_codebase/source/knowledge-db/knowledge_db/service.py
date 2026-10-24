@@ -17,36 +17,26 @@ from typing import Any, Dict, List, Optional, Set, Union
 try:
     from server.service import BaseServiceWorker
 except ImportError:
-    # Dev / sandbox fallback: resolve peer source/server directory
-    import sys
-    from pathlib import Path
-    _src_parent = Path(__file__).resolve().parent.parent.parent
-    _cand_server = _src_parent / "server"
-    if _cand_server.is_dir() and str(_cand_server) not in sys.path:
-        sys.path.insert(0, str(_cand_server))
-    try:
-        from server.service import BaseServiceWorker
-    except ImportError:
-        from abc import ABC, abstractmethod
+    from abc import ABC, abstractmethod
 
-        class BaseServiceWorker(ABC):
-            """Fallback BaseServiceWorker when server module is not yet installed."""
-            @property
-            @abstractmethod
-            def name(self) -> str:
-                pass
+    class BaseServiceWorker(ABC):
+        """Fallback BaseServiceWorker when server module is not yet installed."""
+        @property
+        @abstractmethod
+        def name(self) -> str:
+            pass
 
-            @abstractmethod
-            def start(self, context: Dict[str, Any]) -> None:
-                pass
+        @abstractmethod
+        def start(self, context: Dict[str, Any]) -> None:
+            pass
 
-            @abstractmethod
-            def stop(self) -> None:
-                pass
+        @abstractmethod
+        def stop(self) -> None:
+            pass
 
-            @abstractmethod
-            def health_check(self) -> bool:
-                pass
+        @abstractmethod
+        def health_check(self) -> bool:
+            pass
 
 
 logger = logging.getLogger("knowledge_db.service")

@@ -28,13 +28,7 @@ from knowledge_db.parsers import (
     MarkdownParser,
     PythonParser,
 )
-from knowledge_db.protocol import (
-    LanguageTopologyProtocol,
-    TopologyProtocolRegistry,
-    TreeSitterTopologyAdapter,
-)
 from knowledge_db.schema import (
-    CallGraphNode,
     LanguageType,
     SpaceConfig,
     SymbolCallSite,
@@ -185,29 +179,23 @@ class TestNetworkXCallGraphAndLinker(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_topology_protocol_interface(self):
-        """FT-07: 驗證多語言調用拓撲協議與適配器介面合規性"""
-        class MockDriver:
-            def extract_call_sites(self, file_path, content, space):
-                return [SymbolCallSite(callee_name="mock_call", line_number=1, file_path=file_path)]
+    def test_get_external_incoming_edges_and_hot_patch_retention(self):
+        """FT-07: 驗證 CallGraphIndex 外部入度邊提取與 hot patch 保真機制"""
+        graph = CallGraphIndex()
+        site1 = SymbolCallSite(callee_name="target_func", line_number=10, file_path="caller_ext.py")
+        site2 = SymbolCallSite(callee_name="target_func", line_number=20, file_path="dirty.py")
 
-            def extract_imports(self, file_path, content):
-                return {"foo": "bar"}
+        # caller_ext -> target_sym (外部入度邊)
+        graph.add_edge("caller_ext_id", "target_sym_id", site1)
+        # target_sym -> target_other (內部自我邊)
+        graph.add_edge("target_sym_id", "target_other_id", site2)
 
-        adapter = TreeSitterTopologyAdapter(MockDriver())
-        self.assertIsInstance(adapter, LanguageTopologyProtocol)
-
-        sites = adapter.extract_call_sites("test.ts", "foo()", "main")
-        self.assertEqual(len(sites), 1)
-        self.assertEqual(sites[0].callee_name, "mock_call")
-
-        imports = adapter.extract_imports("test.ts", "import foo from bar")
-        self.assertEqual(imports, {"foo": "bar"})
-
-        # 驗證 Registry
-        TopologyProtocolRegistry.register("typescript", adapter)
-        self.assertTrue(TopologyProtocolRegistry.has("typescript"))
-        self.assertEqual(TopologyProtocolRegistry.get("typescript"), adapter)
+        # 提取外部入度邊
+        incoming = graph.get_external_incoming_edges({"target_sym_id", "target_other_id"})
+        self.assertEqual(len(incoming), 1)
+        self.assertEqual(incoming[0][0], "caller_ext_id")
+        self.assertEqual(incoming[0][1], "target_sym_id")
+        self.assertEqual(incoming[0][2], site1)
 
         self.mark_passed()
 
@@ -257,7 +245,7 @@ class TestCallGraphAndReferenceIndex(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_01_schema_call_site_models(self):
-        """FT-01: 驗證 SymbolCallSite 與 CallGraphNode 模型與序列化"""
+        """FT-01: 驗證 SymbolCallSite 模型與序列化"""
         site = SymbolCallSite(
             callee_name="load_binary",
             line_number=42,
@@ -274,21 +262,6 @@ class TestCallGraphAndReferenceIndex(YSCBTestCase):
 
         restored_site = SymbolCallSite.from_dict(d)
         self.assertEqual(restored_site, site)
-
-        node = CallGraphNode(
-            symbol_id="sym_1",
-            callers={"caller_a", "caller_b"},
-            callees={"callee_c"},
-            call_sites=[site],
-        )
-        node_d = node.to_dict()
-        self.assertIn("caller_a", node_d["callers"])
-        self.assertEqual(len(node_d["call_sites"]), 1)
-
-        restored_node = CallGraphNode.from_dict(node_d)
-        self.assertEqual(restored_node.symbol_id, "sym_1")
-        self.assertEqual(restored_node.callers, {"caller_a", "caller_b"})
-
         self.mark_passed()
 
     @require(Requirement.LOGIC)
