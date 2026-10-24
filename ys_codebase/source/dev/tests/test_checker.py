@@ -473,4 +473,205 @@ class TestDevChecker(YSCBTestCase):
             if os.path.exists(tmp_mod_dir):
                 shutil.rmtree(tmp_mod_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
+    def test_checker_cli_compliance_and_candidates(self):
+        """FT-05 & [P00:DR-01]: Verify CLI compliance candidates = {full_fn, primary_fn}."""
+        src_root = uri.resolve("module.source://")
+        tmp_dir = os.path.join(src_root, "mock_cli_cand_mod")
+        try:
+            os.makedirs(os.path.join(tmp_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(tmp_dir, "contributes"), exist_ok=True)
+            with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_cli_cand_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
+            with open(os.path.join(tmp_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
+                f.write("# Manifest\n")
+            with open(os.path.join(tmp_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
+                f.write('{"commands": {"cmd": {"sub": {"description": "sub group", "cmd": {"run": {"description": "test"}}}}}}')
+
+            # 1. Full function name sub_run passes
+            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('from core.guard import guard_dispatch\ndef sub_run(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
+            rep1 = self.checker.check_module("mock_cli_cand_mod")
+            self.assertTrue(rep1.passed, f"sub_run should pass: {rep1.errors}")
+
+            # 2. Primary function name sub passes
+            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('from core.guard import guard_dispatch\ndef sub(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
+            rep2 = self.checker.check_module("mock_cli_cand_mod")
+            self.assertTrue(rep2.passed, f"sub should pass: {rep2.errors}")
+
+            # 3. Invalid candidate cmd_sub_run or run alone fails
+            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('from core.guard import guard_dispatch\ndef run(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
+            rep3 = self.checker.check_module("mock_cli_cand_mod")
+            self.assertFalse(rep3.passed)
+            self.assertTrue(any("Missing required command handler functions" in e for e in rep3.errors))
+
+            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('from core.guard import guard_dispatch\ndef cmd_sub_run(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
+            rep4 = self.checker.check_module("mock_cli_cand_mod")
+            self.assertFalse(rep4.passed)
+            self.assertTrue(any("Missing required command handler functions" in e for e in rep4.errors))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_checker_cli_forbidden_constructs(self):
+        """FT-07: Forbidden main and if __name__ == '__main__' fail compliance."""
+        src_root = uri.resolve("module.source://")
+        tmp_dir = os.path.join(src_root, "mock_cli_forbidden_mod")
+        try:
+            os.makedirs(os.path.join(tmp_dir, "scripts"), exist_ok=True)
+            with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_cli_forbidden_mod", "version": "1.0.0.0", "entry": "scripts/cli.py"}')
+
+            # 1. Main function forbidden
+            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\ndef main():\n    pass\n')
+            rep1 = self.checker.check_module("mock_cli_forbidden_mod")
+            self.assertFalse(rep1.passed)
+            self.assertTrue(any("Forbidden function 'main'" in e for e in rep1.errors))
+
+            # 2. If name == main forbidden
+            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\nif __name__ == "__main__":\n    pass\n')
+            rep2 = self.checker.check_module("mock_cli_forbidden_mod")
+            self.assertFalse(rep2.passed)
+            self.assertTrue(any("Forbidden 'if __name__ == \"__main__\":'" in e for e in rep2.errors))
+
+            # 3. Invalid top-level expression
+            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\nprint("side-effect")\n')
+            rep3 = self.checker.check_module("mock_cli_forbidden_mod")
+            self.assertFalse(rep3.passed)
+            self.assertTrue(any("top-level expression" in e for e in rep3.errors))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_checker_pip_dependencies_format(self):
+        """FT-08: Validate manifest.json pip_dependencies structure."""
+        src_root = uri.resolve("module.source://")
+        tmp_dir = os.path.join(src_root, "mock_pip_dep_mod")
+        try:
+            os.makedirs(os.path.join(tmp_dir, "scripts"), exist_ok=True)
+            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+
+            # 1. Non-dict pip_dependencies fails
+            with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_pip_dep_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "pip_dependencies": ["bad_list"]}')
+            rep1 = self.checker.check_module("mock_pip_dep_mod")
+            self.assertFalse(rep1.passed)
+            self.assertTrue(any("must be an object" in e or "must be a dictionary" in e for e in rep1.errors))
+
+            # 2. Non-string spec fails
+            with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_pip_dep_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "pip_dependencies": {"pkg": 123}}')
+            rep2 = self.checker.check_module("mock_pip_dep_mod")
+            self.assertFalse(rep2.passed)
+            self.assertTrue(any("Invalid version specification" in e for e in rep2.errors))
+            self.mark_passed()
+        finally:
+            if os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    @require(Requirement.LOGIC)
+    def test_checker_custom_rules_dispatch_and_isolation(self):
+        """FR-04, EC-06, [P00:DR-02]: Custom rules support code.func://, isolate sys.path, convert error to WARN."""
+        import sys
+        import types
+        from unittest.mock import patch
+        from dev.checker import CheckReport, CheckSeverity, CheckIssue
+
+        rep = CheckReport("mock_target")
+        # Test 1: Exception in custom rule converts to WARN
+        with patch("core.contributes.get", return_value=[{"checker_func": "non_existent_pkg.checker.non_existent_func"}]):
+            orig_path = list(sys.path)
+            self.checker._check_custom_rules("mock_target", "/dummy", rep)
+            self.assertEqual(sys.path, orig_path)
+            self.assertTrue(rep.has_warns)
+            self.assertTrue(any("Failed to execute custom rule" in w for w in rep.warnings))
+
+        # Test 2: Invalid code.func:// URI converts to WARN
+        rep2 = CheckReport("mock_target")
+        with patch("core.contributes.get", return_value=[{"checker_func": "code.func://bad_uri"}]):
+            self.checker._check_custom_rules("mock_target", "/dummy", rep2)
+            self.assertTrue(rep2.has_warns)
+            self.assertTrue(any("Failed to parse custom check URI" in w for w in rep2.warnings))
+
+        # Test 3: Working custom rule via mod:func and code.func://
+        dummy_mod = types.ModuleType("mock_donor_rule_pkg")
+        def custom_rule_fn(mod_name, mod_dir, report):
+            report.issues.append(CheckIssue(CheckSeverity.WARN, "CUSTOM", f"Custom rule fired for {mod_name}"))
+        dummy_mod.custom_rule_fn = custom_rule_fn
+        sys.modules["mock_donor_rule_pkg"] = dummy_mod
+        try:
+            rep3 = CheckReport("mock_target")
+            with patch("core.contributes.get", return_value=[
+                {"checker_func": "mock_donor_rule_pkg:custom_rule_fn", "_contribute_by": "core"},
+                {"checker_func": "code.func://core/mock_donor_rule_pkg.py:custom_rule_fn"},
+            ]):
+                orig_path3 = list(sys.path)
+                self.checker._check_custom_rules("mock_target", "/dummy", rep3)
+                self.assertEqual(sys.path, orig_path3)
+                self.assertFalse(any("module.source://" in p or "/source" in p for p in sys.path if p not in orig_path3))
+                custom_msgs = [i.message for i in rep3.issues if i.category == "CUSTOM"]
+                self.assertEqual(len(custom_msgs), 2)
+        finally:
+            sys.modules.pop("mock_donor_rule_pkg", None)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_checker_core_injection_format_priority(self):
+        """FR-04: _check_core_injection prioritizes module.source://<target>/contributes/_format.json."""
+        import json
+        src_root = uri.resolve("module.source://")
+        donor_dir = os.path.join(src_root, "mock_donor_mod")
+        target_dir = os.path.join(src_root, "mock_target_mod")
+        try:
+            os.makedirs(os.path.join(donor_dir, "contributes"), exist_ok=True)
+            os.makedirs(os.path.join(donor_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(target_dir, "contributes"), exist_ok=True)
+            os.makedirs(os.path.join(target_dir, "scripts"), exist_ok=True)
+
+            with open(os.path.join(donor_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_donor_mod", "version": "1.0.0.0", "entry": "scripts/cli.py"}')
+            with open(os.path.join(donor_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+            with open(os.path.join(donor_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
+                f.write('# Donor Manifest\n')
+
+            # Target defines source format schema requiring "custom_token": "str!"
+            target_fmt = {
+                "custom_pt": {
+                    "description": "Custom point",
+                    "format": {
+                        "custom_token": "str!"
+                    }
+                }
+            }
+            with open(os.path.join(target_dir, "contributes", "_format.json"), "w", encoding="utf-8") as f:
+                json.dump(target_fmt, f)
+
+            # Donor contributes invalid data to target (missing custom_token)
+            with open(os.path.join(donor_dir, "contributes", "mock_target_mod.json"), "w", encoding="utf-8") as f:
+                f.write('{"custom_pt": {"wrong_field": 123}}')
+
+            rep = self.checker.check_module("mock_donor_mod")
+            # Should detect schema violation using target's source _format.json!
+            self.assertFalse(rep.passed)
+            self.assertTrue(any("Schema violation in 'contributes/mock_target_mod.json'" in e for e in rep.errors))
+            self.mark_passed()
+        finally:
+            if os.path.exists(donor_dir):
+                shutil.rmtree(donor_dir, ignore_errors=True)
+            if os.path.exists(target_dir):
+                shutil.rmtree(target_dir, ignore_errors=True)
+
 

@@ -136,7 +136,7 @@ python yscb.py dev check --all --json
 | **Revision (第 4 位)** | `python yscb.py dev bump-revision <mod>` | **日常除錯與增修**（向下相容的小型修復與優化） |
 
 ```bash
-# 開發建置打包 (產出 yscb://.build/<mod>/<ver>/<ver>.build.zip，包含 tests/)
+# 開發建置打包 (產出 yscb://.build/<mod>/<major>.<minor>.<patch>.build.zip，包含 tests/)
 python yscb.py dev build my-module
 
 # 語意化版本單向遞增 (自動更新 source/<mod>/manifest.json)

@@ -136,14 +136,17 @@
             }
           },
           "filter": {
-            "k": {
-              "description": "Filter tests by expression",
+            "pattern": {
+              "description": "Filter tests by pattern expression",
               "alias": ["k"],
               "args": {
                 "pattern": {
                   "description": "Pattern expression"
                 }
               }
+            },
+            "contract-only": {
+              "description": "Run only contract tests"
             }
           },
           "parallel": {
@@ -155,6 +158,10 @@
                   "description": "Job count"
                 }
               }
+            },
+            "sequential": {
+              "description": "Disable parallel execution and run sequentially",
+              "alias": ["no-parallel"]
             }
           },
           "target": {
@@ -169,17 +176,33 @@
           },
           "type": {
             "type": {
-              "description": "Filter test type (logic, env, workflow, perf, all)",
+              "description": "Filter test type (logic, env, workflow, perf, stress, all)",
               "args": {
                 "name": {
                   "description": "Type name"
                 }
               }
+            },
+            "logical": {
+              "description": "Run only unit / pure logical tests"
+            },
+            "env": {
+              "description": "Run environment / inter-module / DI tests"
+            },
+            "workflow": {
+              "description": "Run multi-step composite workflow / E2E tests"
+            },
+            "perf": {
+              "description": "Run performance / stress benchmark tests",
+              "alias": ["stress"]
+            },
+            "all-types": {
+              "description": "Run tests across all categories"
             }
           },
           "execution": {
             "sync": {
-              "description": "Run tests synchronously in main process"
+              "description": "Auto-install tested modules (@build) into local environment upon test success"
             },
             "keep-sandbox": {
               "description": "Preserve virtual test sandbox directory after run"
@@ -193,6 +216,21 @@
             "verbose": {
               "description": "Verbose mode (show sandbox details)",
               "alias": ["v"]
+            }
+          },
+          "reporting": {
+            "report-json": {
+              "description": "Export test report data to JSON file",
+              "args": {
+                "path": {
+                  "description": "Path to report JSON file"
+                }
+              }
+            }
+          },
+          "quiet_report": {
+            "quiet-report": {
+              "description": "Suppress final test report summary"
             }
           }
         },
@@ -402,7 +440,18 @@
             "required": false
           }
         },
-        "options": {},
+        "options": {
+          "path": {
+            "dir": {
+              "description": "Target directory path for provisioning sandbox",
+              "args": {
+                "path": {
+                  "description": "Sandbox directory path"
+                }
+              }
+            }
+          }
+        },
         "usage": {
           "cons": [
             "[!] 內部原子操作，嚴禁 Agent 主動手動調用"
@@ -419,7 +468,94 @@
             "required": false
           }
         },
-        "options": {},
+        "options": {
+          "scope": {
+            "all": {
+              "description": "Test all modules",
+              "alias": ["a"]
+            }
+          },
+          "filter": {
+            "pattern": {
+              "description": "Filter tests by pattern expression",
+              "alias": ["k"],
+              "args": {
+                "pattern": {
+                  "description": "Pattern expression"
+                }
+              }
+            },
+            "contract-only": {
+              "description": "Run only contract tests"
+            }
+          },
+          "target": {
+            "target": {
+              "description": "Specific test target class or method",
+              "args": {
+                "spec": {
+                  "description": "Target test specification"
+                }
+              }
+            }
+          },
+          "type": {
+            "type": {
+              "description": "Filter test type (logic, env, workflow, perf, stress, all)",
+              "args": {
+                "name": {
+                  "description": "Type name"
+                }
+              }
+            },
+            "logical": {
+              "description": "Run only unit / pure logical tests"
+            },
+            "env": {
+              "description": "Run environment / inter-module / DI tests"
+            },
+            "workflow": {
+              "description": "Run multi-step composite workflow / E2E tests"
+            },
+            "perf": {
+              "description": "Run performance / stress benchmark tests",
+              "alias": ["stress"]
+            },
+            "all-types": {
+              "description": "Run tests across all categories"
+            }
+          },
+          "execution": {
+            "keep-sandbox": {
+              "description": "Preserve virtual test sandbox directory after run"
+            }
+          },
+          "verbosity": {
+            "quiet": {
+              "description": "Quiet mode (suppress verbose logs)",
+              "alias": ["q"]
+            },
+            "verbose": {
+              "description": "Verbose mode (show sandbox details)",
+              "alias": ["v"]
+            }
+          },
+          "reporting": {
+            "report-json": {
+              "description": "Export test report data to JSON file",
+              "args": {
+                "path": {
+                  "description": "Path to report JSON file"
+                }
+              }
+            }
+          },
+          "quiet_report": {
+            "quiet-report": {
+              "description": "Suppress final test report summary"
+            }
+          }
+        },
         "usage": {
           "cons": [
             "[!] 內部原子操作，嚴禁 Agent 主動手動調用"
@@ -427,5 +563,9 @@
         }
       }
     }
-  }
+  },
+  "events": [
+    { "on_test_setup": "Triggered before test suite execution begins in sandbox" },
+    { "on_test_teardown": "Triggered after test suite execution completes in sandbox" }
+  ]
 }

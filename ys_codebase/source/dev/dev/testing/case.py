@@ -85,6 +85,7 @@ class YSCBTestCase(unittest.TestCase):
         self._execution_status = "UNKNOWN"
         self._orig_sys_path = list(sys.path)
         self._orig_env = dict(os.environ)
+        self._orig_cwd = os.getcwd()
 
         # Determine if current test method requires ISOLATED_SANDBOX
         method_name = getattr(self, "_testMethodName", "")
@@ -131,6 +132,11 @@ class YSCBTestCase(unittest.TestCase):
         sys.path[:] = self._orig_sys_path
         os.environ.clear()
         os.environ.update(self._orig_env)
+        if hasattr(self, "_orig_cwd") and self._orig_cwd:
+            try:
+                os.chdir(self._orig_cwd)
+            except Exception:
+                pass
 
         # 狀態分類檢查：沒呼叫 mark_passed() 又沒有拋出異常的，歸類到 UNKNOWN
         if self._has_exception:
@@ -194,24 +200,49 @@ class YSCBTestCase(unittest.TestCase):
         if deps is None:
             deps = {"core": ">=1.0.0"} if name != "core" else {}
 
-        manifest = {
-            "name": name,
-            "version": version,
-            "description": f"Mock Source Module {name}",
-            "dependencies": deps,
-            "entry": "scripts/cli.py"
-        }
-        with open(os.path.join(src_dir, "manifest.json"), "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
+        if files and "manifest.json" in files:
+            with open(os.path.join(src_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write(files["manifest.json"])
+        else:
+            manifest = {
+                "name": name,
+                "version": version,
+                "description": f"Mock Source Module {name}",
+                "dependencies": deps,
+                "entry": "scripts/cli.py"
+            }
+            with open(os.path.join(src_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2)
 
             
         scripts_dir = os.path.join(src_dir, "scripts")
         os.makedirs(scripts_dir, exist_ok=True)
         cli_content = files.get("scripts/cli.py") if files and "scripts/cli.py" in files else (
-            "from typing import List\n\ndef process(args: List[str]) -> int:\n    return 0\n"
+            f"from typing import Any\nfrom core.guard import guard_dispatch\nfrom core.commands import CmdBags\n\ndef hello(cmd_bags: Any) -> int:\n    guard_dispatch('{name}')\n    return 0\n"
         )
         with open(os.path.join(scripts_dir, "cli.py"), "w", encoding="utf-8") as f:
             f.write(cli_content)
+
+        contrib_dir = os.path.join(src_dir, "contributes")
+        os.makedirs(contrib_dir, exist_ok=True)
+        if not files or "contributes/_manifest.md" not in files:
+            with open(os.path.join(contrib_dir, "_manifest.md"), "w", encoding="utf-8") as f:
+                f.write(f"# {name} Contributes Manifest\n\n## 1. Commands\n- hello\n")
+        if not files or "contributes/core.json" not in files:
+            core_json = {
+                "commands": {
+                    "description": f"Mock Source Module {name}",
+                    "cmd": {
+                        "hello": {
+                            "description": f"Say hello from {name}",
+                            "tier": "safe",
+                            "server_compatible": True
+                        }
+                    }
+                }
+            }
+            with open(os.path.join(contrib_dir, "core.json"), "w", encoding="utf-8") as f:
+                json.dump(core_json, f, indent=2)
 
         tests_dir = os.path.join(src_dir, "tests")
         os.makedirs(tests_dir, exist_ok=True)
@@ -222,7 +253,7 @@ class YSCBTestCase(unittest.TestCase):
 
         if files:
             for rel_p, content in files.items():
-                if rel_p in ("manifest.json", "scripts/cli.py", "tests/__init__.py", "tests/test_dummy.py"):
+                if rel_p in ("manifest.json", "scripts/cli.py", "tests/__init__.py", "tests/test_dummy.py", "contributes/_manifest.md", "contributes/core.json"):
                     continue
                 full_p = os.path.join(src_dir, rel_p)
                 os.makedirs(os.path.dirname(full_p), exist_ok=True)

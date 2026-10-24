@@ -4,6 +4,7 @@ Implements 5-step compliance check pipeline, 3-tier severity classification,
 and AST static security/anti-pattern analysis.
 """
 import os
+import sys
 import ast
 import json
 from enum import Enum
@@ -396,7 +397,15 @@ class Checker:
                 )
                 continue
 
-            target_fmt = core_contrib.get_format(target)
+            target_fmt = None
+            src_fmt_uri = f"module.source://{target}/contributes/_format.json"
+            if uri.exists(src_fmt_uri):
+                try:
+                    target_fmt = uri.read_json(src_fmt_uri)
+                except Exception:
+                    target_fmt = None
+            if target_fmt is None:
+                target_fmt = core_contrib.get_format(target)
             if target_fmt is None:
                 # Target has not declared _format.json yet (gradual tolerance)
                 continue
@@ -521,7 +530,7 @@ class Checker:
     def _check_cli_compliance(self, name: str, cli_path: str, report: CheckReport) -> None:
         """
         以 AST 靜態檢核 scripts/cli.py 的合規性：
-        1. 必須宣告函式 def process(args)
+        1. 必須宣告對應 contributes/core.json 的具名命令函式 def <cmd>(cmd_bags: CmdBags) -> int（或相容舊制 def process(args)）
         2. 絕對不可有 def main(...)
         3. 絕對不可有 if __name__ == '__main__':
         4. 頂層節點除 Docstring、Import、ImportFrom、FunctionDef、ClassDef 外，
@@ -603,14 +612,16 @@ class Checker:
                                 if isinstance(v, dict) and isinstance(v.get("cmd"), dict) and v["cmd"]:
                                     leaves.extend(_collect_leaves(v["cmd"], pfx=f"{pfx}{k}_"))
                                 else:
-                                    leaves.append((f"{pfx}{k}", k))
+                                    full_c = f"{pfx}{k}"
+                                    primary_c = full_c.split("_", 1)[0]
+                                    leaves.append((full_c, primary_c))
                             return leaves
 
                         all_leaves = _collect_leaves(cmd_map)
-                        for full_cmd, leaf_k in all_leaves:
+                        for full_cmd, primary_cmd in all_leaves:
                             full_fn = full_cmd.replace("-", "_")
-                            leaf_fn = leaf_k.replace("-", "_")
-                            candidates = {full_fn, f"cmd_{full_fn}", leaf_fn, f"cmd_{leaf_fn}"}
+                            primary_fn = primary_cmd.replace("-", "_")
+                            candidates = {full_fn, primary_fn}
                             if not any(c in declared_funcs for c in candidates):
                                 missing_cmd_funcs.append(full_cmd)
             except Exception:
@@ -632,7 +643,7 @@ class Checker:
                     CheckIssue(
                         severity=CheckSeverity.FAIL,
                         category="STRUCTURE",
-                        message="Missing required entry function 'def process(args)' in 'scripts/cli.py'.",
+                        message="Missing required command handler function 'def <cmd>(cmd_bags: CmdBags) -> int' (or fallback 'def process(args)') in 'scripts/cli.py'.",
                         file_path="scripts/cli.py",
                     )
                 )
@@ -643,7 +654,7 @@ class Checker:
                 CheckIssue(
                     severity=CheckSeverity.FAIL,
                     category="STRUCTURE",
-                    message="Forbidden function 'main' found in 'scripts/cli.py'. Module CLI entries must only declare 'def process(args)'.",
+                    message="Forbidden function 'main' found in 'scripts/cli.py'. Module CLI entries must declare command handlers 'def <cmd>(cmd_bags: CmdBags) -> int'.",
                     file_path="scripts/cli.py",
                 )
             )
@@ -978,7 +989,7 @@ class Checker:
 
     def _check_custom_rules(self, name: str, real_dir: str, report: CheckReport) -> None:
         try:
-            from core import contributes
+            from core import contributes, uri
             rules = contributes.get("dev", "custom_checks")
             if not rules or not isinstance(rules, list):
                 return
@@ -988,17 +999,92 @@ class Checker:
                 c_func = rule.get("checker_func")
                 if not c_func or not isinstance(c_func, str):
                     continue
+
+                donor = None
+                func_name = None
+                subpath = None
+
+                if c_func.startswith("code.func://"):
+                    try:
+                        from core.symbols import parse_code_func_uri, resolve_callable
+                        donor, subpath, func_name = parse_code_func_uri(c_func)
+                    except Exception as e:
+                        report.issues.append(
+                            CheckIssue(
+                                severity=CheckSeverity.WARN,
+                                category="CONTRIBUTES",
+                                message=f"Failed to parse custom check URI '{c_func}': {e}",
+                                file_path="contributes/core.json",
+                            )
+                        )
+                        continue
+                elif ":" in c_func:
+                    donor, func_name = c_func.split(":", 1)
+                elif "." in c_func:
+                    donor, func_name = c_func.rsplit(".", 1)
+                else:
+                    donor = c_func
+                    func_name = "check"
+
+                # Rigid isolation: only temporarily add module://<donor> (never module.source://)
+                donor_pkg = donor.split(".")[0]
+                donor_uri = f"module://{donor_pkg}"
+                donor_real = None
+                if uri.exists(donor_uri):
+                    try:
+                        donor_real = uri.resolve(donor_uri)
+                    except Exception:
+                        donor_real = None
+
+                orig_sys_path = list(sys.path)
                 try:
-                    import importlib
-                    if "." in c_func:
-                        mod_path, func_name = c_func.rsplit(".", 1)
+                    if donor_real and donor_real not in sys.path:
+                        sys.path.insert(0, donor_real)
+
+                    if c_func.startswith("code.func://"):
+                        from core.symbols import resolve_callable
+                        fn = resolve_callable(c_func, use_cache=False)
+                    elif "." in c_func and ":" not in c_func:
+                        import importlib
+                        mod_path, fn_name = c_func.rsplit(".", 1)
                         mod = importlib.import_module(mod_path)
+                        fn = getattr(mod, fn_name)
+                    else:
+                        import importlib
+                        mod = importlib.import_module(donor)
                         fn = getattr(mod, func_name)
+
+                    if not callable(fn):
+                        report.issues.append(
+                            CheckIssue(
+                                severity=CheckSeverity.WARN,
+                                category="CONTRIBUTES",
+                                message=f"Custom check '{c_func}' is not callable.",
+                                file_path="contributes/core.json",
+                            )
+                        )
+                    else:
                         fn(name, real_dir, report)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    report.issues.append(
+                        CheckIssue(
+                            severity=CheckSeverity.WARN,
+                            category="CONTRIBUTES",
+                            message=f"Failed to execute custom rule '{c_func}': {e}",
+                            file_path="contributes/core.json",
+                        )
+                    )
+                finally:
+                    sys.path[:] = orig_sys_path
+        except Exception as e:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.WARN,
+                    category="CONTRIBUTES",
+                    message=f"Failed to load custom checks: {e}",
+                    file_path="contributes/core.json",
+                )
+            )
 
     def check_all(self) -> Dict[str, CheckReport]:
         results = {}

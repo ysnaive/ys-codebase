@@ -25,19 +25,19 @@ def <command_name>(cmd_bags: CmdBags) -> int:
 ```python
 def my_command(cmd_bags: CmdBags) -> int:
     # 1. 取得位置參數 (Positional Arguments)
-    # 若在 commands 宣告為 args: {"target": {"type": "str", "required": True}}
-    target = cmd_bags.args.get("target")
+    # cmd_bags.args 為位置參數清單 (List[str])
+    target = cmd_bags.args[0] if cmd_bags.args else None
 
     # 2. 判定布林旗標 (Boolean Flag Options)
-    # 例如 --force 或 -f
-    is_force = cmd_bags.has_option("force")
+    # 例如 --force 或 -f (解算為 options 字典)
+    is_force = bool(cmd_bags.options.get("force"))
 
     # 3. 取得具值選項 (Key-Value Options)
     # 例如 --tier=minor 或 -t minor
-    tier = cmd_bags.get_option("tier")  # 若未提供則為 None 或預設值
+    tier = cmd_bags.get_option_value("tier", default="minor")
 
-    # 4. 存取原生額外參數 (Raw trailing arguments，若有)
-    extra_args = cmd_bags.raw_args
+    # 4. 存取原始指令字串
+    raw_cmd = cmd_bags.raw_cmd
 
     return 0
 ```
@@ -54,11 +54,11 @@ def my_command(cmd_bags: CmdBags) -> int:
 1. **指令實作與節點宣告 1:1 對稱**：
    - 實作的每個活躍合約函式 `def <cmd_name>(cmd_bags: CmdBags) -> int`，必須在 `contributes/core.json` 的 `commands` 中擁有完全對應的指令節點宣告。
    - 反之，在 `commands` 宣告的每個節點，必須在 `scripts/cli.py` 存在具體實作函式。嚴禁「有實作無宣告」或「有宣告無實作」。
-2. **參數字典 (`args`) 完整對齊**：
-   - 代碼中 `cmd_bags.args.get("<param>")` 取用的所有參數，必須在宣告節點的 `args` 字典內完整定義。
+2. **位置參數 (`args`) 完整對齊**：
+   - 代碼中透過 `cmd_bags.args` 位置清單索引取用的所有參數，必須依序在宣告節點的 `args` 字典內完整定義。
    - 包含其型別 (`type`)、是否必填 (`required`)、列舉約束 (`choice` / `choices`) 與說明 (`description`)。
 3. **正交選項 (`options`) 完整對齊**：
-   - 代碼中透過 `cmd_bags.has_option("<opt>")` 或 `cmd_bags.get_option("<opt>")` 存取的選項，必須在宣告節點的 `options` 完整宣告。
+   - 代碼中透過 `cmd_bags.options.get("<opt>")` 或 `cmd_bags.get_option_value("<opt>")` 存取的選項，必須在宣告節點的 `options` 完整宣告。
    - 選項若需接收值，必須透過子 `args` 字典定義（純旗標選項則省略子 `args`）。
    - 選項的別名清單 (`alias`) 與說明必須與代碼解析邏輯 100% 一致。
 4. **使用指引 (`usage.pros` / `usage.cons`) 語意客觀性**：
@@ -117,11 +117,11 @@ python yscb.py dev create <mod_name> --desc="模組用途描述"
 執行 `dev create` 後將在 `source/<mod_name>/` 自動產出完整結構：
 ```text
 source/<mod_name>/
-├── manifest.json            # 預設 version: 0.1.0，宣告 core 依賴
+├── manifest.json            # 預設 version: 0.1.0.0，宣告 core 依賴
 ├── scripts/
-│   └── cli.py               # 內建 process(args)、UTF-8 防護、sys.path 修正
+│   └── cli.py               # 內建 def hello(cmd_bags)、UTF-8 防護、guard_dispatch
 ├── <pkg_name>/
-│   └── __init__.py          # 內建 __version__ = "0.1.0"
+│   └── __init__.py          # 內建 __version__ = "0.1.0.0"
 ├── tests/
 │   ├── __init__.py
 │   └── test_basic.py        # 基礎測試範本
@@ -170,15 +170,16 @@ python yscb.py dev test <mod_name> --target=TestMyMod.test_ft_01
 
 ### 5.5 發布流水線 ([GATED] 授權守門)
 ```bash
-# 1. 發布前 3-Gate 校驗 (靜態合規、測試通過標記、依賴拓撲；不進行打包)
+# 1. 發布前 3-Gate 校驗 (Gate 1: 合規 0 Fail 0 Warn; Gate 2: release/<mod>/<ver>.zip 存在不可變; Gate 3: target > global_highest 單調遞增，即便 --force 亦禁止回退)
 python yscb.py dev release-check <mod_name>
-python yscb.py dev release-check <mod_name> --force  # 覆寫模式 (僅限特殊授權)
+python yscb.py dev release-check               # 預設對所有模組執行 3-Gate 校驗
+python yscb.py dev release-check <mod_name> --force  # 覆寫模式 (僅限特殊授權，且僅容許 target == global_highest)
 
 # 2. 純淨發布打包 (排除 tests/ 與 .yscbignore，產出發布包至 project://release/)
 python yscb.py dev release <mod_name>
-python yscb.py dev release --all                     # 依拓撲順序批量發布
+python yscb.py dev release --all                     # 依 Kahn DAG 拓撲順序批量發布 (上游失敗自動跳過下游)
 
-# 3. 本地 Git 一鍵安全發布 (自動依序 test -> release-check -> release -> 本機 git commit 與 tag)
+# 3. 本地 Git 一鍵安全發布 (自動依序 test -> release-check -> release -> 本機 git commit 與 tag，若 git commit 遇真實錯誤立即阻斷)
 python yscb.py dev release-git <mod_name> "feat: 完成特定功能"
 ```
 > [!CAUTION]

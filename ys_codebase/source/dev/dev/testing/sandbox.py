@@ -52,9 +52,41 @@ class SandboxContext:
         with open(os.path.join(pkg_ver_dir, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
             
-        cli_content = f"#!/usr/bin/env python3\ndef main(argv):\n    print(f'[{name}] Running mock cli with args: {{argv}}')\n    return 0\n"
+        cli_content = f'''"""
+CLI Entry point for mock module {name}.
+"""
+from typing import Any
+from core.guard import guard_dispatch
+from core.commands import CmdBags
+
+
+def hello(cmd_bags: Any) -> int:
+    guard_dispatch("{name}")
+    print(f"[{name}] Running mock cli hello")
+    return 0
+'''
         with open(os.path.join(pkg_ver_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
             f.write(cli_content)
+
+        contrib_dir = os.path.join(pkg_ver_dir, "contributes")
+        os.makedirs(contrib_dir, exist_ok=True)
+        manifest_md = f"# {name} Contributes Manifest\n\n## 1. Commands\n- hello\n"
+        with open(os.path.join(contrib_dir, "_manifest.md"), "w", encoding="utf-8") as f:
+            f.write(manifest_md)
+        core_json = {
+            "commands": {
+                "description": description,
+                "cmd": {
+                    "hello": {
+                        "description": f"Say hello from {name}",
+                        "tier": "safe",
+                        "server_compatible": True
+                    }
+                }
+            }
+        }
+        with open(os.path.join(contrib_dir, "core.json"), "w", encoding="utf-8") as f:
+            json.dump(core_json, f, indent=2)
 
         # Create single-file zip in provider_dir/<name>/<version>.zip
         zip_path = os.path.join(self.provider_dir, name, f"{version}.zip")
@@ -75,7 +107,9 @@ class SandboxContext:
                 existing_v = v_data.get("versions", [])
                 if version not in existing_v:
                     existing_v.append(version)
-                versions = sorted(existing_v)
+                from core import semver
+                import functools
+                versions = sorted(existing_v, key=functools.cmp_to_key(lambda a, b: semver.compare_semver(semver.parse_semver(a), semver.parse_semver(b))))
             except Exception:
                 pass
         with open(mod_index_path, "w", encoding="utf-8") as f:
@@ -89,6 +123,31 @@ class SandboxProvisioner:
     _ACTIVE_SANDBOXES = set()
     _PIP_LOCK = threading.Lock()
     _ADAPTED_SPECS = set()
+
+    @staticmethod
+    def _sort_zip_filenames_by_semver(filenames: List[str]) -> List[str]:
+        """依 SemVer 排序 zip 檔名（如 1.10.0.build.zip > 1.9.0.build.zip）。"""
+        from core import semver
+        import functools
+
+        def _extract_ver(fname: str) -> semver.VersionTuple:
+            base = fname[:-4]  # strip .zip
+            if base.endswith(".build"):
+                base = base[:-6]
+            try:
+                return semver.parse_semver(base)
+            except Exception:
+                return semver.parse_semver("0.0.0.0")
+
+        def _cmp(f1: str, f2: str) -> int:
+            v1 = _extract_ver(f1)
+            v2 = _extract_ver(f2)
+            res = semver.compare_semver(v1, v2)
+            if res != 0:
+                return res
+            return 1 if f1 > f2 else (-1 if f1 < f2 else 0)
+
+        return sorted(filenames, key=functools.cmp_to_key(_cmp))
 
     @staticmethod
     def prune_sandboxes(
@@ -240,13 +299,14 @@ class SandboxProvisioner:
                 if os.path.isdir(mod_b_dir):
                     zips = [f for f in os.listdir(mod_b_dir) if f.endswith(".zip")]
                     if zips:
-                        latest_zip = os.path.join(mod_b_dir, sorted(zips)[-1])
+                        sorted_zips = SandboxProvisioner._sort_zip_filenames_by_semver(zips)
+                        latest_zip = os.path.join(mod_b_dir, sorted_zips[-1])
                         try:
                             with zipfile.ZipFile(latest_zip, "r") as zf:
                                 if "manifest.json" in zf.namelist():
                                     with zf.open("manifest.json") as mf:
                                         m_data = json.load(mf)
-                        except Exception:
+                        except (zipfile.BadZipFile, Exception):
                             pass
 
             if m_data is None:
@@ -426,13 +486,17 @@ class SandboxProvisioner:
                     if os.path.isdir(mod_b_dir):
                         zips = [f for f in os.listdir(mod_b_dir) if f.endswith(".zip")]
                         if zips:
-                            latest_zip = os.path.join(mod_b_dir, sorted(zips)[-1])
+                            sorted_zips = SandboxProvisioner._sort_zip_filenames_by_semver(zips)
+                            latest_zip = os.path.join(mod_b_dir, sorted_zips[-1])
                             dest_mod = os.path.join(sandbox_modules_dir, mod_name)
                             if os.path.exists(dest_mod):
                                 shutil.rmtree(dest_mod)
                             os.makedirs(dest_mod, exist_ok=True)
-                            with zipfile.ZipFile(latest_zip, "r") as zf:
-                                zf.extractall(dest_mod)
+                            try:
+                                with zipfile.ZipFile(latest_zip, "r") as zf:
+                                    zf.extractall(dest_mod)
+                            except (zipfile.BadZipFile, Exception):
+                                pass
 
         # Register all provisioned modules into sandbox host_config
         for mod_name in sorted(os.listdir(sandbox_modules_dir)):
