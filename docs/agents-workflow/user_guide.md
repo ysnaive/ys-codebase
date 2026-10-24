@@ -273,3 +273,20 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 1. **零臆測熔斷 (Zero Speculation Gate)**：遇到任何需求不明或技術未知，立即停手提問。
 2. **偏差熔斷 (Deviation Gate)**：遇到 Major/Critical 架構或 API 偏差，立即停止並轉入 `/Discuss`。
 3. **P06 手動/UX 驗證絕對阻斷 (Mandatory UX Gate)**：CLI 自動化測試通過後，強制停步等待開發者人工/UX 驗收，絕對禁止自動結案。
+
+---
+
+## 6. 自動化測試規範技能 (`testing-sop`) 與三支柱 Subagent 隔離協定
+
+### 6.1 自動化測試規範技能 (`testing-sop`)
+`testing-sop` 為與 `documentation` 對偶之環境型技能，管轄專案之測試建置與回歸驗證：
+- **六大自動化測試建置與回歸鐵律**：子系統 1:1 歸戶（禁止計畫名碎片檔）、實質副作用與正負雙向斷言（禁止空殼斷言與 mock 自身）、管線實機產出驗證（禁止靜態文檔 grep）、零歷史墓碑（舊 API 刪除時同步清理舊測）、100% 狀態隔離與沙盒零殘留、本體獨立性（零跨層反向耦合）。
+- **Phase 06 雙重驗收守門**：守門 ①（子系統回歸全綠）+ 守門 ②（新增測試反模式自檢）。
+- **`TESTING_SOP_STANDARDS` 錨點**：供專案注入專屬測試框架與沙盒規範。
+- **存量測試集純化**：按需讀取 `references/test_suite_audit_and_purification.md` 執行 `T-01`~`T-06` 體檢與收斂。
+
+### 6.2 三支柱門檻觸發式 Subagent 委派協定
+針對高認知負荷場景，透過「檔案路徑傳址」與「Single-Writer 計畫檔保護」內化三支柱委派：
+1. **支柱一（`/research` 與 `/discuss` 唯讀廣域探索隔離）**：派發唯讀 Subagent 平行或單一檢索，回傳 150~300 Tokens 濃縮證據，主視窗維持乾淨 Context 撰寫報告或討論卡。
+2. **支柱二（`/auto` 與大型 `Phase 05/06` 序列實作隔離）**：處於 `/auto` 或 $\ge 3$ 個任務組時按高內聚任務組強制序列派發，傳遞 `P03/P04/P05` 與 `testing-sop`；內建「二振失敗熔斷（2-Strike Limit）」與 5 行結構化狀態代碼；Subagent 禁改 `plans/`。
+3. **支柱三（`Phase 07` Step 1 唯讀 Fresh-Eyes 冷眼審查）**：派發乾淨 Reviewer Subagent 結合 `P04` 清單、`git status`、`git diff HEAD` 與直讀 `Untracked` 新檔，僅審查敷衍修補、測試反模式、需求遺漏與文檔未同步三類硬性契約，無缺失回傳 `REVIEW_STATUS: PASSED`。

@@ -34,6 +34,7 @@ Phase 04 執行檢核表：
 
 ## 3. `P06_test_plan.md` 剛性定稿鐵律
 
+- **[!] 強制引用連鎖觸發**：定稿 `P06_test_plan.md` 測試案例前，**強制先觸發並遵循 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`)**，確認測試目標檔案符合「子系統 1:1 歸戶原則（優先擴充既有 `test_<subsystem>`，嚴禁以計畫名新建碎片檔）」，且涵蓋正向副作用與負向異常攔截斷言。
 - 審查 Phase 2 預排之 `P06` 測試案例，補齊執行指令、測試檔案與斷言條件。
 - 將 `P06_test_plan.md` 狀態由 `Draft` 修改為 **`Confirmed`**。
 - 嚴格守門：測試計畫未 Confirmed 前，**絕對禁止進入 Phase 5 寫任何一行程式碼**。

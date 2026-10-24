@@ -199,4 +199,23 @@ last_updated: "2026-10-24"
 > [!CAUTION]
 > 嚴禁將 `TodoManager.add_todo` 的編號分配邏輯退化為僅掃描當前表格現存列（必在 `todo promote` 清空表格後發生 ID 碰撞）；嚴禁在 `RoadmapManager.promote_roadmap` 中讀取舊 `roadmap.md` 的 `> 模型：` 填入新生成的 `changelog.md`；嚴禁從 `verifier.py` 移除 `ORIGIN_SEED_FILES` 對 `sub_XX` 子計畫 `> 所屬主計畫：` 的豁免保護。
 
+---
+
+### [DN-AW-12] 三支柱 Subagent 任務級上下文隔離、Single-Writer 鐵律與多路線圖合流追加合併防坑設計
+
+- **工程背景與坑點**：
+  1. **Subagent 污染計畫狀態機與模型紀錄**：若允許多個 Subagent 直接編輯 `plans/` 下的 `P05_task.md` 或 `changelog.md`，不僅會引發檔案寫入衝突，且子代理視窗缺乏當輪真實模型標記，極易損毀 `> 模型：` 標頭與微觀變更日誌。
+  2. **Reviewer Subagent 漏審新建檔案與主觀偏好無效循環**：
+     - 在 Phase 07 Step 1 尚未執行最終 `git commit` 前，新建檔案處於 `Untracked (??)` 狀態，單跑 `git diff HEAD` 無法檢出內容。
+     - 若未設定硬性審查契約邊界，Reviewer Subagent 常為交差而挑剔命名或排版微調，造成主視窗陷入無意義修改迴圈。
+  3. **多路線圖合流子計畫 `promote` 覆寫**：單一大型子計畫常需消費 2 份高度關聯的路線圖（如 `sub_03` 包含測試規範與 Subagent 隔離）。若 `RoadmapManager.promote_roadmap` 無差別使用 `shutil.move`，第 2 份路線圖將直接覆寫第 1 份已遷入的 `roadmap.md`。
+- **妥協與防禦設計**：
+  1. **Single-Writer 鐵律與 5 行結構化狀態代碼**：`plans/` 檔案 100% 僅由主視窗集中寫入；Subagent 僅回傳包含 `STATUS`、`TASK`、`MODIFIED_FILES`、`TEST_OUTCOME` 與 `DEVIATION_OR_BLOCKER_NOTE` 之結構化狀態（150~300 Tokens），由主視窗安全寫入 `P05_task.md`。
+  2. **Untracked 新檔防護與三類硬性契約審查**：Reviewer 強制對照 `P04` 變更矩陣與 `git status --short` 直讀未追蹤新檔；且嚴格限制僅回報敷衍修補/測試反模式、需求遺漏與文檔未同步三類硬性缺失，其餘情況強制回傳 `REVIEW_STATUS: PASSED`。
+  3. **多路線圖合流追加合併 (`is_appended`)**：`RoadmapManager.promote_roadmap` 偵測到目標目錄已存在 `roadmap.md` 時，自動將新路線圖內容追加合併於分隔線之後並安全刪除來源檔案，伴隨 `changelog.md` 精確記載追加操作。
+
+> [!CAUTION]
+> 嚴禁允許 Subagent 修改 `plans/` 下任何檔案；嚴禁 Reviewer Subagent 在審查時回報非三類硬性契約的主觀微調；嚴禁在 `RoadmapManager.promote_roadmap` 中直接以 `shutil.move` 覆寫既有 `roadmap.md`。
+
+
 

@@ -40,7 +40,7 @@
     - **變更清單**：[預計修改檔案計 N 個 / 守門條件全部合規]
     - **待確認事項**：請確認 4 大守門條件無誤，是否授權進入 FP-02（編碼與驗證）？
     ```
-  - **FP-02 (實作與測試階段)**：直接編碼實作，執行單元測試並回填結果。
+  - **FP-02 (實作與測試階段)**：**強制觸發並遵循 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`)**，直接編碼實作，執行單元測試並回填結果。
     ```markdown
     ###  FP-02 實作與測試通過
     - **產出文件**：[fast_track_plan.md](__${project://plans/}__/{plan_name}/fast_track_plan.md)

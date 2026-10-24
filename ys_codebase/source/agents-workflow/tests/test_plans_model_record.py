@@ -257,11 +257,11 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertIn("skill-optimizer", export_names)
         self.assertIn("SKILL_OPTIMIZER_STANDARDS", token_names)
 
-        # 2. 全部 13 個技能皆具備雙軌結構化邊界 (環境攔截型採三段式『觸發情境：/排除情境：』；主動指令型採『僅於顯式輸入』) 與常見踩坑指南 (Gotchas)
+        # 2. 全部 14 個技能皆具備雙軌結構化邊界 (環境攔截型採三段式『觸發情境：/排除情境：』；主動指令型採『僅於顯式輸入』) 與常見踩坑指南 (Gotchas)
         expected_skills = {
             "auto", "context-init", "continue", "development-sop", "discuss",
             "documentation", "new-plan", "pause", "research", "roadmap",
-            "skill-optimizer", "todo", "yscb-cli-guide",
+            "skill-optimizer", "testing-sop", "todo", "yscb-cli-guide",
         }
         command_driven_skills = {"auto", "pause", "continue", "context-init", "skill-optimizer"}
         ambient_skills = expected_skills - command_driven_skills
@@ -293,6 +293,76 @@ class TestModelRecordRule(YSCBTestCase):
             clean_text = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", text))
             unenclosed = UNENCLOSED_TAG_REGEX.findall(clean_text)
             self.assertEqual(unenclosed, [], f"{md_path} 存在未以單反引號包覆之語意標籤: {unenclosed}")
+
+        self.mark_passed()
+
+    def test_ft_09_sub03_testing_sop_and_three_pillar_subagent_delegation(self):
+        """[sub_03 FR-01 ~ FR-06, EC-01 ~ EC-04, NFR-01]: 驗證 testing-sop 雙層結構、連鎖引用與三支柱 Subagent 隔離協定。"""
+        import json
+
+        assets = _pkg_root / "assets"
+        skills_dir = assets / "skills"
+        sop_ref = skills_dir / "development-sop" / "references"
+        contrib = json.loads((_pkg_root / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+
+        # 1. FR-01 & NFR-01: testing-sop/SKILL.md 主檔與 TESTING_SOP_STANDARDS 註冊
+        export_names = {item.get("name") for item in contrib["export"] if "name" in item}
+        token_names = {item["value"] for item in contrib["token"]}
+        self.assertIn("testing-sop", export_names)
+        self.assertIn("TESTING_SOP_STANDARDS", token_names)
+
+        testing_sop_md = (skills_dir / "testing-sop" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(testing_sop_md.splitlines()), 120)
+        for idx in range(1, 7):
+            self.assertIn(f"鐵律 {idx}：", testing_sop_md)
+        self.assertIn("`__@{TESTING_SOP_STANDARDS}__`", testing_sop_md)
+        self.assertIn("references/test_suite_audit_and_purification.md", testing_sop_md)
+
+        # 2. FR-02: 存量測試集體檢與純化參考指南 (T-01 ~ T-06 與三步工作流)
+        purify_ref = (
+            skills_dir / "testing-sop" / "references" / "test_suite_audit_and_purification.md"
+        ).read_text(encoding="utf-8")
+        for idx in range(1, 7):
+            self.assertIn(f"T-0{idx}", purify_ref)
+        self.assertIn("Step 1", purify_ref)
+        self.assertIn("Step 2", purify_ref)
+        self.assertIn("Step 3", purify_ref)
+
+        # 3. FR-03: AgentsStandards.md 與 development-sop (P04/P05/P06/Fast Track) 連鎖觸發與雙重守門
+        standards = (assets / "standards" / "AgentsStandards.md").read_text(encoding="utf-8")
+        self.assertIn("`testing-sop`", standards)
+        self.assertIn("testing-sop", (skills_dir / "development-sop" / "SKILL.md").read_text(encoding="utf-8"))
+        for ref_name in ("phase_04_plan.md", "phase_05_task.md", "phase_06_test.md", "plan_modes.md"):
+            ref_text = (sop_ref / ref_name).read_text(encoding="utf-8")
+            self.assertIn("testing-sop/SKILL.md", ref_text, f"{ref_name} 缺少 testing-sop 強制連鎖引用")
+        p06_ref = (sop_ref / "phase_06_test.md").read_text(encoding="utf-8")
+        self.assertIn("守門 ①（子系統回歸全綠）", p06_ref)
+        self.assertIn("守門 ②", p06_ref)
+
+        # 4. FR-04 & EC-01: 支柱一 (research / discuss 唯讀廣域探索隔離與 150~300 Tokens 約束)
+        for s_name in ("research", "discuss"):
+            s_text = (skills_dir / s_name / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("支柱一", s_text)
+            self.assertIn("150~300 Tokens", s_text)
+            self.assertIn("自動降級", s_text)
+
+        # 5. FR-05 & EC-02: 支柱二 (auto / phase_05 / phase_06 序列實作、二振失敗熔斷與 Single-Writer)
+        for doc_text in ((skills_dir / "auto" / "SKILL.md").read_text(encoding="utf-8"),
+                         (sop_ref / "phase_05_task.md").read_text(encoding="utf-8")):
+            self.assertIn("支柱二", doc_text)
+            self.assertIn("2-Strike Limit", doc_text)
+            self.assertIn("STATUS: MAJOR_BLOCKER (Two-Strike Test Failure)", doc_text)
+            self.assertIn("Single-Writer", doc_text)
+            self.assertIn("DEVIATION_OR_BLOCKER_NOTE", doc_text)
+            self.assertIn("自動降級", doc_text)
+
+        # 6. FR-06 & EC-03 & EC-04: 支柱三 (phase_07 Fresh-Eyes Review、Untracked 防護與三類硬性契約)
+        p07_ref = (sop_ref / "phase_07_walkthrough.md").read_text(encoding="utf-8")
+        self.assertIn("支柱三", p07_ref)
+        self.assertIn("Untracked (??)", p07_ref)
+        self.assertIn("git status --short", p07_ref)
+        self.assertIn("REVIEW_STATUS: PASSED", p07_ref)
+        self.assertIn("自動降級", p07_ref)
 
         self.mark_passed()
 

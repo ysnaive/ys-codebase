@@ -13,6 +13,12 @@
       "token": "WORKFLOW_CONTEXTINIT",
       "value": "config://agents-workflow/snippets/context_init_devcontainer.md",
       "mode": "replace"
+    },
+    {
+      "type": "uri",
+      "token": "TESTING_SOP_STANDARDS",
+      "value": "config://agents-workflow/snippets/testing_guide.md",
+      "mode": "replace"
     }
   ]
 }

@@ -25,6 +25,12 @@
     },
     {
       "type": "skill",
+      "name": "testing-sop",
+      "source": "module://agents-workflow/assets/skills/testing-sop",
+      "description": "規劃、撰寫、執行與審查專案自動化測試 (單元測試、邊界測試、整合與回歸測試)，以及對既有測試集 (tests/) 執行六維度體檢、去重與純化重構。觸發情境：定稿 P06_test_plan.md (Phase 04)、撰寫或修改測試代碼 (Phase 05 / Fast Track)、執行 Phase 06 測試驗證與回歸守門、或應開發者要求健檢與純化既有測試集。排除情境：純業務生產源碼架構設計 (改用 development-sop) 或非測試類系統知識庫文檔撰寫 (改用 documentation)。"
+    },
+    {
+      "type": "skill",
       "name": "context-init",
       "source": "module://agents-workflow/assets/skills/context-init",
       "description": "載入專案核心規範、近期變更與活躍計畫狀態以完成對話熱啟動。僅於顯式輸入 /context-init 或明確指示初始化專案上下文時觸發。"
@@ -228,6 +234,10 @@
     {
       "value": "SKILL_OPTIMIZER_STANDARDS",
       "description": "專案特化 Skill 審查與優化擴充規則注入錨點（位於 skill-optimizer/SKILL.md）"
+    },
+    {
+      "value": "TESTING_SOP_STANDARDS",
+      "description": "專案特化自動化測試流程、框架指令與沙盒規範注入錨點（位於 testing-sop/SKILL.md）"
     }
   ],
   "insert": [
