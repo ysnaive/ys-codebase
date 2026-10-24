@@ -78,14 +78,6 @@ graph TD
 }
 ```
 `ServiceManager` 支援動態注入 `.modules/<provider>` 至 `sys.path`，支援連字號模組名稱正規化與 `code.class://` 前綴相容，並嚴格杜絕 `source/` 源碼路徑注入。
-    {
-      "id": "knowledge-db-worker",
-      "entry": "code.class://knowledge-db/service:KnowledgeDBServiceWorker",
-      "description": "Knowledge-DB Background File Watcher & Incremental Patcher"
-    }
-  ]
-}
-```
 Worker 在啟動時依序初始化各 ServiceWorker，並透過 `worker_ready` 封包將服務清單與狀態回傳 Master 供 `server start` 橫幅與 `server status` 呈現。
 
 ### 2.3 檔案監視與自癒重載 (ModulesWatcher)

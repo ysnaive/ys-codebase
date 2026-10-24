@@ -126,3 +126,11 @@ feat(knowledge-db): fix vector cold-start, incoming callers retention, and purif
 - Consolidate test suite from 14 files into 12 files, eliminate vacuous assertions, and add regression tests (KT-01~KT-05)
 - Update three-tier documentation in docs/knowledge-db, README.md, and DESIGN_NOTES.md (DN-07, DN-08)
 ```
+
+---
+
+## 6. 計畫結構合規檢核 (Plan Compliance Verification)
+
+- [x] **完成狀態確認**：所有前置階段、代碼實作、SOP 審查與測試驗證均已落實完成，本檔其餘檢核項已勾選 `[x]` 且頂部標頭 `> 狀態：` 已設為 `Completed`。
+- [x] **結構與註解檢核（最終守門）**：最後實機執行 `python yscb.py agents-workflow plan verify 2026_10_23_1122_ecosystem_modules_hardening_and_test_purification/sub_04_knowledge_db_pipeline_and_tests` 驗證 100% Passed（若檢出未通過項則原地修正重驗）。
+

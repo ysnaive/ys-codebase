@@ -117,7 +117,7 @@ class Tester:
 
         report_json_path = None
         quiet_report = False
-        quiet_mode = os.environ.get("YSCB_TEST_QUIET") == "1"
+        quiet_mode = False
         target_mod = None
         test_type = None
         pattern = None
