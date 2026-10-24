@@ -289,4 +289,6 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 針對高認知負荷場景，透過「檔案路徑傳址」與「Single-Writer 計畫檔保護」內化三支柱委派：
 1. **支柱一（`/research` 與 `/discuss` 唯讀廣域探索隔離）**：派發唯讀 Subagent 平行或單一檢索，回傳 150~300 Tokens 濃縮證據，主視窗維持乾淨 Context 撰寫報告或討論卡。
 2. **支柱二（`/auto` 與大型 `Phase 05/06` 序列實作隔離）**：處於 `/auto` 或 $\ge 3$ 個任務組時按高內聚任務組強制序列派發，傳遞 `P03/P04/P05` 與 `testing-sop`；內建「二振失敗熔斷（2-Strike Limit）」與 5 行結構化狀態代碼；Subagent 禁改 `plans/`。
-3. **支柱三（`Phase 07` Step 1 唯讀 Fresh-Eyes 冷眼審查）**：派發乾淨 Reviewer Subagent 結合 `P04` 清單、`git status`、`git diff HEAD` 與直讀 `Untracked` 新檔，僅審查敷衍修補、測試反模式、需求遺漏與文檔未同步三類硬性契約，無缺失回傳 `REVIEW_STATUS: PASSED`。
+3. **支柱三（`Phase 06` Pre-UX 唯讀 Fresh-Eyes 冷眼審查與 `Phase 07` 條件式複審）**：
+   - **審查左移時機**：在完成自動化跑測、**即將向開發者提出手動 / UX 測試驗證請求前**，強制派發無偏誤的 Reviewer Subagent 進行客觀審查，結合 `P04` 清單、`git status`、`git diff HEAD` 與直讀 `Untracked` 新檔，僅審查敷衍修補、測試反模式、需求遺漏與文檔未同步三類硬性契約，無缺失回傳 `REVIEW_STATUS: PASSED`。
+   - **條件式複審**：進入 `Phase 07` 結案時，若 UX 驗收期間完全未更動生產或測試代碼，直接由主 Agent 執行常規文檔與註解審閱；若 UX 測試曾更動原始碼或核心邏輯，則強制再次派發支柱三 Subagent 進行二度冷眼複審。

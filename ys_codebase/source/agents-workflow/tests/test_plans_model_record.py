@@ -356,13 +356,17 @@ class TestModelRecordRule(YSCBTestCase):
             self.assertIn("DEVIATION_OR_BLOCKER_NOTE", doc_text)
             self.assertIn("自動降級", doc_text)
 
-        # 6. FR-06 & EC-03 & EC-04: 支柱三 (phase_07 Fresh-Eyes Review、Untracked 防護與三類硬性契約)
+        # 6. FR-06 & EC-03 & EC-04: 支柱三 (phase_06 Pre-UX Fresh-Eyes Review、phase_07 條件式複審、Untracked 防護與三類硬性契約)
+        p06_ref = (sop_ref / "phase_06_test.md").read_text(encoding="utf-8")
+        self.assertIn("支柱三", p06_ref)
+        self.assertIn("Untracked (??)", p06_ref)
+        self.assertIn("git status --short", p06_ref)
+        self.assertIn("REVIEW_STATUS: PASSED", p06_ref)
+        self.assertIn("自動降級", p06_ref)
+
         p07_ref = (sop_ref / "phase_07_walkthrough.md").read_text(encoding="utf-8")
         self.assertIn("支柱三", p07_ref)
-        self.assertIn("Untracked (??)", p07_ref)
-        self.assertIn("git status --short", p07_ref)
-        self.assertIn("REVIEW_STATUS: PASSED", p07_ref)
-        self.assertIn("自動降級", p07_ref)
+        self.assertIn("條件式", p07_ref)
 
         self.mark_passed()
 

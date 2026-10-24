@@ -1,5 +1,11 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_24_1112_subagent_review_timing_revision (Completed)
+
+- **SOP 支柱三 Subagent 程式碼冷眼審查時機左移至 P06 請求 UX 驗收前，並於 P07 設為條件式複審 (`REV-01`)**：
+  - **Phase 06 審查左移 (Shift-Left Pre-UX Gate)**：在完成自動化跑測、即將向開發者提出手動/UX 測試請求前，強制派發無偏誤的 Reviewer Subagent 審查本次代碼與測試（防呆 2 `git status --short` + `Untracked` 直讀，防呆 3 僅查三類硬性契約）。杜絕代碼存在淺層修補或測試反模式即呈遞 UX 驗證，避免 UX 驗收完成後因代碼被打回而重複驗證。
+  - **Phase 07 條件式複審 (Conditional Re-Review Gate)**：進入 P07 結案時，若 UX 驗收期間完全未更動生產或測試代碼，直接由主 Agent 執行常規文檔與註解審閱，節約 Token；若 UX 測試或修正過程曾更動原始碼或核心邏輯，則強制於 Step 1 再派發一次支柱三 Subagent 複審。同步更新 `phase_06_test.md`、`phase_07_walkthrough.md`、`user_guide.md` 與單元測試，`agents-workflow` 131/131 測試通過並完成 `@build` 自部署。
+
 ## 2026_10_23_1122_ecosystem_modules_hardening_and_test_purification (In Progress)
 
 ### sub_02_dev_toolchain_and_tests (Completed)

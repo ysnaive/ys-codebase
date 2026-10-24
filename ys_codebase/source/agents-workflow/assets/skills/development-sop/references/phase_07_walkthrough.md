@@ -23,17 +23,12 @@ flowchart TD
     Step3 --> Card(["呈遞 P07 結案卡等待指示"])
 ```
 
-### 步驟 1：SOP Review 三層文檔交付對齊 (Documentation Delivery Audit，含 Subagent 支柱三冷眼審查)
+### 步驟 1：SOP Review 三層文檔交付對齊 (Documentation Delivery Audit 與條件式 Subagent 複審)
 - [!] **文檔更新前強制觸發技能**：在執行三層文檔核驗與更新前，**強制必須先觸發並精讀 [`documentation`](`__#{module://agents-workflow/assets/skills/documentation/SKILL.md}__`) 技能手冊**，嚴格對齊專案知識庫 7 大知識維度與作者指引。
-- [!] **支柱三：唯讀 Fresh-Eyes 冷眼審查協定 (Pillar 3 Review Delegation)**：
-  - **派發獨立審查子代理**：主視窗傳遞 `P01`、`P03`、`P04` 路徑指針，由無偏誤的 Reviewer Subagent 進行客觀審查，打破主視窗近因確認偏誤（球員兼裁判）。無子代理環境自動降級為由主視窗內聯冷靜自檢。
-  - **Untracked 新檔審查防護**：Reviewer 先讀取 `P04_implementation_plan.md` 變更清單，搭配 `git status --short` 與 `git diff HEAD`，對未加入 index 之 `Untracked (??)` 新建檔案直接以檔案讀取工具檢視全文，杜絕漏審新建檔案。
-  - **防吹毛求疵三類硬性審查契約**：Reviewer 僅允許回報違反下列三類硬性契約之具體缺失：
-    1. 違反 `AGENTS.md` 核心原則 3 之淺層敷衍修補（如空白 `except` 吞錯誤、無意義 mock、放寬斷言）或違反 `testing-sop` 六大測試鐵律（如新建計畫名碎片測試檔、空殼斷言、歷史墓碑）；
-    2. `P01` 功能/邊界需求或 `P03` 介面契約未落實之遺漏；
-    3. `P04` 文檔衝擊盤點表列應同步但未更新之三層文檔或公開 API Docstring。
-    *嚴禁回報主觀命名或排版微調；若無上述三類硬性缺失，強制直接回傳 `REVIEW_STATUS: PASSED`。*
-  - **時序對齊**：Subagent 審查通過或主視窗修正缺失後，方推進至步驟 2 產出 `P07_walkthrough.md` (`Completed`) 與步驟 3 執行 `plan verify --log`。
+- [!] **支柱三：條件式唯讀 Fresh-Eyes 冷眼複審協定 (Pillar 3 Conditional Review Gate)**：
+  - **條件判定**：
+    - **情況 A（常規審閱，免派子代理）**：若在 Phase 06 手動/UX 驗證過程中**完全未改動任何原始碼與測試代碼**（因 Phase 06 請求 UX 前已完成第一輪冷眼審查），則 Phase 07 **無需重複派發 Subagent**，直接由主 Agent 執行常規三層文檔、註解對齊與自檢核對，極致節省 Token 與延遲。
+    - **情況 B（強制派發複審）**：若在 Phase 06 手動/UX 驗證過程中有**新增、修改原始碼、修復缺陷或更動核心邏輯**，則於步驟 1 **強制必須再次派發獨立 Reviewer Subagent 進行二度冷眼複審**（比照 Phase 06 審查契約，確認 UX 過程中的即時修改未引入淺層敷衍或破壞架構），通過後方可推進。
 - [ ] **宏觀發布日誌**：專案根目錄 [`CHANGELOG.md`](`__#{project://CHANGELOG.md}__`) 最上方預擬或追加本次高階變更摘要。
 - [ ] **中觀模組與專題手冊 (優先更新載體，嚴防 DN 膨脹)**：
   - **優先更新載體**：更新文檔時應優先從 `__${workflow.docs://}__/<Category>/README.md` 模組手冊或專題手冊 (`__${workflow.docs://}__/<Category>/[topic].md`) 下手更新架構、流程與功能資訊，嚴禁在 DN 一直增量！
