@@ -58,8 +58,9 @@ last_updated: "2026-10-15"
     1. **Tier 1 (Windows Junction)**：優先調用 `_winapi.CreateJunction` 建立目錄重析點，免 Administrator 權限且耗時 $\le 1\text{ms}$。
     2. **Tier 2 (POSIX Symlink)**：優先調用 `os.symlink` 建立目錄符號連結。
     3. **Tier 3 (`.pth` 降級兜底)**：在 virtiofs、容器跨系統掛載或 exFAT 等不支援重析點/Symlink 的環境自動捕獲 `OSError`，於沙盒建立輕量 `site-packages/host_venv.pth` 寫入宿主 `site-packages` 絕對路徑。
-- **強制斷開協議 (`_unlink_projected_venv`)**：
+- **強制斷開協議 (`_unlink_projected_venv`) 與平行沙盒執行緒鎖 (`_SANDBOX_LOCK`)**：
   - `cleanup_sandbox` 在執行 `shutil.rmtree` 前，強制先行檢測 `host_env/engine/.venv`：若為 Junction / Symlink 則僅以 `os.rmdir` / `os.unlink` 解除連結節點本身，確保宿主 `.venv` 100% 零損毀。
+  - `_project_venv` 自動透過 `os.path.realpath` 解析宿主 `.venv` 實體目錄（防止子行程在沙盒內建立巢狀 `ISOLATED_SANDBOX` 時形成二次 Junction 鏈）；同時 `SandboxProvisioner` 以 `_SANDBOX_LOCK` 保護沙盒建立與清理，且在 `YSCB_TEST_SANDBOX == "1"` 子行程內或平行 worker 執行中途跳過全域 `prune_sandboxes`，杜絕 `dev test --all` 平行模組測試互刪。
 
 ---
 

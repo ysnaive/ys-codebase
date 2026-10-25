@@ -70,7 +70,7 @@ graph TD
 | [符號解析與動態模組載入機制](./symbol_resolution.md) | 維度 ③ | `code.func://` 協議語法與雙軌動態載入器 (`core.symbols`) |
 | [Core Platform 跨平台底層原語手冊](./platform.md) | 維度 ③ | 背景脫鉤進程管理 (`spawn_detached`、`kill_process_tree`) 與跨平台進程鎖 (`InterProcessLock`) |
 | [Core 模組 API 規格手冊](./API_REFERENCE.md) | 維度 ④ | `core` 公開子模組 API 簽名與回傳契約速查 |
-| [Core 微內核設計決策與工程註記](./DESIGN_NOTES.md) | 維度 ⑤ | 12 項關鍵反直覺工程妥協、防坑不變量與 `[!CAUTION]` 紅線 (`DN-01 ~ DN-12`) |
+| [Core 微內核設計決策與工程註記](./DESIGN_NOTES.md) | 維度 ⑤ | 13 項關鍵反直覺工程妥協、防坑不變量與 `[!CAUTION]` 紅線 (`DN-01 ~ DN-13`) |
 
 ---
 
@@ -100,7 +100,7 @@ YS-Codebase 透過 `core.uri` 與 `core.vfs` 提供標準化虛擬檔案系統�
 - `-y <path>`：輸入路徑（以 `yscb://` 為相對基準，支援 `../` 或語意協議），自動原子寫回 `config.project.json` 並熱刷新快取繼續運行。
 - `-n`：安全終止操作。
 - `--help`：展開全系統可用協議清冊與狀態。
-- **非 TTY / 靜態檢查與可操作自癒提示**：直接拋出結構化 `UndefinedURIError`，並透過 `format_undefined_uri_hint()` 自動附帶精確的 `Quick fix: <cli_cmd>` 修復指令（例如 `project://` 提示 `python yscb.py config set core project_root ./`、`workflow.*://` 提示 `python yscb.py agents-workflow init --default`）；`python yscb.py uri check` 亦同步輸出 `[Quick Fix]` 修復指令區塊。
+- **非 TTY / 靜態檢查與可操作自癒提示**：直接拋出結構化 `UndefinedURIError`，並透過 `format_undefined_uri_hint()` 自動附帶精確的 `Quick fix: <cli_cmd>` 通用修復指令（例如 `project://` 提示 `python yscb.py config set core project_root ./`、模組級 `config` 協議提示 `python yscb.py config set <donor> <key> <path>`）；`python yscb.py uri check` 亦同步輸出 `[Quick Fix]` 修復指令區塊。
 
 ---
 

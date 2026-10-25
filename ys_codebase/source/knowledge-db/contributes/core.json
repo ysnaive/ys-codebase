@@ -12,7 +12,7 @@
     "description": "YS-Codebase Knowledge Database & Semantic Retrieval Subsystem",
     "cmd": {
       "status": {
-        "description": "查看知識庫空間狀態、指紋快取、同義詞與索引統計",
+        "description": "查看知識庫空間狀態、指紋快取與索引統計",
         "tier": "safe",
         "server_compatible": true,
         "args": {
@@ -26,6 +26,25 @@
             "scan": {
               "description": "執行空間指紋掃描並顯示異動差異",
               "alias": ["diff"]
+            }
+          },
+          "scope": {
+            "all": {
+              "description": "顯示全空間狀態",
+              "alias": ["a"]
+            },
+            "space": {
+              "description": "指定空間名稱",
+              "args": {
+                "name": {
+                  "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以 JSON 格式輸出"
             }
           }
         },
@@ -125,12 +144,32 @@
               }
             }
           },
-          "filter": {
+          "filter_ftype": {
             "ftype": {
               "description": "篩選檔案類型 (如 md, py)",
               "args": {
                 "ext": {
                   "description": "副檔名"
+                }
+              }
+            }
+          },
+          "filter_kind": {
+            "kind": {
+              "description": "篩選符號類型 (如 class, function, method, section)",
+              "args": {
+                "type": {
+                  "description": "符號類型"
+                }
+              }
+            }
+          },
+          "filter_lang": {
+            "lang": {
+              "description": "篩選程式語言 (如 python, markdown)",
+              "args": {
+                "language": {
+                  "description": "語言名稱"
                 }
               }
             }
@@ -211,6 +250,16 @@
                 }
               }
             }
+          },
+          "limit": {
+            "limit": {
+              "description": "回傳筆數限制 (auto 或整數)",
+              "args": {
+                "count": {
+                  "description": "筆數"
+                }
+              }
+            }
           }
         },
         "usage": {
@@ -273,6 +322,16 @@
                 }
               }
             }
+          },
+          "limit": {
+            "limit": {
+              "description": "回傳筆數限制 (auto 或整數)",
+              "args": {
+                "count": {
+                  "description": "筆數"
+                }
+              }
+            }
           }
         },
         "usage": {
@@ -306,10 +365,6 @@
             }
           },
           "display": {
-            "preview": {
-              "description": "顯示調用點程式碼切片預覽",
-              "alias": ["s", "snippet"]
-            },
             "detail": {
               "description": "顯示完整詳細資訊",
               "alias": ["d"]
@@ -342,6 +397,16 @@
               "args": {
                 "ext": {
                   "description": "副檔名"
+                }
+              }
+            }
+          },
+          "limit": {
+            "limit": {
+              "description": "回傳筆數限制 (auto 或整數)",
+              "args": {
+                "count": {
+                  "description": "筆數"
                 }
               }
             }

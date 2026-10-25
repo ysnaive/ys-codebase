@@ -67,6 +67,20 @@ def status(cmd_bags: Any) -> int:
         space_target = bags.get_option_value("space") or (targets[0] if targets and not (bags.has_option("all") or bags.has_option("a")) else None)
 
         st = engine.status(space=space_target, scan=scan_mode)
+        if bags.has_option("json"):
+            json_st = dict(st)
+            if "scan_diff" in json_st and json_st["scan_diff"]:
+                json_st["scan_diff"] = {
+                    k: {
+                        "added": list(v.added),
+                        "modified": list(v.modified),
+                        "deleted": list(v.deleted),
+                        "unchanged": list(v.unchanged),
+                    }
+                    for k, v in json_st["scan_diff"].items()
+                }
+            print(json.dumps(json_st, indent=2, ensure_ascii=False))
+            return 0
         styler = TerminalStyler(sys.stdout)
         print(f"[knowledge-db] 系統狀態摘要 (共 {st['total_spaces']} 個空間):")
         print(f"  - 存儲空間根目錄: {styler.path(st['storage_dir'])}")

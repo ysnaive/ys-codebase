@@ -36,11 +36,11 @@ last_updated: "2026-10-25"
 | **[DN-AW-09]** | 新增 | 來源資產換行符 LF 正規化與物化清單 `cache://` 本地隔離防 Git 污染 | 發布引擎 (`publisher.py`) | `Active` |
 | **[DN-AW-10]** | 新增 | ACI 四步執行管線時序、伴隨檔模型防回溯與 `P01` 刪除線/代碼塊預過濾設計 | Plans 工具鏈 (`verifier.py`, `scanner.py`, `status.py`) | `Active` |
 | **[DN-AW-11]** | 新增 | 雙層儲備消耗 (`Consume-on-Promote`)、`TODO.md` 單調遞增編號計數器與 `ORIGIN_SEED_FILES` 種子白名單防坑設計 | 儲備與計畫工具鏈 (`roadmap.py`, `status.py`, `scanner.py`, `verifier.py`) | `Active` |
-| **[DN-AW-12]** | 新增 | 唯讀 Subagent 零劇透盲審傳址、純靜態禁跑測、Single-Writer 鐵律與多路線圖合流追加合併防坑設計 | 技能資產 (`research`, `discuss`, `phase_06`, `phase_07`, `roadmap.py`) | `Active` |
+| **[DN-AW-12]** | 新增 | 唯讀 Subagent 零劇透盲審傳址、純靜態禁跑測、Single-Writer 鐵律（Phase 5 量化門檻委派見 `[DN-AW-16]`）與多路線圖合流追加合併防坑設計 | 技能資產 (`research`, `discuss`, `phase_06`, `phase_07`, `roadmap.py`) | `Active` |
 | **[DN-AW-13]** | 新增 | 跨模組多捐贈者導覽錨點 (`HOW_TO_*_MODULES`)、兩階段漸進式隨包手冊調度與跨模組 `_resolve_source_path` Sibling Fallback 防坑設計 | 工廠編譯器 (`compiler.py`)、教練技能 (`how-to-config-yscb`, `how-to-yscb`) | `Active` |
 | **[DN-AW-14]** | 新增 | `/skill-creator` 三軌擴充防膨脹、`AGENTS_SKILL_ROUTING` 表格列結構隔離與教學範例 Fenced Code Block 編譯器正則保護 | 技能資產 (`skill-creator/SKILL.md`, `references/extension-guide.md`) | `Active` |
-| **[DN-AW-15]** | 新增 | `/auto` 內聯輕量章節骨架、`1-Write-Per-File` 單次到位寫入、`Signature-Only` 去重與 `_auto.md` 雙軌解析防坑設計 | 技能資產 (`auto/SKILL.md`, `development-sop/SKILL.md`)、Plans 工具鏈 (`status.py`, `scanner.py`, `verifier.py`, `archiver.py`) | `Active` |
-| **[DN-AW-16]** | 新增 | `/auto` 兩階段 JIT 讀模板防記憶衰減、`PlanVerifier` 缺失率雙軌分流 (`QUICK_PATCH`/`FULL_REWRITE`) 與確定性標頭自癒邊界 | 技能資產 (`auto/SKILL.md`)、Plans 工具鏈 (`verifier.py`, `cli.py`) | `Active` |
+| **[DN-AW-15]** | 新增 | `/auto` `1-Write-Per-File` 單次到位寫入、`Signature-Only` 去重與 `_auto.md` 雙軌解析防坑設計（內聯骨架已於 `[DN-AW-16]` 演進為兩階段 JIT 讀模板） | 技能資產 (`auto/SKILL.md`, `development-sop/SKILL.md`)、Plans 工具鏈 (`status.py`, `scanner.py`, `verifier.py`, `archiver.py`) | `Active` |
+| **[DN-AW-16]** | 新增 | `/auto` 兩階段 JIT 讀模板防記憶衰減、`PlanVerifier` 缺失率雙軌分流 (`QUICK_PATCH`/`FULL_REWRITE`)、否定前綴防誤配與確定性標頭自癒邊界 | 技能資產 (`auto/SKILL.md`)、Plans 工具鏈 (`verifier.py`, `cli.py`) | `Active` |
 
 ---
 
@@ -216,7 +216,7 @@ last_updated: "2026-10-25"
      - 在尚未執行 `git commit` 前，新建檔案處於 `Untracked (??)` 狀態，單跑 `git diff HEAD` 無法檢出內容；若未設定硬性審查契約邊界，子代理亦常挑剔命名或排版微調。
   3. **多路線圖合流子計畫 `promote` 覆寫**：單一大型子計畫常需消費 2 份高度關聯的路線圖（如 `sub_03` 包含測試規範與 Subagent 隔離）。若 `RoadmapManager.promote_roadmap` 無差別使用 `shutil.move`，第 2 份路線圖將直接覆寫第 1 份已遷入的 `roadmap.md`。
 - **妥協與防禦設計**：
-  1. **廢棄實作隔離與 Single-Writer 鐵律**：`Phase 05` 編碼實作統一由主視窗 Agent 直接執行；`plans/` 檔案 100% 僅由主視窗集中寫入，唯讀子代理嚴禁修改任何專案與計畫檔案。
+  1. **常規任務主視窗直跑、大規模任務量化門檻委派與 `plans/` Single-Writer 鐵律**：日常中小規模 `Phase 05` 編碼實作由主視窗 Agent 直接執行（唯當 `P04` §4 實作規模達 $\ge 5$ 個檔案或 $> 1,500$ 行時，方依 `[DN-AW-16]` 建議委派 `self` 實作 Subagent）；`plans/` 檔案 100% 僅由主視窗集中寫入，唯讀子代理嚴禁修改任何專案與計畫檔案。
   2. **零劇透盲審傳址、純靜態唯讀禁跑測與三類硬性契約**：派發 Reviewer 時**嚴禁告知本次計畫實作內容，僅提供目標計畫路徑**由子代理自行讀取規格書並結合 `git status --short` 直讀 `Untracked` 新檔獨立探索；**明確告知子代理嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查**；且嚴格限制僅回報敷衍修補/測試反模式、需求遺漏與文檔未同步三類硬性缺失，其餘情況強制回傳 `REVIEW_STATUS: PASSED`。
   3. **多路線圖合流追加合併 (`is_appended`)**：`RoadmapManager.promote_roadmap` 偵測到目標目錄已存在 `roadmap.md` 時，自動將新路線圖內容追加合併於分隔線之後並安全刪除來源檔案，伴隨 `changelog.md` 精確記載追加操作。
 
@@ -264,7 +264,7 @@ last_updated: "2026-10-25"
   2. **`/auto` 連續推進期間 Context 雙重膨脹與溯源模糊**：在 `/auto` 模式下，Agent 若機械式逐一讀取 `phase_01~05.md`（含大量無效的單階段 End Turn 說明）與 `P01~P06` 模板（共 11 次讀檔）、在 `P02`/`P03`/`P04`/`P05` 重複抄寫檔案清單與任務拆解、在 `P03` 預寫實作程式碼塊、對 `P05`/`P06` 先寫過渡狀態再二次 Edit，並於每階段呼叫一次 `plan verify`（共 27 次 SOP 工具調用），會造成單次 `/auto` 平白消耗 25K~35K+ Tokens 的文書歷史；同時事後審閱計畫目錄時，無法從檔名直觀區分哪些階段曾經人工定案、哪些階段由 `/auto` 自動生成。
 - **妥協與防禦設計**：
   1. **拔除 `core/providers.py` 動態大表，轉向「技能內建直跑 + 非常規指令 `-h` 按需自省」**：徹底刪除 `core/providers.py` 與 `AGENTS_CLI_GUIDE` computed 注入，將 `yscb-cli-guide/SKILL.md` 收斂至 62 行（~1.0K Tokens，縮減 `-70%`），確立「軌跡 A 技能內建指令免查直跑 (`Skill-Vetted Fast Pass`) + 軌跡 B 非常規指令／未知旗標強制執行 `python yscb.py <mod> [cmd] -h` 按需自省 (`Just-in-Time -h Inspection`)」。
-  2. **`/auto` 內聯骨架契約、`1-Write-Per-File`、`Signature-Only` 與 `PXX_YYYY_auto.md` 雙軌相容**：於 `auto/SKILL.md` 內建 `P01`~`P06` 必填標頭與二級章節標題速查表（免除 `/auto` 期間讀取 `phase_01~05.md` 與模板），規範單檔單次到位寫入（`P05` 直接以 `Completed` 寫入、`P06` 於測試通過後直接以 `Passed` 寫入）與 `P06` 單次彙總 `plan verify`；強制要求 `/auto` 自動生成之 `P01`~`P05` 規格檔附加 `_auto.md` 後綴（如 `P01_requirements_spec_auto.md` ~ `P05_task_auto.md`），並於 `PlanStatusResolver.resolve_phase_file` 實作標準名與 `_auto.md` 雙軌相容解析，串聯 `PlanScanner`、`PlanVerifier` 與 `PlanArchiver`。
+  2. **`/auto` `1-Write-Per-File`、`Signature-Only` 與 `PXX_YYYY_auto.md` 雙軌相容**：免除 `/auto` 期間讀取 `phase_01~05.md`（原內聯 `P01`~`P06` 標題速查表已於 `[DN-AW-16]` 演進為寫檔前兩階段 JIT 讀取模板），規範單檔單次到位寫入（`P05` 直接以 `Completed` 寫入、`P06` 於測試通過後直接以 `Passed` 寫入）與 `P06` 單次彙總 `plan verify`；強制要求 `/auto` 自動生成之 `P01`~`P05` 規格檔附加 `_auto.md` 後綴（如 `P01_requirements_spec_auto.md` ~ `P05_task_auto.md`），並於 `PlanStatusResolver.resolve_phase_file` 實作標準名與 `_auto.md` 雙軌相容解析，串聯 `PlanScanner`、`PlanVerifier` 與 `PlanArchiver`。
 
 > [!CAUTION]
 > 嚴禁重新引入全系統 CLI 靜態大表生成；於 `/auto` 模式自動生成之 `P01`~`P05` 階段檔案必須命名為 `PXX_YYYY_auto.md` 並遵守 `1-Write-Per-File` 與 `Signature-Only`（禁止在 `P03`/`P04` 預貼實作程式碼塊）；`plans/` 工具鏈查找階段檔案時一律透過 `PlanStatusResolver.resolve_phase_file` 以維持原名與 `_auto.md` 雙軌相容。

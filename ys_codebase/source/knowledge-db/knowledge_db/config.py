@@ -38,12 +38,10 @@ class KnowledgeDBConfig:
     ) -> "KnowledgeDBConfig":
         """
         載入 knowledge-db 專用組態。
-        遵循四階層優先級：
+        遵循三階層優先級：
         1. core.config (config://knowledge-db/config.local.json 優先於 config.project.json)
-        2. yscb.config.local.json 中的 "knowledge-db" 區塊
-        3. yscb.config.json 中的 "knowledge-db" 區塊
-        4. 傳入之 local_config / project_config
-        5. 內建預設值
+        2. 傳入之 local_config / project_config
+        3. 內建預設值
         """
         root_path = Path(workspace_root) if workspace_root else Path(cls._find_workspace_root())
 
@@ -68,24 +66,11 @@ class KnowledgeDBConfig:
         if project_config:
             merged_data.update(_parse_cfg_input(project_config))
 
-        # 2. 搜尋實體目錄之 yscb.config.json 與 yscb.config.local.json
-        for fname in ["yscb.config.json", "yscb.config.local.json"]:
-            p = root_path / fname
-            if (vfs.is_file(str(p)) if vfs else p.is_file()):
-                try:
-                    raw = vfs.read_json(str(p)) if vfs else json.loads(p.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        kdb_sec = raw.get("knowledge-db")
-                        if isinstance(kdb_sec, dict):
-                            merged_data.update(kdb_sec)
-                except Exception as e:
-                    logger.debug(f"Failed to read {fname}: {e}")
-
-        # 3. 傳入之 local_config (高於實體檔案)
+        # 2. 傳入之 local_config (高於 project_config)
         if local_config:
             merged_data.update(_parse_cfg_input(local_config))
 
-        # 4. core.config SDK 聚合結果 (最高優先級，具備動態與階層配置能力)
+        # 3. core.config SDK 聚合結果 (最高優先級，具備動態與階層配置能力)
         try:
             from core import config as core_cfg_mod
             if hasattr(core_cfg_mod, "get_all"):

@@ -50,8 +50,6 @@ class TestDistributionLifecycle(YSCBTestCase):
 
         self.mark_passed()
 
-        self.mark_passed()
-
     def test_cmd_self_update_atomic_replacement(self):
         """FT-02: 驗證 cmd_self_update 語法驗證防護與原子備份替換流程。"""
         dummy_script = os.path.join(self.temp_dir, "yscb.py")
