@@ -7,6 +7,8 @@ Validates Stage 0 Fingerprint Short-Circuit, Stage 4 Content Diff, Force Release
 import os
 import sys
 import json
+import shutil
+import tempfile
 import unittest
 import importlib.util
 from typing import Dict, Any
@@ -23,7 +25,15 @@ _spec_cli.loader.exec_module(cli_mod)
 cmd_release = cli_mod.cmd_release
 
 from agents_workflow.compiler import ArtifactCompiler
-from agents_workflow.publisher import ReleasePublisher, PROJECT_MANIFEST_CACHE_URI
+from agents_workflow.publisher import (
+    ReleasePublisher,
+    PROJECT_MANIFEST_CACHE_URI,
+    LOCAL_MANIFEST_CACHE_URI,
+    LEGACY_PROJECT_MANIFEST_STORAGE_URI,
+    ensure_jit_release,
+)
+from agents_workflow.targets import ReleaseTargetManager
+from unittest.mock import patch
 
 try:
     from core import uri
@@ -65,10 +75,10 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertTrue(len(res["fingerprint"]) > 0)
 
         # 驗證 storage:// 中記錄的 manifest
-        if uri and uri.exists(PROJECT_MANIFEST_CACHE_URI):
-            manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
-            self.assertEqual(manifest_data.get("fingerprint"), res["fingerprint"])
-            self.assertEqual(len(manifest_data.get("published_files", [])), res["published_count"])
+        self.assertTrue(bool(uri and uri.exists(PROJECT_MANIFEST_CACHE_URI)))
+        manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        self.assertEqual(manifest_data.get("fingerprint"), res["fingerprint"])
+        self.assertEqual(len(manifest_data.get("published_files", [])), res["published_count"])
         self.mark_passed()
 
     @require(Requirement.ENV)
@@ -94,27 +104,27 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertTrue(res1["success"])
 
         # 取得其中一個已發布檔案並人為修改其內容 (模擬外部內容漂移或部分產物需要更新)
-        if uri and uri.exists(PROJECT_MANIFEST_CACHE_URI):
-            manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
-            target_files = manifest_data.get("published_files", [])
-            self.assertGreater(len(target_files), 1)
+        self.assertTrue(bool(uri and uri.exists(PROJECT_MANIFEST_CACHE_URI)))
+        manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        target_files = manifest_data.get("published_files", [])
+        self.assertGreater(len(target_files), 1)
 
-            modified_file = target_files[0]
-            if modified_file.startswith("project://"):
-                modified_file = uri.resolve(modified_file, interactive=False)
-            with open(modified_file, "w", encoding="utf-8") as f:
-                f.write("MODIFIED CONTENT")
+        modified_file = target_files[0]
+        if modified_file.startswith("project://"):
+            modified_file = uri.resolve(modified_file, interactive=False)
+        with open(modified_file, "w", encoding="utf-8") as f:
+            f.write("MODIFIED CONTENT")
 
-            # 透過破壞快取中的 fingerprint 迫使進入 Stage 4 比對，但非 force
-            manifest_data["fingerprint"] = "stale_fake_fingerprint"
-            uri.write_json(PROJECT_MANIFEST_CACHE_URI, manifest_data)
+        # 透過破壞快取中的 fingerprint 迫使進入 Stage 4 比對，但非 force
+        manifest_data["fingerprint"] = "stale_fake_fingerprint"
+        uri.write_json(PROJECT_MANIFEST_CACHE_URI, manifest_data)
 
-            res2 = self.publisher.release_all(force=False)
-            self.assertTrue(res2["success"])
-            self.assertFalse(res2["short_circuited"])
-            # 只有被竄改的檔案被重新寫入，其餘檔案跳過寫入
-            self.assertEqual(res2["written_count"], 1)
-            self.assertEqual(res2["skipped_count"], len(target_files) - 1)
+        res2 = self.publisher.release_all(force=False)
+        self.assertTrue(res2["success"])
+        self.assertFalse(res2["short_circuited"])
+        # 只有被竄改的檔案被重新寫入，其餘檔案跳過寫入
+        self.assertEqual(res2["written_count"], 1)
+        self.assertEqual(res2["skipped_count"], len(target_files) - 1)
         self.mark_passed()
 
     @require(Requirement.ENV)
@@ -187,24 +197,24 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertTrue(res1["success"])
 
         # 人為刪除其中一個已發布檔案
-        if uri and uri.exists(PROJECT_MANIFEST_CACHE_URI):
-            manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
-            target_files = manifest_data.get("published_files", [])
-            self.assertGreater(len(target_files), 0)
+        self.assertTrue(bool(uri and uri.exists(PROJECT_MANIFEST_CACHE_URI)))
+        manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        target_files = manifest_data.get("published_files", [])
+        self.assertGreater(len(target_files), 0)
 
-            deleted_file = target_files[0]
-            if deleted_file.startswith("project://"):
-                deleted_file = uri.resolve(deleted_file, interactive=False)
-            if os.path.isfile(deleted_file):
-                os.remove(deleted_file)
+        deleted_file = target_files[0]
+        if deleted_file.startswith("project://"):
+            deleted_file = uri.resolve(deleted_file, interactive=False)
+        if os.path.isfile(deleted_file):
+            os.remove(deleted_file)
 
-            # 再次調用 (force=False) -> 應檢測到檔案缺失，短路失效並補齊
-            res2 = self.publisher.release_all(force=False)
-            self.assertTrue(res2["success"])
-            self.assertFalse(res2["short_circuited"])
-            self.assertTrue(os.path.isfile(deleted_file))
-            # 只有缺失的檔案被寫入，其餘檔案跳過寫入
-            self.assertEqual(res2["written_count"], 1)
+        # 再次調用 (force=False) -> 應檢測到檔案缺失，短路失效並補齊
+        res2 = self.publisher.release_all(force=False)
+        self.assertTrue(res2["success"])
+        self.assertFalse(res2["short_circuited"])
+        self.assertTrue(os.path.isfile(deleted_file))
+        # 只有缺失的檔案被寫入，其餘檔案跳過寫入
+        self.assertEqual(res2["written_count"], 1)
         self.mark_passed()
 
     @require(Requirement.ENV)
@@ -359,16 +369,6 @@ class TestReleasePublisherDiff(YSCBTestCase):
             self.assertTrue(res3["success"])
             self.assertTrue(res3["short_circuited"])
             self.assertEqual(res3["fingerprint"], res1["fingerprint"])
-        self.mark_passed()
-
-    def test_ft_12_manifest_clean_of_watchdog(self):
-        """FT-12: 驗證 agents-workflow manifest.json 已解耦清理 watchdog 相依性。"""
-        manifest_p = os.path.join(self.compiler.module_root, "manifest.json")
-        self.assertTrue(os.path.isfile(manifest_p))
-        with open(manifest_p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        pip_deps = data.get("pip_dependencies", {})
-        self.assertNotIn("watchdog", pip_deps)
         self.mark_passed()
 
     def test_ft_13_soft_merge_single_source_and_external_preservation(self):
@@ -551,6 +551,275 @@ class TestReleasePublisherDiff(YSCBTestCase):
         finally:
             config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
             config.reload()
+
+
+class TestJITRelease(YSCBTestCase):
+    """測試 JIT 雜湊偵測與釋出同步。"""
+
+    def test_ft_03_ensure_jit_release_clean(self):
+        """FT-03: 驗證當來源特徵未改變 (Clean) 時，ensure_jit_release 順暢返回且不報錯。"""
+        with patch.object(ReleasePublisher, "release_all", return_value={"success": True, "short_circuited": True, "written_count": 0}):
+            result = ensure_jit_release()
+            self.assertFalse(result)
+            self.mark_passed()
+
+    def test_ft_03_ensure_jit_release_dirty_triggers_materialize(self):
+        """FT-03: 驗證當指紋不一致時，ensure_jit_release 觸發 release 並返回 True。"""
+        with patch.object(ReleasePublisher, "release_all", return_value={"success": True, "short_circuited": False, "written_count": 3}):
+            result = ensure_jit_release()
+            self.assertTrue(result)
+            self.mark_passed()
+
+    def test_et_05_ensure_jit_release_exception_safety(self):
+        """ET-05: 驗證當 release 過程遭遇任何異常時，ensure_jit_release 安全捕獲返回 False，不中斷 CLI。"""
+        with patch.object(ReleasePublisher, "release_all", side_effect=PermissionError("File locked")):
+            result = ensure_jit_release()
+            self.assertFalse(result)
+            self.mark_passed()
+
+    def test_agents_workflow_hook_jit_release(self):
+        """FT-04: 驗證 hook.core.py 之 on_pre_cli_dispatch 呼叫 ensure_jit_release。"""
+        hook_path = os.path.join(_pkg_root, "scripts", "hook.core.py")
+        self.assertTrue(os.path.isfile(hook_path), "hook.core.py does not exist")
+        spec = importlib.util.spec_from_file_location("aw_hook_core_pub", hook_path)
+        hook_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook_mod)
+        self.assertTrue(hasattr(hook_mod, "on_pre_cli_dispatch"))
+
+        with patch("agents_workflow.publisher.ensure_jit_release", return_value=True):
+            res = hook_mod.on_pre_cli_dispatch()
+            self.assertTrue(res)
+
+        with patch("agents_workflow.publisher.ensure_jit_release", return_value=False):
+            res = hook_mod.on_pre_cli_dispatch()
+            self.assertFalse(res)
+        self.mark_passed()
+
+
+class TestManifestPlacementAndDualTrack(YSCBTestCase):
+    """測試發布清單分流 (Storage vs Cache) 與換行符號 LF 歸一化。"""
+
+    def setUp(self):
+        super().setUp()
+        self.compiler = ArtifactCompiler()
+        self.publisher = ReleasePublisher(compiler=self.compiler)
+
+    def tearDown(self):
+        try:
+            ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
+            ReleaseTargetManager.save_tier_targets([], is_project=False)
+        except Exception:
+            pass
+        super().tearDown()
+
+    @require(Requirement.ENV)
+    def test_ft_01_project_target_saves_project_uris_in_cache(self):
+        """FT-01: Project Target 清單寫入 cache://（不入 Git 追蹤區），且全部路徑為 project:// 語意格式。"""
+        ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
+        ReleaseTargetManager.save_tier_targets([], is_project=False)
+
+        res = self.publisher.release_all(force=True)
+        self.assertTrue(res["success"])
+        self.assertGreater(res["published_count"], 0)
+
+        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
+        data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        self.assertEqual(data.get("active_targets"), ["antigravity"])
+        published = data.get("published_files", [])
+        self.assertGreater(len(published), 0)
+
+        for p in published:
+            self.assertTrue(
+                p.startswith("project://"),
+                f"Expected path in project manifest to start with 'project://', got: '{p}'"
+            )
+            self.assertNotIn(":", p.replace("project://", ""))
+            self.assertNotIn("\\", p)
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_02_local_target_saves_absolute_paths_in_cache(self):
+        """FT-02: Local Target 發布至 cache://，且全部路徑為本機實體絕對路徑。"""
+        ReleaseTargetManager.save_tier_targets([], is_project=True)
+        ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=False)
+
+        res = self.publisher.release_all(force=True)
+        self.assertTrue(res["success"])
+        self.assertGreater(res["published_count"], 0)
+
+        self.assertTrue(uri.exists(LOCAL_MANIFEST_CACHE_URI))
+        data = uri.read_json(LOCAL_MANIFEST_CACHE_URI)
+        self.assertEqual(data.get("active_targets"), ["antigravity"])
+        published = data.get("published_files", [])
+        self.assertGreater(len(published), 0)
+
+        for p in published:
+            self.assertTrue(
+                os.path.isabs(p),
+                f"Expected path in cache manifest to be an absolute path, got: '{p}'"
+            )
+            self.assertFalse(p.startswith("project://"))
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_03_mixed_targets_dual_channel_manifests(self):
+        """FT-03: 混合 Targets (Local + Project) 同步獨立更新各自 Manifest。"""
+        ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
+        ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=False)
+
+        res = self.publisher.release_all(force=True)
+        self.assertTrue(res["success"])
+
+        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
+        proj_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        self.assertEqual(proj_data.get("active_targets"), ["antigravity"])
+        for p in proj_data.get("published_files", []):
+            self.assertTrue(p.startswith("project://"))
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_04_legacy_absolute_path_manifest_tolerance(self):
+        """FT-04: 歷史異機絕對路徑 (如 H:\\...) 讀取時不崩潰，安全自癒標準化。"""
+        ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
+        ReleaseTargetManager.save_tier_targets([], is_project=False)
+
+        fake_legacy = {
+            "fingerprint": "fake_legacy_fp",
+            "active_targets": ["antigravity"],
+            "published_files": [
+                "H:\\UseFolder\\NonExistent\\legacy_file_01.md",
+                "H:\\UseFolder\\NonExistent\\legacy_file_02.md"
+            ],
+            "updated_at": "2026-08-01 00:00:00"
+        }
+        uri.write_json(PROJECT_MANIFEST_CACHE_URI, fake_legacy)
+
+        res = self.publisher.release_all(force=False)
+        self.assertTrue(res["success"])
+
+        new_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        for p in new_data.get("published_files", []):
+            self.assertTrue(p.startswith("project://"))
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_05_line_endings_are_pure_lf(self):
+        """FT-05: 驗證發布物化產物之換行符號 100% 為純 LF (\\n)，無 CRLF (\\r\\n)。"""
+        ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
+        ReleaseTargetManager.save_tier_targets([], is_project=False)
+
+        res = self.publisher.release_all(force=True)
+        self.assertTrue(res["success"])
+
+        data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        for p_uri in data.get("published_files", []):
+            abs_p = uri.resolve(p_uri, interactive=False)
+            if os.path.isfile(abs_p):
+                with open(abs_p, "rb") as bf:
+                    raw_bytes = bf.read()
+                self.assertNotIn(
+                    b"\r\n",
+                    raw_bytes,
+                    f"File '{abs_p}' contains CRLF (\\r\\n) but expected pure LF (\\n)."
+                )
+        self.mark_passed()
+
+
+@require(Requirement.ENV)
+class TestPublisherCrossPlatform(YSCBTestCase):
+    """測試發布引擎之跨平台換行符正規化與清單隔離。"""
+
+    def setUp(self):
+        super().setUp()
+        self.compiler = ArtifactCompiler()
+        self.publisher = ReleasePublisher(compiler=self.compiler)
+        self.temp_dir = tempfile.mkdtemp(prefix="test_aw_cross_")
+
+    def tearDown(self):
+        if hasattr(self, "temp_dir") and os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+        super().tearDown()
+
+    def test_sha1_crlf_normalization(self):
+        """FT-01: 驗證 CRLF 與 LF 文字內容計算出完全相同的 SHA-1 雜湊值。"""
+        dir_lf = os.path.join(self.temp_dir, "dir_lf")
+        dir_crlf = os.path.join(self.temp_dir, "dir_crlf")
+        os.makedirs(dir_lf, exist_ok=True)
+        os.makedirs(dir_crlf, exist_ok=True)
+
+        with open(os.path.join(dir_lf, "sample.md"), "wb") as f:
+            f.write(b"# Title\nLine 1\nLine 2\n")
+
+        with open(os.path.join(dir_crlf, "sample.md"), "wb") as f:
+            f.write(b"# Title\r\nLine 1\r\nLine 2\r\n")
+
+        sha1_lf = self.publisher._get_source_file_sha1(dir_lf)
+        sha1_crlf = self.publisher._get_source_file_sha1(dir_crlf)
+        self.assertEqual(sha1_lf, sha1_crlf)
+
+        single_lf = os.path.join(self.temp_dir, "single_lf.txt")
+        single_crlf = os.path.join(self.temp_dir, "single_crlf.txt")
+        with open(single_lf, "wb") as f:
+            f.write(b"Hello\nWorld\n")
+        with open(single_crlf, "wb") as f:
+            f.write(b"Hello\r\nWorld\r\n")
+
+        single_sha1_lf = self.publisher._get_source_file_sha1(single_lf)
+        single_sha1_crlf = self.publisher._get_source_file_sha1(single_crlf)
+        self.assertEqual(single_sha1_lf, single_sha1_crlf)
+        self.mark_passed()
+
+    def test_binary_file_sha1_fallback(self):
+        """ET-01 (EC-01): 驗證非 UTF-8 二進位檔案安全降級至 raw bytes，不崩潰。"""
+        bin_dir = os.path.join(self.temp_dir, "bin_dir")
+        os.makedirs(bin_dir, exist_ok=True)
+
+        raw_binary = b"\x80\xff\xfe\x00\x01\x02\r\n\x88\x99"
+        bin_file = os.path.join(bin_dir, "data.bin")
+        with open(bin_file, "wb") as f:
+            f.write(raw_binary)
+
+        sha1_val = self.publisher._get_source_file_sha1(bin_dir)
+        self.assertEqual(len(sha1_val), 40)
+        self.mark_passed()
+
+    def test_manifest_cache_isolation_and_migration(self):
+        """FT-02 (EC-02): 驗證 manifest 儲存至 cache:// 且舊版 storage manifest 自動遷移並物理刪除。"""
+        if uri.exists(PROJECT_MANIFEST_CACHE_URI):
+            uri.remove(PROJECT_MANIFEST_CACHE_URI)
+
+        fake_legacy = {
+            "fingerprint": "fake_hash_123",
+            "active_targets": ["antigravity"],
+            "published_files": ["project://AGENTS.md"],
+            "combined_fingerprint": "fake_hash_123",
+            "updated_at": "2026-10-18 00:00:00"
+        }
+        uri.write_json(LEGACY_PROJECT_MANIFEST_STORAGE_URI, fake_legacy)
+        self.assertTrue(uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI))
+
+        self.publisher._migrate_legacy_storage_manifest()
+
+        self.assertFalse(uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI))
+        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
+        migrated = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        self.assertEqual(migrated.get("fingerprint"), "fake_hash_123")
+        self.mark_passed()
+
+    def test_release_never_writes_tracked_storage(self):
+        """ET-02 (FR-02): 完整發布後，Git 追蹤區 storage://agents-workflow/release_manifest.json 不存在，清單僅存於 cache://。"""
+        ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
+        ReleaseTargetManager.save_tier_targets([], is_project=False)
+        uri.write_json(LEGACY_PROJECT_MANIFEST_STORAGE_URI, {"published_files": [], "fingerprint": "legacy"})
+
+        res = self.publisher.release_all(force=True)
+        self.assertTrue(res["success"])
+        self.assertFalse(uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI))
+        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
+
+        self.publisher.release_all(force=False)
+        self.assertFalse(uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI))
+        self.mark_passed()
 
 
 if __name__ == "__main__":

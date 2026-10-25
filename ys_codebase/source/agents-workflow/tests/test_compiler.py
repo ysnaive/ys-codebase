@@ -9,6 +9,7 @@ import os
 import io
 import sys
 import tempfile
+from pathlib import Path
 from typing import Dict, Any, List
 
 import importlib.util
@@ -256,6 +257,7 @@ class TestArtifactCompiler(YSCBTestCase):
         with patch("agents_workflow.publisher.ReleasePublisher.release_all") as mock_rel:
             mock_rel.return_value = {"success": True, "published_count": 24, "active_targets": ["antigravity"]}
             hook_mod.on_reload(None)
+            mock_rel.assert_called_once()
         self.mark_passed()
 
     def test_ft_12_project_uri_placeholder_root_and_sub_dir(self):
@@ -481,26 +483,6 @@ class TestArtifactCompiler(YSCBTestCase):
         self.assertTrue(idx_above < idx_replace < idx_below1 < idx_below2)
         self.mark_passed()
 
-    def test_sub_08_session_analysis_skill_retired(self):
-        """SUB-08 (REV-01): 驗證 session-analysis 技能與 SESSION_ANALYSIS_CHECK_ITEMS Token 已徹底除役。"""
-        data = self.compiler.get_contributes_data()
-        exports = data.get("export", [])
-        tokens = data.get("token", [])
-
-        export_sources = [e.get("source") for e in exports]
-        self.assertNotIn("module://agents-workflow/assets/skills/session-analysis", export_sources)
-        self.assertNotIn("module://agents-workflow/assets/workflows/SessionAnalysis.md", export_sources)
-        token_values = [t.get("value") for t in tokens]
-        self.assertNotIn("SESSION_ANALYSIS_CHECK_ITEMS", token_values)
-        self.assertNotIn("WORKFLOW_SESSIONANALYSIS", token_values)
-
-        res = self.compiler.compile_stage1()
-        self.assertTrue(res["success"])
-        resolved_list = res.get("resolved_items", [])
-        sa_item = next((item for item in resolved_list if item.get("skill_name") == "session-analysis"), None)
-        self.assertIsNone(sa_item)
-        self.mark_passed()
-
     def test_ft_09_skill_directory_scan_and_token_expansion(self):
         """FT-09: 驗證目錄級 Skill 掃描、保持子目錄結構與 Token 展開。"""
         with tempfile.TemporaryDirectory(prefix="test_aw_skill_") as tmp_dir:
@@ -586,6 +568,526 @@ class TestArtifactCompiler(YSCBTestCase):
             if "知識庫已註冊空間清單動態注入錨點" in line:
                 self.assertIn("KNOWLEDGE_DB_SPACE", line)
         self.mark_passed()
+
+
+@require(Requirement.ENV)
+class TestWorkflowAssetsCompliance(YSCBTestCase):
+    """驗證內建 17 個 Skills、16 個 Templates 與 21 個 Tokens 資產規範合規性。"""
+
+    def test_ft_03_assets_follow_model_record_rule(self):
+        """FT-03: 規範與模板資產採用新規則，且不再含首行／尾行錨點規則。"""
+        assets = Path(_pkg_root) / "assets"
+        standards = (assets / "standards" / "AgentsStandards.md").read_text(encoding="utf-8")
+        self.assertIn("模型紀錄 (Model Record)", standards)
+        self.assertIn("Unknown", standards)
+        self.assertIn("嚴禁**從既有計畫檔", standards)
+        self.assertNotIn("{model}", standards, "首行／尾行 `> {model}` 規則必須已移除")
+        self.assertNotIn("Model Identity Anchor", standards)
+
+        placeholder = "[平台宣告之模型名稱；無法確認填 Unknown]"
+        header = (assets / "templates" / "header.md").read_text(encoding="utf-8")
+        self.assertIn(placeholder, header)
+        changelog_tpl = (assets / "templates" / "changelog.md").read_text(encoding="utf-8")
+        self.assertIn("| 日期時間 | 類型 | 模型 | 摘要 |", changelog_tpl)
+        self.assertNotIn("(狀態：`Discussing`)", changelog_tpl)
+        self.mark_passed()
+
+    def test_ft_04_sub02_context_init_and_cli_guide_alignment(self):
+        """FT-04 (sub_02 FR-01, FR-08): context-init 移除首行模型錨點並對齊權限標籤，yscb-cli-guide 含三級權限定義。"""
+        assets = Path(_pkg_root) / "assets"
+        ctx_init = (assets / "skills" / "context-init" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("首行強制輸出當前模型識別錨點", ctx_init)
+        self.assertIn("Unknown", ctx_init)
+        self.assertIn("[SAFE] 自主安全", ctx_init)
+
+        cli_guide = (assets / "skills" / "yscb-cli-guide" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("[SAFE] 自主安全", cli_guide)
+        self.assertIn("[CONDITIONAL] 階段條件", cli_guide)
+        self.assertIn("[GATED] 授權守門", cli_guide)
+        self.mark_passed()
+
+    def test_ft_05_sub02_handoff_and_umbrella_lifecycle(self):
+        """FT-05 (sub_02 FR-02, FR-03, FR-04): continue/pause handoff 銷毀與子計畫路徑、Umbrella 主從連動與跨軌道清理。"""
+        assets = Path(_pkg_root) / "assets"
+        cont = (assets / "skills" / "continue" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Consume & Delete", cont)
+        self.assertIn("強制立即刪除該已消費之 `handoff.md`", cont)
+
+        pause = (assets / "skills" / "pause" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("sub_{編號}_{名稱}/handoff.md", pause)
+
+        plan_modes = (
+            assets / "skills" / "development-sop" / "references" / "plan_modes.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("強制刪除原 `fast_track_plan.md`", plan_modes)
+        self.assertIn("附掛於既有已結案計畫之修訂觸發熔斷", plan_modes)
+        self.assertIn("主從計畫狀態連動規則", plan_modes)
+
+        roadmap_tpl = (assets / "templates" / "roadmap.md").read_text(encoding="utf-8")
+        self.assertIn("[Backlog | Proposed | Ready | Deferred]", roadmap_tpl)
+        self.assertIn("> 目標範疇：", roadmap_tpl)
+        self.assertIn("> 前置解鎖條件：", roadmap_tpl)
+        self.assertNotIn("全庫歷史物件量化分析", roadmap_tpl)
+        self.mark_passed()
+
+    def test_ft_06_sub02_templates_and_verify_ordering(self):
+        """FT-06 (sub_02 FR-05, FR-06, FR-07, FR-08): P04/P07 三層 5 列文檔表與無 Checkbox P04 §4，以及 P07/discuss 閉環。"""
+        assets = Path(_pkg_root) / "assets"
+        p00_tpl = (assets / "templates" / "P00_discuss.md").read_text(encoding="utf-8")
+        self.assertIn("架構影響範圍", p00_tpl)
+        self.assertNotIn("- [ ]", p00_tpl)
+
+        p04_tpl = (assets / "templates" / "P04_implementation_plan.md").read_text(encoding="utf-8")
+        self.assertIn("<Category>/README.md", p04_tpl)
+        self.assertIn("<Category>/[topic].md", p04_tpl)
+        self.assertIn("<Category>/DESIGN_NOTES.md", p04_tpl)
+        self.assertIn("微觀註解", p04_tpl)
+        self.assertNotIn("- [ ] **TASK-", p04_tpl)
+        self.assertIn("1. **TASK-01**", p04_tpl)
+
+        p07_tpl = (assets / "templates" / "P07_walkthrough.md").read_text(encoding="utf-8")
+        self.assertIn("<Category>/README.md", p07_tpl)
+        self.assertIn("<Category>/[topic].md", p07_tpl)
+        self.assertIn("<Category>/DESIGN_NOTES.md", p07_tpl)
+
+        p07_ref = (
+            assets / "skills" / "development-sop" / "references" / "phase_07_walkthrough.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("步驟 3：執行計畫合規檢核最終守門", p07_ref)
+
+        discuss = (assets / "skills" / "discuss" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("三大範疇裁定出口", discuss)
+        self.assertIn("fast_track_plan.md", discuss)
+        self.mark_passed()
+
+    def test_ft_07_sub02_restored_lifecycle_assets(self):
+        """FT-07 (補齊 2026_10_17_1133 sub_02 遺失資產，FR-03/04/05/06/08): 驗證先前未提交而遺失之資產規範已全數恢復。"""
+        assets = Path(_pkg_root) / "assets"
+        sop_ref = assets / "skills" / "development-sop" / "references"
+
+        standards = (assets / "standards" / "AgentsStandards.md").read_text(encoding="utf-8")
+        self.assertIn("生命週期工作流", standards)
+
+        new_plan = (assets / "skills" / "new-plan" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("phase_00_discuss.md", new_plan)
+
+        research = (assets / "skills" / "research" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("均須先將 `R{NN}_{topic}.md` 標頭狀態更新為 `Concluded`", research)
+
+        roadmap_skill = (assets / "skills" / "roadmap" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("[Backlog | Proposed | Ready | Deferred]", roadmap_skill)
+        self.assertIn("Consume-on-Promote", roadmap_skill)
+        self.assertIn("roadmap promote", roadmap_skill)
+
+        sop = (assets / "skills" / "development-sop" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`umbrella_overview` + `changelog`", sop)
+        self.assertIn("落檔預設標頭狀態", sop)
+
+        self.assertIn("Umbrella 子計畫立項登記", (sop_ref / "phase_00_discuss.md").read_text(encoding="utf-8"))
+        self.assertIn("Acceptance Criteria", (sop_ref / "phase_01_requirements.md").read_text(encoding="utf-8"))
+        self.assertIn("錯誤與例外契約", (sop_ref / "phase_03_api_spec.md").read_text(encoding="utf-8"))
+        self.assertIn("Umbrella 子計畫結案回寫", (sop_ref / "phase_07_walkthrough.md").read_text(encoding="utf-8"))
+
+        plan_modes = (sop_ref / "plan_modes.md").read_text(encoding="utf-8")
+        self.assertIn("熔斷後舊產物雙軌處置", plan_modes)
+        self.assertIn("首個 `sub_XX` 啟動時", plan_modes)
+
+        cont = (assets / "skills" / "continue" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("若主目錄存在 `P00_discuss.md` 或 `R{NN}_*.md` 則一併參考", cont)
+
+        auto = (assets / "skills" / "auto" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("(Draft)", auto)
+        self.assertIn("一次建立並定稿", auto)
+
+        discuss = (assets / "skills" / "discuss" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("P06_test_plan.md", discuss)
+
+        tpl = assets / "templates"
+        self.assertIn("詳細規格與驗收條件 (Acceptance Criteria)", (tpl / "P01_requirements_spec.md").read_text(encoding="utf-8"))
+        roadmap_tpl = (tpl / "roadmap.md").read_text(encoding="utf-8")
+        self.assertIn("### 1.2 現況與影響範圍評估", roadmap_tpl)
+        self.assertIn("## 4. 核心機制與落地步驟", roadmap_tpl)
+        for name in ("P07_walkthrough.md", "fast_track_plan.md", "revision_log.md"):
+            content = (tpl / name).read_text(encoding="utf-8")
+            self.assertLess(content.index("`Completed`"), content.index("plan verify"),
+                            f"{name}: 應先更新 Completed 狀態，最後執行 plan verify")
+        self.mark_passed()
+
+    def test_ft_08_sub04_skill_optimizer_and_pure_skills_refinement(self):
+        """FT-08 (sub_04 REV-01 & REV-02): 驗證 skill-optimizer 註冊與全部 17 技能雙軌邊界合規。"""
+        import json
+        from agents_workflow.compiler import FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        assets = Path(_pkg_root) / "assets"
+        skills_dir = assets / "skills"
+        contrib = json.loads((Path(_pkg_root) / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+
+        export_names = {item.get("name") for item in contrib["export"] if "name" in item}
+        token_names = {item["value"] for item in contrib["token"]}
+        self.assertNotIn("session-analysis", export_names)
+        self.assertNotIn("SESSION_ANALYSIS_CHECK_ITEMS", token_names)
+        self.assertIn("skill-optimizer", export_names)
+        self.assertIn("SKILL_OPTIMIZER_STANDARDS", token_names)
+
+        expected_skills = {
+            "auto", "context-init", "continue", "development-sop", "discuss",
+            "documentation", "how-to-config-yscb", "how-to-yscb", "new-plan",
+            "pause", "research", "roadmap", "skill-creator", "skill-optimizer",
+            "testing-sop", "todo", "yscb-cli-guide",
+        }
+        command_driven_skills = {
+            "auto", "pause", "continue", "context-init", "skill-creator",
+            "skill-optimizer", "how-to-config-yscb", "how-to-yscb",
+        }
+        ambient_skills = expected_skills - command_driven_skills
+        actual_skills = {p.name for p in skills_dir.iterdir() if p.is_dir()}
+        self.assertEqual(actual_skills, expected_skills)
+
+        for s_name in ambient_skills:
+            skill_md = (skills_dir / s_name / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("觸發情境：", skill_md, f"{s_name}/SKILL.md 缺少三段式『觸發情境：』描述")
+            self.assertIn("排除情境：", skill_md, f"{s_name}/SKILL.md 缺少三段式『排除情境：』描述")
+            self.assertIn("## 常見踩坑指南 (Gotchas)", skill_md, f"{s_name}/SKILL.md 缺少 Gotchas 章節")
+
+        for s_name in command_driven_skills:
+            skill_md = (skills_dir / s_name / "SKILL.md").read_text(encoding="utf-8")
+            first_lines = "\n".join(skill_md.splitlines()[:4])
+            self.assertIn("僅於顯式輸入", first_lines, f"{s_name}/SKILL.md 缺少主動指令型『僅於顯式輸入』契約")
+            self.assertNotIn("(或 /", first_lines, f"{s_name}/SKILL.md description 不應含過度相容大小寫變體")
+            self.assertIn("## 常見踩坑指南 (Gotchas)", skill_md, f"{s_name}/SKILL.md 缺少 Gotchas 章節")
+
+        for md_path in (skills_dir / "skill-optimizer").rglob("*.md"):
+            text = md_path.read_text(encoding="utf-8")
+            self.assertNotIn("不要加反引號", text, f"{md_path.name} 不得含特化錯誤教學")
+            self.assertNotIn("compiler.py", text, f"{md_path.name} 不得耦合特定專案內部檔名")
+
+        for md_path in skills_dir.rglob("*.md"):
+            text = md_path.read_text(encoding="utf-8")
+            clean_text = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", text))
+            unenclosed = UNENCLOSED_TAG_REGEX.findall(clean_text)
+            self.assertEqual(unenclosed, [], f"{md_path} 存在未以單反引號包覆之語意標籤: {unenclosed}")
+
+        self.mark_passed()
+
+    def test_ft_09_sub03_testing_sop_and_three_pillar_subagent_delegation(self):
+        """[sub_03 FR-01 ~ FR-06, EC-01 ~ EC-04, NFR-01]: 驗證 testing-sop 雙層結構、連鎖引用與三支柱 Subagent 隔離協定。"""
+        import json
+
+        assets = Path(_pkg_root) / "assets"
+        skills_dir = assets / "skills"
+        sop_ref = skills_dir / "development-sop" / "references"
+        contrib = json.loads((Path(_pkg_root) / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+
+        export_names = {item.get("name") for item in contrib["export"] if "name" in item}
+        token_names = {item["value"] for item in contrib["token"]}
+        self.assertIn("testing-sop", export_names)
+        self.assertIn("TESTING_SOP_STANDARDS", token_names)
+
+        testing_sop_md = (skills_dir / "testing-sop" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(testing_sop_md.splitlines()), 120)
+        for idx in range(1, 7):
+            self.assertIn(f"鐵律 {idx}：", testing_sop_md)
+        self.assertIn("`__@{TESTING_SOP_STANDARDS}__`", testing_sop_md)
+        self.assertIn("references/test_suite_audit_and_purification.md", testing_sop_md)
+
+        purify_ref = (
+            skills_dir / "testing-sop" / "references" / "test_suite_audit_and_purification.md"
+        ).read_text(encoding="utf-8")
+        for idx in range(1, 7):
+            self.assertIn(f"T-0{idx}", purify_ref)
+        self.assertIn("Step 1", purify_ref)
+        self.assertIn("Step 2", purify_ref)
+        self.assertIn("Step 3", purify_ref)
+
+        standards = (assets / "standards" / "AgentsStandards.md").read_text(encoding="utf-8")
+        self.assertIn("`testing-sop`", standards)
+        self.assertIn("testing-sop", (skills_dir / "development-sop" / "SKILL.md").read_text(encoding="utf-8"))
+        for ref_name in ("phase_04_plan.md", "phase_05_task.md", "phase_06_test.md", "plan_modes.md"):
+            ref_text = (sop_ref / ref_name).read_text(encoding="utf-8")
+            self.assertIn("testing-sop/SKILL.md", ref_text, f"{ref_name} 缺少 testing-sop 強制連鎖引用")
+        p06_ref = (sop_ref / "phase_06_test.md").read_text(encoding="utf-8")
+        self.assertIn("守門 ①（子系統回歸全綠）", p06_ref)
+        self.assertIn("守門 ②", p06_ref)
+
+        for s_name in ("research", "discuss"):
+            s_text = (skills_dir / s_name / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("支柱一", s_text)
+            self.assertIn("150~300 Tokens", s_text)
+            self.assertIn("自動降級", s_text)
+
+        for doc_text in ((skills_dir / "auto" / "SKILL.md").read_text(encoding="utf-8"),
+                         (sop_ref / "phase_05_task.md").read_text(encoding="utf-8")):
+            self.assertNotIn("支柱二", doc_text)
+            self.assertNotIn("2-Strike Limit", doc_text)
+            self.assertNotIn("STATUS: MAJOR_BLOCKER (Two-Strike Test Failure)", doc_text)
+            self.assertNotIn("DEVIATION_OR_BLOCKER_NOTE", doc_text)
+
+        p06_ref = (sop_ref / "phase_06_test.md").read_text(encoding="utf-8")
+        self.assertNotIn("支柱二", p06_ref)
+        self.assertIn("支柱三", p06_ref)
+        self.assertIn("不應告知子代理本次計畫實作內容，僅可提供計畫路徑由子代理進行探索", p06_ref)
+        self.assertIn("嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查", p06_ref)
+        self.assertIn("Single-Writer", p06_ref)
+        self.assertIn("Untracked (??)", p06_ref)
+        self.assertIn("git status --short", p06_ref)
+        self.assertIn("REVIEW_STATUS: PASSED", p06_ref)
+        self.assertIn("自動降級", p06_ref)
+
+        p07_ref = (sop_ref / "phase_07_walkthrough.md").read_text(encoding="utf-8")
+        self.assertIn("支柱三", p07_ref)
+        self.assertIn("條件式", p07_ref)
+        self.assertIn("嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查", p07_ref)
+
+        self.mark_passed()
+
+    def test_ft_10_sub04_onboarding_and_config_coaching_skills(self):
+        """[sub_04 FR-01 ~ FR-05, EC-01 ~ EC-04, NFR-01]: 驗證 PROJECT_ROLE_AND_BOUNDARIES、/how-to-config-yscb、/how-to-yscb 與 4 大模組指南。"""
+        import json
+        from agents_workflow.compiler import FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        assets = Path(_pkg_root) / "assets"
+        skills_dir = assets / "skills"
+        source_root = Path(_pkg_root).parent
+        contrib = json.loads((Path(_pkg_root) / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+
+        export_names = {item.get("name") for item in contrib["export"] if "name" in item}
+        token_names = {item["value"] for item in contrib["token"]}
+        self.assertIn("how-to-config-yscb", export_names)
+        self.assertIn("how-to-yscb", export_names)
+        self.assertIn("PROJECT_ROLE_AND_BOUNDARIES", token_names)
+        self.assertIn("HOW_TO_CONFIG_MODULES", token_names)
+        self.assertIn("HOW_TO_YSCB_MODULES", token_names)
+
+        standards = (assets / "standards" / "AgentsStandards.md").read_text(encoding="utf-8")
+        self.assertIn("`__@{PROJECT_ROLE_AND_BOUNDARIES}__`", standards)
+        self.assertLess(
+            standards.index("`__@{PROJECT_ROLE_AND_BOUNDARIES}__`"),
+            standards.index("## 1. 核心原則"),
+        )
+
+        ctx_init = (skills_dir / "context-init" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("專案角色與主客體空間邊界", ctx_init)
+        self.assertIn("/how-to-yscb", ctx_init)
+        self.assertIn("/how-to-config-yscb", ctx_init)
+
+        config_skill = (skills_dir / "how-to-config-yscb" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`__@{HOW_TO_CONFIG_MODULES}__`", config_skill)
+        self.assertIn("All-Green Short-Circuit", config_skill)
+        self.assertIn("First-Party Trinity Alignment", config_skill)
+        self.assertIn("paths.plans", config_skill)
+        self.assertIn("release_targets", config_skill)
+        self.assertIn("projections", config_skill)
+        self.assertIn("嚴禁硬編碼 `.agents/` 或 `.claude/`", config_skill)
+        self.assertIn("① 開發者角色與專案使命", config_skill)
+        self.assertIn("② 本體業務空間", config_skill)
+        self.assertIn("③ 外部工具包與黑盒依賴", config_skill)
+        self.assertIn("config.project.json", config_skill)
+        self.assertIn("config.local.json", config_skill)
+        self.assertIn("contributes check", config_skill)
+        self.assertIn("agents-workflow compile", config_skill)
+        self.assertIn("agents-workflow release", config_skill)
+
+        howto_skill = (skills_dir / "how-to-yscb" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`__@{HOW_TO_YSCB_MODULES}__`", howto_skill)
+        self.assertIn("Coach / Mentor Persona", howto_skill)
+        self.assertIn("你想從什麼角度了解這套工具？", howto_skill)
+        self.assertIn("角度 A（全景與起手式）", howto_skill)
+        self.assertIn("角度 B（以任務找武器）", howto_skill)
+        self.assertIn("角度 C（已安裝模組探索）", howto_skill)
+        self.assertIn("角度 D（進階技巧與客製化）", howto_skill)
+        self.assertIn("/skill-creator", howto_skill)
+        self.assertIn("/skill-optimizer", howto_skill)
+        self.assertIn("入口 A", howto_skill)
+        self.assertIn("入口 B", howto_skill)
+        self.assertIn("兩階段漸進式知識調度", howto_skill)
+        self.assertIn("/how-to-config-yscb", howto_skill)
+        self.assertIn("開啟一個全新的對話視窗", howto_skill)
+
+        for mod_name in ("core", "dev", "server", "knowledge-db"):
+            mod_dir = source_root / mod_name
+            if not mod_dir.is_dir():
+                continue
+            mod_contrib = json.loads((mod_dir / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+            inserted_tokens = {ins.get("token") for ins in mod_contrib.get("insert", [])}
+            self.assertIn("HOW_TO_CONFIG_MODULES", inserted_tokens, f"{mod_name} 未註冊 HOW_TO_CONFIG_MODULES")
+            self.assertIn("HOW_TO_YSCB_MODULES", inserted_tokens, f"{mod_name} 未註冊 HOW_TO_YSCB_MODULES")
+
+            for guide_name in ("config_guide.md", "usage_guide.md"):
+                g_path = mod_dir / "assets" / guide_name
+                self.assertTrue(g_path.is_file(), f"缺少 {g_path}")
+                g_text = g_path.read_text(encoding="utf-8")
+                self.assertTrue(10 <= len(g_text.splitlines()) <= 25, f"{g_path} 行數 ({len(g_text.splitlines())}) 超出 15~25 行預算")
+                self.assertIn(f"(`__#{{module://{mod_name}/README.md}}__`)", g_text)
+                if guide_name == "config_guide.md":
+                    self.assertIn("① 組態項目與用途", g_text)
+                    self.assertIn("② 健康度檢查條件", g_text)
+                    self.assertIn("③ 隨包設定手冊語意連結", g_text)
+                else:
+                    self.assertIn("① 模組定位與適用時機", g_text)
+                    self.assertIn("② 標準用法速查 (Golden Recipes)", g_text)
+                    self.assertIn("③ 隨包手冊語意連結", g_text)
+                clean_g = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", g_text))
+                self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_g), [], f"{g_path} 含有未包覆單反引號之標籤")
+
+        self.mark_passed()
+
+    def test_ft_11_sub05_skill_creator_extension_workflow(self):
+        """[sub_05 FR-01 ~ FR-05, EC-01 ~ EC-05, NFR-01 ~ NFR-02]: 驗證 skill-creator 三軌分流、藍圖確認卡、單層 extension-guide 22 個錨點地圖、三步驗證守門與實機編譯零警告。"""
+        import io
+        import json
+        from contextlib import redirect_stderr
+        from agents_workflow.compiler import ArtifactCompiler, FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        assets = Path(_pkg_root) / "assets"
+        skills_dir = assets / "skills"
+        sc_dir = skills_dir / "skill-creator"
+        contrib = json.loads((Path(_pkg_root) / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+
+        export_map = {item.get("name"): item for item in contrib["export"] if "name" in item}
+        token_names = {item["value"] for item in contrib["token"]}
+        self.assertIn("skill-creator", export_map)
+        self.assertIn("SKILL_CREATOR_STANDARDS", token_names)
+        self.assertEqual(len(token_names), 21)
+
+        sc_md_path = sc_dir / "SKILL.md"
+        self.assertTrue(sc_md_path.is_file())
+        sc_text = sc_md_path.read_text(encoding="utf-8")
+        self.assertLessEqual(len(sc_text.splitlines()), 180)
+        self.assertIn(export_map["skill-creator"]["description"], sc_text)
+        self.assertIn("`__@{SKILL_CREATOR_STANDARDS}__`", sc_text)
+        self.assertIn("## 常見踩坑指南 (Gotchas)", sc_text)
+
+        self.assertIn("軌跡 ①：純錨點注入模式", sc_text)
+        self.assertIn("Anchor-Only Injection", sc_text)
+        self.assertIn("軌跡 ②：被動環境攔截型 Skill", sc_text)
+        self.assertIn("軌跡 ③：功能特化型 Skill", sc_text)
+        self.assertIn("0 路由表膨脹", sc_text)
+
+        self.assertIn("agents-workflow tokens", sc_text)
+        self.assertIn("uri list", sc_text)
+        self.assertIn("references/extension-guide.md", sc_text)
+        self.assertIn("### 🛠️ /SkillCreator 專案擴充藍圖確認卡", sc_text)
+        self.assertIn("End Turn", sc_text)
+
+        self.assertIn("skills/<name>/SKILL.md", sc_text)
+        self.assertIn("snippets/<name>.md", sc_text)
+        self.assertIn("./references/", sc_text)
+        self.assertIn("contributes check", sc_text)
+        self.assertIn("agents-workflow compile", sc_text)
+        self.assertIn("agents-workflow release", sc_text)
+        self.assertLess(sc_text.index("contributes check"), sc_text.index("agents-workflow compile"))
+        self.assertLess(sc_text.index("agents-workflow compile"), sc_text.index("agents-workflow release"))
+
+        ref_path = sc_dir / "references" / "extension-guide.md"
+        self.assertTrue(ref_path.is_file())
+        sub_dirs = [p for p in (sc_dir / "references").iterdir() if p.is_dir()]
+        self.assertEqual(sub_dirs, [])
+
+        ref_text = ref_path.read_text(encoding="utf-8")
+        self.assertIn("## 目錄 (Contents)", ref_text)
+        all_22_tokens = token_names | {"KNOWLEDGE_DB_SPACE"}
+        self.assertEqual(len(all_22_tokens), 22)
+        for tok in all_22_tokens:
+            self.assertIn(f"`{tok}`", ref_text, f"extension-guide.md 漏列 Stage 1 錨點: {tok}")
+        self.assertIn("Markdown 表格列", ref_text)
+        self.assertIn('"token": "PHASE05_AGENTS_GUIDE"', ref_text)
+        self.assertIn('"token": "AGENTS_SKILL_ROUTING"', ref_text)
+
+        sop_text = (skills_dir / "development-sop" / "SKILL.md").read_text(encoding="utf-8")
+        opt_text = (skills_dir / "skill-optimizer" / "SKILL.md").read_text(encoding="utf-8")
+        manifest_text = (Path(_pkg_root) / "contributes" / "_manifest.md").read_text(encoding="utf-8")
+        self.assertIn("skill-creator/SKILL.md", sop_text)
+        self.assertIn("skill-creator/SKILL.md", opt_text)
+        self.assertIn("/skill-creator", manifest_text)
+
+        for p in (sc_md_path, ref_path):
+            txt = p.read_text(encoding="utf-8")
+            self.assertNotIn("不要加反引號", txt)
+            self.assertNotIn("compiler.py", txt)
+            clean_txt = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", txt))
+            self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_txt), [])
+
+        compiler = ArtifactCompiler(host_dir=str(Path(_pkg_root).parent.parent))
+        deployment_map = {
+            "module://agents-workflow/assets/skills/skill-optimizer/SKILL.md": str(
+                Path(_pkg_root).parent.parent / ".agents" / "skills" / "skill-optimizer" / "SKILL.md"
+            ),
+            "module://agents-workflow/assets/skills/how-to-config-yscb/SKILL.md": str(
+                Path(_pkg_root).parent.parent / ".agents" / "skills" / "how-to-config-yscb" / "SKILL.md"
+            ),
+            "module://agents-workflow/assets/skills/new-plan/SKILL.md": str(
+                Path(_pkg_root).parent.parent / ".agents" / "skills" / "new-plan" / "SKILL.md"
+            ),
+            "module://agents-workflow/assets/skills/development-sop/SKILL.md": str(
+                Path(_pkg_root).parent.parent / ".agents" / "skills" / "development-sop" / "SKILL.md"
+            ),
+        }
+        sc_dst = str(Path(_pkg_root).parent.parent / ".agents" / "skills" / "skill-creator" / "SKILL.md")
+        ref_dst = str(Path(_pkg_root).parent.parent / ".agents" / "skills" / "skill-creator" / "references" / "extension-guide.md")
+
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            res_sc = compiler.resolve_single_artifact(sc_text, contrib.get("insert", []))
+            res_ref = compiler.resolve_single_artifact(ref_text, contrib.get("insert", []))
+            stage2_sc = compiler.resolve_stage2_uri(res_sc, sc_dst, deployment_map)
+            stage2_ref = compiler.resolve_stage2_uri(res_ref, ref_dst, deployment_map)
+        stderr_out = err_buf.getvalue()
+        self.assertNotIn("[compiler:warning]", stderr_out, f"實機 Stage 1/2 編譯產生預期外警告: {stderr_out}")
+
+        self.assertIn("[`/skill-optimizer`](../skill-optimizer/SKILL.md)", stage2_sc)
+        self.assertIn("[`/skill-optimizer`](../../skill-optimizer/SKILL.md)", stage2_ref)
+        self.assertIn("/contribute.json`", stage2_sc)
+        self.assertIn("/contribute.json`", stage2_ref)
+
+        self.assertFalse(stage2_sc.rstrip().endswith("`__@{SKILL_CREATOR_STANDARDS}__`"))
+        self.assertIn("- Stage 1 錨點（獨立行）：`__@{SKILL_CREATOR_STANDARDS}__`", stage2_sc)
+        self.assertIn("(`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)", stage2_sc)
+        self.assertIn("`__@{SKILL_CREATOR_STANDARDS}__`", stage2_ref)
+        self.assertIn("(`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)", stage2_ref)
+        self.assertIn("(`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)", stage2_ref)
+        self.assertIn("`__${project://plans}__/`", stage2_ref)
+        self.assertIn("`__${foo://non_existent_path}__`", stage2_ref)
+
+        self.mark_passed()
+
+    def test_ft_12_sub06_cli_guide_purification_and_help_first(self):
+        """[sub_06 FT-01]: 驗證 yscb-cli-guide 拔除動態指令大表、收斂至 <= 65 行，並落實雙軌執行與 -h 按需自省規範。"""
+        import json
+        from agents_workflow.compiler import ArtifactCompiler, FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        cli_guide_path = Path(_pkg_root) / "assets" / "skills" / "yscb-cli-guide" / "SKILL.md"
+        self.assertTrue(cli_guide_path.is_file())
+        cli_text = cli_guide_path.read_text(encoding="utf-8")
+        lines = cli_text.splitlines()
+        self.assertLessEqual(len(lines), 65, f"yscb-cli-guide/SKILL.md 行數 ({len(lines)}) 超出 65 行上限")
+
+        self.assertIn("Skill-Vetted Fast Pass", cli_text)
+        self.assertIn("Just-in-Time -h Inspection", cli_text)
+        self.assertIn("-h", cli_text)
+        self.assertIn("server start --console", cli_text)
+        self.assertIn("[GATED] 授權守門", cli_text)
+        self.assertIn("`__@{AGENTS_CLI_GUIDE}__`", cli_text)
+        self.assertNotIn("YSCB_AGENTS_CLI_GUIDE_BEGIN", cli_text)
+
+        clean_cli = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", cli_text))
+        self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_cli), [])
+
+        core_root = Path(_pkg_root).parent / "core"
+        if core_root.is_dir():
+            core_aw_contrib = json.loads((core_root / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+            core_insert_tokens = {ins.get("token") for ins in core_aw_contrib.get("insert", [])}
+            self.assertNotIn("AGENTS_CLI_GUIDE", core_insert_tokens)
+            self.assertFalse((core_root / "core" / "providers.py").exists())
+
+        compiler = ArtifactCompiler()
+        contrib = json.loads((Path(_pkg_root) / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+        stage1_out = compiler.resolve_single_artifact(cli_text, contrib.get("insert", []))
+        self.assertNotIn("| 權限分級 | 指令名稱 |", stage1_out)
+        self.assertNotIn("__@{AGENTS_CLI_GUIDE}__", stage1_out)
+        self.assertLessEqual(len(stage1_out.splitlines()), 65)
+
+        self.mark_passed()
+
 
 
 

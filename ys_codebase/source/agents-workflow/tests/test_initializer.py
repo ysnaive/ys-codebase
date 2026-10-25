@@ -75,18 +75,18 @@ class TestWorkflowInitializer(YSCBTestCase):
             # 若處於 modules/ 運行空間，config 模板已被剝除至 config/agents-workflow/
             tpl_path = os.path.join(os.path.dirname(os.path.dirname(_pkg_root)), "config", "agents-workflow", "config.project.json")
         
-        if os.path.isfile(tpl_path):
-            with open(tpl_path, "r", encoding="utf-8") as f:
-                tpl_data = json.load(f)
-            
-            paths = tpl_data.get("paths", {})
-            self.assertIn("plans", paths)
-            self.assertIn("archived", paths)
-            self.assertIn("docs", paths)
-            self.assertNotIn("ext", paths)
-            self.assertIn("release_targets", tpl_data)
-            self.assertIn("enable_agents_md", tpl_data)
-            self.assertIn("enable_project_changelog", tpl_data)
+        self.assertTrue(os.path.isfile(tpl_path), f"config template must exist at {tpl_path}")
+        with open(tpl_path, "r", encoding="utf-8") as f:
+            tpl_data = json.load(f)
+        
+        paths = tpl_data.get("paths", {})
+        self.assertIn("plans", paths)
+        self.assertIn("archived", paths)
+        self.assertIn("docs", paths)
+        self.assertNotIn("ext", paths)
+        self.assertIn("release_targets", tpl_data)
+        self.assertIn("enable_agents_md", tpl_data)
+        self.assertIn("enable_project_changelog", tpl_data)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
