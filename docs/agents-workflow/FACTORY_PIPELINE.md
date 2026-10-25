@@ -9,7 +9,7 @@ related_docs:
   - "./README.md"
   - "./user_guide.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-25"
 ---
 
 # 協議產物工廠流水線規範 (Factory Pipeline Specification)
@@ -88,7 +88,7 @@ flowchart TD
 
 ### 3.1 雙軌空間與路徑分流架構
 1. **Project 軌 (Tier 2，團隊共享 Targets)**：
-   - **儲存空間**：`storage://agents-workflow/release_manifest.json`（受 Git 追蹤）。
+   - **儲存空間**：`cache://agents-workflow/project_release_manifest.json`（本地快取隔離、不入 Git 追蹤；舊版曾存於 `storage://agents-workflow/release_manifest.json`，現已統一由快取隔離並自動遷移舊版紀錄）。
    - **路徑格式**：100% 使用 `project://` 語意協議路徑（例如 `project://.agents/skills/auto/SKILL.md`），徹底消除本機絕對路徑外溢與 Git dirty diff。
 2. **Local 軌 (Tier 1，個人私有 Targets)**：
    - **儲存空間**：`cache://agents-workflow/release_manifest.json`（受 Git 忽略）。
@@ -102,5 +102,5 @@ flowchart TD
    - **孤兒資產拔除与舊目錄清理**：分別讀取 Project 與 Local 歷史 Manifest 紀錄，對比新解算之目標檔案集合，精確拔除已停用 Target 或已移除資產之孤兒實體檔案，並自動清理除役之 `.agents/workflows/` 與 `.claude/commands/` 殘留目錄。
    - **根目錄規範入口檔軟剝離 (`_soft_unmerge_agents_text`)**：當停用或切換 Target 導致 `AGENTS.md` / `CLAUDE.md` 被列入待移除集合時，**嚴禁無差別執行 `os.remove()`**。引擎會先執行非破壞性軟剝離，僅移除 `<!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->` 系統託管區塊：若剝離後仍存有開發者自訂規範內容，則將乾淨的自訂內容寫回原檔並解除託管；唯有剩餘內容為空或僅含未修改之預設佔位樣板時，方安全執行物理刪除。
 2. **步驟 2 (提前解算新清單與分流集合)**：對所有已啟用的 Release Targets 提前完整解算目標檔案映射，並標註 Project 軌與 Local 軌歸屬清冊。
-3. **步驟 3 (原子寫入雙軌 Manifest)**：分別將 Project 軌 (`project://` 格式) 寫入 `storage://`，將 Local 軌 (絕對路徑格式) 寫入 `cache://`。
+3. **步驟 3 (原子寫入雙軌 Manifest)**：分別將 Project 軌 (`project://` 格式) 寫入 `cache://agents-workflow/project_release_manifest.json`，將 Local 軌 (絕對路徑格式) 寫入 `cache://agents-workflow/release_manifest.json`。
 4. **步驟 4 (物理落地與增量軟合併)**：比對磁碟現有內容執行增量寫入；所有檔案寫入顯式傳入 `newline="\n"`，與根目錄 `.gitattributes` 配合確保全專案純 LF 換行；若 `enable_agents_md: true`，對目標規範入口檔（`AGENTS.md` / `CLAUDE.md`）執行 `_soft_merge_agents_text` 無損軟合併（管理區塊由中央標準庫單向覆寫注入以杜絕過期技能殘留，外部專案特化章節 100% 保留；專案特化技能擴充請透過 `config/agents-workflow/contribute.json` 宣告注入）。

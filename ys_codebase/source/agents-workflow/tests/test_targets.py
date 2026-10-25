@@ -208,8 +208,8 @@ class TestReleaseTargets(YSCBTestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     @require(Requirement.LOGIC)
-    def test_ft_05_release_target_cli_syntax(self):
-        """FT-02 & FT-03: 驗證 release-target 支援 --add / add 以及 --remove / remove 雙向語法與 --proj 旗標。"""
+    def test_ft_07_release_target_cli_syntax(self):
+        """FT-07: 驗證 release-target 支援 --add / add 以及 --remove / remove 雙向語法與 --proj 旗標。"""
         import importlib.util
         from unittest.mock import patch
         from core.commands.bags import CmdBags, CmdOption

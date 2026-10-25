@@ -2,7 +2,7 @@
 
 > 計畫名稱：2026_10_23_1314_agents_workflow_aci_and_delegation_evolution  
 > 建立日期：2026-10-23  
-> 計畫狀態：In Progress  
+> 計畫狀態：Completed  
 > Umbrella 模式：Pre-planned (預先規劃型)  
 > 模型：Gemini 4 Argon (Low)  
 > 模板版本：v1.2  
@@ -29,7 +29,7 @@
 | **sub_05** | `sub_05_skill_creator_extension_workflow` | Full Track | `Completed` | **Layer 2 擴充造血閉環** — 落實 [roadmap.md](./sub_05_skill_creator_extension_workflow/roadmap.md)：在 `sub_03` / `sub_04` 所有新增錨點定型後，建立主動指令型技能 `/skill-creator` 與完整錨點／語意 URI 擴充參考手冊（`references/extension-guide.md`），落實「三軌擴充智能分流（純錨點注入 vs. 環境攔截型 vs. 功能特化型）」、「擴充藍圖確認卡」與第一層 `config://agents-workflow/{skills,snippets}/` 宣告式註冊及三步編譯驗證守門。 |
 | **sub_06** | `sub_06_cli_guide_purification` | Fast Track | `Completed` | **`yscb-cli-guide` 深度瘦身與 `-h` 按需自省重構**：徹底拔除 `yscb-cli-guide/SKILL.md` 內隨指令規模無限膨脹之動態指令表（移除 `core/contributes/agents-workflow.json` 中 `AGENTS_CLI_GUIDE` computed 注入與 `core/providers.py`），將 `yscb-cli-guide` 純化為「終端執行慣例與防呆 + 技能內建指令直跑 (`Skill-Vetted Fast Pass`) + 非常規指令與未知參數強制 `-h` 自省 (`JIT -h Inspection`) + 三級權限與 `[GATED]` 紅線家族原則」（單檔自 3.4K 瘦身至 ~1.0K tokens）。 |
 | **sub_07** | `sub_07_auto_context_lean_optimization` | Fast Track | `Completed` | **`/auto` 連續推進工作流 Context 精實化重構（方向 A + B + `_auto.md` 雙軌相容）**：於 `auto/SKILL.md` 內建 `P01`~`P06` 必填標頭與章節骨架速查表（免除 `/auto` 期間逐一讀取 `phase_01~05.md` 與 `P01~P06` 模板之 11 次讀檔開銷）、確立「單檔單次寫入 (`1-Write-Per-File`，`P05_task_auto.md` 直接以 `Completed` 落檔、`P06` 於測試通過後直接以 `Passed` 落檔) + 單次彙總 `plan verify`」、「跨檔單點定義指標引用與 `P03`/`P04` 禁預寫實作碼 (`DRY Spec & Signature-Only`)」及「`/auto` 一次自動生成之 `P01`~`P05` 強制命名為 `PXX_YYYY_auto.md` 並於 `plans` 工具鏈支援雙軌相容 (`PlanStatusResolver.resolve_phase_file`)」，將單次 `/auto` 之 SOP 工具調用減少 74%（27 $\to$ 7 次）、節省 ~16K–25K Tokens。 |
-| **sub_08** | `sub_08_final_acceptance_and_suite_purification` | Full Track | `Pending` | **全主計畫二次驗收與 Dogfooding 實戰收斂**：針對 `sub_01` ~ `sub_07` 落地成果執行端到端二次驗收、跨功能協同整合驗證（含將本主計畫所消費之 6 份 Roadmap 儲備透過新機制閉環遷移）、依 `testing-sop` 規範對 `agents-workflow/tests/` 執行子系統 1:1 歸戶與純化收斂，以及最終三層文檔對齊與打磨結案。 |
+| **sub_08** | `sub_08_final_acceptance_and_suite_purification` | Research / Full Track | `Completed` | **全主計畫二次驗收、測試集六維度純化與工作區清理收官**：針對 `sub_01` ~ `sub_07` 落地成果與 7 份已消費 Roadmap 執行二次驗收；依 `testing-sop` 對 `agents-workflow/tests/` 13 支測試檔執行六維度體檢與 13 $\to$ 6 子系統 1:1 歸戶純化；清理根目錄歷史遺留 `./scratch` 與 `./scripts`，並完成三層文檔最終對齊。 |
 
 ---
 
@@ -48,5 +48,5 @@
 - [x] **里程碑 5 (`sub_05`) [Global Step 9 - Completed]**：完成 `/skill-creator` 三軌擴充引導工作流與全系統錨點／URI 擴充手冊建置。
 - [x] **里程碑 6 (`sub_06`) [Global Step 10 - Completed]**：完成 `yscb-cli-guide` 深度瘦身（拔除動態指令大表與 `core/providers.py`，改採技能內建指令直跑 + 非常規指令 `-h` 按需自省）。
 - [x] **里程碑 7 (`sub_07`) [Global Step 11 - Completed]**：完成 `/auto` 連續推進工作流 Context 精實化重構（方向 A 內聯骨架免讀 11 檔與單次寫檔/檢核 + 方向 B 跨檔單點定義去重與禁預寫實作碼 + `PXX_YYYY_auto.md` 雙軌相容）。
-- [ ] **里程碑 8 (`sub_08`) [Global Step 12]**：完成 `sub_01` ~ `sub_07` 二次驗收、6 份 Roadmap 儲備閉環遷移、`agents-workflow/tests/` 測試集子系統歸戶純化、三層文檔對齊與最終打磨結案。
+- [x] **里程碑 8 (`sub_08`) [Global Step 12 - Completed]**：完成 `sub_01` ~ `sub_07` 二次驗收、7 份 Roadmap 儲備閉環遷移、`agents-workflow/tests/` 測試集子系統歸戶純化、三層文檔對齊與最終打磨結案。
 

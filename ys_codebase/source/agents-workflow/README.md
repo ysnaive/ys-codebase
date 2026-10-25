@@ -123,7 +123,7 @@ graph TD
   - 只有接收到明確定稿指令（如「確認」、「通過」、「進入 Phase X」）方可推進。
 - **除錯範疇保護**：堅持「由近及遠、本體優先」，連續 2 次修復失敗或涉及跨模組時強制停步發起 `/Discuss` 進行 5-Whys 根因分析。
 - **確定性讀檔阻斷**：當讀取規範指定之確定性檔案失敗時，**絕對禁止**自主發起模糊搜尋來掩蓋缺陷，必須直接暴露真實報錯。
-- **CLI 指令 Default-Deny**：查核權限等級（[SAFE] 自主安全 / [CONDITIONAL] 階段條件 / [GATED] 授權守門），未列情境一律禁止執行。
+- **CLI 指令雙軌執行**：遵循 yscb-cli-guide 規範，[SAFE] 技能手冊指引之內建指令直跑免查；非常規或不熟悉之指令強制以 -h 按需自省，嚴禁依賴靜態白名單，嚴禁腦補或臆測參數。
 
 ---
 
@@ -132,12 +132,11 @@ graph TD
 ### 5.1 開發計畫管理 (Dev Plans Management)
 
 ```bash
-# 查詢所有進行中與已完成計畫之狀態大綱
-python yscb.py agents-workflow plan status
+# 查詢所有進行中與已完成計畫之狀態大綱（支援 --resume 輸出斷點交接卡）
+python yscb.py agents-workflow plan status [--resume]
 
-# 檢核指定活躍計畫（或加 --all 檢核所有活躍計畫）之模型標頭、佔位符、Completed 未勾選 Checkbox 與章節合規性
-python yscb.py agents-workflow plan verify [plan_name] [--all]
-python yscb.py agents-workflow plan check 2026_08_29_2035_my_feature
+# 檢核指定活躍計畫之模型標頭、佔位符、Completed 未勾選 Checkbox 與章節合規性（支援 --phase, --log, --model 一鍵核銷）
+python yscb.py agents-workflow plan verify [plan_name] [--phase PXX] [--log "說明"] [--model "模型名稱"] [--all]
 
 # 依關鍵字搜尋歷史與進行中計畫
 python yscb.py agents-workflow plan search "CLI 權限"
@@ -149,14 +148,26 @@ python yscb.py agents-workflow plan archive 2026_08_29_2035_my_feature
 python yscb.py agents-workflow init --default [-y]
 ```
 
-### 5.2 長期策略路線圖 (Roadmap Management)
+### 5.2 長期策略路線圖與待辦帳本 (Roadmap & Todo Management)
 
 ```bash
-# 列出所有長期策略路線圖摘要表格 (支援 --status 過濾)
-python yscb.py agents-workflow roadmap [--list] [--status=Candidate]
+# 列出所有長期策略路線圖摘要表格 (支援 --status <Backlog|Proposed|Ready|Deferred> 過濾)
+python yscb.py agents-workflow roadmap [list] [--status <Backlog|Proposed|Ready|Deferred>]
 
 # 檢視特定主題路線圖詳細內容
-python yscb.py agents-workflow roadmap caching_strategy
+python yscb.py agents-workflow roadmap <topic>
+
+# 晉升路線圖主題至開發計畫 (Consume-on-Promote：物理移轉為計畫內 roadmap.md + 初始化 changelog.md)
+python yscb.py agents-workflow roadmap promote <topic> [--plan <dir>] [--model "<ModelName>"]
+
+# 列出輕量級待辦帳本條目 (支援 --scope <關鍵字> 過濾)
+python yscb.py agents-workflow todo list [--scope <關鍵字>]
+
+# 單行免讀盲寫新增待辦事項至 plans/roadmap/TODO.md (自動分配單調遞增 TODO-XX 編號)
+python yscb.py agents-workflow todo add "<標題>" [--scope <範疇>] [--note "<備忘>"] [--model "<ModelName>"]
+
+# 打包提取待辦條目轉入開發計畫 (Pop & Seed：自 TODO.md 移除並生成計畫內 todo.md + changelog.md)
+python yscb.py agents-workflow todo promote <TODO-ID> [TODO-ID...] --slug <plan_slug> [--plan <dir>] [--model "<ModelName>"]
 ```
 
 ### 5.3 技能編譯與發布 (Compiler & Publisher)

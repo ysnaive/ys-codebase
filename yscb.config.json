@@ -14,7 +14,7 @@
     },
     "agents-workflow": {
       "version": "1.1.0.build",
-      "installed_at": "2026-10-25 14:26:06",
+      "installed_at": "2026-10-25 15:02:44",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
