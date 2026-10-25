@@ -87,6 +87,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         self._is_running = False
         self._debounce_timer: Optional[threading.Timer] = None
         self._debounce_lock = threading.Lock()
+        self._patch_lock = threading.Lock()
         self._pending_dirty_paths: Set[str] = set()
         self._pipeline = None
         self._space_manager = None
@@ -172,53 +173,59 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
 
     def _execute_debounced_patch(self) -> None:
         """Executes debounced incremental indexing hot-patch on the pipeline."""
-        with self._debounce_lock:
-            dirty = list(self._pending_dirty_paths)
-            self._pending_dirty_paths.clear()
-            self._debounce_timer = None
-
-        if not dirty or not self._is_running:
-            try:
-                indices_dir = self._get_pipeline().get_indices_dir()
-                dirty_flag = indices_dir / ".watcher_dirty"
-                if dirty_flag.exists():
-                    dirty_flag.unlink()
-            except Exception:
-                pass
+        if not self._patch_lock.acquire(blocking=False):
             return
 
         try:
-            pipeline = self._get_pipeline()
-            indices_dir = pipeline.get_indices_dir()
-            meta_file = indices_dir / "unified.meta.bin"
+            while self._is_running:
+                with self._debounce_lock:
+                    dirty = list(self._pending_dirty_paths)
+                    self._pending_dirty_paths.clear()
+                    self._debounce_timer = None
 
-            _, scanned_count, reason, full_files_map, diff_detail = pipeline.scanner.check_invalidation(
-                snapshot_path=meta_file
-            )
+                if not dirty:
+                    break
 
-            if diff_detail.has_changes:
-                res = None
                 try:
-                    res = pipeline.hot_patch_unified_index(diff_detail, full_files_map, timeout_seconds=float("inf"))
-                except Exception as pe:
-                    logger.warning(f"Hot patch exception: {pe}, fallback to full rebuild.")
+                    pipeline = self._get_pipeline()
+                    indices_dir = pipeline.get_indices_dir()
+                    meta_file = indices_dir / "unified.meta.bin"
 
-                patched = bool(res[0]) if isinstance(res, (tuple, list)) and len(res) > 0 else bool(res)
-                if not patched:
-                    try:
-                        pipeline.build_unified_index(force=True, current_files=full_files_map)
-                    except Exception as fe:
-                        logger.error(f"Fallback full rebuild failed: {fe}", exc_info=True)
-        except Exception as e:
-            logger.error(f"Error during debounced hot patch: {e}", exc_info=True)
+                    _, scanned_count, reason, full_files_map, diff_detail = pipeline.scanner.check_invalidation(
+                        snapshot_path=meta_file
+                    )
+
+                    if diff_detail.has_changes:
+                        res = None
+                        try:
+                            res = pipeline.hot_patch_unified_index(diff_detail, full_files_map, timeout_seconds=float("inf"))
+                        except Exception as pe:
+                            logger.warning(f"Hot patch exception: {pe}, fallback to full rebuild.")
+
+                        patched = bool(res[0]) if isinstance(res, (tuple, list)) and len(res) > 0 else bool(res)
+                        if not patched:
+                            try:
+                                pipeline.build_unified_index(
+                                    force=True,
+                                    current_files=full_files_map,
+                                    allow_parallel=False,
+                                )
+                            except Exception as fe:
+                                logger.error(f"Fallback full rebuild failed: {fe}", exc_info=True)
+                except Exception as e:
+                    logger.error(f"Error during debounced hot patch: {e}", exc_info=True)
         finally:
             try:
-                indices_dir = self._get_pipeline().get_indices_dir()
-                dirty_flag = indices_dir / ".watcher_dirty"
-                if dirty_flag.exists():
-                    dirty_flag.unlink()
+                with self._debounce_lock:
+                    has_more = bool(self._pending_dirty_paths)
+                if not has_more:
+                    indices_dir = self._get_pipeline().get_indices_dir()
+                    dirty_flag = indices_dir / ".watcher_dirty"
+                    if dirty_flag.exists():
+                        dirty_flag.unlink()
             except Exception:
                 pass
+            self._patch_lock.release()
 
     def start(self, context: Dict[str, Any]) -> None:
         """Starts background file watcher using watchdog Observer."""

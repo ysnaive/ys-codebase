@@ -12,7 +12,7 @@ related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
-last_updated: "2026-10-24"
+last_updated: "2026-10-25"
 ---
 
 # 設計決策與工程妥協 (Design Notes)
@@ -36,6 +36,9 @@ last_updated: "2026-10-24"
 | **[DN-AW-09]** | 新增 | 來源資產換行符 LF 正規化與物化清單 `cache://` 本地隔離防 Git 污染 | 發布引擎 (`publisher.py`) | `Active` |
 | **[DN-AW-10]** | 新增 | ACI 四步執行管線時序、伴隨檔模型防回溯與 `P01` 刪除線/代碼塊預過濾設計 | Plans 工具鏈 (`verifier.py`, `scanner.py`, `status.py`) | `Active` |
 | **[DN-AW-11]** | 新增 | 雙層儲備消耗 (`Consume-on-Promote`)、`TODO.md` 單調遞增編號計數器與 `ORIGIN_SEED_FILES` 種子白名單防坑設計 | 儲備與計畫工具鏈 (`roadmap.py`, `status.py`, `scanner.py`, `verifier.py`) | `Active` |
+| **[DN-AW-12]** | 新增 | 唯讀 Subagent 零劇透盲審傳址、純靜態禁跑測、Single-Writer 鐵律與多路線圖合流追加合併防坑設計 | 技能資產 (`research`, `discuss`, `phase_06`, `phase_07`, `roadmap.py`) | `Active` |
+| **[DN-AW-13]** | 新增 | 跨模組多捐贈者導覽錨點 (`HOW_TO_*_MODULES`)、兩階段漸進式隨包手冊調度與跨模組 `_resolve_source_path` Sibling Fallback 防坑設計 | 工廠編譯器 (`compiler.py`)、教練技能 (`how-to-config-yscb`, `how-to-yscb`) | `Active` |
+| **[DN-AW-14]** | 新增 | `/skill-creator` 三軌擴充防膨脹、`AGENTS_SKILL_ROUTING` 表格列結構隔離與教學範例 Fenced Code Block 編譯器正則保護 | 技能資產 (`skill-creator/SKILL.md`, `references/extension-guide.md`) | `Active` |
 
 ---
 
@@ -233,6 +236,23 @@ last_updated: "2026-10-24"
 
 > [!CAUTION]
 > 嚴禁將多模組詳細體檢表或教學長文注入 `AGENTS.md` 或 `context-init`；各模組注入 `HOW_TO_*_MODULES` 之片段中所有 `__#{...}__` 與 `__${...}__` 標籤在非代碼區塊內必須強制以單反引號包覆；嚴禁將 `_resolve_source_path` 的跨模組 `module://<other_mod>/` 回退路徑硬綁回 `agents-workflow` 自身目錄。
+
+---
+
+### [DN-AW-14] `/skill-creator` 三軌擴充防膨脹、`AGENTS_SKILL_ROUTING` 表格列結構隔離與教學範例 Fenced Code Block 編譯器正則保護
+
+- **工程背景與坑點**：
+  1. **下游專案濫建微型 Skill 導致路由表膨脹**：若使用者僅需在 `Phase 05` 或 `/context-init` 增加幾行專案注意事項，卻每次都建立一個全新的 `SKILL.md` 並掛入 `AGENTS_SKILL_ROUTING`，會導致 `AGENTS.md` 條件路由表迅速膨脹、降低全系統觸發精準度。
+  2. **`AGENTS_SKILL_ROUTING` 與獨立區塊錨點的結構衝突**：全系統 22 個 Stage 1 Token 錨點中，21 個位於獨立段落行（支援注入 Markdown 標題與清單），唯獨 `AGENTS_SKILL_ROUTING` 位於 `AgentsStandards.md` 的 Markdown 表格內部；若向 `AGENTS_SKILL_ROUTING` 注入一般標題段落，會直接截斷並損毀 `AGENTS.md` 的技能路由表。
+  3. **擴充教學文檔內含抽象語法範例觸發編譯器警告**：`skill-creator/SKILL.md` 與 `references/extension-guide.md` 需向 Agent 展示佔位符與語意 URI 寫法。若在一般段落或表格行內使用單反引號包覆虛構之教學範例（如不存在的 URI 或假 Token 名），`ArtifactCompiler` 在 Stage 1/2 會嘗試將其當作真實標籤解析並噴出 `[compiler:warning] Unresolved semantic URI tag`；若不加反引號裸寫，則會被 `check_unenclosed_tags` 攔截報出 `Unenclosed placeholder tag`。
+- **妥協與防禦設計**：
+  1. **三軌擴充智能分流 (`3-Track Extension Triage`)**：於 `skill-creator` 步驟 1 強制區分「軌跡 ① 純錨點注入（`snippets/<name>.md`，0 路由開銷）」、「軌跡 ② 被動環境攔截型 Skill」與「軌跡 ③ 功能特化型 Skill」，針對局部階段注意事項優先引導採用軌跡 ①。
+  2. **22 個錨點結構屬性顯式標註與三步驗證守門**：於 `references/extension-guide.md` 明確標註 `AGENTS_SKILL_ROUTING` 的「Markdown 表格列」專屬屬性，並於步驟 4 強制執行 `contributes check` $\to$ `agents-workflow compile`（0 Error / 0 Warning）$\to$ `agents-workflow release` 三步驗證守門。
+  3. **`LITERAL_FENCED_BLOCK_REGEX` (`<!-- yscb:literal -->`) 教學範例保護與真實 URI 雙軌寫法**：由於一般 Fenced Code Block（如狀態卡模板）內的語意 URI 仍需在 Stage 2 轉譯為相對路徑，若直接在教學區塊寫出 `__@{...}__`、`__#{...}__` 或 `__${...}__`，物化後教學語法會被 Stage 1 抹除或被 Stage 2 轉譯為相對路徑。因此於 `ArtifactCompiler` (`compiler.py`) 引入 `LITERAL_FENCED_BLOCK_REGEX`：凡在三反引號 Fenced Code Block 首行標註 `<!-- yscb:literal -->` 者，在 Stage 1 (`resolve_single_artifact`) 與 Stage 2 (`resolve_stage2_uri`) 均會先抽離保護、不予解析，並於 Stage 2 物化時自動剝除首行 `<!-- yscb:literal -->` 標記、100% 保留原始字面量教學語法；而在非字面量區塊之散文或表格中，則一律使用穿插型真實語意 URI（如 `` `__${config://agents-workflow}__/contribute.json` ``）以在物化後保留行內反引號。
+
+> [!CAUTION]
+> 在維護 `skill-creator/SKILL.md` 與 `references/extension-guide.md` 時，凡需在物化產物中原樣展示 `__@{...}__`、`__#{...}__`、`__${...}__` 字面量教學語法者，必須置於首行標註 `<!-- yscb:literal -->` 之 Fenced Code Block 內；向 `AGENTS_SKILL_ROUTING` 注入之片段必須嚴格保持 Markdown 表格列格式。
+
 
 
 

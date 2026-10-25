@@ -14,7 +14,7 @@ related_docs:
   - "./daemon_architecture.md"
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
-last_updated: "2026-10-24"
+last_updated: "2026-10-25"
 ---
 
 # Server 模組工程妥協與防坑邊界 (DESIGN_NOTES.md)
@@ -30,6 +30,7 @@ last_updated: "2026-10-24"
 | **[DN-05]** | Worker 私有 `_ipc_stdout` 管道隔離與全域 `stdout` 重導向防污染 | `server/worker.py` | High |
 | **[DN-06]** | Master 兩階段平滑關閉協定 (NDJSON Exit Handshake + Process Tree Harvest) | `server/master.py` | High |
 | **[DN-07]** | Server 執行期零 `source/` 嚴格沙盒路徑隔離與動態 Provider 注入 | `server/master.py`, `server/service.py` | High |
+| **[DN-08]** | `WarmWorker.pre_warm()` 服務路徑先行載入時序與 `MasterSupervisor.stop()` 冪等防重入 | `server/worker.py`, `server/master.py` | High |
 
 ---
 
@@ -113,3 +114,17 @@ last_updated: "2026-10-24"
 - **工程決策**：
   1. Master 在生成 Worker 子進程時，`PYTHONPATH` 僅允許注入根目錄、`.modules` 及私有 `.venv`，嚴格剔除所有 `source/` 目錄。
   2. `ServiceManager` 載入第三方服務宣告時，動態將 `.modules/<provider>` 注入 `sys.path`，並相容 `code.class://` 前綴與連字號轉底線（優先直接匯入），確保生態系模組正確隔離載入。
+
+---
+
+### [DN-08] `WarmWorker.pre_warm()` 服務路徑先行載入時序與 `MasterSupervisor.stop()` 冪等防重入
+- **背景與陷阱**：
+  1. 在零 `source/` 隔離環境下，第三方模組（如 `.modules/knowledge-db`）是由 `ServiceManager.load_from_contributes()` 動態注入 `sys.path`。若 `WarmWorker.pre_warm()` 先廣播 `server_worker_warming` 事件才呼叫 `load_from_contributes()`，會導致 `hook.server.py` 在處理預熱事件時因 `sys.path` 尚未包含 `.modules/knowledge-db` 而拋出 `No module named 'knowledge_db'`。
+  2. 當 `/api/shutdown`、Idle TTL 或 `restart_server()` 背景執行緒呼叫 `MasterSupervisor.stop()` 關閉 `_httpd` 時，主執行緒 `start(foreground=True)` 的 `finally: self.stop()` 會立即被喚醒並二次進入 `stop()`，引發重複清理與日誌歸檔競態。
+- **工程決策**：
+  1. **服務路徑先行注入**：`WarmWorker.pre_warm()` 必須先將 `.modules` 加入 `sys.path` 並完成 `self.service_manager.load_from_contributes(self.yscb_root)`，隨後才廣播 `server_worker_warming` 與執行 `start_all()`。
+  2. **停機互斥與 `_is_stopped` 冪等守門**：`MasterSupervisor` 增設 `self._stop_lock` 與 `self._is_stopped` 旗標，確保 `stop()` 在多執行緒與 `finally` 區塊重入時嚴格具備單次執行冪等性。
+
+> [!CAUTION]
+> 嚴禁將 `events.broadcast("server_worker_warming")` 移至 `service_manager.load_from_contributes()` 之前，亦嚴禁移除 `MasterSupervisor.stop()` 的 `_stop_lock` 與 `_is_stopped` 冪等守門。
+

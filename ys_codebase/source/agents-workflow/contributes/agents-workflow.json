@@ -102,6 +102,12 @@
       "description": "切換為互動式教練角色，結合工作流核心心法與各模組標準用法速查卡及隨包手冊，引導使用者掌握工具最佳實踐。僅於顯式輸入 /how-to-yscb 或明確要求教學引導時觸發。"
     },
     {
+      "type": "skill",
+      "name": "skill-creator",
+      "source": "module://agents-workflow/assets/skills/skill-creator",
+      "description": "引導建立專案功能特化 Skill、環境注意事項攔截規則或階段錨點注入配置，自動對接語意 URI 與雙層編譯註冊閉環。僅於顯式輸入 /skill-creator 或明確指示建立新 Skill 與擴充工作流規範時觸發。"
+    },
+    {
       "type": "template",
       "source": "module://agents-workflow/assets/templates/P00_discuss.md",
       "description": "Phase 0 討論模板"
@@ -262,6 +268,10 @@
     {
       "value": "HOW_TO_YSCB_MODULES",
       "description": "已安裝模組之功能速查與隨包手冊索引注入錨點（位於 how-to-yscb/SKILL.md）"
+    },
+    {
+      "value": "SKILL_CREATOR_STANDARDS",
+      "description": "專案特化技能建置與擴充規則注入錨點（位於 skill-creator/SKILL.md）"
     }
   ],
   "insert": [

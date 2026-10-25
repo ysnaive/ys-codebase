@@ -14,7 +14,7 @@ description: 盤點與診斷專案內 YSCB 各模組組態、工作流空間映�
 1. **唯讀探勘先行，草案確認後寫入 (Audit First, Confirm Before Write)**：步驟 1 與步驟 2 僅允許使用唯讀工具與 `🟢 [SAFE]` CLI 指令進行空間探勘與健康度診斷；未經開發者確認診斷卡與配置草案前，**嚴禁自動覆寫任何組態檔**。
 2. **全綠免改短路 (All-Green Short-Circuit)**：若專案已完成完整配置且所有模組健康檢查均為 `🟢 [OK]`，直接輸出全綠健康報告卡並詢問是否有特定參數欲微調，嚴禁無意義重複產生長篇草案或覆寫正常設定。
 3. **本體空間三處一次對齊 (First-Party Trinity Alignment)**：對專案根目錄執行單次結構探勘後，必須同步對齊「專案角色與主客體空間邊界 (`project_role.md`) + 專案測試框架與規範 (`testing_guide.md`) + 代碼語意檢索空間 (`knowledge-db` `spaces.source`)」，杜絕重複掃描或設定脫節。
-4. **雙層組態精準分流 (Config Tier Guardrail)**：跨成員共享的專案規範與目錄映射（如 `paths.plans`、`paths.docs`、`paths.standards`、空間邊界與檢索範圍）強制寫入 `config.project.json` 或 `config://<mod>/contribute.json`；開發者個人 IDE 偏好（如 `release_targets` 選用 `antigravity` / `claude` / `codex`，除非全團隊統一規範）或本機 Port 覆寫強制引導寫入 `config.local.json`，並主動檢核 `.gitignore` 是否已涵蓋 `*.local.json`。
+4. **雙層組態精準分流 (Config Tier Guardrail)**：跨成員共享的專案規範與目錄映射（如 `paths.plans`、`paths.docs`、`paths.standards`、空間邊界與檢索範圍）強制寫入 `config.project.json` 或 `config://<mod>/contribute.json`；開發者個人 IDE 偏好（如 `release_targets` 選用特定內建或自訂 `contribute` 之發布目標，除非全團隊統一規範）或本機 Port 覆寫強制引導寫入 `config.local.json`，並主動檢核 `.gitignore` 是否已涵蓋 `*.local.json`。
 5. **不污染日常啟動 (Zero Startup Pollution)**：完整健檢矩陣與多模組設定指南僅於顯式呼叫 `/how-to-config-yscb` 時載入，絕不塞入日常 `/context-init`。
 
 ---

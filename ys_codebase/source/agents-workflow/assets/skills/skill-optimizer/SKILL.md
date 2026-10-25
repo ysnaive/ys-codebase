@@ -18,7 +18,8 @@ description: 針對既有 Skill 執行靜態診斷、無損重構與 A/B 基準�
   - 為既有 Skill 補齊步驟檢核表、`Plan -> Validate -> Execute` 驗證閉環、`## 常見踩坑指南 (Gotchas)` 與資安防護。
 - **觸發時機**：開發者輸入 `/skill-optimizer`（或 `/SkillOptimizer`），或明確要求審查、優化、重構既有 Skill。
 - **排除情境（負向邊界）**：
-  - **從零建立全新功能或計畫**：當開發者沒有任何現成 `SKILL.md` 草稿、僅要求開發全新功能時，請走標準 [`/new-plan`](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 流程，切勿使用本技能。
+  - **從零建立專案特化 Skill 或階段錨點注入規則**：當開發者尚無現成 `SKILL.md` 草稿、希望從零新建專案專屬 Skill 或於 `config://agents-workflow/` 配置錨點注入時，請改用 [`/skill-creator`](`__#{module://agents-workflow/assets/skills/skill-creator/SKILL.md}__`)。
+  - **從零建立全新業務功能或開發計畫**：當開發者僅要求開發一般業務程式碼功能時，請走標準 [`/new-plan`](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 流程，切勿使用本技能。
 
 ---
 

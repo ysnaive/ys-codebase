@@ -629,6 +629,42 @@ class TestServerModule(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_prewarm_load_order_and_master_stop_idempotency(self):
+        """FT-02 (2026_10_25_1103): Verify WarmWorker loads service contributes before broadcasting warming event, and MasterSupervisor.stop is idempotent."""
+        worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
+        call_order = []
+
+        def fake_load(root):
+            call_order.append("load_from_contributes")
+
+        def fake_broadcast(evt_name, *args, **kwargs):
+            call_order.append(f"broadcast:{evt_name}")
+
+        def fake_start_all(ctx):
+            call_order.append("start_all")
+
+        with unittest.mock.patch.object(worker.service_manager, "load_from_contributes", side_effect=fake_load), \
+             unittest.mock.patch.object(events, "broadcast", side_effect=fake_broadcast), \
+             unittest.mock.patch.object(worker.service_manager, "start_all", side_effect=fake_start_all):
+            worker.pre_warm()
+
+        self.assertIn("load_from_contributes", call_order)
+        self.assertIn("broadcast:server_worker_warming", call_order)
+        self.assertLess(
+            call_order.index("load_from_contributes"),
+            call_order.index("broadcast:server_worker_warming"),
+        )
+
+        # Verify MasterSupervisor.stop() idempotency when called twice
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup._is_running = True
+        with unittest.mock.patch.object(sup.logger, "archive_and_close") as mock_archive:
+            sup.stop()
+            sup.stop()
+            self.assertEqual(mock_archive.call_count, 1)
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

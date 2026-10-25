@@ -26,7 +26,7 @@
 | **sub_02** | `sub_02_roadmap_and_todo_refactoring` | Full Track | `Completed` | 落實 [roadmap.md](./sub_02_roadmap_and_todo_refactoring/roadmap.md)：拆分 `/todo` (`TODO.md` 單調遞增編號、單行免讀盲寫 `todo add`) 與 `/roadmap` 雙層體系、實作 `todo promote` (支援多筆批次與 `--slug` 校驗) / `roadmap promote` 立項物理遷入 (`Consume-on-Promote`)、`Seeded` 前置源頭資產白名單與 `new-plan` 復用防呆。 |
 | **sub_03** | `sub_03_testing_sop_and_subagent_isolation` | Full Track | `Completed` | **核心 SOP 品質與隔離深度合流** — 落實 [roadmap.md](./sub_03_testing_sop_and_subagent_isolation/roadmap.md)：建立與 `documentation` 對偶之環境型技能 `testing-sop`（六大測試鐵律、`TESTING_SOP_STANDARDS` 錨點、存量體檢純化指南），並於 `AgentsStandards.md`、`research`、`discuss`、`auto`、`phase_04`~`phase_07`、`plan_modes.md` 一次性植入 `testing-sop` 連鎖守門與「三支柱門檻觸發式 Subagent 委派協定」（探索隔離、Phase 05 實作隔離綁定 `testing-sop` 與二振熔斷、Phase 07 Fresh-Eyes 冷眼審查納入測試反模式契約）。 |
 | **sub_04** | `sub_04_onboarding_and_config_coaching` | Full Track | `Completed` | **下游接入與教學賦能雙星合流** — 落實 [roadmap.md](./sub_04_onboarding_and_config_coaching/roadmap.md)：於 `AgentsStandards.md` 增設 `PROJECT_ROLE_AND_BOUNDARIES` 錨點（Turn 0 界定本體業務空間 vs. 外部工具包黑盒）；建立 `/how-to-config-yscb`（含自動探勘代寫 `config://agents-workflow/snippets/project_role.md` 與 `testing_guide.md` 嫁接至 `TESTING_SOP_STANDARDS` 及三步熱更新驗證）與 `/how-to-yscb`（互動式引導教練與新開實戰 Session 隔離），並完成四大核心模組之設定體檢卡與黃金配方片段注入。 |
-| **sub_05** | `sub_05_skill_creator_extension_workflow` | Full Track | `Pending` | **Layer 2 擴充造血閉環** — 落實 [skill_creator_and_layer2_extension_roadmap.md](../roadmap/skill_creator_and_layer2_extension_roadmap.md)：在 `sub_03` / `sub_04` 所有新增錨點定型後，建立主動指令型技能 `/skill-creator` 與完整錨點／語意 URI 擴充參考手冊（`references/extension-guide.md`），落實「三軌擴充智能分流（純錨點注入 vs. 環境攔截型 vs. 功能特化型）」、「擴充藍圖確認卡」與第一層 `config://agents-workflow/{skills,snippets}/` 宣告式註冊及三步編譯驗證守門。 |
+| **sub_05** | `sub_05_skill_creator_extension_workflow` | Full Track | `Completed` | **Layer 2 擴充造血閉環** — 落實 [roadmap.md](./sub_05_skill_creator_extension_workflow/roadmap.md)：在 `sub_03` / `sub_04` 所有新增錨點定型後，建立主動指令型技能 `/skill-creator` 與完整錨點／語意 URI 擴充參考手冊（`references/extension-guide.md`），落實「三軌擴充智能分流（純錨點注入 vs. 環境攔截型 vs. 功能特化型）」、「擴充藍圖確認卡」與第一層 `config://agents-workflow/{skills,snippets}/` 宣告式註冊及三步編譯驗證守門。 |
 | **sub_06** | `sub_06_final_acceptance_and_suite_purification` | Full Track | `Pending` | **全主計畫二次驗收與 Dogfooding 實戰收斂**：針對 `sub_01` ~ `sub_05` 落地成果執行端到端二次驗收、跨功能協同整合驗證（含將本主計畫所消費之 6 份 Roadmap 儲備透過新機制閉環遷移）、依 `testing-sop` 規範對 `agents-workflow/tests/` 執行子系統 1:1 歸戶與純化收斂，以及最終三層文檔對齊與打磨結案。 |
 
 ---
@@ -43,6 +43,6 @@
 - [x] **里程碑 2 (`sub_02`) [Global Step 1 - Completed]**：完成 `/todo` 與 `/roadmap` 雙層儲備體系重構（`todo add/list/promote`、`roadmap promote` 物理遷入與 `Seeded` 白名單）並通過單元測試。
 - [x] **里程碑 3 (`sub_03`) [Global Step 2 - Completed]**：完成環境型技能 `testing-sop` 與三支柱門檻觸發式 Subagent 委派協定深度合流植入，通過合規測試。
 - [x] **里程碑 4 (`sub_04`) [Global Step 8 - Completed]**：完成 `PROJECT_ROLE_AND_BOUNDARIES` 空間邊界錨點、`/how-to-config-yscb`（含 `testing_guide.md` 嫁接）與 `/how-to-yscb` 雙星技能建置及跨模組片段注入。
-- [ ] **里程碑 5 (`sub_05`) [Global Step 9]**：完成 `/skill-creator` 三軌擴充引導工作流與全系統錨點／URI 擴充手冊建置。
+- [x] **里程碑 5 (`sub_05`) [Global Step 9 - Completed]**：完成 `/skill-creator` 三軌擴充引導工作流與全系統錨點／URI 擴充手冊建置。
 - [ ] **里程碑 6 (`sub_06`) [Global Step 10]**：完成 `sub_01` ~ `sub_05` 二次驗收、6 份 Roadmap 儲備閉環遷移、`agents-workflow/tests/` 測試集子系統歸戶純化、三層文檔對齊與最終打磨結案。
 

@@ -33,6 +33,7 @@ except ImportError:
     ExecutionContext = None
 
 FENCED_CODE_BLOCK_REGEX = re.compile(r"```[\s\S]*?```")
+LITERAL_FENCED_BLOCK_REGEX = re.compile(r"(```[^\r\n]*\r?\n)<!--\s*yscb:literal\s*-->[ \t]*\r?\n([\s\S]*?```)")
 CODE_SPAN_REGEX = re.compile(r"(`[^`\r\n]+`)")
 UNENCLOSED_TAG_REGEX = re.compile(r"__(?:[@#]\{\s*[^}]+\s*\}|\$(?:\([^)]*\))?\{\s*[^}]+\s*\})__")
 
@@ -230,7 +231,14 @@ class ArtifactCompiler:
             return ""
 
         check_unenclosed_tags(content)
-        resolved_text = content
+        literal_blocks: List[str] = []
+
+        def _mask_stage1_literal(m: re.Match) -> str:
+            idx = len(literal_blocks)
+            literal_blocks.append(m.group(0))
+            return f"\x00YSCB_LITERAL_BLOCK_{idx}\x00"
+
+        resolved_text = LITERAL_FENCED_BLOCK_REGEX.sub(_mask_stage1_literal, content)
         pass_count = 0
 
         while pass_count < max_passes:
@@ -354,6 +362,8 @@ class ArtifactCompiler:
             has_remaining = any(TOKEN_ANCHOR_INNER_REGEX.search(cs) for cs in code_spans)
             if not has_remaining:
                 break
+        for idx, raw_block in enumerate(literal_blocks):
+            resolved_text = resolved_text.replace(f"\x00YSCB_LITERAL_BLOCK_{idx}\x00", raw_block)
         return resolved_text
 
 
@@ -559,6 +569,15 @@ class ArtifactCompiler:
         # 檢查未包裹標籤警示
         check_unenclosed_tags(content, doc_name=os.path.basename(current_dst_path))
 
+        literal_blocks: List[str] = []
+
+        def _mask_stage2_literal(m: re.Match) -> str:
+            idx = len(literal_blocks)
+            literal_blocks.append(m.group(1) + m.group(2))
+            return f"\x00YSCB_LITERAL_BLOCK_{idx}\x00"
+
+        content = LITERAL_FENCED_BLOCK_REGEX.sub(_mask_stage2_literal, content)
+
         def _resolve_local_uri(tag_uri: str) -> str:
             # --- Tier 1: 命中發布拓撲映射表 ---
             if tag_uri in deployment_map:
@@ -744,6 +763,8 @@ class ArtifactCompiler:
             return f"]({path})"
 
         res_clean = re.sub(r"\]\(`?([^`\r\n\)]+)`?\)", _clean_md_link, res_spans)
+        for idx, clean_block in enumerate(literal_blocks):
+            res_clean = res_clean.replace(f"\x00YSCB_LITERAL_BLOCK_{idx}\x00", clean_block)
         return res_clean
 
     resolve_stage2_uris = resolve_stage2_uri

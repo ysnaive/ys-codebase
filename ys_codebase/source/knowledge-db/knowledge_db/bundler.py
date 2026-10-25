@@ -256,6 +256,7 @@ class SemanticBundler:
         self,
         spaces: Optional[List[SpaceConfig]] = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        allow_parallel: bool = True,
     ) -> SemanticBundle:
         """
         掃描全專案空間聯集 (Union Scope)，以實體檔案絕對路徑為唯一鍵去重，
@@ -274,7 +275,7 @@ class SemanticBundler:
             tasks.append((c_key, str(f_path), relpath, sorted_spaces))
 
         cpu_cnt = os.cpu_count() or 1
-        use_parallel = (total_files >= PARALLEL_BUNDLE_THRESHOLD and cpu_cnt > 1)
+        use_parallel = (allow_parallel and total_files >= PARALLEL_BUNDLE_THRESHOLD and cpu_cnt > 1)
 
         if use_parallel:
             try:

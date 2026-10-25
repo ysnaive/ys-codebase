@@ -257,16 +257,16 @@ class TestModelRecordRule(YSCBTestCase):
         self.assertIn("skill-optimizer", export_names)
         self.assertIn("SKILL_OPTIMIZER_STANDARDS", token_names)
 
-        # 2. 全部 16 個技能皆具備雙軌結構化邊界 (環境攔截型採三段式『觸發情境：/排除情境：』；主動指令型採『僅於顯式輸入』) 與常見踩坑指南 (Gotchas)
+        # 2. 全部 17 個技能皆具備雙軌結構化邊界 (環境攔截型採三段式『觸發情境：/排除情境：』；主動指令型採『僅於顯式輸入』) 與常見踩坑指南 (Gotchas)
         expected_skills = {
             "auto", "context-init", "continue", "development-sop", "discuss",
             "documentation", "how-to-config-yscb", "how-to-yscb", "new-plan",
-            "pause", "research", "roadmap", "skill-optimizer", "testing-sop",
-            "todo", "yscb-cli-guide",
+            "pause", "research", "roadmap", "skill-creator", "skill-optimizer",
+            "testing-sop", "todo", "yscb-cli-guide",
         }
         command_driven_skills = {
-            "auto", "pause", "continue", "context-init", "skill-optimizer",
-            "how-to-config-yscb", "how-to-yscb",
+            "auto", "pause", "continue", "context-init", "skill-creator",
+            "skill-optimizer", "how-to-config-yscb", "how-to-yscb",
         }
         ambient_skills = expected_skills - command_driven_skills
         actual_skills = {p.name for p in skills_dir.iterdir() if p.is_dir()}
@@ -471,5 +471,135 @@ class TestModelRecordRule(YSCBTestCase):
                 self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_g), [], f"{g_path} 含有未包覆單反引號之標籤")
 
         self.mark_passed()
+
+    def test_ft_11_sub05_skill_creator_extension_workflow(self):
+        """[sub_05 FR-01 ~ FR-05, EC-01 ~ EC-05, NFR-01 ~ NFR-02]: 驗證 skill-creator 三軌分流、藍圖確認卡、單層 extension-guide 22 個錨點地圖、三步驗證守門與實機編譯零警告。"""
+        import io
+        import json
+        from contextlib import redirect_stderr
+        from agents_workflow.compiler import ArtifactCompiler, FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        assets = _pkg_root / "assets"
+        skills_dir = assets / "skills"
+        sc_dir = skills_dir / "skill-creator"
+        contrib = json.loads((_pkg_root / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+
+        # 1. FR-01 & FR-05 & NFR-01: skill-creator 匯出與 SKILL_CREATOR_STANDARDS Token 註冊、行數 <= 180
+        export_map = {item.get("name"): item for item in contrib["export"] if "name" in item}
+        token_names = {item["value"] for item in contrib["token"]}
+        self.assertIn("skill-creator", export_map)
+        self.assertIn("SKILL_CREATOR_STANDARDS", token_names)
+        self.assertEqual(len(token_names), 21)
+
+        sc_md_path = sc_dir / "SKILL.md"
+        self.assertTrue(sc_md_path.is_file())
+        sc_text = sc_md_path.read_text(encoding="utf-8")
+        self.assertLessEqual(len(sc_text.splitlines()), 180)
+        self.assertIn(export_map["skill-creator"]["description"], sc_text)
+        self.assertIn("`__@{SKILL_CREATOR_STANDARDS}__`", sc_text)
+        self.assertIn("## 常見踩坑指南 (Gotchas)", sc_text)
+
+        # 2. FR-01 & EC-02: 三軌擴充智能分流 (軌跡 ① 純錨點注入 / 軌跡 ② 被動環境攔截 / 軌跡 ③ 功能特化)
+        self.assertIn("軌跡 ①：純錨點注入模式", sc_text)
+        self.assertIn("Anchor-Only Injection", sc_text)
+        self.assertIn("軌跡 ②：被動環境攔截型 Skill", sc_text)
+        self.assertIn("軌跡 ③：功能特化型 Skill", sc_text)
+        self.assertIn("0 路由表膨脹", sc_text)
+
+        # 3. FR-02: CLI 探索與「🛠️ /SkillCreator 專案擴充藍圖確認卡」強制守門
+        self.assertIn("agents-workflow tokens", sc_text)
+        self.assertIn("uri list", sc_text)
+        self.assertIn("references/extension-guide.md", sc_text)
+        self.assertIn("### 🛠️ /SkillCreator 專案擴充藍圖確認卡", sc_text)
+        self.assertIn("End Turn", sc_text)
+
+        # 4. FR-03 & EC-03 & EC-04: 第一層扁平路徑、雙軌路徑分流與三步編譯驗證守門
+        self.assertIn("skills/<name>/SKILL.md", sc_text)
+        self.assertIn("snippets/<name>.md", sc_text)
+        self.assertIn("./references/", sc_text)
+        self.assertIn("contributes check", sc_text)
+        self.assertIn("agents-workflow compile", sc_text)
+        self.assertIn("agents-workflow release", sc_text)
+        self.assertLess(sc_text.index("contributes check"), sc_text.index("agents-workflow compile"))
+        self.assertLess(sc_text.index("agents-workflow compile"), sc_text.index("agents-workflow release"))
+
+        # 5. FR-04 & EC-05: 單層參考手冊 extension-guide.md 包含 TOC、22 個 Stage 1 錨點與三軌 JSON 範本
+        ref_path = sc_dir / "references" / "extension-guide.md"
+        self.assertTrue(ref_path.is_file())
+        # 確保 references/ 下無次級子目錄 (1-level deep)
+        sub_dirs = [p for p in (sc_dir / "references").iterdir() if p.is_dir()]
+        self.assertEqual(sub_dirs, [])
+
+        ref_text = ref_path.read_text(encoding="utf-8")
+        self.assertIn("## 目錄 (Contents)", ref_text)
+        all_22_tokens = token_names | {"KNOWLEDGE_DB_SPACE"}
+        self.assertEqual(len(all_22_tokens), 22)
+        for tok in all_22_tokens:
+            self.assertIn(f"`{tok}`", ref_text, f"extension-guide.md 漏列 Stage 1 錨點: {tok}")
+        self.assertIn("Markdown 表格列", ref_text)
+        self.assertIn('"token": "PHASE05_AGENTS_GUIDE"', ref_text)
+        self.assertIn('"token": "AGENTS_SKILL_ROUTING"', ref_text)
+
+        # 6. FR-05: 中樞 development-sop 與同儕 skill-optimizer 雙向導流、_manifest.md 同步
+        sop_text = (skills_dir / "development-sop" / "SKILL.md").read_text(encoding="utf-8")
+        opt_text = (skills_dir / "skill-optimizer" / "SKILL.md").read_text(encoding="utf-8")
+        manifest_text = (_pkg_root / "contributes" / "_manifest.md").read_text(encoding="utf-8")
+        self.assertIn("skill-creator/SKILL.md", sop_text)
+        self.assertIn("skill-creator/SKILL.md", opt_text)
+        self.assertIn("/skill-creator", manifest_text)
+
+        # 7. EC-01 & NFR-02: 驗證零裸寫標籤、零特化污染禁字，且實機 Stage 1/2 編譯零 Error / 零 Warning
+        for p in (sc_md_path, ref_path):
+            txt = p.read_text(encoding="utf-8")
+            self.assertNotIn("不要加反引號", txt)
+            self.assertNotIn("compiler.py", txt)
+            clean_txt = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", txt))
+            self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_txt), [])
+
+        compiler = ArtifactCompiler(host_dir=str(_pkg_root.parent.parent))
+        deployment_map = {
+            "module://agents-workflow/assets/skills/skill-optimizer/SKILL.md": str(
+                _pkg_root.parent.parent / ".agents" / "skills" / "skill-optimizer" / "SKILL.md"
+            ),
+            "module://agents-workflow/assets/skills/how-to-config-yscb/SKILL.md": str(
+                _pkg_root.parent.parent / ".agents" / "skills" / "how-to-config-yscb" / "SKILL.md"
+            ),
+            "module://agents-workflow/assets/skills/new-plan/SKILL.md": str(
+                _pkg_root.parent.parent / ".agents" / "skills" / "new-plan" / "SKILL.md"
+            ),
+            "module://agents-workflow/assets/skills/development-sop/SKILL.md": str(
+                _pkg_root.parent.parent / ".agents" / "skills" / "development-sop" / "SKILL.md"
+            ),
+        }
+        sc_dst = str(_pkg_root.parent.parent / ".agents" / "skills" / "skill-creator" / "SKILL.md")
+        ref_dst = str(_pkg_root.parent.parent / ".agents" / "skills" / "skill-creator" / "references" / "extension-guide.md")
+
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            res_sc = compiler.resolve_single_artifact(sc_text, contrib.get("insert", []))
+            res_ref = compiler.resolve_single_artifact(ref_text, contrib.get("insert", []))
+            stage2_sc = compiler.resolve_stage2_uri(res_sc, sc_dst, deployment_map)
+            stage2_ref = compiler.resolve_stage2_uri(res_ref, ref_dst, deployment_map)
+        stderr_out = err_buf.getvalue()
+        self.assertNotIn("[compiler:warning]", stderr_out, f"實機 Stage 1/2 編譯產生預期外警告: {stderr_out}")
+
+        # 驗證真實跨技能連結於 Stage 2 正確解算為目標相對路徑，且穿插路徑保留行內反引號
+        self.assertIn("[`/skill-optimizer`](../skill-optimizer/SKILL.md)", stage2_sc)
+        self.assertIn("[`/skill-optimizer`](../../skill-optimizer/SKILL.md)", stage2_ref)
+        self.assertIn("/contribute.json`", stage2_sc)
+        self.assertIn("/contribute.json`", stage2_ref)
+
+        # 驗證首行 <!-- yscb:literal --> 標記已於 Stage 2 剝除，且教學區塊內字面量語法 100% 原樣保留
+        self.assertFalse(stage2_sc.rstrip().endswith("`__@{SKILL_CREATOR_STANDARDS}__`"))
+        self.assertIn("- Stage 1 錨點（獨立行）：`__@{SKILL_CREATOR_STANDARDS}__`", stage2_sc)
+        self.assertIn("(`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)", stage2_sc)
+        self.assertIn("`__@{SKILL_CREATOR_STANDARDS}__`", stage2_ref)
+        self.assertIn("(`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)", stage2_ref)
+        self.assertIn("(`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)", stage2_ref)
+        self.assertIn("`__${project://plans}__/`", stage2_ref)
+        self.assertIn("`__${foo://non_existent_path}__`", stage2_ref)
+
+        self.mark_passed()
+
 
 

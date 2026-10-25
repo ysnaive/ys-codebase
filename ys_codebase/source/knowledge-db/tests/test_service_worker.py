@@ -294,3 +294,95 @@ class TestServiceWorker(YSCBTestCase):
         ret = hook_mod.on_worker_warming({"workspace_root": str(self.root_path)})
         self.assertEqual(ret, "warming_started")
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_concurrent_debounced_patch_and_serialization_safety(self):
+        """FT-01 (2026_10_25_1103): 驗證多執行緒同時觸發 _execute_debounced_patch / to_dict 零並發迭代異常且回退傳遞 allow_parallel=False"""
+        import threading
+        from knowledge_db.schema import SymbolKind, UnifiedSymbol
+
+        # 1. 驗證 InvertedIndex.to_dict() 與並發變異安全性
+        from knowledge_db.retrieval import CodeTokenizer
+        idx = InvertedIndex()
+        tok = CodeTokenizer()
+        for i in range(50):
+            sym = UnifiedSymbol(
+                id=f"test.py::func_{i}",
+                name=f"func_{i}",
+                kind=SymbolKind.FUNCTION,
+                language="python",
+                file_path="test.py",
+                line_number=i + 1,
+                end_line=i + 2,
+                signature=f"def func_{i}():",
+                docstring="doc",
+                metadata={"spaces": ["default"]},
+            )
+            idx.add_symbol(sym, tok)
+
+        errors = []
+        stop_evt = threading.Event()
+
+        def mutate_loop():
+            counter = 100
+            while not stop_evt.is_set():
+                try:
+                    s = UnifiedSymbol(
+                        id=f"test.py::dyn_{counter}",
+                        name=f"dyn_{counter}",
+                        kind=SymbolKind.FUNCTION,
+                        language="python",
+                        file_path="test.py",
+                        line_number=1,
+                        end_line=2,
+                        signature="def dyn():",
+                        docstring="",
+                        metadata={"spaces": ["default"]},
+                    )
+                    idx.symbols[s.id] = s
+                    idx.index[f"term_{counter}"] = []
+                    if counter > 110:
+                        idx.symbols.pop(f"test.py::dyn_{counter - 10}", None)
+                        idx.index.pop(f"term_{counter - 10}", None)
+                    counter += 1
+                except Exception as e:
+                    errors.append(e)
+
+        t_mut = threading.Thread(target=mutate_loop, daemon=True)
+        t_mut.start()
+        try:
+            for _ in range(30):
+                d = idx.to_dict()
+                self.assertIn("symbols", d)
+        except Exception as e:
+            errors.append(e)
+        finally:
+            stop_evt.set()
+            t_mut.join(timeout=1.0)
+
+        self.assertEqual(errors, [], f"Concurrent to_dict raised: {errors}")
+
+        # 2. 驗證 KnowledgeDBServiceWorker._execute_debounced_patch 互斥排隊與回退 allow_parallel=False
+        worker = KnowledgeDBServiceWorker(self.root_path)
+        worker._is_running = True
+        mock_pipeline = MagicMock()
+        mock_pipeline.get_indices_dir.return_value = self.root_path
+        mock_pipeline.scanner.check_invalidation.return_value = (
+            True, 5, "dirty", {"a.py": (1.0, 10)}, MagicMock(has_changes=True)
+        )
+        # 模擬 hot_patch 回傳失敗 (False)，觸發 fallback build_unified_index
+        mock_pipeline.hot_patch_unified_index.return_value = (False, False, None)
+        worker._pipeline = mock_pipeline
+
+        with worker._debounce_lock:
+            worker._pending_dirty_paths.add(str(self.root_path / "a.py"))
+
+        worker._execute_debounced_patch()
+        mock_pipeline.build_unified_index.assert_called_once_with(
+            force=True,
+            current_files={"a.py": (1.0, 10)},
+            allow_parallel=False,
+        )
+        worker._is_running = False
+        self.mark_passed()
+

@@ -111,6 +111,7 @@ class IndexingPipeline:
         self._index_cache: Dict[str, InvertedIndex] = {}
         self._unified_index: Optional[InvertedIndex] = None
         self._call_graph_index: Optional[CallGraphIndex] = None
+        self._index_lock = threading.RLock()
 
     @property
     def storage_dir(self) -> Path:
@@ -200,12 +201,30 @@ class IndexingPipeline:
         current_files: Optional[Dict[str, Tuple[float, int]]] = None,
         interactive: bool = False,
         progress_callback: Optional[Any] = None,
+        allow_parallel: bool = True,
     ) -> InvertedIndex:
         """
         建置全專案空間聯集單一倒排索引與雙向調用圖譜索引，並原子持久化二進位 Gzip 快取
         (unified.index.bin.gz, unified.graph.bin.gz) 與二進位狀態快照 (unified.meta.bin) 至磁碟。
         支援 interactive=True 或 progress_callback 回報 5 階段進度與精確耗時。
         """
+        with self._index_lock:
+            return self._build_unified_index_locked(
+                force=force,
+                current_files=current_files,
+                interactive=interactive,
+                progress_callback=progress_callback,
+                allow_parallel=allow_parallel,
+            )
+
+    def _build_unified_index_locked(
+        self,
+        force: bool = False,
+        current_files: Optional[Dict[str, Tuple[float, int]]] = None,
+        interactive: bool = False,
+        progress_callback: Optional[Any] = None,
+        allow_parallel: bool = True,
+    ) -> InvertedIndex:
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
         graph_file = indices_dir / "unified.graph.bin.gz"
@@ -243,7 +262,7 @@ class IndexingPipeline:
 
         # Stage 1: AST 解析與全域去重打包
         t0 = time.time()
-        bundle = self.bundler.bundle_union()
+        bundle = self.bundler.bundle_union(allow_parallel=allow_parallel)
         _report(1, "AST 符號解析與全域打包", (time.time() - t0) * 1000)
 
         # Stage 2: BM25 倒排索引建立
@@ -354,6 +373,19 @@ class IndexingPipeline:
            - 若 N > 10，以首批 10 符號動態探針實測耗時，若預估 > timeout_seconds 立即熔斷降級回退純 BM25。
         6. 快速原子持久化快照與二進位索引。
         """
+        with self._index_lock:
+            return self._hot_patch_unified_index_locked(
+                diff_detail=diff_detail,
+                full_files_map=full_files_map,
+                timeout_seconds=timeout_seconds,
+            )
+
+    def _hot_patch_unified_index_locked(
+        self,
+        diff_detail: ScanDiffDetail,
+        full_files_map: Dict[str, Tuple[float, int]],
+        timeout_seconds: Optional[float] = None,
+    ) -> HotPatchResult:
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
         graph_file = indices_dir / "unified.graph.bin.gz"
@@ -707,6 +739,19 @@ class IndexingPipeline:
         確保記憶體倒排索引與調用圖譜處於最新就緒狀態 (支援 JIT 變更感知與自動熱自愈)。
         若 require_vectors=False，僅載入與修補倒排與圖譜索引，跳過向量推論，極大化查詢速度。
         """
+        with self._index_lock:
+            return self._ensure_jit_index_ready_locked(
+                require_vectors=require_vectors,
+                auto_rebuild=auto_rebuild,
+                verbose=verbose,
+            )
+
+    def _ensure_jit_index_ready_locked(
+        self,
+        require_vectors: bool = False,
+        auto_rebuild: bool = True,
+        verbose: bool = False,
+    ) -> InvertedIndex:
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
         meta_file = indices_dir / "unified.meta.bin"
