@@ -14,6 +14,7 @@
 
 | 日期時間 | 類型 | 模型 | 摘要 |
 | :--- | :---: | :--- | :--- |
+| 2026-10-25 13:10 | `REVISION` | Gemini 4 Argon (Low) | REV-01 Completed: 清理 .agents/skills/ 下歷史遺留空殼目錄並補齊 publisher.py 空父目錄遞迴回收 |
 | 2026-10-25 12:55 | `PHASE` | Gemini 4 Argon (Medium) | Phase 7 Completed: 完成 P07_walkthrough.md 結案報告、三層文檔審查與通用型敘述純化，sub_05 圓滿結案 |
 | 2026-10-25 12:02 | `PHASE` | Gemini 4 Argon (Medium) | Phase 6 Passed (/auto): 完成 agents-workflow 134/134 單元測試、<!-- yscb:literal --> 字面量保護物化發布與支柱三靜態盲審，等待 UX-01 驗收 |
 | 2026-10-25 11:43 | `PHASE` | Gemini 4 Argon (Medium) | Phase 5 Completed (/auto): 完成 skill-creator/SKILL.md、extension-guide.md、組態註冊、中樞導流與單元測試 |
