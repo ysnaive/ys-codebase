@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_25_1639_global_release_readiness_polish (Completed)
+
+- **新世代全量複檢收尾與發布前最終打磨 (Global Step 1~13 Pre-Release Polish) (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-03`, `NFR-01` ~ `NFR-02`)**：
+  - **`dev` 平行沙盒互刪防護、巢狀虛擬環境 `realpath` 解析與集中收尾清理 (`FR-01`, `EC-01`, `[P04:DR-01]`)**：於 `ys_codebase/source/dev/dev/testing/sandbox.py` 增設行程內執行緒鎖 `_SANDBOX_LOCK`，在 `create_sandbox()` 自動清理時略過子沙盒（`YSCB_TEST_SANDBOX == "1"`）並將自動保留數提升至 `max_keep=8`，且對 `_project_venv` 使用 `os.path.realpath()` 解開多層巢狀 Junction/Symlink；於 `tester.py` 移除平行 Worker 執行中途的 `prune_sandboxes` 呼叫，改於 `ProcessPoolExecutor` 收尾時統一清理，使 `python yscb.py dev test --all -q` 全生態系 5 大模組平行測試 100% 穩定全綠（589/589 Passed）；登錄 `[DN-DEV-03]`。
+  - **`agents-workflow` 章節標題否定詞前綴子字串防誤配 (`FR-02`, `EC-02`)**：於 `ys_codebase/source/agents-workflow/agents_workflow/plans/verifier.py` 新增 `_is_header_match(expected_norm, actual_norm)`，攔截 `非`/`不`/`無`/`未` 否定前綴（如 `非功能需求` 誤配 `功能需求`）之子字串假陽性匹配，確保 `test_ft_14` 缺章節比率計算與 `FULL_REWRITE` 診斷精準無誤。
+  - **`knowledge-db` 符號定位 `ftypes` 優先過濾、組態與 `contributes/core.json` 正交契約補齊 (`FR-03`, `FR-04`, `EC-03`)**：於 `pipeline.py` 之 `act_callers`、`act_callees`、`act_impact` 優先以非 Markdown 程式碼 `ftypes` 過濾目標符號（未命中自動回退全集）並將降級提示更新為 `python yscb.py config set`；於 `config.py` 移除已退役之 `yscb.config*.json` 分支；於 `contributes/core.json` 補齊 `hooks` 頂層宣告與 `status`/`search`/`callers`/`callees`/`impact` 正交選項分組宣告；於 `scripts/cli.py` 擴充 `status --json` 支援，並將 `test_pt_01_call_graph_performance_and_memory` 標註為 `@require(Requirement.PERF)`。
+  - **`server` / `core` 測試純化與三層文檔同步對齊 (`FR-05`, `FR-06`, `NFR-01`, `NFR-02`)**：合併 `server/tests/test_server.py` 與 `core/tests/test_distribution_lifecycle.py` 重複測項並移除靜態字面量檢查；同步更新 `docs/agents-workflow/DESIGN_NOTES.md`、`docs/dev/DESIGN_NOTES.md`、`docs/core/README.md` 與 `docs/knowledge-db/README.md`，通過 `contributes check` (15 files Valid)、`dev check --all` (5/5 Passed) 與全模組 `@build` 熱部署。
+
 ## 2026_10_25_1103_server_kdb_concurrency_and_memory_fix (Completed)
 
 - **`server` 與 `knowledge-db` 常駐背景服務並發鎖、字典快照迭代、背景禁用 `ProcessPoolExecutor` 及預熱時序/停機冪等修復 (`FP-01:DR-01` ~ `DR-03`)**：
