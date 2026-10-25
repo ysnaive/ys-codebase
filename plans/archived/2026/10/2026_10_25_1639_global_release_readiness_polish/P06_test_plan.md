@@ -3,7 +3,7 @@
 > 功能名稱：新世代全量複檢收尾與發布前最終打磨 (Global Step 1~13 Pre-Release Polish)  
 > 建立日期：2026-10-25  
 > 所屬主計畫：N/A (Root Plan)  
-> 狀態：Passed  
+> 狀態：Completed  
 > 模型：Unknown  
 
 > 模板版本：v1.4  
@@ -40,4 +40,4 @@
 
 | 驗證編號 | 驗證操作與預期效果 | 驗證結果標記 | 開發者確認紀錄 / 備註 |
 | :--- | :--- | :---: | :--- |
-| **UX-01** | 檢視 Global Step 1~13 收尾打磨成果（`contributes check`、`dev check --all`、`dev test --all -q` 589/589 全綠）與三層文檔對齊狀態 | `Pending` | 待驗收 |
+| **UX-01** | 檢視 Global Step 1~13 收尾打磨成果（`contributes check`、`dev check --all`、`dev test --all -q` 589/589 全綠）與三層文檔對齊狀態 | `[跳過/免測]` | 開發者指示免測（已確認全量測試與三層文檔對齊通過） |
