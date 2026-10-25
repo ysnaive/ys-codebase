@@ -97,7 +97,7 @@ class PlanArchiver:
 
         ft_plan = src_dir / "fast_track_plan.md"
         legacy_ft_plan = src_dir / "FT_plan.md"
-        p07_walkthrough = src_dir / "P07_walkthrough.md"
+        p07_walkthrough = PlanStatusResolver.resolve_phase_file(src_dir, "P07")
         umbrella_overview = src_dir / "umbrella_overview.md"
         rev_log = src_dir / "revision_log.md"
 

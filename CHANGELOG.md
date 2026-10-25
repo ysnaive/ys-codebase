@@ -51,6 +51,17 @@
 
 ## 2026_10_23_1314_agents_workflow_aci_and_delegation_evolution (In Progress)
 
+### sub_07_auto_context_lean_optimization (Completed)
+- **`/auto` 連續推進工作流 Context 精實化重構與 `PXX_YYYY_auto.md` 雙軌相容 (`FP-01:DR-01` ~ `FP-01:DR-03`)**：
+  - **方向 A：內聯 `P01`~`P06` 章節骨架免讀 11 檔、單檔單次寫入 (`1-Write-Per-File`) 與單次彙總 `plan verify` (`FP-01:DR-01`, `TASK-02`)**：重構 `auto/SKILL.md`（84 行）並於 `development-sop/SKILL.md` §5 補入 `/auto` 豁免說明，內建共用 Blockquote Header 規格與 `P01`~`P06` 必填 `##` 二級章節標題速查表，免除 `/auto` 期間逐一 `read_file` 讀取 `phase_01~05.md` 與 `templates/P01~P06.md`（共省去 11 次讀檔）；確立 `1-Write-Per-File`（`P01`~`P04` 一次寫為 `Confirmed`、編碼完成後 `P05_task_auto.md` 一次寫為 `Completed`、測試通過後 `P06_test_plan.md` 一次寫為 `Passed`）與 `P06` 階段單次彙總 `plan verify`（將 SOP 工具調用由 27 次降至 7 次，`-74%`）。
+  - **方向 B：`P01`~`P05` 跨檔單點定義指標引用與 `Signature-Only` 禁預寫實作碼 (`FP-01:DR-02`, `TASK-02`)**：規範受影響檔案清單單點定義於 `P02` §3、任務拆解單點定義於 `P04` §4（`P05_task_auto.md` §1 採 1 行指標引用 `- [x] **TASK-XX**：<簡述>（詳見 P04 §4）` 控制在 $\le 25$ 行），並強制 `P03` §2 與 `P04` 僅寫類別/函式型別簽名與 1~2 行契約（嚴禁預寫函式體實作程式碼）。
+  - **`PXX_YYYY_auto.md` 自動生成後綴命名規範與 `plans` 工具鏈雙軌相容 (`FP-01:DR-03`, `TASK-01`, `TASK-03`)**：規定凡於 `/auto` 期間一次自動生成之 `P01`~`P05` 文檔強制附加 `_auto.md` 後綴（支援全自動 `P01~P05_auto.md` 或半途人工定案後接續 `P03~P05_auto.md`）；於 `PlanStatusResolver` (`status.py`) 實作 `resolve_phase_file(plan_dir, phase_code)` 並串聯 `scanner.py`、`verifier.py` 與 `archiver.py`；登錄 `[DN-AW-15]`、更新 `docs/agents-workflow/user_guide.md` §5 並新增 `test_ft_13` 單元測試，全模組 **136/136 測試 100% 通過**並完成 `@build` 與 `release` 物化同步。
+
+### sub_06_cli_guide_purification (Completed)
+- **`yscb-cli-guide` 深度瘦身、拔除動態指令大表與 `-h` 按需自省重構 (`FP-01:DR-01`, `FP-01:DR-02`)**：
+  - **拔除無上限膨脹之動態指令大表與微內核去耦合 (`FP-01:DR-01`, `TASK-02`)**：自 `core/contributes/agents-workflow.json` 移除 `AGENTS_CLI_GUIDE` 之 `code.func://core/providers:get_agents_cli_guide` computed 注入，物理刪除 `core/providers.py` 並清理 `core/__init__.py`、`core/contributes/_manifest.md` 與對應舊測試，徹底解除 `core` 微內核對工作流 Markdown 表格渲染之殘留耦合；於 `core/tests/test_cli_router.py` 新增 `TestHelpRendererMetadata` 驗證 `HelpRenderer.render_cmd_help` 輸出 `Security` 三級標籤與 `Pros/Cons`。
+  - **`yscb-cli-guide/SKILL.md` 純化為雙軌執行與 `-h` 按需自省 (`FP-01:DR-02`, `TASK-01`, `TASK-03`)**：將 `yscb-cli-guide/SKILL.md` 重構收斂至 62 行（約 1,020 tokens，較原先 3,385 tokens 縮減 `-70%`），確立「① 終端單行、雙引號逃逸防呆與常駐 Server `[BLOCKER]` 處置、② 軌跡 A 技能內建指令免查直跑 (`Skill-Vetted Fast Pass`) vs. 軌跡 B 非常規指令／未知參數強制 `-h` 按需自省 (`Just-in-Time -h Inspection`)、③ 三級權限模型與 `[GATED]` Default-Deny 紅線家族清冊」；新增 `test_ft_12` 單元測試並同步更新 `docs/agents-workflow/{README.md,user_guide.md}`，`core` (190/190) 與 `agents-workflow` (135/135) 測試 100% 通過並完成 `@build` 與 `release` 物化同步。
+
 ### sub_05_skill_creator_extension_workflow (Completed)
 - **專案特化技能建置與 Layer 2 宣告式擴充引導工作流 (`/skill-creator`)、單層 22 錨點擴充手冊 (`extension-guide.md`) 與編譯器 `<!-- yscb:literal -->` 字面量保護落地**：
   - **主動指令型技能 `/skill-creator` 與三軌擴充智能分流 (`FR-01` ~ `FR-03`, `EC-02` ~ `EC-04`, `NFR-01`)**：建立 `assets/skills/skill-creator/SKILL.md`（114 行，$\le 180$ 行），定義四步建置與擴充閉環：步驟 1 依需求特徵分流至「軌跡 ①：純錨點注入模式（`snippets/<name>.md`，0 路由表膨脹）」、「軌跡 ②：被動環境攔截型 Skill」或「軌跡 ③：功能特化型 Skill」；步驟 2 自動執行 `agents-workflow tokens` 與 `uri list`、按需載入 `references/extension-guide.md` 並輸出「🛠️ /SkillCreator 專案擴充藍圖確認卡」強制 End Turn 守門；步驟 3 落實第一層 `__${config://agents-workflow}__/{skills,snippets}/` 扁平路徑、雙軌 `description` 契約、同技能 `./references/...` 相對路徑 vs. 跨空間單反引號語意 URI 分流與 `release_target.projections` 通用二層空間敘述；步驟 4 最小增量更新 `contribute.json` 並強制依序通過 `contributes check` $\to$ `agents-workflow compile`（0 Error / 0 Warning）$\to$ `agents-workflow release` 三步驗證守門。

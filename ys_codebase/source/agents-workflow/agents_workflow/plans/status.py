@@ -33,6 +33,37 @@ class PlanStatusResolver:
 
     COMPLETED_STATUS_SET = {"completed", "concluded", "passed"}
     ORIGIN_SEED_FILES = {"roadmap.md", "todo.md"}
+    PHASE_CANONICAL_STEMS = {
+        "P00": "P00_discuss",
+        "P01": "P01_requirements_spec",
+        "P02": "P02_architecture_plan",
+        "P03": "P03_api_spec",
+        "P04": "P04_implementation_plan",
+        "P05": "P05_task",
+        "P06": "P06_test_plan",
+        "P07": "P07_walkthrough",
+    }
+
+    @classmethod
+    def resolve_phase_file(cls, plan_dir: Union[Path, str], phase_code: str) -> Path:
+        """
+        解析指定階段 (P00~P07) 於 plan_dir 下之實體檔案路徑，原名與 `_auto.md` 後綴雙軌相容。
+        優先順序：標準檔名 `<stem>.md` -> 自動推進檔名 `<stem>_auto.md` -> 同階段前綴 `<P0X>_*.md` -> 預設標準路徑。
+        """
+        p = Path(plan_dir)
+        p_up = (phase_code or "").strip().upper()
+        stem = cls.PHASE_CANONICAL_STEMS.get(p_up, f"{p_up}_spec")
+        std_path = p / f"{stem}.md"
+        if std_path.is_file():
+            return std_path
+        auto_path = p / f"{stem}_auto.md"
+        if auto_path.is_file():
+            return auto_path
+        if p.is_dir() and re.match(r"^P0[0-7]$", p_up):
+            matches = sorted(p.glob(f"{p_up}_*.md"))
+            if matches:
+                return matches[0]
+        return std_path
 
     @classmethod
     def parse_header_metadata(cls, lines: List[str], max_lines: int = 35) -> Dict[str, str]:
@@ -285,25 +316,15 @@ class PlanStatusResolver:
                 "has_handoff": has_handoff,
             }
 
-        # 3. Full Track (P01 ~ P07) 判定
-        p01_file = p / "P01_requirements_spec.md"
+        # 3. Full Track (P01 ~ P07，支援標準檔名與 _auto.md 後綴雙軌相容) 判定
+        p01_file = cls.resolve_phase_file(p, "P01")
         if p01_file.exists():
-            phase_specs = [
-                ("P07", p / "P07_walkthrough.md", f"{ref_base}/phase_07_walkthrough.md"),
-                ("P06", p / "P06_test_plan.md", f"{ref_base}/phase_06_test.md"),
-                ("P05", p / "P05_task.md", f"{ref_base}/phase_05_task.md"),
-                ("P04", p / "P04_implementation_plan.md", f"{ref_base}/phase_04_plan.md"),
-                ("P03", p / "P03_api_spec.md", f"{ref_base}/phase_03_api_spec.md"),
-                ("P02", p / "P02_architecture_plan.md", f"{ref_base}/phase_02_architecture.md"),
-                ("P01", p01_file, f"{ref_base}/phase_01_requirements.md"),
-            ]
-
-            p07_f = p / "P07_walkthrough.md"
-            p06_f = p / "P06_test_plan.md"
-            p05_f = p / "P05_task.md"
-            p04_f = p / "P04_implementation_plan.md"
-            p03_f = p / "P03_api_spec.md"
-            p02_f = p / "P02_architecture_plan.md"
+            p07_f = cls.resolve_phase_file(p, "P07")
+            p06_f = cls.resolve_phase_file(p, "P06")
+            p05_f = cls.resolve_phase_file(p, "P05")
+            p04_f = cls.resolve_phase_file(p, "P04")
+            p03_f = cls.resolve_phase_file(p, "P03")
+            p02_f = cls.resolve_phase_file(p, "P02")
 
             if p07_f.exists():
                 st = cls.get_doc_header_status(p07_f)

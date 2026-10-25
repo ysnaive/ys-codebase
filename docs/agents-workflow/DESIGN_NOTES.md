@@ -39,6 +39,7 @@ last_updated: "2026-10-25"
 | **[DN-AW-12]** | 新增 | 唯讀 Subagent 零劇透盲審傳址、純靜態禁跑測、Single-Writer 鐵律與多路線圖合流追加合併防坑設計 | 技能資產 (`research`, `discuss`, `phase_06`, `phase_07`, `roadmap.py`) | `Active` |
 | **[DN-AW-13]** | 新增 | 跨模組多捐贈者導覽錨點 (`HOW_TO_*_MODULES`)、兩階段漸進式隨包手冊調度與跨模組 `_resolve_source_path` Sibling Fallback 防坑設計 | 工廠編譯器 (`compiler.py`)、教練技能 (`how-to-config-yscb`, `how-to-yscb`) | `Active` |
 | **[DN-AW-14]** | 新增 | `/skill-creator` 三軌擴充防膨脹、`AGENTS_SKILL_ROUTING` 表格列結構隔離與教學範例 Fenced Code Block 編譯器正則保護 | 技能資產 (`skill-creator/SKILL.md`, `references/extension-guide.md`) | `Active` |
+| **[DN-AW-15]** | 新增 | `/auto` 內聯輕量章節骨架、`1-Write-Per-File` 單次到位寫入、`Signature-Only` 去重與 `_auto.md` 雙軌解析防坑設計 | 技能資產 (`auto/SKILL.md`, `development-sop/SKILL.md`)、Plans 工具鏈 (`status.py`, `scanner.py`, `verifier.py`, `archiver.py`) | `Active` |
 
 ---
 
@@ -252,6 +253,21 @@ last_updated: "2026-10-25"
 
 > [!CAUTION]
 > 在維護 `skill-creator/SKILL.md` 與 `references/extension-guide.md` 時，凡需在物化產物中原樣展示 `__@{...}__`、`__#{...}__`、`__${...}__` 字面量教學語法者，必須置於首行標註 `<!-- yscb:literal -->` 之 Fenced Code Block 內；向 `AGENTS_SKILL_ROUTING` 注入之片段必須嚴格保持 Markdown 表格列格式。
+
+---
+
+### [DN-AW-15] `yscb-cli-guide` `-h` 按需自省純化與 `/auto` Context 精實化暨 `PXX_YYYY_auto.md` 雙軌相容
+
+- **工程背景與坑點**：
+  1. **`yscb-cli-guide` 動態指令大表無上限膨脹**：原先透過 `core.providers:get_agents_cli_guide` 將全系統所有模組指令之權限、Pros 與 Cons 靜態渲染注入 `yscb-cli-guide/SKILL.md`（單檔達 3.4K Tokens），隨模組功能擴充無限制增長，且多數日常指令早已寫入各工作流技能步驟中。
+  2. **`/auto` 連續推進期間 Context 雙重膨脹與溯源模糊**：在 `/auto` 模式下，Agent 若機械式逐一讀取 `phase_01~05.md`（含大量無效的單階段 End Turn 說明）與 `P01~P06` 模板（共 11 次讀檔）、在 `P02`/`P03`/`P04`/`P05` 重複抄寫檔案清單與任務拆解、在 `P03` 預寫實作程式碼塊、對 `P05`/`P06` 先寫過渡狀態再二次 Edit，並於每階段呼叫一次 `plan verify`（共 27 次 SOP 工具調用），會造成單次 `/auto` 平白消耗 25K~35K+ Tokens 的文書歷史；同時事後審閱計畫目錄時，無法從檔名直觀區分哪些階段曾經人工定案、哪些階段由 `/auto` 自動生成。
+- **妥協與防禦設計**：
+  1. **拔除 `core/providers.py` 動態大表，轉向「技能內建直跑 + 非常規指令 `-h` 按需自省」**：徹底刪除 `core/providers.py` 與 `AGENTS_CLI_GUIDE` computed 注入，將 `yscb-cli-guide/SKILL.md` 收斂至 62 行（~1.0K Tokens，縮減 `-70%`），確立「軌跡 A 技能內建指令免查直跑 (`Skill-Vetted Fast Pass`) + 軌跡 B 非常規指令／未知旗標強制執行 `python yscb.py <mod> [cmd] -h` 按需自省 (`Just-in-Time -h Inspection`)」。
+  2. **`/auto` 內聯骨架契約、`1-Write-Per-File`、`Signature-Only` 與 `PXX_YYYY_auto.md` 雙軌相容**：於 `auto/SKILL.md` 內建 `P01`~`P06` 必填標頭與二級章節標題速查表（免除 `/auto` 期間讀取 `phase_01~05.md` 與模板），規範單檔單次到位寫入（`P05` 直接以 `Completed` 寫入、`P06` 於測試通過後直接以 `Passed` 寫入）與 `P06` 單次彙總 `plan verify`；強制要求 `/auto` 自動生成之 `P01`~`P05` 規格檔附加 `_auto.md` 後綴（如 `P01_requirements_spec_auto.md` ~ `P05_task_auto.md`），並於 `PlanStatusResolver.resolve_phase_file` 實作標準名與 `_auto.md` 雙軌相容解析，串聯 `PlanScanner`、`PlanVerifier` 與 `PlanArchiver`。
+
+> [!CAUTION]
+> 嚴禁重新引入全系統 CLI 靜態大表生成；於 `/auto` 模式自動生成之 `P01`~`P05` 階段檔案必須命名為 `PXX_YYYY_auto.md` 並遵守 `1-Write-Per-File` 與 `Signature-Only`（禁止在 `P03`/`P04` 預貼實作程式碼塊）；`plans/` 工具鏈查找階段檔案時一律透過 `PlanStatusResolver.resolve_phase_file` 以維持原名與 `_auto.md` 雙軌相容。
+
 
 
 
