@@ -230,14 +230,15 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 
 ---
 
-## 3. CLI 指令防呆手冊與 Default-Deny 守門機制 (`yscb-cli-guide`)
+## 3. CLI 執行防呆慣例與 `-h` 按需自省機制 (`yscb-cli-guide`)
 
-### 3.1 宣告式 CLI 防呆技能 (`yscb-cli-guide/SKILL.md`)
-由 `agents-workflow` 導出並物化至 `.agents/skills/yscb-cli-guide/SKILL.md`。透過 Core 模組動態 Token `AGENTS_CLI_GUIDE`，自動收集所有已安裝模組在 `contributes.core.commands`（經 `__modules__` 雙層分桶隔離）中宣告的權限等級、推薦情境 (`case_pros`) 與禁止情境 (`case_cons`)。
+### 3.1 輕量防呆與漸進式自省 (`yscb-cli-guide/SKILL.md`)
+由 `agents-workflow` 導出並物化至目標平台 `yscb-cli-guide/SKILL.md`（收斂至 $\le 65$ 行、$< 1,100$ Tokens）。為消除全系統動態指令大表隨模組擴充帶來的無界 Token 膨脹與查表延遲，系統徹底拔除 `core.providers:get_agents_cli_guide` 靜態大表生成，改採以下雙軌調用與 `-h` 按需自省架構：
 
-### 3.2 Agent 調用守門鐵律
-1. **查表比對 (Look Up & Match)**：Agent 執行任何 `python yscb.py` 命令前必須比對 `yscb-cli-guide` 技能手冊。
-2. **Default-Deny 閉環 (Default-Deny Gate)**：若欲執行之命令未列於表、無對應推薦欄位、或命中 `[GATED]` / `[!] 絕對禁止/不適用情境`，Agent 絕對禁止擅自執行，必須向開發者呈遞調用意圖與完整命令列，獲明確授權後方可執行。
+### 3.2 雙軌調用與 Default-Deny 守門鐵律
+1. **軌跡 A — 技能內建指令免查直跑 (`Skill-Vetted Fast Pass`)**：凡於各工作流與工具技能（如 `development-sop`、`knowledge-db-search`、`yscb-module-dev`、`todo`、`roadmap` 等）步驟中已明文列出完整語法的標準指令，均已預審為 `[SAFE]`（或由該技能內建確認節點守門），Agent 可直接執行，無須額外查表或執行 `-h`。
+2. **軌跡 B — 非常規指令／未知參數強制 `-h` 自省 (`Just-in-Time -h Inspection`)**：當準備調用未在當前技能明文列出之指令、嘗試非標準選項旗標或確認權限時，強制先執行 `python yscb.py <module> [command] [subcommand] -h`，由 `HelpRenderer` 即時渲染 `Security : [SAFE]/[CONDITIONAL]/[GATED]`、`ARGUMENTS`、`OPTIONS`、`RECOMMENDED USAGE (Pros)` 與 `RESTRICTIONS & GATES (Cons)`。
+3. **`[GATED]` 紅線家族 Default-Deny 閉環**：凡命中環境異動（`install` [除開發期 `@build` 外]、`remove`、`update`、`rollback`、`init`）、打包發布與版本晉升（`dev release`、`/bump-revision`）、封存與快取清理（`plan archive`、`clean`）或 `op-*` 運維指令家族，未獲開發者於當前輪次顯式授權前絕對禁止主動執行。
 
 ---
 
@@ -259,20 +260,29 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 
 ---
 
-## 5. 自動連續推進技能 (`auto` Skill)
+## 5. 自動連續推進技能 (`auto` Skill — Lean Context Fast-Path)
 
 ### 5.1 核心定位與觸發時機
-`/Auto`（對應 `auto` 技能）為可在 **Phase 01 ~ Phase 05** 之間觸發的連續推進模式。當開發者確認需求（Phase 0 完成）後，下達 `/Auto` 授權 Agent 在無技術歧義與無爭議的前提下，跳過中間各 Phase 的強制 Checkpoint 等待，自動連續產出各階段規範與代碼實作，直達 Phase 6 手動/UX 驗證前。
+`/Auto`（對應 `auto` 技能）為可在 **Phase 00 (`Confirmed`) 或 Phase 01 ~ Phase 05** 之間觸發的連續推進模式。當開發者確認需求或前置階段規格後，下達 `/Auto` 授權 Agent 在無技術歧義與無爭議的前提下，跳過中間各 Phase 的強制 Checkpoint 等待，以精實模式自動連續產出各階段規範與代碼實作，直達 Phase 6 手動/UX 驗證前。
 
-### 5.2 適用範圍與分流
-- **Full Track (Level 1)**：進行中計畫。
-- **Umbrella (Level 2)**：主計畫下處於進行中狀態之 Full Track 子計畫 (`sub_XX`)。
-- **排除 Fast Track (Level 0)**：Fast Track 無多階段等待需求，不適用 `/Auto`。
+### 5.2 `_auto.md` 專屬後綴命名規範與 Context 精實化三大機制
+1. **`PXX_YYYY_auto.md` 動態溯源命名鐵律 (`_auto` Suffix Provenance Rule)**：
+   - 凡於 `/auto` 過程中由 Agent 一次自動寫入之階段規格與任務檔（涵蓋自當前啟動階段至 `Phase 05`），檔名強制附加 `_auto` 後綴（即 `P01_requirements_spec_auto.md`、`P02_architecture_plan_auto.md`、`P03_api_spec_auto.md`、`P04_implementation_plan_auto.md`、`P05_task_auto.md`）：
+     - 若於 `P00` 定案後即觸發 `/auto`，則 `P01`~`P05` 全數帶 `_auto.md` 後綴。
+     - 若人工討論定案至 `P02` 後才觸發 `/auto`，則 `P00`~`P02` 維持原名，僅 `P03`~`P05` 帶 `_auto.md` 後綴。
+   - `PlanStatusResolver.resolve_phase_file` 與 `PlanScanner`、`PlanVerifier`、`PlanArchiver` 原生雙軌相容 `<stem>.md` 與 `<stem>_auto.md`。
+2. **內聯骨架速查表與單次到位寫入 (`Zero Redundant Reads & 1-Write-Per-File`)**：
+   - `auto/SKILL.md` 內建 `P01`~`P06` 必填標頭與二級章節標題速查表，免除 `/auto` 期間逐一 `read_file` 讀取 `phase_01~05.md` 與模板之 11 次讀檔開銷。
+   - 每個階段檔案嚴格僅寫入一次（`P01`~`P04` 直接寫 `Confirmed`、`P05_task_auto.md` 於編碼完成後直接寫 `Completed`、`P06_test_plan.md` 於自動化測試通過後直接寫 `Passed`），並於 `P06` 執行**單次彙總** `plan verify <plan> --log "..."`。
+3. **跨檔單點定義去重與禁預寫實作碼 (`DRY Spec Reference & Signature-Only`)**：
+   - 變更檔案清單單點定義於 `P02` §3；`P03` §2 僅寫 `def/class` 型別簽名與例外契約（嚴禁預貼函式實作程式碼）；任務拆解單點定義於 `P04` §4，`P05_task_auto.md` 僅列 1 行指標（$\le 25$ 行）。
 
-### 5.3 三大熔斷防線 (Circuit Breakers)
-1. **零臆測熔斷 (Zero Speculation Gate)**：遇到任何需求不明或技術未知，立即停手提問。
-2. **偏差熔斷 (Deviation Gate)**：遇到 Major/Critical 架構或 API 偏差，立即停止並轉入 `/Discuss`。
-3. **P06 手動/UX 驗證絕對阻斷 (Mandatory UX Gate)**：CLI 自動化測試通過後，強制停步等待開發者人工/UX 驗收，絕對禁止自動結案。
+### 5.3 適用範圍与三大熔斷防線 (Circuit Breakers)
+- **適用範圍**：進行中之 **Full Track** 計畫或 **Umbrella** 活躍之 Full Track 子計畫 (`sub_XX`)；排除 `P00 Discussing` 與 **Fast Track**。
+- **三大熔斷防線**：
+  1. **零臆測熔斷 (Zero Speculation Gate)**：遇到任何需求不明或技術未知，立即停手提問。
+  2. **偏差熔斷 (Deviation Gate)**：遇到 Major/Critical 架構或 API 偏差，立即停止並轉入 `/Discuss`。
+  3. **P06 手動/UX 驗證絕對阻斷 (Mandatory UX Gate)**：CLI 自動化測試與支柱三 Pre-UX 盲審通過後，強制停步等待開發者人工/UX 驗收，絕對禁止自動結案。
 
 ---
 

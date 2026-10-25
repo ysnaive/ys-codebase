@@ -54,7 +54,6 @@ _MODULE_MAP = {
     "commands": ("core.commands", None),
     "config": ("core.config", None),
     "validator": ("core.validator", None),
-    "providers": ("core.providers", None),
     "ide_projector": ("core.ide_projector", None),
 }
 
@@ -102,6 +101,5 @@ __all__ = [
     "commands",
     "config",
     "validator",
-    "providers",
     "ide_projector",
 ]

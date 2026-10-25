@@ -12,7 +12,8 @@ from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
 from core import uri
-from core.providers import get_agents_cli_guide
+from core.commands.help import HelpRenderer
+from core.commands.registry import CommandSpec
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 
@@ -92,80 +93,48 @@ class TestCLIHelpAndUX(YSCBTestCase):
         self.mark_passed()
 
 
-class TestCliGuideProvider(YSCBTestCase):
-    """測試 CLI 防呆手冊動態產生、三級權限分級與 Phase JIT 過濾邏輯。"""
+class TestHelpRendererMetadata(YSCBTestCase):
+    """測試 HelpRenderer 指令級 -h 渲染之三級權限標籤與 Pros/Cons 輸出。"""
 
     @require(Requirement.LOGIC)
-    def test_filter_and_formatting(self):
-        """FT-01: 驗證有定義 pros/cons 正常生成，支援 tier 標籤 ([SAFE]/[CONDITIONAL]/[GATED])，無定義之指令自動排除。"""
-        fake_commands = {
-            "test": {
-                "description": "Run module tests",
-                "tier": "safe",
-                "phases": ["P05", "P06"],
-                "case_pros": ["開發中跑測"],
-                "case_cons": ["嚴禁手動先 build", "嚴禁跑 --all"],
-                "__provider__": "dev",
-            },
-            "release": {
-                "description": "Release package",
-                "tier": "gated",
-                "phases": ["P07"],
-                "case_pros": ["正式打包發布"],
-                "case_cons": ["嚴禁未經指示發布"],
-                "__provider__": "dev",
-            },
-            "dummy_plain": {
-                "description": "Just a plain tool without pros/cons",
-                "case_pros": [],
-                "case_cons": [],
-                "__provider__": "dev",
-            },
-        }
+    def test_cmd_help_renders_security_tier_and_pros_cons(self):
+        """FT-01: 驗證 render_cmd_help 正確渲染 Security ([SAFE]/[CONDITIONAL]/[GATED])、RECOMMENDED USAGE (Pros) 與 RESTRICTIONS & GATES (Cons)。"""
+        spec_safe = CommandSpec(
+            name="test",
+            description="Run module tests",
+            tier="safe",
+            server_compatible=True,
+            usage_pros=["開發中跑測"],
+            usage_cons=["嚴禁手動先 build", "嚴禁跑 --all"],
+        )
+        out_safe = HelpRenderer.render_cmd_help("dev", "test", spec_safe)
+        self.assertIn("Security   : [SAFE] 自主安全 (safe)", out_safe)
+        self.assertIn("RECOMMENDED USAGE (Pros):", out_safe)
+        self.assertIn("[+] 開發中跑測", out_safe)
+        self.assertIn("RESTRICTIONS & GATES (Cons):", out_safe)
+        self.assertIn("[-] 嚴禁手動先 build", out_safe)
 
-        with patch("core.contributes.get", return_value=fake_commands):
-            output = get_agents_cli_guide()
+        spec_gated = CommandSpec(
+            name="release",
+            description="Release package",
+            tier="gated",
+            server_compatible=False,
+            usage_pros=["正式打包發布"],
+            usage_cons=["嚴禁未經指示發布"],
+        )
+        out_gated = HelpRenderer.render_cmd_help("dev", "release", spec_gated)
+        self.assertIn("Security   : [GATED] 授權守門 (gated)", out_gated)
+        self.assertIn("[+] 正式打包發布", out_gated)
+        self.assertIn("[-] 嚴禁未經指示發布", out_gated)
 
-        # 斷言三級權限標籤
-        self.assertIn("[SAFE] 自主安全", output)
-        self.assertIn("[GATED] 授權守門", output)
-        self.assertIn("`python yscb.py dev test`", output)
-        self.assertIn("`python yscb.py dev release`", output)
-        self.assertIn("開發中跑測", output)
-        self.assertIn("嚴禁手動先 build", output)
-
-        # 斷言 dummy_plain 被過濾排除
-        self.assertNotIn("dummy_plain", output)
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_defensive_string_coercion(self):
-        """ET-01: 驗證 case_pros / case_cons 為單一字串時自動防禦轉換為列表，tier 缺失時 fallback 為 conditional。"""
-        fake_commands = {
-            "install": {
-                "description": "Install package",
-                "case_pros": "單一字串適用情境",
-                "case_cons": "單一字串禁止情境",
-                "__provider__": "core",
-            }
-        }
-
-        with patch("core.contributes.get", return_value=fake_commands):
-            output = get_agents_cli_guide()
-
-        self.assertIn("[CONDITIONAL] 階段條件", output)
-        self.assertIn("`python yscb.py install`", output)
-        self.assertIn("單一字串適用情境", output)
-        self.assertIn("單一字串禁止情境", output)
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_empty_fallback(self):
-        """ET-02: 驗證全系統無任何防呆指令時回傳安全提示。"""
-        with patch("core.contributes.get", return_value={}):
-            output = get_agents_cli_guide()
-
-        self.assertIn("目前無已註冊之 CLI 防呆指令", output)
+        spec_cond = CommandSpec(
+            name="build",
+            description="Build package",
+            tier="conditional",
+            server_compatible=True,
+        )
+        out_cond = HelpRenderer.render_cmd_help("dev", "build", spec_cond)
+        self.assertIn("Security   : [CONDITIONAL] 階段條件 (conditional)", out_cond)
         self.mark_passed()
 
 

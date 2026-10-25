@@ -37,19 +37,19 @@ class PlanScanner:
         Returns:
             Tuple[str, str]: (track_type, status)
         """
+        from .status import PlanStatusResolver
+
         ft_plan = plan_dir / "fast_track_plan.md"
         legacy_ft_plan = plan_dir / "FT_plan.md"
-        p00_req = plan_dir / "P00_discuss.md"
+        p00_req = PlanStatusResolver.resolve_phase_file(plan_dir, "P00")
         legacy_p00_req = plan_dir / "P00_semantic_requirements.md"
-        p01_req = plan_dir / "P01_requirements_spec.md"
+        p01_req = PlanStatusResolver.resolve_phase_file(plan_dir, "P01")
         umbrella = plan_dir / "umbrella_overview.md"
         rev_log = plan_dir / "revision_log.md"
         master_roadmaps = list(plan_dir.glob("master_plan_*.md"))
 
         track_type = "Unknown"
         status = "Unknown"
-
-        from .status import PlanStatusResolver
 
         # 1. Umbrella 判定
         if umbrella.exists() or len(master_roadmaps) > 0:
@@ -91,15 +91,15 @@ class PlanScanner:
             else:
                 status = raw_status.title()
 
-        # 3. Full Track 判定
+        # 3. Full Track 判定 (支援標準檔名與 _auto.md 後綴雙軌相容)
         elif p01_req.exists():
             track_type = "Full Track"
-            p07_file = plan_dir / "P07_walkthrough.md"
-            p06_file = plan_dir / "P06_test_plan.md"
-            p05_file = plan_dir / "P05_task.md"
-            p04_file = plan_dir / "P04_implementation_plan.md"
-            p03_file = plan_dir / "P03_api_spec.md"
-            p02_file = plan_dir / "P02_architecture_plan.md"
+            p07_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P07")
+            p06_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P06")
+            p05_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P05")
+            p04_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P04")
+            p03_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P03")
+            p02_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P02")
 
             if p07_file.exists():
                 if PlanStatusResolver.is_doc_completed(p07_file):

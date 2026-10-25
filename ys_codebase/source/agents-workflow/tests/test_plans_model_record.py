@@ -601,5 +601,174 @@ class TestModelRecordRule(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_ft_12_sub06_cli_guide_purification_and_help_first(self):
+        """[sub_06 FT-01]: 驗證 yscb-cli-guide 拔除動態指令大表、收斂至 <= 65 行，並落實雙軌執行與 -h 按需自省規範。"""
+        import json
+        from agents_workflow.compiler import ArtifactCompiler, FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        cli_guide_path = _pkg_root / "assets" / "skills" / "yscb-cli-guide" / "SKILL.md"
+        self.assertTrue(cli_guide_path.is_file())
+        cli_text = cli_guide_path.read_text(encoding="utf-8")
+        lines = cli_text.splitlines()
+        self.assertLessEqual(len(lines), 65, f"yscb-cli-guide/SKILL.md 行數 ({len(lines)}) 超出 65 行上限")
+
+        # 驗證雙軌機制、-h 自省、Server 守門與 [GATED] 紅線家族
+        self.assertIn("Skill-Vetted Fast Pass", cli_text)
+        self.assertIn("Just-in-Time -h Inspection", cli_text)
+        self.assertIn("-h", cli_text)
+        self.assertIn("server start --console", cli_text)
+        self.assertIn("[GATED] 授權守門", cli_text)
+        self.assertIn("`__@{AGENTS_CLI_GUIDE}__`", cli_text)
+        self.assertNotIn("YSCB_AGENTS_CLI_GUIDE_BEGIN", cli_text)
+
+        # 驗證單反引號語意標籤合規
+        clean_cli = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", cli_text))
+        self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_cli), [])
+
+        # 驗證 core 已移除動態 AGENTS_CLI_GUIDE 注入且 providers.py 已移除
+        core_root = _pkg_root.parent / "core"
+        if core_root.is_dir():
+            core_aw_contrib = json.loads((core_root / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+            core_insert_tokens = {ins.get("token") for ins in core_aw_contrib.get("insert", [])}
+            self.assertNotIn("AGENTS_CLI_GUIDE", core_insert_tokens)
+            self.assertFalse((core_root / "core" / "providers.py").exists())
+
+        # 驗證 Stage 1 編譯後不再產生動態指令表且殘留錨點自動剝除
+        compiler = ArtifactCompiler()
+        contrib = json.loads((_pkg_root / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+        stage1_out = compiler.resolve_single_artifact(cli_text, contrib.get("insert", []))
+        self.assertNotIn("| 權限分級 | 指令名稱 |", stage1_out)
+        self.assertNotIn("__@{AGENTS_CLI_GUIDE}__", stage1_out)
+        self.assertLessEqual(len(stage1_out.splitlines()), 65)
+
+        self.mark_passed()
+
+    def test_ft_13_sub07_auto_context_lean_and_auto_suffix_support(self):
+        """[sub_07 FT-01, FT-02]: 驗證 auto/SKILL.md 內聯章節骨架對齊、_auto.md 後綴規則與 plans 工具鏈雙軌相容。"""
+        from agents_workflow.plans import PlanScanner, PlanStatusResolver, PlanVerifier
+        from agents_workflow.compiler import FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        auto_path = _pkg_root / "assets" / "skills" / "auto" / "SKILL.md"
+        sop_path = _pkg_root / "assets" / "skills" / "development-sop" / "SKILL.md"
+        auto_text = auto_path.read_text(encoding="utf-8")
+        sop_text = sop_path.read_text(encoding="utf-8")
+
+        # 1. FT-01: auto/SKILL.md 涵蓋 _auto.md 命名、1-Write-Per-File、Signature-Only、內聯骨架速查表且 <= 115 行
+        self.assertLessEqual(len(auto_text.splitlines()), 115)
+        self.assertIn("P01_requirements_spec_auto.md", auto_text)
+        self.assertIn("P02_architecture_plan_auto.md", auto_text)
+        self.assertIn("P03_api_spec_auto.md", auto_text)
+        self.assertIn("P04_implementation_plan_auto.md", auto_text)
+        self.assertIn("P05_task_auto.md", auto_text)
+        self.assertIn("1-Write-Per-File", auto_text)
+        self.assertIn("Signature-Only", auto_text)
+        self.assertIn("免除逐一讀取 `phase_01~05` 手冊與模板", sop_text)
+
+        clean_auto = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", auto_text))
+        self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_auto), [])
+
+        # 驗證 auto/SKILL.md 內聯列出的 P01~P06 二級章節標題 100% 滿足真實模板之 PlanVerifier.get_resolved_template_headers
+        real_tpl_dir = _pkg_root / "assets" / "templates"
+        real_verifier = PlanVerifier(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            templates_dir=real_tpl_dir,
+        )
+        for tpl_fname in (
+            "P01_requirements_spec.md",
+            "P02_architecture_plan.md",
+            "P03_api_spec.md",
+            "P04_implementation_plan.md",
+            "P05_task.md",
+            "P06_test_plan.md",
+        ):
+            exp_headers = real_verifier.get_resolved_template_headers(tpl_fname)
+            self.assertTrue(len(exp_headers) > 0)
+            for eh in exp_headers:
+                self.assertTrue(
+                    any(eh in real_verifier.normalize_header_title(line) for line in auto_text.splitlines()),
+                    f"auto/SKILL.md 內聯章節表缺少 {tpl_fname} 必備標題: {eh}",
+                )
+
+        # 2. FT-02: 測試情境 A (自 P00 Confirmed 啟動 /auto -> P01~P05 全數為 _auto.md)
+        plan_full_auto = self.plans_dir / "2026_10_25_1400_full_auto_demo"
+        plan_full_auto.mkdir(parents=True, exist_ok=True)
+        hdr = (
+            "> 功能名稱：Auto Demo\n"
+            "> 建立日期：2026-10-25\n"
+            "> 所屬主計畫：N/A (Root Plan)\n"
+            "> 模型：Gemini 4 Argon (High)\n"
+        )
+        (plan_full_auto / "P00_discuss.md").write_text(
+            "# P00\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 使用者原始需求與意圖 (User Intent)\n"
+            "## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n"
+            "## 3. 開放議題與確認紀錄\n",
+            encoding="utf-8",
+        )
+        (plan_full_auto / "P01_requirements_spec_auto.md").write_text(
+            "# P01\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 功能需求清單\n- FR-01\n## 2. 邊界與異常情況\n- EC-01\n## 3. 非功能需求\n- NFR-01\n## 4. 知識庫與踩坑紀錄查閱\n",
+            encoding="utf-8",
+        )
+        (plan_full_auto / "P02_architecture_plan_auto.md").write_text(
+            "# P02\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 模組架構分層與職責邊界\n## 2. 核心資料流與循序圖\n## 3. 受影響檔案與新建檔案清單\n## 4. 架構決策記錄\n",
+            encoding="utf-8",
+        )
+        (plan_full_auto / "P03_api_spec_auto.md").write_text(
+            "# P03\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 介面契約清單\n## 2. 核心 API 簽名與詳細規格\n## 3. 依賴拓撲與實作順序\n",
+            encoding="utf-8",
+        )
+        (plan_full_auto / "P04_implementation_plan_auto.md").write_text(
+            "# P04\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 交叉驗證檢查清單\n- [x] 對齊\n## 2. 知識庫文檔衝擊與交付規劃\n## 3. 架構靈魂拷問\n## 4. 實作任務清單\n1. **TASK-01**\n## 5. 決策定稿\n",
+            encoding="utf-8",
+        )
+        (plan_full_auto / "P05_task_auto.md").write_text(
+            "# P05\n\n" + hdr + "> 狀態：Completed\n\n"
+            "## 1. 實作任務清單\n- [x] **TASK-01**：見 P04 §4\n## 2. 實作偏差紀錄表\n",
+            encoding="utf-8",
+        )
+        (plan_full_auto / "P06_test_plan.md").write_text(
+            "# P06\n\n" + hdr + "> 狀態：Passed\n\n"
+            "## 1. 自動化測試案例清單\n| FT-01 | FR-01, EC-01, NFR-01 |\n## 2. 測試執行紀錄表\n## 3. 人工 / UX 驗證 Checkpoint\n",
+            encoding="utf-8",
+        )
+
+        scanner = PlanScanner(plans_dir=self.plans_dir)
+        track, st = scanner.get_plan_info(plan_full_auto)
+        self.assertEqual(track, "Full Track")
+        self.assertEqual(st, "Testing/Phase 6")
+
+        nav = PlanStatusResolver.resolve_next_action(plan_full_auto)
+        self.assertEqual(nav["mode"], "Full Track")
+        self.assertEqual(nav["current_phase"], "P06")
+        self.assertEqual(nav["next_phase"], "P07")
+
+        rep = real_verifier.verify_plan(
+            plan_full_auto,
+            log_msg="透過 /auto 完成 P01~P06 規格、實作與測試驗證",
+            model="Gemini 4 Argon (High)",
+        )
+        self.assertTrue(rep.passed, f"Full _auto.md 計畫驗證失敗: {rep.errors}")
+
+        # 3. FT-02: 測試情境 B (人工討論至 P02 定案後啟動 /auto -> P01~P02 原名，P03~P05 為 _auto.md)
+        plan_mid_auto = self.plans_dir / "2026_10_25_1410_mid_auto_demo"
+        plan_mid_auto.mkdir(parents=True, exist_ok=True)
+        for src_f in plan_full_auto.glob("*.md"):
+            dst_name = src_f.name.replace("_auto.md", ".md") if src_f.name.startswith(("P01_", "P02_")) else src_f.name
+            (plan_mid_auto / dst_name).write_text(src_f.read_text(encoding="utf-8"), encoding="utf-8")
+
+        track_m, st_m = scanner.get_plan_info(plan_mid_auto)
+        self.assertEqual((track_m, st_m), ("Full Track", "Testing/Phase 6"))
+        rep_m = real_verifier.verify_plan(plan_mid_auto)
+        self.assertTrue(rep_m.passed, f"Mid _auto.md 混用計畫驗證失敗: {rep_m.errors}")
+
+        self.mark_passed()
+
+
+
 
 

@@ -649,7 +649,7 @@ class PlanVerifier:
                         )
 
         # 4. 標準 ID 矩陣與測試規劃合規 (FR-02)
-        if rel_file_name.endswith("P06_test_plan.md"):
+        if os.path.basename(rel_file_name).startswith("P06_"):
             # 檢查是否具備 FT-XX 或 ET-XX 或 RT-XX 測試案例
             has_ft = any(re.search(r"\b(FT|ET|RT)-\d{2}\b", l) for l in lines)
             if not has_ft:
@@ -736,19 +736,10 @@ class PlanVerifier:
         from .status import PlanStatusResolver
 
         eff_phase = self._resolve_effective_phase(target_dir, phase_norm)
-        phase_file_map = {
-            "P00": "P00_discuss.md",
-            "P01": "P01_requirements_spec.md",
-            "P02": "P02_architecture_plan.md",
-            "P03": "P03_api_spec.md",
-            "P04": "P04_implementation_plan.md",
-            "P05": "P05_task.md",
-            "P06": "P06_test_plan.md",
-            "P07": "P07_walkthrough.md",
-        }
-        primary_fname = phase_file_map.get(eff_phase)
-        if primary_fname and (target_dir / primary_fname).is_file():
-            return PlanStatusResolver.get_doc_header_model(target_dir / primary_fname)
+        if eff_phase in PlanStatusResolver.PHASE_CANONICAL_STEMS:
+            primary_f = PlanStatusResolver.resolve_phase_file(target_dir, eff_phase)
+            if primary_f.is_file():
+                return PlanStatusResolver.get_doc_header_model(primary_f)
 
         # 若未指定特定 P0X，僅當目錄下僅有單一主體入口檔（如 umbrella_overview.md 或 fast_track_plan.md 或 revision_log.md）時讀取該檔
         for entry_name in ("umbrella_overview.md", "fast_track_plan.md", "revision_log.md"):
@@ -797,13 +788,15 @@ class PlanVerifier:
             if created_rel not in report.companion_created:
                 report.companion_created.append(created_rel)
 
-        # 2. 若目標階段為 P02（或 current 為 P02）且存在 P02_architecture_plan.md 但缺少 P06_test_plan.md，自動初始化 Draft
-        p02_path = target_dir / "P02_architecture_plan.md"
-        p06_path = target_dir / "P06_test_plan.md"
+        # 2. 若目標階段為 P02（或 current 為 P02）且存在 P02_architecture_plan*.md 但缺少 P06_test_plan*.md，自動初始化 Draft
+        from .status import PlanStatusResolver
+
+        p02_path = PlanStatusResolver.resolve_phase_file(target_dir, "P02")
+        p06_path = PlanStatusResolver.resolve_phase_file(target_dir, "P06")
         if phase_norm.upper() in ("P02", "ALL", "CURRENT") and p02_path.is_file() and not p06_path.exists():
             p02_model = self._resolve_companion_model(target_dir, "P02", explicit_model)
             # 若 P01 存在，自動預先將 P01 所有需求 ID 填入 P06 Draft 表格骨架
-            p01_path = target_dir / "P01_requirements_spec.md"
+            p01_path = PlanStatusResolver.resolve_phase_file(target_dir, "P01")
             req_ids = sorted(self.extract_requirement_ids(p01_path.read_text(encoding="utf-8", errors="ignore"))) if p01_path.is_file() else ["FR-01"]
             if not req_ids:
                 req_ids = ["FR-01"]
@@ -861,10 +854,10 @@ class PlanVerifier:
         from .status import PlanStatusResolver
 
         prefix = f"{rel_dir}/" if rel_dir != "." else ""
-        p01_path = target_dir / "P01_requirements_spec.md"
-        p02_path = target_dir / "P02_architecture_plan.md"
-        p04_path = target_dir / "P04_implementation_plan.md"
-        p06_path = target_dir / "P06_test_plan.md"
+        p01_path = PlanStatusResolver.resolve_phase_file(target_dir, "P01")
+        p02_path = PlanStatusResolver.resolve_phase_file(target_dir, "P02")
+        p04_path = PlanStatusResolver.resolve_phase_file(target_dir, "P04")
+        p06_path = PlanStatusResolver.resolve_phase_file(target_dir, "P06")
 
         p_up = phase_norm.upper()
 
@@ -1059,9 +1052,11 @@ class PlanVerifier:
             return all_mds
 
         matched = [md for md in all_mds if md.name.startswith(prefix)]
-        # P04 雙定稿時亦需一併檢核 P06_test_plan.md
+        # P04 雙定稿時亦需一併檢核 P06_test_plan*.md
         if p_up == "P04":
-            p06_f = target_dir / "P06_test_plan.md"
+            from .status import PlanStatusResolver
+
+            p06_f = PlanStatusResolver.resolve_phase_file(target_dir, "P06")
             if p06_f.is_file() and p06_f not in matched:
                 matched.append(p06_f)
         return matched

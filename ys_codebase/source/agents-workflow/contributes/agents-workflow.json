@@ -9,7 +9,7 @@
       "type": "skill",
       "name": "yscb-cli-guide",
       "source": "module://agents-workflow/assets/skills/yscb-cli-guide",
-      "description": "檢索與核對 yscb (yscb.py) 命令列子命令、參數旗標、三級權限矩陣 ([SAFE] 自主安全 / [CONDITIONAL] 階段條件 / [GATED] 授權守門) 及單行終端執行防呆規則，確保 CLI 呼叫合法安全。觸發情境：準備透過終端工具執行任何 yscb.py 指令前、查詢可用子命令語法或確認操作是否需開發者授權。排除情境：與 yscb 無關之一般作業系統指令、純靜態文檔閱讀或代碼語意檢索（代碼檢索改用 knowledge-db-search）。"
+      "description": "規範 yscb (yscb.py) 命令列單行執行防呆、常駐 Server 守門、技能內建指令直跑與非常規指令 -h 按需自省機制，確保 CLI 呼叫合法安全。觸發情境：準備透過終端工具執行任何 yscb.py 指令前、查詢不熟悉之子命令語法或透過 -h 確認操作安全等級。排除情境：與 yscb 無關之一般作業系統指令、純靜態文檔閱讀或代碼語意檢索（代碼檢索改用 knowledge-db-search）。"
     },
     {
       "type": "skill",

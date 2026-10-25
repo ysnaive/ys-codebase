@@ -11,7 +11,6 @@ from core.contributes import (
     _is_contributes_dirty,
     get,
 )
-from core import providers
 from core import uri
 
 class TestCoreContributes(YSCBTestCase):
@@ -70,14 +69,6 @@ class TestCoreContributes(YSCBTestCase):
         with uri.module_scope("core"):
             mod_data = contributes.get_for_current_module()
             self.assertEqual(mod_data, core_data)
-        self.mark_passed()
-
-    @require(Requirement.ENV)
-    def test_cli_guide_dynamic_generation(self):
-        """FT-05: Verify core.providers.get_agents_cli_guide outputs Markdown table via SDK."""
-        table_md = providers.get_agents_cli_guide()
-        self.assertIn("| 權限分級 | 指令名稱 | 推薦/適用情境 (Pros) | 限制與守門條件 (Cons) |", table_md)
-        self.assertIn("`python yscb.py install`", table_md)
         self.mark_passed()
 
     @require(Requirement.ENV)
