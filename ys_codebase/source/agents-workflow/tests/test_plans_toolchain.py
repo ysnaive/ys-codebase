@@ -1317,13 +1317,13 @@ class TestPlansModelRecord(YSCBTestCase):
         self.mark_passed()
 
     def test_ft_13_sub07_auto_context_lean_and_auto_suffix_support(self):
-        """[sub_07 FT-01, FT-02]: 驗證 auto/SKILL.md 內聯章節骨架對齊、_auto.md 後綴規則與 plans 工具鏈雙軌相容。"""
+        """[sub_07 FT-01, FT-02 / sub_09 FR-01, FR-02]: 驗證 auto/SKILL.md 兩階段 JIT 讀模板、支柱二門檻、_auto.md 後綴規則與雙軌相容。"""
         auto_path = _pkg_root / "assets" / "skills" / "auto" / "SKILL.md"
         sop_path = _pkg_root / "assets" / "skills" / "development-sop" / "SKILL.md"
         auto_text = auto_path.read_text(encoding="utf-8")
         sop_text = sop_path.read_text(encoding="utf-8")
 
-        self.assertLessEqual(len(auto_text.splitlines()), 115)
+        self.assertLessEqual(len(auto_text.splitlines()), 75)
         self.assertIn("P01_requirements_spec_auto.md", auto_text)
         self.assertIn("P02_architecture_plan_auto.md", auto_text)
         self.assertIn("P03_api_spec_auto.md", auto_text)
@@ -1331,7 +1331,9 @@ class TestPlansModelRecord(YSCBTestCase):
         self.assertIn("P05_task_auto.md", auto_text)
         self.assertIn("1-Write-Per-File", auto_text)
         self.assertIn("Signature-Only", auto_text)
-        self.assertIn("免除逐一讀取 `phase_01~05` 手冊與模板", sop_text)
+        self.assertIn("Two-Stage JIT Template Read", auto_text)
+        self.assertIn("1,500", auto_text)
+        self.assertIn("Two-Stage JIT Template Read", sop_text)
 
         real_tpl_dir = _pkg_root / "assets" / "templates"
         real_verifier = PlanVerifier(
@@ -1347,13 +1349,7 @@ class TestPlansModelRecord(YSCBTestCase):
             "P05_task.md",
             "P06_test_plan.md",
         ):
-            exp_headers = real_verifier.get_resolved_template_headers(tpl_fname)
-            self.assertTrue(len(exp_headers) > 0)
-            for eh in exp_headers:
-                self.assertTrue(
-                    any(eh in real_verifier.normalize_header_title(line) for line in auto_text.splitlines()),
-                    f"auto/SKILL.md 內聯章節表缺少 {tpl_fname} 必備標題: {eh}",
-                )
+            self.assertIn(tpl_fname, auto_text, f"auto/SKILL.md 兩階段 JIT 缺少模板指標: {tpl_fname}")
 
         plan_full_auto = self.plans_dir / "2026_10_25_1400_full_auto_demo"
         plan_full_auto.mkdir(parents=True, exist_ok=True)
@@ -1428,6 +1424,125 @@ class TestPlansModelRecord(YSCBTestCase):
         self.assertEqual((track_m, st_m), ("Full Track", "Testing/Phase 6"))
         rep_m = real_verifier.verify_plan(plan_mid_auto)
         self.assertTrue(rep_m.passed, f"Mid _auto.md 混用計畫驗證失敗: {rep_m.errors}")
+
+        self.mark_passed()
+
+    def test_ft_14_sub09_verifier_triage_header_heal_and_next_phase_hint(self):
+        """[sub_09 FR-03~FR-05, EC-01~EC-04]: 驗證確定性標頭自癒、缺失率 QUICK_PATCH/FULL_REWRITE 分流與 NEXT PHASE GATE 預告。"""
+        real_tpl_dir = _pkg_root / "assets" / "templates"
+        real_verifier = PlanVerifier(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            templates_dir=real_tpl_dir,
+        )
+
+        # 1. 建立 Umbrella + sub_01 測試確定性標頭自癒 (FR-03, EC-01, EC-02)
+        u_dir = self.plans_dir / "2026_10_25_1500_umbrella_heal_demo"
+        sub_dir = u_dir / "sub_01_header_heal_target"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        (u_dir / "umbrella_overview.md").write_text(
+            "# Umbrella\n\n> 功能名稱：Umbrella Heal Demo\n> 建立日期：2026-10-25\n> 狀態：In Progress\n> 模型：Gemini 4 Argon (Low)\n\n"
+            "## 1. 計畫全貌與核心目標\n## 2. 跨模組共用契約與架構邊界\n## 3. 子計畫拆分矩陣與依賴拓撲\n## 4. 整體推進順序與驗收里程碑\n",
+            encoding="utf-8",
+        )
+        # P00 故意遺漏 功能名稱、建立日期、所屬主計畫，但具備合法 狀態、模型 與完整章節
+        p00_sub = sub_dir / "P00_discuss.md"
+        p00_sub.write_text(
+            "# 需求與設計討論\n\n> 狀態：Confirmed\n> 模型：Gemini 4 Argon (Low)\n\n"
+            "## 1. 使用者原始需求與意圖 (User Intent)\n- ok\n"
+            "## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n- ok\n"
+            "## 3. 開放議題與確認紀錄\n- ok\n",
+            encoding="utf-8",
+        )
+        # 未帶 log_msg 時 (唯讀模式)：不自癒，但 Fix Hint 包含精確推導值
+        rep_ro = real_verifier.verify_plan(sub_dir, phase="P00")
+        self.assertFalse(rep_ro.passed)
+        self.assertEqual(rep_ro.header_healed, [])
+        hdr_msgs = "\n".join(i.message for i in rep_ro.issues if i.category == "HEADER")
+        self.assertIn("2026_10_25_1500_umbrella_heal_demo", hdr_msgs)
+        self.assertIn("2026-10-25", hdr_msgs)
+
+        # 帶 log_msg 時 (自癒模式)：原地自動補齊確定性標頭並 PASS，同時產出 NEXT PHASE GATE (FR-05)
+        rep_heal = real_verifier.verify_plan(
+            sub_dir,
+            phase="P00",
+            log_msg="完成 P00 需求定案並驗證確定性標頭自癒",
+            model="Gemini 4 Argon (Low)",
+        )
+        self.assertTrue(rep_heal.passed, f"確定性標頭應自動自癒通過，卻失敗: {rep_heal.errors}")
+        self.assertEqual(len(rep_heal.header_healed), 1)
+        self.assertIn("功能名稱", rep_heal.header_healed[0])
+        self.assertIn("建立日期", rep_heal.header_healed[0])
+        self.assertIn("所屬主計畫", rep_heal.header_healed[0])
+        healed_text = p00_sub.read_text(encoding="utf-8")
+        self.assertIn("> 功能名稱：Header Heal Target", healed_text)
+        self.assertIn("> 建立日期：2026-10-25", healed_text)
+        self.assertIn("> 所屬主計畫：2026_10_25_1500_umbrella_heal_demo", healed_text)
+        self.assertIsNotNone(rep_heal.next_phase_hint)
+        self.assertIn("下一階段 P01 (P01_requirements_spec.md)", rep_heal.next_phase_hint)
+        self.assertIn(".agents/.yscb/templates/P01_requirements_spec.md", rep_heal.next_phase_hint)
+
+        # EC-01: 若連非確定性標頭 `狀態` 也缺漏，則拒絕自癒並報錯
+        p01_bad_hdr = sub_dir / "P01_requirements_spec_auto.md"
+        p01_bad_hdr.write_text(
+            "# P01\n\n> 模型：Gemini 4 Argon (Low)\n\n"
+            "## 1. 功能需求清單\n- FR-01\n## 2. 邊界與異常情況\n## 3. 非功能需求\n## 4. 知識庫與踩坑紀錄查閱\n",
+            encoding="utf-8",
+        )
+        rep_ec01 = real_verifier.verify_plan(
+            sub_dir, phase="P01", log_msg="嘗試結算缺狀態之 P01"
+        )
+        self.assertFalse(rep_ec01.passed)
+        self.assertEqual(rep_ec01.header_healed, [])
+
+        # 2. 驗證章節缺失率分流：QUICK_PATCH (<50%) vs FULL_REWRITE (>=50%) 與單一診斷聚合 (FR-04, EC-03)
+        # P01 共 4 個必備章節：缺 1 個 (25% < 50%) -> QUICK_PATCH
+        p01_bad_hdr.write_text(
+            "# P01\n\n> 功能名稱：Header Heal Target\n> 建立日期：2026-10-25\n"
+            "> 所屬主計畫：2026_10_25_1500_umbrella_heal_demo\n> 狀態：Confirmed\n> 模型：Gemini 4 Argon (Low)\n\n"
+            "## 1. 功能需求清單\n- FR-01\n## 2. 邊界與異常情況\n## 3. 非功能需求\n",
+            encoding="utf-8",
+        )
+        rep_qp = real_verifier.verify_plan(sub_dir, phase="P01")
+        self.assertFalse(rep_qp.passed)
+        tpl_issues_qp = [i for i in rep_qp.issues if i.category == "TEMPLATE"]
+        self.assertEqual(len(tpl_issues_qp), 1)
+        self.assertIn("TRIAGE: QUICK_PATCH (章節缺失 1/4, 25%)", tpl_issues_qp[0].message)
+        self.assertIn("edit_file", tpl_issues_qp[0].message)
+        self.assertIn("## 4. 知識庫與踩坑紀錄查閱 (Known Gotchas & CAUTIONs)", tpl_issues_qp[0].message)
+
+        # P01 共 4 個必備章節：缺 3 個 (75% >= 50%) -> FULL_REWRITE，且僅聚合為 1 筆 TEMPLATE issue (EC-03)
+        p01_bad_hdr.write_text(
+            "# P01\n\n> 功能名稱：Header Heal Target\n> 建立日期：2026-10-25\n"
+            "> 所屬主計畫：2026_10_25_1500_umbrella_heal_demo\n> 狀態：Confirmed\n> 模型：Gemini 4 Argon (Low)\n\n"
+            "## 1. 功能需求清單\n- FR-01\n",
+            encoding="utf-8",
+        )
+        rep_fr = real_verifier.verify_plan(sub_dir, phase="P01")
+        self.assertFalse(rep_fr.passed)
+        tpl_issues_fr = [i for i in rep_fr.issues if i.category == "TEMPLATE"]
+        self.assertEqual(len(tpl_issues_fr), 1, "同一檔案缺少多個章節時應聚合為單一 TEMPLATE PlanIssue")
+        self.assertIn("TRIAGE: FULL_REWRITE (章節缺失 3/4, 75%", tpl_issues_fr[0].message)
+        self.assertIn(".agents/.yscb/templates/P01_requirements_spec.md", tpl_issues_fr[0].message)
+        self.assertIn("write_file", tpl_issues_fr[0].message)
+
+        # 3. EC-04: 已 Completed 結案之計畫 (含 P07 Completed)，next_phase_hint 應為 None
+        ft_done_dir = self.plans_dir / "2026_10_25_1510_ft_done_demo"
+        ft_done_dir.mkdir(parents=True, exist_ok=True)
+        (ft_done_dir / "fast_track_plan.md").write_text(
+            "# Fast Track\n\n> 功能名稱：FT Done\n> 建立日期：2026-10-25\n"
+            "> 所屬主計畫：N/A (Root Plan)\n> 狀態：Completed\n> 模型：Gemini 4 Argon (Low)\n\n"
+            "## 1. 變更摘要與極速通道守門檢核\n- [x] ok\n"
+            "## 2. 受影響檔案與介面影響評估\n- ok\n"
+            "## 3. 實作任務與驗收清單\n- [x] **FT-01**：ok\n"
+            "## 4. 驗證紀錄與三層文檔對齊\n- [x] ok\n",
+            encoding="utf-8",
+        )
+        rep_done = real_verifier.verify_plan(
+            ft_done_dir, log_msg="結案驗證", model="Gemini 4 Argon (Low)"
+        )
+        self.assertTrue(rep_done.passed, f"FT Done 應通過檢核: {rep_done.errors}")
+        self.assertIsNone(rep_done.next_phase_hint)
 
         self.mark_passed()
 

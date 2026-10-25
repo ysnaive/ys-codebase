@@ -49,7 +49,18 @@
   - **CLI 驗證、多層熱派發與組態診斷補齊 (`C-02` ~ `C-06`, `FR-02` ~ `FR-06`, `EC-01` ~ `EC-07`)**：擴充 `contributes_cmd.check_contributes()` 支援 `config://<target>/contribute.json` 單檔父目錄目標推導、外殼剝離與模組級聯合掃描；修復 `dispatcher._try_hot_dispatch()` 支援 `cmd_path: List[str]` 完整傳遞多層子命令路徑；實作 `Installer.cmd_list(remote=True)` 遠端套件探測並修正 `cmd_update()` 先執行 `act_reload` 再觸發 `act_migrate` 之遷移時序；新增 `config inspect`、`config unset` 與 `config list --local` CLI 指令，並於 `dispatcher.py` Step 8 統一攔截群組節點未知子命令與無參數 `HelpRenderer` 渲染；登錄 `[DN-13]`。
   - **測試套件純化收斂與漏測補盲 (`T-01` ~ `T-06`, `FR-07` ~ `FR-10`)**：刪除 `test_contributes_help.py` 並將 7 個碎片測試檔無損收斂至對應子系統測試集；實質改寫 5 個虛假／過寬測試（`sync_pip_dependencies`、損毀 Zip 雙路徑、`act_migrate` 軌跡與跨大版本略過、`cmd_status` 雙態輸出）；清除跨模組 `agents-workflow` patch 依賴、全面補齊 `@require` 與 `tearDown`/`try...finally` 沙盒清理；新增 `contributes check` 負向攔截、`OptionResolver` `--` 終止符與布林反轉、`cmd_update` 端到端升級與 Major Lock 測試，全模組 **193/193 單元測試 100% 通過**並完成 `core@build` 熱部署。
 
-## 2026_10_23_1314_agents_workflow_aci_and_delegation_evolution (In Progress)
+## 2026_10_23_1314_agents_workflow_aci_and_delegation_evolution (Completed)
+
+### sub_09_verifier_triage_and_auto_jit_refinement (Completed)
+- **`PlanVerifier` 缺失率分流處方、確定性標頭無損自癒、下一階段前瞻領航與 `/auto` 兩階段 JIT 讀模板瘦身 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **`auto/SKILL.md` 兩階段寫檔前即時讀取模板 (`Two-Stage JIT Template Read`) 與實作子代理量化門檻 (`FR-01`, `FR-02`, `NFR-02`)**：基於本 Session 1,206 步實戰軌跡 A/B 對照分析，拔除 `auto/SKILL.md` §3 內聯章節大表（單檔由 97 行收斂至 74 行），改為 Batch A（寫 `P01~P04_auto.md` 前平行讀取 `P01~P04` 模板）與 Batch B（Phase 5 測試通過後平行讀取 `P05_task.md` 與 `P06_test_plan.md`）兩階段即時讀取，徹底消除長距離編碼後之記憶衰減；同時規範當 `P04` 預估修改/整併 $\ge 5$ 個檔案或讀改 $> 1,500$ 行代碼時，建議委派 Phase 5 實作 Subagent。
+  - **`PlanVerifier` 確定性環境標頭無損自癒 (`FR-03`, `EC-01`, `EC-02`)**：於 `verifier.py` 實作 `_infer_deterministic_header_values` 與 `_auto_heal_deterministic_headers`；當附帶 `--log` 執行結算且檔案具備合法 `狀態`、`模型` 與 0 章節/佔位符缺失時，自動從目錄名、父目錄與同目錄 `P00/P01` 推導並原地補齊缺漏之 `功能名稱`、`建立日期` 與二級子計畫之 `所屬主計畫`，記錄於 `PlanReport.header_healed` 並於 `cli.py` 輸出 `[SELF-HEAL]`。
+  - **章節缺失率單一診斷分流 (`QUICK_PATCH` / `FULL_REWRITE`) 與 `NEXT PHASE GATE` 前瞻提示 (`FR-04`, `FR-05`, `EC-03`, `EC-04`)**：實作 `get_resolved_template_header_specs` 同步快取正規化與原始 Markdown 標題行，將單檔章節缺失聚合為單一 `TEMPLATE` `PlanIssue`；缺失率 $< 50\%$ 輸出 `[TRIAGE: QUICK_PATCH]` 與缺失原始標題供 `edit_file` 修補，缺失率 $\ge 50\%$ 輸出 `[TRIAGE: FULL_REWRITE]` 與 `.agents/.yscb/templates/{tmpl_name}` 路徑供 `write_file` 重寫；單一計畫檢核 `PASSED` 且未 `Completed` 時，自動輸出 `[NEXT PHASE GATE]` 下一階段模板路徑與必備章節預告；登錄 `[DN-AW-16]`，全模組 **133/133 測試 100% 通過**並完成發布。
+
+### sub_08_final_acceptance_and_suite_purification (Completed)
+- **全主計畫二次驗收、測試集 13 $\to$ 6 子系統 1:1 歸戶純化與工作區根目錄清理收官 (`FR-01` ~ `FR-04`)**：
+  - **根目錄 `./scratch` 與 `./scripts` 洩漏歸因與清理**：確認非 `dev test` 沙盒洩漏，而是歷史單次測試與 git worktree 殘留之空目錄，執行物理清理使工作區 100% 純淨。
+  - **測試集 13 $\to$ 6 檔無損純化收斂**：依 `testing-sop` 六維度體檢，將 7 支計畫名碎片測試檔無損整併至 6 支子系統測試檔（`test_compiler.py`, `test_publisher.py`, `test_initializer.py`, `test_plans_toolchain.py`, `test_roadmap_cli.py`, `test_cli_dispatch.py`），移除 `if uri.exists` 條件放行斷言並修復真實 CLI 參數契約。
 
 ### sub_07_auto_context_lean_optimization (Completed)
 - **`/auto` 連續推進工作流 Context 精實化重構與 `PXX_YYYY_auto.md` 雙軌相容 (`FP-01:DR-01` ~ `FP-01:DR-03`)**：

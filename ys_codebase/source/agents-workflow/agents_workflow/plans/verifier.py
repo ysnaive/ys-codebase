@@ -45,7 +45,9 @@ class PlanReport:
     status: PlanSeverity = PlanSeverity.PASS
     issues: List[PlanIssue] = field(default_factory=list)
     companion_created: List[str] = field(default_factory=list)
+    header_healed: List[str] = field(default_factory=list)
     log_status: Optional[str] = None
+    next_phase_hint: Optional[str] = None
 
     @property
     def passed(self) -> bool:
@@ -85,7 +87,9 @@ class PlanReport:
             "total_errors": len(self.errors),
             "total_warns": len(self.warnings),
             "companion_created": list(self.companion_created),
+            "header_healed": list(self.header_healed),
             "log_status": self.log_status,
+            "next_phase_hint": self.next_phase_hint,
         }
 
     def __iter__(self):
@@ -168,6 +172,7 @@ class PlanVerifier:
             self.templates_dir = res_tmpl
 
         self._template_headers_cache: Dict[str, List[str]] = {}
+        self._template_header_specs_cache: Dict[str, List[Tuple[str, str]]] = {}
         self._dynamic_placeholders_cache: Optional[List[str]] = None
 
     def get_dynamic_placeholders(self) -> List[str]:
@@ -258,14 +263,14 @@ class PlanVerifier:
         return core.lower().replace(" ", "").replace("_", "").replace("-", "")
 
 
-    def get_resolved_template_headers(self, template_name: str) -> List[str]:
+    def get_resolved_template_header_specs(self, template_name: str) -> List[Tuple[str, str]]:
         """
-        讀取已解析之標準模板並提取其定義之 Markdown 章節標題 (# Headers)。
+        讀取已解析之標準模板並提取其定義之 Markdown 二/三級章節標題，回傳 [(norm_title, raw_heading_line), ...] 清單。
         """
-        if template_name in self._template_headers_cache:
-            return self._template_headers_cache[template_name]
+        if template_name in self._template_header_specs_cache:
+            return self._template_header_specs_cache[template_name]
 
-        headers: List[str] = []
+        specs: List[Tuple[str, str]] = []
         tmpl_path = None
         if self.templates_dir and self.templates_dir.exists():
             cand = self.templates_dir / template_name
@@ -277,25 +282,31 @@ class PlanVerifier:
             if cand.exists():
                 tmpl_path = cand
 
-
         if tmpl_path and tmpl_path.exists():
             try:
                 content = tmpl_path.read_text(encoding="utf-8", errors="ignore")
                 for line in content.splitlines():
                     line_s = line.strip()
-                    if line_s.startswith("#"):
-                        # 僅擷取二級與三級核心章節標題（排除 [REV-XX] 動態修訂條目標題）
-                        if line_s.startswith("##") or line_s.startswith("###"):
-                            if re.search(r"\[REV-\d+\]", line_s, re.IGNORECASE):
-                                continue
-                            norm = self.normalize_header_title(line_s)
-                            if norm and len(norm) >= 2:
-                                headers.append(norm)
+                    if line_s.startswith("##") or line_s.startswith("###"):
+                        if re.search(r"\[REV-\d+\]", line_s, re.IGNORECASE):
+                            continue
+                        norm = self.normalize_header_title(line_s)
+                        if norm and len(norm) >= 2:
+                            specs.append((norm, line_s))
             except Exception:
                 pass
 
-        self._template_headers_cache[template_name] = headers
-        return headers
+        self._template_header_specs_cache[template_name] = specs
+        self._template_headers_cache[template_name] = [n for n, _ in specs]
+        return specs
+
+    def get_resolved_template_headers(self, template_name: str) -> List[str]:
+        """
+        讀取已解析之標準模板並提取其定義之正規化 Markdown 章節標題清單（向下相容）。
+        """
+        if template_name in self._template_headers_cache:
+            return self._template_headers_cache[template_name]
+        return [n for n, _ in self.get_resolved_template_header_specs(template_name)]
 
     def _map_file_to_template(self, file_name: str) -> Optional[str]:
         """將計畫檔案對齊至標準模板名稱。"""
@@ -461,8 +472,112 @@ class PlanVerifier:
                 )
             )
 
+    def _infer_deterministic_header_values(self, file_path: Path, is_sub_plan: bool) -> Dict[str, str]:
+        """推導檔案之 100% 確定性標頭欄位值 (功能名稱、建立日期、所屬主計畫)。"""
+        target_dir = file_path.parent
+        dir_date_m = re.match(r"^(\d{4})_(\d{2})_(\d{2})", target_dir.name) or re.match(
+            r"^(\d{4})_(\d{2})_(\d{2})", target_dir.parent.name
+        )
+        today_str = (
+            f"{dir_date_m.group(1)}-{dir_date_m.group(2)}-{dir_date_m.group(3)}"
+            if dir_date_m
+            else datetime.now().strftime("%Y-%m-%d")
+        )
+        parent_name = target_dir.parent.name if is_sub_plan else "N/A (Root Plan)"
+        slug = re.sub(r"^(?:\d{4}_\d{2}_\d{2}_(?:\d{4}_)?|sub_\d+_)", "", target_dir.name)
+        func_name = slug.replace("_", " ").title() if slug else target_dir.name
+        try:
+            for cand in sorted(target_dir.glob("P0[01]_*.md")):
+                if cand.resolve() == file_path.resolve():
+                    continue
+                cand_headers = self.parse_plan_header(cand.read_text(encoding="utf-8", errors="ignore").splitlines())
+                for k in ("功能名稱", "計畫名稱", "調研主題", "name", "title"):
+                    val = cand_headers.get(k, "").strip()
+                    if val and not (val.startswith("[") and val.endswith("]")):
+                        func_name = val
+                        break
+                if func_name != (slug.replace("_", " ").title() if slug else target_dir.name):
+                    break
+        except Exception:
+            pass
+        return {
+            "功能名稱": func_name,
+            "建立日期": today_str,
+            "所屬主計畫": parent_name,
+        }
+
+    def _auto_heal_deterministic_headers(
+        self,
+        md_file: Path,
+        lines: List[str],
+        headers: Dict[str, str],
+        is_sub_plan: bool,
+        target_dir: Path,
+    ) -> Tuple[List[str], Dict[str, str], List[str]]:
+        """
+        若缺少 [功能名稱]、[建立日期] 或二級子計畫之 [所屬主計畫]，自動推導確定性值並寫回檔案。
+        後置契約：絕不新增或修改 [狀態] 與 [模型]；回傳更新後之 (lines, headers, healed_keys)。
+        """
+        inferred = self._infer_deterministic_header_values(md_file, is_sub_plan)
+        has_name = any(k in headers for k in [
+            "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題"
+        ])
+        has_date = any(k in headers for k in [
+            "建立日期", "完成日期", "暫停時間", "歸檔日期", "更新日期",
+            "date", "created_at", "updated_at", "archived_at", "日期", "time", "timestamp"
+        ])
+        has_parent = any(k in headers for k in ["所屬主計畫", "所屬計畫", "parent_plan", "主計畫", "parent"])
+
+        missing_pairs: List[Tuple[str, str]] = []
+        if not has_name:
+            missing_pairs.append(("功能名稱", inferred["功能名稱"]))
+        if not has_date:
+            missing_pairs.append(("建立日期", inferred["建立日期"]))
+        if is_sub_plan and not has_parent:
+            missing_pairs.append(("所屬主計畫", inferred["所屬主計畫"]))
+
+        if not missing_pairs:
+            return lines, headers, []
+
+        new_lines = list(lines)
+        insert_idx = -1
+        for idx, l in enumerate(new_lines[:35]):
+            if l.strip().startswith(">"):
+                insert_idx = idx
+                break
+        if insert_idx == -1:
+            for idx, l in enumerate(new_lines[:15]):
+                if l.strip().startswith("#"):
+                    insert_idx = idx + 1
+                    if insert_idx < len(new_lines) and new_lines[insert_idx].strip() != "":
+                        new_lines.insert(insert_idx, "")
+                        insert_idx += 1
+                    elif insert_idx == len(new_lines):
+                        new_lines.append("")
+                        insert_idx = len(new_lines)
+                    break
+            if insert_idx == -1:
+                insert_idx = 0
+
+        for key, val in reversed(missing_pairs):
+            new_lines.insert(insert_idx, f"> {key}：{val}  ")
+
+        try:
+            md_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        except Exception:
+            return lines, headers, []
+
+        updated_headers = self.parse_plan_header(new_lines)
+        healed_keys = [k for k, _ in missing_pairs]
+        return new_lines, updated_headers, healed_keys
+
     def _verify_markdown_file(
-        self, file_path: Path, rel_file_name: str, is_sub_plan: bool, report: PlanReport
+        self,
+        file_path: Path,
+        rel_file_name: str,
+        is_sub_plan: bool,
+        report: PlanReport,
+        enable_auto_heal: bool = False,
     ) -> None:
         """Stage 4: 稽核單一 Markdown 文件的 Header、佔位符、動態模板鏡像與 ID 格式。"""
         try:
@@ -519,8 +634,27 @@ class PlanVerifier:
                     )
                     break
 
+        # 預先計算模板章節匹配狀況，供標頭自癒與缺失率分流共用
+        tmpl_name = self._map_file_to_template(rel_file_name)
+        expected_specs: List[Tuple[str, str]] = []
+        missing_specs: List[Tuple[str, str]] = []
+        if tmpl_name:
+            expected_specs = self.get_resolved_template_header_specs(tmpl_name)
+            if expected_specs:
+                doc_headers = []
+                for line in lines:
+                    line_s = line.strip()
+                    if line_s.startswith("##") or line_s.startswith("###"):
+                        norm = self.normalize_header_title(line_s)
+                        if norm:
+                            doc_headers.append(norm)
 
-        # 2. Header 元數據檢查 (FR-03)
+                for exp_norm, exp_raw in expected_specs:
+                    matched = any(exp_norm in dh or dh in exp_norm for dh in doc_headers)
+                    if not matched:
+                        missing_specs.append((exp_norm, exp_raw))
+
+        # 2. Header 元數據檢查與確定性標頭無損自癒 (FR-03)
         base_fname = os.path.basename(rel_file_name)
         is_handoff = base_fname == "handoff.md"
         is_seed_asset = base_fname.lower() in self.ORIGIN_SEED_FILES
@@ -540,13 +674,43 @@ class PlanVerifier:
             "模型", "model", "ai_model", "ai-model", "模型名稱", "model_name"
         ])
 
+        has_prior_file_issues = any(i.file_name == rel_file_name for i in report.issues)
+        if (
+            enable_auto_heal
+            and not is_handoff
+            and not is_seed_asset
+            and has_status
+            and has_model
+            and len(missing_specs) == 0
+            and not has_prior_file_issues
+            and (not has_name or not has_date or (is_sub_plan and not has_parent))
+        ):
+            lines, headers, healed_keys = self._auto_heal_deterministic_headers(
+                file_path, lines, headers, is_sub_plan, file_path.parent
+            )
+            if healed_keys:
+                report.header_healed.append(f"{rel_file_name} ({', '.join(healed_keys)})")
+                has_name = any(k in headers for k in [
+                    "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題"
+                ])
+                has_date = any(k in headers for k in [
+                    "建立日期", "完成日期", "暫停時間", "歸檔日期", "更新日期",
+                    "date", "created_at", "updated_at", "archived_at", "日期", "time", "timestamp"
+                ])
+                has_parent = any(k in headers for k in ["所屬主計畫", "所屬計畫", "parent_plan", "主計畫", "parent"])
+
+        inferred_hdr = self._infer_deterministic_header_values(file_path, is_sub_plan)
+        inferred_name = inferred_hdr["功能名稱"]
+        inferred_date = inferred_hdr["建立日期"]
+        inferred_parent = inferred_hdr["所屬主計畫"]
+
         if not has_name:
             report.issues.append(
                 PlanIssue(
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="Header Blockquote 缺少 [功能名稱] (或 [調研主題] / [所屬計畫]) 欄位。 [Fix Hint: 請於檔案前 35 行補上 '> 功能名稱：<名稱>']",
+                    message=f"Header Blockquote 缺少 [功能名稱] (或 [調研主題] / [所屬計畫]) 欄位。 [Fix Hint: 請於檔案前 35 行補上 '> 功能名稱：{inferred_name}']",
                 )
             )
         if not has_date:
@@ -555,7 +719,7 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="Header Blockquote 缺少 [建立日期] (或 [暫停時間]) 欄位。 [Fix Hint: 請於檔案前 35 行補上 '> 建立日期：YYYY-MM-DD']",
+                    message=f"Header Blockquote 缺少 [建立日期] (或 [暫停時間]) 欄位。 [Fix Hint: 請於檔案前 35 行補上 '> 建立日期：{inferred_date}']",
                 )
             )
         if not has_model:
@@ -618,35 +782,39 @@ class PlanVerifier:
                     severity=PlanSeverity.FAIL,
                     file_name=rel_file_name,
                     category="HEADER",
-                    message="二級子計畫之 Header Blockquote 必須包含 [所屬主計畫] 欄位以維持追溯鏈。 [Fix Hint: 請於檔案前 35 行補上 '> 所屬主計畫：<父目錄計畫名稱>']",
+                    message=f"二級子計畫之 Header Blockquote 必須包含 [所屬主計畫] 欄位以維持追溯鏈。 [Fix Hint: 請於檔案前 35 行補上 '> 所屬主計畫：{inferred_parent}']",
                 )
             )
 
-        # 3. 動態模板章節標題鏡像對齊 (FR-01)
-        tmpl_name = self._map_file_to_template(rel_file_name)
-        if tmpl_name:
-            expected_headers = self.get_resolved_template_headers(tmpl_name)
-            if expected_headers:
-                doc_headers = []
-                for line in lines:
-                    line_s = line.strip()
-                    if line_s.startswith("##") or line_s.startswith("###"):
-                        norm = self.normalize_header_title(line_s)
-                        if norm:
-                            doc_headers.append(norm)
-
-                for exp_h in expected_headers:
-                    # 檢查是否有模糊或包含匹配
-                    matched = any(exp_h in dh or dh in exp_h for dh in doc_headers)
-                    if not matched:
-                        report.issues.append(
-                            PlanIssue(
-                                severity=PlanSeverity.FAIL,
-                                file_name=rel_file_name,
-                                category="TEMPLATE",
-                                message=f"缺少標準模板所要求之章節標題：'{exp_h}'。 [Fix Hint: 請對照標準模板 '{tmpl_name}' 補齊包含 '{exp_h}' 之二級/三級標題]",
-                            )
-                        )
+        # 3. 動態模板章節標題鏡像對齊與缺失率分流處方 (FR-01, FR-04, EC-03)
+        if tmpl_name and expected_specs and missing_specs:
+            m_cnt = len(missing_specs)
+            n_cnt = len(expected_specs)
+            r_sec = m_cnt / n_cnt
+            pct = int(round(r_sec * 100))
+            missing_norm_str = "、".join(f"'{norm}'" for norm, _ in missing_specs)
+            missing_raw_str = " | ".join(raw for _, raw in missing_specs)
+            all_raw_str = " | ".join(raw for _, raw in expected_specs)
+            if r_sec < 0.5:
+                msg = (
+                    f"[TRIAGE: QUICK_PATCH (章節缺失 {m_cnt}/{n_cnt}, {pct}%)] "
+                    f"缺少標準模板所要求之章節標題：{missing_norm_str}。 "
+                    f"[Fix Hint: 檔案結構大致完整，請勿重寫全檔；請直接以 edit_file 補齊以下原始 Markdown 標題：{missing_raw_str}]"
+                )
+            else:
+                msg = (
+                    f"[TRIAGE: FULL_REWRITE (章節缺失 {m_cnt}/{n_cnt}, {pct}%, 屬盲寫結構偏離)] "
+                    f"缺少標準模板所要求之章節標題：{missing_norm_str}。 "
+                    f"[Fix Hint: 嚴禁翻找其他歷史計畫目錄抄襲！請直接讀取標準模板 '.agents/.yscb/templates/{tmpl_name}' 並依完整原始標題骨架 ({all_raw_str}) 以 write_file 重寫 '{rel_file_name}']"
+                )
+            report.issues.append(
+                PlanIssue(
+                    severity=PlanSeverity.FAIL,
+                    file_name=rel_file_name,
+                    category="TEMPLATE",
+                    message=msg,
+                )
+            )
 
         # 4. 標準 ID 矩陣與測試規劃合規 (FR-02)
         if os.path.basename(rel_file_name).startswith("P06_"):
@@ -1027,6 +1195,42 @@ class PlanVerifier:
         changelog_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return True, "appended"
 
+    def _build_next_phase_hint(self, target_dir: Path) -> Optional[str]:
+        """當檢核全數通過且計畫尚未結案時，解析下一階段模板路徑與必備章節預告 (FR-05, EC-04)。"""
+        from .status import PlanStatusResolver
+
+        nav = PlanStatusResolver.resolve_next_action(target_dir)
+        next_phase_raw = str(nav.get("next_phase") or "")
+        if not next_phase_raw or any(
+            done_kw in next_phase_raw for done_kw in ("Completed", "Archived", "Transition")
+        ):
+            return None
+
+        phase_match = re.match(r"^(P0[0-7])\b", next_phase_raw)
+        if phase_match:
+            p_code = phase_match.group(1)
+            stem = PlanStatusResolver.PHASE_CANONICAL_STEMS.get(p_code, f"{p_code}_spec")
+            tmpl_name = f"{stem}.md"
+        elif next_phase_raw in ("FP-01", "FP-02", "FP-03"):
+            p_code = next_phase_raw
+            tmpl_name = "fast_track_plan.md"
+        elif next_phase_raw == "Revision":
+            p_code = "Revision"
+            tmpl_name = "revision_log.md"
+        else:
+            return None
+
+        specs = self.get_resolved_template_header_specs(tmpl_name)
+        if not specs:
+            return None
+
+        raw_titles_str = " | ".join(raw_h for _, raw_h in specs)
+        return (
+            f"下一階段 {p_code} ({tmpl_name}) -> "
+            f"請先讀取 `.agents/.yscb/templates/{tmpl_name}` | "
+            f"必備章節: {raw_titles_str}"
+        )
+
 
     def _filter_files_by_phase(
         self, target_dir: Path, phase_norm: str
@@ -1155,7 +1359,9 @@ class PlanVerifier:
         # Step 1: 檢核目標階段主體 Markdown 檔案本體合規性
         target_mds = self._filter_files_by_phase(p, phase_norm)
         for md in target_mds:
-            self._verify_markdown_file(md, md.name, is_sub, report)
+            self._verify_markdown_file(
+                md, md.name, is_sub, report, enable_auto_heal=enable_auto_heal
+            )
 
         # Step 2: 若 Step 1 主體檔合規 (0 FAIL) 且提供 --log，自動補齊伴隨檔 (changelog.md 與 P02 伴隨之 P06 Draft)
         if not report.has_fails and enable_auto_heal:
@@ -1164,7 +1370,9 @@ class PlanVerifier:
             if "P06_test_plan.md" in report.companion_created:
                 p06_new = p / "P06_test_plan.md"
                 if p06_new.is_file() and p06_new not in target_mds:
-                    self._verify_markdown_file(p06_new, p06_new.name, is_sub, report)
+                    self._verify_markdown_file(
+                        p06_new, p06_new.name, is_sub, report, enable_auto_heal=enable_auto_heal
+                    )
 
         # Step 3: 結構、changelog、雙檔協同 (P02/P04 <-> P06) 與 P01<->P06 追溯差集檢核
         self._check_nested_depth_and_structure(p, ".", report)
@@ -1183,7 +1391,11 @@ class PlanVerifier:
                         if sub_md.name == "changelog.md":
                             continue
                         self._verify_markdown_file(
-                            sub_md, f"{sub.name}/{sub_md.name}", True, report
+                            sub_md,
+                            f"{sub.name}/{sub_md.name}",
+                            True,
+                            report,
+                            enable_auto_heal=enable_auto_heal,
                         )
                     self._check_cross_file_and_traceability(sub, sub.name, phase_norm, report)
 
@@ -1197,6 +1409,8 @@ class PlanVerifier:
                 report.status = PlanSeverity.WARN
             else:
                 report.status = PlanSeverity.PASS
+
+            report.next_phase_hint = self._build_next_phase_hint(p)
 
             if enable_auto_heal and log_msg:
                 resolved_model = self._resolve_companion_model(p, phase_norm, model)
