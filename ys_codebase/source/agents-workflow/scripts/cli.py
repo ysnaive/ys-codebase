@@ -625,6 +625,8 @@ def plan_check(cmd_bags: Any) -> int:
         print(f"[*] Plan: {p_name:<50} {status_tag}")
         if r.companion_created:
             print(f"    |-- [SELF-HEAL] 已自動初始化伴隨檔: {', '.join(r.companion_created)}")
+        if r.header_healed:
+            print(f"    |-- [SELF-HEAL] 已自動補齊確定性標頭: {', '.join(r.header_healed)}")
         if r.log_status == "appended":
             print(f"    |-- [CHANGELOG] 已免讀自動追加變更日誌列 (Type: {log_type.upper()})")
         elif r.log_status == "idempotent_skipped":
@@ -635,6 +637,8 @@ def plan_check(cmd_bags: Any) -> int:
             for iss in r.issues:
                 loc = f"{iss.file_name}:{iss.line_number}" if iss.line_number else iss.file_name
                 print(f"    |-- [{iss.severity.value}] ({loc}) [{iss.category}] {iss.message}")
+        if target_name and r.passed and r.next_phase_hint:
+            print(f"    |-- [NEXT PHASE GATE] {r.next_phase_hint}")
 
     print("-" * 70)
     summary_str = f"Summary : {total_plans} Total, {passed_plans} Passed, {warn_plans} Warnings, {fail_plans} Failed"

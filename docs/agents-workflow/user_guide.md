@@ -265,17 +265,23 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 ### 5.1 核心定位與觸發時機
 `/Auto`（對應 `auto` 技能）為可在 **Phase 00 (`Confirmed`) 或 Phase 01 ~ Phase 05** 之間觸發的連續推進模式。當開發者確認需求或前置階段規格後，下達 `/Auto` 授權 Agent 在無技術歧義與無爭議的前提下，跳過中間各 Phase 的強制 Checkpoint 等待，以精實模式自動連續產出各階段規範與代碼實作，直達 Phase 6 手動/UX 驗證前。
 
-### 5.2 `_auto.md` 專屬後綴命名規範與 Context 精實化三大機制
+### 5.2 `_auto.md` 專屬後綴命名規範與 Context 精實化暨兩階段 JIT 四大機制
 1. **`PXX_YYYY_auto.md` 動態溯源命名鐵律 (`_auto` Suffix Provenance Rule)**：
    - 凡於 `/auto` 過程中由 Agent 一次自動寫入之階段規格與任務檔（涵蓋自當前啟動階段至 `Phase 05`），檔名強制附加 `_auto` 後綴（即 `P01_requirements_spec_auto.md`、`P02_architecture_plan_auto.md`、`P03_api_spec_auto.md`、`P04_implementation_plan_auto.md`、`P05_task_auto.md`）：
      - 若於 `P00` 定案後即觸發 `/auto`，則 `P01`~`P05` 全數帶 `_auto.md` 後綴。
      - 若人工討論定案至 `P02` 後才觸發 `/auto`，則 `P00`~`P02` 維持原名，僅 `P03`~`P05` 帶 `_auto.md` 後綴。
    - `PlanStatusResolver.resolve_phase_file` 與 `PlanScanner`、`PlanVerifier`、`PlanArchiver` 原生雙軌相容 `<stem>.md` 與 `<stem>_auto.md`。
-2. **內聯骨架速查表與單次到位寫入 (`Zero Redundant Reads & 1-Write-Per-File`)**：
-   - `auto/SKILL.md` 內建 `P01`~`P06` 必填標頭與二級章節標題速查表，免除 `/auto` 期間逐一 `read_file` 讀取 `phase_01~05.md` 與模板之 11 次讀檔開銷。
+2. **兩階段寫檔前即時讀取模板 (`Two-Stage JIT Template Read`) 與單次到位寫入 (`1-Write-Per-File`)**：
+   - `auto/SKILL.md` 收斂至 $\le 75$ 行，免除讀取 `phase_01~05.md`（省去無效的單階段 End Turn 說明），改於**寫檔前最後一刻分兩階段平行讀取權威模板**以消除長執行跨度之記憶衰減：
+     - **批次 A**：寫 `P01`~`P04_auto.md` 前即時平行讀取 `P01`~`P04` 模板。
+     - **批次 B**：完成 Phase 5 編碼與測試後、寫 `P05_task_auto.md` 與 `P06_test_plan.md` 前即時平行讀取 `P05` 與 `P06` 模板。
    - 每個階段檔案嚴格僅寫入一次（`P01`~`P04` 直接寫 `Confirmed`、`P05_task_auto.md` 於編碼完成後直接寫 `Completed`、`P06_test_plan.md` 於自動化測試通過後直接寫 `Passed`），並於 `P06` 執行**單次彙總** `plan verify <plan> --log "..."`。
 3. **跨檔單點定義去重與禁預寫實作碼 (`DRY Spec Reference & Signature-Only`)**：
    - 變更檔案清單單點定義於 `P02` §3；`P03` §2 僅寫 `def/class` 型別簽名與例外契約（嚴禁預貼函式實作程式碼）；任務拆解單點定義於 `P04` §4，`P05_task_auto.md` 僅列 1 行指標（$\le 25$ 行）。
+4. **`PlanVerifier` 缺失率智能分流 (`QUICK_PATCH` / `FULL_REWRITE`)、確定性標頭自癒與 `NEXT PHASE GATE`**：
+   - **確定性標頭自癒 (`[SELF-HEAL]`)**：附帶 `--log` 執行 `plan verify` 時，若檔案已具合法 `狀態`、`模型` 且無章節/佔位符缺失，自動原地補齊缺漏之 `功能名稱`、`建立日期` 與 `sub_XX` 之 `所屬主計畫`。
+   - **章節缺失率分流**：缺失率 $< 50\%$ 時輸出 `[TRIAGE: QUICK_PATCH]` 與缺失之原始 Markdown 標題供 `edit_file` 局部補齊；缺失率 $\ge 50\%$ 時輸出 `[TRIAGE: FULL_REWRITE]` 與 `.agents/.yscb/templates/{tmpl_name}` 模板路徑，要求讀取模板後以 `write_file` 重寫。
+   - **下一階段預告 (`[NEXT PHASE GATE]`)**：單一計畫檢核 `PASS` 且尚未 `Completed` 時，自動輸出下一階段檔名、模板路徑與必備章節預告。
 
 ### 5.3 適用範圍与三大熔斷防線 (Circuit Breakers)
 - **適用範圍**：進行中之 **Full Track** 計畫或 **Umbrella** 活躍之 Full Track 子計畫 (`sub_XX`)；排除 `P00 Discussing` 與 **Fast Track**。
@@ -295,8 +301,8 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 - **`TESTING_SOP_STANDARDS` 錨點**：供專案注入專屬測試框架與沙盒規範。
 - **存量測試集純化**：按需讀取 `references/test_suite_audit_and_purification.md` 執行 `T-01`~`T-06` 體檢與收斂。
 
-### 6.2 唯讀 Subagent 委派協定（廣域探索與 Pre-UX 零劇透冷眼盲審）
-針對高認知負荷場景，透過「僅傳計畫路徑盲審」與「Single-Writer 計畫檔保護」內化唯讀 Subagent 委派（而 `Phase 05` 編碼實作因跨模組任務間常具高耦合與上下文相依，統一維持由主視窗 Agent 直接實作，廢棄實作隔離開銷）：
+### 6.2 三支柱 Subagent 委派協定（廣域探索、條件式實作隔離與 Pre-UX 零劇透冷眼盲審）
+針對高認知負荷場景，透過「僅傳計畫路徑盲審」、「Single-Writer 計畫檔保護」與「Phase 5 量化規模門檻（預估修改或整併 $\ge 5$ 個檔案，或閱讀與修改 $> 1,500$ 行源碼/測試）」調度 Subagent 委派：
 1. **支柱一（`/research` 與 `/discuss` 唯讀廣域探索隔離）**：派發唯讀 Subagent 平行或單一檢索，回傳 150~300 Tokens 濃縮證據，主視窗維持乾淨 Context 撰寫報告或討論卡。
 2. **支柱三（`Phase 06` Pre-UX 唯讀 Fresh-Eyes 冷眼盲審與 `Phase 07` 條件式複審）**：
    - **審查左移時機**：在完成自動化跑測、**即將向開發者提出手動 / UX 測試驗證請求前**，強制派發無偏誤的 Reviewer Subagent 進行客觀審查。

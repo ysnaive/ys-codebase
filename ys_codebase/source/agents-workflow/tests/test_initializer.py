@@ -70,10 +70,12 @@ class TestWorkflowInitializer(YSCBTestCase):
 
 
         # 檢測 config.project.json 模板或已部署之 config
-        tpl_path = os.path.join(_pkg_root, "config.project.json")
-        if not os.path.isfile(tpl_path):
-            # 若處於 modules/ 運行空間，config 模板已被剝除至 config/agents-workflow/
-            tpl_path = os.path.join(os.path.dirname(os.path.dirname(_pkg_root)), "config", "agents-workflow", "config.project.json")
+        candidates = [
+            os.path.join(_pkg_root, "configurable", "config.project.json"),
+            os.path.join(_pkg_root, "config.project.json"),
+            os.path.join(os.path.dirname(os.path.dirname(_pkg_root)), "config", "agents-workflow", "config.project.json"),
+        ]
+        tpl_path = next((p for p in candidates if os.path.isfile(p)), candidates[0])
         
         self.assertTrue(os.path.isfile(tpl_path), f"config template must exist at {tpl_path}")
         with open(tpl_path, "r", encoding="utf-8") as f:

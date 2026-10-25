@@ -30,6 +30,7 @@
 | **sub_06** | `sub_06_cli_guide_purification` | Fast Track | `Completed` | **`yscb-cli-guide` 深度瘦身與 `-h` 按需自省重構**：徹底拔除 `yscb-cli-guide/SKILL.md` 內隨指令規模無限膨脹之動態指令表（移除 `core/contributes/agents-workflow.json` 中 `AGENTS_CLI_GUIDE` computed 注入與 `core/providers.py`），將 `yscb-cli-guide` 純化為「終端執行慣例與防呆 + 技能內建指令直跑 (`Skill-Vetted Fast Pass`) + 非常規指令與未知參數強制 `-h` 自省 (`JIT -h Inspection`) + 三級權限與 `[GATED]` 紅線家族原則」（單檔自 3.4K 瘦身至 ~1.0K tokens）。 |
 | **sub_07** | `sub_07_auto_context_lean_optimization` | Fast Track | `Completed` | **`/auto` 連續推進工作流 Context 精實化重構（方向 A + B + `_auto.md` 雙軌相容）**：於 `auto/SKILL.md` 內建 `P01`~`P06` 必填標頭與章節骨架速查表（免除 `/auto` 期間逐一讀取 `phase_01~05.md` 與 `P01~P06` 模板之 11 次讀檔開銷）、確立「單檔單次寫入 (`1-Write-Per-File`，`P05_task_auto.md` 直接以 `Completed` 落檔、`P06` 於測試通過後直接以 `Passed` 落檔) + 單次彙總 `plan verify`」、「跨檔單點定義指標引用與 `P03`/`P04` 禁預寫實作碼 (`DRY Spec & Signature-Only`)」及「`/auto` 一次自動生成之 `P01`~`P05` 強制命名為 `PXX_YYYY_auto.md` 並於 `plans` 工具鏈支援雙軌相容 (`PlanStatusResolver.resolve_phase_file`)」，將單次 `/auto` 之 SOP 工具調用減少 74%（27 $\to$ 7 次）、節省 ~16K–25K Tokens。 |
 | **sub_08** | `sub_08_final_acceptance_and_suite_purification` | Research / Full Track | `Completed` | **全主計畫二次驗收、測試集六維度純化與工作區清理收官**：針對 `sub_01` ~ `sub_07` 落地成果與 7 份已消費 Roadmap 執行二次驗收；依 `testing-sop` 對 `agents-workflow/tests/` 13 支測試檔執行六維度體檢與 13 $\to$ 6 子系統 1:1 歸戶純化；清理根目錄歷史遺留 `./scratch` 與 `./scripts`，並完成三層文檔最終對齊。 |
+| **sub_09** | `sub_09_verifier_triage_and_auto_jit_refinement` | Full Track | `Completed` | **`PlanVerifier` 缺失率分流處方、確定性標頭自癒、階段前瞻提示與 `/auto` 兩階段 JIT 讀模板瘦身**：拔除 `auto/SKILL.md` §3 內聯骨架表（改為 Batch A 寫 `P01~P04` 前、Batch B 寫 `P05~P06` 前按需平行讀取 `.agents/.yscb/templates/P0X.md` 並維持免讀 `phase_01~05.md`）、量化支柱二 Phase 5 實作子代理門檻（$\ge 5$ 檔或 $> 1,500$ 行）、並於 `PlanVerifier` 實作確定性標頭無損自癒、章節缺失率速評分流（`QUICK_PATCH` vs `FULL_REWRITE` 附原始標題骨架）與 `PASSED` 時之 `[NEXT PHASE GATE]` 前瞻提示。 |
 
 ---
 
@@ -39,7 +40,7 @@
 > - **Stage 1（研發憲法與儲備工具鏈先行 — 本主計畫核心層）**：`1. AW/sub_02` (`/todo` 與 `roadmap promote`) $\to$ `2. AW/sub_03` (`testing-sop` 六大鐵律 + Subagent 三支柱隔離)
 > - **Stage 2（微內核與開發工具鏈加固 — `2026_10_23_1122` 地基層）**：`3. ECO/sub_01` (`core` 微內核與測試純化) $\to$ `4. ECO/sub_02` (`dev` 沙盒檢查與測試純化)
 > - **Stage 3（常駐服務與檢索管線加固 — `2026_10_23_1122` 運行層與結案）**：`5. ECO/sub_03` (`server` 託管與測試純化) $\to$ `6. ECO/sub_04` (`knowledge-db` 管線與測試純化) $\to$ `7. ECO/sub_05` (四模組聯合驗收與 8 份 Roadmap `promote` 閉環結案)
-> - **Stage 4（下游賦能、CLI/Auto 技能純化與擴充造血收官 — 本主計畫擴充層與結案）**：`8. AW/sub_04` (`PROJECT_ROLE` + `/how-to-config-yscb` + `/how-to-yscb`) $\to$ `9. AW/sub_05` (`/skill-creator` 三軌擴充) $\to$ `10. AW/sub_06` (`yscb-cli-guide` 深度瘦身與 `-h` 按需自省) $\to$ `11. AW/sub_07` (`/auto` Context 精實化重構) $\to$ `12. AW/sub_08` (`agents-workflow/tests/` 純化與 6 份 Roadmap `promote` 閉環結案)
+> - **Stage 4（下游賦能、CLI/Auto 技能純化與擴充造血收官 — 本主計畫擴充層與結案）**：`8. AW/sub_04` (`PROJECT_ROLE` + `/how-to-config-yscb` + `/how-to-yscb`) $\to$ `9. AW/sub_05` (`/skill-creator` 三軌擴充) $\to$ `10. AW/sub_06` (`yscb-cli-guide` 深度瘦身與 `-h` 按需自省) $\to$ `11. AW/sub_07` (`/auto` Context 精實化重構) $\to$ `12. AW/sub_08` (`agents-workflow/tests/` 純化與 6 份 Roadmap `promote` 閉環結案) $\to$ `13. AW/sub_09` (`PlanVerifier` 缺失率分流處方與 `/auto` 兩階段 JIT 讀模板瘦身)
 
 - [x] **里程碑 1 (`sub_01`)**：完成 `agents-workflow` Python 工具鏈 (ACI) 強化（`plan status --resume`、`plan verify --phase` 追溯差集比對與 `--log` 免讀盲寫追加）並通過單元測試。
 - [x] **里程碑 2 (`sub_02`) [Global Step 1 - Completed]**：完成 `/todo` 與 `/roadmap` 雙層儲備體系重構（`todo add/list/promote`、`roadmap promote` 物理遷入與 `Seeded` 白名單）並通過單元測試。
@@ -49,4 +50,5 @@
 - [x] **里程碑 6 (`sub_06`) [Global Step 10 - Completed]**：完成 `yscb-cli-guide` 深度瘦身（拔除動態指令大表與 `core/providers.py`，改採技能內建指令直跑 + 非常規指令 `-h` 按需自省）。
 - [x] **里程碑 7 (`sub_07`) [Global Step 11 - Completed]**：完成 `/auto` 連續推進工作流 Context 精實化重構（方向 A 內聯骨架免讀 11 檔與單次寫檔/檢核 + 方向 B 跨檔單點定義去重與禁預寫實作碼 + `PXX_YYYY_auto.md` 雙軌相容）。
 - [x] **里程碑 8 (`sub_08`) [Global Step 12 - Completed]**：完成 `sub_01` ~ `sub_07` 二次驗收、7 份 Roadmap 儲備閉環遷移、`agents-workflow/tests/` 測試集子系統歸戶純化、三層文檔對齊與最終打磨結案。
+- [x] **里程碑 9 (`sub_09`) [Global Step 13 - Completed]**：完成 `PlanVerifier` 確定性標頭自癒、章節缺失率分流處方 (`QUICK_PATCH` / `FULL_REWRITE`)、下一階段前瞻提示 (`NEXT PHASE GATE`) 與 `/auto` 兩階段 JIT 讀模板瘦身及支柱二門檻量化。
 

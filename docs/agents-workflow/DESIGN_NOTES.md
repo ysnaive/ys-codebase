@@ -40,6 +40,7 @@ last_updated: "2026-10-25"
 | **[DN-AW-13]** | 新增 | 跨模組多捐贈者導覽錨點 (`HOW_TO_*_MODULES`)、兩階段漸進式隨包手冊調度與跨模組 `_resolve_source_path` Sibling Fallback 防坑設計 | 工廠編譯器 (`compiler.py`)、教練技能 (`how-to-config-yscb`, `how-to-yscb`) | `Active` |
 | **[DN-AW-14]** | 新增 | `/skill-creator` 三軌擴充防膨脹、`AGENTS_SKILL_ROUTING` 表格列結構隔離與教學範例 Fenced Code Block 編譯器正則保護 | 技能資產 (`skill-creator/SKILL.md`, `references/extension-guide.md`) | `Active` |
 | **[DN-AW-15]** | 新增 | `/auto` 內聯輕量章節骨架、`1-Write-Per-File` 單次到位寫入、`Signature-Only` 去重與 `_auto.md` 雙軌解析防坑設計 | 技能資產 (`auto/SKILL.md`, `development-sop/SKILL.md`)、Plans 工具鏈 (`status.py`, `scanner.py`, `verifier.py`, `archiver.py`) | `Active` |
+| **[DN-AW-16]** | 新增 | `/auto` 兩階段 JIT 讀模板防記憶衰減、`PlanVerifier` 缺失率雙軌分流 (`QUICK_PATCH`/`FULL_REWRITE`) 與確定性標頭自癒邊界 | 技能資產 (`auto/SKILL.md`)、Plans 工具鏈 (`verifier.py`, `cli.py`) | `Active` |
 
 ---
 
@@ -267,6 +268,22 @@ last_updated: "2026-10-25"
 
 > [!CAUTION]
 > 嚴禁重新引入全系統 CLI 靜態大表生成；於 `/auto` 模式自動生成之 `P01`~`P05` 階段檔案必須命名為 `PXX_YYYY_auto.md` 並遵守 `1-Write-Per-File` 與 `Signature-Only`（禁止在 `P03`/`P04` 預貼實作程式碼塊）；`plans/` 工具鏈查找階段檔案時一律透過 `PlanStatusResolver.resolve_phase_file` 以維持原名與 `_auto.md` 雙軌相容。
+
+---
+
+### [DN-AW-16] `/auto` 兩階段 JIT 讀模板防記憶衰減、`PlanVerifier` 缺失率雙軌分流 (`QUICK_PATCH`/`FULL_REWRITE`) 與確定性標頭自癒邊界
+
+- **工程背景與坑點**：
+  1. **開頭內聯章節表跨 100+ 步實作後的注意力衰減 (`Context Decay`)**：實戰對照 (`sub_08` 新版 `/auto`) 顯示，將 `P01`~`P06` 所有章節標題塞入 `auto/SKILL.md` 開頭雖能在剛讀完技能時精準寫出 `P01`~`P04`，但經歷 Phase 5 逾百步源碼與測試編修後，Agent 在終點憑記憶盲寫 `P05` 或 `P00` 時仍可能發生章節標題偏移或漏寫 `所屬主計畫` 標頭。
+  2. **逐條碎片化 `Fix Hint` 引發無效 Patch 迴圈**：原先 `PlanVerifier` 對每個缺失章節各報一條獨立的正規化小寫標題錯誤，當 Agent 盲寫偏離模板達 50% 以上時，逐條 `edit_file` 修補反而破壞文件連貫性並浪費額外輪次。
+  3. **唯讀檢核與結算自癒的語意邊界**：若在未帶 `--log` 的一般唯讀 `verify_plan()` 中無條件改寫磁碟檔案補齊標頭，會違反唯讀檢核無副作用原則並破壞既有單元測試對缺漏標頭的斷言；此外，若檔案本身連 `狀態`、`模型` 或章節都殘缺時就強行改寫標頭，也無助於一次通過檢核。
+- **妥協與防禦設計**：
+  1. **`auto/SKILL.md` 拔除內聯大表，改採「兩階段寫檔前即時讀取模板 (`Two-Stage JIT Template Read`)」**：將 `auto/SKILL.md` 瘦身至 $\le 75$ 行（仍免讀 `phase_01~05.md`），規範於寫 `P01`~`P04_auto.md` 前即時平行讀取 `P01`~`P04` 模板（批次 A），並於完成 Phase 5 編碼與測試後、寫 `P05_task_auto.md` 與 `P06_test_plan.md` 前即時平行讀取 `P05` 與 `P06` 模板（批次 B），兼顧零記憶衰減與最小常駐負載。
+  2. **`PlanVerifier` 缺失率量化分流 (`QUICK_PATCH` vs `FULL_REWRITE`) 與單一 `TEMPLATE` 聚合**：由 `get_resolved_template_header_specs` 同步快取正規化標題與原始 Markdown 標題行 (`## / ###`)，將同一檔案之缺漏章節聚合為單一 `TEMPLATE` `PlanIssue`；當缺失率 $< 50\%$ 時輸出 `[TRIAGE: QUICK_PATCH]` 附上缺漏之原始標題供 `edit_file` 局部補齊，當缺失率 $\ge 50\%$ 時輸出 `[TRIAGE: FULL_REWRITE]` 附上 `.agents/.yscb/templates/{tmpl_name}` 模板路徑與完整章節骨架，強制引導讀取模板後以 `write_file` 重寫。
+  3. **條件式確定性標頭自癒 (`enable_auto_heal`) 與 `NEXT PHASE GATE`**：僅當附帶 `--log` 結算（`enable_auto_heal=True`）且檔案已具備合法 `狀態`、`模型` 與 0 章節/佔位符缺失時，自動從計畫目錄名與父目錄推導並原地補齊 `功能名稱`、`建立日期` 及 `sub_XX` 之 `所屬主計畫`（記入 `PlanReport.header_healed`）；單一計畫檢核 `PASS` 且未結案時，透過 `_build_next_phase_hint` 輸出下一階段模板路徑與必備章節預告。
+
+> [!CAUTION]
+> 嚴禁在 `enable_auto_heal=False`（未提供 `--log` 之唯讀檢核）時改寫磁碟檔案；嚴禁對 `狀態` 或 `模型` 等非確定性標頭進行猜測自癒；嚴禁在 `auto/SKILL.md` 重新塞回冗長的六階段內聯章節大表。
 
 
 
