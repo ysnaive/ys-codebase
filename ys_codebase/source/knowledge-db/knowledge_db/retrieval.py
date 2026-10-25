@@ -425,17 +425,17 @@ class InvertedIndex:
     def to_dict(self) -> Dict[str, Any]:
         """序列化倒排索引為正規化符號池字典 (包含 doc_lengths)"""
         serialized_index = {}
-        for term, postings in self.index.items():
-            serialized_index[term] = [p.to_dict() for p in postings]
+        for term, postings in list(self.index.items()):
+            serialized_index[term] = [p.to_dict() for p in list(postings)]
 
-        serialized_symbols = {doc_id: sym.to_dict() for doc_id, sym in self.symbols.items()}
+        serialized_symbols = {doc_id: sym.to_dict() for doc_id, sym in list(self.symbols.items())}
 
         return {
             "space_name": self.space_name,
             "doc_count": self.doc_count,
-            "field_avgdl": self.field_avgdl,
-            "field_total_lengths": self.field_total_lengths,
-            "doc_lengths": self.doc_lengths,
+            "field_avgdl": dict(self.field_avgdl),
+            "field_total_lengths": dict(self.field_total_lengths),
+            "doc_lengths": dict(self.doc_lengths),
             "symbols": serialized_symbols,
             "index": serialized_index,
         }

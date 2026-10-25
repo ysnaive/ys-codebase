@@ -13,7 +13,7 @@ related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-24"
+last_updated: "2026-10-25"
 ---
 
 # Agents Workflow 使用者與操作指南 (User Guide)
@@ -313,4 +313,12 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 1. **雙入口自適應領航**：無參數呼叫時提供已安裝模組能力總覽與 `A~D` 探索切角選單；帶具體問題呼叫時直接跳過選單給出精準解答與黃金連招。
 2. **兩階段漸進式知識調度**：第一階段依內建 6 大計畫模式選型表與模組速查面板秒答；第二階段於開發者追問深層細節時，按需讀取各模組速查表底部的隨包手冊連結（`__#{module://<mod>/README.md}__`）。
 3. **純唯讀教練護欄與新對話一鍵啟動指令塊**：教練視窗嚴禁直接修改代碼或建立計畫，需要配置時轉介 `/how-to-config-yscb`，準備正式開發時提供可直接複製貼上至新對話的啟動指令塊。
+
+### 7.4 專案特化技能建置與 Layer 2 宣告式擴充工作流 (`/skill-creator`)
+當專案已完成基礎組態對齊，欲進一步新增**專案特化技能**或**階段防呆規則**時，透過 `/skill-creator`（搭配單層參考手冊 `references/extension-guide.md`）執行四步建置與驗證閉環：
+1. **步驟 1（三軌擴充智能分流 `3-Track Extension Triage`）**：依需求規模自動分流為 **軌跡 ①（純錨點注入 `Anchor-Only Injection`）**（於 `config://agents-workflow/snippets/<name>.md` 撰寫局部片段並注入 22 個既有 Stage 1 錨點之一，0 路由表膨脹）、**軌跡 ②（被動環境攔截型 Skill `Ambient Skill`）**（建立 `config://agents-workflow/skills/<name>/SKILL.md` 並注入 `AGENTS_SKILL_ROUTING` 表格列）或 **軌跡 ③（功能特化型 Skill `Feature Skill`）**（建立多步驟專項工作流技能）。
+2. **步驟 2（錨點與 URI 探索及「擴充藍圖確認卡」守門）**：自動執行 `agents-workflow tokens` 與 `uri list` 並查閱 `extension-guide.md` 之 22 個 Stage 1 錨點地圖，向開發者呈遞「🛠️ /SkillCreator 專案擴充藍圖確認卡」並 End Turn 等待拍板。
+3. **步驟 3（合規第一層資產生成與雙軌路徑封裝）**：於第一層扁平路徑（`config/agents-workflow/skills/<name>/SKILL.md` 或 `snippets/<name>.md`）生成資產；指向同技能內部 `references/` 使用標準相對路徑 `./references/...`，指向跨技能或專案目錄強制使用單反引號包覆之 Stage 2 語意 URI。
+4. **步驟 4（三步嚴格編譯驗證守門）**：最小增量更新 `config/agents-workflow/contribute.json`，強制依序通過 `contributes check`（0 Error）$\to$ `agents-workflow compile`（0 Error / 0 Warning）$\to$ `agents-workflow release` 物化同步至目標平台。
+
 

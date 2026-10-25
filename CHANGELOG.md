@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_25_1103_server_kdb_concurrency_and_memory_fix (Completed)
+
+- **`server` 與 `knowledge-db` 常駐背景服務並發鎖、字典快照迭代、背景禁用 `ProcessPoolExecutor` 及預熱時序/停機冪等修復 (`FP-01:DR-01` ~ `DR-03`)**：
+  - **管線與服務雙層互斥鎖及尾隨排隊防重入 (`FP-01:DR-01`)**：於 `IndexingPipeline` 增設 `self._index_lock = threading.RLock()`，保護 `build_unified_index()`、`hot_patch_unified_index()` 與 `_ensure_jit_index_ready()` 讀寫區段；於 `KnowledgeDBServiceWorker` 增設 `self._patch_lock = threading.Lock()`，將 `_execute_debounced_patch()` 改為非阻塞持鎖與 `while` 迴圈尾隨排空 `_pending_dirty_paths`，徹底消除背景防抖 Timer 與前台 IPC 同時變異與迭代索引字典引發之 `RuntimeError: dictionary changed size during iteration`。
+  - **背景回退禁用多進程 (`allow_parallel=False`) 與序列化淺快照保護 (`FP-01:DR-02`)**：於 `SemanticBundler.bundle_union()` 與 `IndexingPipeline.build_unified_index()` 新增預設相容參數 `allow_parallel: bool = True`，並在 `KnowledgeDBServiceWorker` 背景回退重建時強制傳入 `allow_parallel=False`，杜絕常駐 Worker 在背景無上限衍生 4-worker `ProcessPoolExecutor` 子進程池與重複 ONNX 推論造成記憶體暴衝至 10GB；於 `InvertedIndex.to_dict()` 對 `self.index.items()` 與 `self.symbols.items()` 統一採 `list(...)` 淺快照迭代；清理遺留之 `source/knowledge-db/configurable/config.local.json`；登錄 `[DN-09]`。
+  - **`WarmWorker.pre_warm()` 服務路徑時序與 `MasterSupervisor.stop()` 冪等防重入 (`FP-01:DR-03`)**：修正 `server/worker.py:pre_warm()` 時序，先將 `.modules` 加入 `sys.path` 並執行 `service_manager.load_from_contributes()` 注入 `.modules/<provider>` 路徑後才廣播 `server_worker_warming` 事件，根除 Worker 啟動時 `No module named 'knowledge_db'` 預熱失敗；於 `server/master.py` 增設 `_stop_lock` 與 `_is_stopped` 冪等守門，防止背景停機執行緒與 `finally: self.stop()` 二次重入；登錄 `[DN-08]`。新增 `FT-01`、`FT-02` 單元測試，`knowledge-db` (151/151) 與 `server` (41/41) 測試 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_10_24_1112_subagent_review_timing_revision (Completed)
 
 - **SOP 支柱三 Subagent 程式碼冷眼審查時機左移至 P06 請求 UX 驗收前，並於 P07 設為條件式複審 (`REV-01`)**：
@@ -43,6 +50,12 @@
   - **測試套件純化收斂與漏測補盲 (`T-01` ~ `T-06`, `FR-07` ~ `FR-10`)**：刪除 `test_contributes_help.py` 並將 7 個碎片測試檔無損收斂至對應子系統測試集；實質改寫 5 個虛假／過寬測試（`sync_pip_dependencies`、損毀 Zip 雙路徑、`act_migrate` 軌跡與跨大版本略過、`cmd_status` 雙態輸出）；清除跨模組 `agents-workflow` patch 依賴、全面補齊 `@require` 與 `tearDown`/`try...finally` 沙盒清理；新增 `contributes check` 負向攔截、`OptionResolver` `--` 終止符與布林反轉、`cmd_update` 端到端升級與 Major Lock 測試，全模組 **193/193 單元測試 100% 通過**並完成 `core@build` 熱部署。
 
 ## 2026_10_23_1314_agents_workflow_aci_and_delegation_evolution (In Progress)
+
+### sub_05_skill_creator_extension_workflow (Completed)
+- **專案特化技能建置與 Layer 2 宣告式擴充引導工作流 (`/skill-creator`)、單層 22 錨點擴充手冊 (`extension-guide.md`) 與編譯器 `<!-- yscb:literal -->` 字面量保護落地**：
+  - **主動指令型技能 `/skill-creator` 與三軌擴充智能分流 (`FR-01` ~ `FR-03`, `EC-02` ~ `EC-04`, `NFR-01`)**：建立 `assets/skills/skill-creator/SKILL.md`（114 行，$\le 180$ 行），定義四步建置與擴充閉環：步驟 1 依需求特徵分流至「軌跡 ①：純錨點注入模式（`snippets/<name>.md`，0 路由表膨脹）」、「軌跡 ②：被動環境攔截型 Skill」或「軌跡 ③：功能特化型 Skill」；步驟 2 自動執行 `agents-workflow tokens` 與 `uri list`、按需載入 `references/extension-guide.md` 並輸出「🛠️ /SkillCreator 專案擴充藍圖確認卡」強制 End Turn 守門；步驟 3 落實第一層 `__${config://agents-workflow}__/{skills,snippets}/` 扁平路徑、雙軌 `description` 契約、同技能 `./references/...` 相對路徑 vs. 跨空間單反引號語意 URI 分流與 `release_target.projections` 通用二層空間敘述；步驟 4 最小增量更新 `contribute.json` 並強制依序通過 `contributes check` $\to$ `agents-workflow compile`（0 Error / 0 Warning）$\to$ `agents-workflow release` 三步驗證守門。
+  - **單層按需參考手冊 `references/extension-guide.md` 與全系統 22 個 Stage 1 錨點地圖 (`FR-04`, `EC-05`, `NFR-01`)**：建立單層 `references/extension-guide.md`（頂部附 `## 目錄 (Contents)`），完整收錄全系統 22 個標準 Stage 1 Token 錨點地圖（明確區隔 21 個獨立段落區塊錨點與唯一位於 Markdown 表格內的 `AGENTS_SKILL_ROUTING` 表格列錨點）、Stage 2 語意 URI 轉換與單反引號封裝正反對照，以及軌跡 ①/②/③ 之 `contribute.json` 最小增量配置範本。
+  - **編譯器 `LITERAL_FENCED_BLOCK_REGEX` (`<!-- yscb:literal -->`) 字面量教學保護與雙向導流註冊 (`FR-05`, `EC-01`, `NFR-02`)**：於 `ArtifactCompiler` (`compiler.py`) 實作 `LITERAL_FENCED_BLOCK_REGEX`，在 Stage 1 與 Stage 2 預先抽離保護首行標註 `<!-- yscb:literal -->` 之教學代碼塊並於 Stage 2 物化時自動剝除首行標記、100% 原樣保留 `__@{...}__`、`__#{...}__`、`__${...}__` 字面量語法；於 `contributes/agents-workflow.json` 與 `_manifest.md` 註冊 `skill-creator`（內建純 Skill 擴充至 17 個）與 `SKILL_CREATOR_STANDARDS` Token（本模組 21 個、全系統 22 個），並於 `development-sop/SKILL.md` 與 `skill-optimizer/SKILL.md` 完成雙向互指導流；登錄 `[DN-AW-14]`，新增 `test_ft_11` 單元測試，全模組 **134/134 測試 100% 通過**並完成 `@build` 與 `release` 物化同步。
 
 ### sub_04_onboarding_and_config_coaching (Completed)
 - **專案角色邊界錨點 (`PROJECT_ROLE_AND_BOUNDARIES`)、跨模組組態體檢教練 (`/how-to-config-yscb`)、互動式實戰領航教練 (`/how-to-yscb`) 與四大核心模組指南落地**：

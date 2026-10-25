@@ -16,7 +16,7 @@ related_docs:
   - "./retrieval.md"
   - "./incremental_hot_reload.md"
   - "./call_graph_and_reference_index.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-25"
 ---
 
 # knowledge-db 設計決策與工程妥協手冊 (Design Notes)
@@ -39,6 +39,7 @@ last_updated: "2026-10-15"
 | **DN-06** | 圖譜查詢輕量 JIT 解耦 (`require_vectors=False`)、差量修補對稱路徑剔除與零偽造向量鐵律 *(原 DN-26)* | `pipeline.py`, `retrieval.py`, `embedding.py` | 🚨 CRITICAL |
 | **DN-07** | 冷啟動向量載入需求區隔 (`want_vectors` vs `can_use_vector`) 解除死鎖 | `pipeline.py`, `hybrid.py` | 🚨 CRITICAL |
 | **DN-08** | 調用圖譜雙階入度邊保留 (`Identity Remap` + `TopologyLinker`) 與服務單一託管 | `graph.py`, `pipeline.py`, `hook.server.py`, `service.py` | 🚨 CRITICAL |
+| **DN-09** | 常駐背景修補並發互斥鎖 (`_index_lock` / `_patch_lock`)、字典快照迭代與背景禁用 `ProcessPoolExecutor` (`allow_parallel=False`) | `pipeline.py`, `service.py`, `retrieval.py`, `bundler.py` | 🚨 CRITICAL |
 
 ---
 
@@ -151,3 +152,18 @@ last_updated: "2026-10-15"
 - **工程妥協與解法**：
   1. **雙階入度保留**：拔除舊符號前先透過 `CallGraphIndex.get_external_incoming_edges()` 備份入度邊；符號更新後執行 Stage 1 `Identity Remap`（依同檔案路徑與符號名稱直接對映）＋ Stage 2 `TopologyLinker` 跨檔消歧回退。
   2. **服務單一託管**：`hook.server.py` 僅保留 `pre_warm()`，背景監聽 100% 委由 `server.ServiceManager` 統一託管。
+
+---
+
+### [DN-09] 常駐背景修補並發互斥鎖 (`_index_lock` / `_patch_lock`)、字典快照迭代與背景禁用 `ProcessPoolExecutor` (`allow_parallel=False`)
+
+- **背景與根因**：
+  1. 當 `KnowledgeDBServiceWorker` 在常駐 `server` Worker 中監聽檔案變更時，若前一次 `hot_patch_unified_index()` 耗時超過 500ms 防抖視窗，下一次 `threading.Timer` 執行緒（或前台 IPC 查詢執行緒）會同時重入讀寫 `self._unified_index.symbols` 與 `self._unified_index.index`，引發 `RuntimeError: dictionary changed size during iteration`。
+  2. 一旦 `hot_patch_unified_index()` 因上述競態拋出例外，`_execute_debounced_patch()` 會捕獲並回退呼叫 `build_unified_index(force=True)`，進而觸發 `SemanticBundler.bundle_union()` 啟動 4-worker `ProcessPoolExecutor` 子進程池與全量 FastEmbed ONNX 向量推論。多個重疊 Timer 同時回退全量重建會導致後台子進程風暴與記憶體暴衝至 10GB+。
+- **工程妥協與解法**：
+  1. **管線與服務雙層互斥防重入**：`IndexingPipeline` 增設 `self._index_lock = threading.RLock()` 保護 `build_unified_index`、`hot_patch_unified_index` 與 `_ensure_jit_index_ready`；`KnowledgeDBServiceWorker` 增設 `self._patch_lock = threading.Lock()`，`_execute_debounced_patch()` 採非阻塞獲取鎖並以 `while` 迴圈排空 `_pending_dirty_paths`，確保新變更尾隨排隊、絕不並發衝撞。
+  2. **序列化字典淺快照與背景禁用多進程**：`InvertedIndex.to_dict()` 對 `self.index.items()` 與 `self.symbols.items()` 統一採 `list(...)` 淺快照迭代；`bundle_union()` 與 `build_unified_index()` 增設 `allow_parallel: bool = True`，背景服務回退重建時強制傳入 `allow_parallel=False`，杜絕常駐 daemon 在背景衍生 `ProcessPoolExecutor` 子進程池。
+
+> [!CAUTION]
+> **嚴禁在常駐背景服務執行緒 (`KnowledgeDBServiceWorker`) 中以 `allow_parallel=True` 呼叫全量索引重建，亦嚴禁移除 `_index_lock`、`_patch_lock` 與 `to_dict()` 的 `list(...)` 快照保護！** 違反此防護將重新引發多執行緒字典迭代崩潰與 10GB 級子進程記憶體風暴。
+

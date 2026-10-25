@@ -43,19 +43,28 @@ class WarmWorker:
         start_t = time.time()
         pid = os.getpid()
 
+        # Pre-warm Python environment paths before broadcasting events or starting services
+        modules_dir = os.path.join(self.yscb_root, ".modules")
+        if modules_dir not in sys.path:
+            sys.path.insert(0, modules_dir)
+
+        try:
+            self.service_manager.load_from_contributes(self.yscb_root)
+        except Exception as e:
+            self.emit_packet_fn({
+                "type": "log",
+                "level": "WARNING",
+                "component": "worker",
+                "msg": f"Failed to load background services contributes: {e}",
+            })
+
         try:
             events.broadcast("server_worker_warming", {"worker_pid": pid, "start_time": start_t}, emit_module="server")
         except Exception:
             pass
 
-        # Pre-warm Python environment paths
-        modules_dir = os.path.join(self.yscb_root, ".modules")
-        if modules_dir not in sys.path:
-            sys.path.insert(0, modules_dir)
-
         # Host and start background services in Worker
         try:
-            self.service_manager.load_from_contributes(self.yscb_root)
             self.service_manager.start_all({"yscb_root": self.yscb_root})
         except Exception as e:
             self.emit_packet_fn({

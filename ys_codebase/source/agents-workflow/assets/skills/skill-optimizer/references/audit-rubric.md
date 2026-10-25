@@ -93,7 +93,7 @@ YAML Frontmatter 會在 Agent 啟動時預先載入系統提示詞（System Prom
 - **惡意程式碼與資料外洩 (`Critical`)**：讀取 `~/.ssh`、`~/.aws`、`.env` 或憑證並外傳之指令。
 - **可疑下載與未驗證動態依賴 (`Critical`)**：要求執行 `curl ... | bash`、解壓縮加密檔案或動態抓取外部未驗證指令。
 - **硬編碼機密與過度授權 (`Critical` / `Warning`)**：寫死 API Key / Token，或未遵循最小權限原則（如高風險操作缺少明確授權守門約束）。
-- **未授權修改持久化記憶 (`Critical`)**：未經使用者同意即擅自修改全域規範檔（如 `AGENTS.md`、`CLAUDE.md`、`MEMORY.md`）的指令。
+- **未授權修改持久化記憶 (`Critical`)**：未經使用者同意即擅自修改全域規範入口檔或長期記憶檔（如 `release_target` 投影之根目錄規範檔或 `MEMORY.md`）的指令。
 
 ---
 

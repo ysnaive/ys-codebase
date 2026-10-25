@@ -153,6 +153,8 @@ class MasterSupervisor:
         self._last_active_time = self._start_time
         self._tasks_executed = 0
         self._is_running = False
+        self._is_stopped = False
+        self._stop_lock = threading.Lock()
         self._httpd: Optional[http.server.HTTPServer] = None
         self._lock: Optional[InterProcessLock] = None
         self.port = 0
@@ -201,6 +203,7 @@ class MasterSupervisor:
         self.logger.info(f"Starting MasterSupervisor (PID: {os.getpid()}, Root: {self.yscb_root}, Idle TTL: {self.idle_timeout_sec}s, StartTime: {start_ts})")
 
         self._is_running = True
+        self._is_stopped = False
         self._last_active_time = time.time()
 
         # 1. Start HTTP Server on dynamic port 127.0.0.1:0
@@ -248,33 +251,37 @@ class MasterSupervisor:
 
     def stop(self, force: bool = False) -> None:
         """Stops the master supervisor and all child workers."""
-        self.logger.info(f"Stopping MasterSupervisor (PID: {os.getpid()}, Force: {force})...")
-        self._is_running = False
+        with self._stop_lock:
+            if self._is_stopped:
+                return
+            self._is_stopped = True
+            self.logger.info(f"Stopping MasterSupervisor (PID: {os.getpid()}, Force: {force})...")
+            self._is_running = False
 
-        if self.watcher:
-            self.watcher.stop()
-            self.watcher = None
+            if self.watcher:
+                self.watcher.stop()
+                self.watcher = None
 
-        with self._worker_lock:
-            self._kill_worker_locked(timeout_sec=2.0)
+            with self._worker_lock:
+                self._kill_worker_locked(timeout_sec=2.0)
 
-        if self._httpd:
-            try:
-                self._httpd.shutdown()
-                self._httpd.server_close()
-            except Exception:
-                pass
-            self._httpd = None
+            if self._httpd:
+                try:
+                    self._httpd.shutdown()
+                    self._httpd.server_close()
+                except Exception:
+                    pass
+                self._httpd = None
 
-        if self._lock:
-            try:
-                self._lock.release()
-            except Exception:
-                pass
-            self._lock = None
+            if self._lock:
+                try:
+                    self._lock.release()
+                except Exception:
+                    pass
+                self._lock = None
 
-        self._cleanup_state()
-        self.logger.archive_and_close()
+            self._cleanup_state()
+            self.logger.archive_and_close()
 
     def _kill_worker_locked(self, timeout_sec: float = 2.0) -> None:
         """Safely terminates child worker process with two-stage handshake and closes all pipe handles."""
