@@ -1532,10 +1532,12 @@ class TestPlansModelRecord(YSCBTestCase):
         (ft_done_dir / "fast_track_plan.md").write_text(
             "# Fast Track\n\n> 功能名稱：FT Done\n> 建立日期：2026-10-25\n"
             "> 所屬主計畫：N/A (Root Plan)\n> 狀態：Completed\n> 模型：Gemini 4 Argon (Low)\n\n"
-            "## 1. 變更摘要與極速通道守門檢核\n- [x] ok\n"
-            "## 2. 受影響檔案與介面影響評估\n- ok\n"
-            "## 3. 實作任務與驗收清單\n- [x] **FT-01**：ok\n"
-            "## 4. 驗證紀錄與三層文檔對齊\n- [x] ok\n",
+            "## 1. 敏捷需求與實作計畫 (FP-01 Specification & Plan)\n"
+            "### 1.1 4 大剛性守門合規檢核 (Mandatory 4-Gate Check)\n- [x] ok\n"
+            "### 1.2 核心需求與邊界\n- ok\n"
+            "### 1.3 實作任務與測試規劃\n- [x] **FT-01**：ok\n"
+            "## 2. 實作與驗證成果 (FP-02 Execution & Test Log)\n- ok\n"
+            "## 3. SOP Review 審查與結案交付 (Review & FP-03 Closure)\n- [x] ok\n",
             encoding="utf-8",
         )
         rep_done = real_verifier.verify_plan(

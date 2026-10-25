@@ -121,6 +121,7 @@ def hello(cmd_bags: Any) -> int:
 class SandboxProvisioner:
     """Sandbox environment lifecycle manager and provisioner (dev op-mksb engine)."""
     _ACTIVE_SANDBOXES = set()
+    _SANDBOX_LOCK = threading.RLock()
     _PIP_LOCK = threading.Lock()
     _ADAPTED_SPECS = set()
 
@@ -167,41 +168,46 @@ class SandboxProvisioner:
             int: Number of deleted sandboxes.
         """
         try:
-            if sandbox_parent_dir:
-                sandbox_parent = sandbox_parent_dir
-            else:
-                if not uri.exists("cache://dev/sandbox/"):
+            with SandboxProvisioner._SANDBOX_LOCK:
+                if sandbox_parent_dir:
+                    sandbox_parent = sandbox_parent_dir
+                else:
+                    if not uri.exists("cache://dev/sandbox/"):
+                        return 0
+                    sandbox_parent = uri.resolve("cache://dev/sandbox/")
+
+                if not os.path.isdir(sandbox_parent):
                     return 0
-                sandbox_parent = uri.resolve("cache://dev/sandbox/")
 
-            if not os.path.isdir(sandbox_parent):
-                return 0
+                exclude_set = set(exclude or [])
+                for active_p in SandboxProvisioner._ACTIVE_SANDBOXES:
+                    exclude_set.add(active_p)
+                    exclude_set.add(os.path.basename(active_p))
+                active_sb_env = os.environ.get("YSCB_SANDBOX_DIR")
+                if active_sb_env:
+                    exclude_set.add(os.path.abspath(active_sb_env))
+                    exclude_set.add(os.path.basename(os.path.abspath(active_sb_env)))
 
-            exclude_set = set(exclude or [])
-            for active_p in SandboxProvisioner._ACTIVE_SANDBOXES:
-                exclude_set.add(active_p)
-                exclude_set.add(os.path.basename(active_p))
+                entries = [
+                    d for d in os.listdir(sandbox_parent)
+                    if d.startswith("sandbox_")
+                    and os.path.isdir(os.path.join(sandbox_parent, d))
+                    and d not in exclude_set
+                    and os.path.join(sandbox_parent, d) not in exclude_set
+                ]
+                entries.sort()
 
-            entries = [
-                d for d in os.listdir(sandbox_parent)
-                if d.startswith("sandbox_")
-                and os.path.isdir(os.path.join(sandbox_parent, d))
-                and d not in exclude_set
-                and os.path.join(sandbox_parent, d) not in exclude_set
-            ]
-            entries.sort()
+                if len(entries) <= max_keep:
+                    return 0
 
-            if len(entries) <= max_keep:
-                return 0
-
-            num_to_delete = len(entries) - max_keep
-            to_delete = entries[:num_to_delete]
-            deleted_count = 0
-            for item in to_delete:
-                full_p = os.path.join(sandbox_parent, item)
-                if SandboxProvisioner.cleanup_sandbox(full_p, force=True):
-                    deleted_count += 1
-            return deleted_count
+                num_to_delete = len(entries) - max_keep
+                to_delete = entries[:num_to_delete]
+                deleted_count = 0
+                for item in to_delete:
+                    full_p = os.path.join(sandbox_parent, item)
+                    if SandboxProvisioner.cleanup_sandbox(full_p, force=True):
+                        deleted_count += 1
+                return deleted_count
         except Exception as e:
             print(f"[dev:sandbox] Warning: Failed during prune_sandboxes: {e}", file=sys.stderr)
             return 0
@@ -375,6 +381,9 @@ class SandboxProvisioner:
         host_venv_dir = os.path.join(host_yscb_dir, ".venv")
         if not os.path.exists(host_venv_dir):
             return False
+        real_host_venv_dir = os.path.realpath(host_venv_dir)
+        if os.path.exists(real_host_venv_dir):
+            host_venv_dir = real_host_venv_dir
 
         sandbox_venv_dir = os.path.join(sandbox_engine_dir, ".venv")
         if os.path.lexists(sandbox_venv_dir):
@@ -435,18 +444,20 @@ class SandboxProvisioner:
         if os.environ.get("YSCB_TEST_SANDBOX") != "1":
             SandboxProvisioner.adapt_build_pip_dependencies(target_modules=target_modules, quiet=True)
 
-        if not target_dir:
-            from datetime import datetime
-            SandboxProvisioner.prune_sandboxes(max_keep=3)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            unique_hex = uuid.uuid4().hex[:6]
-            sandbox_id = f"sandbox_{ts}_{unique_hex}"
-            target_dir = uri.resolve(f"cache://dev/sandbox/{sandbox_id}")
-            
-        SandboxProvisioner._ACTIVE_SANDBOXES.add(os.path.abspath(target_dir))
-        ctx = SandboxContext(target_dir)
-        for d in [ctx.sandbox_dir, ctx.project_dir, ctx.host_dir, ctx.engine_dir, ctx.provider_dir]:
-            os.makedirs(d, exist_ok=True)
+        with SandboxProvisioner._SANDBOX_LOCK:
+            if not target_dir:
+                from datetime import datetime
+                if os.environ.get("YSCB_TEST_SANDBOX") != "1":
+                    SandboxProvisioner.prune_sandboxes(max_keep=8)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                unique_hex = uuid.uuid4().hex[:6]
+                sandbox_id = f"sandbox_{ts}_{unique_hex}"
+                target_dir = uri.resolve(f"cache://dev/sandbox/{sandbox_id}")
+
+            SandboxProvisioner._ACTIVE_SANDBOXES.add(os.path.abspath(target_dir))
+            ctx = SandboxContext(target_dir)
+            for d in [ctx.sandbox_dir, ctx.project_dir, ctx.host_dir, ctx.engine_dir, ctx.provider_dir]:
+                os.makedirs(d, exist_ok=True)
 
         # 1. Load host config template and inherit installed modules
         prov_uri = f"file:///{ctx.provider_dir.replace(os.sep, '/')}"
@@ -568,32 +579,33 @@ class SandboxProvisioner:
     @staticmethod
     def cleanup_sandbox(sandbox_dir: str, force: bool = False, is_harness_cleanup: bool = False) -> bool:
         """Tears down the virtual sandbox safely with active running sandbox guardrail."""
-        target_abs = os.path.abspath(sandbox_dir)
-        SandboxProvisioner._ACTIVE_SANDBOXES.discard(target_abs)
-        if not os.path.exists(sandbox_dir):
-            return True
-
-        # Guardrail: protect active harness sandbox from accidental child test case deletion
-        if not is_harness_cleanup and os.environ.get("YSCB_TEST_SANDBOX") == "1":
-            active_sb = os.environ.get("YSCB_SANDBOX_DIR")
-            if active_sb and os.path.abspath(active_sb) == target_abs:
-                return True
-            curr_cwd = os.path.abspath(os.getcwd())
-            if curr_cwd == target_abs or curr_cwd.startswith(target_abs + os.sep):
+        with SandboxProvisioner._SANDBOX_LOCK:
+            target_abs = os.path.abspath(sandbox_dir)
+            SandboxProvisioner._ACTIVE_SANDBOXES.discard(target_abs)
+            if not os.path.exists(sandbox_dir):
                 return True
 
-        try:
-            ctx = SandboxContext(sandbox_dir)
-            scanned_roots = [
-                os.path.join(ctx.engine_dir, "source"),
-                os.path.join(ctx.engine_dir, ".modules")
-            ]
-            with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
-                events.broadcast("on_test_teardown", context=ctx, emit_module="dev", search_roots=scanned_roots)
-            SandboxProvisioner._unlink_projected_venv(ctx.engine_dir)
-            shutil.rmtree(sandbox_dir)
-            return True
-        except Exception as e:
-            if not force:
-                print(f"[dev:sandbox] Warning: Failed to clean sandbox '{sandbox_dir}': {e}", file=sys.stderr)
-            return False
+            # Guardrail: protect active harness sandbox from accidental child test case deletion
+            if not is_harness_cleanup and os.environ.get("YSCB_TEST_SANDBOX") == "1":
+                active_sb = os.environ.get("YSCB_SANDBOX_DIR")
+                if active_sb and os.path.abspath(active_sb) == target_abs:
+                    return True
+                curr_cwd = os.path.abspath(os.getcwd())
+                if curr_cwd == target_abs or curr_cwd.startswith(target_abs + os.sep):
+                    return True
+
+            try:
+                ctx = SandboxContext(sandbox_dir)
+                scanned_roots = [
+                    os.path.join(ctx.engine_dir, "source"),
+                    os.path.join(ctx.engine_dir, ".modules")
+                ]
+                with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
+                    events.broadcast("on_test_teardown", context=ctx, emit_module="dev", search_roots=scanned_roots)
+                SandboxProvisioner._unlink_projected_venv(ctx.engine_dir)
+                shutil.rmtree(sandbox_dir)
+                return True
+            except Exception as e:
+                if not force:
+                    print(f"[dev:sandbox] Warning: Failed to clean sandbox '{sandbox_dir}': {e}", file=sys.stderr)
+                return False

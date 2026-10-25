@@ -300,6 +300,24 @@ class PlanVerifier:
         self._template_headers_cache[template_name] = [n for n, _ in specs]
         return specs
 
+    @staticmethod
+    def _is_header_match(exp_norm: str, doc_norm: str) -> bool:
+        """
+        判斷模板預期章節與文件實際章節是否匹配。
+        防範否定詞前綴（如「非功能需求」vs「功能需求」）因模糊子字串包含而產生誤匹配。
+        """
+        if not exp_norm or not doc_norm:
+            return False
+        if exp_norm == doc_norm:
+            return True
+        shorter, longer = (exp_norm, doc_norm) if len(exp_norm) < len(doc_norm) else (doc_norm, exp_norm)
+        pos = longer.find(shorter)
+        if pos == -1:
+            return False
+        if pos > 0 and longer[pos - 1] in ("非", "不", "無", "未"):
+            return False
+        return True
+
     def get_resolved_template_headers(self, template_name: str) -> List[str]:
         """
         讀取已解析之標準模板並提取其定義之正規化 Markdown 章節標題清單（向下相容）。
@@ -650,7 +668,7 @@ class PlanVerifier:
                             doc_headers.append(norm)
 
                 for exp_norm, exp_raw in expected_specs:
-                    matched = any(exp_norm in dh or dh in exp_norm for dh in doc_headers)
+                    matched = any(self._is_header_match(exp_norm, dh) for dh in doc_headers)
                     if not matched:
                         missing_specs.append((exp_norm, exp_raw))
 

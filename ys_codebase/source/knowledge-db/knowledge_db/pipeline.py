@@ -522,14 +522,14 @@ class IndexingPipeline:
                     degrade_notice = (
                         "[knowledge-db:notice] 向量索引未建立已降級（本次使用純 BM25 模式）。"
                         "請執行 `python yscb.py knowledge-db index` 重建向量索引，"
-                        "或於 yscb.config.json / yscb.config.local.json 設定 `knowledge-db.enable_vector_search: false` 關閉向量語意搜尋。"
+                        "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
                     )
                 elif hasattr(vec_idx, "is_compatible_with") and not vec_idx.is_compatible_with(expected_model, expected_dim):
                     vector_degraded = True
                     degrade_notice = (
                         f"[knowledge-db:notice] 向量快取與當前模型 '{expected_model}' (維度要求: {expected_dim}) 不相容已降級（本次使用純 BM25 模式）。"
                         "請執行 `python yscb.py knowledge-db index --force` 重建向量索引，"
-                        "或於 yscb.config.json / yscb.config.local.json 設定 `knowledge-db.enable_vector_search: false` 關閉向量語意搜尋。"
+                        "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
                     )
                 elif self.embedding_service.is_available:
                     new_texts = [
@@ -571,7 +571,7 @@ class IndexingPipeline:
                                 degrade_notice = (
                                     f"[knowledge-db:notice] 待向量化符號過多（{num_symbols} 個，預估耗時 {est_total:.1f}s > {timeout_seconds:.1f}s）已熔斷降級（本次使用純 BM25 模式）。"
                                     "請執行 `python yscb.py knowledge-db index` 重建/更新向量索引，"
-                                    "或於 yscb.config.json / yscb.config.local.json 設定 `knowledge-db.enable_vector_search: false` 關閉向量語意搜尋。"
+                                    "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
                                 )
                                 # 熔斷：不將不完整向量寫入磁碟，但完成 BM25 與圖譜更新
                             else:
@@ -1207,7 +1207,14 @@ class IndexingPipeline:
         self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True)
         norm_ftypes = self._normalize_ftypes(ftypes)
 
-        target_sym = self.find_target_symbol(target_query, space=space)
+        if norm_ftypes and not all(ft in ("md", "markdown") for ft in norm_ftypes):
+            target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
+            if not target_sym:
+                target_sym = self.find_target_symbol(target_query, space=space)
+        else:
+            target_sym = self.find_target_symbol(target_query, space=space)
+            if not target_sym and norm_ftypes:
+                target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
         if not target_sym:
             return {
                 "target_query": target_query,
@@ -1275,7 +1282,14 @@ class IndexingPipeline:
         self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True)
         norm_ftypes = self._normalize_ftypes(ftypes)
 
-        target_sym = self.find_target_symbol(target_query, space=space)
+        if norm_ftypes and not all(ft in ("md", "markdown") for ft in norm_ftypes):
+            target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
+            if not target_sym:
+                target_sym = self.find_target_symbol(target_query, space=space)
+        else:
+            target_sym = self.find_target_symbol(target_query, space=space)
+            if not target_sym and norm_ftypes:
+                target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
         if not target_sym:
             return {
                 "target_query": target_query,
@@ -1331,7 +1345,14 @@ class IndexingPipeline:
         self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True)
         norm_ftypes = self._normalize_ftypes(ftypes)
 
-        target_sym = self.find_target_symbol(target_query, space=space)
+        if norm_ftypes and not all(ft in ("md", "markdown") for ft in norm_ftypes):
+            target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
+            if not target_sym:
+                target_sym = self.find_target_symbol(target_query, space=space)
+        else:
+            target_sym = self.find_target_symbol(target_query, space=space)
+            if not target_sym and norm_ftypes:
+                target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
         if not target_sym:
             return {
                 "target_query": target_query,

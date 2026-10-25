@@ -15,9 +15,9 @@
   - `knowledge-db status`: 索引資料庫與已註冊空間狀態診斷。
   - `knowledge-db model`: 向量模型生命週期管理。
   - `knowledge-db clean`: 快取清理與索引重建。
-- **生命週期 Hooks**：
-  - `dev: on_test_setup`, `on_test_teardown`
-  - `server: on_server_worker_warming`
+- **生命週期 Hooks（自動掃描 `scripts/hook.{emit_module}.py`）**：
+  - `dev: on_test_setup`, `on_test_teardown` (`scripts/hook.dev.py`)
+  - `server: on_server_worker_warming` (`scripts/hook.server.py`)
 
 ### 1.2 `server.json`（常駐微服務）
 - 註冊 `knowledge-db-watcher` 背景 Worker 監聽檔案變更。

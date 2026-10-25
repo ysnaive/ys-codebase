@@ -752,7 +752,7 @@ class Tester:
             if "--all" in clean_argv:
                 SandboxProvisioner.cleanup_all_sandboxes()
         else:
-            SandboxProvisioner.prune_sandboxes(max_keep=3)
+            SandboxProvisioner.prune_sandboxes(max_keep=8)
 
         ret_code = 0 if all_passed else 1
         if ret_code == 0 and not is_nested:
@@ -833,7 +833,6 @@ class Tester:
                 print(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
             SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
         else:
-            SandboxProvisioner.prune_sandboxes(max_keep=3)
             if not is_nested:
                 if ret_code != 0:
                     print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}", flush=True)

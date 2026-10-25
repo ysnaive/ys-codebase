@@ -60,7 +60,7 @@
 ### sub_08_final_acceptance_and_suite_purification (Completed)
 - **全主計畫二次驗收、測試集 13 $\to$ 6 子系統 1:1 歸戶純化與工作區根目錄清理收官 (`FR-01` ~ `FR-04`)**：
   - **根目錄 `./scratch` 與 `./scripts` 洩漏歸因與清理**：確認非 `dev test` 沙盒洩漏，而是歷史單次測試與 git worktree 殘留之空目錄，執行物理清理使工作區 100% 純淨。
-  - **測試集 13 $\to$ 6 檔無損純化收斂**：依 `testing-sop` 六維度體檢，將 7 支計畫名碎片測試檔無損整併至 6 支子系統測試檔（`test_compiler.py`, `test_publisher.py`, `test_initializer.py`, `test_plans_toolchain.py`, `test_roadmap_cli.py`, `test_cli_dispatch.py`），移除 `if uri.exists` 條件放行斷言並修復真實 CLI 參數契約。
+  - **測試集 13 $\to$ 6 檔無損純化收斂**：依 `testing-sop` 六維度體檢，將 7 支計畫名碎片測試檔無損整併至 6 支子系統測試檔（`test_compiler.py`, `test_publisher.py`, `test_initializer.py`, `test_plans_toolchain.py`, `test_targets.py`, `test_roadmap.py`），移除 `if uri.exists` 條件放行斷言並修復真實 CLI 參數契約。
 
 ### sub_07_auto_context_lean_optimization (Completed)
 - **`/auto` 連續推進工作流 Context 精實化重構與 `PXX_YYYY_auto.md` 雙軌相容 (`FP-01:DR-01` ~ `FP-01:DR-03`)**：

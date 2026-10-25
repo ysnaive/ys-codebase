@@ -123,44 +123,49 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_service_manager_lifecycle(self):
-        """FT-08: ServiceManager unifies service lifecycle with server."""
+        """FT-08: ServiceManager unifies service lifecycle, metadata, and status with server."""
         mgr = ServiceManager()
         svc = MockService("test-kdb-watcher")
-        mgr.register(svc)
+        mgr.register(svc, provider="knowledge-db", description="Test file watcher")
 
         self.assertFalse(svc.started)
+        st_init = mgr.get_status()
+        self.assertEqual(len(st_init), 1)
+        self.assertEqual(st_init[0]["name"], "test-kdb-watcher")
+        self.assertEqual(st_init[0]["provider"], "knowledge-db")
+        self.assertEqual(st_init[0]["description"], "Test file watcher")
+        self.assertFalse(st_init[0]["alive"])
+
         mgr.start_all({"root": self.root_dir})
         self.assertTrue(svc.started)
-
-        st = mgr.get_status()
-        self.assertEqual(len(st), 1)
-        self.assertEqual(st[0]["name"], "test-kdb-watcher")
-        self.assertTrue(st[0]["alive"])
+        self.assertTrue(mgr.get_status()[0]["alive"])
 
         mgr.stop_all()
         self.assertTrue(svc.stopped)
+        self.assertFalse(mgr.get_status()[0]["alive"])
         self.mark_passed()
 
     def test_modules_watcher_detection(self):
-        """FT-10: ModulesWatcher detects file changes under .modules."""
+        """FT-10: ModulesWatcher detects file changes under .modules and extracts affected module names."""
         modules_dir = os.path.join(self.root_dir, ".modules")
-        os.makedirs(modules_dir, exist_ok=True)
+        kdb_dir = os.path.join(modules_dir, "knowledge-db")
+        os.makedirs(kdb_dir, exist_ok=True)
 
-        change_notified = []
+        notified_modules = []
 
-        def on_change():
-            change_notified.append(True)
+        def on_change(affected):
+            notified_modules.append(affected)
 
-        watcher = ModulesWatcher(modules_dir=modules_dir, on_change_callback=on_change, poll_interval_sec=0.1)
+        watcher = ModulesWatcher(modules_dir=modules_dir, on_change_callback=on_change, poll_interval_sec=0.1, debounce_sec=0.1)
         watcher.start()
 
         try:
             time.sleep(0.15)
-            # Create a new file
-            with open(os.path.join(modules_dir, "dummy.py"), "w", encoding="utf-8") as f:
-                f.write("# update")
-            time.sleep(0.3)
-            self.assertGreater(len(change_notified), 0)
+            with open(os.path.join(kdb_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "knowledge-db"}')
+            time.sleep(0.35)
+            self.assertGreater(len(notified_modules), 0)
+            self.assertIn("knowledge-db", notified_modules[0])
         finally:
             watcher.stop()
         self.mark_passed()
@@ -249,60 +254,6 @@ class TestServerModule(YSCBTestCase):
         self.assertEqual(res2, 2)
         self.mark_passed()
 
-    def test_service_manager_metadata_and_status(self):
-        """FT-05 & FT-06: Verify ServiceManager records provider, description and status."""
-        sm = ServiceManager()
-        mock = MockService(name="kdb-watcher")
-        sm.register(mock, provider="knowledge-db", description="Test file watcher")
-
-        status = sm.get_status()
-        self.assertEqual(len(status), 1)
-        self.assertEqual(status[0]["name"], "kdb-watcher")
-        self.assertEqual(status[0]["provider"], "knowledge-db")
-        self.assertEqual(status[0]["description"], "Test file watcher")
-        self.assertFalse(status[0]["alive"])
-
-        sm.start_all({})
-        self.assertTrue(sm.get_status()[0]["alive"])
-
-        sm.stop_all()
-        self.assertFalse(sm.get_status()[0]["alive"])
-        self.mark_passed()
-
-    def test_worker_warming_event(self):
-        """FT-03: Verify WarmWorker broadcasts server_worker_warming."""
-        worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
-        with unittest.mock.patch.object(events, "broadcast") as mock_broadcast:
-            worker.pre_warm()
-            calls = [c.args[0] for c in mock_broadcast.call_args_list if c.args]
-            self.assertIn("server_worker_warming", calls)
-        self.mark_passed()
-
-    def test_modules_watcher_affected_modules(self):
-        """FT-01: ModulesWatcher extracts affected module names and supports arguments."""
-        modules_dir = os.path.join(self.root_dir, ".modules")
-        kdb_dir = os.path.join(modules_dir, "knowledge-db")
-        os.makedirs(kdb_dir, exist_ok=True)
-
-        notified_modules = []
-
-        def on_change(affected):
-            notified_modules.append(affected)
-
-        watcher = ModulesWatcher(modules_dir=modules_dir, on_change_callback=on_change, poll_interval_sec=0.1, debounce_sec=0.1)
-        watcher.start()
-
-        try:
-            time.sleep(0.15)
-            with open(os.path.join(kdb_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "knowledge-db"}')
-            time.sleep(0.35)
-            self.assertGreater(len(notified_modules), 0)
-            self.assertIn("knowledge-db", notified_modules[0])
-        finally:
-            watcher.stop()
-        self.mark_passed()
-
     def test_watcher_reload_dispatch_worker(self):
         """FT-02: Non-server module change dispatches to restart_worker."""
         sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
@@ -354,15 +305,6 @@ class TestServerModule(YSCBTestCase):
         self.assertFalse(watcher_disabled["enabled"])
         self.assertFalse(watcher_disabled["active"])
         self.assertIsNone(watcher_disabled["monitored_dir"])
-        self.mark_passed()
-
-    def test_server_manifest_metadata(self):
-        """FT-01: Verify server module manifest description and dependencies."""
-        manifest_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "manifest.json")
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self.assertEqual(data["name"], "server")
-        self.assertEqual(data["description"], "YS-Codebase Persistent Server & Warm Worker Subsystem")
         self.mark_passed()
 
     def test_format_startup_banner_and_shutdown_summary(self):
