@@ -751,6 +751,10 @@ class ReleasePublisher:
                                 f.write(remaining + "\n")
                             continue
                     os.remove(f_rem)
+                    parent_d = os.path.dirname(f_rem)
+                    while parent_d and parent_d != proj_root and os.path.isdir(parent_d) and not os.listdir(parent_d):
+                        os.rmdir(parent_d)
+                        parent_d = os.path.dirname(parent_d)
                 except Exception as e:
                     print(f"[publisher:warning] Failed removing stale file {f_rem}: {e}", file=sys.stderr)
 
