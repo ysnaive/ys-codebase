@@ -19,12 +19,25 @@ from core.commands.resolver import (
     OptionResolutionError,
     OptionResolver,
 )
-from core.platform import can_spawn_background_daemon, is_process_alive, spawn_detached
+from core.platform import InterProcessLock, can_spawn_background_daemon, is_process_alive, spawn_detached
 
 # 快取已載入之 Contributes Registry
 _GLOBAL_REGISTRY: Optional[CommandsRegistry] = None
 _MODULE_CACHE: Dict[str, Any] = {}
 _AUTO_SPAWN_WARNED: bool = False
+
+# 環境與模組生命週期變異指令（執行前禁止自動拉起背景 Server，防範解壓/重載中途引發重啟風暴）
+_LIFECYCLE_MUTATION_COMMANDS = {
+    "install",
+    "update",
+    "remove",
+    "reload",
+    "restore",
+    "rollback",
+    "bootstrap",
+    "init",
+    "self-update",
+}
 
 
 def _get_yscb_root() -> Tuple[str, str]:
@@ -185,6 +198,17 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
                         pass
         except Exception:
             return
+
+    # 探測 daemon.lock 是否已被正在啟動或運行中的 Master 持有（消除啟動期 daemon.json 寫入前之重複 spawn 競態）
+    lock_file = os.path.join(yscb_abs, ".cache", "server", "daemon.lock")
+    if os.path.isfile(lock_file):
+        try:
+            probe_lock = InterProcessLock(lock_file)
+            if not probe_lock.acquire(blocking=False):
+                return
+            probe_lock.release()
+        except Exception:
+            pass
 
     # [!] 剛性架構約束：僅允許 .modules 運行時空間，禁止任何 fallback
     if not os.path.isdir(os.path.join(yscb_abs, ".modules", "server")):
@@ -573,8 +597,11 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
             return hot_res
         # EC-04: 熱派發通訊失敗或常駐離線，透明降級至本地冷派發
 
-    # 非 server / dev 指令在背景按需喚醒 Server 常駐進程
-    if module_name not in ("server", "dev"):
+    # 非 server / dev 指令且非 core 生命週期變異指令時，在背景按需喚醒 Server 常駐進程
+    primary_cmd_token = cmd_path[0] if cmd_path else ""
+    if module_name not in ("server", "dev") and not (
+        module_name == "core" and primary_cmd_token in _LIFECYCLE_MUTATION_COMMANDS
+    ):
         _maybe_auto_spawn_server(host_dir, yscb_abs)
 
     # 10. 本地冷派發執行

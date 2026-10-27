@@ -501,6 +501,167 @@ class AtomicEngine:
                 uri.makedirs(f"config://{module_name}", exist_ok=True)
                 uri.write_json(cfg_local_uri, infilled_data, indent=2)
 
+    @staticmethod
+    def _atomic_swap_dir(
+        staging_dir: str,
+        target_dir: str,
+        retries: int = 3,
+        retry_delay: float = 0.05,
+    ) -> None:
+        """
+        Atomically swaps a prepared staging_dir into target_dir within the same parent filesystem.
+        Moves any existing target_dir to a hidden .old_<name>_<pid> sibling, replaces staging_dir
+        into target_dir, rolls back from .old on failure, and removes .old upon success.
+        """
+        target_abs = os.path.abspath(target_dir)
+        staging_abs = os.path.abspath(staging_dir)
+        parent_dir = os.path.dirname(target_abs)
+        base_name = os.path.basename(target_abs)
+        old_abs = os.path.join(parent_dir, f".old_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
+
+        def _replace_with_retry(src: str, dst: str) -> None:
+            last_err: Optional[Exception] = None
+            for attempt in range(max(1, retries)):
+                try:
+                    os.replace(src, dst)
+                    return
+                except OSError as err:
+                    last_err = err
+                    if attempt + 1 < retries:
+                        time.sleep(retry_delay)
+            if last_err is not None:
+                raise last_err
+
+        moved_old = False
+        try:
+            if os.path.exists(old_abs):
+                shutil.rmtree(old_abs, ignore_errors=True)
+
+            if os.path.exists(target_abs):
+                _replace_with_retry(target_abs, old_abs)
+                moved_old = True
+
+            _replace_with_retry(staging_abs, target_abs)
+        except Exception:
+            if moved_old and not os.path.exists(target_abs) and os.path.exists(old_abs):
+                try:
+                    _replace_with_retry(old_abs, target_abs)
+                except Exception:
+                    pass
+            raise
+        finally:
+            if os.path.exists(old_abs):
+                shutil.rmtree(old_abs, ignore_errors=True)
+            if os.path.exists(staging_abs):
+                shutil.rmtree(staging_abs, ignore_errors=True)
+
+    def _deploy_and_strip_single_module_config(self, mod: str, mod_dir_real: str) -> None:
+        """
+        Extracts and infills configuration templates from <mod_dir_real>/configurable/
+        and root <mod_dir_real>/config.*.json into config://<mod>/, then physically
+        deletes all template files and .yscbignore from <mod_dir_real>.
+        """
+        if not os.path.isdir(mod_dir_real):
+            return
+
+        def _resolve_target_cfg_uris(tmpl_file: str) -> Tuple[str, bool, Optional[str]]:
+            if tmpl_file == "contribute.json":
+                return f"config://{mod}/contribute.json", False, None
+            if tmpl_file == "config.local.json":
+                return f"config://{mod}/config.local.json", True, f"config://{mod}/config.project.json"
+            if tmpl_file == "config.project.json":
+                return f"config://{mod}/config.project.json", False, None
+            if tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
+                sub_name = tmpl_file[len("config."):-len(".local.json")]
+                return (
+                    f"config://{mod}/config.{sub_name}.local.json",
+                    True,
+                    f"config://{mod}/config.{sub_name}.project.json",
+                )
+            if tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
+                sub_name = tmpl_file[len("config."):-len(".project.json")]
+                return f"config://{mod}/config.{sub_name}.project.json", False, None
+            return f"config://{mod}/{tmpl_file}", False, None
+
+        def _infill_single_template(tmpl_real_path: str, target_cfg_uri: str, is_local: bool, proj_pair_uri: Optional[str]) -> None:
+            try:
+                tmpl_data = vfs.read_json(tmpl_real_path)
+            except Exception:
+                return
+            if not isinstance(tmpl_data, dict):
+                return
+
+            target_data: Dict[str, Any] = {}
+            if uri.exists(target_cfg_uri):
+                try:
+                    loaded = uri.read_json(target_cfg_uri)
+                    if isinstance(loaded, dict):
+                        target_data = loaded
+                except Exception:
+                    target_data = {}
+
+            proj_data = None
+            if is_local and proj_pair_uri and uri.exists(proj_pair_uri):
+                try:
+                    proj_data = uri.read_json(proj_pair_uri)
+                except Exception:
+                    proj_data = None
+
+            merged_data, changed = self._deep_infill_dict(target_data, tmpl_data, project_data=proj_data)
+            if changed or not uri.exists(target_cfg_uri):
+                if not is_local or merged_data:
+                    uri.makedirs(f"config://{mod}", exist_ok=True)
+                    uri.write_json(target_cfg_uri, merged_data, indent=2)
+
+        # 1. 優先處理標準 configurable/ 目錄
+        cfg_tpl_dir = os.path.join(mod_dir_real, "configurable")
+        if os.path.isdir(cfg_tpl_dir):
+            try:
+                raw_files = [f for f in os.listdir(cfg_tpl_dir) if f.endswith(".json")]
+                tmpl_files = sorted(raw_files, key=lambda x: (1 if "local" in x else 0, x))
+                for tmpl_file in tmpl_files:
+                    tmpl_real = os.path.join(cfg_tpl_dir, tmpl_file)
+                    target_cfg_uri, is_local, proj_pair_uri = _resolve_target_cfg_uris(tmpl_file)
+                    _infill_single_template(tmpl_real, target_cfg_uri, is_local, proj_pair_uri)
+                    try:
+                        os.remove(tmpl_real)
+                    except OSError:
+                        pass
+                shutil.rmtree(cfg_tpl_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+        # 2. 向下相容掃描模組根目錄殘留之 config.*.json
+        try:
+            raw_root_files = [
+                f for f in os.listdir(mod_dir_real)
+                if f.startswith("config.") and f.endswith(".json") and os.path.isfile(os.path.join(mod_dir_real, f))
+            ]
+            root_files = sorted(raw_root_files, key=lambda x: (1 if "local" in x else 0, x))
+            for tmpl_file in root_files:
+                tmpl_real = os.path.join(mod_dir_real, tmpl_file)
+                if tmpl_file in ("config.local.json", "config.project.json") or (
+                    tmpl_file.startswith("config.") and (tmpl_file.endswith(".local.json") or tmpl_file.endswith(".project.json"))
+                ):
+                    target_cfg_uri, is_local, proj_pair_uri = _resolve_target_cfg_uris(tmpl_file)
+                else:
+                    target_cfg_uri, is_local, proj_pair_uri = f"config://{mod}/config.project.json", False, None
+                _infill_single_template(tmpl_real, target_cfg_uri, is_local, proj_pair_uri)
+                try:
+                    os.remove(tmpl_real)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
+        # 3. 物理移除 .yscbignore (DN-06)
+        ignore_file = os.path.join(mod_dir_real, ".yscbignore")
+        if os.path.isfile(ignore_file):
+            try:
+                os.remove(ignore_file)
+            except OSError:
+                pass
+
     def act_deploy_configs_from_modules(self) -> None:
         """
         Stage 3 (Atomic Config Deployment & Template Purge):
@@ -516,128 +677,12 @@ class AtomicEngine:
         for mod in uri.listdir("module://"):
             if mod not in installed and mod != "core":
                 continue
-            
+
             mod_runtime_dir = f"module://{mod}"
             if not uri.isdir(mod_runtime_dir):
                 continue
-            
-            # 1. 優先處理標準 configurable/ 目錄
-            cfg_tpl_dir = f"{mod_runtime_dir}/configurable"
-            if uri.exists(cfg_tpl_dir) and uri.isdir(cfg_tpl_dir):
-                try:
-                    raw_files = [f for f in uri.listdir(cfg_tpl_dir) if f.endswith(".json")]
-                    # 排序確保 project 先於 local 處理
-                    tmpl_files = sorted(raw_files, key=lambda x: (1 if "local" in x else 0, x))
-                    for tmpl_file in tmpl_files:
-                        tmpl_uri = f"{cfg_tpl_dir}/{tmpl_file}"
-                        try:
-                            tmpl_data = uri.read_json(tmpl_uri)
-                        except Exception:
-                            continue
 
-                        is_local = False
-                        proj_pair_uri = None
-                        if tmpl_file == "contribute.json":
-                            target_cfg_uri = f"config://{mod}/contribute.json"
-                        elif tmpl_file == "config.local.json":
-                            target_cfg_uri = f"config://{mod}/config.local.json"
-                            is_local = True
-                            proj_pair_uri = f"config://{mod}/config.project.json"
-                        elif tmpl_file == "config.project.json":
-                            target_cfg_uri = f"config://{mod}/config.project.json"
-                        elif tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
-                            sub_name = tmpl_file[len("config."):-len(".local.json")]
-                            target_cfg_uri = f"config://{mod}/config.{sub_name}.local.json"
-                            is_local = True
-                            proj_pair_uri = f"config://{mod}/config.{sub_name}.project.json"
-                        elif tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
-                            sub_name = tmpl_file[len("config."):-len(".project.json")]
-                            target_cfg_uri = f"config://{mod}/config.{sub_name}.project.json"
-                        else:
-                            target_cfg_uri = f"config://{mod}/{tmpl_file}"
-
-                        target_data = {}
-                        if uri.exists(target_cfg_uri):
-                            try:
-                                target_data = uri.read_json(target_cfg_uri)
-                            except Exception:
-                                target_data = {}
-
-                        proj_data = None
-                        if is_local and proj_pair_uri and uri.exists(proj_pair_uri):
-                            try:
-                                proj_data = uri.read_json(proj_pair_uri)
-                            except Exception:
-                                proj_data = None
-
-                        merged_data, changed = self._deep_infill_dict(target_data, tmpl_data, project_data=proj_data)
-
-                        if changed or not uri.exists(target_cfg_uri):
-                            if not is_local or merged_data:
-                                uri.makedirs(f"config://{mod}", exist_ok=True)
-                                uri.write_json(target_cfg_uri, merged_data, indent=2)
-
-                        uri.remove(tmpl_uri)
-
-                    # 移除已清空的 configurable 目錄
-                    try:
-                        uri.remove(cfg_tpl_dir)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-
-            # 2. 向下相容掃描模組根目錄殘留之 config.*.json
-            raw_root_files = [f for f in uri.listdir(mod_runtime_dir) if f.startswith("config.") and f.endswith(".json")]
-            root_files = sorted(raw_root_files, key=lambda x: (1 if "local" in x else 0, x))
-            for tmpl_file in root_files:
-                tmpl_uri = f"{mod_runtime_dir}/{tmpl_file}"
-                try:
-                    tmpl_data = uri.read_json(tmpl_uri)
-                except Exception:
-                    continue
-
-                is_local = False
-                proj_pair_uri = None
-                if tmpl_file == "config.local.json":
-                    target_cfg_uri = f"config://{mod}/config.local.json"
-                    is_local = True
-                    proj_pair_uri = f"config://{mod}/config.project.json"
-                elif tmpl_file == "config.project.json":
-                    target_cfg_uri = f"config://{mod}/config.project.json"
-                elif tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
-                    sub_name = tmpl_file[len("config."):-len(".local.json")]
-                    target_cfg_uri = f"config://{mod}/config.{sub_name}.local.json"
-                    is_local = True
-                    proj_pair_uri = f"config://{mod}/config.{sub_name}.project.json"
-                elif tmpl_file.startswith("config.") and tmpl_file.endswith(".project.json"):
-                    sub_name = tmpl_file[len("config."):-len(".project.json")]
-                    target_cfg_uri = f"config://{mod}/config.{sub_name}.project.json"
-                else:
-                    target_cfg_uri = f"config://{mod}/config.project.json"
-
-                target_data = {}
-                if uri.exists(target_cfg_uri):
-                    try:
-                        target_data = uri.read_json(target_cfg_uri)
-                    except Exception:
-                        target_data = {}
-
-                proj_data = None
-                if is_local and proj_pair_uri and uri.exists(proj_pair_uri):
-                    try:
-                        proj_data = uri.read_json(proj_pair_uri)
-                    except Exception:
-                        proj_data = None
-
-                merged_data, changed = self._deep_infill_dict(target_data, tmpl_data, project_data=proj_data)
-
-                if changed or not uri.exists(target_cfg_uri):
-                    if not is_local or merged_data:
-                        uri.makedirs(f"config://{mod}", exist_ok=True)
-                        uri.write_json(target_cfg_uri, merged_data, indent=2)
-
-                uri.remove(tmpl_uri)
+            self._deploy_and_strip_single_module_config(mod, uri.resolve(mod_runtime_dir))
 
 
 
@@ -714,41 +759,61 @@ class AtomicEngine:
                 except Exception:
                     pass
 
-        # Stage 2: 解壓並部署至 modules/
+        # Stage 2 & 3: 於 .modules/.staging_<mod>_<pid>_<ts> 預組裝解壓與組態剝離，再執行目錄級原子替換
         if clean_stage and uri.exists("module://"):
             for mod in uri.listdir("module://"):
+                if mod.startswith("."):
+                    continue
                 if mod != "core" and mod not in installed:
                     uri.rmtree(f"module://{mod}")
                     # 卸載殘留清理快取
                     self._clean_module_cache(mod)
 
+        modules_root_real = uri.resolve("module://")
+        os.makedirs(modules_root_real, exist_ok=True)
+
         for mod, meta in installed.items():
             ver = meta.get("version", "1.0.0.0")
             mirror_zip = f"module.mirror://{mod}/{ver}.zip"
+            mirror_dir_uri = f"module.mirror://{mod}/{ver}/"
             runtime_dst = f"module://{mod}/"
             real_dst = uri.resolve(runtime_dst)
-            
+            staging_dir = os.path.join(modules_root_real, f".staging_{mod}_{os.getpid()}_{int(time.time() * 1000)}")
+
             if uri.exists(mirror_zip):
                 real_zip = uri.resolve(mirror_zip)
-                if os.path.exists(real_dst):
-                    shutil.rmtree(real_dst, ignore_errors=True)
-                with zipfile.ZipFile(real_zip, "r") as zf:
-                    real_dst_abs = os.path.abspath(real_dst)
-                    for member in zf.infolist():
-                        target_path = os.path.abspath(os.path.join(real_dst_abs, member.filename))
-                        if not target_path.startswith(real_dst_abs + os.sep) and target_path != real_dst_abs:
-                            raise RuntimeError(
-                                f"Zip Slip vulnerability detected: '{member.filename}' in mirror '{mirror_zip}' "
-                                f"attempts to extract outside destination '{real_dst}'."
-                            )
-                    zf.extractall(real_dst)
-            elif uri.exists(f"module.mirror://{mod}/{ver}/"):
-                mirror_src = f"module.mirror://{mod}/{ver}/"
-                if os.path.exists(real_dst):
-                    shutil.rmtree(real_dst, ignore_errors=True)
-                uri.copy(mirror_src, runtime_dst)
+                if os.path.exists(staging_dir):
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                os.makedirs(staging_dir, exist_ok=True)
+                try:
+                    with zipfile.ZipFile(real_zip, "r") as zf:
+                        staging_abs = os.path.abspath(staging_dir)
+                        for member in zf.infolist():
+                            target_path = os.path.abspath(os.path.join(staging_abs, member.filename))
+                            if not target_path.startswith(staging_abs + os.sep) and target_path != staging_abs:
+                                raise RuntimeError(
+                                    f"Zip Slip vulnerability detected: '{member.filename}' in mirror '{mirror_zip}' "
+                                    f"attempts to extract outside destination '{real_dst}'."
+                                )
+                        zf.extractall(staging_dir)
+                    self._deploy_and_strip_single_module_config(mod, staging_dir)
+                    self._atomic_swap_dir(staging_dir, real_dst)
+                finally:
+                    if os.path.exists(staging_dir):
+                        shutil.rmtree(staging_dir, ignore_errors=True)
+            elif uri.exists(mirror_dir_uri):
+                real_mirror_src = uri.resolve(mirror_dir_uri)
+                if os.path.exists(staging_dir):
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                try:
+                    shutil.copytree(real_mirror_src, staging_dir, dirs_exist_ok=True)
+                    self._deploy_and_strip_single_module_config(mod, staging_dir)
+                    self._atomic_swap_dir(staging_dir, real_dst)
+                finally:
+                    if os.path.exists(staging_dir):
+                        shutil.rmtree(staging_dir, ignore_errors=True)
 
-        # Stage 3: 掃描並部署組態 (原子提取並無條件清除模板)
+        # Stage 3 fallback: 對任何未經由 mirror 更新但存在於 module:// 的模組（如自舉 core）確保組態模板已部署並剝離
         self.act_deploy_configs_from_modules()
 
         # Stage 4: 依賴注入與事件廣播

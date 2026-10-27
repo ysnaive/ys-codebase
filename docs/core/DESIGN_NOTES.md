@@ -100,13 +100,15 @@ last_updated: "2026-10-15"
 
 ---
 
-### [DN-06] `act_reload` 解壓安裝時無條件物理剝離 `.modules/<mod>/` 內之組態模板與 `.yscbignore` (原 `DN-11`)
+### [DN-06] `act_reload` 解壓安裝時 Staging 預組裝、目錄級原子替換與無條件物理剝離組態模板 (原 `DN-11`)
 
-- **核心決策**：模組運行空間（`module://<module>/`，即 `.modules/<module>/`）內部嚴禁留存任何 `configurable/`、`config.*.json` 組態模板或 `.yscbignore` 檔案；`act_reload` 在 Stage 3 掃描並將缺失組態增量補齊至 `config://<module>/` 後，無條件物理刪除 `.modules/<module>/` 內的模板檔案與目錄。
-- **背後考量**：徹底杜絕執行期程式碼、外部套件或下游應用誤讀 `.modules/` 內的預設組態模板，確保 `config://` 為執行期組態的唯一真理來源 (SSOT)。
+- **核心決策**：
+  1. **Staging 預組裝與組態模板先行剝離**：模組運行空間（`module://<module>/`，即 `.modules/<module>/`）內部嚴禁留存任何 `configurable/`、`config.*.json` 組態模板或 `.yscbignore` 檔案；`act_reload` 在解壓模組時，先於同父目錄隱藏空間 `.modules/.staging_<mod>_<pid>_<ts>/` 解壓並透過 `_deploy_and_strip_single_module_config()` 將缺失組態增量補齊至 `config://<module>/`，隨後在 Staging 目錄內無條件物理刪除模板檔案、空目錄與 `.yscbignore`。
+  2. **同父目錄雙步 `os.replace` 原子目錄替換 (`_atomic_swap_dir`)**：完成預組裝後，將既有 `.modules/<mod>` 移至 `.modules/.old_<mod>_<pid>_<ts>`，隨即將 `.staging` `os.replace` 為 `.modules/<mod>`（若失敗自動將 `.old` 回滾還原），最後清理 `.old`。
+- **背後考量**：徹底杜絕執行期程式碼誤讀 `.modules/` 內的預設組態模板；同時消除「原地先 `rmtree` 再 `extractall`、事後刪模板」造成的長時段目錄撕裂狀態（Torn State）與 `ModulesWatcher` 多重檔案變動重啟風暴。
 - **防禦宣告**：
   > [!WARNING]
-  > **嚴禁在 `.modules/<module>/` 運行空間保留 `config.*.json` 或 `.yscbignore`；任何組態讀取一律透過 `core.config` 或 `config://` 協議存取！**
+  > **嚴禁在 `.modules/<module>/` 運行空間直接執行原地先刪後解（必須經由同父目錄 `.staging_*` 預組裝並剝離模板後原子替換）；嚴禁保留 `config.*.json` 或 `.yscbignore`！**
 
 ---
 

@@ -3,6 +3,7 @@
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "versions": [
     "1.0.0.4",
-    "1.0.1.0"
+    "1.0.1.0",
+    "1.0.1.1"
   ]
 }

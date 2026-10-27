@@ -117,14 +117,16 @@ last_updated: "2026-10-25"
 
 ---
 
-### [DN-08] `WarmWorker.pre_warm()` 服務路徑先行載入時序與 `MasterSupervisor.stop()` 冪等防重入
+### [DN-08] `WarmWorker.pre_warm()` 服務路徑先行載入時序、`MasterSupervisor.start()` 剛性單例鎖與 `stop()`/`restart_server()` 冪等防重入
 - **背景與陷阱**：
   1. 在零 `source/` 隔離環境下，第三方模組（如 `.modules/knowledge-db`）是由 `ServiceManager.load_from_contributes()` 動態注入 `sys.path`。若 `WarmWorker.pre_warm()` 先廣播 `server_worker_warming` 事件才呼叫 `load_from_contributes()`，會導致 `hook.server.py` 在處理預熱事件時因 `sys.path` 尚未包含 `.modules/knowledge-db` 而拋出 `No module named 'knowledge_db'`。
   2. 當 `/api/shutdown`、Idle TTL 或 `restart_server()` 背景執行緒呼叫 `MasterSupervisor.stop()` 關閉 `_httpd` 時，主執行緒 `start(foreground=True)` 的 `finally: self.stop()` 會立即被喚醒並二次進入 `stop()`，引發重複清理與日誌歸檔競態。
+  3. 當多進程並發啟動 Server 或於 `restart_server()` 自重啟期間，新 Master 剛取得 `daemon.lock` 但尚在等待 `_spawn_worker()` 而未寫入 `daemon.json`；若此時第二個進程呼叫 `start()` 發現 `self._lock.acquire(blocking=False)` 為 `False`，卻因 `read_state()` 為 `None` 而誤判為死鎖並往下穿透啟動，將引發多實例無鎖並存、覆寫 `daemon.json` 與連續分裂洩漏。
 - **工程決策**：
   1. **服務路徑先行注入**：`WarmWorker.pre_warm()` 必須先將 `.modules` 加入 `sys.path` 並完成 `self.service_manager.load_from_contributes(self.yscb_root)`，隨後才廣播 `server_worker_warming` 與執行 `start_all()`。
-  2. **停機互斥與 `_is_stopped` 冪等守門**：`MasterSupervisor` 增設 `self._stop_lock` 與 `self._is_stopped` 旗標，確保 `stop()` 在多執行緒與 `finally` 區塊重入時嚴格具備單次執行冪等性。
+  2. **停機與重啟冪等守門**：`MasterSupervisor` 增設 `self._stop_lock`、`self._is_stopped` 與 `self._restarting` 旗標，確保 `stop()` 與 `restart_server()` 在多執行緒重入時嚴格具備單次執行冪等性，且 `restart_server()` 第一時間停止 `self.watcher`。
+  3. **`start()` 剛性單例鎖退出與 `daemon.json` 先行落盤**：`MasterSupervisor.start()` 一旦 `self._lock.acquire(blocking=False)` 返回 `False`，無條件立即返回既有 PID 或 `0` 並終止啟動（絕不穿透）；且取得鎖並綁定 HTTP Port 後立即先行寫入初始 `daemon.json`，待 `_spawn_worker()` 完成後再更新 `worker_pid`。
 
 > [!CAUTION]
-> 嚴禁將 `events.broadcast("server_worker_warming")` 移至 `service_manager.load_from_contributes()` 之前，亦嚴禁移除 `MasterSupervisor.stop()` 的 `_stop_lock` 與 `_is_stopped` 冪等守門。
+> 嚴禁在 `MasterSupervisor.start()` 中當 `self._lock.acquire(blocking=False)` 失敗時向下穿透啟動 HTTP Server 或 Worker！嚴禁將 `events.broadcast("server_worker_warming")` 移至 `service_manager.load_from_contributes()` 之前，亦嚴禁移除 `stop()` / `restart_server()` 的 `_stop_lock` 冪等守門。
 

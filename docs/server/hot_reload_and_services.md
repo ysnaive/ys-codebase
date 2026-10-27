@@ -116,9 +116,10 @@ class BaseServiceWorker(ABC):
 
 `ModulesWatcher` 以輕量級 `mtime` 快照監聽專案模組部署目錄（`.modules/`），當模組完成安裝、更新或重編譯（如 `install <mod>@build`）時自動觸發重載：
 
-1. **500ms 批次防抖與頂層目錄解析**：
+1. **500ms 批次防抖、`.yscb.lock` 交易感知與頂層目錄解析**：
+   - 當 `core` 正在執行 `install` / `update` / `reload` / `restore` 交易並持有 `cache://.yscb.lock` 時，`ModulesWatcher` 自動延後快照比對，待整批模組完成 `.staging_*` 原子目錄替換與 `scan_and_inject` 並釋放鎖後，才執行單次快照比對。
    - 當偵測到 `.modules/` 下檔案變動時，啟動 **500ms 批次防抖視窗**，聚合連續寫入事件。
-   - 比對快照時精確提取變動檔案所屬之頂層模組目錄集合 `affected_modules: Set[str]`。
+   - 比對快照時精確提取變動檔案所屬之頂層模組目錄集合 `affected_modules: Set[str]`（自動忽略 `.staging_*` 與 `.old_*` 隱藏臨時目錄）。
 2. **雙軌重載分流機制**：
 
 | 變更模組類型 (`affected_modules`) | 重載軌道與調用方法 | 內部執行機制說明 |

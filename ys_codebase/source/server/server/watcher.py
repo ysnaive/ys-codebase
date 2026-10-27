@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Set
 
+from core.platform import InterProcessLock
+
 
 class ModulesWatcher:
     """
@@ -52,21 +54,48 @@ class ModulesWatcher:
             self._thread.join(timeout=1.0)
             self._thread = None
 
+    def _is_core_transaction_locked(self) -> bool:
+        """
+        Checks whether core is currently executing an install/update/reload transaction
+        by probing <yscb_root>/.cache/.yscb.lock non-blockingly, or if .modules/core
+        is mid-transition without manifest.json.
+        """
+        yscb_root = os.path.dirname(self.modules_dir)
+        lock_file = os.path.join(yscb_root, ".cache", ".yscb.lock")
+        if os.path.isfile(lock_file):
+            probe = InterProcessLock(lock_file)
+            if not probe.acquire(blocking=False):
+                return True
+            probe.release()
+
+        core_mod_dir = os.path.join(self.modules_dir, "core")
+        if os.path.isdir(core_mod_dir) and not os.path.isfile(os.path.join(core_mod_dir, "manifest.json")):
+            return True
+
+        return False
+
     def _poll_loop(self) -> None:
         while self._is_running:
             time.sleep(self.poll_interval)
             if not self._is_running:
                 break
 
+            if self._is_core_transaction_locked():
+                continue
+
             current_snapshot = self._take_snapshot()
             if self._has_changed(self._last_snapshot, current_snapshot):
                 # Debounce stabilization
                 if self.debounce_sec > 0:
                     time.sleep(self.debounce_sec)
+                    if not self._is_running or self._is_core_transaction_locked():
+                        continue
                     current_snapshot = self._take_snapshot()
 
                 affected_modules = self._extract_affected_modules(self._last_snapshot, current_snapshot)
                 self._last_snapshot = current_snapshot
+                if not affected_modules:
+                    continue
                 try:
                     self._notify_change(affected_modules)
                 except Exception:

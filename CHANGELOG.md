@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_27_1143_atomic_module_deploy_and_server_leak_fix (Completed)
+
+- **模組運行時 `.modules/<mod>` Staging 原子目錄替換與 `server` 常駐進程分裂洩漏根治 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **`MasterSupervisor.start()` 剛性單例鎖防穿透、`daemon.json` 先行落盤與 `restart_server()` 防重入 (`FR-01`, `FR-02`, `EC-01`, `[P00:DR-01]`, `[P00:DR-02]`)**：修正 `server/master.py` 之 `start()`，當 `self._lock.acquire(blocking=False)` 返回 `False` 時無條件立即返回既有活躍 `state.pid` 或 `0` 並退出，徹底根除啟動競爭窗口期因 `daemon.json` 尚未寫入而誤判死鎖向下穿透建立重複 HTTP Server、`WarmWorker` 與 `ModulesWatcher` 之漏洞；調整啟動時序於綁定 HTTP Port 後立即執行首次 `_write_state()`，待 `_spawn_worker()` 完成後二次更新；於 `restart_server()` 增設 `_stop_lock` 保護之 `self._restarting` 單次重入守門鎖並優先停止 `self.watcher`；更新 `server` `[DN-08]`。
+  - **`.modules/<mod>` 運行時 Staging 預組裝與雙步 `os.replace` 原子目錄切換 (`FR-03`, `EC-02` ~ `EC-04`, `[P00:DR-03]`, `[P02:DR-01]`)**：於 `core/engine.py` 實作 `AtomicEngine._atomic_swap_dir()` 與 `_deploy_and_strip_single_module_config()`，將 `act_reload()` 由「原地先 `rmtree` 後 `extractall`、事後刪模板」重構為「於同父目錄 `.modules/.staging_<mod>_<pid>_<ts>/` 解壓並先行提取部署及物理剝離 `configurable/`、`config.*.json` 與 `.yscbignore` 後，透過 `.old_<mod>_<pid>_<ts>` 進行雙步 `os.replace` 原子切換（含異常自動回滾還原）」；同步升級 `core/installer.py:fetch_and_extract_zip` 與宿主 `yscb.py:_fetch_and_extract_zip` 採用同父目錄 `.staging_*` 原子替換；更新 `core` `[DN-06]`。
+  - **生命週期變異指令免預喚醒、`daemon.lock` 啟動探測與 `ModulesWatcher` 感知 `.yscb.lock` 交易鎖 (`FR-04`, `FR-05`, `[P00:DR-04]`, `[P02:DR-02]`)**：於 `core/commands/dispatcher.py` 新增 `_LIFECYCLE_MUTATION_COMMANDS` 排除集合，禁止在 `update`/`install`/`remove`/`reload`/`restore`/`rollback` 等環境變更指令執行前觸發 `_maybe_auto_spawn_server()`，並於 `_maybe_auto_spawn_server()` 新增 `daemon.lock` 非阻塞探測；於 `Installer.cmd_reload()` 與 `cmd_restore()` 補齊 `act_lock` / `act_unlock` 保護；於 `server/watcher.py` 新增 `ModulesWatcher._is_core_transaction_locked()` 探測 `.cache/.yscb.lock`，在 `core` 更新交易期間自動延後快照比對，待整批交易結束釋放鎖後再觸發單次重載；更新 `docs/server/hot_reload_and_services.md`。新增 `FT-01` ~ `FT-04` 單元測試，`core` (192/192) 與 `server` (39/39) 測試 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_10_25_1639_global_release_readiness_polish (Completed)
 
 - **新世代全量複檢收尾與發布前最終打磨 (Global Step 1~13 Pre-Release Polish) (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-03`, `NFR-01` ~ `NFR-02`)**：
