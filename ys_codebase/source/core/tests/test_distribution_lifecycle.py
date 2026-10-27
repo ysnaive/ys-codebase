@@ -472,4 +472,57 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertEqual(content, "from_dot_build")
         self.mark_passed()
 
+    def test_atomic_swap_dir_and_reload_staging_strip(self):
+        """FR-03, EC-02, EC-03, EC-04 (2026_10_27_1143): 驗證 _atomic_swap_dir 目錄原子切換、異常回滾與 act_reload Staging 組態預剝離。"""
+        from core.engine import AtomicEngine
+
+        parent = os.path.join(self.temp_dir, "atomic_test")
+        os.makedirs(parent, exist_ok=True)
+        target_dir = os.path.join(parent, "mymod")
+        staging_dir = os.path.join(parent, ".staging_mymod")
+        os.makedirs(target_dir, exist_ok=True)
+        os.makedirs(staging_dir, exist_ok=True)
+
+        with open(os.path.join(target_dir, "ver.txt"), "w", encoding="utf-8") as f:
+            f.write("v1")
+        with open(os.path.join(staging_dir, "ver.txt"), "w", encoding="utf-8") as f:
+            f.write("v2")
+
+        AtomicEngine._atomic_swap_dir(staging_dir, target_dir)
+        self.assertFalse(os.path.exists(staging_dir))
+        with open(os.path.join(target_dir, "ver.txt"), "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "v2")
+
+        # EC-03: 驗證當第二階段 os.replace(staging -> target) 失敗時，自動將 .old 回滾還原至 target_dir
+        bad_staging = os.path.join(parent, ".staging_nonexistent")
+        with self.assertRaises(OSError):
+            AtomicEngine._atomic_swap_dir(bad_staging, target_dir, retries=1)
+        self.assertTrue(os.path.isdir(target_dir))
+        with open(os.path.join(target_dir, "ver.txt"), "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "v2")
+
+        # 驗證無任何 .old_* 或 .staging_* 殘留
+        leftovers = [e for e in os.listdir(parent) if e.startswith(".")]
+        self.assertEqual(leftovers, [])
+        self.mark_passed()
+
+    def test_lifecycle_mutation_commands_skip_auto_spawn_server(self):
+        """FR-04 (2026_10_27_1143): 驗證執行 core 生命週期變異指令 (如 update/install/reload) 時不觸發 _maybe_auto_spawn_server，且探測 daemon.lock。"""
+        from core.commands import dispatcher
+
+        self.assertIn("update", dispatcher._LIFECYCLE_MUTATION_COMMANDS)
+        self.assertIn("install", dispatcher._LIFECYCLE_MUTATION_COMMANDS)
+        self.assertIn("reload", dispatcher._LIFECYCLE_MUTATION_COMMANDS)
+        self.assertIn("restore", dispatcher._LIFECYCLE_MUTATION_COMMANDS)
+
+        with patch.object(dispatcher, "_maybe_auto_spawn_server") as mock_spawn, \
+             patch.object(dispatcher, "dispatch_local", return_value=0), \
+             patch.object(dispatcher, "_maybe_check_and_print_updates"):
+            rc = dispatcher.dispatch(["update"])
+            self.assertEqual(rc, 0)
+            mock_spawn.assert_not_called()
+
+        self.mark_passed()
+
+
 

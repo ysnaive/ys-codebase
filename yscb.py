@@ -149,28 +149,59 @@ def _extract_safe_zip(zip_path: str, dest_dir: str) -> None:
 
 
 def _fetch_and_extract_zip(source: str, dest_dir: str) -> None:
-    """自舉提取壓縮包至 dest_dir，嚴防 Zip Slip。"""
-    os.makedirs(dest_dir, exist_ok=True)
-    if source.startswith(("http://", "https://")):
-        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_f:
-            tmp_p = tmp_f.name
+    """自舉提取壓縮包至同父目錄 .staging 臨時空間，完成後原子替換至 dest_dir，嚴防 Zip Slip 與非原子撕裂。"""
+    dest_abs = os.path.abspath(dest_dir)
+    parent_dir = os.path.dirname(dest_abs)
+    base_name = os.path.basename(dest_abs)
+    os.makedirs(parent_dir, exist_ok=True)
+    staging_dir = os.path.join(parent_dir, f".staging_{base_name}_{os.getpid()}")
+    old_dir = os.path.join(parent_dir, f".old_{base_name}_{os.getpid()}")
+    if os.path.exists(staging_dir):
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    os.makedirs(staging_dir, exist_ok=True)
+
+    try:
+        if source.startswith(("http://", "https://")):
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_f:
+                tmp_p = tmp_f.name
+            try:
+                req = urllib.request.Request(source, headers={"User-Agent": "yscb-host/2.0"})
+                with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_p, "wb") as out_f:
+                    shutil.copyfileobj(resp, out_f)
+                _extract_safe_zip(tmp_p, staging_dir)
+            finally:
+                if os.path.exists(tmp_p):
+                    try:
+                        os.remove(tmp_p)
+                    except Exception:
+                        pass
+        elif os.path.isdir(source):
+            shutil.copytree(source, staging_dir, dirs_exist_ok=True)
+        elif os.path.isfile(source) and zipfile.is_zipfile(source):
+            _extract_safe_zip(source, staging_dir)
+        else:
+            raise FileNotFoundError(f"[yscb] Error: Package source '{source}' not found or is not a valid zip archive.")
+
+        moved_old = False
         try:
-            req = urllib.request.Request(source, headers={"User-Agent": "yscb-host/2.0"})
-            with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_p, "wb") as out_f:
-                shutil.copyfileobj(resp, out_f)
-            _extract_safe_zip(tmp_p, dest_dir)
-        finally:
-            if os.path.exists(tmp_p):
+            if os.path.exists(old_dir):
+                shutil.rmtree(old_dir, ignore_errors=True)
+            if os.path.exists(dest_abs):
+                os.replace(dest_abs, old_dir)
+                moved_old = True
+            os.replace(staging_dir, dest_abs)
+        except Exception:
+            if moved_old and not os.path.exists(dest_abs) and os.path.exists(old_dir):
                 try:
-                    os.remove(tmp_p)
+                    os.replace(old_dir, dest_abs)
                 except Exception:
                     pass
-    elif os.path.isdir(source):
-        shutil.copytree(source, dest_dir, dirs_exist_ok=True)
-    elif os.path.isfile(source) and zipfile.is_zipfile(source):
-        _extract_safe_zip(source, dest_dir)
-    else:
-        raise FileNotFoundError(f"[yscb] Error: Package source '{source}' not found or is not a valid zip archive.")
+            raise
+    finally:
+        if os.path.exists(old_dir):
+            shutil.rmtree(old_dir, ignore_errors=True)
+        if os.path.exists(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def _resolve_self_update_target_url(provider: Optional[str] = None, custom_url: Optional[str] = None) -> str:

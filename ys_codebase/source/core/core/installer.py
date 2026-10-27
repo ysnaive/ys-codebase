@@ -87,63 +87,77 @@ def generate_internal_gitignore(yscb_dir: str) -> None:
 
 
 def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
-    """從本機路徑或遠端 URL 提取 Zip 壓縮檔至 dest_dir，嚴防 Zip Slip。"""
+    """從本機路徑或遠端 URL 提取 Zip 壓縮檔至同父目錄 .staging 臨時空間，驗證無誤後原子替換至 dest_dir，嚴防 Zip Slip 與非原子撕裂。"""
     import urllib.request
     import tempfile
+    import time
     import shutil
     import zipfile
 
-    os.makedirs(dest_dir, exist_ok=True)
+    dest_abs = os.path.abspath(dest_dir)
+    parent_dir = os.path.dirname(dest_abs)
+    base_name = os.path.basename(dest_abs)
+    os.makedirs(parent_dir, exist_ok=True)
+    staging_dir = os.path.join(parent_dir, f".staging_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
+    if os.path.exists(staging_dir):
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    os.makedirs(staging_dir, exist_ok=True)
 
-    if source_url_or_path.startswith("file://"):
-        raw_p = urllib.request.url2pathname(source_url_or_path[7:])
-        while raw_p.startswith("//"):
-            raw_p = raw_p[1:]
-        source_url_or_path = raw_p
+    try:
+        if source_url_or_path.startswith("file://"):
+            raw_p = urllib.request.url2pathname(source_url_or_path[7:])
+            while raw_p.startswith("//"):
+                raw_p = raw_p[1:]
+            source_url_or_path = raw_p
 
-    if source_url_or_path.startswith(("http://", "https://")):
-        req = urllib.request.Request(source_url_or_path, headers={"User-Agent": "yscb-core/2.0"})
-        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_f:
-            tmp_path = tmp_f.name
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                with open(tmp_path, "wb") as out_f:
-                    shutil.copyfileobj(resp, out_f)
-            if not zipfile.is_zipfile(tmp_path):
-                raise RuntimeError(f"Downloaded payload from '{source_url_or_path}' is not a valid zip file.")
-            with zipfile.ZipFile(tmp_path, "r") as zf:
-                if zf.testzip() is not None:
-                    raise RuntimeError(f"Corrupted zip archive from '{source_url_or_path}'.")
-                dest_dir_abs = os.path.abspath(dest_dir)
-                for member in zf.infolist():
-                    target_path = os.path.abspath(os.path.join(dest_dir_abs, member.filename))
-                    if not target_path.startswith(dest_dir_abs + os.sep) and target_path != dest_dir_abs:
-                        raise RuntimeError(f"Zip Slip vulnerability detected: '{member.filename}'")
-                zf.extractall(dest_dir)
-        finally:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-    else:
-        file_path = os.path.abspath(source_url_or_path)
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Source file or directory '{source_url_or_path}' does not exist.")
-        if os.path.isdir(file_path):
-            shutil.copytree(file_path, dest_dir, dirs_exist_ok=True)
-        elif zipfile.is_zipfile(file_path):
-            with zipfile.ZipFile(file_path, "r") as zf:
-                if zf.testzip() is not None:
-                    raise RuntimeError(f"Corrupted zip archive from '{source_url_or_path}'.")
-                dest_dir_abs = os.path.abspath(dest_dir)
-                for member in zf.infolist():
-                    target_path = os.path.abspath(os.path.join(dest_dir_abs, member.filename))
-                    if not target_path.startswith(dest_dir_abs + os.sep) and target_path != dest_dir_abs:
-                        raise RuntimeError(f"Zip Slip vulnerability detected: '{member.filename}'")
-                zf.extractall(dest_dir)
+        if source_url_or_path.startswith(("http://", "https://")):
+            req = urllib.request.Request(source_url_or_path, headers={"User-Agent": "yscb-core/2.0"})
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_f:
+                tmp_path = tmp_f.name
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    with open(tmp_path, "wb") as out_f:
+                        shutil.copyfileobj(resp, out_f)
+                if not zipfile.is_zipfile(tmp_path):
+                    raise RuntimeError(f"Downloaded payload from '{source_url_or_path}' is not a valid zip file.")
+                with zipfile.ZipFile(tmp_path, "r") as zf:
+                    if zf.testzip() is not None:
+                        raise RuntimeError(f"Corrupted zip archive from '{source_url_or_path}'.")
+                    staging_abs = os.path.abspath(staging_dir)
+                    for member in zf.infolist():
+                        target_path = os.path.abspath(os.path.join(staging_abs, member.filename))
+                        if not target_path.startswith(staging_abs + os.sep) and target_path != staging_abs:
+                            raise RuntimeError(f"Zip Slip vulnerability detected: '{member.filename}'")
+                    zf.extractall(staging_dir)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
         else:
-            raise RuntimeError(f"Source path '{source_url_or_path}' is neither a directory nor a valid zip file.")
+            file_path = os.path.abspath(source_url_or_path)
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Source file or directory '{source_url_or_path}' does not exist.")
+            if os.path.isdir(file_path):
+                shutil.copytree(file_path, staging_dir, dirs_exist_ok=True)
+            elif zipfile.is_zipfile(file_path):
+                with zipfile.ZipFile(file_path, "r") as zf:
+                    if zf.testzip() is not None:
+                        raise RuntimeError(f"Corrupted zip archive from '{source_url_or_path}'.")
+                    staging_abs = os.path.abspath(staging_dir)
+                    for member in zf.infolist():
+                        target_path = os.path.abspath(os.path.join(staging_abs, member.filename))
+                        if not target_path.startswith(staging_abs + os.sep) and target_path != staging_abs:
+                            raise RuntimeError(f"Zip Slip vulnerability detected: '{member.filename}'")
+                    zf.extractall(staging_dir)
+            else:
+                raise RuntimeError(f"Source path '{source_url_or_path}' is neither a directory nor a valid zip file.")
+
+        AtomicEngine._atomic_swap_dir(staging_dir, dest_abs)
+    finally:
+        if os.path.exists(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 class Installer:
@@ -587,17 +601,27 @@ class Installer:
 
     def cmd_reload(self) -> int:
         print("[core:reload] Reconciling runtime modules from mirror...")
-        self.engine.act_reload(clean_stage=True, inject_stage=True)
-        self.sync_pip_dependencies()
         try:
-            cfg_path, cfg = self.engine._get_config()
-            host_dir, _ = uri._get_host_config()
-            yscb_abs = os.path.normpath(os.path.join(host_dir, cfg.get("yscb_root", ".")))
-            generate_internal_gitignore(yscb_abs)
+            self.engine.act_lock("reload")
         except Exception:
             pass
-        print("[core:reload] Runtime environment reconciled and refreshed successfully.")
-        return 0
+        try:
+            self.engine.act_reload(clean_stage=True, inject_stage=True)
+            self.sync_pip_dependencies()
+            try:
+                cfg_path, cfg = self.engine._get_config()
+                host_dir, _ = uri._get_host_config()
+                yscb_abs = os.path.normpath(os.path.join(host_dir, cfg.get("yscb_root", ".")))
+                generate_internal_gitignore(yscb_abs)
+            except Exception:
+                pass
+            print("[core:reload] Runtime environment reconciled and refreshed successfully.")
+            return 0
+        finally:
+            try:
+                self.engine.act_unlock("reload")
+            except Exception:
+                pass
 
     def cmd_restore(self, force: bool = False, provider: Optional[str] = None) -> int:
         """
@@ -627,44 +651,60 @@ class Installer:
         success_count = 0
         failed_mods = []
 
-        # 確保 core 優先還原，隨後依字母排序
-        mod_keys = sorted(installed.keys(), key=lambda x: (0 if x == "core" else 1, x))
-        for mod_name in mod_keys:
-            mod_info = installed[mod_name]
-            ver = mod_info.get("version", "1.0.0.0") if isinstance(mod_info, dict) else "1.0.0.0"
-            prov = provider or (mod_info.get("provider", default_provider) if isinstance(mod_info, dict) else default_provider)
-            dest = os.path.join(modules_dir, mod_name)
-            mirror = os.path.join(yscb_abs, ".mirror", mod_name)
+        try:
+            self.engine.act_lock("restore")
+        except Exception:
+            pass
+        try:
+            # 確保 core 優先還原，隨後依字母排序
+            mod_keys = sorted(installed.keys(), key=lambda x: (0 if x == "core" else 1, x))
+            for mod_name in mod_keys:
+                mod_info = installed[mod_name]
+                ver = mod_info.get("version", "1.0.0.0") if isinstance(mod_info, dict) else "1.0.0.0"
+                prov = provider or (mod_info.get("provider", default_provider) if isinstance(mod_info, dict) else default_provider)
+                dest = os.path.join(modules_dir, mod_name)
+                mirror = os.path.join(yscb_abs, ".mirror", mod_name)
 
-            if not force and os.path.isdir(dest) and os.path.isfile(os.path.join(dest, "manifest.json")):
-                print(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
-                success_count += 1
-                continue
+                if not force and os.path.isdir(dest) and os.path.isfile(os.path.join(dest, "manifest.json")):
+                    print(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
+                    success_count += 1
+                    continue
 
-            print(f"  -> Restoring '{mod_name}@{ver}'...")
-            ok = self._restore_module_package(host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror)
-            if ok:
-                success_count += 1
-            else:
-                print(f"[core:restore] 錯誤: '{mod_name}' 模組 (v{ver}) 來源 '{prov}' 已遺失或無法存取，需手動修復。")
-                print("               建議措施為:")
-                if mod_name == "core":
-                    print("                 1. 修復核心模組並切換來源 : python yscb.py init --fix [--provider <valid_url_or_path>]")
+                print(f"  -> Restoring '{mod_name}@{ver}'...")
+                ok = self._restore_module_package(host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror)
+                if ok:
+                    success_count += 1
                 else:
-                    print(f"                 1. 重新指定來源安裝該模組 : python yscb.py install {mod_name} --force [--provider <valid_url_or_path>]")
-                print("                 2. 以指定來源全量還原環境 : python yscb.py restore --force --provider <valid_url_or_path>")
-                print(f"                 3. 檢查並修正 'yscb.config.json' 中 '{mod_name}' 的 version / provider 設定")
-                failed_mods.append(mod_name)
+                    print(f"[core:restore] 錯誤: '{mod_name}' 模組 (v{ver}) 來源 '{prov}' 已遺失或無法存取，需手動修復。")
+                    print("               建議措施為:")
+                    if mod_name == "core":
+                        print("                 1. 修復核心模組並切換來源 : python yscb.py init --fix [--provider <valid_url_or_path>]")
+                    else:
+                        print(f"                 1. 重新指定來源安裝該模組 : python yscb.py install {mod_name} --force [--provider <valid_url_or_path>]")
+                    print("                 2. 以指定來源全量還原環境 : python yscb.py restore --force --provider <valid_url_or_path>")
+                    print(f"                 3. 檢查並修正 'yscb.config.json' 中 '{mod_name}' 的 version / provider 設定")
+                    failed_mods.append(mod_name)
 
-        if failed_mods:
-            print(f"[core:restore] Warning: Completed with {len(failed_mods)} failure(s): {', '.join(failed_mods)}")
-        else:
-            print(f"[core:restore] Successfully restored all {success_count} module(s).")
+            if failed_mods:
+                print(f"[core:restore] Warning: Completed with {len(failed_mods)} failure(s): {', '.join(failed_mods)}")
+            else:
+                print(f"[core:restore] Successfully restored all {success_count} module(s).")
 
-        # 觸發 reload
-        print("[core:restore] Triggering reload...")
-        self.cmd_reload()
-        return 0 if not failed_mods else 1
+            # 觸發 reload (仍在 restore 交易鎖期間完成)
+            print("[core:restore] Triggering reload...")
+            self.engine.act_reload(clean_stage=True, inject_stage=True)
+            self.sync_pip_dependencies()
+            try:
+                generate_internal_gitignore(yscb_abs)
+            except Exception:
+                pass
+            print("[core:reload] Runtime environment reconciled and refreshed successfully.")
+            return 0 if not failed_mods else 1
+        finally:
+            try:
+                self.engine.act_unlock("restore")
+            except Exception:
+                pass
 
     def _restore_module_package(
         self,

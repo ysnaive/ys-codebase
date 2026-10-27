@@ -607,6 +607,66 @@ class TestServerModule(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_master_start_lock_contention_never_falls_through(self):
+        """FR-01 & EC-01 (2026_10_27_1143): Verify MasterSupervisor.start() immediately exits without spawning HTTP/Worker when daemon.lock is held, even if daemon.json is missing."""
+        from core.platform import InterProcessLock
+
+        lock_path = os.path.join(self.root_dir, ".cache", "server", "daemon.lock")
+        held_lock = InterProcessLock(lock_path)
+        self.assertTrue(held_lock.acquire(blocking=False))
+        try:
+            # Ensure daemon.json does NOT exist (simulating startup race window)
+            state_path = os.path.join(self.root_dir, ".cache", "server", "daemon.json")
+            if os.path.exists(state_path):
+                os.remove(state_path)
+
+            sup2 = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+            with unittest.mock.patch.object(sup2, "_spawn_worker") as mock_spawn, \
+                 unittest.mock.patch("server.master._create_http_server") as mock_http:
+                ret_pid = sup2.start(foreground=False)
+                self.assertEqual(ret_pid, 0)
+                mock_spawn.assert_not_called()
+                mock_http.assert_not_called()
+                self.assertFalse(sup2._is_running)
+        finally:
+            held_lock.release()
+
+        self.mark_passed()
+
+    def test_master_restart_server_reentrancy_guard_and_watcher_transaction_lock(self):
+        """FR-02 & FR-05 (2026_10_27_1143): Verify restart_server() only spawns once under concurrent calls, and ModulesWatcher defers polling while .yscb.lock is held."""
+        from core.platform import InterProcessLock
+
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        spawn_calls = []
+
+        with unittest.mock.patch.object(sup, "stop"), \
+             unittest.mock.patch("server.master.spawn_detached", side_effect=lambda cmd, **kw: spawn_calls.append(cmd) or 12345), \
+             unittest.mock.patch("os._exit"):
+            sup.restart_server()
+            sup.restart_server()
+            sup.restart_server()
+            time.sleep(0.1)
+
+        self.assertEqual(len(spawn_calls), 1)
+
+        # Verify ModulesWatcher._is_core_transaction_locked() detects held .yscb.lock
+        modules_dir = os.path.join(self.root_dir, ".modules")
+        os.makedirs(modules_dir, exist_ok=True)
+        watcher = ModulesWatcher(modules_dir, on_change_callback=lambda *a: None)
+        self.assertFalse(watcher._is_core_transaction_locked())
+
+        core_lock_path = os.path.join(self.root_dir, ".cache", ".yscb.lock")
+        core_lock = InterProcessLock(core_lock_path)
+        self.assertTrue(core_lock.acquire(blocking=False))
+        try:
+            with unittest.mock.patch.object(InterProcessLock, "acquire", return_value=False):
+                self.assertTrue(watcher._is_core_transaction_locked())
+        finally:
+            core_lock.release()
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

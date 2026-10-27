@@ -154,6 +154,7 @@ class MasterSupervisor:
         self._tasks_executed = 0
         self._is_running = False
         self._is_stopped = False
+        self._restarting = False
         self._stop_lock = threading.Lock()
         self._httpd: Optional[http.server.HTTPServer] = None
         self._lock: Optional[InterProcessLock] = None
@@ -187,15 +188,17 @@ class MasterSupervisor:
         }
 
     def start(self, foreground: bool = False) -> int:
-        """Starts the master supervisor."""
+        """Starts the master supervisor with rigid single-instance lock protection."""
         os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
 
         self._lock = InterProcessLock(self.lock_file)
         if not self._lock.acquire(blocking=False):
+            # Another live Master instance already holds the OS file lock.
+            # Return its PID (or 0 if state file is not yet materialized) and never fall through.
             state = self.read_state()
             if state and is_process_alive(state.pid):
                 return state.pid
-            # If lock held by dead process, cleanup and proceed
+            return 0
 
         # 0. Set identifiable process title & crash recovery & fresh realtime log initialization
         set_process_title("yscb server")
@@ -204,6 +207,7 @@ class MasterSupervisor:
 
         self._is_running = True
         self._is_stopped = False
+        self._restarting = False
         self._last_active_time = time.time()
 
         # 1. Start HTTP Server on dynamic port 127.0.0.1:0
@@ -211,11 +215,12 @@ class MasterSupervisor:
         self.port = self._httpd.server_address[1]
         self.logger.info(f"HTTP Server listening on 127.0.0.1:{self.port}")
 
-        # 2. Spawn initial Warm Worker
+        # 2. Materialize initial daemon.json immediately after port binding (before worker warm-up)
+        self._write_state()
+
+        # 3. Spawn initial Warm Worker and update daemon.json with worker_pid
         self._spawn_worker()
         self.logger.info(f"Initial Warm Worker spawned (PID: {self._worker_proc.pid if self._worker_proc else 0})")
-
-        # 3. Write daemon.json state file
         self._write_state()
 
         # 4. Start ModulesWatcher
@@ -353,8 +358,19 @@ class MasterSupervisor:
     def restart_server(self) -> None:
         """
         Gracefully restarts the entire Server daemon (Master + Worker).
-        Cleans up current Master instance and spawns a fresh detached Master daemon.
+        Guarded by _restarting flag so a single Master instance only ever spawns one replacement.
         """
+        with self._stop_lock:
+            if self._restarting or self._is_stopped:
+                return
+            self._restarting = True
+
+        if self.watcher:
+            try:
+                self.watcher.stop()
+            except Exception:
+                pass
+
         self.logger.info("Initiating graceful MasterSupervisor self-restart...")
         def _do_restart():
             try:
