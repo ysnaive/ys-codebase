@@ -36,9 +36,9 @@ description: 針對已確認需求之計畫自動連續執行規格產出、代�
 
 1. **兩階段寫檔前即時讀模板 (`Two-Stage JIT Template Read`) 與免讀 `phase_01~05.md`**：
    - 處於 `/auto` 模式時，**免除讀取 `phase_01~05.md`**（省去無效的單階段 End Turn 說明），改採**寫檔前最後一刻平行讀取權威模板**以兼顧零記憶衰減與 100% 結構合規：
-     - **批次 A（寫 `P01`~`P04` 前即時平行讀取）**：動筆寫規格前，平行讀取 [P01](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)、[P02](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)、[P03](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)、[P04](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) 模板（僅需讀取本次尚未產出之階段）。
+     - **批次 A（寫 `P01`~`P04` 前即時平行讀取）**：動筆寫規格前，平行讀取 [P01](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)、[P02](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)、[P03](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)、[P04](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) 模板（僅需讀取本次尚未產出之階段）；**讀取模板後必須立即連續寫出 `P01`~`P04_auto.md`，中間嚴禁穿插源碼讀取工具呼叫**（防止中途觸發 Context Compaction 洗掉模板結構記憶導致退件重寫）。此外，若涉及修改既有公開 API 簽名，撰寫 `P02` §3 受影響檔案清單前**必須先執行 `knowledge-db callers <Symbol>`** 確保 100% 涵蓋所有跨空間呼叫端。
      - **批次 B（Phase 5 實作與測試通過後、寫 `P05` & `P06` 前即時平行讀取）**：完成源碼與自動化測試後，平行讀取 [P05](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) 與 [P06](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) 模板，隨即一次寫出 `P05_task_auto.md` 與 `P06_test_plan.md`。
-     - **同對話跨子計畫模板免重讀豁免 (`Same-Session Template Cache Reuse`)**：若於同一對話 Session 中連續推進 Umbrella 旗下多個 `sub_XX` 子計畫，且前序子計畫已讀取過 `P01`~`P06` 模板、中間未發生 Context Compaction 失憶，後續子計畫可直接沿用已載入 Context 之模板結構落檔，**無須於每個子計畫重複調用讀檔工具重讀 `.agents/.yscb/templates/*`**。
+     - **同對話跨子計畫模板免重讀豁免 (`Same-Session Template Cache Reuse`)**：若於同一對話 Session 中連續推進 Umbrella 旗下多個 `sub_XX` 子計畫，且前序子計畫已讀取過 `P01`~`P06` 模板、中間未發生 Context Compaction 失憶，後續子計畫可直接沿用已載入 Context 之模板結構落檔，**無須於每個子計畫重複調用原生檔案讀取工具重讀 `.agents/.yscb/templates/*`**。
    - 撰寫測試與執行 `Phase 06` 驗證時，強制遵循 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`) 與 [`phase_06_test.md`](`__#{module://agents-workflow/assets/skills/development-sop/references/phase_06_test.md}__`)（含支柱三 Pre-UX 唯讀盲審）。
 2. **單檔單次到位寫入與單次彙總檢核 (`1-Write-Per-File & Single Batch Verify`)**：
    - **`P01`~`P04` (`*_auto.md`)**：直接以 `> 狀態：Confirmed` 一次建立並定稿（嚴禁殘留 `[...]` 佔位符或 `<!-- ... -->` 註解）。
@@ -71,5 +71,5 @@ description: 針對已確認需求之計畫自動連續執行規格產出、代�
 
 ## 常見踩坑指南 (Gotchas)
 
-- **切勿省略兩階段 JIT 模板讀取或遺漏 `_auto.md` 後綴**：動筆寫 `P01`~`P04_auto.md` 與 `P05_task_auto.md`/`P06_test_plan.md` 前務必即時平行讀取對應模板；若 `plan verify` 回報 `[TRIAGE: FULL_REWRITE]`，代表章節缺失率 $\ge 50\%$，請立即讀取提示之模板路徑並以 `write_file` 重寫。
+- **切勿省略兩階段 JIT 模板讀取或遺漏 `_auto.md` 後綴**：動筆寫 `P01`~`P04_auto.md` 與 `P05_task_auto.md`/`P06_test_plan.md` 前務必即時平行讀取對應模板；若 `plan verify` 回報 `[TRIAGE: FULL_REWRITE]`，代表章節缺失率 $\ge 50\%$，請立即讀取提示之模板路徑並以原生檔案覆寫工具重寫。
 - **切勿在 `P03`/`P04` 預貼實作程式碼或對 `P05`/`P06` 重複寫檔**：嚴格落實 `Signature-Only` 與 `1-Write-Per-File`，避免無謂消耗 Output 與 Context Tokens。

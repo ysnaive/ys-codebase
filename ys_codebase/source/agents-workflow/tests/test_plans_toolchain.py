@@ -1872,6 +1872,65 @@ class TestPlansModelRecord(YSCBTestCase):
         self.assertFalse(any(s.signal_type == "CONTEXT_WASTE" for s in r4_sigs), "ByteOffset 分段讀取與失敗讀檔不得誤判為 CONTEXT_WASTE")
         self.assertFalse(any(s.signal_type == "MULTI_EDIT_CHURN" for s in r4_sigs), "revision_log.md 與 3 次合規流轉之 P06_test_plan.md 不得誤報 MULTI_EDIT_CHURN")
 
+        # 驗證 REV-05 Token 效益與浪費分析 (token_efficiency) 及高耗能排行 (top_consumers)
+        self.assertIn("token_efficiency", report.session_stats)
+        self.assertIn("top_consumers", report.session_stats)
+        eff_info = report.session_stats["token_efficiency"]
+        self.assertGreater(eff_info["wasted_tokens"], 0, "包含重複讀取、錯誤步驟與重複修改時應計出 wasted_tokens")
+        self.assertGreater(eff_info["wasted_breakdown"]["duplicate_reads"], 0)
+        self.assertGreater(eff_info["wasted_breakdown"]["failed_tool_steps"], 0)
+        self.assertGreater(eff_info["wasted_breakdown"]["edit_churn_rework"], 0)
+        self.assertLess(eff_info["efficiency_pct"], 100.0)
+        top_cons = report.session_stats["top_consumers"]
+        self.assertTrue(len(top_cons["by_tool"]) >= 2)
+        self.assertIn("Token Efficiency :", report.render_text())
+
+        # 11. 驗證 REV-06 二階段漏斗精準行號讀檔豁免與截斷暫存檔 (output.txt) 溢位偵測
+        rev06_file = self.root / "rev06_funnel.jsonl"
+        rev06_file.write_text(
+            "\n".join([
+                json.dumps({
+                    "step_index": 1,
+                    "created_at": "2026-10-28T17:00:00Z",
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "run_command", "args": {"CommandLine": "python yscb.py knowledge-db search 'Scroller' --limit=10 --json"}},
+                    ],
+                }),
+                json.dumps({
+                    "step_index": 2,
+                    "created_at": "2026-10-28T17:00:05Z",
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/a.cs", "StartLine": 10, "EndLine": 60}},
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/b.cs", "StartLine": 1, "EndLine": 80}},
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/c.cs", "StartLine": 20, "EndLine": 100}},
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/d.cs", "StartLine": 5, "EndLine": 55}},
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/e.cs", "StartLine": 1, "EndLine": 120}},
+                    ],
+                }),
+                json.dumps({
+                    "step_index": 3,
+                    "created_at": "2026-10-28T17:00:10Z",
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"Path": "/tmp/.system_generated/steps/13/output.txt", "StartLine": 1, "EndLine": 100}},
+                    ],
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        _, r6_sigs, _, r6_stats = engine._parse_transcript_file(rev06_file)
+        self.assertEqual(
+            r6_stats["token_efficiency"]["wasted_breakdown"]["unindexed_blind_reads"],
+            0,
+            "執行 knowledge-db 定位後對 <= 160 行區段之定點讀取不得誤判為盲讀浪費",
+        )
+        self.assertTrue(
+            any(s.signal_type == "CONTEXT_WASTE" and s.details.get("subtype") == "JSON_SNIPPET_OVERFLOW" for s in r6_sigs),
+            "讀取截斷暫存檔 output.txt 應觸發 JSON_SNIPPET_OVERFLOW 警訊",
+        )
+
         # 驗證 Stage 1 ArtifactCompiler 編譯含 session-audit 之全部內建資產 0 warning / 0 error
         compiler = ArtifactCompiler()
         comp_res = compiler.compile_stage1()

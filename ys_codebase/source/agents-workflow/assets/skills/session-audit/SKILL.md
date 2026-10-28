@@ -17,10 +17,13 @@ description: 執行當前或近期開發對話之隱形摩擦軌跡提取、決�
 
 ---
 
-## 1. 核心鐵律：絕對唯讀安全隔離 (Strict Read-Only Quarantine)
+## 1. 核心鐵律：絕對唯讀安全隔離與零臆測鐵證紀律 (Read-Only & Evidence-Only Discipline)
 
 1. **禁止修改業務與規格資產**：執行 `/session-audit` 期間，**嚴禁修改任何專案原始碼、設定檔或既有的 `P00`~`P07` / `fast_track_plan.md` / `revision_log.md` 計畫文檔**。
-2. **允許產出範圍**：預設僅於對話視窗輸出結構化診斷報告；唯有開發者明確要求落檔時，方允許寫入獨立診斷檔 `__${workflow.plans://}__/<active_plan>/session_audit.md`。
+2. **無鐵證不歸因，嚴禁推估語句 (`Zero-Speculation Autopsy`)**：
+   - 分析報告**絕對禁止出現「推測、可能、大概、也許、估計是因為...」等模糊臆測字眼**。
+   - 每一條摩擦歸因與修補對策，必須 100% 綁定明確的 `Step #`、`<thinking>` 原文切片、工具調用參數或錯誤輸出（`session-trace` 已自動聯集 `transcript_full.jsonl` 補齊截斷行）；若日誌確實未記載某決策動機，強制標註 `[日誌未載，不予臆測]`。
+3. **允許產出範圍**：預設僅於對話視窗輸出結構化診斷報告；唯有開發者明確要求落檔時，方允許寫入獨立診斷檔 `__${workflow.plans://}__/<active_plan>/session_audit.md`。
 
 ---
 
@@ -61,7 +64,12 @@ description: 執行當前或近期開發對話之隱形摩擦軌跡提取、決�
 - **觀測層級與標的**：`[Tier 1+2 | Tier 2 | Tier 3]` / 計畫：`[plan_name 或 None]` / Telemetry：`[N]` 筆
 - **會話基礎統計 (Session Metrics)**：
   - **耗時與回合**：歷時 `[session_duration_human]` / 總步數 `[total_steps]`（使用者 `[user_turns]` 回合、模型 `[model_turns]` 回合、思考鏈 `[thinking_steps]` 步、截斷 `[truncated_steps]` 步、錯誤 `[error_steps]` 步）
-  - **Token 消耗統計**：完整估算 `~[estimated_full_tokens]` Tokens / 精簡估算 `~[estimated_compact_tokens]` Tokens（使用者輸入 `[user_input]`、模型回覆 `[model_output]`、思考鏈 `[thinking]`、工具參數 `[tool_call_args]`、工具輸出 `[tool_outputs]`；日誌體積 `[transcript_compact_kb]` KB / Full `[transcript_full_kb]` KB）*(若具原生 API Usage 則併列 `reported_api_usage`)*
+  - **Token 消耗統計**：完整計算 `~[estimated_full_tokens]` Tokens / 精簡 `~[estimated_compact_tokens]` Tokens（使用者輸入 `[user_input]`、模型回覆 `[model_output]`、思考鏈 `[thinking]`、工具參數 `[tool_call_args]`、工具輸出 `[tool_outputs]`；日誌體積 `[transcript_compact_kb]` KB / Full `[transcript_full_kb]` KB）*(若具原生 API Usage 則併列 `reported_api_usage`)*
+  - **Token 效益與浪費分析 (Token ROI & Waste Breakdown)**：有效生產 `~[effective_tokens]` Tokens (`[efficiency_pct]%`) / 無效浪費 `~[wasted_tokens]` Tokens (`[waste_pct]%`：重複讀檔 `[duplicate_reads]`、失敗與退件步驟 `[failed_tool_steps]`、返工覆寫 `[edit_churn_rework]`、未檢索盲讀 `[unindexed_blind_reads]`)
+  - **高耗能工具與指令排行 (Top Token Consumers)**：
+    - **工具耗能佔比 Top 3 (`by_tool`)**：列出前三大消耗 Token 之工具、總 Token（佔比 `%`）與單次平均 Token
+    - **單步重度操作 Top 3 (`heavy_steps`)**：列出 `Step #`、工具與目標檔/指令、單步消耗 Token
+    - **高耗能 CLI 指令 Top 3 (`heavy_cli_commands`)**：列出消耗大量輸出 Token 之具體 CLI 命令字串與 `Step #`，診斷是否因漏加 `-q`/`-s` 或全量傾倒所致
   - **工具與檔案操作**：工具調用 `[total_tool_calls]` 次（前三大工具分佈：`[tool_distribution]`）/ 讀檔 `[total_read_ops]` 次（涵蓋 `[unique_files_read]` 個不重複檔案）/ 改檔 `[total_edit_ops]` 次（涵蓋 `[unique_files_edited]` 個不重複檔案）/ 子代理派發 `[subagent_calls]` 次
   - **CLI 遙測統計**：總呼叫 `[cli_total_calls]` 次 / 失敗 `[cli_failed_calls]` 次 / 總耗時 `[cli_total_duration_ms]` ms（平均 `[cli_avg_duration_ms]` ms）/ 派發模式分佈 `[cli_by_mode]` / 模組分佈 `[cli_by_module]`
 - **摩擦訊號總覽**：共捕捉 `[M]` 項訊號（`MULTI_EDIT_CHURN: x`, `TOOL_MISS_AND_RETRY: y`, `SILENT_BACKPATCH: z`, `GATE_BOUNCE: w`, `CONTEXT_WASTE: k`）

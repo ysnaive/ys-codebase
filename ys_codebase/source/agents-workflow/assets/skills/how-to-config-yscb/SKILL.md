@@ -43,7 +43,7 @@ description: 盤點與診斷專案內 YSCB 各模組組態、工作流空間映�
    - 檢查專案 `.gitignore` 是否已包含 `*.local.json`（若缺失則列為待修復提醒項）。
 3. **檢查 `agents-workflow` 內建設定與第一方畫像錨點**：
    - **工作流目錄映射與發布目標**：檢查 `paths.plans`、`paths.docs`、`paths.standards`（團隊共享規範，應位於 `config.project.json`）與 `release_targets`（個人 IDE 偏好，預設位於 `config.local.json`），並依據當前生效之 `release_target` 從 `contributes` 的 `projections` 設定**動態解析出實際的二層物化目標路徑**（**嚴禁硬編碼 `.agents/` 或 `.claude/`**）。
-   - **第一方專案畫像與測試規範**：先檢查 `config/agents-workflow/` 目錄與檔案是否存在（`contribute.json` 與 `snippets/` 於首次配置前屬選配項目，若尚不存在即代表正常 `🟡 [未配置]`，**切勿盲目直接調用 `read_file` 讀取不存在之檔案引發報錯**）；僅於檔案存在時讀取 [`config/agents-workflow/contribute.json`](`__#{config://agents-workflow/contribute.json}__`) 檢查是否已注入：
+   - **第一方專案畫像與測試規範**：先檢查 `config/agents-workflow/` 目錄與檔案是否存在（`contribute.json` 與 `snippets/` 於首次配置前屬選配項目，若尚不存在即代表正常 `🟡 [未配置]`，**切勿盲目直接調用原生檔案讀取工具讀取不存在之檔案引發報錯**）；僅於檔案存在時讀取 [`config/agents-workflow/contribute.json`](`__#{config://agents-workflow/contribute.json}__`) 檢查是否已注入：
      - `PROJECT_ROLE_AND_BOUNDARIES`（指向 `config://agents-workflow/snippets/project_role.md`）
      - `TESTING_SOP_STANDARDS`（指向 `config://agents-workflow/snippets/testing_guide.md`）
 4. **依序執行已安裝模組之設定與健康度檢查**：

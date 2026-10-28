@@ -182,6 +182,14 @@
                   "description": "筆數"
                 }
               }
+            },
+            "max-snippet-lines": {
+              "description": "單一符號程式碼切片最大輸出行數 (預設 40 行)",
+              "args": {
+                "lines": {
+                  "description": "最大行數"
+                }
+              }
             }
           },
           "mode": {
