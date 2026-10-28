@@ -482,6 +482,8 @@ class SandboxProvisioner:
         for host_modules_dir in cand_host_modules:
             if os.path.isdir(host_modules_dir):
                 for mod_name in sorted(os.listdir(host_modules_dir)):
+                    if mod_name.startswith("."):
+                        continue
                     mod_src_path = os.path.join(host_modules_dir, mod_name)
                     if os.path.isdir(mod_src_path):
                         dest_mod = os.path.join(sandbox_modules_dir, mod_name)
@@ -493,6 +495,8 @@ class SandboxProvisioner:
             build_root_dir = uri.resolve("module.build://")
             if os.path.isdir(build_root_dir):
                 for mod_name in sorted(os.listdir(build_root_dir)):
+                    if mod_name.startswith(".") or mod_name.startswith("mock_"):
+                        continue
                     mod_b_dir = os.path.join(build_root_dir, mod_name)
                     if os.path.isdir(mod_b_dir):
                         zips = [f for f in os.listdir(mod_b_dir) if f.endswith(".zip")]
@@ -511,6 +515,8 @@ class SandboxProvisioner:
 
         # Register all provisioned modules into sandbox host_config
         for mod_name in sorted(os.listdir(sandbox_modules_dir)):
+            if mod_name.startswith("."):
+                continue
             dest_mod = os.path.join(sandbox_modules_dir, mod_name)
             if os.path.isdir(dest_mod):
                 mod_ver = "1.0.0"

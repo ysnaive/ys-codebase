@@ -70,6 +70,22 @@
       "files.watcherExclude": "**/.venv/**",
       "search.exclude": "**/.venv/**",
       "files.exclude": "**/.venv"
-    }
-  }
+    },
+    "analysisExclude": [
+      "**/.cache/**",
+      "**/.snapshots/**",
+      "**/.build/**",
+      "**/.mirror/**",
+      "**/.modules/**",
+      "**/.venv/**"
+    ]
+  },
+  "python.analysis.exclude": [
+    "**/.cache/**",
+    "**/.snapshots/**",
+    "**/.build/**",
+    "**/.mirror/**",
+    "**/.modules/**",
+    "**/.venv/**"
+  ]
 }

@@ -37,7 +37,7 @@ description: 凍結當前開發進度與斷點並於計畫目錄產出 handoff.m
 ---
 
 ### 步驟 2：生成暫停交接快照 (`handoff.md`) 並自我驗證
-讀取標準模板 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，完整填寫標頭（含 `> 模型：`，依模型紀錄規則填平台宣告名稱或 `Unknown`）後落檔於計畫目錄（若為 Umbrella 子計畫則落檔於 `sub_{編號}_{名稱}/handoff.md`），客觀記錄：
+讀取標準模板 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)（工作區根目錄路徑：`.agents/.yscb/templates/handoff.md`），完整填寫標頭（含 `> 模型：`，依模型紀錄規則填平台宣告名稱或 `Unknown`）後落檔於計畫目錄（若為 Umbrella 子計畫則落檔於 `sub_{編號}_{名稱}/handoff.md`），客觀記錄：
 1. **現場已完成事項**：具體完成之函式、邊界處理或測試。
 2. **進行中待辦**：精確記錄當前實作中斷點與待續邏輯。
 3. **踩坑與注意事項**：關鍵坑點、特殊時序或口頭共識。

@@ -48,6 +48,7 @@ from .scanner import PlanScanner
 from .searcher import PlanSearcher
 from .verifier import PlanVerifier, PlanSeverity, PlanIssue, PlanReport
 from .status import PlanStatusResolver
+from .session_trace import FrictionSignal, SessionTraceReport, SessionTraceEngine
 
 __all__ = [
     "_resolve_uri_path",
@@ -64,5 +65,8 @@ __all__ = [
     "PlanIssue",
     "PlanReport",
     "PlanStatusResolver",
+    "FrictionSignal",
+    "SessionTraceReport",
+    "SessionTraceEngine",
 ]
 

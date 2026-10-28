@@ -54,6 +54,7 @@ __pycache__/
 /.agents/skills/pause/SKILL.md
 /.agents/skills/research/SKILL.md
 /.agents/skills/roadmap/SKILL.md
+/.agents/skills/session-audit/SKILL.md
 /.agents/skills/skill-creator/SKILL.md
 /.agents/skills/skill-creator/references/extension-guide.md
 /.agents/skills/skill-optimizer/SKILL.md

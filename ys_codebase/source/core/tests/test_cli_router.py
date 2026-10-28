@@ -138,5 +138,121 @@ class TestHelpRendererMetadata(YSCBTestCase):
         self.mark_passed()
 
 
+class TestCoreCLITelemetry(YSCBTestCase):
+    """測試 core.telemetry (cache://core/telemetry.jsonl) 寫入、沙盒略過、滾動截斷與路由攔截。"""
+
+    @require(Requirement.LOGIC)
+    def test_telemetry_record_filter_and_rotation(self):
+        """FT-01, ET-03, ET-04: 驗證 record_cli_event 寫入、沙盒預設旁路、--help/session-trace 排除與滾動截斷。"""
+        import tempfile
+        from pathlib import Path
+        from core.telemetry import (
+            record_cli_event,
+            read_telemetry_records,
+            should_record_telemetry,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            telem_file = Path(tmpdir) / "telemetry.jsonl"
+            orig_override = os.environ.get("YSCB_TELEMETRY_PATH")
+            orig_sandbox = os.environ.get("YSCB_TEST_SANDBOX")
+            try:
+                # 1. ET-03: 當 YSCB_TEST_SANDBOX=1 且無 YSCB_TELEMETRY_PATH 時預設不記錄
+                os.environ.pop("YSCB_TELEMETRY_PATH", None)
+                os.environ["YSCB_TEST_SANDBOX"] = "1"
+                self.assertFalse(should_record_telemetry("core", ["status"], []))
+
+                # 2. 設定 YSCB_TELEMETRY_PATH 後允許測試環境寫入，但仍排除 --help 與 session-trace
+                os.environ["YSCB_TELEMETRY_PATH"] = str(telem_file)
+                self.assertTrue(should_record_telemetry("core", ["status"], []))
+                self.assertFalse(should_record_telemetry("core", ["status"], ["--help"]))
+                self.assertFalse(should_record_telemetry("agents-workflow", ["session-trace"], ["--json"]))
+
+                # 3. FT-01: 寫入正向與失敗紀錄並驗證讀取與 error_hint 擷取
+                ok1 = record_cli_event(
+                    module_name="knowledge-db",
+                    cmd_path=["search"],
+                    args=["PlanVerifier", "--json"],
+                    exit_code=0,
+                    duration_ms=42.5,
+                    mode="hot",
+                )
+                self.assertTrue(ok1)
+                ok2 = record_cli_event(
+                    module_name="agents-workflow",
+                    cmd_path=["plan", "verify"],
+                    args=["bad_plan"],
+                    exit_code=1,
+                    duration_ms=18.2,
+                    mode="local",
+                    error_hint="Some header\n[FAIL] Missing section ## 1. 功能需求清單\nFooter",
+                )
+                self.assertTrue(ok2)
+
+                records = read_telemetry_records(telemetry_path=telem_file)
+                self.assertEqual(len(records), 2)
+                self.assertEqual(records[0]["module"], "knowledge-db")
+                self.assertEqual(records[0]["cmd"], "search")
+                self.assertEqual(records[0]["mode"], "hot")
+                self.assertEqual(records[1]["exit_code"], 1)
+                self.assertIn("[FAIL] Missing section", records[1]["error_hint"])
+
+                # 4. ET-04: 超過 max_bytes 時自動滾動截斷並僅保留最後 keep_lines 筆
+                for idx in range(10):
+                    record_cli_event(
+                        module_name="core",
+                        cmd_path=["uri", "list"],
+                        args=[f"arg_{idx}"],
+                        exit_code=0,
+                        duration_ms=5.0,
+                        max_bytes=300,
+                        keep_lines=4,
+                    )
+                rotated = read_telemetry_records(telemetry_path=telem_file)
+                self.assertEqual(len(rotated), 4)
+                self.assertEqual(rotated[-1]["args"], ["arg_9"])
+            finally:
+                if orig_override is None:
+                    os.environ.pop("YSCB_TELEMETRY_PATH", None)
+                else:
+                    os.environ["YSCB_TELEMETRY_PATH"] = orig_override
+                if orig_sandbox is None:
+                    os.environ.pop("YSCB_TEST_SANDBOX", None)
+                else:
+                    os.environ["YSCB_TEST_SANDBOX"] = orig_sandbox
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_dispatcher_records_router_error_telemetry(self):
+        """FT-01: 驗證 dispatcher.dispatch 在攔截未知模組/指令拼寫錯誤時自動寫入 router_err Telemetry。"""
+        import tempfile
+        from pathlib import Path
+        from core.commands.dispatcher import dispatch
+        from core.telemetry import read_telemetry_records
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            telem_file = Path(tmpdir) / "router_telemetry.jsonl"
+            orig_override = os.environ.get("YSCB_TELEMETRY_PATH")
+            try:
+                os.environ["YSCB_TELEMETRY_PATH"] = str(telem_file)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = dispatch(["relod"])
+                self.assertEqual(rc, 1)
+                recs = read_telemetry_records(telemetry_path=telem_file)
+                self.assertEqual(len(recs), 1)
+                self.assertEqual(recs[0]["mode"], "router_err")
+                self.assertEqual(recs[0]["exit_code"], 1)
+                self.assertIn("Did you mean 'reload'?", recs[0]["error_hint"])
+            finally:
+                if orig_override is None:
+                    os.environ.pop("YSCB_TELEMETRY_PATH", None)
+                else:
+                    os.environ["YSCB_TELEMETRY_PATH"] = orig_override
+
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

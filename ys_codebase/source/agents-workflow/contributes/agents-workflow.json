@@ -108,6 +108,12 @@
       "description": "引導建立專案功能特化 Skill、環境注意事項攔截規則或階段錨點注入配置，自動對接語意 URI 與雙層編譯註冊閉環。僅於顯式輸入 /skill-creator 或明確指示建立新 Skill 與擴充工作流規範時觸發。"
     },
     {
+      "type": "skill",
+      "name": "session-audit",
+      "source": "module://agents-workflow/assets/skills/session-audit",
+      "description": "執行當前或近期開發對話之隱形摩擦軌跡提取、決策瑕疵解剖與四象限根因診斷報告生成。僅於顯式輸入 /session-audit 或明確指示自檢分析對話摩擦與返工原因時觸發。"
+    },
+    {
       "type": "template",
       "source": "module://agents-workflow/assets/templates/P00_discuss.md",
       "description": "Phase 0 討論模板"
@@ -272,6 +278,10 @@
     {
       "value": "SKILL_CREATOR_STANDARDS",
       "description": "專案特化技能建置與擴充規則注入錨點（位於 skill-creator/SKILL.md）"
+    },
+    {
+      "value": "SESSION_AUDIT_STANDARDS",
+      "description": "專案特化 Session 隱形摩擦自檢與根因歸類擴充規則注入錨點（位於 session-audit/SKILL.md）"
     }
   ],
   "insert": [

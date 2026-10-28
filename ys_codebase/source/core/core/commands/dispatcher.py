@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,11 +21,13 @@ from core.commands.resolver import (
     OptionResolver,
 )
 from core.platform import InterProcessLock, can_spawn_background_daemon, is_process_alive, spawn_detached
+from core.telemetry import extract_error_hint, record_cli_event
 
 # 快取已載入之 Contributes Registry
 _GLOBAL_REGISTRY: Optional[CommandsRegistry] = None
 _MODULE_CACHE: Dict[str, Any] = {}
 _AUTO_SPAWN_WARNED: bool = False
+_LAST_DISPATCH_ERROR_HINT: str = ""
 
 # 環境與模組生命週期變異指令（執行前禁止自動拉起背景 Server，防範解壓/重載中途引發重啟風暴）
 _LIFECYCLE_MUTATION_COMMANDS = {
@@ -74,6 +77,8 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
     modules_dir = os.path.join(yscb_abs, ".modules")
     if os.path.isdir(modules_dir):
         for mod_name in os.listdir(modules_dir):
+            if mod_name.startswith("."):
+                continue
             mod_path = os.path.join(modules_dir, mod_name)
             if not os.path.isdir(mod_path):
                 continue
@@ -146,6 +151,7 @@ def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], 
             method="POST",
         )
         exit_code = 0
+        captured_err: List[str] = []
         timeout_sec = float(os.environ.get("YSCB_DISPATCH_TIMEOUT", "120.0"))
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             buf = ""
@@ -160,11 +166,20 @@ def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], 
                         continue
                     pkt = json.loads(line)
                     if pkt.get("type") == "terminal_stream":
+                        text_chunk = pkt.get("text", "")
                         out = sys.stderr if pkt.get("stream") == "stderr" else sys.stdout
-                        out.write(pkt.get("text", ""))
+                        out.write(text_chunk)
                         out.flush()
+                        if len(captured_err) < 8 and (
+                            pkt.get("stream") == "stderr"
+                            or any(k in text_chunk for k in ("Error", "[FAIL]", "[BLOCKER]"))
+                        ):
+                            captured_err.append(text_chunk)
                     elif pkt.get("type") == "task_finish":
-                        return pkt.get("exit_code", 0)
+                        rc = pkt.get("exit_code", 0)
+                        global _LAST_DISPATCH_ERROR_HINT
+                        _LAST_DISPATCH_ERROR_HINT = extract_error_hint("".join(captured_err)) if rc != 0 else ""
+                        return rc
         return exit_code
     except Exception:
         # EC-04: 熱派發通訊異常時透明降級
@@ -353,10 +368,14 @@ def dispatch_local(
     primary_cmd = cmd_path[0] if cmd_path else ""
 
     # 參數解析
+    global _LAST_DISPATCH_ERROR_HINT
+    _LAST_DISPATCH_ERROR_HINT = ""
     try:
         positional_args, resolved_options = OptionResolver.resolve(cmd_spec, raw_args)
     except OptionResolutionError as err:
-        print(f"[yscb] Error: {err}")
+        err_msg = f"[yscb] Error: {err}"
+        _LAST_DISPATCH_ERROR_HINT = err_msg
+        print(err_msg)
         return 1
 
     raw_cmd_str = " ".join(cmd_path + raw_args) if (cmd_path or raw_args) else ""
@@ -369,7 +388,9 @@ def dispatch_local(
 
     target_cli = _find_module_cli(module_name, yscb_abs)
     if not target_cli:
-        print(f"[yscb] Error: Cannot find CLI entrypoint for module '{module_name}'.")
+        err_msg = f"[yscb] Error: Cannot find CLI entrypoint for module '{module_name}'."
+        _LAST_DISPATCH_ERROR_HINT = err_msg
+        print(err_msg)
         return 1
 
     # =========================================================================
@@ -426,16 +447,20 @@ def dispatch_local(
         else:
             # EC-05: 既無精確函式亦非純分支 (Hard Sunset: 徹底移除 process fallback)
             disp_cmd = " ".join(cmd_path)
-            print(
+            err_msg = (
                 f"[yscb] Error (EC-05): Module '{module_name}' CLI script does not define "
                 f"command function '{func_name}(cmd_bags)'."
             )
+            _LAST_DISPATCH_ERROR_HINT = err_msg
+            print(err_msg)
             return 127
     except SystemExit as se:
         exit_code = se.code if isinstance(se.code, int) else (0 if se.code is None else 1)
     except Exception as e:
         disp_cmd = " ".join(cmd_path)
-        print(f"[yscb] Error executing '{module_name} {disp_cmd}': {e}")
+        err_msg = f"[yscb] Error executing '{module_name} {disp_cmd}': {e}"
+        _LAST_DISPATCH_ERROR_HINT = err_msg
+        print(err_msg)
         exit_code = 1
     finally:
         sys.argv = orig_argv
@@ -484,6 +509,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     if "YSCB_HOST_DISPATCH_TOKEN" not in os.environ:
         os.environ["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"
 
+    t_start = time.perf_counter()
     registry = _load_registry(yscb_abs)
 
     # 1. 空參數或全域 --help
@@ -523,10 +549,21 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
                 # EC-01: 未知模組或未知指令，模糊拼寫比對
                 all_candidates = list(core_commands) + registry.list_modules()
                 sugg = _suggest_command(first_token, all_candidates)
-                print(f"[yscb] Error: Unknown command or module '{first_token}'.")
+                err_msg = f"[yscb] Error: Unknown command or module '{first_token}'."
+                print(err_msg)
                 if sugg:
                     print(f"       Did you mean '{sugg}'?")
                 print("       Run 'python yscb.py --help' for available commands.")
+                record_cli_event(
+                    module_name=first_token,
+                    cmd_path=[],
+                    args=rest_tokens,
+                    exit_code=1,
+                    duration_ms=(time.perf_counter() - t_start) * 1000.0,
+                    mode="router_err",
+                    error_hint=err_msg + (f" Did you mean '{sugg}'?" if sugg else ""),
+                    yscb_abs=yscb_abs,
+                )
                 return 1
 
     # 4. 模組級 --help 攔截
@@ -545,10 +582,21 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         unknown_token = target_tokens[0]
         cand_list = list(mod_spec.commands.keys()) if (mod_spec and mod_spec.commands) else []
         sugg = _suggest_command(unknown_token, cand_list)
-        print(f"[yscb] Error: Unknown command '{unknown_token}' for module '{module_name}'.")
+        err_msg = f"[yscb] Error: Unknown command '{unknown_token}' for module '{module_name}'."
+        print(err_msg)
         if sugg:
             print(f"       Did you mean '{sugg}'?")
         print(f"       Run 'python yscb.py {module_name} --help' for available commands.")
+        record_cli_event(
+            module_name=module_name,
+            cmd_path=[unknown_token],
+            args=target_tokens[1:],
+            exit_code=1,
+            duration_ms=(time.perf_counter() - t_start) * 1000.0,
+            mode="router_err",
+            error_hint=err_msg + (f" Did you mean '{sugg}'?" if sugg else ""),
+            yscb_abs=yscb_abs,
+        )
         return 1
 
     cmd_disp_name = " ".join(cmd_path)
@@ -583,16 +631,37 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     if cmd_spec and cmd_spec.cmd and not cmd_spec.args and sub_args and not sub_args[0].startswith("-"):
         bad_sub = sub_args[0]
         sugg = _suggest_command(bad_sub, list(cmd_spec.cmd.keys()))
-        print(f"[yscb] Error: Unknown subcommand '{bad_sub}' for command '{cmd_disp_name}'.")
+        err_msg = f"[yscb] Error: Unknown subcommand '{bad_sub}' for command '{cmd_disp_name}'."
+        print(err_msg)
         if sugg:
             print(f"       Did you mean '{sugg}'?")
         print(f"       Run 'python yscb.py {module_name} {cmd_disp_name} --help' for available subcommands.")
+        record_cli_event(
+            module_name=module_name,
+            cmd_path=cmd_path + [bad_sub],
+            args=sub_args[1:],
+            exit_code=1,
+            duration_ms=(time.perf_counter() - t_start) * 1000.0,
+            mode="router_err",
+            error_hint=err_msg + (f" Did you mean '{sugg}'?" if sugg else ""),
+            yscb_abs=yscb_abs,
+        )
         return 1
 
     # 9. FR-06: 指令級 server_compatible 雙管道分流
     if cmd_spec is not None and cmd_spec.server_compatible:
         hot_res = _try_hot_dispatch(module_name, cmd_path, sub_args, yscb_abs)
         if hot_res is not None:
+            record_cli_event(
+                module_name=module_name,
+                cmd_path=cmd_path,
+                args=sub_args,
+                exit_code=hot_res,
+                duration_ms=(time.perf_counter() - t_start) * 1000.0,
+                mode="hot",
+                error_hint=_LAST_DISPATCH_ERROR_HINT if hot_res != 0 else "",
+                yscb_abs=yscb_abs,
+            )
             _maybe_check_and_print_updates()
             return hot_res
         # EC-04: 熱派發通訊失敗或常駐離線，透明降級至本地冷派發
@@ -610,6 +679,16 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         cmd_name=cmd_path,
         raw_args=sub_args,
         cmd_spec=cmd_spec,
+        yscb_abs=yscb_abs,
+    )
+    record_cli_event(
+        module_name=module_name,
+        cmd_path=cmd_path,
+        args=sub_args,
+        exit_code=ret,
+        duration_ms=(time.perf_counter() - t_start) * 1000.0,
+        mode="local",
+        error_hint=_LAST_DISPATCH_ERROR_HINT if ret != 0 else "",
         yscb_abs=yscb_abs,
     )
     _maybe_check_and_print_updates()

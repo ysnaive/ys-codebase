@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_28_1351_session_audit_and_trace_telemetry (Completed)
+
+- **Session 隱形摩擦自檢技能 (`/session-audit`)、三級軌跡提取引擎 (`session-trace`)、Core 飛行紀錄器與沙盒/原子替換防洩漏加固 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：
+  - **Core 層級統一 CLI 飛行紀錄器 (`FR-01`, `EC-03`, `EC-04`, `[P00:DR-01]`)**：於 `ys_codebase/source/core/core/telemetry.py` 新增零耦合飛行紀錄器並掛載於 `core/commands/dispatcher.py:dispatch` 外層，將每次 CLI 呼叫之 `ts`、`epoch`、`module`、`cmd`、`args`、`exit_code`、`duration_ms`、`mode` (`router_err`/`option_err`/`hot`/`local`)、`cwd` 與首行 `error_hint` 記錄於 `cache://core/telemetry.jsonl`；內建沙盒測試預設旁路（支援 `YSCB_TELEMETRY_PATH` 測試覆寫）、`--help` 與 `session-trace` 自身呼叫過濾，以及單檔 `512 KB` / `1,500` 行自動滾動截斷。
+  - **多宿主 `.jsonl` 三層信標定錨、跨階段 `mtime` 消歧與五大摩擦訊號引擎 (`FR-02` ~ `FR-04`, `EC-01`, `EC-02`, `EC-05`, `[P00:DR-02]`, `[P00:DR-03]`)**：於 `ys_codebase/source/agents-workflow/agents_workflow/plans/session_trace.py` 實作 `SessionTraceEngine`，支援顯式 `--transcript`、多 `release_targets`（`antigravity`/`claude`/`codex`）尾端 `64 KB` 工作區指紋與尾行自指信標定錨（自動排除唯讀 Reviewer Subagent，多候選無信標時拒絕盲猜）、Telemetry 時間窗自動切片、活躍與剛歸檔計畫 `mtime` 對照 `changelog.md` 消歧（區分 `VALIDATED_BACKPROP` 與 `SILENT_BACKPATCH`），自動聚合 `MULTI_EDIT_CHURN`、`TOOL_MISS_AND_RETRY`、`SILENT_BACKPATCH`、`GATE_BOUNCE`、`CONTEXT_WASTE` 五大硬訊號與 Tier 3 逆向審訊保底；登錄 `[DN-AW-17]`。
+  - **`agents-workflow session-trace` CLI 與初版 `/session-audit` 唯讀技能導出 (`FR-05`, `NFR-02`, `[P00:DR-04]`)**：於 `contributes/core.json` 與 `scripts/cli.py` 註冊 `session-trace` 指令；建立初版 `assets/skills/session-audit/SKILL.md` 並註冊 `SESSION_AUDIT_STANDARDS` 錨點（全系統內建純 Skill 擴充至 18 個、Stage 1 Token 錨點擴充至 23 個），規範絕對唯讀安全隔離與 A/B/C/D 四象限根因分類樹。
+  - **跨平台原子目錄替換殘留清理、Pylance 沙盒排除與 `YSCBTestCase` URI 狀態還原 (`P05` Deviation Fix)**：於 `AtomicEngine` (`core/engine.py`) 新增 `_force_rmtree_with_retry` 與 `_cleanup_stale_swap_dirs` 主動清除虛擬檔案系統延遲釋放之 `.old_*` / `.staging_*` 目錄，並於 `OSBackend._safe_copytree`、`dispatcher.py` 與 `SandboxProvisioner` 過濾隱藏暫存目錄；於 `IdeProjector` (`core/ide_projector.py`) 新增 `python.analysis.exclude` 排除 `**/.cache/**` 等目錄防止 Pylance 索引沙盒副本導致 RAM 暴增；於 `YSCBTestCase` (`dev/testing/case.py`) 保存並還原 `uri._active_host_dir` / `_active_yscb_dir` / `_active_module_context`；新增 `FT-01` ~ `FT-05` 與 `ET-01` ~ `ET-05` 測試，`core` (195/195)、`dev` (79/79)、`agents-workflow` (134/134) 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_10_27_1143_atomic_module_deploy_and_server_leak_fix (Completed)
 
 - **模組運行時 `.modules/<mod>` Staging 原子目錄替換與 `server` 常駐進程分裂洩漏根治 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：

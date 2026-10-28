@@ -86,6 +86,9 @@ class YSCBTestCase(unittest.TestCase):
         self._orig_sys_path = list(sys.path)
         self._orig_env = dict(os.environ)
         self._orig_cwd = os.getcwd()
+        self._orig_uri_host = uri._active_host_dir
+        self._orig_uri_yscb = uri._active_yscb_dir
+        self._orig_uri_mod = uri._active_module_context
 
         # Determine if current test method requires ISOLATED_SANDBOX
         method_name = getattr(self, "_testMethodName", "")
@@ -132,6 +135,9 @@ class YSCBTestCase(unittest.TestCase):
         sys.path[:] = self._orig_sys_path
         os.environ.clear()
         os.environ.update(self._orig_env)
+        uri._active_host_dir = getattr(self, "_orig_uri_host", None)
+        uri._active_yscb_dir = getattr(self, "_orig_uri_yscb", None)
+        uri._active_module_context = getattr(self, "_orig_uri_mod", None)
         if hasattr(self, "_orig_cwd") and self._orig_cwd:
             try:
                 os.chdir(self._orig_cwd)

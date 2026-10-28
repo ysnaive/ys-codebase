@@ -285,6 +285,21 @@ last_updated: "2026-10-25"
 > [!CAUTION]
 > 嚴禁在 `enable_auto_heal=False`（未提供 `--log` 之唯讀檢核）時改寫磁碟檔案；嚴禁對 `狀態` 或 `模型` 等非確定性標頭進行猜測自癒；嚴禁在 `auto/SKILL.md` 重新塞回冗長的六階段內聯章節大表。
 
+---
+
+### [DN-AW-17] 多宿主 `.jsonl` 尾行自指信標定錨 (`3-Step Beacon Anchoring`) 與跨階段 `mtime` 合規回寫消歧機制
+
+- **工程背景與坑點**：
+  1. **多 `release_targets`、多開視窗與唯讀 Reviewer Subagent 的 `.jsonl` 誤綁**：當專案同時啟用多個 `release_targets`（如 `antigravity`, `claude`, `codex`）或在執行 `Phase 06` 後剛派發過支柱三 Reviewer Subagent 時，本機日誌目錄下會存在多份包含當前 `project_root` 路徑且修改時間極新的 `.jsonl`。若僅取 `mtime` 最新的檔案，極易誤抓到剛剛結束的唯讀 Subagent 對話紀錄或其他平行視窗。
+  2. **跨階段規格同步回寫被誤判為違規偷改**：在 `Phase 04` 定稿審查或 `/discuss` 變更決策時，SOP 允許甚至要求將架構或介面調整反向回寫同步至 `P01`~`P03`；若單憑檔案 `mtime` 晚於後期階段建立時間就一刀切判定為「暗中偷改規格」，將產生大量假陽性誤報。
+- **妥協與防禦設計**：
+  1. **三層信標定錨與拒絕盲猜 (`locate_transcript`)**：(1) 優先支援宿主傳入 `--transcript <path>` 100% 鎖定；(2) 自動探測時僅 `seek` 讀取近期活躍 `.jsonl` 尾端 `64 KB`，排除含 `REVIEW_STATUS: PASSED` 等唯讀審查子代理特徵之檔案，並以「尾端出現 `session-trace` 或 `/session-audit` 觸發信標」精準定錨當前正在執行自檢的主視窗；(3) 若為離線分析（無尾行信標）且匹配到 $\ge 2$ 份工作區日誌，嚴格遵守零臆測原則拒絕盲猜，回傳 `transcript_candidates` 候選清單並先行輸出 Tier 2 結果。
+  2. **`changelog.md` 對帳消歧 (`SILENT_BACKPATCH` vs `VALIDATED_BACKPROP`)**：`audit_plan_mtimes()` 發現前序階段檔案（`P01`~`P03`）之 `mtime` 晚於後序階段完成時間（誤差 $> 5$ 秒）時，自動交叉檢查 `changelog.md` 是否存在對應階段之 `REVISION`/`DECISION` 紀錄或存在 `revision_log.md`——有正式留痕者標為 `VALIDATED_BACKPROP` (`INFO`)，無留痕者方判定為 `SILENT_BACKPATCH` (`HIGH`)。
+
+> [!CAUTION]
+> 嚴禁在未傳 `--transcript` 且無尾行自指信標的多候選情境下僅憑 `mtime` 盲猜鎖定 `.jsonl`；嚴禁未對照 `changelog.md` 修訂紀錄即將跨階段 `mtime` 逆序一律判定為違規偷改。
+
+
 
 
 

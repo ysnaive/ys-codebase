@@ -502,6 +502,60 @@ class AtomicEngine:
                 uri.write_json(cfg_local_uri, infilled_data, indent=2)
 
     @staticmethod
+    def _force_rmtree_with_retry(
+        path: str,
+        retries: int = 5,
+        retry_delay: float = 0.05,
+    ) -> None:
+        """
+        Best-effort recursive removal with read-only chmod handler and short backoff retries
+        to handle transient OS/virtiofs file handle release delays.
+        """
+        if not os.path.exists(path):
+            return
+
+        def _on_rm_error(func, failed_path, _exc_info):
+            try:
+                os.chmod(failed_path, 0o700)
+                func(failed_path)
+            except Exception:
+                pass
+
+        for attempt in range(max(1, retries)):
+            if not os.path.exists(path):
+                return
+            try:
+                shutil.rmtree(path, onerror=_on_rm_error)
+            except Exception:
+                pass
+            if not os.path.exists(path):
+                return
+            try:
+                os.rmdir(path)
+                return
+            except Exception:
+                if attempt + 1 < retries:
+                    time.sleep(retry_delay * (attempt + 1))
+
+    @staticmethod
+    def _cleanup_stale_swap_dirs(parent_dir: str) -> None:
+        """
+        Sweeps and cleans up any residual .old_* or .staging_* directories inside parent_dir
+        left behind by prior swaps or delayed handle releases.
+        """
+        if not os.path.isdir(parent_dir):
+            return
+        try:
+            entries = os.listdir(parent_dir)
+        except Exception:
+            return
+        for entry in entries:
+            if entry.startswith((".old_", ".staging_")):
+                stale_path = os.path.join(parent_dir, entry)
+                if os.path.isdir(stale_path):
+                    AtomicEngine._force_rmtree_with_retry(stale_path, retries=3, retry_delay=0.03)
+
+    @staticmethod
     def _atomic_swap_dir(
         staging_dir: str,
         target_dir: str,
@@ -511,7 +565,7 @@ class AtomicEngine:
         """
         Atomically swaps a prepared staging_dir into target_dir within the same parent filesystem.
         Moves any existing target_dir to a hidden .old_<name>_<pid> sibling, replaces staging_dir
-        into target_dir, rolls back from .old on failure, and removes .old upon success.
+        into target_dir, rolls back from .old on failure, and removes .old and stale swap dirs upon success.
         """
         target_abs = os.path.abspath(target_dir)
         staging_abs = os.path.abspath(staging_dir)
@@ -535,7 +589,7 @@ class AtomicEngine:
         moved_old = False
         try:
             if os.path.exists(old_abs):
-                shutil.rmtree(old_abs, ignore_errors=True)
+                AtomicEngine._force_rmtree_with_retry(old_abs)
 
             if os.path.exists(target_abs):
                 _replace_with_retry(target_abs, old_abs)
@@ -551,9 +605,10 @@ class AtomicEngine:
             raise
         finally:
             if os.path.exists(old_abs):
-                shutil.rmtree(old_abs, ignore_errors=True)
+                AtomicEngine._force_rmtree_with_retry(old_abs)
             if os.path.exists(staging_abs):
-                shutil.rmtree(staging_abs, ignore_errors=True)
+                AtomicEngine._force_rmtree_with_retry(staging_abs)
+            AtomicEngine._cleanup_stale_swap_dirs(parent_dir)
 
     def _deploy_and_strip_single_module_config(self, mod: str, mod_dir_real: str) -> None:
         """
@@ -760,6 +815,10 @@ class AtomicEngine:
                     pass
 
         # Stage 2 & 3: 於 .modules/.staging_<mod>_<pid>_<ts> 預組裝解壓與組態剝離，再執行目錄級原子替換
+        modules_root_real = uri.resolve("module://")
+        os.makedirs(modules_root_real, exist_ok=True)
+        self._cleanup_stale_swap_dirs(modules_root_real)
+
         if clean_stage and uri.exists("module://"):
             for mod in uri.listdir("module://"):
                 if mod.startswith("."):
@@ -768,9 +827,6 @@ class AtomicEngine:
                     uri.rmtree(f"module://{mod}")
                     # 卸載殘留清理快取
                     self._clean_module_cache(mod)
-
-        modules_root_real = uri.resolve("module://")
-        os.makedirs(modules_root_real, exist_ok=True)
 
         for mod, meta in installed.items():
             ver = meta.get("version", "1.0.0.0")
@@ -815,6 +871,7 @@ class AtomicEngine:
 
         # Stage 3 fallback: 對任何未經由 mirror 更新但存在於 module:// 的模組（如自舉 core）確保組態模板已部署並剝離
         self.act_deploy_configs_from_modules()
+        self._cleanup_stale_swap_dirs(modules_root_real)
 
         # Stage 4: 依賴注入與事件廣播
         if inject_stage:
@@ -849,7 +906,13 @@ class AtomicEngine:
             
         # 4. modules/
         if uri.exists("module://"):
-            uri.copy("module://", f"{snap_dir}/modules/")
+            modules_root_real = uri.resolve("module://")
+            self._cleanup_stale_swap_dirs(modules_root_real)
+            uri.makedirs(f"{snap_dir}/modules/")
+            for mod_entry in uri.listdir("module://"):
+                if mod_entry.startswith("."):
+                    continue
+                uri.copy(f"module://{mod_entry}", f"{snap_dir}/modules/{mod_entry}")
             
         return snapshot_id
 
@@ -888,9 +951,20 @@ class AtomicEngine:
         # 4. Restore modules/
         snap_mod_dir = f"{snap_dir}/modules"
         if uri.exists(snap_mod_dir):
+            modules_root_real = uri.resolve("module://")
+            self._cleanup_stale_swap_dirs(modules_root_real)
+            snap_mods = set(uri.listdir(snap_mod_dir))
             if uri.exists("module://"):
-                uri.rmtree("module://")
-            uri.copy(snap_mod_dir, "module://")
+                for existing_mod in uri.listdir("module://"):
+                    if existing_mod.startswith("."):
+                        continue
+                    if existing_mod not in snap_mods:
+                        uri.rmtree(f"module://{existing_mod}")
+            uri.makedirs("module://")
+            for mod_entry in snap_mods:
+                if mod_entry.startswith("."):
+                    continue
+                uri.copy(f"{snap_mod_dir}/{mod_entry}", f"module://{mod_entry}")
 
         self.act_reload(clean_stage=False, inject_stage=True)
 

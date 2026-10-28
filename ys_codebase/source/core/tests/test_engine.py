@@ -361,6 +361,36 @@ def on_test_event(context):
 
         self.mark_passed()
 
+    def test_atomic_swap_dir_cleans_stale_old_and_staging_remnants(self):
+        """Verify _atomic_swap_dir sweeps and removes stale .old_* and .staging_* directories in parent."""
+        parent = os.path.join(self.sandbox_dir, "swap_parent")
+        target = os.path.join(parent, "target_mod")
+        staging = os.path.join(parent, ".staging_target_mod_999")
+        stale_old = os.path.join(parent, ".old_other_mod_111_222")
+        stale_staging = os.path.join(parent, ".staging_other_mod_111_222")
+
+        os.makedirs(target, exist_ok=True)
+        os.makedirs(staging, exist_ok=True)
+        os.makedirs(stale_old, exist_ok=True)
+        os.makedirs(stale_staging, exist_ok=True)
+
+        with open(os.path.join(target, "v.txt"), "w", encoding="utf-8") as f:
+            f.write("old")
+        with open(os.path.join(staging, "v.txt"), "w", encoding="utf-8") as f:
+            f.write("new")
+        with open(os.path.join(stale_old, "remnant.txt"), "w", encoding="utf-8") as f:
+            f.write("stale")
+
+        self.engine._atomic_swap_dir(staging, target)
+        self.assertTrue(os.path.isdir(target))
+        with open(os.path.join(target, "v.txt"), "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "new")
+        self.assertFalse(os.path.exists(staging))
+        self.assertFalse(os.path.exists(stale_old))
+        self.assertFalse(os.path.exists(stale_staging))
+        self.mark_passed()
+
+
 
 
 

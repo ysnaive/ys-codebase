@@ -32,13 +32,17 @@ class TestCorePlatform(YSCBTestCase):
         """FT-01 & FT-02: spawn_detached starts background process, is_process_alive detects it, kill_process_tree terminates it."""
         cmd = [sys.executable, "-c", "import time; time.sleep(10)"]
         pid = spawn_detached(cmd)
-        self.assertGreater(pid, 0)
-        self.assertTrue(is_process_alive(pid))
+        try:
+            self.assertGreater(pid, 0)
+            self.assertTrue(is_process_alive(pid))
 
-        # Kill the spawned process tree
-        killed = kill_process_tree(pid, timeout_sec=2.0)
-        self.assertTrue(killed)
-        self.assertFalse(is_process_alive(pid))
+            # Kill the spawned process tree
+            killed = kill_process_tree(pid, timeout_sec=2.0)
+            self.assertTrue(killed)
+            self.assertFalse(is_process_alive(pid))
+        finally:
+            if pid > 0 and is_process_alive(pid):
+                kill_process_tree(pid, timeout_sec=1.0)
         self.mark_passed()
 
     def test_is_process_alive_invalid(self):
