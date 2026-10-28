@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from core.vfs import VirtualPath
     from core import platform
     from core import commands
+    from core import telemetry
 
 _MODULE_MAP = {
     "uri": ("core.uri", None),
@@ -55,6 +56,7 @@ _MODULE_MAP = {
     "config": ("core.config", None),
     "validator": ("core.validator", None),
     "ide_projector": ("core.ide_projector", None),
+    "telemetry": ("core.telemetry", None),
 }
 
 
@@ -102,4 +104,5 @@ __all__ = [
     "config",
     "validator",
     "ide_projector",
+    "telemetry",
 ]

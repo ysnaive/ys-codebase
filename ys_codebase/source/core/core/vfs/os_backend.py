@@ -193,10 +193,12 @@ class OSBackend(VFSBackend):
             shutil.rmtree(norm_path, ignore_errors=ignore_errors)
 
     def _safe_copytree(self, src: str, dst: str) -> None:
-        """跨平台大小寫不敏感安全複製目錄樹。"""
+        """跨平台大小寫不敏感安全複製目錄樹，忽略暫態點目錄 (.old_* / .staging_*) 與過期句柄。"""
         os.makedirs(dst, exist_ok=True)
         seen_lower = set()
         for item in sorted(os.listdir(src)):
+            if item.startswith((".old_", ".staging_")):
+                continue
             if item.lower() in seen_lower:
                 continue
             seen_lower.add(item.lower())
@@ -204,7 +206,7 @@ class OSBackend(VFSBackend):
             d = os.path.join(dst, item)
             if os.path.isdir(s):
                 self._safe_copytree(s, d)
-            else:
+            elif os.path.isfile(s):
                 shutil.copy2(s, d)
 
     def copy(self, src: str, dst: str) -> None:

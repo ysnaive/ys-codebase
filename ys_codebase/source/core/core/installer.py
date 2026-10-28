@@ -730,7 +730,6 @@ class Installer:
             os.path.join(yscb_abs, ".build", module_name, f"{version}.zip"),
             os.path.join(yscb_abs, ".build", module_name, f"{version}.build.zip"),
             os.path.join(yscb_abs, ".build", module_name, f"{version}"),
-            os.path.join(yscb_abs, ".build", module_name),
             os.path.join(yscb_abs, "release", module_name, f"{version}.zip"),
         ]
         found_b = next((c for c in build_candidates if os.path.exists(c)), None)

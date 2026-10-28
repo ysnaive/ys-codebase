@@ -337,4 +337,13 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 3. **步驟 3（合規第一層資產生成與雙軌路徑封裝）**：於第一層扁平路徑（`config/agents-workflow/skills/<name>/SKILL.md` 或 `snippets/<name>.md`）生成資產；指向同技能內部 `references/` 使用標準相對路徑 `./references/...`，指向跨技能或專案目錄強制使用單反引號包覆之 Stage 2 語意 URI。
 4. **步驟 4（三步嚴格編譯驗證守門）**：最小增量更新 `config/agents-workflow/contribute.json`，強制依序通過 `contributes check`（0 Error）$\to$ `agents-workflow compile`（0 Error / 0 Warning）$\to$ `agents-workflow release` 物化同步至目標平台。
 
+### 7.5 Session 隱形摩擦自檢技能 (`/session-audit`) 與三級軌跡提取引擎 (`session-trace`)
+當開發過程疑似經歷繞遠路、重複搜尋或反覆修補時，可觸發 `/session-audit`（搭配 CLI `python yscb.py agents-workflow session-trace [--transcript <path>] [--plan <dir>] [--json]`）執行唯讀事後法醫解剖：
+1. **三級漸進式資料源 (3-Tier Telemetry Architecture)**：
+   - **Tier 1（IDE 本地 `.jsonl` 深度解析）**：透過顯式 `--transcript` 或「工作區路徑指紋 + 尾行自指信標 (`session-trace` / `/session-audit`)」鎖定主對話 `.jsonl`（自動過濾唯讀 Reviewer Subagent 與其他專案視窗），提取失敗/重試 Tool Calls、`<thinking>` 截斷摘要與會話基礎統計（`session_stats`：含完整/精簡 Token 估算分佈、原生 API 用量、步數/回合數、工具調用分佈及讀改檔計數）。
+   - **Tier 2（`cache://core/telemetry.jsonl` 原生飛行紀錄與 `mtime` 消歧）**：依對話時間窗切片 `core` 記錄之 CLI 軌跡（統計呼叫次數、失敗率、熱派發/本地模式分佈與耗時），並比對目標計畫（支援活躍計畫與最近 30 分鐘內剛歸檔之計畫）各階段檔案 `mtime` 與 `changelog.md`，區分合規回寫（`VALIDATED_BACKPROP`）與未申報暗中偷改（`SILENT_BACKPATCH`）。
+   - **Tier 3（上下文逆向審訊保底）**：無外部日誌時輸出結構化逆向審訊檢核表。
+2. **五大硬性摩擦訊號與四象限根因分類**：機械式提取 `MULTI_EDIT_CHURN`、`TOOL_MISS_AND_RETRY`、`SILENT_BACKPATCH`、`GATE_BOUNCE`、`CONTEXT_WASTE` 五大訊號，嚴格歸入 **Type A（提示詞/SOP 歧義）**、**Type B（ACI 工具/檢索斷層）**、**Type C（任務本質探索）** 與 **Type D（模型注意力滑脫）**，全程遵守 100% 唯讀安全隔離。
+
+
 

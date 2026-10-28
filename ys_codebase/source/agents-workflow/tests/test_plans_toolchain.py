@@ -1548,5 +1548,336 @@ class TestPlansModelRecord(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_ft_15_session_trace_beacon_anchoring_and_five_friction_signals(self):
+        """
+        FT-02 ~ FT-05, ET-01, ET-02, ET-05:
+        驗證 SessionTraceEngine 之：
+        1. 多宿主 .jsonl 三層信標定錨（顯式路徑、尾行自指信標過濾 Subagent 與他案、多候選無信標拒絕盲猜 EC-01）
+        2. 跨階段 mtime 逆序修改與 changelog.md 合規回寫消歧 (VALIDATED_BACKPROP vs SILENT_BACKPATCH)
+        3. 五大硬性摩擦訊號聚合 (MULTI_EDIT_CHURN, TOOL_MISS_AND_RETRY, SILENT_BACKPATCH, GATE_BOUNCE, CONTEXT_WASTE)
+        4. 多活躍計畫提示與剛歸檔計畫自動探測 (EC-02)、損毀 JSONL 容錯 (EC-05) 及 CLI session-trace 正負向執行
+        """
+        import importlib.util
+        import json
+        import time
+        from agents_workflow.plans.session_trace import SessionTraceEngine
+        from agents_workflow.compiler import ArtifactCompiler
+
+        aw_cli_spec = importlib.util.spec_from_file_location("aw_cli_test", str(_pkg_root / "scripts" / "cli.py"))
+        aw_cli = importlib.util.module_from_spec(aw_cli_spec)
+        aw_cli_spec.loader.exec_module(aw_cli)
+
+        # --- A. 驗證三層信標定錨 (locate_transcript) 與 EC-01 / EC-05 ---
+        mock_logs_root = self.root / "mock_ide_logs"
+        ag_main_dir = mock_logs_root / "antigravity" / "conv_main" / ".system_generated" / "logs"
+        ag_sub_dir = mock_logs_root / "antigravity" / "conv_sub" / ".system_generated" / "logs"
+        claude_dir = mock_logs_root / "claude" / "proj_a"
+        ag_main_dir.mkdir(parents=True, exist_ok=True)
+        ag_sub_dir.mkdir(parents=True, exist_ok=True)
+        claude_dir.mkdir(parents=True, exist_ok=True)
+
+        proj_root_str = str(self.root).replace("\\", "/")
+
+        # 1. 建立主視窗 transcript.jsonl（含損毀行 EC-05、同檔多次修改、重複讀取、ERROR 與尾行 session-trace 信標）
+        main_jsonl = ag_main_dir / "transcript.jsonl"
+        main_lines = [
+            json.dumps({
+                "step_index": 1,
+                "created_at": "2026-10-28T14:00:00Z",
+                "type": "USER_INPUT",
+                "content": f"Working in {proj_root_str}",
+            }),
+            "{corrupted_json_line_should_be_skipped",
+            json.dumps({
+                "step_index": 2,
+                "created_at": "2026-10-28T14:01:00Z",
+                "type": "PLANNER_RESPONSE",
+                "thinking": "First attempt to edit foo.py without checking signature",
+                "tool_calls": [
+                    {"name": "edit_file", "args": {"Path": f"{proj_root_str}/foo.py"}},
+                    {"name": "read_file", "args": {"Path": f"{proj_root_str}/bar.py", "StartLine": 1, "EndLine": 50}},
+                ],
+            }),
+            json.dumps({
+                "step_index": 3,
+                "created_at": "2026-10-28T14:02:00Z",
+                "status": "ERROR",
+                "content": "Target string not found in foo.py",
+                "thinking": "I guessed the target string wrong, need to re-read bar.py and re-edit foo.py",
+                "tool_calls": [
+                    {"name": "read_file", "args": {"Path": f"{proj_root_str}/bar.py", "StartLine": 1, "EndLine": 50}},
+                ],
+            }),
+            json.dumps({
+                "step_index": 5,
+                "created_at": "2026-10-28T14:03:00Z",
+                "type": "PLANNER_RESPONSE",
+                "tool_calls": [
+                    {"name": "edit_file", "args": {"Path": f"{proj_root_str}/foo.py"}},
+                    {"name": "run_command", "args": {"CommandLine": "python yscb.py agents-workflow session-trace --json"}},
+                ],
+            }),
+        ]
+        main_jsonl.write_text("\n".join(main_lines) + "\n", encoding="utf-8")
+
+        # 2. 建立較新但屬於唯讀 Reviewer Subagent 的 transcript.jsonl（應被自動排除）
+        sub_jsonl = ag_sub_dir / "transcript.jsonl"
+        sub_jsonl.write_text(
+            json.dumps({
+                "step_index": 1,
+                "created_at": "2026-10-28T14:04:00Z",
+                "content": f"你是一個無歷史包袱的獨立審查員 {proj_root_str} REVIEW_STATUS: PASSED",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        # 3. 建立另一宿主無尾行信標之舊對話紀錄
+        claude_jsonl = claude_dir / "old_session.jsonl"
+        claude_jsonl.write_text(
+            json.dumps({
+                "step_index": 1,
+                "created_at": "2026-10-28T12:00:00Z",
+                "content": f"Old session in {proj_root_str}",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        # 4. 建立模擬之 core telemetry.jsonl（含連續 3 次 knowledge-db search 與 1 次 plan verify 退件）
+        telem_file = self.root / "telemetry.jsonl"
+        telem_records = [
+            {"ts": "2026-10-28T14:01:10Z", "epoch": 1793196070.0, "module": "knowledge-db", "cmd": "search", "args": ["q1"], "exit_code": 0, "duration_ms": 20, "mode": "hot", "error_hint": ""},
+            {"ts": "2026-10-28T14:01:20Z", "epoch": 1793196080.0, "module": "knowledge-db", "cmd": "search", "args": ["q2"], "exit_code": 0, "duration_ms": 20, "mode": "hot", "error_hint": ""},
+            {"ts": "2026-10-28T14:01:30Z", "epoch": 1793196090.0, "module": "knowledge-db", "cmd": "search", "args": ["q3"], "exit_code": 0, "duration_ms": 20, "mode": "hot", "error_hint": ""},
+            {"ts": "2026-10-28T14:02:10Z", "epoch": 1793196130.0, "module": "agents-workflow", "cmd": "plan verify", "args": ["demo"], "exit_code": 1, "duration_ms": 30, "mode": "local", "error_hint": "[FAIL] Missing section"},
+        ]
+        telem_file.write_text("\n".join(json.dumps(r) for r in telem_records) + "\n", encoding="utf-8")
+
+        # 5. 建立測試計畫並驗證 SILENT_BACKPATCH vs VALIDATED_BACKPROP (FR-03)
+        trace_plans_dir = self.root / "trace_plans"
+        trace_arch_dir = self.root / "trace_archived"
+        plan_a = trace_plans_dir / "2026_10_28_1400_silent_patch_demo"
+        plan_a.mkdir(parents=True, exist_ok=True)
+        p01_file = plan_a / "P01_requirements_spec.md"
+        p04_file = plan_a / "P04_implementation_plan.md"
+        cl_file = plan_a / "changelog.md"
+        p01_file.write_text("# P01\n> 狀態：Confirmed\n", encoding="utf-8")
+        p04_file.write_text("# P04\n> 狀態：Confirmed\n", encoding="utf-8")
+        cl_file.write_text(
+            "| 時間 | 類型 | 變更與決策摘要 | 模型 |\n| :--- | :---: | :--- | :--- |\n"
+            "| 2026-10-28 14:00 | PHASE | 完成 P04 | Unknown |\n",
+            encoding="utf-8",
+        )
+        base_t = time.time() - 100.0
+        os.utime(p04_file, (base_t, base_t))
+        # 讓 P01 的 mtime 晚於 P04 30 秒，且 changelog 無 REVISION/DECISION 紀錄 -> SILENT_BACKPATCH
+        os.utime(p01_file, (base_t + 30.0, base_t + 30.0))
+
+        engine = SessionTraceEngine(
+            plans_dir=trace_plans_dir,
+            archive_dir=trace_arch_dir,
+            project_root=self.root,
+            telemetry_path=telem_file,
+            custom_transcript_dirs={
+                "antigravity": [mock_logs_root / "antigravity"],
+                "claude": [mock_logs_root / "claude"],
+            },
+        )
+
+        report = engine.analyze()
+        self.assertEqual(report.active_tier, "Tier 1+2 (Transcript + Core Telemetry)")
+        self.assertEqual(Path(report.transcript_path).resolve(), main_jsonl.resolve())
+        self.assertEqual(report.target_plan, "2026_10_28_1400_silent_patch_demo")
+
+        # 驗證 REV-01 會話基礎統計與 Token 估算指標 (session_stats)
+        self.assertIn("tokens", report.session_stats)
+        self.assertIn("steps_and_tools", report.session_stats)
+        self.assertIn("time_and_cli", report.session_stats)
+        self.assertGreater(report.session_stats["tokens"]["estimated_full_tokens"], 0)
+        self.assertEqual(report.session_stats["steps_and_tools"]["total_steps"], 4)
+        self.assertEqual(report.session_stats["steps_and_tools"]["user_turns"], 1)
+        self.assertEqual(report.session_stats["steps_and_tools"]["error_steps"], 1)
+        self.assertEqual(report.session_stats["steps_and_tools"]["total_tool_calls"], 5)
+        self.assertEqual(report.session_stats["time_and_cli"]["cli_total_calls"], 4)
+        self.assertEqual(report.session_stats["time_and_cli"]["cli_failed_calls"], 1)
+        self.assertEqual(report.session_stats["time_and_cli"]["session_duration_sec"], 180.0)
+        self.assertIn("Session Baseline Metrics:", report.render_text())
+
+        sig_types = {s.signal_type for s in report.signals}
+        self.assertIn("MULTI_EDIT_CHURN", sig_types)
+        self.assertIn("CONTEXT_WASTE", sig_types)
+        self.assertIn("TOOL_MISS_AND_RETRY", sig_types)
+        self.assertIn("GATE_BOUNCE", sig_types)
+        self.assertIn("SILENT_BACKPATCH", sig_types)
+        self.assertTrue(len(report.thinking_excerpts) >= 1)
+
+        # 6. 驗證當 changelog.md 補入 REVISION 回寫紀錄後，自動轉為 VALIDATED_BACKPROP
+        cl_file.write_text(
+            "| 時間 | 類型 | 變更與決策摘要 | 模型 |\n| :--- | :---: | :--- | :--- |\n"
+            "| 2026-10-28 14:05 | REVISION | 反向回寫同步 P01 規格 | Unknown |\n"
+            "| 2026-10-28 14:00 | PHASE | 完成 P04 | Unknown |\n",
+            encoding="utf-8",
+        )
+        backprop_sigs = engine.audit_plan_mtimes(plan_a)
+        self.assertEqual(len(backprop_sigs), 1)
+        self.assertEqual(backprop_sigs[0].signal_type, "VALIDATED_BACKPROP")
+        self.assertEqual(backprop_sigs[0].severity, "INFO")
+
+        # 7. 驗證 EC-01：當移除尾行自指信標且存在多份工作區 .jsonl 時，拒絕盲猜並回傳候選清單
+        main_jsonl.write_text("\n".join(main_lines[:-1]) + "\n", encoding="utf-8")
+        locked_none, cands = engine.locate_transcript()
+        self.assertIsNone(locked_none)
+        self.assertEqual(len(cands), 2)
+
+        # 驗證 REV-02 list_sessions 自動過濾 Subagent 並支援 include_all_workspaces
+        listed_ws = engine.list_sessions(include_all_workspaces=False, include_subagents=False)
+        self.assertEqual(len(listed_ws), 2, "應列出 2 份主工作區對話，並自動排除 Subagent")
+        listed_all = engine.list_sessions(include_all_workspaces=True, include_subagents=True)
+        self.assertEqual(len(listed_all), 3, "include_subagents=True 時應包含 Subagent 共 3 份")
+        self.assertIn("YS-Codebase Historical Session Transcripts", engine.render_session_list_text(listed_ws))
+
+        # 8. 驗證 EC-02：剛歸檔計畫自動探測與 CLI 正負向呼叫
+        shutil_target = trace_arch_dir / "2026" / "10" / plan_a.name
+        shutil_target.parent.mkdir(parents=True, exist_ok=True)
+        plan_a.rename(shutil_target)
+        rep_archived = engine.analyze(transcript_path=str(main_jsonl))
+        self.assertEqual(rep_archived.target_plan, shutil_target.name)
+        self.assertIn("[Auto-Resolved Recently Archived Plan]", rep_archived.plan_resolution_note)
+
+        # 驗證 CLI 傳入不存在之 --plan 時返回非 0 退出碼 (負向斷言)
+        rc_bad = aw_cli.session_trace(["--plan=non_existent_plan_xyz", "--json"])
+        self.assertEqual(rc_bad, 1)
+
+        # 9. 驗證 Claude Code 與 OpenAI Codex 異質 .jsonl 格式相容性及 AbsolutePath / changelog.md 豁免
+        claude_fmt_file = self.root / "claude_fmt.jsonl"
+        claude_fmt_file.write_text(
+            "\n".join([
+                json.dumps({
+                    "timestamp": "2026-10-28T15:00:00Z",
+                    "type": "user",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "Fix bug"}]},
+                }),
+                json.dumps({
+                    "timestamp": "2026-10-28T15:01:00Z",
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "usage": {"input_tokens": 1200, "output_tokens": 300, "cache_read_input_tokens": 500},
+                        "content": [
+                            {"type": "thinking", "thinking": "Checking legacy view_file AbsolutePath"},
+                            {"type": "tool_use", "name": "view_file", "input": {"AbsolutePath": f"{proj_root_str}/legacy.py", "StartLine": 1, "EndLine": 20}},
+                            {"type": "tool_use", "name": "edit_file", "input": {"file_path": f"{proj_root_str}/changelog.md"}},
+                        ],
+                    },
+                }),
+                json.dumps({
+                    "timestamp": "2026-10-28T15:02:00Z",
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "is_error": True, "content": "Permission denied on legacy.py"},
+                        ],
+                    },
+                }),
+                json.dumps({
+                    "timestamp": "2026-10-28T15:03:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "name": "edit_file",
+                        "arguments": json.dumps({"path": f"{proj_root_str}/changelog.md"}),
+                    },
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        _, cc_sigs, cc_thinks, cc_stats = engine._parse_transcript_file(claude_fmt_file)
+        self.assertEqual(cc_stats["tokens"]["reported_api_usage"]["total_tokens"], 2000)
+        self.assertEqual(cc_stats["steps_and_tools"]["total_read_ops"], 1)
+        self.assertEqual(cc_stats["steps_and_tools"]["total_edit_ops"], 2)
+        self.assertEqual(cc_stats["steps_and_tools"]["error_steps"], 1)
+        self.assertTrue(any(s.signal_type == "TOOL_MISS_AND_RETRY" for s in cc_sigs))
+        self.assertFalse(any(s.signal_type == "MULTI_EDIT_CHURN" and s.target == "changelog.md" for s in cc_sigs))
+        self.assertEqual(len(cc_thinks), 1)
+
+        # 10. 驗證 REV-04 5 項精準度修正（GENERIC 不計入 model_turns、ByteOffset 分段讀取免計 CONTEXT_WASTE、失敗讀檔免計重複、revision_log 豁免）
+        rev04_file = self.root / "rev04_precision.jsonl"
+        rev04_file.write_text(
+            "\n".join([
+                json.dumps({
+                    "step_index": 1,
+                    "created_at": "2026-10-28T16:00:00Z",
+                    "source": "MODEL",
+                    "type": "PLANNER_RESPONSE",
+                    "input_tokens": 500,
+                    "output_tokens": 100,
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/large.md", "StartLine": 1, "EndLine": 800}},
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/large.md", "StartLine": 1, "EndLine": 800, "ByteOffset": 46080}},
+                        {"name": "edit_file", "args": {"Path": f"{proj_root_str}/revision_log.md"}},
+                        {"name": "edit_file", "args": {"Path": f"{proj_root_str}/P06_test_plan.md"}},
+                    ],
+                }),
+                json.dumps({
+                    "step_index": 2,
+                    "created_at": "2026-10-28T16:00:05Z",
+                    "source": "MODEL",
+                    "type": "GENERIC",
+                    "content": "Tool output chunk",
+                }),
+                json.dumps({
+                    "step_index": 3,
+                    "created_at": "2026-10-28T16:00:10Z",
+                    "source": "MODEL",
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/missing.py", "StartLine": 1, "EndLine": 50}},
+                        {"name": "edit_file", "args": {"Path": f"{proj_root_str}/revision_log.md"}},
+                        {"name": "edit_file", "args": {"Path": f"{proj_root_str}/P06_test_plan.md"}},
+                    ],
+                }),
+                json.dumps({
+                    "step_index": 4,
+                    "created_at": "2026-10-28T16:00:12Z",
+                    "source": "MODEL",
+                    "type": "GENERIC",
+                    "status": "ERROR",
+                    "content": "file does not exist: missing.py",
+                }),
+                json.dumps({
+                    "step_index": 5,
+                    "created_at": "2026-10-28T16:00:15Z",
+                    "source": "MODEL",
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/missing.py", "StartLine": 1, "EndLine": 50}},
+                        {"name": "edit_file", "args": {"Path": f"{proj_root_str}/revision_log.md"}},
+                        {"name": "edit_file", "args": {"Path": f"{proj_root_str}/P06_test_plan.md"}},
+                    ],
+                }),
+                json.dumps({
+                    "step_index": 6,
+                    "created_at": "2026-10-28T16:00:18Z",
+                    "source": "MODEL",
+                    "type": "GENERIC",
+                    "status": "ERROR",
+                    "content": "file does not exist: missing.py",
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        _, r4_sigs, _, r4_stats = engine._parse_transcript_file(rev04_file)
+        self.assertEqual(r4_stats["steps_and_tools"]["model_turns"], 3, "GENERIC 步驟不得計入 model_turns")
+        self.assertEqual(r4_stats["tokens"]["reported_api_usage"]["total_tokens"], 600, "應支援頂層 input_tokens/output_tokens")
+        self.assertFalse(any(s.signal_type == "CONTEXT_WASTE" for s in r4_sigs), "ByteOffset 分段讀取與失敗讀檔不得誤判為 CONTEXT_WASTE")
+        self.assertFalse(any(s.signal_type == "MULTI_EDIT_CHURN" for s in r4_sigs), "revision_log.md 與 3 次合規流轉之 P06_test_plan.md 不得誤報 MULTI_EDIT_CHURN")
+
+        # 驗證 Stage 1 ArtifactCompiler 編譯含 session-audit 之全部內建資產 0 warning / 0 error
+        compiler = ArtifactCompiler()
+        comp_res = compiler.compile_stage1()
+        self.assertTrue(comp_res.get("success", True))
+
+        self.mark_passed()
+
 
 

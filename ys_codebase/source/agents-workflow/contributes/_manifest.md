@@ -8,13 +8,14 @@
 - **語意 URI**：`workflow.plans://`（活躍計畫空間）、`workflow.archived://`（封存歷史空間）、`workflow.docs://`（專案文檔空間）、`workflow.roadmap://`（路線圖空間）。
 - **CLI 指令樹**：
   - `plan status` / `plan search` / `plan check` / `plan verify` / `plan archive`：Dev Plans 計畫生命週期管理工具鏈。
+  - `session-trace`：三級漸進式對話軌跡與五大硬性摩擦訊號提取引擎（供 `/session-audit` 調用）。
   - `release` / `compile` / `list` / `tokens` / `release-target`：工作流與技能多目標編譯發布系統。
-  - `roadmap`：長期技術路線圖管理與推薦。
+  - `roadmap` / `todo`：雙層長期技術路線圖與輕量待辦管理。
   - `init`：工作流目錄結構與協議一鍵初始化。
 
 ### 1.2 `agents-workflow.json`（自身資產導出）
-- 導出 17 大領域、工作流與引導教練純 Skill 技能包（`.agents/skills/` 或 `.claude/skills/`），含 `/how-to-config-yscb`、`/how-to-yscb` 與 `/skill-creator`。
-- 導出 16 個標準計畫模板（P00~P07、Fast Track、Umbrella、Roadmap、Todo、Changelog 等）與 `AgentsStandards` 核心規範（含 `PROJECT_ROLE_AND_BOUNDARIES` 錨點）。
+- 導出 18 大領域、工作流與引導教練純 Skill 技能包（`.agents/skills/` 或 `.claude/skills/`），含 `/how-to-config-yscb`、`/how-to-yscb`、`/skill-creator` 與 `/session-audit`。
+- 導出 16 個標準計畫模板（P00~P07、Fast Track、Umbrella、Roadmap、Todo、Changelog 等）與 `AgentsStandards` 核心規範（含 `PROJECT_ROLE_AND_BOUNDARIES` 與 `SESSION_AUDIT_STANDARDS` 錨點）。
 
 ## 2. 開放擴充點清冊 (Ingress Points)
 - `export`: 允許其他領域模組導出 Skill、模板或標準規範資產。

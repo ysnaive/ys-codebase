@@ -176,11 +176,33 @@ class IdeProjector:
                 settings[sec][pattern] = True
                 managed_excludes[sec] = pattern
 
+        # 4b. 同步維護 python.analysis.exclude (避免 Pylance 對 .cache 沙盒與暫存目錄重複索引暴衝記憶體)
+        analysis_exclude_patterns = [
+            "**/.cache/**",
+            "**/.snapshots/**",
+            "**/.build/**",
+            "**/.mirror/**",
+            "**/.modules/**",
+            "**/.venv/**",
+        ]
+        raw_analysis_exclude = settings.get("python.analysis.exclude", [])
+        if not isinstance(raw_analysis_exclude, list):
+            raw_analysis_exclude = []
+        old_managed_analysis_excl = set(old_managed_record.get("analysisExclude", []))
+        retained_analysis_excl = [p for p in raw_analysis_exclude if p not in old_managed_analysis_excl]
+        final_analysis_excl = list(retained_analysis_excl)
+        for pat in analysis_exclude_patterns:
+            if pat not in final_analysis_excl:
+                final_analysis_excl.append(pat)
+        if final_analysis_excl:
+            settings["python.analysis.exclude"] = final_analysis_excl
+
         # 5. 更新顯式標記區塊 _yscb_managed (不再記錄 defaultInterpreterPath)
         settings[self.YSCB_MANAGED_KEY] = {
             "description": "Auto-managed by YSCB host bootstrapper. Reversible via module uninstall or rollback.",
             "extraPaths": new_managed_paths,
             "excludes": managed_excludes,
+            "analysisExclude": analysis_exclude_patterns,
         }
 
         # 6. Zero-Touch 檢驗：若與現有 settings.json 內容完全等價，跳過磁碟寫入
@@ -243,6 +265,16 @@ class IdeProjector:
         for sec, pattern in managed_excludes.items():
             if sec in settings and isinstance(settings[sec], dict):
                 settings[sec].pop(pattern, None)
+
+        # 剔除 YSCB 注入之 analysisExclude
+        managed_analysis_excl = set(managed_record.get("analysisExclude", []))
+        raw_analysis_excl = settings.get("python.analysis.exclude", [])
+        if isinstance(raw_analysis_excl, list) and managed_analysis_excl:
+            clean_analysis_excl = [p for p in raw_analysis_excl if p not in managed_analysis_excl]
+            if clean_analysis_excl:
+                settings["python.analysis.exclude"] = clean_analysis_excl
+            else:
+                settings.pop("python.analysis.exclude", None)
 
         # 寫回
         try:

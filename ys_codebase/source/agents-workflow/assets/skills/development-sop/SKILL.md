@@ -15,7 +15,7 @@ description: 管理 `__${project://plans/}__` 開發計畫全生命週期 (SOP P
 - **歷史封存計畫 (Archived Plans)**：`__${project://plans/archived}__/{YYYY}/{MM}/{YYYY_MM_DD_HHMM_功能名稱}/`
 - **長期策略路線圖 (Roadmap)**：`__${workflow.roadmap://}__`
 - **日誌分離與免讀盲寫鐵律**：
-  - `__${project://plans}__/<plan>/changelog.md`（微觀日誌）：記錄階段流轉、DR 決策與偏差，建檔時**必須伴隨初始化**。推進各階段時，優先調用 `python __${yscb.host://yscb.py}__ agents-workflow plan verify [plan_name] --phase <P0X> --log "<摘要>" [--type PHASE|DECISION|REVISION] --model "<ModelName>"` 一次完成階段合規檢核、伴隨檔自癒與 `changelog.md` 免讀盲寫追加（`--log` 內文嚴禁使用雙引號 `"` 與反引號 `` ` ``，一律改用單引號 `'...'` 或方括號 `[...]`），免除手動讀取與編輯 `changelog.md` 的 Context 消耗。
+  - `__${project://plans}__/<plan>/changelog.md`（微觀日誌）：記錄階段流轉、DR 決策與偏差，建檔時**必須伴隨初始化**。推進各階段時，優先調用 `python __${yscb.host://yscb.py}__ agents-workflow plan verify [plan_name] [--phase <P0X>] --log "<摘要>" [--type PHASE|DECISION|REVISION] --model "<ModelName>"` 一次完成合規檢核、伴隨檔自癒與 `changelog.md` 免讀盲寫追加（注意：`--phase <P0X>` **僅適用於 Full Track 單一階段檢核**；若為 Fast Track、Revision 或 Research 計畫，請直接省略 `--phase` 執行全計畫結構檢核。`--log` 內文嚴禁使用雙引號 `"` 與反引號 `` ` ``，一律改用單引號 `'...'` 或方括號 `[...]`），免除手動讀取與編輯 `changelog.md` 的 Context 消耗。
   - [`__${project://CHANGELOG.md}__`](`__#{project://CHANGELOG.md}__`)（宏觀日誌）：僅於 Phase 7 / FP-03 結案時追加高階變更摘要。
 - [!] **巢狀子計畫最多兩層約束**：僅允許「主計畫 -> 子計畫（`sub_{編號}_{目的}/`）」，**絕對禁止三層或更多層嵌套**。
 - **生命週期工作流中樞分流 (Lifecycle Workflow Hub Routing)**：
@@ -95,24 +95,24 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ## 6. 全階段模板指針 (Template Pointers)
 
-執行計畫落檔時，直接由下方對應模板路徑讀取（落檔時務必將頂部標頭 `[...]` 佔位符全數替換為真實資訊，並依核心原則「模型紀錄」填寫 `> 模型：`（僅採平台當輪宣告之名稱，無法確認填 `Unknown`），且嚴禁包含任何 `<!-- ... -->` HTML 註解）：
+執行計畫落檔時，直接由下方對應模板路徑讀取（注意：下方超連結為相對於本 `SKILL.md` 所在目錄之相對路徑；若從工作區根目錄讀取，實體路徑皆位於 `.agents/.yscb/templates/<檔名>`。落檔時務必將頂部標頭 `[...]` 佔位符全數替換為真實資訊，並依核心原則「模型紀錄」填寫 `> 模型：`（僅採平台當輪宣告之名稱，無法確認填 `Unknown`），且嚴禁包含任何 `<!-- ... -->` HTML 註解）：
 
-- **Phase 0**：[`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)
-- **Phase 1**：[`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)
-- **Phase 2**：[`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)
-- **Phase 3**：[`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)
-- **Phase 4**：[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`)
-- **Phase 5**：[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)
-- **Phase 6**：[`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)
-- **Phase 7**：[`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`)
-- **修訂紀錄**：[`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`)
-- **調研報告**：[`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`)
-- **Fast Track**：[`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`)
-- **Umbrella**：[`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`)
-- **路線圖**：[`roadmap.md`](`__#{module://agents-workflow/assets/templates/roadmap.md}__`)
-- **待辦種子**：[`todo.md`](`__#{module://agents-workflow/assets/templates/todo.md}__`)
-- **微觀日誌**：[`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)
-- **現場交接**：[`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)
+- **Phase 0**：[`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) (`.agents/.yscb/templates/P00_discuss.md`)
+- **Phase 1**：[`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) (`.agents/.yscb/templates/P01_requirements_spec.md`)
+- **Phase 2**：[`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) (`.agents/.yscb/templates/P02_architecture_plan.md`)
+- **Phase 3**：[`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) (`.agents/.yscb/templates/P03_api_spec.md`)
+- **Phase 4**：[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) (`.agents/.yscb/templates/P04_implementation_plan.md`)
+- **Phase 5**：[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) (`.agents/.yscb/templates/P05_task.md`)
+- **Phase 6**：[`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) (`.agents/.yscb/templates/P06_test_plan.md`)
+- **Phase 7**：[`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) (`.agents/.yscb/templates/P07_walkthrough.md`)
+- **修訂紀錄**：[`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`) (`.agents/.yscb/templates/revision_log.md`)
+- **調研報告**：[`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) (`.agents/.yscb/templates/RXX_research_report.md`)
+- **Fast Track**：[`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`) (`.agents/.yscb/templates/fast_track_plan.md`)
+- **Umbrella**：[`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) (`.agents/.yscb/templates/umbrella_overview.md`)
+- **路線圖**：[`roadmap.md`](`__#{module://agents-workflow/assets/templates/roadmap.md}__`) (`.agents/.yscb/templates/roadmap.md`)
+- **待辦種子**：[`todo.md`](`__#{module://agents-workflow/assets/templates/todo.md}__`) (`.agents/.yscb/templates/todo.md`)
+- **微觀日誌**：[`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`) (`.agents/.yscb/templates/changelog.md`)
+- **現場交接**：[`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`) (`.agents/.yscb/templates/handoff.md`)
 
 ### [!] 模板調取三大鐵律 (Template Axiom)
 1. **唯一 SSOT**：所有計畫產物模板一律直接讀取上方條列之模板路徑，不得自造或臆測格式。

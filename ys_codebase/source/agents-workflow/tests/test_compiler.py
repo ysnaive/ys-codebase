@@ -732,12 +732,12 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         expected_skills = {
             "auto", "context-init", "continue", "development-sop", "discuss",
             "documentation", "how-to-config-yscb", "how-to-yscb", "new-plan",
-            "pause", "research", "roadmap", "skill-creator", "skill-optimizer",
-            "testing-sop", "todo", "yscb-cli-guide",
+            "pause", "research", "roadmap", "session-audit", "skill-creator",
+            "skill-optimizer", "testing-sop", "todo", "yscb-cli-guide",
         }
         command_driven_skills = {
-            "auto", "pause", "continue", "context-init", "skill-creator",
-            "skill-optimizer", "how-to-config-yscb", "how-to-yscb",
+            "auto", "pause", "continue", "context-init", "session-audit",
+            "skill-creator", "skill-optimizer", "how-to-config-yscb", "how-to-yscb",
         }
         ambient_skills = expected_skills - command_driven_skills
         actual_skills = {p.name for p in skills_dir.iterdir() if p.is_dir()}
@@ -947,7 +947,7 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         token_names = {item["value"] for item in contrib["token"]}
         self.assertIn("skill-creator", export_map)
         self.assertIn("SKILL_CREATOR_STANDARDS", token_names)
-        self.assertEqual(len(token_names), 21)
+        self.assertEqual(len(token_names), 22)
 
         sc_md_path = sc_dir / "SKILL.md"
         self.assertTrue(sc_md_path.is_file())
@@ -985,9 +985,9 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
 
         ref_text = ref_path.read_text(encoding="utf-8")
         self.assertIn("## 目錄 (Contents)", ref_text)
-        all_22_tokens = token_names | {"KNOWLEDGE_DB_SPACE"}
-        self.assertEqual(len(all_22_tokens), 22)
-        for tok in all_22_tokens:
+        all_23_tokens = token_names | {"KNOWLEDGE_DB_SPACE"}
+        self.assertEqual(len(all_23_tokens), 23)
+        for tok in all_23_tokens:
             self.assertIn(f"`{tok}`", ref_text, f"extension-guide.md 漏列 Stage 1 錨點: {tok}")
         self.assertIn("Markdown 表格列", ref_text)
         self.assertIn('"token": "PHASE05_AGENTS_GUIDE"', ref_text)

@@ -1,11 +1,11 @@
 # 專案特化技能與 Layer 2 宣告式擴充參考指南 (Skill Creator & Layer 2 Extension Guide)
 
-本指南為 [`/skill-creator`](../SKILL.md) 的單層按需參考手冊，完整收錄雙階段語意編譯架構下之 **22 個已註冊 Stage 1 Token 錨點地圖**、**Stage 2 語意 URI 轉換與單反引號封裝規則**，以及三大擴充軌跡之 `config://agents-workflow/contribute.json` 最小增量配置範本。
+本指南為 [`/skill-creator`](../SKILL.md) 的單層按需參考手冊，完整收錄雙階段語意編譯架構下之 **23 個已註冊 Stage 1 Token 錨點地圖**、**Stage 2 語意 URI 轉換與單反引號封裝規則**，以及三大擴充軌跡之 `config://agents-workflow/contribute.json` 最小增量配置範本。
 
 ## 目錄 (Contents)
 
 - [1. 雙層物化架構與三大擴充軌跡總覽](#1-雙層物化架構與三大擴充軌跡總覽)
-- [2. 全系統 22 個 Stage 1 Token 錨點地圖 (Token Anchor Map)](#2-全系統-22-個-stage-1-token-錨點地圖-token-anchor-map)
+- [2. 全系統 23 個 Stage 1 Token 錨點地圖 (Token Anchor Map)](#2-全系統-23-個-stage-1-token-錨點地圖-token-anchor-map)
 - [3. Stage 2 語意 URI 轉換與單反引號語法防呆](#3-stage-2-語意-uri-轉換與單反引號語法防呆)
 - [4. 三軌擴充之 contribute.json 最小增量配置範本](#4-三軌擴充之-contributejson-最小增量配置範本)
 - [5. 新建 Skill 結構與雙軌 Description 檢核清單](#5-新建-skill-結構與雙軌-description-檢核清單)
@@ -28,9 +28,9 @@
 
 ---
 
-## 2. 全系統 22 個 Stage 1 Token 錨點地圖 (Token Anchor Map)
+## 2. 全系統 23 個 Stage 1 Token 錨點地圖 (Token Anchor Map)
 
-執行 `python __${yscb.host://yscb.py}__ agents-workflow tokens` 可即時查詢當前環境已安裝模組與專案自訂 `contribute` 註冊之所有 Stage 1 錨點。下表為標準生態系模組提供之 **22 個內建錨點**（`agents-workflow` 內建 21 個 ＋ `knowledge-db` 選配模組註冊 1 個；若專案或額外模組自訂擴充新 Token，以 CLI 實機查詢結果為準）之完整對照地圖：
+執行 `python __${yscb.host://yscb.py}__ agents-workflow tokens` 可即時查詢當前環境已安裝模組與專案自訂 `contribute` 註冊之所有 Stage 1 錨點。下表為標準生態系模組提供之 **23 個內建錨點**（`agents-workflow` 內建 22 個 ＋ `knowledge-db` 選配模組註冊 1 個；若專案或額外模組自訂擴充新 Token，以 CLI 實機查詢結果為準）之完整對照地圖：
 
 ### 2.1 全域行為準則、角色邊界與技能路由錨點（3 個）
 
@@ -40,7 +40,7 @@
 | `AGENTS_SKILL_ROUTING` | `AgentsStandards.md` §2 條件路由表內 | **Markdown 表格列** | **軌跡 ② / ③ 必用**：將新增之專案 Skill 掛載至全域條件觸發路由表（必須為 `\| **條件** \| \`skill\` \|` 表格行格式） |
 | `AGENTS_STANDARDS` | `AgentsStandards.md` 尾部 | 獨立段落區塊 | 注入全專案共通之額外行為紀律或全域鐵律 |
 
-### 2.2 核心中樞與專項技能擴充錨點（9 個）
+### 2.2 核心中樞與專項技能擴充錨點（10 個）
 
 | Token 名稱 | 宿主檔案位置 | 結構屬性 | 注入用途與適用場景 |
 | :--- | :--- | :---: | :--- |
@@ -51,6 +51,7 @@
 | `RESEARCH_AGENTS_GUIDE` | `research/SKILL.md` | 獨立段落區塊 | 注入 `/research` 技術調研階段之專案特化檢索或評估指引 |
 | `SKILL_OPTIMIZER_STANDARDS` | `skill-optimizer/SKILL.md` 尾部 | 獨立段落區塊 | 注入 `/skill-optimizer` 審查既有技能時之專案特化檢核規則 |
 | `SKILL_CREATOR_STANDARDS` | `skill-creator/SKILL.md` 尾部 | 獨立段落區塊 | 注入 `/skill-creator` 建立新技能或擴充配置時之專案特化命名或目錄規範 |
+| `SESSION_AUDIT_STANDARDS` | `session-audit/SKILL.md` §2 | 獨立段落區塊 | 注入 `/session-audit` 事後隱形摩擦自檢時之專案特化歸因規則或檢核項 |
 | `HOW_TO_CONFIG_MODULES` | `how-to-config-yscb/SKILL.md` | 獨立段落區塊 | 聚合各已安裝模組之設定項目、健康檢查條件與隨包手冊連結 (`config_guide.md`) |
 | `HOW_TO_YSCB_MODULES` | `how-to-yscb/SKILL.md` | 獨立段落區塊 | 聚合各已安裝模組之定位、標準用法速查 (`Golden Recipes`) 與手冊連結 (`usage_guide.md`) |
 
@@ -75,7 +76,7 @@
 | `KNOWLEDGE_DB_SPACE` | `knowledge-db` 注入之檢索指南片段內 | 獨立段落區塊 | 由 `knowledge-db` 動態计算並渲染當前專案已註冊之語意檢索空間速查表 (`--space=<name>`) |
 
 > [!WARNING]
-> **結構屬性防呆（`EC-05`）**：上表中唯獨 `AGENTS_SKILL_ROUTING` 位於 `AgentsStandards.md` 的 Markdown 表格內部，向其注入的片段內容**必須是合法的兩欄式 Markdown 表格列**；其餘 21 個錨點均為獨立段落區塊，可注入標準 Markdown 標題、清單或引用塊。
+> **結構屬性防呆（`EC-05`）**：上表中唯獨 `AGENTS_SKILL_ROUTING` 位於 `AgentsStandards.md` 的 Markdown 表格內部，向其注入的片段內容**必須是合法的兩欄式 Markdown 表格列**；其餘 22 個錨點均為獨立段落區塊，可注入標準 Markdown 標題、清單或引用塊。
 
 ---
 

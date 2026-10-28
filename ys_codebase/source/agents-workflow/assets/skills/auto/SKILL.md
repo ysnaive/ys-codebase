@@ -38,6 +38,7 @@ description: 針對已確認需求之計畫自動連續執行規格產出、代�
    - 處於 `/auto` 模式時，**免除讀取 `phase_01~05.md`**（省去無效的單階段 End Turn 說明），改採**寫檔前最後一刻平行讀取權威模板**以兼顧零記憶衰減與 100% 結構合規：
      - **批次 A（寫 `P01`~`P04` 前即時平行讀取）**：動筆寫規格前，平行讀取 [P01](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)、[P02](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)、[P03](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)、[P04](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) 模板（僅需讀取本次尚未產出之階段）。
      - **批次 B（Phase 5 實作與測試通過後、寫 `P05` & `P06` 前即時平行讀取）**：完成源碼與自動化測試後，平行讀取 [P05](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) 與 [P06](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) 模板，隨即一次寫出 `P05_task_auto.md` 與 `P06_test_plan.md`。
+     - **同對話跨子計畫模板免重讀豁免 (`Same-Session Template Cache Reuse`)**：若於同一對話 Session 中連續推進 Umbrella 旗下多個 `sub_XX` 子計畫，且前序子計畫已讀取過 `P01`~`P06` 模板、中間未發生 Context Compaction 失憶，後續子計畫可直接沿用已載入 Context 之模板結構落檔，**無須於每個子計畫重複調用讀檔工具重讀 `.agents/.yscb/templates/*`**。
    - 撰寫測試與執行 `Phase 06` 驗證時，強制遵循 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`) 與 [`phase_06_test.md`](`__#{module://agents-workflow/assets/skills/development-sop/references/phase_06_test.md}__`)（含支柱三 Pre-UX 唯讀盲審）。
 2. **單檔單次到位寫入與單次彙總檢核 (`1-Write-Per-File & Single Batch Verify`)**：
    - **`P01`~`P04` (`*_auto.md`)**：直接以 `> 狀態：Confirmed` 一次建立並定稿（嚴禁殘留 `[...]` 佔位符或 `<!-- ... -->` 註解）。

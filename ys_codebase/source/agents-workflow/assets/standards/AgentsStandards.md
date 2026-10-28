@@ -43,4 +43,4 @@
 
 > [!NOTE]
 > **專案特化技能擴充導引 (Project Contributed Routing)**：  
-> 若當前專案需擴充特化條件技能，請於專案組態 `config/agents-workflow/contribute.json` 宣告 `insert` 至 `AGENTS_SKILL_ROUTING` 錨點（宣告式一等公民，升級自動編譯注入，杜絕物化檔案衝突）。
+> 若當前專案需擴充特化條件技能，請於專案組態 `__${config://agents-workflow}__/contribute.json` 宣告 `insert` 至 `AGENTS_SKILL_ROUTING` 錨點（宣告式一等公民，升級自動編譯注入，杜絕物化檔案衝突）。

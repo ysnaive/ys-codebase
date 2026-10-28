@@ -20,7 +20,7 @@ yscb-cli-guide 執行前檢核表：
 
 1. **指令單行化 (Single-Line Command Discipline)**：調用終端工具（如 `run_command`）**嚴禁字串夾帶換行 (`\n`) 或多行互動輸入**；多命令於 PowerShell 以 `;` 串接（Bash 以 `&&` 串接），複雜邏輯強制落檔後執行，嚴防 PTY 次級提示字元等待卡死。
 2. **雙引號參數字串逃逸防呆 (Quote & Backtick Safeguard)**：調用帶有文字摘要參數之 CLI 指令（如 `plan verify --log "<摘要>"` 或 `todo add "<標題>" --note "<備註>"`）時，雙引號包裹之內文字串**嚴禁夾帶雙引號 `"` 或反引號 `` ` ``**（避免引發 Shell 命令替換或引號解析崩潰）；如需強調識別符、檔案或階段名稱，一律改用單引號 `'...'` 或方括號 `[...]`。
-3. **常駐 Server 守門處置 (`[BLOCKER]` Daemon Handling)**：當專案安裝 `server` 模組且 `require_server_for_agents: true` 時，若執行 CLI 遭遇 `[BLOCKER] YSCB Persistent Server is not running`，應立即以終端工具背景常駐模式（例如設定 `IsDaemon: true` 或非阻塞背景等待）執行 `python __${yscb.host://yscb.py}__ server start --console` 啟動守護進程，隨後重試原指令。
+3. **常駐 Server 守門處置 (`[BLOCKER]` Daemon Handling)**：當專案安裝 `server` 模組且 `require_server_for_agents: true` 時，若執行 CLI 遭遇 `[BLOCKER] YSCB Persistent Server is not running`，應立即以終端工具背景常駐模式（例如設定 `IsDaemon: true` 或非阻塞背景等待）執行 `python __${yscb.host://yscb.py}__ server start --console`（或 `server start -d`）啟動守護進程，隨後重試原指令。注意：`server` 支援之子命令為 `start / stop / status / reload`（安裝 `@build` 後欲熱重載 Worker 請執行 `server reload` 或 `server stop && server start -d`，**無 `server restart` 子命令**）。
 
 ---
 

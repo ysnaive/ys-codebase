@@ -3,23 +3,23 @@
   "default_provider": "./ys_codebase/release",
   "installed_modules": {
     "core": {
-      "version": "1.1.1.1",
-      "installed_at": "2026-10-27 13:58:39",
+      "version": "1.1.1.2",
+      "installed_at": "2026-10-28 16:30:32",
       "provider": "./ys_codebase/release"
     },
     "dev": {
-      "version": "1.1.1.0",
-      "installed_at": "2026-10-25 12:41:02",
+      "version": "1.1.1.1",
+      "installed_at": "2026-10-28 16:31:08",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "1.2.0.0",
-      "installed_at": "2026-10-25 12:40:57",
+      "version": "1.2.0.1",
+      "installed_at": "2026-10-28 16:30:57",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.1.1.0",
-      "installed_at": "2026-10-25 12:40:51",
+      "version": "1.1.1.1",
+      "installed_at": "2026-10-28 16:30:44",
       "provider": "./ys_codebase/release"
     },
     "server": {

@@ -579,6 +579,79 @@
           ]
         }
       },
+      "session-trace": {
+        "description": "執行三級漸進式對話軌跡與五大硬性摩擦訊號提取 (供 /session-audit 調用)",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "plan_name": {
+            "description": "選填指定目標計畫或 sub_XX 子計畫路徑",
+            "required": false
+          }
+        },
+        "options": {
+          "target_plan": {
+            "plan": {
+              "description": "指定目標計畫或 sub_XX 子計畫路徑",
+              "args": {
+                "val": {
+                  "description": "計畫名稱或子路徑"
+                }
+              }
+            }
+          },
+          "transcript_opt": {
+            "transcript": {
+              "description": "顯式指定當前對話之本地 .jsonl 紀錄檔路徑 (優先級 1 定錨)",
+              "args": {
+                "val": {
+                  "description": ".jsonl 檔案路徑"
+                }
+              }
+            }
+          },
+          "since_opt": {
+            "since": {
+              "description": "覆寫 Telemetry 擷取時間窗 (最近 N 分鐘)",
+              "args": {
+                "val": {
+                  "description": "分鐘數"
+                }
+              }
+            }
+          },
+          "limit_opt": {
+            "limit": {
+              "description": "Telemetry 分析或歷史列表筆數上限 (預設: 50)",
+              "args": {
+                "val": {
+                  "description": "筆數"
+                }
+              }
+            }
+          },
+          "list_opt": {
+            "list": {
+              "description": "列出本工作區可抓取之歷史主對話 Session 清單 (自動過濾 Subagent)",
+              "alias": ["l"]
+            },
+            "all": {
+              "description": "搭配 --list 列出全機跨工作區與 Subagent 之所有歷史 Session",
+              "alias": ["a"]
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以 JSON 結構化格式輸出完整軌跡與摩擦訊號報告"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "提取當前對話與計畫之隱形摩擦訊號: session-trace [--transcript <path>] [--plan <dir>] [--list [--all]] [--json]"
+          ]
+        }
+      },
       "list": {
         "description": "檢視當前已安裝模組清冊與 agents-workflow 導出規範清單",
         "tier": "safe",

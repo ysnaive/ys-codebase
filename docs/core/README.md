@@ -24,7 +24,7 @@ related_docs:
   - "./API_REFERENCE.md"
   - "./DESIGN_NOTES.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-28"
 ---
 
 # Core 微內核架構手冊 (Core Microkernel Overview)
@@ -130,6 +130,9 @@ with uri.module_scope("core"):
 ### 3.4 安裝來源 12 小時節流版本探測 (`core.update_checker`)
 微內核提供 `UpdateChecker` 服務，維護 `cache://core/update_check.json`。每隔 12 小時以 2 秒短超時輕量檢查一次 Provider 端之版本資訊；當有新版本可用時，在 CLI 執行完畢時輸出非阻塞友善提示，支援 `YSCB_NO_UPDATE_CHECK=1` 停用。
 
+### 3.5 CLI 派發飛行紀錄器 (`core.telemetry`)
+微內核於 [`core/commands/dispatcher.py:dispatch`](../../ys_codebase/source/core/core/commands/dispatcher.py) 外層內建零耦合飛行紀錄器（[`core/telemetry.py`](../../ys_codebase/source/core/core/telemetry.py)），將每次 CLI 調用的執行結果（`ts`、`epoch`、`module`、`cmd`、`args`、`exit_code`、`duration_ms`、`mode`、`cwd`、`error_hint`）追加記錄於 **`cache://core/telemetry.jsonl`**（單檔超過 `512 KB` 自動滾動保留最新 `1,500` 筆紀錄；沙盒測試、`--help` 查詢與 `session-trace` 自身呼叫預設略過），供上層工作流或診斷工具進行時序與錯誤溯源。
+
 ---
 
 ## 4. CLI 指令速查
@@ -178,5 +181,5 @@ python yscb.py config reload [module]
 
 ### 5.3 IDE 自動感知與可復原軟合併 (`core.ide_projector`)
 - 模組安裝/更新/還原時，自動探測 `project://.vscode` 是否存在（不存在則完全靜默略過，零目錄污染）。
-- 比照 `internal yscb gitignore` 之邊界守門哲學，在 `project://.vscode/settings.json` 引入 `_yscb_managed` 宣告式清冊，差集更新 `extraPaths`（注入 POSIX 與 Windows 跨平台雙候選路徑以保證 0 diff 恆定性，且解耦 host-local 的 `defaultInterpreterPath` 託管寫入），100% 完整保留使用者原有配置與自訂直譯器，並具備 Zero-Touch 比對防護與依清冊乾淨回滾。
+- 比照 `internal yscb gitignore` 之邊界守門哲學，在 `project://.vscode/settings.json` 引入 `_yscb_managed` 宣告式清冊，差集更新 `extraPaths`（注入 POSIX 與 Windows 跨平台雙候選路徑以保證 0 diff 恆定性，且解耦 host-local 的 `defaultInterpreterPath` 託管寫入）與 `python.analysis.exclude`（排除 `**/.cache/**`、`**/.snapshots/**`、`**/.build/**` 等暫存與沙盒目錄以防 Pylance 索引記憶體暴增），100% 完整保留使用者原有配置與自訂直譯器，並具備 Zero-Touch 比對防護與依清冊乾淨回滾。
 

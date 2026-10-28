@@ -23,6 +23,7 @@ from agents_workflow.plans import (
     PlanIssue,
     PlanReport,
     PlansToolchainError,
+    SessionTraceEngine,
 )
 from agents_workflow.roadmap import RoadmapManager, TodoManager
 
@@ -682,6 +683,77 @@ def plan(cmd_bags: Any) -> int:
         return 1
 
 
+def session_trace(cmd_bags: Any) -> int:
+    """執行三級漸進式對話軌跡與五大硬性摩擦訊號提取 (供 /session-audit 調用)。"""
+    guard_dispatch("agents-workflow")
+    _setup_stream_encodings()
+    bags = _normalize_bags(cmd_bags, "session_trace")
+
+    opt_plan = bags.get_option_value("plan")
+    plan_arg = str(opt_plan).strip() if isinstance(opt_plan, str) and opt_plan.strip() else (
+        str(bags.args[0]).strip() if bags.args else None
+    )
+
+    opt_transcript = bags.get_option_value("transcript")
+    transcript_arg = str(opt_transcript).strip() if isinstance(opt_transcript, str) and opt_transcript.strip() else None
+
+    opt_since = bags.get_option_value("since")
+    since_min: Optional[float] = None
+    if opt_since is not None and opt_since is not True:
+        try:
+            since_min = float(str(opt_since).strip())
+        except ValueError:
+            print(f"[agents-workflow:session-trace] Error: Invalid --since value '{opt_since}' (expected minutes).")
+            return 1
+
+    opt_limit = bags.get_option_value("limit")
+    limit_val = 50
+    if opt_limit is not None and opt_limit is not True:
+        try:
+            limit_val = max(1, int(str(opt_limit).strip()))
+        except ValueError:
+            print(f"[agents-workflow:session-trace] Error: Invalid --limit value '{opt_limit}' (expected integer).")
+            return 1
+
+    is_json = bags.has_option("json")
+    is_list = bags.has_option("list") or bags.has_option("l")
+    is_all = bags.has_option("all") or bags.has_option("a")
+
+    engine = SessionTraceEngine()
+    if is_list:
+        sessions = engine.list_sessions(
+            include_all_workspaces=is_all,
+            include_subagents=is_all,
+            limit=limit_val if opt_limit is not None else 20,
+        )
+        if is_json:
+            print(json.dumps(sessions, indent=2, ensure_ascii=False))
+        else:
+            print(engine.render_session_list_text(sessions))
+        return 0
+
+    report = engine.analyze(
+        plan_name_or_subpath=plan_arg,
+        transcript_path=transcript_arg,
+        since_minutes=since_min,
+        limit=limit_val,
+    )
+
+    # 若顯式指定了不存在之 --plan，回傳非 0 退出碼
+    if plan_arg and report.target_plan is None and "找不到指定的計畫目錄" in report.plan_resolution_note:
+        if is_json:
+            print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        else:
+            print(f"[agents-workflow:session-trace] Error: {report.plan_resolution_note}")
+        return 1
+
+    if is_json:
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(report.render_text())
+    return 0
+
+
 # Internal test / caller compatibility aliases
 def cmd_roadmap(cmd_bags: Any) -> int:
     return roadmap(cmd_bags)
@@ -721,5 +793,9 @@ def cmd_plan(cmd_bags: Any) -> int:
 
 def cmd_todo(cmd_bags: Any) -> int:
     return todo(cmd_bags)
+
+
+def cmd_session_trace(cmd_bags: Any) -> int:
+    return session_trace(cmd_bags)
 
 
