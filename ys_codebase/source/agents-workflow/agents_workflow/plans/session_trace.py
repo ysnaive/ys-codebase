@@ -184,6 +184,38 @@ class SessionTraceReport:
                 f"Time: {tc.get('cli_total_duration_ms', 0)} ms (avg {tc.get('cli_avg_duration_ms', 0)} ms), "
                 f"Modes: {tc.get('cli_by_mode', {})}"
             )
+            eff = self.session_stats.get("token_efficiency", {})
+            if eff and eff.get("total_tokens", 0) > 0:
+                wb = eff.get("wasted_breakdown", {})
+                lines.append(
+                    f"  * Token Efficiency : Effective ~{eff.get('effective_tokens', 0):,} ({eff.get('efficiency_pct', 100.0)}%) "
+                    f"| Wasted ~{eff.get('wasted_tokens', 0):,} ({eff.get('waste_pct', 0.0)}%: "
+                    f"DupReads={wb.get('duplicate_reads', 0):,}, FailedOps={wb.get('failed_tool_steps', 0):,}, "
+                    f"ChurnRework={wb.get('edit_churn_rework', 0):,}, BlindReads={wb.get('unindexed_blind_reads', 0):,})"
+                )
+            tc_prof = self.session_stats.get("top_consumers", {})
+            if tc_prof:
+                by_t = tc_prof.get("by_tool", [])[:3]
+                if by_t:
+                    t_str = ", ".join(
+                        f"{x['tool']}={x['total_tokens']:,}({x['share_pct']}%, avg {x['avg_tokens']:,})"
+                        for x in by_t
+                    )
+                    lines.append(f"  * Top Tool Tokens  : {t_str}")
+                h_steps = tc_prof.get("heavy_steps", [])[:3]
+                if h_steps:
+                    hs_str = ", ".join(
+                        f"Step {x['step']}[{x['tool']}->{x['target']}]({x['tokens']:,})"
+                        for x in h_steps
+                    )
+                    lines.append(f"  * Heavy Steps Top3 : {hs_str}")
+                h_clis = tc_prof.get("heavy_cli_commands", [])[:3]
+                if h_clis:
+                    hc_str = ", ".join(
+                        f"Step {x['step']}[{x['command'][:40]}]({x['tokens']:,})"
+                        for x in h_clis
+                    )
+                    lines.append(f"  * Heavy CLI Top3   : {hc_str}")
             lines.append("-" * 72)
 
         if self.transcript_candidates:
@@ -528,268 +560,384 @@ class SessionTraceEngine:
         transcript_cli_by_module: Dict[str, int] = {}
         transcript_gate_bounces: List[FrictionSignal] = []
 
+        # Token 效益與高耗能追蹤結構 (REV-05 / REV-06)
+        wasted_dup_reads = 0
+        wasted_failed_ops = 0
+        wasted_edit_churn = 0
+        wasted_blind_reads = 0
+        has_recent_kdb_query = False
+        file_edit_step_tokens: Dict[str, List[Tuple[int, int]]] = {}
+        tool_token_stats: Dict[str, Dict[str, int]] = {}
+        heavy_steps_raw: List[Dict[str, Any]] = []
+        heavy_cli_raw: List[Dict[str, Any]] = []
+        pending_tool_context: Optional[Dict[str, Any]] = None
+        last_planner_thinking_tok: int = 0
+        last_planner_args_tok: int = 0
+
+        full_path = transcript_path.parent / "transcript_full.jsonl"
+        has_full_sibling = full_path.is_file() and full_path != transcript_path
+
         try:
             with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
-                for line_idx, line in enumerate(f, 1):
-                    s = line.strip()
-                    if not s:
-                        continue
-                    try:
-                        obj = json.loads(s)
-                        if not isinstance(obj, dict):
+                full_f = (
+                    open(full_path, "r", encoding="utf-8", errors="replace")
+                    if has_full_sibling
+                    else None
+                )
+                try:
+                    for line_idx, line in enumerate(f, 1):
+                        full_line = full_f.readline() if full_f is not None else ""
+                        s = line.strip()
+                        if not s:
                             continue
-                    except Exception:
-                        continue
+                        try:
+                            obj = json.loads(s)
+                            if not isinstance(obj, dict):
+                                continue
+                        except Exception:
+                            continue
 
-                    total_steps += 1
-                    step_no = obj.get("step_index", line_idx)
-                    ts_val = obj.get("created_at") or obj.get("timestamp") or obj.get("ts")
-                    if isinstance(ts_val, str) and ts_val.strip():
-                        clean_ts = ts_val.strip()
-                        if first_ts is None:
-                            first_ts = clean_ts
-                        last_ts = clean_ts
+                        total_steps += 1
+                        step_no = obj.get("step_index", line_idx)
+                        was_truncated = bool(obj.get("truncated_fields"))
+                        if was_truncated:
+                            truncated_steps += 1
+                            if full_line:
+                                try:
+                                    full_obj = json.loads(full_line.strip())
+                                    if isinstance(full_obj, dict):
+                                        obj = full_obj
+                                except Exception:
+                                    pass
 
-                    if obj.get("truncated_fields"):
-                        truncated_steps += 1
+                        ts_val = obj.get("created_at") or obj.get("timestamp") or obj.get("ts")
+                        if isinstance(ts_val, str) and ts_val.strip():
+                            clean_ts = ts_val.strip()
+                            if first_ts is None:
+                                first_ts = clean_ts
+                            last_ts = clean_ts
 
-                    # 原生 API usage 累計（相容 Claude Code / Codex .jsonl 之 usage 物件與頂層欄位）
-                    usage_obj = obj.get("usage")
-                    if not isinstance(usage_obj, dict) and isinstance(obj.get("message"), dict):
-                        usage_obj = obj["message"].get("usage")
-                    if not isinstance(usage_obj, dict) and isinstance(obj.get("payload"), dict):
-                        usage_obj = obj["payload"].get("usage")
-                    if isinstance(usage_obj, dict):
-                        api_in_tokens += int(usage_obj.get("input_tokens") or usage_obj.get("prompt_tokens") or 0)
-                        api_out_tokens += int(usage_obj.get("output_tokens") or usage_obj.get("completion_tokens") or 0)
-                        api_cache_read += int(
-                            usage_obj.get("cache_read_input_tokens") or usage_obj.get("cache_read_tokens") or 0
-                        )
-                        api_cache_create += int(
-                            usage_obj.get("cache_creation_input_tokens") or usage_obj.get("cache_creation_tokens") or 0
-                        )
-                    else:
-                        api_in_tokens += int(obj.get("input_tokens") or obj.get("prompt_tokens") or 0)
-                        api_out_tokens += int(obj.get("output_tokens") or obj.get("completion_tokens") or 0)
-                        api_cache_read += int(
-                            obj.get("cache_read_input_tokens") or obj.get("cache_read_tokens") or 0
-                        )
-                        api_cache_create += int(
-                            obj.get("cache_creation_input_tokens") or obj.get("cache_creation_tokens") or 0
-                        )
+                        # 原生 API usage 累計（相容 Claude Code / Codex .jsonl 之 usage 物件與頂層欄位）
+                        usage_obj = obj.get("usage")
+                        if not isinstance(usage_obj, dict) and isinstance(obj.get("message"), dict):
+                            usage_obj = obj["message"].get("usage")
+                        if not isinstance(usage_obj, dict) and isinstance(obj.get("payload"), dict):
+                            usage_obj = obj["payload"].get("usage")
+                        if isinstance(usage_obj, dict):
+                            api_in_tokens += int(usage_obj.get("input_tokens") or usage_obj.get("prompt_tokens") or 0)
+                            api_out_tokens += int(usage_obj.get("output_tokens") or usage_obj.get("completion_tokens") or 0)
+                            api_cache_read += int(
+                                usage_obj.get("cache_read_input_tokens") or usage_obj.get("cache_read_tokens") or 0
+                            )
+                            api_cache_create += int(
+                                usage_obj.get("cache_creation_input_tokens") or usage_obj.get("cache_creation_tokens") or 0
+                            )
+                        else:
+                            api_in_tokens += int(obj.get("input_tokens") or obj.get("prompt_tokens") or 0)
+                            api_out_tokens += int(obj.get("output_tokens") or obj.get("completion_tokens") or 0)
+                            api_cache_read += int(
+                                obj.get("cache_read_input_tokens") or obj.get("cache_read_tokens") or 0
+                            )
+                            api_cache_create += int(
+                                obj.get("cache_creation_input_tokens") or obj.get("cache_creation_tokens") or 0
+                            )
 
-                    # 相容 OpenAI Codex payload 封裝層
-                    payload_obj = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-                    payload_type = str(payload_obj.get("type") or "").lower()
+                        # 相容 OpenAI Codex payload 封裝層
+                        payload_obj = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+                        payload_type = str(payload_obj.get("type") or "").lower()
 
-                    # 角色與內容 Token 分類統計
-                    step_type = str(obj.get("type") or "").upper()
-                    step_source = str(obj.get("source") or "").upper()
-                    msg_role = str(
-                        obj.get("role")
-                        or (obj["message"].get("role") if isinstance(obj.get("message"), dict) else "")
-                        or payload_obj.get("role")
-                        or ""
-                    ).lower()
-                    content_val = obj.get("content") or payload_obj.get("content") or payload_obj.get("output")
-                    content_str = content_val if isinstance(content_val, str) else ""
-                    if not content_str and isinstance(content_val, list):
-                        c_parts: List[str] = []
-                        for blk in content_val:
-                            if isinstance(blk, dict):
-                                c_parts.append(str(blk.get("text") or blk.get("input_text") or blk.get("output_text") or ""))
-                        content_str = "\n".join(c_parts)
-
-                    tool_result_errors: List[str] = []
-                    if not content_str and isinstance(obj.get("message"), dict):
-                        mc = obj["message"].get("content")
-                        if isinstance(mc, str):
-                            content_str = mc
-                        elif isinstance(mc, list):
-                            text_parts: List[str] = []
-                            for blk in mc:
+                        # 角色與內容 Token 分類統計
+                        step_type = str(obj.get("type") or "").upper()
+                        step_source = str(obj.get("source") or "").upper()
+                        msg_role = str(
+                            obj.get("role")
+                            or (obj["message"].get("role") if isinstance(obj.get("message"), dict) else "")
+                            or payload_obj.get("role")
+                            or ""
+                        ).lower()
+                        content_val = obj.get("content") or payload_obj.get("content") or payload_obj.get("output")
+                        content_str = content_val if isinstance(content_val, str) else ""
+                        if not content_str and isinstance(content_val, list):
+                            c_parts: List[str] = []
+                            for blk in content_val:
                                 if isinstance(blk, dict):
-                                    b_type = blk.get("type")
-                                    if b_type in ("text", "input_text", "output_text"):
-                                        text_parts.append(str(blk.get("text") or blk.get("input_text") or blk.get("output_text") or ""))
-                                    elif b_type == "tool_result":
-                                        tr_c = blk.get("content")
-                                        tr_str = json.dumps(tr_c, ensure_ascii=False) if isinstance(tr_c, (list, dict)) else str(tr_c or "")
-                                        tok_tool_out += _estimate_tokens(tr_str)
-                                        if blk.get("is_error") is True:
-                                            tool_result_errors.append(" ".join(tr_str.split())[:200])
-                            content_str = "\n".join(text_parts)
+                                    c_parts.append(str(blk.get("text") or blk.get("input_text") or blk.get("output_text") or ""))
+                            content_str = "\n".join(c_parts)
 
-                    if step_type == "GENERIC" or payload_type in ("function_call_output", "custom_tool_call_output"):
-                        tok_tool_out += _estimate_tokens(content_str)
-                    elif step_type == "USER_INPUT" or step_source == "USER_EXPLICIT" or msg_role == "user":
-                        user_turns += 1
-                        tok_user += _estimate_tokens(content_str)
-                    elif step_type == "PLANNER_RESPONSE" or step_source == "MODEL" or msg_role == "assistant":
-                        model_turns += 1
-                        tok_model += _estimate_tokens(content_str)
-                    else:
-                        tok_tool_out += _estimate_tokens(content_str)
+                        tool_result_errors: List[str] = []
+                        step_inline_tool_out_tok = 0
+                        if not content_str and isinstance(obj.get("message"), dict):
+                            mc = obj["message"].get("content")
+                            if isinstance(mc, str):
+                                content_str = mc
+                            elif isinstance(mc, list):
+                                text_parts: List[str] = []
+                                for blk in mc:
+                                    if isinstance(blk, dict):
+                                        b_type = blk.get("type")
+                                        if b_type in ("text", "input_text", "output_text"):
+                                            text_parts.append(str(blk.get("text") or blk.get("input_text") or blk.get("output_text") or ""))
+                                        elif b_type == "tool_result":
+                                            tr_c = blk.get("content")
+                                            tr_str = json.dumps(tr_c, ensure_ascii=False) if isinstance(tr_c, (list, dict)) else str(tr_c or "")
+                                            tr_tok = _estimate_tokens(tr_str)
+                                            tok_tool_out += tr_tok
+                                            step_inline_tool_out_tok += tr_tok
+                                            if blk.get("is_error") is True:
+                                                tool_result_errors.append(" ".join(tr_str.split())[:200])
+                                content_str = "\n".join(text_parts)
 
-                    # 若前一步發起了 yscb Gate CLI 指令，檢查當前步驟工具輸出是否退件
-                    if last_step_gate_cmds and content_str:
-                        has_gate_fail = any(
-                            marker in content_str
-                            for marker in (
-                                "Exit Code: 1",
-                                "Exit Code: 2",
-                                "exit code 1",
-                                "[FAIL]",
-                                "[REJECTED]",
-                                "[TRIAGE:",
-                                " Validation FAILED",
-                                " Check FAILED",
-                            )
+                        content_tok = _estimate_tokens(content_str)
+                        is_tool_output_step = False
+                        if step_type == "GENERIC" or payload_type in ("function_call_output", "custom_tool_call_output"):
+                            tok_tool_out += content_tok
+                            is_tool_output_step = True
+                        elif step_type == "USER_INPUT" or step_source == "USER_EXPLICIT" or msg_role == "user":
+                            if step_inline_tool_out_tok > 0 and not content_str.strip():
+                                is_tool_output_step = True
+                                content_tok = step_inline_tool_out_tok
+                            else:
+                                user_turns += 1
+                                tok_user += content_tok
+                        elif step_type == "PLANNER_RESPONSE" or step_source == "MODEL" or msg_role == "assistant":
+                            model_turns += 1
+                            tok_model += content_tok
+                        else:
+                            tok_tool_out += content_tok
+                            is_tool_output_step = True
+
+                        # 若當前為工具輸出步驟，將輸出 Token 歸戶至前一步發起之工具與重度排行
+                        status_str = str(obj.get("status") or payload_obj.get("status") or "").upper()
+                        is_step_error = (
+                            status_str in ("ERROR", "FAILED")
+                            or obj.get("is_error") is True
+                            or payload_obj.get("is_error") is True
                         )
-                        if has_gate_fail:
-                            transcript_cli_failed += 1
-                            err_snip = " ".join(content_str.split())[:180]
-                            for g_disp in last_step_gate_cmds:
-                                transcript_gate_bounces.append(FrictionSignal(
-                                    signal_type="GATE_BOUNCE",
-                                    severity="HIGH",
-                                    tier_source="Tier 1",
-                                    target=g_disp,
-                                    summary=f"驗證關卡 '{g_disp}' 於終端輸出退件 (Step {step_no})：{err_snip}",
-                                    details={"cmd": g_disp, "step": step_no},
-                                ))
-                        last_step_gate_cmds = []
-
-                    # 提取 thinking（相容 Antigravity, Claude Code thinking block 與 Codex reasoning summary）
-                    thinking_str = obj.get("thinking")
-                    if not thinking_str and isinstance(obj.get("message"), dict):
-                        msg_content = obj["message"].get("content")
-                        if isinstance(msg_content, list):
-                            for blk in msg_content:
-                                if isinstance(blk, dict) and blk.get("type") == "thinking":
-                                    thinking_str = blk.get("thinking") or blk.get("text")
-                                    break
-                    if not thinking_str and (step_type == "REASONING" or payload_type == "reasoning"):
-                        summary_list = payload_obj.get("summary") or obj.get("summary")
-                        if isinstance(summary_list, list):
-                            thinking_str = " ".join(
-                                str(s.get("text") or "") for s in summary_list if isinstance(s, dict)
+                        has_gate_fail = False
+                        if last_step_gate_cmds and content_str:
+                            has_gate_fail = any(
+                                marker in content_str
+                                for marker in (
+                                    "Exit Code: 1",
+                                    "Exit Code: 2",
+                                    "exit code 1",
+                                    "[FAIL]",
+                                    "[REJECTED]",
+                                    "[TRIAGE:",
+                                    " Validation FAILED",
+                                    " Check FAILED",
+                                )
                             )
-                        elif isinstance(summary_list, str):
-                            thinking_str = summary_list
-                    if isinstance(thinking_str, str) and thinking_str.strip():
-                        thinking_steps += 1
-                        tok_thinking += _estimate_tokens(thinking_str)
-                        last_thinking = " ".join(thinking_str.strip().split())[:300]
+                            if has_gate_fail:
+                                transcript_cli_failed += 1
+                                err_snip = " ".join(content_str.split())[:180]
+                                for g_disp in last_step_gate_cmds:
+                                    transcript_gate_bounces.append(FrictionSignal(
+                                        signal_type="GATE_BOUNCE",
+                                        severity="HIGH",
+                                        tier_source="Tier 1",
+                                        target=g_disp,
+                                        summary=f"驗證關卡 '{g_disp}' 於終端輸出退件 (Step {step_no})：{err_snip}",
+                                        details={"cmd": g_disp, "step": step_no},
+                                    ))
+                            last_step_gate_cmds = []
 
-                    # 提取 tool_calls（相容 Antigravity tool_calls, Claude tool_use 與 Codex function_call）
-                    tool_calls: List[Dict[str, Any]] = []
-                    raw_tcs = obj.get("tool_calls")
-                    if isinstance(raw_tcs, list):
-                        for tc in raw_tcs:
-                            if isinstance(tc, dict):
-                                raw_a = tc.get("args") or tc.get("arguments") or tc.get("input") or {}
-                                if isinstance(raw_a, str):
-                                    try:
-                                        raw_a = json.loads(raw_a)
-                                    except Exception:
-                                        raw_a = {"raw": raw_a}
-                                tool_calls.append({
-                                    "name": str(tc.get("name") or tc.get("tool_name") or "").lower(),
-                                    "args": raw_a if isinstance(raw_a, dict) else {},
+                        if is_tool_output_step and pending_tool_context is not None and content_tok > 0:
+                            p_tools = pending_tool_context.get("tools", [])
+                            if p_tools:
+                                share_tok = max(1, int(round(content_tok / len(p_tools))))
+                                for pt in p_tools:
+                                    pt_name = pt["name"]
+                                    ts_entry = tool_token_stats.setdefault(
+                                        pt_name, {"calls": 0, "args_tokens": 0, "output_tokens": 0}
+                                    )
+                                    ts_entry["output_tokens"] += share_tok
+                                    if pt.get("is_dup_read") and not is_step_error:
+                                        wasted_dup_reads += share_tok
+                                    if pt.get("is_blind_read") and not is_step_error:
+                                        wasted_blind_reads += share_tok
+                                    if pt.get("cmd_line"):
+                                        heavy_cli_raw.append({
+                                            "step": step_no,
+                                            "command": pt["cmd_line"][:120],
+                                            "tokens": pt["args_tok"] + share_tok,
+                                            "output_tokens": share_tok,
+                                            "is_error": bool(is_step_error or has_gate_fail),
+                                        })
+                                primary_pt = p_tools[0]
+                                heavy_steps_raw.append({
+                                    "step": step_no,
+                                    "tool": primary_pt["name"],
+                                    "target": primary_pt["target"][:90],
+                                    "tokens": content_tok + pending_tool_context.get("total_args_tok", 0),
+                                    "truncated": was_truncated,
                                 })
-                    elif isinstance(obj.get("message"), dict):
-                        msg_content = obj["message"].get("content")
-                        if isinstance(msg_content, list):
-                            for blk in msg_content:
-                                if isinstance(blk, dict) and blk.get("type") in ("tool_use", "function_call"):
-                                    raw_a = blk.get("input") or blk.get("arguments") or {}
+                            if has_gate_fail and not is_step_error and not tool_result_errors:
+                                wasted_failed_ops += (
+                                    content_tok
+                                    + pending_tool_context.get("total_args_tok", 0)
+                                    + pending_tool_context.get("thinking_tok", 0)
+                                )
+                            pending_tool_context = None
+
+                        # 提取 thinking（相容 Antigravity, Claude Code thinking block 與 Codex reasoning summary）
+                        thinking_str = obj.get("thinking")
+                        if not thinking_str and isinstance(obj.get("message"), dict):
+                            msg_content = obj["message"].get("content")
+                            if isinstance(msg_content, list):
+                                for blk in msg_content:
+                                    if isinstance(blk, dict) and blk.get("type") == "thinking":
+                                        thinking_str = blk.get("thinking") or blk.get("text")
+                                        break
+                        if not thinking_str and (step_type == "REASONING" or payload_type == "reasoning"):
+                            summary_list = payload_obj.get("summary") or obj.get("summary")
+                            if isinstance(summary_list, list):
+                                thinking_str = " ".join(
+                                    str(s.get("text") or "") for s in summary_list if isinstance(s, dict)
+                                )
+                            elif isinstance(summary_list, str):
+                                thinking_str = summary_list
+                        step_thinking_tok = 0
+                        if isinstance(thinking_str, str) and thinking_str.strip():
+                            thinking_steps += 1
+                            step_thinking_tok = _estimate_tokens(thinking_str)
+                            tok_thinking += step_thinking_tok
+                            last_thinking = " ".join(thinking_str.strip().split())[:300]
+
+                        # 提取 tool_calls（相容 Antigravity tool_calls, Claude tool_use 與 Codex function_call）
+                        tool_calls: List[Dict[str, Any]] = []
+                        raw_tcs = obj.get("tool_calls")
+                        if isinstance(raw_tcs, list):
+                            for tc in raw_tcs:
+                                if isinstance(tc, dict):
+                                    raw_a = tc.get("args") or tc.get("arguments") or tc.get("input") or {}
                                     if isinstance(raw_a, str):
                                         try:
                                             raw_a = json.loads(raw_a)
                                         except Exception:
                                             raw_a = {"raw": raw_a}
                                     tool_calls.append({
-                                        "name": str(blk.get("name") or "").lower(),
+                                        "name": str(tc.get("name") or tc.get("tool_name") or "").lower(),
                                         "args": raw_a if isinstance(raw_a, dict) else {},
                                     })
-                    elif step_type in ("FUNCTION_CALL", "TOOL_CALL") or payload_type in ("function_call", "custom_tool_call"):
-                        src_tc = payload_obj if payload_type in ("function_call", "custom_tool_call") else obj
-                        raw_a = src_tc.get("arguments") or src_tc.get("input") or src_tc.get("args") or {}
-                        if isinstance(raw_a, str):
+                        elif isinstance(obj.get("message"), dict):
+                            msg_content = obj["message"].get("content")
+                            if isinstance(msg_content, list):
+                                for blk in msg_content:
+                                    if isinstance(blk, dict) and blk.get("type") in ("tool_use", "function_call"):
+                                        raw_a = blk.get("input") or blk.get("arguments") or {}
+                                        if isinstance(raw_a, str):
+                                            try:
+                                                raw_a = json.loads(raw_a)
+                                            except Exception:
+                                                raw_a = {"raw": raw_a}
+                                        tool_calls.append({
+                                            "name": str(blk.get("name") or "").lower(),
+                                            "args": raw_a if isinstance(raw_a, dict) else {},
+                                        })
+                        elif step_type in ("FUNCTION_CALL", "TOOL_CALL") or payload_type in ("function_call", "custom_tool_call"):
+                            src_tc = payload_obj if payload_type in ("function_call", "custom_tool_call") else obj
+                            raw_a = src_tc.get("arguments") or src_tc.get("input") or src_tc.get("args") or {}
+                            if isinstance(raw_a, str):
+                                try:
+                                    raw_a = json.loads(raw_a)
+                                except Exception:
+                                    raw_a = {"raw": raw_a}
+                            tool_calls.append({
+                                "name": str(src_tc.get("name") or "").lower(),
+                                "args": raw_a if isinstance(raw_a, dict) else {},
+                            })
+
+                        current_step_read_keys: List[str] = []
+                        current_step_gate_cmds: List[str] = []
+                        step_tools_meta: List[Dict[str, Any]] = []
+                        step_total_args_tok = 0
+                        for tc in tool_calls:
+                            t_name = tc["name"].split(":")[-1] or "unknown"
+                            total_tool_calls += 1
+                            tool_dist[t_name] = tool_dist.get(t_name, 0) + 1
+                            if "subagent" in t_name or t_name in ("task", "dispatch_agent"):
+                                subagent_calls += 1
+
+                            t_args = tc["args"] if isinstance(tc["args"], dict) else {}
                             try:
-                                raw_a = json.loads(raw_a)
+                                single_arg_tok = _estimate_tokens(json.dumps(t_args, ensure_ascii=False))
                             except Exception:
-                                raw_a = {"raw": raw_a}
-                        tool_calls.append({
-                            "name": str(src_tc.get("name") or "").lower(),
-                            "args": raw_a if isinstance(raw_a, dict) else {},
-                        })
+                                single_arg_tok = _estimate_tokens(str(t_args))
+                            tok_tool_args += single_arg_tok
+                            step_total_args_tok += single_arg_tok
 
-                    current_step_read_keys: List[str] = []
-                    current_step_gate_cmds: List[str] = []
-                    for tc in tool_calls:
-                        t_name = tc["name"].split(":")[-1] or "unknown"
-                        total_tool_calls += 1
-                        tool_dist[t_name] = tool_dist.get(t_name, 0) + 1
-                        if "subagent" in t_name or t_name in ("task", "dispatch_agent"):
-                            subagent_calls += 1
-
-                        t_args = tc["args"] if isinstance(tc["args"], dict) else {}
-                        try:
-                            tok_tool_args += _estimate_tokens(json.dumps(t_args, ensure_ascii=False))
-                        except Exception:
-                            tok_tool_args += _estimate_tokens(str(t_args))
-
-                        target_file = str(
-                            t_args.get("Path")
-                            or t_args.get("AbsolutePath")
-                            or t_args.get("file_path")
-                            or t_args.get("path")
-                            or t_args.get("TargetFile")
-                            or t_args.get("filename")
-                            or ""
-                        ).strip().strip('"').strip("'")
-
-                        cmd_line = str(
-                            t_args.get("CommandLine")
-                            or t_args.get("command")
-                            or t_args.get("cmd")
-                            or ""
-                        ).strip()
-                        if "knowledge-db" in cmd_line and ("search" in cmd_line or "callers" in cmd_line or "callees" in cmd_line):
-                            consecutive_source_reads = 0
-
-                        if "yscb.py" in cmd_line:
-                            for m_cli in re.finditer(r"yscb\.py[\"\']?\s+([a-zA-Z0-9_-]+)(?:\s+([a-zA-Z0-9_-]+))?(?:\s+([a-zA-Z0-9_-]+))?", cmd_line):
-                                mod_tok = m_cli.group(1)
-                                sub1 = m_cli.group(2) or ""
-                                sub2 = m_cli.group(3) or ""
-                                transcript_cli_calls += 1
-                                transcript_cli_by_module[mod_tok] = transcript_cli_by_module.get(mod_tok, 0) + 1
-                                sub_pair = f"{sub1} {sub2}".strip()
-                                for g_mod, g_cmd in self.GATE_COMMANDS:
-                                    if mod_tok == g_mod and (sub_pair.startswith(g_cmd) or sub1 == g_cmd):
-                                        current_step_gate_cmds.append(f"{g_mod} {g_cmd}")
-
-                        if t_name in self.EDIT_TOOL_NAMES and target_file:
-                            total_edit_ops += 1
-                            file_steps = edit_history.setdefault(target_file, [])
-                            if not file_steps or file_steps[-1] != int(step_no):
-                                file_steps.append(int(step_no))
-                            for rk in list(read_counts.keys()):
-                                if rk.startswith(f"{target_file}:"):
-                                    read_counts[rk] = 0
-                            consecutive_source_reads = 0
-                        elif t_name in self.READ_TOOL_NAMES and target_file:
-                            total_read_ops += 1
-                            unique_read_files.add(target_file)
-                            lower_tf = target_file.lower()
-                            is_media = any(
-                                lower_tf.endswith(m_ext)
-                                for m_ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".mp4", ".pdf")
+                            ts_entry = tool_token_stats.setdefault(
+                                t_name, {"calls": 0, "args_tokens": 0, "output_tokens": 0}
                             )
-                            if not is_media:
+                            ts_entry["calls"] += 1
+                            ts_entry["args_tokens"] += single_arg_tok
+
+                            target_file = str(
+                                t_args.get("Path")
+                                or t_args.get("AbsolutePath")
+                                or t_args.get("file_path")
+                                or t_args.get("path")
+                                or t_args.get("TargetFile")
+                                or t_args.get("filename")
+                                or ""
+                            ).strip().strip('"').strip("'")
+
+                            cmd_line = str(
+                                t_args.get("CommandLine")
+                                or t_args.get("command")
+                                or t_args.get("cmd")
+                                or ""
+                            ).strip()
+                            if "knowledge-db" in cmd_line and (
+                                "search" in cmd_line or "callers" in cmd_line or "callees" in cmd_line or "impact" in cmd_line
+                            ):
+                                consecutive_source_reads = 0
+                                has_recent_kdb_query = True
+
+                            if "yscb.py" in cmd_line:
+                                for m_cli in re.finditer(r"yscb\.py[\"\']?\s+([a-zA-Z0-9_-]+)(?:\s+([a-zA-Z0-9_-]+))?(?:\s+([a-zA-Z0-9_-]+))?", cmd_line):
+                                    mod_tok = m_cli.group(1)
+                                    sub1 = m_cli.group(2) or ""
+                                    sub2 = m_cli.group(3) or ""
+                                    transcript_cli_calls += 1
+                                    transcript_cli_by_module[mod_tok] = transcript_cli_by_module.get(mod_tok, 0) + 1
+                                    sub_pair = f"{sub1} {sub2}".strip()
+                                    for g_mod, g_cmd in self.GATE_COMMANDS:
+                                        if mod_tok == g_mod and (sub_pair.startswith(g_cmd) or sub1 == g_cmd):
+                                            current_step_gate_cmds.append(f"{g_mod} {g_cmd}")
+
+                            is_dup_read_call = False
+                            is_blind_read_call = False
+                            disp_target = Path(target_file).name if target_file else (cmd_line[:60] if cmd_line else t_name)
+
+                            if t_name in self.EDIT_TOOL_NAMES and target_file:
+                                total_edit_ops += 1
+                                file_steps = edit_history.setdefault(target_file, [])
+                                if not file_steps or file_steps[-1] != int(step_no):
+                                    file_steps.append(int(step_no))
+                                edit_tok_list = file_edit_step_tokens.setdefault(target_file, [])
+                                if edit_tok_list and edit_tok_list[-1][0] == int(step_no):
+                                    edit_tok_list[-1] = (int(step_no), edit_tok_list[-1][1] + single_arg_tok)
+                                else:
+                                    edit_tok_list.append((int(step_no), single_arg_tok))
+                                for rk in list(read_counts.keys()):
+                                    if rk.startswith(f"{target_file}:"):
+                                        read_counts[rk] = 0
+                                consecutive_source_reads = 0
+                            elif t_name in self.READ_TOOL_NAMES and target_file:
+                                total_read_ops += 1
+                                unique_read_files.add(target_file)
+                                lower_tf = target_file.lower().replace("\\", "/")
+                                is_media = any(
+                                    lower_tf.endswith(m_ext)
+                                    for m_ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".mp4", ".pdf")
+                                )
+                                is_overflow_scratch = (
+                                    ("/steps/" in lower_tf and lower_tf.endswith("/output.txt"))
+                                    or "tool-results" in lower_tf
+                                    or lower_tf.endswith("/transcript_full.jsonl")
+                                )
                                 start_ln = (
                                     t_args.get("StartLine")
                                     or t_args.get("StartLineNumber")
@@ -805,93 +953,160 @@ class SessionTraceEngine:
                                 byte_off = t_args.get("ByteOffset")
                                 byte_suffix = f"@{byte_off}" if byte_off is not None and str(byte_off) != "" else ""
                                 read_key = f"{target_file}:{start_ln}-{end_ln}{byte_suffix}"
-                                read_counts[read_key] = read_counts.get(read_key, 0) + 1
-                                current_step_read_keys.append(read_key)
-                            if any(
-                                lower_tf.endswith(ext)
-                                for ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".cs", ".java", ".kt", ".c", ".cpp", ".h", ".hpp", ".rs", ".go")
-                            ):
-                                consecutive_source_reads += 1
-                                if target_file not in consecutive_read_files:
-                                    consecutive_read_files.append(target_file)
-                                if consecutive_source_reads > max_consecutive_reads:
-                                    max_consecutive_reads = consecutive_source_reads
+                                disp_target = f"{Path(target_file).name}:{start_ln}-{end_ln}{byte_suffix}"
 
-                    # 檢查步驟錯誤狀態（相容 Antigravity status=="ERROR"、Claude tool_result is_error 與 Codex error）
-                    status_str = str(obj.get("status") or payload_obj.get("status") or "").upper()
-                    is_step_error = (
-                        status_str in ("ERROR", "FAILED")
-                        or obj.get("is_error") is True
-                        or payload_obj.get("is_error") is True
-                    )
-                    if is_step_error or tool_result_errors:
-                        # 若錯誤屬於讀檔失敗（如檔案不存在或權限拒絕），扣除剛才計入之 read_counts，避免盲猜路徑被雙重誤判為 CONTEXT_WASTE
-                        raw_err_text = " ".join([
-                            str(content_str or ""),
-                            str(obj.get("error") or ""),
-                            str(payload_obj.get("error") or ""),
-                            *tool_result_errors,
-                        ]).lower()
-                        is_read_err = any(
-                            k in raw_err_text
-                            for k in (
-                                "does not exist",
-                                "no such file",
-                                "not found:",
-                                "file not found",
-                                "cannot read",
-                                "is a directory",
-                                "permission denied",
+                                if is_overflow_scratch:
+                                    is_dup_read_call = True
+                                    wasted_dup_reads += single_arg_tok
+                                    signals.append(FrictionSignal(
+                                        signal_type="CONTEXT_WASTE",
+                                        severity="HIGH",
+                                        tier_source="Tier 1",
+                                        target=Path(target_file).name,
+                                        summary=f"讀取宿主超長截斷暫存檔或會話歷史日誌 '{disp_target}' (Step {step_no})，造成巨量 JSON/歷史日誌污染 Context",
+                                        details={"subtype": "JSON_SNIPPET_OVERFLOW", "step": step_no, "path": target_file},
+                                    ))
+                                elif not is_media:
+                                    read_counts[read_key] = read_counts.get(read_key, 0) + 1
+                                    current_step_read_keys.append(read_key)
+                                    if read_counts[read_key] >= 2:
+                                        is_dup_read_call = True
+                                        wasted_dup_reads += single_arg_tok
+
+                                is_targeted_range_read = False
+                                if has_recent_kdb_query and start_ln != "" and end_ln != "":
+                                    try:
+                                        s_i = int(start_ln)
+                                        e_i = int(end_ln)
+                                        if 0 < (e_i - s_i + 1) <= 160:
+                                            is_targeted_range_read = True
+                                    except (ValueError, TypeError):
+                                        pass
+
+                                if (
+                                    any(
+                                        lower_tf.endswith(ext)
+                                        for ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".cs", ".java", ".kt", ".c", ".cpp", ".h", ".hpp", ".rs", ".go")
+                                    )
+                                    and not is_targeted_range_read
+                                ):
+                                    consecutive_source_reads += 1
+                                    if target_file not in consecutive_read_files:
+                                        consecutive_read_files.append(target_file)
+                                    if consecutive_source_reads > max_consecutive_reads:
+                                        max_consecutive_reads = consecutive_source_reads
+                                    if consecutive_source_reads >= 4 and not is_dup_read_call:
+                                        is_blind_read_call = True
+                                        wasted_blind_reads += single_arg_tok
+
+                            step_tools_meta.append({
+                                "name": t_name,
+                                "target": disp_target,
+                                "cmd_line": cmd_line,
+                                "args_tok": single_arg_tok,
+                                "is_dup_read": is_dup_read_call,
+                                "is_blind_read": is_blind_read_call,
+                            })
+
+                        if step_tools_meta:
+                            pending_tool_context = {
+                                "step": step_no,
+                                "tools": step_tools_meta,
+                                "total_args_tok": step_total_args_tok,
+                                "thinking_tok": step_thinking_tok,
+                            }
+                            last_planner_thinking_tok = step_thinking_tok
+                            last_planner_args_tok = step_total_args_tok
+                            # 若單步參數自身極大（如 write_file/edit_file 大塊寫入），亦納入重度步驟候選
+                            if step_total_args_tok >= 250:
+                                p_t = step_tools_meta[0]
+                                heavy_steps_raw.append({
+                                    "step": step_no,
+                                    "tool": p_t["name"],
+                                    "target": p_t["target"][:90],
+                                    "tokens": step_total_args_tok + step_thinking_tok + content_tok,
+                                    "truncated": was_truncated,
+                                })
+
+                        # 檢查步驟錯誤狀態（相容 Antigravity status=="ERROR"、Claude tool_result is_error 與 Codex error）
+                        if is_step_error or tool_result_errors:
+                            wasted_failed_ops += content_tok + step_thinking_tok + step_total_args_tok
+                            if is_tool_output_step:
+                                wasted_failed_ops += last_planner_thinking_tok + last_planner_args_tok
+                                last_planner_thinking_tok = 0
+                                last_planner_args_tok = 0
+                            # 若錯誤屬於讀檔失敗（如檔案不存在或權限拒絕），扣除剛才計入之 read_counts，避免盲猜路徑被雙重誤判為 CONTEXT_WASTE
+                            raw_err_text = " ".join([
+                                str(content_str or ""),
+                                str(obj.get("error") or ""),
+                                str(payload_obj.get("error") or ""),
+                                *tool_result_errors,
+                            ]).lower()
+                            is_read_err = any(
+                                k in raw_err_text
+                                for k in (
+                                    "does not exist",
+                                    "no such file",
+                                    "not found:",
+                                    "file not found",
+                                    "cannot read",
+                                    "is a directory",
+                                    "permission denied",
+                                )
                             )
-                        )
-                        if is_read_err:
-                            keys_to_rollback = last_step_read_keys if not current_step_read_keys else current_step_read_keys
-                            for rk in keys_to_rollback:
-                                if read_counts.get(rk, 0) > 0:
-                                    read_counts[rk] -= 1
-                        last_step_read_keys = current_step_read_keys
-                    else:
-                        if tool_calls:
+                            if is_read_err:
+                                keys_to_rollback = last_step_read_keys if not current_step_read_keys else current_step_read_keys
+                                for rk in keys_to_rollback:
+                                    if read_counts.get(rk, 0) > 0:
+                                        read_counts[rk] -= 1
                             last_step_read_keys = current_step_read_keys
-                        elif step_type == "GENERIC":
-                            last_step_read_keys = []
+                        else:
+                            if tool_calls:
+                                last_step_read_keys = current_step_read_keys
+                            elif step_type == "GENERIC":
+                                last_step_read_keys = []
+                                last_planner_thinking_tok = 0
+                                last_planner_args_tok = 0
 
-                    if current_step_gate_cmds:
-                        last_step_gate_cmds = current_step_gate_cmds
+                        if current_step_gate_cmds:
+                            last_step_gate_cmds = current_step_gate_cmds
 
-                    if is_step_error:
-                        error_steps += 1
-                        err_content = " ".join(str(content_str or obj.get("error") or payload_obj.get("error") or "").split())[:200]
-                        signals.append(FrictionSignal(
-                            signal_type="TOOL_MISS_AND_RETRY",
-                            severity="MEDIUM",
-                            tier_source="Tier 1",
-                            target=f"Step {step_no}",
-                            summary=f"工具調用返回 ERROR 狀態：{err_content or 'Unknown error'}",
-                            details={"step": step_no},
-                        ))
-                        if last_thinking and len(thinking_excerpts) < 5:
-                            thinking_excerpts.append({
-                                "step": step_no,
-                                "context": "TOOL_ERROR",
-                                "excerpt": last_thinking,
-                            })
-                    for tr_err in tool_result_errors:
-                        error_steps += 1
-                        signals.append(FrictionSignal(
-                            signal_type="TOOL_MISS_AND_RETRY",
-                            severity="MEDIUM",
-                            tier_source="Tier 1",
-                            target=f"Step {step_no}",
-                            summary=f"工具調用返回 is_error=True：{tr_err or 'Tool execution error'}",
-                            details={"step": step_no},
-                        ))
-                        if last_thinking and len(thinking_excerpts) < 5:
-                            thinking_excerpts.append({
-                                "step": step_no,
-                                "context": "TOOL_ERROR",
-                                "excerpt": last_thinking,
-                            })
+                        if is_step_error:
+                            error_steps += 1
+                            err_content = " ".join(str(content_str or obj.get("error") or payload_obj.get("error") or "").split())[:200]
+                            signals.append(FrictionSignal(
+                                signal_type="TOOL_MISS_AND_RETRY",
+                                severity="MEDIUM",
+                                tier_source="Tier 1",
+                                target=f"Step {step_no}",
+                                summary=f"工具調用返回 ERROR 狀態：{err_content or 'Unknown error'}",
+                                details={"step": step_no},
+                            ))
+                            if last_thinking and len(thinking_excerpts) < 5:
+                                thinking_excerpts.append({
+                                    "step": step_no,
+                                    "context": "TOOL_ERROR",
+                                    "excerpt": last_thinking,
+                                })
+                        for tr_err in tool_result_errors:
+                            error_steps += 1
+                            signals.append(FrictionSignal(
+                                signal_type="TOOL_MISS_AND_RETRY",
+                                severity="MEDIUM",
+                                tier_source="Tier 1",
+                                target=f"Step {step_no}",
+                                summary=f"工具調用返回 is_error=True：{tr_err or 'Tool execution error'}",
+                                details={"step": step_no},
+                            ))
+                            if last_thinking and len(thinking_excerpts) < 5:
+                                thinking_excerpts.append({
+                                    "step": step_no,
+                                    "context": "TOOL_ERROR",
+                                    "excerpt": last_thinking,
+                                })
+                finally:
+                    if full_f is not None:
+                        full_f.close()
         except (OSError, PermissionError):
             return None, [], [], {}
 
@@ -912,6 +1127,11 @@ class SessionTraceEngine:
             else:
                 is_churn = non_adjacent_edits >= 2 or len(steps) >= 4
             if is_churn:
+                edit_toks = file_edit_step_tokens.get(fpath, [])
+                if len(edit_toks) >= 2:
+                    # 扣除首次建立與最後一次定稿後，中間返工覆寫步驟消耗之參數 Token（若僅 2 次非連續修改則計第 1 次被推翻之修補）
+                    rework_slice = edit_toks[1:-1] if len(edit_toks) >= 3 else edit_toks[:-1]
+                    wasted_edit_churn += sum(t for _, t in rework_slice)
                 signals.append(FrictionSignal(
                     signal_type="MULTI_EDIT_CHURN",
                     severity="HIGH" if non_adjacent_edits >= 3 else "MEDIUM",
@@ -946,24 +1166,62 @@ class SessionTraceEngine:
                 details={"max_consecutive_reads": max_consecutive_reads},
             ))
 
-        # 計算檔案大小與 transcript_full.jsonl 完整 Token 補償
+        # 計算檔案大小與 transcript_full.jsonl 完整 Token 補償（若已聯集讀取 has_full_sibling，則 tok_* 已是 100% 精確完整值）
         try:
             compact_bytes = transcript_path.stat().st_size
         except OSError:
             compact_bytes = 0
 
-        full_path = transcript_path.parent / "transcript_full.jsonl"
         full_bytes = compact_bytes
-        if full_path.is_file() and full_path != transcript_path:
+        if has_full_sibling:
             try:
                 full_bytes = max(compact_bytes, full_path.stat().st_size)
             except OSError:
                 full_bytes = compact_bytes
 
-        est_compact = tok_user + tok_model + tok_thinking + tok_tool_args + tok_tool_out
-        extra_truncated_bytes = max(0, full_bytes - compact_bytes)
-        extra_truncated_tokens = int(round(extra_truncated_bytes / 4.2))
-        est_full = est_compact + extra_truncated_tokens
+        est_parsed = tok_user + tok_model + tok_thinking + tok_tool_args + tok_tool_out
+        if has_full_sibling:
+            extra_truncated_tokens = 0
+            est_full = est_parsed
+            untruncated_ratio = max(0.1, compact_bytes / float(full_bytes)) if full_bytes > 0 else 1.0
+            est_compact = int(round(est_parsed * untruncated_ratio))
+        else:
+            extra_truncated_bytes = max(0, full_bytes - compact_bytes)
+            extra_truncated_tokens = int(round(extra_truncated_bytes / 4.2))
+            est_compact = est_parsed
+            est_full = est_compact + extra_truncated_tokens
+
+        # 彙整有效 Token vs 無效（摩擦浪費）Token 與高耗能排行 (REV-05)
+        raw_wasted = wasted_dup_reads + wasted_failed_ops + wasted_edit_churn + wasted_blind_reads
+        total_for_eff = max(1, est_full)
+        capped_wasted = min(est_full, raw_wasted)
+        effective_tok = max(0, est_full - capped_wasted)
+        eff_pct = round((effective_tok / float(total_for_eff)) * 100.0, 1) if est_full > 0 else 100.0
+        waste_pct = round(100.0 - eff_pct, 1) if est_full > 0 else 0.0
+
+        by_tool_list: List[Dict[str, Any]] = []
+        for t_k, t_v in tool_token_stats.items():
+            calls_c = max(1, t_v["calls"])
+            t_tot = t_v["args_tokens"] + t_v["output_tokens"]
+            by_tool_list.append({
+                "tool": t_k,
+                "calls": t_v["calls"],
+                "args_tokens": t_v["args_tokens"],
+                "output_tokens": t_v["output_tokens"],
+                "total_tokens": t_tot,
+                "avg_tokens": int(round(t_tot / float(calls_c))),
+                "share_pct": round((t_tot / float(total_for_eff)) * 100.0, 1),
+            })
+        by_tool_list.sort(key=lambda x: x["total_tokens"], reverse=True)
+
+        # 去重並排序單步重度操作 Top 5 與 CLI 指令重度排行 Top 5
+        dedup_steps: Dict[int, Dict[str, Any]] = {}
+        for hs in heavy_steps_raw:
+            s_id = int(hs["step"])
+            if s_id not in dedup_steps or hs["tokens"] > dedup_steps[s_id]["tokens"]:
+                dedup_steps[s_id] = hs
+        top_heavy_steps = sorted(dedup_steps.values(), key=lambda x: x["tokens"], reverse=True)[:5]
+        top_heavy_cli = sorted(heavy_cli_raw, key=lambda x: x["tokens"], reverse=True)[:5]
 
         sorted_tools = dict(sorted(tool_dist.items(), key=lambda x: x[1], reverse=True)[:15])
         t1_stats: Dict[str, Any] = {
@@ -972,6 +1230,7 @@ class SessionTraceEngine:
             "tokens": {
                 "estimated_compact_tokens": est_compact,
                 "estimated_full_tokens": est_full,
+                "exact_full_parsed": has_full_sibling,
                 "by_category": {
                     "user_input": tok_user,
                     "model_output": tok_model,
@@ -988,6 +1247,24 @@ class SessionTraceEngine:
                 },
                 "transcript_compact_kb": round(compact_bytes / 1024.0, 2),
                 "transcript_full_kb": round(full_bytes / 1024.0, 2),
+            },
+            "token_efficiency": {
+                "total_tokens": est_full,
+                "effective_tokens": effective_tok,
+                "wasted_tokens": capped_wasted,
+                "efficiency_pct": eff_pct,
+                "waste_pct": waste_pct,
+                "wasted_breakdown": {
+                    "duplicate_reads": wasted_dup_reads,
+                    "failed_tool_steps": wasted_failed_ops,
+                    "edit_churn_rework": wasted_edit_churn,
+                    "unindexed_blind_reads": wasted_blind_reads,
+                },
+            },
+            "top_consumers": {
+                "by_tool": by_tool_list[:10],
+                "heavy_steps": top_heavy_steps,
+                "heavy_cli_commands": top_heavy_cli,
             },
             "steps_and_tools": {
                 "total_steps": total_steps,
@@ -1585,8 +1862,28 @@ class SessionTraceEngine:
             "total_edit_ops": 0,
             "unique_files_edited": 0,
         }
+        default_efficiency = {
+            "total_tokens": 0,
+            "effective_tokens": 0,
+            "wasted_tokens": 0,
+            "efficiency_pct": 100.0,
+            "waste_pct": 0.0,
+            "wasted_breakdown": {
+                "duplicate_reads": 0,
+                "failed_tool_steps": 0,
+                "edit_churn_rework": 0,
+                "unindexed_blind_reads": 0,
+            },
+        }
+        default_consumers = {
+            "by_tool": [],
+            "heavy_steps": [],
+            "heavy_cli_commands": [],
+        }
         session_stats: Dict[str, Any] = {
             "tokens": t1_stats.get("tokens", default_tokens),
+            "token_efficiency": t1_stats.get("token_efficiency", default_efficiency),
+            "top_consumers": t1_stats.get("top_consumers", default_consumers),
             "steps_and_tools": t1_stats.get("steps_and_tools", default_steps),
             "time_and_cli": {
                 "session_start_ts": start_ts_for_dur,
@@ -1612,11 +1909,11 @@ class SessionTraceEngine:
         else:
             active_tier = "Tier 3 (In-Context Fallback)"
             fallback_checklist = [
-                "盤點本輪對話中是否有同一檔案被 edit_file / write_file 修改 >= 2 次（MULTI_EDIT_CHURN）？",
+                "盤點本輪對話中是否有同一檔案被原生編輯/寫入工具修改 >= 2 次（MULTI_EDIT_CHURN）？",
                 "盤點本輪對話中是否有 CLI 報錯、參數猜錯或連續搜尋 >= 3 次才命中目標（TOOL_MISS_AND_RETRY）？",
                 "盤點是否在後期階段回頭修改了前期 P01~P04 規格而未登記於 changelog.md（SILENT_BACKPATCH）？",
                 "盤點是否曾被 plan verify、dev check 或 Reviewer 退件重修（GATE_BOUNCE）？",
-                "盤點是否重複讀取相同檔案或未先執行 knowledge-db search 即盲讀多檔（CONTEXT_WASTE）？",
+                "盤點是否重複讀取相同檔案、讀取超長截斷暫存檔，或未先執行 knowledge-db 定位即盲讀多檔（CONTEXT_WASTE）？",
             ]
 
         return SessionTraceReport(

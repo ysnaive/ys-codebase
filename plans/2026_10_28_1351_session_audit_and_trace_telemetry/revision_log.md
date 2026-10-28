@@ -104,6 +104,65 @@
 
 ---
 
+### [REV-05] 實作無推估鐵證聯集解析、有效 vs. 無效 Token 效益分析 (`token_efficiency`) 與三維高耗能排行 (`top_consumers`)
+- **修訂類別**：UI/UX/DX / Docs
+- **涉及檔案**：
+  - `ys_codebase/source/agents-workflow/agents_workflow/plans/session_trace.py`
+  - `ys_codebase/source/agents-workflow/assets/skills/session-audit/SKILL.md`
+  - `ys_codebase/source/agents-workflow/tests/test_plans_toolchain.py`
+- **修訂摘要**：
+  1. **`transcript_full.jsonl` 截斷行定點聯集與零臆測鐵律 (`Zero-Speculation Autopsy`)**：
+     - `_parse_transcript_file` 偵測到 `truncated_fields` 時，自動從同目錄 `transcript_full.jsonl` 同步讀取完整 JSON 對象取代截斷行，直接計算 100% 真实未截斷之參數、輸出與思考鏈 Token（`exact_full_parsed: true`）。
+     - 於 `session-audit/SKILL.md` §1 新增「無鐵證不歸因，嚴禁推估語句」紅線，禁止報告出現「推測、可能、大概、估計」等模糊詞彙，強制綁定 `Step #` 與具體日誌證據。
+  2. **有效 Token vs. 無效（摩擦浪費）Token 確定性拆解 (`token_efficiency`)**：
+     - 量化計算 `effective_tokens` (`efficiency_pct%`) 與 `wasted_tokens` (`waste_pct%`)，並拆解四大浪費來源 (`wasted_breakdown`)：
+       - `duplicate_reads`：同一檔案區段未修改下第 $2 \dots K$ 次重複讀取之參數與輸出 Token。
+       - `failed_tool_steps`：返回 `ERROR` / `is_error=True` 或關卡退件 (`GATE_BOUNCE`) 步驟所消耗之思考鏈、工具參數與錯誤輸出 Token。
+       - `edit_churn_rework`：觸發 `MULTI_EDIT_CHURN` 檔案扣除首尾定稿後，中間返工覆寫步驟消耗之參數 Token。
+       - `unindexed_blind_reads`：未呼叫 `knowledge-db` 連續盲讀 $\ge 4$ 個源碼檔時，超額盲讀步驟之參數與輸出 Token。
+  3. **三維高耗能操作與 CLI 指令排行榜 (`top_consumers`)**：
+     - `by_tool`：各工具累計消耗之 `args_tokens`、`output_tokens`、`total_tokens`、單次平均 `avg_tokens` 與佔總量百分比 `share_pct`。
+     - `heavy_steps`：單步吞吐量最高之前 5 大步驟（含 `Step #`、工具名稱、目標檔案/指令、消耗 Token 與截斷標記）。
+     - `heavy_cli_commands`：消耗最多 Token 之前 5 大具體終端 CLI 指令字串（含 `Step #`、`command`、`tokens`、`output_tokens`、`is_error`）。
+- **驗證結果**：
+  - `python yscb.py dev check agents-workflow` & `dev test agents-workflow -q`：`PASSED` (`134/134`, 100%)。
+  - `python yscb.py agents-workflow plan verify`：`PASSED`。
+
+---
+
+### [REV-06] 上下游雙向實證合併收斂：`knowledge-db` 二階段漏斗與 40 行切片截斷保護、`handoff.md` 上下文交接壓縮區塊、以及跨宿主通用敘述與 `session-trace` 精準讀檔豁免
+- **修訂類別**：UI/UX/DX / Docs
+- **涉及檔案**：
+  - `ys_codebase/source/knowledge-db/scripts/cli.py`
+  - `ys_codebase/source/knowledge-db/contributes/core.json`
+  - `ys_codebase/source/knowledge-db/assets/skills/knowledge-db-search/SKILL.md`
+  - `ys_codebase/source/agents-workflow/assets/templates/handoff.md`
+  - `ys_codebase/source/agents-workflow/assets/skills/pause/SKILL.md`
+  - `ys_codebase/source/agents-workflow/assets/skills/development-sop/references/phase_02_architecture.md`
+  - `ys_codebase/source/agents-workflow/assets/skills/auto/SKILL.md`
+  - `ys_codebase/source/agents-workflow/assets/skills/how-to-config-yscb/SKILL.md`
+  - `ys_codebase/source/agents-workflow/agents_workflow/plans/session_trace.py`
+  - `ys_codebase/source/agents-workflow/tests/test_plans_toolchain.py`
+- **修訂摘要**：
+  1. **`knowledge-db` 切片溢位截斷保護 (`--max-snippet-lines=40`) 與二階段漏斗模型 (`Two-Stage Funnel Retrieval`)**：
+     - 於 `knowledge-db/scripts/cli.py` 及 `contributes/core.json` 新增 `--max-snippet-lines`（預設 `40` 行），當 `search --json -s` 命中大型類別時自動截斷並輸出跨宿主通用提示 `use native file reader with line range to view`；同時將 `search --json -s` 之 `auto` 預設筆數上限收斂為 Top `10`，徹底消滅單步 50~90KB JSON 切片溢位。
+     - 重構 [`knowledge-db-search/SKILL.md`](../../ys_codebase/source/knowledge-db/assets/skills/knowledge-db-search/SKILL.md)：廢除「探索一律帶 `--json -s`」，改為 **Stage 1（無 `-s` 輕量大綱定位：`search --limit=10 --json`）$\rightarrow$ Stage 2（以各環境之原生檔案讀取工具指定起訖行號定點精讀）**；並明定單次命令列最多串接 2~3 個無 `-s` 查詢，且**嚴禁調用原生檔案讀取工具讀取宿主環境之超長輸出截斷暫存檔**。
+  2. **`handoff.md` 新增 `## 4. 上下文交接 (Compressed Task Context)` 區塊**：
+     - 於 [`handoff.md`](../../ys_codebase/source/agents-workflow/assets/templates/handoff.md) 模板與 [`pause/SKILL.md`](../../ys_codebase/source/agents-workflow/assets/skills/pause/SKILL.md) 正式增設「上下文交接」區塊，要求將當前對話中已定案之具體拆解清單、子系統歸戶映射表、關鍵決策與檔案行號座標進行**高密度資訊壓縮**後寫入，杜絕接手或 Compaction 後翻讀會話歷史日誌檔考古（單次可省逾 4.5 萬 Tokens）。
+  3. **全面對齊跨宿主通用性敘述 (`Host-Agnostic Phrasing`) 與 `callers` 強制守門**：
+     - 將各 Skill 與 CLI 提示中之 `read_file`/`view_file`/`write_file` 統一替換為「各環境之原生檔案讀取／覆寫工具（指定起訖行號區段）」。
+     - 於 [`phase_02_architecture.md`](../../ys_codebase/source/agents-workflow/assets/skills/development-sop/references/phase_02_architecture.md) 與 [`auto/SKILL.md`](../../ys_codebase/source/agents-workflow/assets/skills/auto/SKILL.md) 增設「破壞性公開 API 簽名變更強制執行 `knowledge-db callers` 守門」與「批次 A 讀模板後嚴禁穿插源碼讀取以防 Compaction 洗記憶」。
+  4. **`session-trace` 啟發式判準升級 (`session_trace.py`)**：
+     - **豁免二階段漏斗之定點行號讀取**：執行 `knowledge-db` 定位後，對跨度 $\le 160$ 行區段之原生檔案讀取不計入 `unindexed_blind_reads`。
+     - **新增 `JSON_SNIPPET_OVERFLOW` 子類偵測**：自動捕捉讀取宿主截斷暫存檔（如 `steps/*/output.txt`、`tool-results`）或會話歷史日誌檔（`transcript_full.jsonl`）之高耗能行為並計入 `wasted_tokens`。
+- **驗證結果**：
+  - `python yscb.py contributes check`：`15/15 valid`。
+  - `python yscb.py dev check knowledge-db` & `dev test knowledge-db -q`：`PASSED` (`150/150`, 100%)。
+  - `python yscb.py dev check agents-workflow` & `dev test agents-workflow -q`：`PASSED` (`134/134`, 100%)。
+  - `python yscb.py agents-workflow plan verify`：`PASSED`。
+
+---
+
 ## 2. 結案與合規檢核 (Completion & Compliance Checklist)
 
 - [x] **修訂與驗證完畢**：所有修訂項目均已實作並通過測試或驗證，無殘留死代碼或除錯資訊。

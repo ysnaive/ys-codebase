@@ -6,7 +6,7 @@ Migrated to core.commands active execution contract with strong-typed CmdBags.
 import json
 import os
 import sys
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
@@ -276,7 +276,42 @@ def search(cmd_bags: Any) -> int:
 
         is_snippet = (tier in ("snippet", "detail")) or bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")
         detail_mode = "detail" if tier == "detail" else ("auto" if tier == "snippet" else "simple")
-        fetch_limit = 50 if limit_val == "auto" else max(1, int(limit_val))
+        if limit_val == "auto":
+            fetch_limit = 10 if (is_json and tier == "snippet") else 50
+        else:
+            fetch_limit = max(1, int(limit_val))
+
+        max_snippet_lines = 40
+        msl_opt = bags.get_option_value("max-snippet-lines")
+        if msl_opt:
+            try:
+                max_snippet_lines = max(5, int(str(msl_opt).strip()))
+            except ValueError:
+                max_snippet_lines = 40
+
+        def _cap_json_snippet(cs: Any) -> Dict[str, Any]:
+            if not cs or not getattr(cs, "lines", None):
+                return {}
+            raw_lines = cs.lines
+            if tier == "snippet" and len(raw_lines) > max_snippet_lines:
+                kept = raw_lines[:max_snippet_lines]
+                s_ln = kept[0][0]
+                e_ln = kept[-1][0]
+                full_end = getattr(cs, "end_line", raw_lines[-1][0])
+                code_str = "\n".join(txt for _, txt in kept) + (
+                    f"\n... [truncated {len(raw_lines) - max_snippet_lines} lines; "
+                    f"target spans lines {cs.start_line}-{full_end}, use native file reader with line range to view]"
+                )
+                return {
+                    "code": code_str,
+                    "code_lines": [s_ln, e_ln],
+                    "full_code_lines": [cs.start_line, full_end],
+                    "truncated": True,
+                }
+            return {
+                "code": cs.get_raw_code(),
+                "code_lines": [cs.start_line, cs.end_line],
+            }
 
         from knowledge_db.selector import SymbolSelector
         parsed_sel = SymbolSelector.parse(query_str)
@@ -344,7 +379,7 @@ def search(cmd_bags: Any) -> int:
                                 "score": round(itm.score, 2),
                                 "signature": itm.symbol.signature,
                                 "summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else ""),
-                                **({"code": itm.code_snippet.get_raw_code(), "code_lines": [itm.code_snippet.start_line, itm.code_snippet.end_line]} if (itm.code_snippet and itm.code_snippet.lines) else {}),
+                                **_cap_json_snippet(itm.code_snippet),
                             }
                             for itm in res.items
                         ],

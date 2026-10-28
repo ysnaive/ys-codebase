@@ -14,6 +14,8 @@
 
 | 日期時間 | 類型 | 模型 | 摘要 |
 | :--- | :---: | :--- | :--- |
+| 2026-10-28 18:16 | `REVISION` | Gemini 4 Argon (Low) | [REV-06] 落地下游 A/B 實證與上游盲審收斂之二階段漏斗檢索、40 行切片截斷保護、handoff.md 上下文交接區塊與跨宿主通用敘述 |
+| 2026-10-28 17:51 | `REVISION` | Gemini 4 Argon (Low) | [REV-05] 實作無推估鐵證聯集解析、有效 vs. 無效 Token 效益分析與三維高耗能排行 |
 | 2026-10-28 16:29 | `REVISION` | Gemini 4 Argon (Low) | [REV-04] 落地跨 8 份歷史對話盲審實證收斂之 session-trace 5 項精準度修正與核心 Skill 通用型防呆微調 |
 | 2026-10-28 16:10 | `REVISION` | Gemini 4 Argon (Low) | [REV-03] 收斂 84facb53 盲審回饋（AbsolutePath 相容、changelog.md 豁免、AgentsStandards 語意路徑）並補齊 Claude Code / Codex .jsonl 完整格式解析 |
 | 2026-10-28 16:01 | `REVISION` | Gemini 4 Argon (Low) | [REV-02] 實戰盲審回饋收斂：新增 session-trace --list 歷史清單、頭中尾工作區主導探測與 Subagent 過濾、Telemetry 時間窗上界鎖定及模板路徑標示強化 |
