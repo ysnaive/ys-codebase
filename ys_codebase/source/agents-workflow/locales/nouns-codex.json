@@ -1,0 +1,9 @@
+{
+  "agent_tool.file_read_range": "read_file",
+  "agent_tool.file_read": "read_file",
+  "agent_tool.file_edit": "apply_patch",
+  "agent_tool.file_grep_single": "rg <pattern> <file>",
+  "agent_tool.shell_exec": "exec_command",
+  "agent_tool.shell_bg_daemon": "exec_command (background)"
+}
+

@@ -75,5 +75,6 @@
 ### 5.2 實施步驟 (Implementation Stages)
 1. **Stage 1（工作流語系脫鉤 MVP）**：完成 `verifier.py` 語系無關化、2x2 `locale` 組態讀取與英文版 `P00`~`P07` / `SKILL.md` 投影支援。
 2. **Stage 2（增量文檔編譯器與雙軌 CLI）**：實作帶 `<yscb-token>` 保護罩之 `sync-docs` 差異提取與驗證管線，並為人類高頻 CLI 加上輕量語系表。
+   - **⚠️ `server` 等模組擴充在地化之相依版本約束提醒**：`server` 目前尚未宣告 `locales` 故維持 `"core": ">=1.1.0"`；當未來於 Stage 2 為 `server`（或任何新模組）新增 `locales/` 並於 `contributes/core.json` 註冊 `"locales"` 時，**必須同步將其 `manifest.json` 之 `dependencies.core` 調升為 `">=1.2.0"`**（`dev check` 已同步配置靜態攔截守門）。
 3. **Stage 3（下游業務 `module:i18n` 工具箱發布）**：封裝 `check-locales` 多語系包契約檢查器與專屬 `i18n-sop` 技能。
 

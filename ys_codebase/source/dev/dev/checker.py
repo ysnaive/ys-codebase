@@ -410,6 +410,29 @@ class Checker:
 
             val_res = ContributesValidator.validate(target, c_data, donor_mod=name, format_schema=target_fmt, strict_points=True)
             if target == "core" and isinstance(c_data, dict) and "locales" in c_data and isinstance(c_data["locales"], dict):
+                if name != "core":
+                    manifest_path = os.path.join(real_dir, "manifest.json")
+                    if os.path.exists(manifest_path):
+                        try:
+                            with open(manifest_path, "r", encoding="utf-8") as mf:
+                                m_data = json.load(mf)
+                            deps = m_data.get("dependencies")
+                            core_spec = deps.get("core") if isinstance(deps, dict) else None
+                            if not isinstance(core_spec, str) or semver.match_constraint("1.1.0.0", core_spec):
+                                report.issues.append(
+                                    CheckIssue(
+                                        severity=CheckSeverity.FAIL,
+                                        category="MANIFEST",
+                                        message=(
+                                            f"Module '{name}' declares 'locales' in 'contributes/core.json' "
+                                            f"which requires 'core' >= 1.2.0 in 'manifest.json' dependencies "
+                                            f"(found: {core_spec!r})."
+                                        ),
+                                        file_path="manifest.json",
+                                    )
+                                )
+                        except Exception:
+                            pass
                 try:
                     from core import locale as core_locale
                     loc_res = core_locale.validate_module_locales(name, c_data["locales"], base_dir=real_dir)

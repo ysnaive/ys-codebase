@@ -1,0 +1,12 @@
+{
+  "cli.search.snippet_truncated_hint": {
+    "description": "knowledge-db search --json -s 切片超過行數上限時附加之行尾截斷與定點讀取工具提示",
+    "placeholders": [
+      "omitted",
+      "start_line",
+      "end_line",
+      "agent_tool.file_read_range"
+    ]
+  }
+}
+

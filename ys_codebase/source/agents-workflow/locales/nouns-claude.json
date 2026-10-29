@@ -1,0 +1,9 @@
+{
+  "agent_tool.file_read_range": "Read (offset/limit)",
+  "agent_tool.file_read": "Read",
+  "agent_tool.file_edit": "Edit / Write",
+  "agent_tool.file_grep_single": "Grep (path=<file>)",
+  "agent_tool.shell_exec": "Bash",
+  "agent_tool.shell_bg_daemon": "Bash (run_in_background: true)"
+}
+

@@ -5,7 +5,7 @@ and deterministic static contract validation based on 'definition' semantic file
 
 100% Python Standard Library, Zero Third-Party Dependencies.
 """
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 import difflib
 import json
 import locale as _py_locale
@@ -23,6 +23,8 @@ MAX_INTERPOLATION_DEPTH: int = 5
 
 # Memory cache: abs_file_path -> (mtime, parsed_dict)
 _LOCALE_FILE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_MODULE_BASE_DIR_CACHE: Dict[str, str] = {}
+_MODULE_DECL_CACHE: Dict[Tuple[str, str], Dict[str, str]] = {}
 
 # Sentinel strings for protecting escaped braces '{{' and '}}'
 _ESCAPED_LBRACE = "\x00YSCB_LBRACE\x00"
@@ -33,6 +35,8 @@ _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z0-9_.:-]+)\}")
 def clear_cache() -> None:
     """Clear the in-memory locale JSON cache."""
     _LOCALE_FILE_CACHE.clear()
+    _MODULE_BASE_DIR_CACHE.clear()
+    _MODULE_DECL_CACHE.clear()
 
 
 def parse_locale_chain(raw_chain: Optional[Union[str, List[str]]]) -> List[str]:
@@ -108,14 +112,41 @@ def detect_system_locale_chain(raw_tag: Optional[str] = None) -> List[str]:
     return ["zh"]
 
 
+def detect_active_host_dialect(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """
+    Sniff the caller AI IDE / Agent environment variables and return the corresponding
+    proper-noun dialect ID ('nouns-claude', 'nouns-codex', 'nouns-antigravity'),
+    or None if running in a standard human terminal ([P00:DR-02], FR-02).
+    """
+    env_map = env if env is not None else os.environ
+    for k, v in env_map.items():
+        if not v:
+            continue
+        k_up = k.upper()
+        if k_up in ("CLAUDECODE", "CLAUDE_CODE") or k_up.startswith("CLAUDE_CODE_"):
+            return "nouns-claude"
+    for k, v in env_map.items():
+        if not v:
+            continue
+        k_up = k.upper()
+        if k_up in ("CODEX_SANDBOX", "CODEX_CI", "CODEX_CLI") or k_up.startswith("CODEX_"):
+            return "nouns-codex"
+    for k, v in env_map.items():
+        if not v:
+            continue
+        k_up = k.upper()
+        if k_up in ("ANTIGRAVITY_AGENT", "ANTIGRAVITY_CLI_ALIAS") or k_up.startswith("ANTIGRAVITY_"):
+            return "nouns-antigravity"
+    return None
+
+
 def get_active_chain(explicit_chain: Optional[Union[str, List[str]]] = None) -> List[str]:
     """
     Resolve the active explicit priority fallback chain.
     Priority:
       1. explicit_chain argument
       2. YSCB_LOCALE environment variable (comma-separated)
-      3. config://core 'locale' setting (list[str] or comma-separated str)
-      4. DEFAULT_LOCALE_CHAIN (['zh'])
+      3. Auto-sniffed host dialect ('nouns-<host>') + config://core 'locale' setting (or DEFAULT_LOCALE_CHAIN)
     """
     if explicit_chain is not None:
         parsed = parse_locale_chain(explicit_chain)
@@ -128,17 +159,25 @@ def get_active_chain(explicit_chain: Optional[Union[str, List[str]]] = None) -> 
         if parsed:
             return parsed
 
+    base_chain: List[str] = []
     try:
         from core import config
         cfg_val = config.get("core", "locale", default=None)
         if cfg_val is not None:
             parsed = parse_locale_chain(cfg_val)
             if parsed:
-                return parsed
+                base_chain = parsed
     except Exception:
         pass
 
-    return list(DEFAULT_LOCALE_CHAIN)
+    if not base_chain:
+        base_chain = list(DEFAULT_LOCALE_CHAIN)
+
+    host_dialect = detect_active_host_dialect()
+    if host_dialect and host_dialect not in base_chain:
+        return [host_dialect] + base_chain
+
+    return base_chain
 
 
 def extract_placeholders(template_text: str) -> Set[str]:
@@ -156,19 +195,43 @@ def _resolve_module_base_dir(module: str, base_dir: Optional[str] = None) -> Opt
     """Resolve the physical root directory of a module."""
     if base_dir:
         return os.path.abspath(base_dir)
+    if module in _MODULE_BASE_DIR_CACHE:
+        cached_dir = _MODULE_BASE_DIR_CACHE[module]
+        if os.path.isdir(cached_dir):
+            return cached_dir
+    resolved: Optional[str] = None
     try:
         from core import uri
         if module == "project":
-            return uri.resolve("config://core", interactive=False)
-        mod_uri = f"module://{module}"
-        if uri.exists(mod_uri):
-            return uri.resolve(mod_uri, interactive=False)
-        src_uri = f"module.source://{module}"
-        if uri.exists(src_uri):
-            return uri.resolve(src_uri, interactive=False)
+            resolved = uri.resolve("config://core", interactive=False)
+        else:
+            src_uri = f"module.source://{module}"
+            mod_uri = f"module://{module}"
+            if uri.exists(src_uri):
+                src_abs = uri.resolve(src_uri, interactive=False)
+                if os.path.isfile(os.path.join(src_abs, "locales", "definition.json")):
+                    resolved = src_abs
+            if not resolved and uri.exists(mod_uri):
+                mod_abs = uri.resolve(mod_uri, interactive=False)
+                if os.path.isfile(os.path.join(mod_abs, "locales", "definition.json")) or not uri.exists(src_uri):
+                    resolved = mod_abs
+            if not resolved and uri.exists(src_uri):
+                resolved = uri.resolve(src_uri, interactive=False)
     except Exception:
         pass
-    return None
+    # Fallback relative to this file's directory (handles source/<mod> or .modules/<mod> in isolated sandboxes)
+    if not resolved:
+        try:
+            curr_mod_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            parent_dir = os.path.dirname(curr_mod_root)
+            sibling = os.path.join(parent_dir, module)
+            if os.path.isdir(sibling) and os.path.isfile(os.path.join(sibling, "contributes", "core.json")):
+                resolved = sibling
+        except Exception:
+            pass
+    if resolved and os.path.isdir(resolved):
+        _MODULE_BASE_DIR_CACHE[module] = resolved
+    return resolved
 
 
 def _is_safe_subpath(base_dir: str, rel_path: str) -> Tuple[bool, str]:
@@ -222,6 +285,7 @@ def _get_module_locales_decl(module: str, base_dir: Optional[str] = None) -> Dic
                     k: v for k, v in data["locales"].items()
                     if not k.startswith("_") and isinstance(v, str)
                 }
+        return {}
 
     try:
         from core import contributes
@@ -291,6 +355,37 @@ def _split_module_key(raw_key: str, explicit_module: Optional[str] = None) -> Tu
     return "core", raw_key
 
 
+def _get_all_registered_locale_modules(primary_module: str) -> List[str]:
+    """
+    Build the deterministic module search order for unqualified locale keys ([P02:DR-01]):
+    [primary_module, 'agents-workflow', 'core', ...other registered modules sorted].
+    """
+    ordered: List[str] = []
+    seen: Set[str] = set()
+
+    def _add(m: str) -> None:
+        if m and m not in seen:
+            seen.add(m)
+            ordered.append(m)
+
+    _add(primary_module)
+    _add("agents-workflow")
+    _add("core")
+
+    try:
+        from core import contributes
+        merged_locales = contributes.get("core", "locales", default={})
+        if isinstance(merged_locales, dict):
+            modules_bucket = merged_locales.get("__modules__", {})
+            if isinstance(modules_bucket, dict):
+                for m_name in sorted(modules_bucket.keys()):
+                    _add(m_name)
+    except Exception:
+        pass
+
+    return ordered
+
+
 def resolve_raw(
     key: str,
     *,
@@ -300,21 +395,29 @@ def resolve_raw(
 ) -> Optional[Tuple[str, str, str]]:
     """
     Search for `key` strictly along the active explicit fallback chain.
+    If `key` has no explicit '<module>:' prefix and `base_dir` is None, searches the
+    caller module first and then falls back across `_get_all_registered_locale_modules`.
     Returns `(resolved_module, matched_lang_id, raw_template)` or `None` if not found.
     """
     if not isinstance(key, str) or not key.strip():
         return None
 
-    target_mod, clean_key = _split_module_key(key.strip(), explicit_module=module)
+    stripped_key = key.strip()
+    has_explicit_prefix = ":" in stripped_key
+    target_mod, clean_key = _split_module_key(stripped_key, explicit_module=module)
     active_chain = get_active_chain(chain)
 
-    # Check project override bucket first if available and no explicit base_dir
-    candidate_modules = [target_mod]
+    if has_explicit_prefix or base_dir is not None:
+        candidate_modules = [target_mod]
+    else:
+        candidate_modules = _get_all_registered_locale_modules(target_mod)
+
     for mod_name in candidate_modules:
-        decl = _get_module_locales_decl(mod_name, base_dir=base_dir)
+        mod_base_arg = base_dir if mod_name == target_mod else None
+        decl = _get_module_locales_decl(mod_name, base_dir=mod_base_arg)
         if not decl:
             continue
-        mod_base = _resolve_module_base_dir(mod_name, base_dir=base_dir)
+        mod_base = _resolve_module_base_dir(mod_name, base_dir=mod_base_arg)
         if not mod_base:
             continue
 
@@ -348,7 +451,7 @@ def _interpolate_template(
       1. Protect escaped '{{' and '}}'.
       2. Replace '{var}' from `kwargs` if present.
       3. Otherwise recursively resolve '{var}' as a locale/noun token along `active_chain`
-         (checking `current_mod` first, then falling back to `'core'` if unprefixed).
+         (checking `current_mod` first, then falling back across all registered locale modules).
       4. Restore escaped '{{' -> '{' and '}}' -> '}'.
     """
     if not isinstance(template_str, str) or "{" not in template_str:
@@ -367,17 +470,20 @@ def _interpolate_template(
         # Resolve token as a locale / dialect noun reference
         if ":" in token:
             cand_specs = [token]
-        else:
+        elif base_dir is not None:
             cand_specs = [f"{current_mod}:{token}"]
-            if current_mod != "core":
-                cand_specs.append(f"core:{token}")
+            for fallback_mod in ("agents-workflow", "core"):
+                if fallback_mod != current_mod:
+                    cand_specs.append(f"{fallback_mod}:{token}")
+        else:
+            cand_specs = [f"{m}:{token}" for m in _get_all_registered_locale_modules(current_mod)]
 
         for spec in cand_specs:
             if spec in visited:
                 continue
             spec_mod, spec_key = _split_module_key(spec)
-            spec_base = base_dir if spec_mod == current_mod else None
-            hit = resolve_raw(spec_key, module=spec_mod, chain=active_chain, base_dir=spec_base)
+            spec_base = base_dir if (base_dir is not None and spec == cand_specs[0]) else None
+            hit = resolve_raw(f"{spec_mod}:{spec_key}", module=spec_mod, chain=active_chain, base_dir=spec_base)
             if hit is not None:
                 resolved_mod, _, raw_sub = hit
                 next_visited = set(visited)

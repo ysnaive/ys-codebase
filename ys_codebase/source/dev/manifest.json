@@ -1,10 +1,10 @@
 {
   "name": "dev",
-  "version": "1.1.1.1",
+  "version": "1.1.2.0",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.1.0"
+    "core": ">=1.2.0"
   },
   "onboarding": [
     "Create a new module scaffold: python yscb.py dev create <module-name> --desc=\"My module\"",

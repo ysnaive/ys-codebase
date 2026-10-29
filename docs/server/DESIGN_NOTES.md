@@ -31,6 +31,7 @@ last_updated: "2026-10-25"
 | **[DN-06]** | Master 兩階段平滑關閉協定 (NDJSON Exit Handshake + Process Tree Harvest) | `server/master.py` | High |
 | **[DN-07]** | Server 執行期零 `source/` 嚴格沙盒路徑隔離與動態 Provider 注入 | `server/master.py`, `server/service.py` | High |
 | **[DN-08]** | `WarmWorker.pre_warm()` 服務路徑先行載入時序與 `MasterSupervisor.stop()` 冪等防重入 | `server/worker.py`, `server/master.py` | High |
+| **[DN-09]** | 未來擴充 `locales` 在地化字典時之 `core >= 1.2.0` 相依版本連動約束 | `manifest.json`, `contributes/core.json` | Medium |
 
 ---
 
@@ -129,4 +130,14 @@ last_updated: "2026-10-25"
 
 > [!CAUTION]
 > 嚴禁在 `MasterSupervisor.start()` 中當 `self._lock.acquire(blocking=False)` 失敗時向下穿透啟動 HTTP Server 或 Worker！嚴禁將 `events.broadcast("server_worker_warming")` 移至 `service_manager.load_from_contributes()` 之前，亦嚴禁移除 `stop()` / `restart_server()` 的 `_stop_lock` 冪等守門。
+
+---
+
+### [DN-09] 未來擴充 `locales` 在地化字典時之 `core >= 1.2.0` 相依版本連動約束
+- **背景與陷阱**：
+  `core@1.2.0.0` 新增了 `core.locale` 語系引擎與 `contributes/core.json` 之 `"locales"` 擴充點（並由 `agents-workflow`、`knowledge-db`、`dev` 率先採用並將 `dependencies.core` 升級為 `">=1.2.0"`）。由於 `server` 目前尚未掛載 `locales/` 語系字典，其 `manifest.json` 維持 `"core": ">=1.1.0"`。若未來為 `server` 擴充在地化翻譯（於 `contributes/core.json` 宣告 `"locales"` 或在代碼中調用 `core.locale`）時遺漏更新 `manifest.json`，將導致模組在舊版 `core@1.1.x` 環境下發生擴充點未知或 `ImportError`。
+- **工程決策**：
+  1. 凡未來於 `server` 新增 `locales/` 與 `contributes/core.json` `"locales"` 宣告時，**必須同步將 `ys_codebase/source/server/manifest.json` 的 `"dependencies": {"core": ">=1.2.0"}` 版本下限一併調升**。
+  2. `dev check` (`Checker._check_core_injection`) 已內建剛性靜態防呆：一旦偵測到非 `core` 模組宣告 `"locales"` 但 `manifest.json` 中 `core` 相依版本容許 `< 1.2.0`，將直接報 `[FAIL]` 攔截。
+
 

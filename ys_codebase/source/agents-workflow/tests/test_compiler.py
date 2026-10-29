@@ -1088,6 +1088,42 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_ft_13_stage2_locale_noun_projection_across_targets(self):
+        """[sub_02 FR-03, FR-04, EC-02]: 驗證 Stage 2 `__%{key}__` 依 target_name (antigravity/claude/codex) 精準展開宿主專有名詞。"""
+        compiler = ArtifactCompiler()
+        sample_md = (
+            "請調用 `__%{agent_tool.file_read_range}__` 讀取區段，或使用 `__%{agent_tool.shell_exec}__` 執行。\n"
+            "```bash\n"
+            "# tool: __%{agent_tool.shell_bg_daemon}__\n"
+            "```\n"
+        )
+        dst_p = os.path.join(_pkg_root, "SKILL.md")
+
+        out_agy = compiler.resolve_stage2_uri(sample_md, dst_p, {}, target_name="antigravity")
+        self.assertIn("`read_file (StartLine/EndLine)`", out_agy)
+        self.assertIn("`run_command`", out_agy)
+        self.assertIn("# tool: run_command (IsDaemon: true)", out_agy)
+
+        out_claude = compiler.resolve_stage2_uri(sample_md, dst_p, {}, target_name="claude")
+        self.assertIn("`Read (offset/limit)`", out_claude)
+        self.assertIn("`Bash`", out_claude)
+        self.assertIn("# tool: Bash (run_in_background: true)", out_claude)
+
+        out_codex = compiler.resolve_stage2_uri(sample_md, dst_p, {}, target_name="codex")
+        self.assertIn("`read_file`", out_codex)
+        self.assertIn("`exec_command`", out_codex)
+        self.assertIn("# tool: exec_command (background)", out_codex)
+
+        # EC-02: Unknown noun key emits warning and preserves tag safely
+        import contextlib
+        err_buf = io.StringIO()
+        with contextlib.redirect_stderr(err_buf):
+            out_unk = compiler.resolve_stage2_uri("未知標籤 `__%{agent_tool.non_existent}__`", dst_p, {}, target_name="antigravity")
+        self.assertIn("[compiler:warning] Unresolved locale noun tag: 'agent_tool.non_existent'", err_buf.getvalue())
+        self.assertIn("`__%{agent_tool.non_existent}__`", out_unk)
+
+        self.mark_passed()
+
 
 
 

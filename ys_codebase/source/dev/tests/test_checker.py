@@ -686,7 +686,7 @@ class TestDevChecker(YSCBTestCase):
             os.makedirs(os.path.join(mod_dir, "locales"), exist_ok=True)
 
             with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_locale_check_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
+                f.write('{"name": "mock_locale_check_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.1.0"}}')
             with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
                 f.write('def process(args):\n    return 0\n')
             with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
@@ -700,7 +700,7 @@ class TestDevChecker(YSCBTestCase):
                     }
                 }, f)
 
-            # 1. Invalid locale file: orphan key + missing placeholder
+            # 1. Invalid locale file: orphan key + missing placeholder + core dependency < 1.2.0
             with open(os.path.join(mod_dir, "locales", "zh-TW.json"), "w", encoding="utf-8") as f:
                 json.dump({
                     "cli.msg": "沒有佔位符的字串",
@@ -720,8 +720,11 @@ class TestDevChecker(YSCBTestCase):
             err_str = "\n".join(rep_fail.errors)
             self.assertIn("Placeholder contract mismatch for 'cli.msg'", err_str)
             self.assertIn("Orphan locale key 'cli.orphan'", err_str)
+            self.assertIn("requires 'core' >= 1.2.0 in 'manifest.json' dependencies", err_str)
 
-            # 2. Fix locale file -> passes!
+            # 2. Fix locale file and update dependencies.core >= 1.2.0 -> passes!
+            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_locale_check_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.2.0"}}')
             with open(os.path.join(mod_dir, "locales", "zh-TW.json"), "w", encoding="utf-8") as f:
                 json.dump({
                     "cli.msg": "共 {count} 筆結果"

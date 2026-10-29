@@ -1,10 +1,10 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.0.2",
+  "version": "1.2.1.0",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.1.0"
+    "core": ">=1.2.0"
   },
   "onboarding": [
     "[Pre-flight] Initialize default workflow paths (plans/, docs/, roadmap/, archived/): python yscb.py agents-workflow init --default -y",

@@ -684,5 +684,12 @@
         }
       }
     }
+  },
+  "locales": {
+    "definition": "locales/definition.json",
+    "zh": "locales/zh.json",
+    "nouns-antigravity": "locales/nouns-antigravity.json",
+    "nouns-claude": "locales/nouns-claude.json",
+    "nouns-codex": "locales/nouns-codex.json"
   }
 }

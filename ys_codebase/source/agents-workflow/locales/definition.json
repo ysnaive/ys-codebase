@@ -1,0 +1,27 @@
+{
+  "agent_tool.file_read_range": {
+    "description": "宿主 AI Agent 按起訖行號區段定點讀取檔案內容之原生工具與參數名稱",
+    "placeholders": []
+  },
+  "agent_tool.file_read": {
+    "description": "宿主 AI Agent 讀取或檢視單一檔案內容之原生工具名稱",
+    "placeholders": []
+  },
+  "agent_tool.file_edit": {
+    "description": "宿主 AI Agent 編輯或覆寫檔案內容之原生工具名稱",
+    "placeholders": []
+  },
+  "agent_tool.file_grep_single": {
+    "description": "宿主 AI Agent 對單一指定檔案路徑執行文字搜尋之原生工具名稱",
+    "placeholders": []
+  },
+  "agent_tool.shell_exec": {
+    "description": "宿主 AI Agent 執行終端命令列指令之原生工具名稱",
+    "placeholders": []
+  },
+  "agent_tool.shell_bg_daemon": {
+    "description": "宿主 AI Agent 以非阻塞背景常駐模式啟動守護進程之工具與參數名稱",
+    "placeholders": []
+  }
+}
+

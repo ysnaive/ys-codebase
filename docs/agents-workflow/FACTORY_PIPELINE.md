@@ -73,9 +73,10 @@ flowchart TD
     T2 -- "No" --> T3
 ```
 
-### 2.2 佔位符二分法解析 (Standalone vs. Inline)
-- **純佔位符 (Standalone)**：當 `` `...` `` 代碼塊內部字串為單一完整之 `__#{uri}__`、`__${uri}__` 或 `__$(起始錨點){uri}__` 時，判定為純路徑求值，解算後**完全替代並吞噬外層反引號**（如 `[Link](`__#{uri}__`)` $\to$ `[Link](../path.md)`、`[Doc](`__$(.agents){uri}__`)` $\to$ `[Doc](skills/auto/SKILL.md)`）。
+### 2.2 佔位符二分法解析 (Standalone vs. Inline) 與 Stage 2 宿主專有名詞投影 (`__%{key}__`)
+- **純路徑佔位符 (Standalone URI)**：當 `` `...` `` 代碼塊內部字串為單一完整之 `__#{uri}__`、`__${uri}__` 或 `__$(起始錨點){uri}__` 時，判定為純路徑求值，解算後**完全替代並吞噬外層反引號**（如 `[Link](`__#{uri}__`)` $\to$ `[Link](../path.md)`、`[Doc](`__$(.agents){uri}__`)` $\to$ `[Doc](skills/auto/SKILL.md)`）。
 - **穿插代碼 (Inline)**：當 code span 內部包含指令或其他前後綴（如 `` `python __${yscb.host://yscb.py}__ run` `` 或 `` `run __$(.agents){uri}__` ``），解算內部佔位符後**維持外層代碼反引號**（$\to$ `` `python yscb.py run` ``）。
+- **宿主專有名詞佔位符 (`__%{key}__`)**：於 Stage 2 依當前投影目標 `target_name`（如 `antigravity`、`claude`、`codex`），自動以 `chain=["nouns-" + target_name, *get_active_chain()]` 呼叫 `core.locale.t(key)` 展開為對應宿主平台之原生工具專有名詞（定義於 `agents-workflow/locales/` 之 `agent_tool.*` 詞庫，如 `agent_tool.file_read_range`、`agent_tool.shell_exec`），並保留外層反引號呈現為標準行內代碼（如 `` `read_file (StartLine/EndLine)` `` 或 `` `Read (offset/limit)` ``）。
 
 > [!CAUTION]
 > 根據合約 `FT-14`，任何**未被反引號包裹**的裸露佔位符（例如直接書寫於 Markdown 連結括號內但未加反引號）將不會被替換，編譯器會原樣保留並輸出 `[compiler:warning]` 警示。撰寫超連結時務必使用 `` [文字](`__#{uri}__`) `` 格式。
