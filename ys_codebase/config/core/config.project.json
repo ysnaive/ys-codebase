@@ -1,3 +1,6 @@
 {
-  "project_root": "./"
+  "project_root": "./",
+  "locale": [
+    "zh"
+  ]
 }

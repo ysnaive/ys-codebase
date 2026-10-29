@@ -354,3 +354,60 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.assertEqual(out, "處理 Artifact: 99")
         self.mark_passed()
 
+    @require(Requirement.LOGIC | Requirement.ENV)
+    def test_rev_01_system_primary_locale_detection_and_initial_seeding(self):
+        """REV-01: Primary OS language detection (final fallback ['zh']) and initial config.local.json seeding."""
+        self.assertEqual(locale.DEFAULT_LOCALE_CHAIN, ["zh"])
+        self.assertEqual(locale.detect_system_locale_chain("zh_TW.UTF-8"), ["zh"])
+        self.assertEqual(locale.detect_system_locale_chain("zh-Hant-HK"), ["zh"])
+        self.assertEqual(locale.detect_system_locale_chain("ja_JP.UTF-8"), ["ja", "zh"])
+        self.assertEqual(locale.detect_system_locale_chain("en_US.UTF-8"), ["en", "zh"])
+        self.assertEqual(locale.detect_system_locale_chain("C.UTF-8"), ["zh"])
+        self.assertEqual(locale.detect_system_locale_chain("POSIX"), ["zh"])
+        self.assertEqual(locale.detect_system_locale_chain(""), ["zh"])
+
+        # Verify AtomicEngine._seed_or_update_config seeds fixed default in config.project.json
+        # and detected OS primary language in config.local.json on first run without overwriting user edits
+        from core.engine import AtomicEngine
+        eng = AtomicEngine()
+        cfg_proj_path = uri.resolve("config://core/config.project.json", interactive=False)
+        cfg_local_path = uri.resolve("config://core/config.local.json", interactive=False)
+        tpl_dir = os.path.join(self.tmp_dir, "tpl_core")
+        os.makedirs(tpl_dir, exist_ok=True)
+        with open(os.path.join(tpl_dir, "config.project.json"), "w", encoding="utf-8") as f:
+            json.dump({"project_root": "!undefined", "locale": ["zh"]}, f)
+
+        orig_proj = open(cfg_proj_path, "rb").read() if os.path.exists(cfg_proj_path) else None
+        orig_local = open(cfg_local_path, "rb").read() if os.path.exists(cfg_local_path) else None
+        old_lc_all = os.environ.get("LC_ALL")
+        try:
+            if os.path.exists(cfg_local_path):
+                os.remove(cfg_local_path)
+            os.environ["LC_ALL"] = "ja_JP.UTF-8"
+            eng._seed_or_update_config("core", tpl_dir)
+            self.assertTrue(os.path.exists(cfg_local_path))
+            seeded_local = uri.read_json("config://core/config.local.json")
+            self.assertEqual(seeded_local.get("locale"), ["ja", "zh"])
+
+            # Second run must NOT overwrite user-customized config.local.json
+            uri.write_json("config://core/config.local.json", {"locale": ["zh"]})
+            os.environ["LC_ALL"] = "en_US.UTF-8"
+            eng._seed_or_update_config("core", tpl_dir)
+            preserved_local = uri.read_json("config://core/config.local.json")
+            self.assertEqual(preserved_local.get("locale"), ["zh"])
+        finally:
+            if old_lc_all is None:
+                os.environ.pop("LC_ALL", None)
+            else:
+                os.environ["LC_ALL"] = old_lc_all
+            if orig_proj is not None:
+                with open(cfg_proj_path, "wb") as f:
+                    f.write(orig_proj)
+            if orig_local is not None:
+                with open(cfg_local_path, "wb") as f:
+                    f.write(orig_local)
+            elif os.path.exists(cfg_local_path):
+                os.remove(cfg_local_path)
+        self.mark_passed()
+
+

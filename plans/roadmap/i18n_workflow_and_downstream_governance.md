@@ -1,20 +1,21 @@
 # 技術路線圖：跨語系工作流體驗與下游國際化工程治理藍圖 (Roadmap)
 
 > 主題：跨語系工作流體驗與下游國際化工程治理藍圖 (`i18n_workflow_and_downstream_governance`)  
-> 歸檔日期：2026-10-28  
+> 歸檔日期：2026-10-29  
 > 狀態：Backlog  
-> 目標範疇：`agents-workflow`、`core`、`module:i18n`（獨立擴充模組）  
-> 前置解鎖條件：完成 `declarative_track_schema_and_domain_packs`（`TrackSpec` 與驗證器結構抽象化）  
-> 模型：Gemini 4 Argon (High)  
+> 目標範疇：`agents-workflow`、`core`、`knowledge-db`、`dev`、`server`、`module:i18n`（獨立擴充模組）  
+> 前置解鎖條件：完成 `2026_10_28_1845_core_locale_and_ecosystem_i18n`（`core.locale` 內核引擎與宿主專有名詞優先級鏈穩定落地）及 `declarative_track_schema_and_domain_packs`  
+> 模型：Gemini 4 Argon (Low)  
 
 ---
 
 ## 1. 問題陳述與根因量化 (Problem & Root Cause)
 
 ### 1.1 痛點現象
-- **非繁體中文開發者之母語閱讀門檻與驗證耦合**：目前 `P00`~`P07` 模板與 `PlanVerifier` 標頭檢核預設以繁體中文為主；若跨國團隊希望以英文或日文撰寫開發計畫，缺乏標準化的 `locale` 組態路由與語系無關檢核機制。
+- **當前階段策略聚焦於專有名詞（Dialect / Host Proper Nouns）與母語 `zh` 最終保底**：在 `2026_10_28_1845_core_locale_and_ecosystem_i18n` 中，`core.locale` 已完成多層優先級退避鏈與二階遞迴專有名詞插值引擎，並策略性收斂為「最終 Fallback 固定採用開發團隊母語 `["zh"]`、優先服務各宿主環境專有名詞（如 `nouns-antigravity`、`nouns-claude`、`nouns-codex`）」，暫不散射處理 `en` 等多語系文本翻譯。
+- **非繁體中文開發者之母語閱讀門檻與驗證耦合**：目前各模組 CLI 提示、`P00`~`P07` 模板與 `PlanVerifier` 標頭檢核預設以繁體中文 (`zh`) 為主；未來若跨國團隊希望切換為 `en` 或 `ja` 語系撰寫開發計畫與檢視 CLI，尚待補齊各模組 `en.json` 語系包與語系無關檢核機制。
 - **多語系文檔維護成本與 Token 壓縮需求**：在國際開源推廣或追求極致 Context Window 空間（英文 Token 消耗較繁體中文少約 25%~40%）時，若人工全量翻譯 `README.md`、`docs/` 與 `SKILL.md`，不僅成本高昂，且易誤傷 `__@{...}__`、HTML 託管註解與語義 URI。
-- **下游多語系業務專案缺乏自動化語系包契約檢查**：開發多語系產品時，常發生語系檔漏 Key、廢棄 Key（Orphan Keys）或格式化變數佔位符（如 `{user_name}`, `%d`）不一致導致執行期崩潰。
+- **下游多語系業務專案缺乏自動化語系包契約檢查**：開發多語系產品時，常發生語系檔漏 Key、廢棄 Key（Orphan Keys）或格式化變數佔位符不一致導致執行期崩潰（母倉內建模組已可透過 `core.locale.validate_module_locales` 與 `dev check` 校驗 `locales/definition.json`，下游通用專案工具箱則待封裝）。
 
 ### 1.2 現況與影響範圍評估
 - `agents-workflow` 的 `verifier.py` 與模板目前綁定單一語系標頭格式。

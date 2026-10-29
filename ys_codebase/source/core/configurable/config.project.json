@@ -1,3 +1,6 @@
 {
-  "project_root": "!undefined"
+  "project_root": "!undefined",
+  "locale": [
+    "zh"
+  ]
 }

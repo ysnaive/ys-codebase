@@ -501,6 +501,16 @@ class AtomicEngine:
                 uri.makedirs(f"config://{module_name}", exist_ok=True)
                 uri.write_json(cfg_local_uri, infilled_data, indent=2)
 
+        # 初次建立 core 模組組態時，自動偵測使用者系統主語系播種至 config.local.json（最終 fallback 為開發團隊母語 'zh'）
+        if module_name == "core" and not uri.exists(cfg_local_uri):
+            try:
+                from core import locale as core_locale
+                detected_chain = core_locale.detect_system_locale_chain()
+                uri.makedirs(f"config://{module_name}", exist_ok=True)
+                uri.write_json(cfg_local_uri, {"locale": detected_chain}, indent=2)
+            except Exception:
+                pass
+
     @staticmethod
     def _force_rmtree_with_retry(
         path: str,

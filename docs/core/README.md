@@ -137,7 +137,7 @@ with uri.module_scope("core"):
 ### 3.6 多層次語系與宿主專有名詞引擎 (`core.locale`)
 微內核於 [`core/locale.py`](../../ys_codebase/source/core/core/locale.py) 提供零第三方依賴的多語系與宿主專有名詞（Proper Nouns）解析引擎：
 - **宣告式檔案指標與語意契約 (`locales`)**：各模組於 `contributes/core.json` 宣告 `"locales": {"definition": "locales/definition.json", "<lang-id>": "locales/<lang-id>.json"}`，由 `ContributesAggregator` 按模組分桶保存於 `locales["__modules__"][<donor>]`。
-- **100% 顯式優先級退避鏈 (`get_active_chain`)**：嚴格依顯式設定之 `lang-id` 列表順序逐層查找（如 `["nouns-antigravity", "zh-TW", "zh", "en"]`），不做隱式 `-` 連字號父語系切分猜測。
+- **100% 顯式優先級退避鏈 (`get_active_chain`)**：嚴格依顯式設定之 `lang-id` 列表順序逐層查找（專案固定預設值與最終退避保底皆為開發團隊母語 `["zh"]`；初次安裝且 `config.local.json` 尚未建立時自動透過 `detect_system_locale_chain()` 偵測作業系統主語系播種至 `config.local.json`），不做隱式 `-` 連字號父語系切分猜測。
 - **二階遞迴專有名詞插值 (`locale.t`)**：模板內之 `{placeholder}` 優先由呼叫端 `kwargs` 替換；若未傳入則自動視為專有名詞鍵沿同一優先級鏈遞迴解析（最大深度 `5`），並支援 `{{` / `}}` 雙花括號轉義保護與 `validate_module_locales` 確定性靜態契約校驗。
 
 ---
