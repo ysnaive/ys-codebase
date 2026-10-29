@@ -17,8 +17,8 @@
   - 採用 **宣告式檔案指標 + 語意解釋契約（`"locales": {"definition": "locales/definition.json", "<lang-id>": "locales/<lang-id>.json"}`）** 設計，保持 `contributes/core.json` 極致精簡，並賦能 `contributes check` / `dev check` 執行 100% 確定性的孤兒鍵（Orphan Keys）、缺失鍵（Missing Keys）與變數佔位符（Placeholders）靜態契約校驗。
 - **架構邊界**：
   - 本主計畫採 **Incremental（增量演進型）** 滾動推進：
-    - **`sub_01_core_locale_engine`**：專注於 `core.locale` 核心解析引擎、`contributes/_format.json` 之 `locales` Schema 契約、基於 `definition` 的靜態校驗器擴充（`core.validator` / `dev.checker`）與 CLI 檢視/校驗指令實現（**嚴格排除各業務模組實際接入與字串遷移**）。
-    - **後續子計畫（`sub_02+` 待 `sub_01` 驗收後動態開立）**：依序推進 `knowledge-db`（如 CLI 截斷提示 `{tool.read_range}`）、`agents-workflow`（雙層編譯注入與模板/檢核語系解耦）、`dev` 及 `server` 的增量接入與路線圖收斂。
+    - **`sub_01_core_locale_engine`**：專注於 `core.locale` 核心解析引擎、`contributes/_format.json` 之 `locales` Schema 契約、基於 `definition` 的靜態校驗器擴充（`core.validator` / `dev.checker`）與 CLI 檢視/校驗指令實現（**嚴格排除各模組業務接入與字串遷移**）。
+    - **後續子計畫（`sub_02+` 專注於宿主專有名詞接入 + `zh` 母語保底）**：現階段最終 Fallback 統一固定為開發團隊母語 `["zh"]`，暫不處理 `en` 等多語系翻譯（全系統 CLI、模板與文檔之多語系 `en` 支援已收斂至長期路線圖 [i18n_workflow_and_downstream_governance.md](file:///workspace/ys-codebase/plans/roadmap/i18n_workflow_and_downstream_governance.md)），專注於將宿主環境專有名詞（如 `{tool.read_range}` 等跨平台工具/概念代稱）透過 `[nouns-<host>, "zh"]` 優先級鏈接入 `knowledge-db` 與 `agents-workflow`。
 
 ---
 

@@ -8,15 +8,17 @@ and deterministic static contract validation based on 'definition' semantic file
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import difflib
 import json
+import locale as _py_locale
 import logging
 import os
 import re
+import sys
 
 from core.validator import ValidationIssue, ValidationResult
 
 logger = logging.getLogger("core.locale")
 
-DEFAULT_LOCALE_CHAIN: List[str] = ["zh-TW", "zh", "en"]
+DEFAULT_LOCALE_CHAIN: List[str] = ["zh"]
 MAX_INTERPOLATION_DEPTH: int = 5
 
 # Memory cache: abs_file_path -> (mtime, parsed_dict)
@@ -63,6 +65,49 @@ def parse_locale_chain(raw_chain: Optional[Union[str, List[str]]]) -> List[str]:
     return result
 
 
+def detect_system_locale_chain(raw_tag: Optional[str] = None) -> List[str]:
+    """
+    Detect the user's OS primary language and return an explicit fallback chain.
+    Extracts only the primary language code (e.g. 'ja_JP.UTF-8' -> ['ja', 'zh'],
+    'zh_TW.UTF-8' -> ['zh']) and falls back to ['zh'] (team native language) on
+    C/POSIX/unknown environments.
+    """
+    candidates: List[str] = []
+    if raw_tag is not None:
+        candidates.append(raw_tag)
+    else:
+        for env_key in ("LC_ALL", "LC_MESSAGES", "LANG"):
+            val = os.environ.get(env_key, "").strip()
+            if val:
+                candidates.append(val)
+        if not candidates and sys.platform == "win32":
+            try:
+                import ctypes
+                lang_id = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+                win_loc = _py_locale.windows_locale.get(lang_id, "")
+                if win_loc:
+                    candidates.append(win_loc)
+            except Exception:
+                pass
+        if not candidates:
+            try:
+                loc_tuple = _py_locale.getlocale()
+                if loc_tuple and loc_tuple[0]:
+                    candidates.append(str(loc_tuple[0]))
+            except Exception:
+                pass
+
+    for raw in candidates:
+        cleaned = raw.strip().split(".")[0].split("@")[0].strip()
+        if not cleaned or cleaned.upper() in ("C", "POSIX", "UTF-8"):
+            continue
+        primary = re.split(r"[-_]", cleaned)[0].lower()
+        if primary and primary.isalpha() and len(primary) in (2, 3):
+            return ["zh"] if primary == "zh" else [primary, "zh"]
+
+    return ["zh"]
+
+
 def get_active_chain(explicit_chain: Optional[Union[str, List[str]]] = None) -> List[str]:
     """
     Resolve the active explicit priority fallback chain.
@@ -70,7 +115,7 @@ def get_active_chain(explicit_chain: Optional[Union[str, List[str]]] = None) -> 
       1. explicit_chain argument
       2. YSCB_LOCALE environment variable (comma-separated)
       3. config://core 'locale' setting (list[str] or comma-separated str)
-      4. DEFAULT_LOCALE_CHAIN (['zh-TW', 'zh', 'en'])
+      4. DEFAULT_LOCALE_CHAIN (['zh'])
     """
     if explicit_chain is not None:
         parsed = parse_locale_chain(explicit_chain)
