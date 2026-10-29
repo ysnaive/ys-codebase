@@ -63,5 +63,13 @@
     "format": [
       "dict[str, str]"
     ]
+  },
+
+  "locales": {
+    "description": "註冊模組多語系與宿主專有名詞檔案指標清冊（含必填之 definition 語意契約檔與各 <lang-id> 語系檔路徑）",
+    "format": {
+      "definition": "str!",
+      "*": "str!"
+    }
   }
 }

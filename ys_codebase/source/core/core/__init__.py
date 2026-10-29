@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from core import platform
     from core import commands
     from core import telemetry
+    from core import locale
 
 _MODULE_MAP = {
     "uri": ("core.uri", None),
@@ -57,6 +58,7 @@ _MODULE_MAP = {
     "validator": ("core.validator", None),
     "ide_projector": ("core.ide_projector", None),
     "telemetry": ("core.telemetry", None),
+    "locale": ("core.locale", None),
 }
 
 
@@ -105,4 +107,5 @@ __all__ = [
     "validator",
     "ide_projector",
     "telemetry",
+    "locale",
 ]

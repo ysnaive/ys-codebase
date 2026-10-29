@@ -75,6 +75,20 @@ def _scan_contributes_inputs() -> Dict[str, Tuple[float, int]]:
                                     if os.path.isfile(f_p):
                                         st = os.stat(f_p)
                                         files_snapshot[f_p] = (st.st_mtime, st.st_size)
+                                        if fname == "core.json":
+                                            try:
+                                                c_obj = uri.read_json(f_uri)
+                                                locales_decl = c_obj.get("locales") if isinstance(c_obj, dict) else None
+                                                if isinstance(locales_decl, dict):
+                                                    mod_root = uri.resolve(f"module://{donor}", interactive=False)
+                                                    for l_key, rel_p in locales_decl.items():
+                                                        if not l_key.startswith("_") and isinstance(rel_p, str):
+                                                            loc_f = os.path.normpath(os.path.join(mod_root, rel_p))
+                                                            if os.path.isfile(loc_f):
+                                                                lst = os.stat(loc_f)
+                                                                files_snapshot[loc_f] = (lst.st_mtime, lst.st_size)
+                                            except Exception:
+                                                pass
                                 except Exception:
                                     pass
                     except Exception:
@@ -282,6 +296,7 @@ class ContributesAggregator:
         for mod in installed_modules:
             aggregated[mod] = {}
         core_modules_commands: Dict[str, Any] = {}
+        core_modules_locales: Dict[str, Any] = {}
 
         # 3. 階層 ①：依拓撲順序搜集模組層級 contributes/<target>.json
         for donor in ordered_donors:
@@ -319,14 +334,17 @@ class ContributesAggregator:
                                     else:
                                         tagged_body[c_key] = c_val
                                 
-                                # 保留按 donor 隔離之 commands 分桶，徹底防禦跨模組同名指令覆蓋 (P00:DR-01)
+                                # 保留按 donor 隔離之 commands 與 locales 分桶，徹底防禦跨模組同名鍵覆蓋 (P00:DR-01, P02:DR-01)
                                 if target == "core" and "commands" in tagged_body:
-                                    import copy
                                     core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
+                                if target == "core" and "locales" in tagged_body and isinstance(tagged_body["locales"], dict):
+                                    core_modules_locales[donor] = copy.deepcopy(tagged_body["locales"])
 
                                 self._deep_merge(aggregated[target], tagged_body)
                                 if target == "core" and core_modules_commands:
                                     aggregated[target].setdefault("commands", {})["__modules__"] = core_modules_commands
+                                if target == "core" and core_modules_locales:
+                                    aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
                         except Exception as e:
                             logger.warning(f"Failed to read contributes file '{target_file_uri}': {e}")
                 except Exception as e:
@@ -379,7 +397,11 @@ class ContributesAggregator:
                                 for err in val_res.errors:
                                     logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
                             valid_overlay = val_res.payload if val_res.payload is not None else target_overlay
+                            if target == "core" and "locales" in valid_overlay and isinstance(valid_overlay["locales"], dict):
+                                core_modules_locales["project"] = copy.deepcopy(valid_overlay["locales"])
                             self._deep_merge(aggregated[target], valid_overlay)
+                            if target == "core" and core_modules_locales:
+                                aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
                 except Exception as e:
                     logger.warning(f"Failed to read project contribute override '{proj_contrib_uri}': {e}")
 

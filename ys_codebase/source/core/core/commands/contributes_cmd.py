@@ -11,6 +11,7 @@ from core.guard import guard_dispatch
 from core import uri
 from core.validator import ContributesValidator, ValidationResult
 from core import contributes
+from core import locale as core_locale
 
 
 def list_contributes(module_filter: Optional[str] = None) -> int:
@@ -105,6 +106,12 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
             data = data[target_mod]
 
         res = ContributesValidator.validate(target_mod, data, donor_mod=donor_mod, format_schema=target_format, strict_points=True)
+        if target_mod == "core" and isinstance(data, dict) and "locales" in data and isinstance(data["locales"], dict):
+            # Infer module base directory from file path (parent of contributes/ or config/<target>/)
+            inferred_base = parent_dir if fname == "contribute.json" else os.path.dirname(os.path.dirname(p))
+            loc_res = core_locale.validate_module_locales(donor_mod or target_mod, data["locales"], base_dir=inferred_base)
+            res.issues.extend(loc_res.issues)
+            res.is_valid = len([i for i in res.issues if i.severity == "ERROR"]) == 0
         print(res.format_report(file_label=file_uri))
         return 0 if res.is_valid else 1
 
@@ -150,6 +157,14 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
                     continue
 
                 res = ContributesValidator.validate(target_mod, data, donor_mod=donor, format_schema=target_format, strict_points=True)
+                if target_mod == "core" and isinstance(data, dict) and "locales" in data and isinstance(data["locales"], dict):
+                    try:
+                        donor_base = uri.resolve(f"module://{donor}", interactive=False)
+                    except Exception:
+                        donor_base = None
+                    loc_res = core_locale.validate_module_locales(donor, data["locales"], base_dir=donor_base)
+                    res.issues.extend(loc_res.issues)
+                    res.is_valid = len([i for i in res.issues if i.severity == "ERROR"]) == 0
                 checked_files_count += 1
                 if not res.is_valid:
                     print(res.format_report(file_label=f_uri))
@@ -165,6 +180,14 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
                     if isinstance(cfg_data, dict) and donor in cfg_data and isinstance(cfg_data[donor], dict):
                         cfg_data = cfg_data[donor]
                     res = ContributesValidator.validate(donor, cfg_data, donor_mod="project", format_schema=target_format, strict_points=True)
+                    if donor == "core" and isinstance(cfg_data, dict) and "locales" in cfg_data and isinstance(cfg_data["locales"], dict):
+                        try:
+                            cfg_base = uri.resolve(f"config://{donor}", interactive=False)
+                        except Exception:
+                            cfg_base = None
+                        loc_res = core_locale.validate_module_locales("project", cfg_data["locales"], base_dir=cfg_base)
+                        res.issues.extend(loc_res.issues)
+                        res.is_valid = len([i for i in res.issues if i.severity == "ERROR"]) == 0
                     checked_files_count += 1
                     if not res.is_valid:
                         print(res.format_report(file_label=cfg_uri))

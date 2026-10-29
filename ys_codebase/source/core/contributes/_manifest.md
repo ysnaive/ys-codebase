@@ -20,6 +20,7 @@
   - `event`: 生命週期事件清冊檢索。
   - `contributes`: Contributes 擴充宣告與 Schema 剛性檢驗管理。
 - **生命週期事件**：`pre_cli_dispatch`, `post_cli_dispatch`, `on_reload`, `on_installed`, `on_update`, `on_remove`。
+- **語系與專有名詞擴充點 (`locales`)**：供各模組註冊 `"definition"`（語意解釋與佔位符契約檔相對路徑）與各 `"<lang-id>"`（語系或宿主專有名詞 JSON 檔相對路徑）映射。
 
 ### 1.2 `agents-workflow.json`（工作流擴充）
 - 向 `agents-workflow` 註冊組態體檢指南 (`HOW_TO_CONFIG_MODULES`) 與使用速查指南 (`HOW_TO_YSCB_MODULES`)。
