@@ -1,0 +1,4 @@
+{
+  "cli.search.snippet_truncated_hint": "\n... [truncated {omitted} lines; target spans lines {start_line}-{end_line}, use {agent_tool.file_read_range} to view]"
+}
+

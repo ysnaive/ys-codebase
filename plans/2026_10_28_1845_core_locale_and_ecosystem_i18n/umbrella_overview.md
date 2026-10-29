@@ -2,7 +2,7 @@
 
 > 計畫名稱：核心多層次語系與宿主專有名詞引擎架構 (`core_locale_and_ecosystem_i18n`)  
 > 建立日期：2026-10-28  
-> 計畫狀態：In Progress  
+> 計畫狀態：Completed  
 > Umbrella 模式：Incremental (增量演進型)  
 > 模型：Gemini 4 Argon (Low)  
 > 模板版本：v1.2  
@@ -27,6 +27,7 @@
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_core_locale_engine` | Full Track | `Completed` | 實作 `core.locale` 多層 Fallback 與遞迴插值引擎、`contributes/core.json` 之 `locales` (`definition` + `<lang-id>`) 宣告式 Schema、聚合與靜態契約校驗機制（不含各模組業務接入） |
+| **sub_02** | `sub_02_host_nouns_and_dogfooding` | Full Track | `Completed` | 於 `agents-workflow` 建立跨平台宿主環境專有名詞庫（`nouns-antigravity` / `nouns-claude` / `nouns-codex` + `zh` 母語保底），實作編譯期 Target 綁定與執行期呼叫端 IDE/Agent 環境變數自動嗅探前置 `nouns-<host>`，並於 `knowledge-db` 截斷提示完成首輪 Dogfooding 實機驗證 |
 
 ---
 
@@ -34,5 +35,5 @@
 
 - [x] **里程碑 0（主計畫架構調研定調）**：完成 [R01_core_locale_declarative_architecture.md](R01_core_locale_declarative_architecture.md) 專題調研，確立 `core.locale` 內核定位、多層 Fallback 優先級鏈與 `definition` 語意契約設計。
 - [x] **里程碑 1（`sub_01` 核心引擎與靜態校驗閉環）**：完成 `core.locale` 核心引擎、`locales` 擴充點 Schema 與 `definition` 靜態契約校驗實現及單元測試 100% 守門。
-- [ ] **里程碑 2（`sub_02+` 生態系模組增量接入）**：後續動態開立子計畫，逐步將 `knowledge-db`、`agents-workflow`、`dev`、`server` 及 `core` 自身 CLI/提示訊息接入 `core.locale`。
+- [x] **里程碑 2（`sub_02` 宿主專有名詞庫與首輪 Dogfooding 實機驗證）**：完成 `agents-workflow` 之 `agent_tool.*` 宿主專有名詞庫、Stage 2 `` `__%{key}__` `` 投影、執行期多平台並發環境變數自動嗅探與 `knowledge-db` 截斷提示接入。
 

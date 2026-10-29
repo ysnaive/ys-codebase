@@ -1,6 +1,12 @@
 # 專案變更歷史 (Changelog)
 
-## 2026_10_28_1845_core_locale_and_ecosystem_i18n (In Progress)
+## 2026_10_28_1845_core_locale_and_ecosystem_i18n (Completed)
+
+### sub_02_host_nouns_and_dogfooding (Completed)
+- **跨平台宿主環境專有名詞庫 (`agent_tool.*`)、無前綴全域穿透查找、Stage 2 `` `__%{key}__` `` 投影、多平台並發自動嗅探與首輪 Dogfooding 實機驗證 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **無模組前綴之全域穿透查找與執行期多平台並發自動嗅探 (`FR-01`, `FR-02`, `EC-01`, `EC-03`, `[P00:DR-02]`, `[P00:DR-03]`)**：擴充 `core/locale.py` 之 `resolve_raw` 與 `_interpolate_template` 支援無 `<module>:` 前綴之全域穿透查找（Caller Module 自身優先，未命中則自動穿透掃描 `agents-workflow`、`core` 與所有已註冊 `locales` 模組）；實作 `detect_active_host_dialect()` 自動從當前進程環境變數識別呼叫端 AI IDE / CLI（`CLAUDECODE` $\to$ `nouns-claude`、`CODEX_*` $\to$ `nouns-codex`、`ANTIGRAVITY_*` $\to$ `nouns-antigravity`）並前置於自然語系退避鏈 `["zh"]` 前端，支援同一工作區多平台 IDE 並發運行且設定檔保持純淨自然語系。
+  - **`agents-workflow` 宿主專有名詞庫 (`agent_tool.*`) 與 Stage 2 `` `__%{key}__` `` 投影轉譯 (`FR-03`, `FR-04`, `EC-02`, `[P00:DR-01]`, `[P01:DR-01]`)**：於 `ys_codebase/source/agents-workflow/locales/` 建立 `definition.json`、`zh.json`、`nouns-antigravity.json`、`nouns-claude.json`、`nouns-codex.json`（定義 `agent_tool.file_read_range`、`agent_tool.file_read`、`agent_tool.file_edit`、`agent_tool.file_grep_single`、`agent_tool.shell_exec`、`agent_tool.shell_bg_daemon`）並註冊至 `contributes/core.json`；擴充 `ArtifactCompiler.resolve_stage2_uri` 支援依 `target_name` 展開 `` `__%{key}__` `` 專有名詞佔位符，並於 `ReleasePublisher._get_sources_digest()` 納入 `locales/` 指紋。
+  - **`knowledge-db` 截斷提示與技能手冊首輪 Dogfooding 實機驗證 (`FR-05`, `EC-04`)**：於 `knowledge-db` 註冊 `locales/{definition,zh}.json`，將 `scripts/cli.py` 之 `search -s --json` 截斷提示改由 `core.locale.t("cli.search.snippet_truncated_hint")` 動態帶入 `{agent_tool.file_read_range}`，並於 `knowledge-db-search/SKILL.md` 及 `yscb-cli-guide/SKILL.md` 導入 `` `__%{agent_tool.*}__` ``；`core` (206/206)、`agents-workflow` (135/135)、`knowledge-db` (150/150) 測試與 `@build` 熱部署 100% 通過。
 
 ### sub_01_core_locale_engine (Completed)
 - **`core.locale` 多層顯式退避語系引擎、二階遞迴專有名詞插值與宣告式 `"definition"` 靜態契約校驗 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-03`)**：

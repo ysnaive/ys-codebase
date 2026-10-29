@@ -425,6 +425,46 @@ class TestCLI(YSCBTestCase):
                 self.assertEqual(c_data["total_callers"], 1)
                 self.assertEqual(c_data["callers"][0]["caller_symbol"]["name"], "Host.Tick")
 
+        # 8. 驗證 search -s --json 截斷提示透過 core.locale 與 agent_tool.file_read_range 動態替換 (sub_02 FR-05)
+        from knowledge_db.schema import AggregatedFileResult, AggregatedItem
+        long_cs = CodeSnippet(
+            start_line=10,
+            end_line=25,
+            target_line=10,
+            lines=[(i, f"line_{i} = {i}") for i in range(10, 26)],
+        )
+        mock_search_res = [
+            AggregatedFileResult(
+                file_path="src/Panel.cs",
+                total_score=99.0,
+                language="c_sharp",
+                spaces=["source"],
+                items=[AggregatedItem(symbol=mock_target, score=99.0, matched_terms=["UpdateLayout"], code_snippet=long_cs)],
+            )
+        ]
+        old_yscb_loc = os.environ.get("YSCB_LOCALE")
+        try:
+            os.environ["YSCB_LOCALE"] = "nouns-claude,zh"
+            with patch("knowledge_db.engine.KnowledgeEngine.search", return_value=mock_search_res):
+                buf_trunc = io.StringIO()
+                with contextlib.redirect_stdout(buf_trunc):
+                    ret = process(["search", "Panel.UpdateLayout", "-s", "--max-snippet-lines", "5", "--json"])
+            self.assertEqual(ret, 0)
+            trunc_payload = json.loads(buf_trunc.getvalue())
+            all_codes = [
+                itm.get("code", "")
+                for r in trunc_payload.get("results", [])
+                for itm in r.get("items", [])
+                if itm.get("truncated")
+            ]
+            self.assertEqual(len(all_codes), 1)
+            self.assertIn("use Read (offset/limit) to view", all_codes[0])
+        finally:
+            if old_yscb_loc is None:
+                os.environ.pop("YSCB_LOCALE", None)
+            else:
+                os.environ["YSCB_LOCALE"] = old_yscb_loc
+
         self.mark_passed()
 
 

@@ -410,4 +410,62 @@ class TestCoreLocaleEngine(YSCBTestCase):
                 os.remove(cfg_local_path)
         self.mark_passed()
 
+    @require(Requirement.LOGIC | Requirement.ENV)
+    def test_sub02_unqualified_global_lookup_and_host_dialect_sniffing(self):
+        """sub_02 (FR-01, FR-02, EC-01, EC-03): Unqualified global lookup and runtime host dialect env sniffing."""
+        # 1. Verify detect_active_host_dialect across concurrent AI IDE / CLI environments
+        self.assertEqual(locale.detect_active_host_dialect({"CLAUDECODE": "1"}), "nouns-claude")
+        self.assertEqual(locale.detect_active_host_dialect({"CLAUDE_CODE_ENTRYPOINT": "cli"}), "nouns-claude")
+        self.assertEqual(locale.detect_active_host_dialect({"CODEX_SANDBOX": "seatbelt"}), "nouns-codex")
+        self.assertEqual(locale.detect_active_host_dialect({"ANTIGRAVITY_AGENT": "1"}), "nouns-antigravity")
+        self.assertIsNone(locale.detect_active_host_dialect({"PATH": "/usr/bin"}))
+
+        # 2. Verify unqualified lookup resolves agent_tool.* from agents-workflow without prefix
+        self.assertEqual(
+            locale.t("agent_tool.file_read_range", chain=["nouns-antigravity", "zh"]),
+            "read_file (StartLine/EndLine)",
+        )
+        self.assertEqual(
+            locale.t("agent_tool.file_read_range", chain=["nouns-claude", "zh"]),
+            "Read (offset/limit)",
+        )
+        self.assertEqual(
+            locale.t("agent_tool.file_read_range", chain=["nouns-codex", "zh"]),
+            "read_file",
+        )
+        self.assertEqual(
+            locale.t("agent_tool.file_read_range", chain=["zh"]),
+            "原生檔案讀取工具（指定起訖行號區段）",
+        )
+
+        # 3. Verify Caller-First shadowing (EC-01): local module key overrides global key of the same name
+        self._setup_mock_module_locales(
+            self.tmp_dir,
+            definition_data={
+                "agent_tool.file_read_range": {"description": "Local override", "placeholders": []},
+                "local.msg": {
+                    "description": "Msg using global agent_tool.shell_exec",
+                    "placeholders": ["agent_tool.shell_exec"],
+                },
+            },
+            lang_files={
+                "zh": {
+                    "agent_tool.file_read_range": "本地自訂讀取器",
+                    "local.msg": "請透過 {agent_tool.shell_exec} 執行",
+                }
+            },
+        )
+        # Local key shadows global 'agent_tool.file_read_range' when resolved from tmp_dir
+        self.assertEqual(
+            locale.t("agent_tool.file_read_range", base_dir=self.tmp_dir, chain=["nouns-antigravity", "zh"]),
+            "本地自訂讀取器",
+        )
+        # Unqualified '{agent_tool.shell_exec}' inside local.msg falls back to global agents-workflow noun!
+        self.assertEqual(
+            locale.t("local.msg", base_dir=self.tmp_dir, chain=["nouns-claude", "zh"]),
+            "請透過 Bash 執行",
+        )
+        self.mark_passed()
+
+
 

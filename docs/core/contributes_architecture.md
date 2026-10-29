@@ -147,6 +147,7 @@ points = contributes.list_points(module="core")
   - 當欄位名稱或 `enum` 值拼寫錯誤時，驗證器內建 `difflib.get_close_matches` 相似度比對，自動在報錯報告中給出 `Did you mean '<closest>'?` 提示。
 - **`locales` 語意契約深層校驗 (`core.locale.validate_module_locales`)**：
   - 當模組於 `contributes/core.json` 宣告 `"locales": {"definition": "locales/definition.json", "<lang-id>": "locales/<lang-id>.json"}` 時，`contributes check` 與 `dev check` 除驗證 `_format.json` 型別外，自動進一步載入 `definition` 語意解釋檔與所有 `<lang-id>` 檔案，剛性攔截路徑穿越 (`..`)、缺失 `description`、未定義於 `definition` 之孤兒鍵（Orphan Keys）以及 `{placeholder}` 佔位符集合不一致問題。
+  - **版本下限強制守門 (`core >= 1.2.0`)**：由於 `locales` 擴充點與 `core.locale` 引擎自 `core@1.2.0.0` 起引入，任何外部模組（例如未來 `server` 或其他擴充模組）一旦於 `contributes/core.json` 新增 `"locales"` 宣告，**必須同步將該模組 `manifest.json` 中的 `"dependencies": {"core": ">=1.2.0"}` 版本下限一併調升**；`dev check` 內建版本下限守門，若仍停留於 `>=1.1.0` 將直接觸發 `[FAIL]` 阻斷發布。
 
 ---
 

@@ -259,6 +259,13 @@ class ReleasePublisher:
                 hasher.update(str(src).encode("utf-8"))
                 hasher.update(sha1_val.encode("utf-8"))
 
+        # 4. 模組自身 locales/*.json 專有名詞字典特徵
+        locales_dir = os.path.join(self.compiler.module_root, "locales")
+        if os.path.isdir(locales_dir):
+            sha1_loc = self._get_source_file_sha1(locales_dir)
+            hasher.update(b"locales:")
+            hasher.update(sha1_loc.encode("utf-8"))
+
         self._sources_digest_cache = hasher.digest()
         return self._sources_digest_cache
 
@@ -681,7 +688,7 @@ class ReleasePublisher:
                 if "AgentsStandards" in t_item["base_name"]:
                     agents_standards_content = stage1_text
 
-                stage2_text = self.compiler.resolve_stage2_uri(stage1_text, dst_abs, dep_map)
+                stage2_text = self.compiler.resolve_stage2_uri(stage1_text, dst_abs, dep_map, target_name=t_name)
                 header_text = self.render_header(exp_item, t_item["header_tpl"], t_name)
                 final_text = header_text + stage2_text
 
@@ -703,7 +710,7 @@ class ReleasePublisher:
                 if agents_standards_content:
                     target_agents_abs = self._resolve_project_uri(str(agents_md_uri).strip(), proj_root)
                     rendered_agents_content = self.compiler.resolve_stage2_uri(
-                        agents_standards_content, target_agents_abs, dep_map
+                        agents_standards_content, target_agents_abs, dep_map, target_name=t_name
                     )
                     existing_agents_text = ""
                     if os.path.isfile(target_agents_abs):

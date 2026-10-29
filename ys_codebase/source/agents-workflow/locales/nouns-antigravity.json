@@ -1,0 +1,9 @@
+{
+  "agent_tool.file_read_range": "read_file (StartLine/EndLine)",
+  "agent_tool.file_read": "read_file",
+  "agent_tool.file_edit": "edit_file / write_file",
+  "agent_tool.file_grep_single": "grep_search (Single File)",
+  "agent_tool.shell_exec": "run_command",
+  "agent_tool.shell_bg_daemon": "run_command (IsDaemon: true)"
+}
+

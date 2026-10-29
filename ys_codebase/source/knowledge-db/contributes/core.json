@@ -507,5 +507,9 @@
         }
       }
     }
+  },
+  "locales": {
+    "definition": "locales/definition.json",
+    "zh": "locales/zh.json"
   }
 }

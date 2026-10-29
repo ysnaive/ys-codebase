@@ -3,7 +3,7 @@
 > 功能名稱：2026_10_28_1845_core_locale_and_ecosystem_i18n  
 > 建立日期：2026-10-28  
 > 所屬主計畫：N/A (Root Plan)  
-> 狀態：In Progress  
+> 狀態：Completed  
 > 模型：Gemini 4 Argon (Low)  
 
 > 模板版本：v1.1  
@@ -14,6 +14,9 @@
 
 | 日期時間 | 類型 | 模型 | 摘要 |
 | :--- | :---: | :--- | :--- |
+| 2026-10-29 04:38 | `PHASE` | Gemini 4 Argon (Low) | 完成 core@1.2.0.0、dev@1.1.2.0、agents-workflow@1.2.1.0、knowledge-db@1.1.2.0 正式版釋出與主計畫結案 |
+| 2026-10-29 04:28 | `PHASE` | Gemini 4 Argon (Low) | sub_02_host_nouns_and_dogfooding 完成 P07 結案，里程碑 2 達成 |
+| 2026-10-29 03:53 | `PHASE` | Gemini 4 Argon (Low) | 開立 sub_02_host_nouns_and_dogfooding 子計畫（P00 確認） |
 | 2026-10-29 03:39 | `DECISION` | Gemini 4 Argon (Low) | 收斂主計畫範疇：最終 fallback 固定為母語 ['zh'] 並聚焦專有名詞接入，多語系支援收斂至 Roadmap i18n_workflow_and_downstream_governance.md |
 | 2026-10-29 03:26 | `REVISION` | Gemini 4 Argon (Low) | sub_01_core_locale_engine 追加 [REV-01] 預設語系與系統主語系播種修訂 |
 | 2026-10-29 03:09 | `PHASE` | Gemini 4 Argon (Low) | sub_01_core_locale_engine 完成 P07 結案，里程碑 1 達成 |

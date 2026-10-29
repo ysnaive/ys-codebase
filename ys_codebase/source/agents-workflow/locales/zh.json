@@ -1,0 +1,9 @@
+{
+  "agent_tool.file_read_range": "原生檔案讀取工具（指定起訖行號區段）",
+  "agent_tool.file_read": "原生檔案讀取工具",
+  "agent_tool.file_edit": "原生檔案編輯寫入工具",
+  "agent_tool.file_grep_single": "原生單檔文字搜尋工具",
+  "agent_tool.shell_exec": "終端命令列執行工具",
+  "agent_tool.shell_bg_daemon": "終端背景常駐模式"
+}
+

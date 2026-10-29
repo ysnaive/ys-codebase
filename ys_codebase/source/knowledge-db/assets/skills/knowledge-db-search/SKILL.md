@@ -13,12 +13,12 @@ description: 透過 knowledge-db CLI (search / callers / callees / impact) 檢�
 
 | 行為目標 | 唯一指定指令 (Agent 建議 `--json`) | 授權邊界與守門規範 |
 | :--- | :--- | :--- |
-| **Stage 1：探索定位 / 查簽名 / 查大類別** | `python __${project://yscb.py}__ knowledge-db search <query> --limit=10 --json` | • **預設第一反射（無 `-s` 輕量大綱模式）**：毫秒級取得精確 `file_path`、`line_number`~`end_line` 與 `signature`（單次輸出 `< 2 KB`，杜絕大類別 JSON 切片溢位）。<br/>• **Stage 2 定點精讀**：取得 `(file_path, line_number, end_line)` 後，直接以各環境之**原生檔案讀取工具（指定起訖行號區段，單次建議 $\le 150$ 行）**讀取乾淨程式碼。 |
+| **Stage 1：探索定位 / 查簽名 / 查大類別** | `python __${project://yscb.py}__ knowledge-db search <query> --limit=10 --json` | • **預設第一反射（無 `-s` 輕量大綱模式）**：毫秒級取得精確 `file_path`、`line_number`~`end_line` 與 `signature`（單次輸出 `< 2 KB`，杜絕大類別 JSON 切片溢位）。<br/>• **Stage 2 定點精讀**：取得 `(file_path, line_number, end_line)` 後，直接以各環境之 `__%{agent_tool.file_read_range}__`（單次建議 $\le 150$ 行）讀取乾淨程式碼。 |
 | **讀取單一小型函式 / Markdown 段落切片** | `python __${project://yscb.py}__ knowledge-db search <query> --limit=5 --json -s` | • 僅於確定目標為單一小型方法（`< 40` 行）或 `--ftype=md` 文檔段落時加帶 `-s`（CLI 內建預設 `--max-snippet-lines=40` 自動截斷保護）。<br/>• [!] 嚴禁對大型類別或未知廣域關鍵字盲目連發 `-s`。 |
 | **排查誰調用了我 (上游)** | `python __${project://yscb.py}__ knowledge-db callers <symbol> --json [-s]` | 輸出目標符號與所有跨空間調用點行號（加 `-s` 可附帶上下 5 行調用點切片）；修改公開 API 簽名前強制執行。 |
 | **排查我調用了誰 (下游)** | `python __${project://yscb.py}__ knowledge-db callees <symbol> --json [-s]` | 輸出子組件依賴清單與調用點行號。 |
 | **重構影響半徑評估 (多階拓撲)** | `python __${project://yscb.py}__ knowledge-db impact <symbol> --depth=N --json` | 輸出多階層擴散拓撲 (Layers 1~N)。 |
-| **代碼精確替換 / 單檔定位行號** | 各環境之原生文字搜尋工具 (如 Grep/Search 系列) | [!] **僅限 SearchPath 為單一具體檔案路徑** (Single File Path) 且已知替換目標時使用；**絕對禁止以目錄或全專案為 SearchPath 進行跨檔廣搜**！ |
+| **代碼精確替換 / 單檔定位行號** | 各環境之 `__%{agent_tool.file_grep_single}__` | [!] **僅限 SearchPath 為單一具體檔案路徑** (Single File Path) 且已知替換目標時使用；**絕對禁止以目錄或全專案為 SearchPath 進行跨檔廣搜**！ |
 
 ### [!] 常見探索意圖與反模式對照 (Anti-Patterns vs Correct Patterns)
 

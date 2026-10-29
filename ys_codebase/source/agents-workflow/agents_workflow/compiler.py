@@ -35,11 +35,12 @@ except ImportError:
 FENCED_CODE_BLOCK_REGEX = re.compile(r"```[\s\S]*?```")
 LITERAL_FENCED_BLOCK_REGEX = re.compile(r"(```[^\r\n]*\r?\n)<!--\s*yscb:literal\s*-->[ \t]*\r?\n([\s\S]*?```)")
 CODE_SPAN_REGEX = re.compile(r"(`[^`\r\n]+`)")
-UNENCLOSED_TAG_REGEX = re.compile(r"__(?:[@#]\{\s*[^}]+\s*\}|\$(?:\([^)]*\))?\{\s*[^}]+\s*\})__")
+UNENCLOSED_TAG_REGEX = re.compile(r"__(?:[@#%]\s*\{\s*[^}]+\s*\}|\$(?:\([^)]*\))?\{\s*[^}]+\s*\})__")
 
 TOKEN_ANCHOR_INNER_REGEX = re.compile(r"__@\{\s*([A-Za-z0-9_]+)\s*\}__")
 LOCAL_URI_INNER_REGEX = re.compile(r"__#\{\s*([^}]+)\s*\}__")
 PROJECT_URI_INNER_REGEX = re.compile(r"__\$(?:\(\s*([^)]*?)\s*\))?\{\s*([^}]+)\s*\}__")
+LOCALE_NOUN_INNER_REGEX = re.compile(r"__%\{\s*([A-Za-z0-9_.:-]+)\s*\}__")
 
 LOCAL_URI_EXACT_REGEX = re.compile(r"^__#\{\s*([^}]+)\s*\}__$")
 PROJECT_URI_EXACT_REGEX = re.compile(r"^__\$(?:\(\s*([^)]*?)\s*\))?\{\s*([^}]+)\s*\}__$")
@@ -542,12 +543,15 @@ class ArtifactCompiler:
         self,
         content: str,
         current_dst_path: str,
-        deployment_map: Dict[str, str]
+        deployment_map: Dict[str, str],
+        target_name: Optional[str] = None,
     ) -> str:
         """
-        Stage 2: 依三層重映射階層動態轉譯 `__#{uri}__` (自身相對路徑) 與 `__${uri}__` / `__$(anchor){uri}__` (錨點/專案相對路徑)。
+        Stage 2: 依三層重映射階層動態轉譯 `__#{uri}__` (自身相對路徑)、`__${uri}__` / `__$(anchor){uri}__` (錨點/專案相對路徑)
+        與 `__%{key}__` (依 target_name 綁定之宿主專有名詞)。
         - `__#{uri}__`: 相對於 current_dst_path 所在目錄 (cur_dir)，適用於 Markdown 內部超連結。
         - `__${uri}__` / `__$(anchor){uri}__`: 相對於起始錨點 (預設為 project_root，或由 anchor 指定)，適用於 Shell 命令列與專案/跨組件路徑參照。
+        - `__%{key}__`: 透過 core.locale.t(key, chain=[f'nouns-{target_name}', ...]) 展開為目標宿主平台專有名詞。
         """
         if not content:
             return ""
@@ -707,11 +711,29 @@ class ArtifactCompiler:
 
             return tag_uri
 
+        def _resolve_locale_noun(noun_key: str) -> str:
+            try:
+                from core import locale as core_locale
+                base_chain = core_locale.get_active_chain()
+                if target_name and target_name.strip():
+                    t_dialect = f"nouns-{target_name.strip()}"
+                    target_chain = [t_dialect] + [c for c in base_chain if not c.startswith("nouns-")]
+                else:
+                    target_chain = base_chain
+                hit = core_locale.resolve_raw(noun_key, module="agents-workflow", chain=target_chain)
+                if hit is not None:
+                    return core_locale.t(noun_key, module="agents-workflow", chain=target_chain)
+            except Exception:
+                pass
+            print(f"[compiler:warning] Unresolved locale noun tag: '{noun_key}' in '{os.path.basename(current_dst_path)}'", file=sys.stderr)
+            return f"__%{{{noun_key}}}__"
+
         def _replace_in_fenced_block(match: re.Match) -> str:
             block_text = match.group(0)
             has_local = "__#{" in block_text
             has_proj = "__${" in block_text or "__$(" in block_text
-            if not has_local and not has_proj:
+            has_noun = "__%{" in block_text
+            if not has_local and not has_proj and not has_noun:
                 return block_text
             if has_local:
                 block_text = LOCAL_URI_INNER_REGEX.sub(lambda m: _resolve_local_uri(m.group(1).strip()), block_text)
@@ -720,6 +742,8 @@ class ArtifactCompiler:
                     lambda m: _resolve_project_uri(m.group(2).strip(), anchor=m.group(1).strip() if m.group(1) else None),
                     block_text
                 )
+            if has_noun:
+                block_text = LOCALE_NOUN_INNER_REGEX.sub(lambda m: _resolve_locale_noun(m.group(1).strip()), block_text)
             block_text = re.sub(r"(?<![a-zA-Z0-9_\+\-]:)/{2,}", "/", block_text)
             return block_text
 
@@ -728,10 +752,11 @@ class ArtifactCompiler:
             inner = span_text[1:-1]
             has_local = "__#{" in inner
             has_proj = "__${" in inner or "__$(" in inner
-            if not has_local and not has_proj:
+            has_noun = "__%{" in inner
+            if not has_local and not has_proj and not has_noun:
                 return span_text
 
-            # 1. 判定是否為純 Standalone 佔位符（非穿插類型）：完全替代並剝除外層反引號
+            # 1. 判定是否為純 Standalone URI 佔位符（非穿插類型）：完全替代並剝除外層反引號
             m_local_exact = LOCAL_URI_EXACT_REGEX.fullmatch(inner.strip())
             if m_local_exact:
                 return _resolve_local_uri(m_local_exact.group(1).strip())
@@ -741,7 +766,7 @@ class ArtifactCompiler:
                 anchor = m_proj_exact.group(1).strip() if m_proj_exact.group(1) else None
                 return _resolve_project_uri(m_proj_exact.group(2).strip(), anchor=anchor)
 
-            # 2. 穿插類型（如命令列或複合代碼區塊）：替換內部佔位符並保留外層反引號
+            # 2. 穿插類型或專有名詞 `__%{key}__`（[P01:DR-01] 保留外層反引號作為 Inline Code）
             if has_local:
                 inner = LOCAL_URI_INNER_REGEX.sub(lambda m: _resolve_local_uri(m.group(1).strip()), inner)
             if has_proj:
@@ -749,6 +774,8 @@ class ArtifactCompiler:
                     lambda m: _resolve_project_uri(m.group(2).strip(), anchor=m.group(1).strip() if m.group(1) else None),
                     inner
                 )
+            if has_noun:
+                inner = LOCALE_NOUN_INNER_REGEX.sub(lambda m: _resolve_locale_noun(m.group(1).strip()), inner)
             inner = re.sub(r"(?<![a-zA-Z0-9_\+\-]:)/{2,}", "/", inner)
 
             return f"`{inner}`"

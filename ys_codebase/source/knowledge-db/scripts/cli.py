@@ -298,10 +298,22 @@ def search(cmd_bags: Any) -> int:
                 s_ln = kept[0][0]
                 e_ln = kept[-1][0]
                 full_end = getattr(cs, "end_line", raw_lines[-1][0])
-                code_str = "\n".join(txt for _, txt in kept) + (
-                    f"\n... [truncated {len(raw_lines) - max_snippet_lines} lines; "
-                    f"target spans lines {cs.start_line}-{full_end}, use native file reader with line range to view]"
-                )
+                omitted_count = len(raw_lines) - max_snippet_lines
+                try:
+                    from core import locale as core_locale
+                    trunc_suffix = core_locale.t(
+                        "cli.search.snippet_truncated_hint",
+                        module="knowledge-db",
+                        omitted=omitted_count,
+                        start_line=cs.start_line,
+                        end_line=full_end,
+                    )
+                except Exception:
+                    trunc_suffix = (
+                        f"\n... [truncated {omitted_count} lines; "
+                        f"target spans lines {cs.start_line}-{full_end}, use native file reader with line range to view]"
+                    )
+                code_str = "\n".join(txt for _, txt in kept) + trunc_suffix
                 return {
                     "code": code_str,
                     "code_lines": [s_ln, e_ln],
