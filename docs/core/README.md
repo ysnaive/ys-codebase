@@ -8,6 +8,7 @@ source_paths:
   - "yscb://source/core/core/engine.py"
   - "yscb://source/core/core/installer.py"
   - "yscb://source/core/core/contributes.py"
+  - "yscb://source/core/core/locale.py"
   - "yscb://source/core/core/commands/"
 related_docs:
   - "./contributes_architecture.md"
@@ -132,6 +133,12 @@ with uri.module_scope("core"):
 
 ### 3.5 CLI 派發飛行紀錄器 (`core.telemetry`)
 微內核於 [`core/commands/dispatcher.py:dispatch`](../../ys_codebase/source/core/core/commands/dispatcher.py) 外層內建零耦合飛行紀錄器（[`core/telemetry.py`](../../ys_codebase/source/core/core/telemetry.py)），將每次 CLI 調用的執行結果（`ts`、`epoch`、`module`、`cmd`、`args`、`exit_code`、`duration_ms`、`mode`、`cwd`、`error_hint`）追加記錄於 **`cache://core/telemetry.jsonl`**（單檔超過 `512 KB` 自動滾動保留最新 `1,500` 筆紀錄；沙盒測試、`--help` 查詢與 `session-trace` 自身呼叫預設略過），供上層工作流或診斷工具進行時序與錯誤溯源。
+
+### 3.6 多層次語系與宿主專有名詞引擎 (`core.locale`)
+微內核於 [`core/locale.py`](../../ys_codebase/source/core/core/locale.py) 提供零第三方依賴的多語系與宿主專有名詞（Proper Nouns）解析引擎：
+- **宣告式檔案指標與語意契約 (`locales`)**：各模組於 `contributes/core.json` 宣告 `"locales": {"definition": "locales/definition.json", "<lang-id>": "locales/<lang-id>.json"}`，由 `ContributesAggregator` 按模組分桶保存於 `locales["__modules__"][<donor>]`。
+- **100% 顯式優先級退避鏈 (`get_active_chain`)**：嚴格依顯式設定之 `lang-id` 列表順序逐層查找（如 `["nouns-antigravity", "zh-TW", "zh", "en"]`），不做隱式 `-` 連字號父語系切分猜測。
+- **二階遞迴專有名詞插值 (`locale.t`)**：模板內之 `{placeholder}` 優先由呼叫端 `kwargs` 替換；若未傳入則自動視為專有名詞鍵沿同一優先級鏈遞迴解析（最大深度 `5`），並支援 `{{` / `}}` 雙花括號轉義保護與 `validate_module_locales` 確定性靜態契約校驗。
 
 ---
 

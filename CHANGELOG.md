@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_28_1845_core_locale_and_ecosystem_i18n (In Progress)
+
+### sub_01_core_locale_engine (Completed)
+- **`core.locale` 多層顯式退避語系引擎、二階遞迴專有名詞插值與宣告式 `"definition"` 靜態契約校驗 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-03`)**：
+  - **宣告式 `"locales"` 擴充點 Schema 與 `locales.__modules__` 分桶聚合 (`FR-01`, `FR-02`, `[P00:DR-02]`, `[P02:DR-01]`)**：於 `ys_codebase/source/core/contributes/_format.json` 與 `_manifest.md` 新增頂層擴充點 `"locales"`（規定必填語意解釋檔 `"definition": "str!"` 與動態語系/方言檔路徑 `"*": "str!"`）；於 `ContributesAggregator.scan_and_inject` 將各模組注入之 `locales` 按 Donor 獨立保存於 `locales["__modules__"][<donor>]`，並於 `_scan_contributes_inputs` 將語系 JSON 檔案納入 `(mtime, size)` 快照追蹤以支援 JIT 熱自癒。
+  - **`core.locale` 顯式優先級退避鏈與二階遞迴專有名詞插值 (`FR-03`, `FR-04`, `EC-02`, `EC-03`, `NFR-01`, `NFR-02`, `[P01:DR-02]`, `[P03:DR-01]`)**：新建 `ys_codebase/source/core/core/locale.py` 並於 `core/__init__.py` 註冊 PEP 562 延遲導出；實作 100% 顯式優先級退避鏈（不做隱式 `-` 連字號父語系切分猜測，支援 `YSCB_LOCALE` 與 `config://core` 之 `locale` 設定）與 `(file_path, mtime)` 記憶體快取（熱路徑單次解析 $< 0.5\text{ms}$）；實作 `locale.t()` 二階遞迴插值（優先替換 `kwargs`，未傳入之佔位符自動沿同一優先級退避鏈查找模組或 `core` 公共專有名詞，內建深度上限 `5` 防循環保護與 `{{` / `}}` 雙花括號轉義保護）。
+  - **基於 `"definition"` 的確定性靜態契約校驗 (`FR-05`, `EC-01`, `EC-04`, `EC-05`, `[P04:DR-01]`)**：實作 `locale.validate_module_locales` 並串聯至 `core/commands/contributes_cmd.py` (`contributes check`) 與 `dev/checker.py` (`dev check`，同時開放 `core` 自身 Schema 檢驗），剛性攔截 `..` 路徑越界、缺失檔案、缺失非空 `description`、`<lang-id>` 孤兒鍵（含 `difflib` 拼寫建議）及 `{placeholder}` 佔位符集合不一致；新增 `core/tests/test_locale.py` 與 `dev/tests/test_checker.py` 測試案例，`core` (204/204) 與 `dev` (80/80) 測試 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_10_28_1351_session_audit_and_trace_telemetry (Completed)
 
 - **Session 隱形摩擦自檢技能 (`/session-audit`)、三級軌跡提取引擎 (`session-trace`)、Core 飛行紀錄器與沙盒/原子替換防洩漏加固 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：

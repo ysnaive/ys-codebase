@@ -317,10 +317,8 @@ class Checker:
                 )
 
     def _check_core_injection(self, name: str, real_dir: str, report: CheckReport) -> None:
-        if name == "core":
-            return
         core_contribute_path = os.path.join(real_dir, "contributes", "core.json")
-        if not os.path.exists(core_contribute_path):
+        if name != "core" and not os.path.exists(core_contribute_path):
             report.issues.append(
                 CheckIssue(
                     severity=CheckSeverity.WARN,
@@ -411,6 +409,21 @@ class Checker:
                 continue
 
             val_res = ContributesValidator.validate(target, c_data, donor_mod=name, format_schema=target_fmt, strict_points=True)
+            if target == "core" and isinstance(c_data, dict) and "locales" in c_data and isinstance(c_data["locales"], dict):
+                try:
+                    from core import locale as core_locale
+                    loc_res = core_locale.validate_module_locales(name, c_data["locales"], base_dir=real_dir)
+                    val_res.issues.extend(loc_res.issues)
+                    val_res.is_valid = len([i for i in val_res.issues if i.severity == "ERROR"]) == 0
+                except Exception as e:
+                    report.issues.append(
+                        CheckIssue(
+                            severity=CheckSeverity.FAIL,
+                            category="CONTRIBUTES",
+                            message=f"Locale validation error in 'contributes/{fname}': {e}",
+                            file_path=f"contributes/{fname}",
+                        )
+                    )
             for err in val_res.errors:
                 hint = f" ({err.suggestion})" if err.suggestion else ""
                 report.issues.append(

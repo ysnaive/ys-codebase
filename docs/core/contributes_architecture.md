@@ -5,6 +5,7 @@ status: "active"
 source_paths:
   - "yscb://source/core/core/contributes.py"
   - "yscb://source/core/core/validator.py"
+  - "yscb://source/core/core/locale.py"
   - "yscb://source/core/core/commands/contributes_cmd.py"
   - "yscb://source/core/contributes/_format.json"
   - "yscb://source/core/contributes/_manifest.md"
@@ -13,7 +14,7 @@ related_docs:
   - "./DESIGN_NOTES.md"
   - "./cli_commands_architecture.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-29"
 ---
 
 # Contributes 依賴注入、拓撲聚合與宣告式 Schema 驗證手冊 (Contributes & Schema Validation Architecture)
@@ -66,11 +67,11 @@ graph TD
 - **顯式保留原則**：若資料節點已顯式宣告 `"__provider__"`，聚合器予以保留絕不覆蓋。
 - **用途**：使下游模組與核心調度器（如 `core.uri` 診斷報告、工作流編譯器）能精確追溯每一筆擴充項目或未定義協議的來源模組。
 
-### 1.3 `__modules__` 來源模組分桶隔離（防同名指令覆蓋）
-當多個模組同時向 `core` 注入 `commands` 時，許多模組可能定義同名子指令（例如 `core status`、`dev status`、`server status`）：
-- 若僅使用頂層字典深層合併（`_deep_merge`），後載入模組的同名指令定義會覆蓋前序模組。
-- **雙層分桶設計**：聚合器在合併 `target == "core"` 的 `commands` 時，除了維持頂層平鋪結構以相容傳統查詢外，同步於 `commands["__modules__"][donor]` 建立按來源模組隔離的獨立命名空間分桶。
-- 全域 Help 渲染器與 CLI Guide 生成器優先遍歷 `commands["__modules__"]`，確保各模組同名指令的 Schema、選項與描述 100% 獨立無損。
+### 1.3 `__modules__` 來源模組分桶隔離（防同名指令與語系指標覆蓋）
+當多個模組同時向 `core` 注入 `commands` 或 `locales` 時，各模組擁有獨立的指令定義與 `"definition"` / `"<lang-id>"` 語系檔案路徑：
+- 若僅使用頂層字典深層合併（`_deep_merge`），後載入模組的同名指令定義或 `locales.definition` 路徑會覆蓋前序模組。
+- **雙層分桶設計**：聚合器在合併 `target == "core"` 的 `commands` 與 `locales` 時，除了維持頂層平鋪結構外，同步於 `commands["__modules__"][donor]` 與 `locales["__modules__"][donor]` 建立按來源模組隔離的獨立命名空間分桶（並將 `locales` 指向之實體 JSON 檔案納入 `_scan_contributes_inputs` 的 `(mtime, size)` 快照追蹤）。
+- 全域 Help 渲染器、CLI Guide 生成器與 `core.locale` 引擎優先讀取 `__modules__` 分桶，確保各模組同名指令與語系契約 100% 獨立無損。
 
 ### 1.4 標準查詢 SDK 與 JIT 變更嗅探 (`core.contributes`)
 ```python
@@ -144,6 +145,8 @@ points = contributes.list_points(module="core")
   - `ContributesAggregator` 在運行期動態合併時，若遇校驗失敗，會透過 Logger 輸出結構化 Warning 與修正建議，但安全保留 payload 避免單一外掛拼寫瑕疵導致整體 CLI 癱瘓。
 - **智能拼寫診斷 (`Did you mean`)**：
   - 當欄位名稱或 `enum` 值拼寫錯誤時，驗證器內建 `difflib.get_close_matches` 相似度比對，自動在報錯報告中給出 `Did you mean '<closest>'?` 提示。
+- **`locales` 語意契約深層校驗 (`core.locale.validate_module_locales`)**：
+  - 當模組於 `contributes/core.json` 宣告 `"locales": {"definition": "locales/definition.json", "<lang-id>": "locales/<lang-id>.json"}` 時，`contributes check` 與 `dev check` 除驗證 `_format.json` 型別外，自動進一步載入 `definition` 語意解釋檔與所有 `<lang-id>` 檔案，剛性攔截路徑穿越 (`..`)、缺失 `description`、未定義於 `definition` 之孤兒鍵（Orphan Keys）以及 `{placeholder}` 佔位符集合不一致問題。
 
 ---
 

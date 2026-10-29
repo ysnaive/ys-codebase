@@ -674,4 +674,65 @@ class TestDevChecker(YSCBTestCase):
             if os.path.exists(target_dir):
                 shutil.rmtree(target_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
+    def test_checker_locales_contract_validation(self):
+        """FR-05, EC-04: dev check validates 'locales' definition contract, orphan keys, and placeholder integrity."""
+        import json
+        src_root = uri.resolve("module.source://")
+        mod_dir = os.path.join(src_root, "mock_locale_check_mod")
+        try:
+            os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
+            os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(mod_dir, "locales"), exist_ok=True)
+
+            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_locale_check_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
+            with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def process(args):\n    return 0\n')
+            with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
+                f.write('# Locale Test Manifest\n')
+
+            with open(os.path.join(mod_dir, "locales", "definition.json"), "w", encoding="utf-8") as f:
+                json.dump({
+                    "cli.msg": {
+                        "description": "CLI message with count",
+                        "placeholders": ["count"]
+                    }
+                }, f)
+
+            # 1. Invalid locale file: orphan key + missing placeholder
+            with open(os.path.join(mod_dir, "locales", "zh-TW.json"), "w", encoding="utf-8") as f:
+                json.dump({
+                    "cli.msg": "沒有佔位符的字串",
+                    "cli.orphan": "孤兒鍵"
+                }, f)
+
+            with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
+                json.dump({
+                    "locales": {
+                        "definition": "locales/definition.json",
+                        "zh-TW": "locales/zh-TW.json"
+                    }
+                }, f)
+
+            rep_fail = self.checker.check_module("mock_locale_check_mod")
+            self.assertFalse(rep_fail.passed)
+            err_str = "\n".join(rep_fail.errors)
+            self.assertIn("Placeholder contract mismatch for 'cli.msg'", err_str)
+            self.assertIn("Orphan locale key 'cli.orphan'", err_str)
+
+            # 2. Fix locale file -> passes!
+            with open(os.path.join(mod_dir, "locales", "zh-TW.json"), "w", encoding="utf-8") as f:
+                json.dump({
+                    "cli.msg": "共 {count} 筆結果"
+                }, f)
+
+            rep_ok = self.checker.check_module("mock_locale_check_mod")
+            self.assertTrue(rep_ok.passed, f"Expected pass, got errors: {rep_ok.errors}")
+            self.mark_passed()
+        finally:
+            if os.path.exists(mod_dir):
+                shutil.rmtree(mod_dir, ignore_errors=True)
+
+
 
