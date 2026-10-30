@@ -332,8 +332,8 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 
 ### 7.4 專案特化技能建置與 Layer 2 宣告式擴充工作流 (`/skill-creator`)
 當專案已完成基礎組態對齊，欲進一步新增**專案特化技能**或**階段防呆規則**時，透過 `/skill-creator`（搭配單層參考手冊 `references/extension-guide.md`）執行四步建置與驗證閉環：
-1. **步驟 1（三軌擴充智能分流 `3-Track Extension Triage`）**：依需求規模自動分流為 **軌跡 ①（純錨點注入 `Anchor-Only Injection`）**（於 `config://agents-workflow/snippets/<name>.md` 撰寫局部片段並注入 22 個既有 Stage 1 錨點之一，0 路由表膨脹）、**軌跡 ②（被動環境攔截型 Skill `Ambient Skill`）**（建立 `config://agents-workflow/skills/<name>/SKILL.md` 並注入 `AGENTS_SKILL_ROUTING` 表格列）或 **軌跡 ③（功能特化型 Skill `Feature Skill`）**（建立多步驟專項工作流技能）。
-2. **步驟 2（錨點與 URI 探索及「擴充藍圖確認卡」守門）**：自動執行 `agents-workflow tokens` 與 `uri list` 並查閱 `extension-guide.md` 之 22 個 Stage 1 錨點地圖，向開發者呈遞「🛠️ /SkillCreator 專案擴充藍圖確認卡」並 End Turn 等待拍板。
+1. **步驟 1（三軌擴充智能分流 `3-Track Extension Triage`）**：依需求規模自動分流為 **軌跡 ①（純錨點注入 `Anchor-Only Injection`）**（於 `config://agents-workflow/snippets/<name>.md` 撰寫局部片段並注入 24 個既有 Stage 1 錨點之一，0 路由表膨脹）、**軌跡 ②（被動環境攔截型 Skill `Ambient Skill`）**（建立 `config://agents-workflow/skills/<name>/SKILL.md` 並注入 `AGENTS_SKILL_ROUTING` 表格列）或 **軌跡 ③（功能特化型 Skill `Feature Skill`）**（建立多步驟專項工作流技能）。
+2. **步驟 2（錨點與 URI 探索及「擴充藍圖確認卡」守門）**：自動執行 `agents-workflow tokens` 與 `uri list` 並查閱 `extension-guide.md` 之 24 個 Stage 1 錨點地圖，向開發者呈遞「🛠️ /SkillCreator 專案擴充藍圖確認卡」並 End Turn 等待拍板。
 3. **步驟 3（合規第一層資產生成與雙軌路徑封裝）**：於第一層扁平路徑（`config/agents-workflow/skills/<name>/SKILL.md` 或 `snippets/<name>.md`）生成資產；指向同技能內部 `references/` 使用標準相對路徑 `./references/...`，指向跨技能或專案目錄強制使用單反引號包覆之 Stage 2 語意 URI。
 4. **步驟 4（三步嚴格編譯驗證守門）**：最小增量更新 `config/agents-workflow/contribute.json`，強制依序通過 `contributes check`（0 Error）$\to$ `agents-workflow compile`（0 Error / 0 Warning）$\to$ `agents-workflow release` 物化同步至目標平台。
 
@@ -344,6 +344,13 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
    - **Tier 2（`cache://core/telemetry.jsonl` 原生飛行紀錄與 `mtime` 消歧）**：依對話時間窗切片 `core` 記錄之 CLI 軌跡（統計呼叫次數、失敗率、熱派發/本地模式分佈與耗時），並比對目標計畫（支援活躍計畫與最近 30 分鐘內剛歸檔之計畫）各階段檔案 `mtime` 與 `changelog.md`，區分合規回寫（`VALIDATED_BACKPROP`）與未申報暗中偷改（`SILENT_BACKPATCH`）。
    - **Tier 3（上下文逆向審訊保底）**：無外部日誌時輸出結構化逆向審訊檢核表。
 2. **五大硬性摩擦訊號與四象限根因分類**：機械式提取 `MULTI_EDIT_CHURN`、`TOOL_MISS_AND_RETRY`、`SILENT_BACKPATCH`、`GATE_BOUNCE`、`CONTEXT_WASTE` 五大訊號，嚴格歸入 **Type A（提示詞/SOP 歧義）**、**Type B（ACI 工具/檢索斷層）**、**Type C（任務本質探索）** 與 **Type D（模型注意力滑脫）**，全程遵守 100% 唯讀安全隔離。
+
+### 7.6 業務代碼五維度診斷與無損重構工作流 (`/code-optimizer`)
+針對巨型業務檔案、單一模組或全專案跨模組邊界之結構治理，透過顯式呼叫 `/code-optimizer`（100% 純手動觸發，不主動攔截日常開發）執行四階段無損重構閉環：
+1. **步驟 1（前置雙維度定錨 `Scope & Lifecycle Triage Gate`）**：在建立調研計畫前，強制先向開發者詢問確認**「包含式三層檢視範圍（`全專案 ⊃ 單一模組 ⊃ 單一檔案`，大範圍完整包含小範圍之 `S1~S6` 微觀分析）」**與**「生命週期模式（`Mode A` 收斂期允許破壞性清理 vs. `Mode B` 維護期保護對外門面；但在 `Mode B` 下，若經嚴格查驗確認為 0 外部跨模組調用之純內部工具函式，亦直接執行破壞性收斂）」**，嚴禁 Agent 自行猜測。
+2. **步驟 2（環境感知探索與 `R01` 五維度診斷落檔）**：依規模門檻調度支柱一唯讀探索子代理（回傳 $\le 400$ Tokens 結構化摘要），按 `D1~D5` 診斷矩陣與 `S1~S6` 重構策略產出計畫內 `R01_code_optimization_audit.md`。
+3. **步驟 3（呈遞診斷卡與三大流轉出口裁決）**：輸出極簡診斷卡並強制 End Turn，由開發者裁決**出口 ①（立即原地升級為 `Fast Track` / `Full Track` / `Umbrella` 實作）**、**出口 ②（轉入 `/roadmap` 或 `/todo` 技術儲備）**或**出口 ③（`Concluded` 維持現狀結案）**。
+4. **步驟 4（外科手術無損重構與量化對照）**：選擇出口 ① 時按需載入 `references/refactoring-playbook.md` 執行 `S1`（業務階段拆解）、`S2`（無狀態邏輯剝離）等策略，嚴守四大防過度設計紅線，並於回歸測試 100% 通過後輸出 Before/After 結構量化對照表。支援透過 Stage 1 錨點 `` `__@{CODE_OPTIMIZER_STANDARDS}__` `` 注入專案專屬 `D5` 慣例。
 
 
 

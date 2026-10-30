@@ -14,8 +14,8 @@
   - `init`：工作流目錄結構與協議一鍵初始化。
 
 ### 1.2 `agents-workflow.json`（自身資產導出）
-- 導出 18 大領域、工作流與引導教練純 Skill 技能包（`.agents/skills/` 或 `.claude/skills/`），含 `/how-to-config-yscb`、`/how-to-yscb`、`/skill-creator` 與 `/session-audit`。
-- 導出 16 個標準計畫模板（P00~P07、Fast Track、Umbrella、Roadmap、Todo、Changelog 等）與 `AgentsStandards` 核心規範（含 `PROJECT_ROLE_AND_BOUNDARIES` 與 `SESSION_AUDIT_STANDARDS` 錨點）。
+- 導出 19 大領域、工作流與引導教練純 Skill 技能包（`.agents/skills/` 或 `.claude/skills/`），含 `/how-to-config-yscb`、`/how-to-yscb`、`/skill-creator`、`/session-audit` 與 `/code-optimizer`。
+- 導出 16 個標準計畫模板（P00~P07、Fast Track、Umbrella、Roadmap、Todo、Changelog 等）與 `AgentsStandards` 核心規範（含 `PROJECT_ROLE_AND_BOUNDARIES`、`SESSION_AUDIT_STANDARDS` 與 `CODE_OPTIMIZER_STANDARDS` 錨點）。
 
 ## 2. 開放擴充點清冊 (Ingress Points)
 - `export`: 允許其他領域模組導出 Skill、模板或標準規範資產。

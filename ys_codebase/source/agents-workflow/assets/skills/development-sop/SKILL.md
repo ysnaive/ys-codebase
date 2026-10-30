@@ -30,6 +30,7 @@ description: 管理 `__${project://plans/}__` 開發計畫全生命週期 (SOP P
   - **自動化測試建置、Phase 06 回歸守門與測試集純化** -> [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`)
   - **建立專案特化 Skill、環境攔截規則或階段錨點注入配置** -> [`skill-creator`](`__#{module://agents-workflow/assets/skills/skill-creator/SKILL.md}__`)
   - **既有 Skill 五維度審查、漸進式揭露重構與 A/B 評測** -> [`skill-optimizer`](`__#{module://agents-workflow/assets/skills/skill-optimizer/SKILL.md}__`)
+  - **既有業務程式碼五維度診斷、階段聚合與行為無損重構** -> [`code-optimizer`](`__#{module://agents-workflow/assets/skills/code-optimizer/SKILL.md}__`)
 
 ---
 

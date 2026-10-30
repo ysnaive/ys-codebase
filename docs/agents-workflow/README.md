@@ -10,7 +10,7 @@ related_docs:
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-28"
+last_updated: "2026-10-30"
 ---
 
 # Agents Workflow 模組 (General Agents Workflow Framework)
@@ -28,7 +28,7 @@ last_updated: "2026-10-28"
 - **技能 (`assets/skills/<name>/SKILL.md`)**：
   - **工作流與生命週期技能**：`context-init`（上下文熱啟動）、`new-plan`（標準立項與延遲建檔）、`auto`（Phase 01~05 自動連續推進）、`discuss`（深度歸因與範疇保護）、`continue`（中斷現場接續）、`pause`（現場狀態凍結）、`research`（深度技術調研）、`roadmap`（長期路線圖推薦與 `Consume-on-Promote` 晉升）、`todo`（`TODO.md` 輕量待辦與微觀技術債管理）、`session-audit`（事後隱形摩擦軌跡提取與四象限根因診斷）。
   - **互動引導與配置教練技能**：`how-to-config-yscb`（專案空間自適應探勘、多模組組態體檢與三位一體對齊教練）、`how-to-yscb`（跨模組功能導覽、6 大計畫模式選型與雙入口互動式上手教練）。
-  - **領域與規範技能**：`development-sop`（SOP 0~7 與 6 大分支指南，含 `references/` 規範明細）、`testing-sop`（自動化測試建置六大鐵律、雙重守門與 `__@{TESTING_SOP_STANDARDS}__` 錨點）、`documentation`（知識庫 3 層架構與 7 大維度指南）、`yscb-cli-guide`（CLI 執行防呆慣例、技能內建指令直跑與非常規指令 `-h` 按需自省）、`skill-creator`（專案特化技能建置、三軌擴充智能分流與雙層編譯註冊閉環）、`skill-optimizer`（AI Agent 技能審查、診斷與重構工作流）、`yscb-module-dev`（生態系模組開發與 Dogfooding 閉環）。
+  - **領域與規範技能**：`development-sop`（SOP 0~7 與 6 大分支指南，含 `references/` 規範明細）、`testing-sop`（自動化測試建置六大鐵律、雙重守門與 `__@{TESTING_SOP_STANDARDS}__` 錨點）、`documentation`（知識庫 3 層架構與 7 大維度指南）、`yscb-cli-guide`（CLI 執行防呆慣例、技能內建指令直跑與非常規指令 `-h` 按需自省）、`skill-creator`（專案特化技能建置、三軌擴充智能分流與雙層編譯註冊閉環）、`skill-optimizer`（AI Agent 技能審查、診斷與重構工作流）、`code-optimizer`（業務代碼五維度靜態診斷、階段聚合與行為無損重構工作流）、`yscb-module-dev`（生態系模組開發與 Dogfooding 閉環）。
 - **模板 (`assets/templates/`)**：
   - 16 大標準模板庫（`P00_discuss`, `P01`~`P07`, `revision_log`, `fast_track_plan`, `umbrella_overview`, `changelog`, `RXX_research_report`, `handoff`, `roadmap`, `todo`）與共用標頭。
 - **6 大計畫分支拓撲、雙層儲備消耗 (`Consume-on-Promote`) 與 `/NewPlan` 延遲建檔守門 (Delayed Materialization)**：
@@ -87,7 +87,7 @@ last_updated: "2026-10-28"
 - **`TESTING_SOP_STANDARDS`**：位於 `testing-sop` 之擴充錨點，供生態系模組或專案組態注入專屬測試框架指令、沙盒規範與跑測注意事項。
 - **`AGENTS_SKILL_ROUTING` / `AGENTS_STANDARDS` / `PROJECT_ROLE_AND_BOUNDARIES`**：位於 `AgentsStandards.md` 之擴充錨點，支援子模組或專案組態透過 `insert` 注入專案角色與主客體空間邊界、專屬技能分流與行為準則。
 - **`HOW_TO_CONFIG_MODULES` / `HOW_TO_YSCB_MODULES`**：位於 `how-to-config-yscb` 與 `how-to-yscb` 之動態聚合錨點，自動匯聚各已安裝模組（`core`、`dev`、`server`、`knowledge-db` 等）之設定體檢片段與使用速查面板。
-- **`SKILL_CREATOR_STANDARDS` / `SKILL_OPTIMIZER_STANDARDS` / `SESSION_AUDIT_STANDARDS`**：位於 `skill-creator`、`skill-optimizer` 與 `session-audit` 之擴充錨點，供專案注入專屬技能建置規範、審查標準或自檢歸因規則。
+- **`SKILL_CREATOR_STANDARDS` / `SKILL_OPTIMIZER_STANDARDS` / `SESSION_AUDIT_STANDARDS` / `CODE_OPTIMIZER_STANDARDS`**：位於 `skill-creator`、`skill-optimizer`、`session-audit` 與 `code-optimizer` 之擴充錨點，供專案注入專屬技能建置規範、審查標準、自檢歸因規則或業務代碼 `D5` 架構慣例與無損重構驗證規則。
 - **`AGENTS_CLI_GUIDE`**：位於 `yscb-cli-guide` 之預留擴充錨點（核心已移除全量指令大表動態傾倒，改採 `-h` 按需自省；僅供下游專案按需追加特化 CLI 注意事項）。
 - **`spaces.docs` 貢獻**：透過 `contributes/knowledge-db.json` 向知識庫微內核宣告 `workflow.docs://` 文檔空間。
 

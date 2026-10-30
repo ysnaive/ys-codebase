@@ -53,7 +53,7 @@ description: 引導建立專案功能特化 Skill、環境注意事項攔截規�
 1. **自動執行 `[SAFE]` 探勘指令與讀取參考手冊**：
    - 執行 `python __${yscb.host://yscb.py}__ agents-workflow tokens` 檢索當前全系統已註冊之 Stage 1 Token 錨點清單。
    - 執行 `python __${yscb.host://yscb.py}__ uri list` 檢索當前專案可用之 Stage 2 語意 URI 映射。
-   - **[!] 強制按需載入**：讀取 [`references/extension-guide.md`](./references/extension-guide.md)，核對全系統 **22 個標準 Stage 1 錨點地圖**（含專案或模組自訂擴充錨點時以 CLI 實機輸出為準）之宿主位置與結構屬性（獨立段落區塊 vs. `AGENTS_SKILL_ROUTING` Markdown 表格列），以及 Stage 2 語意 URI 封裝規則。
+   - **[!] 強制按需載入**：讀取 [`references/extension-guide.md`](./references/extension-guide.md)，核對全系統 **24 個標準 Stage 1 錨點地圖**（含專案或模組自訂擴充錨點時以 CLI 實機輸出為準）之宿主位置與結構屬性（獨立段落區塊 vs. `AGENTS_SKILL_ROUTING` Markdown 表格列），以及 Stage 2 語意 URI 封裝規則。
 2. **呈遞「擴充藍圖確認卡」並強制 End Turn 等待拍板**：
    在實際建立檔案或修改 `__${config://agents-workflow}__/contribute.json` 前，必須先向開發者輸出以下確認卡並**立即 End Turn**（開發者之確認同時構成步驟 4 執行正式物化發布之顯式授權）：
 

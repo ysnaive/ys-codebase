@@ -79,6 +79,7 @@ description: 切換為互動式教練角色，結合工作流核心心法與各�
 2. **跨視窗省 Token 接力組合拳 (`/pause` $\to$ 新視窗 `/continue`)**：當對話變長或階段告一段落時，輸入 `/pause` 將現場進度壓縮寫入 `handoff.md`；隨後**開啟全新視窗**輸入 `/continue`，Agent 會自動讀取並原子銷毀 `handoff.md`，以極低 Token 完美接續。
 3. **遇阻深度歸因 (`/discuss`)**：當同一問題連續修 2 次未過或發現需跨界修改時，輸入 `/discuss` 強制停手執行 5-Whys 根因分析與方案比較。
 4. **專案專屬規則擴充與優化 (`/skill-creator` & `/skill-optimizer`)**：想為團隊新增專屬規範或自訂技能時，呼叫 `/skill-creator` 引導在第一層 `config://agents-workflow/{skills,snippets}/` 宣告式擴充；若覺得既有技能觸發不準或太耗 Token，呼叫 `/skill-optimizer` 進行靜態診斷與無損重構。
+5. **業務代碼結構治理與無損重構 (`/code-optimizer`)**：當巨型業務檔案、單一模組或全專案需要結構收斂時，顯式呼叫 `/code-optimizer`（確認包含式範圍與 `Mode A/B` 生命週期後，先產出 `R01` 調研診斷報告，再裁決原地升級實作或轉入技術儲備）。
 
 ---
 
