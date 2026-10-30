@@ -11,9 +11,13 @@ description: 掃描 `__${workflow.roadmap://}__` 宏觀技術儲備庫並比對�
 
 ## 核心原則
 
-1. **CLI 優先掃描 (CLI-First Scan)**：優先調用 `python __${yscb.host://yscb.py}__ agents-workflow roadmap [list] [--status <Backlog|Proposed|Ready|Deferred>]` 獲取結構化元數據與問題背景，嚴禁盲目逐檔全讀。
-2. **立項即物理遷入 (`Consume-on-Promote`)**：路線圖立項時不再採用原地修改 `In Progress / Completed` 狀態，而是調用 `roadmap promote <topic> [--model "<ModelName>"]` 將 `__${workflow.roadmap://}__/{topic}.md` **物理搬移 (`shutil.move`)** 至新計畫目錄下命名為 `roadmap.md`（並自動初始化 `changelog.md`），使 `__${workflow.roadmap://}__` 永遠維持 100% 純淨未立項狀態。
-3. **主動推薦、開發者定奪**：Agent 僅負責客觀篩選並呈遞依據，絕對禁止擅自代開發者啟動任何 Roadmap 計畫。
+1. **時序與顆粒度分流（近期歸 `/todo`，遠期歸 `/roadmap`）**：凡近期可執行、涉及具體檔案或短期技術債之任務一律歸入 [`/todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`)；`__${workflow.roadmap://}__` **專責收錄不會在近期執行的中長期跨模組演進與抽象架構藍圖**。
+2. **強制類 `P00` 抽象敘述，嚴禁混雜技術現況與硬湊陪跑方案**：
+   - **去現況耦合（Zero Current-State Coupling）**：撰寫 `{topic}.md` 必須以**高階抽象概念、語意目標與架構不變量（類 `P00` 層級）**敘述；**嚴禁混入當前程式碼之暫態實作現況**（如具體檔案行號、暫時性缺失旗標、內部私有實作細節，除非屬強耦合必要之核心基礎契約），避免因近期代碼演進導致路線圖過時腐敗。
+   - **拒絕硬湊多方案（No Strawman Alternatives）**：直接聚焦闡述核心架構原則與概念機制，**嚴禁為填表而虛構無用的陪跑候選方案**。
+3. **CLI 優先掃描 (CLI-First Scan)**：優先調用 `python __${yscb.host://yscb.py}__ agents-workflow roadmap [list] [--status <Backlog|Proposed|Ready|Deferred>]` 獲取結構化元數據與背景摘要，嚴禁盲目逐檔全讀。
+4. **立項即物理遷入 (`Consume-on-Promote`)**：路線圖立項時不再採用原地修改 `In Progress / Completed` 狀態，而是調用 `roadmap promote <topic> [--model "<ModelName>"]` 將 `__${workflow.roadmap://}__/{topic}.md` **物理搬移 (`shutil.move`)** 至新計畫目錄下命名為 `roadmap.md`（並自動初始化 `changelog.md`），使 `__${workflow.roadmap://}__` 永遠維持 100% 純淨未立項狀態。
+5. **主動推薦、開發者定奪**：Agent 僅負責客觀篩選並呈遞依據，絕對禁止擅自代開發者啟動任何 Roadmap 計畫。
 
 ---
 
@@ -37,7 +41,7 @@ description: 掃描 `__${workflow.roadmap://}__` 宏觀技術儲備庫並比對�
 - **檢查結果**：
   - 若無待啟動條目，直接向開發者回報並結束對話。
   - 若存在儲備條目，提取各條目之主題、狀態、目標範疇、前置解鎖條件與核心問題背景。
-  - *(分支情境：若本次任務為「將調研成果或新提案存入 Roadmap」，則讀取 [`roadmap.md`](`__#{module://agents-workflow/assets/templates/roadmap.md}__`) 模板，填寫標頭（含 `> 目標範疇：`、`> 前置解鎖條件：` 與 `> 模型：`）後於 `__${workflow.roadmap://}__/{topic}.md` 建立儲備檔並回報完成。)*
+  - *(分支情境：若本次任務為「將調研成果或新提案存入 Roadmap」，則讀取 [`roadmap.md`](`__#{module://agents-workflow/assets/templates/roadmap.md}__`) 模板，填寫標頭（含 `> 目標範疇：`、`> 前置解鎖條件：` 與 `> 模型：`），並嚴格遵循「核心原則 2：類 `P00` 抽象概念敘述、抽離非強耦合之當前技術現況、不硬湊陪跑方案」於 `__${workflow.roadmap://}__/{topic}.md` 建立儲備檔並回報完成。)*
 
 ---
 
@@ -81,5 +85,6 @@ description: 掃描 `__${workflow.roadmap://}__` 宏觀技術儲備庫並比對�
 
 ## 常見踩坑指南 (Gotchas)
 
+- **切勿在 Roadmap 混入當前暫態代碼細節或硬湊多方案對比表**：Roadmap 探討的是遠期概念藍圖，若塞入當前檔案行號、暫態 Bug 或虛構的陪跑方案，不僅浪費 Token 更會隨日常重構迅速失效；近期具體任務請一律改走 [`/todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`)。
 - **切勿在立項後將 `{topic}.md` 留在 `__${workflow.roadmap://}__` 原地改狀態**：一律透過 `roadmap promote` 物理搬移進計畫資料夾，結案時隨 `plan archive` 自然封存，彻底杜絕殭屍檔案。
 - **切勿從舊 `{topic}.md` 抄錄歷史模型名稱至新計畫**：`roadmap promote` 與新計畫文件的 `--model` / `> 模型：` 必須填寫當輪平台宣告之模型（或 `Unknown`）。

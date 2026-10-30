@@ -1,5 +1,11 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_30_1756_roadmap_template_and_skill_refinement (Completed)
+
+- **`roadmap.md` 模板輕量化、`/roadmap` 抽象敘述規範強化與單體 `plan_modes.md` 按需單點載入拆分 (`[REV-01]` ~ `[REV-02]`)**：
+  - **`roadmap.md` 模板輕量化與 `/roadmap` 抽象敘述鐵律 (`[REV-01]`)**：將 `ys_codebase/source/agents-workflow/assets/templates/roadmap.md` 升級至 `v1.1`（移除舊版強制要求之多方案對比表、方案 A/B/C 多維度可行性評估與 `### 1.2 現況與影響範圍評估`，收斂為高寬容度之 3 大抽象章節），並同步更新 `roadmap/SKILL.md`、`roadmap.py` 摘要提取正則與 `plans/roadmap/gui_kit_declarative_host_module.md`，強制區隔近期工作（`/todo`）與遠期藍圖（`/roadmap`），杜絕混雜當前技術現況或硬湊無用方案。
+  - **拆分單體 `plan_modes.md` 為按需單點載入之獨立模式手冊 (`[REV-02]`)**：廢除 156 行單體 `references/plan_modes.md`，按零重複方案拆分為 3 份無專屬 Skill 之輕量模式手冊（`fast_track_plan.md`、`revision_plan.md`、`umbrella_plan.md`），並將 `Full Track`、`Research`、`Roadmap` 直接路由至既有手冊/技能；同步更新 `development-sop/SKILL.md`、`new-plan/SKILL.md` 分流表與 `plans/status.py` (`resolve_next_action`) 之 `required_reference_path` 指標。
+
 ## 2026_10_30_1605_code_optimizer_skill (Completed)
 
 - **業務代碼五維度靜態診斷與無損重構技能 (`/code-optimizer`)、雙維度前置定錨及 `CODE_OPTIMIZER_STANDARDS` 錨點擴充 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：

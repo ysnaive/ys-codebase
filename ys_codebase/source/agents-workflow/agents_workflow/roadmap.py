@@ -171,11 +171,11 @@ class RoadmapManager:
                     if m:
                         trigger = m.group(1).strip()
 
-        # 提取 "## 1. 問題陳述" 或 "## 1. 問題背景" 摘要
+        # 提取 "## 1. 背景與長期願景" 或舊版 "## 1. 問題陳述" 摘要
         summary_lines = []
         in_problem_section = False
         for line in lines:
-            if re.match(r"^##\s+1\.\s+.*(問題|背景|陳述|Problem|Background)", line):
+            if re.match(r"^##\s+1\.\s+.*(問題|背景|陳述|願景|動機|目標|定位|Problem|Background|Vision|Intent|Motivation)", line):
                 in_problem_section = True
                 continue
             if in_problem_section:

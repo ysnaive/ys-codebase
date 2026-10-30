@@ -275,7 +275,7 @@ class PlanStatusResolver:
                 "current_phase": "Umbrella Root",
                 "current_status": u_status,
                 "next_phase": "Archived / Completed" if is_done else "Sub-Plan Creation or Umbrella Closure",
-                "required_reference_path": f"{ref_base}/plan_modes.md",
+                "required_reference_path": f"{ref_base}/umbrella_plan.md",
                 "next_action_hint": (
                     "主計畫已全數完成，可依指示執行 plan archive 歸檔。"
                     if is_done
@@ -311,7 +311,7 @@ class PlanStatusResolver:
                 "current_phase": cur_phase,
                 "current_status": ft_status,
                 "next_phase": nxt_phase,
-                "required_reference_path": f"{ref_base}/plan_modes.md",
+                "required_reference_path": f"{ref_base}/fast_track_plan.md",
                 "next_action_hint": hint,
                 "has_handoff": has_handoff,
             }
@@ -507,7 +507,7 @@ class PlanStatusResolver:
                 "current_phase": "Revision",
                 "current_status": st,
                 "next_phase": "Completed" if is_done else "Revision",
-                "required_reference_path": f"{ref_base}/plan_modes.md",
+                "required_reference_path": f"{ref_base}/revision_plan.md",
                 "next_action_hint": (
                     "Revision 修訂計畫已結案 (Completed)。"
                     if is_done
@@ -532,7 +532,7 @@ class PlanStatusResolver:
                 "current_phase": latest_r.stem.split("_")[0].upper(),
                 "current_status": st,
                 "next_phase": "Transition (P01 / Roadmap / Archive)" if r_done else latest_r.name,
-                "required_reference_path": f"{ref_base}/plan_modes.md",
+                "required_reference_path": ".agents/skills/research/SKILL.md",
                 "next_action_hint": (
                     "調研報告已 Concluded，請向開發者確認三大流轉出口（① 升級 P01 實作 | ② 路線圖儲備 | ③ 結案存檔）。"
                     if r_done
