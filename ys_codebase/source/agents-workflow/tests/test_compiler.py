@@ -616,12 +616,14 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         pause = (assets / "skills" / "pause" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("sub_{編號}_{名稱}/handoff.md", pause)
 
-        plan_modes = (
-            assets / "skills" / "development-sop" / "references" / "plan_modes.md"
-        ).read_text(encoding="utf-8")
-        self.assertIn("強制刪除原 `fast_track_plan.md`", plan_modes)
-        self.assertIn("附掛於既有已結案計畫之修訂觸發熔斷", plan_modes)
-        self.assertIn("主從計畫狀態連動規則", plan_modes)
+        sop_ref = assets / "skills" / "development-sop" / "references"
+        self.assertFalse((sop_ref / "plan_modes.md").exists(), "單體 plan_modes.md 應已拆分為按需單點載入之獨立模式手冊")
+        ft_ref = (sop_ref / "fast_track_plan.md").read_text(encoding="utf-8")
+        rev_ref = (sop_ref / "revision_plan.md").read_text(encoding="utf-8")
+        umb_ref = (sop_ref / "umbrella_plan.md").read_text(encoding="utf-8")
+        self.assertIn("強制刪除原 `fast_track_plan.md`", ft_ref)
+        self.assertIn("附掛於既有已結案計畫之修訂觸發熔斷", rev_ref)
+        self.assertIn("主從計畫狀態連動規則", umb_ref)
 
         roadmap_tpl = (assets / "templates" / "roadmap.md").read_text(encoding="utf-8")
         self.assertIn("[Backlog | Proposed | Ready | Deferred]", roadmap_tpl)
@@ -688,9 +690,10 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertIn("錯誤與例外契約", (sop_ref / "phase_03_api_spec.md").read_text(encoding="utf-8"))
         self.assertIn("Umbrella 子計畫結案回寫", (sop_ref / "phase_07_walkthrough.md").read_text(encoding="utf-8"))
 
-        plan_modes = (sop_ref / "plan_modes.md").read_text(encoding="utf-8")
-        self.assertIn("熔斷後舊產物雙軌處置", plan_modes)
-        self.assertIn("首個 `sub_XX` 啟動時", plan_modes)
+        rev_ref = (sop_ref / "revision_plan.md").read_text(encoding="utf-8")
+        umb_ref = (sop_ref / "umbrella_plan.md").read_text(encoding="utf-8")
+        self.assertIn("熔斷後舊產物雙軌處置", rev_ref)
+        self.assertIn("首個 `sub_XX` 啟動時", umb_ref)
 
         cont = (assets / "skills" / "continue" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("若主目錄存在 `P00_discuss.md` 或 `R{NN}_*.md` 則一併參考", cont)
@@ -705,8 +708,11 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         tpl = assets / "templates"
         self.assertIn("詳細規格與驗收條件 (Acceptance Criteria)", (tpl / "P01_requirements_spec.md").read_text(encoding="utf-8"))
         roadmap_tpl = (tpl / "roadmap.md").read_text(encoding="utf-8")
-        self.assertIn("### 1.2 現況與影響範圍評估", roadmap_tpl)
-        self.assertIn("## 4. 核心機制與落地步驟", roadmap_tpl)
+        self.assertIn("## 1. 背景與長期願景 (Background & Vision)", roadmap_tpl)
+        self.assertIn("## 2. 抽象架構原則與核心設計概念 (Architectural Principles & Concepts)", roadmap_tpl)
+        self.assertIn("## 3. 解鎖條件與演進構想 (Unlock Criteria & Evolution Stages)", roadmap_tpl)
+        self.assertNotIn("候選架構方案對比", roadmap_tpl)
+        self.assertNotIn("### 1.2 現況與影響範圍評估", roadmap_tpl)
         for name in ("P07_walkthrough.md", "fast_track_plan.md", "revision_log.md"):
             content = (tpl / name).read_text(encoding="utf-8")
             self.assertLess(content.index("`Completed`"), content.index("plan verify"),
@@ -802,7 +808,7 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         standards = (assets / "standards" / "AgentsStandards.md").read_text(encoding="utf-8")
         self.assertIn("`testing-sop`", standards)
         self.assertIn("testing-sop", (skills_dir / "development-sop" / "SKILL.md").read_text(encoding="utf-8"))
-        for ref_name in ("phase_04_plan.md", "phase_05_task.md", "phase_06_test.md", "plan_modes.md"):
+        for ref_name in ("phase_04_plan.md", "phase_05_task.md", "phase_06_test.md", "fast_track_plan.md"):
             ref_text = (sop_ref / ref_name).read_text(encoding="utf-8")
             self.assertIn("testing-sop/SKILL.md", ref_text, f"{ref_name} 缺少 testing-sop 強制連鎖引用")
         p06_ref = (sop_ref / "phase_06_test.md").read_text(encoding="utf-8")

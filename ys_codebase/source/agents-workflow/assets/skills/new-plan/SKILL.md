@@ -14,22 +14,22 @@ description: 針對全新開發需求執行邊界訪談、6 大計畫模式 (Ful
 - **先討論、後建檔**：在使用者需求或核心方案未經充分討論與確認前，**嚴禁提前在 `__${project://plans/}__` 下建立目錄或實體檔案**。
 - **立項時序**：討論並收斂需求 $\to$ 決定分流模式 $\to$ 建立計畫目錄與雙星初始化（`P00`、`fast_track_plan.md` 或 `revision_log.md` + `changelog.md`；若為既有計畫之衍生修訂則直接於該計畫目錄建立 `revision_log.md`）。
 - **[防呆 1] `Seeded` 目錄原地復用鐵律 (In-Place Seeded Directory Reuse)**：若目標計畫目錄已由 `roadmap promote` 或 `todo promote` 預先建立並置入起源種子檔（`roadmap.md` 或 `todo.md`）與 `changelog.md`（此時 `plan status` 識別為 `Seeded` 模式），**嚴禁另行建立第二個帶時間戳的新目錄**！必須直接於該既有 `Seeded` 目錄內原地補齊首份正式規格檔（`P00_discuss.md`、`fast_track_plan.md` 或 `revision_log.md`），並透過 `plan verify --log` 追加進度列。
-- **立項細則指針**：建檔與分流守門細節依 [phase_00_discuss.md](../development-sop/references/phase_00_discuss.md) 執行；Umbrella 新增 `sub_XX` 時之父目錄登記規則依 [plan_modes.md](../development-sop/references/plan_modes.md) §5。
+- **立項細則指針**：建檔與分流守門細節依 [phase_00_discuss.md](../development-sop/references/phase_00_discuss.md) 執行；Umbrella 新增 `sub_XX` 時之父目錄登記規則依 [umbrella_plan.md](../development-sop/references/umbrella_plan.md) §2。
 
 ---
 
 ## 2. 計畫分流導航 (Plan Modes Routing)
 
-依據任務變更規模與影響半徑選擇分支，詳細規則請參閱 [plan_modes.md](../development-sop/references/plan_modes.md)：
+依據任務變更規模與影響半徑先由下表鎖定計畫模式，再按需**單點讀取**右側對應之專屬模式手冊或技能：
 
-| 計畫模式 | 適用情境與判定標準 | 產物與推進路徑 |
-| :--- | :--- | :--- |
-| **標準開發計畫 (Full Track)** | 一般新功能開發、跨模組重構、Public API 變更或修改 $> 100$ 行 | 標準 8 階段 (`P00` ~ `P07` + `changelog.md`) |
-| **迅捷開發計畫 (Fast Track)** | 修改 $\le 100$ 行、Public API 0 變更、零新依賴且測試 100% 守門 | 單檔 `fast_track_plan.md` (FP-01 ~ FP-03) + `changelog.md` |
-| **修訂計畫 (Revision Plan)** | **不牽涉核心業務邏輯**之 UI/UX/DX、靜態參數、文檔微調（支援獨立開立或衍生附掛於既有計畫；嚴禁用於 Bug Fix） | 獨立：`[P00] + [RXX] + revision_log.md + changelog.md`<br/>衍生：於原計畫/子計畫目錄建立 `revision_log.md` |
-| **調研計畫 (Research Plan)** | 純技術選型、演算法可行性探索，支援無痛升級實作計畫 | `P00_discuss.md` + `R{NN}_{topic}.md` + `changelog.md` |
-| **分類型主計畫 (Umbrella)** | 統籌多個子計畫之大型跨模組史詩任務（最多 2 層） | 主目錄 `umbrella_overview.md` 協調多個 `sub_XX` |
-| **長期路線圖 (Roadmap)** | 全專案層級長期技術願景與策略資產儲備 | `__${workflow.roadmap://}__` (`{topic}.md`) |
+| 計畫模式 | 適用情境與判定標準 | 產物與推進路徑 | 專屬模式手冊 / 技能 |
+| :--- | :--- | :--- | :---: |
+| **標準開發計畫 (Full Track)** | 一般新功能開發、跨模組重構、Public API 變更或修改 $> 100$ 行 | 標準 8 階段 (`P00` ~ `P07` + `changelog.md`) | [phase_00_discuss.md](../development-sop/references/phase_00_discuss.md) |
+| **迅捷開發計畫 (Fast Track)** | 修改 $\le 100$ 行、Public API 0 變更、零新依賴且測試 100% 守門 | 單檔 `fast_track_plan.md` (FP-01 ~ FP-03) + `changelog.md` | [fast_track_plan.md](../development-sop/references/fast_track_plan.md) |
+| **修訂計畫 (Revision Plan)** | **不牽涉核心業務邏輯**之 UI/UX/DX、靜態參數、文檔微調（支援獨立開立或衍生附掛於既有計畫；嚴禁用於 Bug Fix） | 獨立：`[P00] + [RXX] + revision_log.md + changelog.md`<br/>衍生：於原計畫/子計畫目錄建立 `revision_log.md` | [revision_plan.md](../development-sop/references/revision_plan.md) |
+| **調研計畫 (Research Plan)** | 純技術選型、演算法可行性探索，支援無痛升級實作計畫 | `P00_discuss.md` + `R{NN}_{topic}.md` + `changelog.md` | [research/SKILL.md](../research/SKILL.md) |
+| **分類型主計畫 (Umbrella)** | 統籌多個子計畫之大型跨模組史詩任務（最多 2 層） | 主目錄 `umbrella_overview.md` 協調多個 `sub_XX` | [umbrella_plan.md](../development-sop/references/umbrella_plan.md) |
+| **長期路線圖 (Roadmap)** | 全專案層級長期技術願景與策略資產儲備 | `__${workflow.roadmap://}__` (`{topic}.md`) | [roadmap/SKILL.md](../roadmap/SKILL.md) |
 
 ---
 

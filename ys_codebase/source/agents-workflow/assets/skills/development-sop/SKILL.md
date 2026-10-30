@@ -62,16 +62,16 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ## 4. 全景 6 大計畫分支快速判定表 (Plan Taxonomy)
 
-在啟動任務時，依據任務規模與業務特性判定計畫模式（平等評估 6 大模式，杜絕僵化層級偏見；需要了解特定模式的詳細守門條件與狀態卡格式時，請按需讀取 [references/plan_modes.md](./references/plan_modes.md)）：
+在啟動任務時，先由下方分流表判定計畫模式（平等評估 6 大模式，杜絕僵化層級偏見），再按需**單點讀取**右側對應之專屬模式手冊或技能，嚴禁預先全量通讀所有模式規範：
 
-| 計畫模式 | 核心特徵與週期 | 適用情境與判定標準 | 產出檔案矩陣 | 詳細手冊 |
+| 計畫模式 | 核心特徵與週期 | 適用情境與判定標準 | 產出檔案矩陣 | 專屬模式手冊 / 技能 |
 | :--- | :--- | :--- | :--- | :---: |
-| **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` -> `P01`~`P06` -> `P07 (含 SOP Review)` + `changelog` | [模式詳解](./references/plan_modes.md#1-標準開發計畫-full-track) |
-| **迅捷開發計畫 (Fast Track)** | 3-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` (含 Review 核驗) + `changelog` | [模式詳解](./references/plan_modes.md#2-迅捷開發計畫-fast-track) |
-| **修訂計畫 (Revision Plan)** | 正交修訂留檔閉環 | **不牽涉核心業務邏輯**之 UI/UX/DX 表層微調、靜態參數調整、文檔調整（嚴禁用於 Bug Fix；可無衍生來源獨立開立，或衍生附掛於既有主計畫/子計畫） | `[P00] + [RXX] + revision_log + changelog`（獨立）或於既有計畫追加 `revision_log` | [模式詳解](./references/plan_modes.md#3-修訂計畫-revision-plan---正交修訂與留檔) |
-| **調研計畫 (Research Plan)** | 調研探索 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R{NN}_{topic}` + `changelog` | [模式詳解](./references/plan_modes.md#4-調研計畫-research-plan---調研-track) |
-| **分類型主計畫 (Umbrella)** | 跨子計畫史詩統籌 | 統籌多個子計畫（預先規劃型 / 增量演進型藍圖） | `umbrella_overview` + `changelog` + 各子計畫目錄（主計畫級 `P00` / `R{NN}` 選配） | [模式詳解](./references/plan_modes.md#5-分類型主計畫-umbrella) |
-| **長期路線圖 (Roadmap)** | 策略資產庫儲備 | 全專案層級技術願景與長期技術儲備藍圖（置於 `__${workflow.roadmap://}__`） | `{topic}.md` | [模式詳解](./references/plan_modes.md#6-長期路線圖-roadmap---策略資產庫) |
+| **標準開發計畫 (Full Track)** | 8-Phase 完整週期 | 單一功能/模組重構、涉及 Public API 變更或修改 $> 100$ 行 | `P00` -> `P01`~`P06` -> `P07 (含 SOP Review)` + `changelog` | [P00~P07 導航](#5-full-track-sop-階段導航矩陣-mandatory-navigation-matrix) |
+| **迅捷開發計畫 (Fast Track)** | 3-Step 敏捷閉環 | 同時滿足：修改 $\le 100$ 行、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門 | `fast_track_plan` (含 Review 核驗) + `changelog` | [Fast Track 手冊](./references/fast_track_plan.md) |
+| **修訂計畫 (Revision Plan)** | 正交修訂留檔閉環 | **不牽涉核心業務邏輯**之 UI/UX/DX 表層微調、靜態參數調整、文檔調整（嚴禁用於 Bug Fix；可無衍生來源獨立開立，或衍生附掛於既有主計畫/子計畫） | `[P00] + [RXX] + revision_log + changelog`（獨立）或於既有計畫追加 `revision_log` | [Revision 手冊](./references/revision_plan.md) |
+| **調研計畫 (Research Plan)** | 調研探索 Track | 純技術選型、演算法可行性探索，支援無痛升級為實作計畫 | `P00_discuss` + `R{NN}_{topic}` + `changelog` | [Research 技能](`__#{module://agents-workflow/assets/skills/research/SKILL.md}__`) |
+| **分類型主計畫 (Umbrella)** | 跨子計畫史詩統籌 | 統籌多個子計畫（預先規劃型 / 增量演進型藍圖） | `umbrella_overview` + `changelog` + 各子計畫目錄（主計畫級 `P00` / `R{NN}` 選配） | [Umbrella 手冊](./references/umbrella_plan.md) |
+| **長期路線圖 (Roadmap)** | 策略資產庫儲備 | 全專案層級技術願景與長期技術儲備藍圖（置於 `__${workflow.roadmap://}__`） | `{topic}.md` | [Roadmap 技能](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) |
 
 ---
 

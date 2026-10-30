@@ -98,6 +98,28 @@ class TestRoadmapManager(YSCBTestCase):
         found = mgr.get_roadmap("二進位發布包優化")
         self.assertIsNotNone(found)
         self.assertEqual(found.filename, "binary_optimization.md")
+
+        # 驗證 v1.1 抽象概念模板標題 (## 1. 背景與長期願景) 摘要提取
+        v11_doc = """# 技術路線圖：宣告式視覺化宿主 (Roadmap)
+
+> 主題：gui_kit_host  
+> 歸檔日期：2026-10-30  
+> 狀態：Backlog  
+> 目標範疇：module:gui-kit  
+> 前置解鎖條件：結構化輸出契約就緒  
+> 模型：Unknown  
+> 模板版本：v1.1  
+
+---
+
+## 1. 背景與長期願景 (Background & Vision)
+
+- **核心痛點與動機**：高資訊密度場景下純終端機存在認知瓶頸。
+"""
+        (self.roadmap_dir / "gui_kit_host.md").write_text(v11_doc, encoding="utf-8")
+        v11_item = mgr.get_roadmap("gui_kit_host")
+        self.assertIsNotNone(v11_item)
+        self.assertIn("高資訊密度場景下純終端機存在認知瓶頸", v11_item.problem_summary)
         self.mark_passed()
 
     def test_non_standard_roadmap_fallback(self):

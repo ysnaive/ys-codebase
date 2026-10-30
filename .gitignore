@@ -39,6 +39,7 @@ __pycache__/
 /.agents/skills/context-init/SKILL.md
 /.agents/skills/continue/SKILL.md
 /.agents/skills/development-sop/SKILL.md
+/.agents/skills/development-sop/references/fast_track_plan.md
 /.agents/skills/development-sop/references/phase_00_discuss.md
 /.agents/skills/development-sop/references/phase_01_requirements.md
 /.agents/skills/development-sop/references/phase_02_architecture.md
@@ -47,7 +48,8 @@ __pycache__/
 /.agents/skills/development-sop/references/phase_05_task.md
 /.agents/skills/development-sop/references/phase_06_test.md
 /.agents/skills/development-sop/references/phase_07_walkthrough.md
-/.agents/skills/development-sop/references/plan_modes.md
+/.agents/skills/development-sop/references/revision_plan.md
+/.agents/skills/development-sop/references/umbrella_plan.md
 /.agents/skills/discuss/SKILL.md
 /.agents/skills/documentation/SKILL.md
 /.agents/skills/documentation/references/author_guide_and_checklist.md
