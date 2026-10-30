@@ -114,6 +114,12 @@
       "description": "執行當前或近期開發對話之隱形摩擦軌跡提取、決策瑕疵解剖與四象限根因診斷報告生成。僅於顯式輸入 /session-audit 或明確指示自檢分析對話摩擦與返工原因時觸發。"
     },
     {
+      "type": "skill",
+      "name": "code-optimizer",
+      "source": "module://agents-workflow/assets/skills/code-optimizer",
+      "description": "針對既有業務程式碼執行五維度靜態診斷、業務階段邏輯聚合與行為無損重構。僅於顯式輸入 /code-optimizer 時觸發，嚴禁主動觸發。"
+    },
+    {
       "type": "template",
       "source": "module://agents-workflow/assets/templates/P00_discuss.md",
       "description": "Phase 0 討論模板"
@@ -282,6 +288,10 @@
     {
       "value": "SESSION_AUDIT_STANDARDS",
       "description": "專案特化 Session 隱形摩擦自檢與根因歸類擴充規則注入錨點（位於 session-audit/SKILL.md）"
+    },
+    {
+      "value": "CODE_OPTIMIZER_STANDARDS",
+      "description": "專案特化業務代碼五維度診斷、架構慣例 (D5) 與無損重構驗證規則注入錨點（位於 code-optimizer/SKILL.md）"
     }
   ],
   "insert": [

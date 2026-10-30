@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_30_1605_code_optimizer_skill (Completed)
+
+- **業務代碼五維度靜態診斷與無損重構技能 (`/code-optimizer`)、雙維度前置定錨及 `CODE_OPTIMIZER_STANDARDS` 錨點擴充 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：
+  - **100% 純手動觸發與雙維度前置定錨 (`FR-01`, `FR-02`, `EC-01`, `EC-02`, `[P00:DR-01]`, `[P00:DR-02]`)**：於 `ys_codebase/source/agents-workflow/assets/skills/code-optimizer/SKILL.md` 新增純顯式指令觸發技能 `code-optimizer`（不注入 `AgentsStandards.md` 常駐路由表，全系統內建純 Skill 擴充至 19 個）；於步驟 1 強制執行「包含式三層檢視範圍（`全專案 ⊃ 單一模組 ⊃ 單一檔案`，大範圍強制包含小範圍 `S1/S2` 階段拆解與無狀態剝離）」與「開發者指定生命週期模式（`Mode A` 新功能收斂期 vs. `Mode B` 成熟功能維護期）」雙維度定錨，並規範 `Mode B` 下凡經調用圖譜與匯出清單嚴格查證確認 0 外部跨模組調用之純內部工具函式，一律比照 `Mode A` 直接執行破壞性收斂。
+  - **先行建立調研計畫 (`R01`) 與三大流轉出口守門 (`FR-03`, `EC-04`, `[P00:DR-03]`)**：於步驟 2 強制先行建立 `Research Plan`（`P00_discuss.md` + `R01_code_optimization_audit.md` + `changelog.md`），落檔 `D1~D5` 靜態診斷矩陣與 `S1~S6` 重構處方；於步驟 3 向開發者請示三大出口（出口 ① 原地升級 `Fast Track` / `Full Track` / `Umbrella` 實作計畫並嚴禁誤用 `Revision Plan`、出口 ② 轉入 `/roadmap` 或 `/todo`、出口 ③ 標記 `Concluded` 結案）。
+  - **跨語言通用軟工抽象 `references/` 三大資產與 `CODE_OPTIMIZER_STANDARDS` Stage 1 錨點 (`FR-04`, `FR-05`, `EC-03`, `EC-05`, `[P00:DR-04]`)**：建立 `references/{exploration-and-delegation,diagnostic-matrix,refactoring-playbook}.md` 單層參考手冊（含支柱一子代理量化委派門檻與 Stage 2 `` `__%{agent_tool.*}__` `` 宿主專有名詞佔位符），並於 `contributes/agents-workflow.json` 註冊第 23 個模組內建 Token `CODE_OPTIMIZER_STANDARDS`（全系統第 24 個 Stage 1 Token 錨點）；新增 `test_ft_14_code_optimizer_skill_and_standards_anchor` 並完成 `core` 模組雙子代理 A/B 實機盲測驗收，`agents-workflow` (136/136) 測試 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_10_28_1845_core_locale_and_ecosystem_i18n (Completed)
 
 ### sub_02_host_nouns_and_dogfooding (Completed)

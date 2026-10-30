@@ -32,6 +32,10 @@ __pycache__/
 /.agents/.yscb/templates/umbrella_overview.md
 /.agents/skills/auto/SKILL.md
 /.agents/skills/bump-revision/SKILL.md
+/.agents/skills/code-optimizer/SKILL.md
+/.agents/skills/code-optimizer/references/diagnostic-matrix.md
+/.agents/skills/code-optimizer/references/exploration-and-delegation.md
+/.agents/skills/code-optimizer/references/refactoring-playbook.md
 /.agents/skills/context-init/SKILL.md
 /.agents/skills/continue/SKILL.md
 /.agents/skills/development-sop/SKILL.md

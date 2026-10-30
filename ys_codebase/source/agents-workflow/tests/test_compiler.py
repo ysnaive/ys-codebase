@@ -730,13 +730,13 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertIn("SKILL_OPTIMIZER_STANDARDS", token_names)
 
         expected_skills = {
-            "auto", "context-init", "continue", "development-sop", "discuss",
-            "documentation", "how-to-config-yscb", "how-to-yscb", "new-plan",
+            "auto", "code-optimizer", "context-init", "continue", "development-sop",
+            "discuss", "documentation", "how-to-config-yscb", "how-to-yscb", "new-plan",
             "pause", "research", "roadmap", "session-audit", "skill-creator",
             "skill-optimizer", "testing-sop", "todo", "yscb-cli-guide",
         }
         command_driven_skills = {
-            "auto", "pause", "continue", "context-init", "session-audit",
+            "auto", "code-optimizer", "pause", "continue", "context-init", "session-audit",
             "skill-creator", "skill-optimizer", "how-to-config-yscb", "how-to-yscb",
         }
         ambient_skills = expected_skills - command_driven_skills
@@ -947,7 +947,7 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         token_names = {item["value"] for item in contrib["token"]}
         self.assertIn("skill-creator", export_map)
         self.assertIn("SKILL_CREATOR_STANDARDS", token_names)
-        self.assertEqual(len(token_names), 22)
+        self.assertEqual(len(token_names), 23)
 
         sc_md_path = sc_dir / "SKILL.md"
         self.assertTrue(sc_md_path.is_file())
@@ -985,9 +985,9 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
 
         ref_text = ref_path.read_text(encoding="utf-8")
         self.assertIn("## 目錄 (Contents)", ref_text)
-        all_23_tokens = token_names | {"KNOWLEDGE_DB_SPACE"}
-        self.assertEqual(len(all_23_tokens), 23)
-        for tok in all_23_tokens:
+        all_24_tokens = token_names | {"KNOWLEDGE_DB_SPACE"}
+        self.assertEqual(len(all_24_tokens), 24)
+        for tok in all_24_tokens:
             self.assertIn(f"`{tok}`", ref_text, f"extension-guide.md 漏列 Stage 1 錨點: {tok}")
         self.assertIn("Markdown 表格列", ref_text)
         self.assertIn('"token": "PHASE05_AGENTS_GUIDE"', ref_text)
@@ -1121,6 +1121,125 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
             out_unk = compiler.resolve_stage2_uri("未知標籤 `__%{agent_tool.non_existent}__`", dst_p, {}, target_name="antigravity")
         self.assertIn("[compiler:warning] Unresolved locale noun tag: 'agent_tool.non_existent'", err_buf.getvalue())
         self.assertIn("`__%{agent_tool.non_existent}__`", out_unk)
+
+        self.mark_passed()
+
+    def test_ft_14_code_optimizer_skill_and_standards_anchor(self):
+        """[2026_10_30_1605 FR-01 ~ FR-05, EC-01 ~ EC-05, NFR-01 ~ NFR-02]: 驗證 code-optimizer 純手動觸發、包含式三層範圍與開發者指定 Mode A/B (含 Mode B 內部工具函式嚴格查證收斂)、R01 調研與三出口、三大參考檔與 Stage 1/2 實機編譯零警告。"""
+        import contextlib
+        import json
+        from agents_workflow.compiler import ArtifactCompiler, FENCED_CODE_BLOCK_REGEX, CODE_SPAN_REGEX, UNENCLOSED_TAG_REGEX
+
+        assets = Path(_pkg_root) / "assets"
+        skills_dir = assets / "skills"
+        co_dir = skills_dir / "code-optimizer"
+        contrib = json.loads((Path(_pkg_root) / "contributes" / "agents-workflow.json").read_text(encoding="utf-8"))
+
+        export_map = {item.get("name"): item for item in contrib["export"] if "name" in item}
+        token_names = {item["value"] for item in contrib["token"]}
+        self.assertIn("code-optimizer", export_map)
+        self.assertIn("CODE_OPTIMIZER_STANDARDS", token_names)
+
+        # FR-01 & EC-01: 純手動觸發、不掛載於 AgentsStandards.md 條件路由表
+        standards_text = (assets / "standards" / "AgentsStandards.md").read_text(encoding="utf-8")
+        self.assertNotIn("`code-optimizer`", standards_text)
+
+        co_md_path = co_dir / "SKILL.md"
+        self.assertTrue(co_md_path.is_file())
+        co_text = co_md_path.read_text(encoding="utf-8")
+        self.assertLessEqual(len(co_text.splitlines()), 180, f"code-optimizer/SKILL.md 行數超標: {len(co_text.splitlines())}")
+        self.assertIn(export_map["code-optimizer"]["description"], co_text)
+        self.assertIn("僅於顯式輸入 /code-optimizer 時觸發，嚴禁主動觸發", co_text)
+        self.assertIn("`__@{CODE_OPTIMIZER_STANDARDS}__`", co_text)
+        self.assertIn("## 常見踩坑指南 (Gotchas)", co_text)
+
+        # FR-01, EC-01, EC-02: 包含式三層範圍與開發者顯式指定 Mode A / Mode B (含 Mode B 內部工具函式直接破壞性收斂)
+        self.assertIn("全專案 ⊃ 單一模組 ⊃ 單一檔案", co_text)
+        self.assertIn("File Scope", co_text)
+        self.assertIn("Module Scope", co_text)
+        self.assertIn("Project Scope", co_text)
+        self.assertIn("不由 Agent 判斷", co_text)
+        self.assertIn("Mode A", co_text)
+        self.assertIn("Mode B", co_text)
+        self.assertIn("0 外部跨模組調用", co_text)
+        self.assertIn("直接執行破壞性變更與收斂", co_text)
+
+        # FR-02 & EC-04: R01 調研計畫與三大流轉出口、禁止轉入 Revision Plan
+        self.assertIn("R01_code_optimization_audit.md", co_text)
+        self.assertIn("出口 ① 立即原地升級實作", co_text)
+        self.assertIn("出口 ② 轉入技術儲備", co_text)
+        self.assertIn("出口 ③ 維持現狀結案", co_text)
+        self.assertIn("嚴禁轉入 `Revision Plan`", co_text)
+        self.assertIn("End Turn", co_text)
+
+        # FR-03 & FR-04: 三大單層參考檔、D1~D5、S1~S6 與四大紅線
+        for guard_kw in ("No Pattern Mania", "No Nano-Functions", "Preserve Behavior & Error Semantics", "Self-Documenting over Noise Comments"):
+            self.assertIn(guard_kw, co_text)
+
+        ref_dir = co_dir / "references"
+        self.assertTrue(ref_dir.is_dir())
+        self.assertEqual([p for p in ref_dir.iterdir() if p.is_dir()], [])
+
+        expected_refs = ("exploration-and-delegation.md", "diagnostic-matrix.md", "refactoring-playbook.md")
+        for r_name in expected_refs:
+            r_path = ref_dir / r_name
+            self.assertTrue(r_path.is_file(), f"缺少參考手冊: {r_name}")
+            r_txt = r_path.read_text(encoding="utf-8")
+            self.assertIn("## 目錄 (Contents)", r_txt, f"{r_name} 缺少目錄 (TOC)")
+            clean_r = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", r_txt))
+            self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_r), [], f"{r_name} 含未加單反引號之標籤")
+
+        exp_txt = (ref_dir / "exploration-and-delegation.md").read_text(encoding="utf-8")
+        self.assertIn("全專案 ⊃ 單一模組 ⊃ 單一檔案", exp_txt)
+        self.assertIn("0 外部跨模組引用", exp_txt)
+        self.assertIn("400", exp_txt)
+
+        diag_txt = (ref_dir / "diagnostic-matrix.md").read_text(encoding="utf-8")
+        for dim in ("D1", "D2", "D3", "D4", "D5"):
+            self.assertIn(dim, diag_txt)
+
+        play_txt = (ref_dir / "refactoring-playbook.md").read_text(encoding="utf-8")
+        for strat in ("S1", "S2", "S3", "S4", "S5", "S6"):
+            self.assertIn(strat, play_txt)
+
+        # FR-05 & EC-05: 實機 Stage 1 / Stage 2 編譯零警告與三平台專有名詞投影驗證
+        compiler = ArtifactCompiler(host_dir=str(Path(_pkg_root).parent.parent))
+        deployment_map = {
+            f"module://agents-workflow/assets/skills/{s}/SKILL.md": str(
+                Path(_pkg_root).parent.parent / ".agents" / "skills" / s / "SKILL.md"
+            )
+            for s in ("development-sop", "testing-sop", "skill-optimizer", "new-plan", "auto", "code-optimizer")
+        }
+        for t_name in ("P00_discuss.md", "RXX_research_report.md", "fast_track_plan.md", "umbrella_overview.md"):
+            deployment_map[f"module://agents-workflow/assets/templates/{t_name}"] = str(
+                Path(_pkg_root).parent.parent / ".agents" / ".yscb" / "templates" / t_name
+            )
+
+        co_dst = str(Path(_pkg_root).parent.parent / ".agents" / "skills" / "code-optimizer" / "SKILL.md")
+        err_buf = io.StringIO()
+        with contextlib.redirect_stderr(err_buf):
+            stage1_co = compiler.resolve_single_artifact(co_text, contrib.get("insert", []))
+            stage2_agy = compiler.resolve_stage2_uri(stage1_co, co_dst, deployment_map, target_name="antigravity")
+            stage2_claude = compiler.resolve_stage2_uri(stage1_co, co_dst, deployment_map, target_name="claude")
+            stage2_codex = compiler.resolve_stage2_uri(stage1_co, co_dst, deployment_map, target_name="codex")
+            for r_name in expected_refs:
+                r_txt = (ref_dir / r_name).read_text(encoding="utf-8")
+                r_dst = str(Path(_pkg_root).parent.parent / ".agents" / "skills" / "code-optimizer" / "references" / r_name)
+                r_s1 = compiler.resolve_single_artifact(r_txt, contrib.get("insert", []))
+                compiler.resolve_stage2_uri(r_s1, r_dst, deployment_map, target_name="antigravity")
+        self.assertEqual(err_buf.getvalue(), "", f"Stage 1/2 編譯產生警告: {err_buf.getvalue()}")
+
+        self.assertNotIn("`__@{CODE_OPTIMIZER_STANDARDS}__`", stage1_co)
+        self.assertIn("`read_file (StartLine/EndLine)`", stage2_agy)
+        self.assertIn("`Read (offset/limit)`", stage2_claude)
+        self.assertIn("`exec_command`", stage2_codex)
+
+        # 驗證自訂注入 CODE_OPTIMIZER_STANDARDS
+        injected_co = compiler.resolve_single_artifact(
+            co_text,
+            [{"token": "CODE_OPTIMIZER_STANDARDS", "mode": "below", "value": "### 專案特化 D5 架構規則\n- 強制使用 core.uri"}],
+        )
+        self.assertIn("### 專案特化 D5 架構規則", injected_co)
 
         self.mark_passed()
 
