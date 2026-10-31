@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize  
 > 調研狀態：Concluded  
 > 模型：Gemini 4 Argon (Low)  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -30,7 +30,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 針對 `knowledge-db` 模組在 `Mode A` 下的結構收斂與重構深度，評估以下三種候選方案：
 
@@ -39,10 +39,6 @@
 | **方案 A：僅執行表層死代碼與別名清理 (`S2` 局部 + `Mode A` 別名移除)** | 僅刪除未使用的相容別名、死常數與冗餘參數，不拆解 `formatter.py`、`cli.py`、`treesitter.py` 等長方法，亦不拆離大檔案。 | 修改行數極少（`< 150` 行），風險最低。 | 無法解決 `format_search_output`（290 行 6 分支重複）、`cli.py:search`（213 行）、`pipeline.py`（1,101 行）等核心結構腐化與高認知複雜度問題。 | ⭐⭐ |
 | **方案 B：全模組 `S1~S6` 外科手術式無損重構（推薦）** | 1. 依 `Mode A` 物理拔除所有轉發別名與死分支，收斂為單一正統入口。<br>2. 對 `formatter.py`、`cli.py`、`treesitter.py`、`linker.py`、`embedding.py` 執行 `S1` 業務階段拆解、`S2` 無狀態純函式剝離、`S3` 同構樣板聚合、`S4` 衛語句與表驅動分派、`S5` 資料團塊封裝。<br>3. 對 `pipeline.py` 與 `retrieval.py` 執行適度 `S6` 職責解耦（或提取共用路徑/過濾基礎設施），維持 `knowledge_db/__init__.py` 正統匯出。 | 徹底消除 `P0/P1/P2` 病灶，大幅降低單檔與單函式行數及圈複雜度，修復 `resolve_threads` 靜態調用 Bug，且不引入過度設計的抽象階層。 | 變更規模約 500~800 行，涵蓋模組內十餘個業務檔案，需升級為 **Full Track** 計畫嚴密驗證。 | ⭐⭐⭐⭐⭐ |
 | **方案 C：激進重寫與設計模式教條化（Abstract Factory / Visitor 重塑）** | 將所有 Parser、Formatter 與 Indexer 全面改寫為多層 Abstract Factory、Strategy Pattern 與 Visitor 類別階層，並將每個檔案細拆為 20+ 個微型檔案。 | 形式上符合極端物件導向教條。 | 嚴重違反 `code-optimizer` 防過度設計紅線 ②（禁止教條式套用設計模式）與紅線 ③（禁止碎紙機式過度拆分），大幅增加跨檔跳轉成本與序列化相容風險。 | ⭐ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 契約邊界與 `Mode A` 單一正統入口收斂查驗表 (Contract & Entry Convergence Table)
 
@@ -193,7 +189,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   採納 **方案 B（全模組 `S1~S6` 外科手術式無損重構）**，於 `Mode A（收斂期 / 允許破壞性清理）` 下分三批次有序推進：

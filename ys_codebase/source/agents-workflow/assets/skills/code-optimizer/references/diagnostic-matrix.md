@@ -43,28 +43,24 @@
 ## 3. R{NN} 調研診斷報告 (`R{NN}_code_optimization_audit.md`) 結構指引
 
 > [!CAUTION]
-> **🚨 強制對齊 `RXX_research_report.md` 四大標準 H2 標題（防範 `plan verify` 退件鐵律）**：  
-> `agents-workflow plan verify` 會剛性檢核所有 `R{NN}_*.md` 檔案是否包含 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 模板定義的 **4 個標準二級標題 (`## 1.` ~ `## 4.`)**！  
-> 因此，撰寫 `R01_code_optimization_audit.md`（或跨代盲審 `R02`/`R03`）時，**頂層 `##` H2 標題必須 100% 保持模板原貌**，並將 `code-optimizer` 專屬的五個診斷區塊作為 **`###` 三級子標題 (H3)** 掛載於對應的 H2 之下（嚴禁自創頂層 H2 標題取代模板 H2）：
+> **🚨 強制對齊 `RXX_research_report.md` 三大標準 H2 標題（防範 `plan verify` 退件鐵律）**：  
+> `agents-workflow plan verify` 會剛性檢核所有 `R{NN}_*.md` 檔案是否包含 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 模板定義的 **3 個標準二級標題 (`## 1.` ~ `## 3.`)**！  
+> 因此，撰寫 `R01_code_optimization_audit.md`（或跨代盲審 `R02`/`R03`）時，**頂層 `##` H2 標題必須 100% 保持模板原貌**，並將 `code-optimizer` 專屬的診斷區塊作為 **`###` 三級子標題 (H3)** 掛載於對應的 H2 之下（嚴禁自創頂層 H2 標題取代模板 H2）：
 
 ```markdown
 ## 1. 背景與調研目標 (Background & Objectives)
 ### 1.1 定錨基準與範圍摘要
 - 記錄開發者拍板之「檢視範圍」、「生命週期模式 (Mode A / Mode B)」、「代理執行軌道」與現行測試基線狀態。
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 ### 2.1 契約邊界與內部工具函式查驗表
 - 明確列出「公開契約入口清單（Mode A 預計收斂為單一入口並同步改寫之調用點 / Mode B 預計保留門面重匯出之符號）」與「經 callers + search 雙重查證確認 0 外部引用之純內部工具函式/死代碼清單」。
-### 2.2 重構深度候選方案對比
-- 對比候選重構方案（或當 P0=0, P1=0 時評估維持現狀直接結案）。
-
-## 3. 架構設計與驗證 (Architecture & PoC)
-### 3.1 D1 ~ D5 五維度分級診斷矩陣
+### 2.2 D1 ~ D5 五維度分級診斷矩陣
 - 逐一列出 D1~D5 檢查結果表格（檔案路徑:行號區間 | 維度 | P0/P1/P2 | 具體結構病徵 | 對應策略；無異常標記 Pass）。
-### 3.2 S1 ~ S6 外科手術重構處方箋 (Refactoring Blueprint)
+### 2.3 S1 ~ S6 外科手術重構處方箋 (Refactoring Blueprint)
 - 具體說明預計提取之階段函式 (S1)、無狀態純函式剝離與零轉發殼清理 (S2)、同構合併與 20% 邊界不變量保護 (S3)、控制流扁平化 (S4)、資料團塊封裝 (S5) 與正交拆檔評估 (S6)。
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
-### 4.1 風險評估與推薦流轉出口
+## 3. 結論 (Conclusion)
+### 3.1 風險評估與推薦流轉出口
 - 明確給出推薦流轉出口（出口 ① 原地升級 Fast Track / Full Track / Umbrella、出口 ② 轉入 Roadmap/Todo、或出口 ③ P0=0/P1=0 維持現狀結案）。
 ```

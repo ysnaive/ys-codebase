@@ -6,7 +6,7 @@
 > 狀態：Concluded  
 > 調研狀態：Concluded  
 > 模型：Gemini 4 Argon (Low)  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -25,7 +25,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 ### 2.1 契約邊界與內部工具函式查驗表 (Contract Boundary & Call-Graph Audit)
 
@@ -96,10 +96,6 @@
 | **方案 A：全模組外科手術重構 + 巨型檔案物理子模組拆分 (`S1~S6` 完整套用)** | 針對 `engine.py`（1,007 行）與 `locale.py`（808 行）執行 `S6` 正交職責拆檔並以 `Mode B` 門面重匯出保持 100% 向下相容；同時對 `installer.py`、`dispatcher.py`、`resolver.py`、`symbols.py`、`uri.py`、`cli.py` 執行 `S1~S5` 業務階段拆解、無狀態剝離與重複樣板收斂，並修復 `D4-01` FD 洩漏。 | • 徹底消滅千行級 God File，單檔行數壓降至 `< 550` 行<br>• 消除 `Installer` 與 `AtomicEngine` 雙軌解壓/探測重複<br>• 100% 維持公開 SDK 與 CLI 契約零破壞 | 涉及新增 2~3 個內部私有子模組（如 `_engine_fs.py`、`_locale_validator.py`），需走 Full Track 完整驗證。 | ⭐⭐⭐⭐⭐<br>**(強烈推薦)** |
 | **方案 B：僅做單檔內部方法提取與控制流扁平化 (`S1~S4`，不執行 `S6` 拆檔)** | 不新增任何內部檔案，僅在現有 27 個檔案內部拆解長函式、拉平巢狀並修復 `D4-01`。 | • 檔案拓撲零變動，改動範圍較小 | • `engine.py` 與 `locale.py` 仍維持 800~1,000+ 行，五個正交職責依舊擠在同一檔案，無法根治 `D1-01` (`P0`)。 | ⭐⭐⭐☆☆ |
 | **方案 C：破壞性重構公開 API (`Mode A` 全量改名與拔除舊入口)** | 直接廢除 `AtomicEngine` 類別方法與 `core.config` / `core.vfs` 頂層門面，強制修改全生態系所有模組調用點。 | • 內部結構最極簡 | • 嚴重違反微核心模組對下游模組（`dev`、`server`、`knowledge-db`、`agents-workflow`）之向下相容契約，爆炸半徑過大。 | ⭐☆☆☆☆ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `S1 ~ S6` 外科手術重構處方箋 (Surgical Refactoring Blueprint)
 
@@ -185,7 +181,7 @@ flowchart TD
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **診斷總結**：
   本次針對 `ys_codebase/source/core/`（排除 `tests/`）執行五維度靜態診斷，共識別出 **P0 級問題 2 項**（`D1-01` `engine.py` 1,007 行多重正交職責巨型檔案、`D4-01` `InterProcessLock.acquire` 異常路徑 FD 洩漏風險）、**P1 級問題 12 項**（涵蓋假性實例方法膨脹、跨檔案 Staging 解壓與版本探測重複、超長派發函式、6 層深層巢狀及部分 I/O 繞過 VFS）與 **P2 級問題 5 項**。

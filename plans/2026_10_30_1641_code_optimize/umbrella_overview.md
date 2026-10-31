@@ -2,7 +2,7 @@
 
 > 計畫名稱：2026_10_30_1641_code_optimize  
 > 建立日期：2026-10-30  
-> 計畫狀態：Completed  
+> 計畫狀態：In Progress  
 > Umbrella 模式：Incremental (增量演進型)  
 > 模型：Unknown  
 > 模板版本：v1.2  
@@ -11,7 +11,7 @@
 
 ## 1. 主計畫願景與目標 (Vision & Goals)
 
-- **核心願景**：運用 `/code-optimizer` 技能對 YS-Codebase 核心生態系模組（`core`、`dev`、`server`、`knowledge-db`、`agents-workflow`）分階段執行五維度靜態診斷（`D1~D5`）、業務階段邏輯聚合（`S1`）、無狀態邏輯剝離（`S2`）與行為無損重構（`S3~S6`），消除歷史轉發層、相容別名、循環耦合與巨型檔案/長函式，全面提升代碼內聚度與可維護性。
+- **核心願景**：運用 `/code-optimizer` 技能對 YS-Codebase 核心生態系模組（`core`、`dev`、`server`、`knowledge-db`、`agents-workflow`）與根目錄微核心引導宿主（`yscb.py`）分階段執行五維度靜態診斷（`D1~D5`）、業務階段邏輯聚合（`S1`）、無狀態邏輯剝離（`S2`）與行為無損重構（`S3~S6`），消除歷史轉發層、相容別名、循環耦合與巨型檔案/長函式，全面提升代碼內聚度與可維護性。
 - **架構邊界**：
   - 採增量演進型（`Incremental`）推進，每個子計畫先以 `Research Plan (R01)` 完成五維度靜態診斷與重構處方盤點，待開發者拍板出口後原地升級為實作計畫或分階段落地。
   - 首發子計畫 `sub_01_core_code_optimization` 聚焦於 `ys_codebase/source/core/`（`Module Scope` × `Mode A：新功能收斂期 / 可破壞性變更`），並同步盤點跨模組 `uri.<io> -> vfs.<io>` 調用遷移邊界。
@@ -27,6 +27,7 @@
 | **sub_03** | `sub_03_server_code_optimization` | Full Track (`P00`~`P07`) | `Completed` | 針對 `ys_codebase/source/server/`（9 檔 / 2,263 LOC）執行 `Mode A` 五維度靜態診斷（`R01`~`R03`）、11 項 `Mode A` 清除、`logger.py` 隱藏 `NameError` 與 `_spawn_worker_locked` 管道競爭修復（`R01` 升級 `Full Track` 並完成 `P07` 結案） |
 | **sub_04** | `sub_04_knowledge_db_code_optimization` | Full Track (`P00`~`P07`) | `Completed` | 針對 `ys_codebase/source/knowledge-db/`（30 檔 / 11,535 LOC）執行 `Mode A` 五維度靜態診斷（`R01`~`R03`）、23 項 `Mode A` 清除、`TopologyQueryService` / `io_utils` 剝離與 BM25 打分核心合一（`R01` 升級 `Full Track` 並完成 `P07` 結案） |
 | **sub_05** | `sub_05_agents_workflow_code_optimization` | Full Track (`P00`~`P07`) | `Completed` | 針對 `ys_codebase/source/agents-workflow/`（16 檔 / 8,847 LOC）執行 `Mode A` 五維度靜態診斷（`R01`~`R03`）、19 項 `Mode A` 清除、`session_trace`/`verifier` 模組拆解與循環依賴破除（`R01` 升級 `Full Track` 並完成 `P07` 結案） |
+| **sub_06** | `sub_06_yscb_host_code_optimization` | Research Plan (`P00` + `R01`) | `In Progress` | 針對根目錄微核心引導宿主 `yscb.py`（1 檔 / 793 LOC）執行 `Mode A` 五維度靜態診斷（`R01`）、死代碼與 8 個歷史轉發殼層清除盤點、`core/tests/` 同步遷移映射及 `S1~S6` 重構處方（已落檔 `R01` 並執行 `/pause` 凍結） |
 
 ---
 
@@ -37,4 +38,5 @@
 - [x] **里程碑 3 (`sub_03`)**：完成 `server` 模組 `R01` 五維度靜態診斷報告與後續重構實作閉環
 - [x] **里程碑 4 (`sub_04`)**：完成 `knowledge-db` 模組 `R01` 五維度靜態診斷報告與後續重構實作閉環
 - [x] **里程碑 5 (`sub_05`)**：完成 `agents-workflow` 模組 `R01` 五維度靜斷報告與後續重構實作閉環
+- [ ] **里程碑 6 (`sub_06`)**：完成根目錄引導宿主 `yscb.py` 之 `R01` 五維度靜態診斷報告與後續重構實作閉環
 

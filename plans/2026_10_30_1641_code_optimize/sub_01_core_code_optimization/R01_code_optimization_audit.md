@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize  
 > 調研狀態：Concluded  
 > 模型：Unknown  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -48,7 +48,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 針對 `Mode A` 下 `core` 模組的重構推進範圍（特別是 `uri.<io>` 15 個 VFS 薄轉發函式在跨模組 `dev` 與 `agents-workflow` 尚有約 85~89 處調用點），評估以下三種落地方案：
 
@@ -57,10 +57,6 @@
 | **方案 A：`core` 單模組先行收斂 + 跨模組分階段遷移**<br/>*(Scoped Full Track + Follow-up Sub-plans)* | 於 `sub_01` 內徹底完成 `core` 內部 21 支檔案的 `S1~S6` 重構、死代碼/舊別名物理清除，並將 `core` 內部 ~165 處 `uri.<io>` 100% 改為 `vfs.<io>`；跨模組（`dev`、`agents-workflow`）之 `uri.<io>` 則於同主計畫後續 `sub_02` 遷移後刪除 `uri.py` 轉發層（或於 `sub_01` 一併完成跨模組機械替換）。 | 單次 PR 變更聚焦於 `core`，易於驗證 `core` 206 項單元測試 100% 通過；風險隔離清晰。 | 若不在同一計畫同步替換 `dev`（42 處）與 `agents-workflow`（43 處）的 `uri.<io>`，`uri.py:650-720` 需暫留至 `sub_02` 才能物理刪除。 | ⭐⭐⭐⭐ |
 | **方案 B：`core` 深度重構 + 全倉 `Mode A` 單一正統入口一步到位**<br/>*(Recommended — Full Track with Cross-Module Call-Site Sync)* | 於 `sub_01` 升級為 `Full Track` 時，除完成 `core` 內部 `D1~D5` 重構與 `S1~S6` 拆解外，同步對全倉 `dev`、`agents-workflow`、`knowledge-db` 執行 `uri.<io> -> vfs.<io>` 與 `Config -> ConfigManager` 調用點機械收斂，當場物理刪除 `uri.py:650-720` 全部 15 個轉發函式與所有相容別名。 | 100% 貫徹 `Mode A`「單一正統入口、零薄轉發層、零循環依賴」目標，一步斬斷 `uri <-> vfs` 循環耦合，不留過渡期技術債。 | 需同時跑過 `core`、`dev`、`agents-workflow`、`knowledge-db`、`server` 全生態系測試守門（`dev test --all -q`）。 | ⭐⭐⭐⭐⭐ **(推薦)** |
 | **方案 C：僅做檔案內局部提取（不動公開與內部入口）** | 僅拆分長函式，保留所有 `uri.<io>` 轉發、別名與死方法。 | 修改範圍最小。 | 違背 `Mode A` 破壞性收斂原則，`uri <-> vfs` 循環耦合與死代碼依然殘留。 | ⭐ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `Mode A` 公開入口收斂、薄轉發層、相容別名與死代碼清除清冊 (`S5`)
 
@@ -167,7 +163,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   - 採納 **方案 B（`core` 深度重構 + 全倉 `Mode A` 單一正統入口一步到位）**，於後續啟動實作時將本子計畫 `sub_01_core_code_optimization` 原地升級為 **標準開發計畫 (`Full Track`, `P01~P07`)**。

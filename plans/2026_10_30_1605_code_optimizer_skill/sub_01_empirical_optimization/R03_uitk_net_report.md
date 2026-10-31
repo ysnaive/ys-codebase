@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1605_code_optimizer_skill (sub_01_empirical_optimization)  
 > 調研狀態：Concluded  
 > 模型：Unknown  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -28,7 +28,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 針對 `uitk.net` 實測挖掘出的 6 大核心增量問題，對比各候選改進方案：
 
@@ -41,10 +41,6 @@
 | **增量 4：`D2` 死代碼對靜態欄位、`[InternalsVisibleTo]` 與 Source Generator 之誤判**<br/>**方案 4A（推薦：擴充 `callers + search` 雙重檢索守門涵蓋欄位/屬性/Generator）** | 與 `R02` (`GC_VEX_V5`) 匯流：凡 `callers == 0` 之類別、欄位 (`s_LayoutCallCount`)、屬性、Enum 或含 Source Generator / `[InternalsVisibleTo]` 標記之符號，強制執行 `knowledge-db search "<symbol>"` 跨 `src/` 與 `tests/` 全文檢索確認 | 徹底防止測試探針欄位 (`s_LayoutCallCount`) 與編譯期合成門面被當成死代碼誤刪 | 每次刪除前多 1 次極速 `search` | ★★★★★ |
 | **增量 5：多代盲測「湊數強迫症 (Audit Quota Compulsion)」與 C# 目錄 Namespace 連動**<br/>**方案 5A（推薦：強化 `P0=0 / P1=0` 零處方榮譽結案出口 + 目錄即 Namespace 紅線）** | 1. 於 `SKILL.md` 與 `diagnostic-matrix.md` 明訂：當 `P0=0` 且 `P1=0` 時，直接宣告「已達最佳內聚度，建議出口 ③ 結案」，禁止為湊處方而違反防過度設計紅線；<br/>2. 於 `S6` 明訂：在目錄與 Namespace 1:1 鏡像之專案中，新建子目錄搬移公開型別等同於破壞性變更 Public Namespace | 根除 `R03` 為了不交白卷而亂拆 `StyleSheet.Defaults.cs` 或新建子資料夾破壞 Public Namespace 的現象 | 無額外成本 | ★★★★★ |
 | **增量 6：Umbrella 平行子代理單回合派發溢出與跨模組契約漂移**<br/>**方案 6A（推薦：單回合平行派發上限 `3~4` 個 + 極簡指針 Prompt + `Breaking Signature Manifest` 回報表）** | 於 `exploration-and-delegation.md` 規定：① 單一 Turn 平行 `invoke_subagent` 上限為 `3~4` 個（超過則分批），Prompt 僅傳路徑與規則指針；② 實作子代理完成回條必須附帶 `[Cross-Module Breaking Signature Manifest]` (`Old -> New`) 供主代理對齊 `tests/` 與 `samples/` | 100% 避免 `Step 316` JSON token loop 崩潰，並與 `R02` (`GC_VEX_V5`) 的跨模組交接表完全統一 | 無額外成本 | ★★★★★ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 母倉 6 大共性坑點於 `uitk.net` 之實測命中率與收斂對照
 
@@ -76,7 +72,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   1. **立即修正 `diagnostic-matrix.md §3` 報告結構模板**：將五個診斷區塊改為 `RXX_research_report.md` 四大標準 H2 標題下的 `###` H3 子章節，徹底消滅 `plan verify` 的 `[TRIAGE: FULL_REWRITE]` 退件。

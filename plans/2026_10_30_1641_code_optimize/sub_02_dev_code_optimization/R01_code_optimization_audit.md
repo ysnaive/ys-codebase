@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize  
 > 調研狀態：Concluded  
 > 模型：Unknown  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -40,16 +40,12 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 | 方案 | 運作原理 | 優點 (Pros) | 缺點 / 成本 (Cons) | 適用度評級 |
 | :--- | :--- | :--- | :--- | :---: |
 | **方案 A：`Mode A` 全面破壞性收斂 + 結構拆解**<br/>*(Recommended — Full Track)* | 徹底移除 `ReleasePipeline`、`CheckReport` tuple 解包介面、`Requirement` 舊枚舉別名、`def process(args)` 分支與所有殭屍參數；將 `Checker` 拆分為獨立規則驗證器、合併 `Tester` 與 `Builder` 重複管線、補齊 `SandboxProvisioner` 鎖與回滾保證，並將 `dev` 內 42 處 `uri.<io>` 全面遷移至 `vfs.<io>`。 | 100% 消除歷史相容負債與資源洩漏風險，預計淨減 ~500 LOC，大幅降低 `checker.py` 與 `tester.py` 維護成本。 | 需同步更新 `dev/tests/` 中依賴舊別名或 tuple 解包的斷言（約 6 處測試檔）。 | ⭐⭐⭐⭐⭐ **(推薦)** |
 | **方案 B：保守局部重構（保留相容別名與舊分支）** | 僅拆分內部私有長函式，保留 `ReleasePipeline`、`CheckReport.__iter__`、`Requirement` 別名與 `_normalize_bags`。 | 不需修改既有測試案例。 | 違背 `Mode A` 原則，雙軌別名與死代碼持續污染語意空間。 | ⭐⭐ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `Mode A` 公開入口收斂、薄轉發層、相容別名與死代碼清除清冊 (`S5`)
 
@@ -119,7 +115,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   - 採納 **方案 A（`Mode A` 全面破壞性收斂 + 結構拆解）**，於後續啟動實作時將本子計畫 `sub_02_dev_code_optimization` 原地升級為 **標準開發計畫 (`Full Track`, `P01~P07`)**。

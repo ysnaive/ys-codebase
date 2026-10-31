@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize  
 > 調研狀態：Concluded  
 > 模型：Gemini 4 Argon (Low)  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -48,7 +48,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 ### 2.1 `D1 ~ D5` 五維度分級靜態診斷矩陣 (5-Dimension Diagnostic Matrix)
 
@@ -85,10 +85,6 @@
 | **方案 A：外科手術式模組內聚重構 (`S1~S5` 邏輯收斂 + 零物理拆檔)** | 維持現有 19 個 `.py` 檔案拓撲不變；將跨檔重複之 URI 解析、Header 鍵名常數、`release_targets` 讀取與 `sys.path` 啟動碼收斂至既有基底模組（`_common.py`、`status.py`、`targets.py`）；對 `verifier.py`、`compiler.py`、`publisher.py`、`session_trace.py`、`roadmap.py`、`cli.py` 執行 `S1` 階段拆解、`S2` 無狀態純函式下沉與 `S5` 狀態結構化。 | • **100% 零匯入路徑破壞**：完全相容 `Mode A` 與 `Mode B`，無須額外維護跨檔 Re-export 門面。<br>• **高投資報酬率**：直接消除全部 12 項 `P1` 與 3 項 `P2` 病灶，預計可淨減約 250~350 行冗餘代碼，最大單一函式行數由 260 行降至 $\le 75$ 行。 | • `publisher.py` 與 `verifier.py` 雖內部方法扁平化、類別瘦身，但單檔總行數仍維持在 650~750 行區間。 | ⭐⭐⭐⭐⭐<br>**(推薦首選)** |
 | **方案 B：深度物理模組拆分 (`S1~S6` 全套手術，新增私有子模組)** | 在方案 A 基礎上，進一步對 `publisher.py`（828 行）與 `roadmap.py`（747 行）執行 `S6` 物理拆檔：例如拆出 `_gitignore_sync.py`、`_agents_md_merger.py` 與 `_todo_manager.py`，並於原檔案保留 Re-export（`Mode B`）或全面改寫調用方（`Mode A`）。 | • 單一物理檔案行數全面壓低至 $< 550$ 行，職責物理隔離最徹底。 | • **需要注意動態指紋連動**：`ReleasePublisher._get_sources_digest()`（L201-208）硬編碼了對 `agents_workflow/compiler.py` 與 `agents_workflow/publisher.py` 的 SHA-1 雜湊計算；若將 `publisher.py` 邏輯拆出新檔而未同步更新指紋清單，將破壞 `ensure_jit_release()` 的變更感知自癒契約！ | ⭐⭐⭐☆☆ |
 | **方案 C：保守局部微調（僅修補 `P2` 與單純重複正則）** | 僅清理 `cli.py` 參數解析、重複 `re.search` 與局部常數提取，不動長方法結構與跨檔 URI/Config 收斂。 | • 變更行數最少（$< 80$ 行），風險趨近於零。 | • 無法解決 `_verify_markdown_file`（260 行）、`SessionTraceEngine.analyze`（194 行）與跨檔 4 套 URI 解析分叉等核心 `P1` 維護痛點。 | ⭐⭐☆☆☆ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `S1 ~ S6` 外科手術重構處方箋（Refactoring Blueprint — 基於推薦方案 A）
 
@@ -184,7 +180,7 @@ flowchart TD
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   - 採納 **「方案 A：外科手術式模組內聚重構（`S1~S5` 邏輯收斂 + 零物理拆檔）」**。

@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize  
 > 調研狀態：Concluded  
 > 模型：Gemini 4 Argon (Low)  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -36,7 +36,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 ### 2.1 契約邊界與內部工具函式查驗表 (`Mode A` 收斂基準)
 
@@ -56,10 +56,6 @@
 | **方案 A：局部微調（僅清理死代碼與註解，不拆檔）** | 僅在既有檔案內刪除孤兒方法與薄轉發層，保留 781 行 `master.py` 結構。 | 改動行數少，無須調整模組內匯入路徑。 | 無法解決 `master.py` 巨型破窗（781 行混雜 4 種正交職責）與 HTTP/IPC 耦合問題。 | ⭐⭐ |
 | **方案 B：五維度全面收斂 + `S1~S6` 正交模組物理拆分（推薦）** | 結合 `Mode A` 破壞性清理死代碼，將 `master.py` 的終端格式化與 HTTP Handler 正交職責拆出，並以 `S1~S5` 收斂 IPC 同步、雙重日誌與路徑常數。 | 徹底消除 `P0` 破窗與執行緒競爭隱患，`master.py` 降至 ~420 行，職責單一且 100% 行為無損。 | 涉及模組內跨檔匯入更新（`Full Track` 規模）。 | ⭐⭐⭐⭐⭐ |
 | **方案 C：重寫為 Asyncio 事件迴圈架構** | 將 `ThreadingHTTPServer`、`ModulesWatcher` 與 `DebouncedIOStreamer` 全面改寫為 `asyncio` 協程。 | 減少背景 Daemon 執行緒數量。 | 違反「禁止過度設計」紅線，改變底層並發模型且與既有同步測試套件不相容，風險極高。 | ⭐ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `D1 ~ D5` 五維度分級診斷矩陣
 
@@ -146,7 +142,7 @@ flowchart TD
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **診斷總結**：
   - **`P0`（高危破窗 / 資源競爭）**：共 **2** 項（`master.py` 781 行多重正交職責破窗、`_spawn_worker_locked` 非同步 `_read_ready` 執行緒超時後與 `dispatch_task` 爭搶 `proc.stdout` 管道之競爭風險）。

@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize / sub_03_server_code_optimization  
 > 調研狀態：Concluded  
 > 模型：Gemini 4 Argon (Low)  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -46,7 +46,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 針對 `server` 模組發現之 `D1 ~ D5` 結構病灶（特別是 `master.py` 784 行多重職責耦合與跨檔案重複樣板），提出三種重構深度方案進行權衡：
 
@@ -55,10 +55,6 @@
 | **方案 A：單檔內聯拆解與物理模組拆分 (`S1~S6` Full Track 標準手術)** | 1. 將 `master.py` 784 行按正交職責物理拆分為狀態與橫幅格式器、HTTP 路由處理器與 `MasterSupervisor` 核心編排（`S6`），並在 `master.py` 維持公開符號重匯出。<br>2. 對 `_spawn_worker_locked`、`worker_main`、`start`/`stop` 執行 `S1` 業務階段拆解與 `S3` NDJSON 管道讀取聚合。<br>3. 收斂 `logger.py`、`service.py`、`watcher.py` 之重複骨架與深層巢狀（`S2/S3/S4`）。 | • 徹底解除 `master.py` P0 巨型破窗檔案，單檔行數降至 $\le 450$ 行，最大函式降至 $\le 45$ 行。<br>• 100% 維持對 `core`、`knowledge-db` 與現有測試套件的相容性。<br>• 消除 Worker 管道讀取與日誌歸檔之結構性重複。 | • 涉及模組內新子檔案建立或跨檔移動，變更行數 $> 100$ 行，需走 Full Track 完整回歸驗證。 | ⭐⭐⭐⭐⭐<br>**(推薦首選)** |
 | **方案 B：保守局部打磨 (`S1/S3/S4` 不拆檔)** | 僅在現有 8 個檔案內部進行長函式階段提取（`S1`）、衛語句扁平化（`S4`）與常數提取（`S5`），不拆分 `master.py`。 | • 零新增檔案，改動範圍完全封閉於各單檔內部。<br>• 實作速度極快。 | • `master.py` 仍將維持在 750+ 行，甚至因提取輔助函式而突破 800 行，無法根治 `D1` P0 巨型檔案破窗。 | ⭐⭐⭐☆☆ |
 | **方案 C：維持現狀 (No-Op)** | 僅保留診斷報告作為架構參考，暫不動刀修改任何業務代碼。 | • 零修改風險與回歸成本。 | • `master.py` 持續累積控制平面、HTTP 協議與 CLI 視圖三方耦合技術債。 | ⭐⭐☆☆☆ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `D1 ~ D5` 五維度分級診斷矩陣 (`Diagnostic Matrix`)
 
@@ -143,7 +139,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   強烈建議採納 **「方案 A：單檔內聯拆解與物理模組拆分 (`S1~S6` 標準手術)」**。優先解決 [`server/master.py`](file:///d:/repos/ys_codebase/ys_codebase/source/server/server/master.py) 784 行之 P0 巨型破窗病灶（`F-01`），並同步收斂 `_spawn_worker_locked`、`worker_main`、`logger.py` 與 `service.py` 中的 P1 結構性重複與深層巢狀（`F-02` ~ `F-12`）。在重構期間嚴守防過度設計四大紅線與 `Mode B` 門面相容保護（於 `server.master` 保留原公開符號重匯出），確保對 `core` 熱派發與 `knowledge-db` 背景微服務 100% 零破壞。

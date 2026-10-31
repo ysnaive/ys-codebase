@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1605_code_optimizer_skill (sub_01_empirical_optimization)  
 > 調研狀態：Concluded  
 > 模型：Unknown  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -22,7 +22,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 針對母倉實測暴露出的 5 大核心技能缺陷，以下對比各維度的改進候選方案：
 
@@ -35,10 +35,6 @@
 | **議題 3：S3 同構合併遺失邊界條件**<br/>**方案 3A（推薦：S3 20% 差異分支不變量核對 + Mock/Dummy 同步掃描）** | 於 `refactoring-playbook.md §3 (S3)` 強制要求合併前列出「不相似 20%」的業務守門條件（如 `min_cov` 覆蓋率門檻），並在移除相容分支時同步掃描 `tests/` 內之 `Dummy*`/`Mock*` | 直接防止 `BM25Engine` 合併退化與 `DummyIndex` 簽名失步導致的 `GATE_BOUNCE` | 略微增加 `S3` 重構前的靜態比對步驟 | ★★★★★ |
 | **議題 4：生產代碼殘留審計編號註解**<br/>**方案 4A（推薦：擴充紅線 4 禁寫診斷工單編號與變更歷史）** | 於 `SKILL.md §核心原則 紅線 4` 明確禁止將 `D1-XX`、`F-XX`、`M-XX`、`S1~S6` 或「移除某某舊邏輯」寫入源碼註解與 Docstring | 根除 `knowledge-db` 出現 37 處 `(M-0X / F-0X)` 註解污染的反模式 | 零額外成本 | ★★★★★ |
 | **議題 5：跨代盲審 (`R{NN}`) 與並行延遲測試**<br/>**方案 5A（推薦：原生內建 `R{NN}` 零錨定盲審協議與 Umbrella 批次驗證）** | 於 `SKILL.md` 與 `exploration-and-delegation.md` 支援 `R{NN}_code_optimization_audit.md` 盲審模式（禁讀 `plans/` 既有文檔、雙軌評估 `Mode A/B`）及 Umbrella 子計畫延遲至 `P06` 統一跑測 | 將本次實測極高價值的「無偏見多代盲審收斂法」沉澱為標準能力，免除開發者手寫長 Prompt | 需擴充 `exploration-and-delegation.md` 約 15 行規範 | ★★★★★ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 母倉實測遙測數據與三代收斂軌跡 (PoC Empirical Metrics)
 
@@ -81,7 +77,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **母倉實測推薦落地策略（待與 `R02` / `R03` 下游報告會診後合併執行）**：
   1. **強化 `references/refactoring-playbook.md`**：
