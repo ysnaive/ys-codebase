@@ -1,30 +1,27 @@
 """
 Scaffolder implementation for YS-Codebase modules.
 """
-import os
 import re
 from typing import Tuple
-from core import uri
+from core import vfs
+
 
 class Scaffolder:
-    def __init__(self):
-        pass
-
-    def create_module(self, name: str, description: str = "", author: str = "", desc: str = "") -> Tuple[bool, str]:
+    def create_module(self, name: str, description: str = "") -> Tuple[bool, str]:
         if not name:
             return False, "Module name cannot be empty."
-        
+
         if not re.match(r"^[a-zA-Z0-9_][a-zA-Z0-9_-]*$", name):
             return False, f"Invalid module name '{name}'. Module name must contain only alphanumeric characters, underscores, or hyphens."
-        
+
         target_src_uri = f"module.source://{name}"
-        if uri.exists(target_src_uri):
+        if vfs.exists(target_src_uri):
             return False, f"Module '{name}' already exists at {target_src_uri}."
-        
-        final_desc = desc or description or f"YS-Codebase module: {name}"
-        
+
+        final_desc = description or f"YS-Codebase module: {name}"
+
         # 1. Create manifest.json
-        uri.write_json(f"{target_src_uri}/manifest.json", {
+        vfs.write_json(f"{target_src_uri}/manifest.json", {
             "name": name,
             "version": "0.1.0.0",
             "description": final_desc,
@@ -33,7 +30,7 @@ class Scaffolder:
                 "core": ">=1.0.0"
             }
         })
-        
+
         # 2. Create scripts/cli.py
         cli_content = f'''"""
 CLI Entry point for module {name}.
@@ -51,8 +48,8 @@ def hello(cmd_bags: Any) -> int:
     print(f"[{name}] Hello from YSCB module {name}!")
     return 0
 '''
-        uri.write_text(f"{target_src_uri}/scripts/cli.py", cli_content)
-        
+        vfs.write_text(f"{target_src_uri}/scripts/cli.py", cli_content)
+
         # 3. Create <pkg_name>/__init__.py
         pkg_name = name.replace("-", "_")
         init_content = f'''"""
@@ -60,10 +57,10 @@ def hello(cmd_bags: Any) -> int:
 """
 __version__ = "0.1.0.0"
 '''
-        uri.write_text(f"{target_src_uri}/{pkg_name}/__init__.py", init_content)
-        
+        vfs.write_text(f"{target_src_uri}/{pkg_name}/__init__.py", init_content)
+
         # 4. Create tests/__init__.py and tests/test_basic.py
-        uri.write_text(f"{target_src_uri}/tests/__init__.py", '"""\nTest package.\n"""\n')
+        vfs.write_text(f"{target_src_uri}/tests/__init__.py", '"""\nTest package.\n"""\n')
         test_content = f'''"""
 Basic test for {name}.
 """
@@ -84,8 +81,8 @@ class TestBasic(YSCBTestCase):
 if __name__ == "__main__":
     unittest.main()
 '''
-        uri.write_text(f"{target_src_uri}/tests/test_basic.py", test_content)
-        
+        vfs.write_text(f"{target_src_uri}/tests/test_basic.py", test_content)
+
         # 5. Create .yscbignore
         ignore_content = '''# Development ignore list
 tests/
@@ -93,7 +90,7 @@ tests/
 *.bak
 .pytest_cache/
 '''
-        uri.write_text(f"{target_src_uri}/.yscbignore", ignore_content)
+        vfs.write_text(f"{target_src_uri}/.yscbignore", ignore_content)
 
         # 6. Create contributes/_format.json, contributes/_manifest.md, and sample contributes/core.json
         format_content = {
@@ -106,7 +103,7 @@ tests/
                 }
             }
         }
-        uri.write_json(f"{target_src_uri}/contributes/_format.json", format_content)
+        vfs.write_json(f"{target_src_uri}/contributes/_format.json", format_content)
 
         manifest_content = f"""# {name} Contributes Manifest
 
@@ -115,7 +112,7 @@ tests/
 ## 1. 外部注入清冊 (Egress Contributions)
 - `core.json`: 向微內核註冊之 CLI 指令。
 """
-        uri.write_text(f"{target_src_uri}/contributes/_manifest.md", manifest_content)
+        vfs.write_text(f"{target_src_uri}/contributes/_manifest.md", manifest_content)
 
         core_contrib_content = {
             "commands": {
@@ -133,6 +130,6 @@ tests/
                 }
             }
         }
-        uri.write_json(f"{target_src_uri}/contributes/core.json", core_contrib_content)
-        
+        vfs.write_json(f"{target_src_uri}/contributes/core.json", core_contrib_content)
+
         return True, f"Successfully created module '{name}' at {target_src_uri}."

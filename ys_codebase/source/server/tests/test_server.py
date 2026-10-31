@@ -230,24 +230,26 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_worker_module_cache(self):
-        """FT-01: Verify WarmWorker._module_cache avoids re-executing modules."""
+        """FT-01: Verify WarmWorker.execute_task reuses dispatcher _MODULE_CACHE across calls."""
+        from core.commands.dispatcher import _MODULE_CACHE
+
         worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
-        self.assertEqual(len(worker._module_cache), 0)
 
         # Create a dummy module with execution counter
         mod_dir = os.path.join(self.root_dir, ".modules", "test_cache", "scripts")
+        cli_path = os.path.normpath(os.path.join(mod_dir, "cli.py"))
         os.makedirs(mod_dir, exist_ok=True)
-        with open(os.path.join(mod_dir, "cli.py"), "w", encoding="utf-8") as f:
+        with open(cli_path, "w", encoding="utf-8") as f:
             f.write("EXEC_COUNT = 0\n"
                     "def help(cmd_bags):\n"
                     "    global EXEC_COUNT\n"
                     "    EXEC_COUNT += 1\n"
                     "    return EXEC_COUNT\n")
 
-        # First call: loads module
+        # First call: loads module into dispatcher _MODULE_CACHE
         res1 = worker.execute_task("test_cache", [], cwd=self.root_dir)
         self.assertEqual(res1, 1)
-        self.assertIn("test_cache", worker._module_cache)
+        self.assertIn(cli_path, _MODULE_CACHE)
 
         # Second call: reuses cached module, EXEC_COUNT increments in memory
         res2 = worker.execute_task("test_cache", [], cwd=self.root_dir)
@@ -527,7 +529,22 @@ class TestServerModule(YSCBTestCase):
             return fake_proc
 
         with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen):
-            sup._spawn_worker_locked()
+            ret_pid = sup._spawn_worker_locked()
+            self.assertEqual(ret_pid, 77777)
+
+        # Verify handshake failure (e.g., EOF before worker_ready) cleans up worker and returns 0
+        def mock_popen_unready(cmd, **kwargs):
+            fake_proc = unittest.mock.MagicMock()
+            fake_proc.pid = 77778
+            fake_proc.poll.return_value = 1
+            fake_proc.stdout.readline.return_value = b""
+            fake_proc.stderr = io.BytesIO()
+            return fake_proc
+
+        with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen_unready):
+            unready_pid = sup._spawn_worker_locked()
+            self.assertEqual(unready_pid, 0)
+            self.assertIsNone(sup._worker_proc)
 
         # Real assertion on the PYTHONPATH actually passed by _spawn_worker_locked to subprocess
         self.assertIn("PYTHONPATH", captured_env)
@@ -621,7 +638,7 @@ class TestServerModule(YSCBTestCase):
                 os.remove(state_path)
 
             sup2 = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
-            with unittest.mock.patch.object(sup2, "_spawn_worker") as mock_spawn, \
+            with unittest.mock.patch.object(sup2, "_spawn_worker_locked") as mock_spawn, \
                  unittest.mock.patch("server.master._create_http_server") as mock_http:
                 ret_pid = sup2.start(foreground=False)
                 self.assertEqual(ret_pid, 0)
@@ -630,6 +647,14 @@ class TestServerModule(YSCBTestCase):
                 self.assertFalse(sup2._is_running)
         finally:
             held_lock.release()
+
+        # Verify startup failure after lock acquisition triggers self.stop() and releases lock
+        sup3 = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        with unittest.mock.patch("server.master._create_http_server", side_effect=RuntimeError("bind failed")):
+            with self.assertRaises(RuntimeError):
+                sup3.start(foreground=False)
+        self.assertTrue(sup3._is_stopped)
+        self.assertIsNone(sup3._lock)
 
         self.mark_passed()
 

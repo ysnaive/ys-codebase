@@ -62,6 +62,15 @@ class TestServerLogging(YSCBTestCase):
         self.assertIn("[ERROR] [test_comp] Caught error\n", lines[3])
         self.assertTrue(any("ValueError: Test error exception" in l for l in lines))
 
+        # Verify echo_console=True mirrors output to sys.stdout without raising NameError
+        import io
+        from unittest.mock import patch
+        logger.echo_console = True
+        fake_out = io.StringIO()
+        with patch("sys.stdout", fake_out):
+            logger.info("Console echoed message", component="console_test")
+        self.assertIn("[INFO] [console_test] Console echoed message", fake_out.getvalue())
+
         # Close handle
         logger.archive_and_close()
         self.mark_passed()

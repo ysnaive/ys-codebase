@@ -5,7 +5,6 @@ YS-Codebase Update Checker with 12-Hour Throttling & Non-Blocking Tips.
 from typing import Dict, Any, List, Optional
 import os
 import re
-import sys
 import json
 import time
 import urllib.request
@@ -53,9 +52,9 @@ class UpdateChecker:
         return {}
 
     def _load_cache(self) -> Dict[str, Any]:
-        if uri.exists(self.cache_uri):
+        if vfs.exists(self.cache_uri):
             try:
-                data = uri.read_json(self.cache_uri)
+                data = vfs.read_json(self.cache_uri)
                 if isinstance(data, dict):
                     return data
             except Exception:
@@ -64,8 +63,8 @@ class UpdateChecker:
 
     def _save_cache(self, data: Dict[str, Any]) -> None:
         try:
-            uri.makedirs("cache://core", exist_ok=True)
-            uri.write_json(self.cache_uri, data)
+            vfs.makedirs("cache://core", exist_ok=True)
+            vfs.write_json(self.cache_uri, data)
         except Exception:
             pass
 
@@ -75,7 +74,7 @@ class UpdateChecker:
         - 若 module_name 為 None：重設快取，清空所有更新項目。
         - 若提供 module_name：自快取 updates 字典中移除該模組並回存。
         """
-        if not uri.exists(self.cache_uri):
+        if not vfs.exists(self.cache_uri):
             return
         cached = self._load_cache()
         if module_name is None:

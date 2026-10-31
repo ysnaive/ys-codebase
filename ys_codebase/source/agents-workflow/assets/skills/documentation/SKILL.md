@@ -1,6 +1,6 @@
 ---
 name: documentation
-description: 定位、檢索、撰寫與審校 `__${workflow.docs://}__` 系統知識庫文檔 (ARCHITECTURE.md、模組 README.md、專題手冊、DESIGN_NOTES.md) 與原始碼 Docstring，落實 7 大知識維度歸屬與三層文檔交付對齊。觸發情境：查閱或更新 `__${workflow.docs://}__` 架構與防坑手冊、新增公開 API 註解、執行結案階段 (Phase 07 / FP-03) 三層文檔審查。排除情境：建立或管理 `__${workflow.plans://}__` 下之開發過程產物如 P00~P07、fast_track_plan 或 revision_log（改用 development-sop）。
+description: 撰寫與審校 `__${workflow.docs://}__` 系統知識庫文檔 (ARCHITECTURE/README/DESIGN_NOTES) 與公開 API Docstring。觸發情境：查閱或更新 `__${workflow.docs://}__` 文檔、新增公開 API 註解、執行結案三層文檔對齊審查。
 ---
 
 # 專案知識庫架構與閱讀導引 (Documentation Standards - Reader's Guide)

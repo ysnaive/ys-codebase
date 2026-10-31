@@ -5,24 +5,21 @@ Migrated to core.commands active execution contract with strong-typed CmdBags.
 import sys
 import os
 import json
-from typing import Any, List, Optional
+from typing import Any, List, Dict
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
-from core import uri
-from core import semver
-
+from core import uri, vfs, semver
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
     """容錯正規化：若傳入 List[str] 則包裝為 CmdBags，支援內部測試直呼與帶值短/長選項別名解析。"""
     if isinstance(cmd_bags, CmdBags):
         return cmd_bags
     if isinstance(cmd_bags, (list, tuple)):
-        args = list(cmd_bags)
-        raw_cmd = " ".join(args)
-        opts = {}
-        pos = []
-        value_options = {"k", "pattern", "m", "msg", "message", "j", "jobs", "dir", "type", "target", "desc", "report-json"}
+        value_options = {
+            "k", "pattern", "m", "msg", "message", "j", "jobs",
+            "dir", "type", "target", "desc", "report-json",
+        }
         alias_map = {
             "k": "pattern",
             "pattern": "k",
@@ -44,42 +41,70 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
             "stress": "perf",
             "perf": "stress",
         }
+        args = list(cmd_bags)
+        raw_cmd = " ".join(args)
+        opts: Dict[str, CmdOption] = {}
+        pos: List[str] = []
         idx = 0
         while idx < len(args):
             a = args[idx]
-            if a.startswith("--"):
-                k = a[2:]
+            if a.startswith("-") and len(a) > 1:
+                k = a[2:] if a.startswith("--") else a[1:]
                 v: Any = True
                 if "=" in k:
-                    k, val = k.split("=", 1)
-                    v = val
+                    k, v = k.split("=", 1)
                 elif k in value_options and idx + 1 < len(args) and not args[idx + 1].startswith("-"):
                     v = args[idx + 1]
                     idx += 1
                 opts[k] = CmdOption(name=k, params=v)
-                if k in alias_map:
-                    alt = alias_map[k]
-                    if alt not in opts:
-                        opts[alt] = CmdOption(name=alt, params=v)
-            elif a.startswith("-") and len(a) > 1:
-                k = a[1:]
-                v = True
-                if "=" in k:
-                    k, val = k.split("=", 1)
-                    v = val
-                elif k in value_options and idx + 1 < len(args) and not args[idx + 1].startswith("-"):
-                    v = args[idx + 1]
-                    idx += 1
-                opts[k] = CmdOption(name=k, params=v)
-                if k in alias_map:
-                    alt = alias_map[k]
-                    if alt not in opts:
-                        opts[alt] = CmdOption(name=alt, params=v)
+                alt = alias_map.get(k)
+                if alt and alt not in opts:
+                    opts[alt] = CmdOption(name=alt, params=v)
             else:
                 pos.append(a)
             idx += 1
         return CmdBags(raw_cmd=raw_cmd, command=default_cmd, args=pos, options=opts)
     return CmdBags(raw_cmd="", command=default_cmd, args=[], options={})
+
+
+def _get_short_to_canonical_pairs() -> Dict[str, str]:
+    """回傳短別名與對應長選項映射表。"""
+    return {
+        "k": "pattern",
+        "j": "jobs",
+        "a": "all",
+        "q": "quiet",
+        "v": "verbose",
+        "f": "force",
+        "no-parallel": "sequential",
+        "stress": "perf",
+    }
+
+
+def _should_skip_alias(opt_name: str, options: dict) -> bool:
+    """若短別名與對應長選項同時存在於 options，略過短別名以避免重複展開。"""
+    canon = _get_short_to_canonical_pairs().get(opt_name)
+    return bool(canon and canon in options)
+
+
+def _build_tester_argv(subcmd: str, bags: CmdBags) -> List[str]:
+    raw_args = [subcmd]
+    if bags.args:
+        sub_args = bags.args[1:] if bags.args[0] == subcmd else bags.args
+        raw_args.extend(sub_args)
+    seen_opts = set()
+    short_pairs = _get_short_to_canonical_pairs()
+    for opt_name, opt in bags.options.items():
+        if opt_name in short_pairs and _should_skip_alias(opt_name, bags.options):
+            continue
+        if opt_name in seen_opts:
+            continue
+        seen_opts.add(opt_name)
+        if opt.params is True:
+            raw_args.append(f"--{opt_name}")
+        elif opt.params is not False and opt.params is not None:
+            raw_args.append(f"--{opt_name}={opt.params}")
+    return raw_args
 
 
 def _handle_bump(subcmd: str, cmd_bags: CmdBags) -> int:
@@ -89,19 +114,19 @@ def _handle_bump(subcmd: str, cmd_bags: CmdBags) -> int:
     if not targets:
         print(f"[dev:{subcmd}] Usage: python yscb.py dev {subcmd} <module_name>")
         return 1
-    
+
     mod_name = targets[0]
     src_manifest_uri = f"module.source://{mod_name}/manifest.json"
-    if not uri.exists(src_manifest_uri):
+    if not vfs.exists(src_manifest_uri):
         print(f"[dev:{subcmd}] Error: Source module '{mod_name}' not found at {src_manifest_uri}.", file=sys.stderr)
         return 1
 
     try:
-        manifest_data = uri.read_json(src_manifest_uri)
+        manifest_data = vfs.read_json(src_manifest_uri)
         curr_ver = manifest_data.get("version", "1.0.0.0")
         next_ver = semver.bump_version(curr_ver, bump_type)
         manifest_data["version"] = next_ver
-        uri.write_json(src_manifest_uri, manifest_data, indent=2)
+        vfs.write_json(src_manifest_uri, manifest_data, indent=2)
         print(f"[dev:{subcmd}] Successfully bumped '{mod_name}': {curr_ver} -> {next_ver} ({bump_type}).")
         return 0
     except Exception as e:
@@ -142,59 +167,45 @@ def check(cmd_bags: Any) -> int:
         if json_output:
             print(json.dumps({mod: rep.to_dict() for mod, rep in reports.items()}, indent=2))
             return 0 if all(rep.passed for rep in reports.values()) else 1
-
-        print("=" * 70)
-        print("YS-Codebase Module Compliance Diagnostic Report")
-        print("=" * 70)
-        all_passed = True
-        pass_cnt, warn_cnt, fail_cnt = 0, 0, 0
-
-        for mod, rep in reports.items():
-            if rep.status == CheckSeverity.PASS:
-                pass_cnt += 1
-                print(f"[*] Module: {mod:<50} [PASS]")
-            elif rep.status == CheckSeverity.WARN:
-                warn_cnt += 1
-                print(f"[*] Module: {mod:<50} [WARN]")
-                for issue in rep.issues:
-                    if issue.severity == CheckSeverity.WARN:
-                        loc = f" ({issue.file_path})" if issue.file_path else ""
-                        print(f"    |-- [WARN] [{issue.category}]{loc} {issue.message}")
-            else:
-                fail_cnt += 1
-                all_passed = False
-                print(f"[*] Module: {mod:<50} [FAIL]")
-                for issue in rep.issues:
-                    loc = f" ({issue.file_path})" if issue.file_path else ""
-                    tag = issue.severity.value
-                    print(f"    |-- [{tag}] [{issue.category}]{loc} {issue.message}")
-
-        print("-" * 70)
-        status_text = "PASSED" if all_passed and warn_cnt == 0 else ("WARNINGS FOUND" if all_passed else "FAILED (Release Blocked)")
-        print(f"Summary : {len(reports)} Total, {pass_cnt} Passed, {warn_cnt} Warnings, {fail_cnt} Failed")
-        print(f"Status  : {status_text}")
-        print("=" * 70)
-        return 0 if all_passed else 1
+        title = "YS-Codebase Module Compliance Diagnostic Report"
     else:
         name = bags.args[0]
         rep = checker.check_module(name)
         if json_output:
             print(json.dumps(rep.to_dict(), indent=2))
             return 0 if rep.passed else 1
+        reports = {name: rep}
+        title = f"YS-Codebase Module Compliance Report: {name}"
 
-        print("=" * 70)
-        print(f"YS-Codebase Module Compliance Report: {name}")
-        print("=" * 70)
-        print(f"[*] Module: {name:<50} [{rep.status.value}]")
+    print("=" * 70)
+    print(title)
+    print("=" * 70)
+    all_passed = True
+    pass_cnt, warn_cnt, fail_cnt = 0, 0, 0
+
+    for mod, rep in reports.items():
+        print(f"[*] Module: {mod:<50} [{rep.status.value}]")
+        if rep.status == CheckSeverity.PASS:
+            pass_cnt += 1
+        elif rep.status == CheckSeverity.WARN:
+            warn_cnt += 1
+        else:
+            fail_cnt += 1
+            all_passed = False
+
         for issue in rep.issues:
+            if check_all and rep.status == CheckSeverity.WARN and issue.severity != CheckSeverity.WARN:
+                continue
             loc = f" ({issue.file_path})" if issue.file_path else ""
-            tag = issue.severity.value
-            print(f"    |-- [{tag}] [{issue.category}]{loc} {issue.message}")
-        print("-" * 70)
-        status_text = "PASSED" if rep.passed and not rep.has_warns else ("WARNINGS FOUND" if rep.passed else "FAILED (Release Blocked)")
-        print(f"Status  : {status_text}")
-        print("=" * 70)
-        return 0 if rep.passed else 1
+            print(f"    |-- [{issue.severity.value}] [{issue.category}]{loc} {issue.message}")
+
+    print("-" * 70)
+    status_text = "PASSED" if all_passed and warn_cnt == 0 else ("WARNINGS FOUND" if all_passed else "FAILED (Release Blocked)")
+    if check_all:
+        print(f"Summary : {len(reports)} Total, {pass_cnt} Passed, {warn_cnt} Warnings, {fail_cnt} Failed")
+    print(f"Status  : {status_text}")
+    print("=" * 70)
+    return 0 if all_passed else 1
 
 
 def build(cmd_bags: Any) -> int:
@@ -267,11 +278,8 @@ def release_check(cmd_bags: Any) -> int:
     releaser = Releaser()
 
     if bags.has_option("all") or bags.has_option("a") or not bags.args:
-        src_root = uri.resolve("module.source://")
-        modules = [
-            d for d in sorted(os.listdir(src_root))
-            if os.path.isdir(os.path.join(src_root, d)) and not d.startswith(".") and os.path.isfile(os.path.join(src_root, d, "manifest.json"))
-        ]
+        from dev.checker import discover_source_modules
+        modules = discover_source_modules()
         all_passed = True
         print(f"[dev:release-check] Checking release readiness for all {len(modules)} modules...")
         for mod_name in modules:
@@ -346,93 +354,25 @@ def bump_revision(cmd_bags: Any) -> int:
     return _handle_bump("bump-revision", bags)
 
 
-def alias_map_skip(opt_name: str, options: dict) -> bool:
-    """若短別名與對應長選項同時存在於 options，略過短別名以避免重複展開。"""
-    pairs = {
-        "k": "pattern",
-        "j": "jobs",
-        "a": "all",
-        "q": "quiet",
-        "v": "verbose",
-        "f": "force",
-        "no-parallel": "sequential",
-        "stress": "perf",
-    }
-    canon = pairs.get(opt_name)
-    return bool(canon and canon in options)
-
-
 def test(cmd_bags: Any) -> int:
     """Run module tests inside an isolated sandbox."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "test")
-    raw_args = ["test"]
-    if bags.args:
-        sub_args = bags.args[1:] if bags.args[0] == "test" else bags.args
-        raw_args.extend(sub_args)
-    canonical_skip = {"k", "j", "a", "q", "v", "f", "no-parallel", "stress"}
-    seen_opts = set()
-    for opt_name, opt in bags.options.items():
-        if opt_name in canonical_skip and alias_map_skip(opt_name, bags.options):
-            continue
-        if opt_name in seen_opts:
-            continue
-        seen_opts.add(opt_name)
-        if opt.params is True:
-            raw_args.append(f"--{opt_name}")
-        elif opt.params is not False and opt.params is not None:
-            raw_args.append(f"--{opt_name}={opt.params}")
     from dev.tester import Tester
-    tester = Tester()
-    return tester.run(raw_args)
+    return Tester().run(_build_tester_argv("test", bags))
 
 
 def op_mksb(cmd_bags: Any) -> int:
     """Internal atomic sandbox creation operation."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "op-mksb")
-    raw_args = ["op-mksb"]
-    if bags.args:
-        sub_args = bags.args[1:] if bags.args[0] == "op-mksb" else bags.args
-        raw_args.extend(sub_args)
-    canonical_skip = {"k", "j", "a", "q", "v", "f", "no-parallel", "stress"}
-    seen_opts = set()
-    for opt_name, opt in bags.options.items():
-        if opt_name in canonical_skip and alias_map_skip(opt_name, bags.options):
-            continue
-        if opt_name in seen_opts:
-            continue
-        seen_opts.add(opt_name)
-        if opt.params is True:
-            raw_args.append(f"--{opt_name}")
-        elif opt.params is not False and opt.params is not None:
-            raw_args.append(f"--{opt_name}={opt.params}")
     from dev.tester import Tester
-    tester = Tester()
-    return tester.run(raw_args)
+    return Tester().run(_build_tester_argv("op-mksb", bags))
 
 
 def op_test(cmd_bags: Any) -> int:
     """Internal atomic test runner operation."""
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "op-test")
-    raw_args = ["op-test"]
-    if bags.args:
-        sub_args = bags.args[1:] if bags.args[0] == "op-test" else bags.args
-        raw_args.extend(sub_args)
-    canonical_skip = {"k", "j", "a", "q", "v", "f", "no-parallel", "stress"}
-    seen_opts = set()
-    for opt_name, opt in bags.options.items():
-        if opt_name in canonical_skip and alias_map_skip(opt_name, bags.options):
-            continue
-        if opt_name in seen_opts:
-            continue
-        seen_opts.add(opt_name)
-        if opt.params is True:
-            raw_args.append(f"--{opt_name}")
-        elif opt.params is not False and opt.params is not None:
-            raw_args.append(f"--{opt_name}={opt.params}")
     from dev.tester import Tester
-    tester = Tester()
-    return tester.run(raw_args)
-
+    return Tester().run(_build_tester_argv("op-test", bags))

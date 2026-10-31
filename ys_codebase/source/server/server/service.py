@@ -13,8 +13,45 @@ import logging
 import os
 import sys
 import threading
-import time
 from typing import Any, Dict, List, Optional
+
+
+def _load_service_class_from_uri(uri_str: str, provider: str = "unknown") -> Optional[type]:
+    """Resolves and imports a service worker class from a 'code.class://' or dotted URI string."""
+    raw_str = uri_str
+    if raw_str.startswith("code.class://"):
+        raw_str = raw_str[len("code.class://"):]
+
+    if ":" in raw_str:
+        mod_path, cls_name = raw_str.split(":", 1)
+    elif "." in raw_str:
+        mod_path, cls_name = raw_str.rsplit(".", 1)
+    else:
+        return None
+
+    mod_path = mod_path.replace("/", ".")
+    if "." in mod_path:
+        first_seg, rest = mod_path.split(".", 1)
+        mod_path = f"{first_seg.replace('-', '_')}.{rest}"
+    else:
+        mod_path = mod_path.replace("-", "_")
+
+    try:
+        mod = importlib.import_module(mod_path)
+    except ModuleNotFoundError:
+        stripped = False
+        if provider and provider != "unknown":
+            prov_norm = f"{provider.replace('-', '_')}."
+            if mod_path.startswith(prov_norm):
+                candidate_path = mod_path[len(prov_norm):]
+                try:
+                    mod = importlib.import_module(candidate_path)
+                    stripped = True
+                except ModuleNotFoundError:
+                    pass
+        if not stripped:
+            raise
+    return getattr(mod, cls_name)
 
 
 class BaseServiceWorker(ABC):
@@ -97,11 +134,10 @@ class ServiceManager:
 
             if isinstance(services_data, list) and services_data:
                 for item in services_data:
-                    provider = item.get("__provider__") or item.get("_provider") or item.get("provider") or "unknown"
+                    provider = item.get("__provider__") or item.get("_provider") or "unknown"
                     self._load_service_item(item, provider=provider, yscb_root=yscb_root)
                 return
 
-            # Fallback to scanning .modules/*/contributes/server.json if contributes cache unavailable
             modules_dir = os.path.join(yscb_root, ".modules")
             if os.path.isdir(modules_dir):
                 for mod_name in sorted(os.listdir(modules_dir)):
@@ -112,65 +148,28 @@ class ServiceManager:
                                 sdata = json.load(f)
                                 for item in sdata.get("services", []):
                                     self._load_service_item(item, provider=mod_name, yscb_root=yscb_root)
-                        except Exception as ex:
+                        except (OSError, ValueError) as ex:
                             logging.warning(f"[Server Service] Error reading {srv_json}: {ex}")
         except Exception as e:
             logging.warning(f"[Server Service] Failed to load contributes services: {e}")
 
     def _load_service_item(self, item: Dict[str, Any], provider: str = "unknown", yscb_root: Optional[str] = None) -> None:
-        worker_cls_str = item.get("worker_class") or item.get("entry")
+        worker_cls_str = item.get("worker_class")
         if not worker_cls_str or not isinstance(worker_cls_str, str):
             return
 
-        service_name = item.get("name") or item.get("id") or "unnamed_service"
+        service_name = item.get("name") or "unnamed_service"
         auto_start = item.get("auto_start", True)
 
-        # Dynamic path injection for provider module under .modules/<provider>
         if yscb_root and provider and provider != "unknown":
             prov_dir = os.path.join(yscb_root, ".modules", provider)
             if prov_dir not in sys.path:
                 sys.path.insert(0, prov_dir)
 
         try:
-            raw_str = worker_cls_str
-            for prefix in ("code.class://", "code.func://"):
-                if raw_str.startswith(prefix):
-                    raw_str = raw_str[len(prefix):]
-                    break
-
-            if ":" in raw_str:
-                mod_path, cls_name = raw_str.split(":", 1)
-            elif "." in raw_str:
-                mod_path, cls_name = raw_str.rsplit(".", 1)
-            else:
+            cls_obj = _load_service_class_from_uri(worker_cls_str, provider=provider)
+            if cls_obj is None:
                 return
-
-            # Normalize hyphenated module prefix in path (e.g. knowledge-db/service -> knowledge_db.service)
-            mod_path = mod_path.replace("/", ".")
-            if "." in mod_path:
-                first_seg, rest = mod_path.split(".", 1)
-                mod_path = f"{first_seg.replace('-', '_')}.{rest}"
-            else:
-                mod_path = mod_path.replace("-", "_")
-
-            # Try to import directly first; if not found and prefixed by provider, attempt stripping provider prefix
-            try:
-                mod = importlib.import_module(mod_path)
-            except ModuleNotFoundError:
-                stripped = False
-                if provider and provider != "unknown":
-                    prov_norm = f"{provider.replace('-', '_')}."
-                    if mod_path.startswith(prov_norm):
-                        candidate_path = mod_path[len(prov_norm):]
-                        try:
-                            mod = importlib.import_module(candidate_path)
-                            mod_path = candidate_path
-                            stripped = True
-                        except ModuleNotFoundError:
-                            pass
-                if not stripped:
-                    raise
-            cls_obj = getattr(mod, cls_name)
             instance = cls_obj()
             self.register(
                 instance,
@@ -193,7 +192,7 @@ class ServiceManager:
                 except Exception as e:
                     logging.error(f"[Server Service] Failed to start worker '{name}': {e}")
 
-    def stop_all(self, timeout_sec: float = 2.0) -> None:
+    def stop_all(self) -> None:
         with self._lock:
             for name, worker in self._services.items():
                 try:

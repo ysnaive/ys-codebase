@@ -8,6 +8,7 @@ import os
 import sys
 import importlib.util
 from core import uri
+from core import vfs
 from core.context import ExecutionContext
 
 
@@ -57,12 +58,12 @@ def broadcast(
                     executed_hooks.add(mod_name)
                     targets.append((mod_name, os.path.abspath(hook_file)))
     else:
-        if not uri.exists("module://"):
+        if not vfs.exists("module://"):
             return results
         try:
-            for mod in sorted(uri.listdir("module://")):
+            for mod in sorted(vfs.listdir("module://")):
                 hook_uri = f"module://{mod}/scripts/hook.{emit_module}.py"
-                if uri.exists(hook_uri):
+                if vfs.exists(hook_uri):
                     hook_real_path = uri.resolve(hook_uri)
                     if os.path.isfile(hook_real_path):
                         targets.append((mod, hook_real_path))
@@ -104,11 +105,6 @@ def broadcast(
                 traceback.print_exc(file=sys.stderr)
 
     return results
-
-
-# Backward compatible alias for broadcast
-emit = broadcast
-
 
 
 def get_contributed_events() -> Dict[str, List[Dict[str, str]]]:

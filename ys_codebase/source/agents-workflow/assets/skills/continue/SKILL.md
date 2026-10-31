@@ -1,6 +1,6 @@
 ---
 name: continue
-description: 讀取既有計畫之交接快照或階段產物以定位斷點並恢復開發進度。僅於顯式輸入 /continue 或明確指示接續既有計畫時觸發。
+description: 讀取既有計畫之交接快照或階段產物以定位斷點並恢復開發進度。僅於顯式輸入 /continue 或明確要求接續既有開發計畫時觸發。
 ---
 
 # 接續開發計畫工作流 (Continue)
@@ -11,8 +11,8 @@ description: 讀取既有計畫之交接快照或階段產物以定位斷點並�
 
 ## 適用情境與觸發時機
 
-- **適用情境**：`__${project://plans/}__` 中已有進行中之開發計畫（Full Track、Fast Track、Umbrella、Revision 或 Research）。
-- **觸發時機**：開發者輸入 `/continue`（或 `/Continue`），或指示接續特定既有計畫。
+- **適用情境**：`__${project://plans}__/` 中已有進行中之開發計畫（Full Track、Fast Track、Umbrella、Revision 或 Research）。
+- **觸發時機**：開發者輸入 `/continue`，或明確要求接續既有開發計畫。
 - **排除情境（負向邊界）**：
   - **建立全新功能計畫**：若目標計畫目錄尚不存在，請改用 [new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。
   - **自動連續執行多階段**：若開發者要求不經中間停頓直接跑完 Phase 01~05，請改用 [auto](`__#{module://agents-workflow/assets/skills/auto/SKILL.md}__`)。
@@ -24,11 +24,10 @@ description: 讀取既有計畫之交接快照或階段產物以定位斷點並�
 開始執行時，請複製以下檢核表追蹤狀態恢復流程：
 
 ```markdown
-/Continue 狀態恢復檢核表：
-- [ ] 步驟 1：執行 `plan status --resume` 定位目標計畫、取得確定性下一步領航指令並自動消費刪除 handoff.md
+/continue 狀態恢復檢核表：
+- [ ] 步驟 1：執行 `plan status --resume` 定位目標計畫、取得下一步領航之 `required_reference_path` 並自動消費刪除 handoff.md
 - [ ] 步驟 2：若環境無終端權限（唯讀沙盒 Fallback），手動檢查 handoff.md（閱後即焚）與最新階段檔案標頭狀態
-- [ ] 步驟 3：精讀領航指定之 `required_reference_path` 階段作業手冊
-- [ ] 步驟 4：呈遞極簡接續狀態卡並依 development-sop 規範銜接下一步動作
+- [ ] 步驟 3：精讀領航指定之階段作業手冊，呈遞極簡接續狀態卡並銜接下一步動作
 ```
 
 ### 步驟 1：執行確定性狀態領航與 `handoff.md` 原子閱後即焚 (`CLI-First Resume`)
@@ -61,8 +60,8 @@ description: 讀取既有計畫之交接快照或階段產物以定位斷點並�
 對話 Session **嚴禁代碼傾倒、全文重複或無關推論**，強制僅向開發者呈遞以下極簡接續狀態卡，並等待確認或直接進入下一個動作：
 
 ```markdown
-### [CONTINUE] /Continue 計畫狀態已恢復
-- **目標計畫**：[{plan_name}](`__${project://plans/}__`/{plan_name}/)
+### [CONTINUE] /continue 計畫狀態已恢復
+- **目標計畫**：[{plan_name}](`__${project://plans}__/{plan_name}/`)
 - **計畫模式**：[Full Track / Fast Track / Umbrella 子計畫 / Revision / Research]
 - **當前斷點**：[Phase X 或檔案名稱 (狀態: Confirmed / Passed / In Progress)]
 - **恢復依據**：[已成功載入 handoff.md 現場快照並清除 / 依產出物檔案結構判定]

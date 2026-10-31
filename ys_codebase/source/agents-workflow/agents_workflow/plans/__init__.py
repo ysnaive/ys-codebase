@@ -1,7 +1,12 @@
 """
 agents_workflow.plans — 開發計畫 (Dev Plans) 工具鏈子套件。
 包含計畫安全歸檔 (PlanArchiver)、狀態掃描 (PlanScanner)、歷史與決策檢索 (PlanSearcher) 與規範稽核 (PlanVerifier)。
+採用 PEP 562 模組級 __getattr__ 延遲載入，避免無關命令啟動時全量載入所有子模組。
 """
+
+from typing import Any
+from ._common import resolve_plan_uri, parse_markdown_blockquote_headers
+
 
 class PlansToolchainError(Exception):
     """Plans 工具鏈通用例外基底。"""
@@ -28,30 +33,23 @@ class PlanDestinationExistsError(PlansToolchainError):
     pass
 
 
-from pathlib import Path
-from typing import Optional
-
-def _resolve_uri_path(uri_str: str, default_fallback: Optional[str] = None) -> Optional[Path]:
-    """安全解析語意 URI，若無 core 上下文或解析失敗則回傳 default_fallback 或 None。"""
-    try:
-        from core.uri import resolve
-        resolved = resolve(uri_str)
-        return Path(resolved).resolve()
-    except Exception:
-        if default_fallback:
-            return Path(default_fallback).resolve()
-        return None
-
-
-from .archiver import PlanArchiver
-from .scanner import PlanScanner
-from .searcher import PlanSearcher
-from .verifier import PlanVerifier, PlanSeverity, PlanIssue, PlanReport
-from .status import PlanStatusResolver
-from .session_trace import FrictionSignal, SessionTraceReport, SessionTraceEngine
+_LAZY_EXPORTS = {
+    "PlanArchiver": (".archiver", "PlanArchiver"),
+    "PlanScanner": (".scanner", "PlanScanner"),
+    "PlanSearcher": (".searcher", "PlanSearcher"),
+    "PlanVerifier": (".verifier", "PlanVerifier"),
+    "PlanSeverity": (".verifier", "PlanSeverity"),
+    "PlanIssue": (".verifier", "PlanIssue"),
+    "PlanReport": (".verifier", "PlanReport"),
+    "PlanStatusResolver": (".status", "PlanStatusResolver"),
+    "FrictionSignal": (".session_trace", "FrictionSignal"),
+    "SessionTraceReport": (".session_trace", "SessionTraceReport"),
+    "SessionTraceEngine": (".session_trace", "SessionTraceEngine"),
+}
 
 __all__ = [
-    "_resolve_uri_path",
+    "resolve_plan_uri",
+    "parse_markdown_blockquote_headers",
     "PlansToolchainError",
     "PlanNotFoundError",
     "PlanFormatError",
@@ -70,3 +68,14 @@ __all__ = [
     "SessionTraceEngine",
 ]
 
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 模組級延遲載入。"""
+    if name in _LAZY_EXPORTS:
+        import importlib
+        mod_rel, attr_name = _LAZY_EXPORTS[name]
+        module = importlib.import_module(mod_rel, __name__)
+        val = getattr(module, attr_name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

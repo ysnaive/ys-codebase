@@ -6,12 +6,13 @@ from dev.testing import YSCBTestCase, require, Requirement
 from core import contributes
 from core.contributes import (
     ContributesAggregator,
+    _deep_merge,
     _tag_provider,
     _get_contributes_meta_uri,
     _is_contributes_dirty,
     get,
 )
-from core import uri
+from core import uri, vfs
 
 class TestCoreContributes(YSCBTestCase):
     def setUp(self):
@@ -25,17 +26,17 @@ class TestCoreContributes(YSCBTestCase):
         self.assertTrue(isinstance(res, dict))
         
         # Verify cache file exists for core
-        self.assertTrue(uri.exists("cache://core/contributes.merged.json"))
+        self.assertTrue(vfs.exists("cache://core/contributes.merged.json"))
         # Verify config directory is NOT polluted with merged artifact
-        self.assertFalse(uri.exists("config://core/contributes.merged.json"))
-        self.assertFalse(uri.exists("config://dev/contributes.merged.json"))
+        self.assertFalse(vfs.exists("config://core/contributes.merged.json"))
+        self.assertFalse(vfs.exists("config://dev/contributes.merged.json"))
         self.mark_passed()
 
     def test_deep_merge_dictionary_and_lists(self):
         """Verify recursive cascade deep merge logic."""
         base = {"schemes": ["a", "b"], "opts": {"timeout": 10, "debug": False}}
         overlay = {"schemes": ["b", "c"], "opts": {"debug": True, "extra": "yes"}}
-        self.aggregator._deep_merge(base, overlay)
+        _deep_merge(base, overlay)
         
         self.assertEqual(base["schemes"], ["a", "b", "c"])
         self.assertEqual(base["opts"]["timeout"], 10)
@@ -56,7 +57,7 @@ class TestCoreContributes(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_contributes_get_sdk(self):
-        """FT-04: Verify core.contributes.get and get_for_current_module SDK."""
+        """FT-04: Verify core.contributes.get SDK."""
         # 1. Direct get for core
         core_data = contributes.get("core")
         self.assertTrue(isinstance(core_data, dict))
@@ -65,9 +66,9 @@ class TestCoreContributes(YSCBTestCase):
         schemes = contributes.get("core", "uri_schemes", default=[])
         self.assertTrue(isinstance(schemes, list))
 
-        # 3. Get for current module in module_scope
+        # 3. Get for active module context via uri.get_module_context()
         with uri.module_scope("core"):
-            mod_data = contributes.get_for_current_module()
+            mod_data = contributes.get(uri.get_module_context())
             self.assertEqual(mod_data, core_data)
         self.mark_passed()
 
@@ -78,17 +79,17 @@ class TestCoreContributes(YSCBTestCase):
             "commands": {
                 "custom_override_cmd": {
                     "description": "Project specific command override",
-                    "case_pros": ["專案特化使用"]
+                    "usage": {"pros": ["專案特化使用"]}
                 }
             }
         }
-        uri.makedirs("config://core", exist_ok=True)
+        vfs.makedirs("config://core", exist_ok=True)
         try:
             # 1. Setup mock contribute.json in config://core/contribute.json
-            uri.write_json("config://core/contribute.json", proj_contrib)
+            vfs.write_json("config://core/contribute.json", proj_contrib)
 
             # 2. Setup mock contribute.local.json (should be ignored)
-            uri.write_json("config://core/contribute.local.json", {
+            vfs.write_json("config://core/contribute.local.json", {
                 "commands": {
                     "ignored_local_cmd": {"description": "should not appear"}
                 }
@@ -107,9 +108,9 @@ class TestCoreContributes(YSCBTestCase):
             self.assertNotIn("ignored_local_cmd", commands)
         finally:
             for u in ("config://core/contribute.json", "config://core/contribute.local.json"):
-                if uri.exists(u):
+                if vfs.exists(u):
                     try:
-                        uri.remove(u)
+                        vfs.remove(u)
                     except Exception:
                         pass
             self.aggregator.scan_and_inject()
@@ -146,8 +147,8 @@ class TestContributesJIT(YSCBTestCase):
 
         # 動態建立或修改 config://core/contribute.json 模擬專案特化變更
         cfg_uri = "config://core/contribute.json"
-        has_orig = uri.exists(cfg_uri)
-        orig_data = uri.read_json(cfg_uri) if has_orig else None
+        has_orig = vfs.exists(cfg_uri)
+        orig_data = vfs.read_json(cfg_uri) if has_orig else None
 
         try:
             test_ts = time.time()
@@ -155,7 +156,7 @@ class TestContributesJIT(YSCBTestCase):
             new_data["jit_test_stamp"] = test_ts
 
             time.sleep(0.05)
-            uri.write_json(cfg_uri, new_data)
+            vfs.write_json(cfg_uri, new_data)
 
             # 嗅探應立即感知 dirty
             is_dirty, _ = _is_contributes_dirty("core")
@@ -170,9 +171,9 @@ class TestContributesJIT(YSCBTestCase):
             self.assertFalse(is_dirty_after)
         finally:
             if has_orig:
-                uri.write_json(cfg_uri, orig_data)
-            elif uri.exists(cfg_uri):
-                uri.remove(cfg_uri)
+                vfs.write_json(cfg_uri, orig_data)
+            elif vfs.exists(cfg_uri):
+                vfs.remove(cfg_uri)
             self.agg.scan_and_inject()
 
         self.mark_passed()
@@ -181,8 +182,8 @@ class TestContributesJIT(YSCBTestCase):
     def test_missing_cache_triggers_dirty(self):
         """EC-01: 快取遺失或刪除時直接判定為 dirty。"""
         meta_uri = _get_contributes_meta_uri()
-        if uri.exists(meta_uri):
-            uri.remove(meta_uri)
+        if vfs.exists(meta_uri):
+            vfs.remove(meta_uri)
 
         is_dirty, _ = _is_contributes_dirty("core")
         self.assertTrue(is_dirty)

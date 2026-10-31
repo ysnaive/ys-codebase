@@ -8,7 +8,7 @@ import logging
 import os
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
     import tree_sitter
@@ -17,7 +17,6 @@ except ImportError:
 
 from ..schema import (
     LanguageConfig,
-    LanguageType,
     MemberInfo,
     SymbolCallSite,
     SymbolKind,
@@ -33,7 +32,6 @@ def _clean_docstring(raw: str, lang_id: str) -> str:
     if not raw:
         return ""
     text = raw.strip()
-    # Python triple quotes or single quotes
     if lang_id == "python":
         for q in ('"""', "'''", '"', "'"):
             if text.startswith(q) and text.endswith(q) and len(text) >= 2 * len(q):
@@ -41,7 +39,6 @@ def _clean_docstring(raw: str, lang_id: str) -> str:
                 break
         return text
 
-    # C / C++ / C# / JS / TS: /// or // or /* */ or XML tags
     lines = text.splitlines()
     cleaned_lines = []
     for line in lines:
@@ -56,7 +53,6 @@ def _clean_docstring(raw: str, lang_id: str) -> str:
             l = l[:-2].strip()
         if l.startswith("*"):
             l = l[1:].strip()
-        # Strip XML tags if present (<summary>, </summary>, etc.)
         l = re.sub(r"<[^>]+>", "", l).strip()
         if l:
             cleaned_lines.append(l)
@@ -85,7 +81,6 @@ class TreeSitterDriver(BaseParser):
         if self.config.mode != "tree_sitter":
             return
 
-        # 1. 載入 Language Grammar
         if self.config.grammar:
             try:
                 grammar_str = self.config.grammar
@@ -113,7 +108,6 @@ class TreeSitterDriver(BaseParser):
                 self._language = None
                 self._parser = None
 
-        # 2. 載入並編譯 Query File
         if self._language and self.config.query_file:
             candidates = [
                 Path(self.config.query_file),
@@ -147,8 +141,8 @@ class TreeSitterDriver(BaseParser):
         ext = Path(file_path).suffix.lower()
         return ext in self.config.extensions
 
-    def _extract_preceding_comment(self, node: Any, content_lines: List[str]) -> str:
-        """提取節點上方緊鄰之註解行作為 Docstring"""
+    def _extract_preceding_comment(self, node: Any) -> str:
+        """提取節點上方緊鄰之註解行作為 Docstring (移除未使用參數 content_lines M-10)"""
         try:
             target_node = node
             if target_node.parent and target_node.parent.type in ("export_statement", "decorated_definition"):
@@ -169,19 +163,15 @@ class TreeSitterDriver(BaseParser):
         base_types: List[str] = []
         try:
             for child in def_node.children:
-                # C#: base_list, C++: base_class_clause, TS/JS: class_heritage, Python: argument_list
                 if child.type in ("base_list", "base_class_clause", "class_heritage", "argument_list"):
                     raw_text = child.text.decode("utf-8", errors="replace")
-                    # 移除首尾括號、冒號與常見關鍵字
                     cleaned = re.sub(r"\b(extends|implements|public|protected|private|virtual)\b", " ", raw_text)
                     cleaned = cleaned.strip().lstrip(":(").rstrip(")")
-                    # 移除泛型參數 <...> 內部逗號干擾，僅保留主型別名稱
                     cleaned = re.sub(r"<[^>]+>", "", cleaned)
                     for part in cleaned.split(","):
                         token = part.strip()
                         if not token:
                             continue
-                        # 取最末段型別短名 (如 UIToolkit.Core.VisualElement -> VisualElement)
                         short_base = re.split(r"[.:]+", token)[-1].strip()
                         if short_base and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", short_base):
                             if short_base not in base_types:
@@ -190,39 +180,11 @@ class TreeSitterDriver(BaseParser):
             pass
         return base_types
 
-    def parse(self, file_path: str, content: str, space: str) -> List[UnifiedSymbol]:
-        normalized_path = file_path.replace("\\", "/")
-        if not content or not content.strip():
-            return []
-
-        lines = content.splitlines()
-
-        # EC-02: 若 parser 或 query 未成功載入，優雅降級
-        if self._parser is None or self._query is None:
-            if self.config.id == "markdown" and lines:
-                return self._fallback_markdown(normalized_path, lines, space)
-            return []
-
-        try:
-            content_bytes = content.encode("utf-8", errors="replace")
-            tree = self._parser.parse(content_bytes)
-        except Exception as e:
-            logger.warning(f"TreeSitterDriver: parse error on '{normalized_path}': {e} (EC-01)")
-            return []
-
-        cursor = tree_sitter.QueryCursor(self._query)
-        matches = cursor.matches(tree.root_node)
-
+    def _extract_raw_definition_items(self, matches: List[Tuple[int, Dict[str, List[Any]]]], lines: List[str]) -> List[Dict[str, Any]]:
+        """階段 1：從 Query matches 萃取原始符號定義並處理 Markdown 標題段落"""
         raw_items: List[Dict[str, Any]] = []
-
-        # 1. 萃取所有符號定義
         for _, captures in matches:
-            # 尋找 definition capture
-            def_capture_key = None
-            for key in captures:
-                if key.startswith("definition."):
-                    def_capture_key = key
-                    break
+            def_capture_key = next((k for k in captures if k.startswith("definition.")), None)
             if not def_capture_key:
                 continue
 
@@ -232,14 +194,12 @@ class TreeSitterDriver(BaseParser):
                 continue
             def_node = def_nodes[0]
 
-            # 提取名稱
             name = ""
             if "symbol.name" in captures and captures["symbol.name"]:
                 name = captures["symbol.name"][0].text.decode("utf-8", errors="replace").strip()
             if not name:
                 name = def_node.text.decode("utf-8", errors="replace").splitlines()[0][:60].strip()
 
-            # 提取簽名
             first_line = def_node.text.decode("utf-8", errors="replace").splitlines()[0].strip()
             if first_line.endswith("{") or first_line.endswith(":"):
                 first_line = first_line[:-1].strip()
@@ -251,7 +211,6 @@ class TreeSitterDriver(BaseParser):
             else:
                 signature = first_line
 
-            # 提取回傳型別
             return_type = ""
             if "symbol.return_type" in captures and captures["symbol.return_type"]:
                 return_type = captures["symbol.return_type"][0].text.decode("utf-8", errors="replace").strip()
@@ -260,27 +219,20 @@ class TreeSitterDriver(BaseParser):
                 if return_type.startswith(":"):
                     return_type = return_type[1:].strip()
 
-            # 提取 Docstring
             docstring = ""
             if "symbol.docstring" in captures and captures["symbol.docstring"]:
                 raw_doc = captures["symbol.docstring"][0].text.decode("utf-8", errors="replace")
                 docstring = _clean_docstring(raw_doc, self.config.id)
             if not docstring:
-                docstring = self._extract_preceding_comment(def_node, lines)
+                docstring = self._extract_preceding_comment(def_node)
 
             start_line = def_node.start_point[0] + 1
             end_line = def_node.end_point[0] + 1
-            start_byte = def_node.start_byte
-            end_byte = def_node.end_byte
 
-            # 特殊語言處理：Markdown
             if self.config.id == "markdown":
                 if def_kind == "heading":
-                    # 依 heading 前綴 '#' 計算 level
                     node_text = def_node.text.decode("utf-8", errors="replace").lstrip()
-                    level = 1
-                    if node_text.startswith("#"):
-                        level = len(node_text) - len(node_text.lstrip("#"))
+                    level = len(node_text) - len(node_text.lstrip("#")) if node_text.startswith("#") else 1
                     kind_map = {
                         1: SymbolKind.DOC_HEADING_1.value,
                         2: SymbolKind.DOC_HEADING_2.value,
@@ -304,31 +256,26 @@ class TreeSitterDriver(BaseParser):
                 "docstring": docstring,
                 "start_line": start_line,
                 "end_line": end_line,
-                "start_byte": start_byte,
-                "end_byte": end_byte,
+                "start_byte": def_node.start_byte,
+                "end_byte": def_node.end_byte,
                 "node": def_node,
             })
 
-        # Markdown 標題段落 docstring 累積處理
         if self.config.id == "markdown" and raw_items:
-            # 依行號排序
             raw_items.sort(key=lambda x: x["start_line"])
             for idx, item in enumerate(raw_items):
                 if item["kind"].startswith("doc_heading") and not item["docstring"]:
                     s_ln = item["start_line"]
                     e_ln = raw_items[idx + 1]["start_line"] - 1 if idx + 1 < len(raw_items) else len(lines)
-                    body_lines = lines[s_ln:e_ln]
-                    item["docstring"] = "\n".join(body_lines).strip()
+                    item["docstring"] = "\n".join(lines[s_ln:e_ln]).strip()
                     item["end_line"] = max(e_ln, s_ln)
 
-        # EC-03: Markdown 若無任何 Heading / Table，降級為 DOC_SECTION
-        if self.config.id == "markdown" and not raw_items and lines:
-            return self._fallback_markdown(normalized_path, lines, space)
+        return raw_items
 
-        if not raw_items:
-            return []
-
-        # 2. 去重 (同一個節點若重複被 capture)
+    def _build_symbol_hierarchy(
+        self, raw_items: List[Dict[str, Any]], normalized_path: str, space: str
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """階段 2：去重、排序並以堆疊演算法構建父子階層與 FQN"""
         seen_keys = set()
         dedup_items = []
         for item in raw_items:
@@ -337,10 +284,7 @@ class TreeSitterDriver(BaseParser):
                 seen_keys.add(k)
                 dedup_items.append(item)
 
-        # 3. 排序 (start_byte 遞增, end_byte 遞減以確保父節點排在子節點前)
         dedup_items.sort(key=lambda x: (x["start_byte"], -x["end_byte"]))
-
-        # 4. 堆疊演算法構建階層樹狀結構
         scope_sep = "::" if self.config.id in ("cpp", "c") else "."
         stack: List[Dict[str, Any]] = []
 
@@ -363,7 +307,6 @@ class TreeSitterDriver(BaseParser):
                 item["scope_path"] = []
                 item["fqn"] = item["short_name"]
 
-            # 計算 SHA1 ID
             item["id"] = UnifiedSymbol.compute_id(
                 space=space,
                 file_path=normalized_path,
@@ -374,27 +317,29 @@ class TreeSitterDriver(BaseParser):
             item["children_items"] = []
             stack.append(item)
 
-        # 5. 物化 UnifiedSymbol 與向後相容 members 屬性
-        symbols: List[UnifiedSymbol] = []
+        return dedup_items, scope_sep
 
+    def _materialize_unified_symbols(
+        self, dedup_items: List[Dict[str, Any]], normalized_path: str, scope_sep: str
+    ) -> List[UnifiedSymbol]:
+        """階段 3：將階層節點清單物化為 UnifiedSymbol 實例"""
+        symbols: List[UnifiedSymbol] = []
         for item in dedup_items:
-            # field (類別屬性/欄位) 僅保留於類別 members 中，不單獨作為獨立一級 UnifiedSymbol 輸出
             if item["kind"] == "field" and item["parent_id"]:
                 continue
 
-            # 建立向後相容之 MemberInfo 清單
             members_list = []
             for child in item["children_items"]:
-                vis = "public"
                 c_name = child["short_name"]
                 if c_name.startswith("__") and not c_name.endswith("__"):
                     vis = "private"
                 elif c_name.startswith("_"):
                     vis = "protected"
-
+                else:
+                    vis = "public"
                 members_list.append(
                     MemberInfo(
-                        name=child["short_name"],
+                        name=c_name,
                         kind=child["kind"],
                         signature=child["signature"],
                         docstring=child["docstring"],
@@ -404,14 +349,10 @@ class TreeSitterDriver(BaseParser):
                 )
 
             search_payload = f"{item['fqn']} {item['short_name']} {item['docstring']} {item['signature']}".strip()
-
-            # 對於巢狀符號 (如方法)，其 name 設定為 fqn 以相容 sym_map[name] 查詢
             sym_name = item["fqn"] if item["parent_id"] else item["short_name"]
-
             short_name_val = item["short_name"]
             parent_scope_val = item["scope_path"][-1] if item["scope_path"] else ""
 
-            # C++ 類別外方法實作 (如 void VisualElement::UpdateLayout())：修正 short_name, parent_scope 與 kind
             if self.config.id == "cpp" and "::" in short_name_val and item["kind"] in ("function", "method"):
                 cpp_parts = short_name_val.split("::")
                 short_name_val = cpp_parts[-1]
@@ -447,7 +388,7 @@ class TreeSitterDriver(BaseParser):
                     fqn=item["fqn"],
                     scope_path=scope_sep.join(item["scope_path"]),
                     parent_id=item["parent_id"],
-                    children=(),
+                    children=tuple(members_list),
                     parameters=(),
                     return_type=item["return_type"],
                     search_payload=search_payload,
@@ -455,8 +396,37 @@ class TreeSitterDriver(BaseParser):
                     metadata=metadata,
                 )
             )
-
         return symbols
+
+    def parse(self, file_path: str, content: str, space: str) -> List[UnifiedSymbol]:
+        normalized_path = file_path.replace("\\", "/")
+        if not content or not content.strip():
+            return []
+
+        lines = content.splitlines()
+        if self._parser is None or self._query is None:
+            if self.config.id == "markdown" and lines:
+                return self._fallback_markdown(normalized_path, lines, space)
+            return []
+
+        try:
+            content_bytes = content.encode("utf-8", errors="replace")
+            tree = self._parser.parse(content_bytes)
+        except Exception as e:
+            logger.warning(f"TreeSitterDriver: parse error on '{normalized_path}': {e} (EC-01)")
+            return []
+
+        cursor = tree_sitter.QueryCursor(self._query)
+        matches = cursor.matches(tree.root_node)
+
+        raw_items = self._extract_raw_definition_items(matches, lines)
+        if self.config.id == "markdown" and not raw_items and lines:
+            return self._fallback_markdown(normalized_path, lines, space)
+        if not raw_items:
+            return []
+
+        dedup_items, scope_sep = self._build_symbol_hierarchy(raw_items, normalized_path, space)
+        return self._materialize_unified_symbols(dedup_items, normalized_path, scope_sep)
 
     def _fallback_markdown(self, normalized_path: str, lines: List[str], space: str) -> List[UnifiedSymbol]:
         """Markdown 無 Heading 時安全降級為 DOC_SECTION (EC-03)"""
@@ -482,6 +452,7 @@ class TreeSitterDriver(BaseParser):
                 language="markdown",
                 docstring=doc,
                 signature="markdown_section",
+                children=(),
                 members=(),
                 metadata={"fallback": True, "end_line": total_lines},
             )
@@ -500,7 +471,6 @@ class TreeSitterDriver(BaseParser):
 
         call_sites: List[SymbolCallSite] = []
 
-        # Markdown 特殊調用萃取 (包含 [`Name`](link) 與行內 `Name`)
         if self.config.id == "markdown":
             link_re = re.compile(r"\[`?([A-Za-z0-9_$.]+)`?\]\((?:file:///)?([^)#\s]+)(?:#L?(\d+))?\)")
             code_re = re.compile(r"`([A-Za-z0-9_$]+\.[A-Za-z0-9_$]+)(?:\(\))?`")
@@ -548,7 +518,6 @@ class TreeSitterDriver(BaseParser):
         cursor = tree_sitter.QueryCursor(self._query)
         matches = cursor.matches(tree.root_node)
 
-        # 萃取 symbols 用於定位調用者 (若呼叫端已提供則直接重用，避免二次 AST 解析)
         target_symbols = symbols if symbols is not None else self.parse(file_path=file_path, content=content, space=space)
 
         for _, captures in matches:
@@ -558,33 +527,26 @@ class TreeSitterDriver(BaseParser):
             name_node = captures["call.name"][0]
             callee_name = name_node.text.decode("utf-8", errors="replace").strip()
             line_no = name_node.start_point[0] + 1
-            call_start_byte = name_node.start_byte
 
-            # 前綴提取 (透過 call_node 與 name_node 之 byte 區間精確切割，支援泛型、條件存取 ?. 與鏈式調用)
             prefix = ""
             call_node = captures.get("call.site", [name_node])[0]
             if call_node.start_byte < name_node.start_byte:
                 raw_prefix = content_bytes[call_node.start_byte : name_node.start_byte].decode(
                     "utf-8", errors="replace"
                 ).strip()
-                # 移除末尾成員存取運算子 (?. / -> / :: / .)
                 for op in ("?.", "->", "::", "."):
                     if raw_prefix.endswith(op):
                         raw_prefix = raw_prefix[: -len(op)].strip()
                         break
-                # 規範化多段運算子為 '.'
                 raw_prefix = raw_prefix.replace("?.", ".").replace("->", ".").replace("::", ".")
-                # 處理 new Object().Method() 或括號轉型 ((IPanel)x).Method()
                 if raw_prefix.startswith("(") and raw_prefix.endswith(")"):
                     raw_prefix = raw_prefix[1:-1].strip()
-                # 若為鏈式調用如 GetService<IPanel>() 或 GetPanel()，嘗試提取泛型型別或前綴識別字
                 if raw_prefix.endswith(")"):
                     gen_m = re.search(r"<\s*([A-Za-z_][A-Za-z0-9_.]*)\s*>\s*\([^)]*\)$", raw_prefix)
                     if gen_m:
                         raw_prefix = gen_m.group(1).strip()
                     else:
                         raw_prefix = re.sub(r"\([^)]*\)$", "", raw_prefix).strip()
-                # 移除泛型型別參數 (如 FlexLayoutEngine<T> -> FlexLayoutEngine)
                 raw_prefix = re.sub(r"<[^>]+>", "", raw_prefix).strip()
                 prefix = raw_prefix
 
@@ -595,7 +557,6 @@ class TreeSitterDriver(BaseParser):
             elif prefix.startswith(("this.", "base.", "super.")):
                 prefix = "self." + prefix.split(".", 1)[1]
 
-            # 定位所屬調用者方法/函式/建構子/屬性 (最內層優先)
             caller_name = "<module>"
             caller_sym_id: Optional[str] = None
             matching_syms = [s for s in target_symbols if s.line_number <= line_no <= s.end_line]
@@ -617,7 +578,7 @@ class TreeSitterDriver(BaseParser):
                 SymbolCallSite(
                     callee_name=callee_name,
                     line_number=line_no,
-                    caller_symbol_id=caller_sym_id,
+                    caller_symbol_id=caller_sym_id or "",
                     caller_member_name=caller_name,
                     context_prefix=prefix,
                     file_path=normalized_path,
@@ -628,12 +589,10 @@ class TreeSitterDriver(BaseParser):
         return call_sites
 
     def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
-        normalized_path = file_path.replace("\\", "/")
         imports: Dict[str, str] = {}
         if not content:
             return {}
 
-        # Markdown 超連結提取
         if self.config.id == "markdown":
             link_re = re.compile(r"\[([^\]]+)\]\(([^)#\s]+)(?:#[^)]*)?\)")
             for match in link_re.finditer(content):
@@ -646,13 +605,11 @@ class TreeSitterDriver(BaseParser):
                     imports[target] = target
             return imports
 
-        # Python: import x [as y], from x import y [as z]
         if self.config.id == "python":
             import_re = re.compile(r"^\s*import\s+([^\n]+)", re.MULTILINE)
             from_re = re.compile(r"^\s*from\s+([a-zA-Z0-9_.]+)\s+import\s+([^\n]+)", re.MULTILINE)
             for m in import_re.finditer(content):
-                mods = m.group(1).split(",")
-                for mod_item in mods:
+                for mod_item in m.group(1).split(","):
                     mod_item = mod_item.strip()
                     if " as " in mod_item:
                         orig, alias = mod_item.split(" as ", 1)
@@ -661,8 +618,7 @@ class TreeSitterDriver(BaseParser):
                         imports[mod_item] = mod_item
             for m in from_re.finditer(content):
                 base_mod = m.group(1).strip()
-                targets = m.group(2).split(",")
-                for t in targets:
+                for t in m.group(2).split(","):
                     t = t.strip()
                     if " as " in t:
                         orig, alias = t.split(" as ", 1)
@@ -671,7 +627,6 @@ class TreeSitterDriver(BaseParser):
                         imports[t] = f"{base_mod}.{t}"
             return imports
 
-        # JS / TS: import ... from '...', require('...')
         if self.config.id in ("javascript", "typescript"):
             es_import = re.compile(r"import\s+(?:\{([^}]+)\}|([a-zA-Z0-9_$]+))\s+from\s+['\"]([^'\"]+)['\"]")
             for m in es_import.finditer(content):
@@ -701,7 +656,6 @@ class TreeSitterDriver(BaseParser):
                 imports[m.group(1).strip()] = m.group(2).strip()
             return imports
 
-        # C / C++: #include <...>, using namespace X::Y;, using Alias = Target;
         if self.config.id in ("cpp", "c"):
             inc_re = re.compile(r'^\s*#include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
             for m in inc_re.finditer(content):
@@ -719,7 +673,6 @@ class TreeSitterDriver(BaseParser):
                 imports[m.group(1).strip()] = m.group(2).strip()
             return imports
 
-        # C#: using ...; using Alias = Target;
         if self.config.id == "c_sharp":
             using_alias = re.compile(r"^\s*using\s+([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_.]+);", re.MULTILINE)
             for m in using_alias.finditer(content):

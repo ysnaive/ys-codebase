@@ -10,8 +10,17 @@ import sys
 import venv
 import platform
 import subprocess
-from typing import Optional, List, Dict, Any
-from core import vfs
+from typing import Optional, List, Any
+from core import uri, vfs
+from core.installer import generate_internal_gitignore
+
+
+def ensure_yscb_gitignore(yscb_dir: str) -> None:
+    """
+    確保 yscb_dir/.gitignore 存在且包含 YSCB 內部忽略區塊。
+    直接委派至 core.installer.generate_internal_gitignore 單一正統實作。
+    """
+    generate_internal_gitignore(yscb_dir)
 
 
 class PipInstallError(RuntimeError):
@@ -30,20 +39,8 @@ class PipManager:
         self.yscb_dir = os.path.abspath(yscb_dir or self._resolve_yscb_root())
 
     def _resolve_yscb_root(self) -> str:
-        """解析當前 yscb_root 目錄。"""
-        try:
-            from core import uri
-            return uri._get_yscb_root()
-        except Exception:
-            pass
-        # 向上尋找 yscb.config.json 或使用上兩層
-        cur = os.path.abspath(os.path.dirname(__file__))
-        while cur and cur != os.path.dirname(cur):
-            cfg_p = os.path.join(cur, "yscb.config.json")
-            if os.path.isfile(cfg_p):
-                return cur
-            cur = os.path.dirname(cur)
-        return os.getcwd()
+        """解析當前 yscb_root 目錄，統一委派至 core.uri.resolve_yscb_root()。"""
+        return uri.resolve_yscb_root()
 
     @staticmethod
     def parse_pip_dependencies(pip_deps: Any) -> List[str]:
@@ -236,55 +233,7 @@ class PipManager:
 
     def _ensure_gitignore(self) -> None:
         """確保 yscb_dir/.gitignore 存在且包含 /.venv/ 內部忽略規則。"""
-        try:
-            from core.installer import generate_internal_gitignore
-            generate_internal_gitignore(self.yscb_dir)
-            return
-        except Exception:
-            pass
-
-        gi_path = os.path.join(self.yscb_dir, ".gitignore")
-        begin = "# === YSCB INTERNAL IGNORE BEGIN ==="
-        end = "# === YSCB INTERNAL IGNORE END ==="
-        patterns = [
-            "/.modules/",
-            "/.build/",
-            "/.mirror/",
-            "/.temp/",
-            "/.snapshots/",
-            "/.cache/",
-            "/.venv/",
-            "*.local.json",
-            "__pycache__/",
-            "*.pyc",
-        ]
-        block_lines = [
-            begin,
-            "# Auto-managed by YSCB host bootstrapper. Do not edit this block manually.",
-            *patterns,
-            end,
-        ]
-        new_block = "\n".join(block_lines)
-
-        content = ""
-        if vfs.is_file(gi_path):
-            try:
-                content = vfs.read_text(gi_path)
-            except Exception:
-                pass
-
-        if begin in content and end in content:
-            pre = content.split(begin)[0]
-            post = content.split(end)[1]
-            final_content = pre.rstrip() + "\n" + new_block + "\n" + post.lstrip()
-        else:
-            final_content = (content.rstrip() + "\n\n" + new_block + "\n").lstrip()
-
-        if final_content != content:
-            try:
-                vfs.write_text(gi_path, final_content, atomic=True)
-            except Exception:
-                pass
+        ensure_yscb_gitignore(self.yscb_dir)
 
     def install_packages(self, specs: List[str], py_tag: Optional[str] = None) -> None:
         """

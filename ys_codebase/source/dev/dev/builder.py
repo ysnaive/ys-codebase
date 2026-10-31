@@ -6,17 +6,14 @@ Implements Full Zip Packaging Standard:
 - No scattered unpacked directories in build/ or release/.
 """
 import os
-import sys
 import json
 import fnmatch
 import shutil
 import functools
 import zipfile
-import tempfile
-from typing import Tuple, Dict, List, Optional
-from core import uri
-from core import semver
-from dev.checker import Checker
+from typing import Tuple, Dict, List, Optional, Any
+from core import uri, vfs, semver
+from dev.checker import Checker, discover_source_modules
 
 DEV_BUILD_IGNORES = [
     "__pycache__",
@@ -26,7 +23,7 @@ DEV_BUILD_IGNORES = [
     "*.bak",
     ".git*",
     ".pytest_cache",
-    ".DS_Store"
+    ".DS_Store",
 ]
 
 RELEASE_IGNORES = [
@@ -40,60 +37,109 @@ RELEASE_IGNORES = [
     ".DS_Store",
     ".yscbignore",
     "tests",
-    "tests/*"
+    "tests/*",
 ]
 
+
+def _should_ignore(rel_path: str, ignores: List[str]) -> bool:
+    norm_rel = rel_path.replace("\\", "/").rstrip("/")
+    name = os.path.basename(norm_rel)
+    for pattern in ignores:
+        pat = pattern.replace("\\", "/").rstrip("/")
+        if (
+            fnmatch.fnmatch(name, pat)
+            or fnmatch.fnmatch(norm_rel, pat)
+            or fnmatch.fnmatch(norm_rel, pat + "/*")
+            or norm_rel.startswith(pat.rstrip("*").rstrip("/") + "/")
+        ):
+            return True
+    return False
+
+
+def _create_module_archive_atomic(
+    source_dir: str,
+    target_zip_path: str,
+    ignores: List[str],
+    manifest_data: Dict[str, Any],
+    target_version: str,
+) -> int:
+    """
+    Atomically package module files from source_dir into target_zip_path via a .tmp staging file.
+    Guarantees .zip.tmp cleanup on any failure.
+    """
+    tmp_zip_path = target_zip_path + ".tmp"
+    copied_count = 0
+    try:
+        with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(source_dir):
+                rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
+                if rel_dir == ".":
+                    rel_dir = ""
+
+                dirs[:] = [d for d in dirs if not _should_ignore(f"{rel_dir}/{d}".lstrip("/"), ignores)]
+
+                for f in files:
+                    rel_file = f"{rel_dir}/{f}".lstrip("/")
+                    if not _should_ignore(rel_file, ignores):
+                        src_file_path = os.path.join(root, f)
+                        if rel_file == "manifest.json":
+                            m_copy = dict(manifest_data)
+                            m_copy["version"] = target_version
+                            zf.writestr("manifest.json", json.dumps(m_copy, indent=2, ensure_ascii=False))
+                        else:
+                            zf.write(src_file_path, arcname=rel_file)
+                        copied_count += 1
+
+        if os.path.exists(target_zip_path):
+            os.remove(target_zip_path)
+        os.replace(tmp_zip_path, target_zip_path)
+        return copied_count
+    finally:
+        if os.path.exists(tmp_zip_path):
+            try:
+                os.remove(tmp_zip_path)
+            except OSError:
+                pass
+
+
 class Builder:
-    def __init__(self):
+    def __init__(self) -> None:
         self.checker = Checker()
 
     def _load_module_ignores(self, src_uri: str, base_ignores: List[str]) -> List[str]:
         ignore_file_uri = f"{src_uri}/.yscbignore"
         ignores = list(base_ignores)
-        if uri.exists(ignore_file_uri):
+        if vfs.exists(ignore_file_uri):
             try:
-                content = uri.read_text(ignore_file_uri)
+                content = vfs.read_text(ignore_file_uri)
                 for line in content.splitlines():
                     line = line.strip()
                     if line and not line.startswith("#"):
                         ignores.append(line)
-            except Exception:
+            except OSError:
                 pass
         return ignores
-
-    def _should_ignore(self, rel_path: str, ignores: List[str]) -> bool:
-        norm_rel = rel_path.replace("\\", "/").rstrip("/")
-        name = os.path.basename(norm_rel)
-        for pattern in ignores:
-            pat = pattern.replace("\\", "/").rstrip("/")
-            if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(norm_rel, pat) or fnmatch.fnmatch(norm_rel, pat + "/*") or norm_rel.startswith(pat.rstrip("*").rstrip("/") + "/"):
-                return True
-        return False
 
     def _update_build_index(self, name: str, description: str = "") -> None:
         """Updates build/{name}/index.json scanning *.zip files."""
         mod_build_root = f"module.build://{name}"
-        if not uri.exists(mod_build_root):
+        if not vfs.exists(mod_build_root):
             return
-            
+
         real_build_dir = uri.resolve(mod_build_root)
         versions: List[str] = []
         if os.path.isdir(real_build_dir):
             for item in os.listdir(real_build_dir):
                 if item.endswith(".zip"):
-                    ver_name = item[:-4]
-                    versions.append(ver_name)
-                elif os.path.isdir(os.path.join(real_build_dir, item)):
-                    # Backward compatibility / cleaning: remove old directories
-                    shutil.rmtree(os.path.join(real_build_dir, item), ignore_errors=True)
-                
+                    versions.append(item[:-4])
+
         versions.sort(key=functools.cmp_to_key(semver.compare_semver))
         index_data = {
             "name": name,
             "description": description or f"YS-Codebase module {name} (dev build)",
-            "versions": versions
+            "versions": versions,
         }
-        uri.write_json(f"{mod_build_root}/index.json", index_data, indent=2)
+        vfs.write_json(f"{mod_build_root}/index.json", index_data, indent=2)
 
     def _update_release_index(self, name: str, description: str = "", new_version: Optional[str] = None) -> None:
         """
@@ -103,18 +149,17 @@ class Builder:
         - Rule 3 (Index SSOT): Re-scan active physical zip files to generate index.json.
         """
         mod_rel_root = f"module.release://{name}"
-        if not uri.exists(mod_rel_root):
+        if not vfs.exists(mod_rel_root):
             return
-            
+
         real_rel_dir = uri.resolve(mod_rel_root)
         if not os.path.isdir(real_rel_dir):
             return
 
-        # 1. Execute Retention and Purge Policy
         if new_version:
             try:
                 new_tuple = semver.parse_semver(new_version)
-            except Exception:
+            except ValueError:
                 new_tuple = None
 
             if new_tuple is not None:
@@ -129,76 +174,56 @@ class Builder:
                             if trip not in triplet_map:
                                 triplet_map[trip] = []
                             triplet_map[trip].append((item_tuple, item_ver, item_path))
-                        except Exception:
+                        except ValueError:
                             pass
-                    elif os.path.isdir(item_path):
-                        shutil.rmtree(item_path, ignore_errors=True)
 
                 for trip, items in triplet_map.items():
                     items.sort(key=functools.cmp_to_key(lambda a, b: semver.compare_semver(a[0], b[0])), reverse=True)
-                    
-                    if trip == new_tuple.triplet:
-                        # Rule 1: Same triplet retains at most 3 revisions
-                        purge = items[3:]
-                        for _, _, purge_path in purge:
-                            try:
-                                os.remove(purge_path)
-                            except Exception:
-                                pass
-                    else:
-                        # Rule 2: Legacy triplets retain only the highest revision
-                        purge = items[1:]
-                        for _, _, purge_path in purge:
-                            try:
-                                os.remove(purge_path)
-                            except Exception:
-                                pass
+                    purge = items[3:] if trip == new_tuple.triplet else items[1:]
+                    for _, _, purge_path in purge:
+                        try:
+                            os.remove(purge_path)
+                        except OSError:
+                            pass
 
-        # 2. Gather active release versions from .zip files (Index SSOT)
-        versions: List[str] = []
-        for item in os.listdir(real_rel_dir):
-            if item.endswith(".zip"):
-                ver_name = item[:-4]
-                versions.append(ver_name)
-                
+        versions: List[str] = [
+            item[:-4] for item in os.listdir(real_rel_dir) if item.endswith(".zip")
+        ]
         versions.sort(key=functools.cmp_to_key(semver.compare_semver))
         index_data = {
             "name": name,
             "description": description or f"YS-Codebase module {name}",
-            "versions": versions
+            "versions": versions,
         }
-        uri.write_json(f"{mod_rel_root}/index.json", index_data, indent=2)
+        vfs.write_json(f"{mod_rel_root}/index.json", index_data, indent=2)
 
     def build_module(self, name: str, clean: bool = True) -> Tuple[bool, str]:
         """
         本地完整打包 (dev build):
-        - 打包前一律自動清空 build/<name>/ 目錄。
+        - 打包前自動清空 build/<name>/ 目錄（當 clean=True）。
         - 輸出單一 build/<name>/<ver>.build.zip。
         - 100% 完整保留 tests/ 與開發檔案。
         - 產物版本號強制標記為 X.Y.Z.build。
         - 自動更新 build/{name}/index.json。
         """
         src_uri = f"module.source://{name}"
-        if not uri.exists(src_uri):
+        if not vfs.exists(src_uri):
             return False, f"Source module not found at {src_uri}."
-        
-        # 1. Run compliance check
-        passed, errors = self.checker.check_module(name)
-        if not passed:
-            err_msg = "\n  - ".join(errors)
+
+        report = self.checker.check_module(name)
+        if not report.passed:
+            err_msg = "\n  - ".join(report.errors)
             return False, f"Check failed for module '{name}':\n  - {err_msg}"
-        
-        manifest_data = uri.read_json(f"{src_uri}/manifest.json")
+
+        manifest_data = vfs.read_json(f"{src_uri}/manifest.json")
         raw_version = manifest_data.get("version", "1.0.0.0")
         v_tuple = semver.parse_semver(raw_version)
         build_version = f"{v_tuple.major}.{v_tuple.minor}.{v_tuple.patch}.build"
-        
+
         mod_build_root = f"module.build://{name}"
-        uri.makedirs(mod_build_root)
-        
+        vfs.makedirs(mod_build_root)
         real_build_dir = uri.resolve(mod_build_root)
-        
-        # 2. Automatically clean all previous build files and directories if clean=True
+
         if clean and os.path.isdir(real_build_dir):
             for item in list(os.listdir(real_build_dir)):
                 p = os.path.join(real_build_dir, item)
@@ -207,45 +232,20 @@ class Builder:
                 else:
                     try:
                         os.remove(p)
-                    except Exception:
+                    except OSError:
                         pass
 
         target_zip_path = os.path.join(real_build_dir, f"{build_version}.zip")
-        tmp_zip_path = target_zip_path + ".tmp"
-        
-        ignores = DEV_BUILD_IGNORES
         src_real = uri.resolve(src_uri)
-        
-        copied_count = 0
-        with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(src_real):
-                rel_dir = os.path.relpath(root, src_real).replace("\\", "/")
-                if rel_dir == ".":
-                    rel_dir = ""
-                
-                dirs[:] = [d for d in dirs if not self._should_ignore(f"{rel_dir}/{d}".lstrip("/"), ignores)]
-                
-                for f in files:
-                    rel_file = f"{rel_dir}/{f}".lstrip("/")
-                    if not self._should_ignore(rel_file, ignores):
-                        src_file_path = os.path.join(root, f)
-                        
-                        if rel_file == "manifest.json":
-                            # Override version in build manifest
-                            m_copy = dict(manifest_data)
-                            m_copy["version"] = build_version
-                            zf.writestr("manifest.json", json.dumps(m_copy, indent=2, ensure_ascii=False))
-                        else:
-                            zf.write(src_file_path, arcname=rel_file)
-                        copied_count += 1
+        copied_count = _create_module_archive_atomic(
+            src_real,
+            target_zip_path,
+            DEV_BUILD_IGNORES,
+            manifest_data,
+            build_version,
+        )
 
-        if os.path.exists(target_zip_path):
-            os.remove(target_zip_path)
-        os.replace(tmp_zip_path, target_zip_path)
-
-        # 3. Automatically update build/index.json
         self._update_build_index(name, description=manifest_data.get("description", ""))
-        
         return True, f"Successfully built dev package '{name}@{build_version}' ({copied_count} files) -> {target_zip_path}."
 
     def package_release(self, name: str, target_version: str) -> Tuple[bool, str]:
@@ -257,62 +257,28 @@ class Builder:
         - 更新 release/{name}/index.json。
         """
         src_uri = f"module.source://{name}"
-        if not uri.exists(src_uri):
+        if not vfs.exists(src_uri):
             return False, f"Source module not found at {src_uri}."
-            
-        manifest_data = uri.read_json(f"{src_uri}/manifest.json")
+
+        manifest_data = vfs.read_json(f"{src_uri}/manifest.json")
         mod_rel_root = f"module.release://{name}"
-        uri.makedirs(mod_rel_root)
-        
+        vfs.makedirs(mod_rel_root)
+
         real_rel_dir = uri.resolve(mod_rel_root)
-        legacy_dir = os.path.join(real_rel_dir, target_version)
-        if os.path.isdir(legacy_dir):
-            shutil.rmtree(legacy_dir, ignore_errors=True)
-            
         target_zip_path = os.path.join(real_rel_dir, f"{target_version}.zip")
-        tmp_zip_path = target_zip_path + ".tmp"
-        
         ignores = self._load_module_ignores(src_uri, RELEASE_IGNORES)
         src_real = uri.resolve(src_uri)
-        
-        copied_count = 0
-        with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(src_real):
-                rel_dir = os.path.relpath(root, src_real).replace("\\", "/")
-                if rel_dir == ".":
-                    rel_dir = ""
-                
-                dirs[:] = [d for d in dirs if not self._should_ignore(f"{rel_dir}/{d}".lstrip("/"), ignores)]
-                
-                for f in files:
-                    rel_file = f"{rel_dir}/{f}".lstrip("/")
-                    if not self._should_ignore(rel_file, ignores):
-                        src_file_path = os.path.join(root, f)
-                        
-                        if rel_file == "manifest.json":
-                            m_copy = dict(manifest_data)
-                            m_copy["version"] = target_version
-                            zf.writestr("manifest.json", json.dumps(m_copy, indent=2, ensure_ascii=False))
-                        else:
-                            zf.write(src_file_path, arcname=rel_file)
-                        copied_count += 1
 
-        if os.path.exists(target_zip_path):
-            os.remove(target_zip_path)
-        os.replace(tmp_zip_path, target_zip_path)
-                
-        # Update release/index.json with 3-Revision Retention Policy
+        copied_count = _create_module_archive_atomic(
+            src_real,
+            target_zip_path,
+            ignores,
+            manifest_data,
+            target_version,
+        )
+
         self._update_release_index(name, description=manifest_data.get("description", ""), new_version=target_version)
-        
         return True, f"Successfully packaged release '{name}@{target_version}' ({copied_count} files) -> {target_zip_path}."
 
     def build_all(self, clean: bool = True) -> Dict[str, Tuple[bool, str]]:
-        results = {}
-        src_root_uri = "module.source://"
-        if not uri.exists(src_root_uri):
-            return results
-        for item in uri.listdir(src_root_uri):
-            item_uri = f"module.source://{item}"
-            if uri.is_dir(item_uri) and uri.exists(f"{item_uri}/manifest.json"):
-                results[item] = self.build_module(item, clean=clean)
-        return results
+        return {mod: self.build_module(mod, clean=clean) for mod in discover_source_modules()}

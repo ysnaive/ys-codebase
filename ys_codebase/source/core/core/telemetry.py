@@ -14,28 +14,11 @@ KEEP_TELEMETRY_LINES: int = 1500
 
 
 def _discover_yscb_root(yscb_abs: Optional[str] = None) -> Path:
-    """探索 yscb 根目錄路徑。"""
+    """探索 yscb 根目錄路徑，統一委派至 core.uri.resolve_yscb_root()。"""
     if yscb_abs:
         return Path(yscb_abs).resolve()
-    try:
-        from core import uri
-        root_str = uri._get_yscb_root()
-        if root_str:
-            return Path(root_str).resolve()
-    except Exception:
-        pass
-
-    host_dir = os.environ.get("YSCB_HOST_DIR", os.getcwd())
-    cfg_path = os.path.join(host_dir, "yscb.config.json")
-    yscb_rel = "."
-    if os.path.isfile(cfg_path):
-        try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                yscb_rel = data.get("yscb_root", ".")
-        except Exception:
-            pass
-    return Path(os.path.normpath(os.path.join(host_dir, yscb_rel))).resolve()
+    from core import uri
+    return Path(uri.resolve_yscb_root()).resolve()
 
 
 def resolve_telemetry_path(yscb_abs: Optional[str] = None) -> Path:

@@ -2,7 +2,7 @@
 Contributes Schema Validator and Lightweight DSL Engine.
 100% Python Standard Library, Zero Third-Party Dependencies.
 """
-from typing import Dict, Any, List, Optional, Tuple, NamedTuple, Set
+from typing import Dict, Any, List, Optional, Tuple, NamedTuple
 import difflib
 import copy
 import re
@@ -65,6 +65,21 @@ class ContributesValidator:
         "number": "float",
     }
 
+    @staticmethod
+    def _parse_default_literal(def_str: str) -> Any:
+        """Parse literal default value from signature suffix."""
+        if def_str.lower() in ("true", "false"):
+            return def_str.lower() == "true"
+        if def_str.isdigit():
+            return int(def_str)
+        if (def_str.startswith('"') and def_str.endswith('"')) or (def_str.startswith("'") and def_str.endswith("'")):
+            return def_str[1:-1]
+        if def_str == "[]":
+            return []
+        if def_str == "{}":
+            return {}
+        return def_str
+
     @classmethod
     def parse_type_signature(cls, sig: str) -> Dict[str, Any]:
         """
@@ -83,29 +98,12 @@ class ContributesValidator:
         default_val: Any = None
         has_default = False
 
-        # Extract default value: "= <default>"
-        if " = " in raw or "=" in raw:
+        if "=" in raw:
             parts = raw.split("=", 1)
             raw = parts[0].strip()
-            def_str = parts[1].strip()
+            default_val = cls._parse_default_literal(parts[1].strip())
             has_default = True
-            # Parse def_str
-            if def_str.lower() in ("true", "false"):
-                default_val = def_str.lower() == "true"
-            elif def_str.isdigit():
-                default_val = int(def_str)
-            elif def_str.startswith('"') and def_str.endswith('"'):
-                default_val = def_str[1:-1]
-            elif def_str.startswith("'") and def_str.endswith("'"):
-                default_val = def_str[1:-1]
-            elif def_str == "[]":
-                default_val = []
-            elif def_str == "{}":
-                default_val = {}
-            else:
-                default_val = def_str
 
-        # Check required/optional modifier
         if raw.endswith("!"):
             required = True
             raw = raw[:-1].strip()
@@ -113,68 +111,167 @@ class ContributesValidator:
             required = False
             raw = raw[:-1].strip()
 
-        # Type Reference: $TypeName
-        if raw.startswith("$"):
-            ref_name = raw[1:].strip()
-            return {
-                "type": "ref",
-                "ref_name": ref_name,
-                "required": required,
-                "has_default": has_default,
-                "default": default_val,
-                "raw": sig
-            }
-
-        # Enum: enum(a, b, c)
-        if raw.startswith("enum(") and raw.endswith(")"):
-            inner = raw[5:-1]
-            enum_vals = [v.strip() for v in inner.split(",") if v.strip()]
-            return {
-                "type": "enum",
-                "enum_values": enum_vals,
-                "required": required,
-                "has_default": has_default,
-                "default": default_val,
-                "raw": sig
-            }
-
-        # Container: list[T]
-        list_match = re.match(r"^list\[(.*)\]$", raw)
-        if list_match:
-            item_sig = list_match.group(1).strip()
-            return {
-                "type": "list",
-                "item_type": cls.parse_type_signature(item_sig),
-                "required": required,
-                "has_default": has_default,
-                "default": default_val if has_default else [],
-                "raw": sig
-            }
-
-        # Container: dict[K, V]
-        dict_match = re.match(r"^dict\[(.*),(.*)\]$", raw)
-        if dict_match:
-            k_sig = dict_match.group(1).strip()
-            v_sig = dict_match.group(2).strip()
-            return {
-                "type": "dict",
-                "key_type": cls.parse_type_signature(k_sig),
-                "value_type": cls.parse_type_signature(v_sig),
-                "required": required,
-                "has_default": has_default,
-                "default": default_val if has_default else {},
-                "raw": sig
-            }
-
-        # Normalize primitive type
-        norm_type = cls.TYPE_ALIASES.get(raw.lower(), raw.lower())
-        return {
-            "type": norm_type,
+        base_meta = {
             "required": required,
             "has_default": has_default,
             "default": default_val,
-            "raw": sig
+            "raw": sig,
         }
+
+        if raw.startswith("$"):
+            return {**base_meta, "type": "ref", "ref_name": raw[1:].strip()}
+
+        if raw.startswith("enum(") and raw.endswith(")"):
+            enum_vals = [v.strip() for v in raw[5:-1].split(",") if v.strip()]
+            return {**base_meta, "type": "enum", "enum_values": enum_vals}
+
+        list_match = re.match(r"^list\[(.*)\]$", raw)
+        if list_match:
+            return {
+                **base_meta,
+                "type": "list",
+                "item_type": cls.parse_type_signature(list_match.group(1).strip()),
+                "default": default_val if has_default else [],
+            }
+
+        dict_match = re.match(r"^dict\[(.*),(.*)\]$", raw)
+        if dict_match:
+            return {
+                **base_meta,
+                "type": "dict",
+                "key_type": cls.parse_type_signature(dict_match.group(1).strip()),
+                "value_type": cls.parse_type_signature(dict_match.group(2).strip()),
+                "default": default_val if has_default else {},
+            }
+
+        norm_type = cls.TYPE_ALIASES.get(raw.lower(), raw.lower())
+        return {**base_meta, "type": norm_type}
+
+    @classmethod
+    def _validate_primitive_or_container_rule(
+        cls,
+        data: Any,
+        rule: Dict[str, Any],
+        path: str,
+        types_map: Dict[str, Any],
+        depth: int,
+    ) -> Tuple[Any, List[ValidationIssue]]:
+        """Validate data against a parsed string type signature rule."""
+        issues: List[ValidationIssue] = []
+        expected_type = rule["type"]
+
+        if expected_type == "ref":
+            ref_name = rule["ref_name"]
+            if ref_name not in types_map:
+                issues.append(ValidationIssue(path=path, message=f"Undefined type reference '${ref_name}'.", severity="ERROR"))
+                return data, issues
+            return cls.validate_node(data, types_map[ref_name], path, types_map, depth + 1)
+
+        if expected_type == "any":
+            return data, issues
+
+        primitive_checks = {
+            "str": (lambda x: isinstance(x, str), "string"),
+            "int": (lambda x: isinstance(x, int) and not isinstance(x, bool), "integer"),
+            "bool": (lambda x: isinstance(x, bool), "boolean"),
+            "float": (lambda x: isinstance(x, (float, int)) and not isinstance(x, bool), "float"),
+        }
+        if expected_type in primitive_checks:
+            pred, label = primitive_checks[expected_type]
+            if not pred(data):
+                issues.append(ValidationIssue(path=path, message=f"Expected {label}, got {type(data).__name__}.", severity="ERROR"))
+            return data, issues
+
+        if expected_type == "enum":
+            allowed = rule["enum_values"]
+            if not isinstance(data, str) or data not in allowed:
+                matches = difflib.get_close_matches(str(data), allowed, n=1)
+                hint = f"Did you mean '{matches[0]}'?" if matches else f"Expected one of {allowed}"
+                issues.append(ValidationIssue(path=path, message=f"Invalid value '{data}'.", severity="ERROR", suggestion=hint))
+            return data, issues
+
+        if expected_type == "list":
+            if not isinstance(data, list):
+                issues.append(ValidationIssue(path=path, message=f"Expected list, got {type(data).__name__}.", severity="ERROR"))
+                return data, issues
+            out_list = []
+            for idx, item in enumerate(data):
+                out_item, sub_issues = cls.validate_node(item, rule["item_type"]["raw"], f"{path}[{idx}]", types_map, depth + 1)
+                issues.extend(sub_issues)
+                out_list.append(out_item)
+            return out_list, issues
+
+        if expected_type == "dict":
+            if not isinstance(data, dict):
+                issues.append(ValidationIssue(path=path, message=f"Expected dict, got {type(data).__name__}.", severity="ERROR"))
+                return data, issues
+            out_dict = {}
+            for k, v in data.items():
+                out_v, sub_issues = cls.validate_node(v, rule["value_type"]["raw"], f"{path}.{k}", types_map, depth + 1)
+                issues.extend(sub_issues)
+                out_dict[k] = out_v
+            return out_dict, issues
+
+        issues.append(ValidationIssue(path=path, message=f"Unknown primitive type '{expected_type}'.", severity="ERROR"))
+        return data, issues
+
+    @classmethod
+    def _validate_dict_schema_node(
+        cls,
+        data: Any,
+        schema: Dict[str, Any],
+        path: str,
+        types_map: Dict[str, Any],
+        depth: int,
+    ) -> Tuple[Any, List[ValidationIssue]]:
+        """Validate data against an object/dict schema node."""
+        issues: List[ValidationIssue] = []
+        if not isinstance(data, dict):
+            issues.append(ValidationIssue(path=path, message=f"Expected object/dict, got {type(data).__name__}.", severity="ERROR"))
+            return data, issues
+
+        if "$ref" in schema:
+            ref_name = schema["$ref"].lstrip("$")
+            if ref_name not in types_map:
+                issues.append(ValidationIssue(path=path, message=f"Undefined type reference '${ref_name}'.", severity="ERROR"))
+                return data, issues
+            return cls.validate_node(data, types_map[ref_name], path, types_map, depth + 1)
+
+        out_dict = copy.copy(data)
+        has_wildcard = "*" in schema
+        wildcard_schema = schema.get("*")
+        defined_keys = {k for k in schema.keys() if k != "*"}
+
+        for k, v in data.items():
+            k_path = f"{path}.{k}" if path else k
+            if k in defined_keys:
+                out_val, sub_issues = cls.validate_node(v, schema[k], k_path, types_map, depth + 1)
+                issues.extend(sub_issues)
+                out_dict[k] = out_val
+            elif has_wildcard:
+                out_val, sub_issues = cls.validate_node(v, wildcard_schema, k_path, types_map, depth + 1)
+                issues.extend(sub_issues)
+                out_dict[k] = out_val
+            else:
+                all_allowed = sorted(list(defined_keys))
+                matches = difflib.get_close_matches(k, all_allowed, n=1)
+                hint = f"Did you mean '{matches[0]}'?" if matches else f"Allowed fields: {all_allowed}"
+                issues.append(ValidationIssue(path=k_path, message=f"Unknown field '{k}'.", severity="ERROR", suggestion=hint))
+
+        for k in defined_keys:
+            if k not in data:
+                k_schema = schema[k]
+                k_path = f"{path}.{k}" if path else k
+                if isinstance(k_schema, str):
+                    rule = cls.parse_type_signature(k_schema)
+                    if rule["required"]:
+                        issues.append(ValidationIssue(path=k_path, message=f"Missing required field '{k}'.", severity="ERROR"))
+                    elif rule["has_default"]:
+                        out_dict[k] = rule["default"]
+                elif isinstance(k_schema, dict) and k_schema.get("required") is True:
+                    issues.append(ValidationIssue(path=k_path, message=f"Missing required field '{k}'.", severity="ERROR"))
+
+        return out_dict, issues
 
     @classmethod
     def validate_node(
@@ -195,211 +292,26 @@ class ContributesValidator:
             ))
             return data, issues
 
-        # 1. String signature
         if isinstance(schema, str):
             rule = cls.parse_type_signature(schema)
-            # If ref
-            if rule["type"] == "ref":
-                ref_name = rule["ref_name"]
-                if ref_name not in types_map:
-                    issues.append(ValidationIssue(
-                        path=path,
-                        message=f"Undefined type reference '${ref_name}'.",
-                        severity="ERROR"
-                    ))
-                    return data, issues
-                target_schema = types_map[ref_name]
-                return cls.validate_node(data, target_schema, path, types_map, depth + 1)
+            return cls._validate_primitive_or_container_rule(data, rule, path, types_map, depth)
 
-            expected_type = rule["type"]
-
-            if expected_type == "any":
-                return data, issues
-
-            if expected_type == "str":
-                if not isinstance(data, str):
-                    issues.append(ValidationIssue(
-                        path=path,
-                        message=f"Expected string, got {type(data).__name__}.",
-                        severity="ERROR"
-                    ))
-                return data, issues
-
-            elif expected_type == "int":
-                if not isinstance(data, int) or isinstance(data, bool):
-                    issues.append(ValidationIssue(
-                        path=path,
-                        message=f"Expected integer, got {type(data).__name__}.",
-                        severity="ERROR"
-                    ))
-                return data, issues
-
-            elif expected_type == "bool":
-                if not isinstance(data, bool):
-                    issues.append(ValidationIssue(
-                        path=path,
-                        message=f"Expected boolean, got {type(data).__name__}.",
-                        severity="ERROR"
-                    ))
-                return data, issues
-
-            elif expected_type == "float":
-                if not isinstance(data, (float, int)) or isinstance(data, bool):
-                    issues.append(ValidationIssue(
-                        path=path,
-                        message=f"Expected float, got {type(data).__name__}.",
-                        severity="ERROR"
-                    ))
-                return data, issues
-
-            elif expected_type == "enum":
-                allowed = rule["enum_values"]
-                if not isinstance(data, str) or data not in allowed:
-                    matches = difflib.get_close_matches(str(data), allowed, n=1)
-                    hint = f"Did you mean '{matches[0]}'?" if matches else f"Expected one of {allowed}"
-                    issues.append(ValidationIssue(
-                        path=path,
-                        message=f"Invalid value '{data}'.",
-                        severity="ERROR",
-                        suggestion=hint
-                    ))
-                return data, issues
-
-            elif expected_type == "list":
-                if not isinstance(data, list):
-                    issues.append(ValidationIssue(
-                        path=path,
-                        message=f"Expected list, got {type(data).__name__}.",
-                        severity="ERROR"
-                    ))
-                    return data, issues
-                out_list = []
-                for idx, item in enumerate(data):
-                    item_path = f"{path}[{idx}]"
-                    out_item, sub_issues = cls.validate_node(item, rule["item_type"]["raw"], item_path, types_map, depth + 1)
-                    issues.extend(sub_issues)
-                    out_list.append(out_item)
-                return out_list, issues
-
-            elif expected_type == "dict":
-                if not isinstance(data, dict):
-                    issues.append(ValidationIssue(
-                        path=path,
-                        message=f"Expected dict, got {type(data).__name__}.",
-                        severity="ERROR"
-                    ))
-                    return data, issues
-                out_dict = {}
-                for k, v in data.items():
-                    k_path = f"{path}.{k}"
-                    out_v, sub_issues = cls.validate_node(v, rule["value_type"]["raw"], k_path, types_map, depth + 1)
-                    issues.extend(sub_issues)
-                    out_dict[k] = out_v
-                return out_dict, issues
-
-            else:
-                issues.append(ValidationIssue(
-                    path=path,
-                    message=f"Unknown primitive type '{expected_type}'.",
-                    severity="ERROR"
-                ))
-                return data, issues
-
-        # 2. List schema: [ item_schema ]
-        elif isinstance(schema, list):
+        if isinstance(schema, list):
             if not isinstance(data, list):
-                issues.append(ValidationIssue(
-                    path=path,
-                    message=f"Expected list, got {type(data).__name__}.",
-                    severity="ERROR"
-                ))
+                issues.append(ValidationIssue(path=path, message=f"Expected list, got {type(data).__name__}.", severity="ERROR"))
                 return data, issues
             if not schema:
                 return data, issues
             item_schema = schema[0]
             out_list = []
             for idx, item in enumerate(data):
-                item_path = f"{path}[{idx}]"
-                out_item, sub_issues = cls.validate_node(item, item_schema, item_path, types_map, depth + 1)
+                out_item, sub_issues = cls.validate_node(item, item_schema, f"{path}[{idx}]", types_map, depth + 1)
                 issues.extend(sub_issues)
                 out_list.append(out_item)
             return out_list, issues
 
-        # 3. Dict schema
-        elif isinstance(schema, dict):
-            if not isinstance(data, dict):
-                issues.append(ValidationIssue(
-                    path=path,
-                    message=f"Expected object/dict, got {type(data).__name__}.",
-                    severity="ERROR"
-                ))
-                return data, issues
-
-            # Check if this dict schema is a reference
-            if "$ref" in schema:
-                ref_name = schema["$ref"].lstrip("$")
-                if ref_name not in types_map:
-                    issues.append(ValidationIssue(
-                        path=path,
-                        message=f"Undefined type reference '${ref_name}'.",
-                        severity="ERROR"
-                    ))
-                    return data, issues
-                return cls.validate_node(data, types_map[ref_name], path, types_map, depth + 1)
-
-            out_dict = copy.copy(data)
-            has_wildcard = "*" in schema
-            wildcard_schema = schema.get("*")
-            defined_keys = set(k for k in schema.keys() if k != "*")
-
-            # Validate existing keys in data
-            for k, v in data.items():
-                k_path = f"{path}.{k}" if path else k
-                if k in defined_keys:
-                    k_schema = schema[k]
-                    out_val, sub_issues = cls.validate_node(v, k_schema, k_path, types_map, depth + 1)
-                    issues.extend(sub_issues)
-                    out_dict[k] = out_val
-                elif has_wildcard:
-                    out_val, sub_issues = cls.validate_node(v, wildcard_schema, k_path, types_map, depth + 1)
-                    issues.extend(sub_issues)
-                    out_dict[k] = out_val
-                else:
-                    # Unknown field
-                    all_allowed = sorted(list(defined_keys))
-                    matches = difflib.get_close_matches(k, all_allowed, n=1)
-                    hint = f"Did you mean '{matches[0]}'?" if matches else f"Allowed fields: {all_allowed}"
-                    issues.append(ValidationIssue(
-                        path=k_path,
-                        message=f"Unknown field '{k}'.",
-                        severity="ERROR",
-                        suggestion=hint
-                    ))
-
-            # Check required keys in defined_keys & fill defaults
-            for k in defined_keys:
-                k_schema = schema[k]
-                k_path = f"{path}.{k}" if path else k
-                if k not in data:
-                    # Check if required or has default
-                    if isinstance(k_schema, str):
-                        rule = cls.parse_type_signature(k_schema)
-                        if rule["required"]:
-                            issues.append(ValidationIssue(
-                                path=k_path,
-                                message=f"Missing required field '{k}'.",
-                                severity="ERROR"
-                            ))
-                        elif rule["has_default"]:
-                            out_dict[k] = rule["default"]
-                    elif isinstance(k_schema, dict) and k_schema.get("required") is True:
-                        issues.append(ValidationIssue(
-                            path=k_path,
-                            message=f"Missing required field '{k}'.",
-                            severity="ERROR"
-                        ))
-
-            return out_dict, issues
+        if isinstance(schema, dict):
+            return cls._validate_dict_schema_node(data, schema, path, types_map, depth)
 
         return data, issues
 

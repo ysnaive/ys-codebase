@@ -40,7 +40,7 @@ Phase 03 執行檢核表：
 - **極精簡 Session 回覆格式**：產出 `P03_api_spec.md` 並更新 `changelog.md` 後，對話中**嚴禁全文重複、代碼傾倒或冗長轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
   ###  P03 API 規格已落檔
-  - **產出文件**：[P03_api_spec.md](__${project://plans/}__/{plan_name}/P03_api_spec.md)
+  - **產出文件**：[P03_api_spec.md](`__${project://plans}__/{plan_name}/P03_api_spec.md`)
   - **API 摘要**：[新增/變更 API 計 N 組 / 核心決策 [P03:DR-XX] / 實作依賴順序]
   - **待確認事項**：請問是否同意 API 規格定義並推進至 Phase 4（實作計畫定稿）？
   ```

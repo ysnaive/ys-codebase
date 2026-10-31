@@ -31,7 +31,7 @@
 
 ```markdown
 ###  Umbrella 主計畫已開立
-- **產出文件**：[umbrella_overview.md](__${project://plans/}__/{plan_name}/umbrella_overview.md)
+- **產出文件**：[umbrella_overview.md](`__${project://plans}__/{plan_name}/umbrella_overview.md`)
 - **藍圖摘要**：[規劃子計畫計 N 個 / 執行模式 (Pre-planned/Incremental)]
 - **待確認事項**：請問是否同意主計畫藍圖，並授權啟動首個子計畫？
 ```

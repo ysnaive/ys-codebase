@@ -115,7 +115,7 @@ class TestServerConfig(YSCBTestCase):
         self.assertEqual(res_neg, 1)
 
         # 2. Server 停用時阻斷
-        with patch.object(_server_cli, "_read_daemon_state", return_value=None):
+        with patch.object(_server_cli, "read_daemon_state", return_value=None):
             with patch("server.config.ServerConfig.load", return_value=ServerConfig(enable=False)):
                 bags = CmdBags(raw_cmd="server start", command="start", args=[], options={})
                 code = _server_cli.start(bags)
@@ -125,18 +125,18 @@ class TestServerConfig(YSCBTestCase):
 
     def test_server_reload_syncs_config_and_events_declared(self):
         """FT-05: 驗證 contributes/core.json 聲明 events 且 CLI 四大指令合約健全"""
-        from core import uri
+        from core import vfs
         from core.commands import CmdBags
 
         # 1. 驗證 contributes/core.json 聲明 events
-        contrib = uri.read_json("module.source://server/contributes/core.json")
+        contrib = vfs.read_json("module.source://server/contributes/core.json")
         events_list = contrib.get("events", [])
         declared_events = {k for item in events_list if isinstance(item, dict) for k in item}
         self.assertIn("server_worker_warming", declared_events)
         self.assertIn("server_worker_ready", declared_events)
 
         # 2. 驗證 stop / status / reload 在未運行時的優雅處理
-        with patch.object(_server_cli, "_read_daemon_state", return_value=None):
+        with patch.object(_server_cli, "read_daemon_state", return_value=None):
             self.assertEqual(_server_cli.stop(CmdBags(raw_cmd="server stop", command="stop")), 0)
             self.assertEqual(_server_cli.status(CmdBags(raw_cmd="server status", command="status")), 0)
             self.assertEqual(_server_cli.reload(CmdBags(raw_cmd="server reload", command="reload")), 1)

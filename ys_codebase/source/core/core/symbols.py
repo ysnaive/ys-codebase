@@ -10,9 +10,9 @@ import sys
 import importlib
 import importlib.util
 from typing import Any, Callable, Optional, Tuple, Dict
-from urllib.parse import urlparse
 
 from core import uri
+from core import vfs
 
 
 class SymbolError(Exception):
@@ -141,7 +141,7 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
         
         # Also check relative to workspace if module is core
         for f_uri in file_candidates:
-            if uri.exists(f_uri):
+            if vfs.exists(f_uri):
                 real_file_path = uri.resolve(f_uri)
                 if os.path.isfile(real_file_path):
                     mod_unique_key = f"_yscb_code_{mod_pkg}_{subpath.replace('/', '_')}"

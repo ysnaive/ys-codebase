@@ -1,6 +1,6 @@
 ---
 name: skill-optimizer
-description: 針對既有 Skill 執行靜態診斷、無損重構與 A/B 基準評測生成。僅於顯式輸入 /skill-optimizer 或明確指示審查優化 Skill 時觸發。
+description: 針對既有 Skill 執行五維度靜態診斷、漸進式揭露重構與 A/B 基準評測生成。僅於顯式輸入 /skill-optimizer 時觸發，嚴禁主動觸發。
 ---
 
 # AI Agent 技能審查與優化工作流 (Skill Optimizer)
@@ -16,7 +16,7 @@ description: 針對既有 Skill 執行靜態診斷、無損重構與 A/B 基準�
   - 診斷並修正既有 Skill 的「漏觸發（Under-triggering）」或「誤觸發（Over-triggering）」問題。
   - 精簡超過 500 行的肥大 `SKILL.md`，執行漸進式揭露拆分並補齊按需載入條件。
   - 為既有 Skill 補齊步驟檢核表、`Plan -> Validate -> Execute` 驗證閉環、`## 常見踩坑指南 (Gotchas)` 與資安防護。
-- **觸發時機**：開發者輸入 `/skill-optimizer`（或 `/SkillOptimizer`），或明確要求審查、優化、重構既有 Skill。
+- **觸發時機**：**100% 純手動觸發（B-Strict）**——僅於開發者顯式輸入 `/skill-optimizer` 時觸發，**嚴禁主動觸發**。
 - **排除情境（負向邊界）**：
   - **從零建立專案特化 Skill 或階段錨點注入規則**：當開發者尚無現成 `SKILL.md` 草稿、希望從零新建專案專屬 Skill 或於 `config://agents-workflow/` 配置錨點注入時，請改用 [`/skill-creator`](`__#{module://agents-workflow/assets/skills/skill-creator/SKILL.md}__`)。
   - **從零建立全新業務功能或開發計畫**：當開發者僅要求開發一般業務程式碼功能時，請走標準 [`/new-plan`](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 流程，切勿使用本技能。
@@ -36,7 +36,7 @@ description: 針對既有 Skill 執行靜態診斷、無損重構與 A/B 基準�
 開始執行時，請依序追蹤以下四階段優化進度：
 
 ```markdown
-/SkillOptimizer 四階段進度檢核表：
+/skill-optimizer 四階段進度檢核表：
 - [ ] 階段一：檢視目標 Skill 檔案並確認收尾模式（模式 A：純靜態重構 vs. 模式 B：附加 A/B 評測套件）
 - [ ] 階段二：依 audit-rubric.md 執行五維度靜態審查，輸出「分級審查報告」並 End Turn 等待討論
 - [ ] 階段三：依開發者確認範圍與 refactoring-patterns.md，產出重構後之 SKILL.md 與 references/
@@ -52,15 +52,17 @@ description: 針對既有 Skill 執行靜態診斷、無損重構與 A/B 基準�
 
 ### 階段二：五維度靜態審查與分級報告 (Static Audit & Tiered Report)
 
-**[!] 強制前置閱讀**：執行審查前，必須先讀取 [`references/audit-rubric.md`](./references/audit-rubric.md)，針對以下五大維度逐一掃描：
+**[!] 強制前置閱讀**：執行審查前，必須先讀取通用技能設計標準 [`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) 與 [`references/audit-rubric.md`](./references/audit-rubric.md)，針對以下五大維度逐一掃描：
 
-1. **Metadata 與觸發精準度**：檢查 YAML 語法（防範未加引號之特殊字元如 `[!]` 造成崩潰）、`name` 規格，以及 `description` 是否符合**高密度高召回率**、**自包含具體可觀測（輸入標的＋處理動作＋輸出交付物，禁依賴外部未知脈絡）**與**雙軌結構化邊界**：
-   - **被動／環境攔截型技能（Ambient / Intent-Driven Skills）**：採用完整**三段式結構化邊界（`{核心用途與支援範圍}。觸發情境：{高頻正樣本意圖}。排除情境：{易誤觸發負樣本邊界}。`）**。
-   - **主動指令型技能（Command-Driven / Slash-Invoked Skills）**：採用**極致精簡指令契約（`{1 句話核心目的與交付物}。僅於顯式輸入 /{cmd} 或明確指示{核心動作}時觸發。`）**，省略內部步驟細節與大小寫變體（如 `/Cmd`）等冗餘相容敘述，將延伸呼叫時機交由中樞技能（Hub Skill）按需導流。
-2. **上下文經濟與漸進式揭露**：檢查 `SKILL.md` 是否控制在 500 行／5,000 tokens 內、剔除基礎模型已知常識、確認 `references/` 連結維持單層深度（1-level deep）且具備明確按需載入條件，以及長參考檔（>100 行）是否具備目錄（TOC）。
-3. **控制自由度校準與跨平台解耦**：檢查指令具體度是否匹配任務脆弱度、將多工具選單改為「單一預設＋降級備援」、解除特定平台硬編碼工具名耦合、補上規則背後的技術原因（Explain the why），並保護既有路徑佔位符與超連結語法。
-4. **工作流、腳本與驗證閉環**：檢查多步驟流程是否具備可勾選檢核表、`Plan -> Validate -> Execute` 閉環、極簡狀態卡 End Turn 紀律與 `## 常見踩坑指南 (Gotchas)`。
-5. **資安與供應鏈防護**：排查提示詞注入、混淆指令、硬編碼機密、未驗證遠端依賴與過度授權操作。
+1. **Metadata 與觸發精準度（對齊 [`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) §1）**：檢查 YAML 語法（防範未加引號之特殊字元如 `[!]` 造成崩潰）、`name` 規格，以及 `description` 是否符合**高密度關鍵詞前置**、**自包含具體可觀測（輸入標的＋處理動作＋輸出交付物，禁依賴外部未知脈絡）**與**雙軌結構化邊界（A1 + B2）**：
+   - **軌跡 A — 被動／環境攔截型技能（Ambient / Intent-Driven Skills — A1 正向邊界契約）**：採用**兩段式正向邊界（`{核心用途、處理對象與交付物}。觸發情境：{具體動詞、目標檔案路徑特徵與前置攔截時機}。`）**；預設不寫 `排除情境：`（根除粉紅大象效應與網狀耦合），唯獨同領域極易混淆時選配補充無點名負向邊界，**嚴禁在 `description` 點名其他技能名稱 `(改用 xxx)`**。
+   - **軌跡 B — 主動指令型技能（Command-Driven / Slash Skills — B2 分級命令鎖定）**：
+     - **B-Strict（重型／破壞性／長流程指令）**：採用純斜線鎖定 **`{1 句話核心目的與交付物}。僅於顯式輸入 /{cmd} 時觸發，嚴禁主動觸發。`**（關閉自然語言後門）。
+     - **B-Assist（會話控制／教學輔助指令）**：採用 **`{1 句話核心目的與交付物}。僅於顯式輸入 /{cmd} 或明確要求{具體委託動作}時觸發。`**（嚴禁含 `/Cmd` 大小寫變體）。
+2. **四元素目錄拓撲與漸進式揭露（對齊 [`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) §2）**：檢查 `SKILL.md` 是否控制在 500 行／5,000 tokens 內、剔除基礎模型已知常識、確認 `references/` 連結維持單層深度（1-level deep）且具備明確按需載入條件、長參考檔（>100 行）是否具備目錄（TOC），以及機械式結構校驗是否已下沉至決定性 CLI 或 `scripts/`。
+3. **控制自由度校準與跨平台解耦（對齊 [`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) §2.2）**：檢查指令具體度是否匹配任務脆弱度、將多工具選單改為「單一預設＋降級備援」、解除特定平台硬編碼工具名耦合、補上規則背後的技術原因（Explain the why），並保護既有路徑佔位符與超連結語法。
+4. **條件式工作流護欄與雙模狀態卡節流（對齊 [`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) §3）**：檢查 3 步以上具相依性流程是否具備可勾選檢核表、高風險步驟是否具備條件式 `Plan -> Validate -> Execute` 確認守門、依 `Artifact-in-File` vs. `Artifact-in-Chat` 校準輸出節流，以及末尾是否配置 `## 常見踩坑指南 (Gotchas)`。
+5. **三層縱深安全與跨技能正交（對齊 [`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) §4）**：排查提示詞注入、混淆指令、硬編碼機密、未驗證遠端依賴、宿主工具權限收緊與跨技能職責重複抄寫。
 
 完成掃描後，輸出以下**分級審查報告卡**並**立即 End Turn 等待開發者確認**：
 
@@ -92,11 +94,11 @@ description: 針對既有 Skill 執行靜態診斷、無損重構與 A/B 基準�
 
 ### 階段三：執行無損重構與漸進式揭露拆分 (Skill Refactoring)
 
-待開發者確認修改範圍後，讀取 [`references/refactoring-patterns.md`](./references/refactoring-patterns.md) 執行重構：
+待開發者確認修改範圍後，讀取 [`references/refactoring-patterns.md`](./references/refactoring-patterns.md)（若受審技能為 YSCB 工作流託管資產，**必須一併載入 [`YscbSkillDesignToolStandards.md`](`__#{module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md}__`)**）執行重構：
 
-1. **重寫高鑑別度 Frontmatter**：遵循「高密度高召回率、自包含具體可觀測（輸入→動作→交付物）」與雙軌結構化邊界規範（環境攔截型採「核心用途與支援範圍 → `觸發情境：` → `排除情境：`」三段式；主動指令型採「核心用途與交付物 → `僅於顯式輸入 /{cmd} 或明確指示{核心動作}時觸發`」極簡契約並由中樞技能按需導流）重寫 `description`。
-2. **重構內文與 `references/`**：剔除冗長背景常識、植入步驟檢核表與驗證閉環、收斂 `## 常見踩坑指南 (Gotchas)`，並同步優化底下的 `references/*.md` 檔案。
-3. **驗證功能與連結等價**：逐一核對原始檔案中的所有動態佔位符、跨檔連結、追溯 ID 與狀態卡範本均 100% 完整保留。
+1. **重寫高鑑別度 Frontmatter**：遵循「高密度關鍵詞前置、自包含具體可觀測（輸入→動作→交付物）」與雙軌結構化邊界規範（軌跡 A 環境攔截型採 **A1 正向邊界契約**並拔除跨技能點名；軌跡 B 主動指令型依風險分級採 **B-Strict 純斜線鎖定**或 **B-Assist 明確委託契約**）重寫 `description`。
+2. **重構內文與 `references/`**：剔除冗長背景常識、依條件配置步驟檢核表與雙模狀態卡、收斂 `## 常見踩坑指南 (Gotchas)`，並同步優化底下的 `references/*.md` 檔案。
+3. **驗證功能、連結等價與 YSCB 三步編譯守門**：逐一核對原始檔案中的所有動態佔位符、跨檔連結、追溯 ID 與狀態卡範本均 100% 完整保留；若屬 YSCB 託管技能，必須通過 `contributes check -> compile -> release` 零警告守門。
 
 ### 階段四：依選定模式執行收尾操作 (Closing Operations)
 

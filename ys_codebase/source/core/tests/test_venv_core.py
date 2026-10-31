@@ -12,7 +12,7 @@ import platform
 import unittest
 from unittest.mock import patch, MagicMock
 
-from core import uri
+from core import uri, vfs
 from core.pip_manager import PipManager, PipInstallError
 from core.ide_projector import IdeProjector
 from core.installer import Installer
@@ -117,8 +117,8 @@ class TestVenvCore(YSCBTestCase):
         """T-01 實質化：驗證 Installer.sync_pip_dependencies 實質讀取 manifest 之 pip_dependencies 並發起安裝與 IDE 同步。"""
         installer = Installer()
         mod_name = "mock_pip_mod"
-        uri.makedirs(f"module://{mod_name}", exist_ok=True)
-        uri.write_json(f"module://{mod_name}/manifest.json", {
+        vfs.makedirs(f"module://{mod_name}", exist_ok=True)
+        vfs.write_json(f"module://{mod_name}/manifest.json", {
             "name": mod_name,
             "version": "1.0.0",
             "pip_dependencies": {
@@ -153,8 +153,8 @@ class TestVenvCore(YSCBTestCase):
         finally:
             cfg["installed_modules"] = orig_installed
             installer.engine._save_config(cfg_path, cfg)
-            if uri.exists(f"module://{mod_name}"):
-                uri.rmtree(f"module://{mod_name}")
+            if vfs.exists(f"module://{mod_name}"):
+                vfs.rmtree(f"module://{mod_name}")
 
         self.mark_passed()
 

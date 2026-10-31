@@ -2,7 +2,7 @@
 Release Publisher for agents-workflow.
 Executes the 4-Step Atomic Release Transaction:
 0. Pre-check source fingerprint for early short-circuit (Zero-I/O optimization)
-1. Prune legacy published files recorded in cache://agents-workflow/project_release_manifest.json (auto-migrated from legacy storage://)
+1. Prune legacy published files recorded in cache://agents-workflow/project_release_manifest.json
 2. Pre-compute deployment topology & rendered content for all active release_targets
 3. Persist latest published file manifest and fingerprint to cache:// (host-local, git-ignored)
 4. Materialize physical files (with in-memory diff check) & perform AGENTS.md soft-merge.
@@ -31,16 +31,16 @@ for _cand in [
 
 try:
     from core import uri
+    from core import vfs
 except ImportError:
     uri = None
+    vfs = None
 
 from agents_workflow.compiler import ArtifactCompiler
 
 
 PROJECT_MANIFEST_CACHE_URI = "cache://agents-workflow/project_release_manifest.json"
 LOCAL_MANIFEST_CACHE_URI = "cache://agents-workflow/release_manifest.json"
-# 舊版 Project 軌清單位置（位於 Git 追蹤之 storage://），僅供遷移讀取與清理，嚴禁再寫入
-LEGACY_PROJECT_MANIFEST_STORAGE_URI = "storage://agents-workflow/release_manifest.json"
 SHA1_CACHE_URI = "cache://agents-workflow/source_sha1_cache.json"
 AGENTS_MD_BEGIN = "<!-- YSCB_AGENTS_BEGIN -->"
 AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
@@ -52,17 +52,17 @@ class ReleasePublisher:
     """發布引擎：負責 Target 拓撲映射、Header 巨集插值、雙軌 Diff 檢測與 4 步原子交易。"""
 
     def __init__(self, compiler: Optional[ArtifactCompiler] = None, host_dir: Optional[str] = None):
-        self.compiler = compiler or ArtifactCompiler(host_dir=host_dir)
-        self.host_dir = host_dir
+        self.host_dir = host_dir or os.getcwd()
+        self.compiler = compiler or ArtifactCompiler(host_dir=self.host_dir)
         self._sha1_cache_dirty = False
         self._sha1_cache: Dict[str, List[Any]] = self._load_sha1_cache()
         self._sources_digest_cache: Optional[bytes] = None
 
     def _load_sha1_cache(self) -> Dict[str, List[Any]]:
         """載入持久化之來源檔案 SHA-1 快取 (cache://)。"""
-        if uri and uri.exists(SHA1_CACHE_URI):
+        if vfs and vfs.exists(SHA1_CACHE_URI):
             try:
-                data = uri.read_json(SHA1_CACHE_URI)
+                data = vfs.read_json(SHA1_CACHE_URI)
                 if isinstance(data, dict):
                     return data
             except Exception:
@@ -71,9 +71,9 @@ class ReleasePublisher:
 
     def _save_sha1_cache(self) -> None:
         """若有異動，將來源檔案 SHA-1 快取持久化至 cache://。"""
-        if getattr(self, "_sha1_cache_dirty", False) and uri:
+        if getattr(self, "_sha1_cache_dirty", False) and vfs:
             try:
-                uri.write_json(SHA1_CACHE_URI, self._sha1_cache)
+                vfs.write_json(SHA1_CACHE_URI, self._sha1_cache)
                 self._sha1_cache_dirty = False
             except Exception:
                 pass
@@ -105,16 +105,9 @@ class ReleasePublisher:
 
     def _load_manifest(self, manifest_uri: str) -> Dict[str, Any]:
         """安全讀取指定語意 URI 之 Manifest。"""
-        if uri and uri.exists(manifest_uri):
+        if vfs and vfs.exists(manifest_uri):
             try:
-                data = uri.read_json(manifest_uri)
-                if isinstance(data, dict):
-                    return data
-            except Exception:
-                pass
-        if uri and manifest_uri == PROJECT_MANIFEST_CACHE_URI and uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI):
-            try:
-                data = uri.read_json(LEGACY_PROJECT_MANIFEST_STORAGE_URI)
+                data = vfs.read_json(manifest_uri)
                 if isinstance(data, dict):
                     return data
             except Exception:
@@ -123,32 +116,13 @@ class ReleasePublisher:
 
     def _save_manifest(self, manifest_uri: str, data: Dict[str, Any]) -> bool:
         """安全寫入 Manifest 至指定語意 URI，使用純 LF 換行。"""
-        if uri:
+        if vfs:
             try:
-                uri.write_json(manifest_uri, data)
+                vfs.write_json(manifest_uri, data)
                 return True
             except Exception:
                 pass
         return False
-
-    def _migrate_legacy_storage_manifest(self) -> None:
-        """舊版 storage:// 物化清單平滑遷移至 cache:// 並物理清理舊檔與空目錄。"""
-        if not uri:
-            return
-        try:
-            if uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI):
-                if not uri.exists(PROJECT_MANIFEST_CACHE_URI):
-                    legacy_data = uri.read_json(LEGACY_PROJECT_MANIFEST_STORAGE_URI)
-                    if isinstance(legacy_data, dict):
-                        uri.write_json(PROJECT_MANIFEST_CACHE_URI, legacy_data)
-                uri.remove(LEGACY_PROJECT_MANIFEST_STORAGE_URI)
-                legacy_dir = "storage://agents-workflow"
-                if uri.exists(legacy_dir):
-                    abs_dir = uri.resolve(legacy_dir, interactive=False)
-                    if os.path.isdir(abs_dir) and not os.listdir(abs_dir):
-                        os.rmdir(abs_dir)
-        except Exception:
-            pass
 
     def _get_project_config(self) -> Dict[str, Any]:
         """讀取 config://agents-workflow 設定檔（自動計算 Local 與 Project 之 release_targets 聯集）。"""
@@ -163,8 +137,7 @@ class ReleasePublisher:
             data = config.get_all("agents-workflow")
             if data:
                 cfg = dict(data)
-            
-            # 計算 release_targets 聯集 (Local | Project)
+
             proj_targets = config.get_raw("agents-workflow", "release_targets", local=False, default=["antigravity"]) or ["antigravity"]
             local_targets = config.get_raw("agents-workflow", "release_targets", local=True, default=[]) or []
             union_targets = list(dict.fromkeys(list(proj_targets) + list(local_targets)))
@@ -189,12 +162,10 @@ class ReleasePublisher:
                         with open(fp, "rb") as rf:
                             raw = rf.read()
                         try:
-                            # 嘗試以 UTF-8 解碼並正規化 CRLF -> LF
                             text = raw.decode("utf-8")
                             norm_bytes = text.replace("\r\n", "\n").encode("utf-8")
                             hasher.update(norm_bytes)
                         except UnicodeDecodeError:
-                            # 二進位檔案安全降級：維持原始 bytes
                             hasher.update(raw)
                     except Exception:
                         pass
@@ -276,21 +247,14 @@ class ReleasePublisher:
         """
         hasher = hashlib.sha256()
 
-        # 1. 專案組態
         cfg = self._get_project_config()
         if target_names is not None:
             cfg = dict(cfg)
             cfg["release_targets"] = sorted(list(target_names))
         hasher.update(json.dumps(cfg, sort_keys=True).encode("utf-8"))
-
-        # 2. 來源資產綜合摘要 (具備 stat 快照與單次調用快取)
         hasher.update(self._get_sources_digest())
 
         return hasher.hexdigest()
-
-    def get_registered_targets(self) -> List[Dict[str, Any]]:
-        """自 contributes 獲取所有已宣告之 release_target。"""
-        return self.compiler.get_release_targets()
 
     def build_deployment_map(
         self,
@@ -308,7 +272,7 @@ class ReleasePublisher:
         deployment_map: Dict[str, str] = {}
         target_items: List[Dict[str, Any]] = []
 
-        proj_root = os.getcwd()
+        proj_root = self.host_dir
         if uri:
             try:
                 proj_root = uri.resolve("project://", interactive=False)
@@ -317,7 +281,7 @@ class ReleasePublisher:
 
         for it in resolved_items:
             exp = it.get("export", {})
-            exp_type = exp.get("type", "template")  # workflow, template, standard, skill
+            exp_type = exp.get("type", "template")
             source_uri = exp.get("source", "")
             base_name = it.get("base_name", "")
             sub_folder = it.get("sub_folder", "templates")
@@ -325,17 +289,14 @@ class ReleasePublisher:
             skill_name = it.get("skill_name", exp.get("name", os.path.splitext(base_name)[0]))
             rel_path = it.get("rel_path", base_name)
 
-            # 檢查 projections 是否有對應配置
             proj_rule = projections.get(exp_type, {})
             if not proj_rule:
-                # 嘗試單複數容錯 (standards vs standard, skills vs skill)
                 for k, v in projections.items():
                     if k.rstrip("s") == exp_type.rstrip("s"):
                         proj_rule = v
                         break
 
             if not proj_rule:
-                # 預設 fallback 輸出到 .agents/<sub_folder>/ 或 .agents/skills/{export.name}
                 if is_skill:
                     target_dir_uri = f"project://.agents/skills/{skill_name}"
                 else:
@@ -347,7 +308,6 @@ class ReleasePublisher:
                 ext = proj_rule.get("extension", ".md")
                 header_tpl = proj_rule.get("header")
 
-                # 支援 target_dir 巨集插值 ({export.name}, {export.basename}, {target.name})
                 target_dir_uri = (
                     raw_target_dir
                     .replace("{export.name}", skill_name)
@@ -355,7 +315,6 @@ class ReleasePublisher:
                     .replace("{target.name}", target_cfg.get("name", ""))
                 )
 
-            # 解析目標絕對目錄
             target_dir_abs = ""
             if uri and "://" in target_dir_uri:
                 try:
@@ -372,16 +331,13 @@ class ReleasePublisher:
                 else:
                     target_dir_abs = os.path.join(proj_root, target_dir_uri.replace("/", os.sep))
 
-            # 計算目標檔案名稱與路徑
             file_main_name = os.path.splitext(base_name)[0]
             if is_skill:
-                # 保留 Skill 內部相對路徑 (如 SKILL.md 或 references/sub.md)
                 target_abs_path = os.path.normpath(os.path.join(target_dir_abs, rel_path.replace("/", os.sep)))
             else:
                 target_filename = f"{file_main_name}{ext}"
                 target_abs_path = os.path.normpath(os.path.join(target_dir_abs, target_filename))
 
-            # 註冊完整來源 URI 與標準別名
             if is_skill:
                 if source_uri:
                     deployment_map[f"{source_uri.rstrip('/')}/{rel_path}"] = target_abs_path
@@ -412,9 +368,7 @@ class ReleasePublisher:
         return deployment_map, target_items
 
     def render_header(self, export_item: Dict[str, Any], header_template: Optional[Any], target_name: str) -> str:
-        """
-        將 release_target 宣告之 header 模板進行動態巨集替換。
-        """
+        """將 release_target 宣告之 header 模板進行動態巨集替換。"""
         if not header_template:
             return ""
 
@@ -430,7 +384,7 @@ class ReleasePublisher:
         main_name = os.path.splitext(base_name)[0]
 
         macros = {
-            "export.description": export_item.get("description", ""),
+            "export.description": self.compiler.resolve_export_description(export_item),
             "export.name": export_item.get("name", main_name),
             "export.type": export_item.get("type", "template"),
             "export.source": source_p,
@@ -439,12 +393,10 @@ class ReleasePublisher:
             "target.name": target_name
         }
 
-        # 替換 {key}
         res = raw_template
         for k, v in macros.items():
             res = res.replace(f"{{{k}}}", str(v))
 
-        # 安全清理殘留未匹配的 {export.*} 或 {target.*}
         res = re.sub(r"\{(?:export|target)\.[A-Za-z0-9_]+\}", "", res)
         return res.strip() + "\n\n" if res.strip() else ""
 
@@ -452,7 +404,6 @@ class ReleasePublisher:
         """
         純文字軟合併演算法 (Pure String Soft-Merge).
         將新標準內容單向注入至 YSCB 標記區塊，保留外部自定義章節。
-        專案特化技能擴充請透過 config/agents-workflow/contribute.json 宣告式注入。
         """
         injected_section = f"{AGENTS_MD_BEGIN}\n{dev_standards_content.strip()}\n{AGENTS_MD_END}"
         if not existing_text:
@@ -480,14 +431,12 @@ class ReleasePublisher:
         if not existing_text:
             return ""
 
-        # 1. 剝離 <!-- YSCB_AGENTS_BEGIN --> ... <!-- YSCB_AGENTS_END -->
         pattern = re.compile(
             re.escape(AGENTS_MD_BEGIN) + r".*?" + re.escape(AGENTS_MD_END),
             re.DOTALL
         )
         cleaned = pattern.sub("", existing_text).strip()
 
-        # 2. 剝離空樣板「## 4. 專案特化工程規範...」
         empty_boilerplate = (
             r"##\s*4\.\s*專案特化工程規範\s*\(Project\s*Specific\s*Standards\)\s*"
             r"\*\(專案特化工程規範填寫於此，不受中央標準庫覆蓋\)\*"
@@ -498,172 +447,62 @@ class ReleasePublisher:
 
         return cleaned
 
-    def _soft_merge_agents_md(self, dev_standards_content: str, proj_root_or_file: str, force: bool = False) -> Tuple[bool, bool]:
-        """
-        執行 AGENTS.md 軟合併注入，保留自定義章節。
-        Returns:
-            (success: bool, written: bool)
-        """
-        if os.path.isdir(proj_root_or_file) or not proj_root_or_file.endswith(".md"):
-            target_file = os.path.join(proj_root_or_file, "AGENTS.md")
-        else:
-            target_file = proj_root_or_file
+    def _check_short_circuit(
+        self,
+        force: bool,
+        proj_targets: List[str],
+        local_targets: List[str],
+        active_target_names: List[str],
+        old_proj_manifest: Dict[str, Any],
+        old_local_manifest: Dict[str, Any],
+        proj_fingerprint: str,
+        local_fingerprint: str,
+        all_registered_targets: Dict[str, Dict[str, Any]],
+        proj_root: str,
+    ) -> Tuple[bool, List[str]]:
+        """Stage 0: 檢查是否滿足來源指紋與落地檔案完整性，以執行零 I/O 短路。"""
+        if force or not (proj_targets or local_targets):
+            return False, []
 
-        existing = ""
-        if os.path.isfile(target_file):
-            try:
-                with open(target_file, "r", encoding="utf-8") as f:
-                    existing = f.read()
-            except Exception:
-                existing = ""
-
-        new_content = self._soft_merge_agents_text(existing, dev_standards_content)
-
-        if not force and os.path.isfile(target_file) and new_content == existing:
-            return True, False
-
-        try:
-            os.makedirs(os.path.dirname(target_file), exist_ok=True)
-            with open(target_file, "w", encoding="utf-8", newline="\n") as f:
-                f.write(new_content)
-            return True, True
-        except Exception as e:
-            print(f"[publisher:warning] Failed soft-merge {target_file}: {e}", file=sys.stderr)
-            return False, False
-
-    def release_all(self, force: bool = False, interactive: bool = False) -> Dict[str, Any]:
-        """
-        執行 4 步原子發布交易流水線（支援 Project/Local 雙軌獨立 Manifest 與 Diff 優化）：
-        Stage 0: 來源指紋提前短路檢查 (雙軌獨立比對)
-        Stage 1: 內容佔位符展開 (compile_stage1)
-        Stage 2: 提前解算所有已啟用 Target 之檔案實體路徑與渲染內容 (分流 Project 與 Local 集合)
-        Stage 3: 原子寫入 cache:// (Project 軌 project_release_manifest.json, project:// 格式；Local 軌 release_manifest.json, 絕對路徑格式)
-        Stage 4: 落地端檔案內容比對與增量輸出（含 agents_md 軟合併與純 LF 寫入）
-        """
-        cfg = self._get_project_config()
-        active_target_names: List[str] = cfg.get("release_targets", ["antigravity"])
-
-        # 取得專案根目錄
-        proj_root = os.getcwd()
-        if uri:
-            try:
-                proj_root = uri.resolve("project://", interactive=False)
-            except Exception:
-                pass
-
-        # 分流 Project Targets (Tier 2) 與 Local Targets (Tier 1)
-        try:
-            from agents_workflow.targets import ReleaseTargetManager
-            classified = ReleaseTargetManager.get_classified_targets()
-            proj_tier_targets = set(classified.get("project", []))
-        except Exception:
-            proj_tier_targets = {"antigravity"}
-
-        proj_targets = [t for t in active_target_names if t in proj_tier_targets]
-        local_targets = [t for t in active_target_names if t not in proj_tier_targets]
-
-        # -------------------------------------------------------------
-        # Stage 0: 來源指紋提前短路檢查 (Source Fingerprint Gate & Stat-First)
-        # -------------------------------------------------------------
-        old_proj_manifest = self._load_manifest(PROJECT_MANIFEST_CACHE_URI)
-        old_local_manifest = self._load_manifest(LOCAL_MANIFEST_CACHE_URI)
-
-        # 檢查歷史 Manifest 遷移 (EC-05 及跨平台 Working Tree 隔離遷移)
-        if uri:
-            self._migrate_legacy_storage_manifest()
-            try:
-                legacy_wrong_uri = "storage://core/agents-workflow/release_manifest.json"
-                if uri.exists(legacy_wrong_uri):
-                    if not uri.exists(PROJECT_MANIFEST_CACHE_URI):
-                        legacy_data = uri.read_json(legacy_wrong_uri)
-                        uri.write_json(PROJECT_MANIFEST_CACHE_URI, legacy_data)
-                    uri.remove(legacy_wrong_uri)
-                    legacy_dir_uri = "storage://core/agents-workflow"
-                    if uri.exists(legacy_dir_uri):
-                        uri.rmtree(legacy_dir_uri)
-            except Exception:
-                pass
-
-        all_registered_targets = {t["name"]: t for t in self.get_registered_targets() if "name" in t}
-
-        # Stage 0.1: 極速來源指紋計算 (Stat-First 快取初篩與 sources_digest 共享)
-        proj_fingerprint = self.compute_source_fingerprint(proj_targets) if proj_targets else ""
-        local_fingerprint = self.compute_source_fingerprint(local_targets) if local_targets else ""
-        combined_fingerprint = self.compute_source_fingerprint(active_target_names)
-
-        # 評估是否可全短路 (Stage 0 Short-Circuit)
-        can_short_circuit = True
         total_short_circuited_files: List[str] = []
 
-        if force:
-            can_short_circuit = False
-        else:
-            if proj_targets:
-                if old_proj_manifest.get("fingerprint") != proj_fingerprint:
-                    can_short_circuit = False
-                else:
-                    for p_item in old_proj_manifest.get("published_files", []):
-                        p_abs = self._resolve_project_uri(p_item, proj_root)
-                        if not os.path.isfile(p_abs):
-                            can_short_circuit = False
-                            break
-                        total_short_circuited_files.append(p_abs)
-            if local_targets:
-                if old_local_manifest.get("fingerprint") != local_fingerprint:
-                    can_short_circuit = False
-                else:
-                    for l_item in old_local_manifest.get("published_files", []):
-                        l_abs = self._resolve_project_uri(l_item, proj_root)
-                        if not os.path.isfile(l_abs):
-                            can_short_circuit = False
-                            break
-                        total_short_circuited_files.append(l_abs)
+        if proj_targets:
+            if old_proj_manifest.get("fingerprint") != proj_fingerprint:
+                return False, []
+            for p_item in old_proj_manifest.get("published_files", []):
+                p_abs = self._resolve_project_uri(p_item, proj_root)
+                if not os.path.isfile(p_abs):
+                    return False, []
+                total_short_circuited_files.append(p_abs)
 
-            for t_name in active_target_names:
-                t_cfg = all_registered_targets.get(t_name, {})
-                a_md = t_cfg.get("agents_md")
-                if a_md and str(a_md).strip():
-                    a_abs = self._resolve_project_uri(str(a_md).strip(), proj_root)
-                    if not os.path.isfile(a_abs):
-                        can_short_circuit = False
-                        break
+        if local_targets:
+            if old_local_manifest.get("fingerprint") != local_fingerprint:
+                return False, []
+            for l_item in old_local_manifest.get("published_files", []):
+                l_abs = self._resolve_project_uri(l_item, proj_root)
+                if not os.path.isfile(l_abs):
+                    return False, []
+                total_short_circuited_files.append(l_abs)
 
-            if not (proj_targets or local_targets):
-                can_short_circuit = False
+        for t_name in active_target_names:
+            t_cfg = all_registered_targets.get(t_name, {})
+            a_md = t_cfg.get("agents_md")
+            if a_md and str(a_md).strip():
+                a_abs = self._resolve_project_uri(str(a_md).strip(), proj_root)
+                if not os.path.isfile(a_abs):
+                    return False, []
 
-        if can_short_circuit and total_short_circuited_files:
-            self._save_sha1_cache()
-            return {
-                "success": True,
-                "short_circuited": True,
-                "published_count": len(total_short_circuited_files),
-                "written_count": 0,
-                "skipped_count": len(total_short_circuited_files),
-                "removed_count": 0,
-                "active_targets": active_target_names,
-                "orphan_targets": [],
-                "fingerprint": combined_fingerprint
-            }
+        return bool(total_short_circuited_files), total_short_circuited_files
 
-        # 執行 Stage 1: 內容佔位符展開與快取
-        stage1_res = self.compiler.compile_stage1()
-        if not stage1_res.get("success", False):
-            return {
-                "success": False,
-                "short_circuited": False,
-                "error": "Stage 1 content compilation failed",
-                "details": stage1_res.get("errors", []),
-                "published_count": 0,
-                "written_count": 0,
-                "skipped_count": 0,
-                "removed_count": 0,
-                "active_targets": active_target_names,
-                "orphan_targets": []
-            }
-
-        resolved_items = stage1_res.get("resolved_items", [])
-
-        # --- 步驟 2 (提前解算): 為所有已啟用 Target 解算檔案清單與內容 ---
+    def _prepare_target_compilations(
+        self,
+        active_target_names: List[str],
+        all_registered_targets: Dict[str, Dict[str, Any]],
+        proj_tier_targets: Set[str],
+        resolved_items: List[Dict[str, Any]],
+        proj_root: str,
+    ) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str], List[str]]:
+        """Stage 2: 為所有啟用之 Target 預先解算檔案實體路徑與最終渲染內容。"""
         precomputed_project_files: Dict[str, str] = {}
         precomputed_local_files: Dict[str, str] = {}
         precomputed_all_files: Dict[str, str] = {}
@@ -698,7 +537,6 @@ class ReleasePublisher:
                 else:
                     precomputed_local_files[dst_abs] = final_text
 
-            # 處理該 Target 的 agents_md 規範投影 (若有設定且非空)
             agents_md_uri = target_cfg.get("agents_md")
             if agents_md_uri and str(agents_md_uri).strip():
                 if not agents_standards_content:
@@ -727,7 +565,17 @@ class ReleasePublisher:
                     else:
                         precomputed_local_files[target_agents_abs] = final_agents_text
 
-        # --- 步驟 1 (過往清理): 雙軌舊檔案比對 ---
+        return precomputed_project_files, precomputed_local_files, precomputed_all_files, orphan_targets
+
+    def _prune_orphaned_managed_files(
+        self,
+        old_proj_manifest: Dict[str, Any],
+        old_local_manifest: Dict[str, Any],
+        current_published_set: Set[str],
+        all_registered_targets: Dict[str, Dict[str, Any]],
+        proj_root: str,
+    ) -> Set[str]:
+        """Stage 1: 比對雙軌舊清單並安全清理不再受管之過期檔案（含 AGENTS.md 軟剝離保護）。"""
         old_proj_files: Set[str] = {
             self._resolve_project_uri(f, proj_root) for f in old_proj_manifest.get("published_files", [])
         }
@@ -735,18 +583,16 @@ class ReleasePublisher:
             self._resolve_project_uri(f, proj_root) for f in old_local_manifest.get("published_files", [])
         }
 
-        # 算出各軌不再需要的檔案（必須同時不在當前全體產出中）
-        current_published_set = set(precomputed_all_files.keys())
-        stale_proj_files = old_proj_files - current_published_set
-        stale_local_files = old_local_files - current_published_set
-        files_to_remove = stale_proj_files | stale_local_files
+        files_to_remove = (old_proj_files | old_local_files) - current_published_set
 
         for f_rem in files_to_remove:
             if os.path.isfile(f_rem):
                 try:
                     base_name = os.path.basename(f_rem)
                     is_agents_md = base_name in ("AGENTS.md", "CLAUDE.md") or any(
-                        t_cfg.get("agents_md") and f_rem.endswith(os.path.normpath(str(t_cfg.get("agents_md")).replace("project://", "").replace("/", os.sep)))
+                        t_cfg.get("agents_md") and f_rem.endswith(
+                            os.path.normpath(str(t_cfg.get("agents_md")).replace("project://", "").replace("/", os.sep))
+                        )
                         for t_cfg in all_registered_targets.values()
                     )
                     if is_agents_md:
@@ -765,35 +611,24 @@ class ReleasePublisher:
                 except Exception as e:
                     print(f"[publisher:warning] Failed removing stale file {f_rem}: {e}", file=sys.stderr)
 
-        # 自動清理已除役之 legacy workflows 目錄 (.agents/workflows 與 .claude/commands)
-        for legacy_rel in [".agents/workflows", ".claude/commands"]:
-            legacy_dir = os.path.normpath(os.path.join(proj_root, legacy_rel))
-            if os.path.isdir(legacy_dir):
-                try:
-                    for root, dirs, files in os.walk(legacy_dir, topdown=False):
-                        for f in files:
-                            fp = os.path.join(root, f)
-                            if fp not in current_published_set:
-                                try:
-                                    os.remove(fp)
-                                    files_to_remove.add(fp)
-                                except Exception:
-                                    pass
-                        for d in dirs:
-                            dp = os.path.join(root, d)
-                            try:
-                                os.rmdir(dp)
-                            except Exception:
-                                pass
-                    if os.path.isdir(legacy_dir) and not os.listdir(legacy_dir):
-                        os.rmdir(legacy_dir)
-                except Exception:
-                    pass
+        return files_to_remove
 
-        # --- 步驟 3 (更新持久清單): 分流寫入 cache:// 之 Project 軌與 Local 軌清單 ---
+    def _save_deployment_manifests(
+        self,
+        proj_targets: List[str],
+        local_targets: List[str],
+        precomputed_project_files: Dict[str, str],
+        precomputed_local_files: Dict[str, str],
+        old_proj_manifest: Dict[str, Any],
+        old_local_manifest: Dict[str, Any],
+        proj_fingerprint: str,
+        local_fingerprint: str,
+        combined_fingerprint: str,
+        proj_root: str,
+    ) -> None:
+        """Stage 3: 原子寫入 cache:// 之 Project 軌與 Local 軌持久化發布清單。"""
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1. Project 軌 (寫入 cache://，使用 project:// 協議路徑；不入 Git 追蹤區)
         if proj_targets or old_proj_manifest:
             proj_uris = [self._to_project_uri(f, proj_root) for f in precomputed_project_files.keys()]
             sorted_proj_uris = sorted(proj_uris)
@@ -818,7 +653,6 @@ class ReleasePublisher:
             if new_proj_manifest != old_proj_manifest:
                 self._save_manifest(PROJECT_MANIFEST_CACHE_URI, new_proj_manifest)
 
-        # 2. Local 軌 (寫入 cache://，使用實體絕對路徑)
         if local_targets or old_local_manifest:
             sorted_local_files = sorted(list(precomputed_local_files.keys()))
             if (
@@ -842,7 +676,12 @@ class ReleasePublisher:
             if new_local_manifest != old_local_manifest:
                 self._save_manifest(LOCAL_MANIFEST_CACHE_URI, new_local_manifest)
 
-        # --- 步驟 4 (建立目錄並落地輸出檔案，含 Diff 檢測與純 LF 換行) ---
+    def _materialize_target_files(
+        self,
+        precomputed_all_files: Dict[str, str],
+        force: bool,
+    ) -> Tuple[int, int]:
+        """Stage 4: 落地端檔案內容比對與增量輸出（純 LF 換行）。"""
         written_count = 0
         skipped_count = 0
         for dst_abs, content in precomputed_all_files.items():
@@ -860,8 +699,124 @@ class ReleasePublisher:
             with open(dst_abs, "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
             written_count += 1
+        return written_count, skipped_count
 
-        # 執行 project://.gitignore 軟合併同步 (傳入本次發布之精確檔案清單)
+    def release_all(self, force: bool = False) -> Dict[str, Any]:
+        """
+        執行 4 步原子發布交易流水線（支援 Project/Local 雙軌獨立 Manifest 與 Diff 優化）：
+        Stage 0: 來源指紋提前短路檢查 (_check_short_circuit)
+        Stage 1: 內容佔位符展開 (compile_stage1)
+        Stage 2: 預先解算所有已啟用 Target 之檔案實體路徑與渲染內容 (_prepare_target_compilations)
+        Stage 3: 清理過期檔案 (_prune_orphaned_managed_files) 並原子寫入 cache:// 清單 (_save_deployment_manifests)
+        Stage 4: 落地端檔案內容比對與增量輸出 (_materialize_target_files) 與 .gitignore 軟合併
+        """
+        cfg = self._get_project_config()
+        active_target_names: List[str] = cfg.get("release_targets", ["antigravity"])
+
+        proj_root = self.host_dir
+        if uri:
+            try:
+                proj_root = uri.resolve("project://", interactive=False)
+            except Exception:
+                pass
+
+        try:
+            from agents_workflow.targets import ReleaseTargetManager
+            classified = ReleaseTargetManager.get_classified_targets()
+            proj_tier_targets = set(classified.get("project", []))
+        except Exception:
+            proj_tier_targets = {"antigravity"}
+
+        proj_targets = [t for t in active_target_names if t in proj_tier_targets]
+        local_targets = [t for t in active_target_names if t not in proj_tier_targets]
+
+        old_proj_manifest = self._load_manifest(PROJECT_MANIFEST_CACHE_URI)
+        old_local_manifest = self._load_manifest(LOCAL_MANIFEST_CACHE_URI)
+        all_registered_targets = {t["name"]: t for t in self.compiler.get_release_targets() if "name" in t}
+
+        proj_fingerprint = self.compute_source_fingerprint(proj_targets) if proj_targets else ""
+        local_fingerprint = self.compute_source_fingerprint(local_targets) if local_targets else ""
+        combined_fingerprint = self.compute_source_fingerprint(active_target_names)
+
+        can_short_circuit, short_circuited_files = self._check_short_circuit(
+            force=force,
+            proj_targets=proj_targets,
+            local_targets=local_targets,
+            active_target_names=active_target_names,
+            old_proj_manifest=old_proj_manifest,
+            old_local_manifest=old_local_manifest,
+            proj_fingerprint=proj_fingerprint,
+            local_fingerprint=local_fingerprint,
+            all_registered_targets=all_registered_targets,
+            proj_root=proj_root,
+        )
+        if can_short_circuit:
+            self._save_sha1_cache()
+            return {
+                "success": True,
+                "short_circuited": True,
+                "published_count": len(short_circuited_files),
+                "written_count": 0,
+                "skipped_count": len(short_circuited_files),
+                "removed_count": 0,
+                "active_targets": active_target_names,
+                "orphan_targets": [],
+                "fingerprint": combined_fingerprint
+            }
+
+        stage1_res = self.compiler.compile_stage1()
+        if not stage1_res.get("success", False):
+            return {
+                "success": False,
+                "short_circuited": False,
+                "error": "Stage 1 content compilation failed",
+                "details": stage1_res.get("errors", []),
+                "published_count": 0,
+                "written_count": 0,
+                "skipped_count": 0,
+                "removed_count": 0,
+                "active_targets": active_target_names,
+                "orphan_targets": []
+            }
+
+        resolved_items = stage1_res.get("resolved_items", [])
+        (
+            precomputed_project_files,
+            precomputed_local_files,
+            precomputed_all_files,
+            orphan_targets,
+        ) = self._prepare_target_compilations(
+            active_target_names=active_target_names,
+            all_registered_targets=all_registered_targets,
+            proj_tier_targets=proj_tier_targets,
+            resolved_items=resolved_items,
+            proj_root=proj_root,
+        )
+
+        current_published_set = set(precomputed_all_files.keys())
+        files_to_remove = self._prune_orphaned_managed_files(
+            old_proj_manifest=old_proj_manifest,
+            old_local_manifest=old_local_manifest,
+            current_published_set=current_published_set,
+            all_registered_targets=all_registered_targets,
+            proj_root=proj_root,
+        )
+
+        self._save_deployment_manifests(
+            proj_targets=proj_targets,
+            local_targets=local_targets,
+            precomputed_project_files=precomputed_project_files,
+            precomputed_local_files=precomputed_local_files,
+            old_proj_manifest=old_proj_manifest,
+            old_local_manifest=old_local_manifest,
+            proj_fingerprint=proj_fingerprint,
+            local_fingerprint=local_fingerprint,
+            combined_fingerprint=combined_fingerprint,
+            proj_root=proj_root,
+        )
+
+        written_count, skipped_count = self._materialize_target_files(precomputed_all_files, force=force)
+
         gitignore_res = self.sync_gitignore(
             active_targets=active_target_names,
             published_files=current_published_set,
@@ -894,7 +849,7 @@ class ReleasePublisher:
         避免整目錄忽略 (.agents/) 干擾使用者存放於該目錄下的自訂 skills/rules/檔案。
         """
         if proj_root is None:
-            proj_root = os.getcwd()
+            proj_root = self.host_dir
             if uri:
                 try:
                     proj_root = uri.resolve("project://", interactive=False)
@@ -905,22 +860,19 @@ class ReleasePublisher:
             cfg = self._get_project_config()
             active_targets = list(cfg.get("release_targets", []))
 
-        all_registered = {t["name"]: t for t in self.get_registered_targets() if "name" in t}
+        all_registered = {t["name"]: t for t in self.compiler.get_release_targets() if "name" in t}
         ignore_patterns: Set[str] = set()
 
-        # 1. 取得發布檔案清單 (優先使用傳入的 published_files，否則讀取 storage manifest)
         file_list = []
         if published_files is not None:
             file_list = list(published_files)
-        else:
-            if uri and uri.exists(PROJECT_MANIFEST_CACHE_URI):
-                try:
-                    m_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
-                    file_list = m_data.get("published_files", [])
-                except Exception:
-                    pass
+        elif vfs and vfs.exists(PROJECT_MANIFEST_CACHE_URI):
+            try:
+                m_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
+                file_list = m_data.get("published_files", [])
+            except Exception:
+                pass
 
-        # 2. 針對個別發布檔案轉換為相對路徑 (100% 精確檔案路徑，不濃縮任何目錄，略過常駐規則檔)
         for f_abs in file_list:
             if isinstance(f_abs, str) and f_abs.startswith("project://"):
                 f_abs = self._resolve_project_uri(f_abs, proj_root)
@@ -933,7 +885,6 @@ class ReleasePublisher:
             except Exception:
                 pass
 
-        # 3. 補充各 Target 宣告之自訂 ignore patterns (若有的話)
         for t_name in active_targets:
             t_cfg = all_registered.get(t_name, {})
             for pat in t_cfg.get("ignore_patterns", []):
@@ -942,7 +893,6 @@ class ReleasePublisher:
                     p_clean = f"/{p_clean}"
                 ignore_patterns.add(p_clean)
 
-        # 排序 patterns
         sorted_patterns = sorted(list(ignore_patterns))
 
         block_lines = [
@@ -964,7 +914,6 @@ class ReleasePublisher:
             except Exception:
                 existing_content = ""
 
-        # 檢測現有標記
         pattern = re.compile(
             rf"{re.escape(GITIGNORE_BEGIN_MARKER)}[\s\S]*?{re.escape(GITIGNORE_END_MARKER)}",
             re.MULTILINE,
@@ -980,7 +929,6 @@ class ReleasePublisher:
             else:
                 merged_content = new_block_text + "\n"
 
-        # 若無變更則跳過
         if has_existing and existing_content == merged_content:
             return {"updated": False, "created": False, "patterns": sorted_patterns}
 
@@ -1005,6 +953,3 @@ def ensure_jit_release(force: bool = False) -> bool:
         return bool(res.get("success", False) and not res.get("short_circuited", False))
     except Exception:
         return False
-
-
-

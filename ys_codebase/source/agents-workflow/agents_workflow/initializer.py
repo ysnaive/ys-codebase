@@ -4,7 +4,6 @@ Provides probe, confirmation, directory creation, and atomic configuration bindi
 """
 import os
 import sys
-import json
 from typing import Dict, List, Any, Optional, Tuple
 
 try:
@@ -27,8 +26,6 @@ class WorkflowInitializer:
 
     def __init__(self, host_dir: Optional[str] = None):
         self.host_dir = host_dir
-        # 定位模組根目錄
-        self.module_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     def check_project_protocol(self) -> Tuple[bool, str]:
         """
@@ -57,7 +54,17 @@ class WorkflowInitializer:
                 return ""
 
         # 一般相對/絕對路徑
+        if self.host_dir and not os.path.isabs(raw_path):
+            return os.path.abspath(os.path.join(self.host_dir, raw_path))
         return os.path.abspath(raw_path)
+
+    def sync_gitignore(self, host_dir: Optional[str] = None) -> Dict[str, Any]:
+        """委託 ReleasePublisher 同步更新 .gitignore 受託管區塊。"""
+        from agents_workflow.publisher import ReleasePublisher
+
+        eff_host = host_dir or self.host_dir
+        pub = ReleasePublisher(host_dir=eff_host)
+        return pub.sync_gitignore(proj_root=eff_host)
 
     def probe_paths(self, target_paths: Dict[str, str]) -> List[Dict[str, Any]]:
         """

@@ -1,5 +1,32 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_10_30_1641_code_optimize (Completed)
+
+### sub_05_agents_workflow_code_optimization (Completed)
+- **`agents-workflow` 五維度靜態診斷、巨型模組正交拆分 (`_common` / `_verifier_*` / `_trace_*`)、循環依賴破除與 `Mode A` 歷史技術債清除 (`FR-01` ~ `FR-08`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-03`)**：
+  - **`verifier.py` 與 `session_trace.py` 職責拆分及 `plans/__init__.py` PEP 562 延遲載入 (`FR-02` ~ `FR-05`, `[P02:DR-01]`)**：新建 `agents_workflow/plans/_common.py` 統一 `resolve_plan_uri` 與 `parse_markdown_blockquote_headers`；將 `verifier.py` 拆分為 `_verifier_specs.py`、`_verifier_healer.py` 與 `verifier.py`，將 `session_trace.py` 拆分為 `_trace_parser.py`、`_trace_renderer.py` 與 `session_trace.py`，並將 `plans/__init__.py` 改為 PEP 562 `__getattr__` 延遲載入。
+  - **破除 `publisher <-> targets` 循環依賴、`host_dir` 傳遞與 `workflow.archived://` fallback 修復 (`FR-06`, `FR-08`, `R02` / `R03`)**：移除 `targets.py` 對 `ReleasePublisher` 之反向匯入；修正 `compiler.py` `workflow.archived://` fallback 路徑為 `"plans/archived"`；補齊 `WorkflowInitializer` 與 `ReleasePublisher` 之 `self.host_dir` 傳遞；清除 `commands.py`、`hooks.py`、`plan check` 別名、舊版計畫檔名分支及 `PlanVerifier` / `SessionTraceEngine` / `PlanStatusResolver` 共 14 處單行轉發包裝；全模組 `uri.<io>` 100% 遷移至 `vfs.<io>`，`agents-workflow` (135/135) 測試 100% 通過並完成 `@build` 熱部署。
+
+### sub_04_knowledge_db_code_optimization (Completed)
+- **`knowledge-db` 五維度靜態診斷、`TopologyQueryService` / `io_utils` 抽離、BM25 打分核心合一與 `Mode A` 純化 (`FR-01` ~ `FR-07`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **`TopologyQueryService` 拓撲服務獨立與 `io_utils` 二進位 Gzip 原子持久化 (`FR-01`, `FR-04`, `[P04:DR-01]`)**：新建 `knowledge_db/topology_query.py` 將符號選擇器定位、介面/實作雙向展開與 `callers`/`callees`/`impact` 自 `pipeline.py` 剝離；新建 `knowledge_db/io_utils.py` 統一 `save_gzip_pickle_atomic` 與 `load_gzip_pickle`；純化 `CallGraphIndex` 為單一 `nx.DiGraph` 並移除 `HotPatchResult(int)` 雙重繼承。
+  - **BM25 計分與複合詞 50% 覆蓋率過濾合一、`resolve_threads` 唯一真理與 `Mode A` 清除 (`FR-02`, `FR-03`, `EC-01`, `R02` / `R03`)**：提煉 `BM25Engine._score_candidate_documents`（含 $\ge 3$ 子詞複合查詢之 50% 子詞覆蓋率門檻）；將 `config.resolve_threads` 定為唯一真理（SSOT）並修正 `_resolve_config_uri` 匯入 `core.uri.resolve`；補齊 `pipeline.search` `context_lines` 透傳；對齊 `CssParser` (`.sass`) 與 `SpiceParser` (`.netlist`) 副檔名集合；清除 `KnowledgeEngine` 16 個內部組件代理與 `act_*` 別名、6 個空殼語言子類別与 `hybrid.py` 26 行死分支，`knowledge-db` (151/151) 測試 100% 通過並完成 `@build` 熱部署。
+
+### sub_03_server_code_optimization (Completed)
+- **`server` 五維度靜態診斷、Worker 啟動交握管道競爭修復、`logger.py` `NameError` 修復與 `Mode A` 純化 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **`_spawn_worker_locked` 交握管道競爭根治與啟動回滾/串流還原保護 (`FR-02` ~ `FR-04`, `EC-01` ~ `EC-03`, `R02`)**：於 `server/master.py` `_spawn_worker_locked` 引入 `ready_event` 追蹤 `worker_ready` 交握，超時或異常立即強制呼叫 `_kill_worker_locked` 關閉管道並收割子進程，根除背景 `_read_ready` 執行緒與 `_stream_task_over_worker_pipe` 併發爭搶 `proc.stdout` 之漏洞；補齊 `MasterSupervisor.start()` 異常回滾 `stop()` 與 `worker.py` `os.dup` / `sys.stdout` `try...finally` 確定性還原；於 `server/logger.py` 補齊 `import sys` / `import shutil` 修復 `--console` 模式隱藏 `NameError`。
+  - **`Mode A` 死代碼清除與跨檔格式化純函式收斂 (`FR-01`, `FR-05`, `FR-06`, `R02`)**：清空 `server/__init__.py` 飢渴匯出，移除 `ServerConfig.load(workspace_root)`、`MasterSupervisor.stop(force)` / `_spawn_worker` / `read_state`、`ServiceManager.stop_all(timeout_sec)`、`WarmWorker._module_cache`、`ServerLogger.extract_start_time_from_header` 及 `ModulesWatcher` 3 個單行包裝；`read_daemon_state` 改用 `vfs.read_json` 並共用頂層狀態/橫幅純函式，`server` (39/39) 測試 100% 通過並完成 `@build` 熱部署。
+
+### sub_02_dev_code_optimization (Completed)
+- **`dev` 五維度靜態診斷、沙盒與打包原子安全加固、跨檔探索/清理輔助提煉與 `Mode A` 純化 (`FR-01` ~ `FR-08`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-03`)**：
+  - **跨檔 DRY 收斂與原子打包/沙盒回滾加固 (`FR-03` ~ `FR-08`, `EC-01` ~ `EC-04`, `R02`)**：提煉共用源碼模組探索函式 `discover_source_modules`、沙盒清理 `_sweep_sandboxes`、最新建置包搜尋 `_find_latest_build_zip`、原子壓縮 `_create_module_archive_atomic`（含 `.zip.tmp` `try...finally` 清理）、Kahn 拓撲排序 `resolve_module_dependency_order` 與 `_TestRunConfig`；收斂 `scripts/cli.py` `check()` 單模与全模報表迴圈，並將全模組 `uri.<io>` 遷移至 `vfs.<io>`。
+  - **`Mode A` 舊別名與相容分支清除 (`FR-01`, `FR-02`, `EC-05`, `R02`)**：移除 `Requirement` 5 個舊別名、`CheckReport` 序列解包、`def process(args)` 與 `"ISOLATE_SANDBOX"` 舊相容分支、`Builder._should_ignore`、`ReleasePipeline`、`skip_tests` 與 `quiet`/`active_types` 殭屍參數，`dev` (80/80) 測試 100% 通過並完成 `@build` 熱部署。
+
+### sub_01_core_code_optimization (Completed)
+- **`core` 五維度靜態診斷、VFS 薄轉發與舊別名清零、`transaction_lock` / `InterProcessLock` 安全加固與 `S1/S2` 拆解 (`FR-01` ~ `FR-08`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-03`)**：
+  - **`uri.<io>` 薄轉發與 `Mode A` 殘留別名清零 (`FR-01`, `FR-03`, `FR-05`, `R02`)**：物理刪除 `core/uri.py` 15 個 VFS 薄轉發函式與 `_get_yscb_root` 私有別名，公開 `resolve_yscb_root()` 並統一 `config`、`telemetry`、`dispatcher`、`ide_projector`、`pip_manager` 5 處尋根委派；移除 `AtomicEngine` 7 個冗餘 `staticmethod` 重新綁定、`ContributesAggregator._deep_merge` / `get_for_current_module`、`CommandsRegistry.all_modules` 與 `case_pros` / `case_cons` 舊分支、`config.py` `tempfile.mkstemp` 死分支及 `scripts/cli.py` 12 個 `cmd_*` 舊轉發；將 `pip_manager.ensure_yscb_gitignore` 統一委派至 `installer.generate_internal_gitignore` (`vfs.write_text(..., atomic=True)`)。
+  - **`AtomicEngine.transaction_lock`、`InterProcessLock` FD 防漏與初次語系種子化修復 (`FR-02`, `FR-04`, `FR-06` ~ `FR-08`, `EC-01`, `R03`)**：實作 `AtomicEngine.transaction_lock` 確定性鎖釋放並套用至 `Installer`；於 `InterProcessLock.acquire` 增設 `try...except BaseException: os.close(fd)` 防止等待中斷時 FD 洩漏；修復初次部署 `core` 時之 `locale` 自動偵測種子化並刪除死函式 `_seed_or_update_config`；完成 `engine`、`installer`、`contributes`、`locale`、`validator`、`dispatcher` 長方法 `S1/S2` 拆解，`core` (206/206) 測試 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_10_30_1756_roadmap_template_and_skill_refinement (Completed)
 
 - **`roadmap.md` 模板輕量化、`/roadmap` 抽象敘述規範強化與單體 `plan_modes.md` 按需單點載入拆分 (`[REV-01]` ~ `[REV-02]`)**：
@@ -8,6 +35,15 @@
 
 ## 2026_10_30_1605_code_optimizer_skill (Completed)
 
+### sub_01_empirical_optimization (Completed)
+- **三方實測報告 (`R01`~`R03`) 彙整、`code-optimizer` 多軌代理模式與實戰防呆升級，`CodeQualityStandards.md` / `SkillDesignStandards.md` / `YscbSkillDesignToolStandards.md` 三大中央標準抽離與正交拆分，全生態系 22 個技能 `A1 + B2` 聚合精簡與 `SKILL.md` Frontmatter `description` 單一真理來源 (SSOT) 收斂 (`[REV-01]` ~ `[REV-06]`)**：
+  - **三層多軌代理執行模式與三方實測防呆升級 (`[REV-01]`)**：彙整母倉 (`R01`)、`GC_VEX_V5` (`R02`) 與 `uitk.net` (`R03`) 實測報告；於 `/code-optimizer` 步驟 1 新增「代理執行軌道」定錨（單檔固定純主代理 `軌道 1`、單模自選主代理 `軌道 2A` 或盲眼子代理 `軌道 2B`、多模自選主代理序列推進 `軌道 3A` 或 N 路平行子代理 `軌道 3B`）；對齊 `R{NN}` 報告 H2 標題與 `plan verify` 契約；移除行數教條並增設「零 P0/P1 榮譽結案守門」與 `S6` 三大免拆守門；新增 `partial class` + `S5` 防偽拆檔、`D2` `callers + search` 雙重查證、`S2` 零殘留轉發殼、`S3` 20% 差異分支不變量核對與 C# DIM 防遞迴安全模式。
+  - **抽離 `CodeQualityStandards.md` 與 `SkillDesignStandards.md` 中央標準並雙層整合進 `development-sop` (`[REV-02]`)**：於 `ys_codebase/source/agents-workflow/assets/standards/` 新增 `CodeQualityStandards.md`（四大紅線含禁工單註解、`D1~D5`、`S1~S6`）與 `SkillDesignStandards.md`；將 `CodeQualityStandards.md` 雙層嵌入 `development-sop`（`P05` / `FP-02` / `/auto` 編碼鐵律、`P06` 增量 Diff 微觀收斂與 Pre-UX 盲審攔截契約、`P07` 存量重構轉介）。
+  - **基於雙審閱報告將技能標準正交拆分為 `SkillDesignStandards.md`（L1/L2 通用概念）與 `YscbSkillDesignToolStandards.md`（L3 工具包語法）並升級 `A1 + B2` 雙軌契約 (`[REV-03]`)**：將 `SkillDesignStandards.md` 純化為跨平台通用設計標準（採 **A1 正向邊界契約＋選配無點名負向邊界**根除粉紅大象效應與網狀耦合、採 **B2 分級命令鎖定 `B-Strict` 純斜線鎖定 vs. `B-Assist` 斜線＋明確委託雙通契約**關閉重型指令自然語言後門，並補齊四元素目錄拓撲、`Artifact-in-File` vs. `Artifact-in-Chat` 雙模輸出節流、條件式檢核表與三層縱深安全控制）；另立 `YscbSkillDesignToolStandards.md` 專責收錄 YSCB 雙層物化空間、四大動態佔位符、`<!-- yscb:literal -->` 防護與三步 CLI 編譯驗收守門，供撰寫或修改 YSCB 託管技能時按需載入。
+  - **全生態系 22 個技能盲審體檢、`description` 聚合精簡（節省常態預載約 40%~50% Token）與跨模組結構合規對齊 (`[REV-04]`)**：純化三大中央標準標頭（移除反向調用端耦合）；將全專案 22 個技能（`agents-workflow` 19 個 + `knowledge-db-search` + `yscb-module-dev` + `bump-revision`）之 `SKILL.md` 全面升級為聚合精簡版 `A1 / B-Strict / B-Assist` 契約並拔除跨技能點名；為 `yscb-module-dev` 與 `knowledge-db-search` 補齊 `Gotchas` 及 4 份長參考手冊 `TOC`、拔除跨參考檔二階連結，並全面清除 `development-sop`、`new-plan`、`yscb-cli-guide`、`auto`、`pause`、`how-to-yscb`、`how-to-config-yscb` 之硬編碼物化路徑與相對路徑。
+  - **廢除 `contribute.json` 技能 `description` 雙寫遺留設計，確立 `SKILL.md` Frontmatter 唯一真理來源 (`[REV-05]`)**：於 `ArtifactCompiler` 新增 `resolve_export_description` 自動自 `<source>/SKILL.md` YAML Frontmatter 擷取並解算技能描述供 `agents-workflow list` 顯示；全面移除 4 份 `contribute.json` 中 22 個 `type: "skill"` 條目之冗餘 `"description"` 欄位，並同步更新 `YscbSkillDesignToolStandards.md`、`skill-creator`、`skill-optimizer` 與單元測試。
+
+### Root Plan (Completed)
 - **業務代碼五維度靜態診斷與無損重構技能 (`/code-optimizer`)、雙維度前置定錨及 `CODE_OPTIMIZER_STANDARDS` 錨點擴充 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：
   - **100% 純手動觸發與雙維度前置定錨 (`FR-01`, `FR-02`, `EC-01`, `EC-02`, `[P00:DR-01]`, `[P00:DR-02]`)**：於 `ys_codebase/source/agents-workflow/assets/skills/code-optimizer/SKILL.md` 新增純顯式指令觸發技能 `code-optimizer`（不注入 `AgentsStandards.md` 常駐路由表，全系統內建純 Skill 擴充至 19 個）；於步驟 1 強制執行「包含式三層檢視範圍（`全專案 ⊃ 單一模組 ⊃ 單一檔案`，大範圍強制包含小範圍 `S1/S2` 階段拆解與無狀態剝離）」與「開發者指定生命週期模式（`Mode A` 新功能收斂期 vs. `Mode B` 成熟功能維護期）」雙維度定錨，並規範 `Mode B` 下凡經調用圖譜與匯出清單嚴格查證確認 0 外部跨模組調用之純內部工具函式，一律比照 `Mode A` 直接執行破壞性收斂。
   - **先行建立調研計畫 (`R01`) 與三大流轉出口守門 (`FR-03`, `EC-04`, `[P00:DR-03]`)**：於步驟 2 強制先行建立 `Research Plan`（`P00_discuss.md` + `R01_code_optimization_audit.md` + `changelog.md`），落檔 `D1~D5` 靜態診斷矩陣與 `S1~S6` 重構處方；於步驟 3 向開發者請示三大出口（出口 ① 原地升級 `Fast Track` / `Full Track` / `Umbrella` 實作計畫並嚴禁誤用 `Revision Plan`、出口 ② 轉入 `/roadmap` 或 `/todo`、出口 ③ 標記 `Concluded` 結案）。

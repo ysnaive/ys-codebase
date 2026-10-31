@@ -12,7 +12,7 @@ related_docs:
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-24"
+last_updated: "2026-10-31"
 ---
 
 # Server 常駐服務與守護中樞模組 (Server Module)
@@ -30,7 +30,7 @@ last_updated: "2026-10-24"
    - **Master Supervisor**：純控制平面，管理 Localhost HTTP 服務 (`127.0.0.1:0`)、安全 Token 認證、PID 鎖、`_dispatch_lock` 序列化 IPC 與兩階段優雅停機（NDJSON Exit 握手與進程樹收割）。
    - **Warm Worker**：常駐預熱資料平面，透過獨立私有 `_ipc_stdout` 管道傳輸 IPC 封包並將全域 `sys.stdout` 重導向至 stderr 防止污染；單隊列序列化執行業務模組、攔截 `SystemExit` 保證進程不死，並透過 `ServiceManager` 統一託管各模組宣告之背景服務。
 3. **500ms 防抖分流串流協議**：攔截模組 `sys.stdout`/`sys.stderr`，以 500ms 防抖緩衝發送 `terminal_stream` 與 `task_finish` NDJSON 封包。
-4. **按需延遲加載與進程級模組快取 (Lazy Load & Module Cache)**：Worker 啟動時不預載入業務命令腳本，首次派發後快取於 `Worker._module_cache`，並透過 `worker_warming` 事件廣播觸發重型模組預熱。
+4. **按需延遲加載與進程級模組快取 (Lazy Load & Module Cache)**：Worker 啟動時不預載入業務命令腳本，首次派發後快取於 `core.commands.dispatcher._MODULE_CACHE`，並透過 `server_worker_warming` 事件廣播觸發重型模組預熱。
 5. **雙軌模組熱重載 (Hot Reload)**：自動監控 `.modules/` 變動並精確解析模組歸屬；領域模組變動直接重啟全新 Worker，`server`/`core` 模組變動自動優雅重啟整個 Server (Master + Worker)，100% 杜絕 Python reload 幽靈 Bug 與記憶體殘留。
 6. **統一生命週期自毀 (15m Idle TTL)**：支援配置空閒自毀，無操作 15 分鐘後 Master 與所有 Service Worker 一同優雅關閉，零資源浪費。
 7. **全週期 Console 可觀測性反饋**：
@@ -110,7 +110,7 @@ Server 模組內建高可靠的集中式即時 flush 日誌機制：
 
 ## 5. 相關架構專題手冊 (Architecture Topics)
 
-- [常駐架構與通訊協定專題](./daemon_architecture.md)：Master-Worker 雙進程模型、`Worker._module_cache` 預熱廣播、500ms 防抖串流協議與宿主四大耦合邊界。
+- [常駐架構與通訊協定專題](./daemon_architecture.md)：Master-Worker 雙進程模型、`dispatcher._MODULE_CACHE` 預熱廣播、500ms 防抖串流協議與宿主四大耦合邊界。
 - [熱重載與背景服務託管專題](./hot_reload_and_services.md)：常駐中樞、Warm Worker 資料平面、`ServiceManager` 宣告式掛載與雙軌自動熱重載協調機制。
 - [即時 Flush 日誌與歷史滾動架構](./realtime_logging.md)：`ServerLogger` 規格、`echo_console` 雙向回顯與異常自癒細節。
 - [Server 設計決策與工程手冊](./DESIGN_NOTES.md)：核心工程妥協與防坑邊界紀錄。

@@ -6,7 +6,7 @@
 > 狀態：Confirmed  
 > 模型：Unknown  
 
-> 計畫類型：Research  
+> 計畫類型：Full Track  
 > 模板版本：v1.2  
 
 ---

@@ -22,23 +22,23 @@ _cli_path = os.path.join(_pkg_root, "scripts", "cli.py")
 _spec_cli = importlib.util.spec_from_file_location("aw_cli_publisher_test", _cli_path)
 cli_mod = importlib.util.module_from_spec(_spec_cli)
 _spec_cli.loader.exec_module(cli_mod)
-cmd_release = cli_mod.cmd_release
+cmd_release = cli_mod.release
 
 from agents_workflow.compiler import ArtifactCompiler
 from agents_workflow.publisher import (
     ReleasePublisher,
     PROJECT_MANIFEST_CACHE_URI,
     LOCAL_MANIFEST_CACHE_URI,
-    LEGACY_PROJECT_MANIFEST_STORAGE_URI,
     ensure_jit_release,
 )
 from agents_workflow.targets import ReleaseTargetManager
 from unittest.mock import patch
 
 try:
-    from core import uri
+    from core import uri, vfs
 except ImportError:
     uri = None
+    vfs = None
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
@@ -75,8 +75,8 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertTrue(len(res["fingerprint"]) > 0)
 
         # 驗證 storage:// 中記錄的 manifest
-        self.assertTrue(bool(uri and uri.exists(PROJECT_MANIFEST_CACHE_URI)))
-        manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        self.assertTrue(bool(uri and vfs.exists(PROJECT_MANIFEST_CACHE_URI)))
+        manifest_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         self.assertEqual(manifest_data.get("fingerprint"), res["fingerprint"])
         self.assertEqual(len(manifest_data.get("published_files", [])), res["published_count"])
         self.mark_passed()
@@ -104,8 +104,8 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertTrue(res1["success"])
 
         # 取得其中一個已發布檔案並人為修改其內容 (模擬外部內容漂移或部分產物需要更新)
-        self.assertTrue(bool(uri and uri.exists(PROJECT_MANIFEST_CACHE_URI)))
-        manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        self.assertTrue(bool(uri and vfs.exists(PROJECT_MANIFEST_CACHE_URI)))
+        manifest_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         target_files = manifest_data.get("published_files", [])
         self.assertGreater(len(target_files), 1)
 
@@ -117,7 +117,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
 
         # 透過破壞快取中的 fingerprint 迫使進入 Stage 4 比對，但非 force
         manifest_data["fingerprint"] = "stale_fake_fingerprint"
-        uri.write_json(PROJECT_MANIFEST_CACHE_URI, manifest_data)
+        vfs.write_json(PROJECT_MANIFEST_CACHE_URI, manifest_data)
 
         res2 = self.publisher.release_all(force=False)
         self.assertTrue(res2["success"])
@@ -143,34 +143,18 @@ class TestReleasePublisherDiff(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_ft_05_agents_md_soft_merge_diff(self):
-        """FT-05: AGENTS.md 軟合併在注入內容未變更時跳過磁碟寫入。"""
-        proj_root = os.getcwd()
-        if uri:
-            try:
-                proj_root = uri.resolve("project://", interactive=False)
-            except Exception:
-                pass
+        """FT-05: AGENTS.md 軟合併在注入內容未變更時維持文字恆等（觸發 Stage 4 跳過磁碟寫入）。"""
+        content_a = "# Custom Header\n\n<!-- YSCB_AGENTS_BEGIN -->\nStandard Body\n<!-- YSCB_AGENTS_END -->\n\n## Custom Footer\n"
 
-        agents_path = os.path.join(proj_root, "AGENTS.md")
-        content_a = "# Custom Header\n<!-- YSCB_AGENTS_BEGIN -->\nStandard Body\n<!-- YSCB_AGENTS_END -->\n## Custom Footer"
-        os.makedirs(os.path.dirname(agents_path), exist_ok=True)
-        with open(agents_path, "w", encoding="utf-8") as f:
-            f.write(content_a)
+        # 第一次注入相同內容 -> 合併結果與現有文字完全一致
+        merged_same = self.publisher._soft_merge_agents_text(content_a, "Standard Body")
+        self.assertEqual(merged_same, content_a)
 
-        # 第一次注入相同內容 -> 應跳過寫入 (written == False)
-        success, written = self.publisher._soft_merge_agents_md("Standard Body", proj_root, force=False)
-        self.assertTrue(success)
-        self.assertFalse(written)
-
-        # 第二次注入新內容 -> 應寫入 (written == True)
-        success, written = self.publisher._soft_merge_agents_md("New Standard Body", proj_root, force=False)
-        self.assertTrue(success)
-        self.assertTrue(written)
-
-        with open(agents_path, "r", encoding="utf-8") as f:
-            updated_text = f.read()
-        self.assertIn("New Standard Body", updated_text)
-        self.assertIn("## Custom Footer", updated_text)
+        # 第二次注入新內容 -> 合併結果更新且保留外部自訂區段
+        merged_new = self.publisher._soft_merge_agents_text(content_a, "New Standard Body")
+        self.assertNotEqual(merged_new, content_a)
+        self.assertIn("New Standard Body", merged_new)
+        self.assertIn("## Custom Footer", merged_new)
         self.mark_passed()
 
     @require(Requirement.ENV)
@@ -197,8 +181,8 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertTrue(res1["success"])
 
         # 人為刪除其中一個已發布檔案
-        self.assertTrue(bool(uri and uri.exists(PROJECT_MANIFEST_CACHE_URI)))
-        manifest_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        self.assertTrue(bool(uri and vfs.exists(PROJECT_MANIFEST_CACHE_URI)))
+        manifest_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         target_files = manifest_data.get("published_files", [])
         self.assertGreater(len(target_files), 0)
 
@@ -348,8 +332,8 @@ class TestReleasePublisherDiff(YSCBTestCase):
 
         # 驗證 SHA-1 快取已持久化至 cache://
         if uri:
-            self.assertTrue(uri.exists(SHA1_CACHE_URI))
-            cache_data = uri.read_json(SHA1_CACHE_URI)
+            self.assertTrue(vfs.exists(SHA1_CACHE_URI))
+            cache_data = vfs.read_json(SHA1_CACHE_URI)
             self.assertIsInstance(cache_data, dict)
             self.assertGreater(len(cache_data), 0)
 
@@ -622,8 +606,8 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         self.assertTrue(res["success"])
         self.assertGreater(res["published_count"], 0)
 
-        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
-        data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        self.assertTrue(vfs.exists(PROJECT_MANIFEST_CACHE_URI))
+        data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         self.assertEqual(data.get("active_targets"), ["antigravity"])
         published = data.get("published_files", [])
         self.assertGreater(len(published), 0)
@@ -647,8 +631,8 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         self.assertTrue(res["success"])
         self.assertGreater(res["published_count"], 0)
 
-        self.assertTrue(uri.exists(LOCAL_MANIFEST_CACHE_URI))
-        data = uri.read_json(LOCAL_MANIFEST_CACHE_URI)
+        self.assertTrue(vfs.exists(LOCAL_MANIFEST_CACHE_URI))
+        data = vfs.read_json(LOCAL_MANIFEST_CACHE_URI)
         self.assertEqual(data.get("active_targets"), ["antigravity"])
         published = data.get("published_files", [])
         self.assertGreater(len(published), 0)
@@ -670,8 +654,8 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
 
-        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
-        proj_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        self.assertTrue(vfs.exists(PROJECT_MANIFEST_CACHE_URI))
+        proj_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         self.assertEqual(proj_data.get("active_targets"), ["antigravity"])
         for p in proj_data.get("published_files", []):
             self.assertTrue(p.startswith("project://"))
@@ -692,12 +676,12 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
             ],
             "updated_at": "2026-08-01 00:00:00"
         }
-        uri.write_json(PROJECT_MANIFEST_CACHE_URI, fake_legacy)
+        vfs.write_json(PROJECT_MANIFEST_CACHE_URI, fake_legacy)
 
         res = self.publisher.release_all(force=False)
         self.assertTrue(res["success"])
 
-        new_data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        new_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         for p in new_data.get("published_files", []):
             self.assertTrue(p.startswith("project://"))
         self.mark_passed()
@@ -711,7 +695,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
 
-        data = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
+        data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         for p_uri in data.get("published_files", []):
             abs_p = uri.resolve(p_uri, interactive=False)
             if os.path.isfile(abs_p):
@@ -783,42 +767,22 @@ class TestPublisherCrossPlatform(YSCBTestCase):
         self.assertEqual(len(sha1_val), 40)
         self.mark_passed()
 
-    def test_manifest_cache_isolation_and_migration(self):
-        """FT-02 (EC-02): 驗證 manifest 儲存至 cache:// 且舊版 storage manifest 自動遷移並物理刪除。"""
-        if uri.exists(PROJECT_MANIFEST_CACHE_URI):
-            uri.remove(PROJECT_MANIFEST_CACHE_URI)
-
-        fake_legacy = {
-            "fingerprint": "fake_hash_123",
-            "active_targets": ["antigravity"],
-            "published_files": ["project://AGENTS.md"],
-            "combined_fingerprint": "fake_hash_123",
-            "updated_at": "2026-10-18 00:00:00"
-        }
-        uri.write_json(LEGACY_PROJECT_MANIFEST_STORAGE_URI, fake_legacy)
-        self.assertTrue(uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI))
-
-        self.publisher._migrate_legacy_storage_manifest()
-
-        self.assertFalse(uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI))
-        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
-        migrated = uri.read_json(PROJECT_MANIFEST_CACHE_URI)
-        self.assertEqual(migrated.get("fingerprint"), "fake_hash_123")
-        self.mark_passed()
-
     def test_release_never_writes_tracked_storage(self):
-        """ET-02 (FR-02): 完整發布後，Git 追蹤區 storage://agents-workflow/release_manifest.json 不存在，清單僅存於 cache://。"""
+        """ET-02 (FR-02): 完整發布後，Git 追蹤區 storage://agents-workflow/release_manifest.json 不被寫入，清單僅存於 cache://。"""
+        legacy_storage_uri = "storage://agents-workflow/release_manifest.json"
+        if vfs and vfs.exists(legacy_storage_uri):
+            vfs.remove(legacy_storage_uri)
+
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
         ReleaseTargetManager.save_tier_targets([], is_project=False)
-        uri.write_json(LEGACY_PROJECT_MANIFEST_STORAGE_URI, {"published_files": [], "fingerprint": "legacy"})
 
         res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
-        self.assertFalse(uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI))
-        self.assertTrue(uri.exists(PROJECT_MANIFEST_CACHE_URI))
+        self.assertFalse(bool(vfs and vfs.exists(legacy_storage_uri)))
+        self.assertTrue(bool(vfs and vfs.exists(PROJECT_MANIFEST_CACHE_URI)))
 
         self.publisher.release_all(force=False)
-        self.assertFalse(uri.exists(LEGACY_PROJECT_MANIFEST_STORAGE_URI))
+        self.assertFalse(bool(vfs and vfs.exists(legacy_storage_uri)))
         self.mark_passed()
 
 

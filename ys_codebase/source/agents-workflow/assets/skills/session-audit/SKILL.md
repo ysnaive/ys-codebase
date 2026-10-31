@@ -1,6 +1,6 @@
 ---
 name: session-audit
-description: 執行當前或近期開發對話之隱形摩擦軌跡提取、決策瑕疵解剖與四象限根因診斷報告生成。僅於顯式輸入 /session-audit 或明確指示自檢分析對話摩擦與返工原因時觸發。
+description: 提取對話之隱形摩擦軌跡 (session-trace)，執行決策瑕疵解剖與四象限根因診斷。僅於顯式輸入 /session-audit 時觸發，嚴禁主動觸發。
 ---
 
 # Session 隱形摩擦與決策瑕疵自檢工作流 (Session Audit)
@@ -8,7 +8,7 @@ description: 執行當前或近期開發對話之隱形摩擦軌跡提取、決�
 本技能定位為「事後法醫解剖（Post-Mortem Autopsy）」，結合 `session-trace` 三級軌跡提取引擎與四象限根因分類樹，揭露開發過程中因 AI 自我修復而被掩蓋的走彎路、重複試錯與提示詞誤導。
 
 ```markdown
-/SessionAudit 四步執行檢核表：
+/session-audit 四步執行檢核表：
 - [ ] 步驟 1：嚴守唯讀隔離，調用 `session-trace` 提取會話基礎統計、五大硬性摩擦訊號與思考鏈切片
 - [ ] 步驟 2：檢視提取結果（若處於 Tier 3 則執行強制回合逆向審訊自白）
 - [ ] 步驟 3：對每項摩擦訊號執行 A/B/C/D 四象限根因歸類與修補對策推導
@@ -39,6 +39,7 @@ description: 執行當前或近期開發對話之隱形摩擦軌跡提取、決�
   python __${yscb.host://yscb.py}__ agents-workflow session-trace [--transcript <path>] [--plan <plan_dir>] --json
   ```
 - 若回報多份工作區候選 `.jsonl`（`transcript_candidates`）或多活躍計畫提示，依提示補入 `--transcript` 或 `--plan` 重新提取。
+- **三級觀測降級說明**：`Tier 1+2` 代表同時具備宿主 `.jsonl` 對話軌跡與 CLI 遙測日誌；`Tier 2` 代表僅具備 CLI 遙測日誌；`Tier 3` 代表兩者皆不可用時，降級由 Agent 依對話上下文進行結構化逆向自白。
 
 ### 步驟 2：核對五大硬性摩擦訊號
 依據 `session-trace` 輸出（或 Tier 3 逆向審訊表），逐一盤點：
@@ -60,7 +61,7 @@ description: 執行當前或近期開發對話之隱形摩擦軌跡提取、決�
 ### 步驟 4：輸出結構化自檢診斷卡（強制 End Turn）
 
 ```markdown
-### 🔬 /SessionAudit 隱形摩擦與決策自檢報告
+### 🔬 /session-audit 隱形摩擦與決策自檢報告
 - **觀測層級與標的**：`[Tier 1+2 | Tier 2 | Tier 3]` / 計畫：`[plan_name 或 None]` / Telemetry：`[N]` 筆
 - **會話基礎統計 (Session Metrics)**：
   - **耗時與回合**：歷時 `[session_duration_human]` / 總步數 `[total_steps]`（使用者 `[user_turns]` 回合、模型 `[model_turns]` 回合、思考鏈 `[thinking_steps]` 步、截斷 `[truncated_steps]` 步、錯誤 `[error_steps]` 步）

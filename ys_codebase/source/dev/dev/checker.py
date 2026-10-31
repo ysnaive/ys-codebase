@@ -1,22 +1,25 @@
 """
 Compliance & Architecture Checker for YS-Codebase modules.
-Implements 5-step compliance check pipeline, 3-tier severity classification,
+Implements 8-step compliance check pipeline, 3-tier severity classification,
 and AST static security/anti-pattern analysis.
 """
 import os
 import sys
 import ast
 import json
+import importlib
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Tuple, List, Dict, Optional, Any
-from core import uri
-from core import semver
+from typing import Tuple, List, Dict, Optional, Any, Set
+from core import uri, vfs, semver, contributes
+from core.symbols import parse_code_func_uri, resolve_callable
+
 
 class CheckSeverity(Enum):
     PASS = "PASS"
     WARN = "WARN"
     FAIL = "FAIL"
+
 
 @dataclass
 class CheckIssue:
@@ -34,6 +37,7 @@ class CheckIssue:
             "file_path": self.file_path,
             "line_number": self.line_number,
         }
+
 
 @dataclass
 class CheckReport:
@@ -76,25 +80,179 @@ class CheckReport:
             "issues": [i.to_dict() for i in self.issues],
         }
 
-    def __iter__(self):
-        # Backward compatibility with (passed, errors) tuple unpacking
-        return iter((self.passed, self.errors))
 
-    def __getitem__(self, index):
-        return (self.passed, self.errors)[index]
+def _extract_ast_tokens(expr_node: ast.AST) -> List[str]:
+    tokens: List[str] = []
+    for n in ast.walk(expr_node):
+        if isinstance(n, ast.Attribute):
+            tokens.append(n.attr)
+        elif isinstance(n, ast.Name):
+            tokens.append(n.id)
+    return tokens
 
-    def __len__(self):
-        return 2
+
+def _collect_declared_cli_commands(module_dir: str) -> List[Tuple[str, str]]:
+    """Collect (full_cmd, primary_cmd) pairs from contributes/core.json if present."""
+    contrib_file = os.path.join(module_dir, "contributes", "core.json")
+    if not os.path.isfile(contrib_file):
+        return []
+    try:
+        with open(contrib_file, "r", encoding="utf-8") as f:
+            cdata = json.load(f)
+        cmd_map = cdata.get("commands", {}).get("cmd", {})
+        if not isinstance(cmd_map, dict) or not cmd_map:
+            return []
+
+        def _collect_leaves(d: dict, pfx: str = "") -> List[Tuple[str, str]]:
+            leaves: List[Tuple[str, str]] = []
+            for k, v in d.items():
+                if isinstance(v, dict) and isinstance(v.get("cmd"), dict) and v["cmd"]:
+                    leaves.extend(_collect_leaves(v["cmd"], pfx=f"{pfx}{k}_"))
+                else:
+                    full_c = f"{pfx}{k}"
+                    primary_c = full_c.split("_", 1)[0]
+                    leaves.append((full_c, primary_c))
+            return leaves
+
+        return _collect_leaves(cmd_map)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _audit_cli_script_ast(
+    tree: ast.Module,
+) -> Tuple[Set[str], bool, bool, List[Tuple[int, str]]]:
+    """Scan scripts/cli.py top-level AST nodes for functions, forbidden main, and top-level statements."""
+    declared_funcs: Set[str] = set()
+    has_main_func = False
+    has_if_name_main = False
+    invalid_top_level_nodes: List[Tuple[int, str]] = []
+
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef)):
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            declared_funcs.add(node.name)
+            if node.name == "main":
+                has_main_func = True
+            continue
+        if isinstance(node, ast.Expr):
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                continue
+            invalid_top_level_nodes.append((getattr(node, "lineno", 0), "top-level expression"))
+        elif isinstance(node, ast.If):
+            is_name_main = False
+            if isinstance(node.test, ast.Compare):
+                left = node.test.left
+                if isinstance(left, ast.Name) and left.id == "__name__":
+                    for comp in node.test.comparators:
+                        if isinstance(comp, ast.Constant) and comp.value == "__main__":
+                            is_name_main = True
+                            break
+            if is_name_main:
+                has_if_name_main = True
+            else:
+                invalid_top_level_nodes.append((getattr(node, "lineno", 0), "top-level if-statement"))
+        else:
+            stmt_type = type(node).__name__
+            invalid_top_level_nodes.append((getattr(node, "lineno", 0), f"top-level statement '{stmt_type}'"))
+
+    return declared_funcs, has_main_func, has_if_name_main, invalid_top_level_nodes
+
+
+def _check_require_decorator_node(target_node: ast.AST, t_file: str, report: CheckReport) -> None:
+    """Inspect @require(...) decorator on a test class or test function for LOGIC + ISOLATED_SANDBOX conflict."""
+    for dec in getattr(target_node, "decorator_list", []):
+        if not isinstance(dec, ast.Call) or not dec.args:
+            continue
+        func_name = getattr(dec.func, "id", getattr(dec.func, "attr", ""))
+        if func_name != "require":
+            continue
+        tokens = _extract_ast_tokens(dec.args[0])
+        if "LOGIC" in tokens and "ISOLATED_SANDBOX" in tokens:
+            node_kind = "class" if isinstance(target_node, ast.ClassDef) else "function"
+            lineno = getattr(target_node, "lineno", 0)
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.WARN,
+                    category="ANTIPATTERN",
+                    message=(
+                        f"Anti-Pattern: Test {node_kind} '{getattr(target_node, 'name', '')}' in tests/{t_file}:{lineno} "
+                        f"is marked with both 'LOGIC' and 'ISOLATED_SANDBOX'. Pure logical tests should not request dedicated per-method sandbox isolation."
+                    ),
+                    file_path=f"tests/{t_file}",
+                    line_number=lineno,
+                )
+            )
+
+
+def _method_has_none_requirement(item: ast.AST) -> bool:
+    for dec in getattr(item, "decorator_list", []):
+        if isinstance(dec, ast.Call) and dec.args:
+            f_name = getattr(dec.func, "id", getattr(dec.func, "attr", ""))
+            if f_name == "require" and "NONE" in _extract_ast_tokens(dec.args[0]):
+                return True
+    return False
+
+
+def _method_calls_mark_passed(item: ast.AST) -> bool:
+    for sub_n in ast.walk(item):
+        if isinstance(sub_n, ast.Call) and isinstance(sub_n.func, ast.Attribute):
+            if sub_n.func.attr == "mark_passed" and isinstance(sub_n.func.value, ast.Name) and sub_n.func.value.id == "self":
+                return True
+    return False
+
+
+def _verify_test_class_isolation_and_marks(class_node: ast.ClassDef, t_file: str, report: CheckReport) -> None:
+    """Validate that a Test* class inherits from YSCBTestCase and calls self.mark_passed() in test_* methods."""
+    if not class_node.name.startswith("Test"):
+        return
+
+    base_names = [
+        b.id if isinstance(b, ast.Name) else b.attr
+        for b in class_node.bases
+        if isinstance(b, (ast.Name, ast.Attribute))
+    ]
+    if "TestCase" in base_names and "YSCBTestCase" not in base_names:
+        report.issues.append(
+            CheckIssue(
+                severity=CheckSeverity.FAIL,
+                category="STRUCTURE",
+                message=(
+                    f"Security Guard: Test class '{class_node.name}' in tests/{t_file}:{class_node.lineno} "
+                    f"directly subclasses 'unittest.TestCase'. Must inherit from 'dev.testing.case.YSCBTestCase'."
+                ),
+                file_path=f"tests/{t_file}",
+                line_number=class_node.lineno,
+            )
+        )
+        return
+
+    for item in class_node.body:
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) or not item.name.startswith("test_"):
+            continue
+        if _method_has_none_requirement(item):
+            continue
+        if not _method_calls_mark_passed(item):
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.WARN,
+                    category="STRUCTURE",
+                    message=(
+                        f"Test method '{item.name}' in tests/{t_file}:{item.lineno} lacks 'self.mark_passed()' call. "
+                        f"Unhandled tests will be marked as UNKNOWN in test runner."
+                    ),
+                    file_path=f"tests/{t_file}",
+                    line_number=item.lineno,
+                )
+            )
 
 
 class Checker:
-    def __init__(self):
-        pass
-
     def check_module(self, name: str) -> CheckReport:
         report = CheckReport(module=name)
         src_uri = f"module.source://{name}"
-        if not uri.exists(src_uri):
+        if not vfs.exists(src_uri):
             report.issues.append(
                 CheckIssue(
                     severity=CheckSeverity.FAIL,
@@ -175,7 +333,7 @@ class Checker:
             if m_ver:
                 try:
                     semver.parse_semver(str(m_ver))
-                except Exception:
+                except ValueError:
                     report.issues.append(
                         CheckIssue(
                             severity=CheckSeverity.FAIL,
@@ -184,7 +342,6 @@ class Checker:
                             file_path="manifest.json",
                         )
                     )
-
 
             deps = m_data.get("dependencies")
             if deps is not None:
@@ -275,12 +432,6 @@ class Checker:
             )
 
     def _check_pip_dependencies(self, name: str, m_data: Dict[str, Any], report: CheckReport) -> None:
-        """
-        檢核 manifest.json 中 pip_dependencies 欄位：
-        - 若存在，必須為 dict 型態 (否則 CheckIssue FAIL)
-        - 鍵名必須為合法的非空套件名稱 (否則 CheckIssue FAIL)
-        - 約束值必須為字串或 None (否則 CheckIssue FAIL)
-        """
         if "pip_dependencies" not in m_data:
             return
 
@@ -329,11 +480,10 @@ class Checker:
             )
 
         contrib_dir = os.path.join(real_dir, "contributes")
-        if not os.path.exists(contrib_dir) or not os.path.isdir(contrib_dir):
+        if not os.path.isdir(contrib_dir):
             return
 
         from core.validator import ContributesValidator
-        from core import contributes as core_contrib
 
         # 1. Meta-Check: _format.json if present
         fmt_path = os.path.join(contrib_dir, "_format.json")
@@ -373,12 +523,12 @@ class Checker:
         # 2. Ingress & Egress Boundary Check on <target>.json
         try:
             files = [f for f in os.listdir(contrib_dir) if f.endswith(".json")]
-        except Exception:
+        except OSError:
             files = []
 
         for fname in files:
             if fname.startswith("_"):
-                continue  # Special schema / metadata file
+                continue
             target = fname[:-5]
             f_path = os.path.join(contrib_dir, fname)
             try:
@@ -397,15 +547,14 @@ class Checker:
 
             target_fmt = None
             src_fmt_uri = f"module.source://{target}/contributes/_format.json"
-            if uri.exists(src_fmt_uri):
+            if vfs.exists(src_fmt_uri):
                 try:
-                    target_fmt = uri.read_json(src_fmt_uri)
+                    target_fmt = vfs.read_json(src_fmt_uri)
                 except Exception:
                     target_fmt = None
             if target_fmt is None:
-                target_fmt = core_contrib.get_format(target)
+                target_fmt = contributes.get_format(target)
             if target_fmt is None:
-                # Target has not declared _format.json yet (gradual tolerance)
                 continue
 
             val_res = ContributesValidator.validate(target, c_data, donor_mod=name, format_schema=target_fmt, strict_points=True)
@@ -431,7 +580,7 @@ class Checker:
                                         file_path="manifest.json",
                                     )
                                 )
-                        except Exception:
+                        except (OSError, json.JSONDecodeError):
                             pass
                 try:
                     from core import locale as core_locale
@@ -566,11 +715,10 @@ class Checker:
     def _check_cli_compliance(self, name: str, cli_path: str, report: CheckReport) -> None:
         """
         以 AST 靜態檢核 scripts/cli.py 的合規性：
-        1. 必須宣告對應 contributes/core.json 的具名命令函式 def <cmd>(cmd_bags: CmdBags) -> int（或相容舊制 def process(args)）
-        2. 絕對不可有 def main(...)
+        1. 必須宣告對應 contributes/core.json 的具名命令函式 def <cmd>(cmd_bags: CmdBags) -> int
+        2. 絕對不可有 def main(...) 或舊版 def process(...)
         3. 絕對不可有 if __name__ == '__main__':
-        4. 頂層節點除 Docstring、Import、ImportFrom、FunctionDef、ClassDef 外，
-           嚴禁任何未包覆在 func/class 內的執行陳述式。
+        4. 頂層節點除 Docstring、Import、ImportFrom、FunctionDef、ClassDef 外，嚴禁任何未包覆在 func/class 內的執行陳述式。
         """
         try:
             with open(cli_path, "r", encoding="utf-8", errors="replace") as f:
@@ -587,83 +735,17 @@ class Checker:
             )
             return
 
-        has_process_func = False
-        has_main_func = False
-        has_if_name_main = False
-        invalid_top_level_nodes = []
+        declared_funcs, has_main_func, has_if_name_main, invalid_top_level_nodes = _audit_cli_script_ast(tree)
 
-        declared_funcs = set()
-        for node in tree.body:
-            # 頂層節點白名單過濾
-            if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef)):
-                continue
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                declared_funcs.add(node.name)
-                if node.name == "process":
-                    has_process_func = True
-                elif node.name == "main":
-                    has_main_func = True
-                continue
-            elif isinstance(node, ast.Expr):
-                # 僅允許作為字串常量（如 module docstring）
-                if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-                    continue
-                else:
-                    invalid_top_level_nodes.append((getattr(node, "lineno", 0), "top-level expression"))
-            elif isinstance(node, ast.If):
-                # 檢測是否為 if __name__ == '__main__':
-                is_name_main = False
-                if isinstance(node.test, ast.Compare):
-                    left = node.test.left
-                    if isinstance(left, ast.Name) and left.id == "__name__":
-                        for comp in node.test.comparators:
-                            if isinstance(comp, ast.Constant) and comp.value == "__main__":
-                                is_name_main = True
-                                break
-                if is_name_main:
-                    has_if_name_main = True
-                else:
-                    invalid_top_level_nodes.append((getattr(node, "lineno", 0), "top-level if-statement"))
-            else:
-                stmt_type = type(node).__name__
-                invalid_top_level_nodes.append((getattr(node, "lineno", 0), f"top-level statement '{stmt_type}'"))
-
-        # 檢測規則 1: 具名命令函式或相容 process(args)
-        has_cmd_contract = False
-        missing_cmd_funcs = []
         module_dir = os.path.dirname(os.path.dirname(os.path.abspath(cli_path)))
-        contrib_file = os.path.join(module_dir, "contributes", "core.json")
-        if os.path.isfile(contrib_file):
-            try:
-                import json
-                with open(contrib_file, "r", encoding="utf-8") as f:
-                    cdata = json.load(f)
-                    cmd_map = cdata.get("commands", {}).get("cmd", {})
-                    if isinstance(cmd_map, dict) and cmd_map:
-                        has_cmd_contract = True
+        cmd_leaves = _collect_declared_cli_commands(module_dir)
 
-                        def _collect_leaves(d: dict, pfx: str = "") -> list:
-                            leaves = []
-                            for k, v in d.items():
-                                if isinstance(v, dict) and isinstance(v.get("cmd"), dict) and v["cmd"]:
-                                    leaves.extend(_collect_leaves(v["cmd"], pfx=f"{pfx}{k}_"))
-                                else:
-                                    full_c = f"{pfx}{k}"
-                                    primary_c = full_c.split("_", 1)[0]
-                                    leaves.append((full_c, primary_c))
-                            return leaves
-
-                        all_leaves = _collect_leaves(cmd_map)
-                        for full_cmd, primary_cmd in all_leaves:
-                            full_fn = full_cmd.replace("-", "_")
-                            primary_fn = primary_cmd.replace("-", "_")
-                            candidates = {full_fn, primary_fn}
-                            if not any(c in declared_funcs for c in candidates):
-                                missing_cmd_funcs.append(full_cmd)
-            except Exception:
-                pass
-
-        if has_cmd_contract:
+        if cmd_leaves:
+            missing_cmd_funcs = []
+            for full_cmd, primary_cmd in cmd_leaves:
+                candidates = {full_cmd.replace("-", "_"), primary_cmd.replace("-", "_")}
+                if not any(c in declared_funcs for c in candidates):
+                    missing_cmd_funcs.append(full_cmd)
             if missing_cmd_funcs:
                 report.issues.append(
                     CheckIssue(
@@ -674,17 +756,17 @@ class Checker:
                     )
                 )
         else:
-            if not has_process_func:
+            public_handlers = [fn for fn in declared_funcs if not fn.startswith("_") and fn not in ("main", "process")]
+            if not public_handlers:
                 report.issues.append(
                     CheckIssue(
                         severity=CheckSeverity.FAIL,
                         category="STRUCTURE",
-                        message="Missing required command handler function 'def <cmd>(cmd_bags: CmdBags) -> int' (or fallback 'def process(args)') in 'scripts/cli.py'.",
+                        message="Missing required command handler function 'def <cmd>(cmd_bags: CmdBags) -> int' in 'scripts/cli.py'.",
                         file_path="scripts/cli.py",
                     )
                 )
 
-        # 檢測規則 2: 禁絕 main
         if has_main_func:
             report.issues.append(
                 CheckIssue(
@@ -695,7 +777,6 @@ class Checker:
                 )
             )
 
-        # 檢測規則 3: 禁絕 if __name__ == '__main__':
         if has_if_name_main:
             report.issues.append(
                 CheckIssue(
@@ -706,7 +787,6 @@ class Checker:
                 )
             )
 
-        # 檢測規則 4: 禁絕未包覆在 func/class 之頂層執行內容
         for lineno, desc in invalid_top_level_nodes:
             report.issues.append(
                 CheckIssue(
@@ -756,7 +836,6 @@ class Checker:
                     )
                     continue
 
-                # AST string literal inspections (excluding module/function/class docstrings)
                 doc_nodes = set()
                 if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant):
                     doc_nodes.add(tree.body[0].value)
@@ -768,12 +847,10 @@ class Checker:
                 for node in ast.walk(tree):
                     if node in doc_nodes:
                         continue
-                    # Check string constants in AST
                     if isinstance(node, ast.Constant) and isinstance(node.value, str):
                         s_val = node.value
                         lineno = getattr(node, "lineno", None)
 
-                        # FR-03: Zero Probing for source space
                         if name not in ("dev", "core") and not is_test_file:
                             if "module.source://" in s_val:
                                 report.issues.append(
@@ -786,8 +863,6 @@ class Checker:
                                     )
                                 )
 
-                        # FR-07: Anti-Pattern Check (Reinventing the wheel)
-                        if name not in ("core", "dev") and not is_test_file:
                             if s_val in ("config.project.json", "config.local.json"):
                                 report.issues.append(
                                     CheckIssue(
@@ -809,124 +884,37 @@ class Checker:
                                     )
                                 )
 
-
     def _check_test_classes(self, name: str, real_dir: str, report: CheckReport) -> None:
         tests_dir = os.path.join(real_dir, "tests")
         if not os.path.isdir(tests_dir):
             return
 
-        def _extract_tokens(expr_node: ast.AST) -> List[str]:
-            tokens = []
-            for n in ast.walk(expr_node):
-                if isinstance(n, ast.Attribute):
-                    tokens.append(n.attr)
-                elif isinstance(n, ast.Name):
-                    tokens.append(n.id)
-            return tokens
-
-        def _check_require_node(target_node: ast.AST, t_file: str) -> None:
-            for dec in getattr(target_node, "decorator_list", []):
-                if isinstance(dec, ast.Call):
-                    func_name = ""
-                    if isinstance(dec.func, ast.Name):
-                        func_name = dec.func.id
-                    elif isinstance(dec.func, ast.Attribute):
-                        func_name = dec.func.attr
-                    
-                    if func_name == "require" and dec.args:
-                        tokens = _extract_tokens(dec.args[0])
-                        if "LOGIC" in tokens and ("ISOLATED_SANDBOX" in tokens or "ISOLATE_SANDBOX" in tokens):
-                            node_kind = "class" if isinstance(target_node, ast.ClassDef) else "function"
-                            report.issues.append(
-                                CheckIssue(
-                                    severity=CheckSeverity.WARN,
-                                    category="ANTIPATTERN",
-                                    message=(
-                                        f"Anti-Pattern: Test {node_kind} '{getattr(target_node, 'name', '')}' in tests/{t_file}:{target_node.lineno} "
-                                        f"is marked with both 'LOGIC' and 'ISOLATED_SANDBOX'. Pure logical tests should not request dedicated per-method sandbox isolation."
-                                    ),
-                                    file_path=f"tests/{t_file}",
-                                    line_number=target_node.lineno,
-                                )
-                            )
-
         for t_file in os.listdir(tests_dir):
-            if t_file.startswith("test_") and t_file.endswith(".py"):
-                t_full = os.path.join(tests_dir, t_file)
-                try:
-                    with open(t_full, "r", encoding="utf-8") as tf:
-                        tree = ast.parse(tf.read(), filename=t_file)
-                    for node in ast.walk(tree):
-                        if isinstance(node, ast.ClassDef):
-                            if node.name.startswith("Test"):
-                                base_names = []
-                                for b in node.bases:
-                                    if isinstance(b, ast.Name):
-                                        base_names.append(b.id)
-                                    elif isinstance(b, ast.Attribute):
-                                        base_names.append(b.attr)
-                                if "TestCase" in base_names and "YSCBTestCase" not in base_names:
-                                    report.issues.append(
-                                        CheckIssue(
-                                            severity=CheckSeverity.FAIL,
-                                            category="STRUCTURE",
-                                            message=f"Security Guard: Test class '{node.name}' in tests/{t_file}:{node.lineno} directly subclasses 'unittest.TestCase'. Must inherit from 'dev.testing.case.YSCBTestCase'.",
-                                            file_path=f"tests/{t_file}",
-                                            line_number=node.lineno,
-                                        )
-                                    )
-                                else:
-                                    # AST Static Inspection: Check self.mark_passed() in test_* methods
-                                    for item in node.body:
-                                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith("test_"):
-                                            is_none_req = False
-                                            for dec in getattr(item, "decorator_list", []):
-                                                if isinstance(dec, ast.Call):
-                                                    f_name = getattr(dec.func, "id", getattr(dec.func, "attr", ""))
-                                                    if f_name == "require" and dec.args:
-                                                        if "NONE" in _extract_tokens(dec.args[0]):
-                                                            is_none_req = True
-                                                            break
-                                            if not is_none_req:
-                                                has_mark = False
-                                                for sub_n in ast.walk(item):
-                                                    if isinstance(sub_n, ast.Call):
-                                                        cf = sub_n.func
-                                                        if isinstance(cf, ast.Attribute) and cf.attr == "mark_passed":
-                                                            if isinstance(cf.value, ast.Name) and cf.value.id == "self":
-                                                                has_mark = True
-                                                                break
-                                                if not has_mark:
-                                                    report.issues.append(
-                                                        CheckIssue(
-                                                            severity=CheckSeverity.WARN,
-                                                            category="STRUCTURE",
-                                                            message=f"Test method '{item.name}' in tests/{t_file}:{item.lineno} lacks 'self.mark_passed()' call. Unhandled tests will be marked as UNKNOWN in test runner.",
-                                                            file_path=f"tests/{t_file}",
-                                                            line_number=item.lineno,
-                                                        )
-                                                    )
-                            _check_require_node(node, t_file)
-                        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            _check_require_node(node, t_file)
-                except Exception as e:
-                    report.issues.append(
-                        CheckIssue(
-                            severity=CheckSeverity.FAIL,
-                            category="SYNTAX",
-                            message=f"Error parsing test file tests/{t_file}: {e}",
-                            file_path=f"tests/{t_file}",
-                        )
+            if not (t_file.startswith("test_") and t_file.endswith(".py")):
+                continue
+            t_full = os.path.join(tests_dir, t_file)
+            try:
+                with open(t_full, "r", encoding="utf-8") as tf:
+                    tree = ast.parse(tf.read(), filename=t_file)
+            except Exception as e:
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="SYNTAX",
+                        message=f"Error parsing test file tests/{t_file}: {e}",
+                        file_path=f"tests/{t_file}",
                     )
+                )
+                continue
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    _verify_test_class_isolation_and_marks(node, t_file, report)
+                    _check_require_decorator_node(node, t_file, report)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    _check_require_decorator_node(node, t_file, report)
 
     def _check_sandbox_hooks(self, name: str, real_dir: str, report: CheckReport) -> None:
-        """
-        Verify compliance of 'scripts/hook.dev.py' lifecycle hook script.
-        Enforces:
-        1. Syntax validity via AST parsing.
-        2. Forbidden top-level executable statements (only imports, defs, classes, or docstrings allowed).
-        3. Mandatory function signatures for on_test_setup / on_test_teardown (must accept context argument).
-        """
         hook_path = os.path.join(real_dir, "scripts", "hook.dev.py")
         if not os.path.exists(hook_path):
             return
@@ -991,11 +979,6 @@ class Checker:
                 )
 
     def _check_docs_pollution(self, name: str, real_dir: str, report: CheckReport) -> None:
-        """
-        Scan module's 'docs/' folder to detect hardcoded local development paths.
-        Enforces documentation perspective boundaries:
-        Third-party guides must use semantic URIs (e.g. 'module://<mod>/') instead of 'project://source/'.
-        """
         docs_dir = os.path.join(real_dir, "docs")
         if not os.path.isdir(docs_dir):
             return
@@ -1019,13 +1002,11 @@ class Checker:
                                         line_number=lineno,
                                     )
                                 )
-                except Exception:
+                except OSError:
                     pass
-
 
     def _check_custom_rules(self, name: str, real_dir: str, report: CheckReport) -> None:
         try:
-            from core import contributes, uri
             rules = contributes.get("dev", "custom_checks")
             if not rules or not isinstance(rules, list):
                 return
@@ -1038,12 +1019,10 @@ class Checker:
 
                 donor = None
                 func_name = None
-                subpath = None
 
                 if c_func.startswith("code.func://"):
                     try:
-                        from core.symbols import parse_code_func_uri, resolve_callable
-                        donor, subpath, func_name = parse_code_func_uri(c_func)
+                        donor, _, func_name = parse_code_func_uri(c_func)
                     except Exception as e:
                         report.issues.append(
                             CheckIssue(
@@ -1062,11 +1041,10 @@ class Checker:
                     donor = c_func
                     func_name = "check"
 
-                # Rigid isolation: only temporarily add module://<donor> (never module.source://)
                 donor_pkg = donor.split(".")[0]
                 donor_uri = f"module://{donor_pkg}"
                 donor_real = None
-                if uri.exists(donor_uri):
+                if vfs.exists(donor_uri):
                     try:
                         donor_real = uri.resolve(donor_uri)
                     except Exception:
@@ -1078,15 +1056,12 @@ class Checker:
                         sys.path.insert(0, donor_real)
 
                     if c_func.startswith("code.func://"):
-                        from core.symbols import resolve_callable
                         fn = resolve_callable(c_func, use_cache=False)
                     elif "." in c_func and ":" not in c_func:
-                        import importlib
                         mod_path, fn_name = c_func.rsplit(".", 1)
                         mod = importlib.import_module(mod_path)
                         fn = getattr(mod, fn_name)
                     else:
-                        import importlib
                         mod = importlib.import_module(donor)
                         fn = getattr(mod, func_name)
 
@@ -1123,14 +1098,36 @@ class Checker:
             )
 
     def check_all(self) -> Dict[str, CheckReport]:
-        results = {}
-        src_root_uri = "module.source://"
-        if not uri.exists(src_root_uri):
-            return results
+        return {mod: self.check_module(mod) for mod in discover_source_modules()}
 
-        for item in uri.listdir(src_root_uri):
-            item_uri = f"module.source://{item}"
-            if uri.is_dir(item_uri) and uri.exists(f"{item_uri}/manifest.json"):
-                results[item] = self.check_module(item)
 
-        return results
+def discover_source_modules(
+    target: Optional[str] = None,
+    require_manifest: bool = True,
+) -> List[str]:
+    """
+    Scan module.source:// and return sorted valid module names.
+    Supports optional target filtering (<mod> or <mod>:<selector>) and manifest.json check.
+    """
+    src_root_uri = "module.source://"
+    if not vfs.exists(src_root_uri):
+        return []
+    src_real = uri.resolve(src_root_uri)
+    if not os.path.isdir(src_real):
+        return []
+
+    if target:
+        target_mod = target.split(":", 1)[0] if ":" in target else target
+        mod_path = os.path.join(src_real, target_mod)
+        if os.path.isdir(mod_path) and (not require_manifest or os.path.isfile(os.path.join(mod_path, "manifest.json"))):
+            return [target_mod]
+        return []
+
+    modules: List[str] = []
+    for item in sorted(os.listdir(src_real)):
+        if item.startswith("."):
+            continue
+        mod_path = os.path.join(src_real, item)
+        if os.path.isdir(mod_path) and (not require_manifest or os.path.isfile(os.path.join(mod_path, "manifest.json"))):
+            modules.append(item)
+    return modules

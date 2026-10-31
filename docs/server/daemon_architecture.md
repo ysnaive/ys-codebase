@@ -12,7 +12,7 @@ related_docs:
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-31"
 ---
 
 # Server 常駐架構與通訊協定專題 (Daemon Architecture & IPC Protocol)
@@ -30,17 +30,17 @@ graph TD
     classDef worker fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#fff;
 
     CLI["yscb.py CLI Client"]:::client <-->|"Localhost HTTP (127.0.0.1:0 + Token)"| Master["Master Supervisor<br/>(HTTP / PID 鎖 / Idle TTL / 崩潰自癒)"]:::master
-    Master <-->|"Stdio NDJSON IPC (_dispatch_lock 序列化)"| Worker["Warm Worker<br/>(_module_cache / worker_warming / DebouncedIOStreamer)"]:::worker
+    Master <-->|"Stdio NDJSON IPC (_dispatch_lock 序列化)"| Worker["Warm Worker<br/>(dispatcher._MODULE_CACHE / server_worker_warming / DebouncedIOStreamer)"]:::worker
 ```
 
 1. **職責分離 (Control Plane vs. Data Plane)**：
-   - **Master Supervisor**：純控制平面，負責外部 Localhost HTTP 網絡、安全 Token 守門、狀態鎖 (`cache://server/daemon.json`)、Idle TTL 計時器與子進程守護。
+   - **Master Supervisor**：純控制平面，負責外部 Localhost HTTP 網絡、安全 Token 守門、狀態鎖 (`cache://server/daemon.json`)、Idle TTL 計時器與子進程守護（啟動 Worker 時以 `ready_event` 同步確認 `worker_ready` 握手完成，超時或異常立即強制收割子進程與管道，杜絕背景執行緒爭搶 `proc.stdout`）。
    - **Warm Worker**：常駐預熱資料平面，內部攔截 `SystemExit` 避免被業務模組中斷，兼顧啟動加速 (<30ms) 與模組記憶體隔離。
 2. **模組崩潰自動自癒 (Crash Self-Healing)**：
    - 若業務模組執行期間發生嚴重崩潰或導致 Worker 子進程異常退場（Broken Pipe / EOF），Master Supervisor 會自動偵測並在下一次調度或恢復週期中透明拉起全新 Warm Worker 子進程自癒，確保常駐服務整體高可用。
-3. **進程級模組快取與標準預熱事件廣播 (`_module_cache` & `worker_warming`)**：
-   - **進程級模組快取 (`Worker._module_cache`)**：為避免每次派發任務時重複執行 `importlib.util.module_from_spec` 與 `exec_module` 造成無謂的直譯解析與符號評估開銷，Worker 在首次按需加載目標模組後將 `cli_module` 快取於 `Worker._module_cache` 中，後續跨任務調用直接提取並執行 `process()`。
-   - **標準預熱廣播 (`worker_warming`)**：Worker 初始化完成後，立即透過微內核標準事件原語 `core.events.broadcast("worker_warming", emit_module="server")` 發送預熱廣播，讓各領域重型模組（如 `knowledge-db` 向量推論與倒排索引）可掛載自定義 Pre-warm 邏輯，消除首次請求的冷加載卡頓。
+3. **進程級模組快取與標準預熱事件廣播 (`_MODULE_CACHE` & `server_worker_warming`)**：
+   - **進程級模組快取 (`core.commands.dispatcher._MODULE_CACHE`)**：為避免每次派發任務時重複執行 `importlib.util.module_from_spec` 與 `exec_module` 造成無謂的直譯解析與符號評估開銷，Worker 統一透過微內核 `dispatch_local` 將已載入之 `cli.py` 模組快取於 `dispatcher._MODULE_CACHE` 中，後續跨任務調用直接復用。
+   - **標準預熱廣播 (`server_worker_warming`)**：Worker 初始化完成後，立即透過微內核標準事件原語 `core.events.broadcast("server_worker_warming", emit_module="server")` 發送預熱廣播，讓各領域重型模組（如 `knowledge-db` 向量推論與倒排索引）可掛載自定義 Pre-warm 邏輯，消除首次請求的冷加載卡頓。
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: discuss
-description: 針對實作或測試階段之異常現場、範疇越界與契約衝突，執行由近及遠排查與 5-Whys 根因分析，產出 2~3 種修復候選方案矩陣與深度歸因討論卡。觸發情境：同一錯誤或測試連續 2 次修復失敗、修改觸及非目標模組或破壞 Public API、輸入 /discuss 或 /Discuss (root-cause analysis / scope protection)。排除情境：初次發生且可立即定位之單行語法錯誤修正、全新功能之初期需求訪談與立項（改用 new-plan）。
+description: 針對實作或測試異常、範疇越界與契約衝突，執行 5-Whys 根因分析並產出候選修復方案討論卡。觸發情境：輸入 /discuss、同一錯誤或測試連續 2 次修復失敗、修改觸及非目標模組或破壞 Public API。
 ---
 
 # 深度歸因與防淺層修復工作流 (Discuss)
@@ -15,10 +15,10 @@ description: 針對實作或測試階段之異常現場、範疇越界與契約�
   1. **範疇越界（Scope Creep / Boundary Breach）**：排查時發現需修改非當前計畫承諾範圍之檔案或模組，或偏離 `P01` / `P02` 原定架構。
   2. **連續修復失敗（Two-Strike Circuit Breaker）**：針對同一報錯或測試缺陷，連續 2 次修復嘗試未通過。
   3. **破壞性變更（Breaking Change）**：修復方案將破壞 Public API 契約、既有架構或引入非預期跨模組依賴。
-- **顯式觸發條件**：開發者主動輸入 `/discuss`（或 `/Discuss`）要求針對當前問題進行根因探討。
+- **顯式觸發條件**：開發者主動輸入 `/discuss` 要求針對當前問題進行根因探討。
 - **排除情境（負向邊界）**：
   - 初次遇到語法錯誤或明確的單行 Typo 且可立即精準修復時，無需觸發本流程。
-  - 若為全新功能之 초기 Phase 00 需求訪談，請依 [`new-plan`](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 與 [`development-sop`](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`) 之 `Phase 00` 執行。
+  - 若為全新功能之初期 Phase 00 需求訪談，請依 [`new-plan`](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 與 [`development-sop`](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`) 之 `Phase 00` 執行。
 
 ---
 
@@ -41,7 +41,7 @@ description: 針對實作或測試階段之異常現場、範疇越界與契約�
 觸發本工作流時，請依序執行以下檢核步驟：
 
 ```markdown
-/Discuss 深度歸因檢核表：
+/discuss 深度歸因檢核表：
 - [ ] 步驟 1：立即停止修改程式碼，依「由近及遠」原則收集異常現場與執行 5-Whys 根因分析
 - [ ] 步驟 2：擬定 2~3 種修復候選方案（含影響範疇與 Trade-off），輸出極簡討論卡並 End Turn
 - [ ] 步驟 3：獲開發者決策授權後，同步更新對應計畫文件與 changelog.md，再恢復代碼實作
@@ -59,7 +59,7 @@ description: 針對實作或測試階段之異常現場、範疇越界與契約�
 對話 Session **嚴禁代碼傾倒、日誌全文傾倒或冗長論述**，強制僅呈遞以下極簡討論卡，並**立即 End Turn 等待開發者決策**：
 
 ```markdown
-### [!] /Discuss 深度歸因與討論卡
+### [!] /discuss 深度歸因與討論卡
 - **觸發原因**：[範疇越界 / 連續 2 次修復失敗 / 破壞性變更 / 開發者調用]
 - **異常現場**：[錯誤訊息摘要 / 發生檔案位置]
 - **5-Whys 根因**：[1~2 行客觀架構/時序根因分析]

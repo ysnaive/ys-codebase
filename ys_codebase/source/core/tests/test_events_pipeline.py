@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 from dev.testing import YSCBTestCase, require, Requirement
 from core.engine import AtomicEngine
 from core.uri import ExecutionContext
-from core import uri, events
+from core import uri, vfs, events
 
 
 class TestEventsPipeline(YSCBTestCase):
@@ -21,7 +21,7 @@ class TestEventsPipeline(YSCBTestCase):
     def test_core_events_broadcast_basic(self):
         """FT-01: 驗證 core.events.broadcast 成功尋址 module://{mod}/scripts/hook.{Sender}.py 並執行 on_{event} / {event} 函式。"""
         mod_scripts = "module://mock_listener/scripts"
-        uri.makedirs(mod_scripts)
+        vfs.makedirs(mod_scripts)
         flag_file = "module://mock_listener/event.flag"
         resolved_flag = uri.resolve(flag_file).replace("\\", "/")
         
@@ -35,21 +35,21 @@ def custom_event(ctx):
     return "custom_ok"
 """
         try:
-            uri.write_text(f"{mod_scripts}/hook.core.py", hook_code)
+            vfs.write_text(f"{mod_scripts}/hook.core.py", hook_code)
 
             ctx = ExecutionContext("core", "agents-workflow", ["status"])
             res = events.broadcast("pre_cli_dispatch", context=ctx, emit_module="core")
 
             self.assertEqual(res.get("mock_listener"), "ok")
-            self.assertTrue(uri.exists(flag_file))
-            self.assertEqual(uri.read_text(flag_file), "DISPATCHED:agents-workflow")
+            self.assertTrue(vfs.exists(flag_file))
+            self.assertEqual(vfs.read_text(flag_file), "DISPATCHED:agents-workflow")
 
             # Test non-on_ prefix matching
             res_custom = events.broadcast("custom_event", context=ctx, emit_module="core")
             self.assertEqual(res_custom.get("mock_listener"), "custom_ok")
         finally:
-            if uri.exists("module://mock_listener"):
-                uri.rmtree("module://mock_listener")
+            if vfs.exists("module://mock_listener"):
+                vfs.rmtree("module://mock_listener")
         self.mark_passed()
 
     def test_engine_decoupling_and_installer_events(self):
@@ -129,29 +129,29 @@ def custom_event(ctx):
     def test_hook_missing_graceful_skip(self):
         """ET-01: 驗證缺少 hook.<Sender>.py 或未宣告對應事件處理常式之模組安全略過，不拋出任何例外。"""
         mod_scripts = "module://mock_empty/scripts"
-        uri.makedirs(mod_scripts)
+        vfs.makedirs(mod_scripts)
         try:
             # hook.other.py exists, but not hook.core.py
-            uri.write_text(f"{mod_scripts}/hook.other.py", "def on_event(ctx): pass\n")
+            vfs.write_text(f"{mod_scripts}/hook.other.py", "def on_event(ctx): pass\n")
 
             res = events.broadcast("pre_cli_dispatch", emit_module="core")
             self.assertNotIn("mock_empty", res)
 
             # hook.core.py exists but does not implement pre_cli_dispatch
-            uri.write_text(f"{mod_scripts}/hook.core.py", "def other_unrelated_func(): pass\n")
+            vfs.write_text(f"{mod_scripts}/hook.core.py", "def other_unrelated_func(): pass\n")
             res2 = events.broadcast("pre_cli_dispatch", emit_module="core")
             self.assertNotIn("mock_empty", res2)
         finally:
-            if uri.exists("module://mock_empty"):
-                uri.rmtree("module://mock_empty")
+            if vfs.exists("module://mock_empty"):
+                vfs.rmtree("module://mock_empty")
         self.mark_passed()
 
     def test_hook_exception_isolation(self):
         """ET-02: 驗證特定模組 Hook 內部拋出例外時，事件總線捕獲並記錄警告，絕不阻斷主流程。"""
         mod_scripts = "module://mock_crasher/scripts"
-        uri.makedirs(mod_scripts)
+        vfs.makedirs(mod_scripts)
         try:
-            uri.write_text(
+            vfs.write_text(
                 f"{mod_scripts}/hook.core.py",
                 "def on_pre_cli_dispatch(ctx):\n    raise ZeroDivisionError('Hook crashed')\n"
             )
@@ -160,8 +160,8 @@ def custom_event(ctx):
             self.assertIn("mock_crasher", res)
             self.assertTrue(str(res["mock_crasher"]).startswith("warning:"))
         finally:
-            if uri.exists("module://mock_crasher"):
-                uri.rmtree("module://mock_crasher")
+            if vfs.exists("module://mock_crasher"):
+                vfs.rmtree("module://mock_crasher")
         self.mark_passed()
 
     def test_bootstrap_commands_short_circuit(self):
@@ -217,7 +217,7 @@ def custom_event(ctx):
         """FT-02: 驗證 verbose 模式下 Hook 執行輸出與異常 Traceback 輸出，且一般模式保持乾淨。"""
         from core.commands.dispatcher import _ensure_hooks
         mod_scripts = "module://mock_obs/scripts"
-        uri.makedirs(mod_scripts, exist_ok=True)
+        vfs.makedirs(mod_scripts, exist_ok=True)
 
         hook_code = (
             "def on_test_event(ctx):\n"
@@ -225,7 +225,7 @@ def custom_event(ctx):
             "def on_fail_event(ctx):\n"
             "    raise ValueError('Simulated hook failure for observability')\n"
         )
-        uri.write_text(f"{mod_scripts}/hook.core.py", hook_code)
+        vfs.write_text(f"{mod_scripts}/hook.core.py", hook_code)
 
         ctx = ExecutionContext("core", "test_cmd", [])
 
@@ -265,8 +265,8 @@ def custom_event(ctx):
             self.assertEqual(disp_res.get("mock_obs"), "result_ok")
             self.assertIn("[core:dispatcher] Hooks for 'test_event' completed:", buf_disp.getvalue())
         finally:
-            if uri.exists("module://mock_obs"):
-                uri.rmtree("module://mock_obs")
+            if vfs.exists("module://mock_obs"):
+                vfs.rmtree("module://mock_obs")
 
         self.mark_passed()
 

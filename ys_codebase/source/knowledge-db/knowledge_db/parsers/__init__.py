@@ -1,42 +1,19 @@
 """
-knowledge-db parsers package
+Multi-Language Semantic AST Parsers for Knowledge-DB (Universal AST v2.0).
 """
 
 from .base import BaseParser
-from .registry import (
-    CppParser,
-    CSharpParser,
-    JsTsParser,
-    LanguageRegistry,
-    MarkdownParser,
-    ParserRegistry,
-    PythonParser,
-)
-from .spice_parser import LogicalLine, SpiceParser
+from .css_parser import CssParser
+from .html_parser import HtmlParser
+from .registry import ParserRegistry
+from .spice_parser import SpiceParser
 from .treesitter import TreeSitterDriver
-
-try:
-    from .html_parser import HtmlParser
-except ImportError:
-    HtmlParser = None
-
-try:
-    from .css_parser import CssParser
-except ImportError:
-    CssParser = None
 
 __all__ = [
     "BaseParser",
     "TreeSitterDriver",
-    "ParserRegistry",
-    "LanguageRegistry",
-    "PythonParser",
-    "MarkdownParser",
-    "CppParser",
-    "CSharpParser",
-    "JsTsParser",
     "SpiceParser",
-    "LogicalLine",
     "HtmlParser",
     "CssParser",
+    "ParserRegistry",
 ]

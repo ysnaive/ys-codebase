@@ -7,24 +7,12 @@ memory caching with mtime auto-healing, and atomic writes.
 """
 
 import os
-import sys
-import json
 import copy
 import logging
-import tempfile
 from typing import Any, Dict, List, Optional, Tuple
+from core import uri, vfs
 
 logger = logging.getLogger("core.config")
-
-try:
-    from core import uri
-except ImportError:
-    uri = None
-
-try:
-    from core import vfs
-except ImportError:
-    vfs = None
 
 
 class ConfigManager:
@@ -35,25 +23,18 @@ class ConfigManager:
 
     @classmethod
     def _get_yscb_root(cls) -> str:
-        if uri:
-            try:
-                return uri._get_yscb_root()
-            except Exception:
-                pass
-        curr = os.path.dirname(os.path.abspath(__file__))
-        return os.path.normpath(os.path.dirname(os.path.dirname(os.path.dirname(curr))))
+        """解析 yscb_root 目錄，統一委派至 core.uri.resolve_yscb_root()。"""
+        return uri.resolve_yscb_root()
 
     @classmethod
     def get_config_path(cls, module: str, local: bool = False) -> str:
         """取得指定模組之設定檔實體路徑。"""
         filename = "config.local.json" if local else "config.project.json"
-        if uri:
-            try:
-                return uri.resolve(f"config://{module}/{filename}", interactive=False)
-            except Exception:
-                pass
-        yscb_root = cls._get_yscb_root()
-        return os.path.normpath(os.path.join(yscb_root, "config", module, filename))
+        try:
+            return uri.resolve(f"config://{module}/{filename}", interactive=False)
+        except Exception:
+            yscb_root = cls._get_yscb_root()
+            return os.path.normpath(os.path.join(yscb_root, "config", module, filename))
 
     @classmethod
     def _deep_merge(cls, base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -109,14 +90,10 @@ class ConfigManager:
     @classmethod
     def _read_json_file(cls, filepath: str) -> Dict[str, Any]:
         """安全讀取 JSON 檔案，若檔案不存在回傳空字典，損毀時輸出警告日誌。"""
-        if not os.path.isfile(filepath):
+        if not vfs.is_file(filepath):
             return {}
         try:
-            if vfs:
-                data = vfs.read_json(filepath)
-            else:
-                with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                    data = json.load(f)
+            data = vfs.read_json(filepath)
             return data if isinstance(data, dict) else {}
         except Exception as e:
             logger.warning(f"Failed to read or parse config file '{filepath}': {e}")
@@ -124,29 +101,8 @@ class ConfigManager:
 
     @classmethod
     def _atomic_write_json(cls, filepath: str, data: Dict[str, Any]) -> None:
-        """原子寫入 JSON 檔案並確保目錄存在 (優先使用 core.vfs 原子寫入)。"""
-        if vfs:
-            vfs.write_json(filepath, data, indent=2, encoding="utf-8", atomic=True)
-            return
-
-        target_dir = os.path.dirname(filepath)
-        os.makedirs(target_dir, exist_ok=True)
-
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix="cfg_tmp_", suffix=".json")
-        try:
-            with open(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            if os.path.exists(filepath):
-                os.replace(tmp_path, filepath)
-            else:
-                os.rename(tmp_path, filepath)
-        except Exception:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-            raise
+        """原子寫入 JSON 檔案並確保目錄存在 (100% 委派 core.vfs 原子寫入)。"""
+        vfs.write_json(filepath, data, indent=2, encoding="utf-8", atomic=True)
 
     @classmethod
     def _check_and_load(cls, module: str) -> Dict[str, Any]:
@@ -327,7 +283,4 @@ delete = ConfigManager.delete
 reload = ConfigManager.reload
 list_modules = ConfigManager.list_modules
 get_config_path = ConfigManager.get_config_path
-
-# 相容別名
-Config = ConfigManager
 

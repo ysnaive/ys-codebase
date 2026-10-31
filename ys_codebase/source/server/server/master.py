@@ -8,23 +8,25 @@ single warm worker subprocess lifecycle, idle TTL auto-shutdown, and serialized 
 from dataclasses import asdict, dataclass
 import http.server
 import json
-import importlib
-import logging
 import os
 import platform
-import queue
 import secrets
 import subprocess
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
-logger = logging.getLogger(__name__)
-
 from core import vfs
-from core.platform import is_process_alive, kill_process_tree, InterProcessLock, ensure_private_venv, set_process_title, spawn_detached
+from core.platform import (
+    InterProcessLock,
+    ensure_private_venv,
+    is_process_alive,
+    kill_process_tree,
+    set_process_title,
+    spawn_detached,
+)
 from server.logger import ServerLogger
 from server.watcher import ModulesWatcher
 
@@ -39,6 +41,77 @@ class ServerDaemonState:
     start_time: float
     idle_timeout_sec: float
     tasks_executed: int = 0
+
+
+def format_uptime(uptime_sec: float) -> str:
+    """Formats uptime seconds into human-readable string."""
+    uptime_val = float(uptime_sec)
+    mins = int(uptime_val // 60)
+    secs = uptime_val % 60
+    if mins > 0:
+        return f"{mins}m {secs:.1f}s ({uptime_val:.1f}s)"
+    return f"{uptime_val:.1f}s"
+
+
+def format_watcher_status(watcher: Optional[Dict[str, Any]], include_slash: bool = True) -> str:
+    """Formats ModulesWatcher status dictionary into display label."""
+    if not watcher or not watcher.get("enabled"):
+        return "DISABLED"
+    if watcher.get("active"):
+        dir_name = os.path.basename(watcher.get("monitored_dir") or ".modules")
+        suffix = "/" if include_slash else ""
+        return f"ACTIVE (Monitoring {dir_name}{suffix})"
+    return "STOPPED"
+
+
+def read_daemon_state(yscb_root: str) -> Optional[ServerDaemonState]:
+    """Reads and deserializes daemon.json from yscb_root/.cache/server/daemon.json."""
+    state_file = os.path.join(yscb_root, ".cache", "server", "daemon.json")
+    if not os.path.exists(state_file):
+        return None
+    try:
+        data = vfs.read_json(state_file, default=None)
+        if isinstance(data, dict):
+            return ServerDaemonState(**data)
+    except Exception:
+        pass
+    return None
+
+
+def build_fallback_status_payload(state: ServerDaemonState) -> Dict[str, Any]:
+    """Builds fallback status dictionary from ServerDaemonState when HTTP probe is unavailable."""
+    return {
+        "pid": state.pid,
+        "worker_pid": state.worker_pid,
+        "port": state.port,
+        "root": state.root,
+        "idle_timeout_sec": state.idle_timeout_sec,
+        "log_file": os.path.join(state.root, ".cache", "server", "log"),
+    }
+
+
+def spawn_detached_master(
+    yscb_root: str,
+    idle_timeout_sec: float,
+    enable_watcher: bool = True,
+) -> int:
+    """Assembles cross-platform Python command and spawns a detached MasterSupervisor daemon."""
+    core_dir = os.path.join(yscb_root, ".modules", "core")
+    server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    core_p = os.path.abspath(core_dir).replace("\\", "/")
+    server_p = os.path.abspath(server_dir).replace("\\", "/")
+    root_p = os.path.abspath(yscb_root).replace("\\", "/")
+
+    cmd = [
+        sys.executable,
+        "-c",
+        f"import sys; "
+        f"sys.path.insert(0, '{core_p}'); "
+        f"sys.path.insert(0, '{server_p}'); "
+        f"from server.master import MasterSupervisor; "
+        f"MasterSupervisor('{root_p}', idle_timeout_sec={idle_timeout_sec}, enable_watcher={enable_watcher}).start(foreground=True)",
+    ]
+    return spawn_detached(cmd, cwd=yscb_root)
 
 
 def format_startup_banner(info: Dict[str, Any]) -> str:
@@ -67,14 +140,7 @@ def format_startup_banner(info: Dict[str, Any]) -> str:
         ttl_str = "Disabled (Persistent)"
     lines.append(f"  ├── Idle Timeout    : {ttl_str}")
 
-    watcher = info.get("watcher", {})
-    if not watcher.get("enabled"):
-        w_str = "DISABLED"
-    elif watcher.get("active"):
-        dir_name = os.path.basename(watcher.get("monitored_dir") or ".modules")
-        w_str = f"ACTIVE (Monitoring {dir_name}/)"
-    else:
-        w_str = "STOPPED"
+    w_str = format_watcher_status(info.get("watcher", {}))
     lines.append(f"  ├── Modules Watcher : {w_str}")
 
     services = info.get("services", [])
@@ -92,14 +158,7 @@ def format_startup_banner(info: Dict[str, Any]) -> str:
 
 def format_shutdown_summary(summary: Dict[str, Any]) -> str:
     """Formats structured shutdown summary card."""
-    uptime_sec = float(summary.get("uptime_seconds", 0.0))
-    mins = int(uptime_sec // 60)
-    secs = uptime_sec % 60
-    if mins > 0:
-        uptime_fmt = f"{mins}m {secs:.1f}s ({uptime_sec:.1f}s)"
-    else:
-        uptime_fmt = f"{uptime_sec:.1f}s"
-
+    uptime_fmt = format_uptime(float(summary.get("uptime_seconds", 0.0)))
     tasks = summary.get("tasks_executed", 0)
     svcs = summary.get("services_stopped", 0)
     reason = summary.get("reason", "Graceful CLI shutdown request")
@@ -187,63 +246,51 @@ class MasterSupervisor:
             "watcher": watcher_status,
         }
 
-    def start(self, foreground: bool = False) -> int:
-        """Starts the master supervisor with rigid single-instance lock protection."""
-        os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-
-        self._lock = InterProcessLock(self.lock_file)
-        if not self._lock.acquire(blocking=False):
-            # Another live Master instance already holds the OS file lock.
-            # Return its PID (or 0 if state file is not yet materialized) and never fall through.
-            state = self.read_state()
-            if state and is_process_alive(state.pid):
-                return state.pid
-            return 0
-
-        # 0. Set identifiable process title & crash recovery & fresh realtime log initialization
+    def _initialize_daemon_environment(self) -> None:
+        """Sets process title, initializes crash-recovered logger, and resets runtime flags."""
         set_process_title("yscb server")
         start_ts = self.logger.recover_and_open()
-        self.logger.info(f"Starting MasterSupervisor (PID: {os.getpid()}, Root: {self.yscb_root}, Idle TTL: {self.idle_timeout_sec}s, StartTime: {start_ts})")
-
+        self.logger.info(
+            f"Starting MasterSupervisor (PID: {os.getpid()}, Root: {self.yscb_root}, "
+            f"Idle TTL: {self.idle_timeout_sec}s, StartTime: {start_ts})"
+        )
         self._is_running = True
         self._is_stopped = False
         self._restarting = False
         self._last_active_time = time.time()
 
-        # 1. Start HTTP Server on dynamic port 127.0.0.1:0
+    def _start_http_and_watcher_services(self) -> None:
+        """Binds localhost HTTP server, spawns warm worker, and activateswatcher & idle TTL threads."""
         self._httpd = _create_http_server(self)
         self.port = self._httpd.server_address[1]
         self.logger.info(f"HTTP Server listening on 127.0.0.1:{self.port}")
 
-        # 2. Materialize initial daemon.json immediately after port binding (before worker warm-up)
         self._write_state()
 
-        # 3. Spawn initial Warm Worker and update daemon.json with worker_pid
-        self._spawn_worker()
+        with self._worker_lock:
+            self._spawn_worker_locked()
         self.logger.info(f"Initial Warm Worker spawned (PID: {self._worker_proc.pid if self._worker_proc else 0})")
         self._write_state()
 
-        # 4. Start ModulesWatcher
         if self.enable_watcher:
             modules_dir = os.path.join(self.yscb_root, ".modules")
             self.watcher = ModulesWatcher(modules_dir, on_change_callback=self.on_modules_changed, debounce_sec=0.5)
             self.watcher.start()
             self.logger.info(f"ModulesWatcher active on {modules_dir}")
 
-        # 5. Service Workers (Master is pure control plane; domain services hosted in WarmWorker)
-        # Domain services run inside WarmWorker and report status back to Master via IPC
-
-        # 6. Start Idle TTL checker thread
         if self.idle_timeout_sec > 0:
             ttl_thread = threading.Thread(target=self._idle_ttl_loop, daemon=True, name="idle-ttl")
             ttl_thread.start()
 
+    def _run_supervisor_main_loop(self, foreground: bool) -> None:
+        """Runs HTTP server either in blocking foreground mode or background daemon thread."""
         if foreground:
             self.logger.echo_console = True
             banner = format_startup_banner(self.get_status_dict())
             print(banner, flush=True)
             try:
-                self._httpd.serve_forever()
+                if self._httpd:
+                    self._httpd.serve_forever()
             except KeyboardInterrupt:
                 pass
             finally:
@@ -252,15 +299,33 @@ class MasterSupervisor:
             self._http_thread = threading.Thread(target=self._httpd.serve_forever, daemon=True, name="http-server")
             self._http_thread.start()
 
-        return os.getpid()
+    def start(self, foreground: bool = False) -> int:
+        """Starts the master supervisor with rigid single-instance lock protection."""
+        os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
 
-    def stop(self, force: bool = False) -> None:
+        self._lock = InterProcessLock(self.lock_file)
+        if not self._lock.acquire(blocking=False):
+            state = read_daemon_state(self.yscb_root)
+            if state and is_process_alive(state.pid):
+                return state.pid
+            return 0
+
+        try:
+            self._initialize_daemon_environment()
+            self._start_http_and_watcher_services()
+            self._run_supervisor_main_loop(foreground)
+            return os.getpid()
+        except Exception:
+            self.stop()
+            raise
+
+    def stop(self) -> None:
         """Stops the master supervisor and all child workers."""
         with self._stop_lock:
             if self._is_stopped:
                 return
             self._is_stopped = True
-            self.logger.info(f"Stopping MasterSupervisor (PID: {os.getpid()}, Force: {force})...")
+            self.logger.info(f"Stopping MasterSupervisor (PID: {os.getpid()})...")
             self._is_running = False
 
             if self.watcher:
@@ -294,7 +359,6 @@ class MasterSupervisor:
             return
         proc = self._worker_proc
 
-        # Stage 1: Graceful application-level handshake via {"action": "exit"}
         exited_gracefully = False
         try:
             if proc.poll() is None and proc.stdin:
@@ -306,7 +370,6 @@ class MasterSupervisor:
         except Exception:
             pass
 
-        # Stage 2: OS-level process tree kill fallback if timeout or failure
         if not exited_gracefully and proc.poll() is None:
             try:
                 kill_process_tree(proc.pid, timeout_sec=timeout_sec)
@@ -317,7 +380,7 @@ class MasterSupervisor:
             if pipe:
                 try:
                     pipe.close()
-                except Exception:
+                except OSError:
                     pass
         self._worker_proc = None
 
@@ -330,7 +393,7 @@ class MasterSupervisor:
 
             try:
                 from server.config import ServerConfig
-                cfg = ServerConfig.load(workspace_root=self.yscb_root)
+                cfg = ServerConfig.load()
                 self.idle_timeout_sec = float(cfg.idle_timeout_sec)
             except Exception:
                 pass
@@ -349,10 +412,10 @@ class MasterSupervisor:
         """
         self.logger.info(f"ModulesWatcher detected change in modules: {affected_modules}")
         if affected_modules and ("server" in affected_modules or "core" in affected_modules):
-            logger.info(f"[Server] Detected core/server module update ({affected_modules}). Triggering Master self-restart...")
+            self.logger.info(f"[Server] Detected core/server module update ({affected_modules}). Triggering Master self-restart...")
             self.restart_server()
         else:
-            logger.info(f"[Server] Detected domain module update ({affected_modules or 'unknown'}). Reloading Warm Worker...")
+            self.logger.info(f"[Server] Detected domain module update ({affected_modules or 'unknown'}). Reloading Warm Worker...")
             self.restart_worker()
 
     def restart_server(self) -> None:
@@ -372,38 +435,88 @@ class MasterSupervisor:
                 pass
 
         self.logger.info("Initiating graceful MasterSupervisor self-restart...")
-        def _do_restart():
+
+        def _do_restart() -> None:
             try:
-                # 1. Stop current Master resources
                 self.stop()
             except Exception as e:
-                logger.warning(f"[Server] Error stopping daemon during restart: {e}")
+                self.logger.warning(f"[Server] Error stopping daemon during restart: {e}")
 
-            # 2. Spawn detached new Master daemon
             try:
-                core_dir = os.path.join(self.yscb_root, ".modules", "core")
-                server_dir = os.path.join(self.yscb_root, ".modules", "server")
-                core_p = os.path.abspath(core_dir).replace("\\", "/")
-                server_p = os.path.abspath(server_dir).replace("\\", "/")
-                root_p = os.path.abspath(self.yscb_root).replace("\\", "/")
-
-                cmd = [
-                    sys.executable,
-                    "-c",
-                    f"import sys; "
-                    f"sys.path.insert(0, '{core_p}'); "
-                    f"sys.path.insert(0, '{server_p}'); "
-                    f"from server.master import MasterSupervisor; MasterSupervisor('{root_p}', idle_timeout_sec={self.idle_timeout_sec}, enable_watcher={self.enable_watcher}).start(foreground=True)",
-                ]
-                spawn_detached(cmd, cwd=self.yscb_root)
+                spawn_detached_master(
+                    yscb_root=self.yscb_root,
+                    idle_timeout_sec=self.idle_timeout_sec,
+                    enable_watcher=self.enable_watcher,
+                )
             except Exception as ex:
-                logger.error(f"[Server] Failed to spawn new Master daemon: {ex}")
+                self.logger.error(f"[Server] Failed to spawn new Master daemon: {ex}")
             finally:
-                # 3. Exit current process
                 os._exit(0)
 
         t = threading.Thread(target=_do_restart, daemon=True, name="server-self-restart")
         t.start()
+
+    def _ensure_ready_worker(self) -> subprocess.Popen:
+        """Ensures a live worker subprocess is running and returns its Popen handle."""
+        with self._worker_lock:
+            if not self._worker_proc or not is_process_alive(self._worker_proc.pid):
+                self._spawn_worker_locked()
+                self._write_state()
+            return self._worker_proc  # type: ignore
+
+    def _stream_task_over_worker_pipe(
+        self,
+        proc: subprocess.Popen,
+        target_mod: str,
+        req_payload: Dict[str, Any],
+        chunk_emitter: Callable[[Dict[str, Any]], None],
+    ) -> int:
+        """Writes dispatch payload to worker stdin and relays NDJSON stream chunks until task_finish."""
+        try:
+            req_line = json.dumps(req_payload) + "\n"
+            proc.stdin.write(req_line.encode("utf-8"))  # type: ignore
+            proc.stdin.flush()  # type: ignore
+        except Exception as e:
+            self.logger.error(f"Failed to write task payload to worker stdin: {e}", exc_info=e)
+            chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(e)})
+            return 1
+
+        exit_code = 0
+        while True:
+            try:
+                line = proc.stdout.readline()  # type: ignore
+                if not line:
+                    self.logger.error(f"Worker stdout closed unexpectedly during dispatch for module='{target_mod}'")
+                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": "Worker stdout closed unexpectedly"})
+                    return 1
+
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if not line_str:
+                    continue
+
+                packet = json.loads(line_str)
+                if packet.get("type") == "log":
+                    self.logger.log(
+                        packet.get("level", "INFO"),
+                        packet.get("msg", ""),
+                        component=packet.get("component", "worker"),
+                    )
+                    continue
+
+                chunk_emitter(packet)
+
+                if packet.get("type") == "task_finish":
+                    exit_code = packet.get("exit_code", 0)
+                    dur_ms = packet.get("duration_ms", 0.0)
+                    self.logger.info(f"Task dispatch finished: module='{target_mod}', exit_code={exit_code}, duration={dur_ms:.1f}ms")
+                    break
+            except Exception as ex:
+                self.logger.error(f"Exception during worker stream reading: {ex}", exc_info=ex)
+                chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(ex)})
+                return 1
+
+        self._last_active_time = time.time()
+        return exit_code
 
     def dispatch_task(self, req_data: Dict[str, Any], chunk_emitter: Any) -> int:
         """Dispatches a CLI task to the warm worker sequentially under _dispatch_lock."""
@@ -415,72 +528,15 @@ class MasterSupervisor:
         self.logger.info(f"Task dispatch requested: module='{target_mod}', args={cmd_args}")
 
         with self._dispatch_lock:
-            with self._worker_lock:
-                if not self._worker_proc or not is_process_alive(self._worker_proc.pid):
-                    self._spawn_worker_locked()
-                    self._write_state()
-
-                proc = self._worker_proc
-
+            proc = self._ensure_ready_worker()
             req_payload = {
                 "action": "dispatch",
                 "module": req_data["module"],
-                "args": req_data.get("args", []),
+                "args": cmd_args,
                 "cwd": req_data.get("cwd", self.yscb_root),
                 "env": req_data.get("env"),
             }
-
-            # Send request line to worker
-            try:
-                req_line = json.dumps(req_payload) + "\n"
-                proc.stdin.write(req_line.encode("utf-8"))
-                proc.stdin.flush()
-            except Exception as e:
-                self.logger.error(f"Failed to write task payload to worker stdin: {e}", exc_info=e)
-                chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(e)})
-                return 1
-
-            exit_code = 0
-            # Read stream chunks from worker until task_finish
-            while True:
-                try:
-                    line = proc.stdout.readline()
-                    if not line:
-                        self.logger.error(f"Worker stdout closed unexpectedly during dispatch for module='{target_mod}'")
-                        chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": "Worker stdout closed unexpectedly"})
-                        return 1
-
-                    line_str = line.decode("utf-8", errors="replace").strip()
-                    if not line_str:
-                        continue
-
-                    packet = json.loads(line_str)
-                    # Intercept IPC log packet from Worker
-                    if packet.get("type") == "log":
-                        lvl = packet.get("level", "INFO")
-                        comp = packet.get("component", "worker")
-                        msg = packet.get("msg", "")
-                        self.logger.log(lvl, msg, component=comp)
-                        continue
-
-                    chunk_emitter(packet)
-
-                    if packet.get("type") == "task_finish":
-                        exit_code = packet.get("exit_code", 0)
-                        dur_ms = packet.get("duration_ms", 0.0)
-                        self.logger.info(f"Task dispatch finished: module='{target_mod}', exit_code={exit_code}, duration={dur_ms:.1f}ms")
-                        break
-                except Exception as ex:
-                    self.logger.error(f"Exception during worker stream reading: {ex}", exc_info=ex)
-                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(ex)})
-                    return 1
-
-            self._last_active_time = time.time()
-            return exit_code
-
-    def _spawn_worker(self) -> int:
-        with self._worker_lock:
-            return self._spawn_worker_locked()
+            return self._stream_task_over_worker_pipe(proc, target_mod, req_payload, chunk_emitter)
 
     def _spawn_worker_locked(self) -> int:
         worker_script = os.path.join(os.path.dirname(__file__), "worker.py")
@@ -489,9 +545,12 @@ class MasterSupervisor:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
-        # Ensure child worker has access to modules and private .venv (strict isolation: no source/ paths)
         tag, sys_name = f"py{sys.version_info.major}{sys.version_info.minor}", platform.system()
-        sub = os.path.join(".venv", tag, "Lib", "site-packages") if sys_name == "Windows" else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+        sub = (
+            os.path.join(".venv", tag, "Lib", "site-packages")
+            if sys_name == "Windows"
+            else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+        )
         site_pkg = os.path.join(self.yscb_root, sub)
 
         py_paths = [
@@ -521,8 +580,7 @@ class MasterSupervisor:
         )
         self._worker_proc = proc
 
-        # Continuous background daemon thread to drain stderr and avoid pipe buffer deadlocks
-        def _drain_stderr(pipe, pid):
+        def _drain_stderr(pipe: Any, pid: int) -> None:
             try:
                 for line in iter(pipe.readline, b""):
                     if not line:
@@ -535,18 +593,17 @@ class MasterSupervisor:
             finally:
                 try:
                     pipe.close()
-                except Exception:
+                except OSError:
                     pass
 
         threading.Thread(target=_drain_stderr, args=(proc.stderr, proc.pid), daemon=True, name=f"worker-stderr-{proc.pid}").start()
 
-        # Non-blocking wait for worker_ready packet with 3.0s timeout
-        ready_received = False
-        def _read_ready():
-            nonlocal ready_received
+        ready_event = threading.Event()
+
+        def _read_ready() -> None:
             try:
                 while True:
-                    line = proc.stdout.readline()
+                    line = proc.stdout.readline()  # type: ignore
                     if not line:
                         break
                     line_str = line.decode("utf-8", errors="replace").strip()
@@ -557,16 +614,22 @@ class MasterSupervisor:
                         self.logger.log(data.get("level", "INFO"), data.get("msg", ""), component=data.get("component", "worker"))
                         continue
                     if data.get("type") == "worker_ready":
-                        ready_received = True
                         if "services" in data and isinstance(data["services"], list):
                             self._worker_services = data["services"]
+                        ready_event.set()
                         break
             except Exception:
                 pass
 
-        t = threading.Thread(target=_read_ready, daemon=True)
+        t = threading.Thread(target=_read_ready, daemon=True, name=f"worker-ready-{proc.pid}")
         t.start()
         t.join(timeout=3.0)
+
+        if not ready_event.is_set() or proc.poll() is not None:
+            self.logger.warning(f"Warm Worker (PID: {proc.pid}) failed readiness handshake or exited prematurely; cleaning up.")
+            self._kill_worker_locked(timeout_sec=1.0)
+            t.join(timeout=0.5)
+            return 0
 
         return proc.pid
 
@@ -578,20 +641,8 @@ class MasterSupervisor:
             idle_seconds = time.time() - self._last_active_time
             if self.idle_timeout_sec > 0 and idle_seconds >= self.idle_timeout_sec:
                 self.logger.info(f"Idle TTL ({self.idle_timeout_sec}s) reached. Initiating automatic shutdown...")
-                logging.info(f"[Server Master] Idle TTL ({self.idle_timeout_sec}s) reached. Shutting down...")
-                # Run shutdown in a separate thread so it doesn't block the loop
                 threading.Thread(target=self.stop, daemon=True).start()
                 break
-
-    def read_state(self) -> Optional[ServerDaemonState]:
-        if not os.path.exists(self.state_file):
-            return None
-        try:
-            with open(self.state_file, "r", encoding="utf-8") as f:
-                d = json.load(f)
-                return ServerDaemonState(**d)
-        except Exception:
-            return None
 
     def _write_state(self) -> None:
         worker_pid = self._worker_proc.pid if self._worker_proc else 0
@@ -608,50 +659,45 @@ class MasterSupervisor:
         vfs.write_json(self.state_file, asdict(state), indent=2, atomic=True)
 
     def _cleanup_state(self) -> None:
-        try:
-            if os.path.exists(self.state_file):
-                os.remove(self.state_file)
-        except OSError:
-            pass
-        try:
-            if os.path.exists(self.lock_file):
-                os.remove(self.lock_file)
-        except OSError:
-            pass
+        for fp in (self.state_file, self.lock_file):
+            try:
+                if os.path.exists(fp):
+                    os.remove(fp)
+            except OSError:
+                pass
 
 
 def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
     class DispatcherHTTPHandler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def log_message(self, format, *args):
-            # Suppress default stdout request logging
+        def log_message(self, format: str, *args: Any) -> None:
             pass
+
+        def _send_json_response(self, status_code: int, payload: Dict[str, Any]) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def _authenticate(self) -> bool:
             auth_header = self.headers.get("Authorization", "")
             expected = f"Bearer {supervisor.token}"
             if auth_header != expected:
                 supervisor.logger.warning(f"HTTP Unauthorized access attempt to {self.path}")
-                self.send_response(403)
-                self.end_headers()
-                self.wfile.write(b'{"error": "Unauthorized"}\n')
+                self._send_json_response(403, {"error": "Unauthorized"})
                 return False
             return True
 
-        def do_GET(self):
+        def do_GET(self) -> None:
             t0 = time.time()
             parsed = urlparse(self.path)
             if parsed.path == "/api/status":
                 if not self._authenticate():
                     return
-                status_payload = supervisor.get_status_dict()
-                body = json.dumps(status_payload).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._send_json_response(200, supervisor.get_status_dict())
                 dur_ms = (time.time() - t0) * 1000.0
                 supervisor.logger.info(f"HTTP GET /api/status -> 200 ({dur_ms:.1f}ms)")
             else:
@@ -659,96 +705,77 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 self.end_headers()
                 supervisor.logger.warning(f"HTTP GET {parsed.path} -> 404 Not Found")
 
-        def do_POST(self):
+        def _handle_post_dispatch(self, t0: float) -> None:
+            content_len = int(self.headers.get("Content-Length", 0))
+            raw_body = self.rfile.read(content_len).decode("utf-8")
+            try:
+                req_data = json.loads(raw_body)
+            except ValueError:
+                self._send_json_response(400, {"error": "Invalid JSON"})
+                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid JSON")
+                return
+
+            req_root = req_data.get("yscb_root")
+            if req_root:
+                req_abs = os.path.abspath(req_root)
+                if req_abs != supervisor.yscb_root and req_abs != os.path.dirname(supervisor.yscb_root):
+                    self._send_json_response(400, {"error": "Workspace Root Mismatch"})
+                    supervisor.logger.warning(f"HTTP POST /api/dispatch -> 400 Workspace Root Mismatch ({req_abs})")
+                    return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+
+            def chunk_emitter(packet: Dict[str, Any]) -> None:
+                chunk_bytes = (json.dumps(packet) + "\n").encode("utf-8")
+                chunk_header = f"{len(chunk_bytes):X}\r\n".encode("utf-8")
+                try:
+                    self.wfile.write(chunk_header + chunk_bytes + b"\r\n")
+                    self.wfile.flush()
+                except OSError:
+                    pass
+
+            supervisor.dispatch_task(req_data, chunk_emitter)
+            self.close_connection = True
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except OSError:
+                pass
+            dur_ms = (time.time() - t0) * 1000.0
+            supervisor.logger.info(f"HTTP POST /api/dispatch -> 200 ({dur_ms:.1f}ms)")
+
+        def do_POST(self) -> None:
             t0 = time.time()
             parsed = urlparse(self.path)
             if not self._authenticate():
                 return
 
             if parsed.path == "/api/dispatch":
-                content_len = int(self.headers.get("Content-Length", 0))
-                raw_body = self.rfile.read(content_len).decode("utf-8")
-                try:
-                    req_data = json.loads(raw_body)
-                except Exception:
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b'{"error": "Invalid JSON"}\n')
-                    supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid JSON")
-                    return
-
-                # Check workspace root isolation (matches either yscb_root or parent host dir)
-                req_root = req_data.get("yscb_root")
-                if req_root:
-                    req_abs = os.path.abspath(req_root)
-                    if req_abs != supervisor.yscb_root and req_abs != os.path.dirname(supervisor.yscb_root):
-                        self.send_response(400)
-                        self.end_headers()
-                        self.wfile.write(b'{"error": "Workspace Root Mismatch"}\n')
-                        supervisor.logger.warning(f"HTTP POST /api/dispatch -> 400 Workspace Root Mismatch ({req_abs})")
-                        return
-
-                # Send 200 chunked response
-                self.send_response(200)
-                self.send_header("Content-Type", "application/x-ndjson")
-                self.send_header("Transfer-Encoding", "chunked")
-                self.end_headers()
-
-                def chunk_emitter(packet: Dict[str, Any]):
-                    chunk_bytes = (json.dumps(packet) + "\n").encode("utf-8")
-                    chunk_header = f"{len(chunk_bytes):X}\r\n".encode("utf-8")
-                    try:
-                        self.wfile.write(chunk_header + chunk_bytes + b"\r\n")
-                        self.wfile.flush()
-                    except Exception:
-                        pass
-
-                supervisor.dispatch_task(req_data, chunk_emitter)
-                self.close_connection = True
-                # Send terminal 0 chunk
-                try:
-                    self.wfile.write(b"0\r\n\r\n")
-                    self.wfile.flush()
-                except Exception:
-                    pass
-                dur_ms = (time.time() - t0) * 1000.0
-                supervisor.logger.info(f"HTTP POST /api/dispatch -> 200 ({dur_ms:.1f}ms)")
-
+                self._handle_post_dispatch(t0)
             elif parsed.path == "/api/reload":
                 new_pid = supervisor.restart_worker()
-                resp = json.dumps({"status": "worker_restarted", "new_worker_pid": new_pid}).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(resp)))
-                self.end_headers()
-                self.wfile.write(resp)
+                self._send_json_response(200, {"status": "worker_restarted", "new_worker_pid": new_pid})
                 dur_ms = (time.time() - t0) * 1000.0
                 supervisor.logger.info(f"HTTP POST /api/reload -> 200 ({dur_ms:.1f}ms, New PID: {new_pid})")
-
             elif parsed.path == "/api/shutdown":
                 worker_pid = supervisor._worker_proc.pid if supervisor._worker_proc else 0
                 uptime = time.time() - supervisor._start_time
-                services_count = len(supervisor._worker_services)
-                expected_archive = supervisor.logger.get_expected_archive_path()
                 summary = {
                     "pid": os.getpid(),
                     "worker_pid": worker_pid,
                     "uptime_seconds": uptime,
                     "tasks_executed": supervisor._tasks_executed,
-                    "services_stopped": services_count,
+                    "services_stopped": len(supervisor._worker_services),
                     "reason": "Graceful CLI shutdown request",
-                    "archive_log": expected_archive,
+                    "archive_log": supervisor.logger.get_expected_archive_path(),
                 }
-                resp = json.dumps({"status": "shutting_down", "summary": summary}).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(resp)))
-                self.end_headers()
-                self.wfile.write(resp)
+                self._send_json_response(200, {"status": "shutting_down", "summary": summary})
                 dur_ms = (time.time() - t0) * 1000.0
                 supervisor.logger.info(f"HTTP POST /api/shutdown -> 200 ({dur_ms:.1f}ms, Uptime: {uptime:.1f}s)")
                 threading.Thread(target=supervisor.stop, daemon=True).start()
-
             else:
                 self.send_response(404)
                 self.end_headers()

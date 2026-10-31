@@ -2,8 +2,9 @@
 Module standard specification contract testing and dynamic testsuite synthesis.
 """
 import unittest
-from core import uri
+from core import vfs
 from dev.testing.case import YSCBTestCase
+
 
 class BaseModuleContractTestCase(YSCBTestCase):
     """
@@ -12,11 +13,14 @@ class BaseModuleContractTestCase(YSCBTestCase):
     """
     module_name: str = ""
 
+    def _get_manifest_uri(self) -> str:
+        return f"module.source://{self.module_name}/manifest.json"
+
     def test_contract_manifest_schema(self) -> None:
         """Contract 1: Validate manifest.json required fields & SemVer format."""
-        src_uri = f"module.source://{self.module_name}/manifest.json"
-        self.assertTrue(uri.exists(src_uri), f"Missing manifest.json for module '{self.module_name}'")
-        data = uri.read_json(src_uri)
+        src_uri = self._get_manifest_uri()
+        self.assertTrue(vfs.exists(src_uri), f"Missing manifest.json for module '{self.module_name}'")
+        data = vfs.read_json(src_uri)
         for field in ("name", "version", "entry"):
             self.assertIn(field, data, f"Missing required field '{field}' in manifest.json")
         self.assertEqual(data["name"], self.module_name, f"Module name mismatch: expected '{self.module_name}', got '{data['name']}'")
@@ -26,8 +30,8 @@ class BaseModuleContractTestCase(YSCBTestCase):
         """Contract 2: Validate scripts/cli.py entrypoint exists, parses and conforms to CmdBags handler contract."""
         from dev.checker import Checker
         checker = Checker()
-        passed, errors = checker.check_module(self.module_name)
-        self.assertTrue(passed, f"Contract entrypoint check failed: {'; '.join(errors)}")
+        report = checker.check_module(self.module_name)
+        self.assertTrue(report.passed, f"Contract entrypoint check failed: {'; '.join(report.errors)}")
         self.mark_passed()
 
     def test_contract_clean_build(self) -> None:
@@ -48,7 +52,7 @@ def make_contract_suite(module_name: str) -> unittest.TestSuite:
     dynamic_case_cls = type(
         class_name,
         (BaseModuleContractTestCase,),
-        {"module_name": module_name}
+        {"module_name": module_name},
     )
     loader = unittest.TestLoader()
     return loader.loadTestsFromTestCase(dynamic_case_cls)

@@ -7,12 +7,13 @@ hot patches across AST, BM25, Call Graph, and FastEmbed Vector indices,
 and atomically updates binary snapshots on disk via core.vfs and core.platform.
 """
 
+import json
 import logging
 import os
 from pathlib import Path
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, Optional, Set, Union
 
 try:
     from server.service import BaseServiceWorker
@@ -64,9 +65,9 @@ def resolve_watch_extensions(space_manager: Optional[Any] = None) -> Set[str]:
 
     if space_manager is not None:
         try:
-            spaces = space_manager.get_union_spaces()
+            spaces = space_manager.list_spaces()
             for sp in spaces:
-                for pat in getattr(sp, "file_patterns", []):
+                for pat in getattr(sp, "file_patterns", []) or []:
                     if pat.startswith("*."):
                         exts.add(pat[1:].lower())
         except Exception:
@@ -129,7 +130,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             return True
 
         try:
-            spaces = sm.get_union_spaces()
+            spaces = sm.list_spaces()
             if not spaces:
                 return True
 
@@ -191,7 +192,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     indices_dir = pipeline.get_indices_dir()
                     meta_file = indices_dir / "unified.meta.bin"
 
-                    _, scanned_count, reason, full_files_map, diff_detail = pipeline.scanner.check_invalidation(
+                    _, _, _, full_files_map, diff_detail = pipeline.scanner.check_invalidation(
                         snapshot_path=meta_file
                     )
 
@@ -202,7 +203,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                         except Exception as pe:
                             logger.warning(f"Hot patch exception: {pe}, fallback to full rebuild.")
 
-                        patched = bool(res[0]) if isinstance(res, (tuple, list)) and len(res) > 0 else bool(res)
+                        patched = bool(getattr(res, "success", res))
                         if not patched:
                             try:
                                 pipeline.build_unified_index(
@@ -242,7 +243,6 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         try:
             indices_dir = self._get_pipeline().get_indices_dir()
             active_file = indices_dir / ".watcher_active"
-            import json
             with open(active_file, "w", encoding="utf-8") as f:
                 json.dump({"pid": os.getpid(), "time": time.time()}, f)
         except Exception:
@@ -273,7 +273,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             sm = self._get_space_manager()
             watch_dirs = set()
             try:
-                for sp in sm.get_union_spaces():
+                for sp in sm.list_spaces():
                     for inc in sm.resolve_space_include(sp.name):
                         p = Path(inc).resolve()
                         if p.is_dir():

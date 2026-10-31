@@ -73,13 +73,13 @@ class TestEngine(YSCBTestCase):
             # 5. search 驗證 (FT-05)
             results = engine.search("PIDController", space="demo_space")
             self.assertGreaterEqual(len(results), 1)
-            self.assertEqual(results[0].symbol.name, "PIDController")
+            self.assertEqual(results[0].items[0].symbol.name, "PIDController")
 
             # 6. clean 驗證 (FT-06)
             engine.clean(space="demo_space")
             self.assertFalse(idx_file.exists())
             st_after = engine.status()
-            self.assertEqual(st_after["spaces"]["demo_space"]["fingerprint_cached_files"], 0)
+            self.assertEqual(st_after["spaces"]["demo_space"]["cached_files"], 0)
 
         self.mark_passed()
 
@@ -100,7 +100,7 @@ class TestEngine(YSCBTestCase):
 
             results = engine.search("MotorGroup", space="motor_space")
             self.assertEqual(len(results), 1)
-            self.assertEqual(results[0].symbol.name, "MotorGroup")
+            self.assertEqual(results[0].items[0].symbol.name, "MotorGroup")
 
         self.mark_passed()
 
@@ -142,7 +142,7 @@ class TestEngine(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_compute_dynamic_snippet_lines_curve(self):
         """驗證 compute_dynamic_snippet_lines 在 4 段階梯區間之動態行數計算 (8000 預算體系)"""
-        from knowledge_db.engine import compute_dynamic_snippet_lines
+        from knowledge_db.formatter import compute_dynamic_snippet_lines
 
         self.assertEqual(compute_dynamic_snippet_lines(0), 30)
         self.assertEqual(compute_dynamic_snippet_lines(2500), 30)
@@ -345,24 +345,14 @@ class TestEngine(YSCBTestCase):
             self.assertGreaterEqual(len(results), 1)
 
             # 驗證 callers/callees/impact 委派正常
-            callers_res = engine.act_callers("PipelineService")
+            callers_res = engine.callers("PipelineService")
             self.assertIn("callers", callers_res)
 
-            callees_res = engine.act_callees("PipelineService")
+            callees_res = engine.callees("PipelineService")
             self.assertIn("callees", callees_res)
 
-            impact_res = engine.act_impact("PipelineService")
+            impact_res = engine.impact("PipelineService")
             self.assertIn("layers", impact_res)
-
-            # 驗證 SDK 公開別名 callers / callees / impact 介面
-            sdk_callers = engine.callers("PipelineService")
-            self.assertEqual(sdk_callers, callers_res)
-
-            sdk_callees = engine.callees("PipelineService")
-            self.assertEqual(sdk_callees, callees_res)
-
-            sdk_impact = engine.impact("PipelineService")
-            self.assertEqual(sdk_impact, impact_res)
 
         self.mark_passed()
 

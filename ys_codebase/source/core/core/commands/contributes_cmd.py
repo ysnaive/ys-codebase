@@ -2,16 +2,26 @@
 Contributes Command Handlers for YSCB Core.
 Provides 'contributes list' and 'contributes check'.
 """
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 import os
-import sys
 
-from core.commands.bags import CmdBags
-from core.guard import guard_dispatch
-from core import uri
+from core import uri, vfs
 from core.validator import ContributesValidator, ValidationResult
 from core import contributes
 from core import locale as core_locale
+
+
+def _append_locale_validation_errors(
+    res: ValidationResult,
+    module_name: str,
+    data: Any,
+    base_dir: Optional[str],
+) -> None:
+    """Append locale contract validation issues when target is core and payload declares locales."""
+    if isinstance(data, dict) and "locales" in data and isinstance(data["locales"], dict):
+        loc_res = core_locale.validate_module_locales(module_name, data["locales"], base_dir=base_dir)
+        res.issues.extend(loc_res.issues)
+        res.is_valid = len([i for i in res.issues if i.severity == "ERROR"]) == 0
 
 
 def list_contributes(module_filter: Optional[str] = None) -> int:
@@ -39,92 +49,80 @@ def list_contributes(module_filter: Optional[str] = None) -> int:
     return 0
 
 
-def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool = False) -> int:
-    """
-    Rigidly validate module contributes definitions against format schemas.
-    target_or_uri can be:
-    - None (validates all installed modules)
-    - Module name (e.g. 'core' or 'dev')
-    - Semantic URI to file (e.g. 'module.source://dev/contributes/core.json')
-    - Physical file path
-    """
-    # 1. Meta-Check on _format.json if requested
-    if is_format_check:
-        mod_name = target_or_uri or "core"
-        fmt_uri = f"module.source://{mod_name}/contributes/_format.json"
-        if not uri.exists(fmt_uri):
-            fmt_uri = f"module://{mod_name}/contributes/_format.json"
-        if not uri.exists(fmt_uri):
-            print(f"[core:contributes] [FAIL] Error: Format schema not found for module '{mod_name}' at '{fmt_uri}'.")
+def _check_format_schema_mode(target_or_uri: Optional[str]) -> int:
+    """Meta-check on _format.json schema for a given module."""
+    mod_name = target_or_uri or "core"
+    fmt_uri = f"module.source://{mod_name}/contributes/_format.json"
+    if not vfs.exists(fmt_uri):
+        fmt_uri = f"module://{mod_name}/contributes/_format.json"
+    if not vfs.exists(fmt_uri):
+        print(f"[core:contributes] [FAIL] Error: Format schema not found for module '{mod_name}' at '{fmt_uri}'.")
+        return 1
+    try:
+        data = vfs.read_json(fmt_uri)
+    except Exception as e:
+        print(f"[core:contributes] [FAIL] Error reading '{fmt_uri}': {e}")
+        return 1
+    res = ContributesValidator.validate_format_schema(data)
+    print(res.format_report(file_label=fmt_uri))
+    return 0 if res.is_valid else 1
+
+
+def _check_single_file_mode(file_uri: str) -> int:
+    """Validate a single contributes JSON file or _format.json schema."""
+    try:
+        p = uri.resolve(file_uri, interactive=False) if "://" in file_uri else os.path.abspath(file_uri)
+        if not os.path.isfile(p):
+            print(f"[core:contributes] [FAIL] File not found: {file_uri}")
             return 1
-        try:
-            data = uri.read_json(fmt_uri)
-        except Exception as e:
-            print(f"[core:contributes] [FAIL] Error reading '{fmt_uri}': {e}")
-            return 1
+    except Exception as e:
+        print(f"[core:contributes] [FAIL] Invalid path/URI '{file_uri}': {e}")
+        return 1
+
+    fname = os.path.basename(p)
+    if fname.startswith("_"):
+        print(f"[core:contributes] Checking special metadata file '{fname}' as format schema...")
+        data = vfs.read_json(p) if "://" not in file_uri else vfs.read_json(file_uri)
         res = ContributesValidator.validate_format_schema(data)
-        print(res.format_report(file_label=fmt_uri))
-        return 0 if res.is_valid else 1
-
-    # 2. File-level check
-    if target_or_uri and ("://" in target_or_uri or target_or_uri.endswith(".json")):
-        file_uri = target_or_uri
-        try:
-            p = uri.resolve(file_uri, interactive=False) if "://" in file_uri else os.path.abspath(file_uri)
-            if not os.path.isfile(p):
-                print(f"[core:contributes] [FAIL] File not found: {file_uri}")
-                return 1
-        except Exception as e:
-            print(f"[core:contributes] [FAIL] Invalid path/URI '{file_uri}': {e}")
-            return 1
-
-        fname = os.path.basename(p)
-        if fname.startswith("_"):
-            print(f"[core:contributes] Checking special metadata file '{fname}' as format schema...")
-            data = uri.read_json(p) if "://" not in file_uri else uri.read_json(file_uri)
-            res = ContributesValidator.validate_format_schema(data)
-            print(res.format_report(file_label=file_uri))
-            return 0 if res.is_valid else 1
-
-        if fname == "contribute.json":
-            # For config://<target>/contribute.json or .../<target>/contribute.json, target is parent folder
-            parent_dir = os.path.dirname(p.rstrip("/\\"))
-            target_mod = os.path.basename(parent_dir)
-            donor_mod = "project"
-        else:
-            target_mod = fname[:-5]
-            donor_mod = None
-
-        target_format = contributes.get_format(target_mod)
-        if target_format is None:
-            print(f"[core:contributes] [WARN] Target module '{target_mod}' does not define a _format.json schema. Skipping validation.")
-            return 0
-
-        data = uri.read_json(file_uri) if "://" in file_uri else uri.read_json(p)
-        # Handle shell unwrap if payload wrapped in {target_mod: ...}
-        if isinstance(data, dict) and target_mod in data and isinstance(data[target_mod], dict):
-            data = data[target_mod]
-
-        res = ContributesValidator.validate(target_mod, data, donor_mod=donor_mod, format_schema=target_format, strict_points=True)
-        if target_mod == "core" and isinstance(data, dict) and "locales" in data and isinstance(data["locales"], dict):
-            # Infer module base directory from file path (parent of contributes/ or config/<target>/)
-            inferred_base = parent_dir if fname == "contribute.json" else os.path.dirname(os.path.dirname(p))
-            loc_res = core_locale.validate_module_locales(donor_mod or target_mod, data["locales"], base_dir=inferred_base)
-            res.issues.extend(loc_res.issues)
-            res.is_valid = len([i for i in res.issues if i.severity == "ERROR"]) == 0
         print(res.format_report(file_label=file_uri))
         return 0 if res.is_valid else 1
 
-    # 3. Module-level or All-modules check
+    parent_dir = os.path.dirname(p.rstrip("/\\"))
+    if fname == "contribute.json":
+        target_mod = os.path.basename(parent_dir)
+        donor_mod = "project"
+    else:
+        target_mod = fname[:-5]
+        donor_mod = None
+
+    target_format = contributes.get_format(target_mod)
+    if target_format is None:
+        print(f"[core:contributes] [WARN] Target module '{target_mod}' does not define a _format.json schema. Skipping validation.")
+        return 0
+
+    data = vfs.read_json(file_uri) if "://" in file_uri else vfs.read_json(p)
+    if isinstance(data, dict) and target_mod in data and isinstance(data[target_mod], dict):
+        data = data[target_mod]
+
+    res = ContributesValidator.validate(target_mod, data, donor_mod=donor_mod, format_schema=target_format, strict_points=True)
+    if target_mod == "core":
+        inferred_base = parent_dir if fname == "contribute.json" else os.path.dirname(os.path.dirname(p))
+        _append_locale_validation_errors(res, donor_mod or target_mod, data, inferred_base)
+    print(res.format_report(file_label=file_uri))
+    return 0 if res.is_valid else 1
+
+
+def _check_modules_mode(target_or_uri: Optional[str]) -> int:
+    """Validate contributes across one or all installed modules."""
     if target_or_uri:
         mod_uri = f"module://{target_or_uri}"
         cfg_uri = f"config://{target_or_uri}/contribute.json"
-        if not uri.exists(mod_uri) and not uri.exists(cfg_uri):
+        if not vfs.exists(mod_uri) and not vfs.exists(cfg_uri):
             print(f"[core:contributes] [FAIL] Module or target not found: {target_or_uri}")
             return 1
         modules_to_check = [target_or_uri]
     else:
-        modules_to_check = uri.listdir("module://") if uri.exists("module://") else []
+        modules_to_check = vfs.listdir("module://") if vfs.exists("module://") else []
     if not modules_to_check:
         print("[core:contributes] No installed modules found to check.")
         return 0
@@ -134,9 +132,9 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
 
     for donor in modules_to_check:
         contrib_dir = f"module://{donor}/contributes"
-        if uri.exists(contrib_dir) and uri.isdir(contrib_dir):
+        if vfs.exists(contrib_dir) and vfs.is_dir(contrib_dir):
             try:
-                files = uri.listdir(contrib_dir)
+                files = vfs.listdir(contrib_dir)
             except Exception:
                 files = []
 
@@ -150,21 +148,19 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
 
                 f_uri = f"{contrib_dir}/{f}"
                 try:
-                    data = uri.read_json(f_uri)
+                    data = vfs.read_json(f_uri)
                 except Exception as e:
                     print(f"[FAIL] [{f_uri}] JSON syntax error: {e}")
                     all_passed = False
                     continue
 
                 res = ContributesValidator.validate(target_mod, data, donor_mod=donor, format_schema=target_format, strict_points=True)
-                if target_mod == "core" and isinstance(data, dict) and "locales" in data and isinstance(data["locales"], dict):
+                if target_mod == "core":
                     try:
                         donor_base = uri.resolve(f"module://{donor}", interactive=False)
                     except Exception:
                         donor_base = None
-                    loc_res = core_locale.validate_module_locales(donor, data["locales"], base_dir=donor_base)
-                    res.issues.extend(loc_res.issues)
-                    res.is_valid = len([i for i in res.issues if i.severity == "ERROR"]) == 0
+                    _append_locale_validation_errors(res, donor, data, donor_base)
                 checked_files_count += 1
                 if not res.is_valid:
                     print(res.format_report(file_label=f_uri))
@@ -172,22 +168,20 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
 
         # Also check project-level config://<target>/contribute.json
         cfg_uri = f"config://{donor}/contribute.json"
-        if uri.exists(cfg_uri):
+        if vfs.exists(cfg_uri):
             target_format = contributes.get_format(donor)
             if target_format is not None:
                 try:
-                    cfg_data = uri.read_json(cfg_uri)
+                    cfg_data = vfs.read_json(cfg_uri)
                     if isinstance(cfg_data, dict) and donor in cfg_data and isinstance(cfg_data[donor], dict):
                         cfg_data = cfg_data[donor]
                     res = ContributesValidator.validate(donor, cfg_data, donor_mod="project", format_schema=target_format, strict_points=True)
-                    if donor == "core" and isinstance(cfg_data, dict) and "locales" in cfg_data and isinstance(cfg_data["locales"], dict):
+                    if donor == "core":
                         try:
                             cfg_base = uri.resolve(f"config://{donor}", interactive=False)
                         except Exception:
                             cfg_base = None
-                        loc_res = core_locale.validate_module_locales("project", cfg_data["locales"], base_dir=cfg_base)
-                        res.issues.extend(loc_res.issues)
-                        res.is_valid = len([i for i in res.issues if i.severity == "ERROR"]) == 0
+                        _append_locale_validation_errors(res, "project", cfg_data, cfg_base)
                     checked_files_count += 1
                     if not res.is_valid:
                         print(res.format_report(file_label=cfg_uri))
@@ -196,40 +190,24 @@ def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool
                     print(f"[FAIL] [{cfg_uri}] JSON syntax error: {e}")
                     all_passed = False
 
-
     if all_passed:
         print(f"\n[PASS] All contributes definitions are valid! (Checked {checked_files_count} file(s))\n")
         return 0
-    else:
-        print(f"\n[FAIL] Contributes validation failed. Please address the errors above.\n")
-        return 1
+    print("\n[FAIL] Contributes validation failed. Please address the errors above.\n")
+    return 1
 
 
-def cmd(cmd_bags: Any) -> int:
-    """CLI handler for 'contributes' command tree."""
-    guard_dispatch("core")
-    if not isinstance(cmd_bags, CmdBags):
-        raw_cmd = " ".join([str(x) for x in cmd_bags]) if isinstance(cmd_bags, (list, tuple)) else ""
-        cmd_bags = CmdBags(raw_cmd=raw_cmd, command="contributes")
-
-    sub_cmd = cmd_bags.command.split()
-    # e.g. "contributes list" or "contributes check"
-    action = sub_cmd[1] if len(sub_cmd) > 1 else (cmd_bags.args[0] if cmd_bags.args else "list")
-
-    if action == "list":
-        mod_filter = cmd_bags.get_option_value("module") or cmd_bags.get_option_value("m")
-        if not mod_filter and cmd_bags.args and cmd_bags.args[0] != "list":
-            mod_filter = cmd_bags.args[0]
-        return list_contributes(mod_filter)
-
-    elif action == "check":
-        target = None
-        args = [a for a in cmd_bags.args if a != "check"]
-        if args:
-            target = args[0]
-        is_format = cmd_bags.has_option("format")
-        return check_contributes(target, is_format_check=is_format)
-
-    else:
-        print(f"[core:contributes] Unknown action '{action}'. Available: 'list', 'check'.")
-        return 1
+def check_contributes(target_or_uri: Optional[str] = None, is_format_check: bool = False) -> int:
+    """
+    Rigidly validate module contributes definitions against format schemas.
+    target_or_uri can be:
+    - None (validates all installed modules)
+    - Module name (e.g. 'core' or 'dev')
+    - Semantic URI to file (e.g. 'module.source://dev/contributes/core.json')
+    - Physical file path
+    """
+    if is_format_check:
+        return _check_format_schema_mode(target_or_uri)
+    if target_or_uri and ("://" in target_or_uri or target_or_uri.endswith(".json")):
+        return _check_single_file_mode(target_or_uri)
+    return _check_modules_mode(target_or_uri)

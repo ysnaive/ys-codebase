@@ -168,19 +168,19 @@ class TestVFS(YSCBTestCase):
         self.mark_passed()
 
     def test_uri_compatibility_delegation(self):
-        """FT-05: 驗證 core.uri 既有 IO helpers 向上相容無損轉發至 core.vfs。"""
+        """FT-05: 驗證 core.vfs 頂層快捷 IO helpers 無損轉發。"""
         compat_file = os.path.join(self.test_dir, "compat.txt")
-        uri.write_text(compat_file, "Compatible Content")
-        self.assertTrue(uri.exists(compat_file))
-        self.assertTrue(uri.isfile(compat_file))
-        self.assertEqual(uri.read_text(compat_file), "Compatible Content")
+        vfs.write_text(compat_file, "Compatible Content")
+        self.assertTrue(vfs.exists(compat_file))
+        self.assertTrue(vfs.is_file(compat_file))
+        self.assertEqual(vfs.read_text(compat_file), "Compatible Content")
 
         json_compat = os.path.join(self.test_dir, "compat.json")
-        uri.write_json(json_compat, {"compat": True})
-        self.assertEqual(uri.read_json(json_compat), {"compat": True})
+        vfs.write_json(json_compat, {"compat": True})
+        self.assertEqual(vfs.read_json(json_compat), {"compat": True})
 
-        uri.remove(compat_file)
-        self.assertFalse(uri.exists(compat_file))
+        vfs.remove(compat_file)
+        self.assertFalse(vfs.exists(compat_file))
         self.mark_passed()
 
     def test_cross_backend_protection(self):

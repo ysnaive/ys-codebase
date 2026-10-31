@@ -8,11 +8,13 @@ import time
 import unittest
 import subprocess
 import concurrent.futures
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 from dev.testing.runner import TestDiscovery, TestRunner, ASCIIReportFormatter, get_test_category
-from dev.testing.sandbox import SandboxProvisioner, SandboxContext
+from dev.testing.sandbox import SandboxProvisioner
 
-def safe_print(text: Any = "", file=None, end: str = "\n", flush: bool = False) -> None:
+
+def safe_print(text: Any = "", file: Any = None, end: str = "\n", flush: bool = False) -> None:
     """
     Safely output text to standard streams on Windows systems where encoding
     (e.g., cp950) might throw UnicodeEncodeError on certain special characters.
@@ -39,18 +41,165 @@ def safe_print(text: Any = "", file=None, end: str = "\n", flush: bool = False) 
         pass
 
 
-class Tester:
-    def __init__(self):
-        pass
+@dataclass(frozen=True)
+class _TestRunConfig:
+    clean_argv: List[str]
+    target_mod: Optional[str]
+    target_param: Optional[str]
+    is_all: bool
+    no_build: bool
+    keep_sandbox: bool
+    is_sequential: bool
+    quiet_mode: bool
+    verbose: bool
+    jobs: Optional[int]
+    sync_requested: bool
+    is_nested: bool
 
+
+def _parse_test_run_config(argv: List[str]) -> _TestRunConfig:
+    is_nested = os.environ.get("YSCB_NESTED_TEST") == "1"
+    keep_sandbox = "--keep-sandbox" in argv
+    no_build = "--no-build" in argv
+    is_sequential = "--sequential" in argv or "--no-parallel" in argv
+    quiet_mode = "-q" in argv or "--q" in argv or "--quiet" in argv or os.environ.get("YSCB_TEST_QUIET") == "1"
+    verbose = "-v" in argv or "--v" in argv or "--verbose" in argv
+
+    jobs: Optional[int] = None
+    sync_requested = "--sync" in argv
+    pattern_val: Optional[str] = None
+    clean_argv: List[str] = []
+    idx = 0
+    while idx < len(argv):
+        a = argv[idx]
+        if a in ("--no-build", "--sequential", "--no-parallel", "--sync"):
+            idx += 1
+            continue
+        if a.startswith("--jobs=") or a.startswith("--j="):
+            try:
+                jobs = int(a.split("=", 1)[1])
+            except ValueError:
+                pass
+            idx += 1
+            continue
+        if a in ("-j", "--j", "--jobs"):
+            if idx + 1 < len(argv):
+                try:
+                    jobs = int(argv[idx + 1])
+                    idx += 2
+                    continue
+                except ValueError:
+                    pass
+            idx += 1
+            continue
+        if a.startswith("-j") and len(a) > 2 and a[2:].isdigit():
+            jobs = int(a[2:])
+            idx += 1
+            continue
+        if a in ("-k", "--k", "--pattern"):
+            if idx + 1 < len(argv):
+                pattern_val = argv[idx + 1]
+                idx += 2
+                continue
+            idx += 1
+            continue
+        if a.startswith(("-k=", "--k=", "--pattern=")):
+            pattern_val = a.split("=", 1)[1]
+            idx += 1
+            continue
+        if a in ("-q", "--q", "--quiet", "-v", "--v", "--verbose"):
+            idx += 1
+            continue
+        if a in ("-a", "--a"):
+            clean_argv.append("--all")
+            idx += 1
+            continue
+        clean_argv.append(a)
+        idx += 1
+
+    if pattern_val is not None:
+        clean_argv.append(f"--pattern={pattern_val}")
+    if quiet_mode:
+        clean_argv.append("--quiet")
+    if verbose:
+        clean_argv.append("--verbose")
+
+    target_mod = next((a for a in clean_argv if not a.startswith("-") and a != "test"), None)
+    target_param = next((a for a in clean_argv if a.startswith("--target=")), None)
+    if not target_mod and target_param:
+        target_val = target_param.split("=", 1)[1]
+        if ":" in target_val:
+            target_mod = target_val.split(":", 1)[0]
+    is_all = "--all" in clean_argv or target_mod == "--all"
+
+    return _TestRunConfig(
+        clean_argv=clean_argv,
+        target_mod=target_mod,
+        target_param=target_param,
+        is_all=is_all,
+        no_build=no_build,
+        keep_sandbox=keep_sandbox,
+        is_sequential=is_sequential,
+        quiet_mode=quiet_mode,
+        verbose=verbose,
+        jobs=jobs,
+        sync_requested=sync_requested,
+        is_nested=is_nested,
+    )
+
+
+def _extract_test_cases_from_suite(node: Any) -> List[unittest.TestCase]:
+    collected: List[unittest.TestCase] = []
+    if isinstance(node, unittest.TestSuite):
+        for sub in node:
+            collected.extend(_extract_test_cases_from_suite(sub))
+    elif isinstance(node, unittest.TestCase):
+        collected.append(node)
+    return collected
+
+
+def _record_test_failure_entry(
+    mod_name: str,
+    test_case: unittest.TestCase,
+    tb: str,
+    fail_type: str,
+    default_msg: str,
+    captured_output: str,
+) -> Tuple[str, Dict[str, Any]]:
+    last_line = tb.strip().splitlines()[-1] if tb.strip() else default_msg
+    loc = ""
+    for line in reversed(tb.strip().splitlines()):
+        if "File " in line and ", line " in line:
+            loc = line.strip()
+            break
+    cls_name = test_case.__class__.__name__
+    m_name = getattr(test_case, "_testMethodName", "")
+    rerun_target = (
+        f"python yscb.py dev test --target={mod_name}:{cls_name}.{m_name}"
+        if m_name
+        else f"python yscb.py dev test --target={mod_name}:{cls_name}"
+    )
+    entry = {
+        "module": mod_name,
+        "test": f"{cls_name}.{m_name}" if m_name else str(test_case),
+        "type": fail_type,
+        "message": last_line,
+        "location": loc,
+        "rerun": rerun_target,
+        "captured_output": captured_output,
+    }
+    return f"{test_case}: {last_line}", entry
+
+
+class Tester:
     def run(self, argv: List[str]) -> int:
         if not argv:
             self._print_usage()
             return 1
-            
+
         subcmd = argv[0]
         sub_argv = argv[1:]
-        
+
         if subcmd == "op-mksb":
             return self._run_op_mksb(sub_argv)
         elif subcmd == "op-test":
@@ -58,7 +207,6 @@ class Tester:
         elif subcmd == "test":
             return self._run_test(sub_argv)
         else:
-            # Invoked as Tester.run(["core", ...]) or with arguments directly
             return self._run_test(argv)
 
     def _print_usage(self) -> None:
@@ -101,13 +249,12 @@ class Tester:
 
     def _run_op_test(self, argv: List[str]) -> int:
         """In-place atomic test execution engine."""
-        # Gate 0: Block direct host execution to prevent sandbox leakage
         is_sandbox_env = (
             os.environ.get("YSCB_TEST_SANDBOX") == "1"
             and (
                 os.path.basename(os.getcwd()) == "host_env"
                 or os.path.isdir(os.path.join(os.getcwd(), "engine"))
-                or (os.environ.get("YSCB_SANDBOX_DIR") and os.path.isdir(os.environ.get("YSCB_SANDBOX_DIR")))
+                or bool(os.environ.get("YSCB_SANDBOX_DIR") and os.path.isdir(os.environ.get("YSCB_SANDBOX_DIR", "")))
             )
         )
         if not is_sandbox_env:
@@ -168,16 +315,15 @@ class Tester:
                 target_mod = a
             idx += 1
 
-        VALID_TYPES = {"logic", "logical", "env", "network", "host_cli", "workflow", "perf", "performance", "stress", "all", "all_types", "all-types"}
-        if test_type and test_type.lower().replace("-", "_") not in {t.replace("-", "_") for t in VALID_TYPES}:
+        valid_types = {"logic", "logical", "env", "network", "workflow", "perf", "all", "all_types"}
+        if test_type and test_type.lower().replace("-", "_") not in valid_types:
             print(f"[dev:test] Error: Invalid test type '{test_type}'. Valid types: logic, env, network, workflow, perf, all")
             return 1
 
-        if target:
-            if ":" in target:
-                target_mod_match = target.split(":", 1)[0]
-                if target_mod_match:
-                    target_mod = target_mod_match
+        if target and ":" in target:
+            target_mod_match = target.split(":", 1)[0]
+            if target_mod_match:
+                target_mod = target_mod_match
 
         if not target_mod and not run_all:
             target_mod = "core"
@@ -190,13 +336,9 @@ class Tester:
                 print("[dev:test] No modules found in source/.")
             return 1
 
-        # Determine filter mode string for report metadata
         if test_type:
             tt = test_type.lower().replace("-", "_")
-            if tt in ("all", "all_types"):
-                filter_mode = "ALL Types"
-            else:
-                filter_mode = f"[{test_type.upper()}]"
+            filter_mode = "ALL Types" if tt in ("all", "all_types") else f"[{test_type.upper()}]"
         else:
             filter_mode = "Default (LOGIC + ENV)"
 
@@ -214,7 +356,7 @@ class Tester:
             "unknown": 0,
             "skipped": 0,
             "duration": 0.0,
-            "failures_list": []
+            "failures_list": [],
         }
 
         sandbox_id = os.environ.get("YSCB_SANDBOX_ID", "sandbox 1")
@@ -230,20 +372,10 @@ class Tester:
                 test_type=test_type,
                 pattern=pattern,
                 target=target,
-                contract_only=contract_only
+                contract_only=contract_only,
             )
-            
-            def _extract_tests(node: Any) -> List[unittest.TestCase]:
-                collected = []
-                if isinstance(node, unittest.TestSuite):
-                    for sub in node:
-                        collected.extend(_extract_tests(sub))
-                elif isinstance(node, unittest.TestCase):
-                    collected.append(node)
-                return collected
 
-            all_test_instances = _extract_tests(suite)
-
+            all_test_instances = _extract_test_cases_from_suite(suite)
             result, captured_output = runner.run_suite(suite)
             mod_duration = time.perf_counter() - mod_start
             if not verbose and not quiet_report and not quiet_mode:
@@ -252,11 +384,7 @@ class Tester:
             mod_failed = len(result.failures) + len(result.errors)
             mod_skipped = len(result.skipped)
             mod_passed = mod_total - mod_failed - mod_skipped
-            
-            if mod_failed > 0:
-                all_passed = False
 
-            # Accurate classification based on TestCase class name
             contract_failed = sum(1 for c, _ in result.failures + result.errors if "Contract" in c.__class__.__name__)
             custom_failed = mod_failed - contract_failed
 
@@ -265,17 +393,16 @@ class Tester:
 
             contract_passed = max(0, contract_total - contract_failed - contract_skipped)
 
-            # Taxonomy breakdown for custom passed tests and unknown tally
             logic_passed = 0
             env_passed = 0
             workflow_passed = 0
             perf_passed = 0
             mod_unknown = 0
             unknown_methods = []
-            
-            failed_test_objs = set(c for c, _ in result.failures + result.errors)
-            skipped_test_objs = set(c for c, _ in result.skipped)
-            
+
+            failed_test_objs = {c for c, _ in result.failures + result.errors}
+            skipped_test_objs = {c for c, _ in result.skipped}
+
             for test_case in all_test_instances:
                 if test_case in failed_test_objs or test_case in skipped_test_objs:
                     continue
@@ -306,61 +433,28 @@ class Tester:
 
             err_msgs = []
             for test_case, tb in result.failures:
-                last_line = tb.strip().splitlines()[-1] if tb.strip() else "AssertionError"
-                loc = ""
-                for l in reversed(tb.strip().splitlines()):
-                    if "File " in l and ", line " in l:
-                        loc = l.strip()
-                        break
-                cls_name = test_case.__class__.__name__
-                m_name = getattr(test_case, "_testMethodName", "")
-                rerun_target = f"python yscb.py dev test --target={mod_name}:{cls_name}.{m_name}" if m_name else f"python yscb.py dev test --target={mod_name}:{cls_name}"
-                err_msgs.append(f"{test_case}: {last_line}")
-                report_data["failures_list"].append({
-                    "module": mod_name,
-                    "test": f"{cls_name}.{m_name}" if m_name else str(test_case),
-                    "type": "FAIL",
-                    "message": last_line,
-                    "location": loc,
-                    "rerun": rerun_target,
-                    "captured_output": captured_output
-                })
+                err_str, entry = _record_test_failure_entry(mod_name, test_case, tb, "FAIL", "AssertionError", captured_output)
+                err_msgs.append(err_str)
+                report_data["failures_list"].append(entry)
+
             for test_case, tb in result.errors:
-                last_line = tb.strip().splitlines()[-1] if tb.strip() else "Error"
-                loc = ""
-                for l in reversed(tb.strip().splitlines()):
-                    if "File " in l and ", line " in l:
-                        loc = l.strip()
-                        break
-                cls_name = test_case.__class__.__name__
-                m_name = getattr(test_case, "_testMethodName", "")
-                rerun_target = f"python yscb.py dev test --target={mod_name}:{cls_name}.{m_name}" if m_name else f"python yscb.py dev test --target={mod_name}:{cls_name}"
-                err_msgs.append(f"{test_case}: {last_line}")
+                err_str, entry = _record_test_failure_entry(mod_name, test_case, tb, "ERROR", "Error", captured_output)
+                err_msgs.append(err_str)
+                report_data["failures_list"].append(entry)
+
+            for um in unknown_methods:
+                err_msgs.append(f"{um}: execution status UNKNOWN (missing self.mark_passed())")
                 report_data["failures_list"].append({
                     "module": mod_name,
-                    "test": f"{cls_name}.{m_name}" if m_name else str(test_case),
-                    "type": "ERROR",
-                    "message": last_line,
-                    "location": loc,
-                    "rerun": rerun_target,
-                    "captured_output": captured_output
+                    "test": um,
+                    "type": "UNKNOWN",
+                    "message": "Missing self.mark_passed()",
+                    "location": "",
+                    "rerun": f"python yscb.py dev test --target={mod_name}:{um}",
+                    "captured_output": captured_output,
                 })
 
-            if mod_unknown > 0:
-                for um in unknown_methods:
-                    msg = f"{um}: execution status UNKNOWN (missing self.mark_passed())"
-                    err_msgs.append(msg)
-                    report_data["failures_list"].append({
-                        "module": mod_name,
-                        "test": um,
-                        "type": "UNKNOWN",
-                        "message": "Missing self.mark_passed()",
-                        "location": "",
-                        "rerun": f"python yscb.py dev test --target={mod_name}:{um}",
-                        "captured_output": captured_output
-                    })
-
-            mod_info = {
+            report_data["modules"].append({
                 "name": mod_name,
                 "passed": (mod_failed == 0 and mod_unknown == 0),
                 "duration": mod_duration,
@@ -373,9 +467,8 @@ class Tester:
                 "workflow_passed": workflow_passed,
                 "perf_passed": perf_passed,
                 "unknown": mod_unknown,
-                "errors": err_msgs
-            }
-            report_data["modules"].append(mod_info)
+                "errors": err_msgs,
+            })
             report_data["total"] += mod_total
             report_data["passed"] += mod_explicit_passed
             report_data["failed"] += mod_failed
@@ -399,153 +492,46 @@ class Tester:
                 safe_print(ASCIIReportFormatter.format_summary(report_data))
         return 0 if all_passed else 1
 
-    def _run_test(self, argv: List[str]) -> int:
-        """High-level facade: auto dev build -> op-mksb -> run op-test in sandbox -> cleanup"""
-        is_nested = os.environ.get("YSCB_NESTED_TEST") == "1"
-        keep_sandbox = "--keep-sandbox" in argv
-        no_build = "--no-build" in argv
-        is_sequential = "--sequential" in argv or "--no-parallel" in argv
-        quiet_mode = "-q" in argv or "--q" in argv or "--quiet" in argv or os.environ.get("YSCB_TEST_QUIET") == "1"
-        verbose = "-v" in argv or "--v" in argv or "--verbose" in argv
-        
-        # Parse -j / --jobs and --sync and normalize -k/--pattern, -q, -v
-        jobs = None
-        sync_requested = "--sync" in argv
-        pattern_val = None
-        clean_argv = []
-        idx = 0
-        while idx < len(argv):
-            a = argv[idx]
-            if a in ("--no-build", "--sequential", "--no-parallel", "--sync"):
-                idx += 1
-                continue
-            if a.startswith("--jobs="):
-                try:
-                    jobs = int(a.split("=", 1)[1])
-                except ValueError:
-                    pass
-                idx += 1
-                continue
-            if a in ("-j", "--j", "--jobs"):
-                if idx + 1 < len(argv):
-                    try:
-                        jobs = int(argv[idx + 1])
-                        idx += 2
-                        continue
-                    except ValueError:
-                        pass
-                idx += 1
-                continue
-            if a.startswith("--j="):
-                try:
-                    jobs = int(a.split("=", 1)[1])
-                except ValueError:
-                    pass
-                idx += 1
-                continue
-            if a.startswith("-j") and len(a) > 2 and a[2:].isdigit():
-                jobs = int(a[2:])
-                idx += 1
-                continue
-            if a in ("-k", "--k", "--pattern"):
-                if idx + 1 < len(argv):
-                    pattern_val = argv[idx + 1]
-                    idx += 2
-                    continue
-                idx += 1
-                continue
-            if a.startswith(("-k=", "--k=", "--pattern=")):
-                pattern_val = a.split("=", 1)[1]
-                idx += 1
-                continue
-            if a in ("-q", "--q", "--quiet"):
-                idx += 1
-                continue
-            if a in ("-v", "--v", "--verbose"):
-                idx += 1
-                continue
-            if a in ("-a", "--a"):
-                clean_argv.append("--all")
-                idx += 1
-                continue
-            clean_argv.append(a)
-            idx += 1
-
-        if pattern_val is not None:
-            clean_argv.append(f"--pattern={pattern_val}")
-        if quiet_mode:
-            clean_argv.append("--quiet")
-        if verbose:
-            clean_argv.append("--verbose")
-
-        target_mod = next((a for a in clean_argv if not a.startswith("-") and a != "test"), None)
-        target_param = next((a for a in clean_argv if a.startswith("--target=")), None)
-        if not target_mod and target_param:
-            target_val = target_param.split("=", 1)[1]
-            if ":" in target_val:
-                target_mod = target_val.split(":", 1)[0]
-        is_all = "--all" in clean_argv or target_mod == "--all"
-
-        # Multi-module parallel dispatch if --all (or multiple modules) and not sequential and no single target
-        if is_all and not is_sequential and not target_param:
-            all_modules = TestDiscovery.discover_modules(None)
-            if len(all_modules) > 1:
-                return self._run_parallel_test(
-                    clean_argv,
-                    all_modules,
-                    no_build=no_build,
-                    keep_sandbox=keep_sandbox,
-                    jobs=jobs,
-                    is_nested=is_nested,
-                    sync_requested=sync_requested,
-                    quiet_mode=quiet_mode
-                )
-
-        # 1. Automatic pre-test Hermetic Dev Build (unless --no-build)
-        if not no_build:
-            if not is_nested and not quiet_mode:
-                print("[dev:test] Pre-building modules for test execution...", flush=True)
-            from dev.builder import Builder
-            builder = Builder()
-            if target_mod and target_mod != "--all":
-                ok, msg = builder.build_module(target_mod)
-                if not ok:
-                    print(f"[dev:test] Pre-build failed for module '{target_mod}':\n  {msg}", file=sys.stderr)
-                    return 1
-            else:
-                results = builder.build_all()
-                for m_name, (ok, msg) in results.items():
-                    if not ok:
-                        print(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", file=sys.stderr)
-                        return 1
-        
-        # 2. Provision virtual sandbox (resolves from build:// -> mirror:// -> provider)
-        cand_targets = ["--all"] if is_all else ([target_mod] if target_mod else None)
-        ctx = SandboxProvisioner.create_sandbox(target_modules=cand_targets)
+    def _execute_single_module_in_sandbox(
+        self,
+        op_test_args: List[str],
+        report_filename: str,
+        sandbox_idx: int,
+        target_modules: Optional[List[str]] = None,
+        quiet_mode: bool = False,
+        is_nested: bool = False,
+        mod_label: Optional[str] = None,
+    ) -> Tuple[int, Optional[Dict[str, Any]], str, Optional[subprocess.CompletedProcess]]:
+        """Unified helper to create sandbox, invoke dev op-test subprocess, and parse report JSON."""
+        ctx = SandboxProvisioner.create_sandbox(target_modules=target_modules)
         sandbox_dir = ctx.sandbox_dir
-        sandbox_idx = int(os.environ.get("YSCB_SANDBOX_INDEX", "1"))
         sandbox_display_id = f"sandbox {sandbox_idx}"
         host_dir = ctx.host_dir
+
         if not is_nested and not quiet_mode:
-            print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
-        
-        # 3. Invoke dev op-test inside sandbox via JSON IPC
+            safe_print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
+            if mod_label:
+                safe_print(f"[dev:test] {mod_label} begin test in {sandbox_display_id}", flush=True)
+
         sandbox_yscb = os.path.join(host_dir, "yscb.py")
-        report_json_path = os.path.join(ctx.engine_dir, "report_single.json")
-        op_test_args = [a for a in clean_argv if a != "test"]
-        op_test_args.extend([f"--report-json={report_json_path}", "--quiet-report"])
-        cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + op_test_args
-        
+        report_json_path = os.path.join(ctx.engine_dir, report_filename)
+        cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + op_test_args + [
+            f"--report-json={report_json_path}",
+            "--quiet-report",
+        ]
+
         p_env = dict(os.environ)
         p_env["YSCB_TEST_SANDBOX"] = "1"
         p_env["YSCB_SANDBOX_DIR"] = sandbox_dir
         p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
+        p_env["YSCB_SANDBOX_INDEX"] = str(sandbox_idx)
         if quiet_mode:
             p_env["YSCB_TEST_QUIET"] = "1"
 
         report_data = None
         ret_code = 1
         res = None
+        mod_start = time.perf_counter()
         try:
             res = subprocess.run(
                 cmd,
@@ -555,66 +541,119 @@ class Tester:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                errors="replace"
+                errors="replace",
             )
             ret_code = res.returncode
+            mod_duration = time.perf_counter() - mod_start
+            if mod_label and not is_nested and not quiet_mode:
+                safe_print(f"[dev:test] {mod_label} test finish in ({mod_duration:.2f}s)", flush=True)
             if os.path.isfile(report_json_path):
                 try:
                     with open(report_json_path, "r", encoding="utf-8") as rf:
                         report_data = json.load(rf)
-                except Exception:
+                except (OSError, json.JSONDecodeError):
                     pass
         except Exception as e:
             if not is_nested:
-                safe_print(f"[dev:test] Subprocess execution error: {e}", file=sys.stderr)
+                err_prefix = f"Subprocess error for module '{mod_label}'" if mod_label else "Subprocess execution error"
+                safe_print(f"[dev:test] {err_prefix}: {e}", file=sys.stderr)
             ret_code = 1
 
-        # Output shielding & dual-mode rendering
-        if not is_nested:
-            if verbose:
+        return ret_code, report_data, sandbox_dir, res
+
+    def _run_test(self, argv: List[str]) -> int:
+        """High-level facade: auto dev build -> op-mksb -> run op-test in sandbox -> cleanup"""
+        cfg = _parse_test_run_config(argv)
+
+        if cfg.is_all and not cfg.is_sequential and not cfg.target_param:
+            all_modules = TestDiscovery.discover_modules(None)
+            if len(all_modules) > 1:
+                return self._run_parallel_test(
+                    cfg.clean_argv,
+                    all_modules,
+                    no_build=cfg.no_build,
+                    keep_sandbox=cfg.keep_sandbox,
+                    jobs=cfg.jobs,
+                    is_nested=cfg.is_nested,
+                    sync_requested=cfg.sync_requested,
+                    quiet_mode=cfg.quiet_mode,
+                )
+
+        if not cfg.no_build:
+            if not cfg.is_nested and not cfg.quiet_mode:
+                print("[dev:test] Pre-building modules for test execution...", flush=True)
+            from dev.builder import Builder
+            builder = Builder()
+            if cfg.target_mod and cfg.target_mod != "--all":
+                ok, msg = builder.build_module(cfg.target_mod)
+                if not ok:
+                    print(f"[dev:test] Pre-build failed for module '{cfg.target_mod}':\n  {msg}", file=sys.stderr)
+                    return 1
+            else:
+                results = builder.build_all()
+                for m_name, (ok, msg) in results.items():
+                    if not ok:
+                        print(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", file=sys.stderr)
+                        return 1
+
+        cand_targets = ["--all"] if cfg.is_all else ([cfg.target_mod] if cfg.target_mod else None)
+        sandbox_idx = int(os.environ.get("YSCB_SANDBOX_INDEX", "1"))
+        sandbox_display_id = f"sandbox {sandbox_idx}"
+        op_test_args = [a for a in cfg.clean_argv if a != "test"]
+
+        ret_code, report_data, sandbox_dir, res = self._execute_single_module_in_sandbox(
+            op_test_args=op_test_args,
+            report_filename="report_single.json",
+            sandbox_idx=sandbox_idx,
+            target_modules=cand_targets,
+            quiet_mode=cfg.quiet_mode,
+            is_nested=cfg.is_nested,
+        )
+
+        if not cfg.is_nested:
+            if cfg.verbose:
                 if res and res.stdout:
                     safe_print(res.stdout, end="", flush=True)
                 if res and res.stderr:
                     safe_print(res.stderr, end="", file=sys.stderr, flush=True)
                 if report_data:
                     safe_print(ASCIIReportFormatter.format_summary(report_data))
-            elif quiet_mode:
+            elif cfg.quiet_mode:
                 if report_data:
                     safe_print(ASCIIReportFormatter.format_throttled(report_data))
                 else:
-                    safe_print(f"Pass: 0, Fail: 1, Skip: 0")
+                    safe_print("Pass: 0, Fail: 1, Skip: 0")
                     if res and res.stderr:
                         tail = "\n".join(res.stderr.strip().splitlines()[-20:])
                         safe_print(f"\n[dev:test] Subprocess execution failed with code {ret_code}:\n{tail}", file=sys.stderr)
             else:
                 if report_data:
-                    w_lines = [l for l in ((res.stderr if res else "") or "").splitlines() if l.strip()]
+                    w_lines = [line for line in ((res.stderr if res else "") or "").splitlines() if line.strip()]
                     safe_print(ASCIIReportFormatter.format_summary(report_data, warnings_count=len(w_lines)))
                 else:
                     safe_print(f"[dev:test] Subprocess execution failed with code {ret_code}.", file=sys.stderr)
                     if res and res.stderr:
                         tail = "\n".join(res.stderr.strip().splitlines()[-20:])
                         safe_print(f"[dev:test] Stderr tail:\n{tail}", file=sys.stderr)
-            
-        # 4. Teardown policy
-        if ret_code == 0 and not keep_sandbox:
-            if not is_nested and not quiet_mode:
+
+        if ret_code == 0 and not cfg.keep_sandbox:
+            if not cfg.is_nested and not cfg.quiet_mode:
                 print(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
-            if "--all" in clean_argv:
+            if "--all" in cfg.clean_argv:
                 SandboxProvisioner.cleanup_all_sandboxes()
             else:
                 SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
         else:
             SandboxProvisioner.prune_sandboxes(max_keep=3)
-            if not is_nested:
+            if not cfg.is_nested:
                 if ret_code != 0:
                     print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
-                elif not quiet_mode:
+                elif not cfg.quiet_mode:
                     print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
 
-        if ret_code == 0 and not is_nested:
-            tested_mods = [target_mod] if (target_mod and target_mod != "--all") else []
-            self._handle_post_test_sync(tested_mods, sync_requested, quiet=quiet_mode)
+        if ret_code == 0 and not cfg.is_nested:
+            tested_mods = [cfg.target_mod] if (cfg.target_mod and cfg.target_mod != "--all") else []
+            self._handle_post_test_sync(tested_mods, cfg.sync_requested, quiet=cfg.quiet_mode)
 
         return ret_code
 
@@ -627,7 +666,7 @@ class Tester:
         jobs: Optional[int] = None,
         is_nested: bool = False,
         sync_requested: bool = False,
-        quiet_mode: bool = False
+        quiet_mode: bool = False,
     ) -> int:
         """Runs multiple modules concurrently across independent virtual sandboxes."""
         if not no_build:
@@ -641,8 +680,7 @@ class Tester:
                     print(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", file=sys.stderr)
                     return 1
 
-        from dev.testing.sandbox import SandboxProvisioner
-        SandboxProvisioner.adapt_build_pip_dependencies(target_modules=modules, quiet=True)
+        SandboxProvisioner.adapt_build_pip_dependencies(target_modules=modules)
 
         cpu_limit = os.cpu_count() or 4
         max_workers = jobs if (jobs and jobs > 0) else min(cpu_limit, len(modules))
@@ -666,8 +704,7 @@ class Tester:
             for future in concurrent.futures.as_completed(futures):
                 mod_name = futures[future]
                 try:
-                    res_data = future.result()
-                    worker_results[mod_name] = res_data
+                    worker_results[mod_name] = future.result()
                 except Exception as e:
                     if not is_nested:
                         print(f"[dev:test] Worker error for '{mod_name}': {e}", file=sys.stderr)
@@ -676,10 +713,9 @@ class Tester:
                         "worker_idx": 0,
                         "returncode": 1,
                         "report_data": None,
-                        "sandbox_dir": ""
+                        "sandbox_dir": "",
                     }
 
-        # Aggregate report
         all_passed = True
         aggregated_modules = []
         total_tests = 0
@@ -698,8 +734,7 @@ class Tester:
             rep = w_res.get("report_data") if w_res else None
             if rep and rep.get("modules"):
                 filter_mode = rep.get("filter_mode", filter_mode)
-                m_info = rep["modules"][0]
-                aggregated_modules.append(m_info)
+                aggregated_modules.append(rep["modules"][0])
                 total_tests += rep.get("total", 0)
                 total_passed += rep.get("passed", 0)
                 total_failed += rep.get("failed", 0)
@@ -707,7 +742,6 @@ class Tester:
                 total_skipped += rep.get("skipped", 0)
                 failures_list.extend(rep.get("failures_list", []))
             else:
-                # Fallback if module failed before exporting report
                 all_passed = False
                 aggregated_modules.append({
                     "name": mod_name,
@@ -722,7 +756,7 @@ class Tester:
                     "workflow_passed": 0,
                     "perf_passed": 0,
                     "unknown": 0,
-                    "errors": [f"Execution failed with code {w_res.get('returncode') if w_res else 1}"]
+                    "errors": [f"Execution failed with code {w_res.get('returncode') if w_res else 1}"],
                 })
                 total_failed += 1
 
@@ -738,7 +772,7 @@ class Tester:
             "unknown": total_unknown,
             "skipped": total_skipped,
             "duration": parallel_duration,
-            "failures_list": failures_list
+            "failures_list": failures_list,
         }
 
         total_warnings = sum(w.get("warnings_count", 0) for w in worker_results.values() if w)
@@ -767,67 +801,29 @@ class Tester:
         clean_argv: List[str],
         keep_sandbox: bool = False,
         is_nested: bool = False,
-        quiet_mode: bool = False
+        quiet_mode: bool = False,
     ) -> Dict[str, Any]:
         """Worker executing a single module inside an isolated sandbox."""
-        ctx = SandboxProvisioner.create_sandbox()
-        sandbox_dir = ctx.sandbox_dir
-        sandbox_display_id = f"sandbox {worker_idx}"
-        host_dir = ctx.host_dir
         verbose = "-v" in clean_argv or "--verbose" in clean_argv
-        if not is_nested and not quiet_mode:
-            safe_print(f'[dev:test] Create {sandbox_display_id} at: "{sandbox_dir}"', flush=True)
-            safe_print(f"[dev:test] {mod_name} begin test in {sandbox_display_id}", flush=True)
-
-        sandbox_yscb = os.path.join(host_dir, "yscb.py")
         opts_only = [a for a in clean_argv if a.startswith("-") and a != "--all"]
         op_test_args = opts_only + [mod_name]
-        
-        report_json_path = os.path.join(ctx.engine_dir, f"report_{mod_name}.json")
-        op_test_args.extend([f"--report-json={report_json_path}", "--quiet-report"])
 
-        cmd = [sys.executable, sandbox_yscb, "dev", "op-test"] + op_test_args
-        p_env = dict(os.environ)
-        p_env["YSCB_TEST_SANDBOX"] = "1"
-        p_env["YSCB_SANDBOX_DIR"] = sandbox_dir
-        p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
-        p_env["YSCB_SANDBOX_INDEX"] = str(worker_idx)
-        if quiet_mode:
-            p_env["YSCB_TEST_QUIET"] = "1"
+        ret_code, mod_report_data, sandbox_dir, res = self._execute_single_module_in_sandbox(
+            op_test_args=op_test_args,
+            report_filename=f"report_{mod_name}.json",
+            sandbox_idx=worker_idx,
+            quiet_mode=quiet_mode,
+            is_nested=is_nested,
+            mod_label=mod_name,
+        )
 
-        mod_report_data = None
-        ret_code = 1
-        res = None
-        mod_start = time.perf_counter()
-        try:
-            res = subprocess.run(
-                cmd,
-                cwd=host_dir,
-                env=p_env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace"
-            )
-            ret_code = res.returncode
-            mod_duration = time.perf_counter() - mod_start
-            if not is_nested and not quiet_mode:
-                safe_print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
-                if verbose:
-                    if res.stdout:
-                        safe_print(res.stdout, end="", flush=True)
-                    if res.stderr:
-                        safe_print(res.stderr, end="", file=sys.stderr, flush=True)
-            if os.path.isfile(report_json_path):
-                with open(report_json_path, "r", encoding="utf-8") as rf:
-                    mod_report_data = json.load(rf)
-        except Exception as e:
-            if not is_nested:
-                safe_print(f"[dev:test] Subprocess error for module '{mod_name}': {e}", file=sys.stderr)
-            ret_code = 1
+        if not is_nested and not quiet_mode and verbose and res:
+            if res.stdout:
+                safe_print(res.stdout, end="", flush=True)
+            if res.stderr:
+                safe_print(res.stderr, end="", file=sys.stderr, flush=True)
 
-        # Granular cleanup policy
+        sandbox_display_id = f"sandbox {worker_idx}"
         if ret_code == 0 and not keep_sandbox:
             if not is_nested and not quiet_mode:
                 print(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
@@ -839,14 +835,14 @@ class Tester:
                 elif not quiet_mode:
                     print(f"[dev:test] Sandbox preserved at: {sandbox_dir}", flush=True)
 
-        w_count = len([l for l in ((res.stderr if res else "") or "").splitlines() if l.strip()])
+        w_count = len([line for line in ((res.stderr if res else "") or "").splitlines() if line.strip()])
         return {
             "module": mod_name,
             "worker_idx": worker_idx,
             "returncode": ret_code,
             "report_data": mod_report_data,
             "sandbox_dir": sandbox_dir,
-            "warnings_count": w_count
+            "warnings_count": w_count,
         }
 
     def _handle_post_test_sync(self, modules: List[str], sync_requested: bool, quiet: bool = False) -> None:
@@ -862,7 +858,7 @@ class Tester:
                 with open(cfg_path, "r", encoding="utf-8") as rf:
                     cfg_data = json.load(rf)
                     installed_mods = cfg_data.get("installed_modules", {})
-            except Exception:
+            except (OSError, json.JSONDecodeError):
                 pass
 
         valid_targets = [m for m in modules if m in installed_mods]
@@ -879,8 +875,6 @@ class Tester:
                     safe_print(f"[dev:test:sync] Successfully synced '{mod}@build'.")
                 else:
                     safe_print(f"[dev:test:sync] Failed to sync '{mod}@build'.", file=sys.stderr)
-        else:
-            if not quiet:
-                for mod in valid_targets:
-                    safe_print(f"\n[*] Hint: Tests passed! Run 'python yscb.py install {mod}@build' to install the built package.")
-
+        elif not quiet:
+            for mod in valid_targets:
+                safe_print(f"\n[*] Hint: Tests passed! Run 'python yscb.py install {mod}@build' to install the built package.")

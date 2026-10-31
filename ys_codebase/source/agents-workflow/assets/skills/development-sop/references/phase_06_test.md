@@ -4,9 +4,9 @@
 
 ```markdown
 Phase 06 執行檢核表：
-- [ ] 1. [!] 強制觸發 testing-sop 技能手冊，落實六大測試鐵律與品質自檢清單
+- [ ] 1. [!] 強制觸發 testing-sop 技能手冊與 CodeQualityStandards.md，落實六大測試鐵律與代碼品質自檢
 - [ ] 2. 守門 ①（子系統回歸全綠）：執行新增測試與被修改子系統之全量回歸套件（100% 通過）
-- [ ] 3. 守門 ②（測試反模式自檢）：無計畫名碎片檔、無空殼/寬容放行斷言、無歷史墓碑、跑測後 git status 零殘留
+- [ ] 3. 守門 ②（測試反模式與增量 Diff 微觀無損收斂自檢）：無計畫名碎片檔、無空殼斷言、無歷史墓碑、無 S2 殘留轉發殼或 FR/DR 工單註解、跑測後 git status 零殘留
 - [ ] 4. 將實測數據與通過狀態客觀回填至 P06_test_plan.md，標頭狀態設為 Passed
 - [ ] 5. 更新 changelog.md，呈遞 P06 測試驗證回報卡並立即 End Turn 等待開發者驗收
 ```
@@ -15,10 +15,10 @@ Phase 06 執行檢核表：
 
 ## 1. 核心定位與職責
 
-- **強制觸發 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`)**：執行 Phase 06 驗證前，強制精讀並遵循 `testing-sop` 之六大測試鐵律與品質自檢清單。
+- **強制觸發 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`) 與遵循 [`CodeQualityStandards.md`](`__#{module://agents-workflow/assets/standards/CodeQualityStandards.md}__`)**：執行 Phase 06 驗證前，強制精讀並遵循 `testing-sop` 之六大測試鐵律與 `CodeQualityStandards.md` 之結構衛生規範。
 - **雙重驗收守門機制（Dual Acceptance Gates）**：
   1. **守門 ①（子系統回歸全綠）**：除本次新增案例外，強制跑過被修改子系統之完整回歸測試（100% Passed）。
-  2. **守門 ②（新增測試反模式自檢）**：嚴查無碎片測試檔、無虛假空殼斷言、無歷史墓碑、工作區零污染。
+  2. **守門 ②（新增測試反模式自檢與增量 Diff 微觀無損收斂 — Red-Green-Refactor）**：嚴查無碎片測試檔、無虛假空殼斷言、無歷史墓碑、工作區零污染；並在全綠測試保護傘下，依 [`CodeQualityStandards.md`](`__#{module://agents-workflow/assets/standards/CodeQualityStandards.md}__`) 對本次 `git diff` 變更範圍執行快速微觀收斂（消除本次新增之結構重複 `S3`、壓平深層巢狀 `S4`、拔除 1 行轉發殼 `S2` 與工單編號註解）。
 - **專注業務功能與邏輯正確性測試**：100% 依據 `P06_test_plan.md` 執行自動化測試與回歸測試，驗證核心業務邏輯、API 契約與邊界條件 (`FT/ET/RT`)，客觀回填測試日誌。
 - **人工 / UX 驗收守門**：若包含人機介面、CLI 輸出或終端交互變更，強制等待開發者驗收確認。
 - **業務功能測試 vs. 表層修訂主動分流引導**：當核心業務功能已無問題，而反饋轉向非業務邏輯微調時，主動引導先完成 P07 結案再開啟 `revision_log.md` 修訂。
@@ -40,7 +40,7 @@ Phase 06 執行檢核表：
    - **純靜態唯讀審查禁令 (Static Read-Only Inspection Only)**：**應明確告知子代理嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查**（嚴禁在子代理內重複執行測試指令、建置部署或啟動任何運行進程），且嚴守 Single-Writer 鐵律禁碰 `plans/` 下任何檔案。
    - **Untracked 新檔自主探索防護**：Reviewer 透過計畫路徑自行讀取 `P01`/`P03`/`P04` 規格文件，搭配版本控制狀態（如 `git status --short` 與 `git diff HEAD`），對未加入 index 之 `Untracked (??)` 新建檔案直接以唯讀工具檢視全文，杜絕漏審新建檔案。
    - **防吹毛求疵三類硬性審查契約**：Reviewer 僅允許回報違反下列三類硬性契約之具體缺失：
-     1. 違反 `AGENTS.md` 核心原則 3 之淺層敷衍修補（如空白 `except` 吞錯誤、無意義 mock、放寬斷言）或違反 `testing-sop` 六大測試鐵律（如新建計畫名碎片測試檔、空殼斷言、歷史墓碑）；
+     1. 違反 `AGENTS.md` 核心原則 3 之淺層敷衍修補（如空白 `except` 吞錯誤、無意義 mock、放寬斷言）、違反 `testing-sop` 六大測試鐵律（如新建計畫名碎片測試檔、空殼斷言、歷史墓碑）或違反 [`CodeQualityStandards.md`](`__#{module://agents-workflow/assets/standards/CodeQualityStandards.md}__`) 之結構紅線（如殘留 `S2` 1 行轉發殼、`S3` 合併抹平 20% 邊界不變量、或生產代碼殘留 `FR/DR/EC` 工單編號註解）；
      2. `P01` 功能/邊界需求或 `P03` 介面契約未落實之遺漏；
      3. 程式碼 Docstring 或架構契約遺漏。
      *嚴禁回報主觀命名或排版微調；若無上述硬性缺失，強制直接回傳 `REVIEW_STATUS: PASSED`。*
@@ -83,10 +83,10 @@ Phase 06 執行檢核表：
 - **極精簡 Session 回覆格式**：對話中**嚴禁全文重複、日誌傾倒或冗長轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
   ###  P06 測試驗證回報
-  - **產出文件**：[P06_test_plan.md](__${project://plans}__/{plan_name}/P06_test_plan.md) (Passed / 待驗收)
+  - **產出文件**：[P06_test_plan.md](`__${project://plans}__/{plan_name}/P06_test_plan.md`) (Passed / 待驗收)
   - **測試摘要**：[單元/邊界測試 N 項 100% 通過 / 全量回歸 100% 通過]
   - **手動/UX 驗收項目**：[若有 UX 項目，條列項目與操作預期；若無填「無」]
   - **待確認事項**：[若有 UX 項請確認結果為 [測試通過] 或 [跳過/免測]；確認後將進入 Phase 7 (P07 結案與 SOP Review 審查)]
   ```
 - **立即 End Turn 等待確認**。
-- **接續推進硬性約束**：P06 驗收確認後的唯一合法流轉節點為 [Phase 7 (P07 結案與 SOP 審查)](./phase_07_walkthrough.md)。P07 內化三層文檔核驗與 plan verify 合規檢核，確認 100% Passed 後方可結案（若結案後有 UI/UX/DX、參數或文檔微調需求，則於同計畫建立 `revision_log.md` 接續修訂）！
+- **接續推進硬性約束**：P06 驗收確認後的唯一合法流轉節點為 **Phase 7 (P07 結案與 SOP 審查)**（請由 `development-sop/SKILL.md` §5 導航矩陣讀取對應手冊）。P07 內化三層文檔核驗與 plan verify 合規檢核，確認 100% Passed 後方可結案（若結案後有 UI/UX/DX、參數或文檔微調需求，則於同計畫建立 `revision_log.md` 接續修訂）！

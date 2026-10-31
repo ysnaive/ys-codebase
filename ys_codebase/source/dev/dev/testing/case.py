@@ -6,20 +6,19 @@ import os
 import sys
 import json
 import time
-import shutil
-import tempfile
 import subprocess
 import unittest
 from contextlib import contextmanager
 from typing import List, Optional, Dict, Any, Tuple, Iterator
-from core import uri
-from core import vfs
+from core import uri, vfs
 from dev.testing.requirement import Requirement
 from dev.testing.sandbox import SandboxContext, SandboxProvisioner
+
 
 class SecurityError(RuntimeError):
     """Raised when tests are executed in an insecure or forbidden host environment."""
     pass
+
 
 class YSCBTestCase(unittest.TestCase):
     """
@@ -33,7 +32,7 @@ class YSCBTestCase(unittest.TestCase):
     sandbox_host_dir: str
     sandbox_project_dir: str
     sandbox_provider_dir: str
-    
+
     _shared_sandbox_ctx: Optional[SandboxContext] = None
     _is_isolated_sandbox: bool = False
     _test_passed: bool
@@ -57,11 +56,6 @@ class YSCBTestCase(unittest.TestCase):
                 SandboxProvisioner.cleanup_sandbox(YSCBTestCase._shared_sandbox_ctx.sandbox_dir, force=True)
             YSCBTestCase._shared_sandbox_ctx = None
 
-    @classmethod
-    def tearDownClass(cls) -> None:
-        """Class-level teardown: defensive fallback (no-op in session-level mode)."""
-        pass
-
     def _callTestMethod(self, method: Any) -> Any:
         """Wrap test method execution to reliably capture unhandled exceptions."""
         try:
@@ -73,7 +67,6 @@ class YSCBTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         """Test setup: create or reuse virtual environment and backup environment."""
-        # Gate 3: Intercept insecure host direct execution
         if os.environ.get("YSCB_TEST_SANDBOX") != "1":
             raise SecurityError(
                 "[dev:test] Security Guard Blocked: Running tests directly on the host workspace is strictly forbidden to prevent environment contamination. "
@@ -86,11 +79,10 @@ class YSCBTestCase(unittest.TestCase):
         self._orig_sys_path = list(sys.path)
         self._orig_env = dict(os.environ)
         self._orig_cwd = os.getcwd()
-        self._orig_uri_host = uri._active_host_dir
-        self._orig_uri_yscb = uri._active_yscb_dir
-        self._orig_uri_mod = uri._active_module_context
+        self._orig_uri_host = uri.get_host_dir()
+        self._orig_uri_yscb = uri.get_yscb_root()
+        self._orig_uri_mod = uri.get_module_context()
 
-        # Determine if current test method requires ISOLATED_SANDBOX
         method_name = getattr(self, "_testMethodName", "")
         method = getattr(self, method_name, None)
         req = getattr(method, "__requirement__", None) if method else None
@@ -111,7 +103,10 @@ class YSCBTestCase(unittest.TestCase):
                 else:
                     curr = os.path.abspath(os.getcwd())
                     while curr and curr != os.path.dirname(curr):
-                        if (os.path.basename(curr).startswith("sandbox_") and os.path.isdir(os.path.join(curr, "host_env"))) or (os.path.isdir(os.path.join(curr, "host_env")) and os.path.isdir(os.path.join(curr, "mock_provider"))):
+                        if (
+                            (os.path.basename(curr).startswith("sandbox_") and os.path.isdir(os.path.join(curr, "host_env")))
+                            or (os.path.isdir(os.path.join(curr, "host_env")) and os.path.isdir(os.path.join(curr, "mock_provider")))
+                        ):
                             sb_dir = curr
                             break
                         curr = os.path.dirname(curr)
@@ -135,16 +130,15 @@ class YSCBTestCase(unittest.TestCase):
         sys.path[:] = self._orig_sys_path
         os.environ.clear()
         os.environ.update(self._orig_env)
-        uri._active_host_dir = getattr(self, "_orig_uri_host", None)
-        uri._active_yscb_dir = getattr(self, "_orig_uri_yscb", None)
-        uri._active_module_context = getattr(self, "_orig_uri_mod", None)
+        uri.set_host_dir(getattr(self, "_orig_uri_host", None))
+        uri.set_yscb_root(getattr(self, "_orig_uri_yscb", None))
+        uri.set_module_context(getattr(self, "_orig_uri_mod", None))
         if hasattr(self, "_orig_cwd") and self._orig_cwd:
             try:
                 os.chdir(self._orig_cwd)
-            except Exception:
+            except OSError:
                 pass
 
-        # 狀態分類檢查：沒呼叫 mark_passed() 又沒有拋出異常的，歸類到 UNKNOWN
         if self._has_exception:
             self._execution_status = "FAILED"
         elif self._test_passed:
@@ -154,23 +148,16 @@ class YSCBTestCase(unittest.TestCase):
 
         keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
         if self._is_isolated_sandbox:
-            if self._execution_status == "PASSED" and not keep_all:
+            if self._execution_status in ("PASSED", "UNKNOWN") and not keep_all:
                 SandboxProvisioner.cleanup_sandbox(self.sandbox_dir, force=True)
             elif self._execution_status == "FAILED":
                 print(f"\n[Test Failed] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
-            elif self._execution_status == "UNKNOWN":
-                # 未明確標記 passed 也未失敗：安全清理沙盒
-                if not keep_all:
-                    SandboxProvisioner.cleanup_sandbox(self.sandbox_dir, force=True)
             elif keep_all:
                 print(f"\n[Sandbox Kept] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
         else:
             if self._execution_status == "FAILED":
                 print(f"\n[Test Failed] Shared virtual sandbox preserved at: {self.sandbox_dir}")
-            elif self._execution_status == "UNKNOWN":
-                # 歸類為 UNKNOWN：嚴禁輸出 [Test Failed]，避免假失敗日誌污染與重複洗版
-                pass
-            elif keep_all:
+            elif keep_all and self._execution_status != "UNKNOWN":
                 print(f"\n[Sandbox Kept] Shared virtual sandbox preserved at: {self.sandbox_dir}")
 
     def mark_passed(self) -> None:
@@ -181,9 +168,9 @@ class YSCBTestCase(unittest.TestCase):
     def create_mock_package(
         self,
         name: str,
-        version: str = "1.0.0",
+        version: str = "1.0.0.0",
         deps: Optional[Dict[str, str]] = None,
-        description: str = "Mock Package for Testing"
+        description: str = "Mock Package for Testing",
     ) -> str:
         """Helper to dynamically generate a mock package in sandbox mock_provider."""
         return self.ctx.create_mock_package(name, version, deps, description)
@@ -193,7 +180,7 @@ class YSCBTestCase(unittest.TestCase):
         name: str = "mock_source_pkg",
         version: str = "1.0.0.0",
         deps: Optional[Dict[str, str]] = None,
-        files: Optional[Dict[str, str]] = None
+        files: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         Creates a valid mock source module in the sandbox's source/<name> directory
@@ -215,12 +202,11 @@ class YSCBTestCase(unittest.TestCase):
                 "version": version,
                 "description": f"Mock Source Module {name}",
                 "dependencies": deps,
-                "entry": "scripts/cli.py"
+                "entry": "scripts/cli.py",
             }
             with open(os.path.join(src_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=2)
 
-            
         scripts_dir = os.path.join(src_dir, "scripts")
         os.makedirs(scripts_dir, exist_ok=True)
         cli_content = files.get("scripts/cli.py") if files and "scripts/cli.py" in files else (
@@ -242,9 +228,9 @@ class YSCBTestCase(unittest.TestCase):
                         "hello": {
                             "description": f"Say hello from {name}",
                             "tier": "safe",
-                            "server_compatible": True
+                            "server_compatible": True,
                         }
-                    }
+                    },
                 }
             }
             with open(os.path.join(contrib_dir, "core.json"), "w", encoding="utf-8") as f:
@@ -265,7 +251,7 @@ class YSCBTestCase(unittest.TestCase):
                 os.makedirs(os.path.dirname(full_p), exist_ok=True)
                 with open(full_p, "w", encoding="utf-8") as f:
                     f.write(content)
-                    
+
         return src_dir
 
     def assertSuccess(self, returncode: int, msg: str = "") -> None:
@@ -306,8 +292,7 @@ class YSCBTestCase(unittest.TestCase):
     def run_cli(self, args: List[str], cwd: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Tuple[int, str, str]:
         """Execute yscb host CLI in subprocess with isolated sandbox working directory (default: sandbox_host_dir)."""
         work_dir = cwd or self.sandbox_host_dir
-        
-        # Prefer yscb.py inside the sandbox host_dir, fallback to parent
+
         sandbox_yscb = os.path.join(self.sandbox_host_dir, "yscb.py")
         if os.path.isfile(sandbox_yscb):
             yscb_script = sandbox_yscb
@@ -328,6 +313,6 @@ class YSCBTestCase(unittest.TestCase):
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=p_env
+            env=p_env,
         )
         return res.returncode, res.stdout, res.stderr

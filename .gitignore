@@ -14,6 +14,9 @@ __pycache__/
 # === YSCB AGENTS_WORKFLOW IGNORE BEGIN ===
 # Auto-managed by agents-workflow. Do not edit this block manually.
 /.agents/.yscb/standards/AgentsStandards.md
+/.agents/.yscb/standards/CodeQualityStandards.md
+/.agents/.yscb/standards/SkillDesignStandards.md
+/.agents/.yscb/standards/YscbSkillDesignToolStandards.md
 /.agents/.yscb/templates/P00_discuss.md
 /.agents/.yscb/templates/P01_requirements_spec.md
 /.agents/.yscb/templates/P02_architecture_plan.md

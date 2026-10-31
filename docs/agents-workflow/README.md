@@ -3,14 +3,15 @@ target: "Agents-Workflow"
 doc_type: "readme"
 status: "active"
 source_paths:
-  - "yscb://source/agents-workflow/agents_workflow/commands.py"
+  - "yscb://source/agents-workflow/scripts/cli.py"
   - "yscb://source/agents-workflow/agents_workflow/compiler.py"
   - "yscb://source/agents-workflow/agents_workflow/publisher.py"
+  - "yscb://source/agents-workflow/agents_workflow/plans/"
 related_docs:
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-30"
+last_updated: "2026-10-31"
 ---
 
 # Agents Workflow 模組 (General Agents Workflow Framework)
@@ -25,6 +26,9 @@ last_updated: "2026-10-30"
 
 - **規範 (`assets/standards/`)**：
   - `AgentsStandards.md`：Agent 通用核心原則、防呆紀律與條件式技能分流導航矩陣（自動注入至 `AGENTS.md`，頂部支援 `PROJECT_ROLE_AND_BOUNDARIES` 專案角色與空間邊界錨點注入）。
+  - `CodeQualityStandards.md`：跨語言業務程式碼品質、五維度靜態診斷指標（`D1~D5`）、防過度設計四大紅線（含零工單編號註解鐵律）與六大無損重構法則（`S1~S6`，含 `CODE_OPTIMIZER_STANDARDS` 錨點，供 `development-sop`、`auto` 與 `code-optimizer` 共用）。
+  - `SkillDesignStandards.md`：AI Agent 技能結構、雙軌結構化 `description` 觸發契約（軌跡 A 正向邊界契約＋選配無點名負向邊界 vs. 軌跡 B 分級命令鎖定 B-Strict / B-Assist）、四元素目錄拓撲（`SKILL.md`、`references/`、`scripts/`、`assets/`）、雙模狀態卡節流與三層縱深安全通用設計標準（供 `skill-creator` 與 `skill-optimizer` 概念設計與審查共用）。
+  - `YscbSkillDesignToolStandards.md`：YSCB 技能雙層物化架構、雙軌路徑引用、四大動態佔位符（`__@{TOKEN}__`、`__#{URI}__`、`__${URI}__`、`__%{KEY}__`）與 `<!-- yscb:literal -->` 字面量保護、`contribute.json` 雙端同步與三步 CLI 編譯驗收工具標準（僅於撰寫或修改 YSCB 託管技能時按需載入）。
 - **技能 (`assets/skills/<name>/SKILL.md`)**：
   - **工作流與生命週期技能**：`context-init`（上下文熱啟動）、`new-plan`（標準立項與延遲建檔）、`auto`（Phase 01~05 自動連續推進）、`discuss`（深度歸因與範疇保護）、`continue`（中斷現場接續）、`pause`（現場狀態凍結）、`research`（深度技術調研）、`roadmap`（長期路線圖推薦與 `Consume-on-Promote` 晉升）、`todo`（`TODO.md` 輕量待辦與微觀技術債管理）、`session-audit`（事後隱形摩擦軌跡提取與四象限根因診斷）。
   - **互動引導與配置教練技能**：`how-to-config-yscb`（專案空間自適應探勘、多模組組態體檢與三位一體對齊教練）、`how-to-yscb`（跨模組功能導覽、6 大計畫模式選型與雙入口互動式上手教練）。

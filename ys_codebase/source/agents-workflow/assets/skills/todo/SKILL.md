@@ -1,11 +1,11 @@
 ---
 name: todo
-description: 管理 `__${workflow.roadmap://TODO.md}__` 輕量級待辦與微觀技術債帳本，執行單行免讀盲寫追加 (todo add)、待辦清單檢索過濾 (todo list) 與單筆/多筆打包立項消耗 (todo promote)。觸發情境：輸入 /todo 或 /Todo、開發途中順手記錄微觀技術債/打磨點子/文檔微調、或檢視並打包提取待辦條目轉入 Fast Track / Revision / Full Track 計畫。排除情境：跨模組架構重構或需多階段推進之長期藍圖（改用 roadmap）、直接開立已明確之開發計畫（改用 new-plan）。
+description: 管理 `__${workflow.roadmap://TODO.md}__` 輕量待辦與微觀技術債帳本，執行免讀追加 (add)、清單檢索 (list) 與打包立項 (promote)。觸發情境：輸入 /todo、順手記錄微觀技術債與打磨點子、或提取待辦轉入計畫。
 ---
 
 # 輕量待辦與技術債帳本工作流 (TODO Ledger)
 
-本工作流管理專案戰術級輕量待辦與技術債帳本（`__${workflow.roadmap://}__/TODO.md`），提供零 Context 污染之單行免讀盲寫登記（`todo add`）、範圍過濾檢索（`todo list`）與單筆／多筆原子剪切立項（`todo promote`）。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
+本工作流管理專案戰術級輕量待辦與技術債帳本（`__${workflow.roadmap://}__/TODO.md`），提供零 Context 污染之單行免讀盲寫登記（`todo add`）、範圍過濾檢索（`todo list`）與單筆／多筆原子剪切立項（`todo promote`）。跨模組長期演進藍圖請改走 [`/roadmap`](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`)；直接開立已明確之開發計畫請改走 [`/new-plan`](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
 
 ---
 
@@ -20,9 +20,9 @@ description: 管理 `__${workflow.roadmap://TODO.md}__` 輕量級待辦與微觀
 ## 執行步驟與 CLI 指令速查
 
 ```markdown
-/Todo 執行檢核表：
+/todo 執行檢核表：
 - [ ] 1. 新增待辦：調用 `todo add "<標題>" --scope "<範疇>" --note "<備忘>" --model "<ModelName>"` 免讀盲寫登記
-- [ ] 2. 檢視待辦：調用 `todo list [--scope "<keyword>"]` 檢索並呈遞推薦或清單
+- [ ] 2. 檢視待辦：調用 `todo list [--scope "<keyword>"]` 檢索並呈遞推薦或清單（若擬打包立項須先 End Turn 等待授權）
 - [ ] 3. 立項遷入：獲授權立項時調用 `todo promote <TODO-ID...> --slug <ascii_slug> --model "<ModelName>"`，並於該 Seeded 目錄原地建立初始計畫文件
 ```
 
@@ -36,6 +36,7 @@ python __${yscb.host://yscb.py}__ agents-workflow todo add "<簡短動作標題>
 ```bash
 python __${yscb.host://yscb.py}__ agents-workflow todo list [--scope "<keyword>"]
 ```
+- **立項前確認守門**：檢索後若擬推薦將單筆或多筆 `[TODO-XX]` 打包轉入開發計畫，必須先向開發者呈遞候選條目與建議計畫模式並 **End Turn 等待明確授權**，嚴禁未獲指示擅自執行 `todo promote`。
 
 ### 3. 單筆／多筆打包原子拔除立項 (`todo promote`)
 ```bash

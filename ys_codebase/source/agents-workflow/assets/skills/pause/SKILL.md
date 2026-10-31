@@ -1,6 +1,6 @@
 ---
 name: pause
-description: 凍結當前開發進度與斷點並於計畫目錄產出 handoff.md 交接快照。僅於顯式輸入 /pause 或明確指示暫停並交接當前進度時觸發。
+description: 凍結當前開發進度並於計畫目錄產出 handoff.md 交接快照。僅於顯式輸入 /pause 或明確要求暫停並交接當前進度時觸發。
 ---
 
 # 暫停開發與無縫交接工作流 (Pause)
@@ -21,23 +21,23 @@ description: 凍結當前開發進度與斷點並於計畫目錄產出 handoff.m
 
 ## 執行步驟
 
-當開發者輸入 `/pause`（或 `/Pause`）時，請依序執行以下檢核步驟：
+當開發者顯式輸入 `/pause` 或明確要求暫停並交接當前進度時，請依序執行以下檢核步驟：
 
 ```markdown
-/Pause 現場凍結檢核表：
+/pause 現場凍結檢核表：
 - [ ] 步驟 1：定位 `__${project://plans}__` 中當前正在進行的計畫目錄
 - [ ] 步驟 2：讀取 handoff.md 模板，完整寫入現場狀態並驗證「重啟第 1 步」具體可執行
 - [ ] 步驟 3：輸出極簡交接狀態卡並立即 End Turn
 ```
 
 ### 步驟 1：定位當前進行中計畫
-1. 檢視 `__${project://plans}__`，定位目標計畫目錄 `__${project://plans}__/{YYYY_MM_DD_HHMM_功能名稱}/`。
+1. 檢視 `__${project://plans}__/`，定位目標計畫目錄 `__${project://plans}__/{YYYY_MM_DD_HHMM_功能名稱}/`。
 2. 若當前對話未綁定特定計畫且存在多個進行中計畫，先向開發者確認欲凍結哪一個計畫。
 
 ---
 
 ### 步驟 2：生成暫停交接快照 (`handoff.md`) 並自我驗證
-讀取標準模板 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)（工作區根目錄路徑：`.agents/.yscb/templates/handoff.md`），完整填寫標頭（含 `> 模型：`，依模型紀錄規則填平台宣告名稱或 `Unknown`）後落檔於計畫目錄（若為 Umbrella 子計畫則落檔於 `sub_{編號}_{名稱}/handoff.md`），客觀記錄：
+讀取標準模板 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，完整填寫標頭（含 `> 模型：`，依模型紀錄規則填平台宣告名稱或 `Unknown`）後落檔於計畫目錄（若為 Umbrella 子計畫則落檔於 `sub_{編號}_{名稱}/handoff.md`），客觀記錄：
 1. **現場已完成事項**：具體完成之函式、邊界處理或測試。
 2. **進行中待辦**：精確記錄當前實作中斷點與待續邏輯。
 3. **踩坑與注意事項**：關鍵坑點、特殊時序或口頭共識。
@@ -51,12 +51,12 @@ description: 凍結當前開發進度與斷點並於計畫目錄產出 handoff.m
 對話 Session **嚴禁全文重複、代碼傾倒或冗長轉述**，強制僅呈遞以下極簡卡片，並**立即 End Turn**：
 
 ```markdown
-### [PAUSE] /Pause 現場上下文凍結完成
-- **交接檔案**：[handoff.md](__${project://plans}__/{plan_name}/handoff.md)
-- **所屬計畫**：[{plan_name}](__${project://plans}__/{plan_name}/)
+### [PAUSE] /pause 現場上下文凍結完成
+- **交接檔案**：[handoff.md](`__${project://plans}__/{plan_name}/handoff.md`)
+- **所屬計畫**：[{plan_name}](`__${project://plans}__/{plan_name}/`)
 - **凍結斷點**：[Phase X 或 FP-0Y (狀態)]
 - **重啟第 1 步**：[極精確的重啟行動指引]
-- **下次接手**：輸入 [/Continue](`__#{module://agents-workflow/assets/skills/continue/SKILL.md}__`) 即可無縫接續
+- **下次接手**：輸入 [/continue](`__#{module://agents-workflow/assets/skills/continue/SKILL.md}__`) 即可無縫接續
 ```
 
 ---
@@ -64,3 +64,4 @@ description: 凍結當前開發進度與斷點並於計畫目錄產出 handoff.m
 ## 常見踩坑指南 (Gotchas)
 
 - **切勿在 `/pause` 時擅自推進未完成的代碼變更**：`/pause` 的職責是「如實記錄並安全凍結現場」，不要為了湊齊進度而倉促寫入未驗證的半成品程式碼。
+- **切勿將「上下文交接」或「重啟第 1 步」寫成空泛摘要**：`handoff.md` 會在下次 `/continue` 時被閱後即焚；本輪已確認但尚未寫入階段規格檔的拆解清單、檔案行號座標與接手首個命令必須具體落盤，否則跨視窗後將被迫重新探勘。

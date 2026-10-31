@@ -2,9 +2,17 @@
 
 本手冊定義 YSCB 模組 CLI 命令合約規範、`CmdBags` 參數存取、同構指令樹派發機制與 `dev` 模組工具鏈完整操作指南。
 
+## 目錄 (Contents)
+- [1. 強型別 CmdBags 活躍執行合約](#1-強型別-cmdbags-活躍執行合約)
+- [2. CLI 實作與 Contributes 宣告對稱性規範 (Implementation & Declaration Symmetry)](#2-cli-實作與-contributes-宣告對稱性規範-implementation--declaration-symmetry)
+- [3. 同構指令樹與平鋪命名規範](#3-同構指令樹與平鋪命名規範)
+- [4. 微內核延遲載入規範 (PEP 562 Lazy Loading)](#4-微內核延遲載入規範-pep-562-lazy-loading)
+- [5. Dev 工具鏈 CLI 指令全景矩陣](#5-dev-工具鏈-cli-指令全景矩陣)
+- [6. 伺服器常駐守護進程協同與自動自癒](#6-伺服器常駐守護進程協同與自動自癒)
+
 ---
 
-## 1. 強型別 `CmdBags` 活躍執行合約
+## 1. 強型別 CmdBags 活躍執行合約
 
 YS-Codebase 生態系已全面廢除舊式 `argparse` 與手工字串剖析，所有 CLI 命令統一採用強型別 `CmdBags` 活躍執行合約。
 
@@ -101,7 +109,7 @@ def my_command(cmd_bags: CmdBags) -> int:
 
 ---
 
-## [TOOL] 5. Dev 工具鏈 CLI 指令全景矩陣
+## 5. Dev 工具鏈 CLI 指令全景矩陣
 
 `dev` 模組提供全生命週期的開發者工具鏈：
 
@@ -168,7 +176,7 @@ python yscb.py dev test <mod_name> -k test_ft_01
 python yscb.py dev test <mod_name> --target=TestMyMod.test_ft_01
 ```
 
-### 5.5 發布流水線 ([GATED] 授權守門)
+### 5.5 發布流水線 (授權守門)
 ```bash
 # 1. 發布前 3-Gate 校驗 (Gate 1: 合規 0 Fail 0 Warn; Gate 2: release/<mod>/<ver>.zip 存在不可變; Gate 3: target > global_highest 單調遞增，即便 --force 亦禁止回退)
 python yscb.py dev release-check <mod_name>
@@ -189,7 +197,7 @@ python yscb.py dev release-git <mod_name> "feat: 完成特定功能"
 
 ## 6. 伺服器常駐守護進程協同與自動自癒
 
-本節深化 [SKILL.md 軌道 A](../SKILL.md#軌道-a日常開發調試-dogfooding-track) 中提及的 Server 自癒機制。若開發的模組包含常駐背景服務（如 Service Worker 或生命週期 Watcher）：
+本節深化主技能 `SKILL.md`（軌道 A：日常開發調試）中提及的 Server 自癒機制。若開發的模組包含常駐背景服務（如 Service Worker 或生命週期 Watcher）：
 
 1. **`server_compatible` 旗標**：在命令宣告中標記 `server_compatible: true`，支援透過 IPC HTTP 高速熱派發至常駐 Worker。
 2. **Server 背景自動熱重載機制 (`ModulesWatcher`)**：

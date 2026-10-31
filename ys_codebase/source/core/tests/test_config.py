@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 from core import config
-from core import uri
+from core import uri, vfs
 
 
 @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
@@ -25,11 +25,11 @@ class TestConfigManager(YSCBTestCase):
         # 遍歷清理所有 test_mod_* 測試建立之目錄，確保零殘留
         for mod in ["test_mod_get", "test_mod_override", "test_mod_delete", "test_mod_cli", "test_mod_inspect", "test_mod_clean_cfg", "test_mod_raw_inspect"]:
             cfg_dir = f"config://{mod}"
-            if uri.exists(cfg_dir):
-                uri.rmtree(cfg_dir)
+            if vfs.exists(cfg_dir):
+                vfs.rmtree(cfg_dir)
             mod_dir = f"module://{mod}"
-            if uri.exists(mod_dir):
-                uri.rmtree(mod_dir)
+            if vfs.exists(mod_dir):
+                vfs.rmtree(mod_dir)
         config.reload()
         super().tearDown()
 
@@ -149,7 +149,7 @@ class TestConfigManager(YSCBTestCase):
         spec = importlib.util.spec_from_file_location("core_scripts_cli", cli_path)
         cli_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cli_mod)
-        cmd_config = cli_mod.cmd_config
+        cmd_config = cli_mod.config
 
         mod = "test_mod_cli"
 
@@ -269,13 +269,13 @@ class TestConfigManager(YSCBTestCase):
         from core.engine import AtomicEngine
         mod_name = "test_mod_clean_cfg"
         mod_uri = f"module://{mod_name}"
-        uri.makedirs(f"{mod_uri}/configurable", exist_ok=True)
+        vfs.makedirs(f"{mod_uri}/configurable", exist_ok=True)
 
         proj_payload = {
             "setting_a": "value_a",
             "setting_b": 123
         }
-        uri.write_json(f"{mod_uri}/configurable/config.project.json", proj_payload, indent=2)
+        vfs.write_json(f"{mod_uri}/configurable/config.project.json", proj_payload, indent=2)
 
         engine = AtomicEngine()
         cfg_path, host_cfg = engine._get_config()
@@ -289,17 +289,17 @@ class TestConfigManager(YSCBTestCase):
             cfg_proj_uri = f"config://{mod_name}/config.project.json"
             cfg_local_uri = f"config://{mod_name}/config.local.json"
 
-            self.assertTrue(uri.exists(cfg_proj_uri), "config.project.json must be materialized!")
-            loaded_proj = uri.read_json(cfg_proj_uri)
+            self.assertTrue(vfs.exists(cfg_proj_uri), "config.project.json must be materialized!")
+            loaded_proj = vfs.read_json(cfg_proj_uri)
             self.assertEqual(loaded_proj.get("setting_a"), "value_a")
             self.assertEqual(loaded_proj.get("setting_b"), 123)
 
-            self.assertFalse(uri.exists(cfg_local_uri), "config.local.json should NOT be created automatically when empty!")
+            self.assertFalse(vfs.exists(cfg_local_uri), "config.local.json should NOT be created automatically when empty!")
 
             tpl_local_uri = f"module://{mod_name}/contributes/config.local.json"
-            uri.makedirs(f"module://{mod_name}/contributes", exist_ok=True)
-            uri.write_json(tpl_local_uri, {})
-            engine._seed_or_update_config(mod_name, f"module://{mod_name}/contributes")
+            vfs.makedirs(f"module://{mod_name}/contributes", exist_ok=True)
+            vfs.write_json(tpl_local_uri, {})
+            engine._deploy_and_strip_single_module_config(mod_name, f"module://{mod_name}/contributes")
 
             config.reload(mod_name)
             self.assertEqual(config.get(mod_name, "setting_a"), "value_a")

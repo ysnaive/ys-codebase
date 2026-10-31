@@ -5,39 +5,33 @@
 ## 目錄 (Contents)
 
 - [1. 文檔歸屬判定樹 (Decision Tree)](#1-文檔歸屬判定樹-decision-tree)
-- [2. 中觀專題手冊 5 大抽象情境 (Topic Docs Archetypes)](#research-2-中觀專題手冊-5-大抽象情境-topic-docs-archetypes)
+- [2. 中觀專題手冊 5 大抽象情境 (Topic Docs Archetypes)](#2-中觀專題手冊-5-大抽象情境-topic-docs-archetypes)
 - [3. 三層文檔交付架構與三維錨點驗收 (Three-Tier Delivery & Anchors)](#3-三層文檔交付架構與三維錨點驗收-three-tier-delivery--anchors)
 - [4. 文檔撰寫實作規範](#4-文檔撰寫實作規範)
-- [5. 文檔更新與添加自我核對清單 (Documentation Checklist)](#pass-5-文檔更新與添加自我核對清單-documentation-checklist)
+- [5. 文檔更新與添加自我核對清單 (Documentation Checklist)](#5-文檔更新與添加自我核對清單-documentation-checklist)
 
 ---
 
 ## 1. 文檔歸屬判定樹 (Decision Tree)
 
-```text
-Q1: 這是「歷史探索過程」還是「當前系統事實」？
-    ├─ 探索/任務/爭辯 -> 【`__${workflow.plans://}__`】(結案後凍結)
-    └─ 當前系統事實 -> 進入 Q2
-
-Q2: 這是屬於「全域宏觀拓撲」還是「特定分類 (<Category>)」？
-    ├─ 全域宏觀 -> 【`__${workflow.docs://_project/}__`*.md】
-    └─ 特定分類/領域路徑 (<Category>，如 core 或 Render/Layout/FlexEngine) -> 進入 Q3
-
-Q3: 這是「單一函式微觀簽名」還是「多實體協同/流向/機制」？
-    ├─ 單一函式簽名 -> 【程式碼 Docstrings】
-    └─ 跨實體協同/資料流/狀態 -> 進入 Q4
-
-Q4: 內部機制是否涉及「狀態轉換 / 深度資料管線 / 超過 1 頁」？
-    ├─ 否 (極簡介面/單純轉發) -> 【`__${workflow.docs://}__/<Category>/README.md`】
-    └─ 是 (存在中觀動態機制) -> 【`__${workflow.docs://}__/<Category>/[topic].md`】(強制獨立專題手冊！)
-
-Q5: 是否包含「反直覺妥協 / Workaround / 效能硬體限制」？
-    └─ 是 -> 【`__${workflow.docs://}__/<Category>/DESIGN_NOTES.md`】(強制登記 DN-XX + CAUTION！)
-```
+- **Q1：這是「歷史探索過程」還是「當前系統事實」？**
+  - 探索 / 任務 / 爭辯 $\to$ 歸入 `__${workflow.plans://}__`（結案後凍結）
+  - 當前系統事實 $\to$ 進入 **Q2**
+- **Q2：這是屬於「全域宏觀拓撲」還是「特定分類 (`<Category>`)」？**
+  - 全域宏觀 $\to$ 歸入 `__${workflow.docs://_project/}__/*.md`
+  - 特定分類 / 領域路徑（`<Category>`，如 `core` 或 `Render/Layout/FlexEngine`）$\to$ 進入 **Q3**
+- **Q3：這是「單一函式微觀簽名」還是「多實體協同 / 流向 / 機制」？**
+  - 單一函式簽名 $\to$ 歸入 **程式碼 Docstrings**
+  - 跨實體協同 / 資料流 / 狀態 $\to$ 進入 **Q4**
+- **Q4：內部機制是否涉及「狀態轉換 / 深度資料管線 / 超過 1 頁」？**
+  - 否（極簡介面 / 單純轉發）$\to$ 歸入 `__${workflow.docs://}__/<Category>/README.md`
+  - 是（存在中觀動態機制）$\to$ 歸入 `__${workflow.docs://}__/<Category>/[topic].md`（強制獨立專題手冊！）
+- **Q5：是否包含「反直覺妥協 / Workaround / 效能硬體限制」？**
+  - 是 $\to$ 歸入 `__${workflow.docs://}__/<Category>/DESIGN_NOTES.md`（強制登記 `DN-XX` + `[!CAUTION]`！）
 
 ---
 
-## [RESEARCH] 2. 中觀專題手冊 5 大抽象情境 (Topic Docs Archetypes)
+## 2. 中觀專題手冊 5 大抽象情境 (Topic Docs Archetypes)
 
 中觀專題手冊（`__${workflow.docs://}__/<Category>/[topic].md`）解決**「Docstrings 放不下，README 裝不下」**的架構斷層，適用於各層級模組與子系統：
 
@@ -97,7 +91,7 @@ last_updated: "YYYY-MM-DD"
 
 ---
 
-## [PASS] 5. 文檔更新與添加自我核對清單 (Documentation Checklist)
+## 5. 文檔更新與添加自我核對清單 (Documentation Checklist)
 
 在每次撰寫、修改或結案提交文檔前，請逐一自檢以下項目：
 

@@ -5,7 +5,7 @@ import os
 import sys
 import json
 import unittest
-from core import uri
+from core import uri, vfs
 from core.engine import AtomicEngine
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
@@ -22,8 +22,8 @@ class TestMigrationLadder(YSCBTestCase):
     def tearDown(self):
         super().tearDown()
         mod_uri = f"module://{self.test_mod}"
-        if uri.exists(mod_uri):
-            uri.rmtree(mod_uri)
+        if vfs.exists(mod_uri):
+            vfs.rmtree(mod_uri)
 
     def test_migration_ladder_step_through(self):
         """T-01 實質化：驗證 1.1 與 1.3 遷移腳本實質依序被呼叫、驗證 ctx 欄位與軌跡，且跨大版本安全略過。"""
@@ -72,8 +72,8 @@ class TestMigrationLadder(YSCBTestCase):
             self.assertTrue(res_major)
             self.assertFalse(os.path.isfile(trace_path))
         finally:
-            if uri.exists(f"storage://{self.test_mod}"):
-                uri.rmtree(f"storage://{self.test_mod}")
+            if vfs.exists(f"storage://{self.test_mod}"):
+                vfs.rmtree(f"storage://{self.test_mod}")
         self.mark_passed()
 
 

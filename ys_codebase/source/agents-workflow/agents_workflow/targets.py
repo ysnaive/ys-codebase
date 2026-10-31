@@ -5,14 +5,7 @@ with Local as default and support for --proj flag.
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
-import os
-import json
-from typing import List, Dict, Any, Tuple, Optional
-
-try:
-    from core import uri
-except ImportError:
-    uri = None
+from typing import List, Dict, Any
 
 try:
     from core import config
@@ -20,7 +13,6 @@ except ImportError:
     config = None
 
 from agents_workflow.compiler import ArtifactCompiler
-from agents_workflow.publisher import ReleasePublisher
 
 
 class ReleaseTargetManager:
@@ -68,10 +60,7 @@ class ReleaseTargetManager:
         """寫入特定層級的 release_targets 清單。"""
         if config is None:
             return
-        try:
-            config.set("agents-workflow", "release_targets", targets, local=not is_project)
-        except Exception:
-            pass
+        config.set("agents-workflow", "release_targets", targets, local=not is_project)
 
     @classmethod
     def list_targets(cls) -> List[Dict[str, Any]]:
@@ -146,7 +135,7 @@ class ReleaseTargetManager:
             active_targets.append(target_name)
             cls.save_tier_targets(active_targets, is_project=is_project)
 
-        # 自動觸發發布流水線
+        from agents_workflow.publisher import ReleasePublisher
         publisher = ReleasePublisher()
         res = publisher.release_all()
         return res.get("success", False)
@@ -163,7 +152,7 @@ class ReleaseTargetManager:
             active_targets.remove(target_name)
             cls.save_tier_targets(active_targets, is_project=is_project)
 
-        # 自動觸發發布流水線 (自動清理該 Target 舊檔案)
+        from agents_workflow.publisher import ReleasePublisher
         publisher = ReleasePublisher()
         res = publisher.release_all()
         return res.get("success", False)

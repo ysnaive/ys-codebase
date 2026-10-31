@@ -49,7 +49,7 @@ Phase 04 執行檢核表：
 - **極精簡 Session 回覆格式**：產出 `P04_implementation_plan.md` 與定稿 `P06_test_plan.md` 並更新 `changelog.md` 後，對話中**嚴禁全文重複、代碼傾倒或冗長轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
   ###  P04 實作計畫定稿已落檔
-  - **產出文件**：[P04_implementation_plan.md](__${project://plans/}__/{plan_name}/P04_implementation_plan.md)、[P06_test_plan.md](__${project://plans/}__/{plan_name}/P06_test_plan.md) (Confirmed)
+  - **產出文件**：[P04_implementation_plan.md](`__${project://plans}__/{plan_name}/P04_implementation_plan.md`)、[P06_test_plan.md](`__${project://plans}__/{plan_name}/P06_test_plan.md`) (Confirmed)
   - **計畫摘要**：[預計變更檔案計 N 個 / 文檔衝擊 N 項 / 核心決策 [P04:DR-XX]]
   - **待確認事項**：請問是否同意實作計畫定稿並授權進入 Phase 5（任務實作）？
   ```

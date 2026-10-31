@@ -27,8 +27,3 @@ def on_worker_warming(context: Any) -> str:
     threading.Thread(target=_do_pre_warm, daemon=True, name="kdb-prewarm").start()
     return "warming_started"
 
-
-def on_server_worker_warming(context: Any) -> str:
-    """Backward-compatible alias for server_worker_warming."""
-    return on_worker_warming(context)
-

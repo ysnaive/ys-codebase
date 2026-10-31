@@ -59,7 +59,7 @@
     "spice": {
       "id": "spice",
       "name": "SPICE",
-      "extensions": [".sp", ".cir", ".cdl", ".netlist"],
+      "extensions": [".sp", ".cir", ".spice", ".net", ".cdl", ".netlist"],
       "mode": "custom",
       "parser_entry": "knowledge_db.parsers.spice_parser:SpiceParser"
     },

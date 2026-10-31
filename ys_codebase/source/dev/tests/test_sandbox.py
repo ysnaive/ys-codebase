@@ -13,7 +13,7 @@ from unittest.mock import patch
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 from dev.testing.sandbox import SandboxProvisioner, SandboxContext
-from core import uri, PipManager
+from core import uri, vfs, PipManager
 
 
 class TestSandboxArchitecture(YSCBTestCase):
@@ -238,7 +238,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("manifest.json", json.dumps(manifest_data))
 
-        orig_exists = uri.exists
+        orig_exists = vfs.exists
         orig_resolve = uri.resolve
 
         def mock_exists(u: str) -> bool:
@@ -254,15 +254,15 @@ class TestSandboxArchitecture(YSCBTestCase):
         saved_adapted = set(SandboxProvisioner._ADAPTED_SPECS)
         try:
             SandboxProvisioner._ADAPTED_SPECS.clear()
-            with patch("core.uri.exists", side_effect=mock_exists), \
+            with patch("core.vfs.exists", side_effect=mock_exists), \
                  patch("core.uri.resolve", side_effect=mock_resolve), \
                  patch.object(PipManager, "install_packages") as mock_install:
 
-                specs = SandboxProvisioner.adapt_build_pip_dependencies(target_modules=[mod_name], quiet=True)
+                specs = SandboxProvisioner.adapt_build_pip_dependencies(target_modules=[mod_name])
                 self.assertEqual(specs, ["mock-pkg-a>=1.0.0", "mock-pkg-b"])
                 mock_install.assert_called_once_with(["mock-pkg-a>=1.0.0", "mock-pkg-b"])
 
-                empty_specs = SandboxProvisioner.adapt_build_pip_dependencies(target_modules=["non_existent"], quiet=True)
+                empty_specs = SandboxProvisioner.adapt_build_pip_dependencies(target_modules=["non_existent"])
                 self.assertEqual(empty_specs, [])
         finally:
             SandboxProvisioner._ADAPTED_SPECS = saved_adapted

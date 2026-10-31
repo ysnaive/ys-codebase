@@ -1,6 +1,6 @@
 ---
 name: development-sop
-description: 管理 `__${project://plans/}__` 開發計畫全生命週期 (SOP Phase 00~07 與 6 大計畫模式)，執行階段文件模板調取、跨文件追溯鏈 (FR/EC/NFR/DR/FT/REV) 編列、代碼實作與極簡狀態卡交付。觸發情境：推進各階段開發任務、撰寫或更新 P00~P07 / fast_track_plan / revision_log / umbrella_overview / changelog 產物、查閱階段模板指針與預設標頭狀態。排除情境：查閱或編修 `__${workflow.docs://}__` 系統架構知識庫（改用 documentation）、查詢 CLI 權限與單行防呆語法（改用 yscb-cli-guide）。
+description: 管理 `__${project://plans/}__` 開發計畫全生命週期 (Phase 00~07 與 6 大計畫模式)、追溯鏈編列與業務代碼實作。觸發情境：推進各階段開發任務、撰寫或更新 `__${project://plans/}__` 下之計畫規格與日誌產物、查閱階段模板指針。
 ---
 
 # 開發標準作業流程指南 (Development SOP - Main Hub)
@@ -96,24 +96,24 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 ## 6. 全階段模板指針 (Template Pointers)
 
-執行計畫落檔時，直接由下方對應模板路徑讀取（注意：下方超連結為相對於本 `SKILL.md` 所在目錄之相對路徑；若從工作區根目錄讀取，實體路徑皆位於 `.agents/.yscb/templates/<檔名>`。落檔時務必將頂部標頭 `[...]` 佔位符全數替換為真實資訊，並依核心原則「模型紀錄」填寫 `> 模型：`（僅採平台當輪宣告之名稱，無法確認填 `Unknown`），且嚴禁包含任何 `<!-- ... -->` HTML 註解）：
+執行計畫落檔時，直接由下方對應模板路徑讀取（落檔時務必將頂部標頭 `[...]` 佔位符全數替換為真實資訊，並依核心原則「模型紀錄」填寫 `> 模型：`（僅採平台當輪宣告之名稱，無法確認填 `Unknown`），且嚴禁包含任何 `<!-- ... -->` HTML 註解）：
 
-- **Phase 0**：[`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) (`.agents/.yscb/templates/P00_discuss.md`)
-- **Phase 1**：[`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`) (`.agents/.yscb/templates/P01_requirements_spec.md`)
-- **Phase 2**：[`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`) (`.agents/.yscb/templates/P02_architecture_plan.md`)
-- **Phase 3**：[`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`) (`.agents/.yscb/templates/P03_api_spec.md`)
-- **Phase 4**：[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`) (`.agents/.yscb/templates/P04_implementation_plan.md`)
-- **Phase 5**：[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`) (`.agents/.yscb/templates/P05_task.md`)
-- **Phase 6**：[`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`) (`.agents/.yscb/templates/P06_test_plan.md`)
-- **Phase 7**：[`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`) (`.agents/.yscb/templates/P07_walkthrough.md`)
-- **修訂紀錄**：[`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`) (`.agents/.yscb/templates/revision_log.md`)
-- **調研報告**：[`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) (`.agents/.yscb/templates/RXX_research_report.md`)
-- **Fast Track**：[`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`) (`.agents/.yscb/templates/fast_track_plan.md`)
-- **Umbrella**：[`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`) (`.agents/.yscb/templates/umbrella_overview.md`)
-- **路線圖**：[`roadmap.md`](`__#{module://agents-workflow/assets/templates/roadmap.md}__`) (`.agents/.yscb/templates/roadmap.md`)
-- **待辦種子**：[`todo.md`](`__#{module://agents-workflow/assets/templates/todo.md}__`) (`.agents/.yscb/templates/todo.md`)
-- **微觀日誌**：[`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`) (`.agents/.yscb/templates/changelog.md`)
-- **現場交接**：[`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`) (`.agents/.yscb/templates/handoff.md`)
+- **Phase 0**：[`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`)
+- **Phase 1**：[`P01_requirements_spec.md`](`__#{module://agents-workflow/assets/templates/P01_requirements_spec.md}__`)
+- **Phase 2**：[`P02_architecture_plan.md`](`__#{module://agents-workflow/assets/templates/P02_architecture_plan.md}__`)
+- **Phase 3**：[`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)
+- **Phase 4**：[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`)
+- **Phase 5**：[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)
+- **Phase 6**：[`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)
+- **Phase 7**：[`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`)
+- **修訂紀錄**：[`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`)
+- **調研報告**：[`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`)
+- **Fast Track**：[`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`)
+- **Umbrella**：[`umbrella_overview.md`](`__#{module://agents-workflow/assets/templates/umbrella_overview.md}__`)
+- **路線圖**：[`roadmap.md`](`__#{module://agents-workflow/assets/templates/roadmap.md}__`)
+- **待辦種子**：[`todo.md`](`__#{module://agents-workflow/assets/templates/todo.md}__`)
+- **微觀日誌**：[`changelog.md`](`__#{module://agents-workflow/assets/templates/changelog.md}__`)
+- **現場交接**：[`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)
 
 ### [!] 模板調取三大鐵律 (Template Axiom)
 1. **唯一 SSOT**：所有計畫產物模板一律直接讀取上方條列之模板路徑，不得自造或臆測格式。

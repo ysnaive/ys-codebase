@@ -70,7 +70,7 @@ class TestContributesCmdAndSDK(YSCBTestCase):
         cli_path = os.path.join(os.path.dirname(test_dir), "scripts", "cli.py")
         if not os.path.isfile(cli_path):
             from core import uri
-            cli_path = os.path.join(uri._get_yscb_root(), ".modules", "core", "scripts", "cli.py")
+            cli_path = os.path.join(uri.resolve_yscb_root(), ".modules", "core", "scripts", "cli.py")
         spec = importlib.util.spec_from_file_location("core_cli", cli_path)
         core_cli = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(core_cli)
@@ -138,11 +138,11 @@ class TestContributesCmdAndSDK(YSCBTestCase):
         """T-06 補盲 & FT-02 & EC-01: 驗證 check_contributes 支援 config://core/contribute.json (含包裹與未包裹兩種格式) 與模組級掃描。"""
         import os
         import json
-        from core import uri
+        from core import uri, vfs
         from core.commands import contributes_cmd
 
         cfg_core_dir = uri.resolve("config://core")
-        uri.makedirs("config://core", exist_ok=True)
+        vfs.makedirs("config://core", exist_ok=True)
         cfg_path = os.path.join(cfg_core_dir, "contribute.json")
         try:
             # 1. 包裹於 {"core": ...} 頂層鍵之標準格式

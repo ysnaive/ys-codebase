@@ -112,33 +112,7 @@ class HybridSearchEngine:
         fetch_limit = max(limit * 3, 30)
         bm25_hits: List[Dict[str, Any]] = []
         symbols_map = getattr(self.inverted_index, "symbols", {}) if self.inverted_index else {}
-        if self.inverted_index is not None and hasattr(self.inverted_index, "search"):
-            raw_hits = self.inverted_index.search(
-                query=query,
-                limit=fetch_limit,
-                file_types=list(norm_ftypes) if norm_ftypes else None,
-            )
-            if spaces or kinds or languages or norm_ftypes:
-                filtered_hits = []
-                for h in raw_hits:
-                    sym = symbols_map.get(h["doc_id"])
-                    if not sym:
-                        continue
-                    if norm_ftypes:
-                        ext = sym.file_path.split(".")[-1].lower() if "." in sym.file_path else ""
-                        if ext not in norm_ftypes:
-                            continue
-                    if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
-                        continue
-                    if kinds and sym.kind not in kinds:
-                        continue
-                    if languages and sym.language not in languages:
-                        continue
-                    filtered_hits.append(h)
-                bm25_hits = filtered_hits
-            else:
-                bm25_hits = raw_hits
-        elif self.bm25_engine is not None and self.inverted_index is not None:
+        if self.bm25_engine is not None and self.inverted_index is not None:
             from .retrieval import QueryFilter
             flt = QueryFilter(
                 spaces=spaces,

@@ -406,7 +406,6 @@ class TestCLI(YSCBTestCase):
             "target_symbol": mock_target,
             "callers": [{
                 "symbol": mock_caller,
-                "caller_symbol": mock_caller,
                 "call_sites": [{"line_number": 35, "scope": "Host.Tick"}],
                 "code_snippet": CodeSnippet(
                     start_line=34, end_line=36, target_line=35,
@@ -415,7 +414,7 @@ class TestCLI(YSCBTestCase):
             }],
             "total_callers": 1,
         }
-        with patch("knowledge_db.engine.KnowledgeEngine.act_callers", return_value=mock_res):
+        with patch("knowledge_db.engine.KnowledgeEngine.callers", return_value=mock_res):
             for flag in ["--simple", "-s", "--detail"]:
                 buf_c = io.StringIO()
                 with contextlib.redirect_stdout(buf_c):

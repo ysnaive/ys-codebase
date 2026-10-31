@@ -28,8 +28,9 @@ Phase 05 執行檢核表：
    - 重構或新增 Public API 時，**嚴禁刪減或破壞標準介面註解結構**（說明、傳參、回傳與例外規範）。
 3. **意圖導向行內註解 (Why-Driven Comments)**：
    - 凡涉及非直觀演算法、邊界補償或特定常數，行內註解必須記錄「為什麼這樣做 (Why)」，嚴禁僅複述語法操作 (What)。
-4. **動作前置技能調用與測試連鎖觸發**：
+4. **動作前置技能調用與測試／代碼品質連鎖觸發**：
    - 編輯源碼、執行測試或維護文檔前，須依專案規範調用對應之專屬技能，不可省略。
+   - **[!] 業務程式碼結構衛生與無損重構鐵律**：編寫或修改業務生產源碼時，**強制遵循 [`CodeQualityStandards.md`](`__#{module://agents-workflow/assets/standards/CodeQualityStandards.md}__`)** 之四大防過度設計紅線、五維度品質指標（`D1~D5`）與 `S1~S6` 結構法則（落實公開方法主幹階段管線化 `S1`、無狀態純函式剝離與**零轉發殼層** `S2`、同構邏輯 20% 邊界不變量保護 `S3`、衛語句扁平化 `S4`，且**嚴禁在生產代碼註解或 Docstring 留存 `FR-XX` / `DR-XX` / `EC-XX` 等開發計畫工單標籤**）。
    - **撰寫或修改自動化測試腳本前，強制先觸發並遵循 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`)**，嚴格落實實質副作用斷言與 `tearDown` / `try...finally` 沙盒零殘留清理。
 
 ---
@@ -52,7 +53,7 @@ Phase 05 執行檢核表：
 - **極精簡 Session 回覆格式**：產出 `P05_task.md` 並更新 `changelog.md` 後，對話中**嚴禁全文重複、代碼傾倒或冗長轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
   ###  P05 任務實作已完成
-  - **產出文件**：[P05_task.md](__${project://plans/}__/{plan_name}/P05_task.md)
+  - **產出文件**：[P05_task.md](`__${project://plans}__/{plan_name}/P05_task.md`)
   - **實作摘要**：[完成 TASK 計 N 項、文檔同步 N 項 / 靜態檢查通過 / 偏差處置說明]
   - **待確認事項**：實作已完成，請問是否推進至 Phase 6（測試驗證）？
   ```

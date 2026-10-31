@@ -3,45 +3,26 @@ knowledge-db 輕量 ONNX 向量嵌入推論服務 (EmbeddingService)
 封裝 FastEmbed 離線模型推論、快取持久化與 100% 平滑降級守門。
 """
 
-import gzip
 import hashlib
 import logging
 import os
 from pathlib import Path
-import pickle
 import re
+import shutil
 import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
+from .config import DEFAULT_EMBEDDING_MODEL, MODEL_SPECS, KnowledgeDBConfig, resolve_threads
 from .exceptions import KnowledgeDBError
+from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
 
 # 預設抑制 Windows 上 Hugging Face Hub 的符號連結權限警告 (WinError 1314)
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 logger = logging.getLogger("knowledge-db.embedding")
-
-DEFAULT_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
-
-
-def resolve_max_threads(max_threads: Union[str, int, None] = None) -> int:
-    """計算 CPU 執行緒上限：auto 採用 cpu_count//2 (至少1)，整數截斷於 [1, cpu_count]"""
-    cpu_cnt = os.cpu_count() or 1
-    if max_threads is None or max_threads == "auto":
-        return max(1, cpu_cnt // 2)
-    if isinstance(max_threads, str):
-        if max_threads.lower() == "auto":
-            return max(1, cpu_cnt // 2)
-        try:
-            val = int(max_threads)
-            return max(1, min(val, cpu_cnt))
-        except ValueError:
-            return max(1, cpu_cnt // 2)
-    if isinstance(max_threads, (int, float)):
-        return max(1, min(int(max_threads), cpu_cnt))
-    return max(1, cpu_cnt // 2)
 
 
 class EmbeddingService:
@@ -55,23 +36,12 @@ class EmbeddingService:
 
     @classmethod
     def normalize_model_name(cls, model_name: Optional[str]) -> str:
-        """
-        正規化向量模型名稱，自動為常見縮寫補齊 vendor 前綴 (如 'bge-small-zh-v1.5' -> 'BAAI/bge-small-zh-v1.5')。
-        """
-        if not model_name or not str(model_name).strip():
-            return DEFAULT_MODEL_NAME
-        name = str(model_name).strip()
-        if "/" not in name:
-            name_lower = name.lower()
-            if name_lower.startswith("bge-"):
-                return f"BAAI/{name}"
-            elif name_lower.startswith("paraphrase-") or name_lower.startswith("all-"):
-                return f"sentence-transformers/{name}"
-        return name
+        """委派至 KnowledgeDBConfig.normalize_model_name"""
+        return KnowledgeDBConfig.normalize_model_name(model_name)
 
     def __init__(
         self,
-        model_name: str = DEFAULT_MODEL_NAME,
+        model_name: str = DEFAULT_EMBEDDING_MODEL,
         cache_dir: Optional[Union[str, Path]] = None,
         max_threads: Optional[Union[str, int]] = None,
         mock_mode: bool = False,
@@ -105,17 +75,12 @@ class EmbeddingService:
             except Exception:
                 pass
 
-    @staticmethod
-    def list_supported_models() -> List[Dict[str, Any]]:
-        """回傳 FastEmbed 支援之文字嵌入模型清單"""
-        try:
-            from fastembed import TextEmbedding
-            return list(TextEmbedding.list_supported_models())
-        except Exception:
-            return [{"model": DEFAULT_MODEL_NAME, "description": "Default BAAI model"}]
-
     def _resolve_dimension_mock(self) -> int:
-        """Mock 模式下以模型規格或名稱解析維度"""
+        """Mock 模式下優先從 config.MODEL_SPECS 查表，再以模型規格或名稱解析維度"""
+        spec = MODEL_SPECS.get(self.model_name)
+        if spec and isinstance(spec.get("dim"), int):
+            self._dimension = int(spec["dim"])
+            return self._dimension
         try:
             from fastembed import TextEmbedding
             dim = TextEmbedding.get_embedding_size(self.model_name)
@@ -137,11 +102,7 @@ class EmbeddingService:
         return dim
 
     def is_model_downloaded(self) -> bool:
-        """檢查本地快取目錄中特定模型權重目錄與檔案是否存在。
-
-        Returns:
-            bool: 若權重目錄存在且包含至少一個模型權重檔 (.onnx) 則回傳 True，否則 False。
-        """
+        """檢查本地快取目錄中特定模型權重目錄與檔案是否存在。"""
         if not self.cache_dir.exists():
             return False
 
@@ -149,7 +110,6 @@ class EmbeddingService:
         model_clean = self.model_name.replace("/", "--").lower()
 
         try:
-            # 1. 優先檢查匹配模型名稱之子目錄 (FastEmbed/HuggingFace 格式)
             matching_dirs = [
                 d for d in self.cache_dir.iterdir()
                 if d.is_dir() and (model_short in d.name.lower() or model_clean in d.name.lower())
@@ -160,14 +120,12 @@ class EmbeddingService:
                     if onnx_files:
                         return True
 
-            # 2. 檢查 cache_dir 全域是否有該模型對應之非空 .onnx 權重檔案
             all_onnx = [f for f in self.cache_dir.rglob("*.onnx") if f.is_file() and f.stat().st_size > 0]
             for f in all_onnx:
                 path_str = str(f).lower()
                 if model_short in path_str or model_clean in path_str:
                     return True
 
-            # 若整個快取目錄內檔案少且存在任意非空 .onnx
             sub_entries = list(self.cache_dir.iterdir())
             if all_onnx and len(sub_entries) <= 3:
                 return True
@@ -177,23 +135,15 @@ class EmbeddingService:
         return False
 
     def download_model(self, force: bool = False) -> bool:
-        """顯式下載 FastEmbed 模型權重至本地快取。
-
-        Args:
-            force: 若為 True 則強制覆蓋現有權重重新下載。
-
-        Returns:
-            bool: 下載成功回傳 True。
-
-        Raises:
-            KnowledgeDBError: 下載失敗或網路不可達時拋出。
+        """
+        顯式下載 FastEmbed 模型權重至本地快取，具備暫存目錄與失敗回滾保護。
         """
         self._suppress_hf_warnings()
         if not force and self.is_model_downloaded():
             self._ensure_model()
             return True
 
-        threads_count = resolve_max_threads(self.max_threads)
+        threads_count = resolve_threads(self.max_threads)
         os.environ["OMP_NUM_THREADS"] = str(threads_count)
         os.environ["ONNXRUNTIME_INTRA_OP_NUM_THREADS"] = str(threads_count)
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -238,7 +188,6 @@ class EmbeddingService:
         """嘗試加載 FastEmbed ONNX 模型；本地探針先行，若未下載則平滑降級為 BM25 模式。"""
         self._suppress_hf_warnings()
 
-        # 1. 本地模型權重探針先行 (P02:DR-02, FR-05, FR-06)
         if not self.is_model_downloaded():
             self._is_available = False
             self._model = None
@@ -257,7 +206,6 @@ class EmbeddingService:
         try:
             from fastembed import TextEmbedding
 
-            # 2. 模型白名單合法性比對與優雅降級 (EC-01)
             try:
                 self.model_name = self.normalize_model_name(self.model_name)
                 supported_models = [m["model"] for m in TextEmbedding.list_supported_models()]
@@ -272,14 +220,13 @@ class EmbeddingService:
                     else:
                         logger.warning(
                             f"Requested model '{self.model_name}' is not in FastEmbed supported list. "
-                            f"Falling back to default '{DEFAULT_MODEL_NAME}'."
+                            f"Falling back to default '{DEFAULT_EMBEDDING_MODEL}'."
                         )
-                        self.model_name = DEFAULT_MODEL_NAME
+                        self.model_name = DEFAULT_EMBEDDING_MODEL
             except Exception as e:
                 logger.debug(f"Failed to check supported models list: {e}")
 
-            # 3. 限制 ONNX 與 OpenMP 執行緒上限，採用 CPU 數之一半 (FR-08, EC-07)
-            threads_count = resolve_max_threads(self.max_threads)
+            threads_count = resolve_threads(self.max_threads)
             os.environ["OMP_NUM_THREADS"] = str(threads_count)
             os.environ["ONNXRUNTIME_INTRA_OP_NUM_THREADS"] = str(threads_count)
 
@@ -296,7 +243,6 @@ class EmbeddingService:
                     cache_dir=str(self.cache_dir),
                 )
 
-            # 統一以實際加載之模型實例原生屬性為唯一真理來源 (SSOT)
             dim = getattr(self._model, "embedding_size", None)
             if dim is None or not isinstance(dim, int) or dim <= 0:
                 try:
@@ -359,7 +305,6 @@ class EmbeddingService:
             vec[0] = 1.0
             return vec
 
-        # 以 md5 雜湊作為確定性隨機種子
         seed = int(hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()[:8], 16)
         rng = np.random.RandomState(seed)
         raw_vec = rng.randn(target_dim).astype(np.float32)
@@ -373,10 +318,8 @@ class EmbeddingService:
         """針對程式碼符號進行駝峰與蛇形分割與正規化，以配合 uncased BERT 分詞"""
         if not text:
             return ""
-        # 分割駝峰命名 (CamelCase -> Camel Case)
         t = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(text))
         t = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", t)
-        # 取代底線、點號與路徑分隔符為空格，並轉為小寫
         t = t.replace("_", " ").replace(".", " ").replace("/", " ").replace("\\", " ").lower()
         return " ".join(t.split())
 
@@ -384,7 +327,6 @@ class EmbeddingService:
         """
         批次計算文字嵌入向量清單，傳回 (N, dim) 之 L2-Normalized 矩陣。
         採用 batch_size 切片與微幅時間片讓渡 (sleep 5ms)，杜絕 CPU 100% 飽和與系統凍結。
-        若不可用時回傳空矩陣。
         """
         if not texts:
             return np.empty((0, self.dimension), dtype=np.float32)
@@ -409,7 +351,6 @@ class EmbeddingService:
                     time.sleep(0.005)
 
             mat = np.vstack(embeddings_list).astype(np.float32)
-            # L2 正規化
             norms = np.linalg.norm(mat, axis=1, keepdims=True)
             norms[norms == 0] = 1.0
             return mat / norms
@@ -453,34 +394,13 @@ class EmbeddingService:
             return res[0]
         return np.zeros(self.dimension, dtype=np.float32)
 
-    def compute_similarity(self, query_vec: np.ndarray, doc_vecs: np.ndarray) -> np.ndarray:
-        """
-        計算查詢向量與文件向量群之餘弦相似度陣列。
-        因為兩者均已 L2-Normalized，餘弦相似度即等於內積矩陣相乘 (Dot Product)。
-        :param query_vec: 形狀為 (dim,) 之查詢向量
-        :param doc_vecs: 形狀為 (N, dim) 之文件向量矩陣
-        :return: 形狀為 (N,) 之相似度分數陣列 (範圍約 [-1.0, 1.0])
-        """
-        if len(doc_vecs) == 0 or len(query_vec) == 0:
-            return np.empty((0,), dtype=np.float32)
-
-        # 確保維度相符
-        if query_vec.ndim == 1:
-            query_vec = query_vec.reshape(1, -1)
-
-        sims = np.dot(doc_vecs, query_vec.T).squeeze(axis=-1)
-        return sims.astype(np.float32)
-
 
 class VectorIndex:
-    """
-    向量特徵索引池與二進位快取容器
-    """
+    """向量特徵索引池與二進位快取容器 (移除未使用之 _doc_id_to_idx M-10)"""
 
     def __init__(self, model_name: Optional[str] = None, dim: Optional[int] = None):
         self.doc_ids: List[str] = []
         self.vectors: Optional[np.ndarray] = None
-        self._doc_id_to_idx: Dict[str, int] = {}
         self.model_name: Optional[str] = model_name
         self.dim: Optional[int] = dim
 
@@ -494,7 +414,6 @@ class VectorIndex:
         """建置或替換當前向量索引"""
         self.doc_ids = list(doc_ids)
         self.vectors = vectors.astype(np.float32)
-        self._doc_id_to_idx = {doc_id: i for i, doc_id in enumerate(self.doc_ids)}
         if model_name:
             self.model_name = model_name
         if dim:
@@ -528,7 +447,6 @@ class VectorIndex:
 
         dim = self.vectors.shape[1] if (self.vectors is not None and self.vectors.ndim > 1) else (self.dim or 0)
 
-        # 1. 找出保留的 doc_ids 與其索引
         keep_indices = []
         keep_doc_ids = []
         for i, doc_id in enumerate(self.doc_ids):
@@ -541,7 +459,6 @@ class VectorIndex:
         else:
             current_vectors = np.empty((0, dim), dtype=np.float32)
 
-        # 2. 追加新向量
         if new_doc_ids and new_vectors is not None and len(new_vectors) > 0:
             if len(current_vectors) > 0:
                 merged_vectors = np.vstack([current_vectors, new_vectors.astype(np.float32)])
@@ -555,10 +472,7 @@ class VectorIndex:
         self.build(merged_doc_ids, merged_vectors, model_name=self.model_name, dim=self.dim)
 
     def search(self, query_vec: np.ndarray, top_k: int = 50) -> List[Tuple[str, float]]:
-        """
-        執行頂點餘弦相似度 Top-K 檢索。
-        :return: [(doc_id, score), ...] 按相似度降序排列
-        """
+        """執行頂點餘弦相似度 Top-K 檢索。"""
         if self.vectors is None or len(self.doc_ids) == 0:
             return []
 
@@ -579,9 +493,7 @@ class VectorIndex:
         return results
 
     def save_binary(self, cache_file: Union[str, Path], compresslevel: int = 1) -> None:
-        """使用 Pickle Protocol 5 + Gzip 儲存向量快取 (含 model_name 與 dim 元資料)"""
-        cache_path = Path(cache_file)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        """使用 io_utils 原子儲存向量快取"""
         dim_val = self.dim or (self.vectors.shape[1] if self.vectors is not None and self.vectors.ndim > 1 else None)
         data = {
             "doc_ids": self.doc_ids,
@@ -589,26 +501,19 @@ class VectorIndex:
             "model_name": self.model_name,
             "dim": dim_val,
         }
-        with gzip.open(cache_path, "wb", compresslevel=compresslevel) as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        atomic_save_gzip_pickle(cache_file, data, compresslevel=compresslevel)
 
     @classmethod
     def load_binary(cls, cache_file: Union[str, Path]) -> "VectorIndex":
-        """自 Protocol 5 Gzip 快取還原向量索引與元資料"""
-        cache_path = Path(cache_file)
+        """使用 io_utils 還原向量索引與元資料"""
         idx = cls()
-        if not cache_path.exists():
+        data = load_gzip_pickle(cache_file, raise_on_missing=False)
+        if not isinstance(data, dict):
             return idx
-        try:
-            with gzip.open(cache_path, "rb") as f:
-                data = pickle.load(f)
-            doc_ids = data.get("doc_ids", [])
-            vectors = data.get("vectors")
-            model_name = data.get("model_name")
-            dim = data.get("dim")
-            if doc_ids and vectors is not None:
-                idx.build(doc_ids, vectors, model_name=model_name, dim=dim)
-        except Exception as e:
-            logger.warning(f"Failed to load vector cache from '{cache_path}': {e}")
+        doc_ids = data.get("doc_ids", [])
+        vectors = data.get("vectors")
+        model_name = data.get("model_name")
+        dim = data.get("dim")
+        if doc_ids and vectors is not None:
+            idx.build(doc_ids, vectors, model_name=model_name, dim=dim)
         return idx
-

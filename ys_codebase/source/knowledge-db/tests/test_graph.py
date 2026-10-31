@@ -21,13 +21,7 @@ from dev.testing.requirement import Requirement, require
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.graph import CallGraphIndex
 from knowledge_db.linker import TopologyLinker
-from knowledge_db.parsers import (
-    CppParser,
-    CSharpParser,
-    JsTsParser,
-    MarkdownParser,
-    PythonParser,
-)
+from knowledge_db.parsers import ParserRegistry
 from knowledge_db.schema import (
     LanguageType,
     SpaceConfig,
@@ -243,6 +237,10 @@ class TestCallGraphAndReferenceIndex(YSCBTestCase):
     調用圖譜與引用拓撲完整測試套件
     """
 
+    def setUp(self):
+        super().setUp()
+        self.registry = ParserRegistry(register_defaults=True)
+
     @require(Requirement.LOGIC)
     def test_ft_01_schema_call_site_models(self):
         """FT-01: 驗證 SymbolCallSite 模型與序列化"""
@@ -286,7 +284,7 @@ def top_level_func():
     engine = MyEngine()
     engine.setup()
 """
-        parser = PythonParser()
+        parser = self.registry.get_parser("src/my_engine.py")
         symbols = parser.parse(file_path="src/my_engine.py", content=code, space="main")
         self.assertTrue(len(symbols) >= 3)
 
@@ -454,7 +452,6 @@ def top_level_func():
             # 2. 增量修補: a.py 被修改，A 不再調用 B，改為 A 調用 C
             new_site = SymbolCallSite(callee_name="c", line_number=12, file_path="src/a.py")
             restored.patch_incremental(
-                dirty_file_paths={"src/a.py"},
                 new_edges=[("A", "C", new_site)],
                 old_symbol_ids={"A"},
             )
@@ -512,7 +509,7 @@ class KnowledgeEngine:
             )
 
             # 1. 執行 callers 查詢 (誰調用了 InvertedIndex.load_binary?)
-            callers_res = engine.act_callers("InvertedIndex.load_binary", snippet=True)
+            callers_res = engine.callers("InvertedIndex.load_binary", snippet=True)
             self.assertEqual(callers_res["total_callers"], 1)
             caller_sym = callers_res["callers"][0]["symbol"]
             self.assertEqual(caller_sym.name, "KnowledgeEngine.build_unified_index")
@@ -523,7 +520,7 @@ class KnowledgeEngine:
             self.assertIn("KnowledgeEngine.build_unified_index", callers_out)
 
             # 2. 執行 callees 查詢 (KnowledgeEngine.hot_patch 調用了誰?)
-            callees_res = engine.act_callees("KnowledgeEngine.hot_patch", snippet=True)
+            callees_res = engine.callees("KnowledgeEngine.hot_patch", snippet=True)
             self.assertEqual(callees_res["total_callees"], 1)
             callee_sym = callees_res["callees"][0]["symbol"]
             self.assertEqual(callee_sym.name, "InvertedIndex.patch_incremental")
@@ -532,7 +529,7 @@ class KnowledgeEngine:
             self.assertIn("InvertedIndex.patch_incremental", callees_out)
 
             # 3. 執行 impact 查詢 (改動 InvertedIndex.load_binary 的影響半徑)
-            impact_res = engine.act_impact("InvertedIndex.load_binary", depth=2)
+            impact_res = engine.impact("InvertedIndex.load_binary", depth=2)
             self.assertEqual(impact_res["total_impacted_symbols"], 1)
             impact_out = engine.format_impact_output(impact_res)
             self.assertIn("1 階直接影響", impact_out)
@@ -543,7 +540,7 @@ class KnowledgeEngine:
     @require(Requirement.LOGIC)
     def test_et_01_dynamic_calls_and_error_handling(self):
         """ET-01: 邊界測試 - 動態屬性調用、語法錯誤與無 Import 多型方法安全降級"""
-        parser = PythonParser()
+        parser = self.registry.get_parser("src/broken.py")
         broken_code = "def syntax_error( self. {"
         symbols = parser.parse(file_path="src/broken.py", content=broken_code, space="main")
         self.assertEqual(symbols, [])
@@ -678,7 +675,7 @@ public:
     void Init() {}
 };
 """
-        parser = CppParser()
+        parser = self.registry.get_parser("src/engine.cpp")
         imports = parser.extract_imports("src/engine.cpp", code)
         self.assertEqual(imports.get("retrieval"), "retrieval.h")
         self.assertEqual(imports.get("Utils"), "Core::Utils")
@@ -713,7 +710,7 @@ namespace App {
     }
 }
 """
-        parser = CSharpParser()
+        parser = self.registry.get_parser("src/Controller.cs")
         imports = parser.extract_imports("src/Controller.cs", code)
         self.assertEqual(imports.get("Text"), "System.Text")
         self.assertEqual(imports.get("MyMath"), "System.Math")
@@ -746,7 +743,7 @@ class AppService {
     init() {}
 }
 """
-        parser = JsTsParser()
+        parser = self.registry.get_parser("src/app.ts")
         imports = parser.extract_imports("src/app.ts", code)
         self.assertEqual(imports.get("loadBin"), "./retrieval.loadBinary")
         self.assertEqual(imports.get("InvertedIndex"), "./retrieval.InvertedIndex")
@@ -775,7 +772,7 @@ class AppService {
 Refer to [Architecture Guide](architecture.md) and [`KnowledgeEngine.build`](engine.py#L123).
 You can also call `InvertedIndex.load_binary` to reload cache.
 """
-        parser = MarkdownParser()
+        parser = self.registry.get_parser("docs/api.md")
         imports = parser.extract_imports("docs/api.md", doc)
         self.assertEqual(imports.get("Architecture Guide"), "architecture.md")
 
@@ -857,7 +854,7 @@ namespace UIToolkit.UI.Elements {
             # 1. 驗證 VisualElement.MarkMeasureDirty 的 callers：
             # 包含：遞迴自調用 (MarkMeasureDirty)、衍生類別隱式 this (TextElement.RefreshText)、屬性 setter 條件存取 (VisualElement.Text)
             # 且預設排除 Design.md 文檔符號！
-            res_callers = engine.act_callers("VisualElement.MarkMeasureDirty", snippet=False)
+            res_callers = engine.callers("VisualElement.MarkMeasureDirty", snippet=False)
             caller_names = {c["symbol"].name for c in res_callers["callers"]}
             self.assertTrue(any(n.endswith("VisualElement.MarkMeasureDirty") for n in caller_names))
             self.assertTrue(any(n.endswith("TextElement.RefreshText") for n in caller_names))
@@ -865,26 +862,26 @@ namespace UIToolkit.UI.Elements {
             self.assertFalse(any(c["symbol"].language == "markdown" for c in res_callers["callers"]))
 
             # 2. 驗證顯式 --ftype=md 時僅回傳 Markdown 引用
-            res_md_callers = engine.act_callers("VisualElement.MarkMeasureDirty", snippet=False, ftypes="md")
+            res_md_callers = engine.callers("VisualElement.MarkMeasureDirty", snippet=False, ftypes="md")
             self.assertEqual(len(res_md_callers["callers"]), 1)
             self.assertEqual(res_md_callers["callers"][0]["symbol"].language, "markdown")
 
             # 3. 驗證 VisualElement.MarkLayoutDirty 的隱式 this 同類別調用與 2 階 impact 擴散
-            res_layout_callers = engine.act_callers("VisualElement.MarkLayoutDirty", snippet=False)
+            res_layout_callers = engine.callers("VisualElement.MarkLayoutDirty", snippet=False)
             layout_caller_names = {c["symbol"].name for c in res_layout_callers["callers"]}
             self.assertTrue(any(n.endswith("VisualElement.MarkMeasureDirty") for n in layout_caller_names))
 
-            res_impact = engine.act_impact("VisualElement.MarkLayoutDirty", depth=2)
+            res_impact = engine.impact("VisualElement.MarkLayoutDirty", depth=2)
             self.assertGreaterEqual(res_impact["total_impacted_symbols"], 2)
             layer2_names = {s.name for s in res_impact["layers"].get(2, [])}
             self.assertTrue(any(n.endswith("TextElement.RefreshText") for n in layer2_names))
 
             # 4. 驗證 IPanel.UpdateLayout <-> Panel.UpdateLayout 介面與實作雙向契約聚合
-            res_panel_callers = engine.act_callers("Panel.UpdateLayout", snippet=False)
+            res_panel_callers = engine.callers("Panel.UpdateLayout", snippet=False)
             panel_caller_names = {c["symbol"].name for c in res_panel_callers["callers"]}
             self.assertTrue(any(n.endswith("HostController.Tick") for n in panel_caller_names))
 
-            res_ipanel_impact = engine.act_impact("IPanel.UpdateLayout", depth=2)
+            res_ipanel_impact = engine.impact("IPanel.UpdateLayout", depth=2)
             self.assertGreaterEqual(res_ipanel_impact["total_impacted_symbols"], 1)
 
             # 5. EC-03: 驗證同名符號存在於多個檔案類型 (.cs 與 .py) 時，指定 ftypes='py' 優先精準定位 .py 目標符號
@@ -898,7 +895,7 @@ namespace UIToolkit.UI.Elements {
                 contributes_data={"spaces": {"uitk_multi": sp_multi.to_dict()}},
             )
             engine_multi.build_unified_index(force=True)
-            res_py_target = engine_multi.act_callers("Panel.UpdateLayout", snippet=False, ftypes="py")
+            res_py_target = engine_multi.callers("Panel.UpdateLayout", snippet=False, ftypes="py")
             self.assertIsNotNone(res_py_target["target_symbol"])
             self.assertTrue(res_py_target["target_symbol"].file_path.endswith("Panel.py"))
 

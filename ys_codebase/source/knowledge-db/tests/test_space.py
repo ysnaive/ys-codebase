@@ -97,7 +97,7 @@ class TestSpaceManager(YSCBTestCase):
             }
 
             sm = SpaceManager(contributes_data=mock_contributes)
-            union_spaces = sm.get_union_spaces()
+            union_spaces = sm.list_spaces()
             self.assertEqual(len(union_spaces), 2)
             space_names = [s.name for s in union_spaces]
             self.assertIn("space_a", space_names)
@@ -202,20 +202,31 @@ class TestSpaceManager(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_02_knowledgedb_config_purity(self):
-        """FT-02: 驗證 KnowledgeDBConfig 維持最新版純粹性，無舊版 server 屬性與向後相容欄位"""
-        from knowledge_db.config import KnowledgeDBConfig
+        """FT-02: 驗證 KnowledgeDBConfig 維持最新版純粹性與 resolve_threads 唯一真理 (SSOT)"""
+        from knowledge_db.config import KnowledgeDBConfig, resolve_threads
         cfg = KnowledgeDBConfig()
         self.assertFalse(hasattr(cfg, "enable_hot_reload_server"))
         self.assertFalse(hasattr(cfg, "hot_reload_server_inactivity_timer_sec"))
         self.assertFalse(hasattr(cfg, "enable_server_console"))
         self.assertFalse(hasattr(cfg, "is_jit_effective"))
-        self.assertEqual(cfg.resolve_jit_vector_timeout(), 5.0)
+        self.assertFalse(hasattr(cfg, "resolve_max_threads"))
+        self.assertEqual(cfg.jit_vector_timeout_seconds, 5.0)
+
+        # 驗證模組級 resolve_threads 與實例方法 resolve_threads 對 None / "auto" / 整數之一致性
+        t_none = resolve_threads(None)
+        t_auto = resolve_threads("auto")
+        self.assertIsInstance(t_none, int)
+        self.assertGreaterEqual(t_none, 1)
+        self.assertEqual(t_none, t_auto)
+        self.assertEqual(cfg.resolve_threads(None), t_none)
+        self.assertEqual(cfg.resolve_threads("auto"), t_auto)
+        self.assertEqual(resolve_threads(1), 1)
 
         loaded = KnowledgeDBConfig.load(
             project_config={"knowledge-db": {"enable_hot_reload_server": True, "jit_vector_timeout_seconds": 8.0}}
         )
         self.assertFalse(hasattr(loaded, "enable_hot_reload_server"))
-        self.assertEqual(loaded.resolve_jit_vector_timeout(), 8.0)
+        self.assertEqual(loaded.jit_vector_timeout_seconds, 8.0)
         self.mark_passed()
 
 

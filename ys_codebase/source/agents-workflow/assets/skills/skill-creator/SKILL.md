@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: 引導建立專案功能特化 Skill、環境注意事項攔截規則或階段錨點注入配置，自動對接語意 URI 與雙層編譯註冊閉環。僅於顯式輸入 /skill-creator 或明確指示建立新 Skill 與擴充工作流規範時觸發。
+description: 引導於第一層組態空間建立專案特化 Skill、攔截規則或階段注入片段並完成編譯註冊。僅於顯式輸入 /skill-creator 或明確要求建立新 Skill 與擴充工作流規範時觸發。
 ---
 
 # 專案特化技能建置與宣告式擴充工作流 (Skill Creator)
@@ -28,9 +28,9 @@ description: 引導建立專案功能特化 Skill、環境注意事項攔截規�
 開始執行時，請複製以下檢核表追蹤擴充與建置進度：
 
 ```markdown
-/SkillCreator 四步建置與擴充檢核表：
+/skill-creator 四步建置與擴充檢核表：
 - [ ] 步驟 1：需求意圖訪談與三軌擴充智能分流（判定軌跡 ① 純錨點注入 / 軌跡 ② 環境攔截型 Skill / 軌跡 ③ 功能特化型 Skill）
-- [ ] 步驟 2：執行 CLI 檢索可用錨點與語意 URI、讀取 extension-guide.md，呈遞「🛠️ /SkillCreator 專案擴充藍圖確認卡」並 End Turn 等待拍板
+- [ ] 步驟 2：執行 CLI 檢索可用錨點與語意 URI、讀取 extension-guide.md，呈遞「🛠️ /skill-creator 專案擴充藍圖確認卡」並 End Turn 等待拍板
 - [ ] 步驟 3：於第一層扁平路徑生成合規資產（落實雙軌 description、同技能相對路徑 vs. 跨空間單反引號語意 URI 分流）
 - [ ] 步驟 4：最小增量更新 contribute.json，依序通過「contributes check -> compile -> release」三步驗證守門並呈遞完成卡
 ```
@@ -42,8 +42,8 @@ description: 引導建立專案功能特化 Skill、環境注意事項攔截規�
 | 擴充軌跡 | 判定條件與特徵 | 第一層產出資產 (`__${config://agents-workflow}__/`) | 註冊與掛載方式 |
 | :--- | :--- | :--- | :--- |
 | **軌跡 ①：純錨點注入模式**<br>(`Anchor-Only Injection`) | 僅需在特定階段（如 `Phase 05` 實作、`Phase 06` 測試）或 `/context-init` 補充局部注意事項（$\le 15$ 行），無獨立多步流程 | `snippets/<name>.md`<br>*(不建立新 Skill，0 路由表膨脹)* | 於 `contribute.json` 宣告 `insert` 注入目標 Stage 1 錨點（如 `PHASE05_AGENTS_GUIDE`） |
-| **軌跡 ②：被動環境攔截型 Skill**<br>(`Ambient / Guardrail Skill`) | 當 Agent 操作特定目錄、工具或領域代碼時必須自動攔截並遵循之完整規範 | `skills/<name>/SKILL.md` (+ 選配單層 `references/`)<br>`snippets/<name>_routing.md` | 宣告 `export` 匯出 Skill（採**三段式 `description`**），並 `insert` 表格列至 `AGENTS_SKILL_ROUTING` |
-| **軌跡 ③：功能特化型 Skill**<br>(`Feature / Workflow Skill`) | 專案特定子系統的多步驟標準作業流（如自訂資產編譯、專項發布或特定分析流程） | `skills/<name>/SKILL.md` (+ 選配單層 `references/`) | 宣告 `export` 匯出 Skill（Slash 指令採**極簡契約**，或環境觸發採三段式），選配掛載路由或 `WORKFLOW_SOP_STANDARDS` |
+| **軌跡 ②：被動環境攔截型 Skill**<br>(`Ambient / Guardrail Skill`) | 當 Agent 操作特定目錄、工具或領域代碼時必須自動攔截並遵循之完整規範 | `skills/<name>/SKILL.md` (+ 選配單層 `references/`)<br>`snippets/<name>_routing.md` | 宣告 `export` 匯出 Skill（採 **A1 正向邊界 `description`**），並 `insert` 表格列至 `AGENTS_SKILL_ROUTING` |
+| **軌跡 ③：功能特化型 Skill**<br>(`Feature / Workflow Skill`) | 專案特定子系統的多步驟標準作業流（如自訂資產編譯、專項發布或特定分析流程） | `skills/<name>/SKILL.md` (+ 選配單層 `references/`) | 宣告 `export` 匯出 Skill（Slash 指令採 **B-Strict 純斜線鎖定** 或 **B-Assist 明確委託契約**，環境觸發採 **A1**），選配掛載路由或 `WORKFLOW_SOP_STANDARDS` |
 
 > [!TIP]
 > **過度建技攔截防呆（`EC-02`）**：若開發者要求「新增一個 Skill 來提醒 Phase 5 實作時注意某件事」，請主動在步驟 2 藍圖確認卡建議改採**「軌跡 ①：純錨點注入模式」**直接注入 `PHASE05_AGENTS_GUIDE`，避免技能路由表無謂膨脹。
@@ -58,7 +58,7 @@ description: 引導建立專案功能特化 Skill、環境注意事項攔截規�
    在實際建立檔案或修改 `__${config://agents-workflow}__/contribute.json` 前，必須先向開發者輸出以下確認卡並**立即 End Turn**（開發者之確認同時構成步驟 4 執行正式物化發布之顯式授權）：
 
 ```markdown
-### 🛠️ /SkillCreator 專案擴充藍圖確認卡
+### 🛠️ /skill-creator 專案擴充藍圖確認卡
 - **需求分類與選定軌跡**：[軌跡 ① 純錨點注入 / 軌跡 ② 被動環境攔截型 Skill / 軌跡 ③ 功能特化型 Skill]
 - **預計產出第一層資產**：
   - [例如：`__${config://agents-workflow}__/skills/<name>/SKILL.md` 或 `__${config://agents-workflow}__/snippets/<name>.md`]
@@ -70,17 +70,17 @@ description: 引導建立專案功能特化 Skill、環境注意事項攔截規�
 
 ### 步驟 3：合規第一層資產生成與雙軌路徑語法封裝 (`Compliant Asset Generation`)
 
-獲開發者確認後，遵循 [`references/extension-guide.md`](./references/extension-guide.md) §3 與 §5 規範生成第一層檔案：
+獲開發者確認後，遵循通用技能設計標準 [`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`)、YSCB 工具包編譯標準 [`YscbSkillDesignToolStandards.md`](`__#{module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md}__`) 及 [`references/extension-guide.md`](./references/extension-guide.md) §3 與 §5 規範生成第一層檔案：
 
-1. **第一層扁平路徑鐵律**：
+1. **第一層扁平路徑鐵律（詳見 [`YscbSkillDesignToolStandards.md`](`__#{module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md}__`) §1）**：
    - 專案自訂技能固定置於：`__${config://agents-workflow}__/skills/<name>/SKILL.md`（附屬參考檔置於單層 `skills/<name>/references/<file>.md`，長於 100 行須附 `## 目錄 (Contents)`）。
    - 專案自訂注入片段固定置於：`__${config://agents-workflow}__/snippets/<name>.md`。
    - **嚴禁**在 `__${config://agents-workflow}__/` 下多套一層 `assets/` 目錄，亦**嚴禁**直接寫入由 `release_target` 之 `projections` 定義的第二層物化投影空間。
-2. **雙軌結構化 `description` 契約**：
-   - **被動環境攔截型（軌跡 ②）**：採用三段式 `核心用途與支援範圍。觸發情境：...。排除情境：...。`
-   - **主動指令型（軌跡 ③ Slash 指令）**：採用極簡契約 `1 句話核心目的與交付物。僅於顯式輸入 /<name> 或明確指示<核心動作>時觸發。`
-   - 每個新 `SKILL.md` 必須控制在 **500 行以內**，並內建步驟檢核表與 `## 常見踩坑指南 (Gotchas)`。
-3. **雙軌路徑引用與單反引號封裝防呆（`EC-01`, `EC-03`）**：
+2. **雙軌結構化 `description` 契約（A1 + B2，詳見 [`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) §1）**：
+   - **被動環境攔截型（軌跡 ② — A1 正向邊界契約）**：採用 `{核心用途、處理對象與交付物}。觸發情境：{具體動詞、目標檔案路徑特徵與前置攔截時機}。`（預設不寫 `排除情境：`；若同領域易混淆僅選配補充「不含哪些動作／產物」，**嚴禁在 `description` 跨技能點名 `(改用 xxx)`**）。
+   - **主動指令型（軌跡 ③ — B2 分級命令鎖定）**：重型／破壞性工作流（**B-Strict**）採用 `{1 句話核心目的與交付物}。僅於顯式輸入 /<name> 時觸發，嚴禁主動觸發。`；會話／教學輔助類（**B-Assist**）採用 `{1 句話核心目的與交付物}。僅於顯式輸入 /<name> 或明確要求<具體委託動作>時觸發。`。
+   - 每個新 `SKILL.md` 必須控制在 **500 行以內**，依步驟與產物性質配置檢核表、雙模狀態卡與 `## 常見踩坑指南 (Gotchas)`。
+3. **雙軌路徑引用與單反引號封裝防呆（`EC-01`, `EC-03`，詳見 [`YscbSkillDesignToolStandards.md`](`__#{module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md}__`) §2）**：
    - **指向同技能自身的 `references/`**：一律使用標準相對路徑（如 `[參考手冊](./references/xxx.md)`）。
    - **指向其他技能、標準模板或專案空間路徑**：強制使用**單反引號包覆**之 Stage 2 語意 URI（穿插路徑如 `__${config://agents-workflow}__/contribute.json` 可於物化後保留行內反引號格式）。
    - **教學與範例區塊保護**：若技能或參考手冊內文需展示不被編譯器解算之字面量動態標籤語法，須置於首行標註 `<!-- yscb:literal -->` 之三反引號 Fenced Code Block 內保護：
@@ -95,7 +95,7 @@ description: 引導建立專案功能特化 Skill、環境注意事項攔截規�
 ### 步驟 4：宣告式組態註冊與三步嚴格編譯驗證守門 (`3-Step Verification Gate`)
 
 1. **最小增量更新 `__${config://agents-workflow}__/contribute.json`**：
-   依 [`references/extension-guide.md`](./references/extension-guide.md) §4 範本，以最小增量（Additive Edit）將新條目加入 `export` 或 `insert` 陣列，保留既有全部設定；並確認 `export.description` 與 `SKILL.md` Frontmatter `description` 完全一致。
+   依 [`references/extension-guide.md`](./references/extension-guide.md) §4 範本，以最小增量（Additive Edit）將新條目加入 `export` 或 `insert` 陣列，保留既有全部設定（`type: "skill"` 僅需宣告 `type`、`name`、`source`，描述由編譯器自動自 `SKILL.md` Frontmatter `description` 擷取，無須重複填寫）。
 2. **強制依序執行三步編譯驗證守門（`EC-04`）**：
    - **守門 ①（組態 Schema 檢核）**：執行 `python __${yscb.host://yscb.py}__ contributes check`，確認 `0 Errors`。
    - **守門 ②（Stage 1 試編譯與語法檢核）**：執行 `python __${yscb.host://yscb.py}__ agents-workflow compile`，嚴格確認輸出 **0 Error 且 0 `[compiler:warning]`**（無拼錯之 Token 名稱、無未包覆反引號之標籤）。
