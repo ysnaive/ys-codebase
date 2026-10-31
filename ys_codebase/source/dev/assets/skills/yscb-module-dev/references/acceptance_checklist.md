@@ -3,9 +3,13 @@
 本手冊定義 YSCB 模組在進行功能開發與維護時的**代碼品質、四大文檔視角、AST 靜態檢核紅線與驗收標準**。聚焦於靜態工具無法自動感知的深層語意、文檔同步性與架構邊界盲區，並對齊 `dev check` 剛性檢核管線。
 
 > [!TIP]
-> 若欲查閱 CLI 實作與 Contributes 宣告對稱性規範，請參閱專門指南：
-> - [CLI 活躍合約與指令手冊](./cli_and_commands.md)（第 2 節：實作與宣告對稱性規範）
-> - [Contributes 擴充注入與 Schema 規範指南](./contributes_guide.md)（第 4.3 節：實作與注入宣告對稱性鐵律）
+> 若欲查閱 CLI 實作與 Contributes 宣告對稱性規範，請由主技能 `SKILL.md` 第 4 節分流矩陣查閱 `cli_and_commands.md`（第 2 節）與 `contributes_guide.md`（第 4.3 節）。
+
+## 目錄 (Contents)
+- [1. 核心定位：超越機械檢查的語意防禦](#1-核心定位超越機械檢查的語意防禦)
+- [2. 模組品質維度矩陣 (Module Quality Dimensions)](#2-模組品質維度矩陣-module-quality-dimensions)
+- [3. dev check AST 靜態檢核紅線清冊 (Rigid Checker Redlines)](#3-dev-check-ast-靜態檢核紅線清冊-rigid-checker-redlines)
+- [4. 模組功能品質速查核對表 (Module Quality Quick Check)](#4-模組功能品質速查核對表-module-quality-quick-check)
 
 ---
 
@@ -79,7 +83,7 @@
 
 ---
 
-## [GUARD] 3. `dev check` AST 靜態檢核紅線清冊 (Rigid Checker Redlines)
+## 3. dev check AST 靜態檢核紅線清冊 (Rigid Checker Redlines)
 
 `dev check` 執行深層 AST 靜態語法樹掃描，以下違規將直接觸發 `FAIL` 或 `WARN` 攔截：
 

@@ -6,12 +6,10 @@ knowledge-db 跨檔案符號拓撲消歧鏈接器 (TopologyLinker)
 
 from collections import defaultdict
 import logging
-from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .schema import SymbolCallSite, SymbolKind, UnifiedSymbol
-from .tokenizer import CodeTokenizer
 
 logger = logging.getLogger("knowledge-db.linker")
 
@@ -25,25 +23,15 @@ class TopologyLinker:
     def __init__(
         self,
         symbols_map: Dict[str, UnifiedSymbol],
-        tokenizer: Optional[CodeTokenizer] = None,
     ):
         self.symbols_map = symbols_map
-        self.tokenizer = tokenizer or CodeTokenizer()
 
-        # 預構建高速多維與 FQN 索引
-        # 1. file_path (normalized) -> List[UnifiedSymbol]
         self._by_file: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
-        # 2. name -> List[UnifiedSymbol]
         self._by_name: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
-        # 3. space -> Dict[name, List[UnifiedSymbol]]
         self._by_space_name: Dict[str, Dict[str, List[UnifiedSymbol]]] = defaultdict(lambda: defaultdict(list))
-        # 4. (file_path, name) -> List[UnifiedSymbol]
         self._by_file_name: Dict[Tuple[str, str], List[UnifiedSymbol]] = defaultdict(list)
-        # 5. fqn (lowercase) -> UnifiedSymbol
         self._by_fqn: Dict[str, UnifiedSymbol] = {}
-        # 6. parent_id -> List[UnifiedSymbol]
         self._by_parent_id: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
-        # 7. class_short_name -> Set[base_type_short_name] (繼承與介面映射)
         self._class_bases: Dict[str, Set[str]] = defaultdict(set)
 
         self._reindex()
@@ -58,7 +46,7 @@ class TopologyLinker:
         self._by_parent_id.clear()
         self._class_bases.clear()
 
-        for sym_id, sym in self.symbols_map.items():
+        for _, sym in self.symbols_map.items():
             norm_path = sym.file_path.replace("\\", "/").lower()
             self._by_file[norm_path].append(sym)
             self._by_name[sym.name].append(sym)
@@ -75,14 +63,12 @@ class TopologyLinker:
             )
             parent_scope = sym.metadata.get("parent_scope") or ""
 
-            # 記錄類別繼承與實作介面關係
             base_types = sym.metadata.get("base_types")
             if base_types and isinstance(base_types, (list, tuple)):
                 for bt in base_types:
                     if bt:
                         self._class_bases[short_name].add(str(bt))
 
-            # 索引短名 (short_name) 與雙段類別方法名 (Class.Method)
             alias_keys: List[str] = []
             if short_name and short_name != sym.name:
                 alias_keys.append(short_name)
@@ -101,9 +87,7 @@ class TopologyLinker:
                     self._by_space_name[sp][key].append(sym)
 
     def find_caller_symbol_id(self, file_path: str, caller_member_name: str) -> Optional[str]:
-        """
-        定位調用點所屬之 caller UnifiedSymbol ID
-        """
+        """定位調用點所屬之 caller UnifiedSymbol ID"""
         norm_path = file_path.replace("\\", "/").lower()
         candidates = self._by_file.get(norm_path, [])
         if not candidates:
@@ -113,11 +97,9 @@ class TopologyLinker:
             for sym in candidates:
                 if sym.name == caller_member_name:
                     return sym.id
-                # 若為 ClassName.method_name 形式匹配
                 if sym.name.endswith(f".{caller_member_name}") or caller_member_name.endswith(f".{sym.name}"):
                     return sym.id
 
-        # 若在頂層或未精準匹配到方法，以第一個頂層符號或檔案首個符號為代表
         return candidates[0].id if candidates else None
 
     def _get_caller_class_name(self, site: SymbolCallSite) -> str:
@@ -170,39 +152,22 @@ class TopologyLinker:
         target_classes = self._get_ancestor_classes(class_name) if bases_only else ([class_name] + self._get_ancestor_classes(class_name))
         for cls_name in target_classes:
             scoped_target = f"{cls_name}.{callee}"
-            # 1. 優先同檔案
             local_matches = self._by_file_name.get((norm_path, scoped_target), [])
             if local_matches:
                 return local_matches[0].id
-            # 2. 次選同語意空間 (支援 partial class 或跨檔案繼承基底類別)
             if space_name and space_name in self._by_space_name:
                 space_matches = self._by_space_name[space_name].get(scoped_target, [])
                 if space_matches:
                     return space_matches[0].id
-            # 3. 全庫明確類別限定名匹配
             global_matches = self._by_name.get(scoped_target, [])
             if global_matches:
                 return global_matches[0].id
         return None
 
-    def resolve_call_site(
-        self,
-        site: SymbolCallSite,
-        file_imports: Optional[Dict[str, str]] = None,
-    ) -> Optional[str]:
-        """
-        依四階消歧演算法 (4-Tier Disambiguation Cascade) 定位目標 callee_symbol_id。
-        收緊未明確作用域之裸調用判定，徹底杜絕跨模組幽靈關聯 (Ghost Edges)。
-        """
-        imports = file_imports or {}
-        norm_path = site.file_path.replace("\\", "/").lower()
-        callee = site.callee_name
-        prefix = site.context_prefix.strip()
-        space_name = site.space
-
-        # =========================================================================
-        # Tier 1: 檔內 / 類別內作用域自省 (Self / Class / Implicit this / Base Scope)
-        # =========================================================================
+    def _resolve_self_or_cls_call(
+        self, site: SymbolCallSite, prefix: str, callee: str, norm_path: str, space_name: str
+    ) -> Tuple[bool, Optional[str]]:
+        """Tier 1：檔內 / 類別內作用域自省 (Self / Class / Implicit this / Base Scope)"""
         if prefix in ("self", "cls", "base", "super"):
             caller_class = self._get_caller_class_name(site)
             is_base_call = prefix in ("base", "super")
@@ -210,70 +175,59 @@ class TopologyLinker:
                 caller_class, callee, norm_path, space_name, bases_only=is_base_call
             )
             if resolved_id:
-                return resolved_id
+                return True, resolved_id
 
-            # 檢查 caller 的 parent_id 作用域
             caller_id = site.caller_symbol_id
             if caller_id and caller_id in self.symbols_map:
                 caller_sym = self.symbols_map[caller_id]
                 parent_key = caller_sym.parent_id or caller_id
-                siblings = self._by_parent_id.get(parent_key, [])
-                for s in siblings:
+                for s in self._by_parent_id.get(parent_key, []):
                     if s.name == callee or s.name.endswith(f".{callee}"):
-                        return s.id
-
-            # 若為 self/cls 且同類別/基底類別未找到，不應跨無關檔案盲目擴散
-            return None
+                        return True, s.id
+            return True, None
 
         if not prefix:
-            # 1.2 隱式 this 調用：若 caller 位於類別內部，優先尋找同類別或繼承基底類別之方法
             caller_class = self._get_caller_class_name(site)
             if caller_class:
                 resolved_id = self._resolve_in_class_or_bases(caller_class, callee, norm_path, space_name)
                 if resolved_id:
-                    return resolved_id
+                    return True, resolved_id
 
-            # 1.3 尋找同檔案內的函式、類別或頂層定義 (僅限頂層符號或同類別符號，避免綁定同檔無關類別之同名方法)
             local_matches = self._by_file_name.get((norm_path, callee), [])
             if local_matches:
                 if len(local_matches) == 1:
                     m = local_matches[0]
                     m_parent = m.metadata.get("parent_scope") or ""
                     if not m_parent or m_parent == caller_class or m.kind in ("function", "class", "struct", "interface"):
-                        return m.id
+                        return True, m.id
                 else:
                     for m in local_matches:
                         if m.kind in ("function", "class", "struct", "interface") or (
                             caller_class and m.metadata.get("parent_scope") == caller_class
                         ):
-                            return m.id
+                            return True, m.id
 
-        # =========================================================================
-        # Tier 2: 檔頭 Import 映射表精準匹配 (Explicit Imports & FQN)
-        # =========================================================================
+        return False, None
+
+    def _resolve_imported_module_call(
+        self, prefix: str, callee: str, imports: Dict[str, str]
+    ) -> Optional[str]:
+        """Tier 2：檔頭 Import 映射表精準匹配 (Explicit Imports & FQN)"""
         if prefix and prefix in imports:
-            # 情況 A: 前綴是導入的類別或別名 (例如 from foo import InvertedIndex -> InvertedIndex.load_binary)
-            imported_target = imports[prefix]  # 如 'knowledge_db.retrieval.InvertedIndex'
+            imported_target = imports[prefix]
             target_class = imported_target.split(".")[-1]
-
-            # 2.1 透過 FQN 精確查找
             target_fqn = f"{imported_target.lower()}.{callee.lower()}"
             if target_fqn in self._by_fqn:
                 return self._by_fqn[target_fqn].id
 
-            # 2.2 透過 Class.method 匹配
-            candidate_method = f"{target_class}.{callee}"
-            matches = self._by_name.get(candidate_method, [])
+            matches = self._by_name.get(f"{target_class}.{callee}", [])
             if matches:
                 best = self._pick_best_by_import_path(matches, imported_target)
                 if best:
                     return best.id
 
         if not prefix and callee in imports:
-            # 情況 B: 直接導入的函式或類別 (例如 from foo import act_search -> act_search())
             imported_target = imports[callee]
-
-            # 2.3 透過 FQN 精確查找
             if imported_target.lower() in self._by_fqn:
                 return self._by_fqn[imported_target.lower()].id
 
@@ -283,10 +237,18 @@ class TopologyLinker:
                 best = self._pick_best_by_import_path(matches, imported_target)
                 if best:
                     return best.id
+        return None
 
-        # =========================================================================
-        # Tier 3: 同語意空間符號優先匹配 (Same-Space Scope)
-        # =========================================================================
+    def _resolve_same_file_or_global_call(
+        self,
+        site: SymbolCallSite,
+        prefix: str,
+        callee: str,
+        norm_path: str,
+        space_name: str,
+        imports: Dict[str, str],
+    ) -> Optional[str]:
+        """Tier 3 & Tier 4：同語意空間優先匹配與全庫上下文打分"""
         prefix_tail = prefix.split(".")[-1] if "." in prefix else prefix
         if space_name and space_name in self._by_space_name:
             if prefix:
@@ -300,7 +262,6 @@ class TopologyLinker:
                     if best:
                         return best.id
                 else:
-                    # 若 prefix 是實例變數 (如 self.index 或 m_Owner)，優先檢查同類別/同檔案，再於空間內查找候選
                     caller_class = self._get_caller_class_name(site)
                     if caller_class:
                         same_cls_id = self._resolve_in_class_or_bases(caller_class, callee, norm_path, space_name)
@@ -332,10 +293,6 @@ class TopologyLinker:
                         if best:
                             return best.id
 
-        # =========================================================================
-        # Tier 4: 全庫上下文打分 (嚴格過濾以杜絕幽靈關聯)
-        # =========================================================================
-        # 關鍵守門：若無前綴 (裸調用) 且無 Import 映射且非同檔定義，嚴禁跨檔盲連！
         if not prefix:
             return None
 
@@ -349,7 +306,6 @@ class TopologyLinker:
             if best:
                 return best.id
         else:
-            # 前綴為實例變數 (如 self.index)，比對已匯入類別
             candidates = list(self._by_name.get(callee, []))
             if imports:
                 imported_classes = {target.split(".")[-1].lower() for target in imports.values()}
@@ -371,8 +327,29 @@ class TopologyLinker:
                 if best:
                     return best.id
 
-        # 無法確定唯一目標，標記為未鏈接邊 (EC-03)
         return None
+
+    def resolve_call_site(
+        self,
+        site: SymbolCallSite,
+        file_imports: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """依四階消歧演算法 (4-Tier Disambiguation Cascade) 定位目標 callee_symbol_id。"""
+        imports = file_imports or {}
+        norm_path = site.file_path.replace("\\", "/").lower()
+        callee = site.callee_name
+        prefix = site.context_prefix.strip()
+        space_name = site.space
+
+        handled, tier1_id = self._resolve_self_or_cls_call(site, prefix, callee, norm_path, space_name)
+        if handled:
+            return tier1_id
+
+        tier2_id = self._resolve_imported_module_call(prefix, callee, imports)
+        if tier2_id:
+            return tier2_id
+
+        return self._resolve_same_file_or_global_call(site, prefix, callee, norm_path, space_name, imports)
 
     def _pick_best_by_import_path(self, matches: List[UnifiedSymbol], imported_path: str) -> Optional[UnifiedSymbol]:
         """依據 import 路徑特徵選擇最吻合的符號"""
@@ -410,7 +387,6 @@ class TopologyLinker:
             if parent_cls and parent_cls not in name_parts:
                 name_parts.append(parent_cls)
 
-            # 1. 若符號為 Method/Constructor/Property 且 prefix 包含類別名或命名空間段
             if sym_kind in ("method", "constructor", "property") or name_parts:
                 for cls_part in name_parts:
                     if not cls_part:
@@ -424,7 +400,6 @@ class TopologyLinker:
                     score += 8.0
                 if norm_path and sym.file_path.replace("\\", "/").lower() == norm_path:
                     score += 5.0
-            # 2. 函式比對
             elif sym_kind == SymbolKind.FUNCTION.value and not prefix_clean:
                 score += 5.0
 
@@ -438,9 +413,7 @@ class TopologyLinker:
         call_sites: List[SymbolCallSite],
         imports_map: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> List[Tuple[str, str, SymbolCallSite]]:
-        """
-        批次解析調用點清單，回傳 [(caller_symbol_id, callee_symbol_id, site), ...]
-        """
+        """批次解析調用點清單，回傳 [(caller_symbol_id, callee_symbol_id, site), ...]"""
         all_imports = imports_map or {}
         edges: List[Tuple[str, str, SymbolCallSite]] = []
 
@@ -456,7 +429,6 @@ class TopologyLinker:
             if not callee_id:
                 continue
 
-            # [DR-02] 保留真實程式碼方法/函式之遞迴自調用邊，但阻擋模組/文檔等容器自指雜訊
             if caller_id == callee_id:
                 caller_sym = self.symbols_map.get(caller_id)
                 caller_kind = (

@@ -7,7 +7,7 @@ import json
 import zipfile
 import shutil
 import tempfile
-from core import uri
+from core import uri, vfs
 from core.engine import AtomicEngine
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
@@ -64,7 +64,7 @@ class TestRemoteZipBootstrap(YSCBTestCase):
             with self.assertRaises(RuntimeError):
                 self.engine.act_download("corrupt_mod", "1.0.0.0", "https://example.com/release")
 
-        self.assertFalse(uri.exists("module.mirror://corrupt_mod/1.0.0.0.zip"))
+        self.assertFalse(vfs.exists("module.mirror://corrupt_mod/1.0.0.0.zip"))
         self.mark_passed()
 
 
@@ -90,7 +90,7 @@ class TestRemoteZipBootstrap(YSCBTestCase):
 
         # Ingest into mirror using act_download (single-file zip)
         dest_mirror = self.engine.act_download("mock_mod", "1.0.0.0", prov_dir)
-        self.assertTrue(uri.exists(dest_mirror))
+        self.assertTrue(vfs.exists(dest_mirror))
         real_zip = uri.resolve(dest_mirror)
         with zipfile.ZipFile(real_zip, "r") as zf:
             self.assertIn("manifest.json", zf.namelist())
@@ -126,8 +126,8 @@ class TestRemoteZipBootstrap(YSCBTestCase):
         
         # Clean up
         self.engine.act_unregister("pure_mod")
-        uri.rmtree("module://pure_mod")
-        uri.rmtree("module.mirror://pure_mod")
+        vfs.rmtree("module://pure_mod")
+        vfs.rmtree("module.mirror://pure_mod")
 
     def test_zip_slip_vulnerability_blocked_on_reload(self):
         """Security: Verify malicious Zip with path traversal (Zip Slip) is blocked on reload."""
@@ -149,7 +149,7 @@ class TestRemoteZipBootstrap(YSCBTestCase):
             self.assertIn("Zip Slip vulnerability detected", str(ctx.exception))
         finally:
             self.engine.act_unregister("evil_mod")
-            uri.rmtree("module.mirror://evil_mod")
+            vfs.rmtree("module.mirror://evil_mod")
         self.mark_passed()
 
     def test_zip_slip_blocked_on_host_fetch_and_extract(self):

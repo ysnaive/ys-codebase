@@ -54,8 +54,9 @@ flowchart TD
 
 - **發布與升版授權邊界**：
   - **[!] 嚴禁自主升版或對外發布**：Phase 7 結案僅代表開發與內部驗證完成；未獲開發者顯式指示前，嚴禁 Agent 擅自執行版本號晉升或正式對外打包發布指令。
-- **結案後表層修訂 (`revision_log.md`) 銜接**：
+- **結案後表層修訂 (`revision_log.md`) 與存量結構重構 (`/code-optimizer`) 銜接**：
   - 若結案後開發者針對本計畫功能提出 UI/UX/DX 表層微調、靜態參數調整或文檔修正（不涉及核心業務邏輯變更），可直接於本計畫目錄下建立或更新 [`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`) 進行正交修訂留檔。
+  - 若結案時評估目標模組因多次增量迭代已出現跨檔案正交職責混雜（`S6`）或深層耦合（超出單次功能計畫微觀收斂範疇），可於結案卡主動提示開發者後續顯式觸發 [`/code-optimizer`](`__#{module://agents-workflow/assets/skills/code-optimizer/SKILL.md}__`) 執行專項體檢或登錄至 `/todo`。
 - **計畫目錄歸檔紀律**：
   - 開發計畫目錄預設留存於 `__${project://plans}__` 原位，**嚴禁 Agent 自行執行 `plan archive` 或主動搬移目錄**（除非開發者明確下達歸檔指令）。
 - **推薦 Commit 訊息**：
@@ -73,7 +74,7 @@ flowchart TD
 - **極精簡 Session 回覆格式**：對話中**嚴禁全文重複、傾倒完整結案報告或大篇幅轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
   ###  P07 開發成果已結案
-  - **產出文件**：[P07_walkthrough.md](__${project://plans}__/{plan_name}/P07_walkthrough.md)、[changelog.md](__${project://plans}__/{plan_name}/changelog.md)、[CHANGELOG.md](__${project://CHANGELOG.md}__)
+  - **產出文件**：[P07_walkthrough.md](`__${project://plans}__/{plan_name}/P07_walkthrough.md`)、[changelog.md](`__${project://plans}__/{plan_name}/changelog.md`)、[CHANGELOG.md](`__${project://CHANGELOG.md}__`)
   - **結案摘要**：[1~2 行高階成果 / 通過 SOP Review 審查與合規檢核]
   - **推薦 Commit**：`[type(scope): brief message]`
   - **後續動作**：[計畫已圓滿結案，可依需求開啟 revision_log.md 進行後續微調、執行 commit 或 plan archive]

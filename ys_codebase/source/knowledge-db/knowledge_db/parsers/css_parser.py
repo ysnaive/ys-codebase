@@ -48,15 +48,15 @@ def _make_symbol(
         language=language,
         docstring=docstring,
         signature=signature,
-        members=[],
-        metadata={"space": space, "spaces": [space]},
+        children=(),
+        metadata={"spaces": [space]},
     )
 
 
 class CssParser(BaseParser):
     """CSS / SCSS / LESS Class/ID 選擇器、CSS/SASS/LESS 變數與 @keyframes 解析器"""
 
-    SUPPORTED_EXTENSIONS: Set[str] = {".css", ".scss", ".less"}
+    SUPPORTED_EXTENSIONS: Set[str] = {".css", ".scss", ".sass", ".less"}
 
     def can_parse(self, file_path: Union[str, Path]) -> bool:
         ext = Path(file_path).suffix.lower()

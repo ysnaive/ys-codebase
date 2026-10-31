@@ -1,6 +1,6 @@
 ---
 name: yscb-module-dev
-description: 管理 YSCB 生態系模組於源碼空間 (project://source/)、測試沙盒與運行空間之開發閉環，執行模組骨架建立 (dev create)、靜態合規檢查 (dev check)、沙盒測試 (dev test)、本機熱部署 (@build) 與版本發布，並提供 Contributes、CLI 合約與驗收參考指引。觸發情境：新增或修改模組源碼、配置 manifest.json / contributes/*.json、執行模組沙盒測試、安裝 @build 驗證或打包發布模組。排除情境：一般開發計畫文件推進（改用 development-sop）、純執行全自動版本號批次晉升腳本（改用 bump-revision）。
+description: 管理 project://source/ 生態系模組開發閉環，涵蓋骨架建立 (create)、合規檢查 (check)、沙盒測試 (test)、熱部署 (@build) 與 Contributes/CLI 合約。觸發情境：修改模組源碼、配置 manifest/contributes、執行模組測試或安裝 @build。
 ---
 
 # 生態系模組開發與 Dogfooding 閉環指南 (Module Dev & Dogfooding Guide)
@@ -73,5 +73,14 @@ graph TD
 | **CLI 指令實作 / 存取 CmdBags / 對稱性宣告** | [CLI 活躍合約與指令手冊](./references/cli_and_commands.md) | `CmdBags` 活躍契約、CLI 與 `core.json` 1:1 對稱性規範、平鋪命名、PEP 562 延遲載入、Dev 工具鏈矩陣 |
 | **宣告擴充點 (Host) / 注入能力 (Donor) / Schema 撰寫** | [Contributes 擴充注入與 Schema 規範指南](./references/contributes_guide.md) | 輕量 Schema DSL 語法、`module://` 語意 URI 查找 Host 契約、Donor 注入結構規範、Did you mean 智能糾錯 |
 | **撰寫測試案例 / 4-tier 分類 / 沙盒鉤子 / 跑測節流** | [測試工程實踐與沙盒機制指南](./references/testing_and_sandbox.md) | `YSCBTestCase` 範式、`mark_passed()` 狀態閉環、`@require` 4-tier 分類、`hook.dev.py` 沙盒鉤子、專屬斷言庫 |
-| **代碼交付前靜態檢核 / 四大文檔視角隔離 / AST 紅線排查** | [模組開發品質與驗收標準](./references/acceptance_checklist.md) | 四大文檔視角垂直展開隔離、AST 檢核紅線清冊、`configurable/` 規範、`_manifest.md` 檢查 |
+| **執行 `dev check` 靜態檢核 / 四大文檔視角同步 / 模組驗收自檢** | [模組開發品質與驗收標準](./references/acceptance_checklist.md) | 四大文檔視角隔離、`dev check` AST 靜態檢核紅線清冊、跨模組整合驗收速查表 |
 | **版本晉升 / 正式發布 ([!] 僅限開發者明確指示時)** | [CLI 活躍合約與指令手冊: 軌道 B](./references/cli_and_commands.md#55-發布流水線-授權守門) | `release-check` 獨立預檢、`release` 打包、`release-git` 本機一鍵發布管線 |
+
+---
+
+## 常見踩坑指南 (Gotchas)
+
+- **直接編輯 `.modules/` 或 `.agents/` 運行空間**：任何源碼、腳本、模板或資產修改若直接寫入運行空間，下次 `install` 或 `release` 時將被 100% 覆蓋清零。請務必在 `project://source/<module>/` 編輯後透過 `install <mod>@build --force` 同步。
+- **修改 `contributes/` 或 `assets/` 後漏執行模組重裝與工作流發布**：修改模組內的 `contributes/agents-workflow.json` 或技能/模板資產後，僅執行 `agents-workflow compile` 不會生效（因編譯器讀取 `module://` 已安裝模組空間）；必須先執行 `install <mod>@build --force` 更新運行空間，再執行 `agents-workflow compile` 與 `release --force`。
+- **測試方法漏呼叫 `self.mark_passed()`**：`YSCBTestCase` 採用三態檢核，若測試方法未拋出例外但也未呼叫 `self.mark_passed()`，結果會被判定為 `UNKNOWN` 而非 `PASSED`。
+- **未獲授權擅自執行 `dev bump-*` 或 `dev release`**：日常開發與驗證一律停留在軌道 A（`@build` 熱部署）；軌道 B（版本晉升與正式發布）屬 `[GATED]` 授權操作，僅在開發者明確指示時執行。

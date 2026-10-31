@@ -37,24 +37,55 @@ from knowledge_db.schema import (
     SymbolKind,
     UnifiedSymbol,
 )
-from knowledge_db.tokenizer import CodeTokenizer, MultilingualTokenizer
+from knowledge_db.tokenizer import MultilingualTokenizer
 
 
 class DummyIndex:
-    """Mock InvertedIndex for hybrid unit tests"""
+    """Mock InvertedIndex & BM25Engine for hybrid unit tests"""
 
     def __init__(self, symbols=None, hits=None):
         self.symbols = symbols or {}
         self.hits = hits or []
 
-    def search(self, query: str, limit: int = 10, file_types=None):
-        return self.hits[:limit]
+    def search(self, query: str = "", index: object = None, filter_cfg: object = None):
+        limit = getattr(filter_cfg, "limit", 10) if filter_cfg else 10
+        ftypes = getattr(filter_cfg, "ftypes", None) if filter_cfg else None
+        spaces = getattr(filter_cfg, "spaces", None) if filter_cfg else None
+        kinds = getattr(filter_cfg, "kinds", None) if filter_cfg else None
+        languages = getattr(filter_cfg, "languages", None) if filter_cfg else None
+
+        norm_ftypes = {f.strip().lstrip(".").lower() for f in ftypes} if ftypes else None
+        out = []
+        for h in self.hits:
+            sym = self.symbols.get(h["doc_id"])
+            if not sym:
+                continue
+            if norm_ftypes:
+                ext = sym.file_path.split(".")[-1].lower() if "." in sym.file_path else ""
+                if ext not in norm_ftypes:
+                    continue
+            if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
+                continue
+            if kinds and sym.kind not in kinds:
+                continue
+            if languages and sym.language not in languages:
+                continue
+            sym_spaces = getattr(sym, "spaces", None) or ["default"]
+            out.append(
+                SearchResult(
+                    symbol=sym,
+                    score=h["score"],
+                    space=sym_spaces[0],
+                    matched_terms=h.get("matched_terms", []),
+                )
+            )
+        return out[:limit]
 
 
 class TestRetrieval(YSCBTestCase):
     def setUp(self):
         super().setUp()
-        self.tokenizer = CodeTokenizer()
+        self.tokenizer = MultilingualTokenizer()
 
         # 準備一組測試符號
         self.sym_pid = UnifiedSymbol(
@@ -376,7 +407,7 @@ class TestSearchAggregation(YSCBTestCase):
                 end_line=15,
                 language=LanguageType.CPP.value,
                 signature="ASTNode* ParseASTNode(const char* src)",
-                docstring="Parse AST node from source buffer",
+                docstring="Parse AST node from token source buffer",
             ),
             UnifiedSymbol(
                 id="f2_fn2",
@@ -467,13 +498,33 @@ class TestSearchAggregation(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_et_01_compound_token_coverage_filter_in_aggregated(self):
+        """ET-01: 驗證 >= 3 sub-tokens 複合字查詢於 search_aggregated 強制過濾覆蓋率 < 50% 之單一子詞噪音"""
+        flt = QueryFilter(limit=10)
+        # "parse token stream" 含 3 個子詞 (parse, token, stream)：
+        # - src/engine.py: parse_tokens 命中 parse, token, stream (3/3 = 100% >= 50%)
+        # - src/native_parser.cpp: ParseASTNode 命中 parse, token (2/3 = 66.7% >= 50%)
+        # - docs/parser_guide.md: 僅命中 engine 相關單一詞，若查詢 "parse token stream" 則 0/3，
+        #   若查詢 "parse unknown1 unknown2" (3 子詞)，src/engine.py 僅命中 "parse" (1/3 = 33.3% < 50%) 應被過濾！
+        noise_results = self.engine.search_aggregated("parse unknownalpha unknownbeta", self.index, filter_cfg=flt)
+        self.assertEqual(noise_results, [], "僅命中 1/3 子詞 (< 50%) 之候選符號應於 search_aggregated 被強制過濾")
+
+        valid_results = self.engine.search_aggregated("parse token stream", self.index, filter_cfg=flt)
+        hit_files = {r.file_path for r in valid_results}
+        self.assertIn("src/engine.py", hit_files)
+        self.assertIn("src/native_parser.cpp", hit_files)
+        self.assertNotIn("docs/parser_guide.md", hit_files)
+
+        self.mark_passed()
+
 
 class TestTokenizer(YSCBTestCase):
     """代碼分詞器 (CamelCase / snake_case / CJK 滑動窗口) 測試。"""
 
     @require(Requirement.LOGIC)
     def test_code_identifier_tokenization(self):
-        tok = CodeTokenizer()
+        tok = MultilingualTokenizer()
 
         res1 = tok.tokenize("PIDController")
         self.assertIn("pid", res1)
@@ -502,7 +553,7 @@ class TestTokenizer(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_cjk_and_stopword_tokenization(self):
-        tok = CodeTokenizer()
+        tok = MultilingualTokenizer()
 
         res1 = tok.tokenize("狀態機更新頻率")
         self.assertIn("狀", res1)
@@ -529,7 +580,7 @@ class TestTokenizer(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_multilingual_tokenizer_advanced(self):
-        """FT-01: 驗證 MultilingualTokenizer 中英混排無縫切分與向後相容性。"""
+        """FT-01: 驗證 MultilingualTokenizer 中英混排無縫切分與分詞輔助函式。"""
         tok = MultilingualTokenizer()
 
         res1 = tok.tokenize("解析InvertedIndex倒排索引")
@@ -540,12 +591,8 @@ class TestTokenizer(YSCBTestCase):
         self.assertIn("倒排", res1)
         self.assertIn("索引", res1)
 
-        self.assertIs(CodeTokenizer, MultilingualTokenizer)
-        self.assertTrue(tok.is_cjk("中"))
-        self.assertFalse(tok.is_cjk("A"))
-
-        parts = tok.split_identifier("TreeSitterDriver.extract_imports")
-        self.assertIn("treesitterdriver", parts)
+        parts = tok._split_identifier("TreeSitterDriver.extract_imports")
+        self.assertIn("tree", parts)
         self.assertIn("imports", parts)
 
         self.mark_passed()
@@ -577,8 +624,6 @@ class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
             self.assertAlmostEqual(norm, 1.0, places=4)
 
         query_vec = self.service.embed_query("inverted index")
-        sims = self.service.compute_similarity(query_vec, embeddings)
-        self.assertEqual(len(sims), 3)
 
         doc_ids = ["doc_1", "doc_2", "doc_3"]
         v_idx = VectorIndex()
@@ -744,6 +789,7 @@ class TestHybridSearchEngine(YSCBTestCase):
             inverted_index=dummy_index,
             vector_index=vec_index,
             embedding_service=self.service,
+            bm25_engine=dummy_index,
             rrf_k=60,
             weight_lexical=0.5,
             weight_vector=0.5,
@@ -777,6 +823,7 @@ class TestHybridSearchEngine(YSCBTestCase):
             inverted_index=dummy_index,
             vector_index=VectorIndex(),
             embedding_service=self.service,
+            bm25_engine=dummy_index,
         )
         res_lexical = engine.search("index", lexical_only=True)
         self.assertEqual(len(res_lexical), 1)
@@ -793,6 +840,7 @@ class TestHybridSearchEngine(YSCBTestCase):
             inverted_index=dummy_index,
             vector_index=None,
             embedding_service=None,
+            bm25_engine=dummy_index,
         )
         self.assertFalse(engine_no_svc.is_vector_available)
         res_no_svc = engine_no_svc.search("index", lexical_only=False)
@@ -804,10 +852,12 @@ class TestHybridSearchEngine(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_empty_query(self):
         """ET-01: 驗證空字串、純空白與無效輸入安全防護"""
+        dummy_empty = DummyIndex(symbols=self.symbols, hits=[])
         engine = HybridSearchEngine(
-            inverted_index=DummyIndex(symbols=self.symbols, hits=[]),
+            inverted_index=dummy_empty,
             vector_index=VectorIndex(),
             embedding_service=self.service,
+            bm25_engine=dummy_empty,
         )
         self.assertEqual(engine.search(""), [])
         self.assertEqual(engine.search("   "), [])
@@ -828,10 +878,12 @@ class TestHybridSearchEngine(YSCBTestCase):
         )
         symbols = dict(self.symbols)
         symbols["sym_cs"] = sym_cs
+        dummy_multi = DummyIndex(symbols=symbols, hits=[{"doc_id": "sym_a", "score": 1.0}, {"doc_id": "sym_cs", "score": 1.0}])
         engine = HybridSearchEngine(
-            inverted_index=DummyIndex(symbols=symbols, hits=[{"doc_id": "sym_a", "score": 1.0}, {"doc_id": "sym_cs", "score": 1.0}]),
+            inverted_index=dummy_multi,
             vector_index=VectorIndex(),
             embedding_service=self.service,
+            bm25_engine=dummy_multi,
         )
         hits = engine.search("test", file_types=["py", "cs"], lexical_only=True)
         self.assertGreaterEqual(len(hits), 1)
@@ -863,7 +915,7 @@ class TestHybridSearchEngine(YSCBTestCase):
     def test_inverted_index_doc_lengths_top_level(self):
         """FT-PERF-02: 驗證 InvertedIndex 頂層 doc_lengths 共享池與增量同步"""
         idx = InvertedIndex(space_name="test")
-        tok = CodeTokenizer()
+        tok = MultilingualTokenizer()
 
         sym1 = UnifiedSymbol(
             id="sym_1",

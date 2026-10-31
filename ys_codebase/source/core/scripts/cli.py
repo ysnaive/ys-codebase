@@ -5,13 +5,44 @@ No legacy process(args) fallback.
 import builtins
 import os
 import sys
-from typing import Any, List, Optional
+from typing import Any, List
 
 from core.commands.bags import CmdBags, CmdOption
 from core.guard import guard_dispatch
 from core.installer import Installer
 from core import config as core_config
 from core import uri as core_uri
+
+
+def _render_subcommand_group_help(cmd_name: str) -> int:
+    """Render help message for a core subcommand group (config, uri, event, contributes)."""
+    from core.commands.help import HelpRenderer
+    from core.commands.dispatcher import _load_registry, _get_yscb_root
+    _, yscb_abs = _get_yscb_root()
+    reg = _load_registry(yscb_abs)
+    spec = reg.get_command("core", cmd_name)
+    print(HelpRenderer.render_cmd_help("core", cmd_name, spec))
+    return 0
+
+
+def _parse_cli_scalar_or_json(raw_val: str) -> Any:
+    """Parse CLI raw string value into boolean, null, integer, JSON container, or plain string."""
+    low = raw_val.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if low in ("none", "null"):
+        return None
+    if raw_val.isdigit():
+        return int(raw_val)
+    if raw_val.startswith(("[", "{")) and raw_val.endswith(("]", "}")):
+        import json
+        try:
+            return json.loads(raw_val)
+        except Exception:
+            return raw_val
+    return raw_val
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
@@ -171,22 +202,7 @@ def config_set(cmd_bags: CmdBags) -> int:
 
     mod_name, key, raw_val = cmd_bags.args[0], cmd_bags.args[1], cmd_bags.args[2]
     local_flag = cmd_bags.has_option("local")
-
-    val = raw_val
-    if raw_val.lower() == "true":
-        val = True
-    elif raw_val.lower() == "false":
-        val = False
-    elif raw_val.lower() in ("none", "null"):
-        val = None
-    elif raw_val.isdigit():
-        val = int(raw_val)
-    elif raw_val.startswith(("[", "{")) and raw_val.endswith(("]", "}")):
-        import json
-        try:
-            val = json.loads(raw_val)
-        except Exception:
-            val = raw_val
+    val = _parse_cli_scalar_or_json(raw_val)
 
     try:
         core_config.set(mod_name, key, val, local=local_flag)
@@ -214,13 +230,7 @@ def config(cmd_bags: CmdBags) -> int:
     args = cmd_bags.args
 
     if not args:
-        from core.commands.help import HelpRenderer
-        from core.commands.dispatcher import _load_registry, _get_yscb_root
-        _, yscb_abs = _get_yscb_root()
-        reg = _load_registry(yscb_abs)
-        spec = reg.get_command("core", "config")
-        print(HelpRenderer.render_cmd_help("core", "config", spec))
-        return 0
+        return _render_subcommand_group_help("config")
 
     sub_cmd = args[0]
     sub_bags = CmdBags(raw_cmd=cmd_bags.raw_cmd, command=sub_cmd, args=args[1:], options=cmd_bags.options)
@@ -329,13 +339,7 @@ def uri(cmd_bags: CmdBags) -> int:
     args = cmd_bags.args
 
     if not args:
-        from core.commands.help import HelpRenderer
-        from core.commands.dispatcher import _load_registry, _get_yscb_root
-        _, yscb_abs = _get_yscb_root()
-        reg = _load_registry(yscb_abs)
-        spec = reg.get_command("core", "uri")
-        print(HelpRenderer.render_cmd_help("core", "uri", spec))
-        return 0
+        return _render_subcommand_group_help("uri")
 
     sub_cmd = args[0]
     sub_bags = CmdBags(raw_cmd=cmd_bags.raw_cmd, command=sub_cmd, args=args[1:], options=cmd_bags.options)
@@ -434,11 +438,6 @@ def restore(cmd_bags: CmdBags) -> int:
     return installer.cmd_restore(force=force_flag, provider=provider)
 
 
-def bootstrap(cmd_bags: CmdBags) -> int:
-    """Bootstrap alias for restore."""
-    return restore(cmd_bags)
-
-
 def event_list(cmd_bags: CmdBags) -> int:
     """List all registered ecosystem events."""
     guard_dispatch("core")
@@ -465,13 +464,7 @@ def event(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
     if not cmd_bags.args:
-        from core.commands.help import HelpRenderer
-        from core.commands.dispatcher import _load_registry, _get_yscb_root
-        _, yscb_abs = _get_yscb_root()
-        reg = _load_registry(yscb_abs)
-        spec = reg.get_command("core", "event")
-        print(HelpRenderer.render_cmd_help("core", "event", spec))
-        return 0
+        return _render_subcommand_group_help("event")
     sub_cmd = cmd_bags.args[0]
     if sub_cmd == "list":
         return event_list(cmd_bags)
@@ -507,13 +500,7 @@ def contributes(cmd_bags: CmdBags) -> int:
     cmd_bags = _normalize_bags(cmd_bags)
     args = cmd_bags.args
     if not args:
-        from core.commands.help import HelpRenderer
-        from core.commands.dispatcher import _load_registry, _get_yscb_root
-        _, yscb_abs = _get_yscb_root()
-        reg = _load_registry(yscb_abs)
-        spec = reg.get_command("core", "contributes")
-        print(HelpRenderer.render_cmd_help("core", "contributes", spec))
-        return 0
+        return _render_subcommand_group_help("contributes")
     sub_cmd = args[0]
     sub_args = args[1:]
     sub_bags = CmdBags(
@@ -529,52 +516,3 @@ def contributes(cmd_bags: CmdBags) -> int:
     else:
         print(f"[core:contributes] Unknown subcommand '{sub_cmd}'. Available: list, check", file=sys.stderr)
         return 1
-
-
-# Legacy test compatibility aliases
-def cmd_config(cmd_bags: Any) -> int:
-    return config(cmd_bags)
-
-
-def cmd_uri(cmd_bags: Any) -> int:
-    return uri(cmd_bags)
-
-
-def cmd_install(cmd_bags: Any) -> int:
-    return install(cmd_bags)
-
-
-def cmd_update(cmd_bags: Any) -> int:
-    return update(cmd_bags)
-
-
-def cmd_remove(cmd_bags: Any) -> int:
-    return remove(cmd_bags)
-
-
-def cmd_list(cmd_bags: Any) -> int:
-    return list(cmd_bags)
-
-
-def cmd_status(cmd_bags: Any) -> int:
-    return status(cmd_bags)
-
-
-def cmd_reload(cmd_bags: Any) -> int:
-    return reload(cmd_bags)
-
-
-def cmd_rollback(cmd_bags: Any) -> int:
-    return rollback(cmd_bags)
-
-
-def cmd_restore(cmd_bags: Any) -> int:
-    return restore(cmd_bags)
-
-
-def cmd_event(cmd_bags: Any) -> int:
-    return event(cmd_bags)
-
-
-def cmd_contributes(cmd_bags: Any) -> int:
-    return contributes(cmd_bags)

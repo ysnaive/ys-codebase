@@ -47,7 +47,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft01_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": []}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
 
             report = self.checker.check_module("mock_ft01_mod")
             self.assertFalse(report.passed)
@@ -68,7 +68,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft02_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
 
             report = self.checker.check_module("mock_ft02_mod")
             self.assertTrue(report.passed)  # Warn does not fail
@@ -90,7 +90,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft03_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "mock_pkg", "logic.py"), "w", encoding="utf-8") as f:
                 f.write('src = "module.source://other_mod/foo"\n')
 
@@ -112,7 +112,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft04_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "config.project.json"), "w", encoding="utf-8") as f:
                 f.write('{"foo": "bar"}')
 
@@ -135,7 +135,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft06_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "mock_pkg", "bad_cfg.py"), "w", encoding="utf-8") as f:
                 f.write('CFG_FILE = "config.project.json"\n')
             with open(os.path.join(tmp_mod_dir, "mock_pkg", "bad_contrib.py"), "w", encoding="utf-8") as f:
@@ -161,7 +161,7 @@ class TestDevChecker(YSCBTestCase):
                 # Missing core dependency -> FAIL
                 f.write('{"name": "mock_ft07_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": []}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
 
             passed, errors = self.releaser.release_check("mock_ft07_mod")
             self.assertFalse(passed)
@@ -181,7 +181,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_et01_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "broken.py"), "w", encoding="utf-8") as f:
                 f.write('def syntax_error_here(\n')
 
@@ -204,7 +204,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_et02_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "tests", "test_bad.py"), "w", encoding="utf-8") as f:
                 f.write('import unittest\nclass TestBad(unittest.TestCase):\n    def test_foo(self): pass\n')
 
@@ -227,7 +227,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft07_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "tests", "test_sample.py"), "w", encoding="utf-8") as f:
                 f.write(
                     'from dev.testing import YSCBTestCase, require, Requirement\n'
@@ -269,7 +269,7 @@ class TestDevChecker(YSCBTestCase):
                     '}\n'
                 )
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
 
             report = self.checker.check_module("mock_valid_opt_mod")
             self.assertTrue(report.passed, f"Expected pass, got errors: {report.errors}")
@@ -301,7 +301,7 @@ class TestDevChecker(YSCBTestCase):
                     '}\n'
                 )
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
 
             report = self.checker.check_module("mock_invalid_opt_mod")
             self.assertFalse(report.passed)
@@ -323,7 +323,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft10_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
 
             # 1. 缺少 _manifest.md 應觸發 FAIL
             report = self.checker.check_module("mock_ft10_mod")
@@ -355,7 +355,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft11_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "tests", "test_missing.py"), "w", encoding="utf-8") as f:
                 f.write(
                     'from dev.testing.case import YSCBTestCase\n'
@@ -382,7 +382,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft12_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "scripts", "hook.dev.py"), "w", encoding="utf-8") as f:
                 f.write('def on_test_setup():\n    pass\n')
 
@@ -405,7 +405,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft13_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "docs", "dev_guide.md"), "w", encoding="utf-8") as f:
                 f.write('# Dev Guide\nEdit files in project://source/mock_ft13_mod/ to start.\n')
 
@@ -428,7 +428,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_ft14_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(tmp_mod_dir, "configurable", "custom_template.json"), "w", encoding="utf-8") as f:
                 f.write('{"key": "value"}\n')
 
@@ -448,7 +448,7 @@ class TestDevChecker(YSCBTestCase):
         try:
             os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
             with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
 
             # 1. Valid onboarding list of non-empty strings -> PASS
             with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
@@ -529,21 +529,21 @@ class TestDevChecker(YSCBTestCase):
 
             # 1. Main function forbidden
             with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\ndef main():\n    pass\n')
+                f.write('def hello(cmd_bags):\n    return 0\ndef main():\n    pass\n')
             rep1 = self.checker.check_module("mock_cli_forbidden_mod")
             self.assertFalse(rep1.passed)
             self.assertTrue(any("Forbidden function 'main'" in e for e in rep1.errors))
 
             # 2. If name == main forbidden
             with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\nif __name__ == "__main__":\n    pass\n')
+                f.write('def hello(cmd_bags):\n    return 0\nif __name__ == "__main__":\n    pass\n')
             rep2 = self.checker.check_module("mock_cli_forbidden_mod")
             self.assertFalse(rep2.passed)
             self.assertTrue(any("Forbidden 'if __name__ == \"__main__\":'" in e for e in rep2.errors))
 
             # 3. Invalid top-level expression
             with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\nprint("side-effect")\n')
+                f.write('def hello(cmd_bags):\n    return 0\nprint("side-effect")\n')
             rep3 = self.checker.check_module("mock_cli_forbidden_mod")
             self.assertFalse(rep3.passed)
             self.assertTrue(any("top-level expression" in e for e in rep3.errors))
@@ -560,7 +560,7 @@ class TestDevChecker(YSCBTestCase):
         try:
             os.makedirs(os.path.join(tmp_dir, "scripts"), exist_ok=True)
             with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
 
             # 1. Non-dict pip_dependencies fails
             with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
@@ -643,7 +643,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(donor_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_donor_mod", "version": "1.0.0.0", "entry": "scripts/cli.py"}')
             with open(os.path.join(donor_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(donor_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
                 f.write('# Donor Manifest\n')
 
@@ -688,7 +688,7 @@ class TestDevChecker(YSCBTestCase):
             with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "mock_locale_check_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.1.0"}}')
             with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def process(args):\n    return 0\n')
+                f.write('def hello(cmd_bags):\n    return 0\n')
             with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
                 f.write('# Locale Test Manifest\n')
 

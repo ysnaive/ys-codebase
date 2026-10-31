@@ -4,7 +4,7 @@ Official test suite for core.installer.Installer.
 import os
 from dev.testing import YSCBTestCase, require, Requirement
 from core.installer import Installer
-from core import uri
+from core import uri, vfs
 
 @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
 class TestCoreInstaller(YSCBTestCase):
@@ -57,14 +57,14 @@ class TestCoreInstaller(YSCBTestCase):
         self.installer.engine.act_register("mock_app", "1.0.0", "local")
         
         # Setup mock_app manifest declaring dependency on mock_lib
-        uri.makedirs("module://mock_app")
-        uri.write_json("module://mock_app/manifest.json", {
+        vfs.makedirs("module://mock_app")
+        vfs.write_json("module://mock_app/manifest.json", {
             "name": "mock_app",
             "version": "1.0.0",
             "dependencies": {"mock_lib": ">=1.0.0"}
         })
-        uri.makedirs("module://mock_lib")
-        uri.write_json("module://mock_lib/manifest.json", {
+        vfs.makedirs("module://mock_lib")
+        vfs.write_json("module://mock_lib/manifest.json", {
             "name": "mock_lib",
             "version": "1.0.0"
         })
@@ -86,36 +86,36 @@ class TestCoreInstaller(YSCBTestCase):
         # 1. Setup mock_lifecycle module with storage, config, and cache
         mod_name = "mock_lifecycle"
         self.installer.engine.act_register(mod_name, "1.0.0", "local")
-        uri.makedirs(f"module://{mod_name}")
-        uri.write_json(f"module://{mod_name}/manifest.json", {"name": mod_name, "version": "1.0.0"})
+        vfs.makedirs(f"module://{mod_name}")
+        vfs.write_json(f"module://{mod_name}/manifest.json", {"name": mod_name, "version": "1.0.0"})
         
-        uri.makedirs(f"storage://{mod_name}")
-        uri.write_text(f"storage://{mod_name}/data.json", '{"state": 1}')
-        uri.makedirs(f"config://{mod_name}")
-        uri.write_text(f"config://{mod_name}/config.json", '{"enabled": true}')
-        uri.makedirs(f"cache://{mod_name}")
-        uri.write_text(f"cache://{mod_name}/temp.cache", "cache_content")
+        vfs.makedirs(f"storage://{mod_name}")
+        vfs.write_text(f"storage://{mod_name}/data.json", '{"state": 1}')
+        vfs.makedirs(f"config://{mod_name}")
+        vfs.write_text(f"config://{mod_name}/config.json", '{"enabled": true}')
+        vfs.makedirs(f"cache://{mod_name}")
+        vfs.write_text(f"cache://{mod_name}/temp.cache", "cache_content")
 
         # Standard remove: cache deleted, storage & config preserved
         res_std = self.installer.cmd_remove(mod_name, force=True, purge=False)
         self.assertEqual(res_std, 0)
-        self.assertFalse(uri.exists(f"cache://{mod_name}"))
-        self.assertTrue(uri.exists(f"storage://{mod_name}"))
-        self.assertTrue(uri.exists(f"config://{mod_name}"))
+        self.assertFalse(vfs.exists(f"cache://{mod_name}"))
+        self.assertTrue(vfs.exists(f"storage://{mod_name}"))
+        self.assertTrue(vfs.exists(f"config://{mod_name}"))
 
         # Re-register and populate for purge test
         self.installer.engine.act_register(mod_name, "1.0.0", "local")
-        uri.makedirs(f"module://{mod_name}")
-        uri.write_json(f"module://{mod_name}/manifest.json", {"name": mod_name, "version": "1.0.0"})
-        uri.makedirs(f"cache://{mod_name}")
-        uri.write_text(f"cache://{mod_name}/temp.cache", "cache_content")
+        vfs.makedirs(f"module://{mod_name}")
+        vfs.write_json(f"module://{mod_name}/manifest.json", {"name": mod_name, "version": "1.0.0"})
+        vfs.makedirs(f"cache://{mod_name}")
+        vfs.write_text(f"cache://{mod_name}/temp.cache", "cache_content")
 
         # Purge remove: cache, storage, config all deleted
         res_purge = self.installer.cmd_remove(mod_name, force=True, purge=True)
         self.assertEqual(res_purge, 0)
-        self.assertFalse(uri.exists(f"cache://{mod_name}"))
-        self.assertFalse(uri.exists(f"storage://{mod_name}"))
-        self.assertFalse(uri.exists(f"config://{mod_name}"))
+        self.assertFalse(vfs.exists(f"cache://{mod_name}"))
+        self.assertFalse(vfs.exists(f"storage://{mod_name}"))
+        self.assertFalse(vfs.exists(f"config://{mod_name}"))
         self.mark_passed()
 
     def test_list_installed_modules(self):
@@ -146,7 +146,7 @@ class TestCoreInstaller(YSCBTestCase):
         mod_name = "mock_isolated_build_mod"
 
         # Setup build package in module.build://
-        uri.makedirs(f"module.build://{mod_name}")
+        vfs.makedirs(f"module.build://{mod_name}")
         build_zip_path = uri.resolve(f"module.build://{mod_name}/1.0.0.build.zip")
         with zipfile.ZipFile(build_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps({"name": mod_name, "version": "1.0.0.build"}))
@@ -176,8 +176,8 @@ class TestCoreInstaller(YSCBTestCase):
         from contextlib import redirect_stdout
 
         mod_name = "mock_opt_host"
-        uri.makedirs(f"module://{mod_name}")
-        uri.write_json(f"module://{mod_name}/manifest.json", {
+        vfs.makedirs(f"module://{mod_name}")
+        vfs.write_json(f"module://{mod_name}/manifest.json", {
             "name": mod_name,
             "version": "1.0.0",
             "dependencies": {"core": ">=1.0.0"},
@@ -210,8 +210,8 @@ class TestCoreInstaller(YSCBTestCase):
         from contextlib import redirect_stdout
 
         mod_name = "mock_opt_host_installed"
-        uri.makedirs(f"module://{mod_name}")
-        uri.write_json(f"module://{mod_name}/manifest.json", {
+        vfs.makedirs(f"module://{mod_name}")
+        vfs.write_json(f"module://{mod_name}/manifest.json", {
             "name": mod_name,
             "version": "1.0.0",
             "dependencies": {"core": ">=1.0.0"},
@@ -382,8 +382,8 @@ class TestCoreInstaller(YSCBTestCase):
                 self.assertEqual(len(mig_runs), 2)
             finally:
                 self.installer.cmd_remove(mod_name, force=True, purge=True)
-                if uri.exists(f"module.mirror://{mod_name}"):
-                    uri.rmtree(f"module.mirror://{mod_name}")
+                if vfs.exists(f"module.mirror://{mod_name}"):
+                    vfs.rmtree(f"module.mirror://{mod_name}")
 
         self.mark_passed()
 

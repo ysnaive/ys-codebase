@@ -2,6 +2,14 @@
 
 本手冊定義 YSCB 模組單元/整合測試工程規範、`YSCBTestCase` 基類特徵、拋棄式沙盒隔離機制、生命週期鉤子與高效跑測技巧。
 
+## 目錄 (Contents)
+- [1. 隔離沙盒機制 (Testing Engine Sandbox)](#1-隔離沙盒機制-testing-engine-sandbox)
+- [2. 測試案例撰寫與 YSCBTestCase 基類](#2-測試案例撰寫與-yscbtestcase-基類)
+- [3. 4-Tier 測試分類與沙盒隔離機制](#3-4-tier-測試分類與沙盒隔離機制)
+- [4. 虛擬沙盒生命週期鉤子 (scripts/hook.dev.py)](#4-虛擬沙盒生命週期鉤子-scriptshookdevpy)
+- [5. 高效跑測與 Token 節流技巧](#5-高效跑測與-token-節流技巧)
+- [6. 測試防呆鐵律與調用禁忌](#6-測試防呆鐵律與調用禁忌)
+
 ---
 
 ## 1. 隔離沙盒機制 (Testing Engine Sandbox)
@@ -30,7 +38,7 @@ graph LR
 
 ---
 
-## 2. 測試案例撰寫與 `YSCBTestCase` 基類
+## 2. 測試案例撰寫與 YSCBTestCase 基類
 
 所有模組測試案例**必須**繼承 `dev.testing.YSCBTestCase`（`dev check` 會剛性攔截直接繼承 `unittest.TestCase` 之測試）。
 
@@ -143,7 +151,7 @@ def test_ft_destructive_cleanup(self): ...
 
 ---
 
-## 4. 虛擬沙盒生命週期鉤子 (`scripts/hook.dev.py`)
+## 4. 虛擬沙盒生命週期鉤子 (scripts/hook.dev.py)
 
 當模組在沙盒中跑測需要客製化準備（如預設快取目錄、注入 Mock 環境變數、初始化模擬 DB 或種子資料）時，可在模組內宣告 `scripts/hook.dev.py`：
 
@@ -223,7 +231,7 @@ python yscb.py dev test <mod_name> -q --no-build -k test_ft_01
 
 ---
 
-## [X] 6. 測試防呆鐵律與調用禁忌
+## 6. 測試防呆鐵律與調用禁忌
 
 1. **嚴禁無端執行 `--all`**：
    日常單一模組開發中，**絕對禁止**濫用 `python yscb.py dev test --all`。全量測試僅限於結案前跨模組回歸驗證或開發者明確指示時使用。
@@ -232,4 +240,4 @@ python yscb.py dev test <mod_name> -q --no-build -k test_ft_01
 3. **部署後免重複測試**：
    通過沙盒測試並完成 `@build` 直裝或正式發布後，**嚴禁重複執行 `dev test`**；物化完成即視為驗收通過。
 4. **Contributes 閉環聯動**：
-   若測試涉及擴充點註冊變更，跑測前建議先透過 `python yscb.py contributes check <mod>` 確認 Ingress/Egress 契約合法（詳見 [contributes_guide.md](./contributes_guide.md)）。
+   若測試涉及擴充點註冊變更，跑測前建議先透過 `python yscb.py contributes check <mod>` 確認 Ingress/Egress 契約合法（詳見主技能分流之 `contributes_guide.md`）。

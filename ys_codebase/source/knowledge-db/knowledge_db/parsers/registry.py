@@ -1,12 +1,11 @@
 """
-knowledge-db 解析器動態註冊表與調度中心 (ParserRegistry / LanguageRegistry)
+knowledge-db 解析器動態註冊表與調度中心 (ParserRegistry)
 100% 透過 contributes.knowledge_db 語言宣告驅動，落實零特權架構與 Tree-sitter 通用 AST 解析。
 """
 
 import importlib
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -17,89 +16,9 @@ from .treesitter import TreeSitterDriver
 logger = logging.getLogger("knowledge-db.parsers.registry")
 
 
-class PythonParser(TreeSitterDriver):
-    """Python AST 語意解析器 (基於 TreeSitterDriver)"""
-
-    def __init__(self, config: Optional[LanguageConfig] = None):
-        if config is None:
-            config = LanguageConfig(
-                id="python",
-                name="Python",
-                extensions=(".py", ".pyi"),
-                mode="tree_sitter",
-                grammar="tree_sitter_python",
-                query_file="assets/queries/python.scm",
-            )
-        super().__init__(config)
-
-
-class MarkdownParser(TreeSitterDriver):
-    """Markdown 標題、表格與區塊文檔語意解析器 (基於 TreeSitterDriver)"""
-
-    def __init__(self, config: Optional[LanguageConfig] = None):
-        if config is None:
-            config = LanguageConfig(
-                id="markdown",
-                name="Markdown",
-                extensions=(".md", ".markdown"),
-                mode="tree_sitter",
-                grammar="tree_sitter_markdown",
-                query_file="assets/queries/markdown.scm",
-            )
-        super().__init__(config)
-
-
-class CppParser(TreeSitterDriver):
-    """C/C++ 語意解析器 (基於 TreeSitterDriver)"""
-
-    def __init__(self, config: Optional[LanguageConfig] = None):
-        if config is None:
-            config = LanguageConfig(
-                id="cpp",
-                name="C++",
-                extensions=(".cpp", ".cxx", ".cc", ".hpp", ".hxx", ".hh", ".c", ".h"),
-                mode="tree_sitter",
-                grammar="tree_sitter_cpp",
-                query_file="assets/queries/cpp.scm",
-            )
-        super().__init__(config)
-
-
-class CSharpParser(TreeSitterDriver):
-    """C# 語意解析器 (基於 TreeSitterDriver)"""
-
-    def __init__(self, config: Optional[LanguageConfig] = None):
-        if config is None:
-            config = LanguageConfig(
-                id="c_sharp",
-                name="C#",
-                extensions=(".cs",),
-                mode="tree_sitter",
-                grammar="tree_sitter_c_sharp",
-                query_file="assets/queries/c_sharp.scm",
-            )
-        super().__init__(config)
-
-
-class JsTsParser(TreeSitterDriver):
-    """JavaScript / TypeScript 語意解析器 (基於 TreeSitterDriver)"""
-
-    def __init__(self, config: Optional[LanguageConfig] = None):
-        if config is None:
-            config = LanguageConfig(
-                id="typescript",
-                name="TypeScript",
-                extensions=(".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"),
-                mode="tree_sitter",
-                grammar="tree_sitter_typescript:language_typescript",
-                query_file="assets/queries/typescript.scm",
-            )
-        super().__init__(config)
-
-
 class ParserRegistry:
     """
-    動態外掛解析器註冊中心 (LanguageRegistry)
+    動態外掛解析器註冊中心
     透過 contributes.knowledge_db.languages 自動動態加載並分發相應解析驅動。
     """
 
@@ -152,27 +71,14 @@ class ParserRegistry:
             if not isinstance(raw_cfg, dict):
                 continue
             try:
-                if "id" not in raw_cfg:
-                    raw_cfg["id"] = lang_id
-                cfg = LanguageConfig.from_dict(raw_cfg)
+                cfg_data = dict(raw_cfg)
+                if "id" not in cfg_data:
+                    cfg_data["id"] = lang_id
+                cfg = LanguageConfig.from_dict(cfg_data)
                 self._language_configs[cfg.id] = cfg
 
                 if cfg.mode == "tree_sitter":
-                    # 依語言類別物化特定類別實例以維持向後相容性
-                    if cfg.id == "python":
-                        parser = PythonParser(cfg)
-                    elif cfg.id == "markdown":
-                        parser = MarkdownParser(cfg)
-                    elif cfg.id in ("cpp", "c"):
-                        parser = CppParser(cfg)
-                    elif cfg.id == "c_sharp":
-                        parser = CSharpParser(cfg)
-                    elif cfg.id in ("javascript", "typescript"):
-                        parser = JsTsParser(cfg)
-                    else:
-                        parser = TreeSitterDriver(cfg)
-                    self.register_parser(parser, priority=100)
-
+                    self.register_parser(TreeSitterDriver(cfg), priority=100)
                 elif cfg.mode == "custom" and cfg.parser_entry:
                     try:
                         entry_str = cfg.parser_entry
@@ -215,14 +121,6 @@ class ParserRegistry:
                         ext_clean = "." + ext_clean
                     exts.add(ext_clean)
         return exts
-
-    def get_language_configs(self) -> Dict[str, LanguageConfig]:
-        """取得當前註冊的所有語言規格配置映射表。"""
-        return dict(self._language_configs)
-
-    def is_supported_file(self, file_path: Union[str, Path]) -> bool:
-        """判定目標檔案是否有對應之語意解析器。"""
-        return self.get_parser(file_path) is not None
 
     def get_parser(self, file_path: Union[str, Path]) -> Optional[BaseParser]:
         """
@@ -290,6 +188,3 @@ class ParserRegistry:
         except Exception as e:
             logger.debug(f"Error extracting imports from '{file_path}': {e}")
             return {}
-
-
-LanguageRegistry = ParserRegistry

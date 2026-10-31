@@ -4,33 +4,32 @@ knowledge-db 索引生命週期與流水線引擎 (pipeline.py)
 1. 全域聯集倒排索引建置與原子二進位持久化 (build_unified_index)
 2. 基於 AST 與 FQN 作用域的雙向調用圖譜建立 (CallGraphIndex)
 3. 向量特徵嵌入建置與持久化 (VectorIndex)
-4. 極速 JIT 增量熱自愈修補管線 (hot_patch_unified_index)
-5. 空間倒排索引建置與快取清理 (clean)
-6. 全域檢索編排 (search) 與拓撲查詢 (act_callers, act_callees, act_impact)
+4. 4 階段極速 JIT 增量熱自愈修補管線 (hot_patch_unified_index)
+5. 3 階段全域混合檢索編排 (search) 與 TopologyQueryService 委派
 """
 
 from collections import defaultdict
+from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
-import re
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from .bundler import SemanticBundle, SemanticBundler
+from .bundler import SemanticBundler
 from .embedding import EmbeddingService, VectorIndex
-from .exceptions import KnowledgeDBError, SpaceNotFoundError
+from .exceptions import KnowledgeDBError
 from .graph import CallGraphIndex
 from .hybrid import HybridSearchEngine
 from .linker import TopologyLinker
-from .retrieval import BM25Engine, CodeSnippet, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
+from .retrieval import BM25Engine, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
 from .scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffDetail
 from .schema import AggregatedFileResult, AggregatedItem, SymbolCallSite, UnifiedSymbol
 from .space import SpaceManager
 from .tokenizer import MultilingualTokenizer
-
-import threading
+from .topology_query import TopologyQueryService
 
 logger = logging.getLogger("knowledge-db.pipeline")
 
@@ -45,33 +44,37 @@ _GLOBAL_INDEX_CACHE: Dict[str, Any] = {
 _CACHE_LOCK = threading.RLock()
 
 
-class HotPatchResult(tuple):
+@dataclass(frozen=True)
+class HotPatchResult:
     """
-    熱修補結果元組 (success, vector_degraded, degrade_notice)
-    繼承 tuple 支援解構 (success, degraded, notice)，
-    同時實現 __bool__ 回傳 self[0]，支援 `if res:` 判斷。
+    標準熱修補結果資料模型
     """
-    def __new__(cls, success: bool, vector_degraded: bool = False, degrade_notice: Optional[str] = None):
-        return super().__new__(cls, (bool(success), bool(vector_degraded), degrade_notice))
-
-    @property
-    def success(self) -> bool:
-        return self[0]
-
-    @property
-    def patched(self) -> bool:
-        return self[0]
-
-    @property
-    def vector_degraded(self) -> bool:
-        return self[1]
-
-    @property
-    def degrade_notice(self) -> Optional[str]:
-        return self[2]
+    success: bool
+    patched_count: int = 0
+    vector_degraded: bool = False
+    degrade_notice: Optional[str] = None
 
     def __bool__(self) -> bool:
-        return bool(self[0])
+        return bool(self.success)
+
+
+def _symbol_matches_filters(
+    sym: Optional[UnifiedSymbol],
+    score: float,
+    target_spaces: Optional[List[str]],
+    kinds: Optional[List[str]],
+    languages: Optional[List[str]],
+) -> bool:
+    """無狀態純函式：檢驗符號是否通過搜尋過濾條件"""
+    if sym is None or score <= 0:
+        return False
+    if target_spaces and not any(s in target_spaces for s in getattr(sym, "spaces", [])):
+        return False
+    if kinds and sym.kind not in kinds:
+        return False
+    if languages and sym.language not in languages:
+        return False
+    return True
 
 
 class IndexingPipeline:
@@ -113,6 +116,13 @@ class IndexingPipeline:
         self._call_graph_index: Optional[CallGraphIndex] = None
         self._index_lock = threading.RLock()
 
+        self.topology_query = TopologyQueryService(
+            ensure_index_fn=lambda: self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True) or self.build_unified_index(),
+            get_graph_fn=self.get_call_graph,
+            bm25_engine=self.bm25_engine,
+            snippet_extractor=self.snippet_extractor,
+        )
+
     @property
     def storage_dir(self) -> Path:
         return self.space_manager.storage_dir
@@ -148,17 +158,13 @@ class IndexingPipeline:
         load_vectors: bool = True,
         force_reload: bool = False,
     ) -> None:
-        """
-        微秒級比對磁碟快照 mtime，自動熱更新記憶體快取或從磁碟載入 [FR-04, P00:DR-05]。
-        在常駐進程環境下實現全域快取復用，避免每次 CLI 呼叫重複進行 gzip 反序列化。
-        """
+        """微秒級比對磁碟快照 mtime，自動熱更新記憶體快取或從磁碟載入。"""
         global _GLOBAL_INDEX_CACHE
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
         graph_file = indices_dir / "unified.graph.bin.gz"
         vector_file = indices_dir / "unified.vectors.bin.gz"
 
-        # 1. 倒排索引
         if bin_file.exists():
             try:
                 mtime = bin_file.stat().st_mtime
@@ -170,7 +176,6 @@ class IndexingPipeline:
             except Exception as e:
                 logger.warning(f"Failed loading unified index cache: {e}")
 
-        # 2. 調用圖譜
         if load_graph and graph_file.exists():
             try:
                 mtime = graph_file.stat().st_mtime
@@ -182,7 +187,6 @@ class IndexingPipeline:
             except Exception as e:
                 logger.warning(f"Failed loading graph index cache: {e}")
 
-        # 3. 向量索引
         if load_vectors and vector_file.exists():
             try:
                 mtime = vector_file.stat().st_mtime
@@ -203,11 +207,7 @@ class IndexingPipeline:
         progress_callback: Optional[Any] = None,
         allow_parallel: bool = True,
     ) -> InvertedIndex:
-        """
-        建置全專案空間聯集單一倒排索引與雙向調用圖譜索引，並原子持久化二進位 Gzip 快取
-        (unified.index.bin.gz, unified.graph.bin.gz) 與二進位狀態快照 (unified.meta.bin) 至磁碟。
-        支援 interactive=True 或 progress_callback 回報 5 階段進度與精確耗時。
-        """
+        """建置全專案空間聯集單一倒排索引與雙向調用圖譜索引，並原子持久化至磁碟。"""
         with self._index_lock:
             return self._build_unified_index_locked(
                 force=force,
@@ -260,23 +260,19 @@ class IndexingPipeline:
 
         t_all_start = time.time()
 
-        # Stage 1: AST 解析與全域去重打包
         t0 = time.time()
         bundle = self.bundler.bundle_union(allow_parallel=allow_parallel)
         _report(1, "AST 符號解析與全域打包", (time.time() - t0) * 1000)
 
-        # Stage 2: BM25 倒排索引建立
         t0 = time.time()
         idx = InvertedIndex(space_name="unified")
-        idx.build_unified(bundle.symbols, tokenizer=self.tokenizer)
+        idx.build(bundle.symbols, tokenizer=self.tokenizer, space="unified")
         _report(2, f"BM25 倒排索引建置 ({idx.doc_count} 符號)", (time.time() - t0) * 1000)
 
-        # Stage 3: 雙向調用圖譜建立與符號鏈結
         t0 = time.time()
         call_sites, imports_map = self.bundler.extract_all_call_sites_and_imports()
         linker = TopologyLinker(
             symbols_map=idx.symbols,
-            tokenizer=self.tokenizer,
         )
         edges = linker.link_call_sites(call_sites, imports_map)
         graph_idx = CallGraphIndex()
@@ -284,7 +280,6 @@ class IndexingPipeline:
             graph_idx.add_edge(caller_id, callee_id, site)
         _report(3, f"雙向調用圖譜建置 ({len(edges)} 條調用邊)", (time.time() - t0) * 1000)
 
-        # Stage 4: 向量特徵嵌入建置
         t0 = time.time()
         vector_file = indices_dir / "unified.vectors.bin.gz"
         enable_vec = getattr(self.config, "enable_vector_search", True)
@@ -321,7 +316,6 @@ class IndexingPipeline:
                 reason_str = f" ({last_err.get('error_type')}: {last_err.get('message')})"
             _report(4, f"向量特徵嵌入 (FastEmbed 不可用{reason_str}，略過)", (time.time() - t0) * 1000)
 
-        # Stage 5: 二進位索引與快照原子持久化
         t0 = time.time()
         try:
             idx.save_binary(bin_file, compresslevel=1)
@@ -329,10 +323,7 @@ class IndexingPipeline:
         except Exception as e:
             raise KnowledgeDBError(f"Failed saving unified binary index/graph: {e}")
 
-        files_map = current_files
-        if files_map is None:
-            files_map = bundle.metadata.get("files_map", {})
-
+        files_map = current_files if current_files is not None else bundle.metadata.get("files_map", {})
         try:
             BinarySnapshotManager.save(meta_file, files_map)
         except Exception as e:
@@ -355,30 +346,233 @@ class IndexingPipeline:
                 _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
         return idx
 
+    # ----------------------------------------------------------------------
+    # 4 階段增量熱修補管線
+    # ----------------------------------------------------------------------
+
     def hot_patch_unified_index(
         self,
         diff_detail: ScanDiffDetail,
         full_files_map: Dict[str, Tuple[float, int]],
         timeout_seconds: Optional[float] = None,
     ) -> HotPatchResult:
-        """
-        執行極速增量熱自愈修補管線 (包含 JIT 10 符號動態探針與臨界值熔斷)：
-        1. 若記憶體 _unified_index 為空，回傳 HotPatchResult(False) 降級為全量建置。
-        2. 僅對 dirty 檔案呼叫 AST 解析並更新符號快取池。
-        3. 調用 _unified_index.patch_incremental 進行倒排差量打補丁。
-        4. 調用 _call_graph_index.patch_incremental 進行調用圖譜差量修補。
-        5. 若啟用向量檢索：
-           - 若向量快取遺失或與配置模型維度不符，安全熔斷降級回退純 BM25，輸出引導提示。
-           - 若待向量化符號 N <= 10，直接推論並更新。
-           - 若 N > 10，以首批 10 符號動態探針實測耗時，若預估 > timeout_seconds 立即熔斷降級回退純 BM25。
-        6. 快速原子持久化快照與二進位索引。
-        """
         with self._index_lock:
             return self._hot_patch_unified_index_locked(
                 diff_detail=diff_detail,
                 full_files_map=full_files_map,
                 timeout_seconds=timeout_seconds,
             )
+
+    def _collect_all_dirty_files(
+        self, diff_detail: ScanDiffDetail
+    ) -> Tuple[List[UnifiedSymbol], Set[str]]:
+        """熱修補階段 1：解析所有變更檔案並收集新符號與 dirty_keys"""
+        new_symbols_by_file, dirty_keys = self.bundler.bundle_dirty_files(diff_detail)
+        all_new_symbols: List[UnifiedSymbol] = []
+        for syms in new_symbols_by_file.values():
+            all_new_symbols.extend(syms)
+        return all_new_symbols, dirty_keys
+
+    def _evict_dirty_file_artifacts(
+        self, dirty_keys: Set[str]
+    ) -> Tuple[Set[str], Dict[str, Tuple[str, str, str]]]:
+        """熱修補階段 2：識別將被淘汰之舊符號 doc_id 與身份映射資訊"""
+        old_doc_ids: Set[str] = set()
+        old_symbol_info: Dict[str, Tuple[str, str, str]] = {}
+        if self._unified_index is None:
+            return old_doc_ids, old_symbol_info
+
+        dirty_paths_norm = {p.replace("\\", "/").lower() for p in dirty_keys}
+        for doc_id, sym in list(self._unified_index.symbols.items()):
+            sym_path_norm = sym.file_path.replace("\\", "/").lower()
+            sym_fn = Path(sym_path_norm).name
+            matched = False
+            for p in dirty_paths_norm:
+                if sym_path_norm == p or p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p):
+                    matched = True
+                    break
+                if "/" not in p and sym_fn == p:
+                    matched = True
+                    break
+            if matched:
+                old_doc_ids.add(doc_id)
+                old_symbol_info[doc_id] = (
+                    sym.file_path,
+                    sym.name,
+                    getattr(sym, "qualified_name", sym.name),
+                )
+        return old_doc_ids, old_symbol_info
+
+    def _reparse_and_relink_dirty_files(
+        self,
+        diff_detail: ScanDiffDetail,
+        dirty_keys: Set[str],
+        all_new_symbols: List[UnifiedSymbol],
+        old_doc_ids: Set[str],
+        old_symbol_info: Dict[str, Tuple[str, str, str]],
+        graph_file: Path,
+    ) -> None:
+        """熱修補階段 3：更新倒排索引與雙階入度重鏈接調用圖譜"""
+        if self._unified_index is None:
+            return
+
+        self._unified_index.patch_incremental(
+            dirty_file_paths=dirty_keys,
+            new_symbols=all_new_symbols,
+            tokenizer=self.tokenizer,
+        )
+
+        if self._call_graph_index is not None:
+            incoming_edges = self._call_graph_index.get_external_incoming_edges(old_doc_ids)
+            dirty_sites, dirty_imports = self.bundler.extract_dirty_call_sites_and_imports(diff_detail)
+            linker = TopologyLinker(
+                symbols_map=self._unified_index.symbols,
+            )
+            new_edges = linker.link_call_sites(dirty_sites, dirty_imports)
+
+            reconnected_incoming_edges: List[Tuple[str, str, Optional[SymbolCallSite]]] = []
+            new_syms_by_identity: Dict[Tuple[str, str], UnifiedSymbol] = {}
+            for sym in all_new_symbols:
+                norm_p = sym.file_path.replace("\\", "/").lower()
+                new_syms_by_identity[(norm_p, sym.name)] = sym
+                if getattr(sym, "qualified_name", None):
+                    new_syms_by_identity[(norm_p, sym.qualified_name)] = sym
+
+            for caller_id, old_callee_id, site in incoming_edges:
+                target_new_id = None
+                if old_callee_id in old_symbol_info:
+                    old_p, old_name, old_qname = old_symbol_info[old_callee_id]
+                    old_norm_p = old_p.replace("\\", "/").lower()
+                    new_sym = new_syms_by_identity.get((old_norm_p, old_name)) or new_syms_by_identity.get((old_norm_p, old_qname))
+                    if new_sym is not None:
+                        target_new_id = new_sym.id
+
+                if not target_new_id and site is not None:
+                    try:
+                        resolved_id = linker.resolve_call_site(site)
+                        if resolved_id and resolved_id in self._unified_index.symbols:
+                            target_new_id = resolved_id
+                    except Exception as e:
+                        logger.debug(f"TopologyLinker fallback resolution failed for site {site}: {e}")
+
+                if target_new_id:
+                    reconnected_incoming_edges.append((caller_id, target_new_id, site))
+
+            self._call_graph_index.patch_incremental(
+                new_edges=new_edges + reconnected_incoming_edges,
+                old_symbol_ids=old_doc_ids,
+            )
+            self._call_graph_index.save_binary(graph_file, compresslevel=1)
+
+    def _patch_vector_index_with_probe(
+        self,
+        all_new_symbols: List[UnifiedSymbol],
+        old_doc_ids: Set[str],
+        vector_file: Path,
+        timeout_seconds: Optional[float],
+    ) -> Tuple[bool, Optional[str]]:
+        """執行向量索引增量修補與 10 符號動態探針熔斷"""
+        enable_vec = getattr(self.config, "enable_vector_search", True)
+        if not enable_vec:
+            return False, None
+
+        if (
+            (self.hybrid_engine.vector_index is None or self.hybrid_engine.vector_index.vectors is None)
+            and vector_file.exists()
+        ):
+            try:
+                self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
+            except Exception as ve:
+                logger.warning(f"Failed loading vector index for hot patch: {ve}")
+
+        vec_idx = self.hybrid_engine.vector_index
+        expected_model = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
+        expected_dim = getattr(self.embedding_service, "dimension", getattr(vec_idx, "dim", 512))
+
+        if vec_idx is None or vec_idx.vectors is None or not vector_file.exists():
+            return True, (
+                "[knowledge-db:notice] 向量索引未建立已降級（本次使用純 BM25 模式）。"
+                "請執行 `python yscb.py knowledge-db index` 重建向量索引，"
+                "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
+            )
+        if hasattr(vec_idx, "is_compatible_with") and not vec_idx.is_compatible_with(expected_model, expected_dim):
+            return True, (
+                f"[knowledge-db:notice] 向量快取與當前模型 '{expected_model}' (維度要求: {expected_dim}) 不相容已降級（本次使用純 BM25 模式）。"
+                "請執行 `python yscb.py knowledge-db index --force` 重建向量索引，"
+                "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
+            )
+        if not self.embedding_service.is_available:
+            return False, None
+
+        new_texts = [f"{sym.name} {sym.signature} {sym.docstring}".strip() for sym in all_new_symbols]
+        num_symbols = len(new_texts)
+        if num_symbols == 0:
+            vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=[], new_vectors=None)
+            try:
+                vec_idx.save_binary(vector_file)
+            except Exception as ve:
+                logger.warning(f"Failed saving patched vector index: {ve}")
+            return False, None
+
+        if num_symbols <= 10:
+            try:
+                new_vecs = self.embedding_service.embed_texts(new_texts)
+                new_ids = [sym.id for sym in all_new_symbols]
+                vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=new_ids, new_vectors=new_vecs)
+                vec_idx.save_binary(vector_file)
+                return False, None
+            except Exception as ve:
+                logger.warning(f"Failed patching vector index for <=10 symbols: {ve}")
+                return True, f"[knowledge-db:notice] 向量更新失敗已降級為純 BM25 模式: {ve}"
+
+        try:
+            probe_texts = new_texts[:10]
+            probe_vecs, est_total = self.embedding_service.embed_texts_probe(probe_texts, total_count=num_symbols)
+            if timeout_seconds is not None and est_total > timeout_seconds:
+                return True, (
+                    f"[knowledge-db:notice] 待向量化符號過多（{num_symbols} 個，預估耗時 {est_total:.1f}s > {timeout_seconds:.1f}s）已熔斷降級（本次使用純 BM25 模式）。"
+                    "請執行 `python yscb.py knowledge-db index` 重建/更新向量索引，"
+                    "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
+                )
+
+            remaining_texts = new_texts[10:]
+            remaining_vecs = self.embedding_service.embed_texts(remaining_texts) if remaining_texts else None
+            import numpy as np
+            if probe_vecs is not None and remaining_vecs is not None:
+                full_vecs = np.vstack([probe_vecs, remaining_vecs])
+            elif probe_vecs is not None:
+                full_vecs = probe_vecs
+            else:
+                full_vecs = remaining_vecs
+
+            new_ids = [sym.id for sym in all_new_symbols]
+            vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=new_ids, new_vectors=full_vecs)
+            vec_idx.save_binary(vector_file)
+            return False, None
+        except Exception as ve:
+            logger.warning(f"Dynamic probe or inference failed: {ve}")
+            return True, f"[knowledge-db:notice] 向量推論異常已降級為純 BM25 模式: {ve}"
+
+    def _persist_patched_indices(
+        self,
+        bin_file: Path,
+        graph_file: Path,
+        vector_file: Path,
+        meta_file: Path,
+        full_files_map: Dict[str, Tuple[float, int]],
+    ) -> None:
+        """熱修補階段 4：原子持久化更新後之二進位索引與全域快取同步"""
+        if self._unified_index is not None:
+            self._unified_index.save_binary(bin_file, compresslevel=1)
+        BinarySnapshotManager.save(meta_file, full_files_map)
+        with _CACHE_LOCK:
+            _GLOBAL_INDEX_CACHE["unified_index"] = self._unified_index
+            _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
+            _GLOBAL_INDEX_CACHE["graph_index"] = self._call_graph_index
+            _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
+            if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
+                _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
+                _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
 
     def _hot_patch_unified_index_locked(
         self,
@@ -389,6 +583,7 @@ class IndexingPipeline:
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
         graph_file = indices_dir / "unified.graph.bin.gz"
+        vector_file = indices_dir / "unified.vectors.bin.gz"
         meta_file = indices_dir / "unified.meta.bin"
 
         if self._unified_index is None and bin_file.exists():
@@ -398,13 +593,10 @@ class IndexingPipeline:
                 logger.warning(f"Failed loading binary inverted index for hot patch: {e}")
 
         if self._unified_index is None:
-            return HotPatchResult(False, False, None)
+            return HotPatchResult(success=False, patched_count=0)
 
         if timeout_seconds is None:
-            if self.config and hasattr(self.config, "resolve_jit_vector_timeout"):
-                timeout_seconds = self.config.resolve_jit_vector_timeout()
-            else:
-                timeout_seconds = getattr(self.config, "jit_vector_timeout_seconds", 5.0)
+            timeout_seconds = getattr(self.config, "jit_vector_timeout_seconds", 5.0)
 
         if self._call_graph_index is None and graph_file.exists():
             try:
@@ -413,208 +605,29 @@ class IndexingPipeline:
                 pass
 
         try:
-            new_symbols_by_file, dirty_keys = self.bundler.bundle_dirty_files(diff_detail)
-            all_new_symbols: List[UnifiedSymbol] = []
-            for syms in new_symbols_by_file.values():
-                all_new_symbols.extend(syms)
-
-            old_doc_ids: Set[str] = set()
-            old_symbol_info: Dict[str, Tuple[str, str, str]] = {}
-            dirty_paths_norm = {p.replace("\\", "/").lower() for p in dirty_keys}
-            for doc_id, sym in list(self._unified_index.symbols.items()):
-                sym_path_norm = sym.file_path.replace("\\", "/").lower()
-                sym_fn = Path(sym_path_norm).name
-                matched = False
-                for p in dirty_paths_norm:
-                    if sym_path_norm == p or p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p):
-                        matched = True
-                        break
-                    if "/" not in p and sym_fn == p:
-                        matched = True
-                        break
-                if matched:
-                    old_doc_ids.add(doc_id)
-                    old_symbol_info[doc_id] = (
-                        sym.file_path,
-                        sym.name,
-                        getattr(sym, "qualified_name", sym.name),
-                    )
-
-            self._unified_index.patch_incremental(
-                dirty_file_paths=dirty_keys,
-                new_symbols=all_new_symbols,
-                tokenizer=self.tokenizer,
+            all_new_symbols, dirty_keys = self._collect_all_dirty_files(diff_detail)
+            old_doc_ids, old_symbol_info = self._evict_dirty_file_artifacts(dirty_keys)
+            self._reparse_and_relink_dirty_files(
+                diff_detail, dirty_keys, all_new_symbols, old_doc_ids, old_symbol_info, graph_file
             )
+            vector_degraded, degrade_notice = self._patch_vector_index_with_probe(
+                all_new_symbols, old_doc_ids, vector_file, timeout_seconds
+            )
+            self._persist_patched_indices(bin_file, graph_file, vector_file, meta_file, full_files_map)
 
-            # 差量修補調用圖譜 (雙階入度保留與重鏈接)
-            if self._call_graph_index is not None:
-                incoming_edges = self._call_graph_index.get_external_incoming_edges(old_doc_ids)
-                dirty_sites, dirty_imports = self.bundler.extract_dirty_call_sites_and_imports(diff_detail)
-                linker = TopologyLinker(
-                    symbols_map=self._unified_index.symbols,
-                    tokenizer=self.tokenizer,
-                )
-                new_edges = linker.link_call_sites(dirty_sites, dirty_imports)
-
-                # Stage 1 (Identity Remap) + Stage 2 (TopologyLinker Fallback)
-                reconnected_incoming_edges: List[Tuple[str, str, Optional[SymbolCallSite]]] = []
-                new_syms_by_identity: Dict[Tuple[str, str], UnifiedSymbol] = {}
-                for sym in all_new_symbols:
-                    norm_p = sym.file_path.replace("\\", "/").lower()
-                    new_syms_by_identity[(norm_p, sym.name)] = sym
-                    if getattr(sym, "qualified_name", None):
-                        new_syms_by_identity[(norm_p, sym.qualified_name)] = sym
-
-                for caller_id, old_callee_id, site in incoming_edges:
-                    target_new_id = None
-                    # Stage 1: Identity Remap
-                    if old_callee_id in old_symbol_info:
-                        old_p, old_name, old_qname = old_symbol_info[old_callee_id]
-                        old_norm_p = old_p.replace("\\", "/").lower()
-                        new_sym = new_syms_by_identity.get((old_norm_p, old_name)) or new_syms_by_identity.get((old_norm_p, old_qname))
-                        if new_sym is not None:
-                            target_new_id = new_sym.id
-
-                    # Stage 2: TopologyLinker Fallback
-                    if not target_new_id and site is not None:
-                        try:
-                            resolved_id = linker.resolve_call_site(site)
-                            if resolved_id and resolved_id in self._unified_index.symbols:
-                                target_new_id = resolved_id
-                        except Exception as e:
-                            logger.debug(f"TopologyLinker fallback resolution failed for site {site}: {e}")
-
-                    if target_new_id:
-                        reconnected_incoming_edges.append((caller_id, target_new_id, site))
-
-                self._call_graph_index.patch_incremental(
-                    dirty_file_paths=dirty_keys,
-                    new_edges=new_edges + reconnected_incoming_edges,
-                    old_symbol_ids=old_doc_ids,
-                )
-                self._call_graph_index.save_binary(graph_file, compresslevel=1)
-
-            # 差量修補向量索引與 JIT 10 符號動態探針
-            vector_file = indices_dir / "unified.vectors.bin.gz"
-            vector_degraded = False
-            degrade_notice: Optional[str] = None
-            enable_vec = getattr(self.config, "enable_vector_search", True)
-
-            if not enable_vec:
-                # 向量語意檢索已停用，不執行向量更新與提示
-                pass
-            else:
-                if (
-                    (self.hybrid_engine.vector_index is None or self.hybrid_engine.vector_index.vectors is None)
-                    and vector_file.exists()
-                ):
-                    try:
-                        self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
-                    except Exception as ve:
-                        logger.warning(f"Failed loading vector index for hot patch: {ve}")
-
-                vec_idx = self.hybrid_engine.vector_index
-                expected_model = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
-                expected_dim = getattr(self.embedding_service, "dimension", getattr(vec_idx, "dim", 512))
-
-                if vec_idx is None or vec_idx.vectors is None or not vector_file.exists():
-                    vector_degraded = True
-                    degrade_notice = (
-                        "[knowledge-db:notice] 向量索引未建立已降級（本次使用純 BM25 模式）。"
-                        "請執行 `python yscb.py knowledge-db index` 重建向量索引，"
-                        "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
-                    )
-                elif hasattr(vec_idx, "is_compatible_with") and not vec_idx.is_compatible_with(expected_model, expected_dim):
-                    vector_degraded = True
-                    degrade_notice = (
-                        f"[knowledge-db:notice] 向量快取與當前模型 '{expected_model}' (維度要求: {expected_dim}) 不相容已降級（本次使用純 BM25 模式）。"
-                        "請執行 `python yscb.py knowledge-db index --force` 重建向量索引，"
-                        "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
-                    )
-                elif self.embedding_service.is_available:
-                    new_texts = [
-                        f"{sym.name} {sym.signature} {sym.docstring}".strip()
-                        for sym in all_new_symbols
-                    ]
-                    num_symbols = len(new_texts)
-                    if num_symbols == 0:
-                        vec_idx.patch_incremental(
-                            removed_doc_ids=old_doc_ids,
-                            new_doc_ids=[],
-                            new_vectors=None,
-                        )
-                        try:
-                            vec_idx.save_binary(vector_file)
-                        except Exception as ve:
-                            logger.warning(f"Failed saving patched vector index: {ve}")
-                    elif num_symbols <= 10:
-                        try:
-                            new_vecs = self.embedding_service.embed_texts(new_texts)
-                            new_ids = [sym.id for sym in all_new_symbols]
-                            vec_idx.patch_incremental(
-                                removed_doc_ids=old_doc_ids,
-                                new_doc_ids=new_ids,
-                                new_vectors=new_vecs,
-                            )
-                            vec_idx.save_binary(vector_file)
-                        except Exception as ve:
-                            logger.warning(f"Failed patching vector index for <=10 symbols: {ve}")
-                            vector_degraded = True
-                            degrade_notice = f"[knowledge-db:notice] 向量更新失敗已降級為純 BM25 模式: {ve}"
-                    else:
-                        # N > 10，執行 10 符號動態探針
-                        try:
-                            probe_texts = new_texts[:10]
-                            probe_vecs, est_total = self.embedding_service.embed_texts_probe(probe_texts, total_count=num_symbols)
-                            if timeout_seconds is not None and est_total > timeout_seconds:
-                                vector_degraded = True
-                                degrade_notice = (
-                                    f"[knowledge-db:notice] 待向量化符號過多（{num_symbols} 個，預估耗時 {est_total:.1f}s > {timeout_seconds:.1f}s）已熔斷降級（本次使用純 BM25 模式）。"
-                                    "請執行 `python yscb.py knowledge-db index` 重建/更新向量索引，"
-                                    "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
-                                )
-                                # 熔斷：不將不完整向量寫入磁碟，但完成 BM25 與圖譜更新
-                            else:
-                                remaining_texts = new_texts[10:]
-                                remaining_vecs = self.embedding_service.embed_texts(remaining_texts) if remaining_texts else None
-                                import numpy as np
-                                if probe_vecs is not None and remaining_vecs is not None:
-                                    full_vecs = np.vstack([probe_vecs, remaining_vecs])
-                                elif probe_vecs is not None:
-                                    full_vecs = probe_vecs
-                                else:
-                                    full_vecs = remaining_vecs
-
-                                new_ids = [sym.id for sym in all_new_symbols]
-                                vec_idx.patch_incremental(
-                                    removed_doc_ids=old_doc_ids,
-                                    new_doc_ids=new_ids,
-                                    new_vectors=full_vecs,
-                                )
-                                vec_idx.save_binary(vector_file)
-                        except Exception as ve:
-                            logger.warning(f"Dynamic probe or inference failed: {ve}")
-                            vector_degraded = True
-                            degrade_notice = f"[knowledge-db:notice] 向量推論異常已降級為純 BM25 模式: {ve}"
-
-            self._unified_index.save_binary(bin_file, compresslevel=1)
-            BinarySnapshotManager.save(meta_file, full_files_map)
-            with _CACHE_LOCK:
-                _GLOBAL_INDEX_CACHE["unified_index"] = self._unified_index
-                _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
-                _GLOBAL_INDEX_CACHE["graph_index"] = self._call_graph_index
-                _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
-                if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
-                    _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
-                    _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
             self._vector_degraded = vector_degraded
             self._last_degrade_notice = degrade_notice
-            return HotPatchResult(True, vector_degraded, degrade_notice)
+            return HotPatchResult(
+                success=True,
+                patched_count=len(dirty_keys),
+                vector_degraded=vector_degraded,
+                degrade_notice=degrade_notice,
+            )
         except Exception as e:
             logger.warning(f"Incremental hot patch failed: {e}, falling back to full rebuild.")
             self._vector_degraded = False
             self._last_degrade_notice = None
-            return HotPatchResult(False, False, None)
+            return HotPatchResult(success=False, patched_count=0)
 
     def build_index(
         self,
@@ -631,7 +644,6 @@ class IndexingPipeline:
         indices_dir = self.get_indices_dir()
         sp_name = sp.name
         bin_file = indices_dir / f"{sp_name}.index.bin.gz"
-        legacy_json = indices_dir / f"{sp_name}.index.json"
 
         if not force and bin_file.exists():
             try:
@@ -640,16 +652,6 @@ class IndexingPipeline:
                 return {sp_name: idx}
             except Exception as e:
                 logger.warning(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
-        elif not force and legacy_json.exists():
-            try:
-                with open(legacy_json, "r", encoding="utf-8", errors="replace") as f:
-                    data = json.load(f)
-                idx = InvertedIndex.from_dict(data)
-                idx.save_binary(bin_file)
-                self._index_cache[sp_name] = idx
-                return {sp_name: idx}
-            except Exception as e:
-                logger.warning(f"Failed converting legacy JSON index for '{sp_name}', rebuilding: {e}")
 
         bundle = self.bundler.bundle_space(sp)
         idx = InvertedIndex(space_name=sp_name)
@@ -664,17 +666,10 @@ class IndexingPipeline:
         return {sp_name: idx}
 
     def clean(self, space: Optional[str] = None) -> None:
-        """清理指定空間或全空間之指紋快取、Bundle 檔案與倒排索引快取。"""
-        targets = [self.space_manager.get_space(space)] if space is not None else self.space_manager.get_union_spaces()
+        """清理指定空間或全空間之 Bundle 檔案與倒排索引快取。"""
+        targets = [self.space_manager.get_space(space)] if space is not None else self.space_manager.list_spaces()
         for sp in targets:
             sp_name = sp.name
-            fp_file = self.space_manager.get_space_storage_dir(sp_name) / "fingerprints.json"
-            if fp_file.exists():
-                try:
-                    fp_file.unlink()
-                except OSError:
-                    pass
-
             bundle_file = self.storage_dir / "bundles" / f"{sp_name}.bundle.json"
             if bundle_file.exists():
                 try:
@@ -682,13 +677,12 @@ class IndexingPipeline:
                 except OSError:
                     pass
 
-            for ext in [".index.bin.gz", ".index.json"]:
-                idx_file = self.storage_dir / "indices" / f"{sp_name}{ext}"
-                if idx_file.exists():
-                    try:
-                        idx_file.unlink()
-                    except OSError:
-                        pass
+            idx_file = self.storage_dir / "indices" / f"{sp_name}.index.bin.gz"
+            if idx_file.exists():
+                try:
+                    idx_file.unlink()
+                except OSError:
+                    pass
 
             self._index_cache.pop(sp_name, None)
 
@@ -710,7 +704,7 @@ class IndexingPipeline:
         _GLOBAL_INDEX_CACHE.clear()
 
     # ----------------------------------------------------------------------
-    # 檢索編排與拓撲分析 (Search & Graph Actions)
+    # 3 階段檢索編排與 TopologyQueryService 委派
     # ----------------------------------------------------------------------
 
     def _is_watcher_active(self) -> bool:
@@ -729,16 +723,13 @@ class IndexingPipeline:
             return is_process_alive(pid)
         except Exception:
             return False
+
     def _ensure_jit_index_ready(
         self,
         require_vectors: bool = False,
         auto_rebuild: bool = True,
         verbose: bool = False,
     ) -> InvertedIndex:
-        """
-        確保記憶體倒排索引與調用圖譜處於最新就緒狀態 (支援 JIT 變更感知與自動熱自愈)。
-        若 require_vectors=False，僅載入與修補倒排與圖譜索引，跳過向量推論，極大化查詢速度。
-        """
         with self._index_lock:
             return self._ensure_jit_index_ready_locked(
                 require_vectors=require_vectors,
@@ -759,18 +750,11 @@ class IndexingPipeline:
 
         self._ensure_indices_loaded(load_graph=True, load_vectors=require_vectors)
 
-        # 1. JIT 變更感知與自動增量熱自愈 [FR-12]
         if auto_rebuild:
             watcher_active = self._is_watcher_active()
-            skip_full_stat = (
-                watcher_active
-                and bin_file.exists()
-                and self._unified_index is not None
-            )
+            skip_full_stat = watcher_active and bin_file.exists() and self._unified_index is not None
 
-            if skip_full_stat:
-                is_dirty = False
-            else:
+            if not skip_full_stat:
                 is_dirty, scanned_count, reason, full_files_map, diff_detail = self.scanner.check_invalidation(
                     snapshot_path=meta_file
                 )
@@ -790,11 +774,8 @@ class IndexingPipeline:
                     degrade_notice = None
                     if bin_file.exists() and self._unified_index is not None and diff_detail.has_changes:
                         res = self.hot_patch_unified_index(diff_detail, full_files_map)
-                        if isinstance(res, tuple):
-                            patched = res[0]
-                            degrade_notice = res[2] if len(res) > 2 else None
-                        else:
-                            patched = bool(res)
+                        patched = bool(res.success)
+                        degrade_notice = res.degrade_notice
 
                     if not patched:
                         self.build_unified_index(force=True, current_files=full_files_map)
@@ -826,44 +807,29 @@ class IndexingPipeline:
 
         return self._unified_index
 
-    def search(
+    def _prepare_search_context_and_filters(
         self,
-        query: str,
-        space: Optional[Union[str, List[str]]] = None,
-        kinds: Optional[List[str]] = None,
-        languages: Optional[List[str]] = None,
-        ftypes: Optional[List[str]] = None,
-        min_score: float = 0.0,
-        limit: int = 10,
-        snippet: bool = False,
-        context_lines: int = 3,
-        auto_rebuild: bool = True,
-        verbose: bool = False,
-        aggregate: bool = True,
-        lexical_only: bool = False,
-    ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
-        """全域聯集多欄位加權語意檢索 (支援 JIT 變更嗅探、自動背景熱自愈、空間與副檔名篩選)"""
-        if not query or not query.strip():
-            return []
-
+        space: Optional[Union[str, List[str]]],
+        kinds: Optional[List[str]],
+        languages: Optional[List[str]],
+        ftypes: Optional[Union[str, List[str]]],
+        min_score: float,
+        limit: int,
+        lexical_only: bool,
+        auto_rebuild: bool,
+        verbose: bool,
+    ) -> Tuple[Optional[InvertedIndex], QueryFilter, Optional[List[str]], Optional[List[str]], bool]:
+        """檢索階段 1：準備索引上下文、過濾器與向量可用性判定"""
         enable_vec = getattr(self.config, "enable_vector_search", True)
-        want_vectors = (
-            enable_vec
-            and not getattr(self, "_vector_degraded", False)
-            and not lexical_only
-        )
+        want_vectors = enable_vec and not getattr(self, "_vector_degraded", False) and not lexical_only
 
         unified_index = self._ensure_jit_index_ready(
             require_vectors=want_vectors,
             auto_rebuild=auto_rebuild,
             verbose=verbose,
         )
-        if not unified_index or unified_index.doc_count == 0:
-            return []
-
         target_spaces = [space] if isinstance(space, str) else list(space) if space else None
-        target_ftypes = self._normalize_ftypes(ftypes)
-
+        target_ftypes = TopologyQueryService.normalize_ftypes(ftypes)
         flt = QueryFilter(
             spaces=target_spaces,
             languages=languages,
@@ -872,12 +838,23 @@ class IndexingPipeline:
             min_score=min_score,
             limit=limit,
         )
+        can_use_vector = want_vectors and self.hybrid_engine.is_vector_available
+        return unified_index, flt, target_spaces, target_ftypes, can_use_vector
 
-        can_use_vector = (
-            want_vectors
-            and self.hybrid_engine.is_vector_available
-        )
-
+    def _execute_lexical_and_vector_retrieval(
+        self,
+        query: str,
+        unified_index: InvertedIndex,
+        flt: QueryFilter,
+        target_spaces: Optional[List[str]],
+        target_ftypes: Optional[List[str]],
+        kinds: Optional[List[str]],
+        languages: Optional[List[str]],
+        limit: int,
+        aggregate: bool,
+        can_use_vector: bool,
+    ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
+        """檢索階段 2：執行混合 RRF 或純 BM25 檢索與檔案聚合"""
         if not aggregate:
             if can_use_vector:
                 self.hybrid_engine.inverted_index = unified_index
@@ -891,16 +868,10 @@ class IndexingPipeline:
                     languages=languages,
                     lexical_only=False,
                 )
-                raw_results = []
+                raw_results: List[SearchResult] = []
                 for h in hybrid_hits:
                     sym = h["symbol"]
-                    if sym is None or h["score"] <= 0:
-                        continue
-                    if target_spaces and not any(s in target_spaces for s in getattr(sym, "spaces", [])):
-                        continue
-                    if kinds and sym.kind not in kinds:
-                        continue
-                    if languages and sym.language not in languages:
+                    if not _symbol_matches_filters(sym, h["score"], target_spaces, kinds, languages):
                         continue
                     raw_results.append(
                         SearchResult(
@@ -911,36 +882,9 @@ class IndexingPipeline:
                             snippet=sym.docstring or "",
                         )
                     )
-            else:
-                raw_results = self.bm25_engine.search(query=query, index=unified_index, filter_cfg=flt)
-
-            if not snippet:
                 return raw_results
+            return self.bm25_engine.search(query=query, index=unified_index, filter_cfg=flt)
 
-            results_with_snippets: List[SearchResult] = []
-            for r in raw_results:
-                snip = self.snippet_extractor.extract(
-                    file_path=r.symbol.file_path,
-                    line_number=r.symbol.line_number,
-                    end_line=r.symbol.end_line,
-                    context_before=2,
-                    context_after=8,
-                    docstring=r.symbol.docstring,
-                    space=r.space,
-                )
-                results_with_snippets.append(
-                    SearchResult(
-                        symbol=r.symbol,
-                        score=r.score,
-                        matched_terms=r.matched_terms,
-                        space=r.space,
-                        snippet=r.snippet,
-                        code_snippet=snip,
-                    )
-                )
-            return results_with_snippets
-
-        # 預設聚合模式
         if can_use_vector:
             self.hybrid_engine.inverted_index = unified_index
             self.hybrid_engine.bm25_engine = self.bm25_engine
@@ -960,15 +904,8 @@ class IndexingPipeline:
 
             for h in hybrid_agg_hits:
                 sym = h["symbol"]
-                if sym is None or h["score"] <= 0:
+                if not _symbol_matches_filters(sym, h["score"], target_spaces, kinds, languages):
                     continue
-                if target_spaces and not any(s in target_spaces for s in getattr(sym, "spaces", [])):
-                    continue
-                if kinds and sym.kind not in kinds:
-                    continue
-                if languages and sym.language not in languages:
-                    continue
-
                 fp = sym.file_path
                 file_scores[fp].append(h["score"])
                 if len(file_items[fp]) < 3:
@@ -1000,23 +937,58 @@ class IndexingPipeline:
                     )
                 )
             raw_agg_results.sort(key=lambda x: x.total_score, reverse=True)
-            raw_agg_results = raw_agg_results[:limit]
-        else:
-            raw_agg_results = self.bm25_engine.search_aggregated(query=query, index=unified_index, filter_cfg=flt)
+            return raw_agg_results[:limit]
 
+        return self.bm25_engine.search_aggregated(query=query, index=unified_index, filter_cfg=flt)
+
+    def _enrich_snippets_and_expand_ast(
+        self,
+        raw_results: Union[List[AggregatedFileResult], List[SearchResult]],
+        aggregate: bool,
+        snippet: bool,
+        context_lines: int = 3,
+    ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
+        """檢索階段 3：為命中符號或聚合項目延遲提取原始碼切片"""
         if not snippet:
-            return raw_agg_results
+            return raw_results
+
+        ctx_before = max(0, context_lines)
+        ctx_after = max(ctx_before, 8)
+
+        if not aggregate:
+            results_with_snippets: List[SearchResult] = []
+            for r in raw_results:  # type: ignore[union-attr]
+                snip = self.snippet_extractor.extract(
+                    file_path=r.symbol.file_path,
+                    line_number=r.symbol.line_number,
+                    end_line=r.symbol.end_line,
+                    context_before=ctx_before,
+                    context_after=ctx_after,
+                    docstring=r.symbol.docstring,
+                    space=r.space,
+                )
+                results_with_snippets.append(
+                    SearchResult(
+                        symbol=r.symbol,
+                        score=r.score,
+                        matched_terms=r.matched_terms,
+                        space=r.space,
+                        snippet=r.snippet,
+                        code_snippet=snip,
+                    )
+                )
+            return results_with_snippets
 
         agg_with_snippets: List[AggregatedFileResult] = []
-        for file_res in raw_agg_results:
+        for file_res in raw_results:  # type: ignore[union-attr]
             updated_items: List[AggregatedItem] = []
             for itm in file_res.items:
                 snip = self.snippet_extractor.extract(
                     file_path=itm.symbol.file_path,
                     line_number=itm.symbol.line_number,
                     end_line=itm.symbol.end_line,
-                    context_before=2,
-                    context_after=8,
+                    context_before=ctx_before,
+                    context_after=ctx_after,
                     docstring=itm.symbol.docstring,
                     space=file_res.spaces[0] if file_res.spaces else None,
                 )
@@ -1040,373 +1012,89 @@ class IndexingPipeline:
             )
         return agg_with_snippets
 
-    def get_call_graph(self) -> CallGraphIndex:
-        """獲取已載入之全域雙向調用圖譜索引 (若未建置則自動觸發 JIT 構建)"""
-        indices_dir = self.get_indices_dir()
-        graph_file = indices_dir / "unified.graph.bin.gz"
-
-        self._ensure_indices_loaded(load_graph=True, load_vectors=False)
-
-        if self._call_graph_index is None or self._unified_index is None:
-            self.build_unified_index(force=True)
-
-        return self._call_graph_index
-
-    @staticmethod
-    def _normalize_ftypes(ftypes: Optional[Union[str, List[str]]]) -> Optional[List[str]]:
-        """正規化副檔名篩選清單 (支援逗號分隔或串列)"""
-        if not ftypes:
-            return None
-        raw = [ftypes] if isinstance(ftypes, str) else list(ftypes)
-        norm: List[str] = []
-        for item in raw:
-            for part in str(item).split(","):
-                p = part.strip().lstrip(".").lower()
-                if p and p not in norm:
-                    norm.append(p)
-        return norm or None
-
-    @staticmethod
-    def _is_doc_symbol(sym: UnifiedSymbol) -> bool:
-        """判定符號是否為非程式碼文檔符號 (Markdown / doc_*)"""
-        lang = (sym.language or "").lower()
-        kind_str = sym.kind.value if hasattr(sym.kind, "value") else str(sym.kind)
-        return lang == "markdown" or kind_str.startswith("doc_")
-
-    @classmethod
-    def _matches_topology_filter(cls, sym: UnifiedSymbol, norm_ftypes: Optional[List[str]]) -> bool:
-        """
-        [DR-01] 拓撲指令 (callers / callees / impact) 符號篩選守門：
-        - 未指定 ftypes 時：預設排除非程式碼文檔符號 (Markdown / doc_*)
-        - 顯式指定 ftypes 時：依檔案副檔名嚴格過濾 (如 --ftype=md 僅保留 .md/.markdown)
-        """
-        if not norm_ftypes:
-            return not cls._is_doc_symbol(sym)
-        ext = Path(sym.file_path).suffix.lstrip(".").lower()
-        allowed = set(norm_ftypes)
-        if "md" in allowed or "markdown" in allowed:
-            allowed.update({"md", "markdown"})
-        return ext in allowed
-
-    def _expand_contract_symbol_ids(self, target_sym: UnifiedSymbol) -> List[str]:
-        """
-        [DR-03] 介面/基底類別與實作類別同名方法雙向契約展開：
-        當查詢 IPanel.UpdateLayout 或 Panel.UpdateLayout 時，自動納入了透過 base_types 關聯之同名方法 ID。
-        """
-        result_ids = [target_sym.id]
-        if not self._unified_index:
-            return result_ids
-
-        kind_str = target_sym.kind.value if hasattr(target_sym.kind, "value") else str(target_sym.kind)
-        if kind_str not in ("method", "function", "property"):
-            return result_ids
-
-        parent_cls = (target_sym.metadata.get("parent_scope") or "") if target_sym.metadata else ""
-        short_name = (
-            (target_sym.metadata.get("short_name") if target_sym.metadata else None)
-            or (re.split(r"[.:]+", target_sym.name)[-1] if ("." in target_sym.name or "::" in target_sym.name) else target_sym.name)
-        )
-        if not parent_cls or not short_name:
-            return result_ids
-
-        # 建立類別繼承雙向圖 (class_short -> bases, base -> derived_classes)
-        class_bases: Dict[str, Set[str]] = defaultdict(set)
-        base_derived: Dict[str, Set[str]] = defaultdict(set)
-        for sym in self._unified_index.symbols.values():
-            if not sym.metadata:
-                continue
-            b_types = sym.metadata.get("base_types")
-            if b_types and isinstance(b_types, (list, tuple)):
-                cls_short = sym.metadata.get("short_name") or re.split(r"[.:]+", sym.name)[-1]
-                for bt in b_types:
-                    if bt:
-                        class_bases[cls_short].add(str(bt))
-                        base_derived[str(bt)].add(cls_short)
-
-        # 收集與 parent_cls 具契約繼承關係之類別集合 (含向上祖先與向下實作類別)
-        related_classes: Set[str] = {parent_cls}
-        # 向上尋找介面/基底類別
-        up_queue = list(class_bases.get(parent_cls, []))
-        while up_queue:
-            curr = up_queue.pop(0)
-            if curr not in related_classes:
-                related_classes.add(curr)
-                up_queue.extend(class_bases.get(curr, []))
-        # 向下尋找實作/衍生類別
-        down_queue = list(base_derived.get(parent_cls, []))
-        while down_queue:
-            curr = down_queue.pop(0)
-            if curr not in related_classes:
-                related_classes.add(curr)
-                down_queue.extend(base_derived.get(curr, []))
-
-        if len(related_classes) <= 1:
-            return result_ids
-
-        for sym in self._unified_index.symbols.values():
-            if sym.id == target_sym.id or not sym.metadata:
-                continue
-            s_parent = sym.metadata.get("parent_scope") or ""
-            s_short = sym.metadata.get("short_name") or ""
-            if s_short == short_name and s_parent in related_classes:
-                result_ids.append(sym.id)
-
-        return result_ids
-
-    def find_target_symbol(
+    def search(
         self,
         query: str,
-        space: Optional[str] = None,
+        space: Optional[Union[str, List[str]]] = None,
+        kinds: Optional[List[str]] = None,
+        languages: Optional[List[str]] = None,
         ftypes: Optional[Union[str, List[str]]] = None,
-    ) -> Optional[UnifiedSymbol]:
-        """精準、透過 SymbolSelector 微型語法或語意定位目標 UnifiedSymbol (預設排除非程式碼文檔符號)"""
-        idx = self._ensure_jit_index_ready(require_vectors=False) or self.build_unified_index()
-        query_clean = query.strip()
-        if not query_clean:
-            return None
+        min_score: float = 0.0,
+        limit: int = 10,
+        snippet: bool = False,
+        context_lines: int = 3,
+        auto_rebuild: bool = True,
+        verbose: bool = False,
+        aggregate: bool = True,
+        lexical_only: bool = False,
+    ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
+        """全域聯集多欄位加權語意檢索"""
+        if not query or not query.strip():
+            return []
 
-        norm_ftypes = self._normalize_ftypes(ftypes)
-        from .selector import SymbolSelector
-        all_space_pool = [sym for sym in idx.symbols.values() if (not space or space in sym.spaces)]
-        filtered_pool = [sym for sym in all_space_pool if self._matches_topology_filter(sym, norm_ftypes)]
-        # 若無顯式 ftypes 且過濾後無結果，保留回退至全空間池之彈性 (如使用者明確查文檔標題)
-        pool = filtered_pool if (filtered_pool or norm_ftypes) else all_space_pool
+        unified_index, flt, target_spaces, target_ftypes, can_use_vector = self._prepare_search_context_and_filters(
+            space=space,
+            kinds=kinds,
+            languages=languages,
+            ftypes=ftypes,
+            min_score=min_score,
+            limit=limit,
+            lexical_only=lexical_only,
+            auto_rebuild=auto_rebuild,
+            verbose=verbose,
+        )
+        if not unified_index or unified_index.doc_count == 0:
+            return []
 
-        matches = SymbolSelector.find_matches(query_clean, pool)
-        if matches:
-            return matches[0]
+        raw_results = self._execute_lexical_and_vector_retrieval(
+            query=query,
+            unified_index=unified_index,
+            flt=flt,
+            target_spaces=target_spaces,
+            target_ftypes=target_ftypes,
+            kinds=kinds,
+            languages=languages,
+            limit=limit,
+            aggregate=aggregate,
+            can_use_vector=can_use_vector,
+        )
+        return self._enrich_snippets_and_expand_ast(
+            raw_results,
+            aggregate=aggregate,
+            snippet=snippet,
+            context_lines=context_lines,
+        )
 
-        candidates: List[UnifiedSymbol] = []
-        for sym in pool:
-            if sym.name == query_clean:
-                return sym
-            if sym.name.endswith(f".{query_clean}") or sym.name.endswith(f"::{query_clean}") or query_clean.endswith(f".{sym.name}"):
-                candidates.append(sym)
+    def get_call_graph(self) -> CallGraphIndex:
+        """獲取已載入之全域雙向調用圖譜索引 (若未建置則自動觸發 JIT 構建)"""
+        self._ensure_indices_loaded(load_graph=True, load_vectors=False)
+        if self._call_graph_index is None or self._unified_index is None:
+            self.build_unified_index(force=True)
+        return self._call_graph_index  # type: ignore[return-value]
 
-        if candidates:
-            return candidates[0]
-
-        flt = QueryFilter(spaces=[space] if space else None, ftypes=norm_ftypes, limit=10)
-        raw_results = self.bm25_engine.search(query=query_clean, index=idx, filter_cfg=flt)
-        for r in raw_results:
-            if self._matches_topology_filter(r.symbol, norm_ftypes):
-                return r.symbol
-        if raw_results and not norm_ftypes:
-            return raw_results[0].symbol
-
-        return None
-
-    def act_callers(
+    def callers(
         self,
         target_query: str,
         space: Optional[str] = None,
         snippet: bool = True,
         ftypes: Optional[Union[str, List[str]]] = None,
     ) -> Dict[str, Any]:
-        """查詢指定符號之上游調用者清單 (Who calls me?)"""
-        self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True)
-        norm_ftypes = self._normalize_ftypes(ftypes)
+        return self.topology_query.callers(target_query, space=space, snippet=snippet, ftypes=ftypes)
 
-        if norm_ftypes and not all(ft in ("md", "markdown") for ft in norm_ftypes):
-            target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
-            if not target_sym:
-                target_sym = self.find_target_symbol(target_query, space=space)
-        else:
-            target_sym = self.find_target_symbol(target_query, space=space)
-            if not target_sym and norm_ftypes:
-                target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
-        if not target_sym:
-            return {
-                "target_query": target_query,
-                "target_symbol": None,
-                "callers": [],
-                "total_callers": 0,
-            }
-
-        graph = self.get_call_graph()
-        target_ids = self._expand_contract_symbol_ids(target_sym)
-
-        # 聚合目標符號及其介面/實作契約夥伴之所有調用者與調用點
-        caller_sites_map: Dict[str, List[Any]] = defaultdict(list)
-        caller_order: List[str] = []
-        for tid in target_ids:
-            for cid in graph.get_callers(tid):
-                if cid not in caller_sites_map:
-                    caller_order.append(cid)
-                for s in graph.get_call_sites(cid, tid):
-                    if s not in caller_sites_map[cid]:
-                        caller_sites_map[cid].append(s)
-
-        callers_detail = []
-        for cid in caller_order:
-            caller_sym = self._unified_index.get_symbol(cid) if self._unified_index else None
-            if not caller_sym:
-                continue
-            if not self._matches_topology_filter(caller_sym, norm_ftypes):
-                continue
-
-            sites = caller_sites_map[cid]
-            code_snip = None
-            if snippet:
-                target_ln = sites[0].line_number if sites else caller_sym.line_number
-                code_snip = self.snippet_extractor.extract(
-                    file_path=caller_sym.file_path,
-                    line_number=target_ln,
-                    context_before=2,
-                    context_after=5,
-                    docstring=caller_sym.docstring,
-                )
-
-            callers_detail.append({
-                "symbol": caller_sym,
-                "caller_symbol": caller_sym,
-                "call_sites": [s.to_dict() for s in sites],
-                "code_snippet": code_snip,
-            })
-
-        return {
-            "target_query": target_query,
-            "target_symbol": target_sym,
-            "callers": callers_detail,
-            "total_callers": len(callers_detail),
-        }
-
-    def act_callees(
+    def callees(
         self,
         target_query: str,
         space: Optional[str] = None,
         snippet: bool = True,
         ftypes: Optional[Union[str, List[str]]] = None,
     ) -> Dict[str, Any]:
-        """查詢指定符號內部調用之下游被調用者清單 (Whom do I call?)"""
-        self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True)
-        norm_ftypes = self._normalize_ftypes(ftypes)
+        return self.topology_query.callees(target_query, space=space, snippet=snippet, ftypes=ftypes)
 
-        if norm_ftypes and not all(ft in ("md", "markdown") for ft in norm_ftypes):
-            target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
-            if not target_sym:
-                target_sym = self.find_target_symbol(target_query, space=space)
-        else:
-            target_sym = self.find_target_symbol(target_query, space=space)
-            if not target_sym and norm_ftypes:
-                target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
-        if not target_sym:
-            return {
-                "target_query": target_query,
-                "target_symbol": None,
-                "callees": [],
-                "total_callees": 0,
-            }
-
-        graph = self.get_call_graph()
-        callee_ids = graph.get_callees(target_sym.id)
-
-        callees_detail = []
-        for cid in callee_ids:
-            callee_sym = self._unified_index.get_symbol(cid) if self._unified_index else None
-            if not callee_sym:
-                continue
-            if not self._matches_topology_filter(callee_sym, norm_ftypes):
-                continue
-
-            sites = graph.get_call_sites(target_sym.id, cid)
-            code_snip = None
-            if snippet:
-                code_snip = self.snippet_extractor.extract(
-                    file_path=callee_sym.file_path,
-                    line_number=callee_sym.line_number,
-                    end_line=callee_sym.end_line,
-                    context_before=2,
-                    context_after=6,
-                    docstring=callee_sym.docstring,
-                )
-
-            callees_detail.append({
-                "symbol": callee_sym,
-                "call_sites": [s.to_dict() for s in sites],
-                "code_snippet": code_snip,
-            })
-
-        return {
-            "target_query": target_query,
-            "target_symbol": target_sym,
-            "callees": callees_detail,
-            "total_callees": len(callees_detail),
-        }
-
-    def act_impact(
+    def impact(
         self,
         target_query: str,
         depth: int = 2,
         space: Optional[str] = None,
         ftypes: Optional[Union[str, List[str]]] = None,
     ) -> Dict[str, Any]:
-        """分析目標符號之重構影響面擴散拓撲 (Blast Radius Analysis)"""
-        self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True)
-        norm_ftypes = self._normalize_ftypes(ftypes)
-
-        if norm_ftypes and not all(ft in ("md", "markdown") for ft in norm_ftypes):
-            target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
-            if not target_sym:
-                target_sym = self.find_target_symbol(target_query, space=space)
-        else:
-            target_sym = self.find_target_symbol(target_query, space=space)
-            if not target_sym and norm_ftypes:
-                target_sym = self.find_target_symbol(target_query, space=space, ftypes=norm_ftypes)
-        if not target_sym:
-            return {
-                "target_query": target_query,
-                "target_symbol": None,
-                "max_depth": depth,
-                "layers": {},
-                "total_impacted_symbols": 0,
-                "total_impacted_files": 0,
-            }
-
-        graph = self.get_call_graph()
-        target_ids = self._expand_contract_symbol_ids(target_sym)
-
-        merged_layers_ids: Dict[int, List[str]] = defaultdict(list)
-        merged_chains: Dict[str, List[str]] = {}
-        seen_impacted_ids: Set[str] = set()
-
-        for tid in target_ids:
-            impact_raw = graph.query_impact(tid, max_depth=depth)
-            for d, sids in impact_raw.get("layers", {}).items():
-                for sid in sids:
-                    if sid not in seen_impacted_ids:
-                        seen_impacted_ids.add(sid)
-                        merged_layers_ids[d].append(sid)
-            for k, chain in impact_raw.get("call_chains", {}).items():
-                if k not in merged_chains:
-                    merged_chains[k] = chain
-
-        layers_detail = {}
-        all_files = set()
-        total_symbols = 0
-
-        for d, sids in sorted(merged_layers_ids.items()):
-            layer_syms = []
-            for sid in sids:
-                sym = self._unified_index.get_symbol(sid) if self._unified_index else None
-                if sym and self._matches_topology_filter(sym, norm_ftypes):
-                    layer_syms.append(sym)
-                    all_files.add(sym.file_path)
-                    total_symbols += 1
-            if layer_syms:
-                layers_detail[d] = layer_syms
-
-        filtered_chains = {
-            k: v for k, v in merged_chains.items()
-            if any(s.id == k for syms in layers_detail.values() for s in syms)
-        }
-
-        return {
-            "target_query": target_query,
-            "target_symbol": target_sym,
-            "max_depth": depth,
-            "layers": layers_detail,
-            "call_chains": filtered_chains,
-            "total_impacted_symbols": total_symbols,
-            "total_impacted_files": len(all_files),
-        }
+        return self.topology_query.impact(target_query, depth=depth, space=space, ftypes=ftypes)

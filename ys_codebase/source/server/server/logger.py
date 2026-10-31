@@ -11,9 +11,48 @@ Provides the ServerLogger class managing:
 from datetime import datetime
 import os
 import re
+import shutil
+import sys
 import threading
 import traceback
 from typing import List, Optional
+
+
+def _extract_log_file_timestamp(file_path: str, time_format: str, header_regex: re.Pattern) -> str:
+    """
+    Resolves timestamp string for a log file:
+    1. Attempts to extract start timestamp from first line header banner.
+    2. Falls back to file modification time (mtime).
+    3. Falls back to current system time.
+    """
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                first_line = f.readline()
+                if first_line:
+                    match = header_regex.search(first_line)
+                    if match:
+                        return match.group(1)
+        except OSError:
+            pass
+        try:
+            mtime = os.path.getmtime(file_path)
+            return datetime.fromtimestamp(mtime).strftime(time_format)
+        except OSError:
+            pass
+    return datetime.now().strftime(time_format)
+
+
+def _safe_replace_file(src: str, dst: str) -> None:
+    """Safely moves src to dst, falling back to copy2 + remove across filesystems or Windows handle locks."""
+    try:
+        os.rename(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+        try:
+            os.remove(src)
+        except OSError:
+            pass
 
 
 class ServerLogger:
@@ -27,6 +66,9 @@ class ServerLogger:
     HIST_REGEX: re.Pattern = re.compile(r"^\d{4}_\d{2}_\d{2}_\d{2}\.\d{2}\.\d{2}(?:_\d{2,})?_log$")
     MAX_HIST_FILES: int = 5
     START_BANNER_PREFIX: str = 'server start at time "'
+    HEADER_TIME_REGEX: re.Pattern = re.compile(
+        re.escape(START_BANNER_PREFIX) + r'(\d{4}_\d{2}_\d{2}_\d{2}\.\d{2}\.\d{2})"'
+    )
 
     def __init__(self, yscb_root: str, log_dir: Optional[str] = None, echo_console: bool = False) -> None:
         """
@@ -62,28 +104,6 @@ class ServerLogger:
         with self._lock:
             return self._file is not None and not self._file.closed
 
-    def extract_start_time_from_header(self, file_path: str) -> Optional[str]:
-        """
-        Reads first line of file_path and extracts timestamp from start banner:
-        server start at time "{YYYY}_{MM}_{DD}_{HH}.{MM}.{SS}"
-
-        Returns:
-            Extracted timestamp string if matched, None otherwise.
-        """
-        if not os.path.exists(file_path):
-            return None
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                first_line = f.readline()
-                if not first_line:
-                    return None
-                match = re.search(r'server start at time "(\d{4}_\d{2}_\d{2}_\d{2}\.\d{2}\.\d{2})"', first_line)
-                if match:
-                    return match.group(1)
-        except Exception:
-            return None
-        return None
-
     def _resolve_safe_archive_path(self, timestamp_str: str) -> str:
         """
         Resolves target archive path, handling potential collision by appending index suffix.
@@ -114,21 +134,17 @@ class ServerLogger:
             if not os.path.isdir(self.log_dir):
                 return []
 
-            matched_files = []
-            for entry in os.listdir(self.log_dir):
-                if self.HIST_REGEX.match(entry):
-                    full_p = os.path.join(self.log_dir, entry)
-                    if os.path.isfile(full_p):
-                        matched_files.append(entry)
-
-            # Sort ascending so oldest is at beginning
+            matched_files = [
+                entry
+                for entry in os.listdir(self.log_dir)
+                if self.HIST_REGEX.match(entry) and os.path.isfile(os.path.join(self.log_dir, entry))
+            ]
             matched_files.sort()
 
             deleted_paths: List[str] = []
             if len(matched_files) > self.MAX_HIST_FILES:
                 excess_count = len(matched_files) - self.MAX_HIST_FILES
-                to_delete = matched_files[:excess_count]
-                for fn in to_delete:
+                for fn in matched_files[:excess_count]:
                     fp = os.path.join(self.log_dir, fn)
                     try:
                         os.remove(fp)
@@ -137,6 +153,14 @@ class ServerLogger:
                         pass
 
             return deleted_paths
+
+    def _close_active_handle_locked(self) -> None:
+        if self._file and not self._file.closed:
+            try:
+                self._file.close()
+            except OSError:
+                pass
+            self._file = None
 
     def recover_and_open(self) -> str:
         """
@@ -153,42 +177,16 @@ class ServerLogger:
             Current startup timestamp string.
         """
         with self._lock:
-            # 1. Check existing un-archived log file
             if os.path.exists(self.log_file):
-                # Close handle if somehow open
-                if self._file and not self._file.closed:
-                    try:
-                        self._file.close()
-                    except Exception:
-                        pass
-                    self._file = None
-
-                old_ts = self.extract_start_time_from_header(self.log_file)
-                if not old_ts:
-                    try:
-                        mtime = os.path.getmtime(self.log_file)
-                        old_ts = datetime.fromtimestamp(mtime).strftime(self.TIME_FORMAT)
-                    except Exception:
-                        old_ts = datetime.now().strftime(self.TIME_FORMAT)
-
+                self._close_active_handle_locked()
+                old_ts = _extract_log_file_timestamp(self.log_file, self.TIME_FORMAT, self.HEADER_TIME_REGEX)
                 archive_path = self._resolve_safe_archive_path(old_ts)
-                try:
-                    os.rename(self.log_file, archive_path)
-                except Exception:
-                    # Fallback copy and remove if cross-filesystem or OS restriction
-                    import shutil
-                    shutil.copy2(self.log_file, archive_path)
-                    try:
-                        os.remove(self.log_file)
-                    except OSError:
-                        pass
-
+                _safe_replace_file(self.log_file, archive_path)
                 self.clean_rolling_history()
 
-            # 2. Open fresh log file
             self.start_time_str = datetime.now().strftime(self.TIME_FORMAT)
             self._file = open(self.log_file, "w", encoding="utf-8")
-            banner = f'server start at time "{self.start_time_str}"\n'
+            banner = f'{self.START_BANNER_PREFIX}{self.start_time_str}"\n'
             self._file.write(banner)
             self._file.flush()
 
@@ -208,39 +206,24 @@ class ServerLogger:
             now_ts = datetime.now().strftime(self.TIME_FORMAT)
             if self._file and not self._file.closed:
                 try:
-                    shutdown_msg = f'[{datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}] [{os.getpid()}] [INFO] [master] Server stopped gracefully at time "{now_ts}"\n'
+                    shutdown_msg = (
+                        f'[{datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}] '
+                        f'[{os.getpid()}] [INFO] [master] Server stopped gracefully at time "{now_ts}"\n'
+                    )
                     self._file.write(shutdown_msg)
                     self._file.flush()
-                except Exception:
+                except OSError:
                     pass
-                try:
-                    self._file.close()
-                except Exception:
-                    pass
-                self._file = None
+                self._close_active_handle_locked()
 
             if not os.path.exists(self.log_file):
                 return None
 
-            arch_ts = self.start_time_str or self.extract_start_time_from_header(self.log_file)
-            if not arch_ts:
-                try:
-                    mtime = os.path.getmtime(self.log_file)
-                    arch_ts = datetime.fromtimestamp(mtime).strftime(self.TIME_FORMAT)
-                except Exception:
-                    arch_ts = now_ts
-
+            arch_ts = self.start_time_str or _extract_log_file_timestamp(
+                self.log_file, self.TIME_FORMAT, self.HEADER_TIME_REGEX
+            )
             archive_path = self._resolve_safe_archive_path(arch_ts)
-            try:
-                os.rename(self.log_file, archive_path)
-            except Exception:
-                import shutil
-                shutil.copy2(self.log_file, archive_path)
-                try:
-                    os.remove(self.log_file)
-                except OSError:
-                    pass
-
+            _safe_replace_file(self.log_file, archive_path)
             self.clean_rolling_history()
             return archive_path
 
@@ -248,16 +231,9 @@ class ServerLogger:
         """
         Calculates and returns the target archive path where the current log will be moved on shutdown.
         """
-        arch_ts = self.start_time_str or self.extract_start_time_from_header(self.log_file)
-        if not arch_ts:
-            try:
-                if os.path.exists(self.log_file):
-                    mtime = os.path.getmtime(self.log_file)
-                    arch_ts = datetime.fromtimestamp(mtime).strftime(self.TIME_FORMAT)
-                else:
-                    arch_ts = datetime.now().strftime(self.TIME_FORMAT)
-            except Exception:
-                arch_ts = datetime.now().strftime(self.TIME_FORMAT)
+        arch_ts = self.start_time_str or _extract_log_file_timestamp(
+            self.log_file, self.TIME_FORMAT, self.HEADER_TIME_REGEX
+        )
         return self._resolve_safe_archive_path(arch_ts)
 
     def write_raw(self, line: str) -> None:
@@ -277,7 +253,7 @@ class ServerLogger:
                 try:
                     sys.stdout.write(line)
                     sys.stdout.flush()
-                except Exception:
+                except OSError:
                     pass
 
     def log(

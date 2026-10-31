@@ -173,11 +173,6 @@ class CommandsRegistry:
             cons = usage_data.get("cons", [])
             cmd_spec.usage_pros = [str(p) for p in pros] if isinstance(pros, list) else ([str(pros)] if pros else [])
             cmd_spec.usage_cons = [str(c) for c in cons] if isinstance(cons, list) else ([str(cons)] if cons else [])
-        else:
-            pros = raw_spec.get("case_pros", [])
-            cons = raw_spec.get("case_cons", [])
-            cmd_spec.usage_pros = [str(p) for p in pros] if isinstance(pros, list) else ([str(pros)] if pros else [])
-            cmd_spec.usage_cons = [str(c) for c in cons] if isinstance(cons, list) else ([str(cons)] if cons else [])
 
         # 解析正交選項群組 options: { <group_name>: { <option_name>: { ... } } }
         raw_options = raw_spec.get("options", {})
@@ -283,7 +278,3 @@ class CommandsRegistry:
     def list_modules(self) -> List[str]:
         """列出所有已註冊的模組名稱。"""
         return sorted(list(self._modules.keys()))
-
-    def all_modules(self) -> Dict[str, ModuleSpec]:
-        """取得所有已註冊模組的字典。"""
-        return self._modules

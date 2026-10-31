@@ -10,6 +10,7 @@ import copy
 import time
 import logging
 from core import uri
+from core import vfs
 
 logger = logging.getLogger("core.contributes")
 
@@ -26,13 +27,39 @@ def _tag_provider(data: Any, donor_name: str) -> Any:
                 result[k] = _tag_provider(v, donor_name)
             else:
                 result[k] = v
-        # 如果是業務宣告物件 (非頂層分類鍵值，如 export/insert/token 清單裡的項目)
         if "__provider__" not in result:
             result["__provider__"] = donor_name
         return result
-    elif isinstance(data, list):
+    if isinstance(data, list):
         return [_tag_provider(item, donor_name) for item in data]
     return data
+
+
+def _tag_payload_body(body: Dict[str, Any], donor_name: str) -> Dict[str, Any]:
+    """對整個 contributes 單檔頂層字典的各擴充點內容遞迴注入 __provider__。"""
+    tagged: Dict[str, Any] = {}
+    for c_key, c_val in body.items():
+        if isinstance(c_val, list):
+            tagged[c_key] = [
+                _tag_provider(item, donor_name) if isinstance(item, dict) else item
+                for item in c_val
+            ]
+        elif isinstance(c_val, dict):
+            tagged[c_key] = _tag_provider(c_val, donor_name)
+        else:
+            tagged[c_key] = c_val
+    return tagged
+
+
+def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> None:
+    """深層合併 overlay 至 base（Dict 遞迴合併，List 依序去重擴展）。"""
+    for k, v in overlay.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge(base[k], v)
+        elif k in base and isinstance(base[k], list) and isinstance(v, list):
+            base[k].extend(x for x in v if x not in base[k])
+        else:
+            base[k] = v
 
 
 def _get_contributes_meta_uri() -> str:
@@ -40,84 +67,72 @@ def _get_contributes_meta_uri() -> str:
     return "cache://core/contributes.meta.json"
 
 
-def _scan_contributes_inputs() -> Dict[str, Tuple[float, int]]:
-    """
-    掃描所有影響 contributes 聚合之輸入檔案，取得其實體絕對路徑與 (mtime, size) 快照。
-    比對檔案包含：
-    - yscb.config.json
-    - module://*/contributes/*.json 與 module://*/contributes.json
-    - config://*/contribute.json
-    """
-    files_snapshot: Dict[str, Tuple[float, int]] = {}
+def _record_file_stat(files_snapshot: Dict[str, Tuple[float, int]], file_path: str) -> None:
+    """若實體檔案存在，記錄其 (mtime, size) 至快照字典。"""
+    if os.path.isfile(file_path):
+        st = os.stat(file_path)
+        files_snapshot[file_path] = (st.st_mtime, st.st_size)
 
-    # 1. 宿主設定 yscb.config.json
-    try:
-        cfg_p = uri.resolve("project://yscb.config.json", interactive=False)
-        if os.path.isfile(cfg_p):
-            st = os.stat(cfg_p)
-            files_snapshot[cfg_p] = (st.st_mtime, st.st_size)
-    except Exception:
-        pass
 
-    # 2. 模組層級 contributes
-    if uri.exists("module://"):
+def _scan_donor_contributes_files(donor: str, files_snapshot: Dict[str, Tuple[float, int]]) -> None:
+    """掃描單一模組之 contributes/*.json、語系檔與單一 contributes.json。"""
+    donor_contrib_dir = f"module://{donor}/contributes"
+    if vfs.exists(donor_contrib_dir) and vfs.is_dir(donor_contrib_dir):
         try:
-            installed = uri.listdir("module://")
-            for donor in installed:
-                donor_contrib_dir = f"module://{donor}/contributes"
-                if uri.exists(donor_contrib_dir) and uri.isdir(donor_contrib_dir):
-                    try:
-                        for fname in uri.listdir(donor_contrib_dir):
-                            if fname.endswith(".json"):
-                                f_uri = f"{donor_contrib_dir}/{fname}"
-                                try:
-                                    f_p = uri.resolve(f_uri, interactive=False)
-                                    if os.path.isfile(f_p):
-                                        st = os.stat(f_p)
-                                        files_snapshot[f_p] = (st.st_mtime, st.st_size)
-                                        if fname == "core.json":
-                                            try:
-                                                c_obj = uri.read_json(f_uri)
-                                                locales_decl = c_obj.get("locales") if isinstance(c_obj, dict) else None
-                                                if isinstance(locales_decl, dict):
-                                                    mod_root = uri.resolve(f"module://{donor}", interactive=False)
-                                                    for l_key, rel_p in locales_decl.items():
-                                                        if not l_key.startswith("_") and isinstance(rel_p, str):
-                                                            loc_f = os.path.normpath(os.path.join(mod_root, rel_p))
-                                                            if os.path.isfile(loc_f):
-                                                                lst = os.stat(loc_f)
-                                                                files_snapshot[loc_f] = (lst.st_mtime, lst.st_size)
-                                            except Exception:
-                                                pass
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-
-                donor_unified = f"module://{donor}/contributes.json"
-                if uri.exists(donor_unified):
-                    try:
-                        f_p = uri.resolve(donor_unified, interactive=False)
-                        if os.path.isfile(f_p):
-                            st = os.stat(f_p)
-                            files_snapshot[f_p] = (st.st_mtime, st.st_size)
-                    except Exception:
-                        pass
+            for fname in vfs.listdir(donor_contrib_dir):
+                if not fname.endswith(".json"):
+                    continue
+                f_uri = f"{donor_contrib_dir}/{fname}"
+                try:
+                    f_p = uri.resolve(f_uri, interactive=False)
+                    _record_file_stat(files_snapshot, f_p)
+                    if fname == "core.json" and os.path.isfile(f_p):
+                        c_obj = vfs.read_json(f_uri)
+                        locales_decl = c_obj.get("locales") if isinstance(c_obj, dict) else None
+                        if isinstance(locales_decl, dict):
+                            mod_root = uri.resolve(f"module://{donor}", interactive=False)
+                            for l_key, rel_p in locales_decl.items():
+                                if not l_key.startswith("_") and isinstance(rel_p, str):
+                                    loc_f = os.path.normpath(os.path.join(mod_root, rel_p))
+                                    _record_file_stat(files_snapshot, loc_f)
+                except Exception:
+                    pass
         except Exception:
             pass
 
-    # 3. 專案特化 config://*/contribute.json
-    if uri.exists("config://"):
+    donor_unified = f"module://{donor}/contributes.json"
+    if vfs.exists(donor_unified):
         try:
-            targets = uri.listdir("config://")
-            for tgt in targets:
+            _record_file_stat(files_snapshot, uri.resolve(donor_unified, interactive=False))
+        except Exception:
+            pass
+
+
+def _scan_contributes_inputs() -> Dict[str, Tuple[float, int]]:
+    """
+    掃描所有影響 contributes 聚合之輸入檔案，取得其實體絕對路徑與 (mtime, size) 快照。
+    """
+    files_snapshot: Dict[str, Tuple[float, int]] = {}
+
+    try:
+        _record_file_stat(files_snapshot, uri.resolve("project://yscb.config.json", interactive=False))
+    except Exception:
+        pass
+
+    if vfs.exists("module://"):
+        try:
+            for donor in vfs.listdir("module://"):
+                _scan_donor_contributes_files(donor, files_snapshot)
+        except Exception:
+            pass
+
+    if vfs.exists("config://"):
+        try:
+            for tgt in vfs.listdir("config://"):
                 p_uri = f"config://{tgt}/contribute.json"
-                if uri.exists(p_uri):
+                if vfs.exists(p_uri):
                     try:
-                        f_p = uri.resolve(p_uri, interactive=False)
-                        if os.path.isfile(f_p):
-                            st = os.stat(f_p)
-                            files_snapshot[f_p] = (st.st_mtime, st.st_size)
+                        _record_file_stat(files_snapshot, uri.resolve(p_uri, interactive=False))
                     except Exception:
                         pass
         except Exception:
@@ -136,15 +151,15 @@ def _is_contributes_dirty(target_module: Optional[str] = None) -> Tuple[bool, Di
     """
     if target_module:
         target_cache_uri = f"cache://{target_module}/contributes.merged.json"
-        if not uri.exists(target_cache_uri):
+        if not vfs.exists(target_cache_uri):
             return True, {}
 
     meta_uri = _get_contributes_meta_uri()
-    if not uri.exists(meta_uri):
+    if not vfs.exists(meta_uri):
         return True, {}
 
     try:
-        meta_data = uri.read_json(meta_uri)
+        meta_data = vfs.read_json(meta_uri)
         if not isinstance(meta_data, dict) or "files" not in meta_data:
             return True, {}
         cached_files = meta_data["files"]
@@ -159,8 +174,7 @@ def _is_contributes_dirty(target_module: Optional[str] = None) -> Tuple[bool, Di
         cached_val = cached_files.get(p)
         if not cached_val or len(cached_val) < 2:
             return True, current_snapshot
-        cached_mtime, cached_size = cached_val[0], cached_val[1]
-        if cur_mtime != cached_mtime or cur_size != cached_size:
+        if cur_mtime != cached_val[0] or cur_size != cached_val[1]:
             return True, current_snapshot
 
     return False, current_snapshot
@@ -170,23 +184,17 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
     """
     標準 Contributes 查詢 SDK (支援 JIT 變更嗅探與熱自愈):
     查詢指定目標模組之已合併 Contributes 字典或特定鍵值。
-    
-    1. 執行 JIT 嗅探 (_is_contributes_dirty)，檢查輸入檔案與快取狀態。
-    2. 若未變更 (Clean)，優先從 cache://{target_module}/contributes.merged.json 讀取。
-    3. 若 dirty 或快取損毀，自動調用 scan_and_inject() 即時自愈聚合並更新快照。
-    4. 若指定 key 則返回該特定欄位，否則返回全字典。
     """
     cache_file = f"cache://{target_module}/contributes.merged.json"
     is_dirty, _ = _is_contributes_dirty(target_module)
     data = None
-    if not is_dirty and uri.exists(cache_file):
+    if not is_dirty and vfs.exists(cache_file):
         try:
-            data = uri.read_json(cache_file)
+            data = vfs.read_json(cache_file)
         except Exception:
             data = None
 
     if data is None or not isinstance(data, dict):
-        # 自愈聚合
         aggregator = ContributesAggregator()
         all_merged = aggregator.scan_and_inject()
         data = all_merged.get(target_module, {})
@@ -196,22 +204,14 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
     return data if data else default
 
 
-def get_for_current_module(key: Optional[str] = None, default: Any = None) -> Any:
-    """
-    從當前活躍模組上下文獲取 Contributes 字典或特定鍵值。
-    """
-    curr_mod = uri.get_module_context() or "core"
-    return get(curr_mod, key=key, default=default)
-
-
 def get_format(module: str) -> Optional[Dict[str, Any]]:
     """讀取並返回指定目標模組之 contributes/_format.json 字典，若不存在則返回 None。"""
     fmt_uri = f"module://{module}/contributes/_format.json"
-    if not uri.exists(fmt_uri):
+    if not vfs.exists(fmt_uri):
         fmt_uri = f"module.source://{module}/contributes/_format.json"
-    if uri.exists(fmt_uri):
+    if vfs.exists(fmt_uri):
         try:
-            data = uri.read_json(fmt_uri)
+            data = vfs.read_json(fmt_uri)
             if isinstance(data, dict):
                 return data
         except Exception as e:
@@ -231,10 +231,10 @@ def list_points(module: Optional[str] = None) -> List[Dict[str, Any]]:
     查詢生態系開放之擴充點清單。
     回傳 [{"module": str, "point": str, "description": str, "format_type": str}, ...]
     """
-    installed = [module] if module else (uri.listdir("module://") if uri.exists("module://") else [])
-    if not installed and uri.exists("module.source://"):
+    installed = [module] if module else (vfs.listdir("module://") if vfs.exists("module://") else [])
+    if not installed and vfs.exists("module.source://"):
         try:
-            installed = uri.listdir("module.source://")
+            installed = vfs.listdir("module.source://")
         except Exception:
             installed = []
     results: List[Dict[str, Any]] = []
@@ -252,7 +252,7 @@ def list_points(module: Optional[str] = None) -> List[Dict[str, Any]]:
                 "module": mod,
                 "point": k,
                 "description": desc,
-                "format_type": f_type
+                "format_type": f_type,
             })
     return results
 
@@ -263,132 +263,98 @@ class ContributesAggregator:
     負責掃描已安裝模組的 contributes/<target>.json 宣告與專案級組態，
     執行拓撲合併，並物化寫入 cache://{module}/contributes.merged.json。
     """
-    def __init__(self):
+
+    def __init__(self) -> None:
         pass
 
-    def scan_and_inject(self, topological_order: Optional[List[str]] = None, clean: bool = True) -> Dict[str, Dict[str, Any]]:
-        """
-        掃描所有 installed_modules 之 contributes/<target>.json，
-        依拓撲排序 (topological_order) 依序合併，自動注入 __provider__，
-        最後疊加 config:// 專案特化宣告並寫入快取。
-        """
-        aggregated: Dict[str, Dict[str, Any]] = {}
-        installed_modules = uri.listdir("module://") if uri.exists("module://") else []
-        
-        if not installed_modules:
-            return aggregated
-        
-        # 1. 決定有序遍歷清單 (Topological Order)
+    @staticmethod
+    def _resolve_donor_order(installed_modules: List[str], topological_order: Optional[List[str]]) -> List[str]:
+        """計算模組 contributes 合併之拓撲遍歷順序。"""
         if topological_order:
-            ordered_donors = [m for m in topological_order if m in installed_modules]
-            # 追加未在拓撲清單中之模組
+            ordered = [m for m in topological_order if m in installed_modules]
             for m in installed_modules:
-                if m not in ordered_donors:
-                    ordered_donors.append(m)
-        else:
-            # 預設：core 最先，其他字母序
-            ordered_donors = ["core"] if "core" in installed_modules else []
-            for m in sorted(installed_modules):
-                if m not in ordered_donors:
-                    ordered_donors.append(m)
+                if m not in ordered:
+                    ordered.append(m)
+            return ordered
+        ordered = ["core"] if "core" in installed_modules else []
+        for m in sorted(installed_modules):
+            if m not in ordered:
+                ordered.append(m)
+        return ordered
 
-        # 2. 初始化所有已安裝模組 targets 字典
-        for mod in installed_modules:
-            aggregated[mod] = {}
-        core_modules_commands: Dict[str, Any] = {}
-        core_modules_locales: Dict[str, Any] = {}
+    def _collect_donor_contributes(
+        self,
+        donor: str,
+        aggregated: Dict[str, Dict[str, Any]],
+        core_modules_commands: Dict[str, Any],
+        core_modules_locales: Dict[str, Any],
+    ) -> None:
+        """收集單一模組之 contributes/<target>.json 與單一 contributes.json 並合併。"""
+        donor_contrib_dir = f"module://{donor}/contributes"
+        if vfs.exists(donor_contrib_dir) and vfs.is_dir(donor_contrib_dir):
+            try:
+                for filename in vfs.listdir(donor_contrib_dir):
+                    if not filename.endswith(".json") or filename.startswith("_"):
+                        continue
+                    target = filename[:-5]
+                    aggregated.setdefault(target, {})
+                    target_file_uri = f"{donor_contrib_dir}/{filename}"
+                    try:
+                        c_data = vfs.read_json(target_file_uri)
+                        if isinstance(c_data, dict):
+                            val_res = validate(target, c_data, donor_module=donor)
+                            if not val_res.is_valid:
+                                logger.warning(f"Contributes validation failed for donor '{donor}' -> target '{target}':")
+                                for err in val_res.errors:
+                                    logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
+                            valid_body = val_res.payload if val_res.payload is not None else c_data
+                            tagged_body = _tag_payload_body(valid_body, donor)
 
-        # 3. 階層 ①：依拓撲順序搜集模組層級 contributes/<target>.json
-        for donor in ordered_donors:
-            donor_contrib_dir = f"module://{donor}/contributes"
-            if uri.exists(donor_contrib_dir) and uri.isdir(donor_contrib_dir):
-                try:
-                    for filename in uri.listdir(donor_contrib_dir):
-                        if not filename.endswith(".json") or filename.startswith("_"):
-                            continue
-                        target = filename[:-5]
-                        if target not in aggregated:
-                            aggregated[target] = {}
-                        
-                        target_file_uri = f"{donor_contrib_dir}/{filename}"
-                        try:
-                            c_data = uri.read_json(target_file_uri)
-                            if isinstance(c_data, dict):
-                                # 剛性邊界與 Schema 校驗過濾
-                                val_res = validate(target, c_data, donor_module=donor)
-                                if not val_res.is_valid:
-                                    logger.warning(f"Contributes validation failed for donor '{donor}' -> target '{target}':")
-                                    for err in val_res.errors:
-                                        logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
-                                valid_body = val_res.payload if val_res.payload is not None else c_data
+                            if target == "core" and "commands" in tagged_body:
+                                core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
+                            if target == "core" and "locales" in tagged_body and isinstance(tagged_body["locales"], dict):
+                                core_modules_locales[donor] = copy.deepcopy(tagged_body["locales"])
 
-                                tagged_body = {}
-                                for c_key, c_val in valid_body.items():
-                                    if isinstance(c_val, list):
-                                        tagged_body[c_key] = [
-                                            _tag_provider(item, donor) if isinstance(item, dict) else item 
-                                            for item in c_val
-                                        ]
-                                    elif isinstance(c_val, dict):
-                                        tagged_body[c_key] = _tag_provider(c_val, donor)
-                                    else:
-                                        tagged_body[c_key] = c_val
-                                
-                                # 保留按 donor 隔離之 commands 與 locales 分桶，徹底防禦跨模組同名鍵覆蓋 (P00:DR-01, P02:DR-01)
-                                if target == "core" and "commands" in tagged_body:
-                                    core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
-                                if target == "core" and "locales" in tagged_body and isinstance(tagged_body["locales"], dict):
-                                    core_modules_locales[donor] = copy.deepcopy(tagged_body["locales"])
+                            _deep_merge(aggregated[target], tagged_body)
+                            if target == "core" and core_modules_commands:
+                                aggregated[target].setdefault("commands", {})["__modules__"] = core_modules_commands
+                            if target == "core" and core_modules_locales:
+                                aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
+                    except Exception as e:
+                        logger.warning(f"Failed to read contributes file '{target_file_uri}': {e}")
+            except Exception as e:
+                logger.warning(f"Failed to scan donor contributes dir '{donor_contrib_dir}': {e}")
 
-                                self._deep_merge(aggregated[target], tagged_body)
-                                if target == "core" and core_modules_commands:
-                                    aggregated[target].setdefault("commands", {})["__modules__"] = core_modules_commands
-                                if target == "core" and core_modules_locales:
-                                    aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
-                        except Exception as e:
-                            logger.warning(f"Failed to read contributes file '{target_file_uri}': {e}")
-                except Exception as e:
-                    logger.warning(f"Failed to scan donor contributes dir '{donor_contrib_dir}': {e}")
+        donor_unified_file = f"module://{donor}/contributes.json"
+        if vfs.exists(donor_unified_file):
+            try:
+                u_data = vfs.read_json(donor_unified_file)
+                if isinstance(u_data, dict):
+                    for target, c_body in u_data.items():
+                        if isinstance(c_body, dict):
+                            aggregated.setdefault(target, {})
+                            _deep_merge(aggregated[target], _tag_payload_body(c_body, donor))
+            except Exception:
+                pass
 
-            # 單一 contributes.json 輔助支援
-            donor_unified_file = f"module://{donor}/contributes.json"
-            if uri.exists(donor_unified_file):
-                try:
-                    u_data = uri.read_json(donor_unified_file)
-                    if isinstance(u_data, dict):
-                        for target, c_body in u_data.items():
-                            if isinstance(c_body, dict):
-                                if target not in aggregated:
-                                    aggregated[target] = {}
-                                tagged_body = {}
-                                for c_key, c_val in c_body.items():
-                                    if isinstance(c_val, list):
-                                        tagged_body[c_key] = [
-                                            _tag_provider(item, donor) if isinstance(item, dict) else item 
-                                            for item in c_val
-                                        ]
-                                    elif isinstance(c_val, dict):
-                                        tagged_body[c_key] = _tag_provider(c_val, donor)
-                                    else:
-                                        tagged_body[c_key] = c_val
-                                self._deep_merge(aggregated[target], tagged_body)
-                except Exception:
-                    pass
-
-        # 4. 階層 ②：專案層級特化注入 (Project Contribute Overrides)
-        # [!] 剛性禁止 contribute.local.json，檢測到時輸出警告日誌並忽略。
-        all_targets = list(aggregated.keys())
-        for target in all_targets:
+    def _apply_project_overrides_and_persist(
+        self,
+        aggregated: Dict[str, Dict[str, Any]],
+        core_modules_locales: Dict[str, Any],
+    ) -> None:
+        """疊加專案層級 config://<target>/contribute.json 並物化至 cache://。"""
+        for target in list(aggregated.keys()):
             local_contrib_uri = f"config://{target}/contribute.local.json"
-            if uri.exists(local_contrib_uri):
-                logger.warning(f"Ignoring '{local_contrib_uri}': project contribute overrides must be tracked by Git (no local overrides allowed).")
+            if vfs.exists(local_contrib_uri):
+                logger.warning(
+                    f"Ignoring '{local_contrib_uri}': project contribute overrides must be tracked by Git (no local overrides allowed)."
+                )
 
             proj_contrib_uri = f"config://{target}/contribute.json"
-            if uri.exists(proj_contrib_uri):
+            if vfs.exists(proj_contrib_uri):
                 try:
-                    c_data = uri.read_json(proj_contrib_uri)
+                    c_data = vfs.read_json(proj_contrib_uri)
                     if isinstance(c_data, dict):
-                        # contribute.json 可直接為該目標之擴充內容，或嵌套於 target 鍵下
                         target_overlay = c_data.get(target, c_data)
                         if isinstance(target_overlay, dict):
                             val_res = validate(target, target_overlay, donor_module="project_override")
@@ -399,48 +365,54 @@ class ContributesAggregator:
                             valid_overlay = val_res.payload if val_res.payload is not None else target_overlay
                             if target == "core" and "locales" in valid_overlay and isinstance(valid_overlay["locales"], dict):
                                 core_modules_locales["project"] = copy.deepcopy(valid_overlay["locales"])
-                            self._deep_merge(aggregated[target], valid_overlay)
+                            _deep_merge(aggregated[target], valid_overlay)
                             if target == "core" and core_modules_locales:
                                 aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
                 except Exception as e:
                     logger.warning(f"Failed to read project contribute override '{proj_contrib_uri}': {e}")
 
-
-            # 5. 持久化物化至 cache 空間
             target_cache_uri = f"cache://{target}/contributes.merged.json"
             if aggregated[target]:
-                uri.makedirs(f"cache://{target}", exist_ok=True)
-                uri.write_json(target_cache_uri, aggregated[target])
-            else:
-                if uri.exists(target_cache_uri):
-                    try:
-                        target_p = uri.resolve(target_cache_uri, interactive=False)
-                        if os.path.exists(target_p):
-                            os.remove(target_p)
-                    except Exception:
-                        pass
+                vfs.makedirs(f"cache://{target}", exist_ok=True)
+                vfs.write_json(target_cache_uri, aggregated[target])
+            elif vfs.exists(target_cache_uri):
+                try:
+                    vfs.remove(target_cache_uri, missing_ok=True)
+                except Exception:
+                    pass
 
-        # 6. 持久化 contributes.meta.json 快照 (JIT Freshness Snapshot)
         try:
             meta_uri = _get_contributes_meta_uri()
             current_snapshot = _scan_contributes_inputs()
             meta_payload = {
                 "updated_at": time.time(),
-                "files": {k: [v[0], v[1]] for k, v in current_snapshot.items()}
+                "files": {k: [v[0], v[1]] for k, v in current_snapshot.items()},
             }
-            uri.makedirs("cache://core", exist_ok=True)
-            uri.write_json(meta_uri, meta_payload)
+            vfs.makedirs("cache://core", exist_ok=True)
+            vfs.write_json(meta_uri, meta_payload)
         except Exception as e:
             logger.warning(f"Failed to update contributes.meta.json: {e}")
 
-        return aggregated
+    def scan_and_inject(self, topological_order: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+        """
+        掃描所有 installed_modules 之 contributes/<target>.json，
+        依拓撲排序 (topological_order) 依序合併，自動注入 __provider__，
+        最後疊加 config:// 專案特化宣告並寫入快取。
+        """
+        aggregated: Dict[str, Dict[str, Any]] = {}
+        installed_modules = vfs.listdir("module://") if vfs.exists("module://") else []
+        if not installed_modules:
+            return aggregated
 
-    def _deep_merge(self, base: Dict[str, Any], overlay: Dict[str, Any]) -> None:
-        for k, v in overlay.items():
-            if k in base and isinstance(base[k], dict) and isinstance(v, dict):
-                self._deep_merge(base[k], v)
-            elif k in base and isinstance(base[k], list) and isinstance(v, list):
-                base[k].extend(x for x in v if x not in base[k])
-            else:
-                base[k] = v
+        ordered_donors = self._resolve_donor_order(installed_modules, topological_order)
+        for mod in installed_modules:
+            aggregated[mod] = {}
+        core_modules_commands: Dict[str, Any] = {}
+        core_modules_locales: Dict[str, Any] = {}
+
+        for donor in ordered_donors:
+            self._collect_donor_contributes(donor, aggregated, core_modules_commands, core_modules_locales)
+
+        self._apply_project_overrides_and_persist(aggregated, core_modules_locales)
+        return aggregated
 

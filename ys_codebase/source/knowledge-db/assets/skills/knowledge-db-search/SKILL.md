@@ -1,6 +1,6 @@
 ---
 name: knowledge-db-search
-description: 透過 knowledge-db CLI (search / callers / callees / impact) 檢索專案文檔與程式碼 AST 切片、查閱符號簽名、追蹤上下游調用圖譜並輸出重構影響半徑分析。觸發情境：探索未知程式碼或知識庫文檔路徑、理解業務邏輯、查詢函式被誰呼叫 (callers) 或呼叫了誰 (callees)、評估修改影響範圍 (impact) 或準備調用原生檔案讀取與搜尋工具前。排除情境：已知單一明確檔案路徑且僅需進行局部字串精確替換、修改或撰寫系統知識庫文檔（改用 documentation）。
+description: 透過 knowledge-db CLI (search/callers/callees/impact) 檢索文檔與程式碼 AST 切片、查閱符號簽名與追蹤調用圖譜。觸發情境：探索未知程式碼或文檔路徑、查詢上下游呼叫關係、評估修改影響半徑或調用原生搜尋讀檔工具前。
 ---
 
 # 知識庫語意檢索與代碼探索指南 (Knowledge-DB Search & Exploration Guide)
@@ -67,22 +67,17 @@ description: 透過 knowledge-db CLI (search / callers / callees / impact) 檢�
 
 ## 5. 常用 CLI 速查 (Cheatsheet)
 
-```bash
-# 1. 內文瀏覽檢索 (帶 AST 切片)
-python __${project://yscb.py}__ knowledge-db search '編譯 佔位符 resolve' --json -s
+- **內文瀏覽檢索（帶 AST 切片）**：`python __${project://yscb.py}__ knowledge-db search '編譯 佔位符 resolve' --json -s`
+- **符號大綱檢索（無切片）**：`python __${project://yscb.py}__ knowledge-db search 'HybridSearchEngine' --json`
+- **查上游調用者 (Who calls me)**：`python __${project://yscb.py}__ knowledge-db callers resolve_stage2_uri --json -s`
+- **查下游被調用者 (Whom do I call)**：`python __${project://yscb.py}__ knowledge-db callees compile_stage1 --json -s`
+- **評估多階重構影響面**：`python __${project://yscb.py}__ knowledge-db impact ReleasePublisher --depth=2 --json`
+- **檢視空間與索引狀態**：`python __${project://yscb.py}__ knowledge-db status`
 
-# 2. 符號大綱檢索 (無切片)
-python __${project://yscb.py}__ knowledge-db search 'HybridSearchEngine' --json
+---
 
-# 3. 查上游調用者 (Who calls me)
-python __${project://yscb.py}__ knowledge-db callers resolve_stage2_uri --json -s
+## 常見踩坑指南 (Gotchas)
 
-# 4. 查下游被調用者 (Whom do I call)
-python __${project://yscb.py}__ knowledge-db callees compile_stage1 --json -s
-
-# 5. 評估多階重構影響面
-python __${project://yscb.py}__ knowledge-db impact ReleasePublisher --depth=2 --json
-
-# 6. 檢視空間與索引狀態
-python __${project://yscb.py}__ knowledge-db status
-```
+- **嚴禁讀取因 `-s` 輸出過大而被宿主截斷轉存的暫存檔（如 `output.txt`）**：一旦發生截斷，應立即縮小查詢關鍵字、移除 `-s` 或加上 `--limit=5` 重新檢索。
+- **切勿憑命名慣例盲猜 `tests/` 或未知模組檔案路徑**：首次讀取前必須先透過 `knowledge-db search` 或單次目錄列舉確認真實路徑。
+- **日常檢索無須手動執行 `knowledge-db index`**：`search` / `callers` / `callees` / `impact` 均已內建 JIT 增量索引自動同步。

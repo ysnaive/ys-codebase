@@ -5,6 +5,7 @@ status: "active"
 source_paths:
   - "yscb://source/knowledge-db/knowledge_db/engine.py"
   - "yscb://source/knowledge-db/knowledge_db/pipeline.py"
+  - "yscb://source/knowledge-db/knowledge_db/topology_query.py"
   - "yscb://source/knowledge-db/knowledge_db/formatter.py"
   - "yscb://source/knowledge-db/knowledge_db/schema.py"
   - "yscb://source/knowledge-db/knowledge_db/scanner.py"
@@ -15,18 +16,18 @@ related_docs:
   - "./retrieval.md"
   - "./incremental_hot_reload.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-10-31"
 ---
 
 # knowledge-db 全系統整合架構設計 (System Architecture)
 
-> 本文件說明 `knowledge-db` 模組的完整系統架構分層、門面與管線三向解耦 (`KnowledgeEngine` / `IndexingPipeline` / `ResultFormatter`)、統一符號資料模型 (`UnifiedSymbol`)、空間治理與原生二進位快照比對 (`BinarySnapshotManager`) 機制。
+> 本文件說明 `knowledge-db` 模組的完整系統架構分層、門面與管線四向解耦 (`KnowledgeEngine` / `IndexingPipeline` / `TopologyQueryService` / `ResultFormatter`)、統一符號資料模型 (`UnifiedSymbol`)、空間治理與原生二進位快照比對 (`BinarySnapshotManager`) 機制。
 
 ---
 
 ## 1. 全系統架構分層 (System Layering Architecture)
 
-`knowledge-db` 採用三向職責解耦與冷/熱啟動零感知架構：頂層由 `KnowledgeEngine` 作為輕量統一門面，底層委派 `IndexingPipeline` 執行索引編排與查詢協調，並由 `ResultFormatter` 負責三級複雜度排版與全域切片去重；背景則透過 optional 擴充由 `server` 託管 `KnowledgeDBServiceWorker` 實現 500ms 防抖熱自癒。
+`knowledge-db` 採用四向職責解耦與冷/熱啟動零感知架構：頂層由 `KnowledgeEngine` 作為輕量統一門面，底層委派 `IndexingPipeline` 執行索引編排与混合檢索、由 `TopologyQueryService` 專司跨檔案調用圖譜 (`callers` / `callees` / `impact`) 與介面契約雙向展開、並由 `ResultFormatter` 負責三級複雜度排版與全域切片去重；背景則透過 optional 擴充由 `server` 託管 `KnowledgeDBServiceWorker` 實現 500ms 防抖熱自癒。
 
 ```mermaid
 flowchart TD
@@ -35,9 +36,10 @@ flowchart TD
         Worker["KnowledgeDBServiceWorker (knowledge_db/service.py)<br/>server.master 常駐託管 / Watchdog 500ms 防抖 / pre_warm()"]
     end
 
-    subgraph FacadeLayer ["2. 門面與管線編排層 (三向職責分離)"]
+    subgraph FacadeLayer ["2. 門面與管線編排層 (四向職責分離)"]
         Engine["KnowledgeEngine (engine.py)<br/>輕量統一門面 Facade"]
         Pipeline["IndexingPipeline (pipeline.py)<br/>全棧索引編排 / JIT 變更嗅探 / _GLOBAL_INDEX_CACHE mtime 熱刷新"]
+        TopoSvc["TopologyQueryService (topology_query.py)<br/>符號選擇器定位 / 介面實作契約雙向展開 / Callers & Callees & Impact"]
         Formatter["ResultFormatter (formatter.py)<br/>三級複雜度排版 / 8,000 字元衰減 / UniversalRedundancyFilter"]
     end
 
@@ -61,8 +63,9 @@ flowchart TD
 
     CLI --> Engine
     Worker --> Engine & Pipeline
-    Engine --> Pipeline & Formatter
-    Pipeline --> SpaceMgr & Scanner & Parsers & Bundler & Tokenizer & Hybrid & Graph
+    Engine --> Pipeline & TopoSvc & Formatter
+    Pipeline --> TopoSvc & SpaceMgr & Scanner & Parsers & Bundler & Tokenizer & Hybrid & Graph
+    TopoSvc --> Graph
     Scanner --> MetaBin
     Hybrid --> IndexBin & VecBin
     Graph --> GraphBin

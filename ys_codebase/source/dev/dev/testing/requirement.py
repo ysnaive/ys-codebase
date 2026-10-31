@@ -8,6 +8,7 @@ import functools
 import unittest
 import urllib.request
 
+
 class Requirement(Flag):
     """
     Test capability requirement and classification flags.
@@ -16,17 +17,15 @@ class Requirement(Flag):
     NONE = 0
     LOGIC = auto()            # Pure in-memory / unit logic test (default included)
     ENV = auto()              # Inter-module, DI, VFS environment test (default included)
-    HOST_CLI = ENV            # Alias for backward compatibility
     NETWORK = auto()          # Network required test
     WORKFLOW = auto()         # Multi-step composite workflow / E2E test (default excluded)
     PERF = auto()             # Performance benchmark / stress test (default excluded)
-    PERFORMANCE = PERF        # Alias
-    STRESS = PERF             # Alias
     ISOLATED_SANDBOX = auto() # Dedicated per-test isolated sandbox required (orthogonal)
 
     # Classification composite masks
     ALL_DEFAULT = LOGIC | ENV
     ALL = LOGIC | ENV | WORKFLOW | PERF
+
 
 def is_network_available(timeout: float = 1.5) -> bool:
     try:
@@ -34,6 +33,7 @@ def is_network_available(timeout: float = 1.5) -> bool:
         return True
     except Exception:
         return False
+
 
 def require(requirement: Requirement) -> Callable[[Any], Any]:
     """
@@ -54,7 +54,7 @@ def require(requirement: Requirement) -> Callable[[Any], Any]:
             if bool(req_val & Requirement.NETWORK.value) and not net_available():
                 raise unittest.SkipTest("[Auto-Skipped] Test requires active Network connection.")
             return target(self, *args, **kwargs)
-        
+
         # Attach requirement attribute to wrapper and original func for inspection
         setattr(wrapper, "__requirement__", requirement)
         setattr(target, "__requirement__", requirement)

@@ -1,6 +1,6 @@
 ---
 name: testing-sop
-description: 規劃、撰寫、執行與審查專案自動化測試 (單元測試、邊界測試、整合與回歸測試)，以及對既有測試集 (tests/) 執行六維度體檢、去重與純化重構。觸發情境：定稿 P06_test_plan.md (Phase 04)、撰寫或修改測試代碼 (Phase 05 / Fast Track)、執行 Phase 06 測試驗證與回歸守門、或應開發者要求健檢與純化既有測試集。排除情境：純業務生產源碼架構設計 (改用 development-sop) 或非測試類系統知識庫文檔撰寫 (改用 documentation)。
+description: 規劃、撰寫與審查自動化測試，以及對既有測試集 (tests/) 執行六維度體檢與純化重構。觸發情境：定稿 P06_test_plan.md、於 tests/ 撰寫或修改測試代碼、執行 Phase 06 測試回歸守門或純化測試集。
 ---
 
 # 自動化測試建置與回歸品質規範指南 (Testing SOP)

@@ -22,7 +22,7 @@ from dev.testing.runner import (
 )
 from dev.tester import Tester, safe_print
 from dev.testing.sandbox import SandboxProvisioner
-from core import uri
+from core import uri, vfs
 
 
 class TestDevTester(YSCBTestCase):
@@ -274,7 +274,7 @@ class TestDevTester(YSCBTestCase):
                 shutil.rmtree(src_path, ignore_errors=True)
             for scheme in ("module.build://", "module.release://"):
                 u = f"{scheme}{mod_name}"
-                if uri.exists(u):
+                if vfs.exists(u):
                     shutil.rmtree(uri.resolve(u), ignore_errors=True)
 
         # Also verify SyntaxError in test file produces _FailedTest and fails even under --type=env
@@ -295,7 +295,7 @@ class TestDevTester(YSCBTestCase):
                 shutil.rmtree(syn_path, ignore_errors=True)
             for scheme in ("module.build://", "module.release://"):
                 u = f"{scheme}{syn_mod}"
-                if uri.exists(u):
+                if vfs.exists(u):
                     shutil.rmtree(uri.resolve(u), ignore_errors=True)
 
         self.mark_passed()
@@ -659,7 +659,7 @@ class TestDevTesterThrottle(YSCBTestCase):
             _ = getattr(dev, "NonExistentSymbolXYZ")
 
         # Verify contributes/core.json declares events and options
-        contrib_data = uri.read_json("module.source://dev/contributes/core.json")
+        contrib_data = vfs.read_json("module.source://dev/contributes/core.json")
         event_keys = {k for item in contrib_data.get("events", []) if isinstance(item, dict) for k in item}
         self.assertIn("on_test_setup", event_keys)
         self.assertIn("on_test_teardown", event_keys)

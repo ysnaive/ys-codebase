@@ -1,5 +1,5 @@
 """
-YS-Codebase Semantic URI Protocol & First-Class VFS SDK.
+YS-Codebase Semantic URI Protocol SDK.
 100% Python Standard Library, Zero Third-Party Dependency.
 Dynamically resolves contributed URI schemes from contributes.merged.json with self-injection architecture
 and provides JIT prompt & auto-reconciliation for !undefined configurations.
@@ -7,10 +7,6 @@ and provides JIT prompt & auto-reconciliation for !undefined configurations.
 
 import os
 import sys
-import json
-import shutil
-import warnings
-import importlib.util
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Tuple, Generator, Set
 
@@ -37,9 +33,6 @@ _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
     {"token": "module.release", "type": "const", "value": "yscb://release/"},
     {"token": "yscb.venv", "type": "const", "value": "yscb://.venv/"},
 ]
-
-# Deprecated legacy schemes redirect map (Backwards Compatibility & Deprecation Warnings)
-_DEPRECATED_SCHEME_REDIRECTS: Dict[str, str] = {}
 
 
 class UndefinedModuleContextError(ValueError):
@@ -105,9 +98,6 @@ def set_module_context(module_name: Optional[str]) -> None:
 
 def get_module_context() -> Optional[str]:
     return _active_module_context
-
-
-get_execution_context = get_module_context
 
 
 @contextmanager
@@ -184,7 +174,7 @@ def yscb_scope(yscb_dir: Optional[str]) -> Generator[None, None, None]:
         set_yscb_root(old)
 
 
-def _get_yscb_root() -> str:
+def resolve_yscb_root() -> str:
     """
     三階梯物理拓撲不變性自省：
     1. 優先返回顯式注入之 yscb_root (記憶體或環境變數)。
@@ -201,33 +191,30 @@ def _get_host_config(start_dir: Optional[str] = None) -> Tuple[str, str]:
     """
     獲取宿主目錄與工具庫根目錄 (Physical Topology Invariant Guarantee).
     """
-    yscb_dir = _get_yscb_root()
+    yscb_dir = resolve_yscb_root()
     if start_dir:
         s_abs = os.path.normpath(os.path.abspath(start_dir))
         cfg_path = os.path.join(s_abs, CONFIG_FILENAME)
         if os.path.isfile(cfg_path):
             return s_abs, yscb_dir
         raise FileNotFoundError(f"'{CONFIG_FILENAME}' not found at specified start_dir '{s_abs}'.")
-        
+
     injected_host = get_host_dir()
     candidate_hosts: List[str] = []
     if injected_host:
         candidate_hosts.append(injected_host)
     candidate_hosts.append(os.path.normpath(os.path.dirname(yscb_dir)))
     candidate_hosts.append(yscb_dir)
-    
+
     for h_dir in candidate_hosts:
         cfg_path = os.path.join(h_dir, CONFIG_FILENAME)
         if os.path.isfile(cfg_path):
             return h_dir, yscb_dir
-            
+
     raise FileNotFoundError(
         f"Cannot locate '{CONFIG_FILENAME}'. Checked candidate locations: {candidate_hosts}. "
         "YS-Codebase requires a valid yscb.config.json to operate."
     )
-
-
-_find_host_config = _get_host_config
 
 
 def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
@@ -247,7 +234,6 @@ def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
             return os.path.normpath(str(rel_proj))
         return os.path.normpath(os.path.join(host_dir, str(rel_proj)))
     return None
-
 
 
 _SCHEMES_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
@@ -275,16 +261,22 @@ def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
     return _BOOTSTRAP_FALLBACK_SCHEMES
 
 
-def list_registered_schemes_summary() -> List[Dict[str, Any]]:
-    """
-    列出當前全系統已註冊之所有語意 URI 協議摘要清冊 (供 --help 展開與自省展示)。
-    """
-    yscb_dir = _get_yscb_root()
+def _build_scheme_token_map(yscb_dir: str) -> Dict[str, Dict[str, Any]]:
+    """Builds combined URI scheme lookup dictionary from merged cache and fallback schemes."""
     all_schemes = _get_merged_uri_schemes(yscb_dir)
     token_map = {s.get("token"): dict(s) for s in all_schemes if isinstance(s, dict) and "token" in s}
     for fb in _BOOTSTRAP_FALLBACK_SCHEMES:
         if fb["token"] not in token_map:
             token_map[fb["token"]] = dict(fb)
+    return token_map
+
+
+def list_registered_schemes_summary() -> List[Dict[str, Any]]:
+    """
+    列出當前全系統已註冊之所有語意 URI 協議摘要清冊 (供 --help 展開與自省展示)。
+    """
+    yscb_dir = resolve_yscb_root()
+    token_map = _build_scheme_token_map(yscb_dir)
 
     # 包含 project 協議
     token_map["project"] = {
@@ -312,6 +304,69 @@ def list_registered_schemes_summary() -> List[Dict[str, Any]]:
     return results
 
 
+def _print_reconcile_prompt(provider_name: str, scheme_token: str, desc: str, binding_key: str) -> None:
+    """Renders JIT prompt text for an undefined semantic URI protocol."""
+    print(f"\n[{provider_name}] 語意協議 '{scheme_token}://' 尚未設定 (當前為 !undefined)。")
+    if desc:
+        print(f"  • 說明: {desc}")
+    print(f"  • 目標設定檔: config://{provider_name}/config.project.json ({binding_key})")
+    print("  • 路徑基準: 相對路徑一律以 'yscb://' (工具庫根目錄) 為起始，支援 '../' 穿透或直接輸入語意協議格式 (例: project://plans)")
+    print("\n是否進行及時熱更新補齊?")
+    print("  -y <path> : 設定路徑、自動更新設定檔並繼續運行")
+    print("  -n        : 終止當前操作")
+    print("  --help    : 展開詳細協議資訊與全系統可用協議清單")
+
+
+def _print_schemes_summary_table() -> None:
+    """Renders the registered URI protocols summary table to stdout."""
+    print("\n==============================================================================================================")
+    print("YS-Codebase 語意協議註冊清冊 (Registered URI Protocols Summary)")
+    print("==============================================================================================================")
+    print(f"{'TOKEN':<23} {'PROVIDER':<12} {'RAW TARGET / VALUE':<28} {'RESOLVED PATH / STATUS'}")
+    print("--------------------------------------------------------------------------------------------------------------")
+    for s in list_registered_schemes_summary():
+        raw_v = s.get("value", "")
+        print(f"{s['token'] + '://':<23} {s['provider']:<12} {raw_v:<28} {s['resolved_path']}")
+    print("==============================================================================================================\n")
+
+
+def _persist_reconciled_uri_config(yscb_dir: str, provider_name: str, binding_key: str, input_val: str, resolved_target: str) -> None:
+    """Writes reconciled URI configuration back to config.project.json and ensures target directory exists."""
+    from core import vfs
+    mod_proj_cfg = os.path.join(yscb_dir, "config", provider_name, "config.project.json")
+    cfg_data: Dict[str, Any] = {}
+    if vfs.is_file(mod_proj_cfg):
+        try:
+            loaded = vfs.read_json(mod_proj_cfg)
+            if isinstance(loaded, dict):
+                cfg_data = loaded
+        except Exception:
+            cfg_data = {}
+
+    keys = binding_key.split(".")
+    curr = cfg_data
+    for k in keys[:-1]:
+        if k not in curr or not isinstance(curr[k], dict):
+            curr[k] = {}
+        curr = curr[k]
+    curr[keys[-1]] = input_val
+
+    vfs.write_json(mod_proj_cfg, cfg_data, indent=2, atomic=True)
+    try:
+        from core import config
+        config.reload(provider_name)
+    except Exception:
+        pass
+
+    print(f"[{provider_name}] 已成功寫入設定檔: '{binding_key}' = '{input_val}'")
+    if not vfs.exists(resolved_target):
+        try:
+            vfs.makedirs(resolved_target, exist_ok=True)
+            print(f"[{provider_name}] 目錄不存在，已自動建立: {resolved_target}")
+        except Exception:
+            pass
+
+
 def reconcile_undefined_uri(
     scheme_token: str,
     raw_target: str,
@@ -326,120 +381,155 @@ def reconcile_undefined_uri(
     global _reconciling_tokens
     if scheme_token in _reconciling_tokens:
         raise CyclicURIDependencyError(f"Cyclic or self-referencing URI dependency detected for '{scheme_token}://'")
-    
+
     provider_name = provider or "core"
     binding_key = config_binding or ("project_root" if scheme_token == "project" else "unknown")
     desc = description or ("指向專案最頂層根目錄" if scheme_token == "project" else "")
-    
+
     is_test_env = os.environ.get("YSCB_TEST_SANDBOX") == "1"
     is_tty = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
     if is_test_env or not interactive or not is_tty:
         raise UndefinedURIError(scheme=scheme_token, provider=provider_name, binding=binding_key)
 
-    yscb_dir = _get_yscb_root()
-    
+    yscb_dir = resolve_yscb_root()
+
     while True:
-        print(f"\n[{provider_name}] 語意協議 '{scheme_token}://' 尚未設定 (當前為 !undefined)。")
-        if desc:
-            print(f"  • 說明: {desc}")
-        print(f"  • 目標設定檔: config://{provider_name}/config.project.json ({binding_key})")
-        print(f"  • 路徑基準: 相對路徑一律以 'yscb://' (工具庫根目錄) 為起始，支援 '../' 穿透或直接輸入語意協議格式 (例: project://plans)")
-        print("\n是否進行及時熱更新補齊?")
-        print("  -y <path> : 設定路徑、自動更新設定檔並繼續運行")
-        print("  -n        : 終止當前操作")
-        print("  --help    : 展開詳細協議資訊與全系統可用協議清單")
-        
+        _print_reconcile_prompt(provider_name, scheme_token, desc, binding_key)
         try:
             ans = input("請輸入 [-y <path> / -n / --help]: ").strip()
         except (EOFError, KeyboardInterrupt):
             print(f"\n[{provider_name}] 操作已取消。")
             sys.exit(1)
-            
+
         if ans == "-n":
             print(f"[{provider_name}] 協議 '{scheme_token}://' 未配置，已由使用者終止運行。")
             sys.exit(1)
         elif ans == "--help":
-            print(f"\n==============================================================================================================")
-            print(f"YS-Codebase 語意協議註冊清冊 (Registered URI Protocols Summary)")
-            print(f"==============================================================================================================")
-            print(f"{'TOKEN':<23} {'PROVIDER':<12} {'RAW TARGET / VALUE':<28} {'RESOLVED PATH / STATUS'}")
-            print(f"--------------------------------------------------------------------------------------------------------------")
-            for s in list_registered_schemes_summary():
-                raw_v = s.get("value", "")
-                print(f"{s['token'] + '://':<23} {s['provider']:<12} {raw_v:<28} {s['resolved_path']}")
-            print(f"==============================================================================================================\n")
+            _print_schemes_summary_table()
             continue
         elif ans.startswith("-y "):
             input_val = ans[3:].strip()
             if not input_val:
                 print("錯誤: 請在 -y 後指定路徑 (例如: -y ./plans 或 -y project://plans)")
                 continue
-            
-            # 解算輸入之路徑 (支援連鎖依賴)
+
             _reconciling_tokens.add(scheme_token)
             try:
                 if "://" in input_val:
                     resolved_target = resolve(input_val, interactive=True)
+                elif os.path.isabs(input_val) or (len(input_val) > 1 and input_val[1] == ":"):
+                    resolved_target = os.path.normpath(input_val)
                 else:
-                    if os.path.isabs(input_val) or (len(input_val) > 1 and input_val[1] == ":"):
-                        resolved_target = os.path.normpath(input_val)
-                    else:
-                        resolved_target = os.path.normpath(os.path.join(yscb_dir, input_val))
+                    resolved_target = os.path.normpath(os.path.join(yscb_dir, input_val))
             finally:
                 _reconciling_tokens.discard(scheme_token)
-            
-            # 定位設定檔並寫入
-            mod_proj_cfg = os.path.join(yscb_dir, "config", provider_name, "config.project.json")
-            from core import vfs
-            cfg_data = {}
-            if vfs.is_file(mod_proj_cfg):
-                try:
-                    cfg_data = vfs.read_json(mod_proj_cfg)
-                    if not isinstance(cfg_data, dict):
-                        cfg_data = {}
-                except Exception:
-                    cfg_data = {}
-            
-            # 寫入鍵值 (支援巢狀 key 如 paths.plans_dir 或 project_root)
-            keys = binding_key.split(".")
-            curr = cfg_data
-            for k in keys[:-1]:
-                if k not in curr or not isinstance(curr[k], dict):
-                    curr[k] = {}
-                curr = curr[k]
-            curr[keys[-1]] = input_val
-            
-            vfs.write_json(mod_proj_cfg, cfg_data, indent=2, atomic=True)
-            try:
-                from core import config
-                config.reload(provider_name)
-            except Exception:
-                pass
-            
-            print(f"[{provider_name}] 已成功寫入設定檔: '{binding_key}' = '{input_val}'")
-            
-            # 若實體目錄不存在，自動建立
-            if not vfs.exists(resolved_target):
-                try:
-                    vfs.makedirs(resolved_target, exist_ok=True)
-                    print(f"[{provider_name}] 目錄不存在，已自動建立: {resolved_target}")
-                except Exception:
-                    pass
-                    
+
+            _persist_reconciled_uri_config(yscb_dir, provider_name, binding_key, input_val, resolved_target)
             return resolved_target
         else:
             print("無效的輸入選項，請輸入 -y <path>、-n 或 --help。")
 
 
+def _expand_module_placeholder_in_rel(rel: str, active_mod: Optional[str], raw_uri: str) -> str:
+    """Expands '@/...' or '{module}' active module placeholders in relative URI path."""
+    if rel.startswith("@/") or rel == "@":
+        if not active_mod:
+            raise UndefinedModuleContextError(raw_uri)
+        return active_mod if rel == "@" else active_mod + rel[1:]
+    if "{module}" in rel:
+        if not active_mod:
+            raise UndefinedModuleContextError(raw_uri)
+        return rel.replace("{module}", active_mod)
+    return rel
+
+
+def _resolve_const_scheme(
+    raw_uri: str,
+    sval: str,
+    rel: str,
+    yscb_dir: str,
+    active_mod: Optional[str],
+    context: Optional[ExecutionContext],
+    interactive: bool,
+) -> str:
+    """Resolves a 'const' type contributed URI scheme with path traversal protection."""
+    try:
+        host_dir, _ = _get_host_config()
+    except Exception:
+        host_dir = get_host_dir() or os.path.normpath(os.path.dirname(yscb_dir))
+
+    if "{module}" in sval:
+        if not active_mod:
+            raise UndefinedModuleContextError(raw_uri)
+        val_expanded = sval.replace("{module}", active_mod)
+    else:
+        val_expanded = sval
+    val_expanded = val_expanded.replace("{yscb_root}", yscb_dir).replace("{yscb_host}", host_dir or "")
+
+    target_base = resolve(val_expanded, current_module=active_mod, context=context, interactive=interactive)
+    if rel:
+        resolved_path = os.path.normpath(os.path.join(target_base, rel))
+        is_safe = (resolved_path == target_base) or resolved_path.startswith(target_base + os.sep)
+        if not is_safe and ".." in rel:
+            raise PermissionError(f"Path traversal detected in URI '{raw_uri}': escaped root '{target_base}'.")
+        return resolved_path
+    return os.path.normpath(target_base)
+
+
+def _resolve_config_scheme(
+    scheme_token: str,
+    scheme: Dict[str, Any],
+    sval: str,
+    rel: str,
+    yscb_dir: str,
+    provider_name: str,
+    active_mod: Optional[str],
+    context: Optional[ExecutionContext],
+    interactive: bool,
+) -> str:
+    """Resolves a 'config' type contributed URI scheme with JIT hot-reconciliation fallback."""
+    _get_host_config()
+    curr_val = None
+    try:
+        from core import config
+        curr_val = config.get(provider_name, sval)
+        if curr_val is None and active_mod and active_mod != provider_name:
+            curr_val = config.get(active_mod, sval)
+        if curr_val is None and provider_name != "core":
+            curr_val = config.get("core", sval)
+    except Exception:
+        curr_val = None
+
+    if curr_val is None or str(curr_val).startswith("!undefined"):
+        target_base = reconcile_undefined_uri(
+            scheme_token=scheme_token,
+            raw_target=str(curr_val) if curr_val else "!undefined",
+            provider=provider_name,
+            config_binding=sval,
+            description=scheme.get("description", ""),
+            interactive=interactive,
+        )
+        return os.path.normpath(os.path.join(target_base, rel)) if rel else target_base
+
+    val_str = str(curr_val)
+    if "://" in val_str:
+        target_base = resolve(val_str, current_module=active_mod, context=context, interactive=interactive)
+    elif os.path.isabs(val_str) or (len(val_str) > 1 and val_str[1] == ":"):
+        target_base = os.path.normpath(val_str)
+    else:
+        target_base = os.path.normpath(os.path.join(yscb_dir, val_str))
+    return os.path.normpath(os.path.join(target_base, rel)) if rel else target_base
+
+
 def resolve(
-    uri: str, 
-    current_module: Optional[str] = None, 
+    uri: str,
+    current_module: Optional[str] = None,
     context: Optional[ExecutionContext] = None,
     interactive: bool = True
 ) -> str:
     """
     解析語意 URI 為實體絕對路徑。
-    
+
     :param uri: 語意 URI 字串 (例 "project://AGENTS.md", "config://config.project.json")
     :param current_module: 指定當前模組名稱
     :param context: 執行期上下文 (供動態佔位符解算)
@@ -448,14 +538,16 @@ def resolve(
     """
     if not isinstance(uri, str):
         raise TypeError(f"URI must be a string, got {type(uri)}")
-    
+
     # Pass-through absolute OS paths
     if os.path.isabs(uri) or (len(uri) > 1 and uri[1] == ":"):
         return os.path.normpath(uri)
-    
-    yscb_dir = _get_yscb_root()
-    active_mod = current_module or _active_module_context or (context.module_name if context and hasattr(context, "module_name") else None)
-    
+
+    yscb_dir = resolve_yscb_root()
+    active_mod = current_module or _active_module_context or (
+        context.module_name if context and hasattr(context, "module_name") else None
+    )
+
     # Fast-path for root anchor protocol yscb:// (No need to read host config)
     if uri.startswith("yscb://"):
         rel = uri[len("yscb://"):].lstrip("/\\")
@@ -475,7 +567,6 @@ def resolve(
         host_dir, _ = _get_host_config()
         proj_dir = _get_project_dir(host_dir, yscb_dir)
         if proj_dir is None:
-            # 觸發 JIT 熱補齊
             proj_dir = reconcile_undefined_uri(
                 scheme_token="project",
                 raw_target="!undefined",
@@ -490,108 +581,24 @@ def resolve(
     # 2. Dynamic contributed protocols lookup
     if "://" in uri:
         scheme_token, rel = uri.split("://", 1)
-        rel = rel.lstrip("/\\")
-        
-        # Check Deprecated scheme redirects (Backwards compatibility)
-        if scheme_token in _DEPRECATED_SCHEME_REDIRECTS:
-            canonical_scheme = _DEPRECATED_SCHEME_REDIRECTS[scheme_token]
-            warnings.warn(
-                f"Semantic URI scheme '{scheme_token}://' is deprecated and will be removed in future releases. "
-                f"Please use '{canonical_scheme}://' instead.",
-                DeprecationWarning,
-                stacklevel=2
-            )
-            scheme_token = canonical_scheme
+        rel = _expand_module_placeholder_in_rel(rel.lstrip("/\\"), active_mod, uri)
+        token_map = _build_scheme_token_map(yscb_dir)
 
-        # Resolve '@/' active module context placeholder in path
-        if rel.startswith("@/") or rel == "@":
-            if not active_mod:
-                raise UndefinedModuleContextError(uri)
-            if rel == "@":
-                rel = active_mod
-            else:
-                rel = active_mod + rel[1:]
-        elif "{module}" in rel:
-            if not active_mod:
-                raise UndefinedModuleContextError(uri)
-            rel = rel.replace("{module}", active_mod)
-        
-        all_schemes = _get_merged_uri_schemes(yscb_dir)
-        token_map = {s.get("token"): s for s in all_schemes if isinstance(s, dict) and "token" in s}
-        for fb in _BOOTSTRAP_FALLBACK_SCHEMES:
-            if fb["token"] not in token_map:
-                token_map[fb["token"]] = fb
-                
         if scheme_token in token_map:
             scheme = token_map[scheme_token]
             stype = scheme.get("type", "const")
             sval = scheme.get("value", "")
             provider_name = scheme.get("__provider__", active_mod or "core")
-            
-            if stype == "const":
-                try:
-                    host_dir, _ = _get_host_config()
-                except Exception:
-                    host_dir = get_host_dir() or os.path.normpath(os.path.dirname(yscb_dir))
-                
-                # Expand const placeholders
-                if "{module}" in sval:
-                    if not active_mod:
-                        raise UndefinedModuleContextError(uri)
-                    val_expanded = sval.replace("{module}", active_mod)
-                else:
-                    val_expanded = sval
-                val_expanded = val_expanded.replace("{yscb_root}", yscb_dir).replace("{yscb_host}", host_dir or "")
-                
-                target_base = resolve(val_expanded, current_module=active_mod, context=context, interactive=interactive)
-                if rel:
-                    resolved_path = os.path.normpath(os.path.join(target_base, rel))
-                    # Security Sandbox Guard (EC-02): Prevent path traversal escaping target_base
-                    is_safe = (resolved_path == target_base) or resolved_path.startswith(target_base + os.sep)
-                    if not is_safe and ".." in rel:
-                        raise PermissionError(f"Path traversal detected in URI '{uri}': escaped root '{target_base}'.")
-                    return resolved_path
-                return os.path.normpath(target_base)
-            elif stype == "config":
-                host_dir, _ = _get_host_config()
-                curr_val = None
-                try:
-                    from core import config
-                    curr_val = config.get(provider_name, sval)
-                    if curr_val is None and active_mod and active_mod != provider_name:
-                        curr_val = config.get(active_mod, sval)
-                    if curr_val is None and provider_name != "core":
-                        curr_val = config.get("core", sval)
-                except Exception:
-                    curr_val = None
 
-                
-                # 檢查是否為 !undefined 或未找到
-                if curr_val is None or str(curr_val).startswith("!undefined"):
-                    # 觸發 JIT 熱補齊
-                    target_base = reconcile_undefined_uri(
-                        scheme_token=scheme_token,
-                        raw_target=str(curr_val) if curr_val else "!undefined",
-                        provider=provider_name,
-                        config_binding=sval,
-                        description=scheme.get("description", ""),
-                        interactive=interactive
-                    )
-                    return os.path.normpath(os.path.join(target_base, rel)) if rel else target_base
-                
-                # 已有配置值
-                val_str = str(curr_val)
-                if "://" in val_str:
-                    target_base = resolve(val_str, current_module=active_mod, context=context, interactive=interactive)
-                elif os.path.isabs(val_str) or (len(val_str) > 1 and val_str[1] == ":"):
-                    target_base = os.path.normpath(val_str)
-                else:
-                    # 相對路徑以 yscb_dir 為基準展開
-                    target_base = os.path.normpath(os.path.join(yscb_dir, val_str))
-                return os.path.normpath(os.path.join(target_base, rel)) if rel else target_base
+            if stype == "const":
+                return _resolve_const_scheme(uri, sval, rel, yscb_dir, active_mod, context, interactive)
+            if stype == "config":
+                return _resolve_config_scheme(
+                    scheme_token, scheme, sval, rel, yscb_dir, provider_name, active_mod, context, interactive
+                )
 
         raise ValueError(f"Unsupported URI scheme: {scheme_token}://")
-        
+
     # Zero Speculation: Disallow ambiguous non-URI relative strings
     raise ValueError(
         f"Invalid semantic URI format: '{uri}'. "
@@ -601,23 +608,18 @@ def resolve(
 
 def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
     norm = os.path.normpath(os.path.abspath(abs_path))
-    yscb_dir = _get_yscb_root()
+    yscb_dir = resolve_yscb_root()
     mod = current_module or _active_module_context or "core"
-    
+
     proj_dir = None
     try:
         host_dir, _ = _get_host_config()
         proj_dir = _get_project_dir(host_dir, yscb_dir)
     except Exception:
         pass
-    
-    # Dynamically build resolution list from contributed schemes
-    all_schemes = _get_merged_uri_schemes(yscb_dir)
-    token_map = {s.get("token"): s for s in all_schemes if isinstance(s, dict) and "token" in s}
-    for fb in _BOOTSTRAP_FALLBACK_SCHEMES:
-        if fb["token"] not in token_map:
-            token_map[fb["token"]] = fb
-            
+
+    token_map = _build_scheme_token_map(yscb_dir)
+
     check_order: List[Tuple[str, str]] = []
     for token, scheme in token_map.items():
         stype = scheme.get("type")
@@ -628,14 +630,14 @@ def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
                     check_order.append((base_p, f"{token}://"))
             except Exception:
                 pass
-                
+
     check_order.append((yscb_dir, "yscb://"))
     if proj_dir:
         check_order.append((proj_dir, "project://"))
-    
+
     # Sort by descending length of base path to match most specific URI prefix first
     check_order.sort(key=lambda x: len(os.path.normpath(x[0])), reverse=True)
-    
+
     for base_p, prefix in check_order:
         base_norm = os.path.normpath(base_p)
         if norm == base_norm:
@@ -643,78 +645,6 @@ def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
         if norm.startswith(base_norm + os.sep):
             sub = norm[len(base_norm) + 1:].replace("\\", "/")
             return prefix + sub
-            
+
     return norm
-
-
-# --- VFS Delegated IO Helpers (Backward Compatibility) ---
-
-def exists(uri_or_path: str) -> bool:
-    """檢查 URI 或路徑是否存在 (委派至 core.vfs)。"""
-    from core import vfs
-    return vfs.exists(uri_or_path)
-
-def isfile(uri_or_path: str) -> bool:
-    """檢查 URI 或路徑是否為檔案 (委派至 core.vfs)。"""
-    from core import vfs
-    return vfs.is_file(uri_or_path)
-
-is_file = isfile
-
-def isdir(uri_or_path: str) -> bool:
-    """檢查 URI 或路徑是否為目錄 (委派至 core.vfs)。"""
-    from core import vfs
-    return vfs.is_dir(uri_or_path)
-
-is_dir = isdir
-
-def remove(uri_or_path: str) -> None:
-    """刪除指定 URI 或路徑 (委派至 core.vfs)。"""
-    from core import vfs
-    vfs.remove(uri_or_path, missing_ok=True)
-
-def read_text(uri_or_path: str, encoding: str = "utf-8") -> str:
-    """讀取純文字內容 (委派至 core.vfs)。"""
-    from core import vfs
-    return vfs.read_text(uri_or_path, encoding=encoding)
-
-def write_text(uri_or_path: str, content: str, encoding: str = "utf-8") -> None:
-    """寫入純文字內容 (委派至 core.vfs，預設 atomic 防護)。"""
-    from core import vfs
-    vfs.write_text(uri_or_path, content, encoding=encoding, atomic=True)
-
-def read_json(uri_or_path: str, encoding: str = "utf-8") -> Any:
-    """讀取並解析 JSON 檔案 (委派至 core.vfs)。"""
-    from core import vfs
-    return vfs.read_json(uri_or_path, encoding=encoding)
-
-def write_json(uri_or_path: str, data: Any, indent: int = 2, encoding: str = "utf-8") -> None:
-    """序列化並寫入 JSON 檔案 (委派至 core.vfs，預設 atomic 防護)。"""
-    from core import vfs
-    vfs.write_json(uri_or_path, data, indent=indent, encoding=encoding, atomic=True)
-
-def makedirs(uri_or_path: str, exist_ok: bool = True) -> None:
-    """遞迴建立目錄樹 (委派至 core.vfs)。"""
-    from core import vfs
-    vfs.makedirs(uri_or_path, exist_ok=exist_ok)
-
-def listdir(uri_or_path: str) -> List[str]:
-    """列舉目錄子項目 (委派至 core.vfs)。"""
-    from core import vfs
-    return vfs.listdir(uri_or_path)
-
-def copy(src_uri: str, dst_uri: str) -> None:
-    """複製檔案或目錄 (委派至 core.vfs)。"""
-    from core import vfs
-    vfs.copy(src_uri, dst_uri)
-
-def move(src_uri: str, dst_uri: str) -> None:
-    """移動檔案或目錄 (委派至 core.vfs)。"""
-    from core import vfs
-    vfs.move(src_uri, dst_uri)
-
-def rmtree(uri_or_path: str) -> None:
-    """遞迴刪除目錄樹 (委派至 core.vfs)。"""
-    from core import vfs
-    vfs.rmtree(uri_or_path, ignore_errors=True)
 

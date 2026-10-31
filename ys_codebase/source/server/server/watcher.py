@@ -5,13 +5,33 @@ Monitors the .modules/ deployment directory for changes (install/update/rebuild)
 and triggers warm worker replacement when changes are detected.
 """
 
-import inspect
 import os
 import threading
 import time
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Callable, Dict, Optional, Set
 
 from core.platform import InterProcessLock
+
+
+def _scan_modules_dir(modules_dir: str) -> Dict[str, float]:
+    """Scans .modules directory and returns a mapping of watched file paths to their modification timestamps."""
+    snapshot: Dict[str, float] = {}
+    if not os.path.exists(modules_dir):
+        return snapshot
+
+    try:
+        for root, _, files in os.walk(modules_dir):
+            for f in files:
+                if f.endswith((".py", ".json", ".zip", ".dist-info")):
+                    p = os.path.join(root, f)
+                    try:
+                        snapshot[p] = os.path.getmtime(p)
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+
+    return snapshot
 
 
 class ModulesWatcher:
@@ -23,7 +43,7 @@ class ModulesWatcher:
     def __init__(
         self,
         modules_dir: str,
-        on_change_callback: Callable[..., None],
+        on_change_callback: Callable[[Set[str]], None],
         poll_interval_sec: float = 1.0,
         debounce_sec: float = 0.0,
     ) -> None:
@@ -44,7 +64,7 @@ class ModulesWatcher:
         if self._is_running:
             return
         self._is_running = True
-        self._last_snapshot = self._take_snapshot()
+        self._last_snapshot = _scan_modules_dir(self.modules_dir)
         self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="modules-watcher")
         self._thread.start()
 
@@ -83,21 +103,20 @@ class ModulesWatcher:
             if self._is_core_transaction_locked():
                 continue
 
-            current_snapshot = self._take_snapshot()
-            if self._has_changed(self._last_snapshot, current_snapshot):
-                # Debounce stabilization
+            current_snapshot = _scan_modules_dir(self.modules_dir)
+            if self._last_snapshot != current_snapshot:
                 if self.debounce_sec > 0:
                     time.sleep(self.debounce_sec)
                     if not self._is_running or self._is_core_transaction_locked():
                         continue
-                    current_snapshot = self._take_snapshot()
+                    current_snapshot = _scan_modules_dir(self.modules_dir)
 
                 affected_modules = self._extract_affected_modules(self._last_snapshot, current_snapshot)
                 self._last_snapshot = current_snapshot
                 if not affected_modules:
                     continue
                 try:
-                    self._notify_change(affected_modules)
+                    self.on_change_callback(affected_modules)
                 except Exception:
                     pass
 
@@ -117,46 +136,3 @@ class ModulesWatcher:
             except (ValueError, OSError):
                 pass
         return affected
-
-    def _notify_change(self, affected_modules: Set[str]) -> None:
-        """Invokes on_change_callback with affected_modules if supported, else zero-args."""
-        try:
-            sig = inspect.signature(self.on_change_callback)
-            if len(sig.parameters) > 0:
-                self.on_change_callback(affected_modules)
-                return
-        except (TypeError, ValueError):
-            pass
-
-        try:
-            self.on_change_callback(affected_modules)
-        except TypeError:
-            self.on_change_callback()
-
-    def _take_snapshot(self) -> Dict[str, float]:
-        snapshot: Dict[str, float] = {}
-        if not os.path.exists(self.modules_dir):
-            return snapshot
-
-        try:
-            # Snapshot top-level manifests and zip timestamps under .modules
-            for root, dirs, files in os.walk(self.modules_dir):
-                for f in files:
-                    if f.endswith((".py", ".json", ".zip", ".dist-info")):
-                        p = os.path.join(root, f)
-                        try:
-                            snapshot[p] = os.path.getmtime(p)
-                        except OSError:
-                            pass
-        except Exception:
-            pass
-
-        return snapshot
-
-    def _has_changed(self, prev: Dict[str, float], curr: Dict[str, float]) -> bool:
-        if set(prev.keys()) != set(curr.keys()):
-            return True
-        for k, v in curr.items():
-            if prev.get(k) != v:
-                return True
-        return False

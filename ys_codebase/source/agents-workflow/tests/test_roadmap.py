@@ -21,7 +21,7 @@ _cli_path = _pkg_root / "scripts" / "cli.py"
 _spec = importlib.util.spec_from_file_location("agents_workflow_cli", _cli_path)
 _cli_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_cli_module)
-cmd_roadmap = _cli_module.cmd_roadmap
+cmd_roadmap = _cli_module.roadmap
 
 
 @require(Requirement.LOGIC)

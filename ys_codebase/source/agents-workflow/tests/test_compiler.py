@@ -144,21 +144,12 @@ class TestArtifactCompiler(YSCBTestCase):
 
     def test_st_06_agents_md_soft_merge(self):
         """ST-06: 驗證 AGENTS.md 軟合併無損保護。"""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            orig_agents_md = os.path.join(tmp_dir, "AGENTS.md")
-            with open(orig_agents_md, "w", encoding="utf-8") as f:
-                f.write("# AGENTS\n\n<!-- YSCB_AGENTS_BEGIN -->\nOld Rules\n<!-- YSCB_AGENTS_END -->\n\n## 4. Custom\nCustom Rule\n")
-            
-            ok = self.publisher._soft_merge_agents_md("New Injected Rules", tmp_dir)
-            self.assertTrue(ok)
-            
-            with open(orig_agents_md, "r", encoding="utf-8") as f:
-                merged = f.read()
-            
-            self.assertIn("New Injected Rules", merged)
-            self.assertNotIn("Old Rules", merged)
-            self.assertIn("## 4. Custom", merged)
-            self.assertIn("Custom Rule", merged)
+        existing = "# AGENTS\n\n<!-- YSCB_AGENTS_BEGIN -->\nOld Rules\n<!-- YSCB_AGENTS_END -->\n\n## 4. Custom\nCustom Rule\n"
+        merged = self.publisher._soft_merge_agents_text(existing, "New Injected Rules")
+        self.assertIn("New Injected Rules", merged)
+        self.assertNotIn("Old Rules", merged)
+        self.assertIn("## 4. Custom", merged)
+        self.assertIn("Custom Rule", merged)
         self.mark_passed()
 
     def test_st_07_cli_release_and_target_commands(self):
@@ -749,16 +740,33 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         actual_skills = {p.name for p in skills_dir.iterdir() if p.is_dir()}
         self.assertEqual(actual_skills, expected_skills)
 
+        compiler = ArtifactCompiler()
+        skill_exports = [item for item in contrib["export"] if item.get("type") == "skill"]
+        for item in skill_exports:
+            self.assertNotIn("description", item, f"{item['name']} 在 agents-workflow.json 不應重複定義 description")
+        export_desc_map = {item["name"]: compiler.resolve_export_description(item) for item in skill_exports}
+        b_strict_skills = {"auto", "code-optimizer", "skill-optimizer", "session-audit"}
+        b_assist_skills = {"pause", "continue", "context-init", "skill-creator", "how-to-config-yscb", "how-to-yscb"}
+
         for s_name in ambient_skills:
             skill_md = (skills_dir / s_name / "SKILL.md").read_text(encoding="utf-8")
-            self.assertIn("觸發情境：", skill_md, f"{s_name}/SKILL.md 缺少三段式『觸發情境：』描述")
-            self.assertIn("排除情境：", skill_md, f"{s_name}/SKILL.md 缺少三段式『排除情境：』描述")
+            first_lines = "\n".join(skill_md.splitlines()[:4])
+            self.assertTrue(export_desc_map[s_name], f"{s_name} 無法自動解析 SKILL.md description")
+            self.assertIn(export_desc_map[s_name], first_lines, f"{s_name}/SKILL.md description 解析不一致")
+            self.assertIn("觸發情境：", first_lines, f"{s_name}/SKILL.md 缺少 A1『觸發情境：』描述")
+            self.assertNotIn("（改用", first_lines, f"{s_name}/SKILL.md description 不得跨技能點名『（改用 ...）』")
             self.assertIn("## 常見踩坑指南 (Gotchas)", skill_md, f"{s_name}/SKILL.md 缺少 Gotchas 章節")
 
         for s_name in command_driven_skills:
             skill_md = (skills_dir / s_name / "SKILL.md").read_text(encoding="utf-8")
             first_lines = "\n".join(skill_md.splitlines()[:4])
+            self.assertTrue(export_desc_map[s_name], f"{s_name} 無法自動解析 SKILL.md description")
+            self.assertIn(export_desc_map[s_name], first_lines, f"{s_name}/SKILL.md description 解析不一致")
             self.assertIn("僅於顯式輸入", first_lines, f"{s_name}/SKILL.md 缺少主動指令型『僅於顯式輸入』契約")
+            if s_name in b_strict_skills:
+                self.assertIn("時觸發，嚴禁主動觸發。", first_lines, f"{s_name}/SKILL.md 應採 B-Strict 純斜線鎖定契約")
+            elif s_name in b_assist_skills:
+                self.assertIn("或明確要求", first_lines, f"{s_name}/SKILL.md 應採 B-Assist 明確委託契約")
             self.assertNotIn("(或 /", first_lines, f"{s_name}/SKILL.md description 不應含過度相容大小寫變體")
             self.assertIn("## 常見踩坑指南 (Gotchas)", skill_md, f"{s_name}/SKILL.md 缺少 Gotchas 章節")
 
@@ -959,7 +967,8 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertTrue(sc_md_path.is_file())
         sc_text = sc_md_path.read_text(encoding="utf-8")
         self.assertLessEqual(len(sc_text.splitlines()), 180)
-        self.assertIn(export_map["skill-creator"]["description"], sc_text)
+        self.assertNotIn("description", export_map["skill-creator"])
+        self.assertIn(ArtifactCompiler().resolve_export_description(export_map["skill-creator"]), sc_text)
         self.assertIn("`__@{SKILL_CREATOR_STANDARDS}__`", sc_text)
         self.assertIn("## 常見踩坑指南 (Gotchas)", sc_text)
 
@@ -972,7 +981,7 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertIn("agents-workflow tokens", sc_text)
         self.assertIn("uri list", sc_text)
         self.assertIn("references/extension-guide.md", sc_text)
-        self.assertIn("### 🛠️ /SkillCreator 專案擴充藍圖確認卡", sc_text)
+        self.assertIn("### 🛠️ /skill-creator 專案擴充藍圖確認卡", sc_text)
         self.assertIn("End Turn", sc_text)
 
         self.assertIn("skills/<name>/SKILL.md", sc_text)
@@ -1015,6 +1024,12 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
 
         compiler = ArtifactCompiler(host_dir=str(Path(_pkg_root).parent.parent))
         deployment_map = {
+            "module://agents-workflow/assets/standards/SkillDesignStandards.md": str(
+                Path(_pkg_root).parent.parent / ".agents" / ".yscb" / "standards" / "SkillDesignStandards.md"
+            ),
+            "module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md": str(
+                Path(_pkg_root).parent.parent / ".agents" / ".yscb" / "standards" / "YscbSkillDesignToolStandards.md"
+            ),
             "module://agents-workflow/assets/skills/skill-optimizer/SKILL.md": str(
                 Path(_pkg_root).parent.parent / ".agents" / "skills" / "skill-optimizer" / "SKILL.md"
             ),
@@ -1154,7 +1169,8 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertTrue(co_md_path.is_file())
         co_text = co_md_path.read_text(encoding="utf-8")
         self.assertLessEqual(len(co_text.splitlines()), 180, f"code-optimizer/SKILL.md 行數超標: {len(co_text.splitlines())}")
-        self.assertIn(export_map["code-optimizer"]["description"], co_text)
+        self.assertNotIn("description", export_map["code-optimizer"])
+        self.assertIn(ArtifactCompiler().resolve_export_description(export_map["code-optimizer"]), co_text)
         self.assertIn("僅於顯式輸入 /code-optimizer 時觸發，嚴禁主動觸發", co_text)
         self.assertIn("`__@{CODE_OPTIMIZER_STANDARDS}__`", co_text)
         self.assertIn("## 常見踩坑指南 (Gotchas)", co_text)
@@ -1216,6 +1232,10 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
             )
             for s in ("development-sop", "testing-sop", "skill-optimizer", "new-plan", "auto", "code-optimizer")
         }
+        for std_name in ("AgentsStandards.md", "CodeQualityStandards.md", "SkillDesignStandards.md", "YscbSkillDesignToolStandards.md"):
+            deployment_map[f"module://agents-workflow/assets/standards/{std_name}"] = str(
+                Path(_pkg_root).parent.parent / ".agents" / ".yscb" / "standards" / std_name
+            )
         for t_name in ("P00_discuss.md", "RXX_research_report.md", "fast_track_plan.md", "umbrella_overview.md"):
             deployment_map[f"module://agents-workflow/assets/templates/{t_name}"] = str(
                 Path(_pkg_root).parent.parent / ".agents" / ".yscb" / "templates" / t_name
@@ -1246,6 +1266,62 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
             [{"token": "CODE_OPTIMIZER_STANDARDS", "mode": "below", "value": "### 專案特化 D5 架構規則\n- 強制使用 core.uri"}],
         )
         self.assertIn("### 專案特化 D5 架構規則", injected_co)
+
+        # [sub_01 REV-01 & REV-02]: 驗證三軌代理執行定錨、CodeQualityStandards.md 與 SkillDesignStandards.md 雙標準資產與 SOP 雙層整合
+        self.assertIn("軌道 1：純主代理內聯執行", co_text)
+        self.assertIn("軌道 2A：純主代理內聯審查", co_text)
+        self.assertIn("軌道 2B：主代理 + 盲眼子代理", co_text)
+        self.assertIn("軌道 3A：主代理序列滾動推進", co_text)
+        self.assertIn("軌道 3B：主代理統籌 + N 路盲眼子代理平行推進", co_text)
+
+        std_sources = {item.get("source") for item in contrib["export"] if item.get("type") == "standard"}
+        self.assertIn("module://agents-workflow/assets/standards/CodeQualityStandards.md", std_sources)
+        self.assertIn("module://agents-workflow/assets/standards/SkillDesignStandards.md", std_sources)
+        self.assertIn("module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md", std_sources)
+
+        cqs_path = assets / "standards" / "CodeQualityStandards.md"
+        sds_path = assets / "standards" / "SkillDesignStandards.md"
+        ysdts_path = assets / "standards" / "YscbSkillDesignToolStandards.md"
+        self.assertTrue(cqs_path.is_file())
+        self.assertTrue(sds_path.is_file())
+        self.assertTrue(ysdts_path.is_file())
+        for std_p in (cqs_path, sds_path, ysdts_path):
+            s_txt = std_p.read_text(encoding="utf-8")
+            clean_s = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", s_txt))
+            self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_s), [], f"{std_p.name} 含未加單反引號之標籤")
+            s_dst = str(Path(_pkg_root).parent.parent / ".agents" / ".yscb" / "standards" / std_p.name)
+            with contextlib.redirect_stderr(err_buf):
+                s_s1 = compiler.resolve_single_artifact(s_txt, contrib.get("insert", []))
+                compiler.resolve_stage2_uri(s_s1, s_dst, deployment_map, target_name="antigravity")
+        self.assertEqual(err_buf.getvalue(), "", f"Standards Stage 1/2 編譯產生警告: {err_buf.getvalue()}")
+        cqs_text = cqs_path.read_text(encoding="utf-8")
+        sds_text = sds_path.read_text(encoding="utf-8")
+        ysdts_text = ysdts_path.read_text(encoding="utf-8")
+        self.assertIn("`__@{CODE_OPTIMIZER_STANDARDS}__`", cqs_text)
+        self.assertIn("零工單與審計編號註解鐵律", cqs_text)
+        self.assertIn("雙軌結構化 `description` 契約", sds_text)
+        self.assertIn("A1 正向邊界契約", sds_text)
+        self.assertIn("軌跡 B-Strict", sds_text)
+        self.assertIn("軌跡 B-Assist", sds_text)
+        self.assertIn("Artifact-in-File", sds_text)
+        self.assertIn("Artifact-in-Chat", sds_text)
+        self.assertNotIn("YscbSkillDesignToolStandards", sds_text)
+        self.assertNotIn("skill-creator", sds_text)
+        self.assertNotIn("skill-optimizer", sds_text)
+        self.assertIn("<!-- yscb:literal -->", ysdts_text)
+        self.assertIn("contributes check", ysdts_text)
+        self.assertIn("agents-workflow compile", ysdts_text)
+        self.assertIn("agents-workflow release", ysdts_text)
+
+        sop_ref = skills_dir / "development-sop" / "references"
+        for sop_file in ("phase_05_task.md", "phase_06_test.md", "fast_track_plan.md"):
+            self.assertIn("CodeQualityStandards.md", (sop_ref / sop_file).read_text(encoding="utf-8"))
+        self.assertIn("CodeQualityStandards.md", (skills_dir / "auto" / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("/code-optimizer", (sop_ref / "phase_07_walkthrough.md").read_text(encoding="utf-8"))
+        self.assertIn("SkillDesignStandards.md", (skills_dir / "skill-creator" / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("YscbSkillDesignToolStandards.md", (skills_dir / "skill-creator" / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("SkillDesignStandards.md", (skills_dir / "skill-optimizer" / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("YscbSkillDesignToolStandards.md", (skills_dir / "skill-optimizer" / "SKILL.md").read_text(encoding="utf-8"))
 
         self.mark_passed()
 

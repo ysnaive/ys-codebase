@@ -6,7 +6,6 @@ into structured NDJSON packets ("terminal_stream" vs "task_finish").
 """
 
 import io
-import json
 import sys
 import threading
 import time
@@ -49,7 +48,6 @@ class DebouncedIOStreamer:
 
             self._buffer.append({"stream": stream_name, "text": text})
 
-            # Check if buffer contains a newline or exceeds debounce interval
             now = time.time()
             has_newline = "\n" in text
             time_since_flush = now - self._last_flush_time
@@ -72,7 +70,6 @@ class DebouncedIOStreamer:
             self._last_flush_time = time.time()
             return
 
-        # Consolidate buffer into stream segments
         consolidated: Dict[str, List[str]] = {}
         for item in self._buffer:
             s_name = item["stream"]

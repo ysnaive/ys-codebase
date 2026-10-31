@@ -6,9 +6,9 @@ import os
 import sys
 import json
 import zipfile
-from core import uri
+from core import uri, vfs
 from core import semver
-from dev.releaser import Releaser, ReleasePipeline, CyclicDependencyError
+from dev.releaser import Releaser, CyclicDependencyError
 from dev.builder import Builder
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
@@ -21,7 +21,7 @@ class TestReleasePipeline(YSCBTestCase):
 
     def tearDown(self):
         for scheme in ("module.source://", "module.build://", "module.release://"):
-            if uri.exists(scheme):
+            if vfs.exists(scheme):
                 root = uri.resolve(scheme)
                 if os.path.isdir(root):
                     for item in os.listdir(root):
@@ -233,19 +233,19 @@ class TestReleasePipeline(YSCBTestCase):
 
         # 1. bump_revision: 1.0.0.0 -> 1.0.0.1
         self.assertEqual(cli_mod.bump_revision(CmdBags(raw_cmd="dev bump-revision", args=["mock_bump_mod"])), 0)
-        self.assertEqual(uri.read_json("module.source://mock_bump_mod/manifest.json")["version"], "1.0.0.1")
+        self.assertEqual(vfs.read_json("module.source://mock_bump_mod/manifest.json")["version"], "1.0.0.1")
 
         # 2. bump_patch: 1.0.0.1 -> 1.0.1.0
         self.assertEqual(cli_mod.bump_patch(CmdBags(raw_cmd="dev bump-patch", args=["mock_bump_mod"])), 0)
-        self.assertEqual(uri.read_json("module.source://mock_bump_mod/manifest.json")["version"], "1.0.1.0")
+        self.assertEqual(vfs.read_json("module.source://mock_bump_mod/manifest.json")["version"], "1.0.1.0")
 
         # 3. bump_minor: 1.0.1.0 -> 1.1.0.0
         self.assertEqual(cli_mod.bump_minor(CmdBags(raw_cmd="dev bump-minor", args=["mock_bump_mod"])), 0)
-        self.assertEqual(uri.read_json("module.source://mock_bump_mod/manifest.json")["version"], "1.1.0.0")
+        self.assertEqual(vfs.read_json("module.source://mock_bump_mod/manifest.json")["version"], "1.1.0.0")
 
         # 4. bump_major: 1.1.0.0 -> 2.0.0.0
         self.assertEqual(cli_mod.bump_major(CmdBags(raw_cmd="dev bump-major", args=["mock_bump_mod"])), 0)
-        self.assertEqual(uri.read_json("module.source://mock_bump_mod/manifest.json")["version"], "2.0.0.0")
+        self.assertEqual(vfs.read_json("module.source://mock_bump_mod/manifest.json")["version"], "2.0.0.0")
 
         # 5. release_check single module and default all-modules (empty args)
         self.assertEqual(cli_mod.release_check(CmdBags(raw_cmd="dev release-check", args=["mock_bump_mod"])), 0)

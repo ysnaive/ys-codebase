@@ -46,7 +46,7 @@
 3. **極精簡 Session 回覆格式**：
    ```markdown
    ###  Revision 修訂紀錄已更新
-   - **產出文件**：[revision_log.md](__${project://plans/}__/{plan_name}/revision_log.md)、[changelog.md](__${project://plans/}__/{plan_name}/changelog.md)
+   - **產出文件**：[revision_log.md](`__${project://plans}__/{plan_name}/revision_log.md`)、[changelog.md](`__${project://plans}__/{plan_name}/changelog.md`)
    - **修訂摘要**：[[REV-XX] 1~2 行變更說明 / 驗證與合規檢核通過]
    - **推薦 Commit**：`[type(scope): brief message]`
    - **待確認事項**：修訂已完成，請問是否繼續其他修訂或將 `revision_log.md` 標記為 `Completed` 結案？

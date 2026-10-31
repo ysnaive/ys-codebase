@@ -5,21 +5,16 @@ knowledge-db 倒排索引、多欄位加權 BM25 語意評分與二進位 Gzip �
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-import gzip
-import heapq
-import json
 import logging
 import math
-import os
 from pathlib import Path
-import pickle
 import re
-import tempfile
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from .exceptions import KnowledgeDBError, SchemaValidationError
-from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol, WeightedToken
-from .tokenizer import CodeTokenizer, MultilingualTokenizer
+from .exceptions import SchemaValidationError
+from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
+from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
+from .tokenizer import MultilingualTokenizer
 
 logger = logging.getLogger("knowledge-db.retrieval")
 
@@ -33,7 +28,6 @@ class Posting:
         self,
         doc_id: str,
         field_freqs: Optional[Dict[str, int]] = None,
-        field_lengths: Optional[Dict[str, int]] = None,  # 向後相容參數 (舊代碼若傳入不報錯)
         space: str = "",
         spaces: Optional[List[str]] = None,
     ):
@@ -97,14 +91,12 @@ class CodeSnippet:
         if max_lines <= 0:
             return []
 
-        # 尋找 target_line 在 lines 中的索引位置
         target_idx = 0
         for idx, (ln, _) in enumerate(self.lines):
             if ln == self.target_line:
                 target_idx = idx
                 break
 
-        # 以 target_line 為焦點向前後展開
         half = max_lines // 2
         start_idx = max(0, target_idx - half)
         end_idx = start_idx + max_lines
@@ -193,7 +185,7 @@ class SnippetExtractor:
                 return cand
         if self.space_manager:
             try:
-                spaces_to_check = [self.space_manager.get_space(space)] if space else self.space_manager.get_union_spaces()
+                spaces_to_check = [self.space_manager.get_space(space)] if space else self.space_manager.list_spaces()
                 for sp in spaces_to_check:
                     for root in self.space_manager.resolve_space_include(sp.name):
                         if root.is_file():
@@ -259,8 +251,7 @@ class SnippetExtractor:
 
         target_ln = max(1, min(line_number, total_lines))
         start_ln = max(1, target_ln - context_before)
-        
-        # 若有提供 end_line，以 end_line 為目標切片邊界
+
         if end_line is not None and end_line >= target_ln:
             target_end_ln = min(total_lines, end_line + 1)
         else:
@@ -330,15 +321,6 @@ class InvertedIndex:
         self.field_avgdl: Dict[str, float] = {f: 1.0 for f in self.INDEXED_FIELDS}
         self.field_total_lengths: Dict[str, int] = {f: 0 for f in self.INDEXED_FIELDS}
 
-    @property
-    def symbols_map(self) -> Dict[str, UnifiedSymbol]:
-        """向後相容別名"""
-        return self.symbols
-
-    @symbols_map.setter
-    def symbols_map(self, value: Dict[str, UnifiedSymbol]) -> None:
-        self.symbols = value
-
     def get_symbol(self, doc_id: str) -> Optional[UnifiedSymbol]:
         """自符號池中以 O(1) 獲取符號實例"""
         return self.symbols.get(doc_id)
@@ -346,7 +328,7 @@ class InvertedIndex:
     def add_symbol(
         self,
         symbol: UnifiedSymbol,
-        tokenizer: CodeTokenizer,
+        tokenizer: MultilingualTokenizer,
         space: str = "",
         spaces: Optional[List[str]] = None,
     ) -> None:
@@ -359,8 +341,7 @@ class InvertedIndex:
         effective_spaces = spaces or symbol_spaces or ([space] if space else []) or ([self.space_name] if self.space_name else [])
         curr_space = effective_spaces[0] if effective_spaces else ""
 
-        # 1. 提取各欄位文字
-        members_text = " ".join([f"{m.name} {m.signature} {m.docstring}" for m in symbol.members])
+        members_text = " ".join([f"{m.name} {m.signature} {m.docstring}" for m in symbol.children])
         field_texts = {
             "name": symbol.name,
             "signature": symbol.signature,
@@ -368,25 +349,20 @@ class InvertedIndex:
             "docstring": symbol.docstring,
         }
 
-        # 2. 分詞與詞頻計算
-        field_tokens: Dict[str, List[str]] = {}
         field_freqs_map: Dict[str, Counter] = {}
         field_lengths: Dict[str, int] = {}
         all_unique_terms: Set[str] = set()
 
         for f_name, text in field_texts.items():
             tokens = tokenizer.tokenize(text)
-            field_tokens[f_name] = tokens
             field_lengths[f_name] = len(tokens)
             self.field_total_lengths[f_name] += len(tokens)
             counts = Counter(tokens)
             field_freqs_map[f_name] = counts
             all_unique_terms.update(counts.keys())
 
-        # 註冊至頂層文檔長度共享池 (消滅 Posting 冗餘副本)
         self.doc_lengths[doc_id] = field_lengths
 
-        # 3. 建立輕量 Posting
         for term in all_unique_terms:
             t_freqs = {f_name: field_freqs_map[f_name][term] for f_name in self.INDEXED_FIELDS}
             posting = Posting(
@@ -397,9 +373,11 @@ class InvertedIndex:
             )
             self.index[term].append(posting)
 
-    def build(self, symbols: List[UnifiedSymbol], tokenizer: Optional[CodeTokenizer] = None, space: str = "") -> None:
+    def build(self, symbols: List[UnifiedSymbol], tokenizer: Optional[MultilingualTokenizer] = None, space: str = "") -> None:
         """批次建立倒排索引並計算 avgdl"""
-        tok = tokenizer or CodeTokenizer()
+        tok = tokenizer or MultilingualTokenizer()
+        if space:
+            self.space_name = space
         self.doc_count = 0
         self.symbols.clear()
         self.index.clear()
@@ -409,18 +387,12 @@ class InvertedIndex:
         for sym in symbols:
             self.add_symbol(sym, tok, space=space)
 
-        # 計算 avgdl
         if self.doc_count > 0:
             for f in self.INDEXED_FIELDS:
                 self.field_avgdl[f] = max(1.0, self.field_total_lengths[f] / self.doc_count)
         else:
             for f in self.INDEXED_FIELDS:
                 self.field_avgdl[f] = 1.0
-
-    def build_unified(self, symbols: List[UnifiedSymbol], tokenizer: Optional[CodeTokenizer] = None) -> None:
-        """批次建立全域聯集單一倒排索引"""
-        self.space_name = "unified"
-        self.build(symbols, tokenizer=tokenizer, space="unified")
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化倒排索引為正規化符號池字典 (包含 doc_lengths)"""
@@ -442,7 +414,7 @@ class InvertedIndex:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "InvertedIndex":
-        """反序列化正規化倒排索引 (具備 Schema 自省與舊快取自動遷移)"""
+        """反序列化正規化倒排索引"""
         if not isinstance(data, dict):
             raise SchemaValidationError("InvertedIndex data must be a dictionary.")
 
@@ -452,28 +424,15 @@ class InvertedIndex:
         idx.field_total_lengths = data.get("field_total_lengths", {f: 0 for f in cls.INDEXED_FIELDS})
         idx.doc_lengths = data.get("doc_lengths", {})
 
-        # 1. 還原符號池
         raw_symbols = data.get("symbols", {})
         if raw_symbols:
             for doc_id, s_dict in raw_symbols.items():
                 if isinstance(s_dict, dict):
                     idx.symbols[doc_id] = UnifiedSymbol.from_dict(s_dict)
 
-        # 2. 還原倒排表 (兼顧舊版格式自省遷移)
         raw_index = data.get("index", {})
         for term, postings_raw in raw_index.items():
-            postings: List[Posting] = []
-            for p in postings_raw:
-                if isinstance(p, dict):
-                    posting = Posting.from_dict(p)
-                    postings.append(posting)
-                    # 舊版相容：若 doc_lengths 缺失，自動自舊版 Posting 萃取
-                    if "field_lengths" in p and p["field_lengths"] and posting.doc_id not in idx.doc_lengths:
-                        idx.doc_lengths[posting.doc_id] = p["field_lengths"]
-                    # 舊版向下相容：補充符號池
-                    if "symbol" in p and isinstance(p["symbol"], dict) and posting.doc_id not in idx.symbols:
-                        idx.symbols[posting.doc_id] = UnifiedSymbol.from_dict(p["symbol"])
-            idx.index[term] = postings
+            idx.index[term] = [Posting.from_dict(p) for p in postings_raw if isinstance(p, dict)]
 
         return idx
 
@@ -481,7 +440,7 @@ class InvertedIndex:
         self,
         dirty_file_paths: Set[str],
         new_symbols: List[UnifiedSymbol],
-        tokenizer: Optional[CodeTokenizer] = None,
+        tokenizer: Optional[MultilingualTokenizer] = None,
     ) -> None:
         """
         差量修補倒排索引 (Incremental Hot Patching)：
@@ -489,10 +448,9 @@ class InvertedIndex:
         2. 將 new_symbols 注入符號池、倒排表與 doc_lengths。
         3. 動態重新計算 field_avgdl。
         """
-        tok = tokenizer or CodeTokenizer()
+        tok = tokenizer or MultilingualTokenizer()
         dirty_paths_norm = {p.replace("\\", "/").lower() for p in dirty_file_paths}
 
-        # 1. 識別需移除的舊 doc_id
         doc_ids_to_remove: List[str] = []
         for doc_id, sym in list(self.symbols.items()):
             sym_path_norm = sym.file_path.replace("\\", "/").lower()
@@ -510,13 +468,12 @@ class InvertedIndex:
 
         doc_ids_set = set(doc_ids_to_remove)
 
-        # 2. 扣減長度、清理 doc_lengths 與自符號池移除
         for doc_id in doc_ids_to_remove:
             self.doc_lengths.pop(doc_id, None)
             sym = self.symbols.pop(doc_id, None)
             if sym:
                 self.doc_count = max(0, self.doc_count - 1)
-                members_text = " ".join([f"{m.name} {m.signature} {m.docstring}" for m in sym.members])
+                members_text = " ".join([f"{m.name} {m.signature} {m.docstring}" for m in sym.children])
                 field_texts = {
                     "name": sym.name,
                     "signature": sym.signature,
@@ -529,7 +486,6 @@ class InvertedIndex:
                         0, self.field_total_lengths[f_name] - len(tokens)
                     )
 
-        # 3. 自倒排表移除舊 Postings
         if doc_ids_set:
             for term in list(self.index.keys()):
                 new_postings = [p for p in self.index[term] if p.doc_id not in doc_ids_set]
@@ -538,11 +494,9 @@ class InvertedIndex:
                 else:
                     del self.index[term]
 
-        # 4. 加入新符號
         for sym in new_symbols:
             self.add_symbol(sym, tok, spaces=sym.spaces)
 
-        # 5. 重新計算 avgdl
         if self.doc_count > 0:
             for f in self.INDEXED_FIELDS:
                 self.field_avgdl[f] = max(1.0, self.field_total_lengths[f] / self.doc_count)
@@ -551,38 +505,18 @@ class InvertedIndex:
                 self.field_avgdl[f] = 1.0
 
     def save_binary(self, path: Union[str, Path], compresslevel: int = 1) -> None:
-        """使用 Pickle (Protocol 5) + Gzip 原子持久化二進位快取"""
-        out_path = Path(path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        data = self.to_dict()
-        pkl_bytes = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
-        compressed_bytes = gzip.compress(pkl_bytes, compresslevel=compresslevel)
-
-        tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
-        with open(tmp_path, "wb") as f:
-            f.write(compressed_bytes)
-
-        os.replace(str(tmp_path), str(out_path))
-        logger.debug(f"Saved binary inverted index to: {out_path} ({len(compressed_bytes)} bytes)")
+        """使用 io_utils 原子持久化二進位快取"""
+        atomic_save_gzip_pickle(path, self.to_dict(), compresslevel=compresslevel)
 
     @classmethod
     def load_binary(cls, path: Union[str, Path]) -> "InvertedIndex":
         """自二進位 Gzip 快取反序列化 InvertedIndex"""
-        in_path = Path(path)
-        if not in_path.exists():
-            raise FileNotFoundError(f"Binary inverted index cache not found: {in_path}")
-
-        with open(in_path, "rb") as f:
-            compressed_bytes = f.read()
-
-        pkl_bytes = gzip.decompress(compressed_bytes)
-        data = pickle.loads(pkl_bytes)
+        data = load_gzip_pickle(path, raise_on_missing=True)
         return cls.from_dict(data)
 
 
 class BM25Engine:
-    """多欄位加權 BM25 檢索引擎 (支援 Max-Score 剪枝與三階同義詞加權)"""
+    """多欄位加權 BM25 檢索引擎 (支援單一打分核心 _score_candidate_documents)"""
 
     DEFAULT_WEIGHTS = {
         "name": 3.5,
@@ -593,12 +527,12 @@ class BM25Engine:
 
     def __init__(
         self,
-        tokenizer: Optional[CodeTokenizer] = None,
+        tokenizer: Optional[MultilingualTokenizer] = None,
         field_weights: Optional[Dict[str, float]] = None,
         k1: float = 1.5,
         b: float = 0.75,
     ):
-        self.tokenizer = tokenizer or CodeTokenizer()
+        self.tokenizer = tokenizer or MultilingualTokenizer()
         self.field_weights = field_weights or dict(self.DEFAULT_WEIGHTS)
         self.k1 = k1
         self.b = b
@@ -623,72 +557,57 @@ class BM25Engine:
                     result.add(clean)
         return result
 
-    def search(
+    def _score_candidate_documents(
         self,
         query: str,
         index: InvertedIndex,
-        filter_cfg: Optional[QueryFilter] = None,
-    ) -> List[SearchResult]:
+        flt: QueryFilter,
+    ) -> List[Tuple[UnifiedSymbol, float, List[str], List[str], Posting]]:
         """
-        執行多欄位加權語意檢索 (向後相容扁平清單模式)。
+        共用 BM25 多欄位打分與候選過濾核心：
+        統一執行分詞、IDF 計算、Posting 走訪、Exact Match 2.0x Boost、
+        複合字 (>= 3 sub-tokens) 50% 覆蓋率門檻過濾，以及 space/ftype/language/kind 篩選。
         """
         if not query or not query.strip() or index.doc_count == 0:
             return []
 
-        flt = filter_cfg or QueryFilter()
         raw_query = query.strip()
         allowed_ftypes = self._normalize_ftypes(flt.ftypes)
-
-        # 1. 分詞與詞彙加權
         base_tokens = self.tokenizer.tokenize(raw_query)
         if not base_tokens:
             return []
 
-        weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in base_tokens]
-
-        # 2. 候選文檔計分累加器: doc_id -> (score, matched_terms, posting)
         doc_scores: Dict[str, float] = defaultdict(float)
         doc_matches: Dict[str, Set[str]] = defaultdict(set)
         doc_postings: Dict[str, Posting] = {}
-
         N = index.doc_count
 
-        for w_token in weighted_tokens:
-            term = w_token.term
-            term_weight = w_token.weight
+        for term in base_tokens:
             postings = index.index.get(term, [])
             if not postings:
                 continue
 
-            # IDF 權重
-            n_q = len(postings)
-            idf = self._compute_idf(n_q, N)
-
+            idf = self._compute_idf(len(postings), N)
             for posting in postings:
                 doc_id = posting.doc_id
                 doc_postings[doc_id] = posting
                 doc_matches[doc_id].add(term)
 
-                # 多欄位 BM25 評分計算 (結合頂層 doc_lengths 與 term_weight 衰減)
                 field_scores_sum = 0.0
                 doc_fl = index.doc_lengths.get(doc_id, {})
                 for f_name, weight in self.field_weights.items():
                     tf = posting.field_freqs.get(f_name, 0)
                     if tf <= 0:
                         continue
-                    dl = doc_fl.get(f_name, getattr(posting, "field_lengths", {}).get(f_name, 1))
+                    dl = doc_fl.get(f_name, 1)
                     avgdl = max(1.0, index.field_avgdl.get(f_name, 1.0))
-
-                    # BM25 tf normalization
                     norm_tf = (tf * (self.k1 + 1.0)) / (
                         tf + self.k1 * (1.0 - self.b + self.b * (dl / avgdl)) + 1e-9
                     )
                     field_scores_sum += weight * norm_tf
 
-                term_score = idf * field_scores_sum * term_weight
-                doc_scores[doc_id] += term_score
+                doc_scores[doc_id] += idf * field_scores_sum
 
-        # 3. Exact Match 置頂加權 (2.0x Boost)
         clean_raw_query = raw_query.lower()
         for doc_id, base_score in list(doc_scores.items()):
             sym = index.get_symbol(doc_id)
@@ -696,18 +615,16 @@ class BM25Engine:
                 continue
             sym_name_clean = sym.name.lower()
             last_segment = sym_name_clean.split(".")[-1].split("::")[-1]
-
             if clean_raw_query == sym_name_clean or clean_raw_query == last_segment:
                 doc_scores[doc_id] = base_score * 2.0
 
-        # 4. 條件過濾與結果封裝
-        results: List[SearchResult] = []
+        candidates: List[Tuple[UnifiedSymbol, float, List[str], List[str], Posting]] = []
         clean_raw_no_punct = re.sub(r"[^a-z0-9]", "", clean_raw_query)
+
         for doc_id, score in doc_scores.items():
             if score < flt.min_score:
                 continue
 
-            # 標識符拆解子詞覆蓋率過濾：若未完全匹配原始標識符，且查詢包含多個子詞，需滿足覆蓋率門檻
             if len(base_tokens) >= 3:
                 matches = doc_matches[doc_id]
                 has_exact = (clean_raw_query in matches) or (clean_raw_no_punct in matches)
@@ -718,7 +635,6 @@ class BM25Engine:
             if not sym:
                 continue
 
-            # 過濾 ftypes
             if allowed_ftypes:
                 file_ext = Path(sym.file_path).suffix.lower().lstrip(".")
                 if file_ext not in allowed_ftypes:
@@ -727,35 +643,48 @@ class BM25Engine:
             posting = doc_postings[doc_id]
             posting_spaces = getattr(posting, "spaces", None) or ([posting.space] if posting.space else [])
 
-            # 過濾 space
             if flt.spaces and not any(s in flt.spaces for s in posting_spaces):
                 continue
-            # 過濾 language
             if flt.languages and sym.language not in flt.languages:
                 continue
-            # 過濾 kind
             if flt.kinds and sym.kind not in flt.kinds:
                 continue
 
-            # 產生摘要片段 (Snippet)
+            candidates.append(
+                (sym, score, sorted(list(doc_matches[doc_id])), list(posting_spaces), posting)
+            )
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates
+
+    def search(
+        self,
+        query: str,
+        index: InvertedIndex,
+        filter_cfg: Optional[QueryFilter] = None,
+    ) -> List[SearchResult]:
+        """執行多欄位加權語意檢索 (扁平符號清單模式)"""
+        flt = filter_cfg or QueryFilter()
+        candidates = self._score_candidate_documents(query, index, flt)
+        if not candidates:
+            return []
+
+        results: List[SearchResult] = []
+        for sym, score, matched_terms, posting_spaces, posting in candidates[: flt.limit]:
             snippet = sym.docstring.split("\n")[0] if sym.docstring else sym.signature
             if len(snippet) > 120:
                 snippet = snippet[:120] + "..."
-
             sp_display = ", ".join(posting_spaces) if posting_spaces else posting.space
             results.append(
                 SearchResult(
                     symbol=sym,
                     score=score,
-                    matched_terms=sorted(list(doc_matches[doc_id])),
+                    matched_terms=matched_terms,
                     space=sp_display,
                     snippet=snippet,
                 )
             )
-
-        # 按分數降序排列
-        results.sort(key=lambda x: x.score, reverse=True)
-        return results[:flt.limit]
+        return results
 
     def search_aggregated(
         self,
@@ -767,116 +696,18 @@ class BM25Engine:
     ) -> List[AggregatedFileResult]:
         """
         執行多欄位加權 BM25 檢索並透過 Top-N 動態回填管線聚合為檔案節點清單。
-        
-        評分公式：
-          Score(File) = max(S_i) + alpha * sum(S_j for j != i)
+        評分公式：Score(File) = max(S_i) + alpha * sum(S_j for j != i)
         """
-        if not query or not query.strip() or index.doc_count == 0:
-            return []
-
         flt = filter_cfg or QueryFilter()
-        raw_query = query.strip()
-        allowed_ftypes = self._normalize_ftypes(flt.ftypes)
-
-        # 1. 分詞與詞彙加權
-        base_tokens = self.tokenizer.tokenize(raw_query)
-        if not base_tokens:
+        candidates = self._score_candidate_documents(query, index, flt)
+        if not candidates:
             return []
 
-        weighted_tokens = [WeightedToken(term=t, weight=1.0, kind="original") for t in base_tokens]
-
-        # 2. 候選文檔計分累加器
-        doc_scores: Dict[str, float] = defaultdict(float)
-        doc_matches: Dict[str, Set[str]] = defaultdict(set)
-        doc_postings: Dict[str, Posting] = {}
-
-        N = index.doc_count
-
-        for w_token in weighted_tokens:
-            term = w_token.term
-            term_weight = w_token.weight
-            postings = index.index.get(term, [])
-            if not postings:
-                continue
-
-            n_q = len(postings)
-            idf = self._compute_idf(n_q, N)
-
-            for posting in postings:
-                doc_id = posting.doc_id
-                doc_postings[doc_id] = posting
-                doc_matches[doc_id].add(term)
-
-                field_scores_sum = 0.0
-                doc_fl = index.doc_lengths.get(doc_id, {})
-                for f_name, weight in self.field_weights.items():
-                    tf = posting.field_freqs.get(f_name, 0)
-                    if tf <= 0:
-                        continue
-                    dl = doc_fl.get(f_name, getattr(posting, "field_lengths", {}).get(f_name, 1))
-                    avgdl = max(1.0, index.field_avgdl.get(f_name, 1.0))
-
-                    norm_tf = (tf * (self.k1 + 1.0)) / (
-                        tf + self.k1 * (1.0 - self.b + self.b * (dl / avgdl)) + 1e-9
-                    )
-                    field_scores_sum += weight * norm_tf
-
-                term_score = idf * field_scores_sum * term_weight
-                doc_scores[doc_id] += term_score
-
-        # 3. Exact Match 置頂加權
-        clean_raw_query = raw_query.lower()
-        for doc_id, base_score in list(doc_scores.items()):
-            sym = index.get_symbol(doc_id)
-            if not sym:
-                continue
-            sym_name_clean = sym.name.lower()
-            last_segment = sym_name_clean.split(".")[-1].split("::")[-1]
-
-            if clean_raw_query == sym_name_clean or clean_raw_query == last_segment:
-                doc_scores[doc_id] = base_score * 2.0
-
-        # 4. 篩選合格的候選 Item 池並按單項分數降序排列
-        candidate_items: List[Tuple[UnifiedSymbol, float, List[str], List[str]]] = []
-        for doc_id, score in doc_scores.items():
-            if score < flt.min_score:
-                continue
-
-            sym = index.get_symbol(doc_id)
-            if not sym:
-                continue
-
-            # 過濾 ftypes
-            if allowed_ftypes:
-                file_ext = Path(sym.file_path).suffix.lower().lstrip(".")
-                if file_ext not in allowed_ftypes:
-                    continue
-
-            posting = doc_postings[doc_id]
-            posting_spaces = getattr(posting, "spaces", None) or ([posting.space] if posting.space else [])
-
-            if flt.spaces and not any(s in flt.spaces for s in posting_spaces):
-                continue
-            if flt.languages and sym.language not in flt.languages:
-                continue
-            if flt.kinds and sym.kind not in flt.kinds:
-                continue
-
-            candidate_items.append(
-                (sym, score, sorted(list(doc_matches[doc_id])), list(posting_spaces))
-            )
-
-        candidate_items.sort(key=lambda x: x[1], reverse=True)
-
-        if not candidate_items:
-            return []
-
-        # 5. Top-N 動態聚合與回填管線
         file_nodes: Dict[str, Dict[str, Any]] = {}
         unique_files: List[str] = []
         target_limit = max(1, flt.limit)
 
-        for sym, score, matched_terms, spaces in candidate_items:
+        for sym, score, matched_terms, spaces, _ in candidates:
             file_path = sym.file_path
             snippet = sym.docstring.split("\n")[0] if sym.docstring else sym.signature
             if len(snippet) > 120:
@@ -894,26 +725,20 @@ class BM25Engine:
                 node["items"].append(agg_item)
                 node["scores"].append(score)
                 node["spaces"].update(spaces)
-            else:
-                if len(unique_files) < target_limit:
-                    unique_files.append(file_path)
-                    file_nodes[file_path] = {
-                        "items": [agg_item],
-                        "scores": [score],
-                        "spaces": set(spaces),
-                        "language": sym.language,
-                    }
-                else:
-                    continue
+            elif len(unique_files) < target_limit:
+                unique_files.append(file_path)
+                file_nodes[file_path] = {
+                    "items": [agg_item],
+                    "scores": [score],
+                    "spaces": set(spaces),
+                    "language": sym.language,
+                }
 
-        # 6. 計算各檔案聚合積分並裁切內部 Top-3
         aggregated_results: List[AggregatedFileResult] = []
         for file_path in unique_files:
             node = file_nodes[file_path]
             scores = node["scores"]
-            items = node["items"]
-
-            items_sorted = sorted(items, key=lambda x: x.score, reverse=True)
+            items_sorted = sorted(node["items"], key=lambda x: x.score, reverse=True)
             capped_items = items_sorted[:top_k_items_per_file]
 
             max_s = max(scores) if scores else 0.0
@@ -930,6 +755,5 @@ class BM25Engine:
                 )
             )
 
-        # 7. 二次依最終聚合總分降序穩定重排
         aggregated_results.sort(key=lambda x: x.total_score, reverse=True)
         return aggregated_results

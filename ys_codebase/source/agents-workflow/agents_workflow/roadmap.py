@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union, Tuple
 
+from .plans._common import parse_markdown_blockquote_headers
+
 
 def _resolve_workflow_dir(uri_scheme: str, fallback_rel: str, host_dir: Optional[str] = None) -> Path:
     """解析 workflow.*:// 語意 URI，若未定義則安全回退至專案相對路徑。"""
@@ -25,6 +27,71 @@ def _resolve_workflow_dir(uri_scheme: str, fallback_rel: str, host_dir: Optional
 
     base = Path(host_dir).resolve() if host_dir else Path.cwd().resolve()
     return (base / fallback_rel).resolve()
+
+
+def _sanitize_promoted_model(model: Optional[str]) -> str:
+    clean_model = model.strip() if model and isinstance(model, str) and model.strip() else "Unknown"
+    if clean_model.startswith("[") and clean_model.endswith("]"):
+        return "Unknown"
+    return clean_model
+
+
+def _resolve_or_create_promoted_plan_dir(
+    plans_dir: Path,
+    target_plan: Optional[Union[str, Path]],
+    default_slug: str,
+) -> Tuple[Optional[Path], Optional[str]]:
+    """解析既有 --plan 目標目錄（含 sub_* 母傘補登），或以時間戳建立新 Seeded 目錄。"""
+    if target_plan:
+        from .plans.scanner import PlanScanner
+        scanner = PlanScanner(plans_dir=plans_dir)
+        resolved_dir, err = scanner.resolve_target_plan_dir(target_plan)
+        if err or resolved_dir is None:
+            return (
+                None,
+                f"{err or '找不到指定之目標計畫目錄'} [Fix Hint: 請確認 --plan 指定之目錄已存在於 plans/ 下]",
+            )
+        target_dir = resolved_dir
+        if target_dir.name.startswith("sub_"):
+            umb_md = target_dir.parent / "umbrella_overview.md"
+            if umb_md.is_file():
+                try:
+                    u_text = umb_md.read_text(encoding="utf-8", errors="replace")
+                    if target_dir.name not in u_text:
+                        umb_md.write_text(
+                            u_text.rstrip() + f"\n- `{target_dir.name}`\n",
+                            encoding="utf-8",
+                        )
+                except Exception:
+                    pass
+        return target_dir, None
+
+    now_prefix = datetime.now().strftime("%Y_%m_%d_%H%M")
+    target_dir = (plans_dir / f"{now_prefix}_{default_slug}").resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir, None
+
+
+def _append_promoted_changelog(
+    plans_dir: Path,
+    target_dir: Path,
+    summary: str,
+    model: str,
+) -> str:
+    """於晉升目標目錄追加伴隨 changelog.md 並回傳顯示用計畫名稱。"""
+    from .plans._verifier_healer import append_changelog_entry
+
+    append_changelog_entry(
+        target_dir,
+        summary=summary,
+        log_type="PHASE",
+        model=model,
+    )
+    return (
+        f"{target_dir.parent.name}/{target_dir.name}"
+        if target_dir.name.startswith("sub_") and target_dir.parent != plans_dir
+        else target_dir.name
+    )
 
 
 @dataclass
@@ -143,33 +210,23 @@ class RoadmapManager:
                 break
 
         # 提取 Header 區塊引用 (> 主題：..., > 狀態：..., > 歸檔日期：..., > 目標範疇：..., > 前置解鎖條件：...)
-        for line in lines[:35]:
-            trimmed = line.strip()
-            if trimmed.startswith(">"):
-                val = trimmed.lstrip(">").strip()
-                if "主題" in val or "Topic" in val:
-                    m = re.search(r"[:：]\s*(.+)", val)
-                    if m:
-                        topic = m.group(1).strip()
-                        has_valid_header = True
-                elif "狀態" in val or "Status" in val:
-                    m = re.search(r"[:：]\s*(.+)", val)
-                    if m:
-                        status = m.group(1).strip()
-                        has_valid_header = True
-                elif "日期" in val or "Date" in val:
-                    m = re.search(r"[:：]\s*(.+)", val)
-                    if m:
-                        date = m.group(1).strip()
-                        has_valid_header = True
-                elif "目標範疇" in val or "Scope" in val:
-                    m = re.search(r"[:：]\s*(.+)", val)
-                    if m:
-                        scope = m.group(1).strip()
-                elif "前置解鎖條件" in val or "Trigger" in val:
-                    m = re.search(r"[:：]\s*(.+)", val)
-                    if m:
-                        trigger = m.group(1).strip()
+        headers = parse_markdown_blockquote_headers(lines, max_lines=35)
+        for k, v in headers.items():
+            if not v:
+                continue
+            if "主題" in k or "topic" in k:
+                topic = v
+                has_valid_header = True
+            elif "狀態" in k or "status" in k:
+                status = v
+                has_valid_header = True
+            elif "日期" in k or "date" in k:
+                date = v
+                has_valid_header = True
+            elif "目標範疇" in k or "scope" in k:
+                scope = v
+            elif "前置解鎖條件" in k or "trigger" in k:
+                trigger = v
 
         # 提取 "## 1. 背景與長期願景" 或舊版 "## 1. 問題陳述" 摘要
         summary_lines = []
@@ -326,43 +383,18 @@ class RoadmapManager:
                     ),
                 }
 
-        clean_model = model.strip() if model and isinstance(model, str) and model.strip() else "Unknown"
-        if clean_model.startswith("[") and clean_model.endswith("]"):
-            clean_model = "Unknown"
+        clean_model = _sanitize_promoted_model(model)
+        clean_stem = re.sub(r"[^a-z0-9_]+", "_", matched.path.stem.lower()).strip("_")
+        if clean_stem.endswith("_roadmap"):
+            clean_stem = clean_stem[:-8].strip("_") or clean_stem
+        if not clean_stem:
+            clean_stem = "roadmap_plan"
 
-        # 解析目標計畫目錄（新建 Seeded 目錄或遷入既有 --plan 目錄）
-        if target_plan:
-            from .plans.scanner import PlanScanner
-            scanner = PlanScanner(plans_dir=self.plans_dir)
-            resolved_dir, err = scanner.resolve_target_plan_dir(target_plan)
-            if err or resolved_dir is None:
-                return {
-                    "success": False,
-                    "error": f"{err or '找不到指定之目標計畫目錄'} [Fix Hint: 請確認 --plan 指定之目錄已存在於 plans/ 下]",
-                }
-            target_dir = resolved_dir
-            # 若 target_plan 為子計畫目錄 (sub_*)，自動於父計畫之 umbrella_overview.md 補登子計畫名稱，防止 plan verify 產生未登記 WARN
-            if target_dir.name.startswith("sub_"):
-                umb_md = target_dir.parent / "umbrella_overview.md"
-                if umb_md.is_file():
-                    try:
-                        u_text = umb_md.read_text(encoding="utf-8", errors="replace")
-                        if target_dir.name not in u_text:
-                            umb_md.write_text(
-                                u_text.rstrip() + f"\n- `{target_dir.name}`\n",
-                                encoding="utf-8",
-                            )
-                    except Exception:
-                        pass
-        else:
-            now_prefix = datetime.now().strftime("%Y_%m_%d_%H%M")
-            clean_stem = re.sub(r"[^a-z0-9_]+", "_", matched.path.stem.lower()).strip("_")
-            if clean_stem.endswith("_roadmap"):
-                clean_stem = clean_stem[:-8].strip("_") or clean_stem
-            if not clean_stem:
-                clean_stem = "roadmap_plan"
-            target_dir = (self.plans_dir / f"{now_prefix}_{clean_stem}").resolve()
-            target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir, dir_err = _resolve_or_create_promoted_plan_dir(
+            self.plans_dir, target_plan, clean_stem
+        )
+        if dir_err or target_dir is None:
+            return {"success": False, "error": dir_err}
 
         dest_roadmap = target_dir / "roadmap.md"
         is_appended = False
@@ -379,20 +411,12 @@ class RoadmapManager:
         else:
             shutil.move(str(matched.path), str(dest_roadmap))
 
-        from .plans.verifier import PlanVerifier
-        verifier = PlanVerifier(plans_dir=self.plans_dir)
         action_verb = "追加合併至既有" if is_appended else "物理遷入為"
-        verifier.append_changelog_entry(
+        disp_plan = _append_promoted_changelog(
+            self.plans_dir,
             target_dir,
             summary=f"自長期路線圖 [{matched.filename}] 立項{action_verb} roadmap.md (Consume-on-Promote)",
-            log_type="PHASE",
             model=clean_model,
-        )
-
-        disp_plan = (
-            f"{target_dir.parent.name}/{target_dir.name}"
-            if target_dir.name.startswith("sub_") and target_dir.parent != self.plans_dir
-            else target_dir.name
         )
 
         msg = (
@@ -758,39 +782,14 @@ class TodoManager:
                 ),
             }
 
-        clean_model = (model or "Unknown").strip() or "Unknown"
-        if clean_model.startswith("[") and clean_model.endswith("]"):
-            clean_model = "Unknown"
+        clean_model = _sanitize_promoted_model(model)
         today_str = datetime.now().strftime("%Y-%m-%d")
 
-        # 解析或建立目標計畫目錄
-        if target_plan:
-            from .plans.scanner import PlanScanner
-            scanner = PlanScanner(plans_dir=self.plans_dir)
-            resolved_dir, err = scanner.resolve_target_plan_dir(target_plan)
-            if err or resolved_dir is None:
-                return {
-                    "success": False,
-                    "error": f"{err or '找不到指定之目標計畫目錄'} [Fix Hint: 請確認 --plan 指定之目錄已存在於 plans/ 下]",
-                }
-            target_dir = resolved_dir
-            # 若 target_plan 為子計畫目錄 (sub_*)，自動於父計畫之 umbrella_overview.md 補登子計畫名稱，防止 plan verify 產生未登記 WARN
-            if target_dir.name.startswith("sub_"):
-                umb_md = target_dir.parent / "umbrella_overview.md"
-                if umb_md.is_file():
-                    try:
-                        u_text = umb_md.read_text(encoding="utf-8", errors="replace")
-                        if target_dir.name not in u_text:
-                            umb_md.write_text(
-                                u_text.rstrip() + f"\n- `{target_dir.name}`\n",
-                                encoding="utf-8",
-                            )
-                    except Exception:
-                        pass
-        else:
-            now_prefix = datetime.now().strftime("%Y_%m_%d_%H%M")
-            target_dir = (self.plans_dir / f"{now_prefix}_{clean_slug}").resolve()
-            target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir, dir_err = _resolve_or_create_promoted_plan_dir(
+            self.plans_dir, target_plan, clean_slug
+        )
+        if dir_err or target_dir is None:
+            return {"success": False, "error": dir_err}
 
         promoted_items = [existing_map[n] for n in req_nums]
         remaining_items = [it for it in existing_items if it.number not in set(req_nums)]
@@ -833,19 +832,11 @@ class TodoManager:
         promoted_id_strs = [it.todo_id for it in promoted_items]
 
         # 3. 自動初始化或追加伴隨 changelog.md
-        from .plans.verifier import PlanVerifier
-        verifier = PlanVerifier(plans_dir=self.plans_dir)
-        verifier.append_changelog_entry(
+        disp_plan = _append_promoted_changelog(
+            self.plans_dir,
             target_dir,
             summary=f"自 TODO.md 原子拔除立項 ({', '.join(promoted_id_strs)}) 遷入為 todo.md",
-            log_type="PHASE",
             model=clean_model,
-        )
-
-        disp_plan = (
-            f"{target_dir.parent.name}/{target_dir.name}"
-            if target_dir.name.startswith("sub_") and target_dir.parent != self.plans_dir
-            else target_dir.name
         )
 
         msg = (

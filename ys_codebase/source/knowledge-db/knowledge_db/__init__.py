@@ -1,8 +1,12 @@
 """
-knowledge-db 模組核心套件導出
+YS-Codebase Knowledge-DB Module
+Provides semantic symbol extraction (Universal AST v2.0), incremental fingerprint scanning,
+BM25 + ONNX Hybrid RRF retrieval, and Call Graph Topology analysis.
 """
 
 from .bundler import SemanticBundle, SemanticBundler
+from .config import DEFAULT_EMBEDDING_MODEL, KnowledgeDBConfig
+from .embedding import EmbeddingService, VectorIndex
 from .engine import KnowledgeEngine
 from .exceptions import (
     FingerprintCorruptedError,
@@ -11,38 +15,49 @@ from .exceptions import (
     SchemaValidationError,
     SpaceNotFoundError,
 )
+from .graph import CallGraphIndex
+from .hybrid import HybridSearchEngine
+from .linker import TopologyLinker
 from .parsers import (
     BaseParser,
-    CppParser,
-    CSharpParser,
-    MarkdownParser,
+    CssParser,
+    HtmlParser,
     ParserRegistry,
-    PythonParser,
+    SpiceParser,
+    TreeSitterDriver,
 )
 from .retrieval import (
     BM25Engine,
+    CodeSnippet,
     InvertedIndex,
     Posting,
     QueryFilter,
     SearchResult,
+    SnippetExtractor,
 )
-from .scanner import BinarySnapshotManager, FileFingerprint, FingerprintScanner, ScanDiffResult
+from .scanner import FileFingerprint, FingerprintScanner, ScanDiffResult
 from .schema import (
+    AggregatedFileResult,
+    AggregatedItem,
+    LanguageConfig,
     LanguageType,
     MemberInfo,
     SpaceConfig,
     SpaceOrigin,
+    SymbolCallSite,
     SymbolKind,
     UnifiedSymbol,
 )
-from .embedding import EmbeddingService, VectorIndex
-from .formatter import ResultFormatter, UniversalRedundancyFilter
-from .hybrid import HybridSearchEngine
-from .pipeline import IndexingPipeline
+from .selector import ParsedSelector, SymbolSelector
 from .space import SpaceManager
-from .tokenizer import CodeTokenizer, MultilingualTokenizer
+from .tokenizer import MultilingualTokenizer
+
+__version__ = "1.1.2.0"
 
 __all__ = [
+    "KnowledgeEngine",
+    "KnowledgeDBConfig",
+    "DEFAULT_EMBEDDING_MODEL",
     "KnowledgeDBError",
     "SpaceNotFoundError",
     "InvalidSpaceConfigError",
@@ -50,35 +65,39 @@ __all__ = [
     "FingerprintCorruptedError",
     "SymbolKind",
     "LanguageType",
+    "LanguageConfig",
     "SpaceOrigin",
     "MemberInfo",
     "UnifiedSymbol",
+    "SymbolCallSite",
     "SpaceConfig",
+    "AggregatedItem",
+    "AggregatedFileResult",
     "SpaceManager",
-    "BinarySnapshotManager",
     "FileFingerprint",
     "ScanDiffResult",
     "FingerprintScanner",
     "BaseParser",
+    "TreeSitterDriver",
+    "SpiceParser",
+    "HtmlParser",
+    "CssParser",
     "ParserRegistry",
-    "PythonParser",
-    "MarkdownParser",
-    "CppParser",
-    "CSharpParser",
     "SemanticBundle",
     "SemanticBundler",
-    "CodeTokenizer",
     "MultilingualTokenizer",
+    "SymbolSelector",
+    "ParsedSelector",
+    "Posting",
+    "InvertedIndex",
+    "QueryFilter",
+    "CodeSnippet",
+    "SnippetExtractor",
+    "SearchResult",
+    "BM25Engine",
     "EmbeddingService",
     "VectorIndex",
     "HybridSearchEngine",
-    "Posting",
-    "InvertedIndex",
-    "BM25Engine",
-    "QueryFilter",
-    "SearchResult",
-    "ResultFormatter",
-    "UniversalRedundancyFilter",
-    "IndexingPipeline",
-    "KnowledgeEngine",
+    "CallGraphIndex",
+    "TopologyLinker",
 ]

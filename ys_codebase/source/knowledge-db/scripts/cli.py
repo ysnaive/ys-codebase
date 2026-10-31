@@ -98,12 +98,12 @@ def status(cmd_bags: Any) -> int:
         print("-" * 80)
         for name, sp in st["spaces"].items():
             pat_str = f" [patterns: {', '.join(sp['file_patterns'])}]" if sp.get('file_patterns') else " [all files]"
-            is_idx = sp.get('has_index') or sp.get('index_cached') or st.get("has_unified_index")
+            is_idx = sp.get('has_index') or st.get("has_unified_index")
             idx_str = styler.symbol("已建立") if is_idx else styler.warn("未建立")
             print(f"  - 空間: {styler.path(name)} (來源: {sp.get('origin', 'unknown')}){pat_str}")
             if sp.get("description"):
                 print(f"    說明: {sp['description']}")
-            print(f"    來源目錄數: {sp.get('include_count', 0)}, 快取檔案: {sp.get('cached_files', sp.get('fingerprint_cached_files', 0))} 檔, 倒排索引: {idx_str}")
+            print(f"    來源目錄數: {sp.get('include_count', 0)}, 快取檔案: {sp.get('cached_files', 0)} 檔, 倒排索引: {idx_str}")
         print("-" * 80)
 
         if scan_mode and st.get("scan_diff"):
@@ -249,32 +249,14 @@ def search(cmd_bags: Any) -> int:
         kind_filter = [bags.get_option_value("kind")] if bags.get_option_value("kind") else None
         lang_filter = [bags.get_option_value("lang")] if bags.get_option_value("lang") else None
         ftype_filter = bags.get_option_value("ftype")
-        
-        limit_val: Union[int, str] = "auto"
-        l_opt = bags.get_option_value("limit")
-        if l_opt:
-            l_val = str(l_opt).strip()
-            if l_val.lower() == "auto":
-                limit_val = "auto"
-            else:
-                try:
-                    limit_val = int(l_val)
-                except ValueError:
-                    limit_val = "auto"
-
-        tier = "simple"
-        if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
-            tier = "detail"
-        elif bags.has_option("snippet") or bags.has_option("s") or bags.has_option("preview"):
-            tier = "snippet"
-        elif bags.has_option("simple"):
-            tier = "simple"
-
-        is_json = bags.has_option("json")
-        is_md = bags.has_option("md") or bags.has_option("markdown")
         lexical_only = bags.has_option("lexical-only")
 
-        is_snippet = (tier in ("snippet", "detail")) or bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")
+        opts = _parse_common_display_options(bags)
+        tier = opts["tier"]
+        limit_val = opts["limit_val"]
+        is_json = opts["is_json"]
+        is_md = opts["is_md"]
+        is_snippet = opts["is_snippet"]
         detail_mode = "detail" if tier == "detail" else ("auto" if tier == "snippet" else "simple")
         if limit_val == "auto":
             fetch_limit = 10 if (is_json and tier == "snippet") else 50
@@ -445,156 +427,229 @@ def search(cmd_bags: Any) -> int:
         return 1
 
 
-def callers(cmd_bags: Any) -> int:
-    """查詢調用指定函式/類別之所有上游調用者 (Callers) 與代碼切片。"""
+def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
+    """解析查詢命令共用之 tier / limit / json / md 顯示選項。"""
+    tier = "simple"
+    if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
+        tier = "detail"
+    elif bags.has_option("snippet") or bags.has_option("s") or bags.has_option("preview"):
+        tier = "snippet"
+    elif bags.has_option("simple"):
+        tier = "simple"
+
+    is_json = bags.has_option("json")
+    is_md = bags.has_option("md") or bags.has_option("markdown")
+    limit_val: Union[int, str] = "auto"
+    l_opt = bags.get_option_value("limit")
+    if l_opt:
+        l_val = str(l_opt).strip()
+        if l_val.lower() == "auto":
+            limit_val = "auto"
+        else:
+            try:
+                limit_val = int(l_val)
+            except ValueError:
+                limit_val = "auto"
+
+    is_snippet = (tier in ("snippet", "detail")) or bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")
+    return {
+        "tier": tier,
+        "is_json": is_json,
+        "is_md": is_md,
+        "limit_val": limit_val,
+        "is_snippet": is_snippet,
+        "detail_mode": "detail" if tier == "detail" else "simple",
+        "fmt_type": "md" if is_md else "text",
+    }
+
+
+def _serialize_target_symbol(engine: KnowledgeEngine, tsym: Any, tier: str) -> Optional[Dict[str, Any]]:
+    if not tsym:
+        return None
+    if tier == "detail":
+        return {
+            "id": tsym.id,
+            "name": tsym.name,
+            "kind": tsym.kind,
+            "file_path": engine.normalize_workspace_path(tsym.file_path),
+            "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+            "line_number": tsym.line_number,
+            "end_line": tsym.end_line,
+            "signature": tsym.signature,
+        }
+    if tier == "snippet":
+        return {
+            "name": tsym.name,
+            "kind": tsym.kind,
+            "file_path": engine.normalize_workspace_path(tsym.file_path),
+            "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
+            "line_number": tsym.line_number,
+            "end_line": tsym.end_line,
+            "signature": tsym.signature,
+        }
+    return {
+        "name": tsym.name,
+        "kind": tsym.kind,
+        "file_path": engine.normalize_workspace_path(tsym.file_path),
+        "line_number": tsym.line_number,
+    }
+
+
+def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) -> int:
+    """執行 callers / callees / impact 共用參數解析、Engine 呼叫、JSON/Markdown/Text 渲染與例外守門。"""
     guard_dispatch("knowledge-db")
     _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "callers")
+    bags = _normalize_bags(cmd_bags, cmd_name)
     engine = get_engine()
 
     try:
         targets = bags.args
         if not targets:
-            print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callers 'InvertedIndex.load_binary'", file=sys.stderr)
+            print(f"[knowledge-db] 錯誤: 請指定目標符號名稱。例如: {example_usage}", file=sys.stderr)
             return 1
         query_str = targets[0]
         space_target = bags.get_option_value("space")
         ftype_filter = bags.get_option_value("ftype")
-        
-        tier = "simple"
-        if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
-            tier = "detail"
-        elif bags.has_option("snippet") or bags.has_option("s") or bags.has_option("preview"):
-            tier = "snippet"
-        elif bags.has_option("simple"):
-            tier = "simple"
+        opts = _parse_common_display_options(bags)
+        tier = opts["tier"]
+        limit_val = opts["limit_val"]
+        is_snippet = opts["is_snippet"]
 
-        is_json = bags.has_option("json")
-        is_md = bags.has_option("md") or bags.has_option("markdown")
-        limit_val: Union[int, str] = "auto"
-        l_opt = bags.get_option_value("limit")
-        if l_opt:
-            l_val = str(l_opt).strip()
-            if l_val.lower() == "auto":
-                limit_val = "auto"
-            else:
+        if cmd_name == "impact":
+            depth = 2
+            d_opt = bags.get_option_value("depth")
+            if d_opt:
                 try:
-                    limit_val = int(l_val)
+                    depth = int(str(d_opt).strip())
                 except ValueError:
-                    limit_val = "auto"
+                    depth = 2
+            res = engine.impact(target_query=query_str, depth=depth, space=space_target, ftypes=ftype_filter)
+            if opts["is_json"]:
+                tsym = res.get("target_symbol")
+                if tier == "detail":
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "detail",
+                        "target_symbol": _serialize_target_symbol(engine, tsym, "detail"),
+                        "max_depth": res.get("max_depth", depth),
+                        "total_impacted_symbols": res.get("total_impacted_symbols", 0),
+                        "total_impacted_files": res.get("total_impacted_files", 0),
+                        "layers": {
+                            str(d): [
+                                _serialize_target_symbol(engine, s, "detail")
+                                for s in syms
+                            ]
+                            for d, syms in res.get("layers", {}).items()
+                        },
+                        "call_chains": res.get("call_chains", {}),
+                    }, indent=2, ensure_ascii=False))
+                else:
+                    print(json.dumps({
+                        "target_query": res.get("target_query"),
+                        "tier": "simple",
+                        "target_symbol": _serialize_target_symbol(engine, tsym, "simple"),
+                        "max_depth": res.get("max_depth", depth),
+                        "total_impacted_symbols": res.get("total_impacted_symbols", 0),
+                        "total_impacted_files": res.get("total_impacted_files", 0),
+                        "layers": {
+                            str(d): [
+                                _serialize_target_symbol(engine, s, "simple")
+                                for s in syms
+                            ]
+                            for d, syms in res.get("layers", {}).items()
+                        },
+                    }, separators=(',', ':'), ensure_ascii=False))
+                return 0
+            print(engine.format_impact_output(
+                result=res,
+                detail_mode=opts["detail_mode"],
+                format_type=opts["fmt_type"],
+                limit_mode=limit_val,
+            ))
+            return 0
 
-        is_snippet = (tier in ("snippet", "detail")) or bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")
-        detail_mode = "detail" if tier == "detail" else "simple"
+        is_callers = (cmd_name == "callers")
+        if is_callers:
+            res = engine.callers(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
+        else:
+            res = engine.callees(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
 
-        res = engine.act_callers(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
-        if is_json:
+        if opts["is_json"]:
             tsym = res.get("target_symbol")
-            raw_callers = res.get("callers", [])
-            filtered_callers = raw_callers
-            if isinstance(limit_val, int) and limit_val > 0:
-                filtered_callers = raw_callers[:limit_val]
+            list_key = "callers" if is_callers else "callees"
+            total_key = "total_callers" if is_callers else "total_callees"
+            sym_key = "caller_symbol" if is_callers else "symbol"
+            raw_items = res.get(list_key, [])
+            filtered_items = raw_items[:limit_val] if (isinstance(limit_val, int) and limit_val > 0) else raw_items
 
             if tier == "detail":
                 print(json.dumps({
                     "target_query": res.get("target_query"),
                     "tier": "detail",
-                    "target_symbol": {
-                        "id": tsym.id,
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-                        "line_number": tsym.line_number,
-                        "end_line": tsym.end_line,
-                        "signature": tsym.signature,
-                    } if tsym else None,
-                    "total_callers": len(filtered_callers),
-                    "callers": [
+                    "target_symbol": _serialize_target_symbol(engine, tsym, "detail"),
+                    total_key: len(filtered_items),
+                    list_key: [
                         {
-                            "caller_symbol": {
-                                "id": (c.get("symbol") or c["caller_symbol"]).id,
-                                "name": (c.get("symbol") or c["caller_symbol"]).name,
-                                "kind": (c.get("symbol") or c["caller_symbol"]).kind,
-                                "file_path": engine.normalize_workspace_path((c.get("symbol") or c["caller_symbol"]).file_path),
-                                "file_uri": engine.to_file_uri((c.get("symbol") or c["caller_symbol"]).file_path, line=(c.get("symbol") or c["caller_symbol"]).line_number),
-                                "line_number": (c.get("symbol") or c["caller_symbol"]).line_number,
-                                "end_line": (c.get("symbol") or c["caller_symbol"]).end_line,
-                                "signature": (c.get("symbol") or c["caller_symbol"]).signature,
-                            },
+                            sym_key: _serialize_target_symbol(engine, c["symbol"], "detail"),
                             "call_sites": [
                                 {
                                     "line_number": s.get("line_number"),
                                     "scope": s.get("scope"),
-                                    "file_uri": engine.to_file_uri((c.get("symbol") or c["caller_symbol"]).file_path, line=s.get("line_number")),
+                                    "file_uri": engine.to_file_uri(
+                                        c["symbol"].file_path if is_callers else (tsym.file_path if tsym else c["symbol"].file_path),
+                                        line=s.get("line_number"),
+                                    ),
                                 }
                                 for s in c.get("call_sites", [])
                             ],
                             **({"code_snippet": c["code_snippet"].to_dict()} if (is_snippet and c.get("code_snippet")) else {}),
                         }
-                        for c in filtered_callers
+                        for c in filtered_items
                     ],
                 }, indent=2, ensure_ascii=False))
             elif tier == "snippet":
                 print(json.dumps({
                     "target_query": res.get("target_query"),
                     "tier": "preview",
-                    "target_symbol": {
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-                        "line_number": tsym.line_number,
-                        "end_line": tsym.end_line,
-                        "signature": tsym.signature,
-                    } if tsym else None,
-                    "total_callers": len(filtered_callers),
-                    "callers": [
+                    "target_symbol": _serialize_target_symbol(engine, tsym, "snippet"),
+                    total_key: len(filtered_items),
+                    list_key: [
                         {
-                            "caller_symbol": {
-                                "name": (c.get("symbol") or c["caller_symbol"]).name,
-                                "kind": (c.get("symbol") or c["caller_symbol"]).kind,
-                                "file_path": engine.normalize_workspace_path((c.get("symbol") or c["caller_symbol"]).file_path),
-                                "line_number": (c.get("symbol") or c["caller_symbol"]).line_number,
-                                "end_line": (c.get("symbol") or c["caller_symbol"]).end_line,
+                            sym_key: {
+                                "name": c["symbol"].name,
+                                "kind": c["symbol"].kind,
+                                "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
+                                "line_number": c["symbol"].line_number,
+                                "end_line": c["symbol"].end_line,
                             },
                             "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
                             **({"code": c["code_snippet"].get_raw_code(), "code_lines": [c["code_snippet"].start_line, c["code_snippet"].end_line]} if (c.get("code_snippet") and c["code_snippet"].lines) else {}),
                         }
-                        for c in filtered_callers
+                        for c in filtered_items
                     ],
                 }, separators=(',', ':'), ensure_ascii=False))
             else:
                 print(json.dumps({
                     "target_query": res.get("target_query"),
                     "tier": "simple",
-                    "target_symbol": {
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "line_number": tsym.line_number,
-                    } if tsym else None,
-                    "total_callers": len(filtered_callers),
-                    "callers": [
+                    "target_symbol": _serialize_target_symbol(engine, tsym, "simple"),
+                    total_key: len(filtered_items),
+                    list_key: [
                         {
-                            "caller_symbol": {
-                                "name": (c.get("symbol") or c["caller_symbol"]).name,
-                                "kind": (c.get("symbol") or c["caller_symbol"]).kind,
-                                "file_path": engine.normalize_workspace_path((c.get("symbol") or c["caller_symbol"]).file_path),
-                                "line_number": (c.get("symbol") or c["caller_symbol"]).line_number,
-                            },
+                            sym_key: _serialize_target_symbol(engine, c["symbol"], "simple"),
                             "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
                         }
-                        for c in filtered_callers
+                        for c in filtered_items
                     ],
                 }, separators=(',', ':'), ensure_ascii=False))
             return 0
 
-        fmt_type = "md" if is_md else "text"
-        print(engine.format_callers_output(
+        formatter_fn = engine.format_callers_output if is_callers else engine.format_callees_output
+        print(formatter_fn(
             result=res,
-            detail_mode=detail_mode,
+            detail_mode=opts["detail_mode"],
             snippet=is_snippet,
-            format_type=fmt_type,
+            format_type=opts["fmt_type"],
             limit_mode=limit_val,
         ))
         return 0
@@ -607,299 +662,33 @@ def callers(cmd_bags: Any) -> int:
     except Exception as e:
         print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
         return 1
+
+
+def callers(cmd_bags: Any) -> int:
+    """查詢調用指定函式/類別之所有上游調用者 (Callers) 與代碼切片。"""
+    return _run_topology_cli_command(
+        "callers",
+        cmd_bags,
+        "python yscb.py knowledge-db callers 'InvertedIndex.load_binary'",
+    )
 
 
 def callees(cmd_bags: Any) -> int:
     """查詢指定函式/類別內部調用了哪些下游方法 (Callees) 與依賴。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "callees")
-    engine = get_engine()
-
-    try:
-        targets = bags.args
-        if not targets:
-            print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db callees 'InvertedIndex.patch_incremental'", file=sys.stderr)
-            return 1
-        query_str = targets[0]
-        space_target = bags.get_option_value("space")
-        ftype_filter = bags.get_option_value("ftype")
-
-        tier = "simple"
-        if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
-            tier = "detail"
-        elif bags.has_option("snippet") or bags.has_option("s") or bags.has_option("preview"):
-            tier = "snippet"
-        elif bags.has_option("simple"):
-            tier = "simple"
-
-        is_json = bags.has_option("json")
-        is_md = bags.has_option("md") or bags.has_option("markdown")
-        limit_val: Union[int, str] = "auto"
-        l_opt = bags.get_option_value("limit")
-        if l_opt:
-            l_val = str(l_opt).strip()
-            if l_val.lower() == "auto":
-                limit_val = "auto"
-            else:
-                try:
-                    limit_val = int(l_val)
-                except ValueError:
-                    limit_val = "auto"
-
-        is_snippet = (tier in ("snippet", "detail")) or bags.has_option("s") or bags.has_option("snippet") or bags.has_option("preview")
-        detail_mode = "detail" if tier == "detail" else "simple"
-
-        res = engine.act_callees(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
-        if is_json:
-            tsym = res.get("target_symbol")
-            raw_callees = res.get("callees", [])
-            filtered_callees = raw_callees
-            if isinstance(limit_val, int) and limit_val > 0:
-                filtered_callees = raw_callees[:limit_val]
-
-            if tier == "detail":
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "tier": "detail",
-                    "target_symbol": {
-                        "id": tsym.id,
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-                        "line_number": tsym.line_number,
-                        "end_line": tsym.end_line,
-                        "signature": tsym.signature,
-                    } if tsym else None,
-                    "total_callees": len(filtered_callees),
-                    "callees": [
-                        {
-                            "symbol": {
-                                "id": c["symbol"].id,
-                                "name": c["symbol"].name,
-                                "kind": c["symbol"].kind,
-                                "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
-                                "file_uri": engine.to_file_uri(c["symbol"].file_path, line=c["symbol"].line_number),
-                                "line_number": c["symbol"].line_number,
-                                "end_line": c["symbol"].end_line,
-                                "signature": c["symbol"].signature,
-                            },
-                            "call_sites": [
-                                {
-                                    "line_number": s.get("line_number"),
-                                    "scope": s.get("scope"),
-                                    "file_uri": engine.to_file_uri(tsym.file_path if tsym else c["symbol"].file_path, line=s.get("line_number")),
-                                }
-                                for s in c.get("call_sites", [])
-                            ],
-                            **({"code_snippet": c["code_snippet"].to_dict()} if (is_snippet and c.get("code_snippet")) else {}),
-                        }
-                        for c in filtered_callees
-                    ],
-                }, indent=2, ensure_ascii=False))
-            elif tier == "snippet":
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "tier": "preview",
-                    "target_symbol": {
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-                        "line_number": tsym.line_number,
-                        "end_line": tsym.end_line,
-                        "signature": tsym.signature,
-                    } if tsym else None,
-                    "total_callees": len(filtered_callees),
-                    "callees": [
-                        {
-                            "symbol": {
-                                "name": c["symbol"].name,
-                                "kind": c["symbol"].kind,
-                                "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
-                                "line_number": c["symbol"].line_number,
-                                "end_line": c["symbol"].end_line,
-                            },
-                            "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
-                            **({"code": c["code_snippet"].get_raw_code(), "code_lines": [c["code_snippet"].start_line, c["code_snippet"].end_line]} if (c.get("code_snippet") and c["code_snippet"].lines) else {}),
-                        }
-                        for c in filtered_callees
-                    ],
-                }, separators=(',', ':'), ensure_ascii=False))
-            else:
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "tier": "simple",
-                    "target_symbol": {
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "line_number": tsym.line_number,
-                    } if tsym else None,
-                    "total_callees": len(filtered_callees),
-                    "callees": [
-                        {
-                            "symbol": {
-                                "name": c["symbol"].name,
-                                "kind": c["symbol"].kind,
-                                "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
-                                "line_number": c["symbol"].line_number,
-                            },
-                            "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
-                        }
-                        for c in filtered_callees
-                    ],
-                }, separators=(',', ':'), ensure_ascii=False))
-            return 0
-
-        fmt_type = "md" if is_md else "text"
-        print(engine.format_callees_output(
-            result=res,
-            detail_mode=detail_mode,
-            snippet=is_snippet,
-            format_type=fmt_type,
-            limit_mode=limit_val,
-        ))
-        return 0
-    except SpaceNotFoundError as e:
-        print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
-        return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
-    except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
+    return _run_topology_cli_command(
+        "callees",
+        cmd_bags,
+        "python yscb.py knowledge-db callees 'InvertedIndex.patch_incremental'",
+    )
 
 
 def impact(cmd_bags: Any) -> int:
     """評估符號變更或重構時向上擴散之多階調用影響面 (Blast Radius)。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "impact")
-    engine = get_engine()
-
-    try:
-        targets = bags.args
-        if not targets:
-            print("[knowledge-db] 錯誤: 請指定目標符號名稱。例如: python yscb.py knowledge-db impact 'InvertedIndex.patch_incremental' --depth=2", file=sys.stderr)
-            return 1
-        query_str = targets[0]
-        space_target = bags.get_option_value("space")
-        ftype_filter = bags.get_option_value("ftype")
-        depth = 2
-        d_opt = bags.get_option_value("depth")
-        if d_opt:
-            try:
-                depth = int(str(d_opt).strip())
-            except ValueError:
-                depth = 2
-
-        tier = "simple"
-        if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
-            tier = "detail"
-        elif bags.has_option("simple"):
-            tier = "simple"
-
-        is_json = bags.has_option("json")
-        is_md = bags.has_option("md") or bags.has_option("markdown")
-        limit_val: Union[int, str] = "auto"
-        l_opt = bags.get_option_value("limit")
-        if l_opt:
-            l_val = str(l_opt).strip()
-            if l_val.lower() == "auto":
-                limit_val = "auto"
-            else:
-                try:
-                    limit_val = int(l_val)
-                except ValueError:
-                    limit_val = "auto"
-
-        detail_mode = "detail" if tier == "detail" else "simple"
-        res = engine.act_impact(target_query=query_str, depth=depth, space=space_target, ftypes=ftype_filter)
-        if is_json:
-            tsym = res.get("target_symbol")
-            if tier == "detail":
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "tier": "detail",
-                    "target_symbol": {
-                        "id": tsym.id,
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-                        "line_number": tsym.line_number,
-                        "end_line": tsym.end_line,
-                        "signature": tsym.signature,
-                    } if tsym else None,
-                    "max_depth": res.get("max_depth", depth),
-                    "total_impacted_symbols": res.get("total_impacted_symbols", 0),
-                    "total_impacted_files": res.get("total_impacted_files", 0),
-                    "layers": {
-                        str(d): [
-                            {
-                                "id": s.id,
-                                "name": s.name,
-                                "kind": s.kind,
-                                "file_path": engine.normalize_workspace_path(s.file_path),
-                                "file_uri": engine.to_file_uri(s.file_path, line=s.line_number),
-                                "line_number": s.line_number,
-                                "end_line": s.end_line,
-                                "signature": s.signature,
-                            }
-                            for s in syms
-                        ]
-                        for d, syms in res.get("layers", {}).items()
-                    },
-                    "call_chains": res.get("call_chains", {}),
-                }, indent=2, ensure_ascii=False))
-            else:
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "tier": "simple",
-                    "target_symbol": {
-                        "name": tsym.name,
-                        "kind": tsym.kind,
-                        "file_path": engine.normalize_workspace_path(tsym.file_path),
-                        "line_number": tsym.line_number,
-                    } if tsym else None,
-                    "max_depth": res.get("max_depth", depth),
-                    "total_impacted_symbols": res.get("total_impacted_symbols", 0),
-                    "total_impacted_files": res.get("total_impacted_files", 0),
-                    "layers": {
-                        str(d): [
-                            {
-                                "name": s.name,
-                                "kind": s.kind,
-                                "file_path": engine.normalize_workspace_path(s.file_path),
-                                "line_number": s.line_number,
-                            }
-                            for s in syms
-                        ]
-                        for d, syms in res.get("layers", {}).items()
-                    },
-                }, separators=(',', ':'), ensure_ascii=False))
-            return 0
-
-        fmt_type = "md" if is_md else "text"
-        print(engine.format_impact_output(
-            result=res,
-            detail_mode=detail_mode,
-            format_type=fmt_type,
-            limit_mode=limit_val,
-        ))
-        return 0
-    except SpaceNotFoundError as e:
-        print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
-        return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
-    except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
+    return _run_topology_cli_command(
+        "impact",
+        cmd_bags,
+        "python yscb.py knowledge-db impact 'InvertedIndex.patch_incremental' --depth=2",
+    )
 
 
 def clean(cmd_bags: Any) -> int:

@@ -235,7 +235,7 @@ class ResultFormatter:
         self.redundancy_filter = redundancy_filter or UniversalRedundancyFilter()
         self.styler = styler or TerminalStyler()
 
-    def _get_workspace_root(self) -> Path:
+    def get_workspace_root(self) -> Path:
         if self.workspace_root:
             return self.workspace_root
         try:
@@ -257,7 +257,7 @@ class ResultFormatter:
     def normalize_workspace_path(self, file_path: Union[str, Path]) -> str:
         """將路徑正規化為相對於 Workspace/Project 根目錄之標準相對路徑 (forward slash)"""
         p = Path(file_path)
-        ws = self._get_workspace_root()
+        ws = self.get_workspace_root()
         try:
             if p.is_absolute():
                 rel = p.resolve().relative_to(ws)
@@ -279,7 +279,7 @@ class ResultFormatter:
             if resolved:
                 p = Path(resolved).resolve()
             else:
-                ws = self._get_workspace_root()
+                ws = self.get_workspace_root()
                 p = (ws / p).resolve()
         else:
             p = p.resolve()
@@ -606,45 +606,55 @@ class ResultFormatter:
 
         return "\n".join(lines)
 
-    def format_callers_output(
+    def _format_topology_tree(
         self,
+        direction: str,
         result: Dict[str, Any],
         detail_mode: str = "auto",
         snippet: bool = True,
         format_type: str = "text",
         limit_mode: Union[int, str] = "auto",
     ) -> str:
-        """格式化 callers (調用源) 輸出為 ANSI 樹狀圖或 Markdown 格式"""
+        """共用拓撲樹狀渲染核心 (支援 callers 與 callees)。"""
         target = result.get("target_symbol")
         is_md = (format_type == "md")
+        is_callers = (direction == "callers")
         if not target:
             if is_md:
-                return f"###  調用源查詢: `{result.get('target_query')}` (未找到相符符號)"
+                title = "調用源查詢" if is_callers else "下游被調用者查詢"
+                return f"###  {title}: `{result.get('target_query')}` (未找到相符符號)"
             return f"[knowledge-db] 查無相符目標符號: '{result.get('target_query')}'"
 
         mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
         if mode not in ("simple", "detail"):
             mode = "auto"
 
-        callers = result.get("callers", [])
-        total_callers = len(callers)
+        items_key = "callers" if is_callers else "callees"
+        raw_items = result.get(items_key, [])
+        total_items = len(raw_items)
         target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
 
-        filtered_callers = callers
+        filtered_items = raw_items
         if isinstance(limit_mode, int) and limit_mode > 0:
-            filtered_callers = callers[:limit_mode]
+            filtered_items = raw_items[:limit_mode]
 
         mode_desc = "清單模式" if mode == "simple" else ("詳細模式" if mode == "detail" else ("預覽模式" if snippet else ""))
         desc_tag = f"，{mode_desc}" if mode_desc else ""
 
         if is_md:
-            header = f"###  調用源追蹤 (Callers): `{target.name}` (共找到 {total_callers} 個調用來源{desc_tag}):\n\n"
+            if is_callers:
+                header = f"###  調用源追蹤 (Callers): `{target.name}` (共找到 {total_items} 個調用來源{desc_tag}):\n\n"
+            else:
+                header = f"###  下游被調用者追蹤 (Callees): `{target.name}` (共調用 {total_items} 個內部組件{desc_tag}):\n\n"
             header += f"- ** 目標符號**: `{target.name}` ({target.kind}) 檔案: {target_link}"
             if target.signature:
                 header += f"\n  - **簽名**: `{target.signature}`"
             lines = [header, ""]
         else:
-            header = f"[knowledge-db] 符號 '{target.name}' 之上游調用者清單 (Callers - 共 {total_callers} 個來源{desc_tag}):"
+            if is_callers:
+                header = f"[knowledge-db] 符號 '{target.name}' 之上游調用者清單 (Callers - 共 {total_items} 個來源{desc_tag}):"
+            else:
+                header = f"[knowledge-db] 符號 '{target.name}' 之內部下游依賴清單 (Callees - 共 {total_items} 個被調用項{desc_tag}):"
             lines = [
                 header,
                 "-" * 85,
@@ -654,22 +664,31 @@ class ResultFormatter:
                 lines.append(f"   簽名: {target.signature}")
             lines.append("")
 
-        if not filtered_callers:
-            empty_msg = "  (目前尚無靜態調用者依賴)" if not is_md else "> *(目前尚無靜態調用者依賴)*"
+        if not filtered_items:
+            if is_callers:
+                empty_msg = "  (目前尚無靜態調用者依賴)" if not is_md else "> *(目前尚無靜態調用者依賴)*"
+            else:
+                empty_msg = "  (未檢測到內部符號調用，可能為純邏輯函式或葉節點)" if not is_md else "> *(未檢測到內部符號調用，可能為純邏輯函式或葉節點)*"
             lines.append(empty_msg)
             return "\n".join(lines)
 
         rendered_nodes = 0
         budget_reached = False
         remaining_count = 0
+        md_snip_label = "調用代碼切片" if is_callers else "被調用組件切片"
+        txt_snip_label = "調用代碼切片" if is_callers else "被調用代碼切片"
+        remain_unit = "調用來源" if is_callers else "被調用項目"
 
-        for idx, item in enumerate(filtered_callers, start=1):
+        for idx, item in enumerate(filtered_items, start=1):
             node_lines = []
             sym = item["symbol"]
             sites = item.get("call_sites", [])
-            primary_line = sites[0]["line_number"] if sites else sym.line_number
-            link_str = self.format_file_link(sym.file_path, line=primary_line)
-            is_last = (idx == len(filtered_callers))
+            if is_callers:
+                primary_line = sites[0]["line_number"] if sites else sym.line_number
+                link_str = self.format_file_link(sym.file_path, line=primary_line)
+            else:
+                link_str = self.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
+            is_last = (idx == len(filtered_items))
             branch = "└──" if is_last else "├──"
             pipe = "   " if is_last else "│  "
             code_snip = item.get("code_snippet")
@@ -679,24 +698,14 @@ class ResultFormatter:
                 current_chars = sum(len(l) + 1 for l in lines)
                 if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
                     budget_reached = True
-                    remaining_count = len(filtered_callers) - rendered_nodes
+                    remaining_count = len(filtered_items) - rendered_nodes
                     break
                 max_snip_lines = compute_dynamic_snippet_lines(current_chars)
 
             if is_md:
                 site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
                 site_info = f" *(調用點: {', '.join(site_strs)})*" if site_strs else ""
-                if mode == "simple":
-                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
-                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
-                        snip_lines = code_snip.get_lines(max_snip_lines)
-                        if snip_lines:
-                            node_lines.append(f"  ```{sym.language or ''}")
-                            for ln, code in snip_lines:
-                                mark = ">" if ln == code_snip.target_line else " "
-                                node_lines.append(f"  {mark} {ln:5d} | {code}")
-                            node_lines.append("  ```")
-                elif mode == "detail":
+                if mode == "detail":
                     node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**)")
                     if sym.signature:
                         node_lines.append(f"  - **簽名**: `{sym.signature}`")
@@ -708,13 +717,13 @@ class ResultFormatter:
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         snip_lines = code_snip.get_lines(max_snip_lines)
                         if snip_lines:
-                            node_lines.append(f"  - **調用代碼切片**:")
+                            node_lines.append(f"  - **{md_snip_label}**:")
                             node_lines.append(f"    ```{sym.language or ''}")
                             for ln, code in snip_lines:
                                 mark = ">" if ln == code_snip.target_line else " "
                                 node_lines.append(f"    {mark} {ln:5d} | {code}")
                             node_lines.append("    ```")
-                else:  # auto
+                else:  # simple or auto
                     node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         snip_lines = code_snip.get_lines(max_snip_lines)
@@ -727,13 +736,7 @@ class ResultFormatter:
             else:
                 site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
                 site_info = f" [調用點: {', '.join(site_strs)}]" if site_strs else ""
-                if mode == "simple":
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}){site_info}")
-                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
-                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
-                        if formatted_snip:
-                            node_lines.append(formatted_snip)
-                elif mode == "detail":
+                if mode == "detail":
                     node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)})")
                     if sym.signature:
                         node_lines.append(f"{pipe}   簽名: {sym.signature}")
@@ -745,9 +748,9 @@ class ResultFormatter:
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
                         if formatted_snip:
-                            node_lines.append(f"{pipe}   調用代碼切片:")
+                            node_lines.append(f"{pipe}   {txt_snip_label}:")
                             node_lines.append(formatted_snip)
-                else:  # auto
+                else:  # simple or auto
                     node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}){site_info}")
                     if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
                         formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
@@ -761,16 +764,34 @@ class ResultFormatter:
                 current_chars = sum(len(l) + 1 for l in lines)
                 if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
                     budget_reached = True
-                    remaining_count = len(filtered_callers) - rendered_nodes
+                    remaining_count = len(filtered_items) - rendered_nodes
                     break
 
         if budget_reached and remaining_count > 0:
             if is_md:
-                lines.append(f"\n> [*] *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 `--limit=N` 查看更多)*")
+                lines.append(f"\n> [*] *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個{remain_unit}；可附加 `--limit=N` 查看更多)*")
             else:
-                lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個調用來源；可附加 --limit=<N> 查看完整輸出)")
+                lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個{remain_unit}；可附加 --limit=<N> 查看完整輸出)")
 
         return "\n".join(lines)
+
+    def format_callers_output(
+        self,
+        result: Dict[str, Any],
+        detail_mode: str = "auto",
+        snippet: bool = True,
+        format_type: str = "text",
+        limit_mode: Union[int, str] = "auto",
+    ) -> str:
+        """格式化 callers (調用源) 輸出為 ANSI 樹狀圖或 Markdown 格式"""
+        return self._format_topology_tree(
+            direction="callers",
+            result=result,
+            detail_mode=detail_mode,
+            snippet=snippet,
+            format_type=format_type,
+            limit_mode=limit_mode,
+        )
 
     def format_callees_output(
         self,
@@ -781,162 +802,14 @@ class ResultFormatter:
         limit_mode: Union[int, str] = "auto",
     ) -> str:
         """格式化 callees (下游被調用者) 輸出為 ANSI 樹狀圖或 Markdown 格式"""
-        target = result.get("target_symbol")
-        is_md = (format_type == "md")
-        if not target:
-            if is_md:
-                return f"###  下游被調用者查詢: `{result.get('target_query')}` (未找到相符符號)"
-            return f"[knowledge-db] 查無相符目標符號: '{result.get('target_query')}'"
-
-        mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
-        if mode not in ("simple", "detail"):
-            mode = "auto"
-
-        callees = result.get("callees", [])
-        total_callees = len(callees)
-        target_link = self.format_file_link(target.file_path, line=target.line_number, end_line=target.end_line)
-
-        filtered_callees = callees
-        if isinstance(limit_mode, int) and limit_mode > 0:
-            filtered_callees = callees[:limit_mode]
-
-        mode_desc = "清單模式" if mode == "simple" else ("詳細模式" if mode == "detail" else ("預覽模式" if snippet else ""))
-        desc_tag = f"，{mode_desc}" if mode_desc else ""
-
-        if is_md:
-            header = f"###  下游被調用者追蹤 (Callees): `{target.name}` (共調用 {total_callees} 個內部組件{desc_tag}):\n\n"
-            header += f"- ** 目標符號**: `{target.name}` ({target.kind}) 檔案: {target_link}"
-            if target.signature:
-                header += f"\n  - **簽名**: `{target.signature}`"
-            lines = [header, ""]
-        else:
-            header = f"[knowledge-db] 符號 '{target.name}' 之內部下游依賴清單 (Callees - 共 {total_callees} 個被調用項{desc_tag}):"
-            lines = [
-                header,
-                "-" * 85,
-                f" 目標符號: `{target.name}` ({target.kind}) 檔案: {target_link}",
-            ]
-            if mode == "detail" and target.signature:
-                lines.append(f"   簽名: {target.signature}")
-            lines.append("")
-
-        if not filtered_callees:
-            empty_msg = "  (未檢測到內部符號調用，可能為純邏輯函式或葉節點)" if not is_md else "> *(未檢測到內部符號調用，可能為純邏輯函式或葉節點)*"
-            lines.append(empty_msg)
-            return "\n".join(lines)
-
-        rendered_nodes = 0
-        budget_reached = False
-        remaining_count = 0
-
-        for idx, item in enumerate(filtered_callees, start=1):
-            node_lines = []
-            sym = item["symbol"]
-            sites = item.get("call_sites", [])
-            primary_line = sites[0]["line_number"] if sites else sym.line_number
-            link_str = self.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
-            is_last = (idx == len(filtered_callees))
-            branch = "└──" if is_last else "├──"
-            pipe = "   " if is_last else "│  "
-            code_snip = item.get("code_snippet")
-
-            max_snip_lines: Optional[int] = None
-            if limit_mode == "auto":
-                current_chars = sum(len(l) + 1 for l in lines)
-                if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
-                    budget_reached = True
-                    remaining_count = len(filtered_callees) - rendered_nodes
-                    break
-                max_snip_lines = compute_dynamic_snippet_lines(current_chars)
-
-            if is_md:
-                site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
-                site_info = f" *(調用點: {', '.join(site_strs)})*" if site_strs else ""
-                if mode == "simple":
-                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
-                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
-                        snip_lines = code_snip.get_lines(max_snip_lines)
-                        if snip_lines:
-                            node_lines.append(f"  ```{sym.language or ''}")
-                            for ln, code in snip_lines:
-                                mark = ">" if ln == code_snip.target_line else " "
-                                node_lines.append(f"  {mark} {ln:5d} | {code}")
-                            node_lines.append("  ```")
-                elif mode == "detail":
-                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**)")
-                    if sym.signature:
-                        node_lines.append(f"  - **簽名**: `{sym.signature}`")
-                    if sites:
-                        sites_desc = ", ".join(f"Line {s['line_number']}" + (f" (scope: `{s['scope']}`)" if s.get("scope") else "") for s in sites)
-                        node_lines.append(f"  - **調用點**: {sites_desc}")
-                    if code_snip and code_snip.docstring_summary:
-                        node_lines.append(f"  - **摘要**: {code_snip.docstring_summary}")
-                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
-                        snip_lines = code_snip.get_lines(max_snip_lines)
-                        if snip_lines:
-                            node_lines.append(f"  - **被調用組件切片**:")
-                            node_lines.append(f"    ```{sym.language or ''}")
-                            for ln, code in snip_lines:
-                                mark = ">" if ln == code_snip.target_line else " "
-                                node_lines.append(f"    {mark} {ln:5d} | {code}")
-                            node_lines.append("    ```")
-                else:  # auto
-                    node_lines.append(f"- **#{idx:02d}** 檔案: {link_str} (`{sym.kind}`: **{sym.name}**){site_info}")
-                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
-                        snip_lines = code_snip.get_lines(max_snip_lines)
-                        if snip_lines:
-                            node_lines.append(f"  ```{sym.language or ''}")
-                            for ln, code in snip_lines:
-                                mark = ">" if ln == code_snip.target_line else " "
-                                node_lines.append(f"  {mark} {ln:5d} | {code}")
-                            node_lines.append("  ```")
-            else:
-                site_strs = [f"L{s['line_number']}" for s in sites if "line_number" in s]
-                site_info = f" [調用點: {', '.join(site_strs)}]" if site_strs else ""
-                if mode == "simple":
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}){site_info}")
-                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
-                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
-                        if formatted_snip:
-                            node_lines.append(formatted_snip)
-                elif mode == "detail":
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)})")
-                    if sym.signature:
-                        node_lines.append(f"{pipe}   簽名: {sym.signature}")
-                    if sites:
-                        sites_desc = ", ".join(f"Line {s['line_number']}" + (f" (scope: {s['scope']})" if s.get("scope") else "") for s in sites)
-                        node_lines.append(f"{pipe}   調用位置: {sites_desc}")
-                    if code_snip and code_snip.docstring_summary:
-                        node_lines.append(f"{pipe}   摘要: {code_snip.docstring_summary}")
-                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
-                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
-                        if formatted_snip:
-                            node_lines.append(f"{pipe}   被調用代碼切片:")
-                            node_lines.append(formatted_snip)
-                else:  # auto
-                    node_lines.append(f"{branch} #{idx:02d} 檔案: {self.styler.path(link_str)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}){site_info}")
-                    if snippet and code_snip and code_snip.lines and (max_snip_lines is None or max_snip_lines > 0):
-                        formatted_snip = code_snip.format_text(prefix=f"{pipe}     ", max_lines=max_snip_lines)
-                        if formatted_snip:
-                            node_lines.append(formatted_snip)
-
-            lines.extend(node_lines)
-            rendered_nodes += 1
-
-            if limit_mode == "auto":
-                current_chars = sum(len(l) + 1 for l in lines)
-                if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
-                    budget_reached = True
-                    remaining_count = len(filtered_callees) - rendered_nodes
-                    break
-
-        if budget_reached and remaining_count > 0:
-            if is_md:
-                lines.append(f"\n> [*] *... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 `--limit=N` 查看更多)*")
-            else:
-                lines.append(f"\n... (已達 {AUTO_BUDGET_CHARS} 字元自適應上限，尚有 {remaining_count} 個被調用項目；可附加 --limit=<N> 查看完整輸出)")
-
-        return "\n".join(lines)
+        return self._format_topology_tree(
+            direction="callees",
+            result=result,
+            detail_mode=detail_mode,
+            snippet=snippet,
+            format_type=format_type,
+            limit_mode=limit_mode,
+        )
 
     def format_impact_output(
         self,

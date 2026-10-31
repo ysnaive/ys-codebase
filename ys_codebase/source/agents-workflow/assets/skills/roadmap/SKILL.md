@@ -1,11 +1,11 @@
 ---
 name: roadmap
-description: 掃描 `__${workflow.roadmap://}__` 宏觀技術儲備庫並比對專案現況成熟度，產出高契合度立項推薦卡、將跨模組新技術提案寫入儲備庫檔案 ({topic}.md)，或透過 roadmap promote 執行儲備消耗立項 (Consume-on-Promote)。觸發情境：輸入 /roadmap 或 /Roadmap、詢問「接下來有哪些長期規劃可做」、將宏觀調研成果轉入技術儲備或晉升路線圖立項 (manage/recommend/promote roadmap items)。排除情境：單一檔案微調或局部技術債速記（改用 todo）、直接開立需求已明確的單一短期開發任務（改用 new-plan）、接續進行中計畫（改用 continue）。
+description: 管理 `__${workflow.roadmap://}__` 宏觀技術儲備庫 ({topic}.md)，執行成熟度比對推薦、長期提案入庫與 roadmap promote 儲備晉升立項。觸發情境：輸入 /roadmap、詢問長期規劃建議或晉升路線圖項目。
 ---
 
 # 技術路線圖探索與智能推薦工作流 (Roadmap)
 
-本工作流用於管理與掃描專案之長期技術儲備庫 (`__${workflow.roadmap://}__/{topic}.md`)，結合目前專案架構進度與模組狀態，客觀推薦最適合當前啟動之路線圖主題，或於立項時透過 `roadmap promote` 物理遷入計畫目錄（`Consume-on-Promote`）。輕量待辦請改用 [`/todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`)。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
+本工作流用於管理與掃描專案之長期技術儲備庫 (`__${workflow.roadmap://}__/{topic}.md`)，結合目前專案架構進度與模組狀態，客觀推薦最適合當前啟動之路線圖主題，或於立項時透過 `roadmap promote` 物理遷入計畫目錄（`Consume-on-Promote`）。輕量待辦請改用 [`/todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`)；直接開立需求已明確的短期開發任務請改走 [`/new-plan`](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)；接續進行中計畫請改走 [`/continue`](`__#{module://agents-workflow/assets/skills/continue/SKILL.md}__`)。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
 
 ---
 
@@ -26,7 +26,7 @@ description: 掃描 `__${workflow.roadmap://}__` 宏觀技術儲備庫並比對�
 開始執行時，請依序遵循以下檢核步驟：
 
 ```markdown
-/Roadmap 執行檢核表：
+/roadmap 執行檢核表：
 - [ ] 步驟 1：透過 CLI (`roadmap list [--status Ready]`) 調取 `__${workflow.roadmap://}__` 儲備庫清單
 - [ ] 步驟 2：比對當前專案架構與前置解鎖條件，篩選 1~2 個最佳推薦啟動項（或依模板新增儲備檔）
 - [ ] 步驟 3：呈遞極簡路線圖推薦卡並立即 End Turn 等待指示
@@ -58,9 +58,9 @@ description: 掃描 `__${workflow.roadmap://}__` 宏觀技術儲備庫並比對�
 對話 Session **嚴禁逐檔全文傾倒或冗長主觀論述**，強制僅呈遞以下極簡推薦卡，並**立即 End Turn 等待指示**：
 
 ```markdown
-### [ROADMAP] /Roadmap 路線圖推薦卡
+### [ROADMAP] /roadmap 路線圖推薦卡
 - **儲備庫現況**：共掃描到 `[count]` 項技術儲備
-- **推薦啟動項**：[{topic}.md](__${workflow.roadmap://}__/{topic}.md)（狀態：`[Backlog | Proposed | Ready | Deferred]`）
+- **推薦啟動項**：[{topic}.md](`__${workflow.roadmap://}__/{topic}.md`)（狀態：`[Backlog | Proposed | Ready | Deferred]`）
 - **核心效益**：[1 行客觀效益說明]
 - **匹配理由**：[1 行當前專案相容或前置解鎖條件已成熟之客觀依據]
 - **待確認事項**：請問是否授權執行 `roadmap promote {topic}` 立項並轉入 [/new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)？
@@ -86,5 +86,5 @@ description: 掃描 `__${workflow.roadmap://}__` 宏觀技術儲備庫並比對�
 ## 常見踩坑指南 (Gotchas)
 
 - **切勿在 Roadmap 混入當前暫態代碼細節或硬湊多方案對比表**：Roadmap 探討的是遠期概念藍圖，若塞入當前檔案行號、暫態 Bug 或虛構的陪跑方案，不僅浪費 Token 更會隨日常重構迅速失效；近期具體任務請一律改走 [`/todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`)。
-- **切勿在立項後將 `{topic}.md` 留在 `__${workflow.roadmap://}__` 原地改狀態**：一律透過 `roadmap promote` 物理搬移進計畫資料夾，結案時隨 `plan archive` 自然封存，彻底杜絕殭屍檔案。
+- **切勿在立項後將 `{topic}.md` 留在 `__${workflow.roadmap://}__` 原地改狀態**：一律透過 `roadmap promote` 物理搬移進計畫資料夾，結案時隨 `plan archive` 自然封存，徹底杜絕殭屍檔案。
 - **切勿從舊 `{topic}.md` 抄錄歷史模型名稱至新計畫**：`roadmap promote` 與新計畫文件的 `--model` / `> 模型：` 必須填寫當輪平台宣告之模型（或 `Unknown`）。

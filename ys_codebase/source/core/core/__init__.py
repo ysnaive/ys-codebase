@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from core.vfs import VirtualPath
     from core import platform
     from core import commands
+    from core import config
+    from core import validator
+    from core import ide_projector
     from core import telemetry
     from core import locale
 

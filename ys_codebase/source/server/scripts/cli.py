@@ -10,17 +10,22 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from core.commands.bags import CmdBags, CmdOption
+from core.commands.bags import CmdBags
 from core.guard import guard_dispatch
-from core.platform import is_process_alive, kill_process_tree, spawn_detached
+from core.platform import is_process_alive, kill_process_tree
 from server.config import ServerConfig
 from server.master import (
     MasterSupervisor,
     ServerDaemonState,
+    build_fallback_status_payload,
     format_shutdown_summary,
     format_startup_banner,
+    format_uptime,
+    format_watcher_status,
+    read_daemon_state,
+    spawn_detached_master,
 )
 
 
@@ -51,18 +56,6 @@ def _get_yscb_root() -> str:
         if os.path.isdir(os.path.join(cand, ".modules")) or os.path.isdir(os.path.join(cand, "source")):
             return cand
         return os.environ.get("YSCB_HOST_DIR", os.getcwd())
-
-
-def _read_daemon_state(yscb_root: str) -> Optional[ServerDaemonState]:
-    state_file = os.path.join(yscb_root, ".cache", "server", "daemon.json")
-    if not os.path.exists(state_file):
-        return None
-    try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return ServerDaemonState(**data)
-    except Exception:
-        return None
 
 
 def _http_request(
@@ -105,21 +98,14 @@ def start(cmd_bags: CmdBags) -> int:
             print(f"[Server] Error: Invalid TTL value '{raw_ttl}'. Must be a non-negative number.", file=sys.stderr)
             return 1
 
-    state = _read_daemon_state(yscb_root)
+    state = read_daemon_state(yscb_root)
     if state and is_process_alive(state.pid):
         print(f"[Server] Daemon is already running (PID: {state.pid}, Port: {state.port}).")
-        status_info = _http_request(state, "/api/status") or {
-            "pid": state.pid,
-            "worker_pid": state.worker_pid,
-            "port": state.port,
-            "root": state.root,
-            "idle_timeout_sec": state.idle_timeout_sec,
-            "log_file": os.path.join(state.root, ".cache", "server", "log"),
-        }
+        status_info = _http_request(state, "/api/status") or build_fallback_status_payload(state)
         print(format_startup_banner(status_info))
         return 0
 
-    cfg = ServerConfig.load(workspace_root=yscb_root)
+    cfg = ServerConfig.load()
     if not cfg.enable:
         print("[Server] Server is disabled in configuration ('enable': false). Aborting start.")
         return 1
@@ -132,41 +118,20 @@ def start(cmd_bags: CmdBags) -> int:
         sup = MasterSupervisor(yscb_root=yscb_root, idle_timeout_sec=effective_ttl)
         sup.start(foreground=True)
         return 0
-    else:
-        # Background detached mode
-        # [!] 剛性架構約束：僅允許 .modules/core 運行時空間，禁止任何 fallback
-        core_dir = os.path.join(yscb_root, ".modules", "core").replace("\\", "/")
-        server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
-        root_dir = os.path.abspath(yscb_root).replace("\\", "/")
-        cmd = [
-            sys.executable,
-            "-c",
-            f"import sys; "
-            f"sys.path.insert(0, '{core_dir}'); "
-            f"sys.path.insert(0, '{server_dir}'); "
-            f"from server.master import MasterSupervisor; MasterSupervisor('{root_dir}', idle_timeout_sec={effective_ttl}).start(foreground=True)",
-        ]
-        pid = spawn_detached(cmd, cwd=yscb_root)
-        print(f"[Server] Starting background daemon (PID: {pid})...")
 
-        # Wait for state file creation
-        for _ in range(30):
-            time.sleep(0.1)
-            state = _read_daemon_state(yscb_root)
-            if state and is_process_alive(state.pid):
-                status_info = _http_request(state, "/api/status") or {
-                    "pid": state.pid,
-                    "worker_pid": state.worker_pid,
-                    "port": state.port,
-                    "root": state.root,
-                    "idle_timeout_sec": state.idle_timeout_sec,
-                    "log_file": os.path.join(state.root, ".cache", "server", "log"),
-                }
-                print(format_startup_banner(status_info))
-                return 0
+    pid = spawn_detached_master(yscb_root=yscb_root, idle_timeout_sec=effective_ttl)
+    print(f"[Server] Starting background daemon (PID: {pid})...")
 
-        print("[Server] Daemon started but readiness probe timed out.")
-        return 0
+    for _ in range(30):
+        time.sleep(0.1)
+        state = read_daemon_state(yscb_root)
+        if state and is_process_alive(state.pid):
+            status_info = _http_request(state, "/api/status") or build_fallback_status_payload(state)
+            print(format_startup_banner(status_info))
+            return 0
+
+    print("[Server] Daemon started but readiness probe timed out.")
+    return 0
 
 
 def stop(cmd_bags: CmdBags) -> int:
@@ -175,7 +140,7 @@ def stop(cmd_bags: CmdBags) -> int:
     yscb_root = _get_yscb_root()
     force_flag = cmd_bags.has_option("force")
 
-    state = _read_daemon_state(yscb_root)
+    state = read_daemon_state(yscb_root)
     if not state or not is_process_alive(state.pid):
         print("[Server] Daemon is not running.")
         state_file = os.path.join(yscb_root, ".cache", "server", "daemon.json")
@@ -216,32 +181,11 @@ def stop(cmd_bags: CmdBags) -> int:
     return 0
 
 
-def status(cmd_bags: CmdBags) -> int:
-    """Inspect persistent server daemon and worker status."""
-    guard_dispatch("server")
-    yscb_root = _get_yscb_root()
-    state = _read_daemon_state(yscb_root)
-    if not state or not is_process_alive(state.pid):
-        cfg = ServerConfig.load(workspace_root=yscb_root)
-        if not cfg.enable:
-            print("[Server] Status: Disabled ('enable': false in config).")
-        else:
-            print("[Server] Status: Stopped (No active daemon found).")
-        return 0
-
-    info = _http_request(state, "/api/status", method="GET", timeout=1.5)
-    if not info:
-        print(f"[Server] Daemon PID {state.pid} alive but HTTP not responding (Port: {state.port}).")
-        return 1
-
+def _render_status_dashboard(info: Dict[str, Any], state: ServerDaemonState) -> None:
+    """Renders formatted server daemon status dashboard to stdout."""
     ttl_str = f"{info['idle_seconds_left']:.1f}s" if state.idle_timeout_sec > 0 else "Disabled (Persistent)"
     uptime = info.get("uptime_seconds")
-    if uptime is not None:
-        mins = int(uptime // 60)
-        secs = uptime % 60
-        uptime_str = f"{mins}m {secs:.1f}s ({uptime:.1f}s)" if mins > 0 else f"{uptime:.1f}s"
-    else:
-        uptime_str = "N/A"
+    uptime_str = format_uptime(float(uptime)) if uptime is not None else "N/A"
 
     print("======================================================================")
     print("YS-Codebase Server Daemon Status")
@@ -258,14 +202,7 @@ def status(cmd_bags: CmdBags) -> int:
 
     watcher = info.get("watcher")
     if watcher:
-        if not watcher.get("enabled"):
-            w_str = "DISABLED"
-        elif watcher.get("active"):
-            dir_str = f" (Monitoring {os.path.basename(watcher.get('monitored_dir') or '.modules')}/)"
-            w_str = f"ACTIVE{dir_str}"
-        else:
-            w_str = "STOPPED"
-        print(f"[*] Modules Watcher: {w_str}")
+        print(f"[*] Modules Watcher: {format_watcher_status(watcher)}")
 
     services = info.get("services", [])
     if services:
@@ -276,6 +213,27 @@ def status(cmd_bags: CmdBags) -> int:
             status_txt = "RUNNING" if svc.get("alive") else "STOPPED"
             print(f"    ├── [{svc['name']}]{prov} : {status_txt}")
     print("======================================================================")
+
+
+def status(cmd_bags: CmdBags) -> int:
+    """Inspect persistent server daemon and worker status."""
+    guard_dispatch("server")
+    yscb_root = _get_yscb_root()
+    state = read_daemon_state(yscb_root)
+    if not state or not is_process_alive(state.pid):
+        cfg = ServerConfig.load()
+        if not cfg.enable:
+            print("[Server] Status: Disabled ('enable': false in config).")
+        else:
+            print("[Server] Status: Stopped (No active daemon found).")
+        return 0
+
+    info = _http_request(state, "/api/status", method="GET", timeout=1.5)
+    if not info:
+        print(f"[Server] Daemon PID {state.pid} alive but HTTP not responding (Port: {state.port}).")
+        return 1
+
+    _render_status_dashboard(info, state)
     return 0
 
 
@@ -283,7 +241,7 @@ def reload(cmd_bags: CmdBags) -> int:
     """Hot reload warm worker subprocess."""
     guard_dispatch("server")
     yscb_root = _get_yscb_root()
-    state = _read_daemon_state(yscb_root)
+    state = read_daemon_state(yscb_root)
     if not state or not is_process_alive(state.pid):
         print("[Server] Daemon is not running. Nothing to reload.")
         return 1
@@ -293,6 +251,5 @@ def reload(cmd_bags: CmdBags) -> int:
     if resp and "new_worker_pid" in resp:
         print(f"[Server] Worker reloaded successfully (New Worker PID: {resp['new_worker_pid']}).")
         return 0
-    else:
-        print("[Server] Worker reload request failed or timed out.")
-        return 1
+    print("[Server] Worker reload request failed or timed out.")
+    return 1

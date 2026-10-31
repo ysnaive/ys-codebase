@@ -52,23 +52,29 @@ class InterProcessLock:
             os.makedirs(parent_dir, exist_ok=True)
 
         fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR)
+        try:
+            start_time = time.time()
+            while True:
+                if self._try_lock_fd(fd):
+                    self._fd = fd
+                    self._is_locked = True
+                    return True
 
-        start_time = time.time()
-        while True:
-            if self._try_lock_fd(fd):
-                self._fd = fd
-                self._is_locked = True
-                return True
+                if not blocking:
+                    os.close(fd)
+                    return False
 
-            if not blocking:
+                if timeout_sec > 0 and (time.time() - start_time) >= timeout_sec:
+                    os.close(fd)
+                    return False
+
+                time.sleep(0.05)
+        except BaseException:
+            try:
                 os.close(fd)
-                return False
-
-            if timeout_sec > 0 and (time.time() - start_time) >= timeout_sec:
-                os.close(fd)
-                return False
-
-            time.sleep(0.05)
+            except OSError:
+                pass
+            raise
 
     def release(self) -> None:
         """Releases the lock and closes the underlying file descriptor."""

@@ -3,7 +3,7 @@
 > 調研主題：sub_05_agents_workflow_code_optimization (`agents-workflow` 模組五維度靜態診斷與 Mode A 無損重構處方)  
 > 建立日期：2026-10-30  
 > 所屬主計畫：2026_10_30_1641_code_optimize  
-> 調研狀態：Draft  
+> 調研狀態：Concluded  
 > 模型：Unknown  
 > 模板版本：v1.1  
 

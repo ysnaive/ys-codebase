@@ -2,7 +2,6 @@
 PlanArchiver — 開發計畫安全歸檔服務。
 """
 
-import os
 import re
 import shutil
 from pathlib import Path
@@ -13,8 +12,8 @@ from . import (
     PlanFormatError,
     PlanIncompleteError,
     PlanDestinationExistsError,
-    _resolve_uri_path,
 )
+from ._common import resolve_plan_uri
 
 
 class PlanArchiver:
@@ -36,24 +35,21 @@ class PlanArchiver:
             project_root: 專案根目錄。若為 None 則透過 project:// 解析。
             templates_dir: 標準模板目錄（可選，供 PlanVerifier 使用）。
         """
-        if plans_dir is not None:
-            self.plans_dir = Path(plans_dir).resolve()
-        else:
-            res_plans = _resolve_uri_path("workflow.plans://")
-            self.plans_dir = res_plans if res_plans else Path.cwd() / "plans"
-
-        if archive_dir is not None:
-            self.archive_dir = Path(archive_dir).resolve()
-        else:
-            res_arch = _resolve_uri_path("workflow.archived://")
-            self.archive_dir = res_arch if res_arch else Path.cwd() / "archive_plans"
-
-        if project_root is not None:
-            self.project_root = Path(project_root).resolve()
-        else:
-            res_proj = _resolve_uri_path("project://")
-            self.project_root = res_proj if res_proj else Path.cwd()
-
+        self.plans_dir = (
+            Path(plans_dir).resolve()
+            if plans_dir is not None
+            else resolve_plan_uri("workflow.plans://", "plans")
+        )
+        self.archive_dir = (
+            Path(archive_dir).resolve()
+            if archive_dir is not None
+            else resolve_plan_uri("workflow.archived://", "plans/archived")
+        )
+        self.project_root = (
+            Path(project_root).resolve()
+            if project_root is not None
+            else resolve_plan_uri("project://", ".")
+        )
         self.templates_dir = Path(templates_dir).resolve() if templates_dir is not None else None
         self.verifier = None
 
@@ -96,13 +92,12 @@ class PlanArchiver:
         from .status import PlanStatusResolver
 
         ft_plan = src_dir / "fast_track_plan.md"
-        legacy_ft_plan = src_dir / "FT_plan.md"
         p07_walkthrough = PlanStatusResolver.resolve_phase_file(src_dir, "P07")
         umbrella_overview = src_dir / "umbrella_overview.md"
         rev_log = src_dir / "revision_log.md"
 
         is_completed = False
-        for target_file in [ft_plan, legacy_ft_plan, p07_walkthrough, umbrella_overview, rev_log]:
+        for target_file in [ft_plan, p07_walkthrough, umbrella_overview, rev_log]:
             if target_file.exists() and PlanStatusResolver.is_doc_completed(target_file):
                 is_completed = True
                 break

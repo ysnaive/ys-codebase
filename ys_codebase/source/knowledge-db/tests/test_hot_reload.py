@@ -22,7 +22,7 @@ from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.retrieval import BM25Engine, InvertedIndex, QueryFilter
 from knowledge_db.scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffDetail
 from knowledge_db.schema import SpaceConfig, UnifiedSymbol
-from knowledge_db.tokenizer import CodeTokenizer
+from knowledge_db.tokenizer import MultilingualTokenizer
 
 
 class TestJITHotHealing(YSCBTestCase):
@@ -118,12 +118,12 @@ class TestJITHotHealing(YSCBTestCase):
 
             res_src = engine.search("AuthEngine", space="source", auto_rebuild=False)
             self.assertEqual(len(res_src), 1)
-            self.assertEqual(res_src[0].symbol.name, "AuthEngine")
-            self.assertIn("source", res_src[0].space)
+            self.assertEqual(res_src[0].items[0].symbol.name, "AuthEngine")
+            self.assertIn("source", res_src[0].spaces)
 
             res_doc = engine.search("AuthEngine", space="docs", auto_rebuild=False)
             self.assertEqual(len(res_doc), 1)
-            self.assertIn("docs", res_doc[0].space)
+            self.assertIn("docs", res_doc[0].spaces)
 
         self.mark_passed()
 
@@ -153,7 +153,7 @@ class TestJITHotHealing(YSCBTestCase):
 
             res2 = engine.search("NewlyAddedWorker", auto_rebuild=True)
             self.assertEqual(len(res2), 1)
-            self.assertEqual(res2[0].symbol.name, "NewlyAddedWorker")
+            self.assertEqual(res2[0].items[0].symbol.name, "NewlyAddedWorker")
 
         self.mark_passed()
 
@@ -394,7 +394,7 @@ class TestIncrementalHotReload(YSCBTestCase):
     def test_ft_03_inverted_index_patch_incremental(self):
         """FT-03: 驗證 InvertedIndex.patch_incremental 拔除舊 Postings、注入新 Postings 並動態重算 avgdl"""
         idx = InvertedIndex(space_name="unified")
-        tok = CodeTokenizer()
+        tok = MultilingualTokenizer()
 
         sym1 = UnifiedSymbol(
             id="id1",
@@ -404,7 +404,7 @@ class TestIncrementalHotReload(YSCBTestCase):
             line_number=1,
             language="python",
             docstring="Alpha service implementation",
-            metadata={"spaces": ["main"], "space": "main"},
+            metadata={"spaces": ["main"]},
         )
         sym2 = UnifiedSymbol(
             id="id2",
@@ -414,10 +414,10 @@ class TestIncrementalHotReload(YSCBTestCase):
             line_number=1,
             language="python",
             docstring="Beta service helper",
-            metadata={"spaces": ["main"], "space": "main"},
+            metadata={"spaces": ["main"]},
         )
 
-        idx.build_unified([sym1, sym2], tokenizer=tok)
+        idx.build([sym1, sym2], tokenizer=tok, space="unified")
         self.assertEqual(idx.doc_count, 2)
         self.assertIn("alphaservice", idx.index)
         self.assertIn("betaservice", idx.index)
@@ -430,7 +430,7 @@ class TestIncrementalHotReload(YSCBTestCase):
             line_number=1,
             language="python",
             docstring="Gamma service replacement",
-            metadata={"spaces": ["main"], "space": "main"},
+            metadata={"spaces": ["main"]},
         )
 
         idx.patch_incremental(
@@ -478,7 +478,7 @@ class TestIncrementalHotReload(YSCBTestCase):
 
             r2 = engine.search("PaymentEngine", auto_rebuild=True)
             self.assertEqual(len(r2), 1)
-            self.assertEqual(r2[0].symbol.name, "PaymentEngine")
+            self.assertEqual(r2[0].items[0].symbol.name, "PaymentEngine")
 
         self.mark_passed()
 

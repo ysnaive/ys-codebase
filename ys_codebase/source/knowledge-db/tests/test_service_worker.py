@@ -19,7 +19,7 @@ from dev.testing.requirement import Requirement, require
 
 from knowledge_db.service import KnowledgeDBServiceWorker, resolve_watch_extensions
 from knowledge_db.engine import KnowledgeEngine
-from knowledge_db.pipeline import IndexingPipeline, _GLOBAL_INDEX_CACHE
+from knowledge_db.pipeline import HotPatchResult, IndexingPipeline, _GLOBAL_INDEX_CACHE
 from knowledge_db.retrieval import InvertedIndex
 from scripts.cli import get_engine
 
@@ -74,7 +74,7 @@ class TestServiceWorker(YSCBTestCase):
         mock_pipeline.scanner.check_invalidation.return_value = (
             False, 1, "test", {}, MagicMock(has_changes=True)
         )
-        mock_pipeline.hot_patch_unified_index.return_value = (True, False, None)
+        mock_pipeline.hot_patch_unified_index.return_value = HotPatchResult(success=True, patched_count=1)
         worker._pipeline = mock_pipeline
         worker.is_path_watched = MagicMock(return_value=True)
 
@@ -259,7 +259,7 @@ class TestServiceWorker(YSCBTestCase):
         dummy_space = MagicMock(name="my_space")
 
         mock_sm = MagicMock()
-        mock_sm.get_union_spaces.return_value = [dummy_space]
+        mock_sm.list_spaces.return_value = [dummy_space]
         mock_sm.resolve_space_include.return_value = [str(space_dir)]
         worker._space_manager = mock_sm
         worker._supported_extensions = {".py", ".md", ".json"}
@@ -302,9 +302,9 @@ class TestServiceWorker(YSCBTestCase):
         from knowledge_db.schema import SymbolKind, UnifiedSymbol
 
         # 1. 驗證 InvertedIndex.to_dict() 與並發變異安全性
-        from knowledge_db.retrieval import CodeTokenizer
+        from knowledge_db.tokenizer import MultilingualTokenizer
         idx = InvertedIndex()
-        tok = CodeTokenizer()
+        tok = MultilingualTokenizer()
         for i in range(50):
             sym = UnifiedSymbol(
                 id=f"test.py::func_{i}",
@@ -371,7 +371,7 @@ class TestServiceWorker(YSCBTestCase):
             True, 5, "dirty", {"a.py": (1.0, 10)}, MagicMock(has_changes=True)
         )
         # 模擬 hot_patch 回傳失敗 (False)，觸發 fallback build_unified_index
-        mock_pipeline.hot_patch_unified_index.return_value = (False, False, None)
+        mock_pipeline.hot_patch_unified_index.return_value = HotPatchResult(success=False, patched_count=0)
         worker._pipeline = mock_pipeline
 
         with worker._debounce_lock:

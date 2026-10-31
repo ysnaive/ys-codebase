@@ -52,7 +52,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
         self.changelog_file.write_text("# Changelog\n\n## 2026_08_20_1200_demo\n", encoding="utf-8")
 
         # 建立模擬之展開後標準模板
-        (self.templates_dir / "P00_semantic_requirements.md").write_text(
+        (self.templates_dir / "P00_discuss.md").write_text(
             "# 語意需求說明書\n\n## 1. 使用者原始需求與意圖 (User Intent)\n\n## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n\n## 3. 開放議題與確認紀錄\n",
             encoding="utf-8"
         )
@@ -83,7 +83,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
             "# Changelog\n\n| 日期時間 | 類型 | 摘要 |\n| :--- | :---: | :--- |\n| 2026-08-20 12:00 | `INIT` | 初始化計畫 |\n",
             encoding="utf-8"
         )
-        (p_dir / "P00_semantic_requirements.md").write_text(
+        (p_dir / "P00_discuss.md").write_text(
             "# 語意需求說明書\n\n> 功能名稱：Demo Feature\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n> 模型：Gemini Flash\n\n"
             "## 1. 使用者原始需求與意圖 (User Intent)\n- **原始陳述**：需求\n\n"
             "## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n- **[P00:DR-01]** 決策\n\n"
@@ -111,7 +111,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
         self.assertEqual(rep.status, PlanSeverity.PASS)
 
         # 2. 移除 P00 的必要章節標題 -> FAIL
-        (p_dir / "P00_semantic_requirements.md").write_text(
+        (p_dir / "P00_discuss.md").write_text(
             "# 語意需求說明書\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n> 模型：Gemini Flash\n\n"
             "## 1. 使用者原始需求與意圖\n(缺少第 2 與第 3 節標題)\n",
             encoding="utf-8"
@@ -155,7 +155,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
         )
 
         # 子計畫缺少「所屬主計畫」-> FAIL
-        (sub_dir / "P00_semantic_requirements.md").write_text(
+        (sub_dir / "P00_discuss.md").write_text(
             "# 語意需求說明書\n\n> 功能名稱：Child\n> 建立日期：2026-08-20\n> 狀態：Draft\n> 模型：Gemini Flash\n\n"
             "## 1. 使用者原始需求與意圖 (User Intent)\n\n## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n\n## 3. 開放議題與確認紀錄\n",
             encoding="utf-8"
@@ -175,7 +175,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
         """FT-04: 雙星伴隨與 changelog 合規檢核。"""
         p_dir = self.plans_dir / "2026_08_20_1200_no_changelog"
         p_dir.mkdir(parents=True, exist_ok=True)
-        (p_dir / "P00_semantic_requirements.md").write_text(
+        (p_dir / "P00_discuss.md").write_text(
             "> 功能名稱：NoChangelog\n> 建立日期：2026-08-20\n> 狀態：Draft\n> 模型：Gemini Flash\n",
             encoding="utf-8"
         )
@@ -221,7 +221,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
         )
 
         # 包含 HTML 註解 -> FAIL
-        (p_dir / "P00_semantic_requirements.md").write_text(
+        (p_dir / "P00_discuss.md").write_text(
             "# 語意需求說明書\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n> 模型：Gemini Flash\n\n"
             "<!-- 這是未清除的指引或註解 -->\n\n"
             "## 1. 使用者原始需求與意圖 (User Intent)\n\n## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n\n## 3. 開放議題與確認紀錄\n",
@@ -237,7 +237,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
         """FT-07: PlanArchiver 遭遇 FAIL 時剛性阻斷歸檔，加 --force 則放行。"""
         # 建立一個未通過的計畫（缺少章節）
         p_dir = self._create_valid_plan("2026_08_20_1200_gate_test")
-        (p_dir / "P00_semantic_requirements.md").write_text(
+        (p_dir / "P00_discuss.md").write_text(
             "# 語意需求\n> 功能名稱：Broken\n> 建立日期：2026-08-20\n> 狀態：Draft\n> 模型：Gemini Flash\n\n(缺少必填章節)\n",
             encoding="utf-8"
         )
@@ -333,7 +333,7 @@ class TestPlansToolchainInternal(YSCBTestCase):
             "# Changelog\n\n| 日期時間 | 類型 | 摘要 |\n| :--- | :---: | :--- |\n| 2026-08-20 12:00 | `INIT` | 初始化 |\n",
             encoding="utf-8"
         )
-        (p_dir / "P00_semantic_requirements.md").write_text(
+        (p_dir / "P00_discuss.md").write_text(
             "# 語意需求說明書\n\n> 功能名稱：Demo\n> 建立日期：2026-08-20\n> 狀態：Confirmed\n\n"
             "## 1. 使用者原始需求與意圖 (User Intent)\n- **原始陳述**：需求\n\n"
             "## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n- **[P00:DR-01]** 決策\n\n"
@@ -652,7 +652,7 @@ class TestPlansStatusAndBoundaries(YSCBTestCase):
             "## 1. 快速需求與範疇\n\n## 2. 實作變更清冊\n\n## 3. 測試與驗證\n",
             encoding="utf-8"
         )
-        (self.templates_dir / "P00_semantic_requirements.md").write_text(
+        (self.templates_dir / "P00_discuss.md").write_text(
             "# 語意需求說明書\n\n> 功能名稱：[功能名稱]\n> 建立日期：[YYYY-MM-DD]\n> 狀態：[Draft | Confirmed]\n\n"
             "## 1. 使用者原始需求與意圖 (User Intent)\n\n## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n\n## 3. 開放議題與確認紀錄\n",
             encoding="utf-8"
@@ -723,7 +723,7 @@ class TestPlansStatusAndBoundaries(YSCBTestCase):
         p_dir = self.plans_dir / plan_name
         p_dir.mkdir(parents=True, exist_ok=True)
 
-        (p_dir / "P00_semantic_requirements.md").write_text("# 語意需求\n\n> 功能名稱：測試\n> 狀態：Confirmed\n\n## 1. 需求\n", encoding="utf-8")
+        (p_dir / "P00_discuss.md").write_text("# 語意需求\n\n> 功能名稱：測試\n> 狀態：Confirmed\n\n## 1. 需求\n", encoding="utf-8")
         (p_dir / "P01_requirements_spec.md").write_text("# 需求規格\n\n> 功能名稱：測試\n> 狀態：Confirmed\n\n## 1. 規格\n", encoding="utf-8")
         (p_dir / "P05_task.md").write_text("# 實作任務清單\n\n> 功能名稱：測試\n> 狀態：In Progress\n\n## 1. 實作任務\n- [ ] 任務 1\n", encoding="utf-8")
         (p_dir / "P06_test_plan.md").write_text("# 測試計畫\n\n> 功能名稱：測試\n> 狀態：Confirmed\n\n## 1. 測試\n", encoding="utf-8")
@@ -741,13 +741,13 @@ class TestPlansStatusAndBoundaries(YSCBTestCase):
         plan_concluded = "2026_10_17_1200_research_concluded"
         p_dir1 = self.plans_dir / plan_concluded
         p_dir1.mkdir(parents=True, exist_ok=True)
-        (p_dir1 / "P00_semantic_requirements.md").write_text("# 語意需求\n\n> 功能名稱：調研\n> 狀態：Confirmed\n", encoding="utf-8")
+        (p_dir1 / "P00_discuss.md").write_text("# 語意需求\n\n> 功能名稱：調研\n> 狀態：Confirmed\n", encoding="utf-8")
         (p_dir1 / "R01_deep_dive.md").write_text("# 技術調研報告\n\n> 調研主題：深入調研\n> 調研狀態：Concluded\n", encoding="utf-8")
 
         plan_draft = "2026_10_17_1300_research_draft"
         p_dir2 = self.plans_dir / plan_draft
         p_dir2.mkdir(parents=True, exist_ok=True)
-        (p_dir2 / "P00_semantic_requirements.md").write_text("# 語意需求\n\n> 功能名稱：調研\n> 狀態：Confirmed\n", encoding="utf-8")
+        (p_dir2 / "P00_discuss.md").write_text("# 語意需求\n\n> 功能名稱：調研\n> 狀態：Confirmed\n", encoding="utf-8")
         (p_dir2 / "R01_deep_dive.md").write_text("# 技術調研報告\n\n> 調研主題：深入調研\n> 調研狀態：Draft\n", encoding="utf-8")
 
         scanner = PlanScanner(plans_dir=self.plans_dir)
@@ -766,9 +766,10 @@ class TestPlansStatusAndBoundaries(YSCBTestCase):
 
     def test_ft_05_verifier_research_mapping(self):
         """FT-05: PlanVerifier 正確將 R01_xxx.md 映射至調研模板，即便檔名無 'research' 字樣。"""
-        verifier = PlanVerifier(plans_dir=self.plans_dir, archive_dir=self.archive_dir, templates_dir=self.templates_dir)
-        self.assertEqual(verifier._map_file_to_template("R01_deep_architecture_analysis.md"), "RXX_research_report.md")
-        self.assertEqual(verifier._map_file_to_template("R02_security_audit.md"), "RXX_research_report.md")
+        from agents_workflow.plans._verifier_specs import map_file_to_template
+
+        self.assertEqual(map_file_to_template("R01_deep_architecture_analysis.md", self.templates_dir), "RXX_research_report.md")
+        self.assertEqual(map_file_to_template("R02_security_audit.md", self.templates_dir), "RXX_research_report.md")
         self.mark_passed()
 
     def test_ft_06_verifier_test_id_regex(self):
@@ -1149,6 +1150,8 @@ class TestPlansACIToolchain(YSCBTestCase):
 
     def test_et_02_strikethrough_codeblock_html_comment_stripped_in_p01(self):
         """ET-02 (EC-02): P01 中刪除線 ~~FR-99~~、代碼塊 FR-88 與 HTML 註解 EC-77 不被計入孤兒需求 ID。"""
+        from agents_workflow.plans._verifier_specs import extract_requirement_ids
+
         extra = (
             "\n- ~~**FR-99**：已取消之需求~~\n"
             "```markdown\n| **FR-88** | 範例需求 |\n```\n"
@@ -1157,7 +1160,7 @@ class TestPlansACIToolchain(YSCBTestCase):
         p_dir = self.plans_dir / "2026_10_23_1310_noise_strip"
         p_dir.mkdir(parents=True)
         p01_file = self._write_compliant_p01(p_dir, extra_body=extra)
-        ids = self.verifier.extract_requirement_ids(p01_file.read_text(encoding="utf-8"))
+        ids = extract_requirement_ids(p01_file.read_text(encoding="utf-8"))
         self.assertEqual(ids, {"FR-01", "FR-02", "EC-01", "NFR-01"})
         self.mark_passed()
 
@@ -1729,11 +1732,14 @@ class TestPlansModelRecord(YSCBTestCase):
         self.assertEqual(len(cands), 2)
 
         # 驗證 REV-02 list_sessions 自動過濾 Subagent 並支援 include_all_workspaces
+        from agents_workflow.plans._trace_parser import parse_transcript_file
+        from agents_workflow.plans._trace_renderer import render_session_list_text
+
         listed_ws = engine.list_sessions(include_all_workspaces=False, include_subagents=False)
         self.assertEqual(len(listed_ws), 2, "應列出 2 份主工作區對話，並自動排除 Subagent")
         listed_all = engine.list_sessions(include_all_workspaces=True, include_subagents=True)
         self.assertEqual(len(listed_all), 3, "include_subagents=True 時應包含 Subagent 共 3 份")
-        self.assertIn("YS-Codebase Historical Session Transcripts", engine.render_session_list_text(listed_ws))
+        self.assertIn("YS-Codebase Historical Session Transcripts", render_session_list_text(listed_ws))
 
         # 8. 驗證 EC-02：剛歸檔計畫自動探測與 CLI 正負向呼叫
         shutil_target = trace_arch_dir / "2026" / "10" / plan_a.name
@@ -1791,7 +1797,7 @@ class TestPlansModelRecord(YSCBTestCase):
             ]) + "\n",
             encoding="utf-8",
         )
-        _, cc_sigs, cc_thinks, cc_stats = engine._parse_transcript_file(claude_fmt_file)
+        _, cc_sigs, cc_thinks, cc_stats = parse_transcript_file(claude_fmt_file)
         self.assertEqual(cc_stats["tokens"]["reported_api_usage"]["total_tokens"], 2000)
         self.assertEqual(cc_stats["steps_and_tools"]["total_read_ops"], 1)
         self.assertEqual(cc_stats["steps_and_tools"]["total_edit_ops"], 2)
@@ -1866,7 +1872,7 @@ class TestPlansModelRecord(YSCBTestCase):
             ]) + "\n",
             encoding="utf-8",
         )
-        _, r4_sigs, _, r4_stats = engine._parse_transcript_file(rev04_file)
+        _, r4_sigs, _, r4_stats = parse_transcript_file(rev04_file)
         self.assertEqual(r4_stats["steps_and_tools"]["model_turns"], 3, "GENERIC 步驟不得計入 model_turns")
         self.assertEqual(r4_stats["tokens"]["reported_api_usage"]["total_tokens"], 600, "應支援頂層 input_tokens/output_tokens")
         self.assertFalse(any(s.signal_type == "CONTEXT_WASTE" for s in r4_sigs), "ByteOffset 分段讀取與失敗讀檔不得誤判為 CONTEXT_WASTE")
@@ -1920,7 +1926,7 @@ class TestPlansModelRecord(YSCBTestCase):
             ]) + "\n",
             encoding="utf-8",
         )
-        _, r6_sigs, _, r6_stats = engine._parse_transcript_file(rev06_file)
+        _, r6_sigs, _, r6_stats = parse_transcript_file(rev06_file)
         self.assertEqual(
             r6_stats["token_efficiency"]["wasted_breakdown"]["unindexed_blind_reads"],
             0,

@@ -22,8 +22,8 @@ def _load_yscb_module():
     host_d, _ = uri._get_host_config()
     candidates = [
         os.path.join(host_d, "yscb.py"),
-        os.path.join(uri._get_yscb_root(), "yscb.py"),
-        os.path.join(os.path.dirname(uri._get_yscb_root()), "yscb.py"),
+        os.path.join(uri.resolve_yscb_root(), "yscb.py"),
+        os.path.join(os.path.dirname(uri.resolve_yscb_root()), "yscb.py"),
         os.path.abspath("yscb.py")
     ]
     for c in candidates:

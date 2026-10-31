@@ -7,11 +7,8 @@ stream interception, intercepts SystemExit, and implements lazy module loading.
 """
 
 import argparse
-import importlib
-import importlib.util
 import json
 import os
-import platform
 import sys
 import threading
 import time
@@ -20,9 +17,8 @@ from typing import Any, Dict, List, Optional
 from core import events
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
 from core.platform import ensure_private_venv
-from server.streamer import DebouncedIOStreamer
 from server.service import ServiceManager
-
+from server.streamer import DebouncedIOStreamer
 
 
 class WarmWorker:
@@ -34,8 +30,6 @@ class WarmWorker:
         self.yscb_root = os.path.abspath(yscb_root)
         ensure_private_venv(self.yscb_root)
         self.emit_packet_fn = emit_packet_fn
-        self._is_running = True
-        self._module_cache: Dict[str, Any] = {}
         self.service_manager = ServiceManager()
 
     def pre_warm(self) -> None:
@@ -43,7 +37,6 @@ class WarmWorker:
         start_t = time.time()
         pid = os.getpid()
 
-        # Pre-warm Python environment paths before broadcasting events or starting services
         modules_dir = os.path.join(self.yscb_root, ".modules")
         if modules_dir not in sys.path:
             sys.path.insert(0, modules_dir)
@@ -63,7 +56,6 @@ class WarmWorker:
         except Exception:
             pass
 
-        # Host and start background services in Worker
         try:
             self.service_manager.start_all({"yscb_root": self.yscb_root})
         except Exception as e:
@@ -87,6 +79,52 @@ class WarmWorker:
             "msg": f"Warm worker pre_warm completed in {duration_ms:.1f}ms (PID: {pid})",
         })
 
+    def _prepare_execution_env(self, cwd: str, env: Optional[Dict[str, str]]) -> None:
+        """Applies working directory, environment overrides, and security guard tokens."""
+        if cwd and os.path.isdir(cwd):
+            os.chdir(cwd)
+
+        if env:
+            os.environ.update(env)
+
+        host_dir = os.environ.get(GUARD_ENV_HOST)
+        if not host_dir or not os.path.isdir(host_dir):
+            cand = os.path.dirname(self.yscb_root)
+            host_dir = cand if os.path.isfile(os.path.join(cand, "yscb.config.json")) else self.yscb_root
+        os.environ[GUARD_ENV_HOST] = host_dir
+        os.environ[GUARD_ENV_TOKEN] = os.environ.get(GUARD_ENV_TOKEN, "yscb_auth_dispatch")
+
+    def _dispatch_command_with_captured_streams(
+        self,
+        module: str,
+        args: List[str],
+        streamer: DebouncedIOStreamer,
+    ) -> int:
+        """Resolves command path, dispatches local CLI under captured IO streams, and contains SystemExit."""
+        with streamer:
+            try:
+                from core.commands.dispatcher import (
+                    _load_registry,
+                    dispatch_local,
+                )
+                registry = _load_registry(self.yscb_root)
+                cmd_path, cmd_spec, sub_args = registry.resolve_command_path(module, args)
+                if not cmd_path:
+                    cmd_name = args[0] if args else "help"
+                    sub_args = args[1:] if len(args) > 1 else []
+                    cmd_spec = registry.get_command(module, cmd_name)
+                else:
+                    cmd_name = cmd_path
+
+                return dispatch_local(
+                    module_name=module,
+                    cmd_name=cmd_name,
+                    raw_args=sub_args,
+                    cmd_spec=cmd_spec,
+                    yscb_abs=self.yscb_root,
+                )
+            except SystemExit as se:
+                return se.code if isinstance(se.code, int) else (1 if se.code else 0)
 
     def execute_task(
         self,
@@ -96,57 +134,18 @@ class WarmWorker:
         env: Optional[Dict[str, str]] = None,
     ) -> int:
         """
-        Executes target module process(args) with lazy loading and SystemExit containment.
+        Executes target module command with lazy loading, stream capture, and SystemExit containment.
         """
         start_time = time.time()
         orig_cwd = os.getcwd()
         orig_env = dict(os.environ)
 
         streamer = DebouncedIOStreamer(emit_chunk=self.emit_packet_fn, debounce_ms=500)
+        exit_code = 1
 
         try:
-            if cwd and os.path.isdir(cwd):
-                os.chdir(cwd)
-
-            if env:
-                os.environ.update(env)
-
-            # Security guard injection
-            host_dir = os.environ.get(GUARD_ENV_HOST)
-            if not host_dir or not os.path.isdir(host_dir):
-                cand = os.path.dirname(self.yscb_root)
-                host_dir = cand if os.path.isfile(os.path.join(cand, "yscb.config.json")) else self.yscb_root
-            os.environ[GUARD_ENV_HOST] = host_dir
-            os.environ[GUARD_ENV_TOKEN] = os.environ.get(GUARD_ENV_TOKEN, "yscb_auth_dispatch")
-
-            cmd_name = args[0] if args else "help"
-            sub_args = args[1:] if len(args) > 1 else []
-
-            with streamer:
-                try:
-                    from core.commands.dispatcher import _load_registry, dispatch_local, _find_module_cli, _MODULE_CACHE
-                    registry = _load_registry(self.yscb_root)
-                    cmd_path, cmd_spec, sub_args = registry.resolve_command_path(module, args)
-                    if not cmd_path:
-                        cmd_name = args[0] if args else "help"
-                        sub_args = args[1:] if len(args) > 1 else []
-                        cmd_spec = registry.get_command(module, cmd_name)
-                    else:
-                        cmd_name = cmd_path
-
-                    target_cli = _find_module_cli(module, self.yscb_root)
-                    exit_code = dispatch_local(
-                        module_name=module,
-                        cmd_name=cmd_name,
-                        raw_args=sub_args,
-                        cmd_spec=cmd_spec,
-                        yscb_abs=self.yscb_root,
-                    )
-                    if target_cli and target_cli in _MODULE_CACHE:
-                        self._module_cache[module] = _MODULE_CACHE[target_cli]
-                except SystemExit as se:
-                    exit_code = se.code if isinstance(se.code, int) else (1 if se.code else 0)
-
+            self._prepare_execution_env(cwd, env)
+            exit_code = self._dispatch_command_with_captured_streams(module, args, streamer)
         except Exception as ex:
             streamer.write("stderr", f"[Server Worker Error] {type(ex).__name__}: {str(ex)}\n")
             self.emit_packet_fn({
@@ -159,7 +158,7 @@ class WarmWorker:
         finally:
             try:
                 os.chdir(orig_cwd)
-            except Exception:
+            except OSError:
                 pass
             os.environ.clear()
             os.environ.update(orig_env)
@@ -170,7 +169,7 @@ class WarmWorker:
         return exit_code
 
 
-def worker_main(yscb_root: str, in_stream=None, out_stream=None) -> None:
+def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -> None:
     """Entry point for warm worker subprocess loop reading from stdin and writing to stdout."""
     try:
         from core.platform import set_process_title
@@ -182,9 +181,6 @@ def worker_main(yscb_root: str, in_stream=None, out_stream=None) -> None:
     ipc_out = out_stream or orig_stdout
     in_io = in_stream or sys.stdin
 
-    # Dedicated IPC output handle: redirect global sys.stdout to sys.stderr
-    # so that background service threads and external libraries calling print()
-    # will never pollute the NDJSON IPC control stream.
     sys.stdout = sys.stderr
 
     ipc_lock = threading.Lock()
@@ -195,14 +191,14 @@ def worker_main(yscb_root: str, in_stream=None, out_stream=None) -> None:
                 line = json.dumps(packet) + "\n"
                 ipc_out.write(line)
                 ipc_out.flush()
-            except Exception:
+            except OSError:
                 pass
 
+    worker: Optional[WarmWorker] = None
     try:
         worker = WarmWorker(yscb_root=yscb_root, emit_packet_fn=emit_fn)
         worker.pre_warm()
 
-        # Notify master that worker is ready, including hosted services status
         emit_fn({
             "type": "worker_ready",
             "worker_pid": os.getpid(),
@@ -215,6 +211,8 @@ def worker_main(yscb_root: str, in_stream=None, out_stream=None) -> None:
                 if not line:
                     break
 
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
                 line = line.strip()
                 if not line:
                     continue
@@ -237,10 +235,11 @@ def worker_main(yscb_root: str, in_stream=None, out_stream=None) -> None:
             except Exception as err:
                 emit_fn({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(err)})
     finally:
-        try:
-            worker.service_manager.stop_all(timeout_sec=1.5)
-        except Exception:
-            pass
+        if worker is not None:
+            try:
+                worker.service_manager.stop_all()
+            except Exception:
+                pass
         sys.stdout = orig_stdout
 
 

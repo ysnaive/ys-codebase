@@ -2,11 +2,11 @@
 knowledge-db 核心資料結構、Enums 與 Schema 模型
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import Enum
 import fnmatch
 import hashlib
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .exceptions import InvalidSpaceConfigError, SchemaValidationError
 
@@ -146,7 +146,7 @@ class UnifiedSymbol:
     fqn: str = ""
     scope_path: str = ""
     parent_id: Optional[str] = None
-    children: Tuple["UnifiedSymbol", ...] = ()
+    children: Tuple[Any, ...] = ()
     parameters: Tuple[Dict[str, Any], ...] = ()
     return_type: str = ""
     search_payload: str = ""
@@ -155,7 +155,7 @@ class UnifiedSymbol:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        # 階層與向後相容同步處理
+        # 階層與成員欄位同步
         if not self.children and self.members:
             object.__setattr__(self, "children", tuple(self.members))
         elif not self.members and self.children:
@@ -169,8 +169,7 @@ class UnifiedSymbol:
             return sp
         if isinstance(sp, str) and sp:
             return [sp]
-        single_sp = self.metadata.get("space", "")
-        return [single_sp] if single_sp else []
+        return []
 
     @classmethod
     def compute_id(cls, space: str, file_path: str, name: str, kind: str, line_number: int) -> str:
@@ -180,13 +179,11 @@ class UnifiedSymbol:
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> Dict[str, Any]:
-        members_data = []
-        for m in (self.children or self.members):
-            if hasattr(m, "to_dict"):
-                members_data.append(m.to_dict())
-            elif isinstance(m, dict):
-                members_data.append(m)
-
+        meta = dict(self.metadata)
+        if "space" in meta:
+            single_sp = meta.pop("space")
+            if "spaces" not in meta and single_sp:
+                meta["spaces"] = [single_sp]
         return {
             "id": self.id,
             "name": self.name,
@@ -205,8 +202,7 @@ class UnifiedSymbol:
             "return_type": self.return_type,
             "search_payload": self.search_payload,
             "visibility": self.visibility,
-            "members": members_data,
-            "metadata": dict(self.metadata),
+            "metadata": meta,
         }
 
     @classmethod
@@ -219,9 +215,6 @@ class UnifiedSymbol:
                 raise SchemaValidationError(f"UnifiedSymbol missing required field '{key}'.")
 
         children_raw = data.get("children", [])
-        if not children_raw and "members" in data:
-            children_raw = data.get("members", [])
-
         children: List[Any] = []
         members: List[Any] = []
         for m in children_raw:
@@ -267,6 +260,11 @@ class UnifiedSymbol:
 
         params_raw = data.get("parameters", [])
         parameters = tuple(dict(p) for p in params_raw if isinstance(p, dict))
+        metadata = dict(data.get("metadata", {}))
+        if "space" in metadata:
+            single_sp = metadata.pop("space")
+            if "spaces" not in metadata and single_sp:
+                metadata["spaces"] = [single_sp]
 
         return cls(
             id=str(data["id"]),
@@ -287,7 +285,7 @@ class UnifiedSymbol:
             search_payload=str(data.get("search_payload", "")),
             visibility=str(data.get("visibility", "public")),
             members=tuple(members),
-            metadata=dict(data.get("metadata", {})),
+            metadata=metadata,
         )
 
 
@@ -327,52 +325,6 @@ class AggregatedFileResult:
     items: List[AggregatedItem]
     spaces: List[str]
     language: str
-
-    @property
-    def symbol(self) -> UnifiedSymbol:
-        """向後相容：獲取該檔案中排名最高之主要 UnifiedSymbol"""
-        if self.items:
-            return self.items[0].symbol
-        return UnifiedSymbol(
-            id=self.file_path,
-            name=self.file_path,
-            kind="file",
-            file_path=self.file_path,
-            line_number=1,
-            language=self.language,
-        )
-
-    @property
-    def score(self) -> float:
-        """向後相容別名"""
-        return self.total_score
-
-    @property
-    def space(self) -> str:
-        """向後相容別名"""
-        return ", ".join(self.spaces) if self.spaces else ""
-
-    @property
-    def matched_terms(self) -> List[str]:
-        """向後相容：獲取子項目命中詞聯集"""
-        terms = set()
-        for itm in self.items:
-            terms.update(itm.matched_terms)
-        return sorted(list(terms))
-
-    @property
-    def snippet(self) -> str:
-        """向後相容：獲取主要子項目之摘要"""
-        if self.items:
-            return self.items[0].snippet
-        return ""
-
-    @property
-    def code_snippet(self) -> Optional[Any]:
-        """向後相容：獲取主要子項目之代碼切片"""
-        if self.items:
-            return self.items[0].code_snippet
-        return None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -440,21 +392,6 @@ class SpaceConfig:
         )
 
 
-@dataclass
-class WeightedToken:
-    """查詢 Token 資料結構 (含權重與語意類別)"""
-    term: str
-    weight: float = 1.0
-    kind: str = "original"  # "original" | "synonym" | "alias" | "related"
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "term": self.term,
-            "weight": self.weight,
-            "kind": self.kind,
-        }
-
-
 @dataclass(frozen=True)
 class SymbolCallSite:
     """
@@ -464,7 +401,7 @@ class SymbolCallSite:
     callee_name: str             # 被調用之識別碼名稱 (如 'build_index' 或 'load_binary')
     line_number: int             # 調用所在行號 (1-based)
     caller_symbol_id: str = ""   # 調用者所屬頂層 UnifiedSymbol ID
-    caller_member_name: str = "" # 若在類別/方法內，記錄方法名 (如 'KnowledgeEngine.act_search')
+    caller_member_name: str = "" # 若在類別/方法內，記錄方法名 (如 'KnowledgeEngine.search')
     context_prefix: str = ""     # 調用前綴 (如 'self.', 'InvertedIndex.', 'uri.')
     file_path: str = ""          # 相對於專案根目錄之正規化檔案路徑
     space: str = ""              # 所屬語意空間
@@ -493,8 +430,3 @@ class SymbolCallSite:
             file_path=str(data.get("file_path", "")),
             space=str(data.get("space", "")),
         )
-
-
-
-
-

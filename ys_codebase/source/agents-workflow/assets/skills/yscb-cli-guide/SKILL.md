@@ -1,6 +1,6 @@
 ---
 name: yscb-cli-guide
-description: 規範 yscb (yscb.py) 命令列單行執行防呆、常駐 Server 守門、技能內建指令直跑與非常規指令 -h 按需自省機制，確保 CLI 呼叫合法安全。觸發情境：準備透過終端工具執行任何 yscb.py 指令前、查詢不熟悉之子命令語法或透過 -h 確認操作安全等級。排除情境：與 yscb 無關之一般作業系統指令、純靜態文檔閱讀或代碼語意檢索（代碼檢索改用 knowledge-db-search）。
+description: 規範 yscb.py 命令列單行防呆、常駐 Server 守門與非常規指令 -h 按需自省。觸發情境：透過終端工具執行任何 yscb.py 指令前，或查詢子命令語法與安全等級 ([SAFE]/[CONDITIONAL]/[GATED])。
 ---
 
 # YSCB CLI 執行慣例與 `-h` 按需自省指南 (Agents CLI Guide)
@@ -29,12 +29,9 @@ yscb-cli-guide 執行前檢核表：
 YSCB 全面採用 Progressive Disclosure（漸進式揭露），不再於技能內靜態傾倒全系統 CLI 大表，改採以下雙軌調用機制：
 
 1. **軌跡 A — 技能內建指令免查直跑 (`Skill-Vetted Fast Pass`)**：
-   - 凡於各工作流與工具技能（如 [`development-sop`](../development-sop/SKILL.md)、[`knowledge-db-search`](../knowledge-db-search/SKILL.md)、[`yscb-module-dev`](../yscb-module-dev/SKILL.md)、[`todo`](../todo/SKILL.md)、[`roadmap`](../roadmap/SKILL.md) 等）步驟中**已明確寫出完整語法的標準指令**（如 `plan verify`、`knowledge-db search`、`dev check`、`dev test`、`todo list` 等），均已預審為 `[SAFE]` 自主安全（或已由該技能內建確認節點守門），Agent **可直接執行，無須額外查表或跑 `-h`**。
+   - 凡於各工作流與工具技能（如 [`development-sop`](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)、`knowledge-db-search`、`yscb-module-dev`、[`todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`)、[`roadmap`](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 等）步驟中**已明確寫出完整語法的標準指令**（如 `plan verify`、`knowledge-db search`、`dev check`、`dev test`、`todo list` 等），均已預審為 `[SAFE]` 自主安全（或已由該技能內建確認節點守門），Agent **可直接執行，無須額外查表或跑 `-h`**。
 2. **軌跡 B — 非常規指令／未知參數強制 `-h` 自省 (`Just-in-Time -h Inspection`)**：
-   - 當準備調用**未在當前技能步驟中明文列出之指令**、**嘗試非標準選項旗標**、或**不確定某指令之安全等級與時序限制**時，**嚴禁盲目猜測參數**；必須先執行 `-h` / `--help` 按需自省：
-     ```bash
-     python __${yscb.host://yscb.py}__ <module> [command] [subcommand] -h
-     ```
+   - 當準備調用**未在當前技能步驟中明文列出之指令**、**嘗試非標準選項旗標**、或**不確定某指令之安全等級與時序限制**時，**嚴禁盲目猜測參數**；必須先執行 `-h` / `--help` 按需自省：`python __${yscb.host://yscb.py}__ <module> [command] [subcommand] -h`。
    - `yscb` 的 `-h` 輸出由核心 `HelpRenderer` 統一渲染，原生包含：
      - `Security   : [SAFE] / [CONDITIONAL] / [GATED]`（權限分級）
      - `ARGUMENTS` & `OPTIONS`（正交選項分組、必填屬性與型別）

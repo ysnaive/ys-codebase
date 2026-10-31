@@ -1,17 +1,20 @@
 ---
 name: research
-description: 針對高複雜度技術命題與多候選方案執行優劣權衡 (Pros & Cons)、資源代價分析與架構可行性驗證，產出 R{NN}_{topic}.md 專題調研報告與三大流轉出口建議卡。觸發情境：輸入 /research 或 /Research、要求針對未知技術選型、演算法可行性或跨平台架構進行深度調研並產出評估報告 (technical research / trade-off evaluation)。排除情境：方案已明確之日常功能編碼實作（改用 development-sop）、開發測試中途之單純錯誤排查（改用 discuss）。
+description: 針對高複雜度技術命題與多候選方案執行優劣權衡與可行性驗證，產出 R{NN}_{topic}.md 調研報告與三出口建議卡。觸發情境：輸入 /research，或要求對技術選型與架構方案進行深度調研評估。
 ---
 
 # 深度技術調研工作流 (Research)
 
 本工作流用於高複雜度、新技術選型、演算法可行性或架構演進之深度論證與客觀對比。執行規範遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)。
 
+> [!NOTE]
+> **邊界轉交說明**：若方案已明確、屬於日常功能編碼實作，請直接遵循 [development-sop](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)；若為開發或測試中途之異常排查，請改走 [`/discuss`](`__#{module://agents-workflow/assets/skills/discuss/SKILL.md}__`)。
+
 ---
 
 ## 核心原則與雙軌生命週期
 
-1. **僅被動觸發（Explicit / Requested Only）**：獨立前置調研僅在開發者提出探討需求或下達顯式指令（如 `/Research [主題]` 或 `/research [主題]`）時進行，嚴禁在一般功能開發中途擅自發起。
+1. **僅被動觸發（Explicit / Requested Only）**：獨立前置調研僅在開發者提出探討需求或下達顯式指令（如 `/research [主題]`）時進行，嚴禁在一般功能開發中途擅自發起。
 2. **雙軌生命週期（記憶體收斂 -> 實體落檔）**：
    - **獨立前置調研**：未開立計畫前，隨問隨答與方案對比保留於對話與快取中，不主動在磁碟建檔。
    - **正式固化建檔**：開發者指示立項或需正式留痕時，寫入計畫目錄下的 `R{NN}_{topic}.md`（如 `R01_architecture_reference.md`）。
@@ -25,7 +28,7 @@ description: 針對高複雜度技術命題與多候選方案執行優劣權衡 
 開始執行時，請依序遵循以下檢核步驟：
 
 ```markdown
-/Research 專題調研檢核表：
+/research 專題調研檢核表：
 - [ ] 步驟 1：盤點核心痛點、調研目標與評估維度（若計畫目錄未建立則依 JIT 原則初始化）
 - [ ] 步驟 2：針對候選方案進行深度技術剖析、Pros/Cons 對比與 PoC/數據驗證
 - [ ] 步驟 3：讀取 RXX_research_report.md 模板，產出 R{NN}_{topic}.md 並更新 changelog.md
@@ -67,12 +70,12 @@ description: 針對高複雜度技術命題與多候選方案執行優劣權衡 
 
 ```markdown
 ### 🔬 R01 調研報告已落檔
-- **產出文件**：[R01_{topic}.md](__${project://plans}__/{plan_name}/R01_{topic}.md)、[changelog.md](__${project://plans}__/{plan_name}/changelog.md)
+- **產出文件**：[R01_{topic}.md](`__${project://plans}__/{plan_name}/R01_{topic}.md`)、[changelog.md](`__${project://plans}__/{plan_name}/changelog.md`)
 - **調研主題**：[1 行調研核心命題]
 - **調研結論**：[1~2 行方案選型評估結論 / 推薦採納方案]
 - **推薦出口**：
-  1. 出口 ① 立即實作：轉入 [/NewPlan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 或原地追加 P01~P07 升級實作計畫
-  2. 出口 ② 路線圖儲備：轉入 [Roadmap](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 納入長期演進儲備（日後以 `roadmap promote` 消耗立項）或轉入 [/Todo](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`) 記錄微觀待辦
+  1. 出口 ① 立即實作：轉入 [/new-plan](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`) 或原地追加 P01~P07 升級實作計畫
+  2. 出口 ② 路線圖儲備：轉入 [/roadmap](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 納入長期演進儲備（日後以 `roadmap promote` 消耗立項）或轉入 [/todo](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`) 記錄微觀待辦
   3. 出口 ③ 放棄結案：方案不可行或成本過高，記錄原因後於調研報告標記 Concluded 登記結案
 - **待確認事項**：請問是否採納此結論，並選擇何種流轉出口？
 ```

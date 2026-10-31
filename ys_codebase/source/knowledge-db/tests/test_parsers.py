@@ -17,21 +17,21 @@ from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 from knowledge_db.parsers import (
     BaseParser,
-    CppParser,
-    CSharpParser,
     CssParser,
     HtmlParser,
-    JsTsParser,
-    MarkdownParser,
     ParserRegistry,
-    PythonParser,
     SpiceParser,
+    TreeSitterDriver,
 )
 from knowledge_db.schema import LanguageType, SymbolKind, UnifiedSymbol
 
 
 class TestParsers(YSCBTestCase):
     """多語言語意解析器 (Python, C/C++, C#, Markdown) 與 ParserRegistry 整合單元測試。"""
+
+    def setUp(self):
+        super().setUp()
+        self.registry = ParserRegistry(register_defaults=True)
 
     @require(Requirement.LOGIC)
     def test_ft_01_parser_registry_dispatch_and_priority(self):
@@ -40,16 +40,16 @@ class TestParsers(YSCBTestCase):
 
         # 1. 預設解析器匹配
         py_parser = registry.get_parser("module.py")
-        self.assertIsInstance(py_parser, PythonParser)
+        self.assertIsInstance(py_parser, TreeSitterDriver)
 
         md_parser = registry.get_parser("docs/README.md")
-        self.assertIsInstance(md_parser, MarkdownParser)
+        self.assertIsInstance(md_parser, TreeSitterDriver)
 
         cpp_parser = registry.get_parser("src/engine.hpp")
-        self.assertIsInstance(cpp_parser, CppParser)
+        self.assertIsInstance(cpp_parser, TreeSitterDriver)
 
         cs_parser = registry.get_parser("Models/User.cs")
-        self.assertIsInstance(cs_parser, CSharpParser)
+        self.assertIsInstance(cs_parser, TreeSitterDriver)
 
         # 2. 未知副檔名安全回傳 None 與空符號清單 (EC-02)
         unknown_parser = registry.get_parser("data.xyz_unknown")
@@ -74,7 +74,7 @@ class TestParsers(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_ft_02_python_parser_ast_extraction(self):
         """FT-02: 驗證 PythonParser AST 語法樹類別、函式、成員、簽名與 Docstring 提取"""
-        parser = PythonParser()
+        parser = self.registry.get_parser("source/engine.py")
         code = '''"""Module docstring"""
 from typing import Optional
 
@@ -131,7 +131,7 @@ def standalone_func(x: int, y: int = 10) -> int:
     @require(Requirement.LOGIC)
     def test_ft_03_python_parser_syntax_error_resilience(self):
         """FT-03: 驗證 PythonParser 面對語法錯誤時安全降級不崩潰 (EC-01)"""
-        parser = PythonParser()
+        parser = self.registry.get_parser("source/broken.py")
         broken_code = "def broken_func( this is invalid python syntax {;;"
         symbols = parser.parse("source/broken.py", broken_code, "test_space")
         self.assertEqual(symbols, [])
@@ -141,7 +141,7 @@ def standalone_func(x: int, y: int = 10) -> int:
     @require(Requirement.LOGIC)
     def test_ft_04_markdown_parser_headings_and_tables(self):
         """FT-04: 驗證 MarkdownParser 標題階層、表格與段落摘要提取 (EC-03)"""
-        parser = MarkdownParser()
+        parser = self.registry.get_parser("docs/guide.md")
         doc = """# 主標題 H1
 
 這是 H1 的段落內容介紹。
@@ -179,7 +179,7 @@ def standalone_func(x: int, y: int = 10) -> int:
     @require(Requirement.LOGIC)
     def test_ft_05_cpp_parser_classes_and_macros(self):
         """FT-05: 驗證 CppParser 類別、巨集、列舉與 Doxygen 註解提取"""
-        parser = CppParser()
+        parser = self.registry.get_parser("src/controller.hpp")
         cpp_code = """
 /// PID 控制器計算巨集
 #define PID_CALC(p, i, d) ((p) * 1.0f + (i) * 0.1f)
@@ -216,7 +216,7 @@ public:
     @require(Requirement.LOGIC)
     def test_ft_06_csharp_parser_classes_and_xml_doc(self):
         """FT-06: 驗證 CSharpParser 命名空間、類別、介面與 XML Doc 提取"""
-        parser = CSharpParser()
+        parser = self.registry.get_parser("Services/UserService.cs")
         cs_code = """
 namespace App.Services {
     /// <summary>
@@ -253,7 +253,7 @@ namespace App.Services {
     @require(Requirement.LOGIC)
     def test_cpp_multiline_signature_and_scope(self):
         """驗證 C++ 多行簽名累積狀態機、Namespace 堆疊與 Class 作用域。"""
-        parser = CppParser()
+        parser = self.registry.get_parser("src/renderer.hpp")
         code = '''
 namespace Engine {
 namespace Rendering {
@@ -288,7 +288,7 @@ public:
     @require(Requirement.LOGIC)
     def test_csharp_and_markdown_end_line_coordinates(self):
         """驗證 C# 與 Markdown end_line 邊界座標精確性。"""
-        cs_parser = CSharpParser()
+        cs_parser = self.registry.get_parser("src/Player.cs")
         cs_code = '''
 namespace Game.Core {
     public class PlayerController {
@@ -300,7 +300,7 @@ namespace Game.Core {
         for s in cs_symbols:
             self.assertGreaterEqual(s.end_line, s.line_number)
 
-        md_parser = MarkdownParser()
+        md_parser = self.registry.get_parser("docs/guide.md")
         doc = '''# Introduction
 This is an intro paragraph.
 
@@ -558,7 +558,8 @@ class TestWebParsers(YSCBTestCase):
 
     def setUp(self):
         super().setUp()
-        self.js_ts_parser = JsTsParser()
+        self.registry = ParserRegistry(register_defaults=True)
+        self.js_ts_parser = self.registry.get_parser("app.ts")
         self.html_parser = HtmlParser()
         self.css_parser = CssParser()
 
@@ -577,7 +578,9 @@ class TestWebParsers(YSCBTestCase):
         """FT-02: 驗證 JsTsParser 提取類別、介面、型別、函式、箭頭函式、方法與 JSDoc"""
         valid_exts = ["app.js", "comp.jsx", "index.ts", "widget.tsx", "module.mjs", "config.cjs"]
         for f in valid_exts:
-            self.assertTrue(self.js_ts_parser.can_parse(f))
+            p = self.registry.get_parser(f)
+            self.assertIsNotNone(p)
+            self.assertTrue(p.can_parse(f))
 
         ts_content = """/**
  * UserService Interface
@@ -732,7 +735,7 @@ $sass-bg: #f8f9fa;
         """FT-05: 驗證 ParserRegistry 動態分發與 Web 解析器整合"""
         registry = ParserRegistry(register_defaults=True)
 
-        self.assertIsInstance(registry.get_parser("index.ts"), JsTsParser)
+        self.assertIsInstance(registry.get_parser("index.ts"), TreeSitterDriver)
         self.assertIsInstance(registry.get_parser("page.html"), HtmlParser)
         self.assertIsInstance(registry.get_parser("style.scss"), CssParser)
 

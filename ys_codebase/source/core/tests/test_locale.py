@@ -11,7 +11,7 @@ import tempfile
 from dev.testing import YSCBTestCase, require, Requirement
 from core import contributes
 from core import locale
-from core import uri
+from core import uri, vfs
 from core.validator import ContributesValidator
 
 
@@ -366,7 +366,7 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.assertEqual(locale.detect_system_locale_chain("POSIX"), ["zh"])
         self.assertEqual(locale.detect_system_locale_chain(""), ["zh"])
 
-        # Verify AtomicEngine._seed_or_update_config seeds fixed default in config.project.json
+        # Verify AtomicEngine._deploy_and_strip_single_module_config seeds fixed default in config.project.json
         # and detected OS primary language in config.local.json on first run without overwriting user edits
         from core.engine import AtomicEngine
         eng = AtomicEngine()
@@ -384,16 +384,18 @@ class TestCoreLocaleEngine(YSCBTestCase):
             if os.path.exists(cfg_local_path):
                 os.remove(cfg_local_path)
             os.environ["LC_ALL"] = "ja_JP.UTF-8"
-            eng._seed_or_update_config("core", tpl_dir)
+            eng._deploy_and_strip_single_module_config("core", tpl_dir)
             self.assertTrue(os.path.exists(cfg_local_path))
-            seeded_local = uri.read_json("config://core/config.local.json")
+            seeded_local = vfs.read_json("config://core/config.local.json")
             self.assertEqual(seeded_local.get("locale"), ["ja", "zh"])
 
             # Second run must NOT overwrite user-customized config.local.json
-            uri.write_json("config://core/config.local.json", {"locale": ["zh"]})
+            vfs.write_json("config://core/config.local.json", {"locale": ["zh"]})
+            with open(os.path.join(tpl_dir, "config.project.json"), "w", encoding="utf-8") as f:
+                json.dump({"project_root": "!undefined", "locale": ["zh"]}, f)
             os.environ["LC_ALL"] = "en_US.UTF-8"
-            eng._seed_or_update_config("core", tpl_dir)
-            preserved_local = uri.read_json("config://core/config.local.json")
+            eng._deploy_and_strip_single_module_config("core", tpl_dir)
+            preserved_local = vfs.read_json("config://core/config.local.json")
             self.assertEqual(preserved_local.get("locale"), ["zh"])
         finally:
             if old_lc_all is None:

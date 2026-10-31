@@ -74,7 +74,7 @@
 
 | Token 名稱 | 宿主檔案位置 (`knowledge-db` 註冊) | 結構屬性 | 注入用途與適用場景 |
 | :--- | :--- | :---: | :--- |
-| `KNOWLEDGE_DB_SPACE` | `knowledge-db` 注入之檢索指南片段內 | 獨立段落區塊 | 由 `knowledge-db` 動態计算並渲染當前專案已註冊之語意檢索空間速查表 (`--space=<name>`) |
+| `KNOWLEDGE_DB_SPACE` | `knowledge-db` 注入之檢索指南片段內 | 獨立段落區塊 | 由 `knowledge-db` 動態計算並渲染當前專案已註冊之語意檢索空間速查表 (`--space=<name>`) |
 
 > [!WARNING]
 > **結構屬性防呆（`EC-05`）**：上表中唯獨 `AGENTS_SKILL_ROUTING` 位於 `AgentsStandards.md` 的 Markdown 表格內部，向其注入的片段內容**必須是合法的兩欄式 Markdown 表格列**；其餘 23 個錨點均為獨立段落區塊，可注入標準 Markdown 標題、清單或引用塊。
@@ -141,18 +141,14 @@
 
 ```json
 {
-  "contributes": {
-    "agents-workflow": {
-      "insert": [
-        {
-          "type": "uri",
-          "token": "PHASE05_AGENTS_GUIDE",
-          "value": "config://agents-workflow/snippets/p05_custom_rules.md",
-          "mode": "below"
-        }
-      ]
+  "insert": [
+    {
+      "type": "uri",
+      "token": "PHASE05_AGENTS_GUIDE",
+      "value": "config://agents-workflow/snippets/p05_custom_rules.md",
+      "mode": "below"
     }
-  }
+  ]
 }
 ```
 
@@ -167,47 +163,37 @@
 
 ```json
 {
-  "contributes": {
-    "agents-workflow": {
-      "export": [
-        {
-          "type": "skill",
-          "name": "db-migration-guard",
-          "source": "config://agents-workflow/skills/db-migration-guard",
-          "description": "規範專案資料庫 Schema 變更、遷移腳本編寫與回滾驗證流程。觸發情境：新增或修改 db/migrations/、變更 ORM Model 欄位或執行遷移指令前。排除情境：一般唯讀 SQL 查詢或非資料庫業務邏輯修改。"
-        }
-      ],
-      "insert": [
-        {
-          "type": "uri",
-          "token": "AGENTS_SKILL_ROUTING",
-          "value": "config://agents-workflow/snippets/db_migration_routing.md",
-          "mode": "below"
-        }
-      ]
+  "export": [
+    {
+      "type": "skill",
+      "name": "db-migration-guard",
+      "source": "config://agents-workflow/skills/db-migration-guard"
     }
-  }
+  ],
+  "insert": [
+    {
+      "type": "uri",
+      "token": "AGENTS_SKILL_ROUTING",
+      "value": "config://agents-workflow/snippets/db_migration_routing.md",
+      "mode": "below"
+    }
+  ]
 }
 ```
 
 ### 4.3 軌跡 ③：功能特化型 Skill (`Feature / Workflow Skill`)
 
-適用於專案特定子系統的多步驟標準作業程序（如新增繪圖節點、編譯特效 Shader、執行專案特定部署流程）。依觸發方式可設為主動指令型（`/my-workflow`）或三段式環境型，並可選配注入 `AGENTS_SKILL_ROUTING` 或 `WORKFLOW_SOP_STANDARDS`：
+適用於專案特定子系統的多步驟標準作業程序（如新增繪圖節點、編譯特效 Shader、執行專案特定部署流程）。依觸發方式可設為主動指令型（`B-Strict` 或 `B-Assist`）或 `A1` 正向邊界環境型，並可選配注入 `AGENTS_SKILL_ROUTING` 或 `WORKFLOW_SOP_STANDARDS`：
 
 ```json
 {
-  "contributes": {
-    "agents-workflow": {
-      "export": [
-        {
-          "type": "skill",
-          "name": "shader-build-flow",
-          "source": "config://agents-workflow/skills/shader-build-flow",
-          "description": "執行專案自訂 Shader 語法檢核、跨平台編譯與熱重載驗證閉環。僅於顯式輸入 /shader-build-flow 或明確指示編譯與驗證專案 Shader 資產時觸發。"
-        }
-      ]
+  "export": [
+    {
+      "type": "skill",
+      "name": "shader-build-flow",
+      "source": "config://agents-workflow/skills/shader-build-flow"
     }
-  }
+  ]
 }
 ```
 
@@ -215,15 +201,15 @@
 
 ## 5. 新建 Skill 結構與雙軌 Description 檢核清單
 
-透過 `/skill-creator` 產出任何新 `SKILL.md` 時，必須內建符合 [`/skill-optimizer`](`__#{module://agents-workflow/assets/skills/skill-optimizer/SKILL.md}__`) 五維度標準的黃金結構：
+透過 `/skill-creator` 產出任何新 `SKILL.md` 時，必須遵循通用技能設計標準 [`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`)、YSCB 工具包編譯標準 [`YscbSkillDesignToolStandards.md`](`__#{module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md}__`) 與 [`/skill-optimizer`](`__#{module://agents-workflow/assets/skills/skill-optimizer/SKILL.md}__`) 五維度標準的黃金結構：
 
-1. **YAML Frontmatter 與 `contribute.json` 雙端同步**：
-   - `SKILL.md` 頂部 `description` 與 `contribute.json` 中 `export.description` **必須保持一致**。
-   - **被動環境攔截型（軌跡 ②）**：強制採用三段式結構化邊界：`{核心用途與支援範圍}。觸發情境：{高頻正樣本意圖}。排除情境：{易誤觸發負樣本邊界}。`
-   - **主動指令型（軌跡 ③ Slash 指令）**：強制採用極簡指令契約：`{1 句話核心目的與交付物}。僅於顯式輸入 /{cmd} 或明確指示{核心動作}時觸發。`（嚴禁包含括號大小寫變體如 `(或 /Cmd)`）。
-2. **上下文經濟與單層參考拆分**：
-   - `SKILL.md` 本體嚴格控制在 **500 行以內**（建議 80~180 行）。
-   - 若包含長篇 API 表、Schema 或範例，拆分至同目錄下單層 `references/<topic>.md`（超過 100 行之參考檔頂部須附 `## 目錄 (Contents)`）。
-3. **進度檢核表與 Gotchas 收尾**：
-   - 多步驟技能於 `## 執行步驟` 開頭提供可勾選之 Markdown Checklist。
+1. **YAML Frontmatter 單一真理來源與 `contribute.json` 宣告（[`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) §1 & [`YscbSkillDesignToolStandards.md`](`__#{module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md}__`) §3）**：
+   - `SKILL.md` 頂部 YAML Frontmatter 之 `description` 為技能描述之**唯一真理來源（SSOT）**；`contribute.json` 的 `export` 條目（`type: "skill"`）僅宣告 `type`、`name`、`source`，不重複填寫 `description`。
+   - **被動環境攔截型（軌跡 ② — A1 正向邊界契約）**：採用 `{核心用途、處理對象與交付物}。觸發情境：{具體動詞、目標檔案路徑特徵與前置攔截時機}。`（預設不寫 `排除情境：`；僅於同領域易混淆時選配無點名負向邊界，嚴禁跨技能點名 `(改用 xxx)`）。
+   - **主動指令型（軌跡 ③ — B2 分級命令鎖定）**：重型／破壞性指令（**B-Strict**）採用 `{1 句話核心目的與交付物}。僅於顯式輸入 /{cmd} 時觸發，嚴禁主動觸發。`；會話／教學輔助類（**B-Assist**）採用 `{1 句話核心目的與交付物}。僅於顯式輸入 /{cmd} 或明確要求{具體委託動作}時觸發。`（嚴禁包含括號大小寫變體如 `(或 /Cmd)`）。
+2. **四元素目錄拓撲與單層參考拆分（[`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) §2）**：
+   - `SKILL.md` 本體嚴格控制在 **500 行以內**（建議 60~180 行）。
+   - 若包含長篇 API 表、Schema 或範例，拆分至同目錄下單層 `references/<topic>.md`（超過 100 行之參考檔頂部須附 `## 目錄 (Contents)`）；決定性格式或結構校驗優先下沉至 CLI 或 `scripts/`。
+3. **條件式進度檢核表、雙模狀態卡與 Gotchas 收尾（[`SkillDesignStandards.md`](`__#{module://agents-workflow/assets/standards/SkillDesignStandards.md}__`) §3）**：
+   - 包含 3 個以上具相依性步驟之技能，於 `## 執行步驟` 開頭提供可勾選之 Markdown Checklist，並依 `Artifact-in-File` vs. `Artifact-in-Chat` 校準輸出節流。
    - 檔案末尾提供 `## 常見踩坑指南 (Gotchas)`，提煉最關鍵的反直覺防呆要點。

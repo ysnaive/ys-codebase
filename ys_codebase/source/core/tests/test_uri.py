@@ -5,7 +5,7 @@ import os
 import json
 import warnings
 from dev.testing import YSCBTestCase
-from core import uri
+from core import uri, vfs
 from core.uri import ExecutionContext, UndefinedURIError, CyclicURIDependencyError, UndefinedModuleContextError
 
 class TestCoreURI(YSCBTestCase):
@@ -13,8 +13,8 @@ class TestCoreURI(YSCBTestCase):
         """Verify standard protocol resolutions and explicit config/ path (Option B)."""
         # Ensure core config has project_root for project:// resolution
         core_cfg = "config://core/config.project.json"
-        if not uri.exists(core_cfg):
-            uri.write_json(core_cfg, {"project_root": "./"}, indent=2)
+        if not vfs.exists(core_cfg):
+            vfs.write_json(core_cfg, {"project_root": "./"}, indent=2)
             
         canonical_protocols = [
             "project://", "yscb://", "yscb.host://", "module.mirror://", "snapshot://",
@@ -77,7 +77,7 @@ class TestCoreURI(YSCBTestCase):
 
     def test_yscb_uri_constant_self_locating(self):
         """Verify yscb:// constant self-locating from __file__ and host context injection."""
-        yscb_root = uri._get_yscb_root()
+        yscb_root = uri.resolve_yscb_root()
         self.assertTrue(os.path.isdir(yscb_root), f"yscb_root must be a valid directory: {yscb_root}")
         
         # Test set_host_dir / get_host_dir
@@ -103,9 +103,9 @@ class TestCoreURI(YSCBTestCase):
         """FT-08, ET-03: Verify project:// without project_root raises UndefinedURIError in non-interactive mode."""
         core_cfg = "config://core/config.project.json"
         saved = None
-        if uri.exists(core_cfg):
-            saved = uri.read_json(core_cfg)
-            uri.remove(core_cfg)
+        if vfs.exists(core_cfg):
+            saved = vfs.read_json(core_cfg)
+            vfs.remove(core_cfg)
             
         try:
             with self.assertRaises(UndefinedURIError) as ctx:
@@ -113,7 +113,7 @@ class TestCoreURI(YSCBTestCase):
             self.assertIn("project", ctx.exception.scheme)
         finally:
             if saved is not None:
-                uri.write_json(core_cfg, saved, indent=2)
+                vfs.write_json(core_cfg, saved, indent=2)
         self.mark_passed()
 
     def test_registered_schemes_summary(self):
@@ -142,47 +142,47 @@ class TestCoreURI(YSCBTestCase):
         test_f = f"{self.sandbox_uri}/test_vfs_atomic.txt"
         test_j = f"{self.sandbox_uri}/test_vfs_atomic.json"
         
-        uri.write_text(test_f, "Hello VFS World")
-        self.assertTrue(uri.exists(test_f))
-        self.assertEqual(uri.read_text(test_f), "Hello VFS World")
+        vfs.write_text(test_f, "Hello VFS World")
+        self.assertTrue(vfs.exists(test_f))
+        self.assertEqual(vfs.read_text(test_f), "Hello VFS World")
         
         data = {"key": "value", "count": 100}
-        uri.write_json(test_j, data)
-        self.assertTrue(uri.exists(test_j))
-        self.assertEqual(uri.read_json(test_j), data)
+        vfs.write_json(test_j, data)
+        self.assertTrue(vfs.exists(test_j))
+        self.assertEqual(vfs.read_json(test_j), data)
         
-        uri.remove(test_f)
-        uri.remove(test_j)
-        self.assertFalse(uri.exists(test_f))
-        self.assertFalse(uri.exists(test_j))
+        vfs.remove(test_f)
+        vfs.remove(test_j)
+        self.assertFalse(vfs.exists(test_f))
+        self.assertFalse(vfs.exists(test_j))
         self.mark_passed()
 
     def test_vfs_directory_operations(self):
         """Verify makedirs, listdir, rmtree, copy, move in sandbox."""
         d_uri = f"{self.sandbox_uri}/vfs_test_dir/subdir"
-        uri.makedirs(d_uri)
-        self.assertTrue(uri.is_dir(d_uri))
+        vfs.makedirs(d_uri)
+        self.assertTrue(vfs.is_dir(d_uri))
         
         f1 = f"{d_uri}/f1.txt"
-        uri.write_text(f1, "file1")
-        self.assertTrue(uri.is_file(f1))
-        self.assertIn("f1.txt", uri.listdir(d_uri))
+        vfs.write_text(f1, "file1")
+        self.assertTrue(vfs.is_file(f1))
+        self.assertIn("f1.txt", vfs.listdir(d_uri))
         
         # Test copy file
         f2 = f"{d_uri}/f2.txt"
-        uri.copy(f1, f2)
-        self.assertTrue(uri.exists(f2))
-        self.assertEqual(uri.read_text(f2), "file1")
+        vfs.copy(f1, f2)
+        self.assertTrue(vfs.exists(f2))
+        self.assertEqual(vfs.read_text(f2), "file1")
         
         # Test move file
         f3 = f"{self.sandbox_uri}/vfs_test_dir/f3.txt"
-        uri.move(f2, f3)
-        self.assertFalse(uri.exists(f2))
-        self.assertTrue(uri.exists(f3))
+        vfs.move(f2, f3)
+        self.assertFalse(vfs.exists(f2))
+        self.assertTrue(vfs.exists(f3))
         
         # Test rmtree
-        uri.rmtree(f"{self.sandbox_uri}/vfs_test_dir")
-        self.assertFalse(uri.exists(f"{self.sandbox_uri}/vfs_test_dir"))
+        vfs.rmtree(f"{self.sandbox_uri}/vfs_test_dir")
+        self.assertFalse(vfs.exists(f"{self.sandbox_uri}/vfs_test_dir"))
         self.mark_passed()
 
     def test_test_sandbox_env_suppresses_jit_interaction(self):
@@ -211,14 +211,14 @@ class TestCoreURI(YSCBTestCase):
         try:
             uri.set_yscb_root(dummy_dir)
             self.assertEqual(uri.get_yscb_root(), dummy_dir)
-            self.assertEqual(uri._get_yscb_root(), dummy_dir)
+            self.assertEqual(uri.resolve_yscb_root(), dummy_dir)
 
             # 2. Test yscb_scope nesting & restoration
             nested_dir = os.path.join(self.sandbox_dir, "nested_yscb_root")
             os.makedirs(nested_dir, exist_ok=True)
             with uri.yscb_scope(nested_dir):
                 self.assertEqual(uri.get_yscb_root(), nested_dir)
-                self.assertEqual(uri._get_yscb_root(), nested_dir)
+                self.assertEqual(uri.resolve_yscb_root(), nested_dir)
 
             # Restored to dummy_dir
             self.assertEqual(uri.get_yscb_root(), dummy_dir)
@@ -241,7 +241,7 @@ class TestCoreURI(YSCBTestCase):
             # When memory injection is None, env takes precedence over __file__
             with uri.yscb_scope(None):
                 self.assertEqual(uri.get_yscb_root(), dummy_dir)
-                self.assertEqual(uri._get_yscb_root(), dummy_dir)
+                self.assertEqual(uri.resolve_yscb_root(), dummy_dir)
         finally:
             if orig_env is not None:
                 os.environ["YSCB_ROOT_DIR"] = orig_env
@@ -305,7 +305,7 @@ class TestCoreURI(YSCBTestCase):
         target = "module.build://test_clean_sub_mod/1.0.0.build"
         res = uri.resolve(target)
         try:
-            uri.makedirs(target, exist_ok=True)
+            vfs.makedirs(target, exist_ok=True)
             self.assertTrue(os.path.isdir(res))
         finally:
             if os.path.isdir(res):

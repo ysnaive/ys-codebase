@@ -25,7 +25,7 @@ related_docs:
   - "./API_REFERENCE.md"
   - "./DESIGN_NOTES.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-10-28"
+last_updated: "2026-10-31"
 ---
 
 # Core 微內核架構手冊 (Core Microkernel Overview)
@@ -122,7 +122,7 @@ schemes = contributes.get("core", "uri_schemes", default=[])
 
 # 2. 自動在當前 module_scope 下查詢本模組 Contributes
 with uri.module_scope("core"):
-    my_contribs = contributes.get_for_current_module()
+    my_contribs = contributes.get(uri.get_module_context())
 ```
 
 ### 3.3 JIT 變更嗅探與熱自愈 (JIT Freshness Gate)

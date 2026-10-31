@@ -14,7 +14,7 @@ import zipfile
 from dev.testing.case import YSCBTestCase
 from core.installer import generate_internal_gitignore, INTERNAL_IGNORE_PATTERNS
 from core.update_checker import UpdateChecker
-from core import uri
+from core import uri, vfs
 
 # Import host functions from yscb.py
 import yscb
@@ -241,8 +241,8 @@ class TestDistributionLifecycle(YSCBTestCase):
                 "dev": {"latest_version": "1.1.0.0"}
             }
         }
-        uri.makedirs("cache://core", exist_ok=True)
-        uri.write_json(cache_uri, data)
+        vfs.makedirs("cache://core", exist_ok=True)
+        vfs.write_json(cache_uri, data)
 
         # 1. 局部清除 core
         checker.invalidate_cache("core")
@@ -474,7 +474,7 @@ class TestDistributionLifecycle(YSCBTestCase):
 
     def test_atomic_swap_dir_and_reload_staging_strip(self):
         """FR-03, EC-02, EC-03, EC-04 (2026_10_27_1143): 驗證 _atomic_swap_dir 目錄原子切換、異常回滾與 act_reload Staging 組態預剝離。"""
-        from core.engine import AtomicEngine
+        from core.engine import _atomic_swap_dir
 
         parent = os.path.join(self.temp_dir, "atomic_test")
         os.makedirs(parent, exist_ok=True)
@@ -488,7 +488,7 @@ class TestDistributionLifecycle(YSCBTestCase):
         with open(os.path.join(staging_dir, "ver.txt"), "w", encoding="utf-8") as f:
             f.write("v2")
 
-        AtomicEngine._atomic_swap_dir(staging_dir, target_dir)
+        _atomic_swap_dir(staging_dir, target_dir)
         self.assertFalse(os.path.exists(staging_dir))
         with open(os.path.join(target_dir, "ver.txt"), "r", encoding="utf-8") as f:
             self.assertEqual(f.read(), "v2")
@@ -496,7 +496,7 @@ class TestDistributionLifecycle(YSCBTestCase):
         # EC-03: 驗證當第二階段 os.replace(staging -> target) 失敗時，自動將 .old 回滾還原至 target_dir
         bad_staging = os.path.join(parent, ".staging_nonexistent")
         with self.assertRaises(OSError):
-            AtomicEngine._atomic_swap_dir(bad_staging, target_dir, retries=1)
+            _atomic_swap_dir(bad_staging, target_dir, retries=1)
         self.assertTrue(os.path.isdir(target_dir))
         with open(os.path.join(target_dir, "ver.txt"), "r", encoding="utf-8") as f:
             self.assertEqual(f.read(), "v2")

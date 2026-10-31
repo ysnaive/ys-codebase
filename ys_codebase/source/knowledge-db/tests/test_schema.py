@@ -84,8 +84,18 @@ class TestSchema(YSCBTestCase):
         )
         self.assertEqual(computed_id, computed_id2)
 
-        # 2. UnifiedSymbol 建立與序列化
-        member = MemberInfo(name="init", kind="method", line_number=20)
+        # 2. UnifiedSymbol 建立與序列化 (UnifiedSymbol.to_dict 僅輸出 children 與 spaces，消除雙重儲存 M-07)
+        child_sym = UnifiedSymbol(
+            id="child_init",
+            name="init",
+            kind=SymbolKind.METHOD.value,
+            file_path="source/core/engine.py",
+            line_number=20,
+            language=LanguageType.PYTHON.value,
+            signature="def init(self) -> None",
+            docstring="初始化引擎",
+            parent_id=computed_id,
+        )
         sym = UnifiedSymbol(
             id=computed_id,
             name="CoreEngine",
@@ -95,20 +105,24 @@ class TestSchema(YSCBTestCase):
             language=LanguageType.PYTHON.value,
             docstring="核心引擎類別",
             signature="class CoreEngine",
-            members=[member],
+            children=(child_sym,),
             metadata={"tags": ["core", "engine"], "end_line": 120},
         )
 
         d = sym.to_dict()
         self.assertEqual(d["id"], computed_id)
-        self.assertEqual(len(d["members"]), 1)
-        self.assertEqual(d["members"][0]["name"], "init")
+        self.assertNotIn("members", d)
+        self.assertNotIn("space", d)
+        self.assertEqual(len(d["children"]), 1)
+        self.assertEqual(d["children"][0]["name"], "init")
         self.assertEqual(d["metadata"]["tags"], ["core", "engine"])
 
         # 3. 反序列化
         restored = UnifiedSymbol.from_dict(d)
         self.assertEqual(restored.id, sym.id)
         self.assertEqual(restored.name, sym.name)
+        self.assertEqual(len(restored.children), 1)
+        self.assertEqual(restored.children[0].name, "init")
         self.assertEqual(len(restored.members), 1)
         self.assertEqual(restored.members[0].name, "init")
 

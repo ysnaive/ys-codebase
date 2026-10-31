@@ -3,10 +3,9 @@ CLI Entry point for agents-workflow.
 Migrated to core.commands active execution contract with strong-typed CmdBags.
 """
 import sys
-import os
 import json
 import builtins
-from typing import Any, List, Dict, Optional
+from typing import Any, Dict, Optional
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
@@ -20,8 +19,6 @@ from agents_workflow.plans import (
     PlanSearcher,
     PlanVerifier,
     PlanSeverity,
-    PlanIssue,
-    PlanReport,
     PlansToolchainError,
     SessionTraceEngine,
 )
@@ -416,7 +413,7 @@ def list(cmd_bags: Any) -> int:
     for exp in exports:
         t = exp.get("type", "template")
         src = exp.get("source", "")
-        desc = exp.get("description", "")
+        desc = compiler.resolve_export_description(exp)
         if "__${" in desc or "__#{" in desc:
             desc = compiler.resolve_stage2_uri(desc, "list", {})
         print(f"{t:<12} {src:<45} {desc}")
@@ -560,12 +557,11 @@ def plan_search(cmd_bags: Any) -> int:
         return 0
 
 
-def plan_check(cmd_bags: Any) -> int:
+def plan_verify(cmd_bags: Any) -> int:
     """合規性診斷 Dev Plans 文件結構、雙檔協同、追溯差集與免讀盲寫追加 changelog.md。"""
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "plan_check")
-    include_all = bags.has_option("all") or bags.has_option("a")
+    bags = _normalize_bags(cmd_bags, "plan_verify")
     is_json = bags.has_option("json")
     target_name = bags.args[0] if bags.args else None
 
@@ -605,7 +601,7 @@ def plan_check(cmd_bags: Any) -> int:
         )
         reports = {rep.plan_name: rep}
     else:
-        reports = verifier.verify_all_plans(include_archived=include_all)
+        reports = verifier.verify_all_plans()
 
     if is_json:
         json_dict = {k: v.to_dict() for k, v in reports.items()}
@@ -651,11 +647,6 @@ def plan_check(cmd_bags: Any) -> int:
     return 0 if fail_plans == 0 else 1
 
 
-def plan_verify(cmd_bags: Any) -> int:
-    """plan check 之同義指令。"""
-    return plan_check(cmd_bags)
-
-
 def plan(cmd_bags: Any) -> int:
     """Dev Plans 專案開發計畫管理工具鏈複合入口。"""
     guard_dispatch("agents-workflow")
@@ -676,10 +667,10 @@ def plan(cmd_bags: Any) -> int:
         return plan_status(sub_bags)
     elif action == "search":
         return plan_search(sub_bags)
-    elif action in ("check", "verify"):
-        return plan_check(sub_bags)
+    elif action == "verify":
+        return plan_verify(sub_bags)
     else:
-        print(f"[agents-workflow:plan] Unknown plan action '{action}'. Use archive, status, search, or check.")
+        print(f"[agents-workflow:plan] Unknown plan action '{action}'. Use archive, status, search, or verify.")
         return 1
 
 
@@ -721,6 +712,8 @@ def session_trace(cmd_bags: Any) -> int:
 
     engine = SessionTraceEngine()
     if is_list:
+        from agents_workflow.plans._trace_renderer import render_session_list_text
+
         sessions = engine.list_sessions(
             include_all_workspaces=is_all,
             include_subagents=is_all,
@@ -729,7 +722,7 @@ def session_trace(cmd_bags: Any) -> int:
         if is_json:
             print(json.dumps(sessions, indent=2, ensure_ascii=False))
         else:
-            print(engine.render_session_list_text(sessions))
+            print(render_session_list_text(sessions))
         return 0
 
     report = engine.analyze(
@@ -753,49 +746,5 @@ def session_trace(cmd_bags: Any) -> int:
         print(report.render_text())
     return 0
 
-
-# Internal test / caller compatibility aliases
-def cmd_roadmap(cmd_bags: Any) -> int:
-    return roadmap(cmd_bags)
-
-
-def cmd_release(cmd_bags: Any) -> int:
-    return release(cmd_bags)
-
-
-def cmd_release_target(cmd_bags: Any) -> int:
-    return release_target(cmd_bags)
-
-
-def cmd_compile(cmd_bags: Any) -> int:
-    return compile(cmd_bags)
-
-
-def cmd_tokens(cmd_bags: Any) -> int:
-    return tokens(cmd_bags)
-
-
-def cmd_list(cmd_bags: Any) -> int:
-    return list(cmd_bags)
-
-
-def cmd_init(cmd_bags: Any) -> int:
-    return init(cmd_bags)
-
-
-def cmd_init_default(cmd_bags: Any) -> int:
-    return init(cmd_bags)
-
-
-def cmd_plan(cmd_bags: Any) -> int:
-    return plan(cmd_bags)
-
-
-def cmd_todo(cmd_bags: Any) -> int:
-    return todo(cmd_bags)
-
-
-def cmd_session_trace(cmd_bags: Any) -> int:
-    return session_trace(cmd_bags)
 
 

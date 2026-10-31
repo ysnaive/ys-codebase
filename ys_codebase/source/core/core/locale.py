@@ -24,7 +24,7 @@ MAX_INTERPOLATION_DEPTH: int = 5
 # Memory cache: abs_file_path -> (mtime, parsed_dict)
 _LOCALE_FILE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _MODULE_BASE_DIR_CACHE: Dict[str, str] = {}
-_MODULE_DECL_CACHE: Dict[Tuple[str, str], Dict[str, str]] = {}
+_SAFE_SUBPATH_CACHE: Dict[Tuple[str, str], Tuple[bool, str]] = {}
 
 # Sentinel strings for protecting escaped braces '{{' and '}}'
 _ESCAPED_LBRACE = "\x00YSCB_LBRACE\x00"
@@ -36,7 +36,7 @@ def clear_cache() -> None:
     """Clear the in-memory locale JSON cache."""
     _LOCALE_FILE_CACHE.clear()
     _MODULE_BASE_DIR_CACHE.clear()
-    _MODULE_DECL_CACHE.clear()
+    _SAFE_SUBPATH_CACHE.clear()
 
 
 def parse_locale_chain(raw_chain: Optional[Union[str, List[str]]]) -> List[str]:
@@ -202,20 +202,21 @@ def _resolve_module_base_dir(module: str, base_dir: Optional[str] = None) -> Opt
     resolved: Optional[str] = None
     try:
         from core import uri
+        from core import vfs
         if module == "project":
             resolved = uri.resolve("config://core", interactive=False)
         else:
             src_uri = f"module.source://{module}"
             mod_uri = f"module://{module}"
-            if uri.exists(src_uri):
+            if vfs.exists(src_uri):
                 src_abs = uri.resolve(src_uri, interactive=False)
                 if os.path.isfile(os.path.join(src_abs, "locales", "definition.json")):
                     resolved = src_abs
-            if not resolved and uri.exists(mod_uri):
+            if not resolved and vfs.exists(mod_uri):
                 mod_abs = uri.resolve(mod_uri, interactive=False)
-                if os.path.isfile(os.path.join(mod_abs, "locales", "definition.json")) or not uri.exists(src_uri):
+                if os.path.isfile(os.path.join(mod_abs, "locales", "definition.json")) or not vfs.exists(src_uri):
                     resolved = mod_abs
-            if not resolved and uri.exists(src_uri):
+            if not resolved and vfs.exists(src_uri):
                 resolved = uri.resolve(src_uri, interactive=False)
     except Exception:
         pass
@@ -241,21 +242,27 @@ def _is_safe_subpath(base_dir: str, rel_path: str) -> Tuple[bool, str]:
     """
     if not isinstance(rel_path, str) or not rel_path.strip():
         return False, ""
+    cache_key = (base_dir, rel_path)
+    cached = _SAFE_SUBPATH_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     norm_base = os.path.realpath(os.path.abspath(base_dir))
     # Reject explicit parent traversal segments or absolute paths
     if os.path.isabs(rel_path):
-        return False, os.path.abspath(rel_path)
+        res = (False, os.path.abspath(rel_path))
+        _SAFE_SUBPATH_CACHE[cache_key] = res
+        return res
     candidate = os.path.realpath(os.path.abspath(os.path.join(norm_base, rel_path)))
     is_inside = candidate == norm_base or candidate.startswith(norm_base + os.sep)
-    return is_inside, candidate
+    res = (is_inside, candidate)
+    _SAFE_SUBPATH_CACHE[cache_key] = res
+    return res
 
 
 def _load_json_cached(abs_path: str) -> Optional[Dict[str, Any]]:
     """Load a JSON object with (abs_path, mtime) caching."""
     try:
-        if not os.path.isfile(abs_path):
-            return None
-        mtime = os.path.getmtime(abs_path)
+        mtime = os.stat(abs_path).st_mtime
         cached = _LOCALE_FILE_CACHE.get(abs_path)
         if cached is not None and cached[0] == mtime:
             return cached[1]
@@ -264,6 +271,8 @@ def _load_json_cached(abs_path: str) -> Optional[Dict[str, Any]]:
         if isinstance(data, dict):
             _LOCALE_FILE_CACHE[abs_path] = (mtime, data)
             return data
+    except FileNotFoundError:
+        return None
     except Exception as e:
         logger.warning(f"Failed to load locale JSON '{abs_path}': {e}")
     return None
@@ -546,32 +555,20 @@ def t(
     )
 
 
-translate = t
-
-
-def validate_module_locales(
+def _validate_locales_decl_header(
     module_name: str,
     locales_decl: Dict[str, Any],
-    base_dir: Optional[str] = None,
-) -> ValidationResult:
-    """
-    Rigidly validate a module's 'locales' declaration against its 'definition' contract:
-      1. Verify 'definition' key exists and points to a valid JSON object inside module root.
-      2. Verify every key in 'definition' is an object with a non-empty string 'description'
-         and optional 'placeholders' (list of strings).
-      3. Verify every '<lang-id>' file exists inside module root, is a valid JSON object,
-         contains no orphan keys (keys absent from 'definition'), and its '{placeholder}'
-         set matches 'definition[key].placeholders' ([P04:DR-01]).
-    """
-    issues: List[ValidationIssue] = []
-
+    base_dir: Optional[str],
+    issues: List[ValidationIssue],
+) -> Optional[Tuple[Dict[str, Any], str]]:
+    """Stage 1: Validate locales declaration header and module base directory."""
     if not isinstance(locales_decl, dict):
         issues.append(ValidationIssue(
             path="locales",
             message=f"Expected object/dict for 'locales', got {type(locales_decl).__name__}.",
             severity="ERROR",
         ))
-        return ValidationResult(is_valid=False, issues=issues)
+        return None
 
     clean_decl = {k: v for k, v in locales_decl.items() if not str(k).startswith("_")}
     if "definition" not in clean_decl or not isinstance(clean_decl.get("definition"), str) or not clean_decl["definition"].strip():
@@ -580,7 +577,7 @@ def validate_module_locales(
             message="Missing required non-empty string field 'definition' (semantic contract file path).",
             severity="ERROR",
         ))
-        return ValidationResult(is_valid=False, issues=issues)
+        return None
 
     resolved_base = _resolve_module_base_dir(module_name, base_dir=base_dir)
     if not resolved_base or not os.path.isdir(resolved_base):
@@ -589,10 +586,17 @@ def validate_module_locales(
             message=f"Cannot resolve base directory for module '{module_name}'.",
             severity="ERROR",
         ))
-        return ValidationResult(is_valid=False, issues=issues)
+        return None
 
-    # 1. Validate 'definition' file
-    def_rel = clean_decl["definition"].strip()
+    return clean_decl, resolved_base
+
+
+def _load_and_validate_definition_contract(
+    resolved_base: str,
+    def_rel: str,
+    issues: List[ValidationIssue],
+) -> Optional[Dict[str, Set[str]]]:
+    """Stage 2: Load and validate the 'definition' semantic contract file."""
     is_safe, def_abs = _is_safe_subpath(resolved_base, def_rel)
     if not is_safe:
         issues.append(ValidationIssue(
@@ -600,7 +604,7 @@ def validate_module_locales(
             message=f"Path traversal or outside-module path rejected: '{def_rel}'.",
             severity="ERROR",
         ))
-        return ValidationResult(is_valid=False, issues=issues)
+        return None
 
     if not os.path.isfile(def_abs):
         issues.append(ValidationIssue(
@@ -608,7 +612,7 @@ def validate_module_locales(
             message=f"Locale definition file not found: '{def_rel}'.",
             severity="ERROR",
         ))
-        return ValidationResult(is_valid=False, issues=issues)
+        return None
 
     try:
         with open(def_abs, "r", encoding="utf-8") as f:
@@ -619,7 +623,7 @@ def validate_module_locales(
             message=f"Invalid JSON syntax in '{def_rel}': {e}",
             severity="ERROR",
         ))
-        return ValidationResult(is_valid=False, issues=issues)
+        return None
 
     if not isinstance(def_data, dict):
         issues.append(ValidationIssue(
@@ -627,7 +631,7 @@ def validate_module_locales(
             message=f"Locale definition file '{def_rel}' must contain a top-level JSON object.",
             severity="ERROR",
         ))
-        return ValidationResult(is_valid=False, issues=issues)
+        return None
 
     expected_placeholders_map: Dict[str, Set[str]] = {}
     for def_key, def_spec in def_data.items():
@@ -661,96 +665,144 @@ def validate_module_locales(
         else:
             expected_placeholders_map[def_key] = {p.strip() for p in ph_list}
 
-    defined_keys = sorted(list(expected_placeholders_map.keys()))
+    return expected_placeholders_map
 
-    # 2. Validate each '<lang-id>' file against 'definition'
+
+def _validate_single_lang_file(
+    resolved_base: str,
+    lang_id: str,
+    lang_rel: Any,
+    def_rel: str,
+    expected_placeholders_map: Dict[str, Set[str]],
+    defined_keys: List[str],
+    issues: List[ValidationIssue],
+) -> None:
+    """Stage 3: Validate a single '<lang-id>' translation file against the definition contract."""
+    l_path = f"locales.{lang_id}"
+    if not isinstance(lang_rel, str) or not lang_rel.strip():
+        issues.append(ValidationIssue(
+            path=l_path,
+            message=f"Locale file path for '{lang_id}' must be a non-empty string.",
+            severity="ERROR",
+        ))
+        return
+
+    l_safe, l_abs = _is_safe_subpath(resolved_base, lang_rel.strip())
+    if not l_safe:
+        issues.append(ValidationIssue(
+            path=l_path,
+            message=f"Path traversal or outside-module path rejected for '{lang_id}': '{lang_rel}'.",
+            severity="ERROR",
+        ))
+        return
+
+    if not os.path.isfile(l_abs):
+        issues.append(ValidationIssue(
+            path=l_path,
+            message=f"Locale file for '{lang_id}' not found: '{lang_rel}'.",
+            severity="ERROR",
+        ))
+        return
+
+    try:
+        with open(l_abs, "r", encoding="utf-8") as f:
+            lang_data = json.load(f)
+    except Exception as e:
+        issues.append(ValidationIssue(
+            path=l_path,
+            message=f"Invalid JSON syntax in locale file '{lang_rel}': {e}",
+            severity="ERROR",
+        ))
+        return
+
+    if not isinstance(lang_data, dict):
+        issues.append(ValidationIssue(
+            path=l_path,
+            message=f"Locale file '{lang_rel}' must contain a top-level JSON object.",
+            severity="ERROR",
+        ))
+        return
+
+    for t_key, t_val in lang_data.items():
+        if str(t_key).startswith("_"):
+            continue
+        tk_path = f"locales.{lang_id}.{t_key}"
+        if t_key not in expected_placeholders_map:
+            matches = difflib.get_close_matches(str(t_key), defined_keys, n=1)
+            hint = f"Did you mean '{matches[0]}'?" if matches else f"Key must be declared in '{def_rel}' first."
+            issues.append(ValidationIssue(
+                path=tk_path,
+                message=f"Orphan locale key '{t_key}' in '{lang_id}' is not defined in '{def_rel}'.",
+                severity="ERROR",
+                suggestion=hint,
+            ))
+            continue
+
+        if not isinstance(t_val, str):
+            issues.append(ValidationIssue(
+                path=tk_path,
+                message=f"Localized value for '{t_key}' in '{lang_id}' must be a string, got {type(t_val).__name__}.",
+                severity="ERROR",
+            ))
+            continue
+
+        actual_phs = extract_placeholders(t_val)
+        expected_phs = expected_placeholders_map[t_key]
+        missing_phs = sorted(list(expected_phs - actual_phs))
+        unknown_phs = sorted(list(actual_phs - expected_phs))
+        if missing_phs or unknown_phs:
+            parts = []
+            if missing_phs:
+                parts.append(f"missing required placeholder(s): {missing_phs}")
+            if unknown_phs:
+                parts.append(f"undeclared placeholder(s): {unknown_phs}")
+            issues.append(ValidationIssue(
+                path=tk_path,
+                message=f"Placeholder contract mismatch for '{t_key}' in '{lang_id}': {'; '.join(parts)}.",
+                severity="ERROR",
+                suggestion=f"Expected placeholders from '{def_rel}': {sorted(list(expected_phs))}",
+            ))
+
+
+def validate_module_locales(
+    module_name: str,
+    locales_decl: Dict[str, Any],
+    base_dir: Optional[str] = None,
+) -> ValidationResult:
+    """
+    Rigidly validate a module's 'locales' declaration against its 'definition' contract:
+      1. Verify 'definition' key exists and points to a valid JSON object inside module root.
+      2. Verify every key in 'definition' is an object with a non-empty string 'description'
+         and optional 'placeholders' (list of strings).
+      3. Verify every '<lang-id>' file exists inside module root, is a valid JSON object,
+         contains no orphan keys (keys absent from 'definition'), and its '{placeholder}'
+         set matches 'definition[key].placeholders' ([P04:DR-01]).
+    """
+    issues: List[ValidationIssue] = []
+
+    header_res = _validate_locales_decl_header(module_name, locales_decl, base_dir, issues)
+    if header_res is None:
+        return ValidationResult(is_valid=False, issues=issues)
+    clean_decl, resolved_base = header_res
+
+    def_rel = clean_decl["definition"].strip()
+    expected_placeholders_map = _load_and_validate_definition_contract(resolved_base, def_rel, issues)
+    if expected_placeholders_map is None:
+        return ValidationResult(is_valid=False, issues=issues)
+
+    defined_keys = sorted(list(expected_placeholders_map.keys()))
     for lang_id, lang_rel in clean_decl.items():
         if lang_id == "definition":
             continue
-        l_path = f"locales.{lang_id}"
-        if not isinstance(lang_rel, str) or not lang_rel.strip():
-            issues.append(ValidationIssue(
-                path=l_path,
-                message=f"Locale file path for '{lang_id}' must be a non-empty string.",
-                severity="ERROR",
-            ))
-            continue
-
-        l_safe, l_abs = _is_safe_subpath(resolved_base, lang_rel.strip())
-        if not l_safe:
-            issues.append(ValidationIssue(
-                path=l_path,
-                message=f"Path traversal or outside-module path rejected for '{lang_id}': '{lang_rel}'.",
-                severity="ERROR",
-            ))
-            continue
-
-        if not os.path.isfile(l_abs):
-            issues.append(ValidationIssue(
-                path=l_path,
-                message=f"Locale file for '{lang_id}' not found: '{lang_rel}'.",
-                severity="ERROR",
-            ))
-            continue
-
-        try:
-            with open(l_abs, "r", encoding="utf-8") as f:
-                lang_data = json.load(f)
-        except Exception as e:
-            issues.append(ValidationIssue(
-                path=l_path,
-                message=f"Invalid JSON syntax in locale file '{lang_rel}': {e}",
-                severity="ERROR",
-            ))
-            continue
-
-        if not isinstance(lang_data, dict):
-            issues.append(ValidationIssue(
-                path=l_path,
-                message=f"Locale file '{lang_rel}' must contain a top-level JSON object.",
-                severity="ERROR",
-            ))
-            continue
-
-        for t_key, t_val in lang_data.items():
-            if str(t_key).startswith("_"):
-                continue
-            tk_path = f"locales.{lang_id}.{t_key}"
-            if t_key not in expected_placeholders_map:
-                matches = difflib.get_close_matches(str(t_key), defined_keys, n=1)
-                hint = f"Did you mean '{matches[0]}'?" if matches else f"Key must be declared in '{def_rel}' first."
-                issues.append(ValidationIssue(
-                    path=tk_path,
-                    message=f"Orphan locale key '{t_key}' in '{lang_id}' is not defined in '{def_rel}'.",
-                    severity="ERROR",
-                    suggestion=hint,
-                ))
-                continue
-
-            if not isinstance(t_val, str):
-                issues.append(ValidationIssue(
-                    path=tk_path,
-                    message=f"Localized value for '{t_key}' in '{lang_id}' must be a string, got {type(t_val).__name__}.",
-                    severity="ERROR",
-                ))
-                continue
-
-            actual_phs = extract_placeholders(t_val)
-            expected_phs = expected_placeholders_map[t_key]
-            missing_phs = sorted(list(expected_phs - actual_phs))
-            unknown_phs = sorted(list(actual_phs - expected_phs))
-            if missing_phs or unknown_phs:
-                parts = []
-                if missing_phs:
-                    parts.append(f"missing required placeholder(s): {missing_phs}")
-                if unknown_phs:
-                    parts.append(f"undeclared placeholder(s): {unknown_phs}")
-                issues.append(ValidationIssue(
-                    path=tk_path,
-                    message=f"Placeholder contract mismatch for '{t_key}' in '{lang_id}': {'; '.join(parts)}.",
-                    severity="ERROR",
-                    suggestion=f"Expected placeholders from '{def_rel}': {sorted(list(expected_phs))}",
-                ))
+        _validate_single_lang_file(
+            resolved_base,
+            lang_id,
+            lang_rel,
+            def_rel,
+            expected_placeholders_map,
+            defined_keys,
+            issues,
+        )
 
     is_valid = len([i for i in issues if i.severity == "ERROR"]) == 0
     return ValidationResult(is_valid=is_valid, issues=issues, payload=locales_decl)

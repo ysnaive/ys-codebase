@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Any, Union
 
 
-from . import _resolve_uri_path
+from ._common import resolve_plan_uri
 
 
 class PlanScanner:
@@ -21,11 +21,11 @@ class PlanScanner:
         Args:
             plans_dir: 進行中計畫目錄路徑。若為 None 則透過 workflow.plans:// 解析。
         """
-        if plans_dir is not None:
-            self.plans_dir = Path(plans_dir).resolve()
-        else:
-            resolved = _resolve_uri_path("workflow.plans://")
-            self.plans_dir = resolved if resolved else Path.cwd() / "plans"
+        self.plans_dir = (
+            Path(plans_dir).resolve()
+            if plans_dir is not None
+            else resolve_plan_uri("workflow.plans://", "plans")
+        )
 
     def get_plan_info(self, plan_dir: Path) -> Tuple[str, str]:
         """
@@ -40,22 +40,18 @@ class PlanScanner:
         from .status import PlanStatusResolver
 
         ft_plan = plan_dir / "fast_track_plan.md"
-        legacy_ft_plan = plan_dir / "FT_plan.md"
         p00_req = PlanStatusResolver.resolve_phase_file(plan_dir, "P00")
-        legacy_p00_req = plan_dir / "P00_semantic_requirements.md"
         p01_req = PlanStatusResolver.resolve_phase_file(plan_dir, "P01")
         umbrella = plan_dir / "umbrella_overview.md"
         rev_log = plan_dir / "revision_log.md"
-        master_roadmaps = list(plan_dir.glob("master_plan_*.md"))
 
         track_type = "Unknown"
         status = "Unknown"
 
         # 1. Umbrella 判定
-        if umbrella.exists() or len(master_roadmaps) > 0:
+        if umbrella.exists():
             track_type = "Umbrella"
-            target_doc = umbrella if umbrella.exists() else master_roadmaps[0]
-            raw_status = PlanStatusResolver.get_doc_header_status(target_doc)
+            raw_status = PlanStatusResolver.get_doc_header_status(umbrella)
             if raw_status in ("completed", "concluded"):
                 status = "Completed"
             elif raw_status in ("in progress", "executing", "implementing"):
@@ -74,10 +70,9 @@ class PlanScanner:
                     status = "Planning"
 
         # 2. Fast Track 判定
-        elif ft_plan.exists() or legacy_ft_plan.exists():
+        elif ft_plan.exists():
             track_type = "Fast Track"
-            target_ft = ft_plan if ft_plan.exists() else legacy_ft_plan
-            raw_status = PlanStatusResolver.get_doc_header_status(target_ft)
+            raw_status = PlanStatusResolver.get_doc_header_status(ft_plan)
             if raw_status in ("completed", "concluded"):
                 status = "Completed"
             elif raw_status == "passed":
@@ -143,10 +138,9 @@ class PlanScanner:
                 status = "Draft"
 
         # 6. Phase 0 判定
-        elif p00_req.exists() or legacy_p00_req.exists():
+        elif p00_req.exists():
             track_type = "Phase 0"
-            target_p00 = p00_req if p00_req.exists() else legacy_p00_req
-            raw_status = PlanStatusResolver.get_doc_header_status(target_p00)
+            raw_status = PlanStatusResolver.get_doc_header_status(p00_req)
             if raw_status in ("confirmed", "passed", "completed"):
                 status = "P00 Confirmed"
             else:

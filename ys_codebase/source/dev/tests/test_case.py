@@ -108,15 +108,13 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_taxonomy_flags_and_masks(self):
-        """FT-01: Verify 4-tier taxonomy flags, aliases, and composite masks."""
+        """FT-01: Verify 4-tier taxonomy flags and composite masks."""
         self.assertTrue(bool(Requirement.LOGIC & Requirement.ALL_DEFAULT))
         self.assertTrue(bool(Requirement.ENV & Requirement.ALL_DEFAULT))
         self.assertFalse(bool(Requirement.WORKFLOW & Requirement.ALL_DEFAULT))
         self.assertFalse(bool(Requirement.PERF & Requirement.ALL_DEFAULT))
         self.assertTrue(bool(Requirement.WORKFLOW & Requirement.ALL))
         self.assertTrue(bool(Requirement.PERF & Requirement.ALL))
-        self.assertEqual(Requirement.PERFORMANCE, Requirement.PERF)
-        self.assertEqual(Requirement.HOST_CLI, Requirement.ENV)
         self.mark_passed()
 
     @require(Requirement.LOGIC)

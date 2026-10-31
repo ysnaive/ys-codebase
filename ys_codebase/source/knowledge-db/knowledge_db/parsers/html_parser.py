@@ -66,8 +66,8 @@ def _make_symbol(
         language=language,
         docstring=docstring,
         signature=signature,
-        members=[],
-        metadata={"space": space, "spaces": [space]},
+        children=(),
+        metadata={"spaces": [space]},
     )
 
 

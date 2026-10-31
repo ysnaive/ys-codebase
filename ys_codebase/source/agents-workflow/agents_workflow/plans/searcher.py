@@ -2,13 +2,11 @@
 PlanSearcher — 歷史開發計畫與決策記錄 (DR) 檢索服務。
 """
 
-import os
 import re
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Set
 
-
-from . import _resolve_uri_path
+from ._common import resolve_plan_uri
 
 
 class PlanSearcher:
@@ -26,17 +24,16 @@ class PlanSearcher:
             plans_dir: 進行中計畫目錄。若為 None 則透過 workflow.plans:// 解析。
             archive_dir: 歷史歸檔目錄。若為 None 則透過 workflow.archived:// 解析。
         """
-        if plans_dir is not None:
-            self.plans_dir = Path(plans_dir).resolve()
-        else:
-            res_plans = _resolve_uri_path("workflow.plans://")
-            self.plans_dir = res_plans if res_plans else Path.cwd() / "plans"
-
-        if archive_dir is not None:
-            self.archive_dir = Path(archive_dir).resolve()
-        else:
-            res_arch = _resolve_uri_path("workflow.archived://")
-            self.archive_dir = res_arch if res_arch else Path.cwd() / "plans" / "archived"
+        self.plans_dir = (
+            Path(plans_dir).resolve()
+            if plans_dir is not None
+            else resolve_plan_uri("workflow.plans://", "plans")
+        )
+        self.archive_dir = (
+            Path(archive_dir).resolve()
+            if archive_dir is not None
+            else resolve_plan_uri("workflow.archived://", "plans/archived")
+        )
 
     def find_all_plans(self, year: Optional[str] = None, month: Optional[str] = None) -> List[Path]:
         """

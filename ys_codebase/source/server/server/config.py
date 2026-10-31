@@ -44,7 +44,6 @@ class ServerConfig:
     @classmethod
     def load(
         cls,
-        workspace_root: Optional[str] = None,
         override_dict: Optional[Dict[str, Any]] = None,
     ) -> "ServerConfig":
         """

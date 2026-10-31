@@ -6,118 +6,114 @@
       "description": "Agent 專案核心原則與防呆紀律規範"
     },
     {
+      "type": "standard",
+      "source": "module://agents-workflow/assets/standards/CodeQualityStandards.md",
+      "description": "業務程式碼品質、五維度診斷指標與六大無損重構標準"
+    },
+    {
+      "type": "standard",
+      "source": "module://agents-workflow/assets/standards/SkillDesignStandards.md",
+      "description": "AI Agent 技能結構、雙軌觸發契約與漸進式揭露通用設計標準"
+    },
+    {
+      "type": "standard",
+      "source": "module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md",
+      "description": "YSCB 技能雙層架構、動態佔位符語法與編譯發布工具標準"
+    },
+    {
       "type": "skill",
       "name": "yscb-cli-guide",
-      "source": "module://agents-workflow/assets/skills/yscb-cli-guide",
-      "description": "規範 yscb (yscb.py) 命令列單行執行防呆、常駐 Server 守門、技能內建指令直跑與非常規指令 -h 按需自省機制，確保 CLI 呼叫合法安全。觸發情境：準備透過終端工具執行任何 yscb.py 指令前、查詢不熟悉之子命令語法或透過 -h 確認操作安全等級。排除情境：與 yscb 無關之一般作業系統指令、純靜態文檔閱讀或代碼語意檢索（代碼檢索改用 knowledge-db-search）。"
+      "source": "module://agents-workflow/assets/skills/yscb-cli-guide"
     },
     {
       "type": "skill",
       "name": "documentation",
-      "source": "module://agents-workflow/assets/skills/documentation",
-      "description": "定位、檢索、撰寫與審校 `__${workflow.docs://}__` 系統知識庫文檔 (ARCHITECTURE.md、模組 README.md、專題手冊、DESIGN_NOTES.md) 與原始碼 Docstring，落實 7 大知識維度歸屬與三層文檔交付對齊。觸發情境：查閱或更新 `__${workflow.docs://}__` 架構與防坑手冊、新增公開 API 註解、執行結案階段 (Phase 07 / FP-03) 三層文檔審查。排除情境：建立或管理 `__${workflow.plans://}__` 下之開發過程產物如 P00~P07、fast_track_plan 或 revision_log（改用 development-sop）。"
+      "source": "module://agents-workflow/assets/skills/documentation"
     },
     {
       "type": "skill",
       "name": "development-sop",
-      "source": "module://agents-workflow/assets/skills/development-sop",
-      "description": "管理 `__${project://plans/}__` 開發計畫全生命週期 (SOP Phase 00~07 與 6 大計畫模式)，執行階段文件模板調取、跨文件追溯鏈 (FR/EC/NFR/DR/FT/REV) 編列、代碼實作與極簡狀態卡交付。觸發情境：推進各階段開發任務、撰寫或更新 P00~P07 / fast_track_plan / revision_log / umbrella_overview / changelog 產物、查閱階段模板指針與預設標頭狀態。排除情境：查閱或編修 `__${workflow.docs://}__` 系統架構知識庫（改用 documentation）、查詢 CLI 權限與單行防呆語法（改用 yscb-cli-guide）。"
+      "source": "module://agents-workflow/assets/skills/development-sop"
     },
     {
       "type": "skill",
       "name": "testing-sop",
-      "source": "module://agents-workflow/assets/skills/testing-sop",
-      "description": "規劃、撰寫、執行與審查專案自動化測試 (單元測試、邊界測試、整合與回歸測試)，以及對既有測試集 (tests/) 執行六維度體檢、去重與純化重構。觸發情境：定稿 P06_test_plan.md (Phase 04)、撰寫或修改測試代碼 (Phase 05 / Fast Track)、執行 Phase 06 測試驗證與回歸守門、或應開發者要求健檢與純化既有測試集。排除情境：純業務生產源碼架構設計 (改用 development-sop) 或非測試類系統知識庫文檔撰寫 (改用 documentation)。"
+      "source": "module://agents-workflow/assets/skills/testing-sop"
     },
     {
       "type": "skill",
       "name": "context-init",
-      "source": "module://agents-workflow/assets/skills/context-init",
-      "description": "載入專案核心規範、近期變更與活躍計畫狀態以完成對話熱啟動。僅於顯式輸入 /context-init 或明確指示初始化專案上下文時觸發。"
+      "source": "module://agents-workflow/assets/skills/context-init"
     },
     {
       "type": "skill",
       "name": "new-plan",
-      "source": "module://agents-workflow/assets/skills/new-plan",
-      "description": "針對全新開發需求執行邊界訪談、6 大計畫模式 (Full Track / Fast Track / Revision / Research / Umbrella / Roadmap) 分流判定與 JIT 延遲建檔，於 `__${project://plans/}__` 產出初始化計畫目錄、首份規格檔與 changelog.md。觸發情境：輸入 /new-plan 或 /NewPlan、提出新功能開發、跨模組重構、表層修訂或專題調研立項請求 (create new development plan)。排除情境：接續已存在於 `__${project://plans/}__` 的進行中計畫（改用 continue）、盤點或推薦長期技術儲備項目（改用 roadmap）。"
+      "source": "module://agents-workflow/assets/skills/new-plan"
     },
     {
       "type": "skill",
       "name": "continue",
-      "source": "module://agents-workflow/assets/skills/continue",
-      "description": "讀取既有計畫之交接快照或階段產物以定位斷點並恢復開發進度。僅於顯式輸入 /continue 或明確指示接續既有計畫時觸發。"
+      "source": "module://agents-workflow/assets/skills/continue"
     },
     {
       "type": "skill",
       "name": "pause",
-      "source": "module://agents-workflow/assets/skills/pause",
-      "description": "凍結當前開發進度與斷點並於計畫目錄產出 handoff.md 交接快照。僅於顯式輸入 /pause 或明確指示暫停並交接當前進度時觸發。"
+      "source": "module://agents-workflow/assets/skills/pause"
     },
     {
       "type": "skill",
       "name": "discuss",
-      "source": "module://agents-workflow/assets/skills/discuss",
-      "description": "針對實作或測試階段之異常現場、範疇越界與契約衝突，執行由近及遠排查與 5-Whys 根因分析，產出 2~3 種修復候選方案矩陣與深度歸因討論卡。觸發情境：同一錯誤或測試連續 2 次修復失敗、修改觸及非目標模組或破壞 Public API、輸入 /discuss 或 /Discuss (root-cause analysis / scope protection)。排除情境：初次發生且可立即定位之單行語法錯誤修正、全新功能之初期需求訪談與立項（改用 new-plan）。"
+      "source": "module://agents-workflow/assets/skills/discuss"
     },
     {
       "type": "skill",
       "name": "research",
-      "source": "module://agents-workflow/assets/skills/research",
-      "description": "針對高複雜度技術命題與多候選方案執行優劣權衡 (Pros & Cons)、資源代價分析與架構可行性驗證，產出 R{NN}_{topic}.md 專題調研報告與三大流轉出口建議卡。觸發情境：輸入 /research 或 /Research、要求針對未知技術選型、演算法可行性或跨平台架構進行深度調研並產出評估報告 (technical research / trade-off evaluation)。排除情境：方案已明確之日常功能編碼實作（改用 development-sop）、開發測試中途之單純錯誤排查（改用 discuss）。"
+      "source": "module://agents-workflow/assets/skills/research"
     },
     {
       "type": "skill",
       "name": "auto",
-      "source": "module://agents-workflow/assets/skills/auto",
-      "description": "針對已確認需求之計畫自動連續執行規格產出、代碼實作與測試驗證。僅於顯式輸入 /auto 或明確指示自動連續推進計畫時觸發。"
+      "source": "module://agents-workflow/assets/skills/auto"
     },
     {
       "type": "skill",
       "name": "roadmap",
-      "source": "module://agents-workflow/assets/skills/roadmap",
-      "description": "掃描 `__${workflow.roadmap://}__` 宏觀技術儲備庫並比對專案現況成熟度，產出高契合度立項推薦卡、將跨模組新技術提案寫入儲備庫檔案 ({topic}.md)，或透過 roadmap promote 執行儲備消耗立項 (Consume-on-Promote)。觸發情境：輸入 /roadmap 或 /Roadmap、詢問「接下來有哪些長期規劃可做」、將宏觀調研成果轉入技術儲備或晉升路線圖立項 (manage/recommend/promote roadmap items)。排除情境：單一檔案微調或局部技術債速記（改用 todo）、直接開立需求已明確的單一短期開發任務（改用 new-plan）、接續進行中計畫（改用 continue）。"
+      "source": "module://agents-workflow/assets/skills/roadmap"
     },
     {
       "type": "skill",
       "name": "todo",
-      "source": "module://agents-workflow/assets/skills/todo",
-      "description": "管理 `__${workflow.roadmap://TODO.md}__` 輕量級待辦與微觀技術債帳本，執行單行免讀盲寫追加 (todo add)、待辦清單檢索過濾 (todo list) 與單筆/多筆打包立項消耗 (todo promote)。觸發情境：輸入 /todo 或 /Todo、開發途中順手記錄微觀技術債/打磨點子/文檔微調、或檢視並打包提取待辦條目轉入 Fast Track / Revision / Full Track 計畫。排除情境：跨模組架構重構或需多階段推進之長期藍圖（改用 roadmap）、直接開立已明確之開發計畫（改用 new-plan）。"
+      "source": "module://agents-workflow/assets/skills/todo"
     },
     {
       "type": "skill",
       "name": "skill-optimizer",
-      "source": "module://agents-workflow/assets/skills/skill-optimizer",
-      "description": "針對既有 Skill 執行靜態診斷、無損重構與 A/B 基準評測生成。僅於顯式輸入 /skill-optimizer 或明確指示審查優化 Skill 時觸發。"
+      "source": "module://agents-workflow/assets/skills/skill-optimizer"
     },
     {
       "type": "skill",
       "name": "how-to-config-yscb",
-      "source": "module://agents-workflow/assets/skills/how-to-config-yscb",
-      "description": "盤點與診斷專案內 YSCB 各模組組態、工作流空間映射及專案角色邊界設定狀況，並於確認後代寫修復配置。僅於顯式輸入 /how-to-config-yscb 或明確要求檢查與設定工具包組態時觸發。"
+      "source": "module://agents-workflow/assets/skills/how-to-config-yscb"
     },
     {
       "type": "skill",
       "name": "how-to-yscb",
-      "source": "module://agents-workflow/assets/skills/how-to-yscb",
-      "description": "切換為互動式教練角色，結合工作流核心心法與各模組標準用法速查卡及隨包手冊，引導使用者掌握工具最佳實踐。僅於顯式輸入 /how-to-yscb 或明確要求教學引導時觸發。"
+      "source": "module://agents-workflow/assets/skills/how-to-yscb"
     },
     {
       "type": "skill",
       "name": "skill-creator",
-      "source": "module://agents-workflow/assets/skills/skill-creator",
-      "description": "引導建立專案功能特化 Skill、環境注意事項攔截規則或階段錨點注入配置，自動對接語意 URI 與雙層編譯註冊閉環。僅於顯式輸入 /skill-creator 或明確指示建立新 Skill 與擴充工作流規範時觸發。"
+      "source": "module://agents-workflow/assets/skills/skill-creator"
     },
     {
       "type": "skill",
       "name": "session-audit",
-      "source": "module://agents-workflow/assets/skills/session-audit",
-      "description": "執行當前或近期開發對話之隱形摩擦軌跡提取、決策瑕疵解剖與四象限根因診斷報告生成。僅於顯式輸入 /session-audit 或明確指示自檢分析對話摩擦與返工原因時觸發。"
+      "source": "module://agents-workflow/assets/skills/session-audit"
     },
     {
       "type": "skill",
       "name": "code-optimizer",
-      "source": "module://agents-workflow/assets/skills/code-optimizer",
-      "description": "針對既有業務程式碼執行五維度靜態診斷、業務階段邏輯聚合與行為無損重構。僅於顯式輸入 /code-optimizer 時觸發，嚴禁主動觸發。"
+      "source": "module://agents-workflow/assets/skills/code-optimizer"
     },
     {
       "type": "template",

@@ -148,77 +148,8 @@
               ]
             }
           },
-          "check": {
-            "description": "合規性診斷 Dev Plans 文件結構、雙檔協同、追溯差集與免讀盲寫追加 changelog.md",
-            "tier": "safe",
-            "server_compatible": true,
-            "args": {
-              "plan_name": {
-                "description": "指定計畫或 sub_XX 子路徑 (若省略則檢查進行中計畫)",
-                "required": false
-              }
-            },
-            "options": {
-              "scope": {
-                "all": {
-                  "description": "包含所有活躍計畫",
-                  "alias": ["a"]
-                }
-              },
-              "phase_opt": {
-                "phase": {
-                  "description": "指定檢核階段 (P00..P07, current, all)",
-                  "args": {
-                    "val": {
-                      "description": "階段代碼"
-                    }
-                  }
-                }
-              },
-              "log_opt": {
-                "log": {
-                  "description": "檢核 PASS 時自動以系統時間戳免讀盲寫追加 changelog.md 紀錄 (內文禁含雙引號與反引號)",
-                  "args": {
-                    "val": {
-                      "description": "變更摘要"
-                    }
-                  }
-                }
-              },
-              "log_type_opt": {
-                "type": {
-                  "description": "搭配 --log 指定日誌類型 (PHASE | DECISION | REVISION，預設 PHASE)",
-                  "args": {
-                    "val": {
-                      "description": "類型"
-                    }
-                  }
-                }
-              },
-              "model_opt": {
-                "model": {
-                  "description": "指定當輪平台宣告之模型名稱",
-                  "args": {
-                    "val": {
-                      "description": "模型名稱"
-                    }
-                  }
-                }
-              },
-              "format": {
-                "json": {
-                  "description": "以 JSON 格式輸出診斷報告"
-                }
-              }
-            },
-            "usage": {
-              "pros": [
-                "合規性檢核計畫: plan check [plan_name] [--phase P02] [--log '<摘要>']"
-              ]
-            }
-          },
           "verify": {
-            "description": "合規性診斷 Dev Plans、雙檔自癒與免讀盲寫追加 changelog.md (check 之同義指令)",
+            "description": "合規性診斷 Dev Plans 文件結構、雙檔自癒與免讀盲寫追加 changelog.md",
             "tier": "safe",
             "server_compatible": true,
             "args": {

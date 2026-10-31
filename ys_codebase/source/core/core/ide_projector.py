@@ -7,34 +7,36 @@ soft-merge of private venv site-packages into .vscode/settings.json with explici
 
 import os
 import sys
-import json
 from typing import Optional, List, Dict, Any
 from core.pip_manager import PipManager
-from core import vfs
+from core import uri, vfs
 
 
 class IdeProjector:
     """IDE 自動感知投影器：比照 internal yscb gitignore 模式，以 _yscb_managed 執行可復原軟合併。"""
 
     YSCB_MANAGED_KEY = "_yscb_managed"
+    ANALYSIS_EXCLUDE_PATTERNS = [
+        "**/.cache/**",
+        "**/.snapshots/**",
+        "**/.build/**",
+        "**/.mirror/**",
+        "**/.modules/**",
+        "**/.venv/**",
+    ]
+    EXCLUDE_KEYS = {
+        "files.watcherExclude": "**/.venv/**",
+        "search.exclude": "**/.venv/**",
+        "files.exclude": "**/.venv",
+    }
 
     def __init__(self, yscb_dir: Optional[str] = None):
         self.yscb_dir = os.path.abspath(yscb_dir or self._resolve_yscb_root())
         self.pip_mgr = PipManager(self.yscb_dir)
 
     def _resolve_yscb_root(self) -> str:
-        try:
-            from core import uri
-            return uri._get_yscb_root()
-        except Exception:
-            pass
-        cur = os.path.abspath(os.path.dirname(__file__))
-        while cur and cur != os.path.dirname(cur):
-            cfg_p = os.path.join(cur, "yscb.config.json")
-            if os.path.isfile(cfg_p):
-                return cur
-            cur = os.path.dirname(cur)
-        return os.getcwd()
+        """解析 yscb_root 目錄，統一委派至 core.uri.resolve_yscb_root()。"""
+        return uri.resolve_yscb_root()
 
     @staticmethod
     def is_vscode_configured(proj_root: str) -> bool:
@@ -70,6 +72,89 @@ class IdeProjector:
         except Exception:
             return False
 
+    def _compute_managed_extra_paths(
+        self,
+        proj_root: str,
+        extra_paths: Optional[List[str]] = None,
+        py_tag: Optional[str] = None,
+    ) -> List[str]:
+        """計算本次欲注入的 YSCB 管理路徑 (跨平台雙路徑恆定注入)。"""
+        new_managed_paths: List[str] = []
+        venv_dir = self.pip_mgr.get_venv_dir(py_tag)
+        if os.path.isdir(venv_dir):
+            site_pkgs = self.pip_mgr.get_cross_platform_site_packages_dirs(py_tag)
+            for sp in site_pkgs:
+                try:
+                    rel_site = os.path.relpath(sp, proj_root).replace("\\", "/")
+                    entry = f"./{rel_site}" if not rel_site.startswith(("./", "../")) else rel_site
+                except Exception:
+                    entry = sp.replace("\\", "/")
+                if entry not in new_managed_paths:
+                    new_managed_paths.append(entry)
+
+        if extra_paths:
+            for ep in extra_paths:
+                clean_ep = ep.replace("\\", "/")
+                if clean_ep not in new_managed_paths:
+                    new_managed_paths.append(clean_ep)
+        return new_managed_paths
+
+    def _apply_vscode_settings_merge(
+        self,
+        settings: Dict[str, Any],
+        proj_root: str,
+        new_managed_paths: List[str],
+    ) -> None:
+        """於 settings 字典原地合併 extraPaths、清理舊直譯器並維護排除項與 _yscb_managed 標記。"""
+        raw_extra = settings.get("python.analysis.extraPaths", [])
+        if not isinstance(raw_extra, list):
+            raw_extra = []
+
+        old_managed_record = settings.get(self.YSCB_MANAGED_KEY, {})
+        old_managed_paths = set(old_managed_record.get("extraPaths", []))
+        retained_paths = [p for p in raw_extra if p not in old_managed_paths]
+
+        final_extra_paths = list(retained_paths)
+        for mp in new_managed_paths:
+            if mp not in final_extra_paths:
+                final_extra_paths.append(mp)
+
+        if final_extra_paths:
+            settings["python.analysis.extraPaths"] = final_extra_paths
+        else:
+            settings.pop("python.analysis.extraPaths", None)
+
+        old_managed_interpreter = old_managed_record.get("defaultInterpreterPath")
+        current_interpreter = settings.get("python.defaultInterpreterPath")
+        if self._is_yscb_managed_interpreter(current_interpreter, proj_root, old_managed_interpreter):
+            settings.pop("python.defaultInterpreterPath", None)
+
+        managed_excludes = dict(old_managed_record.get("excludes", {}))
+        for sec, pattern in self.EXCLUDE_KEYS.items():
+            if sec not in settings or not isinstance(settings[sec], dict):
+                settings[sec] = {}
+            if pattern not in settings[sec]:
+                settings[sec][pattern] = True
+                managed_excludes[sec] = pattern
+
+        raw_analysis_exclude = settings.get("python.analysis.exclude", [])
+        if not isinstance(raw_analysis_exclude, list):
+            raw_analysis_exclude = []
+        old_managed_analysis_excl = set(old_managed_record.get("analysisExclude", []))
+        final_analysis_excl = [p for p in raw_analysis_exclude if p not in old_managed_analysis_excl]
+        for pat in self.ANALYSIS_EXCLUDE_PATTERNS:
+            if pat not in final_analysis_excl:
+                final_analysis_excl.append(pat)
+        if final_analysis_excl:
+            settings["python.analysis.exclude"] = final_analysis_excl
+
+        settings[self.YSCB_MANAGED_KEY] = {
+            "description": "Auto-managed by YSCB host bootstrapper. Reversible via module uninstall or rollback.",
+            "extraPaths": new_managed_paths,
+            "excludes": managed_excludes,
+            "analysisExclude": list(self.ANALYSIS_EXCLUDE_PATTERNS),
+        }
+
     def sync_vscode_settings(
         self,
         proj_root: str,
@@ -87,16 +172,12 @@ class IdeProjector:
         if not self.is_vscode_configured(proj_root):
             return False
 
-        vscode_dir = os.path.join(proj_root, ".vscode")
-        settings_path = os.path.join(vscode_dir, "settings.json")
-
+        settings_path = os.path.join(proj_root, ".vscode", "settings.json")
         settings: Dict[str, Any] = {}
         if vfs.is_file(settings_path):
             try:
                 data = vfs.read_json(settings_path)
             except Exception:
-                # 檔案存在但非標準 JSON（如 VS Code 允許之 JSONC 註解 / 尾逗號）：
-                # 為防整檔覆寫導致使用者設定遺失，略過同步且不寫盤。
                 print(
                     f"[core:ide] Warning: '{settings_path}' is not strict JSON (comments or trailing commas?); "
                     "skipped VS Code settings sync to preserve user settings.",
@@ -107,114 +188,16 @@ class IdeProjector:
                 return False
             settings = data
 
-        # 1. 決定本次欲注入的 YSCB 管理路徑 (跨平台雙路徑恆定注入)
-        new_managed_paths: List[str] = []
-        venv_dir = self.pip_mgr.get_venv_dir(py_tag)
-        if os.path.isdir(venv_dir):
-            site_pkgs = self.pip_mgr.get_cross_platform_site_packages_dirs(py_tag)
-            for sp in site_pkgs:
-                try:
-                    rel_site = os.path.relpath(sp, proj_root).replace("\\", "/")
-                    if not rel_site.startswith("./") and not rel_site.startswith("../"):
-                        entry = f"./{rel_site}"
-                    else:
-                        entry = rel_site
-                    if entry not in new_managed_paths:
-                        new_managed_paths.append(entry)
-                except Exception:
-                    entry = sp.replace("\\", "/")
-                    if entry not in new_managed_paths:
-                        new_managed_paths.append(entry)
+        new_managed_paths = self._compute_managed_extra_paths(proj_root, extra_paths=extra_paths, py_tag=py_tag)
+        self._apply_vscode_settings_merge(settings, proj_root, new_managed_paths)
 
-        # 補入額外指定之路徑 (如 source/*)
-        if extra_paths:
-            for ep in extra_paths:
-                clean_ep = ep.replace("\\", "/")
-                if clean_ep not in new_managed_paths:
-                    new_managed_paths.append(clean_ep)
-
-        # 2. 差集更新 python.analysis.extraPaths
-        raw_extra = settings.get("python.analysis.extraPaths", [])
-        if not isinstance(raw_extra, list):
-            raw_extra = []
-
-        # 取得舊版 _yscb_managed 記錄之路徑
-        old_managed_record = settings.get(self.YSCB_MANAGED_KEY, {})
-        old_managed_paths = set(old_managed_record.get("extraPaths", []))
-
-        # 保留使用者自訂路徑 (不在 old_managed_paths 中的項目)
-        retained_paths = [p for p in raw_extra if p not in old_managed_paths]
-
-        # 將新的 managed paths 依序加入 (避免重複)
-        final_extra_paths = list(retained_paths)
-        for mp in new_managed_paths:
-            if mp not in final_extra_paths:
-                final_extra_paths.append(mp)
-
-        if final_extra_paths:
-            settings["python.analysis.extraPaths"] = final_extra_paths
-        else:
-            settings.pop("python.analysis.extraPaths", None)
-
-        # 3. 停止寫入 defaultInterpreterPath，並清理舊版 YSCB 託管值 (保留使用者自訂路徑)
-        old_managed_interpreter = old_managed_record.get("defaultInterpreterPath")
-        current_interpreter = settings.get("python.defaultInterpreterPath")
-        if self._is_yscb_managed_interpreter(current_interpreter, proj_root, old_managed_interpreter):
-            settings.pop("python.defaultInterpreterPath", None)
-
-        # 4. 同步維護 VS Code 排除項 (避免檔案監視與搜尋開銷)
-        exclude_keys = {
-            "files.watcherExclude": "**/.venv/**",
-            "search.exclude": "**/.venv/**",
-            "files.exclude": "**/.venv",
-        }
-        managed_excludes = dict(old_managed_record.get("excludes", {}))
-        for sec, pattern in exclude_keys.items():
-            if sec not in settings or not isinstance(settings[sec], dict):
-                settings[sec] = {}
-            if pattern not in settings[sec]:
-                settings[sec][pattern] = True
-                managed_excludes[sec] = pattern
-
-        # 4b. 同步維護 python.analysis.exclude (避免 Pylance 對 .cache 沙盒與暫存目錄重複索引暴衝記憶體)
-        analysis_exclude_patterns = [
-            "**/.cache/**",
-            "**/.snapshots/**",
-            "**/.build/**",
-            "**/.mirror/**",
-            "**/.modules/**",
-            "**/.venv/**",
-        ]
-        raw_analysis_exclude = settings.get("python.analysis.exclude", [])
-        if not isinstance(raw_analysis_exclude, list):
-            raw_analysis_exclude = []
-        old_managed_analysis_excl = set(old_managed_record.get("analysisExclude", []))
-        retained_analysis_excl = [p for p in raw_analysis_exclude if p not in old_managed_analysis_excl]
-        final_analysis_excl = list(retained_analysis_excl)
-        for pat in analysis_exclude_patterns:
-            if pat not in final_analysis_excl:
-                final_analysis_excl.append(pat)
-        if final_analysis_excl:
-            settings["python.analysis.exclude"] = final_analysis_excl
-
-        # 5. 更新顯式標記區塊 _yscb_managed (不再記錄 defaultInterpreterPath)
-        settings[self.YSCB_MANAGED_KEY] = {
-            "description": "Auto-managed by YSCB host bootstrapper. Reversible via module uninstall or rollback.",
-            "extraPaths": new_managed_paths,
-            "excludes": managed_excludes,
-            "analysisExclude": analysis_exclude_patterns,
-        }
-
-        # 6. Zero-Touch 檢驗：若與現有 settings.json 內容完全等價，跳過磁碟寫入
         if vfs.is_file(settings_path):
             try:
-                existing_data = vfs.read_json(settings_path)
-                if existing_data == settings:
+                if vfs.read_json(settings_path) == settings:
                     return True
             except Exception:
                 pass
 
-        # 7. 原子寫入
         try:
             vfs.write_json(settings_path, settings, indent=2, atomic=True)
             return True

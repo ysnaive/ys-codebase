@@ -3,8 +3,7 @@
     {
       "type": "skill",
       "name": "bump-revision",
-      "source": "config://agents-workflow/skills/bump-revision",
-      "description": "🔴 授權守門：將 @build 開發模組批次執行版本號遞增、正式打包與本機安裝切換。僅於顯式輸入 /bump-revision 授權時觸發，嚴禁主動觸發。"
+      "source": "config://agents-workflow/skills/bump-revision"
     }
   ],
   "insert": [

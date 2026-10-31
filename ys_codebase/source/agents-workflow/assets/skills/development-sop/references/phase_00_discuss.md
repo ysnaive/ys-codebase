@@ -49,7 +49,7 @@ Phase 00 執行檢核表：
 - **極精簡 Session 回覆格式**：產出 `P00_discuss.md` 與 `changelog.md` 後，對話中**嚴禁全文重複或冗長轉述**，強制僅呈遞以下極簡卡片：
   ```markdown
   ###  P00 需求討論與分流確認
-  - **產出文件**：[P00_discuss.md](__${project://plans/}__/{plan_name}/P00_discuss.md)、[changelog.md](__${project://plans/}__/{plan_name}/changelog.md)
+  - **產出文件**：[P00_discuss.md](`__${project://plans}__/{plan_name}/P00_discuss.md`)、[changelog.md](`__${project://plans}__/{plan_name}/changelog.md`)
   - **推薦分流**：[Full Track | Fast Track | Umbrella | Revision | Research]
   - **核心決策**：[1~2 行關鍵架構定案或主要 [P00:DR-XX]]
   - **待確認事項**：請問是否同意此分流並推進至下一階段？

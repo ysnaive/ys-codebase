@@ -4,7 +4,6 @@ knowledge-db 空間管理、雙軌聚合 (Contributes + Config) 與路徑解算�
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -166,12 +165,6 @@ class SpaceManager:
         列出當前所有有效 SpaceConfig 清單。
         """
         return list(self.load_spaces().values())
-
-    def get_union_spaces(self) -> List[SpaceConfig]:
-        """
-        取得所有空間之聯集清單 (全量處理清單)。
-        """
-        return self.list_spaces()
 
     def resolve_space_include(self, space_name: str) -> List[Path]:
         """

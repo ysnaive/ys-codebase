@@ -13,10 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.commands.bags import CmdBags
 from core.commands.help import HelpRenderer
-from core.commands.registry import CommandSpec, CommandsRegistry, ModuleSpec
+from core.commands.registry import CommandSpec, CommandsRegistry
 from core.commands.resolver import (
-    MissingValueError,
-    MutualExclusionError,
     OptionResolutionError,
     OptionResolver,
 )
@@ -44,20 +42,13 @@ _LIFECYCLE_MUTATION_COMMANDS = {
 
 
 def _get_yscb_root() -> Tuple[str, str]:
-    """取得工作區根目錄與 yscb 根目錄。"""
-    host_dir = os.environ.get("YSCB_HOST_DIR", os.getcwd())
-    cfg_path = os.path.join(host_dir, "yscb.config.json")
-    yscb_rel = "."
-    if os.path.isfile(cfg_path):
-        try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                yscb_rel = data.get("yscb_root", ".")
-        except Exception:
-            pass
-
-    yscb_abs = os.path.normpath(os.path.join(host_dir, yscb_rel))
-    return host_dir, yscb_abs
+    """取得工作區根目錄與 yscb 根目錄，統一委派至 core.uri 尋根入口。"""
+    from core import uri
+    try:
+        return uri._get_host_config()
+    except Exception:
+        host_dir = uri.get_host_dir() or os.getcwd()
+        return host_dir, uri.resolve_yscb_root()
 
 
 def _load_registry(yscb_abs: str) -> CommandsRegistry:
@@ -186,17 +177,8 @@ def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], 
         return None
 
 
-def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
-    """
-    在背景非同步按需拉起 Server 守護進程。
-    僅在 server 模組存在、非 server/dev 指令、非測試環境、且 config/server/config.project.json enable != false 時觸發。
-    當偵測到環境無開立背景守護進程權限時，自動降級並輸出提示。
-    """
-    global _AUTO_SPAWN_WARNED
-
-    if os.environ.get("YSCB_TESTING") == "1" or os.environ.get("YSCB_TEST_SANDBOX") == "1":
-        return
-
+def _is_server_daemon_active_or_locked(yscb_abs: str) -> bool:
+    """檢查常駐 Server daemon.json 或啟動期 daemon.lock 是否已活躍。"""
     state_file = os.path.join(yscb_abs, ".cache", "server", "daemon.json")
     if os.path.isfile(state_file):
         try:
@@ -205,34 +187,30 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
             pid = st.get("pid")
             if pid:
                 if is_process_alive(pid):
-                    return  # 守護進程活躍，無須重複拉起
-                else:
-                    try:
-                        os.remove(state_file)
-                    except OSError:
-                        pass
+                    return True
+                try:
+                    os.remove(state_file)
+                except OSError:
+                    pass
         except Exception:
-            return
+            return True
 
-    # 探測 daemon.lock 是否已被正在啟動或運行中的 Master 持有（消除啟動期 daemon.json 寫入前之重複 spawn 競態）
     lock_file = os.path.join(yscb_abs, ".cache", "server", "daemon.lock")
     if os.path.isfile(lock_file):
         try:
             probe_lock = InterProcessLock(lock_file)
             if not probe_lock.acquire(blocking=False):
-                return
+                return True
             probe_lock.release()
         except Exception:
             pass
+    return False
 
-    # [!] 剛性架構約束：僅允許 .modules 運行時空間，禁止任何 fallback
-    if not os.path.isdir(os.path.join(yscb_abs, ".modules", "server")):
-        return
 
+def _read_server_spawn_config(yscb_abs: str) -> Tuple[bool, bool]:
+    """依序讀取 project 與 local 雙層組態之 (enabled, auto_spawn)。"""
     auto_spawn = True
     enabled = True
-
-    # 依序讀取 project 與 local 雙層組態 (P00:DR-02)
     proj_cfg_file = os.path.join(yscb_abs, "config", "server", "config.project.json")
     local_cfg_file = os.path.join(yscb_abs, "config", "server", "config.local.json")
 
@@ -249,39 +227,64 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
                         auto_spawn = bool(cfg_data["auto_spawn"])
             except Exception:
                 pass
+    return enabled, auto_spawn
 
+
+def _print_agent_daemon_blocker() -> None:
+    """輸出沙盒受限環境下之 Agent 常駐啟動強制指引。"""
+    msg = (
+        "\n"
+        "================================================================================\n"
+        "[BLOCKER] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED FOR AGENTS\n"
+        "================================================================================\n"
+        "[!] 嚴格阻斷約束 (STRICT AGENT BLOCKER):\n"
+        "    你必須立即暫停推進手頭上的業務任務！\n"
+        "    在完成以下【步驟 1】或【步驟 2】之前，【嚴禁】略過此提示繼續執行後續指令！\n\n"
+        "[!] 強制執行程序 (MANDATORY DIRECTIVES):\n"
+        "    [1] 步驟 1 (立即執行):\n"
+        "        調用終端工具以【背景/常駐模式】(Background/Daemon task) 啟動 Server：\n"
+        "        $ python yscb.py server start --console\n\n"
+        "    [2] 步驟 2 (異常請示):\n"
+        "        若當前環境不支援常駐進程導致啟動失敗，請立即向開發者回報並請示處置方案：\n"
+        "        - 方案 A: 由開發者在外部獨立終端手動啟動 server\n"
+        "        - 方案 B: 維持純冷派發，由開發者評估關閉 auto_spawn\n"
+        "        - 方案 C: (不推薦) 授權 Agent 暫時忽略常駐警示，以冷派發繼續作業\n\n"
+        "[*] 狀態備註: 沙盒環境背景脫鉤受限，當前以本地冷派發臨時兜底，嚴禁擅改專案組態！\n"
+        "================================================================================\n\n"
+    )
+    try:
+        sys.stderr.write(msg)
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
+    """
+    在背景非同步按需拉起 Server 守護進程。
+    僅在 server 模組存在、非 server/dev 指令、非測試環境、且 config/server/config.project.json enable != false 時觸發。
+    當偵測到環境無開立背景守護進程權限時，自動降級並輸出提示。
+    """
+    global _AUTO_SPAWN_WARNED
+
+    if os.environ.get("YSCB_TESTING") == "1" or os.environ.get("YSCB_TEST_SANDBOX") == "1":
+        return
+
+    if _is_server_daemon_active_or_locked(yscb_abs):
+        return
+
+    # [!] 剛性架構約束：僅允許 .modules 運行時空間，禁止任何 fallback
+    if not os.path.isdir(os.path.join(yscb_abs, ".modules", "server")):
+        return
+
+    enabled, auto_spawn = _read_server_spawn_config(yscb_abs)
     if not enabled or not auto_spawn:
         return
 
-    # 自適應環境權限探針檢測
     if not can_spawn_background_daemon():
         if not _AUTO_SPAWN_WARNED:
             _AUTO_SPAWN_WARNED = True
-            msg = (
-                "\n"
-                "================================================================================\n"
-                "[BLOCKER] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED FOR AGENTS\n"
-                "================================================================================\n"
-                "[!] 嚴格阻斷約束 (STRICT AGENT BLOCKER):\n"
-                "    你必須立即暫停推進手頭上的業務任務！\n"
-                "    在完成以下【步驟 1】或【步驟 2】之前，【嚴禁】略過此提示繼續執行後續指令！\n\n"
-                "[!] 強制執行程序 (MANDATORY DIRECTIVES):\n"
-                "    [1] 步驟 1 (立即執行):\n"
-                "        調用終端工具以【背景/常駐模式】(Background/Daemon task) 啟動 Server：\n"
-                "        $ python yscb.py server start --console\n\n"
-                "    [2] 步驟 2 (異常請示):\n"
-                "        若當前環境不支援常駐進程導致啟動失敗，請立即向開發者回報並請示處置方案：\n"
-                "        - 方案 A: 由開發者在外部獨立終端手動啟動 server\n"
-                "        - 方案 B: 維持純冷派發，由開發者評估關閉 auto_spawn\n"
-                "        - 方案 C: (不推薦) 授權 Agent 暫時忽略常駐警示，以冷派發繼續作業\n\n"
-                "[*] 狀態備註: 沙盒環境背景脫鉤受限，當前以本地冷派發臨時兜底，嚴禁擅改專案組態！\n"
-                "================================================================================\n\n"
-            )
-            try:
-                sys.stderr.write(msg)
-                sys.stderr.flush()
-            except Exception:
-                pass
+            _print_agent_daemon_blocker()
         return
 
     try:
@@ -619,7 +622,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
             try:
                 with open(target_cli, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
-                    if f"def {func_name}(" in content or f"def cmd_{func_name}(" in content:
+                    if f"def {func_name}(" in content:
                         has_fn = True
             except Exception:
                 pass
