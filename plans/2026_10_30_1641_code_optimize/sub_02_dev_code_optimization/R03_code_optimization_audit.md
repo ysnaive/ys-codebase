@@ -6,7 +6,7 @@
 > 狀態：Concluded  
 > 調研狀態：Concluded  
 > 模型：Gemini 4 Argon (Low)  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -44,7 +44,7 @@
 
 ---
 
-## 2. 候選方案分析與對比：`D1 ~ D5` 五維度分級診斷矩陣 (Diagnostic Matrix)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 ### 2.1 五維度病灶匯總統計
 - **`P0（高危破窗 / 巨型檔案與架構腐化）`**：**3 項**
@@ -73,10 +73,6 @@
 | **F-16** | `dev/tester.py:647, 789`<br>`dev/testing/sandbox.py:218, 403`<br>`dev/testing/requirement.py:30-32` | `D5` | **P2** | **散落魔術常數 (Magic Literals)**：沙盒保留上限在不同位置硬編碼為 `max_keep=3` (`tester.py:647`, `sandbox.py:218`) 與 `max_keep=8` (`tester.py:789`, `sandbox.py:403`)；`builder.py:182` 硬編碼 `items[3:]`（3-Revision 窗口）；`requirement.py:30` 硬編碼探測 URL `"https://raw.githubusercontent.com"` 與 `timeout=1.5`；`runner.py:234` 硬編碼截斷行數 `20` / `10` / `5`。 | `S5` |
 | **F-17** | `dev/tester.py:348-477`<br>`dev/tester.py:720-776` | `D4` | **P2** | **測試報告與模組統計結果使用鬆散裸字典 (`Dict[str, Any]`) 跨階段組裝**：`_run_op_test` 與 `_run_parallel_test` 手動維護擁有 10+ 個欄位的 `report_data` 與 `modules` 裸字典，並在兩處重複編寫累加邏輯。 | `S5` |
 | **F-18** | `scripts/cli.py:19-43, 70-81` | `D3` | **P2** | **CLI 短長選項映射表雙重維護**：`_normalize_bags` 內的 `alias_map` (L23-43) 與 `_get_short_to_canonical_pairs` (L72-81) 重複定義了相同的短長旗標映射關係。 | `S3`, `S5` |
-
----
-
-## 3. 架構設計與驗證：`S1 ~ S6` 外科手術重構處方箋 (Refactoring Blueprint)
 
 針對上述 `D1~D5` 病灶，遵循「四大防過度設計紅線（100% 行為與錯誤語意等價、禁止設計模式狂熱、禁止奈米函式、自我解釋命名）」，制定以下 `S1~S6` 具體手術方案：
 
@@ -165,9 +161,9 @@ flowchart TD
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
-### 4.1 預期量化改善指標預估 (Projected Before / After Metrics)
+### 3.1 預期量化改善指標預估 (Projected Before / After Metrics)
 
 | 量化指標 (Metric) | 重構前基線 (Before) | 目標重構後 (After 預估) | 結構改善說明 |
 | :--- | :---: | :---: | :--- |

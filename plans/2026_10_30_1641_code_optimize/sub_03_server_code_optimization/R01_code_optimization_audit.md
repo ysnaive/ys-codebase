@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize  
 > 調研狀態：Concluded  
 > 模型：Unknown  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -36,16 +36,12 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 | 方案 | 運作原理 | 優點 (Pros) | 缺點 / 成本 (Cons) | 適用度評級 |
 | :--- | :--- | :--- | :--- | :---: |
 | **方案 A：`Mode A` 破壞性介面收斂 + `master.py` 職責解耦 + Bug 根除**<br/>*(Recommended — Full Track)* | 立即修復 `logger.py` 缺失 `import sys` 之 `P0` 缺陷與 `master.py`/`worker.py` 資源釋放保護；移除 `ServerConfig.load(workspace_root)`、`stop(force)`、`stop_all(timeout_sec)` 等殭屍參數（同步更新 `core/commands/dispatcher.py:140` 調用點）與舊版 Schema 相容分支；合併 `master.py` 與 `cli.py` 重複之狀態/啟動邏輯並拆解 `master.py` 長方法。 | 100% 根除隱藏 `NameError` 與鎖洩漏風險，消除跨檔重複代碼，預計淨減 ~250 LOC。 | 變更 `ServerConfig.load()` 簽名需同步更新 `core/commands/dispatcher.py:140` 與 `server/tests/`。 | ⭐⭐⭐⭐⭐ **(推薦)** |
 | **方案 B：僅修補 `logger.py` 與保留全部舊參數/相容分支** | 僅補上 `import sys`，保留所有未使用參數與重複 helper。 | 變更極小。 | 未解決 `master.py` 職責過載、雙份 `daemon.json` 狀態讀取與殭屍參數問題。 | ⭐⭐ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `Mode A` 公開入口收斂、薄轉發層、相容別名與死代碼清除清冊 (`S5`)
 
@@ -115,7 +111,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   - 採納 **方案 A（`Mode A` 破壞性介面收斂 + `master.py` 職責解耦 + Bug 根除）**，於後續啟動實作時將本子計畫 `sub_03_server_code_optimization` 原地升級為 **標準開發計畫 (`Full Track`, `P01~P07`)**。

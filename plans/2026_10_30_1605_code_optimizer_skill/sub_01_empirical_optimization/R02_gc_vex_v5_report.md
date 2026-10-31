@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1605_code_optimizer_skill (sub_01_empirical_optimization)  
 > 調研狀態：Concluded  
 > 模型：Unknown  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -28,7 +28,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 針對 `GC_VEX_V5` 實測挖掘出的 5 大增量維度，評估各候選改進方案：
 
@@ -40,10 +40,6 @@
 | **增量 3：Umbrella 子代理回傳契約**<br/>**方案 3A（推薦：雙模委派——Single-Plan 回傳 `<=400` Tokens vs. Umbrella 子代理直接落檔 `R{NN}` + `<50` Tokens 收據）** | 在 `exploration-and-delegation.md` 區分模式 I（局部探索回傳摘要）與模式 II（Umbrella 子計畫授權子代理直接寫入 `sub_XX/R{NN}_*.md` 並僅回傳單行 `P0/P1/P2` 計數收據） | 零資訊壓縮耗損，且大幅保護主代理 Context Window（本案 44 子代理下主視窗有效率高達 `94.0%`） | 無副作用 | ★★★★★ |
 | **增量 4：`S6` 大型類別拆解之語言原生適配**<br/>**方案 4A（推薦：同型別正交物理分檔 `Same-Type Orthogonal File Partitioning`）** | 於 `refactoring-playbook.md §6 (S6)` 增列：當大型類別承載多個正交變更軸（如 `Model` vs. `Inspector UI` vs. `Codec/Codegen`）但共享同一實例私有狀態時，優先採用語言原生同型別分檔（C# `partial class`、C++ 單標頭多 `.cpp`、Rust 多子模組 `impl`） | 零執行期配置開銷、零公開 API 污染、零私有狀態外洩，徹底避免過度設計 Wrapper 類別 | 僅適用於支援同型別分檔之語言（Python 則維持模組級純函式下沉） | ★★★★★ |
 | **增量 5：高複雜度專案之雙層品管掛鉤**<br/>**方案 5A（推薦：導入可選之 `Reverse Fact-Check Gate` 與 `Gen 2 Blind Convergence`）** | 於 `SKILL.md` 提供進階品管掛鉤：① 實作前對 `R{NN}` 的 `P0`/`D2`/`S3` 進行反向查驗（本案攔截 9 處物理狀態機誤判）；② 巨型模組首輪拆檔降噪後啟動無歷史包袱之第二輪盲審，收割深層跨檔同構樣板 | 動刀前消滅幻覺誤判，動刀後收斂深層結構重複（如 C++ 10 檔 `forEachInstance` 模板化） | 增加唯讀驗證子代理調度（可按專案規模選配） | ★★★★★ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 母倉 6 大共性坑點於 `GC_VEX_V5` 之實測命中率與收斂對照
 
@@ -85,7 +81,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   1. **納入 `exploration-and-delegation.md`**：

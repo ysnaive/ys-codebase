@@ -77,8 +77,8 @@ description: 針對既有業務程式碼執行五維度靜態診斷、業務階�
 2. **五維度診斷（`D1~D5`）與六大重構處方（`S1~S6`）速查對照**：
    - **診斷維度**：`D1` 職責內聚與抽象層級（SLAP / 狀態分離，以正交職責為準，行數僅作探索參考）、`D2` 調用耦合與拓撲健康度（無環依賴 / 雙重查證死代碼清零）、`D3` 控制流與認知複雜度（衛語句 / DRY）、`D4` 介面契約與資源生命週期（型別簽名 / 確定性釋放）、`D5` 架構邊界與專案慣例（基礎設施抽象遵從）。
    - **重構手術刀**：`S1` 業務階段拆解與主幹管線化、`S2` 狀態依賴分析與無狀態邏輯剝離（零殘留轉發殼層）、`S3` 跨方法同構模式聚合（含 20% 差異分支不變量核對與介面預設方法防遞迴）、`S4` 控制流扁平化與表驅動分派、`S5` 資料團塊封裝與結構化契約、`S6` 正交職責之物理模組拆分（含三大免拆守門與同型別 `partial class` 分檔規範）。
-3. **落檔 `R{NN}_code_optimization_audit.md`（強制對齊 `RXX_research_report.md` 四大 H2 標題）**：
-   讀取 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 模板，依 `diagnostic-matrix.md` §3 將五個診斷子區塊掛載於模板標準 H2 標題（`## 1.` ~ `## 4.`）之下作為 `###` H3 子章節寫入 `R01_code_optimization_audit.md`（若為後續跨代無上下文盲審則遞增為 `R02`/`R03`），並執行 `plan verify` 檢核與追加 `changelog.md`。
+3. **落檔 `R{NN}_code_optimization_audit.md`（強制對齊 `RXX_research_report.md` 三大 H2 標題）**：
+   讀取 [`RXX_research_report.md`](`__#{module://agents-workflow/assets/templates/RXX_research_report.md}__`) 模板，依 `diagnostic-matrix.md` §3 將五個診斷子區塊掛載於模板標準 H2 標題（`## 1.` ~ `## 3.`）之下作為 `###` H3 子章節寫入 `R01_code_optimization_audit.md`（若為後續跨代無上下文盲審則遞增為 `R02`/`R03`），並執行 `plan verify` 檢核與追加 `changelog.md`。
    - **進階可選品管 — 反向查驗守門 (`Reverse Fact-Check Gate`)**：針對高複雜度核心模組，於 `R{NN}` 落檔後可針對所有 `P0` 拆檔、`D2` 死代碼拔除與 `S3` 合併處方反向核對源碼，攔截多型分派誤刪或物理狀態機誤合併。
 
 ### 步驟 3：呈遞診斷卡與三大流轉出口裁決 (`Export Outlet Gate` — 強制 End Turn)

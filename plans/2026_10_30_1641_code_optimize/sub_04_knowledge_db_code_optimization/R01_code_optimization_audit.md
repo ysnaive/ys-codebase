@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize  
 > 調研狀態：Concluded  
 > 模型：Unknown  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -57,16 +57,12 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 | 方案 | 運作原理 | 優點 (Pros) | 缺點 / 成本 (Cons) | 適用度評級 |
 | :--- | :--- | :--- | :--- | :---: |
 | **方案 A：`Mode A` 全面破壞性收斂 + 拓撲/檢索/格式化三層去重**<br/>*(Recommended — Full Track)* | 徹底清除 23 項歷史別名、`KnowledgeEngine` 薄代理、空白 Parser 子類別與雙軌序列化分支；從 `pipeline.py` 剝離獨立之 `TopologyQueryService`；合併 `BM25Engine.search` 與 `search_aggregated` 打分核心（同步修復複合字過濾缺口）；合併 `formatter.py` 與 `scripts/cli.py` 三套拓撲查詢樣板；移除 `CallGraphIndex` 純 Python 備援圖並補齊 `VectorIndex` 原子寫入。 | 預計淨減 **900~1,200 LOC**，消除 `BM25Engine` 打分漂移與非原子寫入風險，`pipeline.py` 行數由 1,412 LOC 壓降至 ~850 LOC。 | 需同步更新 `knowledge-db/tests/` 中引用舊別名（如 `CodeTokenizer`、`LanguageRegistry`、`PythonParser`、`engine.act_callers`）的測試案例。 | ⭐⭐⭐⭐⭐ **(推薦)** |
 | **方案 B：僅拆分 `pipeline.py` 內部私有方法（保留雙軌別名與舊代理）** | 不動 `KnowledgeEngine`、`schema.py`、`registry.py` 與 `BM25Engine` 雙迴圈。 | 測試修改量少。 | 雙軌序列化、16 個薄代理與 `BM25Engine` 邏輯分叉持續存在，違背 `Mode A`。 | ⭐⭐ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `Mode A` 公開入口收斂、薄轉發層、相容別名與死代碼清除清冊 (`S5`)
 
@@ -132,7 +128,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   - 採納 **方案 A（`Mode A` 全面破壞性收斂 + 拓撲/檢索/格式化三層去重）**，於後續啟動實作時將本子計畫 `sub_04_knowledge_db_code_optimization` 原地升級為 **標準開發計畫 (`Full Track`, `P01~P07`)**。

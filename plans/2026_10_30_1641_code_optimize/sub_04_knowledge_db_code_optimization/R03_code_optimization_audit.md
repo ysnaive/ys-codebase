@@ -6,7 +6,7 @@
 > 狀態：Concluded  
 > 調研狀態：Concluded  
 > 模型：Gemini 4 Argon (Low)  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -54,7 +54,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 ### 2.1 契約邊界與內部工具函式查驗表 (Contract Surface & Internal Helpers Verification)
 
@@ -75,10 +75,6 @@
 | **方案 A：模組內外科手術式階段拆解與同構收斂 (`S1~S5` 為核心，維持現有模組檔案拓撲)** | 不新增零碎物理子檔案；針對 `pipeline.py`、`formatter.py`、`treesitter.py`、`cli.py`、`retrieval.py`、`linker.py` 執行長方法階段拆解 (`S1`)、無狀態純函式剝離 (`S2`)、重複演算法與例外守門聚合 (`S3`)、控制流衛語句與表驅動分派 (`S4`) 及配置/常數結構化 (`S5`)。 | • 100% 保持既有 `import` 路徑與公開 API 契約穩定<br>• 消除 5 大超過 100 行的巨型方法與多處重複邏輯<br>• 零「碎紙機式拆檔」帶來的跨檔跳轉負擔 | `pipeline.py` 與 `formatter.py` 雖邏輯高度清晰化，單檔行數仍維持在約 700~850 行區間。 | ⭐⭐⭐⭐⭐<br>**(推薦首選)** |
 | **方案 B：激進物理拆檔 (`S6` 將 `pipeline`、`formatter`、`treesitter` 拆分為 10+ 個細粒度子檔案)** | 將 `pipeline.py` 拆為 `builder.py` / `patcher.py` / `searcher.py`，將 `formatter.py` 拆為 `styler.py` / `purifier.py` / `search_fmt.py` / `topology_fmt.py`，將 `treesitter.py` 拆為 `ts_symbols.py` / `ts_calls.py` / `ts_imports.py`。 | 單一檔案行數可全面壓低至 450 行以內。 | • 模組檔案數暴增，破壞既有單一領域內聚性<br>• 測試中針對內部屬性或方法的 Mock 路徑需大規模改寫或建立轉發層 | ⭐⭐⭐☆☆ |
 | **方案 C：僅做局部 P2 表層打磨** | 僅替換魔術常數與清理局部註解，不動碰 `D1~D3` 長方法與重複骨架。 | 修改行數最少、風險趨近於零。 | 無法解決 `formatter.py` 三重分支重複、`pipeline.py` 檢索聚合重複及 `treesitter.py` 超長解析函式等核心結構痛點。 | ⭐⭐☆☆☆ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `D1 ~ D5` 五維度靜態診斷矩陣与分級病灶座標表
 
@@ -146,9 +142,9 @@ flowchart TD
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
-### 4.1 `S1 ~ S6` 外科手術無損重構處方箋 (Refactoring Blueprint)
+### 3.1 `S1 ~ S6` 外科手術無損重構處方箋 (Refactoring Blueprint)
 
 #### 處方 1：[`knowledge_db/pipeline.py`](file:///d:/repos/ys_codebase/ys_codebase/source/knowledge-db/knowledge_db/pipeline.py) & [`knowledge_db/retrieval.py`](file:///d:/repos/ys_codebase/ys_codebase/source/knowledge-db/knowledge_db/retrieval.py) — 索引建置階段拆解與聚合演算法單一化 (`F-01`, `F-07`, `F-13`, `F-19`)
 1. **`S3` 消除檔案聚合演算法重複**：

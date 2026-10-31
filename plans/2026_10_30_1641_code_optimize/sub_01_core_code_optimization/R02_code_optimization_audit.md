@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize  
 > 調研狀態：Concluded  
 > 模型：Gemini 4 Argon (Low)  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -23,7 +23,7 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 ### 2.1 Mode A 契約邊界與內部工具函式查驗表
 
@@ -47,10 +47,6 @@
 | :--- | :--- | :--- | :--- | :---: |
 | **方案 A：局部表層清理 (`S2 + S4` 輕量收斂)** | 僅刪除死代碼與重複之 `.gitignore` 函式、拉平局部深層巢狀，不拆分 `engine.py` 與 `installer.py`，亦不抽離共用輔助層。 | 改動行數少，短期合併速度快。 | `engine.py`（1,020 行）與 `installer.py`（819 行）依然維持 God File 狀態；Provider 尋址與 `yscb_root` 探測邏輯仍散落多檔，無法根治 `P0` 架構腐化。 | ⭐⭐ |
 | **方案 B：全維度外科手術重構 (`S1 ~ S6` 完整落地 + `Mode A` 單一入口收斂)** | 1. 針對巨型檔案 `engine.py` 與 `installer.py` 執行 `S6` 職責拆解與 `S3` Provider/Zip 管線收斂；<br>2. 將散落 6 檔的 `yscb_root` / `host_dir` 探測統一收斂至 `core.uri` 單一正統入口（`D5`）；<br>3. 全面消除繞過 `core.vfs` 的原生檔案操作；<br>4. 對 `dispatcher.py`、`locale.py`、`validator.py` 長函式執行 `S1` 階段拆解與 `S4` 表驅動/衛語句扁平化；<br>5. 依 `Mode A` 徹底拔除相容別名與死分支。 | 徹底消除 `P0` 巨型檔案與雙軌實作破窗，確立 `core.uri` $\to$ `core.vfs` $\to$ 上層服務的乾淨單向 DAG 拓撲，大幅降低認知複雜度與維護成本。 | 涉及 `core` 內部多個檔案協同調整，需透過完整回歸測試套件嚴格驗證行為與異常語意 100% 無損。 | ⭐⭐⭐⭐⭐<br>**(推薦)** |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `D1 ~ D5` 五維度分級靜態診斷矩陣
 
@@ -131,7 +127,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **診斷總結**：
   - `ys_codebase/source/core/` 整體架構邊界清晰、100% 遵循標準庫零第三方依賴原則，但在多次功能迭代後累積了 **3 項 `P0`**（`engine.py` / `installer.py` 巨型檔案與雙軌下載解壓、`.gitignore` 雙重實作、6 處重複尋根與局部繞過 `vfs`）、**11 項 `P1`**（長程序、深層巢狀、同構校驗樣板與過渡期別名殘留）與 **4 項 `P2`**（局部重複與長分支鏈）。

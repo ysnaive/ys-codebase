@@ -5,7 +5,7 @@
 > 所屬主計畫：2026_10_30_1641_code_optimize  
 > 調研狀態：Concluded  
 > 模型：Unknown  
-> 模板版本：v1.1  
+> 模板版本：v1.2  
 
 ---
 
@@ -42,16 +42,12 @@
 
 ---
 
-## 2. 候選方案分析與對比 (Candidate Evaluation)
+## 2. 核心分析與評估 (Core Analysis & Evaluation)
 
 | 方案 | 運作原理 | 優點 (Pros) | 缺點 / 成本 (Cons) | 適用度評級 |
 | :--- | :--- | :--- | :--- | :---: |
 | **方案 A：`Mode A` 全面破壞性收斂 + 巨型模組拆解 + 單向依賴純化**<br/>*(Recommended — Full Track)* | 徹底移除 19 項舊版別名、單檔 `workflows` 分支、`FT_plan.md`/`master_plan` 舊檔名分支、`plan check` 重複命令與 11 個 `cmd_*` 轉發；將 `session_trace.py` (1,933 LOC) 與 `verifier.py` (1,486 LOC) 拆分為職責單一之子模組；抽取 `plans/_common.py` 統一語意 URI 與標頭解析並斬斷循環依賴；將全模組 43 處 `uri.<io>` 遷移至 `vfs.<io>`。 | 預計淨減 **750~950 LOC**，將 `_parse_transcript_file` 782 行巨函式拆解為清晰解析器，達成 100% 單向無環依賴。 | 需同步更新 `agents-workflow/tests/` 中使用舊檔名（如 `P00_semantic_requirements.md`、`FT_plan.md`）或舊轉發方法之測試夾具。 | ⭐⭐⭐⭐⭐ **(推薦)** |
 | **方案 B：僅做內部私有函式提取（保留所有歷史相容分支）** | 保留 `FT_plan.md`、`workflows`、`compile_all`、`PlanVerifier.verify()` 與 `cmd_*`。 | 不需調整測試夾具。 | 4 處重複的舊檔名退避與冗餘包裝持續污染核心邏輯。 | ⭐⭐ |
-
----
-
-## 3. 架構設計與驗證 (Architecture & PoC)
 
 ### 3.1 `Mode A` 公開入口收斂、薄轉發層、相容別名與死代碼清除清冊 (`S5`)
 
@@ -118,7 +114,7 @@
 
 ---
 
-## 4. 調研結論與落地建議 (Conclusion & Recommendation)
+## 3. 結論 (Conclusion)
 
 - **推薦落地策略**：
   - 採納 **方案 A（`Mode A` 全面破壞性收斂 + 巨型模組拆解 + 單向依賴純化）**，於後續啟動實作時將本子計畫 `sub_05_agents_workflow_code_optimization` 原地升級為 **標準開發計畫 (`Full Track`, `P01~P07`)**。
