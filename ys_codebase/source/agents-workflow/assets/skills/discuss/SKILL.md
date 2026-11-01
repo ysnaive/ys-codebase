@@ -51,8 +51,7 @@ description: 針對實作或測試異常、範疇越界與契約衝突，執行 
 1. **現場證據**：立即凍結當前無效的嘗試修改，客觀記錄報錯摘要、發生檔案位置與傳參呼叫現場。
 2. **5-Whys 根因**：依「本體 -> 傳參 -> 外部」順序分析架構、時序或資料狀態為何流入該錯誤分支，追溯本質根因而非表面現象。
 3. **[!] 支柱一：唯讀探索隔離 (Pillar 1 Delegation)**：
-   - 若排查涉及深入多模組呼叫鏈或調試日誌繁雜，可派發唯讀 Subagent 進行檔案檢索與上下文抽絲剝繭。
-   - 子代理回傳嚴格限制為 150~300 Tokens（根因線索、檔案行號與證據摘要），主視窗保留純淨 Context 擬定修復方案；無子代理環境自動降級為由主視窗內聯排查。
+   - 局部單一模組／類別問題預設由主視窗 Inline 排查；唯有當異常橫跨多個模組或多個獨立類別（Classes）、產生職責正交之深層呼叫鏈或需切斷主視窗先入為主偏見時，遵循 [`BlindSubagentStandards.md`](`__#{module://agents-workflow/assets/standards/BlindSubagentStandards.md}__`) 原型 ①（套用 `§5.2` 盲眼派發模板與 `Mode I` 150~300 Tokens 濃縮回傳契約；無子代理環境自動降級）派發唯讀盲眼 Subagent 進行去錨定探索。
 
 ### 步驟 2：呈遞修復方案矩陣與討論卡 (強制 End Turn)
 呈遞 2~3 種具體修復方案（分析各自影響範圍與 Trade-offs）。若觸發原因為「次要衍生問題 / 範疇越界」，候選方案須對接 `AgentsStandards.md` 核心原則 3「次要衍生問題處置鐵律」之三大範疇裁定出口：① 擴充當前計畫範疇進行標準修復、② 維持當前範疇並另闢新計畫 / 子計畫、③ 登錄至 [`/todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`) 輕量待辦帳本（微觀技術債/局部打磨，獲開發者拍板後以 `todo add` 單行盲寫追加）或 [`/roadmap`](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 長期技術儲備（跨模組架構演進）。

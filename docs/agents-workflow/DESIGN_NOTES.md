@@ -252,10 +252,13 @@ last_updated: "2026-11-01"
 - **妥協與防禦設計**：
   1. **三軌擴充智能分流 (`3-Track Extension Triage`)**：於 `skill-creator` 步驟 1 強制區分「軌跡 ① 純錨點注入（`snippets/<name>.md`，0 路由開銷）」、「軌跡 ② 被動環境攔截型 Skill」與「軌跡 ③ 功能特化型 Skill」，針對局部階段注意事項優先引導採用軌跡 ①。
   2. **22 個錨點結構屬性顯式標註與三步驗證守門**：於 `references/extension-guide.md` 明確標註 `AGENTS_SKILL_ROUTING` 的「Markdown 表格列」專屬屬性，並於步驟 4 強制執行 `contributes check` $\to$ `agents-workflow compile`（0 Error / 0 Warning）$\to$ `agents-workflow release` 三步驗證守門。
-  3. **`LITERAL_FENCED_BLOCK_REGEX` (`<!-- yscb:literal -->`) 教學範例保護與真實 URI 雙軌寫法**：由於一般 Fenced Code Block（如狀態卡模板）內的語意 URI 仍需在 Stage 2 轉譯為相對路徑，若直接在教學區塊寫出 `__@{...}__`、`__#{...}__` 或 `__${...}__`，物化後教學語法會被 Stage 1 抹除或被 Stage 2 轉譯為相對路徑。因此於 `ArtifactCompiler` (`compiler.py`) 引入 `LITERAL_FENCED_BLOCK_REGEX`：凡在三反引號 Fenced Code Block 首行標註 `<!-- yscb:literal -->` 者，在 Stage 1 (`resolve_single_artifact`) 與 Stage 2 (`resolve_stage2_uri`) 均會先抽離保護、不予解析，並於 Stage 2 物化時自動剝除首行 `<!-- yscb:literal -->` 標記、100% 保留原始字面量教學語法；而在非字面量區塊之散文或表格中，則一律使用穿插型真實語意 URI（如 `` `__${config://agents-workflow}__/contribute.json` ``）以在物化後保留行內反引號。
+  3. **`<!-- yscb:literal:begin/end -->` 教學字面量保護、`<!-- yscb:ignore:begin/end -->` 源碼註解剝除與真實 URI 雙軌寫法**：由於一般 Fenced Code Block（如狀態卡模板）內的語意 URI 仍需在 Stage 2 轉譯為相對路徑，若直接在教學區塊寫出 `__@{...}__`、`__#{...}__` 或 `__${...}__`，物化後教學語法會被 Stage 1 抹除或被 Stage 2 轉譯為相對路徑。因此於 `ArtifactCompiler` (`compiler.py`) 引入 `_preprocess_directives` 深度計數解析器：
+     - **字面量保護（`<!-- yscb:literal:begin -->` ... `<!-- yscb:literal:end -->`）**：可置於任意獨立行（不限於代碼塊內），在 Stage 1 (`resolve_single_artifact`) 與 Stage 2 (`resolve_stage2_uri`) 均先抽離遮罩保護、不予解析，並支援巢狀自舉（外層 `literal` 保護區內出現的第 2 層 `literal:begin/end` 或 `ignore:begin/end` 均視為純文字字面量保留），最後於 Stage 2 物化時自動剝除最外層 `begin`/`end` 標記、100% 保留原始字面量教學語法。
+     - **源碼註解抹除（`<!-- yscb:ignore:begin -->` ... `<!-- yscb:ignore:end -->`）**：供維護者於第一層提示詞/標準源碼檔撰寫內部設計註解，於 Stage 1 與未包覆標籤檢查前直接整段抹除（包含透過 `insert` `type: "uri"` 注入之片段），完全不進入 Stage 1 快取與 Stage 2 物化產物。
+     - **未閉合標記警告**：若 `begin` / `end` 未配對閉合，於 `compile` 階段輸出 `[compiler:warning]` 攔截。
 
 > [!CAUTION]
-> 在維護 `skill-creator/SKILL.md` 與 `references/extension-guide.md` 時，凡需在物化產物中原樣展示 `__@{...}__`、`__#{...}__`、`__${...}__` 字面量教學語法者，必須置於首行標註 `<!-- yscb:literal -->` 之 Fenced Code Block 內；向 `AGENTS_SKILL_ROUTING` 注入之片段必須嚴格保持 Markdown 表格列格式。
+> 在維護 `YscbSkillDesignToolStandards.md`、`skill-creator/SKILL.md` 與 `references/extension-guide.md` 時，凡需在物化產物中原樣展示 `__@{...}__`、`__#{...}__`、`__${...}__`、`__%{...}__` 字面量教學語法者，必須以獨立行 `<!-- yscb:literal:begin -->` 與 `<!-- yscb:literal:end -->` 成對包覆；向 `AGENTS_SKILL_ROUTING` 注入之片段必須嚴格保持 Markdown 表格列格式。
 
 ---
 

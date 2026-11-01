@@ -38,7 +38,7 @@ description: 讀取既有計畫之交接快照或階段產物以定位斷點並�
    ```
    *(實機路徑：`python __${yscb.host://yscb.py}__ agents-workflow plan status --resume [--plan <plan_name_or_subpath>]`)*
    - **單一進行中計畫（含 Umbrella 活躍 `sub_XX` 自動鑽取）**：CLI 會自動輸出目標計畫之 `Plan Mode`、`Current Breakpoint`、`Next Phase`、`Required Reference` 與具體下一步行動提示 (`Next Action Hint`)。
-   - **原子化閱後即焚 (`Consume & Delete`) 與確定性恢復膠囊 (`Deterministic Recovery Capsule`)**：若目標計畫（或活躍子計畫）存在 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，`plan status --resume` 會於終端完整印出 `handoff.md` 快照內容，並由 Python **立即呼叫 `os.unlink()` 物理刪除該檔案**（確認恢復現場後，強制立即刪除該已消費之 `handoff.md`）；若未建立 `handoff.md`，CLI 亦會自動由現有規格與任務檔提取關鍵決策 (`DRs`)、受影響檔案與未勾選待辦清單 (`Checklist Progress`) 輸出至終端，免除逐檔盲讀重建上下文之開銷。
+   - **原子化閱後即焚 (`Consume & Delete`) 與確定性恢復膠囊 (`Deterministic Recovery Capsule`)**：若目標計畫（或活躍子計畫）存在 [`handoff.md`](`__#{module://agents-workflow/assets/templates/handoff.md}__`)，`plan status --resume` 會於終端完整印出 `handoff.md` 快照內容並**自動物理刪除該已消費之檔案**；若未建立 `handoff.md`，CLI 亦會自動由現有規格與任務檔提取關鍵決策 (`DRs`)、受影響檔案與未勾選待辦清單 (`Checklist Progress`) 輸出至終端，免除逐檔盲讀重建上下文之開銷。
    - **多個進行中計畫防呆**：若同時存在多個未結案之進行中計畫且未指定 `--plan`，CLI 會列出狀態矩陣並拒絕盲猜；請先向開發者詢問確認目標計畫名稱（遵守零臆測原則），再帶入 `--plan <name>` 執行。
 
 ---

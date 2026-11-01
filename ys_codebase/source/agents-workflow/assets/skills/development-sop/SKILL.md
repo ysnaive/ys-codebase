@@ -31,6 +31,7 @@ description: 管理 `__${project://plans/}__` 開發計畫全生命週期 (Phase
   - **建立專案特化 Skill、環境攔截規則或階段錨點注入配置** -> [`skill-creator`](`__#{module://agents-workflow/assets/skills/skill-creator/SKILL.md}__`)
   - **既有 Skill 五維度審查、漸進式揭露重構與 A/B 評測** -> [`skill-optimizer`](`__#{module://agents-workflow/assets/skills/skill-optimizer/SKILL.md}__`)
   - **既有業務程式碼五維度診斷、階段聚合與行為無損重構** -> [`code-optimizer`](`__#{module://agents-workflow/assets/skills/code-optimizer/SKILL.md}__`)
+  - **透過盲眼子代理執行無預設假設探索、冷眼審查與反向查驗** -> [`blind-subagent`](`__#{module://agents-workflow/assets/skills/blind-subagent/SKILL.md}__`)
 
 ---
 

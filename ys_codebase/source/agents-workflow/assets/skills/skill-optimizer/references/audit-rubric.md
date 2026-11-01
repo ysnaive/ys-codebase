@@ -15,8 +15,6 @@
 
 ## 1. Metadata 與觸發精準度
 
-YAML Frontmatter 會在 Agent 啟動時預先載入系統提示詞（System Prompt），作為宿主進行技能探索與意圖匹配的首要預載路由信號。
-
 - **主檔名大小寫規範 (`Critical`)**：入口檔案名稱必須精確為 `SKILL.md`（區分大小寫），任何如 `skill.md` 或 `SKILL.MD` 的變體皆會導致無法載入。
 - **YAML 特殊字元引號防護 (`Critical`)**：若 `description` 值以 `[`、`{`、`*`、`!`、`>`、`|` 等 YAML 保留字元開頭（例如 `[!] 授權守門技能`），必須以雙引號 `"..."` 包裹，否則會引發 YAML Flow Sequence / Tag 解析崩潰。
 - **禁止放置多餘的 `README.md` (`Warning`)**：技能資料夾內部不應包含給人類看的 `README.md`，所有說明應整合於 `SKILL.md` 或 `references/` 中。
@@ -37,8 +35,6 @@ YAML Frontmatter 會在 Agent 啟動時預先載入系統提示詞（System Prom
 ---
 
 ## 2. 上下文經濟與漸進式揭露
-
-一旦 Skill 被觸發，整份 `SKILL.md` 主體就會載入上下文視窗，與對話歷史及工具輸出爭奪模型的注意力。
 
 - **行數與 Token 預算上限 (`Warning`)**：
   - `SKILL.md` 主體建議控制在 **500 行**與 **5,000 tokens** 以內。

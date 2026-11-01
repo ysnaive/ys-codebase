@@ -35,16 +35,17 @@ Phase 06 執行檢核表：
 3. **部署/構建後免重複測試鐵律**：
    - 通過測試並完成本地部署或物化同步後，**嚴禁無意義重複調用相同測試套件跑測**。
 4. **支柱三：唯讀 Fresh-Eyes 冷眼盲審協定左移 (Pillar 3 Pre-UX Blind Review Delegation)**：
-   - **審查左移時機**：在完成自動化跑測、**即將向開發者提出手動 / UX 測試驗證請求前**，強制派發無偏誤的 Reviewer Subagent 進行客觀審查，打破主視窗近因確認偏誤（球員兼裁判）。無子代理環境自動降級為由主視窗內聯冷靜自檢。
-   - **零劇透盲審傳址鐵律 (Zero-Spoiler Blind Pass-by-Reference)**：**不應告知子代理本次計畫實作內容，僅可提供計畫路徑由子代理進行探索**。主視窗派發提示詞時，嚴禁摘要、提示或劇透已修改之檔案清單與實作細節，避免引發提示詞錨定偏誤（Confirmation Bias）。
-   - **純靜態唯讀審查禁令 (Static Read-Only Inspection Only)**：**應明確告知子代理嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查**（嚴禁在子代理內重複執行測試指令、建置部署或啟動任何運行進程），且嚴守 Single-Writer 鐵律禁碰 `plans/` 下任何檔案。
-   - **Untracked 新檔自主探索防護**：Reviewer 透過計畫路徑自行讀取 `P01`/`P03`/`P04` 規格文件，搭配版本控制狀態（如 `git status --short` 與 `git diff HEAD`），對未加入 index 之 `Untracked (??)` 新建檔案直接以唯讀工具檢視全文，杜絕漏審新建檔案。
+   - **結構影響範圍分流與左移時機**：在完成自動化跑測、**即將向開發者提出手動 / UX 測試驗證請求前**，禁止以硬編碼檔案數或行數常數決定是否派發子代理，而是依**「是否為全新功能／模組，或是否橫跨模組、類別（Classes）產生職責正交之影響範圍」**分流：
+     - **明確局部修復／單一職責軸線（預設主代理 Inline 自檢）**：若修改屬於明確之局部 Bug 修復且收斂於單一模組或單一類別群組之同一職責軸線（且開發者未顯式要求盲審），直接由主代理依 [`CodeQualityStandards.md`](`__#{module://agents-workflow/assets/standards/CodeQualityStandards.md}__`) 與 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`) 於主視窗內聯完成三類硬性契約自檢，保護 Token 預算。
+     - **全新功能或模組／跨模組與跨類別正交職責影響範圍（優先派發盲審 Subagent）**：當修改涉及**全新功能開發 (`Feature`)、新建模組／組件（非明確之局部 Bug 修復）**，或**橫跨多個模組／多個獨立類別（Classes）產生職責正交之結構變更**，或由開發者顯式指定時，優先派發無偏誤的 Reviewer Subagent 執行客觀盲審（無子代理環境自動降級為由主視窗內聯冷靜自檢）。
+   - **盲眼隔離與純靜態唯讀審查契約（遵循 [`BlindSubagentStandards.md`](`__#{module://agents-workflow/assets/standards/BlindSubagentStandards.md}__`) 原型 ②）**：
+     - 派發時強制遵循 [`BlindSubagentStandards.md`](`__#{module://agents-workflow/assets/standards/BlindSubagentStandards.md}__`) 原型 ②（套用 `§5.2` 盲眼派發模板）：**不應告知子代理本次計畫實作內容，僅可提供計畫路徑由子代理進行探索**，並**明確告知子代理嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查**（搭配 `git status --short` 與 `git diff HEAD` 檢視所有修改與 `Untracked (??)` 新建檔案）。
    - **防吹毛求疵三類硬性審查契約**：Reviewer 僅允許回報違反下列三類硬性契約之具體缺失：
      1. 違反 `AGENTS.md` 核心原則 3 之淺層敷衍修補（如空白 `except` 吞錯誤、無意義 mock、放寬斷言）、違反 `testing-sop` 六大測試鐵律（如新建計畫名碎片測試檔、空殼斷言、歷史墓碑）或違反 [`CodeQualityStandards.md`](`__#{module://agents-workflow/assets/standards/CodeQualityStandards.md}__`) 之結構紅線（如殘留 `S2` 1 行轉發殼、`S3` 合併抹平 20% 邊界不變量、或生產代碼殘留 `FR/DR/EC` 工單編號註解）；
      2. `P01` 功能/邊界需求或 `P03` 介面契約未落實之遺漏；
      3. 程式碼 Docstring 或架構契約遺漏。
      *嚴禁回報主觀命名或排版微調；若無上述硬性缺失，強制直接回傳 `REVIEW_STATUS: PASSED`。*
-   - **UX 請求守門**：必須在 Subagent 審查通過（`REVIEW_STATUS: PASSED`）或主視窗修正缺失後，方可向開發者呈遞 UX 驗證請求，確保代碼架構與測試在人工驗收前已 100% 健全，杜絕事後返工。
+   - **UX 請求守門**：必須在審查通過（`REVIEW_STATUS: PASSED`）或主視窗修正缺失後，方可向開發者呈遞 UX 驗證請求，確保代碼架構與測試在人工驗收前已 100% 健全，杜絕事後返工。
 
 ---
 

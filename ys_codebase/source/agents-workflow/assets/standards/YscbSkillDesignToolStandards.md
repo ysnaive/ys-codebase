@@ -35,11 +35,17 @@ YSCB 工作流嚴格區分「第一層宣告式源碼空間（Layer 1 Source / C
 
 1. **強制單反引號封裝鐵律（Single-Backtick Enclosure）**：
    - 所有動態佔位符在 Markdown 散文、清單或表格中，**必須 100% 以單反引號（`` `...` ``）完整包覆**（注意：不可使用雙反引號 `` ``...`` `` 包覆待解算標籤，且裸露未包覆之標籤將觸發 `[compiler:warning] Unenclosed placeholder tag` 並跳過解算）。
-2. **教學與範例字面量保護（`<!-- yscb:literal -->`）**：
-   - 若在 `SKILL.md`、中央標準或 `references/*.md` 內文中，需要展示「不被編譯器解算展開」的佔位符原始語法作為教學範例（或包含假名如 `<name>`、`foo://`），必須將範例置於**首行緊接 `<!-- yscb:literal -->` 標記之三反引號 Fenced Code Block** 內：
+2. **教學字面量保護（`<!-- yscb:literal:begin/end -->`）與源碼註解抹除（`<!-- yscb:ignore:begin/end -->`）**：
+   - **字面量保護區塊（`<!-- yscb:literal:begin -->` ... `<!-- yscb:literal:end -->`）**：若在 `SKILL.md`、中央標準或 `references/*.md` 內文中，需要展示「不被編譯器解算展開」的佔位符原始語法作為教學範例（或包含假名如 `<name>`、`foo://`），請於任意獨立行使用成對標記包覆（支援深度計數巢狀自舉；Stage 2 物化時自動剝除最外層標記行並 100% 保留內部字面量）。
+   - **純源碼註解區塊（`<!-- yscb:ignore:begin -->` ... `<!-- yscb:ignore:end -->`）**：若需在提示詞原始檔撰寫僅供維護者閱讀、**完全不物化進入輸出檔**的備註或設計說明，請於任意獨立行使用 `ignore:begin/end` 包覆（Stage 1 編譯前即整段剝除，零 Token 洩漏至物化產物）：
 
+<!-- yscb:literal:begin -->
 ```markdown
-<!-- yscb:literal -->
+<!-- yscb:ignore:begin -->
+這段是僅存在於第一層源碼檔的維護者註解，編譯與物化後會被 100% 剝除，不消耗執行期 Context Token。
+<!-- yscb:ignore:end -->
+
+<!-- yscb:literal:begin -->
 # ① Stage 1 內容注入錨點 (`__@{TOKEN}__` — 置於宿主檔獨立行，由 contribute.json 之 insert 規則注入內容，未匹配時自動抹除整行)
 `__@{SKILL_CREATOR_STANDARDS}__`
 
@@ -65,7 +71,9 @@ YSCB 工作流嚴格區分「第一層宣告式源碼空間（Layer 1 Source / C
 - 錯誤 A（跨技能硬編碼相對路徑）：[development-sop](../development-sop/SKILL.md)
 - 錯誤 B（漏加單反引號或誤用雙反引號）：請查閱 __${project://plans}__/ 目錄
 - 錯誤 C（捏造未註冊於 locales/definition.json 之專有名詞 KEY）：`__%{agent_tool.unknown_tool}__`
+<!-- yscb:literal:end -->
 ```
+<!-- yscb:literal:end -->
 
 ---
 

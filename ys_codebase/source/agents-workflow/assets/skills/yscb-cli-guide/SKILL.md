@@ -26,7 +26,7 @@ yscb-cli-guide 執行前檢核表：
 
 ## 2. 雙軌指令調用與 `-h` 按需自省 (2-Track Execution & JIT `-h` Inspection)
 
-YSCB 全面採用 Progressive Disclosure（漸進式揭露），不再於技能內靜態傾倒全系統 CLI 大表，改採以下雙軌調用機制：
+執行 CLI 指令時，遵循以下雙軌調用機制：
 
 1. **軌跡 A — 技能內建指令免查直跑 (`Skill-Vetted Fast Pass`)**：
    - 凡於各工作流與工具技能（如 [`development-sop`](`__#{module://agents-workflow/assets/skills/development-sop/SKILL.md}__`)、`knowledge-db-search`、`yscb-module-dev`、[`todo`](`__#{module://agents-workflow/assets/skills/todo/SKILL.md}__`)、[`roadmap`](`__#{module://agents-workflow/assets/skills/roadmap/SKILL.md}__`) 等）步驟中**已明確寫出完整語法的標準指令**（如 `plan verify`、`knowledge-db search`、`dev check`、`dev test`、`todo list` 等），均已預審為 `[SAFE]` 自主安全（或已由該技能內建確認節點守門），Agent **可直接執行，無須額外查表或跑 `-h`**。

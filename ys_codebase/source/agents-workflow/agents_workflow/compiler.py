@@ -33,7 +33,10 @@ except ImportError:
     ExecutionContext = None
 
 FENCED_CODE_BLOCK_REGEX = re.compile(r"```[\s\S]*?```")
-LITERAL_FENCED_BLOCK_REGEX = re.compile(r"(```[^\r\n]*\r?\n)<!--\s*yscb:literal\s*-->[ \t]*\r?\n([\s\S]*?```)")
+LITERAL_BEGIN_LINE_REGEX = re.compile(r"^[ \t]*<!--\s*yscb:literal:begin\s*-->[ \t]*$")
+LITERAL_END_LINE_REGEX = re.compile(r"^[ \t]*<!--\s*yscb:literal:end\s*-->[ \t]*$")
+IGNORE_BEGIN_LINE_REGEX = re.compile(r"^[ \t]*<!--\s*yscb:ignore:begin\s*-->[ \t]*$")
+IGNORE_END_LINE_REGEX = re.compile(r"^[ \t]*<!--\s*yscb:ignore:end\s*-->[ \t]*$")
 CODE_SPAN_REGEX = re.compile(r"(`[^`\r\n]+`)")
 UNENCLOSED_TAG_REGEX = re.compile(r"__(?:[@#%]\s*\{\s*[^}]+\s*\}|\$(?:\([^)]*\))?\{\s*[^}]+\s*\})__")
 
@@ -46,11 +49,106 @@ LOCAL_URI_EXACT_REGEX = re.compile(r"^__#\{\s*([^}]+)\s*\}__$")
 PROJECT_URI_EXACT_REGEX = re.compile(r"^__\$(?:\(\s*([^)]*?)\s*\))?\{\s*([^}]+)\s*\}__$")
 
 
+def _preprocess_directives(
+    content: str,
+    strip_literal_markers: bool,
+    literal_blocks: Optional[List[str]] = None,
+    doc_name: str = "",
+    emit_warnings: bool = True,
+) -> Tuple[str, List[str]]:
+    """
+    解析並處理 `yscb:ignore:begin/end` 與 `yscb:literal:begin/end` 區塊指令。
+    - `ignore` 區塊（非位於 `literal` 保護區內時）直接整段抹除。
+    - `literal` 區塊以深度計數支援巢狀自舉，替換為遮罩佔位符並存入 `literal_blocks`。
+    """
+    if literal_blocks is None:
+        literal_blocks = []
+    if not content:
+        return "", literal_blocks
+
+    target_str = f" in '{doc_name}'" if doc_name else ""
+    lines = content.splitlines(keepends=True)
+    out_chunks: List[str] = []
+    cur_literal_lines: List[str] = []
+    literal_depth = 0
+    ignore_depth = 0
+
+    for line in lines:
+        stripped = line.rstrip("\r\n")
+        if ignore_depth > 0:
+            if IGNORE_BEGIN_LINE_REGEX.match(stripped):
+                ignore_depth += 1
+            elif IGNORE_END_LINE_REGEX.match(stripped):
+                ignore_depth -= 1
+            continue
+
+        if literal_depth > 0:
+            if LITERAL_BEGIN_LINE_REGEX.match(stripped):
+                literal_depth += 1
+                cur_literal_lines.append(line)
+            elif LITERAL_END_LINE_REGEX.match(stripped):
+                literal_depth -= 1
+                if literal_depth == 0:
+                    if not strip_literal_markers:
+                        cur_literal_lines.append(line)
+                    idx = len(literal_blocks)
+                    literal_blocks.append("".join(cur_literal_lines))
+                    cur_literal_lines = []
+                    out_chunks.append(f"\x00YSCB_LITERAL_BLOCK_{idx}\x00")
+                else:
+                    cur_literal_lines.append(line)
+            else:
+                cur_literal_lines.append(line)
+            continue
+
+        if IGNORE_BEGIN_LINE_REGEX.match(stripped):
+            ignore_depth = 1
+        elif IGNORE_END_LINE_REGEX.match(stripped):
+            if emit_warnings:
+                print(
+                    f"[compiler:warning] Unmatched '<!-- yscb:ignore:end -->' detected{target_str}",
+                    file=sys.stderr,
+                )
+        elif LITERAL_BEGIN_LINE_REGEX.match(stripped):
+            literal_depth = 1
+            cur_literal_lines = []
+            if not strip_literal_markers:
+                cur_literal_lines.append(line)
+        elif LITERAL_END_LINE_REGEX.match(stripped):
+            if emit_warnings:
+                print(
+                    f"[compiler:warning] Unmatched '<!-- yscb:literal:end -->' detected{target_str}",
+                    file=sys.stderr,
+                )
+        else:
+            out_chunks.append(line)
+
+    if ignore_depth > 0 and emit_warnings:
+        print(
+            f"[compiler:warning] Unclosed '<!-- yscb:ignore:begin -->' detected{target_str}",
+            file=sys.stderr,
+        )
+    if literal_depth > 0:
+        if emit_warnings:
+            print(
+                f"[compiler:warning] Unclosed '<!-- yscb:literal:begin -->' detected{target_str}",
+                file=sys.stderr,
+            )
+        idx = len(literal_blocks)
+        literal_blocks.append("".join(cur_literal_lines))
+        out_chunks.append(f"\x00YSCB_LITERAL_BLOCK_{idx}\x00")
+
+    return "".join(out_chunks), literal_blocks
+
+
 def check_unenclosed_tags(content: str, doc_name: str = "") -> None:
     """檢查並輸出未被反引號包裹的裸佔位符警示 (Unenclosed Placeholder Warning Gate)。"""
     if not content:
         return
-    clean_text = FENCED_CODE_BLOCK_REGEX.sub("", content)
+    masked_text, _ = _preprocess_directives(
+        content, strip_literal_markers=True, doc_name=doc_name, emit_warnings=False
+    )
+    clean_text = FENCED_CODE_BLOCK_REGEX.sub("", masked_text)
     clean_text = CODE_SPAN_REGEX.sub("", clean_text)
     matches = UNENCLOSED_TAG_REGEX.findall(clean_text)
     if matches:
@@ -402,14 +500,9 @@ class ArtifactCompiler:
             return ""
 
         check_unenclosed_tags(content)
-        literal_blocks: List[str] = []
-
-        def _mask_stage1_literal(m: re.Match) -> str:
-            idx = len(literal_blocks)
-            literal_blocks.append(m.group(0))
-            return f"\x00YSCB_LITERAL_BLOCK_{idx}\x00"
-
-        resolved_text = LITERAL_FENCED_BLOCK_REGEX.sub(_mask_stage1_literal, content)
+        resolved_text, literal_blocks = _preprocess_directives(
+            content, strip_literal_markers=False, emit_warnings=True
+        )
         pass_count = 0
 
         while pass_count < max_passes:
@@ -467,6 +560,14 @@ class ArtifactCompiler:
 
                     if val_content is None:
                         val_content = ""
+                    elif val_content:
+                        val_content, literal_blocks = _preprocess_directives(
+                            val_content,
+                            strip_literal_markers=False,
+                            literal_blocks=literal_blocks,
+                            doc_name=str(raw_val),
+                            emit_warnings=True,
+                        )
 
                     last_inline_val = val_content
 
@@ -693,15 +794,9 @@ class ArtifactCompiler:
         project_root = self._resolve_project_root()
 
         check_unenclosed_tags(content, doc_name=doc_basename)
-
-        literal_blocks: List[str] = []
-
-        def _mask_stage2_literal(m: re.Match) -> str:
-            idx = len(literal_blocks)
-            literal_blocks.append(m.group(1) + m.group(2))
-            return f"\x00YSCB_LITERAL_BLOCK_{idx}\x00"
-
-        content = LITERAL_FENCED_BLOCK_REGEX.sub(_mask_stage2_literal, content)
+        content, literal_blocks = _preprocess_directives(
+            content, strip_literal_markers=True, doc_name=doc_basename, emit_warnings=False
+        )
 
         def _replace_in_fenced_block(match: re.Match) -> str:
             block_text = match.group(0)

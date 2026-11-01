@@ -16,11 +16,9 @@
 YS-Codebase 採用微內核外掛架構，模組間的能力擴充與依賴注入透過 `contributes/` 宣告完成：
 
 - **Host（擴充點提供方）**：
-  在自身 `contributes/` 下宣告 Ingress 剛性契約（`_format.json`）與 Egress 導覽手冊（`_manifest.md`），對外定義自身開放哪些擴充點及對應格式。  
-  *(註：本機儲存庫路徑為 `project://source/<host>/contributes/`；下游第三方開發者環境無源碼目錄，應透過 `module://<host>/contributes/` 語意 URI 查閱，詳見第 3 節。)*
+  在自身 `contributes/` 下宣告 Ingress 剛性契約（`_format.json`）與 Egress 導覽手冊（`_manifest.md`），對外定義自身開放哪些擴充點及對應格式。
 - **Donor（擴充能力注入方）**：
-  在自身 `contributes/<host>.json` 宣告欲注入 Host 的內容。  
-  *(註：本機儲存庫路徑為 `project://source/<donor>/contributes/<host>.json`。)*
+  在自身 `contributes/<host>.json` 宣告欲注入 Host 的內容。
 - **雙向邊界防禦原則**：
   - **靜態檢核期 (Strict Egress)**：在執行 `dev check` 與 `contributes check` 時實施剛性驗證，攔截未宣告擴充點、型別錯誤或越權欄位。
   - **運行聚合期 (Tolerant Ingress)**：在系統運行聚合時採容錯防禦，記錄格式告警但保留動態欄位，防止單一擴充格式瑕疵拖垮整個運行環境。
@@ -29,7 +27,7 @@ YS-Codebase 採用微內核外掛架構，模組間的能力擴充與依賴注�
 
 ## 2. _format.json Schema DSL 語法規範
 
-YSCB 內建純標準庫實現的輕量 Schema DSL (`core.validator.ContributesValidator`)，零第三方依賴（嚴禁引入 pydantic 或 jsonschema）。
+YSCB 採用純標準庫輕量 Schema DSL，零第三方依賴（嚴禁引入 `pydantic` 或 `jsonschema`）。
 
 ### 2.1 型別標記語法 (Type Tokens)
 | DSL 標記 | 語意說明 | 範例 |
@@ -165,7 +163,7 @@ python yscb.py contributes check --all
 ```
 
 ### 5.2 智能拼寫診斷 (Did you mean)
-驗證引擎內建 Levenshtein 距離演算法。當屬性鍵名或 enum 列舉值拼寫相近時，檢查器會主動提示正確合法名稱：
+當屬性鍵名或 enum 列舉值拼寫相近時，檢查器會主動提示正確合法名稱：
 ```
 [contributes:error] Unknown property 'sever_severity' in point 'custom_checks'. Did you mean 'severity'?
 ```

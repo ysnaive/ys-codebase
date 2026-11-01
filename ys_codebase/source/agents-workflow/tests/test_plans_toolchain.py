@@ -1335,7 +1335,8 @@ class TestPlansModelRecord(YSCBTestCase):
         self.assertIn("1-Write-Per-File", auto_text)
         self.assertIn("Signature-Only", auto_text)
         self.assertIn("Two-Stage JIT Template Read", auto_text)
-        self.assertIn("1,500", auto_text)
+        self.assertIn("SubagentStandards.md", auto_text)
+        self.assertNotIn("1,500", auto_text)
         self.assertIn("Two-Stage JIT Template Read", sop_text)
         self.assertIn("PXX-05_auto.md", sop_text)
 

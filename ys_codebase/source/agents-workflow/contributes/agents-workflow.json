@@ -21,6 +21,16 @@
       "description": "YSCB 技能雙層架構、動態佔位符語法與編譯發布工具標準"
     },
     {
+      "type": "standard",
+      "source": "module://agents-workflow/assets/standards/SubagentStandards.md",
+      "description": "通用子代理調度、跨模組/類別正交影響範圍門檻與物理通訊標準"
+    },
+    {
+      "type": "standard",
+      "source": "module://agents-workflow/assets/standards/BlindSubagentStandards.md",
+      "description": "盲眼子代理認知隔離、去錨定轉譯、冷眼靜態審查與反向查驗標準"
+    },
+    {
       "type": "skill",
       "name": "yscb-cli-guide",
       "source": "module://agents-workflow/assets/skills/yscb-cli-guide"
@@ -114,6 +124,11 @@
       "type": "skill",
       "name": "code-optimizer",
       "source": "module://agents-workflow/assets/skills/code-optimizer"
+    },
+    {
+      "type": "skill",
+      "name": "blind-subagent",
+      "source": "module://agents-workflow/assets/skills/blind-subagent"
     },
     {
       "type": "template",
@@ -300,6 +315,12 @@
       "type": "uri",
       "token": "PHASEXX_HEADER",
       "value": "module://agents-workflow/assets/templates/header.md",
+      "mode": "replace"
+    },
+    {
+      "type": "uri",
+      "token": "SUBAGENT_BASE_STANDARDS",
+      "value": "module://agents-workflow/assets/standards/SubagentStandards.md",
       "mode": "replace"
     }
   ],

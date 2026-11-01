@@ -96,8 +96,8 @@
 
 所有動態佔位符在 Markdown 散文或表格中，**必須 100% 使用單反引號（`` `...` ``）完整包覆**（在 `contribute.json` 的 JSON 字串值內亦建議以單反引號包覆語意路徑標籤）：
 
+<!-- yscb:literal:begin -->
 ```markdown
-<!-- yscb:literal -->
 <!-- 1. Stage 1 內容注入錨點 (Standalone Anchor，於目標宿主檔置於獨立行) -->
 `__@{SKILL_CREATOR_STANDARDS}__`
 
@@ -109,11 +109,12 @@
 - 文檔目錄：`__${workflow.docs://}__`
 - 執行指令：`python __${yscb.host://yscb.py}__ agents-workflow tokens`
 ```
+<!-- yscb:literal:end -->
 
 ### 3.3 正反寫法防呆對照（避免編譯警告與連結斷裂）
 
+<!-- yscb:literal:begin -->
 ```markdown
-<!-- yscb:literal -->
 # ❌ 錯誤寫法 1：跨技能硬編碼相對路徑（當不同 release_target 之 projections 目錄層級不同時會斷連）
 請參考 [development-sop](../development-sop/SKILL.md)
 
@@ -124,10 +125,11 @@
 範例路徑：`__${foo://non_existent_path}__`
 錯誤目錄：<config-dir>/agents-workflow/assets/skills/my-skill/SKILL.md
 
-# ✅ 正確寫法 2：展示字面量語法範例時於代碼塊首行標註 <!-- yscb:literal -->，且第一層自訂資產採扁平目錄結構
+# ✅ 正確寫法 2：展示字面量語法範例時以 <!-- yscb:literal:begin --> ... <!-- yscb:literal:end --> 包覆（不物化之源碼註解則用 <!-- yscb:ignore:begin/end -->），且第一層自訂資產採扁平目錄結構
 <config-dir>/agents-workflow/skills/my-skill/SKILL.md
 <config-dir>/agents-workflow/snippets/my_snippet.md
 ```
+<!-- yscb:literal:end -->
 
 ---
 

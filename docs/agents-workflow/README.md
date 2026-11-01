@@ -28,16 +28,18 @@ last_updated: "2026-11-01"
   - `AgentsStandards.md`：Agent 通用核心原則、防呆紀律與條件式技能分流導航矩陣（自動注入至 `AGENTS.md`，頂部支援 `PROJECT_ROLE_AND_BOUNDARIES` 專案角色與空間邊界錨點注入）。
   - `CodeQualityStandards.md`：跨語言業務程式碼品質、五維度靜態診斷指標（`D1~D5`）、防過度設計四大紅線（含零工單編號註解鐵律）與六大無損重構法則（`S1~S6`，含 `CODE_OPTIMIZER_STANDARDS` 錨點，供 `development-sop`、`auto` 與 `code-optimizer` 共用）。
   - `SkillDesignStandards.md`：AI Agent 技能結構、雙軌結構化 `description` 觸發契約（軌跡 A 正向邊界契約＋選配無點名負向邊界 vs. 軌跡 B 分級命令鎖定 B-Strict / B-Assist）、四元素目錄拓撲（`SKILL.md`、`references/`、`scripts/`、`assets/`）、雙模狀態卡節流與三層縱深安全通用設計標準（供 `skill-creator` 與 `skill-optimizer` 概念設計與審查共用）。
-  - `YscbSkillDesignToolStandards.md`：YSCB 技能雙層物化架構、雙軌路徑引用、四大動態佔位符（`__@{TOKEN}__`、`__#{URI}__`、`__${URI}__`、`__%{KEY}__`）與 `<!-- yscb:literal -->` 字面量保護、`contribute.json` 雙端同步與三步 CLI 編譯驗收工具標準（僅於撰寫或修改 YSCB 託管技能時按需載入）。
+  - `YscbSkillDesignToolStandards.md`：YSCB 技能雙層物化架構、雙軌路徑引用、四大動態佔位符（`__@{TOKEN}__`、`__#{URI}__`、`__${URI}__`、`__%{KEY}__`）、`<!-- yscb:literal:begin/end -->` 字面量保護與 `<!-- yscb:ignore:begin/end -->` 源碼註解抹除、`contribute.json` 雙端同步與三步 CLI 編譯驗收工具標準（僅於撰寫或修改 YSCB 託管技能時按需載入）。
+  - `SubagentStandards.md`：通用子代理調度、預設主代理 Inline 節流 vs. 跨範疇正交職責影響範圍啟動界線、四大物理圍欄（單回合上限 3~4、`Pointer-Only` 傳址、寫入圍欄與禁搶全域鎖、二振熔斷）、標準派發訊息模板與雙模回傳契約（`Mode I` 摘要 vs. `Mode II` 落檔收據 + `[Cross-Boundary Handoff]`）。
+  - `BlindSubagentStandards.md`：盲眼子代理認知隔離、主代理去錨定提示詞轉譯、歷史黑盒與第一手資產取證、誠實收斂防湊數、Devil's Advocate 反向查驗協定、四大盲眼任務原型與專用派發訊息模板（前段透過內部 `SUBAGENT_BASE_STANDARDS` 節點注入完整包含 `SubagentStandards.md` 物理圍欄，供盲眼任務單一明確引用）。
 - **技能 (`assets/skills/<name>/SKILL.md`)**：
-  - **工作流與生命週期技能**：`context-init`（上下文熱啟動）、`new-plan`（標準立項與延遲建檔）、`auto`（Phase 01~05 自動連續推進）、`discuss`（深度歸因與範疇保護）、`continue`（中斷現場接續）、`pause`（現場狀態凍結）、`research`（深度技術調研）、`roadmap`（長期路線圖推薦與 `Consume-on-Promote` 晉升）、`todo`（`TODO.md` 輕量待辦與微觀技術債管理）、`session-audit`（事後隱形摩擦軌跡提取與四象限根因診斷）。
+  - **工作流與生命週期技能**：`context-init`（上下文熱啟動）、`new-plan`（標準立項與延遲建檔）、`auto`（Phase 01~05 自動連續推進）、`discuss`（深度歸因與範疇保護）、`continue`（中斷現場接續）、`pause`（現場狀態凍結）、`research`（深度技術調研）、`roadmap`（長期路線圖推薦與 `Consume-on-Promote` 晉升）、`todo`（`TODO.md` 輕量待辦與微觀技術債管理）、`session-audit`（事後隱形摩擦軌跡提取與四象限根因診斷）、`blind-subagent`（透過盲眼子代理執行無預設假設探索、冷眼靜態審查、反方辯護反向查驗與平行審計之去錨定調度器）。
   - **互動引導與配置教練技能**：`how-to-config-yscb`（專案空間自適應探勘、多模組組態體檢與三位一體對齊教練）、`how-to-yscb`（跨模組功能導覽、6 大計畫模式選型與雙入口互動式上手教練）。
   - **領域與規範技能**：`development-sop`（SOP 0~7 與 6 大分支指南，含 `references/` 規範明細）、`testing-sop`（自動化測試建置六大鐵律、雙重守門與 `__@{TESTING_SOP_STANDARDS}__` 錨點）、`documentation`（知識庫 3 層架構與 7 大維度指南）、`yscb-cli-guide`（CLI 執行防呆慣例、技能內建指令直跑與非常規指令 `-h` 按需自省）、`skill-creator`（專案特化技能建置、三軌擴充智能分流與雙層編譯註冊閉環）、`skill-optimizer`（AI Agent 技能審查、診斷與重構工作流）、`code-optimizer`（業務代碼五維度靜態診斷、階段聚合與行為無損重構工作流）、`yscb-module-dev`（生態系模組開發與 Dogfooding 閉環）。
 - **模板 (`assets/templates/`)**：
   - 17 大標準模板庫（`P00_discuss`, `P01`~`P07`, `PXX-05_auto`, `revision_log`, `fast_track_plan`, `umbrella_overview`, `changelog`, `RXX_research_report`, `handoff`, `roadmap`, `todo`）與共用標頭。
 - **6 大計畫分支拓撲、雙層儲備消耗 (`Consume-on-Promote`) 與 `/NewPlan` 延遲建檔守門 (Delayed Materialization)**：
   - **6 大計畫分支**：依據規模、風險與任務性質劃分為 **Full Track**（標準 SOP 0~7 八大階段）、**Fast Track**（FP-01 規劃、FP-02 實作與驗證、FP-03 SOP 審查與結案，4 大守門：代碼行數 $\le 100$、API 契約 0 變更、零跨模組新依賴、既有測試 100% 守門）、**Umbrella**（跨模組主計畫與 `sub_XX` 子計畫，支援預先規劃型 Pre-planned 與增量演進型 Incremental 兩大模式）、**修訂計畫 (Revision Track)**（正交修訂與強制留檔，適用於不牽涉核心業務邏輯之 UI/UX/DX、參數與文檔微調，排除 Bug Fix，具備 4 大升級熔斷，支援獨立開立或附掛既有計畫產出 `revision_log.md`）、**調研計畫 (Research Track)**（3 步深度調研，統一以 `R{NN}_{topic}.md` 命名產出報告，支援三大出口轉化）以及 **Roadmap / Todo 雙層儲備**（`workflow.roadmap://` 宏觀策略藍圖 `{topic}.md` 與微觀待辦帳本 `TODO.md`，支援 `roadmap promote` 物理移轉與 `todo promote` 打包提取立項）。
-  - **延遲建檔與 `Seeded` 原地復用守門**：觸發 `/NewPlan` 進入 `P00` 需求討論階段時維持純對話，**嚴禁預先建立實體目錄**；若目錄已由 `roadmap promote` 或 `todo promote` 預先建立並置入起源種子檔（`roadmap.md` 或 `todo.md` + `changelog.md`），則直接於該 `Seeded` 目錄原地補齊首份正式規格檔，杜絕重複建檔與空殼垃圾目錄。
+  - **延遲建檔、`Seeded` 原地復用與雙階防放水護欄 (`5-Axis Clarification Probes` & `Pre-Code Analyze Gate`)**：觸發 `/NewPlan` 進入 `P00` 需求討論階段時維持純對話，**嚴禁預先建立實體目錄**，並於 `P00` 定案前執行五維度防放水反詰探針（既有資產查重復用、預設值副作用、生命週期拆卸、跨切面不變量、顯式排除邊界），以及於 `/auto` 批次 A / `P04` 動刀改寫源碼前執行 `Pre-Code Analyze Gate`（核對 `[P00:DR-XX]` 溯源與 `AGENTS.md` 專案憲法紅線）；若目錄已由 `roadmap promote` 或 `todo promote` 預先建立並置入起源種子檔（`roadmap.md` 或 `todo.md` + `changelog.md`），則直接於該 `Seeded` 目錄原地補齊首份正式規格檔，杜絕重複建檔與空殼垃圾目錄。
 - **擴充手冊**：[`contributes/_manifest.md`](../../ys_codebase/source/agents-workflow/contributes/_manifest.md) 官方擴充宣告格式規格書。
 
 ---

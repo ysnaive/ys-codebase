@@ -60,10 +60,10 @@ description: 針對既有業務程式碼執行五維度靜態診斷、業務階�
      - **若範圍為「單一檔案或小範圍 (`File Scope`)」**：**固定採用 `[軌道 1：純主代理內聯執行]`**（免詢問子代理模式，0 子代理冷啟動開銷）。
      - **若範圍為「單一模組 (`Module Scope`)」**，請開發者二選一：
        - **`[軌道 2A：純主代理內聯審查 (Token 節流型)]`**：由主代理親自使用檢索工具與 `__%{agent_tool.file_read_range}__` 分段讀檔逐步完成診斷與實作，適合 Token 額度有限或希望在主對話視窗細部把關之情境。
-       - **`[軌道 2B：主代理 + 盲眼子代理 (Context 隔離與盲審型)]`**：委派唯讀/實作子代理執行探索、無偏見盲審（`R{NN}`）或反向查驗（`Reverse Fact-Check`），保持主代理 Context 乾淨。
+       - **`[軌道 2B：主代理 + 盲眼子代理 (Context 隔離與盲審型)]`**：遵循 [`BlindSubagentStandards.md`](`__#{module://agents-workflow/assets/standards/BlindSubagentStandards.md}__`) 委派唯讀/實作子代理執行探索、無偏見盲審（`R{NN}`）或反向查驗（`Reverse Fact-Check`），保持主代理 Context 乾淨。
      - **若範圍為「全專案 / 多模組 (`Project Scope`)」**，請開發者二選一：
        - **`[軌道 3A：主代理序列滾動推進 (`sub_n` 完成後才進 `sub_n+1`，Token 節流型)]`**：於 Umbrella 主計畫下由主代理親自逐一推進各子計畫，完成 `sub_01` 診斷、重構與測試閉環後再進入 `sub_02`，嚴格控制單輪 Token 消耗且無跨模組平行競態。
-       - **`[軌道 3B：主代理統籌 + N 路盲眼子代理平行推進 (高吞吐多代盲審型)]`**：按模組分批（每回合上限 3~4 個）派發盲眼子代理平行產出 `sub_XX/R{NN}` 與實作，跳過單模各自編譯測試，由主代理依據跨模組交接表統一收斂並於 `P06` 批次驗證。
+       - **`[軌道 3B：主代理統籌 + N 路盲眼子代理平行推進 (高吞吐多代盲審型)]`**：遵循 [`BlindSubagentStandards.md`](`__#{module://agents-workflow/assets/standards/BlindSubagentStandards.md}__`) 按模組分批（每回合上限 3~4 個）派發盲眼子代理平行產出 `sub_XX/R{NN}` 與實作，跳過單模各自編譯測試，由主代理依據跨模組交接表統一收斂並於 `P06` 批次驗證。
 2. **建立調研計畫目錄**：
    獲開發者確認三維度參數後，讀取 [`P00_discuss.md`](`__#{module://agents-workflow/assets/templates/P00_discuss.md}__`) 模板，依 JIT 原則於 `__${project://plans}__/` 建立調研計畫目錄（`P00_discuss.md` + `changelog.md`，記錄鎖定之範圍、`Mode A/B` 與代理執行軌道）。
 

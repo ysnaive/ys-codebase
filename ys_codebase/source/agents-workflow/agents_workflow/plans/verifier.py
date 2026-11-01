@@ -213,7 +213,13 @@ class PlanVerifier:
         sub_dirs = [d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")]
         if sub_dirs:
             umbrella_md = plan_dir / "umbrella_overview.md"
-            if not umbrella_md.exists():
+            rev_log_md = plan_dir / "revision_log.md"
+            is_revision_root = (
+                rev_log_md.exists()
+                and not (plan_dir / "P01_requirements_spec.md").exists()
+                and not (plan_dir / "P07_walkthrough.md").exists()
+            )
+            if not umbrella_md.exists() and not is_revision_root:
                 report.issues.append(
                     PlanIssue(
                         severity=PlanSeverity.FAIL,
@@ -222,7 +228,7 @@ class PlanVerifier:
                         message="分類型主計畫目錄包含子計畫，但缺少 'umbrella_overview.md' 總覽說明書。 [Fix Hint: 請讀取 umbrella_overview.md 模板於主計畫根目錄建立總覽檔]",
                     )
                 )
-            else:
+            elif umbrella_md.exists():
                 try:
                     u_content = umbrella_md.read_text(encoding="utf-8", errors="ignore")
                     for sub in sub_dirs:

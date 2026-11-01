@@ -728,13 +728,13 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertIn("SKILL_OPTIMIZER_STANDARDS", token_names)
 
         expected_skills = {
-            "auto", "code-optimizer", "context-init", "continue", "development-sop",
+            "auto", "blind-subagent", "code-optimizer", "context-init", "continue", "development-sop",
             "discuss", "documentation", "how-to-config-yscb", "how-to-yscb", "new-plan",
             "pause", "research", "roadmap", "session-audit", "skill-creator",
             "skill-optimizer", "testing-sop", "todo", "yscb-cli-guide",
         }
         command_driven_skills = {
-            "auto", "code-optimizer", "pause", "continue", "context-init", "session-audit",
+            "auto", "blind-subagent", "code-optimizer", "pause", "continue", "context-init", "session-audit",
             "skill-creator", "skill-optimizer", "how-to-config-yscb", "how-to-yscb",
         }
         ambient_skills = expected_skills - command_driven_skills
@@ -747,7 +747,7 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
             self.assertNotIn("description", item, f"{item['name']} 在 agents-workflow.json 不應重複定義 description")
         export_desc_map = {item["name"]: compiler.resolve_export_description(item) for item in skill_exports}
         b_strict_skills = {"auto", "code-optimizer", "skill-optimizer", "session-audit"}
-        b_assist_skills = {"pause", "continue", "context-init", "skill-creator", "how-to-config-yscb", "how-to-yscb"}
+        b_assist_skills = {"blind-subagent", "pause", "continue", "context-init", "skill-creator", "how-to-config-yscb", "how-to-yscb"}
 
         for s_name in ambient_skills:
             skill_md = (skills_dir / s_name / "SKILL.md").read_text(encoding="utf-8")
@@ -841,8 +841,8 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertNotIn("支柱二", p06_ref)
         self.assertIn("支柱三", p06_ref)
         self.assertIn("不應告知子代理本次計畫實作內容，僅可提供計畫路徑由子代理進行探索", p06_ref)
-        self.assertIn("嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查", p06_ref)
-        self.assertIn("Single-Writer", p06_ref)
+        self.assertIn("明確告知子代理嚴禁進行實機/測試運行，僅可運行唯讀工具進行靜態檢查", p06_ref)
+        self.assertIn("BlindSubagentStandards.md", p06_ref)
         self.assertIn("Untracked (??)", p06_ref)
         self.assertIn("git status --short", p06_ref)
         self.assertIn("REVIEW_STATUS: PASSED", p06_ref)
@@ -1231,9 +1231,16 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
             f"module://agents-workflow/assets/skills/{s}/SKILL.md": str(
                 Path(_pkg_root).parent.parent / ".agents" / "skills" / s / "SKILL.md"
             )
-            for s in ("development-sop", "testing-sop", "skill-optimizer", "new-plan", "auto", "code-optimizer")
+            for s in ("development-sop", "testing-sop", "skill-optimizer", "new-plan", "auto", "code-optimizer", "blind-subagent", "discuss")
         }
-        for std_name in ("AgentsStandards.md", "CodeQualityStandards.md", "SkillDesignStandards.md", "YscbSkillDesignToolStandards.md"):
+        for std_name in (
+            "AgentsStandards.md",
+            "CodeQualityStandards.md",
+            "SkillDesignStandards.md",
+            "YscbSkillDesignToolStandards.md",
+            "SubagentStandards.md",
+            "BlindSubagentStandards.md",
+        ):
             deployment_map[f"module://agents-workflow/assets/standards/{std_name}"] = str(
                 Path(_pkg_root).parent.parent / ".agents" / ".yscb" / "standards" / std_name
             )
@@ -1279,14 +1286,20 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertIn("module://agents-workflow/assets/standards/CodeQualityStandards.md", std_sources)
         self.assertIn("module://agents-workflow/assets/standards/SkillDesignStandards.md", std_sources)
         self.assertIn("module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md", std_sources)
+        self.assertIn("module://agents-workflow/assets/standards/SubagentStandards.md", std_sources)
+        self.assertIn("module://agents-workflow/assets/standards/BlindSubagentStandards.md", std_sources)
 
         cqs_path = assets / "standards" / "CodeQualityStandards.md"
         sds_path = assets / "standards" / "SkillDesignStandards.md"
         ysdts_path = assets / "standards" / "YscbSkillDesignToolStandards.md"
+        sub_std_path = assets / "standards" / "SubagentStandards.md"
+        blind_std_path = assets / "standards" / "BlindSubagentStandards.md"
         self.assertTrue(cqs_path.is_file())
         self.assertTrue(sds_path.is_file())
         self.assertTrue(ysdts_path.is_file())
-        for std_p in (cqs_path, sds_path, ysdts_path):
+        self.assertTrue(sub_std_path.is_file())
+        self.assertTrue(blind_std_path.is_file())
+        for std_p in (cqs_path, sds_path, ysdts_path, sub_std_path, blind_std_path):
             s_txt = std_p.read_text(encoding="utf-8")
             clean_s = CODE_SPAN_REGEX.sub("", FENCED_CODE_BLOCK_REGEX.sub("", s_txt))
             self.assertEqual(UNENCLOSED_TAG_REGEX.findall(clean_s), [], f"{std_p.name} 含未加單反引號之標籤")
@@ -1295,6 +1308,28 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
                 s_s1 = compiler.resolve_single_artifact(s_txt, contrib.get("insert", []))
                 compiler.resolve_stage2_uri(s_s1, s_dst, deployment_map, target_name="antigravity")
         self.assertEqual(err_buf.getvalue(), "", f"Standards Stage 1/2 編譯產生警告: {err_buf.getvalue()}")
+
+        # 驗證 BlindSubagentStandards.md 透過節點注入完整包含 SubagentStandards.md 前段章節，且各技能單一明確引用、無檔案數硬編碼常數
+        sub_std_s1 = compiler.resolve_single_artifact(sub_std_path.read_text(encoding="utf-8"), contrib.get("insert", []))
+        blind_std_s1 = compiler.resolve_single_artifact(blind_std_path.read_text(encoding="utf-8"), contrib.get("insert", []))
+        self.assertTrue(blind_std_s1.startswith(sub_std_s1.rstrip("\r\n")))
+        self.assertIn("去錨定提示詞淨化", blind_std_s1)
+        self.assertNotIn("`__@{SUBAGENT_BASE_STANDARDS}__`", blind_std_s1)
+
+        blind_skill_txt = (skills_dir / "blind-subagent" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("透過盲眼子代理執行任務時觸發", blind_skill_txt)
+        self.assertIn("BlindSubagentStandards.md", blind_skill_txt)
+
+        auto_txt = (skills_dir / "auto" / "SKILL.md").read_text(encoding="utf-8")
+        p05_txt = (skills_dir / "development-sop" / "references" / "phase_05_task.md").read_text(encoding="utf-8")
+        p06_txt = (skills_dir / "development-sop" / "references" / "phase_06_test.md").read_text(encoding="utf-8")
+        p07_txt = (skills_dir / "development-sop" / "references" / "phase_07_walkthrough.md").read_text(encoding="utf-8")
+        self.assertNotIn("5 個檔案", auto_txt)
+        self.assertNotIn("1,500", auto_txt)
+        self.assertIn("BlindSubagentStandards.md", auto_txt)
+        self.assertIn("SubagentStandards.md", p05_txt)
+        self.assertIn("BlindSubagentStandards.md", p06_txt)
+        self.assertIn("BlindSubagentStandards.md", p07_txt)
         cqs_text = cqs_path.read_text(encoding="utf-8")
         sds_text = sds_path.read_text(encoding="utf-8")
         ysdts_text = ysdts_path.read_text(encoding="utf-8")
@@ -1309,7 +1344,10 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertNotIn("YscbSkillDesignToolStandards", sds_text)
         self.assertNotIn("skill-creator", sds_text)
         self.assertNotIn("skill-optimizer", sds_text)
-        self.assertIn("<!-- yscb:literal -->", ysdts_text)
+        self.assertIn("<!-- yscb:literal:begin -->", ysdts_text)
+        self.assertIn("<!-- yscb:literal:end -->", ysdts_text)
+        self.assertIn("<!-- yscb:ignore:begin -->", ysdts_text)
+        self.assertIn("<!-- yscb:ignore:end -->", ysdts_text)
         self.assertIn("contributes check", ysdts_text)
         self.assertIn("agents-workflow compile", ysdts_text)
         self.assertIn("agents-workflow release", ysdts_text)
@@ -1323,6 +1361,73 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertIn("YscbSkillDesignToolStandards.md", (skills_dir / "skill-creator" / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("SkillDesignStandards.md", (skills_dir / "skill-optimizer" / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("YscbSkillDesignToolStandards.md", (skills_dir / "skill-optimizer" / "SKILL.md").read_text(encoding="utf-8"))
+
+        self.mark_passed()
+
+    def test_ft_15_literal_and_ignore_block_directives(self):
+        """[2026_11_01_1309/sub_01 FT-01]: 驗證 yscb:literal:begin/end（含巢狀自舉）與 yscb:ignore:begin/end 區塊保護、抹除與未閉合警告。"""
+        import contextlib
+        import io
+
+        compiler = ArtifactCompiler(host_dir=str(Path(_pkg_root).parent.parent))
+        src_doc = (
+            "# Title\n"
+            "<!-- yscb:ignore:begin -->\n"
+            "維護者源碼註解：包含裸標籤 __@{RAW_UNENCLOSED}__ 與假路徑 `__${fake://ignore}__`\n"
+            "<!-- yscb:literal:begin -->\n"
+            "在 ignore 區塊內的 literal 標記也應一併被忽略抹除\n"
+            "<!-- yscb:literal:end -->\n"
+            "<!-- yscb:ignore:end -->\n"
+            "`__@{INJECT_TARGET}__`\n"
+            "<!-- yscb:literal:begin -->\n"
+            "段落字面量保護：`__@{INJECT_TARGET}__` 與裸標籤 __${raw://unenclosed}__\n"
+            "```markdown\n"
+            "<!-- yscb:literal:begin -->\n"
+            "內層教學範例：`__#{module://demo/SKILL.md}__`\n"
+            "<!-- yscb:literal:end -->\n"
+            "<!-- yscb:ignore:begin -->\n"
+            "內層教學展示之 ignore 註解（因外層為 literal 故保留）\n"
+            "<!-- yscb:ignore:end -->\n"
+            "```\n"
+            "<!-- yscb:literal:end -->\n"
+        )
+        inserts = [
+            {
+                "type": "const",
+                "token": "INJECT_TARGET",
+                "mode": "replace",
+                "value": "<!-- yscb:ignore:begin -->\n注入片段內註解\n<!-- yscb:ignore:end -->\nInjected Body",
+            }
+        ]
+        err_buf = io.StringIO()
+        dst_path = str(Path(_pkg_root).parent.parent / ".agents" / "skills" / "demo" / "SKILL.md")
+        with contextlib.redirect_stderr(err_buf):
+            s1_out = compiler.resolve_single_artifact(src_doc, inserts)
+            s2_out = compiler.resolve_stage2_uri(s1_out, dst_path, {}, target_name="antigravity")
+        self.assertEqual(err_buf.getvalue(), "", f"合規 literal/ignore 區塊不應產生任何警告: {err_buf.getvalue()}")
+
+        self.assertNotIn("維護者源碼註解", s1_out)
+        self.assertNotIn("注入片段內註解", s1_out)
+        self.assertIn("Injected Body", s1_out)
+        self.assertNotIn("維護者源碼註解", s2_out)
+        self.assertNotIn("在 ignore 區塊內的 literal", s2_out)
+        self.assertIn("段落字面量保護：`__@{INJECT_TARGET}__` 與裸標籤 __${raw://unenclosed}__", s2_out)
+        self.assertIn("<!-- yscb:literal:begin -->\n內層教學範例：`__#{module://demo/SKILL.md}__`\n<!-- yscb:literal:end -->", s2_out)
+        self.assertIn("<!-- yscb:ignore:begin -->\n內層教學展示之 ignore 註解（因外層為 literal 故保留）\n<!-- yscb:ignore:end -->", s2_out)
+        self.assertEqual(s2_out.count("<!-- yscb:literal:begin -->"), 1, "最外層 literal:begin 應於 Stage 2 被剝除，僅保留內層 1 處")
+        self.assertEqual(s2_out.count("<!-- yscb:literal:end -->"), 1, "最外層 literal:end 應於 Stage 2 被剝除，僅保留內層 1 處")
+
+        # 負向驗證：未閉合與孤立標記必須觸發 [compiler:warning]
+        for bad_doc, expected_warn in (
+            ("<!-- yscb:literal:begin -->\nunclosed", "Unclosed '<!-- yscb:literal:begin -->'"),
+            ("<!-- yscb:ignore:begin -->\nunclosed", "Unclosed '<!-- yscb:ignore:begin -->'"),
+            ("stray\n<!-- yscb:literal:end -->\n", "Unmatched '<!-- yscb:literal:end -->'"),
+            ("stray\n<!-- yscb:ignore:end -->\n", "Unmatched '<!-- yscb:ignore:end -->'"),
+        ):
+            warn_buf = io.StringIO()
+            with contextlib.redirect_stderr(warn_buf):
+                compiler.resolve_single_artifact(bad_doc, [])
+            self.assertIn(expected_warn, warn_buf.getvalue())
 
         self.mark_passed()
 

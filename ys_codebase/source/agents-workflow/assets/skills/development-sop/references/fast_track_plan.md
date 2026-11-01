@@ -17,7 +17,7 @@
 
 ## 2. 生命週期與極精簡回覆卡 (FP-01 ~ FP-03)
 
-- **FP-01 (快速規劃階段)**：確認 4 大守門清單，定義修改範圍與驗證指令，產出 [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`)。
+- **FP-01 (快速規劃階段)**：執行既有資產查重與預設值副作用掃描，確認 4 大守門清單與 `AGENTS.md` 專案憲法紅線無衝突，定義修改範圍與驗證指令，產出 [`fast_track_plan.md`](`__#{module://agents-workflow/assets/templates/fast_track_plan.md}__`)。
   ```markdown
   ###  FP-01 迅捷計畫已落檔
   - **產出文件**：[fast_track_plan.md](`__${project://plans}__/{plan_name}/fast_track_plan.md`)

@@ -1,5 +1,16 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_01_1309_subagent_and_blind_subagent_standards (Completed)
+
+- **雙層子代理標準 (`SubagentStandards.md` / `BlindSubagentStandards.md`)、`/blind-subagent` 技能、全倉技能去重與 `P00` / `Pre-Code` 雙階防放水護欄 (`[P00:DR-01]` ~ `[P00:DR-04]`, `REV-01`, `REV-02`)**：
+  - **跨領域通用雙層子代理標準、標準派發訊息模板與 `/blind-subagent` (`[P00:DR-01]` ~ `[P00:DR-04]`, `REV-01`)**：建立通用 `SubagentStandards.md`（職責正交啟動門檻、單回合 3~4 平行上限、`Pointer-Only` 傳址、`Single-Writer` 圍欄、`§3.1` 標準派發訊息模板与 `Mode I/II` + `[Cross-Boundary Handoff]` 契約）與 `BlindSubagentStandards.md`（透過 `SUBAGENT_BASE_STANDARDS` 節點注入複用前段基底，疊加去錨定淨化三原則、黑盒隔離、誠實收斂、Devil's Advocate 反向查驗、四大原型與 `§5.2` 盲眼專用派發模板）；新增 `/blind-subagent` 技能並完成跨技能去重與 `<!-- yscb:ignore:begin/end -->` 維護註記純化。
+  - **第一階 `P00` 五維度防放水反詰探針與第二階動刀前盲審 `Pre-Code Analyze Gate` (`REV-02`)**：於 `P00_discuss.md` 模板、`phase_00_discuss.md` 與 `new-plan/SKILL.md` 導入定案前五維度反詰掃描（既有資產查重復用、預設值隱性副作用、生命週期拆卸冪等性、跨切面不變量、顯式排除邊界）；於 `auto/SKILL.md` 批次 A 寫完 `P{XX}-05_auto.md` 後與 `phase_04_plan.md` / `fast_track_plan.md` 動刀前嵌入 `Pre-Code Analyze Gate`，並於 `SubagentStandards.md`、`phase_04~06` 與 `auto` 確立「全新功能或新建模組（非明確之局部 Bug 修復）統一優先派發（盲眼）Subagent」之門檻。
+
+### sub_01_compiler_literal_and_ignore_directives (Completed)
+- **編譯器 `<!-- yscb:literal:begin/end -->` 字面量保護與 `<!-- yscb:ignore:begin/end -->` 源碼註解抹除語法強化 (`[FP-01:DR-01]` ~ `[FP-01:DR-04]`, `FT-01`, `RT-01`)**：
+  - **深度計數區塊解析與巢狀自舉保護 (`[FP-01:DR-01]` ~ `[FP-01:DR-03]`)**：於 `agents_workflow/compiler.py` 新增 `_preprocess_directives` 深度計數解析器，將舊版僅限三引號代碼塊首行的 `<!-- yscb:literal -->` 升級為任意獨立行成對標記 `<!-- yscb:literal:begin -->` ... `<!-- yscb:literal:end -->`（Stage 1 原樣遮罩保護、Stage 2 自動剝除最外層標記並 100% 保留內部字面量，支援外層 `literal` 包覆內層 `literal`/`ignore` 教學範例之自舉渲染），同時新增 `<!-- yscb:ignore:begin -->` ... `<!-- yscb:ignore:end -->` 源碼註解區塊（於 Stage 1 及 `insert` 片段載入時整段抹除，不進入物化產物）與未閉合標記 `[compiler:warning]` 診斷。
+  - **資產遷移与 `Revision Plan` 衍生 `sub_XX` 檢核放行 (`[FP-01:DR-04]`)**：同步遷移 `YscbSkillDesignToolStandards.md`、`skill-creator/SKILL.md`、`extension-guide.md` 與 `docs/agents-workflow/DESIGN_NOTES.md` (`[DN-AW-14]`)，並於 `verifier.py` 支援含 `revision_log.md` 之 `Revision Plan` 主計畫衍生 `sub_XX` 子計畫，`agents-workflow` (138/138) 測試 100% 通過並完成 `@build` 與 `release` 物化同步。
+
 ## 2026_11_01_1141_ecosystem_precision_infra_and_targets_umbrella (Completed)
 
 ### sub_03_multi_platform_release_targets (Completed)

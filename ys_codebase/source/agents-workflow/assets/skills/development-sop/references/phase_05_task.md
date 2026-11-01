@@ -32,6 +32,9 @@ Phase 05 執行檢核表：
    - 編輯源碼、執行測試或維護文檔前，須依專案規範調用對應之專屬技能，不可省略。
    - **[!] 業務程式碼結構衛生與無損重構鐵律**：編寫或修改業務生產源碼時，**強制遵循 [`CodeQualityStandards.md`](`__#{module://agents-workflow/assets/standards/CodeQualityStandards.md}__`)** 之四大防過度設計紅線、五維度品質指標（`D1~D5`）與 `S1~S6` 結構法則（落實公開方法主幹階段管線化 `S1`、無狀態純函式剝離與**零轉發殼層** `S2`、同構邏輯 20% 邊界不變量保護 `S3`、衛語句扁平化 `S4`，且**嚴禁在生產代碼註解或 Docstring 留存 `FR-XX` / `DR-XX` / `EC-XX` 等開發計畫工單標籤**）。
    - **撰寫或修改自動化測試腳本前，強制先觸發並遵循 [`testing-sop`](`__#{module://agents-workflow/assets/skills/testing-sop/SKILL.md}__`)**，嚴格落實實質副作用斷言與 `tearDown` / `try...finally` 沙盒零殘留清理。
+5. **知情實作子代理啟動界線 (`Orthogonal Scope & New Feature Implementation Delegation`)**：
+   - 明確之局部 Bug 修復或日常單一模組／單一類別群組內之同職責軸線修改，**預設由主代理 Inline 執行**（嚴禁以硬編碼檔案數或行數常數無差別派發子代理）。
+   - 當實作任務屬**全新功能或模組建立（非明確之局部 Bug 修復）**，或**橫跨多個模組／多個獨立類別（Classes）產生職責正交之結構影響範圍**時，可遵循 [`SubagentStandards.md`](`__#{module://agents-workflow/assets/standards/SubagentStandards.md}__`)（套用 `§3.1` 標準派發訊息模板）委派知情實作 Subagent 執行分區編碼，並由主代理統一執行最終編譯與測試驗證。
 
 ---
 

@@ -14,7 +14,7 @@
 
 ## 1. 強型別 CmdBags 活躍執行合約
 
-YS-Codebase 生態系已全面廢除舊式 `argparse` 與手工字串剖析，所有 CLI 命令統一採用強型別 `CmdBags` 活躍執行合約。
+所有 CLI 命令統一採用強型別 `CmdBags` 執行合約（嚴禁使用 `argparse` 或手工剖析 `sys.argv`）。
 
 ### 1.1 合約函式簽名
 所有模組子指令的入口函式簽名必須嚴格宣告為：

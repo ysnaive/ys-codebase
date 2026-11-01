@@ -39,6 +39,15 @@ Phase 04 執行檢核表：
 - 將 `P06_test_plan.md` 狀態由 `Draft` 修改為 **`Confirmed`**。
 - 嚴格守門：測試計畫未 Confirmed 前，**絕對禁止進入 Phase 5 寫任何一行程式碼**。
 - **左移追溯差集檢核與日誌盲寫**：定稿後執行 `python __${yscb.host://yscb.py}__ agents-workflow plan verify [plan_name] --phase P04 --log "完成 P04 實作計畫與 P06 測試計畫定稿" --model "<ModelName>"`，自動檢核 `P01` (`FR/EC/NFR`) 與 `P06` 之集合差集覆蓋率（100% 零孤兒需求 ID）並免讀追加 `changelog.md`。
+- **[!] 第二階護欄：動刀前跨產物與專案憲法合規分析 (`Pre-Code Constitutional Analyze Gate`)**：
+  在定稿 `P04`、進入 Phase 5 動手修改業務源碼前，強制完成以下雙向對齊審查（若檢出嚴重違規或衝突，立即修正規格或發起 [`/discuss`](`__#{module://agents-workflow/assets/skills/discuss/SKILL.md}__`)）：
+  - **執行主體分流（遵循 [`BlindSubagentStandards.md`](`__#{module://agents-workflow/assets/standards/BlindSubagentStandards.md}__`) 原型 ② / ③）**：
+    - **全新功能／新建模組或跨模組正交變更（優先派發盲審 Subagent）**：凡屬**全新功能開發 (`Feature`)、新建模組／組件（非明確之局部 Bug 修復）**，或變更**橫跨多個模組／多個獨立 Class** 時，強制遵循 [`BlindSubagentStandards.md`](`__#{module://agents-workflow/assets/standards/BlindSubagentStandards.md}__`)（套用 `§5.2` 盲眼派發模板，僅傳遞計畫目錄路徑與憲法基準路徑，不劇透主視窗設計理由）委派唯讀盲眼 Subagent 進行無偏見合規把關（無 Subagent 環境自動降級）。
+    - **明確之局部 Bug 修復（主代理 Inline 自檢）**：收斂於單一模組同一職責軸線之明確 Bug 修復，由主代理 Inline 執行。
+  - **雙向對齊檢核三要素（無硬傷直回 `REVIEW_STATUS: PASSED`）**：
+    1. **`[P00:DR-XX]` 溯源與排除邊界零越界**：確認 `P00` 所有設計決策皆已 100% 落實於架構異動表、API 簽名與 `P06` 測試案例中，且零偷渡 `Explicitly Excluded` 排除範圍外之未授權擴充。
+    2. **既有組件查重與防重複造輪子**：核對擬新增之類別、函式或結構是否與既有程式碼功能重疊。
+    3. **專案工程憲法與領域紅線對照**：核對擬定之架構與 API 是否完全符合 `AGENTS.md`（含專案特化工程規範區段）、[`CodeQualityStandards.md`](`__#{module://agents-workflow/assets/standards/CodeQualityStandards.md}__`) 與相關領域技能之剛性禁令。
 
 `__@{PHASE04_AGENTS_GUIDE}__`
 

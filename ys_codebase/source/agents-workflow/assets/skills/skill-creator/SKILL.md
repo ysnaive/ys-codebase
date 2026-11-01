@@ -83,14 +83,15 @@ description: 引導於第一層組態空間建立專案特化 Skill、攔截規�
 3. **雙軌路徑引用與單反引號封裝防呆（`EC-01`, `EC-03`，詳見 [`YscbSkillDesignToolStandards.md`](`__#{module://agents-workflow/assets/standards/YscbSkillDesignToolStandards.md}__`) §2）**：
    - **指向同技能自身的 `references/`**：一律使用標準相對路徑（如 `[參考手冊](./references/xxx.md)`）。
    - **指向其他技能、標準模板或專案空間路徑**：強制使用**單反引號包覆**之 Stage 2 語意 URI（穿插路徑如 `__${config://agents-workflow}__/contribute.json` 可於物化後保留行內反引號格式）。
-   - **教學與範例區塊保護**：若技能或參考手冊內文需展示不被編譯器解算之字面量動態標籤語法，須置於首行標註 `<!-- yscb:literal -->` 之三反引號 Fenced Code Block 內保護：
+   - **教學字面量保護與源碼註解**：若技能或參考手冊內文需展示不被編譯器解算之字面量動態標籤語法，須以 `<!-- yscb:literal:begin -->` 與 `<!-- yscb:literal:end -->` 成對獨立行包覆保護（若需撰寫不物化輸出之純源碼維護註解，則以 `<!-- yscb:ignore:begin -->` 與 `<!-- yscb:ignore:end -->` 包覆）：
 
+<!-- yscb:literal:begin -->
 ```markdown
-<!-- yscb:literal -->
 - Stage 1 錨點（獨立行）：`__@{SKILL_CREATOR_STANDARDS}__`
 - Stage 2 跨檔超連結：[`/new-plan`](`__#{module://agents-workflow/assets/skills/new-plan/SKILL.md}__`)
 - Stage 2 顯示路徑：`__${project://plans}__/` 或 `__${config://agents-workflow}__/contribute.json`
 ```
+<!-- yscb:literal:end -->
 
 ### 步驟 4：宣告式組態註冊與三步嚴格編譯驗證守門 (`3-Step Verification Gate`)
 
