@@ -6,6 +6,7 @@
 /.snapshots/
 /.cache/
 /.venv/
+ys_codebase/release/**/*.zip
 *.local.json
 !**/configurable/*.local.json
 __pycache__/

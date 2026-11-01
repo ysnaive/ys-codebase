@@ -88,3 +88,4 @@ git gc --prune=now --aggressive
 1. **Stage 1 (解耦)**：更新 `.gitignore` 排除 `ys_codebase/release/**/*.zip`，發布管線僅追蹤 `index.json`。
 2. **Stage 2 (分發)**：對接遠端 Release Provider / 本地 Cache 機制。
 3. **Stage 3 (清洗)**：執行 `git-filter-repo` 一次性清理過往歷史冗餘，達成極致純文字輕量倉庫。
+

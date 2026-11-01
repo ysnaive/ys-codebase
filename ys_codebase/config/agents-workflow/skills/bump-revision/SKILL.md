@@ -78,10 +78,11 @@ flowchart TD
    ```bash
    python __${yscb.host://yscb.py}__ dev bump-[revision|patch|minor|major] <module>
    ```
-2. **正式打包發布**：
+2. **正式打包發布（可選附帶雙軌釋出元數據）**：
    ```bash
-   python __${yscb.host://yscb.py}__ dev release <module>
+   python __${yscb.host://yscb.py}__ dev release <module> [--type=<feature|bugfix|hotfix|refactor|docs>] [--urgency=<optional|recommended|critical>] [--summary="<一句話更新摘要>"]
    ```
+   - 若開發者指定或當前變更涉及重要修補，可傳入 `--type`、`--urgency` 與 `--summary`，系統將自動雙軌寫入 `manifest.json["release"]` 與 `release/<module>/index.json["releases"][<ver>]`。
 3. **本機正式版切換安裝**：
    ```bash
    python __${yscb.host://yscb.py}__ install <module> --force -y

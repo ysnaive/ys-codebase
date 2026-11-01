@@ -12,12 +12,14 @@
   - `dev build`: 開發版打包（包含 tests/）。
   - `dev bump-*`: 版本號單向遞增（major/minor/patch/revision）。
   - `dev release-check`: 3-Gate 發布就緒預檢（Gate 1: 合規; Gate 2: 不可變; Gate 3: 單調性防回退）。
-  - `dev release`: 純淨生產發布打包（Kahn DAG 拓撲依賴排序）。
-  - `dev release-git`: 本地安全 git tag 發布流水線（commit 錯誤攔截防護）。
+  - `dev release`: 純淨生產發布打包（Kahn DAG 拓撲依賴排序，支援 `--type` / `--urgency` / `--summary` 雙軌元數據寫入）。
+  - `dev release-git`: 本地安全 git tag 發布流水線（commit 錯誤攔截防護，支援 `--type` / `--urgency` / `--summary` 雙軌元數據寫入）。
+  - `dev index-patch`: 事後修補歷史已發布版本之 `index.json` 依賴範圍、狀態與嚴重度元數據（免重打包 `.zip`）。
   - `dev test`: 沙盒隔離端到端自動化測試（單一 Token 參數傳遞、UNKNOWN 剛性阻斷）。
 - **生命週期事件 (Events)**：
   - `on_test_setup`: 沙盒測試套件啟動前觸發。
   - `on_test_teardown`: 沙盒測試套件完成後清理時觸發。
+  - `on_module_released`: 模組正式發布打包與索引更新完成後觸發。
 
 ### 1.2 `agents-workflow.json`（技能匯出與路由注入）
 - 匯出 `yscb-module-dev` 模組開發技能，並向 `AGENTS_SKILL_ROUTING`、`HOW_TO_CONFIG_MODULES` 與 `HOW_TO_YSCB_MODULES` 錨點注入生態系模組開發路由、體檢與使用指南。

@@ -8,8 +8,79 @@
     "1.0.3.5",
     "1.1.0.6",
     "1.1.1.2",
-    "1.2.0.0",
-    "1.2.0.1",
-    "1.2.0.2"
-  ]
+    "1.2.0.2",
+    "1.2.1.0"
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "初版微內核與套件管理器正式發布，提供 4 階段原子重載管線、標準 URI 語意協議、code.func:// 動態符號系統與 Contributes 擴充機制"
+    },
+    "1.0.1.3": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "強化 act_install 與 resolve_source_uri 本地/遠端嚴格解析，移除自動回退並補齊單元測試"
+    },
+    "1.0.2.7": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "實作 .modules/ 與 .build/ Git 追蹤解耦、.gitignore 區塊軟合併、JIT 鮮度自癒與 update_checker 安全熱更新引擎"
+    },
+    "1.0.3.5": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 core.guard.guard_dispatch 宿主守門 SDK 並將 scripts/cli.py 遷移至純宣告式 process(args) 進入點"
+    },
+    "1.1.0.6": {
+      "status": "active",
+      "dependencies": {},
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "增補 core/README.md 跨平台路徑正規化與錯誤診斷規範，並擴充 CLI 路由與發行生命週期回歸測試"
+    },
+    "1.1.1.2": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 core.telemetry 零侵入式 CLI 執行軌跡側錄引擎與 ide_projector 投影支援，賦能 /session-audit 摩擦診斷"
+    },
+    "1.2.0.0": {
+      "status": "pruned",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 core.locale 顯式語系回退引擎、contributes 詞條定義契約驗證與宿主層專有名詞雙語（zh/en）解析"
+    },
+    "1.2.0.1": {
+      "status": "pruned",
+      "dependencies": {},
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "完成 core 全模組五維度靜態診斷與業務階段邏輯聚合重構，精簡冗餘分支並維持 100% 行為無損"
+    },
+    "1.2.0.2": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "強化 restore 批量安裝容錯韌性、.venv 損毀偵測自癒、locale 巢狀字典遞迴合併與 Windows 鎖定檔案重試防護"
+    },
+    "1.2.1.0": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "支援雙層 provider (index/release)、releases 孤立分支自動發布、releases 感知相容性解析、更新緊急度提示與跨平台目錄鎖定三階段真偽鑑別原子同步"
+    }
+  }
 }

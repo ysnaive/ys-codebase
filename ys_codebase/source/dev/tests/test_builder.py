@@ -99,6 +99,12 @@ class TestDevBuilder(YSCBTestCase):
         
         idx = vfs.read_json("module.release://mock_purge_pkg/index.json")
         self.assertEqual(idx.get("versions", []), ["1.0.0.4", "1.0.1.0"])
+        releases_ledger = idx.get("releases", {})
+        self.assertEqual(releases_ledger.get("1.0.0.1", {}).get("status"), "pruned")
+        self.assertEqual(releases_ledger.get("1.0.0.2", {}).get("status"), "pruned")
+        self.assertEqual(releases_ledger.get("1.0.0.3", {}).get("status"), "pruned")
+        self.assertEqual(releases_ledger.get("1.0.0.4", {}).get("status"), "active")
+        self.assertEqual(releases_ledger.get("1.0.1.0", {}).get("status"), "active")
         self.mark_passed()
 
     def test_builder_generates_and_updates_index_json(self):

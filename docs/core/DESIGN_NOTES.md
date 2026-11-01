@@ -47,6 +47,8 @@ last_updated: "2026-10-15"
 | **[DN-11](#dn-11-core__init__py-pep-562-延遲載入與-coreevents-零-atomicengine-反向依賴-原-dn-18--dn-22)** | `DN-18`<br/>`DN-22` | `core/__init__.py` PEP 562 延遲載入與 `core.events` 零 `AtomicEngine` 反向依賴 | `source/core/core/__init__.py`<br/>`source/core/core/events.py` | 🚨 CAUTION |
 | **[DN-12](#dn-12-vfs-同目錄原子替換防同前綴穿越mtime-快取與宿主自更新-url-物理正交分離-原-dn-20--dn-26--dn-28)** | `DN-20`<br/>`DN-26`<br/>`DN-28` | VFS 同目錄原子替換、防同前綴穿越、`mtime` 快取、宿主自更新 URL 分離與零盲猜自舉 | `source/core/core/vfs/`<br/>`source/core/core/uri.py`<br/>`yscb.py` | 🚨 CAUTION |
 | **[DN-13](#dn-13-宣告式群組雙軌-help-路由與-contributes-check-專案級覆寫剝殼)** | `DN-AW-13` | 宣告式群組雙軌 Help 路由與 `contributes check` 專案級覆寫剝殼 | `source/core/core/commands/` | ⚠️ WARNING |
+| **[DN-14](#dn-14-本地嚴格同版-source_version--target_version-動態打包pruned-同三元組自動補位與-releases-孤兒分支自動遷移)** | `DN-REL-01` | 本地嚴格同版動態打包、`pruned` 同三元組自動補位與 `releases` 孤兒分支自動遷移 | `yscb.py`<br/>`source/core/core/engine.py`<br/>`source/core/core/installer.py` | 🚨 CAUTION |
+| **[DN-15](#dn-15-indexjsonreleases-依賴覆寫優先級core-版本相容性過濾與-mirror-離線快取冪等還原)** | `DN-REL-02` | `index.json["releases"]` 依賴覆寫優先級、`core` 版本相容性過濾與 `mirror://` 離線快取冪等還原 | `source/core/core/engine.py`<br/>`source/core/core/installer.py`<br/>`source/core/core/update_checker.py` | 🚨 CAUTION |
 
 ---
 
@@ -199,4 +201,34 @@ last_updated: "2026-10-15"
 - **防禦宣告**：
   > [!WARNING]
   > **嚴禁在 `dispatcher.py` 步驟 7 一刀切強制輸出 Help 覆蓋所有模組群組節點的無參數預設動作！專案級 `contribute.json` 驗證必須維持外層剝殼相容！**
+
+---
+
+### [DN-14] 本地嚴格同版 (`source_version == target_version`) 動態打包、`pruned` 同三元組自動補位與 `releases` 孤兒分支自動遷移
+
+- **核心決策**：
+  1. **本地嚴格同版 (`source_version == target_version`) 動態打包自給自足**：當 `yscb.py` 或 `AtomicEngine` / `Installer` 在 `release/<mod>/` 找不到 `<ver>.zip` 時，探測本地是否存在 `source/<mod>/manifest.json` 且其 `"version"` **嚴格等於**目標 `<ver>`；唯有完全相等時，以純標準庫 `zipfile` 結合 `.yscbignore` 過濾規則即時打包寫入 `.mirror/<mod>/<ver>.zip` 並解壓至 `.modules/<mod>/`（嚴禁將未過濾之 `source/<mod>` 原地 `copytree` 至 `.modules/` 或在版本不符時強行混裝）。
+  2. **`pruned` 版本同三元組 (`X.Y.Z.*`) 最高活躍版本自動補位**：當下游專案鎖定之舊版 `X.Y.Z.W` 已被遠端 3-Revision 滑動視窗淘汰（不在 `index.json["versions"]` 中）且本地無 `.mirror/` 快取時，`restore` 自動解析 `index.json["versions"]` 中同一 `Major.Minor.Patch` 三元組之最高可用 `active` 版本進行解壓還原，並同步更新 `yscb.config.json` 鎖定版號以消除後續 `_is_modules_dirty` 重複觸發。
+  3. **舊版 `main` 分支官方 Provider URL 無感遷移**：`DEFAULT_PROVIDER_URL` 指向專用單層孤兒分支 `releases`，且 `load_config` / `AtomicEngine._get_config` 讀取到舊版 `.../main/ys_codebase/release` 時自動無感正規化並回寫為 `releases` 分支 URL。
+- **背後考量**：兼顧母倉 `main` 分支零 `.zip` 二進位膨脹、開發者切換歷史 Git Tag 之離線自給自足，以及下游消費者環境在面對滑動視窗裁剪時的無感自癒韌性。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `source/<mod>/manifest.json` 版本與請求版本不符時強行打包混裝，亦嚴禁跳過打包直接將原始 `source/<mod>` 目錄複製進 `.modules/`！同三元組自動補位完成後必須同步更新 `yscb.config.json` 之版本紀錄，否則將引發每次 CLI 啟動無限重複觸發 `auto-restore`！**
+
+---
+
+### [DN-15] `index.json["releases"]` 依賴覆寫優先級、`core` 版本相容性過濾與 `mirror://` 離線快取冪等還原
+
+- **核心決策**：
+  1. **`index.json["releases"][<ver>]["dependencies"]` 覆寫優先權**：當 `dev index-patch` 事後修補歷史版本的依賴範圍時，不重壓 `.zip` 檔案，因此 `AtomicEngine` 在解析候選版本 manifest 時，強制以 `index.json["releases"][<ver>]["dependencies"]` 覆寫 `.zip` 內建 `manifest.json["dependencies"]`。
+  2. **`core` 依賴檢核與 `.build` 正規化**：`act_solve_deps` 主動檢核 `dep_name == "core"` 與當前已安裝 `core` 版本之相容性（將 `X.Y.Z.build` 正規化為 `X.Y.Z` 正式版號進行比對），且 `cmd_update` 與 `UpdateChecker` 在挑選最高版本前先過濾掉與當前已安裝 `core` 衝突之候選版本。
+  3. **`module.mirror://<mod>/index.json` 離線快取與 `reload` 冪等注入**：每次讀取或下載 `<mod>/index.json` 均同步快取至 `module.mirror://<mod>/index.json`；於 `_reload_materialize_single_module` 解壓 `.mirror` 壓縮檔至 `staging_dir` 後，自動將 `index.json["releases"][<ver>]` 之 `dependencies` 與釋出元數據覆寫回 `staging_dir/manifest.json`，確保離線 `reload` / `rollback` 100% 冪等保留事後依賴修補。
+  4. **跨版本（含 `pruned`）`critical` 更新聚合**：`UpdateChecker` 掃描 `index.json["releases"]` 中 `(current_ver, latest_ver]` 區間內所有版本（含已標為 `pruned` 之中間版本），確保跨版本升級不會遺漏中間版本的 `critical` 告警。
+  5. **跨平台/跨系統掛載 (`virtiofs`/Windows) 目錄鎖定三階段真偽鑑別與檔案級全有全無原子同步**：當 `_atomic_swap_dir`（或 `yscb.py` 之 `_fetch_and_extract_zip`）在目錄級 `os.replace` 遭遇 `EACCES`/`EBUSY`/`EPERM` 或 `winerror in (5, 32)` 時，強制透過 `_is_dir_handle_locked_for_rename` 執行三階段鑑別（① 檢查 `parent_dir` 與 `target_dir` 之 `os.access` 權限位元；② 於 `target_dir` 內執行 `.yscb_probe` 實機建立、`os.replace` 與刪除探針；③ 通過探針後以 `_inplace_atomic_sync_dir` 預備份現有檔案並逐檔原子替換，任一檔案異常即全量回滾並拋出原例外），100% 區分宿主機目錄句柄鎖定與真權限/磁碟故障。
+- **背後考量**：解決「歷史版本發布後才發現與未來 `core` 大改版不相容」時的死鎖問題，避免重壓歷史 `.zip` 破壞不可變原則，同時消除不相容版本觸發 `UpdateChecker` 提示卻無法升級的無限告警迴圈；並根治 Windows / DevContainer `virtiofs` 環境下 IDE 開啟 `.modules/<mod>` 時無法熱替換模組目錄之問題。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `_find_manifest_in_local_provider` 讀取 `.zip/manifest.json` 後直接提早返回而略過 `index.json["releases"][<ver>]["dependencies"]` 覆寫！嚴禁在 `UpdateChecker` 僅檢查 `latest_ver` 單點而忽略 `(current_ver, latest_ver]` 區間內已 `pruned` 之中間 `critical` 版本！嚴禁在 `_atomic_swap_dir` 中移除實機寫入探針而無條件吞掉所有 `PermissionError`/`OSError`！**
+
+
 

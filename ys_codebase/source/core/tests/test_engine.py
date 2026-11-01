@@ -390,6 +390,62 @@ def on_test_event(context):
         self.assertFalse(os.path.exists(stale_staging))
         self.mark_passed()
 
+    def test_atomic_swap_dir_three_stage_probe_and_inplace_sync_rollback(self):
+        """Verify 3-stage directory lock discriminator, in-place atomic file sync, and rollback on genuine errors."""
+        import errno
+        from unittest.mock import patch
+
+        parent = os.path.join(self.sandbox_dir, "virtiofs_swap")
+        target = os.path.join(parent, "locked_mod")
+        staging = os.path.join(parent, ".staging_locked_mod")
+        os.makedirs(os.path.join(target, "sub"), exist_ok=True)
+        os.makedirs(os.path.join(staging, "sub"), exist_ok=True)
+
+        with open(os.path.join(target, "keep.txt"), "w", encoding="utf-8") as f:
+            f.write("v1")
+        with open(os.path.join(target, "obsolete.txt"), "w", encoding="utf-8") as f:
+            f.write("remove_me")
+        with open(os.path.join(staging, "keep.txt"), "w", encoding="utf-8") as f:
+            f.write("v2")
+        with open(os.path.join(staging, "sub", "new.txt"), "w", encoding="utf-8") as f:
+            f.write("added")
+
+        real_replace = os.replace
+
+        def _mock_dir_locked_replace(src, dst):
+            if os.path.abspath(src) == os.path.abspath(target):
+                raise PermissionError(errno.EACCES, "Directory handle locked by virtiofs", src)
+            return real_replace(src, dst)
+
+        with patch("os.replace", side_effect=_mock_dir_locked_replace):
+            _atomic_swap_dir(staging, target, retries=1)
+
+        with open(os.path.join(target, "keep.txt"), "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "v2")
+        with open(os.path.join(target, "sub", "new.txt"), "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "added")
+        self.assertFalse(os.path.exists(os.path.join(target, "obsolete.txt")))
+
+        # Genuine permission/IO failure (e.g., ENOSPC or failed write probe) must NOT be swallowed
+        staging2 = os.path.join(parent, ".staging_locked_mod_2")
+        os.makedirs(staging2, exist_ok=True)
+        with open(os.path.join(staging2, "keep.txt"), "w", encoding="utf-8") as f:
+            f.write("v3_fail")
+
+        def _mock_genuine_error_replace(src, dst):
+            if os.path.abspath(src) == os.path.abspath(target):
+                raise OSError(errno.ENOSPC, "No space left on device", src)
+            return real_replace(src, dst)
+
+        with patch("os.replace", side_effect=_mock_genuine_error_replace):
+            with self.assertRaises(OSError) as ctx:
+                _atomic_swap_dir(staging2, target, retries=1)
+            self.assertEqual(ctx.exception.errno, errno.ENOSPC)
+
+        with open(os.path.join(target, "keep.txt"), "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "v2")
+        self.mark_passed()
+
 
 
 

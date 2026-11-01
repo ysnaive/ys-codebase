@@ -122,8 +122,8 @@ python yscb.py dev release-check --all --force
 ### 3.3 純淨正式發布 (`dev release`)
 執行 3-Gate 校驗通過後，產出純淨發布包並實施產物治理：
 ```bash
-# 發布單一模組
-python yscb.py dev release <module_name>
+# 發布單一模組（可選附帶雙軌釋出元數據）
+python yscb.py dev release <module_name> [--type=<feature|bugfix|hotfix|refactor|docs>] [--urgency=<optional|recommended|critical>] [--summary="<text>"]
 
 # 原地覆蓋同版本發布（剛打包發現註解/文檔小瑕疵時使用，免 bump revision）
 python yscb.py dev release <module_name> --force
@@ -134,14 +134,15 @@ python yscb.py dev release --all [--force]
 - **特性**：
   - 嚴格排除 `tests/` 與 `.yscbignore`。
   - 自動執行 **3-Revision 時序滑動窗口保留**與**跨三元組升級舊版收斂淘汰**。
+  - `--type` / `--urgency` / `--summary`：支援將釋出元數據雙軌寫入 `source/<mod>/manifest.json["release"]` 與 `release/<mod>/index.json["releases"][<ver>]`。
   - `--force` 模式：支援物理覆蓋同名 `.zip` 產物，重新計算 hash 並同步更新 `release/<mod>/index.json`。
-  - 以磁碟真實存在的 zip 檔案為唯一事實來源動態更新 `release/<mod>/index.json`。
+  - 以 `index.json` 雙軌帳本 (`versions` + `releases`) 與實體 `.zip` 聯集為唯一事實來源動態更新索引。
 
 ### 3.4 安全提交流水線 (`dev release-git`)
 一鍵執行標準 4 步發布與版本控制流水線：
 ```bash
-# 標準安全發布
-python yscb.py dev release-git <module_name> "<commit message>"
+# 標準安全發布（支援選填釋出元數據）
+python yscb.py dev release-git <module_name> "<commit message>" [--type=<type>] [--urgency=<urgency>] [--summary="<text>"]
 
 # 強制重新覆蓋發布並覆蓋 Git Tag
 python yscb.py dev release-git <module_name> "<commit message>" --force
@@ -151,6 +152,16 @@ python yscb.py dev release-git <module_name> "<commit message>" --force
   - 若目標版本**已發布且無 `--force`**：自動安全略過 release 打包步驟，直接推進執行後續的 Local Git Commit & Tag。
   - 若目標版本**已發布且傳入 `--force`**：重新調用 `dev release --force` 物理覆蓋打包產物，並以 `git tag -f` 覆蓋標籤。
 - 🚨 **安全承諾**：本指令**絕不執行 `git push`**，完全由開發者自主決定何時推播至遠端。
+
+### 3.5 免重打包事後修補 (`dev index-patch`)
+當某個已發布版本事後發現相容性邊界需修正，或需補齊歷史版本的嚴重度與淘汰狀態時，無須重新打包 `.zip`，可直接修改 `release/<module>/index.json`：
+```bash
+python yscb.py dev index-patch <module_name> --ver=<version> [--dep="<mod>:<constraint>[;<mod2>:<constraint2>]"] [--status=active|pruned] [--type=<type>] [--urgency=<urgency>] [--summary="<text>"]
+```
+- **範例**：
+  ```bash
+  python yscb.py dev index-patch knowledge-db --ver=1.1.2.0 --dep="core:>=1.1.0,<1.4.0" --urgency=recommended --summary="標註 core 相容性上界"
+  ```
 
 ---
 

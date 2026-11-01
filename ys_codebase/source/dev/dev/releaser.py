@@ -12,7 +12,8 @@ import functools
 import subprocess
 from typing import Optional, Tuple, Dict, Any, List, Set
 
-from core import uri, vfs, semver
+from core import uri, vfs, semver, events
+from core.context import ExecutionContext
 from dev.builder import Builder
 from dev.checker import Checker, discover_source_modules
 
@@ -94,6 +95,36 @@ class Releaser:
         except Exception as e:
             return -1, "", str(e)
 
+    def _collect_all_known_released_versions(self, module_name: str) -> Set[str]:
+        """Collects all known released versions from index.json ('versions' and 'releases' ledger) and physical .zip files."""
+        known: Set[str] = set()
+        mod_rel_root = f"module.release://{module_name}"
+        if not vfs.exists(mod_rel_root):
+            return known
+
+        index_uri = f"{mod_rel_root}/index.json"
+        if vfs.exists(index_uri):
+            try:
+                idx_data = vfs.read_json(index_uri)
+                if isinstance(idx_data, dict):
+                    if isinstance(idx_data.get("versions"), list):
+                        for v in idx_data["versions"]:
+                            if isinstance(v, str) and v.strip():
+                                known.add(v.strip())
+                    if isinstance(idx_data.get("releases"), dict):
+                        for v in idx_data["releases"].keys():
+                            if isinstance(v, str) and v.strip():
+                                known.add(v.strip())
+            except Exception:
+                pass
+
+        real_rel_dir = uri.resolve(mod_rel_root)
+        if os.path.isdir(real_rel_dir):
+            for item in os.listdir(real_rel_dir):
+                if item.endswith(".zip"):
+                    known.add(item[:-4])
+        return known
+
     def release_check(self, module_name: str, force: bool = False) -> Tuple[bool, List[str]]:
         """
         獨立發布就緒預檢門面 (dev release-check <mod> [--force]):
@@ -126,53 +157,92 @@ class Releaser:
             return False, errors
 
         # Gate 2: Immutability / Version Conflict
+        known_versions = self._collect_all_known_released_versions(module_name)
         exact_rel_zip = f"module.release://{module_name}/{target_version}.zip"
-        if vfs.exists(exact_rel_zip) and not force:
+        if (vfs.exists(exact_rel_zip) or target_version in known_versions) and not force:
             errors.append(
                 f"Gate 2 Failed (Immutability): Version '{target_version}' already exists in release repository "
                 f"({exact_rel_zip}). Duplicate release forbidden (use --force to override)."
             )
 
         # Gate 3: Monotonicity / No Rollback
-        mod_rel_root = f"module.release://{module_name}"
-        if vfs.exists(mod_rel_root):
-            real_rel_dir = uri.resolve(mod_rel_root)
-            if os.path.isdir(real_rel_dir):
-                all_existing_versions: List[semver.VersionTuple] = []
-                for item in os.listdir(real_rel_dir):
-                    if item.endswith(".zip"):
-                        item_ver = item[:-4]
-                        try:
-                            all_existing_versions.append(semver.parse_semver(item_ver))
-                        except ValueError:
-                            pass
+        all_existing_versions: List[semver.VersionTuple] = []
+        for item_ver in known_versions:
+            try:
+                all_existing_versions.append(semver.parse_semver(item_ver))
+            except ValueError:
+                pass
 
-                if all_existing_versions:
-                    all_existing_versions.sort(key=functools.cmp_to_key(semver.compare_semver))
-                    global_highest = all_existing_versions[-1]
-                    cmp_res = semver.compare_semver(target_tuple, global_highest)
+        if all_existing_versions:
+            all_existing_versions.sort(key=functools.cmp_to_key(semver.compare_semver))
+            global_highest = all_existing_versions[-1]
+            cmp_res = semver.compare_semver(target_tuple, global_highest)
 
-                    if not force:
-                        if cmp_res <= 0:
-                            errors.append(
-                                f"Gate 3 Failed (Monotonicity): Target version '{target_version}' must be strictly greater than "
-                                f"the highest existing version '{global_highest}' in release repository."
-                            )
-                    else:
-                        if cmp_res < 0:
-                            errors.append(
-                                f"Gate 3 Failed (Monotonicity): Target version '{target_version}' is less than "
-                                f"the highest existing version '{global_highest}'. Version rollback is forbidden even with --force."
-                            )
+            if not force:
+                if cmp_res <= 0:
+                    errors.append(
+                        f"Gate 3 Failed (Monotonicity): Target version '{target_version}' must be strictly greater than "
+                        f"the highest existing version '{global_highest}' in release repository."
+                    )
+            else:
+                if cmp_res < 0:
+                    errors.append(
+                        f"Gate 3 Failed (Monotonicity): Target version '{target_version}' is less than "
+                        f"the highest existing version '{global_highest}'. Version rollback is forbidden even with --force."
+                    )
 
         return len(errors) == 0, errors
 
-    def release_module(self, module_name: str, force: bool = False, _skip_check: bool = False) -> Tuple[bool, str]:
+    def _apply_release_meta_to_source_manifest(
+        self,
+        module_name: str,
+        release_meta: Optional[Dict[str, str]],
+    ) -> Tuple[bool, str]:
+        """Writes or merges release metadata (type, urgency, summary) into module.source://<mod>/manifest.json['release']."""
+        if not release_meta:
+            return True, ""
+        cleaned = {
+            k: str(v).strip()
+            for k, v in release_meta.items()
+            if k in ("type", "urgency", "summary") and v is not None and str(v).strip()
+        }
+        if not cleaned:
+            return True, ""
+        mf_uri = f"module.source://{module_name}/manifest.json"
+        if not vfs.exists(mf_uri):
+            return False, f"manifest.json not found for module '{module_name}'."
+        try:
+            mf_data = vfs.read_json(mf_uri)
+            if not isinstance(mf_data, dict):
+                return False, f"Invalid manifest.json format for '{module_name}'."
+            cur_rel = mf_data.get("release") if isinstance(mf_data.get("release"), dict) else {}
+            merged_rel = dict(cur_rel)
+            merged_rel.update(cleaned)
+            mf_data["release"] = merged_rel
+            vfs.write_json(mf_uri, mf_data, indent=2)
+            return True, ""
+        except Exception as e:
+            return False, f"Failed to write release metadata into manifest.json for '{module_name}': {e}"
+
+    def release_module(
+        self,
+        module_name: str,
+        force: bool = False,
+        _skip_check: bool = False,
+        release_meta: Optional[Dict[str, str]] = None,
+    ) -> Tuple[bool, str]:
         """
         單一模組純淨發布 (dev release <mod> [--force]):
-        1. 若 _skip_check=False，執行 release_check(module_name, force=force)。
-        2. 調用 Builder.package_release(module_name, target_version)。
+        1. 若傳入 release_meta，先寫入 source/<mod>/manifest.json["release"]。
+        2. 若 _skip_check=False，執行 release_check(module_name, force=force)。
+        3. 調用 Builder.package_release(module_name, target_version)。
+        4. 廣播標準事件 on_module_released。
         """
+        if release_meta:
+            ok_meta, err_meta = self._apply_release_meta_to_source_manifest(module_name, release_meta)
+            if not ok_meta:
+                return False, err_meta
+
         if not _skip_check:
             passed, errors = self.release_check(module_name, force=force)
             if not passed:
@@ -183,7 +253,22 @@ class Releaser:
         manifest_data = vfs.read_json(f"{src_uri}/manifest.json")
         target_version = manifest_data.get("version", "1.0.0.0")
 
-        return self.builder.package_release(module_name, target_version)
+        ok, msg = self.builder.package_release(module_name, target_version)
+        if ok:
+            rel_zip_uri = f"module.release://{module_name}/{target_version}.zip"
+            zip_real = uri.resolve(rel_zip_uri) if vfs.exists(rel_zip_uri) else ""
+            ctx = ExecutionContext(
+                "dev",
+                "on_module_released",
+                [module_name, target_version],
+                metadata={
+                    "module": module_name,
+                    "version": target_version,
+                    "zip_path": zip_real,
+                },
+            )
+            events.broadcast("on_module_released", context=ctx, emit_module="dev")
+        return ok, msg
 
     def release_all(self, force: bool = False) -> Dict[str, Tuple[bool, str]]:
         """
@@ -219,15 +304,22 @@ class Releaser:
 
         return results
 
-    def release_git(self, module_name: str, commit_msg: str, force: bool = False) -> Tuple[bool, str]:
+    def release_git(
+        self,
+        module_name: str,
+        commit_msg: str,
+        force: bool = False,
+        release_meta: Optional[Dict[str, str]] = None,
+    ) -> Tuple[bool, str]:
         """
         4 步發布與版本控制安全流水線 (dev release-git <mod> "<msg>" [--force]):
-        1. 調用 Tester 執行 dev test <mod>（失敗即中斷）。
-        2. 檢查目標版本是否已發布：
+        1. 若傳入 release_meta，先寫入 source/<mod>/manifest.json["release"]。
+        2. 調用 Tester 執行 dev test <mod>（失敗即中斷）。
+        3. 檢查目標版本是否已發布：
            - 若尚未發布：調用 release_check -> release_module(_skip_check=True)。
            - 若已發布且無 --force：略過打包動作，直接推進至本地 Git 提交。
            - 若已發布且傳入 --force：強制調用 release_check(force=True) -> release_module(force=True, _skip_check=True) 覆蓋打包。
-        3. 本地 Git 提交：git add -A -> git commit -m commit_msg（攔截致命錯誤） -> git tag [-f] -a "<mod>/v<ver>" -m commit_msg。
+        4. 本地 Git 提交：git add -A -> git commit -m commit_msg（攔截致命錯誤） -> git tag [-f] -a "<mod>/v<ver>" -m commit_msg。
         """
         if not commit_msg or not commit_msg.strip():
             return False, "Commit message cannot be empty for release-git."
@@ -236,10 +328,16 @@ class Releaser:
         if not vfs.exists(f"{src_uri}/manifest.json"):
             return False, f"manifest.json not found for module '{module_name}'."
 
+        if release_meta:
+            ok_meta, err_meta = self._apply_release_meta_to_source_manifest(module_name, release_meta)
+            if not ok_meta:
+                return False, err_meta
+
         manifest_data = vfs.read_json(f"{src_uri}/manifest.json")
         ver = manifest_data.get("version", "1.0.0.0")
         exact_rel_zip = f"module.release://{module_name}/{ver}.zip"
-        is_already_released = vfs.exists(exact_rel_zip)
+        known_versions = self._collect_all_known_released_versions(module_name)
+        is_already_released = vfs.exists(exact_rel_zip) or (ver in known_versions)
 
         # Step 1: E2E Test
         tester = self.tester
@@ -286,3 +384,95 @@ class Releaser:
             return False, f"Git tag failed for '{tag_name}': {t_err}"
 
         return True, f"Successfully processed '{module_name}@{ver}' and updated local Git commit & tag '{tag_name}'."
+
+    def patch_release_index(
+        self,
+        module_name: str,
+        version: str,
+        dependencies: Optional[Dict[str, str]] = None,
+        status: Optional[str] = None,
+        release_type: Optional[str] = None,
+        urgency: Optional[str] = None,
+        summary: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Lightweight post-release metadata and dependency patcher (dev index-patch).
+        Directly updates module.release://<module_name>/index.json['releases'][<version>]
+        and synchronizes top-level 'versions' list when status changes between 'active' and 'pruned'.
+        """
+        if not module_name or not str(module_name).strip():
+            return False, "Module name cannot be empty."
+        clean_ver = str(version or "").strip()
+        if not clean_ver:
+            return False, "Target version (--ver) is required."
+        try:
+            semver.parse_semver(clean_ver)
+        except Exception as e:
+            return False, f"Invalid SemVer version '{clean_ver}': {e}"
+
+        if status is not None and status not in ("active", "pruned"):
+            return False, f"Invalid status '{status}': must be 'active' or 'pruned'."
+
+        index_uri = f"module.release://{module_name}/index.json"
+        if not vfs.is_file(index_uri):
+            return False, f"Release index not found at {index_uri}."
+
+        try:
+            idx_data = vfs.read_json(index_uri)
+            if not isinstance(idx_data, dict):
+                return False, f"Invalid JSON object in {index_uri}."
+        except Exception as e:
+            return False, f"Failed to read {index_uri}: {e}"
+
+        active_versions = [v for v in idx_data.get("versions", []) if isinstance(v, str)]
+        releases_map = idx_data.get("releases") if isinstance(idx_data.get("releases"), dict) else {}
+        releases_map = {str(k): dict(v) if isinstance(v, dict) else {} for k, v in releases_map.items()}
+
+        entry = dict(releases_map.get(clean_ver, {}))
+        if "status" not in entry:
+            entry["status"] = "active" if clean_ver in active_versions else "pruned"
+        if "dependencies" not in entry or not isinstance(entry.get("dependencies"), dict):
+            entry["dependencies"] = {}
+
+        if status is not None:
+            entry["status"] = status
+            if status == "active" and clean_ver not in active_versions:
+                active_versions.append(clean_ver)
+            elif status == "pruned" and clean_ver in active_versions:
+                active_versions = [v for v in active_versions if v != clean_ver]
+        elif clean_ver not in releases_map and clean_ver not in active_versions:
+            active_versions.append(clean_ver)
+            entry["status"] = "active"
+
+        if isinstance(dependencies, dict) and dependencies:
+            cur_deps = dict(entry.get("dependencies", {}))
+            for dk, dv in dependencies.items():
+                cur_deps[str(dk).strip()] = str(dv).strip()
+            entry["dependencies"] = cur_deps
+
+        if release_type is not None and str(release_type).strip():
+            entry["type"] = str(release_type).strip()
+        if urgency is not None and str(urgency).strip():
+            entry["urgency"] = str(urgency).strip()
+        if summary is not None and str(summary).strip():
+            entry["summary"] = str(summary).strip()
+
+        releases_map[clean_ver] = entry
+
+        def _safe_cmp(a: str, b: str) -> int:
+            try:
+                return semver.compare_semver(a, b)
+            except Exception:
+                return 1 if a > b else (-1 if a < b else 0)
+
+        active_versions = sorted(set(active_versions), key=functools.cmp_to_key(_safe_cmp))
+        sorted_rel_keys = sorted(releases_map.keys(), key=functools.cmp_to_key(_safe_cmp))
+        idx_data["versions"] = active_versions
+        idx_data["releases"] = {k: releases_map[k] for k in sorted_rel_keys}
+
+        try:
+            vfs.write_json(index_uri, idx_data, indent=2, atomic=True)
+        except Exception as e:
+            return False, f"Failed to write {index_uri}: {e}"
+
+        return True, f"Successfully patched release index for '{module_name}@{clean_ver}' ({index_uri})."

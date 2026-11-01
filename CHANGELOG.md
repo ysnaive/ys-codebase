@@ -1,5 +1,22 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_01_1138_release_binary_storage_optimization (Completed)
+
+### sub_03_legacy_release_migration_and_history_purge (Completed)
+- **存量 38 個歷史發布包真實元數據考證與回填、`core@1.2.1.0` / `dev@1.1.3.0` / `yscb.py@1.2.1.0` 正式發布、跨平台目錄鎖定三階段真偽鑑別、`git filter-repo` 全歷史徹底淨化與 `releases` 孤兒分支建立 (`FR-01` ~ `FR-03`, `EC-01` ~ `EC-03`, `NFR-01` ~ `NFR-02`)**：
+  - **存量 38 個歷史版本真實元數據回填與新版本正式發布 (`FR-01`, `FR-02`, `[P00:DR-01]`, `[P00:DR-02]`)**：透過 `.zip` 內部打包時間戳、Git Commit、`CHANGELOG.md` 與 `plans/archived/` 歸檔計畫交叉考證，為 `core`、`dev`、`server`、`knowledge-db`、`agents-workflow` 共 38 個歷史版本完整補齊 `status`、`dependencies`、`type`、`urgency`、`summary`；同步將 `yscb.py` 升版至 `1.2.1.0`、`core` 升版至 `1.2.1.0`、`dev` 升版至 `1.1.3.0` 並完成正式打包發布與安裝（滑動視窗保留 36 個 Active `.zip`）。
+  - **跨平台目錄鎖定三階段真偽鑑別與 `git filter-repo` 歷史徹底淨化 (`FR-02`, `FR-03`, `EC-01` ~ `EC-03`, `[P00:DR-03]`, `[P00:DR-04]`)**：於 `core/engine.py` 與 `yscb.py` 實作 `_is_dir_handle_locked_for_rename`（權限位元檢查 + `.yscb_probe` 實機寫入探針）與 `_inplace_atomic_sync_dir`（預備份與逐檔原子替換，單檔異常全量回滾），根治 `virtiofs`/Windows 宿主機 IDE 鎖定 `.modules/<mod>` 目錄時之 `EACCES` 問題；完成全專案與發布庫外部備份（100% 通過 SHA256 與 Zip CRC 校驗）、於 `.gitignore` 忽略 `ys_codebase/release/**/*.zip`、實證無 `.zip` 下 `restore --force` 100% 自給自足還原，並透過 `git filter-repo` 徹底清除 `main` 分支歷史中之二進位 `.zip` 與運行時殘留目錄，建立單層 `releases` 孤兒分支。
+
+### sub_02_release_metadata_and_compat_governance (Completed)
+- **版本相容性事後修正機制 (`dev index-patch`)、雙軌釋出元數據 (`type`/`urgency`/`summary`)、`mirror://` 離線快取與跨版本 `[CRITICAL UPDATE]` 告警治理 (`FR-01` ~ `FR-04`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：
+  - **`index.json["releases"]` 依賴覆寫優先級、`core` 依賴檢核與 `mirror://` 離線快取 (`FR-01`, `EC-01`, `EC-04`, `[P00:DR-01]`)**：於 `core/engine.py` 與 `core/installer.py` 實作 `index.json["releases"][<ver>]["dependencies"]` 覆寫 `.zip/manifest.json` 優先權，並於挑選最高版本前過濾與當前已安裝 `core` 相容之候選版本；於 `act_solve_deps` 新增 `dep_name == "core"` 相容性校驗（含 `.build` 正規化）；同步快取 `module.mirror://<mod>/index.json` 並於 `_reload_materialize_single_module` 動態覆寫 `staging_dir/manifest.json`，確保離線 `reload` / `rollback` 冪等保留事後依賴修補；登錄 `core` `[DN-15]`。
+  - **`dev index-patch` 事後修補 CLI、雙軌釋出元數據注入與跨版本 `[CRITICAL UPDATE]` 告警 (`FR-02` ~ `FR-04`, `EC-02` ~ `EC-03`, `EC-05`, `[P00:DR-02]` ~ `[P00:DR-04]`)**：新增 `dev index-patch` 指令（支援分號 `;` 分隔或重複 `--dep` 修補多組依賴與 `--status`/`--type`/`--urgency`/`--summary`），並於 `dev release` / `dev release-git` 支援 `--type`/`--urgency`/`--summary` 雙軌寫入 `source/<mod>/manifest.json["release"]` 與 `release/<mod>/index.json["releases"][<ver>]`；於 `Checker._check_manifest` 新增 `"release"` 欄位校驗；於 `core/update_checker.py` 實作向前相容元數據解析、跨版本區間 `(cur_ver, latest_ver]`（含已 `pruned` 版本）嚴重度聚合與 `[!] [CRITICAL UPDATE]` 雙線警告橫幅，`core` (213/213) 與 `dev` (82/82) 測試 100% 通過並完成 `@build` 熱部署。
+
+### sub_01_release_binary_and_git_history (Completed)
+- **發布套件二進位儲存解耦、`index.json` 雙軌版本帳本 SSOT、本地同版 `source/` 動態打包自給自足、`pruned` 同三元組自動補位與母倉 `releases` 孤兒分支自動化 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **`on_module_released` 通用發布事件與 `index.json` 雙軌版本帳本 (`versions` + `releases`) SSOT (`FR-01`, `FR-02`, `[P00:DR-01]`, `[P00:DR-02]`)**：於 `dev/contributes/core.json`、`dev/checker.py` 與 `dev/releaser.py` 註冊並廣播通用發布事件 `on_module_released`（攜帶 `module`/`version`/`zip_path`）；重構 `Builder._update_release_index` 與 `Releaser._collect_all_known_released_versions`，使 `index.json` 同時維護活躍可下載視窗 `versions` 與永久歷史帳本 `releases[<ver>]`（含 `"status": "active" | "pruned"`），確保本機無 `.zip` 時 Gate 2/3 與 3-Revision 滑動視窗仍 100% 精準運作；登錄 `[DN-DEV-05]`。
+  - **本地嚴格同版 (`source_version == target_version`) 動態打包、`pruned` 同三元組補位與 `releases` 孤兒分支 CI (`FR-03` ~ `FR-05`, `EC-01` ~ `EC-04`, `[P00:DR-03]` ~ `[P00:DR-05]`)**：於 `yscb.py`、`core/engine.py` 與 `core/installer.py` 實作無 `.zip` 時比對本地 `source/<mod>/manifest.json` 嚴格同版即時打包至 `.mirror/` 並解壓（排除 `tests/` 與 `.yscbignore`，拒絕版本不符混裝）；新增 `pruned` 版本於新環境 clone 無 `.mirror/` 時自動退回同三元組 (`X.Y.Z.*`) 最高 `active` 版本並同步更新 `yscb.config.json`；將 `DEFAULT_PROVIDER_URL` 切換至 `releases` 分支並支援舊版 `main` URL 無感自動遷移，同步建立 `.github/workflows/release-publish.yml` 單層孤兒分支自動發布工作流；登錄 `core` `[DN-14]`。
+
 ## 2026_11_01_1045_github_issue_8_investigation (Completed)
 
 - **GitHub Issue #8 四大跨模組缺陷與架構完善修復 (`server` / `knowledge-db` / `agents-workflow`, `FR-01` ~ `FR-04`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：

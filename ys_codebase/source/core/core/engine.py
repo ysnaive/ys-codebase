@@ -27,6 +27,142 @@ from core.contributes import ContributesAggregator
 from core import events
 from core.platform import InterProcessLock
 
+DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases"
+LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
+    "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release",
+    "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release/",
+)
+_RELEASE_PACKAGE_IGNORES: Tuple[str, ...] = (
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    "*.tmp",
+    "*.bak",
+    ".git*",
+    ".pytest_cache",
+    ".DS_Store",
+    ".yscbignore",
+    "tests",
+    "tests/*",
+)
+
+
+def normalize_legacy_provider_url(provider_url: Optional[str]) -> str:
+    """Normalizes legacy main-branch official provider URLs to the dedicated releases branch."""
+    s = (provider_url or "").strip()
+    if s in LEGACY_PROVIDER_URLS:
+        return DEFAULT_PROVIDER_URL
+    return s
+
+
+def _should_ignore_rel_path(rel_path: str, ignores: List[str]) -> bool:
+    import fnmatch
+    norm_rel = rel_path.replace("\\", "/").rstrip("/")
+    name = os.path.basename(norm_rel)
+    for pattern in ignores:
+        pat = pattern.replace("\\", "/").rstrip("/")
+        if (
+            fnmatch.fnmatch(name, pat)
+            or fnmatch.fnmatch(norm_rel, pat)
+            or fnmatch.fnmatch(norm_rel, pat + "/*")
+            or norm_rel.startswith(pat.rstrip("*").rstrip("/") + "/")
+        ):
+            return True
+    return False
+
+
+def package_local_source_if_exact_match(
+    source_dir: str,
+    target_version: str,
+    dest_zip_path: str,
+    release_zip_path: Optional[str] = None,
+) -> bool:
+    """
+    Packages source_dir into dest_zip_path (and optional release_zip_path) using stdlib zipfile
+    only when source_dir/manifest.json exists and its 'version' strictly equals target_version.
+    """
+    if not source_dir or not os.path.isdir(source_dir):
+        return False
+    mf_path = os.path.join(source_dir, "manifest.json")
+    if not os.path.isfile(mf_path):
+        return False
+    try:
+        mf_data = vfs.read_json(mf_path)
+    except Exception:
+        return False
+    if not isinstance(mf_data, dict) or str(mf_data.get("version", "")).strip() != str(target_version).strip():
+        return False
+
+    ignores = list(_RELEASE_PACKAGE_IGNORES)
+    yscbignore_path = os.path.join(source_dir, ".yscbignore")
+    if os.path.isfile(yscbignore_path):
+        try:
+            for line in vfs.read_text(yscbignore_path).splitlines():
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    ignores.append(s)
+        except Exception:
+            pass
+
+    os.makedirs(os.path.dirname(os.path.abspath(dest_zip_path)), exist_ok=True)
+    tmp_zip = dest_zip_path + f".tmp_{os.getpid()}"
+    try:
+        with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(source_dir):
+                rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
+                if rel_dir == ".":
+                    rel_dir = ""
+                dirs[:] = [d for d in dirs if not _should_ignore_rel_path(f"{rel_dir}/{d}".lstrip("/"), ignores)]
+                for fname in files:
+                    rel_file = f"{rel_dir}/{fname}".lstrip("/")
+                    if not _should_ignore_rel_path(rel_file, ignores):
+                        src_f = os.path.join(root, fname)
+                        if rel_file == "manifest.json":
+                            m_copy = dict(mf_data)
+                            m_copy["version"] = target_version
+                            zf.writestr("manifest.json", json.dumps(m_copy, indent=2, ensure_ascii=False))
+                        else:
+                            zf.write(src_f, arcname=rel_file)
+        if os.path.exists(dest_zip_path):
+            os.remove(dest_zip_path)
+        os.replace(tmp_zip, dest_zip_path)
+        if release_zip_path and os.path.abspath(release_zip_path) != os.path.abspath(dest_zip_path):
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(release_zip_path)), exist_ok=True)
+                shutil.copy2(dest_zip_path, release_zip_path)
+            except Exception:
+                pass
+        return True
+    except Exception:
+        return False
+    finally:
+        if os.path.exists(tmp_zip):
+            try:
+                os.remove(tmp_zip)
+            except Exception:
+                pass
+
+
+def find_matching_local_source_dir(module_name: str, candidate_roots: List[str]) -> Optional[str]:
+    """Probes candidate_roots for a valid source/<module_name> directory containing manifest.json."""
+    for r in candidate_roots:
+        if not r:
+            continue
+        for cand in (
+            os.path.join(r, "source", module_name),
+            os.path.join(os.path.dirname(r), "source", module_name),
+            os.path.join(r, "ys_codebase", "source", module_name),
+        ):
+            if os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "manifest.json")):
+                return cand
+    try:
+        src_uri = f"module.source://{module_name}"
+        if vfs.is_dir(src_uri) and vfs.is_file(f"{src_uri}/manifest.json"):
+            return uri.resolve(src_uri)
+    except Exception:
+        pass
+    return None
+
 
 def _parse_dependencies(raw_deps: Any) -> Dict[str, str]:
     """Parse dependencies from dict or list format into {module_name: constraint}."""
@@ -136,6 +272,166 @@ def _cleanup_stale_swap_dirs(parent_dir: str) -> None:
                 _force_rmtree_with_retry(stale_path, retries=3, retry_delay=0.03)
 
 
+def _is_dir_handle_locked_for_rename(err: OSError, parent_dir: str, target_dir: str) -> bool:
+    """
+    Three-stage cross-platform discriminator to distinguish transient directory handle locking
+    (e.g., Windows/virtiofs/WSL2/9p open directory handles by IDE/watchers) from genuine
+    filesystem permission or I/O failures.
+    """
+    import errno
+    err_no = getattr(err, "errno", None)
+    win_err = getattr(err, "winerror", None)
+    if err_no not in (errno.EACCES, errno.EBUSY, errno.EPERM) and win_err not in (5, 32):
+        return False
+
+    if not os.path.isdir(parent_dir) or not os.path.isdir(target_dir):
+        return False
+
+    # Stage 1: Verify local OS access mode bits on both parent_dir and target_dir
+    req_mode = os.W_OK if os.name == "nt" else (os.W_OK | os.X_OK)
+    if not os.access(parent_dir, req_mode) or not os.access(target_dir, req_mode):
+        return False
+
+    # Stage 2: Execute a physical file-level write + atomic replace + unlink probe inside target_dir
+    probe_src = os.path.join(target_dir, f".yscb_probe_src_{os.getpid()}_{int(time.time() * 1000)}")
+    probe_dst = os.path.join(target_dir, f".yscb_probe_dst_{os.getpid()}_{int(time.time() * 1000)}")
+    try:
+        with open(probe_src, "wb") as f:
+            f.write(b"1")
+            f.flush()
+        os.replace(probe_src, probe_dst)
+        os.remove(probe_dst)
+        return True
+    except Exception:
+        return False
+    finally:
+        for p in (probe_src, probe_dst):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+
+def _inplace_atomic_sync_dir(staging_dir: str, target_dir: str) -> None:
+    """
+    Stage 3: All-or-nothing file-level atomic sync from staging_dir into target_dir when
+    directory-level rename is blocked by host/virtiofs open directory handles.
+    """
+    import stat
+
+    staging_abs = os.path.abspath(staging_dir)
+    target_abs = os.path.abspath(target_dir)
+    parent_dir = os.path.dirname(target_abs)
+    base_name = os.path.basename(target_abs)
+    backup_dir = os.path.join(parent_dir, f".old_backup_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
+
+    existing_rel_files: Set[str] = set()
+    os.makedirs(backup_dir, exist_ok=True)
+
+    try:
+        # 1. Snapshot all existing files in target_abs into backup_dir for all-or-nothing rollback
+        for root, dirs, files in os.walk(target_abs):
+            dirs[:] = [d for d in dirs if not d.startswith((".old_", ".staging_", ".yscb_probe_"))]
+            rel_root = os.path.relpath(root, target_abs)
+            if rel_root == ".":
+                rel_root = ""
+            for fname in files:
+                if fname.startswith((".yscb_probe_", ".yscb_tmp_")):
+                    continue
+                rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                norm_rel = rel_path.replace("\\", "/")
+                existing_rel_files.add(norm_rel)
+                src_f = os.path.join(root, fname)
+                bak_f = os.path.join(backup_dir, rel_path)
+                os.makedirs(os.path.dirname(bak_f), exist_ok=True)
+                shutil.copy2(src_f, bak_f)
+
+        # 2. Atomically replace/create all files from staging_abs into target_abs
+        staged_rel_files: Set[str] = set()
+        for root, dirs, files in os.walk(staging_abs):
+            rel_root = os.path.relpath(root, staging_abs)
+            if rel_root == ".":
+                rel_root = ""
+            target_sub = os.path.join(target_abs, rel_root) if rel_root else target_abs
+            os.makedirs(target_sub, exist_ok=True)
+            for fname in files:
+                rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                norm_rel = rel_path.replace("\\", "/")
+                staged_rel_files.add(norm_rel)
+                src_f = os.path.join(root, fname)
+                dst_f = os.path.join(target_abs, rel_path)
+                tmp_dst = os.path.join(os.path.dirname(dst_f), f".yscb_tmp_{os.getpid()}_{fname}")
+                try:
+                    if os.path.exists(dst_f) and not os.access(dst_f, os.W_OK):
+                        try:
+                            os.chmod(dst_f, stat.S_IWRITE | stat.S_IREAD)
+                        except Exception:
+                            pass
+                    shutil.copy2(src_f, tmp_dst)
+                    os.replace(tmp_dst, dst_f)
+                finally:
+                    if os.path.exists(tmp_dst):
+                        try:
+                            os.remove(tmp_dst)
+                        except Exception:
+                            pass
+
+        # 3. Remove obsolete files that no longer exist in staging_abs
+        obsolete_files = existing_rel_files - staged_rel_files
+        for norm_rel in obsolete_files:
+            obs_f = os.path.join(target_abs, norm_rel.replace("/", os.sep))
+            if os.path.isfile(obs_f):
+                try:
+                    os.chmod(obs_f, stat.S_IWRITE | stat.S_IREAD)
+                except Exception:
+                    pass
+                os.remove(obs_f)
+
+        # 4. Best-effort cleanup of empty obsolete subdirectories (safe if locked since all files are removed)
+        for root, dirs, _ in os.walk(target_abs, topdown=False):
+            for d in dirs:
+                d_abs = os.path.join(root, d)
+                rel_d = os.path.relpath(d_abs, target_abs)
+                staged_d = os.path.join(staging_abs, rel_d)
+                if not os.path.exists(staged_d):
+                    try:
+                        if not os.listdir(d_abs):
+                            os.rmdir(d_abs)
+                    except OSError:
+                        pass
+    except Exception:
+        # Full rollback from backup_dir if any file write/replace/unlink failed
+        try:
+            for root, _, files in os.walk(target_abs):
+                rel_root = os.path.relpath(root, target_abs)
+                if rel_root == ".":
+                    rel_root = ""
+                for fname in files:
+                    rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                    norm_rel = rel_path.replace("\\", "/")
+                    if norm_rel not in existing_rel_files:
+                        try:
+                            os.remove(os.path.join(root, fname))
+                        except Exception:
+                            pass
+            for norm_rel in existing_rel_files:
+                rel_os = norm_rel.replace("/", os.sep)
+                bak_f = os.path.join(backup_dir, rel_os)
+                dst_f = os.path.join(target_abs, rel_os)
+                if os.path.isfile(bak_f):
+                    os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+                    tmp_restore = os.path.join(os.path.dirname(dst_f), f".yscb_restore_{os.getpid()}_{os.path.basename(dst_f)}")
+                    shutil.copy2(bak_f, tmp_restore)
+                    os.replace(tmp_restore, dst_f)
+        except Exception:
+            pass
+        raise
+    finally:
+        if os.path.exists(backup_dir):
+            _force_rmtree_with_retry(backup_dir)
+
+
 def _atomic_swap_dir(
     staging_dir: str,
     target_dir: str,
@@ -146,6 +442,8 @@ def _atomic_swap_dir(
     Atomically swaps a prepared staging_dir into target_dir within the same parent filesystem.
     Moves any existing target_dir to a hidden .old_<name>_<pid> sibling, replaces staging_dir
     into target_dir, rolls back from .old on failure, and removes .old and stale swap dirs upon success.
+    When directory-level rename is blocked by host/virtiofs directory handles (verified via 3-stage
+    probe), falls back to all-or-nothing file-level atomic sync.
     """
     target_abs = os.path.abspath(target_dir)
     staging_abs = os.path.abspath(staging_dir)
@@ -172,8 +470,14 @@ def _atomic_swap_dir(
             _force_rmtree_with_retry(old_abs)
 
         if os.path.exists(target_abs):
-            _replace_with_retry(target_abs, old_abs)
-            moved_old = True
+            try:
+                _replace_with_retry(target_abs, old_abs)
+                moved_old = True
+            except OSError as rename_err:
+                if _is_dir_handle_locked_for_rename(rename_err, parent_dir, target_abs):
+                    _inplace_atomic_sync_dir(staging_abs, target_abs)
+                    return
+                raise
 
         _replace_with_retry(staging_abs, target_abs)
     except Exception:
@@ -264,7 +568,27 @@ class AtomicEngine:
         cfg_path = os.path.join(host_dir, "yscb.config.json")
         if not vfs.is_file(cfg_path):
             raise FileNotFoundError(f"Configuration file not found: {cfg_path}")
-        return cfg_path, vfs.read_json(cfg_path)
+        data = vfs.read_json(cfg_path)
+        if isinstance(data, dict):
+            changed = False
+            dp = data.get("default_provider")
+            if isinstance(dp, str) and dp.strip() in LEGACY_PROVIDER_URLS:
+                data["default_provider"] = DEFAULT_PROVIDER_URL
+                changed = True
+            inst = data.get("installed_modules")
+            if isinstance(inst, dict):
+                for m_info in inst.values():
+                    if isinstance(m_info, dict):
+                        mp = m_info.get("provider")
+                        if isinstance(mp, str) and mp.strip() in LEGACY_PROVIDER_URLS:
+                            m_info["provider"] = DEFAULT_PROVIDER_URL
+                            changed = True
+            if changed:
+                try:
+                    self._save_config(cfg_path, data)
+                except Exception:
+                    pass
+        return cfg_path, data
 
     def _save_config(self, cfg_path: str, data: Dict[str, Any]) -> None:
         vfs.write_json(cfg_path, data, indent=2, atomic=True)
@@ -273,6 +597,7 @@ class AtomicEngine:
         """
         Fetches a manifest, index, or package archive from local filesystem or remote HTTP/HTTPS.
         """
+        provider_url = normalize_legacy_provider_url(provider_url)
         local_target = os.path.join(provider_url, relative_path)
         if not os.path.exists(local_target):
             for sub in ("release", "build"):
@@ -384,12 +709,13 @@ class AtomicEngine:
         )
 
     def _download_from_release_tier(self, module_name: str, version: str, provider_url: str, dest_zip_real: str, dest_zip_uri: str) -> Optional[str]:
-        """Tier 2 download: resolves package from module.release:// or local provider directory."""
+        """Tier 2 download: resolves package from module.release://, local provider directory, or exact-version local source/."""
         rel_zip = f"module.release://{module_name}/{version}.zip"
         if vfs.exists(rel_zip):
             shutil.copy2(uri.resolve(rel_zip), dest_zip_real)
             return dest_zip_uri
 
+        provider_url = normalize_legacy_provider_url(provider_url)
         p_abs = os.path.abspath(provider_url) if not provider_url.startswith(("http://", "https://", "file://")) else None
         if p_abs and os.path.isdir(p_abs):
             for z_path in (
@@ -412,10 +738,112 @@ class AtomicEngine:
                                 arc = os.path.relpath(f_p, d_path).replace("\\", "/")
                                 zf.write(f_p, arcname=arc)
                     return dest_zip_uri
+
+        # Local exact-version source/<mod> dynamic packaging fallback
+        src_dir = find_matching_local_source_dir(module_name, [p_abs] if p_abs else [])
+        if src_dir:
+            rel_zip_real = None
+            try:
+                rel_zip_real = uri.resolve(rel_zip)
+            except Exception:
+                rel_zip_real = None
+            if package_local_source_if_exact_match(src_dir, version, dest_zip_real, release_zip_path=rel_zip_real):
+                return dest_zip_uri
+
         return None
+
+    def _get_installed_core_version_for_compat(self) -> Optional[str]:
+        """Returns the normalized installed core version (stripping .build suffix for compatibility matching)."""
+        raw_ver: Optional[str] = None
+        try:
+            _, cfg = self._get_config()
+            inst = cfg.get("installed_modules", {})
+            if isinstance(inst, dict) and "core" in inst:
+                c_meta = inst["core"]
+                raw_ver = c_meta.get("version") if isinstance(c_meta, dict) else str(c_meta)
+        except Exception:
+            pass
+        if not raw_ver and vfs.is_file("module://core/manifest.json"):
+            try:
+                mf = vfs.read_json("module://core/manifest.json")
+                if isinstance(mf, dict):
+                    raw_ver = mf.get("version")
+            except Exception:
+                pass
+        if not raw_ver:
+            return None
+        s = str(raw_ver).strip()
+        if s.endswith(".build"):
+            s = s[:-len(".build")]
+        return s
+
+    def _is_dependencies_compatible_with_env(self, deps: Any) -> bool:
+        """Checks whether a candidate version's dependencies are compatible with the currently installed core version."""
+        parsed = _parse_dependencies(deps)
+        core_req = parsed.get("core")
+        if not core_req:
+            return True
+        installed_core = self._get_installed_core_version_for_compat()
+        if not installed_core:
+            return True
+        return semver.match_constraint(installed_core, core_req)
+
+    def _cache_release_index_to_mirror(self, module_name: str, index_data: Dict[str, Any]) -> None:
+        """Persists a copy of the module's release index.json into module.mirror://<module_name>/index.json for offline reload/rollback."""
+        if not isinstance(index_data, dict):
+            return
+        try:
+            mirror_dir = f"module.mirror://{module_name}"
+            vfs.makedirs(mirror_dir, exist_ok=True)
+            vfs.write_json(f"{mirror_dir}/index.json", index_data, indent=2, atomic=True)
+        except Exception:
+            pass
+
+    def _apply_release_index_override_to_staging(self, mod: str, ver: str, staging_dir: str) -> None:
+        """Applies post-release dependency and metadata overrides from index.json into staging_dir/manifest.json."""
+        mf_path = os.path.join(staging_dir, "manifest.json")
+        if not os.path.isfile(mf_path):
+            return
+        idx_data: Optional[Dict[str, Any]] = None
+        for idx_uri in (f"module.release://{mod}/index.json", f"module.mirror://{mod}/index.json"):
+            if vfs.is_file(idx_uri):
+                try:
+                    loaded = vfs.read_json(idx_uri)
+                    if isinstance(loaded, dict) and isinstance(loaded.get("releases"), dict):
+                        idx_data = loaded
+                        break
+                except Exception:
+                    pass
+        if not idx_data:
+            return
+        rel_entry = idx_data.get("releases", {}).get(ver)
+        if not isinstance(rel_entry, dict):
+            return
+        try:
+            mf_data = vfs.read_json(mf_path)
+            if not isinstance(mf_data, dict):
+                return
+            changed = False
+            if isinstance(rel_entry.get("dependencies"), dict):
+                if mf_data.get("dependencies") != rel_entry["dependencies"]:
+                    mf_data["dependencies"] = dict(rel_entry["dependencies"])
+                    changed = True
+            rel_meta = {k: rel_entry[k] for k in ("type", "urgency", "summary") if isinstance(rel_entry.get(k), str) and rel_entry[k]}
+            if rel_meta:
+                cur_rel = mf_data.get("release") if isinstance(mf_data.get("release"), dict) else {}
+                merged_rel = dict(cur_rel)
+                merged_rel.update(rel_meta)
+                if mf_data.get("release") != merged_rel:
+                    mf_data["release"] = merged_rel
+                    changed = True
+            if changed:
+                vfs.write_json(mf_path, mf_data, indent=2, atomic=True)
+        except Exception:
+            pass
 
     def _download_from_remote_tier(self, module_name: str, version: str, provider_url: str, dest_zip_real: str, dest_zip_uri: str) -> str:
         """Tier 3 download: fetches single-file <version>.zip from remote HTTP/HTTPS provider."""
+        provider_url = normalize_legacy_provider_url(provider_url)
         if not provider_url.startswith(("http://", "https://", "file://")):
             raise FileNotFoundError(
                 f"Cannot find release package for module '{module_name}@{version}' in provider '{provider_url}'."
@@ -443,6 +871,75 @@ class AtomicEngine:
                     pass
             raise RuntimeError(f"Failed to download module '{module_name}@{version}' from '{remote_zip_url}': {e}")
 
+    def _resolve_same_triplet_fallback_version(
+        self,
+        module_name: str,
+        requested_version: str,
+        provider_url: str,
+        base_dir: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolves the highest available active version in the same triplet (X.Y.Z.*) when requested_version has been pruned."""
+        try:
+            req_t = semver.parse_semver(requested_version)
+        except Exception:
+            return None
+        if req_t.is_build or str(requested_version).endswith(".build"):
+            return None
+        req_triplet = (req_t.major, req_t.minor, req_t.patch)
+        p_arg = normalize_legacy_provider_url(provider_url)
+        idx_data: Optional[Dict[str, Any]] = None
+
+        if p_arg.startswith("file://"):
+            raw_p = urllib.request.url2pathname(p_arg[7:])
+            while raw_p.startswith("//"):
+                raw_p = raw_p[1:]
+            p_abs = os.path.normpath(raw_p)
+        elif not p_arg.startswith(("http://", "https://")):
+            if base_dir and not os.path.isabs(p_arg):
+                p_abs = os.path.normpath(os.path.join(base_dir, p_arg))
+            else:
+                p_abs = os.path.abspath(p_arg) if p_arg else None
+        else:
+            p_abs = None
+
+        if p_abs and os.path.isdir(p_abs):
+            for idx_cand in (
+                os.path.join(p_abs, module_name, "index.json"),
+                os.path.join(p_abs, "release", module_name, "index.json"),
+                os.path.join(p_abs, "index.json") if os.path.basename(p_abs) == module_name else "",
+            ):
+                if idx_cand and vfs.is_file(idx_cand):
+                    try:
+                        idx_data = vfs.read_json(idx_cand)
+                        if isinstance(idx_data, dict):
+                            break
+                    except Exception:
+                        pass
+        else:
+            ok, res = self.act_fetch(p_arg, f"{module_name}/index.json")
+            if ok and isinstance(res, dict):
+                idx_data = res
+
+        if not isinstance(idx_data, dict):
+            return None
+        active_vers = idx_data.get("versions")
+        if not isinstance(active_vers, list) or requested_version in active_vers:
+            return None
+
+        cands: List[str] = []
+        for v in active_vers:
+            if not isinstance(v, str):
+                continue
+            try:
+                vt = semver.parse_semver(v)
+                if not vt.is_build and not v.endswith(".build") and (vt.major, vt.minor, vt.patch) == req_triplet:
+                    cands.append(v)
+            except Exception:
+                pass
+        if not cands:
+            return None
+        return semver.find_best_version(cands)
+
     def act_download(self, module_name: str, version: str, provider_url: str) -> str:
         """
         Downloads/Materializes a specific module version into module.mirror://{module_name}/{version}.zip.
@@ -455,6 +952,19 @@ class AtomicEngine:
 
         if _is_build_version_request(version):
             return self._download_from_build_tier(module_name, version, provider_url, dest_zip_real, dest_zip_uri)
+
+        try:
+            rel_idx_uri = f"module.release://{module_name}/index.json"
+            if vfs.is_file(rel_idx_uri):
+                idx_d = vfs.read_json(rel_idx_uri)
+                if isinstance(idx_d, dict):
+                    self._cache_release_index_to_mirror(module_name, idx_d)
+            else:
+                ok_idx, res_idx = self.act_fetch(provider_url, f"{module_name}/index.json")
+                if ok_idx and isinstance(res_idx, dict):
+                    self._cache_release_index_to_mirror(module_name, res_idx)
+        except Exception:
+            pass
 
         rel_hit = self._download_from_release_tier(module_name, version, provider_url, dest_zip_real, dest_zip_uri)
         if rel_hit is not None:
@@ -532,13 +1042,46 @@ class AtomicEngine:
             if vfs.is_file(idx_p):
                 try:
                     idx_data = vfs.read_json(idx_p)
+                    if isinstance(idx_data, dict):
+                        self._cache_release_index_to_mirror(module_name, idx_data)
                     vers = idx_data.get("versions", []) if isinstance(idx_data, dict) else []
-                    best_v = semver.find_best_version(vers, version_constraint)
+                    releases_map = idx_data.get("releases") if isinstance(idx_data, dict) else None
+                    compat_vers: List[str] = []
+                    for v in vers:
+                        if not isinstance(v, str):
+                            continue
+                        rel_v = releases_map.get(v) if isinstance(releases_map, dict) else None
+                        if isinstance(rel_v, dict) and isinstance(rel_v.get("dependencies"), dict):
+                            if not self._is_dependencies_compatible_with_env(rel_v["dependencies"]):
+                                continue
+                        compat_vers.append(v)
+                    best_v = semver.find_best_version(compat_vers, version_constraint)
+                    if not best_v:
+                        best_v = semver.find_best_version(vers, version_constraint)
                     if best_v:
+                        rel_entry = releases_map.get(best_v) if isinstance(releases_map, dict) else None
+                        override_deps = rel_entry.get("dependencies") if isinstance(rel_entry, dict) else None
+                        base_mf: Optional[Dict[str, Any]] = None
                         zip_p = os.path.join(os.path.dirname(idx_p), f"{best_v}.zip")
                         if vfs.is_file(zip_p):
                             with zipfile.ZipFile(zip_p, "r") as zf:
-                                return json.loads(zf.read("manifest.json").decode("utf-8"))
+                                base_mf = json.loads(zf.read("manifest.json").decode("utf-8"))
+                        if base_mf is None:
+                            src_dir = find_matching_local_source_dir(module_name, [p_abs, os.path.dirname(os.path.dirname(idx_p))])
+                            if src_dir:
+                                src_mf = vfs.read_json(os.path.join(src_dir, "manifest.json"))
+                                if isinstance(src_mf, dict) and str(src_mf.get("version", "")).strip() == str(best_v).strip():
+                                    base_mf = dict(src_mf)
+                        if base_mf is None and isinstance(rel_entry, dict):
+                            base_mf = {
+                                "name": module_name,
+                                "version": best_v,
+                                "dependencies": rel_entry.get("dependencies", {}),
+                            }
+                        if isinstance(base_mf, dict):
+                            if isinstance(override_deps, dict):
+                                base_mf["dependencies"] = dict(override_deps)
+                            return base_mf
                 except Exception:
                     pass
 
@@ -589,10 +1132,29 @@ class AtomicEngine:
 
         ok, res = self.act_fetch(provider_url, f"{module_name}/index.json")
         if ok and isinstance(res, dict):
+            self._cache_release_index_to_mirror(module_name, res)
             if "versions" in res and isinstance(res["versions"], list):
-                best_ver = semver.find_best_version(res["versions"], version_constraint)
+                releases_map = res.get("releases") if isinstance(res.get("releases"), dict) else {}
+                compat_vers: List[str] = []
+                for v in res["versions"]:
+                    if not isinstance(v, str):
+                        continue
+                    rel_v = releases_map.get(v) if isinstance(releases_map, dict) else None
+                    if isinstance(rel_v, dict) and isinstance(rel_v.get("dependencies"), dict):
+                        if not self._is_dependencies_compatible_with_env(rel_v["dependencies"]):
+                            continue
+                    compat_vers.append(v)
+                best_ver = semver.find_best_version(compat_vers, version_constraint)
+                if not best_ver:
+                    best_ver = semver.find_best_version(res["versions"], version_constraint)
                 if best_ver:
-                    return {"name": module_name, "version": best_ver, "dependencies": {}}
+                    rel_entry = releases_map.get(best_ver) if isinstance(releases_map, dict) else None
+                    deps = rel_entry.get("dependencies", {}) if isinstance(rel_entry, dict) else {}
+                    return {
+                        "name": module_name,
+                        "version": best_ver,
+                        "dependencies": dict(deps) if isinstance(deps, dict) else {},
+                    }
             elif "manifest" in res:
                 return res["manifest"]
 
@@ -631,7 +1193,14 @@ class AtomicEngine:
 
             parsed_deps = _parse_dependencies(manifest.get("dependencies", {}))
             for dep_name, dep_ver in parsed_deps.items():
-                if dep_name != "core":
+                if dep_name == "core":
+                    installed_core = self._get_installed_core_version_for_compat()
+                    if installed_core and not semver.match_constraint(installed_core, dep_ver):
+                        raise RuntimeError(
+                            f"Cannot resolve dependency for '{mod_name}': "
+                            f"required core version '{dep_ver}' is not satisfied by installed core@{installed_core}."
+                        )
+                else:
                     _solve(dep_name, dep_ver)
 
             visiting.remove(mod_name)
@@ -816,6 +1385,7 @@ class AtomicEngine:
             os.makedirs(staging_dir, exist_ok=True)
             try:
                 _extract_zip_safely(real_zip, staging_dir, source_label=mirror_zip)
+                self._apply_release_index_override_to_staging(mod, ver, staging_dir)
                 self._deploy_and_strip_single_module_config(mod, staging_dir)
                 _atomic_swap_dir(staging_dir, real_dst)
             finally:
@@ -827,6 +1397,7 @@ class AtomicEngine:
                 shutil.rmtree(staging_dir, ignore_errors=True)
             try:
                 shutil.copytree(real_mirror_src, staging_dir, dirs_exist_ok=True)
+                self._apply_release_index_override_to_staging(mod, ver, staging_dir)
                 self._deploy_and_strip_single_module_config(mod, staging_dir)
                 _atomic_swap_dir(staging_dir, real_dst)
             finally:
@@ -842,16 +1413,31 @@ class AtomicEngine:
         installed = cfg.get("installed_modules", {})
         default_prov = cfg.get("default_provider", "")
 
-        # Stage 1: 拉取/還原壓縮來源檔 (若 module.mirror:// 缺少單檔 zip，自癒補齊)
-        for mod, meta in installed.items():
-            ver = meta.get("version", "1.0.0.0")
-            prov = meta.get("provider") or default_prov
+        # Stage 1: 拉取/還原壓縮來源檔 (若 module.mirror:// 缺少單檔 zip，自癒補齊；若版本已被淘汰則平滑遞補同三元組最高 active 版本)
+        host_dir, _ = uri._get_host_config()
+        for mod, meta in list(installed.items()):
+            ver = meta.get("version", "1.0.0.0") if isinstance(meta, dict) else str(meta)
+            prov = (meta.get("provider") if isinstance(meta, dict) else None) or default_prov
             mirror_zip = f"module.mirror://{mod}/{ver}.zip"
             if not vfs.exists(mirror_zip):
                 try:
                     self.act_download(mod, ver, prov)
                 except Exception:
-                    pass
+                    fallback_ver = self._resolve_same_triplet_fallback_version(mod, ver, prov, base_dir=host_dir)
+                    if fallback_ver and fallback_ver != ver:
+                        try:
+                            print(
+                                f"[core:reload] Exact revision '{mod}@{ver}' has been pruned upstream; "
+                                f"seamlessly restoring compatible same-triplet revision '{fallback_ver}'."
+                            )
+                            self.act_download(mod, fallback_ver, prov)
+                            self.act_register(mod, fallback_ver, prov)
+                            if isinstance(meta, dict):
+                                meta["version"] = fallback_ver
+                            else:
+                                installed[mod] = {"version": fallback_ver, "provider": prov}
+                        except Exception:
+                            pass
 
         # Stage 2 & 3: 於 .modules/.staging_<mod>_<pid>_<ts> 預組裝解壓與組態剝離，再執行目錄級原子替換
         modules_root_real = uri.resolve("module://")

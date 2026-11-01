@@ -5,6 +5,7 @@ YS-Codebase Ultra-Thin Single-File Host Bootstrapper & Thin Router.
 from typing import Any, Dict, List, Optional, Tuple
 import ast
 import difflib
+import fnmatch
 import importlib.util
 import json
 import os
@@ -15,12 +16,29 @@ import tempfile
 import urllib.request
 import zipfile
 
-__version__: str = "1.1.0.6"
+__version__: str = "1.2.1.0"
 CONFIG_FILENAME: str = "yscb.config.json"
-DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release"
+DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases"
+LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
+    "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release",
+    "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release/",
+)
 DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
 INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
 INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
+_RELEASE_PACKAGE_IGNORES: Tuple[str, ...] = (
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    "*.tmp",
+    "*.bak",
+    ".git*",
+    ".pytest_cache",
+    ".DS_Store",
+    ".yscbignore",
+    "tests",
+    "tests/*",
+)
 
 CORE_COMMANDS: set = {
     "install", "update", "remove", "list", "status",
@@ -130,12 +148,192 @@ def _activate_runtime_env(yscb_abs: str, host_dir: Optional[str] = None) -> str:
     return core_runtime_dir
 
 
+def _normalize_provider_url(url: Optional[str]) -> str:
+    """將指向舊官方 main 分支之 Provider URL 無感遷移至 releases 分支。"""
+    s = (url or "").strip()
+    if s in LEGACY_PROVIDER_URLS:
+        return DEFAULT_PROVIDER_URL
+    return s
+
+
 def load_config(start_dir: Optional[str] = None) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """剛性組態載入：僅探測當前目錄同層之 yscb.config.json。"""
+    """剛性組態載入：僅探測當前目錄同層之 yscb.config.json，並自動遷移舊版官方 Provider URL。"""
     cfg_path = os.path.join(os.path.abspath(start_dir or os.getcwd()), CONFIG_FILENAME)
     if os.path.isfile(cfg_path):
-        return cfg_path, _read_json_dict(cfg_path)
+        data = _read_json_dict(cfg_path)
+        if isinstance(data, dict):
+            changed = False
+            dp = data.get("default_provider")
+            if isinstance(dp, str) and dp.strip() in LEGACY_PROVIDER_URLS:
+                data["default_provider"] = DEFAULT_PROVIDER_URL
+                changed = True
+            inst = data.get("installed_modules")
+            if isinstance(inst, dict):
+                for m_info in inst.values():
+                    if isinstance(m_info, dict):
+                        mp = m_info.get("provider")
+                        if isinstance(mp, str) and mp.strip() in LEGACY_PROVIDER_URLS:
+                            m_info["provider"] = DEFAULT_PROVIDER_URL
+                            changed = True
+            if changed:
+                try:
+                    _write_json_lf(cfg_path, data)
+                except Exception:
+                    pass
+        return cfg_path, data
     return None, None
+
+
+def _should_ignore_rel_path(rel_path: str, ignores: List[str]) -> bool:
+    norm_rel = rel_path.replace("\\", "/").rstrip("/")
+    name = os.path.basename(norm_rel)
+    for pattern in ignores:
+        pat = pattern.replace("\\", "/").rstrip("/")
+        if (
+            fnmatch.fnmatch(name, pat)
+            or fnmatch.fnmatch(norm_rel, pat)
+            or fnmatch.fnmatch(norm_rel, pat + "/*")
+            or norm_rel.startswith(pat.rstrip("*").rstrip("/") + "/")
+        ):
+            return True
+    return False
+
+
+def _package_source_to_zip_if_exact_version(
+    source_dir: str,
+    target_version: str,
+    dest_zip_path: str,
+    release_zip_path: Optional[str] = None,
+) -> bool:
+    """當本地 source/<mod>/manifest.json 存在且版本與 target_version 嚴格相等時，以純標準庫打包至 dest_zip_path。"""
+    if not source_dir or not os.path.isdir(source_dir):
+        return False
+    mf_path = os.path.join(source_dir, "manifest.json")
+    mf_data = _read_json_dict(mf_path)
+    if not mf_data or str(mf_data.get("version", "")).strip() != str(target_version).strip():
+        return False
+
+    ignores = list(_RELEASE_PACKAGE_IGNORES)
+    yscbignore_path = os.path.join(source_dir, ".yscbignore")
+    if os.path.isfile(yscbignore_path):
+        try:
+            with open(yscbignore_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    s = line.strip()
+                    if s and not s.startswith("#"):
+                        ignores.append(s)
+        except Exception:
+            pass
+
+    os.makedirs(os.path.dirname(os.path.abspath(dest_zip_path)), exist_ok=True)
+    tmp_zip = dest_zip_path + f".tmp_{os.getpid()}"
+    try:
+        with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(source_dir):
+                rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
+                if rel_dir == ".":
+                    rel_dir = ""
+                dirs[:] = [d for d in dirs if not _should_ignore_rel_path(f"{rel_dir}/{d}".lstrip("/"), ignores)]
+                for fname in files:
+                    rel_file = f"{rel_dir}/{fname}".lstrip("/")
+                    if not _should_ignore_rel_path(rel_file, ignores):
+                        src_f = os.path.join(root, fname)
+                        if rel_file == "manifest.json":
+                            m_copy = dict(mf_data)
+                            m_copy["version"] = target_version
+                            zf.writestr("manifest.json", json.dumps(m_copy, indent=2, ensure_ascii=False))
+                        else:
+                            zf.write(src_f, arcname=rel_file)
+        if os.path.exists(dest_zip_path):
+            os.remove(dest_zip_path)
+        os.replace(tmp_zip, dest_zip_path)
+        if release_zip_path and os.path.abspath(release_zip_path) != os.path.abspath(dest_zip_path):
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(release_zip_path)), exist_ok=True)
+                shutil.copy2(dest_zip_path, release_zip_path)
+            except Exception:
+                pass
+        return True
+    except Exception:
+        return False
+    finally:
+        if os.path.exists(tmp_zip):
+            try:
+                os.remove(tmp_zip)
+            except Exception:
+                pass
+
+
+def _find_matching_source_dir(module_name: str, candidate_roots: List[str]) -> Optional[str]:
+    """於候選根目錄下探測 source/<module_name> 目錄。"""
+    for r in candidate_roots:
+        if not r:
+            continue
+        for cand in (
+            os.path.join(r, "source", module_name),
+            os.path.join(os.path.dirname(r), "source", module_name),
+            os.path.join(r, "ys_codebase", "source", module_name),
+        ):
+            if os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "manifest.json")):
+                return cand
+    return None
+
+
+def _resolve_same_triplet_fallback_version(
+    provider: str,
+    module_name: str,
+    requested_version: str,
+    base_dir: Optional[str] = None,
+) -> Optional[str]:
+    """當請求版本已被滑動視窗淘汰 (pruned) 時，自 index.json 尋找同三元組 (X.Y.Z.*) 最高可用 active 版本。"""
+    req_t = _parse_simple_semver(requested_version)
+    if req_t[4]:
+        return None
+    req_triplet = (req_t[0], req_t[1], req_t[2])
+    p = _normalize_provider_url(provider).rstrip("/")
+    idx_data: Optional[Dict[str, Any]] = None
+
+    if not p.startswith(("http://", "https://")):
+        p_abs = _normalize_local_path(p, base_dir=base_dir)
+        if p_abs and os.path.isdir(p_abs):
+            for idx_cand in (
+                os.path.join(p_abs, module_name, "index.json"),
+                os.path.join(p_abs, "release", module_name, "index.json"),
+                os.path.join(p_abs, "index.json") if os.path.basename(p_abs) == module_name else "",
+            ):
+                if idx_cand and os.path.isfile(idx_cand):
+                    idx_data = _read_json_dict(idx_cand)
+                    if idx_data:
+                        break
+    else:
+        try:
+            idx_url = f"{p}/{module_name}/index.json"
+            req = urllib.request.Request(idx_url, headers={"User-Agent": "yscb-host/2.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+                if isinstance(raw, dict):
+                    idx_data = raw
+        except Exception:
+            idx_data = None
+
+    if not isinstance(idx_data, dict):
+        return None
+    active_vers = idx_data.get("versions")
+    if not isinstance(active_vers, list) or requested_version in active_vers:
+        return None
+
+    same_triplet_cands: List[Tuple[Tuple[int, int, int, int, bool], str]] = []
+    for v in active_vers:
+        if not isinstance(v, str):
+            continue
+        vt = _parse_simple_semver(v)
+        if not vt[4] and (vt[0], vt[1], vt[2]) == req_triplet:
+            same_triplet_cands.append((vt, v))
+
+    if not same_triplet_cands:
+        return None
+    same_triplet_cands.sort(key=lambda x: x[0], reverse=True)
+    return same_triplet_cands[0][1]
 
 
 def _extract_safe_zip(zip_path: str, dest_dir: str) -> None:
@@ -146,6 +344,151 @@ def _extract_safe_zip(zip_path: str, dest_dir: str) -> None:
             if not tgt.startswith(dest_abs + os.sep) and tgt != dest_abs:
                 raise RuntimeError(f"Zip Slip vulnerability detected: '{m.filename}'")
         zf.extractall(dest_dir)
+
+
+def _is_dir_handle_locked_for_rename(err: OSError, parent_dir: str, target_dir: str) -> bool:
+    """三階段跨平台鑑別器：區分宿主機/virtiofs 目錄句柄暫態鎖定與真正的檔案系統權限/I/O 故障。"""
+    import errno
+    import time
+    err_no = getattr(err, "errno", None)
+    win_err = getattr(err, "winerror", None)
+    if err_no not in (errno.EACCES, errno.EBUSY, errno.EPERM) and win_err not in (5, 32):
+        return False
+    if not os.path.isdir(parent_dir) or not os.path.isdir(target_dir):
+        return False
+
+    req_mode = os.W_OK if os.name == "nt" else (os.W_OK | os.X_OK)
+    if not os.access(parent_dir, req_mode) or not os.access(target_dir, req_mode):
+        return False
+
+    probe_src = os.path.join(target_dir, f".yscb_probe_src_{os.getpid()}_{int(time.time() * 1000)}")
+    probe_dst = os.path.join(target_dir, f".yscb_probe_dst_{os.getpid()}_{int(time.time() * 1000)}")
+    try:
+        with open(probe_src, "wb") as f:
+            f.write(b"1")
+            f.flush()
+        os.replace(probe_src, probe_dst)
+        os.remove(probe_dst)
+        return True
+    except Exception:
+        return False
+    finally:
+        for p in (probe_src, probe_dst):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+
+def _inplace_atomic_sync_dir(staging_dir: str, target_dir: str) -> None:
+    """階段三：當目錄級 rename 因句柄鎖定被拒且通過寫入探針時，執行全有全無 (All-or-Nothing) 檔案級原子同步與異常回滾。"""
+    import stat
+    import time
+
+    staging_abs = os.path.abspath(staging_dir)
+    target_abs = os.path.abspath(target_dir)
+    parent_dir = os.path.dirname(target_abs)
+    base_name = os.path.basename(target_abs)
+    backup_dir = os.path.join(parent_dir, f".old_backup_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
+
+    existing_rel_files = set()
+    os.makedirs(backup_dir, exist_ok=True)
+    try:
+        for root, dirs, files in os.walk(target_abs):
+            dirs[:] = [d for d in dirs if not d.startswith((".old_", ".staging_", ".yscb_probe_"))]
+            rel_root = os.path.relpath(root, target_abs)
+            if rel_root == ".":
+                rel_root = ""
+            for fname in files:
+                if fname.startswith((".yscb_probe_", ".yscb_tmp_")):
+                    continue
+                rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                norm_rel = rel_path.replace("\\", "/")
+                existing_rel_files.add(norm_rel)
+                src_f = os.path.join(root, fname)
+                bak_f = os.path.join(backup_dir, rel_path)
+                os.makedirs(os.path.dirname(bak_f), exist_ok=True)
+                shutil.copy2(src_f, bak_f)
+
+        staged_rel_files = set()
+        for root, dirs, files in os.walk(staging_abs):
+            rel_root = os.path.relpath(root, staging_abs)
+            if rel_root == ".":
+                rel_root = ""
+            target_sub = os.path.join(target_abs, rel_root) if rel_root else target_abs
+            os.makedirs(target_sub, exist_ok=True)
+            for fname in files:
+                rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                norm_rel = rel_path.replace("\\", "/")
+                staged_rel_files.add(norm_rel)
+                src_f = os.path.join(root, fname)
+                dst_f = os.path.join(target_abs, rel_path)
+                tmp_dst = os.path.join(os.path.dirname(dst_f), f".yscb_tmp_{os.getpid()}_{fname}")
+                try:
+                    if os.path.exists(dst_f) and not os.access(dst_f, os.W_OK):
+                        try:
+                            os.chmod(dst_f, stat.S_IWRITE | stat.S_IREAD)
+                        except Exception:
+                            pass
+                    shutil.copy2(src_f, tmp_dst)
+                    os.replace(tmp_dst, dst_f)
+                finally:
+                    if os.path.exists(tmp_dst):
+                        try:
+                            os.remove(tmp_dst)
+                        except Exception:
+                            pass
+
+        for norm_rel in existing_rel_files - staged_rel_files:
+            obs_f = os.path.join(target_abs, norm_rel.replace("/", os.sep))
+            if os.path.isfile(obs_f):
+                try:
+                    os.chmod(obs_f, stat.S_IWRITE | stat.S_IREAD)
+                except Exception:
+                    pass
+                os.remove(obs_f)
+
+        for root, dirs, _ in os.walk(target_abs, topdown=False):
+            for d in dirs:
+                d_abs = os.path.join(root, d)
+                rel_d = os.path.relpath(d_abs, target_abs)
+                staged_d = os.path.join(staging_abs, rel_d)
+                if not os.path.exists(staged_d):
+                    try:
+                        if not os.listdir(d_abs):
+                            os.rmdir(d_abs)
+                    except OSError:
+                        pass
+    except Exception:
+        try:
+            for root, _, files in os.walk(target_abs):
+                rel_root = os.path.relpath(root, target_abs)
+                if rel_root == ".":
+                    rel_root = ""
+                for fname in files:
+                    rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                    norm_rel = rel_path.replace("\\", "/")
+                    if norm_rel not in existing_rel_files:
+                        try:
+                            os.remove(os.path.join(root, fname))
+                        except Exception:
+                            pass
+            for norm_rel in existing_rel_files:
+                rel_os = norm_rel.replace("/", os.sep)
+                bak_f = os.path.join(backup_dir, rel_os)
+                dst_f = os.path.join(target_abs, rel_os)
+                if os.path.isfile(bak_f):
+                    os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+                    tmp_restore = os.path.join(os.path.dirname(dst_f), f".yscb_restore_{os.getpid()}_{os.path.basename(dst_f)}")
+                    shutil.copy2(bak_f, tmp_restore)
+                    os.replace(tmp_restore, dst_f)
+        except Exception:
+            pass
+        raise
+    finally:
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def _fetch_and_extract_zip(source: str, dest_dir: str) -> None:
@@ -187,8 +530,14 @@ def _fetch_and_extract_zip(source: str, dest_dir: str) -> None:
             if os.path.exists(old_dir):
                 shutil.rmtree(old_dir, ignore_errors=True)
             if os.path.exists(dest_abs):
-                os.replace(dest_abs, old_dir)
-                moved_old = True
+                try:
+                    os.replace(dest_abs, old_dir)
+                    moved_old = True
+                except OSError as rename_err:
+                    if _is_dir_handle_locked_for_rename(rename_err, parent_dir, dest_abs):
+                        _inplace_atomic_sync_dir(staging_dir, dest_abs)
+                        return
+                    raise
             os.replace(staging_dir, dest_abs)
         except Exception:
             if moved_old and not os.path.exists(dest_abs) and os.path.exists(old_dir):
@@ -336,10 +685,11 @@ def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
     動態探測 Provider 中的最新 core 模組。
     返回 (version_str, package_path_or_url)；若找不到或探測失敗則返回 (None, None)，嚴禁偽造預設版本。
     """
-    p = (provider or DEFAULT_PROVIDER_URL).strip().rstrip("/")
+    p = _normalize_provider_url(provider or DEFAULT_PROVIDER_URL).strip().rstrip("/")
     # 1. 本地目錄探測
     if not p.startswith(("http://", "https://")):
-        cand_dirs = [os.path.join(p, "core"), os.path.join(p, "release", "core"), p]
+        p_abs = _normalize_local_path(p) or p
+        cand_dirs = [os.path.join(p_abs, "core"), os.path.join(p_abs, "release", "core"), p_abs]
         found_versions: Dict[str, str] = {}
         for c_dir in cand_dirs:
             if not os.path.isdir(c_dir):
@@ -350,6 +700,10 @@ def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
                     zip_cand = os.path.join(c_dir, f"{v}.zip")
                     if os.path.isfile(zip_cand):
                         found_versions[v] = zip_cand
+                    else:
+                        src_dir = _find_matching_source_dir("core", [c_dir, os.path.dirname(c_dir), p_abs, os.getcwd()])
+                        if src_dir and _package_source_to_zip_if_exact_version(src_dir, str(v), zip_cand):
+                            found_versions[v] = zip_cand
             for f in os.listdir(c_dir):
                 full_f = os.path.join(c_dir, f)
                 if f.endswith(".zip"):
@@ -365,7 +719,7 @@ def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
             pool.sort(key=lambda x: x[0], reverse=True)
             return pool[0][1], pool[0][2]
 
-        for c_dir in (os.path.join(p, "core"), p):
+        for c_dir in (os.path.join(p_abs, "core"), p_abs):
             m_data = _read_json_dict(os.path.join(c_dir, "manifest.json"))
             if m_data and m_data.get("version"):
                 return str(m_data["version"]), c_dir
@@ -441,7 +795,7 @@ def cmd_init(argv: List[str]) -> int:
             return 1
 
         yscb_root = cfg.get("yscb_root", clean_argv[0] if clean_argv else ".yscb")
-        target_prov = explicit_prov if explicit_prov else cfg.get("default_provider", DEFAULT_PROVIDER_URL)
+        target_prov = _normalize_provider_url(explicit_prov if explicit_prov else cfg.get("default_provider", DEFAULT_PROVIDER_URL))
         yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
         core_module_dir = os.path.join(yscb_abs, ".modules", "core")
         is_healthy, current_ver = _is_core_healthy(core_module_dir)
@@ -456,7 +810,7 @@ def cmd_init(argv: List[str]) -> int:
         action_tag = "fix"
     else:
         yscb_root = clean_argv[0] if clean_argv else ".yscb"
-        target_prov = explicit_prov or DEFAULT_PROVIDER_URL
+        target_prov = _normalize_provider_url(explicit_prov or DEFAULT_PROVIDER_URL)
         yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
         core_module_dir = os.path.join(yscb_abs, ".modules", "core")
         cfg = {"yscb_root": yscb_root, "default_provider": target_prov, "installed_modules": {}}
@@ -468,8 +822,16 @@ def cmd_init(argv: List[str]) -> int:
         print(f"[yscb] Error: Cannot locate core package in provider '{target_prov}'.")
         return 1
 
-    os.makedirs(os.path.join(yscb_abs, ".mirror", "core"), exist_ok=True)
+    core_mirror_dir = os.path.join(yscb_abs, ".mirror", "core")
+    os.makedirs(core_mirror_dir, exist_ok=True)
     _fetch_and_extract_zip(source, core_module_dir)
+    if os.path.isfile(source) and zipfile.is_zipfile(source):
+        mirror_zip = os.path.join(core_mirror_dir, f"{ver}.zip")
+        if os.path.abspath(source) != os.path.abspath(mirror_zip):
+            try:
+                shutil.copy2(source, mirror_zip)
+            except Exception:
+                pass
     if not isinstance(cfg.get("installed_modules"), dict):
         cfg["installed_modules"] = {}
     cfg["installed_modules"]["core"] = {"version": ver, "installed_at": action_tag, "provider": target_prov}
@@ -535,6 +897,24 @@ def _extract_and_cache_mirror(src_path: str, dest_dir: str, mirror_dir: str, mir
         return False
 
 
+def _update_config_module_version(base_dir: str, module_name: str, new_version: str) -> None:
+    """當發生同三元組 (X.Y.Z.*) pruned 版本自動降級還原時，同步更新 yscb.config.json 中該模組之鎖定版本。"""
+    cfg_path = os.path.join(base_dir, CONFIG_FILENAME)
+    cfg = _read_json_dict(cfg_path)
+    if not isinstance(cfg, dict):
+        return
+    inst = cfg.get("installed_modules")
+    if isinstance(inst, dict) and module_name in inst:
+        if isinstance(inst[module_name], dict):
+            inst[module_name]["version"] = new_version
+        else:
+            inst[module_name] = {"version": new_version}
+        try:
+            _write_json_lf(cfg_path, cfg)
+        except Exception:
+            pass
+
+
 def _bootstrap_package_from_provider(
     base_dir: str,
     yscb_root: str,
@@ -543,17 +923,36 @@ def _bootstrap_package_from_provider(
     provider_arg: str,
     dest_dir: str,
     mirror_dir: str,
+    _allow_fallback: bool = True,
 ) -> bool:
-    """純標準庫零依賴（不依賴 core）嚴格依組態確定之 version 與 provider_arg 提取模組至 dest_dir 與 mirror_dir（禁止跨版本猜測 fallback）。"""
+    """純標準庫零依賴（不依賴 core）嚴格依組態確定之 version 與 provider_arg 提取模組至 dest_dir 與 mirror_dir。"""
     if not version or not provider_arg:
         return False
 
     yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
     mirror_zip = os.path.join(mirror_dir, f"{version}.zip")
+    p_arg = _normalize_provider_url(provider_arg)
 
-    # 1. 若為 .build 版本且本地 yscb_abs/.build/<mod>/<ver>.zip 存在，優先提取
+    # 1. 若為 .build 版本且本地 yscb_abs/.build/<mod>/<ver>.zip 存在，優先提取（若升版覆寫則匹配最新 .build.zip）
     if version == "build" or version.endswith(".build"):
         dot_build_zip = os.path.join(yscb_abs, ".build", module_name, f"{version}.zip")
+        if not os.path.isfile(dot_build_zip):
+            dot_build_mod_dir = os.path.join(yscb_abs, ".build", module_name)
+            if os.path.isdir(dot_build_mod_dir):
+                b_zips = sorted(
+                    [
+                        os.path.join(dot_build_mod_dir, f)
+                        for f in os.listdir(dot_build_mod_dir)
+                        if f.endswith(".build.zip") and os.path.isfile(os.path.join(dot_build_mod_dir, f))
+                    ],
+                    key=lambda p: os.path.getmtime(p),
+                    reverse=True,
+                )
+                if b_zips:
+                    dot_build_zip = b_zips[0]
+                    new_b_ver = os.path.basename(dot_build_zip)[:-4]
+                    mirror_zip = os.path.join(mirror_dir, f"{new_b_ver}.zip")
+                    _update_config_module_version(base_dir, module_name, new_b_ver)
         if os.path.isfile(dot_build_zip) and _extract_and_cache_mirror(dot_build_zip, dest_dir, mirror_dir, mirror_zip):
             return True
 
@@ -561,8 +960,7 @@ def _bootstrap_package_from_provider(
     if os.path.isfile(mirror_zip) and _extract_and_cache_mirror(mirror_zip, dest_dir, mirror_dir, mirror_zip):
         return True
 
-    # 3. 檢查組態指定之本地 Provider 路徑（僅接受精確版本 <mod>/<ver>.zip 或 <mod>/<ver>）
-    p_arg = provider_arg.strip()
+    # 3. 檢查組態指定之本地 Provider 路徑（精確版本 <mod>/<ver>.zip 或本地同版 source/<mod> 即時打包）
     p_abs = _normalize_local_path(p_arg, base_dir=base_dir)
     if p_abs and os.path.isdir(p_abs):
         candidates = (
@@ -574,11 +972,38 @@ def _bootstrap_package_from_provider(
         if found and _extract_and_cache_mirror(found, dest_dir, mirror_dir, mirror_zip):
             return True
 
+        src_dir = _find_matching_source_dir(module_name, [yscb_abs, p_abs, base_dir])
+        rel_zip_target = os.path.join(yscb_abs, "release", module_name, f"{version}.zip")
+        if src_dir and _package_source_to_zip_if_exact_version(src_dir, version, mirror_zip, release_zip_path=rel_zip_target):
+            if _extract_and_cache_mirror(mirror_zip, dest_dir, mirror_dir, mirror_zip):
+                return True
+
+    # 3b. 即便為遠端 Provider，若當前工作區具備嚴格同版本之 source/<mod>，亦優先自給自足打包
+    src_dir_local = _find_matching_source_dir(module_name, [yscb_abs, base_dir])
+    if src_dir_local and _package_source_to_zip_if_exact_version(src_dir_local, version, mirror_zip):
+        if _extract_and_cache_mirror(mirror_zip, dest_dir, mirror_dir, mirror_zip):
+            return True
+
     # 4. 檢查組態指定之遠端 Provider (HTTP/HTTPS) 精確版本 URL
     if p_arg.startswith(("http://", "https://")):
         remote_zip_url = f"{p_arg.rstrip('/')}/{module_name}/{version}.zip"
         if _extract_and_cache_mirror(remote_zip_url, dest_dir, mirror_dir, mirror_zip):
             return True
+
+    # 5. 若精確版本已被滑動視窗淘汰 (pruned)，自動退回同三元組 (X.Y.Z.*) 最高可用 active 版本
+    if _allow_fallback:
+        fallback_ver = _resolve_same_triplet_fallback_version(p_arg, module_name, version, base_dir=base_dir)
+        if fallback_ver and fallback_ver != version:
+            print(
+                f"[yscb:restore] Exact revision '{module_name}@{version}' has been pruned upstream; "
+                f"seamlessly restoring compatible same-triplet revision '{fallback_ver}'."
+            )
+            ok = _bootstrap_package_from_provider(
+                base_dir, yscb_root, module_name, fallback_ver, p_arg, dest_dir, mirror_dir, _allow_fallback=False
+            )
+            if ok:
+                _update_config_module_version(base_dir, module_name, fallback_ver)
+                return True
 
     return False
 

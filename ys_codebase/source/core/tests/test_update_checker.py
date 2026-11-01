@@ -150,6 +150,100 @@ class TestUpdateChecker(YSCBTestCase):
                         mock_chk.assert_called_once()
         self.mark_passed()
 
+    def test_cross_version_pruned_critical_aggregation_and_banner(self):
+        """驗證跨版本升級時，即使中間含 critical 標記的版本已被標為 pruned，UpdateChecker 仍能捕捉並渲染 [CRITICAL UPDATE] 橫幅。"""
+        mod_release_dir = os.path.join(self.prov_dir, "core")
+        with open(os.path.join(mod_release_dir, "index.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "name": "core",
+                    "versions": ["1.0.0.2", "1.0.0.3", "1.0.0.4"],
+                    "releases": {
+                        "1.0.0.0": {"status": "pruned", "dependencies": {}},
+                        "1.0.0.1": {
+                            "status": "pruned",
+                            "dependencies": {},
+                            "type": "bugfix",
+                            "urgency": "critical",
+                            "summary": "修復嚴重資料損毀漏洞",
+                        },
+                        "1.0.0.2": {"status": "active", "dependencies": {}, "type": "docs", "urgency": "optional"},
+                        "1.0.0.3": {"status": "active", "dependencies": {}, "type": "refactor", "urgency": "optional"},
+                        "1.0.0.4": {"status": "active", "dependencies": {}, "type": "feature", "urgency": "optional"},
+                    },
+                },
+                f,
+            )
+
+        checker = UpdateChecker(
+            cache_uri=self.cache_uri,
+            throttle_seconds=10,
+            config_path=self.cfg_path,
+        )
+        updates = checker.check_updates(force=True)
+        self.assertIn("core", updates)
+        self.assertEqual(updates["core"]["latest_version"], "1.0.0.4")
+        self.assertTrue(updates["core"]["is_critical"])
+        self.assertEqual(updates["core"]["urgency"], "critical")
+        self.assertEqual(updates["core"]["summary"], "修復嚴重資料損毀漏洞")
+
+        tips = checker.get_tips(updates)
+        self.assertEqual(len(tips), 1)
+        self.assertIn("[!] [CRITICAL UPDATE] 模組 'core' 有重要修補更新可用", tips[0])
+        self.assertIn("[BUGFIX]", tips[0])
+        self.assertIn("修復嚴重資料損毀漏洞", tips[0])
+        self.mark_passed()
+
+    def test_forward_safe_unknown_metadata_and_incompatible_core_filtering(self):
+        """驗證未知 type/urgency 向前相容解析，以及過濾掉與當前已安裝 core 版本不相容之候選更新版本。"""
+        self.cfg_data["installed_modules"]["dev"] = {"version": "1.1.0.0", "provider": self.prov_dir}
+        with open(self.cfg_path, "w", encoding="utf-8") as f:
+            json.dump(self.cfg_data, f)
+
+        dev_rel_dir = os.path.join(self.prov_dir, "dev")
+        os.makedirs(dev_rel_dir, exist_ok=True)
+        with open(os.path.join(dev_rel_dir, "index.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "name": "dev",
+                    "versions": ["1.1.0.0", "1.1.1.0", "1.1.2.0"],
+                    "releases": {
+                        "1.1.0.0": {"status": "active", "dependencies": {"core": ">=1.0.0"}},
+                        "1.1.1.0": {
+                            "status": "active",
+                            "dependencies": {"core": ">=1.0.0"},
+                            "type": "security",
+                            "urgency": "future_level",
+                            "summary": "加固沙盒權限邊界",
+                        },
+                        "1.1.2.0": {
+                            "status": "active",
+                            "dependencies": {"core": ">=2.0.0"},
+                            "type": "feature",
+                            "urgency": "critical",
+                        },
+                    },
+                },
+                f,
+            )
+
+        checker = UpdateChecker(
+            cache_uri=self.cache_uri,
+            throttle_seconds=10,
+            config_path=self.cfg_path,
+        )
+        updates = checker.check_updates(force=True)
+        self.assertIn("dev", updates)
+        # 1.1.2.0 requires core>=2.0.0 (installed core is 1.0.0.0), so latest compatible is 1.1.1.0
+        self.assertEqual(updates["dev"]["latest_version"], "1.1.1.0")
+        self.assertFalse(updates["dev"]["is_critical"])
+        tips = checker.get_tips(updates)
+        dev_tips = [t for t in tips if "模組 'dev'" in t]
+        self.assertEqual(len(dev_tips), 1)
+        self.assertIn("[SECURITY]", dev_tips[0])
+        self.assertIn("加固沙盒權限邊界", dev_tips[0])
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

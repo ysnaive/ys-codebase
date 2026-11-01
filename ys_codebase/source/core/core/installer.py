@@ -8,7 +8,16 @@ from typing import Optional, List, Dict, Tuple, Any
 from core import uri
 from core import vfs
 from core.context import ExecutionContext
-from core.engine import AtomicEngine, _extract_zip_safely, _atomic_swap_dir, _parse_dependencies
+from core.engine import (
+    AtomicEngine,
+    DEFAULT_PROVIDER_URL,
+    _extract_zip_safely,
+    _atomic_swap_dir,
+    _parse_dependencies,
+    find_matching_local_source_dir,
+    normalize_legacy_provider_url,
+    package_local_source_if_exact_match,
+)
 from core import semver
 from core import events
 
@@ -143,12 +152,13 @@ def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
 
 
 def _discover_available_versions_for_module(engine: AtomicEngine, mod: str, provider_url: str) -> List[str]:
-    """Scans local provider directories/indexes or fetches remote index.json for non-build versions of a module."""
+    """Scans local provider directories/indexes or fetches remote index.json for non-build, environment-compatible versions of a module."""
     candidate_dirs = [
         os.path.join(provider_url, "release", mod),
         os.path.join(provider_url, mod),
     ]
     found_versions: List[str] = []
+    releases_map: Dict[str, Any] = {}
     for c_dir in candidate_dirs:
         if os.path.isdir(c_dir):
             for entry in os.listdir(c_dir):
@@ -162,22 +172,35 @@ def _discover_available_versions_for_module(engine: AtomicEngine, mod: str, prov
                 try:
                     with open(idx_file, "r", encoding="utf-8") as f:
                         idx_data = json.load(f)
-                        if isinstance(idx_data, dict) and "versions" in idx_data:
-                            found_versions.extend(idx_data["versions"])
+                        if isinstance(idx_data, dict):
+                            engine._cache_release_index_to_mirror(mod, idx_data)
+                            if "versions" in idx_data and isinstance(idx_data["versions"], list):
+                                found_versions.extend(idx_data["versions"])
+                            if isinstance(idx_data.get("releases"), dict):
+                                releases_map.update(idx_data["releases"])
                 except Exception:
                     pass
 
     if not found_versions:
         ok, res = engine.act_fetch(provider_url, f"{mod}/index.json")
-        if ok and isinstance(res, dict) and "versions" in res:
-            found_versions = res["versions"]
+        if ok and isinstance(res, dict):
+            engine._cache_release_index_to_mirror(mod, res)
+            if "versions" in res and isinstance(res["versions"], list):
+                found_versions = res["versions"]
+            if isinstance(res.get("releases"), dict):
+                releases_map.update(res["releases"])
 
     clean_versions: List[str] = []
     for v in found_versions:
         try:
             vt = semver.parse_semver(v)
-            if not vt.is_build and not str(v).endswith(".build"):
-                clean_versions.append(v)
+            if vt.is_build or str(v).endswith(".build"):
+                continue
+            rel_entry = releases_map.get(v) if isinstance(releases_map, dict) else None
+            if isinstance(rel_entry, dict) and isinstance(rel_entry.get("dependencies"), dict):
+                if not engine._is_dependencies_compatible_with_env(rel_entry["dependencies"]):
+                    continue
+            clean_versions.append(v)
         except Exception:
             pass
     return clean_versions
@@ -491,14 +514,14 @@ class Installer:
                         self.engine.act_migrate(mod, old_v, new_v)
                     events.broadcast("on_update", ExecutionContext("core", "update", targets), emit_module="core")
                     self.sync_pip_dependencies()
-                    try:
-                        from core.update_checker import UpdateChecker
-                        checker = UpdateChecker()
-                        for m in targets:
-                            checker.invalidate_cache(m)
-                    except Exception:
-                        pass
                     print("[core:update] Update completed successfully.")
+                try:
+                    from core.update_checker import UpdateChecker
+                    checker = UpdateChecker()
+                    for m in targets:
+                        checker.invalidate_cache(m)
+                except Exception:
+                    pass
             return 0
         except Exception as e:
             print(f"[core:update] Error during update: {e}")
@@ -685,9 +708,11 @@ class Installer:
             print("[core:restore] No installed_modules declared in configuration. Nothing to restore.")
             return 0
 
-        default_provider = cfg.get(
-            "default_provider",
-            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release",
+        default_provider = normalize_legacy_provider_url(
+            cfg.get(
+                "default_provider",
+                DEFAULT_PROVIDER_URL,
+            )
         )
         modules_dir = os.path.join(yscb_abs, ".modules")
         os.makedirs(modules_dir, exist_ok=True)
@@ -745,6 +770,18 @@ class Installer:
             print("[core:reload] Runtime environment reconciled and refreshed successfully.")
             return 0 if not failed_mods else 1
 
+    def _resolve_same_triplet_fallback_version(
+        self,
+        base_dir: str,
+        provider_arg: str,
+        module_name: str,
+        requested_version: str,
+    ) -> Optional[str]:
+        """Resolves the highest available active version in the same triplet (X.Y.Z.*) when requested_version has been pruned."""
+        return self.engine._resolve_same_triplet_fallback_version(
+            module_name, requested_version, provider_arg, base_dir=base_dir
+        )
+
     def _restore_module_package(
         self,
         base_dir: str,
@@ -754,6 +791,7 @@ class Installer:
         provider_arg: str,
         dest_dir: str,
         mirror_dir: str,
+        _allow_fallback: bool = True,
     ) -> bool:
         """自 Provider、Build 或本機 Mirror 提取指定版本模組，原子解壓縮至 dest_dir。"""
         import zipfile
@@ -761,6 +799,7 @@ class Installer:
         os.makedirs(dest_dir, exist_ok=True)
         os.makedirs(mirror_dir, exist_ok=True)
 
+        provider_arg = normalize_legacy_provider_url(provider_arg)
         yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
         mirror_zip = os.path.join(mirror_dir, f"{version}.zip")
 
@@ -772,9 +811,36 @@ class Installer:
             os.path.join(yscb_abs, "release", module_name, f"{version}.zip"),
         ]
         found_b = next((c for c in build_candidates if os.path.exists(c)), None)
+        if not found_b and (version == "build" or version.endswith(".build")):
+            dot_build_mod_dir = os.path.join(yscb_abs, ".build", module_name)
+            if os.path.isdir(dot_build_mod_dir):
+                build_zips = sorted(
+                    [
+                        os.path.join(dot_build_mod_dir, f)
+                        for f in os.listdir(dot_build_mod_dir)
+                        if f.endswith(".build.zip") and os.path.isfile(os.path.join(dot_build_mod_dir, f))
+                    ],
+                    key=lambda p: os.path.getmtime(p),
+                    reverse=True,
+                )
+                if build_zips:
+                    found_b = build_zips[0]
+                    new_build_ver = os.path.basename(found_b)[:-4]
+                    mirror_zip = os.path.join(mirror_dir, f"{new_build_ver}.zip")
+                    try:
+                        cfg_p = os.path.join(base_dir, "yscb.config.json")
+                        if vfs.is_file(cfg_p):
+                            cfg_d = vfs.read_json(cfg_p)
+                            if isinstance(cfg_d, dict) and isinstance(cfg_d.get("installed_modules"), dict):
+                                m_entry = cfg_d["installed_modules"].get(module_name)
+                                if isinstance(m_entry, dict):
+                                    m_entry["version"] = new_build_ver
+                                    vfs.write_json(cfg_p, cfg_d, indent=2, atomic=True)
+                    except Exception:
+                        pass
         if found_b:
             is_newer = not os.path.isfile(mirror_zip) or (os.path.getmtime(found_b) >= os.path.getmtime(mirror_zip))
-            if version.endswith(".build") or is_newer:
+            if version == "build" or version.endswith(".build") or is_newer:
                 try:
                     fetch_and_extract_zip(found_b, dest_dir)
                     if os.path.isfile(found_b) and (found_b.endswith(".zip") or zipfile.is_zipfile(found_b)):
@@ -814,18 +880,31 @@ class Installer:
                 os.path.join(p_abs, "release", module_name, f"{version}.zip"),
                 os.path.join(p_abs, ".build", module_name, f"{version}.zip"),
             ]
-            found = next((c for c in candidates if os.path.exists(c)), None)
-            if found:
+            for cand in candidates:
+                if not os.path.exists(cand):
+                    continue
+                if os.path.isdir(cand) and not os.path.isfile(os.path.join(cand, "manifest.json")):
+                    continue
                 try:
-                    fetch_and_extract_zip(found, dest_dir)
-                    if os.path.isfile(found) and (found.endswith(".zip") or zipfile.is_zipfile(found)):
+                    fetch_and_extract_zip(cand, dest_dir)
+                    if os.path.isfile(cand) and (cand.endswith(".zip") or zipfile.is_zipfile(cand)):
                         try:
-                            shutil.copy2(found, mirror_zip)
+                            shutil.copy2(cand, mirror_zip)
                         except Exception:
                             pass
                     return True
                 except Exception:
                     pass
+
+        # 3b. 本地同版 source/<mod> 動態打包自給自足
+        src_dir = find_matching_local_source_dir(module_name, [yscb_abs, p_abs or "", base_dir])
+        rel_zip_target = os.path.join(yscb_abs, "release", module_name, f"{version}.zip")
+        if src_dir and package_local_source_if_exact_match(src_dir, version, mirror_zip, release_zip_path=rel_zip_target):
+            try:
+                fetch_and_extract_zip(mirror_zip, dest_dir)
+                return True
+            except Exception:
+                pass
 
         # 4. 遠端 Provider (HTTP/HTTPS)
         if provider_arg.startswith(("http://", "https://", "file://")):
@@ -835,6 +914,39 @@ class Installer:
                 return True
             except Exception:
                 pass
+
+        # 5. 若鎖定版本已被滑動視窗淘汰 (pruned)，自動退回同三元組 (X.Y.Z.*) 最高可用 active 版本
+        if _allow_fallback:
+            fallback_ver = self._resolve_same_triplet_fallback_version(base_dir, provider_arg, module_name, version)
+            if fallback_ver and fallback_ver != version:
+                print(
+                    f"[core:restore] Exact revision '{module_name}@{version}' has been pruned upstream; "
+                    f"seamlessly restoring compatible same-triplet revision '{fallback_ver}'."
+                )
+                ok = self._restore_module_package(
+                    base_dir, yscb_root, module_name, fallback_ver, provider_arg, dest_dir, mirror_dir, _allow_fallback=False
+                )
+                if ok:
+                    try:
+                        cfg_p = os.path.join(base_dir, "yscb.config.json")
+                        if vfs.is_file(cfg_p):
+                            cfg_d = vfs.read_json(cfg_p)
+                            if isinstance(cfg_d, dict):
+                                inst_d = cfg_d.get("installed_modules")
+                                if not isinstance(inst_d, dict):
+                                    inst_d = {}
+                                    cfg_d["installed_modules"] = inst_d
+                                if isinstance(inst_d.get(module_name), dict):
+                                    inst_d[module_name]["version"] = fallback_ver
+                                else:
+                                    inst_d[module_name] = {
+                                        "version": fallback_ver,
+                                        "provider": provider_arg,
+                                    }
+                                vfs.write_json(cfg_p, cfg_d, indent=2, atomic=True)
+                    except Exception:
+                        pass
+                    return True
 
         return False
 

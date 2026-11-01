@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.0.2",
+  "version": "1.2.1.0",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -8,5 +8,10 @@
     "Bind host project root: python yscb.py config set core project_root ./",
     "Check semantic URI status: python yscb.py uri check",
     "Explore installed modules: python yscb.py status"
-  ]
+  ],
+  "release": {
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "支援雙層 provider (index/release)、releases 孤立分支自動發布、releases 感知相容性解析、更新緊急度提示與跨平台目錄鎖定三階段真偽鑑別原子同步"
+  }
 }

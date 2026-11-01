@@ -6,8 +6,81 @@
     "1.0.1.15",
     "1.1.0.2",
     "1.1.1.1",
-    "1.1.2.0",
-    "1.1.2.1",
-    "1.1.2.2"
-  ]
+    "1.1.2.2",
+    "1.1.3.0"
+  ],
+  "releases": {
+    "1.0.0.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.0"
+      },
+      "type": "perf",
+      "urgency": "recommended",
+      "summary": "實作測試沙盒 Session 級共享機制與輕量狀態重置，將模組測試套件冷啟動耗時大幅壓降"
+    },
+    "1.0.1.15": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.2"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "於 dev check 實作 AST 靜態 CLI 合規審查器（強制 guard_dispatch 與 process(args) 契約）並升級 scaffold 範本"
+    },
+    "1.1.0.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.0"
+      },
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "增補 dev/README.md 開發工具鏈雙軌發布與沙盒測試指引，並同步對齊核心依賴契約 (core>=1.1.0)"
+    },
+    "1.1.1.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.0"
+      },
+      "type": "feature",
+      "urgency": "optional",
+      "summary": "於測試沙盒注入 YSCB_SANDBOX_ACTIVE 環境隔離標記，防止單元測試期間污染宿主 session-trace 遙測日誌"
+    },
+    "1.1.2.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "於 dev check 新增 locales/*.json 跨語系鍵集合對稱性與專有名詞詞條契約靜態驗證"
+    },
+    "1.1.2.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "完成 builder、checker、releaser、tester 與 sandbox 五維度代碼純化重構，並對齊 yscb-module-dev 技能單一真理描述"
+    },
+    "1.1.2.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "於 dev check 新增測試命名規範與跨模組依賴檢查，並更新 yscb-module-dev 技能手冊指引"
+    },
+    "1.1.3.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.1"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "支援雙層索引打包、release-git 孤立分支雙提交發布、release --patch 元資料修補與發布欄位強校驗"
+    }
+  }
 }

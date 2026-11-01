@@ -1,0 +1,139 @@
+name: Publish Releases to Orphan Branch
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "ys_codebase/source/**"
+      - "ys_codebase/release/**/index.json"
+      - "yscb.py"
+      - ".github/workflows/release-publish.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-publish-orphan
+  cancel-in-progress: false
+
+jobs:
+  publish-releases:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore existing release archives from releases branch
+        run: |
+          if git ls-remote --exit-code --heads origin releases >/dev/null 2>&1; then
+            git fetch --depth=1 origin releases:refs/remotes/origin/releases
+            for mod_dir in ys_codebase/release/*; do
+              if [ -d "$mod_dir" ]; then
+                mod_name="$(basename "$mod_dir")"
+                git --work-tree=ys_codebase/release checkout refs/remotes/origin/releases -- "$mod_name" || true
+              fi
+            done
+            git checkout HEAD -- "ys_codebase/release/**/index.json" || true
+          fi
+
+      - name: Package active releases and prune sliding window archives
+        run: |
+          python3 - <<'PYEOF'
+          import fnmatch
+          import json
+          import os
+          import zipfile
+
+          DEFAULT_IGNORES = [
+              "__pycache__", "*.pyc", "*.pyo", "*.tmp", "*.bak",
+              ".git*", ".pytest_cache", ".DS_Store", ".yscbignore",
+              "tests", "tests/*",
+          ]
+
+          def should_ignore(rel_path: str, ignores: list[str]) -> bool:
+              norm = rel_path.replace("\\", "/").rstrip("/")
+              name = os.path.basename(norm)
+              for pat in ignores:
+                  p = pat.replace("\\", "/").rstrip("/")
+                  if (
+                      fnmatch.fnmatch(name, p)
+                      or fnmatch.fnmatch(norm, p)
+                      or fnmatch.fnmatch(norm, p + "/*")
+                      or norm.startswith(p.rstrip("*").rstrip("/") + "/")
+                  ):
+                      return True
+              return False
+
+          release_root = os.path.abspath("ys_codebase/release")
+          source_root = os.path.abspath("ys_codebase/source")
+          if not os.path.isdir(release_root):
+              raise SystemExit(0)
+
+          for mod in sorted(os.listdir(release_root)):
+              mod_rel_dir = os.path.join(release_root, mod)
+              idx_path = os.path.join(mod_rel_dir, "index.json")
+              if not os.path.isdir(mod_rel_dir) or not os.path.isfile(idx_path):
+                  continue
+              with open(idx_path, "r", encoding="utf-8") as f:
+                  idx_data = json.load(f)
+              active_versions = set(idx_data.get("versions", []))
+              src_dir = os.path.join(source_root, mod)
+              src_mf_path = os.path.join(src_dir, "manifest.json")
+              src_mf = None
+              if os.path.isfile(src_mf_path):
+                  with open(src_mf_path, "r", encoding="utf-8") as f:
+                      src_mf = json.load(f)
+
+              for ver in sorted(active_versions):
+                  zip_path = os.path.join(mod_rel_dir, f"{ver}.zip")
+                  if os.path.isfile(zip_path):
+                      continue
+                  if src_mf and str(src_mf.get("version", "")).strip() == ver:
+                      ignores = list(DEFAULT_IGNORES)
+                      ignore_file = os.path.join(src_dir, ".yscbignore")
+                      if os.path.isfile(ignore_file):
+                          with open(ignore_file, "r", encoding="utf-8", errors="ignore") as igf:
+                              for line in igf:
+                                  s = line.strip()
+                                  if s and not s.startswith("#"):
+                                      ignores.append(s)
+                      with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                          for root, dirs, files in os.walk(src_dir):
+                              rel_d = os.path.relpath(root, src_dir).replace("\\", "/")
+                              if rel_d == ".":
+                                  rel_d = ""
+                              dirs[:] = [d for d in dirs if not should_ignore(f"{rel_d}/{d}".lstrip("/"), ignores)]
+                              for fname in files:
+                                  rel_f = f"{rel_d}/{fname}".lstrip("/")
+                                  if not should_ignore(rel_f, ignores):
+                                      zf.write(os.path.join(root, fname), arcname=rel_f)
+                      print(f"[release-publish] Packaged {mod}@{ver}.zip from source.")
+
+              for fname in os.listdir(mod_rel_dir):
+                  if fname.endswith(".zip") and fname[:-4] not in active_versions:
+                      os.remove(os.path.join(mod_rel_dir, fname))
+                      print(f"[release-publish] Pruned non-active archive {mod}/{fname}")
+          PYEOF
+
+      - name: Commit and force-push single-depth orphan releases branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_INDEX_FILE="$(mktemp)"
+          rm -f "$GIT_INDEX_FILE"
+          export GIT_WORK_TREE="$(pwd)/ys_codebase/release"
+          git add -f .
+          TREE_SHA="$(git write-tree)"
+          unset GIT_WORK_TREE
+          COMMIT_SHA="$(git commit-tree "$TREE_SHA" -m "chore(release): publish sliding-window release artifacts (${GITHUB_SHA::7})")"
+          git push --force origin "${COMMIT_SHA}:refs/heads/releases"
+

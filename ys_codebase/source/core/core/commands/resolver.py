@@ -124,6 +124,8 @@ class OptionResolver:
                         else:
                             val = True
 
+                    if canonical == "dep" and "dep" in resolved_options and isinstance(resolved_options["dep"].params, str) and isinstance(val, str):
+                        val = f"{resolved_options['dep'].params};{val}"
                     resolved_options[canonical] = CmdOption(name=canonical, params=val)
 
                 else:
@@ -133,6 +135,8 @@ class OptionResolver:
                         val = raw_val
                     else:
                         val = True
+                    if canonical == "dep" and "dep" in resolved_options and isinstance(resolved_options["dep"].params, str) and isinstance(val, str):
+                        val = f"{resolved_options['dep'].params};{val}"
                     resolved_options[canonical] = CmdOption(name=canonical, params=val)
 
             else:

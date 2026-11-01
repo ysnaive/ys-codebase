@@ -30,6 +30,7 @@ last_updated: "2026-10-15"
 | **DN-DEV-02** *(原 DN-DEV-06)* | 沙盒微環境 3-Tier 零拷貝投影與 `shutil.rmtree` 前強制斷開防護 | `source/dev/dev/testing/sandbox.py` | `[!CAUTION]` |
 | **DN-DEV-03** *(原 DN-DEV-07.4)* | 宿主環境防穿透三道剛性守門鎖與禁止 `os.getcwd()` 回退鐵律 | `source/dev/dev/testing/case.py`<br/>`source/dev/dev/testing/discovery.py`<br/>`source/dev/dev/tester.py` | `[!CAUTION]` |
 | **DN-DEV-04** *(原 DN-DEV-10.3)* | Checker AST 靜態分析之首行 Docstring 節點豁免、CLI 入口候選集合與全庫單調防回退 | `source/dev/dev/checker.py`<br/>`source/dev/dev/releaser.py` | `[!WARNING]` |
+| **DN-DEV-05** | `index.json` 雙軌版本帳本 (`versions` + `releases`) SSOT 與 `on_module_released` 通用事件 | `source/dev/dev/builder.py`<br/>`source/dev/dev/releaser.py` | `[!CAUTION]` |
 
 ---
 
@@ -97,5 +98,24 @@ last_updated: "2026-10-15"
      - **軌道 B（傳統/Mock 入口相容）**：當模組未定義 `contributes/core.json` 或無 `commands.cmd`（例如沙盒動態合成之最小化 Mock 模組）時，平滑回退為驗證 `def process(args)` 入口函式存在性。
   3. **Gate 3 全庫最高版本防回退 (`Releaser.release_check`)**：
      - 盤點 `release/<mod>/` 與 `.build/<mod>/` 下所有既有版本包，計算全庫最高版本 `global_highest`。未指定 `force` 時要求 `target > global_highest`；指定 `force=True` 時僅容許 `target == global_highest` 覆蓋發布，嚴禁跨三元組版本回退（`target < global_highest`）。
+
+---
+
+### [DN-DEV-05] `index.json` 雙軌版本帳本 (`versions` + `releases`) SSOT 與 `on_module_released` 通用事件
+
+> [!CAUTION]
+> **防呆契約：嚴禁在 `Builder` 或 `Releaser` 中僅依賴本機 `release/<mod>/*.zip` 實體檔案列舉已發布版本！**  
+> 當本機開發環境或 `main` 分支未保留歷史 `.zip` 檔案時，若僅透過 `os.listdir()` 掃描 `.zip` 將導致舊版紀錄歸零、3-Revision 滑動視窗失效以及 Gate 2/3 版本單調鎖被繞過。所有版本檢核與滑動視窗計算必須聯集 `index.json["versions"]`、`index.json["releases"].keys()` 與本機 `.zip`。
+
+- **設計細節與雙軌分離**：
+  1. **`versions`（活躍可下載視窗）vs. `releases`（永久全歷史帳本）**：
+     - `Builder._update_release_index` 計算 3-Revision 滑動視窗時，將當前保留於視窗內之版本寫入 `index.json["versions"]` 並標註 `releases[<ver>]["status"] = "active"`；遭滑動視窗淘汰之舊版其元數據永久保留於 `releases[<ver>]` 並自動標註 `"status": "pruned"`。
+  2. **Gate 2 / Gate 3 與 `release_git` 帳本聯集 (`_collect_all_known_released_versions`)**：
+     - `Releaser` 統一透過 `_collect_all_known_released_versions(module_name)` 聚合 `index.json` 雙軌帳本與實體檔案，確保無本機 `.zip` 時仍 100% 剛性攔截重複版本與版本倒退。
+  3. **`on_module_released` 通用發布事件廣播**：
+     - `Releaser.release_module` 在打包與索引更新完成後，透過 `core.events.broadcast("on_module_released", ...)` 傳遞 `{"module": module_name, "version": target_version, "zip_path": zip_real}`，供下游專案註冊 `hook_on_module_released` 自動對接自定義發布流水線。
+  4. **雙軌釋出元數據 (`release_meta`) 與事後修補保護 (`patch_release_index`)**：
+     - `Releaser.release_module` / `release_git` 傳入 `release_meta` 時，強制在 `release_check` (Gate 1) 與 `git add` 之前先寫入 `module.source://<mod>/manifest.json["release"]`；且 `Builder._update_release_index` 更新索引時，嚴格保留既有版本已透過 `dev index-patch` 事後修補之 `dependencies`、`type`、`urgency`、`summary`，絕不以舊 `.zip` 內之 `manifest.json` 覆蓋歷史修補值。
+
 
 

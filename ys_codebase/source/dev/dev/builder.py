@@ -11,9 +11,17 @@ import fnmatch
 import shutil
 import functools
 import zipfile
-from typing import Tuple, Dict, List, Optional, Any
+from typing import Tuple, Dict, List, Optional, Any, Set
 from core import uri, vfs, semver
 from dev.checker import Checker, discover_source_modules
+
+
+def _can_parse_semver(v: str) -> bool:
+    try:
+        semver.parse_semver(v)
+        return True
+    except Exception:
+        return False
 
 DEV_BUILD_IGNORES = [
     "__pycache__",
@@ -141,12 +149,19 @@ class Builder:
         }
         vfs.write_json(f"{mod_build_root}/index.json", index_data, indent=2)
 
-    def _update_release_index(self, name: str, description: str = "", new_version: Optional[str] = None) -> None:
+    def _update_release_index(
+        self,
+        name: str,
+        description: str = "",
+        new_version: Optional[str] = None,
+        manifest_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         Updates release/{name}/index.json with 3-Revision Sliding Window & Legacy Triplet Convergence.
         - Rule 1 (Same Triplet): Retain at most 3 latest revisions (X.Y.Z.W, X.Y.Z.W-1, X.Y.Z.W-2), purge older.
         - Rule 2 (Cross Triplet): When bumped to X.Y.Z+1 or higher, legacy triplets retain only their highest revision (X.Y.Z.W_max).
-        - Rule 3 (Index SSOT): Re-scan active physical zip files to generate index.json.
+        - Rule 3 (Dual-Track Index SSOT): Top-level 'versions' holds active downloadable versions within the sliding window;
+          'releases' ledger permanently retains historical release metadata with status='active'|'pruned'.
         """
         mod_rel_root = f"module.release://{name}"
         if not vfs.exists(mod_rel_root):
@@ -156,46 +171,132 @@ class Builder:
         if not os.path.isdir(real_rel_dir):
             return
 
+        index_uri = f"{mod_rel_root}/index.json"
+        existing_index: Dict[str, Any] = {}
+        if vfs.exists(index_uri):
+            try:
+                raw_idx = vfs.read_json(index_uri)
+                if isinstance(raw_idx, dict):
+                    existing_index = raw_idx
+            except Exception:
+                existing_index = {}
+
+        existing_versions = existing_index.get("versions", []) if isinstance(existing_index.get("versions"), list) else []
+        existing_releases = dict(existing_index.get("releases")) if isinstance(existing_index.get("releases"), dict) else {}
+
+        zip_versions: Set[str] = {
+            item[:-4] for item in os.listdir(real_rel_dir) if item.endswith(".zip")
+        }
+        candidate_active: Set[str] = set(existing_versions) | zip_versions
+        if new_version:
+            candidate_active.add(new_version)
+
+        active_versions: List[str] = []
+        pruned_versions: Set[str] = set()
+
+        new_tuple: Optional[semver.VersionTuple] = None
         if new_version:
             try:
                 new_tuple = semver.parse_semver(new_version)
             except ValueError:
                 new_tuple = None
 
-            if new_tuple is not None:
-                triplet_map: Dict[Tuple[int, int, int], List[Tuple[semver.VersionTuple, str, str]]] = {}
-                for item in list(os.listdir(real_rel_dir)):
-                    item_path = os.path.join(real_rel_dir, item)
-                    if item.endswith(".zip"):
-                        item_ver = item[:-4]
-                        try:
-                            item_tuple = semver.parse_semver(item_ver)
-                            trip = item_tuple.triplet
-                            if trip not in triplet_map:
-                                triplet_map[trip] = []
-                            triplet_map[trip].append((item_tuple, item_ver, item_path))
-                        except ValueError:
-                            pass
+        if new_tuple is not None:
+            triplet_map: Dict[Tuple[int, int, int], List[Tuple[semver.VersionTuple, str]]] = {}
+            for item_ver in candidate_active:
+                try:
+                    item_tuple = semver.parse_semver(item_ver)
+                    trip = item_tuple.triplet
+                    if trip not in triplet_map:
+                        triplet_map[trip] = []
+                    triplet_map[trip].append((item_tuple, item_ver))
+                except ValueError:
+                    pass
 
-                for trip, items in triplet_map.items():
-                    items.sort(key=functools.cmp_to_key(lambda a, b: semver.compare_semver(a[0], b[0])), reverse=True)
-                    purge = items[3:] if trip == new_tuple.triplet else items[1:]
-                    for _, _, purge_path in purge:
+            for trip, items in triplet_map.items():
+                items.sort(key=functools.cmp_to_key(lambda a, b: semver.compare_semver(a[0], b[0])), reverse=True)
+                retained = items[:3] if trip == new_tuple.triplet else items[:1]
+                purge = items[3:] if trip == new_tuple.triplet else items[1:]
+                for _, keep_ver in retained:
+                    active_versions.append(keep_ver)
+                for _, purge_ver in purge:
+                    pruned_versions.add(purge_ver)
+                    purge_path = os.path.join(real_rel_dir, f"{purge_ver}.zip")
+                    if os.path.isfile(purge_path):
                         try:
                             os.remove(purge_path)
                         except OSError:
                             pass
+        else:
+            for item_ver in candidate_active:
+                try:
+                    semver.parse_semver(item_ver)
+                    active_versions.append(item_ver)
+                except ValueError:
+                    pass
 
-        versions: List[str] = [
-            item[:-4] for item in os.listdir(real_rel_dir) if item.endswith(".zip")
-        ]
-        versions.sort(key=functools.cmp_to_key(semver.compare_semver))
+        active_versions.sort(key=functools.cmp_to_key(semver.compare_semver))
+        active_set = set(active_versions)
+
+        for v_key, v_meta in list(existing_releases.items()):
+            meta_copy = dict(v_meta) if isinstance(v_meta, dict) else {}
+            meta_copy["status"] = "active" if v_key in active_set else "pruned"
+            existing_releases[v_key] = meta_copy
+
+        for p_ver in pruned_versions:
+            meta_copy = dict(existing_releases.get(p_ver, {})) if isinstance(existing_releases.get(p_ver), dict) else {}
+            meta_copy["status"] = "pruned"
+            if "dependencies" not in meta_copy:
+                meta_copy["dependencies"] = {}
+            existing_releases[p_ver] = meta_copy
+
+        for a_ver in active_versions:
+            meta_copy = dict(existing_releases.get(a_ver, {})) if isinstance(existing_releases.get(a_ver), dict) else {}
+            meta_copy["status"] = "active"
+            if "dependencies" not in meta_copy:
+                zip_cand = os.path.join(real_rel_dir, f"{a_ver}.zip")
+                if os.path.isfile(zip_cand):
+                    try:
+                        with zipfile.ZipFile(zip_cand, "r") as zf:
+                            z_mf = json.loads(zf.read("manifest.json").decode("utf-8"))
+                            if isinstance(z_mf.get("dependencies"), dict):
+                                meta_copy["dependencies"] = dict(z_mf["dependencies"])
+                    except Exception:
+                        pass
+                if "dependencies" not in meta_copy:
+                    meta_copy["dependencies"] = {}
+            existing_releases[a_ver] = meta_copy
+
+        if new_version and isinstance(manifest_data, dict):
+            new_meta = dict(existing_releases.get(new_version, {})) if isinstance(existing_releases.get(new_version), dict) else {}
+            new_meta["status"] = "active" if new_version in active_set else "pruned"
+            raw_deps = manifest_data.get("dependencies", {})
+            if isinstance(raw_deps, dict):
+                new_meta["dependencies"] = dict(raw_deps)
+            elif "dependencies" not in new_meta:
+                new_meta["dependencies"] = {}
+            rel_info = manifest_data.get("release")
+            if isinstance(rel_info, dict):
+                for k in ("type", "urgency", "summary"):
+                    if isinstance(rel_info.get(k), str) and rel_info[k].strip():
+                        new_meta[k] = rel_info[k].strip()
+            existing_releases[new_version] = new_meta
+
+        sorted_rel_keys = sorted(
+            existing_releases.keys(),
+            key=functools.cmp_to_key(
+                lambda x, y: semver.compare_semver(x, y) if _can_parse_semver(x) and _can_parse_semver(y) else (1 if x > y else -1)
+            ),
+        )
+        ordered_releases = {k: existing_releases[k] for k in sorted_rel_keys}
+
         index_data = {
             "name": name,
-            "description": description or f"YS-Codebase module {name}",
-            "versions": versions,
+            "description": description or existing_index.get("description") or f"YS-Codebase module {name}",
+            "versions": active_versions,
+            "releases": ordered_releases,
         }
-        vfs.write_json(f"{mod_rel_root}/index.json", index_data, indent=2)
+        vfs.write_json(index_uri, index_data, indent=2)
 
     def build_module(self, name: str, clean: bool = True) -> Tuple[bool, str]:
         """
@@ -277,7 +378,12 @@ class Builder:
             target_version,
         )
 
-        self._update_release_index(name, description=manifest_data.get("description", ""), new_version=target_version)
+        self._update_release_index(
+            name,
+            description=manifest_data.get("description", ""),
+            new_version=target_version,
+            manifest_data=manifest_data,
+        )
         return True, f"Successfully packaged release '{name}@{target_version}' ({copied_count} files) -> {target_zip_path}."
 
     def build_all(self, clean: bool = True) -> Dict[str, Tuple[bool, str]]:

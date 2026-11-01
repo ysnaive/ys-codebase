@@ -460,6 +460,29 @@ class Checker:
                         )
                     )
 
+            rel_meta = m_data.get("release")
+            if rel_meta is not None:
+                if not isinstance(rel_meta, dict):
+                    report.issues.append(
+                        CheckIssue(
+                            severity=CheckSeverity.FAIL,
+                            category="MANIFEST",
+                            message="'release' field in manifest.json must be a JSON object.",
+                            file_path="manifest.json",
+                        )
+                    )
+                else:
+                    for rk in ("type", "urgency", "summary"):
+                        if rk in rel_meta and (not isinstance(rel_meta[rk], str) or not rel_meta[rk].strip()):
+                            report.issues.append(
+                                CheckIssue(
+                                    severity=CheckSeverity.FAIL,
+                                    category="MANIFEST",
+                                    message=f"'release.{rk}' in manifest.json must be a non-empty string.",
+                                    file_path="manifest.json",
+                                )
+                            )
+
             self._check_pip_dependencies(name, m_data, report)
         except Exception as e:
             report.issues.append(
@@ -989,7 +1012,7 @@ class Checker:
         for node in tree.body:
             if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if node.name in ("on_test_setup", "on_test_teardown"):
+                    if node.name in ("on_test_setup", "on_test_teardown", "on_module_released", "module_released"):
                         total_args = len(node.args.args) + (1 if node.args.vararg else 0)
                         if total_args < 1:
                             report.issues.append(

@@ -33,8 +33,8 @@ class TestDistributionLifecycle(YSCBTestCase):
         super().tearDown()
 
     def test_resolve_self_update_url(self):
-        """FT-01: 驗證 DEFAULT_PROVIDER_URL 與 DEFAULT_SELF_UPDATE_URL 職責分離且優先權正確。"""
-        self.assertEqual(yscb.DEFAULT_PROVIDER_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release")
+        """驗證 DEFAULT_PROVIDER_URL 與 DEFAULT_SELF_UPDATE_URL 職責分離且優先權正確。"""
+        self.assertEqual(yscb.DEFAULT_PROVIDER_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases")
         self.assertEqual(yscb.DEFAULT_SELF_UPDATE_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py")
 
         # 1. 預設返回官方自更新 URL（不因 provider 變更而改變）
@@ -521,6 +521,215 @@ class TestDistributionLifecycle(YSCBTestCase):
             rc = dispatcher.dispatch(["update"])
             self.assertEqual(rc, 0)
             mock_spawn.assert_not_called()
+
+        self.mark_passed()
+
+    def test_legacy_provider_url_auto_migration_and_pruned_same_triplet_fallback(self):
+        """驗證舊版 main 分支 Provider URL 自動無感遷移至 releases，且 pruned 版本於無 mirror 時自動退回同三元組最高 active 版本。"""
+        provider_dir = os.path.join(self.temp_dir, "provider_window")
+        mod_rel_dir = os.path.join(provider_dir, "release", "appmod")
+        os.makedirs(mod_rel_dir, exist_ok=True)
+
+        # 建立 active 版本 1.0.0.4.zip，而 1.0.0.1 已被滑動視窗淘汰 (status=pruned，無實體 zip)
+        pkg_dir = os.path.join(self.temp_dir, "pkg_active")
+        os.makedirs(os.path.join(pkg_dir, "scripts"), exist_ok=True)
+        with open(os.path.join(pkg_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "appmod", "version": "1.0.0.4", "entry": "scripts/cli.py"}, f)
+        with open(os.path.join(pkg_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write("def main(): return 0\n")
+
+        zip_4 = os.path.join(mod_rel_dir, "1.0.0.4.zip")
+        with zipfile.ZipFile(zip_4, "w") as zf:
+            for root, _, files in os.walk(pkg_dir):
+                for file in files:
+                    full_p = os.path.join(root, file)
+                    zf.write(full_p, os.path.relpath(full_p, pkg_dir))
+
+        with open(os.path.join(mod_rel_dir, "index.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "name": "appmod",
+                    "versions": ["1.0.0.2", "1.0.0.3", "1.0.0.4"],
+                    "releases": {
+                        "1.0.0.1": {"status": "pruned", "dependencies": {}},
+                        "1.0.0.4": {"status": "active", "dependencies": {}},
+                    },
+                },
+                f,
+            )
+
+        host_dir = os.path.join(self.temp_dir, "host_pruned")
+        os.makedirs(host_dir, exist_ok=True)
+        cfg_file = os.path.join(host_dir, "yscb.config.json")
+        with open(cfg_file, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "yscb_root": ".yscb",
+                    "default_provider": "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release",
+                    "installed_modules": {
+                        "appmod": {"version": "1.0.0.1", "provider": provider_dir},
+                    },
+                },
+                f,
+            )
+
+        # 1. 驗證 load_config 自動將舊版 main URL 遷移至 releases URL
+        _, loaded_cfg = yscb.load_config(host_dir)
+        self.assertEqual(loaded_cfg["default_provider"], yscb.DEFAULT_PROVIDER_URL)
+
+        # 2. 驗證請求已 pruned 的 1.0.0.1 時，自動退回同三元組最高 active 版本 1.0.0.4 並同步更新組態
+        dest_dir = os.path.join(host_dir, ".yscb", ".modules", "appmod")
+        mirror_dir = os.path.join(host_dir, ".yscb", ".mirror", "appmod")
+        ok = yscb._bootstrap_package_from_provider(
+            host_dir, ".yscb", "appmod", "1.0.0.1", provider_dir, dest_dir, mirror_dir
+        )
+        self.assertTrue(ok)
+        self.assertTrue(os.path.isfile(os.path.join(dest_dir, "manifest.json")))
+        with open(os.path.join(dest_dir, "manifest.json"), "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["version"], "1.0.0.4")
+        with open(cfg_file, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["installed_modules"]["appmod"]["version"], "1.0.0.4")
+
+        # 3. 驗證當鎖定之 pruned 版本無任何同三元組 (X.Y.Z.*) 可用版本時（例如請求 0.9.0.1，僅有 1.0.0.*），嚴格拒絕跨三元組替換
+        dest_cross = os.path.join(host_dir, ".yscb", ".modules", "appmod_cross")
+        mirror_cross = os.path.join(host_dir, ".yscb", ".mirror", "appmod_cross")
+        ok_cross = yscb._bootstrap_package_from_provider(
+            host_dir, ".yscb", "appmod", "0.9.0.1", provider_dir, dest_cross, mirror_cross
+        )
+        self.assertFalse(ok_cross)
+
+        # 4. 驗證 core Installer._restore_module_package 之路徑亦支援 pruned 同三元組自動補位與跨三元組拒絕
+        from core.installer import Installer
+        inst = Installer()
+        dest_inst = os.path.join(host_dir, ".yscb", ".modules", "appmod_inst")
+        mirror_inst = os.path.join(host_dir, ".yscb", ".mirror", "appmod_inst")
+        self.assertFalse(
+            inst._restore_module_package(host_dir, ".yscb", "appmod", "0.9.0.1", provider_dir, dest_inst, mirror_inst)
+        )
+        self.assertTrue(
+            inst._restore_module_package(host_dir, ".yscb", "appmod", "1.0.0.1", provider_dir, dest_inst, mirror_inst)
+        )
+        with open(os.path.join(dest_inst, "manifest.json"), "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["version"], "1.0.0.4")
+
+        self.mark_passed()
+
+    def test_exact_version_local_source_dynamic_packaging(self):
+        """驗證本地無 .zip 但 source/<mod>/manifest.json 版本嚴格相等時動態打包（排除 tests/），版本不符則拒絕。"""
+        ws_dir = os.path.join(self.temp_dir, "ws_source_pkg")
+        src_mod = os.path.join(ws_dir, "ys_codebase", "source", "mymod")
+        rel_mod = os.path.join(ws_dir, "ys_codebase", "release", "mymod")
+        os.makedirs(os.path.join(src_mod, "scripts"), exist_ok=True)
+        os.makedirs(os.path.join(src_mod, "tests"), exist_ok=True)
+        os.makedirs(rel_mod, exist_ok=True)
+
+        with open(os.path.join(src_mod, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "mymod", "version": "1.2.0.0", "entry": "scripts/cli.py"}, f)
+        with open(os.path.join(src_mod, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write("def main(): return 0\n")
+        with open(os.path.join(src_mod, "tests", "test_dummy.py"), "w", encoding="utf-8") as f:
+            f.write("pass\n")
+        with open(os.path.join(rel_mod, "index.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "mymod", "versions": ["1.2.0.0"]}, f)
+
+        dest_dir = os.path.join(ws_dir, "ys_codebase", ".modules", "mymod")
+        mirror_dir = os.path.join(ws_dir, "ys_codebase", ".mirror", "mymod")
+
+        # 1. 請求不匹配版本 1.1.0.0 -> 嚴禁跨版混裝，必須返回 False
+        ok_mismatch = yscb._bootstrap_package_from_provider(
+            ws_dir, "ys_codebase", "mymod", "1.1.0.0", rel_mod, dest_dir, mirror_dir
+        )
+        self.assertFalse(ok_mismatch)
+
+        # 2. 請求嚴格相等版本 1.2.0.0 -> 自動自 source/mymod 打包至 .mirror 並解壓（且排除 tests/）
+        ok_match = yscb._bootstrap_package_from_provider(
+            ws_dir, "ys_codebase", "mymod", "1.2.0.0", rel_mod, dest_dir, mirror_dir
+        )
+        self.assertTrue(ok_match)
+        self.assertTrue(os.path.isfile(os.path.join(mirror_dir, "1.2.0.0.zip")))
+        self.assertTrue(os.path.isfile(os.path.join(dest_dir, "manifest.json")))
+        self.assertFalse(os.path.exists(os.path.join(dest_dir, "tests")))
+
+        # 3. 驗證 core Installer._restore_module_package 同樣支援本地同版 source/ 動態打包與跨版拒絕
+        from core.installer import Installer
+        inst = Installer()
+        dest_core_inst = os.path.join(ws_dir, "ys_codebase", ".modules", "mymod_inst")
+        mirror_core_inst = os.path.join(ws_dir, "ys_codebase", ".mirror", "mymod_inst")
+        if os.path.isfile(os.path.join(rel_mod, "1.2.0.0.zip")):
+            os.remove(os.path.join(rel_mod, "1.2.0.0.zip"))
+        self.assertFalse(
+            inst._restore_module_package(ws_dir, "ys_codebase", "mymod", "1.1.0.0", rel_mod, dest_core_inst, mirror_core_inst)
+        )
+        self.assertTrue(
+            inst._restore_module_package(ws_dir, "ys_codebase", "mymod", "1.2.0.0", rel_mod, dest_core_inst, mirror_core_inst)
+        )
+        self.assertTrue(os.path.isfile(os.path.join(mirror_core_inst, "1.2.0.0.zip")))
+        self.assertFalse(os.path.exists(os.path.join(dest_core_inst, "tests")))
+
+        self.mark_passed()
+
+    def test_release_index_dependency_override_core_compat_and_offline_mirror_reload(self):
+        """驗證 index.json['releases'] 依賴覆寫優先級、act_solve_deps 對 core 依賴檢核，以及 mirror:// 離線 reload 覆寫。"""
+        from core.engine import AtomicEngine
+
+        engine = AtomicEngine()
+        prov_dir = os.path.join(self.temp_dir, "prov_compat")
+        mod_rel = os.path.join(prov_dir, "compat_mod")
+        os.makedirs(mod_rel, exist_ok=True)
+
+        # 建立 1.0.0.0.zip 與 1.1.0.0.zip，兩者內部 manifest.json 皆未寫嚴格依賴
+        for ver in ("1.0.0.0", "1.1.0.0"):
+            z_p = os.path.join(mod_rel, f"{ver}.zip")
+            with zipfile.ZipFile(z_p, "w") as zf:
+                zf.writestr(
+                    "manifest.json",
+                    json.dumps({"name": "compat_mod", "version": ver, "entry": "cli.py", "dependencies": {"core": ">=1.0.0"}}),
+                )
+                zf.writestr("cli.py", "def main(): return 0\n")
+
+        # 事後在 index.json 將 1.1.0.0 標註為需要 core>=99.0.0，1.0.0.0 修補為需要 core>=1.0.0,<99.0.0
+        idx_payload = {
+            "name": "compat_mod",
+            "versions": ["1.0.0.0", "1.1.0.0"],
+            "releases": {
+                "1.0.0.0": {
+                    "status": "active",
+                    "dependencies": {"core": ">=1.0.0,<50.0.0"},
+                    "type": "bugfix",
+                    "urgency": "recommended",
+                    "summary": "相容修補版",
+                },
+                "1.1.0.0": {
+                    "status": "active",
+                    "dependencies": {"core": ">=99.0.0"},
+                },
+            },
+        }
+        with open(os.path.join(mod_rel, "index.json"), "w", encoding="utf-8") as f:
+            json.dump(idx_payload, f)
+
+        # 1. 不指定版本求解時，應自動過濾掉不相容的 1.1.0.0，解析出最高相容版本 1.0.0.0
+        solved = engine.act_solve_deps("compat_mod", None, prov_dir)
+        self.assertEqual(solved, [("compat_mod", "1.0.0.0")])
+
+        # 2. 若顯式要求 1.1.0.0，act_solve_deps 檢核 dep_name == "core" 應拋出 RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            engine.act_solve_deps("compat_mod", "==1.1.0.0", prov_dir)
+        self.assertIn("required core version '>=99.0.0' is not satisfied", str(ctx.exception))
+
+        # 3. 驗證下載與離線 mirror:// 快取及 _reload_materialize_single_module 覆寫 manifest.json
+        engine.act_download("compat_mod", "1.0.0.0", prov_dir)
+        self.assertTrue(vfs.is_file("module.mirror://compat_mod/index.json"))
+
+        modules_root = uri.resolve("module://")
+        try:
+            engine._reload_materialize_single_module("compat_mod", "1.0.0.0", modules_root)
+            mat_mf = vfs.read_json("module://compat_mod/manifest.json")
+            self.assertEqual(mat_mf.get("dependencies"), {"core": ">=1.0.0,<50.0.0"})
+            self.assertEqual(mat_mf.get("release", {}).get("type"), "bugfix")
+        finally:
+            vfs.rmtree("module://compat_mod", ignore_errors=True)
+            vfs.rmtree("module.mirror://compat_mod", ignore_errors=True)
 
         self.mark_passed()
 

@@ -19,6 +19,7 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
         value_options = {
             "k", "pattern", "m", "msg", "message", "j", "jobs",
             "dir", "type", "target", "desc", "report-json",
+            "urgency", "summary", "dep", "ver", "version", "status",
         }
         alias_map = {
             "k": "pattern",
@@ -40,6 +41,8 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
             "sequential": "no-parallel",
             "stress": "perf",
             "perf": "stress",
+            "ver": "version",
+            "version": "ver",
         }
         args = list(cmd_bags)
         raw_cmd = " ".join(args)
@@ -56,9 +59,11 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
                 elif k in value_options and idx + 1 < len(args) and not args[idx + 1].startswith("-"):
                     v = args[idx + 1]
                     idx += 1
+                if k == "dep" and "dep" in opts and isinstance(opts["dep"].params, str) and isinstance(v, str):
+                    v = f"{opts['dep'].params};{v}"
                 opts[k] = CmdOption(name=k, params=v)
                 alt = alias_map.get(k)
-                if alt and alt not in opts:
+                if alt:
                     opts[alt] = CmdOption(name=alt, params=v)
             else:
                 pos.append(a)
@@ -234,6 +239,16 @@ def build(cmd_bags: Any) -> int:
         return 0 if passed else 1
 
 
+def _extract_release_meta_from_bags(bags: CmdBags) -> Dict[str, str]:
+    """Extracts optional --type, --urgency, and --summary release metadata from CmdBags."""
+    meta: Dict[str, str] = {}
+    for k in ("type", "urgency", "summary"):
+        val = bags.get_option_value(k)
+        if isinstance(val, str) and val.strip():
+            meta[k] = val.strip()
+    return meta
+
+
 def release(cmd_bags: Any) -> int:
     """Package and release pure module (.zip to release/)."""
     guard_dispatch("dev")
@@ -242,6 +257,7 @@ def release(cmd_bags: Any) -> int:
     releaser = Releaser()
     force = bags.has_option("force") or bags.has_option("f")
     release_all = bags.has_option("all") or bags.has_option("a") or not bags.args
+    release_meta = _extract_release_meta_from_bags(bags)
 
     if release_all:
         print("[dev:release] Releasing all modules in source/ (topological pure release)...")
@@ -260,7 +276,7 @@ def release(cmd_bags: Any) -> int:
             return 1
     else:
         name = bags.args[0]
-        ok, msg = releaser.release_module(name, force=force)
+        ok, msg = releaser.release_module(name, force=force, release_meta=release_meta or None)
         if ok:
             print(f"[dev:release] {msg}")
             return 0
@@ -318,19 +334,82 @@ def release_git(cmd_bags: Any) -> int:
     force = bags.has_option("force") or bags.has_option("f")
     commit_msg = bags.get_option_value("msg") or bags.get_option_value("m")
     if len(bags.args) < 1 or (not commit_msg and len(bags.args) < 2):
-        print("[dev:release-git] Usage: python yscb.py dev release-git <module_name> \"<commit message>\" [--force|-f]")
+        print("[dev:release-git] Usage: python yscb.py dev release-git <module_name> \"<commit message>\" [--force|-f] [--type=<type>] [--urgency=<urgency>] [--summary=\"<text>\"]")
         return 1
     mod_name = bags.args[0]
     if not commit_msg:
         commit_msg = bags.args[1]
+    release_meta = _extract_release_meta_from_bags(bags)
     from dev.releaser import Releaser
     releaser = Releaser()
-    ok, msg = releaser.release_git(mod_name, str(commit_msg), force=force)
+    ok, msg = releaser.release_git(mod_name, str(commit_msg), force=force, release_meta=release_meta or None)
     if ok:
         print(f"[dev:release-git] {msg}")
         return 0
     else:
         print(f"[dev:release-git] Error: {msg}", file=sys.stderr)
+        return 1
+
+
+def index_patch(cmd_bags: Any) -> int:
+    """Patch release/<module>/index.json metadata or dependencies without repackaging."""
+    guard_dispatch("dev")
+    bags = _normalize_bags(cmd_bags, "index-patch")
+    if len(bags.args) < 1:
+        print(
+            "[dev:index-patch] Usage: python yscb.py dev index-patch <module_name> "
+            "--ver=<version> [--dep=\"<mod>:<constraint>[;<mod2>:<constraint2>]\"] "
+            "[--status=active|pruned] [--type=<type>] [--urgency=<urgency>] [--summary=\"<text>\"]"
+        )
+        return 1
+    mod_name = bags.args[0]
+    target_ver = bags.get_option_value("ver") or bags.get_option_value("version")
+    if not isinstance(target_ver, str) or not target_ver.strip():
+        print("[dev:index-patch] Error: Target version (--ver=<version>) is required.", file=sys.stderr)
+        return 1
+
+    raw_dep = bags.get_option_value("dep")
+    parsed_deps: Dict[str, str] = {}
+    if isinstance(raw_dep, str) and raw_dep.strip():
+        for chunk in raw_dep.split(";"):
+            item = chunk.strip()
+            if not item:
+                continue
+            if ":" not in item:
+                print(
+                    f"[dev:index-patch] Error: Invalid --dep format '{item}'. Expected '<module>:<constraint>'.",
+                    file=sys.stderr,
+                )
+                return 1
+            d_mod, d_con = item.split(":", 1)
+            if not d_mod.strip() or not d_con.strip():
+                print(
+                    f"[dev:index-patch] Error: Invalid --dep format '{item}'. Expected '<module>:<constraint>'.",
+                    file=sys.stderr,
+                )
+                return 1
+            parsed_deps[d_mod.strip()] = d_con.strip()
+
+    status_val = bags.get_option_value("status")
+    status_str = str(status_val).strip() if isinstance(status_val, str) and status_val.strip() else None
+    rel_meta = _extract_release_meta_from_bags(bags)
+
+    from dev.releaser import Releaser
+    releaser = Releaser()
+    ok, msg = releaser.patch_release_index(
+        module_name=mod_name,
+        version=target_ver.strip(),
+        dependencies=parsed_deps if parsed_deps else None,
+        status=status_str,
+        release_type=rel_meta.get("type"),
+        urgency=rel_meta.get("urgency"),
+        summary=rel_meta.get("summary"),
+    )
+    if ok:
+        print(f"[dev:index-patch] {msg}")
+        return 0
+    else:
+        print(f"[dev:index-patch] Error: {msg}", file=sys.stderr)
         return 1
 
 

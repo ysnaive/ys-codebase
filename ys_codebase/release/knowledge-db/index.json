@@ -10,5 +10,79 @@
     "1.1.2.1",
     "1.1.2.2",
     "1.1.2.3"
-  ]
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "初版知識庫模組發布，提供多語言解析、加權 BM25 檢索、6 大 CLI 指令與二進位 Gzip 倒排索引快取"
+    },
+    "1.0.1.22": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.2"
+      },
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "將舊版 RETRO_CHECK_ITEMS 遷移為 SESSION_ANALYSIS_CHECK_ITEMS 效益評測規範並隨生態系對話節流協議同步發布"
+    },
+    "1.0.2.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.2"
+      },
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "重構 scripts/cli.py 全面遷移至純宣告式 process(args) 進入點並掛載 core.guard.guard_dispatch 宿主守門 SDK"
+    },
+    "1.1.0.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.0"
+      },
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "修正 manifest.json Onboarding 與 README.md 之空間設定指引為宣告式 config/knowledge-db/contribute.json 並純化模組設計筆記"
+    },
+    "1.1.1.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 search --max-snippet-lines=40 切片溢位截斷保護並將 knowledge-db-search 技能升級為二階段漏斗檢索模型"
+    },
+    "1.1.2.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "抽離 TopologyQueryService 與 io_utils、合一 BM25 50% 子詞覆蓋率計分核心，並對齊 knowledge-db-search 技能 SKILL.md Frontmatter 單一真理描述"
+    },
+    "1.1.2.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "支援宣告式空間檢索權重 (SpaceDef.weight)、加固 TopologyLinker 靜態消歧與 Watcher 旗標時序，並新增 C# partial class 跨檔聚合"
+    },
+    "1.1.2.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "支援自訂解析器多格式載入、實例級副檔名擴充與載入異常可觀測性自癒 (Issue #8)"
+    }
+  }
 }

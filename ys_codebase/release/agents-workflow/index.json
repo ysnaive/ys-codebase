@@ -12,5 +12,97 @@
     "1.2.2.0",
     "1.2.2.1",
     "1.2.2.2"
-  ]
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "初版工作流框架正式發布，建立雙階段語意編譯與多目標原子發布管線、8 大核心工作流、P00~P07 模板體系與 plan 管理工具鏈"
+    },
+    "1.0.1.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "實作發布引擎 Stage 0 來源指紋提前短路 (0 I/O)、Stage 4 記憶體 Diff 增量物化與 release --force 強制覆寫選項"
+    },
+    "1.0.2.15": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.2"
+      },
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "於 AgentsStandards.md 同步擴充知識庫調用圖譜 (callers/callees/impact) 導航與條件分流規範"
+    },
+    "1.0.3.9": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.2"
+      },
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "重構 scripts/cli.py 遷移至純宣告式 process(args) 進入點並接入 core.guard.guard_dispatch 宿主守門 SDK"
+    },
+    "1.1.0.7": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.0"
+      },
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "完善工作流生命週期閉環（handoff.md 消費即毀、Umbrella 主從連動、跨軌道清理、結案 plan verify 最終守門時序）並統一三層 5 列文檔表與提示詞契約"
+    },
+    "1.2.0.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "於 session-trace 新增無推估完整日誌聯集解析、有效/無效 Token 效益拆解與三維高耗能排行，並於 handoff.md 增設上下文交接壓縮區塊"
+    },
+    "1.2.1.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "將 roadmap.md 模板輕量化為 v1.1 三大抽象章節，並將單體 plan_modes.md 拆分為按需單點載入之獨立計畫模式參考手冊"
+    },
+    "1.2.2.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 /code-optimizer 技能與三大中央設計標準、完成 plans/ 巨型模組正交拆分與循環依賴破除，並確立 SKILL.md Frontmatter 描述為唯一真理來源"
+    },
+    "1.2.2.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 PXX-05_auto.md 綜合模板與恢復膠囊、擴充 8 大 AI 平台 release_target 並聯渲染、建立雙層子代理標準與 /blind-subagent 技能及編譯器 yscb:literal/ignore 區塊語法"
+    },
+    "1.2.2.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "動態對齊啟用之 release_targets 提示路徑並新增盲眼子代理與雙階防放水護欄 (Issue #8)"
+    }
+  }
 }

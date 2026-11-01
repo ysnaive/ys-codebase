@@ -1,14 +1,19 @@
 {
   "name": "dev",
-  "version": "1.1.2.2",
+  "version": "1.1.3.0",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.0"
+    "core": ">=1.2.1"
   },
   "onboarding": [
     "Create a new module scaffold: python yscb.py dev create <module-name> --desc=\"My module\"",
     "Run compliance static checks: python yscb.py dev check --all",
     "Run isolated sandbox tests: python yscb.py dev test --all --quiet"
-  ]
+  ],
+  "release": {
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "支援雙層索引打包、release-git 孤立分支雙提交發布、release --patch 元資料修補與發布欄位強校驗"
+  }
 }

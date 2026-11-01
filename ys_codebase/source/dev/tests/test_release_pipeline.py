@@ -251,3 +251,103 @@ class TestReleasePipeline(YSCBTestCase):
         self.assertEqual(cli_mod.release_check(CmdBags(raw_cmd="dev release-check", args=["mock_bump_mod"])), 0)
         self.assertEqual(cli_mod.release_check(CmdBags(raw_cmd="dev release-check", args=[], options={"force": CmdOption("force", True)})), 0)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_release_check_with_index_json_ssot_without_local_zip(self):
+        """驗證當本機 release/<mod>/ 無實體 .zip、僅存 index.json 雙軌帳本時，Gate 2 與 Gate 3 依然精準防護版本覆寫與倒退，且發布時廣播 on_module_released 事件。"""
+        from unittest.mock import patch
+
+        self.create_mock_source_module("mock_ssot_mod", "1.0.0.1")
+        rel_dir = uri.resolve("module.release://mock_ssot_mod")
+        os.makedirs(rel_dir, exist_ok=True)
+        vfs.write_json(
+            "module.release://mock_ssot_mod/index.json",
+            {
+                "name": "mock_ssot_mod",
+                "versions": ["1.0.0.2"],
+                "releases": {
+                    "1.0.0.1": {"status": "pruned", "dependencies": {}},
+                    "1.0.0.2": {"status": "active", "dependencies": {}},
+                },
+            },
+            indent=2,
+        )
+
+        # 1. 1.0.0.1 已記錄於 releases 帳本且低於 1.0.0.2 -> Gate 2 & Gate 3 均攔截（即使目錄下無任何 .zip）
+        passed_old, errors_old = self.releaser.release_check("mock_ssot_mod", force=False)
+        self.assertFalse(passed_old)
+        self.assertTrue(any("Gate 2 Failed" in e for e in errors_old))
+        self.assertTrue(any("Gate 3 Failed" in e for e in errors_old))
+
+        # 2. 升級至 1.0.0.3 並發布 -> 通過 Gate 2/3 且觸發 on_module_released 廣播
+        self.create_mock_source_module("mock_ssot_mod", "1.0.0.3")
+        with patch("core.events.broadcast") as mock_broadcast:
+            ok_rel, _ = self.releaser.release_module("mock_ssot_mod", force=False)
+            self.assertTrue(ok_rel)
+            called_events = [c.args[0] for c in mock_broadcast.call_args_list if c.args]
+            self.assertIn("on_module_released", called_events)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_dual_track_release_meta_index_patch_and_manifest_validation(self):
+        """驗證雙軌 release_meta 寫入、dev index-patch 事後修補（含 preserved 歷史修補）與 Checker._check_manifest 'release' 欄位校驗。"""
+        import importlib.util
+
+        cli_path = uri.resolve("module.source://dev/scripts/cli.py")
+        spec = importlib.util.spec_from_file_location("dev_cli_patch_test", cli_path)
+        cli_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli_mod)
+
+        # 1. 發布 1.0.0.0 並帶入 release_meta -> 雙軌寫入 source manifest.json 與 release index.json
+        self.create_mock_source_module("mock_meta_mod", "1.0.0.0")
+        rc_rel = cli_mod.release(
+            ["mock_meta_mod", "--type=bugfix", "--urgency=critical", "--summary=修復關鍵初始化競爭"]
+        )
+        self.assertEqual(rc_rel, 0)
+        src_mf = vfs.read_json("module.source://mock_meta_mod/manifest.json")
+        self.assertEqual(
+            src_mf.get("release"),
+            {"type": "bugfix", "urgency": "critical", "summary": "修復關鍵初始化競爭"},
+        )
+        idx_1 = vfs.read_json("module.release://mock_meta_mod/index.json")
+        self.assertEqual(idx_1["releases"]["1.0.0.0"]["type"], "bugfix")
+        self.assertEqual(idx_1["releases"]["1.0.0.0"]["urgency"], "critical")
+        self.assertEqual(idx_1["releases"]["1.0.0.0"]["summary"], "修復關鍵初始化競爭")
+
+        # 2. 使用 dev index-patch 事後修補 1.0.0.0 的多組相依性（支援分號與重複 --dep）
+        rc_patch = cli_mod.index_patch(
+            [
+                "mock_meta_mod",
+                "--ver=1.0.0.0",
+                "--dep=core:>=1.1.0,<1.4.0",
+                "--dep=server:>=1.0.0",
+            ]
+        )
+        self.assertEqual(rc_patch, 0)
+        idx_2 = vfs.read_json("module.release://mock_meta_mod/index.json")
+        self.assertEqual(
+            idx_2["releases"]["1.0.0.0"]["dependencies"],
+            {"core": ">=1.1.0,<1.4.0", "server": ">=1.0.0"},
+        )
+
+        # 3. 發布新版本 1.0.0.1 -> 驗證 Builder._update_release_index 不會覆蓋 1.0.0.0 已事後修補之 dependencies
+        self.create_mock_source_module("mock_meta_mod", "1.0.0.1")
+        ok_next, _ = self.releaser.release_module("mock_meta_mod", force=False)
+        self.assertTrue(ok_next)
+        idx_3 = vfs.read_json("module.release://mock_meta_mod/index.json")
+        self.assertEqual(
+            idx_3["releases"]["1.0.0.0"]["dependencies"],
+            {"core": ">=1.1.0,<1.4.0", "server": ">=1.0.0"},
+        )
+
+        # 4. 驗證無效 --dep 格式與無效 manifest.json["release"] 被攔截
+        self.assertEqual(cli_mod.index_patch(["mock_meta_mod", "--ver=1.0.0.0", "--dep=invalid_no_colon"]), 1)
+        bad_mf = vfs.read_json("module.source://mock_meta_mod/manifest.json")
+        bad_mf["release"] = {"type": ""}
+        vfs.write_json("module.source://mock_meta_mod/manifest.json", bad_mf, indent=2)
+        chk_rep = self.releaser.checker.check_module("mock_meta_mod")
+        self.assertFalse(chk_rep.passed)
+        self.assertTrue(any("release.type" in e for e in chk_rep.errors))
+
+        self.mark_passed()

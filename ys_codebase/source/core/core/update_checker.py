@@ -11,6 +11,7 @@ import urllib.request
 from core import uri
 from core import vfs
 from core import semver
+from core.engine import normalize_legacy_provider_url
 
 DEFAULT_CACHE_URI: str = "cache://core/update_check.json"
 DEFAULT_THROTTLE_SECONDS: int = 43200  # 12 小時
@@ -18,6 +19,38 @@ DEFAULT_TIMEOUT_SECONDS: float = 2.0
 DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
 HOST_SCRIPT_KEY: str = "yscb.py"
 _VERSION_RE = re.compile(r"""^__version__\s*(?::\s*str\s*)?=\s*['"]([^'"]+)['"]""", re.MULTILINE)
+KNOWN_URGENCIES: Dict[str, int] = {"optional": 1, "recommended": 2, "critical": 3}
+
+
+def normalize_release_metadata(entry: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Forward-safe parser for release metadata in index.json['releases'][<ver>].
+    Unknown 'type' or 'urgency' values never raise exceptions; 'type' is normalized to lowercase,
+    and 'is_critical' is set when urgency == 'critical' or type == 'hotfix'.
+    """
+    if not isinstance(entry, dict):
+        return {"type": "", "urgency": "optional", "summary": "", "is_critical": False, "rank": 1}
+    raw_type = str(entry.get("type", "") or "").strip()
+    raw_urgency = str(entry.get("urgency", "") or "").strip()
+    raw_summary = str(entry.get("summary", "") or "").strip()
+    norm_type = raw_type.lower()
+    norm_urgency = raw_urgency.lower() if raw_urgency else "optional"
+    is_crit = norm_urgency == "critical" or norm_type == "hotfix"
+    if is_crit:
+        rank = 3
+        if norm_urgency != "critical":
+            norm_urgency = "critical"
+    elif norm_urgency in KNOWN_URGENCIES:
+        rank = KNOWN_URGENCIES[norm_urgency]
+    else:
+        rank = 2
+    return {
+        "type": norm_type,
+        "urgency": norm_urgency,
+        "summary": raw_summary,
+        "is_critical": is_crit,
+        "rank": rank,
+    }
 
 
 class UpdateChecker:
@@ -109,6 +142,15 @@ class UpdateChecker:
         installed_modules = cfg.get("installed_modules", {})
         default_provider = cfg.get("default_provider", "")
 
+        installed_core_ver: Optional[str] = None
+        if isinstance(installed_modules, dict) and "core" in installed_modules:
+            c_info = installed_modules["core"]
+            raw_c = c_info.get("version", "") if isinstance(c_info, dict) else str(c_info)
+            if isinstance(raw_c, str) and raw_c.strip():
+                installed_core_ver = raw_c.strip()
+                if installed_core_ver.endswith(".build"):
+                    installed_core_ver = installed_core_ver[:-len(".build")]
+
         updates: Dict[str, Any] = {}
 
         if isinstance(installed_modules, dict):
@@ -123,18 +165,11 @@ class UpdateChecker:
                 if not cur_ver or cur_ver == "build" or cur_ver.endswith(".build"):
                     continue
 
-                latest_ver = self._fetch_latest_version(mod_name, provider_url)
-                if latest_ver:
-                    try:
-                        if semver.compare_semver(latest_ver, cur_ver) > 0:
-                            updates[mod_name] = {
-                                "current_version": cur_ver,
-                                "latest_version": latest_ver,
-                                "has_update": True,
-                                "provider": provider_url
-                            }
-                    except Exception:
-                        pass
+                cand_info = self._fetch_module_update_candidate(
+                    mod_name, cur_ver, provider_url, installed_core_ver=installed_core_ver
+                )
+                if cand_info is not None:
+                    updates[mod_name] = cand_info
 
         # 探測入口檔 yscb.py 版本
         host_update = self._check_host_script_update(cfg)
@@ -244,13 +279,13 @@ class UpdateChecker:
             pass
         return None
 
-    def _fetch_latest_version(self, module_name: str, provider_url: str) -> Optional[str]:
+    def _read_index_data(self, module_name: str, provider_url: str) -> Optional[Dict[str, Any]]:
+        """Reads index.json from local provider paths or remote HTTP provider."""
+        provider_url = normalize_legacy_provider_url(provider_url)
         if not provider_url:
             return None
 
-        # 1. 本地目錄探測 (路徑不以 http/https 開頭)
         if not provider_url.startswith(("http://", "https://")):
-            # 解算本機路徑
             resolved_p = provider_url
             if not os.path.isabs(resolved_p):
                 try:
@@ -268,25 +303,129 @@ class UpdateChecker:
                 if vfs.is_file(cp):
                     try:
                         idx = vfs.read_json(cp)
-                        if isinstance(idx, dict) and "versions" in idx and isinstance(idx["versions"], list):
-                            return semver.find_best_version(idx["versions"])
+                        if isinstance(idx, dict):
+                            return idx
                     except Exception:
                         pass
             return None
 
-        # 2. 遠端 HTTP 探測 (2秒超時，靜默例外)
         try:
             url = f"{provider_url.rstrip('/')}/{module_name}/index.json"
             req = urllib.request.Request(url, headers={"User-Agent": "yscb-update-checker/1.0"})
             with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
-                    if isinstance(data, dict) and "versions" in data and isinstance(data["versions"], list):
-                        return semver.find_best_version(data["versions"])
+                    if isinstance(data, dict):
+                        return data
         except Exception:
             pass
 
         return None
+
+    def _fetch_latest_version(self, module_name: str, provider_url: str) -> Optional[str]:
+        idx = self._read_index_data(module_name, provider_url)
+        if isinstance(idx, dict) and "versions" in idx and isinstance(idx["versions"], list):
+            return semver.find_best_version(idx["versions"])
+        return None
+
+    def _fetch_module_update_candidate(
+        self,
+        mod_name: str,
+        current_ver: str,
+        provider_url: str,
+        installed_core_ver: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Determines the highest compatible update candidate in the same major line
+        and aggregates release urgency/metadata across (current_ver, latest_ver] (including pruned versions).
+        """
+        try:
+            cur_t = semver.parse_semver(current_ver)
+        except Exception:
+            return None
+        major_constraint = f"^{cur_t.major}.{cur_t.minor}.{cur_t.patch}"
+
+        idx = self._read_index_data(mod_name, provider_url)
+        releases_map = idx.get("releases") if isinstance(idx, dict) and isinstance(idx.get("releases"), dict) else {}
+
+        if isinstance(idx, dict) and isinstance(idx.get("versions"), list):
+            raw_versions = idx["versions"]
+        else:
+            fallback_v = self._fetch_latest_version(mod_name, provider_url)
+            raw_versions = [fallback_v] if fallback_v else []
+
+        compat_versions: List[str] = []
+        for v in raw_versions:
+            if not isinstance(v, str):
+                continue
+            try:
+                vt = semver.parse_semver(v)
+                if vt.is_build or v.endswith(".build"):
+                    continue
+            except Exception:
+                continue
+            rel_entry = releases_map.get(v) if isinstance(releases_map, dict) else None
+            if installed_core_ver and isinstance(rel_entry, dict) and isinstance(rel_entry.get("dependencies"), dict):
+                core_req = rel_entry["dependencies"].get("core")
+                if isinstance(core_req, str) and core_req.strip():
+                    if not semver.match_constraint(installed_core_ver, core_req.strip()):
+                        continue
+            compat_versions.append(v)
+
+        latest_ver = semver.find_best_version(compat_versions, major_constraint)
+        if not latest_ver:
+            return None
+        try:
+            if semver.compare_semver(latest_ver, current_ver) <= 0:
+                return None
+        except Exception:
+            return None
+
+        # Aggregate metadata across all versions in (current_ver, latest_ver], including pruned entries in releases_map
+        latest_meta = normalize_release_metadata(releases_map.get(latest_ver) if isinstance(releases_map, dict) else None)
+        agg_rank = latest_meta["rank"]
+        agg_urgency = latest_meta["urgency"]
+        agg_type = latest_meta["type"]
+        agg_summary = latest_meta["summary"]
+        agg_critical = latest_meta["is_critical"]
+
+        if isinstance(releases_map, dict):
+            # Sort versions in (current_ver, latest_ver] ascending so higher versions win ties
+            in_range_vers: List[str] = []
+            for r_ver in releases_map.keys():
+                try:
+                    if semver.compare_semver(r_ver, current_ver) > 0 and semver.compare_semver(r_ver, latest_ver) <= 0:
+                        in_range_vers.append(r_ver)
+                except Exception:
+                    continue
+            in_range_vers.sort(key=lambda x: semver.parse_semver(x))
+            for r_ver in in_range_vers:
+                m_info = normalize_release_metadata(releases_map.get(r_ver))
+                if m_info["is_critical"]:
+                    agg_critical = True
+                if m_info["rank"] > agg_rank or (m_info["rank"] == agg_rank and m_info["is_critical"]):
+                    agg_rank = m_info["rank"]
+                    agg_urgency = m_info["urgency"]
+                    if m_info["type"]:
+                        agg_type = m_info["type"]
+                    if m_info["summary"]:
+                        agg_summary = m_info["summary"]
+                elif m_info["rank"] == agg_rank:
+                    if m_info["type"]:
+                        agg_type = m_info["type"]
+                    if m_info["summary"]:
+                        agg_summary = m_info["summary"]
+
+        return {
+            "current_version": current_ver,
+            "latest_version": latest_ver,
+            "has_update": True,
+            "provider": provider_url,
+            "type": agg_type,
+            "urgency": "critical" if agg_critical else agg_urgency,
+            "summary": agg_summary,
+            "is_critical": agg_critical,
+        }
 
     def get_tips(self, updates: Optional[Dict[str, Any]] = None) -> List[str]:
         """讀取更新資訊並生成非阻塞提示清單。"""
@@ -314,10 +453,27 @@ class UpdateChecker:
                 if isinstance(info, dict) and info.get("has_update"):
                     cur_v = info.get("current_version", "")
                     lat_v = info.get("latest_version", "")
-                    tips.append(
-                        f"[*] 提示: 模組 '{mod}' 有新版本可用 (當前: v{cur_v}, 最新: v{lat_v})。"
-                        f" 可執行 'python yscb.py update {mod}' 進行升級。"
-                    )
+                    rel_type = str(info.get("type", "") or "").strip()
+                    rel_urgency = str(info.get("urgency", "") or "").strip().lower()
+                    rel_summary = str(info.get("summary", "") or "").strip()
+                    is_crit = bool(info.get("is_critical")) or rel_urgency == "critical" or rel_type.lower() == "hotfix"
+                    type_tag = f" [{rel_type.upper()}]" if rel_type else ""
+
+                    if is_crit:
+                        summary_line = f"    摘要: {rel_summary}\n" if rel_summary else ""
+                        tips.append(
+                            "================================================================================\n"
+                            f"[!] [CRITICAL UPDATE] 模組 '{mod}' 有重要修補更新可用 (當前: v{cur_v}, 最新: v{lat_v}){type_tag}！\n"
+                            f"{summary_line}"
+                            f"    強烈建議立即執行 'python yscb.py update {mod}' 進行升級。\n"
+                            "================================================================================"
+                        )
+                    else:
+                        summary_suffix = f" ({rel_summary})" if rel_summary else ""
+                        tips.append(
+                            f"[*] 提示: 模組 '{mod}' 有新版本可用 (當前: v{cur_v}, 最新: v{lat_v}){type_tag}{summary_suffix}。"
+                            f" 可執行 'python yscb.py update {mod}' 進行升級。"
+                        )
         return tips
 
     def print_tips_if_available(self) -> None:
