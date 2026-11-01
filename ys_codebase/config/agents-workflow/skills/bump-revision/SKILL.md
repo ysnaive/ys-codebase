@@ -111,5 +111,6 @@ flowchart TD
 ## 常見踩坑指南 (Gotchas)
 
 - **切勿使用 `yscb.py update` 切換 `@build` 模組**：`update` 對本地 `@build` 開發版設有防覆蓋略過保護，完成 `dev release` 後必須使用 `install <module> --force -y` 才能切換為正式版。
+- **無須手動將本地 `.zip` 加入 Git 追蹤**：本倉 `.gitignore` 已忽略 `ys_codebase/release/**/*.zip`，本地 `dev release` 產出之 `.zip` 僅供本機正式版安裝 Dogfooding；Git 提交時僅需提交更新後的 `manifest.json`、`ys_codebase/release/<mod>/index.json` 與 `yscb.config.json`，推送至 `main` 後將由 GitHub Actions 自動打包並同步至遠端 `releases` 孤兒分支。
 - **涉及 `agents-workflow` 或 Contributed 資產變更時記得同步工作流投影**：當 `agents-workflow`、`dev` 或 `knowledge-db` 切換為正式安裝版後，若涉及工作流資產變更，可補跑 `agents-workflow compile` 與 `release --force` 確保第二層空間與正式版對齊。
 

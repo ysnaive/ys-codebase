@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.1.0",
+  "version": "1.2.1.1",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -12,6 +12,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "支援雙層 provider (index/release)、releases 孤立分支自動發布、releases 感知相容性解析、更新緊急度提示與跨平台目錄鎖定三階段真偽鑑別原子同步"
+    "summary": "支援專案限定 @build 模組跨機 clone 自動自 source/<mod> 動態打包自舉"
   }
 }

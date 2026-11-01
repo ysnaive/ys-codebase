@@ -896,9 +896,10 @@ class Installer:
                 except Exception:
                     pass
 
-        # 3b. 本地同版 source/<mod> 動態打包自給自足
+        # 3b. 本地同版 source/<mod> 動態打包自給自足（含 @build 同三元組匹配，但 .build 絕不寫入 release/）
         src_dir = find_matching_local_source_dir(module_name, [yscb_abs, p_abs or "", base_dir])
-        rel_zip_target = os.path.join(yscb_abs, "release", module_name, f"{version}.zip")
+        is_b_ver = version == "build" or version.endswith(".build")
+        rel_zip_target = None if is_b_ver else os.path.join(yscb_abs, "release", module_name, f"{version}.zip")
         if src_dir and package_local_source_if_exact_match(src_dir, version, mirror_zip, release_zip_path=rel_zip_target):
             try:
                 fetch_and_extract_zip(mirror_zip, dest_dir)

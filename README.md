@@ -4,7 +4,7 @@
 
 > [!IMPORTANT]
 > ### [AI Agent Onboarding] 給 AI Agent 的安裝與初始化指引
-> 若需將本工具庫或擴充模組導入目標專案環境，請直接參閱下方 **[3. 安裝與 5 分鐘快速上手指南 (Quickstart & Setup Guide)](#3-安裝與-5-分鐘快速上手指南-quickstart--setup-guide)**，並嚴格遵守各模組的 **Pre-flight Check**（在執行設定寫入前先向開發者確認路徑與目標 IDE）。
+> 若需將本工具庫或擴充模組導入目標專案環境，請直接參閱下方 **[3. 安裝與 5 分鐘快速上手指南 (Quickstart & Setup Guide)](#3-安裝與-5-分鐘快速上手指南-quickstart--setup-guide)**，並嚴格遵守各模組的 **Pre-flight Check**（在執行設定寫入前先向開發者確認路徑與目標 IDE）。安裝完成後，開發者亦可隨時透過互動式教練技能 **`/how-to-config-yscb`**（組態體檢與空間對齊）與 **`/how-to-yscb`**（工作流與工具互動導覽）快速掌握最佳實踐。
 
 ---
 
@@ -21,16 +21,16 @@ graph TD
     Host["CLI 入口與自舉器<br/><code>python yscb.py</code>"]:::host
 
     subgraph Kernel ["Core 微核心 (module:core)"]
-        URI["語意空間虛擬檔案系統 (URI VFS)<br/><i>project://, yscb://, module:// 等 15 項協定</i>"]:::core
-        Config["2x2 組態矩陣<br/><i>專案共享 config.project.json / 本機覆蓋 config.local.json</i>"]:::core
-        Installer["套件與環境管理器<br/><i>安裝 / 升級 / 快照回滾 / 私有 .venv 隔離</i>"]:::core
+        URI["First-Class VFS 與語意 URI<br/><i>core.uri / core.vfs 13 項標準正交協議</i>"]:::core
+        Config["2x2 組態矩陣與多語系引擎<br/><i>config.project / config.local 與 core.locale 宿主專有名詞</i>"]:::core
+        Installer["套件與環境管理器<br/><i>releases 分支 / 快照回滾 / 私有 .venv 隔離 / 飛行紀錄器</i>"]:::core
     end
 
     subgraph Ecosystem ["核心生態系模組 (Ecosystem Modules)"]
-        Workflow["Agent 技能與開發規範 (agents-workflow)<br/><i>SOP 0~7 / 6 大計畫分支 / 純 Skill 投影與防呆</i>"]:::mod
-        Knowledge["知識庫與語意檢索 (knowledge-db)<br/><i>多語言 AST 解析 / BM25 + ONNX 向量 RRF / 調用圖譜</i>"]:::mod
-        Server["常駐守護與熱派發中樞 (server)<br/><i>&lt;10ms Hot-IPC / WarmWorker 背景服務 / 熱重載</i>"]:::mod
-        Dev["模組開發者工具箱 (dev)<br/><i>腳手架生成 / 靜態合規檢查 / 隔離沙盒測試 / 發布</i>"]:::mod
+        Workflow["Agent 技能與開發規範 (agents-workflow)<br/><i>SOP 0~7 / 6 大計畫分支 / 8 大平台 Target 投影</i>"]:::mod
+        Knowledge["知識庫與語意檢索 (knowledge-db)<br/><i>10 語言 Tree-sitter AST / BM25 + ONNX 向量 RRF / 調用圖譜</i>"]:::mod
+        Server["常駐守護與熱派發中樞 (server)<br/><i>&lt;10ms Hot-IPC / WarmWorker 背景服務 / 雙軌熱重載</i>"]:::mod
+        Dev["模組開發者工具箱 (dev)<br/><i>腳手架生成 / 8 步合規檢核 / 隔離沙盒測試 / 雙軌發布治理</i>"]:::mod
     end
 
     Host --> Kernel
@@ -41,13 +41,13 @@ graph TD
 
 ## 2. 五大核心模組清單 (Ecosystem Modules)
 
-| 模組名稱 | 模組標識 | 職責定位與核心價值 | 隨包手冊語意位置 (安裝後) |
-| :--- | :--- | :--- | :--- |
-| **Core** | `module:core` | **微核心基礎設施**：套件生命週期管理、語意空間協議 VFS、2x2 組態矩陣、CLI 調度、私有微環境 (`PipManager`) 與 SemVer 引擎。 | `module://core/README.md`<br/>*(實體預設：`.yscb/.modules/core/README.md`)* |
-| **Agents-Workflow** | `module:agents-workflow` | **AI Agent 技能與工作流引擎**：SOP 0~7 開發流程、6 大計畫分支拓撲、行為準則防呆、12 大領域與工作流 Skills（`.agents/skills/` 或 `.claude/skills/`）及 `plans` 管理工具鏈。 | `module://agents-workflow/README.md`<br/>*(實體預設：`.yscb/.modules/agents-workflow/README.md`)* |
-| **Knowledge-DB** | `module:knowledge-db` | **知識庫與符號檢索引擎**：多語言 AST 符號解析 (Python/C/C++/C#/JS/TS/MD)、BM25 + FastEmbed ONNX 雙軌向量檢索、調用圖譜 (`callers`/`callees`/`impact`) 與代碼切片。 | `module://knowledge-db/README.md`<br/>*(實體預設：`.yscb/.modules/knowledge-db/README.md`)* |
-| **Server** | `module:server` | **常駐守護與背景服務中樞**：Master/WarmWorker 雙進程隔離、`<10ms` 極速熱派發、`.modules/` 雙軌熱重載、背景服務託管 (`ServiceManager`) 與即時滾動日誌。 | `module://server/README.md`<br/>*(實體預設：`.yscb/.modules/server/README.md`)* |
-| **Dev** | `module:dev` | **模組開發工具箱**：擴充模組腳手架生成 (`create`)、8 步靜態合規檢查 (`check`)、隔離沙盒並行跑測 (`test`) 與雙軌打包發布 (`build`/`release`)。 | `module://dev/README.md`<br/>*(實體預設：`.yscb/.modules/dev/README.md`)* |
+| 模組名稱 | 模組標識 | 職責定位與核心價值 | 隨包手冊語意位置 (安裝後) | 系統知識庫手冊 (本倉) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Core** | `module:core` | **微核心基礎設施**：套件生命週期管理（對接單層 `releases` 分支與 `index.json` 雙軌版本帳本）、First-Class VFS (`core.vfs`) 與 Scheme B 正交語意 URI (`core.uri`)、2x2 組態矩陣、多語系與宿主專有名詞引擎 (`core.locale`)、CLI 飛行紀錄器 (`core.telemetry`)、私有微環境 (`PipManager`) 與四段式 SemVer 引擎。 | `module://core/README.md`<br/>*(預設：`.yscb/.modules/core/README.md`)* | [docs/core/README.md](./docs/core/README.md) |
+| **Agents-Workflow** | `module:agents-workflow` | **AI Agent 技能與工作流引擎**：SOP 0~7 開發流程、6 大計畫分支拓撲、6 大中央工程與子代理標準、8 大主流 AI 平台 `release_target` 投影、19 個內建工作流与領域 Skills（全生態系共 22 個 Skills），以及 `plan` / `roadmap` / `todo` / `session-trace` 管理工具鏈。 | `module://agents-workflow/README.md`<br/>*(預設：`.yscb/.modules/agents-workflow/README.md`)* | [docs/agents-workflow/README.md](./docs/agents-workflow/README.md) |
+| **Knowledge-DB** | `module:knowledge-db` | **知識庫與符號檢索引擎**：10 大語言 Tree-sitter 宣告式 AST 符號解析 (Python/C/C++/C#/JS/TS/MD/SPICE/HTML/CSS)、宣告式空間權重 (`weight`)、BM25 + FastEmbed ONNX 雙軌向量 RRF 複合檢索、跨檔案調用圖譜 (`callers`/`callees`/`impact`) 與三級意圖代碼切片。 | `module://knowledge-db/README.md`<br/>*(預設：`.yscb/.modules/knowledge-db/README.md`)* | [docs/knowledge-db/README.md](./docs/knowledge-db/README.md) |
+| **Server** | `module:server` | **常駐守護與背景服務中樞**：Master/WarmWorker 雙進程隔離、`<10ms` 極速 Hot-IPC 派發、`.modules/` 雙軌自動熱重載、背景服務託管 (`ServiceManager`) 與即時 Flush 滾動日誌。 | `module://server/README.md`<br/>*(預設：`.yscb/.modules/server/README.md`)* | [docs/server/README.md](./docs/server/README.md) |
+| **Dev** | `module:dev` | **模組開發工具箱**：擴充模組腳手架生成 (`create`)、8 步靜態合規檢查 (`check`)、隔離沙盒平行跑測 (`test`)、3-Gate 發布預檢 (`release-check`)、雙軌元數據打包發布 (`build`/`release`/`release-git`) 與事後索引修補 (`index-patch`)。 | `module://dev/README.md`<br/>*(預設：`.yscb/.modules/dev/README.md`)* | [docs/dev/README.md](./docs/dev/README.md) |
 
 > **提示**：隨時可透過 `python yscb.py uri resolve module://<mod>/README.md` 取得任一已安裝模組隨包手冊的實體絕對路徑。
 
@@ -59,13 +59,14 @@ graph TD
 
 1. **環境需求**：Python 3.9+（核心僅使用 Python 標準庫，無需預裝第三方套件）。
 2. **一鍵自舉初始化**：
-   從 YSCB 發布倉庫取得單一入口檔案 `yscb.py` 放入您的專案根目錄，執行 `init` 自動自官方線上來源拉取並解壓最新 `core` 模組與生成錨點檔 `yscb.config.json`：
+   從 YSCB 發布倉庫取得單一入口檔案 `yscb.py` 放入您的專案根目錄，執行 `init` 自動自官方線上 `releases` 分支拉取並解壓最新 `core` 模組與生成錨點檔 `yscb.config.json`：
    ```bash
    # 全新初始化工作區 (預設建立 .yscb 工具目錄並自動寫入 yscb.config.json)
    python yscb.py init
 
-   # [既有工作區自癒] 檢修或強制修復 core 模組
+   # [既有工作區自癒 / Clone 後環境還原] 檢修修復 core 或依 yscb.config.json 還原全套模組
    python yscb.py init --fix
+   python yscb.py restore
    ```
 3. **綁定宿主專案根目錄並驗證**：
    ```bash
@@ -79,9 +80,11 @@ graph TD
    ```text
    my-project/                  <-- project:// (宿主專案根目錄)
    ├── yscb.py                  <-- yscb.host:// (單檔 CLI 入口腳本)
-   ├── yscb.config.json         <-- init 自動生成的錨點檔 (紀錄工具目錄位置，預設指向 .yscb)
-   └── .yscb/                   <-- yscb:// (YSCB 工具與運行根目錄；自舉倉庫亦可自訂為 ys_codebase/)
+   ├── yscb.config.json         <-- init 自動生成的錨點與鎖定檔 (紀錄工具目錄位置與模組版本鎖定)
+   └── .yscb/                   <-- yscb:// (YSCB 工具與運行根目錄；自舉母倉自訂為 ys_codebase/)
        ├── .modules/            <-- module:// (已安裝模組運行空間，如 .yscb/.modules/core/)
+       ├── .mirror/             <-- module.mirror:// (不可變套件快取與離線索引鏡像)
+       ├── .venv/               <-- yscb.venv:// (Wheel-Only 私有隔離微環境，按需自動建立)
        ├── config/              <-- config:// (2x2 組態矩陣：config.project.json 與 config.local.json)
        └── source/              <-- module.source:// (執行 dev create 時建立自訂擴充模組源碼之位置)
    ```
@@ -90,7 +93,7 @@ graph TD
 
 ### 3.2 步驟二：`agents-workflow` 技能與開發規範設定
 
-`agents-workflow` 提供 AI Agent 協同開發所需的 **SOP 0~7 生命週期**（含 Review Gate 結案審查）、**6 大計畫分支**（Fast Track、Full Track、Umbrella、Revision、Research、Roadmap）與 **純 Skill 技能包體系**。
+`agents-workflow` 提供 AI Agent 協同開發所需的 **SOP 0~7 生命週期**（含 `P{XX}-05_auto.md` 單檔連續推進與 Review Gate 結案審查）、**6 大計畫分支**（Full Track、Fast Track、Umbrella、Revision、Research、Roadmap/Todo 雙層儲備）與 **純 Skill 技能包體系**。
 
 #### 安裝與設定步驟
 
@@ -103,7 +106,7 @@ graph TD
 > ### [Pre-flight Check] 給 AI Agent 的初始化確認提示
 > 在執行一鍵初始化與設定 Release Target 前，**Agent 必須先向開發者確認以下兩點**：
 > 1. **目錄配置**：確認是否使用預設路徑（`plans/`、`docs/`、`plans/archived/`、`plans/roadmap/`），或需自訂路徑？
-> 2. **目標環境 (IDE Target)**：詢問開發者使用的 AI 開發環境（`antigravity`、`claude` 或 `codex`），確認要啟用哪一個 Target？
+> 2. **目標環境 (IDE Target)**：詢問開發者使用的 AI 開發環境（支援 `antigravity`、`claude`、`codex`、`cursor`、`copilot`、`windsurf`、`opencode`、`roo` 共 8 大平台），確認要啟用哪一個或哪幾個 Target？
 
 2. **一鍵初始化工作流目錄與語意協議 (`init --default`)**：
    ```bash
@@ -114,7 +117,7 @@ graph TD
 
 3. **設定目標開發環境 (Release Target) 並自動發布規範**：
    ```bash
-   # 查看支援的目標環境清單與啟用狀態 (預設啟用 antigravity)
+   # 查看支援的 8 大目標環境清單與啟用狀態 (預設啟用 antigravity)
    python yscb.py agents-workflow release-target --list
 
    # 啟用目標環境 (--proj 代表寫入專案共享設定，執行時會自動觸發完整原子發布！)
@@ -127,12 +130,19 @@ graph TD
    python yscb.py agents-workflow release
    ```
 
-   **各目標環境 (Release Target) 物化產物對照表**：
-   | Target 名稱 | 適用 AI 開發環境 | 根目錄規範入口檔 | Skills 投影目錄 | 模板與標準參考目錄 |
+   **8 大內建目標環境 (Release Target) 物化產物對照表**：
+   | Target 名稱 | 適用 AI 開發環境 | 規範入口檔 (`agents_md`) | Skills 投影目錄 | 模板與標準參考目錄 |
    | :--- | :--- | :--- | :--- | :--- |
    | `antigravity` | Google Antigravity IDE | `AGENTS.md` | `.agents/skills/<name>/SKILL.md` | `.agents/.yscb/{templates,standards}/` |
    | `claude` | Anthropic Claude Code | `CLAUDE.md` | `.claude/skills/<name>/SKILL.md` | `.claude/.yscb/{templates,standards}/` |
    | `codex` | OpenAI Codex CLI / IDE | `AGENTS.md` | `.agents/skills/<name>/SKILL.md` | `.agents/.yscb/{templates,standards}/` |
+   | `cursor` | Cursor IDE | `AGENTS.md` | `.cursor/skills/<name>/SKILL.md` | `.cursor/.yscb/{templates,standards}/` |
+   | `copilot` | GitHub Copilot | `.github/copilot-instructions.md` | `.github/skills/<name>/SKILL.md` | `.github/.yscb/{templates,standards}/` |
+   | `windsurf` | Windsurf IDE | `AGENTS.md` | `.windsurf/skills/<name>/SKILL.md` | `.windsurf/.yscb/{templates,standards}/` |
+   | `opencode` | OpenCode CLI / IDE | `AGENTS.md` | `.opencode/skills/<name>/SKILL.md` | `.opencode/.yscb/{templates,standards}/` |
+   | `roo` | Roo Code | `AGENTS.md` | `.roo/skills/<name>/SKILL.md` | `.roo/.yscb/{templates,standards}/` |
+
+   *(註：當同時啟用多個共用 `AGENTS.md` 的 Target 時，編譯器會自動將宿主專有名詞與技能相對路徑去重並以 `" / "` 並聯渲染，同時支援執行期環境變數自動嗅探)*
 
 4. **驗證工作流狀態**：
    ```bash
@@ -144,11 +154,11 @@ graph TD
 
 ### 3.3 步驟三：`knowledge-db` 知識庫與語意檢索設定
 
-`knowledge-db` 提供多語言 AST 符號解析、BM25 詞彙 + FastEmbed ONNX 向量雙軌複合檢索、調用圖譜追蹤（`callers` / `callees` / `impact`）與 AST 代碼切片預覽。
+`knowledge-db` 提供 10 大語言 Tree-sitter AST 符號解析、BM25 詞彙 + FastEmbed ONNX 向量雙軌 RRF 複合檢索、跨檔案調用圖譜追蹤（`callers` / `callees` / `impact`）與三級意圖 AST 代碼切片預覽。
 
 #### 安裝與設定步驟
 
-1. **安裝模組**（安裝時會自動在 `yscb://.venv/` 隔離微環境配置 `tree-sitter` 與 `fastembed` 等依賴）：
+1. **安裝模組**（安裝時會自動在 `yscb.venv://` 隔離微環境配置預編譯 Wheel 依賴，並自動向 `agents-workflow` 導出 `knowledge-db-search` 技能）：
    ```bash
    python yscb.py install knowledge-db
    ```
@@ -160,7 +170,7 @@ graph TD
 > 2. **向量檢索模式**：詢問是否要下載本地 ONNX 向量模型（`model download`，約 130MB，支援語意混合檢索），或關閉向量檢索改用輕量極速之純 BM25 詞彙模式？
 
 2. **設定專案源碼掃描空間 (`spaces.source`)**：
-   在 `config/knowledge-db/contribute.json` 設定專案原始碼掃描範圍（若檔案不存在可直接建立，注意鍵名為 `include`）：
+   在 `config/knowledge-db/contribute.json` 設定專案原始碼掃描範圍与檢索權重 `weight`（若檔案不存在可直接建立，注意鍵名為 `include`）：
    ```json
    {
      "spaces": {
@@ -168,7 +178,8 @@ graph TD
          "description": "專案核心原始碼空間",
          "include": ["project://src", "project://lib"],
          "exclude": ["**/__pycache__/**", "**/node_modules/**"],
-         "file_patterns": ["*.py", "*.cpp", "*.h", "*.ts", "*.js"]
+         "file_patterns": ["*.py", "*.cpp", "*.h", "*.cs", "*.ts", "*.js"],
+         "weight": 1.0
        }
      }
    }
@@ -186,13 +197,13 @@ graph TD
 
 4. **一鍵建立全管線索引並驗證檢索**：
    ```bash
-   # 一鍵執行：增量指紋掃描 -> AST 符號提取 -> BM25 倒排索引 -> 向量特徵建置
+   # 一鍵執行：增量指紋掃描 -> AST 符號提取 -> BM25 倒排索引 -> 調用圖譜 -> 向量特徵建置
    python yscb.py knowledge-db index
 
    # 檢查知識庫空間、索引與模型就緒狀態
    python yscb.py knowledge-db status
 
-   # 執行帶 AST 代碼切片之高密度檢索 (AI Agent 探索首選)
+   # 執行帶 AST 代碼切片之 Tier 2 高密度檢索 (AI Agent 探索首選)
    python yscb.py knowledge-db search "核心關鍵字" --json -s
    ```
 
@@ -200,7 +211,7 @@ graph TD
 
 ### 3.4 步驟四：`server` 常駐加速與背景守護設定 (推薦安裝)
 
-`server` 模組透過常駐預熱 `WarmWorker` 將 CLI 調用延遲由冷啟動 ~1s 降至 **<10ms**，並自動託管 `knowledge-db` 背景檔案監聽（存檔即自動增量修補索引）與 `.modules/` 熱重載。
+`server` 模組透過常駐預熱 `WarmWorker` 將 CLI 調用延遲由冷啟動 ~1s 降至 **<10ms**，並自動託管 `knowledge-db` 背景檔案監聽（`KnowledgeDBServiceWorker`，存檔 500ms 防抖自動差量熱修補索引）與 `.modules/` 雙軌熱重載。
 
 ```bash
 # 1. 安裝模組
@@ -224,7 +235,7 @@ python yscb.py server stop
 
 ### 3.5 步驟五：`dev` 擴充模組開發工具箱 (供插件/模組開發者)
 
-若您希望在專案中開發自訂的 YS-Codebase 擴充模組：
+若您希望在專案中開發自訂的 YS-Codebase 擴充模組（安裝 `dev` 後會自動導出 `yscb-module-dev` 與 `/bump-revision` 技能）：
 
 ```bash
 # 1. 安裝開發者工具箱
@@ -236,13 +247,14 @@ python yscb.py dev create my-plugin --desc="自訂業務擴充模組"
 # 查詢新模組源碼的實體絕對路徑以便編輯代碼
 python yscb.py uri resolve module.source://my-plugin
 
-# 3. 執行靜態合規檢查與隔離沙盒測試
+# 3. 執行 8 步靜態合規檢查與隔離沙盒測試 (支援 -q 節流與 --sync 通過後自動熱安裝 @build)
 python yscb.py dev check my-plugin
-python yscb.py dev test my-plugin
+python yscb.py dev test my-plugin -q --sync
 
-# 4. 本地 @build 通道熱安裝試用
+# 4. 或手動執行本地 @build 通道熱安裝試用
 python yscb.py install my-plugin@build --force
 ```
+> **提示**：對於僅供單一專案內部使用之小範圍特化自建模組，**建議長期維持以 `@build` 版自部署使用**，免去版本號遞增與 `release/` 釋出維護問題（跨機 `git clone` 後執行 `restore` 或任意指令時，系統亦會自動從 `source/<name>` 無感打包還原 `@build` 模組）。
 
 ---
 
@@ -252,24 +264,32 @@ python yscb.py install my-plugin@build --force
 # ── 宿主自舉、套件與組態 (Host & Core) ─────────────────────────
 python yscb.py init [--fix]                              # 初始化工作區或自癒修復 core 模組
 python yscb.py self-update                               # 升級宿主起手腳本 yscb.py
-python yscb.py list                                      # 查看已安裝模組清單
+python yscb.py restore [--force]                         # 依 yscb.config.json 鎖定清單一鍵還原所有模組
+python yscb.py list [--remote]                           # 查看已安裝或遠端可用模組清單
 python yscb.py status                                    # 查看模組健康度與更新狀態
-python yscb.py install <module> [--force]                # 安裝模組 (完成後自動輸出 Next Steps)
-python yscb.py config list [--mod=<module>]              # 列出模組組態 (專案層級與本機覆蓋)
-python yscb.py uri list / uri check                      # 列出或檢查全系統語意 URI 協議
+python yscb.py install <module>[@ver] [--force]          # 安裝模組 (完成後自動輸出 Next Steps)
+python yscb.py update [<module>]                         # 更新指定或全部已安裝模組
+python yscb.py rollback [snapshot_id]                    # 回滾至指定雙層組態與模組快照
+python yscb.py config list [--mod=<module>] [--local]    # 列出模組組態 (專案層級與本機覆蓋)
+python yscb.py uri list / uri check                      # 列出或檢查全系統 Scheme B 語意 URI 協議
+python yscb.py contributes list / contributes check      # 列出或校驗全系統 Contributes 擴充點契約
 
 # ── AI Agent 技能與計畫管理 (Agents-Workflow) ──────────────────
 python yscb.py agents-workflow init --default [-y]       # 一鍵初始化工作流目錄與協議
 python yscb.py agents-workflow release [--force]         # 編譯並原子發布 AGENTS.md 與 Skills
-python yscb.py agents-workflow plan status               # 查詢進行中開發計畫狀態矩陣
-python yscb.py agents-workflow plan verify [plan_name]   # 稽核計畫結構、Header 與模板標題合規性
-python yscb.py agents-workflow plan search "<kw>" [--dr] # 跨活躍與封存計畫檢索全文或 DR 決策紀錄
+python yscb.py agents-workflow release-target --list     # 查看 8 大 AI 開發環境 Target 啟用狀態
+python yscb.py agents-workflow plan status [--resume]    # 查詢進行中計畫狀態矩陣或提取斷點恢復膠囊
+python yscb.py agents-workflow plan verify [plan_name]   # 稽核計畫結構、追溯差集或免讀追加 changelog (--log)
+python yscb.py agents-workflow plan search "<kw>" [--dr] # 跨活躍與封存計畫檢索全文或 DR (--full / --json)
 python yscb.py agents-workflow plan archive <plan_name>  # 安全歸檔已完成計畫 (4 重守門檢查)
+python yscb.py agents-workflow roadmap [list|promote]    # 檢視宏觀技術路線圖儲備或晉升立項
+python yscb.py agents-workflow todo [list|add|promote]   # 免讀追加、查詢或打包提取 TODO.md 輕量待辦
+python yscb.py agents-workflow session-trace [--json]    # 提取當前對話之三級摩擦軌跡供 /session-audit 診斷
 
 # ── 知識庫與調用圖譜檢索 (Knowledge-DB 8 大標準指令) ───────────
-python yscb.py knowledge-db index [--export <path>]      # 一鍵全管線建立/更新索引
+python yscb.py knowledge-db index [--all]                # 一鍵全管線建立/更新索引
 python yscb.py knowledge-db status [--scan]              # 查看空間、索引與模型狀態
-python yscb.py knowledge-db search "<query>" --json -s   # 帶 AST 代碼切片之複合語意檢索
+python yscb.py knowledge-db search "<query>" --json -s   # 帶 AST 代碼切片之複合語意檢索 (支援 --ftype)
 python yscb.py knowledge-db callers <symbol> --json -s   # 追蹤誰調用了該符號 (上游調用方)
 python yscb.py knowledge-db callees <symbol> --json -s   # 追蹤該符號內部調用了誰 (下游被調用方)
 python yscb.py knowledge-db impact <symbol> --depth=2    # 評估符號修改之多階擴散影響半徑
@@ -277,15 +297,17 @@ python yscb.py knowledge-db model status / download      # 檢查或下載本地
 python yscb.py knowledge-db clean [--all]                # 清理知識庫索引快取
 
 # ── 常駐加速與守護服務 (Server) ────────────────────────────────
-python yscb.py server start [--console] [--ttl 900]      # 啟動常駐守護進程並輸出參數橫幅
+python yscb.py server start [--console|--daemon]         # 啟動常駐守護進程並輸出參數橫幅
 python yscb.py server status                             # 查看 Master/Worker PID、Uptime 與服務狀態
 python yscb.py server reload                             # 手動熱重載 Worker 子進程
 python yscb.py server stop [--force]                     # 優雅停止服務並輸出運行統計總結報告
 
 # ── 擴充模組開發與測試 (Dev) ───────────────────────────────────
-python yscb.py dev create <name> --desc="..."            # 建立自訂模組標準骨架
-python yscb.py dev check [<name> | --all]                # 執行 8 步靜態架構與契約合規檢查
-python yscb.py dev test [<name> | --all] [--quiet]       # 執行隔離沙盒單元與自動契約測試
+python yscb.py dev create <name> [--desc="..."]          # 建立自訂模組標準骨架
+python yscb.py dev check [<name> | --all] [--json]       # 執行 8 步靜態架構與契約合規檢查
+python yscb.py dev test [<name> | --all] [-q] [--sync]   # 執行隔離沙盒平行測試 (支援通過後直裝 @build)
+python yscb.py dev bump-[major|minor|patch|revision] <m> # 單向遞增模組 manifest.json 四段式版號
 python yscb.py dev release-check [<name> | --all]        # 執行發布前 3-Gate 就緒預檢
-python yscb.py dev release <name>                        # 打包純淨發布包至 release/
+python yscb.py dev release <name> [--type=...]           # 打包純淨發布包至 release/ 並寫入雙軌元數據
+python yscb.py dev index-patch <name> --ver=<v> [...]    # 免重打包事後修補歷史版本依賴與狀態元數據
 ```

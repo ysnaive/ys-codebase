@@ -71,6 +71,24 @@ def _should_ignore_rel_path(rel_path: str, ignores: List[str]) -> bool:
     return False
 
 
+def _is_source_version_compatible_with_target(src_ver: str, target_ver: str) -> bool:
+    """Checks if local source manifest version matches target_ver (including same-triplet .build requests)."""
+    s = str(src_ver).strip()
+    t = str(target_ver).strip()
+    if not s or not t:
+        return False
+    if s == t or t == "build":
+        return True
+    if t.endswith(".build"):
+        try:
+            sv = semver.parse_semver(s)
+            tv = semver.parse_semver(t)
+            return (sv.major, sv.minor, sv.patch) == (tv.major, tv.minor, tv.patch)
+        except Exception:
+            return False
+    return False
+
+
 def package_local_source_if_exact_match(
     source_dir: str,
     target_version: str,
@@ -79,7 +97,7 @@ def package_local_source_if_exact_match(
 ) -> bool:
     """
     Packages source_dir into dest_zip_path (and optional release_zip_path) using stdlib zipfile
-    only when source_dir/manifest.json exists and its 'version' strictly equals target_version.
+    when source_dir/manifest.json exists and its 'version' matches target_version (or same-triplet .build).
     """
     if not source_dir or not os.path.isdir(source_dir):
         return False
@@ -90,7 +108,7 @@ def package_local_source_if_exact_match(
         mf_data = vfs.read_json(mf_path)
     except Exception:
         return False
-    if not isinstance(mf_data, dict) or str(mf_data.get("version", "")).strip() != str(target_version).strip():
+    if not isinstance(mf_data, dict) or not _is_source_version_compatible_with_target(mf_data.get("version", ""), target_version):
         return False
 
     ignores = list(_RELEASE_PACKAGE_IGNORES)
@@ -704,6 +722,10 @@ class AtomicEngine:
                     shutil.copy2(b_path, dest_zip_real)
                     return dest_zip_uri
 
+        src_dir = find_matching_local_source_dir(module_name, [p_abs] if p_abs else [])
+        if src_dir and package_local_source_if_exact_match(src_dir, version, dest_zip_real):
+            return dest_zip_uri
+
         raise FileNotFoundError(
             f"Build package not found for '{module_name}'. Please run 'python yscb.py dev build {module_name}' first."
         )
@@ -1019,6 +1041,18 @@ class AtomicEngine:
                             return json.loads(zf.read("manifest.json").decode("utf-8"))
                     if vfs.exists(f"{build_root_uri}/{best_bld}/manifest.json"):
                         return vfs.read_json(f"{build_root_uri}/{best_bld}/manifest.json")
+            except Exception:
+                pass
+
+        src_dir = find_matching_local_source_dir(module_name, [])
+        if src_dir:
+            try:
+                m_data = vfs.read_json(os.path.join(src_dir, "manifest.json"))
+                if isinstance(m_data, dict):
+                    m_copy = dict(m_data)
+                    v_p = semver.parse_semver(str(m_copy.get("version", "1.0.0.0")))
+                    m_copy["version"] = f"{v_p.major}.{v_p.minor}.{v_p.patch}.build"
+                    return m_copy
             except Exception:
                 pass
         return None

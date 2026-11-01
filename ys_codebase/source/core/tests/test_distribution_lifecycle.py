@@ -666,6 +666,18 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertTrue(os.path.isfile(os.path.join(mirror_core_inst, "1.2.0.0.zip")))
         self.assertFalse(os.path.exists(os.path.join(dest_core_inst, "tests")))
 
+        # 4. 驗證跨機 clone 專案限定 @build 模組（無 .build/ 與 .mirror/）時，同三元組 1.2.0.build 自動自 source/mymod (1.2.0.0) 動態打包還原
+        dest_bld_inst = os.path.join(ws_dir, "ys_codebase", ".modules", "mymod_bld")
+        mirror_bld_inst = os.path.join(ws_dir, "ys_codebase", ".mirror", "mymod_bld")
+        self.assertFalse(
+            inst._restore_module_package(ws_dir, "ys_codebase", "mymod", "1.1.0.build", rel_mod, dest_bld_inst, mirror_bld_inst)
+        )
+        self.assertTrue(
+            inst._restore_module_package(ws_dir, "ys_codebase", "mymod", "1.2.0.build", rel_mod, dest_bld_inst, mirror_bld_inst)
+        )
+        self.assertTrue(os.path.isfile(os.path.join(mirror_bld_inst, "1.2.0.build.zip")))
+        self.assertFalse(os.path.isfile(os.path.join(rel_mod, "1.2.0.build.zip")))
+
         self.mark_passed()
 
     def test_release_index_dependency_override_core_compat_and_offline_mirror_reload(self):

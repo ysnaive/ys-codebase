@@ -39,9 +39,9 @@ graph TD
     G --> H["install {mod} --force"]:::s4
 ```
 
-### 軌道 A：日常開發調試 (Dogfooding Track)
-未獲明確版本晉升指示時之本機熱開發閉環：
-- **流水線**：`編輯 source/<mod>/` $\rightarrow$ `dev check <mod>` $\rightarrow$ `dev test <mod> -q` $\rightarrow$ `install <mod>@build --force`
+### 軌道 A：日常開發調試与專案限定模組自部署 (Dogfooding & In-tree Track)
+未獲明確版本晉升指示時之本機熱開發閉環（對於僅供單一專案內部使用之小範圍特化自建模組，**建議長期維持以 `@build` 版自部署使用**，免去版本號遞增與 `release/` 釋出維護負擔；跨機 `git clone` 時系統亦支援直接自 `source/<mod>` 自動打包還原 `@build` 模組）：
+- **流水線**：`編輯 source/<mod>/` $\rightarrow$ `dev check <mod>` $\rightarrow$ `dev test <mod> -q` $\rightarrow$ `install <mod>@build --force`（亦可使用 `dev test <mod> -q --sync` 於測試通過後自動一鍵熱部署 `@build`）
 - **Server 背景自動熱重載**：若涉及常駐守護服務（如 `server`, `knowledge-db`），`install` 物化完成後 Server 後台之 `ModulesWatcher` 會自動感知 `project://.modules/` 變更並自動重載 Worker 子進程（或 Master 自重啟），**完全無需手動執行 reload**。
 
 ### 軌道 B：版本晉升交付 (Release Track)
@@ -49,7 +49,8 @@ graph TD
 > **[GATED] 授權守門 (Gated Authority) — 嚴禁 Agent 自主觸發**：
 > **僅在開發者明確指示**（顯式要求「執行版本晉升」、「bump 版本」或「release 模組」）時方可進行。未獲開發者明確指示前，嚴禁自行假設需求或擅自進入軌道 B。
 
-- **流水線**：`dev bump-<tier> <mod>` $\rightarrow$ `dev test <mod> -q` $\rightarrow$ `dev release-check <mod>` $\rightarrow$ `dev release <mod>` $\rightarrow$ `install <mod> --force`
+- **流水線**：`dev bump-<tier> <mod>` $\rightarrow$ `dev test <mod> -q` $\rightarrow$ `dev release-check <mod>` $\rightarrow$ `dev release <mod> [--type=...]` $\rightarrow$ `install <mod> --force`
+- **發布產物與 `index.json` 雙軌帳本**：`dev release` 會將釋出元數據雙軌寫入 `manifest.json["release"]` 與 `release/<mod>/index.json["releases"][<ver>]`，並觸發 `on_module_released` 事件（在配置了 `.gitignore` 忽略 `release/**/*.zip` 的倉庫中，Git 僅追蹤 `index.json`，本地 `.zip` 供本機安裝驗證或由本地同版 `source/<mod>` 自給自足動態打包）。
 
 ---
 

@@ -168,6 +168,9 @@ python yscb.py dev test <mod_name>
 # 啟用靜音節流輸出 (全通時單行靜默，節省 95% Token I/O)
 python yscb.py dev test <mod_name> -q
 
+# 測試通過後自動一鍵安裝 <mod_name>@build 至本機運行空間
+python yscb.py dev test <mod_name> -q --sync
+
 # 略過前置 build 快速跑測 (微調代碼時加速驗證)
 python yscb.py dev test <mod_name> --no-build
 
@@ -178,17 +181,20 @@ python yscb.py dev test <mod_name> --target=TestMyMod.test_ft_01
 
 ### 5.5 發布流水線 (授權守門)
 ```bash
-# 1. 發布前 3-Gate 校驗 (Gate 1: 合規 0 Fail 0 Warn; Gate 2: release/<mod>/<ver>.zip 存在不可變; Gate 3: target > global_highest 單調遞增，即便 --force 亦禁止回退)
+# 1. 發布前 3-Gate 校驗 (Gate 1: 合規 0 Fail 0 Warn; Gate 2: release/<mod>/index.json 版本帳本與 .zip 不可變; Gate 3: target > global_highest 單調遞增，即便 --force 亦禁止回退)
 python yscb.py dev release-check <mod_name>
 python yscb.py dev release-check               # 預設對所有模組執行 3-Gate 校驗
 python yscb.py dev release-check <mod_name> --force  # 覆寫模式 (僅限特殊授權，且僅容許 target == global_highest)
 
-# 2. 純淨發布打包 (排除 tests/ 與 .yscbignore，產出發布包至 project://release/)
-python yscb.py dev release <mod_name>
+# 2. 純淨發布打包 (排除 tests/ 與 .yscbignore，產出發布包至 module.release://，支援雙軌寫入釋出元數據並廣播 on_module_released 事件)
+python yscb.py dev release <mod_name> [--type=<feature|bugfix|hotfix|refactor|docs>] [--urgency=<optional|recommended|critical>] [--summary="<text>"]
 python yscb.py dev release --all                     # 依 Kahn DAG 拓撲順序批量發布 (上游失敗自動跳過下游)
 
 # 3. 本地 Git 一鍵安全發布 (自動依序 test -> release-check -> release -> 本機 git commit 與 tag，若 git commit 遇真實錯誤立即阻斷)
-python yscb.py dev release-git <mod_name> "feat: 完成特定功能"
+python yscb.py dev release-git <mod_name> "feat: 完成特定功能" [--type=...] [--urgency=...] [--summary="..."]
+
+# 4. 免重打包事後索引修補 (直接修補歷史已發布版本之依賴範圍、狀態與嚴重度元數據)
+python yscb.py dev index-patch <mod_name> --ver=<ver> [--dep="<mod>:<constraint>[;...]"] [--status=active|pruned] [--type=...] [--urgency=...] [--summary="..."]
 ```
 > [!CAUTION]
 > **發布防呆鐵律**：`release-git` 僅於本機 Git Repo 建立 Commit 與 Tag，**嚴禁遠端 push**；版本晉升與發布行為必須獲得開發者明確授權。

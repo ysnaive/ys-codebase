@@ -15,7 +15,7 @@ related_docs:
   - "../../../docs/dev/architecture.md"
   - "../../../docs/dev/user_guide.md"
   - "../../../docs/dev/testing_guide.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-01"
 ---
 
 # YS-Codebase Dev 開發者工具箱模組 (Developer Toolchain)
@@ -37,11 +37,10 @@ python yscb.py uri resolve module.source://my-module
 # 2. 執行 8 步靜態架構與契約合規檢查
 python yscb.py dev check my-module
 
-# 3. 執行隔離沙盒單元測試與自動契約測試
-python yscb.py dev test my-module
+# 3. 執行隔離沙盒測試並於通過後一鍵熱部署 @build (--sync)
+python yscb.py dev test my-module -q --sync
 
-# 4. 本地 @build 通道熱安裝並實機驗證 CLI
-python yscb.py install my-module@build --force
+# 4. 實機驗證已熱部署之模組 CLI
 python yscb.py my-module --help
 ```
 
@@ -170,24 +169,34 @@ python yscb.py dev test my-module -k test_my_feature
 # 啟用節流輸出模式 (全通僅輸出單行，前置日誌深度靜默，節省 95% 以上 Token I/O)
 python yscb.py dev test --all --quiet
 python yscb.py dev test my-module -q
+
+# 測試通過後自動將最新 @build 同步安裝至本機運行空間
+python yscb.py dev test my-module -q --sync
 ```
 
-### 3.4 純淨發布與 Git 發布流水線
+### 3.4 純淨發布、釋出元數據與事後索引修補
 
 ```bash
-# 發布預檢 (執行 3-Gate 就緒校驗：靜態合規、不可變性防護、版本單調性；支援 --all 全模組預檢)
+# 發布預檢 (執行 3-Gate 就緒校驗：靜態合規、index.json 帳本不可變防護、版本單調性；支援 --all 全模組預檢)
 python yscb.py dev release-check my-module
 python yscb.py dev release-check --all
 
-# 純淨發布打包 (排除 tests/ 與 .yscbignore，產出純淨發布包至 release/ 目錄)
-python yscb.py dev release my-module
+# 純淨發布打包 (排除 tests/ 與 .yscbignore，產出純淨發布包至 release/ 目錄並更新 index.json 雙軌帳本)
+python yscb.py dev release my-module [--type=<feature|bugfix|hotfix|refactor|docs>] [--urgency=<optional|recommended|critical>] [--summary="<更新摘要>"]
 
 # 強制覆蓋同版本發布
 python yscb.py dev release my-module --force
 
 # 本地 Git 安全發布流水線 (自動感應打包 -> 建立本機 git commit 與 tag，嚴禁 remote push)
-python yscb.py dev release-git my-module "feat: 新增資料轉換機制"
+python yscb.py dev release-git my-module "feat: 新增資料轉換機制" [--type=feature] [--urgency=recommended] [--summary="新增資料轉換機制"]
+
+# 免重打包事後索引修補 (直接修補已發布版本之依賴範圍、狀態與嚴重度元數據)
+python yscb.py dev index-patch my-module --ver=0.1.0.0 --dep="core:>=1.2.0" --urgency=recommended --summary="更新依賴範圍"
 ```
+
+> **提示（自訂模組部署策略：專案限定 `@build` 長期自部署 vs. 對外正式發布）**：
+> - **專案限定特化模組（In-tree Project-Specific Modules）**：對於僅在單一專案內部使用、無需跨專案獨立分發的小範圍特化模組，**推薦長期維持以 `@build` 通道自部署使用**（`python yscb.py dev test <mod> -q --sync` 或 `install <mod>@build --force`），免去頻繁遞增版本號與維護 `release/` 產物的負擔。即使將專案推送到 Git 並在其他電腦 `git clone`（不含 `.build/` 與 `.mirror/`），執行 `python yscb.py restore` 或任意 CLI 指令時，系統亦會自動自本地 `source/<mod>` 動態打包並無感還原 `@build` 模組。
+> - **跨專案通用模組（Shared / Distributable Modules）**：`dev release` 會自動在 `module.release://<mod>/index.json` 維護 `versions`（3-Revision 滑動視窗活躍清單）與 `releases`（永久歷史版本元數據帳本），並廣播 `on_module_released` 事件。若將 `.yscb/release/**/*.zip` 加入 `.gitignore` 不納入主分支 Git 追蹤，本地 `restore` 仍能自同版本 `source/<mod>` 自給自足還原；對外分發時，只需將 `release/<mod>/`（含 `index.json` 與 `.zip`）託管於靜態 HTTP 伺服器或獨立 `releases` 分支，即可透過 `--provider=<url_or_path>` 供下游專案安裝。
 
 ### 3.5 底層調試工具 (Low-level Operators)
 
@@ -225,9 +234,10 @@ class TestMyModuleFeature(YSCBTestCase):
 
     def test_ft_01_core_functionality(self):
         """FT-01: 驗證核心轉換邏輯正確性。"""
-        # 透過語意 URI 存取模組資產
+        # 透過 VFS 與語意 URI 存取模組資產
+        from core import vfs
         manifest_uri = "module://manifest.json"
-        self.assertTrue(uri.exists(manifest_uri))
+        self.assertTrue(vfs.exists(manifest_uri))
         self.mark_passed()
 
     def test_et_01_invalid_input_guardrail(self):

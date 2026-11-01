@@ -199,18 +199,33 @@ def _should_ignore_rel_path(rel_path: str, ignores: List[str]) -> bool:
     return False
 
 
+def _is_source_version_compatible(src_ver: str, target_ver: str) -> bool:
+    """檢查本地 source/<mod>/manifest.json 版本是否匹配目標版本（支援同三元組 .build 匹配）。"""
+    s = str(src_ver).strip()
+    t = str(target_ver).strip()
+    if not s or not t:
+        return False
+    if s == t or t == "build":
+        return True
+    if t.endswith(".build"):
+        sv = _parse_simple_semver(s)
+        tv = _parse_simple_semver(t)
+        return (sv[0], sv[1], sv[2]) == (tv[0], tv[1], tv[2])
+    return False
+
+
 def _package_source_to_zip_if_exact_version(
     source_dir: str,
     target_version: str,
     dest_zip_path: str,
     release_zip_path: Optional[str] = None,
 ) -> bool:
-    """當本地 source/<mod>/manifest.json 存在且版本與 target_version 嚴格相等時，以純標準庫打包至 dest_zip_path。"""
+    """當本地 source/<mod>/manifest.json 存在且版本與 target_version 相容（含同三元組 .build）時，以純標準庫打包至 dest_zip_path。"""
     if not source_dir or not os.path.isdir(source_dir):
         return False
     mf_path = os.path.join(source_dir, "manifest.json")
     mf_data = _read_json_dict(mf_path)
-    if not mf_data or str(mf_data.get("version", "")).strip() != str(target_version).strip():
+    if not mf_data or not _is_source_version_compatible(mf_data.get("version", ""), target_version):
         return False
 
     ignores = list(_RELEASE_PACKAGE_IGNORES)
@@ -973,7 +988,8 @@ def _bootstrap_package_from_provider(
             return True
 
         src_dir = _find_matching_source_dir(module_name, [yscb_abs, p_abs, base_dir])
-        rel_zip_target = os.path.join(yscb_abs, "release", module_name, f"{version}.zip")
+        is_b_ver = version == "build" or version.endswith(".build")
+        rel_zip_target = None if is_b_ver else os.path.join(yscb_abs, "release", module_name, f"{version}.zip")
         if src_dir and _package_source_to_zip_if_exact_version(src_dir, version, mirror_zip, release_zip_path=rel_zip_target):
             if _extract_and_cache_mirror(mirror_zip, dest_dir, mirror_dir, mirror_zip):
                 return True
