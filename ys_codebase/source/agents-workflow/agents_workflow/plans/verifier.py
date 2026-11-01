@@ -170,14 +170,18 @@ class PlanVerifier:
                 res.append(p)
         return res
 
-    def get_resolved_template_header_specs(self, template_name: str) -> List[Tuple[str, str]]:
+    def get_resolved_template_header_specs(
+        self, template_name: str, min_phase: int = 1
+    ) -> List[Tuple[str, str]]:
         """讀取已解析之標準模板並提取其定義之 Markdown 二/三級章節標題。"""
-        if template_name in self._template_header_specs_cache:
-            return self._template_header_specs_cache[template_name]
+        cache_key = f"{template_name}:min={min_phase}"
+        if cache_key in self._template_header_specs_cache:
+            return self._template_header_specs_cache[cache_key]
 
-        specs = load_template_header_specs(template_name, self.templates_dir)
-        self._template_header_specs_cache[template_name] = specs
-        self._template_headers_cache[template_name] = [n for n, _ in specs]
+        specs = load_template_header_specs(template_name, self.templates_dir, min_phase=min_phase)
+        self._template_header_specs_cache[cache_key] = specs
+        if min_phase == 1:
+            self._template_headers_cache[template_name] = [n for n, _ in specs]
         return specs
 
     def _check_nested_depth_and_structure(
@@ -331,7 +335,7 @@ class PlanVerifier:
                 in_code_block = not in_code_block
                 continue
             if not in_code_block:
-                cleaned_l = re.sub(r"`.*?`", "", l)
+                cleaned_l = re.sub(r"`+[^`]*`+", "", l)
                 non_code_lines.append(cleaned_l)
 
         non_code_text = "\n".join(non_code_lines)
@@ -366,7 +370,10 @@ class PlanVerifier:
         expected_specs: List[Tuple[str, str]] = []
         missing_specs: List[Tuple[str, str]] = []
         if tmpl_name:
-            expected_specs = self.get_resolved_template_header_specs(tmpl_name)
+            base_for_min = os.path.basename(rel_file_name)
+            m_auto_range = re.match(r"^P0([1-5])-05_auto\.md$", base_for_min, re.IGNORECASE)
+            min_phase = int(m_auto_range.group(1)) if m_auto_range else 1
+            expected_specs = self.get_resolved_template_header_specs(tmpl_name, min_phase=min_phase)
             if expected_specs:
                 doc_headers = []
                 for line in lines:
@@ -380,6 +387,24 @@ class PlanVerifier:
                     matched = any(is_header_match(exp_norm, dh) for dh in doc_headers)
                     if not matched:
                         missing_specs.append((exp_norm, exp_raw))
+
+        for idx, line in enumerate(non_code_lines, 1):
+            m_port = re.search(r"(?:file:///|\b[a-zA-Z]:[/\\][^\s\)\]`\"\'\>]+)", line)
+            if m_port:
+                bad_p = m_port.group(0)
+                report.issues.append(
+                    PlanIssue(
+                        severity=PlanSeverity.WARN,
+                        file_name=rel_file_name,
+                        line_number=idx,
+                        category="PORTABILITY",
+                        message=(
+                            f"檢測到硬編碼本機絕對路徑或 file:/// URI：'{bad_p}'，可能影響跨環境可攜性。 "
+                            f"[Fix Hint: 建議將 '{rel_file_name}' 第 {idx} 行之絕對路徑改為專案相對路徑]"
+                        ),
+                    )
+                )
+                break
 
         base_fname = os.path.basename(rel_file_name)
         is_handoff = base_fname == "handoff.md"
@@ -659,6 +684,33 @@ class PlanVerifier:
             except Exception:
                 pass
 
+        p05_path = PlanStatusResolver.resolve_phase_file(target_dir, "P05")
+        if p_up in ("P05", "P06", "P07", "ALL", "CURRENT") and p05_path.is_file():
+            try:
+                p05_text = p05_path.read_text(encoding="utf-8", errors="ignore")
+                if re.search(r"\|\s*`?(?:Major|Critical)`?\s*\|", p05_text, re.IGNORECASE):
+                    p03_path = PlanStatusResolver.resolve_phase_file(target_dir, "P03")
+                    p05_mtime = p05_path.stat().st_mtime
+                    stale_specs = [
+                        sp.name
+                        for sp in (p02_path, p03_path)
+                        if sp.is_file() and sp != p05_path and sp.stat().st_mtime + 2.0 < p05_mtime
+                    ]
+                    if stale_specs:
+                        report.issues.append(
+                            PlanIssue(
+                                severity=PlanSeverity.WARN,
+                                file_name=f"{prefix}{p05_path.name}",
+                                category="BACKPROP",
+                                message=(
+                                    f"'{p05_path.name}' 記載了 Major/Critical 實作偏差，但前置規格 ({', '.join(stale_specs)}) 修改時間早於 P05，疑似尚未反向同步回寫。 "
+                                    f"[Fix Hint: 若架構或 API 簽名有實質變更，請同步回寫 {', '.join(stale_specs)} 並於 changelog.md 登記 REVISION]"
+                                ),
+                            )
+                        )
+            except Exception:
+                pass
+
     def _build_next_phase_hint(self, target_dir: Path) -> Optional[str]:
         """當檢核全數通過且計畫尚未結案時，解析下一階段模板路徑與必備章節預告。"""
         from .status import PlanStatusResolver
@@ -708,10 +760,13 @@ class PlanVerifier:
         if not prefix:
             return all_mds
 
-        matched = [md for md in all_mds if md.name.startswith(prefix)]
-        if p_up == "P04":
-            from .status import PlanStatusResolver
+        from .status import PlanStatusResolver
 
+        matched = [md for md in all_mds if md.name.startswith(prefix)]
+        resolved_f = PlanStatusResolver.resolve_phase_file(target_dir, p_up)
+        if resolved_f.is_file() and resolved_f not in matched:
+            matched.append(resolved_f)
+        if p_up == "P04":
             p06_f = PlanStatusResolver.resolve_phase_file(target_dir, "P06")
             if p06_f.is_file() and p06_f not in matched:
                 matched.append(p06_f)
@@ -779,8 +834,11 @@ class PlanVerifier:
         enable_auto_heal = bool(log_msg and log_msg.strip())
 
         if phase_norm in PHASE_CANONICAL_FILES:
+            from .status import PlanStatusResolver
+
             exp_fname = PHASE_CANONICAL_FILES[phase_norm]
-            if not any(f.name.startswith(phase_norm + "_") for f in p.glob("*.md")):
+            resolved_primary = PlanStatusResolver.resolve_phase_file(p, phase_norm)
+            if not resolved_primary.is_file() and not any(f.name.startswith(phase_norm + "_") for f in p.glob("*.md")):
                 report.issues.append(
                     PlanIssue(
                         severity=PlanSeverity.FAIL,

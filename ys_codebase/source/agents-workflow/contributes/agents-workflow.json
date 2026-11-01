@@ -157,6 +157,11 @@
     },
     {
       "type": "template",
+      "source": "module://agents-workflow/assets/templates/PXX-05_auto.md",
+      "description": "Phase XX~05 自動連續推進綜合規格與任務模板"
+    },
+    {
+      "type": "template",
       "source": "module://agents-workflow/assets/templates/P06_test_plan.md",
       "description": "Phase 6 測試計畫模板"
     },

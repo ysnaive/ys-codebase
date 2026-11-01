@@ -48,8 +48,8 @@ class PlanStatusResolver:
     @classmethod
     def resolve_phase_file(cls, plan_dir: Union[Path, str], phase_code: str) -> Path:
         """
-        解析指定階段 (P00~P07) 於 plan_dir 下之實體檔案路徑，原名與 `_auto.md` 後綴雙軌相容。
-        優先順序：標準檔名 `<stem>.md` -> 自動推進檔名 `<stem>_auto.md` -> 同階段前綴 `<P0X>_*.md` -> 預設標準路徑。
+        解析指定階段 (P00~P07) 於 plan_dir 下之實體檔案路徑，支援標準檔名、傳統 `_auto.md` 後綴與 `PXX-05_auto.md` 區段整合檔相容。
+        優先順序：標準檔名 `<stem>.md` -> 傳統自動推進檔名 `<stem>_auto.md` -> 區段自動推進檔 `P0{start}-05_auto.md` -> 同階段前綴 `<P0X>_*.md` -> 預設標準路徑。
         """
         p = Path(plan_dir)
         p_up = (phase_code or "").strip().upper()
@@ -60,6 +60,12 @@ class PlanStatusResolver:
         auto_path = p / f"{stem}_auto.md"
         if auto_path.is_file():
             return auto_path
+        if p.is_dir() and re.match(r"^P0[1-5]$", p_up):
+            target_num = int(p_up[1:])
+            for f in sorted(p.glob("P0*-05_auto.md")):
+                m_range = re.match(r"^P0([1-5])-05_auto\.md$", f.name, re.IGNORECASE)
+                if m_range and int(m_range.group(1)) <= target_num <= 5:
+                    return f
         if p.is_dir() and re.match(r"^P0[0-7]$", p_up):
             matches = sorted(p.glob(f"{p_up}_*.md"))
             if matches:

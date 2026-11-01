@@ -71,12 +71,33 @@ class PlanSearcher:
         return plans
 
     @staticmethod
+    def _score_plan_and_file(plan_dir: Path, md_file: Path, is_active: bool) -> Tuple[int, str, int, str]:
+        """計算檢索結果之權重排序鍵：(檔案角色優先度, 計畫時間戳, 活躍目錄加權, 檔名)。"""
+        fname = md_file.name
+        if fname in ("P00_discuss.md", "P07_walkthrough.md", "fast_track_plan.md", "umbrella_overview.md", "revision_log.md") or re.match(
+            r"^R\d{2}_.+\.md$", fname, re.IGNORECASE
+        ):
+            role_weight = 3
+        elif fname == "P06_test_plan.md":
+            role_weight = 2
+        elif re.match(r"^P0[1-5]", fname, re.IGNORECASE):
+            role_weight = 1
+        else:
+            role_weight = 0
+
+        m_date = re.match(r"^(\d{4}_\d{2}_\d{2}(?:_\d{4})?)", plan_dir.name)
+        date_key = m_date.group(1) if m_date else plan_dir.name
+        active_bonus = 1 if is_active else 0
+        return (active_bonus, date_key, role_weight, fname)
+
+    @staticmethod
     def extract_drs_from_content(content: str) -> List[Tuple[str, str]]:
         """
         從 Markdown 文本中提取決策記錄 (DR)。
         支援:
         - ### [P01:DR-01] 標題 或 ### DR-01: 標題
         - - **[P01:DR-01] 標題**：內容
+        - - **[P01:DR-01]** 內容
         - - **DR-01**：內容
         
         Returns:
@@ -96,10 +117,10 @@ class PlanSearcher:
                 summary = summary_match.group(1).strip() if summary_match else dr_header
                 results.append((dr_header, summary))
 
-        # 模式 2: - **...DR...**：內容 (相容中英文與任意符號)
+        # 模式 2: - **...DR...**：內容 或 - **...DR...** 內容 (相容中英文與冒號省略格式)
         list_matches = re.findall(
-            r"-\s*\*\*(.*?DR.*?)\*\*\s*[:：]\s*(.*)",
-            content
+            r"-\s*\*\*([^*\r\n]*?DR[^*\r\n]*?)\*\*\s*(?:[:：]\s*|\s+)([^\r\n]+)",
+            content,
         )
         for dr_id, summary in list_matches:
             results.append((dr_id.strip(), summary.strip()))
@@ -120,19 +141,27 @@ class PlanSearcher:
             List[Dict]: DR 檢索結果清單
         """
         plans = self.find_all_plans(year=year, month=month)
-        results: List[Dict] = []
-        seen_keys: Set[Tuple[str, str]] = set()
+        candidates: List[Tuple[Tuple[int, str, int, str], Dict]] = []
+        seen_keys: Set[Tuple[str, str, str]] = set()
 
         for plan in plans:
+            is_active = plan.parent == self.plans_dir
             for md_file in sorted(plan.rglob("*.md")):
                 try:
                     content = md_file.read_text(encoding="utf-8", errors="ignore")
                 except Exception:
                     continue
 
+                try:
+                    rel_src_str = str(md_file.relative_to(plan)).replace("\\", "/")
+                    disp_source = f"{plan.name}/{rel_src_str}" if rel_src_str != "." else plan.name
+                except Exception:
+                    rel_src_str = md_file.name
+                    disp_source = plan.name
+
                 drs = self.extract_drs_from_content(content)
                 for dr_id, summary in drs:
-                    dedup_key = (plan.name, dr_id)
+                    dedup_key = (plan.name, rel_src_str, dr_id)
                     if dedup_key in seen_keys:
                         continue
                     seen_keys.add(dedup_key)
@@ -142,27 +171,24 @@ class PlanSearcher:
                         if (
                             q_lower not in dr_id.lower()
                             and q_lower not in summary.lower()
-                            and q_lower not in md_file.name.lower()
+                            and q_lower not in rel_src_str.lower()
+                            and q_lower not in plan.name.lower()
                         ):
                             continue
 
-                    try:
-                        rel_src = md_file.relative_to(plan)
-                        disp_source = f"{plan.name}/{rel_src}" if str(rel_src) != "." else plan.name
-                    except Exception:
-                        disp_source = plan.name
+                    score_key = self._score_plan_and_file(plan, md_file, is_active)
+                    candidates.append((
+                        score_key,
+                        {
+                            "plan_name": plan.name,
+                            "source_file": disp_source,
+                            "dr_id": dr_id,
+                            "summary": summary,
+                        },
+                    ))
 
-                    results.append({
-                        "plan_name": plan.name,
-                        "source_file": disp_source,
-                        "dr_id": dr_id,
-                        "summary": summary,
-                    })
-
-                    if len(results) >= limit:
-                        return results
-
-        return results
+        candidates.sort(key=lambda x: (x[0][0], x[0][1], x[0][2]), reverse=True)
+        return [item for _, item in candidates[:limit]] if limit > 0 else [item for _, item in candidates]
 
     def search_full_text(
         self,
@@ -181,32 +207,40 @@ class PlanSearcher:
             return []
 
         plans = self.find_all_plans(year=year, month=month)
-        results: List[Dict] = []
+        candidates: List[Tuple[Tuple[int, str, int, str], Dict]] = []
         q_lower = query.lower()
 
         for plan in plans:
+            is_active = plan.parent == self.plans_dir
             for md_file in sorted(plan.rglob("*.md")):
                 try:
                     lines = md_file.read_text(encoding="utf-8", errors="ignore").splitlines()
                 except Exception:
                     continue
 
+                try:
+                    rel_path_str = str(md_file.relative_to(plan)).replace("\\", "/")
+                except Exception:
+                    rel_path_str = str(md_file.name)
+
+                score_key = self._score_plan_and_file(plan, md_file, is_active)
                 for idx, line in enumerate(lines):
                     if q_lower in line.lower():
                         start_i = max(0, idx - 1)
                         end_i = min(len(lines), idx + 2)
                         context = [(l_num + 1, lines[l_num]) for l_num in range(start_i, end_i)]
 
-                        results.append({
-                            "plan_name": plan.name,
-                            "file_path": md_file,
-                            "rel_path": str(md_file.name),
-                            "line_no": idx + 1,
-                            "matched_line": line,
-                            "context": context,
-                        })
+                        candidates.append((
+                            score_key,
+                            {
+                                "plan_name": plan.name,
+                                "file_path": md_file,
+                                "rel_path": rel_path_str,
+                                "line_no": idx + 1,
+                                "matched_line": line,
+                                "context": context,
+                            },
+                        ))
 
-                        if len(results) >= limit:
-                            return results
-
-        return results
+        candidates.sort(key=lambda x: (x[0][0], x[0][1], x[0][2]), reverse=True)
+        return [item for _, item in candidates[:limit]] if limit > 0 else [item for _, item in candidates]

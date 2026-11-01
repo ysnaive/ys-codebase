@@ -516,6 +516,8 @@ def plan_search(cmd_bags: Any) -> int:
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "plan_search")
     is_dr = bags.has_option("dr")
+    is_full = bags.has_option("full")
+    is_json = bags.has_option("json")
     limit = 20 if not is_dr else 25
     year = str(bags.get_option_value("year")) if bags.get_option_value("year") else None
     month = str(bags.get_option_value("month")) if bags.get_option_value("month") else None
@@ -532,19 +534,42 @@ def plan_search(cmd_bags: Any) -> int:
 
     if is_dr or not query:
         drs = searcher.search_drs(query=query, year=year, month=month, limit=limit)
+        if is_json:
+            print(json.dumps(drs, indent=2, ensure_ascii=False))
+            return 0
         print("=" * 90)
         print(f"{'Plan 名稱 / 來源檔案':<40} | {'DR ID / 標題':<22} | {'結論 / 摘要'}")
         print("=" * 90)
         for d in drs:
-            src = d["source_file"] if len(d["source_file"]) <= 38 else d["source_file"][:35] + "..."
-            did = d["dr_id"] if len(d["dr_id"]) <= 20 else d["dr_id"][:17] + "..."
-            summ = d["summary"] if len(d["summary"]) <= 40 else d["summary"][:37] + "..."
-            print(f"{src:<40} | {did:<22} | {summ}")
+            raw_src = d["source_file"]
+            raw_did = d["dr_id"]
+            raw_sum = d["summary"]
+            if is_full:
+                print(f"{raw_src} | {raw_did} | {raw_sum}")
+            else:
+                src = raw_src if len(raw_src) <= 38 else "..." + raw_src[-35:]
+                did = raw_did if len(raw_did) <= 20 else raw_did[:17] + "..."
+                summ = raw_sum if len(raw_sum) <= 40 else raw_sum[:37] + "..."
+                print(f"{src:<40} | {did:<22} | {summ}")
         print("=" * 90)
         print(f"共找到 {len(drs)} 筆 Decision Records。")
         return 0
     else:
         matches = searcher.search_full_text(query=query, year=year, month=month, limit=limit)
+        if is_json:
+            serializable = [
+                {
+                    "plan_name": m["plan_name"],
+                    "file_path": str(m["file_path"]),
+                    "rel_path": m["rel_path"],
+                    "line_no": m["line_no"],
+                    "matched_line": m["matched_line"],
+                    "context": m.get("context", []),
+                }
+                for m in matches
+            ]
+            print(json.dumps(serializable, indent=2, ensure_ascii=False))
+            return 0
         print(f"搜尋關鍵字: \"{query}\" ...")
         print("=" * 90)
         for m in matches:

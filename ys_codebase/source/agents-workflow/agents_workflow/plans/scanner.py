@@ -230,6 +230,12 @@ class PlanScanner:
                 lines.append(f"{sub_disp:<52} | {sub['track']:<15} | {sub['status']:<16} | plans/")
 
         lines.append("=" * 90)
+        completed_top = [p["name"] for p in plans if p.get("status") in ("Completed", "Concluded")]
+        if completed_top:
+            sample_cmd = f"python yscb.py agents-workflow plan archive {completed_top[0]}"
+            lines.append(
+                f"[HINT] 偵測到 {len(completed_top)} 個已結案計畫 ({', '.join(completed_top)})，可依開發者指示執行 `{sample_cmd}` 歸檔。"
+            )
         return "\n".join(lines)
 
     def resolve_target_plan_dir(
@@ -290,6 +296,113 @@ class PlanScanner:
             )
 
         return Path(target_pool[0]["path"]).resolve(), None
+
+    def build_recovery_capsule(self, plan_dir: Path) -> str:
+        """
+        當目標計畫未建立 handoff.md 時，從現有計畫檔案確定性提取恢復上下文膠囊：
+        1. 關鍵決策紀錄 (DRs)
+        2. 受影響檔案清單 (Impacted Files)
+        3. 任務進度與待完成項目 (Task Progress & Next Unchecked Items)
+        """
+        from .searcher import PlanSearcher
+        from .status import PlanStatusResolver
+
+        drs: List[str] = []
+        dr_sources: List[Path] = []
+        for code in ("P00", "P02", "P03", "P04"):
+            f = PlanStatusResolver.resolve_phase_file(plan_dir, code)
+            if f.is_file() and f not in dr_sources:
+                dr_sources.append(f)
+        for extra_name in ("fast_track_plan.md", "revision_log.md", "umbrella_overview.md"):
+            ef = plan_dir / extra_name
+            if ef.is_file() and ef not in dr_sources:
+                dr_sources.append(ef)
+
+        seen_dr_ids = set()
+        for src_f in dr_sources:
+            try:
+                extracted = PlanSearcher.extract_drs_from_content(
+                    src_f.read_text(encoding="utf-8", errors="ignore")
+                )
+                for did, summ in extracted:
+                    if did not in seen_dr_ids:
+                        seen_dr_ids.add(did)
+                        short_s = summ if len(summ) <= 70 else summ[:67] + "..."
+                        drs.append(f"{did}: {short_s}")
+                        if len(drs) >= 5:
+                            break
+            except Exception:
+                continue
+            if len(drs) >= 5:
+                break
+
+        impacted_files: List[str] = []
+        file_sources: List[Path] = []
+        p02_f = PlanStatusResolver.resolve_phase_file(plan_dir, "P02")
+        if p02_f.is_file():
+            file_sources.append(p02_f)
+        for extra_name in ("fast_track_plan.md", "revision_log.md"):
+            ef = plan_dir / extra_name
+            if ef.is_file() and ef not in file_sources:
+                file_sources.append(ef)
+
+        for src_f in file_sources:
+            try:
+                for line in src_f.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    s = line.strip()
+                    if s.startswith("|") and ("Modify" in s or "New" in s or "Delete" in s):
+                        cells = [c.strip().strip("`") for c in s.strip("|").split("|")]
+                        if cells and cells[0] and cells[0] not in ("檔案路徑", "文件路徑", "---", ":---"):
+                            if cells[0] not in impacted_files:
+                                impacted_files.append(cells[0])
+                                if len(impacted_files) >= 8:
+                                    break
+            except Exception:
+                continue
+            if len(impacted_files) >= 8:
+                break
+
+        checked_cnt = 0
+        unchecked_items: List[str] = []
+        task_sources: List[Path] = []
+        for code in ("P05", "P04"):
+            tf = PlanStatusResolver.resolve_phase_file(plan_dir, code)
+            if tf.is_file() and tf not in task_sources:
+                task_sources.append(tf)
+        for extra_name in ("fast_track_plan.md", "revision_log.md"):
+            ef = plan_dir / extra_name
+            if ef.is_file() and ef not in task_sources:
+                task_sources.append(ef)
+
+        for src_f in task_sources:
+            try:
+                for line in src_f.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    m_chk = re.match(r"^\s*-\s*\[([xX ])\]\s+(.+)", line)
+                    if m_chk:
+                        mark, item_txt = m_chk.group(1), m_chk.group(2).strip()
+                        if mark.lower() == "x":
+                            checked_cnt += 1
+                        else:
+                            short_it = item_txt if len(item_txt) <= 75 else item_txt[:72] + "..."
+                            unchecked_items.append(short_it)
+            except Exception:
+                continue
+
+        cap_lines: List[str] = []
+        if drs:
+            cap_lines.append("  * Key Decisions (DRs):")
+            for d_str in drs:
+                cap_lines.append(f"    - {d_str}")
+        if impacted_files:
+            cap_lines.append(f"  * Impacted Files     : {', '.join(impacted_files)}")
+        total_tasks = checked_cnt + len(unchecked_items)
+        if total_tasks > 0:
+            cap_lines.append(
+                f"  * Checklist Progress : {checked_cnt}/{total_tasks} completed ({len(unchecked_items)} remaining)"
+            )
+            for u_it in unchecked_items[:3]:
+                cap_lines.append(f"    - [ ] {u_it}")
+        return "\n".join(cap_lines)
 
     def execute_resume(
         self,
@@ -359,6 +472,7 @@ class PlanScanner:
         out_lines.append(f"  * Required Reference : {nav_info['required_reference_path']}")
         out_lines.append(f"  * Next Action Hint   : {nav_info['next_action_hint']}")
 
+        recovery_capsule = ""
         if handoff_content is not None:
             out_lines.append("-" * 90)
             action_tag = (
@@ -371,6 +485,11 @@ class PlanScanner:
             out_lines.append(handoff_content.rstrip())
         else:
             out_lines.append(f"  * Handoff Snapshot   : None (依產出物檔案結構與標頭狀態判定)")
+            recovery_capsule = self.build_recovery_capsule(actual_dir)
+            if recovery_capsule:
+                out_lines.append("-" * 90)
+                out_lines.append("[Deterministic Context Recovery Capsule]")
+                out_lines.append(recovery_capsule)
 
         out_lines.append("=" * 90)
 
@@ -380,6 +499,7 @@ class PlanScanner:
             "handoff_consumed": handoff_consumed,
             "handoff_path": handoff_path_str,
             "handoff_content": handoff_content,
+            "recovery_capsule": recovery_capsule,
             "nav_info": nav_info,
             "formatted_output": "\n".join(out_lines),
         }

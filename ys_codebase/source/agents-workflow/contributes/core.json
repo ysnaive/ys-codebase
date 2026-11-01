@@ -140,11 +140,21 @@
                     }
                   }
                 }
+              },
+              "display": {
+                "full": {
+                  "description": "完整印出不截斷之來源路徑、DR 標題與摘要"
+                }
+              },
+              "format": {
+                "json": {
+                  "description": "以 JSON 結構化格式輸出檢索結果"
+                }
               }
             },
             "usage": {
               "pros": [
-                "搜尋歷史計畫或決策紀錄: plan search <query>"
+                "搜尋歷史計畫或決策紀錄: plan search <query> [--dr] [--full] [--json]"
               ]
             }
           },

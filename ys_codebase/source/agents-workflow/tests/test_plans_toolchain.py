@@ -1327,16 +1327,17 @@ class TestPlansModelRecord(YSCBTestCase):
         sop_text = sop_path.read_text(encoding="utf-8")
 
         self.assertLessEqual(len(auto_text.splitlines()), 75)
+        self.assertIn("PXX-05_auto.md", auto_text)
+        self.assertIn("P01-05_auto.md", auto_text)
+        self.assertIn("P03-05_auto.md", auto_text)
         self.assertIn("P01_requirements_spec_auto.md", auto_text)
-        self.assertIn("P02_architecture_plan_auto.md", auto_text)
-        self.assertIn("P03_api_spec_auto.md", auto_text)
-        self.assertIn("P04_implementation_plan_auto.md", auto_text)
         self.assertIn("P05_task_auto.md", auto_text)
         self.assertIn("1-Write-Per-File", auto_text)
         self.assertIn("Signature-Only", auto_text)
         self.assertIn("Two-Stage JIT Template Read", auto_text)
         self.assertIn("1,500", auto_text)
         self.assertIn("Two-Stage JIT Template Read", sop_text)
+        self.assertIn("PXX-05_auto.md", sop_text)
 
         real_tpl_dir = _pkg_root / "assets" / "templates"
         real_verifier = PlanVerifier(
@@ -1345,6 +1346,7 @@ class TestPlansModelRecord(YSCBTestCase):
             templates_dir=real_tpl_dir,
         )
         for tpl_fname in (
+            "PXX-05_auto.md",
             "P01_requirements_spec.md",
             "P02_architecture_plan.md",
             "P03_api_spec.md",
@@ -1941,6 +1943,207 @@ class TestPlansModelRecord(YSCBTestCase):
         compiler = ArtifactCompiler()
         comp_res = compiler.compile_stage1()
         self.assertTrue(comp_res.get("success", True))
+
+        self.mark_passed()
+
+    def test_ft_16_pxx_05_auto_consolidated_search_capsule_and_portability(self):
+        """
+        [2026_11_01_1054 FR-01 ~ FR-06, EC-01 ~ EC-04]:
+        驗證：
+        1. PXX-05_auto.md (P01-05_auto.md 全區段與 P03-05_auto.md 局部區段) 狀態解析、驗證與 session_trace mtime 防誤判
+        2. PlanSearcher Umbrella sub_XX DR 去重、無冒號 DR 萃取、rel_path 保留子路徑、角色權重排序及 CLI --full / --json
+        3. PlanScanner build_recovery_capsule 確定性恢復膠囊與已結案計畫歸檔提示
+        4. PlanVerifier PORTABILITY 絕對路徑警告與 BACKPROP Major 偏差未回寫警告
+        """
+        import io
+        import importlib.util
+        import json
+        import time
+        from contextlib import redirect_stdout
+        from agents_workflow.plans.session_trace import SessionTraceEngine
+
+        real_tpl_dir = _pkg_root / "assets" / "templates"
+        real_verifier = PlanVerifier(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            templates_dir=real_tpl_dir,
+        )
+        scanner = PlanScanner(plans_dir=self.plans_dir)
+        searcher = PlanSearcher(plans_dir=self.plans_dir, archive_dir=self.archive_dir)
+
+        aw_cli_spec = importlib.util.spec_from_file_location("aw_cli_pxx_test", str(_pkg_root / "scripts" / "cli.py"))
+        aw_cli = importlib.util.module_from_spec(aw_cli_spec)
+        aw_cli_spec.loader.exec_module(aw_cli)
+
+        # --- 1. 驗證 P01-05_auto.md 全區段綜合計畫與 P03-05_auto.md 中途啟動綜合計畫 ---
+        p_consolidated = self.plans_dir / "2026_11_01_1000_consolidated_auto"
+        p_consolidated.mkdir(parents=True, exist_ok=True)
+        hdr = (
+            "> 功能名稱：Consolidated Auto\n"
+            "> 建立日期：2026-11-01\n"
+            "> 所屬主計畫：N/A (Root Plan)\n"
+            "> 模型：Gemini 4 Argon (Low)\n"
+        )
+        (p_consolidated / "P00_discuss.md").write_text(
+            "# P00\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 使用者原始需求與意圖 (User Intent)\n"
+            "## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n"
+            "- **[P00:DR-01]** 採用單檔 P01-05_auto.md 結構\n"
+            "## 3. 開放議題與確認紀錄\n",
+            encoding="utf-8",
+        )
+        p01_05_content = (
+            "# 自動連續推進綜合規格與實作紀錄\n\n"
+            + hdr
+            + "> 狀態：Completed\n\n"
+            "## 1. 需求規格與邊界契約 (P01)\n"
+            "### 1.1 功能需求清單 (Functional Requirements)\n| **FR-01** | 綜合模板 | P0 |\n"
+            "### 1.2 邊界與異常情況 (Edge Cases & Failure Modes)\n| **EC-01** | 中途啟動 | 防禦 |\n"
+            "### 1.3 非功能需求 (Non-Functional Requirements)\n| **NFR-01** | 零外部依賴 | 100% stdlib |\n"
+            "### 1.4 知識庫與踩坑紀錄查閱 (Known Gotchas & CAUTIONs)\n- note\n"
+            "## 2. 架構設計與異動檔案清單 (P02)\n"
+            "### 2.1 模組架構與核心資料流 (Architecture & Data Flow)\n"
+            "### 2.2 受影響與新建檔案清單 (Impacted & New Files Inventory)\n"
+            "| `agents_workflow/plans/status.py` | Modify | 支援區段解析 |\n"
+            "### 2.3 架構決策記錄 (Architecture Decision Records)\n- **[P02:DR-01]** 區段正則解析\n"
+            "## 3. 介面契約與 API 簽名 (P03)\n"
+            "### 3.1 介面契約與核心簽名 (Interface Inventory & Method Signatures)\n"
+            "## 4. 定稿審查與文檔衝擊規劃 (P04)\n"
+            "### 4.1 交叉驗證與靈魂拷問 (Cross-Validation & Resilience Review)\n- [x] 對齊\n"
+            "### 4.2 知識庫文檔衝擊與交付規劃 (Documentation Impact Plan)\n"
+            "## 5. 實作任務清單與偏差紀錄 (P05)\n"
+            "### 5.1 實作任務清單 (Task Breakdown)\n- [x] **TASK-01**：完成區段解析\n"
+            "### 5.2 實作偏差紀錄表 (Implementation Deviations)\n| - | - | 無偏差 | - |\n"
+        )
+        (p_consolidated / "P01-05_auto.md").write_text(p01_05_content, encoding="utf-8")
+        (p_consolidated / "P06_test_plan.md").write_text(
+            "# P06\n\n" + hdr + "> 狀態：Passed\n\n"
+            "## 1. 自動化測試案例清單\n| **FT-01** | FR-01, EC-01, NFR-01 |\n"
+            "## 2. 測試執行紀錄表\n## 3. 人工 / UX 驗證 Checkpoint\n",
+            encoding="utf-8",
+        )
+
+        for code in ("P01", "P02", "P03", "P04", "P05"):
+            self.assertEqual(
+                PlanStatusResolver.resolve_phase_file(p_consolidated, code).name,
+                "P01-05_auto.md",
+            )
+        self.assertEqual(scanner.get_plan_info(p_consolidated), ("Full Track", "Testing/Phase 6"))
+        rep_c = real_verifier.verify_plan(
+            p_consolidated,
+            log_msg="驗證 P01-05_auto.md 全量合規",
+            model="Gemini 4 Argon (Low)",
+        )
+        self.assertTrue(rep_c.passed, f"P01-05_auto.md 應通過驗證: {rep_c.errors}")
+
+        # 驗證 session_trace.audit_plan_mtimes 不會因 P01~P05 指向同一檔案而誤判 SILENT_BACKPATCH
+        trace_eng = SessionTraceEngine(plans_dir=self.plans_dir, archive_dir=self.archive_dir, project_root=self.root)
+        self.assertEqual(trace_eng.audit_plan_mtimes(p_consolidated), [])
+
+        # 驗證 P03-05_auto.md 中途啟動（僅含 §3~§5，無 §1~§2）100% 通過檢核 (EC-01)
+        p_partial = self.plans_dir / "2026_11_01_1010_partial_auto"
+        p_partial.mkdir(parents=True, exist_ok=True)
+        (p_partial / "P00_discuss.md").write_text((p_consolidated / "P00_discuss.md").read_text(encoding="utf-8"), encoding="utf-8")
+        (p_partial / "P01_requirements_spec.md").write_text(
+            "# P01\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 功能需求清單\n- FR-01\n## 2. 邊界與異常情況\n- EC-01\n## 3. 非功能需求\n- NFR-01\n## 4. 知識庫與踩坑紀錄查閱\n",
+            encoding="utf-8",
+        )
+        (p_partial / "P02_architecture_plan.md").write_text(
+            "# P02\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 模組架構分層與職責邊界\n## 2. 核心資料流與循序圖\n## 3. 受影響檔案與新建檔案清單\n## 4. 架構決策記錄\n",
+            encoding="utf-8",
+        )
+        p03_05_only = (
+            "# 自動連續推進綜合規格與實作紀錄\n\n"
+            + hdr
+            + "> 狀態：In Progress\n\n"
+            + p01_05_content[p01_05_content.index("## 3. 介面契約與 API 簽名 (P03)"):].replace("- [x] **TASK-01**", "- [ ] **TASK-01**")
+        )
+        (p_partial / "P03-05_auto.md").write_text(p03_05_only, encoding="utf-8")
+        (p_partial / "P06_test_plan.md").write_text(
+            "# P06\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 自動化測試案例清單\n| **FT-01** | FR-01, EC-01, NFR-01 |\n"
+            "## 2. 測試執行紀錄表\n## 3. 人工 / UX 驗證 Checkpoint\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(PlanStatusResolver.resolve_phase_file(p_partial, "P02").name, "P02_architecture_plan.md")
+        self.assertEqual(PlanStatusResolver.resolve_phase_file(p_partial, "P03").name, "P03-05_auto.md")
+        rep_part = real_verifier.verify_plan(p_partial, log_msg="驗證 P03-05_auto.md 局部區段合規", model="Gemini 4 Argon (Low)")
+        self.assertTrue(rep_part.passed, f"P03-05_auto.md 應豁免 §1~§2 並通過檢核: {rep_part.errors}")
+
+        # --- 2. 驗證 PlanScanner 確定性恢復膠囊與已結案計畫歸檔提示 ---
+        res_resume = scanner.execute_resume(p_partial.name, consume_handoff=True)
+        self.assertTrue(res_resume["success"])
+        self.assertIn("[Deterministic Context Recovery Capsule]", res_resume["formatted_output"])
+        self.assertIn("TASK-01", res_resume["recovery_capsule"])
+
+        # 建立一個已 Completed 的計畫並驗證 render_matrix_ascii 提示歸檔
+        p_done = self.plans_dir / "2026_11_01_0900_done_plan"
+        p_done.mkdir(parents=True, exist_ok=True)
+        (p_done / "fast_track_plan.md").write_text("# FT\n\n" + hdr + "> 狀態：Completed\n", encoding="utf-8")
+        matrix_txt = scanner.render_matrix_ascii()
+        self.assertIn("plan archive 2026_11_01_0900_done_plan", matrix_txt)
+
+        # --- 3. 驗證 PlanSearcher Umbrella sub_XX DR 去重、rel_path 與 CLI --full / --json ---
+        u_search = self.plans_dir / "2026_11_01_1020_umbrella_search"
+        for sub_idx in (1, 2):
+            sd = u_search / f"sub_0{sub_idx}_mod"
+            sd.mkdir(parents=True, exist_ok=True)
+            (sd / "P00_discuss.md").write_text(
+                f"# Sub {sub_idx}\n\n" + hdr + "> 狀態：Confirmed\n\n"
+                f"- **[P00:DR-01]** 子計畫 {sub_idx} 專屬決策內容 (UniqueSearchToken)\n",
+                encoding="utf-8",
+            )
+        drs = searcher.search_drs(query="UniqueSearchToken")
+        self.assertEqual(len(drs), 2, "不同 sub_XX 下之同名 [P00:DR-01] 不得被誤去重吞沒")
+        ft_hits = searcher.search_full_text(query="UniqueSearchToken")
+        self.assertEqual(len(ft_hits), 2)
+        self.assertTrue(any("sub_01_mod/P00_discuss.md" in h["rel_path"] for h in ft_hits))
+        self.assertTrue(any("sub_02_mod/P00_discuss.md" in h["rel_path"] for h in ft_hits))
+
+        from unittest.mock import patch
+
+        buf_json = io.StringIO()
+        with patch.object(aw_cli, "PlanSearcher", return_value=searcher), redirect_stdout(buf_json):
+            rc_j = aw_cli.plan_search(["UniqueSearchToken", "--dr", "--json"])
+        self.assertEqual(rc_j, 0)
+        parsed_j = json.loads(buf_json.getvalue())
+        self.assertGreaterEqual(len(parsed_j), 2)
+
+        buf_full = io.StringIO()
+        with patch.object(aw_cli, "PlanSearcher", return_value=searcher), redirect_stdout(buf_full):
+            rc_f = aw_cli.plan_search(["UniqueSearchToken", "--dr", "--full"])
+        self.assertEqual(rc_f, 0)
+        self.assertIn("sub_01_mod/P00_discuss.md", buf_full.getvalue())
+
+        # --- 4. 驗證 PlanVerifier PORTABILITY 與 BACKPROP 警告 ---
+        p_warn = self.plans_dir / "2026_11_01_1030_warn_checks"
+        p_warn.mkdir(parents=True, exist_ok=True)
+        (p_warn / "P02_architecture_plan.md").write_text(
+            "# P02\n\n" + hdr + "> 狀態：Confirmed\n\n"
+            "## 1. 模組架構分層與職責邊界\n## 2. 核心資料流與循序圖\n## 3. 受影響檔案與新建檔案清單\n"
+            "請參考 [本地絕對路徑](file:///C:/Users/demo/file.py)\n## 4. 架構決策記錄\n",
+            encoding="utf-8",
+        )
+        (p_warn / "P05_task.md").write_text(
+            "# P05\n\n" + hdr + "> 狀態：Completed\n\n"
+            "## 1. 實作任務清單 (Task Breakdown)\n- [x] **TASK-01**：ok\n"
+            "## 2. 實作偏差紀錄表 (Implementation Deviations)\n| TASK-01 | `Major` | 大幅調整架構 | 待同步 |\n",
+            encoding="utf-8",
+        )
+        (p_warn / "P06_test_plan.md").write_text(
+            "# P06\n\n" + hdr + "> 狀態：Passed\n\n"
+            "## 1. 自動化測試案例清單\n| **FT-01** | ok |\n## 2. 測試執行紀錄表\n## 3. 人工 / UX 驗證 Checkpoint\n",
+            encoding="utf-8",
+        )
+        old_t = time.time() - 60.0
+        os.utime(p_warn / "P02_architecture_plan.md", (old_t, old_t))
+        rep_w = real_verifier.verify_plan(p_warn, log_msg="測試 PORTABILITY 與 BACKPROP 警告", model="Gemini 4 Argon (Low)")
+        self.assertTrue(rep_w.passed)
+        warn_cats = {i.category for i in rep_w.issues if i.severity == PlanSeverity.WARN}
+        self.assertIn("PORTABILITY", warn_cats)
+        self.assertIn("BACKPROP", warn_cats)
 
         self.mark_passed()
 

@@ -25,6 +25,7 @@ __pycache__/
 /.agents/.yscb/templates/P05_task.md
 /.agents/.yscb/templates/P06_test_plan.md
 /.agents/.yscb/templates/P07_walkthrough.md
+/.agents/.yscb/templates/PXX-05_auto.md
 /.agents/.yscb/templates/RXX_research_report.md
 /.agents/.yscb/templates/changelog.md
 /.agents/.yscb/templates/fast_track_plan.md

@@ -2,7 +2,7 @@
 
 > 計畫名稱：2026_10_30_1641_code_optimize  
 > 建立日期：2026-10-30  
-> 計畫狀態：In Progress  
+> 計畫狀態：Completed  
 > Umbrella 模式：Incremental (增量演進型)  
 > 模型：Unknown  
 > 模板版本：v1.2  
@@ -27,7 +27,7 @@
 | **sub_03** | `sub_03_server_code_optimization` | Full Track (`P00`~`P07`) | `Completed` | 針對 `ys_codebase/source/server/`（9 檔 / 2,263 LOC）執行 `Mode A` 五維度靜態診斷（`R01`~`R03`）、11 項 `Mode A` 清除、`logger.py` 隱藏 `NameError` 與 `_spawn_worker_locked` 管道競爭修復（`R01` 升級 `Full Track` 並完成 `P07` 結案） |
 | **sub_04** | `sub_04_knowledge_db_code_optimization` | Full Track (`P00`~`P07`) | `Completed` | 針對 `ys_codebase/source/knowledge-db/`（30 檔 / 11,535 LOC）執行 `Mode A` 五維度靜態診斷（`R01`~`R03`）、23 項 `Mode A` 清除、`TopologyQueryService` / `io_utils` 剝離與 BM25 打分核心合一（`R01` 升級 `Full Track` 並完成 `P07` 結案） |
 | **sub_05** | `sub_05_agents_workflow_code_optimization` | Full Track (`P00`~`P07`) | `Completed` | 針對 `ys_codebase/source/agents-workflow/`（16 檔 / 8,847 LOC）執行 `Mode A` 五維度靜態診斷（`R01`~`R03`）、19 項 `Mode A` 清除、`session_trace`/`verifier` 模組拆解與循環依賴破除（`R01` 升級 `Full Track` 並完成 `P07` 結案） |
-| **sub_06** | `sub_06_yscb_host_code_optimization` | Research Plan (`P00` + `R01`) | `In Progress` | 針對根目錄微核心引導宿主 `yscb.py`（1 檔 / 793 LOC）執行 `Mode A` 五維度靜態診斷（`R01`）、死代碼與 8 個歷史轉發殼層清除盤點、`core/tests/` 同步遷移映射及 `S1~S6` 重構處方（已落檔 `R01` 並執行 `/pause` 凍結） |
+| **sub_06** | `sub_06_yscb_host_code_optimization` | Research Plan (`P00` + `R01`) | `Concluded` | 針對根目錄微核心引導宿主 `yscb.py`（1 檔 / 793 LOC）執行 `Mode A` 五維度靜態診斷（`R01`）、死代碼與 8 個歷史轉發殼層清除盤點、`core/tests/` 同步遷移映射及 `S1~S6` 重構處方（已完成 `R01` 調研報告與交接快照結案） |
 
 ---
 
@@ -38,5 +38,5 @@
 - [x] **里程碑 3 (`sub_03`)**：完成 `server` 模組 `R01` 五維度靜態診斷報告與後續重構實作閉環
 - [x] **里程碑 4 (`sub_04`)**：完成 `knowledge-db` 模組 `R01` 五維度靜態診斷報告與後續重構實作閉環
 - [x] **里程碑 5 (`sub_05`)**：完成 `agents-workflow` 模組 `R01` 五維度靜斷報告與後續重構實作閉環
-- [ ] **里程碑 6 (`sub_06`)**：完成根目錄引導宿主 `yscb.py` 之 `R01` 五維度靜態診斷報告與後續重構實作閉環
+- [x] **里程碑 6 (`sub_06`)**：完成根目錄引導宿主 `yscb.py` 之 `R01` 五維度靜態診斷報告與後續重構實作閉環
 

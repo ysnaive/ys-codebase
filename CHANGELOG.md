@@ -1,6 +1,17 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_01_1054_auto_plan_and_workflow_refinement (Completed)
+
+- **`P{XX}-05_auto.md` 動態區段單檔合併模板、三軌相容解析、`plan search` / `plan status --resume` 增強與 `PlanVerifier` / `ArtifactCompiler` 完善 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **`PXX-05_auto.md` 單檔五段合併模板與兩階段 `Spec-First` 連續推進規範 (`FR-01`, `FR-02`, `EC-01`, `EC-02`, `[P00:DR-01]`, `[P00:DR-02]`)**：新增 `ys_codebase/source/agents-workflow/assets/templates/PXX-05_auto.md` 並註冊於 `contributes/agents-workflow.json`，將 `/auto` 自動生成之 `Phase {XX}` ~ `Phase 05` 收斂為單一動態區段綜合檔 `P{XX}-05_auto.md`（消除 5 份碎片檔案重複標頭與跨檔重複轉述，100% 保留 `FR/EC/NFR/DR/API/TASK` 五階段工程資訊）；更新 `auto/SKILL.md` 與 `development-sop/SKILL.md` 確立批次 A 實作前先寫出 `P{XX}-05_auto.md (In Progress)`、批次 B 實作完成後原地更新為 `Completed` 並寫出 `P06_test_plan.md (Passed)`；擴充 `PlanStatusResolver`、`PlanVerifier`（含 `min_phase` 動態豁免中途啟動前序章節）與 `SessionTraceEngine`（同檔免自比對與 `P0*-05_auto.md` 單一 `idx=5` 歸戶）達成三軌相容。
+  - **`plan search` 檢索排序/去重修復、`plan status --resume` 確定性恢復膠囊與 `TODO-13` / `PORTABILITY` / `BACKPROP` 校驗 (`FR-03` ~ `FR-06`, `EC-03`, `EC-04`, `[P00:DR-03]`, `[P00:DR-04]`)**：修復 `PlanSearcher` 跨 Umbrella `sub_XX` 同名 DR 誤去重與無冒號 DR 正則，新增活躍度与角色權重排序及 CLI `--full` / `--json` 選項（`TODO-10`）；於 `PlanScanner.execute_resume` 實作無 `handoff.md` 時自動提取 `DRs`、異動檔案與待辦進度之確定性恢復膠囊（`build_recovery_capsule`）並於 `render_matrix_ascii` 增設已結案計畫 `plan archive` 提醒；修復 `compiler.py` `_replace_in_code_span` 對無 `#anchor` 之 `project://` URI 保留外層反引號（`TODO-13`）；於 `PlanVerifier` 新增硬編碼絕對路徑 `PORTABILITY` 與重大偏差未回寫 `BACKPROP` 警告，`agents-workflow` (136/136) 測試 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_10_30_1641_code_optimize (Completed)
+
+### sub_06_yscb_host_code_optimization (Concluded)
+- **根目錄微核心引導宿主 (`yscb.py`, 793 LOC) `Mode A` 五維度靜態診斷、8 個歷史轉發殼層與 `core/tests/` 遷移座標盤點及全生態系重構量化總結 (`[P00:DR-01]` ~ `[P00:DR-02]`, `R01`)**：
+  - **`yscb.py` 死代碼與相容轉發殼層清冊及 `S1~S6` 處方 (`sub_06/R01`)**：盤點 `yscb.py` 內部 2 個無用匯入（`difflib`、`importlib.util`）、4 個廢棄常數/快取（`INTERNAL_IGNORE_*`、`CORE_COMMANDS`、`_MODULE_CACHE`）、`_resolve_self_update_target_url` 冗餘 `provider` 參數，以及 8 個僅供舊測試呼叫的轉發殼層（`_suggest_command`、`_print_global_help`、`cmd_event`、`_ensure_jit_lifecycle_pre/post`、`cmd_restore`、`_restore_module_package`、`_generate_internal_gitignore`），完整建立 `core/tests/` 4 支測試檔之權威入口遷移座標與 `_fetch_url_bytes` 共用提煉處方。
+  - **全生態系 5 大模組三代盲審重構前後量化對比總結 (`R01_before_after_summary_report.md`)**：彙整 `sub_01` ~ `sub_05` 全倉業務源碼淨削減 `-2,191` LOC (`-5.8%`)、`> 100` 行巨型方法減少 `-38.8%`、最大單檔行數縮減 `-41.4%` (`1,933 -> 1,133` LOC)、79+ 處 `Mode A` 轉發殼層與廢棄別名 100% 清零、9 項潛伏 Bug 根除，以及全倉 611 項單元與邊界測試 100% 通過之量化戰果。
 
 ### sub_05_agents_workflow_code_optimization (Completed)
 - **`agents-workflow` 五維度靜態診斷、巨型模組正交拆分 (`_common` / `_verifier_*` / `_trace_*`)、循環依賴破除與 `Mode A` 歷史技術債清除 (`FR-01` ~ `FR-08`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-03`)**：

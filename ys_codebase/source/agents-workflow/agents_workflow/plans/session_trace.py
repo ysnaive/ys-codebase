@@ -366,12 +366,18 @@ class SessionTraceEngine:
         )
 
         phase_files: List[Tuple[int, str, Path, float]] = []
+        seen_paths = set()
         for idx in range(8):
             p_code = f"P0{idx}"
             resolved = PlanStatusResolver.resolve_phase_file(plan_dir, p_code)
             if resolved and resolved.is_file():
+                if re.match(r"^P0[1-5]-05_auto\.md$", resolved.name, re.IGNORECASE) and idx < 5:
+                    continue
+                if resolved in seen_paths:
+                    continue
                 try:
                     phase_files.append((idx, p_code, resolved, resolved.stat().st_mtime))
+                    seen_paths.add(resolved)
                 except OSError:
                     continue
 
@@ -388,7 +394,7 @@ class SessionTraceEngine:
         baseline_time = phase_epochs.get(earliest_later_code, earliest_later_mtime)
 
         for idx, p_code, p_file, p_mtime in phase_files:
-            if idx == 0 or idx >= earliest_later_idx:
+            if idx == 0 or idx >= earliest_later_idx or p_file == earliest_later_file:
                 continue
             if p_mtime > (baseline_time + 5.0) and p_mtime > (earliest_later_mtime + 5.0):
                 delta_sec = int(p_mtime - min(baseline_time, earliest_later_mtime))

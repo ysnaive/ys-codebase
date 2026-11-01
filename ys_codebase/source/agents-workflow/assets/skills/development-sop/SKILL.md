@@ -79,7 +79,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 
 > [!IMPORTANT]
 > **🚨 階段前置閱讀鐵律 (Mandatory Phase Reference Read)**：  
-> 開始任何一個階段（Phase 0~7 / Fast Track 各步驟）前，**強制必須先精讀下方導航矩陣對應之專屬作業手冊（分流 Reference）**，嚴禁憑記憶盲目推進或跳過階段指針！（唯獨觸發 [`/auto`](`__#{module://agents-workflow/assets/skills/auto/SKILL.md}__`) 自動連續推進時，`Phase 01 ~ 05` 改依 `auto/SKILL.md` 兩階段寫檔前即時讀取模板（Two-Stage JIT Template Read）與 `PXX_YYYY_auto.md` 單次到位寫檔規範執行，免除逐一讀取 `phase_01~05` 手冊之開銷）。
+> 開始任何一個階段（Phase 0~7 / Fast Track 各步驟）前，**強制必須先精讀下方導航矩陣對應之專屬作業手冊（分流 Reference）**，嚴禁憑記憶盲目推進或跳過階段指針！（唯獨觸發 [`/auto`](`__#{module://agents-workflow/assets/skills/auto/SKILL.md}__`) 自動連續推進時，`Phase 01 ~ 05` 改依 `auto/SKILL.md` 兩階段寫檔前即時讀取模板（Two-Stage JIT Template Read：批次 A 實作前讀取並立即寫出 `P{XX}-05_auto.md` `In Progress`，批次 B 實作後讀取 `P06` 模板並更新 `P{XX}-05_auto.md` 為 `Completed`）執行，免除逐一讀取 `phase_01~05` 手冊之開銷）。
 
 | 階段 | 專屬作業手冊 | 產出檔案 / 卡片 |
 | :---: | :---: | :---: |
@@ -104,6 +104,7 @@ $$\text{剛性追溯鏈：}\; \texttt{P00 語意} \;\longrightarrow\; \texttt{FR
 - **Phase 3**：[`P03_api_spec.md`](`__#{module://agents-workflow/assets/templates/P03_api_spec.md}__`)
 - **Phase 4**：[`P04_implementation_plan.md`](`__#{module://agents-workflow/assets/templates/P04_implementation_plan.md}__`)
 - **Phase 5**：[`P05_task.md`](`__#{module://agents-workflow/assets/templates/P05_task.md}__`)
+- **Phase XX~05 (`/auto` 綜合)**：[`PXX-05_auto.md`](`__#{module://agents-workflow/assets/templates/PXX-05_auto.md}__`)
 - **Phase 6**：[`P06_test_plan.md`](`__#{module://agents-workflow/assets/templates/P06_test_plan.md}__`)
 - **Phase 7**：[`P07_walkthrough.md`](`__#{module://agents-workflow/assets/templates/P07_walkthrough.md}__`)
 - **修訂紀錄**：[`revision_log.md`](`__#{module://agents-workflow/assets/templates/revision_log.md}__`)

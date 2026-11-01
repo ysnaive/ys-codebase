@@ -12,7 +12,7 @@ related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
-last_updated: "2026-10-25"
+last_updated: "2026-11-01"
 ---
 
 # 設計決策與工程妥協 (Design Notes)
@@ -74,7 +74,7 @@ last_updated: "2026-10-25"
   1. Markdown 連結若寫為 `` [Link](`__#{uri}__`) ``，若 Stage 2 對所有匹配 `CODE_SPAN_REGEX` 的片段無差別包回外層反引號，會產生 `[Link](`../path.md`)` 導致 CommonMark 超連結失效；反之，若對命令列 `` `python __${uri}__ run` `` 剝除反引號，則會破壞行內代碼塊格式。
   2. 在單元測試或未執行 `init` 的空沙盒環境中，`workflow.docs://` 等協議處於 `!undefined` 狀態，若直接調用 `core.uri.resolve()` 並任由例外拋出，將導致 Stage 2 整批編譯崩潰。
 - **妥協與防禦設計**：
-  1. **Standalone vs Inline 二分法**：在 `compiler.resolve_stage2_uri` 中以 `EXACT_REGEX`（`LOCAL_URI_EXACT_REGEX` / `PROJECT_URI_EXACT_REGEX`）識別「整個反引號內僅含單一佔位符」的獨立路徑，解算後**直接剝除外層反引號**；若反引號內含有前後綴指令文字（Inline），則僅替換內部佔位符並**保留外層反引號**。
+  1. **Standalone vs Inline 二分法與 `project://` 無錨點反引號保留**：在 `compiler.resolve_stage2_uri` 中以 `EXACT_REGEX`（`LOCAL_URI_EXACT_REGEX` / `PROJECT_URI_EXACT_REGEX`）識別「整個反引號內僅含單一佔位符」的獨立路徑。對於 `LOCAL_URI_EXACT_REGEX` 或帶自訂錨點的 `PROJECT_URI_EXACT_REGEX` 解算後直接剝除外層反引號；而對於**無自訂錨點 (`anchor is None`) 之 `PROJECT_URI_EXACT_REGEX`**（如散文或表格中之 `` `__${project://yscb.py}__` ``），則預設返回 `` f"`{resolved}`" `` 保留外層反引號以維持行內代碼格式，並由後續 `re.sub(r"\]\(`?([^`\r\n\)]+)`?\)", ...)` 在出現於 Markdown 連結 `[Text](...)` 內部時自動剝除反引號；若反引號內含有前後綴指令文字（Inline），則僅替換內部佔位符並**保留外層反引號**。
   2. **`FT-14` 裸標籤原樣保留契約**：任何未被反引號包裹的裸露佔位符（由 `UNENCLOSED_TAG_REGEX` 偵測）一律不予展開，原樣保留並輸出 `[compiler:warning]` 警示。
   3. **未配置沙盒 URI 安全回退**：當 Stage 2 解析 `workflow.*://` 遭遇未定義或無法解析的沙盒環境時，捕獲例外並安全降級回退為專案相對路徑，防止編譯管線崩潰。
 
@@ -264,10 +264,10 @@ last_updated: "2026-10-25"
   2. **`/auto` 連續推進期間 Context 雙重膨脹與溯源模糊**：在 `/auto` 模式下，Agent 若機械式逐一讀取 `phase_01~05.md`（含大量無效的單階段 End Turn 說明）與 `P01~P06` 模板（共 11 次讀檔）、在 `P02`/`P03`/`P04`/`P05` 重複抄寫檔案清單與任務拆解、在 `P03` 預寫實作程式碼塊、對 `P05`/`P06` 先寫過渡狀態再二次 Edit，並於每階段呼叫一次 `plan verify`（共 27 次 SOP 工具調用），會造成單次 `/auto` 平白消耗 25K~35K+ Tokens 的文書歷史；同時事後審閱計畫目錄時，無法從檔名直觀區分哪些階段曾經人工定案、哪些階段由 `/auto` 自動生成。
 - **妥協與防禦設計**：
   1. **拔除 `core/providers.py` 動態大表，轉向「技能內建直跑 + 非常規指令 `-h` 按需自省」**：徹底刪除 `core/providers.py` 與 `AGENTS_CLI_GUIDE` computed 注入，將 `yscb-cli-guide/SKILL.md` 收斂至 62 行（~1.0K Tokens，縮減 `-70%`），確立「軌跡 A 技能內建指令免查直跑 (`Skill-Vetted Fast Pass`) + 軌跡 B 非常規指令／未知旗標強制執行 `python yscb.py <mod> [cmd] -h` 按需自省 (`Just-in-Time -h Inspection`)」。
-  2. **`/auto` `1-Write-Per-File`、`Signature-Only` 與 `PXX_YYYY_auto.md` 雙軌相容**：免除 `/auto` 期間讀取 `phase_01~05.md`（原內聯 `P01`~`P06` 標題速查表已於 `[DN-AW-16]` 演進為寫檔前兩階段 JIT 讀取模板），規範單檔單次到位寫入（`P05` 直接以 `Completed` 寫入、`P06` 於測試通過後直接以 `Passed` 寫入）與 `P06` 單次彙總 `plan verify`；強制要求 `/auto` 自動生成之 `P01`~`P05` 規格檔附加 `_auto.md` 後綴（如 `P01_requirements_spec_auto.md` ~ `P05_task_auto.md`），並於 `PlanStatusResolver.resolve_phase_file` 實作標準名與 `_auto.md` 雙軌相容解析，串聯 `PlanScanner`、`PlanVerifier` 與 `PlanArchiver`。
+  2. **`/auto` `P{XX}-05_auto.md` 動態區段綜合產物、`Spec-First` 兩階段落檔與三軌相容**：免除 `/auto` 期間讀取 `phase_01~05.md`，於批次 A（實作前）即時讀取 `PXX-05_auto.md` 模板並立即寫出 `P{XX}-05_auto.md` (`In Progress`)、於批次 B（實作完成後）原地更新為 `Completed` 並一次寫出 `P06_test_plan.md` (`Passed`) 及執行單次彙總 `plan verify`；將 `/auto` 自動生成之 `Phase {XX}` ~ `Phase 05` 收斂為單一 `P{XX}-05_auto.md`（消除 5 份碎片檔案標頭與跨檔重複轉述，且 `PlanVerifier` 按 `min_phase` 動態豁免中途啟動前序章節），並於 `PlanStatusResolver.resolve_phase_file` 實作標準名、舊版 `<stem>_auto.md` 與 `P0[1-5]-05_auto.md` 三軌相容解析，串聯 `PlanScanner`、`PlanVerifier`、`SessionTraceEngine` 與 `PlanArchiver`。
 
 > [!CAUTION]
-> 嚴禁重新引入全系統 CLI 靜態大表生成；於 `/auto` 模式自動生成之 `P01`~`P05` 階段檔案必須命名為 `PXX_YYYY_auto.md` 並遵守 `1-Write-Per-File` 與 `Signature-Only`（禁止在 `P03`/`P04` 預貼實作程式碼塊）；`plans/` 工具鏈查找階段檔案時一律透過 `PlanStatusResolver.resolve_phase_file` 以維持原名與 `_auto.md` 雙軌相容。
+> 嚴禁重新引入全系統 CLI 靜態大表生成；於 `/auto` 模式自動生成之 `Phase {XX}` ~ `Phase 05` 階段規格必須收斂為 `P{XX}-05_auto.md` 並遵守兩階段 `Spec-First` 落檔與 `Signature-Only`（禁止在 `§3` 預貼實作程式碼塊）；`plans/` 工具鏈查找階段檔案時一律透過 `PlanStatusResolver.resolve_phase_file` 以維持三軌相容。
 
 ---
 

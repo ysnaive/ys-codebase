@@ -252,13 +252,14 @@ class TestArtifactCompiler(YSCBTestCase):
         self.mark_passed()
 
     def test_ft_12_project_uri_placeholder_root_and_sub_dir(self):
-        """FT-12: 驗證 __${uri}__ 以專案根目錄為基準點展開為純淨相對路徑 (root 與子目錄，純佔位符剝除反引號)。"""
-        raw_text = "Root: `__${project://yscb.py}__`\nSub: `__${project://tools/sub/cli.py}__`\n"
+        """FT-12: 驗證 __${uri}__ 以專案根目錄為基準點展開為純淨相對路徑，且無自訂錨點之行內代碼塊保留外層反引號 ([DN-AW-03])。"""
+        raw_text = "Root: `__${project://yscb.py}__`\nSub: `__${project://tools/sub/cli.py}__`\nLink: [CLI](`__${project://tools/sub/cli.py}__`)\n"
         deployment_map = {}
         dst_path = os.path.join(self.compiler.module_root, "dummy_target.md")
         resolved = self.compiler.resolve_stage2_uri(raw_text, dst_path, deployment_map)
-        self.assertIn("Root: yscb.py", resolved)
-        self.assertIn("Sub: tools/sub/cli.py", resolved)
+        self.assertIn("Root: `yscb.py`", resolved)
+        self.assertIn("Sub: `tools/sub/cli.py`", resolved)
+        self.assertIn("Link: [CLI](tools/sub/cli.py)", resolved)
         self.mark_passed()
 
     def test_ft_13_inline_code_block_expansion(self):
@@ -315,10 +316,10 @@ class TestArtifactCompiler(YSCBTestCase):
 
             compiler = ArtifactCompiler(host_dir=host_dir)
 
-            # 1. 預設無錨點：相對於 project_root (維持既有 project:// 映射相容)
+            # 1. 預設無錨點：相對於 project_root (維持既有 project:// 映射相容，行內保留反引號)
             raw_default = "Default: `__${workflow.workflows://Auto.md}__`"
             res_default = compiler.resolve_stage2_uri(raw_default, dst_path, deployment_map)
-            self.assertIn("Default: .agents/workflows/Auto.md", res_default)
+            self.assertIn("Default: `.agents/workflows/Auto.md`", res_default)
 
             # 2. 自訂錨點為目錄 (如 .agents/workflows)
             raw_with_dir_anchor = "AnchorDir: `__$(.agents/workflows){workflow.workflows://Auto.md}__`"
@@ -338,7 +339,7 @@ class TestArtifactCompiler(YSCBTestCase):
             # 5. 空括號錨點 __$(){uri}__ 退化為預設 project_root
             raw_empty_anchor = "EmptyAnchor: `__$(){workflow.workflows://Auto.md}__`"
             res_empty = compiler.resolve_stage2_uri(raw_empty_anchor, dst_path, deployment_map)
-            self.assertIn("EmptyAnchor: .agents/workflows/Auto.md", res_empty)
+            self.assertIn("EmptyAnchor: `.agents/workflows/Auto.md`", res_empty)
 
         self.mark_passed()
 

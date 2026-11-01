@@ -3,7 +3,7 @@
 > 功能名稱：sub_06_yscb_host_code_optimization  
 > 建立日期：2026-10-31  
 > 所屬主計畫：2026_10_30_1641_code_optimize  
-> 狀態：In Progress  
+> 狀態：Concluded  
 > 模型：Unknown  
 
 > 模板版本：v1.1  

@@ -130,6 +130,7 @@ def is_header_match(exp_norm: str, doc_norm: str) -> bool:
 def load_template_header_specs(
     template_name: str,
     templates_dir: Optional[Path],
+    min_phase: int = 1,
 ) -> List[Tuple[str, str]]:
     """讀取已解析之標準模板並提取其定義之 Markdown 二/三級章節標題，回傳 [(norm_title, raw_heading_line), ...] 清單。"""
     specs: List[Tuple[str, str]] = []
@@ -147,9 +148,15 @@ def load_template_header_specs(
     if tmpl_path and tmpl_path.exists():
         try:
             content = tmpl_path.read_text(encoding="utf-8", errors="ignore")
+            current_h2_phase = 0
             for line in content.splitlines():
                 line_s = line.strip()
+                if line_s.startswith("##") and not line_s.startswith("###"):
+                    m_sec = re.match(r"^##\s*(\d+)\.", line_s)
+                    current_h2_phase = int(m_sec.group(1)) if m_sec else 0
                 if line_s.startswith("##") or line_s.startswith("###"):
+                    if template_name == "PXX-05_auto.md" and min_phase > 1 and 0 < current_h2_phase < min_phase:
+                        continue
                     if re.search(r"\[REV-\d+\]", line_s, re.IGNORECASE):
                         continue
                     norm = normalize_header_title(line_s)
@@ -163,6 +170,8 @@ def load_template_header_specs(
 def map_file_to_template(file_name: str, templates_dir: Optional[Path] = None) -> Optional[str]:
     """將計畫檔案對齊至標準模板名稱。"""
     base = os.path.basename(file_name)
+    if re.match(r"^P0[1-5]-05_auto\.md$", base, re.IGNORECASE) or base == "PXX-05_auto.md":
+        return "PXX-05_auto.md"
     if base.startswith("P00_"):
         if templates_dir and (templates_dir / base).exists():
             return base

@@ -715,13 +715,14 @@ class ArtifactCompiler:
             m_proj_exact = PROJECT_URI_EXACT_REGEX.fullmatch(inner.strip())
             if m_proj_exact:
                 anchor = m_proj_exact.group(1).strip() if m_proj_exact.group(1) else None
-                return _resolve_project_uri_tag(
+                resolved = _resolve_project_uri_tag(
                     m_proj_exact.group(2).strip(),
                     anchor=anchor,
                     project_root=project_root,
                     deployment_map=deployment_map,
                     doc_basename=doc_basename,
                 )
+                return resolved if anchor else f"`{resolved}`"
 
             if has_local:
                 inner = LOCAL_URI_INNER_REGEX.sub(

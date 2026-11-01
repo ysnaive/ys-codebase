@@ -13,7 +13,7 @@ related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-25"
+last_updated: "2026-11-01"
 ---
 
 # Agents Workflow 使用者與操作指南 (User Guide)
@@ -45,9 +45,9 @@ python yscb.py agents-workflow plan status
 python yscb.py agents-workflow plan status --resume [--plan <plan_name_or_subpath>]
 ```
 
-- **確定性狀態領航與 `--resume` 原子閱後即焚**：
-  - `PlanStatusResolver.resolve_next_action` 自動深入 `Umbrella` 第一個未結案之活躍 `sub_XX` 子目錄，依據檔案與標頭狀態輸出 `Plan Mode`、`Current Breakpoint`、`Next Phase`、`Required Reference`（下一步必讀之 SOP 階段參考手冊路徑）與行動提示。
-  - 當傳入 `--resume` 且目標目錄存在 `handoff.md` 時，終端完整輸出快照內容後立即由 Python 呼叫 `os.unlink()` 物理刪除該檔案；未傳入 `--resume` 時維持 100% 純唯讀掃描。
+- **確定性狀態領航、`--resume` 原子閱後即焚與恢復膠囊 (`Deterministic Recovery Capsule`)**：
+  - `PlanStatusResolver.resolve_next_action` 自動深入 `Umbrella` 第一個未結案之活躍 `sub_XX` 子目錄，依據檔案與標頭狀態輸出 `Plan Mode`、`Current Breakpoint`、`Next Phase`、`Required Reference`（下一步必讀之 SOP 階段參考手冊路徑）與行動提示；當頂層活躍計畫已處於 `Completed` 或 `Concluded` 狀態時，`plan status` 表格底部自動附上 `plan archive` 歸檔提醒。
+  - 當傳入 `--resume` 且目標目錄存在 `handoff.md` 時，終端完整輸出快照內容後立即由 Python 呼叫 `os.unlink()` 物理刪除該檔案；若目標目錄**不存在 `handoff.md`**，則自動執行 `build_recovery_capsule` 從現有規格與任務檔提取關鍵決策 (`DRs`)、受影響檔案清單 (`Target Files`)、待辦勾選進度 (`Checklist Progress`) 與最近 3 筆 `changelog.md` 事件輸出為確定性恢復膠囊，免除 Agent 逐檔盲讀重建上下文。未傳入 `--resume` 時維持 100% 純唯讀掃描。
   - 若同時存在多個進行中計畫且未指定 `--plan`，為遵守零臆測原則，系統拒絕盲目挑選或刪除任何 `handoff.md`，並提示顯式傳入 `--plan`。
 
 > [!NOTE]
@@ -92,13 +92,13 @@ python yscb.py agents-workflow plan archive 2026_08_20_1200_demo_feature --force
 跨活躍進行中與歷史歸檔計畫檢索決策記錄 (DR) 或全文關鍵字。
 
 ```bash
-# 1. 檢索架構決策記錄 (DR模式，正則結構化擷取並自動去重)
+# 1. 檢索架構決策記錄 (DR模式，正則結構化擷取、按活躍度與角色權重排序並依 (plan, rel_path, dr_id) 去重)
 python yscb.py agents-workflow plan search --dr
-python yscb.py agents-workflow plan search "URI" --dr
+python yscb.py agents-workflow plan search "URI" --dr [--full] [--json]
 python yscb.py agents-workflow plan search --dr --year=2026 --month=10 --limit=15
 
-# 2. 跨計畫全文程式碼檢索（展示匹配行號與前後上下文）
-python yscb.py agents-workflow plan search "PlanArchiver"
+# 2. 跨計畫全文程式碼檢索（展示匹配行號與前後上下文，支援 --full 與 --json）
+python yscb.py agents-workflow plan search "PlanArchiver" [--full] [--json]
 python yscb.py agents-workflow plan search "VFS" --limit=10
 ```
 
@@ -265,22 +265,22 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 ### 5.1 核心定位與觸發時機
 `/Auto`（對應 `auto` 技能）為可在 **Phase 00 (`Confirmed`) 或 Phase 01 ~ Phase 05** 之間觸發的連續推進模式。當開發者確認需求或前置階段規格後，下達 `/Auto` 授權 Agent 在無技術歧義與無爭議的前提下，跳過中間各 Phase 的強制 Checkpoint 等待，以精實模式自動連續產出各階段規範與代碼實作，直達 Phase 6 手動/UX 驗證前。
 
-### 5.2 `_auto.md` 專屬後綴命名規範與 Context 精實化暨兩階段 JIT 四大機制
-1. **`PXX_YYYY_auto.md` 動態溯源命名鐵律 (`_auto` Suffix Provenance Rule)**：
-   - 凡於 `/auto` 過程中由 Agent 一次自動寫入之階段規格與任務檔（涵蓋自當前啟動階段至 `Phase 05`），檔名強制附加 `_auto` 後綴（即 `P01_requirements_spec_auto.md`、`P02_architecture_plan_auto.md`、`P03_api_spec_auto.md`、`P04_implementation_plan_auto.md`、`P05_task_auto.md`）：
-     - 若於 `P00` 定案後即觸發 `/auto`，則 `P01`~`P05` 全數帶 `_auto.md` 後綴。
-     - 若人工討論定案至 `P02` 後才觸發 `/auto`，則 `P00`~`P02` 維持原名，僅 `P03`~`P05` 帶 `_auto.md` 後綴。
-   - `PlanStatusResolver.resolve_phase_file` 與 `PlanScanner`、`PlanVerifier`、`PlanArchiver` 原生雙軌相容 `<stem>.md` 與 `<stem>_auto.md`。
-2. **兩階段寫檔前即時讀取模板 (`Two-Stage JIT Template Read`) 與單次到位寫入 (`1-Write-Per-File`)**：
-   - `auto/SKILL.md` 收斂至 $\le 75$ 行，免除讀取 `phase_01~05.md`（省去無效的單階段 End Turn 說明），改於**寫檔前最後一刻分兩階段平行讀取權威模板**以消除長執行跨度之記憶衰減：
-     - **批次 A**：寫 `P01`~`P04_auto.md` 前即時平行讀取 `P01`~`P04` 模板。
-     - **批次 B**：完成 Phase 5 編碼與測試後、寫 `P05_task_auto.md` 與 `P06_test_plan.md` 前即時平行讀取 `P05` 與 `P06` 模板。
-   - 每個階段檔案嚴格僅寫入一次（`P01`~`P04` 直接寫 `Confirmed`、`P05_task_auto.md` 於編碼完成後直接寫 `Completed`、`P06_test_plan.md` 於自動化測試通過後直接寫 `Passed`），並於 `P06` 執行**單次彙總** `plan verify <plan> --log "..."`。
-3. **跨檔單點定義去重與禁預寫實作碼 (`DRY Spec Reference & Signature-Only`)**：
-   - 變更檔案清單單點定義於 `P02` §3；`P03` §2 僅寫 `def/class` 型別簽名與例外契約（嚴禁預貼函式實作程式碼）；任務拆解單點定義於 `P04` §4，`P05_task_auto.md` 僅列 1 行指標（$\le 25$ 行）。
-4. **`PlanVerifier` 缺失率智能分流 (`QUICK_PATCH` / `FULL_REWRITE`)、確定性標頭自癒與 `NEXT PHASE GATE`**：
+### 5.2 `P{XX}-05_auto.md` 動態區段綜合命名規範與兩階段 JIT 規格先行機制
+1. **`P{XX}-05_auto.md` 動態區段綜合產物命名鐵律 (`Consolidated Range Rule`)**：
+   - 凡於 `/auto` 過程中由 Agent 自動連續生成之 `Phase {XX}` ~ `Phase 05` 規格與任務，一律收斂為單一綜合檔案 **`P{XX}-05_auto.md`**（將 `XX` 替換為開始 `/auto` 之階段編號，消除 5 份碎片檔案重複標頭與跨檔重複轉述，同時 100% 保留 `P01`~`P05` 五階段核心工程資訊）：
+     - 若自 `P00` (`Confirmed`) 啟動 `/auto`，直接產出單一 **`P01-05_auto.md`**（涵蓋 `§1 (P01)` ~ `§5 (P05)` 完整五節）。
+     - 若人工討論定案至 `P02` 後才啟動 `/auto`，則 `P00`~`P02` 維持原名（`P01_requirements_spec.md`、`P02_architecture_plan.md`），後續由 `/auto` 自動生成之階段收斂為 **`P03-05_auto.md`**（僅需填寫 `§3 (P03)` ~ `§5 (P05)`，`PlanVerifier` 自動依 `min_phase=3` 豁免 `§1`/`§2` 標題檢查）。
+   - `PlanStatusResolver.resolve_phase_file`、`PlanScanner`、`PlanVerifier` 與 `SessionTraceEngine` 原生三軌相容標準檔名 `<stem>.md`、傳統 `<stem>_auto.md` 與區段綜合檔 `P0[1-5]-05_auto.md`。
+2. **兩階段寫檔前即時讀取模板 (`Two-Stage JIT Template Read`) 與規格先行 (`Spec-First`)**：
+   - `auto/SKILL.md` 收斂至 $\le 75$ 行，免除讀取 `phase_01~05.md`，改採**兩階段寫檔前即時讀取權威模板**以消除長執行跨度之記憶衰減：
+     - **批次 A（實作前）**：即時讀取 `PXX-05_auto.md` 模板後**立即寫出 `P{XX}-05_auto.md` (`> 狀態：In Progress`)**，完成 `§1`~`§4` 規格契約與 `§5` 待辦拆解 `- [ ]`，中間嚴禁穿插源碼讀取工具呼叫。
+     - **批次 B（實作與測試完成後）**：即時讀取 `P06_test_plan.md` 模板，將 `P{XX}-05_auto.md` 原地更新為 `Completed`（勾選 `- [x]` 並填寫實作偏差紀錄表），並一次寫出 `P06_test_plan.md` (`Passed`)，最後執行**單次彙總** `plan verify <plan> --log "..."`。
+3. **跨節單點定義去重與禁預寫實作碼 (`DRY Spec Reference & Signature-Only`)**：
+   - 於 `P{XX}-05_auto.md` 中：變更檔案清單單點定義於 `§2.2`；`§3.1` 僅寫 `def/class` 型別簽名與例外契約（嚴禁預貼函式實作程式碼）；任務拆解與勾選清單合一於 `§5.1`。
+4. **`PlanVerifier` 缺失率智能分流 (`QUICK_PATCH` / `FULL_REWRITE`)、可攜性/回寫警告與 `NEXT PHASE GATE`**：
    - **確定性標頭自癒 (`[SELF-HEAL]`)**：附帶 `--log` 執行 `plan verify` 時，若檔案已具合法 `狀態`、`模型` 且無章節/佔位符缺失，自動原地補齊缺漏之 `功能名稱`、`建立日期` 與 `sub_XX` 之 `所屬主計畫`。
    - **章節缺失率分流**：缺失率 $< 50\%$ 時輸出 `[TRIAGE: QUICK_PATCH]` 與缺失之原始 Markdown 標題供 `edit_file` 局部補齊；缺失率 $\ge 50\%$ 時輸出 `[TRIAGE: FULL_REWRITE]` 與 `.agents/.yscb/templates/{tmpl_name}` 模板路徑，要求讀取模板後以 `write_file` 重寫。
+   - **可攜性與偏差回寫警告 (`PORTABILITY` / `BACKPROP`)**：偵測非代碼區塊中之 `file:///` 或本機絕對路徑發出 `PORTABILITY` 警告；偵測 `P05` 記載 `Major`/`Critical` 偏差但獨立前置規格 `P02`/`P03` 未同步更新時發出 `BACKPROP` 警告。
    - **下一階段預告 (`[NEXT PHASE GATE]`)**：單一計畫檢核 `PASS` 且尚未 `Completed` 時，自動輸出下一階段檔名、模板路徑與必備章節預告。
 
 ### 5.3 適用範圍与三大熔斷防線 (Circuit Breakers)
