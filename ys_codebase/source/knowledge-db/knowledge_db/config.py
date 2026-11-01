@@ -29,6 +29,23 @@ MODEL_SHORT_NAME_ALIASES: Dict[str, str] = {
 }
 
 
+def is_agents_workflow_installed() -> bool:
+    """檢查當前環境是否已安裝 agents-workflow 模組 (用於判定是否注入 AI Agent 專屬導引提示)。"""
+    try:
+        from core.uri import resolve
+        resolved = resolve("module://agents-workflow", interactive=False)
+        if resolved and Path(resolved).exists():
+            return True
+        proj_res = resolve("project://", interactive=False)
+        if proj_res:
+            cand = Path(proj_res) / ".modules" / "agents-workflow"
+            if cand.exists():
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def normalize_model_name(name: str) -> str:
     """Normalize short model names to HuggingFace / FastEmbed canonical names."""
     if not name or not str(name).strip():

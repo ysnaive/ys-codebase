@@ -49,13 +49,21 @@ class TestReleaseTargets(YSCBTestCase):
         super().tearDown()
 
     def test_ft_01_manifest_targets_discovery(self):
-        """FT-01: 驗證 manifest.json 中 antigravity, claude, codex 三大 target 均被正確解析。"""
+        """FT-01: 驗證 contributes/agents-workflow.json 中 8 大預設 target 均被正確解析。"""
         targets = self.compiler.get_release_targets()
         target_names = [t.get("name") for t in targets]
-        
-        self.assertIn("antigravity", target_names)
-        self.assertIn("claude", target_names)
-        self.assertIn("codex", target_names)
+
+        for expected_name in (
+            "antigravity",
+            "claude",
+            "codex",
+            "cursor",
+            "copilot",
+            "windsurf",
+            "opencode",
+            "roo",
+        ):
+            self.assertIn(expected_name, target_names)
         self.mark_passed()
 
     def test_ft_02_list_targets_output(self):
@@ -288,6 +296,92 @@ class TestReleaseTargets(YSCBTestCase):
         )
         ret_missing = cli_mod.release_target(bags_missing)
         self.assertEqual(ret_missing, 1)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_08_expanded_targets_copilot_relative_links_and_shared_union(self):
+        """FT-08: 驗證 5 大擴充 target 投影拓撲、copilot 子目錄相對連結與多 Target 共用實體路徑並聯渲染暨 Warning。"""
+        import io
+        from contextlib import redirect_stderr
+
+        targets = {t["name"]: t for t in self.compiler.get_release_targets()}
+        for t_name, expected_prefix, expected_agents_md in (
+            ("cursor", "project://.cursor", "project://AGENTS.md"),
+            ("copilot", "project://.github", "project://.github/copilot-instructions.md"),
+            ("windsurf", "project://.windsurf", "project://AGENTS.md"),
+            ("opencode", "project://.opencode", "project://AGENTS.md"),
+            ("roo", "project://.roo", "project://AGENTS.md"),
+        ):
+            t_cfg = targets.get(t_name, {})
+            self.assertEqual(t_cfg.get("agents_md"), expected_agents_md)
+            proj = t_cfg.get("projections", {})
+            self.assertEqual(proj.get("skill", {}).get("target_dir"), f"{expected_prefix}/skills/{{export.name}}")
+            self.assertEqual(proj.get("template", {}).get("target_dir"), f"{expected_prefix}/.yscb/templates")
+            self.assertEqual(proj.get("standard", {}).get("target_dir"), f"{expected_prefix}/.yscb/standards")
+
+        stage1_res = self.compiler.compile_stage1()
+        self.assertTrue(stage1_res.get("success", False))
+        resolved_items = stage1_res.get("resolved_items", [])
+
+        temp_dir = tempfile.mkdtemp(prefix="test_aw_multi_union_")
+        try:
+            # 1. 驗證單獨啟用 copilot 時，.github/copilot-instructions.md 內部連結以 .github 為基準解析為 ./skills/...
+            _, _, all_copilot, _, warnings_copilot = self.publisher._prepare_target_compilations(
+                active_target_names=["copilot"],
+                all_registered_targets=targets,
+                proj_tier_targets={"copilot"},
+                resolved_items=resolved_items,
+                proj_root=temp_dir,
+            )
+            self.assertEqual(warnings_copilot, [])
+            copilot_md_abs = os.path.normpath(os.path.join(temp_dir, ".github", "copilot-instructions.md"))
+            self.assertIn(copilot_md_abs, all_copilot)
+            copilot_md_text = all_copilot[copilot_md_abs]
+            self.assertIn("(./skills/development-sop/SKILL.md)", copilot_md_text)
+            self.assertNotIn("(.github/skills/", copilot_md_text)
+
+            # 驗證 sync_gitignore 不會將 .github/copilot-instructions.md 加入忽略清單
+            gi_res = self.publisher.sync_gitignore(
+                active_targets=["copilot"],
+                published_files=set(all_copilot.keys()),
+                proj_root=temp_dir,
+            )
+            self.assertNotIn("/.github/copilot-instructions.md", gi_res["patterns"])
+
+            # 2. 驗證同時啟用 antigravity + codex + cursor 時：
+            #    - 共用之 .agents/skills/ 內專有名詞 (__%{...}__) 並聯去重為 "read_file (StartLine/EndLine) / read_file"
+            #    - 共用之 AGENTS.md 內技能相對連結 (__#{...}__) 並聯去重為 "./.agents/skills/... / ./.cursor/skills/..."
+            #    - 輸出 [publisher:warning] 提醒考慮透過 config.local.json 覆寫
+            stderr_buf = io.StringIO()
+            with redirect_stderr(stderr_buf):
+                _, _, all_multi, _, warnings_multi = self.publisher._prepare_target_compilations(
+                    active_target_names=["antigravity", "codex", "cursor"],
+                    all_registered_targets=targets,
+                    proj_tier_targets={"antigravity"},
+                    resolved_items=resolved_items,
+                    proj_root=temp_dir,
+                )
+            stderr_out = stderr_buf.getvalue()
+            self.assertGreaterEqual(len(warnings_multi), 1)
+            self.assertIn("[publisher:warning]", stderr_out)
+            self.assertIn("config.local.json", stderr_out)
+
+            # 檢查共用之 AGENTS.md 包含 .agents/skills 與 .cursor/skills 雙路徑並聯
+            agents_md_abs = os.path.normpath(os.path.join(temp_dir, "AGENTS.md"))
+            self.assertIn(agents_md_abs, all_multi)
+            agents_md_text = all_multi[agents_md_abs]
+            self.assertIn(".agents/skills/development-sop/SKILL.md / .cursor/skills/development-sop/SKILL.md", agents_md_text)
+
+            # 檢查共用之 .agents/skills/knowledge-db-search/SKILL.md 包含 antigravity 與 codex 專有名詞並聯
+            kdb_skill_abs = os.path.normpath(
+                os.path.join(temp_dir, ".agents", "skills", "knowledge-db-search", "SKILL.md")
+            )
+            self.assertIn(kdb_skill_abs, all_multi)
+            kdb_skill_text = all_multi[kdb_skill_abs]
+            self.assertIn("read_file (StartLine/EndLine) / read_file", kdb_skill_text)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
         self.mark_passed()
 

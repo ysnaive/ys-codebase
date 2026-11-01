@@ -72,13 +72,35 @@ class CheckReport:
     def warnings(self) -> List[str]:
         return [i.message for i in self.issues if i.severity == CheckSeverity.WARN]
 
+    @property
+    def agent_directive(self) -> Optional[str]:
+        if not self.has_fails:
+            return None
+        return (
+            "[Agent Directive] Please consult skill 'yscb-module-dev' "
+            "(references/acceptance_checklist.md & references/contributes_guide.md) "
+            "to resolve module compliance errors."
+        )
+
+    def format_report(self) -> str:
+        lines = [f"[*] Module: {self.module:<50} [{self.status.value}]"]
+        for issue in self.issues:
+            loc = f" ({issue.file_path})" if issue.file_path else ""
+            lines.append(f"    |-- [{issue.severity.value}] [{issue.category}]{loc} {issue.message}")
+        if self.agent_directive and not any(i.category == "DIRECTIVE" for i in self.issues):
+            lines.append(self.agent_directive)
+        return "\n".join(lines)
+
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        res: Dict[str, Any] = {
             "module": self.module,
             "status": self.status.value,
             "passed": self.passed,
             "issues": [i.to_dict() for i in self.issues],
         }
+        if self.agent_directive:
+            res["agent_directive"] = self.agent_directive
+        return res
 
 
 def _extract_ast_tokens(expr_node: ast.AST) -> List[str]:
@@ -260,6 +282,14 @@ class Checker:
                     message=f"Module source not found at {src_uri}.",
                 )
             )
+            if report.agent_directive:
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="DIRECTIVE",
+                        message=report.agent_directive,
+                    )
+                )
             return report
 
         real_dir = uri.resolve(src_uri)
@@ -287,6 +317,16 @@ class Checker:
 
         # 8. Check Custom Contributed Rules
         self._check_custom_rules(name, real_dir, report)
+
+        # 9. Append [Agent Directive] on failure so CLI report output always includes skill routing guidance
+        if report.has_fails and report.agent_directive:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.FAIL,
+                    category="DIRECTIVE",
+                    message=report.agent_directive,
+                )
+            )
 
         return report
 

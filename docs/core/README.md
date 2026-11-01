@@ -103,6 +103,10 @@ YS-Codebase 透過 `core.uri` 與 `core.vfs` 提供標準化虛擬檔案系統�
 - `--help`：展開全系統可用協議清冊與狀態。
 - **非 TTY / 靜態檢查與可操作自癒提示**：直接拋出結構化 `UndefinedURIError`，並透過 `format_undefined_uri_hint()` 自動附帶精確的 `Quick fix: <cli_cmd>` 通用修復指令（例如 `project://` 提示 `python yscb.py config set core project_root ./`、模組級 `config` 協議提示 `python yscb.py config set <donor> <key> <path>`）；`python yscb.py uri check` 亦同步輸出 `[Quick Fix]` 修復指令區塊。
 
+### 2.3 `core.vfs` 本地實體檔案代理定位與遠端快取物化邊界
+- **具 `guard.py` 權限守衛之本地實體檔案代理層（Local OS Proxy with Access Guard）**：由於生態系涉及大量外部子進程（如沙盒測試、Git、Pip、Server Worker）與原生擴充模組（如 Tree-sitter C-extension、本地向量模型）的 OS 檔案描述符存取，`core.vfs` 明確定位為具備 [`core/guard.py`](../../ys_codebase/source/core/core/guard.py) 權限守衛、`assert_safe_path` 防逃逸沙盒檢核、同目錄原子寫入（`atomic_write`）與跨平台 LF 正規化之**本地實體檔案代理層**，不採用無法跨子進程共享之純記憶體（In-Memory）虛擬後端。
+- **遠端與雲端來源之本地快取物化邊界（Remote-to-Local Cache Materializer）**：針對 HTTP/HTTPS Provider 或未來雲端儲存來源，系統統一於套件獲取或解算邊界將遠端資產下載並原子物化至本地快取／鏡像空間（如 `module.mirror://` 或 `cache://`），再交由 `OSBackend` 以標準本地實體路徑提供毫秒級讀寫，確保所有上層消費者與子進程 100% 享有確定性的實體檔案系統語意。
+
 ---
 
 ## 3. 微內核 Contribute 依賴注入與查詢 SDK (`core.contributes`)

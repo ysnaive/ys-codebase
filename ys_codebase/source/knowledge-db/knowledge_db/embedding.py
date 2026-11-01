@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
-from .config import DEFAULT_EMBEDDING_MODEL, MODEL_SPECS, KnowledgeDBConfig, resolve_threads
+from .config import DEFAULT_EMBEDDING_MODEL, MODEL_SPECS, KnowledgeDBConfig, is_agents_workflow_installed, resolve_threads
 from .exceptions import KnowledgeDBError
 from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
 
@@ -197,7 +197,7 @@ class EmbeddingService:
                 "timestamp": time.time(),
             }
             logger.info("[knowledge-db:embedding] Vector model not found locally. Gracefully fallback to BM25.")
-            if self.enable_vector_search:
+            if self.enable_vector_search and is_agents_workflow_installed():
                 import sys
                 sys.stderr.write("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？\n")
                 sys.stderr.flush()
@@ -263,7 +263,7 @@ class EmbeddingService:
                 "timestamp": time.time(),
             }
             logger.info(f"[knowledge-db:embedding] Vector model unavailable ({type(e).__name__}: {e}). Gracefully fallback to BM25.")
-            if self.enable_vector_search:
+            if self.enable_vector_search and is_agents_workflow_installed():
                 import sys
                 sys.stderr.write("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？\n")
                 sys.stderr.flush()

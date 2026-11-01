@@ -387,3 +387,85 @@ class TestCoreInstaller(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_cmd_restore_cross_branch_version_mismatch_and_corrupted_manifest(self):
+        """驗證跨分支 cmd_restore (含 yscb.py 與 Installer) 在 installed_ver != ver 或 manifest 損毀時自動覆寫還原。"""
+        import io
+        import json
+        import zipfile
+        import tempfile
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        import yscb
+        from core.installer import _notify_server_release_handles
+
+        mod_name = "mock_branch_mod"
+        with tempfile.TemporaryDirectory() as prov_dir:
+            mod_prov_dir = os.path.join(prov_dir, mod_name)
+            os.makedirs(mod_prov_dir, exist_ok=True)
+
+            # 準備 1.0.0.0.zip 與 1.1.0.0.zip
+            for ver_str in ("1.0.0.0", "1.1.0.0"):
+                with zipfile.ZipFile(os.path.join(mod_prov_dir, f"{ver_str}.zip"), "w") as zf:
+                    zf.writestr("manifest.json", json.dumps({"name": mod_name, "version": ver_str, "entry": "scripts/cli.py"}))
+                    zf.writestr("scripts/cli.py", f"VER = '{ver_str}'\ndef main(): return 0\n")
+
+            cfg_path, orig_cfg = self.installer.engine._get_config()
+            orig_installed = dict(orig_cfg.get("installed_modules", {}))
+            try:
+                # 1. 先將 .modules/mock_branch_mod 設為舊版 1.0.0.0，但 yscb.config.json 目標設為 1.1.0.0 (模擬 git checkout 切換分支)
+                vfs.makedirs(f"module://{mod_name}", exist_ok=True)
+                vfs.write_json(f"module://{mod_name}/manifest.json", {"name": mod_name, "version": "1.0.0.0", "entry": "scripts/cli.py"})
+                vfs.write_text(f"module://{mod_name}/scripts/cli.py", "VER = '1.0.0.0'\n")
+
+                orig_cfg.setdefault("installed_modules", {})[mod_name] = {"version": "1.1.0.0", "provider": prov_dir}
+                self.installer.engine._save_config(cfg_path, orig_cfg)
+
+                # 執行 cmd_restore (不帶 force)，應偵測 installed_ver (1.0.0.0) != ver (1.1.0.0) 並自動覆寫為 1.1.0.0
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = self.installer.cmd_restore(force=False, provider=prov_dir)
+                self.assertEqual(rc, 0)
+                restored_mf = vfs.read_json(f"module://{mod_name}/manifest.json")
+                self.assertEqual(restored_mf.get("version"), "1.1.0.0")
+
+                # 2. 當版本已一致 (1.1.0.0 == 1.1.0.0) 時，再次執行 cmd_restore 應 Skipping
+                buf_skip = io.StringIO()
+                with redirect_stdout(buf_skip):
+                    rc_skip = self.installer.cmd_restore(force=False, provider=prov_dir)
+                self.assertEqual(rc_skip, 0)
+                self.assertIn(f"Skipping '{mod_name}@1.1.0.0'", buf_skip.getvalue())
+
+                # 3. EC-01: 當 manifest.json 損毀無法解析 JSON 時，視為版本不符並重新覆寫修復
+                vfs.write_text(f"module://{mod_name}/manifest.json", "{corrupted_json")
+                buf_corrupt = io.StringIO()
+                with redirect_stdout(buf_corrupt):
+                    rc_corrupt = self.installer.cmd_restore(force=False, provider=prov_dir)
+                self.assertEqual(rc_corrupt, 0)
+                self.assertEqual(vfs.read_json(f"module://{mod_name}/manifest.json").get("version"), "1.1.0.0")
+
+                # 4. 驗證 yscb.py 獨立自舉 cmd_restore 的版本比對行為
+                vfs.write_json(f"module://{mod_name}/manifest.json", {"name": mod_name, "version": "1.0.0.0"})
+                with patch("os.path.isfile", side_effect=lambda p: False if str(p).endswith(os.path.join("core", "scripts", "cli.py")) else os.path.exists(p)):
+                    with patch("yscb.load_config", return_value=(cfg_path, orig_cfg)):
+                        rc_boot = yscb.cmd_restore([])
+                        self.assertEqual(rc_boot, 0)
+                self.assertEqual(vfs.read_json(f"module://{mod_name}/manifest.json").get("version"), "1.1.0.0")
+
+                # 5. 驗證 _notify_server_release_handles 在無 Server 或假 daemon.json 下安全容錯
+                self.assertFalse(_notify_server_release_handles( prov_dir))
+                daemon_dir = os.path.join(prov_dir, ".cache", "server")
+                os.makedirs(daemon_dir, exist_ok=True)
+                with open(os.path.join(daemon_dir, "daemon.json"), "w", encoding="utf-8") as df:
+                    json.dump({"pid": 999999, "port": 65530, "token": "tok"}, df)
+                self.assertFalse(_notify_server_release_handles(prov_dir))
+            finally:
+                orig_cfg["installed_modules"] = orig_installed
+                self.installer.engine._save_config(cfg_path, orig_cfg)
+                if vfs.exists(f"module://{mod_name}"):
+                    vfs.rmtree(f"module://{mod_name}")
+                if vfs.exists(f"module.mirror://{mod_name}"):
+                    vfs.rmtree(f"module.mirror://{mod_name}")
+
+        self.mark_passed()
+
+

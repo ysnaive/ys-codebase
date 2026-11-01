@@ -234,10 +234,19 @@ class TestServiceWorker(YSCBTestCase):
         pipeline.search(query="test_query", auto_rebuild=True)
         self.assertFalse(pipeline.scanner.check_invalidation.called)
 
-        # 模擬檔案發生未防抖變更，寫入 dirty flag；Watcher 活躍期間前台搜尋依然保持 0ms 非阻塞
+        # 模擬檔案發生未防抖變更，寫入 dirty flag；_is_watcher_active 返回 False 觸發前台增量同步 (對齊 [DN-04])
         with open(dirty_file, "w", encoding="utf-8") as f:
             f.write("dirty")
 
+        self.assertFalse(pipeline._is_watcher_active())
+        pipeline.scanner.check_invalidation.return_value = (False, 0, "dirty sync", {}, MagicMock(has_changes=False))
+        pipeline.search(query="test_query", auto_rebuild=True)
+        self.assertTrue(pipeline.scanner.check_invalidation.called)
+
+        # 清理 dirty flag 後，Watcher 活躍狀態再次生效，跳過 stat 走訪
+        dirty_file.unlink()
+        pipeline.scanner.check_invalidation.reset_mock()
+        self.assertTrue(pipeline._is_watcher_active())
         pipeline.search(query="test_query", auto_rebuild=True)
         self.assertFalse(pipeline.scanner.check_invalidation.called)
 
@@ -246,6 +255,26 @@ class TestServiceWorker(YSCBTestCase):
         pipeline.scanner.check_invalidation.return_value = (False, 0, "no changes", {}, MagicMock(has_changes=False))
         pipeline.search(query="test_query", auto_rebuild=True)
         self.assertTrue(pipeline.scanner.check_invalidation.called)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_watcher_start_failure_does_not_leave_active_flag(self):
+        """FT-07 (FR-02, EC-02): 驗證 Observer.start() 拋出異常降級時，不會殘留虛假 .watcher_active 標記"""
+        worker = KnowledgeDBServiceWorker(workspace_root=self.root_path)
+        indices_dir = self.root_path / "indices"
+        indices_dir.mkdir(parents=True, exist_ok=True)
+        active_file = indices_dir / ".watcher_active"
+        active_file.write_text('{"pid": 99999}', encoding="utf-8")
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.get_indices_dir.return_value = indices_dir
+        worker._pipeline = mock_pipeline
+
+        with patch("watchdog.observers.Observer.start", side_effect=RuntimeError("Mock OS inotify limit reached")):
+            worker.start({"yscb_root": str(self.root_path)})
+
+        self.assertFalse(active_file.exists(), ".watcher_active must be cleaned up when observer fails to start")
+        worker.stop()
         self.mark_passed()
 
     @require(Requirement.LOGIC)

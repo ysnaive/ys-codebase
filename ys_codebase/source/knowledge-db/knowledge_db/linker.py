@@ -33,6 +33,7 @@ class TopologyLinker:
         self._by_fqn: Dict[str, UnifiedSymbol] = {}
         self._by_parent_id: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
         self._class_bases: Dict[str, Set[str]] = defaultdict(set)
+        self._class_fields: Dict[str, Dict[str, str]] = defaultdict(dict)
 
         self._reindex()
 
@@ -45,6 +46,7 @@ class TopologyLinker:
         self._by_fqn.clear()
         self._by_parent_id.clear()
         self._class_bases.clear()
+        self._class_fields.clear()
 
         for _, sym in self.symbols_map.items():
             norm_path = sym.file_path.replace("\\", "/").lower()
@@ -68,6 +70,12 @@ class TopologyLinker:
                 for bt in base_types:
                     if bt:
                         self._class_bases[short_name].add(str(bt))
+
+            field_types = sym.metadata.get("field_types")
+            if field_types and isinstance(field_types, dict):
+                for fn, ft in field_types.items():
+                    if fn and ft:
+                        self._class_fields[short_name][str(fn)] = str(ft)
 
             alias_keys: List[str] = []
             if short_name and short_name != sym.name:
@@ -239,6 +247,16 @@ class TopologyLinker:
                     return best.id
         return None
 
+    def _resolve_field_type(self, class_name: str, field_name: str) -> Optional[str]:
+        """查詢類別或其基底類別中宣告之欄位/屬性型別"""
+        if not class_name or not field_name:
+            return None
+        for cls_name in [class_name] + self._get_ancestor_classes(class_name):
+            fields = self._class_fields.get(cls_name)
+            if fields and field_name in fields:
+                return fields[field_name]
+        return None
+
     def _resolve_same_file_or_global_call(
         self,
         site: SymbolCallSite,
@@ -250,6 +268,17 @@ class TopologyLinker:
     ) -> Optional[str]:
         """Tier 3 & Tier 4：同語意空間優先匹配與全庫上下文打分"""
         prefix_tail = prefix.split(".")[-1] if "." in prefix else prefix
+        caller_class = self._get_caller_class_name(site)
+
+        if prefix and caller_class:
+            field_type = self._resolve_field_type(caller_class, prefix_tail)
+            if field_type:
+                resolved_field_id = self._resolve_in_class_or_bases(
+                    field_type, callee, norm_path, space_name
+                )
+                if resolved_field_id:
+                    return resolved_field_id
+
         if space_name and space_name in self._by_space_name:
             if prefix:
                 space_matches = list(self._by_space_name[space_name].get(f"{prefix}.{callee}", []))
@@ -262,13 +291,10 @@ class TopologyLinker:
                     if best:
                         return best.id
                 else:
-                    caller_class = self._get_caller_class_name(site)
-                    if caller_class:
-                        same_cls_id = self._resolve_in_class_or_bases(caller_class, callee, norm_path, space_name)
-                        if same_cls_id:
-                            return same_cls_id
-
-                    local_candidates = list(self._by_file_name.get((norm_path, callee), []))
+                    local_candidates = [
+                        c for c in self._by_file_name.get((norm_path, callee), [])
+                        if not caller_class or (c.metadata.get("parent_scope") or "").lower() != caller_class.lower()
+                    ]
                     if len(local_candidates) == 1:
                         return local_candidates[0].id
 
@@ -287,7 +313,14 @@ class TopologyLinker:
                                 return best.id
 
                     if len(candidates) == 1:
-                        return candidates[0].id
+                        c = candidates[0]
+                        c_path = c.file_path.replace("\\", "/").lower()
+                        c_parent = (c.metadata.get("parent_scope") or "").lower()
+                        if c_path == norm_path and (not caller_class or c_parent != caller_class.lower()):
+                            return c.id
+                        best = self._score_candidates(candidates, prefix, callee)
+                        if best:
+                            return best.id
                     elif len(candidates) > 1:
                         best = self._score_candidates(candidates, prefix, callee, caller_class=caller_class, norm_path=norm_path)
                         if best:
@@ -321,7 +354,14 @@ class TopologyLinker:
                         return best.id
 
             if len(candidates) == 1:
-                return candidates[0].id
+                c = candidates[0]
+                c_path = c.file_path.replace("\\", "/").lower()
+                c_parent = (c.metadata.get("parent_scope") or "").lower()
+                if c_path == norm_path and (not caller_class or c_parent != caller_class.lower()):
+                    return c.id
+                best = self._score_candidates(candidates, prefix, callee)
+                if best:
+                    return best.id
             elif len(candidates) > 1:
                 best = self._score_candidates(candidates, prefix, callee)
                 if best:
@@ -393,13 +433,18 @@ class TopologyLinker:
                         continue
                     if prefix_tail == cls_part or prefix_clean == cls_part:
                         score += 15.0
-                    elif cls_part in prefix_clean or prefix_tail in cls_part:
+                    elif len(prefix_tail) >= 3 and len(cls_part) >= 3 and (
+                        cls_part in prefix_clean
+                        or prefix_tail in cls_part
+                        or any(len(seg) >= 3 and seg in cls_part for seg in prefix_tail.split("_"))
+                    ):
                         score += 10.0
 
-                if caller_cls_low and parent_cls == caller_cls_low:
+                if not prefix_clean and caller_cls_low and parent_cls == caller_cls_low:
                     score += 8.0
                 if norm_path and sym.file_path.replace("\\", "/").lower() == norm_path:
-                    score += 5.0
+                    if not prefix_clean or not caller_cls_low or parent_cls != caller_cls_low:
+                        score += 5.0
             elif sym_kind == SymbolKind.FUNCTION.value and not prefix_clean:
                 score += 5.0
 

@@ -8,7 +8,8 @@
       "exclude": [
         "**/__pycache__/**",
         "**/.git/**"
-      ]
+      ],
+      "weight": 1.2
     },
     "plans": {
       "description": "開發計畫、架構決策與 Roadmap 策略空間 (由 agents-workflow 貢獻)",
@@ -21,7 +22,8 @@
         "**/.git/**",
         "**/.*/**",
         "**/.*"
-      ]
+      ],
+      "weight": 0.85
     }
   }
 }

@@ -32,7 +32,7 @@
      4. **規格與組態敷衍**：為避開 Schema 剛性校驗，隨意填入非真理佔位字串或擅自變更全域預設值。
    - **次要衍生問題處置鐵律 (Secondary Blocker Discipline)**：
      - 推進主要目標時，若遭遇非當前範疇之次要報錯或相依障礙，**嚴禁將敷衍修復作為繞道墊腳石**。
-     - 必須落實「停手 $\to$ 深度歸因 $\to$ 範疇保護」：若無法在當前計畫範疇內進行標準架構修復，強制發起 [/discuss](.agents/skills/discuss/SKILL.md) 或向開發者呈遞請示，由開發者裁定擴充範疇或另闢計畫，絕不隱蔽殘留技術債。
+     - 必須落實「停手 $\to$ 深度歸因 $\to$ 範疇保護」：若無法在當前計畫範疇內進行標準架構修復，強制發起 [/discuss](.agents/skills/discuss/SKILL.md / .cursor/skills/discuss/SKILL.md) 或向開發者呈遞請示，由開發者裁定擴充範疇或另闢計畫，絕不隱蔽殘留技術債。
 
 ---
 
@@ -42,7 +42,7 @@
 
 | 任務情境、業務意圖與原生工具調用攔截 (Trigger Condition & Action Gate) | 強制觸發之技能 (Mandatory Skill) |
 | :--- | :--- |
-| **開立/推進計畫 / 代碼實作 / `plans/` 產物維護**<br/>*(調用檔案編輯寫入工具前；[!] 模板唯一來源請查閱 [`development-sop`](.agents/skills/development-sop/SKILL.md) 指針，嚴禁翻讀歷史封存；生命週期工作流（開立 / 接續 / 暫停 / 連續推進 / 遇阻歸因）由 `development-sop` 分流至對應技能)* | `development-sop` |
+| **開立/推進計畫 / 代碼實作 / `plans/` 產物維護**<br/>*(調用檔案編輯寫入工具前；[!] 模板唯一來源請查閱 [`development-sop`](.agents/skills/development-sop/SKILL.md / .cursor/skills/development-sop/SKILL.md) 指針，嚴禁翻讀歷史封存；生命週期工作流（開立 / 接續 / 暫停 / 連續推進 / 遇阻歸因）由 `development-sop` 分流至對應技能)* | `development-sop` |
 | **執行任何 CLI 命令列指令**<br/>*(調用各環境之終端機/命令列執行工具時)* | `yscb-cli-guide` |
 | **編寫代碼註解 / 撰寫或維護專案文檔 / Phase 7 (P07 / FP-03) 三層文檔對齊**<br/>*(撰寫 Docstring、維護 `docs/`、更新 README 或結案審查前)* | `documentation` |
 | **規劃或撰寫自動化測試 / 執行 Phase 6 (P06 / FP-02) 測試驗證與回歸 / 既有測試集體檢純化**<br/>*(定稿 P06、撰寫或修改測試代碼、執行單元/邊界/回歸測試、或審查純化 tests/ 目錄前)* | `testing-sop` |

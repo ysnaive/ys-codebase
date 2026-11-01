@@ -32,6 +32,7 @@ class HybridSearchEngine:
         weight_lexical: float = DEFAULT_WEIGHT_LEXICAL,
         weight_vector: float = DEFAULT_WEIGHT_VECTOR,
         min_vector_similarity: float = DEFAULT_MIN_VECTOR_SIMILARITY,
+        space_weights: Optional[Dict[str, float]] = None,
     ):
         self.inverted_index = inverted_index
         self.vector_index = vector_index if vector_index is not None else VectorIndex()
@@ -41,6 +42,23 @@ class HybridSearchEngine:
         self.weight_lexical = weight_lexical
         self.weight_vector = weight_vector
         self.min_vector_similarity = min_vector_similarity
+        self.space_weights: Dict[str, float] = dict(space_weights) if space_weights else {}
+
+    def _resolve_symbol_space_weight(
+        self,
+        sym: Optional[UnifiedSymbol],
+        spaces_filter: Optional[List[str]] = None,
+        space_weights: Optional[Dict[str, float]] = None,
+    ) -> float:
+        weights_map = space_weights if space_weights is not None else self.space_weights
+        if not weights_map or sym is None:
+            return 1.0
+        sym_spaces = getattr(sym, "spaces", None) or []
+        if not sym_spaces:
+            return 1.0
+        relevant = [s for s in sym_spaces if s in spaces_filter] if spaces_filter else sym_spaces
+        target = relevant or sym_spaces
+        return max((float(weights_map.get(s, 1.0)) for s in target), default=1.0)
 
     @property
     def is_vector_available(self) -> bool:
@@ -86,6 +104,7 @@ class HybridSearchEngine:
         kinds: Optional[List[str]] = None,
         languages: Optional[List[str]] = None,
         lexical_only: bool = False,
+        space_weights: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
         """
         執行複合檢索：
@@ -94,6 +113,8 @@ class HybridSearchEngine:
         """
         if not query or not str(query).strip():
             return []
+
+        effective_weights = space_weights if space_weights is not None else self.space_weights
 
         # 規範化副檔名篩選集合 (支援逗號分隔或串列，去前綴點並轉小寫)
         norm_ftypes: Optional[Set[str]] = None
@@ -120,6 +141,7 @@ class HybridSearchEngine:
                 languages=languages,
                 ftypes=list(norm_ftypes) if norm_ftypes else None,
                 limit=fetch_limit,
+                space_weights=effective_weights if effective_weights else None,
             )
             raw_res = self.bm25_engine.search(query=query, index=self.inverted_index, filter_cfg=flt)
             bm25_hits = [
@@ -193,8 +215,13 @@ class HybridSearchEngine:
             doc_id: rank for rank, (doc_id, _) in enumerate(filtered_vector_hits, start=1)
         }
 
-        # 5. RRF 倒數排名融合
+        # 5. RRF 倒數排名融合與空間權重乘算
         rrf_scores = self.compute_rrf(lexical_ranks, vector_ranks)
+        if effective_weights:
+            for doc_id in list(rrf_scores.keys()):
+                sym = symbols_map.get(doc_id)
+                sp_w = self._resolve_symbol_space_weight(sym, spaces_filter=spaces, space_weights=effective_weights)
+                rrf_scores[doc_id] = rrf_scores[doc_id] * sp_w
 
         # 按 RRF 得分降序排序
         sorted_doc_ids = sorted(

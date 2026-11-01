@@ -710,6 +710,9 @@ class IndexingPipeline:
     def _is_watcher_active(self) -> bool:
         """檢查是否有背景 Watcher 正在守護檔案系統。"""
         indices_dir = self.get_indices_dir()
+        dirty_file = indices_dir / ".watcher_dirty"
+        if dirty_file.exists():
+            return False
         active_file = indices_dir / ".watcher_active"
         if not active_file.exists():
             return False
@@ -830,6 +833,13 @@ class IndexingPipeline:
         )
         target_spaces = [space] if isinstance(space, str) else list(space) if space else None
         target_ftypes = TopologyQueryService.normalize_ftypes(ftypes)
+        try:
+            loaded_spaces = self.space_manager.load_spaces()
+            space_weights = {sp_name: sp_cfg.weight for sp_name, sp_cfg in loaded_spaces.items() if hasattr(sp_cfg, "weight")}
+        except Exception:
+            space_weights = {}
+        if hasattr(self, "hybrid_engine") and self.hybrid_engine is not None:
+            self.hybrid_engine.space_weights = space_weights
         flt = QueryFilter(
             spaces=target_spaces,
             languages=languages,
@@ -837,6 +847,7 @@ class IndexingPipeline:
             ftypes=target_ftypes,
             min_score=min_score,
             limit=limit,
+            space_weights=space_weights if space_weights else None,
         )
         can_use_vector = want_vectors and self.hybrid_engine.is_vector_available
         return unified_index, flt, target_spaces, target_ftypes, can_use_vector

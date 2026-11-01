@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .exceptions import InvalidSpaceConfigError, SpaceNotFoundError
-from .schema import SpaceConfig, SpaceOrigin
+from .schema import SpaceConfig, SpaceDef, SpaceOrigin
 
 logger = logging.getLogger("knowledge-db.space")
 

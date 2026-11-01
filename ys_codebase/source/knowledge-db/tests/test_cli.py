@@ -458,6 +458,39 @@ class TestCLI(YSCBTestCase):
             ]
             self.assertEqual(len(all_codes), 1)
             self.assertIn("use Read (offset/limit) to view", all_codes[0])
+
+            # 9. 驗證未安裝 agents-workflow 時 (FR-05, EC-04)，隱藏 AI Agent 專用導引提示與 [GUARD] 警告
+            with patch("knowledge_db.config.is_agents_workflow_installed", return_value=False), patch(
+                "knowledge_db.engine.KnowledgeEngine.search", return_value=mock_search_res
+            ):
+                buf_no_aw = io.StringIO()
+                with contextlib.redirect_stdout(buf_no_aw):
+                    ret_no_aw = process(["search", "Panel.UpdateLayout", "-s", "--max-snippet-lines", "5", "--json"])
+                self.assertEqual(ret_no_aw, 0)
+                no_aw_payload = json.loads(buf_no_aw.getvalue())
+                no_aw_codes = [
+                    itm.get("code", "")
+                    for r in no_aw_payload.get("results", [])
+                    for itm in r.get("items", [])
+                    if itm.get("truncated")
+                ]
+                self.assertEqual(len(no_aw_codes), 1)
+                self.assertIn("truncated", no_aw_codes[0])
+                self.assertNotIn("use ", no_aw_codes[0])
+                self.assertNotIn("to view", no_aw_codes[0])
+
+            from knowledge_db.embedding import EmbeddingService
+            with tempfile.TemporaryDirectory() as empty_model_dir:
+                with patch("knowledge_db.embedding.is_agents_workflow_installed", return_value=False):
+                    err_buf = io.StringIO()
+                    with contextlib.redirect_stderr(err_buf):
+                        svc_no_aw = EmbeddingService(
+                            cache_dir=Path(empty_model_dir),
+                            mock_mode=False,
+                            enable_vector_search=True,
+                        )
+                        svc_no_aw._init_model()
+                    self.assertNotIn("[GUARD]", err_buf.getvalue())
         finally:
             if old_yscb_loc is None:
                 os.environ.pop("YSCB_LOCALE", None)

@@ -21,6 +21,49 @@ logger = logging.getLogger("core.locale")
 DEFAULT_LOCALE_CHAIN: List[str] = ["zh"]
 MAX_INTERPOLATION_DEPTH: int = 5
 
+DEFAULT_HOST_DIALECT_RULES: List[Dict[str, Any]] = [
+    {
+        "dialect": "nouns-claude",
+        "env_keys": ["CLAUDECODE", "CLAUDE_CODE"],
+        "env_prefixes": ["CLAUDE_CODE_"],
+    },
+    {
+        "dialect": "nouns-codex",
+        "env_keys": ["CODEX_SANDBOX", "CODEX_CI", "CODEX_CLI"],
+        "env_prefixes": ["CODEX_"],
+    },
+    {
+        "dialect": "nouns-antigravity",
+        "env_keys": ["ANTIGRAVITY_AGENT", "ANTIGRAVITY_CLI_ALIAS"],
+        "env_prefixes": ["ANTIGRAVITY_"],
+    },
+    {
+        "dialect": "nouns-cursor",
+        "env_keys": ["CURSOR_TRACE_ID"],
+        "env_prefixes": ["CURSOR_"],
+    },
+    {
+        "dialect": "nouns-windsurf",
+        "env_keys": ["WINDSURF_AGENT"],
+        "env_prefixes": ["WINDSURF_", "CODEIUM_"],
+    },
+    {
+        "dialect": "nouns-copilot",
+        "env_keys": ["GITHUB_COPILOT_CLI"],
+        "env_prefixes": ["COPILOT_"],
+    },
+    {
+        "dialect": "nouns-opencode",
+        "env_keys": ["OPENCODE"],
+        "env_prefixes": ["OPENCODE_"],
+    },
+    {
+        "dialect": "nouns-roo",
+        "env_keys": ["ROO_CODE"],
+        "env_prefixes": ["ROO_"],
+    },
+]
+
 # Memory cache: abs_file_path -> (mtime, parsed_dict)
 _LOCALE_FILE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _MODULE_BASE_DIR_CACHE: Dict[str, str] = {}
@@ -112,31 +155,62 @@ def detect_system_locale_chain(raw_tag: Optional[str] = None) -> List[str]:
     return ["zh"]
 
 
-def detect_active_host_dialect(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
+def get_host_dialect_rules() -> List[Dict[str, Any]]:
     """
-    Sniff the caller AI IDE / Agent environment variables and return the corresponding
-    proper-noun dialect ID ('nouns-claude', 'nouns-codex', 'nouns-antigravity'),
-    or None if running in a standard human terminal ([P00:DR-02], FR-02).
+    Return the ordered list of declarative host dialect sniffing rules ([P00:DR-02], TODO-06).
+    Merges optional custom 'host_dialects' rules from config://core or contributes://core
+    ahead of DEFAULT_HOST_DIALECT_RULES.
+    """
+    custom_rules: List[Dict[str, Any]] = []
+    try:
+        from core import config
+        cfg_rules = config.get("core", "host_dialects", default=None)
+        if isinstance(cfg_rules, list):
+            for r in cfg_rules:
+                if isinstance(r, dict) and r.get("dialect"):
+                    custom_rules.append(r)
+    except Exception:
+        pass
+    try:
+        from core import contributes
+        contrib_rules = contributes.get("core", "host_dialects")
+        if isinstance(contrib_rules, list):
+            for r in contrib_rules:
+                if isinstance(r, dict) and r.get("dialect"):
+                    custom_rules.append(r)
+    except Exception:
+        pass
+    return custom_rules + list(DEFAULT_HOST_DIALECT_RULES)
+
+
+def detect_active_host_dialect(
+    env: Optional[Mapping[str, str]] = None,
+    rules: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    """
+    Sniff the caller AI IDE / Agent environment variables using declarative rules and return
+    the corresponding proper-noun dialect ID (e.g. 'nouns-claude', 'nouns-codex', 'nouns-antigravity',
+    'nouns-cursor', 'nouns-windsurf', 'nouns-copilot', 'nouns-opencode', 'nouns-roo'),
+    or None if running in a standard human terminal ([P00:DR-02], FR-02, TODO-06).
     """
     env_map = env if env is not None else os.environ
-    for k, v in env_map.items():
-        if not v:
+    active_rules = rules if rules is not None else get_host_dialect_rules()
+
+    non_empty_upper_keys = [k.upper() for k, v in env_map.items() if v]
+    if not non_empty_upper_keys:
+        return None
+
+    for rule in active_rules:
+        if not isinstance(rule, dict):
             continue
-        k_up = k.upper()
-        if k_up in ("CLAUDECODE", "CLAUDE_CODE") or k_up.startswith("CLAUDE_CODE_"):
-            return "nouns-claude"
-    for k, v in env_map.items():
-        if not v:
+        dialect = str(rule.get("dialect", "")).strip()
+        if not dialect:
             continue
-        k_up = k.upper()
-        if k_up in ("CODEX_SANDBOX", "CODEX_CI", "CODEX_CLI") or k_up.startswith("CODEX_"):
-            return "nouns-codex"
-    for k, v in env_map.items():
-        if not v:
-            continue
-        k_up = k.upper()
-        if k_up in ("ANTIGRAVITY_AGENT", "ANTIGRAVITY_CLI_ALIAS") or k_up.startswith("ANTIGRAVITY_"):
-            return "nouns-antigravity"
+        exact_keys = {str(ek).strip().upper() for ek in rule.get("env_keys", []) if str(ek).strip()}
+        prefixes = tuple(str(ep).strip().upper() for ep in rule.get("env_prefixes", []) if str(ep).strip())
+        for k_up in non_empty_upper_keys:
+            if k_up in exact_keys or (prefixes and k_up.startswith(prefixes)):
+                return dialect
     return None
 
 

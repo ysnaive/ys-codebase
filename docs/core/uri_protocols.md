@@ -116,4 +116,12 @@ Scheme B 嚴格區分**基準定位錨點**（`yscb://`、`yscb.host://`、`proj
   $$\text{記憶體注入 } (\texttt{\_active\_yscb\_dir}) \;\longrightarrow\; \text{環境變數 } (\texttt{YSCB\_ROOT\_DIR}) \;\longrightarrow\; \text{常數基準 } (\texttt{\_\_file\_\_})$$
 - **沙盒鉤子隔離保證**：測試 Runner 在調度 `scripts/hook.dev.py` 時，強制包覆 `with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):`，確保所有 VFS 與 `core.config` 操作 100% 沙盒化。
 
+---
+
+## 6. `core.vfs` 本地實體代理定位與遠端快取物化邊界
+
+- **本地實體檔案代理層（Local Physical File Proxy with `guard.py`）**：`core.uri` 負責將語意 URI 純字串解算為本地絕對路徑，而 `core.vfs` 則作為具備 `guard.py` 權限守衛、`assert_safe_path` 目錄防穿越檢核與同分區原子寫入（`atomic_write`）的**本地實體檔案代理層**。由於子進程調度（Git、Pip、Server Worker）與原生 C 擴充庫直接依賴 OS 實體檔案描述符，`core.vfs` 專注於守護本地實體檔案系統，不提供脫離實體磁碟之純記憶體 `MemoryBackend`。
+- **未來雲端來源之本地快取物化解析器（Local Cache Materializer for Cloud Sources）**：當面對遠端 Provider 或未來雲端協議來源時，統一由邊界解析器先將遠端資源驗證並物化（Materialize）至本地 `module.mirror://` 或 `cache://` 實體空間，再將解析後的本地實體路徑交付 `core.vfs` 與上層模組消費，維持單向純淨的本地檔案代理契約。
+
+
 

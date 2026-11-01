@@ -53,6 +53,11 @@ class TestDevChecker(YSCBTestCase):
             self.assertFalse(report.passed)
             self.assertTrue(report.has_fails)
             self.assertTrue(any("must explicitly declare 'core'" in e for e in report.errors))
+            self.assertTrue(any("[Agent Directive]" in e and "yscb-module-dev" in e for e in report.errors))
+            self.assertIsNotNone(report.agent_directive)
+            self.assertIn("[Agent Directive]", report.agent_directive)
+            self.assertIn("yscb-module-dev", report.format_report())
+            self.assertIn("agent_directive", report.to_dict())
             self.mark_passed()
         finally:
             if os.path.exists(tmp_mod_dir):

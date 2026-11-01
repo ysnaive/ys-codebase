@@ -360,6 +360,101 @@
           "extension": ".md"
         }
       }
+    },
+    {
+      "name": "cursor",
+      "description": "Cursor IDE 原生工作流與標準規範輸出",
+      "agents_md": "project://AGENTS.md",
+      "projections": {
+        "template": {
+          "target_dir": "project://.cursor/.yscb/templates",
+          "extension": ".md"
+        },
+        "standard": {
+          "target_dir": "project://.cursor/.yscb/standards",
+          "extension": ".md"
+        },
+        "skill": {
+          "target_dir": "project://.cursor/skills/{export.name}",
+          "extension": ".md"
+        }
+      }
+    },
+    {
+      "name": "copilot",
+      "description": "GitHub Copilot 原生工作流與標準規範輸出 (.github/copilot-instructions.md)",
+      "agents_md": "project://.github/copilot-instructions.md",
+      "projections": {
+        "template": {
+          "target_dir": "project://.github/.yscb/templates",
+          "extension": ".md"
+        },
+        "standard": {
+          "target_dir": "project://.github/.yscb/standards",
+          "extension": ".md"
+        },
+        "skill": {
+          "target_dir": "project://.github/skills/{export.name}",
+          "extension": ".md"
+        }
+      }
+    },
+    {
+      "name": "windsurf",
+      "description": "Windsurf IDE 原生工作流與標準規範輸出",
+      "agents_md": "project://AGENTS.md",
+      "projections": {
+        "template": {
+          "target_dir": "project://.windsurf/.yscb/templates",
+          "extension": ".md"
+        },
+        "standard": {
+          "target_dir": "project://.windsurf/.yscb/standards",
+          "extension": ".md"
+        },
+        "skill": {
+          "target_dir": "project://.windsurf/skills/{export.name}",
+          "extension": ".md"
+        }
+      }
+    },
+    {
+      "name": "opencode",
+      "description": "OpenCode CLI 原生工作流與標準規範輸出",
+      "agents_md": "project://AGENTS.md",
+      "projections": {
+        "template": {
+          "target_dir": "project://.opencode/.yscb/templates",
+          "extension": ".md"
+        },
+        "standard": {
+          "target_dir": "project://.opencode/.yscb/standards",
+          "extension": ".md"
+        },
+        "skill": {
+          "target_dir": "project://.opencode/skills/{export.name}",
+          "extension": ".md"
+        }
+      }
+    },
+    {
+      "name": "roo",
+      "description": "Roo Code 原生工作流與標準規範輸出",
+      "agents_md": "project://AGENTS.md",
+      "projections": {
+        "template": {
+          "target_dir": "project://.roo/.yscb/templates",
+          "extension": ".md"
+        },
+        "standard": {
+          "target_dir": "project://.roo/.yscb/standards",
+          "extension": ".md"
+        },
+        "skill": {
+          "target_dir": "project://.roo/skills/{export.name}",
+          "extension": ".md"
+        }
+      }
     }
   ]
 }

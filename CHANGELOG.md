@@ -1,5 +1,22 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_01_1141_ecosystem_precision_infra_and_targets_umbrella (Completed)
+
+### sub_03_multi_platform_release_targets (Completed)
+- **8 大主流 AI 開發平台 `release_target` 矩陣擴充、同實體路徑多 Target 並聯去重渲染 (`Union Rendering`) 與宣告式宿主環境變數嗅探 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`, `TODO-05`, `TODO-06`)**：
+  - **8 大預設 `release_target` 拓撲與子目錄 `agents_md` 相對連結基準對齊 (`FR-03`, `FR-05`, `[P00:DR-03]`)**：於 `agents-workflow/contributes/agents-workflow.json` 完整提供 `antigravity`、`claude`、`codex`、`cursor`、`copilot`、`windsurf`、`opencode`、`roo` 共 8 大預設 Target；支援 `copilot` 子目錄 `.github/copilot-instructions.md` 以 `.github/` 為基準將技能相對路徑解析為 `./skills/...`，並於 `sync_gitignore` 與 `_prune_orphaned_managed_files` 動態納入所有已註冊 `agents_md` 規則檔。
+  - **同實體路徑多 Target `" / "` 並聯去重渲染、`[publisher:warning]` 本機覆寫提示與宣告式環境嗅探 (`FR-01`, `FR-02`, `FR-04`, `[P00:DR-01]`, `[P00:DR-02]`)**：於 `ReleasePublisher._prepare_target_compilations` 以目標實體路徑 (`dst_abs`) 聚合活躍 Target，當 $\ge 2$ 個 Target 共用路徑時，透過 `ArtifactCompiler.resolve_stage2_uri` 將宿主專有名詞 (`__%{...}__`) 與技能相對連結 (`__#{...}__`) 按序去重並以 `" / "` 並聯輸出，同時向 `stderr` 輸出 `[publisher:warning]` 提示開發者可於 `config/agents-workflow/config.local.json` 覆寫；於 `core/locale.py` 新增 `DEFAULT_HOST_DIALECT_RULES` 與 `get_host_dialect_rules()` 實現宣告式環境變數嗅探，同步更新 `docs/agents-workflow/{README,user_guide,DESIGN_NOTES}.md` (`[DN-AW-18]`)，`agents-workflow` (137/137) 測試 100% 通過並完成 `@build` 熱部署。
+
+### sub_02_core_infra_resilience (Completed)
+- **`core / dev / server` 基礎設施韌性、跨分支 `cmd_restore` 版號比對自癒、Windows 安裝前 Server 句柄釋放與 `[Agent Directive]` 注入 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-03`, `NFR-01`, `TODO-03`, `TODO-07`, `TODO-11`, `TODO-12`)**：
+  - **跨分支 `restore` 版號校驗、Windows 安裝前 Server 句柄釋放與 `PipInstallError` 統一契約 (`FR-01`, `FR-02`, `FR-04`, `EC-01` ~ `EC-03`, `TODO-07`, `TODO-11`)**：於 `yscb.py` 與 `core/installer.py` 之 `cmd_restore` 比對已安裝 `.modules/<name>/manifest.json` 版號與 `lock.json` 目標版號，版號不符或 `manifest.json` 損毀時自動覆寫修復；於模組變異操作前呼叫 `_notify_server_release_handles()` 請求常駐 Server 重啟 Warm Worker 釋放句柄，並於 `_atomic_swap_dir` / `act_reload` 非阻塞清理 `.old_*` 殘留目錄；將 `core/pip_manager.py` 中 `_bootstrap_pip` 與 `ensure_venv` 失敗統一拋出 `PipInstallError`。
+  - **檢核失敗報告尾端 `[Agent Directive]` 注入與 `core.vfs` 契約邊界定錨 (`FR-03`, `FR-05`, `TODO-03`, `TODO-12`)**：於 `core/validator.py` (`ValidationResult.format_report`) 與 `dev/checker.py` (`CheckReport`) 失敗時附加 `[Agent Directive]` 引導遵循 `yscb-module-dev`；更新 `core/vfs/vfs.py` 與 `docs/core/{README,uri_protocols,DESIGN_NOTES}.md`，`core` (208/208) 與 `dev` (80/80) 測試 100% 通過並完成 `@build` 熱部署。
+
+### sub_01_knowledge_db_precision_and_weights (Completed)
+- **`knowledge-db` 宣告式空間檢索權重 (`SpaceDef.weight`)、`TopologyLinker` 靜態消歧加固、Watcher 旗標時序與 C# `partial class` 跨檔聚合 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-04`, `NFR-01`, `TODO-04`, `TODO-08`, `TODO-09`, `TODO-14`, `TODO-15`)**：
+  - **宣告式空間權重 (`SpaceDef.weight`) 與 `TopologyLinker` / Watcher 精準度加固 (`FR-01` ~ `FR-03`, `EC-01` ~ `EC-03`, `TODO-08`, `TODO-09`, `TODO-14`)**：於 `knowledge-db/contributes/_format.json`、`schema.py`、`BM25Engine` 與 `HybridSearchEngine` 支援空間權重乘算（`agents-workflow` 預設 `docs: 1.2`、`plans: 0.85`）；於 `linker.py` 移除非 `self`/`this` 前綴對 `caller_class` 的錯誤自綁定、加固跨檔案單一候選門檻並要求 `len(prefix_tail) >= 3` 方觸發子字串加分；於 `service.py` 將 `.watcher_active` 移至 `Observer.start()` 成功後寫入且於 `pipeline._is_watcher_active()` 補齊 `.watcher_dirty` 檢核。
+  - **C#/C++/TS AST `visibility` 提取、C# `partial class` 跨檔聚合與按需隱藏 Agent 提示 (`FR-04`, `FR-05`, `EC-04`, `TODO-04`, `TODO-15`)**：於 `TreeSitterDriver` 提取真實存取修飾詞，於 `bundler.py` (`aggregate_partial_symbols`) 與 `linker.py` 支援 C# 跨檔案 `partial class` 成員、基底型別與欄位型別聚合消歧；新增 `is_agents_workflow_installed()` 於未安裝 `agents-workflow` 時隱藏 AI Agent 專用提示，`knowledge-db` (157/157) 測試 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_11_01_1054_auto_plan_and_workflow_refinement (Completed)
 
 - **`P{XX}-05_auto.md` 動態區段單檔合併模板、三軌相容解析、`plan search` / `plan status --resume` 增強與 `PlanVerifier` / `ArtifactCompiler` 完善 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：

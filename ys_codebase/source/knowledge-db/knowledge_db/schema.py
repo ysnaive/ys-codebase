@@ -345,6 +345,16 @@ class SpaceConfig:
     exclude: List[str] = field(default_factory=list)
     file_patterns: Optional[List[str]] = None
     origin: str = "project"
+    weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        try:
+            w = float(self.weight)
+        except (TypeError, ValueError) as e:
+            raise InvalidSpaceConfigError(f"Space '{self.name}' weight must be a number, got {self.weight!r}.") from e
+        if w <= 0.0:
+            raise InvalidSpaceConfigError(f"Space '{self.name}' weight must be > 0, got {w}.")
+        self.weight = w
 
     def is_file_included(self, filename: str) -> bool:
         """
@@ -361,6 +371,7 @@ class SpaceConfig:
             "include": list(self.include),
             "exclude": list(self.exclude),
             "origin": self.origin,
+            "weight": self.weight,
         }
         if self.file_patterns is not None:
             result["file_patterns"] = list(self.file_patterns)
@@ -382,6 +393,16 @@ class SpaceConfig:
         if file_patterns is not None and not isinstance(file_patterns, list):
             file_patterns = [str(file_patterns)]
 
+        raw_weight = data.get("weight", 1.0)
+        if raw_weight is None:
+            raw_weight = 1.0
+        try:
+            weight = float(raw_weight)
+        except (TypeError, ValueError) as e:
+            raise InvalidSpaceConfigError(f"Space '{name}' weight must be a positive number, got {raw_weight!r}.") from e
+        if weight <= 0.0:
+            raise InvalidSpaceConfigError(f"Space '{name}' weight must be > 0, got {weight}.")
+
         return cls(
             name=name,
             description=str(data.get("description", "")),
@@ -389,7 +410,11 @@ class SpaceConfig:
             exclude=[str(item) for item in exclude],
             file_patterns=[str(item) for item in file_patterns] if file_patterns is not None else None,
             origin=str(data.get("origin", origin)),
+            weight=weight,
         )
+
+
+SpaceDef = SpaceConfig
 
 
 @dataclass(frozen=True)

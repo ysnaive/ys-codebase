@@ -221,6 +221,7 @@ class KnowledgeEngine:
                 "exclude": sp.exclude,
                 "include_count": len(sp.include),
                 "file_patterns": sp.file_patterns,
+                "weight": sp.weight,
                 "cached_files": cached_files,
                 "has_index": has_index,
             }

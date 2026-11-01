@@ -25,6 +25,92 @@ PARALLEL_BUNDLE_THRESHOLD = 10
 _worker_registry: Optional[ParserRegistry] = None
 
 
+def aggregate_partial_symbols(symbols: List[UnifiedSymbol]) -> List[UnifiedSymbol]:
+    """
+    針對同空間、同命名空間 (相同 FQN) 之 C# partial class/struct/interface 進行跨檔案符號與成員聚合。
+    合併各分部宣告之 members/children、base_types、field_types 與 partial_files，
+    使搜尋與拓撲消歧能完整洞察跨檔 partial 類別之全貌。
+    """
+    if not symbols:
+        return symbols
+
+    from collections import defaultdict
+    groups: Dict[Tuple[str, str, str], List[int]] = defaultdict(list)
+    for idx, sym in enumerate(symbols):
+        if sym.language == "c_sharp" and sym.kind in ("class", "struct", "interface"):
+            sp_key = ",".join(sorted(sym.spaces)) if sym.spaces else ""
+            fqn_key = sym.fqn or sym.name
+            groups[(sp_key, sym.kind, fqn_key)].append(idx)
+
+    updated = list(symbols)
+    for _, indices in groups.items():
+        if len(indices) <= 1:
+            continue
+        group_syms = [symbols[i] for i in indices]
+        if not any(s.metadata.get("is_partial") or "partial " in (s.signature or "") for s in group_syms):
+            continue
+
+        merged_members = []
+        seen_members = set()
+        merged_bases: List[str] = []
+        merged_fields: Dict[str, str] = {}
+        partial_files: List[str] = []
+        merged_docs: List[str] = []
+
+        for s in group_syms:
+            if s.file_path not in partial_files:
+                partial_files.append(s.file_path)
+            if s.docstring and s.docstring not in merged_docs:
+                merged_docs.append(s.docstring)
+            for m in s.members:
+                m_key = (m.name, m.kind, m.signature)
+                if m_key not in seen_members:
+                    seen_members.add(m_key)
+                    merged_members.append(m)
+            for bt in s.metadata.get("base_types", []):
+                if bt and bt not in merged_bases:
+                    merged_bases.append(str(bt))
+            for fn, ft in s.metadata.get("field_types", {}).items():
+                if fn and ft:
+                    merged_fields[fn] = str(ft)
+
+        combined_doc = "\n".join(merged_docs).strip()
+        for i in indices:
+            orig = symbols[i]
+            new_meta = dict(orig.metadata)
+            new_meta["is_partial"] = True
+            new_meta["partial_files"] = list(partial_files)
+            if merged_bases:
+                new_meta["base_types"] = list(merged_bases)
+            if merged_fields:
+                new_meta["field_types"] = dict(merged_fields)
+            doc_to_use = orig.docstring or combined_doc
+            search_payload = f"{orig.fqn} {new_meta.get('short_name', orig.name)} {doc_to_use} {orig.signature}".strip()
+            updated[i] = UnifiedSymbol(
+                id=orig.id,
+                name=orig.name,
+                kind=orig.kind,
+                file_path=orig.file_path,
+                line_number=orig.line_number,
+                end_line=orig.end_line,
+                language=orig.language,
+                docstring=doc_to_use,
+                signature=orig.signature,
+                fqn=orig.fqn,
+                scope_path=orig.scope_path,
+                parent_id=orig.parent_id,
+                children=tuple(merged_members),
+                parameters=orig.parameters,
+                return_type=orig.return_type,
+                search_payload=search_payload,
+                visibility=orig.visibility,
+                members=tuple(merged_members),
+                metadata=new_meta,
+            )
+
+    return updated
+
+
 def _get_worker_registry() -> ParserRegistry:
     """獲取或初始化工作進程專屬的單例 ParserRegistry，避免重複讀取與編譯 Tree-sitter S-Expression"""
     global _worker_registry
@@ -170,6 +256,7 @@ class SemanticBundler:
             except Exception as e:
                 logger.warning(f"Failed parsing file '{f_path}' during bundle: {e}")
 
+        all_symbols = aggregate_partial_symbols(all_symbols)
         created_at = datetime.now(timezone.utc).isoformat()
         return SemanticBundle(
             version="1.0.0",
@@ -260,6 +347,7 @@ class SemanticBundler:
                 all_symbols.extend(file_symbols)
                 self._file_symbols_cache[c_key] = file_symbols
 
+        all_symbols = aggregate_partial_symbols(all_symbols)
         created_at = datetime.now(timezone.utc).isoformat()
         files_map = {}
         for c_key, (f_path, _, _) in unique_files.items():

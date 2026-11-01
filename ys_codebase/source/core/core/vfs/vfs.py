@@ -29,9 +29,9 @@ class VFS:
 
     def register_backend(self, scheme: str, backend: VFSBackend) -> None:
         """
-        為指定 scheme 註冊專屬後端 (供未來 MemoryBackend 等擴充插槽使用)。
+        為指定 scheme 註冊專屬後端插槽。
 
-        :param scheme: 協議前綴 (例如 'mem', 'virtual')
+        :param scheme: 協議前綴
         :param backend: VFSBackend 具體實例
         """
         clean_scheme = scheme.replace("://", "").rstrip(":")

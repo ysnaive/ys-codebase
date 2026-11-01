@@ -186,4 +186,7 @@ class TestContributesValidator(YSCBTestCase):
         }
         res_inv = ContributesValidator.validate_format_schema(invalid_meta)
         self.assertFalse(res_inv.is_valid)
+        report_txt = res_inv.format_report("test_format.json")
+        self.assertIn("[Agent Directive]", report_txt)
+        self.assertIn("yscb-module-dev", report_txt)
         self.mark_passed()

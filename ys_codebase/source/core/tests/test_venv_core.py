@@ -188,6 +188,56 @@ class TestVenvCore(YSCBTestCase):
         self.assertEqual(PipManager.parse_pip_dependencies("invalid"), [])
         self.mark_passed()
 
+    def test_ensure_venv_and_bootstrap_pip_raise_pip_install_error(self):
+        """驗證 _bootstrap_pip 與 ensure_venv 失敗時統一拋出 PipInstallError，且 sync_pip_dependencies 降級為 Warning。"""
+        import io
+        from contextlib import redirect_stdout
+
+        mgr = PipManager(self.yscb_dir)
+        venv_dir = mgr.get_venv_dir("py999")
+        site_pkg = mgr.get_site_packages_dir("py999")
+        py_exec = mgr.get_python_executable("py999")
+
+        # 1. _bootstrap_pip 失敗應拋出 PipInstallError
+        with patch("subprocess.run", side_effect=OSError("ensurepip missing")):
+            with patch.dict("sys.modules", {"ensurepip": None}):
+                with self.assertRaises(PipInstallError) as ctx:
+                    mgr._bootstrap_pip(venv_dir, site_pkg, py_exec)
+                self.assertIn("Failed to bootstrap pip", str(ctx.exception))
+
+        # 2. ensure_venv 當 EnvBuilder.create 失敗時亦拋出 PipInstallError
+        with patch("venv.EnvBuilder.create", side_effect=OSError("venv creation blocked")):
+            with self.assertRaises(PipInstallError) as ctx2:
+                mgr.ensure_venv("py999")
+            self.assertIn("Failed to create private venv", str(ctx2.exception))
+
+        # 3. Installer.sync_pip_dependencies 攔截 ensure_venv 拋出之 PipInstallError 並降級為 Warning
+        installer = Installer()
+        mod_name = "mock_no_ensurepip_mod"
+        vfs.makedirs(f"module://{mod_name}", exist_ok=True)
+        vfs.write_json(f"module://{mod_name}/manifest.json", {
+            "name": mod_name,
+            "version": "1.0.0",
+            "pip_dependencies": {"some_pkg": ">=1.0.0"}
+        })
+        cfg_path, cfg = installer.engine._get_config()
+        orig_installed = dict(cfg.get("installed_modules", {}))
+        cfg.setdefault("installed_modules", {})[mod_name] = {"version": "1.0.0"}
+        installer.engine._save_config(cfg_path, cfg)
+        try:
+            with patch.object(PipManager, "ensure_venv", side_effect=PipInstallError("[PipManager] no ensurepip")):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    installer.sync_pip_dependencies()
+                self.assertIn("[core:pip] Warning: [PipManager] no ensurepip", buf.getvalue())
+        finally:
+            cfg["installed_modules"] = orig_installed
+            installer.engine._save_config(cfg_path, cfg)
+            if vfs.exists(f"module://{mod_name}"):
+                vfs.rmtree(f"module://{mod_name}")
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

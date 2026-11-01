@@ -229,6 +229,32 @@ class TestSpaceManager(YSCBTestCase):
         self.assertEqual(loaded.jit_vector_timeout_seconds, 8.0)
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft_12_space_weight_schema_and_validation(self):
+        """FT-12 (FR-03, EC-03): 驗證 SpaceDef / SpaceConfig weight 欄位預設值 1.0、自訂權重載入與 <= 0 非法權重阻斷"""
+        from knowledge_db.schema import SpaceDef
+        self.assertIs(SpaceDef, SpaceConfig)
+
+        # 1. 預設權重 1.0
+        sp_default = SpaceConfig.from_dict("source", {"include": ["src/"]})
+        self.assertEqual(sp_default.weight, 1.0)
+        self.assertEqual(sp_default.to_dict()["weight"], 1.0)
+
+        # 2. 自訂正浮點權重 (如 docs: 1.2, plans: 0.85)
+        sp_docs = SpaceConfig.from_dict("docs", {"include": ["docs/"], "weight": 1.2})
+        sp_plans = SpaceConfig.from_dict("plans", {"include": ["plans/"], "weight": 0.85})
+        self.assertAlmostEqual(sp_docs.weight, 1.2)
+        self.assertAlmostEqual(sp_plans.weight, 0.85)
+
+        # 3. EC-03: weight <= 0 或非數值時拋出 InvalidSpaceConfigError
+        for invalid_w in (0, 0.0, -0.5, -1, "invalid_float"):
+            with self.assertRaises(InvalidSpaceConfigError):
+                SpaceConfig.from_dict("bad_space", {"include": ["src/"], "weight": invalid_w})
+            with self.assertRaises(InvalidSpaceConfigError):
+                SpaceConfig(name="bad_space", include=["src/"], weight=invalid_w)  # type: ignore[arg-type]
+
+        self.mark_passed()
+
 
 class TestKnowledgeDBProviders(YSCBTestCase):
     """驗證 Token Providers 與空間速查表輸出"""

@@ -180,6 +180,94 @@ class TreeSitterDriver(BaseParser):
             pass
         return base_types
 
+    def _extract_modifiers(self, def_node: Any) -> List[str]:
+        """提取 AST 宣告節點上的修飾詞清單 (如 public, private, protected, internal, partial, static)"""
+        mods: List[str] = []
+        if def_node is None:
+            return mods
+        try:
+            for child in def_node.children:
+                if child.type in ("modifier", "accessibility_modifier", "storage_class_specifier", "type_qualifier"):
+                    txt = child.text.decode("utf-8", errors="replace").strip().lower()
+                    for tok in txt.split():
+                        if tok and tok not in mods:
+                            mods.append(tok)
+                elif child.type in ("public", "private", "protected", "internal", "partial", "static", "abstract", "virtual", "override", "readonly", "async"):
+                    tok = child.type.lower()
+                    if tok not in mods:
+                        mods.append(tok)
+        except Exception:
+            pass
+        return mods
+
+    def _extract_visibility(
+        self,
+        def_node: Any,
+        short_name: str,
+        kind: str,
+        parent_kind: Optional[str] = None,
+    ) -> str:
+        """依語言規範提取符號或成員之真實存取可見度 (visibility)"""
+        lang_id = self.config.id
+        if lang_id == "python":
+            if short_name.startswith("__") and not short_name.endswith("__"):
+                return "private"
+            if short_name.startswith("_"):
+                return "protected"
+            return "public"
+
+        mods = self._extract_modifiers(def_node)
+        if lang_id == "c_sharp":
+            if "public" in mods:
+                return "public"
+            if "private" in mods and "protected" in mods:
+                return "private"
+            if "protected" in mods and "internal" in mods:
+                return "protected"
+            if "protected" in mods:
+                return "protected"
+            if "internal" in mods:
+                return "internal"
+            if "private" in mods:
+                return "private"
+            if parent_kind in ("interface", "enum"):
+                return "public"
+            if parent_kind in ("class", "struct"):
+                return "private"
+            if kind in ("class", "struct", "interface", "enum"):
+                return "internal"
+            return "public"
+
+        if lang_id in ("cpp", "c"):
+            for v in ("public", "protected", "private"):
+                if v in mods:
+                    return v
+            if def_node is not None:
+                try:
+                    curr = def_node.prev_named_sibling
+                    while curr is not None:
+                        if curr.type == "access_specifier":
+                            spec_txt = curr.text.decode("utf-8", errors="replace").strip().rstrip(":").strip().lower()
+                            if spec_txt in ("public", "protected", "private"):
+                                return spec_txt
+                            break
+                        curr = curr.prev_named_sibling
+                except Exception:
+                    pass
+            if parent_kind == "class":
+                return "private"
+            return "public"
+
+        if lang_id in ("typescript", "javascript", "java"):
+            for v in ("public", "protected", "private", "internal"):
+                if v in mods:
+                    return v
+            if short_name.startswith("#"):
+                return "private"
+            return "public"
+
+        return "public"
+
     def _extract_raw_definition_items(self, matches: List[Tuple[int, Dict[str, List[Any]]]], lines: List[str]) -> List[Dict[str, Any]]:
         """階段 1：從 Query matches 萃取原始符號定義並處理 Markdown 標題段落"""
         raw_items: List[Dict[str, Any]] = []
@@ -297,6 +385,7 @@ class TreeSitterDriver(BaseParser):
             if stack:
                 parent = stack[-1]
                 item["parent_id"] = parent["id"]
+                item["parent_kind"] = parent["kind"]
                 item["scope_path"] = parent["scope_path"] + [parent["short_name"]]
                 item["fqn"] = scope_sep.join(item["scope_path"] + [item["short_name"]])
                 parent["children_items"].append(item)
@@ -304,6 +393,7 @@ class TreeSitterDriver(BaseParser):
                     item["kind"] = "method"
             else:
                 item["parent_id"] = None
+                item["parent_kind"] = None
                 item["scope_path"] = []
                 item["fqn"] = item["short_name"]
 
@@ -329,14 +419,20 @@ class TreeSitterDriver(BaseParser):
                 continue
 
             members_list = []
+            field_types: Dict[str, str] = {}
             for child in item["children_items"]:
                 c_name = child["short_name"]
-                if c_name.startswith("__") and not c_name.endswith("__"):
-                    vis = "private"
-                elif c_name.startswith("_"):
-                    vis = "protected"
-                else:
-                    vis = "public"
+                vis = self._extract_visibility(
+                    def_node=child.get("node"),
+                    short_name=c_name,
+                    kind=child["kind"],
+                    parent_kind=item["kind"],
+                )
+                if child["kind"] in ("field", "property") and child.get("return_type"):
+                    raw_t = re.sub(r"<[^>]+>", "", str(child["return_type"])).strip().rstrip("?[]")
+                    short_t = re.split(r"[.:]+", raw_t)[-1].strip()
+                    if short_t and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", short_t):
+                        field_types[c_name] = short_t
                 members_list.append(
                     MemberInfo(
                         name=c_name,
@@ -359,9 +455,20 @@ class TreeSitterDriver(BaseParser):
                 parent_scope_val = cpp_parts[-2]
                 item["kind"] = "method"
 
+            sym_vis = self._extract_visibility(
+                def_node=item.get("node"),
+                short_name=short_name_val,
+                kind=item["kind"],
+                parent_kind=item.get("parent_kind"),
+            )
+
             base_types: List[str] = []
+            is_partial = False
             if item["kind"] in ("class", "struct", "interface") and item.get("node") is not None:
                 base_types = self._extract_base_types(item["node"])
+                mods = self._extract_modifiers(item["node"])
+                if "partial" in mods:
+                    is_partial = True
 
             metadata: Dict[str, Any] = {
                 "short_name": short_name_val,
@@ -373,6 +480,10 @@ class TreeSitterDriver(BaseParser):
             }
             if base_types:
                 metadata["base_types"] = base_types
+            if is_partial:
+                metadata["is_partial"] = True
+            if field_types:
+                metadata["field_types"] = field_types
 
             symbols.append(
                 UnifiedSymbol(
@@ -392,6 +503,7 @@ class TreeSitterDriver(BaseParser):
                     parameters=(),
                     return_type=item["return_type"],
                     search_payload=search_payload,
+                    visibility=sym_vis,
                     members=tuple(members_list),
                     metadata=metadata,
                 )

@@ -241,6 +241,63 @@ def _discover_remote_modules(engine: AtomicEngine, provider_url: str, installed:
     return available_modules
 
 
+def _notify_server_release_handles(yscb_root: Optional[str] = None) -> bool:
+    """
+    在執行模組安裝、更新、移除或還原前，若偵測到常駐 Server 正在運行，
+    主動發送輕量 HTTP POST /api/reload 請求通知 Server 重啟 Worker 以釋放 .pyd/.dll 等檔案句柄。
+    任何網路或狀態異常皆靜默容錯，絕不阻斷主安裝流程。
+    """
+    import urllib.request
+    try:
+        if not yscb_root:
+            host_dir, _ = uri._get_host_config()
+            cfg_p = os.path.join(host_dir, "yscb.config.json")
+            yscb_rel = "."
+            if vfs.is_file(cfg_p):
+                cfg_d = vfs.read_json(cfg_p)
+                if isinstance(cfg_d, dict):
+                    yscb_rel = cfg_d.get("yscb_root", ".")
+            yscb_root = os.path.normpath(os.path.join(host_dir, yscb_rel))
+
+        state_file = os.path.join(yscb_root, ".cache", "server", "daemon.json")
+        if not os.path.isfile(state_file):
+            return False
+
+        with open(state_file, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if not isinstance(state, dict):
+            return False
+
+        port = state.get("port")
+        token = state.get("token")
+        if not port or not token:
+            return False
+
+        url = f"http://127.0.0.1:{port}/api/reload"
+        req = urllib.request.Request(
+            url,
+            data=b"{}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _cleanup_stale_old_dirs(parent_dir: str) -> None:
+    """非阻塞清理 parent_dir 下歷史遺留之 .old_* 與 .staging_* 目錄；若仍被鎖定則靜默跳過延遲回收。"""
+    from core.engine import _cleanup_stale_swap_dirs
+    try:
+        _cleanup_stale_swap_dirs(parent_dir)
+    except Exception:
+        pass
+
+
 def _print_restore_failure_guidance(mod_name: str, ver: str, prov: str) -> None:
     """Prints diagnostic recovery steps when restoring a module fails."""
     print(f"[core:restore] 錯誤: '{mod_name}' 模組 (v{ver}) 來源 '{prov}' 已遺失或無法存取，需手動修復。")
@@ -353,6 +410,7 @@ class Installer:
 
         try:
             with self.engine.transaction_lock("install"):
+                _notify_server_release_handles()
                 targets = self.engine.act_solve_deps(module_name, ver_constraint, provider_url)
                 self.engine.act_prepare(targets, provider_url, force=force)
                 installed_ver = "1.0.0.0"
@@ -404,6 +462,7 @@ class Installer:
         migrations_to_run: List[Tuple[str, str, str]] = []
         try:
             with self.engine.transaction_lock("update"):
+                _notify_server_release_handles()
                 for mod in targets:
                     cur_ver = installed.get(mod, {}).get("version", "1.0.0.0")
                     cur_t = semver.parse_semver(cur_ver)
@@ -486,6 +545,7 @@ class Installer:
             print(f"[core:remove] Warning: Force removing '{module_name}' required by: {', '.join(dependents)}.")
 
         print(f"[core:remove] Removing module '{module_name}'...")
+        _notify_server_release_handles()
         events.broadcast("on_remove", ExecutionContext("core", "remove", [module_name]), emit_module="core")
         self.engine.act_snapshot(f"pre_remove_{module_name}")
         self.engine.act_unregister(module_name)
@@ -637,18 +697,30 @@ class Installer:
         failed_mods: List[str] = []
 
         with self.engine.transaction_lock("restore"):
+            _notify_server_release_handles(yscb_abs)
+            _cleanup_stale_old_dirs(modules_dir)
             mod_keys = sorted(installed.keys(), key=lambda x: (0 if x == "core" else 1, x))
             for mod_name in mod_keys:
                 mod_info = installed[mod_name]
-                ver = mod_info.get("version", "1.0.0.0") if isinstance(mod_info, dict) else "1.0.0.0"
+                ver = mod_info.get("version", "1.0.0.0") if isinstance(mod_info, dict) else str(mod_info)
                 prov = provider or (mod_info.get("provider", default_provider) if isinstance(mod_info, dict) else default_provider)
                 dest = os.path.join(modules_dir, mod_name)
                 mirror = os.path.join(yscb_abs, ".mirror", mod_name)
+                mf_path = os.path.join(dest, "manifest.json")
 
-                if not force and os.path.isdir(dest) and os.path.isfile(os.path.join(dest, "manifest.json")):
-                    print(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
-                    success_count += 1
-                    continue
+                if not force and os.path.isdir(dest) and os.path.isfile(mf_path):
+                    installed_ver = None
+                    try:
+                        mf_data = vfs.read_json(mf_path)
+                        if isinstance(mf_data, dict) and mf_data.get("version"):
+                            installed_ver = str(mf_data["version"])
+                    except Exception:
+                        installed_ver = None
+
+                    if ver == "build" or installed_ver == ver:
+                        print(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
+                        success_count += 1
+                        continue
 
                 print(f"  -> Restoring '{mod_name}@{ver}'...")
                 ok = self._restore_module_package(host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror)

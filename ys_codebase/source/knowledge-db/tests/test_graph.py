@@ -901,6 +901,178 @@ namespace UIToolkit.UI.Elements {
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft_13_topology_linker_disambiguation_precision(self):
+        """FT-13 (FR-01, EC-01): 驗證 TopologyLinker 消除未知型別欄位自綁定、跨模組單一候選幽靈邊與短變數子字串誤配"""
+        sym_caller_save = UnifiedSymbol(
+            id="sym_order_save",
+            name="OrderService.Save",
+            kind=SymbolKind.METHOD.value,
+            file_path="src/order_service.py",
+            line_number=10,
+            language=LanguageType.PYTHON.value,
+            metadata={"space": "main", "spaces": ["main"], "parent_scope": "OrderService", "short_name": "Save"},
+        )
+        sym_remote_unique = UnifiedSymbol(
+            id="sym_remote_unique",
+            name="UnrelatedBilling.ExecuteSpecialBilling",
+            kind=SymbolKind.METHOD.value,
+            file_path="src/billing.py",
+            line_number=20,
+            language=LanguageType.PYTHON.value,
+            metadata={"space": "main", "spaces": ["main"], "parent_scope": "UnrelatedBilling", "short_name": "ExecuteSpecialBilling"},
+        )
+        sym_event_handle = UnifiedSymbol(
+            id="sym_event_handle",
+            name="EventBus.Handle",
+            kind=SymbolKind.METHOD.value,
+            file_path="src/event_bus.py",
+            line_number=30,
+            language=LanguageType.PYTHON.value,
+            metadata={"space": "main", "spaces": ["main"], "parent_scope": "EventBus", "short_name": "Handle"},
+        )
+        sym_error_handle = UnifiedSymbol(
+            id="sym_error_handle",
+            name="ErrorManager.Handle",
+            kind=SymbolKind.METHOD.value,
+            file_path="src/error_mgr.py",
+            line_number=40,
+            language=LanguageType.PYTHON.value,
+            metadata={"space": "main", "spaces": ["main"], "parent_scope": "ErrorManager", "short_name": "Handle"},
+        )
+
+        symbols_map = {
+            sym_caller_save.id: sym_caller_save,
+            sym_remote_unique.id: sym_remote_unique,
+            sym_event_handle.id: sym_event_handle,
+            sym_error_handle.id: sym_error_handle,
+        }
+        linker = TopologyLinker(symbols_map=symbols_map)
+
+        # 1. this._helper.Save() 在 _helper 型別未知時，嚴禁退回綁定至 caller_class (OrderService.Save)
+        site_self_field = SymbolCallSite(
+            callee_name="Save",
+            line_number=15,
+            caller_symbol_id="sym_order_save",
+            caller_member_name="OrderService.Save",
+            context_prefix="self._helper",
+            file_path="src/order_service.py",
+            space="main",
+        )
+        self.assertIsNone(linker.resolve_call_site(site_self_field, file_imports={}))
+
+        # 2. 跨檔案 len(candidates) == 1 但無匯入且 prefix 與目標類別無關時，嚴禁建立跨模組幽靈邊
+        site_ghost_single = SymbolCallSite(
+            callee_name="ExecuteSpecialBilling",
+            line_number=16,
+            caller_symbol_id="sym_order_save",
+            caller_member_name="OrderService.Save",
+            context_prefix="random_client",
+            file_path="src/order_service.py",
+            space="main",
+        )
+        self.assertIsNone(linker.resolve_call_site(site_ghost_single, file_imports={}))
+
+        # 若變數名稱與目標類別具備 >= 3 字元正向匹配 (如 billing.ExecuteSpecialBilling)，則允許消歧連線
+        site_valid_single = SymbolCallSite(
+            callee_name="ExecuteSpecialBilling",
+            line_number=17,
+            caller_symbol_id="sym_order_save",
+            caller_member_name="OrderService.Save",
+            context_prefix="billing_svc",
+            file_path="src/order_service.py",
+            space="main",
+        )
+        self.assertEqual(linker.resolve_call_site(site_valid_single, file_imports={}), sym_remote_unique.id)
+
+        # 3. EC-01: 單/雙字母短變數 (e, s, i, ev) 嚴禁透過子字串匹配誤連至 EventBus.Handle / ErrorManager.Handle
+        for short_var in ("e", "s", "i", "ev"):
+            site_short = SymbolCallSite(
+                callee_name="Handle",
+                line_number=18,
+                caller_symbol_id="sym_order_save",
+                caller_member_name="OrderService.Save",
+                context_prefix=short_var,
+                file_path="src/order_service.py",
+                space="main",
+            )
+            self.assertIsNone(linker.resolve_call_site(site_short, file_imports={}))
+
+        # 長度 >= 3 的有意義變數前綴 (event) 則可正確匹配 EventBus.Handle
+        site_event = SymbolCallSite(
+            callee_name="Handle",
+            line_number=19,
+            caller_symbol_id="sym_order_save",
+            caller_member_name="OrderService.Save",
+            context_prefix="event",
+            file_path="src/order_service.py",
+            space="main",
+        )
+        self.assertEqual(linker.resolve_call_site(site_event, file_imports={}), sym_event_handle.id)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_14_csharp_partial_class_cross_file_aggregation_and_linking(self):
+        """FT-14 (FR-04): 驗證 C# partial class 跨檔案成員聚合、搜尋與跨分部呼叫邊/欄位解析"""
+        part1_code = """
+namespace MyGame.Services {
+    public class AuditLogger {
+        public void WriteLog(string msg) {}
+    }
+
+    public partial class OrderProcessor {
+        private AuditLogger _logger;
+
+        public void ExecuteOrder() {
+            ValidateOrder();
+            this._logger.WriteLog("done");
+        }
+    }
+}
+"""
+        part2_code = """
+namespace MyGame.Services {
+    public partial class OrderProcessor {
+        private void ValidateOrder() {}
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            src_dir = root / "src"
+            storage_dir = root / ".cache" / "knowledge-db"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "OrderProcessor.Part1.cs").write_text(part1_code, encoding="utf-8")
+            (src_dir / "OrderProcessor.Part2.cs").write_text(part2_code, encoding="utf-8")
+
+            sp = SpaceConfig(name="game", include=[str(src_dir)], file_patterns=["*.cs"])
+            engine = KnowledgeEngine(
+                storage_dir=storage_dir,
+                contributes_data={"spaces": {"game": sp.to_dict()}},
+            )
+            idx = engine.build_unified_index(force=True)
+
+            # 1. 驗證 partial class 符號成員跨檔案聚合 (同時包含 ExecuteOrder, ValidateOrder, _logger)
+            cls_syms = [s for s in idx.symbols.values() if s.kind == "class" and s.name.endswith("OrderProcessor")]
+            self.assertGreaterEqual(len(cls_syms), 1)
+            member_names = {m.name for m in cls_syms[0].members}
+            self.assertIn("ExecuteOrder", member_names)
+            self.assertIn("ValidateOrder", member_names)
+            self.assertIn("_logger", member_names)
+
+            # 2. 驗證 Part1 的 ExecuteOrder 調用 Part2 的 ValidateOrder 成功建立跨檔案呼叫邊
+            res_callers = engine.callers("OrderProcessor.ValidateOrder", snippet=False)
+            self.assertEqual(res_callers["total_callers"], 1)
+            self.assertTrue(res_callers["callers"][0]["symbol"].name.endswith("OrderProcessor.ExecuteOrder"))
+
+            # 3. 驗證 Part1 的 this._logger.WriteLog 透過 partial 欄位型別解析至 AuditLogger.WriteLog
+            res_log_callers = engine.callers("AuditLogger.WriteLog", snippet=False)
+            self.assertEqual(res_log_callers["total_callers"], 1)
+            self.assertTrue(res_log_callers["callers"][0]["symbol"].name.endswith("OrderProcessor.ExecuteOrder"))
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

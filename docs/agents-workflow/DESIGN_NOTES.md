@@ -41,6 +41,8 @@ last_updated: "2026-11-01"
 | **[DN-AW-14]** | 新增 | `/skill-creator` 三軌擴充防膨脹、`AGENTS_SKILL_ROUTING` 表格列結構隔離與教學範例 Fenced Code Block 編譯器正則保護 | 技能資產 (`skill-creator/SKILL.md`, `references/extension-guide.md`) | `Active` |
 | **[DN-AW-15]** | 新增 | `/auto` `1-Write-Per-File` 單次到位寫入、`Signature-Only` 去重與 `_auto.md` 雙軌解析防坑設計（內聯骨架已於 `[DN-AW-16]` 演進為兩階段 JIT 讀模板） | 技能資產 (`auto/SKILL.md`, `development-sop/SKILL.md`)、Plans 工具鏈 (`status.py`, `scanner.py`, `verifier.py`, `archiver.py`) | `Active` |
 | **[DN-AW-16]** | 新增 | `/auto` 兩階段 JIT 讀模板防記憶衰減、`PlanVerifier` 缺失率雙軌分流 (`QUICK_PATCH`/`FULL_REWRITE`)、否定前綴防誤配與確定性標頭自癒邊界 | 技能資產 (`auto/SKILL.md`)、Plans 工具鏈 (`verifier.py`, `cli.py`) | `Active` |
+| **[DN-AW-17]** | 新增 | 多宿主 `.jsonl` 尾行自指信標定錨 (`3-Step Beacon Anchoring`) 與跨階段 `mtime` 合規回寫消歧機制 | Plans 工具鏈 (`session_trace.py`) | `Active` |
+| **[DN-AW-18]** | 新增 | 8 大預設 `release_target` 拓撲、多 Target 共用實體路徑並聯去重渲染 (`" / "`) 與子目錄 `agents_md` 相對路徑基準 | 工廠編譯器 (`compiler.py`)、發布引擎 (`publisher.py`)、宿主方言嗅探 (`core/locale.py`) | `Active` |
 
 ---
 
@@ -298,6 +300,23 @@ last_updated: "2026-11-01"
 
 > [!CAUTION]
 > 嚴禁在未傳 `--transcript` 且無尾行自指信標的多候選情境下僅憑 `mtime` 盲猜鎖定 `.jsonl`；嚴禁未對照 `changelog.md` 修訂紀錄即將跨階段 `mtime` 逆序一律判定為違規偷改。
+
+---
+
+### [DN-AW-18] 8 大預設 `release_target` 拓撲、多 Target 共用實體路徑並聯去重渲染 (`" / "`) 與子目錄 `agents_md` 相對路徑基準
+
+- **工程背景與坑點**：
+  1. **多 Target 共用實體路徑之「後寫覆蓋前寫」靜默丟失 (`Last-Writer-Wins` Bug)**：當專案同時啟用多個共用實體路徑之 Target（例如 `antigravity` 與 `codex` 共用 `.agents/skills/<name>/SKILL.md`，或 `antigravity` 與 `cursor`/`windsurf` 共用根目錄 `AGENTS.md`）時，若 `ReleasePublisher._prepare_target_compilations` 僅以迴圈依序渲染並覆寫 `precomputed_all_files[dst_abs]`，後執行的 Target 會將檔案內的 `__%{...}__` 宿主專有名詞或 `AGENTS.md` 內的 `__#{...}__` 技能相對路徑單一覆寫，導致第一個平台的專有名詞與跳轉路徑靜默失效。
+  2. **未建立專屬 `nouns-<target>.json` 之新平台名詞斷裂與硬編碼嗅探耦合**：擴充支援 `cursor`、`copilot`、`windsurf`、`opencode`、`roo` 時，若未建立全部 8 套獨立 JSON 字典且未設定預設名詞 Fallback，Stage 2 解析 `__%{...}__` 會退回未渲染標籤；同時 `core/locale.py:detect_active_host_dialect` 若維持 `if/elif` 硬編碼，新增宿主時違反開放封閉原則 (OCP)。
+  3. **子目錄 `agents_md`（如 `.github/copilot-instructions.md`）之相對連結基準與清理保護**：`copilot` 之 `agents_md` 位於子目錄 `.github/` 下，且檔名並非 `AGENTS.md` / `CLAUDE.md`；若 `sync_gitignore` 與 `_prune_orphaned_managed_files` 僅以檔名硬編碼排除 `("AGENTS.md", "CLAUDE.md")`，會將 `.github/copilot-instructions.md` 誤寫入 `.gitignore` 或繞過軟剝離保護。
+- **妥協與防禦設計**：
+  1. **以 `dst_abs` 實體路徑聚合、`" / "` 並聯去重渲染與 `[publisher:warning]` 本機覆寫提示**：`ReleasePublisher._prepare_target_compilations` 先依 `dst_abs` 聚合所有啟用之 Target 項目與 `agents_md` 入口；偵測到 $\ge 2$ 個 Target 共用路徑時，將共享之 `target_names` 列表與 `extra_deployment_maps` 一併傳入 `ArtifactCompiler.resolve_stage2_uri`，將 `__%{...}__` 與 `__#{...}__` 按順序去重並以 `" / "` 並聯輸出，同時向 `stderr` 輸出 `[publisher:warning]` 提示開發者可於 `config/agents-workflow/config.local.json` 覆寫 `release_targets`。
+  2. **`nouns-antigravity` 基準 Fallback 與宣告式 `DEFAULT_HOST_DIALECT_RULES`**：`_resolve_locale_noun_tag` 對任何 `target_name` 自動構造 `["nouns-<target>", "nouns-antigravity"] + clean_base` 回退鏈；`core/locale.py` 改由宣告式規則表 `DEFAULT_HOST_DIALECT_RULES`（並支援 `config://core` / `contributes://core` 之 `host_dialects` 擴充）驅動環境變數嗅探。
+  3. **全動態 `agents_md` 集合識別**：`sync_gitignore` 與 `_prune_orphaned_managed_files` 動態匯聚所有已註冊 `release_target` 之 `agents_md` 路徑，確保 `.github/copilot-instructions.md` 等子目錄規則檔同享不入 `.gitignore` 與軟剝離保護。
+
+> [!CAUTION]
+> 嚴禁在 `_prepare_target_compilations` 中以單一 Target 迴圈直接覆寫共享 `dst_abs`；嚴禁在 `sync_gitignore` 中僅以 `os.path.basename` 硬編碼判斷規則檔而漏掉 `.github/copilot-instructions.md`。
+
 
 
 

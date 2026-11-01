@@ -863,7 +863,14 @@ class AtomicEngine:
                 if mod.startswith("."):
                     continue
                 if mod != "core" and mod not in installed:
-                    vfs.rmtree(f"module://{mod}", ignore_errors=True)
+                    mod_real = uri.resolve(f"module://{mod}")
+                    if os.path.isdir(mod_real):
+                        old_del = os.path.join(modules_root_real, f".old_{mod}_{os.getpid()}_{int(time.time() * 1000)}")
+                        try:
+                            os.replace(mod_real, old_del)
+                            _force_rmtree_with_retry(old_del, retries=3, retry_delay=0.03)
+                        except OSError:
+                            _force_rmtree_with_retry(mod_real, retries=3, retry_delay=0.03)
                     _clean_module_cache(mod)
 
         for mod, meta in installed.items():

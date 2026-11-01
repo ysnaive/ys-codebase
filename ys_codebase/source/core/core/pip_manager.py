@@ -50,8 +50,8 @@ class PipManager:
           1. 字典格式：{"pkg": ">=1.0.0", "pkg2": ""} -> ["pkg>=1.0.0", "pkg2"]
           2. 清單格式：["pkg>=1.0.0", "pkg2"] -> ["pkg>=1.0.0", "pkg2"]
         行為保證：
-          - 輸入 None、非字典非清單或空結構時安全回傳 [] (EC-01)
-          - 自動去除首尾空白，過濾空字串與無效項目 (EC-02)
+          - 輸入 None、非字典非清單或空結構時安全回傳 []
+          - 自動去除首尾空白，過濾空字串與無效項目
           - 保持首次出現順序之去重 (Order-preserving deduplication)
         """
         if not pip_deps:
@@ -175,7 +175,7 @@ class PipManager:
                 check=True,
             )
         except Exception as e:
-            raise RuntimeError(
+            raise PipInstallError(
                 f"[PipManager] Failed to bootstrap pip into '{venv_dir}': {e}"
             ) from e
 
@@ -206,13 +206,14 @@ class PipManager:
                 builder.create(venv_dir)
                 self._bootstrap_pip(venv_dir, site_pkg, py_exec)
             except Exception as e:
-                # 友善診斷與指導提示 (EC-01)
-                raise RuntimeError(
+                if isinstance(e, PipInstallError):
+                    raise
+                raise PipInstallError(
                     f"[PipManager] Failed to create private venv at '{venv_dir}'. "
                     f"Please ensure python3-venv / ensurepip is installed. Details: {e}"
                 ) from e
 
-        # 驗證並加固 pyvenv.cfg (EC-01 / NFR-01)
+        # 驗證並加固 pyvenv.cfg
         cfg_path = os.path.join(venv_dir, "pyvenv.cfg")
         if vfs.is_file(cfg_path):
             try:

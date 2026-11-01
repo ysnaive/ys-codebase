@@ -9,7 +9,7 @@ Stage 2: 3-Tier Contextual Semantic URI Resolution -> Target Deployments.
 import os
 import sys
 import re
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
 
 # 自動探測掛載 core 模組
 _this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -103,14 +103,27 @@ def _resolve_local_uri_tag(
     cur_dir: str,
     deployment_map: Dict[str, str],
     doc_basename: str,
+    extra_deployment_maps: Optional[List[Tuple[str, Dict[str, str]]]] = None,
 ) -> str:
-    """解算 Stage 2 自身相對路徑標籤 `__#{uri}__`。"""
+    """解算 Stage 2 自身相對路徑標籤 `__#{uri}__`（支援多重 Target 拓撲映射並聯去重）。"""
     trailing_slash = tag_uri.endswith("/")
 
-    # Tier 1: 命中發布拓撲映射表
+    # Tier 1: 命中發布拓撲映射表（支援單一或多重 Target 映射去重並聯）
+    mapped_paths: List[str] = []
     mapped_abs = _lookup_deployed_abs_path(tag_uri, deployment_map)
     if mapped_abs:
-        return _format_relative_local_path(mapped_abs, cur_dir, trailing_slash)
+        mapped_paths.append(_format_relative_local_path(mapped_abs, cur_dir, trailing_slash))
+
+    if extra_deployment_maps:
+        for _, extra_map in extra_deployment_maps:
+            ext_abs = _lookup_deployed_abs_path(tag_uri, extra_map)
+            if ext_abs:
+                ext_rel = _format_relative_local_path(ext_abs, cur_dir, trailing_slash)
+                if ext_rel not in mapped_paths:
+                    mapped_paths.append(ext_rel)
+
+    if mapped_paths:
+        return " / ".join(mapped_paths)
 
     # Tier 2: 專案級語意協議
     if uri and "://" in tag_uri:
@@ -196,19 +209,40 @@ def _resolve_project_uri_tag(
     return tag_uri
 
 
-def _resolve_locale_noun_tag(noun_key: str, target_name: Optional[str], doc_basename: str) -> str:
-    """解算 Stage 2 目標宿主專有名詞標籤 `__%{key}__`。"""
+def _resolve_locale_noun_tag(
+    noun_key: str,
+    target_name: Optional[Union[str, List[str]]],
+    doc_basename: str,
+) -> str:
+    """解算 Stage 2 目標宿主專有名詞標籤 `__%{key}__`（支援單一或多重 Target 並聯去重）。"""
     try:
         from core import locale as core_locale
         base_chain = core_locale.get_active_chain()
-        if target_name and target_name.strip():
-            t_dialect = f"nouns-{target_name.strip()}"
-            target_chain = [t_dialect] + [c for c in base_chain if not c.startswith("nouns-")]
+        clean_base = [c for c in base_chain if not c.startswith("nouns-")]
+
+        if isinstance(target_name, (list, tuple)):
+            t_list = [str(t).strip() for t in target_name if str(t).strip()]
+        elif isinstance(target_name, str) and target_name.strip():
+            t_list = [target_name.strip()]
         else:
-            target_chain = base_chain
-        hit = core_locale.resolve_raw(noun_key, module="agents-workflow", chain=target_chain)
-        if hit is not None:
-            return core_locale.t(noun_key, module="agents-workflow", chain=target_chain)
+            t_list = []
+
+        if not t_list:
+            hit = core_locale.resolve_raw(noun_key, module="agents-workflow", chain=base_chain)
+            if hit is not None:
+                return core_locale.t(noun_key, module="agents-workflow", chain=base_chain)
+        else:
+            rendered_values: List[str] = []
+            for t_item in t_list:
+                t_dialect = f"nouns-{t_item}"
+                target_chain = [t_dialect, "nouns-antigravity"] + clean_base
+                hit = core_locale.resolve_raw(noun_key, module="agents-workflow", chain=target_chain)
+                if hit is not None:
+                    val = core_locale.t(noun_key, module="agents-workflow", chain=target_chain)
+                    if val and val not in rendered_values:
+                        rendered_values.append(val)
+            if rendered_values:
+                return " / ".join(rendered_values)
     except Exception:
         pass
     print(f"[compiler:warning] Unresolved locale noun tag: '{noun_key}' in '{doc_basename}'", file=sys.stderr)
@@ -644,11 +678,12 @@ class ArtifactCompiler:
         content: str,
         current_dst_path: str,
         deployment_map: Dict[str, str],
-        target_name: Optional[str] = None,
+        target_name: Optional[Union[str, List[str]]] = None,
+        extra_deployment_maps: Optional[List[Tuple[str, Dict[str, str]]]] = None,
     ) -> str:
         """
         Stage 2: 依三層重映射階層動態轉譯 `__#{uri}__` (自身相對路徑)、`__${uri}__` / `__$(anchor){uri}__` (錨點/專案相對路徑)
-        與 `__%{key}__` (依 target_name 綁定之宿主專有名詞)。
+        與 `__%{key}__` (依 target_name 綁定之宿主專有名詞，支援多重 Target 並聯去重)。
         """
         if not content:
             return ""
@@ -677,7 +712,9 @@ class ArtifactCompiler:
                 return block_text
             if has_local:
                 block_text = LOCAL_URI_INNER_REGEX.sub(
-                    lambda m: _resolve_local_uri_tag(m.group(1).strip(), cur_dir, deployment_map, doc_basename),
+                    lambda m: _resolve_local_uri_tag(
+                        m.group(1).strip(), cur_dir, deployment_map, doc_basename, extra_deployment_maps
+                    ),
                     block_text,
                 )
             if has_proj:
@@ -710,7 +747,9 @@ class ArtifactCompiler:
 
             m_local_exact = LOCAL_URI_EXACT_REGEX.fullmatch(inner.strip())
             if m_local_exact:
-                return _resolve_local_uri_tag(m_local_exact.group(1).strip(), cur_dir, deployment_map, doc_basename)
+                return _resolve_local_uri_tag(
+                    m_local_exact.group(1).strip(), cur_dir, deployment_map, doc_basename, extra_deployment_maps
+                )
 
             m_proj_exact = PROJECT_URI_EXACT_REGEX.fullmatch(inner.strip())
             if m_proj_exact:
@@ -726,7 +765,9 @@ class ArtifactCompiler:
 
             if has_local:
                 inner = LOCAL_URI_INNER_REGEX.sub(
-                    lambda m: _resolve_local_uri_tag(m.group(1).strip(), cur_dir, deployment_map, doc_basename),
+                    lambda m: _resolve_local_uri_tag(
+                        m.group(1).strip(), cur_dir, deployment_map, doc_basename, extra_deployment_maps
+                    ),
                     inner,
                 )
             if has_proj:

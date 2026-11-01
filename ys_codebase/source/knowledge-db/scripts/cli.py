@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
+import knowledge_db.config as kdb_config
 from knowledge_db.engine import KnowledgeEngine, get_engine
 from knowledge_db.exceptions import KnowledgeDBError, SpaceNotFoundError
 from knowledge_db.formatter import TerminalStyler
@@ -281,19 +282,25 @@ def search(cmd_bags: Any) -> int:
                 e_ln = kept[-1][0]
                 full_end = getattr(cs, "end_line", raw_lines[-1][0])
                 omitted_count = len(raw_lines) - max_snippet_lines
-                try:
-                    from core import locale as core_locale
-                    trunc_suffix = core_locale.t(
-                        "cli.search.snippet_truncated_hint",
-                        module="knowledge-db",
-                        omitted=omitted_count,
-                        start_line=cs.start_line,
-                        end_line=full_end,
-                    )
-                except Exception:
+                if kdb_config.is_agents_workflow_installed():
+                    try:
+                        from core import locale as core_locale
+                        trunc_suffix = core_locale.t(
+                            "cli.search.snippet_truncated_hint",
+                            module="knowledge-db",
+                            omitted=omitted_count,
+                            start_line=cs.start_line,
+                            end_line=full_end,
+                        )
+                    except Exception:
+                        trunc_suffix = (
+                            f"\n... [truncated {omitted_count} lines; "
+                            f"target spans lines {cs.start_line}-{full_end}, use native file reader with line range to view]"
+                        )
+                else:
                     trunc_suffix = (
                         f"\n... [truncated {omitted_count} lines; "
-                        f"target spans lines {cs.start_line}-{full_end}, use native file reader with line range to view]"
+                        f"target spans lines {cs.start_line}-{full_end}]"
                     )
                 code_str = "\n".join(txt for _, txt in kept) + trunc_suffix
                 return {

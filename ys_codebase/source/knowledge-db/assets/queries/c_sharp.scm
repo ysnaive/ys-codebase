@@ -49,6 +49,15 @@
   type: (_)? @symbol.return_type
 ) @definition.property
 
+(field_declaration
+  (variable_declaration
+    type: (_) @symbol.return_type
+    (variable_declarator
+      name: (identifier) @symbol.name
+    )
+  )
+) @definition.field
+
 (invocation_expression
   function: [
     (identifier) @call.name

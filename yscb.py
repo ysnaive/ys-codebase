@@ -666,8 +666,11 @@ def cmd_restore(argv: List[str]) -> int:
         ver = info.get("version", "") if isinstance(info, dict) else str(info)
         prov = (info.get("provider") if isinstance(info, dict) else None) or default_prov
         dest = os.path.join(mods_dir, mod)
-        if not force and os.path.isdir(dest) and os.path.isfile(os.path.join(dest, "manifest.json")):
-            continue
+        mf_file = os.path.join(dest, "manifest.json")
+        if not force and os.path.isdir(dest) and os.path.isfile(mf_file):
+            installed_ver = _read_module_manifest_version(mf_file)
+            if ver == "build" or installed_ver == ver:
+                continue
         if not ver or not prov or not _restore_module_package(base_dir, yscb_root, mod, ver, prov, dest, os.path.join(mirror_dir, mod)):
             _print_missing_source_remediation(mod, str(ver or "unknown"), str(prov or "unknown"))
             failed.append(mod)

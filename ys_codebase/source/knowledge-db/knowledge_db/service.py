@@ -240,13 +240,6 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             self.workspace_root = Path.cwd().resolve()
 
         self._is_running = True
-        try:
-            indices_dir = self._get_pipeline().get_indices_dir()
-            active_file = indices_dir / ".watcher_active"
-            with open(active_file, "w", encoding="utf-8") as f:
-                json.dump({"pid": os.getpid(), "time": time.time()}, f)
-        except Exception:
-            pass
 
         try:
             from watchdog.events import FileSystemEventHandler
@@ -289,8 +282,23 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     self._observer.schedule(handler, str(d), recursive=True)
 
             self._observer.start()
+            try:
+                indices_dir = self._get_pipeline().get_indices_dir()
+                active_file = indices_dir / ".watcher_active"
+                with open(active_file, "w", encoding="utf-8") as f:
+                    json.dump({"pid": os.getpid(), "time": time.time()}, f)
+            except Exception:
+                pass
             logger.info(f"[{self.name}] Watchdog observer started for {len(watch_dirs)} directories.")
         except Exception as e:
+            self._observer = None
+            try:
+                indices_dir = self._get_pipeline().get_indices_dir()
+                active_file = indices_dir / ".watcher_active"
+                if active_file.exists():
+                    active_file.unlink()
+            except Exception:
+                pass
             logger.warning(f"[{self.name}] Watchdog failed to start: {e}. Running in passive mode.")
 
     def stop(self) -> None:

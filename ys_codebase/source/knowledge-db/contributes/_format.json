@@ -4,7 +4,8 @@
       "description": "str?",
       "include": "list[str]!",
       "exclude": "list[str]?",
-      "file_patterns": "list[str]?"
+      "file_patterns": "list[str]?",
+      "weight": "float?"
     },
     "LanguageDef": {
       "id": "str!",

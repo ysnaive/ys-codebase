@@ -48,6 +48,11 @@ class ValidationResult:
             if issue.suggestion:
                 line += f"\n   [*] {issue.suggestion}"
             lines.append(line)
+        if not self.is_valid:
+            lines.append(
+                "[Agent Directive] Please consult skill 'yscb-module-dev' "
+                "(references/contributes_guide.md) to fix contributes schema violations."
+            )
         return "\n".join(lines)
 
 

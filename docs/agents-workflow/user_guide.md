@@ -207,22 +207,36 @@ python yscb.py agents-workflow release [target_name] [--force]
 
 ### 2.4 多平台 Release Targets 矩陣與管理 (`release-target`)
 
-`agents-workflow` 原生支援多種 AI 程式碼助理與 IDE 之純 Skill 發布投影拓撲：
+`agents-workflow` 原生支援 8 大主流 AI 程式碼助理與 IDE 之純 Skill 發布投影拓撲：
 
-| Target 名稱 | 適用平台 / IDE | Skills 投影目錄 | Templates / Standards | 規則檔支援 |
+| Target 名稱 | 適用平台 / IDE (Client Harness) | Skills 投影目錄 | Templates / Standards | 規則檔支援 (`agents_md`) |
 | :--- | :--- | :--- | :--- | :--- |
 | **`antigravity`** | Google Antigravity IDE | `.agents/skills/{export.name}/` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
 | **`claude`** | Anthropic Claude Code | `.claude/skills/{export.name}/` | `.claude/.yscb/templates/`, `.claude/.yscb/standards/` | `CLAUDE.md` (軟合併) |
-| **`codex`** | OpenAI Codex (CLI / VS Code) | `.agents/skills/{export.name}/` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
+| **`codex`** | OpenAI Codex (CLI / App) | `.agents/skills/{export.name}/` | `.agents/.yscb/templates/`, `.agents/.yscb/standards/` | `AGENTS.md` (軟合併) |
+| **`cursor`** | Cursor AI IDE | `.cursor/skills/{export.name}/` | `.cursor/.yscb/templates/`, `.cursor/.yscb/standards/` | `AGENTS.md` (軟合併) |
+| **`copilot`** | GitHub Copilot (VS Code / Coding Agent) | `.github/skills/{export.name}/` | `.github/.yscb/templates/`, `.github/.yscb/standards/` | `.github/copilot-instructions.md` (軟合併) |
+| **`windsurf`** | Windsurf IDE (Codeium) | `.windsurf/skills/{export.name}/` | `.windsurf/.yscb/templates/`, `.windsurf/.yscb/standards/` | `AGENTS.md` (軟合併) |
+| **`opencode`** | OpenCode CLI / TUI | `.opencode/skills/{export.name}/` | `.opencode/.yscb/templates/`, `.opencode/.yscb/standards/` | `AGENTS.md` (軟合併) |
+| **`roo`** | Roo Code (VS Code Extension) | `.roo/skills/{export.name}/` | `.roo/.yscb/templates/`, `.roo/.yscb/standards/` | `AGENTS.md` (軟合併) |
+
+#### 宿主工具鏈 (Client Harness) vs. 後台模型 (Backend LLM) 選型與本機覆寫指南
+1. **依「宿主 IDE / CLI 工具鏈」而非「後台 LLM 模型」選擇 Target (`TODO-05`)**：
+   - `release_target` 決定的是**「哪一套 IDE / CLI 宿主正在掃描你的工作區目錄與提供原生工具 (`read_file`, `Read`, `exec_command` 等)」**，與你在該宿主內切換使用哪家模型（Claude 4.6、GPT-5、Gemini 等）無關。
+   - 例如：在 **Cursor** 內選用 Claude Sonnet 模型時，應啟用 `cursor`（而非 `claude`）；在 **OpenCode** 內連接 Anthropic API 時，應啟用 `opencode`。
+2. **多 Target 共用實體路徑之並聯渲染 (`Union Rendering`) 與本機 `config.local.json` 覆寫建議 (`[P00:DR-01]`)**：
+   - 當專案同時啟用多個共用實體路徑之 Target（例如團隊 `config.project.json` 預設啟用 `antigravity`，而開發者本機同時啟用 `codex` 或 `cursor`）時，`ReleasePublisher` 會自動將共用檔案內之專有名詞（`__%{...}__`）與 `AGENTS.md` 相對路徑（`__#{...}__`）以 `" / "` 去重並聯渲染，確保雙平台同時可用、零覆寫遺失。
+   - 物化時終端機會同步輸出 `[publisher:warning]` 提醒存在共用路徑；若開發者希望工作區保持單一平台純淨語法，建議直接於 `config/agents-workflow/config.local.json`（不入 Git）設定 `"release_targets": ["<your_target>"]`（或使用 `release-target --remove antigravity --proj` 與 `release-target --add <your_target>`）進行本機覆寫。
 
 #### CLI Target 管理指令
 ```bash
-# 檢視當前已宣告與已啟用的 Targets 清單
+# 檢視當前已宣告與已啟用的 Targets 清單 (8 大預設 Targets)
 python yscb.py agents-workflow release-target --list
 
-# 啟用指定 Target 並自動執行發布物化 (加 --proj 寫入團隊共享組態)
+# 啟用指定 Target 並自動執行發布物化 (預設寫入 Local 軌；加 --proj 寫入團隊共享組態)
 python yscb.py agents-workflow release-target --add claude [--proj]
-python yscb.py agents-workflow release-target --add codex [--proj]
+python yscb.py agents-workflow release-target --add cursor [--proj]
+python yscb.py agents-workflow release-target --add copilot [--proj]
 
 # 停用指定 Target 並自動清理歷史檔案
 python yscb.py agents-workflow release-target --remove claude [--proj]

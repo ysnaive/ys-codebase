@@ -259,7 +259,8 @@ class ReleasePublisher:
     def build_deployment_map(
         self,
         target_cfg: Dict[str, Any],
-        resolved_items: List[Dict[str, Any]]
+        resolved_items: List[Dict[str, Any]],
+        proj_root: Optional[str] = None,
     ) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
         """
         為單一 Release Target 建立發布拓撲映射表。
@@ -272,12 +273,14 @@ class ReleasePublisher:
         deployment_map: Dict[str, str] = {}
         target_items: List[Dict[str, Any]] = []
 
-        proj_root = self.host_dir
-        if uri:
-            try:
-                proj_root = uri.resolve("project://", interactive=False)
-            except Exception:
-                pass
+        explicit_proj_root = proj_root is not None
+        if proj_root is None:
+            proj_root = self.host_dir
+            if uri:
+                try:
+                    proj_root = uri.resolve("project://", interactive=False)
+                except Exception:
+                    pass
 
         for it in resolved_items:
             exp = it.get("export", {})
@@ -316,7 +319,10 @@ class ReleasePublisher:
                 )
 
             target_dir_abs = ""
-            if uri and "://" in target_dir_uri:
+            if explicit_proj_root and target_dir_uri.startswith("project://"):
+                rel_part = target_dir_uri.replace("project://", "", 1).lstrip("/\\")
+                target_dir_abs = os.path.join(proj_root, rel_part.replace("/", os.sep))
+            elif uri and "://" in target_dir_uri:
                 try:
                     target_dir_abs = uri.resolve(target_dir_uri, interactive=False)
                 except Exception:
@@ -501,13 +507,18 @@ class ReleasePublisher:
         proj_tier_targets: Set[str],
         resolved_items: List[Dict[str, Any]],
         proj_root: str,
-    ) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str], List[str]]:
-        """Stage 2: 為所有啟用之 Target 預先解算檔案實體路徑與最終渲染內容。"""
+    ) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str], List[str], List[str]]:
+        """Stage 2: 為所有啟用之 Target 預先解算檔案實體路徑與最終渲染內容（支援共用實體路徑並聯去重與衝突告警）。"""
         precomputed_project_files: Dict[str, str] = {}
         precomputed_local_files: Dict[str, str] = {}
         precomputed_all_files: Dict[str, str] = {}
         orphan_targets: List[str] = []
+        shared_path_warnings: List[str] = []
         agents_standards_content = ""
+
+        # Step 1: 收集各 Target 之拓撲映射與候選落地項目（以 dst_abs 聚合）
+        item_groups: Dict[str, List[Dict[str, Any]]] = {}
+        agents_md_groups: Dict[str, List[Dict[str, Any]]] = {}
 
         for t_name in active_target_names:
             if t_name not in all_registered_targets:
@@ -516,56 +527,122 @@ class ReleasePublisher:
                 continue
 
             target_cfg = all_registered_targets[t_name]
-            dep_map, target_items = self.build_deployment_map(target_cfg, resolved_items)
+            dep_map, target_items = self.build_deployment_map(target_cfg, resolved_items, proj_root=proj_root)
             is_proj_target = t_name in proj_tier_targets
 
             for t_item in target_items:
                 dst_abs = t_item["target_abs_path"]
                 stage1_text = t_item["content"]
-                exp_item = t_item["export"]
-
                 if "AgentsStandards" in t_item["base_name"]:
                     agents_standards_content = stage1_text
 
-                stage2_text = self.compiler.resolve_stage2_uri(stage1_text, dst_abs, dep_map, target_name=t_name)
-                header_text = self.render_header(exp_item, t_item["header_tpl"], t_name)
-                final_text = header_text + stage2_text
-
-                precomputed_all_files[dst_abs] = final_text
-                if is_proj_target:
-                    precomputed_project_files[dst_abs] = final_text
-                else:
-                    precomputed_local_files[dst_abs] = final_text
+                item_groups.setdefault(dst_abs, []).append({
+                    "target_name": t_name,
+                    "is_proj_target": is_proj_target,
+                    "dep_map": dep_map,
+                    "item": t_item,
+                })
 
             agents_md_uri = target_cfg.get("agents_md")
             if agents_md_uri and str(agents_md_uri).strip():
-                if not agents_standards_content:
-                    for r_item in resolved_items:
-                        if "AgentsStandards" in r_item.get("base_name", ""):
-                            agents_standards_content = r_item.get("content", "")
-                            break
+                target_agents_abs = self._resolve_project_uri(str(agents_md_uri).strip(), proj_root)
+                agents_md_groups.setdefault(target_agents_abs, []).append({
+                    "target_name": t_name,
+                    "is_proj_target": is_proj_target,
+                    "dep_map": dep_map,
+                })
 
-                if agents_standards_content:
-                    target_agents_abs = self._resolve_project_uri(str(agents_md_uri).strip(), proj_root)
-                    rendered_agents_content = self.compiler.resolve_stage2_uri(
-                        agents_standards_content, target_agents_abs, dep_map, target_name=t_name
-                    )
-                    existing_agents_text = ""
-                    if os.path.isfile(target_agents_abs):
-                        try:
-                            with open(target_agents_abs, "r", encoding="utf-8") as f:
-                                existing_agents_text = f.read()
-                        except Exception:
-                            existing_agents_text = ""
+        if not agents_standards_content:
+            for r_item in resolved_items:
+                if "AgentsStandards" in r_item.get("base_name", ""):
+                    agents_standards_content = r_item.get("content", "")
+                    break
 
-                    final_agents_text = self._soft_merge_agents_text(existing_agents_text, rendered_agents_content)
-                    precomputed_all_files[target_agents_abs] = final_agents_text
-                    if is_proj_target:
-                        precomputed_project_files[target_agents_abs] = final_agents_text
-                    else:
-                        precomputed_local_files[target_agents_abs] = final_agents_text
+        # Step 2: 偵測多 Target 共用實體路徑並按共享組合聚合輸出告警 ([P00:DR-01])
+        shared_combos: Dict[Tuple[str, ...], List[str]] = {}
+        for dst_abs, entries in item_groups.items():
+            t_names = list(dict.fromkeys(e["target_name"] for e in entries))
+            if len(t_names) > 1:
+                shared_combos.setdefault(tuple(t_names), []).append(self._to_project_uri(dst_abs, proj_root))
+        for target_agents_abs, entries in agents_md_groups.items():
+            t_names = list(dict.fromkeys(e["target_name"] for e in entries))
+            if len(t_names) > 1:
+                shared_combos.setdefault(tuple(t_names), []).append(self._to_project_uri(target_agents_abs, proj_root))
 
-        return precomputed_project_files, precomputed_local_files, precomputed_all_files, orphan_targets
+        for t_tuple, shared_uris in shared_combos.items():
+            t_joined = ", ".join(t_tuple)
+            sample_paths = ", ".join(shared_uris[:3])
+            if len(shared_uris) > 3:
+                sample_paths += f" (+{len(shared_uris) - 3} more)"
+            warn_msg = (
+                f"[publisher:warning] Multiple active release_targets ({t_joined}) share destination path(s) "
+                f"({sample_paths}). Merged union content materialized; consider overriding 'release_targets' "
+                f"in config/agents-workflow/config.local.json if you want a single-target workspace."
+            )
+            shared_path_warnings.append(warn_msg)
+            print(warn_msg, file=sys.stderr)
+
+        # Step 3: 渲染各投影項目（單一或多重 Target 共用時傳入完整 target_names 與 extra_deployment_maps）
+        for dst_abs, entries in item_groups.items():
+            primary = entries[0]
+            t_item = primary["item"]
+            stage1_text = t_item["content"]
+            exp_item = t_item["export"]
+            sharing_targets = list(dict.fromkeys(e["target_name"] for e in entries))
+            extra_maps = [(e["target_name"], e["dep_map"]) for e in entries[1:]]
+
+            stage2_text = self.compiler.resolve_stage2_uri(
+                stage1_text,
+                dst_abs,
+                primary["dep_map"],
+                target_name=sharing_targets if len(sharing_targets) > 1 else sharing_targets[0],
+                extra_deployment_maps=extra_maps if extra_maps else None,
+            )
+            header_text = self.render_header(exp_item, t_item["header_tpl"], primary["target_name"])
+            final_text = header_text + stage2_text
+
+            precomputed_all_files[dst_abs] = final_text
+            if any(e["is_proj_target"] for e in entries):
+                precomputed_project_files[dst_abs] = final_text
+            if any(not e["is_proj_target"] for e in entries):
+                precomputed_local_files[dst_abs] = final_text
+
+        # Step 4: 渲染各 agents_md 入口檔（支援多重 Target 路徑並聯與軟合併）
+        if agents_standards_content:
+            for target_agents_abs, entries in agents_md_groups.items():
+                primary = entries[0]
+                sharing_targets = list(dict.fromkeys(e["target_name"] for e in entries))
+                extra_maps = [(e["target_name"], e["dep_map"]) for e in entries[1:]]
+
+                rendered_agents_content = self.compiler.resolve_stage2_uri(
+                    agents_standards_content,
+                    target_agents_abs,
+                    primary["dep_map"],
+                    target_name=sharing_targets if len(sharing_targets) > 1 else sharing_targets[0],
+                    extra_deployment_maps=extra_maps if extra_maps else None,
+                )
+                existing_agents_text = ""
+                if os.path.isfile(target_agents_abs):
+                    try:
+                        with open(target_agents_abs, "r", encoding="utf-8") as f:
+                            existing_agents_text = f.read()
+                    except Exception:
+                        existing_agents_text = ""
+
+                final_agents_text = self._soft_merge_agents_text(existing_agents_text, rendered_agents_content)
+                precomputed_all_files[target_agents_abs] = final_agents_text
+                if any(e["is_proj_target"] for e in entries):
+                    precomputed_project_files[target_agents_abs] = final_agents_text
+                if any(not e["is_proj_target"] for e in entries):
+                    precomputed_local_files[target_agents_abs] = final_agents_text
+
+        return (
+            precomputed_project_files,
+            precomputed_local_files,
+            precomputed_all_files,
+            orphan_targets,
+            shared_path_warnings,
+        )
 
     def _prune_orphaned_managed_files(
         self,
@@ -761,6 +838,7 @@ class ReleasePublisher:
                 "removed_count": 0,
                 "active_targets": active_target_names,
                 "orphan_targets": [],
+                "shared_path_warnings": [],
                 "fingerprint": combined_fingerprint
             }
 
@@ -776,7 +854,8 @@ class ReleasePublisher:
                 "skipped_count": 0,
                 "removed_count": 0,
                 "active_targets": active_target_names,
-                "orphan_targets": []
+                "orphan_targets": [],
+                "shared_path_warnings": []
             }
 
         resolved_items = stage1_res.get("resolved_items", [])
@@ -785,6 +864,7 @@ class ReleasePublisher:
             precomputed_local_files,
             precomputed_all_files,
             orphan_targets,
+            shared_path_warnings,
         ) = self._prepare_target_compilations(
             active_target_names=active_target_names,
             all_registered_targets=all_registered_targets,
@@ -832,6 +912,7 @@ class ReleasePublisher:
             "skipped_count": skipped_count,
             "active_targets": active_target_names,
             "orphan_targets": orphan_targets,
+            "shared_path_warnings": shared_path_warnings,
             "removed_count": len(files_to_remove),
             "gitignore_synced": gitignore_res.get("updated", False) or gitignore_res.get("created", False),
             "fingerprint": combined_fingerprint
@@ -873,10 +954,17 @@ class ReleasePublisher:
             except Exception:
                 pass
 
+        agents_md_abs_set: Set[str] = set()
+        for t_cfg in all_registered.values():
+            a_uri = t_cfg.get("agents_md")
+            if a_uri and str(a_uri).strip():
+                agents_md_abs_set.add(os.path.normpath(self._resolve_project_uri(str(a_uri).strip(), proj_root)))
+
         for f_abs in file_list:
             if isinstance(f_abs, str) and f_abs.startswith("project://"):
                 f_abs = self._resolve_project_uri(f_abs, proj_root)
-            if os.path.basename(f_abs) in ("AGENTS.md", "CLAUDE.md"):
+            f_norm = os.path.normpath(f_abs)
+            if os.path.basename(f_norm) in ("AGENTS.md", "CLAUDE.md") or f_norm in agents_md_abs_set:
                 continue
             try:
                 rel = os.path.relpath(f_abs, proj_root).replace("\\", "/")

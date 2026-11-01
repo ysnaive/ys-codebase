@@ -65,6 +65,7 @@ class QueryFilter:
     ftypes: Optional[List[str]] = None
     min_score: float = 0.01
     limit: int = 20
+    space_weights: Optional[Dict[str, float]] = None
 
 
 @dataclass
@@ -375,6 +376,8 @@ class InvertedIndex:
 
     def build(self, symbols: List[UnifiedSymbol], tokenizer: Optional[MultilingualTokenizer] = None, space: str = "") -> None:
         """批次建立倒排索引並計算 avgdl"""
+        from .bundler import aggregate_partial_symbols
+        symbols = aggregate_partial_symbols(symbols)
         tok = tokenizer or MultilingualTokenizer()
         if space:
             self.space_name = space
@@ -622,6 +625,18 @@ class BM25Engine:
         clean_raw_no_punct = re.sub(r"[^a-z0-9]", "", clean_raw_query)
 
         for doc_id, score in doc_scores.items():
+            posting = doc_postings[doc_id]
+            posting_spaces = getattr(posting, "spaces", None) or ([posting.space] if posting.space else [])
+            if flt.space_weights and posting_spaces:
+                relevant_spaces = (
+                    [s for s in posting_spaces if s in flt.spaces]
+                    if flt.spaces
+                    else posting_spaces
+                )
+                target_sp_list = relevant_spaces or posting_spaces
+                sp_weight = max((float(flt.space_weights.get(s, 1.0)) for s in target_sp_list), default=1.0)
+                score = score * sp_weight
+
             if score < flt.min_score:
                 continue
 
@@ -639,9 +654,6 @@ class BM25Engine:
                 file_ext = Path(sym.file_path).suffix.lower().lstrip(".")
                 if file_ext not in allowed_ftypes:
                     continue
-
-            posting = doc_postings[doc_id]
-            posting_spaces = getattr(posting, "spaces", None) or ([posting.space] if posting.space else [])
 
             if flt.spaces and not any(s in flt.spaces for s in posting_spaces):
                 continue

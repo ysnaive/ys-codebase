@@ -945,6 +945,71 @@ class TestHybridSearchEngine(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_space_weights_in_bm25_and_hybrid_search(self):
+        """FT-14 (FR-03): 驗證 BM25Engine 與 HybridSearchEngine 空間權重乘算 (docs 1.2 > default 1.0 > plans 0.85)"""
+        tok = MultilingualTokenizer()
+        idx = InvertedIndex(space_name="unified")
+
+        sym_docs = UnifiedSymbol(
+            id="doc_arch",
+            name="PrecisionGuide",
+            kind=SymbolKind.DOC_HEADING_1.value,
+            file_path="docs/precision.md",
+            line_number=1,
+            language="markdown",
+            signature="# PrecisionGuide",
+            docstring="系統精準度設計指南",
+            metadata={"spaces": ["docs"]},
+        )
+        sym_plans = UnifiedSymbol(
+            id="plan_arch",
+            name="PrecisionGuide",
+            kind=SymbolKind.DOC_HEADING_1.value,
+            file_path="plans/sub_01/precision.md",
+            line_number=1,
+            language="markdown",
+            signature="# PrecisionGuide",
+            docstring="系統精準度設計指南",
+            metadata={"spaces": ["plans"]},
+        )
+        idx.build([sym_plans, sym_docs], tokenizer=tok)
+
+        bm25 = BM25Engine(tokenizer=tok)
+        weights = {"docs": 1.2, "plans": 0.85}
+
+        # 1. BM25 空間權重乘算驗證
+        flt_unweighted = QueryFilter(limit=10)
+        res_unweighted = {r.symbol.id: r.score for r in bm25.search("PrecisionGuide", idx, filter_cfg=flt_unweighted)}
+        self.assertAlmostEqual(res_unweighted["doc_arch"], res_unweighted["plan_arch"], places=4)
+
+        flt_weighted = QueryFilter(limit=10, space_weights=weights)
+        res_weighted = bm25.search("PrecisionGuide", idx, filter_cfg=flt_weighted)
+        self.assertEqual(len(res_weighted), 2)
+        self.assertEqual(res_weighted[0].symbol.id, "doc_arch")
+        self.assertEqual(res_weighted[1].symbol.id, "plan_arch")
+        self.assertAlmostEqual(res_weighted[0].score / res_weighted[1].score, 1.2 / 0.85, places=4)
+
+        # 2. HybridSearchEngine RRF 空間權重乘算驗證
+        vec_idx = VectorIndex()
+        vecs = self.service.embed_texts(["PrecisionGuide", "PrecisionGuide"])
+        vec_idx.build(["plan_arch", "doc_arch"], vecs)
+
+        hybrid = HybridSearchEngine(
+            inverted_index=idx,
+            vector_index=vec_idx,
+            embedding_service=self.service,
+            bm25_engine=bm25,
+            space_weights=weights,
+        )
+        h_res = hybrid.search("PrecisionGuide", limit=5, lexical_only=False)
+        self.assertEqual(len(h_res), 2)
+        self.assertEqual(h_res[0]["symbol"].id, "doc_arch")
+        self.assertEqual(h_res[1]["symbol"].id, "plan_arch")
+        self.assertGreater(h_res[0]["score"], h_res[1]["score"])
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

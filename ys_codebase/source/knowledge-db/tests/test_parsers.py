@@ -314,6 +314,79 @@ This is an intro paragraph.
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft_07_ast_visibility_modifiers_extraction(self):
+        """FT-07 (FR-04): 驗證 C#, C++, TypeScript 從 AST 修飾詞提取真實成員可見度 (public/private/protected/internal)"""
+        # 1. C# visibility
+        cs_parser = self.registry.get_parser("src/AccessSample.cs")
+        cs_code = """
+namespace Demo {
+    public class AccessSample {
+        public void PublicMethod() {}
+        private void PrivateMethod() {}
+        protected void ProtectedMethod() {}
+        internal void InternalMethod() {}
+        void DefaultPrivateMethod() {}
+    }
+}
+"""
+        cs_syms = cs_parser.parse("src/AccessSample.cs", cs_code, space="test")
+        cs_cls = next(s for s in cs_syms if s.kind == "class")
+        cs_mem_vis = {m.name: m.visibility for m in cs_cls.members}
+        self.assertEqual(cs_mem_vis.get("PublicMethod"), "public")
+        self.assertEqual(cs_mem_vis.get("PrivateMethod"), "private")
+        self.assertEqual(cs_mem_vis.get("ProtectedMethod"), "protected")
+        self.assertEqual(cs_mem_vis.get("InternalMethod"), "internal")
+        self.assertEqual(cs_mem_vis.get("DefaultPrivateMethod"), "private")
+
+        cs_sym_vis = {s.metadata.get("short_name"): s.visibility for s in cs_syms if s.kind == "method"}
+        self.assertEqual(cs_sym_vis.get("PublicMethod"), "public")
+        self.assertEqual(cs_sym_vis.get("PrivateMethod"), "private")
+        self.assertEqual(cs_sym_vis.get("ProtectedMethod"), "protected")
+        self.assertEqual(cs_sym_vis.get("InternalMethod"), "internal")
+        self.assertEqual(cs_sym_vis.get("DefaultPrivateMethod"), "private")
+
+        # 2. C++ visibility (access_specifier sections)
+        cpp_parser = self.registry.get_parser("src/widget.hpp")
+        cpp_code = """
+class Widget {
+    void ImplicitPrivate();
+public:
+    void PublicApi();
+protected:
+    void ProtectedHook();
+private:
+    void ExplicitPrivate();
+};
+"""
+        cpp_syms = cpp_parser.parse("src/widget.hpp", cpp_code, space="test")
+        cpp_cls = next(s for s in cpp_syms if s.kind == "class")
+        cpp_mem_vis = {m.name: m.visibility for m in cpp_cls.members}
+        self.assertEqual(cpp_mem_vis.get("ImplicitPrivate"), "private")
+        self.assertEqual(cpp_mem_vis.get("PublicApi"), "public")
+        self.assertEqual(cpp_mem_vis.get("ProtectedHook"), "protected")
+        self.assertEqual(cpp_mem_vis.get("ExplicitPrivate"), "private")
+
+        # 3. TypeScript visibility (accessibility_modifier)
+        ts_parser = self.registry.get_parser("src/service.ts")
+        ts_code = """
+export class TsService {
+    public openApi(): void {}
+    protected subHook(): void {}
+    private secretHelper(): void {}
+    defaultPublic(): void {}
+}
+"""
+        ts_syms = ts_parser.parse("src/service.ts", ts_code, space="test")
+        ts_cls = next(s for s in ts_syms if s.kind == "class")
+        ts_mem_vis = {m.name: m.visibility for m in ts_cls.members}
+        self.assertEqual(ts_mem_vis.get("openApi"), "public")
+        self.assertEqual(ts_mem_vis.get("subHook"), "protected")
+        self.assertEqual(ts_mem_vis.get("secretHelper"), "private")
+        self.assertEqual(ts_mem_vis.get("defaultPublic"), "public")
+
+        self.mark_passed()
+
 
 class TestSpiceParser(YSCBTestCase):
     """SPICE 網表解析器 (SpiceParser) 完整功能與邊界測試套件。"""

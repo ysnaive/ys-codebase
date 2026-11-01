@@ -415,12 +415,25 @@ class TestCoreLocaleEngine(YSCBTestCase):
     @require(Requirement.LOGIC | Requirement.ENV)
     def test_sub02_unqualified_global_lookup_and_host_dialect_sniffing(self):
         """sub_02 (FR-01, FR-02, EC-01, EC-03): Unqualified global lookup and runtime host dialect env sniffing."""
-        # 1. Verify detect_active_host_dialect across concurrent AI IDE / CLI environments
+        # 1. Verify detect_active_host_dialect across concurrent AI IDE / CLI environments (declarative rules)
         self.assertEqual(locale.detect_active_host_dialect({"CLAUDECODE": "1"}), "nouns-claude")
         self.assertEqual(locale.detect_active_host_dialect({"CLAUDE_CODE_ENTRYPOINT": "cli"}), "nouns-claude")
         self.assertEqual(locale.detect_active_host_dialect({"CODEX_SANDBOX": "seatbelt"}), "nouns-codex")
         self.assertEqual(locale.detect_active_host_dialect({"ANTIGRAVITY_AGENT": "1"}), "nouns-antigravity")
+        self.assertEqual(locale.detect_active_host_dialect({"CURSOR_TRACE_ID": "abc"}), "nouns-cursor")
+        self.assertEqual(locale.detect_active_host_dialect({"WINDSURF_AGENT": "1"}), "nouns-windsurf")
+        self.assertEqual(locale.detect_active_host_dialect({"CODEIUM_API_KEY": "xyz"}), "nouns-windsurf")
+        self.assertEqual(locale.detect_active_host_dialect({"GITHUB_COPILOT_CLI": "1"}), "nouns-copilot")
+        self.assertEqual(locale.detect_active_host_dialect({"OPENCODE_SESSION": "1"}), "nouns-opencode")
+        self.assertEqual(locale.detect_active_host_dialect({"ROO_CODE": "1"}), "nouns-roo")
         self.assertIsNone(locale.detect_active_host_dialect({"PATH": "/usr/bin"}))
+
+        # Verify custom declarative rules injection
+        custom_rules = [{"dialect": "nouns-custom-ide", "env_keys": ["MY_CUSTOM_IDE"], "env_prefixes": ["MYIDE_"]}]
+        self.assertEqual(
+            locale.detect_active_host_dialect({"MYIDE_VERSION": "2.0"}, rules=custom_rules),
+            "nouns-custom-ide",
+        )
 
         # 2. Verify unqualified lookup resolves agent_tool.* from agents-workflow without prefix
         self.assertEqual(
