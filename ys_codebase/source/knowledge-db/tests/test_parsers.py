@@ -898,6 +898,88 @@ export function GenericComp<T extends object>(props: T) {
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_custom_parser_loading_extension_binding_and_error_diagnostics(self):
+        """Verify project custom parser loading, instance-level SUPPORTED_EXTENSIONS binding, and load_errors diagnostics."""
+        import tempfile
+        import shutil
+        from unittest.mock import patch
+
+        temp_proj = tempfile.mkdtemp(prefix="test_custom_parser_")
+        try:
+            pkg_dir = os.path.join(temp_proj, "yscb_test_parsers")
+            os.makedirs(pkg_dir, exist_ok=True)
+            with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
+                f.write("")
+            parser_file = os.path.join(pkg_dir, "astro_parser.py")
+            with open(parser_file, "w", encoding="utf-8") as f:
+                f.write(
+                    "from knowledge_db.parsers.base import BaseParser\n"
+                    "from knowledge_db.schema import UnifiedSymbol, SymbolKind\n"
+                    "class CustomAstroParser(BaseParser):\n"
+                    "    SUPPORTED_EXTENSIONS = {'.astro'}\n"
+                    "    def can_parse(self, file_path):\n"
+                    "        return str(file_path).endswith(tuple(self.SUPPORTED_EXTENSIONS))\n"
+                    "    def parse(self, file_path, content, space):\n"
+                    "        return [UnifiedSymbol(id=UnifiedSymbol.compute_id(space, str(file_path), 'AstroComp', SymbolKind.CLASS.value, 1), name='AstroComp', kind=SymbolKind.CLASS.value, file_path=str(file_path), line_number=1, end_line=1, signature='AstroComp', docstring='Custom Astro', language='astro')]\n"
+                )
+
+            contrib_data = {
+                "languages": {
+                    "astro_custom": {
+                        "id": "astro_custom",
+                        "name": "astro_custom",
+                        "extensions": [".astro", ".mdx"],
+                        "mode": "custom",
+                        "parser_entry": "yscb_test_parsers.astro_parser:CustomAstroParser",
+                        "__provider__": "project",
+                    },
+                    "html_ext": {
+                        "id": "html_ext",
+                        "name": "html_ext",
+                        "extensions": [".html", ".htm", ".customhtml"],
+                        "mode": "custom",
+                        "parser_entry": "knowledge_db.parsers.html_parser:HtmlParser",
+                        "__provider__": "knowledge-db",
+                    },
+                    "broken_lang": {
+                        "id": "broken_lang",
+                        "name": "broken_lang",
+                        "extensions": [".brk"],
+                        "mode": "custom",
+                        "parser_entry": "non_existent_pkg_xyz.mod:MissingParser",
+                        "__provider__": "project",
+                    },
+                }
+            }
+
+            with patch("core.uri.resolve", side_effect=lambda u, **kw: temp_proj if u in ("project://", "yscb.host://") else None):
+                reg = ParserRegistry(register_defaults=True, contributes_data=contrib_data)
+
+            # 1. Custom parser loaded from project:// and bound with configured .mdx extension
+            astro_p = reg.get_parser("src/Page.astro")
+            self.assertIsNotNone(astro_p)
+            self.assertEqual(astro_p.__class__.__name__, "CustomAstroParser")
+            self.assertIsNotNone(reg.get_parser("src/Doc.mdx"))
+            syms = reg.parse_file("src/Page.astro", "---\n---\n<div>Hello</div>", "project")
+            self.assertEqual(len(syms), 1)
+            self.assertEqual(syms[0].name, "AstroComp")
+
+            # 2. Built-in HtmlParser bound with extra extension (.customhtml) without mutating HtmlParser class attribute
+            html_p = reg.get_parser("view.customhtml")
+            self.assertIsInstance(html_p, HtmlParser)
+            self.assertNotIn(".customhtml", HtmlParser.SUPPORTED_EXTENSIONS)
+
+            # 3. Broken parser entry recorded in load_errors
+            self.assertIn("broken_lang", reg.load_errors)
+            self.assertIn("non_existent_pkg_xyz", reg.load_errors["broken_lang"])
+        finally:
+            if temp_proj in sys.path:
+                sys.path.remove(temp_proj)
+            shutil.rmtree(temp_proj, ignore_errors=True)
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

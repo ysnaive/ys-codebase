@@ -10,7 +10,7 @@ related_docs:
   - "./README.md"
   - "./architecture.md"
   - "./contributes_guide.md"
-last_updated: "2026-10-22"
+last_updated: "2026-11-01"
 ---
 
 # knowledge-db 多語言語意解析器使用指南 (Parsers Guide)
@@ -105,3 +105,4 @@ registry.register_parser(RustParser(), priority=150)
 - **語法錯誤防禦 (EC-01)**：`PythonParser` 捕獲 `SyntaxError`，發出 Warning 日誌並安全降級回傳空清單，嚴禁導致整體批次崩潰。
 - **未知格式防禦 (EC-02)**：`ParserRegistry` 遇不支援的檔案副檔名時，安全回傳空清單。
 - **純文字降級 (EC-03)**：`MarkdownParser` 面對無標題之純文字 Markdown 檔案，自動降級提取為 `DOC_SECTION` 符號。
+- **解析器載入異常顯式診斷與自癒 (`load_errors`)**：當 `contributes.knowledge-db.languages` 中宣告之解析器因語法錯誤或模組缺失載入失敗時，`ParserRegistry` 會將異常原因記錄於 `registry.load_errors` 並透過 `engine.status()["parser_load_errors"]` 暴露；執行 `knowledge-db index` 或 `knowledge-db status` 時（包含在 `server` 常駐模式下）皆會主動於終端 `stderr` 輸出 `[WARN]` 告警，且於下次 `get_engine()` 調用時自動重試載入以支援熱修復自癒。

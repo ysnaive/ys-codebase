@@ -4,8 +4,11 @@ knowledge-db 解析器動態註冊表與調度中心 (ParserRegistry)
 """
 
 import importlib
+import importlib.util
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -29,12 +32,138 @@ class ParserRegistry:
     ):
         self._parsers: List[Tuple[int, BaseParser]] = []
         self._language_configs: Dict[str, LanguageConfig] = {}
+        self.load_errors: Dict[str, str] = {}
 
         if register_defaults:
             self._load_from_contributes(contributes_data=contributes_data)
 
+    @staticmethod
+    def _ensure_search_paths(provider: Optional[str] = None) -> None:
+        """確保 project://、yscb.host:// 與語言提供者 module://<provider> 位於 sys.path 中。"""
+        candidates: List[str] = []
+        try:
+            from core import uri
+            for uri_key in ("project://", "yscb.host://"):
+                try:
+                    res = uri.resolve(uri_key, interactive=False)
+                    if res and not str(res).startswith("!undefined"):
+                        candidates.append(res)
+                except Exception:
+                    pass
+            if provider and provider not in ("unknown", "project_override", "project"):
+                try:
+                    mod_res = uri.resolve(f"module://{provider}", interactive=False)
+                    if mod_res and not str(mod_res).startswith("!undefined"):
+                        candidates.append(mod_res)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        cwd = os.getcwd()
+        if cwd:
+            candidates.append(cwd)
+
+        for cand in candidates:
+            if not cand or not os.path.isdir(cand):
+                continue
+            abs_p = os.path.abspath(cand)
+            norm_p = abs_p.replace("\\", "/")
+            if "/source/" in norm_p or norm_p.endswith("/source"):
+                continue
+            if abs_p not in sys.path:
+                sys.path.insert(0, abs_p)
+
+    @staticmethod
+    def _bind_configured_extensions(parser_inst: BaseParser, extensions: Tuple[str, ...]) -> None:
+        """將 LanguageConfig 宣告之副檔名動態合併至解析器實例（不污染類別共享集合）。"""
+        norm_exts = {
+            (str(e).strip().lower() if str(e).strip().startswith(".") else "." + str(e).strip().lower())
+            for e in extensions
+            if str(e).strip()
+        }
+        if not norm_exts:
+            return
+        existing = getattr(parser_inst, "SUPPORTED_EXTENSIONS", None)
+        if isinstance(existing, (set, list, tuple, frozenset)):
+            existing_norm = {
+                (str(e).strip().lower() if str(e).strip().startswith(".") else "." + str(e).strip().lower())
+                for e in existing
+                if str(e).strip()
+            }
+            parser_inst.SUPPORTED_EXTENSIONS = existing_norm | norm_exts  # type: ignore[attr-defined]
+        else:
+            parser_inst.SUPPORTED_EXTENSIONS = norm_exts  # type: ignore[attr-defined]
+
+    def _instantiate_custom_parser(self, entry_str: str, provider: Optional[str] = None) -> BaseParser:
+        """支援 module.path:ClassName、檔案路徑:ClassName 與語意 URI (project://.../file.py:ClassName) 實例化。"""
+        self._ensure_search_paths(provider=provider)
+
+        if "://" in entry_str:
+            scheme_part, rest = entry_str.split("://", 1)
+            if ":" in rest:
+                uri_path_part, cls_name = rest.rsplit(":", 1)
+                target_uri = f"{scheme_part}://{uri_path_part}"
+            else:
+                target_uri, cls_name = entry_str.rsplit(".", 1)
+            from core import uri
+            resolved_target = uri.resolve(target_uri, interactive=False)
+            target_path = Path(resolved_target)
+            if target_path.is_file() or target_path.suffix == ".py":
+                mod_name = f"_yscb_custom_parser_{target_path.stem}_{abs(hash(str(target_path)))}"
+                spec = importlib.util.spec_from_file_location(mod_name, str(target_path))
+                if spec is None or spec.loader is None:
+                    raise ImportError(f"Cannot load spec from file '{target_path}'")
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[mod_name] = mod
+                spec.loader.exec_module(mod)
+                parser_cls = getattr(mod, cls_name)
+                return parser_cls()
+            parent_dir = str(target_path.parent if target_path.suffix else target_path)
+            if os.path.isdir(parent_dir) and parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+            mod_rel = target_path.name.replace("/", ".").replace("\\", ".")
+            mod = importlib.import_module(mod_rel)
+            parser_cls = getattr(mod, cls_name)
+            return parser_cls()
+
+        if ":" in entry_str:
+            mod_name, cls_name = entry_str.rsplit(":", 1)
+        else:
+            mod_name, cls_name = entry_str.rsplit(".", 1)
+
+        if mod_name.endswith(".py") or "/" in mod_name or "\\" in mod_name:
+            cand_file = Path(mod_name)
+            if not cand_file.is_absolute():
+                for sp in list(sys.path):
+                    probe = Path(sp) / mod_name
+                    if probe.is_file():
+                        cand_file = probe
+                        break
+            if cand_file.is_file():
+                dyn_name = f"_yscb_custom_parser_{cand_file.stem}_{abs(hash(str(cand_file)))}"
+                spec = importlib.util.spec_from_file_location(dyn_name, str(cand_file))
+                if spec is None or spec.loader is None:
+                    raise ImportError(f"Cannot load spec from file '{cand_file}'")
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[dyn_name] = mod
+                spec.loader.exec_module(mod)
+                parser_cls = getattr(mod, cls_name)
+                return parser_cls()
+
+        try:
+            mod = importlib.import_module(mod_name)
+        except ModuleNotFoundError:
+            importlib.invalidate_caches()
+            self._ensure_search_paths(provider=provider)
+            mod = importlib.import_module(mod_name)
+
+        parser_cls = getattr(mod, cls_name)
+        return parser_cls()
+
     def _load_from_contributes(self, contributes_data: Optional[Dict[str, Any]] = None) -> None:
         """讀取 contributes 中的 languages 配置並動態掛載解析器 (Zero-Privilege Dogfooding)"""
+        self.load_errors.clear()
         languages_dict: Dict[str, Any] = {}
 
         # 1. 優先使用傳入之自訂 contributes 資料 (測試或隔離環境)
@@ -72,28 +201,31 @@ class ParserRegistry:
                 continue
             try:
                 cfg_data = dict(raw_cfg)
+                provider = str(cfg_data.get("__provider__") or cfg_data.get("_provider") or "")
                 if "id" not in cfg_data:
                     cfg_data["id"] = lang_id
                 cfg = LanguageConfig.from_dict(cfg_data)
                 self._language_configs[cfg.id] = cfg
 
                 if cfg.mode == "tree_sitter":
-                    self.register_parser(TreeSitterDriver(cfg), priority=100)
+                    driver = TreeSitterDriver(cfg)
+                    if driver._language is None or driver._parser is None:
+                        err_msg = f"Failed to load tree-sitter grammar '{cfg.grammar}' or query '{cfg.query_file}'"
+                        self.load_errors[cfg.id] = err_msg
+                    self.register_parser(driver, priority=100)
                 elif cfg.mode == "custom" and cfg.parser_entry:
                     try:
-                        entry_str = cfg.parser_entry
-                        if ":" in entry_str:
-                            mod_name, cls_name = entry_str.split(":", 1)
-                        else:
-                            mod_name, cls_name = entry_str.rsplit(".", 1)
-                        mod = importlib.import_module(mod_name)
-                        parser_cls = getattr(mod, cls_name)
-                        parser_inst = parser_cls()
+                        parser_inst = self._instantiate_custom_parser(cfg.parser_entry, provider=provider)
+                        self._bind_configured_extensions(parser_inst, cfg.extensions)
                         self.register_parser(parser_inst, priority=100)
                     except Exception as e:
-                        logger.warning(f"Failed to instantiate custom parser '{cfg.parser_entry}': {e}")
+                        err_msg = f"Failed to instantiate custom parser '{cfg.parser_entry}': {e}"
+                        self.load_errors[cfg.id] = err_msg
+                        logger.warning(err_msg)
             except Exception as e:
-                logger.warning(f"Error loading language config '{lang_id}': {e}")
+                err_msg = f"Error loading language config '{lang_id}': {e}"
+                self.load_errors[str(lang_id)] = err_msg
+                logger.warning(err_msg)
 
     def register_parser(self, parser: BaseParser, priority: int = 100) -> None:
         """

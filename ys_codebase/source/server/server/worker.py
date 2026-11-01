@@ -41,6 +41,24 @@ class WarmWorker:
         if modules_dir not in sys.path:
             sys.path.insert(0, modules_dir)
 
+        host_cand = os.path.dirname(self.yscb_root)
+        if os.path.isfile(os.path.join(host_cand, "yscb.config.json")):
+            norm_host = host_cand.replace("\\", "/")
+            if "/source/" not in norm_host and not norm_host.endswith("/source") and host_cand not in sys.path:
+                sys.path.append(host_cand)
+
+        try:
+            from core import uri
+            for uri_key in ("project://", "yscb.host://"):
+                resolved_p = uri.resolve(uri_key, interactive=False)
+                if resolved_p and os.path.isdir(resolved_p):
+                    abs_p = os.path.abspath(resolved_p)
+                    norm_p = abs_p.replace("\\", "/")
+                    if "/source/" not in norm_p and not norm_p.endswith("/source") and abs_p not in sys.path:
+                        sys.path.append(abs_p)
+        except Exception:
+            pass
+
         try:
             self.service_manager.load_from_contributes(self.yscb_root)
         except Exception as e:

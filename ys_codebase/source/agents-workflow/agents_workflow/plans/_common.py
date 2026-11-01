@@ -68,3 +68,67 @@ def parse_markdown_blockquote_headers(
                 k, v = inner.split(":", 1)
                 headers[k.strip().lower()] = v.strip()
     return headers
+
+
+def resolve_active_target_projected_path(
+    artifact_type: str,
+    artifact_name: str = "",
+    subpath: str = "",
+) -> str:
+    """
+    依據當前啟用之 release_targets (local ∪ project) 動態解析 template / standard / skill 的專案相對路徑。
+    若無啟用 Target 或讀取失敗，安全退回 .agents/... 預設路徑。
+    """
+    default_base = (
+        f".agents/skills/{artifact_name}"
+        if artifact_type == "skill"
+        else f".agents/.yscb/{artifact_type}s"
+    )
+    fallback = f"{default_base}/{subpath}".strip("/") if subpath else default_base
+
+    try:
+        from agents_workflow.targets import ReleaseTargetManager
+        from agents_workflow.compiler import ArtifactCompiler
+
+        classified = ReleaseTargetManager.get_classified_targets()
+        active_targets = classified.get("union", [])
+        if not active_targets:
+            return fallback
+
+        selected_target = active_targets[0]
+        if len(active_targets) > 1:
+            try:
+                from core.locale import detect_active_host_dialect
+                dialect = detect_active_host_dialect()
+                if dialect and dialect.startswith("nouns-"):
+                    cand_t = dialect[len("nouns-"):]
+                    if cand_t in active_targets:
+                        selected_target = cand_t
+            except Exception:
+                pass
+
+        compiler = ArtifactCompiler()
+        target_defs = {t["name"]: t for t in compiler.get_release_targets() if isinstance(t, dict) and "name" in t}
+        t_obj = target_defs.get(selected_target)
+        if not t_obj:
+            return fallback
+
+        projections = t_obj.get("projections", {})
+        proj_cfg = projections.get(artifact_type)
+        if not isinstance(proj_cfg, dict) or "target_dir" not in proj_cfg:
+            return fallback
+
+        raw_dir = str(proj_cfg["target_dir"]).strip()
+        if raw_dir.startswith("project://"):
+            rel_dir = raw_dir[len("project://"):].lstrip("/")
+        else:
+            rel_dir = raw_dir.lstrip("/")
+
+        if "{export.name}" in rel_dir:
+            rel_dir = rel_dir.replace("{export.name}", artifact_name)
+
+        rel_dir = rel_dir.rstrip("/")
+        return f"{rel_dir}/{subpath.lstrip('/')}" if subpath else rel_dir
+    except Exception:
+        return fallback
+

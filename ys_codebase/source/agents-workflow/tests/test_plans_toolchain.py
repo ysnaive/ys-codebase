@@ -2146,6 +2146,31 @@ class TestPlansModelRecord(YSCBTestCase):
         self.assertIn("PORTABILITY", warn_cats)
         self.assertIn("BACKPROP", warn_cats)
 
+        # --- 5. 驗證單一或自訂 release_target (如僅啟用 claude) 之路徑動態解析 ---
+        from agents_workflow.plans._common import resolve_active_target_projected_path
+        from agents_workflow.targets import ReleaseTargetManager
+
+        with patch.object(
+            ReleaseTargetManager,
+            "get_classified_targets",
+            return_value={"base": ["claude"], "contributed": [], "union": ["claude"]},
+        ):
+            tmpl_hint = resolve_active_target_projected_path("template", subpath="P06_test_plan.md")
+            skill_hint = resolve_active_target_projected_path(
+                "skill", artifact_name="development-sop", subpath="references/phase_03_api_spec.md"
+            )
+            self.assertEqual(tmpl_hint, ".claude/.yscb/templates/P06_test_plan.md")
+            self.assertEqual(skill_hint, ".claude/skills/development-sop/references/phase_03_api_spec.md")
+
+            p_claude = self.plans_dir / "2026_11_01_1040_claude_only"
+            p_claude.mkdir(parents=True, exist_ok=True)
+            (p_claude / "P00_discuss.md").write_text("# P00\n\n" + hdr + "> 狀態：Confirmed\n", encoding="utf-8")
+            nav_claude = PlanStatusResolver.resolve_next_action(p_claude)
+            self.assertTrue(nav_claude["required_reference_path"].startswith(".claude/skills/"))
+
+            next_gate_hint = real_verifier._build_next_phase_hint(p_claude)
+            self.assertIn(".claude/.yscb/templates/P01_requirements_spec.md", next_gate_hint)
+
         self.mark_passed()
 
 

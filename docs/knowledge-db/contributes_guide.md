@@ -11,7 +11,7 @@ related_docs:
   - "./parsers.md"
   - "./tokenizer.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-01"
 ---
 
 # `contributes.knowledge-db` 擴充點注入指南 (Contributes Guide)
@@ -136,7 +136,7 @@ last_updated: "2026-10-15"
 ```
 
 ### 3.2 模式二：`custom` 自訂解析器類別模式
-針對領域特化語言（如 SPICE 電路網表）或自訂輕量解析器，指定繼承自 `BaseParser` 之類別入口點 (`<module_path>:<ClassName>`)：
+針對領域特化語言（如 SPICE 電路網表、Astro/MDX 等）或自訂輕量解析器，指定繼承自 `BaseParser` 之類別入口點 (`<entry_spec>:<ClassName>`)：
 
 ```json
 "spice": {
@@ -148,6 +148,12 @@ last_updated: "2026-10-15"
 }
 ```
 
+- **支援之 `parser_entry` 路徑格式**：
+  1. **Python 套件點號路徑**：`"pkg.submod:ClassName"`（自動從 `project://`、`yscb.host://`、`module://<provider>` 與當前工作目錄檢索匯入，且在 `server` Warm Worker 與多進程 Worker Pool 下皆自動掛載專案根目錄）。
+  2. **語意 URI 檔案路徑**：`"project://yscb_parsers/site_parsers.py:AstroParser"` 或 `"module://<donor>/parsers/custom.py:MyParser"`（直接透過 `spec_from_file_location` 載入，無須依賴 `sys.path` 套件階層）。
+  3. **專案相對檔案路徑**：`"yscb_parsers/site_parsers.py:AstroParser"`。
+- **實例級動態副檔名綁定 (`SUPPORTED_EXTENSIONS`)**：`ParserRegistry` 載入 `custom` 解析器實例後，會自動將 `LanguageConfig.extensions` 合併注入至該實例之 `SUPPORTED_EXTENSIONS` 集合（不污染類別靜態屬性），因此直接複用內建解析器（如 `HtmlParser`）並擴充 `.astro` 等副檔名時，`can_parse()` 亦能無縫匹配。
+
 ### 3.3 `LanguageConfig` 欄位規範表
 | 欄位 | 型別 | 必填 | 說明 |
 | :--- | :---: | :---: | :--- |
@@ -157,7 +163,7 @@ last_updated: "2026-10-15"
 | **`mode`** | `string` | 否 | 解析驅動模式：`"tree_sitter"`（預設）或 `"custom"` |
 | **`grammar`** | `string` | 條件 | `tree_sitter` 模式下必填，指定 Python grammar 模組或入口函式（如 `"tree_sitter_python"`） |
 | **`query_file`** | `string` | 條件 | `tree_sitter` 模式下必填，相對於 Donor 模組根目錄之 `.scm` 查詢檔路徑 |
-| **`parser_entry`** | `string` | 條件 | `custom` 模式下必填，`BaseParser` 子類別之匯入路徑（`<module>:<Class>`） |
+| **`parser_entry`** | `string` | 條件 | `custom` 模式下必填，`BaseParser` 子類別之匯入路徑（`<module_or_uri>:<Class>`） |
 | **`custom_kinds`** | `List[Dict]` | 否 | 自訂符號類型映射表 |
 
 ---

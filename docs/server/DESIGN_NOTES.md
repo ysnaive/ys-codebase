@@ -14,7 +14,7 @@ related_docs:
   - "./daemon_architecture.md"
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
-last_updated: "2026-10-25"
+last_updated: "2026-11-01"
 ---
 
 # Server 模組工程妥協與防坑邊界 (DESIGN_NOTES.md)
@@ -109,12 +109,18 @@ last_updated: "2026-10-25"
 
 ---
 
-### [DN-07] Server 執行期零 `source/` 嚴格沙盒路徑隔離與動態 Provider 注入
+### [DN-07] Server 執行期零 `source/` 嚴格沙盒路徑隔離與動態 Provider / 專案根目錄注入
 - **背景與陷阱**：
-  在開發環境中，若 Master 或 Worker 的 `sys.path` 滲入 `source/` 源碼路徑，會引發「開發源碼覆蓋已發布模組」、「熱重載失效」及「沙盒測試自欺」等嚴重視線污染與架構債。
+  1. 在開發環境中，若 Master 或 Worker 的 `sys.path` 滲入 `source/` 源碼路徑，會引發「開發源碼覆蓋已發布模組」、「熱重載失效」及「沙盒測試自欺」等嚴重視線污染與架構債。
+  2. 反之，若宿主專案在 `project://`（即宿主工作區根目錄，例如 `yscb_parsers/`）定義了自訂插件（如 `knowledge-db` 自訂 `languages` 解析器），而 Master 生成 Worker 子進程或 `WarmWorker.pre_warm()` 時未將 `project://` / `yscb.host://` 納入 `PYTHONPATH` 與 `sys.path`，會導致冷啟動正常但 Server 熱派發與 `ProcessPoolExecutor` 子進程拋出 `ModuleNotFoundError`。
+  3. 此外，`read_daemon_state()` 讀取 `daemon.json` 時必須遵循 `vfs.read_json(state_file)` 簽名契約（不得傳入無效之 `default=` 關鍵字參數），且 `server stop` 在清理失效 `daemon.json` 前必須先以非阻塞 `InterProcessLock(lock_file)` 探測 `daemon.lock`，嚴禁在活體 Daemon 仍持有鎖時誤刪 `daemon.json` 造成孤兒進程。
 - **工程決策**：
-  1. Master 在生成 Worker 子進程時，`PYTHONPATH` 僅允許注入根目錄、`.modules` 及私有 `.venv`，嚴格剔除所有 `source/` 目錄。
+  1. Master 在生成 Worker 子進程 (`_spawn_worker_locked`) 及 `WarmWorker.pre_warm()` 預熱前，動態將 `yscb_root`、宿主專案根目錄 (`project://` / `yscb.host://`)、`.modules` 及私有 `.venv` 注入 `PYTHONPATH` 與 `sys.path`，同時嚴格過濾剔除任何包含 `/source` 之開發源碼目錄。
   2. `ServiceManager` 載入第三方服務宣告時，動態將 `.modules/<provider>` 注入 `sys.path`，並相容 `code.class://` 前綴與連字號轉底線（優先直接匯入），確保生態系模組正確隔離載入。
+  3. `server stop` 僅在確認 `daemon.lock` 未被持有且目標 PID 已終止時，方才安全移除殘留之 `daemon.json`。
+
+> [!CAUTION]
+> 嚴禁在 `read_daemon_state()` 中使用無效的 `vfs.read_json(..., default=...)` 參數搭配寬泛 `except Exception: pass` 靜默吞沒 `TypeError`；亦嚴禁在未確認 `daemon.lock` 釋放前由 CLI 直接刪除 `daemon.json`！
 
 ---
 

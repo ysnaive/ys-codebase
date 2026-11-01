@@ -422,6 +422,8 @@ class PlanStatusResolver:
         latest_r = r_files[-1]
         r_done = cls.is_research_completed(p)
         st = "concluded" if r_done else cls.get_doc_header_status(latest_r)
+        from ._common import resolve_active_target_projected_path
+
         return {
             "target_plan_name": p.name,
             "target_plan_dir": p,
@@ -429,7 +431,7 @@ class PlanStatusResolver:
             "current_phase": latest_r.stem.split("_")[0].upper(),
             "current_status": st,
             "next_phase": "Transition (P01 / Roadmap / Archive)" if r_done else latest_r.name,
-            "required_reference_path": ".agents/skills/research/SKILL.md",
+            "required_reference_path": resolve_active_target_projected_path("skill", "research", "SKILL.md"),
             "next_action_hint": (
                 "調研報告已 Concluded，請向開發者確認三大流轉出口（① 升級 P01 實作 | ② 路線圖儲備 | ③ 結案存檔）。"
                 if r_done
@@ -500,9 +502,11 @@ class PlanStatusResolver:
             Dict[str, Any]: 包含 target_plan_name, target_plan_dir, mode, current_phase,
                             current_status, next_phase, required_reference_path, next_action_hint, has_handoff
         """
+        from ._common import resolve_active_target_projected_path
+
         p = Path(plan_dir).resolve()
-        ref_base = ".agents/skills/development-sop/references"
-        sop_skill_path = ".agents/skills/development-sop/SKILL.md"
+        ref_base = resolve_active_target_projected_path("skill", "development-sop", "references")
+        sop_skill_path = resolve_active_target_projected_path("skill", "development-sop", "SKILL.md")
 
         if not p.exists() or not p.is_dir():
             return {

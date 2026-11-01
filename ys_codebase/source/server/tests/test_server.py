@@ -692,6 +692,67 @@ class TestServerModule(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_daemon_state_roundtrip_and_stop_lock_protection(self):
+        """Verify read_daemon_state round-trip via vfs.read_json and cli.stop preserving daemon.json when daemon.lock is held."""
+        import importlib.util
+        from core.commands.bags import CmdBags
+        from core.platform import InterProcessLock
+        from core import vfs
+        from server.master import read_daemon_state
+
+        cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "cli.py")
+        spec = importlib.util.spec_from_file_location("_server_cli_test", cli_path)
+        server_cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(server_cli)
+        empty_bags = CmdBags()
+
+        # 1. Missing daemon.json returns None without error
+        self.assertIsNone(read_daemon_state(self.root_dir))
+
+        # 2. Valid daemon.json round-trips accurately
+        state_file = os.path.join(self.root_dir, ".cache", "server", "daemon.json")
+        sample_state = {
+            "pid": os.getpid(),
+            "worker_pid": os.getpid(),
+            "port": 59999,
+            "token": "tok_test_123",
+            "root": self.root_dir,
+            "start_time": 1700000000.0,
+            "idle_timeout_sec": 300.0,
+            "tasks_executed": 2,
+        }
+        vfs.write_json(state_file, sample_state)
+        loaded = read_daemon_state(self.root_dir)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.pid, os.getpid())
+        self.assertEqual(loaded.port, 59999)
+        self.assertEqual(loaded.token, "tok_test_123")
+        self.assertEqual(loaded.tasks_executed, 2)
+
+        # 3. Corrupted daemon.json while daemon.lock is held: cli.stop() must NOT delete daemon.json
+        vfs.write_text(state_file, "{corrupted_json")
+        self.assertIsNone(read_daemon_state(self.root_dir))
+
+        lock_file = os.path.join(self.root_dir, ".cache", "server", "daemon.lock")
+        held_lock = InterProcessLock(lock_file)
+        self.assertTrue(held_lock.acquire(blocking=False))
+        try:
+            with unittest.mock.patch.object(InterProcessLock, "acquire", return_value=False), \
+                 unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir):
+                rc = server_cli.stop(empty_bags)
+                self.assertEqual(rc, 0)
+                self.assertTrue(os.path.exists(state_file), "daemon.json must NOT be deleted when daemon.lock is held")
+        finally:
+            held_lock.release()
+
+        # 4. When daemon.lock is NOT held and daemon is dead, stale daemon.json is cleaned up
+        with unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir):
+            rc2 = server_cli.stop(empty_bags)
+            self.assertEqual(rc2, 0)
+            self.assertFalse(os.path.exists(state_file), "Stale daemon.json should be cleaned up when lock is free")
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

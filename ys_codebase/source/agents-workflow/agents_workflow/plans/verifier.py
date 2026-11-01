@@ -746,10 +746,13 @@ class PlanVerifier:
         if not specs:
             return None
 
+        from ._common import resolve_active_target_projected_path
+
+        tmpl_rel_path = resolve_active_target_projected_path("template", subpath=tmpl_name)
         raw_titles_str = " | ".join(raw_h for _, raw_h in specs)
         return (
             f"下一階段 {p_code} ({tmpl_name}) -> "
-            f"請先讀取 `.agents/.yscb/templates/{tmpl_name}` | "
+            f"請先讀取 `{tmpl_rel_path}` | "
             f"必備章節: {raw_titles_str}"
         )
 

@@ -240,6 +240,7 @@ class KnowledgeEngine:
             "model_downloaded": self.embedding_service.is_model_downloaded(),
             "storage_dir": str(self.storage_dir),
             "scan_diff": scan_diff,
+            "parser_load_errors": dict(getattr(self.parser_registry, "load_errors", {})),
         }
 
     def model_status(self) -> Dict[str, Any]:
@@ -376,6 +377,9 @@ def get_engine() -> KnowledgeEngine:
             from .config import KnowledgeDBConfig
             _GLOBAL_ENGINE_INSTANCE.config = KnowledgeDBConfig.load()
             _GLOBAL_ENGINE_INSTANCE.pipeline.config = _GLOBAL_ENGINE_INSTANCE.config
+            if getattr(_GLOBAL_ENGINE_INSTANCE.parser_registry, "load_errors", None):
+                _GLOBAL_ENGINE_INSTANCE.parser_registry = ParserRegistry()
+                _GLOBAL_ENGINE_INSTANCE.bundler.parser_registry = _GLOBAL_ENGINE_INSTANCE.parser_registry
         except Exception:
             pass
     return _GLOBAL_ENGINE_INSTANCE

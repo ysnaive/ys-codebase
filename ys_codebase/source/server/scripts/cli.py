@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 
 from core.commands.bags import CmdBags
 from core.guard import guard_dispatch
-from core.platform import is_process_alive, kill_process_tree
+from core.platform import InterProcessLock, is_process_alive, kill_process_tree
 from server.config import ServerConfig
 from server.master import (
     MasterSupervisor,
@@ -145,10 +145,22 @@ def stop(cmd_bags: CmdBags) -> int:
         print("[Server] Daemon is not running.")
         state_file = os.path.join(yscb_root, ".cache", "server", "daemon.json")
         if os.path.exists(state_file):
-            try:
-                os.remove(state_file)
-            except OSError:
-                pass
+            lock_file = os.path.join(yscb_root, ".cache", "server", "daemon.lock")
+            lock_held = False
+            if os.path.exists(lock_file):
+                try:
+                    probe = InterProcessLock(lock_file)
+                    if not probe.acquire(blocking=False):
+                        lock_held = True
+                    else:
+                        probe.release()
+                except Exception:
+                    pass
+            if not lock_held:
+                try:
+                    os.remove(state_file)
+                except OSError:
+                    pass
         return 0
 
     if not force_flag:

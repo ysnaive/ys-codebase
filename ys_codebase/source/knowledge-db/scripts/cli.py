@@ -96,6 +96,11 @@ def status(cmd_bags: Any) -> int:
         print(f"  - 向量特徵索引: {vec_str}")
         model_str = styler.symbol("已下載") if st.get("model_downloaded") else styler.warn("未下載 (離線時自動降級 BM25)")
         print(f"  - 向量模型權重: {model_str}")
+        load_errs = st.get("parser_load_errors") or {}
+        if load_errs:
+            print(f"  - 解析器狀態  : {styler.warn(f'警告 ({len(load_errs)} 個語言載入失敗)')}")
+            for lid, err_txt in load_errs.items():
+                print(f"    [WARN] 語言 '{lid}': {err_txt}", file=sys.stderr)
         print("-" * 80)
         for name, sp in st["spaces"].items():
             pat_str = f" [patterns: {', '.join(sp['file_patterns'])}]" if sp.get('file_patterns') else " [all files]"
@@ -143,6 +148,14 @@ def index(cmd_bags: Any) -> int:
         export_arg = bags.get_option_value("export")
 
         indices = engine.build_index(space=space_target, force=force, interactive=True, export_path=export_arg)
+        load_errs = getattr(engine.parser_registry, "load_errors", None) or {}
+        if load_errs:
+            print(
+                f"[knowledge-db] [WARN] 偵測到 {len(load_errs)} 個自訂或擴充語言解析器載入失敗（對應檔案將略過符號解析）：",
+                file=sys.stderr,
+            )
+            for lid, err_txt in load_errs.items():
+                print(f"  - [{lid}] {err_txt}", file=sys.stderr)
         print(f"[knowledge-db] 倒排索引建置完成 (共 {len(indices)} 個空間):")
         for sp_name, idx in indices.items():
             print(f"  - 空間 '{sp_name}': {idx.doc_count} 篇文檔符號，{len(idx.index)} 個 Term 索引詞")

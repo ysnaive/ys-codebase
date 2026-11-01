@@ -70,10 +70,10 @@ def read_daemon_state(yscb_root: str) -> Optional[ServerDaemonState]:
     if not os.path.exists(state_file):
         return None
     try:
-        data = vfs.read_json(state_file, default=None)
+        data = vfs.read_json(state_file)
         if isinstance(data, dict):
             return ServerDaemonState(**data)
-    except Exception:
+    except (OSError, ValueError, TypeError, KeyError):
         pass
     return None
 
@@ -559,6 +559,21 @@ class MasterSupervisor:
             os.path.join(self.yscb_root, ".modules", "core"),
             os.path.join(self.yscb_root, ".modules", "server"),
         ]
+        host_cand = os.path.dirname(self.yscb_root)
+        if os.path.isfile(os.path.join(host_cand, "yscb.config.json")):
+            norm_host = host_cand.replace("\\", "/")
+            if "/source/" not in norm_host and not norm_host.endswith("/source"):
+                py_paths.append(host_cand)
+        try:
+            from core import uri
+            proj_dir = uri.resolve("project://", interactive=False)
+            if proj_dir and os.path.isdir(proj_dir):
+                norm_proj = os.path.abspath(proj_dir).replace("\\", "/")
+                if "/source/" not in norm_proj and not norm_proj.endswith("/source"):
+                    if proj_dir not in py_paths:
+                        py_paths.append(proj_dir)
+        except Exception:
+            pass
         if os.path.isdir(site_pkg):
             py_paths.insert(0, site_pkg)
         curr_pp = env.get("PYTHONPATH", "")

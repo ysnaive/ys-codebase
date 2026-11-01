@@ -1,5 +1,11 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_01_1045_github_issue_8_investigation (Completed)
+
+- **GitHub Issue #8 四大跨模組缺陷與架構完善修復 (`server` / `knowledge-db` / `agents-workflow`, `FR-01` ~ `FR-04`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **`server` 狀態讀取修復、`stop` 防孤兒鎖保護與跨模式專案路徑掛載 (`FR-01`, `FR-02`, `EC-01`, `NFR-01`)**：修正 `server/master.py:read_daemon_state(yscb_root)` 移除傳入 `vfs.read_json(state_file)` 的無效 `default=None` 參數，根治 `server status` 與 `server stop` 永遠回報 `Stopped` 之回歸缺陷；於 `server/scripts/cli.py:stop()` 刪除失效 `daemon.json` 前增設非阻塞 `InterProcessLock(lock_file)` 探針防止誤刪活體 Daemon 狀態檔；並於 `_spawn_worker_locked` 與 `WarmWorker.pre_warm` 將 `project://` 與 `yscb.host://` 納入安全搜尋路徑（嚴格過濾 `/source` 路徑）。
+  - **`knowledge-db` 自訂解析器多格式載入、實例級副檔名擴充、載入異常可觀測性與 `agents-workflow` 動態 Target 路徑提示 (`FR-02` ~ `FR-04`, `EC-02` ~ `EC-04`)**：於 `ParserRegistry` 支援 `pkg.mod:Class`、相對檔案路徑與語意 URI (`project://` / `module://`) 載入自訂解析器，並透過 `_bind_configured_extensions` 將 `LanguageConfig.extensions` 動態合併至解析器實例之 `SUPPORTED_EXTENSIONS` 副本（不污染類別共享屬性）；新增 `ParserRegistry.load_errors` 並於 `engine.status()`、`cli.py` (`status`/`index`) 暴露 `[WARN]` 警告且支援 `get_engine()` 熱修復自癒重試；於 `agents_workflow/plans/_common.py` 新增 `resolve_active_target_projected_path` 使 `plan verify` 與 `plan status` 提示路徑動態對齊當前啟用之 `release_targets`，`server` (40/40)、`knowledge-db` (158/158) 與 `agents-workflow` (138/138) 測試 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_11_01_1309_subagent_and_blind_subagent_standards (Completed)
 
 - **雙層子代理標準 (`SubagentStandards.md` / `BlindSubagentStandards.md`)、`/blind-subagent` 技能、全倉技能去重與 `P00` / `Pre-Code` 雙階防放水護欄 (`[P00:DR-01]` ~ `[P00:DR-04]`, `REV-01`, `REV-02`)**：
