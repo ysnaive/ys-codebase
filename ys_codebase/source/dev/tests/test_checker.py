@@ -742,5 +742,39 @@ class TestDevChecker(YSCBTestCase):
             if os.path.exists(mod_dir):
                 shutil.rmtree(mod_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
+    def test_checker_package_dunder_version_mismatch_detected(self):
+        """FR-04, EC-04: dev check detects mismatch between package __init__.py __version__ and manifest.json version."""
+        src_root = uri.resolve("module.source://")
+        mod_dir = os.path.join(src_root, "mock_ver_mismatch_mod")
+        pkg_dir = os.path.join(mod_dir, "mock_ver_mismatch_mod")
+        try:
+            os.makedirs(pkg_dir, exist_ok=True)
+            os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
+            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_ver_mismatch_mod", "version": "1.2.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.0.0"}}')
+            with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def run(cmd_bags):\n    return 0\n')
+            with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
+                f.write('# Test Manifest\n')
+            with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
+                f.write('{"commands": {"cmd": {"run": {"description": "run"}}}}')
+            with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
+                f.write('__version__ = "1.3.0.0"\n')
+
+            rep_fail = self.checker.check_module("mock_ver_mismatch_mod")
+            self.assertFalse(rep_fail.passed)
+            self.assertIn("Package __version__ mismatch", "\n".join(rep_fail.errors))
+
+            with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
+                f.write('__version__ = "1.2.0.0"\n')
+            rep_ok = self.checker.check_module("mock_ver_mismatch_mod")
+            self.assertTrue(rep_ok.passed, f"Expected pass, got: {rep_ok.errors}")
+            self.mark_passed()
+        finally:
+            if os.path.exists(mod_dir):
+                shutil.rmtree(mod_dir, ignore_errors=True)
+
 
 

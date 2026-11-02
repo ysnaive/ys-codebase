@@ -276,7 +276,7 @@ class TestKnowledgeDBProviders(YSCBTestCase):
             ),
         }
 
-        with patch("knowledge_db.providers.FileSpaceManager") as mock_sm_cls:
+        with patch("file_space.providers.FileSpaceManager") as mock_sm_cls:
             mock_sm_inst = mock_sm_cls.return_value
             mock_sm_inst.load_spaces.return_value = mock_spaces
 
@@ -292,12 +292,42 @@ class TestKnowledgeDBProviders(YSCBTestCase):
     def test_ft_02_get_knowledge_db_spaces_empty_fallback(self):
         """驗證無任何空間時之安全降級輸出"""
         from unittest.mock import patch
-        with patch("knowledge_db.providers.FileSpaceManager") as mock_sm_cls:
+        with patch("file_space.providers.FileSpaceManager") as mock_sm_cls:
             mock_sm_inst = mock_sm_cls.return_value
             mock_sm_inst.load_spaces.return_value = {}
 
             output = get_knowledge_db_spaces()
             self.assertIn("*(目前無已註冊空間)*", output)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_et_03_providers_and_lazy_init_without_networkx_or_fastembed(self):
+        """ISS-01, ISS-02: Verify knowledge_db.providers works with networkx/fastembed blocked and __version__ matches manifest."""
+        import importlib
+        from unittest.mock import patch
+        import knowledge_db
+
+        mf_path = Path(_pkg_root) / "manifest.json"
+        mf_data = json.loads(mf_path.read_text(encoding="utf-8"))
+        self.assertEqual(knowledge_db.__version__, mf_data["version"])
+
+        mock_spaces = {
+            "source": FileSpaceConfig(
+                name="source",
+                description="No-networkx test space",
+                include=["project://src"],
+                origin="project",
+            )
+        }
+        with patch.dict(sys.modules, {"networkx": None, "fastembed": None}):
+            import knowledge_db.providers as kdb_prov
+            importlib.reload(kdb_prov)
+            with patch("file_space.providers.FileSpaceManager") as mock_sm_cls:
+                mock_sm_cls.return_value.load_spaces.return_value = mock_spaces
+                table = kdb_prov.get_knowledge_db_spaces()
+                self.assertIn("**`source`**", table)
+                self.assertIn("No-networkx test space", table)
 
         self.mark_passed()
 

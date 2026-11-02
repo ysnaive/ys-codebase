@@ -1,12 +1,36 @@
 """
 knowledge-db 模組之 Computed Token Providers
-提供動態解算 KNOWLEDGE_DB_SPACE 空間表格等宣告式資產注入能力。
+提供動態解算 KNOWLEDGE_DB_SPACE 空間表格等宣告式資產注入能力（委派至 file_space.providers）。
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
-from typing import Any, List, Optional
-import knowledge_db  # noqa: F401
-from file_space import FileSpaceManager
+from pathlib import Path
+import sys
+from typing import Any, Optional
+
+
+def _ensure_file_space_path() -> None:
+    """純標準庫掛載 module:file-space 路徑，避免連帶載入 ast_engine / networkx / fastembed。"""
+    try:
+        from core import uri
+
+        mod_dir = uri.resolve("module://file-space", interactive=False)
+        if mod_dir:
+            m_path = Path(mod_dir).resolve()
+            if (m_path / "file_space" / "__init__.py").is_file() and str(m_path) not in sys.path:
+                sys.path.insert(0, str(m_path))
+    except Exception:
+        pass
+    pkg_parent = Path(__file__).resolve().parent.parent.parent
+    for cand in (pkg_parent / "file-space", pkg_parent.parent / ".modules" / "file-space"):
+        if (cand / "file_space" / "__init__.py").is_file():
+            cand_str = str(cand.resolve())
+            if cand_str not in sys.path:
+                sys.path.insert(0, cand_str)
+
+
+_ensure_file_space_path()
+from file_space.providers import get_knowledge_db_spaces as _render_knowledge_db_spaces
 
 
 def get_knowledge_db_spaces(context: Optional[Any] = None, **kwargs: Any) -> str:
@@ -16,35 +40,4 @@ def get_knowledge_db_spaces(context: Optional[Any] = None, **kwargs: Any) -> str
     :param context: 可選之編譯期上下文（由 agents-workflow compiler 提供）
     :return: 格式化完成之 Markdown 空間表格
     """
-    try:
-        mgr = FileSpaceManager(core_context=context)
-        spaces = mgr.load_spaces()
-    except Exception:
-        spaces = {}
-
-    if not spaces:
-        return (
-            "| 空間名稱 (`--space=<name>`) | 來源定義 | 涵蓋路徑與包含範圍 | 語意說明 |\n"
-            "| :--- | :--- | :--- | :--- |\n"
-            "| - | - | *(目前無已註冊空間)* | - |"
-        )
-
-    lines = [
-        "| 空間名稱 (`--space=<name>`) | 來源定義 | 涵蓋路徑與包含範圍 | 語意說明 |",
-        "| :--- | :--- | :--- | :--- |",
-    ]
-
-    for sp_name, sp in sorted(spaces.items()):
-        name_badge = f"**`{sp_name}`**"
-        origin_label = f"`{getattr(sp, 'origin_display', sp.origin)}`"
-
-        inc_parts: List[str] = [f"`{inc}`" for inc in sp.include]
-        if sp.file_patterns:
-            pat_desc = f"*(過濾: `{', '.join(sp.file_patterns)}`)*"
-            inc_parts.append(pat_desc)
-
-        scope_desc = "<br/>".join(inc_parts) if inc_parts else "*(全目錄)*"
-        desc = sp.description or "*(無描述)*"
-        lines.append(f"| {name_badge} | {origin_label} | {scope_desc} | {desc} |")
-
-    return "\n".join(lines)
+    return _render_knowledge_db_spaces(context=context, **kwargs)

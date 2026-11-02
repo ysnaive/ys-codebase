@@ -776,17 +776,18 @@ class AtomicEngine:
 
         return None
 
-    def _get_installed_core_version_for_compat(self) -> Optional[str]:
+    def _get_installed_core_version_for_compat(self, candidate_core_version: Optional[str] = None) -> Optional[str]:
         """Returns the normalized installed core version (stripping .build suffix for compatibility matching)."""
-        raw_ver: Optional[str] = None
-        try:
-            _, cfg = self._get_config()
-            inst = cfg.get("installed_modules", {})
-            if isinstance(inst, dict) and "core" in inst:
-                c_meta = inst["core"]
-                raw_ver = c_meta.get("version") if isinstance(c_meta, dict) else str(c_meta)
-        except Exception:
-            pass
+        raw_ver: Optional[str] = candidate_core_version
+        if not raw_ver:
+            try:
+                _, cfg = self._get_config()
+                inst = cfg.get("installed_modules", {})
+                if isinstance(inst, dict) and "core" in inst:
+                    c_meta = inst["core"]
+                    raw_ver = c_meta.get("version") if isinstance(c_meta, dict) else str(c_meta)
+            except Exception:
+                pass
         if not raw_ver and vfs.is_file("module://core/manifest.json"):
             try:
                 mf = vfs.read_json("module://core/manifest.json")
@@ -801,16 +802,72 @@ class AtomicEngine:
             s = s[:-len(".build")]
         return s
 
-    def _is_dependencies_compatible_with_env(self, deps: Any) -> bool:
+    def _is_dependencies_compatible_with_env(self, deps: Any, candidate_core_version: Optional[str] = None) -> bool:
         """Checks whether a candidate version's dependencies are compatible with the currently installed core version."""
         parsed = _parse_dependencies(deps)
         core_req = parsed.get("core")
         if not core_req:
             return True
-        installed_core = self._get_installed_core_version_for_compat()
+        installed_core = self._get_installed_core_version_for_compat(candidate_core_version=candidate_core_version)
         if not installed_core:
             return True
         return semver.match_constraint(installed_core, core_req)
+
+    def _read_installed_module_dependencies(self, mod: str, ver: str, provider_url: str = "") -> Dict[str, str]:
+        """
+        Reads the effective `dependencies` dict of a module version from local mirror/module manifest
+        with `index.json["releases"][<ver>]["dependencies"]` override priority (zero network when local exists).
+        """
+        override_deps: Optional[Dict[str, Any]] = None
+        for idx_uri in (f"module.release://{mod}/index.json", f"module.mirror://{mod}/index.json"):
+            if vfs.is_file(idx_uri):
+                try:
+                    loaded = vfs.read_json(idx_uri)
+                    rel_entry = loaded.get("releases", {}).get(ver) if isinstance(loaded, dict) and isinstance(loaded.get("releases"), dict) else None
+                    if isinstance(rel_entry, dict) and isinstance(rel_entry.get("dependencies"), dict):
+                        override_deps = rel_entry["dependencies"]
+                        break
+                except Exception:
+                    pass
+        if override_deps is not None:
+            return _parse_dependencies(override_deps)
+
+        if vfs.is_file(f"module://{mod}/manifest.json"):
+            try:
+                mf = vfs.read_json(f"module://{mod}/manifest.json")
+                if isinstance(mf, dict) and (str(mf.get("version", "")).strip() == str(ver).strip() or _is_build_version_request(ver)):
+                    return _parse_dependencies(mf.get("dependencies", {}))
+            except Exception:
+                pass
+
+        mirror_zip = f"module.mirror://{mod}/{ver}.zip"
+        if vfs.is_file(mirror_zip):
+            try:
+                real_zip = uri.resolve(mirror_zip)
+                with zipfile.ZipFile(real_zip, "r") as zf:
+                    mf = json.loads(zf.read("manifest.json").decode("utf-8"))
+                    if isinstance(mf, dict):
+                        return _parse_dependencies(mf.get("dependencies", {}))
+            except Exception:
+                pass
+
+        mirror_mf = f"module.mirror://{mod}/{ver}/manifest.json"
+        if vfs.is_file(mirror_mf):
+            try:
+                mf = vfs.read_json(mirror_mf)
+                if isinstance(mf, dict):
+                    return _parse_dependencies(mf.get("dependencies", {}))
+            except Exception:
+                pass
+
+        if provider_url:
+            try:
+                mf = self._get_module_manifest_from_provider_or_local(mod, provider_url, f"=={ver}")
+                if isinstance(mf, dict):
+                    return _parse_dependencies(mf.get("dependencies", {}))
+            except Exception:
+                pass
+        return {}
 
     def _cache_release_index_to_mirror(self, module_name: str, index_data: Dict[str, Any]) -> None:
         """Persists a copy of the module's release index.json into module.mirror://<module_name>/index.json for offline reload/rollback."""
@@ -1242,6 +1299,10 @@ class AtomicEngine:
 
         ordered_list: List[Tuple[str, str]] = []
         resolved_versions: Dict[str, str] = {}
+        constraint_sources: Dict[str, List[Tuple[str, str]]] = {}
+        for mod_n, mod_v in root_requests:
+            if mod_v:
+                constraint_sources.setdefault(mod_n, []).append(("explicit request", mod_v))
         visited: Set[str] = set()
         visiting: Set[str] = set()
 
@@ -1256,6 +1317,12 @@ class AtomicEngine:
                 return c2
             return f"{c1},{c2}"
 
+        def _format_conflict_sources(mod_name: str) -> str:
+            srcs = constraint_sources.get(mod_name, [])
+            if not srcs:
+                return ""
+            return " | ".join(f"'{c}' (by {req})" for req, c in srcs)
+
         def _check_resolved_compatibility(mod_name: str, resolved_ver: str, req_constraint: Optional[str]) -> None:
             if not req_constraint:
                 return
@@ -1264,12 +1331,16 @@ class AtomicEngine:
                 if semver.match_constraint(base_ver, req_constraint):
                     return
             if not semver.match_constraint(resolved_ver, req_constraint):
+                detail = _format_conflict_sources(mod_name)
+                suffix = f" [constraints: {detail}]" if detail else ""
                 raise RuntimeError(
                     f"Cannot resolve dependency for '{mod_name}': "
-                    f"resolved version '{resolved_ver}' does not satisfy constraint '{req_constraint}'."
+                    f"resolved version '{resolved_ver}' does not satisfy constraint '{req_constraint}'.{suffix}"
                 )
 
-        def _solve(mod_name: str, ver_req: Optional[str]) -> None:
+        def _solve(mod_name: str, ver_req: Optional[str], requester: str = "root") -> None:
+            if ver_req:
+                constraint_sources.setdefault(mod_name, []).append((requester, ver_req))
             if mod_name in visiting:
                 raise ValueError(f"Circular dependency detected: '{mod_name}' in call chain.")
             if mod_name in visited:
@@ -1277,25 +1348,39 @@ class AtomicEngine:
                 return
 
             visiting.add(mod_name)
-            effective_req = _combine_constraints(explicit_constraints.get(mod_name), ver_req)
-            manifest = self._get_module_manifest_from_provider_or_local(mod_name, provider_url, effective_req)
+            joint_req: Optional[str] = explicit_constraints.get(mod_name)
+            for _, c_str in constraint_sources.get(mod_name, []):
+                joint_req = _combine_constraints(joint_req, c_str)
+            effective_req = _combine_constraints(joint_req, ver_req)
+            try:
+                manifest = self._get_module_manifest_from_provider_or_local(mod_name, provider_url, effective_req)
+            except ModuleNotFoundError as exc:
+                if len(constraint_sources.get(mod_name, [])) > 1:
+                    detail = _format_conflict_sources(mod_name)
+                    raise RuntimeError(
+                        f"Dependency conflict for '{mod_name}': no overlapping version satisfies [{detail}]."
+                    ) from exc
+                raise
             resolved_ver = manifest.get("version", "1.0.0.0")
 
-            _check_resolved_compatibility(mod_name, resolved_ver, ver_req)
+            _check_resolved_compatibility(mod_name, resolved_ver, effective_req)
             if mod_name in explicit_constraints:
                 _check_resolved_compatibility(mod_name, resolved_ver, explicit_constraints[mod_name])
 
             parsed_deps = _parse_dependencies(manifest.get("dependencies", {}))
             for dep_name, dep_ver in parsed_deps.items():
                 if dep_name == "core":
-                    installed_core = self._get_installed_core_version_for_compat()
+                    candidate_core = resolved_versions.get("core") or explicit_constraints.get("core")
+                    if candidate_core and candidate_core.startswith("=="):
+                        candidate_core = candidate_core[2:].strip()
+                    installed_core = self._get_installed_core_version_for_compat(candidate_core_version=candidate_core)
                     if installed_core and not semver.match_constraint(installed_core, dep_ver):
                         raise RuntimeError(
                             f"Cannot resolve dependency for '{mod_name}': "
                             f"required core version '{dep_ver}' is not satisfied by installed core@{installed_core}."
                         )
                 else:
-                    _solve(dep_name, dep_ver)
+                    _solve(dep_name, dep_ver, requester=f"{mod_name}@{resolved_ver}")
 
             visiting.remove(mod_name)
             visited.add(mod_name)
@@ -1303,8 +1388,152 @@ class AtomicEngine:
             ordered_list.append((mod_name, resolved_ver))
 
         for root_mod, root_ver in root_requests:
-            _solve(root_mod, root_ver)
+            _solve(root_mod, root_ver, requester="root")
         return ordered_list
+
+    def reconcile_installed_dependencies(
+        self,
+        provider_url: Optional[str] = None,
+        candidate_overrides: Optional[Dict[str, str]] = None,
+        strict: bool = True,
+    ) -> List[Tuple[str, Optional[str], str]]:
+        """
+        Standard dependency self-check and intersection self-healing engine:
+        - Fast local O(1) pass when all declared dependencies are already installed and satisfy joint constraints.
+        - Missing dependency module (not installed): resolves constraint intersection and auto-downloads/registers it.
+        - Installed dependency module failing new constraints: resolves intersection across all upstream requesters
+          and auto-upgrades if an overlapping version exists; raises RuntimeError on disjoint version conflict.
+        Returns a list of `(mod_name, old_version_or_None, new_version)` for any newly installed or upgraded modules.
+        """
+        _, cfg = self._get_config()
+        installed = cfg.get("installed_modules", {})
+        if not isinstance(installed, dict) or not installed:
+            return []
+
+        default_prov = normalize_legacy_provider_url(
+            provider_url
+            or cfg.get("default_provider")
+            or (installed.get("core", {}).get("provider") if isinstance(installed.get("core"), dict) else "")
+            or ""
+        )
+
+        effective_versions: Dict[str, str] = {}
+        mod_providers: Dict[str, str] = {}
+        for mod, meta in installed.items():
+            ver = meta.get("version", "1.0.0.0") if isinstance(meta, dict) else str(meta)
+            prov = (meta.get("provider") if isinstance(meta, dict) else None) or default_prov
+            effective_versions[mod] = str(ver)
+            mod_providers[mod] = normalize_legacy_provider_url(prov) if prov else default_prov
+
+        if candidate_overrides:
+            for mod, new_ver in candidate_overrides.items():
+                effective_versions[mod] = str(new_ver)
+                if mod not in mod_providers:
+                    mod_providers[mod] = default_prov
+
+        healed_changes: List[Tuple[str, Optional[str], str]] = []
+        max_rounds = 8
+        for _ in range(max_rounds):
+            req_map: Dict[str, List[Tuple[str, str]]] = {}
+            for mod, ver in list(effective_versions.items()):
+                prov = mod_providers.get(mod, default_prov)
+                deps = self._read_installed_module_dependencies(mod, ver, provider_url=prov)
+                for dep_name, dep_constraint in deps.items():
+                    req_map.setdefault(dep_name, []).append((f"{mod}@{ver}", dep_constraint))
+
+            if not req_map:
+                break
+
+            # Verify core compatibility first
+            if "core" in req_map:
+                cur_core = self._get_installed_core_version_for_compat(
+                    candidate_core_version=effective_versions.get("core")
+                )
+                if cur_core:
+                    for requester_label, core_c in req_map["core"]:
+                        if not semver.match_constraint(cur_core, core_c):
+                            raise RuntimeError(
+                                f"Cannot resolve dependency on 'core': required '{core_c}' by '{requester_label}', "
+                                f"but core@{cur_core} is active."
+                            )
+
+            round_changed = False
+            for dep_mod, req_list in req_map.items():
+                if dep_mod == "core":
+                    continue
+                joint_clauses: List[str] = []
+                for _, c_str in req_list:
+                    if c_str and c_str not in joint_clauses:
+                        joint_clauses.append(c_str)
+                joint_constraint = ",".join(joint_clauses) if joint_clauses else "*"
+                detail_str = " | ".join(f"'{c}' (by {r})" for r, c in req_list)
+
+                cur_dep_ver = effective_versions.get(dep_mod)
+                if cur_dep_ver is not None:
+                    check_v = cur_dep_ver[:-len(".build")] if cur_dep_ver.endswith(".build") else cur_dep_ver
+                    if _is_build_version_request(cur_dep_ver) and check_v == "build":
+                        continue
+                    if semver.match_constraint(check_v, joint_constraint):
+                        continue
+
+                # Needs self-heal: either dep_mod is missing or its current version violates joint_constraint
+                prov_to_use = mod_providers.get(dep_mod, default_prov)
+                if not prov_to_use:
+                    raise RuntimeError(
+                        f"Cannot self-heal dependency '{dep_mod}' ({detail_str}): no provider configured."
+                    )
+
+                resolved_mf: Optional[Dict[str, Any]] = None
+                if cur_dep_ver is not None and not _is_build_version_request(cur_dep_ver):
+                    try:
+                        cur_t = semver.parse_semver(cur_dep_ver)
+                        major_lock = f"^{cur_t.major}.0.0"
+                        locked_joint = f"{joint_constraint},{major_lock}" if joint_constraint != "*" else major_lock
+                        resolved_mf = self._get_module_manifest_from_provider_or_local(dep_mod, prov_to_use, locked_joint)
+                    except Exception:
+                        resolved_mf = None
+
+                if resolved_mf is None:
+                    try:
+                        resolved_mf = self._get_module_manifest_from_provider_or_local(dep_mod, prov_to_use, joint_constraint)
+                    except Exception as exc:
+                        if not strict and len(req_list) == 1 and cur_dep_ver is None:
+                            continue
+                        raise RuntimeError(
+                            f"Dependency conflict for '{dep_mod}': no overlapping version satisfies [{detail_str}]."
+                        ) from exc
+
+                target_dep_ver = str(resolved_mf.get("version", "1.0.0.0"))
+                if not semver.match_constraint(target_dep_ver, joint_constraint):
+                    raise RuntimeError(
+                        f"Dependency conflict for '{dep_mod}': candidate '{target_dep_ver}' does not satisfy "
+                        f"joint constraints [{detail_str}]."
+                    )
+
+                # Verify that target_dep_ver's own core requirement is compatible
+                target_deps = _parse_dependencies(resolved_mf.get("dependencies", {}))
+                if "core" in target_deps:
+                    cur_core = self._get_installed_core_version_for_compat(
+                        candidate_core_version=effective_versions.get("core")
+                    )
+                    if cur_core and not semver.match_constraint(cur_core, target_deps["core"]):
+                        raise RuntimeError(
+                            f"Cannot resolve dependency '{dep_mod}@{target_dep_ver}': "
+                            f"required core version '{target_deps['core']}' is not satisfied by core@{cur_core}."
+                        )
+
+                old_v = installed.get(dep_mod, {}).get("version") if isinstance(installed.get(dep_mod), dict) else None
+                self.act_prepare([(dep_mod, target_dep_ver)], prov_to_use, force=False)
+                self.act_register(dep_mod, target_dep_ver, prov_to_use)
+                effective_versions[dep_mod] = target_dep_ver
+                mod_providers[dep_mod] = prov_to_use
+                healed_changes.append((dep_mod, old_v, target_dep_ver))
+                round_changed = True
+
+            if not round_changed:
+                break
+
+        return healed_changes
 
     def act_prepare(self, target_list: List[Tuple[str, str]], provider_url: str, force: bool = False) -> None:
         for mod, ver in target_list:
@@ -1500,10 +1729,10 @@ class AtomicEngine:
                 if os.path.exists(staging_dir):
                     shutil.rmtree(staging_dir, ignore_errors=True)
 
-    def act_reload(self, clean_stage: bool = True, inject_stage: bool = True) -> None:
+    def act_reload(self, clean_stage: bool = True, inject_stage: bool = True, reconcile_deps: bool = True) -> None:
         """
         4-Stage Atomic Reload Pipeline:
-        Stage 1 (自癒拉取) -> Stage 2 (解壓物化) -> Stage 3 (組態治理) -> Stage 4 (依賴注入與事件廣播)
+        Stage 1 (自癒拉取) -> Stage 1.5 (相依交集自檢與自動自癒) -> Stage 2 (解壓物化) -> Stage 3 (組態治理) -> Stage 4 (依賴注入與事件廣播)
         """
         _, cfg = self._get_config()
         installed = cfg.get("installed_modules", {})
@@ -1534,6 +1763,23 @@ class AtomicEngine:
                                 installed[mod] = {"version": fallback_ver, "provider": prov}
                         except Exception:
                             pass
+
+        # Stage 1.5: 相依交集自檢與自動自癒 (若 installed_modules 漏列底層相依模組或相依版號過舊且存在相容交集，自動補齊並重新讀取 installed)
+        if reconcile_deps and default_prov:
+            try:
+                healed = self.reconcile_installed_dependencies(provider_url=default_prov, strict=False)
+                if healed:
+                    _, cfg = self._get_config()
+                    installed = cfg.get("installed_modules", {})
+                    for h_mod, h_old, h_new in healed:
+                        if h_old is None:
+                            print(f"[core:reload] Auto-healed missing dependency '{h_mod}@{h_new}'.")
+                        else:
+                            print(f"[core:reload] Auto-healed dependency '{h_mod}' ({h_old} -> {h_new}).")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
 
         # Stage 2 & 3: 於 .modules/.staging_<mod>_<pid>_<ts> 預組裝解壓與組態剝離，再執行目錄級原子替換
         modules_root_real = uri.resolve("module://")

@@ -30,7 +30,10 @@ from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 
 from file_space.manager import FileSpaceManager
-from file_space.providers import get_registered_file_spaces_table
+from file_space.providers import (
+    get_knowledge_db_spaces,
+    get_registered_file_spaces_table,
+)
 from file_space.scanner import FingerprintScanner
 from file_space.schema import ScanDiffResult
 from file_space.service import (
@@ -222,4 +225,6 @@ class TestServiceAndCli(YSCBTestCase):
 
         table_md = get_registered_file_spaces_table()
         self.assertIn("| 空間名稱 |", table_md)
+        kdb_md = get_knowledge_db_spaces()
+        self.assertIn("| 空間名稱 (`--space=<name>`) |", kdb_md)
         self.mark_passed()

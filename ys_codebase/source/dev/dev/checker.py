@@ -484,6 +484,8 @@ class Checker:
                             )
 
             self._check_pip_dependencies(name, m_data, report)
+            if isinstance(m_ver, str) and m_ver.strip():
+                self._check_package_dunder_version(name, real_dir, m_ver.strip(), report)
         except Exception as e:
             report.issues.append(
                 CheckIssue(
@@ -493,6 +495,49 @@ class Checker:
                     file_path="manifest.json",
                 )
             )
+
+    def _check_package_dunder_version(self, name: str, real_dir: str, manifest_ver: str, report: CheckReport) -> None:
+        """Verify that top-level package `__init__.py` `__version__` string literal (if present) matches `manifest.json` version."""
+        try:
+            entries = os.listdir(real_dir)
+        except OSError:
+            return
+        for entry in sorted(entries):
+            if entry in ("tests", "scripts", "contributes", "configurable", "assets", "skills") or entry.startswith("."):
+                continue
+            init_path = os.path.join(real_dir, entry, "__init__.py")
+            if not os.path.isfile(init_path):
+                continue
+            rel_init = f"{entry}/__init__.py"
+            try:
+                with open(init_path, "r", encoding="utf-8", errors="replace") as f:
+                    tree = ast.parse(f.read(), filename=init_path)
+            except Exception:
+                continue
+            for node in tree.body:
+                target_names: List[str] = []
+                val_node: Optional[ast.AST] = None
+                if isinstance(node, ast.Assign):
+                    target_names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                    val_node = node.value
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    target_names = [node.target.id]
+                    val_node = node.value
+                if "__version__" in target_names and isinstance(val_node, ast.Constant) and isinstance(val_node.value, str):
+                    dunder_ver = val_node.value.strip()
+                    if dunder_ver != manifest_ver:
+                        report.issues.append(
+                            CheckIssue(
+                                severity=CheckSeverity.FAIL,
+                                category="MANIFEST",
+                                message=(
+                                    f"Package __version__ mismatch in '{rel_init}': "
+                                    f"__version__ is '{dunder_ver}', but manifest.json version is '{manifest_ver}'."
+                                ),
+                                file_path=rel_init,
+                                line_number=getattr(node, "lineno", None),
+                            )
+                        )
 
     def _check_pip_dependencies(self, name: str, m_data: Dict[str, Any], report: CheckReport) -> None:
         if "pip_dependencies" not in m_data:

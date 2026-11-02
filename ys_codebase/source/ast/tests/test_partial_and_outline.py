@@ -267,3 +267,19 @@ class TestPartialAndOutline(YSCBTestCase):
         self.assertIn("error", res)
         self.assertIn("File not found", res["error"])
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_04_ast_engine_pep562_lazy_exports_and_version(self):
+        """FR-03, NFR-02: Verify ast_engine PEP 562 lazy attribute loading and __version__ consistency."""
+        import json
+        import ast_engine
+
+        mf_path = Path(__file__).resolve().parent.parent / "manifest.json"
+        mf_data = json.loads(mf_path.read_text(encoding="utf-8"))
+        self.assertEqual(ast_engine.__version__, mf_data["version"])
+        for sym_name in ("ASTEngine", "ASTSnapshot", "CallGraphIndex", "SemanticBundler"):
+            self.assertIn(sym_name, dir(ast_engine))
+            self.assertIsNotNone(getattr(ast_engine, sym_name))
+        with self.assertRaises(AttributeError):
+            _ = ast_engine.NON_EXISTENT_SYMBOL_XYZ
+        self.mark_passed()

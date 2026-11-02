@@ -230,5 +230,21 @@ last_updated: "2026-10-15"
   > [!CAUTION]
   > **嚴禁在 `_find_manifest_in_local_provider` 讀取 `.zip/manifest.json` 後直接提早返回而略過 `index.json["releases"][<ver>]["dependencies"]` 覆寫！嚴禁在 `UpdateChecker` 僅檢查 `latest_ver` 單點而忽略 `(current_ver, latest_ver]` 區間內已 `pruned` 之中間 `critical` 版本！嚴禁在 `_atomic_swap_dir` 中移除實機寫入探針而無條件吞掉所有 `PermissionError`/`OSError`！**
 
+---
+
+### [DN-16] 標準重載與更新管線之相依交集自檢與自動自癒機制 (`reconcile_installed_dependencies`)
+
+- **核心決策**：
+  1. **`cmd_update` `core` 先行判定與相依拓撲展開**：執行 `yscb.py update` 時，優先將 `"core"` 排在待檢查清單首位評估候選版號 `candidate_core_ver`（供同批次後續模組在 `_discover_available_versions_for_module` 時以升級後之 `core` 版號判定相容性）；各目標模組完成新版本準備與註冊後，呼叫 `AtomicEngine.reconcile_installed_dependencies()` 自動檢查新版本宣告之所有 `dependencies`。
+  2. **三態相依交集自癒與衝突剛性阻斷 (`reconcile_installed_dependencies`)**：嵌入 `cmd_update` 與 `act_reload` Stage 1.5（於 Stage 2 解壓物化及 Stage 4 `on_reload` 廣播前執行）：
+     - **本地 O(1) 短路放行**：優先自本地 `.modules/<mod>/manifest.json` 或 `.mirror/<mod>/` 讀取 `dependencies`（含 `index.json["releases"]` 覆寫），若所有相依模組皆已安裝且當前版號已滿足所有上游約束交集，零網路查詢直接放行。
+     - **缺失相依自動補裝 ($D \notin \text{installed\_modules}$)**：若新版引入尚未安裝之底層相依模組（如 `knowledge-db` 1.1 $\to$ 1.2 引入 `file-space` 與 `ast`），自動合成所有上游對 $D$ 之約束交集，下載並註冊最佳相容版本。
+     - **已安裝相依交集自癒升級 vs. 無交集衝突阻斷 ($D \in \text{installed\_modules}$)**：若已安裝相依模組版號過舊不滿足新增約束，自動求取所有上游對 $D$ 的約束交集並升級至相容版號；若兩個模組對同一相依模組宣告之約束**不存在版號交集（$C_A \cap C_B = \emptyset$）**，立即拋出包含雙方模組名與約束明細之 `RuntimeError` 阻斷升級並由 `act_restore_snapshot` 全量回滾。
+- **背後考量**：防止下游專案執行 `yscb update`、手動修改 `yscb.config.json` 後執行 `restore`/`reload`、或跨分支切換時，因新版本模組引入新底層依賴或提高依賴版號門檻而產生執行期斷鏈；同時確保 `on_reload` Hook（如 `agents-workflow` 自動編譯）觸發時，所有底層相依模組 100% 已物化就緒。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `cmd_update` 中僅單獨替換目標模組而不呼叫 `reconcile_installed_dependencies` 驗證更新後之相依圖譜！當兩模組對同一相依模組之版本約束無交集時，必須剛性拋出例外觸發 Snapshot 回滾，嚴禁靜默吞掉衝突強行安裝不相容版本！**
+
+
 
 

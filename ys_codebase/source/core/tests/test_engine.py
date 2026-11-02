@@ -446,6 +446,108 @@ def on_test_event(context):
             self.assertEqual(f.read(), "v2")
         self.mark_passed()
 
+    @require(Requirement.WORKFLOW)
+    def test_update_and_reconcile_dependencies_self_heal_and_conflict_rollback(self):
+        """FR-01, FR-02, EC-01: Verify cmd_update & reconcile_installed_dependencies auto-install new deps, auto-upgrade intersection deps, and rollback on disjoint conflict."""
+        import copy
+        import json
+        import shutil
+        import zipfile
+        from core.installer import Installer
+
+        cfg_path, orig_cfg = self.engine._get_config()
+        orig_cfg_backup = copy.deepcopy(orig_cfg)
+        provider_dir = os.path.join(self.sandbox_dir, "update_deps_provider")
+        os.makedirs(provider_dir, exist_ok=True)
+        test_mods = ("dep_base", "dep_new", "app_mod", "peer_mod")
+
+        def _make_mod_zip(mod_name: str, ver: str, deps: dict) -> None:
+            mod_p = os.path.join(provider_dir, mod_name)
+            os.makedirs(mod_p, exist_ok=True)
+            zip_p = os.path.join(mod_p, f"{ver}.zip")
+            mf = {
+                "name": mod_name,
+                "version": ver,
+                "entry": "scripts/cli.py",
+                "dependencies": deps,
+            }
+            with zipfile.ZipFile(zip_p, "w") as zf:
+                zf.writestr("manifest.json", json.dumps(mf, indent=2))
+                zf.writestr("scripts/cli.py", "def noop(cmd_bags):\n    return 0\n")
+            idx_p = os.path.join(mod_p, "index.json")
+            idx_data = vfs.read_json(idx_p) if os.path.isfile(idx_p) else {"versions": [], "releases": {}}
+            if ver not in idx_data["versions"]:
+                idx_data["versions"].append(ver)
+            idx_data["releases"][ver] = {"status": "active", "dependencies": deps}
+            vfs.write_json(idx_p, idx_data, indent=2)
+
+        try:
+            # Prepare packages:
+            # dep_base: 1.0.0.0 and 1.2.0.0
+            # dep_new: 1.0.0.0 (uninstalled initially, added by app_mod 1.1.0.0)
+            # app_mod: 1.0.0.0 (requires dep_base >=1.0.0) -> 1.1.0.0 (requires dep_base >=1.2.0 and dep_new >=1.0.0)
+            _make_mod_zip("dep_base", "1.0.0.0", {"core": ">=1.0.0"})
+            _make_mod_zip("dep_base", "1.2.0.0", {"core": ">=1.0.0"})
+            _make_mod_zip("dep_new", "1.0.0.0", {"core": ">=1.0.0"})
+            _make_mod_zip("app_mod", "1.0.0.0", {"core": ">=1.0.0", "dep_base": ">=1.0.0"})
+
+            installer = Installer()
+            rc_init = installer.cmd_install("app_mod", version="1.0.0.0", provider=provider_dir)
+            self.assertEqual(rc_init, 0)
+            _, cfg_before = self.engine._get_config()
+            inst_before = cfg_before.get("installed_modules", {})
+            self.assertEqual(inst_before.get("app_mod", {}).get("version"), "1.0.0.0")
+            self.assertEqual(inst_before.get("dep_base", {}).get("version"), "1.2.0.0")
+            # Force downgrade dep_base to 1.0.0.0 to test auto-upgrade during app_mod update
+            self.engine.act_prepare([("dep_base", "1.0.0.0")], provider_dir, force=True)
+            self.engine.act_register("dep_base", "1.0.0.0", provider_dir)
+            self.engine.act_reload(clean_stage=True, inject_stage=False)
+
+            # Now publish app_mod 1.1.0.0 which requires dep_base>=1.2.0 and newly introduced dep_new>=1.0.0
+            _make_mod_zip("app_mod", "1.1.0.0", {"core": ">=1.0.0", "dep_base": ">=1.2.0", "dep_new": ">=1.0.0"})
+
+            rc_upd = installer.cmd_update("app_mod", provider=provider_dir)
+            self.assertEqual(rc_upd, 0)
+
+            _, cfg_after = self.engine._get_config()
+            inst_after = cfg_after.get("installed_modules", {})
+            self.assertEqual(inst_after.get("app_mod", {}).get("version"), "1.1.0.0")
+            self.assertEqual(inst_after.get("dep_base", {}).get("version"), "1.2.0.0")
+            self.assertEqual(inst_after.get("dep_new", {}).get("version"), "1.0.0.0")
+            self.assertTrue(vfs.is_file("module://dep_new/manifest.json"))
+
+            # Verify FR-02: act_reload Stage 1.5 self-heals when dep_new is unregistered from installed_modules
+            self.engine.act_unregister("dep_new")
+            self.engine.act_reload(clean_stage=True, inject_stage=False)
+            _, cfg_reloaded = self.engine._get_config()
+            self.assertEqual(cfg_reloaded.get("installed_modules", {}).get("dep_new", {}).get("version"), "1.0.0.0")
+
+            # Test EC-01: Disjoint dependency conflict blocks update and rolls back snapshot
+            # Install peer_mod 1.0.0.0 which pins dep_base ==1.2.0.0
+            _make_mod_zip("peer_mod", "1.0.0.0", {"core": ">=1.0.0", "dep_base": "==1.2.0.0"})
+            self.assertEqual(installer.cmd_install("peer_mod", version="1.0.0.0", provider=provider_dir), 0)
+
+            # Publish dep_base 1.3.0.0 and app_mod 1.2.0.0 requiring dep_base >=1.3.0.0 (disjoint with peer_mod's ==1.2.0.0!)
+            _make_mod_zip("dep_base", "1.3.0.0", {"core": ">=1.0.0"})
+            _make_mod_zip("app_mod", "1.2.0.0", {"core": ">=1.0.0", "dep_base": ">=1.3.0.0", "dep_new": ">=1.0.0"})
+
+            rc_conflict = installer.cmd_update("app_mod", provider=provider_dir)
+            self.assertEqual(rc_conflict, 1)
+
+            _, cfg_rolled_back = self.engine._get_config()
+            inst_rb = cfg_rolled_back.get("installed_modules", {})
+            self.assertEqual(inst_rb.get("app_mod", {}).get("version"), "1.1.0.0")
+            self.assertEqual(inst_rb.get("dep_base", {}).get("version"), "1.2.0.0")
+            self.mark_passed()
+        finally:
+            self.engine._save_config(cfg_path, orig_cfg_backup)
+            for m_name in test_mods:
+                self.engine.act_delete(m_name, clean_mirror=True, purge=True)
+                if vfs.exists(f"module://{m_name}"):
+                    vfs.rmtree(f"module://{m_name}", ignore_errors=True)
+            shutil.rmtree(provider_dir, ignore_errors=True)
+            self.engine.act_reload(clean_stage=True, inject_stage=True, reconcile_deps=False)
+
 
 
 

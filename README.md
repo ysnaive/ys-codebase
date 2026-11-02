@@ -10,7 +10,7 @@
 
 ## 1. 系統架構全景 (Architecture Overview)
 
-系統由超薄宿主入口腳本 (`yscb.py`)、微內核 (`core`) 與四大生態系擴充模組組成：
+系統由超薄宿主入口腳本 (`yscb.py`)、微內核 (`core`) 與六大生態系擴充模組組成（含 `file-space` $\to$ `ast` $\to$ `knowledge-db` 三階單向無環圖）：
 
 ```mermaid
 graph TD
@@ -21,31 +21,37 @@ graph TD
     Host["CLI 入口與自舉器<br/><code>python yscb.py</code>"]:::host
 
     subgraph Kernel ["Core 微核心 (module:core)"]
-        URI["First-Class VFS 與語意 URI<br/><i>core.uri / core.vfs 13 項標準正交協議</i>"]:::core
+        URI["First-Class VFS 與語意 URI<br/><i>core.uri / core.vfs 18 項標準正交協議</i>"]:::core
         Config["2x2 組態矩陣與多語系引擎<br/><i>config.project / config.local 與 core.locale 宿主專有名詞</i>"]:::core
-        Installer["套件與環境管理器<br/><i>releases 分支 / 快照回滾 / 私有 .venv 隔離 / 飛行紀錄器</i>"]:::core
+        Installer["套件與環境管理器<br/><i>releases 分支 / 相依交集自癒 / 快照回滾 / 私有 .venv 隔離</i>"]:::core
     end
 
     subgraph Ecosystem ["核心生態系模組 (Ecosystem Modules)"]
         Workflow["Agent 技能與開發規範 (agents-workflow)<br/><i>SOP 0~7 / 6 大計畫分支 / 8 大平台 Target 投影</i>"]:::mod
-        Knowledge["知識庫與語意檢索 (knowledge-db)<br/><i>10 語言 Tree-sitter AST / BM25 + ONNX 向量 RRF / 調用圖譜</i>"]:::mod
+        FileSpace["通用檔案空間與分級指紋底座 (file-space)<br/><i>雙軌空間聚合 / 四模雜湊 / YFP2 二進位快照 / 多消費者游標</i>"]:::mod
+        AST["靜態語法樹與呼叫拓撲引擎 (ast)<br/><i>10 語言方言隔離 / partial 雙層聚合 / outline 大綱 / CallGraph</i>"]:::mod
+        Knowledge["知識庫與語意檢索 (knowledge-db)<br/><i>單次解析符號共享 / BM25 + ONNX 向量 RRF / 兩階段背景補齊</i>"]:::mod
         Server["常駐守護與熱派發中樞 (server)<br/><i>&lt;10ms Hot-IPC / WarmWorker 背景服務 / 雙軌熱重載</i>"]:::mod
         Dev["模組開發者工具箱 (dev)<br/><i>腳手架生成 / 8 步合規檢核 / 隔離沙盒測試 / 雙軌發布治理</i>"]:::mod
     end
 
     Host --> Kernel
     Kernel --> Ecosystem
+    FileSpace --> AST
+    AST --> Knowledge
 ```
 
 ---
 
-## 2. 五大核心模組清單 (Ecosystem Modules)
+## 2. 七大核心模組清單 (Ecosystem Modules)
 
 | 模組名稱 | 模組標識 | 職責定位與核心價值 | 隨包手冊語意位置 (安裝後) | 系統知識庫手冊 (本倉) |
 | :--- | :--- | :--- | :--- | :--- |
-| **Core** | `module:core` | **微核心基礎設施**：套件生命週期管理（對接單層 `releases` 分支與 `index.json` 雙軌版本帳本）、First-Class VFS (`core.vfs`) 與 Scheme B 正交語意 URI (`core.uri`)、2x2 組態矩陣、多語系與宿主專有名詞引擎 (`core.locale`)、CLI 飛行紀錄器 (`core.telemetry`)、私有微環境 (`PipManager`) 與四段式 SemVer 引擎。 | `module://core/README.md`<br/>*(預設：`.yscb/.modules/core/README.md`)* | [docs/core/README.md](./docs/core/README.md) |
-| **Agents-Workflow** | `module:agents-workflow` | **AI Agent 技能與工作流引擎**：SOP 0~7 開發流程、6 大計畫分支拓撲、6 大中央工程與子代理標準、8 大主流 AI 平台 `release_target` 投影、19 個內建工作流与領域 Skills（全生態系共 22 個 Skills），以及 `plan` / `roadmap` / `todo` / `session-trace` 管理工具鏈。 | `module://agents-workflow/README.md`<br/>*(預設：`.yscb/.modules/agents-workflow/README.md`)* | [docs/agents-workflow/README.md](./docs/agents-workflow/README.md) |
-| **Knowledge-DB** | `module:knowledge-db` | **知識庫與符號檢索引擎**：10 大語言 Tree-sitter 宣告式 AST 符號解析 (Python/C/C++/C#/JS/TS/MD/SPICE/HTML/CSS)、宣告式空間權重 (`weight`)、BM25 + FastEmbed ONNX 雙軌向量 RRF 複合檢索、跨檔案調用圖譜 (`callers`/`callees`/`impact`) 與三級意圖代碼切片。 | `module://knowledge-db/README.md`<br/>*(預設：`.yscb/.modules/knowledge-db/README.md`)* | [docs/knowledge-db/README.md](./docs/knowledge-db/README.md) |
+| **Core** | `module:core` | **微核心基礎設施**：套件生命週期管理（對接單層 `releases` 分支、`index.json` 雙軌版本帳本與相依交集自檢自癒）、First-Class VFS (`core.vfs`) 與 Scheme B 正交語意 URI (`core.uri`)、2x2 組態矩陣、多語系與宿主專有名詞引擎 (`core.locale`)、CLI 飛行紀錄器 (`core.telemetry`)、私有微環境 (`PipManager`) 與四段式 SemVer 引擎。 | `module://core/README.md`<br/>*(預設：`.yscb/.modules/core/README.md`)* | [docs/core/README.md](./docs/core/README.md) |
+| **Agents-Workflow** | `module:agents-workflow` | **AI Agent 技能與工作流引擎**：SOP 0~7 開發流程、6 大計畫分支拓撲、6 大中央工程與子代理標準、8 大主流 AI 平台 `release_target` 投影、19 個內建工作流與領域 Skills（全生態系共 22 個 Skills），以及 `plan` / `roadmap` / `todo` / `session-trace` 管理工具鏈。 | `module://agents-workflow/README.md`<br/>*(預設：`.yscb/.modules/agents-workflow/README.md`)* | [docs/agents-workflow/README.md](./docs/agents-workflow/README.md) |
+| **File-Space** | `module:file-space` | **通用檔案空間與指紋底座 (Layer 1)**：雙軌空間定義聚合（`config/file-space/contribute.json` 與模組貢獻）、雙階段四模分級雜湊 (`adaptive`/`full_hash`/`stat_only`/`lazy_stabilized`)、`YFP2` 單調世代二進位快照、多消費者獨立水位線與 `file-space-watcher` 常駐監聽。 | `module://file-space/README.md`<br/>*(預設：`.yscb/.modules/file-space/README.md`)* | [docs/file-space/README.md](./docs/file-space/README.md) |
+| **AST** | `module:ast` | **靜態語法樹與呼叫拓撲引擎 (Layer 2)**：10 大語言宣告式 AST / Tree-sitter 方言隔離解析 (`dialects/<lang>`)、C# `partial class` 雙層無損聚合、確定性同名異載群組定址、單檔結構化大綱 (`outline` 三維度正交過濾) 與跨檔案呼叫圖譜 (`callers`/`callees`/`impact`)。 | `module://ast/README.md`<br/>*(預設：`.yscb/.modules/ast/README.md`)* | [docs/ast/README.md](./docs/ast/README.md) |
+| **Knowledge-DB** | `module:knowledge-db` | **知識庫與混合語意檢索引擎 (Layer 3)**：透過單次解析符號共享直接消費 `module:ast` 快照、宣告式空間權重 (`space_weights`)、BM25 + FastEmbed ONNX 雙軌向量 RRF 複合檢索、`KnowledgeDBServiceWorker` 兩階段背景向量補齊與毫秒級動態降級。 | `module://knowledge-db/README.md`<br/>*(預設：`.yscb/.modules/knowledge-db/README.md`)* | [docs/knowledge-db/README.md](./docs/knowledge-db/README.md) |
 | **Server** | `module:server` | **常駐守護與背景服務中樞**：Master/WarmWorker 雙進程隔離、`<10ms` 極速 Hot-IPC 派發、`.modules/` 雙軌自動熱重載、背景服務託管 (`ServiceManager`) 與即時 Flush 滾動日誌。 | `module://server/README.md`<br/>*(預設：`.yscb/.modules/server/README.md`)* | [docs/server/README.md](./docs/server/README.md) |
 | **Dev** | `module:dev` | **模組開發工具箱**：擴充模組腳手架生成 (`create`)、8 步靜態合規檢查 (`check`)、隔離沙盒平行跑測 (`test`)、3-Gate 發布預檢 (`release-check`)、雙軌元數據打包發布 (`build`/`release`/`release-git`) 與事後索引修補 (`index-patch`)。 | `module://dev/README.md`<br/>*(預設：`.yscb/.modules/dev/README.md`)* | [docs/dev/README.md](./docs/dev/README.md) |
 
@@ -152,13 +158,13 @@ graph TD
 
 ---
 
-### 3.3 步驟三：`knowledge-db` 知識庫與語意檢索設定
+### 3.3 步驟三：`file-space`、`ast` 與 `knowledge-db` 三階知識檢索設定
 
-`knowledge-db` 提供 10 大語言 Tree-sitter AST 符號解析、BM25 詞彙 + FastEmbed ONNX 向量雙軌 RRF 複合檢索、跨檔案調用圖譜追蹤（`callers` / `callees` / `impact`）與三級意圖 AST 代碼切片預覽。
+知識庫體系採用 `file-space`（檔案空間與指紋底座）$\to$ `ast`（靜態語法樹、單檔大綱 `outline` 與呼叫圖譜 `callers/callees/impact`）$\to$ `knowledge-db`（BM25 詞彙 + FastEmbed ONNX 向量雙軌 RRF 複合語意檢索）三階架構。
 
 #### 安裝與設定步驟
 
-1. **安裝模組**（安裝時會自動在 `yscb.venv://` 隔離微環境配置預編譯 Wheel 依賴，並自動向 `agents-workflow` 導出 `knowledge-db-search` 技能）：
+1. **安裝模組**（安裝 `knowledge-db` 時會自動連帶解析並安裝底層相依模組 `file-space` 與 `ast`、在 `yscb.venv://` 配置 Wheel 依賴，並向 `agents-workflow` 導出 `knowledge-db-search` 技能）：
    ```bash
    python yscb.py install knowledge-db
    ```
@@ -169,8 +175,8 @@ graph TD
 > 1. **源碼掃描目錄 (`spaces`)**：詢問專案中需要納入檢索的原始碼目錄（例如 `src/`、`lib/`、`app/`）與檔案格式？
 > 2. **向量檢索模式**：詢問是否要下載本地 ONNX 向量模型（`model download`，約 130MB，支援語意混合檢索），或關閉向量檢索改用輕量極速之純 BM25 詞彙模式？
 
-2. **設定專案源碼掃描空間 (`spaces.source`)**：
-   在 `config/knowledge-db/contribute.json` 設定專案原始碼掃描範圍与檢索權重 `weight`（若檔案不存在可直接建立，注意鍵名為 `include`）：
+2. **設定專案源碼掃描空間 (`config/file-space/contribute.json`) 與檢索權重 (`config/knowledge-db/contribute.json`)**：
+   在 `config/file-space/contribute.json` 設定專案原始碼掃描範圍與分級雜湊策略（若檔案不存在可直接建立）：
    ```json
    {
      "spaces": {
@@ -179,12 +185,14 @@ graph TD
          "include": ["project://src", "project://lib"],
          "exclude": ["**/__pycache__/**", "**/node_modules/**"],
          "file_patterns": ["*.py", "*.cpp", "*.h", "*.cs", "*.ts", "*.js"],
+         "hash_policy": "adaptive",
+         "watch": true,
          "weight": 1.0
        }
      }
    }
    ```
-   *(註：`spaces` 為擴充點宣告，統一由 `config/knowledge-db/contribute.json` 託管；運作組態如 `enable_vector_search` 則由 `config set` 管理)*
+   *(註：空間幾何定義統一由 `config/file-space/contribute.json` 託管；若需在 `knowledge-db` 覆寫各空間檢索排序權重，可於 `config/knowledge-db/contribute.json` 設定 `{"space_weights": {"source": 1.2}}`)*
 
 3. **配置向量模型（二選一）**：
    ```bash
@@ -195,16 +203,20 @@ graph TD
    python yscb.py config set knowledge-db enable_vector_search false
    ```
 
-4. **一鍵建立全管線索引並驗證檢索**：
+4. **一鍵建立全管線索引並驗證 AST 導航與語意檢索**：
    ```bash
-   # 一鍵執行：增量指紋掃描 -> AST 符號提取 -> BM25 倒排索引 -> 調用圖譜 -> 向量特徵建置
+   # 一鍵執行：增量指紋掃描 (file-space) -> AST 符號與呼叫圖譜 (ast) -> BM25 倒排與向量特徵建置 (knowledge-db)
    python yscb.py knowledge-db index
 
-   # 檢查知識庫空間、索引與模型就緒狀態
+   # 檢查檔案空間、AST 拓撲與知識庫索引就緒狀態
+   python yscb.py file-space status
+   python yscb.py ast status
    python yscb.py knowledge-db status
 
-   # 執行帶 AST 代碼切片之 Tier 2 高密度檢索 (AI Agent 探索首選)
-   python yscb.py knowledge-db search "核心關鍵字" --json -s
+   # Stage 1 未知座標語意檢索 -> Stage 1.5 單檔結構大綱導航 -> 呼叫拓撲追蹤
+   python yscb.py knowledge-db search "核心關鍵字" -s
+   python yscb.py ast outline src/main.py --public --methods
+   python yscb.py ast callers TargetSymbol -s
    ```
 
 ---
@@ -286,13 +298,24 @@ python yscb.py agents-workflow roadmap [list|promote]    # 檢視宏觀技術路
 python yscb.py agents-workflow todo [list|add|promote]   # 免讀追加、查詢或打包提取 TODO.md 輕量待辦
 python yscb.py agents-workflow session-trace [--json]    # 提取當前對話之三級摩擦軌跡供 /session-audit 診斷
 
-# ── 知識庫與調用圖譜檢索 (Knowledge-DB 8 大標準指令) ───────────
+# ── 檔案空間與增量指紋底座 (File-Space) ────────────────────────
+python yscb.py file-space status [--space=<s_name>]      # 查看已註冊檔案空間、世代水位與消費者游標
+python yscb.py file-space scan [--space=<s_name>]        # 執行雙階段增量指紋掃描並更新 YFP2 快照
+python yscb.py file-space files [--space=<s_name>]       # 列出空間內納管之有效檔案清單
+python yscb.py file-space diff --consumer=<id> [--ack]   # 檢視特定消費者相對於最新快照之增量差異
+python yscb.py file-space clean [--consumer=<id>]        # 清理指紋快照或重置特定消費者游標
+
+# ── 靜態語法樹與呼叫拓撲引擎 (AST) ─────────────────────────────
+python yscb.py ast outline <file> [--public|--methods]   # 單檔結構化大綱與起訖行號 (支援三維度過濾與 --merged)
+python yscb.py ast callers <symbol> [-s] [--json]        # 追蹤誰調用了該符號 (支援同型別 Overload 自動群組展開)
+python yscb.py ast callees <symbol> [-s] [--json]        # 追蹤該符號內部調用了誰 (下游被調用方)
+python yscb.py ast impact <symbol> --depth=2 [--json]    # 評估符號修改之多階擴散影響半徑
+python yscb.py ast status / clean                        # 查看 AST 快照世代、已註冊方言或清除 AST 索引快取
+
+# ── 知識庫與混合語意檢索 (Knowledge-DB) ────────────────────────
 python yscb.py knowledge-db index [--all]                # 一鍵全管線建立/更新索引
-python yscb.py knowledge-db status [--scan]              # 查看空間、索引與模型狀態
-python yscb.py knowledge-db search "<query>" --json -s   # 帶 AST 代碼切片之複合語意檢索 (支援 --ftype)
-python yscb.py knowledge-db callers <symbol> --json -s   # 追蹤誰調用了該符號 (上游調用方)
-python yscb.py knowledge-db callees <symbol> --json -s   # 追蹤該符號內部調用了誰 (下游被調用方)
-python yscb.py knowledge-db impact <symbol> --depth=2    # 評估符號修改之多階擴散影響半徑
+python yscb.py knowledge-db status [--scan]              # 查看後台服務、三大索引覆蓋率與空間水位狀態
+python yscb.py knowledge-db search "<query>" --json -s   # 帶 AST 代碼切片之複合語意檢索 (支援 --ftype / --space)
 python yscb.py knowledge-db model status / download      # 檢查或下載本地 ONNX 向量嵌入模型
 python yscb.py knowledge-db clean [--all]                # 清理知識庫索引快取
 

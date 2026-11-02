@@ -151,7 +151,12 @@ def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
             shutil.rmtree(staging_dir, ignore_errors=True)
 
 
-def _discover_available_versions_for_module(engine: AtomicEngine, mod: str, provider_url: str) -> List[str]:
+def _discover_available_versions_for_module(
+    engine: AtomicEngine,
+    mod: str,
+    provider_url: str,
+    candidate_core_version: Optional[str] = None,
+) -> List[str]:
     """Scans local provider directories/indexes or fetches remote index.json for non-build, environment-compatible versions of a module."""
     candidate_dirs = [
         os.path.join(provider_url, "release", mod),
@@ -198,7 +203,10 @@ def _discover_available_versions_for_module(engine: AtomicEngine, mod: str, prov
                 continue
             rel_entry = releases_map.get(v) if isinstance(releases_map, dict) else None
             if isinstance(rel_entry, dict) and isinstance(rel_entry.get("dependencies"), dict):
-                if not engine._is_dependencies_compatible_with_env(rel_entry["dependencies"]):
+                if not engine._is_dependencies_compatible_with_env(
+                    rel_entry["dependencies"],
+                    candidate_core_version=candidate_core_version,
+                ):
                     continue
             clean_versions.append(v)
         except Exception:
@@ -583,10 +591,13 @@ class Installer:
 
         updated_any = False
         migrations_to_run: List[Tuple[str, str, str]] = []
+        newly_installed_deps: List[str] = []
         try:
             with self.engine.transaction_lock("update"):
                 _notify_server_release_handles()
-                for mod in targets:
+                ordered_targets = sorted(targets, key=lambda m: (0 if m == "core" else 1, targets.index(m)))
+                candidate_core_ver: Optional[str] = None
+                for mod in ordered_targets:
                     cur_ver = installed.get(mod, {}).get("version", "1.0.0.0")
                     cur_t = semver.parse_semver(cur_ver)
 
@@ -595,7 +606,12 @@ class Installer:
                         continue
 
                     major_constraint = f"^{cur_t.major}.{cur_t.minor}.{cur_t.patch}"
-                    clean_versions = _discover_available_versions_for_module(self.engine, mod, provider_url)
+                    clean_versions = _discover_available_versions_for_module(
+                        self.engine,
+                        mod,
+                        provider_url,
+                        candidate_core_version=candidate_core_ver,
+                    )
                     best_v = semver.find_best_version(clean_versions, major_constraint)
                     latest_ver = best_v if best_v else cur_ver
 
@@ -605,8 +621,22 @@ class Installer:
                         self.engine.act_register(mod, latest_ver, provider_url)
                         migrations_to_run.append((mod, cur_ver, latest_ver))
                         updated_any = True
+                        if mod == "core":
+                            candidate_core_ver = latest_ver
                     else:
                         print(f"[core:update] Module '{mod}' is already up-to-date (v{cur_ver}).")
+
+                # Reconcile dependencies across all installed & newly updated modules (auto-installs missing deps,
+                # auto-upgrades compatible intersection deps, or raises RuntimeError on disjoint conflict)
+                healed_deps = self.engine.reconcile_installed_dependencies(provider_url=provider_url)
+                for h_mod, h_old, h_new in healed_deps:
+                    updated_any = True
+                    if h_old is None:
+                        print(f"[core:update] Installing required dependency '{h_mod}@{h_new}'...")
+                        newly_installed_deps.append(h_mod)
+                    elif semver.compare_semver(h_new, h_old) > 0:
+                        print(f"[core:update] Auto-upgrading dependency '{h_mod}' from {h_old} -> {h_new}...")
+                        migrations_to_run.append((h_mod, h_old, h_new))
 
                 if updated_any:
                     self.engine.act_reload(clean_stage=True, inject_stage=True)
@@ -614,11 +644,14 @@ class Installer:
                         self.engine.act_migrate(mod, old_v, new_v)
                     events.broadcast("on_update", ExecutionContext("core", "update", targets), emit_module="core")
                     self.sync_pip_dependencies()
+                    for dep_mod in newly_installed_deps:
+                        self._print_onboarding_guide(dep_mod)
+                        self._check_optional_dependencies(dep_mod)
                     print("[core:update] Update completed successfully.")
                 try:
                     from core.update_checker import UpdateChecker
                     checker = UpdateChecker()
-                    for m in targets:
+                    for m in set(list(targets) + [h[0] for h in healed_deps]):
                         checker.invalidate_cache(m)
                 except Exception:
                     pass
@@ -687,7 +720,7 @@ class Installer:
                     print(f"[core:remove] Removing module '{mod}'...")
                     self.engine.act_unregister(mod)
                     self.engine.act_delete(mod, clean_mirror=clean, purge=purge)
-                self.engine.act_reload(clean_stage=True, inject_stage=True)
+                self.engine.act_reload(clean_stage=True, inject_stage=True, reconcile_deps=False)
                 self.sync_pip_dependencies()
             for mod in targets:
                 if purge:
