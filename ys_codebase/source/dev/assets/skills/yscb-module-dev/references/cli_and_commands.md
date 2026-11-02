@@ -145,7 +145,6 @@ source/<mod_name>/
 # 靜態合規與語法預檢 (驗證 manifest、contributes、AST 語法與紅線)
 python yscb.py dev check <mod_name>
 python yscb.py dev check --all
-python yscb.py dev check <mod_name> --json
 ```
 
 ### 5.3 打包與版本管理

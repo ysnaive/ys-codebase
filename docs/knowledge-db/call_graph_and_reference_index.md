@@ -18,8 +18,8 @@ last_updated: "2026-10-22"
 
 # 符號調用圖譜與引用拓撲索引專題手冊 (Call Graph & Reference Index)
 
-> 模組：`knowledge-db`  
-> 核心組件：`linker.py` (`TopologyLinker`), `graph.py` (`CallGraphIndex`), `selector.py` (`SymbolSelector`), `protocol.py` (`LanguageTopologyProtocol`), `pipeline.py`  
+> 模組：`ast` (核心實作 `ast_engine/{linker,graph,selector,protocol,resolver}.py`) / `knowledge-db` (薄轉發門面)  
+> 正統 CLI 入口：`python yscb.py ast <outline|callers|callees|impact>`（詳見 [`docs/ast/README.md`](../ast/README.md)）  
 
 ---
 

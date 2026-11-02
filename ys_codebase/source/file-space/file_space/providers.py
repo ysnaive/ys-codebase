@@ -1,20 +1,9 @@
 """
 Dynamic completion and documentation token providers for the file-space module.
 """
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from .manager import FileSpaceManager
-
-
-def get_file_space_names(context: Optional[Any] = None) -> List[str]:
-    """
-    Return registered workspace names for CLI argument autocompletion.
-    """
-    try:
-        mgr = FileSpaceManager()
-        return mgr.list_spaces()
-    except Exception:
-        return ["source", "docs", "plans"]
 
 
 def get_registered_file_spaces_table(context: Optional[Any] = None) -> str:
@@ -43,7 +32,3 @@ def get_registered_file_spaces_table(context: Optional[Any] = None) -> str:
             f"| `{name}` | `{origin_str}` | `{policy_str}` | {watch_str} | {desc} |"
         )
     return "\n".join(lines)
-
-
-get_space_names = get_file_space_names
-get_registered_spaces_table = get_registered_file_spaces_table

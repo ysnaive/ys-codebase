@@ -15,10 +15,9 @@ last_updated: "2026-11-01"
 
 # knowledge-db 多語言語意解析器使用指南 (Parsers Guide)
 
-> 模組名稱：`knowledge-db`  
-> 核心模組：`knowledge_db.parsers`  
-> 核心引擎：`tree-sitter` S-Expression 宣告式查詢驅動器 (`TreeSitterDriver`)  
-> 架構原則：100% 透過 `contributes.knowledge_db` 動態驅動 (Zero-Privilege Dogfooding)  
+> 模組名稱：`ast` (核心實作 `ast_engine.parsers`) / `knowledge-db` (`knowledge_db.parsers` 相容重匯出門面)  
+> 核心引擎：`tree-sitter` S-Expression 宣告式查詢驅動器 (`TreeSitterDriver`) + 7 大官方方言隔離 (`ast_engine/dialects/`)  
+> 架構原則：100% 透過 `contributes.ast.languages`（並向下相容 `contributes.knowledge-db.languages`）動態驅動 (Zero-Privilege Dogfooding)，詳見 [`docs/ast/README.md`](../ast/README.md)  
 
 ---
 

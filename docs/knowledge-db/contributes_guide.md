@@ -17,7 +17,7 @@ last_updated: "2026-11-02"
 
 # `contributes.knowledge-db` 擴充點注入指南 (Contributes Guide)
 
-> 本文件指導 YS-Codebase 生態中的 Donor 模組與專案如何透過 `contributes.knowledge-db` 宣告並注入空間檢索加權 (`space_weights`)、多語言解析器 (`languages`) 與三階同義詞庫 (`thesaurus` / `aliases` / `related`)；工作空間目錄幾何定義 (`spaces`) 則統一向 [`file-space` 模組](../file-space/README.md) 註冊。
+> 本文件指導 YS-Codebase 生態中的 Donor 模組與專案如何透過 `contributes.knowledge-db` 宣告並注入空間檢索加權 (`space_weights`) 與三階同義詞庫 (`thesaurus` / `aliases` / `related`)；多語言 AST 解析器 (`languages`) 統一向 [`module:ast`](../ast/README.md) (`contributes/ast.json` 或 `config/ast/contribute.json`) 註冊，且 `ParserRegistry` 仍向下相容讀取舊版 `contributes.knowledge-db.languages`；工作空間目錄幾何定義 (`spaces`) 則統一向 [`file-space` 模組](../file-space/README.md) 註冊。
 
 ---
 

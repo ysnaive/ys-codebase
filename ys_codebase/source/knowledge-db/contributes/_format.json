@@ -1,25 +1,8 @@
 {
-  "_types": {
-    "LanguageDef": {
-      "id": "str!",
-      "name": "str!",
-      "extensions": "list[str]!",
-      "mode": "enum(tree_sitter, custom)!",
-      "grammar": "str?",
-      "query_file": "str?",
-      "parser_entry": "str?"
-    }
-  },
   "space_weights": {
     "description": "各邏輯空間之檢索加權係數",
     "format": {
       "*": "float!"
-    }
-  },
-  "languages": {
-    "description": "向知識庫註冊支援的程式語言、AST Parser 與副檔名對映",
-    "format": {
-      "*": "$LanguageDef"
     }
   }
 }

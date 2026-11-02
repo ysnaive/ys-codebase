@@ -1,7 +1,6 @@
 """
 YS-Codebase Knowledge-DB Module
-Provides semantic symbol extraction (Universal AST v2.0), BM25 + ONNX Hybrid RRF retrieval,
-and Call Graph Topology analysis.
+Provides BM25 + ONNX Hybrid RRF semantic retrieval consuming AST snapshots from module:ast.
 """
 
 from pathlib import Path
@@ -9,31 +8,33 @@ import sys
 
 
 def _ensure_dependency_module_paths() -> None:
-    """確保依賴模組 (module:file-space) 的套件目錄已掛載至 sys.path。"""
+    """確保依賴模組 (module:file-space 與 module:ast) 的套件目錄已掛載至 sys.path。"""
     try:
         from core import uri
 
-        space_mod_dir = uri.resolve("module://file-space", interactive=False)
-        if space_mod_dir:
-            sp_path = Path(space_mod_dir).resolve()
-            if (sp_path / "file_space" / "__init__.py").is_file() and str(sp_path) not in sys.path:
-                sys.path.insert(0, str(sp_path))
+        for mod_uri, pkg_name in (("module://file-space", "file_space"), ("module://ast", "ast_engine")):
+            mod_dir = uri.resolve(mod_uri, interactive=False)
+            if mod_dir:
+                m_path = Path(mod_dir).resolve()
+                if (m_path / pkg_name / "__init__.py").is_file() and str(m_path) not in sys.path:
+                    sys.path.insert(0, str(m_path))
     except Exception:
         pass
     pkg_parent = Path(__file__).resolve().parent.parent.parent
-    for cand in (pkg_parent / "file-space", pkg_parent.parent / ".modules" / "file-space"):
-        if (cand / "file_space" / "__init__.py").is_file():
-            cand_str = str(cand.resolve())
-            if cand_str not in sys.path:
-                sys.path.insert(0, cand_str)
-    existing_space = sys.modules.get("file_space")
-    if existing_space is not None and getattr(existing_space, "__file__", None) is None:
-        del sys.modules["file_space"]
+    for mod_folder, pkg_name in (("file-space", "file_space"), ("ast", "ast_engine")):
+        for cand in (pkg_parent / mod_folder, pkg_parent.parent / ".modules" / mod_folder):
+            if (cand / pkg_name / "__init__.py").is_file():
+                cand_str = str(cand.resolve())
+                if cand_str not in sys.path:
+                    sys.path.insert(0, cand_str)
+        existing_mod = sys.modules.get(pkg_name)
+        if existing_mod is not None and getattr(existing_mod, "__file__", None) is None:
+            del sys.modules[pkg_name]
 
 
 _ensure_dependency_module_paths()
 
-from .bundler import SemanticBundle, SemanticBundler
+from ast_engine import ASTEngine, ASTSnapshot, SemanticBundle, SemanticBundler
 from .config import DEFAULT_EMBEDDING_MODEL, KnowledgeDBConfig
 from .embedding import EmbeddingService, VectorIndex
 from .engine import KnowledgeEngine
@@ -42,17 +43,7 @@ from .exceptions import (
     KnowledgeDBError,
     SchemaValidationError,
 )
-from .graph import CallGraphIndex
 from .hybrid import HybridSearchEngine
-from .linker import TopologyLinker
-from .parsers import (
-    BaseParser,
-    CssParser,
-    HtmlParser,
-    ParserRegistry,
-    SpiceParser,
-    TreeSitterDriver,
-)
 from .retrieval import (
     BM25Engine,
     CodeSnippet,
@@ -66,7 +57,6 @@ from .schema import (
     AggregatedFileResult,
     AggregatedItem,
     KnowledgeDBContributes,
-    LanguageConfig,
     LanguageType,
     MemberInfo,
     SymbolCallSite,
@@ -90,9 +80,10 @@ __all__ = [
     "KnowledgeDBError",
     "InvalidConfigError",
     "SchemaValidationError",
+    "ASTEngine",
+    "ASTSnapshot",
     "SymbolKind",
     "LanguageType",
-    "LanguageConfig",
     "KnowledgeDBContributes",
     "validate_space_weights",
     "MemberInfo",
@@ -100,12 +91,6 @@ __all__ = [
     "SymbolCallSite",
     "AggregatedItem",
     "AggregatedFileResult",
-    "BaseParser",
-    "TreeSitterDriver",
-    "SpiceParser",
-    "HtmlParser",
-    "CssParser",
-    "ParserRegistry",
     "SemanticBundle",
     "SemanticBundler",
     "MultilingualTokenizer",
@@ -121,6 +106,4 @@ __all__ = [
     "EmbeddingService",
     "VectorIndex",
     "HybridSearchEngine",
-    "CallGraphIndex",
-    "TopologyLinker",
 ]

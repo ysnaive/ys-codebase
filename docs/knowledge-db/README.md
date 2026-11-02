@@ -17,19 +17,18 @@ last_updated: "2026-11-02"
 # Knowledge Database 模組手冊 (Knowledge-DB Overview)
 
 > 模組名稱：`knowledge-db`  
-> 職責定位：YS-Codebase 專案代碼與文檔語意知識庫基礎設施，透過 `module:file-space` 底座協同治理命名空間、接收 `YFP2` 單調世代二進位快照與 `on_file_space_changed` 事件驅動增量熱自癒，並提供 Tree-sitter 宣告式多語言 AST 解析、BM25 + FastEmbed ONNX 雙軌向量 RRF 複合檢索（含空間權重 `space_weights` 加成）與靜態調用圖譜分析服務。
+> 職責定位：YS-Codebase Layer 3 混合語意檢索核心模組，建立於 `module:file-space`（Layer 1 空間與指紋底座）與 `module:ast`（Layer 2 靜態語法樹、雙層分部符號與呼叫拓撲引擎）之上；透過單次解析符號共享（Single-Parse Symbol Sharing）直接消費 `ASTSnapshot`，專責提供多欄位加權 BM25 與 FastEmbed ONNX 雙軌向量 RRF 複合檢索（含空間權重 `space_weights` 加成）及兩階段常駐背景自癒服務。
 
 ---
 
 ## 1. 模組定位與願景 (Vision & Goals)
 
-`knowledge-db` 模組旨在為 YS-Codebase 生態體系建立高效、高內聚、強韌的語意檢索與代碼拓撲核心設施。主要能力包括：
+`knowledge-db` 模組與 `file-space`、`ast` 共同構成嚴格三階單向無環圖（`file-space -> ast -> knowledge-db`）：
+- **三階單向 DAG 與單次解析符號共享 (`module:ast` `ASTSnapshot`)**：語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、C# `partial class` 雙層分部聚合、單檔大綱 (`yscb ast outline`) 與呼叫拓撲 (`yscb ast callers/callees/impact`) 統一由 [`module:ast`](../ast/README.md) 負責；`knowledge-db` 直接讀取 `ASTEngine.ensure_jit_synced()` 產出之 `ASTSnapshot` 與 `CallGraphIndex`，**零重複 AST 解析**。
 - **跨模組空間協同與檢索加權 (`module:file-space` & `space_weights`)**：空間目錄幾何統一委由 `file-space` 模組 (`contributes/file-space.json` 與 `config/file-space/contribute.json`) 雙軌聚合，`knowledge-db` 則透過 `space_weights` 對不同空間（如 `docs: 1.2`, `plans: 0.85`）賦予檢索加權。
 - **全空間聯集處理 (Union Scope)**：無單一 `default_space` 強制約定，全系統以所有有效空間之聯集作為全域處理範圍，並對重疊實體檔案進行 100% 唯一解析去重。
-- **`YFP2` 多消費者游標與雙階段背景 Worker (`consume_diff` & `knowledge-db-worker`)**：透過 `file_space.consume_diff(consumer_id="knowledge-db")` 消費 `YFP2` 二進位快照差量；常駐背景服務 `KnowledgeDBServiceWorker` (`knowledge-db-worker`) 採兩階段非阻塞同步（Stage 1 快篩秒級更新 BM25/圖譜並 Ack 游標、Stage 2 微批次自動補齊向量與背景自動下載模型），搭配 `is_worker_busy() -> int` 已運行毫秒探針與 `jit_vector_timeout_ms` 動態容差等待／瞬時降級。
-- **Tree-sitter 宣告式 AST 解析 (Universal AST)**：基於 `TreeSitterDriver` 與 S-Expression (`.scm`) 查詢規則，透過零特權自貢獻 (`contributes.knowledge-db.languages`) 原生支援 Python、C、C++、C#、JavaScript、TypeScript、Markdown、SPICE、HTML、CSS 等 10 大語言符號與調用點提取。
+- **`YFP2` + `acked_ast_generation` 雙水位線與雙階段背景 Worker (`knowledge-db-worker`)**：透過 `file_space.consume_diff(consumer_id="knowledge-db")` 與 `InvertedIndex.acked_ast_generation` 雙重水位線感知變更；常駐背景服務 `KnowledgeDBServiceWorker` (`knowledge-db-worker`) 採兩階段非阻塞同步（Stage 1 快篩秒級更新 BM25 並 Ack 游標、Stage 2 微批次自動補齊向量與背景自動下載模型），搭配 `is_worker_busy() -> int` 已運行毫秒探針與 `jit_vector_timeout_ms` 動態容差等待／瞬時降級。
 - **雙軌 RRF 複合檢索與平滑降級 (Hybrid Search)**：結合中英混排分詞 (`MultilingualTokenizer`)、多欄位加權 BM25 與 FastEmbed ONNX 離線向量推論（動態維度解析，預設 `BAAI/bge-small-zh-v1.5` 為 `512-dim`），透過倒數排名融合 (RRF $k=60$) 精準召回，並具備 100% 剛性平滑降級純 BM25 保證。
-- **跨檔案調用圖譜與影響面分析 (Call Graph & Impact)**：基於 `networkx.DiGraph` 與四階 FQN / Import 作用域消歧，支援上游調用者 (`callers`)、下游被調用者 (`callees`) 與多階重構爆炸半徑 (`impact`) 追蹤。
 
 ---
 
@@ -47,14 +46,14 @@ last_updated: "2026-11-02"
 
 ## 3. CLI 快速上手 (Quick Start)
 
-系統收斂為 8 大正交標準指令集：`status`, `index`, `search`, `callers`, `callees`, `impact`, `clean`, `model`。
+`knowledge-db` 專注於語意與全文檢索指令集（`status`, `index`, `search`, `clean`, `model`）；單檔結構大綱（`outline`）與靜態調用拓撲（`callers`, `callees`, `impact`）正統入口位於 [`yscb ast`](../ast/README.md)（`knowledge-db` 亦保留向下相容轉發）：
 
 ```bash
-# 1. 查看所有已註冊空間、快取、索引狀態與增量快照差異 (--scan / --diff)
+# 1. 查看所有已註冊空間、快取、索引狀態與 acked_ast_generation 水位
 python yscb.py knowledge-db status
 python yscb.py knowledge-db status --scan
 
-# 2. 一鍵全管線索引建置 (掃描 -> AST 提取 -> 倒排索引 -> 調用圖譜 -> 向量特徵)，支援導出 Bundle
+# 2. 一鍵全管線索引建置 (消費 ASTSnapshot -> 倒排索引 -> 向量特徵)，支援導出 Bundle
 python yscb.py knowledge-db index --all
 python yscb.py knowledge-db index --export ./output/project.bundle.json
 
@@ -70,17 +69,13 @@ python yscb.py knowledge-db search "狀態機更新" --kind=class --limit=5
 python yscb.py knowledge-db search "PIDController" --ftype=py --json -s
 python yscb.py knowledge-db search "開發規範" --ftype=md --json -s
 
-# 6. 查詢符號上游調用者 (Who calls me? 預設排除 Markdown 文檔引用，支援 --ftype 過濾)
-python yscb.py knowledge-db callers "InvertedIndex.load_binary" --json -s
-python yscb.py knowledge-db callers "VisualElement.MarkMeasureDirty" --ftype=cs --json -s
+# 6. 單檔結構大綱與跨檔案呼叫拓撲查詢 (透過 Layer 2 module:ast)
+python yscb.py ast outline yscb.py --public --methods
+python yscb.py ast callers "InvertedIndex.load_binary" --json -s
+python yscb.py ast callees "KnowledgeEngine.build_unified_index" --json -s
+python yscb.py ast impact "InvertedIndex.patch_incremental" --depth=2 --json
 
-# 7. 查詢符號內部調用之下游被調用者 (Whom do I call?)
-python yscb.py knowledge-db callees "KnowledgeEngine.build_unified_index" --json -s
-
-# 8. 分析重構影響面擴散拓撲 (Blast Radius Impact，支援介面/實作契約聚合與 --ftype)
-python yscb.py knowledge-db impact "InvertedIndex.patch_incremental" --depth=2 --json
-
-# 9. 清理特定或全空間之二進位快照、Bundle、倒排索引、圖譜與向量快取
+# 7. 清理特定或全空間之倒排索引與向量快取
 python yscb.py knowledge-db clean --all
 ```
 

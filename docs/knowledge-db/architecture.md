@@ -21,52 +21,48 @@ last_updated: "2026-11-02"
 
 # knowledge-db 全系統整合架構設計 (System Architecture)
 
-> 本文件說明 `knowledge-db` 模組的完整系統架構分層、門面與管線四向解耦 (`KnowledgeEngine` / `IndexingPipeline` / `TopologyQueryService` / `ResultFormatter`)、統一符號資料模型 (`UnifiedSymbol`)，以及與 `module:file-space` 底座協同之多消費者游標增量比對 (`YFP2` + `consume_diff`) 機制。
+> 本文件說明 `knowledge-db` 模組的完整系統架構分層、與 `module:file-space`（Layer 1）及 `module:ast`（Layer 2）之三階單向無環圖（Strict 3-Tier DAG）協同、單次解析符號共享（Single-Parse Symbol Sharing），以及 `YFP2` + `acked_ast_generation` 雙水位線增量比對機制。
 
 ---
 
 ## 1. 全系統架構分層 (System Layering Architecture)
 
-`knowledge-db` 採用四向職責解耦與冷/熱啟動零感知架構：頂層由 `KnowledgeEngine` 作為輕量統一門面，底層委派 `IndexingPipeline` 執行索引編排與混合檢索、由 `TopologyQueryService` 專司跨檔案調用圖譜 (`callers` / `callees` / `impact`) 與介面契約雙向展開、並由 `ResultFormatter` 負責三級複雜度排版與全域切片去重；空間幾何、雙階段指紋快照 (`YFP2`) 與背景 `watchdog` 監聽則統一委由 `module:file-space` 負責，並透過 `scripts/hook.file-space.py` 訂閱 `on_file_space_changed` 事件實現 500ms 防抖熱自癒。
+`knowledge-db` 位於三階單向 DAG 的第 3 層（`file-space -> ast -> knowledge-db`）：底層檔案空間幾何與 `YFP2` 指紋快照由 `module:file-space` 負責；語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、雙層 `partial class` 符號聚合與 `CallGraphIndex` 呼叫拓撲由 [`module:ast`](../ast/README.md) (`ASTEngine`) 負責並持久化於 `cache://ast/indices/`；`knowledge-db` 之 `IndexingPipeline` 則直接呼叫 `ASTEngine.ensure_jit_synced()` 消費 `ASTSnapshot` 建立多欄位加權 BM25 倒排索引 (`unified.index.bin.gz`) 與 FastEmbed ONNX 向量索引 (`unified.vectors.bin.gz`)，**100% 零重複 AST 解析**。
 
 ```mermaid
 flowchart TD
     subgraph CLILayer ["1. CLI 與背景事件入口層"]
-        CLI["8 大正交 CLI 指令 (scripts/cli.py)<br/>status | index | search | callers | callees | impact | clean | model"]
+        CLI["5 大正交 CLI 指令 (scripts/cli.py)<br/>status | index | search | clean | model"]
         HookSpace["on_file_space_changed 事件訂閱 (scripts/hook.file-space.py)<br/>接收 module:file-space FileSpaceWatcherServiceWorker 500ms 防抖通知"]
     end
 
-    subgraph FacadeLayer ["2. 門面與管線編排層 (四向職責分離)"]
-        Engine["KnowledgeEngine (engine.py)<br/>輕量統一門面 Facade / space_weights 加權管理"]
-        Pipeline["IndexingPipeline (pipeline.py)<br/>全棧索引編排 / JIT consume_diff / _GLOBAL_INDEX_CACHE mtime 熱刷新"]
-        TopoSvc["TopologyQueryService (topology_query.py)<br/>符號選擇器定位 / 介面實作契約雙向展開 / Callers & Callees & Impact"]
+    subgraph FacadeLayer ["2. 門面與管線編排層 (三向職責分離)"]
+        Engine["KnowledgeEngine (engine.py)<br/>輕量統一門面 Facade / space_weights 加權管理 / AST 薄轉發"]
+        Pipeline["IndexingPipeline (pipeline.py)<br/>全棧索引編排 / JIT consume_diff + acked_ast_generation 雙水位線 / _GLOBAL_INDEX_CACHE"]
         Formatter["ResultFormatter (formatter.py)<br/>三級複雜度排版 / 8,000 字元衰減 / UniversalRedundancyFilter"]
     end
 
-    subgraph CoreSubsystems ["3. 核心領域子系統與 Space 底座層"]
-        SpaceMod["module:file-space (FileSpaceManager & FingerprintScanner)<br/>雙軌空間配置聚合 + YFP2 二進位快照 + cursors/knowledge-db.json"]
-        Parsers["ParserRegistry & TreeSitterDriver (parsers/)<br/>10 大語言 S-Expression (.scm) 宣告式 AST 解析"]
-        Bundler["SemanticBundler (bundler.py)<br/>單檔符號快取池 / ProcessPoolExecutor 多進程打包"]
+    subgraph CoreSubsystems ["3. 核心領域子系統與 Layer 1/2 底座層"]
+        SpaceMod["Layer 1: module:file-space (FileSpaceManager & FingerprintScanner)<br/>雙軌空間配置聚合 + YFP2 二進位快照 + cursors/knowledge-db.json"]
+        ASTMod["Layer 2: module:ast (ASTEngine & ASTSnapshot)<br/>7 大方言隔離 + 雙層 partial class 聚合 + CallGraphIndex 單次解析符號共享"]
         Tokenizer["MultilingualTokenizer & ThesaurusEngine<br/>Unicode 整數區間分詞 / 三階多跳同義詞加權展開"]
         Hybrid["HybridSearchEngine (hybrid.py / retrieval.py / embedding.py)<br/>BM25 預先過濾下推 + FastEmbed ONNX 向量 (預設 512-dim) RRF 融合"]
-        Graph["TopologyLinker & CallGraphIndex (linker.py / graph.py)<br/>四階 FQN 作用域消歧 + networkx.DiGraph 雙向調用圖譜"]
     end
 
-    subgraph StorageLayer ["4. 本地端快取儲存層 (cache://file-space/ 與 cache://knowledge-db/)"]
-        MetaBin["cache://file-space/snapshots/unified.yfp2.bin<br/>與 cursors/knowledge-db.json (Magic YFP2)"]
-        IndexBin["cache://knowledge-db/indices/unified.index.bin.gz<br/>Pickle Protocol 5 + Gzip 倒排索引與符號池"]
-        GraphBin["cache://knowledge-db/indices/unified.graph.bin.gz<br/>NetworkX DiGraph 調用拓撲二進位快取"]
+    subgraph StorageLayer ["4. 本地端快取儲存層 (cache://file-space/, cache://ast/, cache://knowledge-db/)"]
+        MetaBin["cache://file-space/snapshots/unified.yfp2.bin<br/>與 cursors/{ast,knowledge-db}.json (Magic YFP2)"]
+        ASTBin["cache://ast/indices/unified.{symbols,graph}.bin.gz<br/>ASTSnapshot 符號池與 NetworkX DiGraph 調用拓撲"]
+        IndexBin["cache://knowledge-db/indices/unified.index.bin.gz<br/>Pickle Protocol 5 + Gzip 倒排索引 (含 acked_ast_generation)"]
         VecBin["cache://knowledge-db/indices/unified.vectors.bin.gz<br/>FastEmbed 浮點特徵向量矩陣快取 (compresslevel=1)"]
     end
 
     CLI --> Engine
     HookSpace --> Engine & Pipeline
-    Engine --> Pipeline & TopoSvc & Formatter
-    Pipeline --> TopoSvc & SpaceMod & Parsers & Bundler & Tokenizer & Hybrid & Graph
-    TopoSvc --> Graph
+    Engine --> Pipeline & ASTMod & Formatter
+    Pipeline --> SpaceMod & ASTMod & Tokenizer & Hybrid
     SpaceMod --> MetaBin
+    ASTMod --> ASTBin
     Hybrid --> IndexBin & VecBin
-    Graph --> GraphBin
 ```
 
 ---

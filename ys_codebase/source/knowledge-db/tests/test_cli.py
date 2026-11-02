@@ -54,7 +54,7 @@ class TestCLI(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_cli_all_commands(self):
-        """FT-07: 驗證 CLI 8 大子指令路由與執行 (status, index, search, callers, callees, impact, clean, model)"""
+        """FT-07: 驗證 CLI 5 大子指令路由與執行 (status, index, search, clean, model)"""
         # 1. 說明指令
         self.assertEqual(process([]), 0)
         self.assertEqual(process(["--help"]), 0)
@@ -70,31 +70,25 @@ class TestCLI(YSCBTestCase):
         # 空檢索參數防禦
         self.assertEqual(process(["search"]), 1)
 
-        # 5. callers 指令
-        self.assertEqual(process(["callers", "PIDController"]), 0)
-
-        # 6. callees 指令
-        self.assertEqual(process(["callees", "PIDController"]), 0)
-
-        # 7. impact 指令
-        self.assertEqual(process(["impact", "PIDController"]), 0)
-
-        # 8. model 指令
+        # 5. model 指令
         self.assertEqual(process(["model", "status"]), 0)
 
-        # 9. clean 指令
+        # 6. clean 指令
         self.assertEqual(process(["clean", "--all"]), 0)
 
-        # 10. 未知指令 (EC-06)
+        # 7. 未知指令 (EC-06)
         self.assertNotEqual(process(["unknown_cmd_xyz"]), 0)
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_removed_commands(self):
-        """FT-01, EC-05: 驗證舊指令 (scan, bundle) 已徹底移除，調用時返回非 0 退出碼"""
+        """FT-01, EC-05: 驗證舊指令 (scan, bundle, callers, callees, impact) 已徹底移除，調用時返回非 0 退出碼"""
         self.assertNotEqual(process(["scan", "--all"]), 0)
         self.assertNotEqual(process(["bundle", "--all"]), 0)
+        self.assertNotEqual(process(["callers", "PIDController"]), 0)
+        self.assertNotEqual(process(["callees", "PIDController"]), 0)
+        self.assertNotEqual(process(["impact", "PIDController"]), 0)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -308,32 +302,6 @@ class TestCLI(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_cli_callers_callees_impact_modes(self):
-        """FT-09: 驗證 callers, callees, impact 子命令之 simple, detail, md, json 模式與參數解析"""
-        # 1. callers 指令
-        for flag in ["--simple", "--detail", "--md", "--json", "-s"]:
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                ret = process(["callers", "PIDController", flag])
-            self.assertEqual(ret, 0)
-
-        # 2. callees 指令
-        for flag in ["--simple", "--detail", "--md", "--json", "-s"]:
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                ret = process(["callees", "PIDController", flag])
-            self.assertEqual(ret, 0)
-
-        # 3. impact 指令
-        for flag in ["--simple", "--detail", "--md", "--json", "--depth=2"]:
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                ret = process(["impact", "PIDController", flag])
-            self.assertEqual(ret, 0)
-
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
     def test_hook_lifecycle(self):
         """FT-08: 驗證 hook.dev.py 測試前置與後置鉤子正常執行"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -345,10 +313,13 @@ class TestCLI(YSCBTestCase):
 
         self.mark_passed()
 
-
     @require(Requirement.LOGIC)
     def test_cli_options_extraction_and_orthogonal_filter(self):
         """FT-10: 驗證 CLI options 正確提取純字串值與 --space 和 --ftype 正交複合篩選 (ISSUE-01, ISSUE-03)"""
+        from unittest.mock import patch
+        from knowledge_db.schema import UnifiedSymbol, AggregatedFileResult, AggregatedItem
+        from knowledge_db.retrieval import CodeSnippet
+
         # 1. 驗證 --space 與 --ftype 複合使用，不再引發互斥衝突 EC-02
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -363,70 +334,11 @@ class TestCLI(YSCBTestCase):
         data = json.loads(buf_search.getvalue())
         self.assertIn("results", data)
 
-        # 3. 驗證 callers 帶 --limit 正常提取數值
-        buf_callers = io.StringIO()
-        with contextlib.redirect_stdout(buf_callers):
-            ret = process(["callers", "PIDController", "--limit", "5", "--json"])
-        self.assertEqual(ret, 0)
-
-        # 4. 驗證 callees 帶 --limit 正常提取數值
-        buf_callees = io.StringIO()
-        with contextlib.redirect_stdout(buf_callees):
-            ret = process(["callees", "PIDController", "--limit", "5", "--json"])
-        self.assertEqual(ret, 0)
-
-        # 5. 驗證 impact 帶 --depth 與 --limit 正常提取數值
-        buf_impact = io.StringIO()
-        with contextlib.redirect_stdout(buf_impact):
-            ret = process(["impact", "PIDController", "--depth", "3", "--limit", "5", "--json"])
-        self.assertEqual(ret, 0)
-
-        # 6. 驗證 callers / callees / impact 支援 --ftype 選項且 callers --json 在非空結果下正常序列化
-        for cmd in ["callers", "callees", "impact"]:
-            buf_ft = io.StringIO()
-            with contextlib.redirect_stdout(buf_ft):
-                ret = process([cmd, "PIDController", "--ftype", "py", "--json"])
-            self.assertEqual(ret, 0)
-            payload = json.loads(buf_ft.getvalue())
-            self.assertIn("target_query", payload)
-
-        # 7. 驗證 callers --json 在 total_callers > 0 時 (simple/preview/detail) 不會發生 KeyError: 'caller_symbol'
-        from unittest.mock import patch
-        from knowledge_db.schema import UnifiedSymbol
-        from knowledge_db.retrieval import CodeSnippet
+        # 3. 驗證 search -s --json 截斷提示透過 core.locale 與 agent_tool.file_read_range 動態替換 (sub_02 FR-05)
         mock_target = UnifiedSymbol(
             id="t1", name="Panel.UpdateLayout", kind="method",
             file_path="src/Panel.cs", line_number=10, end_line=20, language="c_sharp", signature="void UpdateLayout()"
         )
-        mock_caller = UnifiedSymbol(
-            id="c1", name="Host.Tick", kind="method",
-            file_path="src/Host.cs", line_number=30, end_line=40, language="c_sharp", signature="void Tick()"
-        )
-        mock_res = {
-            "target_query": "Panel.UpdateLayout",
-            "target_symbol": mock_target,
-            "callers": [{
-                "symbol": mock_caller,
-                "call_sites": [{"line_number": 35, "scope": "Host.Tick"}],
-                "code_snippet": CodeSnippet(
-                    start_line=34, end_line=36, target_line=35,
-                    lines=[(34, "public void Tick() {"), (35, "    m_Panel.UpdateLayout();"), (36, "}")],
-                ),
-            }],
-            "total_callers": 1,
-        }
-        with patch("knowledge_db.engine.KnowledgeEngine.callers", return_value=mock_res):
-            for flag in ["--simple", "-s", "--detail"]:
-                buf_c = io.StringIO()
-                with contextlib.redirect_stdout(buf_c):
-                    ret = process(["callers", "Panel.UpdateLayout", flag, "--json"])
-                self.assertEqual(ret, 0)
-                c_data = json.loads(buf_c.getvalue())
-                self.assertEqual(c_data["total_callers"], 1)
-                self.assertEqual(c_data["callers"][0]["caller_symbol"]["name"], "Host.Tick")
-
-        # 8. 驗證 search -s --json 截斷提示透過 core.locale 與 agent_tool.file_read_range 動態替換 (sub_02 FR-05)
-        from knowledge_db.schema import AggregatedFileResult, AggregatedItem
         long_cs = CodeSnippet(
             start_line=10,
             end_line=25,

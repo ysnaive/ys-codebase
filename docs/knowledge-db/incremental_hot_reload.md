@@ -19,7 +19,7 @@ last_updated: "2026-11-02"
 
 # 細粒度增量熱重載與 `on_file_space_changed` 事件驅動熱自癒架構 (Incremental Hot Reload & Space Watcher)
 
-> 本文件說明 `knowledge-db` 模組如何基於 `module:file-space` 的 `YFP2` 單調世代二進位快照與 `cursors/knowledge-db.json` 獨立水位線游標，配合單檔符號快取池、全棧增量差量修補演算法以及 `scripts/hook.file-space.py` (`on_file_space_changed` 訂閱) 實現零冗餘掃描的自動熱自癒。
+> 本文件說明 `knowledge-db` 模組如何基於 `module:file-space` 的 `YFP2` 單調世代二進位快照與 `module:ast` 的 `ASTSnapshot` (`ast_generation`)，配合 `cursors/knowledge-db.json` 與 `InvertedIndex.acked_ast_generation` 雙水位線、單次解析符號共享以及 `scripts/hook.file-space.py` (`on_file_space_changed` 訂閱) 實現零重複 AST 解析的自動熱自癒。
 
 ---
 

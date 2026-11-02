@@ -25,7 +25,6 @@ from .schema import (
     ScanDiffDetail,
     ScanDiffResult,
     FileSpaceConfig,
-    FileSpaceDef,
     FileSpaceOrigin,
 )
 from .service import FileSpaceWatcherServiceWorker, clear_subscribers, subscribe
@@ -211,7 +210,6 @@ __all__ = [
     "ScanDiffResult",
     "SnapshotState",
     "FileSpaceConfig",
-    "FileSpaceDef",
     "FileSpaceError",
     "FileSpaceManager",
     "FileSpaceNotFoundError",

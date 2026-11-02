@@ -78,10 +78,8 @@ class FileSpaceManager:
     Central workspace registry and path resolution engine.
 
     Supports dual-track space discovery:
-    1. Module Contributed: loaded from installed modules' contributes/file-space.json
-       (with fallback to legacy contributes/knowledge-db.json spaces).
-    2. Project Override: loaded from host config://file-space/contribute.json
-       (with fallback to config://knowledge-db/contribute.json).
+    1. Module Contributed: loaded from installed modules' contributes/file-space.json.
+    2. Project Override: loaded from host config://file-space/contribute.json.
     3. Ephemeral Spaces: registered at runtime in memory for sandbox testing.
     """
 
@@ -226,13 +224,9 @@ class FileSpaceManager:
         try:
             from core import contributes as core_contributes
 
-            for target_mod in ("file-space", "knowledge-db"):
-                data = core_contributes.get(target_mod)
-                if not isinstance(data, dict):
-                    continue
-                spaces_map = data.get("spaces", {})
-                if not isinstance(spaces_map, dict):
-                    continue
+            data = core_contributes.get("file-space")
+            spaces_map = data.get("spaces", {}) if isinstance(data, dict) else {}
+            if isinstance(spaces_map, dict):
                 for s_name, s_cfg in spaces_map.items():
                     if not isinstance(s_cfg, dict):
                         continue
@@ -296,37 +290,22 @@ class FileSpaceManager:
         if self._explicit_spaces_config is not None:
             return self._explicit_spaces_config
 
-        project_spaces: Dict[str, Dict[str, Any]] = {}
         if self._custom_config_dir is not None:
-            custom_file = self._custom_config_dir / "contribute.json"
-            if custom_file.is_file():
-                try:
-                    payload = json.loads(custom_file.read_text(encoding="utf-8"))
-                    spaces_dict = payload.get("spaces", {})
-                    if isinstance(spaces_dict, dict):
-                        for s_name, s_cfg in spaces_dict.items():
-                            if isinstance(s_cfg, dict):
-                                project_spaces[s_name] = dict(s_cfg)
-                except Exception:
-                    pass
-            return project_spaces
+            cfg_path = self._custom_config_dir / "contribute.json"
+        else:
+            cfg_path = self._resolve_uri("config://file-space/contribute.json")
 
-        candidate_uris = [
-            "config://file-space/contribute.json",
-            "config://knowledge-db/contribute.json",
-        ]
-        for uri_str in candidate_uris:
-            cfg_path = self._resolve_uri(uri_str)
-            if cfg_path is not None and cfg_path.is_file():
-                try:
-                    payload = json.loads(cfg_path.read_text(encoding="utf-8"))
-                    spaces_dict = payload.get("spaces", {})
-                    if isinstance(spaces_dict, dict):
-                        for s_name, s_cfg in spaces_dict.items():
-                            if isinstance(s_cfg, dict) and s_name not in project_spaces:
-                                project_spaces[s_name] = dict(s_cfg)
-                except Exception:
-                    pass
+        project_spaces: Dict[str, Dict[str, Any]] = {}
+        if cfg_path is not None and cfg_path.is_file():
+            try:
+                payload = json.loads(cfg_path.read_text(encoding="utf-8"))
+                spaces_dict = payload.get("spaces", {})
+                if isinstance(spaces_dict, dict):
+                    for s_name, s_cfg in spaces_dict.items():
+                        if isinstance(s_cfg, dict) and s_name not in project_spaces:
+                            project_spaces[s_name] = dict(s_cfg)
+            except Exception:
+                pass
         return project_spaces
 
     def _build_space_config(
@@ -375,12 +354,9 @@ class FileSpaceManager:
             ),
         )
 
-    def load_spaces(self) -> Dict[str, FileSpaceConfig]:
-        """
-        Load and merge all module-contributed, project-configured, and ephemeral spaces.
-        """
-        merged_spaces: Dict[str, FileSpaceConfig] = {}
-
+    def _load_contributed_space_configs(
+        self, merged_spaces: Dict[str, FileSpaceConfig]
+    ) -> None:
         contributed = self._discover_module_contributed_spaces()
         for name, cfg in contributed.items():
             raw_owners = cfg.get("owner_modules")
@@ -407,6 +383,53 @@ class FileSpaceManager:
                 owner_modules=owners,
             )
 
+    def _merge_project_space_override(
+        self, name: str, base: FileSpaceConfig, p_cfg: Dict[str, Any]
+    ) -> FileSpaceConfig:
+        combined_raw_includes = _dedup_preserve_order(
+            list(base.raw_include_uris) + list(p_cfg.get("include", []))
+        )
+        resolved_paths, raw_uris = self._normalize_include_entries(
+            combined_raw_includes
+        )
+        combined_excludes = (
+            _dedup_preserve_order(list(base.exclude) + list(p_cfg["exclude"]))
+            if "exclude" in p_cfg
+            else list(base.exclude)
+        )
+        combined_patterns = (
+            _dedup_preserve_order(
+                list(base.file_patterns) + list(p_cfg["file_patterns"])
+            )
+            if "file_patterns" in p_cfg
+            else list(base.file_patterns)
+        )
+        owners = _dedup_preserve_order(list(base.owner_modules) + ["project"])
+        return FileSpaceConfig(
+            name=name,
+            include=resolved_paths,
+            raw_include_uris=raw_uris,
+            exclude=combined_excludes,
+            file_patterns=combined_patterns,
+            description=str(p_cfg.get("description", base.description)),
+            hash_policy=p_cfg.get("hash_policy", base.hash_policy),
+            large_file_threshold_mb=int(
+                p_cfg.get(
+                    "large_file_threshold_mb", base.large_file_threshold_mb
+                )
+            ),
+            follow_symlinks=bool(
+                p_cfg.get("follow_symlinks", base.follow_symlinks)
+            ),
+            watch=bool(p_cfg.get("watch", base.watch)),
+            weight=float(p_cfg.get("weight", base.weight)),
+            origin=FileSpaceOrigin.MERGED,
+            owner_modules=owners,
+        )
+
+    def _apply_project_space_overrides(
+        self, merged_spaces: Dict[str, FileSpaceConfig]
+    ) -> None:
         has_explicit_project_override = (
             self._explicit_spaces_config is not None
             or self._custom_config_dir is not None
@@ -414,83 +437,50 @@ class FileSpaceManager:
         )
         project_cfgs = self._discover_project_spaces()
         for name, p_cfg in project_cfgs.items():
-            if name in merged_spaces:
-                if not has_explicit_project_override:
-                    continue
-                base = merged_spaces[name]
-                combined_raw_includes = _dedup_preserve_order(
-                    list(base.raw_include_uris) + list(p_cfg.get("include", []))
-                )
-                resolved_paths, raw_uris = self._normalize_include_entries(
-                    combined_raw_includes
-                )
-                combined_excludes = (
-                    _dedup_preserve_order(
-                        list(base.exclude) + list(p_cfg["exclude"])
-                    )
-                    if "exclude" in p_cfg
-                    else list(base.exclude)
-                )
-                combined_patterns = (
-                    _dedup_preserve_order(
-                        list(base.file_patterns) + list(p_cfg["file_patterns"])
-                    )
-                    if "file_patterns" in p_cfg
-                    else list(base.file_patterns)
-                )
-                owners = _dedup_preserve_order(
-                    list(base.owner_modules) + ["project"]
-                )
-                merged_spaces[name] = FileSpaceConfig(
-                    name=name,
-                    include=resolved_paths,
-                    raw_include_uris=raw_uris,
-                    exclude=combined_excludes,
-                    file_patterns=combined_patterns,
-                    description=str(p_cfg.get("description", base.description)),
-                    hash_policy=p_cfg.get("hash_policy", base.hash_policy),
-                    large_file_threshold_mb=int(
-                        p_cfg.get(
-                            "large_file_threshold_mb", base.large_file_threshold_mb
-                        )
-                    ),
-                    follow_symlinks=bool(
-                        p_cfg.get("follow_symlinks", base.follow_symlinks)
-                    ),
-                    watch=bool(p_cfg.get("watch", base.watch)),
-                    weight=float(p_cfg.get("weight", base.weight)),
-                    origin=FileSpaceOrigin.MERGED,
-                    owner_modules=owners,
-                )
-            else:
+            if name not in merged_spaces:
                 merged_spaces[name] = self._build_space_config(
                     name=name,
                     raw_cfg=p_cfg,
                     origin=FileSpaceOrigin.PROJECT,
                     owner_modules=["project"],
                 )
+            elif has_explicit_project_override:
+                merged_spaces[name] = self._merge_project_space_override(
+                    name, merged_spaces[name], p_cfg
+                )
+
+    def _synthesize_default_source_space(self) -> FileSpaceConfig:
+        p_root = self.project_root
+        return FileSpaceConfig(
+            name="source",
+            include=[p_root],
+            raw_include_uris=[p_root.as_posix()],
+            exclude=list(DEFAULT_EXCLUDES),
+            file_patterns=list(DEFAULT_FILE_PATTERNS),
+            description="Default project workspace",
+            hash_policy=HashPolicy.ADAPTIVE,
+            large_file_threshold_mb=10,
+            follow_symlinks=False,
+            watch=True,
+            weight=1.0,
+            origin=FileSpaceOrigin.PROJECT,
+            owner_modules=["project"],
+        )
+
+    def load_spaces(self) -> Dict[str, FileSpaceConfig]:
+        """
+        Load and merge all module-contributed, project-configured, and ephemeral spaces.
+        """
+        merged_spaces: Dict[str, FileSpaceConfig] = {}
+        self._load_contributed_space_configs(merged_spaces)
+        self._apply_project_space_overrides(merged_spaces)
 
         if (
             not merged_spaces
             and self._explicit_spaces_config is None
             and self._explicit_contributed_spaces is None
         ):
-            p_root = self.project_root
-            merged_spaces["source"] = FileSpaceConfig(
-                name="source",
-                include=[p_root],
-                raw_include_uris=[p_root.as_posix()],
-                exclude=list(DEFAULT_EXCLUDES),
-                file_patterns=list(DEFAULT_FILE_PATTERNS),
-                description="Default project workspace",
-                hash_policy=HashPolicy.ADAPTIVE,
-                large_file_threshold_mb=10,
-                follow_symlinks=False,
-                watch=True,
-                weight=1.0,
-                origin=FileSpaceOrigin.PROJECT,
-                owner_modules=["project"],
-            )
+            merged_spaces["source"] = self._synthesize_default_source_space()
 
         for e_name, e_cfg in self._ephemeral_spaces.items():
             merged_spaces[e_name] = e_cfg
@@ -562,10 +552,6 @@ class FileSpaceManager:
             )
         return self._spaces[name]
 
-    def get_space_config(self, name: str) -> FileSpaceConfig:
-        """Backward-compatible alias for get_space(name)."""
-        return self.get_space(name)
-
     def resolve_space_include(self, name: str) -> List[Path]:
         """Return existing directory paths for a workspace's include roots."""
         cfg = self.get_space(name)
@@ -574,13 +560,6 @@ class FileSpaceManager:
             if inc_path.exists() and inc_path.is_dir():
                 valid_dirs.append(inc_path.resolve())
         return valid_dirs
-
-    def get_space_storage_dir(self, space_name: str) -> Path:
-        """Return and ensure the dedicated storage directory for a workspace."""
-        self.get_space(space_name)
-        target = self.storage_root / "spaces" / space_name
-        target.mkdir(parents=True, exist_ok=True)
-        return target
 
     def compute_config_hash(self, space_name: Optional[str] = None) -> str:
         """Compute a deterministic digest of workspace geometry and filter rules."""

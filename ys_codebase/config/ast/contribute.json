@@ -1,0 +1,11 @@
+{
+  "languages": {
+    "spice": {
+      "id": "spice",
+      "name": "SPICE",
+      "extensions": [".sp", ".cir", ".spice", ".net", ".cdl", ".netlist", ".lib", ".inc"],
+      "mode": "custom",
+      "parser_entry": "ast_engine.parsers.spice_parser:SpiceParser"
+    }
+  }
+}

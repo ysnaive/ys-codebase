@@ -177,9 +177,6 @@ class FileSpaceConfig:
         )
 
 
-FileSpaceDef = FileSpaceConfig
-
-
 @dataclass
 class FileFingerprint:
     """
@@ -196,54 +193,16 @@ class FileFingerprint:
     is_deleted: bool = False
     pending_stabilization: bool = False
 
-    def __init__(
-        self,
-        path: Optional[str] = None,
-        mtime_ns: Optional[int] = None,
-        size: int = 0,
-        content_hash: Optional[str] = None,
-        source_root: str = "",
-        created_gen: int = 1,
-        updated_gen: int = 1,
-        is_deleted: bool = False,
-        pending_stabilization: bool = False,
-        *,
-        relpath: Optional[str] = None,
-        mtime: Optional[float] = None,
-        sha1: Optional[str] = None,
-    ) -> None:
-        resolved_path = path if path is not None else (relpath or "")
-        self.path = resolved_path.replace("\\", "/")
-        if mtime_ns is not None:
-            self.mtime_ns = int(mtime_ns)
-        elif mtime is not None:
-            self.mtime_ns = int(float(mtime) * 1_000_000_000)
-        else:
-            self.mtime_ns = 0
-        self.size = int(size)
-        self.content_hash = (
-            content_hash if content_hash is not None else (sha1 or "")
-        )
-        self.source_root = str(source_root)
-        self.created_gen = int(created_gen)
-        self.updated_gen = int(updated_gen)
-        self.is_deleted = bool(is_deleted)
-        self.pending_stabilization = bool(pending_stabilization)
-
-    @property
-    def relpath(self) -> str:
-        """Backward-compatible alias for path."""
-        return self.path
-
-    @property
-    def mtime(self) -> float:
-        """Backward-compatible mtime in seconds."""
-        return self.mtime_ns / 1_000_000_000.0
-
-    @property
-    def sha1(self) -> str:
-        """Backward-compatible alias for content_hash."""
-        return self.content_hash
+    def __post_init__(self) -> None:
+        self.path = str(self.path or "").replace("\\", "/")
+        self.mtime_ns = int(self.mtime_ns or 0)
+        self.size = int(self.size)
+        self.content_hash = str(self.content_hash or "")
+        self.source_root = str(self.source_root)
+        self.created_gen = int(self.created_gen)
+        self.updated_gen = int(self.updated_gen)
+        self.is_deleted = bool(self.is_deleted)
+        self.pending_stabilization = bool(self.pending_stabilization)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize FileFingerprint into a dictionary."""
@@ -309,63 +268,17 @@ class ScanDiffResult:
     space_name: Optional[str] = None
     space_generations: Dict[str, int] = field(default_factory=dict)
 
-    def __init__(
-        self,
-        added_count: Optional[int] = None,
-        modified_count: Optional[int] = None,
-        deleted_count: Optional[int] = None,
-        unchanged_count: Optional[int] = None,
-        detail: Optional[ScanDiffDetail] = None,
-        from_generation: int = 0,
-        to_generation: int = 0,
-        merkle_root: str = "",
-        space_name: Optional[str] = None,
-        space_generations: Optional[Dict[str, int]] = None,
-        *,
-        added: Optional[Union[List[str], Set[str]]] = None,
-        modified: Optional[Union[List[str], Set[str]]] = None,
-        deleted: Optional[Union[List[str], Set[str]]] = None,
-        unchanged: Optional[Union[List[str], Set[str]]] = None,
-    ) -> None:
-        if detail is None:
-            detail = ScanDiffDetail(
-                added=set(added or []),
-                modified=set(modified or []),
-                deleted=set(deleted or []),
-                unchanged=set(unchanged or []),
-            )
-        else:
-            if added is not None:
-                detail.added = set(added)
-            if modified is not None:
-                detail.modified = set(modified)
-            if deleted is not None:
-                detail.deleted = set(deleted)
-            if unchanged is not None:
-                detail.unchanged = set(unchanged)
-
-        self.detail = detail
-        self.added_count = (
-            int(added_count) if added_count is not None else len(detail.added)
-        )
-        self.modified_count = (
-            int(modified_count)
-            if modified_count is not None
-            else len(detail.modified)
-        )
-        self.deleted_count = (
-            int(deleted_count) if deleted_count is not None else len(detail.deleted)
-        )
-        self.unchanged_count = (
-            int(unchanged_count)
-            if unchanged_count is not None
-            else len(detail.unchanged)
-        )
-        self.from_generation = int(from_generation)
-        self.to_generation = int(to_generation)
-        self.merkle_root = str(merkle_root)
-        self.space_name = space_name
-        self.space_generations = dict(space_generations) if space_generations is not None else {}
+    def __post_init__(self) -> None:
+        if self.detail is None:
+            self.detail = ScanDiffDetail()
+        self.added_count = int(self.added_count) if self.added_count else len(self.detail.added)
+        self.modified_count = int(self.modified_count) if self.modified_count else len(self.detail.modified)
+        self.deleted_count = int(self.deleted_count) if self.deleted_count else len(self.detail.deleted)
+        self.unchanged_count = int(self.unchanged_count) if self.unchanged_count else len(self.detail.unchanged)
+        self.from_generation = int(self.from_generation)
+        self.to_generation = int(self.to_generation)
+        self.merkle_root = str(self.merkle_root)
+        self.space_generations = dict(self.space_generations) if self.space_generations else {}
 
     @property
     def added(self) -> List[str]:

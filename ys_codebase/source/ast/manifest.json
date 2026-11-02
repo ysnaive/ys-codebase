@@ -1,0 +1,42 @@
+{
+  "id": "ast",
+  "name": "ast",
+  "version": "1.0.0.0",
+  "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
+  "author": "YSCB Team",
+  "entry": "scripts/cli.py",
+  "dependencies": {
+    "core": ">=1.2.2",
+    "file-space": ">=1.0.0"
+  },
+  "optional": {
+    "server": {
+      "version": ">=1.0.0",
+      "hint": "提供背景檔案變更事件觸發之 AST 與呼叫圖譜即時熱修補能力"
+    }
+  },
+  "pip_dependencies": {
+    "tree-sitter": ">=0.23.0",
+    "tree-sitter-python": ">=0.23.0",
+    "tree-sitter-c-sharp": ">=0.23.0",
+    "tree-sitter-cpp": ">=0.23.0",
+    "tree-sitter-c": ">=0.23.0",
+    "tree-sitter-javascript": ">=0.23.0",
+    "tree-sitter-typescript": ">=0.23.0",
+    "tree-sitter-markdown": ">=0.3.0",
+    "networkx": ">=3.0"
+  },
+  "uris": {
+    "storage": "cache://ast"
+  },
+  "onboarding": [
+    "請執行 `python yscb.py ast status` 檢視各空間 AST 快照與呼叫圖譜世代狀態。",
+    "請執行 `python yscb.py ast outline <file>` 檢視單檔階層化結構大綱與跨分部姊妹檔提示。",
+    "請執行 `python yscb.py ast callers <symbol>`、`callees <symbol>` 或 `impact <symbol>` 追蹤跨檔案呼叫拓撲與修改影響半徑。"
+  ],
+  "release": {
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "初版 ast 模組發布，提供 10 語言方言隔離、C# partial 雙層分部符號聚合、無 BM25 同名異載群組定址、outline 三維度過濾與呼叫圖譜"
+  }
+}

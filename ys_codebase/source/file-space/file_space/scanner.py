@@ -29,6 +29,70 @@ RACY_CLEAN_WINDOW_NS = 10_000_000
 SPARSE_SAMPLE_CHUNK_BYTES = 64 * 1024
 LAZY_STABILIZATION_SECONDS = 2.0
 
+_WATCHER_STATE_LOCK = threading.Lock()
+_ACTIVE_WATCHER_COUNT = 0
+
+
+def _adjust_active_watcher_count(delta: int) -> None:
+    """Increment or decrement the active in-process watcher count."""
+    global _ACTIVE_WATCHER_COUNT
+    with _WATCHER_STATE_LOCK:
+        _ACTIVE_WATCHER_COUNT = max(0, _ACTIVE_WATCHER_COUNT + delta)
+
+
+def _is_daemon_pid_alive(project_root: Optional[Path]) -> bool:
+    """Probe whether a background file-space daemon process is alive for project_root."""
+    if project_root is None:
+        return False
+    p_root = Path(project_root)
+    candidates = [
+        p_root / "ys_codebase" / ".cache" / "file-space" / "daemon.json",
+        p_root / ".cache" / "file-space" / "daemon.json",
+    ]
+    for status_file in candidates:
+        if not status_file.is_file():
+            continue
+        try:
+            data = json.loads(status_file.read_text(encoding="utf-8"))
+            pid = int(data.get("pid", 0)) if isinstance(data, dict) else 0
+            if pid > 0:
+                os.kill(pid, 0)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def is_watcher_active(project_root: Optional[Path] = None) -> bool:
+    """Return True if a background file-space watcher process or worker is alive."""
+    with _WATCHER_STATE_LOCK:
+        if _ACTIVE_WATCHER_COUNT > 0:
+            return True
+    return _is_daemon_pid_alive(project_root)
+
+
+def _atomic_write_bytes(target_path: Path, payload: bytes) -> None:
+    """Write bytes to a temporary sibling file, fsync, and atomically replace target_path."""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target_path.parent),
+        prefix=f".{target_path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, target_path)
+    except Exception:
+        if os.path.exists(tmp_name):
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+        raise
+
 
 def compute_merkle_root(entries: Dict[str, FileFingerprint]) -> str:
     """
@@ -163,26 +227,7 @@ class BinarySnapshotManager:
         body = b"".join(chunks)
         digest = hashlib.blake2b(body, digest_size=self.CHECKSUM_SIZE).digest()
         payload = body + digest
-
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(target.parent),
-            prefix=f".{target.name}.",
-            suffix=".tmp",
-        )
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_name, target)
-        except Exception:
-            if os.path.exists(tmp_name):
-                try:
-                    os.unlink(tmp_name)
-                except OSError:
-                    pass
-            raise
-
+        _atomic_write_bytes(target, payload)
         return target
 
     def load_state(
@@ -301,70 +346,6 @@ class BinarySnapshotManager:
             entries=entries,
         )
 
-    def save(
-        self,
-        entries: Dict[str, Any],
-        path: Optional[Union[str, Path]] = None,
-        *,
-        head_generation: int = 1,
-        config_hash: str = "",
-    ) -> Path:
-        """
-        Save a dictionary of FileFingerprint (or legacy tuple) records into YFP2 format.
-        """
-        normalized: Dict[str, FileFingerprint] = {}
-        for rel_path, val in entries.items():
-            if isinstance(val, FileFingerprint):
-                normalized[rel_path] = val
-            elif isinstance(val, (tuple, list)):
-                if len(val) >= 3:
-                    raw_mtime, raw_size, raw_hash = val[0], val[1], val[2]
-                    mtime_ns = (
-                        int(raw_mtime)
-                        if isinstance(raw_mtime, int) and raw_mtime > 10_000_000_000
-                        else int(float(raw_mtime) * 1_000_000_000)
-                    )
-                    src_root = str(val[3]) if len(val) >= 4 else ""
-                    normalized[rel_path] = FileFingerprint(
-                        path=rel_path,
-                        mtime_ns=mtime_ns,
-                        size=int(raw_size),
-                        content_hash=str(raw_hash),
-                        source_root=src_root,
-                        created_gen=head_generation,
-                        updated_gen=head_generation,
-                    )
-            elif isinstance(val, dict):
-                normalized[rel_path] = FileFingerprint(
-                    path=rel_path,
-                    mtime_ns=int(val.get("mtime_ns", int(float(val.get("mtime", 0)) * 1e9))),
-                    size=int(val.get("size", 0)),
-                    content_hash=str(val.get("content_hash", val.get("sha1", ""))),
-                    source_root=str(val.get("source_root", "")),
-                    created_gen=int(val.get("created_gen", head_generation)),
-                    updated_gen=int(val.get("updated_gen", head_generation)),
-                    is_deleted=bool(val.get("is_deleted", False)),
-                    pending_stabilization=bool(val.get("pending_stabilization", False)),
-                )
-
-        m_root = compute_merkle_root(normalized)
-        state = SnapshotState(
-            head_generation=head_generation,
-            merkle_root=m_root,
-            config_hash=config_hash,
-            entries=normalized,
-        )
-        return self.save_state(state, path=path)
-
-    def load(
-        self, path: Optional[Union[str, Path]] = None
-    ) -> Dict[str, FileFingerprint]:
-        """
-        Load active FileFingerprint dictionary from a YFP2 snapshot file.
-        """
-        state = self.load_state(path=path)
-        return state.active_entries
-
 
 class CursorStore:
     """
@@ -445,24 +426,7 @@ class CursorStore:
                 "updated_at": time.time(),
             }
             payload = json.dumps(all_spaces, indent=2, sort_keys=True).encode("utf-8")
-            fd, tmp_name = tempfile.mkstemp(
-                dir=str(self.cursors_dir),
-                prefix=f".{c_file.name}.",
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    f.write(payload)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_name, c_file)
-            except Exception:
-                if os.path.exists(tmp_name):
-                    try:
-                        os.unlink(tmp_name)
-                    except OSError:
-                        pass
-                raise
+            _atomic_write_bytes(c_file, payload)
 
     def reset_cursor(
         self,
@@ -649,98 +613,84 @@ class FingerprintScanner:
                 True,
             )
 
-    def scan_space(
+    def _prepare_previous_state(
         self,
         space_name: str,
-        previous_state: Optional[SnapshotState] = None,
-        *,
-        background: bool = False,
-        force: bool = False,
-    ) -> Tuple[SnapshotState, ScanDiffResult]:
-        """
-        Execute two-stage fingerprint scan on a single workspace and return
-        the updated SnapshotState and ScanDiffResult relative to previous_state.
-        """
-        cfg = self.space_manager.get_space(space_name)
-        cfg_hash = self.space_manager.compute_config_hash(space_name)
-
+        cfg_hash: str,
+        previous_state: Optional[SnapshotState],
+        force: bool,
+    ) -> SnapshotState:
         if previous_state is None and not force:
             prev_state, corrupted = self._load_or_recover_state(space_name)
             if corrupted or (
                 prev_state.config_hash and prev_state.config_hash != cfg_hash
             ):
-                prev_state = SnapshotState(
+                return SnapshotState(
                     head_generation=prev_state.head_generation,
                     merkle_root="",
                     config_hash=cfg_hash,
                     entries={},
                 )
-        elif previous_state is not None and not force:
-            prev_state = previous_state
-        else:
-            existing_state, _ = self._load_or_recover_state(space_name)
-            prev_state = SnapshotState(
-                head_generation=existing_state.head_generation,
-                merkle_root="",
-                config_hash=cfg_hash,
-                entries={},
-            )
+            return prev_state
+        if previous_state is not None and not force:
+            return previous_state
+        existing_state, _ = self._load_or_recover_state(space_name)
+        return SnapshotState(
+            head_generation=existing_state.head_generation,
+            merkle_root="",
+            config_hash=cfg_hash,
+            entries={},
+        )
 
-        scan_start_ns = time.time_ns()
-        prev_entries = prev_state.entries
-        next_gen_candidate = prev_state.head_generation + 1
+    def _evaluate_entry_fingerprint(
+        self,
+        rel_path: str,
+        abs_path: Path,
+        src_root: Path,
+        cfg: FileSpaceConfig,
+        prev_fp: Optional[FileFingerprint],
+        next_gen_candidate: int,
+        scan_start_ns: int,
+        background: bool,
+        force: bool,
+    ) -> Tuple[Optional[str], Optional[FileFingerprint]]:
+        try:
+            st = abs_path.stat()
+        except OSError:
+            return None, None
 
-        added_set: Set[str] = set()
-        modified_set: Set[str] = set()
-        deleted_set: Set[str] = set()
-        unchanged_set: Set[str] = set()
+        mtime_ns = int(st.st_mtime_ns)
+        size = int(st.st_size)
+        is_racy = abs(scan_start_ns - mtime_ns) < RACY_CLEAN_WINDOW_NS
 
-        new_entries: Dict[str, FileFingerprint] = dict(prev_entries)
-        seen_paths: Set[str] = set()
-
-        for rel_path, abs_path, src_root in self.space_manager.iter_space_files(
-            space_name
+        if (
+            prev_fp is not None
+            and not prev_fp.is_deleted
+            and not prev_fp.pending_stabilization
+            and not is_racy
+            and not force
+            and prev_fp.mtime_ns == mtime_ns
+            and prev_fp.size == size
         ):
-            seen_paths.add(rel_path)
-            try:
-                st = abs_path.stat()
-            except OSError:
-                continue
+            return "unchanged", None
 
-            mtime_ns = int(st.st_mtime_ns)
-            size = int(st.st_size)
-            prev_fp = prev_entries.get(rel_path)
+        try:
+            content_hash, pending = self.compute_file_hash(
+                file_path=abs_path,
+                size=size,
+                mtime_ns=mtime_ns,
+                policy=cfg.hash_policy,
+                large_file_threshold_mb=cfg.large_file_threshold_mb,
+                background=background,
+                now_ns=scan_start_ns,
+            )
+        except OSError:
+            return None, None
 
-            is_racy = abs(scan_start_ns - mtime_ns) < RACY_CLEAN_WINDOW_NS
-
-            if (
-                prev_fp is not None
-                and not prev_fp.is_deleted
-                and not prev_fp.pending_stabilization
-                and not is_racy
-                and not force
-                and prev_fp.mtime_ns == mtime_ns
-                and prev_fp.size == size
-            ):
-                unchanged_set.add(rel_path)
-                continue
-
-            try:
-                content_hash, pending = self.compute_file_hash(
-                    file_path=abs_path,
-                    size=size,
-                    mtime_ns=mtime_ns,
-                    policy=cfg.hash_policy,
-                    large_file_threshold_mb=cfg.large_file_threshold_mb,
-                    background=background,
-                    now_ns=scan_start_ns,
-                )
-            except OSError:
-                continue
-
-            if prev_fp is None or prev_fp.is_deleted:
-                added_set.add(rel_path)
-                new_entries[rel_path] = FileFingerprint(
+        if prev_fp is None or prev_fp.is_deleted:
+            return (
+                "added",
+                FileFingerprint(
                     path=rel_path,
                     mtime_ns=mtime_ns,
                     size=size,
@@ -750,13 +700,15 @@ class FingerprintScanner:
                     updated_gen=next_gen_candidate,
                     is_deleted=False,
                     pending_stabilization=pending,
-                )
-            elif (
-                prev_fp.content_hash != content_hash
-                or prev_fp.pending_stabilization != pending
-            ):
-                modified_set.add(rel_path)
-                new_entries[rel_path] = FileFingerprint(
+                ),
+            )
+        if (
+            prev_fp.content_hash != content_hash
+            or prev_fp.pending_stabilization != pending
+        ):
+            return (
+                "modified",
+                FileFingerprint(
                     path=rel_path,
                     mtime_ns=mtime_ns,
                     size=size,
@@ -766,21 +718,31 @@ class FingerprintScanner:
                     updated_gen=next_gen_candidate,
                     is_deleted=False,
                     pending_stabilization=pending,
-                )
-            else:
-                unchanged_set.add(rel_path)
-                new_entries[rel_path] = FileFingerprint(
-                    path=rel_path,
-                    mtime_ns=mtime_ns,
-                    size=size,
-                    content_hash=content_hash,
-                    source_root=src_root.as_posix(),
-                    created_gen=prev_fp.created_gen,
-                    updated_gen=prev_fp.updated_gen,
-                    is_deleted=False,
-                    pending_stabilization=False,
-                )
+                ),
+            )
+        return (
+            "unchanged",
+            FileFingerprint(
+                path=rel_path,
+                mtime_ns=mtime_ns,
+                size=size,
+                content_hash=content_hash,
+                source_root=src_root.as_posix(),
+                created_gen=prev_fp.created_gen,
+                updated_gen=prev_fp.updated_gen,
+                is_deleted=False,
+                pending_stabilization=False,
+            ),
+        )
 
+    @staticmethod
+    def _mark_deleted_entries(
+        prev_entries: Dict[str, FileFingerprint],
+        seen_paths: Set[str],
+        next_gen_candidate: int,
+        new_entries: Dict[str, FileFingerprint],
+    ) -> Set[str]:
+        deleted_set: Set[str] = set()
         for rel_path, prev_fp in prev_entries.items():
             if rel_path not in seen_paths and not prev_fp.is_deleted:
                 deleted_set.add(rel_path)
@@ -795,12 +757,69 @@ class FingerprintScanner:
                     is_deleted=True,
                     pending_stabilization=False,
                 )
+        return deleted_set
 
+    def scan_space(
+        self,
+        space_name: str,
+        previous_state: Optional[SnapshotState] = None,
+        *,
+        background: bool = False,
+        force: bool = False,
+    ) -> Tuple[SnapshotState, ScanDiffResult]:
+        """
+        Execute two-stage fingerprint scan on a single workspace and return
+        the updated SnapshotState and ScanDiffResult relative to previous_state.
+        """
+        cfg = self.space_manager.get_space(space_name)
+        cfg_hash = self.space_manager.compute_config_hash(space_name)
+        prev_state = self._prepare_previous_state(
+            space_name, cfg_hash, previous_state, force
+        )
+
+        scan_start_ns = time.time_ns()
+        prev_entries = prev_state.entries
+        next_gen_candidate = prev_state.head_generation + 1
+
+        added_set: Set[str] = set()
+        modified_set: Set[str] = set()
+        unchanged_set: Set[str] = set()
+        new_entries: Dict[str, FileFingerprint] = dict(prev_entries)
+        seen_paths: Set[str] = set()
+
+        for rel_path, abs_path, src_root in self.space_manager.iter_space_files(
+            space_name
+        ):
+            seen_paths.add(rel_path)
+            status, updated_fp = self._evaluate_entry_fingerprint(
+                rel_path=rel_path,
+                abs_path=abs_path,
+                src_root=src_root,
+                cfg=cfg,
+                prev_fp=prev_entries.get(rel_path),
+                next_gen_candidate=next_gen_candidate,
+                scan_start_ns=scan_start_ns,
+                background=background,
+                force=force,
+            )
+            if status == "added":
+                added_set.add(rel_path)
+            elif status == "modified":
+                modified_set.add(rel_path)
+            elif status == "unchanged":
+                unchanged_set.add(rel_path)
+            if updated_fp is not None:
+                new_entries[rel_path] = updated_fp
+
+        deleted_set = self._mark_deleted_entries(
+            prev_entries, seen_paths, next_gen_candidate, new_entries
+        )
         has_structural_change = bool(added_set or modified_set or deleted_set)
-        if prev_state.head_generation == 0 or has_structural_change:
-            final_gen = next_gen_candidate
-        else:
-            final_gen = prev_state.head_generation
+        final_gen = (
+            next_gen_candidate
+            if (prev_state.head_generation == 0 or has_structural_change)
+            else prev_state.head_generation
+        )
 
         m_root = compute_merkle_root(new_entries)
         new_state = SnapshotState(
@@ -809,7 +828,6 @@ class FingerprintScanner:
             config_hash=cfg_hash,
             entries=new_entries,
         )
-
         detail = ScanDiffDetail(
             added=added_set,
             modified=modified_set,
@@ -1021,9 +1039,7 @@ class FingerprintScanner:
     def _diff_all_spaces(
         self, consumer_id: str, *, auto_refresh: bool = False
     ) -> ScanDiffResult:
-        from .service import is_watcher_active
-
-        watcher_active = is_watcher_active()
+        watcher_active = is_watcher_active(self.space_manager.project_root)
         all_added: Set[str] = set()
         all_modified: Set[str] = set()
         all_deleted: Set[str] = set()
@@ -1073,13 +1089,10 @@ class FingerprintScanner:
         consumer_id: str = "default",
         generation: Optional[int] = None,
         space_generations: Optional[Dict[str, int]] = None,
-        *,
-        consumer: Optional[str] = None,
     ) -> int:
         """
         Advance the consumer's cursor watermark to the target generation (or current head_generation).
         """
-        effective_consumer = consumer if consumer is not None else consumer_id
         if space_name is not None:
             state, _ = self._load_or_recover_state(space_name)
             target_gen = (
@@ -1094,7 +1107,7 @@ class FingerprintScanner:
             cfg_hash = self.space_manager.compute_config_hash(space_name)
             self.cursor_store.set_cursor(
                 space_key=space_name,
-                consumer_id=effective_consumer,
+                consumer_id=consumer_id,
                 acked_gen=target_gen,
                 merkle_root=state.merkle_root,
                 config_hash=cfg_hash,
@@ -1111,7 +1124,7 @@ class FingerprintScanner:
             )
             self.cursor_store.set_cursor(
                 space_key=s_name,
-                consumer_id=effective_consumer,
+                consumer_id=consumer_id,
                 acked_gen=s_target_gen,
                 merkle_root=s_state.merkle_root,
                 config_hash=s_cfg_hash,
@@ -1126,7 +1139,7 @@ class FingerprintScanner:
         u_cfg_hash = self.space_manager.compute_config_hash(None)
         self.cursor_store.set_cursor(
             space_key=self.UNIFIED_KEY,
-            consumer_id=effective_consumer,
+            consumer_id=consumer_id,
             acked_gen=target_u_gen,
             merkle_root=u_state.merkle_root,
             config_hash=u_cfg_hash,
@@ -1156,9 +1169,7 @@ class FingerprintScanner:
         Automatically advances cursor via ack() upon normal exit; preserves previous cursor if an exception occurs.
         """
         if auto_refresh is None:
-            from .service import is_watcher_active
-
-            if not is_watcher_active():
+            if not is_watcher_active(self.space_manager.project_root):
                 auto_refresh = True
             elif space_name is not None:
                 s_cfg = self.space_manager.get_space(space_name)
@@ -1177,98 +1188,3 @@ class FingerprintScanner:
             generation=diff_result.to_generation,
             space_generations=getattr(diff_result, "space_generations", None),
         )
-
-    # ------------------------------------------------------------------
-    # Legacy / Low-Level Compatibility Methods for Downstream Callers
-    # ------------------------------------------------------------------
-    def scan_all(
-        self, space_name: Optional[str] = None
-    ) -> Dict[str, FileFingerprint]:
-        """Scan and return active FileFingerprint map for one or all spaces."""
-        self.refresh(space_name)
-        return self.snapshot(space_name)
-
-    def scan_all_spaces(
-        self, space_name: Optional[str] = None
-    ) -> Dict[str, FileFingerprint]:
-        """Alias for scan_all(space_name)."""
-        return self.scan_all(space_name=space_name)
-
-    def compute_diff(
-        self,
-        old_snapshot: Dict[str, FileFingerprint],
-        new_snapshot: Optional[Dict[str, FileFingerprint]] = None,
-        space_name: Optional[str] = None,
-    ) -> ScanDiffResult:
-        """Compare two FileFingerprint dictionaries and return a ScanDiffResult."""
-        current = (
-            new_snapshot
-            if new_snapshot is not None
-            else self.scan_all(space_name=space_name)
-        )
-        old_keys = set(old_snapshot.keys())
-        new_keys = set(current.keys())
-
-        added_set = new_keys - old_keys
-        deleted_set = old_keys - new_keys
-        modified_set: Set[str] = set()
-        unchanged_set: Set[str] = set()
-
-        for k in old_keys & new_keys:
-            old_fp = old_snapshot[k]
-            new_fp = current[k]
-            if old_fp.content_hash != new_fp.content_hash:
-                modified_set.add(k)
-            else:
-                unchanged_set.add(k)
-
-        detail = ScanDiffDetail(
-            added=added_set,
-            modified=modified_set,
-            deleted=deleted_set,
-            unchanged=unchanged_set,
-        )
-        return ScanDiffResult(
-            added_count=len(added_set),
-            modified_count=len(modified_set),
-            deleted_count=len(deleted_set),
-            unchanged_count=len(unchanged_set),
-            detail=detail,
-            from_generation=0,
-            to_generation=1,
-            merkle_root=compute_merkle_root(current),
-            space_name=space_name,
-        )
-
-    def check_invalidation(
-        self,
-        space_name: Optional[str] = None,
-        consumer_id: str = "default",
-    ) -> bool:
-        """Return True if workspace geometry or files have changed since last ack."""
-        diff_res = self.diff(
-            space_name=space_name, consumer_id=consumer_id, auto_refresh=True
-        )
-        return diff_res.has_changes
-
-    def save_snapshot(
-        self,
-        entries: Dict[str, FileFingerprint],
-        space_name: Optional[str] = None,
-        head_generation: int = 1,
-    ) -> Path:
-        """Persist a FileFingerprint dictionary to the space's YFP2 snapshot path."""
-        cfg_hash = self.space_manager.compute_config_hash(space_name)
-        return self.snapshot_mgr.save(
-            entries,
-            path=self.get_snapshot_path(space_name),
-            head_generation=head_generation,
-            config_hash=cfg_hash,
-        )
-
-    def load_snapshot(
-        self, space_name: Optional[str] = None
-    ) -> Dict[str, FileFingerprint]:
-        """Load active FileFingerprint dictionary from the space's YFP2 snapshot path."""
-        state, _ = self._load_or_recover_state(space_name)
-        return state.active_entries

@@ -334,6 +334,7 @@ class InvertedIndex:
     def __init__(self, space_name: str = ""):
         self.space_name = space_name
         self.doc_count: int = 0
+        self.acked_ast_generation: int = 0
         self.symbols: Dict[str, UnifiedSymbol] = {}
         self.index: Dict[str, List[Posting]] = defaultdict(list)
         self.doc_lengths: Dict[str, Dict[str, int]] = {}  # 頂層文檔長度共享池
@@ -412,7 +413,7 @@ class InvertedIndex:
 
     def build(self, symbols: List[UnifiedSymbol], tokenizer: Optional[MultilingualTokenizer] = None, space: str = "") -> None:
         """批次建立倒排索引並計算 avgdl"""
-        from .bundler import aggregate_partial_symbols
+        from ast_engine.bundler import aggregate_partial_symbols
         symbols = aggregate_partial_symbols(symbols)
         tok = tokenizer or MultilingualTokenizer()
         if space:
@@ -444,6 +445,7 @@ class InvertedIndex:
         return {
             "space_name": self.space_name,
             "doc_count": self.doc_count,
+            "acked_ast_generation": self.acked_ast_generation,
             "field_avgdl": dict(self.field_avgdl),
             "field_total_lengths": dict(self.field_total_lengths),
             "doc_lengths": dict(self.doc_lengths),
@@ -459,6 +461,7 @@ class InvertedIndex:
 
         idx = cls(space_name=data.get("space_name", ""))
         idx.doc_count = int(data.get("doc_count", 0))
+        idx.acked_ast_generation = int(data.get("acked_ast_generation", 0))
         idx.field_avgdl = data.get("field_avgdl", {f: 1.0 for f in cls.INDEXED_FIELDS})
         idx.field_total_lengths = data.get("field_total_lengths", {f: 0 for f in cls.INDEXED_FIELDS})
         idx.doc_lengths = data.get("doc_lengths", {})
@@ -480,6 +483,7 @@ class InvertedIndex:
         dirty_file_paths: Set[str],
         new_symbols: List[UnifiedSymbol],
         tokenizer: Optional[MultilingualTokenizer] = None,
+        pre_aggregated: bool = False,
     ) -> None:
         """
         差量修補倒排索引 (Incremental Hot Patching)：
@@ -505,20 +509,21 @@ class InvertedIndex:
             return None
 
         affected_cs_keys: Set[Tuple[str, str, str]] = set()
-        for doc_id in doc_ids_to_remove:
-            sym_old = self.symbols.get(doc_id)
-            if sym_old:
-                ck = _cs_type_key(sym_old)
+        if not pre_aggregated:
+            for doc_id in doc_ids_to_remove:
+                sym_old = self.symbols.get(doc_id)
+                if sym_old:
+                    ck = _cs_type_key(sym_old)
+                    if ck:
+                        affected_cs_keys.add(ck)
+            for sym_new in new_symbols:
+                ck = _cs_type_key(sym_new)
                 if ck:
                     affected_cs_keys.add(ck)
-        for sym_new in new_symbols:
-            ck = _cs_type_key(sym_new)
-            if ck:
-                affected_cs_keys.add(ck)
 
         surviving_partials: List[UnifiedSymbol] = []
-        if affected_cs_keys:
-            from .bundler import restore_unaggregated_partial_symbol
+        if affected_cs_keys and not pre_aggregated:
+            from ast_engine.bundler import restore_unaggregated_partial_symbol
             for doc_id, sym_rem in list(self.symbols.items()):
                 if doc_id in doc_ids_set:
                     continue
@@ -554,8 +559,8 @@ class InvertedIndex:
                 else:
                     del self.index[term]
 
-        if affected_cs_keys:
-            from .bundler import aggregate_partial_symbols
+        if affected_cs_keys and not pre_aggregated:
+            from ast_engine.bundler import aggregate_partial_symbols
             new_symbols = aggregate_partial_symbols(surviving_partials + list(new_symbols))
 
         for sym in new_symbols:

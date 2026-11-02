@@ -6,7 +6,7 @@
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.0"
+    "core": ">=1.2.2"
   },
   "optional": {
     "server": {
@@ -24,5 +24,10 @@
     "請執行 `python yscb.py file-space status` 檢視已註冊之工作空間與游標水位狀態。",
     "請執行 `python yscb.py file-space scan` 觸發全空間雙階段增量指紋掃描並更新 YFP2 二進位快照。",
     "若已安裝 `server` 模組，啟動 Daemon 後將自動掛載 `file-space-watcher` 進行背景增量監聽與 `on_file_space_changed` 事件廣播。"
-  ]
+  ],
+  "release": {
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "初版 file-space 模組發布，提供多工作空間幾何路由、YFP2 雙階段單調世代指紋快照、多消費者游標與 file-space-watcher 常駐監聽"
+  }
 }

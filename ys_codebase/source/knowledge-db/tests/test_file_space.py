@@ -20,7 +20,7 @@ from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.exceptions import InvalidConfigError
 from knowledge_db.providers import get_knowledge_db_spaces
 from knowledge_db.schema import KnowledgeDBContributes, validate_space_weights
-from file_space import InvalidFileSpaceConfigError, FileSpaceConfig, FileSpaceDef, FileSpaceManager, FileSpaceNotFoundError
+from file_space import InvalidFileSpaceConfigError, FileSpaceConfig, FileSpaceManager, FileSpaceNotFoundError
 
 
 class TestSpaceIntegrationAndWeights(YSCBTestCase):
@@ -154,19 +154,18 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_sub_06_empty_configurable_contribute_defaults(self):
-        """驗證 knowledge-db 模組內建 contributes/knowledge-db.json 與 _format.json 契約"""
+        """驗證 knowledge-db 模組已移除 contributes/knowledge-db.json，且 _format.json 僅保留 space_weights"""
         mod_contrib = Path(_pkg_root) / "contributes" / "knowledge-db.json"
-        self.assertTrue(mod_contrib.exists(), f"Module contributes {mod_contrib} must exist")
-        with open(mod_contrib, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self.assertIn("languages", data)
+        self.assertFalse(mod_contrib.exists(), f"Module contributes {mod_contrib} should be removed in Sub-Plan 02")
 
         fmt_path = Path(_pkg_root) / "contributes" / "_format.json"
         with open(fmt_path, "r", encoding="utf-8") as f:
             fmt_data = json.load(f)
         self.assertIn("space_weights", fmt_data)
+        self.assertNotIn("languages", fmt_data)
         self.assertNotIn("spaces", fmt_data)
         self.assertNotIn("FileSpaceDef", fmt_data.get("_types", {}))
+        self.assertNotIn("LanguageDef", fmt_data.get("_types", {}))
 
         self.mark_passed()
 
@@ -224,8 +223,6 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_ft_12_space_weight_schema_and_validation(self):
         """驗證 FileSpaceConfig 與 KnowledgeDBContributes.space_weights 預設值、覆寫與 <= 0 阻斷"""
-        self.assertIs(FileSpaceDef, FileSpaceConfig)
-
         sp_default = FileSpaceConfig.from_dict("source", {"include": ["src/"]})
         self.assertEqual(sp_default.weight, 1.0)
         self.assertEqual(sp_default.to_dict()["weight"], 1.0)

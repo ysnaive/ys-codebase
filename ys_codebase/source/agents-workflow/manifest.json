@@ -1,10 +1,10 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.2.3",
+  "version": "1.2.3.0",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.0"
+    "core": ">=1.2.2"
   },
   "onboarding": [
     "[Pre-flight] Initialize default workflow paths (plans/, docs/, roadmap/, archived/): python yscb.py agents-workflow init --default -y",
@@ -14,6 +14,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "於 session-audit 技能引入盲眼子代理客觀法醫審計與三軌分流機制"
+    "summary": "遷移 file-space 空間貢獻、新增 yscb ast 結構導航盲讀豁免與 publisher 目錄 SHA-1 快取複用及託管標記自癒"
   }
 }

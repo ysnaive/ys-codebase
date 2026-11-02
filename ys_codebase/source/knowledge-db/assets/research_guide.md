@@ -1,2 +1,1 @@
-- **調研知識庫預檢指引**：在啟動技術調研 (Research) 前，優先以複合關鍵詞或語意敘述執行 `python __${yscb.host://yscb.py}__ knowledge-db search <關鍵字> -s` 檢索既有架構設計與模組能力；涉及上下游架構依賴探索時，調用 `knowledge-db callers`、`callees` 與 `impact` 繪製調用拓撲，避免重複發明輪子。
-
+- **既有架構與拓撲對齊**：調研涉及既有模組時，優先依 [`knowledge-db-search`](`__#{module://knowledge-db/assets/skills/knowledge-db-search/SKILL.md}__`) 執行 `python __${project://yscb.py}__ knowledge-db search`（定位未知座標）、`python __${project://yscb.py}__ ast outline <file>`（掌握單檔結構大綱與分部姊妹檔）與 `python __${project://yscb.py}__ ast callers` / `callees` / `impact`（盤點真實呼叫鏈與影響半徑）。

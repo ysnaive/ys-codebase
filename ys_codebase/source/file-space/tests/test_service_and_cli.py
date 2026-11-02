@@ -30,7 +30,7 @@ from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 
 from file_space.manager import FileSpaceManager
-from file_space.providers import get_registered_file_spaces_table, get_file_space_names
+from file_space.providers import get_registered_file_spaces_table
 from file_space.scanner import FingerprintScanner
 from file_space.schema import ScanDiffResult
 from file_space.service import (
@@ -220,8 +220,6 @@ class TestServiceAndCli(YSCBTestCase):
             self.assertEqual(clean_out["status"], "ok")
             self.assertIn("source.yfp2.bin", clean_out["removed_snapshots"])
 
-        names = get_file_space_names()
-        self.assertIsInstance(names, list)
         table_md = get_registered_file_spaces_table()
         self.assertIn("| 空間名稱 |", table_md)
         self.mark_passed()

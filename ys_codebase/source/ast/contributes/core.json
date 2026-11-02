@@ -1,0 +1,390 @@
+{
+  "uri_schemes": [
+    {
+      "token": "ast.storage",
+      "type": "const",
+      "value": "cache://ast/",
+      "description": "ast 模組專屬之統一符號快照 (unified.symbols.bin.gz) 與雙向調用圖譜 (unified.graph.bin.gz) 儲存根目錄"
+    },
+    {
+      "token": "ast.cache",
+      "type": "const",
+      "value": "cache://ast/",
+      "description": "ast 模組快取儲存根目錄別名"
+    }
+  ],
+  "events": [
+    {
+      "on_ast_index_updated": "當 AST 符號快照與雙向呼叫圖譜完成建置或增量熱修補並推進 ast_generation 時觸發"
+    }
+  ],
+  "commands": {
+    "module_alias": [],
+    "description": "Static AST Outline, Two-Tier Partial Symbol & Bidirectional Call Graph Engine (scripts/cli.py:main)",
+    "cmd": {
+      "outline": {
+        "description": "提取並顯示單一檔案之階層化 AST 符號大綱與跨分部姊妹檔提示 ([Partial Siblings])",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "file": {
+            "description": "目標檔案路徑或語意 URI",
+            "required": true
+          }
+        },
+        "options": {
+          "view": {
+            "merged": {
+              "description": "針對 partial 型別展開跨分部檔案合併後之完整成員視圖",
+              "alias": ["m"]
+            }
+          },
+          "visibility": {
+            "public": {
+              "description": "僅顯示公開 (public) 符號與成員"
+            },
+            "protected": {
+              "description": "僅顯示受保護 (protected) 符號與成員"
+            },
+            "internal": {
+              "description": "僅顯示內部 (internal) 符號與成員"
+            },
+            "private": {
+              "description": "僅顯示私有 (private) 符號與成員"
+            },
+            "non-private": {
+              "description": "顯示所有非私有 (public / protected / internal) 符號與成員",
+              "alias": ["api"]
+            }
+          },
+          "binding": {
+            "static": {
+              "description": "僅顯示靜態 (static / @staticmethod / @classmethod) 方法、屬性、欄位或靜態類別"
+            },
+            "non-static": {
+              "description": "僅顯示非靜態 (instance) 成員與型別",
+              "alias": ["nonstatic", "instance"]
+            }
+          },
+          "member_kind": {
+            "methods": {
+              "description": "僅顯示方法與函式 (method / function)"
+            },
+            "fields": {
+              "description": "僅顯示欄位、屬性與常數/變數 (field / property / variable / constant)"
+            },
+            "types": {
+              "description": "僅顯示型別定義 (class / struct / interface / enum / type_alias)，折疊內部成員"
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "在不載入全文索引的情況下極速檢視單檔類別、方法簽名、可見度與行號區間",
+            "自動偵測 C# partial 型別並列出同空間其餘分部姊妹檔 ([Partial Siblings])"
+          ],
+          "cons": [
+            "跨空間模糊關鍵字搜尋請使用 knowledge-db search"
+          ]
+        }
+      },
+      "callers": {
+        "description": "查詢調用指定函式/方法/類別之所有上游調用者 (Callers) 與調用點位置",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "symbol": {
+            "description": "目標符號選擇器 (支援 [kind] [scope.]name[(param_types...)])",
+            "required": true
+          }
+        },
+        "options": {
+          "scope": {
+            "space": {
+              "description": "限定搜尋工作空間",
+              "args": {
+                "name": {
+                  "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "filter": {
+            "ftype": {
+              "description": "篩選檔案副檔名類型 (如 py, cs, cpp, ts, md)",
+              "args": {
+                "ext": {
+                  "description": "副檔名"
+                }
+              }
+            }
+          },
+          "display": {
+            "snippet": {
+              "description": "附上調用點上下文程式碼切片預覽",
+              "alias": ["s", "preview"]
+            },
+            "detail": {
+              "description": "顯示完整詳細簽名與調用點資訊",
+              "alias": ["d"]
+            },
+            "simple": {
+              "description": "精簡清單輸出"
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出"
+            },
+            "md": {
+              "description": "以 Markdown 格式輸出"
+            }
+          },
+          "limit": {
+            "limit": {
+              "description": "回傳筆數限制 (auto 或正整數)",
+              "args": {
+                "count": {
+                  "description": "筆數"
+                }
+              }
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "精確追蹤特定方法或重載群組被哪些上游模組調用"
+          ],
+          "cons": [
+            "單純檢視單檔內部結構時請使用 outline"
+          ]
+        }
+      },
+      "callees": {
+        "description": "查詢指定函式/方法/類別內部往下游調用的目標符號清單 (Callees)",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "symbol": {
+            "description": "目標符號選擇器 (支援 [kind] [scope.]name[(param_types...)])",
+            "required": true
+          }
+        },
+        "options": {
+          "scope": {
+            "space": {
+              "description": "限定搜尋工作空間",
+              "args": {
+                "name": {
+                  "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "filter": {
+            "ftype": {
+              "description": "篩選檔案副檔名類型 (如 py, cs, cpp, ts, md)",
+              "args": {
+                "ext": {
+                  "description": "副檔名"
+                }
+              }
+            }
+          },
+          "display": {
+            "snippet": {
+              "description": "附上被調用目標之程式碼切片預覽",
+              "alias": ["s", "preview"]
+            },
+            "detail": {
+              "description": "顯示完整詳細簽名資訊",
+              "alias": ["d"]
+            },
+            "simple": {
+              "description": "精簡清單輸出"
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出"
+            },
+            "md": {
+              "description": "以 Markdown 格式輸出"
+            }
+          },
+          "limit": {
+            "limit": {
+              "description": "回傳筆數限制 (auto 或正整數)",
+              "args": {
+                "count": {
+                  "description": "筆數"
+                }
+              }
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "分析特定方法或類別內部依賴哪些下游組件"
+          ],
+          "cons": [
+            "單純檢視單檔內部結構時請使用 outline"
+          ]
+        }
+      },
+      "impact": {
+        "description": "分析符號修改或重構時向上游遞迴擴散之多階調用影響半徑 (Blast Radius)",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "symbol": {
+            "description": "目標符號選擇器 (支援 [kind] [scope.]name[(param_types...)])",
+            "required": true
+          }
+        },
+        "options": {
+          "depth": {
+            "depth": {
+              "description": "向上遞迴分析擴散階數 (預設: 2)",
+              "args": {
+                "level": {
+                  "description": "層階整數"
+                }
+              }
+            }
+          },
+          "scope": {
+            "space": {
+              "description": "限定搜尋工作空間",
+              "args": {
+                "name": {
+                  "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "filter": {
+            "ftype": {
+              "description": "篩選檔案副檔名類型 (如 py, cs, cpp, ts, md)",
+              "args": {
+                "ext": {
+                  "description": "副檔名"
+                }
+              }
+            }
+          },
+          "display": {
+            "detail": {
+              "description": "顯示完整詳細資訊",
+              "alias": ["d"]
+            },
+            "simple": {
+              "description": "精簡清單輸出"
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出"
+            },
+            "md": {
+              "description": "以 Markdown 格式輸出"
+            }
+          },
+          "limit": {
+            "limit": {
+              "description": "回傳筆數限制 (auto 或正整數)",
+              "args": {
+                "count": {
+                  "description": "筆數"
+                }
+              }
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "在修改公開介面或核心函式前評估多階層調用波及範圍"
+          ],
+          "cons": [
+            "僅需一階直接調用者時請使用 callers"
+          ]
+        }
+      },
+      "status": {
+        "description": "顯示 AST 快照世代 (ast_generation)、各空間水位、符號統計與已註冊語言解析器狀態",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "space": {
+            "description": "空間名稱 (若省略則顯示全空間)",
+            "required": false
+          }
+        },
+        "options": {
+          "scope": {
+            "space": {
+              "description": "限定檢視特定工作空間",
+              "args": {
+                "name": {
+                  "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "檢視 AST 快照健康度、世代水位與已載入語言解析器"
+          ],
+          "cons": []
+        }
+      },
+      "clean": {
+        "description": "清除 AST 符號快照與呼叫圖譜快取，並重置 file-space (consumer='ast') 游標水位",
+        "tier": "gated",
+        "server_compatible": false,
+        "args": {
+          "space": {
+            "description": "空間名稱 (若省略則清理全空間)",
+            "required": false
+          }
+        },
+        "options": {
+          "scope": {
+            "space": {
+              "description": "限定清理特定工作空間",
+              "args": {
+                "name": {
+                  "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "強制清除並重置 AST 與呼叫圖譜二進位快取"
+          ],
+          "cons": [
+            "日常增量開發會自動熱修補，無需手動清理"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -339,15 +339,11 @@ class TestEngine(YSCBTestCase):
             results = engine.search("PipelineService", space="pipe_space")
             self.assertGreaterEqual(len(results), 1)
 
-            # 驗證 callers/callees/impact 委派正常
-            callers_res = engine.callers("PipelineService")
-            self.assertIn("callers", callers_res)
-
-            callees_res = engine.callees("PipelineService")
-            self.assertIn("callees", callees_res)
-
-            impact_res = engine.impact("PipelineService")
-            self.assertIn("layers", impact_res)
+            # 驗證 callers/callees/impact 已移交至 module:ast，不再留存於 KnowledgeEngine
+            self.assertFalse(hasattr(engine, "callers"))
+            self.assertFalse(hasattr(engine, "callees"))
+            self.assertFalse(hasattr(engine, "impact"))
+            self.assertIsNotNone(engine.ast_engine)
 
         self.mark_passed()
 
@@ -428,7 +424,9 @@ class TestEngine(YSCBTestCase):
             self.assertIn("indices", st)
             self.assertGreaterEqual(st["indices"]["bm25"]["symbol_count"], 2)
             self.assertGreaterEqual(st["indices"]["bm25"]["term_count"], 2)
-            self.assertGreaterEqual(st["indices"]["graph"]["edge_count"], 1)
+            self.assertNotIn("graph", st["indices"])
+            self.assertGreaterEqual(st["ast_generation"], 1)
+            self.assertEqual(st["acked_ast_generation"], st["ast_generation"])
             self.assertEqual(st["indices"]["vector"]["coverage_pct"], 100.0)
             self.assertEqual(st["indices"]["vector"]["missing_count"], 0)
             self.assertEqual(st["retrieval_mode"], "hybrid_rrf")

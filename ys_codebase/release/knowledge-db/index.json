@@ -7,9 +7,8 @@
     "1.0.2.6",
     "1.1.0.6",
     "1.1.1.2",
-    "1.1.2.1",
-    "1.1.2.2",
-    "1.1.2.3"
+    "1.1.2.3",
+    "1.2.0.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -58,7 +57,7 @@
       "summary": "新增 search --max-snippet-lines=40 切片溢位截斷保護並將 knowledge-db-search 技能升級為二階段漏斗檢索模型"
     },
     "1.1.2.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.0"
       },
@@ -67,7 +66,7 @@
       "summary": "抽離 TopologyQueryService 與 io_utils、合一 BM25 50% 子詞覆蓋率計分核心，並對齊 knowledge-db-search 技能 SKILL.md Frontmatter 單一真理描述"
     },
     "1.1.2.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.0"
       },
@@ -83,6 +82,17 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "支援自訂解析器多格式載入、實例級副檔名擴充與載入異常可觀測性自癒 (Issue #8)"
+    },
+    "1.2.0.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2",
+        "file-space": ">=1.0.0",
+        "ast": ">=1.0.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "遷移至 file-space 與 ast 三層 DAG 底座（單次解析符號共享）、新增 KnowledgeDBServiceWorker 兩階段背景向量補齊與毫秒級動態降級"
     }
   }
 }

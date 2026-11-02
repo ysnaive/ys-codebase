@@ -45,13 +45,13 @@
      - **處置原則**：**直接比照 `Mode A` 執行破壞性變更**（直接重命名、合併同構函式、剝離無狀態邏輯、收斂參數型別或物理刪除，並同步更新模組內部的調用點），**絕對禁止為純內部工具函式保留相容別名或轉發死代碼**！
 
 ### 2.3 [!] 靜態強型別、多型、欄位與代碼生成之「死代碼雙重查證鐵律 (Call-Graph + Lexical Search Gate)」
-在 C++ / C# / TypeScript / Rust / Java / Python 等語言中，AST 調用圖譜（如 `knowledge-db callers <Symbol>`）僅追蹤**直接靜態函式呼叫邊 (`CALLS`)**，回傳 `0` **絕不等於 0 引用**！在將任何符號列入 `D2` 殭屍死代碼拔除清單前，**強制執行雙重檢索守門**：
+在 C++ / C# / TypeScript / Rust / Java / Python 等語言中，AST 調用圖譜（如 `ast callers <Symbol>`）僅追蹤**直接靜態函式呼叫邊 (`CALLS`)**，回傳 `0` **絕不等於 0 引用**！在將任何符號列入 `D2` 殭屍死代碼拔除清單前，**強制執行雙重檢索守門**：
 1. **哪些符號不可僅憑 `callers == 0` 定罪**：
    - 純資料型別宣告（`class` / `struct` / `enum` / `interface` / `POCO` / `DTO`）：常被用作欄位型別（`private MyAsset _asset;`）、函式參數或泛型型別參數（`LoadAsset<MyAsset>()`）。
    - 多型虛擬方法與模板轉發（C++/C# `virtual` / `override` 方法、C++ 模板基類內部轉發）：呼叫端通常持有基底類別指標/介面（`base_ptr->update()`）。
    - 靜態/內部欄位與屬性（`static` / `internal` Fields & Properties）、常數、以及供測試驗證之探針計數器（如 `[InternalsVisibleTo]` 暴露給 `tests/` 直接讀寫之欄位）。
    - 具備 `[Attribute]` / `@Decorator` 反射實體化、JSON 序列化契約或編譯期 Source Generator（如 Roslyn Generator）動態合成呼叫之符號。
-2. **強制驗證動作**：凡 `callers == 0` 之上述符號，**必須強制追加執行一次跨生產碼與 `tests/` 的全文/符號檢索（如 `knowledge-db search "<SymbolName>" --json`）**，確認全倉（含測試與泛型 `<T>`）真為 0 引用後，方可定案刪除。
+2. **強制驗證動作**：凡 `callers == 0` 之上述符號，**必須強制追加執行一次跨生產碼與 `tests/` 的全文/符號檢索（如 `knowledge-db search "<SymbolName>"`）**，確認全倉（含測試與泛型 `<T>`）真為 0 引用後，方可定案刪除。
 
 ---
 

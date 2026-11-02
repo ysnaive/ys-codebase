@@ -469,7 +469,10 @@ def _process_tool_calls_in_step(
         ).strip().strip('"').strip("'")
         cmd_line = str(t_args.get("CommandLine") or t_args.get("command") or t_args.get("cmd") or "").strip()
 
-        if "knowledge-db" in cmd_line and any(k in cmd_line for k in ("search", "callers", "callees", "impact")):
+        if (
+            ("knowledge-db" in cmd_line and any(k in cmd_line for k in ("search", "callers", "callees", "impact")))
+            or ("ast" in cmd_line and any(k in cmd_line for k in ("outline", "callers", "callees", "impact")))
+        ):
             state.consecutive_source_reads = 0
             state.has_recent_kdb_query = True
 
@@ -670,7 +673,7 @@ def _build_churn_and_waste_signals(state: _TranscriptParseState) -> None:
             severity="MEDIUM",
             tier_source="Tier 1",
             target="source_exploration",
-            summary=f"未呼叫 knowledge-db search 即連續原生翻讀 {state.max_consecutive_reads} 次源碼檔案 ({sample_files}...)",
+            summary=f"未呼叫 knowledge-db search 或 ast outline 即連續原生翻讀 {state.max_consecutive_reads} 次源碼檔案 ({sample_files}...)",
             details={"max_consecutive_reads": state.max_consecutive_reads},
         ))
 

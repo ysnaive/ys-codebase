@@ -1,0 +1,19 @@
+{
+  "name": "ast",
+  "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
+  "versions": [
+    "1.0.0.0"
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2",
+        "file-space": ">=1.0.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "初版 ast 模組發布，提供 10 語言方言隔離、C# partial 雙層分部符號聚合、無 BM25 同名異載群組定址、outline 三維度過濾與呼叫圖譜"
+    }
+  }
+}

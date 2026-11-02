@@ -9,9 +9,8 @@
     "1.1.0.6",
     "1.1.1.2",
     "1.2.0.2",
-    "1.2.1.0",
-    "1.2.1.1",
-    "1.2.1.2"
+    "1.2.1.2",
+    "1.2.2.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -78,14 +77,14 @@
       "summary": "強化 restore 批量安裝容錯韌性、.venv 損毀偵測自癒、locale 巢狀字典遞迴合併與 Windows 鎖定檔案重試防護"
     },
     "1.2.1.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
       "summary": "支援雙層 provider (index/release)、releases 孤立分支自動發布、releases 感知相容性解析、更新緊急度提示與跨平台目錄鎖定三階段真偽鑑別原子同步"
     },
     "1.2.1.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
@@ -97,6 +96,13 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "支援 install/update/remove 多模組單次批次原子交易與逆向依賴聯集豁免"
+    },
+    "1.2.2.0": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 _format.json 宣告式合併策略 DSL (merge/extend/replace/unique)、__providers__ 多來源追蹤與 core.uri 重入安全 JIT 鮮度自癒"
     }
   }
 }

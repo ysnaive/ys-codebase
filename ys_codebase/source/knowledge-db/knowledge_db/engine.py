@@ -1,7 +1,7 @@
 """
 knowledge-db 統一門面 SDK (engine.py)
-整合空間治理、雙階指紋比對、多語言解析、語意打包、BM25 檢索與二進位 Gzip 快取中心。
-採用 Pipeline、TopologyQueryService 與 ResultFormatter 解耦架構。
+整合空間治理、雙階指紋比對、AST 快照消費 (Single-Parse Symbol Sharing)、BM25 + ONNX 向量混合檢索與二進位 Gzip 快取中心。
+採用 Pipeline 與 ResultFormatter 解耦架構。
 """
 
 import json
@@ -11,23 +11,22 @@ from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional, Union
 
+from ast_engine import ASTEngine, SemanticBundle, SemanticBundler
 from file_space import (
-    FingerprintScanner,
-    InvalidFileSpaceConfigError,
     FileSpaceConfig,
     FileSpaceManager,
     FileSpaceNotFoundError,
+    FingerprintScanner,
+    InvalidFileSpaceConfigError,
     consume_diff,
     reset_cursor,
 )
 
-from .bundler import SemanticBundle, SemanticBundler, _resolve_default_knowledge_storage_dir
 from .embedding import EmbeddingService
 from .exceptions import InvalidConfigError
 from .formatter import ResultFormatter
 from .hybrid import HybridSearchEngine
-from .parsers.registry import ParserRegistry
-from .pipeline import IndexingPipeline
+from .pipeline import IndexingPipeline, _resolve_default_knowledge_storage_dir
 from .retrieval import BM25Engine, InvertedIndex, SearchResult, SnippetExtractor
 from .schema import AggregatedFileResult, validate_space_weights
 from .service import (
@@ -44,8 +43,9 @@ logger = logging.getLogger("knowledge-db.engine")
 
 class KnowledgeEngine:
     """
-    knowledge-db 模組頂層統一門面 Facade SDK。
-    提供一站式呼叫空間狀態查詢、語意打包、倒排索引建置、語意檢索與快取清理。
+    knowledge-db 模組頂層統一門面 Facade SDK (Layer 3 Pure Hybrid Retrieval Consumer)。
+    透過 Single-Parse Symbol Sharing 直接消費 `module:ast` (`ASTEngine`) 產出之語法符號快照，
+    提供一站式空間狀態查詢、語意打包、倒排與向量索引建置、混合語意檢索與快取清理。
     """
 
     def __init__(
@@ -61,15 +61,18 @@ class KnowledgeEngine:
         custom_spaces: Optional[Dict[str, Any]] = None,
         space_weights: Optional[Dict[str, float]] = None,
         space_manager: Optional[FileSpaceManager] = None,
+        ast_engine: Optional[ASTEngine] = None,
         core_context: Optional[Any] = None,
     ):
         proj_root_path = Path(project_root).resolve() if project_root is not None else None
         if storage_dir is not None:
             self._storage_dir = Path(storage_dir).resolve()
             space_storage_dir: Optional[Path] = self._storage_dir / "file-space"
+            ast_storage_dir: Optional[Path] = self._storage_dir / "ast"
         else:
             self._storage_dir = _resolve_default_knowledge_storage_dir(proj_root_path)
             space_storage_dir = None
+            ast_storage_dir = None
 
         self._storage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -102,14 +105,20 @@ class KnowledgeEngine:
         )
 
         self.tokenizer = MultilingualTokenizer()
-        self.parser_registry = ParserRegistry()
         self.scanner = FingerprintScanner(self.space_manager)
-        self.bundler = SemanticBundler(
-            space_manager=self.space_manager,
-            parser_registry=self.parser_registry,
-            scanner=self.scanner,
-            storage_dir=self._storage_dir,
-        )
+
+        if ast_engine is not None:
+            self.ast_engine = ast_engine
+        else:
+            self.ast_engine = ASTEngine(
+                project_root=proj_root_path or getattr(self.space_manager, "project_root", None),
+                storage_dir=ast_storage_dir,
+                contributes_data=merged_contributes,
+                space_manager=self.space_manager,
+                scanner=self.scanner,
+            )
+
+        self.bundler: SemanticBundler = self.ast_engine.bundler
         self.bm25_engine = BM25Engine(
             tokenizer=self.tokenizer,
             field_weights=field_weights,
@@ -154,6 +163,7 @@ class KnowledgeEngine:
 
         self.pipeline = IndexingPipeline(
             space_manager=self.space_manager,
+            ast_engine=self.ast_engine,
             bundler=self.bundler,
             scanner=self.scanner,
             tokenizer=self.tokenizer,
@@ -312,15 +322,6 @@ class KnowledgeEngine:
     def format_search_output(self, *args, **kwargs) -> str:
         return self.formatter.format_search_output(*args, **kwargs)
 
-    def format_callers_output(self, *args, **kwargs) -> str:
-        return self.formatter.format_callers_output(*args, **kwargs)
-
-    def format_callees_output(self, *args, **kwargs) -> str:
-        return self.formatter.format_callees_output(*args, **kwargs)
-
-    def format_impact_output(self, *args, **kwargs) -> str:
-        return self.formatter.format_impact_output(*args, **kwargs)
-
     # ----------------------------------------------------------------------
     # 索引流水線委派 (建置、清理)
     # ----------------------------------------------------------------------
@@ -386,7 +387,7 @@ class KnowledgeEngine:
         self,
         space: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """獲取全系統空間、後台 Worker、三大核心索引、檢索模式、組態與空間游標同步詳盡統計摘要。"""
+        """獲取全系統空間、後台 Worker、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計摘要。"""
         spaces = self.space_manager.load_spaces()
         if space is not None:
             if space not in spaces:
@@ -397,43 +398,32 @@ class KnowledgeEngine:
 
         bin_unified = indices_dir / "unified.index.bin.gz"
         has_unified_index = bin_unified.exists()
-        bin_graph = indices_dir / "unified.graph.bin.gz"
-        has_graph_index = bin_graph.exists()
         bin_vectors = indices_dir / "unified.vectors.bin.gz"
         has_vector_index = bin_vectors.exists()
 
         # 載入最新磁碟索引至記憶體以便提取精確統計指標
         try:
             self.pipeline._ensure_indices_loaded(
-                load_graph=has_graph_index,
                 load_vectors=has_vector_index,
             )
         except Exception:
             pass
 
         unified_idx = self.pipeline.unified_index
-        graph_idx = self.pipeline.call_graph_index
         vec_idx = getattr(self.hybrid_engine, "vector_index", None)
 
         symbol_count = int(getattr(unified_idx, "doc_count", 0) or (len(unified_idx.symbols) if unified_idx else 0))
         term_count = len(unified_idx.index) if (unified_idx and hasattr(unified_idx, "index")) else 0
+        acked_ast_gen = int(getattr(unified_idx, "acked_ast_generation", 0) or 0) if unified_idx else 0
         unified_size_kb = round(bin_unified.stat().st_size / 1024.0, 1) if has_unified_index else 0.0
         unified_mtime = round(bin_unified.stat().st_mtime, 2) if has_unified_index else None
 
-        graph_nodes = 0
-        graph_edges = 0
-        if graph_idx is not None:
-            nx_g = getattr(graph_idx, "graph", None)
-            if nx_g is not None and hasattr(nx_g, "number_of_nodes"):
-                graph_nodes = int(nx_g.number_of_nodes())
-                graph_edges = int(nx_g.number_of_edges())
-            else:
-                out_map = getattr(graph_idx, "outgoing", {}) or {}
-                in_map = getattr(graph_idx, "incoming", {}) or {}
-                graph_nodes = len(set(out_map.keys()) | set(in_map.keys()))
-                graph_edges = sum(len(v) for v in out_map.values())
-        graph_size_kb = round(bin_graph.stat().st_size / 1024.0, 1) if has_graph_index else 0.0
-        graph_mtime = round(bin_graph.stat().st_mtime, 2) if has_graph_index else None
+        ast_gen = 0
+        try:
+            if self.ast_engine._ensure_loaded_from_disk() and self.ast_engine._snapshot is not None:
+                ast_gen = int(self.ast_engine._snapshot.ast_generation)
+        except Exception:
+            ast_gen = 0
 
         worker_st = read_worker_state(indices_dir)
         worker_running = is_worker_running(indices_dir)
@@ -542,15 +532,13 @@ class KnowledgeEngine:
                 "hash_policy": getattr(getattr(sp, "hash_policy", None), "value", str(getattr(sp, "hash_policy", "adaptive"))),
             }
 
-        lang_cfgs = getattr(self.parser_registry, "_language_configs", {})
-        registered_langs = sorted(lang_cfgs.keys()) if isinstance(lang_cfgs, dict) else []
-
         return {
             "total_spaces": len(spaces),
             "spaces": space_details,
             "has_unified_index": has_unified_index,
-            "has_graph_index": has_graph_index,
             "has_vector_index": has_vector_index,
+            "ast_generation": ast_gen,
+            "acked_ast_generation": acked_ast_gen,
             "enable_vector_search": enable_vec,
             "embedding_model": model_name,
             "model_downloaded": model_downloaded,
@@ -574,16 +562,9 @@ class KnowledgeEngine:
                     "ready": has_unified_index,
                     "symbol_count": symbol_count,
                     "term_count": term_count,
+                    "acked_ast_generation": acked_ast_gen,
                     "size_kb": unified_size_kb,
                     "updated_at": unified_mtime,
-                },
-                "graph": {
-                    "file": "unified.graph.bin.gz",
-                    "ready": has_graph_index,
-                    "node_count": graph_nodes,
-                    "edge_count": graph_edges,
-                    "size_kb": graph_size_kb,
-                    "updated_at": graph_mtime,
                 },
                 "vector": {
                     "file": "unified.vectors.bin.gz",
@@ -601,9 +582,7 @@ class KnowledgeEngine:
                     "updated_at": vec_mtime,
                 },
             },
-            "registered_languages": registered_langs,
             "storage_dir": str(self.storage_dir),
-            "parser_load_errors": dict(getattr(self.parser_registry, "load_errors", {})),
         }
 
     def model_status(self) -> Dict[str, Any]:
@@ -626,20 +605,42 @@ class KnowledgeEngine:
         space: Optional[str] = None,
         export_path: Optional[Union[str, Path]] = None,
     ) -> List[SemanticBundle]:
-        """執行空間符號提取與 SemanticBundle 導出。"""
+        """透過 Single-Parse Symbol Sharing 從 ASTEngine 快照提取空間符號與導出 SemanticBundle。"""
+        from datetime import datetime, timezone
+
         if space is not None:
             targets = [self.space_manager.get_space(space)]
         else:
             targets = list(self.space_manager.load_spaces().values())
-        bundles = []
+
+        snapshot = self.ast_engine.ensure_jit_synced()
+        created_at = datetime.now(timezone.utc).isoformat()
+        bundles: List[SemanticBundle] = []
         for sp in targets:
-            b = self.bundler.bundle_space(sp)
+            sp_name = sp.name
+            sp_syms = [
+                sym for sym in snapshot.symbols.values()
+                if not sym.spaces or sp_name in sym.spaces
+            ]
+            sp_files = {sym.file_path for sym in sp_syms if sym.file_path}
+            b = SemanticBundle(
+                version="1.0.0",
+                space_name=sp_name,
+                created_at=created_at,
+                symbols=sp_syms,
+                metadata={
+                    "source_count": len(sp.include),
+                    "file_count": len(sp_files),
+                    "origin": sp.origin,
+                    "ast_generation": snapshot.ast_generation,
+                },
+            )
             self.bundler.export_bundle(b, target_path=export_path)
             bundles.append(b)
         return bundles
 
     # ----------------------------------------------------------------------
-    # 符號搜尋與拓撲分析正統入口
+    # 符號搜尋正統入口
     # ----------------------------------------------------------------------
 
     def search(
@@ -674,36 +675,6 @@ class KnowledgeEngine:
             lexical_only=lexical_only,
         )
 
-    def callers(
-        self,
-        target_query: str,
-        space: Optional[str] = None,
-        snippet: bool = True,
-        ftypes: Optional[Union[str, List[str]]] = None,
-    ) -> Dict[str, Any]:
-        """查詢特定目標符號的上游調用者清單與調用點"""
-        return self.pipeline.callers(target_query, space=space, snippet=snippet, ftypes=ftypes)
-
-    def callees(
-        self,
-        target_query: str,
-        space: Optional[str] = None,
-        snippet: bool = True,
-        ftypes: Optional[Union[str, List[str]]] = None,
-    ) -> Dict[str, Any]:
-        """查詢特定目標符號內部調用的下游依賴清單"""
-        return self.pipeline.callees(target_query, space=space, snippet=snippet, ftypes=ftypes)
-
-    def impact(
-        self,
-        target_query: str,
-        depth: int = 2,
-        space: Optional[str] = None,
-        ftypes: Optional[Union[str, List[str]]] = None,
-    ) -> Dict[str, Any]:
-        """查詢特定目標符號的向上擴散調用影響面拓撲"""
-        return self.pipeline.impact(target_query, depth=depth, space=space, ftypes=ftypes)
-
     @classmethod
     def pre_warm(cls, workspace_root: Optional[Union[str, Path]] = None) -> None:
         """響應 server_worker_warming 事件，預熱 FastEmbed 模型與索引快取。"""
@@ -711,7 +682,7 @@ class KnowledgeEngine:
             logger.info("Pre-warming knowledge-db engine...")
             engine = get_engine()
             enable_vec = bool(getattr(engine.config, "enable_vector_search", True))
-            engine.pipeline._ensure_indices_loaded(load_graph=True, load_vectors=enable_vec)
+            engine.pipeline._ensure_indices_loaded(load_vectors=enable_vec)
             if enable_vec and hasattr(engine, "embedding_service") and engine.embedding_service:
                 engine.embedding_service.suppress_guard_prompt = True
                 if not getattr(engine.embedding_service, "mock_mode", False) and engine.embedding_service.is_model_downloaded():
@@ -737,9 +708,6 @@ def get_engine() -> KnowledgeEngine:
             from .config import KnowledgeDBConfig
             _GLOBAL_ENGINE_INSTANCE.config = KnowledgeDBConfig.load()
             _GLOBAL_ENGINE_INSTANCE.pipeline.config = _GLOBAL_ENGINE_INSTANCE.config
-            if getattr(_GLOBAL_ENGINE_INSTANCE.parser_registry, "load_errors", None):
-                _GLOBAL_ENGINE_INSTANCE.parser_registry = ParserRegistry()
-                _GLOBAL_ENGINE_INSTANCE.bundler.parser_registry = _GLOBAL_ENGINE_INSTANCE.parser_registry
         except Exception:
             pass
     return _GLOBAL_ENGINE_INSTANCE

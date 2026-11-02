@@ -918,7 +918,7 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.assertIn("/how-to-config-yscb", howto_skill)
         self.assertIn("開啟一個全新的對話視窗", howto_skill)
 
-        for mod_name in ("core", "dev", "server", "knowledge-db"):
+        for mod_name in ("core", "dev", "server", "ast", "knowledge-db"):
             mod_dir = source_root / mod_name
             if not mod_dir.is_dir():
                 continue

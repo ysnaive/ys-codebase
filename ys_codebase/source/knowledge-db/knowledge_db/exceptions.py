@@ -2,8 +2,10 @@
 knowledge-db 專屬例外階層定義
 """
 
+from ast_engine.exceptions import ASTError, SchemaValidationError as _ASTSchemaValidationError
 
-class KnowledgeDBError(Exception):
+
+class KnowledgeDBError(ASTError):
     """knowledge-db 模組基礎例外類別"""
 
 
@@ -11,5 +13,10 @@ class InvalidConfigError(KnowledgeDBError):
     """knowledge-db 組態缺失必填欄位或格式不合法"""
 
 
-class SchemaValidationError(KnowledgeDBError):
-    """UnifiedSymbol 或 MemberInfo 資料校驗失敗"""
+SchemaValidationError = _ASTSchemaValidationError
+
+__all__ = [
+    "KnowledgeDBError",
+    "InvalidConfigError",
+    "SchemaValidationError",
+]

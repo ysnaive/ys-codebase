@@ -1,11 +1,10 @@
 """
 knowledge-db 索引生命週期與流水線引擎 (pipeline.py)
 職責：
-1. 全域聯集倒排索引建置與原子二進位持久化 (build_unified_index)
-2. 基於 AST 與 FQN 作用域的雙向調用圖譜建立 (CallGraphIndex)
-3. 向量特徵嵌入建置與持久化 (VectorIndex)
-4. 4 階段極速 JIT 增量熱自愈修補管線 (hot_patch_unified_index)
-5. 3 階段全域混合檢索編排 (search) 與 TopologyQueryService 委派
+1. 單次解析共享 (Single-Parse Symbol Sharing)：透過 `ast_engine.ensure_jit_synced()` 取得 `ASTSnapshot`，零重複解析建置 BM25 倒排索引 (`build_unified_index`)
+2. 向量特徵嵌入建置與持久化 (`VectorIndex`)
+3. 雙水位線 (`ast_generation` vs `acked_ast_generation`) 極速 JIT 增量熱自癒修補管線 (`hot_patch_unified_index`)
+4. 3 階段全域混合檢索編排 (`search`)
 """
 
 from collections import defaultdict
@@ -13,29 +12,28 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import re
 import sys
 import threading
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
 
+from ast_engine import ASTEngine, SemanticBundler
 from file_space import (
+    FileSpaceManager,
     FingerprintScanner,
     ScanDiffDetail,
     ScanDiffResult,
-    FileSpaceManager,
     consume_diff,
     reset_cursor,
 )
 
-from .bundler import SemanticBundler, _resolve_default_knowledge_storage_dir
 from .embedding import EmbeddingService, VectorIndex, format_symbol_embedding_text
 from .exceptions import KnowledgeDBError
-from .graph import CallGraphIndex
 from .hybrid import HybridSearchEngine
 from .io_utils import is_dirty_file_match, normalize_dirty_paths
-from .linker import TopologyLinker
 from .retrieval import BM25Engine, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
-from .schema import AggregatedFileResult, AggregatedItem, SymbolCallSite, UnifiedSymbol
+from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
 from .service import (
     clear_worker_state,
     get_active_worker,
@@ -44,16 +42,49 @@ from .service import (
     wait_until_worker_idle,
 )
 from .tokenizer import MultilingualTokenizer
-from .topology_query import TopologyQueryService
 
 logger = logging.getLogger("knowledge-db.pipeline")
+
+
+def _resolve_default_knowledge_storage_dir(project_root: Optional[Path] = None) -> Path:
+    """解析 knowledge-db 預設快取目錄 (`knowledge.storage://` 或 `.cache/knowledge-db`)"""
+    try:
+        from core import uri
+
+        res = uri.resolve("knowledge.storage://", interactive=False)
+        if res and not str(res).startswith("!undefined"):
+            return Path(str(res)).resolve()
+    except Exception:
+        pass
+    try:
+        from core import uri
+
+        c_res = uri.resolve("cache://knowledge-db/", interactive=False)
+        if c_res and not str(c_res).startswith("!undefined"):
+            return Path(str(c_res)).resolve()
+    except Exception:
+        pass
+    base = project_root.resolve() if project_root else Path.cwd().resolve()
+    return base / "ys_codebase" / ".cache" / "knowledge-db"
+
+
+def _normalize_ftypes(ftypes: Optional[Union[str, List[str]]]) -> Optional[List[str]]:
+    if not ftypes:
+        return None
+    raw_list = [ftypes] if isinstance(ftypes, str) else list(ftypes)
+    result: List[str] = []
+    for item in raw_list:
+        for p in re.split(r"[|,]", str(item)):
+            clean = p.strip().lower().lstrip(".")
+            if clean and clean not in result:
+                result.append(clean)
+    return result or None
+
 
 _GLOBAL_INDEX_CACHE: Dict[str, Any] = {
     "storage_dir": None,
     "unified_index": None,
     "unified_mtime": 0.0,
-    "graph_index": None,
-    "graph_mtime": 0.0,
     "vector_index": None,
     "vector_mtime": 0.0,
 }
@@ -94,7 +125,7 @@ def _symbol_matches_filters(
 
 
 class IndexingPipeline:
-    """多空間索引建置、JIT 增量熱補丁、持久化與檢索拓撲流水線"""
+    """多空間索引建置、JIT 增量熱補丁、持久化與混合檢索流水線"""
 
     def __init__(
         self,
@@ -105,6 +136,7 @@ class IndexingPipeline:
         bm25_engine: BM25Engine,
         embedding_service: EmbeddingService,
         hybrid_engine: HybridSearchEngine,
+        ast_engine: Optional[ASTEngine] = None,
         snippet_extractor: Optional[SnippetExtractor] = None,
         config: Optional[Any] = None,
         storage_dir: Optional[Union[str, Path]] = None,
@@ -128,6 +160,16 @@ class IndexingPipeline:
             proj_root = getattr(space_manager, "project_root", None)
             self._storage_dir = _resolve_default_knowledge_storage_dir(proj_root)
 
+        if ast_engine is not None:
+            self.ast_engine = ast_engine
+        else:
+            self.ast_engine = ASTEngine(
+                project_root=getattr(space_manager, "project_root", None),
+                storage_dir=self._storage_dir / "ast",
+                space_manager=space_manager,
+                scanner=scanner,
+            )
+
         if config is None:
             try:
                 from .config import KnowledgeDBConfig
@@ -140,15 +182,7 @@ class IndexingPipeline:
 
         self._index_cache: Dict[str, InvertedIndex] = {}
         self._unified_index: Optional[InvertedIndex] = None
-        self._call_graph_index: Optional[CallGraphIndex] = None
         self._index_lock = threading.RLock()
-
-        self.topology_query = TopologyQueryService(
-            ensure_index_fn=lambda: self._ensure_jit_index_ready(require_vectors=False, auto_rebuild=True) or self.build_unified_index(),
-            get_graph_fn=self.get_call_graph,
-            bm25_engine=self.bm25_engine,
-            snippet_extractor=self.snippet_extractor,
-        )
 
     @property
     def storage_dir(self) -> Path:
@@ -161,14 +195,6 @@ class IndexingPipeline:
     @unified_index.setter
     def unified_index(self, val: Optional[InvertedIndex]) -> None:
         self._unified_index = val
-
-    @property
-    def call_graph_index(self) -> Optional[CallGraphIndex]:
-        return self._call_graph_index
-
-    @call_graph_index.setter
-    def call_graph_index(self, val: Optional[CallGraphIndex]) -> None:
-        self._call_graph_index = val
 
     @property
     def index_cache(self) -> Dict[str, InvertedIndex]:
@@ -200,15 +226,14 @@ class IndexingPipeline:
 
     def _ensure_indices_loaded(
         self,
-        load_graph: bool = True,
         load_vectors: bool = True,
         force_reload: bool = False,
+        **kwargs: Any,
     ) -> None:
         """微秒級比對磁碟快照 mtime，自動熱更新記憶體快取或從磁碟載入。"""
         global _GLOBAL_INDEX_CACHE
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
-        graph_file = indices_dir / "unified.graph.bin.gz"
         vector_file = indices_dir / "unified.vectors.bin.gz"
         storage_key = str(self.storage_dir)
 
@@ -217,8 +242,6 @@ class IndexingPipeline:
                 _GLOBAL_INDEX_CACHE["storage_dir"] = storage_key
                 _GLOBAL_INDEX_CACHE["unified_index"] = None
                 _GLOBAL_INDEX_CACHE["unified_mtime"] = 0.0
-                _GLOBAL_INDEX_CACHE["graph_index"] = None
-                _GLOBAL_INDEX_CACHE["graph_mtime"] = 0.0
                 _GLOBAL_INDEX_CACHE["vector_index"] = None
                 _GLOBAL_INDEX_CACHE["vector_mtime"] = 0.0
 
@@ -232,17 +255,6 @@ class IndexingPipeline:
                     self._unified_index = _GLOBAL_INDEX_CACHE["unified_index"]
             except Exception as e:
                 logger.warning(f"Failed loading unified index cache: {e}")
-
-        if load_graph and graph_file.exists():
-            try:
-                mtime = graph_file.stat().st_mtime
-                with _CACHE_LOCK:
-                    if force_reload or _GLOBAL_INDEX_CACHE["graph_index"] is None or mtime > _GLOBAL_INDEX_CACHE["graph_mtime"]:
-                        _GLOBAL_INDEX_CACHE["graph_index"] = CallGraphIndex.load_binary(graph_file)
-                        _GLOBAL_INDEX_CACHE["graph_mtime"] = mtime
-                    self._call_graph_index = _GLOBAL_INDEX_CACHE["graph_index"]
-            except Exception as e:
-                logger.warning(f"Failed loading graph index cache: {e}")
 
         if load_vectors:
             if vector_file.exists():
@@ -272,7 +284,7 @@ class IndexingPipeline:
         allow_parallel: bool = True,
         skip_vectors: bool = False,
     ) -> InvertedIndex:
-        """建置全專案空間聯集單一倒排索引與雙向調用圖譜索引，並原子持久化至磁碟。"""
+        """建置全專案空間聯集單一倒排索引與向量索引，並原子持久化至磁碟。"""
         with self._index_lock:
             return self._build_unified_index_locked(
                 force=force,
@@ -294,7 +306,6 @@ class IndexingPipeline:
     ) -> InvertedIndex:
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
-        graph_file = indices_dir / "unified.graph.bin.gz"
 
         def _report(stage: int, name: str, elapsed_ms: float):
             if progress_callback:
@@ -303,56 +314,52 @@ class IndexingPipeline:
                 except Exception:
                     pass
             if interactive:
-                print(f"[{stage}/5] {name} (耗時 {elapsed_ms:.1f}ms)", file=sys.stderr, flush=True)
+                print(f"[{stage}/4] {name} (耗時 {elapsed_ms:.1f}ms)", file=sys.stderr, flush=True)
 
-        if not force and bin_file.exists() and graph_file.exists():
+        if not force and bin_file.exists():
             try:
                 idx = InvertedIndex.load_binary(bin_file)
                 self._unified_index = idx
-                try:
-                    self._call_graph_index = CallGraphIndex.load_binary(graph_file)
-                except Exception as ge:
-                    logger.warning(f"Failed loading unified graph index: {ge}")
                 vector_file = indices_dir / "unified.vectors.bin.gz"
                 if vector_file.exists():
                     try:
                         self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
                     except Exception as ve:
                         logger.warning(f"Failed loading unified vector index: {ve}")
-                if self._call_graph_index is not None:
-                    return idx
+                return idx
             except Exception as e:
                 logger.warning(f"Failed loading unified binary index, rebuilding: {e}")
 
         t_all_start = time.time()
 
+        # Stage 1: Single-Parse Symbol Sharing via ASTEngine
         t0 = time.time()
-        bundle = self.bundler.bundle_union(allow_parallel=allow_parallel)
-        _report(1, "AST 符號解析與全域打包", (time.time() - t0) * 1000)
+        ast_has_disk = self.ast_engine._ensure_loaded_from_disk()
+        has_ast_diff = False
+        try:
+            if self.scanner is not None and hasattr(self.scanner, "diff"):
+                has_ast_diff = bool(self.scanner.diff(consumer_id="ast", auto_refresh=False).has_changes)
+        except Exception:
+            has_ast_diff = True
+        ast_force = bool(force and (not ast_has_disk or has_ast_diff))
+        snapshot = self.ast_engine.ensure_jit_synced(force=ast_force)
+        _report(1, f"AST 快照同步與符號共享 (gen={snapshot.ast_generation})", (time.time() - t0) * 1000)
 
+        # Stage 2: Build BM25 InvertedIndex directly from ASTSnapshot.symbols
         t0 = time.time()
         idx = InvertedIndex(space_name="unified")
-        idx.build(bundle.symbols, tokenizer=self.tokenizer, space="unified")
+        idx.build(list(snapshot.symbols.values()), tokenizer=self.tokenizer, space="unified")
+        idx.acked_ast_generation = snapshot.ast_generation
         _report(2, f"BM25 倒排索引建置 ({idx.doc_count} 符號)", (time.time() - t0) * 1000)
 
-        t0 = time.time()
-        call_sites, imports_map = self.bundler.extract_all_call_sites_and_imports()
-        linker = TopologyLinker(
-            symbols_map=idx.symbols,
-        )
-        edges = linker.link_call_sites(call_sites, imports_map)
-        graph_idx = CallGraphIndex()
-        for caller_id, callee_id, site in edges:
-            graph_idx.add_edge(caller_id, callee_id, site)
-        _report(3, f"雙向調用圖譜建置 ({len(edges)} 條調用邊)", (time.time() - t0) * 1000)
-
+        # Stage 3: Build VectorIndex
         t0 = time.time()
         vector_file = indices_dir / "unified.vectors.bin.gz"
         enable_vec = getattr(self.config, "enable_vector_search", True)
         if skip_vectors:
-            _report(4, "向量特徵嵌入 (交由背景 Stage 2 微批次同步，略過)", (time.time() - t0) * 1000)
+            _report(3, "向量特徵嵌入 (交由背景 Stage 2 微批次同步，略過)", (time.time() - t0) * 1000)
         elif not enable_vec:
-            _report(4, "向量特徵嵌入 (已依組態停用，略過)", (time.time() - t0) * 1000)
+            _report(3, "向量特徵嵌入 (已依組態停用，略過)", (time.time() - t0) * 1000)
         elif self.embedding_service.is_available:
             try:
                 sym_items = list(idx.symbols.items())
@@ -373,23 +380,23 @@ class IndexingPipeline:
                 vec_idx.build(doc_ids, vectors)
                 vec_idx.save_binary(vector_file)
                 self.hybrid_engine.vector_index = vec_idx
-                _report(4, f"向量特徵嵌入建置 ({len(doc_ids)} 符號向量)", (time.time() - t0) * 1000)
+                _report(3, f"向量特徵嵌入建置 ({len(doc_ids)} 符號向量)", (time.time() - t0) * 1000)
             except Exception as e:
                 logger.warning(f"Failed building/saving vector index: {e}")
-                _report(4, f"向量特徵嵌入建置失敗: {e}", (time.time() - t0) * 1000)
+                _report(3, f"向量特徵嵌入建置失敗: {e}", (time.time() - t0) * 1000)
         else:
             reason_str = ""
             last_err = getattr(self.embedding_service, "last_error", None)
             if last_err and isinstance(last_err, dict):
                 reason_str = f" ({last_err.get('error_type')}: {last_err.get('message')})"
-            _report(4, f"向量特徵嵌入 (FastEmbed 不可用{reason_str}，略過)", (time.time() - t0) * 1000)
+            _report(3, f"向量特徵嵌入 (FastEmbed 不可用{reason_str}，略過)", (time.time() - t0) * 1000)
 
+        # Stage 4: Atomic binary persistence & cursor alignment
         t0 = time.time()
         try:
             idx.save_binary(bin_file, compresslevel=1)
-            graph_idx.save_binary(graph_file, compresslevel=1)
         except Exception as e:
-            raise KnowledgeDBError(f"Failed saving unified binary index/graph: {e}") from e
+            raise KnowledgeDBError(f"Failed saving unified binary index: {e}") from e
 
         try:
             with self._consume_space_diff(consumer_id="knowledge-db"):
@@ -397,29 +404,26 @@ class IndexingPipeline:
         except Exception as e:
             logger.debug(f"Cursor alignment after build_unified_index skipped: {e}")
 
-        _report(5, "二進位索引原子持久化與游標同步", (time.time() - t0) * 1000)
+        _report(4, "二進位索引原子持久化與游標同步", (time.time() - t0) * 1000)
 
         if interactive:
             total_elapsed = (time.time() - t_all_start) * 1000
             print(f"[knowledge-db] 全域索引建置完成，總耗時 {total_elapsed:.1f}ms", file=sys.stderr, flush=True)
 
         self._unified_index = idx
-        self._call_graph_index = graph_idx
         self._vector_degraded = False
         self._last_degrade_notice = None
         with _CACHE_LOCK:
             _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
             _GLOBAL_INDEX_CACHE["unified_index"] = idx
             _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
-            _GLOBAL_INDEX_CACHE["graph_index"] = graph_idx
-            _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
             if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
                 _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
                 _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
         return idx
 
     # ----------------------------------------------------------------------
-    # 4 階段增量熱修補管線
+    # 增量熱修補管線 (Single-Parse Symbol Sharing)
     # ----------------------------------------------------------------------
 
     def hot_patch_unified_index(
@@ -439,94 +443,83 @@ class IndexingPipeline:
 
     def _collect_all_dirty_files(
         self, diff_detail: ScanDiffDetail
-    ) -> Tuple[List[UnifiedSymbol], Set[str]]:
-        """熱修補階段 1：解析所有變更檔案並收集新符號與 dirty_keys"""
-        new_symbols_by_file, dirty_keys = self.bundler.bundle_dirty_files(diff_detail)
+    ) -> Tuple[List[UnifiedSymbol], Set[str], int]:
+        """
+        熱修補階段 1 (Single-Parse Symbol Sharing)：
+        1. 透過 `self.ast_engine.ensure_jit_synced()` 讓 `ASTEngine` 依其 `"ast"` 游標完成單次增量解析與游標推進；
+           若呼び出し方直接傳入未經 `scanner` 消費之合成 `diff_detail`（致使 `ast_generation` 未推進），
+           則補充執行 `self.ast_engine.hot_patch_index(detail)` 並對齊 `"ast"` 游標。
+        2. 透過 `bundler._normalize_space_dirty_paths` 將空間相對路徑展開為正規化路徑，
+           並同步檢查舊 `InvertedIndex` 與新 `ASTSnapshot` 中受影響之 C# `partial class` 群組（含被刪除分部檔），
+           直接從最新 `ASTSnapshot.symbols` 提取符號，零重複 Tree-sitter 解析。
+        """
+        detail = self.ast_engine._coerce_diff_detail(diff_detail)
+        target_spaces = self.bundler._resolve_target_spaces(None)
+        expanded_added_mod = self.bundler._normalize_space_dirty_paths(
+            detail.dirty_files, target_spaces, prefer_missing=False
+        )
+        expanded_deleted = self.bundler._normalize_space_dirty_paths(
+            detail.deleted, target_spaces, prefer_missing=True
+        )
+        dirty_keys: Set[str] = set(expanded_added_mod | expanded_deleted)
+
+        current_acked_gen = int(getattr(self._unified_index, "acked_ast_generation", 0) or 0) if self._unified_index else 0
+        snapshot = self.ast_engine.ensure_jit_synced()
+        if snapshot.ast_generation <= current_acked_gen and (detail.dirty_files or detail.deleted):
+            snapshot = self.ast_engine.hot_patch_index(detail)
+
+        dirty_paths_norm = normalize_dirty_paths(dirty_keys)
+
+        # Check existing _unified_index symbols for C# partial groups affected by deleted/modified files
+        affected_cs_keys: Set[Tuple[str, str, str]] = set()
+        if self._unified_index is not None:
+            for old_sym in self._unified_index.symbols.values():
+                old_pf = (old_sym.metadata or {}).get("partial_files") or []
+                if is_dirty_file_match(old_sym.file_path, dirty_paths_norm) or any(
+                    is_dirty_file_match(str(pf), dirty_paths_norm) for pf in old_pf
+                ):
+                    dirty_keys.add(old_sym.file_path)
+                    for pf in old_pf:
+                        dirty_keys.add(str(pf))
+                    if old_sym.language in ("c_sharp", "csharp") and old_sym.kind in ("class", "struct", "interface"):
+                        sp_key = ",".join(sorted(old_sym.spaces)) if old_sym.spaces else ""
+                        affected_cs_keys.add((sp_key, old_sym.kind, old_sym.fqn or old_sym.name))
+
+        dirty_paths_norm = normalize_dirty_paths(dirty_keys)
         all_new_symbols: List[UnifiedSymbol] = []
-        for syms in new_symbols_by_file.values():
-            all_new_symbols.extend(syms)
-        return all_new_symbols, dirty_keys
+        seen_ids: Set[str] = set()
+        for sym in snapshot.symbols.values():
+            sym_matched = is_dirty_file_match(sym.file_path, dirty_paths_norm)
+            if not sym_matched:
+                partial_files = (sym.metadata or {}).get("partial_files") or []
+                if any(is_dirty_file_match(str(pf), dirty_paths_norm) for pf in partial_files):
+                    sym_matched = True
+                elif affected_cs_keys and sym.language in ("c_sharp", "csharp") and sym.kind in ("class", "struct", "interface"):
+                    sp_key = ",".join(sorted(sym.spaces)) if sym.spaces else ""
+                    if (sp_key, sym.kind, sym.fqn or sym.name) in affected_cs_keys:
+                        sym_matched = True
+
+            if sym_matched:
+                if sym.id not in seen_ids:
+                    seen_ids.add(sym.id)
+                    all_new_symbols.append(sym)
+                dirty_keys.add(sym.file_path)
+
+        return all_new_symbols, dirty_keys, snapshot.ast_generation
 
     def _evict_dirty_file_artifacts(
         self, dirty_keys: Set[str]
-    ) -> Tuple[Set[str], Dict[str, Tuple[str, str, str]]]:
-        """熱修補階段 2：識別將被淘汰之舊符號 doc_id 與身份映射資訊"""
+    ) -> Set[str]:
+        """熱修補階段 2：識別將被淘汰之舊符號 doc_id"""
         old_doc_ids: Set[str] = set()
-        old_symbol_info: Dict[str, Tuple[str, str, str]] = {}
         if self._unified_index is None:
-            return old_doc_ids, old_symbol_info
+            return old_doc_ids
 
         dirty_paths_norm = normalize_dirty_paths(dirty_keys)
         for doc_id, sym in list(self._unified_index.symbols.items()):
             if is_dirty_file_match(sym.file_path, dirty_paths_norm):
                 old_doc_ids.add(doc_id)
-                old_symbol_info[doc_id] = (
-                    sym.file_path,
-                    sym.name,
-                    getattr(sym, "qualified_name", sym.name),
-                )
-        return old_doc_ids, old_symbol_info
-
-    def _reparse_and_relink_dirty_files(
-        self,
-        diff_detail: ScanDiffDetail,
-        dirty_keys: Set[str],
-        all_new_symbols: List[UnifiedSymbol],
-        old_doc_ids: Set[str],
-        old_symbol_info: Dict[str, Tuple[str, str, str]],
-        graph_file: Path,
-    ) -> None:
-        """熱修補階段 3：更新倒排索引與雙階入度重鏈接調用圖譜"""
-        if self._unified_index is None:
-            return
-
-        self._unified_index.patch_incremental(
-            dirty_file_paths=dirty_keys,
-            new_symbols=all_new_symbols,
-            tokenizer=self.tokenizer,
-        )
-
-        if self._call_graph_index is not None:
-            incoming_edges = self._call_graph_index.get_external_incoming_edges(old_doc_ids)
-            dirty_sites, dirty_imports = self.bundler.extract_dirty_call_sites_and_imports(diff_detail)
-            linker = TopologyLinker(
-                symbols_map=self._unified_index.symbols,
-            )
-            new_edges = linker.link_call_sites(dirty_sites, dirty_imports)
-
-            reconnected_incoming_edges: List[Tuple[str, str, Optional[SymbolCallSite]]] = []
-            new_syms_by_identity: Dict[Tuple[str, str], UnifiedSymbol] = {}
-            for sym in all_new_symbols:
-                norm_p = sym.file_path.replace("\\", "/").lower()
-                new_syms_by_identity[(norm_p, sym.name)] = sym
-                if getattr(sym, "qualified_name", None):
-                    new_syms_by_identity[(norm_p, sym.qualified_name)] = sym
-
-            for caller_id, old_callee_id, site in incoming_edges:
-                target_new_id = None
-                if old_callee_id in old_symbol_info:
-                    old_p, old_name, old_qname = old_symbol_info[old_callee_id]
-                    old_norm_p = old_p.replace("\\", "/").lower()
-                    new_sym = new_syms_by_identity.get((old_norm_p, old_name)) or new_syms_by_identity.get((old_norm_p, old_qname))
-                    if new_sym is not None:
-                        target_new_id = new_sym.id
-
-                if not target_new_id and site is not None:
-                    try:
-                        resolved_id = linker.resolve_call_site(site)
-                        if resolved_id and resolved_id in self._unified_index.symbols:
-                            target_new_id = resolved_id
-                    except Exception as e:
-                        logger.debug(f"TopologyLinker fallback resolution failed for site {site}: {e}")
-
-                if target_new_id:
-                    reconnected_incoming_edges.append((caller_id, target_new_id, site))
-
-            self._call_graph_index.patch_incremental(
-                new_edges=new_edges + reconnected_incoming_edges,
-                old_symbol_ids=old_doc_ids,
-            )
-            self._call_graph_index.save_binary(graph_file, compresslevel=1)
+        return old_doc_ids
 
     def _patch_vector_index_with_probe(
         self,
@@ -620,7 +613,6 @@ class IndexingPipeline:
     def _persist_patched_indices(
         self,
         bin_file: Path,
-        graph_file: Path,
         vector_file: Path,
     ) -> None:
         """熱修補階段 4：原子持久化更新後之二進位索引與全域快取同步"""
@@ -630,8 +622,6 @@ class IndexingPipeline:
             _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
             _GLOBAL_INDEX_CACHE["unified_index"] = self._unified_index
             _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
-            _GLOBAL_INDEX_CACHE["graph_index"] = self._call_graph_index
-            _GLOBAL_INDEX_CACHE["graph_mtime"] = graph_file.stat().st_mtime if graph_file.exists() else time.time()
             if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
                 _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
                 _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
@@ -645,7 +635,6 @@ class IndexingPipeline:
     ) -> HotPatchResult:
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
-        graph_file = indices_dir / "unified.graph.bin.gz"
         vector_file = indices_dir / "unified.vectors.bin.gz"
 
         if self._unified_index is None and bin_file.exists():
@@ -664,18 +653,17 @@ class IndexingPipeline:
             else:
                 timeout_seconds = getattr(self.config, "jit_vector_timeout_seconds", 3.0)
 
-        if self._call_graph_index is None and graph_file.exists():
-            try:
-                self._call_graph_index = CallGraphIndex.load_binary(graph_file)
-            except Exception:
-                pass
-
         try:
-            all_new_symbols, dirty_keys = self._collect_all_dirty_files(diff_detail)
-            old_doc_ids, old_symbol_info = self._evict_dirty_file_artifacts(dirty_keys)
-            self._reparse_and_relink_dirty_files(
-                diff_detail, dirty_keys, all_new_symbols, old_doc_ids, old_symbol_info, graph_file
+            all_new_symbols, dirty_keys, new_ast_gen = self._collect_all_dirty_files(diff_detail)
+            old_doc_ids = self._evict_dirty_file_artifacts(dirty_keys)
+            self._unified_index.patch_incremental(
+                dirty_file_paths=dirty_keys,
+                new_symbols=all_new_symbols,
+                tokenizer=self.tokenizer,
+                pre_aggregated=True,
             )
+            self._unified_index.acked_ast_generation = new_ast_gen
+
             if skip_vectors:
                 if old_doc_ids and vector_file.exists():
                     try:
@@ -700,7 +688,7 @@ class IndexingPipeline:
                 vector_degraded, degrade_notice = self._patch_vector_index_with_probe(
                     all_new_symbols, old_doc_ids, vector_file, timeout_seconds
                 )
-            self._persist_patched_indices(bin_file, graph_file, vector_file)
+            self._persist_patched_indices(bin_file, vector_file)
 
             self._vector_degraded = vector_degraded
             self._last_degrade_notice = degrade_notice
@@ -719,7 +707,7 @@ class IndexingPipeline:
     def get_vector_deficit_info(self) -> Dict[str, Any]:
         """比對 unified_index.symbols 與 vector_index.doc_ids，回傳向量差集與覆蓋率統計。"""
         with self._index_lock:
-            self._ensure_indices_loaded(load_graph=False, load_vectors=True)
+            self._ensure_indices_loaded(load_vectors=True)
             idx = self._unified_index
             vec_idx = getattr(self.hybrid_engine, "vector_index", None)
             total_syms = len(idx.symbols) if (idx is not None and idx.symbols) else 0
@@ -787,7 +775,7 @@ class IndexingPipeline:
         with self._index_lock:
             indices_dir = self.get_indices_dir()
             vector_file = indices_dir / "unified.vectors.bin.gz"
-            self._ensure_indices_loaded(load_graph=False, load_vectors=True)
+            self._ensure_indices_loaded(load_vectors=True)
 
             idx = self._unified_index
             if idx is None or not idx.symbols:
@@ -894,9 +882,22 @@ class IndexingPipeline:
             except Exception as e:
                 logger.warning(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
 
-        bundle = self.bundler.bundle_space(sp)
+        ast_has_disk = self.ast_engine._ensure_loaded_from_disk()
+        has_ast_diff = False
+        try:
+            if self.scanner is not None and hasattr(self.scanner, "diff"):
+                has_ast_diff = bool(self.scanner.diff(consumer_id="ast", auto_refresh=False).has_changes)
+        except Exception:
+            has_ast_diff = True
+        ast_force = bool(force and (not ast_has_disk or has_ast_diff))
+        snapshot = self.ast_engine.ensure_jit_synced(force=ast_force)
+        space_symbols = [
+            sym for sym in snapshot.symbols.values()
+            if not sym.spaces or sp_name in sym.spaces
+        ]
         idx = InvertedIndex(space_name=sp_name)
-        idx.build(bundle.symbols, tokenizer=self.tokenizer, space=sp_name)
+        idx.build(space_symbols, tokenizer=self.tokenizer, space=sp_name)
+        idx.acked_ast_generation = snapshot.ast_generation
 
         try:
             idx.save_binary(bin_file)
@@ -932,7 +933,6 @@ class IndexingPipeline:
 
         for fn in [
             "unified.index.bin.gz",
-            "unified.graph.bin.gz",
             "unified.vectors.bin.gz",
         ]:
             f_path = self.storage_dir / "indices" / fn
@@ -946,19 +946,16 @@ class IndexingPipeline:
         except Exception:
             pass
         self._unified_index = None
-        self._call_graph_index = None
         self.hybrid_engine.vector_index = VectorIndex()
         with _CACHE_LOCK:
             _GLOBAL_INDEX_CACHE["storage_dir"] = None
             _GLOBAL_INDEX_CACHE["unified_index"] = None
             _GLOBAL_INDEX_CACHE["unified_mtime"] = 0.0
-            _GLOBAL_INDEX_CACHE["graph_index"] = None
-            _GLOBAL_INDEX_CACHE["graph_mtime"] = 0.0
             _GLOBAL_INDEX_CACHE["vector_index"] = None
             _GLOBAL_INDEX_CACHE["vector_mtime"] = 0.0
 
     # ----------------------------------------------------------------------
-    # 3 階段檢索編排與 TopologyQueryService 委派
+    # 3 階段檢索編排
     # ----------------------------------------------------------------------
 
     def _ensure_jit_index_ready(
@@ -984,7 +981,7 @@ class IndexingPipeline:
         bin_file = indices_dir / "unified.index.bin.gz"
         vector_file = indices_dir / "unified.vectors.bin.gz"
 
-        self._ensure_indices_loaded(load_graph=True, load_vectors=require_vectors)
+        self._ensure_indices_loaded(load_vectors=require_vectors)
 
         if not bin_file.exists():
             if auto_rebuild:
@@ -1003,7 +1000,11 @@ class IndexingPipeline:
         if auto_rebuild:
             with self._consume_space_diff(consumer_id="knowledge-db") as diff_res:
                 if not diff_res.has_changes:
-                    self._ensure_indices_loaded(load_graph=True, load_vectors=require_vectors)
+                    self._ensure_indices_loaded(load_vectors=require_vectors)
+                    if self._unified_index is not None and self.ast_engine._ensure_loaded_from_disk():
+                        snap = self.ast_engine._snapshot
+                        if snap is not None and int(getattr(self._unified_index, "acked_ast_generation", 0) or 0) != int(snap.ast_generation):
+                            self.build_unified_index(force=True)
                     return self._unified_index  # type: ignore[return-value]
 
                 if verbose:
@@ -1101,9 +1102,8 @@ class IndexingPipeline:
                 sys.stderr.write("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]\n")
                 sys.stderr.flush()
                 return False
-            self._ensure_indices_loaded(load_graph=False, load_vectors=True, force_reload=True)
+            self._ensure_indices_loaded(load_vectors=True, force_reload=True)
 
-        # 若 Worker 啟用且向量索引尚在待補齊狀態（例如剛啟動尚未完成首輪微批次），唤醒 Worker 並做容差等待
         if worker_active and not self.hybrid_engine.is_vector_available:
             active_w = get_active_worker()
             if active_w is not None:
@@ -1134,7 +1134,6 @@ class IndexingPipeline:
         if hasattr(self, "embedding_service") and self.embedding_service is not None:
             self.embedding_service.suppress_guard_prompt = bool(is_worker_running(indices_dir))
 
-        # 每次搜尋開始前重置單次熱修補之降級旗標，避免單次超時永久鎖死後續查詢
         self._vector_degraded = False
 
         unified_index = self._ensure_jit_index_ready(
@@ -1143,7 +1142,7 @@ class IndexingPipeline:
             verbose=verbose,
         )
         target_spaces = [space] if isinstance(space, str) else list(space) if space else None
-        target_ftypes = TopologyQueryService.normalize_ftypes(ftypes)
+        target_ftypes = _normalize_ftypes(ftypes)
         space_weights = self._resolve_space_weights()
         if hasattr(self, "hybrid_engine") and self.hybrid_engine is not None:
             self.hybrid_engine.space_weights = space_weights
@@ -1383,37 +1382,3 @@ class IndexingPipeline:
             snippet=snippet,
             context_lines=context_lines,
         )
-
-    def get_call_graph(self) -> CallGraphIndex:
-        """獲取已載入之全域雙向調用圖譜索引 (若未建置則自動觸發 JIT 構建)"""
-        self._ensure_indices_loaded(load_graph=True, load_vectors=False)
-        if self._call_graph_index is None or self._unified_index is None:
-            self.build_unified_index(force=True)
-        return self._call_graph_index  # type: ignore[return-value]
-
-    def callers(
-        self,
-        target_query: str,
-        space: Optional[str] = None,
-        snippet: bool = True,
-        ftypes: Optional[Union[str, List[str]]] = None,
-    ) -> Dict[str, Any]:
-        return self.topology_query.callers(target_query, space=space, snippet=snippet, ftypes=ftypes)
-
-    def callees(
-        self,
-        target_query: str,
-        space: Optional[str] = None,
-        snippet: bool = True,
-        ftypes: Optional[Union[str, List[str]]] = None,
-    ) -> Dict[str, Any]:
-        return self.topology_query.callees(target_query, space=space, snippet=snippet, ftypes=ftypes)
-
-    def impact(
-        self,
-        target_query: str,
-        depth: int = 2,
-        space: Optional[str] = None,
-        ftypes: Optional[Union[str, List[str]]] = None,
-    ) -> Dict[str, Any]:
-        return self.topology_query.impact(target_query, depth=depth, space=space, ftypes=ftypes)

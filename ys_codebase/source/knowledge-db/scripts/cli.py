@@ -4,14 +4,14 @@ Migrated to core.commands active execution contract with strong-typed CmdBags.
 """
 
 import json
-import os
 import sys
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Union
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
+import knowledge_db  # noqa: F401
 import knowledge_db.config as kdb_config
-from knowledge_db.engine import KnowledgeEngine, get_engine
+from knowledge_db.engine import get_engine
 from knowledge_db.exceptions import KnowledgeDBError
 from knowledge_db.formatter import TerminalStyler
 from file_space import FileSpaceNotFoundError
@@ -57,7 +57,7 @@ def _setup_stream_encodings():
 
 
 def status(cmd_bags: Any) -> int:
-    """查看知識庫後台服務、三大核心索引、檢索模式、組態與空間游標同步詳盡統計。"""
+    """查看知識庫後台服務、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計。"""
     guard_dispatch("knowledge-db")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "status")
@@ -75,7 +75,6 @@ def status(cmd_bags: Any) -> int:
         worker_info = st.get("worker") or {}
         indices_info = st.get("indices") or {}
         bm25_info = indices_info.get("bm25") or {}
-        graph_info = indices_info.get("graph") or {}
         vec_info = indices_info.get("vector") or {}
 
         print(f"[knowledge-db] 系統狀態摘要 (共 {st['total_spaces']} 個空間):")
@@ -106,26 +105,19 @@ def status(cmd_bags: Any) -> int:
             mode_str = styler.warn(f"{ret_mode} — {ret_reason}")
         print(f"  - 當前檢索模式  : {mode_str}")
 
-        # 3. 三大核心索引細部指標
+        # 3. 核心索引與 AST 水位指標
+        ast_gen = st.get("ast_generation", 0)
+        acked_ast_gen = st.get("acked_ast_generation", 0)
         if st.get("has_unified_index"):
             unified_str = styler.symbol(
                 f"已建立 ({bm25_info.get('symbol_count', 0)} 個符號, "
                 f"{bm25_info.get('term_count', 0)} 個詞條, "
+                f"AST gen {acked_ast_gen}/{ast_gen}, "
                 f"{bm25_info.get('size_kb', 0.0)} KB)"
             )
         else:
             unified_str = styler.warn("未建立")
         print(f"  - 全域倒排索引  : {unified_str}")
-
-        if st.get("has_graph_index"):
-            graph_str = styler.symbol(
-                f"已建立 ({graph_info.get('node_count', 0)} 個節點, "
-                f"{graph_info.get('edge_count', 0)} 條呼叫邊, "
-                f"{graph_info.get('size_kb', 0.0)} KB)"
-            )
-        else:
-            graph_str = styler.warn("未建立")
-        print(f"  - 雙向呼叫圖譜  : {graph_str}")
 
         vec_status = vec_info.get("status", "missing")
         emb_cnt = vec_info.get("embedded_count", 0)
@@ -162,15 +154,6 @@ def status(cmd_bags: Any) -> int:
             f"微批次大小={st.get('vector_batch_size', 32)}, "
             f"執行緒預算={st.get('max_threads', 1)}"
         )
-
-        langs = st.get("registered_languages") or []
-        load_errs = st.get("parser_load_errors") or {}
-        if load_errs:
-            print(f"  - 解析器狀態    : {styler.warn(f'警告 ({len(load_errs)} 個語言載入失敗)')}")
-            for lid, err_txt in load_errs.items():
-                print(f"    [WARN] 語言 '{lid}': {err_txt}", file=sys.stderr)
-        elif langs:
-            print(f"  - 已註冊解析器  : {len(langs)} 種語言 ({', '.join(langs)})")
 
         print("-" * 80)
         for name, sp in st["spaces"].items():
@@ -220,14 +203,6 @@ def index(cmd_bags: Any) -> int:
         export_arg = bags.get_option_value("export")
 
         indices = engine.build_index(space=space_target, force=force, interactive=True, export_path=export_arg)
-        load_errs = getattr(engine.parser_registry, "load_errors", None) or {}
-        if load_errs:
-            print(
-                f"[knowledge-db] [WARN] 偵測到 {len(load_errs)} 個自訂或擴充語言解析器載入失敗（對應檔案將略過符號解析）：",
-                file=sys.stderr,
-            )
-            for lid, err_txt in load_errs.items():
-                print(f"  - [{lid}] {err_txt}", file=sys.stderr)
         print(f"[knowledge-db] 倒排索引建置完成 (共 {len(indices)} 個空間):")
         for sp_name, idx in indices.items():
             print(f"  - 空間 '{sp_name}': {idx.doc_count} 篇文檔符號，{len(idx.index)} 個 Term 索引詞")
@@ -318,7 +293,7 @@ def model_download(cmd_bags: Any) -> int:
 
 
 def search(cmd_bags: Any) -> int:
-    """對全空間或指定空間符號進行多欄位加權 BM25 語意檢索。"""
+    """對全空間或指定空間符號進行多欄位加權 BM25 與向量混合語意檢索。"""
     guard_dispatch("knowledge-db")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "search")
@@ -553,234 +528,6 @@ def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
         "detail_mode": "detail" if tier == "detail" else "simple",
         "fmt_type": "md" if is_md else "text",
     }
-
-
-def _serialize_target_symbol(engine: KnowledgeEngine, tsym: Any, tier: str) -> Optional[Dict[str, Any]]:
-    if not tsym:
-        return None
-    if tier == "detail":
-        return {
-            "id": tsym.id,
-            "name": tsym.name,
-            "kind": tsym.kind,
-            "file_path": engine.normalize_workspace_path(tsym.file_path),
-            "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-            "line_number": tsym.line_number,
-            "end_line": tsym.end_line,
-            "signature": tsym.signature,
-        }
-    if tier == "snippet":
-        return {
-            "name": tsym.name,
-            "kind": tsym.kind,
-            "file_path": engine.normalize_workspace_path(tsym.file_path),
-            "file_uri": engine.to_file_uri(tsym.file_path, line=tsym.line_number),
-            "line_number": tsym.line_number,
-            "end_line": tsym.end_line,
-            "signature": tsym.signature,
-        }
-    return {
-        "name": tsym.name,
-        "kind": tsym.kind,
-        "file_path": engine.normalize_workspace_path(tsym.file_path),
-        "line_number": tsym.line_number,
-    }
-
-
-def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) -> int:
-    """執行 callers / callees / impact 共用參數解析、Engine 呼叫、JSON/Markdown/Text 渲染與例外守門。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, cmd_name)
-    engine = get_engine()
-
-    try:
-        targets = bags.args
-        if not targets:
-            print(f"[knowledge-db] 錯誤: 請指定目標符號名稱。例如: {example_usage}", file=sys.stderr)
-            return 1
-        query_str = targets[0]
-        space_target = bags.get_option_value("space")
-        ftype_filter = bags.get_option_value("ftype")
-        opts = _parse_common_display_options(bags)
-        tier = opts["tier"]
-        limit_val = opts["limit_val"]
-        is_snippet = opts["is_snippet"]
-
-        if cmd_name == "impact":
-            depth = 2
-            d_opt = bags.get_option_value("depth")
-            if d_opt:
-                try:
-                    depth = int(str(d_opt).strip())
-                except ValueError:
-                    depth = 2
-            res = engine.impact(target_query=query_str, depth=depth, space=space_target, ftypes=ftype_filter)
-            if opts["is_json"]:
-                tsym = res.get("target_symbol")
-                if tier == "detail":
-                    print(json.dumps({
-                        "target_query": res.get("target_query"),
-                        "tier": "detail",
-                        "target_symbol": _serialize_target_symbol(engine, tsym, "detail"),
-                        "max_depth": res.get("max_depth", depth),
-                        "total_impacted_symbols": res.get("total_impacted_symbols", 0),
-                        "total_impacted_files": res.get("total_impacted_files", 0),
-                        "layers": {
-                            str(d): [
-                                _serialize_target_symbol(engine, s, "detail")
-                                for s in syms
-                            ]
-                            for d, syms in res.get("layers", {}).items()
-                        },
-                        "call_chains": res.get("call_chains", {}),
-                    }, indent=2, ensure_ascii=False))
-                else:
-                    print(json.dumps({
-                        "target_query": res.get("target_query"),
-                        "tier": "simple",
-                        "target_symbol": _serialize_target_symbol(engine, tsym, "simple"),
-                        "max_depth": res.get("max_depth", depth),
-                        "total_impacted_symbols": res.get("total_impacted_symbols", 0),
-                        "total_impacted_files": res.get("total_impacted_files", 0),
-                        "layers": {
-                            str(d): [
-                                _serialize_target_symbol(engine, s, "simple")
-                                for s in syms
-                            ]
-                            for d, syms in res.get("layers", {}).items()
-                        },
-                    }, separators=(',', ':'), ensure_ascii=False))
-                return 0
-            print(engine.format_impact_output(
-                result=res,
-                detail_mode=opts["detail_mode"],
-                format_type=opts["fmt_type"],
-                limit_mode=limit_val,
-            ))
-            return 0
-
-        is_callers = (cmd_name == "callers")
-        if is_callers:
-            res = engine.callers(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
-        else:
-            res = engine.callees(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
-
-        if opts["is_json"]:
-            tsym = res.get("target_symbol")
-            list_key = "callers" if is_callers else "callees"
-            total_key = "total_callers" if is_callers else "total_callees"
-            sym_key = "caller_symbol" if is_callers else "symbol"
-            raw_items = res.get(list_key, [])
-            filtered_items = raw_items[:limit_val] if (isinstance(limit_val, int) and limit_val > 0) else raw_items
-
-            if tier == "detail":
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "tier": "detail",
-                    "target_symbol": _serialize_target_symbol(engine, tsym, "detail"),
-                    total_key: len(filtered_items),
-                    list_key: [
-                        {
-                            sym_key: _serialize_target_symbol(engine, c["symbol"], "detail"),
-                            "call_sites": [
-                                {
-                                    "line_number": s.get("line_number"),
-                                    "scope": s.get("scope"),
-                                    "file_uri": engine.to_file_uri(
-                                        c["symbol"].file_path if is_callers else (tsym.file_path if tsym else c["symbol"].file_path),
-                                        line=s.get("line_number"),
-                                    ),
-                                }
-                                for s in c.get("call_sites", [])
-                            ],
-                            **({"code_snippet": c["code_snippet"].to_dict()} if (is_snippet and c.get("code_snippet")) else {}),
-                        }
-                        for c in filtered_items
-                    ],
-                }, indent=2, ensure_ascii=False))
-            elif tier == "snippet":
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "tier": "preview",
-                    "target_symbol": _serialize_target_symbol(engine, tsym, "snippet"),
-                    total_key: len(filtered_items),
-                    list_key: [
-                        {
-                            sym_key: {
-                                "name": c["symbol"].name,
-                                "kind": c["symbol"].kind,
-                                "file_path": engine.normalize_workspace_path(c["symbol"].file_path),
-                                "line_number": c["symbol"].line_number,
-                                "end_line": c["symbol"].end_line,
-                            },
-                            "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
-                            **({"code": c["code_snippet"].get_raw_code(), "code_lines": [c["code_snippet"].start_line, c["code_snippet"].end_line]} if (c.get("code_snippet") and c["code_snippet"].lines) else {}),
-                        }
-                        for c in filtered_items
-                    ],
-                }, separators=(',', ':'), ensure_ascii=False))
-            else:
-                print(json.dumps({
-                    "target_query": res.get("target_query"),
-                    "tier": "simple",
-                    "target_symbol": _serialize_target_symbol(engine, tsym, "simple"),
-                    total_key: len(filtered_items),
-                    list_key: [
-                        {
-                            sym_key: _serialize_target_symbol(engine, c["symbol"], "simple"),
-                            "call_sites": [s.get("line_number") for s in c.get("call_sites", []) if s.get("line_number")],
-                        }
-                        for c in filtered_items
-                    ],
-                }, separators=(',', ':'), ensure_ascii=False))
-            return 0
-
-        formatter_fn = engine.format_callers_output if is_callers else engine.format_callees_output
-        print(formatter_fn(
-            result=res,
-            detail_mode=opts["detail_mode"],
-            snippet=is_snippet,
-            format_type=opts["fmt_type"],
-            limit_mode=limit_val,
-        ))
-        return 0
-    except FileSpaceNotFoundError as e:
-        print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
-        return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
-    except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
-
-
-def callers(cmd_bags: Any) -> int:
-    """查詢調用指定函式/類別之所有上游調用者 (Callers) 與代碼切片。"""
-    return _run_topology_cli_command(
-        "callers",
-        cmd_bags,
-        "python yscb.py knowledge-db callers 'InvertedIndex.load_binary'",
-    )
-
-
-def callees(cmd_bags: Any) -> int:
-    """查詢指定函式/類別內部調用了哪些下游方法 (Callees) 與依賴。"""
-    return _run_topology_cli_command(
-        "callees",
-        cmd_bags,
-        "python yscb.py knowledge-db callees 'InvertedIndex.patch_incremental'",
-    )
-
-
-def impact(cmd_bags: Any) -> int:
-    """評估符號變更或重構時向上擴散之多階調用影響面 (Blast Radius)。"""
-    return _run_topology_cli_command(
-        "impact",
-        cmd_bags,
-        "python yscb.py knowledge-db impact 'InvertedIndex.patch_incremental' --depth=2",
-    )
 
 
 def clean(cmd_bags: Any) -> int:

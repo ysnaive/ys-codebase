@@ -9,7 +9,11 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .manager import FileSpaceManager
-from .scanner import FingerprintScanner
+from .scanner import (
+    FingerprintScanner,
+    _adjust_active_watcher_count,
+    is_watcher_active,
+)
 from .schema import ScanDiffResult
 
 logger = logging.getLogger("file_space.service")
@@ -74,13 +78,6 @@ except ImportError:
 
 _SUBSCRIBER_LOCK = threading.Lock()
 _SUBSCRIBERS: List[Tuple[Callable[[str, ScanDiffResult], Any], Optional[Set[str]]]] = []
-_ACTIVE_WATCHER_COUNT = 0
-
-
-def is_watcher_active() -> bool:
-    """Return True if an in-process FileSpaceWatcherServiceWorker is currently running."""
-    with _SUBSCRIBER_LOCK:
-        return _ACTIVE_WATCHER_COUNT > 0
 
 
 def subscribe(
@@ -401,11 +398,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
 
     def run(self) -> None:
         """Main background loop for FileSpaceWatcherServiceWorker."""
-        global _ACTIVE_WATCHER_COUNT
-        with _SUBSCRIBER_LOCK:
-            _ACTIVE_WATCHER_COUNT += 1
-        with self._lock:
-            self._watcher_active = True
+        _adjust_active_watcher_count(1)
         try:
             for s_name, cfg in self.space_manager.get_all_spaces().items():
                 if cfg.watch and not self.scanner.get_snapshot_path(s_name).exists():
@@ -421,10 +414,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
                 self.flush_dirty_spaces(force=False)
                 self._stop_event.wait(timeout=poll_interval)
         finally:
-            with self._lock:
-                self._watcher_active = False
-            with _SUBSCRIBER_LOCK:
-                _ACTIVE_WATCHER_COUNT = max(0, _ACTIVE_WATCHER_COUNT - 1)
+            _adjust_active_watcher_count(-1)
             self._stop_watchdog_observer()
 
     def get_custom_metrics(self) -> Dict[str, Any]:

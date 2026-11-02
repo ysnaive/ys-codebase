@@ -16,7 +16,6 @@ from dev.testing.requirement import Requirement, require
 from knowledge_db.exceptions import InvalidConfigError, SchemaValidationError
 from knowledge_db.schema import (
     KnowledgeDBContributes,
-    LanguageConfig,
     LanguageType,
     MemberInfo,
     SymbolKind,
@@ -145,18 +144,10 @@ class TestSchema(YSCBTestCase):
 
         contributes = KnowledgeDBContributes.from_dict({
             "space_weights": {"source": 1.0, "docs": 1.2, "plans": 0.85},
-            "languages": {
-                "rust": {
-                    "name": "Rust",
-                    "extensions": [".rs"],
-                    "mode": "tree_sitter",
-                    "grammar": "tree_sitter_rust",
-                }
-            },
         })
         self.assertAlmostEqual(contributes.space_weights["docs"], 1.2)
         self.assertAlmostEqual(contributes.space_weights["plans"], 0.85)
-        self.assertIn("rust", contributes.languages)
+        self.assertFalse(hasattr(contributes, "languages"))
 
         for bad_weight in (0, 0.0, -0.5, "not_a_float", False):
             with self.assertRaises(InvalidConfigError):
@@ -222,31 +213,6 @@ class TestSchema(YSCBTestCase):
         self.assertEqual(restored.children[0].name, "connect")
         self.assertEqual(restored.children[0].fqn, "pkg.db.DatabaseClient.connect")
         self.assertEqual(restored.children[0].parent_id, "class_hash_1")
-
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_ft_05_language_config_serialization(self):
-        """驗證 LanguageConfig 模型與 contributes 外掛配置解析"""
-        cfg_data = {
-            "id": "rust",
-            "name": "Rust Language",
-            "extensions": [".rs"],
-            "mode": "tree_sitter",
-            "grammar": "tree_sitter_rust",
-            "query_file": "module://my-mod/assets/queries/rust.scm",
-            "custom_kinds": [{"kind": "trait", "category": "interface"}],
-        }
-        lang_cfg = LanguageConfig.from_dict(cfg_data)
-        self.assertEqual(lang_cfg.id, "rust")
-        self.assertEqual(lang_cfg.extensions, (".rs",))
-        self.assertEqual(lang_cfg.mode, "tree_sitter")
-        self.assertEqual(lang_cfg.grammar, "tree_sitter_rust")
-        self.assertEqual(len(lang_cfg.custom_kinds), 1)
-
-        d = lang_cfg.to_dict()
-        self.assertEqual(d["id"], "rust")
-        self.assertEqual(d["extensions"], [".rs"])
 
         self.mark_passed()
 

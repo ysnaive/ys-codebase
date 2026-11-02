@@ -1,0 +1,17 @@
+{
+  "insert": [
+    {
+      "type": "uri",
+      "token": "HOW_TO_YSCB_MODULES",
+      "value": "module://ast/assets/usage_guide.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_CONFIG_MODULES",
+      "value": "module://ast/assets/config_guide.md",
+      "mode": "below"
+    }
+  ]
+}
+

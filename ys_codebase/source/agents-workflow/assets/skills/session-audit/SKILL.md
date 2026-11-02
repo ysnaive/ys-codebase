@@ -39,7 +39,7 @@ description: 提取對話之隱形摩擦軌跡 (session-trace)，執行決策瑕
   ```
 - 若當前宿主環境上下文已宣告本輪對話之 Transcript 路徑（如 Antigravity 之 `transcript.jsonl`），優先帶入 `--transcript` 以 100% 鎖定主視窗：
   ```bash
-  python __${yscb.host://yscb.py}__ agents-workflow session-trace [--transcript <path>] [--plan <plan_dir>] --json
+  python __${yscb.host://yscb.py}__ agents-workflow session-trace [--transcript <path>] [--plan <plan_dir>]
   ```
 - 若回報多份工作區候選 `.jsonl`（`transcript_candidates`）或多活躍計畫提示，依提示補入 `--transcript` 或 `--plan` 重新提取。
 - **三級觀測降級說明**：`Tier 1+2` 代表同時具備宿主 `.jsonl` 對話軌跡與 CLI 遙測日誌；`Tier 2` 代表僅具備 CLI 遙測日誌；`Tier 3` 代表兩者皆不可用時，降級由主代理依對話上下文進行結構化逆向自白。
@@ -49,7 +49,7 @@ description: 提取對話之隱形摩擦軌跡 (session-trace)，執行決策瑕
 1. **三軌審計執行主體分流 (`Audit Executor Triage`)**：
    - **軌道 A — 零摩擦快速放行（`0 Friction & 0 Error Fast-Pass`）**：若 `session-trace` 提取結果確認 **`friction_signals` 為空 (`0` 項) 且 `error_steps == 0`**，免派發 Subagent（節約冷啟動 Token），直接由主代理彙整 `session_stats` 進入步驟 4 輸出零摩擦報告（審計主體標註 `Main Agent (0-Friction Fast-Pass)`）。
    - **軌道 B — 盲眼子代理冷眼解剖（`Blind Subagent Autopsy`，預設強制軌道）**：當 `len(friction_signals) > 0` 或 `error_steps > 0`（且非 `Tier 3`）時，主代理**必須先讀取 [`BlindSubagentStandards.md`](`__#{module://agents-workflow/assets/standards/BlindSubagentStandards.md}__`)**，套用其 `§5.2 主代理 -> 盲眼 Subagent 專用派發訊息模板`（**原型 ②：基準對齊冷眼靜態審查**，`Mode I` 回傳 150~400 Tokens 濃縮結論）派發唯讀 Subagent：
-     - **去錨定傳址 (`Pointer-Only`)**：僅向盲眼 Subagent 傳遞步驟 1 執行之 `session-trace --json` 精確命令（或已提取之 JSON 結構化訊號座標）、本技能 `session-audit/SKILL.md` 路徑，以及事發步驟涉及之 `AGENTS.md` / 相關 `SKILL.md` 規範路徑。**嚴禁在派發 Prompt 中夾帶主代理的主觀辯解、心路歷程說明或預先歸類傾向！**
+     - **去錨定傳址 (`Pointer-Only`)**：僅向盲眼 Subagent 傳遞步驟 1 執行之 `session-trace` 精確命令（或已提取之結構化訊號座標）、本技能 `session-audit/SKILL.md` 路徑，以及事發步驟涉及之 `AGENTS.md` / 相關 `SKILL.md` 規範路徑。**嚴禁在派發 Prompt 中夾帶主代理的主觀辯解、心路歷程說明或預先歸類傾向！**
      - **反合理化審計基準注入**：要求盲眼 Subagent 逐一核對事發 `Step #` 前後之 `<thinking>` 切片與當時已生效之規範條文；**凡規範或 CLI `-h` 已明文記載卻未遵循、漏讀或盲猜參數者，一律剛性歸為 `Type D`（或 `Type A/B`），嚴禁放水歸入 `Type C`！**
    - **軌道 C — 無子代理環境或 `Tier 3` 降級（`Inline Fallback`）**：若當前宿主環境不支援 Subagent 工具或處於 `Tier 3` 無外部日誌模式，依 `BlindSubagentStandards.md §1` 自動降級由主代理 Inline 執行，並於報告頂部顯式標註 `Main Agent [Inline Fallback]`。
 

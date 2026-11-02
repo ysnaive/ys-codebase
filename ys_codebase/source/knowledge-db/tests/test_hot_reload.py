@@ -16,7 +16,7 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from knowledge_db.bundler import SemanticBundler
+from knowledge_db import SemanticBundler
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.retrieval import InvertedIndex
 from knowledge_db.schema import UnifiedSymbol
@@ -82,12 +82,85 @@ class TestJITHotHealing(YSCBTestCase):
                 contributes_data={"spaces": {"space_a": sp_a.to_dict(), "space_b": sp_b.to_dict()}},
             )
 
-            bundler = SemanticBundler(engine.space_manager, engine.parser_registry, storage_dir=storage_dir)
+            bundler = SemanticBundler(engine.space_manager, engine.ast_engine.parser_registry, storage_dir=storage_dir)
             bundle = bundler.bundle_union()
 
             self.assertEqual(bundle.metadata["total_files"], 1)
             sym = next(s for s in bundle.symbols if s.name == "CommonHelper")
             self.assertEqual(sorted(sym.spaces), ["space_a", "space_b"])
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_single_parse_symbol_sharing_zero_reparse(self):
+        """驗證 Single-Parse Symbol Sharing：當 ast_engine 已同步最新快照時，knowledge-db 直接消費快照而不重複解析檔案"""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            src_dir = temp_path / "src"
+            src_dir.mkdir(parents=True)
+            storage_dir = temp_path / "storage"
+
+            f_shared = src_dir / "shared.py"
+            f_shared.write_text(
+                "class SharedService:\n    def execute(self) -> None:\n        pass\n",
+                encoding="utf-8",
+            )
+
+            sp = FileSpaceConfig(name="source", include=[str(src_dir)])
+            engine = KnowledgeEngine(
+                storage_dir=storage_dir,
+                contributes_data={"spaces": {"source": sp.to_dict()}},
+            )
+
+            # 1. 先由 ast_engine 執行一次 JIT 同步產出 ASTSnapshot
+            ast_snap = engine.ast_engine.ensure_jit_synced(force=True)
+            gen1 = ast_snap.ast_generation
+            self.assertGreaterEqual(gen1, 1)
+
+            # 2. 攔截 parser_registry.parse_file，驗證 knowledge-db build_unified_index (force=True) 零重複解析
+            with patch.object(
+                engine.ast_engine.parser_registry,
+                "parse_file",
+                wraps=engine.ast_engine.parser_registry.parse_file,
+            ) as spy_parse:
+                idx = engine.build_unified_index(force=True)
+                self.assertEqual(
+                    spy_parse.call_count,
+                    0,
+                    "knowledge-db should directly consume ASTSnapshot without re-parsing files!",
+                )
+                self.assertEqual(idx.acked_ast_generation, gen1)
+
+            # 3. 驗證當 ast_engine 先感知檔案修改並推進 ast_generation 時，knowledge-db 也能透過雙游標比對自動同步且零重解析
+            time.sleep(0.05)
+            f_shared.write_text(
+                "class SharedServiceV2:\n    def execute_v2(self) -> None:\n        pass\n",
+                encoding="utf-8",
+            )
+            ast_snap_v2 = engine.ast_engine.ensure_jit_synced()
+            self.assertGreater(ast_snap_v2.ast_generation, gen1)
+
+            with patch.object(
+                engine.ast_engine.parser_registry,
+                "parse_file",
+                wraps=engine.ast_engine.parser_registry.parse_file,
+            ) as spy_parse_v2:
+                res = engine.search("SharedServiceV2", auto_rebuild=True)
+                self.assertEqual(
+                    spy_parse_v2.call_count,
+                    0,
+                    "Hot patch after ast_engine sync should also reuse ASTSnapshot without re-parsing!",
+                )
+                self.assertGreaterEqual(len(res), 1)
+                self.assertEqual(res[0].items[0].symbol.name, "SharedServiceV2")
+
+            # 4. 驗證 EC-02：當 space 差量已被消費為空，但 ast_engine 世代較新 (acked_ast_generation 落後) 時，自動同步對齊世代
+            engine.pipeline.unified_index.acked_ast_generation = 0
+            engine.pipeline.unified_index.save_binary(engine.pipeline.get_indices_dir() / "unified.index.bin.gz")
+            engine.search("SharedServiceV2", auto_rebuild=True)
+            self.assertEqual(engine.pipeline.unified_index.acked_ast_generation, ast_snap_v2.ast_generation)
 
         self.mark_passed()
 

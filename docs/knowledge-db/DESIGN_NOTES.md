@@ -184,4 +184,20 @@ last_updated: "2026-11-02"
 > [!CAUTION]
 > **嚴禁在 `KnowledgeDBServiceWorker` 中重複建立 `watchdog.Observer` 監聽檔案系統，且嚴禁將前台容差等待改為不論 `elapsed_ms` 皆固定睡眠完整 `jit_vector_timeout_ms`！** 必須維持 `elapsed_ms >= timeout_ms` 時 0ms 瞬時降級之防呆不變量。
 
+---
+
+### [DN-30] `file-space -> ast -> knowledge-db` 三階單向無環圖（Strict 3-Tier DAG）、單次解析符號共享（Single-Parse Symbol Sharing）與 `acked_ast_generation` 雙水位線協議
+
+- **背景與根因**：
+  1. 過去語法樹解析、C# `partial class` 跨檔聚合與呼叫拓撲 (`CallGraphIndex` / `TopologyLinker`) 與全文/向量混合檢索耦合於單一 `knowledge-db` 模組中，導致僅需單檔結構大綱 (`outline`) 或靜態呼叫拓撲 (`callers/callees/impact`) 時連帶綁定檢索與向量子系統。
+  2. 獨立出 Layer 2 `module:ast` 後，若 `knowledge-db` 仍自行對原始碼重複執行 Tree-sitter 解析，將造成雙倍 I/O 與 CPU 浪費；且當執行 `ast clean` 重建 `ASTSnapshot` 而 `file-space` 游標已處於 `in_sync` 時，單憑 `file-space` 游標無法感知 `ast_generation` 重置。
+- **工程妥協與解法**：
+  1. **單次解析符號共享（Zero Re-parse）**：`knowledge-db` 物理移除內部 `.scm` 與 Tree-sitter 解析器實作，於 `IndexingPipeline.build_unified_index()`、`build_index(space=...)`、`hot_patch_unified_index()` 與 `KnowledgeEngine.bundle()` 中，100% 透過 `self.ast_engine.ensure_jit_synced()` 取得 `ASTSnapshot`（`cache://ast/indices/unified.symbols.bin.gz`）與 `CallGraphIndex`（`cache://ast/indices/unified.graph.bin.gz`），不再重跑語法樹解析。
+  2. **`acked_ast_generation` 雙水位線自癒**：`IndexingPipeline` 將當次消費之 `ASTSnapshot.ast_generation` 持久化於 `unified.index.bin.gz` 之 `InvertedIndex.acked_ast_generation` 並緩存於 `_GLOBAL_INDEX_CACHE["acked_ast_generation"]`；在 `_ensure_jit_index_ready_locked()` 與 `KnowledgeDBServiceWorker._sync_stage1_lexical_and_graph()` 中，即便 `file-space` 游標 `has_changes == False`，只要 `acked_ast_generation != snapshot.ast_generation` 即自動觸發全量重建並對齊最新 AST 世代。
+  3. **`pre_aggregated=True` 免二次分部聚合與刪除分部連坐**：因 `ASTSnapshot.symbols` 已由 `module:ast` 完成雙層 `partial class` 聚合，`InvertedIndex.patch_incremental(..., pre_aggregated=True)` 直接索引符號之 `_own_members` 而不重複執行分部拆解；同時 `_collect_all_dirty_files()` 結合 `self._unified_index.symbols` 追蹤被刪除之 C# 分部檔案，確保刪除任一分部時其餘姊妹分部強制納入重算。
+
+> [!CAUTION]
+> **嚴禁在 `knowledge-db` 管線中繞過 `ASTEngine.ensure_jit_synced()` 私自呼叫底層 Parser 重複解析原始碼，亦嚴禁移除 `acked_ast_generation != snapshot.ast_generation` 水位線檢核！**
+
+
 

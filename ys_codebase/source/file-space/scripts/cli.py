@@ -337,7 +337,7 @@ def clean(bags: Any = None) -> int:
             )
             reset_consumers.append(consumer_id)
         elif space_name is not None:
-            scanner.mgr_check = scanner.space_manager.get_space(space_name)
+            scanner.space_manager.get_space(space_name)
             snap_path = scanner.get_snapshot_path(space_name)
             if snap_path.exists():
                 snap_path.unlink()

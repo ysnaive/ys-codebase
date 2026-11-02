@@ -14,9 +14,8 @@ last_updated: "2026-10-15"
 
 # knowledge-db 語意打包引擎指南 (Semantic Bundler Guide)
 
-> 模組名稱：`knowledge-db`  
-> 核心模組：`knowledge_db.bundler`  
-> 產物格式：自包含 JSON 發布包 (`.bundle.json`)  
+> 模組名稱：`ast` (核心實作 `ast_engine.bundler`) / `knowledge-db` (`knowledge_db.bundler` 相容重匯出門面)  
+> 產物格式：雙層分部符號快照 `ASTSnapshot` (`unified.symbols.bin.gz`) 與自包含 JSON 發布包 (`.bundle.json`)，詳見 [`docs/ast/README.md`](../ast/README.md)  
 
 ---
 

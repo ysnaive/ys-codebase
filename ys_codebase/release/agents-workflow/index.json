@@ -9,9 +9,8 @@
     "1.1.0.7",
     "1.2.0.2",
     "1.2.1.1",
-    "1.2.2.1",
-    "1.2.2.2",
-    "1.2.2.3"
+    "1.2.2.3",
+    "1.2.3.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -87,7 +86,7 @@
       "summary": "新增 /code-optimizer 技能與三大中央設計標準、完成 plans/ 巨型模組正交拆分與循環依賴破除，並確立 SKILL.md Frontmatter 描述為唯一真理來源"
     },
     "1.2.2.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.0"
       },
@@ -96,7 +95,7 @@
       "summary": "新增 PXX-05_auto.md 綜合模板與恢復膠囊、擴充 8 大 AI 平台 release_target 並聯渲染、建立雙層子代理標準與 /blind-subagent 技能及編譯器 yscb:literal/ignore 區塊語法"
     },
     "1.2.2.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.0"
       },
@@ -112,6 +111,15 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "於 session-audit 技能引入盲眼子代理客觀法醫審計與三軌分流機制"
+    },
+    "1.2.3.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "遷移 file-space 空間貢獻、新增 yscb ast 結構導航盲讀豁免與 publisher 目錄 SHA-1 快取複用及託管標記自癒"
     }
   }
 }

@@ -1,0 +1,20 @@
+{
+  "_types": {
+    "LanguageDef": {
+      "id": "str!",
+      "name": "str!",
+      "extensions": "list[str]!",
+      "mode": "enum(tree_sitter, custom)!",
+      "grammar": "str?",
+      "query_file": "str?",
+      "parser_entry": "str?"
+    }
+  },
+  "languages": {
+    "description": "向 AST 引擎註冊支援的程式語言、Tree-sitter 語法查詢或自訂 AST 解析器與副檔名對映",
+    "merge": "merge",
+    "format": {
+      "*": "$LanguageDef | merge"
+    }
+  }
+}

@@ -248,7 +248,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
     """
     Persistent background worker for `module:knowledge-db`:
     - Stage 1 (Fast Path): Consumes `space` diffs (`consume_diff("knowledge-db")`) and hot-patches
-      AST + BM25 (`unified.index.bin.gz`) and CallGraph (`unified.graph.bin.gz`).
+      AST snapshot (`ast_engine`) and BM25 (`unified.index.bin.gz`).
     - Auto Model Download: When `enable_vector_search=True` and model weights are missing in `.cache/`,
       automatically downloads the FastEmbed ONNX model in the background without `[GUARD]` prompts.
     - Stage 2 (Slow Path): Compares `unified_index.symbols` vs `vector_index.doc_ids` and incrementally
@@ -459,13 +459,20 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             scanner = getattr(engine, "scanner", None)
             if scanner is not None and hasattr(scanner, "diff"):
                 diff_res = scanner.diff(consumer_id="knowledge-db", auto_refresh=False)
-                return bool(diff_res.has_changes)
+                if diff_res.has_changes:
+                    return True
+            ast_eng = getattr(engine, "ast_engine", None)
+            idx = getattr(engine.pipeline, "unified_index", None)
+            if ast_eng is not None and idx is not None and ast_eng._ensure_loaded_from_disk():
+                snap = ast_eng._snapshot
+                if snap is not None and int(getattr(idx, "acked_ast_generation", 0) or 0) != int(snap.ast_generation):
+                    return True
         except Exception:
             pass
         return False
 
     def _sync_stage1_lexical_and_graph(self, engine: Any, indices_dir: Path) -> None:
-        """Stage 1 Fast Path: Update AST, BM25 inverted index, and CallGraph without blocking on vectors."""
+        """Stage 1 Fast Path: Update AST and BM25 inverted index without blocking on vectors."""
         bin_file = indices_dir / "unified.index.bin.gz"
         with engine.pipeline._consume_space_diff(consumer_id="knowledge-db") as diff_res:
             if not bin_file.exists() and engine.pipeline.unified_index is None:
@@ -476,6 +483,16 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 )
                 return
             if not diff_res.has_changes:
+                ast_eng = getattr(engine, "ast_engine", None)
+                idx = getattr(engine.pipeline, "unified_index", None)
+                if ast_eng is not None and idx is not None and ast_eng._ensure_loaded_from_disk():
+                    snap = ast_eng._snapshot
+                    if snap is not None and int(getattr(idx, "acked_ast_generation", 0) or 0) != int(snap.ast_generation):
+                        engine.pipeline.build_unified_index(
+                            force=True,
+                            allow_parallel=False,
+                            skip_vectors=True,
+                        )
                 return
             patch_res = engine.pipeline.hot_patch_unified_index(
                 diff_res.detail,

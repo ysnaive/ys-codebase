@@ -1940,6 +1940,40 @@ class TestPlansModelRecord(YSCBTestCase):
             "讀取截斷暫存檔 output.txt 應觸發 JSON_SNIPPET_OVERFLOW 警訊",
         )
 
+        # 驗證 yscb.py ast outline / callers 同樣觸發二階段漏斗精準行號讀檔豁免
+        rev06_ast_file = self.root / "rev06_ast_funnel.jsonl"
+        rev06_ast_file.write_text(
+            "\n".join([
+                json.dumps({
+                    "step_index": 1,
+                    "created_at": "2026-10-28T17:05:00Z",
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "run_command", "args": {"CommandLine": "python yscb.py ast outline Window.cs --public --methods --json"}},
+                    ],
+                }),
+                json.dumps({
+                    "step_index": 2,
+                    "created_at": "2026-10-28T17:05:05Z",
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/Window.cs", "StartLine": 10, "EndLine": 60}},
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/Window.Lifecycle.cs", "StartLine": 1, "EndLine": 80}},
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/Window.Dragging.cs", "StartLine": 20, "EndLine": 100}},
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/Window.Layout.cs", "StartLine": 5, "EndLine": 55}},
+                        {"name": "read_file", "args": {"Path": f"{proj_root_str}/Window.Events.cs", "StartLine": 1, "EndLine": 120}},
+                    ],
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        _, _, _, r6_ast_stats = parse_transcript_file(rev06_ast_file)
+        self.assertEqual(
+            r6_ast_stats["token_efficiency"]["wasted_breakdown"]["unindexed_blind_reads"],
+            0,
+            "執行 ast outline 定位後對 <= 160 行區段之定點讀取不得誤判為盲讀浪費",
+        )
+
         # 驗證 Stage 1 ArtifactCompiler 編譯含 session-audit 之全部內建資產 0 warning / 0 error
         compiler = ArtifactCompiler()
         comp_res = compiler.compile_stage1()
