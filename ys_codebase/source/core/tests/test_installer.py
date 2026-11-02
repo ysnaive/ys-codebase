@@ -620,5 +620,53 @@ class TestCoreInstaller(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_legacy_agent_workflow_provider_url_auto_migration(self):
+        """驗證舊倉庫名 ysnaive/agent.workflow 之 legacy provider URL 能於 engine 與 yscb.py 自動正規化至 /releases。"""
+        import importlib.util
+        from pathlib import Path
+        from core.engine import normalize_legacy_provider_url, DEFAULT_PROVIDER_URL
+
+        for legacy_url in (
+            "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release",
+            "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release/",
+            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release",
+            "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release/",
+        ):
+            self.assertEqual(normalize_legacy_provider_url(legacy_url), DEFAULT_PROVIDER_URL)
+
+        # 驗證自訂網址不受影響
+        custom_url = "https://example.com/custom/releases"
+        self.assertEqual(normalize_legacy_provider_url(custom_url), custom_url)
+
+        # 驗證 engine._get_config() 自動將 yscb.config.json 中之 agent.workflow 舊網址遷移並回寫
+        cfg_path, orig_cfg = self.installer.engine._get_config()
+        orig_provider = orig_cfg.get("default_provider")
+        try:
+            orig_cfg["default_provider"] = "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release/"
+            self.installer.engine._save_config(cfg_path, orig_cfg)
+            _, reloaded_cfg = self.installer.engine._get_config()
+            self.assertEqual(reloaded_cfg.get("default_provider"), DEFAULT_PROVIDER_URL)
+        finally:
+            if orig_provider is not None:
+                orig_cfg["default_provider"] = orig_provider
+            else:
+                orig_cfg.pop("default_provider", None)
+            self.installer.engine._save_config(cfg_path, orig_cfg)
+
+        # 驗證根目錄 yscb.py 載入之 LEGACY_PROVIDER_URLS 同步包含舊倉庫名
+        root_yscb = Path(__file__).resolve().parents[4] / "yscb.py"
+        if root_yscb.is_file():
+            spec = importlib.util.spec_from_file_location("yscb_entry_test", str(root_yscb))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            self.assertEqual(
+                mod._normalize_provider_url(
+                    "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release"
+                ),
+                DEFAULT_PROVIDER_URL,
+            )
+
+        self.mark_passed()
+
 
 

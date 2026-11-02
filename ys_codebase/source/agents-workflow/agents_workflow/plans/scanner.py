@@ -348,15 +348,24 @@ class PlanScanner:
 
         for src_f in file_sources:
             try:
+                is_spec_file = src_f.name not in ("fast_track_plan.md", "revision_log.md")
                 for line in src_f.read_text(encoding="utf-8", errors="ignore").splitlines():
                     s = line.strip()
+                    if is_spec_file and s.startswith(("## 3.", "## 4.")):
+                        break
                     if s.startswith("|") and ("Modify" in s or "New" in s or "Delete" in s):
                         cells = [c.strip().strip("`") for c in s.strip("|").split("|")]
-                        if cells and cells[0] and cells[0] not in ("檔案路徑", "文件路徑", "---", ":---"):
-                            if cells[0] not in impacted_files:
-                                impacted_files.append(cells[0])
-                                if len(impacted_files) >= 8:
-                                    break
+                        if not cells or not cells[0]:
+                            continue
+                        cand = cells[0].strip("*").strip()
+                        if cand in ("檔案路徑", "文件路徑", "衝擊維度", "維度", "---", ":---"):
+                            continue
+                        if "/" not in cand and "." not in cand:
+                            continue
+                        if cand not in impacted_files:
+                            impacted_files.append(cand)
+                            if len(impacted_files) >= 8:
+                                break
             except Exception:
                 continue
             if len(impacted_files) >= 8:

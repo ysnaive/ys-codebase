@@ -694,7 +694,12 @@ class PlanVerifier:
         if p_up in ("P05", "P06", "P07", "ALL", "CURRENT") and p05_path.is_file():
             try:
                 p05_text = p05_path.read_text(encoding="utf-8", errors="ignore")
-                if re.search(r"\|\s*`?(?:Major|Critical)`?\s*\|", p05_text, re.IGNORECASE):
+                major_lines = [
+                    ln
+                    for ln in p05_text.splitlines()
+                    if re.search(r"\|\s*`?(?:Major|Critical)`?\s*\|", ln, re.IGNORECASE)
+                ]
+                if major_lines:
                     p03_path = PlanStatusResolver.resolve_phase_file(target_dir, "P03")
                     p05_mtime = p05_path.stat().st_mtime
                     stale_specs = [
@@ -714,6 +719,30 @@ class PlanVerifier:
                                 ),
                             )
                         )
+                    elif p02_path == p05_path or p03_path == p05_path:
+                        backprop_kws = ("§2", "§3", "p02", "p03", "已回寫", "已同步", "backprop", "revision")
+                        has_inline_backprop = all(
+                            any(kw in ln.lower() for kw in backprop_kws) for ln in major_lines
+                        )
+                        has_changelog_rev = False
+                        changelog_f = target_dir / "changelog.md"
+                        if not changelog_f.is_file() and target_dir.parent.name != "plans":
+                            changelog_f = target_dir.parent / "changelog.md"
+                        if changelog_f.is_file():
+                            cl_text = changelog_f.read_text(encoding="utf-8", errors="ignore")
+                            has_changelog_rev = bool(re.search(r"\bREVISION\b", cl_text, re.IGNORECASE))
+                        if not has_inline_backprop and not has_changelog_rev:
+                            report.issues.append(
+                                PlanIssue(
+                                    severity=PlanSeverity.WARN,
+                                    file_name=f"{prefix}{p05_path.name}",
+                                    category="BACKPROP",
+                                    message=(
+                                        f"'{p05_path.name}' 記載了 Major/Critical 實作偏差，但未見同檔前置章節 (§2/§3) 反向回寫註記或 changelog.md REVISION 紀錄。 "
+                                        f"[Fix Hint: 請同步更新同檔 §2/§3 規格，並於 §5.2 偏差紀錄註記『已回寫 §2/§3』或於 changelog.md 登記 REVISION]"
+                                    ),
+                                )
+                            )
             except Exception:
                 pass
 

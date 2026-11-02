@@ -856,7 +856,7 @@ class ArtifactCompiler:
                     deployment_map=deployment_map,
                     doc_basename=doc_basename,
                 )
-                return resolved if anchor else f"`{resolved}`"
+                return resolved if anchor else f"`{resolved or './'}`"
 
             if has_local:
                 inner = LOCAL_URI_INNER_REGEX.sub(

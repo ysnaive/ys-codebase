@@ -2171,6 +2171,49 @@ class TestPlansModelRecord(YSCBTestCase):
             next_gate_hint = real_verifier._build_next_phase_hint(p_claude)
             self.assertIn(".claude/.yscb/templates/P01_requirements_spec.md", next_gate_hint)
 
+        # --- 6. 驗證單檔合併模式 P01-05_auto.md 之膠囊 Impacted Files 過濾 (§4.2 維度不誤抓) 與同檔 BACKPROP 檢核 ---
+        p_auto_edge = self.plans_dir / "2026_11_01_1050_auto_edge_checks"
+        p_auto_edge.mkdir(parents=True, exist_ok=True)
+        auto_doc_unbackpropped = (
+            "# 合併規格與任務書 (Consolidated Auto Spec) — 邊界檢核\n\n"
+            + hdr
+            + "> 狀態：In Progress\n\n"
+            "## 1. 需求規格與驗收契約 (Requirements & Acceptance Criteria)\n"
+            "| `FR-01` | 修復邊界 | P0 |\n\n"
+            "## 2. 架構設計與變更清單 (Architecture & Impacted Files)\n"
+            "| `ys_codebase/source/core/core/engine.py` | Modify | 更新常數 |\n\n"
+            "## 3. 詳細設計與介面實作規格 (API & Implementation Spec)\n"
+            "無變更\n\n"
+            "## 4. 依賴環境與文檔衝擊分析 (Impact Analysis)\n"
+            "### 4.2 知識庫文檔衝擊與交付規劃\n"
+            "| **模組手冊** | `docs/core/README.md` | 無衝擊 | 不需 Modify |\n"
+            "| **設計筆記** | `docs/core/DESIGN_NOTES.md` | 無衝擊 | 不涉及 New |\n\n"
+            "## 5. 實作任務清單與偏差紀錄 (Tasks & Deviations)\n"
+            "### 5.1 原子實作任務清單\n"
+            "- [ ] **TASK-01**：修改 `engine.py` (驗證方式：單元測試)\n"
+            "### 5.2 實作偏差紀錄表\n"
+            "| TASK-01 | `Major` | 介面大幅調整 | 尚未同步 |\n"
+        )
+        (p_auto_edge / "P01-05_auto.md").write_text(auto_doc_unbackpropped, encoding="utf-8")
+
+        cap_auto = scanner.build_recovery_capsule(p_auto_edge)
+        self.assertIn("ys_codebase/source/core/core/engine.py", cap_auto)
+        self.assertNotIn("模組手冊", cap_auto)
+        self.assertNotIn("設計筆記", cap_auto)
+
+        rep_auto_warn = real_verifier.verify_plan(p_auto_edge)
+        auto_warn_cats = {i.category for i in rep_auto_warn.issues if i.severity == PlanSeverity.WARN}
+        self.assertIn("BACKPROP", auto_warn_cats)
+
+        # 當於 §5.2 標註「已回寫 §2」時，BACKPROP 警告應自動解除
+        (p_auto_edge / "P01-05_auto.md").write_text(
+            auto_doc_unbackpropped.replace("尚未同步", "已回寫 §2 與 §3"),
+            encoding="utf-8",
+        )
+        rep_auto_ok = real_verifier.verify_plan(p_auto_edge)
+        auto_ok_cats = {i.category for i in rep_auto_ok.issues if i.severity == PlanSeverity.WARN}
+        self.assertNotIn("BACKPROP", auto_ok_cats)
+
         self.mark_passed()
 
 

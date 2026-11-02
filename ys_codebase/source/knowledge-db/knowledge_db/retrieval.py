@@ -326,6 +326,24 @@ class InvertedIndex:
         """自符號池中以 O(1) 獲取符號實例"""
         return self.symbols.get(doc_id)
 
+    @staticmethod
+    def _extract_symbol_members_text(symbol: UnifiedSymbol) -> str:
+        """提取符號之成員索引文本；針對跨檔聚合之分部符號優先使用自身定義之 `_own_members` 以消除重複索引膨脹。"""
+        raw_own = symbol.metadata.get("_own_members")
+        if isinstance(raw_own, (list, tuple)):
+            parts = []
+            for m in raw_own:
+                if isinstance(m, dict):
+                    parts.append(
+                        f"{m.get('name', '')} {m.get('signature', '')} {m.get('docstring', '')}"
+                    )
+                else:
+                    parts.append(
+                        f"{getattr(m, 'name', '')} {getattr(m, 'signature', '')} {getattr(m, 'docstring', '')}"
+                    )
+            return " ".join(parts)
+        return " ".join([f"{m.name} {m.signature} {m.docstring}" for m in symbol.children])
+
     def add_symbol(
         self,
         symbol: UnifiedSymbol,
@@ -342,7 +360,7 @@ class InvertedIndex:
         effective_spaces = spaces or symbol_spaces or ([space] if space else []) or ([self.space_name] if self.space_name else [])
         curr_space = effective_spaces[0] if effective_spaces else ""
 
-        members_text = " ".join([f"{m.name} {m.signature} {m.docstring}" for m in symbol.children])
+        members_text = self._extract_symbol_members_text(symbol)
         field_texts = {
             "name": symbol.name,
             "signature": symbol.signature,
@@ -471,12 +489,42 @@ class InvertedIndex:
 
         doc_ids_set = set(doc_ids_to_remove)
 
+        def _cs_type_key(s: UnifiedSymbol) -> Optional[Tuple[str, str, str]]:
+            if s.language == "c_sharp" and s.kind in ("class", "struct", "interface"):
+                sp_key = ",".join(sorted(s.spaces)) if s.spaces else ""
+                return (sp_key, s.kind, s.fqn or s.name)
+            return None
+
+        affected_cs_keys: Set[Tuple[str, str, str]] = set()
+        for doc_id in doc_ids_to_remove:
+            sym_old = self.symbols.get(doc_id)
+            if sym_old:
+                ck = _cs_type_key(sym_old)
+                if ck:
+                    affected_cs_keys.add(ck)
+        for sym_new in new_symbols:
+            ck = _cs_type_key(sym_new)
+            if ck:
+                affected_cs_keys.add(ck)
+
+        surviving_partials: List[UnifiedSymbol] = []
+        if affected_cs_keys:
+            from .bundler import restore_unaggregated_partial_symbol
+            for doc_id, sym_rem in list(self.symbols.items()):
+                if doc_id in doc_ids_set:
+                    continue
+                ck = _cs_type_key(sym_rem)
+                if ck and ck in affected_cs_keys:
+                    doc_ids_to_remove.append(doc_id)
+                    doc_ids_set.add(doc_id)
+                    surviving_partials.append(restore_unaggregated_partial_symbol(sym_rem))
+
         for doc_id in doc_ids_to_remove:
             self.doc_lengths.pop(doc_id, None)
             sym = self.symbols.pop(doc_id, None)
             if sym:
                 self.doc_count = max(0, self.doc_count - 1)
-                members_text = " ".join([f"{m.name} {m.signature} {m.docstring}" for m in sym.children])
+                members_text = self._extract_symbol_members_text(sym)
                 field_texts = {
                     "name": sym.name,
                     "signature": sym.signature,
@@ -496,6 +544,10 @@ class InvertedIndex:
                     self.index[term] = new_postings
                 else:
                     del self.index[term]
+
+        if affected_cs_keys:
+            from .bundler import aggregate_partial_symbols
+            new_symbols = aggregate_partial_symbols(surviving_partials + list(new_symbols))
 
         for sym in new_symbols:
             self.add_symbol(sym, tok, spaces=sym.spaces)

@@ -1071,6 +1071,45 @@ namespace MyGame.Services {
             self.assertEqual(res_log_callers["total_callers"], 1)
             self.assertTrue(res_log_callers["callers"][0]["symbol"].name.endswith("OrderProcessor.ExecuteOrder"))
 
+            # 4. 驗證倒排索引無 N^2 成員重複索引膨脹 (validateorder 與 executeorder 在 partial class 層級僅各索引 1 次)
+            cls_doc_ids = {s.id for s in cls_syms}
+            val_cls_postings = [p for p in idx.index.get("validateorder", []) if p.doc_id in cls_doc_ids]
+            exec_cls_postings = [p for p in idx.index.get("executeorder", []) if p.doc_id in cls_doc_ids]
+            self.assertEqual(len(val_cls_postings), 1)
+            self.assertEqual(len(exec_cls_postings), 1)
+
+            # 5. 驗證增量更新單一分部檔案 (patch_incremental) 自動觸發跨檔重聚合且不遺失另一分部成員與欄位型別
+            part2_updated = """
+namespace MyGame.Services {
+    public partial class OrderProcessor {
+        private void ValidateOrder() {}
+        public void ArchiveOrder() {}
+    }
+}
+"""
+            part2_file = src_dir / "OrderProcessor.Part2.cs"
+            part2_file.write_text(part2_updated, encoding="utf-8")
+            parser = self.registry.get_parser(str(part2_file))
+            new_p2_syms = parser.parse(str(part2_file), part2_updated, space="game")
+            for s in new_p2_syms:
+                s.metadata["spaces"] = ["game"]
+            idx.patch_incremental({str(part2_file)}, new_p2_syms)
+
+            cls_syms_after = [s for s in idx.symbols.values() if s.kind == "class" and s.name.endswith("OrderProcessor")]
+            self.assertEqual(len(cls_syms_after), 2)
+            for cs in cls_syms_after:
+                m_names = {m.name for m in cs.members}
+                self.assertIn("ExecuteOrder", m_names)
+                self.assertIn("ValidateOrder", m_names)
+                self.assertIn("ArchiveOrder", m_names)
+                self.assertIn("_logger", m_names)
+                self.assertEqual(cs.metadata.get("field_types", {}).get("_logger"), "AuditLogger")
+
+            arch_cls_postings = [
+                p for p in idx.index.get("archiveorder", []) if p.doc_id in {s.id for s in cls_syms_after}
+            ]
+            self.assertEqual(len(arch_cls_postings), 1)
+
         self.mark_passed()
 
 

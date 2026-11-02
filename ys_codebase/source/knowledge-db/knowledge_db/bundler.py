@@ -25,11 +25,70 @@ PARALLEL_BUNDLE_THRESHOLD = 10
 _worker_registry: Optional[ParserRegistry] = None
 
 
+def _extract_unaggregated_partial_state(sym: UnifiedSymbol) -> Tuple[List[Any], List[str], Dict[str, str], str]:
+    """提取或還原分部符號在跨檔聚合前的單檔原始屬性 (own_members, own_base_types, own_field_types, own_docstring)。"""
+    from .schema import MemberInfo
+    meta = sym.metadata
+    if "_own_members" in meta:
+        raw_own = meta["_own_members"]
+        own_members = [
+            MemberInfo.from_dict(m) if isinstance(m, dict) else m
+            for m in raw_own
+        ]
+    else:
+        own_members = list(sym.members)
+
+    own_bases = list(meta.get("_own_base_types", meta.get("base_types", [])))
+    own_fields = dict(meta.get("_own_field_types", meta.get("field_types", {})))
+    own_doc = str(meta.get("_own_docstring", sym.docstring or ""))
+    return own_members, own_bases, own_fields, own_doc
+
+
+def restore_unaggregated_partial_symbol(sym: UnifiedSymbol) -> UnifiedSymbol:
+    """將曾經執行過跨檔聚合之分部符號還原為單檔原始狀態，供單一分部退化或增量重聚合使用。"""
+    if "_own_members" not in sym.metadata:
+        return sym
+    own_members, own_bases, own_fields, own_doc = _extract_unaggregated_partial_state(sym)
+    new_meta = dict(sym.metadata)
+    for k in ("_own_members", "_own_base_types", "_own_field_types", "_own_docstring", "partial_files", "is_primary_partial"):
+        new_meta.pop(k, None)
+    if own_bases:
+        new_meta["base_types"] = own_bases
+    else:
+        new_meta.pop("base_types", None)
+    if own_fields:
+        new_meta["field_types"] = own_fields
+    else:
+        new_meta.pop("field_types", None)
+    search_payload = f"{sym.fqn} {new_meta.get('short_name', sym.name)} {own_doc} {sym.signature}".strip()
+    return UnifiedSymbol(
+        id=sym.id,
+        name=sym.name,
+        kind=sym.kind,
+        file_path=sym.file_path,
+        line_number=sym.line_number,
+        end_line=sym.end_line,
+        language=sym.language,
+        docstring=own_doc,
+        signature=sym.signature,
+        fqn=sym.fqn,
+        scope_path=sym.scope_path,
+        parent_id=sym.parent_id,
+        children=tuple(own_members),
+        parameters=sym.parameters,
+        return_type=sym.return_type,
+        search_payload=search_payload,
+        visibility=sym.visibility,
+        members=tuple(own_members),
+        metadata=new_meta,
+    )
+
+
 def aggregate_partial_symbols(symbols: List[UnifiedSymbol]) -> List[UnifiedSymbol]:
     """
     針對同空間、同命名空間 (相同 FQN) 之 C# partial class/struct/interface 進行跨檔案符號與成員聚合。
     合併各分部宣告之 members/children、base_types、field_types 與 partial_files，
-    使搜尋與拓撲消歧能完整洞察跨檔 partial 類別之全貌。
+    並透過保存單檔原始 `_own_members` 確保倒排索引僅索引該檔案自身定義成員（消除 N^2 重複索引膨脹）。
     """
     if not symbols:
         return symbols
@@ -45,6 +104,8 @@ def aggregate_partial_symbols(symbols: List[UnifiedSymbol]) -> List[UnifiedSymbo
     updated = list(symbols)
     for _, indices in groups.items():
         if len(indices) <= 1:
+            if len(indices) == 1 and "_own_members" in symbols[indices[0]].metadata:
+                updated[indices[0]] = restore_unaggregated_partial_symbol(symbols[indices[0]])
             continue
         group_syms = [symbols[i] for i in indices]
         if not any(s.metadata.get("is_partial") or "partial " in (s.signature or "") for s in group_syms):
@@ -56,35 +117,50 @@ def aggregate_partial_symbols(symbols: List[UnifiedSymbol]) -> List[UnifiedSymbo
         merged_fields: Dict[str, str] = {}
         partial_files: List[str] = []
         merged_docs: List[str] = []
+        own_states = []
 
         for s in group_syms:
+            own_m, own_b, own_f, own_d = _extract_unaggregated_partial_state(s)
+            own_states.append((own_m, own_b, own_f, own_d))
             if s.file_path not in partial_files:
                 partial_files.append(s.file_path)
-            if s.docstring and s.docstring not in merged_docs:
-                merged_docs.append(s.docstring)
-            for m in s.members:
+            if own_d and own_d not in merged_docs:
+                merged_docs.append(own_d)
+            for m in own_m:
                 m_key = (m.name, m.kind, m.signature)
                 if m_key not in seen_members:
                     seen_members.add(m_key)
                     merged_members.append(m)
-            for bt in s.metadata.get("base_types", []):
+            for bt in own_b:
                 if bt and bt not in merged_bases:
                     merged_bases.append(str(bt))
-            for fn, ft in s.metadata.get("field_types", {}).items():
+            for fn, ft in own_f.items():
                 if fn and ft:
                     merged_fields[fn] = str(ft)
 
         combined_doc = "\n".join(merged_docs).strip()
-        for i in indices:
+        primary_pos = next((pos for pos, (_, ob, _, _) in enumerate(own_states) if ob), 0)
+
+        for pos, i in enumerate(indices):
             orig = symbols[i]
+            own_m, own_b, own_f, own_d = own_states[pos]
             new_meta = dict(orig.metadata)
             new_meta["is_partial"] = True
+            new_meta["is_primary_partial"] = (pos == primary_pos)
             new_meta["partial_files"] = list(partial_files)
+            new_meta["_own_members"] = [m.to_dict() if hasattr(m, "to_dict") else m for m in own_m]
+            new_meta["_own_base_types"] = list(own_b)
+            new_meta["_own_field_types"] = dict(own_f)
+            new_meta["_own_docstring"] = own_d
             if merged_bases:
                 new_meta["base_types"] = list(merged_bases)
+            elif "base_types" in new_meta:
+                del new_meta["base_types"]
             if merged_fields:
                 new_meta["field_types"] = dict(merged_fields)
-            doc_to_use = orig.docstring or combined_doc
+            elif "field_types" in new_meta:
+                del new_meta["field_types"]
+            doc_to_use = own_d or combined_doc
             search_payload = f"{orig.fqn} {new_meta.get('short_name', orig.name)} {doc_to_use} {orig.signature}".strip()
             updated[i] = UnifiedSymbol(
                 id=orig.id,

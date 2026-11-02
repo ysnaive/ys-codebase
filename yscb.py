@@ -22,6 +22,8 @@ DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codeba
 LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
     "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release",
     "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release/",
+    "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release",
+    "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release/",
 )
 DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
 INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="

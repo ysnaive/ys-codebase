@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_02_0315_v121_audit_boundary_fixes (Completed)
+
+- **YS-Codebase v1.2.1 二輪審計 5 項邊界條件與相容性隱患修復 (`core` / `knowledge-db` / `agents-workflow`, `FR-01` ~ `FR-05`, `EC-01` ~ `EC-03`, `NFR-01` ~ `NFR-02`)**：
+  - **`LEGACY_PROVIDER_URLS` 補齊舊倉庫名 `ysnaive/agent.workflow` (`FR-01`)**：於 `yscb.py` 與 `core/engine.py` 將 `https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release`（含尾部 `/`）納入 `LEGACY_PROVIDER_URLS`，確保倉庫更名前初始化之下游專案（如 `uitk.net`、`GC_VEX_V5`）離線無感自動遷移至 `/releases` 分支。
+  - **C# `partial class` 消除 $N^2$ 倒排索引膨脹與 `patch_incremental` 跨檔增量重聚合 (`FR-02`, `EC-01`, `NFR-01`)**：於 `knowledge_db/bundler.py` (`aggregate_partial_symbols` / `restore_unaggregated_partial_symbol`) 保存各分部原始定義之 `_own_members`、`_own_base_types`、`_own_field_types`，於 `knowledge_db/retrieval.py` (`InvertedIndex._extract_symbol_members_text`) 針對分部符號僅索引其自身 `_own_members`（徹底消除 $N$ 個分部重複索引全量成員之 $N^2$ Posting 膨脹，同時保留 `sym.members` / `sym.children` 二進位序列化相容性），並於 `InvertedIndex.patch_incremental` 自動撈出受影響之同 FQN C# 分部符號還原並重聚合。
+  - **`build_recovery_capsule` 章節邊界過濾、單檔 `P{XX}-05_auto.md` `BACKPROP` 檢核與根路徑 `` `./` `` 渲染 (`FR-03` ~ `FR-05`, `EC-02` ~ `EC-03`)**：於 `agents_workflow/plans/scanner.py` 限制 `build_recovery_capsule` 於進入 `## 3.` 前提取異動檔案並過濾非路徑維度名稱；於 `agents_workflow/plans/verifier.py` 補齊單檔合併模式（`p02_path == p05_path`）下之 `Major`/`Critical` 偏差回寫註記與 `changelog.md` `REVISION` 檢核；於 `agents_workflow/compiler.py` 將無錨點之根目錄獨立標籤 `` `__${project://}__` `` 回退渲染為 `` `./` ``，`core` (218/218)、`knowledge-db` (158/158) 與 `agents-workflow` (138/138) 測試 100% 通過並完成 `@build` 熱部署。
+
 ## 2026_11_02_0240_batch_lifecycle_and_blind_audit (Completed)
 
 ### sub_02_core_batch_lifecycle_cli (Completed)

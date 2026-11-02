@@ -31,6 +31,8 @@ DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codeba
 LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
     "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release",
     "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/ys_codebase/release/",
+    "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release",
+    "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release/",
 )
 _RELEASE_PACKAGE_IGNORES: Tuple[str, ...] = (
     "__pycache__",

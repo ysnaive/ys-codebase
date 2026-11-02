@@ -1429,6 +1429,13 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
                 compiler.resolve_single_artifact(bad_doc, [])
             self.assertIn(expected_warn, warn_buf.getvalue())
 
+        # 驗證根目錄獨立標籤 `__${project://}__` 展開為 `./` 而非空雙反引號 ``
+        from core import uri as core_uri
+        proj_root = core_uri.resolve("project://", interactive=False)
+        root_compiler = ArtifactCompiler(host_dir=proj_root)
+        root_tag_out = root_compiler.resolve_stage2_uri("Root dir: `__${project://}__`", dst_path, {}, target_name="antigravity")
+        self.assertEqual(root_tag_out, "Root dir: `./`")
+
         self.mark_passed()
 
 
