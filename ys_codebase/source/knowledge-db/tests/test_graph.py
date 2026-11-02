@@ -24,11 +24,11 @@ from knowledge_db.linker import TopologyLinker
 from knowledge_db.parsers import ParserRegistry
 from knowledge_db.schema import (
     LanguageType,
-    SpaceConfig,
     SymbolCallSite,
     SymbolKind,
     UnifiedSymbol,
 )
+from file_space import FileSpaceConfig
 
 
 class TestNetworkXCallGraphAndLinker(YSCBTestCase):
@@ -502,7 +502,7 @@ class KnowledgeEngine:
                 encoding="utf-8",
             )
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -844,7 +844,7 @@ namespace UIToolkit.UI.Elements {
             (src_dir / "VisualElement.cs").write_text(cs_element_code, encoding="utf-8")
             (src_dir / "Design.md").write_text("# Spec\nCalls `VisualElement.MarkMeasureDirty` in layout.\n", encoding="utf-8")
 
-            sp = SpaceConfig(name="uitk", include=[str(src_dir)], file_patterns=["*.cs", "*.md"])
+            sp = FileSpaceConfig(name="uitk", include=[str(src_dir)], file_patterns=["*.cs", "*.md"])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"uitk": sp.to_dict()}},
@@ -889,7 +889,7 @@ namespace UIToolkit.UI.Elements {
                 "class Panel:\n    def UpdateLayout(self):\n        pass\n\ndef py_caller(p):\n    p.UpdateLayout()\n",
                 encoding="utf-8",
             )
-            sp_multi = SpaceConfig(name="uitk_multi", include=[str(src_dir)], file_patterns=["*.cs", "*.py", "*.md"])
+            sp_multi = FileSpaceConfig(name="uitk_multi", include=[str(src_dir)], file_patterns=["*.cs", "*.py", "*.md"])
             engine_multi = KnowledgeEngine(
                 storage_dir=storage_dir / "multi",
                 contributes_data={"spaces": {"uitk_multi": sp_multi.to_dict()}},
@@ -1046,7 +1046,7 @@ namespace MyGame.Services {
             (src_dir / "OrderProcessor.Part1.cs").write_text(part1_code, encoding="utf-8")
             (src_dir / "OrderProcessor.Part2.cs").write_text(part2_code, encoding="utf-8")
 
-            sp = SpaceConfig(name="game", include=[str(src_dir)], file_patterns=["*.cs"])
+            sp = FileSpaceConfig(name="game", include=[str(src_dir)], file_patterns=["*.cs"])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"game": sp.to_dict()}},

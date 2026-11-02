@@ -1,19 +1,5 @@
 {
-  "spaces": {
-    "source": {
-      "description": "YS-Codebase 核心源碼空間",
-      "include": [
-        "module.source://"
-      ],
-
-      "exclude": [
-        "**/__pycache__/**",
-        "**/.*/**",
-        "**/.*",
-        "**/tests/**",
-        "**/build/**",
-        "**/release/**"
-      ]
-    }
+  "space_weights": {
+    "source": 1.0
   }
 }

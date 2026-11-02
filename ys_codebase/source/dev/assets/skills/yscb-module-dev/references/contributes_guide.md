@@ -39,6 +39,7 @@ YSCB 採用純標準庫輕量 Schema DSL，零第三方依賴（嚴禁引入 `py
 | `list[<type>]` / `array[<type>]` | **型別約束列表**（列表元素需符合指定型別） | `"aliases": "list[str]?"`, `"tags": "list[str]!"` |
 | `"*"` | **萬用映射字典**（約束字典下所有動態鍵之子結構） | `"*": "$CustomDef"` |
 | `$TypeName` | **結構指針**（參照 `_types` 定義的複合子結構） | `"config": "$ConfigSpec"` |
+| `\| <strategy>` | **同名合併策略後綴**（由 Format Provider 定義同名碰撞行為：`merge` 遞迴合併、`extend` 清單保序去重附加、`replace` 整包覆寫、`unique` 禁止跨模組同名碰撞但允許 `project` 覆寫） | `"include": "list[str]! \| extend"`, `"*": "$FileSpaceDef \| merge"` |
 
 ### 2.2 `_format.json` 頂層結構設計
 `_format.json` 檔案由可選的 `_types` 字典與各大擴充點定義組成：

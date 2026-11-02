@@ -156,7 +156,7 @@ class CallGraphIndex:
         new_edges: List[Tuple[str, str, SymbolCallSite]],
         old_symbol_ids: Set[str],
     ) -> None:
-        """差量修補調用圖譜 (拔除舊符號出入度邊並重新注入 new_edges，移除未使用參數 dirty_file_paths M-10)"""
+        """差量修補調用圖譜：拔除舊符號出入度邊並重新注入新調用邊"""
         if old_symbol_ids:
             self.remove_symbol_edges(old_symbol_ids)
         for caller_id, callee_id, site in new_edges:

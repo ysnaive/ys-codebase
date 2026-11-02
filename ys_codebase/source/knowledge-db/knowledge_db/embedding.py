@@ -24,6 +24,18 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 logger = logging.getLogger("knowledge-db.embedding")
 
+MAX_SYMBOL_DOCSTRING_EMBED_CHARS = 1000
+
+
+def format_symbol_embedding_text(sym: Any, max_doc_chars: int = MAX_SYMBOL_DOCSTRING_EMBED_CHARS) -> str:
+    """組裝符號嵌入文本，並對超長 Docstring 施加字元上限截斷以避免無效分詞開銷。"""
+    name = getattr(sym, "name", "") or ""
+    sig = getattr(sym, "signature", "") or ""
+    doc = getattr(sym, "docstring", "") or ""
+    if max_doc_chars > 0 and len(doc) > max_doc_chars:
+        doc = doc[:max_doc_chars]
+    return f"{name} {sig} {doc}".strip()
+
 
 class EmbeddingService:
     """
@@ -58,6 +70,7 @@ class EmbeddingService:
         self._init_lock = threading.Lock()
         self._dimension: Optional[int] = None
         self.last_error: Optional[Dict[str, Any]] = None
+        self.suppress_guard_prompt: bool = False
         self._suppress_hf_warnings()
         if self.mock_mode:
             self._is_available = True
@@ -66,7 +79,7 @@ class EmbeddingService:
 
     @staticmethod
     def _suppress_hf_warnings() -> None:
-        """屏蔽 Hugging Face Hub 與 Transformers 未認證警告與非必要日誌 (FR-06)"""
+        """屏蔽 Hugging Face Hub 與 Transformers 未認證警告與非必要日誌"""
         os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
         for lib in ("huggingface_hub", "transformers", "fastembed"):
@@ -197,7 +210,7 @@ class EmbeddingService:
                 "timestamp": time.time(),
             }
             logger.info("[knowledge-db:embedding] Vector model not found locally. Gracefully fallback to BM25.")
-            if self.enable_vector_search and is_agents_workflow_installed():
+            if self.enable_vector_search and not self.suppress_guard_prompt and is_agents_workflow_installed():
                 import sys
                 sys.stderr.write("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？\n")
                 sys.stderr.flush()
@@ -263,7 +276,7 @@ class EmbeddingService:
                 "timestamp": time.time(),
             }
             logger.info(f"[knowledge-db:embedding] Vector model unavailable ({type(e).__name__}: {e}). Gracefully fallback to BM25.")
-            if self.enable_vector_search and is_agents_workflow_installed():
+            if self.enable_vector_search and not self.suppress_guard_prompt and is_agents_workflow_installed():
                 import sys
                 sys.stderr.write("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？\n")
                 sys.stderr.flush()
@@ -282,7 +295,14 @@ class EmbeddingService:
 
     def _ensure_model(self) -> None:
         """嘗試按需加載 FastEmbed ONNX 模型 (Lazy Loading)"""
-        if self.mock_mode or self._model is not None or self._init_attempted:
+        if self.mock_mode or self._model is not None:
+            return
+        if self._init_attempted:
+            # 若先前因模型未下載而未初始化，但背景 Worker 已下載完成，允許重新加載
+            if self.last_error and self.last_error.get("error_type") == "ModelNotFoundLocally" and self.is_model_downloaded():
+                with self._init_lock:
+                    if self._model is None and self.is_model_downloaded():
+                        self._init_model()
             return
         with self._init_lock:
             if self.mock_mode or self._model is not None or self._init_attempted:
@@ -292,8 +312,13 @@ class EmbeddingService:
 
     @property
     def is_available(self) -> bool:
-        """回傳當前環境向量推論服務是否就緒可用 (按需惰性探測加載)"""
-        if not self._is_available and not self._init_attempted and not self.mock_mode:
+        """回傳當前環境向量推論服務是否就緒可用 (按需惰性探測加載，若快取權重被刪除則重置狀態)"""
+        if self.mock_mode:
+            return self._is_available
+        if self._is_available and not self.is_model_downloaded():
+            self._is_available = False
+            self._model = None
+        if not self._is_available:
             self._ensure_model()
         return self._is_available
 
@@ -396,7 +421,7 @@ class EmbeddingService:
 
 
 class VectorIndex:
-    """向量特徵索引池與二進位快取容器 (移除未使用之 _doc_id_to_idx M-10)"""
+    """向量特徵索引池與二進位快取容器"""
 
     def __init__(self, model_name: Optional[str] = None, dim: Optional[int] = None):
         self.doc_ids: List[str] = []
@@ -422,7 +447,7 @@ class VectorIndex:
             self.dim = self.vectors.shape[1]
 
     def is_compatible_with(self, model_name: Optional[str], dim: Optional[int] = None) -> bool:
-        """檢核當前快取之模型名稱與維度是否相容 (EC-02)"""
+        """檢核當前快取之模型名稱與維度是否相容"""
         if self.vectors is None:
             return False
         if self.model_name and model_name and self.model_name != model_name:

@@ -28,6 +28,22 @@ class TestContributesValidator(YSCBTestCase):
         p_alias = ContributesValidator.parse_type_signature("boolean!")
         self.assertEqual(p_alias["type"], "bool")
         self.assertTrue(p_alias["required"])
+
+        p_extend = ContributesValidator.parse_type_signature("list[str]! | extend")
+        self.assertEqual(p_extend["type"], "list")
+        self.assertTrue(p_extend["required"])
+        self.assertEqual(p_extend["merge_strategy"], "extend")
+
+        p_replace = ContributesValidator.parse_type_signature("list[str]? = [] | replace")
+        self.assertEqual(p_replace["type"], "list")
+        self.assertFalse(p_replace["required"])
+        self.assertEqual(p_replace["default"], [])
+        self.assertEqual(p_replace["merge_strategy"], "replace")
+
+        p_ref_unique = ContributesValidator.parse_type_signature("$FileSpaceDef | unique")
+        self.assertEqual(p_ref_unique["type"], "ref")
+        self.assertEqual(p_ref_unique["ref_name"], "FileSpaceDef")
+        self.assertEqual(p_ref_unique["merge_strategy"], "unique")
         self.mark_passed()
 
     @require(Requirement.ENV)
@@ -189,4 +205,44 @@ class TestContributesValidator(YSCBTestCase):
         report_txt = res_inv.format_report("test_format.json")
         self.assertIn("[Agent Directive]", report_txt)
         self.assertIn("yscb-module-dev", report_txt)
+
+        # Valid merge strategies in _types, format, and point.merge
+        valid_merge_meta = {
+            "_types": {
+                "SpaceDef": {
+                    "include": "list[str]! | extend",
+                    "patterns": "list[str]? | replace",
+                }
+            },
+            "spaces": {
+                "description": "space defs",
+                "merge": "merge",
+                "format": {
+                    "*": "$SpaceDef | merge"
+                },
+            },
+        }
+        res_valid_merge = ContributesValidator.validate_format_schema(valid_merge_meta)
+        self.assertTrue(res_valid_merge.is_valid, f"Unexpected errors: {res_valid_merge.errors}")
+
+        # EC-01: Invalid merge strategy in field signature and point.merge
+        bad_merge_meta = {
+            "_types": {
+                "SpaceDef": {
+                    "include": "list[str]! | unknown_strategy"
+                }
+            },
+            "spaces": {
+                "description": "space defs",
+                "merge": "bad_point_mode",
+                "format": {
+                    "*": "$SpaceDef"
+                },
+            },
+        }
+        res_bad_merge = ContributesValidator.validate_format_schema(bad_merge_meta)
+        self.assertFalse(res_bad_merge.is_valid)
+        err_paths = [e.path for e in res_bad_merge.errors]
+        self.assertIn("_types.SpaceDef.include", err_paths)
+        self.assertIn("spaces.merge", err_paths)
         self.mark_passed()

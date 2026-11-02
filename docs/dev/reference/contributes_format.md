@@ -9,7 +9,7 @@ related_docs:
   - "../README.md"
   - "../../core/README.md"
   - "../../_project/STANDARDS.md"
-last_updated: "2026-09-07"
+last_updated: "2026-11-02"
 ---
 
 # YSCB 模組貢獻擴充架構與 Schema 語法手冊 (Contributes Reference)
@@ -91,6 +91,7 @@ YSCB 採用直覺、簡潔的型別字串表示法，不需要手寫複雜臃腫
 | **清單容器** | `list[<type>]` 或 `[ <schema> ]` | `[ { "token": "str!" } ]` | 物件陣列清單 |
 | **任意動態鍵** | 通配符 `"*"` | `"*": { "description": "str!" }` | 鍵名為任意名稱的字典映射 (Map) |
 | **型別參照** | `$<TypeName>` | `"*": "$CommandNode"` | 引用 `_types` 中定義的結構（支援遞迴） |
+| **合併策略修飾符** | `\| <strategy>` | `"include": "list[str]! \| extend"` | 由 Format Provider 控制多來源同名合併行為（`merge` \| `extend` \| `replace` \| `unique`） |
 
 > [!TIP]
 > **別名容錯機制**：型別解析器原生支援常見同義詞容錯：`str` 與 `string`、`bool` 與 `boolean`、`int` 與 `integer` 皆通用。

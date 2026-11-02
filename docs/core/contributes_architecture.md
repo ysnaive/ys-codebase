@@ -14,12 +14,12 @@ related_docs:
   - "./DESIGN_NOTES.md"
   - "./cli_commands_architecture.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-10-29"
+last_updated: "2026-11-02"
 ---
 
 # Contributes 依賴注入、拓撲聚合與宣告式 Schema 驗證手冊 (Contributes & Schema Validation Architecture)
 
-> 本手冊為維度 3 中觀專題手冊，定義 YS-Codebase 微內核 `core.contributes` 拓撲聚合管線、`__provider__` 溯源標記、`__modules__` 來源模組分桶隔離，以及 `core.validator` 輕量宣告式 Schema 驗證引擎與 `_manifest.md` 雙向契約規範。
+> 本手冊為維度 3 中觀專題手冊，定義 YS-Codebase 微內核 `core.contributes` 拓撲聚合管線、`__provider__` / `__providers__` 溯源標記、`__modules__` 來源模組分桶隔離，以及 `core.validator` 輕量宣告式 Schema 驗證與格式驅動合併引擎、`_manifest.md` 雙向契約規範。
 
 ---
 
@@ -62,10 +62,10 @@ graph TD
 3. **快取物化與零空檔原則**：
    - 聚合結果寫入 `cache://{target}/contributes.merged.json`。若目標模組未接收任何注入（空字典），則不落地空檔（若舊快取存在則自動清理）。
 
-### 1.2 `__provider__` 自動溯源標記注入
-在搜集 Donor 模組的宣告時，聚合器透過 `_tag_provider(data, donor_name)` 自動遞迴走訪所有 `dict` 與 `list[dict]` 節點，注入 `"__provider__": donor_name`：
-- **顯式保留原則**：若資料節點已顯式宣告 `"__provider__"`，聚合器予以保留絕不覆蓋。
-- **用途**：使下游模組與核心調度器（如 `core.uri` 診斷報告、工作流編譯器）能精確追溯每一筆擴充項目或未定義協議的來源模組。
+### 1.2 `__provider__` 與 `__providers__` 自動溯源標記注入
+在搜集 Donor 模組宣告與疊加專案層級 `config://<target>/contribute.json` 時，聚合器透過 `_tag_provider(data, donor_name)` 自動遞迴走訪所有 `dict` 與 `list[dict]` 節點，注入 `"__provider__": donor_name`（專案層級標記為 `"project"`）與去重有序清單 `"__providers__": [donor_name, ...]`：
+- **顯式保留與多源累積原則**：若資料節點已顯式宣告 `"__provider__"`，聚合器予以保留；當多個模組或專案覆寫針對同一字典節點進行合併時，`_merge_providers_meta` 會將所有貢獻方保序去重累積至 `"__providers__"` 清單，並將 `"__provider__"` 更新為最新覆疊方。
+- **用途**：使下游模組與核心調度器（如 `FileSpaceManager` 判定空間 `origin` 為 `module` / `project` / `merged`、`core.uri` 診斷報告、工作流編譯器）能精確追溯每一筆擴充項目的完整來源鏈。
 
 ### 1.3 `__modules__` 來源模組分桶隔離（防同名指令與語系指標覆蓋）
 當多個模組同時向 `core` 注入 `commands` 或 `locales` 時，各模組擁有獨立的指令定義與 `"definition"` / `"<lang-id>"` 語系檔案路徑：
@@ -137,6 +137,7 @@ points = contributes.list_points(module="core")
 | **複合型別引用 (`$Def`)** | `$ArgDef`、`$CommandNode!` | 引用同檔案 `_types` 字典中定義之複合結構；支援自身遞迴引用（最大深度保護 `MAX_RECURSION_DEPTH = 20`）。 |
 | **泛型容器** | `list[str]?`、`dict[str, str]` | 驗證陣列元素或字典鍵值型別；亦可在 JSON Schema 中直接以 `[ <item_schema> ]` 表達物件陣列。 |
 | **字典動態通配鍵 (`*`)** | `{ "*": "$OptionDef" }` | 當 JSON 物件中包含 `"*"` 鍵時，所有未顯式列舉的任意自訂鍵名（`{key}` 字典映射）皆套用 `"*"` 對應之子 Schema 進行遞迴驗證。 |
+| **合併策略修飾符 (`\| <strategy>`)** | `list[str]! \| extend`、`list[str]? \| replace`、`"$Def \| unique"` | 由 Format Provider 決定同名欄位或鍵值的合併行為：`merge`（預設於 `dict`/`$Ref`，遞迴合併）、`extend`（預設於 `list`，去重附加）、`replace`（整包覆寫取代）、`unique`（禁止跨模組同名碰撞，僅允許 `project` 覆寫或合併）。 |
 
 ### 2.3 單向依賴邊界與雙重驗證策略 (Strict Egress, Tolerant Ingress)
 - **靜態嚴格阻斷 (Strict Egress)**：

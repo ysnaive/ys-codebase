@@ -8,44 +8,43 @@ source_paths:
   - "yscb://source/knowledge-db/knowledge_db/topology_query.py"
   - "yscb://source/knowledge-db/knowledge_db/formatter.py"
   - "yscb://source/knowledge-db/knowledge_db/schema.py"
-  - "yscb://source/knowledge-db/knowledge_db/scanner.py"
-  - "yscb://source/knowledge-db/knowledge_db/service.py"
+  - "yscb://source/knowledge-db/scripts/hook.file-space.py"
 related_docs:
   - "./README.md"
+  - "../file-space/README.md"
   - "./parsers.md"
   - "./retrieval.md"
   - "./incremental_hot_reload.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-31"
+last_updated: "2026-11-02"
 ---
 
 # knowledge-db 全系統整合架構設計 (System Architecture)
 
-> 本文件說明 `knowledge-db` 模組的完整系統架構分層、門面與管線四向解耦 (`KnowledgeEngine` / `IndexingPipeline` / `TopologyQueryService` / `ResultFormatter`)、統一符號資料模型 (`UnifiedSymbol`)、空間治理與原生二進位快照比對 (`BinarySnapshotManager`) 機制。
+> 本文件說明 `knowledge-db` 模組的完整系統架構分層、門面與管線四向解耦 (`KnowledgeEngine` / `IndexingPipeline` / `TopologyQueryService` / `ResultFormatter`)、統一符號資料模型 (`UnifiedSymbol`)，以及與 `module:file-space` 底座協同之多消費者游標增量比對 (`YFP2` + `consume_diff`) 機制。
 
 ---
 
 ## 1. 全系統架構分層 (System Layering Architecture)
 
-`knowledge-db` 採用四向職責解耦與冷/熱啟動零感知架構：頂層由 `KnowledgeEngine` 作為輕量統一門面，底層委派 `IndexingPipeline` 執行索引編排与混合檢索、由 `TopologyQueryService` 專司跨檔案調用圖譜 (`callers` / `callees` / `impact`) 與介面契約雙向展開、並由 `ResultFormatter` 負責三級複雜度排版與全域切片去重；背景則透過 optional 擴充由 `server` 託管 `KnowledgeDBServiceWorker` 實現 500ms 防抖熱自癒。
+`knowledge-db` 採用四向職責解耦與冷/熱啟動零感知架構：頂層由 `KnowledgeEngine` 作為輕量統一門面，底層委派 `IndexingPipeline` 執行索引編排與混合檢索、由 `TopologyQueryService` 專司跨檔案調用圖譜 (`callers` / `callees` / `impact`) 與介面契約雙向展開、並由 `ResultFormatter` 負責三級複雜度排版與全域切片去重；空間幾何、雙階段指紋快照 (`YFP2`) 與背景 `watchdog` 監聽則統一委由 `module:file-space` 負責，並透過 `scripts/hook.file-space.py` 訂閱 `on_file_space_changed` 事件實現 500ms 防抖熱自癒。
 
 ```mermaid
 flowchart TD
-    subgraph CLILayer ["1. CLI 與背景常駐入口層"]
+    subgraph CLILayer ["1. CLI 與背景事件入口層"]
         CLI["8 大正交 CLI 指令 (scripts/cli.py)<br/>status | index | search | callers | callees | impact | clean | model"]
-        Worker["KnowledgeDBServiceWorker (knowledge_db/service.py)<br/>server.master 常駐託管 / Watchdog 500ms 防抖 / pre_warm()"]
+        HookSpace["on_file_space_changed 事件訂閱 (scripts/hook.file-space.py)<br/>接收 module:file-space FileSpaceWatcherServiceWorker 500ms 防抖通知"]
     end
 
     subgraph FacadeLayer ["2. 門面與管線編排層 (四向職責分離)"]
-        Engine["KnowledgeEngine (engine.py)<br/>輕量統一門面 Facade"]
-        Pipeline["IndexingPipeline (pipeline.py)<br/>全棧索引編排 / JIT 變更嗅探 / _GLOBAL_INDEX_CACHE mtime 熱刷新"]
+        Engine["KnowledgeEngine (engine.py)<br/>輕量統一門面 Facade / space_weights 加權管理"]
+        Pipeline["IndexingPipeline (pipeline.py)<br/>全棧索引編排 / JIT consume_diff / _GLOBAL_INDEX_CACHE mtime 熱刷新"]
         TopoSvc["TopologyQueryService (topology_query.py)<br/>符號選擇器定位 / 介面實作契約雙向展開 / Callers & Callees & Impact"]
         Formatter["ResultFormatter (formatter.py)<br/>三級複雜度排版 / 8,000 字元衰減 / UniversalRedundancyFilter"]
     end
 
-    subgraph CoreSubsystems ["3. 核心領域子系統層"]
-        SpaceMgr["SpaceManager (space.py)<br/>雙軌階層 Contributes / _include_cache 記憶化"]
-        Scanner["FingerprintScanner & BinarySnapshotManager (scanner.py)<br/>os.scandir 極速遍歷 + unified.meta.bin (Magic YFP1)"]
+    subgraph CoreSubsystems ["3. 核心領域子系統與 Space 底座層"]
+        SpaceMod["module:file-space (FileSpaceManager & FingerprintScanner)<br/>雙軌空間配置聚合 + YFP2 二進位快照 + cursors/knowledge-db.json"]
         Parsers["ParserRegistry & TreeSitterDriver (parsers/)<br/>10 大語言 S-Expression (.scm) 宣告式 AST 解析"]
         Bundler["SemanticBundler (bundler.py)<br/>單檔符號快取池 / ProcessPoolExecutor 多進程打包"]
         Tokenizer["MultilingualTokenizer & ThesaurusEngine<br/>Unicode 整數區間分詞 / 三階多跳同義詞加權展開"]
@@ -53,23 +52,21 @@ flowchart TD
         Graph["TopologyLinker & CallGraphIndex (linker.py / graph.py)<br/>四階 FQN 作用域消歧 + networkx.DiGraph 雙向調用圖譜"]
     end
 
-    subgraph StorageLayer ["4. 本地端快取儲存層 (VFS Cache: cache://knowledge-db/)"]
-        MetaBin["indices/unified.meta.bin<br/>原生二進位檔案快照 (Magic YFP1, < 0.1ms)"]
-        IndexBin["indices/unified.index.bin.gz<br/>Pickle Protocol 5 + Gzip 倒排索引與符號池"]
-        GraphBin["indices/unified.graph.bin.gz<br/>NetworkX DiGraph 調用拓撲二進位快取"]
-        VecBin["indices/unified.vectors.bin.gz<br/>FastEmbed 浮點特徵向量矩陣快取 (compresslevel=1)"]
-        WatcherFlags["indices/.watcher_active & .watcher_dirty<br/>背景 Watcher 零阻塞旁路狀態信標"]
+    subgraph StorageLayer ["4. 本地端快取儲存層 (cache://file-space/ 與 cache://knowledge-db/)"]
+        MetaBin["cache://file-space/snapshots/unified.yfp2.bin<br/>與 cursors/knowledge-db.json (Magic YFP2)"]
+        IndexBin["cache://knowledge-db/indices/unified.index.bin.gz<br/>Pickle Protocol 5 + Gzip 倒排索引與符號池"]
+        GraphBin["cache://knowledge-db/indices/unified.graph.bin.gz<br/>NetworkX DiGraph 調用拓撲二進位快取"]
+        VecBin["cache://knowledge-db/indices/unified.vectors.bin.gz<br/>FastEmbed 浮點特徵向量矩陣快取 (compresslevel=1)"]
     end
 
     CLI --> Engine
-    Worker --> Engine & Pipeline
+    HookSpace --> Engine & Pipeline
     Engine --> Pipeline & TopoSvc & Formatter
-    Pipeline --> TopoSvc & SpaceMgr & Scanner & Parsers & Bundler & Tokenizer & Hybrid & Graph
+    Pipeline --> TopoSvc & SpaceMod & Parsers & Bundler & Tokenizer & Hybrid & Graph
     TopoSvc --> Graph
-    Scanner --> MetaBin
+    SpaceMod --> MetaBin
     Hybrid --> IndexBin & VecBin
     Graph --> GraphBin
-    Worker & Pipeline --> WatcherFlags
 ```
 
 ---
@@ -101,38 +98,31 @@ flowchart TD
 
 ---
 
-## 3. 空間管理與原生二進位快照比對 (`SpaceManager` & `BinarySnapshotManager`)
+## 3. 空間管理與 `module:file-space` 二進位快照游標協同 (`FileSpaceManager` & `YFP2`)
 
-### 3.1 雙軌來源聚合與記憶化加速 (Dual-Track Aggregation)
-1. **軌道 ① 模組聯動注入 (Core Donor Contributes)**：自動搜集所有安裝模組之 `contributes/knowledge-db.json` 或 `manifest.json` 作為基底空間、語言與同義詞配置。
-2. **軌道 ② 專案階層覆蓋 (`config://knowledge-db/contribute.json`)**：專案層級可宣告自訂空間或覆蓋同名空間之 `include` / `exclude` / `file_patterns`，同時完整保留基底模組貢獻之其他空間與詞庫。
-3. **記憶化路徑解析 (`_include_cache`)**：`SpaceManager` 對空間路徑與排除規則實作進程內記憶化快取，消除重複 `Path.resolve()` I/O 開銷。
+### 3.1 跨模組空間聚合與檢索權重分離 (Space & Weight Separation)
+1. **空間幾何定義 (`module:file-space`)**：由 `file_space.FileSpaceManager` 自動搜集所有安裝模組之 `contributes/file-space.json` 與宿主專案 `config://file-space/contribute.json`，提供空間路徑與排除規則之記憶化解析（詳見 [`docs/file-space/README.md`](../file-space/README.md)）。
+2. **空間檢索加權 (`contributes.knowledge-db.space_weights`)**：`knowledge-db` 專注於語意權重配置，由 `contributes/knowledge-db.json` 與 `config://knowledge-db/contribute.json` 宣告各邏輯空間之檢索加權係數（如 `docs: 1.2`, `plans: 0.85`）。
 
 ### 3.2 全空間聯集處理模型 (Union Scope Model)
 `knowledge-db` 不設單一 `default_space` 限制，全系統以所有已註冊空間之聯集作為全域處理範圍：
 $$\text{Scope} = \bigcup_{i=1}^{N} \text{Space}_i$$
 重疊路徑之實體檔案在掃描階段即完成去重，**100% 僅執行 1 次 AST 解析**，並將命中的多個空間名稱寫入 `symbol.metadata["spaces"]`。
 
-### 3.3 `BinarySnapshotManager` (`unified.meta.bin`) 極速快照比對機制
-系統徹底廢除早期的 JSON 指紋檔與逐檔 SHA-1 內容雜湊，全權收斂至物理級單一真理來源 `cache://knowledge-db/indices/unified.meta.bin`：
-
-- **二進位結構 (Magic `YFP1`)**：
-  - **Header (`<4sHId`)**：`magic` (`b"YFP1"`, 4B) + `version` (`1`, 2B) + `total_files` (4B) + `timestamp` (float64, 8B)。
-  - **Entry (`<HQd` + UTF-8 bytes)**：`path_len` (2B) + `size` (uint64, 8B) + `mtime` (float64, 8B) + `canonical_path` 位元組序列。
-- **極速 `os.scandir` 變更嗅探**：反序列化 `unified.meta.bin` 耗時 $< 0.1\text{ ms}$；配合 `os.scandir` 直接自作業系統目錄項目取得 `(mtime, size)`，千檔規模下全量掃描比對僅需 $2\sim 3\text{ ms}$，零檔案內容讀取開銷。
+### 3.3 `YFP2` 單調世代快照與 `knowledge-db` 消費者游標比對機制
+系統透過 `file_space.FingerprintScanner` 與 `file-space.storage://snapshots/unified.yfp2.bin`（Magic `b"YFP2"`）搭配 `file-space.storage://cursors/knowledge-db.json` 獨立水位線游標執行增量比對：
 
 ```mermaid
 flowchart TD
-    Start(["啟動檢索或背景檢查"]) --> CheckWatcher{"前台查詢且<br/>.watcher_active 存在<br/>且無 .watcher_dirty?"}
+    Start(["啟動檢索或收到 on_file_space_changed"]) --> CheckWatcher{"前台查詢且<br/>file_space.is_watcher_active()<br/>且無 .watcher_dirty?"}
     CheckWatcher -- "Yes (0ms 旁路)" --> CheckMtime["比對 _GLOBAL_INDEX_CACHE<br/>與磁碟 *.bin.gz 微秒級 mtime"]
     CheckMtime --> ServeQuery(["直接以記憶體快取響應查詢 (< 20ms)"])
 
-    CheckWatcher -- "No (JIT 嗅探或背景 Worker)" --> LoadMeta["BinarySnapshotManager.load()<br/>載入 unified.meta.bin (Magic: YFP1, < 0.1ms)"]
-    LoadMeta --> ScanDir["os.scandir 遞迴走訪全空間聯集<br/>提取當前檔案 (mtime, size)"]
-    ScanDir --> Diff{"比對 (mtime, size)<br/>是否有變更?"}
-    Diff -- "無變更" --> CheckMtime
+    CheckWatcher -- "No (JIT 嗅探或 hook.file-space.py)" --> DiffCursor["FingerprintScanner.diff(consumer_id='knowledge-db')<br/>比對 YFP2 head_generation 與 acked_gen"]
+    DiffCursor --> Diff{"是否有未確認世代差量?"}
+    Diff -- "無變更 (in_sync)" --> CheckMtime
     Diff -- "發現 Added / Modified / Deleted" --> HotPatch["IndexingPipeline.hot_patch_unified_index()<br/>差量修補 AST / BM25 / Graph / Vector"]
-    HotPatch --> AtomicSave["core.vfs.write_bytes(atomic=True)<br/>原子更新 unified.meta.bin 與 *.bin.gz"]
+    HotPatch --> AtomicSave["core.vfs.write_bytes(atomic=True) 寫入 *.bin.gz<br/>並執行 scanner.ack(consumer_id='knowledge-db')"]
     AtomicSave --> ServeQuery
 ```
 

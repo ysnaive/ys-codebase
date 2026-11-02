@@ -1,0 +1,186 @@
+"""
+Unit and Integration Tests for Knowledge-DB Stage 1 Vector Eviction Self-Healing
+and Cross-Space Same-Basename Dirty File Isolation.
+"""
+import os
+from pathlib import Path
+import shutil
+import sys
+import tempfile
+import time
+
+_test_dir = os.path.dirname(os.path.abspath(__file__))
+_pkg_root = os.path.dirname(_test_dir)
+if _pkg_root not in sys.path:
+    sys.path.insert(0, _pkg_root)
+
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import Requirement, require
+
+from file_space import FileSpaceConfig, ScanDiffDetail
+from knowledge_db.embedding import format_symbol_embedding_text
+from knowledge_db.engine import KnowledgeEngine
+from knowledge_db.io_utils import is_dirty_file_match, normalize_dirty_paths
+
+
+class TestKnowledgeDBSelfHealing(YSCBTestCase):
+    """Tests for Stage 1 old vector eviction and cross-space path normalization."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.tmp_dir = Path(tempfile.mkdtemp(prefix="test_kdb_self_healing_"))
+        self.proj_root = self.tmp_dir / "project"
+        self.storage_dir = self.tmp_dir / "storage"
+        self.proj_root.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        super().tearDown()
+
+    @require(Requirement.LOGIC)
+    def test_ft_01_stage1_skip_vectors_evicts_old_vectors_for_same_line_edits(self) -> None:
+        """
+        Verify that when a symbol's body/docstring changes without changing its start line_number
+        (so UnifiedSymbol.compute_id remains identical), hot_patch_unified_index(skip_vectors=True)
+        evicts old_doc_ids from VectorIndex so Stage 2 sync_vector_deficit_step recomputes its vector.
+        """
+        src_dir = self.proj_root / "src"
+        src_dir.mkdir(parents=True)
+        target_py = src_dir / "worker.py"
+        target_py.write_text(
+            "def process_task(x: int) -> int:\n"
+            "    '''Original docstring alpha'''\n"
+            "    return x + 1\n",
+            encoding="utf-8",
+        )
+
+        sp = FileSpaceConfig(name="source", include=[src_dir.as_posix()])
+        engine = KnowledgeEngine(
+            project_root=self.proj_root,
+            storage_dir=self.storage_dir,
+            contributes_data={"spaces": {"source": sp.to_dict()}},
+            embedding_mock_mode=True,
+        )
+
+        idx = engine.build_unified_index(force=True)
+        sym_before = next(s for s in idx.symbols.values() if s.name == "process_task")
+        sym_id = sym_before.id
+
+        vec_idx_before = engine.pipeline.hybrid_engine.vector_index
+        self.assertIn(sym_id, vec_idx_before.doc_ids)
+        pos_before = vec_idx_before.doc_ids.index(sym_id)
+        vec_before = vec_idx_before.vectors[pos_before].copy()
+
+        # Modify docstring/signature on the exact same start line (line 1) -> compute_id stays identical!
+        time.sleep(0.02)
+        target_py.write_text(
+            "def process_task(x: int, y: int = 0) -> int:\n"
+            "    '''Updated docstring beta with completely new semantics'''\n"
+            "    return x + y + 100\n",
+            encoding="utf-8",
+        )
+
+        with engine.scanner.consume_diff(consumer_id="knowledge-db") as diff_res:
+            self.assertTrue(diff_res.has_changes)
+            patch_res = engine.pipeline.hot_patch_unified_index(
+                diff_res.detail, skip_vectors=True
+            )
+            self.assertTrue(patch_res.success)
+
+        sym_after = next(
+            s for s in engine.pipeline.unified_index.symbols.values() if s.name == "process_task"
+        )
+        # Symbol ID must remain stable for call graph continuity
+        self.assertEqual(sym_after.id, sym_id)
+        self.assertIn("Updated docstring beta", sym_after.docstring)
+
+        # Stage 1 skip_vectors=True must have evicted sym_id from VectorIndex!
+        deficit = engine.pipeline.get_vector_deficit_info()
+        self.assertGreaterEqual(deficit["missing_count"], 1)
+        self.assertNotIn(sym_id, engine.pipeline.hybrid_engine.vector_index.doc_ids)
+
+        # Stage 2 micro-batch deficit sync must now detect and re-embed sym_id
+        sync_res = engine.sync_vector_deficit_step(batch_size=32)
+        self.assertGreaterEqual(sync_res["embedded_in_step"], 1)
+        self.assertEqual(sync_res["remaining"], 0)
+
+        vec_idx_after = engine.pipeline.hybrid_engine.vector_index
+        self.assertIn(sym_id, vec_idx_after.doc_ids)
+        pos_after = vec_idx_after.doc_ids.index(sym_id)
+        vec_after = vec_idx_after.vectors[pos_after]
+
+        expected_new_vec = engine.embedding_service.embed_texts(
+            [format_symbol_embedding_text(sym_after)]
+        )[0]
+        self.assertFalse((vec_before == vec_after).all())
+        self.assertTrue((vec_after == expected_new_vec).all())
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_02_cross_space_same_filename_isolation(self) -> None:
+        """
+        Verify that modifying or deleting a top-level file (without '/') in one space
+        (e.g. __init__.py or README.md) does not falsely match or evict same-named files in other spaces.
+        """
+        # 1. Direct unit test of is_dirty_file_match without '/' wildcarding subdirectories
+        dirty_norm = normalize_dirty_paths(["README.md"])
+        self.assertTrue(is_dirty_file_match("README.md", dirty_norm))
+        self.assertFalse(is_dirty_file_match("space_a/README.md", dirty_norm))
+        self.assertFalse(is_dirty_file_match("space_b/sub/README.md", dirty_norm))
+
+        # 2. Multi-space integration test with top-level __init__.py in two separate spaces
+        mod_a_dir = self.proj_root / "mod_a"
+        mod_b_dir = self.proj_root / "mod_b"
+        mod_a_dir.mkdir(parents=True)
+        mod_b_dir.mkdir(parents=True)
+
+        init_a = mod_a_dir / "__init__.py"
+        init_b = mod_b_dir / "__init__.py"
+        init_a.write_text("class ModAInitSymbol:\n    pass\n", encoding="utf-8")
+        init_b.write_text("class ModBInitSymbol:\n    pass\n", encoding="utf-8")
+
+        sp_a = FileSpaceConfig(name="space_a", include=[mod_a_dir.as_posix()])
+        sp_b = FileSpaceConfig(name="space_b", include=[mod_b_dir.as_posix()])
+
+        engine = KnowledgeEngine(
+            project_root=self.proj_root,
+            storage_dir=self.storage_dir,
+            contributes_data={
+                "spaces": {
+                    "space_a": sp_a.to_dict(),
+                    "space_b": sp_b.to_dict(),
+                }
+            },
+            embedding_mock_mode=True,
+        )
+
+        engine.build_unified_index(force=True)
+        key_b = str(init_b.resolve()).replace("\\", "/")
+        orig_b_cached = engine.bundler._file_symbols_cache[key_b][0]
+
+        # Modify only mod_a/__init__.py (which yields rel_path="__init__.py" in space_a)
+        time.sleep(0.02)
+        init_a.write_text("class ModAInitUpdated:\n    pass\n", encoding="utf-8")
+        with engine.scanner.consume_diff("space_a", consumer_id="knowledge-db") as diff_a:
+            self.assertEqual(diff_a.modified, ["__init__.py"])
+            res = engine.pipeline.hot_patch_unified_index(diff_a.detail)
+            self.assertTrue(res.success)
+
+        # ModBInitSymbol must remain untouched and its bundler cache must not be evicted!
+        self.assertIs(engine.bundler._file_symbols_cache[key_b][0], orig_b_cached)
+        sym_names = {s.name for s in engine.pipeline.unified_index.symbols.values()}
+        self.assertIn("ModBInitSymbol", sym_names)
+        self.assertIn("ModAInitUpdated", sym_names)
+        self.assertNotIn("ModAInitSymbol", sym_names)
+
+        # Delete mod_a/__init__.py -> ModBInitSymbol in space_b must NOT be evicted!
+        init_a.unlink()
+        with engine.scanner.consume_diff("space_a", consumer_id="knowledge-db") as diff_del:
+            self.assertEqual(diff_del.deleted, ["__init__.py"])
+            res_del = engine.pipeline.hot_patch_unified_index(diff_del.detail)
+            self.assertTrue(res_del.success)
+
+        sym_names_after = {s.name for s in engine.pipeline.unified_index.symbols.values()}
+        self.assertNotIn("ModAInitUpdated", sym_names_after)
+        self.assertIn("ModBInitSymbol", sym_names_after)
+        self.mark_passed()

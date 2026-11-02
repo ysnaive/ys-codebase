@@ -70,6 +70,8 @@ class ContributesValidator:
         "number": "float",
     }
 
+    VALID_MERGE_STRATEGIES = ("merge", "extend", "replace", "unique")
+
     @staticmethod
     def _parse_default_literal(def_str: str) -> Any:
         """Parse literal default value from signature suffix."""
@@ -94,11 +96,17 @@ class ContributesValidator:
         - "enum(a, b, c)!" -> type: "enum", enum_values: ["a", "b", "c"], required: True
         - "bool? = false" -> type: "bool", required: False, default: False
         - "$TypeName" -> type: "ref", ref_name: "TypeName", required: False
-        - "$TypeName!" -> type: "ref", ref_name: "TypeName", required: True
-        - "list[str]" -> type: "list", item_type: "str"
+        - "$TypeName | merge" -> type: "ref", ref_name: "TypeName", merge_strategy: "merge"
+        - "list[str]! | extend" -> type: "list", item_type: "str", required: True, merge_strategy: "extend"
         - "dict[str, str]" -> type: "dict", key_type: "str", value_type: "str"
         """
         raw = sig.strip()
+        merge_strategy: Optional[str] = None
+        if "|" in raw:
+            raw_part, strat_part = raw.rsplit("|", 1)
+            raw = raw_part.strip()
+            merge_strategy = strat_part.strip() or None
+
         required = False
         default_val: Any = None
         has_default = False
@@ -120,6 +128,7 @@ class ContributesValidator:
             "required": required,
             "has_default": has_default,
             "default": default_val,
+            "merge_strategy": merge_strategy,
             "raw": sig,
         }
 
@@ -248,6 +257,9 @@ class ContributesValidator:
         defined_keys = {k for k in schema.keys() if k != "*"}
 
         for k, v in data.items():
+            if k.startswith("__") and k.endswith("__"):
+                out_dict[k] = v
+                continue
             k_path = f"{path}.{k}" if path else k
             if k in defined_keys:
                 out_val, sub_issues = cls.validate_node(v, schema[k], k_path, types_map, depth + 1)
@@ -381,6 +393,39 @@ class ContributesValidator:
         return ValidationResult(is_valid=is_valid, issues=issues, payload=validated_payload)
 
     @classmethod
+    def _validate_schema_merge_strategies(
+        cls,
+        schema_node: Any,
+        path: str,
+        issues: List[ValidationIssue],
+    ) -> None:
+        """Recursively verify merge strategy modifiers in _format.json schema nodes."""
+        if isinstance(schema_node, str):
+            rule = cls.parse_type_signature(schema_node)
+            strat = rule.get("merge_strategy")
+            if strat is not None and strat not in cls.VALID_MERGE_STRATEGIES:
+                matches = difflib.get_close_matches(strat, cls.VALID_MERGE_STRATEGIES, n=1)
+                hint = (
+                    f"Did you mean '{matches[0]}'?"
+                    if matches
+                    else f"Allowed merge strategies: {list(cls.VALID_MERGE_STRATEGIES)}"
+                )
+                issues.append(
+                    ValidationIssue(
+                        path=path,
+                        message=f"Invalid merge strategy '{strat}'.",
+                        severity="ERROR",
+                        suggestion=hint,
+                    )
+                )
+        elif isinstance(schema_node, dict):
+            for k, v in schema_node.items():
+                cls._validate_schema_merge_strategies(v, f"{path}.{k}" if path else k, issues)
+        elif isinstance(schema_node, list):
+            for idx, item in enumerate(schema_node):
+                cls._validate_schema_merge_strategies(item, f"{path}[{idx}]", issues)
+
+    @classmethod
     def validate_format_schema(cls, format_schema: Dict[str, Any]) -> ValidationResult:
         """
         Meta-Check: Validate _format.json structure itself.
@@ -395,6 +440,8 @@ class ContributesValidator:
         types_map = format_schema.get("_types", {})
         if not isinstance(types_map, dict):
             issues.append(ValidationIssue(path="_types", message="_types must be a dictionary.", severity="ERROR"))
+        else:
+            cls._validate_schema_merge_strategies(types_map, "_types", issues)
 
         points = [k for k in format_schema.keys() if not k.startswith("_")]
         if not points:
@@ -407,8 +454,27 @@ class ContributesValidator:
                 continue
             if "description" not in p_def or not isinstance(p_def["description"], str):
                 issues.append(ValidationIssue(path=f"{pt}.description", message="Missing or non-string 'description'.", severity="ERROR"))
+            if "merge" in p_def:
+                pt_merge = p_def["merge"]
+                if not isinstance(pt_merge, str) or pt_merge not in cls.VALID_MERGE_STRATEGIES:
+                    matches = difflib.get_close_matches(str(pt_merge), cls.VALID_MERGE_STRATEGIES, n=1)
+                    hint = (
+                        f"Did you mean '{matches[0]}'?"
+                        if matches
+                        else f"Allowed merge strategies: {list(cls.VALID_MERGE_STRATEGIES)}"
+                    )
+                    issues.append(
+                        ValidationIssue(
+                            path=f"{pt}.merge",
+                            message=f"Invalid merge strategy '{pt_merge}'.",
+                            severity="ERROR",
+                            suggestion=hint,
+                        )
+                    )
             if "format" not in p_def:
                 issues.append(ValidationIssue(path=f"{pt}.format", message="Missing 'format' specification.", severity="ERROR"))
+            else:
+                cls._validate_schema_merge_strategies(p_def["format"], f"{pt}.format", issues)
 
         is_valid = len([i for i in issues if i.severity == "ERROR"]) == 0
         return ValidationResult(is_valid=is_valid, issues=issues)

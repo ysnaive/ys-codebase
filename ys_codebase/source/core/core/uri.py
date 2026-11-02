@@ -7,6 +7,7 @@ and provides JIT prompt & auto-reconciliation for !undefined configurations.
 
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Tuple, Generator, Set
 
@@ -236,28 +237,52 @@ def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
     return None
 
 
-_SCHEMES_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_SCHEMES_CACHE: Dict[str, Tuple[float, float, List[Dict[str, Any]]]] = {}
+_URI_REENTRANCY = threading.local()
 
 
 def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
     """
-    Reads contributed URI schemes from merged cache with in-memory (mtime, data) cache.
+    Reads contributed URI schemes from merged cache with in-memory (merged_mtime, cfg_mtime, data) cache
+    and thread-local reentrancy-guarded JIT dirty check.
     """
+    if getattr(_URI_REENTRANCY, "active", False):
+        return {}
+
     merged_cfg = os.path.join(yscb_dir, ".cache", "core", "contributes.merged.json")
+    cfg_core_contrib = os.path.join(yscb_dir, "config", "core", "contribute.json")
+    merged_mtime = os.path.getmtime(merged_cfg) if os.path.isfile(merged_cfg) else -1.0
+    cfg_mtime = os.path.getmtime(cfg_core_contrib) if os.path.isfile(cfg_core_contrib) else -1.0
+
+    cached = _SCHEMES_CACHE.get(yscb_dir)
+    if cached and cached[0] == merged_mtime and cached[1] == cfg_mtime and merged_mtime > 0:
+        return cached[2]
+
+    _URI_REENTRANCY.active = True
     try:
-        from core import vfs
-        if vfs.is_file(merged_cfg):
-            mtime = os.path.getmtime(merged_cfg)
-            cached = _SCHEMES_CACHE.get(yscb_dir)
-            if cached and cached[0] == mtime:
-                return cached[1]
-            data = vfs.read_json(merged_cfg)
-            schemes = data.get("uri_schemes", [])
-            if isinstance(schemes, list) and len(schemes) > 0:
-                _SCHEMES_CACHE[yscb_dir] = (mtime, schemes)
-                return schemes
-    except Exception:
-        pass
+        try:
+            from . import contributes
+            is_dirty, _ = contributes._is_contributes_dirty("core")
+            if is_dirty:
+                contributes.get("core", "uri_schemes")
+                merged_mtime = os.path.getmtime(merged_cfg) if os.path.isfile(merged_cfg) else -1.0
+        except Exception:
+            pass
+
+        try:
+            from core import vfs
+            if vfs.is_file(merged_cfg):
+                merged_mtime = os.path.getmtime(merged_cfg)
+                data = vfs.read_json(merged_cfg)
+                schemes = data.get("uri_schemes", [])
+                if isinstance(schemes, list) and len(schemes) > 0:
+                    _SCHEMES_CACHE[yscb_dir] = (merged_mtime, cfg_mtime, schemes)
+                    return schemes
+        except Exception:
+            pass
+    finally:
+        _URI_REENTRANCY.active = False
+
     return _BOOTSTRAP_FALLBACK_SCHEMES
 
 

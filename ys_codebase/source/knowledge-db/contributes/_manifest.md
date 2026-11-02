@@ -1,33 +1,31 @@
-# Knowledge-DB 模組貢獻導覽清冊 (Contributes Manifest)
+# Contributes 擴充與依賴清冊 (`knowledge-db`)
 
-> 本清冊記錄 `knowledge-db` 模組對外貢獻之擴充能力與協議。
+本文件記錄 `knowledge-db` 模組對其他模組提供的擴充貢獻，以及本模組對外開放的擴充介面。
 
-## 1. 外部注入清冊 (Egress Contributions)
+## 1. 對外貢獻清冊 (Contributes to Hosts)
 
-### 1.1 `core.json`（微內核指令、Hooks 與 URI 擴充）
-- **語意 URI**：`knowledge.storage://`（知識庫索引與快取空間）。
-- **CLI 指令樹**：
-  - `knowledge-db search`: 全庫與跨空間語意檢索（支援 `-s` 切片與 `-d` 詳細模式）。
-  - `knowledge-db index`: 知識庫增量或全量索引建構與語意包導出。
-  - `knowledge-db callers`: 調用關係追蹤（誰調用了該符號）。
-  - `knowledge-db callees`: 被調用依賴追蹤。
-  - `knowledge-db impact`: 重構影響半徑分析。
-  - `knowledge-db status`: 索引資料庫與已註冊空間狀態診斷。
-  - `knowledge-db model`: 向量模型生命週期管理。
-  - `knowledge-db clean`: 快取清理與索引重建。
-- **生命週期 Hooks（自動掃描 `scripts/hook.{emit_module}.py`）**：
-  - `dev: on_test_setup`, `on_test_teardown` (`scripts/hook.dev.py`)
-  - `server: on_server_worker_warming` (`scripts/hook.server.py`)
+### 1.1 `core.json` (宿主：`core`)
+- **URI Schemes**:
+  - `knowledge.storage://` -> `cache://knowledge-db/`（知識資料庫之語意 Bundle 與檢索索引儲存根目錄）
+  - `knowledge.cache://` -> `cache://knowledge-db/`（知識資料庫快取根目錄別名）
+- **Commands (`knowledge-db` / `kdb`)**:
+  - `status`: 顯示各知識空間、索引健康度與快取統計資訊。
+  - `index`: 增量掃描變更檔案、提取語意結構並更新混合檢索索引。
+  - `search`: 執行跨空間混合語意檢索並即時提取高密度代碼或文檔切片。
+  - `callers`: 查詢指定符號之跨檔案上游呼叫者與引用位置。
+  - `callees`: 查詢指定符號內部往下游調用的目標符號清單。
+  - `impact`: 分析指定符號修改後的遞迴上游影響半徑與波及範圍。
+  - `clean`: 清除指定或全部知識空間之索引快取與重置變更游標。
+- **Hooks**:
+  - `dev`: `on_test_setup` (`scripts/hook.dev.py`) — 沙盒測試初始化時準備 `.cache/knowledge-db/` 目錄結構。
+  - `server`: `on_Context_build` (`scripts/hook.server.py`) — 常駐服務啟動時掛載單例 `KnowledgeEngine` 並預熱索引。
+  - `file-space`: `on_file_space_changed` (`scripts/hook.file-space.py`) — 監聽 `file-space` 模組空間指紋變更事件，透過 `consume_diff` 執行熱增量索引修補。
 
-### 1.2 `server.json`（常駐微服務）
-- 註冊 `knowledge-db-watcher` 背景 Worker 監聽檔案變更。
+---
 
-### 1.3 `agents-workflow.json`（技能注入）
-- 導出 `knowledge-db-search` 領域技能包，並向 `AGENTS_SKILL_ROUTING`、`HOW_TO_CONFIG_MODULES`、`HOW_TO_YSCB_MODULES` 及階段指南錨點注入檢索規範。
+## 2. 開放擴充點清冊 (Extension Schema: `_format.json`)
 
-### 1.4 `knowledge-db.json`（語言註冊）
-- 註冊 10 大程式語言、AST Parser 與副檔名對映。
+其他模組可透過 `contributes/knowledge-db.json`（或專案於 `ys_codebase/config/knowledge-db/contribute.json`）向本模組注入以下擴充：
 
-## 2. 開放擴充點清冊 (Ingress Points)
-- `spaces`: 允許各模組註冊自訂語意檢索空間。
-- `languages`: 允許註冊支援的程式語言與 AST 解析器。
+- **`space_weights`**: 定義各邏輯空間之檢索加權係數（`dict[str, float]`，權重值須 `> 0`）。空間幾何範圍統一向 `file-space` 模組註冊。
+- **`languages`**: 註冊自訂語言副檔名與 Tree-sitter 語法查詢規則。

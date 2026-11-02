@@ -3,20 +3,21 @@ target: "Knowledge-DB"
 doc_type: "design_notes"
 status: "active"
 source_paths:
-  - "yscb://source/knowledge-db/knowledge_db/space.py"
+  - "yscb://source/knowledge-db/knowledge_db/engine.py"
   - "yscb://source/knowledge-db/knowledge_db/pipeline.py"
   - "yscb://source/knowledge-db/knowledge_db/embedding.py"
   - "yscb://source/knowledge-db/knowledge_db/bundler.py"
   - "yscb://source/knowledge-db/knowledge_db/retrieval.py"
-  - "yscb://source/knowledge-db/knowledge_db/service.py"
+  - "yscb://source/knowledge-db/scripts/hook.file-space.py"
   - "yscb://source/knowledge-db/scripts/cli.py"
 related_docs:
   - "./README.md"
+  - "../file-space/DESIGN_NOTES.md"
   - "./architecture.md"
   - "./retrieval.md"
   - "./incremental_hot_reload.md"
   - "./call_graph_and_reference_index.md"
-last_updated: "2026-10-25"
+last_updated: "2026-11-02"
 ---
 
 # knowledge-db 設計決策與工程妥協手冊 (Design Notes)
@@ -31,31 +32,32 @@ last_updated: "2026-10-25"
 
 | 決策編號 | 標題 / 主題 (含歷史編號對照) | 影響檔案 | 風險等級 |
 | :---: | :--- | :--- | :---: |
-| **DN-01** | `cache://knowledge-db/` 零 Fallback 隔離與 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)* | `space.py`, `retrieval.py`, `graph.py`, `embedding.py` | 🚨 CRITICAL |
+| **DN-01** | `cache://knowledge-db/` 與 `cache://file-space/` 儲存雙軌分離及 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)* | `engine.py`, `retrieval.py`, `graph.py`, `embedding.py` | 🚨 CRITICAL |
 | **DN-02** | ONNX 執行緒硬上限、時間片主動讓渡 (`sleep(0.005)`)、向量低壓縮寫盤 (`compresslevel=1`) 與多進程 AST 單次走訪 *(原 DN-13 + DN-06.3)* | `embedding.py`, `bundler.py`, `parsers/` | 🚨 CRITICAL |
 | **DN-03** | JIT 10 符號動態探針熔斷、離線 `.onnx` 權重探針先行 (`[GUARD]`) 與 `--json` 純淨通道保護 *(原 DN-14 + DN-25.2)* | `pipeline.py`, `embedding.py`, `config.py`, `scripts/cli.py` | 🚨 CRITICAL |
-| **DN-04** | 背景 Watcher `.watcher_active` 零阻塞旁路與 `_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新 *(原 DN-21 + DN-23)* | `pipeline.py`, `service.py` | ⚠️ WARNING |
-| **DN-05** | `SpaceManager._include_cache` 空間路徑解析記憶化防退化 *(原 DN-24)* | `space.py`, `engine.py` | ⚠️ WARNING |
+| **DN-04** | 背景 `file-space-watcher` 零阻塞旁路、`hook.file-space.py` 免重掃與 `_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新 *(原 DN-21 + DN-23)* | `pipeline.py`, `scripts/hook.file-space.py` | ⚠️ WARNING |
+| **DN-05** | `FileSpaceManager._include_cache` 空間路徑解析記憶化防退化 *(已收斂至 `module:file-space`，原 DN-24)* | `engine.py`, `file_space/manager.py` | ⚠️ WARNING |
 | **DN-06** | 圖譜查詢輕量 JIT 解耦 (`require_vectors=False`)、差量修補對稱路徑剔除與零偽造向量鐵律 *(原 DN-26)* | `pipeline.py`, `retrieval.py`, `embedding.py` | 🚨 CRITICAL |
 | **DN-07** | 冷啟動向量載入需求區隔 (`want_vectors` vs `can_use_vector`) 解除死鎖 | `pipeline.py`, `hybrid.py` | 🚨 CRITICAL |
-| **DN-08** | 調用圖譜雙階入度邊保留 (`Identity Remap` + `TopologyLinker`) 與服務單一託管 | `graph.py`, `pipeline.py`, `hook.server.py`, `service.py` | 🚨 CRITICAL |
-| **DN-09** | 常駐背景修補並發互斥鎖 (`_index_lock` / `_patch_lock`)、字典快照迭代與背景禁用 `ProcessPoolExecutor` (`allow_parallel=False`) | `pipeline.py`, `service.py`, `retrieval.py`, `bundler.py` | 🚨 CRITICAL |
+| **DN-08** | 調用圖譜雙階入度邊保留 (`Identity Remap` + `TopologyLinker`) 與服務單一託管 | `graph.py`, `pipeline.py`, `hook.server.py`, `scripts/hook.file-space.py` | 🚨 CRITICAL |
+| **DN-09** | 常駐背景修補並發互斥鎖 (`_index_lock`)、字典快照迭代與背景禁用 `ProcessPoolExecutor` (`allow_parallel=False`) | `pipeline.py`, `scripts/hook.file-space.py`, `retrieval.py`, `bundler.py` | 🚨 CRITICAL |
+| **DN-10** | 兩階段背景 `KnowledgeDBServiceWorker` (`knowledge-db-worker`)、`is_worker_busy() -> int` 已運行毫秒探針與 `jit_vector_timeout_ms` 動態容差降級 | `service.py`, `pipeline.py`, `engine.py`, `embedding.py`, `config.py` | 🚨 CRITICAL |
 
 ---
 
 ## 詳細設計決策與防坑邊界
 
-### [DN-01] `cache://knowledge-db/` 零 Fallback 隔離與 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)*
+### [DN-01] `cache://knowledge-db/` 與 `cache://file-space/` 儲存雙軌分離及 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)*
 
 - **背景與根因**：
-  1. 早期 `get_cache_dir` 曾保留舊版候選路徑搜尋或 `Path.cwd() / ".cache"` 隱式降級兜底；在跨目錄調用、沙盒測試或自引用環境下，極易於宿主根目錄或非預期工作目錄產生殘留 `.cache/` 污染。
+  1. 早期 `get_cache_dir` 曾保留舊版候選路徑搜尋或 `Path.cwd() / ".cache"` 隱式降級兜底；且在導入 `module:file-space` 後，若 `KnowledgeEngine.storage_dir` 直接共用 `space_manager.storage_dir`（`cache://file-space/`），會導致知識庫索引與空間指紋快照混雜於同一目錄，`clean()` 時互相誤刪。
   2. 倒排索引 (`unified.index.bin.gz`)、調用圖譜 (`unified.graph.bin.gz`) 與向量索引 (`unified.vectors.bin.gz`) 為追求 $< 20\text{ ms}$ 的反序列化速度，採用了 Python `pickle` Protocol 5，而 `pickle.loads` 對不可信來源具有任意代碼執行風險。
 - **工程妥協與解法**：
-  1. **快取路徑零 Fallback 收斂**：`SpaceManager._get_storage_root()` 完全移除所有相對路徑猜測與 `root / ".cache"` 兜底，100% 剛性透過 `core.uri.resolve("cache://knowledge-db")` 解析物理路徑。
+  1. **快取路徑零 Fallback 與雙軌分離**：`file_space.FileSpaceManager` 固定解析 `file-space.storage://` (`cache://file-space/`) 儲存 `YFP2` 快照與消費者游標；`KnowledgeEngine.storage_dir` 獨立解析 `knowledge.storage://` (`cache://knowledge-db/`) 儲存 AST bundles 與索引檔，並於 `engine.clean()` 時同步呼叫 `file_space.reset_cursor(consumer_id="knowledge-db")` 對齊狀態。
   2. **二進位與跨機傳輸職責分離**：`pickle` 二進位快取嚴格限定於本機受保護之 `cache://knowledge-db/indices/` 目錄讀寫（並透過 `core.vfs.write_bytes(atomic=True)` 原子替換）；凡涉及跨環境分享或外部導出（`index --export`），一律使用純 JSON Schema 之 `SemanticBundle` (`.bundle.json`)。
 
 > [!CAUTION]
-> **嚴禁在 `SpaceManager` 或任何索引讀寫邏輯中加入 `os.getcwd()` / `Path.cwd()` 降級兜底路徑，且嚴禁對外部匯入檔案 (`import_bundle`) 調用 `pickle.loads`！** 違反此邊界將造成宿主目錄污染與反序列化安全漏洞。
+> **嚴禁將 `KnowledgeEngine.storage_dir` 指向 `space_manager.storage_dir`，嚴禁加入 `os.getcwd()` / `Path.cwd()` 降級兜底路徑，且嚴禁對外部匯入檔案 (`import_bundle`) 調用 `pickle.loads`！** 違反此邊界將造成跨模組快取誤刪、宿主目錄污染與反序列化安全漏洞。
 
 ---
 
@@ -92,28 +94,28 @@ last_updated: "2026-10-25"
 
 ---
 
-### [DN-04] 背景 Watcher `.watcher_active` 零阻塞旁路與 `_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新 *(原 DN-21 + DN-23)*
+### [DN-04] 背景 `file-space-watcher` 零阻塞旁路、`hook.file-space.py` 免重掃與 `_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新 *(原 DN-21 + DN-23)*
 
 - **背景與根因**：
-  當 `server` 常駐模組託管 `KnowledgeDBServiceWorker` 在背景執行 Watchdog 500ms 防抖監聽時，若前台 `IndexingPipeline.search()` 每次仍照常執行同步 `os.scandir` 與 `hot_patch_unified_index`，前台進程會與背景 Watcher 發生磁碟寫入與重算競態 (Race Condition)，導致前台搜尋被無謂阻塞 $1.7\text{s}$ 以上。同時，常駐 Worker 進程內若不感知磁碟快取檔案更新，會持續回傳舊的記憶體索引。
+  當 `server` 常駐模組託管 `FileSpaceWatcherServiceWorker` (`file-space-watcher`) 在背景執行 Watchdog 500ms 防抖監聽並觸發 `hook.file-space.py` 時，若前台 `IndexingPipeline.search()` 每次仍照常執行同步 `os.scandir` 與 `hot_patch_unified_index`，前台進程會與背景修補發生磁碟寫入與重算競態 (Race Condition)。同時，常駐 Worker 進程內若不感知磁碟快取檔案更新，會持續回傳舊的記憶體索引。
 - **工程妥協與解法**：
-  1. **`.watcher_active` 與 `.watcher_dirty` 雙信標協調**：`KnowledgeDBServiceWorker` 啟動時於 `indices/` 建立 `.watcher_active`（收到檔案變更防抖期間建立 `.watcher_dirty`，修補完成後移除）。當前台檢索管線探測到 `.watcher_active` 存在且無 `.watcher_dirty` 時，**前台 0ms 直接旁路略過同步掃描與熱修補**，100% 交由背景 Watcher 負責。
+  1. **`file_space.is_watcher_active()` 與 `hook.file-space.py` 免重掃協調**：當 `file-space-watcher` 常駐運行且無 `.watcher_dirty` 時，前台檢索管線透過 `file_space.is_watcher_active()` 0ms 直接旁路略過同步 `os.scandir` 掃描；而 `hook.file-space.py` 接收 `on_file_space_changed` 事件時，由於 `file-space-watcher` 剛完成 `YFP2` 快照更新，直接呼叫 `scanner.diff(..., auto_refresh=False)` 零重複掃描消費差量。
   2. **`_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新**：進程級全域快取 `_GLOBAL_INDEX_CACHE` 同時保存 `unified_index`、`graph_index`、`vector_index` 及其對應磁碟檔案之浮點數 `st_mtime`。每次查詢前以微秒級精度比對磁碟 `*.bin.gz` 的 `mtime`，一旦背景完成原子替換 (`core.vfs.write_bytes(atomic=True)`)，記憶體立即原地熱重載最新索引。
 
 > [!CAUTION]
-> **修改 `KnowledgeDBServiceWorker.start/stop` 或 `_execute_debounced_patch` 時，必須確保 `finally` 區塊嚴格清理 `.watcher_active` 與 `.watcher_dirty` 信標檔！** 若異常殘留 `.watcher_active` 而背景 Watcher 實際已退出，將導致前台 JIT 變更感知被永久旁路而無法自癒。
+> **嚴禁在 `hook.file-space.py` 的 `on_file_space_changed` 事件回呼中開啟 `auto_refresh=True` 造成重複全目錄 `scandir`，且嚴禁破壞 `_GLOBAL_INDEX_CACHE` 的 `st_mtime` 比對熱重載機制！**
 
 ---
 
-### [DN-05] `SpaceManager._include_cache` 空間路徑解析記憶化防退化 *(原 DN-24)*
+### [DN-05] `FileSpaceManager._include_cache` 空間路徑解析記憶化防退化 *(原 DN-24)*
 
 - **背景與根因**：
-  在 `KnowledgeEngine.status()` 或多空間歸屬判定 (`_file_belongs_to_space`) 中，系統需針對 `unified.meta.bin` 內的數百個檔案逐一比對所有空間。若每次呼叫 `SpaceManager.resolve_space_include(space_name)` 皆重新調用 `core.contributes.get("knowledge-db")` 與 `Path.resolve()`，在 300 檔 $\times$ 3 空間規模下會觸發超過 2,600 次高成本磁碟系統呼叫，導致 `status` 耗時暴增至 $7.1\text{s}$。
+  在 `KnowledgeEngine.status()` 或多空間歸屬判定 (`_file_belongs_to_space`) 中，系統需針對 `unified.meta.bin` 內的數百個檔案逐一比對所有空間。若每次呼叫 `FileSpaceManager.resolve_space_include(space_name)` 皆重新調用 `core.contributes.get("knowledge-db")` 與 `Path.resolve()`，在 300 檔 $\times$ 3 空間規模下會觸發超過 2,600 次高成本磁碟系統呼叫，導致 `status` 耗時暴增至 $7.1\text{s}$。
 - **工程妥協與解法**：
-  - 在 `SpaceManager` 實例內部引入 `self._include_cache: Dict[Tuple[str, tuple], List[Path]] = {}`，以 `(space_name, tuple(space.include))` 為快取鍵。首次解析出實體絕對路徑清單後即駐留記憶體，使 `status` 總耗時由 $7.1\text{s}$ 驟降至 $0.14\text{s}$（提速 50 倍以上）。
+  - 在 `FileSpaceManager` 實例內部引入 `self._include_cache: Dict[Tuple[str, tuple], List[Path]] = {}`，以 `(space_name, tuple(space.include))` 為快取鍵。首次解析出實體絕對路徑清單後即駐留記憶體，使 `status` 總耗時由 $7.1\text{s}$ 驟降至 $0.14\text{s}$（提速 50 倍以上）。
 
 > [!WARNING]
-> **切勿在迴圈內部重複實例化 `SpaceManager()` 或繞過 `self._include_cache` 直接解析語意 URI！** 若動態更新了空間配置（如呼叫 `register_space`），必須同步清空 `_include_cache` 以維持快取一致性。
+> **切勿在迴圈內部重複實例化 `FileSpaceManager()` 或繞過 `self._include_cache` 直接解析語意 URI！** 若動態更新了空間配置（如呼叫 `register_space`），必須同步清空 `_include_cache` 以維持快取一致性。
 
 ---
 
@@ -148,22 +150,38 @@ last_updated: "2026-10-25"
 
 - **背景與根因**：
   1. 單一檔案增量熱修補時，若僅拔除修改檔案之舊符號並重鏈接該檔之 outgoing 邊，會導致外部未修改檔案指向該檔之 incoming edges 被誤刪丟失。直接調用 `TopologyLinker` 又因缺少外部檔案檔頭 imports 而丟棄裸函式調用。
-  2. `hook.server.py` 早期私自建立並啟動 `_watcher_instance`，與 `server.ServiceManager` 透過 `contributes/server.json` 託管之 Worker 產生雙重監聽競態。
+  2. `hook.server.py` 早期私自建立並啟動 `_watcher_instance`，與 `server.ServiceManager` 託管之服務產生雙重監聽競態。
 - **工程妥協與解法**：
   1. **雙階入度保留**：拔除舊符號前先透過 `CallGraphIndex.get_external_incoming_edges()` 備份入度邊；符號更新後執行 Stage 1 `Identity Remap`（依同檔案路徑與符號名稱直接對映）＋ Stage 2 `TopologyLinker` 跨檔消歧回退。
-  2. **服務單一託管**：`hook.server.py` 僅保留 `pre_warm()`，背景監聽 100% 委由 `server.ServiceManager` 統一託管。
+  2. **服務單一託管与事件解耦**：`hook.server.py` 僅保留 `pre_warm()`，背景檔案監聽 100% 委由 `module:file-space` 之 `file-space-watcher` 服務統一託管，並由 `scripts/hook.file-space.py` 訂閱 `on_file_space_changed` 事件驅動增量熱修補。
 
 ---
 
-### [DN-09] 常駐背景修補並發互斥鎖 (`_index_lock` / `_patch_lock`)、字典快照迭代與背景禁用 `ProcessPoolExecutor` (`allow_parallel=False`)
+### [DN-09] 常駐背景修補並發互斥鎖 (`_index_lock`)、字典快照迭代與背景禁用 `ProcessPoolExecutor` (`allow_parallel=False`)
 
 - **背景與根因**：
-  1. 當 `KnowledgeDBServiceWorker` 在常駐 `server` Worker 中監聽檔案變更時，若前一次 `hot_patch_unified_index()` 耗時超過 500ms 防抖視窗，下一次 `threading.Timer` 執行緒（或前台 IPC 查詢執行緒）會同時重入讀寫 `self._unified_index.symbols` 與 `self._unified_index.index`，引發 `RuntimeError: dictionary changed size during iteration`。
-  2. 一旦 `hot_patch_unified_index()` 因上述競態拋出例外，`_execute_debounced_patch()` 會捕獲並回退呼叫 `build_unified_index(force=True)`，進而觸發 `SemanticBundler.bundle_union()` 啟動 4-worker `ProcessPoolExecutor` 子進程池與全量 FastEmbed ONNX 向量推論。多個重疊 Timer 同時回退全量重建會導致後台子進程風暴與記憶體暴衝至 10GB+。
+  1. 當常駐 `server` Worker 接收 `on_file_space_changed` 觸發 `hot_patch_unified_index()` 時，若與前台 IPC 查詢執行緒同時重入讀寫 `self._unified_index.symbols` 與 `self._unified_index.index`，會引發 `RuntimeError: dictionary changed size during iteration`。
+  2. 一旦背景修補回退呼叫 `build_unified_index(force=True)`，若預設啟動 4-worker `ProcessPoolExecutor` 子進程池，在常駐 daemon 背景會衍生子進程風暴。
 - **工程妥協與解法**：
-  1. **管線與服務雙層互斥防重入**：`IndexingPipeline` 增設 `self._index_lock = threading.RLock()` 保護 `build_unified_index`、`hot_patch_unified_index` 與 `_ensure_jit_index_ready`；`KnowledgeDBServiceWorker` 增設 `self._patch_lock = threading.Lock()`，`_execute_debounced_patch()` 採非阻塞獲取鎖並以 `while` 迴圈排空 `_pending_dirty_paths`，確保新變更尾隨排隊、絕不並發衝撞。
-  2. **序列化字典淺快照與背景禁用多進程**：`InvertedIndex.to_dict()` 對 `self.index.items()` 與 `self.symbols.items()` 統一採 `list(...)` 淺快照迭代；`bundle_union()` 與 `build_unified_index()` 增設 `allow_parallel: bool = True`，背景服務回退重建時強制傳入 `allow_parallel=False`，杜絕常駐 daemon 在背景衍生 `ProcessPoolExecutor` 子進程池。
+  1. **管線與事件鉤子互斥防重入**：`IndexingPipeline` 設 `self._index_lock = threading.RLock()` 保護 `build_unified_index`、`hot_patch_unified_index` 與 `_ensure_jit_index_ready`；`scripts/hook.file-space.py` 內部亦設模組級 `_patch_lock` 確保背景事件序列執行。
+  2. **序列化字典淺快照與背景禁用多進程**：`InvertedIndex.to_dict()` 對 `self.index.items()` 與 `self.symbols.items()` 統一採 `list(...)` 淺快照迭代；`bundle_union()` 與 `build_unified_index()` 增設 `allow_parallel: bool = True`，`hook.file-space.py` 回退重建時強制傳入 `allow_parallel=False`，杜絕常駐 daemon 在背景衍生 `ProcessPoolExecutor` 子進程池。
 
 > [!CAUTION]
-> **嚴禁在常駐背景服務執行緒 (`KnowledgeDBServiceWorker`) 中以 `allow_parallel=True` 呼叫全量索引重建，亦嚴禁移除 `_index_lock`、`_patch_lock` 與 `to_dict()` 的 `list(...)` 快照保護！** 違反此防護將重新引發多執行緒字典迭代崩潰與 10GB 級子進程記憶體風暴。
+> **嚴禁在常駐背景事件 (`scripts/hook.file-space.py`) 中以 `allow_parallel=True` 呼叫全量索引重建，亦嚴禁移除 `_index_lock` 與 `to_dict()` 的 `list(...)` 快照保護！** 違反此防護將重新引發多執行緒字典迭代崩潰與子進程記憶體風暴。
+
+---
+
+### [DN-10] 兩階段背景 `KnowledgeDBServiceWorker` (`knowledge-db-worker`)、`is_worker_busy() -> int` 已運行毫秒探針與 `jit_vector_timeout_ms` 動態容差降級
+
+- **背景與根因**：
+  1. 若於 `on_file_space_changed` 事件回呼中同步執行全量或大批量 ONNX 向量嵌入，不僅會阻塞 `file-space-watcher` 事件執行緒，亦會導致缺失 `unified.vectors.bin.gz`（而游標已 `in_sync`）時無法在背景自動自癒補齊。
+  2. 本地 FastEmbed 模型存放於系統快取，切換環境或清理快取後容易遺失；若每次皆須跳出 `[GUARD]` 警告要求 Agent 反問開發者確認下載，在已有常駐 Server Worker 的環境下會造成不必要的人工中斷。
+  3. 當背景 Worker 正在執行長耗時任務（如初次全量向量化或背景下載模型）時，若前台每次搜尋皆固定死等完整超時時間（如 3000ms），將造成連續搜尋每次都被無謂延遲 3 秒。
+- **工程妥協與解法**：
+  1. **職責分離與兩階段背景同步 (`KnowledgeDBServiceWorker`)**：檔案系統 `watchdog` 監聽 100% 維持由 `file-space` 模組 (`file-space-watcher`) 單一負責；`knowledge-db` 註冊專屬 `KnowledgeDBServiceWorker` (`knowledge-db-worker`)。Stage 1 以 `skip_vectors=True` 秒級更新 AST/BM25/圖譜並推進游標；Stage 2 以微批次 (`vector_batch_size=32`，且將 `symbol.docstring` 截斷至 `1000` 字元防止超長 Token 拖慢 ONNX) 自動補齊缺失向量，並在缺少模型權重時自動於背景下載。
+  2. **`is_worker_busy() -> int` 已運行毫秒探針與剩餘容差計算**：`is_worker_busy()` 回傳 `0`（空閒）或已連續忙碌毫秒數 `elapsed_ms > 0`（具備陳舊 PID 存活校驗）。前台 `search()` 根據 `config.jit_vector_timeout_ms`（預設 `3000` ms）：當 `elapsed_ms >= timeout_ms` 時等待 `0ms` 瞬時降級純 BM25；當 `0 < elapsed_ms < timeout_ms` 時最多等待剩餘時間 `timeout_ms - elapsed_ms`，逾時即降級並於 `sys.stderr` 輸出 `[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]`。
+
+> [!CAUTION]
+> **嚴禁在 `KnowledgeDBServiceWorker` 中重複建立 `watchdog.Observer` 監聽檔案系統，且嚴禁將前台容差等待改為不論 `elapsed_ms` 皆固定睡眠完整 `jit_vector_timeout_ms`！** 必須維持 `elapsed_ms >= timeout_ms` 時 0ms 瞬時降級之防呆不變量。
+
 

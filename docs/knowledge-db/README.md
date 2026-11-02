@@ -11,22 +11,22 @@ related_docs:
   - "./architecture.md"
   - "./retrieval.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-22"
+last_updated: "2026-11-02"
 ---
 
 # Knowledge Database 模組手冊 (Knowledge-DB Overview)
 
 > 模組名稱：`knowledge-db`  
-> 職責定位：YS-Codebase 專案代碼與文檔語意知識庫基礎設施，提供多來源空間宣告、雙軌聚合、`unified.meta.bin` 原生二進位快照與 JIT / `KnowledgeDBServiceWorker` 熱自癒、Tree-sitter 宣告式多語言 AST 解析、BM25 + FastEmbed ONNX 雙軌向量 RRF 複合檢索與靜態調用圖譜分析服務。
+> 職責定位：YS-Codebase 專案代碼與文檔語意知識庫基礎設施，透過 `module:file-space` 底座協同治理命名空間、接收 `YFP2` 單調世代二進位快照與 `on_file_space_changed` 事件驅動增量熱自癒，並提供 Tree-sitter 宣告式多語言 AST 解析、BM25 + FastEmbed ONNX 雙軌向量 RRF 複合檢索（含空間權重 `space_weights` 加成）與靜態調用圖譜分析服務。
 
 ---
 
 ## 1. 模組定位與願景 (Vision & Goals)
 
 `knowledge-db` 模組旨在為 YS-Codebase 生態體系建立高效、高內聚、強韌的語意檢索與代碼拓撲核心設施。主要能力包括：
-- **多空間治理 (Space Management)**：支援多模組聯動注入 (`module://<donor>/contributes/knowledge-db.json`) 與專案 `config/knowledge-db/contribute.json` 雙軌階層覆蓋。
+- **跨模組空間協同與檢索加權 (`module:file-space` & `space_weights`)**：空間目錄幾何統一委由 `file-space` 模組 (`contributes/file-space.json` 與 `config/file-space/contribute.json`) 雙軌聚合，`knowledge-db` 則透過 `space_weights` 對不同空間（如 `docs: 1.2`, `plans: 0.85`）賦予檢索加權。
 - **全空間聯集處理 (Union Scope)**：無單一 `default_space` 強制約定，全系統以所有有效空間之聯集作為全域處理範圍，並對重疊實體檔案進行 100% 唯一解析去重。
-- **極速二進位快照與雙軌熱自癒 (`unified.meta.bin` & Hot Healing)**：採用 Magic `YFP1` + `struct` 原生二進位快照搭配 `os.scandir` 微秒級變更嗅探；支援前台 JIT 差量熱修補與背景常駐 `KnowledgeDBServiceWorker` (500ms 防抖) 自動熱自癒。
+- **`YFP2` 多消費者游標與雙階段背景 Worker (`consume_diff` & `knowledge-db-worker`)**：透過 `file_space.consume_diff(consumer_id="knowledge-db")` 消費 `YFP2` 二進位快照差量；常駐背景服務 `KnowledgeDBServiceWorker` (`knowledge-db-worker`) 採兩階段非阻塞同步（Stage 1 快篩秒級更新 BM25/圖譜並 Ack 游標、Stage 2 微批次自動補齊向量與背景自動下載模型），搭配 `is_worker_busy() -> int` 已運行毫秒探針與 `jit_vector_timeout_ms` 動態容差等待／瞬時降級。
 - **Tree-sitter 宣告式 AST 解析 (Universal AST)**：基於 `TreeSitterDriver` 與 S-Expression (`.scm`) 查詢規則，透過零特權自貢獻 (`contributes.knowledge-db.languages`) 原生支援 Python、C、C++、C#、JavaScript、TypeScript、Markdown、SPICE、HTML、CSS 等 10 大語言符號與調用點提取。
 - **雙軌 RRF 複合檢索與平滑降級 (Hybrid Search)**：結合中英混排分詞 (`MultilingualTokenizer`)、多欄位加權 BM25 與 FastEmbed ONNX 離線向量推論（動態維度解析，預設 `BAAI/bge-small-zh-v1.5` 為 `512-dim`），透過倒數排名融合 (RRF $k=60$) 精準召回，並具備 100% 剛性平滑降級純 BM25 保證。
 - **跨檔案調用圖譜與影響面分析 (Call Graph & Impact)**：基於 `networkx.DiGraph` 與四階 FQN / Import 作用域消歧，支援上游調用者 (`callers`)、下游被調用者 (`callees`) 與多階重構爆炸半徑 (`impact`) 追蹤。
@@ -142,7 +142,8 @@ engine.clean()
 | :--- | :--- | :---: | :--- |
 | **`enable_vector_search`** | `true` | `bool` | 是否啟用 FastEmbed 向量語意檢索與特徵提取。設為 `false` 則跳過向量化並強制使用純 BM25 詞彙檢索模式。 |
 | **`embedding_model`** | `"BAAI/bge-small-zh-v1.5"` | `str` | 指定 FastEmbed ONNX 嵌入模型名稱（預設模型為 `512-dim`，支援中英多語言）。 |
-| **`jit_vector_timeout_seconds`** | `5.0` | `float` | JIT 增量熱自癒時 10 符號動態探針之超時臨界值（秒）。若推估耗時超過此值，自動熔斷退回純 BM25 模式以保障檢索瞬發響應。 |
+| **`jit_vector_timeout_ms`** | `3000` | `int` | 向量容差等待與 JIT 熔斷超時上限（毫秒，向下相容舊鍵 `jit_vector_timeout_seconds`）。當背景 Worker 已運行時間 `elapsed_ms < jit_vector_timeout_ms` 時最多等待剩餘時間 `timeout_ms - elapsed_ms`；若 `elapsed_ms >= jit_vector_timeout_ms` 則等待 0ms 瞬時降級純 BM25 並印出 `[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]`。無 Server 環境時則作為前台 10 符號探針熔斷上限。 |
+| **`vector_batch_size`** | `32` | `int` | 背景 `knowledge-db-worker` Stage 2 微批次向量差集自癒之單批符號數量。 |
 | **`max_threads`** | `"auto"` | `str` / `int` | 向量推論與 ONNX Runtime 執行緒上限。預設 `"auto"` 自動限制為 `min(2, max(1, cpu_count // 2))` 以防止 CPU 排程飢餓。 |
 
 ### 6.2 向量嵌入與作業系統環境注意事項

@@ -4,22 +4,20 @@ knowledge-db 模組之 Computed Token Providers
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
-from typing import Any, Dict, List, Optional
-try:
-    from .space import SpaceManager
-except ImportError:
-    from knowledge_db.space import SpaceManager
+from typing import Any, List, Optional
+import knowledge_db  # noqa: F401
+from file_space import FileSpaceManager
 
 
 def get_knowledge_db_spaces(context: Optional[Any] = None, **kwargs: Any) -> str:
     """
-    動態編譯全系統已註冊之 knowledge-db 知識庫空間清單為 Markdown 表格。
+    動態編譯全系統已註冊之知識庫工作空間清單為 Markdown 表格。
 
     :param context: 可選之編譯期上下文（由 agents-workflow compiler 提供）
     :return: 格式化完成之 Markdown 空間表格
     """
     try:
-        mgr = SpaceManager(core_context=context)
+        mgr = FileSpaceManager(core_context=context)
         spaces = mgr.load_spaces()
     except Exception:
         spaces = {}
@@ -38,7 +36,7 @@ def get_knowledge_db_spaces(context: Optional[Any] = None, **kwargs: Any) -> str
 
     for sp_name, sp in sorted(spaces.items()):
         name_badge = f"**`{sp_name}`**"
-        origin_label = f"`{sp.origin}`"
+        origin_label = f"`{getattr(sp, 'origin_display', sp.origin)}`"
 
         inc_parts: List[str] = [f"`{inc}`" for inc in sp.include]
         if sp.file_patterns:

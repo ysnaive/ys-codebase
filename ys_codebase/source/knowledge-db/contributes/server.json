@@ -1,10 +1,11 @@
 {
   "services": [
     {
-      "name": "knowledge-db-watcher",
+      "name": "knowledge-db-worker",
       "worker_class": "knowledge_db.service:KnowledgeDBServiceWorker",
-      "description": "知識庫即時檔案變更監聽與增量熱自癒服務",
+      "description": "知識庫兩階段增量解析、背景自動模型下載與微批次向量差集自癒常駐服務",
       "auto_start": true
     }
   ]
 }
+

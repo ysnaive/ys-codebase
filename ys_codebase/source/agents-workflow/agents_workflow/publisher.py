@@ -159,14 +159,22 @@ class ReleasePublisher:
                     rel = os.path.relpath(fp, real_p).replace("\\", "/")
                     hasher.update(rel.encode("utf-8"))
                     try:
-                        with open(fp, "rb") as rf:
-                            raw = rf.read()
-                        try:
-                            text = raw.decode("utf-8")
-                            norm_bytes = text.replace("\r\n", "\n").encode("utf-8")
-                            hasher.update(norm_bytes)
-                        except UnicodeDecodeError:
-                            hasher.update(raw)
+                        st = os.stat(fp)
+                        cached = self._sha1_cache.get(fp)
+                        if cached and len(cached) >= 3 and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+                            file_sha1 = str(cached[2])
+                        else:
+                            with open(fp, "rb") as rf:
+                                raw = rf.read()
+                            try:
+                                text = raw.decode("utf-8")
+                                norm_bytes = text.replace("\r\n", "\n").encode("utf-8")
+                                file_sha1 = hashlib.sha1(norm_bytes).hexdigest()
+                            except UnicodeDecodeError:
+                                file_sha1 = hashlib.sha1(raw).hexdigest()
+                            self._sha1_cache[fp] = [st.st_mtime_ns, st.st_size, file_sha1]
+                            self._sha1_cache_dirty = True
+                        hasher.update(file_sha1.encode("utf-8"))
                     except Exception:
                         pass
             return hasher.hexdigest()
@@ -243,7 +251,7 @@ class ReleasePublisher:
     def compute_source_fingerprint(self, target_names: Optional[List[str]] = None) -> str:
         """
         計算來源端綜合特徵指紋 (SHA-256 Hex Digest)。
-        涵蓋 assets 資源、contributes 宣告、專案組態與 target 投影規則。
+        涵蓋 assets 資源、contributes 宣告、專案組態、有效語系鏈與 target 投影規則。
         """
         hasher = hashlib.sha256()
 
@@ -252,6 +260,21 @@ class ReleasePublisher:
             cfg = dict(cfg)
             cfg["release_targets"] = sorted(list(target_names))
         hasher.update(json.dumps(cfg, sort_keys=True).encode("utf-8"))
+
+        try:
+            from core import locale as core_locale
+            active_chain = core_locale.get_active_chain()
+            hasher.update(json.dumps(active_chain, sort_keys=True).encode("utf-8"))
+        except Exception:
+            pass
+
+        try:
+            from core import config
+            core_cfg = config.get_all("core") or {}
+            hasher.update(json.dumps(core_cfg, sort_keys=True, default=str).encode("utf-8"))
+        except Exception:
+            pass
+
         hasher.update(self._get_sources_digest())
 
         return hasher.hexdigest()
@@ -497,6 +520,34 @@ class ReleasePublisher:
                 a_abs = self._resolve_project_uri(str(a_md).strip(), proj_root)
                 if not os.path.isfile(a_abs):
                     return False, []
+                try:
+                    with open(a_abs, "r", encoding="utf-8") as f:
+                        a_text = f.read()
+                    if AGENTS_MD_BEGIN not in a_text or AGENTS_MD_END not in a_text:
+                        return False, []
+                except Exception:
+                    return False, []
+
+            for ar in t_cfg.get("agent_rules", []):
+                if not isinstance(ar, dict):
+                    continue
+                ar_target = ar.get("target") or ar.get("path") or ar.get("agents_md")
+                if not ar_target or not str(ar_target).strip():
+                    continue
+                a_abs = self._resolve_project_uri(str(ar_target).strip(), proj_root)
+                if not os.path.isfile(a_abs):
+                    return False, []
+                if ar.get("mode", "inject") == "inject":
+                    marker = ar.get("marker", "YSCB_AGENTS")
+                    begin_tag = f"<!-- {marker}_BEGIN -->"
+                    end_tag = f"<!-- {marker}_END -->"
+                    try:
+                        with open(a_abs, "r", encoding="utf-8") as f:
+                            a_text = f.read()
+                        if begin_tag not in a_text or end_tag not in a_text:
+                            return False, []
+                    except Exception:
+                        return False, []
 
         return bool(total_short_circuited_files), total_short_circuited_files
 
@@ -558,7 +609,7 @@ class ReleasePublisher:
                     agents_standards_content = r_item.get("content", "")
                     break
 
-        # Step 2: 偵測多 Target 共用實體路徑並按共享組合聚合輸出告警 ([P00:DR-01])
+        # Step 2: 偵測多 Target 共用實體路徑並按共享組合聚合輸出告警
         shared_combos: Dict[Tuple[str, ...], List[str]] = {}
         for dst_abs, entries in item_groups.items():
             t_names = list(dict.fromkeys(e["target_name"] for e in entries))

@@ -103,7 +103,7 @@ class TreeSitterDriver(BaseParser):
                 self._parser = tree_sitter.Parser(self._language)
             except Exception as e:
                 logger.warning(
-                    f"TreeSitterDriver: Failed to load grammar '{self.config.grammar}' for '{self.config.id}': {e} (EC-02)"
+                    f"TreeSitterDriver: Failed to load grammar '{self.config.grammar}' for '{self.config.id}': {e}"
                 )
                 self._language = None
                 self._parser = None
@@ -128,12 +128,12 @@ class TreeSitterDriver(BaseParser):
                     self._query = tree_sitter.Query(self._language, q_str)
                 except Exception as e:
                     logger.warning(
-                        f"TreeSitterDriver: Failed to compile query '{q_path}' for '{self.config.id}': {e} (EC-02)"
+                        f"TreeSitterDriver: Failed to compile query '{q_path}' for '{self.config.id}': {e}"
                     )
                     self._query = None
             else:
                 logger.warning(
-                    f"TreeSitterDriver: Query file '{self.config.query_file}' not found for '{self.config.id}' (EC-02)"
+                    f"TreeSitterDriver: Query file '{self.config.query_file}' not found for '{self.config.id}'"
                 )
                 self._query = None
 
@@ -142,7 +142,7 @@ class TreeSitterDriver(BaseParser):
         return ext in self.config.extensions
 
     def _extract_preceding_comment(self, node: Any) -> str:
-        """提取節點上方緊鄰之註解行作為 Docstring (移除未使用參數 content_lines M-10)"""
+        """提取節點上方緊鄰之註解行作為 Docstring"""
         try:
             target_node = node
             if target_node.parent and target_node.parent.type in ("export_statement", "decorated_definition"):
@@ -525,7 +525,7 @@ class TreeSitterDriver(BaseParser):
             content_bytes = content.encode("utf-8", errors="replace")
             tree = self._parser.parse(content_bytes)
         except Exception as e:
-            logger.warning(f"TreeSitterDriver: parse error on '{normalized_path}': {e} (EC-01)")
+            logger.warning(f"TreeSitterDriver: parse error on '{normalized_path}': {e}")
             return []
 
         cursor = tree_sitter.QueryCursor(self._query)
@@ -541,7 +541,7 @@ class TreeSitterDriver(BaseParser):
         return self._materialize_unified_symbols(dedup_items, normalized_path, scope_sep)
 
     def _fallback_markdown(self, normalized_path: str, lines: List[str], space: str) -> List[UnifiedSymbol]:
-        """Markdown 無 Heading 時安全降級為 DOC_SECTION (EC-03)"""
+        """Markdown 無 Heading 時安全降級為 DOC_SECTION"""
         non_empty = [l for l in lines if l.strip()]
         sec_name = non_empty[0][:60] if non_empty else os.path.basename(normalized_path)
         doc = "\n".join(lines[:200]).strip()

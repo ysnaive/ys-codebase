@@ -1,6 +1,5 @@
 """
-Unit Tests for knowledge-db SpaceManager, Dual-Track Aggregation, Priority Resolution, and Computed Token Providers.
-Unified Suite consolidating test_space.py and test_providers.py.
+Unit Tests for knowledge-db Space Integration, Space Weights, and Computed Token Providers.
 """
 
 import json
@@ -17,16 +16,17 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from knowledge_db.exceptions import InvalidSpaceConfigError, SpaceNotFoundError
+from knowledge_db.engine import KnowledgeEngine
+from knowledge_db.exceptions import InvalidConfigError
 from knowledge_db.providers import get_knowledge_db_spaces
-from knowledge_db.schema import SpaceConfig
-from knowledge_db.space import SpaceManager
+from knowledge_db.schema import KnowledgeDBContributes, validate_space_weights
+from file_space import InvalidFileSpaceConfigError, FileSpaceConfig, FileSpaceDef, FileSpaceManager, FileSpaceNotFoundError
 
 
-class TestSpaceManager(YSCBTestCase):
+class TestSpaceIntegrationAndWeights(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_ft_04_dual_track_aggregation_and_priority(self):
-        """FT-04: 驗證 SpaceManager Contributes 體系與 Project contribute.json 優先權覆蓋"""
+        """驗證 FileSpaceManager Contributes 體系與 Project contribute.json 優先權覆蓋"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             cfg_dir = temp_path / "config"
@@ -46,7 +46,6 @@ class TestSpaceManager(YSCBTestCase):
                         "origin": "module:donor_mod",
                     },
                 },
-                "thesaurus": [["同義詞A", "syn_a"]],
             }
 
             proj_contribute = {
@@ -60,12 +59,11 @@ class TestSpaceManager(YSCBTestCase):
                         "include": [str(temp_path / "proj_shared")],
                     },
                 },
-                "thesaurus": [["同義詞B", "syn_b"]],
             }
             with open(cfg_dir / "contribute.json", "w", encoding="utf-8") as f:
                 json.dump(proj_contribute, f)
 
-            sm = SpaceManager(config_dir=cfg_dir, contributes_data=mock_contributes)
+            sm = FileSpaceManager(config_dir=cfg_dir, contributes_data=mock_contributes)
             spaces = sm.load_spaces()
 
             self.assertIn("mod_space", spaces)
@@ -77,7 +75,7 @@ class TestSpaceManager(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_05_union_spaces_and_uri_resolution(self):
-        """FT-05: 驗證全空間聯集 (Union Scope) 與 resolve_space_include 路徑解算"""
+        """驗證全空間聯集 (Union Scope) 與 resolve_space_include 路徑解算"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir1 = temp_path / "src1"
@@ -96,10 +94,9 @@ class TestSpaceManager(YSCBTestCase):
                 }
             }
 
-            sm = SpaceManager(contributes_data=mock_contributes)
-            union_spaces = sm.list_spaces()
-            self.assertEqual(len(union_spaces), 2)
-            space_names = [s.name for s in union_spaces]
+            sm = FileSpaceManager(contributes_data=mock_contributes)
+            space_names = sm.list_spaces()
+            self.assertEqual(len(space_names), 2)
             self.assertIn("space_a", space_names)
             self.assertIn("space_b", space_names)
 
@@ -111,9 +108,9 @@ class TestSpaceManager(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_et_02_space_not_found_error(self):
-        """ET-02: 驗證查詢未註冊空間拋出 SpaceNotFoundError (EC-08)"""
-        sm = SpaceManager(contributes_data={"spaces": {}})
-        with self.assertRaises(SpaceNotFoundError) as ctx:
+        """驗證查詢未註冊空間拋出 FileSpaceNotFoundError"""
+        sm = FileSpaceManager(contributes_data={"spaces": {}})
+        with self.assertRaises(FileSpaceNotFoundError) as ctx:
             sm.get_space("non_existent_space")
         self.assertIn("non_existent_space", str(ctx.exception))
 
@@ -121,7 +118,7 @@ class TestSpaceManager(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_et_03_invalid_source_path_warning_and_skip(self):
-        """ET-03: 驗證包含不存在之來源路徑時安全略過且不中斷 (EC-02)"""
+        """驗證包含不存在之來源路徑時安全略過且不中斷"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             valid_dir = temp_path / "valid_src"
@@ -136,7 +133,7 @@ class TestSpaceManager(YSCBTestCase):
                 }
             }
 
-            sm = SpaceManager(contributes_data=mock_contributes)
+            sm = FileSpaceManager(contributes_data=mock_contributes)
             resolved = sm.resolve_space_include("mixed_space")
             self.assertEqual(len(resolved), 1)
             self.assertEqual(resolved[0], valid_dir.resolve())
@@ -144,45 +141,38 @@ class TestSpaceManager(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_11_cache_storage_root_resolution(self):
-        """FT-11: 驗證 SpaceManager 顯式指定 storage_dir 或有效 URI 正確解算"""
+    def test_ft_11_storage_dir_decoupling(self):
+        """驗證 KnowledgeEngine.storage_dir 與 FileSpaceManager.storage_dir 物理隔離解耦"""
         with tempfile.TemporaryDirectory() as temp_dir:
-            sm = SpaceManager(storage_dir=temp_dir, contributes_data={"spaces": {}})
-            self.assertEqual(sm.storage_dir, Path(temp_dir).resolve())
-
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_et_04_zero_fallback_cache_root_guardrail(self):
-        """ET-04: 驗證無 core 且未指定 storage_dir 時拋出 InvalidSpaceConfigError (零 Fallback 鐵律)"""
-        import knowledge_db.space as space_mod
-        orig_resolver = space_mod._safe_resolve_uri
-        try:
-            space_mod._safe_resolve_uri = lambda uri_str: None
-            sm = SpaceManager(contributes_data={"spaces": {}})
-            with self.assertRaises(InvalidSpaceConfigError):
-                _ = sm.storage_dir
-        finally:
-            space_mod._safe_resolve_uri = orig_resolver
+            temp_path = Path(temp_dir)
+            kdb_storage = temp_path / "knowledge_cache"
+            engine = KnowledgeEngine(storage_dir=kdb_storage, contributes_data={"spaces": {}})
+            self.assertEqual(engine.storage_dir, kdb_storage.resolve())
+            self.assertNotEqual(engine.storage_dir, engine.space_manager.storage_dir)
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_sub_06_empty_configurable_contribute_defaults(self):
-        """SUB-06: 驗證 knowledge-db 模組內建 contributes/knowledge-db.json 存在且包含完整語意配置"""
+        """驗證 knowledge-db 模組內建 contributes/knowledge-db.json 與 _format.json 契約"""
         mod_contrib = Path(_pkg_root) / "contributes" / "knowledge-db.json"
         self.assertTrue(mod_contrib.exists(), f"Module contributes {mod_contrib} must exist")
         with open(mod_contrib, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.assertIn("languages", data)
-        self.assertNotIn("thesaurus", data)
-        self.assertNotIn("aliases", data)
+
+        fmt_path = Path(_pkg_root) / "contributes" / "_format.json"
+        with open(fmt_path, "r", encoding="utf-8") as f:
+            fmt_data = json.load(f)
+        self.assertIn("space_weights", fmt_data)
+        self.assertNotIn("spaces", fmt_data)
+        self.assertNotIn("FileSpaceDef", fmt_data.get("_types", {}))
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_configurable_config_templates_exist(self):
-        """驗證 knowledge-db 模組預設組態整合至 configurable/config.project.json，且無預設 config.local.json 造成遮蔽"""
+        """驗證 knowledge-db 模組預設組態整合至 configurable/config.project.json"""
         proj_tpl = Path(_pkg_root) / "configurable" / "config.project.json"
         local_tpl = Path(_pkg_root) / "configurable" / "config.local.json"
 
@@ -193,7 +183,8 @@ class TestSpaceManager(YSCBTestCase):
             proj_data = json.load(f)
         self.assertIn("enable_vector_search", proj_data)
         self.assertIn("embedding_model", proj_data)
-        self.assertIn("jit_vector_timeout_seconds", proj_data)
+        self.assertIn("jit_vector_timeout_ms", proj_data)
+        self.assertEqual(proj_data["jit_vector_timeout_ms"], 3000)
         self.assertIn("max_threads", proj_data)
         self.assertNotIn("enable_hot_reload_server", proj_data)
         self.assertNotIn("hot_reload_server_inactivity_timer_sec", proj_data)
@@ -202,7 +193,7 @@ class TestSpaceManager(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_02_knowledgedb_config_purity(self):
-        """FT-02: 驗證 KnowledgeDBConfig 維持最新版純粹性與 resolve_threads 唯一真理 (SSOT)"""
+        """驗證 KnowledgeDBConfig 維持純粹性與 resolve_threads 唯一真理"""
         from knowledge_db.config import KnowledgeDBConfig, resolve_threads
         cfg = KnowledgeDBConfig()
         self.assertFalse(hasattr(cfg, "enable_hot_reload_server"))
@@ -210,9 +201,9 @@ class TestSpaceManager(YSCBTestCase):
         self.assertFalse(hasattr(cfg, "enable_server_console"))
         self.assertFalse(hasattr(cfg, "is_jit_effective"))
         self.assertFalse(hasattr(cfg, "resolve_max_threads"))
-        self.assertEqual(cfg.jit_vector_timeout_seconds, 5.0)
+        self.assertEqual(cfg.jit_vector_timeout_ms, 3000)
+        self.assertEqual(cfg.jit_vector_timeout_seconds, 3.0)
 
-        # 驗證模組級 resolve_threads 與實例方法 resolve_threads 對 None / "auto" / 整數之一致性
         t_none = resolve_threads(None)
         t_auto = resolve_threads("auto")
         self.assertIsInstance(t_none, int)
@@ -223,35 +214,44 @@ class TestSpaceManager(YSCBTestCase):
         self.assertEqual(resolve_threads(1), 1)
 
         loaded = KnowledgeDBConfig.load(
-            project_config={"knowledge-db": {"enable_hot_reload_server": True, "jit_vector_timeout_seconds": 8.0}}
+            project_config={"knowledge-db": {"enable_hot_reload_server": True, "jit_vector_timeout_ms": 8000}}
         )
         self.assertFalse(hasattr(loaded, "enable_hot_reload_server"))
+        self.assertEqual(loaded.jit_vector_timeout_ms, 8000)
         self.assertEqual(loaded.jit_vector_timeout_seconds, 8.0)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_ft_12_space_weight_schema_and_validation(self):
-        """FT-12 (FR-03, EC-03): 驗證 SpaceDef / SpaceConfig weight 欄位預設值 1.0、自訂權重載入與 <= 0 非法權重阻斷"""
-        from knowledge_db.schema import SpaceDef
-        self.assertIs(SpaceDef, SpaceConfig)
+        """驗證 FileSpaceConfig 與 KnowledgeDBContributes.space_weights 預設值、覆寫與 <= 0 阻斷"""
+        self.assertIs(FileSpaceDef, FileSpaceConfig)
 
-        # 1. 預設權重 1.0
-        sp_default = SpaceConfig.from_dict("source", {"include": ["src/"]})
+        sp_default = FileSpaceConfig.from_dict("source", {"include": ["src/"]})
         self.assertEqual(sp_default.weight, 1.0)
         self.assertEqual(sp_default.to_dict()["weight"], 1.0)
 
-        # 2. 自訂正浮點權重 (如 docs: 1.2, plans: 0.85)
-        sp_docs = SpaceConfig.from_dict("docs", {"include": ["docs/"], "weight": 1.2})
-        sp_plans = SpaceConfig.from_dict("plans", {"include": ["plans/"], "weight": 0.85})
+        sp_docs = FileSpaceConfig.from_dict("docs", {"include": ["docs/"], "weight": 1.2})
+        sp_plans = FileSpaceConfig.from_dict("plans", {"include": ["plans/"], "weight": 0.85})
         self.assertAlmostEqual(sp_docs.weight, 1.2)
         self.assertAlmostEqual(sp_plans.weight, 0.85)
 
-        # 3. EC-03: weight <= 0 或非數值時拋出 InvalidSpaceConfigError
         for invalid_w in (0, 0.0, -0.5, -1, "invalid_float"):
-            with self.assertRaises(InvalidSpaceConfigError):
-                SpaceConfig.from_dict("bad_space", {"include": ["src/"], "weight": invalid_w})
-            with self.assertRaises(InvalidSpaceConfigError):
-                SpaceConfig(name="bad_space", include=["src/"], weight=invalid_w)  # type: ignore[arg-type]
+            with self.assertRaises(InvalidConfigError):
+                validate_space_weights({"bad_space": invalid_w})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            src_dir = temp_path / "src"
+            src_dir.mkdir(parents=True)
+            engine = KnowledgeEngine(
+                storage_dir=temp_path / "storage",
+                contributes_data={
+                    "spaces": {"docs": {"include": [str(src_dir)], "weight": 1.0}},
+                    "space_weights": {"docs": 1.35},
+                },
+            )
+            self.assertAlmostEqual(engine.get_space_weight("docs"), 1.35)
+            self.assertAlmostEqual(engine.get_space_weight("unregistered"), 1.0)
 
         self.mark_passed()
 
@@ -261,17 +261,17 @@ class TestKnowledgeDBProviders(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_01_get_knowledge_db_spaces_output_format(self):
-        """FT-01: 驗證 get_knowledge_db_spaces 產出正確的 Markdown 空間速查表格"""
+        """驗證 get_knowledge_db_spaces 產出正確的 Markdown 空間速查表格"""
         from unittest.mock import patch
         mock_spaces = {
-            "alpha_space": SpaceConfig(
+            "alpha_space": FileSpaceConfig(
                 name="alpha_space",
                 description="Alpha 領域空間",
                 include=["module://alpha/docs"],
                 file_patterns=["*.py", "*.md"],
                 origin="module:alpha",
             ),
-            "beta_space": SpaceConfig(
+            "beta_space": FileSpaceConfig(
                 name="beta_space",
                 description="Beta 核心源碼空間",
                 include=["module://beta/src"],
@@ -279,7 +279,7 @@ class TestKnowledgeDBProviders(YSCBTestCase):
             ),
         }
 
-        with patch("knowledge_db.providers.SpaceManager") as mock_sm_cls:
+        with patch("knowledge_db.providers.FileSpaceManager") as mock_sm_cls:
             mock_sm_inst = mock_sm_cls.return_value
             mock_sm_inst.load_spaces.return_value = mock_spaces
 
@@ -293,9 +293,9 @@ class TestKnowledgeDBProviders(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_02_get_knowledge_db_spaces_empty_fallback(self):
-        """FT-02: 驗證無任何空間時之安全降級輸出"""
+        """驗證無任何空間時之安全降級輸出"""
         from unittest.mock import patch
-        with patch("knowledge_db.providers.SpaceManager") as mock_sm_cls:
+        with patch("knowledge_db.providers.FileSpaceManager") as mock_sm_cls:
             mock_sm_inst = mock_sm_cls.return_value
             mock_sm_inst.load_spaces.return_value = {}
 

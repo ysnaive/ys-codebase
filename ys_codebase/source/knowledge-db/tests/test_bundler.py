@@ -21,8 +21,8 @@ from knowledge_db.bundler import (
     SemanticBundler,
 )
 from knowledge_db.exceptions import KnowledgeDBError
-from knowledge_db.schema import LanguageType, SpaceConfig, SymbolKind, UnifiedSymbol
-from knowledge_db.space import SpaceManager
+from knowledge_db.schema import LanguageType, SymbolKind, UnifiedSymbol
+from file_space import FileSpaceConfig, FileSpaceManager
 
 
 class TestBundler(YSCBTestCase):
@@ -72,15 +72,15 @@ class TestBundler(YSCBTestCase):
             (src_dir / "app.py").write_text("class MainApp: pass", encoding="utf-8")
             (src_dir / "README.md").write_text("# App Document\nDescription.", encoding="utf-8")
 
-            space_cfg = SpaceConfig(name="multi_lang_space", include=[str(src_dir)])
-            sm = SpaceManager(
+            space_cfg = FileSpaceConfig(name="multi_lang_space", include=[str(src_dir)])
+            sm = FileSpaceManager(
                 storage_dir=storage_dir,
                 contributes_data={
                     "spaces": {"multi_lang_space": space_cfg.to_dict()},
                 },
             )
 
-            bundler = SemanticBundler(sm)
+            bundler = SemanticBundler(sm, storage_dir=storage_dir)
 
             # 1. 執行打包
             bundle = bundler.bundle_space(space_cfg)
@@ -90,6 +90,7 @@ class TestBundler(YSCBTestCase):
             # 2. 導出 Bundle 檔案
             export_path = bundler.export_bundle(bundle)
             self.assertTrue(export_path.exists())
+            self.assertEqual(export_path.parent, storage_dir.resolve() / "bundles")
 
             # 3. 載入還原 Bundle 檔案
             imported_bundle = bundler.import_bundle(export_path)
@@ -125,7 +126,7 @@ class TestBundler(YSCBTestCase):
         """ET-01: 驗證載入損毀或不存在的 Bundle 檔案拋出 KnowledgeDBError (EC-05)"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            sm = SpaceManager(storage_dir=temp_path)
+            sm = FileSpaceManager(storage_dir=temp_path)
             bundler = SemanticBundler(sm)
 
             with self.assertRaises(KnowledgeDBError):

@@ -17,18 +17,26 @@ logger = logging.getLogger("core.contributes")
 
 def _tag_provider(data: Any, donor_name: str) -> Any:
     """
-    遞迴為 contributes 宣告中的 Dict 與 List[Dict] 項目注入 __provider__ 標記。
+    遞迴為 contributes 宣告中的 Dict 與 List[Dict] 項目注入 __provider__ 與 __providers__ 標記。
     若物件已顯式宣告 __provider__ 則予以保留不覆蓋。
     """
     if isinstance(data, dict):
         result = {}
         for k, v in data.items():
-            if isinstance(v, (dict, list)):
+            if isinstance(v, (dict, list)) and not (k.startswith("__") and k.endswith("__")):
                 result[k] = _tag_provider(v, donor_name)
             else:
                 result[k] = v
-        if "__provider__" not in result:
-            result["__provider__"] = donor_name
+        provider_val = str(result.get("__provider__", donor_name))
+        result["__provider__"] = provider_val
+        existing_providers = result.get("__providers__")
+        if isinstance(existing_providers, list):
+            providers_list = [str(p) for p in existing_providers]
+            if provider_val not in providers_list:
+                providers_list.append(provider_val)
+            result["__providers__"] = providers_list
+        else:
+            result["__providers__"] = [provider_val]
         return result
     if isinstance(data, list):
         return [_tag_provider(item, donor_name) for item in data]
@@ -36,7 +44,7 @@ def _tag_provider(data: Any, donor_name: str) -> Any:
 
 
 def _tag_payload_body(body: Dict[str, Any], donor_name: str) -> Dict[str, Any]:
-    """對整個 contributes 單檔頂層字典的各擴充點內容遞迴注入 __provider__。"""
+    """對整個 contributes 單檔頂層字典的各擴充點內容遞迴注入 __provider__ 與 __providers__。"""
     tagged: Dict[str, Any] = {}
     for c_key, c_val in body.items():
         if isinstance(c_val, list):
@@ -51,15 +59,165 @@ def _tag_payload_body(body: Dict[str, Any], donor_name: str) -> Dict[str, Any]:
     return tagged
 
 
-def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> None:
-    """深層合併 overlay 至 base（Dict 遞迴合併，List 依序去重擴展）。"""
+def _merge_providers_meta(base_dict: Dict[str, Any], overlay_dict: Dict[str, Any]) -> None:
+    """合併兩個字典之 __providers__ 清單並更新最新 __provider__。"""
+    base_providers: List[str] = []
+    if isinstance(base_dict.get("__providers__"), list):
+        base_providers.extend(str(p) for p in base_dict["__providers__"])
+    elif "__provider__" in base_dict:
+        base_providers.append(str(base_dict["__provider__"]))
+
+    overlay_providers: List[str] = []
+    if isinstance(overlay_dict.get("__providers__"), list):
+        overlay_providers.extend(str(p) for p in overlay_dict["__providers__"])
+    elif "__provider__" in overlay_dict:
+        overlay_providers.append(str(overlay_dict["__provider__"]))
+
+    combined: List[str] = []
+    for p in base_providers + overlay_providers:
+        if p not in combined:
+            combined.append(p)
+
+    if combined:
+        base_dict["__providers__"] = combined
+    if "__provider__" in overlay_dict:
+        base_dict["__provider__"] = overlay_dict["__provider__"]
+
+
+def _resolve_schema_for_key(
+    schema: Any,
+    key: str,
+    types_map: Dict[str, Any],
+) -> Tuple[Optional[str], Any]:
+    """根據當前層級之 _format.json schema 解析指定 key 的 (merge_strategy, child_schema)。"""
+    if schema is None:
+        return None, None
+
+    from core.validator import ContributesValidator
+
+    cur_schema = schema
+    if isinstance(cur_schema, str):
+        rule = ContributesValidator.parse_type_signature(cur_schema)
+        if rule["type"] == "ref" and rule["ref_name"] in types_map:
+            cur_schema = types_map[rule["ref_name"]]
+    elif isinstance(cur_schema, dict) and "$ref" in cur_schema:
+        ref_name = str(cur_schema["$ref"]).lstrip("$")
+        if ref_name in types_map:
+            cur_schema = types_map[ref_name]
+
+    if not isinstance(cur_schema, dict):
+        return None, None
+
+    raw_spec = cur_schema.get(key) if key in cur_schema else cur_schema.get("*")
+    if raw_spec is None:
+        return None, None
+
+    if isinstance(raw_spec, dict) and "format" in raw_spec and "description" in raw_spec:
+        point_strategy = raw_spec.get("merge") if isinstance(raw_spec.get("merge"), str) else None
+        fmt_spec = raw_spec["format"]
+        if isinstance(fmt_spec, str):
+            rule = ContributesValidator.parse_type_signature(fmt_spec)
+            strat = point_strategy or rule.get("merge_strategy")
+            child = types_map.get(rule["ref_name"]) if rule["type"] == "ref" else fmt_spec
+            return strat, child
+        return point_strategy, fmt_spec
+
+    if isinstance(raw_spec, str):
+        rule = ContributesValidator.parse_type_signature(raw_spec)
+        strat = rule.get("merge_strategy")
+        child = types_map.get(rule["ref_name"]) if rule["type"] == "ref" else raw_spec
+        return strat, child
+
+    if isinstance(raw_spec, dict):
+        strat = raw_spec.get("_merge") if isinstance(raw_spec.get("_merge"), str) else None
+        return strat, raw_spec
+
+    if isinstance(raw_spec, list):
+        return None, (raw_spec[0] if raw_spec else None)
+
+    return None, None
+
+
+def _deep_merge(
+    base: Dict[str, Any],
+    overlay: Dict[str, Any],
+    schema: Optional[Any] = None,
+    types_map: Optional[Dict[str, Any]] = None,
+    is_project_override: bool = False,
+    raw_overlay: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    深層合併 overlay 至 base：
+    支援依據目標模組 _format.json 宣告之 merge / extend / replace / unique 策略執行合併，
+    並自動累積去重之 __providers__ 來源清單。
+    """
+    if types_map is None and isinstance(schema, dict) and "_types" in schema:
+        raw_types = schema.get("_types")
+        types_map = raw_types if isinstance(raw_types, dict) else {}
+
+    _merge_providers_meta(base, overlay)
+
     for k, v in overlay.items():
-        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
-            _deep_merge(base[k], v)
-        elif k in base and isinstance(base[k], list) and isinstance(v, list):
-            base[k].extend(x for x in v if x not in base[k])
+        if k in ("__provider__", "__providers__"):
+            continue
+
+        strat, child_schema = _resolve_schema_for_key(schema, k, types_map or {})
+
+        if k in base:
+            if raw_overlay is not None and isinstance(raw_overlay, dict) and k not in raw_overlay:
+                continue
+            child_raw = raw_overlay.get(k) if isinstance(raw_overlay, dict) else None
+
+            if strat == "unique" and not is_project_override:
+                existing_donor = (
+                    base[k].get("__provider__", "existing")
+                    if isinstance(base[k], dict)
+                    else "existing"
+                )
+                new_donor = (
+                    v.get("__provider__", "overlay")
+                    if isinstance(v, dict)
+                    else "overlay"
+                )
+                logger.warning(
+                    f"Contributes unique key collision on '{k}': keeping '{existing_donor}', ignoring '{new_donor}'."
+                )
+                continue
+
+            if isinstance(base[k], dict) and isinstance(v, dict):
+                eff_strat = strat or "merge"
+                if eff_strat == "replace":
+                    replaced = copy.deepcopy(v)
+                    if isinstance(base[k].get("__providers__"), list) or "__provider__" in base[k]:
+                        prev_meta: Dict[str, Any] = {}
+                        if isinstance(base[k].get("__providers__"), list):
+                            prev_meta["__providers__"] = list(base[k]["__providers__"])
+                        elif "__provider__" in base[k]:
+                            prev_meta["__provider__"] = base[k]["__provider__"]
+                        _merge_providers_meta(prev_meta, replaced)
+                        replaced["__providers__"] = prev_meta["__providers__"]
+                        if "__provider__" in prev_meta:
+                            replaced["__provider__"] = prev_meta["__provider__"]
+                    base[k] = replaced
+                else:
+                    _deep_merge(
+                        base[k],
+                        v,
+                        schema=child_schema,
+                        types_map=types_map,
+                        is_project_override=is_project_override,
+                        raw_overlay=child_raw,
+                    )
+            elif isinstance(base[k], list) and isinstance(v, list):
+                eff_strat = strat or "extend"
+                if eff_strat == "replace":
+                    base[k] = copy.deepcopy(v)
+                else:
+                    base[k].extend(x for x in v if x not in base[k])
+            else:
+                base[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
         else:
-            base[k] = v
+            base[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
 
 
 def _get_contributes_meta_uri() -> str:
@@ -75,7 +233,7 @@ def _record_file_stat(files_snapshot: Dict[str, Tuple[float, int]], file_path: s
 
 
 def _scan_donor_contributes_files(donor: str, files_snapshot: Dict[str, Tuple[float, int]]) -> None:
-    """掃描單一模組之 contributes/*.json、語系檔與單一 contributes.json。"""
+    """掃描單一模組之 contributes/*.json、語系檔、開發源碼 _format.json fallback 與單一 contributes.json。"""
     donor_contrib_dir = f"module://{donor}/contributes"
     if vfs.exists(donor_contrib_dir) and vfs.is_dir(donor_contrib_dir):
         try:
@@ -97,6 +255,13 @@ def _scan_donor_contributes_files(donor: str, files_snapshot: Dict[str, Tuple[fl
                                     _record_file_stat(files_snapshot, loc_f)
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+    if not vfs.exists(f"module://{donor}/contributes/_format.json"):
+        try:
+            src_fmt_p = uri.resolve(f"module.source://{donor}/contributes/_format.json", interactive=False)
+            _record_file_stat(files_snapshot, src_fmt_p)
         except Exception:
             pass
 
@@ -132,7 +297,19 @@ def _scan_contributes_inputs() -> Dict[str, Tuple[float, int]]:
                 p_uri = f"config://{tgt}/contribute.json"
                 if vfs.exists(p_uri):
                     try:
-                        _record_file_stat(files_snapshot, uri.resolve(p_uri, interactive=False))
+                        p_abs = uri.resolve(p_uri, interactive=False)
+                        _record_file_stat(files_snapshot, p_abs)
+                        if tgt == "core" and os.path.isfile(p_abs):
+                            c_obj = vfs.read_json(p_uri)
+                            if isinstance(c_obj, dict):
+                                core_body = c_obj.get("core", c_obj)
+                                locales_decl = core_body.get("locales") if isinstance(core_body, dict) else None
+                                if isinstance(locales_decl, dict):
+                                    cfg_core_root = uri.resolve("config://core", interactive=False)
+                                    for l_key, rel_p in locales_decl.items():
+                                        if not l_key.startswith("_") and isinstance(rel_p, str):
+                                            loc_f = os.path.normpath(os.path.join(cfg_core_root, rel_p))
+                                            _record_file_stat(files_snapshot, loc_f)
                     except Exception:
                         pass
         except Exception:
@@ -149,35 +326,40 @@ def _is_contributes_dirty(target_module: Optional[str] = None) -> Tuple[bool, Di
     3. 比對即時掃描之檔案 (mtime, size) 與快取清單。
     返回 (is_dirty, current_snapshot)。
     """
-    if target_module:
-        target_cache_uri = f"cache://{target_module}/contributes.merged.json"
-        if not vfs.exists(target_cache_uri):
-            return True, {}
-
-    meta_uri = _get_contributes_meta_uri()
-    if not vfs.exists(meta_uri):
-        return True, {}
-
+    prev_reentrancy = getattr(uri._URI_REENTRANCY, "active", False)
+    uri._URI_REENTRANCY.active = True
     try:
-        meta_data = vfs.read_json(meta_uri)
-        if not isinstance(meta_data, dict) or "files" not in meta_data:
+        if target_module:
+            target_cache_uri = f"cache://{target_module}/contributes.merged.json"
+            if not vfs.exists(target_cache_uri):
+                return True, {}
+
+        meta_uri = _get_contributes_meta_uri()
+        if not vfs.exists(meta_uri):
             return True, {}
-        cached_files = meta_data["files"]
-    except Exception:
-        return True, {}
 
-    current_snapshot = _scan_contributes_inputs()
-    if set(current_snapshot.keys()) != set(cached_files.keys()):
-        return True, current_snapshot
+        try:
+            meta_data = vfs.read_json(meta_uri)
+            if not isinstance(meta_data, dict) or "files" not in meta_data:
+                return True, {}
+            cached_files = meta_data["files"]
+        except Exception:
+            return True, {}
 
-    for p, (cur_mtime, cur_size) in current_snapshot.items():
-        cached_val = cached_files.get(p)
-        if not cached_val or len(cached_val) < 2:
-            return True, current_snapshot
-        if cur_mtime != cached_val[0] or cur_size != cached_val[1]:
+        current_snapshot = _scan_contributes_inputs()
+        if set(current_snapshot.keys()) != set(cached_files.keys()):
             return True, current_snapshot
 
-    return False, current_snapshot
+        for p, (cur_mtime, cur_size) in current_snapshot.items():
+            cached_val = cached_files.get(p)
+            if not cached_val or len(cached_val) < 2:
+                return True, current_snapshot
+            if cur_mtime != cached_val[0] or cur_size != cached_val[1]:
+                return True, current_snapshot
+
+        return False, current_snapshot
+    finally:
+        uri._URI_REENTRANCY.active = prev_reentrancy
 
 
 def get(target_module: str, key: Optional[str] = None, default: Any = None) -> Any:
@@ -315,7 +497,14 @@ class ContributesAggregator:
                             if target == "core" and "locales" in tagged_body and isinstance(tagged_body["locales"], dict):
                                 core_modules_locales[donor] = copy.deepcopy(tagged_body["locales"])
 
-                            _deep_merge(aggregated[target], tagged_body)
+                            fmt_schema = get_format(target)
+                            _deep_merge(
+                                aggregated[target],
+                                tagged_body,
+                                schema=fmt_schema,
+                                is_project_override=False,
+                                raw_overlay=c_data,
+                            )
                             if target == "core" and core_modules_commands:
                                 aggregated[target].setdefault("commands", {})["__modules__"] = core_modules_commands
                             if target == "core" and core_modules_locales:
@@ -333,7 +522,14 @@ class ContributesAggregator:
                     for target, c_body in u_data.items():
                         if isinstance(c_body, dict):
                             aggregated.setdefault(target, {})
-                            _deep_merge(aggregated[target], _tag_payload_body(c_body, donor))
+                            fmt_schema = get_format(target)
+                            _deep_merge(
+                                aggregated[target],
+                                _tag_payload_body(c_body, donor),
+                                schema=fmt_schema,
+                                is_project_override=False,
+                                raw_overlay=c_body,
+                            )
             except Exception:
                 pass
 
@@ -343,6 +539,14 @@ class ContributesAggregator:
         core_modules_locales: Dict[str, Any],
     ) -> None:
         """疊加專案層級 config://<target>/contribute.json 並物化至 cache://。"""
+        if vfs.exists("config://"):
+            try:
+                for cfg_tgt in vfs.listdir("config://"):
+                    if vfs.exists(f"config://{cfg_tgt}/contribute.json"):
+                        aggregated.setdefault(cfg_tgt, {})
+            except Exception:
+                pass
+
         for target in list(aggregated.keys()):
             local_contrib_uri = f"config://{target}/contribute.local.json"
             if vfs.exists(local_contrib_uri):
@@ -363,9 +567,17 @@ class ContributesAggregator:
                                 for err in val_res.errors:
                                     logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
                             valid_overlay = val_res.payload if val_res.payload is not None else target_overlay
-                            if target == "core" and "locales" in valid_overlay and isinstance(valid_overlay["locales"], dict):
-                                core_modules_locales["project"] = copy.deepcopy(valid_overlay["locales"])
-                            _deep_merge(aggregated[target], valid_overlay)
+                            tagged_overlay = _tag_payload_body(valid_overlay, "project")
+                            if target == "core" and "locales" in tagged_overlay and isinstance(tagged_overlay["locales"], dict):
+                                core_modules_locales["project"] = copy.deepcopy(tagged_overlay["locales"])
+                            fmt_schema = get_format(target)
+                            _deep_merge(
+                                aggregated[target],
+                                tagged_overlay,
+                                schema=fmt_schema,
+                                is_project_override=True,
+                                raw_overlay=target_overlay,
+                            )
                             if target == "core" and core_modules_locales:
                                 aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
                 except Exception as e:

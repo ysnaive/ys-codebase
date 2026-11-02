@@ -1,10 +1,11 @@
 {
   "name": "knowledge-db",
-  "version": "1.1.2.3",
+  "version": "1.3.0.0",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.0"
+    "core": ">=1.2.0",
+    "file-space": ">=1.0.0"
   },
   "optional": {
     "server": {
@@ -22,11 +23,10 @@
     "tree-sitter-c-sharp": ">=0.21.0",
     "tree-sitter-markdown": ">=0.5.0",
     "fastembed": ">=0.3.0",
-    "networkx": ">=3.0",
-    "watchdog": ">=4.0.0"
+    "networkx": ">=3.0"
   },
   "onboarding": [
-    "[Pre-flight] Configure project source directories in config/knowledge-db/contribute.json (spaces.source.include)",
+    "[Pre-flight] Configure project workspaces in config/file-space/contribute.json and optional retrieval weights in config/knowledge-db/contribute.json (space_weights)",
     "Optional - Download local ONNX vector model (or use lightweight BM25 via config set knowledge-db enable_vector_search false): python yscb.py knowledge-db model download",
     "Build unified AST & BM25/vector index: python yscb.py knowledge-db index",
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" --json -s"

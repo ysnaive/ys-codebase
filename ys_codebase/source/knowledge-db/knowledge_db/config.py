@@ -93,8 +93,38 @@ class KnowledgeDBConfig:
 
     enable_vector_search: bool = True
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
-    jit_vector_timeout_seconds: float = 5.0
+    jit_vector_timeout_ms: int = 3000
+    vector_batch_size: int = 32
     max_threads: Any = 0
+
+    def __init__(
+        self,
+        enable_vector_search: bool = True,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+        jit_vector_timeout_ms: Optional[int] = None,
+        jit_vector_timeout_seconds: Optional[float] = None,
+        vector_batch_size: int = 32,
+        max_threads: Any = 0,
+    ) -> None:
+        self.enable_vector_search = bool(enable_vector_search)
+        self.embedding_model = str(embedding_model or DEFAULT_EMBEDDING_MODEL).strip() or DEFAULT_EMBEDDING_MODEL
+        if jit_vector_timeout_ms is not None:
+            self.jit_vector_timeout_ms = max(0, int(jit_vector_timeout_ms))
+        elif jit_vector_timeout_seconds is not None:
+            self.jit_vector_timeout_ms = max(0, int(round(float(jit_vector_timeout_seconds) * 1000.0)))
+        else:
+            self.jit_vector_timeout_ms = 3000
+        self.vector_batch_size = max(1, int(vector_batch_size)) if vector_batch_size else 32
+        self.max_threads = max_threads
+
+    @property
+    def jit_vector_timeout_seconds(self) -> float:
+        """Read/write compatibility property converting milliseconds to seconds."""
+        return float(self.jit_vector_timeout_ms) / 1000.0
+
+    @jit_vector_timeout_seconds.setter
+    def jit_vector_timeout_seconds(self, value: float) -> None:
+        self.jit_vector_timeout_ms = max(0, int(round(float(value) * 1000.0)))
 
     @staticmethod
     def normalize_model_name(name: Optional[str]) -> str:
@@ -121,10 +151,24 @@ class KnowledgeDBConfig:
 
         model = str(sec.get("embedding_model", DEFAULT_EMBEDDING_MODEL)).strip() or DEFAULT_EMBEDDING_MODEL
 
-        try:
-            timeout = float(sec.get("jit_vector_timeout_seconds", 5.0))
-        except (TypeError, ValueError):
-            timeout = 5.0
+        timeout_ms = 3000
+        if "jit_vector_timeout_ms" in sec and sec["jit_vector_timeout_ms"] is not None:
+            try:
+                timeout_ms = int(float(sec["jit_vector_timeout_ms"]))
+            except (TypeError, ValueError):
+                timeout_ms = 3000
+        elif "jit_vector_timeout_seconds" in sec and sec["jit_vector_timeout_seconds"] is not None:
+            try:
+                timeout_ms = int(round(float(sec["jit_vector_timeout_seconds"]) * 1000.0))
+            except (TypeError, ValueError):
+                timeout_ms = 3000
+
+        batch_size = 32
+        if "vector_batch_size" in sec and sec["vector_batch_size"] is not None:
+            try:
+                batch_size = max(1, int(sec["vector_batch_size"]))
+            except (TypeError, ValueError):
+                batch_size = 32
 
         try:
             threads = int(sec.get("max_threads", 0))
@@ -134,7 +178,8 @@ class KnowledgeDBConfig:
         return cls(
             enable_vector_search=enable_vec,
             embedding_model=model,
-            jit_vector_timeout_seconds=max(0.0, timeout),
+            jit_vector_timeout_ms=max(0, timeout_ms),
+            vector_batch_size=batch_size,
             max_threads=max(0, threads),
         )
 

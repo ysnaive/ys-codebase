@@ -9,14 +9,15 @@ import json
 import logging
 import os
 from pathlib import Path
-import tempfile
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
+
+from core.vfs import write_bytes
+from file_space import FingerprintScanner, ScanDiffDetail, FileSpaceConfig, FileSpaceManager
 
 from .exceptions import KnowledgeDBError, SchemaValidationError
+from .io_utils import is_dirty_file_match, normalize_dirty_paths
 from .parsers.registry import ParserRegistry
-from .scanner import FingerprintScanner, ScanDiffDetail
-from .schema import SpaceConfig, SymbolCallSite, UnifiedSymbol
-from .space import SpaceManager
+from .schema import SymbolCallSite, UnifiedSymbol
 
 logger = logging.getLogger("knowledge-db.bundler")
 
@@ -265,25 +266,85 @@ class SemanticBundle:
         )
 
 
+def _resolve_default_knowledge_storage_dir(project_root: Optional[Path] = None) -> Path:
+    """解析 knowledge-db 專屬快取儲存根目錄 (`knowledge.storage://` -> `cache://knowledge-db/`)"""
+    try:
+        from core import uri
+        res = uri.resolve("knowledge.storage://", interactive=False)
+        if res:
+            return Path(res).resolve()
+    except Exception:
+        pass
+    base = project_root.resolve() if project_root else Path.cwd().resolve()
+    if (base / "ys_codebase").is_dir():
+        return base / "ys_codebase" / ".cache" / "knowledge-db"
+    return base / ".cache" / "knowledge-db"
+
+
 class SemanticBundler:
     """空間語意打包與導出/導入引擎 (支援動態門檻多進程並行打包)"""
 
     def __init__(
         self,
-        space_manager: SpaceManager,
+        space_manager: FileSpaceManager,
         parser_registry: Optional[ParserRegistry] = None,
         scanner: Optional[FingerprintScanner] = None,
+        storage_dir: Optional[Union[str, Path]] = None,
     ):
         self.space_manager = space_manager
         self.parser_registry = parser_registry or ParserRegistry(register_defaults=True)
         self.scanner = scanner or FingerprintScanner(space_manager)
+        if storage_dir is not None:
+            self.storage_dir = Path(storage_dir).resolve()
+        else:
+            proj_root = getattr(self.space_manager, "project_root", None)
+            self.storage_dir = _resolve_default_knowledge_storage_dir(proj_root)
         self._file_symbols_cache: Dict[str, List[UnifiedSymbol]] = {}
+
+    def _resolve_target_spaces(
+        self, spaces: Optional[Iterable[Union[str, FileSpaceConfig]]] = None
+    ) -> List[FileSpaceConfig]:
+        """將空間名稱或 FileSpaceConfig 清單正規化為 FileSpaceConfig 實體清單"""
+        if spaces is None:
+            if hasattr(self.space_manager, "get_all_spaces"):
+                return list(self.space_manager.get_all_spaces().values())
+            raw_list = self.space_manager.list_spaces()
+            return [
+                self.space_manager.get_space(sp) if isinstance(sp, str) else sp
+                for sp in raw_list
+            ]
+        resolved: List[FileSpaceConfig] = []
+        for sp in spaces:
+            if isinstance(sp, str):
+                resolved.append(self.space_manager.get_space(sp))
+            else:
+                resolved.append(sp)
+        return resolved
+
+    def _iter_space_eligible_files(self, space_cfg: FileSpaceConfig) -> List[Tuple[str, Path, Path]]:
+        """委派 FileSpaceManager 列舉指定空間內受納管之有效檔案"""
+        if space_cfg.name in self.space_manager.load_spaces():
+            return list(self.space_manager.iter_space_files(space_cfg.name))
+        temp_mgr = FileSpaceManager(
+            project_root=getattr(self.space_manager, "project_root", None),
+            storage_root=getattr(self.space_manager, "storage_root", None),
+            spaces_config={space_cfg.name: space_cfg},
+        )
+        return list(temp_mgr.iter_space_files(space_cfg.name))
 
     def _get_project_relpath(self, f_path: Path, fallback_base: Path) -> str:
         """
         將檔案路徑轉譯為標準相對於 project:// 根目錄之路徑。
         若不在 project:// 目錄下或無法解析，則退回以 fallback_base 計算。
         """
+        try:
+            proj_root = getattr(self.space_manager, "project_root", None)
+            if proj_root is not None:
+                rel = os.path.relpath(str(f_path.resolve()), str(Path(proj_root).resolve())).replace("\\", "/")
+                if not rel.startswith(".."):
+                    return rel
+        except Exception:
+            pass
         try:
             from core import uri
             p_res = uri.resolve("project://", interactive=False)
@@ -297,22 +358,31 @@ class SemanticBundler:
         try:
             rel = os.path.relpath(str(f_path), str(fallback_base)).replace("\\", "/")
             if not rel.startswith(".."):
-                return rel
+                base_name = Path(fallback_base).name
+                return f"{base_name}/{rel}" if base_name else rel
         except Exception:
             pass
         return f_path.name
 
     def bundle_space(
         self,
-        space_config: SpaceConfig,
+        space_config: Union[str, FileSpaceConfig],
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> SemanticBundle:
         """掃描並解析空間內所有有效來源檔案，提取符號並封裝為 SemanticBundle。"""
-        space_name = space_config.name
-        source_roots = self.space_manager.resolve_space_include(space_name)
+        sp_cfg = (
+            self.space_manager.get_space(space_config)
+            if isinstance(space_config, str)
+            else space_config
+        )
+        space_name = sp_cfg.name
+        if space_name in self.space_manager.load_spaces():
+            source_roots = self.space_manager.resolve_space_include(space_name)
+        else:
+            source_roots = [Path(inc) for inc in sp_cfg.include]
         files_to_parse: List[Tuple[Path, str]] = []
 
-        for base_dir, f_path, _, _, _ in self.scanner._iter_eligible_files(space_config):
+        for _, f_path, base_dir in self._iter_space_eligible_files(sp_cfg):
             relpath = self._get_project_relpath(f_path, base_dir)
             files_to_parse.append((f_path, relpath))
 
@@ -342,19 +412,23 @@ class SemanticBundler:
             metadata={
                 "source_count": len(source_roots),
                 "file_count": total_files,
-                "origin": space_config.origin,
+                "origin": sp_cfg.origin,
             },
         )
 
     def _collect_space_files(
-        self, target_spaces: List[SpaceConfig]
+        self, target_spaces: List[FileSpaceConfig]
     ) -> Dict[str, Tuple[Path, str, Set[str]]]:
         """收集所有實體檔案與其所屬空間集合: canonical_path -> (file_path, relpath, set_of_spaces)"""
         unique_files: Dict[str, Tuple[Path, str, Set[str]]] = {}
 
         for sp in target_spaces:
             space_name = sp.name
-            for base_dir, f_path, _, c_key, _ in self.scanner._iter_eligible_files(sp):
+            for _, f_path, base_dir in self._iter_space_eligible_files(sp):
+                try:
+                    c_key = str(f_path.resolve()).replace("\\", "/")
+                except OSError:
+                    c_key = str(f_path).replace("\\", "/")
                 relpath = self._get_project_relpath(f_path, base_dir)
                 if c_key not in unique_files:
                     unique_files[c_key] = (f_path, relpath, {space_name})
@@ -365,7 +439,7 @@ class SemanticBundler:
 
     def bundle_union(
         self,
-        spaces: Optional[List[SpaceConfig]] = None,
+        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
         allow_parallel: bool = True,
     ) -> SemanticBundle:
@@ -373,7 +447,7 @@ class SemanticBundler:
         掃描全專案空間聯集 (Union Scope)，以實體檔案絕對路徑為唯一鍵去重，
         支援動態門檻多進程並行解析 AST。
         """
-        target_spaces = spaces if spaces is not None else self.space_manager.list_spaces()
+        target_spaces = self._resolve_target_spaces(spaces)
         unique_files = self._collect_space_files(target_spaces)
 
         total_files = len(unique_files)
@@ -446,37 +520,166 @@ class SemanticBundler:
             },
         )
 
+    def _normalize_space_dirty_paths(
+        self,
+        raw_paths: Iterable[str],
+        target_spaces: List[FileSpaceConfig],
+        prefer_missing: bool = False,
+    ) -> Set[str]:
+        """
+        將空間相對路徑（或絕對路徑）透過空間快照 source_root 或 include 根目錄正規化為 project:// 相對路徑與絕對路徑。
+        針對單一無 '/' 之空間頂層檔名，優先透過快照紀錄精確反查，避免無差別擴展至其他空間之同名頂層檔。
+        """
+        expanded: Set[str] = set()
+        raw_list = [str(p).replace("\\", "/").strip("/") for p in raw_paths if p]
+        if not raw_list:
+            return expanded
+
+        snap_entries_by_space: Dict[str, Dict[str, Any]] = {}
+        if self.scanner is not None and hasattr(self.scanner, "_load_or_recover_state"):
+            for sp in target_spaces:
+                try:
+                    st, _ = self.scanner._load_or_recover_state(sp.name)
+                    if st and st.entries:
+                        snap_entries_by_space[sp.name] = st.entries
+                except Exception:
+                    pass
+
+        for raw_p in raw_list:
+            p_obj = Path(raw_p)
+            if p_obj.is_absolute():
+                expanded.add(raw_p)
+                try:
+                    c_abs = str(p_obj.resolve()).replace("\\", "/")
+                    expanded.add(c_abs)
+                    expanded.add(self._get_project_relpath(p_obj, p_obj.parent))
+                except Exception:
+                    pass
+                continue
+
+            matched_from_snap = False
+            snap_matches: List[Any] = []
+            for sp in target_spaces:
+                entries = snap_entries_by_space.get(sp.name, {})
+                fp_rec = entries.get(raw_p)
+                if fp_rec is not None and getattr(fp_rec, "source_root", ""):
+                    snap_matches.append(fp_rec)
+
+            if snap_matches:
+                deleted_matches = [fp for fp in snap_matches if getattr(fp, "is_deleted", False)]
+                if prefer_missing and deleted_matches:
+                    chosen_matches = deleted_matches
+                elif not prefer_missing:
+                    active_matches = [fp for fp in snap_matches if not getattr(fp, "is_deleted", False)]
+                    pool = active_matches or snap_matches
+                    best_mtime_ns = max((int(getattr(fp, "mtime_ns", 0)) for fp in pool), default=0)
+                    chosen_matches = [
+                        fp for fp in pool if int(getattr(fp, "mtime_ns", 0)) >= best_mtime_ns
+                    ]
+                else:
+                    chosen_matches = deleted_matches or snap_matches
+                for fp_rec in chosen_matches:
+                    src_root = Path(fp_rec.source_root)
+                    cand_abs = src_root / raw_p
+                    try:
+                        c_abs = str(cand_abs.resolve()).replace("\\", "/")
+                    except OSError:
+                        c_abs = str(cand_abs).replace("\\", "/")
+                    expanded.add(c_abs)
+                    expanded.add(self._get_project_relpath(cand_abs, src_root))
+                    matched_from_snap = True
+
+            if matched_from_snap:
+                continue
+
+            matching_candidates: List[Tuple[Path, Path]] = []
+            for sp in target_spaces:
+                inc_roots = (
+                    self.space_manager.resolve_space_include(sp.name)
+                    if sp.name in self.space_manager.load_spaces()
+                    else sp.resolved_include_paths
+                )
+                for inc_root in inc_roots:
+                    cand_abs = inc_root / raw_p
+                    matching_candidates.append((cand_abs, inc_root))
+
+            existing_cands = [(c, r) for c, r in matching_candidates if c.exists()]
+            missing_cands = [(c, r) for c, r in matching_candidates if not c.exists()]
+            if prefer_missing and missing_cands:
+                if len(missing_cands) == 1:
+                    cands_to_use = missing_cands
+                else:
+                    cached_missing = [
+                        (c, r)
+                        for c, r in missing_cands
+                        if str(c.resolve()).replace("\\", "/") in self._file_symbols_cache
+                    ]
+                    cands_to_use = cached_missing or missing_cands
+            else:
+                if len(existing_cands) > 1 and "/" not in raw_p:
+                    max_mtime = max((c.stat().st_mtime_ns for c, _ in existing_cands), default=0)
+                    existing_cands = [
+                        (c, r) for c, r in existing_cands if c.stat().st_mtime_ns >= max_mtime
+                    ]
+                cands_to_use = existing_cands if len(existing_cands) >= 1 else (
+                    matching_candidates if len(matching_candidates) == 1 or "/" in raw_p else existing_cands
+                )
+            if cands_to_use:
+                for cand_abs, inc_root in cands_to_use:
+                    try:
+                        c_abs = str(cand_abs.resolve()).replace("\\", "/")
+                    except OSError:
+                        c_abs = str(cand_abs).replace("\\", "/")
+                    expanded.add(c_abs)
+                    expanded.add(self._get_project_relpath(cand_abs, inc_root))
+            else:
+                expanded.add(raw_p)
+
+        return expanded
+
     def bundle_dirty_files(
         self,
         dirty_diff: ScanDiffDetail,
-        spaces: Optional[List[SpaceConfig]] = None,
+        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
     ) -> Tuple[Dict[str, List[UnifiedSymbol]], Set[str]]:
         """
         僅針對 dirty_diff 中 added 與 modified 的檔案執行 AST 解析，
         同步自 _file_symbols_cache 移除 deleted 與 modified 檔案的舊快取。
         """
-        target_spaces = spaces if spaces is not None else self.space_manager.list_spaces()
-        dirty_keys = dirty_diff.dirty_files
+        target_spaces = self._resolve_target_spaces(spaces)
+        expanded_added_mod = self._normalize_space_dirty_paths(
+            dirty_diff.dirty_files, target_spaces, prefer_missing=False
+        )
+        expanded_deleted = self._normalize_space_dirty_paths(
+            dirty_diff.deleted, target_spaces, prefer_missing=True
+        )
+        dirty_keys = set(expanded_added_mod | expanded_deleted)
+        expanded_mod = self._normalize_space_dirty_paths(
+            dirty_diff.modified, target_spaces, prefer_missing=False
+        )
+        evict_norm = normalize_dirty_paths(expanded_deleted | expanded_mod)
 
-        for d_key in dirty_diff.deleted | dirty_diff.modified:
-            d_key_norm = d_key.replace("\\", "/").lower()
-            keys_to_pop = [k for k in self._file_symbols_cache.keys() if k.replace("\\", "/").lower() == d_key_norm]
+        if evict_norm:
+            keys_to_pop = [
+                k for k in list(self._file_symbols_cache.keys())
+                if is_dirty_file_match(k, evict_norm)
+            ]
             for k in keys_to_pop:
                 self._file_symbols_cache.pop(k, None)
 
-        if not (dirty_diff.added or dirty_diff.modified):
+        parse_targets_norm = normalize_dirty_paths(expanded_added_mod)
+        if not parse_targets_norm:
             return {}, dirty_keys
 
         space_files_map = self._collect_space_files(target_spaces)
         new_symbols_by_file: Dict[str, List[UnifiedSymbol]] = {}
 
         tasks: List[Tuple[str, str, str, List[str]]] = []
-        for c_key in (dirty_diff.added | dirty_diff.modified):
-            file_info = space_files_map.get(c_key)
-            if not file_info:
-                continue
-            f_path, relpath, sp_set = file_info
-            tasks.append((c_key, str(f_path), relpath, sorted(list(sp_set))))
+        for c_key, (f_path, relpath, sp_set) in space_files_map.items():
+            if is_dirty_file_match(c_key, parse_targets_norm) or is_dirty_file_match(relpath, parse_targets_norm):
+                dirty_keys.add(c_key)
+                dirty_keys.add(relpath)
+                tasks.append((c_key, str(f_path), relpath, sorted(list(sp_set))))
 
         for task in tasks:
             c_key, sym_dicts, err = _parse_file_task_worker(task)
@@ -499,29 +702,18 @@ class SemanticBundler:
         if target_path is not None:
             out_file = Path(target_path).resolve()
         else:
-            storage_dir = self.space_manager.get_space_storage_dir(bundle.space_name)
-            bundles_dir = storage_dir.parent.parent / "bundles"
+            bundles_dir = self.storage_dir / "bundles"
             bundles_dir.mkdir(parents=True, exist_ok=True)
             out_file = bundles_dir / f"{bundle.space_name}.bundle.json"
 
         out_file.parent.mkdir(parents=True, exist_ok=True)
-        temp_fd, temp_path = tempfile.mkstemp(
-            dir=str(out_file.parent), prefix="bundle_tmp_", suffix=".json"
-        )
-
         try:
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-                json.dump(bundle.to_dict(), f, indent=2, ensure_ascii=False)
-            os.replace(temp_path, str(out_file))
+            payload = json.dumps(bundle.to_dict(), indent=2, ensure_ascii=False).encode("utf-8")
+            write_bytes(str(out_file), payload)
             logger.info(f"Successfully exported SemanticBundle for '{bundle.space_name}' to {out_file}")
             return out_file
         except Exception as e:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-            raise KnowledgeDBError(f"Failed exporting bundle to {out_file}: {e}")
+            raise KnowledgeDBError(f"Failed exporting bundle to {out_file}: {e}") from e
 
     def import_bundle(self, bundle_path: Union[str, Path]) -> SemanticBundle:
         """載入並反序列化 Bundle 檔案。"""
@@ -534,20 +726,26 @@ class SemanticBundler:
                 data = json.load(f)
             return SemanticBundle.from_dict(data)
         except Exception as e:
-            raise KnowledgeDBError(f"Failed to import bundle from {p}: {e}")
+            raise KnowledgeDBError(f"Failed to import bundle from {p}: {e}") from e
 
-    def extract_all_call_sites_and_imports(
+    def _extract_call_sites_and_imports_core(
         self,
-        spaces: Optional[List[SpaceConfig]] = None,
+        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
+        dirty_file_paths: Optional[Iterable[str]] = None,
     ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
-        """掃描全專案空間聯集，提取所有檔案的 SymbolCallSite 清單與檔頭 Import 映射表。"""
-        target_spaces = spaces if spaces is not None else self.space_manager.list_spaces()
+        """掃描空間聯集（或僅過濾髒檔案子集），提取 SymbolCallSite 清單與檔頭 Import 映射表。"""
+        target_spaces = self._resolve_target_spaces(spaces)
         unique_files = self._collect_space_files(target_spaces)
+        dirty_norm = normalize_dirty_paths(dirty_file_paths) if dirty_file_paths is not None else None
 
-        all_call_sites: List[SymbolCallSite] = []
-        all_imports: Dict[str, Dict[str, str]] = {}
+        call_sites: List[SymbolCallSite] = []
+        imports_map: Dict[str, Dict[str, str]] = {}
 
         for c_key, (f_path, relpath, sp_set) in unique_files.items():
+            if dirty_norm is not None:
+                if not (is_dirty_file_match(c_key, dirty_norm) or is_dirty_file_match(relpath, dirty_norm)):
+                    continue
+
             primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
             cached_syms = self._file_symbols_cache.get(c_key)
             try:
@@ -559,56 +757,31 @@ class SemanticBundler:
                 imps = self.parser_registry.extract_imports(
                     file_path=relpath, content=content
                 )
-                all_call_sites.extend(sites)
+                call_sites.extend(sites)
                 if imps:
-                    all_imports[relpath] = imps
+                    imports_map[relpath] = imps
             except Exception as e:
                 logger.debug(f"Error extracting call sites/imports from '{f_path}': {e}")
 
-        return all_call_sites, all_imports
+        return call_sites, imports_map
+
+    def extract_all_call_sites_and_imports(
+        self,
+        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
+    ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
+        """掃描全專案空間聯集，提取所有檔案的 SymbolCallSite 清單與檔頭 Import 映射表。"""
+        return self._extract_call_sites_and_imports_core(spaces=spaces, dirty_file_paths=None)
 
     def extract_dirty_call_sites_and_imports(
         self,
         dirty_diff: ScanDiffDetail,
-        spaces: Optional[List[SpaceConfig]] = None,
+        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
     ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
-        """僅針對 dirty_diff 中 added 與 modified 檔案提取調用點與 Import 映射。"""
-        target_spaces = spaces if spaces is not None else self.space_manager.list_spaces()
-        unique_files = self._collect_space_files(target_spaces)
-        dirty_keys_norm = {k.replace("\\", "/").lower() for k in dirty_diff.dirty_files}
-
-        dirty_call_sites: List[SymbolCallSite] = []
-        dirty_imports: Dict[str, Dict[str, str]] = {}
-
-        for c_key, (f_path, relpath, sp_set) in unique_files.items():
-            c_key_norm = c_key.replace("\\", "/").lower()
-            relpath_norm = relpath.replace("\\", "/").lower()
-
-            is_dirty = any(
-                c_key_norm == dk
-                or c_key_norm.endswith("/" + dk)
-                or relpath_norm == dk
-                or relpath_norm.endswith("/" + dk)
-                for dk in dirty_keys_norm
-            )
-            if not is_dirty:
-                continue
-
-            primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
-            cached_syms = self._file_symbols_cache.get(c_key)
-            try:
-                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-                sites = self.parser_registry.extract_call_sites(
-                    file_path=relpath, content=content, space=primary_space, symbols=cached_syms
-                )
-                imps = self.parser_registry.extract_imports(
-                    file_path=relpath, content=content
-                )
-                dirty_call_sites.extend(sites)
-                if imps:
-                    dirty_imports[relpath] = imps
-            except Exception as e:
-                logger.debug(f"Error extracting dirty call sites/imports from '{f_path}': {e}")
-
-        return dirty_call_sites, dirty_imports
+        """僅針對 dirty_diff 中變更檔案提取調用點與 Import 映射。"""
+        target_spaces = self._resolve_target_spaces(spaces)
+        expanded_dirty = self._normalize_space_dirty_paths(
+            dirty_diff.dirty_files, target_spaces, prefer_missing=False
+        )
+        return self._extract_call_sites_and_imports_core(
+            spaces=spaces, dirty_file_paths=expanded_dirty
+        )

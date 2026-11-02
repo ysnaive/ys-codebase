@@ -257,7 +257,7 @@ class ParserRegistry:
     def get_parser(self, file_path: Union[str, Path]) -> Optional[BaseParser]:
         """
         依副檔名/特徵尋找相符且優先級最高之解析器。
-        若無匹配解析器回傳 None (EC-02)。
+        若無匹配解析器回傳 None。
         """
         for _, parser in self._parsers:
             try:

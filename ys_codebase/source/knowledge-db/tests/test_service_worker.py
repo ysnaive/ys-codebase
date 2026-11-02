@@ -1,12 +1,16 @@
 """
-Tests for Knowledge-DB Service Worker, Eager Preload, and mtime Cache Synchronization (sub_04).
+Tests for Knowledge-DB Space Event Hook (`scripts/hook.file-space.py`), Server Pre-warm Hook,
+and mtime Cache Synchronization.
 """
 
+import importlib.util
 import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
+import unittest
 from unittest.mock import MagicMock, patch
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
@@ -16,20 +20,30 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-
-from knowledge_db.service import KnowledgeDBServiceWorker, resolve_watch_extensions
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.pipeline import HotPatchResult, IndexingPipeline, _GLOBAL_INDEX_CACHE
 from knowledge_db.retrieval import InvertedIndex
+from knowledge_db.schema import SymbolKind, UnifiedSymbol
+from knowledge_db.tokenizer import MultilingualTokenizer
 from scripts.cli import get_engine
+from file_space import FileSpaceConfig
+
 
 def process(args: list) -> int:
     from core.commands.dispatcher import dispatch
     return dispatch(["knowledge-db"] + list(args))
 
 
-class TestServiceWorker(YSCBTestCase):
-    """sub_04 驗證：ServiceWorker 納管、預熱、mtime 快取自愈與 CLI 重構 (FT-01 ~ FT-06)"""
+def _load_hook_module(script_name: str):
+    hook_path = Path(_pkg_root) / "scripts" / script_name
+    spec = importlib.util.spec_from_file_location(script_name.replace(".", "_"), hook_path)
+    hook_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook_mod)
+    return hook_mod
+
+
+class TestSpaceEventHookAndCacheSync(YSCBTestCase):
+    """驗證 hook.file-space.py + consume_diff 事件熱修補、Server 預熱與 mtime 快取自愈"""
 
     def setUp(self):
         super().setUp()
@@ -44,60 +58,101 @@ class TestServiceWorker(YSCBTestCase):
         super().tearDown()
 
     @require(Requirement.LOGIC)
-    def test_lifecycle(self):
-        """FT-01: 驗證 KnowledgeDBServiceWorker 生命週期 (name, start, health_check, stop)"""
-        worker = KnowledgeDBServiceWorker(self.root_path)
-        self.assertEqual(worker.name, "knowledge-db-watcher")
-        self.assertFalse(worker.health_check())
+    def test_hook_file_space_on_file_space_changed_end_to_end(self):
+        """驗證 scripts/hook.file-space.py 接收 on_file_space_changed 事件時透過 consume_diff 觸發熱修補與游標推進"""
+        hook_file_space = _load_hook_module("hook.file-space.py")
 
-        # 啟動
-        worker.start({"yscb_root": str(self.root_path)})
-        self.assertTrue(worker.health_check())
+        src_dir = self.root_path / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        storage_dir = self.root_path / "storage"
 
-        # 重複啟動無副作用
-        worker.start({"yscb_root": str(self.root_path)})
-        self.assertTrue(worker.health_check())
+        f1 = src_dir / "alpha.py"
+        f1.write_text("class AlphaComponent:\n    def execute(self): pass\n", encoding="utf-8")
 
-        # 停止
-        worker.stop()
-        self.assertFalse(worker.health_check())
+        sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            contributes_data={"spaces": {"main": sp.to_dict()}},
+            embedding_mock_mode=True,
+        )
+
+        # 1. 當基礎索引尚未建立時，收到 on_file_space_changed 自動觸發初次建置並對齊游標
+        res_init = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+        self.assertIn(res_init["status"], ("rebuilt", "patched"))
+        self.assertEqual(len(engine.search("AlphaComponent", auto_rebuild=False)), 1)
+
+        # 2. 無變更時再次觸發 on_file_space_changed -> noop
+        res_noop = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+        self.assertEqual(res_noop["status"], "noop")
+        self.assertEqual(res_noop["patched_count"], 0)
+
+        # 3. 修改檔案並新增符號後，觸發 on_file_space_changed -> 執行 4 階段增量熱修補
+        time.sleep(0.05)
+        f1.write_text(
+            "class AlphaComponent:\n    def execute(self): pass\n"
+            "class BetaHotPatched:\n    def run_hot(self): pass\n",
+            encoding="utf-8",
+        )
+        res_patch = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+        self.assertEqual(res_patch["status"], "patched")
+        self.assertGreaterEqual(res_patch["patched_count"], 1)
+
+        # 驗證無須再次掃描，記憶體與磁碟索引皆已包含新符號
+        hits = engine.search("BetaHotPatched", auto_rebuild=False)
+        self.assertEqual(len(hits), 1)
+        sym_names = [it.symbol.name for it in hits[0].items]
+        self.assertIn("BetaHotPatched", sym_names)
+
+        # 4. 驗證游標已於 with consume_diff 區塊結束後自動 ack，再次呼叫為 noop
+        res_after = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+        self.assertEqual(res_after["status"], "noop")
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_debounce_patch(self):
-        """FT-02: 驗證 500ms 防抖計時器聚合檔案變更並安全觸發增量熱修補"""
-        worker = KnowledgeDBServiceWorker(self.root_path)
-        worker.start({"yscb_root": str(self.root_path)})
+    def test_hook_file_space_fallback_to_rebuild_when_hot_patch_fails(self):
+        """驗證當 hot_patch_unified_index 返回失敗時，hook.file-space.py 安全退回 build_unified_index(allow_parallel=False)"""
+        hook_file_space = _load_hook_module("hook.file-space.py")
 
-        mock_pipeline = MagicMock()
-        mock_pipeline.get_indices_dir.return_value = self.root_path
-        mock_pipeline.scanner.check_invalidation.return_value = (
-            False, 1, "test", {}, MagicMock(has_changes=True)
+        src_dir = self.root_path / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        storage_dir = self.root_path / "storage"
+
+        f1 = src_dir / "service.py"
+        f1.write_text("class BaseService:\n    pass\n", encoding="utf-8")
+
+        sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            contributes_data={"spaces": {"main": sp.to_dict()}},
+            embedding_mock_mode=True,
         )
-        mock_pipeline.hot_patch_unified_index.return_value = HotPatchResult(success=True, patched_count=1)
-        worker._pipeline = mock_pipeline
-        worker.is_path_watched = MagicMock(return_value=True)
+        engine.build_unified_index(force=True)
 
-        # 觸發檔案變更
-        test_file = str(self.root_path / "test.py")
-        worker.on_file_changed(test_file)
-        self.assertIsNotNone(worker._debounce_timer)
+        time.sleep(0.05)
+        f1.write_text("class BaseService:\n    pass\nclass FallbackRebuiltService:\n    pass\n", encoding="utf-8")
 
-        # 立即手動呼叫防抖修補
-        worker._execute_debounced_patch()
-        self.assertTrue(mock_pipeline.scanner.check_invalidation.called)
-        self.assertTrue(mock_pipeline.hot_patch_unified_index.called)
+        with patch.object(
+            engine.pipeline,
+            "hot_patch_unified_index",
+            return_value=HotPatchResult(success=False, patched_count=0),
+        ), patch.object(
+            engine.pipeline,
+            "build_unified_index",
+            wraps=engine.pipeline.build_unified_index,
+        ) as spy_rebuild:
+            res = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+            self.assertEqual(res["status"], "rebuilt")
+            spy_rebuild.assert_called_once_with(force=True, allow_parallel=False)
 
-        worker.stop()
+        self.assertEqual(len(engine.search("FallbackRebuiltService", auto_rebuild=False)), 1)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_cli_no_daemon(self):
-        """FT-03: 驗證 scripts/cli.py 徹底移除 daemon 子命令且 --help 中無殘留"""
+        """驗證 scripts/cli.py 無 daemon 子命令且 --help 中無殘留"""
         import io
-        from contextlib import redirect_stdout, redirect_stderr
+        from contextlib import redirect_stderr, redirect_stdout
 
-        # 1. 測試 --help
         f_out = io.StringIO()
         with redirect_stdout(f_out):
             ret = process(["--help"])
@@ -105,20 +160,18 @@ class TestServiceWorker(YSCBTestCase):
         out_text = f_out.getvalue()
         self.assertNotIn("knowledge-db daemon", out_text)
 
-        # 2. 測試調用已移除的 daemon 指令（應被未知指令攔截或返回異常碼）
         f_err = io.StringIO()
         with redirect_stderr(f_err):
             try:
                 ret2 = process(["daemon", "status"])
             except Exception:
                 ret2 = 1
-        # daemon 已不是合法 subcmd，不會返回 0
         self.assertNotEqual(ret2, 0)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_pre_warm_eager_load(self):
-        """FT-04: 驗證 KnowledgeEngine.pre_warm 支援提前加載索引快取與 FastEmbed 模型"""
+        """驗證 KnowledgeEngine.pre_warm 支援提前加載索引快取與 FastEmbed 模型"""
         with patch.object(IndexingPipeline, "_ensure_indices_loaded") as mock_load:
             KnowledgeEngine.pre_warm(workspace_root=self.root_path)
             self.assertTrue(mock_load.called)
@@ -126,19 +179,16 @@ class TestServiceWorker(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_mtime_cache_invalidation(self):
-        """FT-05: 驗證 _GLOBAL_INDEX_CACHE 與 _ensure_indices_loaded 透過微秒級 mtime 比對熱刷新"""
+        """驗證 _GLOBAL_INDEX_CACHE 與 _ensure_indices_loaded 透過微秒級 mtime 比對熱刷新"""
         indices_dir = self.root_path / "indices"
         indices_dir.mkdir(parents=True, exist_ok=True)
         bin_file = indices_dir / "unified.index.bin.gz"
 
-        # 寫入初始空索引快照
         idx = InvertedIndex()
         idx.save_binary(bin_file)
         mtime1 = bin_file.stat().st_mtime
 
-        # 透過 pipeline 載入
         sm = MagicMock()
-        sm.storage_dir = self.root_path
         pipeline = IndexingPipeline(
             space_manager=sm,
             bundler=MagicMock(),
@@ -147,13 +197,13 @@ class TestServiceWorker(YSCBTestCase):
             bm25_engine=MagicMock(),
             embedding_service=MagicMock(),
             hybrid_engine=MagicMock(),
+            storage_dir=self.root_path,
         )
 
         pipeline._ensure_indices_loaded(load_graph=False, load_vectors=False)
         self.assertIsNotNone(pipeline.unified_index)
         self.assertEqual(_GLOBAL_INDEX_CACHE["unified_mtime"], mtime1)
 
-        # 模擬檔案被修改（更新 mtime）
         time.sleep(0.01)
         idx2 = InvertedIndex()
         idx2.doc_count = 42
@@ -161,36 +211,14 @@ class TestServiceWorker(YSCBTestCase):
         mtime2 = bin_file.stat().st_mtime
         self.assertGreater(mtime2, mtime1)
 
-        # 再次呼叫 _ensure_indices_loaded，驗證快取自動原地熱重載
         pipeline._ensure_indices_loaded(load_graph=False, load_vectors=False)
         self.assertEqual(pipeline.unified_index.doc_count, 42)
         self.assertEqual(_GLOBAL_INDEX_CACHE["unified_mtime"], mtime2)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_primitives_integration(self):
-        """FT-06: 驗證微內核原語整合 (core.vfs.write_bytes 原子覆蓋與 core.platform.lock 互斥鎖)"""
-        from core.vfs import exists, read_bytes
-        from core.platform.lock import InterProcessLock
-        from knowledge_db.scanner import BinarySnapshotManager
-
-        meta_file = self.root_path / "unified.meta.bin"
-        files_map = {str(self.root_path / "a.py"): (time.time(), 100)}
-
-        BinarySnapshotManager.save(meta_file, files_map)
-        self.assertTrue(exists(meta_file))
-        raw = read_bytes(meta_file)
-        self.assertTrue(raw.startswith(b"YFP1"))
-
-        # 驗證 InterProcessLock 能正常保護快照
-        lock_file = self.root_path / "snapshot.lock"
-        with InterProcessLock(str(lock_file)) as lock:
-            self.assertTrue(lock.is_locked)
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
     def test_singleton_engine(self):
-        """FT-02: 驗證 KnowledgeEngine 單例化：get_engine() 多次調用返回同一實例物件"""
+        """驗證 KnowledgeEngine 單例化：get_engine() 多次調用返回同一實例物件"""
         e1 = get_engine()
         e2 = get_engine()
         self.assertIs(e1, e2)
@@ -198,140 +226,17 @@ class TestServiceWorker(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_watcher_dirty_flag_stat_bypass(self):
-        """FT-04: 驗證 Watcher Dirty Flag：未標記 dirty 時，pipeline.search() 0ms 跳過 stat 走訪"""
-        indices_dir = self.root_path / "indices"
-        indices_dir.mkdir(parents=True, exist_ok=True)
-        bin_file = indices_dir / "unified.index.bin.gz"
-
-        idx = InvertedIndex()
-        idx.save_binary(bin_file)
-
-        sm = MagicMock()
-        sm.storage_dir = self.root_path
-        pipeline = IndexingPipeline(
-            space_manager=sm,
-            bundler=MagicMock(),
-            scanner=MagicMock(),
-            tokenizer=MagicMock(),
-            bm25_engine=MagicMock(),
-            embedding_service=MagicMock(),
-            hybrid_engine=MagicMock(),
-        )
-        pipeline._unified_index = idx
-
-        # 模擬 Watcher 活躍且 dirty flag 不存在
-        active_file = indices_dir / ".watcher_active"
-        import json
-        with open(active_file, "w", encoding="utf-8") as f:
-            json.dump({"pid": os.getpid(), "start_time": time.time()}, f)
-
-        dirty_file = indices_dir / ".watcher_dirty"
-        if dirty_file.exists():
-            dirty_file.unlink()
-
-        # 呼叫 search，驗證 scanner.check_invalidation 未被調用（直接跳過 stat 走訪）
-        pipeline.search(query="test_query", auto_rebuild=True)
-        self.assertFalse(pipeline.scanner.check_invalidation.called)
-
-        # 模擬檔案發生未防抖變更，寫入 dirty flag；_is_watcher_active 返回 False 觸發前台增量同步 (對齊 [DN-04])
-        with open(dirty_file, "w", encoding="utf-8") as f:
-            f.write("dirty")
-
-        self.assertFalse(pipeline._is_watcher_active())
-        pipeline.scanner.check_invalidation.return_value = (False, 0, "dirty sync", {}, MagicMock(has_changes=False))
-        pipeline.search(query="test_query", auto_rebuild=True)
-        self.assertTrue(pipeline.scanner.check_invalidation.called)
-
-        # 清理 dirty flag 後，Watcher 活躍狀態再次生效，跳過 stat 走訪
-        dirty_file.unlink()
-        pipeline.scanner.check_invalidation.reset_mock()
-        self.assertTrue(pipeline._is_watcher_active())
-        pipeline.search(query="test_query", auto_rebuild=True)
-        self.assertFalse(pipeline.scanner.check_invalidation.called)
-
-        # 模擬 Watcher 停止運行（無背景服務），前台 search 恢復同步執行 check_invalidation
-        active_file.unlink()
-        pipeline.scanner.check_invalidation.return_value = (False, 0, "no changes", {}, MagicMock(has_changes=False))
-        pipeline.search(query="test_query", auto_rebuild=True)
-        self.assertTrue(pipeline.scanner.check_invalidation.called)
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_watcher_start_failure_does_not_leave_active_flag(self):
-        """FT-07 (FR-02, EC-02): 驗證 Observer.start() 拋出異常降級時，不會殘留虛假 .watcher_active 標記"""
-        worker = KnowledgeDBServiceWorker(workspace_root=self.root_path)
-        indices_dir = self.root_path / "indices"
-        indices_dir.mkdir(parents=True, exist_ok=True)
-        active_file = indices_dir / ".watcher_active"
-        active_file.write_text('{"pid": 99999}', encoding="utf-8")
-
-        mock_pipeline = MagicMock()
-        mock_pipeline.get_indices_dir.return_value = indices_dir
-        worker._pipeline = mock_pipeline
-
-        with patch("watchdog.observers.Observer.start", side_effect=RuntimeError("Mock OS inotify limit reached")):
-            worker.start({"yscb_root": str(self.root_path)})
-
-        self.assertFalse(active_file.exists(), ".watcher_active must be cleaned up when observer fails to start")
-        worker.stop()
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_is_path_watched_strict_filtering(self):
-        """FT-02: 驗證 is_path_watched 徹底移除 workspace_root 兜底，非空間目錄一律返回 False (H-02)"""
-        worker = KnowledgeDBServiceWorker(workspace_root=self.root_path)
-
-        # 模擬 SpaceManager 僅包含特定目錄
-        space_dir = self.root_path / "source" / "my_module"
-        space_dir.mkdir(parents=True, exist_ok=True)
-        dummy_space = MagicMock(name="my_space")
-
-        mock_sm = MagicMock()
-        mock_sm.list_spaces.return_value = [dummy_space]
-        mock_sm.resolve_space_include.return_value = [str(space_dir)]
-        worker._space_manager = mock_sm
-        worker._supported_extensions = {".py", ".md", ".json"}
-
-        # 空間內合法副檔名 -> True
-        self.assertTrue(worker.is_path_watched(space_dir / "foo.py"))
-
-        # 位於 workspace_root 但非空間 include（如 .cache 或根目錄檔案）-> 嚴格返回 False
-        self.assertFalse(worker.is_path_watched(self.root_path / ".cache" / "server" / "daemon.json"))
-        self.assertFalse(worker.is_path_watched(self.root_path / "random_root_file.py"))
-        self.assertFalse(worker.is_path_watched(self.root_path / ".git" / "COMMIT_EDITMSG"))
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_worker_shares_engine_pipeline(self):
-        """FT-06: 驗證 KnowledgeDBServiceWorker._get_pipeline() 共享 get_engine().pipeline (M-05)"""
-        worker = KnowledgeDBServiceWorker(workspace_root=self.root_path)
-        p = worker._get_pipeline()
-        self.assertIs(p, get_engine().pipeline)
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
     def test_hook_server_no_duplicate_watcher(self):
-        """FT-REG: 驗證 scripts/hook.server.py 僅執行 pre_warm，不重複啟動私有 watcher 實例"""
-        import importlib.util
-        hook_path = Path(_pkg_root) / "scripts" / "hook.server.py"
-        spec = importlib.util.spec_from_file_location("hook_server", hook_path)
-        hook_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(hook_mod)
-
+        """驗證 scripts/hook.server.py 僅執行 pre_warm，不啟動私有 watcher 實例"""
+        hook_mod = _load_hook_module("hook.server.py")
         self.assertFalse(hasattr(hook_mod, "_watcher_instance"))
         ret = hook_mod.on_worker_warming({"workspace_root": str(self.root_path)})
         self.assertEqual(ret, "warming_started")
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_concurrent_debounced_patch_and_serialization_safety(self):
-        """FT-01 (2026_10_25_1103): 驗證多執行緒同時觸發 _execute_debounced_patch / to_dict 零並發迭代異常且回退傳遞 allow_parallel=False"""
-        import threading
-        from knowledge_db.schema import SymbolKind, UnifiedSymbol
-
-        # 1. 驗證 InvertedIndex.to_dict() 與並發變異安全性
-        from knowledge_db.tokenizer import MultilingualTokenizer
+    def test_concurrent_serialization_safety(self):
+        """驗證多執行緒同時執行 InvertedIndex.to_dict() 與並發變異之安全性"""
         idx = InvertedIndex()
         tok = MultilingualTokenizer()
         for i in range(50):
@@ -390,28 +295,183 @@ class TestServiceWorker(YSCBTestCase):
             t_mut.join(timeout=1.0)
 
         self.assertEqual(errors, [], f"Concurrent to_dict raised: {errors}")
-
-        # 2. 驗證 KnowledgeDBServiceWorker._execute_debounced_patch 互斥排隊與回退 allow_parallel=False
-        worker = KnowledgeDBServiceWorker(self.root_path)
-        worker._is_running = True
-        mock_pipeline = MagicMock()
-        mock_pipeline.get_indices_dir.return_value = self.root_path
-        mock_pipeline.scanner.check_invalidation.return_value = (
-            True, 5, "dirty", {"a.py": (1.0, 10)}, MagicMock(has_changes=True)
-        )
-        # 模擬 hot_patch 回傳失敗 (False)，觸發 fallback build_unified_index
-        mock_pipeline.hot_patch_unified_index.return_value = HotPatchResult(success=False, patched_count=0)
-        worker._pipeline = mock_pipeline
-
-        with worker._debounce_lock:
-            worker._pending_dirty_paths.add(str(self.root_path / "a.py"))
-
-        worker._execute_debounced_patch()
-        mock_pipeline.build_unified_index.assert_called_once_with(
-            force=True,
-            current_files={"a.py": (1.0, 10)},
-            allow_parallel=False,
-        )
-        worker._is_running = False
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_is_worker_busy_probe_and_dynamic_tolerance_degradation(self):
+        """驗證 is_worker_busy() -> int (已運行 ms) 探針、>= timeout_ms 0ms 瞬時降級、< timeout_ms 剩餘時間等待與陳舊 PID 清理"""
+        import contextlib
+        import io
+        from knowledge_db.service import (
+            clear_worker_state,
+            get_worker_busy_ms,
+            write_worker_state,
+        )
+
+        src_dir = self.root_path / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        storage_dir = self.root_path / "storage"
+        (src_dir / "core_mod.py").write_text(
+            "class VectorTargetNode:\n    '''核心向量測試節點'''\n    def compute(self): pass\n",
+            encoding="utf-8",
+        )
+        sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            local_config={"knowledge-db": {"jit_vector_timeout_ms": 500, "enable_vector_search": True}},
+            contributes_data={"spaces": {"main": sp.to_dict()}},
+            embedding_mock_mode=True,
+        )
+        engine.build_unified_index(force=True)
+        indices_dir = engine.pipeline.get_indices_dir()
+
+        # 1. 空閒時 is_worker_busy() == 0
+        clear_worker_state(indices_dir, worker_running=True)
+        self.assertEqual(engine.is_worker_busy(), 0)
+
+        # 2. 當已運行時間 >= jit_vector_timeout_ms (例如已忙碌 1200ms >= 500ms)，前台等待 0ms 瞬時降級純 BM25 並印出提示
+        write_worker_state(
+            indices_dir,
+            busy=True,
+            start_ts=time.time() - 1.2,
+            phase="downloading_model",
+            progress="下載中",
+            worker_running=True,
+        )
+        self.assertGreaterEqual(engine.is_worker_busy(), 1000)
+
+        err_buf = io.StringIO()
+        t0 = time.perf_counter()
+        with contextlib.redirect_stderr(err_buf):
+            hits = engine.search("VectorTargetNode", auto_rebuild=False)
+        elapsed_wait_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertEqual(len(hits), 1)
+        self.assertLess(elapsed_wait_ms, 150.0, "Should degrade immediately without waiting full timeout")
+        self.assertIn("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", err_buf.getvalue())
+
+        # 3. 當 0 < elapsed_ms < timeout_ms 且後台在剩餘時間內完成，前台等待至完成後不降級
+        write_worker_state(
+            indices_dir,
+            busy=True,
+            start_ts=time.time() - 0.1,
+            phase="stage2_vector_microbatch",
+            progress="1/2",
+            worker_running=True,
+        )
+
+        def _finish_soon():
+            time.sleep(0.08)
+            clear_worker_state(indices_dir, worker_running=True)
+
+        threading.Thread(target=_finish_soon, daemon=True).start()
+        err_buf2 = io.StringIO()
+        with contextlib.redirect_stderr(err_buf2):
+            hits2 = engine.search("VectorTargetNode", auto_rebuild=False)
+        self.assertEqual(len(hits2), 1)
+        self.assertNotIn("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", err_buf2.getvalue())
+        self.assertEqual(engine.is_worker_busy(), 0)
+
+        # 4. EC-01: 若狀態檔內 PID 已不存在 (死進程殘留)，自動視為空閒 0ms 並清理
+        state_file = indices_dir / ".kdb_worker_state.json"
+        import json
+        state_file.write_text(
+            json.dumps({
+                "worker_running": True,
+                "busy": True,
+                "start_ts": time.time() - 0.1,
+                "pid": 99999999,
+                "phase": "stage2",
+            }),
+            encoding="utf-8",
+        )
+        self.assertEqual(get_worker_busy_ms(indices_dir), 0)
+        self.assertFalse(state_file.exists())
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_knowledge_db_service_worker_two_stage_and_auto_model_download(self):
+        """驗證 KnowledgeDBServiceWorker 兩階段背景管線 (Stage 1 快篩 + Stage 2 微批次向量差集補齊) 與背景自動下載模型"""
+        import contextlib
+        import io
+        from knowledge_db.service import KnowledgeDBServiceWorker
+
+        src_dir = self.root_path / "src_worker"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        storage_dir = self.root_path / "storage_worker"
+
+        for i in range(6):
+            (src_dir / f"mod_{i}.py").write_text(
+                f"class WorkerSymbol{i}:\n    '''符號 {i}'''\n    def run_{i}(self): return {i}\n",
+                encoding="utf-8",
+            )
+
+        sp = FileSpaceConfig(name="w_space", include=[str(src_dir)])
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            local_config={"knowledge-db": {"enable_vector_search": True, "vector_batch_size": 4, "jit_vector_timeout_ms": 2000}},
+            contributes_data={"spaces": {"w_space": sp.to_dict()}},
+            embedding_mock_mode=True,
+        )
+
+        # 先建立不含向量的基礎索引 (模擬首次僅完成 Stage 1 或向量遺失)
+        engine.pipeline.build_unified_index(force=True, skip_vectors=True)
+        deficit_before = engine.pipeline.get_vector_deficit_info()
+        self.assertGreater(deficit_before["missing_count"], 0)
+        self.assertEqual(deficit_before["embedded_count"], 0)
+
+        # 啟動 KnowledgeDBServiceWorker 自動在背景分批補齊向量
+        worker = KnowledgeDBServiceWorker(engine=engine)
+        worker.start()
+        try:
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                info = engine.pipeline.get_vector_deficit_info()
+                if info["missing_count"] == 0 and info["embedded_count"] > 0 and engine.is_worker_busy() == 0:
+                    break
+                time.sleep(0.05)
+
+            deficit_after = engine.pipeline.get_vector_deficit_info()
+            self.assertEqual(deficit_after["missing_count"], 0)
+            self.assertEqual(deficit_after["coverage_pct"], 100.0)
+            self.assertGreaterEqual(worker.get_custom_metrics()["vector_batches_processed"], 2)
+
+            # 驗證若運行中途刪除 unified.vectors.bin.gz，_ensure_indices_loaded 與 get_vector_deficit_info 能即時感知並清空舊記憶體向量
+            worker.stop()
+            vec_file = engine.pipeline.get_indices_dir() / "unified.vectors.bin.gz"
+            self.assertTrue(vec_file.exists())
+            vec_file.unlink()
+            deficit_deleted = engine.pipeline.get_vector_deficit_info()
+            self.assertEqual(deficit_deleted["embedded_count"], 0)
+            self.assertGreater(deficit_deleted["missing_count"], 0)
+
+            # 驗證背景自動模型下載 (當 mock_mode=False 且 is_model_downloaded()=False 時由 Worker 自動呼叫 download_model 且不印 [GUARD])
+            worker._stop_event.clear()
+            engine.embedding_service.mock_mode = False
+            dl_flag = {"downloaded": False}
+
+            def _fake_is_downloaded():
+                return dl_flag["downloaded"]
+
+            def _fake_download(force: bool = False):
+                dl_flag["downloaded"] = True
+                engine.embedding_service.mock_mode = True
+                return True
+
+            with patch.object(engine.embedding_service, "is_model_downloaded", side_effect=_fake_is_downloaded), patch.object(
+                engine.embedding_service, "download_model", side_effect=_fake_download
+            ) as mock_dl:
+                err_buf = io.StringIO()
+                with contextlib.redirect_stderr(err_buf):
+                    worker._last_download_attempt_ts = 0.0
+                    worker._run_sync_cycle(engine, engine.pipeline.get_indices_dir())
+                self.assertTrue(mock_dl.called)
+                self.assertNotIn("[GUARD]", err_buf.getvalue())
+        finally:
+            engine.embedding_service.mock_mode = True
+            worker.stop()
+
+        self.mark_passed()
+
+
+if __name__ == "__main__":
+    unittest.main()

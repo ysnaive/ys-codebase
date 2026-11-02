@@ -1,0 +1,828 @@
+"""
+FileSpaceManager: Dual-track workspace aggregation, path resolution, and file iteration.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
+
+from .exceptions import InvalidFileSpaceConfigError, FileSpaceNotFoundError
+from .schema import HashPolicy, FileSpaceConfig, FileSpaceOrigin
+
+DEFAULT_EXCLUDES: List[str] = [
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "env",
+    "dist",
+    "build",
+    "target",
+    ".idea",
+    ".vscode",
+    "*.pyc",
+    "*.pyo",
+    "*.so",
+    "*.dll",
+    "*.dylib",
+    "*.class",
+    ".DS_Store",
+]
+
+DEFAULT_FILE_PATTERNS: List[str] = [
+    "*.py",
+    "*.md",
+    "*.js",
+    "*.ts",
+    "*.jsx",
+    "*.tsx",
+    "*.json",
+    "*.yaml",
+    "*.yml",
+    "*.toml",
+    "*.rs",
+    "*.go",
+    "*.java",
+    "*.c",
+    "*.cpp",
+    "*.h",
+    "*.hpp",
+    "*.cs",
+    "*.rb",
+    "*.php",
+    "*.html",
+    "*.css",
+    "*.scss",
+    "*.sql",
+    "*.sh",
+    "*.bat",
+    "*.ps1",
+]
+
+
+def _dedup_preserve_order(items: List[Any]) -> List[Any]:
+    seen: Set[str] = set()
+    result: List[Any] = []
+    for item in items:
+        key = item.as_posix() if isinstance(item, Path) else str(item)
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+class FileSpaceManager:
+    """
+    Central workspace registry and path resolution engine.
+
+    Supports dual-track space discovery:
+    1. Module Contributed: loaded from installed modules' contributes/file-space.json
+       (with fallback to legacy contributes/knowledge-db.json spaces).
+    2. Project Override: loaded from host config://file-space/contribute.json
+       (with fallback to config://knowledge-db/contribute.json).
+    3. Ephemeral Spaces: registered at runtime in memory for sandbox testing.
+    """
+
+    def __init__(
+        self,
+        project_root: Optional[Path] = None,
+        storage_root: Optional[Path] = None,
+        spaces_config: Optional[Dict[str, Dict[str, Any]]] = None,
+        contributed_spaces: Optional[Dict[str, Dict[str, Any]]] = None,
+        uri_resolver: Optional[Any] = None,
+        *,
+        core_context: Optional[Any] = None,
+        config_dir: Optional[Path] = None,
+        storage_dir: Optional[Path] = None,
+        contributes_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.core_context = core_context
+        self._explicit_project_root = (
+            Path(project_root).resolve() if project_root else None
+        )
+        effective_storage = storage_root if storage_root is not None else storage_dir
+        self._explicit_storage_root = (
+            Path(effective_storage).resolve() if effective_storage else None
+        )
+        self._custom_config_dir = (
+            Path(config_dir).resolve() if config_dir else None
+        )
+        self._explicit_spaces_config = spaces_config
+        if contributed_spaces is not None:
+            self._explicit_contributed_spaces = contributed_spaces
+        elif isinstance(contributes_data, dict):
+            self._explicit_contributed_spaces = contributes_data.get(
+                "spaces", contributes_data
+            )
+        else:
+            self._explicit_contributed_spaces = None
+        self._uri_resolver = uri_resolver
+        self._spaces: Dict[str, FileSpaceConfig] = {}
+        self._ephemeral_spaces: Dict[str, FileSpaceConfig] = {}
+        self._loaded = False
+        self.load_spaces()
+
+    @property
+    def project_root(self) -> Path:
+        """Resolve and return the host workspace root directory."""
+        if self._explicit_project_root is not None:
+            return self._explicit_project_root
+        resolved = self._resolve_uri("project://")
+        if resolved is not None:
+            if resolved.name == "ys_codebase" and (resolved.parent / "ys_codebase").is_dir():
+                return resolved.parent.resolve()
+            return resolved.resolve()
+        cwd = Path.cwd().resolve()
+        if cwd.name == "ys_codebase":
+            return cwd.parent
+        return cwd
+
+    @property
+    def storage_root(self) -> Path:
+        """Resolve and return the storage directory for snapshots and cursors."""
+        if self._explicit_storage_root is not None:
+            self._explicit_storage_root.mkdir(parents=True, exist_ok=True)
+            return self._explicit_storage_root
+        resolved = self._resolve_uri("file-space.storage://") or self._resolve_uri(
+            "cache://file-space/"
+        )
+        if resolved is not None:
+            resolved.mkdir(parents=True, exist_ok=True)
+            return resolved.resolve()
+        fallback = self.project_root / "ys_codebase" / ".cache" / "file-space"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+    def _resolve_uri(self, uri_or_path: Union[str, Path]) -> Optional[Path]:
+        if isinstance(uri_or_path, Path):
+            if uri_or_path.is_absolute():
+                return uri_or_path.resolve()
+            return (self.project_root / uri_or_path).resolve()
+
+        raw = str(uri_or_path).strip()
+        if not raw:
+            return None
+
+        if self._uri_resolver is not None:
+            try:
+                res = self._uri_resolver(raw)
+                if res:
+                    return Path(res).resolve()
+            except Exception:
+                pass
+
+        if "://" in raw:
+            try:
+                from core import uri as core_uri
+
+                res = core_uri.resolve(raw)
+                if res:
+                    return Path(res).resolve()
+            except Exception:
+                return None
+
+        p = Path(raw)
+        if p.is_absolute():
+            return p.resolve()
+        base = (
+            self._explicit_project_root
+            if self._explicit_project_root is not None
+            else Path.cwd().resolve()
+        )
+        return (base / p).resolve()
+
+    def _normalize_include_entries(
+        self, raw_includes: List[Any]
+    ) -> Tuple[List[Path], List[str]]:
+        resolved_paths: List[Path] = []
+        raw_uris: List[str] = []
+        seen_paths: Set[str] = set()
+
+        for entry in raw_includes:
+            raw_str = entry.as_posix() if isinstance(entry, Path) else str(entry).strip()
+            if not raw_str:
+                continue
+            raw_uris.append(raw_str)
+            resolved = self._resolve_uri(entry)
+            if resolved is not None:
+                key = resolved.as_posix()
+                if key not in seen_paths:
+                    seen_paths.add(key)
+                    resolved_paths.append(resolved)
+        return resolved_paths, _dedup_preserve_order(raw_uris)
+
+    @property
+    def storage_dir(self) -> Path:
+        """Backward-compatible alias for storage_root."""
+        return self.storage_root
+
+    def _discover_module_contributed_spaces(self) -> Dict[str, Dict[str, Any]]:
+        if self._explicit_contributed_spaces is not None:
+            return self._explicit_contributed_spaces
+
+        aggregated: Dict[str, Dict[str, Any]] = {}
+        try:
+            from core import contributes as core_contributes
+
+            for target_mod in ("file-space", "knowledge-db"):
+                data = core_contributes.get(target_mod)
+                if not isinstance(data, dict):
+                    continue
+                spaces_map = data.get("spaces", {})
+                if not isinstance(spaces_map, dict):
+                    continue
+                for s_name, s_cfg in spaces_map.items():
+                    if not isinstance(s_cfg, dict):
+                        continue
+                    providers_raw = s_cfg.get("__providers__")
+                    if isinstance(providers_raw, list) and providers_raw:
+                        donors = [str(p) for p in providers_raw]
+                    elif "__provider__" in s_cfg:
+                        donors = [str(s_cfg["__provider__"])]
+                    elif isinstance(s_cfg.get("owner_modules"), list) and s_cfg["owner_modules"]:
+                        donors = [str(p) for p in s_cfg["owner_modules"]]
+                    else:
+                        donors = ["module"]
+
+                    if s_name not in aggregated:
+                        copied = dict(s_cfg)
+                        copied["include"] = list(s_cfg.get("include", []))
+                        copied["exclude"] = list(
+                            s_cfg.get("exclude", DEFAULT_EXCLUDES)
+                        )
+                        copied["file_patterns"] = list(
+                            s_cfg.get("file_patterns", DEFAULT_FILE_PATTERNS)
+                        )
+                        copied["owner_modules"] = _dedup_preserve_order(donors)
+                        aggregated[s_name] = copied
+                    else:
+                        existing = aggregated[s_name]
+                        existing["include"] = _dedup_preserve_order(
+                            existing.get("include", [])
+                            + list(s_cfg.get("include", []))
+                        )
+                        if "exclude" in s_cfg:
+                            existing["exclude"] = _dedup_preserve_order(
+                                existing.get("exclude", [])
+                                + list(s_cfg.get("exclude", []))
+                            )
+                        if "file_patterns" in s_cfg:
+                            existing["file_patterns"] = _dedup_preserve_order(
+                                existing.get("file_patterns", [])
+                                + list(s_cfg.get("file_patterns", []))
+                            )
+                        owners = existing.setdefault("owner_modules", [])
+                        for d in donors:
+                            if d not in owners:
+                                owners.append(d)
+                        for scalar_key in (
+                            "description",
+                            "hash_policy",
+                            "large_file_threshold_mb",
+                            "follow_symlinks",
+                            "watch",
+                            "weight",
+                        ):
+                            if scalar_key in s_cfg and not existing.get(scalar_key):
+                                existing[scalar_key] = s_cfg[scalar_key]
+        except Exception:
+            pass
+
+        return aggregated
+
+    def _discover_project_spaces(self) -> Dict[str, Dict[str, Any]]:
+        if self._explicit_spaces_config is not None:
+            return self._explicit_spaces_config
+
+        project_spaces: Dict[str, Dict[str, Any]] = {}
+        if self._custom_config_dir is not None:
+            custom_file = self._custom_config_dir / "contribute.json"
+            if custom_file.is_file():
+                try:
+                    payload = json.loads(custom_file.read_text(encoding="utf-8"))
+                    spaces_dict = payload.get("spaces", {})
+                    if isinstance(spaces_dict, dict):
+                        for s_name, s_cfg in spaces_dict.items():
+                            if isinstance(s_cfg, dict):
+                                project_spaces[s_name] = dict(s_cfg)
+                except Exception:
+                    pass
+            return project_spaces
+
+        candidate_uris = [
+            "config://file-space/contribute.json",
+            "config://knowledge-db/contribute.json",
+        ]
+        for uri_str in candidate_uris:
+            cfg_path = self._resolve_uri(uri_str)
+            if cfg_path is not None and cfg_path.is_file():
+                try:
+                    payload = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    spaces_dict = payload.get("spaces", {})
+                    if isinstance(spaces_dict, dict):
+                        for s_name, s_cfg in spaces_dict.items():
+                            if isinstance(s_cfg, dict) and s_name not in project_spaces:
+                                project_spaces[s_name] = dict(s_cfg)
+                except Exception:
+                    pass
+        return project_spaces
+
+    def _build_space_config(
+        self,
+        name: str,
+        raw_cfg: Dict[str, Any],
+        origin: FileSpaceOrigin,
+        owner_modules: Optional[List[str]] = None,
+    ) -> FileSpaceConfig:
+        raw_includes = list(raw_cfg.get("include", []))
+        if not raw_includes:
+            raise InvalidFileSpaceConfigError(
+                f"Space '{name}' must define a non-empty 'include' list."
+            )
+        resolved_paths, raw_uris = self._normalize_include_entries(raw_includes)
+        excludes = _dedup_preserve_order(
+            list(raw_cfg.get("exclude", DEFAULT_EXCLUDES))
+        )
+        file_patterns = _dedup_preserve_order(
+            list(raw_cfg.get("file_patterns", DEFAULT_FILE_PATTERNS))
+        )
+        hash_policy_val = raw_cfg.get("hash_policy", HashPolicy.ADAPTIVE)
+        threshold_mb = int(raw_cfg.get("large_file_threshold_mb", 10))
+        if threshold_mb <= 0:
+            raise InvalidFileSpaceConfigError(
+                f"Space '{name}' large_file_threshold_mb must be positive, got {threshold_mb}."
+            )
+
+        return FileSpaceConfig(
+            name=name,
+            include=resolved_paths,
+            raw_include_uris=raw_uris,
+            exclude=excludes,
+            file_patterns=file_patterns,
+            description=str(raw_cfg.get("description", "")),
+            hash_policy=hash_policy_val,
+            large_file_threshold_mb=threshold_mb,
+            follow_symlinks=bool(raw_cfg.get("follow_symlinks", False)),
+            watch=bool(raw_cfg.get("watch", True)),
+            weight=float(raw_cfg.get("weight", 1.0)),
+            origin=origin,
+            owner_modules=list(
+                owner_modules
+                if owner_modules is not None
+                else raw_cfg.get("owner_modules", [])
+            ),
+        )
+
+    def load_spaces(self) -> Dict[str, FileSpaceConfig]:
+        """
+        Load and merge all module-contributed, project-configured, and ephemeral spaces.
+        """
+        merged_spaces: Dict[str, FileSpaceConfig] = {}
+
+        contributed = self._discover_module_contributed_spaces()
+        for name, cfg in contributed.items():
+            raw_owners = cfg.get("owner_modules")
+            if isinstance(raw_owners, list) and raw_owners:
+                owners = _dedup_preserve_order([str(o) for o in raw_owners])
+            elif isinstance(cfg.get("__providers__"), list) and cfg["__providers__"]:
+                owners = _dedup_preserve_order([str(o) for o in cfg["__providers__"]])
+            elif "__provider__" in cfg:
+                owners = [str(cfg["__provider__"])]
+            else:
+                owners = ["module"]
+
+            if owners == ["project"]:
+                origin = FileSpaceOrigin.PROJECT
+            elif "project" in owners:
+                origin = FileSpaceOrigin.MERGED
+            else:
+                origin = FileSpaceOrigin.MODULE
+
+            merged_spaces[name] = self._build_space_config(
+                name=name,
+                raw_cfg=cfg,
+                origin=origin,
+                owner_modules=owners,
+            )
+
+        has_explicit_project_override = (
+            self._explicit_spaces_config is not None
+            or self._custom_config_dir is not None
+            or self._explicit_contributed_spaces is not None
+        )
+        project_cfgs = self._discover_project_spaces()
+        for name, p_cfg in project_cfgs.items():
+            if name in merged_spaces:
+                if not has_explicit_project_override:
+                    continue
+                base = merged_spaces[name]
+                combined_raw_includes = _dedup_preserve_order(
+                    list(base.raw_include_uris) + list(p_cfg.get("include", []))
+                )
+                resolved_paths, raw_uris = self._normalize_include_entries(
+                    combined_raw_includes
+                )
+                combined_excludes = (
+                    _dedup_preserve_order(
+                        list(base.exclude) + list(p_cfg["exclude"])
+                    )
+                    if "exclude" in p_cfg
+                    else list(base.exclude)
+                )
+                combined_patterns = (
+                    _dedup_preserve_order(
+                        list(base.file_patterns) + list(p_cfg["file_patterns"])
+                    )
+                    if "file_patterns" in p_cfg
+                    else list(base.file_patterns)
+                )
+                owners = _dedup_preserve_order(
+                    list(base.owner_modules) + ["project"]
+                )
+                merged_spaces[name] = FileSpaceConfig(
+                    name=name,
+                    include=resolved_paths,
+                    raw_include_uris=raw_uris,
+                    exclude=combined_excludes,
+                    file_patterns=combined_patterns,
+                    description=str(p_cfg.get("description", base.description)),
+                    hash_policy=p_cfg.get("hash_policy", base.hash_policy),
+                    large_file_threshold_mb=int(
+                        p_cfg.get(
+                            "large_file_threshold_mb", base.large_file_threshold_mb
+                        )
+                    ),
+                    follow_symlinks=bool(
+                        p_cfg.get("follow_symlinks", base.follow_symlinks)
+                    ),
+                    watch=bool(p_cfg.get("watch", base.watch)),
+                    weight=float(p_cfg.get("weight", base.weight)),
+                    origin=FileSpaceOrigin.MERGED,
+                    owner_modules=owners,
+                )
+            else:
+                merged_spaces[name] = self._build_space_config(
+                    name=name,
+                    raw_cfg=p_cfg,
+                    origin=FileSpaceOrigin.PROJECT,
+                    owner_modules=["project"],
+                )
+
+        if (
+            not merged_spaces
+            and self._explicit_spaces_config is None
+            and self._explicit_contributed_spaces is None
+        ):
+            p_root = self.project_root
+            merged_spaces["source"] = FileSpaceConfig(
+                name="source",
+                include=[p_root],
+                raw_include_uris=[p_root.as_posix()],
+                exclude=list(DEFAULT_EXCLUDES),
+                file_patterns=list(DEFAULT_FILE_PATTERNS),
+                description="Default project workspace",
+                hash_policy=HashPolicy.ADAPTIVE,
+                large_file_threshold_mb=10,
+                follow_symlinks=False,
+                watch=True,
+                weight=1.0,
+                origin=FileSpaceOrigin.PROJECT,
+                owner_modules=["project"],
+            )
+
+        for e_name, e_cfg in self._ephemeral_spaces.items():
+            merged_spaces[e_name] = e_cfg
+
+        self._spaces = merged_spaces
+        self._loaded = True
+        return dict(self._spaces)
+
+    def define_ephemeral_space(
+        self, name: str, config: Union[FileSpaceConfig, Dict[str, Any]]
+    ) -> FileSpaceConfig:
+        """
+        Register an in-memory ephemeral workspace for runtime or sandbox isolation.
+        """
+        if isinstance(config, FileSpaceConfig):
+            resolved_paths, raw_uris = self._normalize_include_entries(
+                list(config.include)
+            )
+            space_cfg = FileSpaceConfig(
+                name=name,
+                include=resolved_paths,
+                raw_include_uris=raw_uris,
+                exclude=list(config.exclude or DEFAULT_EXCLUDES),
+                file_patterns=list(config.file_patterns or DEFAULT_FILE_PATTERNS),
+                description=config.description,
+                hash_policy=config.hash_policy,
+                large_file_threshold_mb=config.large_file_threshold_mb,
+                follow_symlinks=config.follow_symlinks,
+                watch=config.watch,
+                weight=config.weight,
+                origin=FileSpaceOrigin.EPHEMERAL,
+                owner_modules=["ephemeral"],
+            )
+        elif isinstance(config, dict):
+            space_cfg = self._build_space_config(
+                name=name,
+                raw_cfg=config,
+                origin=FileSpaceOrigin.EPHEMERAL,
+                owner_modules=["ephemeral"],
+            )
+        else:
+            raise InvalidFileSpaceConfigError(
+                f"Expected FileSpaceConfig or dict for ephemeral space '{name}'."
+            )
+
+        self._ephemeral_spaces[name] = space_cfg
+        self._spaces[name] = space_cfg
+        return space_cfg
+
+    def list_spaces(self) -> List[str]:
+        """Return all registered workspace names in deterministic order."""
+        if not self._loaded:
+            self.load_spaces()
+        return list(self._spaces.keys())
+
+    def get_all_spaces(self) -> Dict[str, FileSpaceConfig]:
+        """Return a mapping of all registered workspace names to FileSpaceConfig."""
+        if not self._loaded:
+            self.load_spaces()
+        return dict(self._spaces)
+
+    def get_space(self, name: str) -> FileSpaceConfig:
+        """Return the FileSpaceConfig for the specified workspace or raise FileSpaceNotFoundError."""
+        if not self._loaded:
+            self.load_spaces()
+        if name not in self._spaces:
+            raise FileSpaceNotFoundError(
+                f"Workspace '{name}' is not registered. Available spaces: {list(self._spaces.keys())}"
+            )
+        return self._spaces[name]
+
+    def get_space_config(self, name: str) -> FileSpaceConfig:
+        """Backward-compatible alias for get_space(name)."""
+        return self.get_space(name)
+
+    def resolve_space_include(self, name: str) -> List[Path]:
+        """Return existing directory paths for a workspace's include roots."""
+        cfg = self.get_space(name)
+        valid_dirs: List[Path] = []
+        for inc_path in cfg.resolved_include_paths:
+            if inc_path.exists() and inc_path.is_dir():
+                valid_dirs.append(inc_path.resolve())
+        return valid_dirs
+
+    def get_space_storage_dir(self, space_name: str) -> Path:
+        """Return and ensure the dedicated storage directory for a workspace."""
+        self.get_space(space_name)
+        target = self.storage_root / "spaces" / space_name
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def compute_config_hash(self, space_name: Optional[str] = None) -> str:
+        """Compute a deterministic digest of workspace geometry and filter rules."""
+        if space_name is not None:
+            cfg = self.get_space(space_name)
+            payload = {
+                "name": cfg.name,
+                "include": sorted(p.as_posix() for p in cfg.resolved_include_paths),
+                "exclude": sorted(cfg.exclude),
+                "file_patterns": sorted(cfg.file_patterns),
+                "hash_policy": (
+                    cfg.hash_policy.value
+                    if isinstance(cfg.hash_policy, HashPolicy)
+                    else str(cfg.hash_policy)
+                ),
+                "large_file_threshold_mb": cfg.large_file_threshold_mb,
+                "follow_symlinks": cfg.follow_symlinks,
+            }
+        else:
+            payload = {
+                name: {
+                    "include": sorted(
+                        p.as_posix() for p in cfg.resolved_include_paths
+                    ),
+                    "exclude": sorted(cfg.exclude),
+                    "file_patterns": sorted(cfg.file_patterns),
+                    "hash_policy": (
+                        cfg.hash_policy.value
+                        if isinstance(cfg.hash_policy, HashPolicy)
+                        else str(cfg.hash_policy)
+                    ),
+                    "large_file_threshold_mb": cfg.large_file_threshold_mb,
+                    "follow_symlinks": cfg.follow_symlinks,
+                }
+                for name, cfg in sorted(self.get_all_spaces().items())
+            }
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.blake2b(
+            serialized.encode("utf-8"), digest_size=16
+        ).hexdigest()
+
+    def file_belongs_to_space(
+        self, file_path: Union[str, Path], space_cfg: Union[str, FileSpaceConfig]
+    ) -> bool:
+        """
+        Determine whether an absolute or relative file path falls within a workspace
+        and satisfies its exclude and file_patterns filters.
+        """
+        cfg = (
+            self.get_space(space_cfg)
+            if isinstance(space_cfg, str)
+            else space_cfg
+        )
+        candidate = Path(file_path)
+        if not candidate.is_absolute():
+            candidate = (self.project_root / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+
+        matched_rel: Optional[str] = None
+        for inc_root in cfg.resolved_include_paths:
+            root_resolved = inc_root.resolve()
+            try:
+                rel = candidate.relative_to(root_resolved).as_posix()
+                matched_rel = rel
+                break
+            except ValueError:
+                continue
+
+        if matched_rel is None:
+            return False
+
+        return cfg.is_file_included(matched_rel)
+
+    def resolve_file_path(
+        self, rel_path: str, space_name: Optional[str] = None
+    ) -> Optional[Path]:
+        """
+        Safely resolve a workspace-relative path to an existing absolute file Path.
+        Rejects path traversal ('..') outside workspace include roots.
+        """
+        norm_rel = str(rel_path).replace("\\", "/").strip("/")
+        if not norm_rel:
+            return None
+        posix_parts = PurePosixPath(norm_rel).parts
+        if ".." in posix_parts:
+            return None
+
+        target_spaces = (
+            [self.get_space(space_name)]
+            if space_name is not None
+            else list(self.get_all_spaces().values())
+        )
+
+        for cfg in target_spaces:
+            for inc_root in cfg.resolved_include_paths:
+                root_resolved = inc_root.resolve()
+                candidate = (root_resolved / norm_rel).resolve()
+                try:
+                    candidate.relative_to(root_resolved)
+                except ValueError:
+                    continue
+                if candidate.is_file():
+                    return candidate
+
+            proj_root = self.project_root.resolve()
+            fallback_candidate = (proj_root / norm_rel).resolve()
+            try:
+                fallback_candidate.relative_to(proj_root)
+            except ValueError:
+                continue
+            if fallback_candidate.is_file() and self.file_belongs_to_space(
+                fallback_candidate, cfg
+            ):
+                return fallback_candidate
+
+        return None
+
+    def _compute_rel_path(
+        self, abs_file: Path, inc_root: Path, multi_root: bool
+    ) -> str:
+        proj_root = self.project_root.resolve()
+        if not multi_root:
+            try:
+                return abs_file.relative_to(inc_root).as_posix()
+            except ValueError:
+                pass
+        try:
+            return abs_file.relative_to(proj_root).as_posix()
+        except ValueError:
+            try:
+                return abs_file.relative_to(inc_root).as_posix()
+            except ValueError:
+                return abs_file.name
+
+    def iter_space_files(
+        self, space_name: Optional[str] = None
+    ) -> Iterator[Tuple[str, Path, Path]]:
+        """
+        Iterate over all active files in one or all workspaces.
+        Yields (rel_path, abs_path, source_root) tuples in deterministic order.
+        """
+        target_names = (
+            [space_name] if space_name is not None else self.list_spaces()
+        )
+        seen_rel_paths: Set[str] = set()
+
+        for s_name in target_names:
+            cfg = self.get_space(s_name)
+            inc_roots = self.resolve_space_include(s_name)
+            multi_root = len(inc_roots) > 1
+            visited_dirs: Set[Tuple[int, int]] = set()
+            collected: List[Tuple[str, Path, Path]] = []
+
+            for inc_root in inc_roots:
+                self._walk_root(
+                    current_dir=inc_root,
+                    inc_root=inc_root,
+                    cfg=cfg,
+                    multi_root=multi_root,
+                    visited_dirs=visited_dirs,
+                    collected=collected,
+                )
+
+            collected.sort(key=lambda item: item[0])
+            for rel_p, abs_p, src_root in collected:
+                dedup_key = f"{s_name}:{rel_p}" if space_name is None else rel_p
+                if dedup_key not in seen_rel_paths:
+                    seen_rel_paths.add(dedup_key)
+                    yield (rel_p, abs_p, src_root)
+
+    def _walk_root(
+        self,
+        current_dir: Path,
+        inc_root: Path,
+        cfg: FileSpaceConfig,
+        multi_root: bool,
+        visited_dirs: Set[Tuple[int, int]],
+        collected: List[Tuple[str, Path, Path]],
+    ) -> None:
+        try:
+            dir_stat = current_dir.stat()
+            dir_key = (dir_stat.st_dev, dir_stat.st_ino)
+            if dir_key in visited_dirs:
+                return
+            visited_dirs.add(dir_key)
+        except OSError:
+            return
+
+        try:
+            with os.scandir(current_dir) as it:
+                entries = list(it)
+        except OSError:
+            return
+
+        for entry in entries:
+            try:
+                is_symlink = entry.is_symlink()
+                if is_symlink and not cfg.follow_symlinks:
+                    continue
+                entry_path = Path(entry.path)
+                rel_to_root = entry_path.relative_to(inc_root).as_posix()
+
+                if entry.is_dir(follow_symlinks=cfg.follow_symlinks):
+                    if self._is_dir_excluded(entry.name, rel_to_root, cfg.exclude):
+                        continue
+                    self._walk_root(
+                        current_dir=entry_path,
+                        inc_root=inc_root,
+                        cfg=cfg,
+                        multi_root=multi_root,
+                        visited_dirs=visited_dirs,
+                        collected=collected,
+                    )
+                elif entry.is_file(follow_symlinks=cfg.follow_symlinks):
+                    if not cfg.is_file_included(rel_to_root):
+                        continue
+                    rel_path = self._compute_rel_path(
+                        entry_path.resolve() if not is_symlink else entry_path,
+                        inc_root,
+                        multi_root,
+                    )
+                    collected.append((rel_path, Path(entry.path), inc_root))
+            except OSError:
+                continue
+
+    @staticmethod
+    def _is_dir_excluded(
+        dir_name: str, rel_dir_posix: str, exclude_patterns: List[str]
+    ) -> bool:
+        import fnmatch
+
+        for pattern in exclude_patterns:
+            norm = pattern.replace("\\", "/").strip("/")
+            if not norm:
+                continue
+            if "/" in norm:
+                if fnmatch.fnmatch(rel_dir_posix, norm) or rel_dir_posix.startswith(
+                    norm + "/"
+                ):
+                    return True
+            else:
+                if dir_name == norm or fnmatch.fnmatch(dir_name, norm):
+                    return True
+        return False

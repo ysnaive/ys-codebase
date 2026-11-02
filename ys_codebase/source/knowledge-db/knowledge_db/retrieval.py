@@ -12,7 +12,12 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .exceptions import SchemaValidationError
-from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
+from .io_utils import (
+    atomic_save_gzip_pickle,
+    is_dirty_file_match,
+    load_gzip_pickle,
+    normalize_dirty_paths,
+)
 from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
 from .tokenizer import MultilingualTokenizer
 
@@ -186,9 +191,22 @@ class SnippetExtractor:
                 return cand
         if self.space_manager:
             try:
-                spaces_to_check = [self.space_manager.get_space(space)] if space else self.space_manager.list_spaces()
-                for sp in spaces_to_check:
-                    for root in self.space_manager.resolve_space_include(sp.name):
+                if hasattr(self.space_manager, "resolve_file_path"):
+                    resolved = self.space_manager.resolve_file_path(str(file_path), space_name=space)
+                    if resolved is not None and resolved.exists():
+                        return resolved
+                spaces_raw = (
+                    [self.space_manager.get_space(space)]
+                    if space
+                    else (
+                        list(self.space_manager.get_all_spaces().values())
+                        if hasattr(self.space_manager, "get_all_spaces")
+                        else self.space_manager.list_spaces()
+                    )
+                )
+                for sp in spaces_raw:
+                    sp_name = sp if isinstance(sp, str) else sp.name
+                    for root in self.space_manager.resolve_space_include(sp_name):
                         if root.is_file():
                             if root.name == p.name:
                                 return root
@@ -470,22 +488,13 @@ class InvertedIndex:
         3. 動態重新計算 field_avgdl。
         """
         tok = tokenizer or MultilingualTokenizer()
-        dirty_paths_norm = {p.replace("\\", "/").lower() for p in dirty_file_paths}
+        dirty_paths_norm = normalize_dirty_paths(dirty_file_paths)
 
-        doc_ids_to_remove: List[str] = []
-        for doc_id, sym in list(self.symbols.items()):
-            sym_path_norm = sym.file_path.replace("\\", "/").lower()
-            sym_filename = Path(sym_path_norm).name
-            matched = False
-            for p in dirty_paths_norm:
-                if sym_path_norm == p or p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p):
-                    matched = True
-                    break
-                if "/" not in p and sym_filename == p:
-                    matched = True
-                    break
-            if matched:
-                doc_ids_to_remove.append(doc_id)
+        doc_ids_to_remove: List[str] = [
+            doc_id
+            for doc_id, sym in list(self.symbols.items())
+            if is_dirty_file_match(sym.file_path, dirty_paths_norm)
+        ]
 
         doc_ids_set = set(doc_ids_to_remove)
 

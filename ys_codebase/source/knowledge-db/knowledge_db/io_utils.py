@@ -1,11 +1,11 @@
 """
-Atomic Gzip + Pickle Binary Persistence Primitives for Knowledge-DB.
+Atomic Gzip + Pickle Binary Persistence and Dirty File Path Matching Primitives for Knowledge-DB.
 """
 
 import gzip
 from pathlib import Path
 import pickle
-from typing import Any, Union
+from typing import Any, Iterable, Set, Union
 
 from core.vfs import write_bytes
 
@@ -43,3 +43,21 @@ def load_gzip_pickle(target_path: Union[str, Path], raise_on_missing: bool = Fal
         if raise_on_missing:
             raise
         return None
+
+
+def normalize_dirty_paths(dirty_file_paths: Iterable[str]) -> Set[str]:
+    """正規化待修補或淘汰之髒檔案路徑集合（統一正斜線與小寫）"""
+    return {str(p).replace("\\", "/").lower() for p in dirty_file_paths if p}
+
+
+def is_dirty_file_match(doc_file_path: str, dirty_paths_norm: Set[str]) -> bool:
+    """判斷符號或索引紀錄之檔案路徑是否命中正規化後的髒檔案路徑集合"""
+    if not dirty_paths_norm:
+        return False
+    sym_path_norm = str(doc_file_path).replace("\\", "/").lower()
+    for p in dirty_paths_norm:
+        if sym_path_norm == p:
+            return True
+        if "/" in p and (p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p)):
+            return True
+    return False

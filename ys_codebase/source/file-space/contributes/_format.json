@@ -1,0 +1,22 @@
+{
+  "_types": {
+    "FileSpaceDef": {
+      "description": "str?",
+      "include": "list[str]! | extend",
+      "exclude": "list[str]? | extend",
+      "file_patterns": "list[str]? | extend",
+      "hash_policy": "enum(adaptive, full_hash, stat_only, lazy_stabilized)? = adaptive",
+      "large_file_threshold_mb": "int? = 10",
+      "follow_symlinks": "bool? = false",
+      "watch": "bool? = true",
+      "weight": "float? = 1.0"
+    }
+  },
+  "spaces": {
+    "description": "向 file-space 模組註冊通用檔案空間幾何範圍、過濾規則與分級雜湊策略",
+    "merge": "merge",
+    "format": {
+      "*": "$FileSpaceDef | merge"
+    }
+  }
+}

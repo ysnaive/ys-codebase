@@ -80,7 +80,7 @@ class UniversalRedundancyFilter:
         2. 剔除重複之 Docstring 區塊 (Python \"\"\"/''' 或 C/JS /* ... */ 註解)
         3. 剔除版權宣告、SPDX 與 License 樣板
         4. 收斂 2 行以上連續空白行
-        5. EC-05 保底：保證至少保留目標定義行 target_line
+        5. 安全保底：保證至少保留目標定義行 target_line
         """
         if not lines:
             return []
@@ -166,7 +166,7 @@ class UniversalRedundancyFilter:
 
             cleaned.append((ln, txt))
 
-        # 6. EC-05 安全保底：若純化後為空，保底保留 target_line
+        # 6. 安全保底：若純化後為空，保底保留 target_line
         if not cleaned:
             target_candidates = [l for l in lines if l[0] == target_line]
             if target_candidates:
@@ -225,12 +225,10 @@ class ResultFormatter:
 
     def __init__(
         self,
-        space_manager: Optional[Any] = None,
         workspace_root: Optional[Path] = None,
         redundancy_filter: Optional[UniversalRedundancyFilter] = None,
         styler: Optional[TerminalStyler] = None,
     ):
-        self.space_manager = space_manager
         self.workspace_root = workspace_root
         self.redundancy_filter = redundancy_filter or UniversalRedundancyFilter()
         self.styler = styler or TerminalStyler()

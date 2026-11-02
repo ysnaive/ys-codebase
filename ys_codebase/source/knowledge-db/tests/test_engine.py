@@ -16,8 +16,7 @@ if _pkg_root not in sys.path:
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 from knowledge_db.engine import KnowledgeEngine
-from knowledge_db.exceptions import SpaceNotFoundError
-from knowledge_db.schema import SpaceConfig
+from file_space import FileSpaceConfig, FileSpaceNotFoundError
 
 
 class TestEngine(YSCBTestCase):
@@ -40,7 +39,7 @@ class TestEngine(YSCBTestCase):
                 encoding="utf-8",
             )
 
-            space_cfg = SpaceConfig(name="demo_space", include=[str(src_dir)])
+            space_cfg = FileSpaceConfig(name="demo_space", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={
@@ -48,38 +47,34 @@ class TestEngine(YSCBTestCase):
                 },
             )
 
-            # 1. status 驗證 (FT-01)
+            # 1. status 驗證
             st = engine.status()
             self.assertEqual(st["total_spaces"], 1)
             self.assertIn("demo_space", st["spaces"])
-            self.assertEqual(st["spaces"]["demo_space"]["cached_files"], 0)
+            self.assertEqual(st["spaces"]["demo_space"]["cached_files"], 2)
 
-            # 2. scan 驗證 (FT-02)
-            diffs = engine.scan(space="demo_space")
-            self.assertEqual(len(diffs["demo_space"].added), 2)
-
-            # 3. bundle 驗證 (FT-03)
+            # 2. bundle 驗證
             bundles = engine.bundle(space="demo_space")
             self.assertEqual(len(bundles), 1)
             self.assertEqual(bundles[0].space_name, "demo_space")
             self.assertGreaterEqual(len(bundles[0].symbols), 2)
 
-            # 4. build_index 驗證 (FT-04)
+            # 3. build_index 驗證
             indices = engine.build_index(space="demo_space")
             self.assertIn("demo_space", indices)
             idx_file = storage_dir / "indices" / "demo_space.index.bin.gz"
             self.assertTrue(idx_file.exists())
 
-            # 5. search 驗證 (FT-05)
+            # 4. search 驗證
             results = engine.search("PIDController", space="demo_space")
             self.assertGreaterEqual(len(results), 1)
             self.assertEqual(results[0].items[0].symbol.name, "PIDController")
 
-            # 6. clean 驗證 (FT-06)
+            # 5. clean 驗證 (清除索引並重置 knowledge-db 游標)
             engine.clean(space="demo_space")
             self.assertFalse(idx_file.exists())
             st_after = engine.status()
-            self.assertEqual(st_after["spaces"]["demo_space"]["cached_files"], 0)
+            self.assertFalse(st_after["has_unified_index"])
 
         self.mark_passed()
 
@@ -92,7 +87,7 @@ class TestEngine(YSCBTestCase):
             src_dir.mkdir(parents=True)
             (src_dir / "motor.py").write_text("class MotorGroup: pass", encoding="utf-8")
 
-            space_cfg = SpaceConfig(name="motor_space", include=[str(src_dir)])
+            space_cfg = FileSpaceConfig(name="motor_space", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=temp_path / "storage",
                 contributes_data={"spaces": {"motor_space": space_cfg.to_dict()}},
@@ -106,11 +101,11 @@ class TestEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_non_existent_space_error(self):
-        """ET-01: 驗證操作不存在空間拋出 SpaceNotFoundError (EC-02)"""
+        """驗證操作不存在空間拋出 FileSpaceNotFoundError"""
         with tempfile.TemporaryDirectory() as temp_dir:
             engine = KnowledgeEngine(storage_dir=temp_dir)
-            with self.assertRaises(SpaceNotFoundError):
-                engine.scan(space="non_existent_12345")
+            with self.assertRaises(FileSpaceNotFoundError):
+                engine.status(space="non_existent_12345")
 
         self.mark_passed()
 
@@ -174,7 +169,7 @@ class TestEngine(YSCBTestCase):
                     lines.append(f"    def run_method_{m}(self):\n        return {m} * {i}")
                 (src_dir / f"mod_{i:02d}.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-            space_cfg = SpaceConfig(name="test_space", include=[str(src_dir)])
+            space_cfg = FileSpaceConfig(name="test_space", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=temp_path / "storage",
                 contributes_data={"spaces": {"test_space": space_cfg.to_dict()}},
@@ -326,7 +321,7 @@ class TestEngine(YSCBTestCase):
             src_dir.mkdir(parents=True)
             (src_dir / "service.py").write_text("class PipelineService:\n    def execute(self): return 42\n", encoding="utf-8")
 
-            space_cfg = SpaceConfig(name="pipe_space", include=[str(src_dir)])
+            space_cfg = FileSpaceConfig(name="pipe_space", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=temp_path / "storage",
                 contributes_data={"spaces": {"pipe_space": space_cfg.to_dict()}},
@@ -371,10 +366,80 @@ class TestEngine(YSCBTestCase):
         # 2. local_config 覆蓋 project_config
         cfg2 = KnowledgeDBConfig.load(
             project_config={"knowledge-db": {"enable_vector_search": False, "max_threads": 4}},
-            local_config={"knowledge-db": {"enable_vector_search": True}},
+            local_config={"knowledge-db": {"enable_vector_search": True, "jit_vector_timeout_ms": 1800, "vector_batch_size": 16}},
         )
         self.assertTrue(cfg2.enable_vector_search)
         self.assertEqual(cfg2.max_threads, 4)
+        self.assertEqual(cfg2.jit_vector_timeout_ms, 1800)
+        self.assertAlmostEqual(cfg2.jit_vector_timeout_seconds, 1.8)
+        self.assertEqual(cfg2.vector_batch_size, 16)
+
+        # 3. 預設 jit_vector_timeout_ms 為 3000，並向下相容 jit_vector_timeout_seconds
+        cfg_default = KnowledgeDBConfig()
+        self.assertEqual(cfg_default.jit_vector_timeout_ms, 3000)
+        self.assertAlmostEqual(cfg_default.jit_vector_timeout_seconds, 3.0)
+
+        cfg_legacy = KnowledgeDBConfig.from_dict({"jit_vector_timeout_seconds": 4.5})
+        self.assertEqual(cfg_legacy.jit_vector_timeout_ms, 4500)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_status_detailed_metrics_and_docstring_truncation(self):
+        """驗證 engine.status() 詳細結構化指標 (worker, indices.bm25/graph/vector, retrieval_mode, space gen) 與 Docstring 截斷"""
+        from knowledge_db.embedding import format_symbol_embedding_text
+        from knowledge_db.schema import UnifiedSymbol
+
+        long_doc = "A" * 2500
+        sym = UnifiedSymbol(
+            id="s1",
+            name="LongDocSymbol",
+            kind="class",
+            file_path="src/a.py",
+            line_number=1,
+            signature="class LongDocSymbol:",
+            docstring=long_doc,
+            language="python",
+        )
+        emb_txt = format_symbol_embedding_text(sym, max_doc_chars=1000)
+        self.assertLessEqual(len(emb_txt), 1050)
+        self.assertIn("LongDocSymbol", emb_txt)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            src_dir = temp_path / "src"
+            src_dir.mkdir(parents=True)
+            storage_dir = temp_path / "storage"
+            (src_dir / "mod.py").write_text(
+                "def alpha():\n    beta()\n\ndef beta():\n    return 1\n",
+                encoding="utf-8",
+            )
+            sp = FileSpaceConfig(name="main_sp", include=[str(src_dir)])
+            engine = KnowledgeEngine(
+                storage_dir=storage_dir,
+                contributes_data={"spaces": {"main_sp": sp.to_dict()}},
+                embedding_mock_mode=True,
+            )
+            engine.build_unified_index(force=True)
+            st = engine.status()
+
+            self.assertIn("worker", st)
+            self.assertEqual(st["worker"]["busy_elapsed_ms"], 0)
+            self.assertIn("indices", st)
+            self.assertGreaterEqual(st["indices"]["bm25"]["symbol_count"], 2)
+            self.assertGreaterEqual(st["indices"]["bm25"]["term_count"], 2)
+            self.assertGreaterEqual(st["indices"]["graph"]["edge_count"], 1)
+            self.assertEqual(st["indices"]["vector"]["coverage_pct"], 100.0)
+            self.assertEqual(st["indices"]["vector"]["missing_count"], 0)
+            self.assertEqual(st["retrieval_mode"], "hybrid_rrf")
+            self.assertEqual(st["jit_vector_timeout_ms"], 3000)
+            self.assertIn("main_sp", st["spaces"])
+            self.assertGreater(st["spaces"]["main_sp"]["head_generation"], 0)
+            self.assertEqual(
+                st["spaces"]["main_sp"]["acked_generation"],
+                st["spaces"]["main_sp"]["head_generation"],
+            )
+            self.assertTrue(st["spaces"]["main_sp"]["in_sync"])
 
         self.mark_passed()
 

@@ -1,6 +1,7 @@
 {
   "enable_vector_search": true,
   "embedding_model": "BAAI/bge-small-zh-v1.5",
-  "jit_vector_timeout_seconds": 5.0,
+  "jit_vector_timeout_ms": 3000,
+  "vector_batch_size": 32,
   "max_threads": "auto"
 }

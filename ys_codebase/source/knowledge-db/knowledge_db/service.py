@@ -1,10 +1,9 @@
 """
-Knowledge-DB Service Worker - Background Indexing & Watchdog Watcher.
+KnowledgeDBServiceWorker: Background two-stage incremental indexing,
+automatic vector model download, micro-batched vector self-healing,
+and elapsed busy millisecond probe (`is_worker_busy() -> int`).
 
-Implements BaseServiceWorker for module:knowledge-db.
-Monitors workspace source directories with 500ms debounce, performs incremental
-hot patches across AST, BM25, Call Graph, and FastEmbed Vector indices,
-and atomically updates binary snapshots on disk via core.vfs and core.platform.
+File system monitoring (`watchdog`) is delegated 100% to `module:file-space` (`file-space-watcher`).
 """
 
 import json
@@ -13,324 +12,496 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Any, Dict, Optional, Set, Union
+from typing import Any, Dict, Optional, Union
+
+logger = logging.getLogger("knowledge-db.service")
 
 try:
     from server.service import BaseServiceWorker
 except ImportError:
-    from abc import ABC, abstractmethod
 
-    class BaseServiceWorker(ABC):
-        """Fallback BaseServiceWorker when server module is not yet installed."""
+    class BaseServiceWorker:  # type: ignore[no-redef]
+        """Fallback base worker when server module is not installed."""
+
         @property
-        @abstractmethod
         def name(self) -> str:
-            pass
+            return "knowledge-db-worker"
 
-        @abstractmethod
         def start(self, context: Dict[str, Any]) -> None:
             pass
 
-        @abstractmethod
         def stop(self) -> None:
             pass
 
-        @abstractmethod
         def health_check(self) -> bool:
-            pass
+            return False
 
 
-logger = logging.getLogger("knowledge_db.service")
+WORKER_STATE_FILENAME = ".kdb_worker_state.json"
 
-DEFAULT_VCS_IGNORED_DIRS: Set[str] = {
-    ".git",
-    ".venv",
-    "__pycache__",
-    ".pytest_cache",
-    ".cache",
-    ".modules",
-}
+_WORKER_LOCK = threading.Lock()
+_ACTIVE_WORKER: Optional["KnowledgeDBServiceWorker"] = None
+_IN_PROCESS_BUSY_START_TS: float = 0.0
+_IN_PROCESS_PHASE: str = "idle"
+_IN_PROCESS_PROGRESS: str = ""
+_IDLE_EVENT = threading.Event()
+_IDLE_EVENT.set()
 
 
-def resolve_watch_extensions(space_manager: Optional[Any] = None) -> Set[str]:
-    """Dynamically collects watchable file extensions from registered languages and spaces."""
-    exts: Set[str] = {".json"}
+def _check_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
     try:
-        from .parsers.registry import ParserRegistry
-        reg = ParserRegistry()
-        if hasattr(reg, "get_supported_extensions"):
-            exts.update(reg.get_supported_extensions())
+        from core.platform import is_process_alive
+        return bool(is_process_alive(pid))
     except Exception:
-        pass
-
-    if space_manager is not None:
         try:
-            spaces = space_manager.list_spaces()
-            for sp in spaces:
-                for pat in getattr(sp, "file_patterns", []) or []:
-                    if pat.startswith("*."):
-                        exts.add(pat[1:].lower())
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def get_active_worker() -> Optional["KnowledgeDBServiceWorker"]:
+    """Return the active in-process KnowledgeDBServiceWorker instance if running."""
+    with _WORKER_LOCK:
+        if _ACTIVE_WORKER is not None and _ACTIVE_WORKER.is_alive():
+            return _ACTIVE_WORKER
+        return None
+
+
+def is_worker_running(indices_dir: Optional[Union[str, Path]] = None) -> bool:
+    """Return True if a KnowledgeDBServiceWorker is active in-process or in the server daemon."""
+    if get_active_worker() is not None:
+        return True
+    if indices_dir is not None:
+        st = read_worker_state(indices_dir)
+        pid = int(st.get("pid", 0) or 0)
+        if st.get("worker_running") and _check_pid_alive(pid):
+            return True
+    return False
+
+
+def get_worker_state_path(indices_dir: Union[str, Path]) -> Path:
+    return Path(indices_dir) / WORKER_STATE_FILENAME
+
+
+def write_worker_state(
+    indices_dir: Union[str, Path],
+    *,
+    busy: bool,
+    start_ts: float = 0.0,
+    phase: str = "idle",
+    progress: str = "",
+    worker_running: bool = True,
+) -> None:
+    """Atomically persist worker state to `indices/.kdb_worker_state.json` and update in-process state."""
+    global _IN_PROCESS_BUSY_START_TS, _IN_PROCESS_PHASE, _IN_PROCESS_PROGRESS
+    now = time.time()
+    with _WORKER_LOCK:
+        if busy:
+            if start_ts <= 0.0:
+                start_ts = _IN_PROCESS_BUSY_START_TS if _IN_PROCESS_BUSY_START_TS > 0.0 else now
+            _IN_PROCESS_BUSY_START_TS = start_ts
+            _IN_PROCESS_PHASE = phase
+            _IN_PROCESS_PROGRESS = progress
+            _IDLE_EVENT.clear()
+        else:
+            _IN_PROCESS_BUSY_START_TS = 0.0
+            _IN_PROCESS_PHASE = "idle"
+            _IN_PROCESS_PROGRESS = ""
+            _IDLE_EVENT.set()
+
+    p = get_worker_state_path(indices_dir)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "worker_running": bool(worker_running),
+            "busy": bool(busy),
+            "start_ts": float(start_ts if busy else 0.0),
+            "updated_ts": now,
+            "pid": os.getpid(),
+            "phase": phase if busy else "idle",
+            "progress": progress if busy else "",
+        }
+        tmp_path = p.with_name(f"{WORKER_STATE_FILENAME}.tmp.{os.getpid()}.{threading.get_ident()}")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp_path), str(p))
+    except Exception as exc:
+        logger.debug("Failed writing worker state file %s: %s", p, exc)
+
+
+def clear_worker_state(indices_dir: Union[str, Path], *, worker_running: bool = False) -> None:
+    """Reset busy state to idle (or remove state file when worker stops)."""
+    write_worker_state(
+        indices_dir,
+        busy=False,
+        start_ts=0.0,
+        phase="idle",
+        progress="",
+        worker_running=worker_running,
+    )
+
+
+def read_worker_state(indices_dir: Union[str, Path]) -> Dict[str, Any]:
+    """
+    Read worker state from in-process memory or `indices/.kdb_worker_state.json`.
+    Automatically cleans up stale state if the owning PID is no longer alive.
+    """
+    p = get_worker_state_path(indices_dir)
+    if p.exists():
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                pid = int(raw.get("pid", 0) or 0)
+                if pid > 0 and not _check_pid_alive(pid):
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+                    return {
+                        "worker_running": False,
+                        "busy": False,
+                        "start_ts": 0.0,
+                        "elapsed_ms": 0,
+                        "phase": "idle",
+                        "progress": "",
+                        "pid": 0,
+                    }
+                busy = bool(raw.get("busy", False))
+                start_ts = float(raw.get("start_ts", 0.0) or 0.0)
+                elapsed_ms = max(1, int((time.time() - start_ts) * 1000)) if (busy and start_ts > 0.0) else 0
+                return {
+                    "worker_running": bool(raw.get("worker_running", True)),
+                    "busy": busy,
+                    "start_ts": start_ts,
+                    "elapsed_ms": elapsed_ms,
+                    "phase": str(raw.get("phase", "idle") or "idle"),
+                    "progress": str(raw.get("progress", "") or ""),
+                    "pid": pid,
+                }
         except Exception:
             pass
 
-    return exts
+    with _WORKER_LOCK:
+        active = _ACTIVE_WORKER is not None and _ACTIVE_WORKER.is_alive()
+        if _IN_PROCESS_BUSY_START_TS > 0.0:
+            elapsed_ms = max(1, int((time.time() - _IN_PROCESS_BUSY_START_TS) * 1000))
+            return {
+                "worker_running": active,
+                "busy": True,
+                "start_ts": _IN_PROCESS_BUSY_START_TS,
+                "elapsed_ms": elapsed_ms,
+                "phase": _IN_PROCESS_PHASE,
+                "progress": _IN_PROCESS_PROGRESS,
+                "pid": os.getpid(),
+            }
+        return {
+            "worker_running": active,
+            "busy": False,
+            "start_ts": 0.0,
+            "elapsed_ms": 0,
+            "phase": "idle",
+            "progress": "",
+            "pid": os.getpid() if active else 0,
+        }
+
+
+def get_worker_busy_ms(indices_dir: Union[str, Path]) -> int:
+    """
+    Return the elapsed milliseconds (`int`) that the background worker has been
+    continuously busy on its current task (`0` means idle).
+    """
+    st = read_worker_state(indices_dir)
+    if not st.get("busy"):
+        return 0
+    return max(1, int(st.get("elapsed_ms", 0)))
+
+
+def wait_until_worker_idle(indices_dir: Union[str, Path], timeout_ms: int) -> bool:
+    """
+    Wait up to `timeout_ms` milliseconds for the worker to become idle (`get_worker_busy_ms() == 0`).
+    Returns True if worker became idle within the window, False if still busy on timeout.
+    """
+    if get_worker_busy_ms(indices_dir) == 0:
+        return True
+    if timeout_ms <= 0:
+        return False
+
+    deadline = time.perf_counter() + (timeout_ms / 1000.0)
+    while time.perf_counter() < deadline:
+        if get_worker_busy_ms(indices_dir) == 0:
+            return True
+        remain = deadline - time.perf_counter()
+        if remain <= 0:
+            break
+        wait_slice = min(0.025, remain)
+        if _IDLE_EVENT.wait(timeout=wait_slice):
+            if get_worker_busy_ms(indices_dir) == 0:
+                return True
+    return get_worker_busy_ms(indices_dir) == 0
 
 
 class KnowledgeDBServiceWorker(BaseServiceWorker):
     """
-    Background file watcher and incremental index hot-patcher for knowledge-db.
-    Managed by server MasterSupervisor, strictly following server idle TTL and shutdown.
+    Persistent background worker for `module:knowledge-db`:
+    - Stage 1 (Fast Path): Consumes `space` diffs (`consume_diff("knowledge-db")`) and hot-patches
+      AST + BM25 (`unified.index.bin.gz`) and CallGraph (`unified.graph.bin.gz`).
+    - Auto Model Download: When `enable_vector_search=True` and model weights are missing in `.cache/`,
+      automatically downloads the FastEmbed ONNX model in the background without `[GUARD]` prompts.
+    - Stage 2 (Slow Path): Compares `unified_index.symbols` vs `vector_index.doc_ids` and incrementally
+      computes missing symbol embeddings in small micro-batches (`vector_batch_size`, default 32).
     """
 
-    def __init__(self, workspace_root: Optional[Union[str, Path]] = None) -> None:
-        self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
-        self._observer = None
-        self._is_running = False
-        self._debounce_timer: Optional[threading.Timer] = None
-        self._debounce_lock = threading.Lock()
-        self._patch_lock = threading.Lock()
-        self._pending_dirty_paths: Set[str] = set()
-        self._pipeline = None
-        self._space_manager = None
-        self._supported_extensions: Optional[Set[str]] = None
+    MODEL_DOWNLOAD_RETRY_COOLDOWN_SEC = 60.0
+
+    def __init__(
+        self,
+        name: str = "knowledge-db-worker",
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        engine: Optional[Any] = None,
+    ) -> None:
+        self._name = name
+        self.context: Dict[str, Any] = dict(context) if isinstance(context, dict) else {}
+        self._engine = engine
+        self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._last_download_attempt_ts: float = 0.0
+        self._space_diffs_processed: int = 0
+        self._vector_batches_processed: int = 0
+        self._last_sync_at: Optional[float] = None
 
     @property
     def name(self) -> str:
-        return "knowledge-db-watcher"
+        return self._name
 
-    def _get_space_manager(self) -> Any:
-        if self._space_manager is None:
-            from .space import SpaceManager
-            self._space_manager = SpaceManager()
-        return self._space_manager
+    def _get_engine(self) -> Any:
+        if self._engine is not None:
+            return self._engine
+        from .engine import get_engine
+        self._engine = get_engine()
+        return self._engine
 
-    def _get_pipeline(self) -> Any:
-        if self._pipeline is None:
-            from .engine import get_engine
-            self._pipeline = get_engine().pipeline
-        return self._pipeline
+    def notify_space_changed(self) -> None:
+        """Non-blocking O(1) wakeup signal when `file-space-watcher` broadcasts `on_file_space_changed`."""
+        self._wake_event.set()
 
-    def _get_supported_extensions(self) -> Set[str]:
-        if self._supported_extensions is None:
-            self._supported_extensions = resolve_watch_extensions(self._get_space_manager())
-        return self._supported_extensions
-
-    def is_path_watched(self, file_path: Union[str, Path]) -> bool:
-        """Determines if a given path is an eligible file for incremental indexing."""
-        p = Path(file_path)
-        for part in p.parts:
-            if part in DEFAULT_VCS_IGNORED_DIRS:
-                return False
-
-        if p.suffix.lower() not in self._get_supported_extensions():
-            return False
-
-        sm = self._get_space_manager()
-        if sm is None:
-            return True
-
-        try:
-            spaces = sm.list_spaces()
-            if not spaces:
-                return True
-
-            abs_p = p.resolve()
-            abs_p_str = str(abs_p).replace("\\", "/")
-
-            for sp in spaces:
-                roots = sm.resolve_space_include(sp.name)
-                for root in roots:
-                    root_res = Path(root).resolve()
-                    root_str = str(root_res).replace("\\", "/")
-                    if abs_p_str == root_str or abs_p_str.startswith(root_str + "/"):
-                        return True
-        except Exception:
-            return False
-
-        return False
-
-    def on_file_changed(self, file_path: str) -> None:
-        """Handles incoming file events, filters irrelevant paths, debounces with 500ms timer."""
-        if not self._is_running:
+    def start(self, context: Optional[Dict[str, Any]] = None) -> None:
+        global _ACTIVE_WORKER
+        if isinstance(context, dict):
+            self.context.update(context)
+        if self._thread and self._thread.is_alive():
             return
+        self._stop_event.clear()
+        self._wake_event.set()
+        with _WORKER_LOCK:
+            _ACTIVE_WORKER = self
+        self._thread = threading.Thread(
+            target=self.run,
+            name=f"Worker-{self.name}",
+            daemon=True,
+        )
+        self._thread.start()
 
-        p = Path(file_path)
-        if not self.is_path_watched(p):
-            return
-
-        with self._debounce_lock:
-            self._pending_dirty_paths.add(str(p.resolve()))
-            try:
-                indices_dir = self._get_pipeline().get_indices_dir()
-                (indices_dir / ".watcher_dirty").touch(exist_ok=True)
-            except Exception:
-                pass
-            if self._debounce_timer is not None:
-                self._debounce_timer.cancel()
-
-            self._debounce_timer = threading.Timer(0.5, self._execute_debounced_patch)
-            self._debounce_timer.daemon = True
-            self._debounce_timer.start()
-
-    def _execute_debounced_patch(self) -> None:
-        """Executes debounced incremental indexing hot-patch on the pipeline."""
-        if not self._patch_lock.acquire(blocking=False):
-            return
-
+    def stop(self, timeout: float = 5.0) -> None:
+        global _ACTIVE_WORKER
+        self._stop_event.set()
+        self._wake_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+        with _WORKER_LOCK:
+            if _ACTIVE_WORKER is self:
+                _ACTIVE_WORKER = None
         try:
-            while self._is_running:
-                with self._debounce_lock:
-                    dirty = list(self._pending_dirty_paths)
-                    self._pending_dirty_paths.clear()
-                    self._debounce_timer = None
-
-                if not dirty:
-                    break
-
-                try:
-                    pipeline = self._get_pipeline()
-                    indices_dir = pipeline.get_indices_dir()
-                    meta_file = indices_dir / "unified.meta.bin"
-
-                    _, _, _, full_files_map, diff_detail = pipeline.scanner.check_invalidation(
-                        snapshot_path=meta_file
-                    )
-
-                    if diff_detail.has_changes:
-                        res = None
-                        try:
-                            res = pipeline.hot_patch_unified_index(diff_detail, full_files_map, timeout_seconds=float("inf"))
-                        except Exception as pe:
-                            logger.warning(f"Hot patch exception: {pe}, fallback to full rebuild.")
-
-                        patched = bool(getattr(res, "success", res))
-                        if not patched:
-                            try:
-                                pipeline.build_unified_index(
-                                    force=True,
-                                    current_files=full_files_map,
-                                    allow_parallel=False,
-                                )
-                            except Exception as fe:
-                                logger.error(f"Fallback full rebuild failed: {fe}", exc_info=True)
-                except Exception as e:
-                    logger.error(f"Error during debounced hot patch: {e}", exc_info=True)
-        finally:
-            try:
-                with self._debounce_lock:
-                    has_more = bool(self._pending_dirty_paths)
-                if not has_more:
-                    indices_dir = self._get_pipeline().get_indices_dir()
-                    dirty_flag = indices_dir / ".watcher_dirty"
-                    if dirty_flag.exists():
-                        dirty_flag.unlink()
-            except Exception:
-                pass
-            self._patch_lock.release()
-
-    def start(self, context: Dict[str, Any]) -> None:
-        """Starts background file watcher using watchdog Observer."""
-        if self._is_running:
-            return
-
-        root = context.get("yscb_root") or context.get("workspace_root")
-        if root:
-            self.workspace_root = Path(root).resolve()
-        elif not self.workspace_root:
-            self.workspace_root = Path.cwd().resolve()
-
-        self._is_running = True
-
-        try:
-            from watchdog.events import FileSystemEventHandler
-            from watchdog.observers import Observer
-            from watchdog.observers.polling import PollingObserver
-
-            service_ref = self
-
-            class Handler(FileSystemEventHandler):
-                def on_any_event(self, event):
-                    if getattr(event, "is_directory", False):
-                        return
-                    src = getattr(event, "src_path", None)
-                    if src:
-                        service_ref.on_file_changed(src)
-                    dst = getattr(event, "dest_path", None)
-                    if dst:
-                        service_ref.on_file_changed(dst)
-
-            use_polling = os.getenv("KNOWLEDGE_DB_FORCE_POLLING", "0").lower() in ("1", "true", "yes")
-            self._observer = PollingObserver() if use_polling else Observer()
-            handler = Handler()
-
-            sm = self._get_space_manager()
-            watch_dirs = set()
-            try:
-                for sp in sm.list_spaces():
-                    for inc in sm.resolve_space_include(sp.name):
-                        p = Path(inc).resolve()
-                        if p.is_dir():
-                            watch_dirs.add(p)
-            except Exception:
-                pass
-
-            if not watch_dirs:
-                watch_dirs.add(self.workspace_root)
-
-            for d in watch_dirs:
-                if d.is_dir():
-                    self._observer.schedule(handler, str(d), recursive=True)
-
-            self._observer.start()
-            try:
-                indices_dir = self._get_pipeline().get_indices_dir()
-                active_file = indices_dir / ".watcher_active"
-                with open(active_file, "w", encoding="utf-8") as f:
-                    json.dump({"pid": os.getpid(), "time": time.time()}, f)
-            except Exception:
-                pass
-            logger.info(f"[{self.name}] Watchdog observer started for {len(watch_dirs)} directories.")
-        except Exception as e:
-            self._observer = None
-            try:
-                indices_dir = self._get_pipeline().get_indices_dir()
-                active_file = indices_dir / ".watcher_active"
-                if active_file.exists():
-                    active_file.unlink()
-            except Exception:
-                pass
-            logger.warning(f"[{self.name}] Watchdog failed to start: {e}. Running in passive mode.")
-
-    def stop(self) -> None:
-        """Stops the file observer and releases background resources."""
-        self._is_running = False
-
-        try:
-            indices_dir = self._get_pipeline().get_indices_dir()
-            active_file = indices_dir / ".watcher_active"
-            if active_file.exists():
-                active_file.unlink()
+            engine = self._get_engine()
+            clear_worker_state(engine.pipeline.get_indices_dir(), worker_running=False)
         except Exception:
             pass
 
-        with self._debounce_lock:
-            if self._debounce_timer:
-                self._debounce_timer.cancel()
-                self._debounce_timer = None
-            self._pending_dirty_paths.clear()
-
-        if self._observer:
-            try:
-                self._observer.stop()
-                self._observer.join(timeout=2.0)
-            except Exception:
-                pass
-            self._observer = None
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
 
     def health_check(self) -> bool:
-        """Returns True if the worker is actively running and observer thread is healthy."""
-        if not self._is_running:
-            return False
-        if self._observer is not None:
-            return self._observer.is_alive()
-        return True
+        return self.is_alive()
+
+    def run(self) -> None:
+        """Main background loop executing Stage 1 (Fast AST/BM25/Graph) and Stage 2 (Micro-batched Vector Sync)."""
+        try:
+            engine = self._get_engine()
+            indices_dir = engine.pipeline.get_indices_dir()
+            clear_worker_state(indices_dir, worker_running=True)
+            if hasattr(engine, "embedding_service") and engine.embedding_service is not None:
+                engine.embedding_service.suppress_guard_prompt = True
+        except Exception as exc:
+            logger.warning("[knowledge-db-worker] Failed to initialize engine in worker: %s", exc)
+            return
+
+        try:
+            while not self._stop_event.is_set():
+                self._wake_event.clear()
+                self._run_sync_cycle(engine, indices_dir)
+                if self._stop_event.is_set():
+                    break
+                # Wait for next `on_file_space_changed` wakeup or periodic self-check
+                self._wake_event.wait(timeout=2.0)
+        finally:
+            try:
+                clear_worker_state(indices_dir, worker_running=False)
+            except Exception:
+                pass
+
+    def _run_sync_cycle(self, engine: Any, indices_dir: Path) -> None:
+        """Execute a full background synchronization cycle (Stage 1 + Auto Model Download + Stage 2)."""
+        busy_start_ts: float = 0.0
+
+        def _mark_busy(phase: str, progress: str = "") -> None:
+            nonlocal busy_start_ts
+            if busy_start_ts <= 0.0:
+                busy_start_ts = time.time()
+            write_worker_state(
+                indices_dir,
+                busy=True,
+                start_ts=busy_start_ts,
+                phase=phase,
+                progress=progress,
+                worker_running=True,
+            )
+
+        try:
+            # Stage 1: Check and consume any pending space diffs (AST + BM25 + CallGraph only)
+            if self._has_pending_space_work(engine, indices_dir):
+                _mark_busy("stage1_ast_bm25_graph", "同步 AST 符號、BM25 倒排與呼叫圖譜")
+                self._sync_stage1_lexical_and_graph(engine, indices_dir)
+                self._space_diffs_processed += 1
+                self._last_sync_at = time.time()
+
+            if self._stop_event.is_set():
+                return
+
+            # Stage 2: Vector model auto-download & micro-batched vector self-healing
+            enable_vec = getattr(engine.config, "enable_vector_search", True)
+            if not enable_vec:
+                return
+
+            emb_svc = getattr(engine, "embedding_service", None)
+            if emb_svc is None:
+                return
+            emb_svc.suppress_guard_prompt = True
+
+            # Check if there is any vector deficit before downloading/loading model
+            deficit_info = engine.pipeline.get_vector_deficit_info()
+            needs_vectors = deficit_info["missing_count"] > 0 or deficit_info["stale_count"] > 0 or not deficit_info["compatible"]
+
+            if not emb_svc.mock_mode and not emb_svc.is_model_downloaded():
+                now = time.time()
+                if (now - self._last_download_attempt_ts) >= self.MODEL_DOWNLOAD_RETRY_COOLDOWN_SEC:
+                    self._last_download_attempt_ts = now
+                    _mark_busy("downloading_model", f"背景自動下載向量模型 {emb_svc.model_name}")
+                    try:
+                        emb_svc.download_model(force=False)
+                        needs_vectors = True
+                    except Exception as dl_err:
+                        logger.warning("[knowledge-db-worker] Background model download failed: %s", dl_err)
+                        return
+                else:
+                    return
+
+            if not emb_svc.is_available:
+                return
+
+            if not needs_vectors:
+                return
+
+            batch_size = max(1, int(getattr(engine.config, "vector_batch_size", 32) or 32))
+            while not self._stop_event.is_set():
+                # If new code changes arrived during Stage 2, immediately prioritize Stage 1!
+                if self._wake_event.is_set() and self._has_pending_space_work(engine, indices_dir):
+                    self._wake_event.clear()
+                    _mark_busy("stage1_ast_bm25_graph", "插隊同步最新變更之 AST / BM25 / 圖譜")
+                    self._sync_stage1_lexical_and_graph(engine, indices_dir)
+                    self._space_diffs_processed += 1
+
+                step_info = engine.pipeline.get_vector_deficit_info()
+                total_syms = step_info["total_symbols"]
+                embedded_before = max(0, total_syms - step_info["missing_count"])
+                if step_info["missing_count"] == 0 and step_info["stale_count"] == 0 and step_info["compatible"]:
+                    break
+
+                _mark_busy(
+                    "stage2_vector_microbatch",
+                    f"向量增量嵌入 ({embedded_before}/{total_syms})",
+                )
+                res = engine.pipeline.sync_vector_deficit_step(batch_size=batch_size)
+                embedded_step = int(res.get("embedded_in_step", 0))
+                removed_step = int(res.get("removed_stale", 0))
+                if embedded_step > 0 or removed_step > 0:
+                    self._vector_batches_processed += 1
+                    self._last_sync_at = time.time()
+                if res.get("remaining", 0) <= 0 or (embedded_step == 0 and removed_step == 0):
+                    break
+                # Brief yield between micro-batches
+                time.sleep(0.005)
+        except Exception as exc:
+            logger.warning("[knowledge-db-worker] Sync cycle warning: %s", exc)
+        finally:
+            if busy_start_ts > 0.0:
+                clear_worker_state(indices_dir, worker_running=not self._stop_event.is_set())
+
+    def _has_pending_space_work(self, engine: Any, indices_dir: Path) -> bool:
+        bin_file = indices_dir / "unified.index.bin.gz"
+        if not bin_file.exists():
+            return True
+        try:
+            scanner = getattr(engine, "scanner", None)
+            if scanner is not None and hasattr(scanner, "diff"):
+                diff_res = scanner.diff(consumer_id="knowledge-db", auto_refresh=False)
+                return bool(diff_res.has_changes)
+        except Exception:
+            pass
+        return False
+
+    def _sync_stage1_lexical_and_graph(self, engine: Any, indices_dir: Path) -> None:
+        """Stage 1 Fast Path: Update AST, BM25 inverted index, and CallGraph without blocking on vectors."""
+        bin_file = indices_dir / "unified.index.bin.gz"
+        with engine.pipeline._consume_space_diff(consumer_id="knowledge-db") as diff_res:
+            if not bin_file.exists() and engine.pipeline.unified_index is None:
+                engine.pipeline.build_unified_index(
+                    force=True,
+                    allow_parallel=False,
+                    skip_vectors=True,
+                )
+                return
+            if not diff_res.has_changes:
+                return
+            patch_res = engine.pipeline.hot_patch_unified_index(
+                diff_res.detail,
+                skip_vectors=True,
+            )
+            if not patch_res.success:
+                engine.pipeline.build_unified_index(
+                    force=True,
+                    allow_parallel=False,
+                    skip_vectors=True,
+                )
+
+    def get_custom_metrics(self) -> Dict[str, Any]:
+        try:
+            engine = self._get_engine()
+            indices_dir = engine.pipeline.get_indices_dir()
+            st = read_worker_state(indices_dir)
+        except Exception:
+            st = {"busy": False, "elapsed_ms": 0, "phase": "idle", "progress": ""}
+        return {
+            "busy": st.get("busy", False),
+            "busy_elapsed_ms": st.get("elapsed_ms", 0),
+            "phase": st.get("phase", "idle"),
+            "progress": st.get("progress", ""),
+            "space_diffs_processed": self._space_diffs_processed,
+            "vector_batches_processed": self._vector_batches_processed,
+            "last_sync_at": self._last_sync_at,
+        }
+

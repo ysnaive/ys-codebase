@@ -3,20 +3,23 @@ target: "Knowledge-DB/HotReload"
 doc_type: "topic"
 status: "active"
 source_paths:
-  - "yscb://source/knowledge-db/knowledge_db/scanner.py"
-  - "yscb://source/knowledge-db/knowledge_db/pipeline.py"
+  - "yscb://source/file-space/file_space/scanner.py"
+  - "yscb://source/file-space/file_space/service.py"
   - "yscb://source/knowledge-db/knowledge_db/service.py"
+  - "yscb://source/knowledge-db/knowledge_db/pipeline.py"
+  - "yscb://source/knowledge-db/scripts/hook.file-space.py"
 related_docs:
   - "./README.md"
+  - "../file-space/README.md"
   - "./architecture.md"
   - "./DESIGN_NOTES.md"
   - "../server/hot_reload_and_services.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-02"
 ---
 
-# 細粒度增量熱重載與常駐 ServiceWorker 熱自癒架構 (Incremental Hot Reload & ServiceWorker)
+# 細粒度增量熱重載與 `on_file_space_changed` 事件驅動熱自癒架構 (Incremental Hot Reload & Space Watcher)
 
-> 本文件說明 `knowledge-db` 模組的 `BinarySnapshotManager` (`unified.meta.bin`) 極速二進位快照、單檔符號快取池、全棧增量差量修補演算法，以及常駐 `KnowledgeDBServiceWorker` 500ms 防抖熱自癒架構。
+> 本文件說明 `knowledge-db` 模組如何基於 `module:file-space` 的 `YFP2` 單調世代二進位快照與 `cursors/knowledge-db.json` 獨立水位線游標，配合單檔符號快取池、全棧增量差量修補演算法以及 `scripts/hook.file-space.py` (`on_file_space_changed` 訂閱) 實現零冗餘掃描的自動熱自癒。
 
 ---
 
@@ -27,67 +30,53 @@ graph TD
     classDef step fill:#1e3a8a,stroke:#3b82f6,stroke-width:2px,color:#fff;
     classDef opt fill:#14532d,stroke:#22c55e,stroke-width:2px,color:#fff;
 
-    A["1. 變更感知入口 (JIT 嗅探或 Watchdog 500ms 防抖)<br/><code>os.scandir</code> 比對 <code>unified.meta.bin</code> (Magic: YFP1)<br/><b>100% 完整掃描無提前中斷</b>"]:::step
-    --> B{"是否有變更？"}
+    A["1. 變更感知入口 (前台 JIT consume_diff 或背景 file-space-watcher)<br/><code>module:file-space</code> 維護 <code>YFP2</code> 二進位快照與 <code>cursors/knowledge-db.json</code>"]:::step
+    --> B{"是否有未確認世代差量？<br/>(acked_gen &lt; head_generation)"}
     
-    B -- "無變更 / .watcher_active 旁路" --> C["微秒級比對 *.bin.gz mtime<br/>直接使用記憶體 <code>_GLOBAL_INDEX_CACHE</code> 響應查詢 (< 20ms)"]:::opt
-    B -- "有變更 (Dirty Files)" --> D["2. 差量分類 (Diff Detection)<br/>產出 <code>added</code>, <code>modified</code>, <code>deleted</code><br/>及 100% 完整 <code>current_files_map</code>"]:::step
+    B -- "無變更 (in_sync) / .watcher_active 旁路" --> C["微秒級比對 *.bin.gz mtime<br/>直接使用記憶體 <code>_GLOBAL_INDEX_CACHE</code> 響應查詢 (&lt; 20ms)"]:::opt
+    B -- "有變更 (Dirty Files)" --> D["2. 游標差量提取 (ScanDiffResult)<br/>取得相對於 <code>knowledge-db</code> 游標之 <code>added</code>, <code>modified</code>, <code>deleted</code>"]:::step
 
     D --> E["3. 符號快取復用 (Per-File Cache)<br/>僅對 modified/added 執行 Tree-sitter AST 解析<br/>未變更檔案直接復用記憶體 Symbol"]:::step
     
     E --> F["4. 全棧差量修補 (hot_patch_unified_index)<br/>• <code>InvertedIndex.patch_incremental()</code><br/>• <code>CallGraphIndex.patch_incremental()</code><br/>• <code>VectorIndex.patch_incremental()</code> (含 10 符號探針熔斷)"]:::step
     
-    F --> G["5. 原子落盤與雙重兜底 (Atomic Persistence)<br/><code>core.vfs.write_bytes(atomic=True)</code> 寫入 <code>unified.meta.bin</code> 與 <code>*.bin.gz</code><br/>若修補異常自動降級 <code>build_unified_index(force=True)</code> 全量自癒"]:::opt
+    F --> G["5. 原子落盤與游標 Ack (Atomic Persistence & Ack)<br/><code>core.vfs.write_bytes(atomic=True)</code> 寫入 <code>*.bin.gz</code> 後推進 <code>acked_gen</code><br/>若修補異常則不推進游標並自動降級 <code>build_unified_index(force=True)</code>"]:::opt
 ```
 
 ---
 
-## 2. 原生二進位快照與增量修補核心機制 (Core Snapshot & Patch Features)
+## 2. `YFP2` 快照游標消費與增量修補核心機制 (Core Snapshot & Patch Features)
 
-### 2.1 `BinarySnapshotManager` (`unified.meta.bin`) 二進位結構
-為消滅傳統 JSON 指紋檔解析緩慢與雙軌狀態撕裂問題，全系統以 `cache://knowledge-db/indices/unified.meta.bin` 為物理級單一真理來源 (Physical SSOT)：
+### 2.1 `module:file-space` `YFP2` 二進位快照與獨立消費者游標
+`knowledge-db` 將底層檔案指紋掃描與快照管理 100% 委由 `module:file-space` 負責：
+- **二進位快照 (`file-space.storage://snapshots/unified.yfp2.bin`)**：採用 Magic `b"YFP2"` 二進位結構，記錄單調遞增世代 `head_generation`、`merkle_root` 與每檔 `(created_gen, updated_gen, is_deleted)` 軟刪除墓碑（詳見 [`docs/file-space/README.md`](../file-space/README.md)）。
+- **獨立消費者游標 (`file-space.storage://cursors/knowledge-db.json`)**：`knowledge-db` 以固定 `consumer_id="knowledge-db"` 維護自身已處理完成的快照世代 `acked_gen`，與其他下游工具的游標完全隔離。
+- **索引與游標一致性守門**：當 `cache://knowledge-db/indices/` 下之基底索引被清除（如執行 `knowledge-db clean`）時，系統同步呼叫 `file_space.reset_cursor(consumer_id="knowledge-db")`，確保下次建立或查詢時必定觸發全量重建並對齊最新世代。
 
-| 區段 | `struct` 格式 | 長度 | 欄位組成與說明 |
-| :--- | :---: | :---: | :--- |
-| **Header** | `<4sHId` | 18 Bytes | `magic` (`b"YFP1"`, 4B) + `version` (`1`, uint16, 2B) + `total_files` (uint32, 4B) + `timestamp` (float64, 8B) |
-| **Entry (x N)** | `<HQd` + UTF-8 | 18 + $L$ Bytes | `path_len` ($L$, uint16, 2B) + `size` (uint64, 8B) + `mtime` (float64, 8B) + `canonical_path` ($L$ Bytes UTF-8) |
-
-- **極速反序列化**：載入數百至數千筆檔案記錄耗時 $< 0.1\text{ ms}$。
-- **原子持久化**：優先透過 `core.vfs.write_bytes(target_path, buffer, atomic=True)`（或同目錄暫存檔 + `os.replace`）寫入，杜絕寫入中斷導致快照損毀。
-
-### 2.2 100% 完整清冊保證 (No Truncated Map)
-`FingerprintScanner.check_invalidation()` 完整走訪所有已註冊空間之有效檔案，精確比對 `unified.meta.bin`，產出 `ScanDiffDetail` (`added`, `modified`, `deleted`) 與 100% 完整之 `current_files_map`，杜絕任何提前中斷返回截斷字典之問題，徹底根除「重複熱重載死循環」。
-
-### 2.3 `os.scandir` 遍歷加速與單檔符號快取池
-- **`os.scandir` 高速走訪**：直接自作業系統 `DirEntry.stat()` 取得 `(mtime, size)`，減少 50% 以上之系統呼叫開銷（千檔掃描僅 $2\sim 3\text{ ms}$）。
+### 2.2 單檔符號快取池与全棧差量打補丁 (`hot_patch_unified_index`)
 - **單檔符號記憶體快取 (`_file_symbols_cache`)**：`SemanticBundler` 維護單檔符號快取池，熱修補時僅對 `added` 與 `modified` 檔案重新執行 AST 解析，其餘未變更檔案 100% 記憶體零 I/O 復用。
-
-### 2.4 全棧四維差量打補丁 (`hot_patch_unified_index`)
-單次差量修補同步更新四大核心索引並以 `compresslevel=1` 快速寫盤（端到端延遲 $20\sim 50\text{ ms}$）：
-1. **倒排索引 (`InvertedIndex.patch_incremental`)**：採用對稱路徑匹配拔除 `deleted` / `modified` 舊檔案之 Postings 與 `doc_lengths`，注入新符號並動態重算 `field_avgdl`。
-2. **調用圖譜 (`CallGraphIndex.patch_incremental`)**：拔除異動檔案在 `networkx.DiGraph` 中的出入度邊，並由 `TopologyLinker` 重新鏈接注入新邊。
-3. **向量特徵 (`VectorIndex.patch_incremental`)**：差量移除舊符號向量並對新符號提取特徵（前台 JIT 模式受 10 符號動態探針保護，預估逾時則平滑熔斷退回純 BM25）。
+- **全棧三維差量打補丁**：單次差量修補同步更新三大核心索引並以 `compresslevel=1` 快速寫盤（端到端延遲 $20\sim 50\text{ ms}$）：
+  1. **倒排索引 (`InvertedIndex.patch_incremental`)**：採用對稱路徑匹配 (`io_utils.is_dirty_file_match`) 拔除 `deleted` / `modified` 舊檔案之 Postings 與 `doc_lengths`，注入新符號（含 C# `partial class` 跨檔重聚合）並動態重算 `field_avgdl`。
+  2. **調用圖譜 (`CallGraphIndex.patch_incremental`)**：透過 Stage 1 `Identity Remap` 與 Stage 2 `TopologyLinker` 更新異動檔案在 `networkx.DiGraph` 中的出入度邊。
+  3. **向量特徵 (`VectorIndex.patch_incremental`)**：差量移除舊符號向量並對新符號提取特徵（前台 JIT 模式受 10 符號動態探針保護，預估逾時則平滑熔斷退回純 BM25）。
 
 ---
 
-## 3. 常駐 `KnowledgeDBServiceWorker` 與 500ms 防抖熱自癒架構
+## 3. 常駐 `file-space-watcher` 與專屬 `KnowledgeDBServiceWorker` (`knowledge-db-worker`) 兩階段自癒架構
 
-當環境安裝選用模組 `server`（於 `manifest.json` 宣告為 `optional` 弱耦合依賴）時，`knowledge-db` 透過 `contributes/server.json` 註冊常駐背景服務 `KnowledgeDBServiceWorker` (`"knowledge-db-watcher"`)，由 `server` 模組統一託管生命週期與 Idle TTL：
+當環境啟動 `server` 常駐 Daemon 時，背景檔案系統 `watchdog` 監聽由 `file-space` 模組註冊之 `FileSpaceWatcherServiceWorker` (`file-space-watcher`) 單一託管，而 `knowledge-db` 則於 `contributes/server.json` 註冊專屬背景同步服務 `KnowledgeDBServiceWorker` (`knowledge-db-worker`)，透過事件驅動實現「Stage 1 快篩 + Stage 2 微批次向量補齊」兩階段管線：
 
-### 3.1 預熱事件與 Eager Preload (`pre_warm()`)
-- Worker 啟動時響應 `server` 發出之 `worker_warming` 事件，主動呼叫 `KnowledgeEngine.pre_warm()`，提前將 FastEmbed ONNX 模型單例與 `unified.index.bin.gz` / `unified.graph.bin.gz` / `unified.vectors.bin.gz` 載入進程記憶體 `_GLOBAL_INDEX_CACHE`，實現首發查詢零冷啟動延遲。
+### 3.1 預熱事件 (`hook.server.py:on_worker_warming`) 與組態守門
+- Server Warm Worker 啟動時響應 `worker_warming` 事件，主動呼叫 `KnowledgeEngine.pre_warm()`，提前將 `unified.index.bin.gz` / `unified.graph.bin.gz`（以及當 `config.enable_vector_search=True` 時之 `unified.vectors.bin.gz` 與 FastEmbed ONNX 模型單例）載入進程記憶體 `_GLOBAL_INDEX_CACHE`，實現首發查詢零冷啟動延遲。
 
-### 3.2 三層動態路徑過濾 (`is_path_watched`)
-背景 Watchdog 監聽目錄完全由 `SpaceManager.resolve_space_include()` 動態解算，嚴禁硬編碼目錄或副檔名，事件觸發時依序執行三層快篩：
-1. **第一層（VCS 與快取忽略）**：快速排除 `.git`, `.venv`, `__pycache__`, `.pytest_cache`, `.cache`, `.modules` 等系統目錄。
-2. **第二層（動態副檔名集合 `resolve_watch_extensions`）**：動態聚合 `ParserRegistry.get_supported_extensions()`（自 `contributes.knowledge-db.languages` 提取之 10 大語言副檔名）、`.json` 與所有空間之 `file_patterns`。
-3. **第三層（Space 歸屬校驗）**：比對檔案絕對路徑是否座落於已註冊空間之 `include` 根目錄下且符合排除規則。
+### 3.2 `on_file_space_changed` 喚醒與兩階段背景同步 (`KnowledgeDBServiceWorker`)
+- **Stage 1（Fast Path — AST + BM25 + CallGraph 快篩同步）**：當 `file-space-watcher` 經 500ms 防抖更新 `YFP2` 二進位快照並廣播 `on_file_space_changed` 後，`scripts/hook.file-space.py` 透過 O(1) `notify_space_changed()` 喚醒 `KnowledgeDBServiceWorker` 主迴圈。Worker 先以 `skip_vectors=True` 消費 `consume_diff("knowledge-db")`，秒級完成 AST 符號增量解析、BM25 倒排索引與調用圖譜更新並立即推進游標。
+- **背景模型自動下載（Auto Model Provisioning）**：若 `enable_vector_search=True` 且本地快取缺少 FastEmbed ONNX 權重（如清除快取或切換環境），`KnowledgeDBServiceWorker` 會在進入 Stage 2 前自動於背景執行 `embedding_service.download_model()`（靜默抑制 `[GUARD]` 警告，失敗時具備 60 秒退避冷卻），免除人工互動確認。
+- **Stage 2（Slow Path — 微批次向量差集自癒）**：Worker 主迴圈透過 `pipeline.get_vector_deficit_info()` 比對 `unified_index.symbols` 與 `vector_index.doc_ids` 之差集，以微批次 `sync_vector_deficit_step(batch_size=config.vector_batch_size)`（預設每批 `32` 符號，截斷 Docstring 至 `1000` 字元）逐步計算嵌入並以 `atomic_save_gzip_pickle(..., compresslevel=1)` 原子寫入 `unified.vectors.bin.gz`，直至覆蓋率達 100%。
 
-### 3.3 500ms 防抖熱修補與雙重剛性自癒兜底
-- **500ms 防抖聚合窗口**：當收到連續檔案存檔事件（Burst Saves）時，Worker 將變更路徑收集至 `_pending_dirty_paths`，建立 `.watcher_dirty` 標記並重設 `0.5s` `threading.Timer`，避免高頻磁碟 I/O 抖動。
-- **冷啟動倒排索引磁碟懶加載**：在 `hot_patch_unified_index()` 入口處，若記憶體 `self._unified_index` 為 `None` 且磁碟存在 `unified.index.bin.gz`，自動呼叫 `InvertedIndex.load_binary()` 還原基底索引至記憶體再執行差量打補丁，防止冷啟動短路失效。
-- **雙重剛性自癒兜底 (`build_unified_index(force=True)`)**：若增量熱修補回傳 `False`（如基底快取不存在或損毀）或拋出任何未預期例外，Worker 強制降級執行 `pipeline.build_unified_index(force=True, current_files=full_files_map)` 全量重建，100% 保證磁碟快照與索引最終一致。
-
-### 3.4 前台 `.watcher_active` 零阻塞旁路與 `_GLOBAL_INDEX_CACHE` 微秒級熱刷新
-- **前台零阻塞旁路**：`KnowledgeDBServiceWorker` 啟動時於 `indices/` 寫入 `.watcher_active`（停止時自動清除）。當前台檢索管線探測到 `.watcher_active` 存在且無 `.watcher_dirty` 時，**前台 0ms 直接略過同步 `os.scandir` 掃描與熱修補**，徹底消除前台查詢與背景防抖修補的競態阻塞。
-- **微秒級 `mtime` 記憶體熱刷新**：`_GLOBAL_INDEX_CACHE` 記錄 `unified_mtime`、`graph_mtime` 與 `vector_mtime`。背景 Worker 完成原子寫盤後，下次查詢僅比對磁碟 `*.bin.gz` 之微秒級 `st_mtime`，感知變更即就地熱重載記憶體快取，維持 $< 20\text{ ms}$ 瞬發檢索體驗。
+### 3.3 `is_worker_busy() -> int` 探針與 `jit_vector_timeout_ms` 動態容差降級
+- **已運行毫秒探針 (`is_worker_busy() -> int`)**：`KnowledgeDBServiceWorker` 執行背景任務時於 `indices/.kdb_worker_state.json` 記錄狀態與 `start_ts`（並附帶 PID 存活校驗防止死進程殘留）。`engine.is_worker_busy()` 回傳 `0` 代表空閒，`> 0` 代表當前任務已連續運行之毫秒數 `elapsed_ms`。
+- **動態剩餘時間等待與 0ms 瞬時降級**：當 `search()` 需要向量檢索且偵測到 `elapsed_ms = engine.is_worker_busy() > 0`（或向量覆蓋率尚未達標且 Worker 忙碌）時：
+  - 若 `elapsed_ms >= config.jit_vector_timeout_ms`（預設 `3000` ms）：代表後台正在執行長耗時任務（如初次全量嵌入或模型下載），前台**等待 0ms 立即降級為純 BM25 搜尋**，並於 `sys.stderr` 輸出 `[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]`。
+  - 若 `0 < elapsed_ms < config.jit_vector_timeout_ms`：前台僅等待剩餘時間 `remain_ms = timeout_ms - elapsed_ms`；若期間內 Worker 完成並轉為空閒，即熱重載最新 `unified.vectors.bin.gz` 執行 `hybrid_rrf`；若逾時則平滑降級為純 BM25 並輸出相同提示。
+- **微秒級 `mtime` 記憶體熱刷新**：`_GLOBAL_INDEX_CACHE` 記錄 `unified_mtime`、`graph_mtime` 與 `vector_mtime`。背景完成原子寫盤後，下次查詢僅比對磁碟 `*.bin.gz` 之微秒級 `st_mtime`，感知變更即就地熱重載記憶體快取，維持 $< 20\text{ ms}$ 瞬發檢索體驗。

@@ -1,6 +1,5 @@
 """
-Unit and Integration Tests for Knowledge-DB JIT Invalidation, Incremental Hot Reload, and Hot Healing.
-Unified Suite consolidating test_incremental_hot_reload.py and test_jit_hot_healing.py.
+Unit and Integration Tests for Knowledge-DB JIT Cursor Consumption, Incremental Hot Reload, and Hot Healing.
 """
 
 import os
@@ -19,48 +18,53 @@ from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 from knowledge_db.bundler import SemanticBundler
 from knowledge_db.engine import KnowledgeEngine
-from knowledge_db.retrieval import BM25Engine, InvertedIndex, QueryFilter
-from knowledge_db.scanner import BinarySnapshotManager, FingerprintScanner, ScanDiffDetail
-from knowledge_db.schema import SpaceConfig, UnifiedSymbol
+from knowledge_db.retrieval import InvertedIndex
+from knowledge_db.schema import UnifiedSymbol
 from knowledge_db.tokenizer import MultilingualTokenizer
+from file_space import FingerprintScanner, ScanDiffDetail, FileSpaceConfig
+from file_space.scanner import BinarySnapshotManager, FileFingerprint, SnapshotState
 
 
 class TestJITHotHealing(YSCBTestCase):
     """JIT 快照檢驗與熱自愈機制測試"""
 
     @require(Requirement.LOGIC)
-    def test_binary_snapshot_manager_perf_and_roundtrip(self):
-        """FT-04: 驗證 BinarySnapshotManager (YFP1) 原生二進位快照讀寫耗時與正確反序列化"""
+    def test_binary_snapshot_codec_perf_and_roundtrip(self):
+        """驗證 file_space.scanner.BinarySnapshotManager (YFP2) 原生二進位快照讀寫耗時與正確反序列化"""
         with tempfile.TemporaryDirectory() as temp_dir:
-            snap_path = Path(temp_dir) / "indices" / "unified.meta.bin"
+            snap_path = Path(temp_dir) / "main.yfp2.bin"
 
             mock_files = {
-                f"d:/repos/ys_codebase/source/module_{i % 5}/file_{i}.py": (1700000000.0 + i, 1024 + i)
+                f"source/module_{i % 5}/file_{i}.py": FileFingerprint(
+                    path=f"source/module_{i % 5}/file_{i}.py",
+                    mtime_ns=(1700000000 + i) * 1_000_000_000,
+                    size=1024 + i,
+                    content_hash=f"{i:040x}",
+                )
                 for i in range(1000)
             }
 
-            t0 = time.perf_counter()
-            BinarySnapshotManager.save(snap_path, mock_files)
-            write_time_ms = (time.perf_counter() - t0) * 1000
+            mgr = BinarySnapshotManager(snap_path)
+            mgr.save_state(SnapshotState(head_generation=1, entries=mock_files))
             self.assertTrue(snap_path.exists())
 
             t1 = time.perf_counter()
-            loaded_map = BinarySnapshotManager.load(snap_path)
+            loaded_state = mgr.load_state(snap_path)
             read_time_ms = (time.perf_counter() - t1) * 1000
 
-            self.assertIsNotNone(loaded_map)
-            self.assertEqual(len(loaded_map), 1000)
-            self.assertIn("d:/repos/ys_codebase/source/module_0/file_0.py", loaded_map)
-            mtime, size = loaded_map["d:/repos/ys_codebase/source/module_0/file_0.py"]
-            self.assertEqual(size, 1024)
-            self.assertEqual(mtime, 1700000000.0)
+            self.assertIsNotNone(loaded_state)
+            self.assertEqual(loaded_state.head_generation, 1)
+            self.assertEqual(len(loaded_state.entries), 1000)
+            self.assertIn("source/module_0/file_0.py", loaded_state.entries)
+            fp0 = loaded_state.entries["source/module_0/file_0.py"]
+            self.assertEqual(fp0.size, 1024)
             self.assertLess(read_time_ms, 50.0)
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_bundle_union_and_spaces_tagging(self):
-        """FT-01: 驗證全專案空間聯集去重掃描，相同檔案僅解析 1 次並標記多空間標籤"""
+        """驗證全專案空間聯集去重掃描，相同檔案僅解析 1 次並標記多空間標籤"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -70,15 +74,15 @@ class TestJITHotHealing(YSCBTestCase):
             file_a = src_dir / "common.py"
             file_a.write_text("class CommonHelper:\n    '''共用輔助工具類別'''\n    def execute(self): pass", encoding="utf-8")
 
-            sp_a = SpaceConfig(name="space_a", include=[str(src_dir)])
-            sp_b = SpaceConfig(name="space_b", include=[str(src_dir)])
+            sp_a = FileSpaceConfig(name="space_a", include=[str(src_dir)])
+            sp_b = FileSpaceConfig(name="space_b", include=[str(src_dir)])
 
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"space_a": sp_a.to_dict(), "space_b": sp_b.to_dict()}},
             )
 
-            bundler = SemanticBundler(engine.space_manager, engine.parser_registry)
+            bundler = SemanticBundler(engine.space_manager, engine.parser_registry, storage_dir=storage_dir)
             bundle = bundler.bundle_union()
 
             self.assertEqual(bundle.metadata["total_files"], 1)
@@ -89,7 +93,7 @@ class TestJITHotHealing(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_unified_inverted_index_and_space_filtering(self):
-        """FT-02: 驗證單一全域倒排索引 (unified.index.bin.gz) 與 BM25 空間標籤 O(1) 過濾"""
+        """驗證單一全域倒排索引 (unified.index.bin.gz) 與 BM25 空間標籤 O(1) 過濾"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -101,8 +105,8 @@ class TestJITHotHealing(YSCBTestCase):
             (src_dir / "service.py").write_text("class AuthEngine:\n    '''驗證授權引擎'''\n    pass", encoding="utf-8")
             (docs_dir / "AUTH.md").write_text("# AuthEngine 說明文件\n說明授權流程", encoding="utf-8")
 
-            sp_code = SpaceConfig(name="source", include=[str(src_dir)])
-            sp_docs = SpaceConfig(name="docs", include=[str(docs_dir)])
+            sp_code = FileSpaceConfig(name="source", include=[str(src_dir)])
+            sp_docs = FileSpaceConfig(name="docs", include=[str(docs_dir)])
 
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
@@ -129,7 +133,7 @@ class TestJITHotHealing(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_jit_invalidation_and_hot_healing(self):
-        """FT-03: 驗證檔案修改後，JIT 變更檢測精準感知並自動熱自愈"""
+        """驗證檔案修改後，JIT 游標差異檢測精準感知並自動熱自愈"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -139,7 +143,7 @@ class TestJITHotHealing(YSCBTestCase):
             app_file = src_dir / "app.py"
             app_file.write_text("class InitialClass:\n    pass", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -159,7 +163,7 @@ class TestJITHotHealing(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_no_auto_rebuild_flag(self):
-        """FT-05: 驗證 auto_rebuild=False 正確略過 JIT 重建"""
+        """驗證 auto_rebuild=False 正確略過 JIT 重建"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -169,7 +173,7 @@ class TestJITHotHealing(YSCBTestCase):
             app_file = src_dir / "app.py"
             app_file.write_text("class AlphaService:\n    pass", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -190,7 +194,7 @@ class TestJITHotHealing(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_edge_cases_missing_and_corrupted_snapshot(self):
-        """ET-01, ET-02: 驗證快照/索引缺失或損毀時，自動無縫自愈"""
+        """驗證快照或索引缺失或損毀時，自動無縫自愈"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -198,7 +202,7 @@ class TestJITHotHealing(YSCBTestCase):
             storage_dir = temp_path / "storage"
 
             (src_dir / "module.py").write_text("class EdgeTest:\n    pass", encoding="utf-8")
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -207,8 +211,9 @@ class TestJITHotHealing(YSCBTestCase):
             res1 = engine.search("EdgeTest", auto_rebuild=True)
             self.assertEqual(len(res1), 1)
 
-            meta_file = storage_dir / "indices" / "unified.meta.bin"
-            meta_file.write_bytes(b"CORRUPTED_GARBAGE_HEADER")
+            snap_file = engine.scanner.get_snapshot_path("main")
+            snap_file.parent.mkdir(parents=True, exist_ok=True)
+            snap_file.write_bytes(b"CORRUPTED_GARBAGE_HEADER")
 
             res2 = engine.search("EdgeTest", auto_rebuild=True)
             self.assertEqual(len(res2), 1)
@@ -217,7 +222,7 @@ class TestJITHotHealing(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_edge_case_deleted_file(self):
-        """ET-03: 驗證檔案刪除後，JIT 變更檢測感知並剔除過期符號"""
+        """驗證檔案刪除後，JIT 變更檢測感知並剔除過期符號"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -229,7 +234,7 @@ class TestJITHotHealing(YSCBTestCase):
             file1.write_text("class UniqueKeeper:\n    pass", encoding="utf-8")
             file2.write_text("class DestinedToDelete:\n    pass", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -247,11 +252,7 @@ class TestJITHotHealing(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_cold_start_vector_search_loads_disk_index(self):
-        """FT-REG: 驗證全新進程冷啟動 search 能解除死鎖並正確載入磁碟上的向量索引"""
-        import numpy as np
-        from knowledge_db.embedding import VectorIndex
-        from knowledge_db.pipeline import IndexingPipeline
-
+        """驗證全新進程冷啟動 search 能解除死鎖並正確載入磁碟上的向量索引"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -261,7 +262,7 @@ class TestJITHotHealing(YSCBTestCase):
             file1 = src_dir / "target.py"
             file1.write_text("class ColdStartSymbol:\n    pass\n", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine1 = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -269,25 +270,19 @@ class TestJITHotHealing(YSCBTestCase):
             )
             engine1.build_unified_index(force=True)
 
-            # 驗證向量二進位檔案存在
             indices_dir = engine1.pipeline.get_indices_dir()
             vec_file = indices_dir / "unified.vectors.bin.gz"
             self.assertTrue(vec_file.exists())
 
-            # 模擬全新的進程 (Cold Start: 記憶體無快取)
             engine2 = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
                 embedding_mock_mode=True,
             )
-            # 此時向量索引尚未加載至記憶體
             self.assertFalse(engine2.pipeline.hybrid_engine.is_vector_available)
 
-            # 執行搜尋 (應由 want_vectors 觸發 require_vectors=True 載入)
             results = engine2.search("ColdStartSymbol", lexical_only=False)
             self.assertGreater(len(results), 0)
-
-            # 驗證冷啟動後向量索引已成功加載至記憶體，未發生死鎖
             self.assertTrue(engine2.pipeline.hybrid_engine.is_vector_available)
 
         self.mark_passed()
@@ -297,8 +292,8 @@ class TestIncrementalHotReload(YSCBTestCase):
     """增量檔案變更偵測與差量索引修補測試"""
 
     @require(Requirement.LOGIC)
-    def test_ft_01_check_invalidation_full_scan(self):
-        """FT-01: 驗證 check_invalidation 在多檔有修改/新增時完整掃描，回傳完整清冊與差量明細"""
+    def test_ft_01_consume_diff_full_scan(self):
+        """驗證 consume_diff 在多檔有修改/新增時完整掃描，回傳差量明細並推進游標"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -311,15 +306,15 @@ class TestIncrementalHotReload(YSCBTestCase):
                 f.write_text(f"class Class{i}: pass", encoding="utf-8")
                 files.append(f)
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
             )
 
             engine.build_unified_index(force=True)
-            meta_path = storage_dir / "indices" / "unified.meta.bin"
-            self.assertTrue(meta_path.exists())
+            snap_path = engine.scanner.get_snapshot_path("main")
+            self.assertTrue(snap_path.exists())
 
             time.sleep(0.05)
             files[0].write_text("class Class0Modified: pass", encoding="utf-8")
@@ -327,28 +322,18 @@ class TestIncrementalHotReload(YSCBTestCase):
             f5 = src_dir / "file_5.py"
             f5.write_text("class Class5: pass", encoding="utf-8")
 
-            is_dirty, count, reason, files_map, diff = engine.scanner.check_invalidation(
-                snapshot_path=meta_path
-            )
-
-            self.assertTrue(is_dirty)
-            self.assertEqual(count, 6)
-            self.assertEqual(len(files_map), 6)
-
-            k0 = str(files[0].resolve()).replace("\\", "/")
-            k4 = str(files[4].resolve()).replace("\\", "/")
-            k5 = str(f5.resolve()).replace("\\", "/")
-
-            self.assertIn(k0, diff.modified)
-            self.assertIn(k4, diff.modified)
-            self.assertIn(k5, diff.added)
-            self.assertEqual(len(diff.deleted), 0)
+            with engine.scanner.consume_diff(consumer_id="knowledge-db") as diff_res:
+                self.assertTrue(diff_res.has_changes)
+                self.assertEqual(diff_res.total_changed + diff_res.unchanged_count, 6)
+                self.assertEqual(diff_res.modified_count, 2)
+                self.assertEqual(diff_res.added_count, 1)
+                self.assertEqual(diff_res.deleted_count, 0)
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_ft_02_per_file_symbol_cache(self):
-        """FT-02: 驗證 SemanticBundler 單檔符號快取：未變更檔案復用記憶體物件，僅重新解析 dirty 檔案"""
+        """驗證 SemanticBundler 單檔符號快取：未變更檔案復用記憶體物件，僅重新解析 dirty 檔案"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -360,7 +345,7 @@ class TestIncrementalHotReload(YSCBTestCase):
             f1.write_text("class Mod1:\n    def run(self): pass", encoding="utf-8")
             f2.write_text("class Mod2:\n    def exec(self): pass", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -392,7 +377,7 @@ class TestIncrementalHotReload(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_03_inverted_index_patch_incremental(self):
-        """FT-03: 驗證 InvertedIndex.patch_incremental 拔除舊 Postings、注入新 Postings 並動態重算 avgdl"""
+        """驗證 InvertedIndex.patch_incremental 拔除舊 Postings、注入新 Postings 並動態重算 avgdl"""
         idx = InvertedIndex(space_name="unified")
         tok = MultilingualTokenizer()
 
@@ -450,7 +435,7 @@ class TestIncrementalHotReload(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft_04_incremental_hot_reload_search(self):
-        """FT-04: 驗證 KnowledgeEngine.search 觸發增量熱自愈後，檢索結果即刻反映新增/修改/刪除之符號"""
+        """驗證 KnowledgeEngine.search 觸發增量熱自愈後，檢索結果即刻反映新增/修改/刪除之符號"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -460,7 +445,7 @@ class TestIncrementalHotReload(YSCBTestCase):
             app_file = src_dir / "app.py"
             app_file.write_text("class UserQueryEngine:\n    '''用戶查詢引擎'''\n    pass", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -484,7 +469,7 @@ class TestIncrementalHotReload(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_et_01_file_deletion_handling(self):
-        """ET-01: 驗證檔案刪除情境，快照中存在但磁碟不存在，正確移除符號、Postings 與快取"""
+        """驗證檔案刪除情境，快照中存在但磁碟不存在，正確移除符號、Postings 與快取"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -496,7 +481,7 @@ class TestIncrementalHotReload(YSCBTestCase):
             f1.write_text("class PermanentKeeper: pass", encoding="utf-8")
             f2.write_text("class TemporaryObject: pass", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -516,7 +501,7 @@ class TestIncrementalHotReload(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_et_02_empty_file_handling(self):
-        """ET-02: 驗證檔案修改為空內容 (Empty/Non-symbol File)：舊符號乾淨移除不拋例外"""
+        """驗證檔案修改為空內容 (Empty/Non-symbol File)：舊符號乾淨移除不拋例外"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -526,7 +511,7 @@ class TestIncrementalHotReload(YSCBTestCase):
             f1 = src_dir / "target.py"
             f1.write_text("class WillBeEmpty: pass", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -544,7 +529,7 @@ class TestIncrementalHotReload(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_et_03_corrupted_snapshot_fallback(self):
-        """ET-03: 驗證快照損毀時自動安全降級為 Full Rebuild 並恢復正常狀態"""
+        """驗證快照損毀時自動安全降級為重建並恢復正常狀態"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -554,7 +539,7 @@ class TestIncrementalHotReload(YSCBTestCase):
             f1 = src_dir / "code.py"
             f1.write_text("class SafeFallbackClass: pass", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -562,8 +547,8 @@ class TestIncrementalHotReload(YSCBTestCase):
 
             engine.search("SafeFallbackClass", auto_rebuild=True)
 
-            meta_path = storage_dir / "indices" / "unified.meta.bin"
-            meta_path.write_bytes(b"CORRUPTED_BIN_HEADER_123")
+            snap_path = engine.scanner.get_snapshot_path("main")
+            snap_path.write_bytes(b"CORRUPTED_BIN_HEADER_123")
 
             r = engine.search("SafeFallbackClass", auto_rebuild=True)
             self.assertEqual(len(r), 1)
@@ -572,7 +557,7 @@ class TestIncrementalHotReload(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_rt_01_no_infinite_hot_reload_loop(self):
-        """RT-01 (Bugfix 回歸防護): 修改 1 檔觸發熱自愈後，後續查詢絕對不再重複觸發熱重載"""
+        """修改 1 檔觸發熱自愈後，游標推進至最新世代，後續查詢絕對不再重複觸發熱重載"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -582,7 +567,7 @@ class TestIncrementalHotReload(YSCBTestCase):
             for i in range(10):
                 (src_dir / f"file_{i}.py").write_text(f"class FileClass{i}: pass", encoding="utf-8")
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
@@ -598,14 +583,10 @@ class TestIncrementalHotReload(YSCBTestCase):
             first_sym = r1[0].items[0].symbol if hasattr(r1[0], "items") else r1[0].symbol
             self.assertEqual(first_sym.name, "FileClass2Modified")
 
-            meta_path = storage_dir / "indices" / "unified.meta.bin"
-            is_dirty, count, reason, files_map, diff = engine.scanner.check_invalidation(
-                snapshot_path=meta_path
-            )
-
-            self.assertFalse(is_dirty, f"Expected clean state but got dirty: {reason}")
-            self.assertEqual(len(diff.dirty_files), 0)
-            self.assertEqual(count, 10)
+            with engine.scanner.consume_diff(consumer_id="knowledge-db") as diff_res:
+                self.assertFalse(diff_res.has_changes, f"Expected clean cursor state but got changes: {diff_res}")
+                self.assertEqual(len(diff_res.detail.dirty_files), 0)
+                self.assertEqual(diff_res.total_changed + diff_res.unchanged_count, 10)
 
             for q in ["FileClass0", "FileClass5", "FileClass9"]:
                 res = engine.search(q, auto_rebuild=True)
@@ -615,7 +596,7 @@ class TestIncrementalHotReload(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_pt_01_incremental_latency_benchmark(self):
-        """PT-01: 模擬 50 檔規模下單檔微小修改觸發之增量熱自愈端到端耗時"""
+        """模擬 50 檔規模下單檔微小修改觸發之增量熱自愈端到端耗時"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -635,7 +616,7 @@ class TestIncrementalHotReload(YSCBTestCase):
                 )
                 files.append(f)
 
-            sp = SpaceConfig(name="main", include=[str(src_dir)])
+            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},

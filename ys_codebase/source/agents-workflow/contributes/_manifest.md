@@ -17,6 +17,12 @@
 - 導出 20 大領域、工作流與引導教練純 Skill 技能包（`.agents/skills/` 或 `.claude/skills/`），含 `/how-to-config-yscb`、`/how-to-yscb`、`/skill-creator`、`/session-audit`、`/code-optimizer` 與 `/blind-subagent`。
 - 導出 16 個標準計畫模板（P00~P07、Fast Track、Umbrella、Roadmap、Todo、Changelog 等）與 6 大核心標準規範（`AgentsStandards`、`CodeQualityStandards`、`SkillDesignStandards`、`YscbSkillDesignToolStandards`、`SubagentStandards`、`BlindSubagentStandards`，含 `PROJECT_ROLE_AND_BOUNDARIES`、`SESSION_AUDIT_STANDARDS` 與 `CODE_OPTIMIZER_STANDARDS` 錨點）。
 
+### 1.3 `file-space.json`（工作空間幾何註冊）
+- 向 `file-space` 模組註冊 `docs`（`workflow.docs://`）與 `plans`（`workflow.plans://`）工作空間幾何、排除規則與分級雜湊策略。
+
+### 1.4 `knowledge-db.json`（知識庫檢索空間權重）
+- 向 `knowledge-db` 模組注入 `docs` 與 `plans` 邏輯空間之檢索加權係數（`space_weights`）。
+
 ## 2. 開放擴充點清冊 (Ingress Points)
 - `export`: 允許其他領域模組導出 Skill、模板或標準規範資產。
 - `token`: 宣告動態注入錨點（如 `PHASEXX_HEADER`、`AGENTS_SKILL_ROUTING` 等）。

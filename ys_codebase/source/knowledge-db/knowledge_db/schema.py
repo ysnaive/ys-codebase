@@ -4,11 +4,10 @@ knowledge-db 核心資料結構、Enums 與 Schema 模型
 
 from dataclasses import dataclass, field
 from enum import Enum
-import fnmatch
 import hashlib
 from typing import Any, Dict, List, Optional, Tuple
 
-from .exceptions import InvalidSpaceConfigError, SchemaValidationError
+from .exceptions import InvalidConfigError, SchemaValidationError
 
 
 class SymbolKind(str, Enum):
@@ -46,12 +45,6 @@ class LanguageType(str, Enum):
     JSON = "json"
     TEXT = "text"
     UNKNOWN = "unknown"
-
-
-class SpaceOrigin(str, Enum):
-    CONTRIBUTED = "contributed"
-    PROJECT = "project"
-    LOCAL = "local"
 
 
 @dataclass(frozen=True)
@@ -129,6 +122,60 @@ class LanguageConfig:
             parser_entry=data.get("parser_entry"),
             custom_kinds=tuple(dict(k) for k in data.get("custom_kinds", [])),
         )
+
+
+def validate_space_weights(raw_weights: Any) -> Dict[str, float]:
+    """校驗並正規化邏輯空間檢索權重映射表"""
+    if raw_weights is None:
+        return {}
+    if not isinstance(raw_weights, dict):
+        raise InvalidConfigError("space_weights must be a dict mapping space names to positive floats.")
+    validated: Dict[str, float] = {}
+    for space_name, weight_val in raw_weights.items():
+        if isinstance(weight_val, bool):
+            raise InvalidConfigError(f"Space '{space_name}' weight must be a number, got {weight_val!r}.")
+        try:
+            w = float(weight_val)
+        except (TypeError, ValueError) as exc:
+            raise InvalidConfigError(f"Space '{space_name}' weight must be a number, got {weight_val!r}.") from exc
+        if w <= 0.0:
+            raise InvalidConfigError(f"Space '{space_name}' weight must be > 0, got {w}.")
+        validated[str(space_name)] = w
+    return validated
+
+
+@dataclass(frozen=True)
+class KnowledgeDBContributes:
+    """knowledge-db 擴充貢獻結構模型（space_weights 與 languages）"""
+    space_weights: Dict[str, float] = field(default_factory=dict)
+    languages: Dict[str, LanguageConfig] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        validated_weights = validate_space_weights(self.space_weights)
+        object.__setattr__(self, "space_weights", validated_weights)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "space_weights": dict(self.space_weights),
+            "languages": {k: v.to_dict() for k, v in self.languages.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "KnowledgeDBContributes":
+        if not isinstance(data, dict):
+            raise InvalidConfigError("KnowledgeDBContributes data must be a dict.")
+        weights = validate_space_weights(data.get("space_weights", {}))
+        raw_langs = data.get("languages", {})
+        languages: Dict[str, LanguageConfig] = {}
+        if isinstance(raw_langs, dict):
+            for lang_id, lang_data in raw_langs.items():
+                if isinstance(lang_data, LanguageConfig):
+                    languages[str(lang_id)] = lang_data
+                elif isinstance(lang_data, dict):
+                    merged = dict(lang_data)
+                    merged.setdefault("id", str(lang_id))
+                    languages[str(lang_id)] = LanguageConfig.from_dict(merged)
+        return cls(space_weights=weights, languages=languages)
 
 
 @dataclass(frozen=True)
@@ -335,86 +382,6 @@ class AggregatedFileResult:
             "item_count": len(self.items),
             "items": [item.to_dict() for item in self.items],
         }
-
-
-@dataclass
-class SpaceConfig:
-    name: str
-    description: str = ""
-    include: List[str] = field(default_factory=list)
-    exclude: List[str] = field(default_factory=list)
-    file_patterns: Optional[List[str]] = None
-    origin: str = "project"
-    weight: float = 1.0
-
-    def __post_init__(self) -> None:
-        try:
-            w = float(self.weight)
-        except (TypeError, ValueError) as e:
-            raise InvalidSpaceConfigError(f"Space '{self.name}' weight must be a number, got {self.weight!r}.") from e
-        if w <= 0.0:
-            raise InvalidSpaceConfigError(f"Space '{self.name}' weight must be > 0, got {w}.")
-        self.weight = w
-
-    def is_file_included(self, filename: str) -> bool:
-        """
-        若未指定 file_patterns 則預設全包含 (include all)；若有指定則依 pattern 比對
-        """
-        if not self.file_patterns:
-            return True
-        return any(fnmatch.fnmatch(filename, pat) for pat in self.file_patterns)
-
-    def to_dict(self) -> Dict[str, Any]:
-        result = {
-            "name": self.name,
-            "description": self.description,
-            "include": list(self.include),
-            "exclude": list(self.exclude),
-            "origin": self.origin,
-            "weight": self.weight,
-        }
-        if self.file_patterns is not None:
-            result["file_patterns"] = list(self.file_patterns)
-        return result
-
-    @classmethod
-    def from_dict(cls, name: str, data: Dict[str, Any], origin: str = "project") -> "SpaceConfig":
-        if not isinstance(data, dict):
-            raise InvalidSpaceConfigError(f"Space config for '{name}' must be a dict.")
-        include = data.get("include")
-        if include is None or not isinstance(include, list):
-            raise InvalidSpaceConfigError(f"Space '{name}' requires 'include' list.")
-
-        exclude = data.get("exclude", [])
-        if not isinstance(exclude, list):
-            exclude = [str(exclude)]
-
-        file_patterns = data.get("file_patterns")
-        if file_patterns is not None and not isinstance(file_patterns, list):
-            file_patterns = [str(file_patterns)]
-
-        raw_weight = data.get("weight", 1.0)
-        if raw_weight is None:
-            raw_weight = 1.0
-        try:
-            weight = float(raw_weight)
-        except (TypeError, ValueError) as e:
-            raise InvalidSpaceConfigError(f"Space '{name}' weight must be a positive number, got {raw_weight!r}.") from e
-        if weight <= 0.0:
-            raise InvalidSpaceConfigError(f"Space '{name}' weight must be > 0, got {weight}.")
-
-        return cls(
-            name=name,
-            description=str(data.get("description", "")),
-            include=[str(item) for item in include],
-            exclude=[str(item) for item in exclude],
-            file_patterns=[str(item) for item in file_patterns] if file_patterns is not None else None,
-            origin=str(data.get("origin", origin)),
-            weight=weight,
-        )
-
-
-SpaceDef = SpaceConfig
 
 
 @dataclass(frozen=True)

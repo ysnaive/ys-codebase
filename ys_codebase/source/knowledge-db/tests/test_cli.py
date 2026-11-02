@@ -98,22 +98,23 @@ class TestCLI(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_status_with_scan(self):
-        """FT-02: 驗證 status --scan / status --diff 正常輸出空間指紋統計與變更"""
-        buf_scan = io.StringIO()
-        with contextlib.redirect_stdout(buf_scan):
-            ret = process(["status", "--scan"])
+    def test_status_json_output(self):
+        """驗證 status 與 status --json 正常輸出空間資訊、權重與索引統計"""
+        buf_text = io.StringIO()
+        with contextlib.redirect_stdout(buf_text):
+            ret = process(["status"])
         self.assertEqual(ret, 0)
-        out_scan = buf_scan.getvalue()
-        self.assertIn("系統狀態摘要", out_scan)
-        self.assertIn("增量指紋比對結果", out_scan)
+        out_text = buf_text.getvalue()
+        self.assertIn("系統狀態摘要", out_text)
 
-        buf_diff = io.StringIO()
-        with contextlib.redirect_stdout(buf_diff):
-            ret = process(["status", "--diff"])
+        buf_json = io.StringIO()
+        with contextlib.redirect_stdout(buf_json):
+            ret = process(["status", "--json"])
         self.assertEqual(ret, 0)
-        out_diff = buf_diff.getvalue()
-        self.assertIn("增量指紋比對結果", out_diff)
+        st_data = json.loads(buf_json.getvalue())
+        self.assertIn("total_spaces", st_data)
+        self.assertIn("spaces", st_data)
+        self.assertIn("storage_dir", st_data)
         self.mark_passed()
 
     @require(Requirement.LOGIC)

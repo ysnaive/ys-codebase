@@ -12,8 +12,9 @@ from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
 import knowledge_db.config as kdb_config
 from knowledge_db.engine import KnowledgeEngine, get_engine
-from knowledge_db.exceptions import KnowledgeDBError, SpaceNotFoundError
+from knowledge_db.exceptions import KnowledgeDBError
 from knowledge_db.formatter import TerminalStyler
+from file_space import FileSpaceNotFoundError
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
@@ -56,74 +57,145 @@ def _setup_stream_encodings():
 
 
 def status(cmd_bags: Any) -> int:
-    """查看知識庫空間狀態、指紋快取、同義詞與索引統計。"""
+    """查看知識庫後台服務、三大核心索引、檢索模式、組態與空間游標同步詳盡統計。"""
     guard_dispatch("knowledge-db")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "status")
     engine = get_engine()
 
     try:
-        scan_mode = bags.has_option("scan") or bags.has_option("diff")
         targets = bags.args
         space_target = bags.get_option_value("space") or (targets[0] if targets and not (bags.has_option("all") or bags.has_option("a")) else None)
 
-        st = engine.status(space=space_target, scan=scan_mode)
+        st = engine.status(space=space_target)
         if bags.has_option("json"):
-            json_st = dict(st)
-            if "scan_diff" in json_st and json_st["scan_diff"]:
-                json_st["scan_diff"] = {
-                    k: {
-                        "added": list(v.added),
-                        "modified": list(v.modified),
-                        "deleted": list(v.deleted),
-                        "unchanged": list(v.unchanged),
-                    }
-                    for k, v in json_st["scan_diff"].items()
-                }
-            print(json.dumps(json_st, indent=2, ensure_ascii=False))
+            print(json.dumps(dict(st), indent=2, ensure_ascii=False))
             return 0
         styler = TerminalStyler(sys.stdout)
+        worker_info = st.get("worker") or {}
+        indices_info = st.get("indices") or {}
+        bm25_info = indices_info.get("bm25") or {}
+        graph_info = indices_info.get("graph") or {}
+        vec_info = indices_info.get("vector") or {}
+
         print(f"[knowledge-db] 系統狀態摘要 (共 {st['total_spaces']} 個空間):")
         print(f"  - 存儲空間根目錄: {styler.path(st['storage_dir'])}")
-        unified_str = styler.symbol("已建立") if st.get("has_unified_index") else styler.warn("未建立")
-        print(f"  - 全域倒排索引: {unified_str}")
+
+        # 1. 後台服務與忙碌探針
+        w_running = bool(worker_info.get("running"))
+        w_busy_ms = int(worker_info.get("busy_elapsed_ms", 0) or 0)
+        w_phase = worker_info.get("phase", "idle")
+        w_prog = worker_info.get("progress", "")
+        if w_running:
+            w_run_str = styler.symbol(f"運行中 (knowledge-db-worker, PID: {worker_info.get('pid') or 'in-process'})")
+        else:
+            w_run_str = styler.line("未啟動 (Standalone 前台模式)")
+        if w_busy_ms > 0:
+            prog_suffix = f" | {w_prog}" if w_prog else ""
+            w_busy_str = styler.warn(f"忙碌中 (已運行 {w_busy_ms} ms | 階段: {w_phase}{prog_suffix})")
+        else:
+            w_busy_str = styler.symbol("空閒 (0 ms)")
+        print(f"  - 後台常駐服務  : {w_run_str} | 探針狀態: {w_busy_str}")
+
+        # 2. 生效檢索模式與原因
+        ret_mode = st.get("retrieval_mode", "lexical_bm25")
+        ret_reason = st.get("retrieval_reason", "")
+        if str(ret_mode).startswith("hybrid_rrf"):
+            mode_str = styler.symbol(f"{ret_mode} — {ret_reason}")
+        else:
+            mode_str = styler.warn(f"{ret_mode} — {ret_reason}")
+        print(f"  - 當前檢索模式  : {mode_str}")
+
+        # 3. 三大核心索引細部指標
+        if st.get("has_unified_index"):
+            unified_str = styler.symbol(
+                f"已建立 ({bm25_info.get('symbol_count', 0)} 個符號, "
+                f"{bm25_info.get('term_count', 0)} 個詞條, "
+                f"{bm25_info.get('size_kb', 0.0)} KB)"
+            )
+        else:
+            unified_str = styler.warn("未建立")
+        print(f"  - 全域倒排索引  : {unified_str}")
+
+        if st.get("has_graph_index"):
+            graph_str = styler.symbol(
+                f"已建立 ({graph_info.get('node_count', 0)} 個節點, "
+                f"{graph_info.get('edge_count', 0)} 條呼叫邊, "
+                f"{graph_info.get('size_kb', 0.0)} KB)"
+            )
+        else:
+            graph_str = styler.warn("未建立")
+        print(f"  - 雙向呼叫圖譜  : {graph_str}")
+
+        vec_status = vec_info.get("status", "missing")
+        emb_cnt = vec_info.get("embedded_count", 0)
+        tot_cnt = vec_info.get("total_symbols", 0)
+        cov_pct = vec_info.get("coverage_pct", 0.0)
+        miss_cnt = vec_info.get("missing_count", 0)
+        vec_dim = vec_info.get("dimension", 512)
+        vec_kb = vec_info.get("size_kb", 0.0)
+
         if not st.get("enable_vector_search"):
             vec_str = styler.line("已停用 (依組態停用向量檢索)")
-        elif st.get("has_vector_index"):
-            vec_str = styler.symbol(f"已建立 (模型: {st.get('embedding_model')})")
+        elif vec_status == "ready" or (st.get("has_vector_index") and miss_cnt == 0 and emb_cnt > 0):
+            vec_str = styler.symbol(
+                f"已建立 ({emb_cnt}/{tot_cnt} 向量, 覆蓋率 {cov_pct}%, 維度 {vec_dim}, {vec_kb} KB)"
+            )
+        elif st.get("has_vector_index") and emb_cnt > 0:
+            vec_str = styler.warn(
+                f"部分建立/同步中 ({emb_cnt}/{tot_cnt} 向量, 覆蓋率 {cov_pct}%, 待補 {miss_cnt} 個, 維度 {vec_dim}, {vec_kb} KB)"
+            )
         else:
-            vec_str = styler.warn("未建立")
-        print(f"  - 向量特徵索引: {vec_str}")
-        model_str = styler.symbol("已下載") if st.get("model_downloaded") else styler.warn("未下載 (離線時自動降級 BM25)")
-        print(f"  - 向量模型權重: {model_str}")
+            vec_str = styler.warn(f"未建立 (0/{tot_cnt} 向量, 待補 {miss_cnt} 個)")
+        print(f"  - 向量特徵索引  : {vec_str}")
+
+        # 4. 向量模型與執行期組態
+        if st.get("model_downloaded"):
+            model_str = styler.symbol(f"已下載 ({st.get('embedding_model')})")
+        elif w_running and st.get("enable_vector_search"):
+            model_str = styler.warn(f"未下載 ({st.get('embedding_model')} — 後台 Worker 將自動下載)")
+        else:
+            model_str = styler.warn(f"未下載 ({st.get('embedding_model')} — 離線時自動降級 BM25)")
+        print(f"  - 向量模型權重  : {model_str}")
+        print(
+            f"  - 執行期組態參數: 容差等待/熔斷={st.get('jit_vector_timeout_ms', 3000)} ms, "
+            f"微批次大小={st.get('vector_batch_size', 32)}, "
+            f"執行緒預算={st.get('max_threads', 1)}"
+        )
+
+        langs = st.get("registered_languages") or []
         load_errs = st.get("parser_load_errors") or {}
         if load_errs:
-            print(f"  - 解析器狀態  : {styler.warn(f'警告 ({len(load_errs)} 個語言載入失敗)')}")
+            print(f"  - 解析器狀態    : {styler.warn(f'警告 ({len(load_errs)} 個語言載入失敗)')}")
             for lid, err_txt in load_errs.items():
                 print(f"    [WARN] 語言 '{lid}': {err_txt}", file=sys.stderr)
+        elif langs:
+            print(f"  - 已註冊解析器  : {len(langs)} 種語言 ({', '.join(langs)})")
+
         print("-" * 80)
         for name, sp in st["spaces"].items():
-            pat_str = f" [patterns: {', '.join(sp['file_patterns'])}]" if sp.get('file_patterns') else " [all files]"
-            is_idx = sp.get('has_index') or st.get("has_unified_index")
+            pat_str = f" [patterns: {', '.join(sp['file_patterns'])}]" if sp.get("file_patterns") else " [all files]"
+            is_idx = sp.get("has_index") or st.get("has_unified_index")
             idx_str = styler.symbol("已建立") if is_idx else styler.warn("未建立")
-            print(f"  - 空間: {styler.path(name)} (來源: {sp.get('origin', 'unknown')}){pat_str}")
+            head_gen = sp.get("head_generation", 0)
+            acked_gen = sp.get("acked_generation", 0)
+            sync_str = (
+                styler.symbol(f"已對齊 (gen {acked_gen}/{head_gen})")
+                if sp.get("in_sync")
+                else styler.warn(f"待同步 (acked {acked_gen} / head {head_gen})")
+            )
+            print(f"  - 空間: {styler.path(name)} (來源: {sp.get('origin', 'unknown')}, 權重: {sp.get('weight', 1.0)}){pat_str}")
             if sp.get("description"):
                 print(f"    說明: {sp['description']}")
-            print(f"    來源目錄數: {sp.get('include_count', 0)}, 快取檔案: {sp.get('cached_files', 0)} 檔, 倒排索引: {idx_str}")
+            print(
+                f"    來源目錄數: {sp.get('include_count', 0)}, "
+                f"納管檔案: {sp.get('cached_files', 0)} 檔, "
+                f"倒排索引: {idx_str}, "
+                f"游標水位: {sync_str}"
+            )
         print("-" * 80)
-
-        if scan_mode and st.get("scan_diff"):
-            diffs = st["scan_diff"]
-            print("[knowledge-db] 增量指紋比對結果:")
-            for sp_name, diff in diffs.items():
-                print(
-                    f"  - 空間 '{sp_name}': Added={len(diff.added)}, Modified={len(diff.modified)}, "
-                    f"Deleted={len(diff.deleted)}, Unchanged={len(diff.unchanged)}"
-                )
-            print("-" * 80)
-
         return 0
-    except SpaceNotFoundError as e:
+    except FileSpaceNotFoundError as e:
         print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
         return 1
     except KnowledgeDBError as e:
@@ -162,7 +234,7 @@ def index(cmd_bags: Any) -> int:
         if export_arg:
             print(f"  - 語意 Bundle 已導出至: {export_arg}")
         return 0
-    except SpaceNotFoundError as e:
+    except FileSpaceNotFoundError as e:
         print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
         return 1
     except KnowledgeDBError as e:
@@ -436,7 +508,7 @@ def search(cmd_bags: Any) -> int:
         )
         print(formatted_output)
         return 0
-    except SpaceNotFoundError as e:
+    except FileSpaceNotFoundError as e:
         print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
         return 1
     except KnowledgeDBError as e:
@@ -673,7 +745,7 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
             limit_mode=limit_val,
         ))
         return 0
-    except SpaceNotFoundError as e:
+    except FileSpaceNotFoundError as e:
         print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
         return 1
     except KnowledgeDBError as e:
@@ -726,7 +798,7 @@ def clean(cmd_bags: Any) -> int:
         target_str = f"空間 '{space_target}'" if space_target else "全空間"
         print(f"[knowledge-db] 成功清理 {target_str} 之指紋、Bundle 與倒排索引快取。")
         return 0
-    except SpaceNotFoundError as e:
+    except FileSpaceNotFoundError as e:
         print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
         return 1
     except KnowledgeDBError as e:

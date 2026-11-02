@@ -11,15 +11,11 @@
 > **[Pre-flight Check] AI Agent 初始化確認**：初次為下游專案設定 `knowledge-db` 前，請先向開發者確認：**① 欲納入檢索的原始碼目錄（如 `src/`, `lib/`）與副檔名**，以及 **② 是否下載本地 ONNX 向量模型（或關閉向量檢索改用輕量極速之純 BM25 模式）**。
 
 ```bash
-# 1. 設定專案源碼掃描空間 (於 config/knowledge-db/contribute.json 宣告)
-# 若檔案不存在可直接建立，注意鍵名為 include：
+# 1. 設定專案工作空間幾何 (於 config/file-space/contribute.json 宣告) 與檢索加權係數 (於 config/knowledge-db/contribute.json 宣告)
+# config/knowledge-db/contribute.json:
 # {
-#   "spaces": {
-#     "source": {
-#       "description": "專案核心原始碼空間",
-#       "include": ["project://src", "project://lib"],
-#       "file_patterns": ["*.py", "*.cpp", "*.h", "*.ts", "*.js"]
-#     }
+#   "space_weights": {
+#     "source": 1.0
 #   }
 # }
 
@@ -50,10 +46,10 @@ graph TD
     CLI["CLI 入口<br/><code>python yscb.py knowledge-db &lt;command&gt;</code>"]:::main
 
     subgraph KnowledgeDBModule ["Knowledge-DB 模組 (module:knowledge-db)"]
-        Scanner["極速快照與熱自癒 (BinarySnapshotManager & Watcher)<br/><i>os.scandir + unified.meta.bin (Magic YFP1) / 500ms 防抖</i>"]:::sub
+        Scanner["多消費者游標增量與兩階段背景 Worker (module:file-space + knowledge-db-worker)<br/><i>YFP2 二進位快照 + consume_diff(consumer_id='knowledge-db') / Stage 1 快篩 + Stage 2 微批次向量補齊</i>"]:::sub
         Parsers["聲明式 AST 符號解析 (Tree-sitter & LanguageRegistry)<br/><i>零特權 Contributed 擴充，支援 Python, C, C++, C#, JS/TS, Markdown, SPICE 等 10 大語言</i>"]:::sub
         Tokenizer["中英混雜分詞 (MultilingualTokenizer)<br/><i>CJK 1/2-gram / 駝峰蛇形拆解</i>"]:::sub
-        Retrieval["複合檢索引擎 (HybridSearchEngine)<br/><i>BM25 預先過濾下推 + FastEmbed ONNX 向量 (預設 512-dim) RRF 融合</i>"]:::sub
+        Retrieval["複合檢索引擎 (HybridSearchEngine)<br/><i>BM25 預先過濾下推 + FastEmbed ONNX 向量 (預設 512-dim) RRF 融合 + is_worker_busy 動態容差</i>"]:::sub
         Graph["調用圖譜引擎 (Call Graph Engine)<br/><i>networkx.DiGraph / Callers / Callees / Impact</i>"]:::sub
     end
 
@@ -113,11 +109,11 @@ python yscb.py knowledge-db impact ReleasePublisher --depth=2 --json
 ### 3.3 知識庫狀態、模型與維護管理 (`status`, `index`, `model`, `clean`)
 
 ```bash
-# 查詢全系統註冊空間、指紋快取、索引狀態與模型狀態 (支援 --scan / --diff 比對增量指紋)
+# 查詢全系統註冊空間、檢索權重、索引狀態與模型狀態
 python yscb.py knowledge-db status
-python yscb.py knowledge-db status --scan
+python yscb.py knowledge-db status --json
 
-# 一鍵全管線索引建置 (掃描 -> Bundle 提取 -> 倒排索引 -> 向量特徵)，支援導出 Bundle
+# 一鍵全管線索引建置 (Bundle 提取 -> 倒排索引 -> 向量特徵)，支援導出 Bundle
 python yscb.py knowledge-db index
 python yscb.py knowledge-db index --export ./output/project.bundle.json
 
@@ -169,7 +165,8 @@ indices = engine.build_index()
 {
   "enable_vector_search": true,
   "embedding_model": "BAAI/bge-small-zh-v1.5",
-  "jit_vector_timeout_seconds": 5.0,
+  "jit_vector_timeout_ms": 3000,
+  "vector_batch_size": 32,
   "max_threads": "auto"
 }
 ```
@@ -178,32 +175,28 @@ indices = engine.build_index()
 | :--- | :--- | :--- |
 | `enable_vector_search` | `true` | `bool`。是否啟用 FastEmbed 向量語意檢索與特徵提取。設為 `false` 則跳過向量化並強制使用純 BM25 模式。 |
 | `embedding_model` | `"BAAI/bge-small-zh-v1.5"` | `str`。指定 FastEmbed ONNX 嵌入模型名稱（512 維，支援中英多語言）。 |
-| `jit_vector_timeout_seconds` | `5.0` | `float`。JIT 增量索引時 10 符號動態探針之超時臨界值。超過此值自動熔斷退回純 BM25 模式。 |
+| `jit_vector_timeout_ms` | `3000` | `int`。向量容差等待與 JIT 熔斷超時（毫秒，向下相容舊鍵 `jit_vector_timeout_seconds`）。當背景 Worker 已運行時間 `< jit_vector_timeout_ms` 時最多等待剩餘時間；若 `>= jit_vector_timeout_ms` 則 0ms 瞬時降級純 BM25 並印出提示。無 Server 時作為前台 10 符號探針熔斷上限。 |
+| `vector_batch_size` | `32` | `int`。背景 `knowledge-db-worker` Stage 2 微批次向量差集自癒之單批符號數量。 |
 | `max_threads` | `"auto"` | `str` / `int`。向量推論與 ONNXRuntime 執行緒上限。預設 `"auto"` 為 CPU 核心數之一半。 |
 
-### 5.2 自訂空間與宣告式擴充 (`contribute.json`)
+### 5.2 空間檢索加權與宣告式擴充 (`contribute.json`)
 
-專案原始碼掃描空間 (`spaces`) 屬於宣告式擴充點，統一由專案特化 `config/knowledge-db/contribute.json` 託管：
+工作空間幾何範圍統一向 `file-space` 模組註冊（於 `config/file-space/contribute.json` 宣告 `spaces`），而各邏輯空間之檢索加權係數 (`space_weights`) 則由 `config/knowledge-db/contribute.json` 託管：
 
 ```json
 {
-  "spaces": {
-    "source": {
-      "description": "專案核心原始碼空間",
-      "include": ["project://src", "project://lib"],
-      "exclude": ["**/__pycache__/**", "**/node_modules/**"],
-      "file_patterns": ["*.py", "*.c", "*.cpp", "*.h", "*.ts", "*.js"]
-    }
+  "space_weights": {
+    "source": 1.0,
+    "docs": 1.2,
+    "plans": 0.85
   }
 }
 ```
 
-| 空間宣告欄位 (Field) | 必填 | 型態與說明 |
+| 宣告欄位 (Field) | 必填 | 型態與說明 |
 | :--- | :---: | :--- |
-| `description` | 否 | `str`。空間用途說明。 |
-| `include` | **是** | `List[str]`。欲納入掃描之語意 URI 目錄或檔案清單（如 `["project://src"]`）。 |
-| `exclude` | 否 | `List[str]`。排除之 Glob 模式清單（如 `["**/__pycache__/**"]`）。 |
-| `file_patterns` | 否 | `List[str]`。檔案副檔名 Glob 過濾（未宣告或為空時預設全包含）。 |
+| `space_weights` | 否 | `Dict[str, float]`。各邏輯空間之檢索加權係數（權重值必須 `> 0`）。 |
+| `languages` | 否 | `Dict[str, LanguageDef]`。自訂語言副檔名與 Tree-sitter 語法查詢規則。 |
 
 ---
 

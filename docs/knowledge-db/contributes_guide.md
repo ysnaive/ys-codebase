@@ -3,20 +3,21 @@ target: "Knowledge-DB/Contributes"
 doc_type: "topic"
 status: "active"
 source_paths:
-  - "yscb://source/knowledge-db/knowledge_db/space.py"
+  - "yscb://source/file-space/file_space/manager.py"
   - "yscb://source/knowledge-db/knowledge_db/parsers/registry.py"
   - "yscb://source/knowledge-db/contributes/knowledge-db.json"
 related_docs:
   - "./README.md"
+  - "../file-space/README.md"
   - "./parsers.md"
   - "./tokenizer.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-01"
+last_updated: "2026-11-02"
 ---
 
 # `contributes.knowledge-db` 擴充點注入指南 (Contributes Guide)
 
-> 本文件指導 YS-Codebase 生態中的 Donor 模組與專案如何透過 `contributes.knowledge-db` 宣告並注入自訂空間 (`spaces`)、多語言解析器 (`languages`) 與三階同義詞庫 (`thesaurus` / `aliases` / `related`)。
+> 本文件指導 YS-Codebase 生態中的 Donor 模組與專案如何透過 `contributes.knowledge-db` 宣告並注入空間檢索加權 (`space_weights`)、多語言解析器 (`languages`) 與三階同義詞庫 (`thesaurus` / `aliases` / `related`)；工作空間目錄幾何定義 (`spaces`) 則統一向 [`file-space` 模組](../file-space/README.md) 註冊。
 
 ---
 
@@ -24,22 +25,14 @@ last_updated: "2026-11-01"
 
 ### 途徑 A：獨立貢獻檔案 (`module://<donor>/contributes/knowledge-db.json`)【推薦】
 
-在模組 `contributes/` 目錄下建立 `knowledge-db.json`（或於專案層級 `config://knowledge-db/contribute.json` 宣告）：
+在模組 `contributes/` 目錄下建立 `knowledge-db.json`（或於專案層級 `config://knowledge-db/contribute.json` 宣告；空間目錄範圍請同步宣告於 `contributes/file-space.json` 或 `config://file-space/contribute.json`）：
 
 ```json
 {
-  "spaces": {
-    "agents_workflow_docs": {
-      "description": "agents-workflow 規範與技能空間",
-      "include": [
-        "module://agents-workflow/assets/standards",
-        "module://agents-workflow/assets/skills"
-      ],
-      "exclude": [
-        "**/__pycache__/**"
-      ],
-      "file_patterns": ["*.md"]
-    }
+  "space_weights": {
+    "source": 1.0,
+    "docs": 1.2,
+    "plans": 0.85
   },
   "languages": {
     "python": {
@@ -80,13 +73,18 @@ last_updated: "2026-11-01"
   "name": "donor-module",
   "version": "1.0.0.0",
   "contributes": {
-    "knowledge-db": {
+    "file-space": {
       "spaces": {
         "donor_space": {
           "description": "Donor 模組專屬空間",
           "include": ["module://donor-module/source"],
           "exclude": ["**/__pycache__/**"]
         }
+      }
+    },
+    "knowledge-db": {
+      "space_weights": {
+        "donor_space": 1.15
       },
       "thesaurus": [
         ["同義詞A", "synonym_a"]
@@ -104,14 +102,14 @@ last_updated: "2026-11-01"
 
 ---
 
-## 2. 空間欄位與規則 (Space Fields)
+## 2. 空間檢索加權與幾何欄位規則 (`space_weights` & `file-space.spaces`)
 
-| 欄位 | 型別 | 必填 | 說明 |
-| :--- | :---: | :---: | :--- |
-| **`description`** | `string` | 否 | 空間用途說明 |
-| **`include`** | `List[string]` | **是** | 包含來源目錄/檔案之語意 URI 清單 (如 `module://donor/docs` 或 `project://src`) |
-| **`exclude`** | `List[string]` | 否 | 排除 Glob 模式清單 (如 `**/__pycache__/**`) |
-| **`file_patterns`** | `List[string]` | 否 | 檔名/副檔名 Glob 模式。**未宣告或為空時預設全包含 (include all)** |
+| 歸屬模組 | 欄位 | 型別 | 必填 | 說明 |
+| :--- | :--- | :---: | :---: | :--- |
+| **`knowledge-db`** | **`space_weights`** | `Dict[str, float]` | 否 | 映射邏輯空間名稱至檢索得分乘數（必須 `> 0`，未指定時回退至 `FileSpaceConfig.weight` 或 `1.0`） |
+| **`file-space`** | **`spaces.<name>.include`** | `List[string]` | **是** | 包含來源目錄/檔案之語意 URI 清單（詳見 [`docs/file-space/README.md`](../file-space/README.md)） |
+| **`file-space`** | **`spaces.<name>.exclude`** | `List[string]` | 否 | 排除 Glob 模式清單 (如 `**/__pycache__/**`) |
+| **`file-space`** | **`spaces.<name>.file_patterns`** | `List[string]` | 否 | 檔名/副檔名 Glob 模式。未宣告或為空時預設全包含 |
 
 ---
 
@@ -170,11 +168,11 @@ last_updated: "2026-11-01"
 
 ## 4. 優先權與雙軌階層覆蓋機制 (Dual-Track Hierarchy & Overrides)
 
-`SpaceManager._load_contributes()` 採用**「Core Donor Contributes（基底）+ 專案 `contribute.json`（覆蓋）」雙軌階層合併機制**：
+`KnowledgeEngine` 結合 `file_space.FileSpaceManager` 採用**「Core Donor Contributes（基底）+ 專案 `contribute.json`（覆蓋）」雙軌階層合併機制**：
 
 $$\text{Project Contributes (config://knowledge-db/contribute.json)} \;\succ\; \text{Module Contributes (module://<donor>/contributes/knowledge-db.json)}$$
 
-1. **基底聚合 (Base Layer)**：系統首先透過 `core.contributes.get("knowledge-db")` 聚合所有已安裝 Donor 模組貢獻之 `spaces`、`languages` 與 `thesaurus` / `aliases` / `related`。
+1. **基底聚合 (Base Layer)**：系統透過 `file_space.FileSpaceManager` 聚合所有模組與宿主之 `spaces` 定義，並透過 `core.contributes.get("knowledge-db")` 聚合所有已安裝 Donor 模組貢獻之 `space_weights`、`languages` 與 `thesaurus` / `aliases` / `related`。
 2. **專案階層覆蓋 (Project Override Layer)**：接著讀取專案層級 `config://knowledge-db/contribute.json`。
-   - **空間 (`spaces`)**：若宣告同名空間，專案設定將精確覆蓋該空間之 `include`、`exclude` 與 `file_patterns`；未覆蓋之其他 Donor 空間則 **100% 完整保留**。
+   - **空間檢索權重 (`space_weights`)**：若專案針對特定空間宣告權重值，將直接覆蓋模組預設權重；未覆蓋之空間則保留 Donor 權重或預設值 `1.0`。
    - **同義詞庫 (`thesaurus` / `aliases` / `related`)**：專案新增之詞群會與基底詞庫進行聯集擴充合併，確保專案特化領域術語與通用軟工詞庫無縫共存。
