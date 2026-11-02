@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.1.1",
+  "version": "1.2.1.2",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -12,6 +12,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "支援專案限定 @build 模組跨機 clone 自動自 source/<mod> 動態打包自舉"
+    "summary": "支援 install/update/remove 多模組單次批次原子交易與逆向依賴聯集豁免"
   }
 }

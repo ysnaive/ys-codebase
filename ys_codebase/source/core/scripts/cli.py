@@ -358,44 +358,58 @@ def uri(cmd_bags: CmdBags) -> int:
 
 
 def install(cmd_bags: CmdBags) -> int:
-    """Install a module from provider or local build package (@build)."""
+    """Install one or more modules from provider or local build package (@build)."""
     guard_dispatch("core")
     if not cmd_bags.args:
         print("[core:install] Error: Module name is required.")
         return 1
 
-    module_spec = cmd_bags.args[0]
     version = cmd_bags.get_option_value("version")
-    if "@" in module_spec:
-        module_name, version = module_spec.split("@", 1)
-    else:
-        module_name = module_spec
-
     provider = cmd_bags.get_option_value("provider")
     force_flag = cmd_bags.has_option("force")
 
+    specs = cmd_bags.args
+    if len(specs) == 1:
+        module_spec = specs[0]
+        if "@" in module_spec:
+            module_target, version = module_spec.split("@", 1)
+        else:
+            module_target = module_spec
+    else:
+        module_target = [s for s in specs]
+
     installer = Installer()
-    return installer.cmd_install(module_name, version=version, provider=provider, force=force_flag)
+    return installer.cmd_install(module_target, version=version, provider=provider, force=force_flag)
 
 
 def update(cmd_bags: CmdBags) -> int:
     """Update installed module(s) to latest version."""
     guard_dispatch("core")
-    mod_name = cmd_bags.args[0] if cmd_bags.args else None
+    if not cmd_bags.args:
+        mod_target = None
+    elif len(cmd_bags.args) == 1:
+        mod_target = cmd_bags.args[0]
+    else:
+        mod_target = [s for s in cmd_bags.args]
     provider = cmd_bags.get_option_value("provider")
     installer = Installer()
-    return installer.cmd_update(mod_name, provider=provider)
+    return installer.cmd_update(mod_target, provider=provider)
 
 
 def remove(cmd_bags: CmdBags) -> int:
-    """Remove an installed module from environment."""
+    """Remove one or more installed modules from environment."""
     guard_dispatch("core")
-    mod_name = cmd_bags.args[0] if cmd_bags.args else ""
+    if not cmd_bags.args:
+        mod_target = ""
+    elif len(cmd_bags.args) == 1:
+        mod_target = cmd_bags.args[0]
+    else:
+        mod_target = [s for s in cmd_bags.args]
     clean = cmd_bags.has_option("clean")
     purge = cmd_bags.has_option("purge")
     force_flag = cmd_bags.has_option("force")
     installer = Installer()
-    return installer.cmd_remove(mod_name, clean=clean, purge=purge, force=force_flag)
+    return installer.cmd_remove(mod_target, clean=clean, purge=purge, force=force_flag)
 
 
 def list(cmd_bags: CmdBags) -> int:

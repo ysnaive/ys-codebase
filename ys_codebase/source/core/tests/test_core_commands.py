@@ -711,6 +711,59 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertEqual(pos_args, ["--not-an-option", "pos_arg"])
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_cli_lifecycle_batch_forwarding(self):
+        """驗證 scripts/cli.py 之 install、update、remove 正確支援單一與多模組批次參數解析與轉發。"""
+        import importlib.util
+        core_cli_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "cli.py"))
+        spec_core = importlib.util.spec_from_file_location("core_scripts_cli_batch_test", core_cli_path)
+        core_cli = importlib.util.module_from_spec(spec_core)
+        spec_core.loader.exec_module(core_cli)
+
+        with patch.object(core_cli, "Installer") as mock_inst_cls:
+            mock_inst = MagicMock()
+            mock_inst.cmd_install.return_value = 0
+            mock_inst.cmd_update.return_value = 0
+            mock_inst.cmd_remove.return_value = 0
+            mock_inst_cls.return_value = mock_inst
+
+            # 1. Single module install with @version
+            b_inst_single = CmdBags(command="install", args=["dev@1.2.0.0"], options={"force": CmdOption("force", True)})
+            self.assertEqual(core_cli.install(b_inst_single), 0)
+            mock_inst.cmd_install.assert_called_with("dev", version="1.2.0.0", provider=None, force=True)
+
+            # 2. Multi-module batch install
+            b_inst_batch = CmdBags(
+                command="install",
+                args=["dev@build", "agents-workflow@build"],
+                options={"force": CmdOption("force", True)},
+            )
+            self.assertEqual(core_cli.install(b_inst_batch), 0)
+            mock_inst.cmd_install.assert_called_with(
+                ["dev@build", "agents-workflow@build"], version=None, provider=None, force=True
+            )
+
+            # 3. Multi-module batch update & zero-arg update
+            b_up_all = CmdBags(command="update", args=[], options={})
+            self.assertEqual(core_cli.update(b_up_all), 0)
+            mock_inst.cmd_update.assert_called_with(None, provider=None)
+
+            b_up_batch = CmdBags(command="update", args=["dev", "server"], options={})
+            self.assertEqual(core_cli.update(b_up_batch), 0)
+            mock_inst.cmd_update.assert_called_with(["dev", "server"], provider=None)
+
+            # 4. Multi-module batch remove
+            b_rm_batch = CmdBags(
+                command="remove",
+                args=["dev", "server"],
+                options={"purge": CmdOption("purge", True)},
+            )
+            self.assertEqual(core_cli.remove(b_rm_batch), 0)
+            mock_inst.cmd_remove.assert_called_with(["dev", "server"], clean=False, purge=True, force=False)
+
+        self.mark_passed()
+
+
 
 
 if __name__ == "__main__":

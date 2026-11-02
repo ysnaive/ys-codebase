@@ -468,4 +468,157 @@ class TestCoreInstaller(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_batch_install_atomic_transaction_and_conflict_rollback(self):
+        """驗證 cmd_install 支援多模組批次原子交易、單次 reload/pip 同步、混合 @ver 與 --version，以及版本衝突時 All-or-Nothing 回滾。"""
+        import io
+        import json
+        import zipfile
+        import tempfile
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as prov_dir:
+            for m_name, vers, deps_map in (
+                ("batch_lib", ["1.0.0.0", "2.0.0.0"], {}),
+                ("batch_mid", ["1.0.0.0"], {"batch_lib": ">=1.0.0.0"}),
+                ("batch_top", ["1.5.0.0"], {"batch_mid": ">=1.0.0.0"}),
+            ):
+                m_dir = os.path.join(prov_dir, m_name)
+                os.makedirs(m_dir, exist_ok=True)
+                for v in vers:
+                    with zipfile.ZipFile(os.path.join(m_dir, f"{v}.zip"), "w") as zf:
+                        zf.writestr(
+                            "manifest.json",
+                            json.dumps({"name": m_name, "version": v, "dependencies": deps_map, "entry": "scripts/cli.py"}),
+                        )
+                        zf.writestr("scripts/cli.py", "def dummy(): return 0\n")
+                with open(os.path.join(m_dir, "index.json"), "w", encoding="utf-8") as f:
+                    json.dump({"name": m_name, "latest": vers[-1], "versions": vers}, f)
+
+            try:
+                # 1. 負向測試：批次內對同一模組指定衝突版本 (batch_lib@1.0.0.0 vs batch_lib@2.0.0.0) 應攔截並回滾
+                buf_err = io.StringIO()
+                with redirect_stdout(buf_err):
+                    rc_conflict = self.installer.cmd_install(
+                        ["batch_lib@1.0.0.0", "batch_lib@2.0.0.0"], provider=prov_dir
+                    )
+                self.assertEqual(rc_conflict, 1)
+                self.assertIn("Conflicting version constraints", buf_err.getvalue())
+                _, cfg_after_fail = self.installer.engine._get_config()
+                self.assertNotIn("batch_lib", cfg_after_fail.get("installed_modules", {}))
+
+                # 2. 正向測試：批次安裝多個模組，且驗證 act_reload 與 sync_pip_dependencies 僅各執行 1 次
+                with patch.object(self.installer.engine, "act_reload", wraps=self.installer.engine.act_reload) as spy_reload:
+                    with patch.object(self.installer, "sync_pip_dependencies", wraps=self.installer.sync_pip_dependencies) as spy_pip:
+                        buf_ok = io.StringIO()
+                        with redirect_stdout(buf_ok):
+                            rc_ok = self.installer.cmd_install(
+                                ["batch_lib@1.0.0.0", "batch_top"],
+                                version="1.5.0.0",
+                                provider=prov_dir,
+                            )
+                        self.assertEqual(rc_ok, 0)
+                        self.assertEqual(spy_reload.call_count, 1)
+                        self.assertEqual(spy_pip.call_count, 1)
+
+                _, cfg_ok = self.installer.engine._get_config()
+                inst_mods = cfg_ok.get("installed_modules", {})
+                self.assertEqual(inst_mods.get("batch_lib", {}).get("version"), "1.0.0.0")
+                self.assertEqual(inst_mods.get("batch_mid", {}).get("version"), "1.0.0.0")
+                self.assertEqual(inst_mods.get("batch_top", {}).get("version"), "1.5.0.0")
+            finally:
+                for m_clean in ("batch_top", "batch_mid", "batch_lib"):
+                    self.installer.engine.act_unregister(m_clean)
+                    self.installer.engine.act_delete(m_clean, clean_mirror=True, purge=True)
+                    if vfs.exists(f"module://{m_clean}"):
+                        vfs.rmtree(f"module://{m_clean}")
+
+        self.mark_passed()
+
+    def test_batch_update_and_remove_reverse_deps_exemption(self):
+        """驗證 cmd_update 支援多模組批次更新與未安裝模組攔截，以及 cmd_remove 支援多模組逆向依賴聯集豁免與外部依賴阻斷。"""
+        import io
+        import json
+        import zipfile
+        import tempfile
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as prov_dir:
+            for m_name, vers, deps_map in (
+                ("up_mod_a", ["1.0.0.0", "1.1.0.0"], {}),
+                ("up_mod_b", ["1.0.0.0", "1.2.0.0"], {"up_mod_a": ">=1.0.0.0"}),
+                ("up_mod_c", ["1.0.0.0"], {"up_mod_b": ">=1.0.0.0"}),
+            ):
+                m_dir = os.path.join(prov_dir, m_name)
+                os.makedirs(m_dir, exist_ok=True)
+                for v in vers:
+                    with zipfile.ZipFile(os.path.join(m_dir, f"{v}.zip"), "w") as zf:
+                        zf.writestr(
+                            "manifest.json",
+                            json.dumps({"name": m_name, "version": v, "dependencies": deps_map, "entry": "scripts/cli.py"}),
+                        )
+                        zf.writestr("scripts/cli.py", "def dummy(): return 0\n")
+                with open(os.path.join(m_dir, "index.json"), "w", encoding="utf-8") as f:
+                    json.dump({"name": m_name, "latest": vers[-1], "versions": vers}, f)
+
+            try:
+                rc_inst = self.installer.cmd_install(
+                    ["up_mod_a@1.0.0.0", "up_mod_b@1.0.0.0", "up_mod_c@1.0.0.0"], provider=prov_dir
+                )
+                self.assertEqual(rc_inst, 0)
+
+                # 1. cmd_update 包含未安裝模組時應報錯返回 1 且不執行部分更新
+                buf_up_err = io.StringIO()
+                with redirect_stdout(buf_up_err):
+                    rc_up_err = self.installer.cmd_update(["up_mod_a", "ghost_uninstalled_mod"], provider=prov_dir)
+                self.assertEqual(rc_up_err, 1)
+                self.assertIn("not currently installed", buf_up_err.getvalue())
+                _, cfg_check = self.installer.engine._get_config()
+                self.assertEqual(cfg_check["installed_modules"]["up_mod_a"]["version"], "1.0.0.0")
+
+                # 2. cmd_update 批次更新指定模組 (含重複名稱自動去重)
+                buf_up_ok = io.StringIO()
+                with redirect_stdout(buf_up_ok):
+                    rc_up_ok = self.installer.cmd_update(["up_mod_a", "up_mod_b", "up_mod_a"], provider=prov_dir)
+                self.assertEqual(rc_up_ok, 0)
+                _, cfg_up = self.installer.engine._get_config()
+                self.assertEqual(cfg_up["installed_modules"]["up_mod_a"]["version"], "1.1.0.0")
+                self.assertEqual(cfg_up["installed_modules"]["up_mod_b"]["version"], "1.2.0.0")
+
+                # 3. cmd_remove 批次移除 up_mod_a 與 up_mod_b 時，因批次外的 up_mod_c 依賴 up_mod_b，無 --force 應阻斷
+                buf_rm_block = io.StringIO()
+                with redirect_stdout(buf_rm_block):
+                    rc_rm_block = self.installer.cmd_remove(["up_mod_a", "up_mod_b"], force=False)
+                self.assertEqual(rc_rm_block, 1)
+                self.assertIn("up_mod_c", buf_rm_block.getvalue())
+
+                # 4. cmd_remove 批次包含 core 時應拒絕
+                buf_rm_core = io.StringIO()
+                with redirect_stdout(buf_rm_core):
+                    rc_rm_core = self.installer.cmd_remove(["up_mod_c", "core"], force=True)
+                self.assertEqual(rc_rm_core, 1)
+                self.assertIn("Cannot remove 'core'", buf_rm_core.getvalue())
+
+                # 5. cmd_remove 將 up_mod_a, up_mod_b, up_mod_c 一併列入批次時，逆向依賴聯集豁免生效，無須 --force 即可一次乾淨移除
+                with patch.object(self.installer.engine, "act_reload", wraps=self.installer.engine.act_reload) as spy_rm_reload:
+                    buf_rm_ok = io.StringIO()
+                    with redirect_stdout(buf_rm_ok):
+                        rc_rm_ok = self.installer.cmd_remove(["up_mod_a", "up_mod_b", "up_mod_c"], force=False, purge=True)
+                    self.assertEqual(rc_rm_ok, 0)
+                    self.assertEqual(spy_rm_reload.call_count, 1)
+
+                _, cfg_final = self.installer.engine._get_config()
+                for m_Gone in ("up_mod_a", "up_mod_b", "up_mod_c"):
+                    self.assertNotIn(m_Gone, cfg_final.get("installed_modules", {}))
+            finally:
+                for m_clean in ("up_mod_c", "up_mod_b", "up_mod_a"):
+                    self.installer.engine.act_unregister(m_clean)
+                    self.installer.engine.act_delete(m_clean, clean_mirror=True, purge=True)
+                    if vfs.exists(f"module://{m_clean}"):
+                        vfs.rmtree(f"module://{m_clean}")
+
+        self.mark_passed()
+
+
 

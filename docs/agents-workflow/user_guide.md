@@ -357,7 +357,7 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
    - **Tier 1（IDE 本地 `.jsonl` 深度解析）**：透過顯式 `--transcript` 或「工作區路徑指紋 + 尾行自指信標 (`session-trace` / `/session-audit`)」鎖定主對話 `.jsonl`（自動過濾唯讀 Reviewer Subagent 與其他專案視窗），提取失敗/重試 Tool Calls、`<thinking>` 截斷摘要與會話基礎統計（`session_stats`：含完整/精簡 Token 估算分佈、原生 API 用量、步數/回合數、工具調用分佈及讀改檔計數）。
    - **Tier 2（`cache://core/telemetry.jsonl` 原生飛行紀錄與 `mtime` 消歧）**：依對話時間窗切片 `core` 記錄之 CLI 軌跡（統計呼叫次數、失敗率、熱派發/本地模式分佈與耗時），並比對目標計畫（支援活躍計畫與最近 30 分鐘內剛歸檔之計畫）各階段檔案 `mtime` 與 `changelog.md`，區分合規回寫（`VALIDATED_BACKPROP`）與未申報暗中偷改（`SILENT_BACKPATCH`）。
    - **Tier 3（上下文逆向審訊保底）**：無外部日誌時輸出結構化逆向審訊檢核表。
-2. **五大硬性摩擦訊號與四象限根因分類**：機械式提取 `MULTI_EDIT_CHURN`、`TOOL_MISS_AND_RETRY`、`SILENT_BACKPATCH`、`GATE_BOUNCE`、`CONTEXT_WASTE` 五大訊號，嚴格歸入 **Type A（提示詞/SOP 歧義）**、**Type B（ACI 工具/檢索斷層）**、**Type C（任務本質探索）** 與 **Type D（模型注意力滑脫）**，全程遵守 100% 唯讀安全隔離。
+2. **盲眼認知隔離 (`Blind Subagent Autopsy`) 與四象限根因分類**：當 `session-trace` 檢出摩擦訊號或錯誤步數時，主代理依 `BlindSubagentStandards.md` 原型 ② 強制委派無歷史對話包袱之唯讀盲眼 Subagent 核對 `MULTI_EDIT_CHURN`、`TOOL_MISS_AND_RETRY`、`SILENT_BACKPATCH`、`GATE_BOUNCE`、`CONTEXT_WASTE` 五大訊號，並嚴格歸入 **Type A（提示詞/SOP 歧義）**、**Type B（ACI 工具/檢索斷層）**、**Type C（任務本質探索）** 與 **Type D（模型注意力滑脫）**（防止當事主代理因敘事慣性將 Type D 防衛性合理化為 Type C；0 摩擦且 0 錯誤時快速放行，無 Subagent 環境標註 `[Inline Fallback]`），全程遵守 100% 唯讀安全隔離。
 
 ### 7.6 業務代碼五維度診斷與無損重構工作流 (`/code-optimizer`)
 針對巨型業務檔案、單一模組或全專案跨模組邊界之結構治理，透過顯式呼叫 `/code-optimizer`（100% 純手動觸發，不主動攔截日常開發）執行四階段無損重構閉環：

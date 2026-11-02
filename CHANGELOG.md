@@ -1,5 +1,16 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_02_0240_batch_lifecycle_and_blind_audit (Completed)
+
+### sub_02_core_batch_lifecycle_cli (Completed)
+- **`core` 模組生命週期 CLI (`install` / `update` / `remove`) 多模組批次操作、聯合拓撲解析、逆向依賴聯集豁免與單次原子事務升級 (`FR-01` ~ `FR-04`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`, `TODO-16`)**：
+  - **多根聯合拓撲解析與單次批次原子交易 (`FR-01`, `FR-02`, `FR-04`, `EC-01` ~ `EC-03`, `NFR-01`, `NFR-02`)**：於 `core/engine.py` (`AtomicEngine.act_solve_deps`) 支援多根模組序列輸入與跨規格/跨依賴鏈版本約束衝突檢測；於 `core/installer.py` (`cmd_install` / `cmd_update`) 與 `core/scripts/cli.py` 支援單一或多模組批次規格（含混合 `@<version>` / `@build` 與 `--version`），將前置快照 (`act_snapshot`)、跨進程鎖 (`transaction_lock`)、Server 句柄釋放通知、下載準備、模組註冊、環境重載 (`act_reload`) 與 Python 虛擬環境依賴同步 (`sync_pip_dependencies`) 收斂為單次 All-or-Nothing 原子事務。
+  - **批次移除逆向依賴聯集豁免與前置完整性防護 (`FR-03`, `EC-04`, `EC-05`)**：於 `Installer.cmd_remove` 支援多模組批次移除，在逆向依賴檢核時自動豁免同時位於本次移除批次內之其他模組（支援免 `--force` 一次移除具上下游關係之多個模組），並嚴格攔截批次外逆向依賴、未安裝模組或 `core` 基座移除請求；`core` (217/217) 測試 100% 通過並完成 `@build` 熱部署。
+
+### sub_01_session_audit_blind_subagent (Completed)
+- **於 `/session-audit` 技能引入盲眼子代理 (`BlindSubagentStandards.md`) 客觀法醫審計與三軌分流機制 (`[REV-01]`, `[P00:DR-01]`, `[P00:DR-02]`, `TODO-17`)**：
+  - **盲眼認知隔離與三軌審計主體分流 (`[REV-01]`)**：更新 `ys_codebase/source/agents-workflow/assets/skills/session-audit/SKILL.md` 與 `docs/agents-workflow/user_guide.md`，確立當 `session-trace` 檢出摩擦訊號或錯誤步數時，主代理強制依 `BlindSubagentStandards.md` 原型 ② 委派無歷史對話包袱之唯讀盲眼 Subagent 執行五大訊號核對與 A/B/C/D 四象限根因解剖（嚴禁夾帶主視窗事後辯解，防範將明文規則已載之 `Type D` 滑脫防衛性合理化為 `Type C` 探索；0 摩擦且 0 錯誤時快速放行，無子代理環境標註 `[Inline Fallback]`），`agents-workflow` (138/138) 測試 100% 通過並完成 `@build` 與 `release` 物化同步。
+
 ## 2026_11_01_1138_release_binary_storage_optimization (Completed)
 
 ### sub_03_legacy_release_migration_and_history_purge (Completed)

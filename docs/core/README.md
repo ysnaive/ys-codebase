@@ -159,10 +159,10 @@ python yscb.py uri check                    # 全量語意協議健康檢查
 python yscb.py contributes list             # 列出全系統開放之擴充點清冊 (_format.json)
 python yscb.py contributes check [module]   # 校驗模組 contributes 宣告是否符合目標 Schema
 
-# 3. 套件生命週期管理
-python yscb.py install <module>[@version] [--provider="<source>"] [--force]
-python yscb.py update [<module>] [--provider="<source>"]
-python yscb.py remove <module> [--clean] [--purge]
+# 3. 套件生命週期管理 (支援單一或多模組單次批次原子交易)
+python yscb.py install <module>[@version] [<module2>[@version] ...] [--provider="<source>"] [--force]
+python yscb.py update [<module> ...] [--provider="<source>"]
+python yscb.py remove <module> [<module2> ...] [--clean] [--purge] [--force]
 python yscb.py list [--remote] [--provider="<source>"]
 python yscb.py status
 python yscb.py rollback [snapshot_id]

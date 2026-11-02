@@ -17,7 +17,7 @@ import zipfile
 import urllib.request
 import importlib.util
 from contextlib import contextmanager
-from typing import Dict, Any, List, Optional, Tuple, Set, Generator
+from typing import Dict, Any, List, Optional, Tuple, Set, Generator, Sequence, Union
 
 from core import uri
 from core import vfs
@@ -1198,32 +1198,90 @@ class AtomicEngine:
 
     def act_solve_deps(
         self,
-        target_module: str,
-        version_constraint: Optional[str],
-        provider_url: str,
+        target_module: Union[str, Sequence[Union[str, Tuple[str, Optional[str]]]]],
+        version_constraint: Optional[str] = None,
+        provider_url: str = "",
     ) -> List[Tuple[str, str]]:
         """
         Recursively resolves dependency topology with 4-segment SemVer constraint satisfaction.
+        Supports both single module (str) and batch module specifications (Sequence[str | Tuple[str, Optional[str]]]),
+        enforcing cross-root and cross-dependency version constraint compatibility.
         """
+        root_requests: List[Tuple[str, Optional[str]]] = []
+        if isinstance(target_module, str):
+            root_requests.append((target_module, version_constraint))
+        else:
+            for item in target_module:
+                if isinstance(item, tuple):
+                    mod_n, mod_v = item[0], item[1] if len(item) > 1 else version_constraint
+                    root_requests.append((str(mod_n), mod_v))
+                else:
+                    spec_str = str(item)
+                    if "@" in spec_str:
+                        mod_n, mod_v = spec_str.split("@", 1)
+                        root_requests.append((mod_n, mod_v))
+                    else:
+                        root_requests.append((spec_str, version_constraint))
+
+        explicit_constraints: Dict[str, Optional[str]] = {}
+        for mod_n, mod_v in root_requests:
+            if mod_n in explicit_constraints:
+                prev_v = explicit_constraints[mod_n]
+                if prev_v and mod_v and prev_v != mod_v:
+                    if not (semver.match_constraint(prev_v, mod_v) or semver.match_constraint(mod_v, prev_v)):
+                        raise RuntimeError(
+                            f"Conflicting version constraints for module '{mod_n}' in batch request: "
+                            f"'{prev_v}' vs '{mod_v}'."
+                        )
+                if mod_v and not prev_v:
+                    explicit_constraints[mod_n] = mod_v
+            else:
+                explicit_constraints[mod_n] = mod_v
+
         ordered_list: List[Tuple[str, str]] = []
+        resolved_versions: Dict[str, str] = {}
         visited: Set[str] = set()
         visiting: Set[str] = set()
+
+        def _combine_constraints(c1: Optional[str], c2: Optional[str]) -> Optional[str]:
+            if not c1:
+                return c2
+            if not c2 or c1 == c2:
+                return c1
+            if _is_build_version_request(c1):
+                return c1
+            if _is_build_version_request(c2):
+                return c2
+            return f"{c1},{c2}"
+
+        def _check_resolved_compatibility(mod_name: str, resolved_ver: str, req_constraint: Optional[str]) -> None:
+            if not req_constraint:
+                return
+            if _is_build_version_request(resolved_ver) and not _is_build_version_request(req_constraint):
+                base_ver = resolved_ver[:-len(".build")] if resolved_ver.endswith(".build") else resolved_ver
+                if semver.match_constraint(base_ver, req_constraint):
+                    return
+            if not semver.match_constraint(resolved_ver, req_constraint):
+                raise RuntimeError(
+                    f"Cannot resolve dependency for '{mod_name}': "
+                    f"resolved version '{resolved_ver}' does not satisfy constraint '{req_constraint}'."
+                )
 
         def _solve(mod_name: str, ver_req: Optional[str]) -> None:
             if mod_name in visiting:
                 raise ValueError(f"Circular dependency detected: '{mod_name}' in call chain.")
             if mod_name in visited:
+                _check_resolved_compatibility(mod_name, resolved_versions[mod_name], ver_req)
                 return
 
             visiting.add(mod_name)
-            manifest = self._get_module_manifest_from_provider_or_local(mod_name, provider_url, ver_req)
+            effective_req = _combine_constraints(explicit_constraints.get(mod_name), ver_req)
+            manifest = self._get_module_manifest_from_provider_or_local(mod_name, provider_url, effective_req)
             resolved_ver = manifest.get("version", "1.0.0.0")
 
-            if ver_req and not semver.match_constraint(resolved_ver, ver_req):
-                raise RuntimeError(
-                    f"Cannot resolve dependency for '{mod_name}': "
-                    f"resolved version '{resolved_ver}' does not satisfy constraint '{ver_req}'."
-                )
+            _check_resolved_compatibility(mod_name, resolved_ver, ver_req)
+            if mod_name in explicit_constraints:
+                _check_resolved_compatibility(mod_name, resolved_ver, explicit_constraints[mod_name])
 
             parsed_deps = _parse_dependencies(manifest.get("dependencies", {}))
             for dep_name, dep_ver in parsed_deps.items():
@@ -1239,9 +1297,11 @@ class AtomicEngine:
 
             visiting.remove(mod_name)
             visited.add(mod_name)
+            resolved_versions[mod_name] = resolved_ver
             ordered_list.append((mod_name, resolved_ver))
 
-        _solve(target_module, version_constraint)
+        for root_mod, root_ver in root_requests:
+            _solve(root_mod, root_ver)
         return ordered_list
 
     def act_prepare(self, target_list: List[Tuple[str, str]], provider_url: str, force: bool = False) -> None:

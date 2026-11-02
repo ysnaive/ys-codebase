@@ -9,9 +9,9 @@
     "1.1.0.7",
     "1.2.0.2",
     "1.2.1.1",
-    "1.2.2.0",
     "1.2.2.1",
-    "1.2.2.2"
+    "1.2.2.2",
+    "1.2.2.3"
   ],
   "releases": {
     "1.0.0.0": {
@@ -78,7 +78,7 @@
       "summary": "將 roadmap.md 模板輕量化為 v1.1 三大抽象章節，並將單體 plan_modes.md 拆分為按需單點載入之獨立計畫模式參考手冊"
     },
     "1.2.2.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.0"
       },
@@ -103,6 +103,15 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "動態對齊啟用之 release_targets 提示路徑並新增盲眼子代理與雙階防放水護欄 (Issue #8)"
+    },
+    "1.2.2.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "於 session-audit 技能引入盲眼子代理客觀法醫審計與三軌分流機制"
     }
   }
 }

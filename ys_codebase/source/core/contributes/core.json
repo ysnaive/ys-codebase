@@ -60,12 +60,12 @@
     "description": "YS-Codebase Core Microkernel Manager",
     "cmd": {
       "install": {
-        "description": "Install a module from provider or local build package (@build)",
+        "description": "Install one or more modules from provider or local build package (@build)",
         "tier": "gated",
         "server_compatible": false,
         "args": {
           "module": {
-            "description": "Module name or specifier (e.g. core@1.0.0)",
+            "description": "Module name(s) or specifier(s) (e.g. core@1.0.0 dev@build)",
             "required": true
           }
         },
@@ -99,8 +99,8 @@
         },
         "usage": {
           "pros": [
-            "安裝新模組能力至環境中",
-            "本地模組自引用調試: install <mod>@build --force (不更新無關模組)"
+            "安裝單一或多個新模組能力至環境中",
+            "本地模組自引用調試: install <mod...>@build --force (單次批次原子交易)"
           ],
           "cons": [
             "[!] 嚴禁在未授權情況下，於開發過程連動 release 指令自部署，應使用 build + install <mod>@build 部署開發版"
@@ -113,7 +113,7 @@
         "server_compatible": false,
         "args": {
           "module": {
-            "description": "Module name to update (updates all if omitted)",
+            "description": "Module name(s) to update (updates all if omitted)",
             "required": false
           }
         },
@@ -132,7 +132,7 @@
         },
         "usage": {
           "pros": [
-            "升級已安裝之模組版本"
+            "升級已安裝之單一、多個或全部模組版本"
           ],
           "cons": [
             "[!] 嚴禁在未獲升級指示前擅自更新"
@@ -140,12 +140,12 @@
         }
       },
       "remove": {
-        "description": "Remove an installed module from environment",
+        "description": "Remove one or more installed modules from environment",
         "tier": "gated",
         "server_compatible": false,
         "args": {
           "module": {
-            "description": "Module name to remove",
+            "description": "Module name(s) to remove",
             "required": true
           }
         },
@@ -169,7 +169,7 @@
         },
         "usage": {
           "pros": [
-            "清理不再使用之模組"
+            "清理不再使用之單一或多個模組（批次內上下游依賴自動聯集豁免）"
           ],
           "cons": [
             "[!] 嚴禁擅自移除 core 或使用中之依賴模組"

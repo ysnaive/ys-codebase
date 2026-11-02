@@ -4,7 +4,7 @@ Includes Major Boundary Lock & Incremental Migration Trigger.
 """
 import os
 import json
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple, Any, Sequence, Union
 from core import uri
 from core import vfs
 from core.context import ExecutionContext
@@ -408,8 +408,77 @@ class Installer:
         except Exception:
             pass
 
-    def cmd_install(self, module_name: str, version: Optional[str] = None, provider: Optional[str] = None, force: bool = False) -> int:
-        if not module_name:
+    @staticmethod
+    def _normalize_ver_constraint(ver_str: Optional[str]) -> Optional[str]:
+        if not ver_str:
+            return None
+        v_clean = str(ver_str).strip()
+        if not v_clean:
+            return None
+        if v_clean == "build" or v_clean.endswith(".build"):
+            return v_clean
+        return semver.normalize_version(v_clean)
+
+    def _parse_install_requests(
+        self,
+        module_name: Union[str, Sequence[str]],
+        version: Optional[str] = None,
+    ) -> List[Tuple[str, Optional[str]]]:
+        """Normalizes single or sequence module specifiers into a list of (mod_name, ver_constraint) tuples."""
+        raw_items: List[str] = []
+        if isinstance(module_name, str):
+            s = module_name.strip()
+            if s:
+                raw_items.append(s)
+        elif isinstance(module_name, Sequence):
+            for item in module_name:
+                s = str(item).strip() if item is not None else ""
+                if s:
+                    raw_items.append(s)
+
+        fallback_ver = self._normalize_ver_constraint(version)
+        requests: List[Tuple[str, Optional[str]]] = []
+        for spec in raw_items:
+            if "@" in spec:
+                m_name, m_ver = spec.split("@", 1)
+                m_name = m_name.strip()
+                norm_v = self._normalize_ver_constraint(m_ver)
+            else:
+                m_name = spec.strip()
+                norm_v = fallback_ver
+            if m_name:
+                requests.append((m_name, norm_v))
+        return requests
+
+    @staticmethod
+    def _normalize_target_names(module_name: Optional[Union[str, Sequence[str]]]) -> List[str]:
+        """Normalizes single or sequence module names into a deduplicated, order-preserving list."""
+        if module_name is None:
+            return []
+        raw_list: List[str] = [module_name] if isinstance(module_name, str) else [str(x) for x in module_name if x is not None]
+        seen = set()
+        result: List[str] = []
+        for item in raw_list:
+            clean = item.strip()
+            if clean and clean not in seen:
+                seen.add(clean)
+                result.append(clean)
+        return result
+
+    def cmd_install(
+        self,
+        module_name: Union[str, Sequence[str]],
+        version: Optional[str] = None,
+        provider: Optional[str] = None,
+        force: bool = False,
+    ) -> int:
+        try:
+            requests = self._parse_install_requests(module_name, version)
+        except Exception as e:
+            print(f"[core:install] Error parsing module version specification: {e}")
+            return 1
+
+        if not requests:
             print("[core:install] Error: Module name is required.")
             return 1
 
@@ -420,51 +489,72 @@ class Installer:
             print("[core:install] Error: No default_provider configured in yscb.config.json and no --provider specified.")
             return 1
 
-        if version and (version == "build" or version.endswith(".build")):
-            ver_constraint = version
-        else:
-            ver_constraint = semver.normalize_version(version) if version else None
+        req_names_ordered: List[str] = []
+        for m_name, _ in requests:
+            if m_name not in req_names_ordered:
+                req_names_ordered.append(m_name)
 
-        print(f"[core:install] Resolving dependencies for '{module_name}'...")
-        snap_id = self.engine.act_snapshot(f"pre_install_{module_name}")
+        label_str = ", ".join(req_names_ordered)
+        snap_suffix = req_names_ordered[0] if len(req_names_ordered) == 1 else f"batch_{len(req_names_ordered)}"
+        print(f"[core:install] Resolving dependencies for '{label_str}'...")
+        snap_id = self.engine.act_snapshot(f"pre_install_{snap_suffix}")
 
         installed = cfg.get("installed_modules", {})
-        old_ver = installed.get(module_name, {}).get("version", "0.0.0.0")
+        old_versions: Dict[str, str] = {
+            mod: installed.get(mod, {}).get("version", "0.0.0.0")
+            for mod in set( list(installed.keys()) + req_names_ordered )
+        }
 
         try:
             with self.engine.transaction_lock("install"):
                 _notify_server_release_handles()
-                targets = self.engine.act_solve_deps(module_name, ver_constraint, provider_url)
+                if len(requests) == 1:
+                    targets = self.engine.act_solve_deps(requests[0][0], requests[0][1], provider_url)
+                else:
+                    targets = self.engine.act_solve_deps(requests, None, provider_url)
                 self.engine.act_prepare(targets, provider_url, force=force)
-                installed_ver = "1.0.0.0"
+                resolved_map: Dict[str, str] = {}
                 for mod, ver in targets:
                     self.engine.act_register(mod, ver, provider_url)
-                    if mod == module_name:
-                        installed_ver = ver
+                    resolved_map[mod] = ver
                 self.engine.act_reload(clean_stage=True, inject_stage=True)
 
-                if old_ver != "0.0.0.0" and semver.compare_semver(installed_ver, old_ver) > 0:
-                    print(f"[core:install] Running migration ladder for '{module_name}' ({old_ver} -> {installed_ver})...")
-                    self.engine.act_migrate(module_name, old_ver, installed_ver)
+                for mod, installed_ver in targets:
+                    old_ver = old_versions.get(mod, "0.0.0.0")
+                    if old_ver != "0.0.0.0" and semver.compare_semver(installed_ver, old_ver) > 0:
+                        print(f"[core:install] Running migration ladder for '{mod}' ({old_ver} -> {installed_ver})...")
+                        self.engine.act_migrate(mod, old_ver, installed_ver)
 
-                events.broadcast("on_installed", ExecutionContext("core", "install", [module_name, installed_ver]), emit_module="core")
+                for req_mod in req_names_ordered:
+                    inst_v = resolved_map.get(req_mod, "1.0.0.0")
+                    events.broadcast("on_installed", ExecutionContext("core", "install", [req_mod, inst_v]), emit_module="core")
+
                 self.sync_pip_dependencies()
                 try:
                     from core.update_checker import UpdateChecker
-                    UpdateChecker().invalidate_cache(module_name)
+                    checker = UpdateChecker()
+                    for req_mod in req_names_ordered:
+                        checker.invalidate_cache(req_mod)
                 except Exception:
                     pass
-            print(f"[core:install] Successfully installed '{module_name}@{installed_ver}'.")
-            if old_ver == "0.0.0.0":
-                self._print_onboarding_guide(module_name)
-                self._check_optional_dependencies(module_name)
+
+            for req_mod in req_names_ordered:
+                inst_v = resolved_map.get(req_mod, "1.0.0.0")
+                print(f"[core:install] Successfully installed '{req_mod}@{inst_v}'.")
+                if old_versions.get(req_mod, "0.0.0.0") == "0.0.0.0":
+                    self._print_onboarding_guide(req_mod)
+                    self._check_optional_dependencies(req_mod)
             return 0
         except Exception as e:
             print(f"[core:install] Error during install: {e}")
             self.engine.act_restore_snapshot(snap_id)
             return 1
 
-    def cmd_update(self, module_name: Optional[str] = None, provider: Optional[str] = None) -> int:
+    def cmd_update(
+        self,
+        module_name: Optional[Union[str, Sequence[str]]] = None,
+        provider: Optional[str] = None,
+    ) -> int:
         _, cfg = self.engine._get_config()
         default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider")
         provider_url = provider or default_provider
@@ -473,7 +563,17 @@ class Installer:
             return 1
 
         installed = cfg.get("installed_modules", {})
-        targets = [module_name] if module_name else list(installed.keys())
+        explicit_targets = self._normalize_target_names(module_name)
+        if explicit_targets:
+            missing_mods = [m for m in explicit_targets if m not in installed]
+            if missing_mods:
+                for m in missing_mods:
+                    print(f"[core:update] Error: Module '{m}' is not currently installed.")
+                return 1
+            targets = explicit_targets
+        else:
+            targets = list(installed.keys())
+
         if not targets:
             print("[core:update] No modules installed to update.")
             return 0
@@ -528,58 +628,77 @@ class Installer:
             self.engine.act_restore_snapshot(snap_id)
             return 1
 
-    def cmd_remove(self, module_name: str, clean: bool = False, purge: bool = False, force: bool = False) -> int:
-        if not module_name:
+    def cmd_remove(
+        self,
+        module_name: Union[str, Sequence[str]],
+        clean: bool = False,
+        purge: bool = False,
+        force: bool = False,
+    ) -> int:
+        targets = self._normalize_target_names(module_name)
+        if not targets:
             print("[core:remove] Error: Module name is required.")
+            return 1
+
+        if "core" in targets:
+            print("[core:remove] Error: Cannot remove 'core' infrastructure module.")
             return 1
 
         _, cfg = self.engine._get_config()
         installed = cfg.get("installed_modules", {})
 
-        if module_name not in installed:
-            print(f"[core:remove] Module '{module_name}' is not currently installed.")
-            return 1
-
-        if module_name == "core":
-            print("[core:remove] Error: Cannot remove 'core' infrastructure module.")
-            return 1
-
-        dependents: List[str] = []
-        for other_mod in installed.keys():
-            if other_mod == module_name:
-                continue
-            manifest_uri = f"module://{other_mod}/manifest.json"
-            if vfs.exists(manifest_uri):
-                try:
-                    m_data = vfs.read_json(manifest_uri)
-                    deps = _parse_dependencies(m_data.get("dependencies", {}))
-                    if module_name in deps:
-                        dependents.append(other_mod)
-                except Exception:
-                    pass
-
-        if dependents:
-            if not force:
-                print(
-                    f"[core:remove] Error: Cannot remove '{module_name}' because it is required by: "
-                    f"{', '.join(dependents)}. Use --force to override."
-                )
+        for mod in targets:
+            if mod not in installed:
+                print(f"[core:remove] Module '{mod}' is not currently installed.")
                 return 1
-            print(f"[core:remove] Warning: Force removing '{module_name}' required by: {', '.join(dependents)}.")
 
-        print(f"[core:remove] Removing module '{module_name}'...")
-        _notify_server_release_handles()
-        events.broadcast("on_remove", ExecutionContext("core", "remove", [module_name]), emit_module="core")
-        self.engine.act_snapshot(f"pre_remove_{module_name}")
-        self.engine.act_unregister(module_name)
-        self.engine.act_delete(module_name, clean_mirror=clean, purge=purge)
-        self.engine.act_reload(clean_stage=True, inject_stage=True)
-        self.sync_pip_dependencies()
-        if purge:
-            print(f"[core:remove] Module '{module_name}' and all its persistent data/config purged successfully.")
-        else:
-            print(f"[core:remove] Module '{module_name}' removed successfully (cache cleared, storage/config preserved).")
-        return 0
+        target_set = set(targets)
+        for mod in targets:
+            dependents: List[str] = []
+            for other_mod in installed.keys():
+                if other_mod in target_set:
+                    continue
+                manifest_uri = f"module://{other_mod}/manifest.json"
+                if vfs.exists(manifest_uri):
+                    try:
+                        m_data = vfs.read_json(manifest_uri)
+                        deps = _parse_dependencies(m_data.get("dependencies", {}))
+                        if mod in deps:
+                            dependents.append(other_mod)
+                    except Exception:
+                        pass
+
+            if dependents:
+                if not force:
+                    print(
+                        f"[core:remove] Error: Cannot remove '{mod}' because it is required by: "
+                        f"{', '.join(dependents)}. Use --force to override."
+                    )
+                    return 1
+                print(f"[core:remove] Warning: Force removing '{mod}' required by: {', '.join(dependents)}.")
+
+        snap_suffix = targets[0] if len(targets) == 1 else f"batch_{len(targets)}"
+        snap_id = self.engine.act_snapshot(f"pre_remove_{snap_suffix}")
+        try:
+            with self.engine.transaction_lock("remove"):
+                _notify_server_release_handles()
+                events.broadcast("on_remove", ExecutionContext("core", "remove", list(targets)), emit_module="core")
+                for mod in targets:
+                    print(f"[core:remove] Removing module '{mod}'...")
+                    self.engine.act_unregister(mod)
+                    self.engine.act_delete(mod, clean_mirror=clean, purge=purge)
+                self.engine.act_reload(clean_stage=True, inject_stage=True)
+                self.sync_pip_dependencies()
+            for mod in targets:
+                if purge:
+                    print(f"[core:remove] Module '{mod}' and all its persistent data/config purged successfully.")
+                else:
+                    print(f"[core:remove] Module '{mod}' removed successfully (cache cleared, storage/config preserved).")
+            return 0
+        except Exception as e:
+            print(f"[core:remove] Error during remove: {e}")
+            self.engine.act_restore_snapshot(snap_id)
+            return 1
 
     def cmd_list(self, remote: bool = False, provider: Optional[str] = None) -> int:
         _, cfg = self.engine._get_config()

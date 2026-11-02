@@ -10,7 +10,8 @@
     "1.1.1.2",
     "1.2.0.2",
     "1.2.1.0",
-    "1.2.1.1"
+    "1.2.1.1",
+    "1.2.1.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -89,6 +90,13 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "支援專案限定 @build 模組跨機 clone 自動自 source/<mod> 動態打包自舉"
+    },
+    "1.2.1.2": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "支援 install/update/remove 多模組單次批次原子交易與逆向依賴聯集豁免"
     }
   }
 }
