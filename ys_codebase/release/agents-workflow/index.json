@@ -10,7 +10,8 @@
     "1.2.0.2",
     "1.2.1.1",
     "1.2.2.3",
-    "1.2.3.0"
+    "1.2.3.0",
+    "1.2.3.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -120,6 +121,15 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "遷移 file-space 空間貢獻、新增 yscb ast 結構導航盲讀豁免與 publisher 目錄 SHA-1 快取複用及託管標記自癒"
+    },
+    "1.2.3.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "同步三層檢索架構指引並啟用 publisher 原子檔案寫入"
     }
   }
 }

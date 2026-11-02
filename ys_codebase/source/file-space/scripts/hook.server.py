@@ -28,3 +28,9 @@ def on_worker_warming(context: Any) -> str:
         target=_do_pre_warm, daemon=True, name="file-space-prewarm"
     ).start()
     return "warming_started"
+
+
+def on_server_worker_warming(context: Any) -> str:
+    """Standard event entry point matching events.broadcast('server_worker_warming')."""
+    return on_worker_warming(context)
+

@@ -66,6 +66,7 @@ class EmbeddingService:
         self.enable_vector_search = enable_vector_search
         self._model: Optional[Any] = None
         self._is_available: bool = False
+        self._verified_onnx_path: Optional[Path] = None
         self._init_attempted: bool = False
         self._init_lock = threading.Lock()
         self._dimension: Optional[int] = None
@@ -131,16 +132,19 @@ class EmbeddingService:
                 for d in matching_dirs:
                     onnx_files = [f for f in d.rglob("*.onnx") if f.is_file() and f.stat().st_size > 0]
                     if onnx_files:
+                        self._verified_onnx_path = onnx_files[0]
                         return True
 
             all_onnx = [f for f in self.cache_dir.rglob("*.onnx") if f.is_file() and f.stat().st_size > 0]
             for f in all_onnx:
                 path_str = str(f).lower()
                 if model_short in path_str or model_clean in path_str:
+                    self._verified_onnx_path = f
                     return True
 
             sub_entries = list(self.cache_dir.iterdir())
             if all_onnx and len(sub_entries) <= 3:
+                self._verified_onnx_path = all_onnx[0]
                 return True
         except Exception as e:
             logger.debug(f"Error while probing local model weights: {e}")
@@ -157,8 +161,8 @@ class EmbeddingService:
             return True
 
         threads_count = resolve_threads(self.max_threads)
-        os.environ["OMP_NUM_THREADS"] = str(threads_count)
-        os.environ["ONNXRUNTIME_INTRA_OP_NUM_THREADS"] = str(threads_count)
+        os.environ.setdefault("OMP_NUM_THREADS", str(threads_count))
+        os.environ.setdefault("ONNXRUNTIME_INTRA_OP_NUM_THREADS", str(threads_count))
         os.makedirs(self.cache_dir, exist_ok=True)
 
         try:
@@ -240,8 +244,8 @@ class EmbeddingService:
                 logger.debug(f"Failed to check supported models list: {e}")
 
             threads_count = resolve_threads(self.max_threads)
-            os.environ["OMP_NUM_THREADS"] = str(threads_count)
-            os.environ["ONNXRUNTIME_INTRA_OP_NUM_THREADS"] = str(threads_count)
+            os.environ.setdefault("OMP_NUM_THREADS", str(threads_count))
+            os.environ.setdefault("ONNXRUNTIME_INTRA_OP_NUM_THREADS", str(threads_count))
 
             os.makedirs(self.cache_dir, exist_ok=True)
             try:
@@ -315,9 +319,13 @@ class EmbeddingService:
         """回傳當前環境向量推論服務是否就緒可用 (按需惰性探測加載，若快取權重被刪除則重置狀態)"""
         if self.mock_mode:
             return self._is_available
-        if self._is_available and not self.is_model_downloaded():
-            self._is_available = False
-            self._model = None
+        if self._is_available:
+            if self._verified_onnx_path is not None and self._verified_onnx_path.is_file():
+                return True
+            if not self.is_model_downloaded():
+                self._is_available = False
+                self._model = None
+                self._verified_onnx_path = None
         if not self._is_available:
             self._ensure_model()
         return self._is_available

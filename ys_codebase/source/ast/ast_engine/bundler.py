@@ -391,6 +391,15 @@ def aggregate_partial_symbols(symbols: List[UnifiedSymbol]) -> List[UnifiedSymbo
     return updated
 
 
+def _init_bundle_worker(parent_sys_path: List[str]) -> None:
+    """Ensure child processes spawned on Windows/macOS inherit dynamic module paths."""
+    import sys
+
+    for p in reversed(parent_sys_path):
+        if p and p not in sys.path:
+            sys.path.insert(0, p)
+
+
 def _get_worker_registry() -> ParserRegistry:
     """Get or initialize worker-process singleton `ParserRegistry`."""
     global _worker_registry
@@ -690,9 +699,15 @@ class SemanticBundler:
 
         if use_parallel:
             try:
+                import sys
+
                 workers = min(4, cpu_cnt)
                 chunk_size = max(1, total_files // (workers * 4))
-                with ProcessPoolExecutor(max_workers=workers) as pool:
+                with ProcessPoolExecutor(
+                    max_workers=workers,
+                    initializer=_init_bundle_worker,
+                    initargs=(list(sys.path),),
+                ) as pool:
                     results_iter = pool.map(_parse_file_task_worker, tasks, chunksize=chunk_size)
                     for idx, (c_key, sym_dicts, err) in enumerate(results_iter, start=1):
                         if progress_callback:

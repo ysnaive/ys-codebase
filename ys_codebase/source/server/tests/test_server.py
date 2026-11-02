@@ -753,6 +753,33 @@ class TestServerModule(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_spawn_detached_master_quote_safe_args_and_restart_worker_lock_order(self):
+        """FR-02, EC-02 (AUD-02, AUD-03): Verify spawn_detached_master uses sys.argv without quote injection and restart_worker acquires _dispatch_lock."""
+        from server import master as master_mod
+
+        captured_cmd = []
+        with unittest.mock.patch.object(master_mod, "spawn_detached", side_effect=lambda cmd, cwd=None: captured_cmd.extend(cmd) or 12345):
+            quoted_root = os.path.join(self.root_dir, "O'Connor's Workspace")
+            pid = master_mod.spawn_detached_master(quoted_root, idle_timeout_sec=120.0, enable_watcher=False)
+            self.assertEqual(pid, 12345)
+            self.assertGreaterEqual(len(captured_cmd), 8)
+            self.assertNotIn("O'Connor", captured_cmd[2])
+            self.assertTrue(captured_cmd[5].endswith("O'Connor's Workspace"))
+            self.assertEqual(captured_cmd[6], "120.0")
+            self.assertEqual(captured_cmd[7], "0")
+
+        sup = MasterSupervisor(self.root_dir, idle_timeout_sec=60.0, enable_watcher=False)
+        dispatch_held_during_kill = []
+        with unittest.mock.patch.object(
+            sup, "_kill_worker_locked", side_effect=lambda timeout_sec=1.5: dispatch_held_during_kill.append(sup._dispatch_lock.locked())
+        ), unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=9999), \
+             unittest.mock.patch.object(sup, "_write_state"):
+            new_pid = sup.restart_worker()
+            self.assertEqual(new_pid, 9999)
+            self.assertEqual(dispatch_held_during_kill, [True])
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

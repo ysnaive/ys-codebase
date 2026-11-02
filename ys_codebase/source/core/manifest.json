@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.2.0",
+  "version": "1.2.3.0",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -10,8 +10,8 @@
     "Explore installed modules: python yscb.py status"
   ],
   "release": {
-    "type": "feature",
-    "urgency": "recommended",
-    "summary": "新增 _format.json 宣告式合併策略 DSL (merge/extend/replace/unique)、__providers__ 多來源追蹤與 core.uri 重入安全 JIT 鮮度自癒"
+    "type": "bugfix",
+    "urgency": "critical",
+    "summary": "新增跨代升級相依交集解析與自癒引擎、快照交易鎖保護與 OSBackend Symlink 邊界加固"
   }
 }

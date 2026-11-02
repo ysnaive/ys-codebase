@@ -486,7 +486,9 @@ class ASTEngine:
                     try:
                         snap_st, _ = self.scanner._load_or_recover_state(sp_name)
                         if snap_st is not None:
-                            space_gens[sp_name] = int(getattr(snap_st, "generation", 1))
+                            space_gens[sp_name] = int(
+                                getattr(snap_st, "head_generation", getattr(snap_st, "generation", 1))
+                            )
                             continue
                     except Exception:
                         pass
@@ -697,12 +699,12 @@ class ASTEngine:
         new_edges = linker.link_call_sites(dirty_sites, dirty_imports)
 
         reconnected_incoming_edges: List[Tuple[str, str, Optional[SymbolCallSite]]] = []
-        new_syms_by_identity: Dict[Tuple[str, str], UnifiedSymbol] = {}
+        new_syms_by_identity: Dict[Tuple[str, str], List[UnifiedSymbol]] = {}
         for sym in all_new_symbols:
             norm_p = sym.file_path.replace("\\", "/").lower()
-            new_syms_by_identity[(norm_p, sym.name)] = sym
+            new_syms_by_identity.setdefault((norm_p, sym.name), []).append(sym)
             if sym.fqn:
-                new_syms_by_identity[(norm_p, sym.fqn)] = sym
+                new_syms_by_identity.setdefault((norm_p, sym.fqn), []).append(sym)
 
         for caller_id, old_callee_id, site in incoming_edges:
             if caller_id not in self._snapshot.symbols:
@@ -713,12 +715,22 @@ class ASTEngine:
             elif old_callee_id in old_symbol_info:
                 old_p, old_name, old_fqn = old_symbol_info[old_callee_id]
                 old_norm_p = old_p.replace("\\", "/").lower()
-                new_sym = (
+                cands = (
                     new_syms_by_identity.get((old_norm_p, old_name))
                     or new_syms_by_identity.get((old_norm_p, old_fqn))
+                    or []
                 )
-                if new_sym is not None:
-                    target_new_id = new_sym.id
+                if len(cands) == 1:
+                    target_new_id = cands[0].id
+                elif len(cands) > 1:
+                    target_new_id = cands[0].id
+                    if site is not None:
+                        try:
+                            resolved_id = linker.resolve_call_site(site)
+                            if resolved_id and any(c.id == resolved_id for c in cands):
+                                target_new_id = resolved_id
+                        except Exception:
+                            pass
 
             if not target_new_id and site is not None:
                 try:

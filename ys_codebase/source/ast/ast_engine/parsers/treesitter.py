@@ -607,7 +607,8 @@ class TreeSitterDriver(BaseParser):
         # Track same-line overload collisions so same-line overloads receive distinct IDs
         line_name_counts: Dict[Tuple[int, str, str], int] = {}
         for item in dedup_items:
-            key = (item["start_line"], item["kind"], item["short_name"])
+            norm_kind = "method" if item["kind"] == "function" else item["kind"]
+            key = (item["start_line"], norm_kind, item["short_name"])
             line_name_counts[key] = line_name_counts.get(key, 0) + 1
 
         for item in dedup_items:
@@ -629,20 +630,30 @@ class TreeSitterDriver(BaseParser):
                 item["parent_kind"] = parent["kind"]
                 item["scope_path"] = parent["scope_path"] + [parent["short_name"]]
                 item["fqn"] = scope_sep.join(item["scope_path"] + [item["short_name"]])
+                if item["kind"] == "function" and parent["kind"] in ("class", "struct", "interface"):
+                    item["kind"] = "method"
                 if not any(
-                    c["kind"] == item["kind"] and c["short_name"] == item["short_name"]
+                    c["kind"] == item["kind"]
+                    and c["short_name"] == item["short_name"]
+                    and c.get("signature") == item.get("signature")
+                    and c.get("start_line") == item.get("start_line")
                     for c in parent["children_items"]
                 ):
                     parent["children_items"].append(item)
-                if item["kind"] == "function" and parent["kind"] in ("class", "struct", "interface"):
-                    item["kind"] = "method"
             else:
                 item["parent_id"] = None
                 item["parent_kind"] = None
                 item["scope_path"] = []
                 item["fqn"] = item["short_name"]
 
-            collision_key = (item["start_line"], item["kind"], item["short_name"])
+            _, _, resolved_kind = self.dialect.resolve_out_of_line_scope(
+                name=item["short_name"],
+                parent_scope=item["scope_path"][-1] if item["scope_path"] else "",
+                kind=item["kind"],
+            )
+            item["kind"] = resolved_kind
+
+            collision_key = (item["start_line"], "method" if item["kind"] == "function" else item["kind"], item["short_name"])
             sig_hint = item["signature"] if line_name_counts.get(collision_key, 0) > 1 else ""
             item["id"] = UnifiedSymbol.compute_id(
                 space=space,

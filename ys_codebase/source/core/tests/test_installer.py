@@ -668,5 +668,43 @@ class TestCoreInstaller(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_transaction_lock_contention_does_not_overwrite_snapshot_or_rollback(self):
+        """FR-01, EC-01 (AUD-01): Verify lock timeout in cmd_update/cmd_install does not overwrite snapshot or trigger rollback."""
+        from unittest.mock import patch
+        from core.vfs.os_backend import OSBackend
+
+        with patch.object(self.installer.engine, "act_lock", side_effect=BlockingIOError("lock held by another process")):
+            with patch.object(self.installer.engine, "act_snapshot") as mock_snap, \
+                 patch.object(self.installer.engine, "act_restore_snapshot") as mock_restore:
+                rc_upd = self.installer.cmd_update("core", provider="local")
+                self.assertEqual(rc_upd, 1)
+                mock_snap.assert_not_called()
+                mock_restore.assert_not_called()
+
+        # Verify EC-03 (AUD-05): OSBackend blocks symlink escape outside boundary root
+        sb_sub = os.path.join(self.sandbox_dir, "vfs_boundary_box")
+        outside_dir = os.path.join(self.sandbox_dir, "vfs_outside_secret")
+        os.makedirs(sb_sub, exist_ok=True)
+        os.makedirs(outside_dir, exist_ok=True)
+        outside_file = os.path.join(outside_dir, "secret.txt")
+        with open(outside_file, "w", encoding="utf-8") as f:
+            f.write("secret")
+        symlink_path = os.path.join(sb_sub, "escape_link.txt")
+        try:
+            os.symlink(outside_file, symlink_path)
+            has_symlink = True
+        except OSError:
+            has_symlink = False
+
+        if has_symlink:
+            guarded_vfs = OSBackend(root_dir=sb_sub)
+            with self.assertRaises(PermissionError):
+                guarded_vfs.read_text(symlink_path)
+            with self.assertRaises(PermissionError):
+                guarded_vfs.exists(symlink_path)
+
+        self.mark_passed()
+
+
 
 

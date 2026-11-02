@@ -169,8 +169,15 @@ def _rotate_telemetry_file(target_path: Path, keep_lines: int = KEEP_TELEMETRY_L
 
         kept = valid_lines[-max(1, keep_lines):]
         tmp_path = target_path.with_suffix(f".tmp.{os.getpid()}")
-        tmp_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-        os.replace(str(tmp_path), str(target_path))
+        try:
+            tmp_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+            os.replace(str(tmp_path), str(target_path))
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
     except Exception:
         pass
 

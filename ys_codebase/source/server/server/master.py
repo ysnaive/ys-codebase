@@ -96,20 +96,26 @@ def spawn_detached_master(
     enable_watcher: bool = True,
 ) -> int:
     """Assembles cross-platform Python command and spawns a detached MasterSupervisor daemon."""
-    core_dir = os.path.join(yscb_root, ".modules", "core")
-    server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    core_p = os.path.abspath(core_dir).replace("\\", "/")
-    server_p = os.path.abspath(server_dir).replace("\\", "/")
-    root_p = os.path.abspath(yscb_root).replace("\\", "/")
+    core_dir = os.path.abspath(os.path.join(yscb_root, ".modules", "core"))
+    server_dir = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    root_abs = os.path.abspath(yscb_root)
 
+    code = (
+        "import sys; "
+        "sys.path.insert(0, sys.argv[1]); "
+        "sys.path.insert(0, sys.argv[2]); "
+        "from server.master import MasterSupervisor; "
+        "MasterSupervisor(sys.argv[3], idle_timeout_sec=float(sys.argv[4]), enable_watcher=(sys.argv[5] == '1')).start(foreground=True)"
+    )
     cmd = [
         sys.executable,
         "-c",
-        f"import sys; "
-        f"sys.path.insert(0, '{core_p}'); "
-        f"sys.path.insert(0, '{server_p}'); "
-        f"from server.master import MasterSupervisor; "
-        f"MasterSupervisor('{root_p}', idle_timeout_sec={idle_timeout_sec}, enable_watcher={enable_watcher}).start(foreground=True)",
+        code,
+        core_dir,
+        server_dir,
+        root_abs,
+        str(float(idle_timeout_sec)),
+        "1" if enable_watcher else "0",
     ]
     return spawn_detached(cmd, cwd=yscb_root)
 
@@ -386,23 +392,24 @@ class MasterSupervisor:
 
     def restart_worker(self) -> int:
         """Terminates existing worker and spawns a fresh worker subprocess while syncing ServerConfig."""
-        with self._worker_lock:
-            old_pid = self._worker_proc.pid if self._worker_proc else 0
-            self.logger.info(f"Restarting Warm Worker (terminating old PID: {old_pid})...")
-            self._kill_worker_locked(timeout_sec=1.5)
+        with self._dispatch_lock:
+            with self._worker_lock:
+                old_pid = self._worker_proc.pid if self._worker_proc else 0
+                self.logger.info(f"Restarting Warm Worker (terminating old PID: {old_pid})...")
+                self._kill_worker_locked(timeout_sec=1.5)
 
-            try:
-                from server.config import ServerConfig
-                cfg = ServerConfig.load()
-                self.idle_timeout_sec = float(cfg.idle_timeout_sec)
-            except Exception:
-                pass
+                try:
+                    from server.config import ServerConfig
+                    cfg = ServerConfig.load()
+                    self.idle_timeout_sec = float(cfg.idle_timeout_sec)
+                except Exception:
+                    pass
 
-            new_pid = self._spawn_worker_locked()
-            self._last_active_time = time.time()
-            self._write_state()
-            self.logger.info(f"Fresh Warm Worker spawned (PID: {new_pid})")
-            return new_pid
+                new_pid = self._spawn_worker_locked()
+                self._last_active_time = time.time()
+                self._write_state()
+                self.logger.info(f"Fresh Warm Worker spawned (PID: {new_pid})")
+                return new_pid
 
     def on_modules_changed(self, affected_modules: Optional[Set[str]] = None) -> None:
         """
@@ -672,6 +679,10 @@ class MasterSupervisor:
             tasks_executed=self._tasks_executed,
         )
         vfs.write_json(self.state_file, asdict(state), indent=2, atomic=True)
+        try:
+            os.chmod(self.state_file, 0o600)
+        except OSError:
+            pass
 
     def _cleanup_state(self) -> None:
         for fp in (self.state_file, self.lock_file):
@@ -700,7 +711,7 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
         def _authenticate(self) -> bool:
             auth_header = self.headers.get("Authorization", "")
             expected = f"Bearer {supervisor.token}"
-            if auth_header != expected:
+            if not secrets.compare_digest(auth_header, expected):
                 supervisor.logger.warning(f"HTTP Unauthorized access attempt to {self.path}")
                 self._send_json_response(403, {"error": "Unauthorized"})
                 return False

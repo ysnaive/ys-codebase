@@ -132,11 +132,36 @@ def _handle_bump(subcmd: str, cmd_bags: CmdBags) -> int:
         next_ver = semver.bump_version(curr_ver, bump_type)
         manifest_data["version"] = next_ver
         vfs.write_json(src_manifest_uri, manifest_data, indent=2)
+        _sync_package_dunder_version(mod_name, curr_ver, next_ver)
         print(f"[dev:{subcmd}] Successfully bumped '{mod_name}': {curr_ver} -> {next_ver} ({bump_type}).")
         return 0
     except Exception as e:
         print(f"[dev:{subcmd}] Error bumping version for '{mod_name}': {e}", file=sys.stderr)
         return 1
+
+
+def _sync_package_dunder_version(mod_name: str, old_ver: str, new_ver: str) -> None:
+    """若模組套件目錄之 __init__.py 宣告有 __version__ 字面量，自動同步更新為新版本。"""
+    import os
+    import re
+    src_dir = uri.resolve(f"module.source://{mod_name}")
+    if not src_dir or not os.path.isdir(src_dir):
+        return
+    for entry in sorted(os.listdir(src_dir)):
+        if entry in ("tests", "scripts", "contributes", "configurable", "assets", "skills") or entry.startswith("."):
+            continue
+        init_uri = f"module.source://{mod_name}/{entry}/__init__.py"
+        if not vfs.is_file(init_uri):
+            continue
+        content = vfs.read_text(init_uri)
+        updated = re.sub(
+            r'^(__version__\s*(?::\s*str\s*)?=\s*[\'"])' + re.escape(old_ver) + r'([\'"])',
+            rf"\g<1>{new_ver}\g<2>",
+            content,
+            flags=re.MULTILINE,
+        )
+        if updated != content:
+            vfs.write_text(init_uri, updated, atomic=True)
 
 
 def create(cmd_bags: Any) -> int:

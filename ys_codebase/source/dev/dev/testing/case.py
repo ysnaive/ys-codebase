@@ -57,13 +57,20 @@ class YSCBTestCase(unittest.TestCase):
             YSCBTestCase._shared_sandbox_ctx = None
 
     def _callTestMethod(self, method: Any) -> Any:
-        """Wrap test method execution to reliably capture unhandled exceptions."""
+        """Wrap test method execution to reliably capture unhandled exceptions and per-test output slice."""
+        from dev.testing.runner import OutputCapturer
+
+        active_cap = OutputCapturer._ACTIVE_INSTANCE
+        start_offsets = active_cap.snapshot_offsets() if active_cap is not None else None
         try:
             return super()._callTestMethod(method)
         except BaseException:
             self._has_exception = True
             self._execution_status = "FAILED"
             raise
+        finally:
+            if active_cap is not None and start_offsets is not None:
+                self._yscb_captured_output = active_cap.get_slice(start_offsets)
 
     def setUp(self) -> None:
         """Test setup: create or reuse virtual environment and backup environment."""

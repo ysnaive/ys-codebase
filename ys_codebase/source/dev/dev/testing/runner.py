@@ -187,6 +187,8 @@ def get_test_category(test_case: unittest.TestCase) -> str:
 
 class OutputCapturer:
     """Context manager for buffering stdout and stderr during test execution."""
+    _ACTIVE_INSTANCE: Optional["OutputCapturer"] = None
+
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
         self._stdout_buf = StringIO()
@@ -196,6 +198,7 @@ class OutputCapturer:
 
     def __enter__(self) -> "OutputCapturer":
         if self.enabled:
+            OutputCapturer._ACTIVE_INSTANCE = self
             self._orig_stdout = sys.stdout
             self._orig_stderr = sys.stderr
             sys.stdout = self._stdout_buf
@@ -204,10 +207,21 @@ class OutputCapturer:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         if self.enabled:
+            if OutputCapturer._ACTIVE_INSTANCE is self:
+                OutputCapturer._ACTIVE_INSTANCE = None
             if self._orig_stdout is not None:
                 sys.stdout = self._orig_stdout
             if self._orig_stderr is not None:
                 sys.stderr = self._orig_stderr
+
+    def snapshot_offsets(self) -> Tuple[int, int]:
+        return (len(self._stdout_buf.getvalue()), len(self._stderr_buf.getvalue()))
+
+    def get_slice(self, start_offsets: Tuple[int, int]) -> str:
+        out_start, err_start = start_offsets
+        out_part = self._stdout_buf.getvalue()[out_start:]
+        err_part = self._stderr_buf.getvalue()[err_start:]
+        return (out_part + err_part).strip()
 
     def get_output(self) -> str:
         return (self._stdout_buf.getvalue() + self._stderr_buf.getvalue()).strip()

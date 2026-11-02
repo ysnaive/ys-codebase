@@ -259,7 +259,10 @@ def _discover_remote_modules(engine: AtomicEngine, provider_url: str, installed:
                     available_modules[m] = latest or "unknown"
 
     if not available_modules:
-        candidate_mods = set(list(installed.keys()) + ["core", "dev", "server", "knowledge-db", "agents-workflow"])
+        candidate_mods = set(
+            list(installed.keys())
+            + ["core", "dev", "server", "file-space", "ast", "knowledge-db", "agents-workflow"]
+        )
         for m in sorted(candidate_mods):
             ok, res = engine.act_fetch(provider_url, f"{m}/index.json")
             if ok and isinstance(res, dict):
@@ -505,46 +508,51 @@ class Installer:
         label_str = ", ".join(req_names_ordered)
         snap_suffix = req_names_ordered[0] if len(req_names_ordered) == 1 else f"batch_{len(req_names_ordered)}"
         print(f"[core:install] Resolving dependencies for '{label_str}'...")
-        snap_id = self.engine.act_snapshot(f"pre_install_{snap_suffix}")
-
-        installed = cfg.get("installed_modules", {})
-        old_versions: Dict[str, str] = {
-            mod: installed.get(mod, {}).get("version", "0.0.0.0")
-            for mod in set( list(installed.keys()) + req_names_ordered )
-        }
 
         try:
             with self.engine.transaction_lock("install"):
-                _notify_server_release_handles()
-                if len(requests) == 1:
-                    targets = self.engine.act_solve_deps(requests[0][0], requests[0][1], provider_url)
-                else:
-                    targets = self.engine.act_solve_deps(requests, None, provider_url)
-                self.engine.act_prepare(targets, provider_url, force=force)
-                resolved_map: Dict[str, str] = {}
-                for mod, ver in targets:
-                    self.engine.act_register(mod, ver, provider_url)
-                    resolved_map[mod] = ver
-                self.engine.act_reload(clean_stage=True, inject_stage=True)
-
-                for mod, installed_ver in targets:
-                    old_ver = old_versions.get(mod, "0.0.0.0")
-                    if old_ver != "0.0.0.0" and semver.compare_semver(installed_ver, old_ver) > 0:
-                        print(f"[core:install] Running migration ladder for '{mod}' ({old_ver} -> {installed_ver})...")
-                        self.engine.act_migrate(mod, old_ver, installed_ver)
-
-                for req_mod in req_names_ordered:
-                    inst_v = resolved_map.get(req_mod, "1.0.0.0")
-                    events.broadcast("on_installed", ExecutionContext("core", "install", [req_mod, inst_v]), emit_module="core")
-
-                self.sync_pip_dependencies()
+                _, cfg = self.engine._get_config()
+                installed = cfg.get("installed_modules", {})
+                old_versions: Dict[str, str] = {
+                    mod: installed.get(mod, {}).get("version", "0.0.0.0")
+                    for mod in set(list(installed.keys()) + req_names_ordered)
+                }
+                snap_id = self.engine.act_snapshot(f"pre_install_{snap_suffix}")
                 try:
-                    from core.update_checker import UpdateChecker
-                    checker = UpdateChecker()
+                    _notify_server_release_handles()
+                    if len(requests) == 1:
+                        targets = self.engine.act_solve_deps(requests[0][0], requests[0][1], provider_url)
+                    else:
+                        targets = self.engine.act_solve_deps(requests, None, provider_url)
+                    self.engine.act_prepare(targets, provider_url, force=force)
+                    resolved_map: Dict[str, str] = {}
+                    for mod, ver in targets:
+                        self.engine.act_register(mod, ver, provider_url)
+                        resolved_map[mod] = ver
+                    self.engine.act_reload(clean_stage=True, inject_stage=True)
+
+                    for mod, installed_ver in targets:
+                        old_ver = old_versions.get(mod, "0.0.0.0")
+                        if old_ver != "0.0.0.0" and semver.compare_semver(installed_ver, old_ver) > 0:
+                            print(f"[core:install] Running migration ladder for '{mod}' ({old_ver} -> {installed_ver})...")
+                            self.engine.act_migrate(mod, old_ver, installed_ver)
+
                     for req_mod in req_names_ordered:
-                        checker.invalidate_cache(req_mod)
-                except Exception:
-                    pass
+                        inst_v = resolved_map.get(req_mod, "1.0.0.0")
+                        events.broadcast("on_installed", ExecutionContext("core", "install", [req_mod, inst_v]), emit_module="core")
+
+                    self.sync_pip_dependencies()
+                    try:
+                        from core.update_checker import UpdateChecker
+                        checker = UpdateChecker()
+                        for req_mod in req_names_ordered:
+                            checker.invalidate_cache(req_mod)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"[core:install] Error during install: {e}")
+                    self.engine.act_restore_snapshot(snap_id)
+                    return 1
 
             for req_mod in req_names_ordered:
                 inst_v = resolved_map.get(req_mod, "1.0.0.0")
@@ -554,8 +562,7 @@ class Installer:
                     self._check_optional_dependencies(req_mod)
             return 0
         except Exception as e:
-            print(f"[core:install] Error during install: {e}")
-            self.engine.act_restore_snapshot(snap_id)
+            print(f"[core:install] Error acquiring install lock: {e}")
             return 1
 
     def cmd_update(
@@ -587,78 +594,82 @@ class Installer:
             return 0
 
         print(f"[core:update] Checking updates for modules: {', '.join(targets)} (Major Lock active)...")
-        snap_id = self.engine.act_snapshot("pre_update")
 
         updated_any = False
         migrations_to_run: List[Tuple[str, str, str]] = []
         newly_installed_deps: List[str] = []
         try:
             with self.engine.transaction_lock("update"):
-                _notify_server_release_handles()
-                ordered_targets = sorted(targets, key=lambda m: (0 if m == "core" else 1, targets.index(m)))
-                candidate_core_ver: Optional[str] = None
-                for mod in ordered_targets:
-                    cur_ver = installed.get(mod, {}).get("version", "1.0.0.0")
-                    cur_t = semver.parse_semver(cur_ver)
-
-                    if cur_t.is_build or cur_ver == "build" or str(cur_ver).endswith(".build"):
-                        print(f"[core:update] Module '{mod}' is a development build (v{cur_ver}), skipping update.")
-                        continue
-
-                    major_constraint = f"^{cur_t.major}.{cur_t.minor}.{cur_t.patch}"
-                    clean_versions = _discover_available_versions_for_module(
-                        self.engine,
-                        mod,
-                        provider_url,
-                        candidate_core_version=candidate_core_ver,
-                    )
-                    best_v = semver.find_best_version(clean_versions, major_constraint)
-                    latest_ver = best_v if best_v else cur_ver
-
-                    if semver.compare_semver(latest_ver, cur_ver) > 0:
-                        print(f"[core:update] Updating '{mod}' from {cur_ver} -> {latest_ver}...")
-                        self.engine.act_prepare([(mod, latest_ver)], provider_url, force=True)
-                        self.engine.act_register(mod, latest_ver, provider_url)
-                        migrations_to_run.append((mod, cur_ver, latest_ver))
-                        updated_any = True
-                        if mod == "core":
-                            candidate_core_ver = latest_ver
-                    else:
-                        print(f"[core:update] Module '{mod}' is already up-to-date (v{cur_ver}).")
-
-                # Reconcile dependencies across all installed & newly updated modules (auto-installs missing deps,
-                # auto-upgrades compatible intersection deps, or raises RuntimeError on disjoint conflict)
-                healed_deps = self.engine.reconcile_installed_dependencies(provider_url=provider_url)
-                for h_mod, h_old, h_new in healed_deps:
-                    updated_any = True
-                    if h_old is None:
-                        print(f"[core:update] Installing required dependency '{h_mod}@{h_new}'...")
-                        newly_installed_deps.append(h_mod)
-                    elif semver.compare_semver(h_new, h_old) > 0:
-                        print(f"[core:update] Auto-upgrading dependency '{h_mod}' from {h_old} -> {h_new}...")
-                        migrations_to_run.append((h_mod, h_old, h_new))
-
-                if updated_any:
-                    self.engine.act_reload(clean_stage=True, inject_stage=True)
-                    for mod, old_v, new_v in migrations_to_run:
-                        self.engine.act_migrate(mod, old_v, new_v)
-                    events.broadcast("on_update", ExecutionContext("core", "update", targets), emit_module="core")
-                    self.sync_pip_dependencies()
-                    for dep_mod in newly_installed_deps:
-                        self._print_onboarding_guide(dep_mod)
-                        self._check_optional_dependencies(dep_mod)
-                    print("[core:update] Update completed successfully.")
+                snap_id = self.engine.act_snapshot("pre_update")
                 try:
-                    from core.update_checker import UpdateChecker
-                    checker = UpdateChecker()
-                    for m in set(list(targets) + [h[0] for h in healed_deps]):
-                        checker.invalidate_cache(m)
-                except Exception:
-                    pass
+                    _notify_server_release_handles()
+                    ordered_targets = sorted(targets, key=lambda m: (0 if m == "core" else 1, targets.index(m)))
+                    candidate_core_ver: Optional[str] = None
+                    for mod in ordered_targets:
+                        cur_ver = installed.get(mod, {}).get("version", "1.0.0.0")
+                        cur_t = semver.parse_semver(cur_ver)
+
+                        if cur_t.is_build or cur_ver == "build" or str(cur_ver).endswith(".build"):
+                            print(f"[core:update] Module '{mod}' is a development build (v{cur_ver}), skipping update.")
+                            continue
+
+                        major_constraint = f"^{cur_t.major}.{cur_t.minor}.{cur_t.patch}"
+                        clean_versions = _discover_available_versions_for_module(
+                            self.engine,
+                            mod,
+                            provider_url,
+                            candidate_core_version=candidate_core_ver,
+                        )
+                        best_v = semver.find_best_version(clean_versions, major_constraint)
+                        latest_ver = best_v if best_v else cur_ver
+
+                        if semver.compare_semver(latest_ver, cur_ver) > 0:
+                            print(f"[core:update] Updating '{mod}' from {cur_ver} -> {latest_ver}...")
+                            self.engine.act_prepare([(mod, latest_ver)], provider_url, force=True)
+                            self.engine.act_register(mod, latest_ver, provider_url)
+                            migrations_to_run.append((mod, cur_ver, latest_ver))
+                            updated_any = True
+                            if mod == "core":
+                                candidate_core_ver = latest_ver
+                        else:
+                            print(f"[core:update] Module '{mod}' is already up-to-date (v{cur_ver}).")
+
+                    # Reconcile dependencies across all installed & newly updated modules (auto-installs missing deps,
+                    # auto-upgrades compatible intersection deps, or raises RuntimeError on disjoint conflict)
+                    healed_deps = self.engine.reconcile_installed_dependencies(provider_url=provider_url)
+                    for h_mod, h_old, h_new in healed_deps:
+                        updated_any = True
+                        if h_old is None:
+                            print(f"[core:update] Installing required dependency '{h_mod}@{h_new}'...")
+                            newly_installed_deps.append(h_mod)
+                        elif semver.compare_semver(h_new, h_old) > 0:
+                            print(f"[core:update] Auto-upgrading dependency '{h_mod}' from {h_old} -> {h_new}...")
+                            migrations_to_run.append((h_mod, h_old, h_new))
+
+                    if updated_any:
+                        self.engine.act_reload(clean_stage=True, inject_stage=True)
+                        for mod, old_v, new_v in migrations_to_run:
+                            self.engine.act_migrate(mod, old_v, new_v)
+                        events.broadcast("on_update", ExecutionContext("core", "update", targets), emit_module="core")
+                        self.sync_pip_dependencies()
+                        for dep_mod in newly_installed_deps:
+                            self._print_onboarding_guide(dep_mod)
+                            self._check_optional_dependencies(dep_mod)
+                        print("[core:update] Update completed successfully.")
+                    try:
+                        from core.update_checker import UpdateChecker
+                        checker = UpdateChecker()
+                        for m in set(list(targets) + [h[0] for h in healed_deps]):
+                            checker.invalidate_cache(m)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"[core:update] Error during update: {e}")
+                    self.engine.act_restore_snapshot(snap_id)
+                    return 1
             return 0
         except Exception as e:
-            print(f"[core:update] Error during update: {e}")
-            self.engine.act_restore_snapshot(snap_id)
+            print(f"[core:update] Error acquiring update lock: {e}")
             return 1
 
     def cmd_remove(
@@ -711,17 +722,22 @@ class Installer:
                 print(f"[core:remove] Warning: Force removing '{mod}' required by: {', '.join(dependents)}.")
 
         snap_suffix = targets[0] if len(targets) == 1 else f"batch_{len(targets)}"
-        snap_id = self.engine.act_snapshot(f"pre_remove_{snap_suffix}")
         try:
             with self.engine.transaction_lock("remove"):
-                _notify_server_release_handles()
-                events.broadcast("on_remove", ExecutionContext("core", "remove", list(targets)), emit_module="core")
-                for mod in targets:
-                    print(f"[core:remove] Removing module '{mod}'...")
-                    self.engine.act_unregister(mod)
-                    self.engine.act_delete(mod, clean_mirror=clean, purge=purge)
-                self.engine.act_reload(clean_stage=True, inject_stage=True, reconcile_deps=False)
-                self.sync_pip_dependencies()
+                snap_id = self.engine.act_snapshot(f"pre_remove_{snap_suffix}")
+                try:
+                    _notify_server_release_handles()
+                    events.broadcast("on_remove", ExecutionContext("core", "remove", list(targets)), emit_module="core")
+                    for mod in targets:
+                        print(f"[core:remove] Removing module '{mod}'...")
+                        self.engine.act_unregister(mod)
+                        self.engine.act_delete(mod, clean_mirror=clean, purge=purge)
+                    self.engine.act_reload(clean_stage=True, inject_stage=True, reconcile_deps=False)
+                    self.sync_pip_dependencies()
+                except Exception as e:
+                    print(f"[core:remove] Error during remove: {e}")
+                    self.engine.act_restore_snapshot(snap_id)
+                    return 1
             for mod in targets:
                 if purge:
                     print(f"[core:remove] Module '{mod}' and all its persistent data/config purged successfully.")
@@ -729,8 +745,7 @@ class Installer:
                     print(f"[core:remove] Module '{mod}' removed successfully (cache cleared, storage/config preserved).")
             return 0
         except Exception as e:
-            print(f"[core:remove] Error during remove: {e}")
-            self.engine.act_restore_snapshot(snap_id)
+            print(f"[core:remove] Error acquiring remove lock: {e}")
             return 1
 
     def cmd_list(self, remote: bool = False, provider: Optional[str] = None) -> int:

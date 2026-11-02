@@ -41,11 +41,13 @@ def _adjust_active_watcher_count(delta: int) -> None:
 
 
 def _is_daemon_pid_alive(project_root: Optional[Path]) -> bool:
-    """Probe whether a background file-space daemon process is alive for project_root."""
+    """Probe whether a background server/file-space daemon process is alive for project_root."""
     if project_root is None:
         return False
     p_root = Path(project_root)
     candidates = [
+        p_root / "ys_codebase" / ".cache" / "server" / "daemon.json",
+        p_root / ".cache" / "server" / "daemon.json",
         p_root / "ys_codebase" / ".cache" / "file-space" / "daemon.json",
         p_root / ".cache" / "file-space" / "daemon.json",
     ]
@@ -56,8 +58,13 @@ def _is_daemon_pid_alive(project_root: Optional[Path]) -> bool:
             data = json.loads(status_file.read_text(encoding="utf-8"))
             pid = int(data.get("pid", 0)) if isinstance(data, dict) else 0
             if pid > 0:
-                os.kill(pid, 0)
-                return True
+                try:
+                    from core.platform import is_process_alive
+                    if is_process_alive(pid):
+                        return True
+                except Exception:
+                    os.kill(pid, 0)
+                    return True
         except Exception:
             continue
     return False
@@ -454,10 +461,8 @@ class CursorStore:
                         except OSError:
                             pass
                 else:
-                    c_file.write_text(
-                        json.dumps(all_spaces, indent=2, sort_keys=True),
-                        encoding="utf-8",
-                    )
+                    payload = json.dumps(all_spaces, indent=2, sort_keys=True).encode("utf-8")
+                    _atomic_write_bytes(c_file, payload)
 
     def list_consumers(self) -> List[str]:
         """List all consumer IDs that currently have persisted cursor files."""

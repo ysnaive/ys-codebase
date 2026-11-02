@@ -169,10 +169,12 @@ class PipManager:
         try:
             subprocess.run(
                 [py_exec, "-m", "ensurepip", "--default-pip"],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 check=True,
+                timeout=300,
             )
         except Exception as e:
             raise PipInstallError(
@@ -254,6 +256,8 @@ class PipManager:
             "install",
             "--only-binary=:all:",
             "--no-warn-script-location",
+            "--no-input",
+            "--timeout=30",
             "--quiet",
             *specs,
         ]
@@ -261,9 +265,11 @@ class PipManager:
         try:
             res = subprocess.run(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                timeout=300,
             )
         except Exception as e:
             raise PipInstallError(f"Failed to execute pip command: {e}") from e

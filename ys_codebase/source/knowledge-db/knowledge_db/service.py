@@ -238,9 +238,12 @@ def wait_until_worker_idle(indices_dir: Union[str, Path], timeout_ms: int) -> bo
         if remain <= 0:
             break
         wait_slice = min(0.025, remain)
-        if _IDLE_EVENT.wait(timeout=wait_slice):
-            if get_worker_busy_ms(indices_dir) == 0:
-                return True
+        if not _IDLE_EVENT.is_set():
+            if _IDLE_EVENT.wait(timeout=wait_slice):
+                if get_worker_busy_ms(indices_dir) == 0:
+                    return True
+        else:
+            time.sleep(wait_slice)
     return get_worker_busy_ms(indices_dir) == 0
 
 

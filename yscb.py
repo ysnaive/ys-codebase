@@ -42,14 +42,6 @@ _RELEASE_PACKAGE_IGNORES: Tuple[str, ...] = (
     "tests/*",
 )
 
-CORE_COMMANDS: set = {
-    "install", "update", "remove", "list", "status",
-    "rollback", "reload", "restore", "bootstrap", "uri", "config", "event", "help",
-    "self-update"
-}
-
-_MODULE_CACHE: Dict[str, Any] = {}
-
 
 def _read_json_dict(path: str) -> Optional[Dict[str, Any]]:
     """安全讀取 JSON 檔案並確保返回 dict，失敗或非 dict 時返回 None。"""

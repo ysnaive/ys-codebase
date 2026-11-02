@@ -40,7 +40,7 @@ class OSBackend(VFSBackend):
 
     def assert_safe_path(self, path: str, root: Optional[str] = None) -> str:
         """
-        檢核目標路徑是否處於授權邊界內，防禦目錄穿越與逃逸攻擊。
+        檢核目標路徑是否處於授權邊界內，防禦目錄穿越與符號連結逃逸攻擊。
 
         :param path: 目標路徑
         :param root: 指定根目錄 (若為 None 則使用實例之 self.root_dir)
@@ -52,7 +52,11 @@ class OSBackend(VFSBackend):
         if boundary_root:
             is_same = norm_target == boundary_root
             is_child = norm_target.startswith(boundary_root + os.sep)
-            if not (is_same or is_child):
+            real_target = os.path.normpath(os.path.realpath(norm_target))
+            real_root = os.path.normpath(os.path.realpath(boundary_root))
+            is_real_same = real_target == real_root
+            is_real_child = real_target.startswith(real_root + os.sep)
+            if not ((is_same or is_child or is_real_same or is_real_child) and (is_real_same or is_real_child)):
                 raise PermissionError(
                     f"Path traversal detected: target path '{norm_target}' "
                     f"escaped boundary root '{boundary_root}'."
@@ -129,24 +133,24 @@ class OSBackend(VFSBackend):
 
     def exists(self, path: str) -> bool:
         """檢查路徑是否存在。"""
+        norm_path = self.assert_safe_path(path)
         try:
-            norm_path = self.normalize_path(path)
             return os.path.exists(norm_path)
         except Exception:
             return False
 
     def is_file(self, path: str) -> bool:
         """檢查是否為常規檔案。"""
+        norm_path = self.assert_safe_path(path)
         try:
-            norm_path = self.normalize_path(path)
             return os.path.isfile(norm_path)
         except Exception:
             return False
 
     def is_dir(self, path: str) -> bool:
         """檢查是否為目錄。"""
+        norm_path = self.assert_safe_path(path)
         try:
-            norm_path = self.normalize_path(path)
             return os.path.isdir(norm_path)
         except Exception:
             return False

@@ -34,7 +34,7 @@ def _ensure_dependency_module_paths() -> None:
 
 _ensure_dependency_module_paths()
 
-__version__ = "1.0.0.0"
+__version__ = "1.0.0.1"
 
 _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "SemanticBundler": (".bundler", "SemanticBundler"),

@@ -576,8 +576,15 @@ class SandboxProvisioner:
                 ]
                 with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
                     events.broadcast("on_test_teardown", context=ctx, emit_module="dev", search_roots=scanned_roots)
+                def _handle_remove_readonly(func, path, exc_info):
+                    try:
+                        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                        func(path)
+                    except OSError:
+                        pass
+
                 SandboxProvisioner._unlink_projected_venv(ctx.engine_dir)
-                shutil.rmtree(sandbox_dir)
+                shutil.rmtree(sandbox_dir, onerror=_handle_remove_readonly)
                 return True
             except Exception as e:
                 if not force:

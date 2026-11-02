@@ -433,12 +433,16 @@ class Tester:
 
             err_msgs = []
             for test_case, tb in result.failures:
-                err_str, entry = _record_test_failure_entry(mod_name, test_case, tb, "FAIL", "AssertionError", captured_output)
+                per_test_out = getattr(test_case, "_yscb_captured_output", None)
+                out_to_use = per_test_out if per_test_out is not None else captured_output
+                err_str, entry = _record_test_failure_entry(mod_name, test_case, tb, "FAIL", "AssertionError", out_to_use)
                 err_msgs.append(err_str)
                 report_data["failures_list"].append(entry)
 
             for test_case, tb in result.errors:
-                err_str, entry = _record_test_failure_entry(mod_name, test_case, tb, "ERROR", "Error", captured_output)
+                per_test_out = getattr(test_case, "_yscb_captured_output", None)
+                out_to_use = per_test_out if per_test_out is not None else captured_output
+                err_str, entry = _record_test_failure_entry(mod_name, test_case, tb, "ERROR", "Error", out_to_use)
                 err_msgs.append(err_str)
                 report_data["failures_list"].append(entry)
 

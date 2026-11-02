@@ -95,6 +95,7 @@ class InterProcessLock:
         if sys.platform == "win32":
             try:
                 import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 return True
             except (IOError, OSError):

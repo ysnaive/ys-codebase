@@ -232,14 +232,23 @@ def is_process_alive(pid: int) -> bool:
     if sys.platform == "win32":
         try:
             import ctypes
+            from ctypes import wintypes
+
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
             STILL_ACTIVE = 259
             kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
             if not handle:
                 return False
             try:
-                exit_code = ctypes.c_ulong()
+                exit_code = wintypes.DWORD()
                 if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                     return exit_code.value == STILL_ACTIVE
                 return False

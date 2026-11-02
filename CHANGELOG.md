@@ -1,5 +1,18 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_02_2325_deep_audit_remediation_p0_to_p3 (Completed)
+
+- **全專案八維度單點序列深度審計 22 項問題修復 (`AUD-01` ~ `AUD-22`, `FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：
+  - **跨進程安裝交易鎖臨界區與伺服器安全加固 (`AUD-01` ~ `AUD-03`, `AUD-12`)**：將 `core/installer.py` (`cmd_install`, `cmd_update`, `cmd_remove`) 之 `act_snapshot` 與異常回滾 `act_restore_snapshot` 嚴格移入 `transaction_lock` 臨界區內，防止鎖競爭超時觸發無鎖回滾破壞進行中環境；`server/master.py:spawn_detached_master` 改用 `sys.argv` 安全傳遞路徑與參數，杜絕單引號插值崩潰；`restart_worker` 遵循 `_dispatch_lock -> _worker_lock` 固定鎖序；`daemon.json` 設定 `0o600` 權限並以 `secrets.compare_digest` 執行恆定時間鑑權。
+  - **跨平台 Tri-OS 相容性與 VFS 邊界強化 (`AUD-04` ~ `AUD-06`, `AUD-11`, `AUD-13`, `AUD-16`, `AUD-19`, `AUD-20`)**：補齊 64-bit Windows `OpenProcess` / `GetExitCodeProcess` / `CloseHandle` 之 `wintypes.HANDLE` 簽名，並於 `msvcrt.locking` 前補上 `os.lseek(fd, 0, os.SEEK_SET)`；`OSBackend.assert_safe_path` 加入對稱 `os.path.realpath` 檢核阻斷 Symlink 逃逸，並於 `exists` / `is_file` / `is_dir` 套用邊界校驗；為 `PipManager` 補上 `--no-input` 與 `timeout=300`；`_GLOBAL_REGISTRY` 綁定 `_GLOBAL_REGISTRY_ROOT` 隔離；確保遙測裁剪 `.tmp` 檔案清理；Windows 沙盒清理加入唯讀屬性清除回呼。
+  - **跨模組契約、重載方法保留與非同步空轉修復 (`AUD-07` ~ `AUD-10`, `AUD-14`, `AUD-15`, `AUD-17`, `AUD-18`, `AUD-21`, `AUD-22`)**：補齊 `file-space` 與 `knowledge-db` 之 `on_server_worker_warming` 預熱 Hook；`is_transaction_locked` 改用 `InterProcessLock` 探測 `cache://.yscb.lock`；`wait_until_worker_idle` 跨進程等待時改用 `time.sleep` 消除 100% CPU 空轉；`knowledge_db/io_utils.py` 統一委派 `ast_engine.io_utils` 並防止 `is_dirty_file_match` 對無斜線同名檔案誤判；修復 `ast` 之 `SnapshotState.head_generation` 讀取、同檔重載符號重連、`ProcessPoolExecutor` `sys.path` 初始化器與 `treesitter.py` 重載成員保留；`agents-workflow` 落地檔案與 `.gitignore` 改用 `vfs.write_text(..., atomic=True)` 原子寫入；`OutputCapturer` 支援單一失敗測試方法輸出切片隔離。
+
+## 2026_11_02_2245_post_abstraction_audit_and_update_deps (Completed)
+
+- **`yscb.py update` / `act_reload` 相依交集自癒、空間表收斂、PEP 562 延遲載入與 `__version__` 守門 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - 於 `AtomicEngine.reconcile_installed_dependencies`、`act_reload` Stage 1.5 與 `Installer.cmd_update` 實作 `core` 候選版號先行評估、未安裝相依模組自動補裝、已安裝相依模組約束交集自動升級，以及無交集約束衝突拋出 `RuntimeError` 並執行 Snapshot 100% 回滾。
+  - 於 `file_space/providers.py` 統一實作空間表生成，`knowledge_db/providers.py` 以純標準庫委派呼叫；`knowledge_db/__init__.py` (`1.2.0.0`) 與 `ast_engine/__init__.py` (`1.0.0.0`) 改為 PEP 562 `__getattr__` 延遲匯入，並於 `Checker._check_package_dunder_version` 新增 AST 靜態檢核。
+
 ## 2026_11_02_2133_file_space_and_ast_code_optimization_audit (Completed)
 
 - **`module:file-space` 與 `module:ast` 業務代碼五維度靜態診斷 (`R01`)、`Mode A` 單一正統入口收斂重構與巨型方法階段拆解 (`FR-01` ~ `FR-04`, `EC-01` ~ `EC-03`, `NFR-01` ~ `NFR-02`)**：

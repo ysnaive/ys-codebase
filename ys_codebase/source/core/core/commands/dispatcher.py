@@ -23,6 +23,7 @@ from core.telemetry import extract_error_hint, record_cli_event
 
 # 快取已載入之 Contributes Registry
 _GLOBAL_REGISTRY: Optional[CommandsRegistry] = None
+_GLOBAL_REGISTRY_ROOT: Optional[str] = None
 _MODULE_CACHE: Dict[str, Any] = {}
 _AUTO_SPAWN_WARNED: bool = False
 _LAST_DISPATCH_ERROR_HINT: str = ""
@@ -53,8 +54,9 @@ def _get_yscb_root() -> Tuple[str, str]:
 
 def _load_registry(yscb_abs: str) -> CommandsRegistry:
     """聚合工作區所有模組之 contributes/core.json 或 contributes/*.json。"""
-    global _GLOBAL_REGISTRY
-    if _GLOBAL_REGISTRY is not None:
+    global _GLOBAL_REGISTRY, _GLOBAL_REGISTRY_ROOT
+    norm_root = os.path.normcase(os.path.abspath(yscb_abs)) if yscb_abs else ""
+    if _GLOBAL_REGISTRY is not None and _GLOBAL_REGISTRY_ROOT == norm_root:
         return _GLOBAL_REGISTRY
 
     registry = CommandsRegistry()
@@ -92,6 +94,7 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
                         pass
 
     _GLOBAL_REGISTRY = registry
+    _GLOBAL_REGISTRY_ROOT = norm_root
     return registry
 
 

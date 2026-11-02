@@ -113,9 +113,11 @@ def is_dirty_file_match(doc_file_path: str, dirty_paths_norm: Set[str]) -> bool:
     if not dirty_paths_norm:
         return False
     sym_path_norm = str(doc_file_path).replace("\\", "/").lower()
+    if sym_path_norm in dirty_paths_norm:
+        return True
+    if "/" not in sym_path_norm:
+        return False
     for p in dirty_paths_norm:
-        if sym_path_norm == p:
-            return True
         if "/" in p and (p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p)):
             return True
     return False

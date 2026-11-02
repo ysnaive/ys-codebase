@@ -10,7 +10,8 @@
     "1.1.1.2",
     "1.2.0.2",
     "1.2.1.2",
-    "1.2.2.0"
+    "1.2.2.0",
+    "1.2.3.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -103,6 +104,13 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "新增 _format.json 宣告式合併策略 DSL (merge/extend/replace/unique)、__providers__ 多來源追蹤與 core.uri 重入安全 JIT 鮮度自癒"
+    },
+    "1.2.3.0": {
+      "status": "active",
+      "dependencies": {},
+      "type": "bugfix",
+      "urgency": "critical",
+      "summary": "新增跨代升級相依交集解析與自癒引擎、快照交易鎖保護與 OSBackend Symlink 邊界加固"
     }
   }
 }

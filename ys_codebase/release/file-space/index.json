@@ -2,7 +2,8 @@
   "name": "file-space",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
-    "1.0.0.0"
+    "1.0.0.0",
+    "1.0.0.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -13,6 +14,15 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "初版 file-space 模組發布，提供多工作空間幾何路由、YFP2 雙階段單調世代指紋快照、多消費者游標與 file-space-watcher 常駐監聽"
+    },
+    "1.0.0.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "補齊 on_server_worker_warming 入口點與 is_transaction_locked 交易鎖探測"
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "dev",
-  "version": "1.1.3.2",
+  "version": "1.1.3.3",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -12,8 +12,8 @@
     "Run isolated sandbox tests: python yscb.py dev test --all --quiet"
   ],
   "release": {
-    "type": "docs",
-    "urgency": "optional",
-    "summary": "同步更新 contributes_guide 合併策略說明並對齊 core>=1.2.2 依賴契約"
+    "type": "bugfix",
+    "urgency": "recommended",
+    "summary": "新增唯讀檔案沙盒清理回呼、單測方法級輸出切片捕獲與 bump 自動同步 __version__"
   }
 }

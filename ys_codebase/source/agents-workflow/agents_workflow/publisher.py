@@ -824,8 +824,7 @@ class ReleasePublisher:
                     pass
 
             os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
-            with open(dst_abs, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
+            vfs.write_text(dst_abs, content, encoding="utf-8", atomic=True)
             written_count += 1
         return written_count, skipped_count
 
@@ -1072,8 +1071,7 @@ class ReleasePublisher:
             return {"updated": False, "created": False, "patterns": sorted_patterns}
 
         try:
-            with open(gitignore_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(merged_content)
+            vfs.write_text(gitignore_path, merged_content, encoding="utf-8", atomic=True)
             return {"updated": True, "created": not has_existing, "patterns": sorted_patterns}
         except Exception as e:
             print(f"[publisher:warning] Failed to sync .gitignore: {e}", file=sys.stderr)

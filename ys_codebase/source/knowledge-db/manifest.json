@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.0.0",
+  "version": "1.2.0.1",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -24,8 +24,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "feature",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "遷移至 file-space 與 ast 三層 DAG 底座（單次解析符號共享）、新增 KnowledgeDBServiceWorker 兩階段背景向量補齊與毫秒級動態降級"
+    "summary": "修復 wait_until_worker_idle 跨進程緊密空轉、清理舊版組態遺留並補齊 on_server_worker_warming"
   }
 }

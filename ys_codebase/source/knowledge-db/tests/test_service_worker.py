@@ -227,11 +227,34 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_hook_server_no_duplicate_watcher(self):
-        """驗證 scripts/hook.server.py 僅執行 pre_warm，不啟動私有 watcher 實例"""
+        """驗證 scripts/hook.server.py 僅執行 pre_warm，不啟動私有 watcher 實例，且支援 on_server_worker_warming"""
         hook_mod = _load_hook_module("hook.server.py")
         self.assertFalse(hasattr(hook_mod, "_watcher_instance"))
         ret = hook_mod.on_worker_warming({"workspace_root": str(self.root_path)})
         self.assertEqual(ret, "warming_started")
+        ret2 = hook_mod.on_server_worker_warming({"workspace_root": str(self.root_path)})
+        self.assertEqual(ret2, "warming_started")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_wait_until_worker_idle_cross_process_does_not_busy_spin(self):
+        """FR-04, EC-05, NFR-01 (AUD-10): Verify wait_until_worker_idle sleeps instead of busy-spinning when _IDLE_EVENT is set locally."""
+        from knowledge_db import service as svc_mod
+
+        indices_dir = self.root_path / "indices_spin_test"
+        indices_dir.mkdir(parents=True, exist_ok=True)
+        svc_mod._IDLE_EVENT.set()
+
+        call_count = {"n": 0}
+
+        def _fake_busy_ms(_dir):
+            call_count["n"] += 1
+            return 50
+
+        with patch.object(svc_mod, "get_worker_busy_ms", side_effect=_fake_busy_ms):
+            res = svc_mod.wait_until_worker_idle(indices_dir, timeout_ms=60)
+            self.assertFalse(res)
+            self.assertLessEqual(call_count["n"], 10)
         self.mark_passed()
 
     @require(Requirement.LOGIC)

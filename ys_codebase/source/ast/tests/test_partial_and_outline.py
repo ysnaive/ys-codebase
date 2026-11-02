@@ -283,3 +283,35 @@ class TestPartialAndOutline(YSCBTestCase):
         with self.assertRaises(AttributeError):
             _ = ast_engine.NON_EXISTENT_SYMBOL_XYZ
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_05_overload_members_retention_and_dirty_file_match(self):
+        """FR-04, EC-04 (AUD-08, AUD-09, AUD-14): Verify C# overloaded methods are retained in class members and is_dirty_file_match avoids basename false positives."""
+        from ast_engine.io_utils import is_dirty_file_match, normalize_dirty_paths
+
+        dirty_set = normalize_dirty_paths(["ys_codebase/source/dev/scripts/cli.py"])
+        self.assertFalse(is_dirty_file_match("cli.py", dirty_set))
+        self.assertTrue(is_dirty_file_match("source/dev/scripts/cli.py", dirty_set))
+        self.assertTrue(is_dirty_file_match("ys_codebase/source/dev/scripts/cli.py", dirty_set))
+
+        proj_dir = self.temp_dir / "overload_proj"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        cs_file = proj_dir / "MathOps.cs"
+        cs_file.write_text(
+            "namespace Calc {\n"
+            "    public class MathOps {\n"
+            "        public int Add(int a, int b) { return a + b; }\n"
+            "        public double Add(double a, double b) { return a + b; }\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        engine = ASTEngine(project_root=proj_dir, storage_dir=self.storage_dir)
+        engine.ensure_jit_synced(force=True)
+        outline_res = engine.outline(str(cs_file), merged=False)
+        cls_sym = next((s for s in outline_res["symbols"] if s["kind"] == "class"), None)
+        if cls_sym is not None:
+            add_members = [m for m in cls_sym["members"] if m["name"] == "Add"]
+            self.assertEqual(len(add_members), 2)
+        self.mark_passed()
+

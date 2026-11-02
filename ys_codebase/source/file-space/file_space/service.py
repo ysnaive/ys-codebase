@@ -263,13 +263,47 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         in the project root or ys_codebase runtime directory.
         """
         p_root = self.space_manager.project_root
-        candidates = [
-            p_root / ".yscb.lock",
-            p_root / "ys_codebase" / ".yscb.lock",
-        ]
         if "lock_file" in self.context and self.context["lock_file"]:
-            candidates.append(Path(self.context["lock_file"]))
-        return any(c.exists() for c in candidates)
+            explicit_lock = Path(self.context["lock_file"])
+            if explicit_lock.exists():
+                try:
+                    from core.platform.lock import InterProcessLock
+                    probe = InterProcessLock(str(explicit_lock))
+                    if probe.acquire(blocking=False):
+                        probe.release()
+                    else:
+                        return True
+                except Exception:
+                    return True
+
+        for legacy_cand in (p_root / ".yscb.lock", p_root / "ys_codebase" / ".yscb.lock"):
+            if legacy_cand.exists():
+                return True
+
+        cache_lock_candidates = [
+            p_root / "ys_codebase" / ".cache" / ".yscb.lock",
+            p_root / ".cache" / ".yscb.lock",
+        ]
+        try:
+            from core import uri
+            resolved_lock = uri.resolve("cache://.yscb.lock", interactive=False)
+            if resolved_lock and not str(resolved_lock).startswith("!undefined"):
+                cache_lock_candidates.insert(0, Path(str(resolved_lock)))
+        except Exception:
+            pass
+
+        for lock_cand in cache_lock_candidates:
+            if lock_cand.exists():
+                try:
+                    from core.platform.lock import InterProcessLock
+                    probe = InterProcessLock(str(lock_cand))
+                    if probe.acquire(blocking=False):
+                        probe.release()
+                    else:
+                        return True
+                except Exception:
+                    pass
+        return False
 
     def notify_file_event(self, file_path: str) -> List[str]:
         """
