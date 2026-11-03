@@ -2,18 +2,19 @@
 YS-Codebase Ultra-Thin Single-File Host Bootstrapper & Thin Router.
 100% Python Standard Library, Zero Third-Party Dependencies.
 """
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import ast
-import difflib
+import errno
 import fnmatch
 import hashlib
-import importlib.util
 import json
 import os
 import platform
 import shutil
+import stat
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 
@@ -27,8 +28,6 @@ LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
     "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release/",
 )
 DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
-INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
-INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
 _RELEASE_PACKAGE_IGNORES: Tuple[str, ...] = (
     "__pycache__",
     "*.pyc",
@@ -364,20 +363,26 @@ def _find_matching_source_dir(module_name: str, candidate_roots: List[str]) -> O
     return None
 
 
-def _resolve_same_triplet_fallback_version(
+def _http_get_bytes(url: str, timeout: int = 5) -> bytes:
+    """發送 HTTP(S) GET 請求並返回原始位元組，對 127.0.0.1 / localhost 自動繞過系統 Proxy。"""
+    req = urllib.request.Request(url, headers={"User-Agent": "yscb-host/2.0"})
+    if "127.0.0.1" in url or "localhost" in url:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
+            return resp.read()
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _load_provider_index_dict(
     provider: str,
     module_name: str,
-    requested_version: str,
     base_dir: Optional[str] = None,
-) -> Optional[str]:
-    """當請求版本已被滑動視窗淘汰 (pruned) 時，自 index.json 尋找同三元組 (X.Y.Z.*) 最高可用 active 版本。"""
-    req_t = _parse_simple_semver(requested_version)
-    if req_t[4]:
+) -> Optional[Dict[str, Any]]:
+    """自本地目錄或遠端 HTTP(S) Provider 讀取 <module_name>/index.json 並返回 dict。"""
+    p = _normalize_provider_url(provider).strip().rstrip("/")
+    if not p:
         return None
-    req_triplet = (req_t[0], req_t[1], req_t[2])
-    p = _normalize_provider_url(provider).rstrip("/")
-    idx_data: Optional[Dict[str, Any]] = None
-
     if not p.startswith(("http://", "https://")):
         p_abs = _normalize_local_path(p, base_dir=base_dir)
         if p_abs and os.path.isdir(p_abs):
@@ -389,32 +394,40 @@ def _resolve_same_triplet_fallback_version(
                 if idx_cand and os.path.isfile(idx_cand):
                     idx_data = _read_json_dict(idx_cand)
                     if idx_data:
-                        break
-    else:
-        try:
-            idx_url = f"{p}/{module_name}/index.json"
-            req = urllib.request.Request(idx_url, headers={"User-Agent": "yscb-host/2.0"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                raw = json.loads(resp.read().decode("utf-8"))
-                if isinstance(raw, dict):
-                    idx_data = raw
-        except Exception:
-            idx_data = None
+                        return idx_data
+        return None
+    try:
+        raw = json.loads(_http_get_bytes(f"{p}/{module_name}/index.json", timeout=5).decode("utf-8"))
+        return raw if isinstance(raw, dict) else None
+    except Exception:
+        return None
 
+
+def _resolve_same_triplet_fallback_version(
+    provider: str,
+    module_name: str,
+    requested_version: str,
+    base_dir: Optional[str] = None,
+) -> Optional[str]:
+    """當請求版本已被滑動視窗淘汰 (pruned) 時，自 index.json 尋找同三元組 (X.Y.Z.*) 最高可用 active 版本。"""
+    req_t = _parse_simple_semver(requested_version)
+    if req_t[4]:
+        return None
+    req_triplet = (req_t[0], req_t[1], req_t[2])
+    idx_data = _load_provider_index_dict(provider, module_name, base_dir=base_dir)
     if not isinstance(idx_data, dict):
         return None
     active_vers = idx_data.get("versions")
     if not isinstance(active_vers, list) or requested_version in active_vers:
         return None
 
-    same_triplet_cands: List[Tuple[Tuple[int, int, int, int, bool], str]] = []
-    for v in active_vers:
-        if not isinstance(v, str):
-            continue
-        vt = _parse_simple_semver(v)
-        if not vt[4] and (vt[0], vt[1], vt[2]) == req_triplet:
-            same_triplet_cands.append((vt, v))
-
+    same_triplet_cands = [
+        (_parse_simple_semver(v), v)
+        for v in active_vers
+        if isinstance(v, str)
+        and not _parse_simple_semver(v)[4]
+        and _parse_simple_semver(v)[:3] == req_triplet
+    ]
     if not same_triplet_cands:
         return None
     same_triplet_cands.sort(key=lambda x: x[0], reverse=True)
@@ -433,8 +446,6 @@ def _extract_safe_zip(zip_path: str, dest_dir: str) -> None:
 
 def _is_dir_handle_locked_for_rename(err: OSError, parent_dir: str, target_dir: str) -> bool:
     """三階段跨平台鑑別器：區分宿主機/virtiofs 目錄句柄暫態鎖定與真正的檔案系統權限/I/O 故障。"""
-    import errno
-    import time
     err_no = getattr(err, "errno", None)
     win_err = getattr(err, "winerror", None)
     if err_no not in (errno.EACCES, errno.EBUSY, errno.EPERM) and win_err not in (5, 32):
@@ -446,8 +457,9 @@ def _is_dir_handle_locked_for_rename(err: OSError, parent_dir: str, target_dir: 
     if not os.access(parent_dir, req_mode) or not os.access(target_dir, req_mode):
         return False
 
-    probe_src = os.path.join(target_dir, f".yscb_probe_src_{os.getpid()}_{int(time.time() * 1000)}")
-    probe_dst = os.path.join(target_dir, f".yscb_probe_dst_{os.getpid()}_{int(time.time() * 1000)}")
+    ts = int(time.time() * 1000)
+    probe_src = os.path.join(target_dir, f".yscb_probe_src_{os.getpid()}_{ts}")
+    probe_dst = os.path.join(target_dir, f".yscb_probe_dst_{os.getpid()}_{ts}")
     try:
         with open(probe_src, "wb") as f:
             f.write(b"1")
@@ -466,56 +478,79 @@ def _is_dir_handle_locked_for_rename(err: OSError, parent_dir: str, target_dir: 
                     pass
 
 
+def _force_writable(path: str) -> None:
+    """嘗試賦予檔案讀寫權限以解除唯讀屬性限制。"""
+    try:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    except Exception:
+        pass
+
+
+def _backup_dir_files(target_abs: str, backup_dir: str) -> Set[str]:
+    """備份目標目錄現有檔案至 backup_dir 並返回正規化相對路徑集合。"""
+    existing_rel_files: Set[str] = set()
+    os.makedirs(backup_dir, exist_ok=True)
+    for root, dirs, files in os.walk(target_abs):
+        dirs[:] = [d for d in dirs if not d.startswith((".old_", ".staging_", ".yscb_probe_"))]
+        rel_root = "" if root == target_abs else os.path.relpath(root, target_abs)
+        for fname in files:
+            if fname.startswith((".yscb_probe_", ".yscb_tmp_")):
+                continue
+            rel_path = os.path.join(rel_root, fname) if rel_root else fname
+            existing_rel_files.add(rel_path.replace("\\", "/"))
+            bak_f = os.path.join(backup_dir, rel_path)
+            os.makedirs(os.path.dirname(bak_f), exist_ok=True)
+            shutil.copy2(os.path.join(root, fname), bak_f)
+    return existing_rel_files
+
+
+def _rollback_dir_from_backup(target_abs: str, backup_dir: str, existing_rel_files: Set[str]) -> None:
+    """當就地同步異常時，刪除新增檔案並自 backup_dir 原子還原原有檔案。"""
+    try:
+        for root, _, files in os.walk(target_abs):
+            rel_root = "" if root == target_abs else os.path.relpath(root, target_abs)
+            for fname in files:
+                rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                if rel_path.replace("\\", "/") not in existing_rel_files:
+                    try:
+                        os.remove(os.path.join(root, fname))
+                    except Exception:
+                        pass
+        for norm_rel in existing_rel_files:
+            rel_os = norm_rel.replace("/", os.sep)
+            bak_f = os.path.join(backup_dir, rel_os)
+            dst_f = os.path.join(target_abs, rel_os)
+            if os.path.isfile(bak_f):
+                os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+                tmp_restore = os.path.join(os.path.dirname(dst_f), f".yscb_restore_{os.getpid()}_{os.path.basename(dst_f)}")
+                shutil.copy2(bak_f, tmp_restore)
+                os.replace(tmp_restore, dst_f)
+    except Exception:
+        pass
+
+
 def _inplace_atomic_sync_dir(staging_dir: str, target_dir: str) -> None:
     """階段三：當目錄級 rename 因句柄鎖定被拒且通過寫入探針時，執行全有全無 (All-or-Nothing) 檔案級原子同步與異常回滾。"""
-    import stat
-    import time
-
-    staging_abs = os.path.abspath(staging_dir)
-    target_abs = os.path.abspath(target_dir)
-    parent_dir = os.path.dirname(target_abs)
-    base_name = os.path.basename(target_abs)
-    backup_dir = os.path.join(parent_dir, f".old_backup_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
-
-    existing_rel_files = set()
-    os.makedirs(backup_dir, exist_ok=True)
+    staging_abs, target_abs = os.path.abspath(staging_dir), os.path.abspath(target_dir)
+    backup_dir = os.path.join(
+        os.path.dirname(target_abs),
+        f".old_backup_{os.path.basename(target_abs)}_{os.getpid()}_{int(time.time() * 1000)}",
+    )
+    existing_rel_files: Set[str] = set()
     try:
-        for root, dirs, files in os.walk(target_abs):
-            dirs[:] = [d for d in dirs if not d.startswith((".old_", ".staging_", ".yscb_probe_"))]
-            rel_root = os.path.relpath(root, target_abs)
-            if rel_root == ".":
-                rel_root = ""
-            for fname in files:
-                if fname.startswith((".yscb_probe_", ".yscb_tmp_")):
-                    continue
-                rel_path = os.path.join(rel_root, fname) if rel_root else fname
-                norm_rel = rel_path.replace("\\", "/")
-                existing_rel_files.add(norm_rel)
-                src_f = os.path.join(root, fname)
-                bak_f = os.path.join(backup_dir, rel_path)
-                os.makedirs(os.path.dirname(bak_f), exist_ok=True)
-                shutil.copy2(src_f, bak_f)
-
-        staged_rel_files = set()
-        for root, dirs, files in os.walk(staging_abs):
-            rel_root = os.path.relpath(root, staging_abs)
-            if rel_root == ".":
-                rel_root = ""
-            target_sub = os.path.join(target_abs, rel_root) if rel_root else target_abs
-            os.makedirs(target_sub, exist_ok=True)
+        existing_rel_files = _backup_dir_files(target_abs, backup_dir)
+        staged_rel_files: Set[str] = set()
+        for root, _, files in os.walk(staging_abs):
+            rel_root = "" if root == staging_abs else os.path.relpath(root, staging_abs)
+            os.makedirs(os.path.join(target_abs, rel_root) if rel_root else target_abs, exist_ok=True)
             for fname in files:
                 rel_path = os.path.join(rel_root, fname) if rel_root else fname
-                norm_rel = rel_path.replace("\\", "/")
-                staged_rel_files.add(norm_rel)
-                src_f = os.path.join(root, fname)
-                dst_f = os.path.join(target_abs, rel_path)
+                staged_rel_files.add(rel_path.replace("\\", "/"))
+                src_f, dst_f = os.path.join(root, fname), os.path.join(target_abs, rel_path)
                 tmp_dst = os.path.join(os.path.dirname(dst_f), f".yscb_tmp_{os.getpid()}_{fname}")
                 try:
                     if os.path.exists(dst_f) and not os.access(dst_f, os.W_OK):
-                        try:
-                            os.chmod(dst_f, stat.S_IWRITE | stat.S_IREAD)
-                        except Exception:
-                            pass
+                        _force_writable(dst_f)
                     shutil.copy2(src_f, tmp_dst)
                     os.replace(tmp_dst, dst_f)
                 finally:
@@ -528,59 +563,47 @@ def _inplace_atomic_sync_dir(staging_dir: str, target_dir: str) -> None:
         for norm_rel in existing_rel_files - staged_rel_files:
             obs_f = os.path.join(target_abs, norm_rel.replace("/", os.sep))
             if os.path.isfile(obs_f):
-                try:
-                    os.chmod(obs_f, stat.S_IWRITE | stat.S_IREAD)
-                except Exception:
-                    pass
+                _force_writable(obs_f)
                 os.remove(obs_f)
 
         for root, dirs, _ in os.walk(target_abs, topdown=False):
             for d in dirs:
                 d_abs = os.path.join(root, d)
-                rel_d = os.path.relpath(d_abs, target_abs)
-                staged_d = os.path.join(staging_abs, rel_d)
-                if not os.path.exists(staged_d):
+                if not os.path.exists(os.path.join(staging_abs, os.path.relpath(d_abs, target_abs))):
                     try:
                         if not os.listdir(d_abs):
                             os.rmdir(d_abs)
                     except OSError:
                         pass
     except Exception:
-        try:
-            for root, _, files in os.walk(target_abs):
-                rel_root = os.path.relpath(root, target_abs)
-                if rel_root == ".":
-                    rel_root = ""
-                for fname in files:
-                    rel_path = os.path.join(rel_root, fname) if rel_root else fname
-                    norm_rel = rel_path.replace("\\", "/")
-                    if norm_rel not in existing_rel_files:
-                        try:
-                            os.remove(os.path.join(root, fname))
-                        except Exception:
-                            pass
-            for norm_rel in existing_rel_files:
-                rel_os = norm_rel.replace("/", os.sep)
-                bak_f = os.path.join(backup_dir, rel_os)
-                dst_f = os.path.join(target_abs, rel_os)
-                if os.path.isfile(bak_f):
-                    os.makedirs(os.path.dirname(dst_f), exist_ok=True)
-                    tmp_restore = os.path.join(os.path.dirname(dst_f), f".yscb_restore_{os.getpid()}_{os.path.basename(dst_f)}")
-                    shutil.copy2(bak_f, tmp_restore)
-                    os.replace(tmp_restore, dst_f)
-        except Exception:
-            pass
+        _rollback_dir_from_backup(target_abs, backup_dir, existing_rel_files)
         raise
     finally:
         if os.path.exists(backup_dir):
             shutil.rmtree(backup_dir, ignore_errors=True)
 
 
+def _verify_and_extract_zip_file(
+    zip_path: str,
+    staging_dir: str,
+    source_label: str,
+    expected_sha256: Optional[str] = None,
+) -> None:
+    """校驗壓縮包 SHA-256（若提供）並安全解壓至 staging_dir。"""
+    if expected_sha256:
+        actual_sha = _compute_file_sha256(zip_path)
+        if actual_sha.lower() != expected_sha256.strip().lower():
+            raise RuntimeError(
+                f"[yscb] Error: SHA-256 checksum mismatch for '{source_label}': "
+                f"expected {expected_sha256}, got {actual_sha}."
+            )
+    _extract_safe_zip(zip_path, staging_dir)
+
+
 def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional[str] = None) -> None:
     """自舉提取壓縮包至同父目錄 .staging 臨時空間，完成後原子替換至 dest_dir，嚴防 Zip Slip 與非原子撕裂。"""
     dest_abs = os.path.abspath(dest_dir)
-    parent_dir = os.path.dirname(dest_abs)
-    base_name = os.path.basename(dest_abs)
+    parent_dir, base_name = os.path.dirname(dest_abs), os.path.basename(dest_abs)
     os.makedirs(parent_dir, exist_ok=True)
     staging_dir = os.path.join(parent_dir, f".staging_{base_name}_{os.getpid()}")
     old_dir = os.path.join(parent_dir, f".old_{base_name}_{os.getpid()}")
@@ -593,17 +616,9 @@ def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_f:
                 tmp_p = tmp_f.name
             try:
-                req = urllib.request.Request(source, headers={"User-Agent": "yscb-host/2.0"})
-                with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_p, "wb") as out_f:
-                    shutil.copyfileobj(resp, out_f)
-                if expected_sha256:
-                    actual_sha = _compute_file_sha256(tmp_p)
-                    if actual_sha.lower() != expected_sha256.strip().lower():
-                        raise RuntimeError(
-                            f"[yscb] Error: SHA-256 checksum mismatch for '{source}': "
-                            f"expected {expected_sha256}, got {actual_sha}."
-                        )
-                _extract_safe_zip(tmp_p, staging_dir)
+                with open(tmp_p, "wb") as out_f:
+                    out_f.write(_http_get_bytes(source, timeout=30))
+                _verify_and_extract_zip_file(tmp_p, staging_dir, source, expected_sha256)
             finally:
                 if os.path.exists(tmp_p):
                     try:
@@ -613,14 +628,7 @@ def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional
         elif os.path.isdir(source):
             shutil.copytree(source, staging_dir, dirs_exist_ok=True)
         elif os.path.isfile(source) and zipfile.is_zipfile(source):
-            if expected_sha256:
-                actual_sha = _compute_file_sha256(source)
-                if actual_sha.lower() != expected_sha256.strip().lower():
-                    raise RuntimeError(
-                        f"[yscb] Error: SHA-256 checksum mismatch for '{source}': "
-                        f"expected {expected_sha256}, got {actual_sha}."
-                    )
-            _extract_safe_zip(source, staging_dir)
+            _verify_and_extract_zip_file(source, staging_dir, source, expected_sha256)
         else:
             raise FileNotFoundError(f"[yscb] Error: Package source '{source}' not found or is not a valid zip archive.")
 
@@ -727,16 +735,8 @@ def _fetch_companion_sha256_token(target_url: str, local_target: Optional[str]) 
         except Exception:
             raw_text = None
     elif target_url.startswith(("http://", "https://")):
-        sha_url = target_url + ".sha256"
         try:
-            req = urllib.request.Request(sha_url, headers={"User-Agent": "yscb-host/2.0"})
-            if "127.0.0.1" in sha_url or "localhost" in sha_url:
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(req, timeout=5) as resp:
-                    raw_text = resp.read().decode("utf-8")
-            else:
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    raw_text = resp.read().decode("utf-8")
+            raw_text = _http_get_bytes(target_url + ".sha256", timeout=5).decode("utf-8")
         except Exception:
             raw_text = None
 
@@ -744,6 +744,52 @@ def _fetch_companion_sha256_token(target_url: str, local_target: Optional[str]) 
         return None
     parts = raw_text.strip().split()
     return parts[0].strip() if parts else None
+
+
+def _download_and_verify_self_update(target_url: str, opts: Dict[str, Any]) -> Optional[str]:
+    """下載 yscb.py 新版本內容並完成 AST 結構與 SHA-256 完整性驗證。"""
+    local_target: Optional[str] = None
+    try:
+        local_target = _normalize_local_path(target_url)
+        if local_target and os.path.isfile(local_target):
+            with open(local_target, "r", encoding="utf-8") as f:
+                content = f.read()
+        else:
+            content = _http_get_bytes(target_url, timeout=10).decode("utf-8")
+    except Exception as e:
+        print(f"[yscb] Error: Failed to download update from {target_url}: {e}")
+        return None
+
+    try:
+        tree = ast.parse(content, filename="yscb.py")
+    except SyntaxError as e:
+        print(f"[yscb] Error: Downloaded script has invalid Python syntax: {e}")
+        return None
+
+    if not _has_required_host_script_ast(tree):
+        print("[yscb] Error: Downloaded script is missing required entrypoint structure (__version__ or main).")
+        return None
+
+    actual_sha = hashlib.sha256(content.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+    raw_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    expected_sha = opts.get("sha256")
+    if expected_sha:
+        if expected_sha.strip().lower() not in (actual_sha.lower(), raw_sha.lower()):
+            print(
+                f"[yscb] Error: SHA-256 checksum mismatch for downloaded yscb.py: "
+                f"expected {expected_sha}, got {actual_sha}."
+            )
+            return None
+    elif not opts.get("ignore_sha256"):
+        companion_sha = _fetch_companion_sha256_token(target_url, local_target)
+        if companion_sha and companion_sha.lower() not in (actual_sha.lower(), raw_sha.lower()):
+            print(
+                f"[yscb] Error: SHA-256 checksum mismatch for downloaded yscb.py: "
+                f"expected {companion_sha}, got {actual_sha}."
+            )
+            return None
+
+    return content
 
 
 def cmd_self_update(argv: List[str]) -> int:
@@ -755,58 +801,13 @@ def cmd_self_update(argv: List[str]) -> int:
     target_url = _resolve_self_update_target_url(custom_url=opts["url"])
     print(f"[yscb] Checking for latest yscb.py from: {target_url}")
 
+    content = _download_and_verify_self_update(target_url, opts)
+    if content is None:
+        return 1
+
     current_file = os.path.abspath(__file__)
     tmp_file = current_file + ".tmp"
     bak_file = current_file + ".bak"
-    local_target: Optional[str] = None
-
-    try:
-        local_target = _normalize_local_path(target_url)
-        if local_target and os.path.isfile(local_target):
-            with open(local_target, "r", encoding="utf-8") as f:
-                content = f.read()
-        else:
-            req = urllib.request.Request(target_url, headers={"User-Agent": "yscb-host/2.0"})
-            if "127.0.0.1" in target_url or "localhost" in target_url:
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(req, timeout=10) as resp:
-                    content = resp.read().decode("utf-8")
-            else:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    content = resp.read().decode("utf-8")
-    except Exception as e:
-        print(f"[yscb] Error: Failed to download update from {target_url}: {e}")
-        return 1
-
-    try:
-        tree = ast.parse(content, filename="yscb.py")
-    except SyntaxError as e:
-        print(f"[yscb] Error: Downloaded script has invalid Python syntax: {e}")
-        return 1
-
-    if not _has_required_host_script_ast(tree):
-        print("[yscb] Error: Downloaded script is missing required entrypoint structure (__version__ or main).")
-        return 1
-
-    actual_sha = hashlib.sha256(content.replace("\r\n", "\n").encode("utf-8")).hexdigest()
-    raw_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    expected_sha = opts.get("sha256")
-    if expected_sha:
-        if expected_sha.strip().lower() not in (actual_sha.lower(), raw_sha.lower()):
-            print(
-                f"[yscb] Error: SHA-256 checksum mismatch for downloaded yscb.py: "
-                f"expected {expected_sha}, got {actual_sha}."
-            )
-            return 1
-    elif not opts.get("ignore_sha256"):
-        companion_sha = _fetch_companion_sha256_token(target_url, local_target)
-        if companion_sha and companion_sha.lower() not in (actual_sha.lower(), raw_sha.lower()):
-            print(
-                f"[yscb] Error: SHA-256 checksum mismatch for downloaded yscb.py: "
-                f"expected {companion_sha}, got {actual_sha}."
-            )
-            return 1
-
     try:
         with open(tmp_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
@@ -898,18 +899,12 @@ def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
         return None, None
 
     # 2. 遠端 HTTP/HTTPS 探測
-    try:
-        idx_url = f"{p}/core/index.json"
-        req = urllib.request.Request(idx_url, headers={"User-Agent": "yscb-host/2.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("versions"), list):
-            clean_versions = [v for v in data["versions"] if not _parse_simple_semver(v)[4]]
-            if clean_versions:
-                best_v = sorted(clean_versions, key=_parse_simple_semver, reverse=True)[0]
-                return best_v, f"{p}/core/{best_v}.zip"
-    except Exception:
-        pass
+    data = _load_provider_index_dict(p, "core")
+    if isinstance(data, dict) and isinstance(data.get("versions"), list):
+        clean_versions = [v for v in data["versions"] if not _parse_simple_semver(v)[4]]
+        if clean_versions:
+            best_v = sorted(clean_versions, key=_parse_simple_semver, reverse=True)[0]
+            return best_v, f"{p}/core/{best_v}.zip"
 
     return None, None
 
@@ -938,36 +933,7 @@ def _lookup_provider_release_sha256(
     """
     if version == "build" or str(version).endswith(".build"):
         return False, None
-    p = _normalize_provider_url(provider).rstrip("/")
-    idx_data: Optional[Dict[str, Any]] = None
-    if not p.startswith(("http://", "https://")):
-        p_abs = _normalize_local_path(p, base_dir=base_dir)
-        if p_abs and os.path.isdir(p_abs):
-            for idx_cand in (
-                os.path.join(p_abs, module_name, "index.json"),
-                os.path.join(p_abs, "release", module_name, "index.json"),
-                os.path.join(p_abs, "index.json") if os.path.basename(p_abs) == module_name else "",
-            ):
-                if idx_cand and os.path.isfile(idx_cand):
-                    idx_data = _read_json_dict(idx_cand)
-                    if idx_data:
-                        break
-    else:
-        try:
-            idx_url = f"{p}/{module_name}/index.json"
-            req = urllib.request.Request(idx_url, headers={"User-Agent": "yscb-host/2.0"})
-            if "127.0.0.1" in idx_url or "localhost" in idx_url:
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(req, timeout=5) as resp:
-                    raw = json.loads(resp.read().decode("utf-8"))
-            else:
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    raw = json.loads(resp.read().decode("utf-8"))
-            if isinstance(raw, dict):
-                idx_data = raw
-        except Exception:
-            idx_data = None
-
+    idx_data = _load_provider_index_dict(provider, module_name, base_dir=base_dir)
     if not isinstance(idx_data, dict):
         return False, None
     rels = idx_data.get("releases")
@@ -1108,15 +1074,6 @@ def _print_init_next_steps(yscb_root: str) -> None:
     print("-" * 72)
 
 
-def _generate_internal_gitignore(yscb_dir: str) -> None:
-    _activate_runtime_env(yscb_dir)
-    try:
-        from core.installer import generate_internal_gitignore
-        generate_internal_gitignore(yscb_dir)
-    except Exception:
-        pass
-
-
 def _print_missing_source_remediation(module_name: str, version: str, provider_arg: str) -> None:
     """當組態宣告之確定來源遺失或無法下載時，輸出明確錯誤訊息與建議修復措施。"""
     print(f"[yscb] 錯誤: '{module_name}' 模組 (v{version}) 來源 '{provider_arg}' 已遺失或無法存取，需手動修復。")
@@ -1169,6 +1126,37 @@ def _update_config_module_version(base_dir: str, module_name: str, new_version: 
             pass
 
 
+def _try_bootstrap_dot_build_package(
+    base_dir: str,
+    yscb_abs: str,
+    module_name: str,
+    version: str,
+    dest_dir: str,
+    mirror_dir: str,
+    mirror_zip: str,
+) -> bool:
+    """嘗試自本地 .build/<mod> 提取 .build 開發套件（若升版覆寫則匹配最新 .build.zip）。"""
+    dot_build_zip = os.path.join(yscb_abs, ".build", module_name, f"{version}.zip")
+    if not os.path.isfile(dot_build_zip):
+        dot_build_mod_dir = os.path.join(yscb_abs, ".build", module_name)
+        if os.path.isdir(dot_build_mod_dir):
+            b_zips = sorted(
+                [
+                    os.path.join(dot_build_mod_dir, f)
+                    for f in os.listdir(dot_build_mod_dir)
+                    if f.endswith(".build.zip") and os.path.isfile(os.path.join(dot_build_mod_dir, f))
+                ],
+                key=lambda p: os.path.getmtime(p),
+                reverse=True,
+            )
+            if b_zips:
+                dot_build_zip = b_zips[0]
+                new_b_ver = os.path.basename(dot_build_zip)[:-4]
+                mirror_zip = os.path.join(mirror_dir, f"{new_b_ver}.zip")
+                _update_config_module_version(base_dir, module_name, new_b_ver)
+    return os.path.isfile(dot_build_zip) and _extract_and_cache_mirror(dot_build_zip, dest_dir, mirror_dir, mirror_zip)
+
+
 def _bootstrap_package_from_provider(
     base_dir: str,
     yscb_root: str,
@@ -1189,28 +1177,9 @@ def _bootstrap_package_from_provider(
     p_arg = _normalize_provider_url(provider_arg)
     is_b_ver = version == "build" or str(version).endswith(".build")
 
-    # 1. 若為 .build 版本且本地 yscb_abs/.build/<mod>/<ver>.zip 存在，優先提取（若升版覆寫則匹配最新 .build.zip）
-    if is_b_ver:
-        dot_build_zip = os.path.join(yscb_abs, ".build", module_name, f"{version}.zip")
-        if not os.path.isfile(dot_build_zip):
-            dot_build_mod_dir = os.path.join(yscb_abs, ".build", module_name)
-            if os.path.isdir(dot_build_mod_dir):
-                b_zips = sorted(
-                    [
-                        os.path.join(dot_build_mod_dir, f)
-                        for f in os.listdir(dot_build_mod_dir)
-                        if f.endswith(".build.zip") and os.path.isfile(os.path.join(dot_build_mod_dir, f))
-                    ],
-                    key=lambda p: os.path.getmtime(p),
-                    reverse=True,
-                )
-                if b_zips:
-                    dot_build_zip = b_zips[0]
-                    new_b_ver = os.path.basename(dot_build_zip)[:-4]
-                    mirror_zip = os.path.join(mirror_dir, f"{new_b_ver}.zip")
-                    _update_config_module_version(base_dir, module_name, new_b_ver)
-        if os.path.isfile(dot_build_zip) and _extract_and_cache_mirror(dot_build_zip, dest_dir, mirror_dir, mirror_zip):
-            return True
+    # 1. 若為 .build 版本且本地 yscb_abs/.build/<mod>/<ver>.zip 存在，優先提取
+    if is_b_ver and _try_bootstrap_dot_build_package(base_dir, yscb_abs, module_name, version, dest_dir, mirror_dir, mirror_zip):
+        return True
 
     # 2. 本地鏡像庫 (.mirror/<mod>/<ver>.zip) 精確版本命中
     if os.path.isfile(mirror_zip) and _extract_and_cache_mirror(mirror_zip, dest_dir, mirror_dir, mirror_zip):
@@ -1220,9 +1189,7 @@ def _bootstrap_package_from_provider(
         if is_b_ver or ignore_sha256:
             return True, None
         has_idx, sha_val = _lookup_provider_release_sha256(p_arg, module_name, version, base_dir=base_dir)
-        if has_idx and not sha_val:
-            return False, None
-        return True, sha_val
+        return (False, None) if (has_idx and not sha_val) else (True, sha_val)
 
     # 3. 檢查組態指定之本地 Provider 路徑（精確版本 <mod>/<ver>.zip 或本地同版 source/<mod> 即時打包）
     p_abs = _normalize_local_path(p_arg, base_dir=base_dir)
@@ -1379,7 +1346,6 @@ def cmd_restore(argv: List[str]) -> int:
         return 1
     base_dir, yscb_root = os.path.dirname(cfg_path), cfg["yscb_root"]
     yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
-    _generate_internal_gitignore(yscb_abs)
     installed = cfg.get("installed_modules", {})
     if not installed:
         return 0
@@ -1405,28 +1371,6 @@ def cmd_restore(argv: List[str]) -> int:
     return 0 if not failed else 1
 
 
-def cmd_event(argv: List[str]) -> int:
-    return dispatch_module("core", ["event"] + argv)
-
-
-def _ensure_jit_lifecycle_pre(cmd: str) -> None:
-    if cmd not in ("init", "self-update", "restore", "bootstrap"):
-        try:
-            from core import events
-            events.broadcast("pre_cli_dispatch", emit_module="core")
-        except Exception:
-            pass
-
-
-def _ensure_jit_lifecycle_post(cmd: str, exit_code: int = 0) -> None:
-    if cmd not in ("init", "self-update", "restore", "bootstrap"):
-        try:
-            from core import events
-            events.broadcast("post_cli_dispatch", emit_module="core")
-        except Exception:
-            pass
-
-
 def _read_module_manifest_version(manifest_path: str) -> Optional[str]:
     data = _read_json_dict(manifest_path)
     return str(data["version"]) if (data and data.get("version")) else None
@@ -1448,18 +1392,6 @@ def _is_modules_dirty(base_dir: str, yscb_root: str, installed: Dict[str, Any]) 
             if _read_module_manifest_version(mf_file) != i.get("version"):
                 dirty.append(m)
     return bool(dirty), dirty
-
-
-def _suggest_command(unknown_cmd: str, candidate_pool: List[str]) -> Optional[str]:
-    """模糊拼寫建議相容函式。"""
-    from core.commands.dispatcher import _suggest_command as sc
-    return sc(unknown_cmd, candidate_pool)
-
-
-def _print_global_help() -> int:
-    """幫助輸出相容函式。"""
-    from core.commands.dispatcher import dispatch
-    return dispatch(["--help"])
 
 
 def dispatch_module(module_name: str, args: List[str]) -> int:
@@ -1513,7 +1445,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         _activate_runtime_env(yscb_abs, host_dir=host_dir)
 
-    # FR-12: 僅攔截 core 入口本身之 ImportError，派發期 ImportError 交由 dispatcher 回報真實錯誤
+    # 僅攔截 core 入口本身之 ImportError，派發期 ImportError 交由 dispatcher 回報真實錯誤
     try:
         from core.commands import dispatch
     except ImportError as e:

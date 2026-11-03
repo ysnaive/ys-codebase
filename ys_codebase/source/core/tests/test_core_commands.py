@@ -251,14 +251,15 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_ft07_yscb_thin_host_delegation(self):
-        """FT-07: 驗證 yscb.py 薄宿主相容函式正常轉派。"""
+        """FT-07: 驗證 yscb.py 薄宿主對外公開介面與 core.commands.dispatcher 轉派。"""
         import yscb
+        from core.commands.dispatcher import _suggest_command
         self.assertTrue(hasattr(yscb, "cmd_init"))
+        self.assertTrue(hasattr(yscb, "cmd_self_update"))
+        self.assertTrue(hasattr(yscb, "cmd_restore"))
         self.assertTrue(hasattr(yscb, "dispatch_module"))
-        self.assertTrue(hasattr(yscb, "_suggest_command"))
-        self.assertTrue(hasattr(yscb, "_print_global_help"))
 
-        sugg = yscb._suggest_command("stauts", ["status", "install"])
+        sugg = _suggest_command("stauts", ["status", "install"])
         self.assertEqual(sugg, "status")
         self.mark_passed()
 

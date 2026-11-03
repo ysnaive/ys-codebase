@@ -81,31 +81,26 @@ def custom_event(ctx):
         self.mark_passed()
 
     def test_yscb_host_lifecycle_pipeline(self):
-        """FT-03: 驗證 yscb.py 分發命令時生命週期 pre/post 廣播與跳過自舉命令。"""
-        import yscb
-        self.assertTrue(hasattr(yscb, "_ensure_jit_lifecycle_pre"))
-        self.assertTrue(hasattr(yscb, "_ensure_jit_lifecycle_post"))
+        """FT-03: 驗證 core.commands.dispatcher 分發命令時生命週期 pre/post 廣播。"""
+        from core.commands import dispatcher
 
         with patch("core.events.broadcast") as mock_broadcast:
-            # 正常命令觸發 pre/post 廣播
-            yscb._ensure_jit_lifecycle_pre("agents-workflow")
-            mock_broadcast.assert_called_with("pre_cli_dispatch", emit_module="core")
+            dispatcher._ensure_hooks("pre_cli_dispatch")
+            mock_broadcast.assert_called_with("pre_cli_dispatch", emit_module="core", verbose=False)
 
             mock_broadcast.reset_mock()
-            yscb._ensure_jit_lifecycle_post("agents-workflow", 0)
-            mock_broadcast.assert_called_with("post_cli_dispatch", emit_module="core")
+            dispatcher._ensure_hooks("post_cli_dispatch")
+            mock_broadcast.assert_called_with("post_cli_dispatch", emit_module="core", verbose=False)
 
         self.mark_passed()
 
     def test_event_list_cli(self):
         """FT-07: 驗證 python yscb.py event list 能正確聚合各模組之 contributes.events 中繼資料並格式化輸出。"""
         import yscb
-        self.assertTrue(hasattr(yscb, "cmd_event"))
 
-        # Test cmd_event list output
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ret = yscb.cmd_event(["list"])
+            ret = yscb.main(["event", "list"])
 
         self.assertEqual(ret, 0)
         output = buf.getvalue()
@@ -165,15 +160,16 @@ def custom_event(ctx):
         self.mark_passed()
 
     def test_bootstrap_commands_short_circuit(self):
-        """ET-03: 驗證執行 init、restore、bootstrap 等自舉指令時自動短路跳過前置廣播。"""
+        """ET-03: 驗證執行 init、self-update 等宿主自舉指令時直接於 yscb.main 攔截，不觸發 core.events 廣播。"""
         import yscb
-        for b_cmd in ["init", "restore", "bootstrap", "self-update"]:
-            with patch("core.events.broadcast") as mock_bc:
-                yscb._ensure_jit_lifecycle_pre(b_cmd)
-                mock_bc.assert_not_called()
-
-                yscb._ensure_jit_lifecycle_post(b_cmd, 0)
-                mock_bc.assert_not_called()
+        with patch("core.events.broadcast") as mock_bc, \
+             patch("yscb.cmd_init", return_value=0) as mock_init, \
+             patch("yscb.cmd_self_update", return_value=0) as mock_su:
+            self.assertEqual(yscb.main(["init"]), 0)
+            self.assertEqual(yscb.main(["self-update"]), 0)
+            mock_init.assert_called_once_with([])
+            mock_su.assert_called_once_with([])
+            mock_bc.assert_not_called()
 
         self.mark_passed()
 

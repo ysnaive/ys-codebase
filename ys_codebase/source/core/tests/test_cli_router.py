@@ -44,10 +44,10 @@ class TestCLIHelpAndUX(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_global_help_output_structure(self):
-        """FT-02: Verifies that _print_global_help outputs Banner, Usage, Core & Module commands."""
+        """FT-02: Verifies that global --help outputs Banner, Usage, Core & Module commands."""
         f = io.StringIO()
         with redirect_stdout(f):
-            yscb._print_global_help()
+            yscb.main(["--help"])
         out = f.getvalue()
         
         # Assertions for Banner & Sections
@@ -68,16 +68,17 @@ class TestCLIHelpAndUX(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_spelling_suggestion_algorithm(self):
         """FT-04: Verifies difflib-based intelligent spelling suggestion."""
+        from core.commands.dispatcher import _suggest_command
         known = ["init", "install", "update", "remove", "list", "status", "rollback", "reload", "dev"]
         
         # Close typos
-        self.assertEqual(yscb._suggest_command("relod", known), "reload")
-        self.assertEqual(yscb._suggest_command("stauts", known), "status")
-        self.assertEqual(yscb._suggest_command("instll", known), "install")
-        self.assertEqual(yscb._suggest_command("updat", known), "update")
+        self.assertEqual(_suggest_command("relod", known), "reload")
+        self.assertEqual(_suggest_command("stauts", known), "status")
+        self.assertEqual(_suggest_command("instll", known), "install")
+        self.assertEqual(_suggest_command("updat", known), "update")
         
         # Far-off strings (no match)
-        self.assertIsNone(yscb._suggest_command("completely_unrelated_xyz", known))
+        self.assertIsNone(_suggest_command("completely_unrelated_xyz", known))
         self.mark_passed()
 
     @require(Requirement.LOGIC)
