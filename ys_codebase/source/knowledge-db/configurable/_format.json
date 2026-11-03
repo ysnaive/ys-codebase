@@ -1,0 +1,8 @@
+{
+  "enable_vector_search": "bool? = true @desc(是否啟用本地向量語意檢索與混合排序 (RRF))",
+  "embedding_model": "str? = BAAI/bge-small-zh-v1.5 @desc(FastEmbed 向量嵌入推論模型名稱)",
+  "jit_vector_timeout_ms": "int? = 3000 @desc(單次檢索 JIT 向量編碼等待逾時上限 (毫秒))",
+  "vector_batch_size": "int? = 32 @desc(向量嵌入批次推論大小)",
+  "max_threads": "any? = auto @desc(ONNX 推論與索引建置最大執行緒數 (auto 或正整數))"
+}
+

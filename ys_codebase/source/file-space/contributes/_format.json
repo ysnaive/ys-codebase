@@ -1,15 +1,15 @@
 {
   "_types": {
     "FileSpaceDef": {
-      "description": "str?",
-      "include": "list[str]! | extend",
-      "exclude": "list[str]? | extend",
-      "file_patterns": "list[str]? | extend",
-      "hash_policy": "enum(adaptive, full_hash, stat_only, lazy_stabilized)? = adaptive",
-      "large_file_threshold_mb": "int? = 10",
-      "follow_symlinks": "bool? = false",
-      "watch": "bool? = true",
-      "weight": "float? = 1.0"
+      "description": "str? @desc(邏輯檔案空間用途說明)",
+      "include": "list[uri]! | extend @desc(納入空間掃描之根目錄或檔案語意 URI 清單)",
+      "exclude": "list[uri]? | extend @desc(排除掃描之子目錄或萬用字元語意 URI 清單)",
+      "file_patterns": "list[str]? | extend @desc(允許納入之檔案副檔名或 Glob 樣式清單 (如 *.py, *.md))",
+      "hash_policy": "enum(adaptive, full_hash, stat_only, lazy_stabilized)? = adaptive @desc(檔案指紋雜湊計算策略)",
+      "large_file_threshold_mb": "int? = 10 @desc(大檔案自適應分流閾值 (MB))",
+      "follow_symlinks": "bool? = false @desc(掃描時是否跟隨符號連結目錄)",
+      "watch": "bool? = true @desc(是否由背景常駐服務即時監聽變更)",
+      "weight": "float? = 1.0 @desc(空間檢索預設權重係數)"
     }
   },
   "spaces": {

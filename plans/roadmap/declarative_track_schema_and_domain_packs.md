@@ -1,10 +1,10 @@
 # 技術路線圖：工作流宣告式階段拓撲引擎與可插拔領域擴充架構 (Roadmap)
 
 > 主題：工作流宣告式階段拓撲引擎與可插拔領域擴充架構 (`declarative_track_schema_and_domain_packs`)  
-> 歸檔日期：2026-11-01  
+> 歸檔日期：2026-11-03  
 > 狀態：Proposed  
 > 目標範疇：`agents-workflow`（階段拓撲狀態機、結構檢核引擎與 `contributes` 領域擴充契約）  
-> 前置解鎖條件：完成 `workflow_ab_eval_and_failure_harvesting`（具備量化回歸測試基準）  
+> 前置解鎖條件：實際出現非純軟開發領域專案（如企劃設計、遊戲引擎資產、硬體工程）之工作流擴充需求時啟動  
 > 模型：Gemini 4 Argon (Low)  
 > 模板版本：v1.1  
 
@@ -37,8 +37,8 @@
 ## 3. 解鎖條件與演進構想 (Unlock Criteria & Evolution Stages)
 
 - **前置解鎖條件與觸發時機**：
-  - 需先完成 `workflow_ab_eval_and_failure_harvesting` 建立量化回歸測試基準，並於實際有非純軟領域專案需求時孵化外部領域擴充包。
+  - 無外部阻塞依賴；於實際有非純軟領域專案需求時孵化外部領域擴充包。
 - **階段演進構想 (High-Level Stages)**：
   1. **Stage 1（Python `TrackSpec` 表驅動狀態機與驗證器重構）**：以 Python 型別化 `TrackSpec` 重構內部狀態解析與結構驗證器，並開放扁平 `contributes` 擴充點（註冊靜態模板與 Python Validator 符號）。
-  2. **Stage 2（階段感知路由與 Cross-Track Umbrella）**：實作按需階段提示詞輸出與跨 Track 子計畫狀態聚合，通過量化回歸測試驗證零退化。
+  2. **Stage 2（階段感知路由與 Cross-Track Umbrella）**：實作按需階段提示詞輸出與跨 Track 子計畫狀態聚合，通過既有全量單元測試驗證零退化。
   3. **Stage 3（首個非 Coding 領域擴充包實戰孵化）**：結合真實下游非純軟場景，以標準插件形式掛載領域專屬 Track。

@@ -63,7 +63,7 @@ YS-Codebase 遵循**明文空間嚴格二分法**：
 ### 3.2 模組組態遞迴原地增量補齊 (`_deep_infill_dict`)
 - **無損增量補齊**：當模組於新版本 `configurable/`（或預設組態模板）新增欄位時，`act_deploy_configs_from_modules` 會對 `config://{mod}/config.project.json` 與 `config.local.json` 執行遞迴比對，**僅自動補齊缺失鍵值，使用者既有已調整之設定值 100% 保持不變**。
 - **跨層優先級感知**：在補齊 `config.local.json` 時，若對應鍵已存在於 `config.project.json`，則跳過重複寫入，維持組態矩陣乾淨正交。
-- **運行端模板物理剝除**：組態補齊完成後，無條件從 `module://{mod}/` 實體刪除 `configurable/` 目錄與 `config.*.json` 模板，確保運行空間 100% 純程式碼化。
+- **運行端模板物理剝除與 `_format.json` 契約保留**：組態補齊完成後，無條件從 `module://{mod}/` 實體刪除 `config.*.json` 預設值模板（若模組定義了同構組態契約 `configurable/_format.json`，則保留 `module://{mod>/configurable/_format.json` 供運行態組態校驗與 IDE Schema 編譯器讀取；若無 `_format.json` 則移除空 `configurable/` 目錄）。
 
 ---
 

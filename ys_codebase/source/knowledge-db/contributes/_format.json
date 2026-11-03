@@ -2,7 +2,7 @@
   "space_weights": {
     "description": "各邏輯空間之檢索加權係數",
     "format": {
-      "*": "float!"
+      "*": "float! @desc(指定邏輯空間之 BM25 / 混合檢索分數加權倍數)"
     }
   }
 }

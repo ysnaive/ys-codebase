@@ -1,0 +1,9 @@
+{
+  "enable": "bool? = true @desc(是否啟用常駐背景 Server Daemon 熱派發與檔案監聽)",
+  "enable_console": "bool? = false @desc(是否於啟動常駐 Server 時開啟獨立終端監視視窗)",
+  "idle_timeout_sec": "float? = 900.0 @desc(常駐 Server 閒置自動休眠秒數)",
+  "auto_spawn": "bool? = true @desc(執行 server_compatible 指令時若常駐未啟動是否自動於背景拉起)",
+  "strict_hot_dispatch": "bool? = false @desc(是否強制僅走常駐熱派發而不降級為本地冷派發)",
+  "worker_alive_timeout_sec": "float? = 5.0 @desc(Worker 心跳與健康檢測逾時秒數)"
+}
+

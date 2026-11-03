@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from core import commands
     from core import config
     from core import validator
-    from core import ide_projector
     from core import telemetry
     from core import locale
 
@@ -59,7 +58,6 @@ _MODULE_MAP = {
     "commands": ("core.commands", None),
     "config": ("core.config", None),
     "validator": ("core.validator", None),
-    "ide_projector": ("core.ide_projector", None),
     "telemetry": ("core.telemetry", None),
     "locale": ("core.locale", None),
 }
@@ -108,7 +106,6 @@ __all__ = [
     "commands",
     "config",
     "validator",
-    "ide_projector",
     "telemetry",
     "locale",
 ]

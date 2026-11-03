@@ -1,0 +1,25 @@
+{
+  "json_schemas": {
+    "format-meta": {
+      "file_match": [
+        "**/contributes/_format.json",
+        "**/configurable/_format.json"
+      ],
+      "schema_source": "static_file",
+      "schema_path": "meta/format-meta.schema.json",
+      "description": "YS-Codebase _format.json 元 Schema 檢核規則（含 contributes 與 configurable）"
+    },
+    "manifest": {
+      "file_match": [
+        "**/source/*/manifest.json",
+        "**/modules/*/manifest.json",
+        "**/.modules/*/manifest.json"
+      ],
+      "schema_source": "static_file",
+      "schema_path": "meta/manifest.schema.json",
+      "description": "YS-Codebase Module manifest.json 元 Schema 檢核規則"
+    }
+  }
+}
+
+

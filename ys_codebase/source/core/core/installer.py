@@ -1144,10 +1144,9 @@ class Installer:
         """
         收集所有已安裝模組之 pip_dependencies 宣告聯集，
         透過 PipManager 於微環境執行 Wheel-Only 靜默物化；
-        隨後若 project://.vscode 存在，調用 IdeProjector 執行明確標記 _yscb_managed 之可復原軟合併。
+        隨後廣播 on_env_synced 生命週期事件供訂閱模組（如 vscode-support）同步環境路徑。
         """
         from core.pip_manager import PipManager, PipInstallError
-        from core.ide_projector import IdeProjector
 
         try:
             _, cfg = self.engine._get_config()
@@ -1181,11 +1180,7 @@ class Installer:
                 print(f"[core:pip] Warning: {e}")
 
         try:
-            proj_root = uri.resolve("project://", interactive=False)
-            if proj_root and os.path.isdir(proj_root):
-                ide_proj = IdeProjector(yscb_abs)
-                if ide_proj.is_vscode_configured(proj_root):
-                    ide_proj.sync_vscode_settings(proj_root)
+            events.broadcast("on_env_synced", ExecutionContext("core", "env_sync", []), emit_module="core")
         except Exception:
             pass
 

@@ -1,10 +1,10 @@
 {
   "_types": {
     "ServiceWorkerDef": {
-      "name": "str!",
-      "worker_class": "str!",
-      "description": "str?",
-      "auto_start": "bool? = true"
+      "name": "str! @desc(常駐背景微服務 Worker 唯一識別名稱)",
+      "worker_class": "str! @desc(Worker 類別完整匯入路徑 (<package>.<module>:<ClassName>))",
+      "description": "str? @desc(背景微服務職責說明)",
+      "auto_start": "bool? = true @desc(常駐 Server 啟動時是否自動拉起此 Worker)"
     }
   },
 

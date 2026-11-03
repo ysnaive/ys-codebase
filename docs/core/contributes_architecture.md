@@ -134,13 +134,14 @@ contributes.invalidate_cache(target_module=None)
 
 | 語法類別 | DSL 語法範例 | 解析規則與驗證行為 |
 | :--- | :--- | :--- |
-| **基礎型別與必填修飾** | `str!`、`int!`、`bool!`、`float!`、`any` | 結尾 `!` 代表必填（Missing 時報錯）；亦支援別名 `string`、`integer`、`boolean`、`number`。 |
-| **選填與預設值注入** | `str?`、`bool? = false`、`int? = 0` | 結尾 `?`（或省略修飾符）代表選填；若附帶 `= <val>`，當欄位缺失時驗證器自動於 payload 補齊預設值。 |
+| **基礎型別與必填修飾** | `str!`、`int!`、`bool!`、`float!`、`uri!`、`path!`、`any` | 結尾 `!` 代表必填（Missing 時報錯）；亦支援別名 `string`、`integer`、`boolean`、`number`（`uri` 與 `path` 為字串路徑/語意 URI 子類，供 IDE Schema 編譯器注入語意協議 `defaultSnippets`）。 |
+| **選填與預設值注入** | `str?`、`bool? = false`、`int? = -1`、`float? = 1.0` | 結尾 `?`（或省略修飾符）代表選填；若附帶 `= <val>`（支援布林、帶正負號整數與浮點數、字串），當欄位缺失時驗證器自動於 payload 補齊預設值。 |
 | **受限枚舉 (`enum`)** | `enum(safe, conditional, gated)!` | 限制字串必須屬於括號內逗號分隔之集合；支援後接 `!`、`?` 與 `= default`。 |
 | **複合型別引用 (`$Def`)** | `$ArgDef`、`$CommandNode!` | 引用同檔案 `_types` 字典中定義之複合結構；支援自身遞迴引用（最大深度保護 `MAX_RECURSION_DEPTH = 20`）。 |
-| **泛型容器** | `list[str]?`、`dict[str, str]` | 驗證陣列元素或字典鍵值型別；亦可在 JSON Schema 中直接以 `[ <item_schema> ]` 表達物件陣列。 |
+| **泛型容器** | `list[str]?`、`list[uri]!`、`dict[str, str]` | 驗證陣列元素或字典鍵值型別；亦可在 JSON Schema 中直接以 `[ <item_schema> ]` 表達物件陣列。 |
 | **字典動態通配鍵 (`*`)** | `{ "*": "$OptionDef" }` | 當 JSON 物件中包含 `"*"` 鍵時，所有未顯式列舉的任意自訂鍵名（`{key}` 字典映射）皆套用 `"*"` 對應之子 Schema 進行遞迴驗證。 |
 | **合併策略修飾符 (`\| <strategy>`)** | `list[str]! \| extend`、`list[str]? \| replace`、`"$Def \| unique"` | 由 Format Provider 決定同名欄位或鍵值的合併行為：`merge`（預設於 `dict`/`$Ref`，遞迴合併）、`extend`（預設於 `list`，去重附加）、`replace`（整包覆寫取代）、`unique`（禁止跨模組同名碰撞，僅允許 `project` 覆寫或合併）。 |
+| **正交屬性標註 (`@<attr>(...)`)** | `uri! @desc(組態路徑 (支援 config://))` | 於型別簽名任意位置附加 `@<name>(<平衡括號內容>)` 正交屬性（解析至 `attributes` 字典，其中 `@desc(...)` 同步映射為 `description`，供 `vscode-support` 編譯為 IDE 欄位懸浮說明）。 |
 
 ### 2.3 單向依賴邊界與雙重驗證策略 (Strict Egress, Tolerant Ingress)
 - **靜態嚴格阻斷 (Strict Egress)**：

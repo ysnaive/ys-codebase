@@ -1,27 +1,27 @@
 {
   "_types": {
     "ExportAssetDef": {
-      "type": "enum(standard, template, skill)!",
-      "name": "str?",
-      "source": "str!",
-      "description": "str?"
+      "type": "enum(standard, template, skill)! @desc(導出資產類型 (standard: 標準規範, template: 階段模板, skill: 技能手冊))",
+      "name": "str? @desc(導出資產識別名稱 (省略時預設取來源檔名))",
+      "source": "uri! @desc(導出資產之來源語意 URI 路徑)",
+      "description": "str? @desc(導出資產之用途說明)"
     },
     "TokenAnchorDef": {
-      "value": "str?",
-      "name": "str?",
-      "description": "str?"
+      "value": "str? @desc(Token 錨點識別字串)",
+      "name": "str? @desc(Token 錨點顯示名稱)",
+      "description": "str? @desc(Token 錨點掛載位置與用途說明)"
     },
     "ContentInsertDef": {
-      "type": "enum(uri, const, computed)? = const",
-      "token": "str!",
-      "value": "str!",
-      "mode": "enum(replace, below, above)? = replace"
+      "type": "enum(uri, const, computed)? = const @desc(注入內容來源類型 (uri: 讀取語意 URI 檔案, const: 字面常數, computed: 動態計算))",
+      "token": "str! @desc(目標掛載之 Token 錨點名稱 (如 AGENTS_SKILL_ROUTING))",
+      "value": "uri! @desc(注入內容之語意 URI 路徑或常數值)",
+      "mode": "enum(replace, below, above)? = replace @desc(注入合併模式 (replace: 取代預設內容, below: 附加於下方, above: 插入於上方))"
     },
     "ReleaseTargetDef": {
-      "name": "str!",
-      "description": "str?",
-      "agents_md": "str?",
-      "projections": "dict[str, any]!"
+      "name": "str! @desc(發布目標環境名稱 (如 antigravity, claude, cursor))",
+      "description": "str? @desc(發布目標環境說明)",
+      "agents_md": "uri? @desc(根目錄受託管規範檔之輸出路徑 (如 project://AGENTS.md))",
+      "projections": "dict[str, any]! @desc(各類資產 (skill/standard/template) 之目標物化目錄映射規則)"
     }
   },
 

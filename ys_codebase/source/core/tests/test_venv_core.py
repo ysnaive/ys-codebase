@@ -14,7 +14,6 @@ from unittest.mock import patch, MagicMock
 
 from core import uri, vfs
 from core.pip_manager import PipManager, PipInstallError
-from core.ide_projector import IdeProjector
 from core.installer import Installer
 from dev.testing.case import YSCBTestCase
 import yscb
@@ -114,7 +113,7 @@ class TestVenvCore(YSCBTestCase):
         self.mark_passed()
 
     def test_ft_08_installer_sync_pip_dependencies(self):
-        """T-01 實質化：驗證 Installer.sync_pip_dependencies 實質讀取 manifest 之 pip_dependencies 並發起安裝與 IDE 同步。"""
+        """驗證 Installer.sync_pip_dependencies 實質讀取 manifest 之 pip_dependencies 並發起安裝與廣播 on_env_synced 事件。"""
         installer = Installer()
         mod_name = "mock_pip_mod"
         vfs.makedirs(f"module://{mod_name}", exist_ok=True)
@@ -132,24 +131,14 @@ class TestVenvCore(YSCBTestCase):
         cfg.setdefault("installed_modules", {})[mod_name] = {"version": "1.0.0"}
         installer.engine._save_config(cfg_path, cfg)
 
-        mock_proj_dir = os.path.join(self.test_root, "mock_proj")
-        os.makedirs(mock_proj_dir, exist_ok=True)
-        orig_resolve = uri.resolve
-        def mock_resolve(u, *args, **kwargs):
-            if str(u).startswith("project://"):
-                return mock_proj_dir
-            return orig_resolve(u, *args, **kwargs)
-
         try:
             with patch.object(PipManager, "install_packages") as mock_install:
-                with patch.object(IdeProjector, "is_vscode_configured", return_value=True):
-                    with patch.object(IdeProjector, "sync_vscode_settings") as mock_sync:
-                        with patch("core.uri.resolve", side_effect=mock_resolve):
-                            mock_install.return_value = True
-                            mock_sync.return_value = True
-                            installer.sync_pip_dependencies()
-                            mock_install.assert_called_once_with(["pkg_alpha>=1.2.0", "pkg_beta"])
-                            mock_sync.assert_called_once_with(mock_proj_dir)
+                with patch("core.events.broadcast") as mock_broadcast:
+                    mock_install.return_value = True
+                    installer.sync_pip_dependencies()
+                    mock_install.assert_called_once_with(["pkg_alpha>=1.2.0", "pkg_beta"])
+                    mock_broadcast.assert_called_once()
+                    self.assertEqual(mock_broadcast.call_args[0][0], "on_env_synced")
         finally:
             cfg["installed_modules"] = orig_installed
             installer.engine._save_config(cfg_path, cfg)

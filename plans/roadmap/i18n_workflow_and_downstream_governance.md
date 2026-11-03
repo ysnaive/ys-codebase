@@ -1,11 +1,12 @@
 # 技術路線圖：跨語系工作流體驗與下游國際化工程治理藍圖 (Roadmap)
 
 > 主題：跨語系工作流體驗與下游國際化工程治理藍圖 (`i18n_workflow_and_downstream_governance`)  
-> 歸檔日期：2026-10-29  
+> 歸檔日期：2026-11-03  
 > 狀態：Backlog  
-> 目標範疇：`agents-workflow`、`core`、`knowledge-db`、`dev`、`server`、`module:i18n`（獨立擴充模組）  
-> 前置解鎖條件：完成 `2026_10_28_1845_core_locale_and_ecosystem_i18n`（`core.locale` 內核引擎與宿主專有名詞優先級鏈穩定落地）及 `declarative_track_schema_and_domain_packs`  
+> 目標範疇：`agents-workflow`、`core`、`file-space`、`ast`、`knowledge-db`、`dev`、`server`、`module:i18n`（獨立擴充模組）  
+> 前置解鎖條件：核心工作流架構（含 `declarative_track_schema_and_domain_packs`）穩定且出現跨語系團隊或國際開源推廣需求時啟動  
 > 模型：Gemini 4 Argon (Low)  
+> 模板版本：v1.1  
 
 ---
 

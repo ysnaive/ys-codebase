@@ -1797,7 +1797,10 @@ class AtomicEngine:
         cfg_tpl_dir = os.path.join(mod_dir_real, "configurable")
         if os.path.isdir(cfg_tpl_dir):
             try:
-                raw_files = [f for f in os.listdir(cfg_tpl_dir) if f.endswith(".json")]
+                raw_files = [
+                    f for f in os.listdir(cfg_tpl_dir)
+                    if f.endswith(".json") and not f.startswith("_")
+                ]
                 tmpl_files = sorted(raw_files, key=lambda x: (1 if "local" in x else 0, x))
                 for tmpl_file in tmpl_files:
                     tmpl_real = os.path.join(cfg_tpl_dir, tmpl_file)
@@ -1807,7 +1810,9 @@ class AtomicEngine:
                         os.remove(tmpl_real)
                     except OSError:
                         pass
-                shutil.rmtree(cfg_tpl_dir, ignore_errors=True)
+                remaining = [f for f in os.listdir(cfg_tpl_dir) if f != "_format.json"]
+                if not remaining and not os.path.isfile(os.path.join(cfg_tpl_dir, "_format.json")):
+                    shutil.rmtree(cfg_tpl_dir, ignore_errors=True)
             except Exception:
                 pass
 

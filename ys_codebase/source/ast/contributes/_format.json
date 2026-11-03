@@ -1,13 +1,13 @@
 {
   "_types": {
     "LanguageDef": {
-      "id": "str!",
-      "name": "str!",
-      "extensions": "list[str]!",
-      "mode": "enum(tree_sitter, custom)!",
-      "grammar": "str?",
-      "query_file": "str?",
-      "parser_entry": "str?"
+      "id": "str! @desc(語言唯一識別碼 (如 python, csharp, typescript))",
+      "name": "str! @desc(語言顯示名稱)",
+      "extensions": "list[str]! @desc(支援之檔案副檔名清單 (含點號，如 .py))",
+      "mode": "enum(tree_sitter, custom)! @desc(語法解析引擎模式 (tree_sitter 或 custom))",
+      "grammar": "uri? @desc(Tree-sitter 語法動態庫或定義檔 URI 路徑)",
+      "query_file": "uri? @desc(Tree-sitter S-expression 符號提取查詢檔 URI 路徑)",
+      "parser_entry": "str? @desc(自訂解析器入口類別路徑 (當 mode=custom 時使用))"
     }
   },
   "languages": {

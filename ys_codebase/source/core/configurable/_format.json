@@ -1,0 +1,5 @@
+{
+  "project_root": "uri! @desc(專案業務根目錄路徑 (綁定 project:// 語意 URI 協議))",
+  "locale": "list[str]? = [] @desc(系統顯示語系與宿主專有名詞優先順序清單 (如 zh, en))"
+}
+

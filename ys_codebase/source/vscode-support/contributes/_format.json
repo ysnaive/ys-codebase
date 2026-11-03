@@ -1,0 +1,18 @@
+{
+  "_types": {
+    "JsonSchemaRuleDef": {
+      "file_match": "list[str]! | extend @desc(VS Code json.schemas 之檔案匹配 Glob 清單 (如 **/manifest.json))",
+      "schema_source": "enum(contributes_format, configurable_template, static_file)! @desc(Schema 編譯來源模式)",
+      "schema_path": "path? @desc(目標 Schema 相對路徑 (相對於 .vscode/schemas/) 或目標模組名稱)",
+      "description": "str? @desc(JSON Schema 規則用途說明)"
+    }
+  },
+  "json_schemas": {
+    "description": "註冊 VS Code JSON Schema 檔案匹配與自動編譯規則",
+    "merge": "merge",
+    "format": {
+      "*": "$JsonSchemaRuleDef | merge"
+    }
+  }
+}
+

@@ -1,10 +1,10 @@
 {
   "_types": {
     "CheckRuleDef": {
-      "name": "str!",
-      "description": "str!",
-      "severity": "enum(PASS, WARN, FAIL)? = WARN",
-      "checker_func": "str!"
+      "name": "str! @desc(靜態合規檢查規則名稱)",
+      "description": "str! @desc(檢查規則說明與違規修復指引)",
+      "severity": "enum(PASS, WARN, FAIL)? = WARN @desc(違規嚴重度等級 (PASS, WARN, FAIL))",
+      "checker_func": "str! @desc(檢查函式入口點路徑 (<module>:<callable>))"
     }
   },
 

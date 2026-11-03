@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_03_1701_vscode_support_module_and_core_ide_decoupling (Completed)
+
+- **新建 `module:vscode-support@1.0.0.0`、`core@1.2.5.0` 零 IDE 假設解耦、單檔級 JSON Schema 自動編譯、`uri`/`path` 語意協議補全與 `@desc(...)` 正交屬性及同構組態契約正規化 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-06`, `NFR-01` ~ `NFR-02`)**：
+  - **`core@1.2.5.0` 零 IDE 假設剝離、`on_env_synced` 事件廣播與 `[TODO-18]` 數值預設值修復 (`FR-01`, `FR-02`)**：物理移除 `core/ide_projector.py` 與對應舊測試，於 `Installer.sync_pip_dependencies()` 結尾廣播 IDE 中立之 `on_env_synced` 事件（並登錄至 `core/contributes/core.json`）；於 `ContributesValidator._parse_default_literal` 支援帶正負號十進位整數（如 `-1`）與浮點數（如 `1.0`、`-0.5`）預設值解析。
+  - **`_format.json` 型別簽名擴充 (`uri`/`path` 與 `@desc(...)`) 及同構 `configurable/_format.json` 正規化 (`FR-05`)**：於 `ContributesValidator.parse_type_signature` 原生支援 `uri`/`path` 路徑型別與支援巢狀平衡括號之 `@<attr>(...)`（含 `@desc(...)`）正交屬性語法；為全倉 8 模組之 `contributes/_format.json` 全面補齊 `uri`/`path` 與 `@desc(...)` 欄位說明，並為 4 個可組態模組（`core`、`agents-workflow`、`knowledge-db`、`server`）建立同構 `configurable/_format.json`（同步更新 `core/engine.py` 與 `dev/checker.py` 保留 `module://<mod>/configurable/_format.json`）。
+  - **`module:vscode-support@1.0.0.0` 穩定微環境連結、單檔級 `SchemaCompiler` 與可逆生命周期治理 (`FR-03` ~ `FR-06`, `EC-01` ~ `EC-06`)**：實作 `SettingsProjector` 管理 `yscb.venv://current-site-packages` 穩定連結（恆定注入 `./ys_codebase/.venv/current-site-packages` 消除跨平台/跨 Python 版本設定漂移）、自動建立 `project://.vscode/` 並以 `_yscb_managed` 軟合併 `.vscode/settings.json`；實作 `SchemaCompiler` 動態編譯 `schemas/{contributes,config,meta}/*.schema.json` 至 `.vscode/schemas/`（內含 `.gitignore` `*` 自我忽略），自動為 `uri`/`path` 欄位注入全系統已註冊語意 URI 協議前綴之 VS Code `defaultSnippets`；提供 `yscb vscode-support <status|sync|revert>` CLI 與 `on_env_synced` / `on_reload` / `on_remove` 自動鉤子，通過全倉 8 模組 `dev check --all`、`contributes check`、`core` (235/235) 與 `vscode-support` (6/6) 單元測試及 VS Code 實機 UX 驗收。
+
 ## 2026_11_03_1018_issue_triage_remediation (Completed)
 
 ### sub_05_p3_polish (Completed)

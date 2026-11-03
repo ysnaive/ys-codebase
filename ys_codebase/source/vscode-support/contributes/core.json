@@ -1,0 +1,69 @@
+{
+  "commands": {
+    "module_alias": ["vsc"],
+    "description": "VS Code 工作區設定投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯指令群",
+    "cmd": {
+      "status": {
+        "description": "檢視 .vscode/settings.json 託管狀態、current-site-packages 連結與已編譯 Schema 清單",
+        "tier": "safe",
+        "server_compatible": true,
+        "options": {
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出狀態報告"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "快速確認 VS Code Pylance extraPaths 與單檔 JSON Schema 綁定現況"
+          ],
+          "cons": [
+            "僅唯讀檢視狀態；若需更新設定或重編 Schema 請使用 sync"
+          ]
+        }
+      },
+      "sync": {
+        "description": "重新建立穩定 site-packages 連結、編譯全模組單檔 JSON Schema 並軟合併 .vscode/settings.json",
+        "tier": "safe",
+        "server_compatible": true,
+        "options": {
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出同步結果"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "手動強制刷新 .vscode/schemas/ 與 .vscode/settings.json 受託管設定"
+          ],
+          "cons": [
+            "日常透過 yscb install/update/reload 時已自動由 Hook 觸發，無須頻繁手動呼叫"
+          ]
+        }
+      },
+      "revert": {
+        "description": "依據 _yscb_managed 乾淨剔除所有 YSCB 注入之 VS Code 設定，並移除 .vscode/schemas/ 與穩定連結",
+        "tier": "conditional",
+        "server_compatible": true,
+        "options": {
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出還原結果"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "100% 還原 .vscode/settings.json 至未注入前之純淨狀態，完整保留使用者自訂設定"
+          ],
+          "cons": [
+            "還原後 VS Code 將失去 YSCB 微環境 Pylance 路徑與單檔 JSON Schema 自動驗證"
+          ]
+        }
+      }
+    }
+  }
+}
+

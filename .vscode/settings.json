@@ -2,7 +2,6 @@
   "terminal.integrated.enablePersistentSessions": true,
   "files.exclude": {
     "**/.git": true,
-    "**/.vscode": true,
     "**/.gitignore": true,
     "**/.gitattributes": true,
     "**/.gitkeep": true,
@@ -11,20 +10,17 @@
     "**/.build": true,
     "**/build": true,
     "**/.mirror": true,
-    "**/.modules": true,
     "**/modules": true,
     "**/.snapshots": true,
     "**/.venv": true
   },
   "search.exclude": {
     "**/.git": true,
-    "**/.vscode": true,
     "**/__pycache__": true,
     "**/.cache/**": true,
     "**/.build/**": true,
     "**/build/**": true,
     "**/.mirror/**": true,
-    "**/.modules/**": true,
     "**/modules/**": true,
     "**/.snapshots/**": true,
     "**/release/**": true,
@@ -39,7 +35,6 @@
     "**/.build/**": true,
     "**/build/**": true,
     "**/.mirror/**": true,
-    "**/.modules/**": true,
     "**/modules/**": true,
     "**/.snapshots/**": true,
     "**/release/**": true,
@@ -57,14 +52,12 @@
   "markdown.preview.openMarkdownLinks": "inPreview",
   "markdown.preview.doubleClickToSwitchToEditor": true,
   "python.analysis.extraPaths": [
-    "./ys_codebase/.venv/py312/lib/python3.12/site-packages",
-    "./ys_codebase/.venv/py312/Lib/site-packages"
+    "./ys_codebase/.venv/current-site-packages"
   ],
   "_yscb_managed": {
-    "description": "Auto-managed by YSCB host bootstrapper. Reversible via module uninstall or rollback.",
+    "description": "Auto-managed by YSCB vscode-support module. Reversible via 'yscb vscode-support revert' or module uninstall.",
     "extraPaths": [
-      "./ys_codebase/.venv/py312/lib/python3.12/site-packages",
-      "./ys_codebase/.venv/py312/Lib/site-packages"
+      "./ys_codebase/.venv/current-site-packages"
     ],
     "excludes": {
       "files.watcherExclude": "**/.venv/**",
@@ -78,6 +71,22 @@
       "**/.mirror/**",
       "**/.modules/**",
       "**/.venv/**"
+    ],
+    "jsonSchemas": [
+      "./.vscode/schemas/contributes/agents-workflow.schema.json",
+      "./.vscode/schemas/contributes/ast.schema.json",
+      "./.vscode/schemas/contributes/core.schema.json",
+      "./.vscode/schemas/contributes/dev.schema.json",
+      "./.vscode/schemas/contributes/file-space.schema.json",
+      "./.vscode/schemas/contributes/knowledge-db.schema.json",
+      "./.vscode/schemas/contributes/server.schema.json",
+      "./.vscode/schemas/contributes/vscode-support.schema.json",
+      "./.vscode/schemas/config/agents-workflow.schema.json",
+      "./.vscode/schemas/config/core.schema.json",
+      "./.vscode/schemas/config/knowledge-db.schema.json",
+      "./.vscode/schemas/config/server.schema.json",
+      "./.vscode/schemas/meta/format-meta.schema.json",
+      "./.vscode/schemas/meta/manifest.schema.json"
     ]
   },
   "python.analysis.exclude": [
@@ -87,5 +96,110 @@
     "**/.mirror/**",
     "**/.modules/**",
     "**/.venv/**"
+  ],
+  "json.schemas": [
+    {
+      "fileMatch": [
+        "**/contributes/agents-workflow.json",
+        "**/config/agents-workflow/contribute.json"
+      ],
+      "url": "./.vscode/schemas/contributes/agents-workflow.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/contributes/ast.json",
+        "**/config/ast/contribute.json"
+      ],
+      "url": "./.vscode/schemas/contributes/ast.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/contributes/core.json",
+        "**/config/core/contribute.json"
+      ],
+      "url": "./.vscode/schemas/contributes/core.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/contributes/dev.json",
+        "**/config/dev/contribute.json"
+      ],
+      "url": "./.vscode/schemas/contributes/dev.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/contributes/file-space.json",
+        "**/config/file-space/contribute.json"
+      ],
+      "url": "./.vscode/schemas/contributes/file-space.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/contributes/knowledge-db.json",
+        "**/config/knowledge-db/contribute.json"
+      ],
+      "url": "./.vscode/schemas/contributes/knowledge-db.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/contributes/server.json",
+        "**/config/server/contribute.json"
+      ],
+      "url": "./.vscode/schemas/contributes/server.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/contributes/vscode-support.json",
+        "**/config/vscode-support/contribute.json"
+      ],
+      "url": "./.vscode/schemas/contributes/vscode-support.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/config/agents-workflow/config.*.json",
+        "**/source/agents-workflow/configurable/config.*.json",
+        "**/agents-workflow/configurable/config.*.json"
+      ],
+      "url": "./.vscode/schemas/config/agents-workflow.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/config/core/config.*.json",
+        "**/source/core/configurable/config.*.json",
+        "**/core/configurable/config.*.json"
+      ],
+      "url": "./.vscode/schemas/config/core.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/config/knowledge-db/config.*.json",
+        "**/source/knowledge-db/configurable/config.*.json",
+        "**/knowledge-db/configurable/config.*.json"
+      ],
+      "url": "./.vscode/schemas/config/knowledge-db.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/config/server/config.*.json",
+        "**/source/server/configurable/config.*.json",
+        "**/server/configurable/config.*.json"
+      ],
+      "url": "./.vscode/schemas/config/server.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/contributes/_format.json",
+        "**/configurable/_format.json"
+      ],
+      "url": "./.vscode/schemas/meta/format-meta.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/source/*/manifest.json",
+        "**/modules/*/manifest.json",
+        "**/.modules/*/manifest.json"
+      ],
+      "url": "./.vscode/schemas/meta/manifest.schema.json"
+    }
   ]
 }

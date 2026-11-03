@@ -1,9 +1,12 @@
 # 技術路線圖：Release 技能輸出前綴與命名空間防撞機制 (Roadmap)
 
-> 主題：Release 技能輸出前綴與命名空間防撞機制  
-> 歸檔日期：2026-10-22  
+> 主題：Release 技能輸出前綴與命名空間防撞機制 (`skill_release_prefix_isolation`)  
+> 歸檔日期：2026-11-03  
 > 狀態：Proposed  
+> 目標範疇：`agents-workflow`（`ArtifactCompiler`、`ReleasePublisher`、`config.project.json` 與 `AGENTS.md` 路由表投影）  
+> 前置解鎖條件：下游專案出現自有同名 Skill 防撞隔離需求時啟動  
 > 模型：Gemini 4 Argon (Low)  
+> 模板版本：v1.1  
 
 ---
 

@@ -1,0 +1,12 @@
+{
+  "paths": {
+    "plans": "uri! @desc(活躍開發計畫目錄路徑 (綁定 workflow.plans://，預設 project://plans))",
+    "archived": "uri! @desc(歷史封存計畫目錄路徑 (綁定 workflow.archived://，預設 project://plans/archived))",
+    "docs": "uri! @desc(專案系統知識庫文檔目錄路徑 (綁定 workflow.docs://，預設 project://docs))",
+    "roadmap": "uri? = project://plans/roadmap @desc(長期技術路線圖與待辦目錄路徑 (綁定 workflow.roadmap://))"
+  },
+  "release_targets": "list[str]? = [] @desc(工作流編譯物化之目標環境清單 (如 antigravity, claude, codex))",
+  "enable_agents_md": "bool? = true @desc(是否於專案根目錄生成受託管 AGENTS.md 規範檔)",
+  "enable_project_changelog": "bool? = true @desc(是否啟用專案根目錄 CHANGELOG.md 結案同步維護)"
+}
+

@@ -44,6 +44,43 @@ class TestContributesValidator(YSCBTestCase):
         self.assertEqual(p_ref_unique["type"], "ref")
         self.assertEqual(p_ref_unique["ref_name"], "FileSpaceDef")
         self.assertEqual(p_ref_unique["merge_strategy"], "unique")
+
+        p_float = ContributesValidator.parse_type_signature("float? = 1.0")
+        self.assertEqual(p_float["type"], "float")
+        self.assertFalse(p_float["required"])
+        self.assertIsInstance(p_float["default"], float)
+        self.assertEqual(p_float["default"], 1.0)
+
+        p_neg_float = ContributesValidator.parse_type_signature("float? = -0.5")
+        self.assertIsInstance(p_neg_float["default"], float)
+        self.assertEqual(p_neg_float["default"], -0.5)
+
+        p_neg_int = ContributesValidator.parse_type_signature("int? = -1")
+        self.assertEqual(p_neg_int["type"], "int")
+        self.assertIsInstance(p_neg_int["default"], int)
+        self.assertEqual(p_neg_int["default"], -1)
+
+        p_semver_str = ContributesValidator.parse_type_signature("str? = 1.0.0")
+        self.assertEqual(p_semver_str["default"], "1.0.0")
+
+        p_uri = ContributesValidator.parse_type_signature("uri!")
+        self.assertEqual(p_uri["type"], "uri")
+        self.assertTrue(p_uri["required"])
+
+        p_path = ContributesValidator.parse_type_signature("path? = ./default")
+        self.assertEqual(p_path["type"], "path")
+        self.assertEqual(p_path["default"], "./default")
+
+        p_attr = ContributesValidator.parse_type_signature(
+            "enum(replace, below, above)? = replace | merge @desc(注入模式 (replace/below/above)) @cond(type == 'uri')"
+        )
+        self.assertEqual(p_attr["type"], "enum")
+        self.assertEqual(p_attr["enum_values"], ["replace", "below", "above"])
+        self.assertEqual(p_attr["default"], "replace")
+        self.assertEqual(p_attr["merge_strategy"], "merge")
+        self.assertEqual(p_attr["description"], "注入模式 (replace/below/above)")
+        self.assertEqual(p_attr["attributes"]["desc"], "注入模式 (replace/below/above)")
+        self.assertEqual(p_attr["attributes"]["cond"], "type == 'uri'")
         self.mark_passed()
 
     @require(Requirement.ENV)

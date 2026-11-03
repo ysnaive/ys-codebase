@@ -192,7 +192,7 @@ python yscb.py config reload [module]
 ### 5.2 宿主前置嗅探與動態注入 (`yscb.py`)
 - `yscb.py` 在分發任何命令前，前置執行 $< 0.05\text{ms}$ 極速嗅探；若微環境之 `site-packages` 存在且未注入，自動安全插入 `sys.path` 前端，模組代碼可直接無感 `import`。
 
-### 5.3 IDE 自動感知與可復原軟合併 (`core.ide_projector`)
-- 模組安裝/更新/還原時，自動探測 `project://.vscode` 是否存在（不存在則完全靜默略過，零目錄污染）。
-- 比照 `internal yscb gitignore` 之邊界守門哲學，在 `project://.vscode/settings.json` 引入 `_yscb_managed` 宣告式清冊，差集更新 `extraPaths`（注入 POSIX 與 Windows 跨平台雙候選路徑以保證 0 diff 恆定性，且解耦 host-local 的 `defaultInterpreterPath` 託管寫入）與 `python.analysis.exclude`（排除 `**/.cache/**`、`**/.snapshots/**`、`**/.build/**` 等暫存與沙盒目錄以防 Pylance 索引記憶體暴增），100% 完整保留使用者原有配置與自訂直譯器，並具備 Zero-Touch 比對防護與依清冊乾淨回滾。
+### 5.3 環境同步生命週期廣播 (`on_env_synced`) 與 IDE 零假設解耦
+- `core` 本身保持 100% 零下游 IDE 假設（不直接感知或修改 `.vscode/`）。
+- 當 `Installer.sync_pip_dependencies()` 完成第三方套件物化後，主動廣播 `on_env_synced` 事件（`ExecutionContext("core", "env_sync", [])`），交由選配模組（如 [`vscode-support`](../vscode-support/README.md)）訂閱並執行 IDE 設定投影與 Schema 編譯。
 

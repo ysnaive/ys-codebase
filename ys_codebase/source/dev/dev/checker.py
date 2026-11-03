@@ -770,12 +770,12 @@ class Checker:
         cfg_dir = os.path.join(real_dir, "configurable")
         if os.path.isdir(cfg_dir):
             for cfg_f in os.listdir(cfg_dir):
-                if not (cfg_f.startswith("config.") and cfg_f.endswith(".json")):
+                if not ((cfg_f.startswith("config.") and cfg_f.endswith(".json")) or cfg_f == "_format.json"):
                     report.issues.append(
                         CheckIssue(
                             severity=CheckSeverity.WARN,
                             category="STRUCTURE",
-                            message=f"Non-standard configuration template naming in 'configurable/{cfg_f}'. Expected pattern 'config.*.json'.",
+                            message=f"Non-standard configuration template naming in 'configurable/{cfg_f}'. Expected pattern 'config.*.json' or '_format.json'.",
                             file_path=f"configurable/{cfg_f}",
                         )
                     )

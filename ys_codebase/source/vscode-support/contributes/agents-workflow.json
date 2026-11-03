@@ -1,0 +1,17 @@
+{
+  "insert": [
+    {
+      "type": "uri",
+      "token": "HOW_TO_YSCB_MODULES",
+      "value": "module://vscode-support/assets/usage_guide.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_CONFIG_MODULES",
+      "value": "module://vscode-support/assets/config_guide.md",
+      "mode": "below"
+    }
+  ]
+}
+

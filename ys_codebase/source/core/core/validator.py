@@ -77,8 +77,10 @@ class ContributesValidator:
         """Parse literal default value from signature suffix."""
         if def_str.lower() in ("true", "false"):
             return def_str.lower() == "true"
-        if def_str.isdigit():
+        if re.match(r"^[+-]?\d+$", def_str):
             return int(def_str)
+        if re.match(r"^[+-]?\d+\.\d+$", def_str):
+            return float(def_str)
         if (def_str.startswith('"') and def_str.endswith('"')) or (def_str.startswith("'") and def_str.endswith("'")):
             return def_str[1:-1]
         if def_str == "[]":
@@ -86,6 +88,38 @@ class ContributesValidator:
         if def_str == "{}":
             return {}
         return def_str
+
+    @staticmethod
+    def _extract_attributes(raw_sig: str) -> Tuple[str, Dict[str, str]]:
+        """
+        Extract orthogonal `@<attr_name>(<attr_body>)` attributes from type signature string.
+        Supports balanced nested parentheses inside `<attr_body>`.
+        """
+        attrs: Dict[str, str] = {}
+        out_chars: List[str] = []
+        i = 0
+        n = len(raw_sig)
+        while i < n:
+            if raw_sig[i] == "@":
+                m = re.match(r"^@([A-Za-z_][A-Za-z0-9_-]*)\(", raw_sig[i:])
+                if m:
+                    attr_name = m.group(1)
+                    body_start = i + m.end()
+                    depth = 1
+                    j = body_start
+                    while j < n and depth > 0:
+                        if raw_sig[j] == "(":
+                            depth += 1
+                        elif raw_sig[j] == ")":
+                            depth -= 1
+                        j += 1
+                    if depth == 0:
+                        attrs[attr_name] = raw_sig[body_start : j - 1].strip()
+                        i = j
+                        continue
+            out_chars.append(raw_sig[i])
+            i += 1
+        return "".join(out_chars).strip(), attrs
 
     @classmethod
     def parse_type_signature(cls, sig: str) -> Dict[str, Any]:
@@ -99,8 +133,10 @@ class ContributesValidator:
         - "$TypeName | merge" -> type: "ref", ref_name: "TypeName", merge_strategy: "merge"
         - "list[str]! | extend" -> type: "list", item_type: "str", required: True, merge_strategy: "extend"
         - "dict[str, str]" -> type: "dict", key_type: "str", value_type: "str"
+        - "uri! @desc(欄位說明)" -> type: "uri", required: True, description: "欄位說明", attributes: {"desc": "欄位說明"}
         """
-        raw = sig.strip()
+        raw, attributes = cls._extract_attributes(sig.strip())
+        description = attributes.get("desc") or attributes.get("doc") or attributes.get("anno") or None
         merge_strategy: Optional[str] = None
         if "|" in raw:
             raw_part, strat_part = raw.rsplit("|", 1)
@@ -129,6 +165,8 @@ class ContributesValidator:
             "has_default": has_default,
             "default": default_val,
             "merge_strategy": merge_strategy,
+            "description": description,
+            "attributes": attributes,
             "raw": sig,
         }
 
@@ -186,6 +224,8 @@ class ContributesValidator:
 
         primitive_checks = {
             "str": (lambda x: isinstance(x, str), "string"),
+            "uri": (lambda x: isinstance(x, str) and len(x.strip()) > 0, "semantic URI or path string"),
+            "path": (lambda x: isinstance(x, str) and len(x.strip()) > 0, "file/directory path string"),
             "int": (lambda x: isinstance(x, int) and not isinstance(x, bool), "integer"),
             "bool": (lambda x: isinstance(x, bool), "boolean"),
             "float": (lambda x: isinstance(x, (float, int)) and not isinstance(x, bool), "float"),

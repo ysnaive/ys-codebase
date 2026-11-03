@@ -1,22 +1,22 @@
 {
   "_types": {
     "ArgDef": {
-      "description": "str!",
-      "required": "bool? = true",
-      "choice": "list[str]?",
-      "choices": "list[str]?"
+      "description": "str! @desc(位置參數說明文字)",
+      "required": "bool? = true @desc(是否為必填位置參數)",
+      "choice": "list[str]? @desc(允許之列舉值清單)",
+      "choices": "list[str]? @desc(允許之列舉值清單 (相容別名))"
     },
     "OptionDef": {
-      "description": "str!",
-      "alias": "list[str]?",
+      "description": "str! @desc(命令列選項說明文字)",
+      "alias": "list[str]? @desc(短選項或替代別名清單 (不含前綴 -))",
       "args": {
         "*": "$ArgDef"
       }
     },
     "CommandNode": {
-      "description": "str!",
-      "tier": "enum(safe, conditional, gated)? = conditional",
-      "server_compatible": "bool? = false",
+      "description": "str! @desc(子命令功能與用途說明)",
+      "tier": "enum(safe, conditional, gated)? = conditional @desc(CLI 執行安全分級 (safe: 唯讀安全, conditional: 條件修改, gated: 高危守門))",
+      "server_compatible": "bool? = false @desc(是否支援透過常駐 Server Daemon 熱派發執行)",
       "args": {
         "*": "$ArgDef"
       },
@@ -26,8 +26,8 @@
         }
       },
       "usage": {
-        "pros": "list[str]?",
-        "cons": "list[str]?"
+        "pros": "list[str]? @desc(推薦使用情境與正確範例)",
+        "cons": "list[str]? @desc(禁止或反模式警語)"
       },
       "cmd": {
         "*": "$CommandNode"
@@ -39,10 +39,10 @@
     "description": "註冊自訂語意 URI 協議（例 workflow.plans://, knowledge.storage://）",
     "format": [
       {
-        "token": "str!",
-        "type": "enum(config, const, module)!",
-        "value": "str!",
-        "description": "str?"
+        "token": "str! @desc(語意 URI 協議名稱 (不含 ://，如 workflow.plans))",
+        "type": "enum(config, const, module)! @desc(協議綁定類型 (config: 讀取模組組態鍵, const: 固定路徑映射, module: 模組相對路徑))",
+        "value": "uri! @desc(協議映射目標值 (組態鍵名或基準語意 URI 路徑))",
+        "description": "str? @desc(語意 URI 協議用途說明)"
       }
     ]
   },
@@ -50,8 +50,8 @@
   "commands": {
     "description": "註冊 CLI 模組指令樹、權限分級與防呆情境",
     "format": {
-      "module_alias": "list[str]?",
-      "description": "str?",
+      "module_alias": "list[str]? @desc(模組頂層 CLI 短別名清單)",
+      "description": "str? @desc(模組 CLI 工具鏈總覽說明)",
       "cmd": {
         "*": "$CommandNode"
       }
@@ -61,15 +61,15 @@
   "events": {
     "description": "宣告模組派送之生命週期或自訂事件清冊",
     "format": [
-      "dict[str, str]"
+      "dict[str, str] @desc(事件名稱至事件觸發時機說明之鍵值對)"
     ]
   },
 
   "locales": {
     "description": "註冊模組多語系與宿主專有名詞檔案指標清冊（含必填之 definition 語意契約檔與各 <lang-id> 語系檔路徑）",
     "format": {
-      "definition": "str!",
-      "*": "str!"
+      "definition": "path! @desc(語意詞條契約定義檔相對路徑 (如 locales/definition.json))",
+      "*": "path! @desc(各語系或宿主專有名詞檔相對路徑 (如 locales/zh.json))"
     }
   }
 }
