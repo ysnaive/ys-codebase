@@ -1,14 +1,13 @@
 name: Publish Releases to Orphan Branch
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - "CI"
+    types:
+      - completed
     branches:
       - main
-    paths:
-      - "ys_codebase/source/**"
-      - "ys_codebase/release/**/index.json"
-      - "yscb.py"
-      - ".github/workflows/release-publish.yml"
   workflow_dispatch:
 
 permissions:
@@ -20,11 +19,13 @@ concurrency:
 
 jobs:
   publish-releases:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main branch
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 1
 
       - name: Set up Python
@@ -192,6 +193,6 @@ jobs:
           git add -f .
           TREE_SHA="$(git write-tree)"
           unset GIT_WORK_TREE
-          COMMIT_SHA="$(git commit-tree "$TREE_SHA" -m "chore(release): publish sliding-window release artifacts (${GITHUB_SHA::7})")"
+          TARGET_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          COMMIT_SHA="$(git commit-tree "$TREE_SHA" -m "chore(release): publish sliding-window release artifacts (${TARGET_SHA::7})")"
           git push --force origin "${COMMIT_SHA}:refs/heads/releases"
-

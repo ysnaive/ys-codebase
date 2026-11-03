@@ -33,7 +33,96 @@ jobs:
       - name: Install test and runtime dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest numpy tree-sitter tree-sitter-language-pack
+          python -m pip install numpy tree-sitter tree-sitter-language-pack
+
+      - name: Build local release archives from current source tree
+        run: |
+          python3 - <<'PYEOF'
+          import fnmatch
+          import json
+          import os
+          import zipfile
+
+          DEFAULT_IGNORES = [
+              "__pycache__", "*.pyc", "*.pyo", "*.tmp", "*.bak",
+              ".git*", ".pytest_cache", ".DS_Store", ".yscbignore",
+              "tests", "tests/*",
+          ]
+          TEXT_EXTENSIONS = (".py", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".sh")
+          TEXT_BASENAMES = (".yscbignore", ".gitignore")
+          ZIP_DATETIME = (2020, 1, 1, 0, 0, 0)
+          ZIP_EXTERNAL_ATTR = (0o644 & 0xFFFF) << 16
+
+          def should_ignore(rel_path: str, ignores: list[str]) -> bool:
+              norm = rel_path.replace("\\", "/").rstrip("/")
+              name = os.path.basename(norm)
+              for pat in ignores:
+                  p = pat.replace("\\", "/").rstrip("/")
+                  if (
+                      fnmatch.fnmatch(name, p)
+                      or fnmatch.fnmatch(norm, p)
+                      or fnmatch.fnmatch(norm, p + "/*")
+                      or norm.startswith(p.rstrip("*").rstrip("/") + "/")
+                  ):
+                      return True
+              return False
+
+          release_root = os.path.abspath("ys_codebase/release")
+          source_root = os.path.abspath("ys_codebase/source")
+          for mod in sorted(os.listdir(source_root)):
+              src_dir = os.path.join(source_root, mod)
+              src_mf_path = os.path.join(src_dir, "manifest.json")
+              if not os.path.isdir(src_dir) or not os.path.isfile(src_mf_path):
+                  continue
+              with open(src_mf_path, "r", encoding="utf-8") as f:
+                  src_mf = json.load(f)
+              ver = str(src_mf.get("version", "")).strip()
+              if not ver:
+                  continue
+              mod_rel_dir = os.path.join(release_root, mod)
+              os.makedirs(mod_rel_dir, exist_ok=True)
+              zip_path = os.path.join(mod_rel_dir, f"{ver}.zip")
+              ignores = list(DEFAULT_IGNORES)
+              ignore_file = os.path.join(src_dir, ".yscbignore")
+              if os.path.isfile(ignore_file):
+                  with open(ignore_file, "r", encoding="utf-8", errors="ignore") as igf:
+                      for line in igf:
+                          s = line.strip()
+                          if s and not s.startswith("#"):
+                              ignores.append(s)
+              entries = []
+              for root, dirs, files in os.walk(src_dir):
+                  rel_d = os.path.relpath(root, src_dir).replace("\\", "/")
+                  if rel_d == ".":
+                      rel_d = ""
+                  dirs[:] = sorted(d for d in dirs if not should_ignore(f"{rel_d}/{d}".lstrip("/"), ignores))
+                  for fname in sorted(files):
+                      rel_f = f"{rel_d}/{fname}".lstrip("/")
+                      if not should_ignore(rel_f, ignores):
+                          entries.append((rel_f, os.path.join(root, fname)))
+              entries.sort(key=lambda item: item[0])
+              with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                  for rel_f, src_file_path in entries:
+                      zinfo = zipfile.ZipInfo(filename=rel_f, date_time=ZIP_DATETIME)
+                      zinfo.compress_type = zipfile.ZIP_DEFLATED
+                      zinfo.external_attr = ZIP_EXTERNAL_ATTR
+                      if rel_f == "manifest.json":
+                          m_copy = dict(src_mf)
+                          m_copy["version"] = ver
+                          payload = json.dumps(m_copy, indent=2, ensure_ascii=False).replace("\r\n", "\n").encode("utf-8")
+                      else:
+                          with open(src_file_path, "rb") as rf:
+                              raw_bytes = rf.read()
+                          if rel_f.endswith(TEXT_EXTENSIONS) or os.path.basename(rel_f) in TEXT_BASENAMES:
+                              try:
+                                  payload = raw_bytes.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+                              except UnicodeDecodeError:
+                                  payload = raw_bytes
+                          else:
+                              payload = raw_bytes
+                      zf.writestr(zinfo, payload)
+              print(f"[ci-bootstrap] Packaged {mod}@{ver}.zip from source.")
+          PYEOF
 
       - name: Bootstrap YS-Codebase runtime environment
         run: |
@@ -45,16 +134,6 @@ jobs:
           python yscb.py contributes check
           python yscb.py dev check --all
 
-      - name: Run Module Test Suites (pytest)
+      - name: Run Module Test Suites (Isolated YSCB Sandbox)
         run: |
-          export PYTHONPATH="$(pwd)/ys_codebase/source/core:$(pwd)/ys_codebase/source/dev:$(pwd)/ys_codebase/source/server:$(pwd)/ys_codebase/source/file-space:$(pwd)/ys_codebase/source/ast:$(pwd)/ys_codebase/source/knowledge-db:$(pwd)/ys_codebase/source/agents-workflow:$(pwd)"
-          pytest \
-            ys_codebase/source/core/tests \
-            ys_codebase/source/file-space/tests \
-            ys_codebase/source/ast/tests \
-            ys_codebase/source/knowledge-db/tests \
-            ys_codebase/source/server/tests \
-            ys_codebase/source/dev/tests \
-            ys_codebase/source/agents-workflow/tests \
-            -q
-
+          python yscb.py dev test --all -q
