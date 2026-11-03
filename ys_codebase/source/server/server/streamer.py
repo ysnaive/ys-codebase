@@ -23,11 +23,14 @@ class DebouncedIOStreamer:
         self,
         emit_chunk: Callable[[Dict[str, Any]], None],
         debounce_ms: int = 500,
+        max_buffer_bytes: int = 4096,
     ) -> None:
         self.emit_chunk = emit_chunk
         self.debounce_sec = debounce_ms / 1000.0
+        self.max_buffer_bytes = max_buffer_bytes
         self._lock = threading.Lock()
         self._buffer: List[Dict[str, str]] = []
+        self._buffer_bytes: int = 0
         self._timer: Optional[threading.Timer] = None
         self._last_flush_time = time.time()
         self._is_closed = False
@@ -47,12 +50,9 @@ class DebouncedIOStreamer:
                 return
 
             self._buffer.append({"stream": stream_name, "text": text})
+            self._buffer_bytes += len(text.encode("utf-8", errors="replace"))
 
-            now = time.time()
-            has_newline = "\n" in text
-            time_since_flush = now - self._last_flush_time
-
-            if has_newline or time_since_flush >= self.debounce_sec:
+            if self._buffer_bytes >= self.max_buffer_bytes:
                 self._flush_locked()
             else:
                 self._ensure_timer_locked()
@@ -67,6 +67,7 @@ class DebouncedIOStreamer:
             self._timer = None
 
         if not self._buffer:
+            self._buffer_bytes = 0
             self._last_flush_time = time.time()
             return
 
@@ -78,6 +79,7 @@ class DebouncedIOStreamer:
             consolidated[s_name].append(item["text"])
 
         self._buffer.clear()
+        self._buffer_bytes = 0
         self._last_flush_time = time.time()
 
         for s_name, chunks in consolidated.items():

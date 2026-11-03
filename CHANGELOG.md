@@ -1,6 +1,11 @@
 # 專案變更歷史 (Changelog)
 
-## 2026_11_03_1018_issue_triage_remediation (In Progress)
+## 2026_11_03_1018_issue_triage_remediation (Completed)
+
+### sub_05_p3_polish (Completed)
+- **P3 效能與穩健性細節打磨（18 項 P3 項目 + `DEV-01` 已接收熱派發防重跑 + `T-27` 轉入 `/roadmap`）(`FR-01` ~ `FR-06`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：
+  - **`DEV-01` 熱派發已接收後不降級冷派發、預發布 SemVer 排序與 `core` 底層打磨 (`FR-01` ~ `FR-03`, `EC-01`)**：於 `core/commands/dispatcher.py:_try_hot_dispatch` 僅在 `not res.accepted`（未送達）時回傳 `None` 降級冷派發，當 `res.accepted=True` 後發生逾時或中斷時直接回傳非零退出碼杜絕雙重執行；統一 `yscb.py` 與 `core/engine.py` 之 `_parse_simple_semver` 為 `(major, minor, patch, build, is_release, prerelease)` 6 元組使預發布版排在正式版之前且不將 `-rc1` 誤解析為數字版號，並移除 `_write_json_lf` 在 `os.replace` 前冗餘之 `os.remove`；於 `core/uri.py` 新增 `_TOKEN_MAP_CACHE` 與 100ms 單調時鐘守門（搭配 `contributes.get()` 重入保護）、於 `OSBackend.__init__` 預計算 `_real_root_dir`、將 `core/telemetry.py` 改為 `os.SEEK_END` 64KB 尾端反向分塊讀取，並於 `InterProcessLock._try_lock_fd` 區分鎖競爭與檔案系統不支援鎖定之 `ENOTSUP`/`ENOSYS`/`EBADF`。
+  - **`server`/`dev` 熱路徑打磨與 `ast`/`knowledge-db`/`agents-workflow` 結構與演算法優化 (`FR-04` ~ `FR-06`, `EC-02` ~ `EC-05`, `NFR-01`, `NFR-02`)**：於 `server/master.py` 複用 `get_venv_site_packages` 並將 `_tasks_executed += 1` 納入 `self._worker_lock`、於 `DebouncedIOStreamer` 新增 `max_buffer_bytes=4096` 雙水位緩衝取代逐行 `\n` 立即 flush、於 `dev/checker.py` 實作單次 `check_module` 週期內之 `_parsed_py_cache`；於 `ast_engine/schema.py:UnifiedSymbol.from_dict` 將 `children`/`members` 反序列化為輕量 `Tuple[MemberInfo, ...]`（保留 `.line`/`.fqn`/`.parent_id` 相容屬性並維持 `to_dict()` 格式不變）、於 `TopologyLinker` 改用 `collections.deque` BFS 與預建繼承映射、於 `treesitter.py`/`python_ast.py` 迴圈外預先按跨度排序 `target_symbols`；於 `BM25Engine._score_candidate_documents` 計分前預過濾、於 `SnippetExtractor` 新增帶 `(str(real_path), st_mtime_ns)` 鍵之 `_file_lines_cache`、於 `agents_workflow` 實作 `@lru_cache` Regex 編譯、Stage 1 注入快取、指紋複用與 `PlanVerifier` 預編譯佔位符 Regex（另將 `T-27` 登錄至 `plans/roadmap/doc_and_plan_archive_governance.md` 標記為 `尚未完整調研`），通過 6 模組共 660 項單元測試與臨時兄弟目錄端到端實測。
 
 ### sub_04_yscb_host_optimization (Completed)
 - **唯一宿主 `yscb.py` 五維度靜態診斷 (`R01`) 與 Fast Track 無損收斂重構 (`[FP-01:DR-01]` ~ `[FP-01:DR-03]`)**：

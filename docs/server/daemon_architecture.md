@@ -78,9 +78,9 @@ stateDiagram-v2
 
 為避免業務模組高頻輸出時產生大量微小封包衝擊 IPC 管道與 HTTP 串流，同時兼顧終端機即時互動感，Worker 透過 `DebouncedIOStreamer` 攔截 `sys.stdout` 與 `sys.stderr`：
 
-1. **防抖與立即 Flush 觸發條件**：
-   - 設置 **500ms 緩衝閥值**：一般零碎輸出在緩衝區累積達 500ms 時批次刷出。
-   - **換行或結束立即 Flush**：當輸出內容包含換行符 (`\n`) 或當前派發任務執行結束時，無須等待 500ms 計時器，**立即觸發 `flush()`**，確保單行訊息與最終結果零延遲送達終端。
+1. **防抖與雙水位 Flush 觸發條件**：
+   - 設置 **500ms 緩衝閥值**與 **`max_buffer_bytes=4096` 容量上限**：一般輸出在緩衝區累積達 500ms 或字節數達 4096 bytes 時批次刷出（不再於每次遇到 `\n` 時立即呼叫 `flush()`，避免高頻逐行輸出產生大量微小 IPC 封包）。
+   - **任務結束立即 Flush**：當當前派發任務執行結束時，無須等待 500ms 計時器，**立即觸發 `flush()`**，確保最終結果零遺漏送達終端。
 2. **NDJSON 分流封包規格**：
    - **`terminal_stream`**：`{"type": "terminal_stream", "stream": "stdout"|"stderr", "text": "..."}`（即時轉發至客戶端對應之標準輸出/錯誤流）。
    - **`task_finish`**：`{"type": "task_finish", "exit_code": 0, "duration_ms": 24.5, "error": null}`（標記單次任務閉環並回傳退出碼與耗時）。
@@ -136,7 +136,7 @@ stateDiagram-v2
 flowchart TD
     A["server_compatible=true 指令"] --> B{"熱派發嘗試"}
     B -->|"成功"| Z["回傳 exit code"]
-    B -->|"accepted=true 後失敗"| X["strict: 回傳 1，不重試"]
+    B -->|"accepted=true 後失敗"| X["回傳非零 (1)，不重試亦不降級冷派發"]
     B -->|"accepted=false (未送達)"| C{"strict_hot_dispatch?"}
     C -->|"false"| D["冷派發兜底"]
     C -->|"true"| E{"可常駐且 auto_spawn?"}
@@ -146,7 +146,7 @@ flowchart TD
     F -->|"仍失敗"| G
 ```
 
-- **送達判準**：`_hot_dispatch_attempt` 回傳 `_HotDispatchResult(exit_code, accepted)`；`accepted=true` 表示請求已被 server 接收。strict 模式**只對未送達（unreachable）的失敗重試**；已送達後中途失敗一律回傳 `1`，因為任務可能已在 Worker 執行，重試會造成雙重執行（見 DN-11）。
+- **送達判準**：`_hot_dispatch_attempt` 回傳 `_HotDispatchResult(exit_code, accepted)`；`accepted=true` 表示請求已被 server 接收。不論是否開啟 strict 模式，**僅對未送達（`accepted=false`）的失敗才允許重試或降級冷派發**；一旦 `accepted=true` 後中途失敗（如讀取逾時或串流中斷），一律直接回傳非零退出碼（`1`），因為任務已在 Worker 執行，重試或降級冷派發會造成雙重執行（見 DN-11）。
 - 生效條件：`enable=true` 且指令 `server_compatible=true`；`enable=false` 時嚴格模式失效，`server_compatible=false` 指令（如 `server start/status`）照常冷執行。
 - `[BLOCKER]` 文案兩種：advisory（已冷派發兜底）與 strict（已阻斷）。
-- 非嚴格模式下 `_try_hot_dispatch` 行為不變（含 socket 讀取逾時後降級冷派發）。
+- 非嚴格模式下 `_try_hot_dispatch` 僅在 `not res.accepted` 時回傳 `None` 降級冷派發；若 `res.accepted` 為 `True`，則直接回傳 `res.exit_code`（若為 `None` 則回傳 `1`）。

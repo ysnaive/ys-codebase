@@ -9,7 +9,8 @@
     "1.1.1.2",
     "1.1.2.3",
     "1.2.0.0",
-    "1.2.0.1"
+    "1.2.0.1",
+    "1.2.0.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -113,6 +114,18 @@
       "urgency": "recommended",
       "summary": "修復 wait_until_worker_idle 跨進程緊密空轉、清理舊版組態遺留並補齊 on_server_worker_warming",
       "sha256": "7b6c81495de7038fb2a3dbfa5c6795994d91a5c245d9bd00e3346da7a2c3eb6d"
+    },
+    "1.2.0.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2",
+        "file-space": ">=1.0.0",
+        "ast": ">=1.0.0"
+      },
+      "sha256": "fce6b7bf9a7faf92c59bcf4bfe4261a481d16f8a39181f70d4c615953a1d7de0",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "實作 Stage 2 向量推論鎖分離、檢查點定期持久化、BM25 計分前預過濾與片段行快取"
     }
   }
 }

@@ -663,8 +663,9 @@ class MasterSupervisor:
         Tracks `current_task` for status reporting, waits for a warming worker to become
         ready (FR-09), and converts `WorkerSpawnError` into a failing `task_finish` (EC-08).
         """
-        self._last_active_time = time.time()
-        self._tasks_executed += 1
+        with self._worker_lock:
+            self._last_active_time = time.time()
+            self._tasks_executed += 1
 
         target_mod = req_data.get("module", "unknown")
         cmd_args = req_data.get("args", [])
@@ -719,13 +720,9 @@ class MasterSupervisor:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
-        tag, sys_name = f"py{sys.version_info.major}{sys.version_info.minor}", platform.system()
-        sub = (
-            os.path.join(".venv", tag, "Lib", "site-packages")
-            if sys_name == "Windows"
-            else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
-        )
-        site_pkg = os.path.join(self.yscb_root, sub)
+        from core.platform.venv import get_venv_site_packages
+
+        site_pkg = get_venv_site_packages(self.yscb_root)
 
         py_paths = [
             self.yscb_root,

@@ -6,6 +6,7 @@ Stage 2: 3-Tier Contextual Semantic URI Resolution -> Target Deployments.
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
+import functools
 import os
 import sys
 import re
@@ -157,14 +158,25 @@ def check_unenclosed_tags(content: str, doc_name: str = "") -> None:
             print(f"[compiler:warning] Unenclosed placeholder tag '{m}' detected{target_str} (must be enclosed in backticks '`...`')", file=sys.stderr)
 
 
+_STANDALONE_TAG_RE = re.compile(r"[ \t]*`__@\{\s*([A-Za-z0-9_]+)\s*\}__`[ \t]*\r?\n?")
+
+
+@functools.lru_cache(maxsize=128)
 def make_token_tag_regex(token_name: str) -> re.Pattern:
     """構造匹配指定 Token 標籤之正則表達式，支援大括號內部微量空格。"""
     return re.compile(r"__@\{\s*" + re.escape(token_name) + r"\s*\}__")
 
 
+@functools.lru_cache(maxsize=128)
 def make_purge_regex(token_name: str) -> re.Pattern:
     """構造用於抹除殘留 Token 錨點行之正則表達式，自動吞噬行首縮排與行尾換行。"""
     return re.compile(r"([ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?)")
+
+
+@functools.lru_cache(maxsize=128)
+def make_standalone_tag_regex(token_name: str) -> re.Pattern:
+    """構造匹配單行獨立 Token 錨點之正則表達式。"""
+    return re.compile(r"[ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?")
 
 
 def _lookup_deployed_abs_path(tag_uri: str, deployment_map: Dict[str, str]) -> Optional[str]:
@@ -365,6 +377,7 @@ class ArtifactCompiler:
     def __init__(self, host_dir: Optional[str] = None):
         self.host_dir = host_dir
         self.module_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._stage1_insert_cache: Optional[Dict[str, str]] = None
 
     def _resolve_source_path(self, path_or_uri: str) -> str:
         """解析語意 URI 或相對路徑至本機實體檔案/目錄路徑。"""
@@ -486,7 +499,8 @@ class ArtifactCompiler:
         content: str,
         inserts: List[Dict[str, Any]],
         max_passes: int = 10,
-        context: Optional[Any] = None
+        context: Optional[Any] = None,
+        _insert_cache: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         Stage 1: 單一 Export 檔案之多輪遞迴解算狀態機：
@@ -498,6 +512,8 @@ class ArtifactCompiler:
         """
         if not content:
             return ""
+
+        active_cache = _insert_cache if _insert_cache is not None else self._stage1_insert_cache
 
         check_unenclosed_tags(content)
         resolved_text, literal_blocks = _preprocess_directives(
@@ -544,14 +560,21 @@ class ArtifactCompiler:
                     mode = ins.get("mode", "replace")
                     raw_val = ins.get("value", "")
 
-                    if ins_type == "uri":
+                    cache_key = f"{ins_type}:{token_name}:{raw_val}"
+                    if active_cache is not None and ins_type in ("uri", "computed") and cache_key in active_cache:
+                        val_content = active_cache[cache_key]
+                    elif ins_type == "uri":
                         val_content = self._read_file_content(str(raw_val))
+                        if active_cache is not None:
+                            active_cache[cache_key] = val_content
                     elif ins_type == "computed":
                         try:
                             from core.symbols import resolve_callable
                             target_fn = resolve_callable(str(raw_val), context=context)
                             comp_res = target_fn(context)
                             val_content = "" if comp_res is None else str(comp_res)
+                            if active_cache is not None:
+                                active_cache[cache_key] = val_content
                         except Exception as e:
                             print(f"[compiler:warning] Failed to resolve computed token '{token_name}' ({raw_val}): {e}", file=sys.stderr)
                             val_content = ""
@@ -581,7 +604,7 @@ class ArtifactCompiler:
                         if val_content.strip():
                             replace_blocks.append(val_content.rstrip("\r\n"))
 
-                standalone_tag_regex = re.compile(r"[ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?")
+                standalone_tag_regex = make_standalone_tag_regex(token_name)
                 if standalone_tag_regex.search(resolved_text):
                     combined_pieces = []
                     if above_blocks:
@@ -685,75 +708,84 @@ class ArtifactCompiler:
             "skills": "skills"
         }
 
-        for exp in exports:
-            if not isinstance(exp, dict):
-                continue
-            exp_type = exp.get("type", "template")
-            source_p = exp.get("source", "")
-            exp_name = exp.get("name", "")
-            sub_folder = folder_map.get(exp_type, "templates")
+        stage1_insert_cache: Dict[str, str] = {}
+        self._stage1_insert_cache = stage1_insert_cache
+        try:
+            for exp in exports:
+                if not isinstance(exp, dict):
+                    continue
+                exp_type = exp.get("type", "template")
+                source_p = exp.get("source", "")
+                exp_name = exp.get("name", "")
+                sub_folder = folder_map.get(exp_type, "templates")
 
-            real_src_path = self._resolve_source_path(source_p)
-            if not real_src_path or not os.path.exists(real_src_path):
-                errors.append(f"Cannot read export source: {source_p}")
-                continue
-
-            if os.path.isdir(real_src_path):
-                skill_files = self._scan_directory_files(source_p)
-                if not skill_files:
-                    errors.append(f"Skill directory is empty: {source_p}")
+                real_src_path = self._resolve_source_path(source_p)
+                if not real_src_path or not os.path.exists(real_src_path):
+                    errors.append(f"Cannot read export source: {source_p}")
                     continue
 
-                skill_pkg_name = exp_name or os.path.basename(source_p.rstrip("/\\"))
-                for rel_f, _, raw_text in skill_files:
+                if os.path.isdir(real_src_path):
+                    skill_files = self._scan_directory_files(source_p)
+                    if not skill_files:
+                        errors.append(f"Skill directory is empty: {source_p}")
+                        continue
+
+                    skill_pkg_name = exp_name or os.path.basename(source_p.rstrip("/\\"))
+                    for rel_f, _, raw_text in skill_files:
+                        try:
+                            ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
+                            if rel_f.endswith((".md", ".txt", ".json", ".yaml", ".yml", ".sh")):
+                                stage1_content = self.resolve_single_artifact(
+                                    raw_text, inserts, context=ctx, _insert_cache=stage1_insert_cache
+                                )
+                            else:
+                                stage1_content = raw_text
+
+                            cache_uri = f"{cache_target_root}/{sub_folder}/{skill_pkg_name}/{rel_f}"
+                            actual_cache = self._write_cache_file(cache_uri, stage1_content)
+
+                            resolved_items.append({
+                                "export": exp,
+                                "sub_folder": sub_folder,
+                                "base_name": os.path.basename(rel_f),
+                                "rel_path": rel_f,
+                                "cache_uri": actual_cache,
+                                "content": stage1_content,
+                                "is_skill": True,
+                                "skill_name": skill_pkg_name
+                            })
+                        except Exception as e:
+                            errors.append(f"Failed Stage 1 for {skill_pkg_name}/{rel_f}: {e}")
+                else:
+                    base_name = os.path.basename(source_p.replace("\\", "/"))
+                    raw_content = self._read_file_content(source_p)
+                    if not raw_content:
+                        errors.append(f"Cannot read export source: {source_p}")
+                        continue
+
                     try:
                         ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
-                        if rel_f.endswith((".md", ".txt", ".json", ".yaml", ".yml", ".sh")):
-                            stage1_content = self.resolve_single_artifact(raw_text, inserts, context=ctx)
-                        else:
-                            stage1_content = raw_text
+                        stage1_content = self.resolve_single_artifact(
+                            raw_content, inserts, context=ctx, _insert_cache=stage1_insert_cache
+                        )
 
-                        cache_uri = f"{cache_target_root}/{sub_folder}/{skill_pkg_name}/{rel_f}"
+                        cache_uri = f"{cache_target_root}/{sub_folder}/{base_name}"
                         actual_cache = self._write_cache_file(cache_uri, stage1_content)
 
                         resolved_items.append({
                             "export": exp,
                             "sub_folder": sub_folder,
-                            "base_name": os.path.basename(rel_f),
-                            "rel_path": rel_f,
+                            "base_name": base_name,
+                            "rel_path": base_name,
                             "cache_uri": actual_cache,
                             "content": stage1_content,
-                            "is_skill": True,
-                            "skill_name": skill_pkg_name
+                            "is_skill": (exp_type in ("skill", "skills")),
+                            "skill_name": exp_name or os.path.splitext(base_name)[0]
                         })
                     except Exception as e:
-                        errors.append(f"Failed Stage 1 for {skill_pkg_name}/{rel_f}: {e}")
-            else:
-                base_name = os.path.basename(source_p.replace("\\", "/"))
-                raw_content = self._read_file_content(source_p)
-                if not raw_content:
-                    errors.append(f"Cannot read export source: {source_p}")
-                    continue
-
-                try:
-                    ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
-                    stage1_content = self.resolve_single_artifact(raw_content, inserts, context=ctx)
-
-                    cache_uri = f"{cache_target_root}/{sub_folder}/{base_name}"
-                    actual_cache = self._write_cache_file(cache_uri, stage1_content)
-
-                    resolved_items.append({
-                        "export": exp,
-                        "sub_folder": sub_folder,
-                        "base_name": base_name,
-                        "rel_path": base_name,
-                        "cache_uri": actual_cache,
-                        "content": stage1_content,
-                        "is_skill": (exp_type in ("skill", "skills")),
-                        "skill_name": exp_name or os.path.splitext(base_name)[0]
-                    })
-                except Exception as e:
-                    errors.append(f"Failed Stage 1 for {base_name}: {e}")
+                        errors.append(f"Failed Stage 1 for {base_name}: {e}")
+        finally:
+            self._stage1_insert_cache = None
 
         return {
             "success": len(errors) == 0,

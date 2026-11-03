@@ -158,14 +158,15 @@ class TestServerModule(YSCBTestCase):
         def on_change(affected):
             notified_modules.append(affected)
 
-        watcher = ModulesWatcher(modules_dir=modules_dir, on_change_callback=on_change, poll_interval_sec=0.1, debounce_sec=0.1)
+        watcher = ModulesWatcher(modules_dir=modules_dir, on_change_callback=on_change, poll_interval_sec=0.05, debounce_sec=0.05)
         watcher.start()
 
         try:
-            time.sleep(0.15)
             with open(os.path.join(kdb_dir, "manifest.json"), "w", encoding="utf-8") as f:
                 f.write('{"name": "knowledge-db"}')
-            time.sleep(0.35)
+            deadline = time.monotonic() + 3.0
+            while not notified_modules and time.monotonic() < deadline:
+                time.sleep(0.02)
             self.assertGreater(len(notified_modules), 0)
             self.assertIn("knowledge-db", notified_modules[0])
         finally:
@@ -1182,6 +1183,35 @@ class TestServerModule(YSCBTestCase):
                 os.environ.pop(k, None)
 
         self.assertEqual(observed_missing_baseline, [], "os.environ was emptied or lost baseline keys during execute_task!")
+        self.mark_passed()
+
+    def test_t39_debounced_streamer_max_buffer_bytes(self):
+        """T-39: DebouncedIOStreamer 不因單純換行立即 flush，而是於累積達 max_buffer_bytes 或 flush/timer 時才送出。"""
+        packets = []
+        streamer = DebouncedIOStreamer(
+            emit_chunk=lambda pkt: packets.append(pkt),
+            debounce_ms=5000,
+            max_buffer_bytes=64,
+        )
+        try:
+            streamer.write("stdout", "line1\n")
+            streamer.write("stdout", "line2\n")
+            # Accumulated 12 bytes < 64 bytes -> still buffered despite newlines
+            self.assertEqual(len(packets), 0)
+
+            # Writing 60 bytes crosses max_buffer_bytes=64 -> flushes immediately
+            streamer.write("stdout", "x" * 60 + "\n")
+            self.assertEqual(len(packets), 1)
+            self.assertEqual(packets[0]["text"], "line1\nline2\n" + "x" * 60 + "\n")
+
+            # Subsequent short write stays buffered until explicit flush()
+            streamer.write("stdout", "tail\n")
+            self.assertEqual(len(packets), 1)
+            streamer.flush()
+            self.assertEqual(len(packets), 2)
+            self.assertEqual(packets[1]["text"], "tail\n")
+        finally:
+            streamer.stop_capture()
         self.mark_passed()
 
 

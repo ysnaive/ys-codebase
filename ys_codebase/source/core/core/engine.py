@@ -74,6 +74,27 @@ def _should_ignore_rel_path(rel_path: str, ignores: List[str]) -> bool:
     return False
 
 
+def _parse_simple_semver(v_str: str) -> Tuple[int, int, int, int, bool, Tuple[int, str]]:
+    """輕量 SemVer 解析器：返回 (major, minor, patch, revision, is_build, prerelease_weight)。"""
+    raw = str(v_str).strip()
+    is_build = raw == "build" or raw.endswith(".build")
+    if raw.endswith(".build"):
+        raw = raw[:-6]
+    elif raw == "build":
+        return (0, 0, 0, 0, True, (1, ""))
+
+    main_part, _, pre_tag = raw.partition("-")
+    parts: List[int] = []
+    for token in main_part.split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+
+    while len(parts) < 4:
+        parts.append(0)
+    pre_weight: Tuple[int, str] = (0, pre_tag) if pre_tag else (1, "")
+    return (parts[0], parts[1], parts[2], parts[3], is_build, pre_weight)
+
+
 def _is_source_version_compatible_with_target(src_ver: str, target_ver: str) -> bool:
     """Checks if local source manifest version matches target_ver (including same-triplet .build requests)."""
     s = str(src_ver).strip()
@@ -83,12 +104,9 @@ def _is_source_version_compatible_with_target(src_ver: str, target_ver: str) -> 
     if s == t or t == "build":
         return True
     if t.endswith(".build"):
-        try:
-            sv = semver.parse_semver(s)
-            tv = semver.parse_semver(t)
-            return (sv.major, sv.minor, sv.patch) == (tv.major, tv.minor, tv.patch)
-        except Exception:
-            return False
+        sv = _parse_simple_semver(s)
+        tv = _parse_simple_semver(t)
+        return (sv[0], sv[1], sv[2]) == (tv[0], tv[1], tv[2])
     return False
 
 
@@ -205,8 +223,6 @@ def package_local_source_if_exact_match(
                 else:
                     payload = _read_normalized_package_file_bytes(src_f, rel_file)
                     zf.writestr(zi, payload, compress_type=zipfile.ZIP_DEFLATED)
-        if os.path.exists(dest_zip_path):
-            os.remove(dest_zip_path)
         os.replace(tmp_zip, dest_zip_path)
         if release_zip_path and os.path.abspath(release_zip_path) != os.path.abspath(dest_zip_path):
             try:

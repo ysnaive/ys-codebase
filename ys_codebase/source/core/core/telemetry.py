@@ -156,18 +156,22 @@ def _rotate_telemetry_file(target_path: Path, keep_lines: int = KEEP_TELEMETRY_L
     """滾動截斷 telemetry.jsonl，僅保留最後 keep_lines 筆有效 JSONL。"""
     try:
         raw_lines = target_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        valid_lines: List[str] = []
-        for ln in raw_lines:
+        target_keep = max(1, keep_lines)
+        kept_reversed: List[str] = []
+        for ln in reversed(raw_lines):
             s = ln.strip()
             if not s:
                 continue
             try:
                 json.loads(s)
-                valid_lines.append(s)
+                kept_reversed.append(s)
+                if len(kept_reversed) >= target_keep:
+                    break
             except Exception:
                 continue
 
-        kept = valid_lines[-max(1, keep_lines):]
+        kept_reversed.reverse()
+        kept = kept_reversed
         tmp_path = target_path.with_suffix(f".tmp.{os.getpid()}")
         try:
             tmp_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
@@ -206,6 +210,25 @@ def read_telemetry_records(
             cutoff_epoch = max(cutoff_epoch, min_cutoff) if cutoff_epoch is not None else min_cutoff
 
         records: List[Dict[str, Any]] = []
+        if cutoff_epoch is None and limit is not None and limit > 0:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                raw_lines = f.readlines()
+            for line in reversed(raw_lines):
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    item = json.loads(s)
+                    if not isinstance(item, dict):
+                        continue
+                except Exception:
+                    continue
+                records.append(item)
+                if len(records) >= limit:
+                    break
+            records.reverse()
+            return records
+
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 s = line.strip()

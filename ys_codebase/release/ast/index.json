@@ -3,7 +3,8 @@
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "versions": [
     "1.0.0.0",
-    "1.0.0.1"
+    "1.0.0.1",
+    "1.0.0.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -27,6 +28,17 @@
       "urgency": "recommended",
       "summary": "修復 SnapshotState.head_generation 讀取、C# 同名重載方法保留與跨檔案邊重連",
       "sha256": "158cc1bff1f3da0d2a4f25a47a8ef0d5b161adaa2d6895f295fabe986f49f933"
+    },
+    "1.0.0.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2",
+        "file-space": ">=1.0.0"
+      },
+      "sha256": "ce7662729f2bf1f9deaef469d763d78e5d6eea0c01c34284afc33004ea74e12d",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "實作單檔 O(dirty) 免全掃熱修補、單次讀檔提取、MemberInfo 輕量反序列化與 BFS 拓撲優化"
     }
   }
 }

@@ -3,38 +3,38 @@
   "default_provider": "./ys_codebase/release",
   "installed_modules": {
     "core": {
-      "version": "1.2.3.build",
-      "installed_at": "2026-11-03 13:53:38",
+      "version": "1.2.4.0",
+      "installed_at": "2026-11-03 15:04:53",
       "provider": "./ys_codebase/release"
     },
     "dev": {
-      "version": "1.1.3.build",
-      "installed_at": "2026-11-03 13:32:57",
+      "version": "1.1.3.4",
+      "installed_at": "2026-11-03 15:06:41",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "1.2.3.1",
-      "installed_at": "2026-11-02 15:48:26",
+      "version": "1.2.3.2",
+      "installed_at": "2026-11-03 15:06:48",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.2.0.build",
-      "installed_at": "2026-11-03 12:02:48",
+      "version": "1.2.0.2",
+      "installed_at": "2026-11-03 15:06:11",
       "provider": "./ys_codebase/release"
     },
     "server": {
-      "version": "1.0.2.build",
-      "installed_at": "2026-11-03 13:32:57",
+      "version": "1.0.3.0",
+      "installed_at": "2026-11-03 15:05:45",
       "provider": "./ys_codebase/release"
     },
     "file-space": {
-      "version": "1.0.0.build",
-      "installed_at": "2026-11-03 12:02:48",
+      "version": "1.0.0.2",
+      "installed_at": "2026-11-03 15:06:11",
       "provider": "./ys_codebase/release"
     },
     "ast": {
-      "version": "1.0.0.build",
-      "installed_at": "2026-11-03 12:02:48",
+      "version": "1.0.0.2",
+      "installed_at": "2026-11-03 15:06:11",
       "provider": "./ys_codebase/release"
     }
   }

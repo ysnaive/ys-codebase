@@ -7,13 +7,9 @@ import platform
 import sys
 
 
-def ensure_private_venv(yscb_root: str) -> None:
+def get_venv_site_packages(yscb_root: str) -> str:
     """
-    Ensures that the private virtual environment for the current Python interpreter
-    version is added to sys.path, recursively parsing any host_venv.pth files.
-
-    Args:
-        yscb_root: Absolute or relative path to the YSCB project root directory.
+    Returns the platform-specific private virtualenv site-packages path under yscb_root.
     """
     tag = f"py{sys.version_info.major}{sys.version_info.minor}"
     sys_name = platform.system()
@@ -22,7 +18,18 @@ def ensure_private_venv(yscb_root: str) -> None:
         if sys_name == "Windows"
         else os.path.join(".venv", tag, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
     )
-    site_pkg = os.path.join(yscb_root, sub)
+    return os.path.join(yscb_root, sub)
+
+
+def ensure_private_venv(yscb_root: str) -> None:
+    """
+    Ensures that the private virtual environment for the current Python interpreter
+    version is added to sys.path, recursively parsing any host_venv.pth files.
+
+    Args:
+        yscb_root: Absolute or relative path to the YSCB project root directory.
+    """
+    site_pkg = get_venv_site_packages(yscb_root)
     if os.path.isdir(site_pkg) and site_pkg not in sys.path:
         sys.path.insert(0, site_pkg)
         pth = os.path.join(site_pkg, "host_venv.pth")

@@ -357,5 +357,64 @@ class TestCorePlatform(YSCBTestCase):
         self.assertTrue(entry["clean_exit"])
         self.mark_passed()
 
+    def test_t22_parse_simple_semver_prerelease(self):
+        """T-22: _parse_simple_semver 預發布標籤不污染主版號數字，且預發布版排序低於同版號正式版。"""
+        import importlib.util
+        from core import engine, semver, uri
+
+        yscb_root = uri.resolve_yscb_root()
+        yscb_py_cand = os.path.join(os.path.dirname(yscb_root), "yscb.py")
+        if not os.path.isfile(yscb_py_cand):
+            yscb_py_cand = os.path.join(yscb_root, "yscb.py")
+        parsers = [engine._parse_simple_semver]
+        if os.path.isfile(yscb_py_cand):
+            spec = importlib.util.spec_from_file_location("_yscb_boot_test", yscb_py_cand)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                parsers.append(mod._parse_simple_semver)
+
+        for parse_fn in parsers:
+            rc_ver = parse_fn("1.2.0-rc1")
+            rel_ver = parse_fn("1.2.0")
+            self.assertLess(rc_ver, rel_ver)
+            self.assertEqual(rc_ver[:4], (1, 2, 0, 0))
+            self.assertFalse(rc_ver[4])
+            self.assertNotEqual(parse_fn("1.0.0-rc1")[:4], parse_fn("1.0.1")[:4])
+            self.assertLess(parse_fn("1.0.0-rc1"), parse_fn("1.0.1"))
+            self.assertTrue(parse_fn("1.2.0.build")[4])
+
+        vt = semver.parse_semver("1.2.0.0-rc1")
+        self.assertEqual((vt.major, vt.minor, vt.patch, vt.revision, vt.prerelease), (1, 2, 0, 0, "rc1"))
+        self.assertEqual(semver.compare_semver("1.2.0-rc1", "1.2.0"), -1)
+        self.mark_passed()
+
+    def test_t40_try_lock_fd_raises_on_unsupported_errno(self):
+        """T-40: _try_lock_fd 於鎖競爭 (EAGAIN/EACCES) 回傳 False，於 ENOTSUP/ENOSYS/EBADF 往上拋出 OSError。"""
+        import errno
+        from unittest.mock import patch
+
+        lock = InterProcessLock(self.lock_path)
+        enotsup = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.ENOSYS))
+        if sys.platform == "win32":
+            with patch("os.lseek", side_effect=OSError(errno.EACCES, "locked")):
+                self.assertFalse(lock._try_lock_fd(999))
+            with patch("os.lseek", side_effect=OSError(enotsup, "not supported")):
+                with self.assertRaises(OSError):
+                    lock._try_lock_fd(999)
+            with patch("os.lseek", side_effect=OSError(errno.ENOSYS, "function not implemented")):
+                with self.assertRaises(OSError):
+                    lock._try_lock_fd(999)
+        else:
+            with patch("fcntl.flock", side_effect=OSError(errno.EAGAIN, "resource temporarily unavailable")):
+                self.assertFalse(lock._try_lock_fd(999))
+            with patch("fcntl.flock", side_effect=OSError(enotsup, "operation not supported")):
+                with self.assertRaises(OSError):
+                    lock._try_lock_fd(999)
+            with patch("fcntl.flock", side_effect=OSError(errno.ENOSYS, "function not implemented")):
+                with self.assertRaises(OSError):
+                    lock._try_lock_fd(999)
+        self.mark_passed()
+
 if __name__ == "__main__":
     unittest.main()

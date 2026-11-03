@@ -56,10 +56,19 @@ def _read_json_dict(path: str) -> Optional[Dict[str, Any]]:
 
 
 def _write_json_lf(path: str, data: Dict[str, Any]) -> None:
-    """以 UTF-8 與固定 LF 換行寫入格式化 JSON 檔案。"""
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    """以 UTF-8 與固定 LF 換行原子寫入格式化 JSON 檔案。"""
+    tmp_path = f"{path}.tmp_{os.getpid()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _normalize_local_path(raw: str, base_dir: Optional[str] = None) -> Optional[str]:
@@ -328,8 +337,6 @@ def _package_source_to_zip_if_exact_version(
                 else:
                     payload = _read_normalized_package_file_bytes(src_f, rel_file)
                     zf.writestr(zi, payload, compress_type=zipfile.ZIP_DEFLATED)
-        if os.path.exists(dest_zip_path):
-            os.remove(dest_zip_path)
         os.replace(tmp_zip, dest_zip_path)
         if release_zip_path and os.path.abspath(release_zip_path) != os.path.abspath(dest_zip_path):
             try:
@@ -834,23 +841,25 @@ def cmd_self_update(argv: List[str]) -> int:
         return 1
 
 
-def _parse_simple_semver(v_str: str) -> Tuple[int, int, int, int, bool]:
-    """輕量 4-tuple semver 解析器：返回 (major, minor, patch, revision, is_build)。"""
+def _parse_simple_semver(v_str: str) -> Tuple[int, int, int, int, bool, Tuple[int, str]]:
+    """輕量 SemVer 解析器：返回 (major, minor, patch, revision, is_build, prerelease_weight)。"""
     raw = str(v_str).strip()
     is_build = raw == "build" or raw.endswith(".build")
     if raw.endswith(".build"):
         raw = raw[:-6]
     elif raw == "build":
-        return (0, 0, 0, 0, True)
+        return (0, 0, 0, 0, True, (1, ""))
 
+    main_part, _, pre_tag = raw.partition("-")
     parts: List[int] = []
-    for token in raw.split("."):
+    for token in main_part.split("."):
         digits = "".join(ch for ch in token if ch.isdigit())
         parts.append(int(digits) if digits else 0)
 
     while len(parts) < 4:
         parts.append(0)
-    return (parts[0], parts[1], parts[2], parts[3], is_build)
+    pre_weight: Tuple[int, str] = (0, pre_tag) if pre_tag else (1, "")
+    return (parts[0], parts[1], parts[2], parts[3], is_build, pre_weight)
 
 
 def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:

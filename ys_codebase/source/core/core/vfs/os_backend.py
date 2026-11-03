@@ -17,6 +17,17 @@ from typing import Optional, List, Dict, Any, Union, IO, Generator
 from core.vfs.base import VFSBackend
 
 
+def _maybe_invalidate_uri_cache(norm_path: str) -> None:
+    """When contribute.json or contributes cache files are mutated via VFS, invalidate URI token map cache."""
+    base = os.path.basename(norm_path)
+    if base in ("contribute.json", "contributes.merged.json", "contributes.meta.json", "core.json"):
+        try:
+            from core import uri
+            uri._TOKEN_MAP_CACHE.clear()
+        except Exception:
+            pass
+
+
 class OSBackend(VFSBackend):
     """
     作業系統本機檔案系統後端。
@@ -30,6 +41,9 @@ class OSBackend(VFSBackend):
         :param root_dir: 可選之授權安全根目錄邊界。若指定，則在此後端操作之所有路徑均嚴格防逃逸。
         """
         self.root_dir = os.path.normpath(os.path.abspath(root_dir)) if root_dir else None
+        self._real_root_dir: Optional[str] = (
+            os.path.normpath(os.path.realpath(self.root_dir)) if self.root_dir else None
+        )
 
     def normalize_path(self, path: str) -> str:
         """
@@ -50,15 +64,17 @@ class OSBackend(VFSBackend):
         :raises PermissionError: 若路徑超出邊界則拋出異常
         """
         norm_target = self.normalize_path(path)
-        boundary_root = os.path.normpath(os.path.abspath(root)) if root else self.root_dir
-        if boundary_root:
-            is_same = norm_target == boundary_root
-            is_child = norm_target.startswith(boundary_root + os.sep)
+        if root is not None:
+            boundary_root: Optional[str] = os.path.normpath(os.path.abspath(root))
+            real_root: Optional[str] = os.path.normpath(os.path.realpath(boundary_root))
+        else:
+            boundary_root = self.root_dir
+            real_root = self._real_root_dir
+        if boundary_root and real_root:
             real_target = os.path.normpath(os.path.realpath(norm_target))
-            real_root = os.path.normpath(os.path.realpath(boundary_root))
             is_real_same = real_target == real_root
             is_real_child = real_target.startswith(real_root + os.sep)
-            if not ((is_same or is_child or is_real_same or is_real_child) and (is_real_same or is_real_child)):
+            if not (is_real_same or is_real_child):
                 raise PermissionError(
                     f"Path traversal detected: target path '{norm_target}' "
                     f"escaped boundary root '{boundary_root}'."
@@ -91,6 +107,7 @@ class OSBackend(VFSBackend):
             os.makedirs(os.path.dirname(norm_path), exist_ok=True)
             with open(norm_path, "w", encoding=encoding, newline="\n") as f:
                 f.write(content)
+        _maybe_invalidate_uri_cache(norm_path)
 
     def read_bytes(self, path: str) -> bytes:
         """讀取二進位資料。"""
@@ -203,6 +220,7 @@ class OSBackend(VFSBackend):
             except FileNotFoundError:
                 if not missing_ok:
                     raise
+        _maybe_invalidate_uri_cache(norm_path)
 
     def rmtree(self, path: str, ignore_errors: bool = False) -> None:
         """遞迴刪除目錄樹。"""

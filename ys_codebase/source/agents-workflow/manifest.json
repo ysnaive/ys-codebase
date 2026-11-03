@@ -1,6 +1,6 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.3.1",
+  "version": "1.2.3.2",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -12,8 +12,8 @@
     "Publish AGENTS.md & skills to project workspace: python yscb.py agents-workflow release"
   ],
   "release": {
-    "type": "bugfix",
-    "urgency": "recommended",
-    "summary": "同步三層檢索架構指引並啟用 publisher 原子檔案寫入"
+    "type": "refactor",
+    "urgency": "optional",
+    "summary": "優化工作流編譯與計畫驗證 Regex 快取並同步 CLI 嚴格熱派發指引"
   }
 }

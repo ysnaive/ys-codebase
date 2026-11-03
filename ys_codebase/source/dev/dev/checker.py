@@ -271,7 +271,22 @@ def _verify_test_class_isolation_and_marks(class_node: ast.ClassDef, t_file: str
 
 
 class Checker:
+    def __init__(self) -> None:
+        self._parsed_py_cache: Dict[str, Tuple[str, ast.Module]] = {}
+
+    def _get_parsed_py(self, full_path: str, filename: Optional[str] = None) -> Tuple[str, ast.Module]:
+        """Reads and parses a Python file into (content, ast.Module), caching per check_module run."""
+        norm_p = os.path.abspath(full_path)
+        if norm_p in self._parsed_py_cache:
+            return self._parsed_py_cache[norm_p]
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        tree = ast.parse(content, filename=filename or full_path)
+        self._parsed_py_cache[norm_p] = (content, tree)
+        return content, tree
+
     def check_module(self, name: str) -> CheckReport:
+        self._parsed_py_cache = {}
         report = CheckReport(module=name)
         src_uri = f"module.source://{name}"
         if not vfs.exists(src_uri):
@@ -510,8 +525,7 @@ class Checker:
                 continue
             rel_init = f"{entry}/__init__.py"
             try:
-                with open(init_path, "r", encoding="utf-8", errors="replace") as f:
-                    tree = ast.parse(f.read(), filename=init_path)
+                _, tree = self._get_parsed_py(init_path, filename=init_path)
             except Exception:
                 continue
             for node in tree.body:
@@ -829,9 +843,7 @@ class Checker:
         4. 頂層節點除 Docstring、Import、ImportFrom、FunctionDef、ClassDef 外，嚴禁任何未包覆在 func/class 內的執行陳述式。
         """
         try:
-            with open(cli_path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-            tree = ast.parse(content, filename=cli_path)
+            content, tree = self._get_parsed_py(cli_path, filename=cli_path)
         except Exception as e:
             report.issues.append(
                 CheckIssue(
@@ -919,9 +931,7 @@ class Checker:
                 is_test_file = rel_p.startswith("tests/")
 
                 try:
-                    with open(full_p, "r", encoding="utf-8") as py_f:
-                        content = py_f.read()
-                    tree = ast.parse(content, filename=rel_p)
+                    content, tree = self._get_parsed_py(full_p, filename=rel_p)
                 except SyntaxError as se:
                     report.issues.append(
                         CheckIssue(
@@ -1013,8 +1023,7 @@ class Checker:
                 continue
             t_full = os.path.join(tests_dir, t_file)
             try:
-                with open(t_full, "r", encoding="utf-8") as tf:
-                    tree = ast.parse(tf.read(), filename=t_file)
+                _, tree = self._get_parsed_py(t_full, filename=t_file)
             except Exception as e:
                 report.issues.append(
                     CheckIssue(
@@ -1040,9 +1049,7 @@ class Checker:
 
         rel_p = "scripts/hook.dev.py"
         try:
-            with open(hook_path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-            tree = ast.parse(content, filename=hook_path)
+            content, tree = self._get_parsed_py(hook_path, filename=hook_path)
         except SyntaxError as se:
             report.issues.append(
                 CheckIssue(

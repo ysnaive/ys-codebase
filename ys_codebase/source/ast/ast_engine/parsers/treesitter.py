@@ -837,6 +837,7 @@ class TreeSitterDriver(BaseParser):
         target_symbols = (
             symbols if symbols is not None else self.parse(file_path=file_path, content=content, space=space)
         )
+        sorted_target_symbols = sorted(target_symbols, key=lambda s: (s.end_line - s.line_number))
         call_sites: List[SymbolCallSite] = []
 
         for _, captures in matches:
@@ -857,20 +858,25 @@ class TreeSitterDriver(BaseParser):
 
             caller_name = "<module>"
             caller_sym_id: Optional[str] = None
-            matching_syms = [s for s in target_symbols if s.line_number <= line_no <= s.end_line]
-            matching_syms.sort(key=lambda s: (s.end_line - s.line_number))
-            for sym in matching_syms:
-                if sym.kind in ("method", "function", "constructor", "property"):
-                    caller_sym_id = sym.id
-                    if sym.metadata.get("parent_scope"):
-                        caller_name = f"{sym.metadata['parent_scope']}.{sym.metadata.get('short_name', sym.name)}"
+            enclosing = next(
+                (
+                    s
+                    for s in sorted_target_symbols
+                    if s.line_number <= line_no <= s.end_line
+                    and s.kind in ("method", "function", "constructor", "property", "class", "struct", "interface")
+                ),
+                None,
+            )
+            if enclosing is not None:
+                if enclosing.kind in ("method", "function", "constructor", "property"):
+                    caller_sym_id = enclosing.id
+                    if enclosing.metadata.get("parent_scope"):
+                        caller_name = f"{enclosing.metadata['parent_scope']}.{enclosing.metadata.get('short_name', enclosing.name)}"
                     else:
-                        caller_name = sym.name
-                    break
-                elif sym.kind in ("class", "struct", "interface"):
-                    caller_sym_id = sym.id
-                    caller_name = sym.metadata.get("short_name") or sym.name
-                    break
+                        caller_name = enclosing.name
+                elif enclosing.kind in ("class", "struct", "interface"):
+                    caller_sym_id = enclosing.id
+                    caller_name = enclosing.metadata.get("short_name") or enclosing.name
 
             call_sites.append(
                 SymbolCallSite(

@@ -3,6 +3,7 @@ Core Commands - CLI Pipeline Dispatcher & Dual-Track Router.
 100% Python Standard Library. Zero Third-Party Dependencies.
 """
 import difflib
+import errno
 import importlib.util
 import json
 import os
@@ -177,6 +178,12 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
         return _HotDispatchResult(None, not unreachable)
     except ConnectionRefusedError:
         return _HotDispatchResult(None, False)
+    except OSError as err:
+        if not isinstance(err, (TimeoutError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)) and (
+            "refused" in str(err).lower() or getattr(err, "errno", None) == errno.ECONNREFUSED
+        ):
+            return _HotDispatchResult(None, False)
+        return _HotDispatchResult(None, True)
     except Exception:
         # 請求可能已送出（逾時、重置），保守視為已接受
         return _HotDispatchResult(None, True)
@@ -225,11 +232,22 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
 
 def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], yscb_abs: str) -> Optional[int]:
     """
-    管道 B（非嚴格模式）：熱派發並回傳退出碼；未取得 task_finish 則返回 None，由呼叫端降級為本地冷派發。
+    管道 B（非嚴格模式）：熱派發並回傳退出碼；僅當請求尚未被 Server 接受（not res.accepted）時返回 None 降級冷派發，
+    若請求已被接受（res.accepted 為 True）但中途逾時或斷線未取得 task_finish，直接回傳 1 以防止重複執行。
     支援 cmd_path_or_name 為 List[str] 或單一 str。
     """
-    # EC-04: 熱派發通訊異常時透明降級（送出後失敗之重複執行風險屬 DEV-01，另案處理）
-    return _hot_dispatch_attempt(module_name, cmd_path_or_name, args, yscb_abs).exit_code
+    res = _hot_dispatch_attempt(module_name, cmd_path_or_name, args, yscb_abs)
+    if not res.accepted:
+        return None
+    if res.exit_code is not None:
+        return res.exit_code
+    err_msg = (
+        "[yscb] Error: hot_dispatch: request was delivered to the server but failed before completion "
+        "(timeout / connection reset / worker restarted). Not falling back to cold dispatch to avoid double execution."
+    )
+    global _LAST_DISPATCH_ERROR_HINT
+    _LAST_DISPATCH_ERROR_HINT = err_msg
+    return 1
 
 
 def _is_server_daemon_active_or_locked(yscb_abs: str) -> bool:

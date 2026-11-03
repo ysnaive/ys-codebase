@@ -569,6 +569,7 @@ class SnippetExtractor:
     def __init__(self, space_manager: Optional[Any] = None, project_root: Optional[Path] = None) -> None:
         self.space_manager = space_manager
         self.project_root = Path(project_root).resolve() if project_root else None
+        self._file_lines_cache: Dict[str, Tuple[int, List[str]]] = {}
 
     def _resolve_abs_path(self, file_path: str) -> Optional[Path]:
         if not file_path:
@@ -633,11 +634,21 @@ class SnippetExtractor:
         context_after: int = 5,
         docstring: str = "",
     ) -> Optional[CodeSnippet]:
-        abs_p = self._resolve_abs_path(file_path)
-        if not abs_p:
+        real_path = self._resolve_abs_path(file_path)
+        if not real_path:
             return None
         try:
-            all_lines = abs_p.read_text(encoding="utf-8", errors="replace").splitlines()
+            cache_key = str(real_path)
+            st_mtime_ns = real_path.stat().st_mtime_ns
+            cached_entry = self._file_lines_cache.get(cache_key)
+            if cached_entry is not None and cached_entry[0] == st_mtime_ns:
+                all_lines = cached_entry[1]
+            else:
+                all_lines = real_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                if cache_key not in self._file_lines_cache and len(self._file_lines_cache) >= 32:
+                    oldest_key = next(iter(self._file_lines_cache))
+                    del self._file_lines_cache[oldest_key]
+                self._file_lines_cache[cache_key] = (st_mtime_ns, all_lines)
             if not all_lines:
                 return None
             total = len(all_lines)

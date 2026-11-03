@@ -281,6 +281,7 @@ class PythonASTParser(BaseParser):
         target_symbols = (
             symbols if symbols is not None else self.parse(file_path=file_path, content=content, space=space)
         )
+        sorted_target_symbols = sorted(target_symbols, key=lambda s: (s.end_line - s.line_number))
         sites: List[SymbolCallSite] = []
 
         for node in py_ast.walk(tree):
@@ -302,17 +303,17 @@ class PythonASTParser(BaseParser):
 
             caller_name = "<module>"
             caller_sym_id = ""
-            matching_syms = [s for s in target_symbols if s.line_number <= line_no <= s.end_line]
-            matching_syms.sort(key=lambda s: (s.end_line - s.line_number))
-            for sym in matching_syms:
-                if sym.kind in ("method", "function"):
-                    caller_sym_id = sym.id
-                    caller_name = sym.name
-                    break
-                elif sym.kind == "class":
-                    caller_sym_id = sym.id
-                    caller_name = sym.name
-                    break
+            enclosing = next(
+                (
+                    s
+                    for s in sorted_target_symbols
+                    if s.line_number <= line_no <= s.end_line and s.kind in ("method", "function", "class")
+                ),
+                None,
+            )
+            if enclosing is not None:
+                caller_sym_id = enclosing.id
+                caller_name = enclosing.name
 
             sites.append(
                 SymbolCallSite(

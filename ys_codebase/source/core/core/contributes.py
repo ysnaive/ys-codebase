@@ -240,12 +240,16 @@ def invalidate_cache(target_module: Optional[str] = None) -> None:
     若指定 target_module 則僅清除該目標模組之已合併字典快取，並重置免掃時窗。
     """
     _LAST_CLEAN_SCAN_TS.clear()
+    uri._TOKEN_MAP_CACHE.clear()
     if target_module:
         stale_keys = [k for k in _MERGED_MEMORY_CACHE if k[1] == target_module]
         for k in stale_keys:
             _MERGED_MEMORY_CACHE.pop(k, None)
+        if target_module == "core":
+            uri._SCHEMES_CACHE.clear()
     else:
         _MERGED_MEMORY_CACHE.clear()
+        uri._SCHEMES_CACHE.clear()
 
 
 def _safe_file_mtime(file_path: str) -> float:
@@ -408,16 +412,12 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
     meta_uri = _get_contributes_meta_uri()
     cache_key = (yscb_root, target_module)
 
-    prev_reentrancy = getattr(uri._URI_REENTRANCY, "active", False)
-    uri._URI_REENTRANCY.active = True
     try:
-        meta_abs = uri.resolve(meta_uri, interactive=False)
-        merged_abs = uri.resolve(cache_file, interactive=False)
+        meta_abs = os.path.join(yscb_root, ".cache", "core", "contributes.meta.json") if yscb_root else uri.resolve(meta_uri, interactive=False)
+        merged_abs = os.path.join(yscb_root, ".cache", target_module, "contributes.merged.json") if yscb_root else uri.resolve(cache_file, interactive=False)
     except Exception:
         meta_abs = ""
         merged_abs = ""
-    finally:
-        uri._URI_REENTRANCY.active = prev_reentrancy
 
     meta_mtime = _safe_file_mtime(meta_abs) if meta_abs else 0.0
     merged_mtime = _safe_file_mtime(merged_abs) if merged_abs else 0.0
@@ -456,15 +456,20 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
             and cached_entry[1] == merged_mtime
         ):
             data = cached_entry[2]
-        elif vfs.exists(cache_file):
+        else:
+            prev_re = getattr(uri._URI_REENTRANCY, "active", False)
+            uri._URI_REENTRANCY.active = True
             try:
-                loaded = vfs.read_json(cache_file)
-                if isinstance(loaded, dict):
-                    data = loaded
-                    if meta_mtime > 0.0 and merged_mtime > 0.0:
-                        _MERGED_MEMORY_CACHE[cache_key] = (meta_mtime, merged_mtime, data)
+                if vfs.exists(cache_file):
+                    loaded = vfs.read_json(cache_file)
+                    if isinstance(loaded, dict):
+                        data = loaded
+                        if meta_mtime > 0.0 and merged_mtime > 0.0:
+                            _MERGED_MEMORY_CACHE[cache_key] = (meta_mtime, merged_mtime, data)
             except Exception:
                 data = None
+            finally:
+                uri._URI_REENTRANCY.active = prev_re
 
     if data is None or not isinstance(data, dict):
         aggregator = ContributesAggregator()

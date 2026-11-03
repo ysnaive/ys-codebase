@@ -5,15 +5,23 @@ Cross-File Call Topology Linker (`TopologyLinker`) and Polymorphic Contract Expa
 - Supports parameter-count matching when resolving overloaded call sites and links overload groups cleanly.
 """
 
-from collections import defaultdict
+from collections import defaultdict, deque
 import logging
 import re
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from .graph import CallGraphIndex
 from .schema import SymbolCallSite, SymbolKind, UnifiedSymbol
 
 logger = logging.getLogger("ast.linker")
+
+_LAST_LINKER_CACHE: Dict[str, Any] = {
+    "symbols_map_id": None,
+    "symbols_count": 0,
+    "class_bases": None,
+    "base_derived": None,
+    "methods_by_class_and_short": None,
+}
 
 
 def _extract_param_count_from_signature(signature: str) -> Optional[int]:
@@ -57,6 +65,8 @@ class TopologyLinker:
         self._by_fqn: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
         self._by_parent_id: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
         self._class_bases: Dict[str, Set[str]] = defaultdict(set)
+        self._base_derived: Dict[str, Set[str]] = defaultdict(set)
+        self._methods_by_class_and_short: Dict[Tuple[str, str], List[str]] = defaultdict(list)
         self._class_fields: Dict[str, Dict[str, str]] = defaultdict(dict)
 
         self._reindex()
@@ -69,6 +79,8 @@ class TopologyLinker:
         self._by_fqn.clear()
         self._by_parent_id.clear()
         self._class_bases.clear()
+        self._base_derived.clear()
+        self._methods_by_class_and_short.clear()
         self._class_fields.clear()
 
         for _, sym in self.symbols_map.items():
@@ -92,11 +104,16 @@ class TopologyLinker:
             )
             parent_scope = sym.metadata.get("parent_scope") or ""
 
+            if parent_scope and short_name:
+                self._methods_by_class_and_short[(str(parent_scope), str(short_name))].append(sym.id)
+
             base_types = sym.metadata.get("base_types")
             if base_types and isinstance(base_types, (list, tuple)):
                 for bt in base_types:
                     if bt:
-                        self._class_bases[short_name].add(str(bt))
+                        bt_str = str(bt)
+                        self._class_bases[short_name].add(bt_str)
+                        self._base_derived[bt_str].add(short_name)
 
             field_types = sym.metadata.get("field_types")
             if field_types and isinstance(field_types, dict):
@@ -120,6 +137,12 @@ class TopologyLinker:
                 self._by_space_name[sp][sym.name].append(sym)
                 for key in alias_keys:
                     self._by_space_name[sp][key].append(sym)
+
+        _LAST_LINKER_CACHE["symbols_map_id"] = id(self.symbols_map)
+        _LAST_LINKER_CACHE["symbols_count"] = len(self.symbols_map)
+        _LAST_LINKER_CACHE["class_bases"] = self._class_bases
+        _LAST_LINKER_CACHE["base_derived"] = self._base_derived
+        _LAST_LINKER_CACHE["methods_by_class_and_short"] = self._methods_by_class_and_short
 
     @staticmethod
     def _select_best_overload(
@@ -173,12 +196,12 @@ class TopologyLinker:
         if not class_name:
             return []
         visited: List[str] = []
-        queue: List[str] = list(self._class_bases.get(class_name, []))
+        queue: Deque[str] = deque(self._class_bases.get(class_name, ()))
         while queue:
-            curr = queue.pop(0)
+            curr = queue.popleft()
             if curr not in visited:
                 visited.append(curr)
-                for nxt in self._class_bases.get(curr, []):
+                for nxt in self._class_bases.get(curr, ()):
                     if nxt not in visited:
                         queue.append(nxt)
         return visited
@@ -616,17 +639,40 @@ class TopologyLinker:
         return graph
 
 
+    def expand_contract_symbol_ids(
+        self,
+        target_sym: Union[UnifiedSymbol, List[UnifiedSymbol]],
+        symbols_map: Optional[Union[Dict[str, UnifiedSymbol], Any]] = None,
+    ) -> List[str]:
+        """Expand polymorphic contract symbol IDs using pre-indexed inheritance and method maps when possible."""
+        return expand_contract_symbol_ids(
+            symbols_map=symbols_map if symbols_map is not None else self,
+            target_sym=target_sym,
+        )
+
+
 def expand_contract_symbol_ids(
     symbols_map: Union[Dict[str, UnifiedSymbol], Any],
     target_sym: Union[UnifiedSymbol, List[UnifiedSymbol]],
 ) -> List[str]:
     """
     Bidirectional interface/base-class and derived-class method contract expansion.
-    Accepts either a `Dict[str, UnifiedSymbol]` (or an object with `.symbols` dict) and
+    Accepts either a `Dict[str, UnifiedSymbol]` (or an object with `.symbols` / `.symbols_map` dict) and
     either a single `UnifiedSymbol` or a `List[UnifiedSymbol]` (such as an overload group).
     """
-    if hasattr(symbols_map, "symbols") and isinstance(symbols_map.symbols, dict):
-        sym_dict: Dict[str, UnifiedSymbol] = symbols_map.symbols
+    cached_bases: Optional[Dict[str, Set[str]]] = None
+    cached_derived: Optional[Dict[str, Set[str]]] = None
+    cached_methods: Optional[Dict[Tuple[str, str], List[str]]] = None
+
+    if isinstance(symbols_map, TopologyLinker):
+        sym_dict: Dict[str, UnifiedSymbol] = symbols_map.symbols_map
+        cached_bases = symbols_map._class_bases
+        cached_derived = symbols_map._base_derived
+        cached_methods = symbols_map._methods_by_class_and_short
+    elif hasattr(symbols_map, "symbols") and isinstance(symbols_map.symbols, dict):
+        sym_dict = symbols_map.symbols
+    elif hasattr(symbols_map, "symbols_map") and isinstance(symbols_map.symbols_map, dict):
+        sym_dict = symbols_map.symbols_map
     elif isinstance(symbols_map, dict):
         sym_dict = symbols_map
     else:
@@ -647,18 +693,44 @@ def expand_contract_symbol_ids(
     for t in targets:
         _add(t.id)
 
-    class_bases: Dict[str, Set[str]] = defaultdict(set)
-    base_derived: Dict[str, Set[str]] = defaultdict(set)
-    for sym in sym_dict.values():
-        if not sym.metadata:
-            continue
-        b_types = sym.metadata.get("base_types")
-        if b_types and isinstance(b_types, (list, tuple)):
-            cls_short = sym.metadata.get("short_name") or re.split(r"[.:]+", sym.name)[-1]
-            for bt in b_types:
-                if bt:
-                    class_bases[cls_short].add(str(bt))
-                    base_derived[str(bt)].add(cls_short)
+    if (
+        cached_bases is None
+        and _LAST_LINKER_CACHE["symbols_map_id"] == id(sym_dict)
+        and _LAST_LINKER_CACHE["symbols_count"] == len(sym_dict)
+    ):
+        cached_bases = _LAST_LINKER_CACHE["class_bases"]
+        cached_derived = _LAST_LINKER_CACHE["base_derived"]
+        cached_methods = _LAST_LINKER_CACHE["methods_by_class_and_short"]
+
+    if cached_bases is not None and cached_derived is not None and cached_methods is not None:
+        class_bases = cached_bases
+        base_derived = cached_derived
+        methods_by_class_and_short = cached_methods
+    else:
+        class_bases = defaultdict(set)
+        base_derived = defaultdict(set)
+        methods_by_class_and_short = defaultdict(list)
+        for sym in sym_dict.values():
+            if not sym.metadata:
+                continue
+            s_short = sym.metadata.get("short_name") or (
+                re.split(r"[.:]+", sym.name)[-1] if ("." in sym.name or "::" in sym.name) else sym.name
+            )
+            s_parent = sym.metadata.get("parent_scope") or ""
+            if s_parent and s_short:
+                methods_by_class_and_short[(str(s_parent), str(s_short))].append(sym.id)
+            b_types = sym.metadata.get("base_types")
+            if b_types and isinstance(b_types, (list, tuple)):
+                for bt in b_types:
+                    if bt:
+                        bt_str = str(bt)
+                        class_bases[s_short].add(bt_str)
+                        base_derived[bt_str].add(s_short)
+        _LAST_LINKER_CACHE["symbols_map_id"] = id(sym_dict)
+        _LAST_LINKER_CACHE["symbols_count"] = len(sym_dict)
+        _LAST_LINKER_CACHE["class_bases"] = class_bases
+        _LAST_LINKER_CACHE["base_derived"] = base_derived
+        _LAST_LINKER_CACHE["methods_by_class_and_short"] = methods_by_class_and_short
 
     for t in targets:
         kind_str = t.kind.value if hasattr(t.kind, "value") else str(t.kind)
@@ -676,30 +748,26 @@ def expand_contract_symbol_ids(
             continue
 
         related_classes: Set[str] = {parent_cls}
-        up_queue = list(class_bases.get(parent_cls, []))
+        up_queue: Deque[str] = deque(class_bases.get(parent_cls, ()))
         while up_queue:
-            curr = up_queue.pop(0)
+            curr = up_queue.popleft()
             if curr not in related_classes:
                 related_classes.add(curr)
-                up_queue.extend(class_bases.get(curr, []))
+                up_queue.extend(class_bases.get(curr, ()))
 
-        down_queue = list(base_derived.get(parent_cls, []))
+        down_queue: Deque[str] = deque(base_derived.get(parent_cls, ()))
         while down_queue:
-            curr = down_queue.pop(0)
+            curr = down_queue.popleft()
             if curr not in related_classes:
                 related_classes.add(curr)
-                down_queue.extend(base_derived.get(curr, []))
+                down_queue.extend(base_derived.get(curr, ()))
 
         if len(related_classes) <= 1:
             continue
 
-        for sym in sym_dict.values():
-            if sym.id in seen_ids or not sym.metadata:
-                continue
-            s_parent = sym.metadata.get("parent_scope") or ""
-            s_short = sym.metadata.get("short_name") or re.split(r"[.:]+", sym.name)[-1]
-            if s_short == short_name and s_parent in related_classes:
-                _add(sym.id)
+        for r_cls in related_classes:
+            for sid in methods_by_class_and_short.get((r_cls, short_name), ()):
+                _add(sid)
 
     return result_ids
 

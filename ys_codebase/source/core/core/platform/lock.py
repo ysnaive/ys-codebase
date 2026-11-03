@@ -5,6 +5,7 @@ Provides a robust, reentrant-safe, non-blocking file-based mutex across
 Linux/POSIX (fcntl.flock) and Windows (msvcrt.locking).
 """
 
+import errno
 import os
 import sys
 import time
@@ -115,21 +116,44 @@ class InterProcessLock:
             self._is_locked = False
 
     def _try_lock_fd(self, fd: int) -> bool:
+        fatal_errnos = (
+            getattr(errno, "ENOTSUP", -1),
+            getattr(errno, "EOPNOTSUPP", -1),
+            getattr(errno, "ENOSYS", -1),
+            errno.EBADF,
+            errno.EINVAL,
+        )
         if sys.platform == "win32":
             try:
                 import msvcrt
                 os.lseek(fd, 0, os.SEEK_SET)
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 return True
-            except (IOError, OSError):
+            except (IOError, OSError) as e:
+                if e.errno in fatal_errnos:
+                    raise
+                win_err = getattr(e, "winerror", None)
+                if e.errno in (errno.EACCES, errno.EAGAIN, getattr(errno, "EDEADLK", 36)) or win_err == 33:
+                    return False
+                if e.errno is not None and e.errno not in (errno.EACCES, errno.EAGAIN, getattr(errno, "EDEADLK", 36)):
+                    raise
                 return False
         else:
+            posix_contention = {
+                errno.EACCES,
+                errno.EAGAIN,
+                getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
+            }
             try:
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return True
-            except (IOError, OSError):
-                return False
+            except (IOError, OSError) as e:
+                if e.errno in fatal_errnos:
+                    raise
+                if e.errno in posix_contention:
+                    return False
+                raise
 
     def _unlock_fd(self, fd: int) -> None:
         if sys.platform == "win32":

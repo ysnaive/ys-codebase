@@ -1,10 +1,10 @@
 {
   "name": "server",
-  "version": "1.0.2.0",
+  "version": "1.0.3.0",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.1.0"
+    "core": ">=1.2.4"
   },
   "onboarding": [
     "Start background daemon (or use --console in IDE background task): python yscb.py server start",
@@ -13,7 +13,7 @@
   ],
   "release": {
     "type": "bugfix",
-    "urgency": "recommended",
-    "summary": "修復 detached master 路徑單引號注入與 restart_worker 鎖順序死鎖並加固 daemon.json 權限"
+    "urgency": "critical",
+    "summary": "新增搶占式重啟、兩段式 Worker 握手、strict_hot_dispatch、環境變數差量還原與 4KB 防抖緩衝"
   }
 }

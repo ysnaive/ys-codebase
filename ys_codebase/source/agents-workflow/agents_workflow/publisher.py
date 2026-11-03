@@ -862,8 +862,19 @@ class ReleasePublisher:
         all_registered_targets = {t["name"]: t for t in self.compiler.get_release_targets() if "name" in t}
 
         proj_fingerprint = self.compute_source_fingerprint(proj_targets) if proj_targets else ""
-        local_fingerprint = self.compute_source_fingerprint(local_targets) if local_targets else ""
-        combined_fingerprint = self.compute_source_fingerprint(active_target_names)
+        if not local_targets:
+            local_fingerprint = ""
+        elif local_targets == proj_targets:
+            local_fingerprint = proj_fingerprint
+        else:
+            local_fingerprint = self.compute_source_fingerprint(local_targets)
+
+        if active_target_names == proj_targets:
+            combined_fingerprint = proj_fingerprint
+        elif active_target_names == local_targets:
+            combined_fingerprint = local_fingerprint
+        else:
+            combined_fingerprint = self.compute_source_fingerprint(active_target_names)
 
         can_short_circuit, short_circuited_files = self._check_short_circuit(
             force=force,

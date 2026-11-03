@@ -3,7 +3,8 @@
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
     "1.0.0.0",
-    "1.0.0.1"
+    "1.0.0.1",
+    "1.0.0.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -25,6 +26,16 @@
       "urgency": "recommended",
       "summary": "補齊 on_server_worker_warming 入口點與 is_transaction_locked 交易鎖探測",
       "sha256": "f73835e6263a048407af6d2ac0e70cb82fd205daf4ba2a352659f34c9a0b8497"
+    },
+    "1.0.0.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2"
+      },
+      "sha256": "0453c371b1f3ec53ed9859a29afcfc1caf500945f1e6706fdf4471b77765cd2b",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "優化 FileSpaceManager 熱路徑快取與非 symlink 走訪效能"
     }
   }
 }

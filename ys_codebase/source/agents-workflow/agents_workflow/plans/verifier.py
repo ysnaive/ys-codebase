@@ -152,6 +152,7 @@ class PlanVerifier:
         self._template_headers_cache: Dict[str, List[str]] = {}
         self._template_header_specs_cache: Dict[str, List[Tuple[str, str]]] = {}
         self._dynamic_placeholders_cache: Optional[List[str]] = None
+        self._compiled_placeholder_patterns: Optional[List[Tuple[str, re.Pattern]]] = None
 
     def get_dynamic_placeholders(self) -> List[str]:
         """動態自模板目錄提取標頭佔位符正則模式清單。"""
@@ -169,6 +170,14 @@ class PlanVerifier:
                 seen.add(p)
                 res.append(p)
         return res
+
+    def get_compiled_placeholder_patterns(self) -> List[Tuple[str, re.Pattern]]:
+        """獲取並快取預編譯後之全量佔位符正則清單。"""
+        if self._compiled_placeholder_patterns is None:
+            self._compiled_placeholder_patterns = [
+                (pat, re.compile(pat)) for pat in self.get_all_placeholder_patterns()
+            ]
+        return self._compiled_placeholder_patterns
 
     def get_resolved_template_header_specs(
         self, template_name: str, min_phase: int = 1
@@ -284,10 +293,13 @@ class PlanVerifier:
                     )
                 )
 
-            for pat in self.get_all_placeholder_patterns():
-                for idx, line in enumerate(lines, 1):
-                    line_clean = re.sub(r"`.*?`", "", line)
-                    m = re.search(pat, line_clean)
+            cleaned_lines = [
+                (idx, re.sub(r"`[^`]*`", "", line))
+                for idx, line in enumerate(lines, 1)
+            ]
+            for _, compiled_pat in self.get_compiled_placeholder_patterns():
+                for idx, clean_line in cleaned_lines:
+                    m = compiled_pat.search(clean_line)
                     if m:
                         matched_ph = m.group(0)
                         report.issues.append(
@@ -356,9 +368,9 @@ class PlanVerifier:
                 )
             )
 
-        for pat in self.get_all_placeholder_patterns():
+        for _, compiled_pat in self.get_compiled_placeholder_patterns():
             for idx, line in enumerate(non_code_lines, 1):
-                m = re.search(pat, line)
+                m = compiled_pat.search(line)
                 if m:
                     matched_ph = m.group(0)
                     report.issues.append(

@@ -7,6 +7,7 @@ and provides JIT prompt & auto-reconciliation for !undefined configurations.
 
 import os
 import sys
+import time
 import threading
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Tuple, Generator, Set
@@ -237,8 +238,24 @@ def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
     return None
 
 
-_SCHEMES_CACHE: Dict[str, Tuple[float, float, List[Dict[str, Any]]]] = {}
+_TOKEN_MAP_CACHE: Dict[str, Tuple[float, Dict[str, Dict[str, Any]]]] = {}
+_TOKEN_MAP_TTL_SEC: float = 0.1
+
+
+class _SchemesCacheDict(dict):
+    def clear(self) -> None:
+        super().clear()
+        _TOKEN_MAP_CACHE.clear()
+
+
+_SCHEMES_CACHE: Dict[str, Tuple[float, float, List[Dict[str, Any]]]] = _SchemesCacheDict()
 _URI_REENTRANCY = threading.local()
+
+
+def invalidate_uri_cache() -> None:
+    """Clears in-memory URI schemes and token map caches."""
+    _SCHEMES_CACHE.clear()
+    _TOKEN_MAP_CACHE.clear()
 
 
 def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
@@ -288,11 +305,21 @@ def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
 
 def _build_scheme_token_map(yscb_dir: str) -> Dict[str, Dict[str, Any]]:
     """Builds combined URI scheme lookup dictionary from merged cache and fallback schemes."""
+    is_reentrant = getattr(_URI_REENTRANCY, "active", False)
+    if not is_reentrant:
+        now_mono = time.monotonic()
+        cached_entry = _TOKEN_MAP_CACHE.get(yscb_dir)
+        if cached_entry is not None and (now_mono - cached_entry[0]) < _TOKEN_MAP_TTL_SEC:
+            return {k: dict(v) for k, v in cached_entry[1].items()}
+
     all_schemes = _get_merged_uri_schemes(yscb_dir)
     token_map = {s.get("token"): dict(s) for s in all_schemes if isinstance(s, dict) and "token" in s}
     for fb in _BOOTSTRAP_FALLBACK_SCHEMES:
         if fb["token"] not in token_map:
             token_map[fb["token"]] = dict(fb)
+
+    if not is_reentrant:
+        _TOKEN_MAP_CACHE[yscb_dir] = (time.monotonic(), {k: dict(v) for k, v in token_map.items()})
     return token_map
 
 

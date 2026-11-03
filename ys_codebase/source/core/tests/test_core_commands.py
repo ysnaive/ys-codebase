@@ -979,7 +979,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_hot_dispatch_attempt_classifies_unreachable_vs_accepted(self):
-        """Review#1: 無 state/連線拒絕/HTTP 錯誤判為未送達；串流中途失敗或無 task_finish 判為已送達；非嚴格 _try_hot_dispatch 行為不變。"""
+        """Review#1 & DEV-01: 無 state/連線拒絕/HTTP 錯誤判為未送達；串流中途失敗或無 task_finish 判為已送達且 _try_hot_dispatch 回傳 1 不降級冷派發。"""
         import json
         import tempfile
         import urllib.error
@@ -1011,7 +1011,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             mid_stream.read.side_effect = ConnectionResetError()
             with patch("core.commands.dispatcher.urllib.request.urlopen", return_value=mid_stream):
                 self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir), dispatcher._HotDispatchResult(None, True))
-                self.assertIsNone(dispatcher._try_hot_dispatch("m", ["c"], [], tmp_dir))
+                self.assertEqual(dispatcher._try_hot_dispatch("m", ["c"], [], tmp_dir), 1)
 
             no_finish = _Resp(b'{"type": "terminal_stream", "text": "x", "stream": "stdout"}\n')
             with patch("core.commands.dispatcher.urllib.request.urlopen", return_value=no_finish), redirect_stdout(io.StringIO()):
@@ -1020,6 +1020,41 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             ok = _Resp(b'{"type": "task_finish", "exit_code": 3}\n')
             with patch("core.commands.dispatcher.urllib.request.urlopen", return_value=ok):
                 self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir), dispatcher._HotDispatchResult(3, True))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_dev01_try_hot_dispatch_accepted_never_falls_back_to_cold(self):
+        """DEV-01: _try_hot_dispatch 於 accepted=True (含 exit_code=1 或中途 socket.timeout) 時直接回傳退出碼/1，僅於 accepted=False 時回傳 None。"""
+        import socket
+        from core.commands import dispatcher
+
+        with patch(
+            "core.commands.dispatcher._hot_dispatch_attempt",
+            return_value=dispatcher._HotDispatchResult(exit_code=1, accepted=True),
+        ):
+            self.assertEqual(dispatcher._try_hot_dispatch("m", ["c"], [], "/fake"), 1)
+
+        with patch(
+            "core.commands.dispatcher._hot_dispatch_attempt",
+            return_value=dispatcher._HotDispatchResult(exit_code=None, accepted=True),
+        ):
+            self.assertEqual(dispatcher._try_hot_dispatch("m", ["c"], [], "/fake"), 1)
+
+        with patch(
+            "core.commands.dispatcher._hot_dispatch_attempt",
+            return_value=dispatcher._HotDispatchResult(exit_code=None, accepted=False),
+        ):
+            self.assertIsNone(dispatcher._try_hot_dispatch("m", ["c"], [], "/fake"))
+
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_dir = os.path.join(tmp_dir, ".cache", "server")
+            os.makedirs(state_dir, exist_ok=True)
+            with open(os.path.join(state_dir, "daemon.json"), "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "port": 1, "token": "t", "root": tmp_dir}, f)
+            with patch("core.commands.dispatcher.urllib.request.urlopen", side_effect=socket.timeout("timed out")):
+                self.assertEqual(dispatcher._try_hot_dispatch("m", ["c"], [], tmp_dir), 1)
         self.mark_passed()
 
     @require(Requirement.LOGIC)

@@ -11,7 +11,8 @@
     "1.2.1.1",
     "1.2.2.3",
     "1.2.3.0",
-    "1.2.3.1"
+    "1.2.3.1",
+    "1.2.3.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -140,6 +141,16 @@
       "urgency": "recommended",
       "summary": "同步三層檢索架構指引並啟用 publisher 原子檔案寫入",
       "sha256": "485de81b4219c1745527534dcae07391c3f7856289dc72d9f78280b78a0b8eea"
+    },
+    "1.2.3.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2"
+      },
+      "sha256": "6cd6dbb94f3e9892a8d4dde23c17eb5adb4e55b4e7a36d5d3db6ca2d1216ce72",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "優化工作流編譯與計畫驗證 Regex 快取並同步 CLI 嚴格熱派發指引"
     }
   }
 }

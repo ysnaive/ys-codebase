@@ -32,7 +32,7 @@ class VersionTuple(NamedTuple):
 
 _SEMVER_FOUR_SEGMENT_REGEX = re.compile(
     r"^(?:v|V)?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
-    r"(?:\.(?P<revision>[0-9A-Za-z_-]+))?"
+    r"(?:\.(?P<revision>[0-9A-Za-z_]+))?"
     r"(?:-(?P<prerelease>[0-9A-Za-z.-]+))?$"
 )
 

@@ -58,9 +58,17 @@ class MemberInfo:
     visibility: str = "public"
     line_number: int = 0
     is_static: bool = False
+    fqn: str = ""
+    parent_id: str = ""
+    return_type: str = ""
+    parameters: Tuple[Dict[str, str], ...] = ()
+
+    @property
+    def line(self) -> int:
+        return self.line_number
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "name": self.name,
             "kind": self.kind,
             "signature": self.signature,
@@ -69,6 +77,15 @@ class MemberInfo:
             "line_number": self.line_number,
             "is_static": self.is_static,
         }
+        if self.fqn:
+            d["fqn"] = self.fqn
+        if self.parent_id:
+            d["parent_id"] = self.parent_id
+        if self.return_type:
+            d["return_type"] = self.return_type
+        if self.parameters:
+            d["parameters"] = [dict(p) for p in self.parameters]
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MemberInfo":
@@ -76,14 +93,20 @@ class MemberInfo:
             raise SchemaValidationError("MemberInfo data must be a dict.")
         if "name" not in data or "kind" not in data:
             raise SchemaValidationError("MemberInfo requires 'name' and 'kind'.")
+        params_raw = data.get("parameters", [])
+        params = tuple(dict(p) for p in params_raw if isinstance(p, dict)) if isinstance(params_raw, (list, tuple)) else ()
         return cls(
             name=str(data["name"]),
             kind=str(data["kind"]),
             signature=str(data.get("signature", "")),
             docstring=str(data.get("docstring", "")),
             visibility=str(data.get("visibility", "public")),
-            line_number=int(data.get("line_number", 0)),
+            line_number=int(data.get("line_number", data.get("line", 0))),
             is_static=bool(data.get("is_static", False)),
+            fqn=str(data.get("fqn", "")),
+            parent_id=str(data.get("parent_id", "")),
+            return_type=str(data.get("return_type", "")),
+            parameters=params,
         )
 
 
@@ -228,53 +251,60 @@ class UnifiedSymbol:
             if key not in data:
                 raise SchemaValidationError(f"UnifiedSymbol missing required field '{key}'.")
 
-        children_raw = data.get("children", [])
-        children: List[Any] = []
-        members: List[Any] = []
-        for m in children_raw:
-            if isinstance(m, dict):
-                if "file_path" in m or "language" in m or "children" in m:
-                    c_sym = cls.from_dict(m)
-                    children.append(c_sym)
-                    members.append(c_sym)
-                else:
-                    mem = MemberInfo.from_dict(m)
-                    members.append(mem)
-                    children.append(
-                        cls(
-                            id=f"{data['id']}::{mem.name}",
-                            name=mem.name,
-                            kind=mem.kind,
-                            file_path=data["file_path"],
-                            line_number=mem.line_number,
-                            end_line=mem.line_number,
-                            language=data["language"],
-                            signature=mem.signature,
-                            docstring=mem.docstring,
-                            visibility=mem.visibility,
-                            parent_id=data["id"],
+        def _coerce_member_list(raw_list: Any) -> List[MemberInfo]:
+            out: List[MemberInfo] = []
+            if not isinstance(raw_list, (list, tuple)):
+                return out
+            for m in raw_list:
+                if isinstance(m, MemberInfo):
+                    out.append(m)
+                elif isinstance(m, cls):
+                    out.append(
+                        MemberInfo(
+                            name=m.name,
+                            kind=m.kind,
+                            signature=m.signature,
+                            docstring=m.docstring,
+                            visibility=m.visibility,
+                            line_number=m.line_number,
+                            is_static=bool((m.metadata or {}).get("is_static", False)),
+                            fqn=m.fqn,
+                            parent_id=m.parent_id,
+                            return_type=m.return_type,
+                            parameters=m.parameters,
                         )
                     )
-            elif isinstance(m, cls):
-                children.append(m)
-                members.append(m)
-            elif isinstance(m, MemberInfo):
-                members.append(m)
-                children.append(
-                    cls(
-                        id=f"{data['id']}::{m.name}",
-                        name=m.name,
-                        kind=m.kind,
-                        file_path=data["file_path"],
-                        line_number=m.line_number,
-                        end_line=m.line_number,
-                        language=data["language"],
-                        signature=m.signature,
-                        docstring=m.docstring,
-                        visibility=m.visibility,
-                        parent_id=data["id"],
-                    )
-                )
+                elif isinstance(m, dict):
+                    if "name" in m and "kind" in m:
+                        meta_d = m.get("metadata") if isinstance(m.get("metadata"), dict) else {}
+                        p_raw = m.get("parameters", [])
+                        p_tup = tuple(dict(p) for p in p_raw if isinstance(p, dict)) if isinstance(p_raw, (list, tuple)) else ()
+                        out.append(
+                            MemberInfo(
+                                name=str(m["name"]),
+                                kind=str(m["kind"]),
+                                signature=str(m.get("signature", "")),
+                                docstring=str(m.get("docstring", "")),
+                                visibility=str(m.get("visibility", "public")),
+                                line_number=int(m.get("line_number", m.get("line", 0))),
+                                is_static=bool(m.get("is_static", meta_d.get("is_static", False))),
+                                fqn=str(m.get("fqn", "")),
+                                parent_id=str(m.get("parent_id", "")),
+                                return_type=str(m.get("return_type", "")),
+                                parameters=p_tup,
+                            )
+                        )
+            return out
+
+        children_raw = data.get("children", [])
+        members_raw = data.get("members")
+        children_list = _coerce_member_list(children_raw)
+        children_tuple: Tuple[MemberInfo, ...] = tuple(children_list)
+        if members_raw is None or members_raw == children_raw:
+            members_tuple: Tuple[MemberInfo, ...] = children_tuple
+        else:
+            members_list = _coerce_member_list(members_raw)
+            members_tuple = children_tuple if members_list == children_list else tuple(members_list)
 
         params_raw = data.get("parameters", [])
         parameters = tuple(dict(p) for p in params_raw if isinstance(p, dict))
@@ -302,12 +332,12 @@ class UnifiedSymbol:
             fqn=str(data.get("fqn", "")),
             scope_path=str(data.get("scope_path", "")),
             parent_id=data.get("parent_id"),
-            children=tuple(children),
+            children=children_tuple,
             parameters=parameters,
             return_type=str(data.get("return_type", "")),
             search_payload=str(data.get("search_payload", "")),
             visibility=str(data.get("visibility", "public")),
-            members=tuple(members),
+            members=members_tuple,
             metadata=metadata,
         )
 

@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.0.1",
+  "version": "1.2.0.2",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -24,8 +24,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "refactor",
     "urgency": "recommended",
-    "summary": "修復 wait_until_worker_idle 跨進程緊密空轉、清理舊版組態遺留並補齊 on_server_worker_warming"
+    "summary": "實作 Stage 2 向量推論鎖分離、檢查點定期持久化、BM25 計分前預過濾與片段行快取"
   }
 }

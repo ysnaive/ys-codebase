@@ -1010,6 +1010,68 @@ class TestHybridSearchEngine(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_t33_bm25_prefilter_before_scoring(self):
+        """T-33: 驗證 BM25Engine._score_candidate_documents 於計分迴圈前即依 space/language/kind/ftype 過濾候選文件"""
+        tok = MultilingualTokenizer()
+        idx = InvertedIndex(space_name="code")
+
+        sym_py = UnifiedSymbol(
+            id="sym_py_fn",
+            name="compute_metric",
+            kind="function",
+            file_path="src/metrics.py",
+            line_number=10,
+            language="python",
+            signature="def compute_metric()",
+            docstring="compute metric value",
+            metadata={"spaces": ["code"]},
+        )
+        sym_cs = UnifiedSymbol(
+            id="sym_cs_cls",
+            name="compute_metric",
+            kind="class",
+            file_path="src/Metrics.cs",
+            line_number=20,
+            language="c_sharp",
+            signature="class compute_metric",
+            docstring="compute metric value",
+            metadata={"spaces": ["other_space"]},
+        )
+        idx.build([sym_py, sym_cs], tokenizer=tok)
+
+        bm25 = BM25Engine(tokenizer=tok)
+        flt = QueryFilter(
+            spaces=["code"],
+            languages=["python"],
+            kinds=["function"],
+            ftypes=["py"],
+            limit=10,
+        )
+        results = bm25.search("compute_metric", idx, filter_cfg=flt)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].symbol.id, "sym_py_fn")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_t34_snippet_extractor_mtime_ns_cache_invalidation(self):
+        """T-34: 驗證 knowledge_db SnippetExtractor 基於 mtime_ns 快取檔案行並在檔案更新後自動讀取新內容"""
+        sample_file = self.cache_dir / "snippet_target.py"
+        sample_file.write_text("alpha = 1\nbeta = 2\ngamma = 3\n", encoding="utf-8")
+
+        extractor = SnippetExtractor(workspace_root=self.cache_dir)
+        s1 = extractor.extract(sample_file, line_number=2, end_line=2, context_before=0, context_after=0)
+        self.assertEqual(s1.lines[0], (2, "beta = 2"))
+        self.assertEqual(len(extractor._file_lines_cache), 1)
+
+        st_old = sample_file.stat()
+        sample_file.write_text("alpha = 1\nbeta = 999\ngamma = 3\n", encoding="utf-8")
+        os.utime(sample_file, ns=(st_old.st_atime_ns, st_old.st_mtime_ns + 1_000_000))
+
+        s2 = extractor.extract(sample_file, line_number=2, end_line=2, context_before=0, context_after=0)
+        self.assertEqual(s2.lines[0], (2, "beta = 999"))
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

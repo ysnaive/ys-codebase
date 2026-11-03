@@ -4,7 +4,8 @@
   "versions": [
     "1.0.0.4",
     "1.0.1.3",
-    "1.0.2.0"
+    "1.0.2.0",
+    "1.0.3.0"
   ],
   "releases": {
     "1.0.0.4": {
@@ -54,6 +55,16 @@
       "urgency": "recommended",
       "summary": "修復 detached master 路徑單引號注入與 restart_worker 鎖順序死鎖並加固 daemon.json 權限",
       "sha256": "e741586f68c7ea5dd4844ed234a82b4a5f1ff396580941f24abda92a17012c54"
+    },
+    "1.0.3.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.4"
+      },
+      "sha256": "e1e3a1ccec79bebfe812671d96d04c6b242919761fe1d64e726cd48579ac7c4f",
+      "type": "bugfix",
+      "urgency": "critical",
+      "summary": "新增搶占式重啟、兩段式 Worker 握手、strict_hot_dispatch、環境變數差量還原與 4KB 防抖緩衝"
     }
   }
 }

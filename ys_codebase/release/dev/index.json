@@ -7,9 +7,9 @@
     "1.1.0.2",
     "1.1.1.1",
     "1.1.2.2",
-    "1.1.3.1",
     "1.1.3.2",
-    "1.1.3.3"
+    "1.1.3.3",
+    "1.1.3.4"
   ],
   "releases": {
     "1.0.0.5": {
@@ -90,7 +90,7 @@
       "summary": "支援雙層索引打包、release-git 孤立分支雙提交發布、release --patch 元資料修補與發布欄位強校驗"
     },
     "1.1.3.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.1"
       },
@@ -118,6 +118,16 @@
       "urgency": "recommended",
       "summary": "新增唯讀檔案沙盒清理回呼、單測方法級輸出切片捕獲與 bump 自動同步 __version__",
       "sha256": "d4c6f9bfa6104542ddad22534dfe890fbf5f85873bb2f8dab148483aab34696c"
+    },
+    "1.1.3.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.2"
+      },
+      "sha256": "e82017714cec6de32762005ee0aea2cae05fb174db837c0cb6a142dae42b5d8b",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "實作確定性壓縮與 SHA-256 索引寫入、裸 except 靜態攔截、沙盒免雙倍拷貝與 AST 解析快取"
     }
   }
 }

@@ -159,9 +159,9 @@ last_updated: "2026-11-03"
 
 ---
 
-### [DN-11] 嚴格熱派發於請求已送達後絕不重試
-- **背景與陷阱**：熱派發可能在請求送達 server 之後才失敗（串流中斷、讀取逾時、Worker 被搶占）。此時任務可能已在 Worker 執行或執行完畢，若重試（或 auto-spawn 後重送）會造成同一指令雙重執行。
-- **工程決策**：`_hot_dispatch_attempt` 以 `_HotDispatchResult.accepted` 區分「未送達」與「已送達」；`strict_hot_dispatch` 僅對 `accepted=false` 執行 auto-spawn + 單次重試，`accepted=true` 之失敗直接回傳 `1`。
+### [DN-11] 熱派發於請求已送達 (`accepted=True`) 後絕不重試亦不降級冷派發
+- **背景與陷阱**：熱派發可能在請求送達 server 之後才失敗（串流中斷、讀取逾時、Worker 被搶占）。此時任務可能已在 Worker 執行或執行完畢，若重試（或 auto-spawn 後重送）或於非嚴格模式下退回本地冷派發，會造成同一指令（包含具副作用之寫入指令）雙重執行。
+- **工程決策**：`_hot_dispatch_attempt` 以 `_HotDispatchResult.accepted` 區分「未送達」與「已送達」；無論 `strict_hot_dispatch` 或一般 `_try_hot_dispatch`，僅對 `accepted=False` 執行 auto-spawn 重試或回傳 `None` 降級冷派發；一旦 `accepted=True` 後失敗，直接回傳非零退出碼（`1`）。
 
 > [!CAUTION]
-> 修改 `_strict_hot_dispatch_or_block` 或熱派發客戶端時，嚴禁把「已送達後失敗」併入重試路徑，也嚴禁在送達後的錯誤處理中丟失 `accepted` 標記。
+> 修改 `_strict_hot_dispatch_or_block`、`_try_hot_dispatch` 或熱派發客戶端時，嚴禁把「已送達後失敗 (`accepted=True`)」併入重試或冷派發回退路徑，也嚴禁在送達後的錯誤處理中丟失 `accepted` 標記。

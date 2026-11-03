@@ -11,7 +11,8 @@
     "1.2.0.2",
     "1.2.1.2",
     "1.2.2.0",
-    "1.2.3.0"
+    "1.2.3.0",
+    "1.2.4.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -121,6 +122,14 @@
       "urgency": "critical",
       "summary": "新增跨代升級相依交集解析與自癒引擎、快照交易鎖保護與 OSBackend Symlink 邊界加固",
       "sha256": "a3d26725e9613109680696ac893f7b556b7f9896bbaf48d1961da6ab94f5a7e4"
+    },
+    "1.2.4.0": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "aaff31c39a8dbc37a3ef8074f15aedb53270c5825d4e3f29262e667e1ce2b4f6",
+      "type": "bugfix",
+      "urgency": "critical",
+      "summary": "新增 SHA-256 強制驗證、實證回收探針、嚴格熱派發防重跑與 contributes 記憶體快取"
     }
   }
 }

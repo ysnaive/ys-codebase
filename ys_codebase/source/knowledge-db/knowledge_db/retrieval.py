@@ -170,6 +170,7 @@ class SnippetExtractor:
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self.max_lines = max_lines
         self.space_manager = space_manager
+        self._file_lines_cache: Dict[str, Tuple[int, List[str]]] = {}
 
     def resolve_file_path(self, file_path: Union[str, Path], space: Optional[str] = None) -> Path:
         """解析檔案為實體絕對路徑"""
@@ -246,8 +247,18 @@ class SnippetExtractor:
             )
 
         try:
-            with open(real_path, "r", encoding="utf-8", errors="replace") as f:
-                all_lines = f.readlines()
+            cache_key = str(real_path)
+            st_mtime_ns = real_path.stat().st_mtime_ns
+            cached_entry = self._file_lines_cache.get(cache_key)
+            if cached_entry is not None and cached_entry[0] == st_mtime_ns:
+                all_lines = cached_entry[1]
+            else:
+                with open(real_path, "r", encoding="utf-8", errors="replace") as f:
+                    all_lines = f.readlines()
+                if cache_key not in self._file_lines_cache and len(self._file_lines_cache) >= 32:
+                    oldest_key = next(iter(self._file_lines_cache))
+                    del self._file_lines_cache[oldest_key]
+                self._file_lines_cache[cache_key] = (st_mtime_ns, all_lines)
         except Exception as e:
             return CodeSnippet(
                 lines=[],
@@ -654,6 +665,7 @@ class BM25Engine:
         doc_scores: Dict[str, float] = defaultdict(float)
         doc_matches: Dict[str, Set[str]] = defaultdict(set)
         doc_postings: Dict[str, Posting] = {}
+        eligible_cache: Dict[str, bool] = {}
         N = index.doc_count
 
         for term in base_tokens:
@@ -664,6 +676,31 @@ class BM25Engine:
             idf = self._compute_idf(len(postings), N)
             for posting in postings:
                 doc_id = posting.doc_id
+                is_eligible = eligible_cache.get(doc_id)
+                if is_eligible is None:
+                    sym = index.get_symbol(doc_id)
+                    if not sym:
+                        is_eligible = False
+                    else:
+                        posting_spaces = getattr(posting, "spaces", None) or (
+                            [posting.space] if posting.space else []
+                        )
+                        if flt.spaces and not any(s in flt.spaces for s in posting_spaces):
+                            is_eligible = False
+                        elif flt.languages and sym.language not in flt.languages:
+                            is_eligible = False
+                        elif flt.kinds and sym.kind not in flt.kinds:
+                            is_eligible = False
+                        elif allowed_ftypes and (
+                            Path(sym.file_path).suffix.lower().lstrip(".") not in allowed_ftypes
+                        ):
+                            is_eligible = False
+                        else:
+                            is_eligible = True
+                    eligible_cache[doc_id] = is_eligible
+                if not is_eligible:
+                    continue
+
                 doc_postings[doc_id] = posting
                 doc_matches[doc_id].add(term)
 

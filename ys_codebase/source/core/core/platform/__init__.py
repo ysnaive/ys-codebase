@@ -12,7 +12,7 @@ from core.platform.process import (
     spawn_detached,
     terminate_popen_tree,
 )
-from core.platform.venv import ensure_private_venv
+from core.platform.venv import ensure_private_venv, get_venv_site_packages
 
 __all__ = [
     "daemon_probe",
@@ -25,4 +25,5 @@ __all__ = [
     "InterProcessLock",
     "LockAcquisitionError",
     "ensure_private_venv",
+    "get_venv_site_packages",
 ]
