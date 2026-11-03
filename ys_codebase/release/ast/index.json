@@ -2,13 +2,13 @@
   "name": "ast",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "versions": [
-    "1.0.0.0",
     "1.0.0.1",
-    "1.0.0.2"
+    "1.0.0.2",
+    "1.0.0.3"
   ],
   "releases": {
     "1.0.0.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2",
         "file-space": ">=1.0.0"
@@ -39,6 +39,17 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "實作單檔 O(dirty) 免全掃熱修補、單次讀檔提取、MemberInfo 輕量反序列化與 BFS 拓撲優化"
+    },
+    "1.0.0.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5",
+        "file-space": ">=1.0.0"
+      },
+      "sha256": "56dbe0db380b27488f37739cee4adb0994d8551a9e23bd1d15e367c59c45e3b6",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
     }
   }
 }

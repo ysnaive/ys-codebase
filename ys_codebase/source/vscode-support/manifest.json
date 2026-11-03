@@ -17,7 +17,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "新建 vscode-support@1.0.0.0 模組，將 VS Code 工作區設定投影自 core 解耦並支援單檔級 JSON Schema 自動編譯與綁定"
+    "summary": "VS Code 工作區設定投影、current-site-packages 穩定連結與單檔級 JSON Schema 編譯器初始發布"
   }
 }
-

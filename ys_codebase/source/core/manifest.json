@@ -10,8 +10,8 @@
     "Explore installed modules: python yscb.py status"
   ],
   "release": {
-    "type": "bugfix",
-    "urgency": "critical",
-    "summary": "新增 SHA-256 強制驗證、實證回收探針、嚴格熱派發防重跑與 contributes 記憶體快取"
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "剝離 ide_projector 並新增 on_env_synced 事件、支援 uri/path 型別與 @desc(...) 正交屬性及 configurable/_format.json"
   }
 }

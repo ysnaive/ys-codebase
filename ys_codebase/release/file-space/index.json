@@ -2,13 +2,13 @@
   "name": "file-space",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
-    "1.0.0.0",
     "1.0.0.1",
-    "1.0.0.2"
+    "1.0.0.2",
+    "1.0.0.3"
   ],
   "releases": {
     "1.0.0.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2"
       },
@@ -36,6 +36,16 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "優化 FileSpaceManager 熱路徑快取與非 symlink 走訪效能"
+    },
+    "1.0.0.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "9d5191f57a8bf06a6c953bc17ab2240986b2d9174a655d37304d5f0ff5b780a3",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
     }
   }
 }

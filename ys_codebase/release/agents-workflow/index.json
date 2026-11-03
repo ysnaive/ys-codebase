@@ -10,9 +10,9 @@
     "1.2.0.2",
     "1.2.1.1",
     "1.2.2.3",
-    "1.2.3.0",
     "1.2.3.1",
-    "1.2.3.2"
+    "1.2.3.2",
+    "1.2.3.3"
   ],
   "releases": {
     "1.0.0.0": {
@@ -123,7 +123,7 @@
       "sha256": "c90ed49b62ec817981958144006beb7a2cff61ca66ed574b9860bcb5bf902485"
     },
     "1.2.3.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2"
       },
@@ -151,6 +151,16 @@
       "type": "refactor",
       "urgency": "optional",
       "summary": "優化工作流編譯與計畫驗證 Regex 快取並同步 CLI 嚴格熱派發指引"
+    },
+    "1.2.3.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "9413b2608cbe391284f8b5093de8fa92efe05be2aecf98de57ec73ab6cabd752",
+      "type": "feature",
+      "urgency": "optional",
+      "summary": "新增同構 configurable/_format.json 組態契約並升級 uri/path 與 @desc(...) 欄位說明"
     }
   }
 }

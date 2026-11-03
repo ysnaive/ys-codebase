@@ -8,9 +8,9 @@
     "1.1.0.6",
     "1.1.1.2",
     "1.1.2.3",
-    "1.2.0.0",
     "1.2.0.1",
-    "1.2.0.2"
+    "1.2.0.2",
+    "1.2.0.3"
   ],
   "releases": {
     "1.0.0.0": {
@@ -92,7 +92,7 @@
       "sha256": "6dd655b3881f83047ee7c41b8a0d4fd324ed97bfcd4654d38df2b649a642662c"
     },
     "1.2.0.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2",
         "file-space": ">=1.0.0",
@@ -126,6 +126,18 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "實作 Stage 2 向量推論鎖分離、檢查點定期持久化、BM25 計分前預過濾與片段行快取"
+    },
+    "1.2.0.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5",
+        "file-space": ">=1.0.0",
+        "ast": ">=1.0.0"
+      },
+      "sha256": "2e12833129bba22bbbab3149ea2dc1628d16b3c0605a5acc9e71163c3fc0777e",
+      "type": "feature",
+      "urgency": "optional",
+      "summary": "新增同構 configurable/_format.json 組態契約並升級 uri 與 @desc(...) 欄位說明"
     }
   }
 }

@@ -1,10 +1,10 @@
 {
   "name": "server",
-  "version": "1.0.3.0",
+  "version": "1.0.3.1",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.4"
+    "core": ">=1.2.5"
   },
   "onboarding": [
     "Start background daemon (or use --console in IDE background task): python yscb.py server start",
@@ -12,8 +12,8 @@
     "Stop daemon and view session summary: python yscb.py server stop"
   ],
   "release": {
-    "type": "bugfix",
-    "urgency": "critical",
-    "summary": "新增搶占式重啟、兩段式 Worker 握手、strict_hot_dispatch、環境變數差量還原與 4KB 防抖緩衝"
+    "type": "feature",
+    "urgency": "optional",
+    "summary": "新增同構 configurable/_format.json 組態契約並升級 @desc(...) 欄位說明"
   }
 }

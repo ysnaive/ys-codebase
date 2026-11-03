@@ -1,10 +1,10 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.0.2",
+  "version": "1.2.0.3",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.2",
+    "core": ">=1.2.5",
     "file-space": ">=1.0.0",
     "ast": ">=1.0.0"
   },
@@ -24,8 +24,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "recommended",
-    "summary": "實作 Stage 2 向量推論鎖分離、檢查點定期持久化、BM25 計分前預過濾與片段行快取"
+    "type": "feature",
+    "urgency": "optional",
+    "summary": "新增同構 configurable/_format.json 組態契約並升級 uri 與 @desc(...) 欄位說明"
   }
 }

@@ -1,10 +1,10 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.3.2",
+  "version": "1.2.3.3",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.2"
+    "core": ">=1.2.5"
   },
   "onboarding": [
     "[Pre-flight] Initialize default workflow paths (plans/, docs/, roadmap/, archived/): python yscb.py agents-workflow init --default -y",
@@ -12,8 +12,8 @@
     "Publish AGENTS.md & skills to project workspace: python yscb.py agents-workflow release"
   ],
   "release": {
-    "type": "refactor",
+    "type": "feature",
     "urgency": "optional",
-    "summary": "優化工作流編譯與計畫驗證 Regex 快取並同步 CLI 嚴格熱派發指引"
+    "summary": "新增同構 configurable/_format.json 組態契約並升級 uri/path 與 @desc(...) 欄位說明"
   }
 }

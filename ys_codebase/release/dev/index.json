@@ -7,9 +7,8 @@
     "1.1.0.2",
     "1.1.1.1",
     "1.1.2.2",
-    "1.1.3.2",
-    "1.1.3.3",
-    "1.1.3.4"
+    "1.1.3.4",
+    "1.1.4.0"
   ],
   "releases": {
     "1.0.0.5": {
@@ -100,7 +99,7 @@
       "sha256": "870c158bb653aec2abb4429006f59fb3f92a559ed08618eaac28e8f3dd091e1b"
     },
     "1.1.3.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2"
       },
@@ -110,7 +109,7 @@
       "sha256": "eb76276aa337bbc911b5ad43d30eae021e96082371b3d8e378491eec738131c4"
     },
     "1.1.3.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2"
       },
@@ -128,6 +127,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "實作確定性壓縮與 SHA-256 索引寫入、裸 except 靜態攔截、沙盒免雙倍拷貝與 AST 解析快取"
+    },
+    "1.1.4.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "631dd8fffcb1aa44ccf8f772608d3979f24ff03a7b2cb519b34133e39e9ee6d8",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "Checker 支援同構 configurable/_format.json 組態契約並升級 @desc(...) 欄位說明"
     }
   }
 }

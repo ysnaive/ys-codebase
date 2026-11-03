@@ -1,12 +1,12 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.0.0.2",
+  "version": "1.0.0.3",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.2",
+    "core": ">=1.2.5",
     "file-space": ">=1.0.0"
   },
   "optional": {
@@ -36,7 +36,7 @@
   ],
   "release": {
     "type": "refactor",
-    "urgency": "recommended",
-    "summary": "實作單檔 O(dirty) 免全掃熱修補、單次讀檔提取、MemberInfo 輕量反序列化與 BFS 拓撲優化"
+    "urgency": "optional",
+    "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
   }
 }
