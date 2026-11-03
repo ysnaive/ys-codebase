@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 
 from core.commands.bags import CmdBags
 from core.guard import guard_dispatch
-from core.platform import InterProcessLock, is_process_alive, kill_process_tree
+from core.platform import InterProcessLock, daemon_probe, is_process_alive, kill_process_tree
 from server.config import ServerConfig
 from server.master import (
     MasterSupervisor,
@@ -130,8 +130,12 @@ def start(cmd_bags: CmdBags) -> int:
             print(format_startup_banner(status_info))
             return 0
 
-    print("[Server] Daemon started but readiness probe timed out.")
-    return 0
+    # FR-06: distinguish a still-booting daemon from one that died during startup
+    if is_process_alive(pid):
+        print(f"[Server] Daemon (PID: {pid}) is still starting up; readiness probe timed out. Check 'server status' shortly.")
+        return 0
+    print(f"[Server] Error: Daemon (PID: {pid}) exited before becoming ready. See log under .cache/server/log.", file=sys.stderr)
+    return 1
 
 
 def stop(cmd_bags: CmdBags) -> int:
@@ -179,6 +183,8 @@ def stop(cmd_bags: CmdBags) -> int:
 
     print(f"[Server] Terminating process tree for PID: {state.pid}...")
     kill_process_tree(state.pid, timeout_sec=2.0)
+    # User-initiated stop is not environment reaping: reset empirical detection (FR-03)
+    daemon_probe.mark_clean_exit(yscb_root)
     uptime = time.time() - state.start_time
     fallback_summary = {
         "pid": state.pid,
@@ -193,6 +199,15 @@ def stop(cmd_bags: CmdBags) -> int:
     return 0
 
 
+def _format_current_task(task: Optional[Dict[str, Any]]) -> str:
+    """Formats the in-flight dispatch task (FR-02) for the status dashboard."""
+    if not task:
+        return "Idle"
+    args = " ".join(str(a) for a in task.get("args") or [])
+    cmd = f"{task.get('module', 'unknown')} {args}".strip()
+    return f"{cmd} (running {float(task.get('elapsed_sec', 0.0)):.1f}s)"
+
+
 def _render_status_dashboard(info: Dict[str, Any], state: ServerDaemonState) -> None:
     """Renders formatted server daemon status dashboard to stdout."""
     ttl_str = f"{info['idle_seconds_left']:.1f}s" if state.idle_timeout_sec > 0 else "Disabled (Persistent)"
@@ -202,7 +217,10 @@ def _render_status_dashboard(info: Dict[str, Any], state: ServerDaemonState) -> 
     print("======================================================================")
     print("YS-Codebase Server Daemon Status")
     print("======================================================================")
-    print(f"[*] State         : {info.get('state', 'ready').upper()}")
+    state_label = str(info.get("state", "ready")).upper()
+    if info.get("warming_elapsed_sec") is not None:
+        state_label += f" (pre-warming {float(info['warming_elapsed_sec']):.1f}s)"
+    print(f"[*] State         : {state_label}")
     print(f"[*] Master PID    : {info.get('pid')}")
     print(f"[*] Worker PID    : {info.get('worker_pid')} ({'Alive' if is_process_alive(info.get('worker_pid', 0)) else 'Restarting'})")
     print(f"[*] Port          : {info.get('port')}")
@@ -210,6 +228,7 @@ def _render_status_dashboard(info: Dict[str, Any], state: ServerDaemonState) -> 
     print(f"[*] Uptime        : {uptime_str}")
     print(f"[*] Tasks Handled : {info.get('tasks_executed')}")
     print(f"[*] Idle TTL Left : {ttl_str}")
+    print(f"[*] Current Task  : {_format_current_task(info.get('current_task'))}")
     print(f"[*] Real-time Log : {info.get('log_file', os.path.join(state.root, '.cache', 'server', 'log'))}")
 
     watcher = info.get("watcher")

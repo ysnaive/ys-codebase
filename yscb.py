@@ -1219,12 +1219,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         _activate_runtime_env(yscb_abs, host_dir=host_dir)
 
+    # FR-12: 僅攔截 core 入口本身之 ImportError，派發期 ImportError 交由 dispatcher 回報真實錯誤
     try:
         from core.commands import dispatch
-        return dispatch(argv)
     except ImportError as e:
         print(f"[yscb] Error: Environment not initialized or core module missing ({e}). Run 'python yscb.py init' or 'python yscb.py init --fix' first.")
         return 1
+    return dispatch(argv)
 
 
 if __name__ == "__main__":

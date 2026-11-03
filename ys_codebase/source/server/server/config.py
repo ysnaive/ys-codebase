@@ -15,6 +15,8 @@ DEFAULT_ENABLE: bool = True
 DEFAULT_ENABLE_CONSOLE: bool = False
 DEFAULT_IDLE_TIMEOUT_SEC: float = 900.0
 DEFAULT_AUTO_SPAWN: bool = True
+DEFAULT_STRICT_HOT_DISPATCH: bool = False
+DEFAULT_WORKER_ALIVE_TIMEOUT_SEC: float = 5.0
 
 
 def _parse_bool(val: Any, default: bool = False) -> bool:
@@ -40,6 +42,8 @@ class ServerConfig:
     enable_console: bool = DEFAULT_ENABLE_CONSOLE
     idle_timeout_sec: float = DEFAULT_IDLE_TIMEOUT_SEC
     auto_spawn: bool = DEFAULT_AUTO_SPAWN
+    strict_hot_dispatch: bool = DEFAULT_STRICT_HOT_DISPATCH
+    worker_alive_timeout_sec: float = DEFAULT_WORKER_ALIVE_TIMEOUT_SEC
 
     @classmethod
     def load(
@@ -70,10 +74,20 @@ class ServerConfig:
             idle_timeout_sec_val = float(raw_ttl)
         except (ValueError, TypeError):
             idle_timeout_sec_val = DEFAULT_IDLE_TIMEOUT_SEC
+        strict_val = _parse_bool(raw_cfg.get("strict_hot_dispatch"), DEFAULT_STRICT_HOT_DISPATCH)
+        raw_alive = raw_cfg.get("worker_alive_timeout_sec", DEFAULT_WORKER_ALIVE_TIMEOUT_SEC)
+        try:
+            alive_timeout_val = float(raw_alive)
+        except (ValueError, TypeError):
+            alive_timeout_val = DEFAULT_WORKER_ALIVE_TIMEOUT_SEC
+        if alive_timeout_val <= 0:
+            alive_timeout_val = DEFAULT_WORKER_ALIVE_TIMEOUT_SEC
 
         return cls(
             enable=enable_val,
             enable_console=enable_console_val,
             idle_timeout_sec=idle_timeout_sec_val,
             auto_spawn=auto_spawn_val,
+            strict_hot_dispatch=strict_val,
+            worker_alive_timeout_sec=alive_timeout_val,
         )

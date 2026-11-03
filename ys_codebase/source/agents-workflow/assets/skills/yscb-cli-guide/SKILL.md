@@ -20,7 +20,7 @@ yscb-cli-guide 執行前檢核表：
 
 1. **指令單行化 (Single-Line Command Discipline)**：調用終端工具（如 `__%{agent_tool.shell_exec}__`）**嚴禁字串夾帶換行 (`\n`) 或多行互動輸入**；多命令於 PowerShell 以 `;` 串接（Bash 以 `&&` 串接），複雜邏輯強制落檔後執行，嚴防 PTY 次級提示字元等待卡死。
 2. **雙引號參數字串逃逸防呆 (Quote & Backtick Safeguard)**：調用帶有文字摘要參數之 CLI 指令（如 `plan verify --log "<摘要>"` 或 `todo add "<標題>" --note "<備註>"`）時，雙引號包裹之內文字串**嚴禁夾帶雙引號 `"` 或反引號 `` ` ``**（避免引發 Shell 命令替換或引號解析崩潰）；如需強調識別符、檔案或階段名稱，一律改用單引號 `'...'` 或方括號 `[...]`。
-3. **常駐 Server 守門處置 (`[BLOCKER]` Daemon Handling)**：當專案安裝 `server` 模組且 `require_server_for_agents: true` 時，若執行 CLI 遭遇 `[BLOCKER] YSCB Persistent Server is not running`，應立即以終端工具背景常駐模式（例如 `__%{agent_tool.shell_bg_daemon}__`）執行 `python __${yscb.host://yscb.py}__ server start --console`（或 `server start -d`）啟動守護進程，隨後重試原指令。注意：`server` 支援之子命令為 `start / stop / status / reload`（安裝 `@build` 後欲熱重載 Worker 請執行 `server reload` 或 `server stop && server start -d`，**無 `server restart` 子命令**）。
+3. **常駐 Server 守門處置 (`[BLOCKER]` Daemon Handling)**：當專案安裝 `server` 模組時，若執行 CLI 遭遇 `[BLOCKER] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED FOR AGENTS`，應立即暫停業務任務並以終端工具背景常駐模式（例如 `__%{agent_tool.shell_bg_daemon}__`）執行 `python __${yscb.host://yscb.py}__ server start --console`（或 `server start -d`）啟動守護進程後重試原指令；啟動失敗則依提示向開發者請示。文案分兩種：預設 advisory（`狀態備註: ... 本次已以本地冷派發兜底完成`，exit code 不變）與組態 `strict_hot_dispatch: true` 時之 strict（`狀態備註: strict_hot_dispatch=true ... 已阻斷執行 (exit 1)`，`server_compatible` 指令僅允許熱派發、不冷派發）。環境被實證判定會回收背景常駐（auto-spawn 之 daemon 連續 2 次未正常退出即消失）時才會出現此提示；誤判時由開發者設定環境變數 `YSCB_FORCE_DAEMON=1` 強制允許（`YSCB_NO_DAEMON=1` 則強制停用），**Agent 嚴禁自行修改組態或環境變數繞過**。注意：`server` 支援之子命令為 `start / stop / status / reload`（安裝 `@build` 後欲熱重載 Worker 請執行 `server reload` 或 `server stop && server start -d`，**無 `server restart` 子命令**）。
 
 ---
 

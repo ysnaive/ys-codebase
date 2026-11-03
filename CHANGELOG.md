@@ -1,5 +1,15 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_03_1018_issue_triage_remediation (In Progress)
+
+### sub_01_server_daemon_robustness (Completed)
+- **`server` / `core` daemon 生命週期穩健性修復：搶占式 worker 重啟、兩段式握手、實證回收偵測、`strict_hot_dispatch` 嚴格熱派發與鎖檔競態根除 (`FR-01` ~ `FR-13`, `EC-01` ~ `EC-11`, `NFR-01` ~ `NFR-03`)**：
+  - **P0 dispatch 死鎖消除與 status 可觀測 (`FR-01`, `FR-02`, `FR-10`)**：`MasterSupervisor.restart_worker` / `stop` 改為先於 `_worker_lock` 內以 `terminate_popen_tree` 強殺卡住之 worker（解除阻塞 `readline()`）再取 `_dispatch_lock`，被搶占任務回傳 1 並於客戶端顯示原因；`get_status_dict` 新增 `current_task` 與 `warming` 狀態，`server status` 改為強制冷派發（`server_compatible=false`）。
+  - **兩段式 worker 握手與程序樹終止 (`FR-09`, `FR-11`)**：worker 啟動即送 `worker_alive`（`worker_alive_timeout_sec` 預設 5.0），預熱期間無上限等待 `worker_ready`；失敗改拋 `WorkerSpawnError`；POSIX worker 以 `start_new_session` 啟動並由 Popen 自行回收。
+  - **實證回收偵測取代無條件可常駐 (`FR-03` ~ `FR-06`)**：新增 `core.platform.daemon_probe`（`cache://server/spawn_probe.json`，依 `env_fingerprint` 分鍵、連續 2 次未經正常關閉即消失判不可常駐、`bind_master_pid`、正常/強制 stop 皆標記 clean exit）；`can_spawn_background_daemon` 判定順序 `YSCB_FORCE_DAEMON` → `YSCB_NO_DAEMON` → POSIX 實證 / Windows Job 探針；不可常駐時僅印 advisory [BLOCKER]、exit code 不變；`server start -d` readiness 逾時且進程已死回傳 1。
+  - **`strict_hot_dispatch` 與載入錯誤分流 (`FR-07`, `FR-08`, `FR-12`)**：`config://server` 新增 `strict_hot_dispatch`（預設 `false`），依 contributes `server_compatible` 擋下熱派發不可用之指令並回傳非零，僅對「請求未送達」重試以杜絕雙重執行；`dispatch_local` 攔截 `exec_module` 例外、`yscb.py` `except ImportError` 收斂至匯入本身；統一 [BLOCKER] 文案與 `yscb-cli-guide`。
+  - **鎖檔競態根除 (`FR-13`)**：`_cleanup_state` 不再刪除 `daemon.lock`（消除 unlink/create inode 競態），`InterProcessLock.acquire` 對 `FileExistsError` 有限重試；`core` (238/238)、`server` (52/52) 測試通過，`docs/server`、`docs/core/platform.md` 同步更新（`DN-10`, `DN-11`）。
+
 ## 2026_11_02_2325_deep_audit_remediation_p0_to_p3 (Completed)
 
 - **全專案八維度單點序列深度審計 22 項問題修復 (`AUD-01` ~ `AUD-22`, `FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：

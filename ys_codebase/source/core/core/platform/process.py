@@ -16,24 +16,44 @@ from typing import Dict, List, Optional
 _CAN_SPAWN_DAEMON_CACHE: Optional[bool] = None
 
 
-def can_spawn_background_daemon(force_reprobe: bool = False) -> bool:
+_TRUTHY_ENV_VALUES = ("1", "true", "True")
+
+
+def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional[str] = None) -> bool:
     """
     Probes whether the current execution environment allows spawning a persistent
     background daemon process detached from the parent process group / Job Object.
 
+    Decision order:
+        1. ``YSCB_FORCE_DAEMON=1`` -> True (explicit override, bypasses all probes).
+        2. ``YSCB_NO_DAEMON=1`` -> False.
+        3. Windows: Job Object breakaway probe (cached per process).
+        4. POSIX: empirical reaping detection via ``core.platform.daemon_probe``
+           when ``yscb_root`` is given (not cached, daemon state changes); True otherwise.
+
     Args:
         force_reprobe: If True, bypasses the in-memory cache and re-probes the environment.
+        yscb_root: Absolute yscb root used to locate the spawn probe record (POSIX only).
 
     Returns:
         bool: True if background daemon spawning is supported, False otherwise.
     """
     global _CAN_SPAWN_DAEMON_CACHE
+    if os.environ.get("YSCB_FORCE_DAEMON") in _TRUTHY_ENV_VALUES:
+        return True
+
+    if os.environ.get("YSCB_NO_DAEMON") in _TRUTHY_ENV_VALUES:
+        return False
+
+    if sys.platform != "win32":
+        if not yscb_root:
+            return True
+        from core.platform import daemon_probe
+        # Daemon liveness (daemon.json / daemon.lock) is probed lazily inside, only when needed
+        return not daemon_probe.is_reaping_env(yscb_root)
+
     if _CAN_SPAWN_DAEMON_CACHE is not None and not force_reprobe:
         return _CAN_SPAWN_DAEMON_CACHE
-
-    if os.environ.get("YSCB_NO_DAEMON") in ("1", "true", "True"):
-        _CAN_SPAWN_DAEMON_CACHE = False
-        return False
 
     if sys.platform == "win32":
         try:
@@ -75,9 +95,7 @@ def can_spawn_background_daemon(force_reprobe: bool = False) -> bool:
         except Exception:
             _CAN_SPAWN_DAEMON_CACHE = False
             return False
-    else:
-        _CAN_SPAWN_DAEMON_CACHE = True
-        return True
+    return True
 
 
 def spawn_detached(
@@ -358,3 +376,69 @@ def kill_process_tree(pid: int, timeout_sec: float = 3.0) -> bool:
 
         return not is_process_alive(pid)
 
+
+
+def terminate_popen_tree(proc: subprocess.Popen, timeout_sec: float = 2.0) -> bool:
+    """
+    Terminates a child ``Popen`` process (and its process group on POSIX) while
+    letting ``Popen`` itself reap the exit status (avoids ``waitpid`` races with
+    ``is_process_alive``).
+
+    POSIX: SIGTERM to the process group (the child must be started with
+    ``start_new_session=True``) -> ``proc.wait(timeout)`` -> SIGKILL -> ``proc.wait``.
+    Windows: ``taskkill /T /F`` -> ``proc.wait``.
+
+    Args:
+        proc: Child process handle.
+        timeout_sec: Grace period before escalating to a forced kill.
+
+    Returns:
+        bool: True if the process is confirmed terminated, False otherwise.
+    """
+    if proc.poll() is not None:
+        return True
+
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        try:
+            proc.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                return False
+        return True
+
+    def _signal_group(sig: int) -> None:
+        try:
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            return
+        try:
+            if pgid == proc.pid:
+                os.killpg(pgid, sig)
+            else:
+                os.kill(proc.pid, sig)
+        except OSError as err:
+            if err.errno != errno.ESRCH:
+                raise
+
+    _signal_group(signal.SIGTERM)
+    try:
+        proc.wait(timeout=timeout_sec)
+        return True
+    except subprocess.TimeoutExpired:
+        pass
+
+    _signal_group(signal.SIGKILL)
+    try:
+        proc.wait(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        return False
+    return True

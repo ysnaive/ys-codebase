@@ -12,7 +12,7 @@ related_docs:
   - "./daemon_architecture.md"
   - "./README.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-24"
+last_updated: "2026-11-03"
 ---
 
 # 熱重載與背景服務託管專題 (Service Workers & Hot Reload Architecture)
@@ -138,12 +138,13 @@ class BaseServiceWorker(ABC):
 python yscb.py server status
 ```
 
-輸出包含 Process Info、Service Counters（含 Uptime 與累計處理任務數）以及 Background Services 清冊（含狀態與模組歸屬）：
+`server status` 本身於本地冷執行（不排入 Worker 佇列），`State` 可為 `WARMING (pre-warming Ns)` / `READY` / `RESTARTING`，`Current Task` 顯示進行中指令。輸出包含 Process Info、Service Counters（含 Uptime 與累計處理任務數）以及 Background Services 清冊（含狀態與模組歸屬）：
 ```text
 ======================================================================
 YS-Codebase Server Daemon Status
 ======================================================================
 [*] State         : READY
+[*] Current Task  : Idle
 [*] Master PID    : 26138
 [*] Worker PID    : 26145 (Alive)
 [*] Port          : 42939
@@ -165,6 +166,7 @@ Master 透過 `/api/status` 回傳完整 JSON 狀態負載（其中 `services` �
 {
   "status": "running",
   "state": "ready",
+  "current_task": null,
   "pid": 26138,
   "worker_pid": 26145,
   "port": 42939,

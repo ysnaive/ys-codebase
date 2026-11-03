@@ -8,7 +8,9 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.commands.bags import CmdBags
@@ -18,7 +20,7 @@ from core.commands.resolver import (
     OptionResolutionError,
     OptionResolver,
 )
-from core.platform import InterProcessLock, can_spawn_background_daemon, is_process_alive, spawn_detached
+from core.platform import InterProcessLock, can_spawn_background_daemon, daemon_probe, is_process_alive, spawn_detached
 from core.telemetry import extract_error_hint, record_cli_event
 
 # 快取已載入之 Contributes Registry
@@ -27,6 +29,8 @@ _GLOBAL_REGISTRY_ROOT: Optional[str] = None
 _MODULE_CACHE: Dict[str, Any] = {}
 _AUTO_SPAWN_WARNED: bool = False
 _LAST_DISPATCH_ERROR_HINT: str = ""
+# FR-07: strict 模式 auto-spawn 後等待 daemon 活躍之上限秒數
+_STRICT_SPAWN_WAIT_SEC: float = 10.0
 
 # 環境與模組生命週期變異指令（執行前禁止自動拉起背景 Server，防範解壓/重載中途引發重啟風暴）
 _LIFECYCLE_MUTATION_COMMANDS = {
@@ -104,50 +108,81 @@ def _suggest_command(unknown_cmd: str, candidate_pool: List[str]) -> Optional[st
     return matches[0] if matches else None
 
 
-def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], yscb_abs: str) -> Optional[int]:
+@dataclass(frozen=True)
+class _HotDispatchResult:
     """
-    管道 B：透過 Localhost HTTP 將 server_compatible 指令熱派發至常駐 Server Worker。
-    若連線超時或失敗則返回 None，自動降級為本地冷派發。
-    支援 cmd_path_or_name 為 List[str] 或單一 str。
+    熱派發嘗試結果。
+
+    exit_code: 取得 task_finish 時之退出碼；未完成則為 None。
+    accepted: 請求是否已送達並被 Server 接受（已開始串流）。為 True 而 exit_code 為 None 表示
+              「送出後失敗」（讀取逾時、連線重置、被搶占等），此時重試可能導致重複執行。
+    """
+    exit_code: Optional[int]
+    accepted: bool
+
+
+def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[str], yscb_abs: str) -> _HotDispatchResult:
+    """
+    管道 B 單次嘗試：透過 Localhost HTTP 將 server_compatible 指令熱派發至常駐 Server Worker。
+
+    區分「請求未被接受」（無/過期 daemon.json、連線拒絕、送出前之 HTTP 錯誤）與「送出後失敗」，
+    供 strict 模式判斷是否可安全重試。
     """
     state_file = os.path.join(yscb_abs, ".cache", "server", "daemon.json")
     if not os.path.isfile(state_file):
-        return None
+        return _HotDispatchResult(None, False)
 
     try:
         with open(state_file, "r", encoding="utf-8") as f:
             state = json.load(f)
-        pid = state.get("pid")
-        if not pid or not is_process_alive(pid):
-            try:
-                os.remove(state_file)
-            except OSError:
-                pass
-            return None
+    except (OSError, ValueError):
+        return _HotDispatchResult(None, False)
+    pid = state.get("pid") if isinstance(state, dict) else None
+    if not pid or not is_process_alive(pid):
+        try:
+            os.remove(state_file)
+        except OSError:
+            pass
+        return _HotDispatchResult(None, False)
 
-        port, token = state.get("port"), state.get("token")
-        url = f"http://127.0.0.1:{port}/api/dispatch"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-        dispatch_args = list(cmd_path_or_name) if isinstance(cmd_path_or_name, (list, tuple)) else [cmd_path_or_name]
-        payload = {
-            "module": module_name,
-            "args": dispatch_args + list(args),
-            "cwd": os.getcwd(),
-            "yscb_root": state.get("root", yscb_abs),
-        }
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        exit_code = 0
-        captured_err: List[str] = []
-        timeout_sec = float(os.environ.get("YSCB_DISPATCH_TIMEOUT", "120.0"))
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+    port, token = state.get("port"), state.get("token")
+    url = f"http://127.0.0.1:{port}/api/dispatch"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    dispatch_args = list(cmd_path_or_name) if isinstance(cmd_path_or_name, (list, tuple)) else [cmd_path_or_name]
+    payload = {
+        "module": module_name,
+        "args": dispatch_args + list(args),
+        "cwd": os.getcwd(),
+        "yscb_root": state.get("root", yscb_abs),
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    captured_err: List[str] = []
+    timeout_sec = float(os.environ.get("YSCB_DISPATCH_TIMEOUT", "120.0"))
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout_sec)
+    except urllib.error.HTTPError:
+        # Server 於串流前即拒絕（鑑權失敗、根目錄不符等），任務未執行
+        return _HotDispatchResult(None, False)
+    except urllib.error.URLError as err:
+        # 連線階段失敗（拒絕連線、無法解析）任務未送達；其餘（如等待回應逾時）無法確認是否已執行
+        unreachable = isinstance(err.reason, OSError) and not isinstance(err.reason, TimeoutError)
+        return _HotDispatchResult(None, not unreachable)
+    except ConnectionRefusedError:
+        return _HotDispatchResult(None, False)
+    except Exception:
+        # 請求可能已送出（逾時、重置），保守視為已接受
+        return _HotDispatchResult(None, True)
+
+    try:
+        with resp:
             buf = ""
             while True:
                 chunk = resp.read(1024)
@@ -171,13 +206,30 @@ def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], 
                             captured_err.append(text_chunk)
                     elif pkt.get("type") == "task_finish":
                         rc = pkt.get("exit_code", 0)
+                        err_field = pkt.get("error")
+                        if rc != 0 and err_field:
+                            # OBS-02: surface server-side failures (e.g. worker preempted) instead of failing silently
+                            err_line = f"[yscb] Error: {err_field}\n"
+                            sys.stderr.write(err_line)
+                            sys.stderr.flush()
+                            captured_err.append(err_line)
                         global _LAST_DISPATCH_ERROR_HINT
                         _LAST_DISPATCH_ERROR_HINT = extract_error_hint("".join(captured_err)) if rc != 0 else ""
-                        return rc
-        return exit_code
+                        return _HotDispatchResult(rc, True)
     except Exception:
-        # EC-04: 熱派發通訊異常時透明降級
-        return None
+        # 串流中途失敗：任務已送達，結果不明
+        return _HotDispatchResult(None, True)
+    # 串流結束卻無 task_finish：任務已送達，結果不明
+    return _HotDispatchResult(None, True)
+
+
+def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], yscb_abs: str) -> Optional[int]:
+    """
+    管道 B（非嚴格模式）：熱派發並回傳退出碼；未取得 task_finish 則返回 None，由呼叫端降級為本地冷派發。
+    支援 cmd_path_or_name 為 List[str] 或單一 str。
+    """
+    # EC-04: 熱派發通訊異常時透明降級（送出後失敗之重複執行風險屬 DEV-01，另案處理）
+    return _hot_dispatch_attempt(module_name, cmd_path_or_name, args, yscb_abs).exit_code
 
 
 def _is_server_daemon_active_or_locked(yscb_abs: str) -> bool:
@@ -210,10 +262,17 @@ def _is_server_daemon_active_or_locked(yscb_abs: str) -> bool:
     return False
 
 
-def _read_server_spawn_config(yscb_abs: str) -> Tuple[bool, bool]:
-    """依序讀取 project 與 local 雙層組態之 (enabled, auto_spawn)。"""
-    auto_spawn = True
-    enabled = True
+@dataclass(frozen=True)
+class _ServerSpawnConfig:
+    """dispatcher 所需之 server 組態快照（core 不得 import server.config，故直讀 JSON）。"""
+    enabled: bool
+    auto_spawn: bool
+    strict_hot_dispatch: bool
+
+
+def _read_server_spawn_config(yscb_abs: str) -> _ServerSpawnConfig:
+    """依序讀取 project 與 local 雙層組態之 enable / auto_spawn / strict_hot_dispatch。"""
+    values: Dict[str, bool] = {"enable": True, "auto_spawn": True, "strict_hot_dispatch": False}
     proj_cfg_file = os.path.join(yscb_abs, "config", "server", "config.project.json")
     local_cfg_file = os.path.join(yscb_abs, "config", "server", "config.local.json")
 
@@ -224,17 +283,34 @@ def _read_server_spawn_config(yscb_abs: str) -> Tuple[bool, bool]:
                     cfg_data = json.load(f)
                     if not isinstance(cfg_data, dict):
                         continue
-                    if "enable" in cfg_data:
-                        enabled = bool(cfg_data["enable"])
-                    if "auto_spawn" in cfg_data:
-                        auto_spawn = bool(cfg_data["auto_spawn"])
+                    for key in values:
+                        if key in cfg_data:
+                            values[key] = bool(cfg_data[key])
             except Exception:
                 pass
-    return enabled, auto_spawn
+    return _ServerSpawnConfig(
+        enabled=values["enable"],
+        auto_spawn=values["auto_spawn"],
+        strict_hot_dispatch=values["strict_hot_dispatch"],
+    )
 
 
-def _print_agent_daemon_blocker() -> None:
-    """輸出沙盒受限環境下之 Agent 常駐啟動強制指引。"""
+def _print_agent_daemon_blocker(strict: bool = False) -> None:
+    """
+    輸出 Server 常駐不可用時之 Agent 指引。
+
+    Args:
+        strict: False 為 advisory 文案（本次以冷派發兜底，exit code 不變）；
+                True 為 strict 文案（strict_hot_dispatch 已阻斷本次執行，回傳 1）。
+    """
+    if strict:
+        status_line = (
+            "[*] 狀態備註: strict_hot_dispatch=true，本指令僅允許熱派發，已阻斷執行 (exit 1)，未進行冷派發！\n"
+        )
+    else:
+        status_line = (
+            "[*] 狀態備註: 常駐 Server 不可用（環境不支援背景常駐或已被回收），本次已以本地冷派發兜底完成，嚴禁擅改專案組態！\n"
+        )
     msg = (
         "\n"
         "================================================================================\n"
@@ -250,10 +326,11 @@ def _print_agent_daemon_blocker() -> None:
         "    [2] 步驟 2 (異常請示):\n"
         "        若當前環境不支援常駐進程導致啟動失敗，請立即向開發者回報並請示處置方案：\n"
         "        - 方案 A: 由開發者在外部獨立終端手動啟動 server\n"
-        "        - 方案 B: 維持純冷派發，由開發者評估關閉 auto_spawn\n"
-        "        - 方案 C: (不推薦) 授權 Agent 暫時忽略常駐警示，以冷派發繼續作業\n\n"
-        "[*] 狀態備註: 沙盒環境背景脫鉤受限，當前以本地冷派發臨時兜底，嚴禁擅改專案組態！\n"
-        "================================================================================\n\n"
+        "        - 方案 B: 維持純冷派發，由開發者評估關閉 auto_spawn / strict_hot_dispatch\n"
+        "        - 方案 C: (不推薦) 授權 Agent 暫時忽略常駐警示，以冷派發繼續作業\n"
+        "        (誤判可常駐時，開發者可設定環境變數 YSCB_FORCE_DAEMON=1 強制允許背景常駐)\n\n"
+        + status_line
+        + "================================================================================\n\n"
     )
     try:
         sys.stderr.write(msg)
@@ -262,14 +339,42 @@ def _print_agent_daemon_blocker() -> None:
         pass
 
 
+def _spawn_server_daemon(host_dir: str, yscb_abs: str) -> Optional[int]:
+    """以脫鉤背景進程拉起 Server 並記錄 spawn 探針（FR-03）；失敗回傳 None。"""
+    yscb_py = os.path.join(host_dir, "yscb.py")
+    if not os.path.isfile(yscb_py):
+        yscb_py = sys.argv[0]
+    try:
+        pid = spawn_detached(
+            [sys.executable, yscb_py, "server", "start", "--daemon"],
+            cwd=host_dir,
+        )
+    except OSError as err:
+        if os.environ.get("YSCB_VERBOSE") == "1" or os.environ.get("YSCB_DEBUG") == "1":
+            print(f"[core:dispatcher] Warning: Failed to auto-spawn server daemon: {err}", file=sys.stderr)
+        return None
+    daemon_probe.record_spawn(yscb_abs, pid)
+    return pid
+
+
+def _warn_daemon_unavailable_once(strict: bool = False) -> None:
+    """每進程僅輸出一次 [BLOCKER]（strict 文案則每次阻斷皆輸出）。"""
+    global _AUTO_SPAWN_WARNED
+    if strict:
+        _AUTO_SPAWN_WARNED = True
+        _print_agent_daemon_blocker(strict=True)
+        return
+    if not _AUTO_SPAWN_WARNED:
+        _AUTO_SPAWN_WARNED = True
+        _print_agent_daemon_blocker(strict=False)
+
+
 def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
     """
     在背景非同步按需拉起 Server 守護進程。
     僅在 server 模組存在、非 server/dev 指令、非測試環境、且 config/server/config.project.json enable != false 時觸發。
-    當偵測到環境無開立背景守護進程權限時，自動降級並輸出提示。
+    當偵測到環境無開立背景守護進程權限（含實證回收偵測）時，輸出一次 advisory [BLOCKER] 並照常冷派發（exit code 不變）。
     """
-    global _AUTO_SPAWN_WARNED
-
     if os.environ.get("YSCB_TESTING") == "1" or os.environ.get("YSCB_TEST_SANDBOX") == "1":
         return
 
@@ -280,26 +385,69 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
     if not os.path.isdir(os.path.join(yscb_abs, ".modules", "server")):
         return
 
-    enabled, auto_spawn = _read_server_spawn_config(yscb_abs)
-    if not enabled or not auto_spawn:
+    cfg = _read_server_spawn_config(yscb_abs)
+    if not cfg.enabled or not cfg.auto_spawn:
         return
 
-    if not can_spawn_background_daemon():
-        if not _AUTO_SPAWN_WARNED:
-            _AUTO_SPAWN_WARNED = True
-            _print_agent_daemon_blocker()
+    if not can_spawn_background_daemon(yscb_root=yscb_abs):
+        _warn_daemon_unavailable_once(strict=False)
         return
 
-    try:
-        yscb_py = os.path.join(host_dir, "yscb.py")
-        if not os.path.isfile(yscb_py):
-            yscb_py = sys.argv[0]
-        spawn_detached(
-            [sys.executable, yscb_py, "server", "start", "--daemon"],
-            cwd=host_dir,
+    _spawn_server_daemon(host_dir, yscb_abs)
+
+
+def _strict_hot_dispatch_or_block(
+    module_name: str,
+    cmd_path: List[str],
+    sub_args: List[str],
+    host_dir: str,
+    yscb_abs: str,
+) -> int:
+    """
+    FR-07: strict_hot_dispatch 模式之熱派發（含首次嘗試），絕不冷派發。
+
+    1. 首次熱派發成功即回傳退出碼。
+    2. 請求已送達但送出後失敗（逾時、重置、被搶占）→ 不重試（防重複執行），回傳 1。
+    3. Server 不可達且可常駐、auto_spawn=true → auto-spawn 並等待 daemon 活躍（≤ _STRICT_SPAWN_WAIT_SEC）
+       後重試一次；重試結果同上規則判定。
+    4. 仍不可達 → 輸出 strict [BLOCKER] 並回傳 1。
+    """
+    global _LAST_DISPATCH_ERROR_HINT
+    result = _hot_dispatch_attempt(module_name, cmd_path, sub_args, yscb_abs)
+    if result.exit_code is None and not result.accepted:
+        cfg = _read_server_spawn_config(yscb_abs)
+        can_spawn = (
+            cfg.auto_spawn
+            and os.path.isdir(os.path.join(yscb_abs, ".modules", "server"))
+            and can_spawn_background_daemon(yscb_root=yscb_abs)
         )
-    except Exception:
-        pass
+        if can_spawn:
+            if not _is_server_daemon_active_or_locked(yscb_abs):
+                _spawn_server_daemon(host_dir, yscb_abs)
+            state_file = os.path.join(yscb_abs, ".cache", "server", "daemon.json")
+            deadline = time.time() + _STRICT_SPAWN_WAIT_SEC
+            while time.time() < deadline:
+                if os.path.isfile(state_file):
+                    result = _hot_dispatch_attempt(module_name, cmd_path, sub_args, yscb_abs)
+                    break
+                time.sleep(0.2)
+
+    if result.exit_code is not None:
+        return result.exit_code
+
+    if result.accepted:
+        err_msg = (
+            "[yscb] Error: strict_hot_dispatch: request was delivered to the server but failed before completion "
+            "(timeout / connection reset / worker restarted). Not retried to avoid double execution; "
+            "check 'server status' and the server log, then re-run if appropriate."
+        )
+        _LAST_DISPATCH_ERROR_HINT = err_msg
+        print(err_msg, file=sys.stderr)
+        return 1
+
+    _LAST_DISPATCH_ERROR_HINT = "[BLOCKER] strict_hot_dispatch: server daemon unavailable, cold dispatch blocked"
+    _warn_daemon_unavailable_once(strict=True)
+    return 1
 
 
 def _find_module_cli(module_name: str, yscb_abs: str) -> Optional[str]:
@@ -424,7 +572,15 @@ def dispatch_local(
             return 1
         mod = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = mod
-        spec.loader.exec_module(mod)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception as load_err:
+            # FR-12 / EC-09: 載入期例外（含 SyntaxError）移除半初始化模組並回傳 1
+            sys.modules.pop(spec.name, None)
+            err_msg = f"[yscb] Error loading CLI for '{module_name}': {type(load_err).__name__}: {load_err}"
+            _LAST_DISPATCH_ERROR_HINT = err_msg
+            print(err_msg)
+            return 1
         _MODULE_CACHE[target_cli] = mod
 
     exit_code = 0
@@ -656,7 +812,12 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
 
     # 9. FR-06: 指令級 server_compatible 雙管道分流
     if cmd_spec is not None and cmd_spec.server_compatible:
-        hot_res = _try_hot_dispatch(module_name, cmd_path, sub_args, yscb_abs)
+        spawn_cfg = _read_server_spawn_config(yscb_abs)
+        if spawn_cfg.enabled and spawn_cfg.strict_hot_dispatch:
+            # FR-07: strict_hot_dispatch 啟用（且 server enable=true）時僅允許熱派發，禁止冷派發兜底
+            hot_res: Optional[int] = _strict_hot_dispatch_or_block(module_name, cmd_path, sub_args, host_dir, yscb_abs)
+        else:
+            hot_res = _try_hot_dispatch(module_name, cmd_path, sub_args, yscb_abs)
         if hot_res is not None:
             record_cli_event(
                 module_name=module_name,

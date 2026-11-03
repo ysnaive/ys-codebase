@@ -255,6 +255,8 @@ class TestServerLogging(YSCBTestCase):
         mock_proc.poll.return_value = None
 
         sup._worker_proc = mock_proc
+        # FR-09 (2026_11_03): injected worker is treated as having completed the worker_ready handshake
+        sup._worker_ready_event.set()
 
         with unittest.mock.patch("server.master.is_process_alive", return_value=True):
             # Real execution of sup.dispatch_task()

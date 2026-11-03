@@ -5,6 +5,7 @@ and cross-platform inter-process file locks (InterProcessLock).
 """
 
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -155,6 +156,206 @@ class TestCorePlatform(YSCBTestCase):
 
         self.mark_passed()
 
+
+    def _dead_pid(self) -> int:
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        return proc.pid
+
+    def test_daemon_probe_reaping_detection(self):
+        """FR-03 / EC-05: 未經 clean exit 之 spawn PID 死亡累計 reaped_count，門檻 2 判不可常駐；clean exit 歸零。"""
+        from core.platform import daemon_probe
+
+        root = self.temp_dir.name
+        self.assertFalse(daemon_probe.is_reaping_env(root, daemon_active=False))
+
+        daemon_probe.record_spawn(root, self._dead_pid())
+        self.assertFalse(daemon_probe.is_reaping_env(root, daemon_active=False))  # EC-05: 1 次不判定
+        self.assertFalse(daemon_probe.is_reaping_env(root, daemon_active=False))  # 同紀錄不重複累計
+
+        daemon_probe.record_spawn(root, self._dead_pid())
+        self.assertTrue(daemon_probe.is_reaping_env(root, daemon_active=False))
+
+        daemon_probe.mark_clean_exit(root)
+        self.assertFalse(daemon_probe.is_reaping_env(root, daemon_active=False))
+
+        # 活躍 daemon 或存活 PID 不累計
+        daemon_probe.record_spawn(root, self._dead_pid())
+        self.assertFalse(daemon_probe.is_reaping_env(root, daemon_active=True))
+        daemon_probe.record_spawn(root, os.getpid())
+        self.assertFalse(daemon_probe.is_reaping_env(root, daemon_active=False))
+        self.mark_passed()
+
+    def test_daemon_probe_corrupt_file_and_fingerprint_isolation(self):
+        """EC-03 / EC-04: 損壞檔視為無紀錄並可覆寫；不同 env_fingerprint 之紀錄互不污染。"""
+        import json
+        from unittest.mock import patch
+        from core.platform import daemon_probe
+
+        root = self.temp_dir.name
+        probe_file = os.path.join(root, daemon_probe.PROBE_REL_PATH)
+        os.makedirs(os.path.dirname(probe_file), exist_ok=True)
+        with open(probe_file, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        self.assertFalse(daemon_probe.is_reaping_env(root, daemon_active=False))
+        daemon_probe.record_spawn(root, 123)
+        with open(probe_file, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f)[daemon_probe.env_fingerprint()]["pid"], 123)
+
+        with patch.object(daemon_probe, "env_fingerprint", return_value="other-host|win32"):
+            daemon_probe.record_spawn(root, self._dead_pid())
+            daemon_probe.is_reaping_env(root, daemon_active=False)
+            daemon_probe.record_spawn(root, self._dead_pid())
+            self.assertTrue(daemon_probe.is_reaping_env(root, daemon_active=False))
+        with open(probe_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data[daemon_probe.env_fingerprint()]["reaped_count"], 0)
+        self.assertEqual(data["other-host|win32"]["reaped_count"], 2)
+        self.mark_passed()
+
+    def test_can_spawn_force_and_posix_probe(self):
+        """FR-04: YSCB_FORCE_DAEMON 優先於 YSCB_NO_DAEMON；POSIX 帶 yscb_root 時依實證偵測，未帶時為 True。"""
+        from unittest.mock import patch
+        from core.platform import can_spawn_background_daemon, daemon_probe
+
+        root = self.temp_dir.name
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("YSCB_FORCE_DAEMON", "YSCB_NO_DAEMON")}
+        with patch.dict(os.environ, dict(clean_env, YSCB_FORCE_DAEMON="1", YSCB_NO_DAEMON="1"), clear=True):
+            self.assertTrue(can_spawn_background_daemon(force_reprobe=True, yscb_root=root))
+        with patch.dict(os.environ, dict(clean_env, YSCB_NO_DAEMON="1"), clear=True):
+            self.assertFalse(can_spawn_background_daemon(force_reprobe=True, yscb_root=root))
+        if sys.platform != "win32":
+            with patch.dict(os.environ, clean_env, clear=True):
+                self.assertTrue(can_spawn_background_daemon(yscb_root=root))
+                daemon_probe.record_spawn(root, self._dead_pid())
+                can_spawn_background_daemon(yscb_root=root)
+                daemon_probe.record_spawn(root, self._dead_pid())
+                self.assertFalse(can_spawn_background_daemon(yscb_root=root))
+                self.assertTrue(can_spawn_background_daemon())
+        self.mark_passed()
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX process-group semantics")
+    def test_terminate_popen_tree_kills_group_and_escalates(self):
+        """FR-11: terminate_popen_tree 終止整個程序群組（含孫進程），忽略 SIGTERM 時升級 SIGKILL，並由 Popen 回收。"""
+        from core.platform import terminate_popen_tree
+
+        code = (
+            "import signal, subprocess, sys, time; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            "print(c.pid, flush=True); time.sleep(30)"
+        )
+        proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, start_new_session=True)
+        try:
+            child_pid = int(proc.stdout.readline().decode().strip())
+            self.assertTrue(is_process_alive(child_pid))
+            t0 = time.time()
+            self.assertTrue(terminate_popen_tree(proc, timeout_sec=0.5))
+            self.assertLess(time.time() - t0, 5.0)
+            self.assertIsNotNone(proc.returncode)
+            deadline = time.time() + 3.0
+            while is_process_alive(child_pid) and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(is_process_alive(child_pid))
+            # 已結束之進程再次呼叫直接回傳 True
+            self.assertTrue(terminate_popen_tree(proc, timeout_sec=0.5))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdout.close()
+        self.mark_passed()
+
+    def test_lock_eexist_retry(self):
+        """FR-13 / EC-10: os.open 遇 FileExistsError 重試（不帶 O_CREAT）後成功；持續失敗拋原例外；其他 errno 不重試。"""
+        from unittest.mock import patch
+
+        real_open = os.open
+        calls = []
+
+        def flaky_open(path, flags, *args):
+            calls.append(flags)
+            if len(calls) == 1:
+                raise FileExistsError(17, "File exists", path)
+            return real_open(path, flags, *args)
+
+        lock = InterProcessLock(self.lock_path)
+        open(self.lock_path, "a").close()
+        with patch("core.platform.lock.os.open", side_effect=flaky_open), patch("core.platform.lock.time.sleep"):
+            self.assertTrue(lock.acquire(blocking=False))
+        lock.release()
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[0] & os.O_CREAT)
+        self.assertFalse(calls[1] & os.O_CREAT)
+
+        always_err = FileExistsError(17, "File exists", self.lock_path)
+        with patch("core.platform.lock.os.open", side_effect=always_err) as mock_open, \
+             patch("core.platform.lock.time.sleep"):
+            with self.assertRaises(FileExistsError) as ctx:
+                InterProcessLock(self.lock_path).acquire(blocking=False)
+        self.assertIs(ctx.exception, always_err)
+        self.assertEqual(mock_open.call_count, 4)
+
+        with patch("core.platform.lock.os.open", side_effect=PermissionError(13, "denied")) as mock_perm:
+            with self.assertRaises(PermissionError):
+                InterProcessLock(self.lock_path).acquire(blocking=False)
+        self.assertEqual(mock_perm.call_count, 1)
+        self.mark_passed()
+
+    def test_daemon_probe_lazy_lock_probe(self):
+        """Review#3: 僅於紀錄 pid 已死且無 clean exit 時才探測 daemon 活躍；daemon.json pid 存活優先於 daemon.lock 探測。"""
+        import json
+        from unittest.mock import patch
+        from core.platform import daemon_probe
+
+        root = self.temp_dir.name
+        with patch.object(daemon_probe, "is_daemon_lock_held", return_value=False) as mock_lock:
+            self.assertFalse(daemon_probe.is_reaping_env(root))  # no record
+            daemon_probe.record_spawn(root, os.getpid())
+            self.assertFalse(daemon_probe.is_reaping_env(root))  # pid alive
+            daemon_probe.mark_clean_exit(root)
+            self.assertFalse(daemon_probe.is_reaping_env(root))  # clean exit
+            mock_lock.assert_not_called()
+
+            state_file = os.path.join(root, daemon_probe.DAEMON_STATE_REL_PATH)
+            with open(state_file, "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid()}, f)
+            daemon_probe.record_spawn(root, self._dead_pid())
+            daemon_probe.is_reaping_env(root)
+            mock_lock.assert_not_called()  # daemon.json pid alive short-circuits the lock probe
+            os.remove(state_file)
+
+            daemon_probe.record_spawn(root, self._dead_pid())
+            daemon_probe.is_reaping_env(root)
+            mock_lock.assert_called_once_with(root)
+        with open(os.path.join(root, daemon_probe.PROBE_REL_PATH), "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f)[daemon_probe.env_fingerprint()]["reaped_count"], 1)
+        self.mark_passed()
+
+    def test_daemon_probe_bind_master_pid(self):
+        """OBS-01: bind_master_pid 將 launcher PID 紀錄改綁 master PID；無紀錄或已 clean_exit 時不動作。"""
+        import json
+        from core.platform import daemon_probe
+
+        root = self.temp_dir.name
+        probe_file = os.path.join(root, daemon_probe.PROBE_REL_PATH)
+        daemon_probe.bind_master_pid(root, 222)
+        self.assertFalse(os.path.exists(probe_file))
+
+        daemon_probe.record_spawn(root, 111)
+        daemon_probe.bind_master_pid(root, 222)
+        with open(probe_file, "r", encoding="utf-8") as f:
+            entry = json.load(f)[daemon_probe.env_fingerprint()]
+        self.assertEqual(entry["pid"], 222)
+        self.assertFalse(entry["clean_exit"])
+
+        daemon_probe.mark_clean_exit(root)
+        daemon_probe.bind_master_pid(root, 333)
+        with open(probe_file, "r", encoding="utf-8") as f:
+            entry = json.load(f)[daemon_probe.env_fingerprint()]
+        self.assertEqual(entry["pid"], 0)
+        self.assertTrue(entry["clean_exit"])
+        self.mark_passed()
 
 if __name__ == "__main__":
     unittest.main()

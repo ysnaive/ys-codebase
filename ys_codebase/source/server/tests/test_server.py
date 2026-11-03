@@ -7,7 +7,9 @@ SystemExit interception, ServiceManager, MasterSupervisor HTTP dispatch, and Mod
 import io
 import json
 import os
+import subprocess
 import sys
+import threading
 import tempfile
 import time
 import unittest
@@ -20,7 +22,7 @@ from server.streamer import DebouncedIOStreamer
 from server.service import BaseServiceWorker, ServiceManager
 from server.worker import WarmWorker
 from server.watcher import ModulesWatcher
-from server.master import MasterSupervisor, ServerDaemonState
+from server.master import MasterSupervisor, ServerDaemonState, WorkerSpawnError
 
 
 class MockService(BaseServiceWorker):
@@ -532,7 +534,7 @@ class TestServerModule(YSCBTestCase):
             ret_pid = sup._spawn_worker_locked()
             self.assertEqual(ret_pid, 77777)
 
-        # Verify handshake failure (e.g., EOF before worker_ready) cleans up worker and returns 0
+        # Verify handshake failure (EOF before worker_alive) cleans up worker and raises WorkerSpawnError (EC-08)
         def mock_popen_unready(cmd, **kwargs):
             fake_proc = unittest.mock.MagicMock()
             fake_proc.pid = 77778
@@ -542,8 +544,8 @@ class TestServerModule(YSCBTestCase):
             return fake_proc
 
         with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen_unready):
-            unready_pid = sup._spawn_worker_locked()
-            self.assertEqual(unready_pid, 0)
+            with self.assertRaises(WorkerSpawnError):
+                sup._spawn_worker_locked()
             self.assertIsNone(sup._worker_proc)
 
         # Real assertion on the PYTHONPATH actually passed by _spawn_worker_locked to subprocess
@@ -565,16 +567,16 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_master_two_stage_kill_fallback(self):
-        """ET-04: MasterSupervisor _kill_worker_locked sends exit and falls back to kill_process_tree on timeout."""
+        """ET-04 / FR-11: MasterSupervisor _kill_worker_locked sends exit and falls back to terminate_popen_tree on timeout."""
         sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
         mock_proc = unittest.mock.MagicMock()
         mock_proc.pid = 99999
         mock_proc.poll.return_value = None  # Process doesn't exit on its own
-        mock_proc.wait.side_effect = Exception("timeout")
+        mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="worker", timeout=1.5)
         mock_proc.stdin = unittest.mock.MagicMock()
         sup._worker_proc = mock_proc
 
-        with unittest.mock.patch("server.master.kill_process_tree") as mock_kill, \
+        with unittest.mock.patch("server.master.terminate_popen_tree", return_value=True) as mock_kill, \
              unittest.mock.patch("time.sleep") as mock_sleep:
             sup._kill_worker_locked(timeout_sec=1.5)
 
@@ -582,8 +584,8 @@ class TestServerModule(YSCBTestCase):
             mock_proc.stdin.write.assert_called_with(b'{"action": "exit"}\n')
             mock_proc.stdin.flush.assert_called()
 
-            # Verify Stage 2 fallback to kill_process_tree
-            mock_kill.assert_called_once_with(mock_proc.pid, timeout_sec=1.5)
+            # Verify Stage 2 fallback to terminate_popen_tree (Popen-owned reaping)
+            mock_kill.assert_called_once_with(mock_proc, timeout_sec=1.5)
             self.assertIsNone(sup._worker_proc)
 
         self.mark_passed()
@@ -754,7 +756,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_spawn_detached_master_quote_safe_args_and_restart_worker_lock_order(self):
-        """FR-02, EC-02 (AUD-02, AUD-03): Verify spawn_detached_master uses sys.argv without quote injection and restart_worker acquires _dispatch_lock."""
+        """FR-02, EC-02 (AUD-02, AUD-03) / FR-01 (2026_11_03): Verify spawn_detached_master quote safety; restart_worker kills without _dispatch_lock, then spawns under it."""
         from server import master as master_mod
 
         captured_cmd = []
@@ -770,16 +772,347 @@ class TestServerModule(YSCBTestCase):
 
         sup = MasterSupervisor(self.root_dir, idle_timeout_sec=60.0, enable_watcher=False)
         dispatch_held_during_kill = []
+        dispatch_held_during_spawn = []
+
+        def _fake_spawn():
+            dispatch_held_during_spawn.append(sup._dispatch_lock.locked())
+            return 9999
+
         with unittest.mock.patch.object(
             sup, "_kill_worker_locked", side_effect=lambda timeout_sec=1.5: dispatch_held_during_kill.append(sup._dispatch_lock.locked())
-        ), unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=9999), \
+        ), unittest.mock.patch.object(sup, "_spawn_worker_locked", side_effect=_fake_spawn), \
              unittest.mock.patch.object(sup, "_write_state"):
             new_pid = sup.restart_worker()
             self.assertEqual(new_pid, 9999)
-            self.assertEqual(dispatch_held_during_kill, [True])
+            self.assertEqual(dispatch_held_during_kill, [False])
+            self.assertEqual(dispatch_held_during_spawn, [True])
 
         self.mark_passed()
 
+
+    def _write_fake_worker(self, body: str) -> str:
+        path = os.path.join(self.root_dir, "fake_worker.py")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("import json, os, sys, time\n")
+            f.write("def emit(p):\n    sys.stdout.write(json.dumps(p) + '\\n'); sys.stdout.flush()\n")
+            f.write(body)
+        return path
+
+    def _spawn_fake_worker(self, sup: MasterSupervisor, script: str) -> int:
+        real_popen = subprocess.Popen
+
+        def popen_fake(cmd, **kwargs):
+            return real_popen([sys.executable, script], **kwargs)
+
+        with unittest.mock.patch("server.master.subprocess.Popen", side_effect=popen_fake):
+            with sup._worker_lock:
+                return sup._spawn_worker_locked()
+
+    def test_worker_main_emits_alive_before_ready(self):
+        """FR-09: worker_main 於 pre_warm 前送出 worker_alive，之後才送 worker_ready。"""
+        out = io.StringIO()
+        with unittest.mock.patch.object(WarmWorker, "pre_warm"):
+            from server.worker import worker_main
+            worker_main(self.root_dir, in_stream=io.StringIO('{"action": "exit"}\n'), out_stream=out)
+        types = [json.loads(line)["type"] for line in out.getvalue().splitlines() if line.strip()]
+        self.assertGreaterEqual(len(types), 2)
+        self.assertEqual(types[0], "worker_alive")
+        self.assertIn("worker_ready", types)
+        self.assertLess(types.index("worker_alive"), types.index("worker_ready"))
+        self.mark_passed()
+
+    def test_two_stage_handshake_warming_then_ready(self):
+        """FR-09 / FR-10: alive 後狀態 warming（含 warming_elapsed_sec），ready 後轉 ready；dispatch 於 warming 期間等待 ready。"""
+        script = self._write_fake_worker(
+            "emit({'type': 'worker_alive'})\n"
+            "time.sleep(1.0)\n"
+            "emit({'type': 'worker_ready', 'services': []})\n"
+            "for line in sys.stdin:\n"
+            "    req = json.loads(line)\n"
+            "    if req.get('action') == 'exit':\n        break\n"
+            "    emit({'type': 'task_finish', 'exit_code': 7, 'duration_ms': 1.0})\n"
+        )
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        try:
+            pid = self._spawn_fake_worker(sup, script)
+            self.assertGreater(pid, 0)
+            status = sup.get_status_dict()
+            self.assertEqual(status["state"], "warming")
+            self.assertIn("warming_elapsed_sec", status)
+            self.assertIsNone(status["current_task"])
+
+            packets = []
+            with unittest.mock.patch.object(sup, "_write_state"):
+                rc = sup.dispatch_task({"module": "dummy", "args": ["x"]}, packets.append)
+            self.assertEqual(rc, 7)
+            self.assertEqual(packets[-1]["type"], "task_finish")
+            ready_status = sup.get_status_dict()
+            self.assertEqual(ready_status["state"], "ready")
+            self.assertNotIn("warming_elapsed_sec", ready_status)
+        finally:
+            with sup._worker_lock:
+                sup._kill_worker_locked(timeout_sec=1.0)
+        self.mark_passed()
+
+    def test_alive_timeout_and_death_during_warming(self):
+        """EC-07 / EC-08: 未送 alive 即逾時拋 WorkerSpawnError；warming 中死亡時等待之 dispatch 回傳 1。"""
+        silent = self._write_fake_worker("time.sleep(30)\n")
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup._worker_alive_timeout_sec = 0.5
+        t0 = time.time()
+        with self.assertRaises(WorkerSpawnError) as ctx:
+            self._spawn_fake_worker(sup, silent)
+        self.assertIn("worker_alive", str(ctx.exception))
+        self.assertLess(time.time() - t0, 5.0)
+        self.assertIsNone(sup._worker_proc)
+
+        dying = self._write_fake_worker("emit({'type': 'worker_alive'})\ntime.sleep(0.5)\nsys.exit(3)\n")
+        sup._worker_alive_timeout_sec = 5.0
+        self._spawn_fake_worker(sup, dying)
+        packets = []
+        rc = sup.dispatch_task({"module": "dummy", "args": []}, packets.append)
+        self.assertEqual(rc, 1)
+        self.assertEqual(packets[-1]["error"], "Worker exited before becoming ready")
+        with sup._worker_lock:
+            sup._kill_worker_locked(timeout_sec=1.0)
+
+        # EC-08: respawn failure inside dispatch is reported, not masked as PID 0
+        with unittest.mock.patch.object(sup, "_spawn_worker_locked", side_effect=WorkerSpawnError("boom")):
+            packets2 = []
+            rc2 = sup.dispatch_task({"module": "dummy", "args": []}, packets2.append)
+        self.assertEqual(rc2, 1)
+        self.assertEqual(packets2[-1], {"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": "boom"})
+        self.mark_passed()
+
+    def test_restart_worker_preempts_stuck_dispatch(self):
+        """FR-01 / FR-02 / EC-02: 卡住之 dispatch 期間 status 回報 current_task；restart_worker 搶占後 dispatch 回傳 1 並於時限內完成重啟。"""
+        stuck = self._write_fake_worker(
+            "emit({'type': 'worker_alive'})\n"
+            "emit({'type': 'worker_ready', 'services': []})\n"
+            "for line in sys.stdin:\n"
+            "    req = json.loads(line)\n"
+            "    if req.get('action') == 'exit':\n        break\n"
+            "    if 'hang' in req.get('args', []):\n        time.sleep(60)\n"
+            "    emit({'type': 'task_finish', 'exit_code': 0, 'duration_ms': 1.0})\n"
+        )
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        real_popen = subprocess.Popen
+        with unittest.mock.patch("server.master.subprocess.Popen", side_effect=lambda cmd, **kw: real_popen([sys.executable, stuck], **kw)), \
+             unittest.mock.patch.object(sup, "_write_state"):
+            try:
+                with sup._worker_lock:
+                    old_pid = sup._spawn_worker_locked()
+                self.assertTrue(sup._wait_worker_ready(timeout_sec=5.0))
+                result = {}
+                packets = []
+
+                def _run():
+                    result["rc"] = sup.dispatch_task({"module": "dummy", "args": ["hang"]}, packets.append)
+
+                th = threading.Thread(target=_run, daemon=True)
+                th.start()
+                deadline = time.time() + 5.0
+                while sup.get_status_dict()["current_task"] is None and time.time() < deadline:
+                    time.sleep(0.05)
+                task = sup.get_status_dict()["current_task"]
+                self.assertIsNotNone(task)
+                self.assertEqual(task["module"], "dummy")
+                self.assertEqual(task["args"], ["hang"])
+                self.assertGreaterEqual(task["elapsed_sec"], 0.0)
+
+                t0 = time.time()
+                new_pid = sup.restart_worker()
+                self.assertLess(time.time() - t0, 1.5 + 5.0)
+                th.join(timeout=5.0)
+                self.assertFalse(th.is_alive())
+                self.assertEqual(result["rc"], 1)
+                self.assertEqual(packets[-1]["error"], "Worker terminated by restart/stop")
+                self.assertNotEqual(new_pid, old_pid)
+                self.assertIsNone(sup.get_status_dict()["current_task"])
+
+                # Fresh worker serves the next request normally
+                packets_ok = []
+                self.assertEqual(sup.dispatch_task({"module": "dummy", "args": []}, packets_ok.append), 0)
+            finally:
+                with sup._worker_lock:
+                    sup._kill_worker_locked(timeout_sec=1.0)
+        self.mark_passed()
+
+    def test_restart_worker_spawn_failure_raises_and_reload_returns_500(self):
+        """Error contract: restart_worker 不再以 PID 0 冒充成功，改拋 WorkerSpawnError；/api/reload 轉 HTTP 500。"""
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        with unittest.mock.patch.object(sup, "_spawn_worker_locked", side_effect=WorkerSpawnError("no alive")), \
+             unittest.mock.patch.object(sup, "_write_state") as mock_write:
+            with self.assertRaises(WorkerSpawnError):
+                sup.restart_worker()
+            mock_write.assert_not_called()
+
+        with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
+            sup.start(foreground=False)
+        try:
+            auth_headers = {"Authorization": f"Bearer {sup.token}", "Content-Type": "application/json"}
+            req = urllib.request.Request(f"http://127.0.0.1:{sup.port}/api/reload", data=b"{}", headers=auth_headers, method="POST")
+            with unittest.mock.patch.object(sup, "restart_worker", side_effect=WorkerSpawnError("no alive")):
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    urllib.request.urlopen(req)
+            self.assertEqual(cm.exception.code, 500)
+            self.assertIn("no alive", cm.exception.read().decode("utf-8"))
+            cm.exception.close()
+        finally:
+            sup.stop()
+        self.mark_passed()
+
+    def test_stop_keeps_lock_file_and_marks_clean_exit(self):
+        """FR-13 / FR-03: stop() 僅移除 daemon.json、保留 daemon.lock 且鎖可再取得，並寫入 clean exit 歸零回收計數。"""
+        import json as _json
+        from core.platform import InterProcessLock, daemon_probe
+
+        daemon_probe.record_spawn(self.root_dir, 1)
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
+            sup.start(foreground=False)
+        self.assertTrue(os.path.exists(sup.state_file))
+        sup.stop()
+        self.assertFalse(os.path.exists(sup.state_file))
+        self.assertTrue(os.path.exists(sup.lock_file))
+        probe_lock = InterProcessLock(sup.lock_file)
+        self.assertTrue(probe_lock.acquire(blocking=False))
+        probe_lock.release()
+        with open(os.path.join(self.root_dir, daemon_probe.PROBE_REL_PATH), "r", encoding="utf-8") as f:
+            entry = _json.load(f)[daemon_probe.env_fingerprint()]
+        self.assertTrue(entry["clean_exit"])
+        self.assertEqual(entry["reaped_count"], 0)
+        self.mark_passed()
+
+    def test_cli_status_dashboard_and_start_readiness_exit_code(self):
+        """FR-02 / FR-06 / FR-10: 儀表板顯示 Current Task 與預熱秒數；start -d 逾時依 spawn PID 存活決定回傳 0/1。"""
+        import importlib.util
+        from contextlib import redirect_stdout, redirect_stderr
+        from core.commands.bags import CmdBags, CmdOption
+
+        cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "cli.py")
+        spec = importlib.util.spec_from_file_location("server_cli_fr06", cli_path)
+        server_cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(server_cli)
+
+        state = ServerDaemonState(pid=1, worker_pid=0, port=1, token="t", root=self.root_dir, start_time=time.time(), idle_timeout_sec=0.0)
+        info = {"state": "warming", "warming_elapsed_sec": 2.5, "idle_seconds_left": 0.0, "current_task": {"module": "dev", "args": ["test", "core"], "started_at": 0.0, "elapsed_sec": 12.0}}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            server_cli._render_status_dashboard(info, state)
+        self.assertIn("WARMING (pre-warming 2.5s)", buf.getvalue())
+        self.assertIn("Current Task  : dev test core (running 12.0s)", buf.getvalue())
+        idle_buf = io.StringIO()
+        with redirect_stdout(idle_buf):
+            server_cli._render_status_dashboard(dict(info, state="ready", warming_elapsed_sec=None, current_task=None), state)
+        self.assertIn("Current Task  : Idle", idle_buf.getvalue())
+        self.assertNotIn("pre-warming", idle_buf.getvalue())
+
+        bags = CmdBags(raw_cmd="start -d", command="start", args=[], options={"daemon": CmdOption(name="daemon", params=True)})
+        for alive, expected_rc in ((False, 1), (True, 0)):
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch.object(server_cli, "guard_dispatch"), \
+                 unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir), \
+                 unittest.mock.patch.object(server_cli, "read_daemon_state", return_value=None), \
+                 unittest.mock.patch.object(server_cli, "spawn_detached_master", return_value=424242), \
+                 unittest.mock.patch.object(server_cli, "is_process_alive", return_value=alive), \
+                 unittest.mock.patch.object(server_cli.time, "sleep"), \
+                 redirect_stdout(out), redirect_stderr(err):
+                rc = server_cli.start(bags)
+            self.assertEqual(rc, expected_rc)
+            if alive:
+                self.assertIn("still starting up", out.getvalue())
+            else:
+                self.assertIn("exited before becoming ready", err.getvalue())
+        self.mark_passed()
+
+    def test_cli_forced_stop_marks_clean_exit(self):
+        """Review#2: server stop --force 與優雅關閉逾時之強制終止路徑於 kill 後寫入 clean exit，不累計回收計數。"""
+        import importlib.util
+        import json as _json
+        from contextlib import redirect_stdout
+        from core.commands.bags import CmdBags, CmdOption
+        from core.platform import daemon_probe
+
+        cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "cli.py")
+        spec = importlib.util.spec_from_file_location("server_cli_force_stop", cli_path)
+        server_cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(server_cli)
+
+        state = ServerDaemonState(pid=424242, worker_pid=0, port=1, token="t", root=self.root_dir, start_time=time.time(), idle_timeout_sec=0.0)
+        force_bags = CmdBags(raw_cmd="stop --force", command="stop", args=[], options={"force": CmdOption(name="force", params=True)})
+        graceful_bags = CmdBags(raw_cmd="stop", command="stop", args=[], options={})
+        probe_file = os.path.join(self.root_dir, daemon_probe.PROBE_REL_PATH)
+        real_mark = daemon_probe.mark_clean_exit
+        for bags in (force_bags, graceful_bags):
+            daemon_probe.record_spawn(self.root_dir, 424242)
+            order = []
+            with unittest.mock.patch.object(server_cli, "guard_dispatch"), \
+                 unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir), \
+                 unittest.mock.patch.object(server_cli, "read_daemon_state", return_value=state), \
+                 unittest.mock.patch.object(server_cli, "is_process_alive", return_value=True), \
+                 unittest.mock.patch.object(server_cli, "_http_request", return_value=None), \
+                 unittest.mock.patch.object(server_cli, "kill_process_tree", side_effect=lambda *a, **k: order.append("kill")), \
+                 unittest.mock.patch.object(server_cli.daemon_probe, "mark_clean_exit", side_effect=lambda root: (order.append("mark"), real_mark(root))), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(server_cli.stop(bags), 0)
+            self.assertEqual(order, ["kill", "mark"])
+            with open(probe_file, "r", encoding="utf-8") as f:
+                entry = _json.load(f)[daemon_probe.env_fingerprint()]
+            self.assertTrue(entry["clean_exit"])
+            self.assertEqual(entry["pid"], 0)
+            self.assertFalse(daemon_probe.is_reaping_env(self.root_dir, daemon_active=False))
+        self.mark_passed()
+
+    def test_master_start_retries_transient_lock_contention(self):
+        """Review#3: 無活躍 daemon 時鎖短暫被探針持有，start 以短暫阻塞重試取得鎖而非直接放棄。"""
+        from core.platform import InterProcessLock
+
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        prober = InterProcessLock(sup.lock_file)
+        self.assertTrue(prober.acquire(blocking=False))
+        timer = threading.Timer(0.15, prober.release)
+        timer.start()
+        try:
+            with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
+                ret = sup.start(foreground=False)
+            self.assertEqual(ret, os.getpid())
+            self.assertTrue(sup._is_running)
+        finally:
+            timer.join()
+            sup.stop()
+        self.assertFalse(prober.is_locked)
+        self.mark_passed()
+
+    def test_restart_worker_config_error_is_non_destructive(self):
+        """Review#4: restart_worker 先載入組態；組態載入失敗時於任何破壞性動作前拋出，現役 worker 保留。"""
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        with unittest.mock.patch("server.config.ServerConfig.load", side_effect=RuntimeError("bad config")), \
+             unittest.mock.patch.object(sup, "_kill_worker_locked") as mock_kill, \
+             unittest.mock.patch.object(sup, "_spawn_worker_locked") as mock_spawn:
+            with self.assertRaises(RuntimeError):
+                sup.restart_worker()
+        mock_kill.assert_not_called()
+        mock_spawn.assert_not_called()
+        self.mark_passed()
+
+    def test_master_start_binds_master_pid(self):
+        """OBS-01: MasterSupervisor.start 取得單例鎖後將 auto-spawn 紀錄之 launcher PID 改綁為 master PID。"""
+        import json as _json
+        from core.platform import daemon_probe
+
+        daemon_probe.record_spawn(self.root_dir, 111)
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        try:
+            with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
+                sup.start(foreground=False)
+            with open(os.path.join(self.root_dir, daemon_probe.PROBE_REL_PATH), "r", encoding="utf-8") as f:
+                entry = _json.load(f)[daemon_probe.env_fingerprint()]
+            self.assertEqual(entry["pid"], os.getpid())
+            self.assertFalse(entry["clean_exit"])
+        finally:
+            sup.stop()
+        self.mark_passed()
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,8 @@ import sys
 import time
 from typing import Optional
 
+_EEXIST_RETRIES: int = 3
+
 
 class LockAcquisitionError(Exception):
     """Raised when an inter-process lock cannot be acquired."""
@@ -51,7 +53,7 @@ class InterProcessLock:
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir, exist_ok=True)
 
-        fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR)
+        fd = self._open_lock_fd()
         try:
             start_time = time.time()
             while True:
@@ -75,6 +77,27 @@ class InterProcessLock:
             except OSError:
                 pass
             raise
+
+    def _open_lock_fd(self) -> int:
+        """
+        Opens (creating if needed) the lock file descriptor.
+
+        Some filesystems (e.g. shared/9p mounts) transiently raise ``FileExistsError``
+        for ``O_CREAT`` when another process races on creating the same file. Retries
+        up to ``_EEXIST_RETRIES`` times (50ms apart) re-opening without ``O_CREAT``;
+        re-raises the original ``FileExistsError`` if all retries fail. Other errors propagate.
+        """
+        try:
+            return os.open(self.lock_file, os.O_CREAT | os.O_RDWR)
+        except FileExistsError as first_err:
+            original = first_err
+        for _ in range(_EEXIST_RETRIES):
+            time.sleep(0.05)
+            try:
+                return os.open(self.lock_file, os.O_RDWR)
+            except FileExistsError:
+                continue
+        raise original
 
     def release(self) -> None:
         """Releases the lock and closes the underlying file descriptor."""

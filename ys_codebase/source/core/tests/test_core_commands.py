@@ -766,6 +766,283 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
 
 
+    @require(Requirement.LOGIC)
+    def test_fr07_read_server_spawn_config_strict_layering(self):
+        """FR-07 / NFR-03: _read_server_spawn_config 預設 strict=False，local 覆寫 project，舊組態缺鍵可載入。"""
+        import tempfile
+        from core.commands import dispatcher
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            default_cfg = dispatcher._read_server_spawn_config(tmp_dir)
+            self.assertEqual(default_cfg, dispatcher._ServerSpawnConfig(enabled=True, auto_spawn=True, strict_hot_dispatch=False))
+
+            cfg_dir = os.path.join(tmp_dir, "config", "server")
+            os.makedirs(cfg_dir, exist_ok=True)
+            with open(os.path.join(cfg_dir, "config.project.json"), "w", encoding="utf-8") as f:
+                f.write('{"enable": true, "auto_spawn": true}')
+            self.assertFalse(dispatcher._read_server_spawn_config(tmp_dir).strict_hot_dispatch)
+
+            with open(os.path.join(cfg_dir, "config.local.json"), "w", encoding="utf-8") as f:
+                f.write('{"strict_hot_dispatch": true, "auto_spawn": false}')
+            layered = dispatcher._read_server_spawn_config(tmp_dir)
+            self.assertTrue(layered.strict_hot_dispatch)
+            self.assertFalse(layered.auto_spawn)
+            self.assertTrue(layered.enabled)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_fr08_blocker_advisory_vs_strict_wording(self):
+        """FR-08: advisory 文案宣告冷派發兜底；strict 文案宣告已阻斷且不含兜底字樣。"""
+        from core.commands import dispatcher
+
+        adv_buf, strict_buf = io.StringIO(), io.StringIO()
+        with redirect_stderr(adv_buf):
+            dispatcher._print_agent_daemon_blocker()
+        with redirect_stderr(strict_buf):
+            dispatcher._print_agent_daemon_blocker(strict=True)
+        adv, strict = adv_buf.getvalue(), strict_buf.getvalue()
+        for out in (adv, strict):
+            self.assertIn("[BLOCKER] YSCB SERVER DAEMON MANDATORY ACTION REQUIRED", out)
+            self.assertIn("YSCB_FORCE_DAEMON=1", out)
+        self.assertIn("冷派發兜底完成", adv)
+        self.assertNotIn("已阻斷執行", adv)
+        self.assertIn("strict_hot_dispatch=true", strict)
+        self.assertIn("已阻斷執行 (exit 1)", strict)
+        self.assertNotIn("冷派發兜底完成", strict)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_fr07_strict_mode_blocks_cold_dispatch(self):
+        """FR-07 / EC-06: strict 模式下熱派發失敗回傳 1 且不冷派發；server_compatible=false 指令與 enable=false 照常冷派發。"""
+        from core.commands import dispatcher
+
+        strict_cfg = dispatcher._ServerSpawnConfig(enabled=True, auto_spawn=True, strict_hot_dispatch=True)
+        disabled_cfg = dispatcher._ServerSpawnConfig(enabled=False, auto_spawn=True, strict_hot_dispatch=True)
+        reg = CommandsRegistry()
+        reg.register_module("test-mod", {"cmd": {"run": {"server_compatible": True}, "cold": {"server_compatible": False}}})
+        dispatcher._AUTO_SPAWN_WARNED = False
+        with patch("core.commands.dispatcher._load_registry", return_value=reg), \
+             patch("core.commands.dispatcher._hot_dispatch_attempt", return_value=dispatcher._HotDispatchResult(None, False)), \
+             patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=False), \
+             patch("core.commands.dispatcher.dispatch_local", return_value=42) as mock_local:
+            err_buf = io.StringIO()
+            with patch("core.commands.dispatcher._read_server_spawn_config", return_value=strict_cfg), redirect_stderr(err_buf):
+                ret_strict = dispatch(["test-mod", "run"])
+                ret_cold = dispatch(["test-mod", "cold"])
+            self.assertEqual(ret_strict, 1)
+            self.assertIn("已阻斷執行 (exit 1)", err_buf.getvalue())
+            self.assertEqual(ret_cold, 42)
+            self.assertEqual(mock_local.call_count, 1)
+
+            with patch("core.commands.dispatcher._read_server_spawn_config", return_value=disabled_cfg):
+                ret_disabled = dispatch(["test-mod", "run"])
+            self.assertEqual(ret_disabled, 42)
+            self.assertEqual(mock_local.call_count, 2)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_fr07_strict_mode_auto_spawn_then_retry_hot(self):
+        """FR-07: strict 模式可常駐時 auto-spawn、記錄 spawn 探針，待 daemon 活躍後重試熱派發一次成功。"""
+        import tempfile
+        from core.commands import dispatcher
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            os.makedirs(os.path.join(tmp_dir, ".modules", "server"), exist_ok=True)
+            state_dir = os.path.join(tmp_dir, ".cache", "server")
+            cfg = dispatcher._ServerSpawnConfig(enabled=True, auto_spawn=True, strict_hot_dispatch=True)
+
+            def fake_spawn(cmd, cwd=None):
+                os.makedirs(state_dir, exist_ok=True)
+                with open(os.path.join(state_dir, "daemon.json"), "w", encoding="utf-8") as f:
+                    f.write("{}")
+                return 4242
+
+            with patch("core.commands.dispatcher._read_server_spawn_config", return_value=cfg), \
+                 patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=True), \
+                 patch("core.commands.dispatcher._is_server_daemon_active_or_locked", return_value=False), \
+                 patch("core.commands.dispatcher.spawn_detached", side_effect=fake_spawn) as mock_spawn, \
+                 patch("core.commands.dispatcher.daemon_probe.record_spawn") as mock_record, \
+                 patch("core.commands.dispatcher._hot_dispatch_attempt", side_effect=[dispatcher._HotDispatchResult(None, False), dispatcher._HotDispatchResult(0, True)]) as mock_hot:
+                ret = dispatcher._strict_hot_dispatch_or_block("test-mod", ["run"], [], tmp_dir, tmp_dir)
+            self.assertEqual(ret, 0)
+            mock_spawn.assert_called_once()
+            mock_record.assert_called_once_with(tmp_dir, 4242)
+            self.assertEqual(mock_hot.call_count, 2)
+
+            # 重試仍失敗 -> strict BLOCKER 回傳 1
+            err_buf = io.StringIO()
+            with patch("core.commands.dispatcher._read_server_spawn_config", return_value=cfg), \
+                 patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=True), \
+                 patch("core.commands.dispatcher._is_server_daemon_active_or_locked", return_value=True), \
+                 patch("core.commands.dispatcher.spawn_detached") as mock_spawn2, \
+                 patch("core.commands.dispatcher._hot_dispatch_attempt", return_value=dispatcher._HotDispatchResult(None, False)), \
+                 redirect_stderr(err_buf):
+                ret_fail = dispatcher._strict_hot_dispatch_or_block("test-mod", ["run"], [], tmp_dir, tmp_dir)
+            self.assertEqual(ret_fail, 1)
+            mock_spawn2.assert_not_called()
+            self.assertIn("strict_hot_dispatch=true", err_buf.getvalue())
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_fr03_auto_spawn_records_probe_and_passes_root(self):
+        """FR-03 / FR-04: auto-spawn 以 yscb_root 呼叫能力判定並將 spawn PID 寫入 spawn_probe.json。"""
+        import json
+        import tempfile
+        from core.commands import dispatcher
+        from core.platform import daemon_probe
+
+        dispatcher._AUTO_SPAWN_WARNED = False
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            os.makedirs(os.path.join(tmp_dir, ".modules", "server"), exist_ok=True)
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("YSCB_TESTING", "YSCB_TEST_SANDBOX")}
+            with patch.dict(os.environ, clean_env, clear=True):
+                with patch("core.commands.dispatcher.spawn_detached", return_value=31337), \
+                     patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=True) as mock_can:
+                    dispatcher._maybe_auto_spawn_server(tmp_dir, tmp_dir)
+            mock_can.assert_called_once_with(yscb_root=tmp_dir)
+            with open(os.path.join(tmp_dir, daemon_probe.PROBE_REL_PATH), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            entry = data[daemon_probe.env_fingerprint()]
+            self.assertEqual(entry["pid"], 31337)
+            self.assertFalse(entry["clean_exit"])
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_fr12_exec_module_failure_is_reported(self):
+        """FR-12 / EC-09: CLI 載入期 SyntaxError 回傳 1、印出錯誤類型並移除半初始化模組，不寫入快取。"""
+        import tempfile
+        from core.commands import dispatcher
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cli_dir = os.path.join(tmp_dir, ".modules", "broken-mod", "scripts")
+            os.makedirs(cli_dir, exist_ok=True)
+            cli_path = os.path.join(cli_dir, "cli.py")
+            with open(cli_path, "w", encoding="utf-8") as f:
+                f.write("def run(cmd_bags):\n    return 0\ndef broken(:\n")
+            out_buf = io.StringIO()
+            orig_path = list(sys.path)
+            try:
+                with redirect_stdout(out_buf):
+                    ret = dispatch_local("broken-mod", "run", [], CommandSpec(name="run"), tmp_dir)
+            finally:
+                sys.path[:] = orig_path
+            self.assertEqual(ret, 1)
+            self.assertIn("[yscb] Error loading CLI for 'broken-mod': SyntaxError:", out_buf.getvalue())
+            self.assertNotIn("yscb_mod_broken_mod_cli", sys.modules)
+            self.assertNotIn(os.path.normpath(cli_path), dispatcher._MODULE_CACHE)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_fr07_strict_failed_after_send_never_retries(self):
+        """Review#1: strict 模式請求已送達後失敗（逾時/重置/搶占）回傳 1、不重試、不 spawn、不冷派發，防重複執行。"""
+        from core.commands import dispatcher
+
+        cfg = dispatcher._ServerSpawnConfig(enabled=True, auto_spawn=True, strict_hot_dispatch=True)
+        err_buf = io.StringIO()
+        with patch("core.commands.dispatcher._read_server_spawn_config", return_value=cfg), \
+             patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=True), \
+             patch("core.commands.dispatcher.spawn_detached") as mock_spawn, \
+             patch("core.commands.dispatcher.dispatch_local") as mock_local, \
+             patch("core.commands.dispatcher._hot_dispatch_attempt", return_value=dispatcher._HotDispatchResult(None, True)) as mock_hot, \
+             redirect_stderr(err_buf):
+            ret = dispatcher._strict_hot_dispatch_or_block("test-mod", ["run"], [], "/fake", "/fake")
+        self.assertEqual(ret, 1)
+        self.assertEqual(mock_hot.call_count, 1)
+        mock_spawn.assert_not_called()
+        mock_local.assert_not_called()
+        self.assertIn("Not retried to avoid double execution", err_buf.getvalue())
+        self.assertNotIn("[BLOCKER]", err_buf.getvalue())
+
+        # 重試後才送出失敗：同樣不再重試且回報 1
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            os.makedirs(os.path.join(tmp_dir, ".modules", "server"), exist_ok=True)
+            os.makedirs(os.path.join(tmp_dir, ".cache", "server"), exist_ok=True)
+            with open(os.path.join(tmp_dir, ".cache", "server", "daemon.json"), "w", encoding="utf-8") as f:
+                f.write("{}")
+            with patch("core.commands.dispatcher._read_server_spawn_config", return_value=cfg), \
+                 patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=True), \
+                 patch("core.commands.dispatcher._is_server_daemon_active_or_locked", return_value=True), \
+                 patch("core.commands.dispatcher._hot_dispatch_attempt", side_effect=[dispatcher._HotDispatchResult(None, False), dispatcher._HotDispatchResult(None, True)]) as mock_hot2, \
+                 redirect_stderr(io.StringIO()):
+                ret2 = dispatcher._strict_hot_dispatch_or_block("test-mod", ["run"], [], tmp_dir, tmp_dir)
+        self.assertEqual(ret2, 1)
+        self.assertEqual(mock_hot2.call_count, 2)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_hot_dispatch_attempt_classifies_unreachable_vs_accepted(self):
+        """Review#1: 無 state/連線拒絕/HTTP 錯誤判為未送達；串流中途失敗或無 task_finish 判為已送達；非嚴格 _try_hot_dispatch 行為不變。"""
+        import json
+        import tempfile
+        import urllib.error
+        from core.commands import dispatcher
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir), dispatcher._HotDispatchResult(None, False))
+            state_dir = os.path.join(tmp_dir, ".cache", "server")
+            os.makedirs(state_dir, exist_ok=True)
+            with open(os.path.join(state_dir, "daemon.json"), "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "port": 1, "token": "t", "root": tmp_dir}, f)
+
+            refused = urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+            http_err = urllib.error.HTTPError("http://x", 403, "Forbidden", {}, None)
+            timeout_err = urllib.error.URLError(TimeoutError("timed out"))
+            cases = [(refused, False), (http_err, False), (timeout_err, True), (ConnectionResetError(), True)]
+            for exc, accepted in cases:
+                with patch("core.commands.dispatcher.urllib.request.urlopen", side_effect=exc):
+                    res = dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir)
+                self.assertIsNone(res.exit_code)
+                self.assertEqual(res.accepted, accepted, repr(exc))
+
+            class _Resp(io.BytesIO):
+                def __enter__(self):
+                    return self
+
+            mid_stream = MagicMock()
+            mid_stream.__enter__.return_value = mid_stream
+            mid_stream.read.side_effect = ConnectionResetError()
+            with patch("core.commands.dispatcher.urllib.request.urlopen", return_value=mid_stream):
+                self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir), dispatcher._HotDispatchResult(None, True))
+                self.assertIsNone(dispatcher._try_hot_dispatch("m", ["c"], [], tmp_dir))
+
+            no_finish = _Resp(b'{"type": "terminal_stream", "text": "x", "stream": "stdout"}\n')
+            with patch("core.commands.dispatcher.urllib.request.urlopen", return_value=no_finish), redirect_stdout(io.StringIO()):
+                self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir), dispatcher._HotDispatchResult(None, True))
+
+            ok = _Resp(b'{"type": "task_finish", "exit_code": 3}\n')
+            with patch("core.commands.dispatcher.urllib.request.urlopen", return_value=ok):
+                self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir), dispatcher._HotDispatchResult(3, True))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_hot_dispatch_surfaces_task_finish_error(self):
+        """OBS-02: task_finish 非零且帶 error 時輸出 '[yscb] Error: <error>' 至 stderr 並納入 error hint；成功時不輸出。"""
+        import json
+        import tempfile
+        from core.commands import dispatcher
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_dir = os.path.join(tmp_dir, ".cache", "server")
+            os.makedirs(state_dir, exist_ok=True)
+            with open(os.path.join(state_dir, "daemon.json"), "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "port": 1, "token": "t", "root": tmp_dir}, f)
+
+            fail = io.BytesIO(b'{"type": "task_finish", "exit_code": 1, "error": "Worker terminated by restart/stop"}\n')
+            err_buf = io.StringIO()
+            with patch("core.commands.dispatcher.urllib.request.urlopen", return_value=fail), redirect_stderr(err_buf):
+                res = dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir)
+            self.assertEqual(res, dispatcher._HotDispatchResult(1, True))
+            self.assertIn("[yscb] Error: Worker terminated by restart/stop", err_buf.getvalue())
+            self.assertIn("Worker terminated by restart/stop", dispatcher._LAST_DISPATCH_ERROR_HINT)
+
+            ok = io.BytesIO(b'{"type": "task_finish", "exit_code": 0, "error": "ignored"}\n')
+            ok_buf = io.StringIO()
+            with patch("core.commands.dispatcher.urllib.request.urlopen", return_value=ok), redirect_stderr(ok_buf):
+                self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir).exit_code, 0)
+            self.assertEqual(ok_buf.getvalue(), "")
+        self.mark_passed()
+
 if __name__ == "__main__":
     unittest.main()
 

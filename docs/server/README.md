@@ -7,12 +7,14 @@ source_paths:
   - "yscb://source/server/server/worker.py"
   - "yscb://source/server/server/config.py"
   - "yscb://source/server/scripts/cli.py"
+  - "yscb://source/server/contributes/core.json"
+  - "yscb://source/core/core/commands/dispatcher.py"
 related_docs:
   - "./daemon_architecture.md"
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-31"
+last_updated: "2026-11-03"
 ---
 
 # Server 常駐服務與守護中樞模組 (Server Module)
@@ -49,7 +51,7 @@ python yscb.py server start [--daemon] [--ttl 900]
 # 前台控制台模式啟動 (輸出啟動橫幅並即時回顯日誌至 stdout)
 python yscb.py server start --console
 
-# 檢視 Server Master、Worker PID、Port、Uptime、Idle TTL 倒數與服務狀態
+# 檢視 Server 狀態 (WARMING/READY/RESTARTING)、Current Task、Master/Worker PID、Port、Uptime、Idle TTL 倒數與服務狀態
 python yscb.py server status
 
 # 手動熱重載 Worker 子進程 (刷新代碼記憶體與背景服務)
@@ -63,6 +65,15 @@ python yscb.py server stop [--force]
 - **互斥參數組 (`add_mutually_exclusive_group`)**：CLI 嚴格禁止 `--console` 與 `--daemon` 同時傳入，避免啟動意圖衝突。
 - **啟動模式優先級分流**：
   $$\text{CLI }\texttt{--console}\text{ (強制前台除錯)} \;\succ\; \text{CLI }\texttt{--daemon}\text{ (強制背景常駐)} \;\succ\; \text{組態 }\texttt{enable\_console}\text{ (`ServerConfig`)} \;\succ\; \text{預設 }\texttt{False}\text{ (靜默脫鉤背景常駐)}$$
+
+### 2.2 指令行為合約 (Exit Codes \& Side Effects)
+
+| 指令 | 行為與 Exit Code |
+| :--- | :--- |
+| `server start -d` | 輪詢 readiness 成功 → `0`；逾時但 spawn 之 PID 仍存活 → 印「still starting up」並回傳 `0`；逾時且 PID 已死 → 印錯誤（指向 `.cache/server/log`）並回傳 `1` |
+| `server status` | 一律於本地冷執行（`contributes/core.json` 中 `server_compatible=false`），不經 Worker 佇列，故 Worker 忙碌或卡住時仍可即時回報；`State` 為 `WARMING (pre-warming Ns)` / `READY` / `RESTARTING`，`Current Task` 顯示進行中指令與已執行秒數（無則 `Idle`） |
+| `server reload` | 搶占式：不等待進行中任務，直接終止現役 Worker（被搶占之任務回傳 `1`，`error="Worker terminated by restart/stop"`）後再 spawn 新 Worker |
+| `server stop [--force]` | 優雅停止，逾時或 `--force` 時強殺進程樹；兩種路徑皆寫入 clean-exit 標記（見 [daemon_architecture.md](./daemon_architecture.md) §5）。僅刪除 `daemon.json`，**`daemon.lock` 永久保留**（見 DN-10） |
 
 ---
 
@@ -85,7 +96,9 @@ Server 模組內建高可靠的集中式即時 flush 日誌機制：
   "enable": true,
   "enable_console": false,
   "idle_timeout_sec": 900.0,
-  "auto_spawn": true
+  "auto_spawn": true,
+  "strict_hot_dispatch": false,
+  "worker_alive_timeout_sec": 5.0
 }
 ```
 
@@ -93,11 +106,13 @@ Server 模組內建高可靠的集中式即時 flush 日誌機制：
 - `enable_console`: `ServerConfig` 預設啟動模式（對接 `core.config.get("server", "enable_console", False)`，預設 `false` 走背景脫鉤常駐；設為 `true` 時無參數 `server start` 預設走前台 Console 模式，仍可被 `--daemon` 覆寫）。
 - `auto_spawn`: 是否在執行非 server 指令時於背景自動喚醒常駐進程（預設 `true`）。若手動關閉 (`false`)，系統將保持純冷派發。
 - `idle_timeout_sec`: 空閒超時自毀時間（秒，預設 `900.0`）。
+- `strict_hot_dispatch`: 嚴格熱派發（預設 `false`）。為 `true` 且 `enable=true` 時，`server_compatible=true` 之指令熱派發失敗不再冷派發兜底，而是（可常駐且 `auto_spawn=true` 時）auto-spawn、等待 daemon 活躍 ≤ 10s 後重試一次，仍失敗則印 strict `[BLOCKER]` 並回傳 `1`。`server_compatible=false` 指令不受影響；重試規則見 [daemon_architecture.md](./daemon_architecture.md) §6。
+- `worker_alive_timeout_sec`: Worker 啟動後送出 `worker_alive` 的等待上限（秒，預設 `5.0`，非正數或非法值回退預設）。僅約束「進程存活」階段，pre-warm 預熱階段不設上限。
 
 ### 4.2 IDE Agent 沙盒環境最佳實踐
 
 在 IDE Agent（如 Antigravity / Cursor / Claude Code）環境下，因 Windows Job Object 沙盒未開啟 Breakaway 權限，單次 CLI 命令結束時背景進程會被 OS 連帶收割。
-系統內建自適應環境探針，自動輸出 `[BLOCKER]` 診斷與處置提示。
+系統內建自適應環境探針（Windows Job 探針；POSIX 依實證回收偵測），自動輸出 `[BLOCKER]` 診斷與處置提示；非嚴格模式下僅提示、照常冷派發且不改變 exit code。可用環境變數 `YSCB_FORCE_DAEMON=1`（強制視為可常駐）或 `YSCB_NO_DAEMON=1`（強制不常駐）覆寫判定，詳見 [daemon_architecture.md](./daemon_architecture.md) §4–§5。
 
 若 IDE Agent 希望享受 Hot-IPC（<10ms）極速派發：
 - **推薦做法**：透過 IDE 背景常駐任務機制（例如 Antigravity `run_command(IsDaemon: true)` 或 VS Code Task），在會話啟動時執行：

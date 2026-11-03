@@ -21,14 +21,22 @@ from urllib.parse import urlparse
 from core import vfs
 from core.platform import (
     InterProcessLock,
+    daemon_probe,
     ensure_private_venv,
     is_process_alive,
-    kill_process_tree,
     set_process_title,
     spawn_detached,
+    terminate_popen_tree,
 )
 from server.logger import ServerLogger
 from server.watcher import ModulesWatcher
+
+
+_PREEMPTED_ERROR = "Worker terminated by restart/stop"
+
+
+class WorkerSpawnError(RuntimeError):
+    """Raised when a warm worker fails the `worker_alive` handshake (crashed or hung at startup)."""
 
 
 @dataclass
@@ -213,6 +221,14 @@ class MasterSupervisor:
         self._worker_lock = threading.Lock()
         self._dispatch_lock = threading.Lock()
         self._worker_services: List[Dict[str, Any]] = []
+        # FR-09: two-stage handshake state (per spawned worker)
+        self._worker_ready_event = threading.Event()
+        self._warming_since: Optional[float] = None
+        self._worker_alive_timeout_sec = self._load_worker_alive_timeout()
+        # FR-01: PIDs of workers killed while a dispatch was in flight
+        self._preempted_pids: Set[int] = set()
+        # FR-02: currently executing dispatch task snapshot
+        self._current_task: Optional[Dict[str, Any]] = None
 
         self._start_time = time.time()
         self._last_active_time = self._start_time
@@ -225,19 +241,47 @@ class MasterSupervisor:
         self._lock: Optional[InterProcessLock] = None
         self.port = 0
 
+    @staticmethod
+    def _load_worker_alive_timeout() -> float:
+        from server.config import DEFAULT_WORKER_ALIVE_TIMEOUT_SEC, ServerConfig
+        try:
+            return float(ServerConfig.load().worker_alive_timeout_sec)
+        except (TypeError, ValueError):
+            return DEFAULT_WORKER_ALIVE_TIMEOUT_SEC
+
+    def _worker_state(self) -> str:
+        """Returns worker lifecycle state: 'ready', 'warming' or 'restarting' (no live worker)."""
+        proc = self._worker_proc
+        if proc is None or proc.poll() is not None:
+            return "restarting"
+        return "ready" if self._worker_ready_event.is_set() else "warming"
+
     def get_status_dict(self) -> Dict[str, Any]:
-        """Returns structured dictionary of server runtime status."""
+        """
+        Returns structured dictionary of server runtime status.
+
+        Never acquires `_dispatch_lock`, so it stays responsive while a task is running.
+        Includes `current_task` ({module, args, started_at, elapsed_sec} or None) and,
+        while the worker is pre-warming, `warming_elapsed_sec`.
+        """
         worker_pid = self._worker_proc.pid if self._worker_proc else 0
-        uptime = time.time() - self._start_time
-        idle_left = max(0.0, self.idle_timeout_sec - (time.time() - self._last_active_time))
+        now = time.time()
+        uptime = now - self._start_time
+        idle_left = max(0.0, self.idle_timeout_sec - (now - self._last_active_time))
         watcher_status = {
             "enabled": self.enable_watcher,
             "active": (self.watcher is not None and self.watcher.is_running),
             "monitored_dir": self.watcher.modules_dir if self.watcher else None,
         }
-        return {
+        task = self._current_task
+        current_task: Optional[Dict[str, Any]] = None
+        if task is not None:
+            current_task = dict(task)
+            current_task["elapsed_sec"] = max(0.0, now - float(task["started_at"]))
+        state = self._worker_state()
+        status = {
             "status": "running",
-            "state": "ready" if is_process_alive(worker_pid) else "restarting",
+            "state": state,
             "pid": os.getpid(),
             "worker_pid": worker_pid,
             "port": self.port,
@@ -250,7 +294,12 @@ class MasterSupervisor:
             "log_file": self.logger.log_file,
             "services": self._worker_services or [],
             "watcher": watcher_status,
+            "current_task": current_task,
         }
+        warming_since = self._warming_since
+        if state == "warming" and warming_since is not None:
+            status["warming_elapsed_sec"] = max(0.0, now - warming_since)
+        return status
 
     def _initialize_daemon_environment(self) -> None:
         """Sets process title, initializes crash-recovered logger, and resets runtime flags."""
@@ -274,8 +323,12 @@ class MasterSupervisor:
         self._write_state()
 
         with self._worker_lock:
-            self._spawn_worker_locked()
-        self.logger.info(f"Initial Warm Worker spawned (PID: {self._worker_proc.pid if self._worker_proc else 0})")
+            try:
+                self._spawn_worker_locked()
+                self.logger.info(f"Initial Warm Worker spawned (PID: {self._worker_proc.pid if self._worker_proc else 0})")
+            except WorkerSpawnError as err:
+                # EC-08: keep the daemon up; the next dispatch re-attempts spawning
+                self.logger.error(f"Initial Warm Worker spawn failed: {err}")
         self._write_state()
 
         if self.enable_watcher:
@@ -314,8 +367,13 @@ class MasterSupervisor:
             state = read_daemon_state(self.yscb_root)
             if state and is_process_alive(state.pid):
                 return state.pid
-            return 0
+            # No live daemon: the lock may be briefly held by a CLI liveness probe; retry shortly
+            if not self._lock.acquire(blocking=True, timeout_sec=0.5):
+                state = read_daemon_state(self.yscb_root)
+                return state.pid if state and is_process_alive(state.pid) else 0
 
+        # OBS-01: rebind auto-spawn probe record from the launcher PID to this master PID
+        daemon_probe.bind_master_pid(self.yscb_root, os.getpid())
         try:
             self._initialize_daemon_environment()
             self._start_http_and_watcher_services()
@@ -338,6 +396,7 @@ class MasterSupervisor:
                 self.watcher.stop()
                 self.watcher = None
 
+            # FR-01: preempt any in-flight dispatch by killing the worker (no _dispatch_lock)
             with self._worker_lock:
                 self._kill_worker_locked(timeout_sec=2.0)
 
@@ -357,55 +416,83 @@ class MasterSupervisor:
                 self._lock = None
 
             self._cleanup_state()
+            # FR-03: graceful shutdown marker resets empirical reaping detection
+            daemon_probe.mark_clean_exit(self.yscb_root)
             self.logger.archive_and_close()
 
     def _kill_worker_locked(self, timeout_sec: float = 2.0) -> None:
-        """Safely terminates child worker process with two-stage handshake and closes all pipe handles."""
+        """
+        Terminates the child worker and closes all pipe handles (caller holds `_worker_lock`).
+
+        Idle worker: two-stage handshake (`{"action": "exit"}` then process-tree termination).
+        Busy worker (dispatch in flight): skips the handshake and terminates the process tree
+        immediately so the blocked dispatch `readline()` hits EOF and releases `_dispatch_lock`.
+        """
         if not self._worker_proc:
             return
         proc = self._worker_proc
 
         exited_gracefully = False
-        try:
-            if proc.poll() is None and proc.stdin:
+        if self._current_task is not None:
+            self._preempted_pids.add(proc.pid)
+        elif proc.poll() is None and proc.stdin:
+            try:
                 proc.stdin.write(b'{"action": "exit"}\n')
                 proc.stdin.flush()
-                wait_timeout = min(timeout_sec, 1.5)
-                proc.wait(timeout=wait_timeout)
+                proc.wait(timeout=min(timeout_sec, 1.5))
                 exited_gracefully = True
-        except Exception:
-            pass
+            except (OSError, ValueError, subprocess.TimeoutExpired) as err:
+                self.logger.warning(f"Worker (PID: {proc.pid}) graceful exit handshake failed: {err}")
 
         if not exited_gracefully and proc.poll() is None:
-            try:
-                kill_process_tree(proc.pid, timeout_sec=timeout_sec)
-            except Exception:
-                pass
+            if not terminate_popen_tree(proc, timeout_sec=timeout_sec):
+                self.logger.error(f"Failed to terminate worker process tree (PID: {proc.pid})")
 
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
             if pipe:
                 try:
                     pipe.close()
-                except OSError:
+                except (OSError, ValueError):
                     pass
         self._worker_proc = None
+        self._warming_since = None
 
     def restart_worker(self) -> int:
-        """Terminates existing worker and spawns a fresh worker subprocess while syncing ServerConfig."""
+        """
+        Preemptively terminates the current worker and spawns a fresh one while syncing ServerConfig.
+
+        FR-01: the worker is killed under `_worker_lock` only (never waiting on `_dispatch_lock`),
+        which unblocks any in-flight dispatch; `_dispatch_lock` is then acquired to spawn.
+
+        Returns:
+            int: PID of the fresh worker.
+
+        Raises:
+            WorkerSpawnError: if the fresh worker fails the alive handshake.
+        """
+        # Load config before any destructive action so a config error never leaves the daemon worker-less
+        from server.config import ServerConfig
+        cfg = ServerConfig.load()
+
+        with self._worker_lock:
+            old_pid = self._worker_proc.pid if self._worker_proc else 0
+            self.logger.info(f"Restarting Warm Worker (terminating old PID: {old_pid})...")
+            self._kill_worker_locked(timeout_sec=1.5)
+
+        self.idle_timeout_sec = float(cfg.idle_timeout_sec)
+        self._worker_alive_timeout_sec = float(cfg.worker_alive_timeout_sec)
+
         with self._dispatch_lock:
             with self._worker_lock:
-                old_pid = self._worker_proc.pid if self._worker_proc else 0
-                self.logger.info(f"Restarting Warm Worker (terminating old PID: {old_pid})...")
-                self._kill_worker_locked(timeout_sec=1.5)
-
-                try:
-                    from server.config import ServerConfig
-                    cfg = ServerConfig.load()
-                    self.idle_timeout_sec = float(cfg.idle_timeout_sec)
-                except Exception:
-                    pass
-
-                new_pid = self._spawn_worker_locked()
+                if self._worker_proc is not None and self._worker_proc.poll() is None:
+                    # A queued dispatch already spawned a fresh worker after the kill
+                    new_pid = self._worker_proc.pid
+                else:
+                    try:
+                        new_pid = self._spawn_worker_locked()
+                    except WorkerSpawnError as err:
+                        self.logger.error(f"Warm Worker restart failed: {err}")
+                        raise
                 self._last_active_time = time.time()
                 self._write_state()
                 self.logger.info(f"Fresh Warm Worker spawned (PID: {new_pid})")
@@ -423,7 +510,10 @@ class MasterSupervisor:
             self.restart_server()
         else:
             self.logger.info(f"[Server] Detected domain module update ({affected_modules or 'unknown'}). Reloading Warm Worker...")
-            self.restart_worker()
+            try:
+                self.restart_worker()
+            except WorkerSpawnError as err:
+                self.logger.error(f"[Server] Warm Worker reload failed; next dispatch will retry spawning: {err}")
 
     def restart_server(self) -> None:
         """
@@ -464,12 +554,39 @@ class MasterSupervisor:
         t.start()
 
     def _ensure_ready_worker(self) -> subprocess.Popen:
-        """Ensures a live worker subprocess is running and returns its Popen handle."""
+        """
+        Ensures a live (alive-handshaked) worker subprocess exists and returns its Popen handle.
+
+        Raises:
+            WorkerSpawnError: if a required respawn fails the alive handshake.
+        """
         with self._worker_lock:
-            if not self._worker_proc or not is_process_alive(self._worker_proc.pid):
+            if not self._worker_proc or self._worker_proc.poll() is not None:
                 self._spawn_worker_locked()
                 self._write_state()
             return self._worker_proc  # type: ignore
+
+    def _wait_worker_ready(self, timeout_sec: Optional[float] = None) -> bool:
+        """
+        Blocks until the current worker reports `worker_ready` (FR-09).
+
+        Args:
+            timeout_sec: Optional upper bound; None waits as long as the worker stays alive.
+
+        Returns:
+            bool: True once ready; False if the worker died (EC-07) or the timeout elapsed.
+        """
+        deadline = None if timeout_sec is None else time.time() + timeout_sec
+        while True:
+            proc = self._worker_proc
+            event = self._worker_ready_event
+            if proc is None or proc.poll() is not None:
+                return False
+            if event.is_set():
+                return True
+            if deadline is not None and time.time() >= deadline:
+                return False
+            event.wait(0.1)
 
     def _stream_task_over_worker_pipe(
         self,
@@ -493,8 +610,9 @@ class MasterSupervisor:
             try:
                 line = proc.stdout.readline()  # type: ignore
                 if not line:
-                    self.logger.error(f"Worker stdout closed unexpectedly during dispatch for module='{target_mod}'")
-                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": "Worker stdout closed unexpectedly"})
+                    err_text = self._worker_eof_error(proc)
+                    self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
+                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": err_text})
                     return 1
 
                 line_str = line.decode("utf-8", errors="replace").strip()
@@ -518,6 +636,12 @@ class MasterSupervisor:
                     self.logger.info(f"Task dispatch finished: module='{target_mod}', exit_code={exit_code}, duration={dur_ms:.1f}ms")
                     break
             except Exception as ex:
+                if proc.pid in self._preempted_pids:
+                    # EC-02: pipe closed by a preempting restart/stop
+                    self._preempted_pids.discard(proc.pid)
+                    self.logger.warning(f"Dispatch for module='{target_mod}' preempted: {_PREEMPTED_ERROR}")
+                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": _PREEMPTED_ERROR})
+                    return 1
                 self.logger.error(f"Exception during worker stream reading: {ex}", exc_info=ex)
                 chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(ex)})
                 return 1
@@ -525,8 +649,20 @@ class MasterSupervisor:
         self._last_active_time = time.time()
         return exit_code
 
+    def _worker_eof_error(self, proc: subprocess.Popen) -> str:
+        """Classifies a worker stdout EOF as preemption (EC-02) or unexpected closure."""
+        if proc.pid in self._preempted_pids:
+            self._preempted_pids.discard(proc.pid)
+            return _PREEMPTED_ERROR
+        return "Worker stdout closed unexpectedly"
+
     def dispatch_task(self, req_data: Dict[str, Any], chunk_emitter: Any) -> int:
-        """Dispatches a CLI task to the warm worker sequentially under _dispatch_lock."""
+        """
+        Dispatches a CLI task to the warm worker sequentially under `_dispatch_lock`.
+
+        Tracks `current_task` for status reporting, waits for a warming worker to become
+        ready (FR-09), and converts `WorkerSpawnError` into a failing `task_finish` (EC-08).
+        """
         self._last_active_time = time.time()
         self._tasks_executed += 1
 
@@ -535,17 +671,48 @@ class MasterSupervisor:
         self.logger.info(f"Task dispatch requested: module='{target_mod}', args={cmd_args}")
 
         with self._dispatch_lock:
-            proc = self._ensure_ready_worker()
-            req_payload = {
-                "action": "dispatch",
-                "module": req_data["module"],
-                "args": cmd_args,
-                "cwd": req_data.get("cwd", self.yscb_root),
-                "env": req_data.get("env"),
-            }
-            return self._stream_task_over_worker_pipe(proc, target_mod, req_payload, chunk_emitter)
+            self._current_task = {"module": target_mod, "args": list(cmd_args), "started_at": time.time()}
+            try:
+                try:
+                    proc = self._ensure_ready_worker()
+                except WorkerSpawnError as err:
+                    self.logger.error(f"Task dispatch aborted: {err}")
+                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(err)})
+                    return 1
+                if not self._wait_worker_ready():
+                    err_text = self._worker_eof_error(proc)
+                    if err_text != _PREEMPTED_ERROR:
+                        err_text = "Worker exited before becoming ready"
+                    self.logger.error(f"Task dispatch aborted for module='{target_mod}': {err_text}")
+                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": err_text})
+                    return 1
+                req_payload = {
+                    "action": "dispatch",
+                    "module": req_data["module"],
+                    "args": cmd_args,
+                    "cwd": req_data.get("cwd", self.yscb_root),
+                    "env": req_data.get("env"),
+                }
+                return self._stream_task_over_worker_pipe(proc, target_mod, req_payload, chunk_emitter)
+            finally:
+                self._current_task = None
+                # Dispatch is serialized; stale preemption markers never outlive their task
+                self._preempted_pids.clear()
 
     def _spawn_worker_locked(self) -> int:
+        """
+        Spawns a warm worker (caller holds `_worker_lock`) using a two-stage handshake (FR-09).
+
+        Waits up to `worker_alive_timeout_sec` for `worker_alive`; afterwards the worker is in
+        state `warming` and a background reader waits (unbounded while alive) for `worker_ready`.
+        POSIX workers run in their own session so `terminate_popen_tree` can kill the whole tree.
+
+        Returns:
+            int: PID of the alive worker.
+
+        Raises:
+            WorkerSpawnError: if the worker exits or stays silent before `worker_alive` (EC-08).
+        """
         worker_script = os.path.join(os.path.dirname(__file__), "worker.py")
         cmd = [sys.executable, worker_script, "--yscb-root", self.yscb_root]
 
@@ -586,10 +753,15 @@ class MasterSupervisor:
         curr_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = os.pathsep.join([p for p in py_paths if os.path.isdir(p)] + ([curr_pp] if curr_pp else []))
 
-        creationflags = 0
+        popen_kwargs: Dict[str, Any] = {}
         if sys.platform == "win32":
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        else:
+            popen_kwargs["start_new_session"] = True
 
+        ready_event = threading.Event()
+        alive_event = threading.Event()
+        self._worker_ready_event = ready_event
         proc = subprocess.Popen(
             cmd,
             cwd=self.yscb_root,
@@ -597,8 +769,8 @@ class MasterSupervisor:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            creationflags=creationflags,
             bufsize=0,
+            **popen_kwargs,
         )
         self._worker_proc = proc
 
@@ -620,9 +792,7 @@ class MasterSupervisor:
 
         threading.Thread(target=_drain_stderr, args=(proc.stderr, proc.pid), daemon=True, name=f"worker-stderr-{proc.pid}").start()
 
-        ready_event = threading.Event()
-
-        def _read_ready() -> None:
+        def _read_handshake() -> None:
             try:
                 while True:
                     line = proc.stdout.readline()  # type: ignore
@@ -632,27 +802,44 @@ class MasterSupervisor:
                     if not line_str:
                         continue
                     data = json.loads(line_str)
-                    if data.get("type") == "log":
+                    pkt_type = data.get("type")
+                    if pkt_type == "log":
                         self.logger.log(data.get("level", "INFO"), data.get("msg", ""), component=data.get("component", "worker"))
                         continue
-                    if data.get("type") == "worker_ready":
+                    if pkt_type == "worker_alive":
+                        alive_event.set()
+                        continue
+                    if pkt_type == "worker_ready":
                         if "services" in data and isinstance(data["services"], list):
                             self._worker_services = data["services"]
+                        alive_event.set()
                         ready_event.set()
+                        if self._worker_proc is proc:
+                            self._warming_since = None
+                        self.logger.info(f"Warm Worker (PID: {proc.pid}) ready")
                         break
-            except Exception:
-                pass
+            except (OSError, ValueError) as err:
+                # Pipe closed by kill or malformed handshake line: the worker is treated as not ready
+                self.logger.warning(f"Warm Worker (PID: {proc.pid}) handshake reader stopped: {err}")
 
-        t = threading.Thread(target=_read_ready, daemon=True, name=f"worker-ready-{proc.pid}")
+        t = threading.Thread(target=_read_handshake, daemon=True, name=f"worker-handshake-{proc.pid}")
         t.start()
-        t.join(timeout=3.0)
 
-        if not ready_event.is_set() or proc.poll() is not None:
-            self.logger.warning(f"Warm Worker (PID: {proc.pid}) failed readiness handshake or exited prematurely; cleaning up.")
+        deadline = time.time() + self._worker_alive_timeout_sec
+        while not alive_event.is_set() and time.time() < deadline and proc.poll() is None:
+            alive_event.wait(0.05)
+
+        if not alive_event.is_set() or proc.poll() is not None:
+            reason = "exited prematurely" if proc.poll() is not None else (
+                f"sent no worker_alive within {self._worker_alive_timeout_sec:.1f}s"
+            )
+            self.logger.warning(f"Warm Worker (PID: {proc.pid}) failed alive handshake ({reason}); cleaning up.")
             self._kill_worker_locked(timeout_sec=1.0)
             t.join(timeout=0.5)
-            return 0
+            raise WorkerSpawnError(f"Warm Worker (PID: {proc.pid}) failed alive handshake: {reason}")
 
+        if not ready_event.is_set():
+            self._warming_since = time.time()
         return proc.pid
 
     def _idle_ttl_loop(self) -> None:
@@ -685,12 +872,16 @@ class MasterSupervisor:
             pass
 
     def _cleanup_state(self) -> None:
-        for fp in (self.state_file, self.lock_file):
-            try:
-                if os.path.exists(fp):
-                    os.remove(fp)
-            except OSError:
-                pass
+        """
+        Removes daemon.json only. daemon.lock is intentionally kept (FR-13): deleting it would let
+        a concurrent starter lock a fresh inode while another holds the unlinked one; liveness is
+        always decided by lock ownership (EC-11).
+        """
+        try:
+            if os.path.exists(self.state_file):
+                os.remove(self.state_file)
+        except OSError as err:
+            self.logger.warning(f"Failed to remove daemon state file {self.state_file}: {err}")
 
 
 def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
@@ -782,7 +973,12 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
             if parsed.path == "/api/dispatch":
                 self._handle_post_dispatch(t0)
             elif parsed.path == "/api/reload":
-                new_pid = supervisor.restart_worker()
+                try:
+                    new_pid = supervisor.restart_worker()
+                except WorkerSpawnError as err:
+                    self._send_json_response(500, {"error": str(err)})
+                    supervisor.logger.error(f"HTTP POST /api/reload -> 500 ({err})")
+                    return
                 self._send_json_response(200, {"status": "worker_restarted", "new_worker_pid": new_pid})
                 dur_ms = (time.time() - t0) * 1000.0
                 supervisor.logger.info(f"HTTP POST /api/reload -> 200 ({dur_ms:.1f}ms, New PID: {new_pid})")

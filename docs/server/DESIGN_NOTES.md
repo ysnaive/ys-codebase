@@ -14,7 +14,7 @@ related_docs:
   - "./daemon_architecture.md"
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
-last_updated: "2026-11-01"
+last_updated: "2026-11-03"
 ---
 
 # Server 模組工程妥協與防坑邊界 (DESIGN_NOTES.md)
@@ -32,6 +32,8 @@ last_updated: "2026-11-01"
 | **[DN-07]** | Server 執行期零 `source/` 嚴格沙盒路徑隔離與動態 Provider 注入 | `server/master.py`, `server/service.py` | High |
 | **[DN-08]** | `WarmWorker.pre_warm()` 服務路徑先行載入時序與 `MasterSupervisor.stop()` 冪等防重入 | `server/worker.py`, `server/master.py` | High |
 | **[DN-09]** | 未來擴充 `locales` 在地化字典時之 `core >= 1.2.0` 相依版本連動約束 | `manifest.json`, `contributes/core.json` | Medium |
+| **[DN-10]** | `daemon.lock` 永不刪除（僅刪 `daemon.json`） | `server/master.py`, `scripts/cli.py` | High |
+| **[DN-11]** | 嚴格熱派發於請求已送達後絕不重試 | `core/commands/dispatcher.py` | High |
 
 ---
 
@@ -146,4 +148,20 @@ last_updated: "2026-11-01"
   1. 凡未來於 `server` 新增 `locales/` 與 `contributes/core.json` `"locales"` 宣告時，**必須同步將 `ys_codebase/source/server/manifest.json` 的 `"dependencies": {"core": ">=1.2.0"}` 版本下限一併調升**。
   2. `dev check` (`Checker._check_core_injection`) 已內建剛性靜態防呆：一旦偵測到非 `core` 模組宣告 `"locales"` 但 `manifest.json` 中 `core` 相依版本容許 `< 1.2.0`，將直接報 `[FAIL]` 攔截。
 
+---
 
+### [DN-10] `daemon.lock` 永不刪除（僅刪 `daemon.json`）
+- **背景與陷阱**：若關閉時刪除 `daemon.lock`，持有舊檔 fd 的進程與新建同名檔的進程鎖的是不同 inode，兩者都能「取得」鎖，導致多個 Master 並存。
+- **工程決策**：`_cleanup_state()` 只刪 `daemon.json`；daemon 活躍與否一律以能否取得 `daemon.lock` 判定，檔案長期存在屬正常。
+
+> [!CAUTION]
+> 嚴禁在 `stop()`、`server stop` 或任何清理路徑中刪除 `daemon.lock`，也嚴禁以「鎖檔存在」作為 daemon 活躍判據。
+
+---
+
+### [DN-11] 嚴格熱派發於請求已送達後絕不重試
+- **背景與陷阱**：熱派發可能在請求送達 server 之後才失敗（串流中斷、讀取逾時、Worker 被搶占）。此時任務可能已在 Worker 執行或執行完畢，若重試（或 auto-spawn 後重送）會造成同一指令雙重執行。
+- **工程決策**：`_hot_dispatch_attempt` 以 `_HotDispatchResult.accepted` 區分「未送達」與「已送達」；`strict_hot_dispatch` 僅對 `accepted=false` 執行 auto-spawn + 單次重試，`accepted=true` 之失敗直接回傳 `1`。
+
+> [!CAUTION]
+> 修改 `_strict_hot_dispatch_or_block` 或熱派發客戶端時，嚴禁把「已送達後失敗」併入重試路徑，也嚴禁在送達後的錯誤處理中丟失 `accepted` 標記。
