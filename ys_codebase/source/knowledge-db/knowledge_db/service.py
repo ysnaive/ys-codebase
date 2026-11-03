@@ -420,10 +420,16 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 return
 
             batch_size = max(1, int(getattr(engine.config, "vector_batch_size", 32) or 32))
+            batches_since_persist = 0
+            last_persist_ts = time.monotonic()
             while not self._stop_event.is_set():
                 # If new code changes arrived during Stage 2, immediately prioritize Stage 1!
                 if self._wake_event.is_set() and self._has_pending_space_work(engine, indices_dir):
                     self._wake_event.clear()
+                    if getattr(engine.pipeline, "_vector_index_dirty", False):
+                        engine.pipeline.flush_vector_index()
+                        batches_since_persist = 0
+                        last_persist_ts = time.monotonic()
                     _mark_busy("stage1_ast_bm25_graph", "插隊同步最新變更之 AST / BM25 / 圖譜")
                     self._sync_stage1_lexical_and_graph(engine, indices_dir)
                     self._space_diffs_processed += 1
@@ -438,12 +444,23 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     "stage2_vector_microbatch",
                     f"向量增量嵌入 ({embedded_before}/{total_syms})",
                 )
-                res = engine.pipeline.sync_vector_deficit_step(batch_size=batch_size)
+                should_persist = (
+                    (batches_since_persist + 1) >= 8
+                    or (time.monotonic() - last_persist_ts) >= 2.0
+                )
+                res = engine.pipeline.sync_vector_deficit_step(
+                    batch_size=batch_size,
+                    persist=should_persist,
+                )
                 embedded_step = int(res.get("embedded_in_step", 0))
                 removed_step = int(res.get("removed_stale", 0))
                 if embedded_step > 0 or removed_step > 0:
                     self._vector_batches_processed += 1
                     self._last_sync_at = time.time()
+                    batches_since_persist += 1
+                if should_persist or res.get("remaining", 0) <= 0:
+                    batches_since_persist = 0
+                    last_persist_ts = time.monotonic()
                 if res.get("remaining", 0) <= 0 or (embedded_step == 0 and removed_step == 0):
                     break
                 # Brief yield between micro-batches
@@ -451,6 +468,11 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         except Exception as exc:
             logger.warning("[knowledge-db-worker] Sync cycle warning: %s", exc)
         finally:
+            try:
+                if getattr(engine.pipeline, "_vector_index_dirty", False):
+                    engine.pipeline.flush_vector_index()
+            except Exception as flush_err:
+                logger.warning("[knowledge-db-worker] Flush vector index on exit warning: %s", flush_err)
             if busy_start_ts > 0.0:
                 clear_worker_state(indices_dir, worker_running=not self._stop_event.is_set())
 

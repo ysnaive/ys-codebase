@@ -117,6 +117,9 @@ class FileSpaceManager:
         else:
             self._explicit_contributed_spaces = None
         self._uri_resolver = uri_resolver
+        self._cached_project_root: Optional[Path] = (
+            self._explicit_project_root
+        )
         self._spaces: Dict[str, FileSpaceConfig] = {}
         self._ephemeral_spaces: Dict[str, FileSpaceConfig] = {}
         self._loaded = False
@@ -125,17 +128,24 @@ class FileSpaceManager:
     @property
     def project_root(self) -> Path:
         """Resolve and return the host workspace root directory."""
+        if self._cached_project_root is not None:
+            return self._cached_project_root
         if self._explicit_project_root is not None:
-            return self._explicit_project_root
+            self._cached_project_root = self._explicit_project_root
+            return self._cached_project_root
         resolved = self._resolve_uri("project://")
         if resolved is not None:
             if resolved.name == "ys_codebase" and (resolved.parent / "ys_codebase").is_dir():
-                return resolved.parent.resolve()
-            return resolved.resolve()
+                self._cached_project_root = resolved.parent.resolve()
+            else:
+                self._cached_project_root = resolved.resolve()
+            return self._cached_project_root
         cwd = Path.cwd().resolve()
         if cwd.name == "ys_codebase":
-            return cwd.parent
-        return cwd
+            self._cached_project_root = cwd.parent
+        else:
+            self._cached_project_root = cwd
+        return self._cached_project_root
 
     @property
     def storage_root(self) -> Path:
@@ -467,10 +477,14 @@ class FileSpaceManager:
             owner_modules=["project"],
         )
 
-    def load_spaces(self) -> Dict[str, FileSpaceConfig]:
+    def load_spaces(self, force: bool = False) -> Dict[str, FileSpaceConfig]:
         """
         Load and merge all module-contributed, project-configured, and ephemeral spaces.
+        When already loaded and `force=False`, returns a shallow copy of the cached map.
         """
+        if self._loaded and not force:
+            return dict(self._spaces)
+
         merged_spaces: Dict[str, FileSpaceConfig] = {}
         self._load_contributed_space_configs(merged_spaces)
         self._apply_project_space_overrides(merged_spaces)
@@ -679,16 +693,22 @@ class FileSpaceManager:
         return None
 
     def _compute_rel_path(
-        self, abs_file: Path, inc_root: Path, multi_root: bool
+        self,
+        abs_file: Path,
+        inc_root: Path,
+        multi_root: bool,
+        proj_root: Optional[Path] = None,
     ) -> str:
-        proj_root = self.project_root.resolve()
+        effective_proj_root = (
+            proj_root if proj_root is not None else self.project_root
+        )
         if not multi_root:
             try:
                 return abs_file.relative_to(inc_root).as_posix()
             except ValueError:
                 pass
         try:
-            return abs_file.relative_to(proj_root).as_posix()
+            return abs_file.relative_to(effective_proj_root).as_posix()
         except ValueError:
             try:
                 return abs_file.relative_to(inc_root).as_posix()
@@ -706,6 +726,7 @@ class FileSpaceManager:
             [space_name] if space_name is not None else self.list_spaces()
         )
         seen_rel_paths: Set[str] = set()
+        proj_root = self.project_root
 
         for s_name in target_names:
             cfg = self.get_space(s_name)
@@ -722,6 +743,7 @@ class FileSpaceManager:
                     multi_root=multi_root,
                     visited_dirs=visited_dirs,
                     collected=collected,
+                    proj_root=proj_root,
                 )
 
             collected.sort(key=lambda item: item[0])
@@ -739,6 +761,7 @@ class FileSpaceManager:
         multi_root: bool,
         visited_dirs: Set[Tuple[int, int]],
         collected: List[Tuple[str, Path, Path]],
+        proj_root: Optional[Path] = None,
     ) -> None:
         try:
             dir_stat = current_dir.stat()
@@ -773,16 +796,23 @@ class FileSpaceManager:
                         multi_root=multi_root,
                         visited_dirs=visited_dirs,
                         collected=collected,
+                        proj_root=proj_root,
                     )
                 elif entry.is_file(follow_symlinks=cfg.follow_symlinks):
                     if not cfg.is_file_included(rel_to_root):
                         continue
+                    target_file_path = (
+                        entry_path
+                        if (not is_symlink and not cfg.follow_symlinks)
+                        else (entry_path.resolve() if not is_symlink else entry_path)
+                    )
                     rel_path = self._compute_rel_path(
-                        entry_path.resolve() if not is_symlink else entry_path,
+                        target_file_path,
                         inc_root,
                         multi_root,
+                        proj_root=proj_root,
                     )
-                    collected.append((rel_path, Path(entry.path), inc_root))
+                    collected.append((rel_path, entry_path, inc_root))
             except OSError:
                 continue
 

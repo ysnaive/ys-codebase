@@ -12,7 +12,7 @@ import stat
 import threading
 import functools
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
 from core import uri, vfs, semver, events, PipManager
 from dev.checker import discover_source_modules
 
@@ -423,24 +423,7 @@ class SandboxProvisioner:
 
         sandbox_modules_dir = os.path.join(ctx.engine_dir, ".modules")
         os.makedirs(sandbox_modules_dir, exist_ok=True)
-        cand_host_modules = []
-        if vfs.exists("module://"):
-            cand_host_modules.append(uri.resolve("module://"))
-        yscb_d = uri.resolve("yscb://")
-        cand_host_modules.append(os.path.join(yscb_d, ".modules"))
-        cand_host_modules.append(os.path.join(yscb_d, "modules"))
-
-        for host_modules_dir in cand_host_modules:
-            if os.path.isdir(host_modules_dir):
-                for mod_name in sorted(os.listdir(host_modules_dir)):
-                    if mod_name.startswith("."):
-                        continue
-                    mod_src_path = os.path.join(host_modules_dir, mod_name)
-                    if os.path.isdir(mod_src_path):
-                        dest_mod = os.path.join(sandbox_modules_dir, mod_name)
-                        if not os.path.exists(dest_mod):
-                            shutil.copytree(mod_src_path, dest_mod, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-
+        deployed_from_build: Set[str] = set()
         if vfs.exists("module.build://"):
             build_root_dir = uri.resolve("module.build://")
             if os.path.isdir(build_root_dir):
@@ -451,13 +434,32 @@ class SandboxProvisioner:
                     if latest_zip:
                         dest_mod = os.path.join(sandbox_modules_dir, mod_name)
                         if os.path.exists(dest_mod):
-                            shutil.rmtree(dest_mod)
+                            shutil.rmtree(dest_mod, ignore_errors=True)
                         os.makedirs(dest_mod, exist_ok=True)
                         try:
                             with zipfile.ZipFile(latest_zip, "r") as zf:
                                 zf.extractall(dest_mod)
+                            deployed_from_build.add(mod_name)
                         except (zipfile.BadZipFile, OSError):
-                            pass
+                            shutil.rmtree(dest_mod, ignore_errors=True)
+
+        cand_host_modules = []
+        if vfs.exists("module://"):
+            cand_host_modules.append(uri.resolve("module://"))
+        yscb_d = uri.resolve("yscb://")
+        cand_host_modules.append(os.path.join(yscb_d, ".modules"))
+        cand_host_modules.append(os.path.join(yscb_d, "modules"))
+
+        for host_modules_dir in cand_host_modules:
+            if os.path.isdir(host_modules_dir):
+                for mod_name in sorted(os.listdir(host_modules_dir)):
+                    if mod_name.startswith(".") or mod_name in deployed_from_build:
+                        continue
+                    mod_src_path = os.path.join(host_modules_dir, mod_name)
+                    if os.path.isdir(mod_src_path):
+                        dest_mod = os.path.join(sandbox_modules_dir, mod_name)
+                        if not os.path.exists(dest_mod):
+                            shutil.copytree(mod_src_path, dest_mod, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
         for mod_name in sorted(os.listdir(sandbox_modules_dir)):
             if mod_name.startswith("."):

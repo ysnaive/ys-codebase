@@ -14,7 +14,7 @@ related_docs:
   - "./DESIGN_NOTES.md"
   - "../file-space/README.md"
   - "../knowledge-db/README.md"
-last_updated: "2026-11-02"
+last_updated: "2026-11-03"
 ---
 
 # AST 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎手冊 (AST Overview)
@@ -43,8 +43,9 @@ last_updated: "2026-11-02"
   - 當檔案內型別為 `partial` 且同空間存在其他同 FQN 分部檔時，預設僅顯示本物理檔案之 `_own_members`，並自動附帶 `[Partial Siblings]` 提示列出其餘分部檔案與成員數摘要（加 `--merged` 可展開跨分部合併視圖）。
 - **按需語法依賴自舉 (On-Demand Grammar Provisioning) 之 `stderr` 與離線圍欄**：
   - 動態安裝日誌與離線降級 Warning 100% 導向 `sys.stderr`，內建會話級負快取避免重複重試，保證 `--json` stdout 在任何網路/沙盒環境下 100% 純淨可解析。
-- **Single-Parse Symbol Sharing 與 Pull-Based JIT 熱自癒**：
-  - 以 `consumer_id="ast"` 消費 `file-space` 指紋差量，原子持久化 `ast.storage://indices/unified.symbols.bin.gz` (`ASTSnapshot`) 與 `unified.graph.bin.gz` (`CallGraphIndex`)，並透過 `scripts/hook.file-space.py` 訂閱 `on_file_space_changed` 自動熱修補及廣播 `on_ast_index_updated`。
+- **Single-Parse Symbol Sharing、單次讀檔建置與 $O(|\text{dirty}|)$ Pull-Based JIT 熱自癒**：
+  - 全量建置 `bundle_union` 於單次讀檔中同時提取 `(symbols, call_sites, imports)` 並緩存於 `SemanticBundler`（`_file_call_sites_cache` / `_file_imports_cache`），使後續 `extract_all_call_sites_and_imports` 零重複讀盤。
+  - 以 `consumer_id="ast"` 消費 `file-space` 指紋差量；單檔或增量熱修補 `hot_patch_index` 透過 `_resolve_dirty_files_only` 直接從 `YFP2` 快照與空間 `include` 根目錄以 $O(|\text{dirty}|)$ 定位異動檔案（零全倉走訪）、透過 `file_to_symbol_ids` 快速淘汰舊符號並增量合成 `files_map`，原子持久化 `ast.storage://indices/unified.symbols.bin.gz` (`ASTSnapshot`) 與 `unified.graph.bin.gz` (`CallGraphIndex`)，並透過 `scripts/hook.file-space.py` 訂閱 `on_file_space_changed` 自動熱修補及廣播 `on_ast_index_updated`。
 
 ---
 

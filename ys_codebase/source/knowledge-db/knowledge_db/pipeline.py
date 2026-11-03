@@ -179,6 +179,7 @@ class IndexingPipeline:
         self.config = config
         self._vector_degraded: bool = False
         self._last_degrade_notice: Optional[str] = None
+        self._vector_index_dirty: bool = False
 
         self._index_cache: Dict[str, InvertedIndex] = {}
         self._unified_index: Optional[InvertedIndex] = None
@@ -268,7 +269,7 @@ class IndexingPipeline:
                             self.hybrid_engine.vector_index = _GLOBAL_INDEX_CACHE["vector_index"]
                 except Exception as e:
                     logger.warning(f"Failed loading vector index cache: {e}")
-            else:
+            elif not getattr(self, "_vector_index_dirty", False):
                 with _CACHE_LOCK:
                     if _GLOBAL_INDEX_CACHE["vector_mtime"] > 0.0 or _GLOBAL_INDEX_CACHE["vector_index"] is not None:
                         _GLOBAL_INDEX_CACHE["vector_index"] = None
@@ -765,16 +766,34 @@ class IndexingPipeline:
                 "compatible": compatible,
             }
 
-    def sync_vector_deficit_step(self, batch_size: int = 32) -> Dict[str, int]:
+    def flush_vector_index(self) -> bool:
+        """原子持久化記憶體中之 vector_index 至 unified.vectors.bin.gz 並同步 _GLOBAL_INDEX_CACHE。"""
+        with self._index_lock:
+            vec_idx = getattr(self.hybrid_engine, "vector_index", None)
+            if vec_idx is None or getattr(vec_idx, "vectors", None) is None:
+                self._vector_index_dirty = False
+                return False
+            indices_dir = self.get_indices_dir()
+            vector_file = indices_dir / "unified.vectors.bin.gz"
+            vec_idx.save_binary(vector_file)
+            self._vector_index_dirty = False
+            with _CACHE_LOCK:
+                _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
+                _GLOBAL_INDEX_CACHE["vector_index"] = vec_idx
+                _GLOBAL_INDEX_CACHE["vector_mtime"] = (
+                    vector_file.stat().st_mtime if vector_file.exists() else time.time()
+                )
+            return True
+
+    def sync_vector_deficit_step(self, batch_size: int = 32, persist: bool = True) -> Dict[str, int]:
         """
         執行單步微批次（Micro-batch）向量差集自癒：
-        1. 剔除已不存在於 unified_index.symbols 之陳舊 doc_ids。
-        2. 選取前 batch_size 個缺少向量之符號計算嵌入並原子持久化至 unified.vectors.bin.gz。
+        1. 鎖內選取待淘汰之陳舊 doc_ids 與前 batch_size 個缺少向量之符號文本。
+        2. 鎖外執行 embedding_service.embed_texts()，避免阻塞前景檢索。
+        3. 重新進入鎖內二次確認存活符號、更新記憶體 vector_index，並依 persist 參數或完成狀態原子持久化。
         回傳 {"embedded_in_step": int, "removed_stale": int, "remaining": int, "total_symbols": int}。
         """
         with self._index_lock:
-            indices_dir = self.get_indices_dir()
-            vector_file = indices_dir / "unified.vectors.bin.gz"
             self._ensure_indices_loaded(load_vectors=True)
 
             idx = self._unified_index
@@ -809,6 +828,8 @@ class IndexingPipeline:
             missing_ids = [sid for sid in sym_ids_ordered if sid not in vec_ids_set]
 
             if not stale_ids and not missing_ids:
+                if getattr(self, "_vector_index_dirty", False) and persist:
+                    self.flush_vector_index()
                 self._vector_degraded = False
                 self._last_degrade_notice = None
                 return {
@@ -819,43 +840,75 @@ class IndexingPipeline:
                 }
 
             batch_ids = missing_ids[: max(1, int(batch_size))]
-            new_vecs = None
-            if batch_ids:
-                batch_texts = [format_symbol_embedding_text(idx.symbols[sid]) for sid in batch_ids]
-                new_vecs = self.embedding_service.embed_texts(batch_texts, batch_size=len(batch_texts))
-                if new_vecs is None or len(new_vecs) != len(batch_ids):
-                    return {
-                        "embedded_in_step": 0,
-                        "removed_stale": 0,
-                        "remaining": len(missing_ids),
-                        "total_symbols": len(sym_ids_ordered),
-                    }
+            batch_texts = [format_symbol_embedding_text(idx.symbols[sid]) for sid in batch_ids] if batch_ids else []
+
+        new_vecs = None
+        if batch_ids:
+            new_vecs = self.embedding_service.embed_texts(batch_texts, batch_size=len(batch_texts))
+            if new_vecs is None or len(new_vecs) != len(batch_ids):
+                return {
+                    "embedded_in_step": 0,
+                    "removed_stale": 0,
+                    "remaining": len(missing_ids),
+                    "total_symbols": len(sym_ids_ordered),
+                }
+
+        with self._index_lock:
+            idx = self._unified_index
+            vec_idx = getattr(self.hybrid_engine, "vector_index", None)
+            if idx is None or not idx.symbols or vec_idx is None:
+                return {"embedded_in_step": 0, "removed_stale": 0, "remaining": 0, "total_symbols": 0}
+
+            current_sym_ids = set(idx.symbols.keys())
+            valid_batch_ids: List[str] = []
+            valid_indices: List[int] = []
+            if batch_ids and new_vecs is not None:
+                for pos, sid in enumerate(batch_ids):
+                    if sid in current_sym_ids:
+                        valid_batch_ids.append(sid)
+                        valid_indices.append(pos)
+
+            valid_new_vecs = None
+            if valid_batch_ids and new_vecs is not None:
+                if len(valid_indices) == len(batch_ids):
+                    valid_new_vecs = new_vecs
+                else:
+                    import numpy as np
+
+                    arr = np.asarray(new_vecs, dtype=np.float32)
+                    valid_new_vecs = arr[valid_indices]
+
+            current_stale_ids = set(vec_idx.doc_ids) - current_sym_ids
+            all_stale_to_remove = stale_ids | current_stale_ids
 
             vec_idx.model_name = expected_model
             vec_idx.dim = expected_dim
             vec_idx.patch_incremental(
-                removed_doc_ids=stale_ids,
-                new_doc_ids=batch_ids,
-                new_vectors=new_vecs,
+                removed_doc_ids=all_stale_to_remove,
+                new_doc_ids=valid_batch_ids,
+                new_vectors=valid_new_vecs,
             )
-            vec_idx.save_binary(vector_file)
             self.hybrid_engine.vector_index = vec_idx
+            self._vector_index_dirty = True
 
-            remaining = max(0, len(missing_ids) - len(batch_ids))
+            updated_vec_ids = set(vec_idx.doc_ids)
+            remaining = len(current_sym_ids - updated_vec_ids)
             if remaining == 0:
                 self._vector_degraded = False
                 self._last_degrade_notice = None
 
-            with _CACHE_LOCK:
-                _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
-                _GLOBAL_INDEX_CACHE["vector_index"] = vec_idx
-                _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
+            if persist or remaining == 0:
+                self.flush_vector_index()
+            else:
+                with _CACHE_LOCK:
+                    _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
+                    _GLOBAL_INDEX_CACHE["vector_index"] = vec_idx
 
             return {
-                "embedded_in_step": len(batch_ids),
-                "removed_stale": len(stale_ids),
+                "embedded_in_step": len(valid_batch_ids),
+                "removed_stale": len(all_stale_to_remove),
                 "remaining": remaining,
-                "total_symbols": len(sym_ids_ordered),
+                "total_symbols": len(current_sym_ids),
             }
 
     def build_index(
@@ -912,7 +965,12 @@ class IndexingPipeline:
         if space is not None:
             targets = [self.space_manager.get_space(space)]
         else:
-            targets = list(self.space_manager.load_spaces().values())
+            loaded_spaces = (
+                self.space_manager.get_all_spaces()
+                if hasattr(self.space_manager, "get_all_spaces")
+                else self.space_manager.load_spaces()
+            )
+            targets = list(loaded_spaces.values())
         for sp in targets:
             sp_name = sp.name
             bundle_file = self.storage_dir / "bundles" / f"{sp_name}.bundle.json"
@@ -946,6 +1004,7 @@ class IndexingPipeline:
         except Exception:
             pass
         self._unified_index = None
+        self._vector_index_dirty = False
         self.hybrid_engine.vector_index = VectorIndex()
         with _CACHE_LOCK:
             _GLOBAL_INDEX_CACHE["storage_dir"] = None
@@ -1062,7 +1121,11 @@ class IndexingPipeline:
         if hasattr(self.hybrid_engine, "space_weights") and self.hybrid_engine.space_weights:
             return dict(self.hybrid_engine.space_weights)
         try:
-            loaded_spaces = self.space_manager.load_spaces()
+            loaded_spaces = (
+                self.space_manager.get_all_spaces()
+                if hasattr(self.space_manager, "get_all_spaces")
+                else self.space_manager.load_spaces()
+            )
             return {
                 sp_name: float(sp_cfg.weight)
                 for sp_name, sp_cfg in loaded_spaces.items()

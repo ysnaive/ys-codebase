@@ -225,6 +225,38 @@ def _get_contributes_meta_uri() -> str:
     return "cache://core/contributes.meta.json"
 
 
+# In-memory cache: (yscb_root, target_module) -> (meta_mtime, merged_mtime, merged_dict)
+_MERGED_MEMORY_CACHE: Dict[Tuple[str, str], Tuple[float, float, Dict[str, Any]]] = {}
+# Monotonic timestamp of last verified clean input scan per yscb_root
+_LAST_CLEAN_SCAN_TS: Dict[str, Tuple[float, float]] = {}
+# Short window (seconds) within which consecutive get() calls skip full directory walk
+# provided contributes.meta.json and contributes.merged.json mtimes have not changed.
+_CLEAN_SCAN_WINDOW_SEC: float = 0.04
+
+
+def invalidate_cache(target_module: Optional[str] = None) -> None:
+    """
+    手動清空 contributes 程序內記憶體快取與免掃時窗標記。
+    若指定 target_module 則僅清除該目標模組之已合併字典快取，並重置免掃時窗。
+    """
+    _LAST_CLEAN_SCAN_TS.clear()
+    if target_module:
+        stale_keys = [k for k in _MERGED_MEMORY_CACHE if k[1] == target_module]
+        for k in stale_keys:
+            _MERGED_MEMORY_CACHE.pop(k, None)
+    else:
+        _MERGED_MEMORY_CACHE.clear()
+
+
+def _safe_file_mtime(file_path: str) -> float:
+    """安全取得實體檔案 mtime，不存在時回傳 0.0。"""
+    try:
+        return os.stat(file_path).st_mtime
+    except OSError:
+        return 0.0
+
+
+
 def _record_file_stat(files_snapshot: Dict[str, Tuple[float, int]], file_path: str) -> None:
     """若實體檔案存在，記錄其 (mtime, size) 至快照字典。"""
     if os.path.isfile(file_path):
@@ -364,22 +396,86 @@ def _is_contributes_dirty(target_module: Optional[str] = None) -> Tuple[bool, Di
 
 def get(target_module: str, key: Optional[str] = None, default: Any = None) -> Any:
     """
-    標準 Contributes 查詢 SDK (支援 JIT 變更嗅探與熱自愈):
+    標準 Contributes 查詢 SDK (支援程序內記憶體快取、JIT 變更嗅探與熱自愈):
     查詢指定目標模組之已合併 Contributes 字典或特定鍵值。
     """
+    try:
+        yscb_root = uri.resolve_yscb_root()
+    except Exception:
+        yscb_root = ""
+
     cache_file = f"cache://{target_module}/contributes.merged.json"
+    meta_uri = _get_contributes_meta_uri()
+    cache_key = (yscb_root, target_module)
+
+    prev_reentrancy = getattr(uri._URI_REENTRANCY, "active", False)
+    uri._URI_REENTRANCY.active = True
+    try:
+        meta_abs = uri.resolve(meta_uri, interactive=False)
+        merged_abs = uri.resolve(cache_file, interactive=False)
+    except Exception:
+        meta_abs = ""
+        merged_abs = ""
+    finally:
+        uri._URI_REENTRANCY.active = prev_reentrancy
+
+    meta_mtime = _safe_file_mtime(meta_abs) if meta_abs else 0.0
+    merged_mtime = _safe_file_mtime(merged_abs) if merged_abs else 0.0
+
+    now_mono = time.monotonic()
+    cached_entry = _MERGED_MEMORY_CACHE.get(cache_key)
+    last_clean = _LAST_CLEAN_SCAN_TS.get(yscb_root)
+
+    if (
+        cached_entry is not None
+        and meta_mtime > 0.0
+        and merged_mtime > 0.0
+        and cached_entry[0] == meta_mtime
+        and cached_entry[1] == merged_mtime
+        and last_clean is not None
+        and last_clean[0] == meta_mtime
+        and (now_mono - last_clean[1]) < _CLEAN_SCAN_WINDOW_SEC
+    ):
+        data = cached_entry[2]
+        if key is not None:
+            return data.get(key, default)
+        return data if data else default
+
     is_dirty, _ = _is_contributes_dirty(target_module)
     data = None
-    if not is_dirty and vfs.exists(cache_file):
-        try:
-            data = vfs.read_json(cache_file)
-        except Exception:
-            data = None
+    if not is_dirty:
+        meta_mtime = _safe_file_mtime(meta_abs) if meta_abs else 0.0
+        merged_mtime = _safe_file_mtime(merged_abs) if merged_abs else 0.0
+        if meta_mtime > 0.0:
+            _LAST_CLEAN_SCAN_TS[yscb_root] = (meta_mtime, time.monotonic())
+        if (
+            cached_entry is not None
+            and meta_mtime > 0.0
+            and merged_mtime > 0.0
+            and cached_entry[0] == meta_mtime
+            and cached_entry[1] == merged_mtime
+        ):
+            data = cached_entry[2]
+        elif vfs.exists(cache_file):
+            try:
+                loaded = vfs.read_json(cache_file)
+                if isinstance(loaded, dict):
+                    data = loaded
+                    if meta_mtime > 0.0 and merged_mtime > 0.0:
+                        _MERGED_MEMORY_CACHE[cache_key] = (meta_mtime, merged_mtime, data)
+            except Exception:
+                data = None
 
     if data is None or not isinstance(data, dict):
         aggregator = ContributesAggregator()
         all_merged = aggregator.scan_and_inject()
         data = all_merged.get(target_module, {})
+        meta_mtime = _safe_file_mtime(meta_abs) if meta_abs else 0.0
+        merged_mtime = _safe_file_mtime(merged_abs) if merged_abs else 0.0
+        if meta_mtime > 0.0:
+            _LAST_CLEAN_SCAN_TS[yscb_root] = (meta_mtime, time.monotonic())
+            if merged_mtime > 0.0 and isinstance(data, dict):
+                _MERGED_MEMORY_CACHE[cache_key] = (meta_mtime, merged_mtime, data)
 
     if key is not None:
         return data.get(key, default)
@@ -626,5 +722,6 @@ class ContributesAggregator:
             self._collect_donor_contributes(donor, aggregated, core_modules_commands, core_modules_locales)
 
         self._apply_project_overrides_and_persist(aggregated, core_modules_locales)
+        invalidate_cache()
         return aggregated
 

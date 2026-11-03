@@ -332,3 +332,87 @@ class TestSandboxArchitecture(YSCBTestCase):
                 zf.namelist()
 
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_deploy_modules_build_zip_skips_copytree_and_falls_back_on_corrupt_zip(self):
+        """FR-07, EC-06: Verify valid .build.zip skips host copytree, and corrupt .build.zip falls back to host copytree."""
+        fake_root = self._mkdtemp()
+        fake_host_modules = os.path.join(fake_root, ".modules")
+        fake_build_root = os.path.join(fake_root, ".build")
+        os.makedirs(fake_host_modules, exist_ok=True)
+        os.makedirs(fake_build_root, exist_ok=True)
+
+        # Module 'mod_valid' has both host .modules/mod_valid and valid .build/mod_valid/1.0.0.build.zip
+        host_mod_valid = os.path.join(fake_host_modules, "mod_valid")
+        os.makedirs(host_mod_valid, exist_ok=True)
+        with open(os.path.join(host_mod_valid, "from_host.txt"), "w", encoding="utf-8") as f:
+            f.write("host_version")
+
+        build_mod_valid = os.path.join(fake_build_root, "mod_valid")
+        os.makedirs(build_mod_valid, exist_ok=True)
+        valid_zip = os.path.join(build_mod_valid, "1.0.0.build.zip")
+        with zipfile.ZipFile(valid_zip, "w") as zf:
+            zf.writestr("manifest.json", json.dumps({"name": "mod_valid", "version": "1.0.0.1"}))
+            zf.writestr("from_build.txt", "build_version")
+
+        # Module 'mod_corrupt' has both host .modules/mod_corrupt and a corrupted .build/mod_corrupt/1.0.0.build.zip
+        host_mod_corrupt = os.path.join(fake_host_modules, "mod_corrupt")
+        os.makedirs(host_mod_corrupt, exist_ok=True)
+        with open(os.path.join(host_mod_corrupt, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "mod_corrupt", "version": "1.0.0.0"}, f)
+        with open(os.path.join(host_mod_corrupt, "fallback_ok.txt"), "w", encoding="utf-8") as f:
+            f.write("recovered_from_host")
+
+        build_mod_corrupt = os.path.join(fake_build_root, "mod_corrupt")
+        os.makedirs(build_mod_corrupt, exist_ok=True)
+        corrupt_zip = os.path.join(build_mod_corrupt, "1.0.0.build.zip")
+        with open(corrupt_zip, "w", encoding="utf-8") as f:
+            f.write("CORRUPT_ZIP_PAYLOAD")
+
+        sb_dir = self._mkdtemp()
+        ctx = SandboxContext(sb_dir)
+        for d in (ctx.sandbox_dir, ctx.project_dir, ctx.host_dir, ctx.engine_dir, ctx.provider_dir):
+            os.makedirs(d, exist_ok=True)
+
+        def mock_exists(u: str) -> bool:
+            if u in ("module://", "module.build://"):
+                return True
+            if u == "module.source://":
+                return False
+            return False
+
+        def mock_resolve(u: str) -> str:
+            if u == "module://":
+                return fake_host_modules
+            if u == "module.build://":
+                return fake_build_root
+            if u == "yscb://":
+                return fake_root
+            return fake_root
+
+        orig_copytree = shutil.copytree
+        copied_srcs = []
+
+        def tracking_copytree(src, dst, *args, **kwargs):
+            copied_srcs.append(os.path.basename(src))
+            return orig_copytree(src, dst, *args, **kwargs)
+
+        with patch("core.vfs.exists", side_effect=mock_exists), \
+             patch("core.uri.resolve", side_effect=mock_resolve), \
+             patch("shutil.copytree", side_effect=tracking_copytree):
+            host_cfg = SandboxProvisioner._deploy_target_and_dependency_modules(ctx, copy_source=False)
+
+        # 1. 'mod_valid' was extracted from .build.zip and NEVER passed to shutil.copytree
+        self.assertNotIn("mod_valid", copied_srcs)
+        sb_valid_dir = os.path.join(ctx.engine_dir, ".modules", "mod_valid")
+        self.assertTrue(os.path.isfile(os.path.join(sb_valid_dir, "from_build.txt")))
+        self.assertFalse(os.path.exists(os.path.join(sb_valid_dir, "from_host.txt")))
+        self.assertEqual(host_cfg["installed_modules"]["mod_valid"]["version"], "1.0.0.1")
+
+        # 2. EC-06: 'mod_corrupt' failed zip extraction, cleaned up empty dir, and fell back to shutil.copytree
+        self.assertIn("mod_corrupt", copied_srcs)
+        sb_corrupt_dir = os.path.join(ctx.engine_dir, ".modules", "mod_corrupt")
+        self.assertTrue(os.path.isfile(os.path.join(sb_corrupt_dir, "fallback_ok.txt")))
+        self.assertEqual(host_cfg["installed_modules"]["mod_corrupt"]["version"], "1.0.0.0")
+        self.mark_passed()
+

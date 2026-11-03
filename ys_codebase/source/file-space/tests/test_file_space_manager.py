@@ -242,3 +242,79 @@ class TestFileSpaceManager(YSCBTestCase):
         traversed = mgr.resolve_file_path("../../secret.py", space_name="source")
         self.assertIsNone(traversed)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft03_load_spaces_caching_project_root_and_symlinks(self) -> None:
+        """FR-02, EC-02: Verify load_spaces(force=False) caching, project_root caching, and follow_symlinks subdirectory behavior."""
+        from unittest.mock import patch
+
+        resolve_calls = 0
+
+        def counting_resolver(raw: str) -> str:
+            nonlocal resolve_calls
+            if raw == "project://":
+                resolve_calls += 1
+                return self.proj_root.as_posix()
+            return ""
+
+        mgr = FileSpaceManager(
+            storage_root=self.storage_root,
+            spaces_config={
+                "source": {
+                    "include": [self.src_dir.as_posix()],
+                    "file_patterns": ["*.py"],
+                }
+            },
+            contributed_spaces={},
+            uri_resolver=counting_resolver,
+        )
+
+        # 1. project_root is cached after first resolution
+        root1 = mgr.project_root
+        root2 = mgr.project_root
+        self.assertEqual(root1, self.proj_root.resolve())
+        self.assertEqual(root2, self.proj_root.resolve())
+        self.assertEqual(resolve_calls, 1)
+
+        # 2. load_spaces(force=False) returns cached map without re-discovering; force=True reloads
+        with patch.object(mgr, "_discover_module_contributed_spaces", wraps=mgr._discover_module_contributed_spaces) as mock_disc:
+            cached_map = mgr.load_spaces(force=False)
+            self.assertEqual(mock_disc.call_count, 0)
+            self.assertIn("source", cached_map)
+
+            reloaded_map = mgr.load_spaces(force=True)
+            self.assertEqual(mock_disc.call_count, 1)
+            self.assertIn("source", reloaded_map)
+
+        # 3. EC-02: follow_symlinks=True with symlinked subdirectory resolves paths consistently
+        ext_target_dir = self.tmp_dir / "ext_linked_pkg"
+        ext_target_dir.mkdir(parents=True)
+        (ext_target_dir / "linked_mod.py").write_text("LINKED = True\n", encoding="utf-8")
+
+        symlink_sub = self.src_dir / "linked_sub"
+        symlink_supported = True
+        try:
+            os.symlink(ext_target_dir, symlink_sub, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            symlink_supported = False
+
+        if symlink_supported:
+            # When follow_symlinks=False (default), symlink_sub is ignored
+            files_no_follow = [rel for rel, _, _ in mgr.iter_space_files("source")]
+            self.assertEqual(files_no_follow, ["app.py"])
+
+            # When follow_symlinks=True, symlink_sub is traversed and its file is included
+            mgr.define_ephemeral_space(
+                "sym_space",
+                {
+                    "include": [self.src_dir.as_posix()],
+                    "file_patterns": ["*.py"],
+                    "follow_symlinks": True,
+                },
+            )
+            files_follow = [rel for rel, _, _ in mgr.iter_space_files("sym_space")]
+            self.assertIn("app.py", files_follow)
+            self.assertTrue(any("linked_mod.py" in f for f in files_follow))
+
+        self.mark_passed()
+

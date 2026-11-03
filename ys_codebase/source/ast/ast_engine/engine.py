@@ -463,17 +463,64 @@ class ASTEngine:
     def _collect_space_generations_and_files_map(
         self,
         spaces: Optional[List[str]] = None,
+        incremental_detail: Optional[ScanDiffDetail] = None,
     ) -> Tuple[Dict[str, int], Dict[str, List[str]]]:
         space_gens: Dict[str, int] = {}
         files_map: Dict[str, List[str]] = {}
         try:
             target_cfgs = self.bundler._resolve_target_spaces(spaces)
+            cached_unique = getattr(self.bundler, "_last_bundle_unique_files", None)
+            existing_files_map = self._snapshot.files_map if self._snapshot is not None else {}
+
             for sp_cfg in target_cfgs:
                 sp_name = sp_cfg.name
-                rel_files = []
-                for _, f_path, base_dir in self.bundler._iter_space_eligible_files(sp_cfg):
-                    rel_files.append(self.bundler._get_project_relpath(f_path, base_dir))
-                files_map[sp_name] = sorted(set(rel_files))
+                snap_st = None
+                if self.scanner is not None and hasattr(self.scanner, "_load_or_recover_state"):
+                    try:
+                        snap_st, _ = self.scanner._load_or_recover_state(sp_name)
+                    except Exception:
+                        snap_st = None
+
+                rel_files: Optional[List[str]] = None
+                if incremental_detail is not None:
+                    if snap_st is not None and getattr(snap_st, "entries", None):
+                        rel_from_snap: List[str] = []
+                        for rel_k, fp_rec in snap_st.entries.items():
+                            if getattr(fp_rec, "is_deleted", False):
+                                continue
+                            src_root_str = getattr(fp_rec, "source_root", "")
+                            if src_root_str:
+                                src_root = Path(src_root_str)
+                                rel_from_snap.append(self.bundler._get_project_relpath(src_root / rel_k, src_root))
+                            else:
+                                rel_from_snap.append(str(rel_k).replace("\\", "/"))
+                        rel_files = sorted(set(rel_from_snap))
+                    elif sp_name in existing_files_map:
+                        base_set = set(existing_files_map[sp_name])
+                        del_norm = normalize_dirty_paths(incremental_detail.deleted)
+                        if del_norm:
+                            base_set = {p for p in base_set if not is_dirty_file_match(p, del_norm)}
+                        if incremental_detail.added:
+                            added_map = self.bundler._resolve_dirty_files_only(incremental_detail.added, [sp_cfg])
+                            for _, (_, relp, sp_set) in added_map.items():
+                                if sp_name in sp_set:
+                                    base_set.add(relp)
+                        rel_files = sorted(base_set)
+
+                if rel_files is None and cached_unique:
+                    from_cache = [
+                        relp for _, (_, relp, sp_set) in cached_unique.items() if sp_name in sp_set
+                    ]
+                    if from_cache:
+                        rel_files = sorted(set(from_cache))
+
+                if rel_files is None:
+                    walked = []
+                    for _, f_path, base_dir in self.bundler._iter_space_eligible_files(sp_cfg):
+                        walked.append(self.bundler._get_project_relpath(f_path, base_dir))
+                    rel_files = sorted(set(walked))
+
+                files_map[sp_name] = rel_files
                 if self.scanner is not None and hasattr(self.scanner, "get_cursor_status"):
                     try:
                         st = self.scanner.get_cursor_status(sp_name, consumer_id=self.CONSUMER_ID)
@@ -482,16 +529,11 @@ class ASTEngine:
                             continue
                     except Exception:
                         pass
-                if self.scanner is not None and hasattr(self.scanner, "_load_or_recover_state"):
-                    try:
-                        snap_st, _ = self.scanner._load_or_recover_state(sp_name)
-                        if snap_st is not None:
-                            space_gens[sp_name] = int(
-                                getattr(snap_st, "head_generation", getattr(snap_st, "generation", 1))
-                            )
-                            continue
-                    except Exception:
-                        pass
+                if snap_st is not None:
+                    space_gens[sp_name] = int(
+                        getattr(snap_st, "head_generation", getattr(snap_st, "generation", 1))
+                    )
+                    continue
                 space_gens[sp_name] = 1
         except Exception as exc:
             logger.debug(f"Collecting space generations fallback: {exc}")
@@ -635,14 +677,27 @@ class ASTEngine:
         old_doc_ids: Set[str] = set()
         old_symbol_info: Dict[str, Tuple[str, str, str]] = {}
 
-        for doc_id, sym in list(self._snapshot.symbols.items()):
-            if is_dirty_file_match(sym.file_path, dirty_paths_norm):
-                old_doc_ids.add(doc_id)
-                old_symbol_info[doc_id] = (
-                    sym.file_path,
-                    sym.name,
-                    sym.fqn or sym.name,
-                )
+        if self._snapshot.file_to_symbol_ids:
+            for f_path_key, sids in list(self._snapshot.file_to_symbol_ids.items()):
+                if is_dirty_file_match(f_path_key, dirty_paths_norm):
+                    for doc_id in sids:
+                        sym = self._snapshot.symbols.get(doc_id)
+                        if sym is not None and is_dirty_file_match(sym.file_path, dirty_paths_norm):
+                            old_doc_ids.add(doc_id)
+                            old_symbol_info[doc_id] = (
+                                sym.file_path,
+                                sym.name,
+                                sym.fqn or sym.name,
+                            )
+        else:
+            for doc_id, sym in list(self._snapshot.symbols.items()):
+                if is_dirty_file_match(sym.file_path, dirty_paths_norm):
+                    old_doc_ids.add(doc_id)
+                    old_symbol_info[doc_id] = (
+                        sym.file_path,
+                        sym.name,
+                        sym.fqn or sym.name,
+                    )
 
         affected_cs_keys: Set[Tuple[str, str, str]] = set()
         for doc_id in old_doc_ids:
@@ -752,6 +807,7 @@ class ASTEngine:
         self,
         diff_detail: Union[ScanDiffDetail, ScanDiffResult, Dict[str, Any]],
         spaces: Optional[List[str]] = None,
+        _cursor_already_consumed: bool = False,
     ) -> ASTSnapshot:
         """
         Incremental Hot-Patching Pipeline:
@@ -783,13 +839,17 @@ class ASTEngine:
                     spaces=spaces,
                 )
 
-                space_gens, files_map = self._collect_space_generations_and_files_map(spaces=spaces)
-                try:
-                    target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
-                    with self._consume_space_diff(space_name=target_sp):
-                        pass
-                except Exception as exc:
-                    logger.debug(f"Cursor alignment after hot_patch_index skipped: {exc}")
+                if not _cursor_already_consumed:
+                    try:
+                        target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
+                        with self._consume_space_diff(space_name=target_sp):
+                            pass
+                    except Exception as exc:
+                        logger.debug(f"Cursor alignment after hot_patch_index skipped: {exc}")
+
+                space_gens, files_map = self._collect_space_generations_and_files_map(
+                    spaces=spaces, incremental_detail=detail
+                )
                 self._snapshot.ast_generation += 1
                 self._snapshot.space_generations.update(space_gens)
                 self._snapshot.files_map.update(files_map)
@@ -827,7 +887,11 @@ class ASTEngine:
             try:
                 with self._consume_space_diff(space_name=target_sp) as diff_res:
                     if diff_res and getattr(diff_res, "has_changes", False):
-                        return self.hot_patch_index(diff_res.detail, spaces=norm_spaces)
+                        return self.hot_patch_index(
+                            diff_res.detail,
+                            spaces=norm_spaces,
+                            _cursor_already_consumed=True,
+                        )
             except Exception as exc:
                 logger.debug(f"JIT diff check skipped: {exc}")
 
@@ -858,6 +922,11 @@ class ASTEngine:
         if not raw:
             raise FileNotFoundError("Empty file path provided to outline().")
 
+        loaded_spaces = (
+            self.space_manager.get_all_spaces()
+            if hasattr(self.space_manager, "get_all_spaces")
+            else self.space_manager.load_spaces()
+        )
         if "://" in raw:
             scheme, rest = raw.split("://", 1)
             rest_clean = rest.replace("\\", "/").lstrip("/")
@@ -869,14 +938,14 @@ class ASTEngine:
                     p = Path(str(resolved)).resolve()
                     if p.is_file():
                         rel = self.bundler._get_project_relpath(p, p.parent)
-                        sp = scheme if scheme in self.space_manager.load_spaces() else "project"
+                        sp = scheme if scheme in loaded_spaces else "project"
                         return p, rel, sp
             except Exception:
                 pass
             cand = (self.project_root / rest_clean).resolve()
             if cand.is_file():
                 rel = self.bundler._get_project_relpath(cand, self.project_root)
-                sp = scheme if scheme in self.space_manager.load_spaces() else "project"
+                sp = scheme if scheme in loaded_spaces else "project"
                 return cand, rel, sp
 
         p = Path(raw)
@@ -897,7 +966,7 @@ class ASTEngine:
         rel_path = self.bundler._get_project_relpath(p, self.project_root)
         matched_space = "project"
         try:
-            for sp_name, sp_cfg in self.space_manager.load_spaces().items():
+            for sp_name, sp_cfg in loaded_spaces.items():
                 for inc_root in self.space_manager.resolve_space_include(sp_name):
                     try:
                         p.relative_to(Path(inc_root).resolve())

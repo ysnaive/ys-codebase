@@ -533,6 +533,7 @@ class InvertedIndex:
                     doc_ids_set.add(doc_id)
                     surviving_partials.append(restore_unaggregated_partial_symbol(sym_rem))
 
+        removed_terms: Set[str] = set()
         for doc_id in doc_ids_to_remove:
             self.doc_lengths.pop(doc_id, None)
             sym = self.symbols.pop(doc_id, None)
@@ -547,12 +548,16 @@ class InvertedIndex:
                 }
                 for f_name, text in field_texts.items():
                     tokens = tok.tokenize(text)
+                    removed_terms.update(tokens)
                     self.field_total_lengths[f_name] = max(
                         0, self.field_total_lengths[f_name] - len(tokens)
                     )
 
         if doc_ids_set:
-            for term in list(self.index.keys()):
+            target_terms = removed_terms if removed_terms else list(self.index.keys())
+            for term in target_terms:
+                if term not in self.index:
+                    continue
                 new_postings = [p for p in self.index[term] if p.doc_id not in doc_ids_set]
                 if new_postings:
                     self.index[term] = new_postings

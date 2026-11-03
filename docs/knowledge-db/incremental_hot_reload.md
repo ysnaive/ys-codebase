@@ -14,7 +14,7 @@ related_docs:
   - "./architecture.md"
   - "./DESIGN_NOTES.md"
   - "../server/hot_reload_and_services.md"
-last_updated: "2026-11-02"
+last_updated: "2026-11-03"
 ---
 
 # 細粒度增量熱重載與 `on_file_space_changed` 事件驅動熱自癒架構 (Incremental Hot Reload & Space Watcher)
@@ -56,7 +56,7 @@ graph TD
 ### 2.2 單檔符號快取池与全棧差量打補丁 (`hot_patch_unified_index`)
 - **單檔符號記憶體快取 (`_file_symbols_cache`)**：`SemanticBundler` 維護單檔符號快取池，熱修補時僅對 `added` 與 `modified` 檔案重新執行 AST 解析，其餘未變更檔案 100% 記憶體零 I/O 復用。
 - **全棧三維差量打補丁**：單次差量修補同步更新三大核心索引並以 `compresslevel=1` 快速寫盤（端到端延遲 $20\sim 50\text{ ms}$）：
-  1. **倒排索引 (`InvertedIndex.patch_incremental`)**：採用對稱路徑匹配 (`io_utils.is_dirty_file_match`) 拔除 `deleted` / `modified` 舊檔案之 Postings 與 `doc_lengths`，注入新符號（含 C# `partial class` 跨檔重聚合）並動態重算 `field_avgdl`。
+  1. **倒排索引 (`InvertedIndex.patch_incremental`)**：採用對稱路徑匹配 (`io_utils.is_dirty_file_match`) 拔除 `deleted` / `modified` 舊檔案之符號與 `doc_lengths`，於移除舊符號分詞時收集 `removed_terms` 並僅針對受影響詞條修剪 Postings（避免全詞表線性掃描），注入新符號（含 C# `partial class` 跨檔重聚合）並動態重算 `field_avgdl`。
   2. **調用圖譜 (`CallGraphIndex.patch_incremental`)**：透過 Stage 1 `Identity Remap` 與 Stage 2 `TopologyLinker` 更新異動檔案在 `networkx.DiGraph` 中的出入度邊。
   3. **向量特徵 (`VectorIndex.patch_incremental`)**：差量移除舊符號向量並對新符號提取特徵（前台 JIT 模式受 10 符號動態探針保護，預估逾時則平滑熔斷退回純 BM25）。
 
@@ -72,7 +72,7 @@ graph TD
 ### 3.2 `on_file_space_changed` 喚醒與兩階段背景同步 (`KnowledgeDBServiceWorker`)
 - **Stage 1（Fast Path — AST + BM25 + CallGraph 快篩同步）**：當 `file-space-watcher` 經 500ms 防抖更新 `YFP2` 二進位快照並廣播 `on_file_space_changed` 後，`scripts/hook.file-space.py` 透過 O(1) `notify_space_changed()` 喚醒 `KnowledgeDBServiceWorker` 主迴圈。Worker 先以 `skip_vectors=True` 消費 `consume_diff("knowledge-db")`，秒級完成 AST 符號增量解析、BM25 倒排索引與調用圖譜更新並立即推進游標。
 - **背景模型自動下載（Auto Model Provisioning）**：若 `enable_vector_search=True` 且本地快取缺少 FastEmbed ONNX 權重（如清除快取或切換環境），`KnowledgeDBServiceWorker` 會在進入 Stage 2 前自動於背景執行 `embedding_service.download_model()`（靜默抑制 `[GUARD]` 警告，失敗時具備 60 秒退避冷卻），免除人工互動確認。
-- **Stage 2（Slow Path — 微批次向量差集自癒）**：Worker 主迴圈透過 `pipeline.get_vector_deficit_info()` 比對 `unified_index.symbols` 與 `vector_index.doc_ids` 之差集，以微批次 `sync_vector_deficit_step(batch_size=config.vector_batch_size)`（預設每批 `32` 符號，截斷 Docstring 至 `1000` 字元）逐步計算嵌入並以 `atomic_save_gzip_pickle(..., compresslevel=1)` 原子寫入 `unified.vectors.bin.gz`，直至覆蓋率達 100%。
+- **Stage 2（Slow Path — 微批次鎖分離向量差集自癒與檢查點持久化）**：Worker 主迴圈透過 `pipeline.get_vector_deficit_info()` 比對 `unified_index.symbols` 與 `vector_index.doc_ids` 之差集，以微批次 `sync_vector_deficit_step(batch_size=config.vector_batch_size, persist=...)`（預設每批 `32` 符號，截斷 Docstring 至 `1000` 字元）逐步計算嵌入：`embedding_service.embed_texts()` 移出 `_index_lock` 外執行以免阻塞前景檢索，重新加鎖寫回前二次過濾仍存活於 `unified_index.symbols` 之符號 ID，並由 Worker 每滿 8 批（256 符號）、距上次存盤 $\ge 2.0\text{s}$、全部完成或於退出 `finally` 區塊時呼叫 `flush_vector_index()` 原子寫入 `unified.vectors.bin.gz`，兼顧前景零阻塞與磁碟寫入放大抑制。
 
 ### 3.3 `is_worker_busy() -> int` 探針與 `jit_vector_timeout_ms` 動態容差降級
 - **已運行毫秒探針 (`is_worker_busy() -> int`)**：`KnowledgeDBServiceWorker` 執行背景任務時於 `indices/.kdb_worker_state.json` 記錄狀態與 `start_ts`（並附帶 PID 存活校驗防止死進程殘留）。`engine.is_worker_busy()` 回傳 `0` 代表空閒，`> 0` 代表當前任務已連續運行之毫秒數 `elapsed_ms`。

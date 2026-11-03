@@ -201,3 +201,79 @@ class TestProvisionerAndJit(YSCBTestCase):
             self.assertEqual(res_ok.get("status"), "updated")
             self.assertTrue(res_ok.get("ast_generation", 0) >= 2)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_pt_01_single_file_hot_patch_zero_full_tree_walks_and_cached_call_sites(self):
+        """FR-03, FR-06, EC-03, NFR-01: Verify single-file hot_patch_index with _cursor_already_consumed=True executes 0 iter_space_files walks and bundle_union caches call sites/imports."""
+        proj_dir = self.temp_dir / "perf_proj"
+        src_dir = proj_dir / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+
+        f1 = src_dir / "alpha.py"
+        f2 = src_dir / "beta.py"
+        f1.write_text(
+            "import os\n\ndef compute_alpha(x: int) -> int:\n    return x + 1\n",
+            encoding="utf-8",
+        )
+        f2.write_text(
+            "from src.alpha import compute_alpha\n\ndef run_beta() -> int:\n    return compute_alpha(10)\n",
+            encoding="utf-8",
+        )
+
+        engine = ASTEngine(project_root=proj_dir, storage_dir=self.storage_dir)
+
+        # 1. Verify bundle_union populates _file_call_sites_cache and _file_imports_cache,
+        #    and extract_all_call_sites_and_imports reuses cached entries without re-reading disk
+        bundle = engine.bundler.bundle_union(allow_parallel=False)
+        self.assertEqual(len(bundle.symbols), 2)
+        self.assertEqual(len(engine.bundler._file_call_sites_cache), 2)
+        self.assertEqual(len(engine.bundler._file_imports_cache), 2)
+
+        with patch.object(
+            engine.bundler.parser_registry,
+            "extract_call_sites",
+            side_effect=AssertionError("extract_call_sites should not be re-invoked on cache hit"),
+        ), patch.object(
+            engine.bundler.parser_registry,
+            "extract_imports",
+            side_effect=AssertionError("extract_imports should not be re-invoked on cache hit"),
+        ):
+            sites, imps = engine.bundler.extract_all_call_sites_and_imports()
+            self.assertTrue(any(s.callee_name == "compute_alpha" for s in sites))
+            self.assertTrue(len(imps) >= 1)
+
+        # Build initial index so snapshot and scanner state exist
+        snap1 = engine.ensure_jit_synced(force=True)
+        self.assertEqual(snap1.ast_generation, 1)
+
+        # 2. Modify single file f1 and run hot_patch_index(_cursor_already_consumed=True)
+        #    Verify space_manager.iter_space_files is NOT called (0 full-tree walks)
+        f1.write_text(
+            "import os\n\ndef compute_alpha(x: int) -> int:\n    return x + 2\n\ndef extra_helper() -> int:\n    return compute_alpha(5)\n",
+            encoding="utf-8",
+        )
+
+        with patch.object(
+            engine.space_manager,
+            "iter_space_files",
+            side_effect=AssertionError("Full-tree walk iter_space_files must not be called during single-file hot_patch_index"),
+        ), patch.object(
+            engine,
+            "_consume_space_diff",
+            side_effect=AssertionError("_consume_space_diff must not be called when _cursor_already_consumed=True"),
+        ):
+            snap2 = engine.hot_patch_index(
+                {"modified": ["src/alpha.py"]},
+                _cursor_already_consumed=True,
+            )
+
+        self.assertEqual(snap2.ast_generation, 2)
+        sym_names = {s.name for s in snap2.symbols.values()}
+        self.assertIn("extra_helper", sym_names)
+
+        # Verify both new internal edge (extra_helper -> compute_alpha) and preserved external edge (run_beta -> compute_alpha)
+        callers_res = engine.callers("compute_alpha")
+        caller_names = {c["name"] for c in callers_res.get("callers", [])}
+        self.assertIn("run_beta", caller_names)
+        self.assertIn("extra_helper", caller_names)
+        self.mark_passed()

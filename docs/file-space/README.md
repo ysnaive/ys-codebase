@@ -12,7 +12,7 @@ related_docs:
   - "./DESIGN_NOTES.md"
   - "../knowledge-db/README.md"
   - "../server/hot_reload_and_services.md"
-last_updated: "2026-11-02"
+last_updated: "2026-11-03"
 ---
 
 # File-Space 通用檔案空間、分級指紋快取與背景監聽底座模組手冊 (File-Space Overview)
@@ -30,7 +30,7 @@ last_updated: "2026-11-02"
   - 透過 `core.contributes` 依據 `contributes/_format.json`（`include`/`exclude`/`file_patterns` 宣告 `| extend`、`spaces.*` 宣告 `$FileSpaceDef | merge`）自動聚合各已安裝模組 `module://<donor>/contributes/file-space.json` 與宿主專案 `config://file-space/contribute.json` 之 `spaces` 定義，並根據累積之 `"__providers__"` 清單精確判定空間來源 `origin`（單一來源顯示為 `origin(<provider>)`、多源合併顯示為 `merged(<provider_a>, <provider_b>, ...)`）。
   - **列表欄位附加去重**：同名空間的 `include`、`exclude`、`file_patterns` 依據 `| extend` 策略自動保序去重附加合併。
   - **純量欄位宿主覆寫**：`hash_policy`、`large_file_threshold_mb`、`follow_symlinks`、`watch`、`weight`、`description` 由後載入方或宿主專案優先覆寫（未顯式提供之選填欄位保留既有設定，不被預設值洗掉）。
-  - **執行期臨時空間**：支援透過 `define_ephemeral_space(name, config)` 動態掛載記憶體空間（如單元測試沙盒），不污染全域設定。
+  - **執行期臨時空間與快取優化**：支援透過 `define_ephemeral_space(name, config)` 動態掛載記憶體空間（如單元測試沙盒），不污染全域設定；`project_root` 屬性快取於實例 `_cached_project_root`，`load_spaces(force: bool = False)` 內建已載入守衛避免重複讀盤，且目錄走訪 `_walk_root` 於非符號連結且 `follow_symlinks=False` 時直接使用 `DirEntry.path` 免除逐檔冗餘 `Path.resolve()` 系統呼叫。
 - **雙階段門檻與四模分級雜湊 (`FingerprintScanner`)**：
   - **Stage 1 (`os.scandir` + 10ms Racy-Clean 防護)**：高速比對 `(mtime_ns, size)`，並針對 `abs(scan_start_ns - mtime_ns) < 10_000_000` 之極近修改檔案強制重算內容雜湊，消弭檔案系統時間戳精度競爭造成的同毫秒改檔漏檢。
   - **Stage 2 (四模 `HashPolicy`)**：支援 `adaptive`（預設，`< 10MB` 全量 `blake2b(digest_size=20)`，`>= 10MB` 頭/中/尾各 64KB 稀疏抽樣）、`full_hash`、`stat_only` 與 `lazy_stabilized`（背景監聽大檔 2.0 秒靜置收斂）。

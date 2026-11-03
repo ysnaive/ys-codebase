@@ -193,7 +193,12 @@ class KnowledgeEngine:
 
         # 1. 從 space_manager 已註冊空間提取基礎預設權重
         try:
-            for sp_name, sp_cfg in self.space_manager.load_spaces().items():
+            loaded_spaces = (
+                self.space_manager.get_all_spaces()
+                if hasattr(self.space_manager, "get_all_spaces")
+                else self.space_manager.load_spaces()
+            )
+            for sp_name, sp_cfg in loaded_spaces.items():
                 if hasattr(sp_cfg, "weight") and sp_cfg.weight is not None:
                     weights[sp_name] = float(sp_cfg.weight)
         except (InvalidFileSpaceConfigError, InvalidConfigError):
@@ -289,7 +294,12 @@ class KnowledgeEngine:
         """獲取當前所有空間之檢索加權係數映射表"""
         result = dict(self.space_weights)
         try:
-            for sp_name, sp_cfg in self.space_manager.load_spaces().items():
+            loaded_spaces = (
+                self.space_manager.get_all_spaces()
+                if hasattr(self.space_manager, "get_all_spaces")
+                else self.space_manager.load_spaces()
+            )
+            for sp_name, sp_cfg in loaded_spaces.items():
                 if sp_name not in result:
                     result[sp_name] = float(getattr(sp_cfg, "weight", 1.0))
         except Exception:
@@ -378,17 +388,23 @@ class KnowledgeEngine:
         budget = int(timeout_ms if timeout_ms is not None else getattr(self.config, "jit_vector_timeout_ms", 3000))
         return wait_until_worker_idle(self.pipeline.get_indices_dir(), budget)
 
-    def sync_vector_deficit_step(self, batch_size: Optional[int] = None) -> Dict[str, int]:
+    def sync_vector_deficit_step(
+        self, batch_size: Optional[int] = None, persist: bool = True
+    ) -> Dict[str, int]:
         """執行單步微批次向量差集自癒，供背景 Worker 或測試呼叫。"""
         b_size = int(batch_size if batch_size is not None else getattr(self.config, "vector_batch_size", 32))
-        return self.pipeline.sync_vector_deficit_step(batch_size=b_size)
+        return self.pipeline.sync_vector_deficit_step(batch_size=b_size, persist=persist)
 
     def status(
         self,
         space: Optional[str] = None,
     ) -> Dict[str, Any]:
         """獲取全系統空間、後台 Worker、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計摘要。"""
-        spaces = self.space_manager.load_spaces()
+        spaces = (
+            self.space_manager.get_all_spaces()
+            if hasattr(self.space_manager, "get_all_spaces")
+            else self.space_manager.load_spaces()
+        )
         if space is not None:
             if space not in spaces:
                 raise FileSpaceNotFoundError(space, list(spaces.keys()))
@@ -611,7 +627,12 @@ class KnowledgeEngine:
         if space is not None:
             targets = [self.space_manager.get_space(space)]
         else:
-            targets = list(self.space_manager.load_spaces().values())
+            loaded_spaces = (
+                self.space_manager.get_all_spaces()
+                if hasattr(self.space_manager, "get_all_spaces")
+                else self.space_manager.load_spaces()
+            )
+            targets = list(loaded_spaces.values())
 
         snapshot = self.ast_engine.ensure_jit_synced()
         created_at = datetime.now(timezone.utc).isoformat()

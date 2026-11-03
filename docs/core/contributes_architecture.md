@@ -14,7 +14,7 @@ related_docs:
   - "./DESIGN_NOTES.md"
   - "./cli_commands_architecture.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-11-02"
+last_updated: "2026-11-03"
 ---
 
 # Contributes 依賴注入、拓撲聚合與宣告式 Schema 驗證手冊 (Contributes & Schema Validation Architecture)
@@ -87,8 +87,11 @@ with uri.module_scope("agents-workflow"):
 
 # 3. 查詢全生態系已開放之擴充點清冊 (_format.json)
 points = contributes.list_points(module="core")
+
+# 4. 手動清空程序內記憶體快取與免掃時窗標記 (如測試中動態改寫磁碟檔案後需立即重掃)
+contributes.invalidate_cache(target_module=None)
 ```
-- **JIT 熱自愈閘門 (`_is_contributes_dirty`)**：每次呼叫 `contributes.get()` 時，微內核比對 `cache://core/contributes.meta.json` 中記錄之所有輸入檔 `(mtime, size)` 指紋（耗時 $< 2\text{ms}$）。一旦偵測到任何 `contributes/*.json` 或 `config/*/contribute.json` 變更，立即自動觸發 `scan_and_inject()` 重建快取。
+- **程序內記憶體快取 (`_MERGED_MEMORY_CACHE`) 與 JIT 熱自愈閘門 (`_is_contributes_dirty`)**：`contributes.get()` 內建以 `(yscb_root, target_module)` 為鍵的程序內記憶體快取（同時綁定 `contributes.meta.json` 與 `contributes.merged.json` 雙實體檔案 `mtime` 守衛）與 `40ms` 單調時鐘免重掃視窗（`_LAST_CLEAN_SCAN_TS`），徹底消除單次 CLI 內 `locale.t()` 等高頻呼叫重複反序列化 JSON 與走訪目錄之開銷。當視窗屆滿或快取檔案 `mtime` 改變時，微內核比對 `cache://core/contributes.meta.json` 中記錄之所有輸入檔 `(mtime, size)` 指紋，一旦偵測到變更立即觸發 `scan_and_inject()` 重建快取並呼叫 `invalidate_cache()`。
 
 ---
 

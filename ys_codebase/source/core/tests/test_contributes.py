@@ -394,5 +394,37 @@ class TestContributesJIT(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.ENV)
+    def test_in_memory_cache_and_invalidation(self):
+        """FR-01, EC-01: 驗證 contributes.get() 於時窗內連續呼叫 10 次僅觸發 1 次輸入掃描，且 invalidate_cache() / scan_and_inject() 立即刷新快取。"""
+        from unittest.mock import patch
+
+        self.agg.scan_and_inject()
+        contributes.invalidate_cache()
+
+        orig_scan = contributes._scan_contributes_inputs
+        with patch("core.contributes._scan_contributes_inputs", wraps=orig_scan) as mock_scan:
+            results = [contributes.get("core", "commands") for _ in range(10)]
+            self.assertEqual(mock_scan.call_count, 1)
+            for r in results:
+                self.assertIsInstance(r, dict)
+                self.assertEqual(r, results[0])
+
+            # 顯式呼叫 invalidate_cache("core") 後再次 get 應重新觸發掃描
+            contributes.invalidate_cache("core")
+            after_inv = contributes.get("core", "commands")
+            self.assertEqual(mock_scan.call_count, 2)
+            self.assertEqual(after_inv, results[0])
+
+        # EC-01: 驗證負向/邊界防禦 — 外部刪除或改寫 merged.json 時，即使在時窗內亦能透過 mtime 守衛失效快取並自癒
+        merged_uri = "cache://core/contributes.merged.json"
+        if vfs.exists(merged_uri):
+            vfs.remove(merged_uri)
+        repaired = contributes.get("core", "commands")
+        self.assertIsInstance(repaired, dict)
+        self.assertTrue(vfs.exists(merged_uri))
+        self.mark_passed()
+
+
 
 

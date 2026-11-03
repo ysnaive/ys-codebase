@@ -495,6 +495,92 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_vector_deficit_step_lock_splitting_persist_throttling_and_removed_terms(self):
+        """FR-04, FR-05, EC-04, EC-05: Verify sync_vector_deficit_step releases _index_lock during embed_texts, filters deleted symbols on re-entry, supports persist=False + flush_vector_index, and InvertedIndex.patch_incremental prunes via removed_terms."""
+        src_dir = self.root_path / "src_lock_test"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        storage_dir = self.root_path / "storage_lock_test"
+
+        for i in range(4):
+            (src_dir / f"item_{i}.py").write_text(
+                f"class ItemNode{i}:\n    '''獨特測試節點 {i} unique_token_{i}'''\n    pass\n",
+                encoding="utf-8",
+            )
+
+        sp = FileSpaceConfig(name="l_space", include=[str(src_dir)])
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            local_config={"knowledge-db": {"enable_vector_search": True, "vector_batch_size": 2}},
+            contributes_data={"spaces": {"l_space": sp.to_dict()}},
+            embedding_mock_mode=True,
+        )
+        engine.pipeline.build_unified_index(force=True, skip_vectors=True)
+        vec_file = engine.pipeline.get_indices_dir() / "unified.vectors.bin.gz"
+        self.assertFalse(vec_file.exists())
+
+        # 1. persist=False updates in-memory vector_index without writing unified.vectors.bin.gz
+        res1 = engine.pipeline.sync_vector_deficit_step(batch_size=2, persist=False)
+        self.assertEqual(res1["embedded_in_step"], 2)
+        self.assertEqual(res1["remaining"], 2)
+        self.assertTrue(engine.pipeline._vector_index_dirty)
+        self.assertFalse(vec_file.exists())
+
+        # Explicit flush_vector_index() persists to disk and clears dirty flag
+        self.assertTrue(engine.pipeline.flush_vector_index())
+        self.assertFalse(engine.pipeline._vector_index_dirty)
+        self.assertTrue(vec_file.exists())
+
+        # 2. Verify _index_lock is released during embed_texts (another thread can acquire _index_lock)
+        #    AND if a symbol in the current batch is deleted while unlocked, it is filtered out (EC-04)
+        orig_embed = engine.embedding_service.embed_texts
+        lock_acquired_in_other_thread = {"ok": False}
+        evicted_sid_holder = {"sid": None}
+
+        def _hooked_embed_texts(texts, batch_size=32):
+            def _probe_lock_and_evict():
+                acquired = engine.pipeline._index_lock.acquire(blocking=False)
+                if acquired:
+                    try:
+                        lock_acquired_in_other_thread["ok"] = True
+                        # Simulate foreground deleting one of the remaining unembedded symbols while unlocked
+                        vec_ids = set(engine.hybrid_engine.vector_index.doc_ids)
+                        remaining_sids = [
+                            sid for sid in engine.pipeline.unified_index.symbols if sid not in vec_ids
+                        ]
+                        if remaining_sids:
+                            victim = remaining_sids[0]
+                            evicted_sid_holder["sid"] = victim
+                            engine.pipeline.unified_index.symbols.pop(victim, None)
+                    finally:
+                        engine.pipeline._index_lock.release()
+
+            t = threading.Thread(target=_probe_lock_and_evict)
+            t.start()
+            t.join(timeout=1.0)
+            return orig_embed(texts, batch_size=batch_size)
+
+        with patch.object(engine.embedding_service, "embed_texts", side_effect=_hooked_embed_texts):
+            res2 = engine.pipeline.sync_vector_deficit_step(batch_size=2, persist=True)
+
+        self.assertTrue(lock_acquired_in_other_thread["ok"], "_index_lock must not be held during embed_texts()")
+        self.assertIsNotNone(evicted_sid_holder["sid"])
+        self.assertNotIn(evicted_sid_holder["sid"], engine.hybrid_engine.vector_index.doc_ids)
+        self.assertEqual(res2["embedded_in_step"], 1)
+        self.assertEqual(res2["remaining"], 0)
+
+        # 3. Verify InvertedIndex.patch_incremental accurately prunes postings via removed_terms (FR-05)
+        idx = engine.pipeline.unified_index
+        self.assertIn("uniquetoken0", idx.index)
+        idx.patch_incremental(
+            dirty_file_paths={str((src_dir / "item_0.py").resolve())},
+            new_symbols=[],
+            tokenizer=engine.tokenizer,
+            pre_aggregated=True,
+        )
+        self.assertNotIn("uniquetoken0", idx.index)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()
