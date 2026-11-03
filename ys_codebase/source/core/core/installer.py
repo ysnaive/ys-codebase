@@ -13,7 +13,9 @@ from core.engine import (
     DEFAULT_PROVIDER_URL,
     _extract_zip_safely,
     _atomic_swap_dir,
+    _is_build_version_request,
     _parse_dependencies,
+    compute_file_sha256,
     find_matching_local_source_dir,
     normalize_legacy_provider_url,
     package_local_source_if_exact_match,
@@ -482,6 +484,7 @@ class Installer:
         version: Optional[str] = None,
         provider: Optional[str] = None,
         force: bool = False,
+        ignore_sha256: bool = False,
     ) -> int:
         try:
             requests = self._parse_install_requests(module_name, version)
@@ -524,12 +527,12 @@ class Installer:
                         targets = self.engine.act_solve_deps(requests[0][0], requests[0][1], provider_url)
                     else:
                         targets = self.engine.act_solve_deps(requests, None, provider_url)
-                    self.engine.act_prepare(targets, provider_url, force=force)
+                    self.engine.act_prepare(targets, provider_url, force=force, ignore_sha256=ignore_sha256)
                     resolved_map: Dict[str, str] = {}
                     for mod, ver in targets:
                         self.engine.act_register(mod, ver, provider_url)
                         resolved_map[mod] = ver
-                    self.engine.act_reload(clean_stage=True, inject_stage=True)
+                    self.engine.act_reload(clean_stage=True, inject_stage=True, ignore_sha256=ignore_sha256)
 
                     for mod, installed_ver in targets:
                         old_ver = old_versions.get(mod, "0.0.0.0")
@@ -569,6 +572,7 @@ class Installer:
         self,
         module_name: Optional[Union[str, Sequence[str]]] = None,
         provider: Optional[str] = None,
+        ignore_sha256: bool = False,
     ) -> int:
         _, cfg = self.engine._get_config()
         default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider")
@@ -625,7 +629,7 @@ class Installer:
 
                         if semver.compare_semver(latest_ver, cur_ver) > 0:
                             print(f"[core:update] Updating '{mod}' from {cur_ver} -> {latest_ver}...")
-                            self.engine.act_prepare([(mod, latest_ver)], provider_url, force=True)
+                            self.engine.act_prepare([(mod, latest_ver)], provider_url, force=True, ignore_sha256=ignore_sha256)
                             self.engine.act_register(mod, latest_ver, provider_url)
                             migrations_to_run.append((mod, cur_ver, latest_ver))
                             updated_any = True
@@ -636,7 +640,9 @@ class Installer:
 
                     # Reconcile dependencies across all installed & newly updated modules (auto-installs missing deps,
                     # auto-upgrades compatible intersection deps, or raises RuntimeError on disjoint conflict)
-                    healed_deps = self.engine.reconcile_installed_dependencies(provider_url=provider_url)
+                    healed_deps = self.engine.reconcile_installed_dependencies(
+                        provider_url=provider_url, ignore_sha256=ignore_sha256
+                    )
                     for h_mod, h_old, h_new in healed_deps:
                         updated_any = True
                         if h_old is None:
@@ -647,7 +653,7 @@ class Installer:
                             migrations_to_run.append((h_mod, h_old, h_new))
 
                     if updated_any:
-                        self.engine.act_reload(clean_stage=True, inject_stage=True)
+                        self.engine.act_reload(clean_stage=True, inject_stage=True, ignore_sha256=ignore_sha256)
                         for mod, old_v, new_v in migrations_to_run:
                             self.engine.act_migrate(mod, old_v, new_v)
                         events.broadcast("on_update", ExecutionContext("core", "update", targets), emit_module="core")
@@ -855,9 +861,9 @@ class Installer:
             print("[core:reload] Runtime environment reconciled and refreshed successfully.")
             return 0
 
-    def cmd_restore(self, force: bool = False, provider: Optional[str] = None) -> int:
+    def cmd_restore(self, force: bool = False, provider: Optional[str] = None, ignore_sha256: bool = False) -> int:
         """
-        CLI 指令：python yscb.py restore [--force]
+        CLI 指令：python yscb.py restore [--force] [--ignore-sha256]
         讀取 yscb.config.json 之 installed_modules 清冊，批量還原所有模組至 .modules/，
         並於完成後自動觸發 reload 重聚環境。
         """
@@ -915,7 +921,9 @@ class Installer:
                         continue
 
                 print(f"  -> Restoring '{mod_name}@{ver}'...")
-                ok = self._restore_module_package(host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror)
+                ok = self._restore_module_package(
+                    host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror, ignore_sha256=ignore_sha256
+                )
                 if ok:
                     success_count += 1
                 else:
@@ -928,7 +936,7 @@ class Installer:
                 print(f"[core:restore] Successfully restored all {success_count} module(s).")
 
             print("[core:restore] Triggering reload...")
-            self.engine.act_reload(clean_stage=True, inject_stage=True)
+            self.engine.act_reload(clean_stage=True, inject_stage=True, ignore_sha256=ignore_sha256)
             self.sync_pip_dependencies()
             try:
                 generate_internal_gitignore(yscb_abs)
@@ -959,6 +967,7 @@ class Installer:
         dest_dir: str,
         mirror_dir: str,
         _allow_fallback: bool = True,
+        ignore_sha256: bool = False,
     ) -> bool:
         """自 Provider、Build 或本機 Mirror 提取指定版本模組，原子解壓縮至 dest_dir。"""
         import zipfile
@@ -1009,6 +1018,8 @@ class Installer:
             is_newer = not os.path.isfile(mirror_zip) or (os.path.getmtime(found_b) >= os.path.getmtime(mirror_zip))
             if version == "build" or version.endswith(".build") or is_newer:
                 try:
+                    if not _is_build_version_request(version) and os.path.isfile(found_b) and found_b.endswith(".zip"):
+                        self.engine._verify_zip_sha256(module_name, version, found_b, provider_arg, ignore_sha256=ignore_sha256)
                     fetch_and_extract_zip(found_b, dest_dir)
                     if os.path.isfile(found_b) and (found_b.endswith(".zip") or zipfile.is_zipfile(found_b)):
                         try:
@@ -1053,12 +1064,12 @@ class Installer:
                 if os.path.isdir(cand) and not os.path.isfile(os.path.join(cand, "manifest.json")):
                     continue
                 try:
-                    fetch_and_extract_zip(cand, dest_dir)
                     if os.path.isfile(cand) and (cand.endswith(".zip") or zipfile.is_zipfile(cand)):
-                        try:
-                            shutil.copy2(cand, mirror_zip)
-                        except Exception:
-                            pass
+                        shutil.copy2(cand, mirror_zip)
+                        self.engine._verify_zip_sha256(module_name, version, mirror_zip, p_abs, ignore_sha256=ignore_sha256)
+                        fetch_and_extract_zip(mirror_zip, dest_dir)
+                    else:
+                        fetch_and_extract_zip(cand, dest_dir)
                     return True
                 except Exception:
                     pass
@@ -1076,9 +1087,12 @@ class Installer:
 
         # 4. 遠端 Provider (HTTP/HTTPS)
         if provider_arg.startswith(("http://", "https://", "file://")):
-            remote_zip_url = provider_arg.rstrip("/") + f"/{module_name}/{version}.zip"
             try:
-                fetch_and_extract_zip(remote_zip_url, dest_dir)
+                self.engine._download_from_remote_tier(
+                    module_name, version, provider_arg, mirror_zip, f"module.mirror://{module_name}/{version}.zip",
+                    ignore_sha256=ignore_sha256,
+                )
+                fetch_and_extract_zip(mirror_zip, dest_dir)
                 return True
             except Exception:
                 pass
@@ -1092,7 +1106,15 @@ class Installer:
                     f"seamlessly restoring compatible same-triplet revision '{fallback_ver}'."
                 )
                 ok = self._restore_module_package(
-                    base_dir, yscb_root, module_name, fallback_ver, provider_arg, dest_dir, mirror_dir, _allow_fallback=False
+                    base_dir,
+                    yscb_root,
+                    module_name,
+                    fallback_ver,
+                    provider_arg,
+                    dest_dir,
+                    mirror_dir,
+                    _allow_fallback=False,
+                    ignore_sha256=ignore_sha256,
                 )
                 if ok:
                     try:

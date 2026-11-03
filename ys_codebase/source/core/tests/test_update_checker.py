@@ -244,6 +244,42 @@ class TestUpdateChecker(YSCBTestCase):
         self.assertIn("加固沙盒權限邊界", dev_tips[0])
         self.mark_passed()
 
+    def test_host_script_content_drift_detection_and_banner(self):
+        """T-16: 驗證 yscb.py 版本號相同但內容 SHA-256 漂移時偵測 is_drift=True 並輸出內容漂移警告橫幅，且忽略 CRLF 差異。"""
+        local_yscb = os.path.join(self.temp_dir, "yscb.py")
+        remote_yscb = os.path.join(self.prov_dir, "yscb.py")
+
+        # 1. 版本與內容一致（僅 CRLF 與 LF 換行差異）-> 無更新、無漂移
+        with open(local_yscb, "wb") as f:
+            f.write(b'__version__: str = "1.2.2.0"\r\ndef main():\r\n    return 0\r\n')
+        with open(remote_yscb, "wb") as f:
+            f.write(b'__version__: str = "1.2.2.0"\ndef main():\n    return 0\n')
+
+        checker = UpdateChecker(
+            cache_uri=self.cache_uri,
+            throttle_seconds=10,
+            config_path=self.cfg_path,
+        )
+        updates_same = checker.check_updates(force=True)
+        self.assertNotIn("yscb.py", updates_same)
+
+        # 2. 版本號同為 1.2.2.0 但遠端內容已修補 -> 觸發 is_drift=True 與 SHA-256 漂移提示
+        with open(remote_yscb, "wb") as f:
+            f.write(b'__version__: str = "1.2.2.0"\ndef main():\n    print("patched")\n    return 0\n')
+
+        updates_drift = checker.check_updates(force=True)
+        self.assertIn("yscb.py", updates_drift)
+        host_up = updates_drift["yscb.py"]
+        self.assertTrue(host_up["has_update"])
+        self.assertTrue(host_up.get("is_drift"))
+        self.assertEqual(host_up["current_version"], "1.2.2.0")
+        self.assertEqual(host_up["latest_version"], "1.2.2.0")
+        self.assertNotEqual(host_up.get("local_sha256"), host_up.get("latest_sha256"))
+
+        tips = checker.get_tips(updates_drift)
+        self.assertTrue(any("內容漂移" in t and "SHA-256 mismatch" in t for t in tips))
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

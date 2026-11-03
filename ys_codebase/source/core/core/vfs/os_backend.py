@@ -6,6 +6,8 @@ YS-Codebase VFS 作業系統本機後端實作 (OSBackend)。
 import os
 import sys
 import json
+import errno
+import stat
 import shutil
 import threading
 import uuid
@@ -182,7 +184,19 @@ class OSBackend(VFSBackend):
             return
 
         if os.path.isdir(norm_path):
-            shutil.rmtree(norm_path, ignore_errors=missing_ok)
+            def _on_rm_error(func, failed_path, exc_info):
+                exc = exc_info[1]
+                if isinstance(exc, FileNotFoundError) or getattr(exc, "errno", None) == errno.ENOENT:
+                    if missing_ok:
+                        return
+                    raise exc
+                if isinstance(exc, PermissionError) or getattr(exc, "errno", None) == errno.EACCES:
+                    os.chmod(failed_path, stat.S_IWRITE | stat.S_IREAD)
+                    func(failed_path)
+                    return
+                raise exc
+
+            shutil.rmtree(norm_path, onerror=_on_rm_error)
         else:
             try:
                 os.remove(norm_path)
@@ -275,7 +289,7 @@ class OSBackend(VFSBackend):
             file_obj.close()
             file_obj = None
 
-            # 原子替換 (針對 Windows 檔案鎖/索引競態提供漸進重試與回退防護)
+            # 原子替換 (針對 Windows 檔案鎖/索引競態提供漸進重試；若耗盡重試直接拋出異常以保護原檔並清理暫存檔)
             if sys.platform == "win32":
                 import time
                 max_retries = 10
@@ -288,18 +302,7 @@ class OSBackend(VFSBackend):
                         if attempt < max_retries - 1:
                             time.sleep(0.05 * (attempt + 1))
                         else:
-                            try:
-                                if os.path.exists(norm_target):
-                                    os.remove(norm_target)
-                                os.replace(tmp_path, norm_target)
-                                success = True
-                            except Exception:
-                                shutil.copy2(tmp_path, norm_target)
-                                try:
-                                    os.remove(tmp_path)
-                                except Exception:
-                                    pass
-                                success = True
+                            raise
             else:
                 os.replace(tmp_path, norm_target)
                 success = True

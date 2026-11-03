@@ -6,7 +6,7 @@ import os
 import shutil
 import zipfile
 from dev.testing import YSCBTestCase, require, Requirement
-from dev.builder import Builder
+from dev.builder import Builder, compute_file_sha256
 from core import uri, vfs
 
 @require(Requirement.ENV)
@@ -17,7 +17,7 @@ class TestDevBuilder(YSCBTestCase):
         self.builder = Builder()
 
     def tearDown(self):
-        for mod in ("mock_bld_pkg", "mock_rel_pkg", "mock_purge_pkg", "mock_idx_pkg", "mock_clean_pkg"):
+        for mod in ("mock_bld_pkg", "mock_rel_pkg", "mock_purge_pkg", "mock_idx_pkg", "mock_clean_pkg", "mock_det_pkg"):
             for scheme in ("module.source://", "module.build://", "module.release://"):
                 u = f"{scheme}{mod}"
                 if vfs.exists(u):
@@ -140,4 +140,53 @@ class TestDevBuilder(YSCBTestCase):
         passed3, msg3 = self.builder.build_module("mock_clean_pkg", clean=True)
         self.assertTrue(passed3, f"Build failed: {msg3}")
         self.assertFalse(os.path.isfile(extra_file), "Expected extra_file to be wiped when clean=True")
+        self.mark_passed()
+
+    def test_deterministic_zip_packaging_and_release_sha256_index(self):
+        """TASK-02: Verify deterministic zip packaging across repeated builds and CRLF vs LF inputs, and sha256 in release index.json."""
+        self.create_mock_source_module("mock_det_pkg", "1.0.0.1")
+        src_dir = uri.resolve("module.source://mock_det_pkg")
+        cli_file = os.path.join(src_dir, "scripts", "cli.py")
+        readme_file = os.path.join(src_dir, "README.md")
+
+        # Write LF text files
+        with open(cli_file, "wb") as f:
+            f.write(b"def hello(cmd_bags):\n    return 0\n")
+        with open(readme_file, "wb") as f:
+            f.write(b"# Mock Module\nLine 2\n")
+
+        ok1, msg1 = self.builder.package_release("mock_det_pkg", "1.0.0.1")
+        self.assertTrue(ok1, f"Package 1 failed: {msg1}")
+        rel_zip = uri.resolve("module.release://mock_det_pkg/1.0.0.1.zip")
+        sha_lf_1 = compute_file_sha256(rel_zip)
+
+        # Repeated build with modified mtimes produces identical SHA-256
+        os.utime(cli_file, (1600000000, 1600000000))
+        os.utime(readme_file, (1600000100, 1600000100))
+        ok2, msg2 = self.builder.package_release("mock_det_pkg", "1.0.0.1")
+        self.assertTrue(ok2, f"Package 2 failed: {msg2}")
+        sha_lf_2 = compute_file_sha256(rel_zip)
+        self.assertEqual(sha_lf_1, sha_lf_2)
+
+        # Rewrite text files with CRLF line endings -> produces identical SHA-256
+        with open(cli_file, "wb") as f:
+            f.write(b"def hello(cmd_bags):\r\n    return 0\r\n")
+        with open(readme_file, "wb") as f:
+            f.write(b"# Mock Module\r\nLine 2\r\n")
+        ok3, msg3 = self.builder.package_release("mock_det_pkg", "1.0.0.1")
+        self.assertTrue(ok3, f"Package 3 failed: {msg3}")
+        sha_crlf = compute_file_sha256(rel_zip)
+        self.assertEqual(sha_lf_1, sha_crlf)
+
+        # Verify ZipInfo metadata determinism and release index.json sha256 entry
+        with zipfile.ZipFile(rel_zip, "r") as zf:
+            infolist = zf.infolist()
+            self.assertEqual([zi.filename for zi in infolist], sorted(zi.filename for zi in infolist))
+            for zi in infolist:
+                self.assertEqual(zi.date_time, (2020, 1, 1, 0, 0, 0))
+                self.assertEqual(zi.external_attr, (0o644 & 0xFFFF) << 16)
+
+        idx = vfs.read_json("module.release://mock_det_pkg/index.json")
+        rel_meta = idx.get("releases", {}).get("1.0.0.1", {})
+        self.assertEqual(rel_meta.get("sha256"), sha_lf_1)
         self.mark_passed()

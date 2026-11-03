@@ -14,7 +14,8 @@
       },
       "type": "docs",
       "urgency": "optional",
-      "summary": "增補 server/README.md 常駐守護進程架構、IPC 通訊協議與生命週期管理說明"
+      "summary": "增補 server/README.md 常駐守護進程架構、IPC 通訊協議與生命週期管理說明",
+      "sha256": "3c7261e21575bc9e7de647f5986051238a962565326abe275a090a56c8932742"
     },
     "1.0.1.1": {
       "status": "pruned",
@@ -41,7 +42,8 @@
       },
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "修復 read_daemon_state 讀取狀態異常、stop 防孤兒鎖保護與跨模式專案路徑掛載 (Issue #8)"
+      "summary": "修復 read_daemon_state 讀取狀態異常、stop 防孤兒鎖保護與跨模式專案路徑掛載 (Issue #8)",
+      "sha256": "9052414a1fcad332c4aa4739e70b48a4fecb4597b22b012e060e1adeb9528928"
     },
     "1.0.2.0": {
       "status": "active",
@@ -50,7 +52,8 @@
       },
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "修復 detached master 路徑單引號注入與 restart_worker 鎖順序死鎖並加固 daemon.json 權限"
+      "summary": "修復 detached master 路徑單引號注入與 restart_worker 鎖順序死鎖並加固 daemon.json 權限",
+      "sha256": "e741586f68c7ea5dd4844ed234a82b4a5f1ff396580941f24abda92a17012c54"
     }
   }
 }

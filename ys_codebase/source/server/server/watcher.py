@@ -5,6 +5,7 @@ Monitors the .modules/ deployment directory for changes (install/update/rebuild)
 and triggers warm worker replacement when changes are detected.
 """
 
+import logging
 import os
 import threading
 import time
@@ -117,8 +118,8 @@ class ModulesWatcher:
                     continue
                 try:
                     self.on_change_callback(affected_modules)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.warning(f"[ModulesWatcher] Error in on_change_callback for {affected_modules}: {exc}")
 
     def _extract_affected_modules(self, prev: Dict[str, float], curr: Dict[str, float]) -> Set[str]:
         """

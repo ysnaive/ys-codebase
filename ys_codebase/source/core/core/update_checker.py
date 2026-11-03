@@ -2,7 +2,8 @@
 YS-Codebase Update Checker with 12-Hour Throttling & Non-Blocking Tips.
 100% Python Standard Library, Zero External Dependencies.
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
+import hashlib
 import os
 import re
 import json
@@ -191,8 +192,14 @@ class UpdateChecker:
         m = _VERSION_RE.search(content)
         return m.group(1).strip() if m else None
 
-    def _get_local_host_script_version(self) -> Optional[str]:
-        """讀取本機工作區入口檔 yscb.py 之 __version__。"""
+    @staticmethod
+    def _compute_script_sha256(content: str) -> str:
+        """將腳本換行符正規化為 LF 後計算 UTF-8 SHA-256 十六進位雜湊值。"""
+        norm = (content or "").replace("\r\n", "\n")
+        return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+    def _get_local_host_script_info(self) -> Tuple[Optional[str], Optional[str]]:
+        """讀取本機工作區入口檔 yscb.py 之 (__version__, sha256)。"""
         candidates: List[str] = []
         if self.config_path:
             candidates.append(os.path.join(os.path.dirname(os.path.abspath(self.config_path)), "yscb.py"))
@@ -208,13 +215,21 @@ class UpdateChecker:
         for cand in candidates:
             if vfs.is_file(cand):
                 try:
-                    return self._extract_script_version(vfs.read_text(cand))
+                    text = vfs.read_text(cand)
+                    ver = self._extract_script_version(text)
+                    if ver:
+                        return ver, self._compute_script_sha256(text)
                 except Exception:
                     pass
-        return None
+        return None, None
 
-    def _fetch_latest_host_script_version(self, cfg: Dict[str, Any]) -> Optional[str]:
-        """探測來源端最新 yscb.py 之 __version__（支援本地路徑與遠端 HTTP）。"""
+    def _get_local_host_script_version(self) -> Optional[str]:
+        """讀取本機工作區入口檔 yscb.py 之 __version__。"""
+        ver, _ = self._get_local_host_script_info()
+        return ver
+
+    def _fetch_latest_host_script_info(self, cfg: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """探測來源端最新 yscb.py 之 (__version__, sha256)（支援本地路徑與遠端 HTTP）。"""
         self_update_url = cfg.get("self_update_url") if isinstance(cfg, dict) else None
         default_provider = cfg.get("default_provider", "") if isinstance(cfg, dict) else ""
 
@@ -234,9 +249,10 @@ class UpdateChecker:
             ):
                 if vfs.is_file(cand):
                     try:
-                        ver = self._extract_script_version(vfs.read_text(cand))
+                        text = vfs.read_text(cand)
+                        ver = self._extract_script_version(text)
                         if ver:
-                            return ver
+                            return ver, self._compute_script_sha256(text)
                     except Exception:
                         pass
 
@@ -244,36 +260,79 @@ class UpdateChecker:
         if not target_url.startswith(("http://", "https://")):
             if vfs.is_file(target_url):
                 try:
-                    return self._extract_script_version(vfs.read_text(target_url))
+                    text = vfs.read_text(target_url)
+                    ver = self._extract_script_version(text)
+                    return ver, (self._compute_script_sha256(text) if ver else None)
                 except Exception:
                     pass
-            return None
+            return None, None
 
         try:
             req = urllib.request.Request(target_url, headers={"User-Agent": "yscb-update-checker/1.0"})
             with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 if resp.status == 200:
                     text = resp.read().decode("utf-8", errors="replace")
-                    return self._extract_script_version(text)
+                    ver = self._extract_script_version(text)
+                    return ver, (self._compute_script_sha256(text) if ver else None)
         except Exception:
             pass
-        return None
+        return None, None
+
+    def _fetch_latest_host_script_version(self, cfg: Dict[str, Any]) -> Optional[str]:
+        """探測來源端最新 yscb.py 之 __version__（支援本地路徑與遠端 HTTP）。"""
+        ver, _ = self._fetch_latest_host_script_info(cfg)
+        return ver
 
     def _check_host_script_update(self, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """比對本機與來源端 yscb.py 版本，若有新版則回傳更新資訊字典。"""
-        cur_ver = self._get_local_host_script_version()
+        """比對本機與來源端 yscb.py 版本與內容 SHA-256，若有新版或內容漂移則回傳更新資訊字典。"""
+        if (
+            "_get_local_host_script_version" in self.__dict__
+            or getattr(type(self), "_get_local_host_script_version", None)
+            is not UpdateChecker._get_local_host_script_version
+        ):
+            cur_ver, local_sha256 = self._get_local_host_script_version(), None
+        else:
+            cur_ver, local_sha256 = self._get_local_host_script_info()
+
         if not cur_ver or cur_ver == "build" or cur_ver.endswith(".build"):
             return None
-        latest_ver = self._fetch_latest_host_script_version(cfg)
+
+        if (
+            "_fetch_latest_host_script_version" in self.__dict__
+            or getattr(type(self), "_fetch_latest_host_script_version", None)
+            is not UpdateChecker._fetch_latest_host_script_version
+        ):
+            latest_ver, latest_sha256 = self._fetch_latest_host_script_version(cfg), None
+        else:
+            latest_ver, latest_sha256 = self._fetch_latest_host_script_info(cfg)
+
         if not latest_ver:
             return None
         try:
-            if semver.compare_semver(latest_ver, cur_ver) > 0:
+            cmp_res = semver.compare_semver(latest_ver, cur_ver)
+            if cmp_res > 0:
                 return {
                     "current_version": cur_ver,
                     "latest_version": latest_ver,
                     "has_update": True,
                     "is_host_script": True,
+                }
+            if (
+                cmp_res == 0
+                and isinstance(local_sha256, str)
+                and isinstance(latest_sha256, str)
+                and local_sha256
+                and latest_sha256
+                and local_sha256 != latest_sha256
+            ):
+                return {
+                    "current_version": cur_ver,
+                    "latest_version": latest_ver,
+                    "has_update": True,
+                    "is_host_script": True,
+                    "is_drift": True,
+                    "local_sha256": local_sha256,
+                    "latest_sha256": latest_sha256,
                 }
         except Exception:
             pass
@@ -439,9 +498,19 @@ class UpdateChecker:
             if isinstance(host_info, dict) and host_info.get("has_update"):
                 cur_v = host_info.get("current_version", "")
                 lat_v = host_info.get("latest_version", "")
+                if host_info.get("is_drift"):
+                    header_line = (
+                        f"[!] [CRITICAL UPDATE] 宿主入口檔 'yscb.py' 偵測到內容漂移 "
+                        f"(Content Drift: SHA-256 mismatch at v{cur_v})！\n"
+                    )
+                else:
+                    header_line = (
+                        f"[!] [CRITICAL UPDATE] 宿主入口檔 'yscb.py' 有新版本可用 "
+                        f"(當前: v{cur_v}, 最新: v{lat_v})！\n"
+                    )
                 tips.append(
                     "================================================================================\n"
-                    f"[!] [CRITICAL UPDATE] 宿主入口檔 'yscb.py' 有新版本可用 (當前: v{cur_v}, 最新: v{lat_v})！\n"
+                    f"{header_line}"
                     "    強烈建議立即執行 'python yscb.py self-update' 更新入口檔。\n"
                     "    [AGENT BLOCKER] 若由 AI Agent 觸發本指令，你必須【立即暫停當前任務】，\n"
                     "    優先向開發者請示是否要立即執行 'python yscb.py self-update' 更新入口檔！\n"

@@ -19,7 +19,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "初版知識庫模組發布，提供多語言解析、加權 BM25 檢索、6 大 CLI 指令與二進位 Gzip 倒排索引快取"
+      "summary": "初版知識庫模組發布，提供多語言解析、加權 BM25 檢索、6 大 CLI 指令與二進位 Gzip 倒排索引快取",
+      "sha256": "648575ce6217f78a4043e63b8d7bc2bff3af0f63e50c9782ae8566953cda6308"
     },
     "1.0.1.22": {
       "status": "active",
@@ -28,7 +29,8 @@
       },
       "type": "refactor",
       "urgency": "optional",
-      "summary": "將舊版 RETRO_CHECK_ITEMS 遷移為 SESSION_ANALYSIS_CHECK_ITEMS 效益評測規範並隨生態系對話節流協議同步發布"
+      "summary": "將舊版 RETRO_CHECK_ITEMS 遷移為 SESSION_ANALYSIS_CHECK_ITEMS 效益評測規範並隨生態系對話節流協議同步發布",
+      "sha256": "6ff10665d50785c67c195ebfdb3a2d79b0d977591915bb7ba09b04c3de7e4a92"
     },
     "1.0.2.6": {
       "status": "active",
@@ -37,7 +39,8 @@
       },
       "type": "refactor",
       "urgency": "recommended",
-      "summary": "重構 scripts/cli.py 全面遷移至純宣告式 process(args) 進入點並掛載 core.guard.guard_dispatch 宿主守門 SDK"
+      "summary": "重構 scripts/cli.py 全面遷移至純宣告式 process(args) 進入點並掛載 core.guard.guard_dispatch 宿主守門 SDK",
+      "sha256": "a7573ec0ebef4a3f6ca78d768037a2d99a2d0f49e598f1f16fe6e1d7f3bd9007"
     },
     "1.1.0.6": {
       "status": "active",
@@ -46,7 +49,8 @@
       },
       "type": "docs",
       "urgency": "optional",
-      "summary": "修正 manifest.json Onboarding 與 README.md 之空間設定指引為宣告式 config/knowledge-db/contribute.json 並純化模組設計筆記"
+      "summary": "修正 manifest.json Onboarding 與 README.md 之空間設定指引為宣告式 config/knowledge-db/contribute.json 並純化模組設計筆記",
+      "sha256": "945108cbad1164cac39fab4192ef0e8b2f69bd8d9c9b984ba17db0d576272c96"
     },
     "1.1.1.2": {
       "status": "active",
@@ -55,7 +59,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "新增 search --max-snippet-lines=40 切片溢位截斷保護並將 knowledge-db-search 技能升級為二階段漏斗檢索模型"
+      "summary": "新增 search --max-snippet-lines=40 切片溢位截斷保護並將 knowledge-db-search 技能升級為二階段漏斗檢索模型",
+      "sha256": "1d22787da392d398f756873576ecc0f92a2ea1fc543b63999a2c122a670e6a94"
     },
     "1.1.2.1": {
       "status": "pruned",
@@ -82,7 +87,8 @@
       },
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "支援自訂解析器多格式載入、實例級副檔名擴充與載入異常可觀測性自癒 (Issue #8)"
+      "summary": "支援自訂解析器多格式載入、實例級副檔名擴充與載入異常可觀測性自癒 (Issue #8)",
+      "sha256": "6dd655b3881f83047ee7c41b8a0d4fd324ed97bfcd4654d38df2b649a642662c"
     },
     "1.2.0.0": {
       "status": "active",
@@ -93,7 +99,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "遷移至 file-space 與 ast 三層 DAG 底座（單次解析符號共享）、新增 KnowledgeDBServiceWorker 兩階段背景向量補齊與毫秒級動態降級"
+      "summary": "遷移至 file-space 與 ast 三層 DAG 底座（單次解析符號共享）、新增 KnowledgeDBServiceWorker 兩階段背景向量補齊與毫秒級動態降級",
+      "sha256": "1fed3a40b809476bdf129c5faef83e84bb9eb6ac5676031df82f42c6edc0f290"
     },
     "1.2.0.1": {
       "status": "active",
@@ -104,7 +111,8 @@
       },
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "修復 wait_until_worker_idle 跨進程緊密空轉、清理舊版組態遺留並補齊 on_server_worker_warming"
+      "summary": "修復 wait_until_worker_idle 跨進程緊密空轉、清理舊版組態遺留並補齊 on_server_worker_warming",
+      "sha256": "7b6c81495de7038fb2a3dbfa5c6795994d91a5c245d9bd00e3346da7a2c3eb6d"
     }
   }
 }

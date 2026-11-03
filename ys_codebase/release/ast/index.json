@@ -14,7 +14,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "初版 ast 模組發布，提供 10 語言方言隔離、C# partial 雙層分部符號聚合、無 BM25 同名異載群組定址、outline 三維度過濾與呼叫圖譜"
+      "summary": "初版 ast 模組發布，提供 10 語言方言隔離、C# partial 雙層分部符號聚合、無 BM25 同名異載群組定址、outline 三維度過濾與呼叫圖譜",
+      "sha256": "fef3d6888da96b73df8c2f057908eaa4ba10a7b39e46b0f56b7a36bdae8f5eb8"
     },
     "1.0.0.1": {
       "status": "active",
@@ -24,7 +25,8 @@
       },
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "修復 SnapshotState.head_generation 讀取、C# 同名重載方法保留與跨檔案邊重連"
+      "summary": "修復 SnapshotState.head_generation 讀取、C# 同名重載方法保留與跨檔案邊重連",
+      "sha256": "158cc1bff1f3da0d2a4f25a47a8ef0d5b161adaa2d6895f295fabe986f49f933"
     }
   }
 }

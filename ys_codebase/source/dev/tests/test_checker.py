@@ -776,5 +776,49 @@ class TestDevChecker(YSCBTestCase):
             if os.path.exists(mod_dir):
                 shutil.rmtree(mod_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
+    def test_checker_bare_except_emits_antipattern_warning(self):
+        """TASK-02: Checker.check_module emits a WARN (ANTIPATTERN) when a source file contains a bare 'except:' clause."""
+        src_root = uri.resolve("module.source://")
+        mod_dir = os.path.join(src_root, "mock_bare_except_mod")
+        pkg_dir = os.path.join(mod_dir, "mock_bare_except_mod")
+        try:
+            os.makedirs(pkg_dir, exist_ok=True)
+            os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
+            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_bare_except_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.0.0"}}')
+            with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write('def run(cmd_bags):\n    return 0\n')
+            with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
+                f.write('# Test Manifest\n')
+            with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
+                f.write('{"commands": {"cmd": {"run": {"description": "run"}}}}')
+            with open(os.path.join(pkg_dir, "bad_mod.py"), "w", encoding="utf-8") as f:
+                f.write(
+                    "def risky():\n"
+                    "    try:\n"
+                    "        return 1 / 0\n"
+                    "    except:\n"
+                    "        return 0\n"
+                )
+
+            rep = self.checker.check_module("mock_bare_except_mod")
+            self.assertTrue(rep.passed, f"Expected pass with WARN, got errors: {rep.errors}")
+            self.assertEqual(rep.status, CheckSeverity.WARN)
+            bare_warns = [
+                i for i in rep.issues
+                if i.severity == CheckSeverity.WARN
+                and i.category == "ANTIPATTERN"
+                and "Bare 'except:' clause detected" in i.message
+            ]
+            self.assertEqual(len(bare_warns), 1)
+            self.assertEqual(bare_warns[0].file_path, "mock_bare_except_mod/bad_mod.py")
+            self.assertEqual(bare_warns[0].line_number, 4)
+            self.mark_passed()
+        finally:
+            if os.path.exists(mod_dir):
+                shutil.rmtree(mod_dir, ignore_errors=True)
+
 
 

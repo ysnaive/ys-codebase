@@ -12,13 +12,27 @@ import os
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional
 
-from core import events
+from core import events, uri
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
 from core.platform import ensure_private_venv
 from server.service import ServiceManager
 from server.streamer import DebouncedIOStreamer
+
+
+def _restore_env_diff(orig_env: Dict[str, str]) -> None:
+    """
+    Restores os.environ to match orig_env via incremental key diff without calling os.environ.clear(),
+    ensuring concurrent daemon threads never observe an empty environment.
+    """
+    for k in list(os.environ.keys()):
+        if k not in orig_env:
+            os.environ.pop(k, None)
+    for k, v in orig_env.items():
+        if os.environ.get(k) != v:
+            os.environ[k] = v
 
 
 class WarmWorker:
@@ -31,6 +45,7 @@ class WarmWorker:
         ensure_private_venv(self.yscb_root)
         self.emit_packet_fn = emit_packet_fn
         self.service_manager = ServiceManager()
+        self._task_lock = threading.RLock()
 
     def pre_warm(self) -> None:
         """Emits warming events and pre-warms core runtime."""
@@ -47,17 +62,23 @@ class WarmWorker:
             if "/source/" not in norm_host and not norm_host.endswith("/source") and host_cand not in sys.path:
                 sys.path.append(host_cand)
 
-        try:
-            from core import uri
-            for uri_key in ("project://", "yscb.host://"):
+        for uri_key in ("project://", "yscb.host://"):
+            try:
                 resolved_p = uri.resolve(uri_key, interactive=False)
                 if resolved_p and os.path.isdir(resolved_p):
                     abs_p = os.path.abspath(resolved_p)
                     norm_p = abs_p.replace("\\", "/")
                     if "/source/" not in norm_p and not norm_p.endswith("/source") and abs_p not in sys.path:
                         sys.path.append(abs_p)
-        except Exception:
-            pass
+            except (ValueError, OSError):
+                continue
+            except Exception as e:
+                self.emit_packet_fn({
+                    "type": "log",
+                    "level": "WARNING",
+                    "component": "worker",
+                    "msg": f"Unexpected error resolving '{uri_key}' during pre_warm: {e}",
+                })
 
         try:
             self.service_manager.load_from_contributes(self.yscb_root)
@@ -154,37 +175,40 @@ class WarmWorker:
         """
         Executes target module command with lazy loading, stream capture, and SystemExit containment.
         """
-        start_time = time.time()
-        orig_cwd = os.getcwd()
-        orig_env = dict(os.environ)
+        with self._task_lock:
+            start_time = time.time()
+            orig_cwd = os.getcwd()
+            orig_env = dict(os.environ)
 
-        streamer = DebouncedIOStreamer(emit_chunk=self.emit_packet_fn, debounce_ms=500)
-        exit_code = 1
-
-        try:
-            self._prepare_execution_env(cwd, env)
-            exit_code = self._dispatch_command_with_captured_streams(module, args, streamer)
-        except Exception as ex:
-            streamer.write("stderr", f"[Server Worker Error] {type(ex).__name__}: {str(ex)}\n")
-            self.emit_packet_fn({
-                "type": "log",
-                "level": "ERROR",
-                "component": "worker",
-                "msg": f"Task execution failed for module='{module}', args={args}: {type(ex).__name__}: {str(ex)}",
-            })
+            streamer = DebouncedIOStreamer(emit_chunk=self.emit_packet_fn, debounce_ms=500)
             exit_code = 1
-        finally:
+
             try:
-                os.chdir(orig_cwd)
-            except OSError:
-                pass
-            os.environ.clear()
-            os.environ.update(orig_env)
+                self._prepare_execution_env(cwd, env)
+                host_env = os.environ.get(GUARD_ENV_HOST)
+                host_ctx = uri.host_scope(host_env) if (host_env and os.path.isdir(host_env)) else nullcontext()
+                with host_ctx:
+                    exit_code = self._dispatch_command_with_captured_streams(module, args, streamer)
+            except Exception as ex:
+                streamer.write("stderr", f"[Server Worker Error] {type(ex).__name__}: {str(ex)}\n")
+                self.emit_packet_fn({
+                    "type": "log",
+                    "level": "ERROR",
+                    "component": "worker",
+                    "msg": f"Task execution failed for module='{module}', args={args}: {type(ex).__name__}: {str(ex)}",
+                })
+                exit_code = 1
+            finally:
+                try:
+                    os.chdir(orig_cwd)
+                except OSError:
+                    pass
+                _restore_env_diff(orig_env)
 
-            duration_ms = (time.time() - start_time) * 1000.0
-            streamer.send_task_finish(exit_code=exit_code, duration_ms=duration_ms)
+                duration_ms = (time.time() - start_time) * 1000.0
+                streamer.send_task_finish(exit_code=exit_code, duration_ms=duration_ms)
 
-        return exit_code
+            return exit_code
 
 
 def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -> None:

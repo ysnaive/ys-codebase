@@ -955,6 +955,17 @@ class Checker:
                 for node in ast.walk(tree):
                     if node in doc_nodes:
                         continue
+                    if isinstance(node, ast.ExceptHandler) and node.type is None:
+                        lineno = getattr(node, "lineno", None)
+                        report.issues.append(
+                            CheckIssue(
+                                severity=CheckSeverity.WARN,
+                                category="ANTIPATTERN",
+                                message=f"Bare 'except:' clause detected in '{rel_p}:{lineno or 0}'. Catch 'Exception' or specific exception types instead.",
+                                file_path=rel_p,
+                                line_number=lineno,
+                            )
+                        )
                     if isinstance(node, ast.Constant) and isinstance(node.value, str):
                         s_val = node.value
                         lineno = getattr(node, "lineno", None)

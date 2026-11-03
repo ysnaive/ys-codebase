@@ -86,7 +86,15 @@ class TestRemoteZipBootstrap(YSCBTestCase):
             
         idx_path = os.path.join(prov_dir, "mock_mod", "index.json")
         with open(idx_path, "w", encoding="utf-8") as f:
-            json.dump({"name": "mock_mod", "versions": ["1.0.0.0"]}, f, indent=2)
+            json.dump(
+                {
+                    "name": "mock_mod",
+                    "versions": ["1.0.0.0"],
+                    "releases": {"1.0.0.0": {"sha256": yscb_mod._compute_file_sha256(zip_path)}},
+                },
+                f,
+                indent=2,
+            )
 
         # Ingest into mirror using act_download (single-file zip)
         dest_mirror = self.engine.act_download("mock_mod", "1.0.0.0", prov_dir)
@@ -111,11 +119,20 @@ class TestRemoteZipBootstrap(YSCBTestCase):
             zf.writestr("manifest.json", json.dumps(manifest, indent=2))
             zf.writestr("scripts/cli.py", "def main(): return 0\n")
             zf.writestr("configurable/config.project.json", json.dumps({"foo": "bar"}, indent=2))
-            
+        with open(os.path.join(prov_dir, "pure_mod", "index.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "name": "pure_mod",
+                    "versions": ["1.0.0.0"],
+                    "releases": {"1.0.0.0": {"sha256": yscb_mod._compute_file_sha256(zip_path)}},
+                },
+                f,
+            )
+
         self.engine.act_download("pure_mod", "1.0.0.0", prov_dir)
         self.engine.act_register("pure_mod", "1.0.0.0", prov_dir)
         self.engine.act_reload()
-        
+
         # Check module root
         mod_root = uri.resolve("module://pure_mod")
         self.assertFalse(os.path.isfile(os.path.join(mod_root, "config.project.json")))
@@ -123,7 +140,7 @@ class TestRemoteZipBootstrap(YSCBTestCase):
         self.assertFalse(os.path.isdir(os.path.join(mod_root, "configurable")))
         self.mark_passed()
 
-        
+
         # Clean up
         self.engine.act_unregister("pure_mod")
         vfs.rmtree("module://pure_mod")
@@ -134,11 +151,20 @@ class TestRemoteZipBootstrap(YSCBTestCase):
         prov_dir = os.path.join(self.temp_dir, "provider")
         os.makedirs(os.path.join(prov_dir, "evil_mod"), exist_ok=True)
         zip_path = os.path.join(prov_dir, "evil_mod", "1.0.0.0.zip")
-        
+
         # Create malicious zip with ../../ path traversal
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps({"name": "evil_mod", "version": "1.0.0.0"}, indent=2))
             zf.writestr("../../evil_escape.txt", "MALICIOUS PAYLOAD OUTSIDE DESTINATION")
+        with open(os.path.join(prov_dir, "evil_mod", "index.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "name": "evil_mod",
+                    "versions": ["1.0.0.0"],
+                    "releases": {"1.0.0.0": {"sha256": yscb_mod._compute_file_sha256(zip_path)}},
+                },
+                f,
+            )
             
         self.engine.act_download("evil_mod", "1.0.0.0", prov_dir)
         self.engine.act_register("evil_mod", "1.0.0.0", prov_dir)
@@ -218,4 +244,67 @@ class TestRemoteZipBootstrap(YSCBTestCase):
         finally:
             if os.path.exists(mod_dir):
                 shutil.rmtree(mod_dir, ignore_errors=True)
+        self.mark_passed()
+
+    def test_sha256_verification_and_deterministic_zip_governance(self):
+        """T-03 / T-15: 驗證決定性 Zip 打包一致性、SHA-256 缺失/不符攔截、--ignore-sha256 繞過與 @build 豁免。"""
+        from core.engine import compute_file_sha256, package_local_source_if_exact_match
+
+        # 1. 決定性打包：相同目錄（即使 CRLF/LF 不同）由 engine 與 yscb 打包產生之 SHA-256 必須 100% 相同
+        src_a = os.path.join(self.temp_dir, "det_src_a")
+        src_b = os.path.join(self.temp_dir, "det_src_b")
+        for s_dir, eol in ((src_a, "\n"), (src_b, "\r\n")):
+            os.makedirs(os.path.join(s_dir, "scripts"), exist_ok=True)
+            with open(os.path.join(s_dir, "manifest.json"), "wb") as f:
+                f.write(f'{{"name": "det_mod", "version": "1.0.0.0", "entry": "scripts/cli.py"}}{eol}'.encode("utf-8"))
+            with open(os.path.join(s_dir, "scripts", "cli.py"), "wb") as f:
+                f.write(f"def main():{eol}    return 0{eol}".encode("utf-8"))
+
+        zip_eng = os.path.join(self.temp_dir, "det_eng.zip")
+        zip_host = os.path.join(self.temp_dir, "det_host.zip")
+        self.assertTrue(package_local_source_if_exact_match(src_a, "1.0.0.0", zip_eng))
+        self.assertTrue(yscb_mod._package_source_to_zip_if_exact_version(src_b, "1.0.0.0", zip_host))
+        self.assertEqual(compute_file_sha256(zip_eng), compute_file_sha256(zip_host))
+
+        # 2. 缺失 sha256 攔截：index.json 無 sha256 時 act_download 拋出 RuntimeError 且清除 mirror 檔案
+        prov_dir = os.path.join(self.temp_dir, "sha_prov")
+        mod_dir = os.path.join(prov_dir, "sec_mod")
+        os.makedirs(mod_dir, exist_ok=True)
+        pkg_zip = os.path.join(mod_dir, "1.0.0.0.zip")
+        shutil.copy2(zip_eng, pkg_zip)
+        with open(os.path.join(mod_dir, "index.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "sec_mod", "versions": ["1.0.0.0"], "releases": {"1.0.0.0": {}}}, f)
+
+        with self.assertRaises(RuntimeError) as ctx_missing:
+            self.engine.act_download("sec_mod", "1.0.0.0", prov_dir)
+        self.assertIn("Missing SHA-256 checksum", str(ctx_missing.exception))
+        self.assertFalse(vfs.exists("module.mirror://sec_mod/1.0.0.0.zip"))
+
+        # 3. --ignore-sha256 顯式繞過
+        uri_bypass = self.engine.act_download("sec_mod", "1.0.0.0", prov_dir, ignore_sha256=True)
+        self.assertTrue(vfs.exists(uri_bypass))
+        vfs.remove(uri_bypass)
+
+        # 4. SHA-256 不符攔截
+        with open(os.path.join(mod_dir, "index.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "name": "sec_mod",
+                    "versions": ["1.0.0.0"],
+                    "releases": {"1.0.0.0": {"sha256": "0" * 64}},
+                },
+                f,
+            )
+        with self.assertRaises(RuntimeError) as ctx_mismatch:
+            self.engine.act_download("sec_mod", "1.0.0.0", prov_dir)
+        self.assertIn("SHA-256 checksum mismatch", str(ctx_mismatch.exception))
+        self.assertFalse(vfs.exists("module.mirror://sec_mod/1.0.0.0.zip"))
+
+        # 5. @build 開發版本豁免 SHA-256 校驗
+        bld_dir = os.path.join(prov_dir, "build", "sec_mod")
+        os.makedirs(bld_dir, exist_ok=True)
+        shutil.copy2(zip_eng, os.path.join(bld_dir, "1.0.0.build.zip"))
+        uri_bld = self.engine.act_download("sec_mod", "1.0.0.build", prov_dir, ignore_sha256=False)
+        self.assertTrue(vfs.exists(uri_bld))
+        vfs.rmtree("module.mirror://sec_mod")
         self.mark_passed()

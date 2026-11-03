@@ -730,27 +730,33 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             # 1. Single module install with @version
             b_inst_single = CmdBags(command="install", args=["dev@1.2.0.0"], options={"force": CmdOption("force", True)})
             self.assertEqual(core_cli.install(b_inst_single), 0)
-            mock_inst.cmd_install.assert_called_with("dev", version="1.2.0.0", provider=None, force=True)
+            mock_inst.cmd_install.assert_called_with(
+                "dev", version="1.2.0.0", provider=None, force=True, ignore_sha256=False
+            )
 
             # 2. Multi-module batch install
             b_inst_batch = CmdBags(
                 command="install",
                 args=["dev@build", "agents-workflow@build"],
-                options={"force": CmdOption("force", True)},
+                options={"force": CmdOption("force", True), "ignore-sha256": CmdOption("ignore-sha256", True)},
             )
             self.assertEqual(core_cli.install(b_inst_batch), 0)
             mock_inst.cmd_install.assert_called_with(
-                ["dev@build", "agents-workflow@build"], version=None, provider=None, force=True
+                ["dev@build", "agents-workflow@build"], version=None, provider=None, force=True, ignore_sha256=True
             )
 
             # 3. Multi-module batch update & zero-arg update
             b_up_all = CmdBags(command="update", args=[], options={})
             self.assertEqual(core_cli.update(b_up_all), 0)
-            mock_inst.cmd_update.assert_called_with(None, provider=None)
+            mock_inst.cmd_update.assert_called_with(None, provider=None, ignore_sha256=False)
 
-            b_up_batch = CmdBags(command="update", args=["dev", "server"], options={})
+            b_up_batch = CmdBags(
+                command="update",
+                args=["dev", "server"],
+                options={"ignore-sha256": CmdOption("ignore-sha256", True)},
+            )
             self.assertEqual(core_cli.update(b_up_batch), 0)
-            mock_inst.cmd_update.assert_called_with(["dev", "server"], provider=None)
+            mock_inst.cmd_update.assert_called_with(["dev", "server"], provider=None, ignore_sha256=True)
 
             # 4. Multi-module batch remove
             b_rm_batch = CmdBags(

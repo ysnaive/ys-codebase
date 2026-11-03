@@ -19,7 +19,8 @@
       },
       "type": "perf",
       "urgency": "recommended",
-      "summary": "實作測試沙盒 Session 級共享機制與輕量狀態重置，將模組測試套件冷啟動耗時大幅壓降"
+      "summary": "實作測試沙盒 Session 級共享機制與輕量狀態重置，將模組測試套件冷啟動耗時大幅壓降",
+      "sha256": "3e8e0aefc2bc35eacbba11448a966ab7f280f5503ca5118d70fe6111d4f1d4ef"
     },
     "1.0.1.15": {
       "status": "active",
@@ -28,7 +29,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "於 dev check 實作 AST 靜態 CLI 合規審查器（強制 guard_dispatch 與 process(args) 契約）並升級 scaffold 範本"
+      "summary": "於 dev check 實作 AST 靜態 CLI 合規審查器（強制 guard_dispatch 與 process(args) 契約）並升級 scaffold 範本",
+      "sha256": "6ed20f6554419d1fe2b4b758063c944cab229350f4af73afc5fe59e5012c7541"
     },
     "1.1.0.2": {
       "status": "active",
@@ -37,7 +39,8 @@
       },
       "type": "docs",
       "urgency": "optional",
-      "summary": "增補 dev/README.md 開發工具鏈雙軌發布與沙盒測試指引，並同步對齊核心依賴契約 (core>=1.1.0)"
+      "summary": "增補 dev/README.md 開發工具鏈雙軌發布與沙盒測試指引，並同步對齊核心依賴契約 (core>=1.1.0)",
+      "sha256": "9c87e2c5b33c3c08a6fe1e21c564c909df6d8abf29451aa850a950c2b09c08e4"
     },
     "1.1.1.1": {
       "status": "active",
@@ -46,7 +49,8 @@
       },
       "type": "feature",
       "urgency": "optional",
-      "summary": "於測試沙盒注入 YSCB_SANDBOX_ACTIVE 環境隔離標記，防止單元測試期間污染宿主 session-trace 遙測日誌"
+      "summary": "於測試沙盒注入 YSCB_SANDBOX_ACTIVE 環境隔離標記，防止單元測試期間污染宿主 session-trace 遙測日誌",
+      "sha256": "959d671c86c79ebb99be7f6410b609608569af564b71a444a122ffdeac0afd03"
     },
     "1.1.2.0": {
       "status": "pruned",
@@ -73,7 +77,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "於 dev check 新增測試命名規範與跨模組依賴檢查，並更新 yscb-module-dev 技能手冊指引"
+      "summary": "於 dev check 新增測試命名規範與跨模組依賴檢查，並更新 yscb-module-dev 技能手冊指引",
+      "sha256": "c782d6e7dc4a5bf1f1daa6f50eeb848b5b553076815e11e3b1ff13482d84abb6"
     },
     "1.1.3.0": {
       "status": "pruned",
@@ -91,7 +96,8 @@
       },
       "type": "docs",
       "urgency": "optional",
-      "summary": "對齊 dev 隨包手冊與技能文檔之雙軌釋出元數據、index-patch 與專案限定 @build 自部署建議"
+      "summary": "對齊 dev 隨包手冊與技能文檔之雙軌釋出元數據、index-patch 與專案限定 @build 自部署建議",
+      "sha256": "870c158bb653aec2abb4429006f59fb3f92a559ed08618eaac28e8f3dd091e1b"
     },
     "1.1.3.2": {
       "status": "active",
@@ -100,7 +106,8 @@
       },
       "type": "docs",
       "urgency": "optional",
-      "summary": "同步更新 contributes_guide 合併策略說明並對齊 core>=1.2.2 依賴契約"
+      "summary": "同步更新 contributes_guide 合併策略說明並對齊 core>=1.2.2 依賴契約",
+      "sha256": "eb76276aa337bbc911b5ad43d30eae021e96082371b3d8e378491eec738131c4"
     },
     "1.1.3.3": {
       "status": "active",
@@ -109,7 +116,8 @@
       },
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "新增唯讀檔案沙盒清理回呼、單測方法級輸出切片捕獲與 bump 自動同步 __version__"
+      "summary": "新增唯讀檔案沙盒清理回呼、單測方法級輸出切片捕獲與 bump 自動同步 __version__",
+      "sha256": "d4c6f9bfa6104542ddad22534dfe890fbf5f85873bb2f8dab148483aab34696c"
     }
   }
 }

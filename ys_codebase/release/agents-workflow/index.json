@@ -21,7 +21,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "初版工作流框架正式發布，建立雙階段語意編譯與多目標原子發布管線、8 大核心工作流、P00~P07 模板體系與 plan 管理工具鏈"
+      "summary": "初版工作流框架正式發布，建立雙階段語意編譯與多目標原子發布管線、8 大核心工作流、P00~P07 模板體系與 plan 管理工具鏈",
+      "sha256": "25efb18dc3e9d69c17b7e2df8a909130269df0822d267fe22efbdc5456af2379"
     },
     "1.0.1.6": {
       "status": "active",
@@ -30,7 +31,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "實作發布引擎 Stage 0 來源指紋提前短路 (0 I/O)、Stage 4 記憶體 Diff 增量物化與 release --force 強制覆寫選項"
+      "summary": "實作發布引擎 Stage 0 來源指紋提前短路 (0 I/O)、Stage 4 記憶體 Diff 增量物化與 release --force 強制覆寫選項",
+      "sha256": "b85303549f99618ae3e180594fc7ef1aad063ddcd6631c9ab54bf0dd9b3b4d4f"
     },
     "1.0.2.15": {
       "status": "active",
@@ -39,7 +41,8 @@
       },
       "type": "docs",
       "urgency": "optional",
-      "summary": "於 AgentsStandards.md 同步擴充知識庫調用圖譜 (callers/callees/impact) 導航與條件分流規範"
+      "summary": "於 AgentsStandards.md 同步擴充知識庫調用圖譜 (callers/callees/impact) 導航與條件分流規範",
+      "sha256": "6b2dba59aff7f3bb4f5ae6a56f65c5ab3c35389b0cbbf8f795d6f4dd211124cc"
     },
     "1.0.3.9": {
       "status": "active",
@@ -48,7 +51,8 @@
       },
       "type": "refactor",
       "urgency": "recommended",
-      "summary": "重構 scripts/cli.py 遷移至純宣告式 process(args) 進入點並接入 core.guard.guard_dispatch 宿主守門 SDK"
+      "summary": "重構 scripts/cli.py 遷移至純宣告式 process(args) 進入點並接入 core.guard.guard_dispatch 宿主守門 SDK",
+      "sha256": "f33bb1536c420735757ddd17201540b8c18a2d8fa1a31c17d19d1e8c5324359d"
     },
     "1.1.0.7": {
       "status": "active",
@@ -57,7 +61,8 @@
       },
       "type": "refactor",
       "urgency": "recommended",
-      "summary": "完善工作流生命週期閉環（handoff.md 消費即毀、Umbrella 主從連動、跨軌道清理、結案 plan verify 最終守門時序）並統一三層 5 列文檔表與提示詞契約"
+      "summary": "完善工作流生命週期閉環（handoff.md 消費即毀、Umbrella 主從連動、跨軌道清理、結案 plan verify 最終守門時序）並統一三層 5 列文檔表與提示詞契約",
+      "sha256": "7efb8569ea4ad78f988280eb803c39381e4714921ded6c5b5b1d685ad0c2c9a0"
     },
     "1.2.0.2": {
       "status": "active",
@@ -66,7 +71,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "於 session-trace 新增無推估完整日誌聯集解析、有效/無效 Token 效益拆解與三維高耗能排行，並於 handoff.md 增設上下文交接壓縮區塊"
+      "summary": "於 session-trace 新增無推估完整日誌聯集解析、有效/無效 Token 效益拆解與三維高耗能排行，並於 handoff.md 增設上下文交接壓縮區塊",
+      "sha256": "e7668e14e4175e8f9cf05d5136e2137aac092f63d5b465c1892c1d57ce59d6f6"
     },
     "1.2.1.1": {
       "status": "active",
@@ -75,7 +81,8 @@
       },
       "type": "refactor",
       "urgency": "optional",
-      "summary": "將 roadmap.md 模板輕量化為 v1.1 三大抽象章節，並將單體 plan_modes.md 拆分為按需單點載入之獨立計畫模式參考手冊"
+      "summary": "將 roadmap.md 模板輕量化為 v1.1 三大抽象章節，並將單體 plan_modes.md 拆分為按需單點載入之獨立計畫模式參考手冊",
+      "sha256": "6f4c1550bf874fcedc92971c9a7b8fea0c62c54e9570b897a4775cdaa52f075b"
     },
     "1.2.2.0": {
       "status": "pruned",
@@ -111,7 +118,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "於 session-audit 技能引入盲眼子代理客觀法醫審計與三軌分流機制"
+      "summary": "於 session-audit 技能引入盲眼子代理客觀法醫審計與三軌分流機制",
+      "sha256": "c90ed49b62ec817981958144006beb7a2cff61ca66ed574b9860bcb5bf902485"
     },
     "1.2.3.0": {
       "status": "active",
@@ -120,7 +128,8 @@
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "遷移 file-space 空間貢獻、新增 yscb ast 結構導航盲讀豁免與 publisher 目錄 SHA-1 快取複用及託管標記自癒"
+      "summary": "遷移 file-space 空間貢獻、新增 yscb ast 結構導航盲讀豁免與 publisher 目錄 SHA-1 快取複用及託管標記自癒",
+      "sha256": "711d77239cadccb3f9b5c2e28500d9c0eac7f8f9238b6926429f894e7e9e50cc"
     },
     "1.2.3.1": {
       "status": "active",
@@ -129,7 +138,8 @@
       },
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "同步三層檢索架構指引並啟用 publisher 原子檔案寫入"
+      "summary": "同步三層檢索架構指引並啟用 publisher 原子檔案寫入",
+      "sha256": "485de81b4219c1745527534dcae07391c3f7856289dc72d9f78280b78a0b8eea"
     }
   }
 }

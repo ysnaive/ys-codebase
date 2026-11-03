@@ -367,6 +367,7 @@ def install(cmd_bags: CmdBags) -> int:
     version = cmd_bags.get_option_value("version")
     provider = cmd_bags.get_option_value("provider")
     force_flag = cmd_bags.has_option("force")
+    ignore_sha256 = cmd_bags.has_option("ignore-sha256")
 
     specs = cmd_bags.args
     if len(specs) == 1:
@@ -379,7 +380,13 @@ def install(cmd_bags: CmdBags) -> int:
         module_target = [s for s in specs]
 
     installer = Installer()
-    return installer.cmd_install(module_target, version=version, provider=provider, force=force_flag)
+    return installer.cmd_install(
+        module_target,
+        version=version,
+        provider=provider,
+        force=force_flag,
+        ignore_sha256=ignore_sha256,
+    )
 
 
 def update(cmd_bags: CmdBags) -> int:
@@ -392,8 +399,9 @@ def update(cmd_bags: CmdBags) -> int:
     else:
         mod_target = [s for s in cmd_bags.args]
     provider = cmd_bags.get_option_value("provider")
+    ignore_sha256 = cmd_bags.has_option("ignore-sha256")
     installer = Installer()
-    return installer.cmd_update(mod_target, provider=provider)
+    return installer.cmd_update(mod_target, provider=provider, ignore_sha256=ignore_sha256)
 
 
 def remove(cmd_bags: CmdBags) -> int:
@@ -448,8 +456,9 @@ def restore(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     force_flag = cmd_bags.has_option("force")
     provider = cmd_bags.get_option_value("provider")
+    ignore_sha256 = cmd_bags.has_option("ignore-sha256")
     installer = Installer()
-    return installer.cmd_restore(force=force_flag, provider=provider)
+    return installer.cmd_restore(force=force_flag, provider=provider, ignore_sha256=ignore_sha256)
 
 
 def event_list(cmd_bags: CmdBags) -> int:

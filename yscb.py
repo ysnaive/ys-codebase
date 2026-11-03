@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import ast
 import difflib
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import os
@@ -16,7 +17,7 @@ import tempfile
 import urllib.request
 import zipfile
 
-__version__: str = "1.2.1.0"
+__version__: str = "1.2.2.0"
 CONFIG_FILENAME: str = "yscb.config.json"
 DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases"
 LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
@@ -76,9 +77,16 @@ def _normalize_local_path(raw: str, base_dir: Optional[str] = None) -> Optional[
 
 
 def _parse_flag_options(argv: List[str]) -> Tuple[List[str], Dict[str, Any]]:
-    """統一解析自舉指令之旗標選項 (--fix, --force, --provider/-p, --url) 與位置參數。"""
+    """統一解析自舉指令之旗標選項 (--fix, --force, --provider/-p, --url, --sha256, --ignore-sha256) 與位置參數。"""
     pos: List[str] = []
-    opts: Dict[str, Any] = {"fix": False, "force": False, "provider": None, "url": None}
+    opts: Dict[str, Any] = {
+        "fix": False,
+        "force": False,
+        "provider": None,
+        "url": None,
+        "sha256": None,
+        "ignore_sha256": False,
+    }
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -86,6 +94,13 @@ def _parse_flag_options(argv: List[str]) -> Tuple[List[str], Dict[str, Any]]:
             opts["fix"] = True
         elif a == "--force":
             opts["force"] = True
+        elif a == "--ignore-sha256":
+            opts["ignore_sha256"] = True
+        elif a.startswith("--sha256="):
+            opts["sha256"] = a.split("=", 1)[1].strip("\"'")
+        elif a == "--sha256" and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            opts["sha256"] = argv[i + 1].strip("\"'")
+            i += 1
         elif a.startswith("--provider="):
             opts["provider"] = a.split("=", 1)[1].strip("\"'")
         elif a in ("--provider", "-p") and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
@@ -208,13 +223,67 @@ def _is_source_version_compatible(src_ver: str, target_ver: str) -> bool:
     return False
 
 
+_TEXT_NORMALIZE_EXTS: Tuple[str, ...] = (
+    ".py",
+    ".json",
+    ".md",
+    ".txt",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".cfg",
+    ".ini",
+    ".sh",
+)
+_TEXT_NORMALIZE_NAMES: Tuple[str, ...] = (
+    ".yscbignore",
+    ".gitignore",
+)
+_DETERMINISTIC_ZIP_DATE: Tuple[int, int, int, int, int, int] = (2020, 1, 1, 0, 0, 0)
+
+
+def _compute_file_sha256(file_path: str) -> str:
+    """計算檔案之小寫 SHA-256 hex digest。"""
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _make_deterministic_zip_info(rel_file: str) -> zipfile.ZipInfo:
+    """建立固定時間戳記與權限之 ZipInfo 以達成跨環境決定性打包。"""
+    zi = zipfile.ZipInfo(filename=rel_file, date_time=_DETERMINISTIC_ZIP_DATE)
+    zi.compress_type = zipfile.ZIP_DEFLATED
+    zi.external_attr = (0o644 & 0xFFFF) << 16
+    return zi
+
+
+def _read_normalized_package_file_bytes(src_path: str, rel_file: str) -> bytes:
+    """讀取打包檔案位元組，對 UTF-8 文字檔統一將 CRLF 正規化為 LF。"""
+    base_name = os.path.basename(rel_file)
+    _, ext = os.path.splitext(base_name)
+    with open(src_path, "rb") as f:
+        raw = f.read()
+    if ext.lower() in _TEXT_NORMALIZE_EXTS or base_name in _TEXT_NORMALIZE_NAMES:
+        try:
+            text = raw.decode("utf-8")
+            return text.replace("\r\n", "\n").encode("utf-8")
+        except UnicodeDecodeError:
+            return raw
+    return raw
+
+
 def _package_source_to_zip_if_exact_version(
     source_dir: str,
     target_version: str,
     dest_zip_path: str,
     release_zip_path: Optional[str] = None,
 ) -> bool:
-    """當本地 source/<mod>/manifest.json 存在且版本與 target_version 相容（含同三元組 .build）時，以純標準庫打包至 dest_zip_path。"""
+    """當本地 source/<mod>/manifest.json 存在且版本與 target_version 相容（含同三元組 .build）時，以純標準庫決定性打包至 dest_zip_path。"""
     if not source_dir or not os.path.isdir(source_dir):
         return False
     mf_path = os.path.join(source_dir, "manifest.json")
@@ -234,25 +303,32 @@ def _package_source_to_zip_if_exact_version(
         except Exception:
             pass
 
+    entries: List[Tuple[str, str]] = []
+    for root, dirs, files in os.walk(source_dir):
+        rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
+        if rel_dir == ".":
+            rel_dir = ""
+        dirs[:] = sorted(d for d in dirs if not _should_ignore_rel_path(f"{rel_dir}/{d}".lstrip("/"), ignores))
+        for fname in sorted(files):
+            rel_file = f"{rel_dir}/{fname}".lstrip("/")
+            if not _should_ignore_rel_path(rel_file, ignores):
+                entries.append((rel_file, os.path.join(root, fname)))
+    entries.sort(key=lambda item: item[0])
+
     os.makedirs(os.path.dirname(os.path.abspath(dest_zip_path)), exist_ok=True)
     tmp_zip = dest_zip_path + f".tmp_{os.getpid()}"
     try:
         with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(source_dir):
-                rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
-                if rel_dir == ".":
-                    rel_dir = ""
-                dirs[:] = [d for d in dirs if not _should_ignore_rel_path(f"{rel_dir}/{d}".lstrip("/"), ignores)]
-                for fname in files:
-                    rel_file = f"{rel_dir}/{fname}".lstrip("/")
-                    if not _should_ignore_rel_path(rel_file, ignores):
-                        src_f = os.path.join(root, fname)
-                        if rel_file == "manifest.json":
-                            m_copy = dict(mf_data)
-                            m_copy["version"] = target_version
-                            zf.writestr("manifest.json", json.dumps(m_copy, indent=2, ensure_ascii=False))
-                        else:
-                            zf.write(src_f, arcname=rel_file)
+            for rel_file, src_f in entries:
+                zi = _make_deterministic_zip_info(rel_file)
+                if rel_file == "manifest.json":
+                    m_copy = dict(mf_data)
+                    m_copy["version"] = target_version
+                    payload = json.dumps(m_copy, indent=2, ensure_ascii=False).replace("\r\n", "\n").encode("utf-8")
+                    zf.writestr(zi, payload, compress_type=zipfile.ZIP_DEFLATED)
+                else:
+                    payload = _read_normalized_package_file_bytes(src_f, rel_file)
+                    zf.writestr(zi, payload, compress_type=zipfile.ZIP_DEFLATED)
         if os.path.exists(dest_zip_path):
             os.remove(dest_zip_path)
         os.replace(tmp_zip, dest_zip_path)
@@ -500,7 +576,7 @@ def _inplace_atomic_sync_dir(staging_dir: str, target_dir: str) -> None:
             shutil.rmtree(backup_dir, ignore_errors=True)
 
 
-def _fetch_and_extract_zip(source: str, dest_dir: str) -> None:
+def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional[str] = None) -> None:
     """自舉提取壓縮包至同父目錄 .staging 臨時空間，完成後原子替換至 dest_dir，嚴防 Zip Slip 與非原子撕裂。"""
     dest_abs = os.path.abspath(dest_dir)
     parent_dir = os.path.dirname(dest_abs)
@@ -520,6 +596,13 @@ def _fetch_and_extract_zip(source: str, dest_dir: str) -> None:
                 req = urllib.request.Request(source, headers={"User-Agent": "yscb-host/2.0"})
                 with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_p, "wb") as out_f:
                     shutil.copyfileobj(resp, out_f)
+                if expected_sha256:
+                    actual_sha = _compute_file_sha256(tmp_p)
+                    if actual_sha.lower() != expected_sha256.strip().lower():
+                        raise RuntimeError(
+                            f"[yscb] Error: SHA-256 checksum mismatch for '{source}': "
+                            f"expected {expected_sha256}, got {actual_sha}."
+                        )
                 _extract_safe_zip(tmp_p, staging_dir)
             finally:
                 if os.path.exists(tmp_p):
@@ -530,6 +613,13 @@ def _fetch_and_extract_zip(source: str, dest_dir: str) -> None:
         elif os.path.isdir(source):
             shutil.copytree(source, staging_dir, dirs_exist_ok=True)
         elif os.path.isfile(source) and zipfile.is_zipfile(source):
+            if expected_sha256:
+                actual_sha = _compute_file_sha256(source)
+                if actual_sha.lower() != expected_sha256.strip().lower():
+                    raise RuntimeError(
+                        f"[yscb] Error: SHA-256 checksum mismatch for '{source}': "
+                        f"expected {expected_sha256}, got {actual_sha}."
+                    )
             _extract_safe_zip(source, staging_dir)
         else:
             raise FileNotFoundError(f"[yscb] Error: Package source '{source}' not found or is not a valid zip archive.")
@@ -602,9 +692,58 @@ def _render_self_update_help() -> str:
             "OPTIONS:",
             "  -- [Group: source]",
             "    --url <target_url>             Custom URL to download yscb.py",
+            "  -- [Group: security]",
+            "    --sha256 <hex>                 Expected SHA-256 checksum of yscb.py",
+            "    --ignore-sha256                Bypass SHA-256 integrity verification (unsafe)",
         ],
         pros="升級宿主工程起手腳本 yscb.py 至最新版本",
     )
+
+
+def _has_required_host_script_ast(tree: ast.Module) -> bool:
+    """驗證下載之腳本 AST 頂層是否具備 __version__ 變數宣告與 def main 主入口函式。"""
+    has_version = False
+    has_main = False
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "__version__":
+                    has_version = True
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == "__version__":
+                has_version = True
+        elif isinstance(node, ast.FunctionDef) and node.name == "main":
+            has_main = True
+    return has_version and has_main
+
+
+def _fetch_companion_sha256_token(target_url: str, local_target: Optional[str]) -> Optional[str]:
+    """嘗試讀取同路徑下之 <target>.sha256 伴隨校驗檔並提取首個 64 字元 hex token。"""
+    raw_text: Optional[str] = None
+    if local_target and os.path.isfile(local_target + ".sha256"):
+        try:
+            with open(local_target + ".sha256", "r", encoding="utf-8") as f:
+                raw_text = f.read()
+        except Exception:
+            raw_text = None
+    elif target_url.startswith(("http://", "https://")):
+        sha_url = target_url + ".sha256"
+        try:
+            req = urllib.request.Request(sha_url, headers={"User-Agent": "yscb-host/2.0"})
+            if "127.0.0.1" in sha_url or "localhost" in sha_url:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(req, timeout=5) as resp:
+                    raw_text = resp.read().decode("utf-8")
+            else:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    raw_text = resp.read().decode("utf-8")
+        except Exception:
+            raw_text = None
+
+    if not raw_text:
+        return None
+    parts = raw_text.strip().split()
+    return parts[0].strip() if parts else None
 
 
 def cmd_self_update(argv: List[str]) -> int:
@@ -619,6 +758,7 @@ def cmd_self_update(argv: List[str]) -> int:
     current_file = os.path.abspath(__file__)
     tmp_file = current_file + ".tmp"
     bak_file = current_file + ".bak"
+    local_target: Optional[str] = None
 
     try:
         local_target = _normalize_local_path(target_url)
@@ -639,10 +779,33 @@ def cmd_self_update(argv: List[str]) -> int:
         return 1
 
     try:
-        ast.parse(content, filename="yscb.py")
+        tree = ast.parse(content, filename="yscb.py")
     except SyntaxError as e:
         print(f"[yscb] Error: Downloaded script has invalid Python syntax: {e}")
         return 1
+
+    if not _has_required_host_script_ast(tree):
+        print("[yscb] Error: Downloaded script is missing required entrypoint structure (__version__ or main).")
+        return 1
+
+    actual_sha = hashlib.sha256(content.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+    raw_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    expected_sha = opts.get("sha256")
+    if expected_sha:
+        if expected_sha.strip().lower() not in (actual_sha.lower(), raw_sha.lower()):
+            print(
+                f"[yscb] Error: SHA-256 checksum mismatch for downloaded yscb.py: "
+                f"expected {expected_sha}, got {actual_sha}."
+            )
+            return 1
+    elif not opts.get("ignore_sha256"):
+        companion_sha = _fetch_companion_sha256_token(target_url, local_target)
+        if companion_sha and companion_sha.lower() not in (actual_sha.lower(), raw_sha.lower()):
+            print(
+                f"[yscb] Error: SHA-256 checksum mismatch for downloaded yscb.py: "
+                f"expected {companion_sha}, got {actual_sha}."
+            )
+            return 1
 
     try:
         with open(tmp_file, "w", encoding="utf-8", newline="\n") as f:
@@ -763,6 +926,59 @@ def _is_core_healthy(core_module_dir: str) -> Tuple[bool, Optional[str]]:
     return True, str(ver)
 
 
+def _lookup_provider_release_sha256(
+    provider: str,
+    module_name: str,
+    version: str,
+    base_dir: Optional[str] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    於 Provider 之 index.json 探測該模組是否定義 releases[version]["sha256"]。
+    返回 (has_index_with_releases, expected_sha256)。
+    """
+    if version == "build" or str(version).endswith(".build"):
+        return False, None
+    p = _normalize_provider_url(provider).rstrip("/")
+    idx_data: Optional[Dict[str, Any]] = None
+    if not p.startswith(("http://", "https://")):
+        p_abs = _normalize_local_path(p, base_dir=base_dir)
+        if p_abs and os.path.isdir(p_abs):
+            for idx_cand in (
+                os.path.join(p_abs, module_name, "index.json"),
+                os.path.join(p_abs, "release", module_name, "index.json"),
+                os.path.join(p_abs, "index.json") if os.path.basename(p_abs) == module_name else "",
+            ):
+                if idx_cand and os.path.isfile(idx_cand):
+                    idx_data = _read_json_dict(idx_cand)
+                    if idx_data:
+                        break
+    else:
+        try:
+            idx_url = f"{p}/{module_name}/index.json"
+            req = urllib.request.Request(idx_url, headers={"User-Agent": "yscb-host/2.0"})
+            if "127.0.0.1" in idx_url or "localhost" in idx_url:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(req, timeout=5) as resp:
+                    raw = json.loads(resp.read().decode("utf-8"))
+            else:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    raw = json.loads(resp.read().decode("utf-8"))
+            if isinstance(raw, dict):
+                idx_data = raw
+        except Exception:
+            idx_data = None
+
+    if not isinstance(idx_data, dict):
+        return False, None
+    rels = idx_data.get("releases")
+    if isinstance(rels, dict) and version in rels and isinstance(rels[version], dict):
+        sha_val = rels[version].get("sha256")
+        if isinstance(sha_val, str) and sha_val.strip():
+            return True, sha_val.strip()
+        return True, None
+    return True, None
+
+
 def _render_init_help() -> str:
     """渲染 init 指令幫助訊息。"""
     return _render_box_help(
@@ -779,6 +995,8 @@ def _render_init_help() -> str:
             "    --force                        Force re-download and re-unpack core module",
             "  -- [Group: source]",
             "    --provider <url>               Module provider URL or path (alias: -p)",
+            "  -- [Group: security]",
+            "    --ignore-sha256                Bypass SHA-256 integrity verification (unsafe)",
         ],
         pros="初次引入 YSCB 或自癒修復核心運行時環境",
     )
@@ -792,6 +1010,7 @@ def cmd_init(argv: List[str]) -> int:
     clean_argv, opts = _parse_flag_options(argv)
     is_fix, is_force = opts["fix"], opts["force"]
     explicit_prov = opts["provider"]
+    ignore_sha256 = bool(opts.get("ignore_sha256", False))
 
     base_dir = os.path.abspath(os.getcwd())
     cfg_path = os.path.join(base_dir, CONFIG_FILENAME)
@@ -831,9 +1050,29 @@ def cmd_init(argv: List[str]) -> int:
         print(f"[yscb] Error: Cannot locate core package in provider '{target_prov}'.")
         return 1
 
+    expected_sha: Optional[str] = None
+    is_zip_source = source.startswith(("http://", "https://")) or (os.path.isfile(source) and source.endswith(".zip"))
+    if is_zip_source and not (ver == "build" or str(ver).endswith(".build")):
+        if ignore_sha256:
+            print(f"[yscb:security] [WARN] Skipping SHA-256 verification for 'core@{ver}' (--ignore-sha256).")
+        else:
+            has_idx, looked_up_sha = _lookup_provider_release_sha256(target_prov, "core", ver, base_dir=base_dir)
+            if has_idx:
+                if not looked_up_sha:
+                    print(
+                        f"[yscb] Error: Missing SHA-256 checksum for 'core@{ver}' in index.json. "
+                        "Refusing unverified package (use --ignore-sha256 to bypass)."
+                    )
+                    return 1
+                expected_sha = looked_up_sha
+
     core_mirror_dir = os.path.join(yscb_abs, ".mirror", "core")
     os.makedirs(core_mirror_dir, exist_ok=True)
-    _fetch_and_extract_zip(source, core_module_dir)
+    try:
+        _fetch_and_extract_zip(source, core_module_dir, expected_sha256=expected_sha)
+    except Exception as e:
+        print(f"[yscb] Error: Failed to verify or extract core package: {e}")
+        return 1
     if os.path.isfile(source) and zipfile.is_zipfile(source):
         mirror_zip = os.path.join(core_mirror_dir, f"{ver}.zip")
         if os.path.abspath(source) != os.path.abspath(mirror_zip):
@@ -890,12 +1129,18 @@ def _print_missing_source_remediation(module_name: str, version: str, provider_a
     print(f"         3. 檢查並修正 '{CONFIG_FILENAME}' 中 '{module_name}' 的 version / provider 設定")
 
 
-def _extract_and_cache_mirror(src_path: str, dest_dir: str, mirror_dir: str, mirror_zip: str) -> bool:
+def _extract_and_cache_mirror(
+    src_path: str,
+    dest_dir: str,
+    mirror_dir: str,
+    mirror_zip: str,
+    expected_sha256: Optional[str] = None,
+) -> bool:
     """提取套件至 dest_dir 並於來源為 zip 檔時同步快取至 mirror_zip。"""
     try:
         os.makedirs(dest_dir, exist_ok=True)
         os.makedirs(mirror_dir, exist_ok=True)
-        _fetch_and_extract_zip(src_path, dest_dir)
+        _fetch_and_extract_zip(src_path, dest_dir, expected_sha256=expected_sha256)
         if os.path.isfile(src_path) and zipfile.is_zipfile(src_path) and os.path.abspath(src_path) != os.path.abspath(mirror_zip):
             try:
                 shutil.copy2(src_path, mirror_zip)
@@ -933,6 +1178,7 @@ def _bootstrap_package_from_provider(
     dest_dir: str,
     mirror_dir: str,
     _allow_fallback: bool = True,
+    ignore_sha256: bool = False,
 ) -> bool:
     """純標準庫零依賴（不依賴 core）嚴格依組態確定之 version 與 provider_arg 提取模組至 dest_dir 與 mirror_dir。"""
     if not version or not provider_arg:
@@ -941,9 +1187,10 @@ def _bootstrap_package_from_provider(
     yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
     mirror_zip = os.path.join(mirror_dir, f"{version}.zip")
     p_arg = _normalize_provider_url(provider_arg)
+    is_b_ver = version == "build" or str(version).endswith(".build")
 
     # 1. 若為 .build 版本且本地 yscb_abs/.build/<mod>/<ver>.zip 存在，優先提取（若升版覆寫則匹配最新 .build.zip）
-    if version == "build" or version.endswith(".build"):
+    if is_b_ver:
         dot_build_zip = os.path.join(yscb_abs, ".build", module_name, f"{version}.zip")
         if not os.path.isfile(dot_build_zip):
             dot_build_mod_dir = os.path.join(yscb_abs, ".build", module_name)
@@ -969,6 +1216,14 @@ def _bootstrap_package_from_provider(
     if os.path.isfile(mirror_zip) and _extract_and_cache_mirror(mirror_zip, dest_dir, mirror_dir, mirror_zip):
         return True
 
+    def _resolve_zip_expected_sha() -> Tuple[bool, Optional[str]]:
+        if is_b_ver or ignore_sha256:
+            return True, None
+        has_idx, sha_val = _lookup_provider_release_sha256(p_arg, module_name, version, base_dir=base_dir)
+        if has_idx and not sha_val:
+            return False, None
+        return True, sha_val
+
     # 3. 檢查組態指定之本地 Provider 路徑（精確版本 <mod>/<ver>.zip 或本地同版 source/<mod> 即時打包）
     p_abs = _normalize_local_path(p_arg, base_dir=base_dir)
     if p_abs and os.path.isdir(p_abs):
@@ -978,11 +1233,15 @@ def _bootstrap_package_from_provider(
             os.path.join(p_abs, "release", module_name, f"{version}.zip"),
         )
         found = next((c for c in candidates if os.path.exists(c)), None)
-        if found and _extract_and_cache_mirror(found, dest_dir, mirror_dir, mirror_zip):
-            return True
+        if found:
+            if os.path.isfile(found) and found.endswith(".zip"):
+                ok_sha, exp_sha = _resolve_zip_expected_sha()
+                if ok_sha and _extract_and_cache_mirror(found, dest_dir, mirror_dir, mirror_zip, expected_sha256=exp_sha):
+                    return True
+            elif _extract_and_cache_mirror(found, dest_dir, mirror_dir, mirror_zip):
+                return True
 
         src_dir = _find_matching_source_dir(module_name, [yscb_abs, p_abs, base_dir])
-        is_b_ver = version == "build" or version.endswith(".build")
         rel_zip_target = None if is_b_ver else os.path.join(yscb_abs, "release", module_name, f"{version}.zip")
         if src_dir and _package_source_to_zip_if_exact_version(src_dir, version, mirror_zip, release_zip_path=rel_zip_target):
             if _extract_and_cache_mirror(mirror_zip, dest_dir, mirror_dir, mirror_zip):
@@ -996,9 +1255,11 @@ def _bootstrap_package_from_provider(
 
     # 4. 檢查組態指定之遠端 Provider (HTTP/HTTPS) 精確版本 URL
     if p_arg.startswith(("http://", "https://")):
-        remote_zip_url = f"{p_arg.rstrip('/')}/{module_name}/{version}.zip"
-        if _extract_and_cache_mirror(remote_zip_url, dest_dir, mirror_dir, mirror_zip):
-            return True
+        ok_sha, exp_sha = _resolve_zip_expected_sha()
+        if ok_sha:
+            remote_zip_url = f"{p_arg.rstrip('/')}/{module_name}/{version}.zip"
+            if _extract_and_cache_mirror(remote_zip_url, dest_dir, mirror_dir, mirror_zip, expected_sha256=exp_sha):
+                return True
 
     # 5. 若精確版本已被滑動視窗淘汰 (pruned)，自動退回同三元組 (X.Y.Z.*) 最高可用 active 版本
     if _allow_fallback:
@@ -1009,7 +1270,15 @@ def _bootstrap_package_from_provider(
                 f"seamlessly restoring compatible same-triplet revision '{fallback_ver}'."
             )
             ok = _bootstrap_package_from_provider(
-                base_dir, yscb_root, module_name, fallback_ver, p_arg, dest_dir, mirror_dir, _allow_fallback=False
+                base_dir,
+                yscb_root,
+                module_name,
+                fallback_ver,
+                p_arg,
+                dest_dir,
+                mirror_dir,
+                _allow_fallback=False,
+                ignore_sha256=ignore_sha256,
             )
             if ok:
                 _update_config_module_version(base_dir, module_name, fallback_ver)
@@ -1018,16 +1287,35 @@ def _bootstrap_package_from_provider(
     return False
 
 
-def _restore_module_package(base_dir: str, yscb_root: str, module_name: str, version: str, provider_arg: str, dest_dir: str, mirror_dir: str) -> bool:
+def _restore_module_package(
+    base_dir: str,
+    yscb_root: str,
+    module_name: str,
+    version: str,
+    provider_arg: str,
+    dest_dir: str,
+    mirror_dir: str,
+    ignore_sha256: bool = False,
+) -> bool:
     yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
     core_dir = _activate_runtime_env(yscb_abs)
     if _is_core_healthy(core_dir)[0]:
         from core.installer import Installer
-        return Installer()._restore_module_package(base_dir, yscb_root, module_name, version, provider_arg, dest_dir, mirror_dir)
-    return _bootstrap_package_from_provider(base_dir, yscb_root, module_name, version, provider_arg, dest_dir, mirror_dir)
+        return Installer()._restore_module_package(
+            base_dir, yscb_root, module_name, version, provider_arg, dest_dir, mirror_dir, ignore_sha256=ignore_sha256
+        )
+    return _bootstrap_package_from_provider(
+        base_dir, yscb_root, module_name, version, provider_arg, dest_dir, mirror_dir, ignore_sha256=ignore_sha256
+    )
 
 
-def _auto_bootstrap_and_restore_if_needed(host_dir: str, yscb_rel: str, cfg: Dict[str, Any], target_cmd: str) -> bool:
+def _auto_bootstrap_and_restore_if_needed(
+    host_dir: str,
+    yscb_rel: str,
+    cfg: Dict[str, Any],
+    target_cmd: str,
+    ignore_sha256: bool = False,
+) -> bool:
     """
     自適應環境重建：當 yscb.config.json 存在，但 .modules/core 尚未下載或 installed_modules 有缺失時，
     嚴格依據組態已知之 provider 與 version 下載 core 後觸發 restore 重建運行環境；
@@ -1060,6 +1348,7 @@ def _auto_bootstrap_and_restore_if_needed(host_dir: str, yscb_rel: str, cfg: Dic
         ok = _bootstrap_package_from_provider(
             host_dir, yscb_rel, "core", core_ver, core_prov,
             core_module_dir, os.path.join(yscb_abs, ".mirror", "core"),
+            ignore_sha256=ignore_sha256,
         )
         if not ok or not _is_core_healthy(core_module_dir)[0]:
             _print_missing_source_remediation("core", core_ver, core_prov)
@@ -1078,7 +1367,8 @@ def _auto_bootstrap_and_restore_if_needed(host_dir: str, yscb_rel: str, cfg: Dic
             print(f"[yscb] Missing runtime modules detected ({', '.join(remaining_mods)}). Triggering auto-restore...")
         else:
             print("[yscb] Triggering auto-restore to reconcile runtime environment...")
-        return dispatch_module("core", ["restore"]) == 0
+        restore_args = ["restore"] + (["--ignore-sha256"] if ignore_sha256 else [])
+        return dispatch_module("core", restore_args) == 0
 
     return True
 
@@ -1096,6 +1386,7 @@ def cmd_restore(argv: List[str]) -> int:
     if os.path.isfile(os.path.join(yscb_abs, ".modules", "core", "scripts", "cli.py")):
         return dispatch_module("core", ["restore"] + argv)
     mods_dir, mirror_dir, force, failed = os.path.join(yscb_abs, ".modules"), os.path.join(yscb_abs, ".mirror"), "--force" in argv, []
+    ignore_sha256 = "--ignore-sha256" in argv
     default_prov = cfg.get("default_provider", "")
     for mod, info in sorted(installed.items(), key=lambda x: (0 if x[0] == "core" else 1, x[0])):
         ver = info.get("version", "") if isinstance(info, dict) else str(info)
@@ -1106,7 +1397,9 @@ def cmd_restore(argv: List[str]) -> int:
             installed_ver = _read_module_manifest_version(mf_file)
             if ver == "build" or installed_ver == ver:
                 continue
-        if not ver or not prov or not _restore_module_package(base_dir, yscb_root, mod, ver, prov, dest, os.path.join(mirror_dir, mod)):
+        if not ver or not prov or not _restore_module_package(
+            base_dir, yscb_root, mod, ver, prov, dest, os.path.join(mirror_dir, mod), ignore_sha256=ignore_sha256
+        ):
             _print_missing_source_remediation(mod, str(ver or "unknown"), str(prov or "unknown"))
             failed.append(mod)
     return 0 if not failed else 1
@@ -1215,7 +1508,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if cfg is not None:
         primary_arg = argv[0] if argv else ""
-        if not _auto_bootstrap_and_restore_if_needed(host_dir, yscb_rel, cfg, primary_arg):
+        ignore_sha = "--ignore-sha256" in (argv or [])
+        if not _auto_bootstrap_and_restore_if_needed(host_dir, yscb_rel, cfg, primary_arg, ignore_sha256=ignore_sha):
             return 1
         _activate_runtime_env(yscb_abs, host_dir=host_dir)
 

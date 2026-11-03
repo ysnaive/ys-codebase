@@ -49,6 +49,7 @@ jobs:
         run: |
           python3 - <<'PYEOF'
           import fnmatch
+          import hashlib
           import json
           import os
           import zipfile
@@ -58,6 +59,10 @@ jobs:
               ".git*", ".pytest_cache", ".DS_Store", ".yscbignore",
               "tests", "tests/*",
           ]
+          TEXT_EXTENSIONS = (".py", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".sh")
+          TEXT_BASENAMES = (".yscbignore", ".gitignore")
+          ZIP_DATETIME = (2020, 1, 1, 0, 0, 0)
+          ZIP_EXTERNAL_ATTR = (0o644 & 0xFFFF) << 16
 
           def should_ignore(rel_path: str, ignores: list[str]) -> bool:
               norm = rel_path.replace("\\", "/").rstrip("/")
@@ -72,6 +77,16 @@ jobs:
                   ):
                       return True
               return False
+
+          def compute_sha256(file_path: str) -> str:
+              h = hashlib.sha256()
+              with open(file_path, "rb") as f:
+                  while True:
+                      chunk = f.read(65536)
+                      if not chunk:
+                          break
+                      h.update(chunk)
+              return h.hexdigest().lower()
 
           release_root = os.path.abspath("ys_codebase/release")
           source_root = os.path.abspath("ys_codebase/source")
@@ -106,17 +121,60 @@ jobs:
                                   s = line.strip()
                                   if s and not s.startswith("#"):
                                       ignores.append(s)
+                      entries = []
+                      for root, dirs, files in os.walk(src_dir):
+                          rel_d = os.path.relpath(root, src_dir).replace("\\", "/")
+                          if rel_d == ".":
+                              rel_d = ""
+                          dirs[:] = sorted(d for d in dirs if not should_ignore(f"{rel_d}/{d}".lstrip("/"), ignores))
+                          for fname in sorted(files):
+                              rel_f = f"{rel_d}/{fname}".lstrip("/")
+                              if not should_ignore(rel_f, ignores):
+                                  entries.append((rel_f, os.path.join(root, fname)))
+                      entries.sort(key=lambda item: item[0])
                       with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                          for root, dirs, files in os.walk(src_dir):
-                              rel_d = os.path.relpath(root, src_dir).replace("\\", "/")
-                              if rel_d == ".":
-                                  rel_d = ""
-                              dirs[:] = [d for d in dirs if not should_ignore(f"{rel_d}/{d}".lstrip("/"), ignores)]
-                              for fname in files:
-                                  rel_f = f"{rel_d}/{fname}".lstrip("/")
-                                  if not should_ignore(rel_f, ignores):
-                                      zf.write(os.path.join(root, fname), arcname=rel_f)
+                          for rel_f, src_file_path in entries:
+                              zinfo = zipfile.ZipInfo(filename=rel_f, date_time=ZIP_DATETIME)
+                              zinfo.compress_type = zipfile.ZIP_DEFLATED
+                              zinfo.external_attr = ZIP_EXTERNAL_ATTR
+                              if rel_f == "manifest.json":
+                                  m_copy = dict(src_mf)
+                                  m_copy["version"] = ver
+                                  payload = json.dumps(m_copy, indent=2, ensure_ascii=False).replace("\r\n", "\n").encode("utf-8")
+                              else:
+                                  with open(src_file_path, "rb") as rf:
+                                      raw_bytes = rf.read()
+                                  if rel_f.endswith(TEXT_EXTENSIONS) or os.path.basename(rel_f) in TEXT_BASENAMES:
+                                      try:
+                                          payload = raw_bytes.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+                                      except UnicodeDecodeError:
+                                          payload = raw_bytes
+                                  else:
+                                      payload = raw_bytes
+                              zf.writestr(zinfo, payload)
                       print(f"[release-publish] Packaged {mod}@{ver}.zip from source.")
+
+              idx_updated = False
+              releases_map = idx_data.get("releases")
+              if not isinstance(releases_map, dict):
+                  releases_map = {}
+                  idx_data["releases"] = releases_map
+                  idx_updated = True
+              for ver in sorted(active_versions):
+                  zip_path = os.path.join(mod_rel_dir, f"{ver}.zip")
+                  if not os.path.isfile(zip_path):
+                      continue
+                  rel_entry = releases_map.get(ver)
+                  if not isinstance(rel_entry, dict):
+                      rel_entry = {"status": "active", "dependencies": {}}
+                      releases_map[ver] = rel_entry
+                      idx_updated = True
+                  if not rel_entry.get("sha256"):
+                      rel_entry["sha256"] = compute_sha256(zip_path)
+                      idx_updated = True
+              if idx_updated:
+                  with open(idx_path, "w", encoding="utf-8", newline="\n") as f:
+                      f.write(json.dumps(idx_data, indent=2, ensure_ascii=False).replace("\r\n", "\n") + "\n")
 
               for fname in os.listdir(mod_rel_dir):
                   if fname.endswith(".zip") and fname[:-4] not in active_versions:

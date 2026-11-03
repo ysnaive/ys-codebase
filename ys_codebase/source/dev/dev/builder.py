@@ -8,12 +8,25 @@ Implements Full Zip Packaging Standard:
 import os
 import json
 import fnmatch
+import hashlib
 import shutil
 import functools
 import zipfile
 from typing import Tuple, Dict, List, Optional, Any, Set
 from core import uri, vfs, semver
 from dev.checker import Checker, discover_source_modules
+
+
+def compute_file_sha256(file_path: str) -> str:
+    """Computes SHA-256 hex digest of a file in 64KB chunks."""
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest().lower()
 
 
 def _can_parse_semver(v: str) -> bool:
@@ -64,6 +77,17 @@ def _should_ignore(rel_path: str, ignores: List[str]) -> bool:
     return False
 
 
+_TEXT_EXTENSIONS = (".py", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".sh")
+_TEXT_BASENAMES = (".yscbignore", ".gitignore")
+_DETERMINISTIC_ZIP_DATETIME = (2020, 1, 1, 0, 0, 0)
+_DETERMINISTIC_ZIP_EXTERNAL_ATTR = (0o644 & 0xFFFF) << 16
+
+
+def _is_text_archive_entry(rel_file: str) -> bool:
+    base = os.path.basename(rel_file)
+    return rel_file.endswith(_TEXT_EXTENSIONS) or base in _TEXT_BASENAMES
+
+
 def _create_module_archive_atomic(
     source_dir: str,
     target_zip_path: str,
@@ -72,36 +96,52 @@ def _create_module_archive_atomic(
     target_version: str,
 ) -> int:
     """
-    Atomically package module files from source_dir into target_zip_path via a .tmp staging file.
+    Atomically package module files from source_dir into target_zip_path via a .tmp staging file
+    using deterministic entry ordering, fixed timestamp/permissions, and LF text normalization.
     Guarantees .zip.tmp cleanup on any failure.
     """
     tmp_zip_path = target_zip_path + ".tmp"
-    copied_count = 0
+    entries: List[Tuple[str, str]] = []
+    for root, dirs, files in os.walk(source_dir):
+        rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
+        if rel_dir == ".":
+            rel_dir = ""
+
+        dirs[:] = sorted(d for d in dirs if not _should_ignore(f"{rel_dir}/{d}".lstrip("/"), ignores))
+
+        for f in sorted(files):
+            rel_file = f"{rel_dir}/{f}".lstrip("/")
+            if not _should_ignore(rel_file, ignores):
+                entries.append((rel_file, os.path.join(root, f)))
+
+    entries.sort(key=lambda item: item[0])
+
     try:
         with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(source_dir):
-                rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
-                if rel_dir == ".":
-                    rel_dir = ""
-
-                dirs[:] = [d for d in dirs if not _should_ignore(f"{rel_dir}/{d}".lstrip("/"), ignores)]
-
-                for f in files:
-                    rel_file = f"{rel_dir}/{f}".lstrip("/")
-                    if not _should_ignore(rel_file, ignores):
-                        src_file_path = os.path.join(root, f)
-                        if rel_file == "manifest.json":
-                            m_copy = dict(manifest_data)
-                            m_copy["version"] = target_version
-                            zf.writestr("manifest.json", json.dumps(m_copy, indent=2, ensure_ascii=False))
-                        else:
-                            zf.write(src_file_path, arcname=rel_file)
-                        copied_count += 1
+            for rel_file, src_file_path in entries:
+                zinfo = zipfile.ZipInfo(filename=rel_file, date_time=_DETERMINISTIC_ZIP_DATETIME)
+                zinfo.compress_type = zipfile.ZIP_DEFLATED
+                zinfo.external_attr = _DETERMINISTIC_ZIP_EXTERNAL_ATTR
+                if rel_file == "manifest.json":
+                    m_copy = dict(manifest_data)
+                    m_copy["version"] = target_version
+                    payload = json.dumps(m_copy, indent=2, ensure_ascii=False).replace("\r\n", "\n").encode("utf-8")
+                else:
+                    with open(src_file_path, "rb") as rf:
+                        raw_bytes = rf.read()
+                    if _is_text_archive_entry(rel_file):
+                        try:
+                            payload = raw_bytes.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+                        except UnicodeDecodeError:
+                            payload = raw_bytes
+                    else:
+                        payload = raw_bytes
+                zf.writestr(zinfo, payload)
 
         if os.path.exists(target_zip_path):
             os.remove(target_zip_path)
         os.replace(tmp_zip_path, target_zip_path)
-        return copied_count
+        return len(entries)
     finally:
         if os.path.exists(tmp_zip_path):
             try:
@@ -253,8 +293,8 @@ class Builder:
         for a_ver in active_versions:
             meta_copy = dict(existing_releases.get(a_ver, {})) if isinstance(existing_releases.get(a_ver), dict) else {}
             meta_copy["status"] = "active"
+            zip_cand = os.path.join(real_rel_dir, f"{a_ver}.zip")
             if "dependencies" not in meta_copy:
-                zip_cand = os.path.join(real_rel_dir, f"{a_ver}.zip")
                 if os.path.isfile(zip_cand):
                     try:
                         with zipfile.ZipFile(zip_cand, "r") as zf:
@@ -265,6 +305,10 @@ class Builder:
                         pass
                 if "dependencies" not in meta_copy:
                     meta_copy["dependencies"] = {}
+            if os.path.isfile(zip_cand) and (
+                a_ver == new_version or "sha256" not in meta_copy or not meta_copy.get("sha256")
+            ):
+                meta_copy["sha256"] = compute_file_sha256(zip_cand)
             existing_releases[a_ver] = meta_copy
 
         if new_version and isinstance(manifest_data, dict):
@@ -280,6 +324,9 @@ class Builder:
                 for k in ("type", "urgency", "summary"):
                     if isinstance(rel_info.get(k), str) and rel_info[k].strip():
                         new_meta[k] = rel_info[k].strip()
+            new_zip_cand = os.path.join(real_rel_dir, f"{new_version}.zip")
+            if os.path.isfile(new_zip_cand):
+                new_meta["sha256"] = compute_file_sha256(new_zip_cand)
             existing_releases[new_version] = new_meta
 
         sorted_rel_keys = sorted(

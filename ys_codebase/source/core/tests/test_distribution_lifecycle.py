@@ -72,7 +72,7 @@ class TestDistributionLifecycle(YSCBTestCase):
             # 2. 合法腳本更新成功，並產生 .bak 備份
             valid_script = os.path.join(self.temp_dir, "valid.py")
             with open(valid_script, "w", encoding="utf-8") as f:
-                f.write("# Updated v2.0\nprint('v2.0')\n")
+                f.write("# Updated v2.0\n__version__ = '2.0.0.0'\ndef main():\n    print('v2.0')\n    return 0\n")
 
             ret_ok = yscb.cmd_self_update([f"--url={valid_script}"])
             self.assertEqual(ret_ok, 0)
@@ -86,6 +86,23 @@ class TestDistributionLifecycle(YSCBTestCase):
             self.assertTrue(os.path.isfile(bak_path))
             with open(bak_path, "r", encoding="utf-8") as f:
                 self.assertIn("v1.0", f.read())
+
+            # 3. 語法合法但缺少必要入口結構 (__version__ 或 def main) 的腳本應被 AST 檢查攔截
+            no_entry_script = os.path.join(self.temp_dir, "no_entry.py")
+            with open(no_entry_script, "w", encoding="utf-8") as f:
+                f.write("x = 42\n")
+            self.assertEqual(yscb.cmd_self_update([f"--url={no_entry_script}"]), 1)
+
+            # 4. 顯式 --sha256 不匹配時拒絕更新，匹配時允許更新
+            self.assertEqual(yscb.cmd_self_update([f"--url={valid_script}", f"--sha256={'a' * 64}"]), 1)
+            expected_valid_sha = yscb._compute_file_sha256(valid_script)
+            self.assertEqual(yscb.cmd_self_update([f"--url={valid_script}", f"--sha256={expected_valid_sha}"]), 0)
+
+            # 5. 存在伴隨 .sha256 檔案且雜湊不符時預設攔截，帶 --ignore-sha256 時放行
+            with open(valid_script + ".sha256", "w", encoding="utf-8") as f:
+                f.write(f"{'b' * 64}  yscb.py\n")
+            self.assertEqual(yscb.cmd_self_update([f"--url={valid_script}"]), 1)
+            self.assertEqual(yscb.cmd_self_update([f"--url={valid_script}", "--ignore-sha256"]), 0)
 
         self.mark_passed()
 
@@ -372,7 +389,14 @@ class TestDistributionLifecycle(YSCBTestCase):
                         full_p = os.path.join(root, file)
                         zf.write(full_p, os.path.relpath(full_p, pkg_dir))
             with open(os.path.join(mod_prov_dir, "index.json"), "w", encoding="utf-8") as f:
-                json.dump({"name": m_name, "versions": [m_ver]}, f)
+                json.dump(
+                    {
+                        "name": m_name,
+                        "versions": [m_ver],
+                        "releases": {m_ver: {"sha256": yscb._compute_file_sha256(zip_p)}},
+                    },
+                    f,
+                )
 
         host_dir = os.path.join(self.temp_dir, "host_fresh")
         engine_dir = os.path.join(host_dir, "engine")
@@ -552,7 +576,11 @@ class TestDistributionLifecycle(YSCBTestCase):
                     "versions": ["1.0.0.2", "1.0.0.3", "1.0.0.4"],
                     "releases": {
                         "1.0.0.1": {"status": "pruned", "dependencies": {}},
-                        "1.0.0.4": {"status": "active", "dependencies": {}},
+                        "1.0.0.4": {
+                            "status": "active",
+                            "dependencies": {},
+                            "sha256": yscb._compute_file_sha256(zip_4),
+                        },
                     },
                 },
                 f,
@@ -710,10 +738,12 @@ class TestDistributionLifecycle(YSCBTestCase):
                     "type": "bugfix",
                     "urgency": "recommended",
                     "summary": "相容修補版",
+                    "sha256": yscb._compute_file_sha256(os.path.join(mod_rel, "1.0.0.0.zip")),
                 },
                 "1.1.0.0": {
                     "status": "active",
                     "dependencies": {"core": ">=99.0.0"},
+                    "sha256": yscb._compute_file_sha256(os.path.join(mod_rel, "1.1.0.0.zip")),
                 },
             },
         }

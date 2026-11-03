@@ -25,7 +25,7 @@ related_docs:
   - "./API_REFERENCE.md"
   - "./DESIGN_NOTES.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-10-31"
+last_updated: "2026-11-03"
 ---
 
 # Core 微內核架構手冊 (Core Microkernel Overview)
@@ -132,8 +132,8 @@ with uri.module_scope("core"):
 ### 3.3 JIT 變更嗅探與熱自愈 (JIT Freshness Gate)
 `core.contributes.get()` 內建 $< 2\text{ms}$ 檔案指紋嗅探閘門。當任何模組的 `contributes/<target>.json` 或專案級 `config/<target>/contribute.json` 被編輯修改時，下次調用 `get()` 會自動感知 dirty 並原地重新執行 `scan_and_inject()`，徹底消除手動執行 `python yscb.py reload` 的負擔。
 
-### 3.4 安裝來源 12 小時節流版本探測 (`core.update_checker`)
-微內核提供 `UpdateChecker` 服務，維護 `cache://core/update_check.json`。每隔 12 小時以 2 秒短超時輕量檢查一次 Provider 端之版本資訊；當有新版本可用時，在 CLI 執行完畢時輸出非阻塞友善提示，支援 `YSCB_NO_UPDATE_CHECK=1` 停用。
+### 3.4 安裝來源 12 小時節流版本探測與同版本內容漂移偵測 (`core.update_checker`)
+微內核提供 `UpdateChecker` 服務，維護 `cache://core/update_check.json`。每隔 12 小時以 2 秒短超時輕量檢查一次 Provider 端之版本資訊；當有新版本可用，或宿主 `yscb.py` 與遠端版本號相同但正規化 LF 後之 SHA-256 內容發生漂移（`is_drift=True`）時，在 CLI 執行完畢時輸出非阻塞友善提示，支援 `YSCB_NO_UPDATE_CHECK=1` 停用。
 
 ### 3.5 CLI 派發飛行紀錄器 (`core.telemetry`)
 微內核於 [`core/commands/dispatcher.py:dispatch`](../../ys_codebase/source/core/core/commands/dispatcher.py) 外層內建零耦合飛行紀錄器（[`core/telemetry.py`](../../ys_codebase/source/core/core/telemetry.py)），將每次 CLI 調用的執行結果（`ts`、`epoch`、`module`、`cmd`、`args`、`exit_code`、`duration_ms`、`mode`、`cwd`、`error_hint`）追加記錄於 **`cache://core/telemetry.jsonl`**（單檔超過 `512 KB` 自動滾動保留最新 `1,500` 筆紀錄；沙盒測試、`--help` 查詢與 `session-trace` 自身呼叫預設略過），供上層工作流或診斷工具進行時序與錯誤溯源。
@@ -159,9 +159,11 @@ python yscb.py uri check                    # 全量語意協議健康檢查
 python yscb.py contributes list             # 列出全系統開放之擴充點清冊 (_format.json)
 python yscb.py contributes check [module]   # 校驗模組 contributes 宣告是否符合目標 Schema
 
-# 3. 套件生命週期管理 (支援單一或多模組單次批次原子交易)
-python yscb.py install <module>[@version] [<module2>[@version] ...] [--provider="<source>"] [--force]
-python yscb.py update [<module> ...] [--provider="<source>"]
+# 3. 套件生命週期管理 (支援單一或多模組單次批次原子交易，正式版預設強制校驗 index.json SHA-256，@build 免檢，或以 --ignore-sha256 跳過)
+python yscb.py install <module>[@version] [<module2>[@version] ...] [--provider="<source>"] [--force] [--ignore-sha256]
+python yscb.py update [<module> ...] [--provider="<source>"] [--ignore-sha256]
+python yscb.py restore [--provider="<source>"] [--force] [--ignore-sha256]
+python yscb.py self-update [--provider="<source>"] [--sha256="<hex>"] [--ignore-sha256]
 python yscb.py remove <module> [<module2> ...] [--clean] [--purge] [--force]
 python yscb.py list [--remote] [--provider="<source>"]
 python yscb.py status

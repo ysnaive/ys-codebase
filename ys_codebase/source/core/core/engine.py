@@ -12,6 +12,7 @@ import sys
 import json
 import time
 import copy
+import hashlib
 import shutil
 import zipfile
 import urllib.request
@@ -91,6 +92,60 @@ def _is_source_version_compatible_with_target(src_ver: str, target_ver: str) -> 
     return False
 
 
+_TEXT_NORMALIZE_EXTS: Tuple[str, ...] = (
+    ".py",
+    ".json",
+    ".md",
+    ".txt",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".cfg",
+    ".ini",
+    ".sh",
+)
+_TEXT_NORMALIZE_NAMES: Tuple[str, ...] = (
+    ".yscbignore",
+    ".gitignore",
+)
+_DETERMINISTIC_ZIP_DATE: Tuple[int, int, int, int, int, int] = (2020, 1, 1, 0, 0, 0)
+
+
+def compute_file_sha256(file_path: str) -> str:
+    """Computes the lowercase SHA-256 hex digest of a file."""
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _make_deterministic_zip_info(rel_file: str) -> zipfile.ZipInfo:
+    """Creates a ZipInfo entry with fixed timestamp and file permissions for deterministic packaging."""
+    zi = zipfile.ZipInfo(filename=rel_file, date_time=_DETERMINISTIC_ZIP_DATE)
+    zi.compress_type = zipfile.ZIP_DEFLATED
+    zi.external_attr = (0o644 & 0xFFFF) << 16
+    return zi
+
+
+def _read_normalized_package_file_bytes(src_path: str, rel_file: str) -> bytes:
+    """Reads file bytes, normalizing CRLF to LF for UTF-8 text files."""
+    base_name = os.path.basename(rel_file)
+    _, ext = os.path.splitext(base_name)
+    with open(src_path, "rb") as f:
+        raw = f.read()
+    if ext.lower() in _TEXT_NORMALIZE_EXTS or base_name in _TEXT_NORMALIZE_NAMES:
+        try:
+            text = raw.decode("utf-8")
+            return text.replace("\r\n", "\n").encode("utf-8")
+        except UnicodeDecodeError:
+            return raw
+    return raw
+
+
 def package_local_source_if_exact_match(
     source_dir: str,
     target_version: str,
@@ -124,25 +179,32 @@ def package_local_source_if_exact_match(
         except Exception:
             pass
 
+    entries: List[Tuple[str, str]] = []
+    for root, dirs, files in os.walk(source_dir):
+        rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
+        if rel_dir == ".":
+            rel_dir = ""
+        dirs[:] = sorted(d for d in dirs if not _should_ignore_rel_path(f"{rel_dir}/{d}".lstrip("/"), ignores))
+        for fname in sorted(files):
+            rel_file = f"{rel_dir}/{fname}".lstrip("/")
+            if not _should_ignore_rel_path(rel_file, ignores):
+                entries.append((rel_file, os.path.join(root, fname)))
+    entries.sort(key=lambda item: item[0])
+
     os.makedirs(os.path.dirname(os.path.abspath(dest_zip_path)), exist_ok=True)
     tmp_zip = dest_zip_path + f".tmp_{os.getpid()}"
     try:
         with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(source_dir):
-                rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
-                if rel_dir == ".":
-                    rel_dir = ""
-                dirs[:] = [d for d in dirs if not _should_ignore_rel_path(f"{rel_dir}/{d}".lstrip("/"), ignores)]
-                for fname in files:
-                    rel_file = f"{rel_dir}/{fname}".lstrip("/")
-                    if not _should_ignore_rel_path(rel_file, ignores):
-                        src_f = os.path.join(root, fname)
-                        if rel_file == "manifest.json":
-                            m_copy = dict(mf_data)
-                            m_copy["version"] = target_version
-                            zf.writestr("manifest.json", json.dumps(m_copy, indent=2, ensure_ascii=False))
-                        else:
-                            zf.write(src_f, arcname=rel_file)
+            for rel_file, src_f in entries:
+                zi = _make_deterministic_zip_info(rel_file)
+                if rel_file == "manifest.json":
+                    m_copy = dict(mf_data)
+                    m_copy["version"] = target_version
+                    payload = json.dumps(m_copy, indent=2, ensure_ascii=False).replace("\r\n", "\n").encode("utf-8")
+                    zf.writestr(zi, payload, compress_type=zipfile.ZIP_DEFLATED)
+                else:
+                    payload = _read_normalized_package_file_bytes(src_f, rel_file)
+                    zf.writestr(zi, payload, compress_type=zipfile.ZIP_DEFLATED)
         if os.path.exists(dest_zip_path):
             os.remove(dest_zip_path)
         os.replace(tmp_zip, dest_zip_path)
@@ -618,6 +680,11 @@ class AtomicEngine:
         Fetches a manifest, index, or package archive from local filesystem or remote HTTP/HTTPS.
         """
         provider_url = normalize_legacy_provider_url(provider_url)
+        if provider_url.startswith("file://"):
+            raw_p = urllib.request.url2pathname(provider_url[7:])
+            while raw_p.startswith("//"):
+                raw_p = raw_p[1:]
+            provider_url = os.path.normpath(raw_p)
         local_target = os.path.join(provider_url, relative_path)
         if not os.path.exists(local_target):
             for sub in ("release", "build"):
@@ -732,11 +799,109 @@ class AtomicEngine:
             f"Build package not found for '{module_name}'. Please run 'python yscb.py dev build {module_name}' first."
         )
 
-    def _download_from_release_tier(self, module_name: str, version: str, provider_url: str, dest_zip_real: str, dest_zip_uri: str) -> Optional[str]:
+    def _lookup_expected_sha256(self, module_name: str, version: str, provider_url: str) -> Optional[str]:
+        """Looks up releases[version]['sha256'] from local provider, release/mirror index.json, or remote provider."""
+        provider_url = normalize_legacy_provider_url(provider_url)
+        candidate_dicts: List[Dict[str, Any]] = []
+
+        if provider_url and not provider_url.startswith(("http://", "https://")):
+            if provider_url.startswith("file://"):
+                raw_p = urllib.request.url2pathname(provider_url[7:])
+                while raw_p.startswith("//"):
+                    raw_p = raw_p[1:]
+                p_abs = os.path.normpath(raw_p)
+            else:
+                p_abs = os.path.abspath(provider_url)
+            for idx_cand in (
+                os.path.join(p_abs, module_name, "index.json"),
+                os.path.join(p_abs, "release", module_name, "index.json"),
+                os.path.join(p_abs, "index.json") if os.path.basename(p_abs) == module_name else "",
+            ):
+                if idx_cand and vfs.is_file(idx_cand):
+                    try:
+                        loaded = vfs.read_json(idx_cand)
+                        if isinstance(loaded, dict):
+                            candidate_dicts.append(loaded)
+                    except Exception:
+                        pass
+
+        for idx_uri in (f"module.release://{module_name}/index.json", f"module.mirror://{module_name}/index.json"):
+            if vfs.is_file(idx_uri):
+                try:
+                    loaded = vfs.read_json(idx_uri)
+                    if isinstance(loaded, dict):
+                        candidate_dicts.append(loaded)
+                except Exception:
+                    pass
+
+        if provider_url:
+            ok, res = self.act_fetch(provider_url, f"{module_name}/index.json")
+            if ok and isinstance(res, dict):
+                candidate_dicts.append(res)
+
+        for idx_d in candidate_dicts:
+            rels = idx_d.get("releases")
+            if isinstance(rels, dict):
+                rel_entry = rels.get(version)
+                if isinstance(rel_entry, dict):
+                    sha_val = rel_entry.get("sha256")
+                    if isinstance(sha_val, str) and sha_val.strip():
+                        return sha_val.strip()
+        return None
+
+    def _verify_zip_sha256(
+        self,
+        module_name: str,
+        version: str,
+        zip_real_path: str,
+        provider_url: str,
+        ignore_sha256: bool = False,
+    ) -> None:
+        """Verifies SHA-256 checksum of zip_real_path against index.json['releases'][version]['sha256']."""
+        if _is_build_version_request(version):
+            return
+        if ignore_sha256:
+            print(f"[core:security] [WARN] Skipping SHA-256 verification for '{module_name}@{version}' (--ignore-sha256).")
+            return
+
+        expected_sha256 = self._lookup_expected_sha256(module_name, version, provider_url)
+        if not expected_sha256 or not isinstance(expected_sha256, str) or not expected_sha256.strip():
+            if os.path.exists(zip_real_path):
+                try:
+                    os.remove(zip_real_path)
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"Missing SHA-256 checksum for '{module_name}@{version}' in index.json. "
+                "Refusing unverified package (use --ignore-sha256 to bypass)."
+            )
+
+        actual_sha256 = compute_file_sha256(zip_real_path)
+        if actual_sha256.lower() != expected_sha256.strip().lower():
+            if os.path.exists(zip_real_path):
+                try:
+                    os.remove(zip_real_path)
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"SHA-256 checksum mismatch for '{module_name}@{version}': "
+                f"expected {expected_sha256}, got {actual_sha256}."
+            )
+
+    def _download_from_release_tier(
+        self,
+        module_name: str,
+        version: str,
+        provider_url: str,
+        dest_zip_real: str,
+        dest_zip_uri: str,
+        ignore_sha256: bool = False,
+    ) -> Optional[str]:
         """Tier 2 download: resolves package from module.release://, local provider directory, or exact-version local source/."""
         rel_zip = f"module.release://{module_name}/{version}.zip"
         if vfs.exists(rel_zip):
             shutil.copy2(uri.resolve(rel_zip), dest_zip_real)
+            self._verify_zip_sha256(module_name, version, dest_zip_real, provider_url, ignore_sha256=ignore_sha256)
             return dest_zip_uri
 
         provider_url = normalize_legacy_provider_url(provider_url)
@@ -748,6 +913,7 @@ class AtomicEngine:
             ):
                 if os.path.isfile(z_path):
                     shutil.copy2(z_path, dest_zip_real)
+                    self._verify_zip_sha256(module_name, version, dest_zip_real, provider_url, ignore_sha256=ignore_sha256)
                     return dest_zip_uri
 
             for d_path in (
@@ -922,7 +1088,15 @@ class AtomicEngine:
         except Exception:
             pass
 
-    def _download_from_remote_tier(self, module_name: str, version: str, provider_url: str, dest_zip_real: str, dest_zip_uri: str) -> str:
+    def _download_from_remote_tier(
+        self,
+        module_name: str,
+        version: str,
+        provider_url: str,
+        dest_zip_real: str,
+        dest_zip_uri: str,
+        ignore_sha256: bool = False,
+    ) -> str:
         """Tier 3 download: fetches single-file <version>.zip from remote HTTP/HTTPS provider."""
         provider_url = normalize_legacy_provider_url(provider_url)
         if not provider_url.startswith(("http://", "https://", "file://")):
@@ -943,6 +1117,8 @@ class AtomicEngine:
             with zipfile.ZipFile(dest_zip_real, "r") as zf:
                 if zf.testzip() is not None:
                     raise RuntimeError(f"Corrupted zip archive downloaded from '{remote_zip_url}'.")
+
+            self._verify_zip_sha256(module_name, version, dest_zip_real, provider_url, ignore_sha256=ignore_sha256)
             return dest_zip_uri
         except Exception as e:
             if vfs.exists(dest_zip_real):
@@ -1021,7 +1197,7 @@ class AtomicEngine:
             return None
         return semver.find_best_version(cands)
 
-    def act_download(self, module_name: str, version: str, provider_url: str) -> str:
+    def act_download(self, module_name: str, version: str, provider_url: str, ignore_sha256: bool = False) -> str:
         """
         Downloads/Materializes a specific module version into module.mirror://{module_name}/{version}.zip.
         Enforces 3-Tier Resolution Chain (module.build:// -> module.release:// -> provider_url).
@@ -1047,11 +1223,15 @@ class AtomicEngine:
         except Exception:
             pass
 
-        rel_hit = self._download_from_release_tier(module_name, version, provider_url, dest_zip_real, dest_zip_uri)
+        rel_hit = self._download_from_release_tier(
+            module_name, version, provider_url, dest_zip_real, dest_zip_uri, ignore_sha256=ignore_sha256
+        )
         if rel_hit is not None:
             return rel_hit
 
-        return self._download_from_remote_tier(module_name, version, provider_url, dest_zip_real, dest_zip_uri)
+        return self._download_from_remote_tier(
+            module_name, version, provider_url, dest_zip_real, dest_zip_uri, ignore_sha256=ignore_sha256
+        )
 
     def act_register(self, module_name: str, version: str, provider_url: str) -> None:
         cfg_path, cfg = self._get_config()
@@ -1396,6 +1576,7 @@ class AtomicEngine:
         provider_url: Optional[str] = None,
         candidate_overrides: Optional[Dict[str, str]] = None,
         strict: bool = True,
+        ignore_sha256: bool = False,
     ) -> List[Tuple[str, Optional[str], str]]:
         """
         Standard dependency self-check and intersection self-healing engine:
@@ -1523,7 +1704,7 @@ class AtomicEngine:
                         )
 
                 old_v = installed.get(dep_mod, {}).get("version") if isinstance(installed.get(dep_mod), dict) else None
-                self.act_prepare([(dep_mod, target_dep_ver)], prov_to_use, force=False)
+                self.act_prepare([(dep_mod, target_dep_ver)], prov_to_use, force=False, ignore_sha256=ignore_sha256)
                 self.act_register(dep_mod, target_dep_ver, prov_to_use)
                 effective_versions[dep_mod] = target_dep_ver
                 mod_providers[dep_mod] = prov_to_use
@@ -1535,11 +1716,17 @@ class AtomicEngine:
 
         return healed_changes
 
-    def act_prepare(self, target_list: List[Tuple[str, str]], provider_url: str, force: bool = False) -> None:
+    def act_prepare(
+        self,
+        target_list: List[Tuple[str, str]],
+        provider_url: str,
+        force: bool = False,
+        ignore_sha256: bool = False,
+    ) -> None:
         for mod, ver in target_list:
             mirror_zip = f"module.mirror://{mod}/{ver}.zip"
             if force or not vfs.exists(mirror_zip):
-                self.act_download(mod, ver, provider_url)
+                self.act_download(mod, ver, provider_url, ignore_sha256=ignore_sha256)
 
     def _infill_single_template(
         self,
@@ -1729,7 +1916,13 @@ class AtomicEngine:
                 if os.path.exists(staging_dir):
                     shutil.rmtree(staging_dir, ignore_errors=True)
 
-    def act_reload(self, clean_stage: bool = True, inject_stage: bool = True, reconcile_deps: bool = True) -> None:
+    def act_reload(
+        self,
+        clean_stage: bool = True,
+        inject_stage: bool = True,
+        reconcile_deps: bool = True,
+        ignore_sha256: bool = False,
+    ) -> None:
         """
         4-Stage Atomic Reload Pipeline:
         Stage 1 (自癒拉取) -> Stage 1.5 (相依交集自檢與自動自癒) -> Stage 2 (解壓物化) -> Stage 3 (組態治理) -> Stage 4 (依賴注入與事件廣播)
@@ -1746,7 +1939,7 @@ class AtomicEngine:
             mirror_zip = f"module.mirror://{mod}/{ver}.zip"
             if not vfs.exists(mirror_zip):
                 try:
-                    self.act_download(mod, ver, prov)
+                    self.act_download(mod, ver, prov, ignore_sha256=ignore_sha256)
                 except Exception:
                     fallback_ver = self._resolve_same_triplet_fallback_version(mod, ver, prov, base_dir=host_dir)
                     if fallback_ver and fallback_ver != ver:
@@ -1755,7 +1948,7 @@ class AtomicEngine:
                                 f"[core:reload] Exact revision '{mod}@{ver}' has been pruned upstream; "
                                 f"seamlessly restoring compatible same-triplet revision '{fallback_ver}'."
                             )
-                            self.act_download(mod, fallback_ver, prov)
+                            self.act_download(mod, fallback_ver, prov, ignore_sha256=ignore_sha256)
                             self.act_register(mod, fallback_ver, prov)
                             if isinstance(meta, dict):
                                 meta["version"] = fallback_ver
@@ -1767,7 +1960,9 @@ class AtomicEngine:
         # Stage 1.5: 相依交集自檢與自動自癒 (若 installed_modules 漏列底層相依模組或相依版號過舊且存在相容交集，自動補齊並重新讀取 installed)
         if reconcile_deps and default_prov:
             try:
-                healed = self.reconcile_installed_dependencies(provider_url=default_prov, strict=False)
+                healed = self.reconcile_installed_dependencies(
+                    provider_url=default_prov, strict=False, ignore_sha256=ignore_sha256
+                )
                 if healed:
                     _, cfg = self._get_config()
                     installed = cfg.get("installed_modules", {})

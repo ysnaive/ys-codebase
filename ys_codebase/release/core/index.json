@@ -19,42 +19,48 @@
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
-      "summary": "初版微內核與套件管理器正式發布，提供 4 階段原子重載管線、標準 URI 語意協議、code.func:// 動態符號系統與 Contributes 擴充機制"
+      "summary": "初版微內核與套件管理器正式發布，提供 4 階段原子重載管線、標準 URI 語意協議、code.func:// 動態符號系統與 Contributes 擴充機制",
+      "sha256": "49799537127af6ce9a3dae558afc87dc333dbb6b6fcefc46d1ee58b9b89db2ef"
     },
     "1.0.1.3": {
       "status": "active",
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
-      "summary": "強化 act_install 與 resolve_source_uri 本地/遠端嚴格解析，移除自動回退並補齊單元測試"
+      "summary": "強化 act_install 與 resolve_source_uri 本地/遠端嚴格解析，移除自動回退並補齊單元測試",
+      "sha256": "f3131f40621ae118c66e08b0b05e92f6694d0359d04eb8b57d97f8530caf7664"
     },
     "1.0.2.7": {
       "status": "active",
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
-      "summary": "實作 .modules/ 與 .build/ Git 追蹤解耦、.gitignore 區塊軟合併、JIT 鮮度自癒與 update_checker 安全熱更新引擎"
+      "summary": "實作 .modules/ 與 .build/ Git 追蹤解耦、.gitignore 區塊軟合併、JIT 鮮度自癒與 update_checker 安全熱更新引擎",
+      "sha256": "db959d804845896f1eed9835ba2cfde9117cdcf6efcba5a57a4cdf8b0c264e66"
     },
     "1.0.3.5": {
       "status": "active",
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
-      "summary": "新增 core.guard.guard_dispatch 宿主守門 SDK 並將 scripts/cli.py 遷移至純宣告式 process(args) 進入點"
+      "summary": "新增 core.guard.guard_dispatch 宿主守門 SDK 並將 scripts/cli.py 遷移至純宣告式 process(args) 進入點",
+      "sha256": "f07451fc377cae5cbb9ff12d958c02ecbf1366ef037b8a583ebeb77feece7ff0"
     },
     "1.1.0.6": {
       "status": "active",
       "dependencies": {},
       "type": "docs",
       "urgency": "optional",
-      "summary": "增補 core/README.md 跨平台路徑正規化與錯誤診斷規範，並擴充 CLI 路由與發行生命週期回歸測試"
+      "summary": "增補 core/README.md 跨平台路徑正規化與錯誤診斷規範，並擴充 CLI 路由與發行生命週期回歸測試",
+      "sha256": "3493f58763dd81071ad6f9889689a2c90728058578e60be6d5e56b9d3617acc4"
     },
     "1.1.1.2": {
       "status": "active",
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
-      "summary": "新增 core.telemetry 零侵入式 CLI 執行軌跡側錄引擎與 ide_projector 投影支援，賦能 /session-audit 摩擦診斷"
+      "summary": "新增 core.telemetry 零侵入式 CLI 執行軌跡側錄引擎與 ide_projector 投影支援，賦能 /session-audit 摩擦診斷",
+      "sha256": "c59183b989bd4e858648fef1b2f4875c57f67879e09284073f0e37f6f74c55f0"
     },
     "1.2.0.0": {
       "status": "pruned",
@@ -75,7 +81,8 @@
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
-      "summary": "強化 restore 批量安裝容錯韌性、.venv 損毀偵測自癒、locale 巢狀字典遞迴合併與 Windows 鎖定檔案重試防護"
+      "summary": "強化 restore 批量安裝容錯韌性、.venv 損毀偵測自癒、locale 巢狀字典遞迴合併與 Windows 鎖定檔案重試防護",
+      "sha256": "e399dee4aec1234e24ef9a9b571cda6a1887dc659422e7761cccbddebe781405"
     },
     "1.2.1.0": {
       "status": "pruned",
@@ -96,21 +103,24 @@
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
-      "summary": "支援 install/update/remove 多模組單次批次原子交易與逆向依賴聯集豁免"
+      "summary": "支援 install/update/remove 多模組單次批次原子交易與逆向依賴聯集豁免",
+      "sha256": "a051dd1db870ea2b8f81e4107f942b4902e6b4ce7a07b370ed6054eeec12589a"
     },
     "1.2.2.0": {
       "status": "active",
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
-      "summary": "新增 _format.json 宣告式合併策略 DSL (merge/extend/replace/unique)、__providers__ 多來源追蹤與 core.uri 重入安全 JIT 鮮度自癒"
+      "summary": "新增 _format.json 宣告式合併策略 DSL (merge/extend/replace/unique)、__providers__ 多來源追蹤與 core.uri 重入安全 JIT 鮮度自癒",
+      "sha256": "f1ddd5b9b13e26735cf44495a43514dc43c397aad5670408b8e07396c426e19c"
     },
     "1.2.3.0": {
       "status": "active",
       "dependencies": {},
       "type": "bugfix",
       "urgency": "critical",
-      "summary": "新增跨代升級相依交集解析與自癒引擎、快照交易鎖保護與 OSBackend Symlink 邊界加固"
+      "summary": "新增跨代升級相依交集解析與自癒引擎、快照交易鎖保護與 OSBackend Symlink 邊界加固",
+      "sha256": "a3d26725e9613109680696ac893f7b556b7f9896bbaf48d1961da6ab94f5a7e4"
     }
   }
 }

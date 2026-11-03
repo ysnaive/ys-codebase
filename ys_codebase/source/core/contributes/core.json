@@ -76,6 +76,12 @@
               "alias": ["f"]
             }
           },
+          "security": {
+            "ignore-sha256": {
+              "description": "Bypass SHA-256 integrity verification (unsafe)",
+              "alias": []
+            }
+          },
           "source": {
             "provider": {
               "description": "Module provider URL or path",
@@ -118,6 +124,12 @@
           }
         },
         "options": {
+          "security": {
+            "ignore-sha256": {
+              "description": "Bypass SHA-256 integrity verification (unsafe)",
+              "alias": []
+            }
+          },
           "source": {
             "provider": {
               "description": "Module provider URL or path",
@@ -519,6 +531,12 @@
             "force": {
               "description": "Force restore/reinstall modules",
               "alias": ["f"]
+            }
+          },
+          "security": {
+            "ignore-sha256": {
+              "description": "Bypass SHA-256 integrity verification (unsafe)",
+              "alias": []
             }
           },
           "source": {

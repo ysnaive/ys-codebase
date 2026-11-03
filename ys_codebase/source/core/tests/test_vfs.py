@@ -201,3 +201,80 @@ class TestVFS(YSCBTestCase):
         with self.assertRaises(NotImplementedError):
             custom_vfs.move(src_path, "dummy://target.txt")
         self.mark_passed()
+
+    def test_atomic_write_win32_retry_exhaustion_preserves_target(self):
+        """T-06: 驗證 Windows 平台 atomic_write 重試耗盡時拋出異常、絕不刪除/覆寫原目標檔，且清理 .tmp 暫存檔。"""
+        from unittest.mock import patch
+
+        target_file = os.path.join(self.test_dir, "win32_atomic.txt")
+        self.backend.write_text(target_file, "Original Safe Content")
+
+        with patch("core.vfs.os_backend.sys.platform", "win32"), \
+             patch("time.sleep") as mock_sleep, \
+             patch("core.vfs.os_backend.os.replace", side_effect=PermissionError("WinError 32: file in use")) as mock_replace:
+            with self.assertRaises(PermissionError):
+                with self.backend.atomic_write(target_file, mode="w") as f:
+                    f.write("New Content That Fails Replace")
+
+            self.assertEqual(mock_replace.call_count, 10)
+            self.assertEqual(mock_sleep.call_count, 9)
+
+        self.assertEqual(self.backend.read_text(target_file), "Original Safe Content")
+        tmp_files = [f for f in os.listdir(self.test_dir) if ".tmp." in f]
+        self.assertEqual(tmp_files, [])
+        self.mark_passed()
+
+    def test_remove_directory_readonly_chmod_retry_and_error_propagation(self):
+        """T-14: 驗證 OSBackend.remove 目錄刪除對唯讀檔自動 chmod 重試、支援 missing_ok，且非 ENOENT 錯誤不靜默吞沒。"""
+        import errno
+        import stat
+        from unittest.mock import patch
+
+        # 1. 目錄內含唯讀檔案時可透過 _on_rm_error 自動 chmod 並成功刪除
+        ro_dir = os.path.join(self.test_dir, "readonly_dir")
+        os.makedirs(ro_dir, exist_ok=True)
+        ro_file = os.path.join(ro_dir, "locked.txt")
+        self.backend.write_text(ro_file, "readonly data")
+        os.chmod(ro_file, stat.S_IREAD)
+
+        # 模擬首次 unlink 拋出 PermissionError，觸發 _on_rm_error chmod 後重試成功
+        real_unlink = os.unlink
+        real_rmtree = shutil.rmtree
+        call_state = {"count": 0}
+
+        def flaky_unlink(p):
+            if os.path.abspath(p) == os.path.abspath(ro_file) and call_state["count"] == 0:
+                call_state["count"] += 1
+                raise PermissionError(errno.EACCES, "Permission denied", p)
+            return real_unlink(p)
+
+        def fake_rmtree(path, onerror=None, **kwargs):
+            try:
+                flaky_unlink(ro_file)
+            except Exception:
+                import sys
+                onerror(flaky_unlink, ro_file, sys.exc_info())
+            real_rmtree(path, ignore_errors=True)
+
+        with patch("core.vfs.os_backend.shutil.rmtree", side_effect=fake_rmtree):
+            self.backend.remove(ro_dir, missing_ok=True)
+        self.assertFalse(os.path.exists(ro_dir))
+        self.assertEqual(call_state["count"], 1)
+
+        # 2. 非 ENOENT 異常（例如 EBUSY）即使 missing_ok=True 亦必須向上拋出，絕不因 missing_ok 靜默吞沒
+        busy_dir = os.path.join(self.test_dir, "busy_dir")
+        os.makedirs(busy_dir, exist_ok=True)
+
+        def busy_rmtree(path, onerror=None, **kwargs):
+            try:
+                raise OSError(errno.EBUSY, "Device or resource busy", path)
+            except Exception:
+                import sys
+                onerror(os.rmdir, path, sys.exc_info())
+
+        with patch("core.vfs.os_backend.shutil.rmtree", side_effect=busy_rmtree):
+            with self.assertRaises(OSError) as ctx:
+                self.backend.remove(busy_dir, missing_ok=True)
+            self.assertEqual(ctx.exception.errno, errno.EBUSY)
+
+        self.mark_passed()

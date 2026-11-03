@@ -60,7 +60,7 @@ class ServerConfig:
                 mod_cfg = core_config.get_all("server")
                 if isinstance(mod_cfg, dict):
                     raw_cfg.update(mod_cfg)
-            except Exception:
+            except (OSError, ValueError, TypeError, KeyError):
                 pass
 
         if override_dict and isinstance(override_dict, dict):

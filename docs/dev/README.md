@@ -17,7 +17,7 @@ related_docs:
   - "./topics/release_governance.md"
   - "./reference/contributes_format.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-03"
 ---
 
 # Dev 開發者工具鏈概覽手冊 (Developer Toolchain Overview)
@@ -50,11 +50,11 @@ graph TD
 | 指令群組 | 指令語法 | 核心職責說明 |
 | :--- | :--- | :--- |
 | **模組建立** | `python yscb.py dev create <name> [--desc="..."]` | 一鍵生成標準模組骨架與 Contributes 契約設定（預設版號 `0.1.0.0`） |
-| **合規檢查** | `python yscb.py dev check [name \| --all\|-a] [--json]` | 執行 8 步靜態合規檢核（`manifest.json`、Contributes、`scripts/cli.py`、AST Zero-Probing 等），支援 `--json` 結構化輸出 |
-| **開發建置** | `python yscb.py dev build [name \| --all]` | 自動清空目標目錄，打包 `<ver>.build.zip`（保留 `tests/`） |
+| **合規檢查** | `python yscb.py dev check [name \| --all\|-a] [--json]` | 執行 8 步靜態合規檢核（`manifest.json`、Contributes、`scripts/cli.py`、AST Zero-Probing、裸 `except:` 反模式警告等），支援 `--json` 結構化輸出 |
+| **開發建置** | `python yscb.py dev build [name \| --all]` | 自動清空目標目錄，採用確定性壓縮（Deterministic Zip）打包 `<ver>.build.zip`（保留 `tests/`） |
 | **版本管理** | `python yscb.py dev bump-[major\|minor\|patch\|revision] <name>` | 對模組 `manifest.json` 版本號進行單向遞增 |
 | **發布預檢** | `python yscb.py dev release-check [name \| --all\|-a] [--force\|-f]` | 獨立執行 3-Gate 發布就緒校驗（合規、不可變、單調性，支援 `--all` 批次預檢與 `--force` 放行同版本） |
-| **純淨發布** | `python yscb.py dev release [name \| --all] [--force\|-f] [--type=<type>] [--urgency=<lvl>] [--summary="<text>"]` | 通過 3-Gate 後純淨打包（排除 `tests/` 與 `.yscbignore`），支援雙軌寫入釋出元數據 (`manifest.json["release"]` 與 `index.json["releases"]`)，並廣播 `on_module_released` 事件 |
+| **純淨發布** | `python yscb.py dev release [name \| --all] [--force\|-f] [--type=<type>] [--urgency=<lvl>] [--summary="<text>"]` | 通過 3-Gate 後確定性純淨打包（排除 `tests/` 與 `.yscbignore`），自動計算 `.zip` SHA-256 並雙軌寫入釋出元數據 (`manifest.json["release"]` 與 `index.json["releases"][<ver>]["sha256"]`)，廣播 `on_module_released` 事件 |
 | **安全發布** | `python yscb.py dev release-git <name> "<msg>" [--force\|-f] [--type=<type>] [--urgency=<lvl>] [--summary="<text>"]` | 智慧感應：未發布則打包，已發布自動略過打包（加 `--force` 重新覆蓋），支援雙軌寫入釋出元數據，接續本地 git commit & tag（🚨 嚴禁 remote push） |
 | **索引修補** | `python yscb.py dev index-patch <name> --ver=<ver> [--dep="<mod>:<constraint>[;...]"] [--status=active\|pruned] [--type=<type>] [--urgency=<lvl>] [--summary="<text>"]` | 免重打包 `.zip` 事後修補歷史已發布版本之依賴範圍、淘汰狀態與嚴重度元數據 |
 | **沙盒測試** | `python yscb.py dev test [name \| --all] [-q\|--quiet] [-k <pat>] [-j <n>] [--target=<tgt>] [--no-build] [--sync]` | 自動前置 build ➔ 配置沙盒 ➔ 跑測 ➔ 銷毀環境（支援 `--quiet` 節流單行輸出、`-k` 關鍵字過濾、`-j` 平行加速、`--sync` 通過後直裝 `@build`） |

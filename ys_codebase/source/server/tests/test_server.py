@@ -1114,5 +1114,76 @@ class TestServerModule(YSCBTestCase):
             sup.stop()
         self.mark_passed()
 
+    def test_worker_restore_env_diff_without_clearing_os_environ(self):
+        """TASK-05: _restore_env_diff and WarmWorker.execute_task restore modified, added, and deleted env keys without ever emptying os.environ."""
+        from server.worker import _restore_env_diff
+
+        baseline_key = "YSCB_TEST_BASELINE_CONTINUOUS_KEY"
+        modified_key = "YSCB_TEST_MODIFIED_KEY"
+        deleted_key = "YSCB_TEST_DELETED_KEY"
+        added_key = "YSCB_TEST_ADDED_DURING_TASK_KEY"
+
+        os.environ[baseline_key] = "always_present"
+        os.environ[modified_key] = "orig_val"
+        os.environ[deleted_key] = "to_be_deleted"
+        os.environ.pop(added_key, None)
+
+        observed_missing_baseline = []
+        stop_bg = threading.Event()
+
+        def bg_env_observer():
+            while not stop_bg.is_set():
+                if os.environ.get(baseline_key) != "always_present" or "PATH" not in os.environ:
+                    observed_missing_baseline.append(True)
+                time.sleep(0.0005)
+
+        bg_thread = threading.Thread(target=bg_env_observer, daemon=True)
+        bg_thread.start()
+        try:
+            worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
+            mod_dir = os.path.join(self.root_dir, ".modules", "mock_env_diff", "scripts")
+            os.makedirs(mod_dir, exist_ok=True)
+            with open(os.path.join(mod_dir, "cli.py"), "w", encoding="utf-8") as f:
+                f.write(
+                    "import os\n"
+                    "def help(cmd_bags):\n"
+                    f"    os.environ['{modified_key}'] = 'mutated_val'\n"
+                    f"    os.environ.pop('{deleted_key}', None)\n"
+                    f"    os.environ['{added_key}'] = 'temp_added'\n"
+                    "    return 0\n"
+                )
+
+            for _ in range(5):
+                rc = worker.execute_task(
+                    module="mock_env_diff",
+                    args=[],
+                    cwd=self.root_dir,
+                    env={modified_key: "override_val"},
+                )
+                self.assertEqual(rc, 0)
+                self.assertEqual(os.environ.get(baseline_key), "always_present")
+                self.assertEqual(os.environ.get(modified_key), "orig_val")
+                self.assertEqual(os.environ.get(deleted_key), "to_be_deleted")
+                self.assertNotIn(added_key, os.environ)
+
+            # Direct unit check of _restore_env_diff
+            snap = dict(os.environ)
+            os.environ[modified_key] = "changed"
+            os.environ.pop(deleted_key, None)
+            os.environ[added_key] = "extra"
+            _restore_env_diff(snap)
+            self.assertEqual(os.environ.get(modified_key), "orig_val")
+            self.assertEqual(os.environ.get(deleted_key), "to_be_deleted")
+            self.assertNotIn(added_key, os.environ)
+        finally:
+            stop_bg.set()
+            bg_thread.join(timeout=1.0)
+            for k in (baseline_key, modified_key, deleted_key, added_key):
+                os.environ.pop(k, None)
+
+        self.assertEqual(observed_missing_baseline, [], "os.environ was emptied or lost baseline keys during execute_task!")
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

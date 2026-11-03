@@ -36,7 +36,7 @@
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_server_daemon_robustness` | Full Track | `Completed` | P0~P2 server/daemon 生命週期：T-01, T-02, T-05, T-08, T-12, T-13, T-21 |
 | **sub_02** | `sub_02_hot_path_performance` | Full Track | `Completed` | P1~P2 熱路徑效能：T-09, T-10, T-11, T-17, T-18, T-19, T-20 |
-| **sub_03** | `sub_03_reliability_and_governance` | Full Track | `Pending` | P1~P2 可靠性與工程治理：T-03, T-04, T-06, T-07, T-14, T-15, T-16 |
+| **sub_03** | `sub_03_reliability_and_governance` | Full Track | `Completed` | P1~P2 可靠性與工程治理：T-03, T-04, T-06, T-07, T-14, T-15, T-16 |
 | **sub_04** | `sub_04_p3_polish` | Full Track | `Pending` | 全部 P3：T-22 ~ T-40（T-36 評估後可標記不修）；另含 sub_01 移交之 DEV-01（熱派發逾時重複執行）與 dev test 沙盒舊副本觀察 |
 
 > [!NOTE]
@@ -48,6 +48,6 @@
 
 - [x] **里程碑 1**：sub_01 結案 — P0 dispatch 卡死消除、沙盒 daemon 守門與嚴格模式上線、鎖檔競態根除
 - [x] **里程碑 2**：sub_02 結案 — 增量路徑回歸 O(|dirty|)、contributes/file-space 熱路徑記憶化
-- [ ] **里程碑 3**：sub_03 結案 — 完整性驗證、worker 隔離、CI 測試與 lint 上線
+- [x] **里程碑 3**：sub_03 結案 — 完整性驗證、worker 隔離、CI 測試與 lint 上線
 - [ ] **里程碑 4**：sub_04 結案 — P3 打磨完成，Umbrella 轉 `Completed`
 

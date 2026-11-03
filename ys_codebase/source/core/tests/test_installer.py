@@ -332,7 +332,8 @@ class TestCoreInstaller(YSCBTestCase):
             os.makedirs(mod_prov_dir, exist_ok=True)
 
             # 1. 建立 1.0.0.0.zip
-            with zipfile.ZipFile(os.path.join(mod_prov_dir, "1.0.0.0.zip"), "w") as zf:
+            z_100 = os.path.join(mod_prov_dir, "1.0.0.0.zip")
+            with zipfile.ZipFile(z_100, "w") as zf:
                 zf.writestr("manifest.json", json.dumps({"name": mod_name, "version": "1.0.0.0", "entry": "scripts/cli.py"}))
                 zf.writestr("scripts/cli.py", "def main(): return 0\n")
 
@@ -347,19 +348,34 @@ class TestCoreInstaller(YSCBTestCase):
                 "    json.dump(arr, open(p, 'w'))\n"
                 "    return True\n"
             )
-            with zipfile.ZipFile(os.path.join(mod_prov_dir, "1.2.0.0.zip"), "w") as zf:
+            z_120 = os.path.join(mod_prov_dir, "1.2.0.0.zip")
+            with zipfile.ZipFile(z_120, "w") as zf:
                 zf.writestr("manifest.json", json.dumps({"name": mod_name, "version": "1.2.0.0", "entry": "scripts/cli.py"}))
                 zf.writestr("scripts/cli.py", "def main(): return 0\n")
                 zf.writestr("scripts/migrations/1.1.x.py", mig_code)
                 zf.writestr("scripts/migrations/1.2.x.py", mig_code)
 
             # 3. 建立 2.0.0.0.zip (跨 Major 版本，應被 Major Lock 攔截)
-            with zipfile.ZipFile(os.path.join(mod_prov_dir, "2.0.0.0.zip"), "w") as zf:
+            z_200 = os.path.join(mod_prov_dir, "2.0.0.0.zip")
+            with zipfile.ZipFile(z_200, "w") as zf:
                 zf.writestr("manifest.json", json.dumps({"name": mod_name, "version": "2.0.0.0", "entry": "scripts/cli.py"}))
                 zf.writestr("scripts/cli.py", "def main(): return 0\n")
 
+            from core.engine import compute_file_sha256
             with open(os.path.join(mod_prov_dir, "index.json"), "w", encoding="utf-8") as f:
-                json.dump({"name": mod_name, "latest": "2.0.0.0", "versions": ["1.0.0.0", "1.2.0.0", "2.0.0.0"]}, f)
+                json.dump(
+                    {
+                        "name": mod_name,
+                        "latest": "2.0.0.0",
+                        "versions": ["1.0.0.0", "1.2.0.0", "2.0.0.0"],
+                        "releases": {
+                            "1.0.0.0": {"sha256": compute_file_sha256(z_100)},
+                            "1.2.0.0": {"sha256": compute_file_sha256(z_120)},
+                            "2.0.0.0": {"sha256": compute_file_sha256(z_200)},
+                        },
+                    },
+                    f,
+                )
 
             try:
                 # 先安裝 1.0.0.0
@@ -404,10 +420,16 @@ class TestCoreInstaller(YSCBTestCase):
             os.makedirs(mod_prov_dir, exist_ok=True)
 
             # 準備 1.0.0.0.zip 與 1.1.0.0.zip
+            from core.engine import compute_file_sha256
+            rels_info = {}
             for ver_str in ("1.0.0.0", "1.1.0.0"):
-                with zipfile.ZipFile(os.path.join(mod_prov_dir, f"{ver_str}.zip"), "w") as zf:
+                zp = os.path.join(mod_prov_dir, f"{ver_str}.zip")
+                with zipfile.ZipFile(zp, "w") as zf:
                     zf.writestr("manifest.json", json.dumps({"name": mod_name, "version": ver_str, "entry": "scripts/cli.py"}))
                     zf.writestr("scripts/cli.py", f"VER = '{ver_str}'\ndef main(): return 0\n")
+                rels_info[ver_str] = {"sha256": compute_file_sha256(zp)}
+            with open(os.path.join(mod_prov_dir, "index.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": mod_name, "versions": ["1.0.0.0", "1.1.0.0"], "releases": rels_info}, f)
 
             cfg_path, orig_cfg = self.installer.engine._get_config()
             orig_installed = dict(orig_cfg.get("installed_modules", {}))
@@ -485,15 +507,19 @@ class TestCoreInstaller(YSCBTestCase):
             ):
                 m_dir = os.path.join(prov_dir, m_name)
                 os.makedirs(m_dir, exist_ok=True)
+                from core.engine import compute_file_sha256
+                rels_map = {}
                 for v in vers:
-                    with zipfile.ZipFile(os.path.join(m_dir, f"{v}.zip"), "w") as zf:
+                    zp = os.path.join(m_dir, f"{v}.zip")
+                    with zipfile.ZipFile(zp, "w") as zf:
                         zf.writestr(
                             "manifest.json",
                             json.dumps({"name": m_name, "version": v, "dependencies": deps_map, "entry": "scripts/cli.py"}),
                         )
                         zf.writestr("scripts/cli.py", "def dummy(): return 0\n")
+                    rels_map[v] = {"sha256": compute_file_sha256(zp)}
                 with open(os.path.join(m_dir, "index.json"), "w", encoding="utf-8") as f:
-                    json.dump({"name": m_name, "latest": vers[-1], "versions": vers}, f)
+                    json.dump({"name": m_name, "latest": vers[-1], "versions": vers, "releases": rels_map}, f)
 
             try:
                 # 1. 負向測試：批次內對同一模組指定衝突版本 (batch_lib@1.0.0.0 vs batch_lib@2.0.0.0) 應攔截並回滾
@@ -552,15 +578,19 @@ class TestCoreInstaller(YSCBTestCase):
             ):
                 m_dir = os.path.join(prov_dir, m_name)
                 os.makedirs(m_dir, exist_ok=True)
+                from core.engine import compute_file_sha256
+                rels_map = {}
                 for v in vers:
-                    with zipfile.ZipFile(os.path.join(m_dir, f"{v}.zip"), "w") as zf:
+                    zp = os.path.join(m_dir, f"{v}.zip")
+                    with zipfile.ZipFile(zp, "w") as zf:
                         zf.writestr(
                             "manifest.json",
                             json.dumps({"name": m_name, "version": v, "dependencies": deps_map, "entry": "scripts/cli.py"}),
                         )
                         zf.writestr("scripts/cli.py", "def dummy(): return 0\n")
+                    rels_map[v] = {"sha256": compute_file_sha256(zp)}
                 with open(os.path.join(m_dir, "index.json"), "w", encoding="utf-8") as f:
-                    json.dump({"name": m_name, "latest": vers[-1], "versions": vers}, f)
+                    json.dump({"name": m_name, "latest": vers[-1], "versions": vers, "releases": rels_map}, f)
 
             try:
                 rc_inst = self.installer.cmd_install(
