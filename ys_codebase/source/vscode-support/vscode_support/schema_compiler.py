@@ -571,16 +571,19 @@ class SchemaCompiler:
     def sync_all_schemas(self, proj_root: str) -> List[Dict[str, Any]]:
         """
         編譯所有已安裝模組之 Contributes Schema、Config Schema 與 Meta Schema 至 `project://.vscode/schemas/`，
-        建立 `.vscode/schemas/.gitignore` (`*`) 自我忽略，清理已移除模組之孤兒 Schema，
+        清理已移除模組之孤兒 Schema 與舊版子目錄 `.gitignore`，
         並回傳應寫入 `.vscode/settings.json` `"json.schemas"` 之綁定條目清單。
         """
         schemas_root = os.path.join(proj_root, ".vscode", "schemas")
         os.makedirs(schemas_root, exist_ok=True)
 
-        # 建立自我忽略 .gitignore
+        # 移除舊版子目錄 .vscode/schemas/.gitignore（改由 core.gitignore 統一於根目錄 .gitignore 忽略）
         gi_path = os.path.join(schemas_root, ".gitignore")
-        if not vfs.is_file(gi_path) or vfs.read_text(gi_path).strip() != "*":
-            vfs.write_text(gi_path, "*\n", encoding="utf-8", atomic=True)
+        if vfs.is_file(gi_path):
+            try:
+                vfs.remove(gi_path, missing_ok=True)
+            except Exception:
+                pass
 
         active_schema_files: Set[str] = set()
         bindings: List[Dict[str, Any]] = []

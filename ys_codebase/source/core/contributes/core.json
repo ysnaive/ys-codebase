@@ -644,9 +644,74 @@
           ],
           "cons": []
         }
+      },
+      "gitignore": {
+        "description": "Unified project://.gitignore managed block inspector and synchronizer",
+        "tier": "safe",
+        "server_compatible": true,
+        "cmd": {
+          "status": {
+            "description": "Inspect project://.gitignore managed block sync status and module rule groups",
+            "tier": "safe",
+            "server_compatible": true,
+            "options": {
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視根目錄 .gitignore 受託管規則分組與同步狀態: python yscb.py gitignore status [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "sync": {
+            "description": "Synthesize and synchronize all static and dynamic module ignore rules into project://.gitignore",
+            "tier": "safe",
+            "server_compatible": true,
+            "options": {
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "手動強制收斂同步全模組 .gitignore 規則至 project://.gitignore: python yscb.py gitignore sync [--json]"
+              ],
+              "cons": []
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "統一管理與檢視根目錄 .gitignore 託管區塊: python yscb.py gitignore <status|sync>"
+          ],
+          "cons": []
+        }
       }
     }
   },
+  "gitignore": [
+    "yscb://.modules/",
+    "yscb://.build/",
+    "yscb://.mirror/",
+    "yscb://.temp/",
+    "yscb://.snapshots/",
+    "yscb://.cache/",
+    "yscb://.venv/",
+    "*.local.json",
+    "__pycache__/",
+    "*.pyc",
+    "yscb.py.bak",
+    "*.bak"
+  ],
   "events": [
     { "pre_cli_dispatch": "在 CLI 執行各模組指令前觸發，提供自癒與生命週期檢查" },
     { "post_cli_dispatch": "在 CLI 執行結束後觸發，提供更新檢查提示" },
@@ -654,7 +719,8 @@
     { "on_installed": "當模組安裝完成後觸發" },
     { "on_update": "當模組更新完成後觸發" },
     { "on_remove": "當模組移除前觸發" },
-    { "on_env_synced": "當私有微環境第三方依賴物化同步完成後觸發" }
+    { "on_env_synced": "當私有微環境第三方依賴物化同步完成後觸發" },
+    { "on_gitignore_synced": "當根目錄 project://.gitignore 託管區塊完成同步更新後觸發" }
   ]
 }
 

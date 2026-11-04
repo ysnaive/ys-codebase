@@ -9,6 +9,7 @@ source_paths:
   - "yscb://source/core/core/installer.py"
   - "yscb://source/core/core/contributes.py"
   - "yscb://source/core/core/locale.py"
+  - "yscb://source/core/core/gitignore.py"
   - "yscb://source/core/core/commands/"
 related_docs:
   - "./contributes_architecture.md"
@@ -25,7 +26,7 @@ related_docs:
   - "./API_REFERENCE.md"
   - "./DESIGN_NOTES.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-04"
 ---
 
 # Core 微內核架構手冊 (Core Microkernel Overview)
@@ -144,6 +145,11 @@ with uri.module_scope("core"):
 - **100% 顯式優先級退避鏈 (`get_active_chain`) 與多平台並發自動嗅探 (`detect_active_host_dialect`)**：嚴格依顯式設定之 `lang-id` 列表順序逐層查找（專案固定預設值與最終退避保底皆為開發團隊母語 `["zh"]`；初次安裝且 `config.local.json` 尚未建立時自動透過 `detect_system_locale_chain()` 偵測作業系統主語系播種至 `config.local.json`），不做隱式 `-` 連字號父語系切分猜測。執行期若未顯式傳入 `chain` 或 `YSCB_LOCALE`，`get_active_chain()` 會自動透過 `detect_active_host_dialect()` 嗅探當前呼叫端 AI IDE / CLI 環境變數（`CLAUDECODE` / `CLAUDE_CODE_*` $\to$ `nouns-claude`；`CODEX_*` $\to$ `nouns-codex`；`ANTIGRAVITY_*` $\to$ `nouns-antigravity`）並前置於自然語系鏈首位，支援同一工作區多平台 IDE 並發運行。
 - **無前綴全域穿透查找 (`Caller-First Global Lookup`) 與二階遞迴專有名詞插值 (`locale.t`)**：當 Key 未帶 `<module>:` 前綴時，優先查找呼叫端自身模組，未命中則自動穿透掃描全系統已註冊 `locales` 之模組（`<module>:` 前綴僅於跨模組同名 Key 衝突消歧義時需要）。模板內之 `{placeholder}` 優先由呼叫端 `kwargs` 替換；若未傳入則自動視為專有名詞鍵沿同一優先級鏈遞迴解析（最大深度 `5`），並支援 `{{` / `}}` 雙花括號轉義保護與 `validate_module_locales` 確定性靜態契約校驗。
 
+### 3.7 根目錄單一 `.gitignore` 統一收斂引擎 (`core.gitignore`)
+微內核於 [`core/gitignore.py`](../../ys_codebase/source/core/core/gitignore.py) 提供零外部依賴的 `.gitignore` 託管區塊收斂引擎：
+- **根目錄單檔 SSOT (`project://.gitignore`) 與語意 URI 自動錨定**：將各模組於 `contributes/core.json` 靜態宣告之 `"gitignore"` 清單、專案級 `config://core/contribute.json` 規則，以及執行期透過 `core.gitignore.register_dynamic(module, patterns)` 註冊之動態規則（快取於 `cache://core/gitignore_dynamic.json`）統一換算為相對於 `project://` 之錨定路徑，寫入 `project://.gitignore` 單一託管區塊（`# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===`）。
+- **`# [<module>]` 分組可觀測性與卸載自癒**：託管區塊內部強制按模組來源輸出 `# [<module>]` 子標頭（`core` 置頂，其餘模組按字母序，`project` 置底）；當模組移除（`act_delete`）或重載（`act_reload`）時自動清除已卸載模組之靜態與動態忽略規則，並自動清理過時之子目錄 `.gitignore`（如舊版 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`）。
+
 ---
 
 ## 4. CLI 指令速查
@@ -158,6 +164,10 @@ python yscb.py uri check                    # 全量語意協議健康檢查
 # 2. Contributes 擴充點自省與剛性校驗
 python yscb.py contributes list             # 列出全系統開放之擴充點清冊 (_format.json)
 python yscb.py contributes check [module]   # 校驗模組 contributes 宣告是否符合目標 Schema
+
+# 2.5 根目錄 .gitignore 託管區塊檢視與同步
+python yscb.py gitignore status [--json]    # 檢視 project://.gitignore 託管狀態與各模組規則分組
+python yscb.py gitignore sync [--json]      # 手動強制收斂同步全模組忽略規則至 project://.gitignore
 
 # 3. 套件生命週期管理 (支援單一或多模組單次批次原子交易，正式版預設強制校驗 index.json SHA-256，@build 免檢，或以 --ignore-sha256 跳過)
 python yscb.py install <module>[@version] [<module2>[@version] ...] [--provider="<source>"] [--force] [--ignore-sha256]

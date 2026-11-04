@@ -64,6 +64,9 @@
         }
       }
     }
-  }
+  },
+  "gitignore": [
+    "project://.vscode/schemas/"
+  ]
 }
 

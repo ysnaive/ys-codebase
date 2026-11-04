@@ -245,6 +245,19 @@ last_updated: "2026-10-15"
   > [!CAUTION]
   > **嚴禁在 `cmd_update` 中僅單獨替換目標模組而不呼叫 `reconcile_installed_dependencies` 驗證更新後之相依圖譜！當兩模組對同一相依模組之版本約束無交集時，必須剛性拋出例外觸發 Snapshot 回滾，嚴禁靜默吞掉衝突強行安裝不相容版本！**
 
+---
+
+### [DN-17] 根目錄單一 `project://.gitignore` 統一收斂與 `# [<module>]` 強制分組 (`core.gitignore`)
+
+- **核心決策**：
+  1. **根目錄單檔 SSOT (`project://.gitignore`)**：全系統廢除子目錄分散式 `.gitignore`（如舊版 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`），統一由 `core.gitignore` 將各模組透過 `contributes/core.json`（`"gitignore"`）或動態 SDK（`register_dynamic(module, patterns)`）註冊之語意 URI 自動換算為相對於 `project://` 之錨定路徑，寫入 `project://.gitignore` 的 `# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===` 區塊。
+  2. **`# [<module>]` 強制分組與 SDK 非空模組名守衛**：託管區塊內依貢獻來源輸出 `# [<module>]` 子標頭（`core` 置頂、一般模組字母序、`project` 置底），且 `register_dynamic` / `clear_dynamic` 強制驗證 `module` 為非空字串；當呼叫端傳入非活躍工作區之自訂沙盒 `proj_root` 時，自動將動態規則隔離於記憶體字典而不污染全域 `cache://core/gitignore_dynamic.json`。
+- **背後考量**：子目錄拆散多個 `.gitignore` 易造成跨拓撲規則過時、外部工具鏈解析不一致以及模組移除後殘留隱藏殭屍檔；集中於單一根目錄託管區塊並以 `# [<module>]` 分組，可在模組卸載（`act_delete`）時 100% 自動剔除該模組之靜態與動態忽略規則。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁任何業務模組繞過 `core.gitignore` 自行拼湊 Regex 讀寫 `project://.gitignore` 或在子目錄偷塞隱藏 `.gitignore`！動態註冊忽略規則時必須傳入明確之模組識別名稱！**
+
+
 
 
 

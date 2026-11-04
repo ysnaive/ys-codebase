@@ -43,56 +43,33 @@ INTERNAL_IGNORE_PATTERNS = [
 
 def generate_internal_gitignore(yscb_dir: str) -> None:
     """
-    非破壞性軟合併 yscb://.gitignore 中的 YSCB 內部管理區塊。
-    支援 'yscb://' == 'project://' 之拓撲情境，完整保留宿主專案既有之自訂忽略規則
-    及其他模組之管理區塊，杜絕粗暴覆蓋導致的設定丟失。
+    相容性委派層：將內部 `.gitignore` 管理統一收斂至 `core.gitignore.sync()`。
+    若傳入之 `yscb_dir` 為獨立測試目錄（非當前活躍工作區之 `yscb://`），
+    則以對應之專案根目錄執行 `core.gitignore.sync`；否則直接同步全專案 `project://.gitignore`。
     """
-    import re
-    gi_path = os.path.join(yscb_dir, ".gitignore")
-    block_lines = [
-        INTERNAL_IGNORE_BEGIN,
-        "# Auto-managed by YSCB host bootstrapper. Do not edit this block manually.",
-        *INTERNAL_IGNORE_PATTERNS,
-        INTERNAL_IGNORE_END,
-    ]
-    new_block_text = "\n".join(block_lines)
+    from core import gitignore as gi_mod
 
-    existing_content = ""
-    has_existing = vfs.is_file(gi_path)
-    if has_existing:
-        try:
-            existing_content = vfs.read_text(gi_path)
-        except Exception:
-            existing_content = ""
-
-    pattern_marker = re.compile(
-        rf"{re.escape(INTERNAL_IGNORE_BEGIN)}[\s\S]*?{re.escape(INTERNAL_IGNORE_END)}",
-        re.MULTILINE,
-    )
-    pattern_legacy = re.compile(
-        r"# YS-Codebase Autonomous Internal Ignore Rules\n(?:(?!\n*# ===)[^\n]+\n*)*",
-        re.MULTILINE,
-    )
-
-    if pattern_marker.search(existing_content):
-        merged_content = pattern_marker.sub(new_block_text, existing_content)
-    elif pattern_legacy.search(existing_content):
-        merged_content = pattern_legacy.sub(new_block_text + "\n", existing_content)
-    else:
-        if existing_content and not existing_content.endswith("\n"):
-            merged_content = existing_content + "\n\n" + new_block_text + "\n"
-        elif existing_content:
-            merged_content = existing_content + new_block_text + "\n"
-        else:
-            merged_content = new_block_text + "\n"
-
-    if has_existing and existing_content == merged_content:
+    if not yscb_dir:
+        gi_mod.sync()
         return
 
-    try:
-        vfs.write_text(gi_path, merged_content, atomic=True)
-    except Exception:
-        pass
+    abs_dir = os.path.abspath(yscb_dir)
+    base_name = os.path.basename(abs_dir)
+    if base_name in ("ys_codebase", ".yscb", "engine") and os.path.isfile(
+        os.path.join(os.path.dirname(abs_dir), "yscb.config.json")
+    ):
+        proj_dir = os.path.dirname(abs_dir)
+        gi_mod.sync(proj_root=proj_dir, yscb_root=abs_dir)
+    else:
+        default_yscb = ""
+        try:
+            default_yscb = os.path.abspath(uri.resolve("yscb://", interactive=False))
+        except Exception:
+            pass
+        if default_yscb and os.path.normcase(abs_dir) == os.path.normcase(default_yscb):
+            gi_mod.sync()
+        else:
+            gi_mod.sync(proj_root=abs_dir, yscb_root=abs_dir)
 
 
 def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:

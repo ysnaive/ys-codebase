@@ -161,3 +161,29 @@ class PipManager:
 ### 5.2 `PipInstallError` (安裝異常)
 - **說明**：當私有微環境調用 pip 安裝失敗時拋出之結構化異常，包含 `returncode`、`stdout`、`stderr`。
 
+---
+
+## 6. `core.gitignore` 子模組 (統一忽略規則收斂引擎)
+
+```python
+from core import gitignore
+```
+
+### 6.1 `normalize_pattern(raw_pattern: str, proj_root: str, yscb_root: Optional[str] = None) -> Optional[str]`
+- **說明**：將原始忽略規則或語意 URI（如 `yscb://.venv/`、`project://.vscode/schemas/`）正規化為相對於 `proj_root` 之標準 `/` 錨定路徑（同根與子目錄拓撲自適應，越界路徑自動過濾回傳 `None`）。
+
+### 6.2 `register_dynamic(module: str, patterns: Iterable[str], *, sync_now: bool = True, proj_root: Optional[str] = None, yscb_root: Optional[str] = None) -> Dict[str, Any]`
+- **說明**：註冊模組動態忽略規則至 `cache://core/gitignore_dynamic.json` 並可選擇立即合成更新 `project://.gitignore` 之 `# [<module>]` 分組。
+- **例外**：若 `module` 非字串或為空白字串，拋出 `ValueError("module name must be a non-empty string")`。
+
+### 6.3 `clear_dynamic(module: str, *, sync_now: bool = True, proj_root: Optional[str] = None, yscb_root: Optional[str] = None) -> Dict[str, Any]`
+- **說明**：清除指定模組之動態忽略規則（模組移除 `act_delete` 時自動調用）。
+- **例外**：若 `module` 非字串或為空白字串，拋出 `ValueError`。
+
+### 6.4 `sync(*, proj_root: Optional[str] = None, yscb_root: Optional[str] = None, emit_event: bool = True) -> Dict[str, Any]`
+- **說明**：收集全系統靜態 `contributes` (`gitignore`) 與動態 SDK 規則，按 `# [<module>]` 分組軟合併至 `project://.gitignore`，無縫遷移舊版區塊並清理廢棄之子目錄 `.gitignore`。
+
+### 6.5 `status(*, proj_root: Optional[str] = None, yscb_root: Optional[str] = None) -> Dict[str, Any]`
+- **說明**：檢視 `project://.gitignore` 是否存在、託管區塊同步狀態 (`in_sync`) 以及各 `# [<module>]` 分組規則清單。
+
+

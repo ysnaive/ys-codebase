@@ -1,5 +1,11 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_04_0711_core_gitignore_unification (Completed)
+
+- **`core.gitignore` 單一根目錄 `project://.gitignore` 統一忽略規則收斂引擎、`# [<module>]` 強制分組與跨模組 (`core` / `agents-workflow` / `vscode-support`) 全面遷移 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-02`)**：
+  - **`core.gitignore` 統一收斂引擎、語意 URI 錨定轉換與 `# [<module>]` 分組 (`FR-01`, `FR-02`, `FR-04`, `EC-01` ~ `EC-04`)**：新建 `core/gitignore.py`（並匯出至 `core.__all__`），於 `core/contributes/_format.json` 新增 `"gitignore"` (`list[str]! | extend`) 擴充點（`core` 自身基礎忽略規則亦由 `core/contributes/core.json` 自貢獻，引擎保持 100% 純業務邏輯）；自動將語意 URI（如 `yscb://.venv/`、`project://.vscode/schemas/`）依子目錄或同根拓撲正規化為相對於 `project://` 之 `/` 錨定路徑，並於 `# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `END` 單一託管區塊內按 `# [<module>]` 子標頭分組排序（`core` 置頂、一般模組字母序、`project` 置底）；提供強制校驗非空 `module` 參數之動態 SDK `register_dynamic(module, patterns, ...)` 與 `clear_dynamic(module, ...)`（持久化於 `cache://core/gitignore_dynamic.json`）。
+  - **跨模組遷移、舊版區塊無縫升級、廢棄子目錄 `.gitignore` 自動清理與 CLI 介面 (`FR-03`, `FR-05`, `FR-06`, `EC-05`, `NFR-01` ~ `NFR-02`)**：將 `core` (`installer.generate_internal_gitignore`、`pip_manager.ensure_yscb_gitignore`、`engine.act_reload` / `act_delete`)、`agents-workflow` (`ReleasePublisher.sync_gitignore` 與指紋短路同步) 及 `vscode-support` (`contributes/core.json` 宣告 `project://.vscode/schemas/`、`schema_compiler.py`) 全面收斂至 `core.gitignore`；自動無縫遷移舊版 `# === YSCB INTERNAL IGNORE BEGIN ===`、`# === YSCB AGENTS_WORKFLOW IGNORE BEGIN ===` 與未包裹遺留行（100% 保留使用者手寫規則），並安全物理刪除廢棄之子目錄 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`；新增 `python yscb.py gitignore <status|sync> [--json]` CLI 與 `on_gitignore_synced` 事件（同時將 `module:gdrive` 雙向雲端同步構想存入 `plans/roadmap/gdrive_bidirectional_sync_module.md`），通過 `core` (240/240)、`vscode-support` (10/10)、`agents-workflow` (141/141) 全量測試與臨時兄弟目錄實機驗證。
+
 ## 2026_11_04_0540_audit_808d156_remediation_p0_to_p3 (Completed)
 
 - **Commit `808d156` 全專案八維度單點序列深度審計 14 項問題 (`AUD-01` ~ `AUD-14`, P0 ~ P3) 系統性修復與 0-to-1 跨平台實證 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-06`, `NFR-01` ~ `NFR-02`)**：

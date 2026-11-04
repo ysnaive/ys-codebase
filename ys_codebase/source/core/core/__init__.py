@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from core import validator
     from core import telemetry
     from core import locale
+    from core import gitignore
 
 _MODULE_MAP = {
     "uri": ("core.uri", None),
@@ -60,6 +61,7 @@ _MODULE_MAP = {
     "validator": ("core.validator", None),
     "telemetry": ("core.telemetry", None),
     "locale": ("core.locale", None),
+    "gitignore": ("core.gitignore", None),
 }
 
 
@@ -108,4 +110,5 @@ __all__ = [
     "validator",
     "telemetry",
     "locale",
+    "gitignore",
 ]

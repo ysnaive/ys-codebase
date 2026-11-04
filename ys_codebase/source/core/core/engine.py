@@ -1882,10 +1882,16 @@ class AtomicEngine:
         """
         刪除指定模組資產與相關狀態 (生命週期治理)。
         - 自動清空 cache://{module_name}/
+        - 自動清除該模組於 core.gitignore 註冊之動態忽略規則
         - clean_mirror=True: 刪除 module.mirror://{module_name}/
         - purge=True: 強制物理刪除 storage://{module_name}/ 與 config://{module_name}/
         """
         _clean_module_cache(module_name)
+        try:
+            from core import gitignore as gi_mod
+            gi_mod.clear_dynamic(module_name, sync_now=False)
+        except Exception:
+            pass
 
         if clean_mirror:
             mirror_uri = f"module.mirror://{module_name}"
@@ -2028,6 +2034,11 @@ class AtomicEngine:
         # Stage 4: 依賴注入與事件廣播
         if inject_stage:
             self.contributes_aggregator.scan_and_inject()
+            try:
+                from core import gitignore as gi_mod
+                gi_mod.sync(emit_event=False)
+            except Exception:
+                pass
             events.broadcast("on_reload", ExecutionContext("core", "reload", []), emit_module="core")
 
     def act_snapshot(self, tag: Optional[str] = None) -> str:

@@ -44,8 +44,8 @@ LOCAL_MANIFEST_CACHE_URI = "cache://agents-workflow/release_manifest.json"
 SHA1_CACHE_URI = "cache://agents-workflow/source_sha1_cache.json"
 AGENTS_MD_BEGIN = "<!-- YSCB_AGENTS_BEGIN -->"
 AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
-GITIGNORE_BEGIN_MARKER = "# === YSCB AGENTS_WORKFLOW IGNORE BEGIN ==="
-GITIGNORE_END_MARKER = "# === YSCB AGENTS_WORKFLOW IGNORE END ==="
+GITIGNORE_BEGIN_MARKER = "# === YSCB MANAGED GITIGNORE BEGIN ==="
+GITIGNORE_END_MARKER = "# === YSCB MANAGED GITIGNORE END ==="
 
 
 class ReleasePublisher:
@@ -889,6 +889,11 @@ class ReleasePublisher:
             proj_root=proj_root,
         )
         if can_short_circuit:
+            self.sync_gitignore(
+                active_targets=active_target_names,
+                published_files=short_circuited_files,
+                proj_root=proj_root,
+            )
             self._save_sha1_cache()
             return {
                 "success": True,
@@ -1044,46 +1049,16 @@ class ReleasePublisher:
 
         sorted_patterns = sorted(list(ignore_patterns))
 
-        block_lines = [
-            GITIGNORE_BEGIN_MARKER,
-            "# Auto-managed by agents-workflow. Do not edit this block manually.",
-        ]
-        block_lines.extend(sorted_patterns)
-        block_lines.append(GITIGNORE_END_MARKER)
-        new_block_text = "\n".join(block_lines)
-
-        gitignore_path = os.path.join(proj_root, ".gitignore")
-        existing_content = ""
-        has_existing = os.path.isfile(gitignore_path)
-
-        if has_existing:
-            try:
-                with open(gitignore_path, "r", encoding="utf-8") as f:
-                    existing_content = f.read()
-            except Exception:
-                existing_content = ""
-
-        pattern = re.compile(
-            rf"{re.escape(GITIGNORE_BEGIN_MARKER)}[\s\S]*?{re.escape(GITIGNORE_END_MARKER)}",
-            re.MULTILINE,
-        )
-
-        if pattern.search(existing_content):
-            merged_content = pattern.sub(new_block_text, existing_content)
-        else:
-            if existing_content and not existing_content.endswith("\n"):
-                merged_content = existing_content + "\n\n" + new_block_text + "\n"
-            elif existing_content:
-                merged_content = existing_content + "\n" + new_block_text + "\n"
-            else:
-                merged_content = new_block_text + "\n"
-
-        if has_existing and existing_content == merged_content:
-            return {"updated": False, "created": False, "patterns": sorted_patterns}
-
         try:
-            vfs.write_text(gitignore_path, merged_content, encoding="utf-8", atomic=True)
-            return {"updated": True, "created": not has_existing, "patterns": sorted_patterns}
+            from core import gitignore as gi_mod
+            res = gi_mod.register_dynamic(
+                "agents-workflow",
+                sorted_patterns,
+                sync_now=True,
+                proj_root=proj_root,
+            )
+            res["patterns"] = sorted_patterns
+            return res
         except Exception as e:
             print(f"[publisher:warning] Failed to sync .gitignore: {e}", file=sys.stderr)
             return {"updated": False, "created": False, "error": str(e), "patterns": sorted_patterns}

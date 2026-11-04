@@ -1,19 +1,22 @@
-# YS-Codebase Autonomous Internal Ignore Rules
-/.modules/
-/.build/
-/.mirror/
-/.temp/
-/.snapshots/
-/.cache/
-/.venv/
 ys_codebase/release/**/*.zip
-*.local.json
 !**/configurable/*.local.json
+
+# === YSCB MANAGED GITIGNORE BEGIN ===
+# Auto-managed by YSCB core.gitignore. Do not edit this block manually.
+# [core]
+/ys_codebase/.modules/
+/ys_codebase/.build/
+/ys_codebase/.mirror/
+/ys_codebase/.temp/
+/ys_codebase/.snapshots/
+/ys_codebase/.cache/
+/ys_codebase/.venv/
+*.local.json
 __pycache__/
 *.pyc
-
-# === YSCB AGENTS_WORKFLOW IGNORE BEGIN ===
-# Auto-managed by agents-workflow. Do not edit this block manually.
+yscb.py.bak
+*.bak
+# [agents-workflow]
 /.agents/.yscb/standards/AgentsStandards.md
 /.agents/.yscb/standards/BlindSubagentStandards.md
 /.agents/.yscb/standards/CodeQualityStandards.md
@@ -85,4 +88,6 @@ __pycache__/
 /.agents/skills/yscb-module-dev/references/cli_and_commands.md
 /.agents/skills/yscb-module-dev/references/contributes_guide.md
 /.agents/skills/yscb-module-dev/references/testing_and_sandbox.md
-# === YSCB AGENTS_WORKFLOW IGNORE END ===
+# [vscode-support]
+/.vscode/schemas/
+# === YSCB MANAGED GITIGNORE END ===

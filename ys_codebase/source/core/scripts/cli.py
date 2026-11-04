@@ -3,6 +3,7 @@ Core Module CLI Entrypoint - Precise Command Handlers Contract.
 No legacy process(args) fallback.
 """
 import builtins
+import json
 import os
 import sys
 from typing import Any, List
@@ -538,4 +539,74 @@ def contributes(cmd_bags: CmdBags) -> int:
         return contributes_check(sub_bags)
     else:
         print(f"[core:contributes] Unknown subcommand '{sub_cmd}'. Available: list, check", file=sys.stderr)
+        return 1
+
+
+def gitignore_status(cmd_bags: CmdBags) -> int:
+    """Inspect project://.gitignore managed block status and grouped module rules."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    from core import gitignore as gi_mod
+    info = gi_mod.status()
+    if cmd_bags.has_option("json"):
+        print(json.dumps(info, indent=2, ensure_ascii=False))
+        return 0
+    print("=" * 70)
+    print("  YS-Codebase - Unified Gitignore Status")
+    print("=" * 70)
+    print(f"  Target File    : {info.get('target_path')}")
+    print(f"  Exists         : {info.get('exists')}")
+    print(f"  Managed Block  : {info.get('has_managed_block')}")
+    print(f"  In Sync        : {info.get('in_sync')}")
+    print(f"  Total Rules    : {info.get('total_patterns')}")
+    groups = info.get("groups", {})
+    if groups:
+        print("\n  Module Groups:")
+        for mod, pats in groups.items():
+            print(f"    # [{mod}] ({len(pats)} rule(s))")
+    print("=" * 70)
+    return 0
+
+
+def gitignore_sync(cmd_bags: CmdBags) -> int:
+    """Synthesize and synchronize all module ignore rules into project://.gitignore."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    from core import gitignore as gi_mod
+    res = gi_mod.sync()
+    if cmd_bags.has_option("json"):
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0 if not res.get("error") else 1
+    if res.get("error"):
+        print(f"[core:gitignore] Error: {res['error']}", file=sys.stderr)
+        return 1
+    state_label = "created" if res.get("created") else ("updated" if res.get("updated") else "already up-to-date")
+    print(
+        f"[core:gitignore] '{res.get('target_path')}' is {state_label} "
+        f"({len(res.get('patterns', []))} rule(s) across {len(res.get('groups', {}))} module group(s))."
+    )
+    return 0
+
+
+def gitignore(cmd_bags: CmdBags) -> int:
+    """Unified project://.gitignore managed block inspector and synchronizer (Group Dispatcher)."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    args = cmd_bags.args
+    if not args:
+        return _render_subcommand_group_help("gitignore")
+    sub_cmd = args[0]
+    sub_args = args[1:]
+    sub_bags = CmdBags(
+        raw_cmd=cmd_bags.raw_cmd,
+        command=sub_cmd,
+        args=sub_args,
+        options=cmd_bags.options,
+    )
+    if sub_cmd == "status":
+        return gitignore_status(sub_bags)
+    elif sub_cmd == "sync":
+        return gitignore_sync(sub_bags)
+    else:
+        print(f"[core:gitignore] Unknown subcommand '{sub_cmd}'. Available: status, sync", file=sys.stderr)
         return 1

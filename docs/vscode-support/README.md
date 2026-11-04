@@ -25,7 +25,7 @@ last_updated: "2026-11-04"
 | 組件 | 原始碼位置 | 核心職責 |
 | :--- | :--- | :--- |
 | **`SettingsProjector`** | `vscode_support/projector.py` | 管理 `yscb.venv://current-site-packages` 穩定連結（恆定注入 `./ys_codebase/.venv/current-site-packages` 避免容器或 Python 版本切換產生設定漂移）、自動建立 `project://.vscode/`、內建 `strip_jsonc` 處理 `.vscode/settings.json` 之註解與尾隨逗號（偵測到 JSONC 時自動備份至 `.vscode/settings.json.bak` 後再以 `_yscb_managed` 差集軟合併），並提供 `revert_vscode_settings` 完全可逆拆卸。 |
-| **`SchemaCompiler`** | `vscode_support/schema_compiler.py` | 掃描 `module://<mod>/contributes/_format.json`、`module://<mod>/configurable/_format.json`（及 `module.mirror://<mod>/<ver>.zip` 內之 `configurable/*.json`），支援 `uri` / `path` 型別之全系統語意 URI 協議前綴補全（`defaultSnippets`）與 `@desc(...)` 正交欄位說明，動態編譯 Draft-07 JSON Schema 至 `project://.vscode/schemas/`（內含 `.gitignore` `*` 自我忽略）並自動清理孤兒 Schema。 |
+| **`SchemaCompiler`** | `vscode_support/schema_compiler.py` | 掃描 `module://<mod>/contributes/_format.json`、`module://<mod>/configurable/_format.json`（及 `module.mirror://<mod>/<ver>.zip` 內之 `configurable/*.json`），支援 `uri` / `path` 型別之全系統語意 URI 協議前綴補全（`defaultSnippets`）與 `@desc(...)` 正交欄位說明，動態編譯 Draft-07 JSON Schema 至 `project://.vscode/schemas/`（透過 `contributes/core.json` 宣告 `project://.vscode/schemas/` 由 `core.gitignore` 統一納管忽略）並自動清理孤兒 Schema。 |
 | **`hook.core.py`** | `scripts/hook.core.py` | 訂閱 `core` 廣播之 `on_env_synced`、`on_reload` 與 `on_remove` 生命週期事件。 |
 | **`cli.py`** | `scripts/cli.py` | 提供 `vscode-support <status\|sync\|revert>` 三項命令列工具。 |
 
@@ -41,7 +41,7 @@ flowchart TD
 
     PROJ --> LINK["1. 建立 yscb.venv://current-site-packages\n(Symlink / Junction -> <py_tag>/.../site-packages)"]
     PROJ --> SC["2. SchemaCompiler.sync_all_schemas()"]
-    SC --> SCHEMAS["輸出 .vscode/schemas/{contributes,config,meta}/*.schema.json\n與 .vscode/schemas/.gitignore ('*')"]
+    SC --> SCHEMAS["輸出 .vscode/schemas/{contributes,config,meta}/*.schema.json\n(由 core.gitignore 於根目錄 .gitignore 忽略)"]
     PROJ --> MERGE["3. Zero-Touch 軟合併 .vscode/settings.json\n(寫入 extraPaths, excludes, json.schemas, _yscb_managed)"]
 ```
 

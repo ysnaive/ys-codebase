@@ -185,19 +185,21 @@ class TestVSCodeSupport(YSCBTestCase):
         )
         self.assertIn("defaultSnippets", fmt_cfg_schema["properties"]["paths"]["properties"]["plans"])
 
-        # 預先放一個孤兒 Schema 檔案，驗證 sync_all_schemas 會自動刪除它
+        # 預先放一個孤兒 Schema 檔案與舊版子目錄 .gitignore，驗證 sync_all_schemas 會自動刪除它們
         orphan_dir = os.path.join(self.project_root, ".vscode", "schemas", "contributes")
         os.makedirs(orphan_dir, exist_ok=True)
         orphan_file = os.path.join(orphan_dir, "non_existent_orphan_mod.schema.json")
         vfs.write_json(orphan_file, {"type": "object"})
         self.assertTrue(os.path.isfile(orphan_file))
 
+        gi_file = os.path.join(self.project_root, ".vscode", "schemas", ".gitignore")
+        vfs.write_text(gi_file, "*\n")
+        self.assertTrue(os.path.isfile(gi_file))
+
         bindings = self.compiler.sync_all_schemas(self.project_root)
         self.assertFalse(os.path.exists(orphan_file))
         self.assertTrue(len(bindings) >= 2)
-        gi_file = os.path.join(self.project_root, ".vscode", "schemas", ".gitignore")
-        self.assertTrue(os.path.isfile(gi_file))
-        self.assertEqual(vfs.read_text(gi_file).strip(), "*")
+        self.assertFalse(os.path.exists(gi_file))
         self.mark_passed()
 
     def test_ft_05_soft_merge_preserves_user_settings_and_revert_cleans_all(self) -> None:

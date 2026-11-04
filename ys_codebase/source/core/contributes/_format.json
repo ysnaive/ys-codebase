@@ -71,5 +71,13 @@
       "definition": "path! @desc(語意詞條契約定義檔相對路徑 (如 locales/definition.json))",
       "*": "path! @desc(各語系或宿主專有名詞檔相對路徑 (如 locales/zh.json))"
     }
+  },
+
+  "gitignore": {
+    "description": "向 core.gitignore 註冊需收斂寫入根目錄 project://.gitignore 託管區塊之忽略路徑或語意 URI 清單",
+    "merge": "extend",
+    "format": [
+      "str! @desc(Git 忽略規則或語意 URI 路徑 (如 yscb://.venv/, project://.vscode/schemas/, *.local.json))"
+    ]
   }
 }
