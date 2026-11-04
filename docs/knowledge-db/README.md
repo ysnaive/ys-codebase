@@ -11,7 +11,7 @@ related_docs:
   - "./architecture.md"
   - "./retrieval.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-02"
+last_updated: "2026-11-04"
 ---
 
 # Knowledge Database 模組手冊 (Knowledge-DB Overview)
@@ -25,7 +25,7 @@ last_updated: "2026-11-02"
 
 `knowledge-db` 模組與 `file-space`、`ast` 共同構成嚴格三階單向無環圖（`file-space -> ast -> knowledge-db`）：
 - **三階單向 DAG 與單次解析符號共享 (`module:ast` `ASTSnapshot`)**：語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、C# `partial class` 雙層分部聚合、單檔大綱 (`yscb ast outline`) 與呼叫拓撲 (`yscb ast callers/callees/impact`) 統一由 [`module:ast`](../ast/README.md) 負責；`knowledge-db` 直接讀取 `ASTEngine.ensure_jit_synced()` 產出之 `ASTSnapshot` 與 `CallGraphIndex`，**零重複 AST 解析**。
-- **跨模組空間協同與檢索加權 (`module:file-space` & `space_weights`)**：空間目錄幾何統一委由 `file-space` 模組 (`contributes/file-space.json` 與 `config/file-space/contribute.json`) 雙軌聚合，`knowledge-db` 則透過 `space_weights` 對不同空間（如 `docs: 1.2`, `plans: 0.85`）賦予檢索加權。
+- **跨模組空間協同與顯式 Opt-in 檢索加權 (`module:file-space` & `space_weights`)**：空間目錄幾何統一委由 `file-space` 模組 (`contributes/file-space.json` 與 `config/file-space/contribute.json`) 雙軌聚合；`knowledge-db` 則採**顯式 Opt-in 權重制**，唯有於 `space_weights`（如 `source: 1.0`, `docs: 1.2`, `plans: 0.85`）明確宣告權重的空間才會納入資料庫索引與檢索（未宣告權重的 `file-space` 空間，如純雲端同步空間，自動排除於資料庫索引之外）。
 - **全空間聯集處理 (Union Scope)**：無單一 `default_space` 強制約定，全系統以所有有效空間之聯集作為全域處理範圍，並對重疊實體檔案進行 100% 唯一解析去重。
 - **`YFP2` + `acked_ast_generation` 雙水位線與雙階段背景 Worker (`knowledge-db-worker`)**：透過 `file_space.consume_diff(consumer_id="knowledge-db")` 與 `InvertedIndex.acked_ast_generation` 雙重水位線感知變更；常駐背景服務 `KnowledgeDBServiceWorker` (`knowledge-db-worker`) 採兩階段非阻塞同步（Stage 1 快篩秒級更新 BM25 並 Ack 游標、Stage 2 微批次自動補齊向量與背景自動下載模型），搭配 `is_worker_busy() -> int` 已運行毫秒探針與 `jit_vector_timeout_ms` 動態容差等待／瞬時降級。
 - **雙軌 RRF 複合檢索與平滑降級 (Hybrid Search)**：結合中英混排分詞 (`MultilingualTokenizer`)、多欄位加權 BM25 與 FastEmbed ONNX 離線向量推論（動態維度解析，預設 `BAAI/bge-small-zh-v1.5` 為 `512-dim`），透過倒數排名融合 (RRF $k=60$) 精準召回，並具備 100% 剛性平滑降級純 BM25 保證。

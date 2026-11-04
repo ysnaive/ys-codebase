@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.0.4",
+  "version": "1.2.0.5",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -10,8 +10,8 @@
   },
   "optional": {
     "server": {
-      "version": ">=1.0.0",
-      "hint": "提供常駐背景檔案監聽熱自癒與極速預熱派發"
+      "version": ">=1.0.4",
+      "hint": "提供常駐背景檔案監聽熱自癒、極速預熱派發與 touch_activity 保活能力"
     }
   },
   "pip_dependencies": {
@@ -24,8 +24,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "feature",
     "urgency": "optional",
-    "summary": "新增 .kdb_index.lock 跨進程寫入鎖與 numpy 頂層延遲載入"
+    "summary": "KnowledgeIndexService 背景增量索引整合 server.touch_activity() 保活探針"
   }
 }

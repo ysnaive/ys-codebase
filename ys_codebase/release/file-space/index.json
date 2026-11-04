@@ -2,9 +2,9 @@
   "name": "file-space",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
-    "1.0.0.2",
     "1.0.0.3",
-    "1.0.0.4"
+    "1.0.0.4",
+    "1.0.0.5"
   ],
   "releases": {
     "1.0.0.0": {
@@ -28,7 +28,7 @@
       "sha256": "f73835e6263a048407af6d2ac0e70cb82fd205daf4ba2a352659f34c9a0b8497"
     },
     "1.0.0.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2"
       },
@@ -56,6 +56,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "新增同秒級 st_ctime_ns Racy Stat Gate 守門與符號連結安全防禦"
+    },
+    "1.0.0.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "d834512ff99e20a19a3e5b371b40ab14b425e55f31fa20c11983247734d46cbb",
+      "type": "feature",
+      "urgency": "optional",
+      "summary": "FileSpaceWatcherService 背景掃描整合 server.touch_activity() 保活探針"
     }
   }
 }

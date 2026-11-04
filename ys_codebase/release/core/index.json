@@ -13,8 +13,8 @@
     "1.2.2.0",
     "1.2.3.0",
     "1.2.4.0",
-    "1.2.5.0",
-    "1.2.5.1"
+    "1.2.5.1",
+    "1.2.6.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -134,7 +134,7 @@
       "summary": "新增 SHA-256 強制驗證、實證回收探針、嚴格熱派發防重跑與 contributes 記憶體快取"
     },
     "1.2.5.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "077571297545e55e190ab9bc777fc0120d0914d1d016a423299c6ddf9e0924d9",
       "type": "feature",
@@ -148,6 +148,14 @@
       "type": "bugfix",
       "urgency": "critical",
       "summary": "新增 robust_rmtree/robust_replace EXDEV 防腐層、不可繼承鎖 FD、微環境跨進程鎖與 virtiofs lib64 相容修復"
+    },
+    "1.2.6.0": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "36a6ffdedc95a2a111d4e330b7d47463ae830ef1a7d92d01dd7e04f708e4286c",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 core.gitignore 根目錄 .gitignore 統一分組軟合併引擎並將預設自更新 URL 對齊 releases 分支"
     }
   }
 }

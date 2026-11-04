@@ -27,18 +27,18 @@ class TestServerConfig(YSCBTestCase):
     """Server 組態與 Console 啟動模式測試套件"""
 
     def test_default_config(self):
-        """FT-01: 驗證 ServerConfig 預設值為 enable=True, enable_console=False 與 TTL=900.0"""
+        """FT-01: 驗證 ServerConfig 預設值為 enable=True, enable_console=False 與 TTL=1800.0"""
         cfg = ServerConfig()
         self.assertTrue(cfg.enable)
         self.assertFalse(cfg.enable_console)
-        self.assertEqual(cfg.idle_timeout_sec, 900.0)
+        self.assertEqual(cfg.idle_timeout_sec, 1800.0)
 
         # 自 load() 預設無設定時載入
         with patch("core.config.get_all", return_value={}):
             loaded = ServerConfig.load()
             self.assertTrue(loaded.enable)
             self.assertFalse(loaded.enable_console)
-            self.assertEqual(loaded.idle_timeout_sec, 900.0)
+            self.assertEqual(loaded.idle_timeout_sec, 1800.0)
 
         self.mark_passed()
 
@@ -158,6 +158,36 @@ class TestServerConfig(YSCBTestCase):
 
         cfg_true = ServerConfig.load(override_dict={"auto_spawn": "true"})
         self.assertTrue(cfg_true.auto_spawn)
+
+        self.mark_passed()
+
+    def test_touch_activity_probe_sdk(self):
+        """REV-01: 驗證 server.touch_activity 探針 SDK 與 MasterSupervisor /api/touch 刷新閒置計時器"""
+        import json
+        import tempfile
+        import shutil
+        from server import touch_activity
+        from server.master import MasterSupervisor, _create_http_server
+        import threading
+
+        tmp_dir = tempfile.mkdtemp(prefix="yscb_srv_touch_")
+        try:
+            sup = MasterSupervisor(yscb_root=tmp_dir, idle_timeout_sec=1800.0, enable_watcher=False)
+            sup._last_active_time = 100.0
+            httpd = _create_http_server(sup)
+            sup.port = httpd.server_address[1]
+            sup._write_state()
+            t = threading.Thread(target=httpd.serve_forever, daemon=True)
+            t.start()
+            try:
+                ok = touch_activity(yscb_root=tmp_dir, source="unit_test", force=True)
+                self.assertTrue(ok)
+                self.assertGreater(sup._last_active_time, 1000.0)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
         self.mark_passed()
 

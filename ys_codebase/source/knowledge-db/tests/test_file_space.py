@@ -252,6 +252,76 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft_09_opt_in_space_weights_excludes_unweighted_spaces(self):
+        """驗證未於 space_weights 宣告權重之空間不會納入 KnowledgeEngine 索引、status() 與檢索結果"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            indexed_dir = temp_path / "indexed_src"
+            cloud_dir = temp_path / "cloud_mirror"
+            indexed_dir.mkdir(parents=True)
+            cloud_dir.mkdir(parents=True)
+
+            # 1. 獨立於兩個空間的檔案 + 一個重疊於兩空間的檔案
+            (indexed_dir / "core_logic.py").write_text(
+                "def calculate_quantum_score():\n    return 42\n",
+                encoding="utf-8",
+            )
+            (cloud_dir / "cloud_only_doc.py").write_text(
+                "def secret_cloud_sync_marker():\n    return 99\n",
+                encoding="utf-8",
+            )
+
+            engine = KnowledgeEngine(
+                storage_dir=temp_path / "storage",
+                project_root=temp_path,
+                contributes_data={
+                    "spaces": {
+                        "source": {
+                            "description": "受索引源碼空間",
+                            "include": [str(indexed_dir)],
+                            "file_patterns": ["*.py"],
+                        },
+                        "cloud": {
+                            "description": "純雲端同步空間（未配置 weight）",
+                            "include": [str(cloud_dir), str(indexed_dir)],
+                            "file_patterns": ["*.py"],
+                        },
+                    },
+                    "space_weights": {
+                        "source": 1.0,
+                    },
+                },
+            )
+
+            # A. 驗證 space_manager 擁有 2 個空間，但 KnowledgeEngine 僅將 source 視為受索引空間
+            self.assertEqual(set(engine.space_manager.get_all_spaces().keys()), {"source", "cloud"})
+            self.assertEqual(set(engine.get_indexed_spaces().keys()), {"source"})
+            self.assertEqual(engine.get_all_space_weights(), {"source": 1.0})
+
+            # B. 驗證 status() 預設僅統計受索引空間
+            st = engine.status()
+            self.assertEqual(st["total_spaces"], 1)
+            self.assertIn("source", st["spaces"])
+            self.assertNotIn("cloud", st["spaces"])
+
+            # C. 驗證 build_unified_index 與 search 排除 cloud_only_doc.py，且重疊檔 core_logic.py 不帶 cloud 標籤
+            idx = engine.build_unified_index(force=True)
+            indexed_names = {sym.name for sym in idx.symbols.values()}
+            self.assertIn("calculate_quantum_score", indexed_names)
+            self.assertNotIn("secret_cloud_sync_marker", indexed_names)
+            for sym in idx.symbols.values():
+                self.assertNotIn("cloud", sym.spaces)
+
+            hits_source = engine.search("calculate_quantum_score", lexical_only=True)
+            self.assertEqual(len(hits_source), 1)
+            self.assertEqual(hits_source[0].spaces, ["source"])
+
+            hits_cloud = engine.search("secret_cloud_sync_marker", lexical_only=True)
+            self.assertEqual(len(hits_cloud), 0)
+
+        self.mark_passed()
+
 
 class TestKnowledgeDBProviders(YSCBTestCase):
     """驗證 Token Providers 與空間速查表輸出"""

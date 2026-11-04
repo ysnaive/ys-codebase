@@ -12,7 +12,7 @@
 > **[Pre-flight Check] AI Agent 初始化確認**：初次為下游專案設定 `knowledge-db` 前，請先向開發者確認：**① 欲納入檢索的原始碼目錄（如 `src/`, `lib/`）與副檔名**，以及 **② 是否下載本地 ONNX 向量模型（或關閉向量檢索改用輕量極速之純 BM25 模式）**。
 
 ```bash
-# 1. 設定專案工作空間幾何 (於 config/file-space/contribute.json 宣告) 與檢索加權係數 (於 config/knowledge-db/contribute.json 宣告)
+# 1. 設定專案工作空間幾何 (於 config/file-space/contribute.json 宣告) 與檢索加權係數 (於 config/knowledge-db/contribute.json 宣告；僅宣告於 space_weights 之空間會納入資料庫索引)
 # config/knowledge-db/contribute.json:
 # {
 #   "space_weights": {

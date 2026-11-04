@@ -13,7 +13,79 @@ import logging
 import os
 import sys
 import threading
-from typing import Any, Dict, List, Optional
+import time
+import urllib.request
+from typing import Any, Callable, Dict, List, Optional
+
+_LAST_TOUCH_TS: float = 0.0
+_TOUCH_MIN_INTERVAL_SEC: float = 1.0
+
+
+def touch_activity(
+    yscb_root: Optional[str] = None,
+    *,
+    source: str = "sdk",
+    force: bool = False,
+) -> bool:
+    """
+    Refresh the running Server daemon's idle timeout timer (non-CLI keepalive probe SDK).
+
+    Reads `.cache/server/daemon.json` and sends an authenticated `POST /api/touch`
+    (debounced to at most once per 1.0s unless `force=True`) to the MasterSupervisor so
+    background workers (`file-space-watcher`, `knowledge-db-worker`, `gdrive-sync`) and
+    external SDK callers keep the server alive without corrupting the worker stdout pipe.
+
+    Returns True if the activity timestamp was refreshed (or throttled within 1s), False if no
+    active daemon was reachable.
+    """
+    global _LAST_TOUCH_TS
+    now = time.monotonic()
+    if not force and yscb_root is None and (now - _LAST_TOUCH_TS) < _TOUCH_MIN_INTERVAL_SEC:
+        return True
+
+    resolved_root = yscb_root
+    if not resolved_root:
+        try:
+            from core import uri
+
+            resolved_root = uri.resolve("yscb://", interactive=False)
+        except Exception:
+            resolved_root = None
+    if not resolved_root:
+        cand = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if os.path.isdir(os.path.join(cand, ".cache")):
+            resolved_root = cand
+        else:
+            resolved_root = os.environ.get("YSCB_HOST_DIR", os.getcwd())
+
+    state_file = os.path.join(resolved_root, ".cache", "server", "daemon.json")
+    if not os.path.isfile(state_file):
+        return False
+    try:
+        with open(state_file, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        port = int(state.get("port", 0) or 0)
+        token = str(state.get("token", "") or "")
+        if port <= 0 or not token:
+            return False
+        url = f"http://127.0.0.1:{port}/api/touch"
+        body = json.dumps({"source": source}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status == 200:
+                _LAST_TOUCH_TS = now
+                return True
+            return False
+    except Exception:
+        return False
 
 
 def _load_service_class_from_uri(uri_str: str, provider: str = "unknown") -> Optional[type]:
@@ -92,6 +164,10 @@ class BaseServiceWorker(ABC):
     def health_check(self) -> bool:
         """Probes whether the background service is running healthy."""
         pass
+
+    def touch_activity(self) -> bool:
+        """Notify the server supervisor that this background worker is actively processing work."""
+        return touch_activity(source=self.name)
 
 
 class ServiceManager:

@@ -3,7 +3,7 @@ Public SDK entry point for module:gdrive-support (lazy attribute exports).
 """
 from typing import Any
 
-__version__ = "0.1.0.0"
+__version__ = "1.0.0.0"
 
 __all__ = [
     "__version__",

@@ -1,7 +1,7 @@
 {
   "enable": true,
   "enable_console": false,
-  "idle_timeout_sec": 900.0,
+  "idle_timeout_sec": 1800.0,
   "auto_spawn": true,
   "strict_hot_dispatch": false,
   "worker_alive_timeout_sec": 5.0

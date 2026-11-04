@@ -33,26 +33,122 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Restore existing release archives from releases branch
+      - name: Fetch existing releases branch & short-circuit if no pending changes
+        id: check_pending
         run: |
           if git ls-remote --exit-code --heads origin releases >/dev/null 2>&1; then
             git fetch --depth=1 origin releases:refs/remotes/origin/releases
+          fi
+
+          python3 - <<'PYEOF'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+
+          SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$")
+          VERSION_ASSIGN_RE = re.compile(r'^__version__\s*(?::\s*str\s*)?=\s*[\'"]([^\'"]+)[\'"]', re.MULTILINE)
+
+          def parse_ver(v: str) -> tuple[int, int, int, int]:
+              m = SEMVER_RE.match(v.strip())
+              if not m:
+                  return (0, 0, 0, 0)
+              return (
+                  int(m.group(1)),
+                  int(m.group(2)),
+                  int(m.group(3)),
+                  int(m.group(4)) if m.group(4) is not None else 0,
+              )
+
+          def get_remote_files() -> set[str]:
+              res = subprocess.run(
+                  ["git", "ls-tree", "-r", "--name-only", "refs/remotes/origin/releases"],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              if res.returncode != 0:
+                  return set()
+              return {line.strip() for line in res.stdout.splitlines() if line.strip()}
+
+          def get_remote_blob_bytes(rel_path: str) -> bytes | None:
+              res = subprocess.run(
+                  ["git", "show", f"refs/remotes/origin/releases:{rel_path}"],
+                  capture_output=True,
+                  check=False,
+              )
+              return res.stdout if res.returncode == 0 else None
+
+          remote_files = get_remote_files()
+          release_root = os.path.abspath("ys_codebase/release")
+          needs_publish = False
+
+          expected_remote_files: set[str] = {"yscb.py", "yscb.py.sha256"}
+          if "yscb.py" not in remote_files or "yscb.py.sha256" not in remote_files:
+              needs_publish = True
+          else:
+              with open("yscb.py", "r", encoding="utf-8") as hf:
+                  loc_host_text = hf.read()
+              rem_host_bytes = get_remote_blob_bytes("yscb.py")
+              rem_host_text = rem_host_bytes.decode("utf-8", errors="replace") if rem_host_bytes else ""
+              m_loc = VERSION_ASSIGN_RE.search(loc_host_text)
+              m_rem = VERSION_ASSIGN_RE.search(rem_host_text)
+              if m_loc and (not m_rem or parse_ver(m_loc.group(1)) > parse_ver(m_rem.group(1))):
+                  needs_publish = True
+          for mod in sorted(os.listdir(release_root)):
+              mod_rel_dir = os.path.join(release_root, mod)
+              idx_path = os.path.join(mod_rel_dir, "index.json")
+              if not os.path.isdir(mod_rel_dir) or not os.path.isfile(idx_path):
+                  continue
+              expected_remote_files.add(f"{mod}/index.json")
+              with open(idx_path, "rb") as f:
+                  local_idx_bytes = f.read()
+              remote_idx_bytes = get_remote_blob_bytes(f"{mod}/index.json")
+              if remote_idx_bytes != local_idx_bytes:
+                  needs_publish = True
+              idx_data = json.loads(local_idx_bytes.decode("utf-8"))
+              for ver in idx_data.get("versions", []):
+                  v_str = str(ver).strip()
+                  if v_str:
+                      rel_zip = f"{mod}/{v_str}.zip"
+                      expected_remote_files.add(rel_zip)
+                      if rel_zip not in remote_files:
+                          needs_publish = True
+
+          if remote_files != expected_remote_files:
+              needs_publish = True
+
+          flag = "true" if needs_publish else "false"
+          print(f"[release-publish] needs_publish={flag}")
+          gh_out = os.environ.get("GITHUB_OUTPUT")
+          if gh_out:
+              with open(gh_out, "a", encoding="utf-8") as out_f:
+                  out_f.write(f"needs_publish={flag}\n")
+          PYEOF
+
+      - name: Restore existing release archives from releases branch
+        if: steps.check_pending.outputs.needs_publish == 'true'
+        run: |
+          if git show-ref --verify --quiet refs/remotes/origin/releases; then
             for mod_dir in ys_codebase/release/*; do
               if [ -d "$mod_dir" ]; then
                 mod_name="$(basename "$mod_dir")"
-                git --work-tree=ys_codebase/release checkout refs/remotes/origin/releases -- "$mod_name" || true
+                git --work-tree=ys_codebase/release checkout refs/remotes/origin/releases -- "$mod_name" 2>/dev/null || true
               fi
             done
             git checkout HEAD -- "ys_codebase/release/**/index.json" || true
           fi
 
-      - name: Package active releases and prune sliding window archives
+      - name: Package new releases and prune sliding window archives
+        if: steps.check_pending.outputs.needs_publish == 'true'
         run: |
           python3 - <<'PYEOF'
           import fnmatch
           import hashlib
           import json
           import os
+          import sys
           import zipfile
 
           DEFAULT_IGNORES = [
@@ -154,6 +250,13 @@ jobs:
                                       payload = raw_bytes
                               zf.writestr(zinfo, payload)
                       print(f"[release-publish] Packaged {mod}@{ver}.zip from source.")
+                  else:
+                      print(
+                          f"[release-publish] ERROR: Missing archive {mod}@{ver}.zip on origin/releases and "
+                          f"source manifest is at '{src_mf.get('version') if src_mf else 'N/A'}'.",
+                          file=sys.stderr,
+                      )
+                      sys.exit(1)
 
               idx_updated = False
               releases_map = idx_data.get("releases")
@@ -165,13 +268,14 @@ jobs:
                   zip_path = os.path.join(mod_rel_dir, f"{ver}.zip")
                   if not os.path.isfile(zip_path):
                       continue
+                  actual_sha = compute_sha256(zip_path)
                   rel_entry = releases_map.get(ver)
                   if not isinstance(rel_entry, dict):
                       rel_entry = {"status": "active", "dependencies": {}}
                       releases_map[ver] = rel_entry
                       idx_updated = True
-                  if not rel_entry.get("sha256"):
-                      rel_entry["sha256"] = compute_sha256(zip_path)
+                  if rel_entry.get("sha256") != actual_sha:
+                      rel_entry["sha256"] = actual_sha
                       idx_updated = True
               if idx_updated:
                   with open(idx_path, "w", encoding="utf-8", newline="\n") as f:
@@ -181,9 +285,59 @@ jobs:
                   if fname.endswith(".zip") and fname[:-4] not in active_versions:
                       os.remove(os.path.join(mod_rel_dir, fname))
                       print(f"[release-publish] Pruned non-active archive {mod}/{fname}")
+
+          # Stage yscb.py and yscb.py.sha256 into release_root:
+          # Only publish local yscb.py when its __version__ > published origin/releases:yscb.py (or when absent on origin/releases)
+          import re
+          import subprocess
+          SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$")
+          VERSION_ASSIGN_RE = re.compile(r'^__version__\s*(?::\s*str\s*)?=\s*[\'"]([^\'"]+)[\'"]', re.MULTILINE)
+          def parse_ver(v: str) -> tuple[int, int, int, int]:
+              m = SEMVER_RE.match(v.strip())
+              if not m:
+                  return (0, 0, 0, 0)
+              return (
+                  int(m.group(1)),
+                  int(m.group(2)),
+                  int(m.group(3)),
+                  int(m.group(4)) if m.group(4) is not None else 0,
+              )
+
+          with open("yscb.py", "r", encoding="utf-8") as hf:
+              local_host_lf = hf.read().replace("\r\n", "\n")
+          m_loc = VERSION_ASSIGN_RE.search(local_host_lf)
+          loc_ver_tuple = parse_ver(m_loc.group(1)) if m_loc else (0, 0, 0, 0)
+
+          rem_res = subprocess.run(
+              ["git", "show", "refs/remotes/origin/releases:yscb.py"],
+              capture_output=True,
+              check=False,
+          )
+          use_local_host = True
+          if rem_res.returncode == 0 and rem_res.stdout:
+              rem_host_lf = rem_res.stdout.decode("utf-8", errors="replace").replace("\r\n", "\n")
+              m_rem = VERSION_ASSIGN_RE.search(rem_host_lf)
+              rem_ver_tuple = parse_ver(m_rem.group(1)) if m_rem else (0, 0, 0, 0)
+              if loc_ver_tuple <= rem_ver_tuple:
+                  use_local_host = False
+                  chosen_host_lf = rem_host_lf
+              else:
+                  chosen_host_lf = local_host_lf
+          else:
+              chosen_host_lf = local_host_lf
+
+          staged_host_path = os.path.join(release_root, "yscb.py")
+          staged_sha_path = os.path.join(release_root, "yscb.py.sha256")
+          with open(staged_host_path, "w", encoding="utf-8", newline="\n") as out_hf:
+              out_hf.write(chosen_host_lf)
+          host_sha256 = hashlib.sha256(chosen_host_lf.encode("utf-8")).hexdigest().lower()
+          with open(staged_sha_path, "w", encoding="utf-8", newline="\n") as out_sf:
+              out_sf.write(f"{host_sha256}  yscb.py\n")
+          print(f"[release-publish] Staged yscb.py (updated={use_local_host}, sha256={host_sha256[:12]}...)")
           PYEOF
 
-      - name: Commit and force-push single-depth orphan releases branch
+      - name: Commit, force-push single-depth orphan releases branch, and run git gc
+        if: steps.check_pending.outputs.needs_publish == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -193,6 +347,22 @@ jobs:
           git add -f .
           TREE_SHA="$(git write-tree)"
           unset GIT_WORK_TREE
+          rm -f "$GIT_INDEX_FILE"
+          unset GIT_INDEX_FILE
+          rm -f ys_codebase/release/yscb.py ys_codebase/release/yscb.py.sha256
+
+          REMOTE_TREE_SHA=""
+          if git show-ref --verify --quiet refs/remotes/origin/releases; then
+            REMOTE_TREE_SHA="$(git rev-parse 'refs/remotes/origin/releases^{tree}' 2>/dev/null || true)"
+          fi
+
+          if [ -n "$REMOTE_TREE_SHA" ] && [ "$TREE_SHA" = "$REMOTE_TREE_SHA" ]; then
+            echo "[release-publish] Tree SHA ($TREE_SHA) matches origin/releases. Skipping push."
+            exit 0
+          fi
+
           TARGET_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
           COMMIT_SHA="$(git commit-tree "$TREE_SHA" -m "chore(release): publish sliding-window release artifacts (${TARGET_SHA::7})")"
           git push --force origin "${COMMIT_SHA}:refs/heads/releases"
+          git reflog expire --expire=now --all
+          git gc --prune=now

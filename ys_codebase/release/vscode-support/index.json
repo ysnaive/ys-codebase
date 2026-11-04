@@ -3,7 +3,8 @@
   "description": "YS-Codebase VS Code 工作區投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯模組",
   "versions": [
     "1.0.0.0",
-    "1.0.0.1"
+    "1.0.0.1",
+    "1.0.0.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -25,6 +26,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "新增 .vscode/settings.json 字串感知 JSONC 剝離、.bak 自動備份防覆寫與 Schema 原子寫入"
+    },
+    "1.0.0.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.6"
+      },
+      "sha256": "aef13e31b99e0192be30304593fc6f3d9f7ea5ed5ec03ee7516d0937b3e6d0ce",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "schema_compiler 與 contributes/core.json 對齊根目錄 .gitignore 統一管理"
     }
   }
 }

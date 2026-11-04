@@ -39,6 +39,9 @@ except ImportError:
         def health_check(self) -> bool:
             return True
 
+        def touch_activity(self) -> bool:
+            return False
+
 
 class GDriveSyncServiceWorker(BaseServiceWorker):
     """
@@ -131,6 +134,10 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         if self.standby_mode or self._coordinator is None:
             return None
         try:
+            try:
+                self.touch_activity()
+            except Exception:
+                pass
             report = self._coordinator.run_sync(
                 mode="sync", non_blocking_lock=True
             )

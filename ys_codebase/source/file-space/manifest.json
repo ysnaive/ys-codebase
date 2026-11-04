@@ -1,7 +1,7 @@
 {
   "id": "file-space",
   "name": "file-space",
-  "version": "1.0.0.4",
+  "version": "1.0.0.5",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -10,8 +10,8 @@
   },
   "optional": {
     "server": {
-      "version": ">=1.0.0",
-      "hint": "提供 FileSpaceWatcherServiceWorker 背景自動監聽與增量空間指紋更新能力"
+      "version": ">=1.0.4",
+      "hint": "提供 FileSpaceWatcherServiceWorker 背景自動監聽、增量空間指紋更新與 touch_activity 保活能力"
     }
   },
   "pip_dependencies": {
@@ -26,8 +26,8 @@
     "若已安裝 `server` 模組，啟動 Daemon 後將自動掛載 `file-space-watcher` 進行背景增量監聽與 `on_file_space_changed` 事件廣播。"
   ],
   "release": {
-    "type": "bugfix",
-    "urgency": "recommended",
-    "summary": "新增同秒級 st_ctime_ns Racy Stat Gate 守門與符號連結安全防禦"
+    "type": "feature",
+    "urgency": "optional",
+    "summary": "FileSpaceWatcherService 背景掃描整合 server.touch_activity() 保活探針"
   }
 }

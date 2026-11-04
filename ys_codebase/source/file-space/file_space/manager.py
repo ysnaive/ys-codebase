@@ -636,8 +636,14 @@ class FileSpaceManager:
         matched_rel: Optional[str] = None
         for inc_root in cfg.resolved_include_paths:
             root_resolved = inc_root.resolve()
+            if root_resolved.is_file():
+                if candidate == root_resolved:
+                    return True
+                continue
             try:
                 rel = candidate.relative_to(root_resolved).as_posix()
+                if rel == ".":
+                    return False
                 matched_rel = rel
                 break
             except ValueError:

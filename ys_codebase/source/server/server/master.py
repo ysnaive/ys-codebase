@@ -202,7 +202,7 @@ class MasterSupervisor:
     def __init__(
         self,
         yscb_root: str,
-        idle_timeout_sec: float = 900.0,
+        idle_timeout_sec: float = 1800.0,
         enable_watcher: bool = True,
     ) -> None:
         self.yscb_root = os.path.abspath(yscb_root)
@@ -636,6 +636,9 @@ class MasterSupervisor:
                     continue
 
                 packet = json.loads(line_str)
+                if packet.get("type") == "touch_activity":
+                    self.touch_activity(source=str(packet.get("source") or "worker"))
+                    continue
                 if packet.get("type") == "log":
                     self.logger.log(
                         packet.get("level", "INFO"),
@@ -819,6 +822,9 @@ class MasterSupervisor:
                     if pkt_type == "log":
                         self.logger.log(data.get("level", "INFO"), data.get("msg", ""), component=data.get("component", "worker"))
                         continue
+                    if pkt_type == "touch_activity":
+                        self.touch_activity(source=str(data.get("source") or "worker"))
+                        continue
                     if pkt_type == "worker_alive":
                         alive_event.set()
                         continue
@@ -854,6 +860,12 @@ class MasterSupervisor:
         if not ready_event.is_set():
             self._warming_since = time.time()
         return proc.pid
+
+    def touch_activity(self, source: str = "probe") -> float:
+        """Refreshes `_last_active_time` to prevent idle auto-shutdown while background workers are active."""
+        now = time.time()
+        self._last_active_time = now
+        return max(0.0, self.idle_timeout_sec - (now - self._last_active_time))
 
     def _idle_ttl_loop(self) -> None:
         while self._is_running:
@@ -985,6 +997,16 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
 
             if parsed.path == "/api/dispatch":
                 self._handle_post_dispatch(t0)
+            elif parsed.path == "/api/touch":
+                idle_left = supervisor.touch_activity(source="http")
+                self._send_json_response(
+                    200,
+                    {
+                        "status": "ok",
+                        "idle_seconds_left": idle_left,
+                        "idle_timeout_sec": supervisor.idle_timeout_sec,
+                    },
+                )
             elif parsed.path == "/api/reload":
                 try:
                     new_pid = supervisor.restart_worker()

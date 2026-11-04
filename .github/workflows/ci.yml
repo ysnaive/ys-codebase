@@ -4,9 +4,19 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "ys_codebase/source/**"
+      - "ys_codebase/release/**"
+      - "yscb.py"
+      - ".github/workflows/**"
   pull_request:
     branches:
       - main
+    paths:
+      - "ys_codebase/source/**"
+      - "ys_codebase/release/**"
+      - "yscb.py"
+      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:
@@ -19,6 +29,9 @@ concurrency:
 jobs:
   compliance-and-tests:
     runs-on: ubuntu-latest
+    outputs:
+      has_releases: ${{ steps.detect.outputs.has_releases }}
+      changed_modules: ${{ steps.detect.outputs.changed_modules }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,13 +43,223 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install test and runtime dependencies
+      - name: Detect pending module releases & verify version monotonicity / immutability
+        id: detect
+        run: |
+          if git ls-remote --exit-code --heads origin releases >/dev/null 2>&1; then
+            git fetch --depth=1 origin releases:refs/remotes/origin/releases
+          fi
+
+          python3 - <<'PYEOF'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$")
+
+          def parse_ver(v: str) -> tuple[int, int, int, int]:
+              m = SEMVER_RE.match(v.strip())
+              if not m:
+                  raise ValueError(f"Invalid version format: '{v}'")
+              return (
+                  int(m.group(1)),
+                  int(m.group(2)),
+                  int(m.group(3)),
+                  int(m.group(4)) if m.group(4) is not None else 0,
+              )
+
+          def get_remote_releases_files() -> set[str]:
+              res = subprocess.run(
+                  ["git", "ls-tree", "-r", "--name-only", "refs/remotes/origin/releases"],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              if res.returncode != 0:
+                  return set()
+              return {line.strip() for line in res.stdout.splitlines() if line.strip()}
+
+          def get_remote_blob_bytes(rel_path: str) -> bytes | None:
+              res = subprocess.run(
+                  ["git", "show", f"refs/remotes/origin/releases:{rel_path}"],
+                  capture_output=True,
+                  check=False,
+              )
+              return res.stdout if res.returncode == 0 else None
+
+          remote_files = get_remote_releases_files()
+          release_root = os.path.abspath("ys_codebase/release")
+          source_root = os.path.abspath("ys_codebase/source")
+
+          errors: list[str] = []
+          changed_modules: list[str] = []
+
+          # Host script (yscb.py) release version gate
+          VERSION_ASSIGN_RE = re.compile(r'^__version__\s*(?::\s*str\s*)?=\s*[\'"]([^\'"]+)[\'"]', re.MULTILINE)
+          host_script_path = os.path.abspath("yscb.py")
+          host_release_pending = False
+          if os.path.isfile(host_script_path):
+              with open(host_script_path, "r", encoding="utf-8") as hf:
+                  local_host_text = hf.read()
+              m_loc = VERSION_ASSIGN_RE.search(local_host_text)
+              if not m_loc:
+                  errors.append("[yscb.py] Missing top-level __version__ declaration.")
+              else:
+                  local_host_ver = m_loc.group(1).strip()
+                  try:
+                      local_host_tuple = parse_ver(local_host_ver)
+                  except ValueError as exc:
+                      errors.append(f"[yscb.py] {exc}")
+                      local_host_tuple = (0, 0, 0, 0)
+
+                  rem_host_bytes = get_remote_blob_bytes("yscb.py")
+                  if rem_host_bytes is None:
+                      host_release_pending = True
+                  else:
+                      rem_host_text = rem_host_bytes.decode("utf-8", errors="replace")
+                      m_rem = VERSION_ASSIGN_RE.search(rem_host_text)
+                      if m_rem:
+                          rem_host_ver = m_rem.group(1).strip()
+                          try:
+                              rem_host_tuple = parse_ver(rem_host_ver)
+                              if local_host_tuple < rem_host_tuple:
+                                  errors.append(
+                                      f"[yscb.py] Version rollback detected: local __version__ '{local_host_ver}' "
+                                      f"is older than published releases version '{rem_host_ver}'."
+                                  )
+                              elif local_host_tuple > rem_host_tuple:
+                                  host_release_pending = True
+                          except ValueError:
+                              host_release_pending = True
+                      else:
+                          host_release_pending = True
+          if host_release_pending and "core" not in changed_modules:
+              changed_modules.append("core")
+
+          for mod in sorted(os.listdir(release_root)):
+              mod_rel_dir = os.path.join(release_root, mod)
+              idx_path = os.path.join(mod_rel_dir, "index.json")
+              if not os.path.isdir(mod_rel_dir) or not os.path.isfile(idx_path):
+                  continue
+
+              with open(idx_path, "r", encoding="utf-8") as f:
+                  idx_data = json.load(f)
+
+              active_versions = [str(v).strip() for v in idx_data.get("versions", []) if str(v).strip()]
+              releases_ledger = idx_data.get("releases", {}) if isinstance(idx_data.get("releases"), dict) else {}
+
+              remote_idx_raw = get_remote_blob_bytes(f"{mod}/index.json")
+              remote_releases_ledger: dict = {}
+              if remote_idx_raw:
+                  try:
+                      rem_idx_obj = json.loads(remote_idx_raw.decode("utf-8"))
+                      if isinstance(rem_idx_obj.get("releases"), dict):
+                          remote_releases_ledger = rem_idx_obj["releases"]
+                  except Exception:
+                      remote_releases_ledger = {}
+
+              src_mf_path = os.path.join(source_root, mod, "manifest.json")
+              if os.path.isfile(src_mf_path):
+                  with open(src_mf_path, "r", encoding="utf-8") as mf_f:
+                      src_mf = json.load(mf_f)
+                  src_ver = str(src_mf.get("version", "")).strip()
+              else:
+                  src_ver = ""
+
+              # Gate 1: Format & Monotonicity (supports 4-tuple major.minor.patch.revision & skipped versions)
+              all_known_tuples: list[tuple[tuple[int, int, int, int], str]] = []
+              for v_str in set(active_versions) | set(releases_ledger.keys()) | set(remote_releases_ledger.keys()):
+                  try:
+                      all_known_tuples.append((parse_ver(v_str), v_str))
+                  except ValueError as exc:
+                      errors.append(f"[{mod}] {exc}")
+
+              if all_known_tuples:
+                  all_known_tuples.sort(key=lambda item: item[0])
+                  highest_tuple, highest_ver_str = all_known_tuples[-1]
+                  if src_ver:
+                      try:
+                          src_tuple = parse_ver(src_ver)
+                          if src_tuple < highest_tuple:
+                              errors.append(
+                                  f"[{mod}] Version rollback detected: source manifest version '{src_ver}' "
+                                  f"is older than highest recorded release '{highest_ver_str}'."
+                              )
+                      except ValueError as exc:
+                          errors.append(f"[{mod}] Invalid source manifest version: {exc}")
+
+              # Gate 2: Check which active_versions are new vs already on origin/releases
+              mod_has_new_release = False
+              for v_str in active_versions:
+                  rel_zip = f"{mod}/{v_str}.zip"
+                  ledger_entry = releases_ledger.get(v_str, {}) if isinstance(releases_ledger.get(v_str), dict) else {}
+                  expected_sha = str(ledger_entry.get("sha256") or "").strip().lower()
+
+                  if rel_zip in remote_files:
+                      rem_entry = remote_releases_ledger.get(v_str, {}) if isinstance(remote_releases_ledger.get(v_str), dict) else {}
+                      rem_recorded_sha = str(rem_entry.get("sha256") or "").strip().lower()
+                      if expected_sha and rem_recorded_sha and expected_sha != rem_recorded_sha:
+                          errors.append(
+                              f"[{mod}@{v_str}] Immutability violation: '{rel_zip}' is already published on "
+                              f"origin/releases (sha256={rem_recorded_sha[:12]}...), but index.json modified it to "
+                              f"sha256={expected_sha[:12]}... Bump version instead of overwriting!"
+                          )
+                  else:
+                      mod_has_new_release = True
+                      if src_ver != v_str:
+                          errors.append(
+                              f"[{mod}@{v_str}] Pending new release version '{v_str}' in index.json does not "
+                              f"match source/{mod}/manifest.json version '{src_ver}'."
+                          )
+
+              if mod_has_new_release and mod not in changed_modules:
+                  changed_modules.append(mod)
+
+          if errors:
+              for err in errors:
+                  print(f"[ci-version-gate] ERROR: {err}", file=sys.stderr)
+              sys.exit(1)
+
+          is_manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+          if not changed_modules and is_manual:
+              changed_modules = sorted(
+                  m for m in os.listdir(source_root)
+                  if os.path.isfile(os.path.join(source_root, m, "manifest.json"))
+              )
+
+          has_releases = "true" if changed_modules else "false"
+          mods_space_sep = " ".join(changed_modules)
+          print(f"[ci-detect] has_releases={has_releases} | changed_modules={mods_space_sep or '(none)'}")
+
+          gh_out = os.environ.get("GITHUB_OUTPUT")
+          if gh_out:
+              with open(gh_out, "a", encoding="utf-8") as out_f:
+                  out_f.write(f"has_releases={has_releases}\n")
+                  out_f.write(f"changed_modules={mods_space_sep}\n")
+          PYEOF
+
+      - name: Install test and runtime dependencies (only when releases pending)
+        if: steps.detect.outputs.has_releases == 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy tree-sitter tree-sitter-language-pack
 
-      - name: Build local release archives from current source tree
+      - name: Restore existing release archives & build pending module archives
+        if: steps.detect.outputs.has_releases == 'true'
         run: |
+          if git show-ref --verify --quiet refs/remotes/origin/releases; then
+            for mod_dir in ys_codebase/release/*; do
+              if [ -d "$mod_dir" ]; then
+                mod_name="$(basename "$mod_dir")"
+                git --work-tree=ys_codebase/release checkout refs/remotes/origin/releases -- "$mod_name" 2>/dev/null || true
+              fi
+            done
+            git checkout HEAD -- "ys_codebase/release/**/index.json" || true
+          fi
+
           python3 - <<'PYEOF'
           import fnmatch
           import json
@@ -82,6 +305,8 @@ jobs:
               mod_rel_dir = os.path.join(release_root, mod)
               os.makedirs(mod_rel_dir, exist_ok=True)
               zip_path = os.path.join(mod_rel_dir, f"{ver}.zip")
+              if os.path.isfile(zip_path):
+                  continue
               ignores = list(DEFAULT_IGNORES)
               ignore_file = os.path.join(src_dir, ".yscbignore")
               if os.path.isfile(ignore_file):
@@ -121,19 +346,18 @@ jobs:
                           else:
                               payload = raw_bytes
                       zf.writestr(zinfo, payload)
-              print(f"[ci-bootstrap] Packaged {mod}@{ver}.zip from source.")
+              print(f"[ci-bootstrap] Packaged new release {mod}@{ver}.zip from source.")
           PYEOF
 
       - name: Bootstrap YS-Codebase runtime environment
+        if: steps.detect.outputs.has_releases == 'true'
         run: |
           python yscb.py restore --force
           python yscb.py status
 
-      - name: Run Contributes Schema & Architecture Compliance Checks
+      - name: Run Compliance Checks & Tests on Released Modules Only
+        if: steps.detect.outputs.has_releases == 'true'
         run: |
           python yscb.py contributes check
-          python yscb.py dev check --all
-
-      - name: Run Module Test Suites (Isolated YSCB Sandbox)
-        run: |
-          python yscb.py dev test --all -q
+          python yscb.py dev check ${{ steps.detect.outputs.changed_modules }}
+          python yscb.py dev test ${{ steps.detect.outputs.changed_modules }} -q

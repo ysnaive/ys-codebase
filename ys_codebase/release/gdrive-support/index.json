@@ -1,0 +1,20 @@
+{
+  "name": "gdrive-support",
+  "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
+  "versions": [
+    "1.0.0.0"
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.6",
+        "file-space": ">=1.0.0"
+      },
+      "sha256": "087724f2c99e6b435c71388735deab98c113b77737fde331a544876ec05ec816",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "首發 Google Drive 雲端原子操作、repo_sync 雙層隔離同步倉、Shortcut 零空間分支、CoW 30 天垃圾桶與雙軌內外部 Skills"
+    }
+  }
+}

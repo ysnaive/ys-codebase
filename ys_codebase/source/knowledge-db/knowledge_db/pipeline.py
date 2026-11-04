@@ -346,10 +346,18 @@ class IndexingPipeline:
         snapshot = self.ast_engine.ensure_jit_synced(force=ast_force)
         _report(1, f"AST 快照同步與符號共享 (gen={snapshot.ast_generation})", (time.time() - t0) * 1000)
 
-        # Stage 2: Build BM25 InvertedIndex directly from ASTSnapshot.symbols
+        # Stage 2: Build BM25 InvertedIndex directly from ASTSnapshot.symbols (filtered to weighted spaces)
         t0 = time.time()
+        indexed_spaces = self._get_indexed_space_names()
+        filtered_symbols = [
+            fs for fs in (
+                self._filter_symbol_for_indexed_spaces(sym, indexed_spaces)
+                for sym in snapshot.symbols.values()
+            )
+            if fs is not None
+        ]
         idx = InvertedIndex(space_name="unified")
-        idx.build(list(snapshot.symbols.values()), tokenizer=self.tokenizer, space="unified")
+        idx.build(filtered_symbols, tokenizer=self.tokenizer, space="unified")
         idx.acked_ast_generation = snapshot.ast_generation
         _report(2, f"BM25 倒排索引建置 ({idx.doc_count} 符號)", (time.time() - t0) * 1000)
 
@@ -466,7 +474,13 @@ class IndexingPipeline:
            直接從最新 `ASTSnapshot.symbols` 提取符號，零重複 Tree-sitter 解析。
         """
         detail = self.ast_engine._coerce_diff_detail(diff_detail)
-        target_spaces = self.bundler._resolve_target_spaces(None)
+        indexed_spaces = self._get_indexed_space_names()
+        all_target_spaces = self.bundler._resolve_target_spaces(None)
+        target_spaces = (
+            [sp for sp in all_target_spaces if sp.name in indexed_spaces]
+            if indexed_spaces
+            else all_target_spaces
+        )
         expanded_added_mod = self.bundler._normalize_space_dirty_paths(
             detail.dirty_files, target_spaces, prefer_missing=False
         )
@@ -500,7 +514,10 @@ class IndexingPipeline:
         dirty_paths_norm = normalize_dirty_paths(dirty_keys)
         all_new_symbols: List[UnifiedSymbol] = []
         seen_ids: Set[str] = set()
-        for sym in snapshot.symbols.values():
+        for raw_sym in snapshot.symbols.values():
+            sym = self._filter_symbol_for_indexed_spaces(raw_sym, indexed_spaces)
+            if sym is None:
+                continue
             sym_matched = is_dirty_file_match(sym.file_path, dirty_paths_norm)
             if not sym_matched:
                 partial_files = (sym.metadata or {}).get("partial_files") or []
@@ -1134,21 +1151,31 @@ class IndexingPipeline:
                 return dict(self._space_weights_provider())
             except Exception:
                 pass
-        if hasattr(self.hybrid_engine, "space_weights") and self.hybrid_engine.space_weights:
+        if hasattr(self.hybrid_engine, "space_weights") and self.hybrid_engine.space_weights is not None:
             return dict(self.hybrid_engine.space_weights)
-        try:
-            loaded_spaces = (
-                self.space_manager.get_all_spaces()
-                if hasattr(self.space_manager, "get_all_spaces")
-                else self.space_manager.load_spaces()
-            )
-            return {
-                sp_name: float(sp_cfg.weight)
-                for sp_name, sp_cfg in loaded_spaces.items()
-                if hasattr(sp_cfg, "weight") and sp_cfg.weight is not None
-            }
-        except Exception:
-            return {}
+        return {}
+
+    def _get_indexed_space_names(self) -> Set[str]:
+        """取得已宣告 `space_weights` 之受索引空間名稱集合。"""
+        return set(self._resolve_space_weights().keys())
+
+    def _filter_symbol_for_indexed_spaces(
+        self, sym: UnifiedSymbol, indexed_spaces: Set[str]
+    ) -> Optional[UnifiedSymbol]:
+        """過濾未納入 `space_weights` 之空間符號；若為跨空間符號則僅保留受索引空間標籤。"""
+        from dataclasses import replace
+
+        raw_spaces = list(getattr(sym, "spaces", []) or [])
+        if not raw_spaces:
+            return sym
+        valid_spaces = [s for s in raw_spaces if s in indexed_spaces]
+        if not valid_spaces:
+            return None
+        if len(valid_spaces) == len(raw_spaces):
+            return sym
+        new_meta = dict(sym.metadata or {})
+        new_meta["spaces"] = valid_spaces
+        return replace(sym, metadata=new_meta)
 
     def _resolve_vector_availability_with_worker_tolerance(
         self,

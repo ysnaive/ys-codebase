@@ -8,9 +8,9 @@
     "1.1.0.6",
     "1.1.1.2",
     "1.1.2.3",
-    "1.2.0.2",
     "1.2.0.3",
-    "1.2.0.4"
+    "1.2.0.4",
+    "1.2.0.5"
   ],
   "releases": {
     "1.0.0.0": {
@@ -116,7 +116,7 @@
       "sha256": "7b6c81495de7038fb2a3dbfa5c6795994d91a5c245d9bd00e3346da7a2c3eb6d"
     },
     "1.2.0.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2",
         "file-space": ">=1.0.0",
@@ -150,6 +150,18 @@
       "type": "bugfix",
       "urgency": "optional",
       "summary": "新增 .kdb_index.lock 跨進程寫入鎖與 numpy 頂層延遲載入"
+    },
+    "1.2.0.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5",
+        "file-space": ">=1.0.0",
+        "ast": ">=1.0.0"
+      },
+      "sha256": "e1c236d23decd7e208b4b9b6e957db612e6ce3b67fba1d0739081e67d51bea95",
+      "type": "feature",
+      "urgency": "optional",
+      "summary": "KnowledgeIndexService 背景增量索引整合 server.touch_activity() 保活探針"
     }
   }
 }

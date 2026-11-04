@@ -1,18 +1,22 @@
 {
   "id": "gdrive-support",
   "name": "gdrive-support",
-  "version": "0.1.0.0",
+  "version": "1.0.0.0",
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.5",
+    "core": ">=1.2.6",
     "file-space": ">=1.0.0"
   },
   "optional": {
     "server": {
-      "version": ">=1.0.0",
-      "hint": "提供 GDriveSyncServiceWorker 選配常駐背景同步能力 (預設 auto_sync: false)"
+      "version": ">=1.0.4",
+      "hint": "提供 GDriveSyncServiceWorker 選配常駐背景同步與 touch_activity 保活能力 (預設 auto_sync: false)"
+    },
+    "agents-workflow": {
+      "version": ">=1.2.3",
+      "hint": "自動投射 gdrive-local-ops 本地 AI 技能並支援雲端外部 AI 協作工作流"
     }
   },
   "pip_dependencies": {},
@@ -23,5 +27,10 @@
     "請執行 `python yscb.py gdrive status` 檢視 Google Drive 同步組態、分支設定與受管空間映射狀態。",
     "可使用原子指令 `python yscb.py gdrive ls / get / put / rm / mkdir / shortcut` 手動操作雲端或本地沙盒檔案。",
     "背景自動同步預設為關閉 (`auto_sync: false`)，僅於顯式啟用時方啟動常駐監聽與輪詢。"
-  ]
+  ],
+  "release": {
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "首發 Google Drive 雲端原子操作、repo_sync 雙層隔離同步倉、Shortcut 零空間分支、CoW 30 天垃圾桶與雙軌內外部 Skills"
+  }
 }

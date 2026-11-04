@@ -209,7 +209,7 @@ last_updated: "2026-10-15"
 - **核心決策**：
   1. **本地嚴格同版 (`source_version == target_version`) 動態打包自給自足**：當 `yscb.py` 或 `AtomicEngine` / `Installer` 在 `release/<mod>/` 找不到 `<ver>.zip` 時，探測本地是否存在 `source/<mod>/manifest.json` 且其 `"version"` **嚴格等於**目標 `<ver>`；唯有完全相等時，以純標準庫 `zipfile` 結合 `.yscbignore` 過濾規則即時打包寫入 `.mirror/<mod>/<ver>.zip` 並解壓至 `.modules/<mod>/`（嚴禁將未過濾之 `source/<mod>` 原地 `copytree` 至 `.modules/` 或在版本不符時強行混裝）。
   2. **`pruned` 版本同三元組 (`X.Y.Z.*`) 最高活躍版本自動補位**：當下游專案鎖定之舊版 `X.Y.Z.W` 已被遠端 3-Revision 滑動視窗淘汰（不在 `index.json["versions"]` 中）且本地無 `.mirror/` 快取時，`restore` 自動解析 `index.json["versions"]` 中同一 `Major.Minor.Patch` 三元組之最高可用 `active` 版本進行解壓還原，並同步更新 `yscb.config.json` 鎖定版號以消除後續 `_is_modules_dirty` 重複觸發。
-  3. **舊版 `main` 分支官方 Provider URL 無感遷移**：`DEFAULT_PROVIDER_URL` 指向專用單層孤兒分支 `releases`，且 `load_config` / `AtomicEngine._get_config` 讀取到舊版 `.../main/ys_codebase/release` 時自動無感正規化並回寫為 `releases` 分支 URL。
+  3. **舊版 `main` 分支官方 Provider URL 無感遷移與 `yscb.py` 宿主納入 `releases` 分支**：`DEFAULT_PROVIDER_URL` 與 `DEFAULT_SELF_UPDATE_URL` (`https://raw.githubusercontent.com/ysnaive/ys-codebase/releases/yscb.py`) 雙雙指向專用單層孤兒分支 `releases`（附帶 `yscb.py.sha256` 伴隨校驗檔），使 `main` 成為 100% 純開發分支；唯有當 `yscb.py` 之 `__version__` 正式遞增時，CI 與 `release-publish` 才會將新版 `yscb.py` 發布至 `releases` 分支。
 - **背後考量**：兼顧母倉 `main` 分支零 `.zip` 二進位膨脹、開發者切換歷史 Git Tag 之離線自給自足，以及下游消費者環境在面對滑動視窗裁剪時的無感自癒韌性。
 - **防禦宣告**：
   > [!CAUTION]

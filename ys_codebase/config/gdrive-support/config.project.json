@@ -5,12 +5,12 @@
   "token_uri": "cache://gdrive-support/token.json",
   "sandbox_dir": "",
   "repo_sync": {
-    "enable": false,
+    "enable": true,
     "repo_sync_root": "repo",
     "active_branch": "main",
-    "auto_sync": false,
+    "auto_sync": true,
     "poll_interval_sec": 30.0,
     "pull_delete_default": false,
-    "push_delete_default": false
+    "push_delete_default": true
   }
 }

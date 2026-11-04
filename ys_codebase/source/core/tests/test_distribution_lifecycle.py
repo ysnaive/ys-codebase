@@ -35,7 +35,7 @@ class TestDistributionLifecycle(YSCBTestCase):
     def test_resolve_self_update_url(self):
         """驗證 DEFAULT_PROVIDER_URL 與 DEFAULT_SELF_UPDATE_URL 職責分離且優先權正確。"""
         self.assertEqual(yscb.DEFAULT_PROVIDER_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases")
-        self.assertEqual(yscb.DEFAULT_SELF_UPDATE_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py")
+        self.assertEqual(yscb.DEFAULT_SELF_UPDATE_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases/yscb.py")
 
         # 1. 預設返回官方自更新 URL（不因 provider 變更而改變）
         target = yscb._resolve_self_update_target_url()

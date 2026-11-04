@@ -1,6 +1,30 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_04_1517_gdrive_parallel_sync (Completed)
+
+- **`SyncCoordinator` 父目錄拓撲預建 (`_precreate_remote_dirs`) 與 `ThreadPoolExecutor` 多執行緒並發同步加速 (`[FP-01:DR-01]`, `[FP-01:DR-02]`)**：
+  - **父目錄深度優先預建與執行緒安全保護 (`[FP-01:DR-01]`)**：於 `LocalSandboxTransport` 與 `GoogleDriveApiTransport._ensure_access_token` 補齊執行緒安全鎖（`_lock` / `_token_lock`），並於 `SyncCoordinator` 執行 `create_branch` 與 `run_sync`（`PUSH_NEW` / `PUSH_UPDATE`）前，先透過 `_precreate_remote_dirs()` 按路徑深度由淺入深依序預建所有目標父目錄，確保多執行緒平行上傳與建立 Shortcut 時 100% 命中已快取之父目錄 ID，杜絕並發搶建同名資料夾競態。
+  - **`ThreadPoolExecutor(max_workers=8)` 多執行緒並發傳輸與增量狀態落盤 (`[FP-01:DR-02]`)**：於 `SyncCoordinator.create_branch`（平行建立 Shortcut）與 `SyncCoordinator.run_sync`（平行執行 `PUSH_NEW` / `PUSH_UPDATE` 上傳及 `PULL_NEW` / `PULL_UPDATE` 下載，主執行緒透過 `as_completed` 逐筆增量持久化 `sync_state.json`）導入 `ThreadPoolExecutor(max_workers=8)`，通過 `gdrive-support` (26/26) 全量單元測試。
+
+## 2026_11_04_1459_gdrive_transport_accel (Completed)
+
+- **`GoogleDriveApiTransport` 目錄 ID 快取 (`_folder_cache`)、遞迴掃描免重查 (`_scanned_prefixes`) 與 HTTPS Keep-Alive 持久連線池加速 (`[FP-01:DR-01]`, `[FP-01:DR-02]`)**：
+  - **路徑 $\to$ Folder ID 快取與免重查 `get_entry` (`[FP-01:DR-01]`)**：於 `GoogleDriveApiTransport` 實作 `_folder_cache` 與 `_scanned_prefixes`（在 `list_files`、`mkdir`、`_resolve_folder_id_by_path` 自動填入目錄快取，並於 `trash_file`、`move_file` 自動同步失效），消除單檔上傳時重複自 `root_folder_id` 逐層發起 $2 \times \text{depth}$ 次 `files.list` HTTP GET 查詢的 $O(N \times D)$ 往返瓶頸。
+  - **Thread-Local `HTTPSConnection` Keep-Alive 連線複用 (`[FP-01:DR-02]`)**：於 `GoogleDriveApiTransport._request_json` 改用執行緒本地之 `http.client.HTTPSConnection` 持久連線池（異常時自動回收重連），省去批次同步期間數百次重複的 TCP + TLS 交握延遲，通過 `gdrive-support` (25/25) 全量單元測試。
+
+## 2026_11_04_1425_kdb_opt_in_space_weights (Completed)
+
+- **`knowledge-db` 空間權重 (`space_weights`) 顯式 Opt-in 索引機制與 `file-space` 冗餘 `weight` 清理 (`[FP-01:DR-01]`, `[FP-01:DR-02]`)**：
+  - **顯式權重 Opt-in 資料庫索引 (`[FP-01:DR-01]`)**：調整 `KnowledgeEngine._load_and_merge_space_weights`、`get_all_space_weights`、`get_indexed_spaces`、`status`、`bundle` 與 `IndexingPipeline` (`_build_unified_index_locked`、`_collect_all_dirty_files`、`_filter_symbol_for_indexed_spaces`)，凡未於 `knowledge-db` 組態（`contributes/knowledge-db.json` 或 `config/knowledge-db/contribute.json` 之 `space_weights`）宣告權重之 `file-space` 空間，一律視為不納入 `knowledge-db` 資料庫索引（且多空間重疊檔案僅保留受索引空間標籤），並同步於 `file_space/providers.py:get_knowledge_db_spaces` 過濾 `KNOWLEDGE_DB_SPACE` 提示表。
+  - **單一真理來源收斂 (`[FP-01:DR-02]`)**：移除 `ys_codebase/config/file-space/contribute.json` 與 `ys_codebase/source/agents-workflow/contributes/file-space.json` 中冗餘之 `"weight"` 屬性，使空間檢索權重 100% 由 `knowledge-db` 單一真理來源管轄，通過 `knowledge-db` (109/109)、`file-space` (17/17) 與 `agents-workflow` (141/141) 全量單元測試。
+
 ## 2026_11_04_0858_gdrive_bidirectional_sync_module (Completed)
+
+### sub_05_ecosystem_refinements_and_release (Completed)
+- **`server` 30 分鐘預設閒置 Timeout 與 `touch_activity()` 保活探針、外部 AI 雙資產技能 (`gdrive-external-ops` + `GEMINI_BOOTSTRAP_GUIDE.md`)、三維度正交邊界收斂、GitHub Actions CI 與 `yscb.py` 宿主 `releases` 分支標準發布管線升級，以及全倉 9 模組版號晉升與正式發布 (`[REV-01]` ~ `[REV-06]`)**：
+  - **`module:server@1.0.4.0` 預設 30 分鐘 Timeout 與 `touch_activity()` 背景保活探針 (`[REV-01]`, `[REV-03]`)**：將 `server` 預設 `idle_timeout_sec` 調升至 `1800.0`（30 分鐘），新增 `server.touch_activity()` SDK、`BaseServiceWorker.touch_activity()` 與 `POST /api/touch` 端點（含 1.0 秒節流防抖），並整合至 `file-space-watcher`、`knowledge-db-worker` 與 `gdrive-sync` 背景服務，通過真實 Google Drive 雲端背景全量與事件驅動增量自動同步實測。
+  - **外部隨包雙資產技能與三維度正交邊界收斂 (`[REV-02]`, `[REV-04]`)**：重建 `assets/external_skill/` 為 `gdrive-external-ops/SKILL.md`（含前置 `§0 專案實例化配置` 7 維度自舉表與寫入前目標分支詢問守門）與單檔自包含之 `gemini-drive-guide/GEMINI_BOOTSTRAP_GUIDE.md`（階段 0 強制驗證「網頁版 Gemini 任務模式 + 可並行任務 + Linux 虛擬運行機 + Google Drive 直連」）；於 `reconciler.py` 與 `coordinator.py` 補齊「雙端皆刪之幽靈基準自動清理」、「雲端新建未註冊分支資料夾自動發現 (`_reconcile_unregistered_cloud_branches`)」與「`checkout --force` 對未追蹤 `.gitignore` 本地檔案之保留與衝突備份保護」。
+  - **CI / `release-publish` 智慧短路、`yscb.py@1.2.2.2` 宿主納入 `releases` 分支發布與全倉 9 模組正式發布 (`[REV-05]`, `[REV-06]`)**：升級 `.github/workflows/{ci.yml,release-publish.yml}` 支援無發布需求完全短路、僅針對新版模組執行 `dev check`/`dev test`、四元組版本防倒退與防竄改守門、`yscb.py` + `yscb.py.sha256` 隨 `releases` 分支單一最新版發布（將 `DEFAULT_SELF_UPDATE_URL` 對齊 `releases` 分支，使 `main` 成為 100% 純開發分支）及發布後 `git gc --prune=now` 空間釋放；對齊全模組 `manifest.json` 硬相依與 `optional` 擴充建議，並完成 `core@1.2.6.0`、`server@1.0.4.0`、`dev@1.1.4.2`、`file-space@1.0.0.5`、`ast@1.0.0.5`、`knowledge-db@1.2.0.5`、`agents-workflow@1.2.3.5`、`vscode-support@1.0.0.2` 與 `gdrive-support@1.0.0.0` 正式打包發布與安裝切換。
 
 ### sub_04_repo_sync_isolation_and_skills (Completed)
 - **`repo_sync` 巢狀組態守門、`<root_folder_id>/<repo_sync_root>/`（預設 `repo/`）雲端雙層隔離、Google Drive 原生 30 天垃圾桶與 `repo/.trash/` 自動清空、頂層 `README.md` 本地快取軟合併/軟移除、本地/外部雙軌 Skills 分離及 `/blind-subagent` 資安與狀態機加固 (`FR-01` ~ `FR-04`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：

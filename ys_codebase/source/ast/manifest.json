@@ -1,7 +1,7 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.0.0.4",
+  "version": "1.0.0.5",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -13,6 +13,10 @@
     "server": {
       "version": ">=1.0.0",
       "hint": "提供背景檔案變更事件觸發之 AST 與呼叫圖譜即時熱修補能力"
+    },
+    "knowledge-db": {
+      "version": ">=1.2.0",
+      "hint": "結合 AST 符號快照提供跨空間 BM25 與本地向量混合語意檢索能力"
     }
   },
   "pip_dependencies": {
@@ -35,8 +39,8 @@
     "請執行 `python yscb.py ast callers <symbol>`、`callees <symbol>` 或 `impact <symbol>` 追蹤跨檔案呼叫拓撲與修改影響半徑。"
   ],
   "release": {
-    "type": "bugfix",
-    "urgency": "recommended",
-    "summary": "新增 Tree-sitter JIT 跨進程鎖、刪檔孤兒節點回收、.ast_graph.lock 與二級雜湊索引加速"
+    "type": "refactor",
+    "urgency": "optional",
+    "summary": "補充 manifest.json optional 建議擴充模組 (knowledge-db)"
   }
 }

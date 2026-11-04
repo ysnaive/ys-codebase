@@ -99,10 +99,12 @@ class FileSpaceConfig:
             if isinstance(rel_path, Path)
             else str(rel_path).replace("\\", "/")
         ).strip("/")
-        if not posix_str:
+        if not posix_str or posix_str == ".":
             return False
 
         parts = PurePosixPath(posix_str).parts
+        if not parts:
+            return False
         filename = parts[-1]
 
         for pattern in self.exclude:

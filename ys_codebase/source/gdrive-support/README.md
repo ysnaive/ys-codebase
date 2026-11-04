@@ -13,9 +13,11 @@
 3. **雙層 `README.md` 與本地快取驅動之頂層軟合併 / 軟移除**：
    - `<repo_sync_root>/README.md`（預設 `repo/README.md`）：完整受控同步倉說明。
    - 頂層 `<root_folder_id>/README.md`：透過本地狀態快取 `cache://gdrive-support/readme_sync_state.json` 偵測 `(enable, repo_sync_root)` 狀態變動（僅於初始化啟用或開關切換時觸發，零日常 API 額外開銷）；啟用時自動建立或以 `<!-- === YSCB GDRIVE REPO_SYNC BEGIN/END === -->` 區塊軟合併（100% 保留既有人工內容），關閉時自動軟移除受控區塊（若無剩餘人工內容則移入 Google Drive 原生 30 天垃圾桶）。
-4. **雙技能明確分離（本地 `gdrive-local-ops` vs 外部雲端 `external_cloud_skill`）**：
+4. **雙技能明確分離（本地 `gdrive-local-ops` vs 外部雲端 `external_skill`）**：
    - **本地 Agent 專用 Skill (`assets/skills/gdrive-local-ops/SKILL.md`)**：透過 `contributes/agents-workflow.json` 自動貢獻至本地 `agents-workflow`，指導本地 Agent 操作 `yscb gdrive` 原子指令與 `repo_sync` 雙模式。
-   - **外部雲端 AI 專用隨包 Skill (`assets/external_cloud_skill/SKILL.md`)**：僅隨包封存供外部雲端 AI（如網頁版 Gemini、Drive 外掛 Agent）直接操作 Google Drive 雲端資料夾時查閱（遵循 Copy-on-Write 先移入 `<repo_sync_root>/.trash/` 再建立新檔等規範，並警示 `<repo_sync_root>/.trash/` 會被自動清空至原生垃圾桶），不注入本地 `agents-workflow`。
+   - **外部雲端 AI 專用隨包技能組 (`assets/external_skill/`)**：僅隨包封存供外部雲端 AI 直接操作 Google Drive 雲端資料夾時使用，不注入本地 `agents-workflow`：
+     - `assets/external_skill/gdrive-external-ops/SKILL.md`：適用於任何外部 AI Agent 之通用雲端空間規範（含 §0 專案實例化回填配置區塊、雙端溝通協議、Copy-on-Write 與 `<repo_sync_root>/.trash/` 自動清空警示）。
+     - `assets/external_skill/gemini-drive-guide/GEMINI_BOOTSTRAP_GUIDE.md`：專供複製給**網頁版 Gemini** 之自檢與初始化引導手冊（強制自檢「網頁版 Gemini 任務模式 + 可並行任務 + Linux 虛擬運行機 + Google Drive 直連」，自動探查雲端目錄並與使用者確認後回填產出定製版 `SKILL.md`）。
 
 ---
 

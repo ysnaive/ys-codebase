@@ -1,9 +1,9 @@
 # 專案輕量級待辦與技術債帳本 (TODO Ledger)
 
 > 主題：專案輕量級待辦與技術債帳本  
-> 更新日期：2026-11-03  
+> 更新日期：2026-11-04  
 > 狀態：Active  
-> 最後分配編號：20  
+> 最後分配編號：21  
 > 模型：Gemini 4 Argon (Low)  
 
 ---
@@ -29,3 +29,8 @@
 - **建立日期**：2026-11-03
 - **目標範疇**：`module:vscode-support, module:core`
 - **備忘與解法要點**：目前採方案 C 恆定寫入 ./ys_codebase/.venv/current-site-packages 並保留宿主機已建連結；後續調研是否支援無 symlink/junction 之純目錄或路由機制
+
+### [TODO-21] 完整調研、整理 event broadcast 架構與現有 event，並加入 CLI pre-flight 檢查供各模組 hook 進行健康度排查
+- **建立日期**：2026-11-04
+- **目標範疇**：`core, ecosystem modules`
+- **備忘與解法要點**：盤點並正規化 core.events 廣播生命週期與既有事件契約，新增 CLI pre-flight 事件掛鉤供各模組執行前置健康度自檢

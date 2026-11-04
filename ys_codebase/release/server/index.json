@@ -5,9 +5,8 @@
     "1.0.0.4",
     "1.0.1.3",
     "1.0.2.0",
-    "1.0.3.0",
-    "1.0.3.1",
-    "1.0.3.2"
+    "1.0.3.2",
+    "1.0.4.0"
   ],
   "releases": {
     "1.0.0.4": {
@@ -59,7 +58,7 @@
       "sha256": "e741586f68c7ea5dd4844ed234a82b4a5f1ff396580941f24abda92a17012c54"
     },
     "1.0.3.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.4"
       },
@@ -69,7 +68,7 @@
       "summary": "新增搶占式重啟、兩段式 Worker 握手、strict_hot_dispatch、環境變數差量還原與 4KB 防抖緩衝"
     },
     "1.0.3.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5"
       },
@@ -87,6 +86,16 @@
       "type": "hotfix",
       "urgency": "critical",
       "summary": "修復 Master 自我重啟移交序列、Worker close_fds 隔離與日誌輪替偏移量重置"
+    },
+    "1.0.4.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "2b817501c0e2655a2eb4934b8f30573b46737796d9f128e85db90ff394f63a15",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 server.touch_activity() 與 POST /api/touch 背景服務保活 API 並將預設閒置逾時提高至 1800 秒"
     }
   }
 }

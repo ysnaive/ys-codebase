@@ -428,6 +428,68 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
         self.assertTrue(any(e.file_id == "older_dup_id" for e in trashed))
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft_05_google_drive_api_transport_folder_cache_and_scanned_prefix(self) -> None:
+        """Verify GoogleDriveApiTransport caches folder IDs across mkdir/list_files and skips redundant get_entry after recursive scan."""
+        from gdrive_support.transport import FOLDER_MIME_TYPE, GoogleDriveApiTransport
+
+        cfg = load_gdrive_config(
+            config_override={"root_folder_id": "root_123"},
+            project_root=self.proj_dir,
+            space_include_roots={},
+        )
+        transport = GoogleDriveApiTransport(cfg)
+
+        list_calls = []
+        post_calls = []
+
+        def _fake_list_children(folder_id: str):
+            list_calls.append(folder_id)
+            if folder_id == "root_123":
+                return [{"id": "fid_repo", "name": "repo", "mimeType": FOLDER_MIME_TYPE, "parents": ["root_123"]}]
+            if folder_id == "fid_repo":
+                return [{"id": "fid_main", "name": "main", "mimeType": FOLDER_MIME_TYPE, "parents": ["fid_repo"]}]
+            if folder_id == "fid_main":
+                return [{"id": "fid_docs", "name": "docs", "mimeType": FOLDER_MIME_TYPE, "parents": ["fid_main"]}]
+            return []
+
+        def _fake_request_json(method, url, body=None, headers=None):
+            post_calls.append((method, url))
+            return {
+                "id": f"uploaded_{len(post_calls)}",
+                "name": "file.md",
+                "mimeType": "text/markdown",
+                "size": 5,
+                "md5Checksum": "abc",
+                "parents": ["fid_docs"],
+            }
+
+        transport._list_children_raw = _fake_list_children
+        transport._request_json = _fake_request_json
+
+        # 1. Recursive scan of repo/main populates _folder_cache and _scanned_prefixes
+        entries = transport.list_files("repo/main", recursive=True)
+        self.assertEqual(len(entries), 1)
+        self.assertIn("repo/main/docs", transport._folder_cache)
+        initial_list_count = len(list_calls)
+
+        # 2. Uploading two files into repo/main/docs hits _folder_cache (0 list calls) and skips get_entry
+        f1 = self.proj_dir / "a.md"
+        f2 = self.proj_dir / "b.md"
+        f1.write_text("hello", encoding="utf-8")
+        f2.write_text("world", encoding="utf-8")
+
+        u1 = transport.upload_file(f1, "repo/main/docs/a.md")
+        u2 = transport.upload_file(f2, "repo/main/docs/b.md")
+        self.assertEqual(u1.file_id, "uploaded_1")
+        self.assertEqual(u2.file_id, "uploaded_2")
+        self.assertEqual(len(list_calls), initial_list_count)
+
+        # 3. Trashing a cached folder invalidates its cache entry
+        transport.trash_file("repo/main/docs")
+        self.assertNotIn("repo/main/docs", transport._folder_cache)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

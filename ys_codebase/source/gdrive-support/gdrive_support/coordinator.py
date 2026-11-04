@@ -4,6 +4,7 @@ Shortcut delta branches, Copy-on-Write (.history/) & unreferenced garbage collec
 incremental state ledger persistence, 4-stage bidirectional synchronization under 'repo_sync/',
 and local-cache-driven soft-merge / soft-remove of the root README.md.
 """
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
@@ -60,6 +61,7 @@ SYSTEM_NAMES = {
 }
 STABILIZATION_WINDOW_NS = 2_000_000_000  # 2.0 seconds
 MAX_LOG_BYTES = 2 * 1024 * 1024  # 2 MB
+PARALLEL_TRANSFER_WORKERS = 8
 
 
 def build_managed_readme_content(repo_sync_root: str = DEFAULT_REPO_SYNC_ROOT) -> str:
@@ -76,9 +78,10 @@ def build_managed_readme_content(repo_sync_root: str = DEFAULT_REPO_SYNC_ROOT) -
         "- `.history/`：存放被更新替換下來、但仍受舊分支 Shortcut 引用之凍結版本實體檔（當無任何分支引用時自動移入 Google Drive 原生 30 天垃圾桶）。\n"
         "- `.trash/`：專供無原生垃圾桶權限之外部/網頁版 AI 搬移待刪除檔案的暫存緩衝區（**注意：本地 `yscb gdrive` 同步或分支操作時會自動清空 `.trash/` 內的所有項目並移入 Google Drive 原生 30 天垃圾桶，切勿將 `.trash/` 當作長期備份資料夾！**）。\n\n"
         "## 2. 人類與外部/網頁版 AI Agent 操作注意事項\n\n"
-        f"1. **更新既有檔案時**：若無法直接覆寫原檔案版本（例如透過網頁版 Gemini 操作），請**先將原檔案或原 Shortcut 移動至 `{norm_root}/.trash/` 資料夾，再於原路徑建立更新後的檔案**（本地同步時會自動幫你把 `{norm_root}/.trash/` 內的舊檔轉移至 Google Drive 原生 30 天垃圾桶）。\n"
-        "2. **保持原檔案類型**：請直接上傳/建立原始檔案格式（如 `.md`, `.json`, `.py`, `.xlsx`, `.pdf`），勿轉換為雲端專屬線上文件格式。\n"
-        "3. **切勿直接修改 `.history/` 內之檔案**：`.history/` 專供保護歷史分支版本凍結完整性。\n"
+        f"1. **修改前先確認目標分支（直接改 `main/` vs. 新增雲端分支 `{norm_root}/<new_branch>/`）**：外部 Agent 於寫入前應先向使用者確認要直接更新 `main/` 或是建立新分支 `{norm_root}/<new_branch>/`（本地 `yscb gdrive` 支援自動發現雲端新建之分支資料夾，無須手動修改 `.yscb_gdrive.json`）。\n"
+        f"2. **更新既有檔案時**：若無法直接覆寫原檔案版本（例如透過網頁版 Gemini 操作），請**先將原檔案或原 Shortcut 移動至 `{norm_root}/.trash/` 資料夾，再於原路徑建立更新後的檔案**（本地同步時會自動幫你把 `{norm_root}/.trash/` 內的舊檔轉移至 Google Drive 原生 30 天垃圾桶）。\n"
+        "3. **保持原檔案類型**：請直接上傳/建立原始檔案格式（如 `.md`, `.json`, `.py`, `.xlsx`, `.pdf`），勿轉換為雲端專屬線上文件格式。\n"
+        "4. **切勿直接修改 `.history/` 內之檔案**：`.history/` 專供保護歷史分支版本凍結完整性。\n"
     )
 
 
@@ -341,6 +344,20 @@ class SyncCoordinator:
             return self.repo_sync_prefix
         return f"{self.repo_sync_prefix}/{norm_sub}"
 
+    def _precreate_remote_dirs(self, remote_file_paths: List[str]) -> None:
+        """
+        Pre-create all ancestor parent directories sequentially on the main thread
+        sorted by path depth before dispatching concurrent worker threads.
+        """
+        parents: Set[str] = set()
+        for p in remote_file_paths:
+            curr = Path(p).parent.as_posix()
+            while curr not in ("", "."):
+                parents.add(curr)
+                curr = Path(curr).parent.as_posix()
+        for parent_rel in sorted(parents, key=lambda x: (x.count("/"), x)):
+            self.transport.mkdir(parent_rel)
+
     def reconcile_root_readme(self) -> Dict[str, Any]:
         """Reconcile the top-level root/README.md if repo_sync.enable changed vs local cache."""
         return reconcile_root_readme_state(
@@ -432,15 +449,60 @@ class SyncCoordinator:
             )
             self.transport.upload_file(local_tmp, cfg_rel)
 
+    def _reconcile_unregistered_cloud_branches(
+        self, meta: Dict[str, Any]
+    ) -> List[str]:
+        """
+        Scan top-level directories under <repo_sync_root>/ and automatically register any
+        non-system directory (not in SYSTEM_NAMES and not starting with '.' or '_') that
+        was created directly on Google Drive without updating .yscb_gdrive.json.
+        """
+        branches = meta.setdefault("branches", {})
+        branch_files = meta.setdefault("branch_files", {})
+        repo_prefix = self._repo_rel()
+        discovered: List[str] = []
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        for entry in self.transport.list_files(repo_prefix, recursive=False):
+            if not entry.is_dir or entry.skipped_reason:
+                continue
+            rel = entry.rel_path
+            if rel.startswith(f"{repo_prefix}/"):
+                name = rel[len(repo_prefix) + 1 :]
+            else:
+                name = Path(rel).name
+            if (
+                not name
+                or "/" in name
+                or name in SYSTEM_NAMES
+                or name.startswith(".")
+                or name.startswith("_")
+            ):
+                continue
+            if name not in branches:
+                branches[name] = {
+                    "created_at": now_iso,
+                    "base_branch": meta.get("default_branch", "main"),
+                    "auto_discovered": True,
+                }
+                branch_files.setdefault(name, {})
+                discovered.append(name)
+
+        if discovered:
+            self._write_remote_repo_meta(meta)
+        return discovered
+
     def _ensure_remote_repo_initialized(self) -> Dict[str, Any]:
         """
         Verify repo_sync/.yscb_gdrive.json exists on remote.
         - If repo_sync/ is completely empty (or does not exist yet), auto-initialize it.
         - If repo_sync/ is non-empty and lacks .yscb_gdrive.json, abort with GDriveRepoUninitializedError.
+        - When initialized, auto-discover any cloud-created branch directories under repo_sync/.
         """
         self.reconcile_root_readme()
         meta = self._read_remote_repo_meta()
         if meta is not None:
+            self._reconcile_unregistered_cloud_branches(meta)
             return meta
 
         top_entries = self.transport.list_files(self._repo_rel(), recursive=False)
@@ -553,7 +615,7 @@ class SyncCoordinator:
             branch_files_map = meta.setdefault("branch_files", {})
             new_branch_map: Dict[str, str] = {}
 
-            shortcut_count = 0
+            shortcut_tasks: List[Tuple[str, str, str]] = []
             dir_count = 0
             for entry in src_entries:
                 if entry.skipped_reason:
@@ -567,9 +629,25 @@ class SyncCoordinator:
                     target_fid = (
                         entry.target_file_id if entry.is_shortcut else entry.file_id
                     )
-                    self.transport.create_shortcut(target_fid, dst_rel)
-                    new_branch_map[sub_rel] = target_fid
-                    shortcut_count += 1
+                    shortcut_tasks.append((sub_rel, dst_rel, target_fid))
+
+            self._precreate_remote_dirs([dst_rel for _, dst_rel, _ in shortcut_tasks])
+
+            shortcut_count = 0
+            if shortcut_tasks:
+                with ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS) as pool:
+                    fut_map = {
+                        pool.submit(
+                            self.transport.create_shortcut, target_fid, dst_rel
+                        ): (sub_rel, target_fid)
+                        for sub_rel, dst_rel, target_fid in shortcut_tasks
+                    }
+                    for fut in as_completed(fut_map):
+                        fut.result()
+                        sub_rel, target_fid = fut_map[fut]
+                        new_branch_map[sub_rel] = target_fid
+                        shortcut_count += 1
+                new_branch_map = dict(sorted(new_branch_map.items()))
 
             now_iso = datetime.now(timezone.utc).isoformat()
             branches[norm_branch] = {
@@ -711,7 +789,7 @@ class SyncCoordinator:
             pulled_files: List[str] = []
 
             try:
-                old_tracked_paths = set(curr_base.keys()) | set(local_snap.keys())
+                old_tracked_paths = set(curr_base.keys())
                 for rel_p in sorted(old_tracked_paths - set(target_remote_snap.keys())):
                     abs_local = local_path_map.get(rel_p) or self._resolve_remote_rel_to_local_abs(rel_p)
                     if abs_local and abs_local.is_file():
@@ -727,7 +805,13 @@ class SyncCoordinator:
                         continue
                     loc_existing = local_snap.get(rel_p)
                     if loc_existing is None or loc_existing.md5 != rem_entry.md5:
-                        if backup and abs_local.is_file() and loc_existing and loc_existing.md5 != rem_entry.md5:
+                        should_backup = bool(
+                            abs_local.is_file()
+                            and loc_existing is not None
+                            and loc_existing.md5 != rem_entry.md5
+                            and (backup or rel_p not in curr_base)
+                        )
+                        if should_backup:
                             self._create_conflict_backup(abs_local)
                         self.transport.download_file(
                             self._repo_rel(f"{norm_target}/{rel_p}"), abs_local
@@ -862,6 +946,7 @@ class SyncCoordinator:
             branch_files_map: Dict[str, Dict[str, str]] = meta.setdefault(
                 "branch_files", {}
             )
+            prev_branch_files = dict(branch_files_map.get(branch) or {})
             curr_branch_files = {
                 rel_p: r_ent.effective_file_id()
                 for rel_p, r_ent in remote_snap.items()
@@ -876,10 +961,13 @@ class SyncCoordinator:
                     }
 
             history_files: Dict[str, str] = meta.setdefault("history_files", {})
-            meta_dirty = False
+            meta_dirty = bool(curr_branch_files != prev_branch_files)
 
             # Stage 3: Execute actions with try/finally incremental state persistence
             try:
+                push_tasks: List[Tuple[str, Path, str, Optional[str], FileEntry]] = []
+                pull_tasks: List[Tuple[str, Path, str, FileEntry]] = []
+
                 for act in actions:
                     rel_p = act.rel_path
                     remote_branch_rel = self._repo_rel(f"{branch}/{rel_p}")
@@ -897,6 +985,16 @@ class SyncCoordinator:
                                 target_file_id=act.remote_entry.target_file_id,
                             )
                             branch_state_dict[rel_p] = merged_entry.to_dict()
+                        elif (
+                            act.local_entry is None
+                            and act.remote_entry is None
+                            and act.baseline_entry is not None
+                        ):
+                            branch_state_dict.pop(rel_p, None)
+                            if rel_p in curr_branch_files:
+                                curr_branch_files.pop(rel_p, None)
+                                meta_dirty = True
+                            self._save_local_state(state)
                         continue
 
                     if act.action == SyncActionType.CONFLICT:
@@ -944,29 +1042,11 @@ class SyncCoordinator:
                                 else:
                                     in_place_fid = old_fid
 
-                        uploaded = self.transport.upload_file(
-                            abs_local,
-                            remote_branch_rel,
-                            in_place_file_id=in_place_fid,
-                        )
-                        curr_branch_files[rel_p] = uploaded.file_id
-                        meta_dirty = True
-
                         loc_ent = act.local_entry
                         assert loc_ent is not None
-                        new_base = FileEntry(
-                            rel_path=rel_p,
-                            md5=loc_ent.md5,
-                            sha256=loc_ent.sha256,
-                            size=loc_ent.size,
-                            mtime_ns=loc_ent.mtime_ns,
-                            file_id=uploaded.file_id,
-                            is_shortcut=False,
-                            target_file_id="",
+                        push_tasks.append(
+                            (rel_p, abs_local, remote_branch_rel, in_place_fid, loc_ent)
                         )
-                        branch_state_dict[rel_p] = new_base.to_dict()
-                        self._save_local_state(state)
-                        report.pushed.append(rel_p)
                         continue
 
                     if act.action in (SyncActionType.PULL_NEW, SyncActionType.PULL_UPDATE):
@@ -977,24 +1057,9 @@ class SyncCoordinator:
                             if force and act.local_entry and act.baseline_entry and act.local_entry.md5 != act.baseline_entry.md5:
                                 self._create_conflict_backup(abs_local)
 
-                        self.transport.download_file(remote_branch_rel, abs_local)
-                        md5_hex, sha_hex, sz = compute_local_hashes(abs_local)
-                        st = abs_local.stat()
                         rem_ent = act.remote_entry
                         assert rem_ent is not None
-                        new_base = FileEntry(
-                            rel_path=rel_p,
-                            md5=md5_hex,
-                            sha256=sha_hex,
-                            size=sz,
-                            mtime_ns=int(st.st_mtime_ns),
-                            file_id=rem_ent.effective_file_id(),
-                            is_shortcut=rem_ent.is_shortcut,
-                            target_file_id=rem_ent.target_file_id,
-                        )
-                        branch_state_dict[rel_p] = new_base.to_dict()
-                        self._save_local_state(state)
-                        report.pulled.append(rel_p)
+                        pull_tasks.append((rel_p, abs_local, remote_branch_rel, rem_ent))
                         continue
 
                     if act.action == SyncActionType.DELETE_LOCAL:
@@ -1028,6 +1093,90 @@ class SyncCoordinator:
                         self._save_local_state(state)
                         report.deleted_remote.append(rel_p)
                         continue
+
+                if push_tasks:
+                    self._precreate_remote_dirs(
+                        [remote_branch_rel for _, _, remote_branch_rel, _, _ in push_tasks]
+                    )
+                    first_push_err: Optional[BaseException] = None
+                    with ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS) as pool:
+                        fut_map = {
+                            pool.submit(
+                                self.transport.upload_file,
+                                abs_local,
+                                remote_branch_rel,
+                                in_place_file_id=in_place_fid,
+                            ): (rel_p, loc_ent)
+                            for rel_p, abs_local, remote_branch_rel, in_place_fid, loc_ent in push_tasks
+                        }
+                        for fut in as_completed(fut_map):
+                            rel_p, loc_ent = fut_map[fut]
+                            try:
+                                uploaded = fut.result()
+                            except BaseException as exc:
+                                if first_push_err is None:
+                                    first_push_err = exc
+                                continue
+                            curr_branch_files[rel_p] = uploaded.file_id
+                            meta_dirty = True
+                            new_base = FileEntry(
+                                rel_path=rel_p,
+                                md5=loc_ent.md5,
+                                sha256=loc_ent.sha256,
+                                size=loc_ent.size,
+                                mtime_ns=loc_ent.mtime_ns,
+                                file_id=uploaded.file_id,
+                                is_shortcut=False,
+                                target_file_id="",
+                            )
+                            branch_state_dict[rel_p] = new_base.to_dict()
+                            self._save_local_state(state)
+                            report.pushed.append(rel_p)
+                    report.pushed.sort()
+                    if first_push_err is not None:
+                        raise first_push_err
+
+                if pull_tasks:
+                    def _download_and_hash(
+                        remote_branch_rel: str, abs_local: Path
+                    ) -> Tuple[str, str, int, int]:
+                        self.transport.download_file(remote_branch_rel, abs_local)
+                        md5_hex, sha_hex, sz = compute_local_hashes(abs_local)
+                        st = abs_local.stat()
+                        return md5_hex, sha_hex, sz, int(st.st_mtime_ns)
+
+                    first_pull_err: Optional[BaseException] = None
+                    with ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS) as pool:
+                        fut_map = {
+                            pool.submit(
+                                _download_and_hash, remote_branch_rel, abs_local
+                            ): (rel_p, rem_ent)
+                            for rel_p, abs_local, remote_branch_rel, rem_ent in pull_tasks
+                        }
+                        for fut in as_completed(fut_map):
+                            rel_p, rem_ent = fut_map[fut]
+                            try:
+                                md5_hex, sha_hex, sz, mtime_ns = fut.result()
+                            except BaseException as exc:
+                                if first_pull_err is None:
+                                    first_pull_err = exc
+                                continue
+                            new_base = FileEntry(
+                                rel_path=rel_p,
+                                md5=md5_hex,
+                                sha256=sha_hex,
+                                size=sz,
+                                mtime_ns=mtime_ns,
+                                file_id=rem_ent.effective_file_id(),
+                                is_shortcut=rem_ent.is_shortcut,
+                                target_file_id=rem_ent.target_file_id,
+                            )
+                            branch_state_dict[rel_p] = new_base.to_dict()
+                            self._save_local_state(state)
+                            report.pulled.append(rel_p)
+                    report.pulled.sort()
+                    if first_pull_err is not None:
+                        raise first_pull_err
 
                 gc_trashed = self._gc_unreferenced_history_files(meta)
                 if gc_trashed:

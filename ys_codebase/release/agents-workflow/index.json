@@ -10,9 +10,9 @@
     "1.2.0.2",
     "1.2.1.1",
     "1.2.2.3",
-    "1.2.3.2",
     "1.2.3.3",
-    "1.2.3.4"
+    "1.2.3.4",
+    "1.2.3.5"
   ],
   "releases": {
     "1.0.0.0": {
@@ -143,7 +143,7 @@
       "sha256": "485de81b4219c1745527534dcae07391c3f7856289dc72d9f78280b78a0b8eea"
     },
     "1.2.3.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2"
       },
@@ -171,6 +171,16 @@
       "type": "refactor",
       "urgency": "optional",
       "summary": "實作 _trace_parser JSONL 串流生成器與 2MB 單行安全上限"
+    },
+    "1.2.3.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.6"
+      },
+      "sha256": "59a8fe20bd013516e62324256e24db675d37d7e7874bb68f227a6571c0d8b800",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "publisher 對齊 core.gitignore 根目錄統一分組軟合併引擎並更新 manifest.json optional"
     }
   }
 }

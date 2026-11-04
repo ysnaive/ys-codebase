@@ -648,6 +648,142 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         self.assertEqual(rem_baks[0].read_text(encoding="utf-8"), "Spec v3 Remote Diverged\n")
         self.mark_passed()
 
+    @require(Requirement.ENV)
+    def test_et_06_orthogonal_cloud_branch_discovery_both_deleted_prune_and_untracked_checkout_guard(self) -> None:
+        """
+        Verify the 3 orthogonal multi-dimensional edge cases:
+        1. Cloud-created branch directory ('repo/cloud_feat/') without updating .yscb_gdrive.json is
+           auto-discovered by list_branches(), checkout_branch(), and run_sync() CoW ref-counting.
+        2. When a tracked file is deleted on both local and remote and synced WITHOUT --delete,
+           its ghost baseline in sync_state.json and .yscb_gdrive.json['branch_files'] is pruned
+           so recreating the file later performs a clean PUSH_NEW without false conflict.
+        3. checkout_branch(..., force=True) preserves untracked local files (e.g. .gitignore files
+           in sync_spaces not yet in curr_base) when absent on target branch, and auto-backups them
+           before overwriting when target branch has a colliding path.
+        """
+        self.coord.init_repo()
+
+        # --- Sub-case 1: Both-side deletion without --delete prunes ghost baseline ---
+        f_ghost = self.docs_dir / "ghost_test.md"
+        f_ghost.write_text("Ghost v1\n", encoding="utf-8")
+        self.coord.run_sync(mode="sync")
+        self.assertIsNotNone(self.transport.get_entry("repo/main/docs/ghost_test.md"))
+
+        # Delete on both local and remote, then run sync WITHOUT --delete
+        f_ghost.unlink()
+        self.transport.trash_file("repo/main/docs/ghost_test.md")
+        rep_both_del = self.coord.run_sync(mode="sync", delete=False)
+        self.assertEqual(rep_both_del.conflicts, [])
+
+        # Recreate f_ghost with new content and sync WITHOUT --delete -> must cleanly PUSH_NEW (no conflict!)
+        f_ghost.write_text("Ghost v2 Reborn\n", encoding="utf-8")
+        rep_reborn = self.coord.run_sync(mode="sync", delete=False, now_ns=time.time_ns() + 5_000_000_000)
+        self.assertEqual(rep_reborn.conflicts, [])
+        self.assertIn("docs/ghost_test.md", rep_reborn.pushed)
+
+        # --- Sub-case 2: Cloud-created branch directory auto-discovery ---
+        self.transport.mkdir("repo/cloud_feat")
+        cloud_only_src = self.tmp_root / "cloud_branch_doc.md"
+        cloud_only_src.write_text("Created on Cloud Branch\n", encoding="utf-8")
+        self.transport.upload_file(cloud_only_src, "repo/cloud_feat/docs/cloud_doc.md")
+        # Also upload a colliding file on cloud_feat
+        colliding_remote = self.tmp_root / "colliding_remote.md"
+        colliding_remote.write_text("Remote Colliding Content on cloud_feat\n", encoding="utf-8")
+        self.transport.upload_file(colliding_remote, "repo/cloud_feat/docs/untracked_collide.md")
+
+        branches_info = self.coord.list_branches()
+        self.assertIn("cloud_feat", branches_info["branches"])
+        self.assertTrue(branches_info["branches"]["cloud_feat"].get("auto_discovered"))
+
+        # --- Sub-case 3: Untracked local (.gitignore) file protection during checkout --force ---
+        untracked_keep = self.docs_dir / "untracked_local_only.md"
+        untracked_keep.write_text("Local gitignored config to keep\n", encoding="utf-8")
+        untracked_collide = self.docs_dir / "untracked_collide.md"
+        untracked_collide.write_text("Local gitignored colliding v1\n", encoding="utf-8")
+
+        co_res = self.coord.checkout_branch("cloud_feat", force=True, backup=False)
+        self.assertEqual(co_res["active_branch"], "cloud_feat")
+        # Tracked main file ('docs/ghost_test.md') absent on cloud_feat is removed as orphan
+        self.assertFalse(f_ghost.exists())
+        # Untracked local file absent on cloud_feat is preserved!
+        self.assertTrue(untracked_keep.is_file())
+        self.assertEqual(untracked_keep.read_text(encoding="utf-8"), "Local gitignored config to keep\n")
+        # Untracked local file colliding with cloud_feat was automatically backed up even with backup=False!
+        self.assertEqual(untracked_collide.read_text(encoding="utf-8"), "Remote Colliding Content on cloud_feat\n")
+        collide_baks = list(self.docs_dir.glob("untracked_collide.md.conflict.*.bak"))
+        self.assertEqual(len(collide_baks), 1)
+        self.assertEqual(collide_baks[0].read_text(encoding="utf-8"), "Local gitignored colliding v1\n")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_09_parallel_push_pull_and_branch_create_precreates_dirs(self) -> None:
+        """
+        Verify multi-directory concurrent push, create_branch, and pull pre-create parent
+        directories deterministically before parallel file/shortcut transfers and maintain
+        100% state integrity across multiple nested subdirectories.
+        """
+        self.coord.init_repo()
+        nested_paths = [
+            "a/b/c/file_1.md",
+            "a/b/c/file_2.md",
+            "a/b/d/file_3.md",
+            "x/y/z/file_4.md",
+            "x/y/z/file_5.md",
+            "root_file.md",
+        ]
+        for rel in nested_paths:
+            f_path = self.docs_dir / rel
+            f_path.parent.mkdir(parents=True, exist_ok=True)
+            f_path.write_text(f"Content of {rel}\n", encoding="utf-8")
+
+        precreated_before_upload = set()
+        upload_started = {"flag": False}
+        orig_mkdir = self.transport.mkdir
+        orig_upload = self.transport.upload_file
+
+        def _spy_mkdir(remote_rel_path: str):
+            if not upload_started["flag"]:
+                precreated_before_upload.add(remote_rel_path)
+            return orig_mkdir(remote_rel_path)
+
+        def _spy_upload(local_path: Path, remote_rel_path: str, in_place_file_id=None):
+            if remote_rel_path.startswith("repo/main/docs/"):
+                upload_started["flag"] = True
+            return orig_upload(local_path, remote_rel_path, in_place_file_id=in_place_file_id)
+
+        self.transport.mkdir = _spy_mkdir  # type: ignore[method-assign]
+        self.transport.upload_file = _spy_upload  # type: ignore[method-assign]
+        try:
+            rep_push = self.coord.run_sync(mode="push")
+        finally:
+            self.transport.mkdir = orig_mkdir  # type: ignore[method-assign]
+            self.transport.upload_file = orig_upload  # type: ignore[method-assign]
+
+        expected_pushed = sorted(f"docs/{p}" for p in nested_paths)
+        self.assertEqual(rep_push.pushed, expected_pushed)
+        self.assertIn("repo/main/docs/a/b/c", precreated_before_upload)
+        self.assertIn("repo/main/docs/a/b/d", precreated_before_upload)
+        self.assertIn("repo/main/docs/x/y/z", precreated_before_upload)
+
+        # Create branch 'parallel_br' concurrently
+        br_res = self.coord.create_branch("parallel_br", from_branch="main")
+        self.assertEqual(br_res["shortcuts_created"], len(nested_paths))
+
+        # Delete local files and pull concurrently from 'main'
+        shutil.rmtree(self.docs_dir)
+        self.docs_dir.mkdir(parents=True, exist_ok=True)
+        # Clear local state baseline to trigger PULL_NEW for all files
+        (self.cache_dir / "sync_state.json").unlink(missing_ok=True)
+
+        rep_pull = self.coord.run_sync(mode="pull")
+        self.assertEqual(rep_pull.pulled, expected_pushed)
+        for rel in nested_paths:
+            self.assertEqual(
+                (self.docs_dir / rel).read_text(encoding="utf-8"),
+                f"Content of {rel}\n",
+            )
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

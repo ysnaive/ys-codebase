@@ -1,10 +1,20 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.3.4",
+  "version": "1.2.3.5",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.5"
+    "core": ">=1.2.6"
+  },
+  "optional": {
+    "knowledge-db": {
+      "version": ">=1.2.0",
+      "hint": "提供 knowledge-db-search 技能與工作流文檔/程式碼語意檢索第一反射能力"
+    },
+    "gdrive-support": {
+      "version": ">=1.0.0",
+      "hint": "提供 gdrive-local-ops 技能與 Google Drive 雲端原子操作及跨環境 AI 協作同步能力"
+    }
   },
   "onboarding": [
     "[Pre-flight] Initialize default workflow paths (plans/, docs/, roadmap/, archived/): python yscb.py agents-workflow init --default -y",
@@ -14,6 +24,6 @@
   "release": {
     "type": "refactor",
     "urgency": "optional",
-    "summary": "實作 _trace_parser JSONL 串流生成器與 2MB 單行安全上限"
+    "summary": "publisher 對齊 core.gitignore 根目錄統一分組軟合併引擎並更新 manifest.json optional"
   }
 }

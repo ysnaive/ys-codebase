@@ -8,8 +8,7 @@
       "hash_policy": "adaptive",
       "large_file_threshold_mb": 10,
       "follow_symlinks": false,
-      "watch": true,
-      "weight": 1.2
+      "watch": true
     },
     "plans": {
       "description": "專案演進與開發計畫空間",
@@ -19,8 +18,7 @@
       "hash_policy": "adaptive",
       "large_file_threshold_mb": 10,
       "follow_symlinks": false,
-      "watch": true,
-      "weight": 0.9
+      "watch": true
     }
   }
 }

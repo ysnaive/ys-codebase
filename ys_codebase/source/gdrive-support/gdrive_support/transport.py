@@ -9,12 +9,14 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 import html
+from http.client import HTTPSConnection
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import mimetypes
 import os
 from pathlib import Path
 import shutil
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.error
@@ -163,25 +165,28 @@ class LocalSandboxTransport(AbstractSyncTransport):
         self.root = Path(sandbox_root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self._meta_path = self.root / SANDBOX_META_FILENAME
+        self._lock = threading.RLock()
         self._ensure_meta()
 
     def _ensure_meta(self) -> Dict[str, Any]:
-        if self._meta_path.is_file():
-            try:
-                data = json.loads(self._meta_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and "items" in data:
-                    return data
-            except Exception:
-                pass
-        init_data: Dict[str, Any] = {
-            "root_id": "sandbox_root",
-            "items": {},
-        }
-        self._save_meta(init_data)
-        return init_data
+        with self._lock:
+            if self._meta_path.is_file():
+                try:
+                    data = json.loads(self._meta_path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and "items" in data:
+                        return data
+                except Exception:
+                    pass
+            init_data: Dict[str, Any] = {
+                "root_id": "sandbox_root",
+                "items": {},
+            }
+            self._save_meta(init_data)
+            return init_data
 
     def _save_meta(self, data: Dict[str, Any]) -> None:
-        vfs.write_json(self._meta_path, data, indent=2, encoding="utf-8", atomic=True)
+        with self._lock:
+            vfs.write_json(self._meta_path, data, indent=2, encoding="utf-8", atomic=True)
 
     def _phys_path(self, rel_path: str) -> Path:
         norm = normalize_remote_rel_path(rel_path)
@@ -441,25 +446,27 @@ class LocalSandboxTransport(AbstractSyncTransport):
                 mime_type=FOLDER_MIME_TYPE,
                 is_dir=True,
             )
-        meta = self._sync_filesystem_into_meta()
-        items = self._deduplicate_same_path_items(meta)
-        for info in items.values():
-            if info.get("rel_path") == norm:
-                if not info.get("is_shortcut") and not is_unsupported_google_workspace_mime(
-                    str(info.get("mime_type") or "")
-                ):
-                    if not self._phys_path(norm).exists():
-                        continue
-                return self._build_entry(info, items)
-        return None
+        with self._lock:
+            meta = self._sync_filesystem_into_meta()
+            items = self._deduplicate_same_path_items(meta)
+            for info in items.values():
+                if info.get("rel_path") == norm:
+                    if not info.get("is_shortcut") and not is_unsupported_google_workspace_mime(
+                        str(info.get("mime_type") or "")
+                    ):
+                        if not self._phys_path(norm).exists():
+                            continue
+                    return self._build_entry(info, items)
+            return None
 
     def get_entry_by_id(self, file_id: str) -> Optional[RemoteEntry]:
-        meta = self._sync_filesystem_into_meta()
-        items = meta.get("items", {})
-        info = items.get(file_id)
-        if not info:
-            return None
-        return self._build_entry(info, items)
+        with self._lock:
+            meta = self._sync_filesystem_into_meta()
+            items = meta.get("items", {})
+            info = items.get(file_id)
+            if not info:
+                return None
+            return self._build_entry(info, items)
 
     def mkdir(self, remote_path: str) -> RemoteEntry:
         norm = normalize_remote_rel_path(remote_path)
@@ -471,33 +478,34 @@ class LocalSandboxTransport(AbstractSyncTransport):
                 mime_type=FOLDER_MIME_TYPE,
                 is_dir=True,
             )
-        existing = self.get_entry(norm)
-        if existing is not None and existing.is_dir:
-            return existing
+        with self._lock:
+            existing = self.get_entry(norm)
+            if existing is not None and existing.is_dir:
+                return existing
 
-        phys = self._phys_path(norm)
-        phys.mkdir(parents=True, exist_ok=True)
-        meta = self._sync_filesystem_into_meta()
-        items = meta.get("items", {})
-        for info in items.values():
-            if info.get("rel_path") == norm and info.get("is_dir"):
-                return self._build_entry(info, items)
+            phys = self._phys_path(norm)
+            phys.mkdir(parents=True, exist_ok=True)
+            meta = self._sync_filesystem_into_meta()
+            items = meta.get("items", {})
+            for info in items.values():
+                if info.get("rel_path") == norm and info.get("is_dir"):
+                    return self._build_entry(info, items)
 
-        fid = f"sbx_dir_{uuid.uuid4().hex[:10]}"
-        items[fid] = {
-            "file_id": fid,
-            "rel_path": norm,
-            "name": phys.name,
-            "mime_type": FOLDER_MIME_TYPE,
-            "is_dir": True,
-            "is_shortcut": False,
-            "target_file_id": "",
-            "size": 0,
-            "md5": "",
-            "mtime_ns": int(phys.stat().st_mtime_ns),
-        }
-        self._save_meta(meta)
-        return self._build_entry(items[fid], items)
+            fid = f"sbx_dir_{uuid.uuid4().hex[:10]}"
+            items[fid] = {
+                "file_id": fid,
+                "rel_path": norm,
+                "name": phys.name,
+                "mime_type": FOLDER_MIME_TYPE,
+                "is_dir": True,
+                "is_shortcut": False,
+                "target_file_id": "",
+                "size": 0,
+                "md5": "",
+                "mtime_ns": int(phys.stat().st_mtime_ns),
+            }
+            self._save_meta(meta)
+            return self._build_entry(items[fid], items)
 
     def upload_file(
         self,
@@ -526,35 +534,36 @@ class LocalSandboxTransport(AbstractSyncTransport):
         guessed_mime, _ = mimetypes.guess_type(dst.name)
         mime = guessed_mime or "application/octet-stream"
 
-        meta = self._ensure_meta()
-        items = meta["items"]
+        with self._lock:
+            meta = self._ensure_meta()
+            items = meta["items"]
 
-        target_fid: Optional[str] = None
-        if in_place_file_id and in_place_file_id in items:
-            target_fid = in_place_file_id
-        else:
-            for fid, info in items.items():
-                if info.get("rel_path") == norm and not info.get("is_shortcut"):
-                    target_fid = fid
-                    break
+            target_fid: Optional[str] = None
+            if in_place_file_id and in_place_file_id in items:
+                target_fid = in_place_file_id
+            else:
+                for fid, info in items.items():
+                    if info.get("rel_path") == norm and not info.get("is_shortcut"):
+                        target_fid = fid
+                        break
 
-        if target_fid is None:
-            target_fid = in_place_file_id or f"sbx_{uuid.uuid4().hex[:12]}"
+            if target_fid is None:
+                target_fid = in_place_file_id or f"sbx_{uuid.uuid4().hex[:12]}"
 
-        items[target_fid] = {
-            "file_id": target_fid,
-            "rel_path": norm,
-            "name": dst.name,
-            "mime_type": mime,
-            "is_dir": False,
-            "is_shortcut": False,
-            "target_file_id": "",
-            "size": sz,
-            "md5": md5_hex,
-            "mtime_ns": mtime_ns,
-        }
-        self._save_meta(meta)
-        return self._build_entry(items[target_fid], items)
+            items[target_fid] = {
+                "file_id": target_fid,
+                "rel_path": norm,
+                "name": dst.name,
+                "mime_type": mime,
+                "is_dir": False,
+                "is_shortcut": False,
+                "target_file_id": "",
+                "size": sz,
+                "md5": md5_hex,
+                "mtime_ns": mtime_ns,
+            }
+            self._save_meta(meta)
+            return self._build_entry(items[target_fid], items)
 
     def download_file(self, remote_path: str, local_path: Path) -> RemoteEntry:
         norm = normalize_remote_rel_path(remote_path)
@@ -672,39 +681,40 @@ class LocalSandboxTransport(AbstractSyncTransport):
         if not norm:
             raise GDrivePathError("shortcut_remote_path cannot be empty.")
 
-        meta = self._sync_filesystem_into_meta()
-        items = meta["items"]
-        target_info = items.get(target_file_id)
-        if target_info is not None and target_info.get("is_dir"):
-            raise GDrivePathError(
-                f"Creating a shortcut to a folder ('{target_file_id}') is forbidden."
-            )
-
         parent_rel = Path(norm).parent.as_posix()
         if parent_rel and parent_rel != ".":
             self.mkdir(parent_rel)
 
-        existing_fid: Optional[str] = None
-        for fid, info in items.items():
-            if info.get("rel_path") == norm:
-                existing_fid = fid
-                break
+        with self._lock:
+            meta = self._sync_filesystem_into_meta()
+            items = meta["items"]
+            target_info = items.get(target_file_id)
+            if target_info is not None and target_info.get("is_dir"):
+                raise GDrivePathError(
+                    f"Creating a shortcut to a folder ('{target_file_id}') is forbidden."
+                )
 
-        sc_fid = existing_fid or f"sbx_sc_{uuid.uuid4().hex[:10]}"
-        items[sc_fid] = {
-            "file_id": sc_fid,
-            "rel_path": norm,
-            "name": Path(norm).name,
-            "mime_type": SHORTCUT_MIME_TYPE,
-            "is_dir": False,
-            "is_shortcut": True,
-            "target_file_id": target_file_id,
-            "size": 0,
-            "md5": "",
-            "mtime_ns": time.time_ns(),
-        }
-        self._save_meta(meta)
-        return self._build_entry(items[sc_fid], items)
+            existing_fid: Optional[str] = None
+            for fid, info in items.items():
+                if info.get("rel_path") == norm:
+                    existing_fid = fid
+                    break
+
+            sc_fid = existing_fid or f"sbx_sc_{uuid.uuid4().hex[:10]}"
+            items[sc_fid] = {
+                "file_id": sc_fid,
+                "rel_path": norm,
+                "name": Path(norm).name,
+                "mime_type": SHORTCUT_MIME_TYPE,
+                "is_dir": False,
+                "is_shortcut": True,
+                "target_file_id": target_file_id,
+                "size": 0,
+                "md5": "",
+                "mtime_ns": time.time_ns(),
+            }
+            self._save_meta(meta)
+            return self._build_entry(items[sc_fid], items)
 
 
 class GoogleDriveApiTransport(AbstractSyncTransport):
@@ -731,6 +741,37 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         self.root_folder_id = config.root_folder_id
         self._access_token: Optional[str] = None
         self._token_expiry_epoch: float = 0.0
+        self._folder_cache: Dict[str, RemoteEntry] = {}
+        self._scanned_prefixes: set[str] = set()
+        self._token_lock = threading.RLock()
+        self._tls = threading.local()
+
+    def _invalidate_cache_path(self, norm_path: str) -> None:
+        if not norm_path:
+            self._folder_cache.clear()
+            return
+        prefix = f"{norm_path}/"
+        for k in [k for k in self._folder_cache if k == norm_path or k.startswith(prefix)]:
+            self._folder_cache.pop(k, None)
+
+    def _get_https_conn(self, host: str) -> HTTPSConnection:
+        conns: Dict[str, HTTPSConnection] = getattr(self._tls, "conns", None)
+        if conns is None:
+            conns = {}
+            self._tls.conns = conns
+        conn = conns.get(host)
+        if conn is None:
+            conn = HTTPSConnection(host, timeout=60)
+            conns[host] = conn
+        return conn
+
+    def _drop_https_conn(self, host: str) -> None:
+        conns: Optional[Dict[str, HTTPSConnection]] = getattr(self._tls, "conns", None)
+        if conns and host in conns:
+            try:
+                conns.pop(host).close()
+            except Exception:
+                pass
 
     def _resolve_uri_path(self, raw_uri: str) -> Path:
         if "://" in raw_uri:
@@ -738,100 +779,112 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         return Path(raw_uri).resolve()
 
     def _ensure_access_token(self) -> str:
-        now = time.time()
-        if self._access_token and now < self._token_expiry_epoch - 60:
+        with self._token_lock:
+            now = time.time()
+            if self._access_token and now < self._token_expiry_epoch - 60:
+                return self._access_token
+
+            token_path = self._resolve_uri_path(self.config.token_uri)
+            if not token_path.is_file():
+                raise GDriveTransportError(
+                    f"OAuth token file not found at '{token_path.as_posix()}'. "
+                    "Run 'python yscb.py gdrive auth' to authorize."
+                )
+            token_data = json.loads(token_path.read_text(encoding="utf-8"))
+            access_token = str(token_data.get("access_token") or "")
+            expiry = float(token_data.get("expiry_epoch") or 0.0)
+            if access_token and now < expiry - 60:
+                self._access_token = access_token
+                self._token_expiry_epoch = expiry
+                return access_token
+
+            refresh_token = str(token_data.get("refresh_token") or "")
+            client_id = str(token_data.get("client_id") or "")
+            client_secret = str(token_data.get("client_secret") or "")
+            if not client_id or not client_secret:
+                cred_path = self._resolve_uri_path(self.config.credentials_uri)
+                if cred_path.is_file():
+                    client_id, client_secret = load_oauth_client_config(cred_path)
+            if not (refresh_token and client_id and client_secret):
+                raise GDriveTransportError(
+                    "Stored OAuth token is expired and lacks refresh credentials."
+                )
+
+            payload = urllib.parse.urlencode(
+                {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                }
+            ).encode("utf-8")
+            req = urllib.request.Request(
+                self.OAUTH_TOKEN_URL,
+                data=payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    refreshed = json.loads(resp.read().decode("utf-8"))
+            except Exception as exc:
+                raise GDriveTransportError(f"Failed to refresh OAuth2 token: {exc}") from exc
+
+            self._access_token = str(refreshed["access_token"])
+            expires_in = float(refreshed.get("expires_in", 3600))
+            self._token_expiry_epoch = time.time() + expires_in
+            token_data["access_token"] = self._access_token
+            token_data["expiry_epoch"] = self._token_expiry_epoch
+            token_data.pop("client_secret", None)
+            vfs.write_json(token_path, token_data, indent=2, encoding="utf-8", atomic=True)
+            try:
+                os.chmod(token_path, 0o600)
+            except OSError:
+                pass
             return self._access_token
-
-        token_path = self._resolve_uri_path(self.config.token_uri)
-        if not token_path.is_file():
-            raise GDriveTransportError(
-                f"OAuth token file not found at '{token_path.as_posix()}'. "
-                "Run 'python yscb.py gdrive auth' to authorize."
-            )
-        token_data = json.loads(token_path.read_text(encoding="utf-8"))
-        access_token = str(token_data.get("access_token") or "")
-        expiry = float(token_data.get("expiry_epoch") or 0.0)
-        if access_token and now < expiry - 60:
-            self._access_token = access_token
-            self._token_expiry_epoch = expiry
-            return access_token
-
-        refresh_token = str(token_data.get("refresh_token") or "")
-        client_id = str(token_data.get("client_id") or "")
-        client_secret = str(token_data.get("client_secret") or "")
-        if not client_id or not client_secret:
-            cred_path = self._resolve_uri_path(self.config.credentials_uri)
-            if cred_path.is_file():
-                client_id, client_secret = load_oauth_client_config(cred_path)
-        if not (refresh_token and client_id and client_secret):
-            raise GDriveTransportError(
-                "Stored OAuth token is expired and lacks refresh credentials."
-            )
-
-        payload = urllib.parse.urlencode(
-            {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token",
-            }
-        ).encode("utf-8")
-        req = urllib.request.Request(
-            self.OAUTH_TOKEN_URL,
-            data=payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                refreshed = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
-            raise GDriveTransportError(f"Failed to refresh OAuth2 token: {exc}") from exc
-
-        self._access_token = str(refreshed["access_token"])
-        expires_in = float(refreshed.get("expires_in", 3600))
-        self._token_expiry_epoch = time.time() + expires_in
-        token_data["access_token"] = self._access_token
-        token_data["expiry_epoch"] = self._token_expiry_epoch
-        token_data.pop("client_secret", None)
-        vfs.write_json(token_path, token_data, indent=2, encoding="utf-8", atomic=True)
-        try:
-            os.chmod(token_path, 0o600)
-        except OSError:
-            pass
-        return self._access_token
 
     def _request_json(
         self,
         method: str,
         url: str,
-        body: Optional[ bytes ] = None,
+        body: Optional[bytes] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         token = self._ensure_access_token()
-        req_headers = {"Authorization": f"Bearer {token}"}
+        req_headers = {"Authorization": f"Bearer {token}", "Connection": "keep-alive"}
+        if body is not None:
+            req_headers["Content-Length"] = str(len(body))
         if headers:
             req_headers.update(headers)
 
+        parsed = urllib.parse.urlsplit(url)
+        host = parsed.netloc
+        path_with_query = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+
         backoff = 1.0
         for attempt in range(4):
-            req = urllib.request.Request(url, data=body, headers=req_headers, method=method)
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    raw = resp.read()
+                conn = self._get_https_conn(host)
+                conn.request(method, path_with_query, body=body, headers=req_headers)
+                resp = conn.getresponse()
+                raw = resp.read()
+                status = resp.status
+                if 200 <= status < 300:
                     return json.loads(raw.decode("utf-8")) if raw else {}
-            except urllib.error.HTTPError as exc:
-                if exc.code in (429, 500, 502, 503, 504) and attempt < 3:
+                if status in (429, 500, 502, 503, 504) and attempt < 3:
                     time.sleep(backoff)
                     backoff *= 2
                     continue
-                err_body = exc.read().decode("utf-8", errors="replace")
-                if exc.code == 404:
-                    raise GDriveFileNotFoundError(f"Drive API 404: {err_body}") from exc
-                raise GDriveTransportError(
-                    f"Drive API HTTP {exc.code}: {err_body}"
-                ) from exc
+                err_body = raw.decode("utf-8", errors="replace")
+                if status == 404:
+                    raise GDriveFileNotFoundError(f"Drive API 404: {err_body}")
+                raise GDriveTransportError(f"Drive API HTTP {status}: {err_body}")
+            except (GDriveFileNotFoundError, GDriveTransportError):
+                raise
             except Exception as exc:
+                self._drop_https_conn(host)
+                if attempt < 3:
+                    continue
                 raise GDriveTransportError(f"Drive API request failed: {exc}") from exc
         raise GDriveTransportError("Drive API request exhausted retries.")
 
@@ -960,8 +1013,13 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             }
         parts = norm.split("/")
         curr_parent = self.root_folder_id
+        curr_rel = ""
         last_item: Optional[Dict[str, Any]] = None
         for idx, part in enumerate(parts):
+            curr_rel = f"{curr_rel}/{part}".strip("/") if curr_rel else part
+            if idx < len(parts) - 1 and curr_rel in self._folder_cache:
+                curr_parent = self._folder_cache[curr_rel].file_id
+                continue
             children = self._list_children_raw(curr_parent)
             matches = [c for c in children if c.get("name") == part]
             if not matches:
@@ -972,6 +1030,8 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             )
             chosen = matches[0]
             last_item = chosen
+            if chosen.get("mimeType") == FOLDER_MIME_TYPE:
+                self._folder_cache[curr_rel] = self._raw_to_entry(chosen, curr_rel)
             if idx < len(parts) - 1:
                 if chosen.get("mimeType") != FOLDER_MIME_TYPE:
                     return None
@@ -1019,10 +1079,14 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                             pass
                 child_rel = f"{curr_prefix}/{name}".strip("/") if curr_prefix else name
                 collected_raw.append((child_rel, winner))
-                if recursive and winner.get("mimeType") == FOLDER_MIME_TYPE:
-                    _walk(str(winner["id"]), child_rel)
+                if winner.get("mimeType") == FOLDER_MIME_TYPE:
+                    self._folder_cache[child_rel] = self._raw_to_entry(winner, child_rel)
+                    if recursive:
+                        _walk(str(winner["id"]), child_rel)
 
         _walk(folder_id, norm)
+        if recursive:
+            self._scanned_prefixes.add(norm)
         target_map = self._resolve_shortcut_targets([it for _, it in collected_raw])
         entries = [
             self._raw_to_entry(it, rel_p, target_map) for rel_p, it in collected_raw
@@ -1032,6 +1096,8 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
 
     def get_entry(self, remote_path: str) -> Optional[RemoteEntry]:
         norm = normalize_remote_rel_path(remote_path)
+        if norm in self._folder_cache:
+            return self._folder_cache[norm]
         res = self._resolve_folder_id_by_path(norm)
         if res is None:
             return None
@@ -1061,12 +1127,18 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 mime_type=FOLDER_MIME_TYPE,
                 is_dir=True,
             )
+        if norm in self._folder_cache:
+            return self._folder_cache[norm]
         parts = norm.split("/")
         curr_parent = self.root_folder_id
         curr_rel = ""
         last_entry: Optional[RemoteEntry] = None
         for part in parts:
             curr_rel = f"{curr_rel}/{part}".strip("/") if curr_rel else part
+            if curr_rel in self._folder_cache:
+                last_entry = self._folder_cache[curr_rel]
+                curr_parent = last_entry.file_id
+                continue
             children = self._list_children_raw(curr_parent)
             folder_matches = [
                 c
@@ -1095,8 +1167,15 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 )
             curr_parent = str(chosen["id"])
             last_entry = self._raw_to_entry(chosen, curr_rel)
+            self._folder_cache[curr_rel] = last_entry
         assert last_entry is not None
         return last_entry
+
+    def _is_under_scanned_prefix(self, norm_path: str) -> bool:
+        for pfx in self._scanned_prefixes:
+            if not pfx or norm_path.startswith(f"{pfx}/"):
+                return True
+        return False
 
     def upload_file(
         self,
@@ -1118,7 +1197,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             parent_id = parent_entry.file_id
 
         target_fid = in_place_file_id
-        if not target_fid:
+        if not target_fid and not self._is_under_scanned_prefix(norm):
             existing = self.get_entry(norm)
             if existing and not existing.is_dir and not existing.is_shortcut:
                 target_fid = existing.file_id
@@ -1225,6 +1304,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             body=json.dumps({"trashed": True}).encode("utf-8"),
             headers={"Content-Type": "application/json; charset=utf-8"},
         )
+        self._invalidate_cache_path(norm)
         return True
 
     def move_file(self, src_remote_path: str, dst_remote_path: str) -> RemoteEntry:
@@ -1253,7 +1333,11 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             body=json.dumps({"name": Path(dst_norm).name}).encode("utf-8"),
             headers={"Content-Type": "application/json; charset=utf-8"},
         )
-        return self._raw_to_entry(updated, dst_norm)
+        self._invalidate_cache_path(src_norm)
+        res_entry = self._raw_to_entry(updated, dst_norm)
+        if res_entry.is_dir:
+            self._folder_cache[dst_norm] = res_entry
+        return res_entry
 
     def create_shortcut(
         self, target_file_id: str, shortcut_remote_path: str

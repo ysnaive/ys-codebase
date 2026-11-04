@@ -57,6 +57,9 @@ except ImportError:
         def health_check(self) -> bool:
             return self.is_alive()
 
+        def touch_activity(self) -> bool:
+            return False
+
         def get_custom_metrics(self) -> Dict[str, Any]:
             return {}
 
@@ -375,6 +378,10 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
                 if diff_res.has_changes:
                     self._refresh_count += 1
                     self._last_refresh_at = time.time()
+                    try:
+                        self.touch_activity()
+                    except Exception:
+                        pass
                     _notify_subscribers(s_name, diff_res)
                     _broadcast_file_space_changed(s_name, diff_res)
             except Exception as exc:

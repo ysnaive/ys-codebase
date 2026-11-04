@@ -36,6 +36,9 @@ except ImportError:
         def health_check(self) -> bool:
             return False
 
+        def touch_activity(self) -> bool:
+            return False
+
 
 WORKER_STATE_FILENAME = ".kdb_worker_state.json"
 
@@ -365,6 +368,10 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             nonlocal busy_start_ts
             if busy_start_ts <= 0.0:
                 busy_start_ts = time.time()
+            try:
+                self.touch_activity()
+            except Exception:
+                pass
             write_worker_state(
                 indices_dir,
                 busy=True,

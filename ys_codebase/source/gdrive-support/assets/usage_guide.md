@@ -14,4 +14,4 @@
     - 初始化與分支：`python __${yscb.host://yscb.py}__ gdrive init [--json]` / `python __${yscb.host://yscb.py}__ gdrive branch <list|create|delete> ...` / `python __${yscb.host://yscb.py}__ gdrive checkout <branch>`
     - 拉取、推送與雙向同步：`python __${yscb.host://yscb.py}__ gdrive <pull|push|sync> [--delete] [--force] [--backup] [--json]`
 - **③ 隨包手冊語意連結**：
-  - 深入探索雙層 `README.md` 軟合併協議、Shortcut 分支與外部雲端 AI 隨包 Skill (`assets/external_cloud_skill/SKILL.md`) 請按需唯讀查閱 [`gdrive-support 隨包手冊`](`__#{module://gdrive-support/README.md}__`)。
+  - 深入探索雙層 `README.md` 軟合併協議、Shortcut 分支與外部雲端 AI 隨包技能 (`assets/external_skill/gdrive-external-ops/SKILL.md` 及 `assets/external_skill/gemini-drive-guide/GEMINI_BOOTSTRAP_GUIDE.md`) 請按需唯讀查閱 [`gdrive-support 隨包手冊`](`__#{module://gdrive-support/README.md}__`)。

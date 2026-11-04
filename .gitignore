@@ -1,4 +1,6 @@
 ys_codebase/release/**/*.zip
+ys_codebase/release/yscb.py
+ys_codebase/release/yscb.py.sha256
 !**/configurable/*.local.json
 
 # === YSCB MANAGED GITIGNORE BEGIN ===

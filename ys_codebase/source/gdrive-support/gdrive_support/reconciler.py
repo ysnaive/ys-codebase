@@ -357,6 +357,20 @@ def reconcile_three_way(
                         )
             continue
 
+        # Case 4: Deleted on both local and remote, but ghost entry remains in baseline
+        if loc is None and rem is None and base is not None:
+            actions.append(
+                SyncAction(
+                    rel_path=rel_p,
+                    action=SyncActionType.IN_SYNC,
+                    local_entry=None,
+                    remote_entry=None,
+                    baseline_entry=base,
+                    reason="both_deleted_prune_baseline",
+                )
+            )
+            continue
+
     return actions
 
 

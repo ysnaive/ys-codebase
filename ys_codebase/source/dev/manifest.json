@@ -1,10 +1,20 @@
 {
   "name": "dev",
-  "version": "1.1.4.1",
+  "version": "1.1.4.2",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
     "core": ">=1.2.5"
+  },
+  "optional": {
+    "vscode-support": {
+      "version": ">=1.0.0",
+      "hint": "提供模組開發時 manifest.json、contributes/*.json 與 configurable/*.json 單檔即時 Schema 驗證"
+    },
+    "agents-workflow": {
+      "version": ">=1.2.3",
+      "hint": "自動投射 yscb-module-dev 生態系模組開發與熱調試技能手冊"
+    }
   },
   "onboarding": [
     "Create a new module scaffold: python yscb.py dev create <module-name> --desc=\"My module\"",
@@ -12,8 +22,8 @@
     "Run isolated sandbox tests: python yscb.py dev test --all --quiet"
   ],
   "release": {
-    "type": "bugfix",
-    "urgency": "recommended",
-    "summary": "沙盒清理串接 vfs.robust_rmtree、成對 realpath 校驗與平行測試超時進程樹回收"
+    "type": "refactor",
+    "urgency": "optional",
+    "summary": "補充 manifest.json optional 建議擴充模組 (vscode-support, agents-workflow)"
   }
 }

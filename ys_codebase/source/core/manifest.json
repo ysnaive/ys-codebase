@@ -1,17 +1,31 @@
 {
   "name": "core",
-  "version": "1.2.5.1",
+  "version": "1.2.6.0",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
+  "optional": {
+    "server": {
+      "version": ">=1.0.4",
+      "hint": "提供 Master-Worker 常駐熱派發與背景微服務容器能力"
+    },
+    "vscode-support": {
+      "version": ">=1.0.0",
+      "hint": "提供 VS Code Pylance extraPaths 與單檔級 JSON Schema 自動編譯投影"
+    },
+    "agents-workflow": {
+      "version": ">=1.2.3",
+      "hint": "提供多階段開發計畫、標準規範與跨 IDE 技能編譯物化引擎"
+    }
+  },
   "onboarding": [
     "Bind host project root: python yscb.py config set core project_root ./",
     "Check semantic URI status: python yscb.py uri check",
     "Explore installed modules: python yscb.py status"
   ],
   "release": {
-    "type": "bugfix",
-    "urgency": "critical",
-    "summary": "新增 robust_rmtree/robust_replace EXDEV 防腐層、不可繼承鎖 FD、微環境跨進程鎖與 virtiofs lib64 相容修復"
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "新增 core.gitignore 根目錄 .gitignore 統一分組軟合併引擎並將預設自更新 URL 對齊 releases 分支"
   }
 }

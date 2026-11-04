@@ -9,7 +9,8 @@
     "1.1.2.2",
     "1.1.3.4",
     "1.1.4.0",
-    "1.1.4.1"
+    "1.1.4.1",
+    "1.1.4.2"
   ],
   "releases": {
     "1.0.0.5": {
@@ -148,6 +149,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "沙盒清理串接 vfs.robust_rmtree、成對 realpath 校驗與平行測試超時進程樹回收"
+    },
+    "1.1.4.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "b59f87785b25d2eaf989b61283b5d62cbd43285ea0a92d078b1e606119139ef9",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "補充 manifest.json optional 建議擴充模組 (vscode-support, agents-workflow)"
     }
   }
 }

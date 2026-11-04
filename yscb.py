@@ -18,7 +18,7 @@ import time
 import urllib.request
 import zipfile
 
-__version__: str = "1.2.2.1"
+__version__: str = "1.2.2.2"
 CONFIG_FILENAME: str = "yscb.config.json"
 DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases"
 LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
@@ -27,7 +27,7 @@ LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
     "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release",
     "https://raw.githubusercontent.com/ysnaive/agent.workflow/main/ys_codebase/release/",
 )
-DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
+DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases/yscb.py"
 _RELEASE_PACKAGE_IGNORES: Tuple[str, ...] = (
     "__pycache__",
     "*.pyc",

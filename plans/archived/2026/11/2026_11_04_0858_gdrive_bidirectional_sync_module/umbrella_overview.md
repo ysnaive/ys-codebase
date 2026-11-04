@@ -31,6 +31,7 @@
 | **sub_02** | `sub_02_branch_and_sync_engine` | Full Track | `Completed` | 實作雲端 `<root_folder_id>` 分支管理機制（`.yscb_gdrive.json`、`README.md`、`init`、`branch list/create/delete`、`checkout` 原子工作樹切換、Shortcut 差量分支、`.history/` Copy-on-Write 與無引用自動移入 `.trash/` GC）、100% 純函式三方對帳 (`reconciler.py`)、增量帳本落盤 (`coordinator.py` 之 `pull`/`push`/`sync`) 與 `auto_sync: false` 預設待機之 `service.py`（自動化測試 100% 基於 `LocalSandboxTransport` 驗證） |
 | **sub_03** | `sub_03_live_gdrive_verification` | Revision | `Completed` | 修訂與非沙盒可測試內容功能驗證：針對對外真實 Google Drive REST API v3（OAuth2 Desktop Loopback / Service Account 憑證流、`files.*` / `changes.list` 真實雲端端點相容性、錯誤訊息與 CLI DX 細節）進行實機手動驗證與微調修訂（不將需使用者金鑰之對外 API 納入自動化 `tests/`） |
 | **sub_04** | `sub_04_repo_sync_isolation_and_skills` | Full Track | `Completed` | 將雲端區分為「頂層純雲端原子儲存區 (`<root_folder_id>/`)」與「子目錄受管同步倉 (`<root_folder_id>/<repo_sync_root>/`，預設 `repo/`)」；重構組態為 `"repo_sync": {"enable": false, "repo_sync_root": "repo", ...}`（`enable: false` 時拒絕 `init/branch/checkout/pull/push/sync` 僅開放原子操作）；雲端刪除改用 Google Drive 原生 30 天垃圾桶 (`trashed=true`) 並自動清空外部 AI 暫存之 `<repo_sync_root>/.trash/`；依本地快取最後啟用狀態變動觸發頂層 `root/README.md` 軟合併/軟移除與 `<repo_sync_root>/README.md` 維護；並新增雙軌分離之「本地 `agents-workflow` Skill」與「給外部/雲端操作之隨包 Skill」 |
+| **sub_05** | `sub_05_ecosystem_refinements_and_release` | Revision | `Completed` | 生態系關聯模組微調更新（`[REV-01]` `server` 預設 30 分鐘 Timeout 與 `touch_activity` 保活探針 SDK 整合、`[REV-02]` 外部隨包技能與網頁版 Gemini 引導手冊、`[REV-03]` 實機背景自動同步驗證、`[REV-04]` 三維度正交邊界收斂、`[REV-05]` CI 與 `yscb.py` 宿主 `releases` 分支發布管線升級、`[REV-06]` 全模組相依/組態對齊與正式版打包發布） |
 
 ---
 
@@ -41,4 +42,5 @@
 - [x] **里程碑 2 (`sub_02_branch_and_sync_engine`)**：完成 `<root_folder_id>` Shortcut 差量分支系統、`.history/` 引用計數回收至 `.trash/`、三方同步狀態機與選配背景服務（`auto_sync: false`）及沙盒整合測試。
 - [x] **里程碑 3 (`sub_03_live_gdrive_verification`)**：完成非沙盒可測試之對外 Google Drive API 實機功能驗證與 OAuth2 Loopback 實證。
 - [x] **里程碑 4 (`sub_04_repo_sync_isolation_and_skills`)**：完成 `repo_sync` 組態與子目錄隔離、雙層 `README.md` 本地快取軟合併/軟移除，以及本地/外部雙軌分離之 Agent Skills。
+- [x] **里程碑 5 (`sub_05_ecosystem_refinements_and_release`)**：完成關聯模組微調更新與最終釋出作業。
 

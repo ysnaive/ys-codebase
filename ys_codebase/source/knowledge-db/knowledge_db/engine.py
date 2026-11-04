@@ -188,25 +188,10 @@ class KnowledgeEngine:
         explicit_weights: Optional[Dict[str, float]] = None,
         core_context: Optional[Any] = None,
     ) -> Dict[str, float]:
-        """載入並合併各層級之空間檢索加權係數 (`space_weights`)"""
+        """載入並合併各層級之空間檢索加權係數 (`space_weights`)，僅顯式宣告權重之空間納入資料庫索引。"""
         weights: Dict[str, float] = {}
 
-        # 1. 從 space_manager 已註冊空間提取基礎預設權重
-        try:
-            loaded_spaces = (
-                self.space_manager.get_all_spaces()
-                if hasattr(self.space_manager, "get_all_spaces")
-                else self.space_manager.load_spaces()
-            )
-            for sp_name, sp_cfg in loaded_spaces.items():
-                if hasattr(sp_cfg, "weight") and sp_cfg.weight is not None:
-                    weights[sp_name] = float(sp_cfg.weight)
-        except (InvalidFileSpaceConfigError, InvalidConfigError):
-            raise
-        except Exception:
-            pass
-
-        # 2. 從模組生態系 contributes.get("knowledge-db") 提取
+        # 1. 從模組生態系 contributes.get("knowledge-db") 提取
         if contributes_data is None:
             try:
                 from core import contributes as core_contributes
@@ -229,7 +214,7 @@ class KnowledgeEngine:
             except Exception:
                 pass
 
-        # 3. 從專案或測試傳入之 config_dir / config://knowledge-db/contribute.json 提取
+        # 2. 從專案或測試傳入之 config_dir / config://knowledge-db/contribute.json 提取
         cfg_candidates: List[Path] = []
         if config_dir is not None:
             cfg_dir_path = Path(config_dir).resolve()
@@ -244,6 +229,7 @@ class KnowledgeEngine:
             except Exception:
                 pass
 
+        has_explicit_cfg_weights = False
         for cfg_file in cfg_candidates:
             if cfg_file.is_file():
                 try:
@@ -251,8 +237,9 @@ class KnowledgeEngine:
                         file_data = json.load(f)
                     if isinstance(file_data, dict):
                         if "space_weights" in file_data:
+                            has_explicit_cfg_weights = True
                             weights.update(validate_space_weights(file_data["space_weights"]))
-                        if isinstance(file_data.get("spaces"), dict):
+                        elif isinstance(file_data.get("spaces"), dict):
                             for s_name, s_val in file_data["spaces"].items():
                                 if isinstance(s_val, dict) and "weight" in s_val and s_val["weight"] is not None:
                                     weights.update(validate_space_weights({s_name: s_val["weight"]}))
@@ -261,15 +248,22 @@ class KnowledgeEngine:
                 except Exception:
                     pass
 
-        # 4. 從傳入之 contributes_data / custom_spaces / explicit_weights 提取覆寫
+        # 3. 從傳入之 contributes_data / custom_spaces / explicit_weights 提取覆寫
+        has_explicit_dict_weights = (
+            explicit_weights is not None
+            or has_explicit_cfg_weights
+            or (isinstance(contributes_data, dict) and "space_weights" in contributes_data and contributes_data["space_weights"] is not None)
+        )
         for raw_dict in (contributes_data, {"spaces": custom_spaces} if custom_spaces else None):
             if isinstance(raw_dict, dict):
-                if isinstance(raw_dict.get("spaces"), dict):
+                if not has_explicit_dict_weights and isinstance(raw_dict.get("spaces"), dict):
                     for s_name, s_val in raw_dict["spaces"].items():
                         if isinstance(s_val, FileSpaceConfig):
                             weights.update(validate_space_weights({s_name: s_val.weight}))
-                        elif isinstance(s_val, dict) and "weight" in s_val and s_val["weight"] is not None:
-                            weights.update(validate_space_weights({s_name: s_val["weight"]}))
+                        elif isinstance(s_val, dict):
+                            w_val = s_val.get("weight", 1.0)
+                            if w_val is not None:
+                                weights.update(validate_space_weights({s_name: w_val}))
                 if "space_weights" in raw_dict and raw_dict["space_weights"] is not None:
                     weights.update(validate_space_weights(raw_dict["space_weights"]))
 
@@ -277,6 +271,22 @@ class KnowledgeEngine:
             weights.update(validate_space_weights(explicit_weights))
 
         return weights
+
+    def get_indexed_spaces(self) -> Dict[str, FileSpaceConfig]:
+        """取得已宣告 `space_weights` 且納入資料庫索引之邏輯空間映射表。"""
+        try:
+            loaded_spaces = (
+                self.space_manager.get_all_spaces()
+                if hasattr(self.space_manager, "get_all_spaces")
+                else self.space_manager.load_spaces()
+            )
+            return {
+                sp_name: sp_cfg
+                for sp_name, sp_cfg in loaded_spaces.items()
+                if sp_name in self.space_weights
+            }
+        except Exception:
+            return {}
 
     def get_space_weight(self, space_name: str) -> float:
         """取得指定邏輯空間之檢索加權係數（預設為 1.0）"""
@@ -291,20 +301,8 @@ class KnowledgeEngine:
         return 1.0
 
     def get_all_space_weights(self) -> Dict[str, float]:
-        """獲取當前所有空間之檢索加權係數映射表"""
-        result = dict(self.space_weights)
-        try:
-            loaded_spaces = (
-                self.space_manager.get_all_spaces()
-                if hasattr(self.space_manager, "get_all_spaces")
-                else self.space_manager.load_spaces()
-            )
-            for sp_name, sp_cfg in loaded_spaces.items():
-                if sp_name not in result:
-                    result[sp_name] = float(getattr(sp_cfg, "weight", 1.0))
-        except Exception:
-            pass
-        return result
+        """獲取當前所有受索引空間之檢索加權係數映射表"""
+        return dict(self.space_weights)
 
     # ----------------------------------------------------------------------
     # 路徑與 Markdown 標籤轉譯委派 (委派 ResultFormatter)
@@ -400,16 +398,22 @@ class KnowledgeEngine:
         space: Optional[str] = None,
     ) -> Dict[str, Any]:
         """獲取全系統空間、後台 Worker、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計摘要。"""
-        spaces = (
+        all_spaces = (
             self.space_manager.get_all_spaces()
             if hasattr(self.space_manager, "get_all_spaces")
             else self.space_manager.load_spaces()
         )
         if space is not None:
-            if space not in spaces:
-                raise FileSpaceNotFoundError(space, list(spaces.keys()))
-            sp = spaces[space]
+            if space not in all_spaces:
+                raise FileSpaceNotFoundError(space, list(all_spaces.keys()))
+            sp = all_spaces[space]
             spaces = {sp.name: sp}
+        else:
+            spaces = {
+                sp_name: sp_cfg
+                for sp_name, sp_cfg in all_spaces.items()
+                if sp_name in self.space_weights
+            }
         indices_dir = self.pipeline.get_indices_dir()
 
         bin_unified = indices_dir / "unified.index.bin.gz"
@@ -627,12 +631,7 @@ class KnowledgeEngine:
         if space is not None:
             targets = [self.space_manager.get_space(space)]
         else:
-            loaded_spaces = (
-                self.space_manager.get_all_spaces()
-                if hasattr(self.space_manager, "get_all_spaces")
-                else self.space_manager.load_spaces()
-            )
-            targets = list(loaded_spaces.values())
+            targets = list(self.get_indexed_spaces().values())
 
         snapshot = self.ast_engine.ensure_jit_synced()
         created_at = datetime.now(timezone.utc).isoformat()

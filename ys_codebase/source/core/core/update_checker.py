@@ -17,7 +17,7 @@ from core.engine import normalize_legacy_provider_url
 DEFAULT_CACHE_URI: str = "cache://core/update_check.json"
 DEFAULT_THROTTLE_SECONDS: int = 43200  # 12 小時
 DEFAULT_TIMEOUT_SECONDS: float = 2.0
-DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/main/yscb.py"
+DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases/yscb.py"
 HOST_SCRIPT_KEY: str = "yscb.py"
 _VERSION_RE = re.compile(r"""^__version__\s*(?::\s*str\s*)?=\s*['"]([^'"]+)['"]""", re.MULTILINE)
 KNOWN_URGENCIES: Dict[str, int] = {"optional": 1, "recommended": 2, "critical": 3}
