@@ -269,9 +269,9 @@ def on_test_event(context):
         self.engine.act_register("mock_deploy_mod", "1.0.0.0", "mock_prov")
         self.engine.act_deploy_configs_from_modules()
 
-        # Check deployed to config://
+        # Check deployed to config:// and config.local://
         self.assertTrue(vfs.exists("config://mock_deploy_mod/config.project.json"))
-        self.assertTrue(vfs.exists("config://mock_deploy_mod/config.local.json"))
+        self.assertTrue(vfs.exists("config.local://mock_deploy_mod/config.local.json"))
         self.assertTrue(vfs.exists("config://mock_deploy_mod/contribute.json"))
         self.assertEqual(vfs.read_json("config://mock_deploy_mod/config.project.json")["proj_key"], "val1")
 
@@ -282,6 +282,7 @@ def on_test_event(context):
         self.engine.act_unregister("mock_deploy_mod")
         vfs.rmtree(mod_dir)
         vfs.rmtree("config://mock_deploy_mod")
+        vfs.rmtree("config.local://mock_deploy_mod")
         self.mark_passed()
 
     def test_local_config_infill_skips_project_keys(self):
@@ -323,7 +324,7 @@ def on_test_event(context):
         self.engine.act_deploy_configs_from_modules()
 
         deployed_proj = vfs.read_json("config://mock_deploy_infill/config.project.json")
-        deployed_local = vfs.read_json("config://mock_deploy_infill/config.local.json")
+        deployed_local = vfs.read_json("config.local://mock_deploy_infill/config.local.json")
 
         self.assertEqual(deployed_proj.get("override_me"), "from_proj")
         self.assertEqual(deployed_local.get("local_only"), "loc_val")
@@ -333,6 +334,7 @@ def on_test_event(context):
         self.engine.act_unregister("mock_deploy_infill")
         vfs.rmtree(mod_dir)
         vfs.rmtree("config://mock_deploy_infill")
+        vfs.rmtree("config.local://mock_deploy_infill")
         self.mark_passed()
 
     def test_dual_layer_snapshot_and_execution_context_immutability(self):
@@ -344,21 +346,97 @@ def on_test_event(context):
         with self.assertRaises(Exception):
             ctx.module_name = "mutated"
 
-        # 2. 雙層快照與還原
+        # 2. 雙層快照與還原 (含 config:// 與 config.local://，且排除 storage.local:// 與 cache://)
         cfg_p = "config://core/config.project.json"
+        cfg_loc_test = "config.local://test_snap_mod/config.local.json"
+        stg_loc_test = "storage.local://test_snap_mod/heavy_index.bin"
+        cache_test = "cache://test_snap_mod/ephemeral.tmp"
+        vfs.makedirs("config.local://test_snap_mod", exist_ok=True)
+        vfs.makedirs("storage.local://test_snap_mod", exist_ok=True)
+        vfs.makedirs("cache://test_snap_mod", exist_ok=True)
+        vfs.write_json(cfg_loc_test, {"local_secret": "orig_secret"})
+        vfs.write_text(stg_loc_test, "PERSISTENT_LOCAL_MODEL")
+        vfs.write_text(cache_test, "EPHEMERAL_CACHE")
+
         orig_p = vfs.read_json(cfg_p) if vfs.exists(cfg_p) else {}
         snap_id = self.engine.act_snapshot("test_dual_snap")
         try:
+            self.assertTrue(vfs.exists(f"snapshot://{snap_id}/config.local/test_snap_mod/config.local.json"))
+            self.assertFalse(vfs.exists(f"snapshot://{snap_id}/storage.local"))
+            self.assertFalse(vfs.exists(f"snapshot://{snap_id}/cache"))
+
             vfs.write_json(cfg_p, {"project_root": "mutated_val"})
+            vfs.write_json(cfg_loc_test, {"local_secret": "mutated_secret"})
             self.assertEqual(vfs.read_json(cfg_p).get("project_root"), "mutated_val")
+            self.assertEqual(vfs.read_json(cfg_loc_test).get("local_secret"), "mutated_secret")
             self.engine.act_restore_snapshot(snap_id)
             restored_p = vfs.read_json(cfg_p)
             self.assertEqual(restored_p.get("project_root"), orig_p.get("project_root"))
+            self.assertEqual(vfs.read_json(cfg_loc_test).get("local_secret"), "orig_secret")
+            self.assertEqual(vfs.read_text(stg_loc_test), "PERSISTENT_LOCAL_MODEL")
         finally:
             if orig_p:
                 vfs.write_json(cfg_p, orig_p)
+            vfs.rmtree("config.local://test_snap_mod", ignore_errors=True)
+            vfs.rmtree("storage.local://test_snap_mod", ignore_errors=True)
+            vfs.rmtree("cache://test_snap_mod", ignore_errors=True)
             vfs.rmtree(f"snapshot://{snap_id}")
 
+        self.mark_passed()
+
+    def test_act_delete_purge_and_multi_segment_act_migrate(self):
+        """驗證 act_delete(purge=True) 物理清理四大持久化空間，以及 act_migrate 多維度遷移階梯 (minor/patch/revision)。"""
+        mod = "test_purge_mig_mod"
+        for scheme in ("storage", "storage.local", "config", "config.local", "cache"):
+            vfs.makedirs(f"{scheme}://{mod}", exist_ok=True)
+            vfs.write_text(f"{scheme}://{mod}/marker.txt", scheme)
+
+        # purge=False 僅清理 cache://，保留四大持久化空間
+        self.engine.act_delete(mod, clean_mirror=False, purge=False)
+        self.assertFalse(vfs.exists(f"cache://{mod}/marker.txt"))
+        for scheme in ("storage", "storage.local", "config", "config.local"):
+            self.assertTrue(vfs.exists(f"{scheme}://{mod}/marker.txt"))
+
+        # purge=True 完整物理刪除四大空間
+        self.engine.act_delete(mod, clean_mirror=False, purge=True)
+        for scheme in ("storage", "storage.local", "config", "config.local"):
+            self.assertFalse(vfs.exists(f"{scheme}://{mod}"))
+
+        # 驗證 act_migrate 支援 {major}.{minor}.x.py, {major}.{minor}.{patch}.x.py, {major}.{minor}.{patch}.{rev}.py
+        mig_dir = f"module://{mod}/scripts/migrations"
+        vfs.makedirs(mig_dir, exist_ok=True)
+        log_uri = f"storage.local://{mod}/mig_order.json"
+        for script_name, tag in (
+            ("1.2.x.py", "1.2.x"),
+            ("1.2.6.x.py", "1.2.6.x"),
+            ("1.2.7.x.py", "1.2.7.x"),
+            ("1.2.7.1.py", "1.2.7.1"),
+            ("1.3.x.py", "1.3.x"),
+        ):
+            code = (
+                "import json, os\n"
+                "def migrate(context):\n"
+                "    d = context['storage_local_dir']\n"
+                "    os.makedirs(d, exist_ok=True)\n"
+                "    p = os.path.join(d, 'mig_order.json')\n"
+                "    arr = json.load(open(p, 'r', encoding='utf-8')) if os.path.exists(p) else []\n"
+                f"    arr.append('{tag}')\n"
+                "    json.dump(arr, open(p, 'w', encoding='utf-8'))\n"
+                "    return True\n"
+            )
+            vfs.write_text(f"{mig_dir}/{script_name}", code)
+
+        try:
+            # 開發期 @build 迭代應直接短路跳過不觸發
+            self.assertTrue(self.engine.act_migrate(mod, "1.2.6.build", "1.2.7.build"))
+            self.assertFalse(vfs.exists(log_uri))
+
+            ok = self.engine.act_migrate(mod, "1.2.6.0", "1.2.7.1")
+            self.assertTrue(ok)
+            self.assertEqual(vfs.read_json(log_uri), ["1.2.7.x", "1.2.7.1"])
+        finally:
+            vfs.rmtree(f"module://{mod}", ignore_errors=True)
+            vfs.rmtree(f"storage.local://{mod}", ignore_errors=True)
         self.mark_passed()
 
     def test_atomic_swap_dir_cleans_stale_old_and_staging_remnants(self):

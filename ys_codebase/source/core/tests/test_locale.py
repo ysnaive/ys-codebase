@@ -371,7 +371,7 @@ class TestCoreLocaleEngine(YSCBTestCase):
         from core.engine import AtomicEngine
         eng = AtomicEngine()
         cfg_proj_path = uri.resolve("config://core/config.project.json", interactive=False)
-        cfg_local_path = uri.resolve("config://core/config.local.json", interactive=False)
+        cfg_local_path = uri.resolve("config.local://core/config.local.json", interactive=False)
         tpl_dir = os.path.join(self.tmp_dir, "tpl_core")
         os.makedirs(tpl_dir, exist_ok=True)
         with open(os.path.join(tpl_dir, "config.project.json"), "w", encoding="utf-8") as f:
@@ -386,16 +386,16 @@ class TestCoreLocaleEngine(YSCBTestCase):
             os.environ["LC_ALL"] = "ja_JP.UTF-8"
             eng._deploy_and_strip_single_module_config("core", tpl_dir)
             self.assertTrue(os.path.exists(cfg_local_path))
-            seeded_local = vfs.read_json("config://core/config.local.json")
+            seeded_local = vfs.read_json("config.local://core/config.local.json")
             self.assertEqual(seeded_local.get("locale"), ["ja", "zh"])
 
             # Second run must NOT overwrite user-customized config.local.json
-            vfs.write_json("config://core/config.local.json", {"locale": ["zh"]})
+            vfs.write_json("config.local://core/config.local.json", {"locale": ["zh"]})
             with open(os.path.join(tpl_dir, "config.project.json"), "w", encoding="utf-8") as f:
                 json.dump({"project_root": "!undefined", "locale": ["zh"]}, f)
             os.environ["LC_ALL"] = "en_US.UTF-8"
             eng._deploy_and_strip_single_module_config("core", tpl_dir)
-            preserved_local = vfs.read_json("config://core/config.local.json")
+            preserved_local = vfs.read_json("config.local://core/config.local.json")
             self.assertEqual(preserved_local.get("locale"), ["zh"])
         finally:
             if old_lc_all is None:

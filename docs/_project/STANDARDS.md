@@ -30,9 +30,11 @@ last_updated: "2026-10-27"
 | **`yscb.host://`** | `core` | 由 `yscb.config.json` 之 `yscb_host` 定位 | **YS-Codebase 宿主環境根目錄** | ✅ 受追蹤 |
 | **`module://`** | `core` | `yscb://.modules/` | **本機模組運行端目錄** | 🚫 忽略 |
 | **`module.mirror://`** | `core` | `yscb://.mirror/` | **本機端模組鏡像庫（版本化快照備份）** | 🚫 忽略 |
-| **`config://`** | `core` | `yscb://config/` | **全域與模組設定檔根目錄** | ✅ 受追蹤 |
-| **`cache://`** | `core` | `yscb://.cache/` | **全域與模組編譯快取與中介產物根目錄** | 🚫 忽略 |
-| **`storage://`** | `core` | `yscb://storage/` | **跨環境共享持久化資料空間** | ✅ 受追蹤 |
+| **`config://`** | `core` | `yscb://config/` | **全域與模組團隊版控設定檔根目錄** | ✅ 受追蹤 |
+| **`config.local://`** | `core` | `yscb://.config.local/` | **模組本機個人設定與私密憑證根目錄（磁碟持久化）** | 🚫 忽略 |
+| **`cache://`** | `core` | `yscb://.cache/` | **全域與模組編譯快取與可隨時丟棄之中介產物根目錄** | 🚫 忽略 |
+| **`storage://`** | `core` | `yscb://storage/` | **跨環境共享持久化資料空間（團隊版控）** | ✅ 受追蹤 |
+| **`storage.local://`** | `core` | `yscb://.storage.local/` | **本機持久化運行狀態、索引與大型模型空間（磁碟持久化，不入快照）** | 🚫 忽略 |
 | **`snapshot://`** | `core` | `yscb://.snapshots/` | **組態快照備份目錄（用於災難恢復與回滾）** | 🚫 忽略 |
 | **`yscb.venv://`** | `core` | `yscb://.venv/` | **YSCB 私有微虛擬環境空間根目錄** | 🚫 忽略 |
 | **`module.source://`** | `dev` | `yscb://source/` | **模組原始碼開發空間（SSOT 源碼）** | ✅ 受追蹤 |
@@ -53,7 +55,7 @@ last_updated: "2026-10-27"
 | 範圍維度 | 專案層級 (`config.project.json`)<br/>✅ **受 Git 追蹤 (Team Shared)** | 本地個人層級 (`config.local.json`)<br/>🚫 **Git 忽略 (Machine Specific)** |
 | :--- | :--- | :--- |
 | **全域層級** | `yscb.config.json`：宣告 `yscb_root`、預設 `default_provider` 與 `installed_modules` 清冊。 | `yscb.config.local.json`：本機覆蓋設定。 |
-| **模組層級** | `yscb://config/{module}/config.project.json`：模組專案層級設定（如 `core` 的 `project_root`）。 | `yscb://config/{module}/config.local.json`：模組本機層級覆蓋。 |
+| **模組層級** | `config://{module}/config.project.json`（即 `yscb://config/{module}/config.project.json`）：模組專案層級設定（如 `core` 的 `project_root`）。 | `config.local://{module}/config.local.json`（即 `yscb://.config.local/{module}/config.local.json`）：模組本機層級覆蓋與私密憑證。 |
 
 ### 🛡️ 組態管理與打包物化四項鐵律
 1. **SSOT 原則**：模組預設組態模板宣告於 `source/{module}/configurable/`（或 `contribute.json`），專案層級覆蓋於 `config.project.json`，個人特化於 `config.local.json`。

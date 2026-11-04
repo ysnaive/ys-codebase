@@ -289,10 +289,10 @@ class _ServerSpawnConfig:
 
 
 def _read_server_spawn_config(yscb_abs: str) -> _ServerSpawnConfig:
-    """依序讀取 project 與 local 雙層組態之 enable / auto_spawn / strict_hot_dispatch。"""
+    """依序讀取 project (config/) 與 local (.config.local/) 雙層組態之 enable / auto_spawn / strict_hot_dispatch。"""
     values: Dict[str, bool] = {"enable": True, "auto_spawn": True, "strict_hot_dispatch": False}
     proj_cfg_file = os.path.join(yscb_abs, "config", "server", "config.project.json")
-    local_cfg_file = os.path.join(yscb_abs, "config", "server", "config.local.json")
+    local_cfg_file = os.path.join(yscb_abs, ".config.local", "server", "config.local.json")
 
     for cfg_file in (proj_cfg_file, local_cfg_file):
         if os.path.isfile(cfg_file):

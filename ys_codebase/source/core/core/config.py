@@ -9,7 +9,7 @@ memory caching with mtime auto-healing, and atomic writes.
 import os
 import copy
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from core import uri, vfs
 
 logger = logging.getLogger("core.config")
@@ -28,13 +28,15 @@ class ConfigManager:
 
     @classmethod
     def get_config_path(cls, module: str, local: bool = False) -> str:
-        """取得指定模組之設定檔實體路徑。"""
+        """取得指定模組之設定檔實體路徑（local=False 指向 config://，local=True 指向 config.local://）。"""
         filename = "config.local.json" if local else "config.project.json"
+        scheme = "config.local" if local else "config"
+        subdir = ".config.local" if local else "config"
         try:
-            return uri.resolve(f"config://{module}/{filename}", interactive=False)
+            return uri.resolve(f"{scheme}://{module}/{filename}", interactive=False)
         except Exception:
             yscb_root = cls._get_yscb_root()
-            return os.path.normpath(os.path.join(yscb_root, "config", module, filename))
+            return os.path.normpath(os.path.join(yscb_root, subdir, module, filename))
 
     @classmethod
     def _deep_merge(cls, base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -259,18 +261,22 @@ class ConfigManager:
 
     @classmethod
     def list_modules(cls) -> List[str]:
-        """列出當前 config:// 空間下存在設定檔之所有模組清單。"""
+        """列出當前 config:// 與 config.local:// 空間下存在設定檔之所有模組清單。"""
         yscb_root = cls._get_yscb_root()
+        mods_set: Set[str] = {m for m in ()}
         cfg_root = os.path.join(yscb_root, "config")
-        if not os.path.isdir(cfg_root):
-            return []
-        mods = []
-        for item in os.listdir(cfg_root):
-            mod_dir = os.path.join(cfg_root, item)
-            if os.path.isdir(mod_dir):
-                if os.path.isfile(os.path.join(mod_dir, "config.project.json")) or os.path.isfile(os.path.join(mod_dir, "config.local.json")):
-                    mods.append(item)
-        return sorted(mods)
+        if os.path.isdir(cfg_root):
+            for item in os.listdir(cfg_root):
+                mod_dir = os.path.join(cfg_root, item)
+                if os.path.isdir(mod_dir) and os.path.isfile(os.path.join(mod_dir, "config.project.json")):
+                    mods_set.add(item)
+        local_root = os.path.join(yscb_root, ".config.local")
+        if os.path.isdir(local_root):
+            for item in os.listdir(local_root):
+                mod_dir = os.path.join(local_root, item)
+                if os.path.isdir(mod_dir) and os.path.isfile(os.path.join(mod_dir, "config.local.json")):
+                    mods_set.add(item)
+        return sorted(mods_set)
 
 
 # 頂層便捷函式 (Public API Facade)

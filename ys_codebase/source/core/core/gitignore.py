@@ -34,6 +34,8 @@ LEGACY_UNANCHORED_LINES: Set[str] = {
     "/.temp/",
     "/.snapshots/",
     "/.cache/",
+    "/.config.local/",
+    "/.storage.local/",
     "/.venv/",
     "*.local.json",
     "__pycache__/",
@@ -136,6 +138,18 @@ def normalize_pattern(
             target_abs = os.path.join(eff_proj, rest_clean) if rest_clean else eff_proj
         elif scheme_lower == "yscb":
             target_abs = os.path.join(eff_yscb, rest_clean) if rest_clean else eff_yscb
+        elif scheme_lower in ("config", "config.local", "storage", "storage.local", "cache", "module", "snapshot"):
+            sub_map = {
+                "config": "config",
+                "config.local": ".config.local",
+                "storage": "storage",
+                "storage.local": ".storage.local",
+                "cache": ".cache",
+                "module": ".modules",
+                "snapshot": ".snapshots",
+            }
+            base_sub = os.path.join(eff_yscb, sub_map[scheme_lower])
+            target_abs = os.path.join(base_sub, rest_clean) if rest_clean else base_sub
         else:
             try:
                 target_abs = uri.resolve(core_pat, interactive=False)

@@ -138,6 +138,8 @@ class SettingsProjector:
     STABLE_LINK_NAME = "current-site-packages"
     ANALYSIS_EXCLUDE_PATTERNS = [
         "**/.cache/**",
+        "**/.config.local/**",
+        "**/.storage.local/**",
         "**/.snapshots/**",
         "**/.build/**",
         "**/.mirror/**",

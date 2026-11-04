@@ -21,10 +21,11 @@ class TestConfigManager(YSCBTestCase):
 
     def tearDown(self):
         # 遍歷清理所有 test_mod_* 測試建立之目錄，確保零殘留
-        for mod in ["test_mod_get", "test_mod_override", "test_mod_delete", "test_mod_cli", "test_mod_inspect", "test_mod_clean_cfg", "test_mod_raw_inspect"]:
-            cfg_dir = f"config://{mod}"
-            if vfs.exists(cfg_dir):
-                vfs.rmtree(cfg_dir)
+        for mod in ["test_mod_get", "test_mod_override", "test_mod_set", "test_mod_del", "test_mod_corrupt", "test_mod_delete", "test_mod_cli", "test_mod_inspect", "test_mod_clean_cfg", "test_mod_raw_inspect", "test_mod_mig"]:
+            for scheme in ("config", "config.local"):
+                cfg_dir = f"{scheme}://{mod}"
+                if vfs.exists(cfg_dir):
+                    vfs.rmtree(cfg_dir)
             mod_dir = f"module://{mod}"
             if vfs.exists(mod_dir):
                 vfs.rmtree(mod_dir)
@@ -78,7 +79,10 @@ class TestConfigManager(YSCBTestCase):
 
         proj_path = config.get_config_path("test_mod_override", local=False)
         local_path = config.get_config_path("test_mod_override", local=True)
+        self.assertTrue(proj_path.replace("\\", "/").endswith("config/test_mod_override/config.project.json"))
+        self.assertTrue(local_path.replace("\\", "/").endswith(".config.local/test_mod_override/config.local.json"))
         os.makedirs(os.path.dirname(proj_path), exist_ok=True)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
         with open(proj_path, "w", encoding="utf-8") as f:
             json.dump(proj_data, f, indent=2)
@@ -285,7 +289,7 @@ class TestConfigManager(YSCBTestCase):
             engine.act_deploy_configs_from_modules()
 
             cfg_proj_uri = f"config://{mod_name}/config.project.json"
-            cfg_local_uri = f"config://{mod_name}/config.local.json"
+            cfg_local_uri = f"config.local://{mod_name}/config.local.json"
 
             self.assertTrue(vfs.exists(cfg_proj_uri), "config.project.json must be materialized!")
             loaded_proj = vfs.read_json(cfg_proj_uri)
@@ -304,12 +308,56 @@ class TestConfigManager(YSCBTestCase):
             self.assertEqual(config.get(mod_name, "setting_b"), 123)
 
             config.set(mod_name, "setting_a", "local_override_a", local=True)
+            self.assertTrue(vfs.exists(cfg_local_uri))
             self.assertEqual(config.get(mod_name, "setting_a"), "local_override_a")
             self.assertEqual(config.get(mod_name, "setting_b"), 123)
         finally:
             host_cfg["installed_modules"] = orig_installed
             engine._save_config(cfg_path, host_cfg)
 
+        self.mark_passed()
+
+    def test_migration_script_1_2_7_x_sweeps_and_deep_merges_legacy_local_configs(self):
+        """驗證 core/scripts/migrations/1.2.7.x.py 搬移舊版 config/<mod>/config*.local.json 至 .config.local/<mod>/ 且保留使用者覆寫優先權。"""
+        import importlib.util
+
+        mig_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "scripts", "migrations", "1.2.7.x.py")
+        )
+        spec = importlib.util.spec_from_file_location("_test_core_mig_1_2_7", mig_path)
+        self.assertIsNotNone(spec)
+        mig_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mig_mod)
+
+        mod = "test_mod_mig"
+        legacy_local_uri = f"config://{mod}/config.local.json"
+        legacy_sub_uri = f"config://{mod}/config.sub.local.json"
+        new_local_uri = f"config.local://{mod}/config.local.json"
+        new_sub_uri = f"config.local://{mod}/config.sub.local.json"
+
+        vfs.makedirs(f"config://{mod}", exist_ok=True)
+        vfs.makedirs(f"config.local://{mod}", exist_ok=True)
+
+        # Case 1: 新路徑已有 Stage 3 剛播種之預設值，舊版路徑有使用者自訂值 -> 舊版使用者設定優先覆寫，且新路徑預設獨有鍵保留
+        vfs.write_json(new_local_uri, {"locale": ["zh"], "new_seeded_key": True})
+        vfs.write_json(legacy_local_uri, {"locale": ["en", "zh"], "user_secret": "tok_123"})
+        # Case 2: 新路徑尚無檔案 -> 直接無損搬移
+        vfs.write_json(legacy_sub_uri, {"sub_flag": 42})
+
+        host_dir, yscb_dir = uri._get_host_config()
+        res = mig_mod.migrate({"host_dir": host_dir, "yscb_dir": yscb_dir})
+        self.assertTrue(res)
+
+        self.assertFalse(vfs.exists(legacy_local_uri))
+        self.assertFalse(vfs.exists(legacy_sub_uri))
+        self.assertTrue(vfs.exists(new_local_uri))
+        self.assertTrue(vfs.exists(new_sub_uri))
+
+        merged_local = vfs.read_json(new_local_uri)
+        self.assertEqual(merged_local.get("locale"), ["en", "zh"])
+        self.assertEqual(merged_local.get("user_secret"), "tok_123")
+        self.assertTrue(merged_local.get("new_seeded_key"))
+        self.assertEqual(vfs.read_json(new_sub_uri).get("sub_flag"), 42)
         self.mark_passed()
 
 

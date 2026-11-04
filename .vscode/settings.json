@@ -89,6 +89,8 @@
     },
     "analysisExclude": [
       "**/.cache/**",
+      "**/.config.local/**",
+      "**/.storage.local/**",
       "**/.snapshots/**",
       "**/.build/**",
       "**/.mirror/**",
@@ -116,6 +118,8 @@
   },
   "python.analysis.exclude": [
     "**/.cache/**",
+    "**/.config.local/**",
+    "**/.storage.local/**",
     "**/.snapshots/**",
     "**/.build/**",
     "**/.mirror/**",
@@ -189,6 +193,7 @@
     {
       "fileMatch": [
         "**/config/agents-workflow/config.*.json",
+        "**/.config.local/agents-workflow/config.*.json",
         "**/source/agents-workflow/configurable/config.*.json",
         "**/agents-workflow/configurable/config.*.json"
       ],
@@ -197,6 +202,7 @@
     {
       "fileMatch": [
         "**/config/core/config.*.json",
+        "**/.config.local/core/config.*.json",
         "**/source/core/configurable/config.*.json",
         "**/core/configurable/config.*.json"
       ],
@@ -205,6 +211,7 @@
     {
       "fileMatch": [
         "**/config/gdrive-support/config.*.json",
+        "**/.config.local/gdrive-support/config.*.json",
         "**/source/gdrive-support/configurable/config.*.json",
         "**/gdrive-support/configurable/config.*.json"
       ],
@@ -213,6 +220,7 @@
     {
       "fileMatch": [
         "**/config/knowledge-db/config.*.json",
+        "**/.config.local/knowledge-db/config.*.json",
         "**/source/knowledge-db/configurable/config.*.json",
         "**/knowledge-db/configurable/config.*.json"
       ],
@@ -221,6 +229,7 @@
     {
       "fileMatch": [
         "**/config/server/config.*.json",
+        "**/.config.local/server/config.*.json",
         "**/source/server/configurable/config.*.json",
         "**/server/configurable/config.*.json"
       ],

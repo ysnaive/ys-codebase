@@ -32,6 +32,8 @@ INTERNAL_IGNORE_PATTERNS = [
     "/.temp/",
     "/.snapshots/",
     "/.cache/",
+    "/.config.local/",
+    "/.storage.local/",
     "/.venv/",
     "*.local.json",
     "__pycache__/",
@@ -870,6 +872,7 @@ class Installer:
         print(f"[core:restore] Restoring {len(installed)} module(s) to '{modules_dir}'...")
         success_count = 0
         failed_mods: List[str] = []
+        migrations_to_run: List[Tuple[str, str, str]] = []
 
         with self.engine.transaction_lock("restore"):
             _notify_server_release_handles(yscb_abs)
@@ -882,9 +885,8 @@ class Installer:
                 dest = os.path.join(modules_dir, mod_name)
                 mirror = os.path.join(yscb_abs, ".mirror", mod_name)
                 mf_path = os.path.join(dest, "manifest.json")
-
-                if not force and os.path.isdir(dest) and os.path.isfile(mf_path):
-                    installed_ver = None
+                installed_ver = None
+                if os.path.isdir(dest) and os.path.isfile(mf_path):
                     try:
                         mf_data = vfs.read_json(mf_path)
                         if isinstance(mf_data, dict) and mf_data.get("version"):
@@ -892,6 +894,7 @@ class Installer:
                     except Exception:
                         installed_ver = None
 
+                if not force and os.path.isdir(dest) and os.path.isfile(mf_path):
                     if ver == "build" or installed_ver == ver:
                         print(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
                         success_count += 1
@@ -903,6 +906,12 @@ class Installer:
                 )
                 if ok:
                     success_count += 1
+                    if installed_ver and installed_ver != "0.0.0.0":
+                        try:
+                            if semver.compare_semver(ver, installed_ver) > 0:
+                                migrations_to_run.append((mod_name, installed_ver, ver))
+                        except Exception:
+                            pass
                 else:
                     _print_restore_failure_guidance(mod_name, ver, prov)
                     failed_mods.append(mod_name)
@@ -914,6 +923,8 @@ class Installer:
 
             print("[core:restore] Triggering reload...")
             self.engine.act_reload(clean_stage=True, inject_stage=True, ignore_sha256=ignore_sha256)
+            for m_mod, m_old, m_new in migrations_to_run:
+                self.engine.act_migrate(m_mod, m_old, m_new)
             self.sync_pip_dependencies()
             try:
                 generate_internal_gitignore(yscb_abs)

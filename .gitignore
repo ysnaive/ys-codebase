@@ -12,6 +12,8 @@ ys_codebase/release/yscb.py.sha256
 /ys_codebase/.temp/
 /ys_codebase/.snapshots/
 /ys_codebase/.cache/
+/ys_codebase/.config.local/
+/ys_codebase/.storage.local/
 /ys_codebase/.venv/
 *.local.json
 __pycache__/

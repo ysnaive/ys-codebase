@@ -59,9 +59,11 @@ Scheme B 嚴格區分**基準定位錨點**（`yscb://`、`yscb.host://`、`proj
 | **`module.build://`** | `dev` | `const` | `yscb://.build/` | **Ignored** | 本地開發完整建置產物空間（例：`module.build://core/1.0.0.build.zip`） |
 | **`module.release://`** | `dev` | `const` | `yscb://release/` | **Tracked** | 模組純淨發布產物來源空間（例：`module.release://core/index.json`） |
 | **`module.mirror://`** | `core` | `const` | `yscb://.mirror/` | **Ignored** | 本地模組壓縮鏡像庫空間（例：`module.mirror://core/1.0.0.0.zip`） |
-| **`config://`** | `core` | `const` | `yscb://config/` | **Tracked** | 全域與模組設定檔空間（例：`config://core/config.project.json`；自省：`config://@/config.project.json`） |
-| **`cache://`** | `core` | `const` | `yscb://.cache/` | **Ignored** | 模組快取、衍生快照與鎖空間（替代已廢除之 `temp://`；例：`cache://dev/sandbox/`） |
-| **`storage://`** | `core` | `const` | `yscb://storage/` | **Tracked** | 模組持久化儲存空間（跨模組：`storage://dev/file.json`；自省：`storage://@/data.json`） |
+| **`config://`** | `core` | `const` | `yscb://config/` | **Tracked** | 模組團隊版控設定檔空間（例：`config://core/config.project.json`；自省：`config://@/config.project.json`） |
+| **`config.local://`** | `core` | `const` | `yscb://.config.local/` | **Ignored** | 模組本機個人設定檔與私密憑證空間（例：`config.local://core/config.local.json`；自省：`config.local://@/config.local.json`） |
+| **`cache://`** | `core` | `const` | `yscb://.cache/` | **Ignored** | 模組可隨時丟棄之快取、衍生快照與鎖空間（替代已廢除之 `temp://`；例：`cache://dev/sandbox/`） |
+| **`storage://`** | `core` | `const` | `yscb://storage/` | **Tracked** | 模組團隊版控持久化儲存空間（跨模組：`storage://dev/file.json`；自省：`storage://@/data.json`） |
+| **`storage.local://`** | `core` | `const` | `yscb://.storage.local/` | **Ignored** | 模組本機持久化運行狀態、索引與大型模型空間（例：`storage.local://knowledge-db/models/`；自省：`storage.local://@/state.json`） |
 | **`snapshot://`** | `core` | `const` | `yscb://.snapshots/` | **Ignored** | 雙層組態與環境原子快照備份空間 |
 | **`yscb.venv://`** | `core` | `const` | `yscb://.venv/` | **Ignored** | YSCB 私有微虛擬環境空間根目錄 |
 

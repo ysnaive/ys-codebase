@@ -135,17 +135,19 @@ except Exception as e:
 
 ---
 
-## 6. 模組資料三位一體與生命週期治理 (`--purge`)
+## 6. 模組資料五大語意空間與生命週期治理 (`--purge`)
 
-YS-Codebase 確立三大資料空間語意與版本控制原則：
-1. **`storage://` (持久化/Git 追蹤)**：業務資料與發布清冊（`storage/agents-workflow/release_manifest.json`），卸載時預設安全保留。
-2. **`config://` (專案設定/Git 追蹤)**：專案設定檔（`config/core/config.project.json`），卸載時預設安全保留。
-3. **`cache://` (快取暫存/Git 忽略)**：編譯快照、沙盒環境（`cache://dev/sandbox/`）與程序鎖（`cache://.yscb.lock`），卸載與重載時自動清空。
+YS-Codebase 確立五大資料空間語意與版本控制原則：
+1. **`storage://` (團隊持久化儲存 / Git 追蹤)**：跨環境共享業務資料，卸載時預設安全保留，納入 `snapshot://` 原子快照。
+2. **`storage.local://` (本機持久化儲存 / Git 忽略)**：本機持久化運行狀態、發布清冊（`storage.local://agents-workflow/release_manifest.json`）、本地嵌入模型與語意索引，卸載時預設安全保留，**排除於 `snapshot://` 原子快照之外**（防範大型資產拖慢安裝/升級交易）。
+3. **`config://` (團隊專案設定 / Git 追蹤)**：專案設定檔（`config://core/config.project.json`、`contribute.json`），卸載時預設安全保留，納入 `snapshot://` 原子快照。
+4. **`config.local://` (本機個人設定與憑證 / Git 忽略)**：本機覆寫設定（`config.local://<mod>/config.local.json`）與 OAuth 憑證，卸載時預設安全保留，納入 `snapshot://` 原子快照。
+5. **`cache://` (短暫快取暫存 / Git 忽略)**：編譯快照、沙盒環境（`cache://dev/sandbox/`）與程序鎖（`cache://.yscb.lock`），卸載與重載時自動清空，可安全掛載於 `tmpfs`。
 
 ### 6.1 卸載治理行為
 - **標準卸載 (`python yscb.py core remove <module>`)**：
   - 自動物理清空 `cache://{module}/`。
-  - 安全保留 `storage://{module}/` 與 `config://{module}/`。
+  - 安全保留 `storage://{module}/`、`storage.local://{module}/`、`config://{module}/` 與 `config.local://{module}/`。
 - **深度清除 (`python yscb.py core remove <module> --purge`)**：
-  - 強制物理銷毀 `storage://{module}/`、`config://{module}/` 與 `cache://{module}/`。
-  - 具備目錄邊界防護（EC-04），禁止逃逸出 `storage` 或 `config` 根空間。
+  - 強制物理銷毀 `storage://{module}/`、`storage.local://{module}/`、`config://{module}/`、`config.local://{module}/` 與 `cache://{module}/`。
+  - 具備目錄邊界防護（`os.path.abspath(p).startswith(os.path.abspath(root_p) + os.sep)`），禁止逃逸出各根空間。

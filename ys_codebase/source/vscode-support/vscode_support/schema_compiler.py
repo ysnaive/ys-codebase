@@ -36,14 +36,16 @@ class SchemaCompiler:
             "project": "專案業務根目錄 (project_root)",
             "yscb": "YS-Codebase 工具庫根目錄",
             "yscb.host": "宿主工程根目錄 (yscb.py 所在目錄)",
-            "config": "模組專屬設定檔空間根目錄 (yscb://config/)",
+            "config": "模組團隊版控設定檔空間根目錄 (yscb://config/)",
+            "config.local": "模組本機開發環境設定與私密憑證空間根目錄 (yscb://.config.local/)",
             "module": "本地模組運行端空間根目錄 (yscb://.modules/)",
             "module.source": "模組源碼空間根目錄 (yscb://source/)",
             "module.build": "本地開發完整建置產物空間根目錄 (yscb://.build/)",
             "module.release": "模組發布來源空間根目錄 (yscb://release/)",
             "module.mirror": "本地端模組鏡像庫空間根目錄 (yscb://.mirror/)",
             "cache": "模組快取與中繼暫存空間根目錄 (yscb://.cache/)",
-            "storage": "模組持久化儲存空間根目錄 (yscb://storage/)",
+            "storage": "模組團隊版控持久化儲存空間根目錄 (yscb://storage/)",
+            "storage.local": "模組本機持久化運行狀態與索引空間根目錄 (yscb://.storage.local/)",
             "snapshot": "組態歷史快照空間目錄 (yscb://.snapshots/)",
             "yscb.venv": "YSCB 私有微虛擬環境空間根目錄 (yscb://.venv/)",
         }
@@ -628,6 +630,7 @@ class SchemaCompiler:
                     {
                         "fileMatch": [
                             f"**/config/{mod}/config.*.json",
+                            f"**/.config.local/{mod}/config.*.json",
                             f"**/source/{mod}/configurable/config.*.json",
                             f"**/{mod}/configurable/config.*.json",
                         ],

@@ -25,7 +25,7 @@
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_core_all_modules_sys_path` | Full Track | `Completed` | 於 `core.platform` 統一在派發、預熱、事件廣播與符號解析前注入所有已安裝 `.modules/<mod>` 至 `sys.path`，拔除 13 處散落補丁，並於 `dev/checker.py` 新增禁止非 `core` 生產代碼變動 `sys.path` 之零豁免靜態 AST 守門。 |
-| **sub_02** | `sub_02_five_semantic_spaces_architecture` | Full Track | `Pending` | 於 `core` 擴充 `config.local://` (`yscb://.config.local/`) 與 `storage.local://` (`yscb://.storage.local/`) 語意協議、預設 `.gitignore` 保護、`core.config` 雙軌讀寫與舊版 `config.local.json` 自動遷移、`act_snapshot` 排除 `storage.local://` 及 `act_delete --purge` 生命週期治理，並對齊 `dev` 與 `vscode-support` Schema/檢核。 |
+| **sub_02** | `sub_02_five_semantic_spaces_architecture` | Full Track | `Completed` | 於 `core` 擴充 `config.local://` (`yscb://.config.local/`) 與 `storage.local://` (`yscb://.storage.local/`) 語意協議、預設 `.gitignore` 保護、`core.config` 雙軌讀寫與舊版 `config.local.json` 自動遷移、`act_snapshot` 排除 `storage.local://` 及 `act_delete --purge` 生命週期治理，並對齊 `dev` 與 `vscode-support` Schema/檢核。 |
 | **sub_03** | `sub_03_ecosystem_modules_space_alignment` | Full Track | `Pending` | 將全生態系模組（`gdrive-support`、`knowledge-db`、`ast`、`file-space`、`agents-workflow`、`core`）之本機憑證（`credentials.json`, `token.json`）、模型權重（`models/`）、索引圖譜、同步狀態帳本（`sync_state.json`）與發布清冊全面對齊遷移至 `config.local://` 與 `storage.local://`，保留純揮發性快取與鎖檔於 `cache://`。 |
 
 ---
@@ -33,6 +33,6 @@
 ## 3. 主計畫里程碑與推進狀態 (Milestones)
 
 - [x] **里程碑 1 (`sub_01`)**：完成 `core` 與 `server` 全已安裝模組 `sys.path` 統一注入並通過單元與沙盒回歸測試。
-- [ ] **里程碑 2 (`sub_02`)**：完成 `config` / `config.local` / `storage` / `storage.local` / `cache` 五大語意空間核心引擎、組態雙軌合成與快照生命週期重構。
+- [x] **里程碑 2 (`sub_02`)**：完成 `config` / `config.local` / `storage` / `storage.local` / `cache` 五大語意空間核心引擎、組態雙軌合成與快照生命週期重構。
 - [ ] **里程碑 3 (`sub_03`)**：完成全倉 9 模組語意空間映射對齊、本機既有資產無損遷移與 `gdrive` 實機同步驗證。
 

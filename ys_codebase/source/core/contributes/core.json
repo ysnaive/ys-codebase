@@ -37,6 +37,12 @@
       "description": "模組專屬設定檔空間根目錄 (Git 追蹤)"
     },
     {
+      "token": "config.local",
+      "type": "const",
+      "value": "yscb://.config.local/",
+      "description": "模組本機私有設定與機密憑證空間根目錄 (Git 忽略、磁碟持久)"
+    },
+    {
       "token": "cache",
       "type": "const",
       "value": "yscb://.cache/",
@@ -47,6 +53,12 @@
       "type": "const",
       "value": "yscb://storage/",
       "description": "模組持久化儲存空間根目錄 (Git 追蹤)"
+    },
+    {
+      "token": "storage.local",
+      "type": "const",
+      "value": "yscb://.storage.local/",
+      "description": "模組本機持久化狀態帳本、模型與索引空間根目錄 (Git 忽略、磁碟持久、免快照)"
     },
     {
       "token": "yscb.venv",
@@ -705,6 +717,8 @@
     "yscb://.temp/",
     "yscb://.snapshots/",
     "yscb://.cache/",
+    "yscb://.config.local/",
+    "yscb://.storage.local/",
     "yscb://.venv/",
     "*.local.json",
     "__pycache__/",

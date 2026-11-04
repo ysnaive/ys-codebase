@@ -41,9 +41,13 @@ class TestCoreGitignore(YSCBTestCase):
         p_venv = gitignore.normalize_pattern("yscb://.venv/", self.proj_root, self.yscb_root)
         p_vsc = gitignore.normalize_pattern("project://.vscode/schemas/", self.proj_root, self.yscb_root)
         p_glob = gitignore.normalize_pattern("*.local.json", self.proj_root, self.yscb_root)
+        p_cfg_loc = gitignore.normalize_pattern("config.local://", self.proj_root, self.yscb_root)
+        p_stg_loc = gitignore.normalize_pattern("storage.local://", self.proj_root, self.yscb_root)
         self.assertEqual(p_venv, "/ys_codebase/.venv/")
         self.assertEqual(p_vsc, "/.vscode/schemas/")
         self.assertEqual(p_glob, "*.local.json")
+        self.assertEqual(p_cfg_loc, "/ys_codebase/.config.local/")
+        self.assertEqual(p_stg_loc, "/ys_codebase/.storage.local/")
 
         # 2. 同根拓撲 (yscb:// == project://)
         same_venv = gitignore.normalize_pattern("yscb://.venv/", self.proj_root, self.proj_root)

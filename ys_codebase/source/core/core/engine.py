@@ -640,13 +640,13 @@ def _resolve_target_cfg_uris(mod: str, tmpl_file: str) -> Tuple[str, bool, Optio
     if tmpl_file == "contribute.json":
         return f"config://{mod}/contribute.json", False, None
     if tmpl_file == "config.local.json":
-        return f"config://{mod}/config.local.json", True, f"config://{mod}/config.project.json"
+        return f"config.local://{mod}/config.local.json", True, f"config://{mod}/config.project.json"
     if tmpl_file == "config.project.json":
         return f"config://{mod}/config.project.json", False, None
     if tmpl_file.startswith("config.") and tmpl_file.endswith(".local.json"):
         sub_name = tmpl_file[len("config."):-len(".local.json")]
         return (
-            f"config://{mod}/config.{sub_name}.local.json",
+            f"config.local://{mod}/config.{sub_name}.local.json",
             True,
             f"config://{mod}/config.{sub_name}.project.json",
         )
@@ -1779,14 +1779,15 @@ class AtomicEngine:
         merged_data, changed = _deep_infill_dict(target_data, tmpl_data, project_data=proj_data)
         if changed or not vfs.exists(target_cfg_uri):
             if not is_local or merged_data:
-                vfs.makedirs(f"config://{mod}", exist_ok=True)
+                target_dir_uri = f"config.local://{mod}" if is_local else f"config://{mod}"
+                vfs.makedirs(target_dir_uri, exist_ok=True)
                 vfs.write_json(target_cfg_uri, merged_data, indent=2)
 
     def _deploy_and_strip_single_module_config(self, mod: str, mod_dir_real: str) -> None:
         """
         Extracts and infills configuration templates from <mod_dir_real>/configurable/
-        and root <mod_dir_real>/config.*.json into config://<mod>/, seeds initial
-        system locale for 'core' if config.local.json is absent, then physically
+        and root <mod_dir_real>/config.*.json into config://<mod>/ and config.local://<mod>/,
+        seeds initial system locale for 'core' if config.local.json is absent, then physically
         deletes all template files and .yscbignore from <mod_dir_real>.
         """
         if "://" in mod_dir_real:
@@ -1839,12 +1840,12 @@ class AtomicEngine:
             pass
 
         # 初次建立 core 模組組態時，自動偵測使用者系統主語系播種至 config.local.json（最終 fallback 為開發團隊母語 'zh'）
-        cfg_local_uri = f"config://{mod}/config.local.json"
+        cfg_local_uri = f"config.local://{mod}/config.local.json"
         if mod == "core" and not vfs.exists(cfg_local_uri):
             try:
                 from core import locale as core_locale
                 detected_chain = core_locale.detect_system_locale_chain()
-                vfs.makedirs(f"config://{mod}", exist_ok=True)
+                vfs.makedirs(f"config.local://{mod}", exist_ok=True)
                 vfs.write_json(cfg_local_uri, {"locale": detected_chain}, indent=2)
             except Exception:
                 pass
@@ -1899,7 +1900,7 @@ class AtomicEngine:
                 vfs.rmtree(mirror_uri, ignore_errors=True)
 
         if purge:
-            for root_scheme in ("storage", "config"):
+            for root_scheme in ("storage", "storage.local", "config", "config.local"):
                 target_uri = f"{root_scheme}://{module_name}"
                 if vfs.exists(target_uri):
                     try:
@@ -2045,7 +2046,7 @@ class AtomicEngine:
         """
         Creates a full atomic snapshot:
         1. Backs up yscb.config.json.
-        2. Backs up config:// (config/).
+        2. Backs up config:// (config/) and config.local:// (config.local/).
         3. Backs up storage:// (storage/).
         4. Backs up module:// (modules/).
         """
@@ -2060,6 +2061,9 @@ class AtomicEngine:
 
         if vfs.exists("config://"):
             vfs.copy("config://", f"{snap_dir}/config/")
+
+        if vfs.exists("config.local://"):
+            vfs.copy("config.local://", f"{snap_dir}/config.local/")
 
         if vfs.exists("storage://"):
             vfs.copy("storage://", f"{snap_dir}/storage/")
@@ -2079,7 +2083,7 @@ class AtomicEngine:
         """
         Restores a full atomic snapshot:
         1. Restores yscb.config.json.
-        2. Restores config/ and storage/.
+        2. Restores config/, config.local/, and storage/.
         3. Restores modules/.
         """
         host_dir, _ = uri._get_host_config()
@@ -2097,6 +2101,12 @@ class AtomicEngine:
             if vfs.exists("config://"):
                 vfs.rmtree("config://", ignore_errors=True)
             vfs.copy(snap_config_dir, "config://")
+
+        snap_config_local_dir = f"{snap_dir}/config.local"
+        if vfs.exists(snap_config_local_dir):
+            if vfs.exists("config.local://"):
+                vfs.rmtree("config.local://", ignore_errors=True)
+            vfs.copy(snap_config_local_dir, "config.local://")
 
         snap_storage_dir = f"{snap_dir}/storage"
         if vfs.exists(snap_storage_dir):
@@ -2126,49 +2136,99 @@ class AtomicEngine:
     def act_migrate(self, module_name: str, old_version: str, new_version: str) -> bool:
         """
         Executes Incremental Migration Ladder:
-        - Evaluates minor version differential: {major}.{minor}.x.py
+        - Short-circuits during @build development iterations.
+        - Evaluates minor/patch/revision version differential across:
+          * {major}.{minor}.x.py
+          * {major}.{minor}.{patch}.x.py
+          * {major}.{minor}.{patch}.{rev}.py
         - Silently skips non-existent scripts.
         - Raises RuntimeError on script failure to trigger atomic snapshot rollback.
         """
+        if _is_build_version_request(old_version) or _is_build_version_request(new_version):
+            return True
+
         t_old = semver.parse_semver(old_version)
         t_new = semver.parse_semver(new_version)
 
-        if t_new.major != t_old.major or t_new.minor <= t_old.minor:
+        if t_new.major != t_old.major or semver.compare_semver(new_version, old_version) <= 0:
             return True
 
         host_dir, yscb_dir = uri._get_host_config()
-        storage_dir = (
-            uri.resolve(f"storage://{module_name}")
-            if vfs.exists(f"storage://{module_name}")
-            else os.path.join(yscb_dir, "storage", module_name)
-        )
+
+        def _resolve_space_dir(scheme: str, fallback_rel: str) -> str:
+            try:
+                return uri.resolve(f"{scheme}://{module_name}")
+            except Exception:
+                return os.path.join(yscb_dir, fallback_rel, module_name)
 
         context = {
             "host_dir": host_dir,
-            "storage_dir": storage_dir,
+            "yscb_dir": yscb_dir,
+            "config_dir": _resolve_space_dir("config", "config"),
+            "config_local_dir": _resolve_space_dir("config.local", ".config.local"),
+            "storage_dir": _resolve_space_dir("storage", "storage"),
+            "storage_local_dir": _resolve_space_dir("storage.local", ".storage.local"),
             "old_version": old_version,
             "target_version": new_version,
         }
 
-        for m in range(t_old.minor + 1, t_new.minor + 1):
-            script_rel = f"scripts/migrations/{t_old.major}.{m}.x.py"
-            mod_script_uri = f"module://{module_name}/{script_rel}"
+        mig_dir_uri = f"module://{module_name}/scripts/migrations"
+        if not vfs.is_dir(mig_dir_uri):
+            return True
 
-            if vfs.exists(mod_script_uri):
-                script_real = uri.resolve(mod_script_uri)
-                mod_key = f"_yscb_migrate_{module_name}_{t_old.major}_{m}"
+        candidates: List[Tuple[Tuple[int, int, int, int, int, str], str]] = []
+        for fname in vfs.listdir(mig_dir_uri):
+            if not fname.endswith(".py") or fname.startswith("_"):
+                continue
+            stem = fname[:-3]
+            parts = stem.split(".")
+            if len(parts) == 3 and parts[2] == "x":
+                if not (parts[0].isdigit() and parts[1].isdigit()):
+                    continue
+                maj, min_v = int(parts[0]), int(parts[1])
+                if maj == t_old.major and (t_old.major, t_old.minor) < (maj, min_v) <= (t_new.major, t_new.minor):
+                    candidates.append(((maj, min_v, 0, 0, 0, fname), fname))
+            elif len(parts) == 4 and parts[3] == "x":
+                if not (parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit()):
+                    continue
+                maj, min_v, pat_v = int(parts[0]), int(parts[1]), int(parts[2])
+                if maj == t_old.major and t_old.triplet < (maj, min_v, pat_v) <= t_new.triplet:
+                    candidates.append(((maj, min_v, pat_v, 0, 1, fname), fname))
+            elif len(parts) == 4 and parts[3] != "x":
+                if not (parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit()):
+                    continue
                 try:
-                    spec = importlib.util.spec_from_file_location(mod_key, script_real)
-                    if spec and spec.loader:
-                        migrate_mod = importlib.util.module_from_spec(spec)
-                        sys.modules[mod_key] = migrate_mod
-                        spec.loader.exec_module(migrate_mod)
-                        if hasattr(migrate_mod, "migrate"):
-                            res = migrate_mod.migrate(context)
-                            if not res:
-                                raise RuntimeError(f"Migration script '{script_rel}' returned False.")
-                except Exception as e:
-                    raise RuntimeError(f"Migration step '{script_rel}' failed for module '{module_name}': {e}")
+                    t_script = semver.parse_semver(stem)
+                except Exception:
+                    continue
+                if (
+                    t_script.major == t_old.major
+                    and semver.compare_semver(old_version, stem) < 0
+                    and semver.compare_semver(new_version, stem) >= 0
+                ):
+                    rev_num = int(t_script.revision) if str(t_script.revision).isdigit() else 999999
+                    candidates.append(((t_script.major, t_script.minor, t_script.patch, rev_num, 2, fname), fname))
+
+        candidates.sort(key=lambda item: item[0])
+
+        for _, fname in candidates:
+            script_rel = f"scripts/migrations/{fname}"
+            mod_script_uri = f"module://{module_name}/{script_rel}"
+            script_real = uri.resolve(mod_script_uri)
+            safe_stem = fname[:-3].replace(".", "_")
+            mod_key = f"_yscb_migrate_{module_name}_{safe_stem}"
+            try:
+                spec = importlib.util.spec_from_file_location(mod_key, script_real)
+                if spec and spec.loader:
+                    migrate_mod = importlib.util.module_from_spec(spec)
+                    sys.modules[mod_key] = migrate_mod
+                    spec.loader.exec_module(migrate_mod)
+                    if hasattr(migrate_mod, "migrate"):
+                        res = migrate_mod.migrate(context)
+                        if not res:
+                            raise RuntimeError(f"Migration script '{script_rel}' returned False.")
+            except Exception as e:
+                raise RuntimeError(f"Migration step '{script_rel}' failed for module '{module_name}': {e}")
 
         return True
 

@@ -133,6 +133,8 @@ class TestVSCodeSupport(YSCBTestCase):
         snippet_labels = [s["label"] for s in locales_prop["properties"]["definition"]["defaultSnippets"]]
         self.assertIn("project://", snippet_labels)
         self.assertIn("config://", snippet_labels)
+        self.assertIn("config.local://", snippet_labels)
+        self.assertIn("storage.local://", snippet_labels)
 
         # 驗證支援外層包裹 {"demo-mod": { ... }}
         self.assertIn("demo-mod", schema["properties"])
@@ -362,6 +364,8 @@ class TestVSCodeSupport(YSCBTestCase):
             ],
         )
         self.assertNotIn("**/.modules/**", merged.get("python.analysis.exclude", []))
+        self.assertIn("**/.config.local/**", merged.get("python.analysis.exclude", []))
+        self.assertIn("**/.storage.local/**", merged.get("python.analysis.exclude", []))
 
         # Case 2: 若所有模組皆有對應 source/<mod>，extraPaths 全部指向 source/<mod> 且恢復 **/.modules/** 排除
         os.makedirs(os.path.join(src_dir, "core"), exist_ok=True)

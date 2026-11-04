@@ -91,9 +91,11 @@ YS-Codebase 透過 `core.uri` 與 `core.vfs` 提供標準化虛擬檔案系統�
 | **建置端空間** | `module.build://` | `module.build://@/` | `module.build://core/1.0.0.build.zip` | `yscb://.build/{module}/` |
 | **發布端空間** | `module.release://` | `module.release://@/` | `module.release://core/index.json` | `yscb://release/{module}/` |
 | **鏡像端空間** | `module.mirror://` | `module.mirror://@/` | `module.mirror://core/1.0.0.0.zip` | `yscb://.mirror/{module}/` |
-| **組態空間** | `config://` | `config://@/` | `config://core/config.project.json` | `yscb://config/{module}/` |
-| **快取與暫存** | `cache://` *(全面取代舊 `temp://`)* | `cache://@/` | `cache://core/contributes.merged.json` | `yscb://.cache/{module}/` |
-| **持久儲存** | `storage://` | `storage://@/` | `storage://dev/state.json` | `yscb://storage/{module}/` |
+| **團隊組態空間** | `config://` | `config://@/` | `config://core/config.project.json` | `yscb://config/{module}/` (Git 追蹤) |
+| **本機組態空間** | `config.local://` | `config.local://@/` | `config.local://core/config.local.json` | `yscb://.config.local/{module}/` (Git 忽略) |
+| **快取與暫存** | `cache://` *(全面取代舊 `temp://`)* | `cache://@/` | `cache://core/contributes.merged.json` | `yscb://.cache/{module}/` (Git 忽略) |
+| **團隊持久儲存** | `storage://` | `storage://@/` | `storage://dev/state.json` | `yscb://storage/{module}/` (Git 追蹤) |
+| **本機持久儲存** | `storage.local://` | `storage.local://@/` | `storage.local://agents-workflow/release_manifest.json` | `yscb://.storage.local/{module}/` (Git 忽略) |
 | **原子快照** | `snapshot://` | - | `snapshot://snap_1724578900/` | `yscb://.snapshots/` |
 | **私有微環境** | `yscb.venv://` | - | `yscb.venv://py310/` | `yscb://.venv/` (Git 忽略) |
 

@@ -18,16 +18,20 @@ class TestCoreURI(YSCBTestCase):
             
         canonical_protocols = [
             "project://", "yscb://", "yscb.host://", "module.mirror://", "snapshot://",
-            "module://", "config://", "cache://", "storage://",
+            "module://", "config://", "config.local://", "cache://", "storage://", "storage.local://",
             "module.source://", "module.build://", "module.release://"
         ]
         for p in canonical_protocols:
             res = uri.resolve(p, interactive=False)
             self.assertTrue(isinstance(res, str) and len(res) > 0, f"Failed resolving {p}")
             
-        # Verify explicit config/ directory (not .config)
+        # Verify explicit config/ and .config.local/ / .storage.local/ directories
         cfg_root = uri.resolve("config://", interactive=False)
         self.assertTrue(cfg_root.endswith("config") and not cfg_root.endswith(".config"), f"config:// must be explicit config/, got {cfg_root}")
+        cfg_local_root = uri.resolve("config.local://", interactive=False)
+        self.assertTrue(cfg_local_root.replace("\\", "/").endswith("/.config.local"), f"config.local:// must resolve to .config.local, got {cfg_local_root}")
+        storage_local_root = uri.resolve("storage.local://", interactive=False)
+        self.assertTrue(storage_local_root.replace("\\", "/").endswith("/.storage.local"), f"storage.local:// must resolve to .storage.local, got {storage_local_root}")
         self.mark_passed()
 
     def test_option_b_canonical_rooting_and_at_syntax(self):
@@ -41,6 +45,12 @@ class TestCoreURI(YSCBTestCase):
         with uri.module_scope("agents-workflow"):
             res_at = uri.resolve("storage://@/release_manifest.json")
             self.assertTrue(res_at.replace("\\", "/").endswith("storage/agents-workflow/release_manifest.json"))
+
+            res_cfg_local_at = uri.resolve("config.local://@/config.local.json")
+            self.assertTrue(res_cfg_local_at.replace("\\", "/").endswith(".config.local/agents-workflow/config.local.json"))
+
+            res_stg_local_at = uri.resolve("storage.local://@/release_manifest.json")
+            self.assertTrue(res_stg_local_at.replace("\\", "/").endswith(".storage.local/agents-workflow/release_manifest.json"))
 
             res_cache_at = uri.resolve("cache://@/resolved_contents/test.md")
             self.assertTrue(res_cache_at.replace("\\", "/").endswith(".cache/agents-workflow/resolved_contents/test.md"))
@@ -67,6 +77,10 @@ class TestCoreURI(YSCBTestCase):
             # 驗證同前綴兄弟目錄穿越攻擊防禦 (EC-05)
             with self.assertRaises(PermissionError):
                 uri.resolve("storage://../storage_sibling/hack.txt")
+            with self.assertRaises(PermissionError):
+                uri.resolve("config.local://@/../../../../../../etc/passwd")
+            with self.assertRaises(PermissionError):
+                uri.resolve("storage.local://../.storage.local_sibling/hack.txt")
         self.mark_passed()
 
     def test_deprecated_scheme_redirection_warning(self):

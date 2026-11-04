@@ -4,12 +4,12 @@
   "installed_modules": {
     "core": {
       "version": "1.2.6.build",
-      "installed_at": "2026-11-04 18:56:44",
+      "installed_at": "2026-11-04 19:48:45",
       "provider": "./ys_codebase/release"
     },
     "dev": {
       "version": "1.1.4.build",
-      "installed_at": "2026-11-04 18:30:57",
+      "installed_at": "2026-11-04 19:39:13",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
@@ -39,7 +39,7 @@
     },
     "vscode-support": {
       "version": "1.0.0.build",
-      "installed_at": "2026-11-04 18:57:11",
+      "installed_at": "2026-11-04 19:38:38",
       "provider": "./ys_codebase/release"
     },
     "gdrive-support": {

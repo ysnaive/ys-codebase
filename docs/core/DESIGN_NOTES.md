@@ -50,6 +50,7 @@ last_updated: "2026-10-15"
 | **[DN-14](#dn-14-本地嚴格同版-source_version--target_version-動態打包pruned-同三元組自動補位與-releases-孤兒分支自動遷移)** | `DN-REL-01` | 本地嚴格同版動態打包、`pruned` 同三元組自動補位與 `releases` 孤兒分支自動遷移 | `yscb.py`<br/>`source/core/core/engine.py`<br/>`source/core/core/installer.py` | 🚨 CAUTION |
 | **[DN-15](#dn-15-indexjsonreleases-依賴覆寫優先級core-版本相容性過濾與-mirror-離線快取冪等還原)** | `DN-REL-02` | `index.json["releases"]` 依賴覆寫優先級、`core` 版本相容性過濾與 `mirror://` 離線快取冪等還原 | `source/core/core/engine.py`<br/>`source/core/core/installer.py`<br/>`source/core/core/update_checker.py` | 🚨 CAUTION |
 | **[DN-18](#dn-18-coreplatform-統一全模組-syspath-注入與非-core-模組零豁免靜態守門)** | `DN-PATH-01` | `core.platform` 統一全模組 `sys.path` 注入與非 `core` 模組零豁免靜態守門 | `source/core/core/platform/venv.py`<br/>`source/core/core/commands/dispatcher.py`<br/>`source/core/core/events.py`<br/>`source/core/core/symbols.py` | 🚨 CAUTION |
+| **[DN-19](#dn-19-五大語意資料空間正交分離與零執行期版本債之多維度-act_migrate-遷移階梯)** | `DN-SPACE-01` | 五大語意資料空間正交分離與零執行期版本債之多維度 `act_migrate` 遷移階梯 | `source/core/core/uri.py`<br/>`source/core/core/config.py`<br/>`source/core/core/engine.py`<br/>`source/core/scripts/migrations/1.2.7.x.py` | 🚨 CAUTION |
 
 ---
 
@@ -270,6 +271,23 @@ last_updated: "2026-10-15"
 - **防禦宣告**：
   > [!CAUTION]
   > **嚴禁在任何非 `core` 生產源碼檔案中直接變動 `sys.path`（已由 `dev/checker.py:_find_sys_path_mutations` 實施零豁免 `FAIL` 守門）！嚴禁在生產環境（非 `YSCB_TEST_SANDBOX=="1"`）將 `module.source://` 或 `/source/` 注入 `sys.path`！**
+
+---
+
+### [DN-19] 五大語意資料空間正交分離與零執行期版本債之多維度 `act_migrate` 遷移階梯
+
+- **核心決策**：
+  1. **五大語意空間正交矩陣 (`config://`, `config.local://`, `storage://`, `storage.local://`, `cache://`)**：
+     - 將「版控團隊資產 (`config/`, `storage/`)」、「本機持久化資產 (`.config.local/`, `.storage.local/`)」與「短暫易失快取 (`.cache/`)」完全正交解耦。
+     - `act_snapshot` / `act_restore_snapshot` 僅備份與還原 `config://`、`config.local://` 與 `storage://`，**嚴格排除 `storage.local://` 與 `cache://`**，防止數十 MB 級別的本地模型與語意索引拖慢快照與回滾。
+  2. **零執行期歷史相容分支與多維度 `act_migrate` 遷移階梯**：
+     - `core/config.py`、`core/engine.py` 與 `core/commands/dispatcher.py` 維持 100% 純淨新路徑解算，嚴禁在執行期熱路徑殘留舊版路徑 fallback 或惰性搬移分支。
+     - `AtomicEngine.act_migrate` 支援 `{major}.{minor}.x.py`、`{major}.{minor}.{patch}.x.py` 與 `{major}.{minor}.{patch}.{rev}.py` 三種粒度階梯腳本，並於 `install`、`update` 與 `restore` 升級版本時自動觸發；舊版 `config/<mod>/config*.local.json` 至 `.config.local/<mod>/` 之遷移完全收斂於一次性版本遷移腳本 `core/scripts/migrations/1.2.7.x.py`。
+- **背後考量**：避免 `config/` 目錄混放受追蹤與被忽略檔案造成 Git 誤操作，避免 `cache://` 被濫用於存放不可丟失之本機狀態或大體積模型，並杜絕為一次性格式演進而在微內核熱路徑永久殘留技術債。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁將 `storage.local://` 或 `cache://` 納入 `act_snapshot` 備份範圍！嚴禁在 `core.config` 或業務代碼熱路徑中塞入歷史版本路徑相容分支（所有跨版本資料與路徑遷移一律註冊於 `scripts/migrations/`）！**
+
 
 
 

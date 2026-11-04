@@ -27,8 +27,12 @@ class SandboxContext:
         self.provider_dir = os.path.join(self.sandbox_dir, "mock_provider")
 
     def set_module_config(self, module_name: str, config_filename: str, data: Dict[str, Any]) -> str:
-        """Safely write configuration into host engine's config/{module}/{config_filename}."""
-        cfg_dir = os.path.join(self.engine_dir, "config", module_name)
+        """Safely write configuration into host engine's config/{module}/ or .config.local/{module}/."""
+        is_local = config_filename == "config.local.json" or (
+            config_filename.startswith("config.") and config_filename.endswith(".local.json")
+        )
+        root_sub = ".config.local" if is_local else "config"
+        cfg_dir = os.path.join(self.engine_dir, root_sub, module_name)
         os.makedirs(cfg_dir, exist_ok=True)
         target_path = os.path.join(cfg_dir, config_filename)
         with open(target_path, "w", encoding="utf-8") as f:

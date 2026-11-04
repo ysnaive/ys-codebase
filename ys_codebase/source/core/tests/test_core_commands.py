@@ -784,12 +784,14 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             self.assertEqual(default_cfg, dispatcher._ServerSpawnConfig(enabled=True, auto_spawn=True, strict_hot_dispatch=False))
 
             cfg_dir = os.path.join(tmp_dir, "config", "server")
+            cfg_local_dir = os.path.join(tmp_dir, ".config.local", "server")
             os.makedirs(cfg_dir, exist_ok=True)
+            os.makedirs(cfg_local_dir, exist_ok=True)
             with open(os.path.join(cfg_dir, "config.project.json"), "w", encoding="utf-8") as f:
                 f.write('{"enable": true, "auto_spawn": true}')
             self.assertFalse(dispatcher._read_server_spawn_config(tmp_dir).strict_hot_dispatch)
 
-            with open(os.path.join(cfg_dir, "config.local.json"), "w", encoding="utf-8") as f:
+            with open(os.path.join(cfg_local_dir, "config.local.json"), "w", encoding="utf-8") as f:
                 f.write('{"strict_hot_dispatch": true, "auto_spawn": false}')
             layered = dispatcher._read_server_spawn_config(tmp_dir)
             self.assertTrue(layered.strict_hot_dispatch)
