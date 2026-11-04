@@ -1,0 +1,665 @@
+{
+  "uri_schemes": [
+    {
+      "token": "gdrive-support.storage",
+      "type": "const",
+      "value": "cache://gdrive-support/",
+      "description": "Google Drive 同步狀態帳本、指紋快取與跨進程鎖根目錄"
+    }
+  ],
+  "commands": {
+    "module_alias": ["gdrive"],
+    "description": "Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步指令群",
+    "cmd": {
+      "status": {
+        "description": "檢視 gdrive-support 組態、活躍分支、auto_sync 開關與受管 sync_spaces 映射狀態",
+        "tier": "safe",
+        "server_compatible": true,
+        "options": {
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出狀態報告"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "快速確認 root_folder_id、active_branch、auto_sync 預設狀態與 sync_spaces 空間映射"
+          ],
+          "cons": [
+            "僅唯讀檢視組態與映射狀態，不會發起遠端同步"
+          ]
+        }
+      },
+      "auth": {
+        "description": "驗證或執行 Google Drive API OAuth 2.0 Client ID 憑證授權",
+        "tier": "conditional",
+        "server_compatible": false,
+        "options": {
+          "check": {
+            "check": {
+              "description": "僅檢查憑證與 Token 狀態而不啟動授權流程"
+            },
+            "no-launch-browser": {
+              "description": "不啟動本機迴路伺服器，直接印出授權 URL 供無頭環境搭配 --code 兌換 Token"
+            },
+            "code": {
+              "description": "傳入瀏覽器授權後重導向取得之授權碼或完整 http://127.0.0.1:<port>/?code=... 網址以兌換 Token",
+              "args": {
+                "code_or_url": {
+                  "description": "OAuth2 授權碼或完整回呼網址"
+                }
+              }
+            },
+            "port": {
+              "description": "指定本機 OAuth2 Loopback 回呼埠號 (預設 8765)",
+              "args": {
+                "port": {
+                  "description": "TCP 埠號"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出授權狀態"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "支援本機 Loopback 自動接收與無頭容器 --no-launch-browser / --code 兩階段兌換 OAuth2 Token"
+          ],
+          "cons": [
+            "使用 --sandbox-dir 離線沙盒時無須執行 auth"
+          ]
+        }
+      },
+      "ls": {
+        "description": "原子列舉雲端或沙盒指定相對路徑下之檔案、資料夾與 Shortcut 項目",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "remote_path": {
+            "description": "雲端相對路徑 (省略時代表當前根目錄)",
+            "required": false
+          }
+        },
+        "options": {
+          "recursive": {
+            "recursive": {
+              "description": "遞迴列舉所有子目錄內容",
+              "alias": ["r"]
+            }
+          },
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出檔案清單"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "無須啟動同步服務即可獨立檢視雲端或沙盒目錄結構、file_id 與 Shortcut 目標資訊"
+          ],
+          "cons": [
+            "大型目錄使用 --recursive 時可能消耗較多 API 請求"
+          ]
+        }
+      },
+      "get": {
+        "description": "原子下載雲端或沙盒單一檔案（或自動解析 Shortcut 目標檔）至本地路徑",
+        "tier": "conditional",
+        "server_compatible": true,
+        "args": {
+          "remote_path": {
+            "description": "雲端來源檔案相對路徑",
+            "required": true
+          },
+          "local_path": {
+            "description": "本地目標檔案路徑",
+            "required": true
+          }
+        },
+        "options": {
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出下載結果"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "直接保持原檔案類型與原始位元組 1:1 原子下載單一檔案"
+          ],
+          "cons": [
+            "不支援對 Google Workspace 雲端原生線上文件執行匯出轉檔"
+          ]
+        }
+      },
+      "put": {
+        "description": "原子上傳本地單一檔案至雲端或沙盒指定相對路徑",
+        "tier": "conditional",
+        "server_compatible": true,
+        "args": {
+          "local_path": {
+            "description": "本地來源檔案路徑",
+            "required": true
+          },
+          "remote_path": {
+            "description": "雲端目標檔案相對路徑",
+            "required": true
+          }
+        },
+        "options": {
+          "in_place": {
+            "in-place-id": {
+              "description": "指定既有 file_id 進行原地覆寫更新 (省略時若已存在同名檔則原地更新，否則新建)",
+              "args": {
+                "file_id": {
+                  "description": "目標 file_id"
+                }
+              }
+            }
+          },
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出上傳結果"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "無須啟動同步服務即可手動將單一檔案原樣上傳至 Google Drive 或沙盒"
+          ],
+          "cons": [
+            "單檔手動 put 不會自動更新批次三方同步帳本 sync_state.json"
+          ]
+        }
+      },
+      "rm": {
+        "description": "原子將雲端或沙盒指定路徑之檔案或 Shortcut 安全移入 Google Drive 原生 30 天垃圾桶（或沙盒 .trash/）",
+        "tier": "conditional",
+        "server_compatible": true,
+        "args": {
+          "remote_path": {
+            "description": "欲移入垃圾桶之雲端相對路徑",
+            "required": true
+          }
+        },
+        "options": {
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出移除結果"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "安全將目標移入 Google Drive 原生 30 天垃圾桶（或沙盒 .trash/）而非直接永久抹除，具備誤刪保護"
+          ],
+          "cons": [
+            "僅移入垃圾桶，不會永久清空雲端垃圾桶"
+          ]
+        }
+      },
+      "mkdir": {
+        "description": "原子於雲端或沙盒建立指定相對路徑之真實資料夾階層",
+        "tier": "conditional",
+        "server_compatible": true,
+        "args": {
+          "remote_path": {
+            "description": "欲建立之雲端資料夾相對路徑",
+            "required": true
+          }
+        },
+        "options": {
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出建立結果"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "自動遞迴建立父目錄並回傳對應 folder file_id"
+          ],
+          "cons": [
+            "若同名資料夾已存在則直接回傳既有項目（冪等）"
+          ]
+        }
+      },
+      "shortcut": {
+        "description": "原子於雲端或沙盒指定路徑建立指向目標 file_id 之 Google Drive Shortcut",
+        "tier": "conditional",
+        "server_compatible": true,
+        "args": {
+          "target_file_id": {
+            "description": "目標實體檔案之 file_id",
+            "required": true
+          },
+          "shortcut_remote_path": {
+            "description": "Shortcut 放置之雲端相對路徑",
+            "required": true
+          }
+        },
+        "options": {
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出 Shortcut 建立結果"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "以 0 Bytes 捷徑方式跨分支引用主幹或 .history/ 內之實體檔案"
+          ],
+          "cons": [
+            "嚴禁對資料夾建立 Shortcut 以免雲端寫入穿透污染主幹"
+          ]
+        }
+      },
+      "init": {
+        "description": "初始化雲端或沙盒根目錄（建立 .yscb_gdrive.json、README.md、.history/、.trash/ 與 main/）",
+        "tier": "conditional",
+        "server_compatible": true,
+        "options": {
+          "force": {
+            "force": {
+              "description": "即使已存在 .yscb_gdrive.json 仍重新覆寫初始化",
+              "alias": ["f"]
+            }
+          },
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出初始化結果"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "安全納管雲端根資料夾並建立標準分支與歷史回收目錄結構"
+          ],
+          "cons": [
+            "若根目錄已有其他非空檔案，請確認該資料夾確實為專用同步倉庫後再執行"
+          ]
+        }
+      },
+      "branch": {
+        "description": "管理雲端 Shortcut 差量分支（list / create / delete）",
+        "cmd": {
+          "list": {
+            "description": "列出所有已註冊之雲端分支與當前活躍分支",
+            "tier": "safe",
+            "server_compatible": true,
+            "options": {
+              "sandbox": {
+                "sandbox-dir": {
+                  "description": "指定本地沙盒模擬目錄路徑",
+                  "args": {
+                    "path": {
+                      "description": "本地沙盒目錄路徑"
+                    }
+                  }
+                }
+              },
+              "format": {
+                "json": {
+                  "description": "以結構化 JSON 格式輸出分支清單"
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視雲端 .yscb_gdrive.json 註冊之所有分支與建立時間"
+              ],
+              "cons": []
+            }
+          },
+          "create": {
+            "description": "建立新差量分支（真實資料夾骨架 + 指向來源分支檔案之 Google Drive Shortcut）",
+            "tier": "conditional",
+            "server_compatible": true,
+            "args": {
+              "branch_name": {
+                "description": "新分支名稱 (如 v1.0)",
+                "required": true
+              }
+            },
+            "options": {
+              "from": {
+                "from": {
+                  "description": "指定來源基準分支 (預設為 main)",
+                  "args": {
+                    "source_branch": {
+                      "description": "來源分支名稱"
+                    }
+                  }
+                }
+              },
+              "sandbox": {
+                "sandbox-dir": {
+                  "description": "指定本地沙盒模擬目錄路徑",
+                  "args": {
+                    "path": {
+                      "description": "本地沙盒目錄路徑"
+                    }
+                  }
+                }
+              },
+              "format": {
+                "json": {
+                  "description": "以結構化 JSON 格式輸出分支建立結果"
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "以 0 Bytes Shortcut 建立完整版本快照分支，不重複占用雲端空間"
+              ],
+              "cons": [
+                "建立分支本身不會切換本地工作區，如需切換請接續執行 checkout"
+              ]
+            }
+          },
+          "delete": {
+            "description": "將指定分支移入 .trash/ 並自動將 .history/ 中無引用之歷史檔案回收至 .trash/",
+            "tier": "conditional",
+            "server_compatible": true,
+            "args": {
+              "branch_name": {
+                "description": "欲刪除之分支名稱 (禁止刪除 main 或當前活躍分支)",
+                "required": true
+              }
+            },
+            "options": {
+              "sandbox": {
+                "sandbox-dir": {
+                  "description": "指定本地沙盒模擬目錄路徑",
+                  "args": {
+                    "path": {
+                      "description": "本地沙盒目錄路徑"
+                    }
+                  }
+                }
+              },
+              "format": {
+                "json": {
+                  "description": "以結構化 JSON 格式輸出分支刪除與歷史回收結果"
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "刪除分支同時自動觸發 Reference-Counted History GC 將無引用歷史檔移入 .trash/"
+              ],
+              "cons": [
+                "禁止刪除預設主幹 main 或當前活躍分支"
+              ]
+            }
+          }
+        }
+      },
+      "checkout": {
+        "description": "原子切換活躍分支並同步對齊本地受管工作樹（含清理舊分支獨有檔案）",
+        "tier": "conditional",
+        "server_compatible": true,
+        "args": {
+          "target_branch": {
+            "description": "目標分支名稱 (如 main 或 v1.0)",
+            "required": true
+          }
+        },
+        "options": {
+          "force": {
+            "force": {
+              "description": "忽略本地未同步修改強制切換分支",
+              "alias": ["f"]
+            }
+          },
+          "backup": {
+            "backup": {
+              "description": "覆寫或清理本地檔案前自動建立 .conflict.<ts>.bak 備份"
+            }
+          },
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出切換結果"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "確保本地受管檔案與目標分支 100% 對齊並更新基準線帳本，防止跨分支殘留污染"
+          ],
+          "cons": [
+            "若本地有未同步修改且未加 --force，將阻斷切換以保護未儲存工作"
+          ]
+        }
+      },
+      "pull": {
+        "description": "從雲端活躍分支單向拉取新增與更新檔案至本地受管空間",
+        "tier": "conditional",
+        "server_compatible": true,
+        "options": {
+          "delete": {
+            "delete": {
+              "description": "同步刪除雲端已移除之本地受管檔案"
+            }
+          },
+          "force": {
+            "force": {
+              "description": "遭遇衝突時強制以雲端版本覆寫本地",
+              "alias": ["f"]
+            }
+          },
+          "backup": {
+            "backup": {
+              "description": "強制覆寫或刪除本地檔案前建立 .conflict.<ts>.bak 備份"
+            }
+          },
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出拉取報告"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "將雲端或網頁版 Gemini 更新之檔案拉回本地並增量更新 sync_state.json"
+          ],
+          "cons": [
+            "未加 --force 時若遇雙邊修改衝突將安全阻斷"
+          ]
+        }
+      },
+      "push": {
+        "description": "將本地受管空間新增與修改檔案單向推送至雲端活躍分支（含受引用時 Copy-on-Write 移入 .history/）",
+        "tier": "conditional",
+        "server_compatible": true,
+        "options": {
+          "delete": {
+            "delete": {
+              "description": "將本地已刪除之受管檔案於雲端移入 Google Drive 原生 30 天垃圾桶（或受引用時移入 .history/）"
+            }
+          },
+          "force": {
+            "force": {
+              "description": "遭遇衝突時強制以本地版本覆寫雲端",
+              "alias": ["f"]
+            }
+          },
+          "backup": {
+            "backup": {
+              "description": "強制覆寫雲端衝突檔案前先下載遠端版本為本地 .remote_conflict.<ts>.bak 備份"
+            }
+          },
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出推送報告"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "自動判定跨分支 Shortcut 引用計數，保護舊分支歷史凍結並回收無引用 .history/ 檔案至 Google Drive 原生 30 天垃圾桶"
+          ],
+          "cons": [
+            "未加 --force 時若遇雙邊修改衝突將安全阻斷"
+          ]
+        }
+      },
+      "sync": {
+        "description": "執行三方狀態機雙向同步（遇衝突按檔隔離保留雙邊原狀並回傳 Exit Code 2，其餘檔案照常同步）",
+        "tier": "conditional",
+        "server_compatible": true,
+        "options": {
+          "delete": {
+            "delete": {
+              "description": "啟用雙向刪除傳播"
+            }
+          },
+          "sandbox": {
+            "sandbox-dir": {
+              "description": "指定本地沙盒模擬目錄路徑",
+              "args": {
+                "path": {
+                  "description": "本地沙盒目錄路徑"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出同步報告"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "單次完成雙向新增/修改對帳、Copy-on-Write 歷史保護、.history/ 無引用回收與單檔增量落盤"
+          ],
+          "cons": [
+            "遇到雙邊衝突檔案時會隔離保留不覆寫（回傳 Exit Code 2），需以 pull/push --force --backup 裁決"
+          ]
+        }
+      }
+    }
+  },
+  "gitignore": [
+    "config://gdrive-support/credentials.json",
+    "config://gdrive-support/service_account.json",
+    "config://gdrive-support/token.json",
+    "config://gdrive-support/*secret*.json"
+  ]
+}

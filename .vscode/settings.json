@@ -83,11 +83,13 @@
       "./.vscode/schemas/contributes/core.schema.json",
       "./.vscode/schemas/contributes/dev.schema.json",
       "./.vscode/schemas/contributes/file-space.schema.json",
+      "./.vscode/schemas/contributes/gdrive-support.schema.json",
       "./.vscode/schemas/contributes/knowledge-db.schema.json",
       "./.vscode/schemas/contributes/server.schema.json",
       "./.vscode/schemas/contributes/vscode-support.schema.json",
       "./.vscode/schemas/config/agents-workflow.schema.json",
       "./.vscode/schemas/config/core.schema.json",
+      "./.vscode/schemas/config/gdrive-support.schema.json",
       "./.vscode/schemas/config/knowledge-db.schema.json",
       "./.vscode/schemas/config/server.schema.json",
       "./.vscode/schemas/meta/format-meta.schema.json",
@@ -140,6 +142,13 @@
     },
     {
       "fileMatch": [
+        "**/contributes/gdrive-support.json",
+        "**/config/gdrive-support/contribute.json"
+      ],
+      "url": "./.vscode/schemas/contributes/gdrive-support.schema.json"
+    },
+    {
+      "fileMatch": [
         "**/contributes/knowledge-db.json",
         "**/config/knowledge-db/contribute.json"
       ],
@@ -174,6 +183,14 @@
         "**/core/configurable/config.*.json"
       ],
       "url": "./.vscode/schemas/config/core.schema.json"
+    },
+    {
+      "fileMatch": [
+        "**/config/gdrive-support/config.*.json",
+        "**/source/gdrive-support/configurable/config.*.json",
+        "**/gdrive-support/configurable/config.*.json"
+      ],
+      "url": "./.vscode/schemas/config/gdrive-support.schema.json"
     },
     {
       "fileMatch": [

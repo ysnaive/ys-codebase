@@ -1,0 +1,16 @@
+{
+  "root_folder_id": "str? = \"\" @desc(Google Drive 雲端總根資料夾 ID，原子 API 操作之根目錄，而 repo_sync 同步倉位於其下之 repo_sync_root 子目錄)",
+  "auth_mode": "enum(oauth_user)? = oauth_user @desc(Google Drive API OAuth 2.0 Client ID 認證模式)",
+  "credentials_uri": "uri? = config://gdrive-support/credentials.json @desc(OAuth2 客戶端金鑰檔路徑)",
+  "token_uri": "uri? = cache://gdrive-support/token.json @desc(OAuth2 授權 Token 快取路徑)",
+  "sandbox_dir": "str? = \"\" @desc(選填之本地沙盒模擬目錄路徑，設定後預設使用 LocalSandboxTransport)",
+  "repo_sync": {
+    "enable": "bool? = false @desc(repo_sync 同步與分支版控功能總開關，預設為 false，為 false 時以下所有設定皆不生效且僅開放原子 API 操作)",
+    "repo_sync_root": "str? = repo @desc(repo_sync 受控同步倉於雲端 root_folder_id 下之子資料夾相對路徑，預設為 repo)",
+    "active_branch": "str? = main @desc(當前活躍之雲端同步分支名稱，預設為 main)",
+    "auto_sync": "bool? = false @desc(是否啟用背景常駐自動同步，僅在 repo_sync.enable 為 true 時生效)",
+    "poll_interval_sec": "float? = 30.0 @desc(背景輪詢雲端變更之時間間隔秒數)",
+    "pull_delete_default": "bool? = false @desc(拉取時預設是否傳播雲端刪除至本地)",
+    "push_delete_default": "bool? = false @desc(推送時預設是否傳播本地刪除至雲端)"
+  }
+}

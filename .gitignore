@@ -64,6 +64,7 @@ yscb.py.bak
 /.agents/skills/discuss/SKILL.md
 /.agents/skills/documentation/SKILL.md
 /.agents/skills/documentation/references/author_guide_and_checklist.md
+/.agents/skills/gdrive-local-ops/SKILL.md
 /.agents/skills/how-to-config-yscb/SKILL.md
 /.agents/skills/how-to-yscb/SKILL.md
 /.agents/skills/knowledge-db-search/SKILL.md
@@ -88,6 +89,11 @@ yscb.py.bak
 /.agents/skills/yscb-module-dev/references/cli_and_commands.md
 /.agents/skills/yscb-module-dev/references/contributes_guide.md
 /.agents/skills/yscb-module-dev/references/testing_and_sandbox.md
+# [gdrive-support]
+/ys_codebase/config/gdrive-support/*secret*.json
+/ys_codebase/config/gdrive-support/credentials.json
+/ys_codebase/config/gdrive-support/service_account.json
+/ys_codebase/config/gdrive-support/token.json
 # [vscode-support]
 /.vscode/schemas/
 # === YSCB MANAGED GITIGNORE END ===

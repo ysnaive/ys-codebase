@@ -1,0 +1,11 @@
+{
+  "services": [
+    {
+      "name": "gdrive-sync",
+      "worker_class": "gdrive_support.service:GDriveSyncServiceWorker",
+      "description": "Google Drive 選配背景雙向同步與差量輪詢服務 (預設 auto_sync: false 保持靜默待機)",
+      "auto_start": true
+    }
+  ]
+}
+

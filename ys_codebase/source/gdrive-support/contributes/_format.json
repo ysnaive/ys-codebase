@@ -1,0 +1,20 @@
+{
+  "_types": {
+    "PathMappingDef": {
+      "local": "uri! @desc(本地來源目錄或檔案語意 URI，必須位於所屬 space 之 include 根目錄範圍內)",
+      "remote": "str! @desc(映射至雲端 <root_folder_id>/<repo_sync_root>/<active_branch>/ 下之相對路徑前綴)"
+    },
+    "SyncSpaceDef": {
+      "space": "str! @desc(已於 file-space 註冊之邏輯檔案空間名稱)",
+      "mapping": "list[$PathMappingDef]? | extend @desc(選填之本地與雲端路徑重映射清單；省略時預設相對於 project:// 1:1 映射)",
+      "description": "str? @desc(同步空間用途說明)"
+    }
+  },
+  "sync_spaces": {
+    "description": "向 gdrive-support 註冊納入雲端 repo_sync (<repo_sync_root>/<active_branch>/) 同步之 file-space 空間與選填路徑重映射規則",
+    "merge": "extend",
+    "format": [
+      "$SyncSpaceDef"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "root_folder_id": "1MeDEInAzn11JobNbfA_6uQ2OPpRTGAhF",
+  "auth_mode": "oauth_user",
+  "credentials_uri": "config://gdrive-support/credentials.json",
+  "token_uri": "cache://gdrive-support/token.json",
+  "sandbox_dir": "",
+  "repo_sync": {
+    "enable": false,
+    "repo_sync_root": "repo",
+    "active_branch": "main",
+    "auto_sync": false,
+    "poll_interval_sec": 30.0,
+    "pull_delete_default": false,
+    "push_delete_default": false
+  }
+}

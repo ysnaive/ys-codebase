@@ -1,0 +1,30 @@
+{
+  "export": [
+    {
+      "type": "skill",
+      "name": "gdrive-local-ops",
+      "source": "module://gdrive-support/assets/skills/gdrive-local-ops"
+    }
+  ],
+  "insert": [
+    {
+      "type": "const",
+      "token": "AGENTS_SKILL_ROUTING",
+      "value": "| **操作 Google Drive 雲端檔案 / 執行 `yscb gdrive` 單檔原子讀寫或 `repo_sync` 分支與雙向同步**<br/>*(調用 `yscb.py gdrive` / `gdrive-support`、存取純雲端單檔資產、或配置 `config/gdrive-support/` 前)* | `gdrive-local-ops` |",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_CONFIG_MODULES",
+      "value": "module://gdrive-support/assets/config_guide.md",
+      "mode": "below"
+    },
+    {
+      "type": "uri",
+      "token": "HOW_TO_YSCB_MODULES",
+      "value": "module://gdrive-support/assets/usage_guide.md",
+      "mode": "below"
+    }
+  ]
+}
+

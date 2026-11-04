@@ -1,0 +1,27 @@
+{
+  "id": "gdrive-support",
+  "name": "gdrive-support",
+  "version": "0.1.0.0",
+  "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
+  "author": "YSCB Team",
+  "entry": "scripts/cli.py",
+  "dependencies": {
+    "core": ">=1.2.5",
+    "file-space": ">=1.0.0"
+  },
+  "optional": {
+    "server": {
+      "version": ">=1.0.0",
+      "hint": "提供 GDriveSyncServiceWorker 選配常駐背景同步能力 (預設 auto_sync: false)"
+    }
+  },
+  "pip_dependencies": {},
+  "uris": {
+    "storage": "cache://gdrive-support"
+  },
+  "onboarding": [
+    "請執行 `python yscb.py gdrive status` 檢視 Google Drive 同步組態、分支設定與受管空間映射狀態。",
+    "可使用原子指令 `python yscb.py gdrive ls / get / put / rm / mkdir / shortcut` 手動操作雲端或本地沙盒檔案。",
+    "背景自動同步預設為關閉 (`auto_sync: false`)，僅於顯式啟用時方啟動常駐監聽與輪詢。"
+  ]
+}
