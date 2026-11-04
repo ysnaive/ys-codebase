@@ -540,8 +540,12 @@ class ASTEngine:
         return space_gens, files_map
 
     def _save_snapshot_and_graph(self, snapshot: ASTSnapshot, graph: CallGraphIndex) -> None:
-        atomic_save_gzip_pickle(self.symbols_index_path, snapshot.to_dict(), compresslevel=1)
-        graph.save_binary(self.graph_index_path, compresslevel=1)
+        from core.platform.lock import InterProcessLock
+
+        lock_file = str(self.indices_dir / ".ast_index.lock")
+        with InterProcessLock(lock_file, timeout=15.0):
+            atomic_save_gzip_pickle(self.symbols_index_path, snapshot.to_dict(), compresslevel=1)
+            graph.save_binary(self.graph_index_path, compresslevel=1)
         self._snapshot = snapshot
         self._graph = graph
         if self.symbols_index_path.exists():
@@ -682,13 +686,17 @@ class ASTEngine:
                 if is_dirty_file_match(f_path_key, dirty_paths_norm):
                     for doc_id in sids:
                         sym = self._snapshot.symbols.get(doc_id)
-                        if sym is not None and is_dirty_file_match(sym.file_path, dirty_paths_norm):
+                        if sym is not None:
+                            if is_dirty_file_match(sym.file_path, dirty_paths_norm):
+                                old_doc_ids.add(doc_id)
+                                old_symbol_info[doc_id] = (
+                                    sym.file_path,
+                                    sym.name,
+                                    sym.fqn or sym.name,
+                                )
+                        else:
                             old_doc_ids.add(doc_id)
-                            old_symbol_info[doc_id] = (
-                                sym.file_path,
-                                sym.name,
-                                sym.fqn or sym.name,
-                            )
+                    self._snapshot.file_to_symbol_ids.pop(f_path_key, None)
         else:
             for doc_id, sym in list(self._snapshot.symbols.items()):
                 if is_dirty_file_match(sym.file_path, dirty_paths_norm):

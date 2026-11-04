@@ -27,8 +27,9 @@ class InterProcessLock:
     (via fcntl.flock) and Windows (via msvcrt.locking).
     """
 
-    def __init__(self, lock_file: str) -> None:
+    def __init__(self, lock_file: str, timeout: float = 0.0) -> None:
         self.lock_file = os.path.abspath(lock_file)
+        self.timeout = float(timeout)
         self._fd: Optional[int] = None
         self._is_locked: bool = False
 
@@ -89,13 +90,17 @@ class InterProcessLock:
         re-raises the original ``FileExistsError`` if all retries fail. Other errors propagate.
         """
         try:
-            return os.open(self.lock_file, os.O_CREAT | os.O_RDWR)
+            fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR)
+            os.set_inheritable(fd, False)
+            return fd
         except FileExistsError as first_err:
             original = first_err
         for _ in range(_EEXIST_RETRIES):
             time.sleep(0.05)
             try:
-                return os.open(self.lock_file, os.O_RDWR)
+                fd = os.open(self.lock_file, os.O_RDWR)
+                os.set_inheritable(fd, False)
+                return fd
             except FileExistsError:
                 continue
         raise original
@@ -171,7 +176,7 @@ class InterProcessLock:
                 pass
 
     def __enter__(self) -> "InterProcessLock":
-        if not self.acquire(blocking=True):
+        if not self.acquire(blocking=True, timeout_sec=self.timeout):
             raise LockAcquisitionError(f"Could not acquire inter-process lock on {self.lock_file}")
         return self
 

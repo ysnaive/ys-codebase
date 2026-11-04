@@ -1,6 +1,6 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.3.3",
+  "version": "1.2.3.4",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -12,8 +12,8 @@
     "Publish AGENTS.md & skills to project workspace: python yscb.py agents-workflow release"
   ],
   "release": {
-    "type": "feature",
+    "type": "refactor",
     "urgency": "optional",
-    "summary": "新增同構 configurable/_format.json 組態契約並升級 uri/path 與 @desc(...) 欄位說明"
+    "summary": "實作 _trace_parser JSONL 串流生成器與 2MB 單行安全上限"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.3.1",
+  "version": "1.0.3.2",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -12,8 +12,8 @@
     "Stop daemon and view session summary: python yscb.py server stop"
   ],
   "release": {
-    "type": "feature",
-    "urgency": "optional",
-    "summary": "新增同構 configurable/_format.json 組態契約並升級 @desc(...) 欄位說明"
+    "type": "hotfix",
+    "urgency": "critical",
+    "summary": "修復 Master 自我重啟移交序列、Worker close_fds 隔離與日誌輪替偏移量重置"
   }
 }

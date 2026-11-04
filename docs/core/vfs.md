@@ -10,7 +10,7 @@ related_docs:
   - "./README.md"
   - "./uri_protocols.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-22"
+last_updated: "2026-11-04"
 ---
 
 # 統一虛擬檔案系統手冊 (Unified Virtual File System - VFS)
@@ -108,8 +108,9 @@ with vfs.atomic_write("project://config.json", mode="w") as f:
 
 ---
 
-## 🛡️ 3. 安全邊界防護與防逃逸 (Anti-Escape Sandbox)
+## 🛡️ 3. 安全邊界防護與跨平台防腐原語 (`robust_rmtree` / `robust_replace`)
 
-`OSBackend` 內建授權邊界防護機制：
-- 若指定授權邊界（如沙盒專屬目錄），任何帶有 `../../` 意圖逃逸出根目錄之路徑，`assert_safe_path` 將主動拋出 `PermissionError`。
-- 跨平台消弭 Windows 反斜線與 POSIX 正斜線混用導致的逃逸偵測旁路。
+`OSBackend` 內建授權邊界防護與跨平台防腐層：
+- **成對 `realpath` 邊界校驗**：`assert_safe_path` 與 `core.uri` 對根目錄與目標路徑成對執行 `os.path.realpath()`，消除 macOS `/var -> /private/var` 系統符號連結誤報並攔截 `../` 逃逸。
+- **`robust_rmtree(path, ignore_errors=False, max_retries=5)`**：針對 Windows `.git` 唯讀物件（`WinError 5`）自動於 `onexc`/`onerror` 剝離唯讀位元（`os.chmod(..., stat.S_IWRITE | stat.S_IREAD)`），並對短暫句柄佔用（`WinError 32` / `EACCES`）執行退避重試。
+- **`robust_replace(src, dst, max_retries=10)`**：針對 Windows `PermissionError` 執行退避重試並於目標唯讀時自動賦予寫入權限；遭遇跨掛載點 `errno.EXDEV` 時自動於目標同目錄建立 `.tmp` 暫存完成原子替換。

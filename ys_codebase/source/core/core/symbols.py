@@ -144,21 +144,32 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
             if vfs.exists(f_uri):
                 real_file_path = uri.resolve(f_uri)
                 if os.path.isfile(real_file_path):
-                    mod_unique_key = f"_yscb_code_{mod_pkg}_{subpath.replace('/', '_')}"
+                    script_stem = subpath.replace("/", "_").replace(".", "_")
+                    mod_unique_key = f"_yscb_mod_{mod_pkg}_{script_stem}"
                     dot_name = subpath.replace("/", ".")
                     full_mod_name = dot_name if dot_name.startswith(f"{mod_pkg}.") else f"{mod_pkg}.{dot_name}"
                     try:
-                        spec = importlib.util.spec_from_file_location(full_mod_name, real_file_path)
-                        if spec and spec.loader:
-                            mod_dir = os.path.dirname(real_file_path)
-                            mod_parent = os.path.dirname(mod_dir)
-                            for p_cand in (mod_dir, mod_parent):
-                                if p_cand and p_cand not in sys.path:
-                                    sys.path.insert(0, p_cand)
+                        mod_dir = os.path.dirname(real_file_path)
+                        mod_parent = os.path.dirname(mod_dir)
+                        for p_cand in (mod_parent, mod_dir):
+                            if p_cand and os.path.isdir(p_cand):
+                                if p_cand in sys.path:
+                                    sys.path.remove(p_cand)
+                                sys.path.insert(0, p_cand)
 
+                        if os.path.isfile(os.path.join(mod_dir, "__init__.py")):
+                            pkg_name = os.path.basename(mod_dir)
+                            sub_stem = os.path.splitext(os.path.basename(real_file_path))[0]
+                            pkg_mod_name = pkg_name if sub_stem == "__init__" else f"{pkg_name}.{sub_stem}"
+                            loaded_mod = importlib.import_module(pkg_mod_name)
+                            sys.modules[mod_unique_key] = loaded_mod
+                            break
+
+                        spec = importlib.util.spec_from_file_location(mod_unique_key, real_file_path)
+                        if spec and spec.loader:
                             mod_obj = importlib.util.module_from_spec(spec)
-                            sys.modules[full_mod_name] = mod_obj
                             sys.modules[mod_unique_key] = mod_obj
+                            sys.modules[full_mod_name] = mod_obj
                             spec.loader.exec_module(mod_obj)
                             loaded_mod = mod_obj
                             break

@@ -77,8 +77,15 @@ def broadcast(
         candidate_funcs = [f"on_{event_name}", event_name, "on_event"]
 
     for mod_name, hook_real_path in targets:
-        mod_key = f"_yscb_hook_{mod_name}_{emit_module}"
+        mod_pkg = mod_name.replace("-", "_")
+        emit_pkg = emit_module.replace("-", "_")
+        mod_key = f"_yscb_mod_{mod_pkg}_hook_{emit_pkg}"
         try:
+            hook_root = os.path.dirname(os.path.dirname(hook_real_path))
+            if os.path.isdir(hook_root):
+                if hook_root in sys.path:
+                    sys.path.remove(hook_root)
+                sys.path.insert(0, hook_root)
             spec = importlib.util.spec_from_file_location(mod_key, hook_real_path)
             if spec and spec.loader:
                 hook_mod = importlib.util.module_from_spec(spec)

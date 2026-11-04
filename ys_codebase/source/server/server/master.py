@@ -515,6 +515,33 @@ class MasterSupervisor:
             except WorkerSpawnError as err:
                 self.logger.error(f"[Server] Warm Worker reload failed; next dispatch will retry spawning: {err}")
 
+    def _perform_self_restart(self) -> int:
+        """
+        Executes the ordered self-restart handover sequence:
+        stops watcher, terminates and reaps the worker, closes the HTTP server,
+        releases the singleton lock, archives and closes the logger, and spawns
+        a detached replacement Master daemon.
+
+        Returns:
+            int: PID of the newly spawned replacement Master process, or 0 on failure.
+        """
+        try:
+            self.stop()
+        except Exception as err:
+            try:
+                self.logger.warning(f"[Server] Error stopping daemon during restart: {err}")
+            except Exception:
+                pass
+
+        try:
+            return spawn_detached_master(
+                yscb_root=self.yscb_root,
+                idle_timeout_sec=self.idle_timeout_sec,
+                enable_watcher=self.enable_watcher,
+            )
+        except Exception:
+            return 0
+
     def restart_server(self) -> None:
         """
         Gracefully restarts the entire Server daemon (Master + Worker).
@@ -535,18 +562,7 @@ class MasterSupervisor:
 
         def _do_restart() -> None:
             try:
-                self.stop()
-            except Exception as e:
-                self.logger.warning(f"[Server] Error stopping daemon during restart: {e}")
-
-            try:
-                spawn_detached_master(
-                    yscb_root=self.yscb_root,
-                    idle_timeout_sec=self.idle_timeout_sec,
-                    enable_watcher=self.enable_watcher,
-                )
-            except Exception as ex:
-                self.logger.error(f"[Server] Failed to spawn new Master daemon: {ex}")
+                self._perform_self_restart()
             finally:
                 os._exit(0)
 
@@ -750,7 +766,7 @@ class MasterSupervisor:
         curr_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = os.pathsep.join([p for p in py_paths if os.path.isdir(p)] + ([curr_pp] if curr_pp else []))
 
-        popen_kwargs: Dict[str, Any] = {}
+        popen_kwargs: Dict[str, Any] = {"close_fds": True}
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         else:

@@ -5,6 +5,7 @@ soft-merges `extraPaths`, `excludes`, `analysisExclude`, and `json.schemas` unde
 and provides 100% clean revert on `remove vscode-support` or `vscode-support revert`.
 """
 
+import json
 import os
 import platform
 import shutil
@@ -15,6 +16,98 @@ from typing import Any, Dict, List, Optional
 from core import uri, vfs
 from core.pip_manager import PipManager
 from vscode_support.schema_compiler import SchemaCompiler
+
+
+def strip_jsonc(raw_text: str) -> str:
+    """
+    String-aware JSONC normalizer that strips single-line comments (``//``),
+    multi-line comments (``/* ... */``), and trailing commas before ``}`` or ``]``
+    while preserving string literals intact.
+    """
+    if not raw_text:
+        return ""
+
+    # Phase 1: Strip comments outside string literals
+    chars: List[str] = []
+    n = len(raw_text)
+    i = 0
+    in_string = False
+    while i < n:
+        ch = raw_text[i]
+        if in_string:
+            chars.append(ch)
+            if ch == "\\" and i + 1 < n:
+                chars.append(raw_text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            chars.append(ch)
+            i += 1
+            continue
+
+        if ch == "/" and i + 1 < n:
+            nxt = raw_text[i + 1]
+            if nxt == "/":
+                i += 2
+                while i < n and raw_text[i] not in ("\n", "\r"):
+                    i += 1
+                continue
+            if nxt == "*":
+                i += 2
+                while i + 1 < n and not (raw_text[i] == "*" and raw_text[i + 1] == "/"):
+                    if raw_text[i] in ("\n", "\r"):
+                        chars.append(raw_text[i])
+                    i += 1
+                i += 2
+                continue
+
+        chars.append(ch)
+        i += 1
+
+    no_comments = "".join(chars)
+
+    # Phase 2: Strip trailing commas before '}' or ']' outside string literals
+    out: List[str] = []
+    m = len(no_comments)
+    j = 0
+    in_str = False
+    while j < m:
+        ch = no_comments[j]
+        if in_str:
+            out.append(ch)
+            if ch == "\\" and j + 1 < m:
+                out.append(no_comments[j + 1])
+                j += 2
+                continue
+            if ch == '"':
+                in_str = False
+            j += 1
+            continue
+
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            j += 1
+            continue
+
+        if ch == ",":
+            k = j + 1
+            while k < m and no_comments[k] in (" ", "\t", "\r", "\n"):
+                k += 1
+            if k < m and no_comments[k] in ("}", "]"):
+                j += 1
+                continue
+
+        out.append(ch)
+        j += 1
+
+    return "".join(out)
 
 
 def _safe_remove_link(link_path: str) -> bool:
@@ -315,16 +408,31 @@ class SettingsProjector:
         vscode_dir = os.path.join(proj_root, ".vscode")
         settings_path = os.path.join(vscode_dir, "settings.json")
         settings: Dict[str, Any] = {}
+        had_jsonc = False
+        raw_original: Optional[str] = None
         if vfs.is_file(settings_path):
             try:
-                data = vfs.read_json(settings_path)
+                raw_original = vfs.read_text(settings_path)
             except Exception:
-                print(
-                    f"[vscode-support] Warning: '{settings_path}' is not strict JSON (comments or trailing commas?); "
-                    "skipped VS Code settings sync to preserve user settings.",
-                    file=sys.stderr,
-                )
                 return False
+            try:
+                data = json.loads(raw_original)
+            except Exception:
+                had_jsonc = True
+                try:
+                    data = json.loads(strip_jsonc(raw_original))
+                except Exception:
+                    bak_path = settings_path + ".bak"
+                    try:
+                        vfs.write_text(bak_path, raw_original, encoding="utf-8", atomic=True)
+                    except Exception:
+                        pass
+                    print(
+                        f"[vscode-support] Warning: '{settings_path}' contains unrecoverable JSON syntax errors "
+                        f"(backed up to '{os.path.basename(bak_path)}'); skipped VS Code settings sync to preserve user file.",
+                        file=sys.stderr,
+                    )
+                    return False
             if not isinstance(data, dict):
                 return False
             settings = data
@@ -344,10 +452,16 @@ class SettingsProjector:
         new_managed_paths = self._compute_managed_extra_paths(proj_root, extra_paths=extra_paths, py_tag=py_tag)
         self._apply_vscode_settings_merge(settings, proj_root, new_managed_paths, schema_bindings=schema_bindings)
 
-        if vfs.is_file(settings_path):
+        if vfs.is_file(settings_path) and not had_jsonc:
             try:
                 if vfs.read_json(settings_path) == settings:
                     return True
+            except Exception:
+                pass
+
+        if had_jsonc and raw_original is not None:
+            try:
+                vfs.write_text(settings_path + ".bak", raw_original, encoding="utf-8", atomic=True)
             except Exception:
                 pass
 
@@ -366,7 +480,7 @@ class SettingsProjector:
 
         schemas_dir = os.path.join(proj_root, ".vscode", "schemas")
         if os.path.isdir(schemas_dir):
-            shutil.rmtree(schemas_dir, ignore_errors=True)
+            vfs.robust_rmtree(schemas_dir, ignore_errors=True)
 
         if not self.is_vscode_configured(proj_root):
             return False
@@ -376,7 +490,11 @@ class SettingsProjector:
             return False
 
         try:
-            settings = vfs.read_json(settings_path)
+            raw_text = vfs.read_text(settings_path)
+            try:
+                settings = json.loads(raw_text)
+            except Exception:
+                settings = json.loads(strip_jsonc(raw_text))
             if not isinstance(settings, dict):
                 return False
         except Exception:

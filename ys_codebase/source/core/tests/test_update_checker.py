@@ -40,6 +40,10 @@ class TestUpdateChecker(YSCBTestCase):
         os.makedirs(mod_release_dir, exist_ok=True)
         with open(os.path.join(mod_release_dir, "index.json"), "w", encoding="utf-8") as f:
             json.dump({"name": "core", "versions": ["1.0.0.0", "1.0.1.0"]}, f)
+        # 建置與預設 DEFAULT_SELF_UPDATE_URL 隔離之本機與來源端 yscb.py，避免回退觸發真實外網探測
+        for d in (self.temp_dir, self.prov_dir):
+            with open(os.path.join(d, "yscb.py"), "w", encoding="utf-8") as f:
+                f.write('__version__: str = "1.0.0.0"\n')
 
     def tearDown(self):
         super().tearDown()

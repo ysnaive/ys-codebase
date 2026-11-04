@@ -13,6 +13,7 @@ import subprocess
 from typing import Optional, List, Any
 from core import uri, vfs
 from core.installer import generate_internal_gitignore
+from core.platform.lock import InterProcessLock
 
 
 def ensure_yscb_gitignore(yscb_dir: str) -> None:
@@ -181,6 +182,12 @@ class PipManager:
                 f"[PipManager] Failed to bootstrap pip into '{venv_dir}': {e}"
             ) from e
 
+    def get_lock_file(self) -> str:
+        """回傳私有微環境跨進程安裝排他鎖檔案路徑 (yscb_dir/.venv/.pip_install.lock)。"""
+        venv_root = os.path.join(self.yscb_dir, ".venv")
+        os.makedirs(venv_root, exist_ok=True)
+        return os.path.join(venv_root, ".pip_install.lock")
+
     def ensure_venv(self, py_tag: Optional[str] = None) -> str:
         """
         若微環境不存在則以純 Python 標準庫 venv 建立。
@@ -191,46 +198,51 @@ class PipManager:
         py_exec = self.get_python_executable(py_tag)
         site_pkg = self.get_site_packages_dir(py_tag)
 
-        pip_ready = False
-        if os.path.isfile(py_exec) and os.path.isdir(site_pkg):
-            if os.path.isdir(os.path.join(site_pkg, "pip")):
-                pip_ready = True
+        with InterProcessLock(self.get_lock_file()):
+            pip_ready = False
+            if os.path.isfile(py_exec) and os.path.isdir(site_pkg):
+                if os.path.isdir(os.path.join(site_pkg, "pip")):
+                    pip_ready = True
 
-        if not os.path.isfile(py_exec) or not pip_ready:
-            os.makedirs(venv_dir, exist_ok=True)
-            try:
-                symlinks_ok = self._can_symlink(venv_dir)
-                builder = venv.EnvBuilder(
-                    with_pip=False,
-                    clear=False,
-                    symlinks=symlinks_ok,
-                )
-                builder.create(venv_dir)
-                self._bootstrap_pip(venv_dir, site_pkg, py_exec)
-            except Exception as e:
-                if isinstance(e, PipInstallError):
-                    raise
-                raise PipInstallError(
-                    f"[PipManager] Failed to create private venv at '{venv_dir}'. "
-                    f"Please ensure python3-venv / ensurepip is installed. Details: {e}"
-                ) from e
-
-        # 驗證並加固 pyvenv.cfg
-        cfg_path = os.path.join(venv_dir, "pyvenv.cfg")
-        if vfs.is_file(cfg_path):
-            try:
-                content = vfs.read_text(cfg_path)
-                if "include-system-site-packages = true" in content:
-                    content = content.replace(
-                        "include-system-site-packages = true",
-                        "include-system-site-packages = false",
+            if not os.path.isfile(py_exec) or not pip_ready:
+                os.makedirs(venv_dir, exist_ok=True)
+                try:
+                    symlinks_ok = self._can_symlink(venv_dir)
+                    if not symlinks_ok and os.name == "posix" and sys.platform != "darwin":
+                        lib64_dir = os.path.join(venv_dir, "lib64")
+                        if not os.path.exists(lib64_dir):
+                            os.makedirs(lib64_dir, exist_ok=True)
+                    builder = venv.EnvBuilder(
+                        with_pip=False,
+                        clear=False,
+                        symlinks=symlinks_ok,
                     )
-                    vfs.write_text(cfg_path, content, atomic=True)
-            except Exception:
-                pass
+                    builder.create(venv_dir)
+                    self._bootstrap_pip(venv_dir, site_pkg, py_exec)
+                except Exception as e:
+                    if isinstance(e, PipInstallError):
+                        raise
+                    raise PipInstallError(
+                        f"[PipManager] Failed to create private venv at '{venv_dir}'. "
+                        f"Please ensure python3-venv / ensurepip is installed. Details: {e}"
+                    ) from e
 
-        # 確保 yscb_dir/.gitignore 包含 /.venv/ 內部忽略標記
-        self._ensure_gitignore()
+            # 驗證並加固 pyvenv.cfg
+            cfg_path = os.path.join(venv_dir, "pyvenv.cfg")
+            if vfs.is_file(cfg_path):
+                try:
+                    content = vfs.read_text(cfg_path)
+                    if "include-system-site-packages = true" in content:
+                        content = content.replace(
+                            "include-system-site-packages = true",
+                            "include-system-site-packages = false",
+                        )
+                        vfs.write_text(cfg_path, content, atomic=True)
+                except Exception:
+                    pass
+
+            # 確保 yscb_dir/.gitignore 包含 /.venv/ 內部忽略標記
+            self._ensure_gitignore()
 
         return venv_dir
 
@@ -247,38 +259,39 @@ class PipManager:
             return
 
         self.ensure_venv(py_tag)
-        py_exec = self.get_python_executable(py_tag)
+        with InterProcessLock(self.get_lock_file()):
+            py_exec = self.get_python_executable(py_tag)
 
-        cmd = [
-            py_exec,
-            "-m",
-            "pip",
-            "install",
-            "--only-binary=:all:",
-            "--no-warn-script-location",
-            "--no-input",
-            "--timeout=30",
-            "--quiet",
-            *specs,
-        ]
+            cmd = [
+                py_exec,
+                "-m",
+                "pip",
+                "install",
+                "--only-binary=:all:",
+                "--no-warn-script-location",
+                "--no-input",
+                "--timeout=30",
+                "--quiet",
+                *specs,
+            ]
 
-        try:
-            res = subprocess.run(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=300,
-            )
-        except Exception as e:
-            raise PipInstallError(f"Failed to execute pip command: {e}") from e
+            try:
+                res = subprocess.run(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=300,
+                )
+            except Exception as e:
+                raise PipInstallError(f"Failed to execute pip command: {e}") from e
 
-        if res.returncode != 0:
-            err_msg = res.stderr.strip() or res.stdout.strip()
-            raise PipInstallError(
-                f"[PipManager] Wheel-Only installation failed for {specs}:\n{err_msg}",
-                returncode=res.returncode,
-                stdout=res.stdout,
-                stderr=res.stderr,
-            )
+            if res.returncode != 0:
+                err_msg = res.stderr.strip() or res.stdout.strip()
+                raise PipInstallError(
+                    f"[PipManager] Wheel-Only installation failed for {specs}:\n{err_msg}",
+                    returncode=res.returncode,
+                    stdout=res.stdout,
+                    stderr=res.stderr,
+                )

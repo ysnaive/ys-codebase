@@ -2,9 +2,9 @@
   "name": "ast",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "versions": [
-    "1.0.0.1",
     "1.0.0.2",
-    "1.0.0.3"
+    "1.0.0.3",
+    "1.0.0.4"
   ],
   "releases": {
     "1.0.0.0": {
@@ -19,7 +19,7 @@
       "sha256": "fef3d6888da96b73df8c2f057908eaa4ba10a7b39e46b0f56b7a36bdae8f5eb8"
     },
     "1.0.0.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2",
         "file-space": ">=1.0.0"
@@ -50,6 +50,17 @@
       "type": "refactor",
       "urgency": "optional",
       "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
+    },
+    "1.0.0.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5",
+        "file-space": ">=1.0.0"
+      },
+      "sha256": "b5e1d24b5deeafd728049fbc513176239c0dbf1688567618bab54c9f8696af5a",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增 Tree-sitter JIT 跨進程鎖、刪檔孤兒節點回收、.ast_graph.lock 與二級雜湊索引加速"
     }
   }
 }

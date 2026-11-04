@@ -379,7 +379,8 @@ class IndexingPipeline:
                     vectors = np.zeros((0, dim), dtype=np.float32)
                 vec_idx = VectorIndex(model_name=model_name, dim=dim)
                 vec_idx.build(doc_ids, vectors)
-                vec_idx.save_binary(vector_file)
+                with self._kdb_index_file_lock():
+                    vec_idx.save_binary(vector_file)
                 self.hybrid_engine.vector_index = vec_idx
                 _report(3, f"向量特徵嵌入建置 ({len(doc_ids)} 符號向量)", (time.time() - t0) * 1000)
             except Exception as e:
@@ -395,7 +396,8 @@ class IndexingPipeline:
         # Stage 4: Atomic binary persistence & cursor alignment
         t0 = time.time()
         try:
-            idx.save_binary(bin_file, compresslevel=1)
+            with self._kdb_index_file_lock():
+                idx.save_binary(bin_file, compresslevel=1)
         except Exception as e:
             raise KnowledgeDBError(f"Failed saving unified binary index: {e}") from e
 
@@ -426,6 +428,15 @@ class IndexingPipeline:
     # ----------------------------------------------------------------------
     # 增量熱修補管線 (Single-Parse Symbol Sharing)
     # ----------------------------------------------------------------------
+
+    @contextmanager
+    def _kdb_index_file_lock(self) -> Iterator[None]:
+        """Acquire a cross-process file lock before persisting binary index files."""
+        from core.platform.lock import InterProcessLock
+
+        lock_file = str(self.get_indices_dir() / ".kdb_index.lock")
+        with InterProcessLock(lock_file, timeout=15.0):
+            yield
 
     def hot_patch_unified_index(
         self,
@@ -567,7 +578,8 @@ class IndexingPipeline:
         if num_symbols == 0:
             vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=[], new_vectors=None)
             try:
-                vec_idx.save_binary(vector_file)
+                with self._kdb_index_file_lock():
+                    vec_idx.save_binary(vector_file)
             except Exception as ve:
                 logger.warning(f"Failed saving patched vector index: {ve}")
             return False, None
@@ -577,7 +589,8 @@ class IndexingPipeline:
                 new_vecs = self.embedding_service.embed_texts(new_texts)
                 new_ids = [sym.id for sym in all_new_symbols]
                 vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=new_ids, new_vectors=new_vecs)
-                vec_idx.save_binary(vector_file)
+                with self._kdb_index_file_lock():
+                    vec_idx.save_binary(vector_file)
                 return False, None
             except Exception as ve:
                 logger.warning(f"Failed patching vector index for <=10 symbols: {ve}")
@@ -605,7 +618,8 @@ class IndexingPipeline:
 
             new_ids = [sym.id for sym in all_new_symbols]
             vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=new_ids, new_vectors=full_vecs)
-            vec_idx.save_binary(vector_file)
+            with self._kdb_index_file_lock():
+                vec_idx.save_binary(vector_file)
             return False, None
         except Exception as ve:
             logger.warning(f"Dynamic probe or inference failed: {ve}")
@@ -618,7 +632,8 @@ class IndexingPipeline:
     ) -> None:
         """熱修補階段 4：原子持久化更新後之二進位索引與全域快取同步"""
         if self._unified_index is not None:
-            self._unified_index.save_binary(bin_file, compresslevel=1)
+            with self._kdb_index_file_lock():
+                self._unified_index.save_binary(bin_file, compresslevel=1)
         with _CACHE_LOCK:
             _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
             _GLOBAL_INDEX_CACHE["unified_index"] = self._unified_index
@@ -775,7 +790,8 @@ class IndexingPipeline:
                 return False
             indices_dir = self.get_indices_dir()
             vector_file = indices_dir / "unified.vectors.bin.gz"
-            vec_idx.save_binary(vector_file)
+            with self._kdb_index_file_lock():
+                vec_idx.save_binary(vector_file)
             self._vector_index_dirty = False
             with _CACHE_LOCK:
                 _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)

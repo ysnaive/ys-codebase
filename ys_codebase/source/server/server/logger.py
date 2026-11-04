@@ -15,7 +15,7 @@ import shutil
 import sys
 import threading
 import traceback
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 def _extract_log_file_timestamp(file_path: str, time_format: str, header_regex: re.Pattern) -> str:
@@ -186,6 +186,10 @@ class ServerLogger:
 
             self.start_time_str = datetime.now().strftime(self.TIME_FORMAT)
             self._file = open(self.log_file, "w", encoding="utf-8")
+            try:
+                os.set_inheritable(self._file.fileno(), False)
+            except OSError:
+                pass
             banner = f'{self.START_BANNER_PREFIX}{self.start_time_str}"\n'
             self._file.write(banner)
             self._file.flush()
@@ -243,6 +247,10 @@ class ServerLogger:
         with self._lock:
             if not self._file or self._file.closed:
                 self._file = open(self.log_file, "a", encoding="utf-8")
+                try:
+                    os.set_inheritable(self._file.fileno(), False)
+                except OSError:
+                    pass
 
             if not line.endswith("\n"):
                 line += "\n"
@@ -286,3 +294,46 @@ class ServerLogger:
 
     def error(self, msg: str, component: str = "master", exc_info: Optional[Exception] = None) -> None:
         self.log("ERROR", msg, component=component, exc_info=exc_info)
+
+    def read_tail_chunks(
+        self,
+        last_offset: int = 0,
+        last_inode: Optional[int] = None,
+    ) -> Tuple[str, int, Optional[int]]:
+        """
+        Reads newly appended log bytes from the active log file without holding a persistent handle.
+
+        Detects log truncation or file rotation (when current file size is smaller than
+        ``last_offset`` or inode changes) and automatically resets the read offset to 0.
+
+        Args:
+            last_offset: Byte offset from the previous read cycle.
+            last_inode: Optional inode identifier from the previous read cycle.
+
+        Returns:
+            Tuple of (decoded_text_chunk, new_byte_offset, current_inode).
+        """
+        if not os.path.exists(self.log_file):
+            return "", 0, None
+
+        try:
+            st = os.stat(self.log_file)
+            curr_size = st.st_size
+            curr_ino = st.st_ino if st.st_ino != 0 else None
+
+            offset = max(0, last_offset)
+            if curr_size < offset or (last_inode is not None and curr_ino is not None and curr_ino != last_inode):
+                offset = 0
+
+            if curr_size == offset:
+                return "", offset, curr_ino
+
+            with open(self.log_file, "rb") as f:
+                if offset > 0:
+                    f.seek(offset)
+                raw = f.read()
+                new_offset = f.tell()
+
+            return raw.decode("utf-8", errors="replace"), new_offset, curr_ino
+        except OSError:
+            return "", last_offset, last_inode

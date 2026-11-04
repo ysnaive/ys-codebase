@@ -71,6 +71,7 @@ class ContributesValidator:
     }
 
     VALID_MERGE_STRATEGIES = ("merge", "extend", "replace", "unique")
+    _SIGNATURE_PARSE_CACHE: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
     def _parse_default_literal(def_str: str) -> Any:
@@ -135,6 +136,10 @@ class ContributesValidator:
         - "dict[str, str]" -> type: "dict", key_type: "str", value_type: "str"
         - "uri! @desc(欄位說明)" -> type: "uri", required: True, description: "欄位說明", attributes: {"desc": "欄位說明"}
         """
+        cached_sig = cls._SIGNATURE_PARSE_CACHE.get(sig)
+        if cached_sig is not None:
+            return copy.deepcopy(cached_sig)
+
         raw, attributes = cls._extract_attributes(sig.strip())
         description = attributes.get("desc") or attributes.get("doc") or attributes.get("anno") or None
         merge_strategy: Optional[str] = None
@@ -197,7 +202,9 @@ class ContributesValidator:
             }
 
         norm_type = cls.TYPE_ALIASES.get(raw.lower(), raw.lower())
-        return {**base_meta, "type": norm_type}
+        res = {**base_meta, "type": norm_type}
+        cls._SIGNATURE_PARSE_CACHE[sig] = copy.deepcopy(res)
+        return res
 
     @classmethod
     def _validate_primitive_or_container_rule(

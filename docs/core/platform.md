@@ -9,7 +9,7 @@ source_paths:
 related_docs:
   - "./README.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-04"
 ---
 
 # Core Platform 跨平台底層原語手冊 (core.platform)
@@ -69,6 +69,7 @@ last_updated: "2026-11-03"
 提供統一的跨進程檔案排他互斥鎖，支援 Context Manager：
 - **POSIX**：`fcntl.flock(fd, LOCK_EX | LOCK_NB)`。
 - **Windows**：`msvcrt.locking(fd, LK_NBLCK, 1)`。
+- **句柄不可繼承保證**：開啟鎖檔案描述符後強制執行 `os.set_inheritable(fd, False)`，防止父進程在持鎖期間派生 Worker 或自我重啟子進程時洩漏鎖句柄。
 - **開檔重試**：部分共享/9p 檔案系統在並發建立同一檔案時會對 `O_CREAT` 瞬態拋 `FileExistsError`；`acquire()` 對此最多重試 3 次（間隔 50ms，改以不帶 `O_CREAT` 開啟），仍失敗則拋出原始例外，其他錯誤照拋。
 - **使用範例**：
   ```python

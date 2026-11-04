@@ -2,9 +2,9 @@
   "name": "file-space",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
-    "1.0.0.1",
     "1.0.0.2",
-    "1.0.0.3"
+    "1.0.0.3",
+    "1.0.0.4"
   ],
   "releases": {
     "1.0.0.0": {
@@ -18,7 +18,7 @@
       "sha256": "16a6339eff5208155bb652e2a8774740d80e0f511710ce99b5c3a385e9f65914"
     },
     "1.0.0.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2"
       },
@@ -46,6 +46,16 @@
       "type": "refactor",
       "urgency": "optional",
       "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
+    },
+    "1.0.0.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "4f8332ee4a5b401c2519cc46c973b17063a1cb786a81d489a75b914c3e601d79",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增同秒級 st_ctime_ns Racy Stat Gate 守門與符號連結安全防禦"
     }
   }
 }

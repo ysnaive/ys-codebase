@@ -18,7 +18,7 @@ import time
 import urllib.request
 import zipfile
 
-__version__: str = "1.2.2.0"
+__version__: str = "1.2.2.1"
 CONFIG_FILENAME: str = "yscb.config.json"
 DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases"
 LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
@@ -607,6 +607,25 @@ def _verify_and_extract_zip_file(
     _extract_safe_zip(zip_path, staging_dir)
 
 
+def _safe_replace_dir(src_dir: str, dst_dir: str) -> None:
+    """Replaces dst_dir with src_dir, falling back to same-parent staged copy across filesystems (EXDEV)."""
+    try:
+        os.replace(src_dir, dst_dir)
+    except OSError as err:
+        if getattr(err, "errno", None) == 18:  # errno.EXDEV
+            parent = os.path.dirname(os.path.abspath(dst_dir))
+            stage = os.path.join(parent, f".exdev_{os.path.basename(dst_dir)}_{os.getpid()}")
+            if os.path.exists(stage):
+                shutil.rmtree(stage, ignore_errors=True)
+            shutil.copytree(src_dir, stage, symlinks=True)
+            if os.path.exists(dst_dir):
+                shutil.rmtree(dst_dir, ignore_errors=True)
+            os.replace(stage, dst_dir)
+            shutil.rmtree(src_dir, ignore_errors=True)
+            return
+        raise
+
+
 def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional[str] = None) -> None:
     """自舉提取壓縮包至同父目錄 .staging 臨時空間，完成後原子替換至 dest_dir，嚴防 Zip Slip 與非原子撕裂。"""
     dest_abs = os.path.abspath(dest_dir)
@@ -645,18 +664,18 @@ def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional
                 shutil.rmtree(old_dir, ignore_errors=True)
             if os.path.exists(dest_abs):
                 try:
-                    os.replace(dest_abs, old_dir)
+                    _safe_replace_dir(dest_abs, old_dir)
                     moved_old = True
                 except OSError as rename_err:
                     if _is_dir_handle_locked_for_rename(rename_err, parent_dir, dest_abs):
                         _inplace_atomic_sync_dir(staging_dir, dest_abs)
                         return
                     raise
-            os.replace(staging_dir, dest_abs)
+            _safe_replace_dir(staging_dir, dest_abs)
         except Exception:
             if moved_old and not os.path.exists(dest_abs) and os.path.exists(old_dir):
                 try:
-                    os.replace(old_dir, dest_abs)
+                    _safe_replace_dir(old_dir, dest_abs)
                 except Exception:
                     pass
             raise

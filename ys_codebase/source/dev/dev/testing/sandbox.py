@@ -489,7 +489,7 @@ class SandboxProvisioner:
             if os.path.isdir(curr_source):
                 dest_source = os.path.join(ctx.engine_dir, "source")
                 if os.path.exists(dest_source):
-                    shutil.rmtree(dest_source)
+                    vfs.robust_rmtree(dest_source)
                 shutil.copytree(curr_source, dest_source, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
         return host_config
@@ -563,11 +563,12 @@ class SandboxProvisioner:
                 return True
 
             if not is_harness_cleanup and os.environ.get("YSCB_TEST_SANDBOX") == "1":
+                real_target = os.path.normpath(os.path.realpath(target_abs))
                 active_sb = os.environ.get("YSCB_SANDBOX_DIR")
-                if active_sb and os.path.abspath(active_sb) == target_abs:
+                if active_sb and os.path.normpath(os.path.realpath(active_sb)) == real_target:
                     return True
-                curr_cwd = os.path.abspath(os.getcwd())
-                if curr_cwd == target_abs or curr_cwd.startswith(target_abs + os.sep):
+                curr_cwd = os.path.normpath(os.path.realpath(os.getcwd()))
+                if curr_cwd == real_target or curr_cwd.startswith(real_target + os.sep):
                     return True
 
             try:
@@ -578,15 +579,9 @@ class SandboxProvisioner:
                 ]
                 with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
                     events.broadcast("on_test_teardown", context=ctx, emit_module="dev", search_roots=scanned_roots)
-                def _handle_remove_readonly(func, path, exc_info):
-                    try:
-                        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
-                        func(path)
-                    except OSError:
-                        pass
 
                 SandboxProvisioner._unlink_projected_venv(ctx.engine_dir)
-                shutil.rmtree(sandbox_dir, onerror=_handle_remove_readonly)
+                vfs.robust_rmtree(sandbox_dir)
                 return True
             except Exception as e:
                 if not force:

@@ -9,7 +9,7 @@ source_paths:
 related_docs:
   - "./README.md"
   - "../core/README.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-04"
 ---
 
 # `vscode-support` 設計決策與邊界防坑紀錄 (Design Notes)
@@ -44,4 +44,15 @@ last_updated: "2026-11-03"
 - **設計決策**：
   - 擴充點 Schema 100% 讀取運行態 `module://<mod>/contributes/_format.json`。
   - 組態 Schema 優先讀取 `module://<mod>/configurable/_format.json`（同構支援 `uri` / `path` 協議前綴 `defaultSnippets` 與 `@desc(...)` 欄位說明），並從 `module.mirror://<mod>/<ver>.zip` 記憶體讀取 `configurable/config.*.json` 提取預設值或作為無 `_format.json` 時之型別推導來源。
+
+---
+
+## [DN-04] `.vscode/settings.json` 之 JSONC 字串感知剝離與 `.bak` 保護
+
+- **背景與原因**：開發者手動維護之 `.vscode/settings.json` 常包含 `//` 行註解、`/* */` 區塊註解與尾隨逗號（JSONC），且檔案內如 `"https://..."` 字串值不可被誤判為註解。
+- **設計決策**：
+  1. `projector.strip_jsonc(raw_text)` 採用兩階段字元狀態機：先安全剝離字串外之單行與區塊註解，再剝離 `}` / `]` 前之尾隨逗號。
+  2. 當原始 `.vscode/settings.json` 因含 JSONC 語法而無法由標準 `json.loads` 直接解析，但經 `strip_jsonc` 後解析成功時，自動將原始內容備份至 `.vscode/settings.json.bak`，再執行 `_yscb_managed` 差集軟合併與原子寫入。
+  3. 若剝離後仍非合法 JSON 物件，同樣備份至 `.vscode/settings.json.bak` 並回傳 `False`，絕不靜默清空使用者設定。
+
 

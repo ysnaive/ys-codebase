@@ -6,7 +6,8 @@
     "1.0.1.3",
     "1.0.2.0",
     "1.0.3.0",
-    "1.0.3.1"
+    "1.0.3.1",
+    "1.0.3.2"
   ],
   "releases": {
     "1.0.0.4": {
@@ -76,6 +77,16 @@
       "type": "feature",
       "urgency": "optional",
       "summary": "新增同構 configurable/_format.json 組態契約並升級 @desc(...) 欄位說明"
+    },
+    "1.0.3.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "23d2da81c76fd22e7a2821a90c0fd22b72ed99ea1ef6637ad350834034f87306",
+      "type": "hotfix",
+      "urgency": "critical",
+      "summary": "修復 Master 自我重啟移交序列、Worker close_fds 隔離與日誌輪替偏移量重置"
     }
   }
 }

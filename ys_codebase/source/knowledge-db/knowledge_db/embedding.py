@@ -3,6 +3,8 @@ knowledge-db 輕量 ONNX 向量嵌入推論服務 (EmbeddingService)
 封裝 FastEmbed 離線模型推論、快取持久化與 100% 平滑降級守門。
 """
 
+from __future__ import annotations
+
 import hashlib
 import logging
 import os
@@ -11,9 +13,10 @@ import re
 import shutil
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 from .config import DEFAULT_EMBEDDING_MODEL, MODEL_SPECS, KnowledgeDBConfig, is_agents_workflow_installed, resolve_threads
 from .exceptions import KnowledgeDBError
@@ -332,6 +335,8 @@ class EmbeddingService:
 
     def _generate_mock_vector(self, text: str, dim: Optional[int] = None) -> np.ndarray:
         """針對輸入字串生成確定性 (Deterministic) 單位正規化向量 (供測試或沙盒使用)"""
+        import numpy as np
+
         target_dim = dim if dim is not None else self.dimension
         if not text:
             vec = np.zeros(target_dim, dtype=np.float32)
@@ -361,6 +366,8 @@ class EmbeddingService:
         批次計算文字嵌入向量清單，傳回 (N, dim) 之 L2-Normalized 矩陣。
         採用 batch_size 切片與微幅時間片讓渡 (sleep 5ms)，杜絕 CPU 100% 飽和與系統凍結。
         """
+        import numpy as np
+
         if not texts:
             return np.empty((0, self.dimension), dtype=np.float32)
 
@@ -405,6 +412,8 @@ class EmbeddingService:
         若指定 total_count，回傳 (probe_vectors, est_total)；
         若未指定 total_count，回傳 (probe_vectors, elapsed, unit_sec)。
         """
+        import numpy as np
+
         if not texts:
             empty_vecs = np.empty((0, self.dimension), dtype=np.float32)
             return (empty_vecs, 0.0) if total_count is not None else (empty_vecs, 0.0, 0.0)
@@ -422,6 +431,8 @@ class EmbeddingService:
 
     def embed_query(self, query: str) -> np.ndarray:
         """計算單一查詢語句之特徵向量 (shape: (dim,))"""
+        import numpy as np
+
         res = self.embed_texts([query])
         if len(res) > 0:
             return res[0]
@@ -445,6 +456,8 @@ class VectorIndex:
         dim: Optional[int] = None,
     ) -> None:
         """建置或替換當前向量索引"""
+        import numpy as np
+
         self.doc_ids = list(doc_ids)
         self.vectors = vectors.astype(np.float32)
         if model_name:
@@ -473,6 +486,8 @@ class VectorIndex:
         new_vectors: Optional[np.ndarray] = None,
     ) -> None:
         """增量修補向量索引：移除過期 doc_ids，追加新 doc_ids 與向量"""
+        import numpy as np
+
         if self.vectors is None or len(self.doc_ids) == 0:
             if new_doc_ids and new_vectors is not None and len(new_vectors) > 0:
                 self.build(new_doc_ids, new_vectors)
@@ -506,6 +521,8 @@ class VectorIndex:
 
     def search(self, query_vec: np.ndarray, top_k: int = 50) -> List[Tuple[str, float]]:
         """執行頂點餘弦相似度 Top-K 檢索。"""
+        import numpy as np
+
         if self.vectors is None or len(self.doc_ids) == 0:
             return []
 

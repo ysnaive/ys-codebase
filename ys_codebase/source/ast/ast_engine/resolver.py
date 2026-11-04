@@ -348,6 +348,23 @@ class DeterministicSymbolResolver:
             self.symbols_map = symbols
         else:
             self.symbols_map = {s.id: s for s in symbols}
+        self._by_ident_lower: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
+        self._build_ident_index()
+
+    def _build_ident_index(self) -> None:
+        self._by_ident_lower.clear()
+        for sym in self.symbols_map.values():
+            keys: Set[str] = set()
+            if sym.name:
+                keys.add(sym.name.lower())
+                if "." in sym.name or "::" in sym.name:
+                    keys.add(re.split(r"[.:]+", sym.name)[-1].lower())
+            raw_short = (sym.metadata.get("short_name") or "") if sym.metadata else ""
+            if raw_short:
+                keys.add(str(raw_short).lower())
+            for k in keys:
+                if k:
+                    self._by_ident_lower[k].append(sym)
 
     @staticmethod
     def normalize_ftypes(ftypes: Optional[Union[str, List[str]]]) -> Optional[List[str]]:
@@ -469,19 +486,24 @@ class DeterministicSymbolResolver:
             else:
                 space_set = {str(s).strip() for s in space if str(s).strip()}
 
+        parsed = SymbolSelector.parse(query_clean)
+        if not parsed.identifier:
+            return SymbolResolutionResult(status="not_found", query=query_clean)
+
         norm_ftypes = self.normalize_ftypes(ftypes)
+        ident_candidates = self._by_ident_lower.get(parsed.identifier.lower())
+        if ident_candidates is None:
+            self._build_ident_index()
+            ident_candidates = self._by_ident_lower.get(parsed.identifier.lower(), [])
+
         all_space_pool = [
             sym
-            for sym in self.symbols_map.values()
+            for sym in ident_candidates
             if (not space_set or bool(set(sym.spaces or ["project"]).intersection(space_set)))
         ]
         filtered_pool = [sym for sym in all_space_pool if self.matches_topology_filter(sym, norm_ftypes)]
         pool = filtered_pool if (filtered_pool or norm_ftypes) else all_space_pool
         if not pool:
-            return SymbolResolutionResult(status="not_found", query=query_clean)
-
-        parsed = SymbolSelector.parse(query_clean)
-        if not parsed.identifier:
             return SymbolResolutionResult(status="not_found", query=query_clean)
 
         # Tier 1: Case-sensitive exact FQN, scoped selector, or short-name match

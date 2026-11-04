@@ -3,12 +3,15 @@ Bidirectional Call Graph Index & Impact Analysis Engine (`CallGraphIndex`) for `
 Uses `networkx.DiGraph` and Gzip Pickle Protocol 5 persistence (`unified.graph.bin.gz`).
 """
 
+from __future__ import annotations
+
 from collections import defaultdict, deque
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
 
-import networkx as nx
+if TYPE_CHECKING:
+    import networkx as nx
 
 from .exceptions import ASTIndexNotFoundError, SchemaValidationError
 from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
@@ -25,7 +28,11 @@ class CallGraphIndex:
     """
 
     def __init__(self, graph: Optional[nx.DiGraph] = None):
-        self._graph: nx.DiGraph = graph if graph is not None else nx.DiGraph()
+        if graph is None:
+            import networkx as nx
+
+            graph = nx.DiGraph()
+        self._graph: nx.DiGraph = graph
 
     @property
     def graph(self) -> nx.DiGraph:

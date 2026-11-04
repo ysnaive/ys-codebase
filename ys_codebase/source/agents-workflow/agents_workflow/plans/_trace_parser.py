@@ -7,9 +7,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from ._trace_renderer import FrictionSignal
+
+MAX_JSONL_LINE_BYTES: int = 2 * 1024 * 1024
 
 EDIT_TOOL_NAMES: Set[str] = {
     "edit_file", "write_file", "edit", "write", "multiedit", "replace",
@@ -806,6 +808,68 @@ def _compile_tier1_stats(
     }
 
 
+def _iter_jsonl_records(
+    transcript_path: Path,
+    full_path: Path,
+    has_full_sibling: bool,
+    state: _TranscriptParseState,
+) -> Iterator[Tuple[int, Dict[str, Any], bool]]:
+    """
+    Streams JSONL records line-by-line with a bounded per-line read cap (`MAX_JSONL_LINE_BYTES`),
+    preventing multi-megabyte single-line tool payloads from spiking process memory.
+    """
+    with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+        full_f = open(full_path, "r", encoding="utf-8", errors="replace") if has_full_sibling else None
+        try:
+            line_idx = 0
+            while True:
+                line = f.readline(MAX_JSONL_LINE_BYTES)
+                if not line:
+                    break
+                if len(line) == MAX_JSONL_LINE_BYTES and not line.endswith("\n"):
+                    while True:
+                        rem = f.readline(MAX_JSONL_LINE_BYTES)
+                        if not rem or rem.endswith("\n"):
+                            break
+
+                full_line = ""
+                if full_f is not None:
+                    full_line = full_f.readline(MAX_JSONL_LINE_BYTES)
+                    if len(full_line) == MAX_JSONL_LINE_BYTES and not full_line.endswith("\n"):
+                        while True:
+                            rem_full = full_f.readline(MAX_JSONL_LINE_BYTES)
+                            if not rem_full or rem_full.endswith("\n"):
+                                break
+
+                line_idx += 1
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    obj = json.loads(s)
+                    if not isinstance(obj, dict):
+                        continue
+                except Exception:
+                    continue
+
+                state.total_steps += 1
+                step_no = obj.get("step_index", line_idx)
+                was_truncated = bool(obj.get("truncated_fields"))
+                if was_truncated:
+                    state.truncated_steps += 1
+                    if full_line:
+                        try:
+                            full_obj = json.loads(full_line.strip())
+                            if isinstance(full_obj, dict):
+                                obj = full_obj
+                        except Exception:
+                            pass
+                yield step_no, obj, was_truncated
+        finally:
+            if full_f is not None:
+                full_f.close()
+
+
 def parse_transcript_file(
     transcript_path: Path,
 ) -> Tuple[Optional[str], List[FrictionSignal], List[Dict[str, Any]], Dict[str, Any]]:
@@ -821,78 +885,48 @@ def parse_transcript_file(
     has_full_sibling = full_path.is_file() and full_path != transcript_path
 
     try:
-        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
-            full_f = open(full_path, "r", encoding="utf-8", errors="replace") if has_full_sibling else None
-            try:
-                for line_idx, line in enumerate(f, 1):
-                    full_line = full_f.readline() if full_f is not None else ""
-                    s = line.strip()
-                    if not s:
-                        continue
-                    try:
-                        obj = json.loads(s)
-                        if not isinstance(obj, dict):
-                            continue
-                    except Exception:
-                        continue
+        for step_no, obj, was_truncated in _iter_jsonl_records(transcript_path, full_path, has_full_sibling, state):
+            ts_val = obj.get("created_at") or obj.get("timestamp") or obj.get("ts")
+            if isinstance(ts_val, str) and ts_val.strip():
+                clean_ts = ts_val.strip()
+                if state.first_ts is None:
+                    state.first_ts = clean_ts
+                state.last_ts = clean_ts
 
-                    state.total_steps += 1
-                    step_no = obj.get("step_index", line_idx)
-                    was_truncated = bool(obj.get("truncated_fields"))
-                    if was_truncated:
-                        state.truncated_steps += 1
-                        if full_line:
-                            try:
-                                full_obj = json.loads(full_line.strip())
-                                if isinstance(full_obj, dict):
-                                    obj = full_obj
-                            except Exception:
-                                pass
+            _accumulate_api_usage(obj, state)
 
-                    ts_val = obj.get("created_at") or obj.get("timestamp") or obj.get("ts")
-                    if isinstance(ts_val, str) and ts_val.strip():
-                        clean_ts = ts_val.strip()
-                        if state.first_ts is None:
-                            state.first_ts = clean_ts
-                        state.last_ts = clean_ts
+            payload_obj = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+            payload_type = str(payload_obj.get("type") or "").lower()
 
-                    _accumulate_api_usage(obj, state)
+            content_str, content_tok, is_tool_output_step, tool_result_errors = _extract_step_content_and_role(
+                obj, payload_obj, payload_type, state
+            )
 
-                    payload_obj = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-                    payload_type = str(payload_obj.get("type") or "").lower()
+            status_str = str(obj.get("status") or payload_obj.get("status") or "").upper()
+            is_step_error = (
+                status_str in ("ERROR", "FAILED")
+                or obj.get("is_error") is True
+                or payload_obj.get("is_error") is True
+            )
 
-                    content_str, content_tok, is_tool_output_step, tool_result_errors = _extract_step_content_and_role(
-                        obj, payload_obj, payload_type, state
-                    )
+            _attribute_tool_output_tokens(
+                step_no, content_str, content_tok, is_tool_output_step,
+                is_step_error, was_truncated, tool_result_errors, state
+            )
 
-                    status_str = str(obj.get("status") or payload_obj.get("status") or "").upper()
-                    is_step_error = (
-                        status_str in ("ERROR", "FAILED")
-                        or obj.get("is_error") is True
-                        or payload_obj.get("is_error") is True
-                    )
+            step_thinking_tok = _extract_step_thinking(obj, payload_obj, payload_type, state)
+            tool_calls = _extract_step_tool_calls(obj, payload_obj, payload_type)
 
-                    _attribute_tool_output_tokens(
-                        step_no, content_str, content_tok, is_tool_output_step,
-                        is_step_error, was_truncated, tool_result_errors, state
-                    )
+            current_step_read_keys, current_step_gate_cmds, step_total_args_tok = _process_tool_calls_in_step(
+                step_no, tool_calls, step_thinking_tok, content_tok, was_truncated, state
+            )
 
-                    step_thinking_tok = _extract_step_thinking(obj, payload_obj, payload_type, state)
-                    tool_calls = _extract_step_tool_calls(obj, payload_obj, payload_type)
-
-                    current_step_read_keys, current_step_gate_cmds, step_total_args_tok = _process_tool_calls_in_step(
-                        step_no, tool_calls, step_thinking_tok, content_tok, was_truncated, state
-                    )
-
-                    _record_step_error_signals(
-                        step_no, obj, payload_obj, content_str, content_tok,
-                        step_thinking_tok, step_total_args_tok, is_step_error,
-                        is_tool_output_step, tool_result_errors, tool_calls,
-                        current_step_read_keys, current_step_gate_cmds, state
-                    )
-            finally:
-                if full_f is not None:
-                    full_f.close()
+            _record_step_error_signals(
+                step_no, obj, payload_obj, content_str, content_tok,
+                step_thinking_tok, step_total_args_tok, is_step_error,
+                is_tool_output_step, tool_result_errors, tool_calls,
+                current_step_read_keys, current_step_gate_cmds, state
+            )
     except (OSError, PermissionError):
         return None, [], [], {}
 

@@ -2,15 +2,67 @@
 Test discovery, execution engine and ASCII report formatter for YS-Codebase.
 """
 import os
+import subprocess
 import sys
 import unittest
 from io import StringIO
 from typing import List, Dict, Any, Optional, Tuple
 from core import uri, vfs
+from core.platform.process import terminate_popen_tree
 from dev.checker import discover_source_modules
 from dev.testing.contract import make_contract_suite
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement
+
+
+def run_subprocess_with_tree_timeout(
+    cmd: List[str],
+    timeout_sec: float = 30.0,
+    cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> Tuple[int, str, str]:
+    """
+    Executes a child subprocess in its own process group/session and terminates the entire
+    process tree on timeout, preventing orphaned grandchildren from holding stdout/stderr pipes open.
+    """
+    popen_kwargs: Dict[str, Any] = {"close_fds": True}
+    if sys.platform == "win32":
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200) | getattr(
+            subprocess, "CREATE_NO_WINDOW", 0x08000000
+        )
+        popen_kwargs["creationflags"] = flags
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **popen_kwargs,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout_sec)
+        return proc.returncode or 0, out or "", err or ""
+    except subprocess.TimeoutExpired:
+        terminate_popen_tree(proc, timeout_sec=2.0)
+        try:
+            out, err = proc.communicate(timeout=2.0)
+        except Exception:
+            out, err = "", ""
+        finally:
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe:
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
+        return -1, out or "", (err or "") + f"\n[dev:runner] Process timed out after {timeout_sec}s"
 
 
 def filter_suite(

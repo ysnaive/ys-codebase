@@ -8,9 +8,9 @@
     "1.1.0.6",
     "1.1.1.2",
     "1.1.2.3",
-    "1.2.0.1",
     "1.2.0.2",
-    "1.2.0.3"
+    "1.2.0.3",
+    "1.2.0.4"
   ],
   "releases": {
     "1.0.0.0": {
@@ -104,7 +104,7 @@
       "sha256": "1fed3a40b809476bdf129c5faef83e84bb9eb6ac5676031df82f42c6edc0f290"
     },
     "1.2.0.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2",
         "file-space": ">=1.0.0",
@@ -138,6 +138,18 @@
       "type": "feature",
       "urgency": "optional",
       "summary": "新增同構 configurable/_format.json 組態契約並升級 uri 與 @desc(...) 欄位說明"
+    },
+    "1.2.0.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5",
+        "file-space": ">=1.0.0",
+        "ast": ">=1.0.0"
+      },
+      "sha256": "bdb083c1e6050e9f4802a95324bb8d2f9e72ec5a490c0b3eb58e194a177e027f",
+      "type": "bugfix",
+      "urgency": "optional",
+      "summary": "新增 .kdb_index.lock 跨進程寫入鎖與 numpy 頂層延遲載入"
     }
   }
 }

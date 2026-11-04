@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.0.3",
+  "version": "1.2.0.4",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -24,8 +24,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "feature",
+    "type": "bugfix",
     "urgency": "optional",
-    "summary": "新增同構 configurable/_format.json 組態契約並升級 uri 與 @desc(...) 欄位說明"
+    "summary": "新增 .kdb_index.lock 跨進程寫入鎖與 numpy 頂層延遲載入"
   }
 }

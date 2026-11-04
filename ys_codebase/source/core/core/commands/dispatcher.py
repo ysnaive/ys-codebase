@@ -573,16 +573,21 @@ def dispatch_local(
     mod_root = os.path.dirname(os.path.dirname(target_cli))
     core_dir = os.path.join(yscb_abs, ".modules", "core")
 
-    for p in [core_dir, mod_root]:
-        if os.path.isdir(p) and p not in sys.path:
+    for p in (core_dir, mod_root):
+        if os.path.isdir(p):
+            if p in sys.path:
+                sys.path.remove(p)
             sys.path.insert(0, p)
 
     # 載入模組
     if target_cli in _MODULE_CACHE:
         mod = _MODULE_CACHE[target_cli]
     else:
+        mod_pkg = module_name.replace("-", "_")
+        script_stem = os.path.splitext(os.path.basename(target_cli))[0].replace(".", "_")
+        unique_mod_name = f"_yscb_mod_{mod_pkg}_{script_stem}"
         spec = importlib.util.spec_from_file_location(
-            f"yscb_mod_{module_name.replace('-', '_')}_cli",
+            unique_mod_name,
             target_cli,
         )
         if spec is None or spec.loader is None:

@@ -10,9 +10,9 @@
     "1.2.0.2",
     "1.2.1.1",
     "1.2.2.3",
-    "1.2.3.1",
     "1.2.3.2",
-    "1.2.3.3"
+    "1.2.3.3",
+    "1.2.3.4"
   ],
   "releases": {
     "1.0.0.0": {
@@ -133,7 +133,7 @@
       "sha256": "711d77239cadccb3f9b5c2e28500d9c0eac7f8f9238b6926429f894e7e9e50cc"
     },
     "1.2.3.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.2"
       },
@@ -161,6 +161,16 @@
       "type": "feature",
       "urgency": "optional",
       "summary": "新增同構 configurable/_format.json 組態契約並升級 uri/path 與 @desc(...) 欄位說明"
+    },
+    "1.2.3.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "5a5c48fb3d1911e49480310b72d56002e264359f550eaa8c68e8caf8abc7559c",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "實作 _trace_parser JSONL 串流生成器與 2MB 單行安全上限"
     }
   }
 }

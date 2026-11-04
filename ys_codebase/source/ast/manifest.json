@@ -1,7 +1,7 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.0.0.3",
+  "version": "1.0.0.4",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -35,8 +35,8 @@
     "請執行 `python yscb.py ast callers <symbol>`、`callees <symbol>` 或 `impact <symbol>` 追蹤跨檔案呼叫拓撲與修改影響半徑。"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "optional",
-    "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
+    "type": "bugfix",
+    "urgency": "recommended",
+    "summary": "新增 Tree-sitter JIT 跨進程鎖、刪檔孤兒節點回收、.ast_graph.lock 與二級雜湊索引加速"
   }
 }

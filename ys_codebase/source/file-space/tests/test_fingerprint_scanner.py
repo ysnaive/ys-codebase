@@ -164,3 +164,26 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
             self.assertEqual(rec["merkle_root"], f"root_{i}_14")
 
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_et_02_racy_stat_gate_and_broken_symlink_safety(self) -> None:
+        """驗證同秒級同長度覆寫時透過 Racy Stat Gate 重新計算雜湊，且懸空符號連結不引發掃描崩潰。"""
+        target_f = self.space_a_dir / "racy.py"
+        target_f.write_text("AAAA\n", encoding="utf-8")
+
+        broken_link = self.space_a_dir / "broken_link.py"
+        try:
+            os.symlink(self.space_a_dir / "non_existent_target.py", broken_link)
+        except OSError:
+            pass
+
+        scanner = self._build_multi_space_scanner()
+        scanner.refresh("space_a")
+        scanner.ack("space_a", consumer_id="kdb")
+
+        # 覆寫為相同位元組長度但內容不同之檔案，即使處於同秒視窗內亦必須偵測出 modified
+        target_f.write_text("BBBB\n", encoding="utf-8")
+        scanner.refresh("space_a")
+        diff_res = scanner.diff("space_a", consumer_id="kdb", auto_refresh=False)
+        self.assertIn("racy.py", diff_res.modified)
+        self.mark_passed()

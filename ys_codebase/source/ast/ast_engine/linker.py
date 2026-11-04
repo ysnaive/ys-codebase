@@ -60,6 +60,8 @@ class TopologyLinker:
 
         self._by_file: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
         self._by_name: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
+        self._by_short_name: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
+        self._by_module_suffix: Dict[str, Set[str]] = defaultdict(set)
         self._by_space_name: Dict[str, Dict[str, List[UnifiedSymbol]]] = defaultdict(lambda: defaultdict(list))
         self._by_file_name: Dict[Tuple[str, str], List[UnifiedSymbol]] = defaultdict(list)
         self._by_fqn: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
@@ -74,6 +76,8 @@ class TopologyLinker:
     def _reindex(self) -> None:
         self._by_file.clear()
         self._by_name.clear()
+        self._by_short_name.clear()
+        self._by_module_suffix.clear()
         self._by_space_name.clear()
         self._by_file_name.clear()
         self._by_fqn.clear()
@@ -89,12 +93,20 @@ class TopologyLinker:
             self._by_name[sym.name].append(sym)
             self._by_file_name[(norm_path, sym.name)].append(sym)
 
+            path_no_ext = norm_path.rsplit(".", 1)[0] if "." in norm_path else norm_path
+            for seg in path_no_ext.split("/"):
+                if len(seg) > 2:
+                    self._by_module_suffix[seg].add(sym.id)
+
             if sym.fqn:
                 fqn_low = sym.fqn.lower()
                 if sym not in self._by_fqn[fqn_low]:
                     self._by_fqn[fqn_low].append(sym)
                 if sym.fqn != fqn_low and sym not in self._by_fqn[sym.fqn]:
                     self._by_fqn[sym.fqn].append(sym)
+                for fqn_seg in re.split(r"[.:]+", fqn_low):
+                    if len(fqn_seg) > 2:
+                        self._by_module_suffix[fqn_seg].add(sym.id)
 
             if sym.parent_id:
                 self._by_parent_id[sym.parent_id].append(sym)
@@ -102,6 +114,9 @@ class TopologyLinker:
             short_name = sym.metadata.get("short_name") or (
                 re.split(r"[.:]+", sym.name)[-1] if ("." in sym.name or "::" in sym.name) else sym.name
             )
+            if short_name:
+                self._by_short_name[str(short_name).lower()].append(sym)
+                self._by_file_name[(norm_path, str(short_name))].append(sym)
             parent_scope = sym.metadata.get("parent_scope") or ""
 
             if parent_scope and short_name:
@@ -160,6 +175,10 @@ class TopologyLinker:
 
     def find_caller_symbol_id(self, file_path: str, caller_member_name: str) -> Optional[str]:
         norm_path = file_path.replace("\\", "/").lower()
+        if caller_member_name and caller_member_name != "<module>":
+            direct = self._by_file_name.get((norm_path, caller_member_name))
+            if direct:
+                return direct[0].id
         candidates = self._by_file.get(norm_path, [])
         if not candidates:
             return None
@@ -515,13 +534,20 @@ class TopologyLinker:
         imported_path: str,
         arg_count: Optional[int] = None,
     ) -> Optional[UnifiedSymbol]:
-        imp_parts = imported_path.replace(".", "/").lower().split("/")
+        imp_parts = [p for p in imported_path.replace(".", "/").lower().split("/") if len(p) > 2]
+        matched_ids: Set[str] = set()
+        for part in imp_parts:
+            matched_ids.update(self._by_module_suffix.get(part, ()))
         filtered: List[UnifiedSymbol] = []
+        imp_low = imported_path.lower()
         for m in matches:
-            m_path = m.file_path.replace("\\", "/").lower()
-            if any(part in m_path for part in imp_parts if len(part) > 2):
+            if m.id in matched_ids:
                 filtered.append(m)
-            elif m.fqn and imported_path.lower() in m.fqn.lower():
+                continue
+            m_path = m.file_path.replace("\\", "/").lower()
+            if any(part in m_path for part in imp_parts):
+                filtered.append(m)
+            elif m.fqn and imp_low in m.fqn.lower():
                 filtered.append(m)
         pool = filtered if filtered else matches
         return self._select_best_overload(pool, arg_count=arg_count)

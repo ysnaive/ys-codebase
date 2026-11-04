@@ -37,7 +37,7 @@ def _ensure_dependency_module_paths() -> None:
 
 _ensure_dependency_module_paths()
 
-__version__ = "1.2.0.3"
+__version__ = "1.2.0.4"
 
 _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "ASTEngine": ("ast_engine", "ASTEngine"),

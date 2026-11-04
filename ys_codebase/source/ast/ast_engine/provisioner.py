@@ -5,9 +5,12 @@ Ensures `--json` output on stdout remains 100% pure even when dynamic grammar in
 
 import importlib
 import logging
+import os
 import subprocess
 import sys
-from typing import Any, ClassVar, Dict, List, Optional, Set
+import tempfile
+from contextlib import contextmanager
+from typing import Any, ClassVar, Dict, Iterator, List, Optional, Set
 
 try:
     import tree_sitter
@@ -70,38 +73,78 @@ class GrammarProvisioner:
         return msg
 
     @classmethod
-    def _try_pip_install(cls, pkg_name: str) -> bool:
+    @contextmanager
+    def _provision_lock(cls) -> Iterator[None]:
+        """Acquires a cross-process file lock around JIT grammar installation."""
+        lock_obj = None
+        try:
+            from core import uri
+            from core.platform.lock import InterProcessLock
+
+            try:
+                yscb_root = uri.resolve_yscb_root()
+                lock_dir = os.path.join(yscb_root, ".venv")
+            except Exception:
+                lock_dir = tempfile.gettempdir()
+            os.makedirs(lock_dir, exist_ok=True)
+            lock_obj = InterProcessLock(os.path.join(lock_dir, ".pip_install.lock"))
+            lock_obj.acquire(blocking=True, timeout_sec=60.0)
+        except Exception:
+            lock_obj = None
+        try:
+            yield
+        finally:
+            if lock_obj is not None:
+                try:
+                    lock_obj.release()
+                except Exception:
+                    pass
+
+    @classmethod
+    def _try_pip_install(cls, pkg_name: str, module_name: Optional[str] = None) -> bool:
         """
         Attempt to install a missing grammar package via pip with stdout and stderr strictly redirected to sys.stderr.
+        Synchronizes across processes and performs a double-checked import check after acquiring the lock.
         """
         if pkg_name in cls._FAILED_PACKAGES:
             return False
 
-        try:
-            cmd = [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--quiet",
-                "--disable-pip-version-check",
-                pkg_name,
-            ]
-            proc = subprocess.run(
-                cmd,
-                stdout=sys.stderr,
-                stderr=sys.stderr,
-                timeout=30,
-                check=False,
-            )
-            if proc.returncode == 0:
+        with cls._provision_lock():
+            if pkg_name in cls._FAILED_PACKAGES:
+                return False
+            if module_name:
                 importlib.invalidate_caches()
-                return True
-        except Exception as exc:
-            logger.debug(f"GrammarProvisioner pip install failed for '{pkg_name}': {exc}")
+                try:
+                    importlib.import_module(module_name)
+                    return True
+                except ImportError:
+                    pass
 
-        cls._FAILED_PACKAGES.add(pkg_name)
-        return False
+            try:
+                cmd = [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--quiet",
+                    "--disable-pip-version-check",
+                    pkg_name,
+                ]
+                proc = subprocess.run(
+                    cmd,
+                    stdout=sys.stderr,
+                    stderr=sys.stderr,
+                    timeout=30,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    importlib.invalidate_caches()
+                    return True
+            except Exception as exc:
+                logger.debug(f"GrammarProvisioner pip install failed for '{pkg_name}': {exc}")
+
+            cls._FAILED_PACKAGES.add(pkg_name)
+            return False
 
     @classmethod
     def load_language(
@@ -143,7 +186,7 @@ class GrammarProvisioner:
                 if attempt_auto_install is not None
                 else (cls.auto_install_enabled or bool(auto_install_pkg))
             )
-            if should_install and cls._try_pip_install(pkg_name):
+            if should_install and cls._try_pip_install(pkg_name, module_name=module_name):
                 try:
                     mod = importlib.import_module(module_name)
                 except Exception:

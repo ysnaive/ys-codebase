@@ -247,17 +247,33 @@ class TestVSCodeSupport(YSCBTestCase):
         self.mark_passed()
 
     def test_et_01_jsonc_settings_preserved_and_hook_lifecycle(self) -> None:
-        """驗證含註解之 JSONC settings.json 不被覆寫破壞，且 hook.core.py 正確處理 on_remove 過濾。"""
+        """驗證含註解與尾隨逗號之 JSONC settings.json 自動備份 .bak 並平滑軟合併，且不可恢復之損毀語法不覆寫原檔。"""
         vscode_dir = os.path.join(self.project_root, ".vscode")
         os.makedirs(vscode_dir, exist_ok=True)
         settings_path = os.path.join(vscode_dir, "settings.json")
-        raw_jsonc = b'{\n  // user comment\n  "editor.tabSize": 4,\n}\n'
+        bak_path = settings_path + ".bak"
+        raw_jsonc = b'{\n  // user comment\n  "editor.tabSize": 4,\n  "custom.url": "https://example.com//not-a-comment",\n}\n'
         with open(settings_path, "wb") as f:
             f.write(raw_jsonc)
 
+        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
+        self.assertTrue(os.path.isfile(bak_path))
+        with open(bak_path, "rb") as f:
+            self.assertEqual(f.read(), raw_jsonc)
+        merged = vfs.read_json(settings_path)
+        self.assertEqual(merged.get("editor.tabSize"), 4)
+        self.assertEqual(merged.get("custom.url"), "https://example.com//not-a-comment")
+        self.assertIn("_yscb_managed", merged)
+
+        # 不可恢復之損毀語法：備份至 .bak 且回傳 False 不覆寫原檔
+        corrupt_bytes = b'{\n  "broken": [1, 2\n'
+        with open(settings_path, "wb") as f:
+            f.write(corrupt_bytes)
         self.assertFalse(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
         with open(settings_path, "rb") as f:
-            self.assertEqual(f.read(), raw_jsonc)
+            self.assertEqual(f.read(), corrupt_bytes)
+        with open(bak_path, "rb") as f:
+            self.assertEqual(f.read(), corrupt_bytes)
 
         # 測試 hook.core.py 之 on_remove 僅在移除目標含 vscode-support 時觸發 revert
         import importlib.util

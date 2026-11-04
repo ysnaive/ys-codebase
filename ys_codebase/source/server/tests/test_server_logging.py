@@ -276,6 +276,36 @@ class TestServerLogging(YSCBTestCase):
         sup.stop()
         self.mark_passed()
 
+    def test_non_inheritable_lock_fd_and_log_tail_rotation_reset(self):
+        """驗證 InterProcessLock 檔案描述符設定為不可繼承，且 ServerLogger.read_tail_chunks 在日誌輪替/截斷時重置偏移量。"""
+        from core.platform.lock import InterProcessLock
+
+        lock_path = os.path.join(self.cache_dir, "test_non_inheritable.lock")
+        lock = InterProcessLock(lock_path, timeout=2.0)
+        self.assertTrue(lock.acquire())
+        try:
+            self.assertIsNotNone(lock._fd)
+            self.assertFalse(os.get_inheritable(lock._fd))
+        finally:
+            lock.release()
+
+        logger = ServerLogger(yscb_root=self.root_dir, log_dir=self.cache_dir)
+        logger.recover_and_open()
+        logger.info("Line one Long Message For Offset")
+        chunk1, off1, ino1 = logger.read_tail_chunks(0, None)
+        self.assertIn("Line one Long Message For Offset", chunk1)
+        self.assertGreater(off1, 0)
+
+        # 模擬日誌輪替重啟後檔案變短，read_tail_chunks 應自動從 0 重新讀取新內容
+        logger.archive_and_close()
+        logger.recover_and_open()
+        logger.info("Short line")
+        chunk2, off2, ino2 = logger.read_tail_chunks(off1 + 5000, ino1)
+        self.assertIn("Short line", chunk2)
+        self.assertGreater(off2, 0)
+        logger.archive_and_close()
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

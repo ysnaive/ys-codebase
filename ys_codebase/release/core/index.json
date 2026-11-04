@@ -13,7 +13,8 @@
     "1.2.2.0",
     "1.2.3.0",
     "1.2.4.0",
-    "1.2.5.0"
+    "1.2.5.0",
+    "1.2.5.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -139,6 +140,14 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "剝離 ide_projector 並新增 on_env_synced 事件、支援 uri/path 型別與 @desc(...) 正交屬性及 configurable/_format.json"
+    },
+    "1.2.5.1": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "e1814a624686359b5540b26a9d2bb8380ee6078c24dc42a35c052271575d7336",
+      "type": "bugfix",
+      "urgency": "critical",
+      "summary": "新增 robust_rmtree/robust_replace EXDEV 防腐層、不可繼承鎖 FD、微環境跨進程鎖與 virtiofs lib64 相容修復"
     }
   }
 }

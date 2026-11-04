@@ -521,7 +521,14 @@ def _resolve_const_scheme(
     target_base = resolve(val_expanded, current_module=active_mod, context=context, interactive=interactive)
     if rel:
         resolved_path = os.path.normpath(os.path.join(target_base, rel))
-        is_safe = (resolved_path == target_base) or resolved_path.startswith(target_base + os.sep)
+        real_base = os.path.normpath(os.path.realpath(target_base))
+        real_resolved = os.path.normpath(os.path.realpath(resolved_path))
+        is_safe = (
+            (resolved_path == target_base)
+            or resolved_path.startswith(target_base + os.sep)
+            or (real_resolved == real_base)
+            or real_resolved.startswith(real_base + os.sep)
+        )
         if not is_safe and ".." in rel:
             raise PermissionError(f"Path traversal detected in URI '{raw_uri}': escaped root '{target_base}'.")
         return resolved_path

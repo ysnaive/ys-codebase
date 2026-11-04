@@ -1,7 +1,7 @@
 {
   "id": "file-space",
   "name": "file-space",
-  "version": "1.0.0.3",
+  "version": "1.0.0.4",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -26,8 +26,8 @@
     "若已安裝 `server` 模組，啟動 Daemon 後將自動掛載 `file-space-watcher` 進行背景增量監聽與 `on_file_space_changed` 事件廣播。"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "optional",
-    "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
+    "type": "bugfix",
+    "urgency": "recommended",
+    "summary": "新增同秒級 st_ctime_ns Racy Stat Gate 守門與符號連結安全防禦"
   }
 }

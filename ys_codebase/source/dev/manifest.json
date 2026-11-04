@@ -1,6 +1,6 @@
 {
   "name": "dev",
-  "version": "1.1.4.0",
+  "version": "1.1.4.1",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -12,8 +12,8 @@
     "Run isolated sandbox tests: python yscb.py dev test --all --quiet"
   ],
   "release": {
-    "type": "feature",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "Checker 支援同構 configurable/_format.json 組態契約並升級 @desc(...) 欄位說明"
+    "summary": "沙盒清理串接 vfs.robust_rmtree、成對 realpath 校驗與平行測試超時進程樹回收"
   }
 }

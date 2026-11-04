@@ -264,17 +264,52 @@ class TestVFS(YSCBTestCase):
         # 2. 非 ENOENT 異常（例如 EBUSY）即使 missing_ok=True 亦必須向上拋出，絕不因 missing_ok 靜默吞沒
         busy_dir = os.path.join(self.test_dir, "busy_dir")
         os.makedirs(busy_dir, exist_ok=True)
+        busy_file = os.path.join(busy_dir, "locked_busy.txt")
+        self.backend.write_text(busy_file, "busy")
 
         def busy_rmtree(path, onerror=None, **kwargs):
+            def fail_busy(_p):
+                raise OSError(errno.EBUSY, "Device or resource busy", _p)
+
             try:
-                raise OSError(errno.EBUSY, "Device or resource busy", path)
+                fail_busy(busy_file)
             except Exception:
                 import sys
-                onerror(os.rmdir, path, sys.exc_info())
+                onerror(fail_busy, busy_file, sys.exc_info())
 
         with patch("core.vfs.os_backend.shutil.rmtree", side_effect=busy_rmtree):
             with self.assertRaises(OSError) as ctx:
                 self.backend.remove(busy_dir, missing_ok=True)
             self.assertEqual(ctx.exception.errno, errno.EBUSY)
 
+        self.mark_passed()
+
+    def test_robust_replace_exdev_fallback_and_contributes_json_cache(self):
+        """驗證 robust_replace 遭遇 EXDEV 時降級至目標同目錄暫存後原子替換，且 contributes._read_json_cached 命中與失效正常。"""
+        import errno
+        from unittest.mock import patch
+        from core.vfs.os_backend import robust_replace
+        from core.contributes import _read_json_cached, invalidate_cache
+
+        src_file = os.path.join(self.test_dir, "exdev_src.json")
+        dst_file = os.path.join(self.test_dir, "exdev_dst.json")
+        self.backend.write_text(src_file, '{"ok": true}')
+
+        real_replace = os.replace
+        calls = {"count": 0}
+
+        def simulated_exdev_replace(s, d):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            return real_replace(s, d)
+
+        with patch("core.vfs.os_backend.os.replace", side_effect=simulated_exdev_replace):
+            robust_replace(src_file, dst_file)
+
+        self.assertFalse(os.path.exists(src_file))
+        self.assertTrue(os.path.exists(dst_file))
+        self.assertEqual(_read_json_cached(dst_file), {"ok": True})
+        self.assertEqual(_read_json_cached(dst_file), {"ok": True})
+        invalidate_cache()
         self.mark_passed()

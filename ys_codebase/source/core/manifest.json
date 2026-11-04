@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.5.0",
+  "version": "1.2.5.1",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -10,8 +10,8 @@
     "Explore installed modules: python yscb.py status"
   ],
   "release": {
-    "type": "feature",
-    "urgency": "recommended",
-    "summary": "剝離 ide_projector 並新增 on_env_synced 事件、支援 uri/path 型別與 @desc(...) 正交屬性及 configurable/_format.json"
+    "type": "bugfix",
+    "urgency": "critical",
+    "summary": "新增 robust_rmtree/robust_replace EXDEV 防腐層、不可繼承鎖 FD、微環境跨進程鎖與 virtiofs lib64 相容修復"
   }
 }

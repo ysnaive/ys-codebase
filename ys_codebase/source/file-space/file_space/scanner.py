@@ -665,8 +665,14 @@ class FingerprintScanner:
             return None, None
 
         mtime_ns = int(st.st_mtime_ns)
+        ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
         size = int(st.st_size)
-        is_racy = abs(scan_start_ns - mtime_ns) < RACY_CLEAN_WINDOW_NS
+        latest_stat_ns = max(mtime_ns, ctime_ns)
+        is_racy = (
+            abs(scan_start_ns - mtime_ns) < RACY_CLEAN_WINDOW_NS
+            or abs(scan_start_ns - latest_stat_ns) < RACY_CLEAN_WINDOW_NS
+            or (prev_fp is not None and ctime_ns > prev_fp.mtime_ns)
+        )
 
         if (
             prev_fp is not None

@@ -227,11 +227,37 @@ def _get_contributes_meta_uri() -> str:
 
 # In-memory cache: (yscb_root, target_module) -> (meta_mtime, merged_mtime, merged_dict)
 _MERGED_MEMORY_CACHE: Dict[Tuple[str, str], Tuple[float, float, Dict[str, Any]]] = {}
+# In-memory per-file JSON cache: norm_path -> (mtime_ns, size, parsed_data)
+_JSON_FILE_CACHE: Dict[str, Tuple[int, int, Any]] = {}
 # Monotonic timestamp of last verified clean input scan per yscb_root
 _LAST_CLEAN_SCAN_TS: Dict[str, Tuple[float, float]] = {}
 # Short window (seconds) within which consecutive get() calls skip full directory walk
 # provided contributes.meta.json and contributes.merged.json mtimes have not changed.
 _CLEAN_SCAN_WINDOW_SEC: float = 0.04
+
+
+def _read_json_cached(path_or_uri: str) -> Any:
+    """
+    Reads and parses a JSON file with an in-memory ``(norm_path, st_mtime_ns, st_size)`` cache
+    to eliminate repeated disk I/O across a single CLI lifecycle.
+    """
+    resolved = uri.resolve(path_or_uri, interactive=False) if "://" in str(path_or_uri) else str(path_or_uri)
+    norm_path = os.path.normpath(os.path.abspath(resolved))
+    try:
+        st = os.stat(norm_path)
+        mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))
+        size = st.st_size
+    except OSError:
+        _JSON_FILE_CACHE.pop(norm_path, None)
+        return vfs.read_json(path_or_uri)
+
+    cached = _JSON_FILE_CACHE.get(norm_path)
+    if cached is not None and cached[0] == mtime_ns and cached[1] == size:
+        return copy.deepcopy(cached[2])
+
+    data = vfs.read_json(path_or_uri)
+    _JSON_FILE_CACHE[norm_path] = (mtime_ns, size, copy.deepcopy(data))
+    return data
 
 
 def invalidate_cache(target_module: Optional[str] = None) -> None:
@@ -240,6 +266,7 @@ def invalidate_cache(target_module: Optional[str] = None) -> None:
     若指定 target_module 則僅清除該目標模組之已合併字典快取，並重置免掃時窗。
     """
     _LAST_CLEAN_SCAN_TS.clear()
+    _JSON_FILE_CACHE.clear()
     uri._TOKEN_MAP_CACHE.clear()
     if target_module:
         stale_keys = [k for k in _MERGED_MEMORY_CACHE if k[1] == target_module]
@@ -281,7 +308,7 @@ def _scan_donor_contributes_files(donor: str, files_snapshot: Dict[str, Tuple[fl
                     f_p = uri.resolve(f_uri, interactive=False)
                     _record_file_stat(files_snapshot, f_p)
                     if fname == "core.json" and os.path.isfile(f_p):
-                        c_obj = vfs.read_json(f_uri)
+                        c_obj = _read_json_cached(f_uri)
                         locales_decl = c_obj.get("locales") if isinstance(c_obj, dict) else None
                         if isinstance(locales_decl, dict):
                             mod_root = uri.resolve(f"module://{donor}", interactive=False)
@@ -336,7 +363,7 @@ def _scan_contributes_inputs() -> Dict[str, Tuple[float, int]]:
                         p_abs = uri.resolve(p_uri, interactive=False)
                         _record_file_stat(files_snapshot, p_abs)
                         if tgt == "core" and os.path.isfile(p_abs):
-                            c_obj = vfs.read_json(p_uri)
+                            c_obj = _read_json_cached(p_uri)
                             if isinstance(c_obj, dict):
                                 core_body = c_obj.get("core", c_obj)
                                 locales_decl = core_body.get("locales") if isinstance(core_body, dict) else None
@@ -494,7 +521,7 @@ def get_format(module: str) -> Optional[Dict[str, Any]]:
         fmt_uri = f"module.source://{module}/contributes/_format.json"
     if vfs.exists(fmt_uri):
         try:
-            data = vfs.read_json(fmt_uri)
+            data = _read_json_cached(fmt_uri)
             if isinstance(data, dict):
                 return data
         except Exception as e:
@@ -583,7 +610,7 @@ class ContributesAggregator:
                     aggregated.setdefault(target, {})
                     target_file_uri = f"{donor_contrib_dir}/{filename}"
                     try:
-                        c_data = vfs.read_json(target_file_uri)
+                        c_data = _read_json_cached(target_file_uri)
                         if isinstance(c_data, dict):
                             val_res = validate(target, c_data, donor_module=donor)
                             if not val_res.is_valid:

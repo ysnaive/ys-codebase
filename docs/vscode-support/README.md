@@ -11,7 +11,7 @@ related_docs:
   - "../_project/STANDARDS.md"
   - "../core/README.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-04"
 ---
 
 # `vscode-support` — VS Code 工作區設定投影與單檔級 JSON Schema 編譯器
@@ -24,7 +24,7 @@ last_updated: "2026-11-03"
 
 | 組件 | 原始碼位置 | 核心職責 |
 | :--- | :--- | :--- |
-| **`SettingsProjector`** | `vscode_support/projector.py` | 管理 `yscb.venv://current-site-packages` 穩定連結（恆定注入 `./ys_codebase/.venv/current-site-packages` 避免容器或 Python 版本切換產生設定漂移）、自動建立 `project://.vscode/`、以 `_yscb_managed` 差集軟合併 `.vscode/settings.json`（含 `extraPaths`、`excludes`、`analysisExclude`、`json.schemas`），並提供 `revert_vscode_settings` 完全可逆拆卸。 |
+| **`SettingsProjector`** | `vscode_support/projector.py` | 管理 `yscb.venv://current-site-packages` 穩定連結（恆定注入 `./ys_codebase/.venv/current-site-packages` 避免容器或 Python 版本切換產生設定漂移）、自動建立 `project://.vscode/`、內建 `strip_jsonc` 處理 `.vscode/settings.json` 之註解與尾隨逗號（偵測到 JSONC 時自動備份至 `.vscode/settings.json.bak` 後再以 `_yscb_managed` 差集軟合併），並提供 `revert_vscode_settings` 完全可逆拆卸。 |
 | **`SchemaCompiler`** | `vscode_support/schema_compiler.py` | 掃描 `module://<mod>/contributes/_format.json`、`module://<mod>/configurable/_format.json`（及 `module.mirror://<mod>/<ver>.zip` 內之 `configurable/*.json`），支援 `uri` / `path` 型別之全系統語意 URI 協議前綴補全（`defaultSnippets`）與 `@desc(...)` 正交欄位說明，動態編譯 Draft-07 JSON Schema 至 `project://.vscode/schemas/`（內含 `.gitignore` `*` 自我忽略）並自動清理孤兒 Schema。 |
 | **`hook.core.py`** | `scripts/hook.core.py` | 訂閱 `core` 廣播之 `on_env_synced`、`on_reload` 與 `on_remove` 生命週期事件。 |
 | **`cli.py`** | `scripts/cli.py` | 提供 `vscode-support <status\|sync\|revert>` 三項命令列工具。 |

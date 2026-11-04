@@ -2,7 +2,8 @@
   "name": "vscode-support",
   "description": "YS-Codebase VS Code 工作區投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯模組",
   "versions": [
-    "1.0.0.0"
+    "1.0.0.0",
+    "1.0.0.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -14,6 +15,16 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "VS Code 工作區設定投影、current-site-packages 穩定連結與單檔級 JSON Schema 編譯器初始發布"
+    },
+    "1.0.0.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.5"
+      },
+      "sha256": "03110c991f4613725d38130544bee93fbe9af905c0adef6d2e304641b8c43138",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增 .vscode/settings.json 字串感知 JSONC 剝離、.bak 自動備份防覆寫與 Schema 原子寫入"
     }
   }
 }

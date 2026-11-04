@@ -186,3 +186,19 @@ class TestOverloadAndTopology(YSCBTestCase):
         self.assertEqual(res_missing.status, "not_found")
         self.assertEqual(res_missing.targets, [])
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_et_02_deleted_file_orphan_node_eviction_and_hash_index(self):
+        """驗證刪除檔案熱修補時 CallGraphIndex 孤兒節點完全移除，且 DeterministicSymbolResolver _by_ident_lower 索引命中正常。"""
+        snapshot, linker, graph = self._build_csharp_overload_fixture()
+        resolver = DeterministicSymbolResolver(snapshot)
+        self.assertIn("open", resolver._by_ident_lower)
+        self.assertGreaterEqual(len(resolver._by_ident_lower["open"]), 3)
+
+        # 將孤兒節點加入圖中，驗證 remove_symbol_edges / patch_incremental 徹底清除節點與關聯邊
+        orphan_id = "code:OrphanFile.cs:OrphanFunc"
+        graph.add_edge(orphan_id, snapshot.symbols[next(iter(snapshot.symbols))].id)
+        self.assertTrue(graph.graph.has_node(orphan_id))
+        graph.patch_incremental(new_edges=[], old_symbol_ids={orphan_id})
+        self.assertFalse(graph.graph.has_node(orphan_id))
+        self.mark_passed()

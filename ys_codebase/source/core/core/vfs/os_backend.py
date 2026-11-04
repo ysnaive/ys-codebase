@@ -10,6 +10,7 @@ import errno
 import stat
 import shutil
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Union, IO, Generator
@@ -26,6 +27,105 @@ def _maybe_invalidate_uri_cache(norm_path: str) -> None:
             uri._TOKEN_MAP_CACHE.clear()
         except Exception:
             pass
+
+
+def robust_rmtree(path: str, ignore_errors: bool = False, max_retries: int = 5) -> None:
+    """
+    Removes a directory tree across platforms, stripping read-only attributes on
+    encountered files (such as Git packfiles on Windows) and retrying transient
+    handle locks (`WinError 5` / `WinError 32`).
+    """
+    norm_path = os.path.normpath(os.path.abspath(path))
+    if not (os.path.exists(norm_path) or os.path.lexists(norm_path)):
+        return
+
+    def _on_rm_error(func: Any, failed_path: str, exc_info: Any) -> None:
+        exc = exc_info[1]
+        if isinstance(exc, FileNotFoundError) or getattr(exc, "errno", None) == errno.ENOENT:
+            return
+        try:
+            os.chmod(failed_path, stat.S_IWRITE | stat.S_IREAD)
+            func(failed_path)
+            return
+        except Exception:
+            if not ignore_errors:
+                raise exc
+
+    retries = max(1, max_retries)
+    for attempt in range(retries):
+        try:
+            if os.path.islink(norm_path) or os.path.isfile(norm_path):
+                try:
+                    os.chmod(norm_path, stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
+                os.unlink(norm_path)
+            elif os.path.exists(norm_path):
+                shutil.rmtree(norm_path, onerror=_on_rm_error)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt < retries - 1:
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            if not ignore_errors:
+                raise
+
+
+def robust_replace(src: str, dst: str, max_retries: int = 10) -> None:
+    """
+    Atomically replaces ``dst`` with ``src`` across platforms, retrying transient
+    Windows file locks (`PermissionError` / `WinError 5` / `WinError 32`) and
+    falling back to a same-directory staged copy + atomic replace when ``src``
+    and ``dst`` reside on different filesystems (`errno.EXDEV`).
+    """
+    src_norm = os.path.normpath(os.path.abspath(src))
+    dst_norm = os.path.normpath(os.path.abspath(dst))
+    parent_dir = os.path.dirname(dst_norm)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+    retries = max(1, max_retries)
+    for attempt in range(retries):
+        try:
+            os.replace(src_norm, dst_norm)
+            return
+        except OSError as err:
+            if err.errno == errno.EXDEV:
+                stage_name = f".{os.path.basename(dst_norm)}.exdev.{os.getpid()}_{uuid.uuid4().hex[:8]}"
+                stage_path = os.path.join(parent_dir, stage_name) if parent_dir else stage_name
+                try:
+                    if os.path.isdir(src_norm) and not os.path.islink(src_norm):
+                        shutil.copytree(src_norm, stage_path, symlinks=True)
+                    else:
+                        shutil.copy2(src_norm, stage_path, follow_symlinks=False)
+                    if os.path.isdir(dst_norm) and not os.path.islink(dst_norm):
+                        robust_rmtree(dst_norm, ignore_errors=True)
+                    os.replace(stage_path, dst_norm)
+                    if os.path.isdir(src_norm) and not os.path.islink(src_norm):
+                        robust_rmtree(src_norm, ignore_errors=True)
+                    elif os.path.exists(src_norm) or os.path.lexists(src_norm):
+                        os.remove(src_norm)
+                    return
+                finally:
+                    if os.path.exists(stage_path) or os.path.lexists(stage_path):
+                        robust_rmtree(stage_path, ignore_errors=True)
+            win_err = getattr(err, "winerror", None)
+            is_transient = (
+                isinstance(err, PermissionError)
+                or err.errno in (errno.EACCES, errno.EPERM, errno.EBUSY)
+                or win_err in (5, 32)
+            )
+            if is_transient and attempt < retries - 1:
+                try:
+                    if os.path.exists(dst_norm):
+                        os.chmod(dst_norm, stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            raise
 
 
 class OSBackend(VFSBackend):
@@ -201,21 +301,13 @@ class OSBackend(VFSBackend):
             return
 
         if os.path.isdir(norm_path):
-            def _on_rm_error(func, failed_path, exc_info):
-                exc = exc_info[1]
-                if isinstance(exc, FileNotFoundError) or getattr(exc, "errno", None) == errno.ENOENT:
-                    if missing_ok:
-                        return
-                    raise exc
-                if isinstance(exc, PermissionError) or getattr(exc, "errno", None) == errno.EACCES:
-                    os.chmod(failed_path, stat.S_IWRITE | stat.S_IREAD)
-                    func(failed_path)
-                    return
-                raise exc
-
-            shutil.rmtree(norm_path, onerror=_on_rm_error)
+            robust_rmtree(norm_path, ignore_errors=False)
         else:
             try:
+                try:
+                    os.chmod(norm_path, stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
                 os.remove(norm_path)
             except FileNotFoundError:
                 if not missing_ok:
@@ -225,8 +317,8 @@ class OSBackend(VFSBackend):
     def rmtree(self, path: str, ignore_errors: bool = False) -> None:
         """遞迴刪除目錄樹。"""
         norm_path = self.assert_safe_path(path)
-        if os.path.exists(norm_path):
-            shutil.rmtree(norm_path, ignore_errors=ignore_errors)
+        if os.path.exists(norm_path) or os.path.lexists(norm_path):
+            robust_rmtree(norm_path, ignore_errors=ignore_errors)
 
     def _safe_copytree(self, src: str, dst: str) -> None:
         """跨平台大小寫不敏感安全複製目錄樹，忽略暫態點目錄 (.old_* / .staging_*) 與過期句柄。"""
@@ -251,7 +343,7 @@ class OSBackend(VFSBackend):
         dst_norm = self.assert_safe_path(dst)
         if os.path.isdir(src_norm):
             if os.path.exists(dst_norm):
-                shutil.rmtree(dst_norm, ignore_errors=True)
+                robust_rmtree(dst_norm, ignore_errors=True)
             self._safe_copytree(src_norm, dst_norm)
         else:
             os.makedirs(os.path.dirname(dst_norm), exist_ok=True)
@@ -262,7 +354,10 @@ class OSBackend(VFSBackend):
         src_norm = self.assert_safe_path(src)
         dst_norm = self.assert_safe_path(dst)
         os.makedirs(os.path.dirname(dst_norm), exist_ok=True)
-        shutil.move(src_norm, dst_norm)
+        try:
+            robust_replace(src_norm, dst_norm)
+        except OSError:
+            shutil.move(src_norm, dst_norm)
 
     @contextmanager
     def atomic_write(
@@ -308,22 +403,8 @@ class OSBackend(VFSBackend):
             file_obj = None
 
             # 原子替換 (針對 Windows 檔案鎖/索引競態提供漸進重試；若耗盡重試直接拋出異常以保護原檔並清理暫存檔)
-            if sys.platform == "win32":
-                import time
-                max_retries = 10
-                for attempt in range(max_retries):
-                    try:
-                        os.replace(tmp_path, norm_target)
-                        success = True
-                        break
-                    except (PermissionError, OSError):
-                        if attempt < max_retries - 1:
-                            time.sleep(0.05 * (attempt + 1))
-                        else:
-                            raise
-            else:
-                os.replace(tmp_path, norm_target)
-                success = True
+            robust_replace(tmp_path, norm_target, max_retries=10)
+            success = True
         finally:
             if file_obj is not None and not file_obj.closed:
                 try:

@@ -564,7 +564,8 @@ class SchemaCompiler:
             except Exception:
                 pass
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        vfs.write_json(file_path, data, indent=2, atomic=True)
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+        vfs.write_text(file_path, content, encoding="utf-8", atomic=True)
         return True
 
     def sync_all_schemas(self, proj_root: str) -> List[Dict[str, Any]]:
