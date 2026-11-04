@@ -10,15 +10,8 @@ from typing import Any
 from core import uri
 
 
-def _ensure_module_path() -> None:
-    module_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if module_root not in sys.path:
-        sys.path.insert(0, module_root)
-
-
 def _sync_workspace() -> bool:
     try:
-        _ensure_module_path()
         from vscode_support.projector import SettingsProjector
 
         proj_root = uri.resolve("project://", interactive=False)
@@ -47,7 +40,6 @@ def on_remove(ctx: Any = None) -> bool:
         targets = getattr(ctx, "args", None) if ctx is not None else None
         if isinstance(targets, (list, tuple)) and "vscode-support" not in targets:
             return False
-        _ensure_module_path()
         from vscode_support.projector import SettingsProjector
 
         proj_root = uri.resolve("project://", interactive=False)

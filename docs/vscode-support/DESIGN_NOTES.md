@@ -32,6 +32,7 @@ last_updated: "2026-11-04"
 - **設計決策**：
   1. 建立連結前先執行 `os.makedirs(target_site_pkg, exist_ok=True)`，確保在所有模組皆無 `pip_dependencies` 的冷啟動環境下不會產生懸空連結（Dangling Link）。
   2. 透過固定連結 `./ys_codebase/.venv/current-site-packages`，使 `.vscode/settings.json` 的 `python.analysis.extraPaths` 不再包含 `py311`/`py312` 等版本字串，徹底消除跨開發者切換 Python 次版本時的 Git Diff。
+  3. 透過 `core.platform.list_module_search_roots(self.yscb_dir, prefer_source=True)` 自動將各模組搜尋根目錄（若 `source/<mod>` 存在則優先投影 `./ys_codebase/source/<mod>`，否則投影 `./ys_codebase/.modules/<mod>`）追加至 `python.analysis.extraPaths`；當 `extraPaths` 包含 `/.modules/` 路徑時，動態自 `python.analysis.exclude` 省略 `**/.modules/**`，確保 Pylance 在母倉與下游專案皆能 100% 精準解析 `from core import uri, vfs` 等跨模組匯入。
 
 ---
 

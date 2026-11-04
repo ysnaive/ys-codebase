@@ -5,8 +5,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 from core import config

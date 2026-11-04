@@ -3,25 +3,6 @@ Microkernel Lifecycle Hook for agents-workflow.
 Listens to 'on_reload' event to autonomously execute release transaction for all active targets.
 """
 import sys
-import os
-
-# Ensure package directory and sibling modules (e.g. core) are importable
-_script_dir = os.path.dirname(os.path.abspath(__file__))
-_pkg_root = os.path.dirname(_script_dir)
-_modules_root = os.path.dirname(_pkg_root)
-
-if _pkg_root not in sys.path:
-    sys.path.insert(0, _pkg_root)
-if _modules_root not in sys.path and os.path.isdir(_modules_root):
-    sys.path.insert(0, _modules_root)
-
-for cand_core in [
-    os.path.join(_modules_root, "core"),
-    os.path.join(os.path.dirname(_modules_root), "source", "core"),
-    os.path.join(os.path.dirname(_modules_root), ".modules", "core")
-]:
-    if os.path.isdir(cand_core) and cand_core not in sys.path:
-        sys.path.insert(0, cand_core)
 
 from agents_workflow.publisher import ReleasePublisher
 

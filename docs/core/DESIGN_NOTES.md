@@ -49,6 +49,7 @@ last_updated: "2026-10-15"
 | **[DN-13](#dn-13-宣告式群組雙軌-help-路由與-contributes-check-專案級覆寫剝殼)** | `DN-AW-13` | 宣告式群組雙軌 Help 路由與 `contributes check` 專案級覆寫剝殼 | `source/core/core/commands/` | ⚠️ WARNING |
 | **[DN-14](#dn-14-本地嚴格同版-source_version--target_version-動態打包pruned-同三元組自動補位與-releases-孤兒分支自動遷移)** | `DN-REL-01` | 本地嚴格同版動態打包、`pruned` 同三元組自動補位與 `releases` 孤兒分支自動遷移 | `yscb.py`<br/>`source/core/core/engine.py`<br/>`source/core/core/installer.py` | 🚨 CAUTION |
 | **[DN-15](#dn-15-indexjsonreleases-依賴覆寫優先級core-版本相容性過濾與-mirror-離線快取冪等還原)** | `DN-REL-02` | `index.json["releases"]` 依賴覆寫優先級、`core` 版本相容性過濾與 `mirror://` 離線快取冪等還原 | `source/core/core/engine.py`<br/>`source/core/core/installer.py`<br/>`source/core/core/update_checker.py` | 🚨 CAUTION |
+| **[DN-18](#dn-18-coreplatform-統一全模組-syspath-注入與非-core-模組零豁免靜態守門)** | `DN-PATH-01` | `core.platform` 統一全模組 `sys.path` 注入與非 `core` 模組零豁免靜態守門 | `source/core/core/platform/venv.py`<br/>`source/core/core/commands/dispatcher.py`<br/>`source/core/core/events.py`<br/>`source/core/core/symbols.py` | 🚨 CAUTION |
 
 ---
 
@@ -256,6 +257,20 @@ last_updated: "2026-10-15"
 - **防禦宣告**：
   > [!CAUTION]
   > **嚴禁任何業務模組繞過 `core.gitignore` 自行拼湊 Regex 讀寫 `project://.gitignore` 或在子目錄偷塞隱藏 `.gitignore`！動態註冊忽略規則時必須傳入明確之模組識別名稱！**
+
+---
+
+### [DN-18] `core.platform` 統一全模組 `sys.path` 注入與非 `core` 模組零豁免靜態守門
+
+- **核心決策**：
+  1. **單一權威路徑管理器 (`core.platform.venv`)**：全系統運行時 `sys.path` 與子進程 `PYTHONPATH` 組裝統一收斂於 `core.platform`（`list_installed_module_roots`、`ensure_installed_modules_path`、`build_runtime_pythonpath`、`init_subprocess_sys_path`、`activate_test_module_source_path`、`restore_sys_path`）。
+  2. **四大執行入口全模組掛載與確定性優先序**：`dispatcher.dispatch_local`、`events.broadcast`、`symbols.resolve_callable` 與 `server` `WarmWorker.pre_warm` 在執行前統一呼叫 `ensure_installed_modules_path`，將 `yscb://.modules/<mod>` 下所有非隱藏已安裝模組一次性掛載至 `sys.path`（優先序：`[extra_paths, _ACTIVE_TEST_SOURCE_PATHS, .modules/<priority_module>, .modules/core, ...其餘字母序]`），確保冷派發（`server_compatible: false`）與熱派發跨模組 `import` 行為 100% 對齊。
+  3. **沙盒測試受測模組前端釘選與生產期零 `/source` 污染**：`activate_test_module_source_path` 將當前受測模組 `source/<mod>` 註冊於 `_ACTIVE_TEST_SOURCE_PATHS`，防止測試中途觸發 `ensure_installed_modules_path` 時被 `.modules/<mod>` 反超；非沙盒生產期嚴格剔除任何含 `/source/` 或以 `/source` 結尾之路徑。
+- **背後考量**：過去 `dispatch_local` 僅注入目標模組與 `core`，迫使各業務模組在 `__init__.py`、`cli.py` 與 `hook.*.py` 私自塞入 `sys.path.insert`（甚至偷掛 `../source/`），造成冷派發缺模組、幽靈源碼污染與維護碎片化。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在任何非 `core` 生產源碼檔案中直接變動 `sys.path`（已由 `dev/checker.py:_find_sys_path_mutations` 實施零豁免 `FAIL` 守門）！嚴禁在生產環境（非 `YSCB_TEST_SANDBOX=="1"`）將 `module.source://` 或 `/source/` 注入 `sys.path`！**
+
 
 
 

@@ -12,16 +12,6 @@ from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
 
 
-def _ensure_module_path() -> None:
-    module_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if module_root not in sys.path:
-        sys.path.insert(0, module_root)
-    modules_parent = os.path.dirname(module_root)
-    fs_root = os.path.join(modules_parent, "file-space")
-    if os.path.isdir(fs_root) and fs_root not in sys.path:
-        sys.path.insert(0, fs_root)
-
-
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
     """Normalize `cmd_bags` into `CmdBags` (supporting `CmdBags`, `list[str]`, or `dict` for test invocations)."""
     if isinstance(cmd_bags, CmdBags):
@@ -116,7 +106,6 @@ def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
 
 
 def _get_engine() -> Any:
-    _ensure_module_path()
     from ast_engine.engine import get_engine
 
     return get_engine()
@@ -326,7 +315,6 @@ def _serialize_call_edges_json(
 
 
 def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) -> int:
-    _ensure_module_path()
     from ast_engine.exceptions import ASTError
     from file_space import FileSpaceNotFoundError
 

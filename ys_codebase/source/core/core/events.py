@@ -76,40 +76,50 @@ def broadcast(
     else:
         candidate_funcs = [f"on_{event_name}", event_name, "on_event"]
 
-    for mod_name, hook_real_path in targets:
-        mod_pkg = mod_name.replace("-", "_")
-        emit_pkg = emit_module.replace("-", "_")
-        mod_key = f"_yscb_mod_{mod_pkg}_hook_{emit_pkg}"
-        try:
-            hook_root = os.path.dirname(os.path.dirname(hook_real_path))
-            if os.path.isdir(hook_root):
-                if hook_root in sys.path:
-                    sys.path.remove(hook_root)
-                sys.path.insert(0, hook_root)
-            spec = importlib.util.spec_from_file_location(mod_key, hook_real_path)
-            if spec and spec.loader:
-                hook_mod = importlib.util.module_from_spec(spec)
-                sys.modules[mod_key] = hook_mod
-                spec.loader.exec_module(hook_mod)
+    from core.platform import ensure_installed_modules_path, restore_sys_path
 
-                hook_func = None
-                for fname in candidate_funcs:
-                    fn = getattr(hook_mod, fname, None)
-                    if callable(fn):
-                        hook_func = fn
-                        break
+    orig_sys_path = list(sys.path) if search_roots is not None else None
+    try:
+        if targets:
+            ensure_installed_modules_path(priority_module="core")
 
-                if callable(hook_func):
-                    h_res = hook_func(ctx)
-                    results[mod_name] = h_res if h_res is not None else "success"
-                    if is_verbose:
-                        print(f"[{emit_module}:events] Hook '{mod_name}:hook.{emit_module}.py' executed '{event_name}' -> {results[mod_name]}", file=sys.stderr)
-        except Exception as e:
-            results[mod_name] = f"warning: {e}"
-            print(f"[{emit_module}:events] Warning: Hook '{mod_name}:hook.{emit_module}.py' failed on '{event_name}': {e}", file=sys.stderr)
-            if is_verbose:
-                import traceback
-                traceback.print_exc(file=sys.stderr)
+        for mod_name, hook_real_path in targets:
+            mod_pkg = mod_name.replace("-", "_")
+            emit_pkg = emit_module.replace("-", "_")
+            mod_key = f"_yscb_mod_{mod_pkg}_hook_{emit_pkg}"
+            try:
+                hook_root = os.path.dirname(os.path.dirname(hook_real_path))
+                ensure_installed_modules_path(
+                    priority_module=mod_name,
+                    extra_paths=[hook_root] if os.path.isdir(hook_root) else None,
+                )
+                spec = importlib.util.spec_from_file_location(mod_key, hook_real_path)
+                if spec and spec.loader:
+                    hook_mod = importlib.util.module_from_spec(spec)
+                    sys.modules[mod_key] = hook_mod
+                    spec.loader.exec_module(hook_mod)
+
+                    hook_func = None
+                    for fname in candidate_funcs:
+                        fn = getattr(hook_mod, fname, None)
+                        if callable(fn):
+                            hook_func = fn
+                            break
+
+                    if callable(hook_func):
+                        h_res = hook_func(ctx)
+                        results[mod_name] = h_res if h_res is not None else "success"
+                        if is_verbose:
+                            print(f"[{emit_module}:events] Hook '{mod_name}:hook.{emit_module}.py' executed '{event_name}' -> {results[mod_name]}", file=sys.stderr)
+            except Exception as e:
+                results[mod_name] = f"warning: {e}"
+                print(f"[{emit_module}:events] Warning: Hook '{mod_name}:hook.{emit_module}.py' failed on '{event_name}': {e}", file=sys.stderr)
+                if is_verbose:
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+    finally:
+        if orig_sys_path is not None:
+            restore_sys_path(orig_sys_path)
 
     return results
 

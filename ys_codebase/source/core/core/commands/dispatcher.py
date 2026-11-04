@@ -567,17 +567,18 @@ def dispatch_local(
 
     # =========================================================================
     # [!] 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
-    # 僅注入 .modules/<module> 與 .modules/core 運行時空間至 sys.path。
+    # 統一透過 core.platform.ensure_installed_modules_path 將所有已安裝 .modules/<mod>
+    # 注入 sys.path（並將當前目標模組與 core 置於最前）。
     # 嚴禁直接運行開發環境 (source/) 程式碼，禁止在此向 sys.path 插入 source/ 空間！
     # =========================================================================
-    mod_root = os.path.dirname(os.path.dirname(target_cli))
-    core_dir = os.path.join(yscb_abs, ".modules", "core")
+    from core.platform import ensure_installed_modules_path
 
-    for p in (core_dir, mod_root):
-        if os.path.isdir(p):
-            if p in sys.path:
-                sys.path.remove(p)
-            sys.path.insert(0, p)
+    mod_root = os.path.dirname(os.path.dirname(target_cli))
+    ensure_installed_modules_path(
+        yscb_root=yscb_abs,
+        priority_module=module_name,
+        extra_paths=[mod_root] if os.path.isdir(mod_root) else None,
+    )
 
     # 載入模組
     if target_cli in _MODULE_CACHE:

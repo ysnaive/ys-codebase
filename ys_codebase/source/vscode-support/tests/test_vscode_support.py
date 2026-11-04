@@ -332,6 +332,62 @@ class TestVSCodeSupport(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_ft_07_module_and_source_extra_paths_projection_and_revert(self) -> None:
+        """驗證自動投影已安裝模組 (.modules/<mod>) 與源碼 (source/<mod>) 至 extraPaths，動態調整 analysisExclude 並支援 100% 乾淨還原。"""
+        mods_dir = os.path.join(self.yscb_dir, ".modules")
+        src_dir = os.path.join(self.yscb_dir, "source")
+        os.makedirs(os.path.join(mods_dir, "core"), exist_ok=True)
+        os.makedirs(os.path.join(mods_dir, "ast"), exist_ok=True)
+        os.makedirs(os.path.join(mods_dir, "file-space"), exist_ok=True)
+        os.makedirs(os.path.join(src_dir, "ast"), exist_ok=True)
+        os.makedirs(os.path.join(src_dir, "knowledge-db"), exist_ok=True)
+
+        vscode_dir = os.path.join(self.project_root, ".vscode")
+        os.makedirs(vscode_dir, exist_ok=True)
+        settings_path = os.path.join(vscode_dir, "settings.json")
+        vfs.write_json(settings_path, {"python.analysis.extraPaths": ["./user_custom"]})
+
+        # Case 1: 同時包含 .modules/<mod> 與 source/<mod> 時，同名模組優先取 source/<mod>，且因含 .modules/ 故省略 **/.modules/** 排除
+        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
+        merged = vfs.read_json(settings_path)
+        self.assertEqual(
+            merged.get("python.analysis.extraPaths"),
+            [
+                "./user_custom",
+                "./.yscb/.venv/current-site-packages",
+                "./.yscb/.modules/core",
+                "./.yscb/source/ast",
+                "./.yscb/.modules/file-space",
+                "./.yscb/source/knowledge-db",
+            ],
+        )
+        self.assertNotIn("**/.modules/**", merged.get("python.analysis.exclude", []))
+
+        # Case 2: 若所有模組皆有對應 source/<mod>，extraPaths 全部指向 source/<mod> 且恢復 **/.modules/** 排除
+        os.makedirs(os.path.join(src_dir, "core"), exist_ok=True)
+        os.makedirs(os.path.join(src_dir, "file-space"), exist_ok=True)
+        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
+        merged_all_src = vfs.read_json(settings_path)
+        self.assertEqual(
+            merged_all_src.get("python.analysis.extraPaths"),
+            [
+                "./user_custom",
+                "./.yscb/.venv/current-site-packages",
+                "./.yscb/source/core",
+                "./.yscb/source/ast",
+                "./.yscb/source/file-space",
+                "./.yscb/source/knowledge-db",
+            ],
+        )
+        self.assertIn("**/.modules/**", merged_all_src.get("python.analysis.exclude", []))
+
+        # Case 3: revert_vscode_settings 必須 100% 乾淨還原為僅保留 ./user_custom
+        self.assertTrue(self.projector.revert_vscode_settings(self.project_root))
+        reverted = vfs.read_json(settings_path)
+        self.assertEqual(reverted.get("python.analysis.extraPaths"), ["./user_custom"])
+        self.assertNotIn("_yscb_managed", reverted)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

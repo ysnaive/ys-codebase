@@ -165,19 +165,26 @@ class TestDiscovery:
             src_real = uri.resolve(f"module.source://{module_name}")
             tests_dir = os.path.join(src_real, "tests")
             if os.path.isdir(tests_dir):
+                pkg_name = "ast_engine" if module_name == "ast" else module_name.replace("-", "_")
                 for mod_k in list(sys.modules.keys()):
-                    if mod_k == "tests" or mod_k.startswith("tests.") or mod_k == module_name or mod_k.startswith(f"{module_name}."):
+                    if (
+                        mod_k == "tests"
+                        or mod_k.startswith("tests.")
+                        or mod_k == "scripts"
+                        or mod_k.startswith("scripts.")
+                        or mod_k == pkg_name
+                        or mod_k.startswith(f"{pkg_name}.")
+                    ):
                         del sys.modules[mod_k]
 
                 try:
                     src_root = uri.resolve("module.source://")
-                    sys.path[:] = [p for p in sys.path if not (p.startswith(src_root) and p != src_real)]
                 except Exception:
-                    pass
+                    src_root = None
 
-                if src_real in sys.path:
-                    sys.path.remove(src_real)
-                sys.path.insert(0, src_real)
+                from core.platform import activate_test_module_source_path
+
+                activate_test_module_source_path(src_real, src_root=src_root)
 
                 init_py = os.path.join(tests_dir, "__init__.py")
                 if not os.path.isfile(init_py):

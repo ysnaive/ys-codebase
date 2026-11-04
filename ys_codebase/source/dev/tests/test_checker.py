@@ -820,5 +820,73 @@ class TestDevChecker(YSCBTestCase):
             if os.path.exists(mod_dir):
                 shutil.rmtree(mod_dir, ignore_errors=True)
 
+    @require(Requirement.LOGIC)
+    def test_checker_forbids_non_core_sys_path_mutation(self):
+        """Verify Checker rejects direct sys.path mutations in non-core source files while allowing read-only access, test files, and core."""
+        src_root = uri.resolve("module.source://")
+        mod_dir = os.path.join(src_root, "mock_syspath_mod")
+        pkg_dir = os.path.join(mod_dir, "mock_syspath_mod")
+        tests_dir = os.path.join(mod_dir, "tests")
+        try:
+            os.makedirs(pkg_dir, exist_ok=True)
+            os.makedirs(tests_dir, exist_ok=True)
+            os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
+            os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
+            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                f.write('{"name": "mock_syspath_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.0.0"}}')
+            with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+                f.write(
+                    "import sys\n"
+                    "def run(cmd_bags):\n"
+                    "    snap = list(sys.path)\n"
+                    "    return 0 if snap is not None else 1\n"
+                )
+            with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
+                f.write("# Test Manifest\n")
+            with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
+                f.write('{"commands": {"cmd": {"run": {"description": "run"}}}}')
+            with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
+                f.write('__version__ = "1.0.0.0"\n')
+
+            # Test files are allowed to mutate sys.path for standalone test bootstrap
+            with open(os.path.join(tests_dir, "test_dummy.py"), "w", encoding="utf-8") as f:
+                f.write(
+                    "import sys\n"
+                    "from dev.testing.case import YSCBTestCase\n"
+                    "from dev.testing.requirement import require, Requirement\n"
+                    "sys.path.insert(0, '/tmp')\n"
+                    "@require(Requirement.LOGIC)\n"
+                    "class TestDummy(YSCBTestCase):\n"
+                    "    def test_ok(self):\n"
+                    "        self.mark_passed()\n"
+                )
+
+            rep_clean = self.checker.check_module("mock_syspath_mod")
+            self.assertTrue(rep_clean.passed, f"Expected clean module to pass, got: {rep_clean.errors}")
+
+            with open(os.path.join(pkg_dir, "violator.py"), "w", encoding="utf-8") as f:
+                f.write(
+                    "import sys as s\n"
+                    "from sys import path as sp\n"
+                    "def bad():\n"
+                    "    s.path.insert(0, '/bad')\n"
+                    "    sp.append('/bad2')\n"
+                    "    s.path[:] = []\n"
+                    "    del s.path[0]\n"
+                )
+
+            rep_bad = self.checker.check_module("mock_syspath_mod")
+            self.assertFalse(rep_bad.passed)
+            fail_msgs = [
+                i.message for i in rep_bad.issues
+                if i.severity == CheckSeverity.FAIL and "Forbidden direct sys.path mutation" in i.message
+            ]
+            self.assertEqual(len(fail_msgs), 4)
+            self.mark_passed()
+        finally:
+            if os.path.exists(mod_dir):
+                shutil.rmtree(mod_dir, ignore_errors=True)
+
+
 
 

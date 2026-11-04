@@ -5,37 +5,7 @@ Uses PEP 562 module-level `__getattr__` lazy loading so top-level package import
 """
 
 import importlib
-from pathlib import Path
-import sys
 from typing import Any, Dict, List, Tuple
-
-
-def _ensure_dependency_module_paths() -> None:
-    """確保依賴模組 (module:file-space 與 module:ast) 的套件目錄已掛載至 sys.path。"""
-    try:
-        from core import uri
-
-        for mod_uri, pkg_name in (("module://file-space", "file_space"), ("module://ast", "ast_engine")):
-            mod_dir = uri.resolve(mod_uri, interactive=False)
-            if mod_dir:
-                m_path = Path(mod_dir).resolve()
-                if (m_path / pkg_name / "__init__.py").is_file() and str(m_path) not in sys.path:
-                    sys.path.insert(0, str(m_path))
-    except Exception:
-        pass
-    pkg_parent = Path(__file__).resolve().parent.parent.parent
-    for mod_folder, pkg_name in (("file-space", "file_space"), ("ast", "ast_engine")):
-        for cand in (pkg_parent / mod_folder, pkg_parent.parent / ".modules" / mod_folder):
-            if (cand / pkg_name / "__init__.py").is_file():
-                cand_str = str(cand.resolve())
-                if cand_str not in sys.path:
-                    sys.path.insert(0, cand_str)
-        existing_mod = sys.modules.get(pkg_name)
-        if existing_mod is not None and getattr(existing_mod, "__file__", None) is None:
-            del sys.modules[pkg_name]
-
-
-_ensure_dependency_module_paths()
 
 __version__ = "1.2.0.5"
 

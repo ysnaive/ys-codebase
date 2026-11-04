@@ -238,9 +238,9 @@ class ServiceManager:
         auto_start = item.get("auto_start", True)
 
         if yscb_root and provider and provider != "unknown":
-            prov_dir = os.path.join(yscb_root, ".modules", provider)
-            if prov_dir not in sys.path:
-                sys.path.insert(0, prov_dir)
+            from core.platform import ensure_installed_modules_path
+
+            ensure_installed_modules_path(yscb_root=yscb_root, priority_module=provider)
 
         try:
             cls_obj = _load_service_class_from_uri(worker_cls_str, provider=provider)

@@ -918,6 +918,83 @@ class Checker:
                 )
             )
 
+    _SYS_PATH_MUTATING_METHODS = frozenset({
+        "insert",
+        "append",
+        "extend",
+        "remove",
+        "pop",
+        "clear",
+        "sort",
+        "reverse",
+    })
+
+    @staticmethod
+    def _find_sys_path_mutations(tree: ast.AST) -> List[Tuple[int, str]]:
+        sys_aliases = {"sys"}
+        path_aliases = set()
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "sys":
+                        sys_aliases.add(alias.asname or "sys")
+            elif isinstance(node, ast.ImportFrom) and node.module == "sys":
+                for alias in node.names:
+                    if alias.name == "path":
+                        path_aliases.add(alias.asname or "path")
+
+        def _is_sys_path_expr(expr: ast.AST) -> bool:
+            if (
+                isinstance(expr, ast.Attribute)
+                and expr.attr == "path"
+                and isinstance(expr.value, ast.Name)
+                and expr.value.id in sys_aliases
+            ):
+                return True
+            if isinstance(expr, ast.Name) and expr.id in path_aliases:
+                return True
+            return False
+
+        def _is_sys_path_target(target: ast.AST) -> bool:
+            if _is_sys_path_expr(target):
+                return True
+            if isinstance(target, ast.Subscript) and _is_sys_path_expr(target.value):
+                return True
+            return False
+
+        violations: List[Tuple[int, str]] = []
+        seen = set()
+
+        for node in ast.walk(tree):
+            lineno = getattr(node, "lineno", 0) or 0
+            detail = None
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in Checker._SYS_PATH_MUTATING_METHODS
+                and _is_sys_path_expr(node.func.value)
+            ):
+                detail = f"sys.path.{node.func.attr}()"
+            elif isinstance(node, ast.Assign):
+                if any(_is_sys_path_target(t) for t in node.targets):
+                    detail = "assignment to sys.path"
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                if _is_sys_path_target(node.target):
+                    detail = "assignment to sys.path"
+            elif isinstance(node, ast.Delete):
+                if any(_is_sys_path_target(t) for t in node.targets):
+                    detail = "deletion on sys.path"
+
+            if detail is not None:
+                key = (lineno, detail)
+                if key not in seen:
+                    seen.add(key)
+                    violations.append(key)
+
+        violations.sort(key=lambda item: item[0])
+        return violations
+
     def _check_source_files(self, name: str, real_dir: str, report: CheckReport) -> None:
         for root, _, files in os.walk(real_dir):
             if "__pycache__" in root or ".pytest_cache" in root:
@@ -961,6 +1038,18 @@ class Checker:
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                         if n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant):
                             doc_nodes.add(n.body[0].value)
+
+                if name != "core" and not is_test_file:
+                    for mut_line, mut_detail in self._find_sys_path_mutations(tree):
+                        report.issues.append(
+                            CheckIssue(
+                                severity=CheckSeverity.FAIL,
+                                category="ANTIPATTERN",
+                                message=f"Forbidden direct sys.path mutation in '{rel_p}:{mut_line}' ({mut_detail}). Runtime sys.path management must be delegated to 'core.platform'.",
+                                file_path=rel_p,
+                                line_number=mut_line,
+                            )
+                        )
 
                 for node in ast.walk(tree):
                     if node in doc_nodes:
@@ -1176,10 +1265,14 @@ class Checker:
                     except Exception:
                         donor_real = None
 
+                from core.platform import ensure_installed_modules_path, restore_sys_path
+
                 orig_sys_path = list(sys.path)
                 try:
-                    if donor_real and donor_real not in sys.path:
-                        sys.path.insert(0, donor_real)
+                    ensure_installed_modules_path(
+                        priority_module=donor_pkg,
+                        extra_paths=[donor_real] if (donor_real and os.path.isdir(donor_real)) else None,
+                    )
 
                     if c_func.startswith("code.func://"):
                         fn = resolve_callable(c_func, use_cache=False)
@@ -1212,7 +1305,7 @@ class Checker:
                         )
                     )
                 finally:
-                    sys.path[:] = orig_sys_path
+                    restore_sys_path(orig_sys_path)
         except Exception as e:
             report.issues.append(
                 CheckIssue(

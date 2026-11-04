@@ -17,18 +17,6 @@ import hashlib
 import datetime
 from typing import Dict, List, Any, Optional, Set, Tuple
 
-# 自動探測掛載 core 模組
-_this_dir = os.path.dirname(os.path.abspath(__file__))
-_pkg_root_aw = os.path.dirname(_this_dir)
-_mods_root_aw = os.path.dirname(_pkg_root_aw)
-for _cand in [
-    os.path.join(_mods_root_aw, "core"),
-    os.path.join(os.path.dirname(_mods_root_aw), "source", "core"),
-    os.path.join(os.path.dirname(_mods_root_aw), ".modules", "core")
-]:
-    if os.path.isdir(_cand) and _cand not in sys.path:
-        sys.path.insert(0, _cand)
-
 try:
     from core import uri
     from core import vfs

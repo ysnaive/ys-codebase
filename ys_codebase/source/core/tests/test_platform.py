@@ -416,5 +416,123 @@ class TestCorePlatform(YSCBTestCase):
                     lock._try_lock_fd(999)
         self.mark_passed()
 
+    def test_installed_module_roots_and_sys_path_priority(self):
+        """Verify list_installed_module_roots and ensure_installed_modules_path ordering, hidden filtering, and performance."""
+        from core.platform import (
+            ensure_installed_modules_path,
+            list_installed_module_roots,
+            restore_sys_path,
+        )
+
+        root = self.temp_dir.name
+        mods_dir = os.path.join(root, ".modules")
+        for name in ("core", "ast", "file-space", "gdrive-support", ".staging_ast_123", ".old_core_456"):
+            os.makedirs(os.path.join(mods_dir, name), exist_ok=True)
+        with open(os.path.join(mods_dir, "README.txt"), "w", encoding="utf-8") as f:
+            f.write("placeholder")
+
+        roots = list_installed_module_roots(yscb_root=root, priority_module="gdrive-support")
+        expected = [
+            os.path.normpath(os.path.abspath(os.path.join(mods_dir, "gdrive-support"))),
+            os.path.normpath(os.path.abspath(os.path.join(mods_dir, "core"))),
+            os.path.normpath(os.path.abspath(os.path.join(mods_dir, "ast"))),
+            os.path.normpath(os.path.abspath(os.path.join(mods_dir, "file-space"))),
+        ]
+        self.assertEqual(roots, expected)
+
+        snap = list(sys.path)
+        try:
+            extra_dir = os.path.join(root, "custom_hook_root")
+            os.makedirs(extra_dir, exist_ok=True)
+            t0 = time.perf_counter()
+            ensure_installed_modules_path(
+                yscb_root=root,
+                priority_module="gdrive-support",
+                extra_paths=[extra_dir],
+            )
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            self.assertLess(elapsed_ms, 50.0)
+            self.assertEqual(sys.path[0], os.path.normpath(os.path.abspath(extra_dir)))
+            self.assertEqual(sys.path[1], expected[0])
+            self.assertEqual(sys.path[2], expected[1])
+            for mod_p in expected[2:]:
+                self.assertIn(mod_p, sys.path)
+        finally:
+            restore_sys_path(snap)
+        self.mark_passed()
+
+    def test_runtime_pythonpath_subprocess_and_test_source_activation(self):
+        """Verify build_runtime_pythonpath source exclusion, init_subprocess_sys_path, and activate_test_module_source_path."""
+        from core.platform import (
+            activate_test_module_source_path,
+            build_runtime_pythonpath,
+            ensure_installed_modules_path,
+            init_subprocess_sys_path,
+            list_module_search_roots,
+            restore_sys_path,
+        )
+
+        root = self.temp_dir.name
+        mods_dir = os.path.join(root, ".modules")
+        src_root = os.path.join(root, "source")
+        os.makedirs(os.path.join(mods_dir, "core"), exist_ok=True)
+        os.makedirs(os.path.join(mods_dir, "file-space"), exist_ok=True)
+        os.makedirs(os.path.join(mods_dir, "ast"), exist_ok=True)
+        src_ast = os.path.join(src_root, "ast")
+        src_kdb = os.path.join(src_root, "knowledge-db")
+        os.makedirs(src_ast, exist_ok=True)
+        os.makedirs(src_kdb, exist_ok=True)
+
+        search_roots = list_module_search_roots(yscb_root=root, prefer_source=True)
+        self.assertEqual(
+            search_roots,
+            [
+                os.path.normpath(os.path.abspath(os.path.join(mods_dir, "core"))),
+                os.path.normpath(os.path.abspath(src_ast)),
+                os.path.normpath(os.path.abspath(os.path.join(mods_dir, "file-space"))),
+                os.path.normpath(os.path.abspath(src_kdb)),
+            ],
+        )
+
+        dirty_existing = os.pathsep.join([src_ast, os.path.join(root, "external_lib")])
+        py_path = build_runtime_pythonpath(
+            yscb_root=root,
+            priority_module="file-space",
+            include_host_roots=True,
+            existing_pythonpath=dirty_existing,
+        )
+        entries = py_path.split(os.pathsep)
+        self.assertIn(os.path.normpath(os.path.abspath(os.path.join(mods_dir, "file-space"))), entries)
+        self.assertIn(os.path.normpath(os.path.abspath(os.path.join(mods_dir, "core"))), entries)
+        for item in entries:
+            norm_slash = item.replace("\\", "/")
+            self.assertNotIn("/source/", norm_slash)
+            self.assertFalse(norm_slash.endswith("/source"))
+
+        snap = list(sys.path)
+        try:
+            sys.path.insert(0, os.path.normpath(os.path.abspath(src_kdb)))
+            pre_activate_snap = activate_test_module_source_path(
+                src_real=src_ast,
+                src_root=src_root,
+                yscb_root=root,
+            )
+            norm_src_ast = os.path.normpath(os.path.abspath(src_ast))
+            norm_src_kdb = os.path.normpath(os.path.abspath(src_kdb))
+            self.assertEqual(sys.path[0], norm_src_ast)
+            self.assertNotIn(norm_src_kdb, sys.path)
+
+            # Mid-test call to ensure_installed_modules_path must keep pinned src_ast ahead of .modules/*
+            ensure_installed_modules_path(yscb_root=root, priority_module="core")
+            self.assertEqual(sys.path[0], norm_src_ast)
+
+            restore_sys_path(pre_activate_snap)
+            fake_parent_entry = os.path.join(root, "parent_worker_only")
+            init_subprocess_sys_path([fake_parent_entry])
+            self.assertEqual(sys.path[0], fake_parent_entry)
+        finally:
+            restore_sys_path(snap)
+        self.mark_passed()
+
 if __name__ == "__main__":
     unittest.main()

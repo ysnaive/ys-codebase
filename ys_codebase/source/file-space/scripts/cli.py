@@ -7,14 +7,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-def _ensure_module_path() -> None:
-    import sys
-
-    module_root = Path(__file__).resolve().parent.parent
-    if str(module_root) not in sys.path:
-        sys.path.insert(0, str(module_root))
-
-
 def _extract_opt(bags: Any, name: str, default: Any = None) -> Any:
     if bags is None:
         return default
@@ -54,7 +46,6 @@ def _has_opt(bags: Any, name: str) -> bool:
 
 
 def _create_scanner(bags: Any = None) -> Any:
-    _ensure_module_path()
     from file_space.manager import FileSpaceManager
     from file_space.scanner import FingerprintScanner
 
@@ -67,7 +58,6 @@ def status(bags: Any = None) -> int:
     Display workspace geometry, active file count, head_generation, merkle_root,
     and per-consumer cursor lag status.
     """
-    _ensure_module_path()
     from file_space.exceptions import FileSpaceError
 
     space_name: Optional[str] = _extract_opt(bags, "--space", None)
@@ -166,7 +156,6 @@ def scan(bags: Any = None) -> int:
     Trigger two-stage incremental fingerprint scan for one or all workspaces
     and update YFP2 binary snapshots.
     """
-    _ensure_module_path()
     from file_space.exceptions import FileSpaceError
 
     space_name: Optional[str] = _extract_opt(bags, "--space", None)
@@ -209,7 +198,6 @@ def files(bags: Any = None) -> int:
     """
     List active files managed within the specified workspace (or all workspaces).
     """
-    _ensure_module_path()
     from file_space.exceptions import FileSpaceError
 
     space_name: Optional[str] = _extract_opt(bags, "--space", None)
@@ -264,7 +252,6 @@ def diff(bags: Any = None) -> int:
     Inspect pending incremental changes for a consumer cursor relative to current snapshot.
     Optionally advances the cursor when `--ack` is passed.
     """
-    _ensure_module_path()
     from file_space.exceptions import FileSpaceError
 
     space_name: Optional[str] = _extract_opt(bags, "--space", None)
@@ -318,7 +305,6 @@ def clean(bags: Any = None) -> int:
     """
     Remove YFP2 binary snapshots and/or reset consumer watermark cursors.
     """
-    _ensure_module_path()
     import shutil
     from file_space.exceptions import FileSpaceError
 

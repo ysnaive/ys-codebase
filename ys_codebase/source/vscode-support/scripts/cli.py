@@ -13,12 +13,6 @@ from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
 
 
-def _ensure_module_path() -> None:
-    module_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if module_root not in sys.path:
-        sys.path.insert(0, module_root)
-
-
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
     if isinstance(cmd_bags, CmdBags):
         return cmd_bags
@@ -54,7 +48,6 @@ def _is_json_mode(bags: CmdBags) -> bool:
 def status(cmd_bags: Any) -> int:
     """檢視 `.vscode/settings.json` 託管狀態、`current-site-packages` 連結與已編譯 Schema 清單。"""
     guard_dispatch("vscode-support")
-    _ensure_module_path()
     bags = _normalize_bags(cmd_bags, "status")
     from vscode_support.projector import SettingsProjector
 
@@ -86,7 +79,6 @@ def status(cmd_bags: Any) -> int:
 def sync(cmd_bags: Any) -> int:
     """重新建立穩定 `site-packages` 連結、編譯全模組單檔 JSON Schema 並軟合併 `.vscode/settings.json`。"""
     guard_dispatch("vscode-support")
-    _ensure_module_path()
     bags = _normalize_bags(cmd_bags, "sync")
     from vscode_support.projector import SettingsProjector
 
@@ -112,7 +104,6 @@ def sync(cmd_bags: Any) -> int:
 def revert(cmd_bags: Any) -> int:
     """依據 `_yscb_managed` 乾淨剔除所有 YSCB 注入之 VS Code 設定，並移除 `.vscode/schemas/` 與穩定連結。"""
     guard_dispatch("vscode-support")
-    _ensure_module_path()
     bags = _normalize_bags(cmd_bags, "revert")
     from vscode_support.projector import SettingsProjector
 

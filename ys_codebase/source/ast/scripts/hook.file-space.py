@@ -7,19 +7,7 @@ and broadcasts `on_ast_index_updated` to downstream subscribers.
 
 from contextlib import contextmanager
 import logging
-import os
-import sys
 from typing import Any, Dict, Iterator, List, Optional
-
-
-def _ensure_module_path() -> None:
-    module_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if module_root not in sys.path:
-        sys.path.insert(0, module_root)
-    modules_parent = os.path.dirname(module_root)
-    fs_root = os.path.join(modules_parent, "file-space")
-    if os.path.isdir(fs_root) and fs_root not in sys.path:
-        sys.path.insert(0, fs_root)
 
 
 @contextmanager
@@ -29,7 +17,6 @@ def _resolve_consume_diff(
     consumer_id: str = "ast",
     auto_refresh: Optional[bool] = None,
 ) -> Iterator[Any]:
-    _ensure_module_path()
     from file_space import consume_diff
     scanner = getattr(engine, "scanner", None)
     if scanner is not None and hasattr(scanner, "consume_diff"):
@@ -84,7 +71,6 @@ def on_file_space_changed(
     Consumes incremental diffs using `consumer_id="ast"`, updates `ASTEngine` snapshot/graph,
     and broadcasts `on_ast_index_updated`.
     """
-    _ensure_module_path()
     from ast_engine.engine import ASTEngine, get_engine
 
     # Support explicit diff_detail argument passed by direct unit test callers

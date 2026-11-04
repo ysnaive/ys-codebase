@@ -199,8 +199,9 @@ python yscb.py config reload [module]
 - **隔離目錄**：管理 `yscb.venv://`（即 `yscb://.venv/`），依當前 Python 大小版本（`py{major}{minor}`）分層隔離，設定 `include-system-site-packages = false`，達成零全域污染。
 - **Wheel-Only 安全安裝**：呼叫 `pip` 安裝時強制附加 `--only-binary=:all:` 與 `--no-warn-script-location`，任何缺乏預編譯 Wheel 之依賴在嘗試編譯前即被安全攔截，消除本機編譯崩潰風險。
 
-### 5.2 宿主前置嗅探與動態注入 (`yscb.py`)
-- `yscb.py` 在分發任何命令前，前置執行 $< 0.05\text{ms}$ 極速嗅探；若微環境之 `site-packages` 存在且未注入，自動安全插入 `sys.path` 前端，模組代碼可直接無感 `import`。
+### 5.2 宿主前置嗅探与統一運行時全模組路徑管理 (`yscb.py` & `core.platform`)
+- `yscb.py` 在分發任何命令前，前置執行 $< 0.05\text{ms}$ 極速嗅探；若微環境之 `site-packages` 存在且未注入，自動安全插入 `sys.path` 前端。
+- 進入微內核後，統一由 `core.platform`（`ensure_installed_modules_path`、`list_installed_module_roots`、`list_module_search_roots`、`build_runtime_pythonpath`、`init_subprocess_sys_path`、`activate_test_module_source_path`、`restore_sys_path`）接管全系統 `sys.path`、`PYTHONPATH` 與靜態搜尋根目錄發現：於 CLI 冷派發 (`dispatch_local`)、Server 熱預熱 (`WarmWorker.pre_warm`)、事件廣播 (`events.broadcast`) 與符號解析 (`symbols.resolve_callable`) 前一次性掛載 `yscb://.modules/<mod>` 所有已安裝模組根目錄（並將當前目標模組與 `core` 置於最前端，嚴格排除 `.staging_*` / `.old_*` 與 `/source` 路徑），使上層業務模組 100% 免除手動 `sys.path` 補丁。
 
 ### 5.3 環境同步生命週期廣播 (`on_env_synced`) 與 IDE 零假設解耦
 - `core` 本身保持 100% 零下游 IDE 假設（不直接感知或修改 `.vscode/`）。

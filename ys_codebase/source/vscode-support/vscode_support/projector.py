@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from core import uri, vfs
 from core.pip_manager import PipManager
+from core.platform import list_module_search_roots
 from vscode_support.schema_compiler import SchemaCompiler
 
 
@@ -252,6 +253,15 @@ class SettingsProjector:
         except Exception:
             return False
 
+    @staticmethod
+    def _format_proj_rel_path(proj_root: str, target_path: str) -> str:
+        """將目標絕對路徑格式化為相對於 `proj_root` 之 POSIX 相對路徑（以 `./` 或 `../` 開頭）。"""
+        try:
+            rel_p = os.path.relpath(target_path, proj_root).replace("\\", "/")
+            return f"./{rel_p}" if not rel_p.startswith(("./", "../")) else rel_p
+        except Exception:
+            return target_path.replace("\\", "/")
+
     def _compute_managed_extra_paths(
         self,
         proj_root: str,
@@ -260,18 +270,19 @@ class SettingsProjector:
     ) -> List[str]:
         """
         計算欲注入的 YSCB 管理路徑：
-        恆定寫入 `current-site-packages` 穩定連結路徑（確保切換 Python 版本或於受限容器環境同步時 `settings.json` 零變動），
-        並嘗試於本機環境建立或更新指向當前 `site-packages` 之目錄連結。
+        1. 恆定寫入 `current-site-packages` 穩定連結路徑（確保切換 Python 版本或於受限容器環境同步時 `settings.json` 零變動）；
+        2. 透過 `core.platform.list_module_search_roots(self.yscb_dir, prefer_source=True)` 自動投影各模組搜尋根目錄
+           （優先選用 `source/<mod>`，否則選用已安裝之 `.modules/<mod>`）。
         """
         new_managed_paths: List[str] = []
         self.ensure_stable_site_packages_link(py_tag=py_tag)
         link_path = self.get_stable_link_path()
-        try:
-            rel_link = os.path.relpath(link_path, proj_root).replace("\\", "/")
-            entry = f"./{rel_link}" if not rel_link.startswith(("./", "../")) else rel_link
-        except Exception:
-            entry = link_path.replace("\\", "/")
-        new_managed_paths.append(entry)
+        new_managed_paths.append(self._format_proj_rel_path(proj_root, link_path))
+
+        for mod_root in list_module_search_roots(self.yscb_dir, prefer_source=True):
+            mod_entry = self._format_proj_rel_path(proj_root, mod_root)
+            if mod_entry not in new_managed_paths:
+                new_managed_paths.append(mod_entry)
 
         if extra_paths:
             for ep in extra_paths:
@@ -341,12 +352,21 @@ class SettingsProjector:
                 settings[sec][pattern] = True
                 managed_excludes[sec] = pattern
 
+        has_modules_extra = any("/.modules/" in str(p).replace("\\", "/") for p in new_managed_paths)
+        active_analysis_exclude = [
+            pat
+            for pat in self.ANALYSIS_EXCLUDE_PATTERNS
+            if not (has_modules_extra and pat == "**/.modules/**")
+        ]
+
         raw_analysis_exclude = settings.get("python.analysis.exclude", [])
         if not isinstance(raw_analysis_exclude, list):
             raw_analysis_exclude = []
-        old_managed_analysis_excl = set(old_managed_record.get("analysisExclude", []))
+        old_managed_analysis_excl = set(old_managed_record.get("analysisExclude", [])) | set(
+            self.ANALYSIS_EXCLUDE_PATTERNS
+        )
         final_analysis_excl = [p for p in raw_analysis_exclude if p not in old_managed_analysis_excl]
-        for pat in self.ANALYSIS_EXCLUDE_PATTERNS:
+        for pat in active_analysis_exclude:
             if pat not in final_analysis_excl:
                 final_analysis_excl.append(pat)
         if final_analysis_excl:
@@ -381,7 +401,7 @@ class SettingsProjector:
             "description": "Auto-managed by YSCB vscode-support module. Reversible via 'yscb vscode-support revert' or module uninstall.",
             "extraPaths": new_managed_paths,
             "excludes": managed_excludes,
-            "analysisExclude": list(self.ANALYSIS_EXCLUDE_PATTERNS),
+            "analysisExclude": list(active_analysis_exclude),
         }
         if managed_schema_urls:
             managed_dict["jsonSchemas"] = managed_schema_urls

@@ -739,35 +739,14 @@ class MasterSupervisor:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
-        from core.platform.venv import get_venv_site_packages
+        from core.platform import build_runtime_pythonpath
 
-        site_pkg = get_venv_site_packages(self.yscb_root)
-
-        py_paths = [
-            self.yscb_root,
-            os.path.join(self.yscb_root, ".modules"),
-            os.path.join(self.yscb_root, ".modules", "core"),
-            os.path.join(self.yscb_root, ".modules", "server"),
-        ]
-        host_cand = os.path.dirname(self.yscb_root)
-        if os.path.isfile(os.path.join(host_cand, "yscb.config.json")):
-            norm_host = host_cand.replace("\\", "/")
-            if "/source/" not in norm_host and not norm_host.endswith("/source"):
-                py_paths.append(host_cand)
-        try:
-            from core import uri
-            proj_dir = uri.resolve("project://", interactive=False)
-            if proj_dir and os.path.isdir(proj_dir):
-                norm_proj = os.path.abspath(proj_dir).replace("\\", "/")
-                if "/source/" not in norm_proj and not norm_proj.endswith("/source"):
-                    if proj_dir not in py_paths:
-                        py_paths.append(proj_dir)
-        except Exception:
-            pass
-        if os.path.isdir(site_pkg):
-            py_paths.insert(0, site_pkg)
-        curr_pp = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = os.pathsep.join([p for p in py_paths if os.path.isdir(p)] + ([curr_pp] if curr_pp else []))
+        env["PYTHONPATH"] = build_runtime_pythonpath(
+            yscb_root=self.yscb_root,
+            priority_module="server",
+            include_host_roots=True,
+            existing_pythonpath=env.get("PYTHONPATH", ""),
+        )
 
         popen_kwargs: Dict[str, Any] = {"close_fds": True}
         if sys.platform == "win32":

@@ -52,33 +52,13 @@ class WarmWorker:
         start_t = time.time()
         pid = os.getpid()
 
-        modules_dir = os.path.join(self.yscb_root, ".modules")
-        if modules_dir not in sys.path:
-            sys.path.insert(0, modules_dir)
+        from core.platform import ensure_installed_modules_path
 
-        host_cand = os.path.dirname(self.yscb_root)
-        if os.path.isfile(os.path.join(host_cand, "yscb.config.json")):
-            norm_host = host_cand.replace("\\", "/")
-            if "/source/" not in norm_host and not norm_host.endswith("/source") and host_cand not in sys.path:
-                sys.path.append(host_cand)
-
-        for uri_key in ("project://", "yscb.host://"):
-            try:
-                resolved_p = uri.resolve(uri_key, interactive=False)
-                if resolved_p and os.path.isdir(resolved_p):
-                    abs_p = os.path.abspath(resolved_p)
-                    norm_p = abs_p.replace("\\", "/")
-                    if "/source/" not in norm_p and not norm_p.endswith("/source") and abs_p not in sys.path:
-                        sys.path.append(abs_p)
-            except (ValueError, OSError):
-                continue
-            except Exception as e:
-                self.emit_packet_fn({
-                    "type": "log",
-                    "level": "WARNING",
-                    "component": "worker",
-                    "msg": f"Unexpected error resolving '{uri_key}' during pre_warm: {e}",
-                })
+        ensure_installed_modules_path(
+            yscb_root=self.yscb_root,
+            priority_module="server",
+            include_host_roots=True,
+        )
 
         try:
             self.service_manager.load_from_contributes(self.yscb_root)

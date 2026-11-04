@@ -12,7 +12,17 @@ from core.platform.process import (
     spawn_detached,
     terminate_popen_tree,
 )
-from core.platform.venv import ensure_private_venv, get_venv_site_packages
+from core.platform.venv import (
+    activate_test_module_source_path,
+    build_runtime_pythonpath,
+    ensure_installed_modules_path,
+    ensure_private_venv,
+    get_venv_site_packages,
+    init_subprocess_sys_path,
+    list_installed_module_roots,
+    list_module_search_roots,
+    restore_sys_path,
+)
 
 __all__ = [
     "daemon_probe",
@@ -26,4 +36,11 @@ __all__ = [
     "LockAcquisitionError",
     "ensure_private_venv",
     "get_venv_site_packages",
+    "list_installed_module_roots",
+    "list_module_search_roots",
+    "ensure_installed_modules_path",
+    "build_runtime_pythonpath",
+    "init_subprocess_sys_path",
+    "activate_test_module_source_path",
+    "restore_sys_path",
 ]

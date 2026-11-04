@@ -110,6 +110,9 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
     module_name, subpath, function_name = parse_code_func_uri(uri_str)
     mod_pkg = module_name.replace("-", "_")
 
+    from core.platform import ensure_installed_modules_path
+    ensure_installed_modules_path(priority_module=module_name)
+
     loaded_mod = None
 
     # --- 軌道 1: 嘗試標準 Package Import ---
@@ -135,11 +138,13 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
         file_candidates = [
             f"module://{module_name}/{subpath}.py",
             f"module://{module_name}/{mod_pkg}/{subpath}.py",
-            f"module.source://{module_name}/{mod_pkg}/{subpath}.py",
-            f"module.source://{module_name}/{subpath}.py",
         ]
-        
-        # Also check relative to workspace if module is core
+        if os.environ.get("YSCB_TEST_SANDBOX") == "1":
+            file_candidates.extend([
+                f"module.source://{module_name}/{mod_pkg}/{subpath}.py",
+                f"module.source://{module_name}/{subpath}.py",
+            ])
+
         for f_uri in file_candidates:
             if vfs.exists(f_uri):
                 real_file_path = uri.resolve(f_uri)
@@ -151,11 +156,11 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
                     try:
                         mod_dir = os.path.dirname(real_file_path)
                         mod_parent = os.path.dirname(mod_dir)
-                        for p_cand in (mod_parent, mod_dir):
-                            if p_cand and os.path.isdir(p_cand):
-                                if p_cand in sys.path:
-                                    sys.path.remove(p_cand)
-                                sys.path.insert(0, p_cand)
+                        extra_dirs = [p_cand for p_cand in (mod_dir, mod_parent) if p_cand and os.path.isdir(p_cand)]
+                        ensure_installed_modules_path(
+                            priority_module=module_name,
+                            extra_paths=extra_dirs,
+                        )
 
                         if os.path.isfile(os.path.join(mod_dir, "__init__.py")):
                             pkg_name = os.path.basename(mod_dir)

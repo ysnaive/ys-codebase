@@ -393,11 +393,9 @@ def aggregate_partial_symbols(symbols: List[UnifiedSymbol]) -> List[UnifiedSymbo
 
 def _init_bundle_worker(parent_sys_path: List[str]) -> None:
     """Ensure child processes spawned on Windows/macOS inherit dynamic module paths."""
-    import sys
+    from core.platform import init_subprocess_sys_path
 
-    for p in reversed(parent_sys_path):
-        if p and p not in sys.path:
-            sys.path.insert(0, p)
+    init_subprocess_sys_path(parent_sys_path)
 
 
 def _get_worker_registry() -> ParserRegistry:

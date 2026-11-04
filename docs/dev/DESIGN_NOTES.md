@@ -31,6 +31,7 @@ last_updated: "2026-10-15"
 | **DN-DEV-03** *(原 DN-DEV-07.4)* | 宿主環境防穿透三道剛性守門鎖與禁止 `os.getcwd()` 回退鐵律 | `source/dev/dev/testing/case.py`<br/>`source/dev/dev/testing/discovery.py`<br/>`source/dev/dev/tester.py` | `[!CAUTION]` |
 | **DN-DEV-04** *(原 DN-DEV-10.3)* | Checker AST 靜態分析之首行 Docstring 節點豁免、CLI 入口候選集合與全庫單調防回退 | `source/dev/dev/checker.py`<br/>`source/dev/dev/releaser.py` | `[!WARNING]` |
 | **DN-DEV-05** | `index.json` 雙軌版本帳本 (`versions` + `releases`) SSOT 與 `on_module_released` 通用事件 | `source/dev/dev/builder.py`<br/>`source/dev/dev/releaser.py` | `[!CAUTION]` |
+| **DN-DEV-06** | 非 `core` 生產源碼禁止直接變動 `sys.path` 之零豁免 AST 靜態守門 (`_find_sys_path_mutations`) | `source/dev/dev/checker.py`<br/>`source/dev/dev/testing/runner.py` | `[!CAUTION]` |
 
 ---
 
@@ -119,3 +120,17 @@ last_updated: "2026-10-15"
 
 
 
+
+---
+
+### [DN-DEV-06] 非 `core` 生產源碼禁止直接變動 `sys.path` 之零豁免 AST 靜態守門 (`_find_sys_path_mutations`)
+
+> [!CAUTION]
+> **防呆契約：任何非 `core` 模組之生產源碼檔案（`name != "core" and not is_test_file`）嚴禁直接變動 `sys.path`！**  
+> 運行時全模組路徑掛載、`PYTHONPATH` 組裝、子進程 `sys.path` 同步與 `dev test` 沙盒待測模組源碼切換一律委派予 `core.platform` 權威原語，切勿為個別模組開設 `Checker` 豁免白名單。
+
+- **設計細節與 AST 偵測範圍**：
+  1. **別名與變動語法全覆蓋 (`Checker._find_sys_path_mutations`)**：
+     - 先收集檔案內 `import sys [as alias]` 與 `from sys import path [as alias]` 的本地別名集合，再精確攔截對 `sys.path` 呼叫 8 種變動方法（`insert`, `append`, `extend`, `remove`, `pop`, `clear`, `sort`, `reverse`）、賦值或切片/下標賦值（`Assign`, `AnnAssign`, `AugAssign`）與刪除（`Delete`），同時對唯讀存取（如 `in sys.path`、`list(sys.path)`）及 `tests/` 測試自舉維持零誤報放行。
+  2. **`dev test` 待測模組源碼切換與 `sys.modules` 套件名映射 (`TestDiscovery.build_suite_for_module`)**：
+     - 委派 `core.platform.activate_test_module_source_path` 在掛載沙盒 `.modules/*` 後將唯一受測模組 `source/<mod>` 釘選於 `sys.path[0]`，並以實際 Python 套件名稱（`ast_engine` 或 `module_name.replace("-", "_")`，避免誤刪標準庫 `ast`）清除 `pre_cli_dispatch` 可能預載之模組快取。

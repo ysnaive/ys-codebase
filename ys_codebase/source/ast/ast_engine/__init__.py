@@ -4,35 +4,7 @@ Uses PEP 562 module-level `__getattr__` lazy loading so top-level package import
 """
 
 import importlib
-from pathlib import Path
-import sys
 from typing import Any, Dict, List, Tuple
-
-
-def _ensure_dependency_module_paths() -> None:
-    """Ensure dependency module (`module:file-space`) package directory is mounted in `sys.path`."""
-    try:
-        from core import uri
-
-        space_mod_dir = uri.resolve("module://file-space", interactive=False)
-        if space_mod_dir:
-            sp_path = Path(space_mod_dir).resolve()
-            if (sp_path / "file_space" / "__init__.py").is_file() and str(sp_path) not in sys.path:
-                sys.path.insert(0, str(sp_path))
-    except Exception:
-        pass
-    pkg_parent = Path(__file__).resolve().parent.parent.parent
-    for cand in (pkg_parent / "file-space", pkg_parent.parent / ".modules" / "file-space"):
-        if (cand / "file_space" / "__init__.py").is_file():
-            cand_str = str(cand.resolve())
-            if cand_str not in sys.path:
-                sys.path.insert(0, cand_str)
-    existing_space = sys.modules.get("file_space")
-    if existing_space is not None and getattr(existing_space, "__file__", None) is None:
-        del sys.modules["file_space"]
-
-
-_ensure_dependency_module_paths()
 
 __version__ = "1.0.0.5"
 

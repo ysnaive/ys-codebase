@@ -122,21 +122,13 @@ class ParserRegistry:
     @staticmethod
     def _ensure_search_paths(provider: Optional[str] = None) -> None:
         """Ensure module root, `project://`, `yscb.host://`, and `module://<provider>` are in `sys.path`."""
-        ast_mod_root = str(Path(__file__).resolve().parents[2])
-        if ast_mod_root not in sys.path:
-            sys.path.insert(0, ast_mod_root)
+        from core.platform import ensure_installed_modules_path
 
-        candidates: List[str] = []
+        ast_mod_root = str(Path(__file__).resolve().parents[2])
+        candidates: List[str] = [ast_mod_root]
         try:
             from core import uri
 
-            for uri_key in ("project://", "yscb.host://"):
-                try:
-                    res = uri.resolve(uri_key, interactive=False)
-                    if res and not str(res).startswith("!undefined"):
-                        candidates.append(res)
-                except Exception:
-                    pass
             if provider and provider not in ("unknown", "project_override", "project"):
                 try:
                     mod_res = uri.resolve(f"module://{provider}", interactive=False)
@@ -151,6 +143,7 @@ class ParserRegistry:
         if cwd:
             candidates.append(cwd)
 
+        valid_extras: List[str] = []
         for cand in candidates:
             if not cand or not os.path.isdir(cand):
                 continue
@@ -158,8 +151,14 @@ class ParserRegistry:
             norm_p = abs_p.replace("\\", "/")
             if "/source/" in norm_p or norm_p.endswith("/source"):
                 continue
-            if abs_p not in sys.path:
-                sys.path.insert(0, abs_p)
+            valid_extras.append(abs_p)
+
+        prio = provider if (provider and provider not in ("unknown", "project_override", "project")) else "ast"
+        ensure_installed_modules_path(
+            priority_module=prio,
+            include_host_roots=True,
+            extra_paths=valid_extras,
+        )
 
     @staticmethod
     def _bind_configured_extensions(parser_inst: BaseParser, extensions: Tuple[str, ...]) -> None:
@@ -208,8 +207,10 @@ class ParserRegistry:
                 parser_cls = getattr(mod, cls_name)
                 return parser_cls()
             parent_dir = str(target_path.parent if target_path.suffix else target_path)
-            if os.path.isdir(parent_dir) and parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
+            if os.path.isdir(parent_dir):
+                from core.platform import ensure_installed_modules_path
+
+                ensure_installed_modules_path(extra_paths=[parent_dir])
             mod_rel = target_path.name.replace("/", ".").replace("\\", ".")
             mod = importlib.import_module(mod_rel)
             parser_cls = getattr(mod, cls_name)

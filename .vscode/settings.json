@@ -57,12 +57,30 @@
   "markdown.preview.openMarkdownLinks": "inPreview",
   "markdown.preview.doubleClickToSwitchToEditor": true,
   "python.analysis.extraPaths": [
-    "./ys_codebase/.venv/current-site-packages"
+    "./ys_codebase/.venv/current-site-packages",
+    "./ys_codebase/source/core",
+    "./ys_codebase/source/agents-workflow",
+    "./ys_codebase/source/ast",
+    "./ys_codebase/source/dev",
+    "./ys_codebase/source/file-space",
+    "./ys_codebase/source/gdrive-support",
+    "./ys_codebase/source/knowledge-db",
+    "./ys_codebase/source/server",
+    "./ys_codebase/source/vscode-support"
   ],
   "_yscb_managed": {
     "description": "Auto-managed by YSCB vscode-support module. Reversible via 'yscb vscode-support revert' or module uninstall.",
     "extraPaths": [
-      "./ys_codebase/.venv/current-site-packages"
+      "./ys_codebase/.venv/current-site-packages",
+      "./ys_codebase/source/core",
+      "./ys_codebase/source/agents-workflow",
+      "./ys_codebase/source/ast",
+      "./ys_codebase/source/dev",
+      "./ys_codebase/source/file-space",
+      "./ys_codebase/source/gdrive-support",
+      "./ys_codebase/source/knowledge-db",
+      "./ys_codebase/source/server",
+      "./ys_codebase/source/vscode-support"
     ],
     "excludes": {
       "files.watcherExclude": "**/.venv/**",

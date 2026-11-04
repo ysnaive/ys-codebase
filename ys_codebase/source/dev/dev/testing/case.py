@@ -134,7 +134,9 @@ class YSCBTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         """Test teardown: restore environment and classify execution status (Passed / Failed / Unknown)."""
-        sys.path[:] = self._orig_sys_path
+        from core.platform import restore_sys_path
+
+        restore_sys_path(self._orig_sys_path)
         os.environ.clear()
         os.environ.update(self._orig_env)
         uri.set_host_dir(getattr(self, "_orig_uri_host", None))
