@@ -16,7 +16,7 @@ related_docs:
   - "./retrieval.md"
   - "./incremental_hot_reload.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-02"
+last_updated: "2026-11-05"
 ---
 
 # knowledge-db 全系統整合架構設計 (System Architecture)
@@ -27,7 +27,7 @@ last_updated: "2026-11-02"
 
 ## 1. 全系統架構分層 (System Layering Architecture)
 
-`knowledge-db` 位於三階單向 DAG 的第 3 層（`file-space -> ast -> knowledge-db`）：底層檔案空間幾何與 `YFP2` 指紋快照由 `module:file-space` 負責；語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、雙層 `partial class` 符號聚合與 `CallGraphIndex` 呼叫拓撲由 [`module:ast`](../ast/README.md) (`ASTEngine`) 負責並持久化於 `cache://ast/indices/`；`knowledge-db` 之 `IndexingPipeline` 則直接呼叫 `ASTEngine.ensure_jit_synced()` 消費 `ASTSnapshot` 建立多欄位加權 BM25 倒排索引 (`unified.index.bin.gz`) 與 FastEmbed ONNX 向量索引 (`unified.vectors.bin.gz`)，**100% 零重複 AST 解析**。
+`knowledge-db` 位於三階單向 DAG 的第 3 層（`file-space -> ast -> knowledge-db`）：底層檔案空間幾何與 `YFP2` 指紋快照由 `module:file-space` 負責；語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、雙層 `partial class` 符號聚合與 `CallGraphIndex` 呼叫拓撲由 [`module:ast`](../ast/README.md) (`ASTEngine`) 負責並持久化於 `storage.local://ast/indices/`；`knowledge-db` 之 `IndexingPipeline` 則直接呼叫 `ASTEngine.ensure_jit_synced()` 消費 `ASTSnapshot` 建立多欄位加權 BM25 倒排索引 (`unified.index.bin.gz`) 與 FastEmbed ONNX 向量索引 (`unified.vectors.bin.gz`)，**100% 零重複 AST 解析**。
 
 ```mermaid
 flowchart TD
@@ -49,11 +49,11 @@ flowchart TD
         Hybrid["HybridSearchEngine (hybrid.py / retrieval.py / embedding.py)<br/>BM25 預先過濾下推 + FastEmbed ONNX 向量 (預設 512-dim) RRF 融合"]
     end
 
-    subgraph StorageLayer ["4. 本地端快取儲存層 (cache://file-space/, cache://ast/, cache://knowledge-db/)"]
-        MetaBin["cache://file-space/snapshots/unified.yfp2.bin<br/>與 cursors/{ast,knowledge-db}.json (Magic YFP2)"]
-        ASTBin["cache://ast/indices/unified.{symbols,graph}.bin.gz<br/>ASTSnapshot 符號池與 NetworkX DiGraph 調用拓撲"]
-        IndexBin["cache://knowledge-db/indices/unified.index.bin.gz<br/>Pickle Protocol 5 + Gzip 倒排索引 (含 acked_ast_generation)"]
-        VecBin["cache://knowledge-db/indices/unified.vectors.bin.gz<br/>FastEmbed 浮點特徵向量矩陣快取 (compresslevel=1)"]
+    subgraph StorageLayer ["4. 本機持久儲存層 (storage.local://file-space/, storage.local://ast/, storage.local://knowledge-db/)"]
+        MetaBin["storage.local://file-space/snapshots/unified.yfp2.bin<br/>與 cursors/{ast,knowledge-db}.json (Magic YFP2)"]
+        ASTBin["storage.local://ast/indices/unified.{symbols,graph}.bin.gz<br/>ASTSnapshot 符號池與 NetworkX DiGraph 調用拓撲"]
+        IndexBin["storage.local://knowledge-db/indices/unified.index.bin.gz<br/>Pickle Protocol 5 + Gzip 倒排索引 (含 acked_ast_generation)"]
+        VecBin["storage.local://knowledge-db/indices/unified.vectors.bin.gz<br/>FastEmbed 浮點特徵向量矩陣快取 (compresslevel=1)"]
     end
 
     CLI --> Engine

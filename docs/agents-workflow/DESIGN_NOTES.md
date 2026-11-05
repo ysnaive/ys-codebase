@@ -7,12 +7,12 @@ source_paths:
   - "yscb://source/agents-workflow/agents_workflow/publisher.py"
   - "yscb://source/agents-workflow/agents_workflow/initializer.py"
   - "yscb://source/agents-workflow/agents_workflow/roadmap.py"
-  - "yscb://source/agents-workflow/config.project.json"
+  - "yscb://source/agents-workflow/configurable/config.project.json"
 related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
-last_updated: "2026-11-01"
+last_updated: "2026-11-05"
 ---
 
 # 設計決策與工程妥協 (Design Notes)
@@ -33,7 +33,7 @@ last_updated: "2026-11-01"
 | **[DN-AW-06]** | 原 `DN-AW-11` + `DN-AW-16` | `AGENTS.md` / `CLAUDE.md` 單向覆寫防殭屍技能復活與移除 Target 軟剝離保護 | 發布引擎 (`publisher.py`) | `Active` |
 | **[DN-AW-07]** | 原規劃 `DN-AW-17` | Plans 工具鏈標頭解析 SSOT、時序防呆與動態佔位符正則推導設計 | Plans 工具鏈 (`status.py`, `scanner.py`, `archiver.py`, `verifier.py`) | `Active` |
 | **[DN-AW-08]** | 新增 | 模型紀錄規則：唯一來源為平台宣告、嚴禁由檔案反推、不確定填 `Unknown`、事件粒度記入 changelog | 規範資產 (`AgentsStandards.md`)、標頭模板、`changelog.md` 模板 | `Active`（待下游驗證） |
-| **[DN-AW-09]** | 新增 | 來源資產換行符 LF 正規化與物化清單 `cache://` 本地隔離防 Git 污染 | 發布引擎 (`publisher.py`) | `Active` |
+| **[DN-AW-09]** | 新增 | 來源資產換行符 LF 正規化與物化清單 `storage.local://` 本地隔離防 Git 污染 | 發布引擎 (`publisher.py`)、遷移腳本 (`1.2.4.x.py`) | `Active` |
 | **[DN-AW-10]** | 新增 | ACI 四步執行管線時序、伴隨檔模型防回溯與 `P01` 刪除線/代碼塊預過濾設計 | Plans 工具鏈 (`verifier.py`, `scanner.py`, `status.py`) | `Active` |
 | **[DN-AW-11]** | 新增 | 雙層儲備消耗 (`Consume-on-Promote`)、`TODO.md` 單調遞增編號計數器與 `ORIGIN_SEED_FILES` 種子白名單防坑設計 | 儲備與計畫工具鏈 (`roadmap.py`, `status.py`, `scanner.py`, `verifier.py`) | `Active` |
 | **[DN-AW-12]** | 新增 | 唯讀 Subagent 零劇透盲審傳址、純靜態禁跑測、Single-Writer 鐵律（Phase 5 量化門檻委派見 `[DN-AW-16]`）與多路線圖合流追加合併防坑設計 | 技能資產 (`research`, `discuss`, `phase_06`, `phase_07`, `roadmap.py`) | `Active` |
@@ -155,16 +155,16 @@ last_updated: "2026-11-01"
 
 ---
 
-### [DN-AW-09] 來源資產換行符 LF 正規化與物化清單 `cache://` 本地隔離防 Git 污染
+### [DN-AW-09] 來源資產換行符 LF 正規化與物化清單 `storage.local://` 本地隔離防 Git 污染
 
 - **工程背景與坑點**：
   跨平台協作情境（Linux 與 Windows 交替開發）下：
   1. Windows Git 預設 `core.autocrlf=true` 會將檔案檢出為 CRLF，導致 `_get_source_file_sha1` 計算出的 SHA-1 與 Linux (LF) 不一致，造成 `fingerprint` 與 `combined_fingerprint` 頻繁漂移。
-  2. 原先 Project 軌之發布狀態記錄於 `storage://agents-workflow/release_manifest.json`，而 `storage/` 屬版本庫追蹤範圍；一旦 fingerprint 漂移或觸發同步，自動改寫 `updated_at` 時間戳記，造成 Git 工作區非自願性陷入 Dirty（ping-pong diff）。
+  2. 原先 Project 軌之發布狀態記錄於 `storage://agents-workflow/release_manifest.json`（受版本庫追蹤），後一度置於揮發性 `cache://`；若置於 `storage/` 會造成 Git 工作區非自願性陷入 Dirty（ping-pong diff），若置於 `cache/` 則在清理快取時丟失已發布檔案清冊。
 - **妥協與防禦設計**：
   1. **UTF-8 文字 CRLF $\to$ LF 正規化**：`_get_source_file_sha1` 讀取文字內容時統一將 `\r\n` 轉換為 `\n` 後再計算 SHA-1；遇到非 UTF-8 二進位檔案時安全降級維持 raw bytes 雜湊。
-  2. **物化清單本地隔離 (`cache://`)**：將 Project 軌之狀態檔遷移至 `cache://agents-workflow/project_release_manifest.json`（已在 `.gitignore` 範圍內），並在發布階段自動遷移且物理刪除舊版 `storage://` 下的遺留檔案與目錄。
-  3. **不以忽略規則掩蓋**：刻意不在 `.gitignore` 增列 `storage://` 下之任何規則（`storage://` 為受追蹤空間）；根治手段唯一為「運行期資產不寫入受追蹤空間」。升級後舊檔被刪除會產生一次性 `deleted` 差異，需提交一次。
+  2. **物化清單本地持久化隔離 (`storage.local://`) 與版本晉升 Hook 收斂**：將 Project 軌 (`project_release_manifest.json`)、Local 軌 (`release_manifest.json`) 與來源雜湊快取 (`source_sha1_cache.json`) 統一持久化於 `storage.local://agents-workflow/`（`.storage.local/agents-workflow/`，受 `.gitignore` 忽略且不受 `cache://` 清理影響）；舊版 `storage://` 與 `cache://` 下的遺留清冊統一由版本晉升 Hook `scripts/migrations/1.2.4.x.py` 冪等搬移並清理，保持 `publisher.py` 執行期 0 歷史遷移分支。
+  3. **不以忽略規則掩蓋**：刻意不在 `.gitignore` 增列 `storage://` 下之任何規則（`storage://` 為受追蹤空間）；根治手段唯一為「本機運行期狀態寫入 `storage.local://`」。
 
 > [!CAUTION]
 > 計算來源資產 SHA-1 時嚴禁未經換行符正規化直接雜湊；嚴禁將運行期動態物化狀態清單寫入 `storage://` 等 Git 追蹤目錄。
@@ -313,7 +313,7 @@ last_updated: "2026-11-01"
   2. **未建立專屬 `nouns-<target>.json` 之新平台名詞斷裂與硬編碼嗅探耦合**：擴充支援 `cursor`、`copilot`、`windsurf`、`opencode`、`roo` 時，若未建立全部 8 套獨立 JSON 字典且未設定預設名詞 Fallback，Stage 2 解析 `__%{...}__` 會退回未渲染標籤；同時 `core/locale.py:detect_active_host_dialect` 若維持 `if/elif` 硬編碼，新增宿主時違反開放封閉原則 (OCP)。
   3. **子目錄 `agents_md`（如 `.github/copilot-instructions.md`）之相對連結基準與清理保護**：`copilot` 之 `agents_md` 位於子目錄 `.github/` 下，且檔名並非 `AGENTS.md` / `CLAUDE.md`；若 `sync_gitignore` 與 `_prune_orphaned_managed_files` 僅以檔名硬編碼排除 `("AGENTS.md", "CLAUDE.md")`，會將 `.github/copilot-instructions.md` 誤寫入 `.gitignore` 或繞過軟剝離保護。
 - **妥協與防禦設計**：
-  1. **以 `dst_abs` 實體路徑聚合、`" / "` 並聯去重渲染與 `[publisher:warning]` 本機覆寫提示**：`ReleasePublisher._prepare_target_compilations` 先依 `dst_abs` 聚合所有啟用之 Target 項目與 `agents_md` 入口；偵測到 $\ge 2$ 個 Target 共用路徑時，將共享之 `target_names` 列表與 `extra_deployment_maps` 一併傳入 `ArtifactCompiler.resolve_stage2_uri`，將 `__%{...}__` 與 `__#{...}__` 按順序去重並以 `" / "` 並聯輸出，同時向 `stderr` 輸出 `[publisher:warning]` 提示開發者可於 `config/agents-workflow/config.local.json` 覆寫 `release_targets`。
+  1. **以 `dst_abs` 實體路徑聚合、`" / "` 並聯去重渲染與 `[publisher:warning]` 本機覆寫提示**：`ReleasePublisher._prepare_target_compilations` 先依 `dst_abs` 聚合所有啟用之 Target 項目與 `agents_md` 入口；偵測到 $\ge 2$ 個 Target 共用路徑時，將共享之 `target_names` 列表與 `extra_deployment_maps` 一併傳入 `ArtifactCompiler.resolve_stage2_uri`，將 `__%{...}__` 與 `__#{...}__` 按順序去重並以 `" / "` 並聯輸出，同時向 `stderr` 輸出 `[publisher:warning]` 提示開發者可於 `config.local://agents-workflow/config.local.json` 覆寫 `release_targets`。
   2. **`nouns-antigravity` 基準 Fallback 與宣告式 `DEFAULT_HOST_DIALECT_RULES`**：`_resolve_locale_noun_tag` 對任何 `target_name` 自動構造 `["nouns-<target>", "nouns-antigravity"] + clean_base` 回退鏈；`core/locale.py` 改由宣告式規則表 `DEFAULT_HOST_DIALECT_RULES`（並支援 `config://core` / `contributes://core` 之 `host_dialects` 擴充）驅動環境變數嗅探。
   3. **全動態 `agents_md` 集合識別**：`sync_gitignore` 與 `_prune_orphaned_managed_files` 動態匯聚所有已註冊 `release_target` 之 `agents_md` 路徑，確保 `.github/copilot-instructions.md` 等子目錄規則檔同享不入 `.gitignore` 與軟剝離保護。
 

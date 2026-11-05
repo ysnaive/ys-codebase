@@ -1,13 +1,13 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.0.0.5",
+  "version": "1.0.1.0",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.5",
-    "file-space": ">=1.0.0"
+    "core": ">=1.2.7",
+    "file-space": ">=1.0.1"
   },
   "optional": {
     "server": {
@@ -31,7 +31,7 @@
     "networkx": ">=3.0"
   },
   "uris": {
-    "storage": "cache://ast"
+    "storage": "storage.local://ast"
   },
   "onboarding": [
     "請執行 `python yscb.py ast status` 檢視各空間 AST 快照與呼叫圖譜世代狀態。",
@@ -41,6 +41,6 @@
   "release": {
     "type": "refactor",
     "urgency": "optional",
-    "summary": "補充 manifest.json optional 建議擴充模組 (knowledge-db)"
+    "summary": "AST 符號快照與呼叫圖譜儲存空間對齊至 storage.local://ast，跨進程鎖分離至 cache://ast，並提供 1.0.1.x.py 自動遷移"
   }
 }

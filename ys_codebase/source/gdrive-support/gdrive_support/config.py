@@ -197,8 +197,8 @@ class GDriveConfig:
     pull_delete_default: bool = False
     push_delete_default: bool = False
     auth_mode: str = "oauth_user"
-    credentials_uri: str = "config://gdrive-support/credentials.json"
-    token_uri: str = "cache://gdrive-support/token.json"
+    credentials_uri: str = "config.local://gdrive-support/credentials.json"
+    token_uri: str = "config.local://gdrive-support/token.json"
     sandbox_dir: str = ""
     sync_spaces: Tuple[SyncSpaceSpec, ...] = field(default_factory=tuple)
 
@@ -307,8 +307,8 @@ _FORBIDDEN_CREDENTIAL_FILENAMES = frozenset(
 def is_sensitive_credential_path(abs_path: Path, proj_root: Path) -> bool:
     """
     Hard security guard: Return True if abs_path points to any credential, token,
-    private key, or ys_codebase/config/gdrive-support/ secret file that must NEVER
-    be uploaded to Google Drive or overwritten by repo_sync.
+    private key, or local/module secret file that must NEVER be uploaded to
+    Google Drive or overwritten by repo_sync.
     """
     name_low = abs_path.name.lower()
     if name_low in _FORBIDDEN_CREDENTIAL_FILENAMES:
@@ -321,6 +321,8 @@ def is_sensitive_credential_path(abs_path: Path, proj_root: Path) -> bool:
         rel_posix = abs_path.resolve().relative_to(proj_root.resolve()).as_posix()
         if rel_posix.startswith(
             (
+                "ys_codebase/.config.local/",
+                "ys_codebase/.storage.local/",
                 "ys_codebase/config/gdrive-support/",
                 "ys_codebase/.cache/gdrive-support/",
             )
@@ -512,9 +514,12 @@ def load_gdrive_config(
         push_delete_default=push_delete_default,
         auth_mode=str(raw_cfg.get("auth_mode") or "oauth_user").strip(),
         credentials_uri=str(
-            raw_cfg.get("credentials_uri") or "config://gdrive-support/credentials.json"
+            raw_cfg.get("credentials_uri")
+            or "config.local://gdrive-support/credentials.json"
         ).strip(),
-        token_uri=str(raw_cfg.get("token_uri") or "cache://gdrive-support/token.json").strip(),
+        token_uri=str(
+            raw_cfg.get("token_uri") or "config.local://gdrive-support/token.json"
+        ).strip(),
         sandbox_dir=str(raw_cfg.get("sandbox_dir") or "").strip(),
         sync_spaces=compiled_spaces if repo_sync_enabled else (),
     )

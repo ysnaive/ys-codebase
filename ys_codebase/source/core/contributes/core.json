@@ -176,11 +176,11 @@
         "options": {
           "remove_mode": {
             "clean": {
-              "description": "Clean configuration and cache files",
+              "description": "Clean mirror and cache files",
               "alias": []
             },
             "purge": {
-              "description": "Purge storage and all module data completely",
+              "description": "Purge storage, storage.local, config, config.local and all module data completely",
               "alias": []
             }
           },

@@ -146,7 +146,7 @@ indices = engine.build_index()
 
 ### 5.1 運作組態設定 (`config.project.json`)
 
-本模組之運作組態位於 `config://knowledge-db/config.project.json`（團隊共享）與 `config://knowledge-db/config.local.json`（個人本機覆蓋），建議直接透過 `python yscb.py config set knowledge-db <key> <val>` 進行操作：
+本模組之運作組態位於 `config://knowledge-db/config.project.json`（團隊共享）與 `config.local://knowledge-db/config.local.json`（個人本機覆蓋），建議直接透過 `python yscb.py config set knowledge-db <key> <val>` 進行操作：
 
 ```json
 {

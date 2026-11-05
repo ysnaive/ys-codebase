@@ -1,12 +1,12 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.0.5",
+  "version": "1.2.1.0",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.5",
-    "file-space": ">=1.0.0",
-    "ast": ">=1.0.0"
+    "core": ">=1.2.7",
+    "file-space": ">=1.0.1",
+    "ast": ">=1.0.1"
   },
   "optional": {
     "server": {
@@ -17,6 +17,9 @@
   "pip_dependencies": {
     "fastembed": ">=0.3.0"
   },
+  "uris": {
+    "storage": "storage.local://knowledge-db"
+  },
   "onboarding": [
     "[Pre-flight] Configure project workspaces in config/file-space/contribute.json and optional retrieval weights in config/knowledge-db/contribute.json (space_weights)",
     "Optional - Download local ONNX vector model (or use lightweight BM25 via config set knowledge-db enable_vector_search false): python yscb.py knowledge-db model download",
@@ -24,8 +27,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "feature",
+    "type": "refactor",
     "urgency": "optional",
-    "summary": "KnowledgeIndexService 背景增量索引整合 server.touch_activity() 保活探針"
+    "summary": "模型權重與檢索索引對齊至 storage.local://knowledge-db，本機組態對齊 config.local://，跨進程鎖分離至 cache://，並提供 1.2.1.x.py 自動遷移"
   }
 }

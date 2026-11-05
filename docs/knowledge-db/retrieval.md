@@ -12,7 +12,7 @@ related_docs:
   - "./architecture.md"
   - "./tokenizer.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-05"
 ---
 
 # knowledge-db 倒排索引與 BM25/向量雙軌複合檢索引擎指南 (Retrieval Guide)
@@ -192,8 +192,8 @@ print(snippet.format_text())
    - 支援人類開發者於 VS Code / Cursor / 終端機中透過 `Ctrl + Click` 直達精確程式碼行位址。
    - 為 Agent 自動化提供 100% 確定之實體路徑，消除路徑拼接猜測。
    - `--json` 模式於每筆搜尋項目注入 `file_uri` 欄位。
-2. **快取根目錄零 Fallback 守門 (Zero Fallback Guardrail)**：
-   - `SpaceManager._get_storage_root()` 嚴格遵循語意協議 `cache://knowledge-db/`，禁止任何隱式退化至 CWD 之相對路徑，杜絕在專案宿主根目錄意外產生 `.cache/` 殘留目錄。
+2. **儲存根目錄零 Fallback 守門 (Zero Fallback Guardrail)**：
+   - 持久索引與模型空間嚴格遵循語意協議 `storage.local://knowledge-db/`（`knowledge.storage://`），禁止任何隱式退化至 CWD 之相對路徑，杜絕在專案宿主根目錄意外產生殘留目錄。
 
 ---
 

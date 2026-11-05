@@ -3,8 +3,14 @@
     {
       "token": "knowledge.storage",
       "type": "const",
+      "value": "storage.local://knowledge-db/",
+      "description": "knowledge-db 模組專屬本機持久索引與模型存儲空間根目錄"
+    },
+    {
+      "token": "knowledge.cache",
+      "type": "const",
       "value": "cache://knowledge-db/",
-      "description": "knowledge-db 模組專屬本機快取存儲空間根目錄"
+      "description": "knowledge-db 模組專屬快取與進程鎖空間根目錄"
     }
   ],
   "commands": {

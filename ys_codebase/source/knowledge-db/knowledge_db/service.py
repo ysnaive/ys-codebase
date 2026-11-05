@@ -255,7 +255,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
     Persistent background worker for `module:knowledge-db`:
     - Stage 1 (Fast Path): Consumes `space` diffs (`consume_diff("knowledge-db")`) and hot-patches
       AST snapshot (`ast_engine`) and BM25 (`unified.index.bin.gz`).
-    - Auto Model Download: When `enable_vector_search=True` and model weights are missing in `.cache/`,
+    - Auto Model Download: When `enable_vector_search=True` and model weights are missing in `.storage.local/`,
       automatically downloads the FastEmbed ONNX model in the background without `[GUARD]` prompts.
     - Stage 2 (Slow Path): Compares `unified_index.symbols` vs `vector_index.doc_ids` and incrementally
       computes missing symbol embeddings in small micro-batches (`vector_batch_size`, default 32).

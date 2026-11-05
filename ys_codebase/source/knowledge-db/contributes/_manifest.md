@@ -6,8 +6,8 @@
 
 ### 1.1 `core.json` (宿主：`core`)
 - **URI Schemes**:
-  - `knowledge.storage://` -> `cache://knowledge-db/`（知識資料庫之語意 Bundle 與檢索索引儲存根目錄）
-  - `knowledge.cache://` -> `cache://knowledge-db/`（知識資料庫快取根目錄別名）
+  - `knowledge.storage://` -> `storage.local://knowledge-db/`（知識資料庫之語意 Bundle、模型權重與檢索索引儲存根目錄）
+  - `knowledge.cache://` -> `cache://knowledge-db/`（知識資料庫快取與進程鎖根目錄別名）
 - **Commands (`knowledge-db` / `kdb`)**:
   - `status`: 顯示各知識空間、索引健康度與快取統計資訊。
   - `index`: 增量掃描變更檔案、提取語意結構並更新混合檢索索引。
@@ -15,7 +15,7 @@
   - `clean`: 清除指定或全部知識空間之索引快取與重置變更游標。
   - `model`: 管理向量嵌入推論模型（`status` / `download`）。
 - **Hooks**:
-  - `dev`: `on_test_setup` (`scripts/hook.dev.py`) — 沙盒測試初始化時準備 `.cache/knowledge-db/` 目錄結構。
+  - `dev`: `on_test_setup` (`scripts/hook.dev.py`) — 沙盒測試初始化時準備 `.storage.local/knowledge-db/` 與 `.cache/knowledge-db/` 目錄結構。
   - `server`: `on_Context_build` (`scripts/hook.server.py`) — 常駐服務啟動時掛載單例 `KnowledgeEngine` 並預熱索引。
   - `file-space`: `on_file_space_changed` (`scripts/hook.file-space.py`) — 監聽 `file-space` 模組空間指紋變更事件，透過 `consume_diff` 執行熱增量索引修補。
 

@@ -14,7 +14,7 @@ related_docs:
   - "./architecture.md"
   - "./DESIGN_NOTES.md"
   - "../server/hot_reload_and_services.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-05"
 ---
 
 # 細粒度增量熱重載與 `on_file_space_changed` 事件驅動熱自癒架構 (Incremental Hot Reload & Space Watcher)
@@ -51,7 +51,7 @@ graph TD
 `knowledge-db` 將底層檔案指紋掃描與快照管理 100% 委由 `module:file-space` 負責：
 - **二進位快照 (`file-space.storage://snapshots/unified.yfp2.bin`)**：採用 Magic `b"YFP2"` 二進位結構，記錄單調遞增世代 `head_generation`、`merkle_root` 與每檔 `(created_gen, updated_gen, is_deleted)` 軟刪除墓碑（詳見 [`docs/file-space/README.md`](../file-space/README.md)）。
 - **獨立消費者游標 (`file-space.storage://cursors/knowledge-db.json`)**：`knowledge-db` 以固定 `consumer_id="knowledge-db"` 維護自身已處理完成的快照世代 `acked_gen`，與其他下游工具的游標完全隔離。
-- **索引與游標一致性守門**：當 `cache://knowledge-db/indices/` 下之基底索引被清除（如執行 `knowledge-db clean`）時，系統同步呼叫 `file_space.reset_cursor(consumer_id="knowledge-db")`，確保下次建立或查詢時必定觸發全量重建並對齊最新世代。
+- **索引與游標一致性守門**：當 `storage.local://knowledge-db/indices/` 下之基底索引被清除（如執行 `knowledge-db clean`）時，系統同步呼叫 `file_space.reset_cursor(consumer_id="knowledge-db")`，確保下次建立或查詢時必定觸發全量重建並對齊最新世代。
 
 ### 2.2 單檔符號快取池与全棧差量打補丁 (`hot_patch_unified_index`)
 - **單檔符號記憶體快取 (`_file_symbols_cache`)**：`SemanticBundler` 維護單檔符號快取池，熱修補時僅對 `added` 與 `modified` 檔案重新執行 AST 解析，其餘未變更檔案 100% 記憶體零 I/O 復用。

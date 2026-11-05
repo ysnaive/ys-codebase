@@ -26,13 +26,13 @@ related_docs:
   - "./API_REFERENCE.md"
   - "./DESIGN_NOTES.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-11-04"
+last_updated: "2026-11-05"
 ---
 
 # Core 微內核架構手冊 (Core Microkernel Overview)
 
 > 模組名稱：`core`  
-> 模組版本：`1.1.0`  
+> 模組版本：`1.2.7.0`  
 > 職責定位：YS-Codebase 系統微內核基礎設施、套件生命週期、VFS 檔案系統、語意 URI 系統、SemVer 運算與依賴注入引擎。
 
 ---
@@ -149,7 +149,7 @@ with uri.module_scope("core"):
 
 ### 3.7 根目錄單一 `.gitignore` 統一收斂引擎 (`core.gitignore`)
 微內核於 [`core/gitignore.py`](../../ys_codebase/source/core/core/gitignore.py) 提供零外部依賴的 `.gitignore` 託管區塊收斂引擎：
-- **根目錄單檔 SSOT (`project://.gitignore`) 與語意 URI 自動錨定**：將各模組於 `contributes/core.json` 靜態宣告之 `"gitignore"` 清單、專案級 `config://core/contribute.json` 規則，以及執行期透過 `core.gitignore.register_dynamic(module, patterns)` 註冊之動態規則（快取於 `cache://core/gitignore_dynamic.json`）統一換算為相對於 `project://` 之錨定路徑，寫入 `project://.gitignore` 單一託管區塊（`# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===`）。
+- **根目錄單檔 SSOT (`project://.gitignore`) 與語意 URI 自動錨定**：將各模組於 `contributes/core.json` 靜態宣告之 `"gitignore"` 清單、專案級 `config://core/contribute.json` 規則，以及執行期透過 `core.gitignore.register_dynamic(module, patterns)` 註冊之動態規則（持久化於 `storage.local://core/gitignore_dynamic.json`）統一換算為相對於 `project://` 之錨定路徑，寫入 `project://.gitignore` 單一託管區塊（`# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===`）。
 - **`# [<module>]` 分組可觀測性與卸載自癒**：託管區塊內部強制按模組來源輸出 `# [<module>]` 子標頭（`core` 置頂，其餘模組按字母序，`project` 置底）；當模組移除（`act_delete`）或重載（`act_reload`）時自動清除已卸載模組之靜態與動態忽略規則，並自動清理過時之子目錄 `.gitignore`（如舊版 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`）。
 
 ---

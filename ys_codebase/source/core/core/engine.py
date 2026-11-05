@@ -4,7 +4,7 @@ YS-Codebase Atomic Package Lifecycle Engine.
 Implements:
 - 3-Tier Resolution Chain (build:// -> mirror:// -> provider)
 - 4-Segment SemVer Dependency Solving
-- Dual-Layer Snapshots & Atomic Rollback (modules/, config/, storage/, yscb.config.json)
+- Dual-Layer Snapshots & Atomic Rollback (modules/, config/, .config.local/, storage/, yscb.config.json)
 - Incremental Migration Ladder Subsystem
 """
 import os
@@ -1501,6 +1501,8 @@ class AtomicEngine:
                 constraint_sources.setdefault(mod_n, []).append(("explicit request", mod_v))
         visited: Set[str] = set()
         visiting: Set[str] = set()
+        _, cur_cfg = self._get_config()
+        installed_map = cur_cfg.get("installed_modules", {}) if isinstance(cur_cfg, dict) else {}
 
         def _combine_constraints(c1: Optional[str], c2: Optional[str]) -> Optional[str]:
             if not c1:
@@ -1548,15 +1550,24 @@ class AtomicEngine:
             for _, c_str in constraint_sources.get(mod_name, []):
                 joint_req = _combine_constraints(joint_req, c_str)
             effective_req = _combine_constraints(joint_req, ver_req)
-            try:
-                manifest = self._get_module_manifest_from_provider_or_local(mod_name, provider_url, effective_req)
-            except ModuleNotFoundError as exc:
-                if len(constraint_sources.get(mod_name, [])) > 1:
-                    detail = _format_conflict_sources(mod_name)
-                    raise RuntimeError(
-                        f"Dependency conflict for '{mod_name}': no overlapping version satisfies [{detail}]."
-                    ) from exc
-                raise
+            manifest: Optional[Dict[str, Any]] = None
+            if mod_name not in explicit_constraints and not _is_build_version_request(effective_req):
+                inst_meta = installed_map.get(mod_name) if isinstance(installed_map, dict) else None
+                inst_ver = str(inst_meta.get("version", "")) if isinstance(inst_meta, dict) else ""
+                if _is_build_version_request(inst_ver):
+                    base_ver = inst_ver[:-len(".build")] if inst_ver.endswith(".build") else inst_ver
+                    if not effective_req or semver.match_constraint(base_ver, effective_req):
+                        manifest = self._find_manifest_in_build_tier(mod_name, "build")
+            if manifest is None:
+                try:
+                    manifest = self._get_module_manifest_from_provider_or_local(mod_name, provider_url, effective_req)
+                except ModuleNotFoundError as exc:
+                    if len(constraint_sources.get(mod_name, [])) > 1:
+                        detail = _format_conflict_sources(mod_name)
+                        raise RuntimeError(
+                            f"Dependency conflict for '{mod_name}': no overlapping version satisfies [{detail}]."
+                        ) from exc
+                    raise
             resolved_ver = manifest.get("version", "1.0.0.0")
 
             _check_resolved_compatibility(mod_name, resolved_ver, effective_req)
@@ -1860,7 +1871,7 @@ class AtomicEngine:
     def act_deploy_configs_from_modules(self) -> None:
         """
         Stage 3 (Atomic Config Deployment & Template Purge):
-        Scans all modules in module://, infills/deploys configuration from configurable/ (or root config.*.json) to config://,
+        Scans all modules in module://, infills/deploys configuration from configurable/ (or root config.*.json) to config:// and config.local://,
         and unconditionally physically deletes template files from modules/ to maintain pure code.
         """
         if not vfs.exists("module://"):
@@ -1885,7 +1896,7 @@ class AtomicEngine:
         - 自動清空 cache://{module_name}/
         - 自動清除該模組於 core.gitignore 註冊之動態忽略規則
         - clean_mirror=True: 刪除 module.mirror://{module_name}/
-        - purge=True: 強制物理刪除 storage://{module_name}/ 與 config://{module_name}/
+        - purge=True: 強制物理刪除 storage://{module_name}/、storage.local://{module_name}/、config://{module_name}/ 與 config.local://{module_name}/
         """
         _clean_module_cache(module_name)
         try:
@@ -2107,6 +2118,10 @@ class AtomicEngine:
             if vfs.exists("config.local://"):
                 vfs.rmtree("config.local://", ignore_errors=True)
             vfs.copy(snap_config_local_dir, "config.local://")
+        else:
+            if vfs.exists("config.local://"):
+                vfs.rmtree("config.local://", ignore_errors=True)
+            vfs.makedirs("config.local://", exist_ok=True)
 
         snap_storage_dir = f"{snap_dir}/storage"
         if vfs.exists(snap_storage_dir):
@@ -2136,19 +2151,22 @@ class AtomicEngine:
     def act_migrate(self, module_name: str, old_version: str, new_version: str) -> bool:
         """
         Executes Incremental Migration Ladder:
-        - Short-circuits during @build development iterations.
-        - Evaluates minor/patch/revision version differential across:
+        - Short-circuits when versions are bare 'build' or within the same version/major lock.
+        - Evaluates minor/patch/revision version differential (including across @build triplets) across:
           * {major}.{minor}.x.py
           * {major}.{minor}.{patch}.x.py
           * {major}.{minor}.{patch}.{rev}.py
         - Silently skips non-existent scripts.
         - Raises RuntimeError on script failure to trigger atomic snapshot rollback.
         """
-        if _is_build_version_request(old_version) or _is_build_version_request(new_version):
+        if str(old_version).strip().lower() == "build" or str(new_version).strip().lower() == "build":
             return True
 
-        t_old = semver.parse_semver(old_version)
-        t_new = semver.parse_semver(new_version)
+        try:
+            t_old = semver.parse_semver(old_version)
+            t_new = semver.parse_semver(new_version)
+        except ValueError:
+            return True
 
         if t_new.major != t_old.major or semver.compare_semver(new_version, old_version) <= 0:
             return True

@@ -74,7 +74,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertIn("fingerprint", res)
         self.assertTrue(len(res["fingerprint"]) > 0)
 
-        # 驗證 storage:// 中記錄的 manifest
+        # 驗證 storage.local:// 中記錄的 manifest
         self.assertTrue(bool(uri and vfs.exists(PROJECT_MANIFEST_CACHE_URI)))
         manifest_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         self.assertEqual(manifest_data.get("fingerprint"), res["fingerprint"])
@@ -330,7 +330,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         res1 = self.publisher.release_all(force=True)
         self.assertTrue(res1["success"])
 
-        # 驗證 SHA-1 快取已持久化至 cache://
+        # 驗證 SHA-1 快取已持久化至 storage.local://
         if uri:
             self.assertTrue(vfs.exists(SHA1_CACHE_URI))
             cache_data = vfs.read_json(SHA1_CACHE_URI)
@@ -581,7 +581,7 @@ class TestJITRelease(YSCBTestCase):
 
 
 class TestManifestPlacementAndDualTrack(YSCBTestCase):
-    """測試發布清單分流 (Storage vs Cache) 與換行符號 LF 歸一化。"""
+    """測試發布清單分流 (storage.local://) 與換行符號 LF 歸一化。"""
 
     def setUp(self):
         super().setUp()
@@ -598,7 +598,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_ft_01_project_target_saves_project_uris_in_cache(self):
-        """FT-01: Project Target 清單寫入 cache://（不入 Git 追蹤區），且全部路徑為 project:// 語意格式。"""
+        """FT-01: Project Target 清單寫入 storage.local://（不入 Git 追蹤區），且全部路徑為 project:// 語意格式。"""
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
         ReleaseTargetManager.save_tier_targets([], is_project=False)
 
@@ -623,7 +623,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_ft_02_local_target_saves_absolute_paths_in_cache(self):
-        """FT-02: Local Target 發布至 cache://，且全部路徑為本機實體絕對路徑。"""
+        """FT-02: Local Target 發布至 storage.local://，且全部路徑為本機實體絕對路徑。"""
         ReleaseTargetManager.save_tier_targets([], is_project=True)
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=False)
 
@@ -768,7 +768,7 @@ class TestPublisherCrossPlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_release_never_writes_tracked_storage(self):
-        """ET-02 (FR-02): 完整發布後，Git 追蹤區 storage://agents-workflow/release_manifest.json 不被寫入，清單僅存於 cache://。"""
+        """ET-02: 完整發布後，Git 追蹤區 storage://agents-workflow/release_manifest.json 不被寫入，清單僅存於 storage.local://。"""
         legacy_storage_uri = "storage://agents-workflow/release_manifest.json"
         if vfs and vfs.exists(legacy_storage_uri):
             vfs.remove(legacy_storage_uri)
@@ -783,6 +783,67 @@ class TestPublisherCrossPlatform(YSCBTestCase):
 
         self.publisher.release_all(force=False)
         self.assertFalse(bool(vfs and vfs.exists(legacy_storage_uri)))
+        self.mark_passed()
+
+    def test_migration_1_2_4_x_moves_legacy_storage_and_cache_manifests(self):
+        """驗證 scripts/migrations/1.2.4.x.py 之 migrate(context) 能無損將舊 storage:// 及 cache:// 清冊遷移至 storage.local://。"""
+        mig_path = os.path.join(_pkg_root, "scripts", "migrations", "1.2.4.x.py")
+        self.assertTrue(os.path.isfile(mig_path), "1.2.4.x.py migration script must exist")
+        spec = importlib.util.spec_from_file_location("aw_mig_1_2_4_x", mig_path)
+        mig_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mig_mod)
+
+        yscb_dir = os.path.join(self.temp_dir, "ys_codebase")
+        storage_dir = os.path.join(yscb_dir, "storage", "agents-workflow")
+        storage_local_dir = os.path.join(yscb_dir, ".storage.local", "agents-workflow")
+        cache_dir = os.path.join(yscb_dir, ".cache", "agents-workflow")
+        os.makedirs(storage_dir, exist_ok=True)
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # Case 1: Legacy storage:// release_manifest.json with 'files' list + cache:// local/sha1 files
+        legacy_storage_file = os.path.join(storage_dir, "release_manifest.json")
+        with open(legacy_storage_file, "w", encoding="utf-8") as f:
+            json.dump({"fingerprint": "fp_legacy", "files": ["project://AGENTS.md"]}, f)
+
+        with open(os.path.join(cache_dir, "release_manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"fingerprint": "fp_local", "published_files": ["/abs/CLAUDE.md"]}, f)
+        with open(os.path.join(cache_dir, "source_sha1_cache.json"), "w", encoding="utf-8") as f:
+            json.dump({"sample.md": [1, 10, "abc"]}, f)
+
+        ctx = {
+            "yscb_dir": yscb_dir,
+            "storage_dir": storage_dir,
+            "storage_local_dir": storage_local_dir,
+        }
+        self.assertTrue(mig_mod.migrate(ctx))
+
+        self.assertFalse(os.path.exists(legacy_storage_file))
+        self.assertFalse(os.path.exists(storage_dir))
+        self.assertFalse(os.path.exists(os.path.join(cache_dir, "release_manifest.json")))
+        self.assertFalse(os.path.exists(os.path.join(cache_dir, "source_sha1_cache.json")))
+
+        proj_m_path = os.path.join(storage_local_dir, "project_release_manifest.json")
+        local_m_path = os.path.join(storage_local_dir, "release_manifest.json")
+        sha1_m_path = os.path.join(storage_local_dir, "source_sha1_cache.json")
+        self.assertTrue(os.path.isfile(proj_m_path))
+        self.assertTrue(os.path.isfile(local_m_path))
+        self.assertTrue(os.path.isfile(sha1_m_path))
+
+        with open(proj_m_path, "r", encoding="utf-8") as f:
+            proj_m = json.load(f)
+        self.assertEqual(proj_m.get("published_files"), ["project://AGENTS.md"])
+        self.assertEqual(proj_m.get("fingerprint"), "fp_legacy")
+
+        # Case 2: Idempotency when cache:// project_release_manifest.json also exists
+        os.remove(proj_m_path)
+        with open(os.path.join(cache_dir, "project_release_manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"fingerprint": "fp_cache_proj", "published_files": ["project://.agents/skills/auto/SKILL.md"]}, f)
+
+        self.assertTrue(mig_mod.migrate(ctx))
+        self.assertFalse(os.path.exists(os.path.join(cache_dir, "project_release_manifest.json")))
+        with open(proj_m_path, "r", encoding="utf-8") as f:
+            proj_m2 = json.load(f)
+        self.assertEqual(proj_m2.get("fingerprint"), "fp_cache_proj")
         self.mark_passed()
 
 

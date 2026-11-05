@@ -1,8 +1,8 @@
 {
   "root_folder_id": "str? = \"\" @desc(Google Drive 雲端總根資料夾 ID，原子 API 操作之根目錄，而 repo_sync 同步倉位於其下之 repo_sync_root 子目錄)",
   "auth_mode": "enum(oauth_user)? = oauth_user @desc(Google Drive API OAuth 2.0 Client ID 認證模式)",
-  "credentials_uri": "uri? = config://gdrive-support/credentials.json @desc(OAuth2 客戶端金鑰檔路徑)",
-  "token_uri": "uri? = cache://gdrive-support/token.json @desc(OAuth2 授權 Token 快取路徑)",
+  "credentials_uri": "uri? = config.local://gdrive-support/credentials.json @desc(OAuth2 客戶端金鑰檔路徑)",
+  "token_uri": "uri? = config.local://gdrive-support/token.json @desc(OAuth2 授權 Token 快取路徑)",
   "sandbox_dir": "str? = \"\" @desc(選填之本地沙盒模擬目錄路徑，設定後預設使用 LocalSandboxTransport)",
   "repo_sync": {
     "enable": "bool? = false @desc(repo_sync 同步與分支版控功能總開關，預設為 false，為 false 時以下所有設定皆不生效且僅開放原子 API 操作)",

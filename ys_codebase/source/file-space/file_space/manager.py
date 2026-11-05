@@ -154,12 +154,12 @@ class FileSpaceManager:
             self._explicit_storage_root.mkdir(parents=True, exist_ok=True)
             return self._explicit_storage_root
         resolved = self._resolve_uri("file-space.storage://") or self._resolve_uri(
-            "cache://file-space/"
+            "storage.local://file-space/"
         )
         if resolved is not None:
             resolved.mkdir(parents=True, exist_ok=True)
             return resolved.resolve()
-        fallback = self.project_root / "ys_codebase" / ".cache" / "file-space"
+        fallback = self.project_root / "ys_codebase" / ".storage.local" / "file-space"
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
 

@@ -20,7 +20,7 @@ related_docs:
   - "./cli_commands_architecture.md"
   - "./ZIP_PACKAGE_SPEC.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-05"
 ---
 
 # Core 微內核設計決策與工程註記 (Core Design Notes)
@@ -49,6 +49,8 @@ last_updated: "2026-10-15"
 | **[DN-13](#dn-13-宣告式群組雙軌-help-路由與-contributes-check-專案級覆寫剝殼)** | `DN-AW-13` | 宣告式群組雙軌 Help 路由與 `contributes check` 專案級覆寫剝殼 | `source/core/core/commands/` | ⚠️ WARNING |
 | **[DN-14](#dn-14-本地嚴格同版-source_version--target_version-動態打包pruned-同三元組自動補位與-releases-孤兒分支自動遷移)** | `DN-REL-01` | 本地嚴格同版動態打包、`pruned` 同三元組自動補位與 `releases` 孤兒分支自動遷移 | `yscb.py`<br/>`source/core/core/engine.py`<br/>`source/core/core/installer.py` | 🚨 CAUTION |
 | **[DN-15](#dn-15-indexjsonreleases-依賴覆寫優先級core-版本相容性過濾與-mirror-離線快取冪等還原)** | `DN-REL-02` | `index.json["releases"]` 依賴覆寫優先級、`core` 版本相容性過濾與 `mirror://` 離線快取冪等還原 | `source/core/core/engine.py`<br/>`source/core/core/installer.py`<br/>`source/core/core/update_checker.py` | 🚨 CAUTION |
+| **[DN-16](#dn-16-標準重載與更新管線之相依交集自檢與自動自癒機制-reconcile_installed_dependencies)** | `DN-DEP-01` | 標準重載與更新管線之相依交集自檢與自動自癒機制 (`reconcile_installed_dependencies`) | `source/core/core/engine.py`<br/>`source/core/core/installer.py` | 🚨 CAUTION |
+| **[DN-17](#dn-17-根目錄單一-projectgitignore-統一收斂與--module-強制分組-coregitignore)** | `DN-GI-01` | 根目錄單一 `project://.gitignore` 統一收斂與 `# [<module>]` 強制分組 (`core.gitignore`) | `source/core/core/gitignore.py` | 🚨 CAUTION |
 | **[DN-18](#dn-18-coreplatform-統一全模組-syspath-注入與非-core-模組零豁免靜態守門)** | `DN-PATH-01` | `core.platform` 統一全模組 `sys.path` 注入與非 `core` 模組零豁免靜態守門 | `source/core/core/platform/venv.py`<br/>`source/core/core/commands/dispatcher.py`<br/>`source/core/core/events.py`<br/>`source/core/core/symbols.py` | 🚨 CAUTION |
 | **[DN-19](#dn-19-五大語意資料空間正交分離與零執行期版本債之多維度-act_migrate-遷移階梯)** | `DN-SPACE-01` | 五大語意資料空間正交分離與零執行期版本債之多維度 `act_migrate` 遷移階梯 | `source/core/core/uri.py`<br/>`source/core/core/config.py`<br/>`source/core/core/engine.py`<br/>`source/core/scripts/migrations/1.2.7.x.py` | 🚨 CAUTION |
 
@@ -253,7 +255,7 @@ last_updated: "2026-10-15"
 
 - **核心決策**：
   1. **根目錄單檔 SSOT (`project://.gitignore`)**：全系統廢除子目錄分散式 `.gitignore`（如舊版 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`），統一由 `core.gitignore` 將各模組透過 `contributes/core.json`（`"gitignore"`）或動態 SDK（`register_dynamic(module, patterns)`）註冊之語意 URI 自動換算為相對於 `project://` 之錨定路徑，寫入 `project://.gitignore` 的 `# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===` 區塊。
-  2. **`# [<module>]` 強制分組與 SDK 非空模組名守衛**：託管區塊內依貢獻來源輸出 `# [<module>]` 子標頭（`core` 置頂、一般模組字母序、`project` 置底），且 `register_dynamic` / `clear_dynamic` 強制驗證 `module` 為非空字串；當呼叫端傳入非活躍工作區之自訂沙盒 `proj_root` 時，自動將動態規則隔離於記憶體字典而不污染全域 `cache://core/gitignore_dynamic.json`。
+  2. **`# [<module>]` 強制分組與 SDK 非空模組名守衛**：託管區塊內依貢獻來源輸出 `# [<module>]` 子標頭（`core` 置頂、一般模組字母序、`project` 置底），且 `register_dynamic` / `clear_dynamic` 強制驗證 `module` 為非空字串；當呼叫端傳入非活躍工作區之自訂沙盒 `proj_root` 時，自動將動態規則隔離於記憶體字典而不污染全域 `storage.local://core/gitignore_dynamic.json`。
 - **背後考量**：子目錄拆散多個 `.gitignore` 易造成跨拓撲規則過時、外部工具鏈解析不一致以及模組移除後殘留隱藏殭屍檔；集中於單一根目錄託管區塊並以 `# [<module>]` 分組，可在模組卸載（`act_delete`）時 100% 自動剔除該模組之靜態與動態忽略規則。
 - **防禦宣告**：
   > [!CAUTION]
@@ -281,8 +283,8 @@ last_updated: "2026-10-15"
      - 將「版控團隊資產 (`config/`, `storage/`)」、「本機持久化資產 (`.config.local/`, `.storage.local/`)」與「短暫易失快取 (`.cache/`)」完全正交解耦。
      - `act_snapshot` / `act_restore_snapshot` 僅備份與還原 `config://`、`config.local://` 與 `storage://`，**嚴格排除 `storage.local://` 與 `cache://`**，防止數十 MB 級別的本地模型與語意索引拖慢快照與回滾。
   2. **零執行期歷史相容分支與多維度 `act_migrate` 遷移階梯**：
-     - `core/config.py`、`core/engine.py` 與 `core/commands/dispatcher.py` 維持 100% 純淨新路徑解算，嚴禁在執行期熱路徑殘留舊版路徑 fallback 或惰性搬移分支。
-     - `AtomicEngine.act_migrate` 支援 `{major}.{minor}.x.py`、`{major}.{minor}.{patch}.x.py` 與 `{major}.{minor}.{patch}.{rev}.py` 三種粒度階梯腳本，並於 `install`、`update` 與 `restore` 升級版本時自動觸發；舊版 `config/<mod>/config*.local.json` 至 `.config.local/<mod>/` 之遷移完全收斂於一次性版本遷移腳本 `core/scripts/migrations/1.2.7.x.py`。
+     - `core/config.py`、`core/gitignore.py`、`core/engine.py` 與 `core/commands/dispatcher.py` 維持 100% 純淨新路徑解算，嚴禁在執行期熱路徑殘留舊版路徑 fallback 或惰性搬移分支。
+     - `AtomicEngine.act_migrate` 支援 `{major}.{minor}.x.py`、`{major}.{minor}.{patch}.x.py` 與 `{major}.{minor}.{patch}.{rev}.py` 三種粒度階梯腳本，並於 `install`、`update` 與 `restore` 升級版本時自動觸發；舊版 `config/<mod>/config*.local.json` 至 `.config.local/<mod>/` 以及 `.cache/core/gitignore_dynamic.json` 至 `.storage.local/core/gitignore_dynamic.json` 之遷移完全收斂於一次性版本遷移腳本 `core/scripts/migrations/1.2.7.x.py`。
 - **背後考量**：避免 `config/` 目錄混放受追蹤與被忽略檔案造成 Git 誤操作，避免 `cache://` 被濫用於存放不可丟失之本機狀態或大體積模型，並杜絕為一次性格式演進而在微內核熱路徑永久殘留技術債。
 - **防禦宣告**：
   > [!CAUTION]

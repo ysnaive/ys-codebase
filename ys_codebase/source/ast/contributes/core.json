@@ -3,7 +3,7 @@
     {
       "token": "ast.storage",
       "type": "const",
-      "value": "cache://ast/",
+      "value": "storage.local://ast/",
       "description": "ast 模組專屬之統一符號快照 (unified.symbols.bin.gz) 與雙向調用圖譜 (unified.graph.bin.gz) 儲存根目錄"
     },
     {

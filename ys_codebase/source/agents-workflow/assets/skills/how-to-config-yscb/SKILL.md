@@ -14,7 +14,7 @@ description: 盤點與診斷專案內 YSCB 各模組組態、空間映射及角�
 1. **唯讀探勘先行，草案確認後寫入 (Audit First, Confirm Before Write)**：步驟 1 與步驟 2 僅允許使用唯讀工具與 `🟢 [SAFE]` CLI 指令進行空間探勘與健康度診斷；未經開發者確認診斷卡與配置草案前，**嚴禁自動覆寫任何組態檔**。
 2. **全綠免改短路 (All-Green Short-Circuit)**：若專案已完成完整配置且所有模組健康檢查均為 `🟢 [OK]`，直接輸出全綠健康報告卡並詢問是否有特定參數欲微調，嚴禁無意義重複產生長篇草案或覆寫正常設定。
 3. **本體空間三處一次對齊 (First-Party Trinity Alignment)**：對專案根目錄執行單次結構探勘後，必須同步對齊「專案角色與主客體空間邊界 (`project_role.md`) + 專案測試框架與規範 (`testing_guide.md`) + 代碼語意檢索空間 (`knowledge-db` `spaces.source`)」，杜絕重複掃描或設定脫節。
-4. **雙層組態精準分流 (Config Tier Guardrail)**：跨成員共享的專案規範與目錄映射（如 `paths.plans`、`paths.docs`、`paths.standards`、空間邊界與檢索範圍）強制寫入 `config.project.json` 或 `config://<mod>/contribute.json`；開發者個人 IDE 偏好（如 `release_targets` 選用特定內建或自訂 `contribute` 之發布目標，除非全團隊統一規範）或本機 Port 覆寫強制引導寫入 `config.local.json`，並主動檢核 `.gitignore` 是否已涵蓋 `*.local.json`。
+4. **雙層組態精準分流 (Config Tier Guardrail)**：跨成員共享的專案規範與目錄映射（如 `paths.plans`、`paths.docs`、`paths.standards`、空間邊界與檢索範圍）強制寫入 `config.project.json` 或 `config://<mod>/contribute.json`；開發者個人 IDE 偏好（如 `release_targets` 選用特定內建或自訂 `contribute` 之發布目標，除非全團隊統一規範）或本機 Port 覆寫強制引導寫入 `config.local://<mod>/config.local.json`（`.config.local/<mod>/config.local.json`），並主動檢核 `.gitignore` 是否已涵蓋 `.config.local/`、`.storage.local/` 與 `*.local.json`。
 5. **不污染日常啟動 (Zero Startup Pollution)**：完整健檢矩陣與多模組設定指南僅於顯式呼叫 `/how-to-config-yscb` 時載入，絕不塞入日常 `/context-init`。
 
 ---
@@ -40,9 +40,9 @@ description: 盤點與診斷專案內 YSCB 各模組組態、空間映射及角�
    - `python __${yscb.host://yscb.py}__ contributes check`（確認跨模組 contributes 與快取完整性）
 2. **探勘專案第一方目錄拓撲與 `.gitignore` 防護**：
    - 掃描專案根目錄與頂層結構（如 `src/`、`app/`、`packages/`、`tests/`、`docs/`、`plans/`、`README.md`、`pyproject.toml`、`package.json`、`pytest.ini`、`Makefile` 等），辨識本體業務空間、測試框架與外部工具包黑盒目錄。
-   - 檢查專案 `.gitignore` 是否已包含 `*.local.json`（若缺失則列為待修復提醒項）。
+   - 檢查專案 `.gitignore` 是否已包含 `.config.local/`、`.storage.local/` 與 `*.local.json`（若缺失則列為待修復提醒項）。
 3. **檢查 `agents-workflow` 內建設定與第一方畫像錨點**：
-   - **工作流目錄映射與發布目標**：檢查 `paths.plans`、`paths.docs`、`paths.standards`（團隊共享規範，應位於 `config.project.json`）與 `release_targets`（個人 IDE 偏好，預設位於 `config.local.json`），並依據當前生效之 `release_target` 從 `contributes` 的 `projections` 設定**動態解析出實際的二層物化目標路徑**（**嚴禁硬編碼 `.agents/` 或 `.claude/`**）。
+   - **工作流目錄映射與發布目標**：檢查 `paths.plans`、`paths.docs`、`paths.standards`（團隊共享規範，應位於 `config.project.json`）與 `release_targets`（個人 IDE 偏好，預設位於 `config.local://agents-workflow/config.local.json`），並依據當前生效之 `release_target` 從 `contributes` 的 `projections` 設定**動態解析出實際的二層物化目標路徑**（**嚴禁硬編碼 `.agents/` 或 `.claude/`**）。
    - **第一方專案畫像與測試規範**：先檢查 `__${config://agents-workflow}__/` 目錄與檔案是否存在（`contribute.json` 與 `snippets/` 於首次配置前屬選配項目，若尚不存在即代表正常 `🟡 [未配置]`，**切勿盲目直接調用原生檔案讀取工具讀取不存在之檔案引發報錯**）；僅於檔案存在時讀取 [`config/agents-workflow/contribute.json`](`__#{config://agents-workflow/contribute.json}__`) 檢查是否已注入：
      - `PROJECT_ROLE_AND_BOUNDARIES`（指向 `config://agents-workflow/snippets/project_role.md`）
      - `TESTING_SOP_STANDARDS`（指向 `config://agents-workflow/snippets/testing_guide.md`）
@@ -60,7 +60,7 @@ description: 盤點與診斷專案內 YSCB 各模組組態、空間映射及角�
   - 若所有基礎檢查、模組體檢與 `project_role.md` / `testing_guide.md` 均為 `🟢 [OK]`：
   - 直接輸出極簡「全綠健康報告卡」，僅詢問：「目前專案與所有已安裝模組組態均為 `🟢 [OK]`，請問是否有特定參數欲微調或需重新生成角色邊界片段？」並立即 End Turn。
 - **情境 B：存在未配置或異常項目 (`🟡 [未配置]` / `🔴 [異常]`)**
-  - 輸出結構化診斷表（標示 `🟢 [OK]` / `🟡 [未配置]` / `🔴 [異常]`，並明確標註建議寫入層級為 `config.project.json`、`contribute.json` 或 `config.local.json`）。
+  - 輸出結構化診斷表（標示 `🟢 [OK]` / `🟡 [未配置]` / `🔴 [異常]`，並明確標註建議寫入層級為 `config.project.json`、`contribute.json` 或 `config.local://<mod>/config.local.json`）。
   - **一次生成「本體空間三處一次對齊草案 (First-Party Trinity Alignment Draft)」**：
     1. **專案角色與空間邊界 (`__${config://agents-workflow}__/snippets/project_role.md`，極簡三要素 80~120 Tokens）**：
        - 以 `## 0. 專案角色與主客體空間邊界 (Project Role & Scope Boundaries)` 獨立成節，包含：
@@ -81,7 +81,7 @@ description: 盤點與診斷專案內 YSCB 各模組組態、空間映射及角�
 獲得開發者確認後：
 
 1. **代寫組態與第一層片段**：
-   - 遵循第一層扁平慣例寫入 `__${config://agents-workflow}__/snippets/{project_role.md,testing_guide.md}`、更新 [`config/agents-workflow/contribute.json`](`__#{config://agents-workflow/contribute.json}__`) 及相關模組之 `config.project.json` / `config.local.json`。
+   - 遵循第一層扁平慣例寫入 `__${config://agents-workflow}__/snippets/{project_role.md,testing_guide.md}`、更新 [`config/agents-workflow/contribute.json`](`__#{config://agents-workflow/contribute.json}__`) 及相關模組之 `config.project.json` / `config.local://<mod>/config.local.json`（`.config.local/<mod>/config.local.json`）。
 2. **強制執行三步驗證守門 (Mandatory 3-Step Verification Gate)**：
    - **步驟 ①（Schema 校驗）**：執行 `python __${yscb.host://yscb.py}__ contributes check`，確認 `contribute.json` 結構合法。
    - **步驟 ②（Stage 1 編譯與標籤語法零錯誤驗證）**：執行 `python __${yscb.host://yscb.py}__ agents-workflow compile`，確認 **0 Error / 0 Warning**（確保片段內無拼錯 Token 或未加單反引號之裸寫語意 URI 標籤）。

@@ -11,7 +11,7 @@ related_docs:
   - "./architecture.md"
   - "./retrieval.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-04"
+last_updated: "2026-11-05"
 ---
 
 # Knowledge Database 模組手冊 (Knowledge-DB Overview)
@@ -131,7 +131,7 @@ engine.clean()
 
 ### 6.1 雙層運作組態設定 (`config.project.json` / `config.local.json`)
 
-本模組運作組態遵循 YSCB 2x2 組態矩陣，位於 `config://knowledge-db/config.project.json`（團隊共享）與 `config://knowledge-db/config.local.json`（本機覆蓋，優先權高於 project），可透過 `python yscb.py config set knowledge-db <key> <val>` 進行設定：
+本模組運作組態遵循 YSCB 2x2 組態矩陣，位於 `config://knowledge-db/config.project.json`（團隊共享）與 `config.local://knowledge-db/config.local.json`（本機覆蓋，優先權高於 project），可透過 `python yscb.py config set knowledge-db <key> <val>` 進行設定：
 
 | 設定鍵值 (Key) | 預設值 (Default) | 型態 | 說明 |
 | :--- | :--- | :---: | :--- |

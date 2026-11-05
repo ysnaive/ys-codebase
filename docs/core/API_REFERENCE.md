@@ -14,7 +14,7 @@ related_docs:
   - "./vfs.md"
   - "./symbol_resolution.md"
   - "./SEMVER.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-05"
 ---
 
 # Core 模組 API 規格手冊 (Core API Reference)
@@ -173,7 +173,7 @@ from core import gitignore
 - **說明**：將原始忽略規則或語意 URI（如 `yscb://.venv/`、`project://.vscode/schemas/`）正規化為相對於 `proj_root` 之標準 `/` 錨定路徑（同根與子目錄拓撲自適應，越界路徑自動過濾回傳 `None`）。
 
 ### 6.2 `register_dynamic(module: str, patterns: Iterable[str], *, sync_now: bool = True, proj_root: Optional[str] = None, yscb_root: Optional[str] = None) -> Dict[str, Any]`
-- **說明**：註冊模組動態忽略規則至 `cache://core/gitignore_dynamic.json` 並可選擇立即合成更新 `project://.gitignore` 之 `# [<module>]` 分組。
+- **說明**：註冊模組動態忽略規則至 `storage.local://core/gitignore_dynamic.json` 並可選擇立即合成更新 `project://.gitignore` 之 `# [<module>]` 分組。
 - **例外**：若 `module` 非字串或為空白字串，拋出 `ValueError("module name must be a non-empty string")`。
 
 ### 6.3 `clear_dynamic(module: str, *, sync_now: bool = True, proj_root: Optional[str] = None, yscb_root: Optional[str] = None) -> Dict[str, Any]`

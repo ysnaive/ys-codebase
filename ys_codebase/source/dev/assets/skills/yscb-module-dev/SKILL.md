@@ -60,7 +60,7 @@ graph TD
 2. **嚴禁未授權正式發布**：**嚴禁 Agent 自主觸發軌道 B**。唯有在開發者明確指示時方可執行 `dev bump-*` 或 `dev release`；未獲指示前，一律強制維持在軌道 A (`@build`)。
 3. **部署後免重複測試**：沙盒測試通過並完成 `@build` 或正式安裝物化後，**嚴禁重複調用 `dev test` 跑測**；物化成功即視為達標。
 4. **異動前影響評估守門**：修改公共介面、核心基類或擴充點前，強制以 `python yscb.py knowledge-db callers <symbol>` 與 `impact <symbol>` 排查影響半徑。
-5. **語意 URI 剛性解耦**：模組內部跨空間存取**嚴禁硬編碼相對路徑**，必須 100% 使用語意協議（`project://`、`module://`、`config://`、`cache://`、`storage://`）。
+5. **語意 URI 剛性解耦**：模組內部跨空間存取**嚴禁硬編碼相對路徑**，必須 100% 使用語意協議（`project://`、`module://`、`config://`、`config.local://`、`storage://`、`storage.local://`、`cache://`）。
 
 ---
 

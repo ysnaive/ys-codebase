@@ -1,12 +1,12 @@
 {
   "id": "file-space",
   "name": "file-space",
-  "version": "1.0.0.5",
+  "version": "1.0.1.0",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.5"
+    "core": ">=1.2.7"
   },
   "optional": {
     "server": {
@@ -18,7 +18,7 @@
     "watchdog": ">=4.0.0"
   },
   "uris": {
-    "storage": "cache://file-space"
+    "storage": "storage.local://file-space"
   },
   "onboarding": [
     "請執行 `python yscb.py file-space status` 檢視已註冊之工作空間與游標水位狀態。",
@@ -26,8 +26,8 @@
     "若已安裝 `server` 模組，啟動 Daemon 後將自動掛載 `file-space-watcher` 進行背景增量監聽與 `on_file_space_changed` 事件廣播。"
   ],
   "release": {
-    "type": "feature",
+    "type": "refactor",
     "urgency": "optional",
-    "summary": "FileSpaceWatcherService 背景掃描整合 server.touch_activity() 保活探針"
+    "summary": "工作空間指紋快照與消費者游標儲存空間對齊至 storage.local://file-space，並提供 1.0.1.x.py 自動遷移"
   }
 }

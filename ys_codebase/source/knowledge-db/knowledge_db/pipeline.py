@@ -47,7 +47,7 @@ logger = logging.getLogger("knowledge-db.pipeline")
 
 
 def _resolve_default_knowledge_storage_dir(project_root: Optional[Path] = None) -> Path:
-    """解析 knowledge-db 預設快取目錄 (`knowledge.storage://` 或 `.cache/knowledge-db`)"""
+    """解析 knowledge-db 預設持久儲存目錄 (`knowledge.storage://` 或 `.storage.local/knowledge-db`)"""
     try:
         from core import uri
 
@@ -59,13 +59,15 @@ def _resolve_default_knowledge_storage_dir(project_root: Optional[Path] = None) 
     try:
         from core import uri
 
-        c_res = uri.resolve("cache://knowledge-db/", interactive=False)
-        if c_res and not str(c_res).startswith("!undefined"):
-            return Path(str(c_res)).resolve()
+        s_res = uri.resolve("storage.local://knowledge-db/", interactive=False)
+        if s_res and not str(s_res).startswith("!undefined"):
+            return Path(str(s_res)).resolve()
     except Exception:
         pass
     base = project_root.resolve() if project_root else Path.cwd().resolve()
-    return base / "ys_codebase" / ".cache" / "knowledge-db"
+    if (base / "ys_codebase").is_dir():
+        return base / "ys_codebase" / ".storage.local" / "knowledge-db"
+    return base / ".storage.local" / "knowledge-db"
 
 
 def _normalize_ftypes(ftypes: Optional[Union[str, List[str]]]) -> Optional[List[str]]:
@@ -152,6 +154,7 @@ class IndexingPipeline:
         self.snippet_extractor = snippet_extractor or SnippetExtractor(space_manager=space_manager)
         self._space_weights_provider = space_weights_provider
 
+        self._custom_storage_dir = storage_dir is not None
         if storage_dir is not None:
             self._storage_dir = Path(storage_dir).resolve()
         elif hasattr(bundler, "storage_dir") and bundler.storage_dir is not None:
@@ -437,12 +440,35 @@ class IndexingPipeline:
     # 增量熱修補管線 (Single-Parse Symbol Sharing)
     # ----------------------------------------------------------------------
 
+    def _resolve_index_lock_path(self) -> Path:
+        if self._custom_storage_dir:
+            return self.get_indices_dir() / ".kdb_index.lock"
+        for scheme in ("knowledge.cache://.kdb_index.lock", "cache://knowledge-db/.kdb_index.lock"):
+            try:
+                from core import uri
+
+                res = uri.resolve(scheme, interactive=False)
+                if res and not str(res).startswith("!undefined"):
+                    lock_path = Path(str(res)).resolve()
+                    lock_path.parent.mkdir(parents=True, exist_ok=True)
+                    return lock_path
+            except Exception:
+                pass
+        proj_root = getattr(self.space_manager, "project_root", None)
+        base = Path(proj_root).resolve() if proj_root else Path.cwd().resolve()
+        if (base / "ys_codebase").is_dir():
+            fallback = base / "ys_codebase" / ".cache" / "knowledge-db" / ".kdb_index.lock"
+        else:
+            fallback = base / ".cache" / "knowledge-db" / ".kdb_index.lock"
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        return fallback
+
     @contextmanager
     def _kdb_index_file_lock(self) -> Iterator[None]:
         """Acquire a cross-process file lock before persisting binary index files."""
         from core.platform.lock import InterProcessLock
 
-        lock_file = str(self.get_indices_dir() / ".kdb_index.lock")
+        lock_file = str(self._resolve_index_lock_path())
         with InterProcessLock(lock_file, timeout=15.0):
             yield
 

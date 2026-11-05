@@ -351,6 +351,7 @@ class ASTEngine:
         custom_spaces: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.project_root = Path(project_root).resolve() if project_root else self._resolve_default_project_root()
+        self._custom_storage_dir = storage_dir is not None
         if storage_dir is not None:
             self.storage_dir = Path(storage_dir).resolve()
         else:
@@ -539,10 +540,32 @@ class ASTEngine:
             logger.debug(f"Collecting space generations fallback: {exc}")
         return space_gens, files_map
 
+    def _resolve_index_lock_path(self) -> Path:
+        if self._custom_storage_dir:
+            self.indices_dir.mkdir(parents=True, exist_ok=True)
+            return self.indices_dir / ".ast_index.lock"
+        for scheme in ("ast.cache://.ast_index.lock", "cache://ast/.ast_index.lock"):
+            try:
+                from core import uri
+
+                res = uri.resolve(scheme, interactive=False)
+                if res and not str(res).startswith("!undefined"):
+                    lock_path = Path(str(res)).resolve()
+                    lock_path.parent.mkdir(parents=True, exist_ok=True)
+                    return lock_path
+            except Exception:
+                pass
+        if (self.project_root / "ys_codebase").is_dir():
+            fallback = self.project_root / "ys_codebase" / ".cache" / "ast" / ".ast_index.lock"
+        else:
+            fallback = self.project_root / ".cache" / "ast" / ".ast_index.lock"
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        return fallback
+
     def _save_snapshot_and_graph(self, snapshot: ASTSnapshot, graph: CallGraphIndex) -> None:
         from core.platform.lock import InterProcessLock
 
-        lock_file = str(self.indices_dir / ".ast_index.lock")
+        lock_file = str(self._resolve_index_lock_path())
         with InterProcessLock(lock_file, timeout=15.0):
             atomic_save_gzip_pickle(self.symbols_index_path, snapshot.to_dict(), compresslevel=1)
             graph.save_binary(self.graph_index_path, compresslevel=1)

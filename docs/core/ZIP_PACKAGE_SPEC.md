@@ -10,7 +10,7 @@ related_docs:
   - "./README.md"
   - "./DESIGN_NOTES.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-05"
 ---
 
 # Zip 套件規格與同構自舉管線手冊 (Zip Packaging & Isomorphic Bootstrap Spec)
@@ -52,7 +52,7 @@ YS-Codebase 遵循**明文空間嚴格二分法**：
 ```text
 [Stage 1: 依賴與產物校驗] 檢查依賴約束、拉取單檔 Zip 至 module.mirror:// 並執行完整性驗證
 [Stage 2: 安全解壓物化]   剛性清空 module://{mod}/，執行 Zip Slip 路徑防逃逸檢查後解壓物化
-[Stage 3: 遞迴組態治理]   掃描模組組態模板，遞迴原地增量補齊至 config://，並物理剝除模組內模板
+[Stage 3: 遞迴組態治理]   掃描模組組態模板，遞迴原地增量補齊至 config:// 與 config.local://，並物理剝除模組內模板
 [Stage 4: 注入與事件廣播] 執行 Contributes 拓撲聚合並廣播 on_reload 事件
 ```
 
@@ -61,7 +61,7 @@ YS-Codebase 遵循**明文空間嚴格二分法**：
 - **Zip Slip 路徑穿越防護**：解壓至 `module://{mod}/` 前，逐一校驗壓縮包內所有成員路徑 `target_path.startswith(real_dst_abs + os.sep)`，嚴防惡意 `../` 逃逸覆寫外部檔案。
 
 ### 3.2 模組組態遞迴原地增量補齊 (`_deep_infill_dict`)
-- **無損增量補齊**：當模組於新版本 `configurable/`（或預設組態模板）新增欄位時，`act_deploy_configs_from_modules` 會對 `config://{mod}/config.project.json` 與 `config.local.json` 執行遞迴比對，**僅自動補齊缺失鍵值，使用者既有已調整之設定值 100% 保持不變**。
+- **無損增量補齊**：當模組於新版本 `configurable/`（或預設組態模板）新增欄位時，`act_deploy_configs_from_modules` 會對 `config://{mod}/config.project.json` 與 `config.local://{mod}/config.local.json` 執行遞迴比對，**僅自動補齊缺失鍵值，使用者既有已調整之設定值 100% 保持不變**。
 - **跨層優先級感知**：在補齊 `config.local.json` 時，若對應鍵已存在於 `config.project.json`，則跳過重複寫入，維持組態矩陣乾淨正交。
 - **運行端模板物理剝除與 `_format.json` 契約保留**：組態補齊完成後，無條件從 `module://{mod}/` 實體刪除 `config.*.json` 預設值模板（若模組定義了同構組態契約 `configurable/_format.json`，則保留 `module://{mod>/configurable/_format.json` 供運行態組態校驗與 IDE Schema 編譯器讀取；若無 `_format.json` 則移除空 `configurable/` 目錄）。
 

@@ -2,9 +2,9 @@
 Release Publisher for agents-workflow.
 Executes the 4-Step Atomic Release Transaction:
 0. Pre-check source fingerprint for early short-circuit (Zero-I/O optimization)
-1. Prune legacy published files recorded in cache://agents-workflow/project_release_manifest.json
+1. Prune legacy published files recorded in storage.local://agents-workflow/project_release_manifest.json
 2. Pre-compute deployment topology & rendered content for all active release_targets
-3. Persist latest published file manifest and fingerprint to cache:// (host-local, git-ignored)
+3. Persist latest published file manifest and fingerprint to storage.local:// (host-local, git-ignored)
 4. Materialize physical files (with in-memory diff check) & perform AGENTS.md soft-merge.
 100% Python Standard Library, Zero Third-Party Dependency.
 """
@@ -27,9 +27,9 @@ except ImportError:
 from agents_workflow.compiler import ArtifactCompiler
 
 
-PROJECT_MANIFEST_CACHE_URI = "cache://agents-workflow/project_release_manifest.json"
-LOCAL_MANIFEST_CACHE_URI = "cache://agents-workflow/release_manifest.json"
-SHA1_CACHE_URI = "cache://agents-workflow/source_sha1_cache.json"
+PROJECT_MANIFEST_CACHE_URI = "storage.local://agents-workflow/project_release_manifest.json"
+LOCAL_MANIFEST_CACHE_URI = "storage.local://agents-workflow/release_manifest.json"
+SHA1_CACHE_URI = "storage.local://agents-workflow/source_sha1_cache.json"
 AGENTS_MD_BEGIN = "<!-- YSCB_AGENTS_BEGIN -->"
 AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
 GITIGNORE_BEGIN_MARKER = "# === YSCB MANAGED GITIGNORE BEGIN ==="
@@ -47,7 +47,7 @@ class ReleasePublisher:
         self._sources_digest_cache: Optional[bytes] = None
 
     def _load_sha1_cache(self) -> Dict[str, List[Any]]:
-        """載入持久化之來源檔案 SHA-1 快取 (cache://)。"""
+        """載入持久化之來源檔案 SHA-1 快取 (storage.local://)。"""
         if vfs and vfs.exists(SHA1_CACHE_URI):
             try:
                 data = vfs.read_json(SHA1_CACHE_URI)
@@ -58,7 +58,7 @@ class ReleasePublisher:
         return {}
 
     def _save_sha1_cache(self) -> None:
-        """若有異動，將來源檔案 SHA-1 快取持久化至 cache://。"""
+        """若有異動，將來源檔案 SHA-1 快取持久化至 storage.local://。"""
         if getattr(self, "_sha1_cache_dirty", False) and vfs:
             try:
                 vfs.write_json(SHA1_CACHE_URI, self._sha1_cache)
@@ -616,7 +616,7 @@ class ReleasePublisher:
             warn_msg = (
                 f"[publisher:warning] Multiple active release_targets ({t_joined}) share destination path(s) "
                 f"({sample_paths}). Merged union content materialized; consider overriding 'release_targets' "
-                f"in config/agents-workflow/config.local.json if you want a single-target workspace."
+                f"in config.local://agents-workflow/config.local.json if you want a single-target workspace."
             )
             shared_path_warnings.append(warn_msg)
             print(warn_msg, file=sys.stderr)
@@ -742,7 +742,7 @@ class ReleasePublisher:
         combined_fingerprint: str,
         proj_root: str,
     ) -> None:
-        """Stage 3: 原子寫入 cache:// 之 Project 軌與 Local 軌持久化發布清單。"""
+        """Stage 3: 原子寫入 storage.local:// 之 Project 軌與 Local 軌持久化發布清單。"""
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if proj_targets or old_proj_manifest:
@@ -822,7 +822,7 @@ class ReleasePublisher:
         Stage 0: 來源指紋提前短路檢查 (_check_short_circuit)
         Stage 1: 內容佔位符展開 (compile_stage1)
         Stage 2: 預先解算所有已啟用 Target 之檔案實體路徑與渲染內容 (_prepare_target_compilations)
-        Stage 3: 清理過期檔案 (_prune_orphaned_managed_files) 並原子寫入 cache:// 清單 (_save_deployment_manifests)
+        Stage 3: 清理過期檔案 (_prune_orphaned_managed_files) 並原子寫入 storage.local:// 清單 (_save_deployment_manifests)
         Stage 4: 落地端檔案內容比對與增量輸出 (_materialize_target_files) 與 .gitignore 軟合併
         """
         cfg = self._get_project_config()

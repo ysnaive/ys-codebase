@@ -1,5 +1,23 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_04_1739_sys_path_and_five_semantic_spaces (Completed)
+
+### sub_03_ecosystem_modules_space_alignment (Completed)
+- **全生態系 9 大模組 (`core`, `dev`, `server`, `vscode-support`, `file-space`, `ast`, `knowledge-db`, `agents-workflow`, `gdrive-support`) 五大語意空間映射對齊與 6 大版本晉升 Hook 無損遷移 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-03`, `NFR-01` ~ `NFR-02`, `[P00:DR-01]`, `[P00:DR-02]`)**：
+  - **`gdrive-support@1.0.1.0` 本機私密憑證與同步基準帳本持久化 (`FR-01`, `EC-03`)**：將預設 `credentials_uri` 與 `token_uri` 由 `config://`/`cache://` 遷移至 `config.local://gdrive-support/{credentials,token}.json`（`0o600` 權限），將三方對帳基準 `sync_state.json` 與 `readme_sync_state.json` 由 `cache://` 遷移至 `storage.local://gdrive-support/`，保留揮發性鎖與日誌（`sync.lock`, `sync.log`, `cli_op.lock`）於 `cache://`，並於 `is_sensitive_credential_path` 與 `ys_codebase/config/file-space/contribute.json` (`cloud.exclude`) 補齊 `.config.local` 與 `.storage.local` 雙重邊界防禦。
+  - **三層索引棧 (`file-space@1.0.1.0`, `ast@1.0.1.0`, `knowledge-db@1.2.1.0`)、工作流清冊 (`agents-workflow@1.2.4.0`) 與動態忽略規則 (`core@1.2.7.0`) 對齊 `storage.local://` (`FR-02`, `FR-03`, `EC-01`, `NFR-02`)**：將 `snapshots/`、`cursors/`、`indices/`、`bundles/`、91MB ONNX `models/`、`project_release_manifest.json`、`source_sha1_cache.json`、`session_trace_manifest.json` 與 `DYNAMIC_CACHE_URI` (`storage.local://core/gitignore_dynamic.json`) 全數對齊 `storage.local://`（避免容器 `tmpfs` 重啟清空 `.cache/` 導致模型重載與索引重算），同時將跨進程排他鎖 `.ast_index.lock` 與 `.kdb_index.lock` 分離留駐 `cache://`（測試沙盒自訂 `storage_root` 時留駐沙盒內部確保平行測試隔離）。
+  - **業務源碼零歷史遷移分支與 6 大版本晉升 Hook 自癒升級 (`FR-04`, `[P00:DR-02]`, `NFR-01`)**：嚴格落實業務源碼零歷史遷移分支鐵律（拔除 `agents_workflow/publisher.py:_migrate_legacy_manifest` 與 `core/config.py:_migrate_legacy_local_config`），統一於 `scripts/migrations/` 建立 6 大冪等遷移腳本（`core` `1.2.7.x.py`, `gdrive-support` `1.0.1.x.py`, `file-space` `1.0.1.x.py`, `ast` `1.0.1.x.py`, `knowledge-db` `1.2.1.x.py`, `agents-workflow` `1.2.4.x.py`），並修正 `core/engine.py:act_solve_deps` 對已安裝相容 `@build` 相依模組之保留邏輯；通過全倉 9 模組 `dev check`、721/721 單元測試與臨時兄弟目錄升級/`tmpfs` 抹除實機驗證 (20/20 Passed)。
+
+### sub_02_five_semantic_spaces_architecture (Completed)
+- **確立 `config` / `config.local` / `storage` / `storage.local` / `cache` 五大語意空間架構、`core.config` 雙軌合成、`act_snapshot` 排除 `storage.local://` 與 `--purge` 生命週期治理 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **`config.local://` 與 `storage.local://` 一等公民協議與 `.gitignore` 預設保護 (`FR-01`, `FR-02`, `EC-01`)**：於 `core/uri.py` 新增 `config.local://`（映射至 `yscb://.config.local/`）與 `storage.local://`（映射至 `yscb://.storage.local/`）雙協議、更新 `ALL_SCHEMES` 與 `uri check` 診斷矩陣，並於 `core/contributes/core.json` 預設納入根目錄 `.gitignore` 保護。
+  - **`core.config` 雙軌組態合成、快照排除 `storage.local://` 與 `dev`/`vscode-support` 對齊 (`FR-03` ~ `FR-06`, `EC-02` ~ `EC-04`)**：`core/config.py` 將 `config.project.json` 維持於 `config://<mod>/` 而將本機私密 `config.local.json` 路由至 `config.local://<mod>/`；`core/engine.py` 於 `act_snapshot`/`act_rollback` 納入 `.config.local` 並刻意排除百 MB 級 `.storage.local` 以維持毫秒級安裝快照，於 `act_delete --purge` 同步清理 `.config.local/<mod>` 與 `.storage.local/<mod>`；同步擴充 `dev` (`checker.py`, `sandbox.py`) 與 `vscode-support` Schema URI 正規表示式。
+
+### sub_01_core_all_modules_sys_path (Completed)
+- **`core.platform.ensure_all_installed_modules_in_sys_path` 統一運行時尋址、13 處手工 `sys.path` 補丁拔除與 `dev` 零豁免 AST 守門 (`FR-01` ~ `FR-04`, `EC-01` ~ `EC-03`, `NFR-01` ~ `NFR-02`)**：
+  - **統一注入所有已安裝 `.modules/<mod>` 至 `sys.path` (`FR-01`, `FR-02`, `EC-01` ~ `EC-03`)**：於 `core/platform/process.py` 實作 `ensure_all_installed_modules_in_sys_path(yscb_dir)`（含 `(abs_modules_dir, mtime_ns, entries_tuple)` 指紋短路快取與尾端追加防搶佔），並整合至 `core/cli.py:dispatch_local`、`core/events.py:broadcast`、`core/symbols.py:resolve_callable` 與 `server/worker.py:WarmWorker.pre_warm`，徹底消除冷/熱派發跨模組匯入落差。
+  - **拔除 13 處跨模組手工 `sys.path` 補丁與 `dev/checker.py` 靜態守門 (`FR-03`, `FR-04`)**：清理 `server`、`file-space`、`ast`、`knowledge-db`、`agents-workflow`、`gdrive-support` 共 13 處 `_ensure_module_path` / `sys.path.insert` 散落補丁，並於 `dev/checker.py` 新增針對非 `core` 模組生產代碼變動 `sys.path` 之零豁免 AST 合規守門。
+
 ## 2026_11_04_1517_gdrive_parallel_sync (Completed)
 
 - **`SyncCoordinator` 父目錄拓撲預建 (`_precreate_remote_dirs`) 與 `ThreadPoolExecutor` 多執行緒並發同步加速 (`[FP-01:DR-01]`, `[FP-01:DR-02]`)**：

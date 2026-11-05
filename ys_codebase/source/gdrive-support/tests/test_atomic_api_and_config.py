@@ -24,12 +24,14 @@ from dev.testing import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 
 from gdrive_support import (
+    GDriveConfig,
     GDriveConfigError,
     GDriveFileNotFoundError,
     GDrivePathError,
     GDriveUnsupportedMimeError,
     LocalSandboxTransport,
     collect_space_local_files,
+    is_sensitive_credential_path,
     load_gdrive_config,
 )
 
@@ -70,9 +72,30 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
     def test_ft_01_default_config_and_lazy_sdk_exports(self) -> None:
         """Verify default configuration enforces repo_sync.enable=False, auto_sync=False, and active_branch='main'."""
         cfg = load_gdrive_config(
-            config_override={},
+            config_override={
+                "repo_sync": {"enable": False, "auto_sync": False},
+                "credentials_uri": "",
+                "token_uri": "",
+            },
             project_root=self.proj_dir,
             space_include_roots={},
+        )
+        default_dataclass_cfg = GDriveConfig()
+        self.assertEqual(
+            default_dataclass_cfg.credentials_uri,
+            "config.local://gdrive-support/credentials.json",
+        )
+        self.assertEqual(
+            default_dataclass_cfg.token_uri,
+            "config.local://gdrive-support/token.json",
+        )
+        self.assertEqual(
+            cfg.credentials_uri,
+            "config.local://gdrive-support/credentials.json",
+        )
+        self.assertEqual(
+            cfg.token_uri,
+            "config.local://gdrive-support/token.json",
         )
         self.assertFalse(cfg.repo_sync_enabled)
         self.assertEqual(cfg.repo_sync_root, "repo")
@@ -488,6 +511,132 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
         # 3. Trashing a cached folder invalidates its cache entry
         transport.trash_file("repo/main/docs")
         self.assertNotIn("repo/main/docs", transport._folder_cache)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_06_sensitive_credential_paths_and_migration_1_0_1_x(self) -> None:
+        """Verify is_sensitive_credential_path guards .config.local/.storage.local and 1.0.1.x.py idempotently migrates assets."""
+        self.assertTrue(
+            is_sensitive_credential_path(
+                self.proj_dir / "ys_codebase" / ".config.local" / "gdrive-support" / "custom.json",
+                self.proj_dir,
+            )
+        )
+        self.assertTrue(
+            is_sensitive_credential_path(
+                self.proj_dir / "ys_codebase" / ".storage.local" / "gdrive-support" / "sync_state.json",
+                self.proj_dir,
+            )
+        )
+        self.assertTrue(
+            is_sensitive_credential_path(
+                self.proj_dir / "ys_codebase" / "config" / "gdrive-support" / "credentials.json",
+                self.proj_dir,
+            )
+        )
+        self.assertFalse(
+            is_sensitive_credential_path(
+                self.proj_dir / "ys_codebase" / "config" / "gdrive-support" / "config.project.json",
+                self.proj_dir,
+            )
+        )
+        self.assertFalse(
+            is_sensitive_credential_path(
+                self.proj_dir / "docs" / "README.md",
+                self.proj_dir,
+            )
+        )
+
+        mig_spec = importlib.util.spec_from_file_location(
+            "_gdrive_mig_1_0_1_x",
+            _pkg_root / "scripts" / "migrations" / "1.0.1.x.py",
+        )
+        assert mig_spec is not None and mig_spec.loader is not None
+        mig_mod = importlib.util.module_from_spec(mig_spec)
+        mig_spec.loader.exec_module(mig_mod)
+
+        yscb_dir = self.tmp_root / "ys_codebase"
+        cfg_dir = yscb_dir / "config" / "gdrive-support"
+        cfg_local_dir = yscb_dir / ".config.local" / "gdrive-support"
+        storage_local_dir = yscb_dir / ".storage.local" / "gdrive-support"
+        cache_dir = yscb_dir / ".cache" / "gdrive-support"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        (cfg_dir / "credentials.json").write_text('{"installed":{"client_id":"cid"}}', encoding="utf-8")
+        (cache_dir / "token.json").write_text('{"refresh_token":"rtok"}', encoding="utf-8")
+        (cache_dir / "sync_state.json").write_text('{"branches":{"main":{}}}', encoding="utf-8")
+        (cache_dir / "readme_sync_state.json").write_text('{"states":{"root":true}}', encoding="utf-8")
+        (cfg_dir / "config.project.json").write_text(
+            json.dumps(
+                {
+                    "root_folder_id": "folder_1",
+                    "credentials_uri": "config://gdrive-support/credentials.json",
+                    "token_uri": "cache://gdrive-support/token.json",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        ctx = {
+            "host_dir": self.tmp_root.as_posix(),
+            "yscb_dir": yscb_dir.as_posix(),
+            "config_dir": cfg_dir.as_posix(),
+            "config_local_dir": cfg_local_dir.as_posix(),
+            "storage_dir": (yscb_dir / "storage" / "gdrive-support").as_posix(),
+            "storage_local_dir": storage_local_dir.as_posix(),
+            "old_version": "1.0.0.0",
+            "target_version": "1.0.1.0",
+        }
+        self.assertTrue(mig_mod.migrate(ctx))
+
+        self.assertFalse((cfg_dir / "credentials.json").exists())
+        self.assertFalse((cache_dir / "token.json").exists())
+        self.assertFalse((cache_dir / "sync_state.json").exists())
+        self.assertFalse((cache_dir / "readme_sync_state.json").exists())
+
+        self.assertEqual(
+            (cfg_local_dir / "credentials.json").read_text(encoding="utf-8"),
+            '{"installed":{"client_id":"cid"}}',
+        )
+        self.assertEqual(
+            (cfg_local_dir / "token.json").read_text(encoding="utf-8"),
+            '{"refresh_token":"rtok"}',
+        )
+        self.assertEqual(
+            (storage_local_dir / "sync_state.json").read_text(encoding="utf-8"),
+            '{"branches":{"main":{}}}',
+        )
+        self.assertEqual(
+            (storage_local_dir / "readme_sync_state.json").read_text(encoding="utf-8"),
+            '{"states":{"root":true}}',
+        )
+
+        upgraded_cfg = json.loads((cfg_dir / "config.project.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            upgraded_cfg["credentials_uri"],
+            "config.local://gdrive-support/credentials.json",
+        )
+        self.assertEqual(
+            upgraded_cfg["token_uri"],
+            "config.local://gdrive-support/token.json",
+        )
+
+        # Verify idempotency when target files already exist and stale legacy files reappear
+        (cfg_dir / "credentials.json").write_text('{"stale":true}', encoding="utf-8")
+        (cache_dir / "sync_state.json").write_text('{"stale":true}', encoding="utf-8")
+        self.assertTrue(mig_mod.migrate(ctx))
+        self.assertFalse((cfg_dir / "credentials.json").exists())
+        self.assertFalse((cache_dir / "sync_state.json").exists())
+        self.assertEqual(
+            (cfg_local_dir / "credentials.json").read_text(encoding="utf-8"),
+            '{"installed":{"client_id":"cid"}}',
+        )
+        self.assertEqual(
+            (storage_local_dir / "sync_state.json").read_text(encoding="utf-8"),
+            '{"branches":{"main":{}}}',
+        )
         self.mark_passed()
 
 

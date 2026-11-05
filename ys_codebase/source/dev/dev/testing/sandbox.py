@@ -412,7 +412,18 @@ class SandboxProvisioner:
 
             SandboxProvisioner._ACTIVE_SANDBOXES.add(os.path.abspath(target_dir))
             ctx = SandboxContext(target_dir)
-            for d in (ctx.sandbox_dir, ctx.project_dir, ctx.host_dir, ctx.engine_dir, ctx.provider_dir):
+            for d in (
+                ctx.sandbox_dir,
+                ctx.project_dir,
+                ctx.host_dir,
+                ctx.engine_dir,
+                ctx.provider_dir,
+                os.path.join(ctx.engine_dir, "config"),
+                os.path.join(ctx.engine_dir, ".config.local"),
+                os.path.join(ctx.engine_dir, "storage"),
+                os.path.join(ctx.engine_dir, ".storage.local"),
+                os.path.join(ctx.engine_dir, ".cache"),
+            ):
                 os.makedirs(d, exist_ok=True)
             return ctx
 

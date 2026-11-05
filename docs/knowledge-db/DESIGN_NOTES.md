@@ -17,7 +17,7 @@ related_docs:
   - "./retrieval.md"
   - "./incremental_hot_reload.md"
   - "./call_graph_and_reference_index.md"
-last_updated: "2026-11-02"
+last_updated: "2026-11-05"
 ---
 
 # knowledge-db 設計決策與工程妥協手冊 (Design Notes)
@@ -32,7 +32,7 @@ last_updated: "2026-11-02"
 
 | 決策編號 | 標題 / 主題 (含歷史編號對照) | 影響檔案 | 風險等級 |
 | :---: | :--- | :--- | :---: |
-| **DN-01** | `cache://knowledge-db/` 與 `cache://file-space/` 儲存雙軌分離及 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)* | `engine.py`, `retrieval.py`, `graph.py`, `embedding.py` | 🚨 CRITICAL |
+| **DN-01** | `storage.local://knowledge-db/` 與 `storage.local://file-space/` 儲存雙軌分離、跨進程鎖分離 (`cache://`) 及 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)* | `engine.py`, `pipeline.py`, `retrieval.py`, `graph.py`, `embedding.py` | 🚨 CRITICAL |
 | **DN-02** | ONNX 執行緒硬上限、時間片主動讓渡 (`sleep(0.005)`)、向量低壓縮寫盤 (`compresslevel=1`) 與多進程 AST 單次走訪 *(原 DN-13 + DN-06.3)* | `embedding.py`, `bundler.py`, `parsers/` | 🚨 CRITICAL |
 | **DN-03** | JIT 10 符號動態探針熔斷、離線 `.onnx` 權重探針先行 (`[GUARD]`) 與 `--json` 純淨通道保護 *(原 DN-14 + DN-25.2)* | `pipeline.py`, `embedding.py`, `config.py`, `scripts/cli.py` | 🚨 CRITICAL |
 | **DN-04** | 背景 `file-space-watcher` 零阻塞旁路、`hook.file-space.py` 免重掃與 `_GLOBAL_INDEX_CACHE` 微秒級 `mtime` 熱刷新 *(原 DN-21 + DN-23)* | `pipeline.py`, `scripts/hook.file-space.py` | ⚠️ WARNING |
@@ -47,17 +47,17 @@ last_updated: "2026-11-02"
 
 ## 詳細設計決策與防坑邊界
 
-### [DN-01] `cache://knowledge-db/` 與 `cache://file-space/` 儲存雙軌分離及 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)*
+### [DN-01] `storage.local://knowledge-db/` 與 `storage.local://file-space/` 儲存雙軌分離、跨進程鎖分離 (`cache://`) 及 Pickle 二進位安全邊界 *(原 DN-02 + DN-17.2)*
 
 - **背景與根因**：
-  1. 早期 `get_cache_dir` 曾保留舊版候選路徑搜尋或 `Path.cwd() / ".cache"` 隱式降級兜底；且在導入 `module:file-space` 後，若 `KnowledgeEngine.storage_dir` 直接共用 `space_manager.storage_dir`（`cache://file-space/`），會導致知識庫索引與空間指紋快照混雜於同一目錄，`clean()` 時互相誤刪。
+  1. 早期 `get_cache_dir` 曾保留舊版候選路徑搜尋或 `Path.cwd() / ".cache"` 隱式降級兜底；且在導入 `module:file-space` 後，若 `KnowledgeEngine.storage_dir` 直接共用 `space_manager.storage_dir`（`storage.local://file-space/`），會導致知識庫索引與空間指紋快照混雜於同一目錄，`clean()` 時互相誤刪。此外，若將百 MB 級向量模型與持久索引存放於揮發性 `cache://`，於容器或 `tmpfs` 環境清空快取時將導致模型與索引全毀。
   2. 倒排索引 (`unified.index.bin.gz`)、調用圖譜 (`unified.graph.bin.gz`) 與向量索引 (`unified.vectors.bin.gz`) 為追求 $< 20\text{ ms}$ 的反序列化速度，採用了 Python `pickle` Protocol 5，而 `pickle.loads` 對不可信來源具有任意代碼執行風險。
 - **工程妥協與解法**：
-  1. **快取路徑零 Fallback 與雙軌分離**：`file_space.FileSpaceManager` 固定解析 `file-space.storage://` (`cache://file-space/`) 儲存 `YFP2` 快照與消費者游標；`KnowledgeEngine.storage_dir` 獨立解析 `knowledge.storage://` (`cache://knowledge-db/`) 儲存 AST bundles 與索引檔，並於 `engine.clean()` 時同步呼叫 `file_space.reset_cursor(consumer_id="knowledge-db")` 對齊狀態。
-  2. **二進位與跨機傳輸職責分離**：`pickle` 二進位快取嚴格限定於本機受保護之 `cache://knowledge-db/indices/` 目錄讀寫（並透過 `core.vfs.write_bytes(atomic=True)` 原子替換）；凡涉及跨環境分享或外部導出（`index --export`），一律使用純 JSON Schema 之 `SemanticBundle` (`.bundle.json`)。
+  1. **本機持久儲存零 Fallback、雙軌分離與鎖檔分離**：`file_space.FileSpaceManager` 固定解析 `file-space.storage://` (`storage.local://file-space/`) 儲存 `YFP2` 快照與消費者游標；`KnowledgeEngine.storage_dir` 獨立解析 `knowledge.storage://` (`storage.local://knowledge-db/`) 儲存模型權重 (`models/`)、AST bundles 與索引檔，而跨進程鎖檔 `.kdb_index.lock` 則於預設模式下分離至 `knowledge.cache://.kdb_index.lock` (`cache://knowledge-db/.kdb_index.lock`)（單元測試顯式注入自訂 `storage_dir` 時留駐於測試沙盒內隔離）；歷史 `.cache/knowledge-db/` 舊資產統一由 `scripts/migrations/1.2.1.x.py` 在版本晉升時自動冪等遷移，業務代碼維持 0 舊路徑 Fallback。
+  2. **二進位與跨機傳輸職責分離**：`pickle` 二進位索引嚴格限定於本機受保護之 `storage.local://knowledge-db/indices/` 目錄讀寫（並透過 `core.vfs.write_bytes(atomic=True)` 原子替換）；凡涉及跨環境分享或外部導出（`index --export`），一律使用純 JSON Schema 之 `SemanticBundle` (`.bundle.json`)。
 
 > [!CAUTION]
-> **嚴禁將 `KnowledgeEngine.storage_dir` 指向 `space_manager.storage_dir`，嚴禁加入 `os.getcwd()` / `Path.cwd()` 降級兜底路徑，且嚴禁對外部匯入檔案 (`import_bundle`) 調用 `pickle.loads`！** 違反此邊界將造成跨模組快取誤刪、宿主目錄污染與反序列化安全漏洞。
+> **嚴禁將 `KnowledgeEngine.storage_dir` 指向 `space_manager.storage_dir`，嚴禁加入 `os.getcwd()` / `Path.cwd()` 或舊路徑 `.cache/` 執行期降級兜底，且嚴禁對外部匯入檔案 (`import_bundle`) 調用 `pickle.loads`！** 違反此邊界將造成跨模組索引誤刪、宿主目錄污染與反序列化安全漏洞。
 
 ---
 
@@ -192,7 +192,7 @@ last_updated: "2026-11-02"
   1. 過去語法樹解析、C# `partial class` 跨檔聚合與呼叫拓撲 (`CallGraphIndex` / `TopologyLinker`) 與全文/向量混合檢索耦合於單一 `knowledge-db` 模組中，導致僅需單檔結構大綱 (`outline`) 或靜態呼叫拓撲 (`callers/callees/impact`) 時連帶綁定檢索與向量子系統。
   2. 獨立出 Layer 2 `module:ast` 後，若 `knowledge-db` 仍自行對原始碼重複執行 Tree-sitter 解析，將造成雙倍 I/O 與 CPU 浪費；且當執行 `ast clean` 重建 `ASTSnapshot` 而 `file-space` 游標已處於 `in_sync` 時，單憑 `file-space` 游標無法感知 `ast_generation` 重置。
 - **工程妥協與解法**：
-  1. **單次解析符號共享（Zero Re-parse）**：`knowledge-db` 物理移除內部 `.scm` 與 Tree-sitter 解析器實作，於 `IndexingPipeline.build_unified_index()`、`build_index(space=...)`、`hot_patch_unified_index()` 與 `KnowledgeEngine.bundle()` 中，100% 透過 `self.ast_engine.ensure_jit_synced()` 取得 `ASTSnapshot`（`cache://ast/indices/unified.symbols.bin.gz`）與 `CallGraphIndex`（`cache://ast/indices/unified.graph.bin.gz`），不再重跑語法樹解析。
+  1. **單次解析符號共享（Zero Re-parse）**：`knowledge-db` 物理移除內部 `.scm` 與 Tree-sitter 解析器實作，於 `IndexingPipeline.build_unified_index()`、`build_index(space=...)`、`hot_patch_unified_index()` 與 `KnowledgeEngine.bundle()` 中，100% 透過 `self.ast_engine.ensure_jit_synced()` 取得 `ASTSnapshot`（`storage.local://ast/indices/unified.symbols.bin.gz`）與 `CallGraphIndex`（`storage.local://ast/indices/unified.graph.bin.gz`），不再重跑語法樹解析。
   2. **`acked_ast_generation` 雙水位線自癒**：`IndexingPipeline` 將當次消費之 `ASTSnapshot.ast_generation` 持久化於 `unified.index.bin.gz` 之 `InvertedIndex.acked_ast_generation` 並緩存於 `_GLOBAL_INDEX_CACHE["acked_ast_generation"]`；在 `_ensure_jit_index_ready_locked()` 與 `KnowledgeDBServiceWorker._sync_stage1_lexical_and_graph()` 中，即便 `file-space` 游標 `has_changes == False`，只要 `acked_ast_generation != snapshot.ast_generation` 即自動觸發全量重建並對齊最新 AST 世代。
   3. **`pre_aggregated=True` 免二次分部聚合與刪除分部連坐**：因 `ASTSnapshot.symbols` 已由 `module:ast` 完成雙層 `partial class` 聚合，`InvertedIndex.patch_incremental(..., pre_aggregated=True)` 直接索引符號之 `_own_members` 而不重複執行分部拆解；同時 `_collect_all_dirty_files()` 結合 `self._unified_index.symbols` 追蹤被刪除之 C# 分部檔案，確保刪除任一分部時其餘姊妹分部強制納入重算。
 

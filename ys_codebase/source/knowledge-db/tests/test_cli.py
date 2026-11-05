@@ -306,7 +306,7 @@ class TestCLI(YSCBTestCase):
         """FT-08: 驗證 hook.dev.py 測試前置與後置鉤子正常執行"""
         with tempfile.TemporaryDirectory() as temp_dir:
             _hook_dev.on_test_setup(temp_dir)
-            indices_dir = Path(temp_dir) / ".cache" / "knowledge-db" / "indices"
+            indices_dir = Path(temp_dir) / ".storage.local" / "knowledge-db" / "indices"
             self.assertTrue(indices_dir.exists())
 
             _hook_dev.on_test_teardown(temp_dir)

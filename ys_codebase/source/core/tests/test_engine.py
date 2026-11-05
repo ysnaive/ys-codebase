@@ -374,6 +374,13 @@ def on_test_event(context):
             self.assertEqual(restored_p.get("project_root"), orig_p.get("project_root"))
             self.assertEqual(vfs.read_json(cfg_loc_test).get("local_secret"), "orig_secret")
             self.assertEqual(vfs.read_text(stg_loc_test), "PERSISTENT_LOCAL_MODEL")
+
+            # Verify FR-04.2: When snapshot lacks config.local/, act_restore_snapshot cleans config.local:// and recreates empty dir
+            vfs.rmtree(f"snapshot://{snap_id}/config.local", ignore_errors=True)
+            vfs.write_json("config.local://test_snap_mod/dirty_after_snap.json", {"dirty": True})
+            self.engine.act_restore_snapshot(snap_id)
+            self.assertTrue(vfs.is_dir("config.local://"))
+            self.assertFalse(vfs.exists("config.local://test_snap_mod/dirty_after_snap.json"))
         finally:
             if orig_p:
                 vfs.write_json(cfg_p, orig_p)
@@ -427,10 +434,21 @@ def on_test_event(context):
             vfs.write_text(f"{mig_dir}/{script_name}", code)
 
         try:
-            # 開發期 @build 迭代應直接短路跳過不觸發
-            self.assertTrue(self.engine.act_migrate(mod, "1.2.6.build", "1.2.7.build"))
+            # 1. 同三元組 @build 迭代或 @build -> .0 正式版不應重複觸發同 patch 階梯
+            self.assertTrue(self.engine.act_migrate(mod, "1.2.6.build", "1.2.6.build"))
+            self.assertTrue(self.engine.act_migrate(mod, "1.2.7.build", "1.2.7.0"))
             self.assertFalse(vfs.exists(log_uri))
 
+            # 2. 跨三元組 @build -> @build 或 @build -> 正式版應正常觸發對應階梯腳本
+            self.assertTrue(self.engine.act_migrate(mod, "1.2.6.build", "1.2.7.build"))
+            self.assertEqual(vfs.read_json(log_uri), ["1.2.7.x"])
+            vfs.remove(log_uri)
+
+            self.assertTrue(self.engine.act_migrate(mod, "1.2.6.build", "1.2.7.0"))
+            self.assertEqual(vfs.read_json(log_uri), ["1.2.7.x"])
+            vfs.remove(log_uri)
+
+            # 3. 正式版跨段升級依序觸發 patch.x 與 exact revision
             ok = self.engine.act_migrate(mod, "1.2.6.0", "1.2.7.1")
             self.assertTrue(ok)
             self.assertEqual(vfs.read_json(log_uri), ["1.2.7.x", "1.2.7.1"])

@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.6.0",
+  "version": "1.2.7.0",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -26,6 +26,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "新增 core.gitignore 根目錄 .gitignore 統一分組軟合併引擎並將預設自更新 URL 對齊 releases 分支"
+    "summary": "確立五大語意資料空間架構 (config/config.local/storage/storage.local/cache)、全模組 sys.path 統一尋址與 1.2.7.x 自動遷移"
   }
 }

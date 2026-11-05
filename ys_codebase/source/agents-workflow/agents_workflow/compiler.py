@@ -1,7 +1,7 @@
 """
 Artifact Factory Compiler for agents-workflow.
 Implements the 6-Stage Semantic Pipeline:
-Stage 1: 5-Step Multi-Pass Recursive State Machine for Content Token Resolution -> cache.root://
+Stage 1: 5-Step Multi-Pass Recursive State Machine for Content Token Resolution -> cache://
 Stage 2: 3-Tier Contextual Semantic URI Resolution -> Target Deployments.
 100% Python Standard Library, Zero Third-Party Dependency.
 """
@@ -675,7 +675,7 @@ class ArtifactCompiler:
     def compile_stage1(self) -> Dict[str, Any]:
         """
         執行 Stage 1 全量段落佔位符解算：
-        將所有 export 項目物化寫入 cache.root://agents-workflow/resolved_contents/。
+        將所有 export 項目物化寫入 cache://agents-workflow/resolved_contents/。
         支援單檔與目錄級 (Skill Package) 遞迴掃描與 Stage 1 展開。
         """
         data = self.get_contributes_data()

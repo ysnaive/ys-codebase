@@ -13,7 +13,7 @@ related_docs:
   - "./architecture.md"
   - "./parsers.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-22"
+last_updated: "2026-11-05"
 ---
 
 # 符號調用圖譜與引用拓撲索引專題手冊 (Call Graph & Reference Index)
@@ -90,7 +90,7 @@ flowchart TD
 - **輕量 JIT 熱自癒解耦 (`require_vectors=False`)**：
   - 執行 `callers`、`callees`、`impact` 時，管線透過 `_ensure_jit_index_ready(require_vectors=False)` 僅確保 AST 符號池、倒排索引与 `CallGraphIndex` 完成同步或差量修補，**100% 跳過 FastEmbed ONNX 向量模型加載與推論**，使純靜態拓撲查詢延遲穩定保持在 $< 30\text{ ms}$。
 - **Protocol 5 + Gzip 高速寫盤與增量修補**：
-  - 持久化儲存於 `cache://knowledge-db/indices/unified.graph.bin.gz`，檔案體積 $< 150\text{ KB}$，反序列化載入耗時 $< 5\text{ ms}$。
+  - 持久化儲存於 `storage.local://ast/indices/unified.graph.bin.gz`，檔案體積 $< 150\text{ KB}$，反序列化載入耗時 $< 5\text{ ms}$。
   - 支援 `patch_incremental`：檔案變更時差量拔除舊檔案作為 Caller 與 Callee 的雙向邊並重新注入新調用邊，且重用已解析之 `UnifiedSymbol` 實例避免二次 AST 解析。
 
 ---

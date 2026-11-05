@@ -21,11 +21,13 @@ def on_test_setup(context: Any) -> None:
         sb_str = getattr(context, "root_dir", getattr(context, "sandbox_path", str(context)))
 
     sb_path = Path(str(sb_str))
+    storage_dir = sb_path / ".storage.local" / "knowledge-db"
+    (storage_dir / "indices").mkdir(parents=True, exist_ok=True)
+    (storage_dir / "bundles").mkdir(parents=True, exist_ok=True)
+    (storage_dir / "models").mkdir(parents=True, exist_ok=True)
     cache_dir = sb_path / ".cache" / "knowledge-db"
-    (cache_dir / "indices").mkdir(parents=True, exist_ok=True)
-    (cache_dir / "bundles").mkdir(parents=True, exist_ok=True)
-    (cache_dir / "models").mkdir(parents=True, exist_ok=True)
-    logger.debug(f"[hook.dev] Prepared knowledge-db cache storage at: {cache_dir}")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    logger.debug(f"[hook.dev] Prepared knowledge-db storage at: {storage_dir}")
 
 
 def on_test_teardown(context: Any) -> None:

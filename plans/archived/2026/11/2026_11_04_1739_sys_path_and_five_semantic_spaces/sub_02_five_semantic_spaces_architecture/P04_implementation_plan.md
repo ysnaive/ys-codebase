@@ -51,14 +51,14 @@
 2. **TASK-02 (`core.config` 雙軌物理純淨分離、`dispatcher` 對齊與 `1.2.7.x.py` 遷移腳本)**：
    - 修改 [`core/config.py`](../../../../ys_codebase/source/core/core/config.py) 更新 `get_config_path` 與 `list_modules`（100% 純淨定址）。
    - 修改 [`core/commands/dispatcher.py`](../../../../ys_codebase/source/core/core/commands/dispatcher.py) 更新 `_read_server_spawn_config` 讀取 `.config.local/server/config.local.json`。
-   - 將 [`core/manifest.json`](../../../../ys_codebase/source/core/manifest.json) 版本號推進至 `1.2.7.0`，並新建 `ys_codebase/source/core/scripts/migrations/1.2.7.x.py`。
+   - 新建 `ys_codebase/source/core/scripts/migrations/1.2.7.x.py`（`core/manifest.json` 維持 `1.2.6.0`，將於 `sub_03` 與全倉其餘模組一併執行版號晉升）。
 3. **TASK-03 (`core.engine` 模板部署、快照治理、`--purge` 與多段式 `act_migrate` 升級)**：
    - 修改 [`core/engine.py`](../../../../ys_codebase/source/core/core/engine.py) 更新 `_resolve_target_cfg_uris`、`_infill_single_template`、`_deploy_and_strip_single_module_config`、`act_snapshot`、`act_restore_snapshot`、`act_delete` 與多段式 `act_migrate`。
 4. **TASK-04 (`vscode-support` 與 `dev` 沙盒工具鏈對齊)**：
    - 修改 [`vscode_support/schema_compiler.py`](../../../../ys_codebase/source/vscode-support/vscode_support/schema_compiler.py)、[`vscode_support/projector.py`](../../../../ys_codebase/source/vscode-support/vscode_support/projector.py) 與 [`dev/dev/testing/sandbox.py`](../../../../ys_codebase/source/dev/dev/testing/sandbox.py)。
 5. **TASK-05 (單元測試補齊、`@build` 部署、工作區 `.gitignore` / VS Code 同步與文檔更新)**：
    - 更新並擴充 `core/tests/{test_uri.py,test_config.py,test_engine.py,test_gitignore.py,test_locale.py,test_core_commands.py}` 與 `vscode-support/tests/test_vscode_support.py`。
-   - 建置並安裝 `core@build`（自動觸發 `1.2.6.build -> 1.2.7.build` 之 `1.2.7.x.py` 遷移）、`dev@build`、`vscode-support@build`，執行 `gitignore sync` 與 `vscode-support sync`，驗證全套測試與三層文檔對齊。
+   - 建置並安裝 `core@build`、`dev@build`、`vscode-support@build`，執行 `gitignore sync` 與 `vscode-support sync`，驗證全套測試與三層文檔對齊（全模組版號晉升與 `1.2.7.x.py` 跨版實機觸發統一於 `sub_03` 執行）。
 
 ---
 

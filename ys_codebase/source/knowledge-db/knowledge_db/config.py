@@ -205,7 +205,7 @@ class KnowledgeDBConfig:
             except Exception:
                 pass
 
-            for uri_str in ("project://config/config.project.json", "project://config/config.local.json"):
+            for uri_str in ("config://knowledge-db/config.project.json", "config.local://knowledge-db/config.local.json"):
                 p = cls._resolve_config_uri(uri_str)
                 if p and p.exists():
                     try:

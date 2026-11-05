@@ -8,7 +8,7 @@ from typing import Any
 
 
 def on_test_setup(context: Any = None, **kwargs: Any) -> None:
-    """Prepare `.cache/ast/{indices,bundles}` inside the sandbox before test execution."""
+    """Prepare `.storage.local/ast/{indices,bundles}` and `.cache/ast` inside the sandbox before test execution."""
     sb_str = getattr(context, "sandbox_dir", None)
     if not sb_str and isinstance(context, dict):
         sb_str = context.get("sandbox_dir") or context.get("sandbox_root") or context.get("root_dir")
@@ -18,10 +18,12 @@ def on_test_setup(context: Any = None, **kwargs: Any) -> None:
         return
 
     sb_path = Path(str(sb_str))
+    storage_dir = sb_path / ".storage.local" / "ast"
+    (storage_dir / "indices").mkdir(parents=True, exist_ok=True)
+    (storage_dir / "bundles").mkdir(parents=True, exist_ok=True)
     cache_dir = sb_path / ".cache" / "ast"
-    (cache_dir / "indices").mkdir(parents=True, exist_ok=True)
-    (cache_dir / "bundles").mkdir(parents=True, exist_ok=True)
-    logging.getLogger("ast.hook.dev").debug("[hook.dev] Prepared ast cache storage at: %s", cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    logging.getLogger("ast.hook.dev").debug("[hook.dev] Prepared ast storage at: %s", storage_dir)
 
 
 def on_test_teardown(context: Any = None, **kwargs: Any) -> None:

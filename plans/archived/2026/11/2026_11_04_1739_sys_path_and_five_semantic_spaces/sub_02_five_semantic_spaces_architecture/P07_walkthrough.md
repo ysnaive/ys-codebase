@@ -43,7 +43,7 @@
 ## 3. 測試與品質驗證結果 (Verification & Quality Audit)
 
 - **自動化測試通過率**：
-  - `python yscb.py dev test core -q --sync`：`244/244 (100.0%) Passed`（同步安裝 `core@1.2.7.build` 時自動觸發 `1.2.7.x.py` 遷移 `ys_codebase/config/core/config.local.json` $\to$ `ys_codebase/.config.local/core/config.local.json`）
+  - `python yscb.py dev test core -q --sync`：`244/244 (100.0%) Passed`（含 `1.2.7.x.py` 遷移腳本、跨三元組 `@build` / 正式版 `act_migrate` 與 `act_restore_snapshot` 空 `config.local` 清理驗證；`core` 版號將於 `sub_03` 與其餘模組一併晉升）
   - `python yscb.py dev test vscode-support -q --sync`：`11/11 (100.0%) Passed`
   - `python yscb.py dev test dev -q --sync`：`87/87 (100.0%) Passed`
   - `python yscb.py dev check --all`：`9 Total, 9 Passed, 0 Warnings, 0 Failed`

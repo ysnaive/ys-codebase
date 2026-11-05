@@ -3,48 +3,48 @@
   "default_provider": "./ys_codebase/release",
   "installed_modules": {
     "core": {
-      "version": "1.2.6.build",
-      "installed_at": "2026-11-04 19:48:45",
+      "version": "1.2.7.build",
+      "installed_at": "2026-11-05 04:34:14",
       "provider": "./ys_codebase/release"
     },
     "dev": {
       "version": "1.1.4.build",
-      "installed_at": "2026-11-04 19:39:13",
+      "installed_at": "2026-11-05 04:05:20",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "1.2.3.build",
-      "installed_at": "2026-11-04 18:35:15",
+      "version": "1.2.4.build",
+      "installed_at": "2026-11-05 04:07:58",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.2.0.build",
-      "installed_at": "2026-11-04 18:33:59",
+      "version": "1.2.1.build",
+      "installed_at": "2026-11-05 04:14:09",
       "provider": "./ys_codebase/release"
     },
     "server": {
       "version": "1.0.4.build",
-      "installed_at": "2026-11-04 18:34:48",
+      "installed_at": "2026-11-05 04:05:51",
       "provider": "./ys_codebase/release"
     },
     "file-space": {
-      "version": "1.0.0.build",
-      "installed_at": "2026-11-04 18:35:41",
+      "version": "1.0.1.build",
+      "installed_at": "2026-11-05 04:14:28",
       "provider": "./ys_codebase/release"
     },
     "ast": {
-      "version": "1.0.0.build",
-      "installed_at": "2026-11-04 18:35:42",
+      "version": "1.0.1.build",
+      "installed_at": "2026-11-05 04:14:09",
       "provider": "./ys_codebase/release"
     },
     "vscode-support": {
       "version": "1.0.0.build",
-      "installed_at": "2026-11-04 19:38:38",
+      "installed_at": "2026-11-05 04:06:07",
       "provider": "./ys_codebase/release"
     },
     "gdrive-support": {
-      "version": "1.0.0.0",
-      "installed_at": "2026-11-04 15:27:28",
+      "version": "1.0.1.build",
+      "installed_at": "2026-11-05 04:14:28",
       "provider": "./ys_codebase/release"
     }
   }

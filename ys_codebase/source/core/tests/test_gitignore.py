@@ -241,6 +241,34 @@ class TestCoreGitignore(YSCBTestCase):
         self.assertIn("Unknown subcommand", err_buf.getvalue())
         self.mark_passed()
 
+    def test_ft_04_default_workspace_storage_local_persistence(self) -> None:
+        """驗證預設工作區動態忽略規則持久化至 `storage.local://core/gitignore_dynamic.json`。"""
+        self.assertEqual(gitignore.DYNAMIC_CACHE_URI, "storage.local://core/gitignore_dynamic.json")
+
+        had_existing = vfs.exists(gitignore.DYNAMIC_CACHE_URI)
+        orig_data = vfs.read_json(gitignore.DYNAMIC_CACHE_URI) if had_existing else None
+        try:
+            res_reg = gitignore.register_dynamic(
+                "mock_dyn_persist",
+                ["/.mock_dyn_dir/"],
+                sync_now=False,
+            )
+            self.assertEqual(res_reg["module"], "mock_dyn_persist")
+            self.assertTrue(vfs.exists(gitignore.DYNAMIC_CACHE_URI))
+            persisted = vfs.read_json(gitignore.DYNAMIC_CACHE_URI)
+            self.assertEqual(persisted.get("mock_dyn_persist"), ["/.mock_dyn_dir/"])
+
+            res_clr = gitignore.clear_dynamic("mock_dyn_persist", sync_now=False)
+            self.assertTrue(res_clr["had_dynamic_entries"])
+            persisted_after = vfs.read_json(gitignore.DYNAMIC_CACHE_URI)
+            self.assertNotIn("mock_dyn_persist", persisted_after)
+        finally:
+            if had_existing and orig_data is not None:
+                vfs.write_json(gitignore.DYNAMIC_CACHE_URI, orig_data, indent=2, atomic=True)
+            elif vfs.exists(gitignore.DYNAMIC_CACHE_URI):
+                vfs.remove(gitignore.DYNAMIC_CACHE_URI, missing_ok=True)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

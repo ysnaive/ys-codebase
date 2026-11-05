@@ -1,10 +1,10 @@
 {
   "name": "server",
-  "version": "1.0.4.0",
+  "version": "1.0.4.6",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.5"
+    "core": ">=1.2.7"
   },
   "onboarding": [
     "Start background daemon (or use --console in IDE background task): python yscb.py server start",

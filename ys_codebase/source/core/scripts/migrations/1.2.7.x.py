@@ -1,7 +1,8 @@
 """
 Core 1.2.7.x migration hook.
 Migrates legacy `config://<mod>/config*.local.json` files into `config.local://<mod>/config*.local.json`
-when upgrading `core` to >= 1.2.7.0, keeping runtime configuration lookup logic 100% free of legacy fallback branches.
+and migrates `<yscb_dir>/.cache/core/gitignore_dynamic.json` into `<yscb_dir>/.storage.local/core/gitignore_dynamic.json`
+when upgrading `core` to >= 1.2.7.0, keeping runtime lookup logic 100% free of legacy fallback branches.
 """
 from typing import Any, Dict
 import copy
@@ -21,25 +22,12 @@ def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str
     return result
 
 
-def migrate(context: Dict[str, Any]) -> bool:
-    """
-    Scans `<yscb_dir>/config/<mod>/config*.local.json` across all modules and migrates
-    each file to `<yscb_dir>/.config.local/<mod>/config*.local.json`.
-    If the target file already exists (for instance, default locale seeded during `act_reload`),
-    user settings from the legacy file take precedence over the newly seeded defaults.
-    """
-    yscb_dir = context.get("yscb_dir")
-    if not yscb_dir:
-        try:
-            from core import uri
-            yscb_dir = uri.resolve_yscb_root()
-        except Exception:
-            return True
-
+def _migrate_local_configs(yscb_dir: str) -> None:
+    """Migrates `<yscb_dir>/config/<mod>/config*.local.json` to `<yscb_dir>/.config.local/<mod>/`."""
     cfg_root = os.path.join(yscb_dir, "config")
     local_root = os.path.join(yscb_dir, ".config.local")
     if not os.path.isdir(cfg_root):
-        return True
+        return
 
     for mod_name in sorted(os.listdir(cfg_root)):
         if mod_name.startswith("."):
@@ -104,6 +92,84 @@ def migrate(context: Dict[str, Any]) -> bool:
                 os.rmdir(mod_cfg_dir)
         except OSError:
             pass
+
+
+def _migrate_gitignore_dynamic(yscb_dir: str, storage_local_dir: str) -> None:
+    """Migrates `<yscb_dir>/.cache/core/gitignore_dynamic.json` to `<storage_local_dir>/gitignore_dynamic.json`."""
+    legacy_gi_path = os.path.join(yscb_dir, ".cache", "core", "gitignore_dynamic.json")
+    if not os.path.isfile(legacy_gi_path):
+        return
+
+    os.makedirs(storage_local_dir, exist_ok=True)
+    target_gi_path = os.path.join(storage_local_dir, "gitignore_dynamic.json")
+
+    if not os.path.exists(target_gi_path):
+        shutil.move(legacy_gi_path, target_gi_path)
+        return
+
+    legacy_data = None
+    target_data = None
+    try:
+        with open(legacy_gi_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            if isinstance(loaded, dict):
+                legacy_data = loaded
+    except Exception:
+        legacy_data = None
+
+    try:
+        with open(target_gi_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            if isinstance(loaded, dict):
+                target_data = loaded
+    except Exception:
+        target_data = None
+
+    if legacy_data is not None and target_data is not None:
+        merged = copy.deepcopy(target_data)
+        for k, v in legacy_data.items():
+            if k not in merged:
+                merged[k] = copy.deepcopy(v)
+            elif isinstance(merged[k], list) and isinstance(v, list):
+                for item in v:
+                    if item not in merged[k]:
+                        merged[k].append(item)
+            elif isinstance(merged[k], dict) and isinstance(v, dict):
+                merged[k] = _deep_merge_dict(v, merged[k])
+        tmp_path = f"{target_gi_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(merged, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp_path, target_gi_path)
+    elif legacy_data is not None and target_data is None:
+        shutil.copy2(legacy_gi_path, target_gi_path)
+
+    try:
+        os.remove(legacy_gi_path)
+    except OSError:
+        pass
+
+
+def migrate(context: Dict[str, Any]) -> bool:
+    """
+    Scans `<yscb_dir>/config/<mod>/config*.local.json` across all modules and migrates
+    each file to `<yscb_dir>/.config.local/<mod>/config*.local.json`, and migrates
+    `<yscb_dir>/.cache/core/gitignore_dynamic.json` to `<storage_local_dir>/gitignore_dynamic.json`.
+    """
+    yscb_dir = context.get("yscb_dir")
+    if not yscb_dir:
+        try:
+            from core import uri
+            yscb_dir = uri.resolve_yscb_root()
+        except Exception:
+            return True
+
+    storage_local_dir = context.get("storage_local_dir") or os.path.join(
+        yscb_dir, ".storage.local", "core"
+    )
+
+    _migrate_local_configs(yscb_dir)
+    _migrate_gitignore_dynamic(yscb_dir, storage_local_dir)
 
     try:
         from core import config

@@ -309,7 +309,7 @@
         }
       },
       "compile": {
-        "description": "執行 Stage 1 中繼工廠編譯管線 (展開變數至 cache.root://)",
+        "description": "執行 Stage 1 中繼工廠編譯管線 (展開變數至 cache://)",
         "tier": "safe",
         "server_compatible": true,
         "usage": {

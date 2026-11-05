@@ -29,7 +29,7 @@
 | :--- | :---: | :--- | :---: |
 | **FT-01** | `Passed` | `TestCoreURI` 全數通過：`config.local://` -> `/.config.local`、`storage.local://` -> `/.storage.local`、`@/` 自省與越界防禦驗證無誤 | 2026-11-04 |
 | **FT-02** | `Passed` | `TestCoreGitignore` 全數通過：`normalize_pattern` 正確轉換 `config.local://` 與 `storage.local://` 為 `/ys_codebase/.config.local/` 與 `/ys_codebase/.storage.local/` | 2026-11-04 |
-| **FT-03** | `Passed` | `TestConfigManager` 全數通過（含新增 `test_migration_script_1_2_7_x_sweeps_and_deep_merges_legacy_local_configs`），且 `core@build` 安裝時自動觸發 `Running migration ladder for 'core' (1.2.6.build -> 1.2.7.build)...` 將工作區 `ys_codebase/config/core/config.local.json` 無損遷移至 `ys_codebase/.config.local/core/config.local.json` | 2026-11-04 |
+| **FT-03** | `Passed` | `TestConfigManager` 全數通過（含新增 `test_migration_script_1_2_7_x_sweeps_and_deep_merges_legacy_local_configs`），且 `TestCoreEngine` 驗證 `act_migrate` 支援跨三元組 `1.2.6.build -> 1.2.7.build` / `1.2.7.0` 觸發 `1.2.7.x.py`（`core` 版號將於 `sub_03` 與全倉其餘模組一併晉升） | 2026-11-04 |
 | **FT-04** | `Passed` | `TestCoreEngine` 全數通過（含新增 `test_act_delete_purge_and_multi_segment_act_migrate` 與更新 `test_dual_layer_snapshot_and_execution_context_immutability`） | 2026-11-04 |
 | **FT-05** | `Passed` | `TestVSCodeSupport` 11/11 (100%) 通過 | 2026-11-04 |
 | **FT-06** | `Passed` | `core` (244/244 Passed)、`vscode-support` (11/11 Passed)、`dev` (87/87 Passed)，`dev check --all` 9/9 Passed (0 Warnings, 0 Failed)，`uri check` 25/25 HEALTHY | 2026-11-04 |
@@ -42,4 +42,4 @@
 
 | 驗證編號 | 驗證操作與預期效果 | 驗證結果標記 | 開發者確認紀錄 / 備註 |
 | :--- | :--- | :---: | :--- |
-| **UX-01** | 檢視 `yscb uri check` 語意協議清冊、根目錄 `.gitignore` 與 `.vscode/settings.json`，確認 `config.local://` 與 `storage.local://` 已註冊生效且舊版 `ys_codebase/config/core/config.local.json` 已透過 `1.2.7.x.py` 遷入 `ys_codebase/.config.local/core/config.local.json` | `[跳過/免測]` | CLI 實機驗證 `uri check`、`config list --local` 與 `.vscode/settings.json` 同步皆已確認通過 |
+| **UX-01** | 檢視 `yscb uri check` 語意協議清冊、根目錄 `.gitignore` 與 `.vscode/settings.json`，確認 `config.local://` 與 `storage.local://` 已註冊生效且 `.config.local/core/config.local.json` 已就緒（`core` 版號晉升與 `1.2.7.x.py` 跨版實機觸發將於 `sub_03` 執行） | `[跳過/免測]` | CLI 實機驗證 `uri check`、`config list --local` 與 `.vscode/settings.json` 同步皆已確認通過 |

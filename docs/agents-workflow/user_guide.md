@@ -13,7 +13,7 @@ related_docs:
   - "./README.md"
   - "./FACTORY_PIPELINE.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-01"
+last_updated: "2026-11-05"
 ---
 
 # Agents Workflow 使用者與操作指南 (User Guide)
@@ -226,7 +226,7 @@ python yscb.py agents-workflow release [target_name] [--force]
    - 例如：在 **Cursor** 內選用 Claude Sonnet 模型時，應啟用 `cursor`（而非 `claude`）；在 **OpenCode** 內連接 Anthropic API 時，應啟用 `opencode`。
 2. **多 Target 共用實體路徑之並聯渲染 (`Union Rendering`) 與本機 `config.local.json` 覆寫建議 (`[P00:DR-01]`)**：
    - 當專案同時啟用多個共用實體路徑之 Target（例如團隊 `config.project.json` 預設啟用 `antigravity`，而開發者本機同時啟用 `codex` 或 `cursor`）時，`ReleasePublisher` 會自動將共用檔案內之專有名詞（`__%{...}__`）與 `AGENTS.md` 相對路徑（`__#{...}__`）以 `" / "` 去重並聯渲染，確保雙平台同時可用、零覆寫遺失。
-   - 物化時終端機會同步輸出 `[publisher:warning]` 提醒存在共用路徑；若開發者希望工作區保持單一平台純淨語法，建議直接於 `config/agents-workflow/config.local.json`（不入 Git）設定 `"release_targets": ["<your_target>"]`（或使用 `release-target --remove antigravity --proj` 與 `release-target --add <your_target>`）進行本機覆寫。
+   - 物化時終端機會同步輸出 `[publisher:warning]` 提醒存在共用路徑；若開發者希望工作區保持單一平台純淨語法，建議直接於 `config.local://agents-workflow/config.local.json`（`.config.local/agents-workflow/config.local.json`，不入 Git）設定 `"release_targets": ["<your_target>"]`（或使用 `release-target --remove antigravity --proj` 與 `release-target --add <your_target>`）進行本機覆寫。
 
 #### CLI Target 管理指令
 ```bash
@@ -333,8 +333,8 @@ python yscb.py agents-workflow release-target --remove claude [--proj]
 
 ### 7.2 專案空間自適應配置與跨模組組態體檢教練 (`/how-to-config-yscb`)
 透過動態聚合錨點 `` `__@{HOW_TO_CONFIG_MODULES}__` `` 匯聚所有已安裝模組之 `assets/config_guide.md`，執行四步閉環：
-1. **Step 1（自動空間探勘與多模組健康檢查）**：執行 `status`、`config list`、`uri check`、`contributes check`、檢查 `.gitignore` 是否忽略 `*.local.json`，並依各模組體檢指南逐一核對。
-2. **Step 2（診斷報告與配置草案卡）**：支援**全綠健康短路 (All-Green Short-Circuit)**（全綠時不強行覆寫組態）與**第一方專案三位一體對齊 (First-Party Trinity Alignment)**（單次目錄探勘同步生成 `project_role.md`、`testing_guide.md` 與 `knowledge-db` `spaces.source.include` 草案，並嚴格區分 `config.project.json` 與 `config.local.json` 雙層階層）。
+1. **Step 1（自動空間探勘與多模組健康檢查）**：執行 `status`、`config list`、`uri check`、`contributes check`、檢查 `.gitignore` 是否忽略 `.config.local/`、`.storage.local/` 與 `*.local.json`，並依各模組體檢指南逐一核對。
+2. **Step 2（診斷報告與配置草案卡）**：支援**全綠健康短路 (All-Green Short-Circuit)**（全綠時不強行覆寫組態）與**第一方專案三位一體對齊 (First-Party Trinity Alignment)**（單次目錄探勘同步生成 `project_role.md`、`testing_guide.md` 與 `knowledge-db` `spaces.source.include` 草案，並嚴格區分 `config.project.json` 與 `config.local://<mod>/config.local.json` 雙層階層）。
 3. **Step 3（引導寫入與三步編譯發布守門）**：確認後寫入組態，並強制通過 `contributes check` $\to$ `agents-workflow compile`（0 Error / 0 Warning）$\to$ `agents-workflow release` 三步守門。
 4. **Step 4（潔淨對話切換提示）**：提醒開發者開啟全新對話視窗以乾淨 Context 載入更新後的 `AGENTS.md` 與技能。
 

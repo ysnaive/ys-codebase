@@ -3,14 +3,14 @@
     {
       "token": "file-space.storage",
       "type": "const",
-      "value": "cache://file-space/",
+      "value": "storage.local://file-space/",
       "description": "工作空間二進位指紋快照 (YFP2) 與多消費者游標儲存根目錄"
     },
     {
       "token": "file-space.cache",
       "type": "const",
       "value": "cache://file-space/",
-      "description": "工作空間快取與快照根目錄別名"
+      "description": "工作空間快取根目錄別名"
     }
   ],
   "events": [

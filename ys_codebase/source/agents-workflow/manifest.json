@@ -1,10 +1,10 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.3.5",
+  "version": "1.2.4.0",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.6"
+    "core": ">=1.2.7"
   },
   "optional": {
     "knowledge-db": {
@@ -24,6 +24,6 @@
   "release": {
     "type": "refactor",
     "urgency": "optional",
-    "summary": "publisher 對齊 core.gitignore 根目錄統一分組軟合併引擎並更新 manifest.json optional"
+    "summary": "對齊五大語意空間 (storage.local:// 發布清冊與 config.local:// 覆寫) 並新增 1.2.4.x 版本晉升遷移腳本"
   }
 }

@@ -1,8 +1,8 @@
 {
   "root_folder_id": "",
   "auth_mode": "oauth_user",
-  "credentials_uri": "config://gdrive-support/credentials.json",
-  "token_uri": "cache://gdrive-support/token.json",
+  "credentials_uri": "config.local://gdrive-support/credentials.json",
+  "token_uri": "config.local://gdrive-support/token.json",
   "sandbox_dir": "",
   "repo_sync": {
     "enable": false,

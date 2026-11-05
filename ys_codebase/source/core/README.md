@@ -84,9 +84,11 @@ Core 提供內建語意 URI 協定（Scheme B 正交協定），並支援各擴�
 | **`module.source://`** | `yscb://source/` | **模組源碼開發空間目錄（`dev create` 預設建立位置）** |
 | **`module.build://`** | `yscb://.build/` | **模組開發打包暫存目錄** |
 | **`module.release://`** | `yscb://release/` | **模組正式發布包產出目錄** |
-| **`config://`** | `yscb://config/{module}/` | **模組專屬設定檔目錄（支援 `config://@/` 自省）** |
-| **`cache://`** | `yscb://.cache/{module}/` | **模組專屬快取與暫態工作目錄（支援 `cache://@/` 自省）** |
-| **`storage://`** | `yscb://storage/` | **跨環境共享持久化資料空間（支援 `storage://@/` 自省）** |
+| **`config://`** | `yscb://config/{module}/` | **模組團隊共享設定檔目錄（支援 `config://@/` 自省，Git 追蹤）** |
+| **`config.local://`** | `yscb://.config.local/{module}/` | **模組本機個人設定與私密憑證目錄（支援 `config.local://@/` 自省，Git 忽略）** |
+| **`cache://`** | `yscb://.cache/{module}/` | **模組專屬快取與暫態工作目錄（支援 `cache://@/` 自省，Git 忽略）** |
+| **`storage://`** | `yscb://storage/{module}/` | **跨環境共享持久化資料空間（支援 `storage://@/` 自省，Git 追蹤）** |
+| **`storage.local://`** | `yscb://.storage.local/{module}/` | **本機持久化運行狀態、索引與大型模型空間（支援 `storage.local://@/` 自省，Git 忽略）** |
 | **`snapshot://`** | `yscb://.snapshots/` | **系統組態快照備份（用於災難恢復）** |
 
 ### 2.2 2x2 組態矩陣邊界 (Configuration Matrix)
@@ -317,5 +319,5 @@ python yscb.py install agents-workflow --provider=./my_offline_packages/release
 若某台開發機需要特化的暫存路徑或調試參數：
 ```bash
 python yscb.py config set core debug_mode true --local
-# 自動寫入 config/core/config.local.json (被 .gitignore 忽略)
+# 自動寫入 .config.local/core/config.local.json (被 .gitignore 忽略)
 ```

@@ -10,7 +10,7 @@ related_docs:
   - "../core/README.md"
   - "../core/uri_protocols.md"
   - "../core/ZIP_PACKAGE_SPEC.md"
-last_updated: "2026-10-27"
+last_updated: "2026-11-05"
 ---
 
 # 全專案核心工程規範與邊界架構 (Project Standards & Boundary Architecture)
@@ -32,15 +32,15 @@ last_updated: "2026-10-27"
 | **`module.mirror://`** | `core` | `yscb://.mirror/` | **本機端模組鏡像庫（版本化快照備份）** | 🚫 忽略 |
 | **`config://`** | `core` | `yscb://config/` | **全域與模組團隊版控設定檔根目錄** | ✅ 受追蹤 |
 | **`config.local://`** | `core` | `yscb://.config.local/` | **模組本機個人設定與私密憑證根目錄（磁碟持久化）** | 🚫 忽略 |
-| **`cache://`** | `core` | `yscb://.cache/` | **全域與模組編譯快取與可隨時丟棄之中介產物根目錄** | 🚫 忽略 |
+| **`cache://`** | `core` | `yscb://.cache/` | **全域與模組純揮發性快取與跨進程鎖根目錄 (`tmpfs` Ready)** | 🚫 忽略 |
 | **`storage://`** | `core` | `yscb://storage/` | **跨環境共享持久化資料空間（團隊版控）** | ✅ 受追蹤 |
-| **`storage.local://`** | `core` | `yscb://.storage.local/` | **本機持久化運行狀態、索引與大型模型空間（磁碟持久化，不入快照）** | 🚫 忽略 |
+| **`storage.local://`** | `core` | `yscb://.storage.local/` | **本機持久化運行狀態、同步帳本、索引與大型模型空間（磁碟持久化，不入快照）** | 🚫 忽略 |
 | **`snapshot://`** | `core` | `yscb://.snapshots/` | **組態快照備份目錄（用於災難恢復與回滾）** | 🚫 忽略 |
 | **`yscb.venv://`** | `core` | `yscb://.venv/` | **YSCB 私有微虛擬環境空間根目錄** | 🚫 忽略 |
 | **`module.source://`** | `dev` | `yscb://source/` | **模組原始碼開發空間（SSOT 源碼）** | ✅ 受追蹤 |
 | **`module.build://`** | `dev` | `yscb://.build/` | **本地開發完整建置產物空間** | 🚫 忽略 |
 | **`module.release://`** | `dev` | `yscb://release/` | **本機發布產物準備空間** | ✅ 受追蹤 |
-| **`knowledge.storage://`** | `knowledge-db` | `cache://knowledge-db/` | **知識庫 AST 與向量快取專用空間** | 🚫 忽略 |
+| **`knowledge.storage://`** | `knowledge-db` | `storage.local://knowledge-db/` | **知識庫向量模型與混合索引持久化專用空間** | 🚫 忽略 |
 | **`workflow.plans://`** | `agents-workflow` | `project://plans/` | **工作流開發與推進計畫空間** | 專案自行管理 |
 | **`workflow.docs://`** | `agents-workflow` | `project://docs/` | **專案知識庫與架構文檔空間** | 專案自行管理 |
 | **`workflow.roadmap://`** | `agents-workflow` | `project://plans/roadmap/` | **長期演進藍圖與策略主題空間** | 專案自行管理 |
@@ -121,7 +121,7 @@ graph LR
 - **背景問題**：
   YSCB 作為上游核心框架，無法預知下游消費端專案的實體目錄結構（各專案存放計畫、設定檔與源碼的相對位置不一）；同時必須防範 AI 代理在自動執行任務時發生越權寫入（Path Traversal）或污染受保護目錄。
 - **設計決策**：
-  所有跨模組路徑統一使用自訂語義化 URI（如 `project://`、`workflow.plans://`、`workflow.roadmap://`、`storage://`、`cache://`、`module://`），並透過 `core.vfs` 進行檔案操作封裝。
+  所有跨模組路徑統一使用自訂語義化 URI（如 `project://`、`workflow.plans://`、`workflow.roadmap://`、`config://`、`config.local://`、`storage://`、`storage.local://`、`cache://`、`module://`），並透過 `core.vfs` 進行檔案操作封裝。
 - **取捨與理由（Trade-offs）**：
   1. **契約式路徑解耦（Contractual Pathing）**：核心模組與 `SKILL.md` 提示詞僅需針對固定語義 URI（或 `__${...}__` 佔位符）編寫邏輯，下游專案透過各自的 `config.project.json` 將不定實體路徑掛載（Mount）至固定語義路由，實現對下游專案結構的「零假設與零侵入」。
   2. **集中式權限守衛與本地實體檔案代理（Access Guard & Local OS Proxy）**：由於系統涉及大量 `subprocess` 呼叫（沙盒測試、Git、Pip、Server Worker）、Tree-sitter C-extension 以及本地模型載入，在物理上依賴作業系統實體檔案描述符（OS File Descriptors）。因此 `core.vfs` 明確定位為**「具備 `guard.py` 權限守衛、原子寫入與跨平台路徑正規化的本地實體檔案代理層」**（不追求純記憶體 In-Memory VFS 攔截子進程）。

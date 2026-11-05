@@ -3,8 +3,8 @@
     {
       "token": "gdrive-support.storage",
       "type": "const",
-      "value": "cache://gdrive-support/",
-      "description": "Google Drive 同步狀態帳本、指紋快取與跨進程鎖根目錄"
+      "value": "storage.local://gdrive-support/",
+      "description": "Google Drive 同步狀態帳本與指紋快取根目錄"
     }
   ],
   "commands": {

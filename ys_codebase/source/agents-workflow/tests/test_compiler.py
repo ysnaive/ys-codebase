@@ -70,7 +70,7 @@ class TestArtifactCompiler(YSCBTestCase):
         self.mark_passed()
 
     def test_st_01_stage1_cache_output(self):
-        """ST-01: 驗證 Stage 1 快取物化寫入 cache.root:// 並回傳結構化項目清單。"""
+        """ST-01: 驗證 Stage 1 快取物化寫入 cache:// 並回傳結構化項目清單。"""
         res = self.compiler.compile_stage1()
         self.assertTrue(res["success"])
         self.assertGreaterEqual(len(res["resolved_items"]), 16)

@@ -171,7 +171,7 @@ def reconcile_root_readme_state(
     state_file = (
         Path(readme_state_path).resolve()
         if readme_state_path is not None
-        else Path(uri.resolve("cache://gdrive-support/readme_sync_state.json")).resolve()
+        else Path(uri.resolve("storage.local://gdrive-support/readme_sync_state.json")).resolve()
     )
     target_key = (config.sandbox_dir or config.root_folder_id or "default").strip()
     if not target_key:
@@ -305,7 +305,7 @@ class SyncCoordinator:
         self.state_path = (
             Path(state_path).resolve()
             if state_path is not None
-            else Path(uri.resolve("cache://gdrive-support/sync_state.json")).resolve()
+            else Path(uri.resolve("storage.local://gdrive-support/sync_state.json")).resolve()
         )
         self.lock_path = (
             Path(lock_path).resolve()
@@ -320,7 +320,7 @@ class SyncCoordinator:
         self.readme_state_path = (
             Path(readme_state_path).resolve()
             if readme_state_path is not None
-            else Path(uri.resolve("cache://gdrive-support/readme_sync_state.json")).resolve()
+            else Path(uri.resolve("storage.local://gdrive-support/readme_sync_state.json")).resolve()
         )
         self._file_space_manager = file_space_manager
 

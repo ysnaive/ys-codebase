@@ -1,13 +1,13 @@
 {
   "id": "gdrive-support",
   "name": "gdrive-support",
-  "version": "1.0.0.0",
+  "version": "1.0.1.0",
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.6",
-    "file-space": ">=1.0.0"
+    "core": ">=1.2.7",
+    "file-space": ">=1.0.1"
   },
   "optional": {
     "server": {
@@ -21,7 +21,7 @@
   },
   "pip_dependencies": {},
   "uris": {
-    "storage": "cache://gdrive-support"
+    "storage": "storage.local://gdrive-support"
   },
   "onboarding": [
     "請執行 `python yscb.py gdrive status` 檢視 Google Drive 同步組態、分支設定與受管空間映射狀態。",
@@ -31,6 +31,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "首發 Google Drive 雲端原子操作、repo_sync 雙層隔離同步倉、Shortcut 零空間分支、CoW 30 天垃圾桶與雙軌內外部 Skills"
+    "summary": "對齊五大語意空間：OAuth 憑證與 Token 收斂至 config.local://gdrive-support/，同步狀態帳本遷移至 storage.local://gdrive-support/，並隨附 1.0.1.x.py 無損遷移腳本"
   }
 }

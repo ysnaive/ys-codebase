@@ -173,6 +173,32 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
     @require(Requirement.ENV)
     def test_ft_02_init_repo_and_readme_generation(self) -> None:
         """Verify init_repo creates repo/{.yscb_gdrive.json, README.md, .history/, .trash/, main/} and top-level README.md."""
+        default_coord = SyncCoordinator(
+            config=self.cfg,
+            transport=self.transport,
+            project_root=self.proj_dir,
+        )
+        self.assertTrue(
+            default_coord.state_path.as_posix().endswith(
+                ".storage.local/gdrive-support/sync_state.json"
+            )
+        )
+        self.assertTrue(
+            default_coord.readme_state_path.as_posix().endswith(
+                ".storage.local/gdrive-support/readme_sync_state.json"
+            )
+        )
+        self.assertTrue(
+            default_coord.lock_path.as_posix().endswith(
+                ".cache/gdrive-support/sync.lock"
+            )
+        )
+        self.assertTrue(
+            default_coord.log_path.as_posix().endswith(
+                ".cache/gdrive-support/sync.log"
+            )
+        )
+
         res = self.coord.init_repo()
         self.assertEqual(res["status"], "initialized")
         self.assertIsNotNone(self.transport.get_entry("repo/.yscb_gdrive.json"))

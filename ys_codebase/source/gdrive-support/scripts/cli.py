@@ -23,7 +23,7 @@ def _maybe_reconcile_root_readme(
     """
     Trigger local-cache-gated root/README.md soft-merge / soft-remove check if repo_sync.enable changed.
     When an ad-hoc --sandbox-dir CLI override is passed, store state inside that sandbox's .yscb_readme_state.json
-    to prevent ad-hoc sandbox runs from mutating the global cache://gdrive-support/readme_sync_state.json.
+    to prevent ad-hoc sandbox runs from mutating the global storage.local://gdrive-support/readme_sync_state.json.
     """
     from gdrive_support.coordinator import reconcile_root_readme_state
 

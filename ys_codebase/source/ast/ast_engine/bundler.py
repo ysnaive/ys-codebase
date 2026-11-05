@@ -437,7 +437,7 @@ def _parse_file_task_worker(
 
 
 def _resolve_default_ast_storage_dir(project_root: Optional[Path] = None) -> Path:
-    """Resolve `ast.storage://` -> `cache://ast/`."""
+    """Resolve `ast.storage://` -> `storage.local://ast/`."""
     try:
         from core import uri
 
@@ -449,15 +449,15 @@ def _resolve_default_ast_storage_dir(project_root: Optional[Path] = None) -> Pat
     try:
         from core import uri
 
-        res_cache = uri.resolve("cache://ast", interactive=False)
-        if res_cache and not str(res_cache).startswith("!undefined"):
-            return Path(str(res_cache)).resolve()
+        res_storage = uri.resolve("storage.local://ast", interactive=False)
+        if res_storage and not str(res_storage).startswith("!undefined"):
+            return Path(str(res_storage)).resolve()
     except Exception:
         pass
     base = Path(project_root).resolve() if project_root else Path.cwd().resolve()
     if (base / "ys_codebase").is_dir():
-        return base / "ys_codebase" / ".cache" / "ast"
-    return base / ".cache" / "ast"
+        return base / "ys_codebase" / ".storage.local" / "ast"
+    return base / ".storage.local" / "ast"
 
 
 def _get_loaded_spaces(space_manager: Optional[FileSpaceManager]) -> Dict[str, Any]:

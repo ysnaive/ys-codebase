@@ -63,7 +63,12 @@ class EmbeddingService:
         enable_vector_search: bool = True,
     ):
         self.model_name = self.normalize_model_name(model_name)
-        self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "knowledge-db" / "models"
+        if cache_dir:
+            self.cache_dir = Path(cache_dir)
+        else:
+            from .pipeline import _resolve_default_knowledge_storage_dir
+
+            self.cache_dir = _resolve_default_knowledge_storage_dir() / "models"
         self.max_threads = max_threads or "auto"
         self.mock_mode = mock_mode
         self.enable_vector_search = enable_vector_search

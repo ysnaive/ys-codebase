@@ -24,7 +24,7 @@ LEGACY_INTERNAL_END = "# === YSCB INTERNAL IGNORE END ==="
 LEGACY_AW_BEGIN = "# === YSCB AGENTS_WORKFLOW IGNORE BEGIN ==="
 LEGACY_AW_END = "# === YSCB AGENTS_WORKFLOW IGNORE END ==="
 
-DYNAMIC_CACHE_URI = "cache://core/gitignore_dynamic.json"
+DYNAMIC_CACHE_URI = "storage.local://core/gitignore_dynamic.json"
 
 LEGACY_UNANCHORED_LINES: Set[str] = {
     "# YS-Codebase Autonomous Internal Ignore Rules",
@@ -204,14 +204,14 @@ def _save_dynamic_registry(
     proj_root: str,
     is_custom_root: bool,
 ) -> None:
-    """Persists dynamic patterns per module to `cache://core/gitignore_dynamic.json` (or memory for custom root)."""
+    """Persists dynamic patterns per module to `storage.local://core/gitignore_dynamic.json` (or memory for custom root)."""
     if is_custom_root:
         norm_key = os.path.normcase(os.path.abspath(proj_root))
         _CUSTOM_ROOT_DYNAMIC_STORE[norm_key] = dict(registry)
         return
 
     try:
-        vfs.makedirs("cache://core", exist_ok=True)
+        vfs.makedirs("storage.local://core", exist_ok=True)
         vfs.write_json(DYNAMIC_CACHE_URI, registry, indent=2, atomic=True)
     except Exception:
         pass
@@ -467,7 +467,7 @@ def register_dynamic(
 ) -> Dict[str, Any]:
     """
     Registers or replaces dynamic gitignore patterns for `module` (mandatory non-empty string).
-    Persists to `cache://core/gitignore_dynamic.json` and optionally triggers `sync()`.
+    Persists to `storage.local://core/gitignore_dynamic.json` and optionally triggers `sync()`.
     """
     mod_name = _validate_module_name(module)
     eff_proj, eff_yscb, is_custom = _resolve_roots(proj_root=proj_root, yscb_root=yscb_root)
