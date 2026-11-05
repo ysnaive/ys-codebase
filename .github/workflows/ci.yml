@@ -262,8 +262,10 @@ jobs:
 
           python3 - <<'PYEOF'
           import fnmatch
+          import hashlib
           import json
           import os
+          import sys
           import zipfile
 
           DEFAULT_IGNORES = [
@@ -290,8 +292,19 @@ jobs:
                       return True
               return False
 
+          def compute_sha256(file_path: str) -> str:
+              h = hashlib.sha256()
+              with open(file_path, "rb") as f:
+                  while True:
+                      chunk = f.read(65536)
+                      if not chunk:
+                          break
+                      h.update(chunk)
+              return h.hexdigest().lower()
+
           release_root = os.path.abspath("ys_codebase/release")
           source_root = os.path.abspath("ys_codebase/source")
+          sha_errors: list[str] = []
           for mod in sorted(os.listdir(source_root)):
               src_dir = os.path.join(source_root, mod)
               src_mf_path = os.path.join(src_dir, "manifest.json")
@@ -346,7 +359,31 @@ jobs:
                           else:
                               payload = raw_bytes
                       zf.writestr(zinfo, payload)
-              print(f"[ci-bootstrap] Packaged new release {mod}@{ver}.zip from source.")
+              actual_sha = compute_sha256(zip_path)
+              idx_path = os.path.join(mod_rel_dir, "index.json")
+              if os.path.isfile(idx_path):
+                  with open(idx_path, "r", encoding="utf-8") as idx_f:
+                      idx_data = json.load(idx_f)
+                  releases_map = idx_data.get("releases", {}) if isinstance(idx_data.get("releases"), dict) else {}
+                  rel_entry = releases_map.get(ver, {}) if isinstance(releases_map.get(ver), dict) else {}
+                  expected_sha = str(rel_entry.get("sha256") or "").strip().lower()
+                  if not expected_sha:
+                      sha_errors.append(
+                          f"[{mod}@{ver}] Missing 'sha256' in release/{mod}/index.json. "
+                          f"Please run 'python yscb.py dev release {mod}' before committing."
+                      )
+                  elif expected_sha != actual_sha:
+                      sha_errors.append(
+                          f"[{mod}@{ver}] Stale index.json sha256 detected: index.json recorded "
+                          f"sha256={expected_sha[:12]}..., but current source/{mod}/ packaged to "
+                          f"sha256={actual_sha[:12]}... Source files were modified after 'dev release'; "
+                          f"please re-run 'python yscb.py dev release {mod}' and commit index.json."
+                      )
+              print(f"[ci-bootstrap] Packaged new release {mod}@{ver}.zip from source (sha256={actual_sha[:12]}...).")
+          if sha_errors:
+              for err in sha_errors:
+                  print(f"[ci-sha256-gate] ERROR: {err}", file=sys.stderr)
+              sys.exit(1)
           PYEOF
 
       - name: Bootstrap YS-Codebase runtime environment

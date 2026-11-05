@@ -83,7 +83,7 @@
       "dependencies": {
         "core": ">=1.2.5"
       },
-      "sha256": "23d2da81c76fd22e7a2821a90c0fd22b72ed99ea1ef6637ad350834034f87306",
+      "sha256": "ccbc6bcc3e4d9d5fbbe29919a1fae36b46358f17477336fd946cf7dea20a8ba4",
       "type": "hotfix",
       "urgency": "critical",
       "summary": "修復 Master 自我重啟移交序列、Worker close_fds 隔離與日誌輪替偏移量重置"
