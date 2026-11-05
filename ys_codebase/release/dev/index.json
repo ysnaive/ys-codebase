@@ -9,7 +9,6 @@
     "1.1.2.2",
     "1.1.3.4",
     "1.1.4.3",
-    "1.1.4.4",
     "1.1.4.5"
   ],
   "releases": {
@@ -171,7 +170,7 @@
       "summary": "checker 新增非 core 模組 sys.path 零豁免 AST 守門並支援五大語意空間沙盒與合規檢查"
     },
     "1.1.4.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7"
       },

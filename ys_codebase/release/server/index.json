@@ -7,7 +7,6 @@
     "1.0.2.0",
     "1.0.3.2",
     "1.0.4.1",
-    "1.0.4.2",
     "1.0.4.3"
   ],
   "releases": {
@@ -110,7 +109,7 @@
       "summary": "WarmWorker.pre_warm 對齊 core.platform 統一 sys.path 注入與五大語意空間組態指引"
     },
     "1.0.4.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7"
       },

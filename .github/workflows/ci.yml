@@ -193,6 +193,7 @@ jobs:
 
               # Gate 2: Check which active_versions are new vs already on origin/releases
               mod_has_new_release = False
+              pending_new_versions: list[str] = []
               for v_str in active_versions:
                   rel_zip = f"{mod}/{v_str}.zip"
                   ledger_entry = releases_ledger.get(v_str, {}) if isinstance(releases_ledger.get(v_str), dict) else {}
@@ -208,12 +209,20 @@ jobs:
                               f"sha256={expected_sha[:12]}... Bump version instead of overwriting!"
                           )
                   else:
-                      mod_has_new_release = True
-                      if src_ver != v_str:
-                          errors.append(
-                              f"[{mod}@{v_str}] Pending new release version '{v_str}' in index.json does not "
-                              f"match source/{mod}/manifest.json version '{src_ver}'."
-                          )
+                      pending_new_versions.append(v_str)
+
+              if pending_new_versions:
+                  mod_has_new_release = True
+                  try:
+                      pending_sorted = sorted(pending_new_versions, key=parse_ver)
+                      highest_pending = pending_sorted[-1]
+                  except ValueError:
+                      highest_pending = pending_new_versions[-1]
+                  if src_ver != highest_pending:
+                      errors.append(
+                          f"[{mod}@{highest_pending}] Highest pending new release version '{highest_pending}' "
+                          f"in index.json does not match source/{mod}/manifest.json version '{src_ver}'."
+                      )
 
               if mod_has_new_release and mod not in changed_modules:
                   changed_modules.append(mod)

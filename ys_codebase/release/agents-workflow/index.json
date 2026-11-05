@@ -11,8 +11,6 @@
     "1.2.1.1",
     "1.2.2.3",
     "1.2.3.5",
-    "1.2.4.1",
-    "1.2.4.2",
     "1.2.4.3"
   ],
   "releases": {
@@ -194,7 +192,7 @@
       "summary": "三大持久清冊遷移至 storage.local://、拔除執行期歷史遷移分支並附帶 1.2.4.x 遷移腳本"
     },
     "1.2.4.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7"
       },
@@ -204,7 +202,7 @@
       "summary": "session-trace 軌跡解析支援 kdb 短別名歸一化至 knowledge-db"
     },
     "1.2.4.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7"
       },

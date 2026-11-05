@@ -3,8 +3,6 @@
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "versions": [
     "1.0.0.5",
-    "1.0.1.2",
-    "1.0.1.3",
     "1.0.1.4"
   ],
   "releases": {
@@ -97,7 +95,7 @@
       "summary": "CLI 預設去重相對路徑與 --file-uri 旗標、呼叫圖譜惰性載入與 unified.meta.json 快照探針"
     },
     "1.0.1.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7",
         "file-space": ">=1.0.1"
@@ -108,7 +106,7 @@
       "summary": "hook.file-space.py 空間白名單過濾與 _diff_all_spaces 動態聚合"
     },
     "1.0.1.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7",
         "file-space": ">=1.0.1"

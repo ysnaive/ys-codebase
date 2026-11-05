@@ -205,11 +205,21 @@ jobs:
                   with open(src_mf_path, "r", encoding="utf-8") as f:
                       src_mf = json.load(f)
 
+              idx_updated = False
+              releases_map = idx_data.get("releases")
+              if not isinstance(releases_map, dict):
+                  releases_map = {}
+                  idx_data["releases"] = releases_map
+                  idx_updated = True
+
+              src_ver_str = str(src_mf.get("version", "")).strip() if src_mf else ""
+              superseded_versions: set[str] = set()
+
               for ver in sorted(active_versions):
                   zip_path = os.path.join(mod_rel_dir, f"{ver}.zip")
                   if os.path.isfile(zip_path):
                       continue
-                  if src_mf and str(src_mf.get("version", "")).strip() == ver:
+                  if src_mf and src_ver_str == ver:
                       ignores = list(DEFAULT_IGNORES)
                       ignore_file = os.path.join(src_dir, ".yscbignore")
                       if os.path.isfile(ignore_file):
@@ -251,19 +261,22 @@ jobs:
                               zf.writestr(zinfo, payload)
                       print(f"[release-publish] Packaged {mod}@{ver}.zip from source.")
                   else:
+                      # Unpushed local intermediate revision superseded before reaching origin/releases
+                      superseded_versions.add(ver)
+                      rel_entry = releases_map.get(ver)
+                      if isinstance(rel_entry, dict):
+                          rel_entry["status"] = "pruned"
+                      idx_updated = True
                       print(
-                          f"[release-publish] ERROR: Missing archive {mod}@{ver}.zip on origin/releases and "
-                          f"source manifest is at '{src_mf.get('version') if src_mf else 'N/A'}'.",
-                          file=sys.stderr,
+                          f"[release-publish] Auto-pruned intermediate unpushed revision {mod}@{ver} "
+                          f"(superseded by '{src_ver_str or 'N/A'}')."
                       )
-                      sys.exit(1)
 
-              idx_updated = False
-              releases_map = idx_data.get("releases")
-              if not isinstance(releases_map, dict):
-                  releases_map = {}
-                  idx_data["releases"] = releases_map
-                  idx_updated = True
+              if superseded_versions:
+                  active_versions -= superseded_versions
+                  idx_data["versions"] = [
+                      v for v in idx_data.get("versions", []) if str(v).strip() not in superseded_versions
+                  ]
               for ver in sorted(active_versions):
                   zip_path = os.path.join(mod_rel_dir, f"{ver}.zip")
                   if not os.path.isfile(zip_path):

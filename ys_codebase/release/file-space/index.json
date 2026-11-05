@@ -3,8 +3,6 @@
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
     "1.0.0.5",
-    "1.0.1.1",
-    "1.0.1.2",
     "1.0.1.3"
   ],
   "releases": {
@@ -79,7 +77,7 @@
       "summary": "預設 snapshots 與 cursors 遷移至 storage.local:// 並附帶 1.0.1.x 自癒遷移腳本"
     },
     "1.0.1.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7"
       },
@@ -89,7 +87,7 @@
       "summary": "YFP3 世代位元組增量快照、Racy-Clean 防護與 diff_since_cursor 消費者增量游標管線"
     },
     "1.0.1.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7"
       },

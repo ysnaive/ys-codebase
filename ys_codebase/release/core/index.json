@@ -16,7 +16,6 @@
     "1.2.5.1",
     "1.2.6.0",
     "1.2.7.0",
-    "1.2.7.1",
     "1.2.7.2"
   ],
   "releases": {
@@ -169,7 +168,7 @@
       "summary": "新增五大語意空間協議、全已安裝模組 sys.path 統一注入與多段版本遷移階梯"
     },
     "1.2.7.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "d9532cb8422fcfef36e878b123acde32c81342b1d91103f73e5ecf5fbb83e934",
       "type": "bugfix",
