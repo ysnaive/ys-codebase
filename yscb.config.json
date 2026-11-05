@@ -28,13 +28,13 @@
       "provider": "./ys_codebase/release"
     },
     "file-space": {
-      "version": "1.0.1.build",
-      "installed_at": "2026-11-05 09:38:20",
+      "version": "1.0.1.1",
+      "installed_at": "2026-11-05 10:19:15",
       "provider": "./ys_codebase/release"
     },
     "ast": {
-      "version": "1.0.1.build",
-      "installed_at": "2026-11-05 09:38:20",
+      "version": "1.0.1.2",
+      "installed_at": "2026-11-05 10:18:49",
       "provider": "./ys_codebase/release"
     },
     "vscode-support": {
@@ -43,8 +43,8 @@
       "provider": "./ys_codebase/release"
     },
     "gdrive-support": {
-      "version": "1.0.1.build",
-      "installed_at": "2026-11-05 09:37:07",
+      "version": "1.0.1.2",
+      "installed_at": "2026-11-05 10:19:15",
       "provider": "./ys_codebase/release"
     }
   }

@@ -4,7 +4,8 @@
   "versions": [
     "1.0.0.5",
     "1.0.1.0",
-    "1.0.1.1"
+    "1.0.1.1",
+    "1.0.1.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -94,6 +95,17 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "CLI 預設去重相對路徑與 --file-uri 旗標、呼叫圖譜惰性載入與 unified.meta.json 快照探針"
+    },
+    "1.0.1.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7",
+        "file-space": ">=1.0.1"
+      },
+      "sha256": "3109c7b926a59e2980037eaee8ef7dd618f7a154c3c84e60a4685ef321b62810",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "hook.file-space.py 空間白名單過濾與 _diff_all_spaces 動態聚合"
     }
   }
 }

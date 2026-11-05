@@ -4,7 +4,8 @@
   "versions": [
     "1.0.0.0",
     "1.0.1.0",
-    "1.0.1.1"
+    "1.0.1.1",
+    "1.0.1.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -39,6 +40,17 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "Google Drive changes API 3-level remote cache short-circuit and foreground CLI lock preemption"
+    },
+    "1.0.1.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7",
+        "file-space": ">=1.0.1"
+      },
+      "sha256": "26eb8e0bb0feddecfe08f1e28d8af77eacd345b012f94ee4cb20988cb20a86c3",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "接入 file-space 單調世代增量游標與 Level 1 changes.list 雙向遠端快取修補"
     }
   }
 }

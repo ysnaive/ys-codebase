@@ -1,7 +1,7 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.0.1.1",
+  "version": "1.0.1.2",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -39,8 +39,8 @@
     "請執行 `python yscb.py ast callers <symbol>`、`callees <symbol>` 或 `impact <symbol>` 追蹤跨檔案呼叫拓撲與修改影響半徑。"
   ],
   "release": {
-    "type": "refactor",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "CLI 預設去重相對路徑與 --file-uri 旗標、呼叫圖譜惰性載入與 unified.meta.json 快照探針"
+    "summary": "hook.file-space.py 空間白名單過濾與 _diff_all_spaces 動態聚合"
   }
 }
