@@ -22,8 +22,8 @@
     "Run isolated sandbox tests: python yscb.py dev test --all --quiet"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "optional",
-    "summary": "補充 manifest.json optional 建議擴充模組 (vscode-support, agents-workflow)"
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "checker 新增非 core 模組 sys.path 零豁免 AST 守門並支援五大語意空間沙盒與合規檢查"
   }
 }

@@ -3,48 +3,48 @@
   "default_provider": "./ys_codebase/release",
   "installed_modules": {
     "core": {
-      "version": "1.2.7.build",
-      "installed_at": "2026-11-05 04:34:14",
+      "version": "1.2.7.0",
+      "installed_at": "2026-11-05 04:49:47",
       "provider": "./ys_codebase/release"
     },
     "dev": {
-      "version": "1.1.4.build",
-      "installed_at": "2026-11-05 04:05:20",
+      "version": "1.1.4.3",
+      "installed_at": "2026-11-05 04:50:26",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "1.2.4.build",
-      "installed_at": "2026-11-05 04:07:58",
+      "version": "1.2.4.0",
+      "installed_at": "2026-11-05 04:50:26",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.2.1.build",
-      "installed_at": "2026-11-05 04:14:09",
+      "version": "1.2.1.0",
+      "installed_at": "2026-11-05 04:50:25",
       "provider": "./ys_codebase/release"
     },
     "server": {
-      "version": "1.0.4.build",
-      "installed_at": "2026-11-05 04:05:51",
+      "version": "1.0.4.1",
+      "installed_at": "2026-11-05 04:50:24",
       "provider": "./ys_codebase/release"
     },
     "file-space": {
-      "version": "1.0.1.build",
-      "installed_at": "2026-11-05 04:14:28",
+      "version": "1.0.1.0",
+      "installed_at": "2026-11-05 04:50:25",
       "provider": "./ys_codebase/release"
     },
     "ast": {
-      "version": "1.0.1.build",
-      "installed_at": "2026-11-05 04:14:09",
+      "version": "1.0.1.0",
+      "installed_at": "2026-11-05 04:50:25",
       "provider": "./ys_codebase/release"
     },
     "vscode-support": {
-      "version": "1.0.0.build",
-      "installed_at": "2026-11-05 04:06:07",
+      "version": "1.0.0.3",
+      "installed_at": "2026-11-05 04:50:26",
       "provider": "./ys_codebase/release"
     },
     "gdrive-support": {
-      "version": "1.0.1.build",
-      "installed_at": "2026-11-05 04:14:28",
+      "version": "1.0.1.0",
+      "installed_at": "2026-11-05 04:50:26",
       "provider": "./ys_codebase/release"
     }
   }

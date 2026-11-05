@@ -2,9 +2,8 @@
   "name": "ast",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "versions": [
-    "1.0.0.3",
-    "1.0.0.4",
-    "1.0.0.5"
+    "1.0.0.5",
+    "1.0.1.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -41,7 +40,7 @@
       "summary": "實作單檔 O(dirty) 免全掃熱修補、單次讀檔提取、MemberInfo 輕量反序列化與 BFS 拓撲優化"
     },
     "1.0.0.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5",
         "file-space": ">=1.0.0"
@@ -52,7 +51,7 @@
       "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
     },
     "1.0.0.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5",
         "file-space": ">=1.0.0"
@@ -72,6 +71,17 @@
       "type": "refactor",
       "urgency": "optional",
       "summary": "補充 manifest.json optional 建議擴充模組 (knowledge-db)"
+    },
+    "1.0.1.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7",
+        "file-space": ">=1.0.1"
+      },
+      "sha256": "87afb218be378cd35869e6b058fcadce25d7638796149a10c94ca96baff5d179",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "預設 indices 與 bundles 遷移至 storage.local://、跨進程鎖分離至 cache:// 並附帶 1.0.1.x 遷移腳本"
     }
   }
 }

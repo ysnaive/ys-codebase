@@ -39,8 +39,8 @@
     "請執行 `python yscb.py ast callers <symbol>`、`callees <symbol>` 或 `impact <symbol>` 追蹤跨檔案呼叫拓撲與修改影響半徑。"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "optional",
-    "summary": "AST 符號快照與呼叫圖譜儲存空間對齊至 storage.local://ast，跨進程鎖分離至 cache://ast，並提供 1.0.1.x.py 自動遷移"
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "預設 indices 與 bundles 遷移至 storage.local://、跨進程鎖分離至 cache:// 並附帶 1.0.1.x 遷移腳本"
   }
 }

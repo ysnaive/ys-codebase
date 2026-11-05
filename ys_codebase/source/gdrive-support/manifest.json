@@ -31,6 +31,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "對齊五大語意空間：OAuth 憑證與 Token 收斂至 config.local://gdrive-support/，同步狀態帳本遷移至 storage.local://gdrive-support/，並隨附 1.0.1.x.py 無損遷移腳本"
+    "summary": "HTTPS Keep-Alive 與 8 執行緒平行同步加速、憑證與同步帳本對齊 config.local:// 與 storage.local://"
   }
 }

@@ -27,8 +27,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "optional",
-    "summary": "模型權重與檢索索引對齊至 storage.local://knowledge-db，本機組態對齊 config.local://，跨進程鎖分離至 cache://，並提供 1.2.1.x.py 自動遷移"
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "預設 indices、bundles 與 91MB models 遷移至 storage.local:// 並附帶 1.2.1.x 遷移腳本"
   }
 }

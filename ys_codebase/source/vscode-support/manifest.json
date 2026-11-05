@@ -1,7 +1,7 @@
 {
   "id": "vscode-support",
   "name": "vscode-support",
-  "version": "1.0.0.4",
+  "version": "1.0.0.3",
   "description": "YS-Codebase VS Code 工作區投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯模組",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -17,6 +17,6 @@
   "release": {
     "type": "refactor",
     "urgency": "optional",
-    "summary": "schema_compiler 與 contributes/core.json 對齊根目錄 .gitignore 統一管理"
+    "summary": "extraPaths 對齊 core.platform 並擴充 JSON Schema 支援五大語意空間 URI"
   }
 }

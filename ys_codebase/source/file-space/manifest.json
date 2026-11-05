@@ -26,8 +26,8 @@
     "若已安裝 `server` 模組，啟動 Daemon 後將自動掛載 `file-space-watcher` 進行背景增量監聽與 `on_file_space_changed` 事件廣播。"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "optional",
-    "summary": "工作空間指紋快照與消費者游標儲存空間對齊至 storage.local://file-space，並提供 1.0.1.x.py 自動遷移"
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "預設 snapshots 與 cursors 遷移至 storage.local:// 並附帶 1.0.1.x 自癒遷移腳本"
   }
 }

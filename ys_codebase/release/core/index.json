@@ -14,7 +14,8 @@
     "1.2.3.0",
     "1.2.4.0",
     "1.2.5.1",
-    "1.2.6.0"
+    "1.2.6.0",
+    "1.2.7.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -156,6 +157,14 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "新增 core.gitignore 根目錄 .gitignore 統一分組軟合併引擎並將預設自更新 URL 對齊 releases 分支"
+    },
+    "1.2.7.0": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "37b2e696ce8df7b346e2cafd7161a883d442a2716ff1d2ec740239474049c941",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增五大語意空間協議、全已安裝模組 sys.path 統一注入與多段版本遷移階梯"
     }
   }
 }

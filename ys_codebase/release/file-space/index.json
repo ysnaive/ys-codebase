@@ -2,9 +2,8 @@
   "name": "file-space",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
-    "1.0.0.3",
-    "1.0.0.4",
-    "1.0.0.5"
+    "1.0.0.5",
+    "1.0.1.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -38,7 +37,7 @@
       "summary": "優化 FileSpaceManager 熱路徑快取與非 symlink 走訪效能"
     },
     "1.0.0.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5"
       },
@@ -48,7 +47,7 @@
       "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
     },
     "1.0.0.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5"
       },
@@ -66,6 +65,16 @@
       "type": "feature",
       "urgency": "optional",
       "summary": "FileSpaceWatcherService 背景掃描整合 server.touch_activity() 保活探針"
+    },
+    "1.0.1.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7"
+      },
+      "sha256": "df4151cb2ec45cff53310ea41a958e6ee0e49c8d2522ff41db0a3e398be27387",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "預設 snapshots 與 cursors 遷移至 storage.local:// 並附帶 1.0.1.x 自癒遷移腳本"
     }
   }
 }

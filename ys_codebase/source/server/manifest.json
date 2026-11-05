@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.4.6",
+  "version": "1.0.4.1",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -12,8 +12,8 @@
     "Stop daemon and view session summary: python yscb.py server stop"
   ],
   "release": {
-    "type": "feature",
+    "type": "refactor",
     "urgency": "recommended",
-    "summary": "新增 server.touch_activity() 與 POST /api/touch 背景服務保活 API 並將預設閒置逾時提高至 1800 秒"
+    "summary": "WarmWorker.pre_warm 對齊 core.platform 統一 sys.path 注入與五大語意空間組態指引"
   }
 }

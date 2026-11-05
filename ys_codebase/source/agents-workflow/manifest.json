@@ -22,8 +22,8 @@
     "Publish AGENTS.md & skills to project workspace: python yscb.py agents-workflow release"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "optional",
-    "summary": "對齊五大語意空間 (storage.local:// 發布清冊與 config.local:// 覆寫) 並新增 1.2.4.x 版本晉升遷移腳本"
+    "type": "feature",
+    "urgency": "recommended",
+    "summary": "三大持久清冊遷移至 storage.local://、拔除執行期歷史遷移分支並附帶 1.2.4.x 遷移腳本"
   }
 }

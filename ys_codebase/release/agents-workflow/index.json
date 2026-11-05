@@ -10,9 +10,8 @@
     "1.2.0.2",
     "1.2.1.1",
     "1.2.2.3",
-    "1.2.3.3",
-    "1.2.3.4",
-    "1.2.3.5"
+    "1.2.3.5",
+    "1.2.4.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -153,7 +152,7 @@
       "summary": "優化工作流編譯與計畫驗證 Regex 快取並同步 CLI 嚴格熱派發指引"
     },
     "1.2.3.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5"
       },
@@ -163,7 +162,7 @@
       "summary": "新增同構 configurable/_format.json 組態契約並升級 uri/path 與 @desc(...) 欄位說明"
     },
     "1.2.3.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5"
       },
@@ -181,6 +180,16 @@
       "type": "refactor",
       "urgency": "optional",
       "summary": "publisher 對齊 core.gitignore 根目錄統一分組軟合併引擎並更新 manifest.json optional"
+    },
+    "1.2.4.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7"
+      },
+      "sha256": "59de1b7c94aed11a91c51cc17c60d1e3da4210bfb6093d9f9631c2b70ca95708",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "三大持久清冊遷移至 storage.local://、拔除執行期歷史遷移分支並附帶 1.2.4.x 遷移腳本"
     }
   }
 }

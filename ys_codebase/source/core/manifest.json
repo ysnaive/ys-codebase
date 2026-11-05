@@ -26,6 +26,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "確立五大語意資料空間架構 (config/config.local/storage/storage.local/cache)、全模組 sys.path 統一尋址與 1.2.7.x 自動遷移"
+    "summary": "新增五大語意空間協議、全已安裝模組 sys.path 統一注入與多段版本遷移階梯"
   }
 }
