@@ -318,3 +318,105 @@ class TestFileSpaceManager(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft04_precompiled_filter_equivalence_and_zero_depth_glob(self) -> None:
+        """Verify FileSpaceConfig pre-compiled filter semantics for exact segments, path prefixes, **/ globs, and extensions."""
+        cfg = FileSpaceConfig(
+            name="filter_check",
+            include=[self.proj_root],
+            exclude=[
+                ".git",
+                "ys_codebase/.modules",
+                "**/.storage.local/**",
+                "*.pyc",
+                "build_*",
+            ],
+            file_patterns=["*.py", "*.md", "Makefile"],
+        )
+
+        # Included files
+        self.assertTrue(cfg.is_file_included("src/app.py"))
+        self.assertTrue(cfg.is_file_included("docs/README.md"))
+        self.assertTrue(cfg.is_file_included("Makefile"))
+        self.assertTrue(cfg.is_file_included("ys_codebase/.modules_extra/helper.py"))
+
+        # Excluded by exact segment (.git)
+        self.assertFalse(cfg.is_file_included(".git/config"))
+        self.assertFalse(cfg.is_file_included("sub/.git/hooks.py"))
+        self.assertTrue(cfg.is_dir_excluded(".git", ".git"))
+        self.assertTrue(cfg.is_dir_excluded(".git", "sub/.git"))
+
+        # Excluded by slash prefix (ys_codebase/.modules)
+        self.assertFalse(cfg.is_file_included("ys_codebase/.modules/core/init.py"))
+        self.assertTrue(cfg.is_dir_excluded(".modules", "ys_codebase/.modules"))
+        self.assertFalse(cfg.is_dir_excluded(".modules_extra", "ys_codebase/.modules_extra"))
+
+        # Excluded by **/ zero-or-multi-level glob (**/.storage.local/**)
+        self.assertFalse(cfg.is_file_included(".storage.local/cache.py"))
+        self.assertFalse(cfg.is_file_included("a/b/.storage.local/deep/item.py"))
+        self.assertTrue(cfg.is_dir_excluded(".storage.local", ".storage.local"))
+        self.assertTrue(cfg.is_dir_excluded(".storage.local", "a/b/.storage.local"))
+
+        # Excluded by extension suffix (*.pyc) or segment glob (build_*)
+        self.assertFalse(cfg.is_file_included("src/app.pyc"))
+        self.assertFalse(cfg.is_file_included("build_out/gen.py"))
+        self.assertTrue(cfg.is_dir_excluded("build_out", "build_out"))
+
+        # Excluded by file_patterns mismatch
+        self.assertFalse(cfg.is_file_included("src/notes.txt"))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft05_iter_space_files_with_stat_and_override_mode_replace(self) -> None:
+        """Verify iter_space_files_with_stat 6-tuple output, nested root deduplication, and override_mode='replace'."""
+        nested_sub = self.src_dir / "nested"
+        nested_sub.mkdir(parents=True)
+        nested_file = nested_sub / "mod.py"
+        nested_file.write_text("x = 42\n", encoding="utf-8")
+
+        contributed = {
+            "source": {
+                "description": "Default contributed source",
+                "include": [self.docs_dir.as_posix(), self.extra_docs_dir.as_posix()],
+                "exclude": [".git", "legacy_exclude"],
+                "file_patterns": ["*.md", "*.py"],
+            }
+        }
+        project_spaces = {
+            "source": {
+                "override_mode": "replace",
+                "include": [self.src_dir.as_posix(), nested_sub.as_posix()],
+                "exclude": [".git"],
+                "file_patterns": ["*.py"],
+            }
+        }
+
+        mgr = FileSpaceManager(
+            project_root=self.proj_root,
+            storage_root=self.storage_root,
+            spaces_config=project_spaces,
+            contributed_spaces=contributed,
+        )
+
+        src_cfg = mgr.get_space("source")
+        # override_mode="replace" replaces base include/exclude/file_patterns instead of appending
+        self.assertEqual(src_cfg.exclude, [".git"])
+        self.assertEqual(src_cfg.file_patterns, ["*.py"])
+        resolved_inc = [p.as_posix() for p in src_cfg.resolved_include_paths]
+        self.assertNotIn(self.docs_dir.resolve().as_posix(), resolved_inc)
+
+        # iter_space_files_with_stat yields 6-tuples and deduplicates nested_sub under src_dir
+        stat_entries = list(mgr.iter_space_files_with_stat("source"))
+        rel_paths = [item[0] for item in stat_entries]
+        self.assertEqual(len(stat_entries), 2)
+        self.assertEqual(sorted(rel_paths), ["src/app.py", "src/nested/mod.py"])
+
+        for rel_p, abs_p, src_r, mtime_ns, ctime_ns, size in stat_entries:
+            self.assertTrue(abs_p.is_file())
+            self.assertGreater(mtime_ns, 0)
+            self.assertGreater(ctime_ns, 0)
+            self.assertEqual(size, abs_p.stat().st_size)
+
+        self.mark_passed()
+
+

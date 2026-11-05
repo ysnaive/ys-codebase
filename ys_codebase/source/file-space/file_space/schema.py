@@ -5,7 +5,52 @@ from dataclasses import dataclass, field
 from enum import Enum
 import fnmatch
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Optional, Set, Union
+import re
+from typing import Any, Dict, FrozenSet, List, Optional, Pattern, Set, Tuple, Union
+
+
+def _compile_glob_pattern(norm_pat: str, *, allow_dir_prefix: bool = False) -> Pattern[str]:
+    """
+    Compile a normalized POSIX glob pattern into a regular expression.
+    Supports zero-or-more directory segments for `**/` and `/**/`.
+    """
+    working = norm_pat
+    has_leading_ds = False
+    has_trailing_ds = False
+    if working == "**":
+        return re.compile(r"(?s:^.*\Z)")
+    if working.startswith("**/"):
+        has_leading_ds = True
+        working = working[3:]
+    if working.endswith("/**"):
+        has_trailing_ds = True
+        working = working[:-3]
+
+    chunks = working.split("/**/")
+    translated_chunks: List[str] = []
+    for chunk in chunks:
+        if not chunk:
+            translated_chunks.append("")
+            continue
+        raw_regex = fnmatch.translate(chunk)
+        # Strip fnmatch's wrapper (?s: ... )\Z or \Z to compose sub-expressions cleanly
+        if raw_regex.startswith("(?s:") and raw_regex.endswith(")\\Z"):
+            inner = raw_regex[4:-3]
+        elif raw_regex.endswith("\\Z"):
+            inner = raw_regex[:-2]
+        elif raw_regex.endswith("$"):
+            inner = raw_regex[:-1]
+        else:
+            inner = raw_regex
+        translated_chunks.append(inner)
+
+    body = r"(?:/|/.+/)".join(translated_chunks)
+    prefix = r"(?:.+/)?" if has_leading_ds else ""
+    if has_trailing_ds or allow_dir_prefix:
+        suffix = r"(?:/.*)?"
+    else:
+        suffix = ""
+    return re.compile(f"(?s:^{prefix}{body}{suffix}\\Z)")
 
 
 class FileSpaceOrigin(str, Enum):
@@ -46,6 +91,20 @@ class FileSpaceConfig:
     owner_modules: List[str] = field(default_factory=list)
     raw_include_uris: List[str] = field(default_factory=list)
 
+    _exclude_exact_segments: FrozenSet[str] = field(default_factory=frozenset, init=False, repr=False, compare=False)
+    _exclude_rel_exact: FrozenSet[str] = field(default_factory=frozenset, init=False, repr=False, compare=False)
+    _exclude_rel_prefixes: Tuple[str, ...] = field(default_factory=tuple, init=False, repr=False, compare=False)
+    _exclude_ext_suffixes: Tuple[str, ...] = field(default_factory=tuple, init=False, repr=False, compare=False)
+    _exclude_seg_regexes: Tuple[Pattern[str], ...] = field(default_factory=tuple, init=False, repr=False, compare=False)
+    _exclude_rel_regexes: Tuple[Pattern[str], ...] = field(default_factory=tuple, init=False, repr=False, compare=False)
+    _include_all: bool = field(default=True, init=False, repr=False, compare=False)
+    _include_ext_suffixes: Tuple[str, ...] = field(default_factory=tuple, init=False, repr=False, compare=False)
+    _include_exact_names: FrozenSet[str] = field(default_factory=frozenset, init=False, repr=False, compare=False)
+    _include_regexes: Tuple[Pattern[str], ...] = field(default_factory=tuple, init=False, repr=False, compare=False)
+    _compiled_filter_sig: Optional[Tuple[Tuple[str, ...], Tuple[str, ...]]] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
     def __post_init__(self) -> None:
         if isinstance(self.hash_policy, str):
             try:
@@ -63,6 +122,88 @@ class FileSpaceConfig:
                 self.origin = FileSpaceOrigin.PROJECT
         if not self.raw_include_uris and self.include:
             self.raw_include_uris = [str(p) for p in self.include]
+        self._compile_filter_rules()
+
+    def _compile_filter_rules(self) -> None:
+        sig = (tuple(self.exclude), tuple(self.file_patterns))
+        if self._compiled_filter_sig == sig:
+            return
+
+        exact_segs: Set[str] = set()
+        rel_exact: Set[str] = set()
+        rel_prefixes: List[str] = []
+        excl_exts: List[str] = []
+        seg_regexes: List[Pattern[str]] = []
+        rel_regexes: List[Pattern[str]] = []
+
+        for pattern in self.exclude:
+            norm_pat = str(pattern).replace("\\", "/").strip("/")
+            if not norm_pat:
+                continue
+            has_wildcard = any(ch in norm_pat for ch in ("*", "?", "["))
+            if "/" in norm_pat:
+                if not has_wildcard:
+                    rel_exact.add(norm_pat)
+                    rel_prefixes.append(norm_pat + "/")
+                else:
+                    rel_regexes.append(
+                        _compile_glob_pattern(norm_pat, allow_dir_prefix=True)
+                    )
+            else:
+                if not has_wildcard:
+                    exact_segs.add(norm_pat)
+                elif norm_pat.startswith("*.") and not any(
+                    ch in norm_pat[1:] for ch in ("*", "?", "[")
+                ):
+                    excl_exts.append(norm_pat[1:])
+                else:
+                    seg_regexes.append(
+                        _compile_glob_pattern(norm_pat, allow_dir_prefix=False)
+                    )
+
+        self._exclude_exact_segments = frozenset(exact_segs)
+        self._exclude_rel_exact = frozenset(rel_exact)
+        self._exclude_rel_prefixes = tuple(rel_prefixes)
+        self._exclude_ext_suffixes = tuple(excl_exts)
+        self._exclude_seg_regexes = tuple(seg_regexes)
+        self._exclude_rel_regexes = tuple(rel_regexes)
+
+        if not self.file_patterns:
+            self._include_all = True
+            self._include_ext_suffixes = ()
+            self._include_exact_names = frozenset()
+            self._include_regexes = ()
+        else:
+            inc_all = False
+            inc_exts: List[str] = []
+            inc_names: Set[str] = set()
+            inc_rxs: List[Pattern[str]] = []
+            for raw_pat in self.file_patterns:
+                pat = str(raw_pat).replace("\\", "/").strip("/")
+                if not pat:
+                    continue
+                if pat in ("*", "**", "**/*"):
+                    inc_all = True
+                    break
+                has_wildcard = any(ch in pat for ch in ("*", "?", "["))
+                if "/" not in pat:
+                    if not has_wildcard:
+                        inc_names.add(pat)
+                    elif pat.startswith("*.") and not any(
+                        ch in pat[1:] for ch in ("*", "?", "[")
+                    ):
+                        inc_exts.append(pat[1:])
+                    else:
+                        inc_rxs.append(_compile_glob_pattern(pat, allow_dir_prefix=False))
+                else:
+                    inc_rxs.append(_compile_glob_pattern(pat, allow_dir_prefix=False))
+
+            self._include_all = inc_all
+            self._include_ext_suffixes = tuple(inc_exts)
+            self._include_exact_names = frozenset(inc_names)
+            self._include_regexes = tuple(inc_rxs)
+
+        self._compiled_filter_sig = sig
 
     @property
     def origin_display(self) -> str:
@@ -90,10 +231,41 @@ class FileSpaceConfig:
                 result.append(Path(str(item)))
         return result
 
+    def is_dir_excluded(self, dir_name: str, rel_dir_posix: str) -> bool:
+        """
+        Check whether a directory segment and its workspace-relative POSIX path match any exclude rule.
+        """
+        if self._compiled_filter_sig != (tuple(self.exclude), tuple(self.file_patterns)):
+            self._compile_filter_rules()
+
+        norm_rel = rel_dir_posix.replace("\\", "/").strip("/")
+        if not norm_rel or norm_rel == ".":
+            return False
+
+        if dir_name in self._exclude_exact_segments:
+            return True
+        if "/" in norm_rel and self._exclude_exact_segments:
+            if any(part in self._exclude_exact_segments for part in norm_rel.split("/") if part):
+                return True
+        if self._exclude_rel_exact and norm_rel in self._exclude_rel_exact:
+            return True
+        if self._exclude_rel_prefixes and norm_rel.startswith(self._exclude_rel_prefixes):
+            return True
+        if self._exclude_ext_suffixes and dir_name.endswith(self._exclude_ext_suffixes):
+            return True
+        if self._exclude_seg_regexes and any(rx.match(dir_name) for rx in self._exclude_seg_regexes):
+            return True
+        if self._exclude_rel_regexes and any(rx.match(norm_rel) for rx in self._exclude_rel_regexes):
+            return True
+        return False
+
     def is_file_included(self, rel_path: Union[str, Path]) -> bool:
         """
         Check whether a relative path passes exclude rules and file_patterns.
         """
+        if self._compiled_filter_sig != (tuple(self.exclude), tuple(self.file_patterns)):
+            self._compile_filter_rules()
+
         posix_str = (
             rel_path.as_posix()
             if isinstance(rel_path, Path)
@@ -102,31 +274,47 @@ class FileSpaceConfig:
         if not posix_str or posix_str == ".":
             return False
 
-        parts = PurePosixPath(posix_str).parts
-        if not parts:
+        if "/" in posix_str:
+            parts = [p for p in posix_str.split("/") if p and p != "."]
+            if not parts:
+                return False
+            posix_str = "/".join(parts)
+            filename = parts[-1]
+        else:
+            parts = [posix_str]
+            filename = posix_str
+
+        if self._exclude_exact_segments and any(
+            part in self._exclude_exact_segments for part in parts
+        ):
             return False
-        filename = parts[-1]
+        if self._exclude_rel_exact and posix_str in self._exclude_rel_exact:
+            return False
+        if self._exclude_rel_prefixes and posix_str.startswith(self._exclude_rel_prefixes):
+            return False
+        if self._exclude_ext_suffixes and any(
+            part.endswith(self._exclude_ext_suffixes) for part in parts
+        ):
+            return False
+        if self._exclude_seg_regexes and any(
+            rx.match(part) for rx in self._exclude_seg_regexes for part in parts
+        ):
+            return False
+        if self._exclude_rel_regexes and any(
+            rx.match(posix_str) for rx in self._exclude_rel_regexes
+        ):
+            return False
 
-        for pattern in self.exclude:
-            norm_pat = pattern.replace("\\", "/").strip("/")
-            if not norm_pat:
-                continue
-            if "/" in norm_pat:
-                if fnmatch.fnmatch(posix_str, norm_pat) or posix_str.startswith(
-                    norm_pat + "/"
-                ):
-                    return False
-            else:
-                for part in parts:
-                    if part == norm_pat or fnmatch.fnmatch(part, norm_pat):
-                        return False
-
-        if not self.file_patterns:
+        if self._include_all:
             return True
-
-        for pat in self.file_patterns:
-            if fnmatch.fnmatch(filename, pat) or fnmatch.fnmatch(posix_str, pat):
-                return True
+        if self._include_ext_suffixes and filename.endswith(self._include_ext_suffixes):
+            return True
+        if self._include_exact_names and filename in self._include_exact_names:
+            return True
+        if self._include_regexes and any(
+            rx.match(filename) or rx.match(posix_str) for rx in self._include_regexes
+        ):
+            return True
         return False
 
     def to_dict(self) -> Dict[str, Any]:

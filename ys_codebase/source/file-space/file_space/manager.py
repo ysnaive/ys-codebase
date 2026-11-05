@@ -396,24 +396,42 @@ class FileSpaceManager:
     def _merge_project_space_override(
         self, name: str, base: FileSpaceConfig, p_cfg: Dict[str, Any]
     ) -> FileSpaceConfig:
-        combined_raw_includes = _dedup_preserve_order(
-            list(base.raw_include_uris) + list(p_cfg.get("include", []))
-        )
+        override_mode = str(p_cfg.get("override_mode", "merge")).strip().lower()
+        is_replace = override_mode == "replace"
+
+        if is_replace and "include" in p_cfg:
+            combined_raw_includes = _dedup_preserve_order(
+                list(p_cfg.get("include", []))
+            )
+        else:
+            combined_raw_includes = _dedup_preserve_order(
+                list(base.raw_include_uris) + list(p_cfg.get("include", []))
+            )
         resolved_paths, raw_uris = self._normalize_include_entries(
             combined_raw_includes
         )
-        combined_excludes = (
-            _dedup_preserve_order(list(base.exclude) + list(p_cfg["exclude"]))
-            if "exclude" in p_cfg
-            else list(base.exclude)
-        )
-        combined_patterns = (
-            _dedup_preserve_order(
-                list(base.file_patterns) + list(p_cfg["file_patterns"])
+        if "exclude" in p_cfg:
+            combined_excludes = (
+                _dedup_preserve_order(list(p_cfg["exclude"]))
+                if is_replace
+                else _dedup_preserve_order(
+                    list(base.exclude) + list(p_cfg["exclude"])
+                )
             )
-            if "file_patterns" in p_cfg
-            else list(base.file_patterns)
-        )
+        else:
+            combined_excludes = list(base.exclude)
+
+        if "file_patterns" in p_cfg:
+            combined_patterns = (
+                _dedup_preserve_order(list(p_cfg["file_patterns"]))
+                if is_replace
+                else _dedup_preserve_order(
+                    list(base.file_patterns) + list(p_cfg["file_patterns"])
+                )
+            )
+        else:
+            combined_patterns = list(base.file_patterns)
+
         owners = _dedup_preserve_order(list(base.owner_modules) + ["project"])
         return FileSpaceConfig(
             name=name,
@@ -454,7 +472,10 @@ class FileSpaceManager:
                     origin=FileSpaceOrigin.PROJECT,
                     owner_modules=["project"],
                 )
-            elif has_explicit_project_override:
+            elif (
+                has_explicit_project_override
+                or str(p_cfg.get("override_mode", "")).strip().lower() == "replace"
+            ):
                 merged_spaces[name] = self._merge_project_space_override(
                     name, merged_spaces[name], p_cfg
                 )
@@ -630,24 +651,30 @@ class FileSpaceManager:
         candidate = Path(file_path)
         if not candidate.is_absolute():
             candidate = (self.project_root / candidate).resolve()
-        else:
+        elif cfg.follow_symlinks:
             candidate = candidate.resolve()
 
         matched_rel: Optional[str] = None
         for inc_root in cfg.resolved_include_paths:
-            root_resolved = inc_root.resolve()
-            if root_resolved.is_file():
-                if candidate == root_resolved:
+            if inc_root.is_file():
+                if candidate == inc_root or candidate.resolve() == inc_root.resolve():
                     return True
                 continue
             try:
-                rel = candidate.relative_to(root_resolved).as_posix()
+                rel = candidate.relative_to(inc_root).as_posix()
                 if rel == ".":
                     return False
                 matched_rel = rel
                 break
             except ValueError:
-                continue
+                try:
+                    rel = candidate.resolve().relative_to(inc_root.resolve()).as_posix()
+                    if rel == ".":
+                        return False
+                    matched_rel = rel
+                    break
+                except ValueError:
+                    continue
 
         if matched_rel is None:
             return False
@@ -728,6 +755,18 @@ class FileSpaceManager:
         Iterate over all active files in one or all workspaces.
         Yields (rel_path, abs_path, source_root) tuples in deterministic order.
         """
+        for rel_p, abs_p, src_root, _mtime_ns, _ctime_ns, _size in self.iter_space_files_with_stat(
+            space_name
+        ):
+            yield (rel_p, abs_p, src_root)
+
+    def iter_space_files_with_stat(
+        self, space_name: Optional[str] = None
+    ) -> Iterator[Tuple[str, Path, Path, int, int, int]]:
+        """
+        Iterate over all active files in one or all workspaces, reusing DirEntry.stat() results.
+        Yields (rel_path, abs_path, source_root, mtime_ns, ctime_ns, size) in deterministic order.
+        """
         target_names = (
             [space_name] if space_name is not None else self.list_spaces()
         )
@@ -739,7 +778,8 @@ class FileSpaceManager:
             inc_roots = self.resolve_space_include(s_name)
             multi_root = len(inc_roots) > 1
             visited_dirs: Set[Tuple[int, int]] = set()
-            collected: List[Tuple[str, Path, Path]] = []
+            visited_dir_paths: Set[str] = set()
+            collected: List[Tuple[str, Path, Path, int, int, int]] = []
 
             for inc_root in inc_roots:
                 self._walk_root(
@@ -750,14 +790,16 @@ class FileSpaceManager:
                     visited_dirs=visited_dirs,
                     collected=collected,
                     proj_root=proj_root,
+                    visited_dir_paths=visited_dir_paths,
+                    rel_dir_prefix="",
                 )
 
             collected.sort(key=lambda item: item[0])
-            for rel_p, abs_p, src_root in collected:
+            for rel_p, abs_p, src_root, mtime_ns, ctime_ns, size in collected:
                 dedup_key = f"{s_name}:{rel_p}" if space_name is None else rel_p
                 if dedup_key not in seen_rel_paths:
                     seen_rel_paths.add(dedup_key)
-                    yield (rel_p, abs_p, src_root)
+                    yield (rel_p, abs_p, src_root, mtime_ns, ctime_ns, size)
 
     def _walk_root(
         self,
@@ -766,17 +808,25 @@ class FileSpaceManager:
         cfg: FileSpaceConfig,
         multi_root: bool,
         visited_dirs: Set[Tuple[int, int]],
-        collected: List[Tuple[str, Path, Path]],
+        collected: List[Any],
         proj_root: Optional[Path] = None,
+        visited_dir_paths: Optional[Set[str]] = None,
+        rel_dir_prefix: str = "",
     ) -> None:
-        try:
-            dir_stat = current_dir.stat()
-            dir_key = (dir_stat.st_dev, dir_stat.st_ino)
-            if dir_key in visited_dirs:
+        if cfg.follow_symlinks:
+            try:
+                dir_stat = current_dir.stat()
+                dir_key = (dir_stat.st_dev, dir_stat.st_ino)
+                if dir_key in visited_dirs:
+                    return
+                visited_dirs.add(dir_key)
+            except OSError:
                 return
-            visited_dirs.add(dir_key)
-        except OSError:
-            return
+        elif multi_root and visited_dir_paths is not None:
+            norm_dir_key = current_dir.as_posix()
+            if norm_dir_key in visited_dir_paths:
+                return
+            visited_dir_paths.add(norm_dir_key)
 
         try:
             with os.scandir(current_dir) as it:
@@ -789,43 +839,64 @@ class FileSpaceManager:
                 is_symlink = entry.is_symlink()
                 if is_symlink and not cfg.follow_symlinks:
                     continue
-                entry_path = Path(entry.path)
-                rel_to_root = entry_path.relative_to(inc_root).as_posix()
+                entry_name = entry.name
+                rel_to_root = (
+                    f"{rel_dir_prefix}/{entry_name}"
+                    if rel_dir_prefix
+                    else entry_name
+                )
 
                 if entry.is_dir(follow_symlinks=cfg.follow_symlinks):
-                    if self._is_dir_excluded(entry.name, rel_to_root, cfg.exclude):
+                    if self._is_dir_excluded(entry_name, rel_to_root, cfg):
                         continue
                     self._walk_root(
-                        current_dir=entry_path,
+                        current_dir=Path(entry.path),
                         inc_root=inc_root,
                         cfg=cfg,
                         multi_root=multi_root,
                         visited_dirs=visited_dirs,
                         collected=collected,
                         proj_root=proj_root,
+                        visited_dir_paths=visited_dir_paths,
+                        rel_dir_prefix=rel_to_root,
                     )
                 elif entry.is_file(follow_symlinks=cfg.follow_symlinks):
                     if not cfg.is_file_included(rel_to_root):
                         continue
-                    target_file_path = (
-                        entry_path
-                        if (not is_symlink and not cfg.follow_symlinks)
-                        else (entry_path.resolve() if not is_symlink else entry_path)
+                    st = entry.stat(follow_symlinks=cfg.follow_symlinks)
+                    mtime_ns = int(st.st_mtime_ns)
+                    ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
+                    size = int(st.st_size)
+                    entry_path = Path(entry.path)
+                    if not cfg.follow_symlinks and not multi_root:
+                        rel_path = rel_to_root
+                    else:
+                        target_file_path = (
+                            entry_path
+                            if (not is_symlink and not cfg.follow_symlinks)
+                            else (entry_path.resolve() if not is_symlink else entry_path)
+                        )
+                        rel_path = self._compute_rel_path(
+                            target_file_path,
+                            inc_root,
+                            multi_root,
+                            proj_root=proj_root,
+                        )
+                    collected.append(
+                        (rel_path, entry_path, inc_root, mtime_ns, ctime_ns, size)
                     )
-                    rel_path = self._compute_rel_path(
-                        target_file_path,
-                        inc_root,
-                        multi_root,
-                        proj_root=proj_root,
-                    )
-                    collected.append((rel_path, entry_path, inc_root))
             except OSError:
                 continue
 
     @staticmethod
     def _is_dir_excluded(
-        dir_name: str, rel_dir_posix: str, exclude_patterns: List[str]
+        dir_name: str,
+        rel_dir_posix: str,
+        exclude_patterns: Union[List[str], FileSpaceConfig],
     ) -> bool:
+        if isinstance(exclude_patterns, FileSpaceConfig):
+            return exclude_patterns.is_dir_excluded(dir_name, rel_dir_posix)
+
         import fnmatch
 
         for pattern in exclude_patterns:

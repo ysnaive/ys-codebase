@@ -318,18 +318,21 @@ def is_sensitive_credential_path(abs_path: Path, proj_root: Path) -> bool:
     if name_low.endswith((".pem", ".key", ".p12", ".pfx")):
         return True
     try:
-        rel_posix = abs_path.resolve().relative_to(proj_root.resolve()).as_posix()
-        if rel_posix.startswith(
-            (
-                "ys_codebase/.config.local/",
-                "ys_codebase/.storage.local/",
-                "ys_codebase/config/gdrive-support/",
-                "ys_codebase/.cache/gdrive-support/",
-            )
-        ) and rel_posix != "ys_codebase/config/gdrive-support/config.project.json":
-            return True
+        rel_posix = abs_path.relative_to(proj_root).as_posix()
     except ValueError:
-        pass
+        try:
+            rel_posix = abs_path.resolve().relative_to(proj_root.resolve()).as_posix()
+        except ValueError:
+            rel_posix = ""
+    if rel_posix and rel_posix.startswith(
+        (
+            "ys_codebase/.config.local/",
+            "ys_codebase/.storage.local/",
+            "ys_codebase/config/gdrive-support/",
+            "ys_codebase/.cache/gdrive-support/",
+        )
+    ) and rel_posix != "ys_codebase/config/gdrive-support/config.project.json":
+        return True
     return False
 
 
@@ -534,24 +537,61 @@ def collect_space_local_files(
     Enumerate files in the target file-space, normalize each path via abs_path.relative_to(project_root)
     to eliminate single-root inc_root stripping, and return a dict of {remote_rel_path: abs_local_path}.
     """
+    with_stat = collect_space_local_files_with_stat(
+        spec,
+        project_root=project_root,
+        file_space_manager=file_space_manager,
+    )
+    return {remote_rel: abs_p for remote_rel, (abs_p, _mtime, _sz) in with_stat.items()}
+
+
+def collect_space_local_files_with_stat(
+    spec: SyncSpaceSpec,
+    project_root: Optional[Path] = None,
+    file_space_manager: Optional[Any] = None,
+) -> Dict[str, Tuple[Path, Optional[int], Optional[int]]]:
+    """
+    Enumerate files in the target file-space along with pre-collected (mtime_ns, size) metadata
+    when supported by the file-space manager, avoiding per-file Path.resolve() and redundant stat() calls.
+    Returns a dict of {remote_rel_path: (abs_local_path, mtime_ns, size)}.
+    """
     proj_root = _resolve_project_root(project_root)
     if file_space_manager is None:
         from file_space.manager import FileSpaceManager
 
         file_space_manager = FileSpaceManager(project_root=proj_root)
 
-    mapped_files: Dict[str, Path] = {}
-    for _rel_p, abs_path, _src_root in file_space_manager.iter_space_files(spec.space):
-        resolved_abs = Path(abs_path).resolve()
-        if is_sensitive_credential_path(resolved_abs, proj_root):
+    mapped_files: Dict[str, Tuple[Path, Optional[int], Optional[int]]] = {}
+    if hasattr(file_space_manager, "iter_space_files_with_stat"):
+        raw_iter = (
+            (abs_path, int(mtime_ns), int(size))
+            for _rel_p, abs_path, _src_root, mtime_ns, _ctime_ns, size in file_space_manager.iter_space_files_with_stat(
+                spec.space
+            )
+        )
+    else:
+        raw_iter = (
+            (abs_path, None, None)
+            for _rel_p, abs_path, _src_root in file_space_manager.iter_space_files(
+                spec.space
+            )
+        )
+
+    for abs_path, mtime_ns, size in raw_iter:
+        local_abs = abs_path if isinstance(abs_path, Path) else Path(abs_path)
+        if is_sensitive_credential_path(local_abs, proj_root):
             continue
         try:
-            proj_rel = resolved_abs.relative_to(proj_root).as_posix()
+            proj_rel = local_abs.relative_to(proj_root).as_posix()
         except ValueError:
-            continue
+            try:
+                local_abs = local_abs.resolve()
+                proj_rel = local_abs.relative_to(proj_root).as_posix()
+            except ValueError:
+                continue
         remote_rel = spec.local_to_remote_rel(proj_rel)
         if remote_rel is None or not remote_rel:
             continue
-        mapped_files[remote_rel] = resolved_abs
+        mapped_files[remote_rel] = (local_abs, mtime_ns, size)
     return mapped_files
 

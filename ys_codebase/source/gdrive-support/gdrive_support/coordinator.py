@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -37,6 +38,7 @@ from .config import (
     GDriveTransportError,
     SyncSpaceSpec,
     collect_space_local_files,
+    collect_space_local_files_with_stat,
     is_sensitive_credential_path,
     normalize_remote_rel_path,
 )
@@ -1611,17 +1613,24 @@ class SyncCoordinator:
 
         for spec in self.config.sync_spaces:
             threshold_bytes = int(max(1, spec.large_file_threshold_mb)) * 1024 * 1024
-            files_map = collect_space_local_files(
+            files_map = collect_space_local_files_with_stat(
                 spec,
                 project_root=self.project_root,
                 file_space_manager=self._file_space_manager,
             )
-            for remote_rel, abs_path in files_map.items():
-                if not abs_path.is_file():
-                    continue
-                st = abs_path.stat()
-                mtime_ns = int(st.st_mtime_ns)
-                sz = int(st.st_size)
+            for remote_rel, (abs_path, pre_mtime_ns, pre_size) in files_map.items():
+                if pre_mtime_ns is not None and pre_size is not None:
+                    mtime_ns = int(pre_mtime_ns)
+                    sz = int(pre_size)
+                else:
+                    try:
+                        st = abs_path.stat()
+                    except OSError:
+                        continue
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    mtime_ns = int(st.st_mtime_ns)
+                    sz = int(st.st_size)
 
                 if (
                     sz >= threshold_bytes
@@ -1642,7 +1651,10 @@ class SyncCoordinator:
                     md5_hex = str(cached["md5"])
                     sha_hex = str(cached["sha256"])
                 else:
-                    md5_hex, sha_hex, sz = compute_local_hashes(abs_path)
+                    try:
+                        md5_hex, sha_hex, sz = compute_local_hashes(abs_path)
+                    except OSError:
+                        continue
                     fp_cache[cache_key] = {
                         "mtime_ns": mtime_ns,
                         "size": sz,
@@ -1917,7 +1929,10 @@ class SyncCoordinator:
                 dedup_changes[ch.file_id] = ch
 
         level1_ops: List[ChangeRecord] = []
+        folder_changes: List[ChangeRecord] = []
+        non_folder_changes: List[ChangeRecord] = []
         repo_prefix = self._repo_rel()
+        folder_patched = False
 
         for ch in dedup_changes.values():
             fid = ch.file_id
@@ -1951,7 +1966,6 @@ class SyncCoordinator:
                     continue
                 return None
 
-            # 3. Check folder items or known folders
             is_folder_change = (
                 fid in known_folder_ids
                 or fid in all_branch_dir_ids
@@ -1959,32 +1973,147 @@ class SyncCoordinator:
                 or (ent is not None and ent.is_dir)
             )
             if is_folder_change:
-                if ch.removed:
-                    if fid in known_folder_ids or fid in all_branch_dir_ids:
-                        return None
-                    continue
+                folder_changes.append(ch)
+            else:
+                non_folder_changes.append(ch)
+
+        # 3. Process folder changes first (removals, renames/moves, topological new subfolders)
+        pending_new_folders: List[ChangeRecord] = []
+        for ch in folder_changes:
+            fid = ch.file_id
+            if ch.removed:
                 if fid in known_folder_ids or fid in all_branch_dir_ids:
-                    fm = folder_meta.get(fid)
-                    if (
-                        fm is not None
-                        and ch.name == fm.get("name")
-                        and ch.parent_id == fm.get("parent_id")
-                    ):
-                        continue
-                    return None
-                if (
-                    ch.parent_id in known_folder_ids
-                    or ch.parent_id in all_branch_dir_ids
-                    or (
-                        ent is not None
-                        and (
-                            ent.rel_path == repo_prefix
-                            or ent.rel_path.startswith(f"{repo_prefix}/")
+                    if fid in (repo_folder_id, history_folder_id, trash_folder_id):
+                        return None
+                    matched_branch = False
+                    for b_name, b_data in cache_branches.items():
+                        b_dirs: Dict[str, str] = b_data.setdefault("dir_ids", {})
+                        if fid not in b_dirs:
+                            continue
+                        matched_branch = True
+                        rel_dir = b_dirs[fid]
+                        if not rel_dir:
+                            return None
+                        dir_prefix = f"{rel_dir}/"
+                        sub_dir_ids = [
+                            d_id
+                            for d_id, d_rel in list(b_dirs.items())
+                            if d_rel == rel_dir or d_rel.startswith(dir_prefix)
+                        ]
+                        for d_id in sub_dir_ids:
+                            b_dirs.pop(d_id, None)
+                            all_branch_dir_ids.discard(d_id)
+                            known_folder_ids.discard(d_id)
+                            folder_meta.pop(d_id, None)
+
+                        raw_entries: Dict[str, Dict[str, Any]] = b_data.setdefault(
+                            "raw_entries", {}
                         )
-                    )
-                ):
-                    return None
+                        removed_rel_paths = [
+                            r_path
+                            for r_path in list(raw_entries.keys())
+                            if r_path == rel_dir or r_path.startswith(dir_prefix)
+                        ]
+                        for r_path in removed_rel_paths:
+                            r_dict = raw_entries.pop(r_path, None) or {}
+                            entry_fid = str(r_dict.get("file_id") or "")
+                            if entry_fid:
+                                file_id_to_branch_paths.pop(entry_fid, None)
+                                for sc_b, sc_rel in target_id_to_shortcuts.pop(
+                                    entry_fid, []
+                                ):
+                                    if sc_b in cache_branches:
+                                        sc_dict = (
+                                            cache_branches[sc_b].get("raw_entries")
+                                            or {}
+                                        ).pop(sc_rel, None) or {}
+                                        sc_fid = str(sc_dict.get("file_id") or "")
+                                        if sc_fid:
+                                            file_id_to_branch_paths.pop(sc_fid, None)
+                        folder_patched = True
+                    if not matched_branch:
+                        return None
                 continue
+
+            if fid in known_folder_ids or fid in all_branch_dir_ids:
+                fm = folder_meta.get(fid)
+                if (
+                    fm is not None
+                    and ch.name == fm.get("name")
+                    and ch.parent_id == fm.get("parent_id")
+                ):
+                    continue
+                return None
+
+            if ch.parent_id == repo_folder_id:
+                return None
+
+            pending_new_folders.append(ch)
+
+        while pending_new_folders:
+            progress = False
+            remaining_folders: List[ChangeRecord] = []
+            for ch in pending_new_folders:
+                fid = ch.file_id
+                ent = ch.entry
+                if ch.parent_id in all_branch_dir_ids:
+                    progress = True
+                    dir_name = (
+                        ch.name or (ent.name if ent is not None else "")
+                    ).strip()
+                    if (
+                        not dir_name
+                        or dir_name in SYSTEM_NAMES
+                        or dir_name.startswith(".")
+                        or dir_name.startswith("_")
+                    ):
+                        return None
+                    for b_name, b_data in cache_branches.items():
+                        b_dirs = b_data.setdefault("dir_ids", {})
+                        if ch.parent_id not in b_dirs:
+                            continue
+                        parent_rel = b_dirs[ch.parent_id]
+                        rel_dir = (
+                            f"{parent_rel}/{dir_name}".strip("/")
+                            if parent_rel
+                            else dir_name
+                        )
+                        if (
+                            rel_dir in SYSTEM_NAMES
+                            or rel_dir in b_dirs.values()
+                            or rel_dir in (b_data.get("raw_entries") or {})
+                        ):
+                            return None
+                        b_dirs[fid] = rel_dir
+                        all_branch_dir_ids.add(fid)
+                        known_folder_ids.add(fid)
+                        folder_meta[fid] = {
+                            "name": dir_name,
+                            "parent_id": ch.parent_id,
+                        }
+                        folder_patched = True
+                elif ch.parent_id in known_folder_ids:
+                    return None
+                else:
+                    remaining_folders.append(ch)
+            if not progress:
+                pending_new_folders = remaining_folders
+                break
+            pending_new_folders = remaining_folders
+
+        unresolved_folder_ids: Set[str] = set()
+        for ch in pending_new_folders:
+            ent = ch.entry
+            if ent is not None and (
+                ent.rel_path == repo_prefix
+                or ent.rel_path.startswith(f"{repo_prefix}/")
+            ):
+                return None
+            unresolved_folder_ids.add(ch.file_id)
+
+        for ch in non_folder_changes:
+            fid = ch.file_id
+            ent = ch.entry
 
             # 4. Check external repo/.trash additions
             if ch.parent_id == trash_folder_id or (
@@ -2003,6 +2132,9 @@ class SyncCoordinator:
 
             if ent is None:
                 continue
+
+            if ch.parent_id in unresolved_folder_ids:
+                return None
 
             if fid in file_id_to_branch_paths or fid in target_id_to_shortcuts:
                 for b_name, rel_p in file_id_to_branch_paths.get(fid, []):
@@ -2155,6 +2287,10 @@ class SyncCoordinator:
                                 rel_p
                             ] = added.to_dict()
 
+        if folder_patched:
+            cache["known_folder_ids"] = sorted(known_folder_ids)
+            cache["folder_meta"] = folder_meta
+
         cache["page_token"] = new_token
         meta_copy = copy.deepcopy(repo_meta)
         branch_files_map = meta_copy.setdefault("branch_files", {})
@@ -2185,7 +2321,7 @@ class SyncCoordinator:
                 target_file_id=r_ent.target_file_id,
             )
 
-        hit_level = 1 if level1_ops else 0
+        hit_level = 1 if (level1_ops or folder_patched) else 0
         return hit_level, meta_copy, remote_snap, raw_remote_entries
 
     def _persist_active_branch_to_config(self, target_branch: str) -> None:

@@ -31,6 +31,7 @@ from gdrive_support import (
     GDriveUnsupportedMimeError,
     LocalSandboxTransport,
     collect_space_local_files,
+    collect_space_local_files_with_stat,
     is_sensitive_credential_path,
     load_gdrive_config,
 )
@@ -200,6 +201,30 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
         self.assertEqual(
             src_spec.remote_to_local_rel("code/core/uri.py"),
             "ys_codebase/source/core/uri.py",
+        )
+
+        # Verify fallback vs iter_space_files_with_stat delegation
+        fallback_with_stat = collect_space_local_files_with_stat(
+            docs_spec, project_root=self.proj_dir, file_space_manager=fake_mgr
+        )
+        self.assertEqual(
+            fallback_with_stat,
+            {"docs/README.md": (readme_f.resolve(), None, None)},
+        )
+
+        class _StatFakeFileSpaceManager:
+            def iter_space_files_with_stat(self, space_name):
+                if space_name == "docs":
+                    yield ("README.md", readme_f, docs_dir, 123456789, 123456789, 7)
+
+        stat_with_stat = collect_space_local_files_with_stat(
+            docs_spec,
+            project_root=self.proj_dir,
+            file_space_manager=_StatFakeFileSpaceManager(),
+        )
+        self.assertEqual(
+            stat_with_stat,
+            {"docs/README.md": (readme_f, 123456789, 7)},
         )
         self.mark_passed()
 

@@ -187,3 +187,147 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         diff_res = scanner.diff("space_a", consumer_id="kdb", auto_refresh=False)
         self.assertIn("racy.py", diff_res.modified)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_03_backdated_mtime_no_permanent_racy_and_tombstone_resurrection(self) -> None:
+        """Verify backdated mtime (ctime_ns > mtime_ns) hits cache after first scan, and resurrected tombstone keeps created_gen."""
+        import time
+
+        f_utime = self.space_a_dir / "backdated.py"
+        f_utime.write_text("content_v1\n", encoding="utf-8")
+        # Backdate mtime by 60 seconds so ctime_ns > mtime_ns permanently
+        past_ts = time.time() - 60.0
+        os.utime(f_utime, (past_ts, past_ts))
+        # Wait 15ms so scan_start_ns - ctime_ns > RACY_CLEAN_WINDOW_NS (10ms)
+        time.sleep(0.015)
+
+        scanner = self._build_multi_space_scanner()
+        scanner.refresh("space_a")
+        snap1, _ = scanner._load_or_recover_state("space_a")
+        self.assertEqual(snap1.head_generation, 1)
+        self.assertEqual(snap1.entries["backdated.py"].created_gen, 1)
+
+        # Second scan must NOT re-hash f_utime even though ctime_ns > prev_fp.mtime_ns
+        with patch.object(scanner, "compute_file_hash", wraps=scanner.compute_file_hash) as mock_hash:
+            scanner.refresh("space_a")
+            snap2, _ = scanner._load_or_recover_state("space_a")
+            self.assertEqual(mock_hash.call_count, 0)
+            self.assertEqual(snap2.head_generation, 1)
+
+        # Delete backdated.py -> tombstone at Gen 2, then recreate -> updated at Gen 3 preserving created_gen=1
+        f_utime.unlink()
+        scanner.refresh("space_a")
+        snap3, _ = scanner._load_or_recover_state("space_a")
+        self.assertTrue(snap3.entries["backdated.py"].is_deleted)
+        self.assertEqual(snap3.entries["backdated.py"].updated_gen, 2)
+
+        f_utime.write_text("content_v2_resurrected\n", encoding="utf-8")
+        scanner.refresh("space_a")
+        snap4, _ = scanner._load_or_recover_state("space_a")
+        self.assertFalse(snap4.entries["backdated.py"].is_deleted)
+        self.assertEqual(snap4.entries["backdated.py"].created_gen, 1)
+        self.assertEqual(snap4.entries["backdated.py"].updated_gen, 3)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_04_patch_space_files_and_watcher_directory_move_delete_guard(self) -> None:
+        """Verify patch_space_files incremental updates and Watcher directory move/delete full-rescan fallback."""
+        from file_space.service import FileSpaceWatcherServiceWorker
+
+        f1 = self.space_a_dir / "keep.py"
+        f2 = self.space_a_dir / "edit.py"
+        sub_dir = self.space_a_dir / "pkg"
+        sub_dir.mkdir(parents=True)
+        f3 = sub_dir / "sub_mod.py"
+        f1.write_text("keep = 1\n", encoding="utf-8")
+        f2.write_text("edit = 1\n", encoding="utf-8")
+        f3.write_text("sub = 1\n", encoding="utf-8")
+
+        scanner = self._build_multi_space_scanner()
+        scanner.refresh("space_a")
+        scanner.ack("space_a", consumer_id="ast")
+
+        # 1. Incremental patch_space_files: modify f2, add f4, delete f1
+        f2.write_text("edit = 2\n", encoding="utf-8")
+        f4 = self.space_a_dir / "added.py"
+        f4.write_text("added = 1\n", encoding="utf-8")
+        f1.unlink()
+
+        patched_snap = scanner.patch_space_files("space_a", [f1, f2, f4])
+        self.assertEqual(patched_snap.head_generation, 2)
+        self.assertTrue(patched_snap.entries["keep.py"].is_deleted)
+        self.assertFalse(patched_snap.entries["added.py"].is_deleted)
+
+        diff_res = scanner.diff("space_a", consumer_id="ast", auto_refresh=False)
+        self.assertIn("added.py", diff_res.added)
+        self.assertIn("edit.py", diff_res.modified)
+        self.assertIn("keep.py", diff_res.deleted)
+        scanner.ack("space_a", consumer_id="ast", generation=diff_res.to_generation)
+
+        # 2. Watcher directory deletion triggers full rescan to purge sub_dir/sub_mod.py ghost entry
+        worker = FileSpaceWatcherServiceWorker(
+            space_manager=scanner.space_manager,
+            scanner=scanner,
+        )
+        # Fast segment filter ignores .git and .cache before Path.resolve()
+        self.assertEqual(worker.notify_file_event(str(self.space_a_dir / ".git" / "HEAD")), [])
+
+        shutil.rmtree(sub_dir)
+        matched = worker.notify_file_event(str(sub_dir), is_directory=True, event_type="deleted")
+        self.assertIn("space_a", matched)
+        self.assertIn("space_a", worker._full_rescan_spaces)
+
+        flush_res = worker.flush_space_now("space_a")
+        self.assertIsNotNone(flush_res)
+        diff_after_dir_del = scanner.diff("space_a", consumer_id="ast", auto_refresh=False)
+        self.assertIn("pkg/sub_mod.py", diff_after_dir_del.deleted)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ft_05_watcher_state_awareness_and_diff_all_spaces_aggregation(self) -> None:
+        """Verify is_watcher_active checks watcher_state.json + space watch flag, and _diff_all_spaces aggregates generations."""
+        import json
+        from file_space.scanner import is_watcher_active
+
+        (self.space_a_dir / "a.py").write_text("a = 1\n", encoding="utf-8")
+        (self.space_b_dir / "b.py").write_text("b = 1\n", encoding="utf-8")
+
+        scanner = self._build_multi_space_scanner()
+        scanner.refresh(None)
+
+        all_diff = scanner.diff(None, consumer_id="kdb", auto_refresh=False)
+        self.assertGreater(all_diff.to_generation, 0)
+        self.assertTrue(len(all_diff.merkle_root) > 0)
+        self.assertEqual(all_diff.space_generations.get("space_a"), 1)
+        self.assertEqual(all_diff.space_generations.get("space_b"), 1)
+
+        state_file = self.proj_root / "ys_codebase" / ".cache" / "file-space" / "watcher_state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "watchdog_running": False,
+                    "watched_spaces": ["space_a"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        # When watchdog_running is False, is_watcher_active must return False
+        self.assertFalse(is_watcher_active(self.proj_root, space_name="space_a", space_manager=scanner.space_manager))
+
+        state_file.write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "watchdog_running": True,
+                    "watched_spaces": ["space_a"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertTrue(is_watcher_active(self.proj_root, space_name="space_a", space_manager=scanner.space_manager))
+        # space_b has watch=False, so is_watcher_active(..., space_name="space_b") must return False
+        self.assertFalse(is_watcher_active(self.proj_root, space_name="space_b", space_manager=scanner.space_manager))
+        self.mark_passed()
+

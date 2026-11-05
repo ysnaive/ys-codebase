@@ -79,6 +79,8 @@ def on_file_space_changed(
         if isinstance(diff_detail_arg, dict) and not diff_detail_arg:
             return {"status": "skipped", "ast_generation": 0, "patched_count": 0}
         space_name_arg = kwargs.get("space_name") or (spaces[0] if spaces else "default")
+        if space_name_arg == "cloud":
+            return {"status": "noop", "ast_generation": 0, "patched_count": 0, "to_generation": 0}
         eng = kwargs.get("engine") or ASTEngine()
         normalized_detail = (
             diff_detail_arg
@@ -117,6 +119,36 @@ def on_file_space_changed(
 
     if target_space is None and spaces and len(spaces) == 1:
         target_space = spaces[0]
+
+    known_spaces: List[str] = []
+    space_mgr = getattr(engine, "space_manager", None)
+    if space_mgr is not None and hasattr(space_mgr, "list_spaces"):
+        try:
+            known_spaces = [s for s in space_mgr.list_spaces() if s != "cloud"]
+        except Exception:
+            known_spaces = []
+
+    if target_space == "cloud" or (
+        target_space is not None and known_spaces and target_space not in known_spaces
+    ):
+        cur_ast_gen = engine._snapshot.ast_generation if getattr(engine, "_snapshot", None) else 0
+        return {
+            "status": "noop",
+            "ast_generation": cur_ast_gen,
+            "patched_count": 0,
+            "to_generation": 0,
+        }
+
+    if isinstance(spaces, list):
+        spaces = [s for s in spaces if s != "cloud" and (not known_spaces or s in known_spaces)]
+        if not spaces and target_space is None:
+            cur_ast_gen = engine._snapshot.ast_generation if getattr(engine, "_snapshot", None) else 0
+            return {
+                "status": "noop",
+                "ast_generation": cur_ast_gen,
+                "patched_count": 0,
+                "to_generation": 0,
+            }
 
     has_existing_snapshot = engine.symbols_index_path.exists() and engine.graph_index_path.exists()
     auto_refresh = False if diff_summary is not None else None

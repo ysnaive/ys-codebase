@@ -7,11 +7,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat as stat_mod
 import struct
+import sys
 import tempfile
 import threading
 import time
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
+import weakref
 
 from .exceptions import FingerprintCorruptedError
 from .manager import FileSpaceManager
@@ -31,13 +34,60 @@ LAZY_STABILIZATION_SECONDS = 2.0
 
 _WATCHER_STATE_LOCK = threading.Lock()
 _ACTIVE_WATCHER_COUNT = 0
+_ACTIVE_WATCHER_WORKERS: List[Any] = []
 
 
-def _adjust_active_watcher_count(delta: int) -> None:
-    """Increment or decrement the active in-process watcher count."""
+def _adjust_active_watcher_count(delta: int, worker: Optional[Any] = None) -> None:
+    """Increment or decrement the active in-process watcher count and track active workers."""
     global _ACTIVE_WATCHER_COUNT
     with _WATCHER_STATE_LOCK:
         _ACTIVE_WATCHER_COUNT = max(0, _ACTIVE_WATCHER_COUNT + delta)
+        if worker is not None:
+            if delta > 0:
+                _ACTIVE_WATCHER_WORKERS.append(weakref.ref(worker))
+            elif delta < 0:
+                _ACTIVE_WATCHER_WORKERS[:] = [
+                    ref for ref in _ACTIVE_WATCHER_WORKERS
+                    if ref() is not None and ref() is not worker
+                ]
+
+
+def _flush_in_process_watcher(
+    project_root: Optional[Path], space_name: Optional[str] = None
+) -> None:
+    """If an in-process watcher worker has pending dirty paths for space_name, flush it synchronously."""
+    with _WATCHER_STATE_LOCK:
+        refs = list(_ACTIVE_WATCHER_WORKERS)
+    for ref in refs:
+        worker = ref()
+        if worker is None:
+            continue
+        try:
+            if project_root is not None:
+                w_root = getattr(getattr(worker, "space_manager", None), "project_root", None)
+                if w_root is not None and Path(w_root).resolve() != Path(project_root).resolve():
+                    continue
+            if space_name is not None and hasattr(worker, "flush_space_now"):
+                worker.flush_space_now(space_name)
+            elif space_name is None and hasattr(worker, "flush_dirty_spaces"):
+                worker.flush_dirty_spaces(force=True)
+        except Exception:
+            continue
+
+
+def _check_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        from core.platform import is_process_alive
+
+        return bool(is_process_alive(pid))
+    except Exception:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
 
 
 def _is_daemon_pid_alive(project_root: Optional[Path]) -> bool:
@@ -57,25 +107,103 @@ def _is_daemon_pid_alive(project_root: Optional[Path]) -> bool:
         try:
             data = json.loads(status_file.read_text(encoding="utf-8"))
             pid = int(data.get("pid", 0)) if isinstance(data, dict) else 0
-            if pid > 0:
-                try:
-                    from core.platform import is_process_alive
-                    if is_process_alive(pid):
-                        return True
-                except Exception:
-                    os.kill(pid, 0)
-                    return True
+            if _check_pid_alive(pid):
+                return True
         except Exception:
             continue
     return False
 
 
-def is_watcher_active(project_root: Optional[Path] = None) -> bool:
-    """Return True if a background file-space watcher process or worker is alive."""
-    with _WATCHER_STATE_LOCK:
-        if _ACTIVE_WATCHER_COUNT > 0:
+def _read_watcher_state_file(project_root: Optional[Path]) -> Optional[Dict[str, Any]]:
+    if project_root is None:
+        return None
+    p_root = Path(project_root)
+    candidates = [
+        p_root / "ys_codebase" / ".cache" / "file-space" / "watcher_state.json",
+        p_root / ".cache" / "file-space" / "watcher_state.json",
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            try:
+                data = json.loads(cand.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
+    return None
+
+
+def is_watcher_active(
+    project_root: Optional[Path] = None,
+    space_name: Optional[str] = None,
+    *,
+    space_manager: Optional[FileSpaceManager] = None,
+) -> bool:
+    """
+    Return True if a background file-space watcher process or worker is actively watching
+    the workspace (and the specified space_name has watch=True).
+    """
+    svc_mod = sys.modules.get("file_space.service")
+    if svc_mod is not None:
+        svc_fn = getattr(svc_mod, "is_watcher_active", None)
+        if svc_fn is not None and svc_fn is not is_watcher_active:
+            try:
+                base_active = bool(svc_fn(project_root))
+            except TypeError:
+                base_active = bool(svc_fn())
+            if not base_active:
+                return False
+            if space_name is not None and space_manager is not None:
+                try:
+                    return bool(space_manager.get_space(space_name).watch)
+                except Exception:
+                    return True
             return True
-    return _is_daemon_pid_alive(project_root)
+
+    state_data = _read_watcher_state_file(project_root)
+    if state_data is not None:
+        if not bool(state_data.get("watchdog_running", False)):
+            return False
+        pid = int(state_data.get("pid", 0))
+        if pid > 0 and not _check_pid_alive(pid):
+            return False
+        watched_list = state_data.get("watched_spaces")
+        if space_name is not None and isinstance(watched_list, list):
+            if space_name not in watched_list:
+                return False
+
+    with _WATCHER_STATE_LOCK:
+        in_proc_active = _ACTIVE_WATCHER_COUNT > 0
+        active_refs = list(_ACTIVE_WATCHER_WORKERS)
+
+    daemon_alive = in_proc_active or _is_daemon_pid_alive(project_root) or (
+        state_data is not None and bool(state_data.get("watchdog_running", False))
+    )
+    if not daemon_alive:
+        return False
+
+    if space_name is not None:
+        if space_manager is not None:
+            try:
+                return bool(space_manager.get_space(space_name).watch)
+            except Exception:
+                pass
+        for ref in active_refs:
+            w = ref()
+            w_mgr = getattr(w, "space_manager", None) if w is not None else None
+            if w_mgr is not None:
+                try:
+                    return bool(w_mgr.get_space(space_name).watch)
+                except Exception:
+                    continue
+        if project_root is not None:
+            try:
+                mgr = FileSpaceManager(project_root=Path(project_root))
+                return bool(mgr.get_space(space_name).watch)
+            except Exception:
+                pass
+
+    return True
 
 
 def _atomic_write_bytes(target_path: Path, payload: bytes) -> None:
@@ -126,6 +254,9 @@ class SnapshotState:
     merkle_root: str = ""
     config_hash: str = ""
     entries: Dict[str, FileFingerprint] = field(default_factory=dict)
+    last_diff: Optional[ScanDiffResult] = field(
+        default=None, repr=False, compare=False
+    )
 
     @property
     def active_entries(self) -> Dict[str, FileFingerprint]:
@@ -378,6 +509,30 @@ class CursorStore:
         safe_id = self._sanitize_consumer_id(consumer_id)
         return self.cursors_dir / f"{safe_id}.json"
 
+    @contextmanager
+    def _cursor_lock(self, consumer_id: str) -> Iterator[None]:
+        """Acquire both thread-level RLock and cross-process InterProcessLock for a consumer cursor."""
+        with self._lock:
+            self.cursors_dir.mkdir(parents=True, exist_ok=True)
+            safe_id = self._sanitize_consumer_id(consumer_id)
+            lock_path = self.cursors_dir / f".{safe_id}.lock"
+            ip_lock = None
+            try:
+                from core.platform.lock import InterProcessLock
+
+                ip_lock = InterProcessLock(str(lock_path), timeout=5.0)
+                ip_lock.acquire(blocking=True, timeout_sec=5.0)
+            except Exception:
+                ip_lock = None
+            try:
+                yield
+            finally:
+                if ip_lock is not None:
+                    try:
+                        ip_lock.release()
+                    except Exception:
+                        pass
+
     def load_consumer(self, consumer_id: str = "default") -> Dict[str, Dict[str, Any]]:
         """Load all space cursor states for a given consumer_id."""
         with self._lock:
@@ -422,8 +577,7 @@ class CursorStore:
         config_hash: str = "",
     ) -> None:
         """Atomically persist updated cursor watermark for a space_key and consumer_id."""
-        with self._lock:
-            self.cursors_dir.mkdir(parents=True, exist_ok=True)
+        with self._cursor_lock(consumer_id):
             c_file = self._cursor_file(consumer_id)
             all_spaces = self.load_consumer(consumer_id)
             all_spaces[space_key] = {
@@ -441,7 +595,7 @@ class CursorStore:
         consumer_id: str = "default",
     ) -> None:
         """Reset cursor watermark for a specific space or entire consumer."""
-        with self._lock:
+        with self._cursor_lock(consumer_id):
             c_file = self._cursor_file(consumer_id)
             if space_key is None:
                 if c_file.exists():
@@ -658,20 +812,23 @@ class FingerprintScanner:
         scan_start_ns: int,
         background: bool,
         force: bool,
+        stat_tuple: Optional[Tuple[int, int, int]] = None,
     ) -> Tuple[Optional[str], Optional[FileFingerprint]]:
-        try:
-            st = abs_path.stat()
-        except OSError:
-            return None, None
+        if stat_tuple is not None:
+            mtime_ns, ctime_ns, size = stat_tuple
+        else:
+            try:
+                st = abs_path.stat()
+            except OSError:
+                return None, None
+            mtime_ns = int(st.st_mtime_ns)
+            ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
+            size = int(st.st_size)
 
-        mtime_ns = int(st.st_mtime_ns)
-        ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
-        size = int(st.st_size)
         latest_stat_ns = max(mtime_ns, ctime_ns)
         is_racy = (
             abs(scan_start_ns - mtime_ns) < RACY_CLEAN_WINDOW_NS
             or abs(scan_start_ns - latest_stat_ns) < RACY_CLEAN_WINDOW_NS
-            or (prev_fp is not None and ctime_ns > prev_fp.mtime_ns)
         )
 
         if (
@@ -699,6 +856,11 @@ class FingerprintScanner:
             return None, None
 
         if prev_fp is None or prev_fp.is_deleted:
+            effective_created_gen = (
+                prev_fp.created_gen
+                if (prev_fp is not None and prev_fp.created_gen > 0)
+                else next_gen_candidate
+            )
             return (
                 "added",
                 FileFingerprint(
@@ -707,7 +869,7 @@ class FingerprintScanner:
                     size=size,
                     content_hash=content_hash,
                     source_root=src_root.as_posix(),
-                    created_gen=next_gen_candidate,
+                    created_gen=effective_created_gen,
                     updated_gen=next_gen_candidate,
                     is_deleted=False,
                     pending_stabilization=pending,
@@ -770,6 +932,25 @@ class FingerprintScanner:
                 )
         return deleted_set
 
+    def _iter_space_entries_with_stat(
+        self, space_name: str
+    ) -> Iterator[Tuple[str, Path, Path, Optional[Tuple[int, int, int]]]]:
+        if hasattr(self.space_manager, "iter_space_files_with_stat"):
+            for (
+                rel_p,
+                abs_p,
+                src_root,
+                mtime_ns,
+                ctime_ns,
+                size,
+            ) in self.space_manager.iter_space_files_with_stat(space_name):
+                yield (rel_p, abs_p, src_root, (mtime_ns, ctime_ns, size))
+        else:
+            for rel_p, abs_p, src_root in self.space_manager.iter_space_files(
+                space_name
+            ):
+                yield (rel_p, abs_p, src_root, None)
+
     def scan_space(
         self,
         space_name: str,
@@ -798,9 +979,12 @@ class FingerprintScanner:
         new_entries: Dict[str, FileFingerprint] = dict(prev_entries)
         seen_paths: Set[str] = set()
 
-        for rel_path, abs_path, src_root in self.space_manager.iter_space_files(
-            space_name
-        ):
+        for (
+            rel_path,
+            abs_path,
+            src_root,
+            stat_tuple,
+        ) in self._iter_space_entries_with_stat(space_name):
             seen_paths.add(rel_path)
             status, updated_fp = self._evaluate_entry_fingerprint(
                 rel_path=rel_path,
@@ -812,6 +996,7 @@ class FingerprintScanner:
                 scan_start_ns=scan_start_ns,
                 background=background,
                 force=force,
+                stat_tuple=stat_tuple,
             )
             if status == "added":
                 added_set.add(rel_path)
@@ -833,12 +1018,6 @@ class FingerprintScanner:
         )
 
         m_root = compute_merkle_root(new_entries)
-        new_state = SnapshotState(
-            head_generation=final_gen,
-            merkle_root=m_root,
-            config_hash=cfg_hash,
-            entries=new_entries,
-        )
         detail = ScanDiffDetail(
             added=added_set,
             modified=modified_set,
@@ -857,7 +1036,220 @@ class FingerprintScanner:
             space_name=space_name,
             space_generations={space_name: final_gen},
         )
+        new_state = SnapshotState(
+            head_generation=final_gen,
+            merkle_root=m_root,
+            config_hash=cfg_hash,
+            entries=new_entries,
+            last_diff=diff_res,
+        )
         return new_state, diff_res
+
+    def patch_space_files(
+        self,
+        space_name: str,
+        dirty_paths: Iterable[Union[str, Path]],
+        background: bool = False,
+    ) -> SnapshotState:
+        """
+        Incrementally update a workspace's YFP2 snapshot for a targeted subset of dirty file paths
+        in O(|dirty|) stat/hash operations without walking the entire directory tree.
+        Falls back to scan_space() if no baseline snapshot exists or config_hash has changed.
+        """
+        cfg = self.space_manager.get_space(space_name)
+        cfg_hash = self.space_manager.compute_config_hash(space_name)
+        snap_path = self.get_snapshot_path(space_name)
+
+        if not snap_path.exists():
+            new_state, _ = self.scan_space(space_name, background=background)
+            self.snapshot_mgr.save_state(new_state, snap_path)
+            return new_state
+
+        prev_state, corrupted = self._load_or_recover_state(space_name)
+        if (
+            corrupted
+            or prev_state.head_generation == 0
+            or (prev_state.config_hash and prev_state.config_hash != cfg_hash)
+        ):
+            new_state, _ = self.scan_space(
+                space_name, background=background, force=corrupted
+            )
+            self.snapshot_mgr.save_state(new_state, snap_path)
+            return new_state
+
+        inc_roots = self.space_manager.resolve_space_include(space_name)
+        multi_root = len(inc_roots) > 1
+        proj_root = self.space_manager.project_root
+        scan_start_ns = time.time_ns()
+        prev_entries = prev_state.entries
+        next_gen_candidate = prev_state.head_generation + 1
+
+        added_set: Set[str] = set()
+        modified_set: Set[str] = set()
+        deleted_set: Set[str] = set()
+        new_entries: Dict[str, FileFingerprint] = dict(prev_entries)
+        any_entry_mutated = False
+
+        for raw_item in dirty_paths:
+            if not raw_item:
+                continue
+            cand_path = Path(raw_item)
+            matched_root: Optional[Path] = None
+            rel_to_root: Optional[str] = None
+            abs_file: Optional[Path] = None
+
+            if not cand_path.is_absolute():
+                norm_rel = str(raw_item).replace("\\", "/").strip("/")
+                if norm_rel in prev_entries and prev_entries[norm_rel].source_root:
+                    matched_root = Path(prev_entries[norm_rel].source_root)
+                    abs_file = matched_root / norm_rel
+                    try:
+                        rel_to_root = abs_file.relative_to(matched_root).as_posix()
+                    except ValueError:
+                        rel_to_root = norm_rel
+                else:
+                    for inc_root in inc_roots:
+                        cand_abs = inc_root / norm_rel
+                        if cand_abs.exists() or len(inc_roots) == 1:
+                            matched_root = inc_root
+                            abs_file = cand_abs
+                            rel_to_root = norm_rel
+                            break
+            else:
+                abs_file = (
+                    cand_path.resolve() if cfg.follow_symlinks else cand_path
+                )
+                for inc_root in inc_roots:
+                    try:
+                        rel_to_root = abs_file.relative_to(inc_root).as_posix()
+                        matched_root = inc_root
+                        break
+                    except ValueError:
+                        try:
+                            res_p = abs_file.resolve()
+                            rel_to_root = res_p.relative_to(inc_root).as_posix()
+                            abs_file = res_p
+                            matched_root = inc_root
+                            break
+                        except ValueError:
+                            continue
+
+            if (
+                matched_root is None
+                or abs_file is None
+                or not rel_to_root
+                or rel_to_root == "."
+            ):
+                continue
+
+            if not cfg.follow_symlinks and not multi_root:
+                rel_path = rel_to_root
+            else:
+                rel_path = self.space_manager._compute_rel_path(
+                    abs_file, matched_root, multi_root, proj_root=proj_root
+                )
+
+            prev_fp = prev_entries.get(rel_path)
+            is_included = cfg.is_file_included(rel_to_root)
+            stat_tuple: Optional[Tuple[int, int, int]] = None
+
+            if is_included:
+                try:
+                    if not cfg.follow_symlinks and abs_file.is_symlink():
+                        stat_tuple = None
+                    else:
+                        st = abs_file.stat()
+                        if stat_mod.S_ISREG(st.st_mode):
+                            mtime_ns = int(st.st_mtime_ns)
+                            ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
+                            size = int(st.st_size)
+                            stat_tuple = (mtime_ns, ctime_ns, size)
+                except OSError:
+                    stat_tuple = None
+
+            if stat_tuple is None:
+                if prev_fp is not None and not prev_fp.is_deleted:
+                    deleted_set.add(rel_path)
+                    any_entry_mutated = True
+                    new_entries[rel_path] = FileFingerprint(
+                        path=rel_path,
+                        mtime_ns=prev_fp.mtime_ns,
+                        size=prev_fp.size,
+                        content_hash=prev_fp.content_hash,
+                        source_root=prev_fp.source_root,
+                        created_gen=prev_fp.created_gen,
+                        updated_gen=next_gen_candidate,
+                        is_deleted=True,
+                        pending_stabilization=False,
+                    )
+                continue
+
+            status, updated_fp = self._evaluate_entry_fingerprint(
+                rel_path=rel_path,
+                abs_path=abs_file,
+                src_root=matched_root,
+                cfg=cfg,
+                prev_fp=prev_fp,
+                next_gen_candidate=next_gen_candidate,
+                scan_start_ns=scan_start_ns,
+                background=background,
+                force=False,
+                stat_tuple=stat_tuple,
+            )
+            if status == "added":
+                added_set.add(rel_path)
+            elif status == "modified":
+                modified_set.add(rel_path)
+            if updated_fp is not None:
+                new_entries[rel_path] = updated_fp
+                any_entry_mutated = True
+
+        changed_paths = added_set | modified_set | deleted_set
+        unchanged_set = {
+            k
+            for k, fp in new_entries.items()
+            if not fp.is_deleted and k not in changed_paths
+        }
+        has_structural_change = bool(changed_paths)
+        final_gen = (
+            next_gen_candidate
+            if has_structural_change
+            else prev_state.head_generation
+        )
+        m_root = (
+            compute_merkle_root(new_entries)
+            if has_structural_change
+            else prev_state.merkle_root
+        )
+
+        detail = ScanDiffDetail(
+            added=added_set,
+            modified=modified_set,
+            deleted=deleted_set,
+            unchanged=unchanged_set,
+        )
+        diff_res = ScanDiffResult(
+            added_count=len(added_set),
+            modified_count=len(modified_set),
+            deleted_count=len(deleted_set),
+            unchanged_count=len(unchanged_set),
+            detail=detail,
+            from_generation=prev_state.head_generation,
+            to_generation=final_gen,
+            merkle_root=m_root,
+            space_name=space_name,
+            space_generations={space_name: final_gen},
+        )
+        new_state = SnapshotState(
+            head_generation=final_gen,
+            merkle_root=m_root,
+            config_hash=cfg_hash,
+            entries=new_entries,
+            last_diff=diff_res,
+        )
+        if has_structural_change or any_entry_mutated:
+            self.snapshot_mgr.save_state(new_state, snap_path)
+        return new_state
 
     def refresh(
         self,
@@ -951,6 +1343,8 @@ class FingerprintScanner:
         Return the current map of active FileFingerprints for a space or all spaces.
         If no snapshot exists on disk yet, triggers an initial refresh().
         """
+        if not refresh_first:
+            _flush_in_process_watcher(self.space_manager.project_root, space_name)
         snap_path = self.get_snapshot_path(space_name)
         if refresh_first or not snap_path.exists():
             self.refresh(space_name)
@@ -966,6 +1360,8 @@ class FingerprintScanner:
         """
         Return the Blake2b-160 Merkle root hex digest of the specified space (or all spaces).
         """
+        if not refresh_first:
+            _flush_in_process_watcher(self.space_manager.project_root, space_name)
         snap_path = self.get_snapshot_path(space_name)
         if refresh_first or not snap_path.exists():
             self.refresh(space_name)
@@ -986,6 +1382,8 @@ class FingerprintScanner:
         Compute the monotonic generation delta between a consumer's acked_gen watermark
         and the current YFP2 snapshot without advancing the consumer's cursor.
         """
+        if not auto_refresh:
+            _flush_in_process_watcher(self.space_manager.project_root, space_name)
         if auto_refresh or not self.get_snapshot_path(space_name).exists():
             self.refresh(space_name)
 
@@ -1050,12 +1448,15 @@ class FingerprintScanner:
     def _diff_all_spaces(
         self, consumer_id: str, *, auto_refresh: bool = False
     ) -> ScanDiffResult:
-        watcher_active = is_watcher_active(self.space_manager.project_root)
+        watcher_active = is_watcher_active(
+            self.space_manager.project_root, space_manager=self.space_manager
+        )
         all_added: Set[str] = set()
         all_modified: Set[str] = set()
         all_deleted: Set[str] = set()
         all_unchanged: Set[str] = set()
         space_gens: Dict[str, int] = {}
+        space_merkle_parts: List[str] = []
 
         for s_name in self.space_manager.list_spaces():
             s_cfg = self.space_manager.get_space(s_name)
@@ -1066,6 +1467,7 @@ class FingerprintScanner:
                 s_name, consumer_id=consumer_id, auto_refresh=sub_auto_refresh
             )
             space_gens[s_name] = s_diff.to_generation
+            space_merkle_parts.append(f"{s_name}:{s_diff.merkle_root}")
             all_added |= s_diff.detail.added
             all_modified |= s_diff.detail.modified
             all_deleted |= s_diff.detail.deleted
@@ -1074,6 +1476,16 @@ class FingerprintScanner:
         all_unchanged -= all_added | all_modified | all_deleted
         unified_state, _ = self._load_or_recover_state(None)
         u_cursor = self.cursor_store.get_cursor(self.UNIFIED_KEY, consumer_id)
+
+        dynamic_gen = sum(space_gens.values())
+        effective_to_gen = max(unified_state.head_generation, dynamic_gen)
+        if space_merkle_parts:
+            hasher = hashlib.blake2b(digest_size=20)
+            for part in sorted(space_merkle_parts):
+                hasher.update(f"{part}\n".encode("utf-8"))
+            effective_merkle = hasher.hexdigest()
+        else:
+            effective_merkle = unified_state.merkle_root
 
         detail = ScanDiffDetail(
             added=all_added,
@@ -1088,8 +1500,8 @@ class FingerprintScanner:
             unchanged_count=len(all_unchanged),
             detail=detail,
             from_generation=u_cursor["acked_gen"],
-            to_generation=unified_state.head_generation,
-            merkle_root=unified_state.merkle_root,
+            to_generation=effective_to_gen,
+            merkle_root=effective_merkle,
             space_name=None,
             space_generations=space_gens,
         )
@@ -1180,7 +1592,11 @@ class FingerprintScanner:
         Automatically advances cursor via ack() upon normal exit; preserves previous cursor if an exception occurs.
         """
         if auto_refresh is None:
-            if not is_watcher_active(self.space_manager.project_root):
+            if not is_watcher_active(
+                self.space_manager.project_root,
+                space_name=space_name,
+                space_manager=self.space_manager,
+            ):
                 auto_refresh = True
             elif space_name is not None:
                 s_cfg = self.space_manager.get_space(space_name)

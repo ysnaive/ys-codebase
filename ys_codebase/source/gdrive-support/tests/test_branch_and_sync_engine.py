@@ -41,6 +41,7 @@ from gdrive_support import (
     SyncActionType,
     SyncCoordinator,
     SyncSpaceSpec,
+    collect_space_local_files_with_stat,
     compute_history_ref_counts,
     compute_orphan_history_file_ids,
     is_file_id_referenced_by_other_branches,
@@ -881,11 +882,12 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         self,
     ) -> None:
         """
-        Verify SyncCoordinator 3-level remote_repo_cache with changes API (FT-02):
+        Verify SyncCoordinator 3-level remote_repo_cache with changes API:
         - Level 0: Second run_sync makes 0 list_files calls and reports cache_hit_level == 0.
-        - Level 1: Single remote file update, new file in known dir, and Shortcut target_file_id update
-          patch cache in-memory with 0 list_files calls (cache_hit_level == 1).
-        - Level 2: Adding a new remote directory automatically falls back to full scan (cache_hit_level == 2).
+        - Level 1: Single remote file update, new file in known dir, topological new nested subdirectories,
+          and Shortcut target_file_id update patch cache in-memory with 0 list_files calls (cache_hit_level == 1).
+        - Level 2: Moving/renaming an existing directory or creating a new cloud branch under repo/
+          safely falls back to full scan (cache_hit_level == 2).
         """
         f_guide = self.docs_dir / "guide.md"
         f_guide.write_text("Guide v1\n", encoding="utf-8")
@@ -976,24 +978,211 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
             self.assertEqual(rep_sc_rm.deleted_local, ["docs/guide.md"])
             self.assertFalse(f_guide.exists())
 
-            # 4. Level 2 Fallback: Create a new remote subdirectory under repo/v1.0/docs/new_sub/
+            # 4. Level 1 Topological Subdirectory Patch: Create a new remote subdirectory under repo/v1.0/docs/new_sub/
             rem_sub = self.tmp_root / "rem_sub_doc.md"
             rem_sub.write_text("Deep Subdir Doc\n", encoding="utf-8")
             self.transport.upload_file(
                 rem_sub, "repo/v1.0/docs/new_sub/deep_doc.md"
             )
 
-            rep_l2 = self.coord.run_sync(mode="pull")
-            self.assertEqual(rep_l2.cache_hit_level, 2)
-            self.assertIn("docs/new_sub/deep_doc.md", rep_l2.pulled)
+            list_files_calls["n"] = 0
+            rep_sub_l1 = self.coord.run_sync(mode="pull")
+            self.assertEqual(rep_sub_l1.cache_hit_level, 1)
+            self.assertEqual(list_files_calls["n"], 0)
+            self.assertIn("docs/new_sub/deep_doc.md", rep_sub_l1.pulled)
             self.assertEqual(
                 (self.docs_dir / "new_sub" / "deep_doc.md").read_text(
                     encoding="utf-8"
                 ),
                 "Deep Subdir Doc\n",
             )
+
+            # 5. Level 2 Fallback: Renaming an existing tracked subdirectory falls back to full scan
+            self.transport.move_file(
+                "repo/v1.0/docs/new_sub", "repo/v1.0/docs/renamed_sub"
+            )
+            rep_l2 = self.coord.run_sync(mode="pull", delete=True)
+            self.assertEqual(rep_l2.cache_hit_level, 2)
+            self.assertIn("docs/renamed_sub/deep_doc.md", rep_l2.pulled)
+            self.assertFalse((self.docs_dir / "new_sub" / "deep_doc.md").exists())
+            self.assertEqual(
+                (self.docs_dir / "renamed_sub" / "deep_doc.md").read_text(
+                    encoding="utf-8"
+                ),
+                "Deep Subdir Doc\n",
+            )
         finally:
             self.transport.list_files = orig_list_files  # type: ignore[method-assign]
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_13_level1_topological_nested_subdirs_removal_shortcut_purge_and_zero_stat_snapshot(
+        self,
+    ) -> None:
+        """
+        Verify:
+        1. Level 1 creates multi-level new subdirectories (e.g. plans/2026_11_05_new/sub_01) and files
+           in a single batch with 0 list_files calls, registering all new dir_ids into cache and pulling files.
+        2. Level 1 deleting a known subdirectory purges its subtree from dir_ids, raw_entries, and
+           cross-branch Shortcuts pointing to files inside that deleted subdirectory.
+        3. collect_space_local_files_with_stat and _collect_local_snapshot reuse iter_space_files_with_stat
+           (mtime_ns, size) without calling Path.stat() or Path.is_file() during local snapshot collection.
+        """
+        f_init = self.docs_dir / "root.md"
+        f_init.write_text("Root v1\n", encoding="utf-8")
+        rep_init = self.coord.run_sync(mode="sync")
+        self.assertEqual(rep_init.cache_hit_level, 2)
+
+        list_files_calls = {"n": 0}
+        orig_list_files = self.transport.list_files
+
+        def _counting_list_files(remote_path: str = "", recursive: bool = False):
+            list_files_calls["n"] += 1
+            return orig_list_files(remote_path, recursive=recursive)
+
+        self.transport.list_files = _counting_list_files  # type: ignore[method-assign]
+        try:
+            # (a) Multi-level new subdirectories + files in a single batch -> Level 1 (0 list_files calls)
+            f_plan_a = self.tmp_root / "plan_a.md"
+            f_plan_b = self.tmp_root / "plan_b.md"
+            f_plan_a.write_text("Plan Spec A\n", encoding="utf-8")
+            f_plan_b.write_text("Plan Task B\n", encoding="utf-8")
+            self.transport.upload_file(
+                f_plan_a, "repo/main/docs/plans/2026_11_05_new/P00_discuss.md"
+            )
+            ent_b = self.transport.upload_file(
+                f_plan_b, "repo/main/docs/plans/2026_11_05_new/sub_01/task.md"
+            )
+
+            list_files_calls["n"] = 0
+            rep_nested = self.coord.run_sync(mode="pull")
+            self.assertEqual(rep_nested.cache_hit_level, 1)
+            self.assertEqual(list_files_calls["n"], 0)
+            self.assertEqual(
+                sorted(rep_nested.pulled),
+                [
+                    "docs/plans/2026_11_05_new/P00_discuss.md",
+                    "docs/plans/2026_11_05_new/sub_01/task.md",
+                ],
+            )
+            self.assertEqual(
+                (
+                    self.docs_dir
+                    / "plans"
+                    / "2026_11_05_new"
+                    / "sub_01"
+                    / "task.md"
+                ).read_text(encoding="utf-8"),
+                "Plan Task B\n",
+            )
+            saved_state = json.loads(
+                (self.cache_dir / "sync_state.json").read_text(encoding="utf-8")
+            )
+            cached_main_dirs = saved_state["remote_repo_cache"]["branches"]["main"][
+                "dir_ids"
+            ].values()
+            self.assertIn("docs/plans", cached_main_dirs)
+            self.assertIn("docs/plans/2026_11_05_new", cached_main_dirs)
+            self.assertIn("docs/plans/2026_11_05_new/sub_01", cached_main_dirs)
+
+            # (b) Create branch v1.0 (which has Shortcuts to main's files in docs/plans/2026_11_05_new/...),
+            #     checkout v1.0, warm cache, then trash the entire subdirectory on main!
+            self.coord.create_branch("v1.0", from_branch="main")
+            self.coord.checkout_branch("v1.0")
+            rep_warm = self.coord.run_sync(mode="sync")
+            self.assertEqual(rep_warm.cache_hit_level, 2)
+
+            # Trash the parent directory on main -> removes physical files on main AND purges v1.0's shortcuts in Level 1
+            self.transport.trash_file("repo/main/docs/plans/2026_11_05_new")
+            list_files_calls["n"] = 0
+            rep_del_dir = self.coord.run_sync(mode="pull", delete=True)
+            self.assertEqual(rep_del_dir.cache_hit_level, 1)
+            self.assertEqual(list_files_calls["n"], 0)
+            self.assertEqual(
+                sorted(rep_del_dir.deleted_local),
+                [
+                    "docs/plans/2026_11_05_new/P00_discuss.md",
+                    "docs/plans/2026_11_05_new/sub_01/task.md",
+                ],
+            )
+            saved_after_del = json.loads(
+                (self.cache_dir / "sync_state.json").read_text(encoding="utf-8")
+            )
+            main_after = saved_after_del["remote_repo_cache"]["branches"]["main"]
+            v1_after = saved_after_del["remote_repo_cache"]["branches"]["v1.0"]
+            self.assertNotIn(
+                "docs/plans/2026_11_05_new", main_after["dir_ids"].values()
+            )
+            self.assertNotIn(
+                "docs/plans/2026_11_05_new/sub_01", main_after["dir_ids"].values()
+            )
+            self.assertNotIn(
+                "docs/plans/2026_11_05_new/sub_01/task.md", main_after["raw_entries"]
+            )
+            self.assertNotIn(
+                "docs/plans/2026_11_05_new/sub_01/task.md", v1_after["raw_entries"]
+            )
+            self.assertNotIn(ent_b.file_id, v1_after["raw_entries"].values())
+        finally:
+            self.transport.list_files = orig_list_files  # type: ignore[method-assign]
+
+        # (c) Verify zero-redundant stat() when file_space_manager provides iter_space_files_with_stat
+        class _StatProvidingFileSpaceManager:
+            def __init__(self, root_dir: Path) -> None:
+                self.root_dir = root_dir
+
+            def iter_space_files_with_stat(self, _space_name: str):
+                f_p = self.root_dir / "root.md"
+                st = os.stat(f_p)
+                yield (
+                    "root.md",
+                    f_p,
+                    self.root_dir,
+                    int(st.st_mtime_ns),
+                    int(st.st_ctime_ns),
+                    int(st.st_size),
+                )
+
+            def iter_space_files(self, _space_name: str):
+                raise AssertionError(
+                    "iter_space_files should not be called when iter_space_files_with_stat is present"
+                )
+
+        stat_mgr = _StatProvidingFileSpaceManager(self.docs_dir)
+        spec_docs = SyncSpaceSpec(space="docs")
+        with_stat_map = collect_space_local_files_with_stat(
+            spec_docs,
+            project_root=self.proj_dir,
+            file_space_manager=stat_mgr,
+        )
+        self.assertIn("docs/root.md", with_stat_map)
+        abs_p, m_ns, sz_val = with_stat_map["docs/root.md"]
+        self.assertEqual(abs_p, self.docs_dir / "root.md")
+        self.assertIsNotNone(m_ns)
+        self.assertIsNotNone(sz_val)
+
+        # Warm fingerprint_cache so compute_local_hashes is also a cache hit, then block Path.stat
+        self.coord._file_space_manager = stat_mgr
+        state_obj = self.coord._load_local_state()
+        self.coord._collect_local_snapshot(state_obj)
+
+        orig_path_stat = Path.stat
+
+        def _forbid_stat(path_self: Path, *args, **kwargs):
+            if path_self == (self.docs_dir / "root.md"):
+                raise AssertionError(
+                    f"Redundant Path.stat() called on {path_self} despite pre-collected stat!"
+                )
+            return orig_path_stat(path_self, *args, **kwargs)
+
+        Path.stat = _forbid_stat  # type: ignore[method-assign]
+        try:
+            snap_zero_stat, _, _ = self.coord._collect_local_snapshot(state_obj)
+        finally:
+            Path.stat = orig_path_stat  # type: ignore[method-assign]
+
+        self.assertIn("docs/root.md", snap_zero_stat)
+        self.assertEqual(snap_zero_stat["docs/root.md"].size, sz_val)
         self.mark_passed()
 
     @require(Requirement.ENV)

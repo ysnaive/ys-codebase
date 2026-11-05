@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_05_0826_file_space_foundation_research (Completed)
+
+- **`file-space` 底層預編譯過濾與零冗餘 `DirEntry.stat()` 遍歷、Watcher $O(|\text{dirty}|)$ 路徑級增量 Patch、Racy-Clean `ctime_ns` 防擊穿與 `gdrive-support` 雙端增量同步打通 (`FR-01` ~ `FR-08`, `EC-01` ~ `EC-08`, `NFR-01` ~ `NFR-03`)**：
+  - **`FileSpaceConfig` 預編譯過濾引擎與 `iter_space_files_with_stat` 零冗餘遍歷 (`FR-01`, `FR-08`, `EC-01`, `EC-02`)**：於 `FileSpaceConfig.__post_init__` 將 `exclude` 與 `file_patterns` 預編譯為 $O(1)$ `_exclude_exact_segments`、`_exclude_rel_exact`、`_exclude_rel_prefixes`、`_include_ext_suffixes` 及支援 `**/` 零或多層目錄之合併正則；於 `FileSpaceManager` 新增 `iter_space_files_with_stat(space_name)` 直接複用 `os.DirEntry.stat()` 傳遞 `(mtime_ns, ctime_ns, size)`、消除 `follow_symlinks=False` 下之目錄級 `stat()`，並支援專案配置 `override_mode: "replace"`。
+  - **`FileSpaceWatcherServiceWorker` 路徑級增量 Patch (`patch_space_files`)、目錄事件守門與 Racy-Clean `ctime_ns` 陷阱修復 (`FR-02`, `FR-03`, `FR-06`, `FR-07`, `EC-03` ~ `EC-05`)**：於 `notify_file_event` 前置攔截 `.git`/`.cache`/`.storage.local`/`.modules` 噪音，以 `FingerprintScanner.patch_space_files()` 實現 $O(|\text{dirty}|)$ 毫秒級局部快照修補（目錄移動/刪除事件自動升級 `_full_rescan_spaces` 防幽靈殘留）；移除 `_evaluate_entry_fingerprint` 中 `ctime_ns > prev_fp.mtime_ns` 造成的 `os.utime`/`shutil.copy2` 檔案永久快取擊穿並保留復活墓碑之 `created_gen`；於 `ast/scripts/hook.file-space.py` 過濾非 AST 追蹤空間（如 `"cloud"`）消除雙重熱修補，並為 `CursorStore` 加上 `InterProcessLock`。
+  - **`gdrive-support` 本地零冗餘 `stat` 快照管線與雲端 Level 1 拓撲序新建/移除子目錄增量修補 (`FR-04`, `FR-05`, `EC-06` ~ `EC-08`, `NFR-01`, `NFR-02`)**：新增 `collect_space_local_files_with_stat` 對接 `iter_space_files_with_stat`（對測試替身保持 fallback）並移除逐檔 `Path.resolve()` 與雙重 `is_file()`/`stat()`；升級 `SyncCoordinator._try_incremental_remote_cache` 支援分支內部新建子目錄按父子拓撲序掛載入 `dir_ids`（`0` 次 `list_files` 呼叫，消除新增計畫目錄時退回 `138s` Level 2 全掃）及刪除子目錄連動清理 `dir_ids`、`raw_entries` 與跨分支 `target_id_to_shortcuts` 懸空 Shortcut（根目錄新分支 `parent_id == repo_folder_id` 安全退回 Level 2 守護 `test_et_06`），通過 `file-space` (22/22)、`gdrive-support` (31/31)、`ast` (27/27) 與 `knowledge-db` (109/109) 全量測試。
+
 ## 2026_11_05_0321_kdb_cli_and_engine_optimization (Completed)
 
 - **`knowledge-db` 與 `ast` 雙模組 CLI 輸出路徑去重瘦身、`kdb` 頂層模組別名、呼叫圖譜按需惰性載入與 `InvertedIndex` 內部 `0..n` 整數文檔碼映射優化 (`OPT-01` ~ `OPT-08`)**：

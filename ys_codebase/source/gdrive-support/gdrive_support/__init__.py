@@ -25,6 +25,7 @@ __all__ = [
     "is_sensitive_credential_path",
     "load_gdrive_config",
     "collect_space_local_files",
+    "collect_space_local_files_with_stat",
     "RemoteEntry",
     "AbstractSyncTransport",
     "LocalSandboxTransport",
@@ -72,6 +73,7 @@ def __getattr__(name: str) -> Any:
         "is_sensitive_credential_path",
         "load_gdrive_config",
         "collect_space_local_files",
+        "collect_space_local_files_with_stat",
     ):
         from . import config
 
