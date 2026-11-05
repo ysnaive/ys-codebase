@@ -50,7 +50,7 @@ python __${yscb.host://yscb.py}__ gdrive put <local_path> <remote_path> [--json]
 # 單點從純雲端區下載檔案至本地指定路徑（如 /tmp 或指定目錄）
 python __${yscb.host://yscb.py}__ gdrive get <remote_path> <local_path> [--json]
 
-# 於純雲端區建立資料夾、建立 Shortcut 或將項目移入 .trash/
+# 於純雲端區建立資料夾、建立 Shortcut 或將項目移入 Google Drive 原生 30 天垃圾桶 (沙盒模式為 .trash/)
 python __${yscb.host://yscb.py}__ gdrive mkdir <remote_path> [--json]
 python __${yscb.host://yscb.py}__ gdrive shortcut <target_file_id> <shortcut_remote_path> [--json]
 python __${yscb.host://yscb.py}__ gdrive rm <remote_path> [--json]
@@ -61,7 +61,7 @@ python __${yscb.host://yscb.py}__ gdrive rm <remote_path> [--json]
 # 初始化 <root_folder_id>/<repo_sync_root>/ 同步倉並軟合併頂層 README.md
 python __${yscb.host://yscb.py}__ gdrive init [--json]
 
-# 管理 Shortcut 差量分支（刪除分支時自動將無引用 .history/ 歷史檔回收至 .trash/）
+# 管理 Shortcut 差量分支（刪除分支時自動將無引用 .history/ 歷史檔回收至 Google Drive 原生 30 天垃圾桶）
 python __${yscb.host://yscb.py}__ gdrive branch list [--json]
 python __${yscb.host://yscb.py}__ gdrive branch create <branch_name> [--from=main] [--json]
 python __${yscb.host://yscb.py}__ gdrive branch delete <branch_name> [--json]

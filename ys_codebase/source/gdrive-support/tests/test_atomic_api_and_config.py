@@ -957,9 +957,74 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
             resolved_sc = transport._resolve_shortcut_targets(sc_items)
             self.assertEqual(sorted(resolved_sc.keys()), ["tgt_1", "tgt_2", "tgt_3"])
             self.assertEqual(sorted(fetched_targets), ["tgt_1", "tgt_2", "tgt_3"])
+
+            # 6. upload_file in_place_file_id HTTP 404 fallback to POST multipart creation
+            upload_methods: list[tuple[str, str]] = []
+
+            def _fake_request_json_404_fallback(
+                method: str,
+                url: str,
+                body: bytes | None = None,
+                headers: dict[str, str] | None = None,
+            ) -> dict[str, object]:
+                upload_methods.append((method, url))
+                if method == "PATCH" and "stale_deleted_fid" in url:
+                    raise GDriveFileNotFoundError("Remote file 404 gone")
+                if method == "POST" and "/upload/drive/v3/files" in url:
+                    return {
+                        "id": "fresh_created_fid",
+                        "name": "recreated.md",
+                        "mimeType": "text/markdown",
+                        "size": "12",
+                        "md5Checksum": "md5_recreated",
+                        "parents": ["fid_docs_warm"],
+                    }
+                return _fake_request_json_patch(method, url, body=body, headers=headers)
+
+            transport._request_json = _fake_request_json_404_fallback  # type: ignore[method-assign]
+            recreated_src = self.tmp_root / "recreated.md"
+            recreated_src.write_text("Recreated v1", encoding="utf-8")
+            recreated_ent = transport.upload_file(
+                recreated_src,
+                "repo/main/docs/recreated.md",
+                in_place_file_id="stale_deleted_fid",
+            )
+            self.assertEqual(recreated_ent.file_id, "fresh_created_fid")
+            self.assertEqual([m for m, _ in upload_methods], ["PATCH", "POST"])
+
+            # 7. close() safely closes any thread-local HTTPSConnection pool
+            closed_hosts: list[str] = []
+
+            class _ClosableConn:
+                def __init__(self, host: str) -> None:
+                    self.host = host
+
+                def close(self) -> None:
+                    closed_hosts.append(self.host)
+
+            transport._tls.conns = {"www.googleapis.com": _ClosableConn("www.googleapis.com")}
+            transport.close()
+            self.assertEqual(closed_hosts, ["www.googleapis.com"])
+            self.assertEqual(transport._tls.conns, {})
         finally:
             transport._request_json = orig_request_json  # type: ignore[method-assign]
             transport._ensure_access_token = orig_ensure_token  # type: ignore[method-assign]
+
+        # 8. LocalSandboxTransport.move_file on a directory updates child rel_path prefixes and replaces existing dst
+        sbx_transport = LocalSandboxTransport(self.sandbox_dir)
+        sub_file = self.tmp_root / "sub_item.md"
+        sub_file.write_text("Nested Dir Move Content\n", encoding="utf-8")
+        sbx_transport.upload_file(sub_file, "dir_src/nested/sub_item.md")
+        sbx_transport.upload_file(sub_file, "dir_dst/old_stale.md")
+        moved_dir = sbx_transport.move_file("dir_src", "dir_dst")
+        self.assertTrue(moved_dir.is_dir)
+        self.assertEqual(moved_dir.rel_path, "dir_dst")
+        self.assertIsNone(sbx_transport.get_entry("dir_src/nested/sub_item.md"))
+        self.assertIsNone(sbx_transport.get_entry("dir_dst/old_stale.md"))
+        moved_child = sbx_transport.get_entry("dir_dst/nested/sub_item.md")
+        self.assertIsNotNone(moved_child)
+        assert moved_child is not None
+        self.assertEqual(moved_child.rel_path, "dir_dst/nested/sub_item.md")
         self.mark_passed()
 
 

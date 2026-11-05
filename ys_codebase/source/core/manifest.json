@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.7.0",
+  "version": "1.2.7.1",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -24,8 +24,8 @@
     "Explore installed modules: python yscb.py status"
   ],
   "release": {
-    "type": "feature",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "新增五大語意空間協議、全已安裝模組 sys.path 統一注入與多段版本遷移階梯"
+    "summary": "core.uri 狀態執行緒本地化 (TLS)、路徑逃逸與 VFS.open 安全守衛、IPC ProxyHandler 隔離及快照排序加固"
   }
 }

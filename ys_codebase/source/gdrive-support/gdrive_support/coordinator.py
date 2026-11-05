@@ -36,8 +36,6 @@ from .config import (
     GDriveRepoSyncDisabledError,
     GDriveRepoUninitializedError,
     GDriveTransportError,
-    SyncSpaceSpec,
-    collect_space_local_files,
     collect_space_local_files_with_stat,
     is_sensitive_credential_path,
     normalize_remote_rel_path,
@@ -59,6 +57,7 @@ from .transport import (
 )
 
 DEFAULT_REPO_SYNC_ROOT = "repo"
+# Public backward-compatible alias exported in gdrive_support.__all__
 REPO_SYNC_ROOT_PREFIX = DEFAULT_REPO_SYNC_ROOT
 REPO_CONFIG_FILENAME = ".yscb_gdrive.json"
 REPO_README_FILENAME = "README.md"
@@ -79,6 +78,29 @@ BRANCH_INTERNAL_SYSTEM_NAMES = {
 STABILIZATION_WINDOW_NS = 2_000_000_000  # 2.0 seconds
 MAX_LOG_BYTES = 2 * 1024 * 1024  # 2 MB
 PARALLEL_TRANSFER_WORKERS = 8
+
+
+def _create_conflict_backup(local_path: Path) -> Path:
+    """Create a timestamped local `.conflict.<UTC>.bak` backup copy before overwriting or deleting."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    bak_path = local_path.with_name(f"{local_path.name}.conflict.{ts}.bak")
+    shutil.copy2(local_path, bak_path)
+    return bak_path
+
+
+def _extract_cached_readme_state(raw_entry: Any) -> Tuple[Optional[bool], str]:
+    """Normalize a stored readme_sync_state entry (legacy bool or dict) into (enabled, repo_sync_root)."""
+    if isinstance(raw_entry, bool):
+        return raw_entry, DEFAULT_REPO_SYNC_ROOT
+    if isinstance(raw_entry, dict) and "enable" in raw_entry:
+        return (
+            bool(raw_entry["enable"]),
+            normalize_remote_rel_path(
+                str(raw_entry.get("repo_sync_root") or DEFAULT_REPO_SYNC_ROOT)
+            )
+            or DEFAULT_REPO_SYNC_ROOT,
+        )
+    return None, DEFAULT_REPO_SYNC_ROOT
 
 
 def build_managed_readme_content(repo_sync_root: str = DEFAULT_REPO_SYNC_ROOT) -> str:
@@ -178,12 +200,12 @@ def reconcile_root_readme_state(
     readme_state_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
-    Check local cache for the last known 'repo_sync.enable' state for this target root.
+    Check local cache for the last known 'repo_sync.enable' and 'repo_sync_root' state for this target root.
     Only when a state transition is detected (or first initialization with enable=True)
     does it inspect/update the cloud root README.md:
     - enable == True: create root/README.md or soft-merge the managed block into existing root/README.md.
     - enable == False: if root/README.md exists, strip the managed block; if empty after stripping,
-      move root/README.md to .trash/, otherwise write back the preserved user content (soft-remove).
+      move root/README.md to Trash, otherwise write back the preserved user content (soft-remove).
     """
     state_file = (
         Path(readme_state_path).resolve()
@@ -200,18 +222,23 @@ def reconcile_root_readme_state(
             loaded = vfs.read_json(state_file)
             if isinstance(loaded, dict) and isinstance(loaded.get("states"), dict):
                 cache_data = loaded
-        except Exception:
+        except (OSError, ValueError):
             cache_data = {"states": {}}
 
     states_map: Dict[str, Any] = cache_data.setdefault("states", {})
     curr_enabled = bool(config.repo_sync_enabled)
-    prev_enabled = states_map.get(target_key)
+    curr_root = (
+        normalize_remote_rel_path(config.repo_sync_root or DEFAULT_REPO_SYNC_ROOT)
+        or DEFAULT_REPO_SYNC_ROOT
+    )
+    prev_enabled, prev_root = _extract_cached_readme_state(states_map.get(target_key))
 
-    if prev_enabled is not None and bool(prev_enabled) == curr_enabled:
-        return {"changed": False, "action": "noop_cached", "enabled": curr_enabled}
+    if prev_enabled is not None and prev_enabled == curr_enabled:
+        if not curr_enabled or prev_root == curr_root:
+            return {"changed": False, "action": "noop_cached", "enabled": curr_enabled}
 
     if prev_enabled is None and not curr_enabled:
-        states_map[target_key] = False
+        states_map[target_key] = {"enable": False, "repo_sync_root": curr_root}
         state_file.parent.mkdir(parents=True, exist_ok=True)
         vfs.write_json(state_file, cache_data, indent=2, encoding="utf-8", atomic=True)
         return {"changed": False, "action": "initialized_disabled_cache", "enabled": False}
@@ -228,7 +255,7 @@ def reconcile_root_readme_state(
 
         if curr_enabled:
             merged_text = merge_root_readme_block(
-                existing_text, repo_sync_root=config.repo_sync_root
+                existing_text, repo_sync_root=curr_root
             )
             tmp_path.write_text(merged_text, encoding="utf-8")
             in_place_id = (
@@ -259,7 +286,7 @@ def reconcile_root_readme_state(
             else:
                 action_taken = "absent_noop"
 
-    states_map[target_key] = curr_enabled
+    states_map[target_key] = {"enable": curr_enabled, "repo_sync_root": curr_root}
     state_file.parent.mkdir(parents=True, exist_ok=True)
     vfs.write_json(state_file, cache_data, indent=2, encoding="utf-8", atomic=True)
     return {"changed": True, "action": action_taken, "enabled": curr_enabled}
@@ -285,6 +312,63 @@ class SyncReport:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class _PushTask:
+    """Encapsulated Stage 3 upload work item."""
+
+    rel_path: str
+    abs_local: Path
+    remote_branch_rel: str
+    existing_remote: Optional[RemoteEntry]
+    local_entry: FileEntry
+    action_type: SyncActionType
+    remote_entry: Optional[FileEntry]
+    baseline_entry: Optional[FileEntry]
+
+
+@dataclass(frozen=True)
+class _PullTask:
+    """Encapsulated Stage 3 download work item."""
+
+    rel_path: str
+    abs_local: Path
+    remote_branch_rel: str
+    remote_entry: FileEntry
+
+
+@dataclass
+class _RemoteStageSnapshot:
+    """Stage 1 remote snapshot and cache state before Stage 3 reconciliation."""
+
+    cache_hit_level: int
+    meta: Dict[str, Any]
+    remote_snap: Dict[str, FileEntry]
+    raw_remote_entries: Dict[str, RemoteEntry]
+    branch_dir_ids_current: Dict[str, str]
+    flushed_external_trash: List[str]
+    pending_page_token: str
+
+
+@dataclass
+class _IncrementalPatchContext:
+    """Working state for isolated Level 1 incremental change patching."""
+
+    repo_meta: Dict[str, Any]
+    cache_branches: Dict[str, Any]
+    known_folder_ids: Set[str]
+    folder_meta: Dict[str, Dict[str, str]]
+    all_branch_dir_ids: Set[str]
+    file_id_to_branch_paths: Dict[str, List[Tuple[str, str]]]
+    target_id_to_shortcuts: Dict[str, List[Tuple[str, str]]]
+    history_file_ids: Set[str]
+    meta_file_id: str
+    meta_md5: str
+    repo_folder_id: str
+    history_folder_id: str
+    trash_folder_id: str
+    folder_patched: bool = False
 
 
 class _BackgroundYieldRequested(Exception):
@@ -393,24 +477,24 @@ class SyncCoordinator:
             level_dirs = by_depth[depth]
             if len(level_dirs) == 1:
                 created.append(self.transport.mkdir(level_dirs[0]))
-            else:
-                with ThreadPoolExecutor(
-                    max_workers=min(PARALLEL_TRANSFER_WORKERS, len(level_dirs))
-                ) as pool:
-                    fut_map = {
-                        pool.submit(self.transport.mkdir, d_rel): d_rel
-                        for d_rel in level_dirs
-                    }
-                    level_results: Dict[str, RemoteEntry] = {}
-                    for fut in as_completed(fut_map):
-                        d_rel = fut_map[fut]
-                        level_results[d_rel] = fut.result()
-                    for d_rel in level_dirs:
-                        created.append(level_results[d_rel])
+                continue
+            with ThreadPoolExecutor(
+                max_workers=min(PARALLEL_TRANSFER_WORKERS, len(level_dirs))
+            ) as pool:
+                fut_map = {
+                    pool.submit(self.transport.mkdir, d_rel): d_rel
+                    for d_rel in level_dirs
+                }
+                level_results: Dict[str, RemoteEntry] = {}
+                for fut in as_completed(fut_map):
+                    d_rel = fut_map[fut]
+                    level_results[d_rel] = fut.result()
+                for d_rel in level_dirs:
+                    created.append(level_results[d_rel])
         return created
 
     def reconcile_root_readme(self) -> Dict[str, Any]:
-        """Reconcile the top-level root/README.md if repo_sync.enable changed vs local cache."""
+        """Reconcile the top-level root/README.md if repo_sync.enable or repo_sync_root changed vs local cache."""
         return reconcile_root_readme_state(
             config=self.config,
             transport=self.transport,
@@ -445,7 +529,7 @@ class SyncCoordinator:
                 return False
             pid = int(raw.get("pid") or 0)
             ts = float(raw.get("ts") or 0.0)
-        except Exception:
+        except (OSError, ValueError, TypeError):
             self.yield_signal_path.unlink(missing_ok=True)
             return False
 
@@ -479,7 +563,7 @@ class SyncCoordinator:
                         encoding="utf-8",
                         atomic=True,
                     )
-                except Exception:
+                except OSError:
                     pass
                 try:
                     acquired = lock.acquire(blocking=True, timeout_sec=timeout_sec)
@@ -504,7 +588,7 @@ class SyncCoordinator:
             }
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except Exception:
+        except OSError:
             pass
 
     # ------------------------------------------------------------------
@@ -519,7 +603,7 @@ class SyncCoordinator:
                     data.setdefault("branches", {})
                     data.setdefault("fingerprint_cache", {})
                     return data
-            except Exception:
+            except (OSError, ValueError):
                 pass
         return {"branches": {}, "fingerprint_cache": {}}
 
@@ -574,10 +658,11 @@ class SyncCoordinator:
             if not entry.is_dir or entry.skipped_reason:
                 continue
             rel = entry.rel_path
-            if rel.startswith(f"{repo_prefix}/"):
-                name = rel[len(repo_prefix) + 1 :]
-            else:
-                name = Path(rel).name
+            name = (
+                rel[len(repo_prefix) + 1 :]
+                if rel.startswith(f"{repo_prefix}/")
+                else Path(rel).name
+            )
             if (
                 not name
                 or "/" in name
@@ -789,7 +874,7 @@ class SyncCoordinator:
 
     def delete_branch(self, branch_name: str) -> Dict[str, Any]:
         """
-        Move repo_sync/<branch_name>/ to repo_sync/.trash/, remove it from .yscb_gdrive.json,
+        Move repo_sync/<branch_name>/ to Google Drive Trash (or sandbox .trash/), remove it from .yscb_gdrive.json,
         and immediately garbage-collect any repo_sync/.history/ files whose reference count drops to 0.
         """
         self.ensure_repo_sync_enabled()
@@ -808,7 +893,7 @@ class SyncCoordinator:
             if norm_branch not in branches:
                 raise GDriveFileNotFoundError(f"Branch '{norm_branch}' not found.")
 
-            self._trash_repo_item(self._repo_rel(norm_branch))
+            self.transport.trash_file(self._repo_rel(norm_branch))
             branches.pop(norm_branch, None)
             meta.get("branch_files", {}).pop(norm_branch, None)
 
@@ -865,7 +950,7 @@ class SyncCoordinator:
                 k: FileEntry.from_dict(v) for k, v in curr_base_raw.items()
             }
             local_snap, local_path_map, _ = self._collect_local_snapshot(state)
-            curr_remote_snap, _ = self._collect_remote_branch_snapshot(curr_branch)
+            curr_remote_snap, _, _, _ = self._scan_remote_branch_with_dirs(curr_branch)
 
             if not force:
                 pre_actions = reconcile_three_way(
@@ -892,7 +977,7 @@ class SyncCoordinator:
                         "Sync or commit changes first, or pass --force."
                     )
 
-            target_remote_snap, _ = self._collect_remote_branch_snapshot(norm_target)
+            target_remote_snap, _, _, _ = self._scan_remote_branch_with_dirs(norm_target)
             target_branch_state = (
                 state.setdefault("branches", {})
                 .setdefault(norm_target, {})
@@ -908,7 +993,7 @@ class SyncCoordinator:
                     abs_local = local_path_map.get(rel_p) or self._resolve_remote_rel_to_local_abs(rel_p)
                     if abs_local and abs_local.is_file():
                         if backup:
-                            self._create_conflict_backup(abs_local)
+                            _create_conflict_backup(abs_local)
                         abs_local.unlink()
                         removed_orphans.append(rel_p)
                     target_branch_state.pop(rel_p, None)
@@ -926,7 +1011,7 @@ class SyncCoordinator:
                             and (backup or rel_p not in curr_base)
                         )
                         if should_backup:
-                            self._create_conflict_backup(abs_local)
+                            _create_conflict_backup(abs_local)
                         self.transport.download_file(
                             self._repo_rel(f"{norm_target}/{rel_p}"), abs_local
                         )
@@ -993,7 +1078,7 @@ class SyncCoordinator:
         Stage 2: Compute 8-state SyncActions via stateless reconciler.py.
         Stage 3: Execute transfers with single-file atomic Copy-on-Write (repo_sync/.history/),
                  cooperative foreground preemption yielding, incremental per-file state commit,
-                 and reference-counted repo_sync/.history/ -> repo_sync/.trash/ garbage collection.
+                 and reference-counted repo_sync/.history/ -> Trash garbage collection.
         Stage 4: Write structured sync.log entry and return SyncReport.
         """
         self.ensure_repo_sync_enabled()
@@ -1026,7 +1111,6 @@ class SyncCoordinator:
                 k: FileEntry.from_dict(v) for k, v in branch_state_dict.items()
             }
 
-            # Stage 1: Snapshot collection (Local + 3-Level Incremental Remote Cache)
             local_snap, local_path_map, stabilizing = self._collect_local_snapshot(
                 state, now_ns=now_ns
             )
@@ -1036,100 +1120,17 @@ class SyncCoordinator:
                     branch=branch, mode=norm_mode, yielded=True, cache_hit_level=None
                 )
 
-            cache_hit_level = 2
-            flushed_ext_stage1: List[str] = []
-            branch_dir_ids_current: Dict[str, str] = {}
-            inc_res = self._try_incremental_remote_cache(state, branch)
-            if inc_res is not None:
-                cache_hit_level, meta, remote_snap, raw_remote_entries = inc_res
-                self._warm_transport_folder_cache(state, branch)
-                branch_dir_ids_current = dict(
-                    (
-                        state.get("remote_repo_cache", {})
-                        .get("branches", {})
-                        .get(branch, {})
-                        .get("dir_ids")
-                        or {}
-                    )
-                )
-                self.reconcile_root_readme()
-            else:
-                cache_hit_level = 2
-                start_token = ""
-                try:
-                    start_token = self.transport.get_start_page_token()
-                except Exception:
-                    start_token = ""
-
-                meta = self._ensure_remote_repo_initialized()
-                if branch not in meta.get("branches", {}):
-                    raise GDriveConfigError(
-                        f"Active branch '{branch}' is not registered in {self._repo_rel(REPO_CONFIG_FILENAME)}."
-                    )
-                if background_worker and self.should_yield_background():
-                    self._save_local_state(state)
-                    return SyncReport(
-                        branch=branch,
-                        mode=norm_mode,
-                        yielded=True,
-                        cache_hit_level=cache_hit_level,
-                    )
-
-                flushed_ext_stage1 = self._flush_external_repo_trash()
-                remote_snap, raw_remote_entries, branch_dir_ids, branch_dir_meta = (
-                    self._scan_remote_branch_with_dirs(branch)
-                )
-                branch_dir_ids_current = dict(branch_dir_ids)
-
-                cache_branches: Dict[str, Any] = {
-                    branch: {
-                        "raw_entries": {
-                            k: v.to_dict() for k, v in raw_remote_entries.items()
-                        },
-                        "dir_ids": branch_dir_ids,
-                    }
-                }
-                all_folder_meta: Dict[str, Dict[str, str]] = dict(branch_dir_meta)
-                branch_files_map_init: Dict[str, Dict[str, str]] = meta.setdefault(
-                    "branch_files", {}
-                )
-                branch_files_map_init[branch] = {
-                    rel_p: r_ent.effective_file_id()
-                    for rel_p, r_ent in remote_snap.items()
-                }
-
-                for other_b in meta.get("branches", {}).keys():
-                    if other_b == branch:
-                        continue
-                    if background_worker and self.should_yield_background():
-                        self._save_local_state(state)
-                        return SyncReport(
-                            branch=branch,
-                            mode=norm_mode,
-                            yielded=True,
-                            cache_hit_level=cache_hit_level,
-                        )
-                    o_snap, o_raw, o_dirs, o_dmeta = (
-                        self._scan_remote_branch_with_dirs(other_b)
-                    )
-                    cache_branches[other_b] = {
-                        "raw_entries": {k: v.to_dict() for k, v in o_raw.items()},
-                        "dir_ids": o_dirs,
-                    }
-                    all_folder_meta.update(o_dmeta)
-                    branch_files_map_init[other_b] = {
-                        rel_p: r_ent.effective_file_id()
-                        for rel_p, r_ent in o_snap.items()
-                    }
-
-                self._populate_remote_repo_cache(
-                    state=state,
-                    page_token=start_token,
-                    meta=meta,
-                    cache_branches=cache_branches,
-                    folder_meta=all_folder_meta,
+            rem_stage = self._collect_remote_stage_snapshot(
+                state, branch, background_worker
+            )
+            if rem_stage is None:
+                self._save_local_state(state)
+                return SyncReport(
+                    branch=branch, mode=norm_mode, yielded=True, cache_hit_level=2
                 )
 
+            meta = rem_stage.meta
+            remote_snap = rem_stage.remote_snap
             if branch not in meta.get("branches", {}):
                 raise GDriveConfigError(
                     f"Active branch '{branch}' is not registered in {self._repo_rel(REPO_CONFIG_FILENAME)}."
@@ -1140,17 +1141,17 @@ class SyncCoordinator:
                 remote_snap.pop(stab_rel, None)
                 baseline_snap.pop(stab_rel, None)
 
-            allow_pull_del = bool(effective_delete or self.config.pull_delete_default)
-            allow_push_del = bool(effective_delete or self.config.push_delete_default)
-
-            # Stage 2: Stateless three-way reconciliation
             actions = reconcile_three_way(
                 local_snap=local_snap,
                 remote_snap=remote_snap,
                 baseline_snap=baseline_snap,
                 mode=norm_mode,
-                allow_pull_delete=allow_pull_del,
-                allow_push_delete=allow_push_del,
+                allow_pull_delete=bool(
+                    effective_delete or self.config.pull_delete_default
+                ),
+                allow_push_delete=bool(
+                    effective_delete or self.config.push_delete_default
+                ),
                 force=force,
             )
 
@@ -1169,446 +1170,23 @@ class SyncCoordinator:
                 conflicts=list(conflicts),
                 skipped_stabilizing=list(stabilizing),
                 exit_code=2 if conflicts else 0,
-                cache_hit_level=cache_hit_level,
+                cache_hit_level=rem_stage.cache_hit_level,
             )
-            if flushed_ext_stage1:
-                report.gc_history_to_trash.extend(flushed_ext_stage1)
+            if rem_stage.flushed_external_trash:
+                report.gc_history_to_trash.extend(rem_stage.flushed_external_trash)
 
-            branch_files_map: Dict[str, Dict[str, str]] = meta.setdefault(
-                "branch_files", {}
+            self._execute_stage3_reconciliation(
+                state=state,
+                branch=branch,
+                branch_state_dict=branch_state_dict,
+                rem_stage=rem_stage,
+                actions=actions,
+                local_path_map=local_path_map,
+                report=report,
+                force=force,
+                backup=backup,
+                background_worker=background_worker,
             )
-            prev_branch_files = dict(branch_files_map.get(branch) or {})
-            curr_branch_files = {
-                rel_p: r_ent.effective_file_id()
-                for rel_p, r_ent in remote_snap.items()
-            }
-            branch_files_map[branch] = curr_branch_files
-            history_files: Dict[str, str] = meta.setdefault("history_files", {})
-            meta_dirty = bool(curr_branch_files != prev_branch_files)
-            first_push_err: Optional[BaseException] = None
-            first_pull_err: Optional[BaseException] = None
-
-            # Stage 3: Execute actions with atomic per-file CoW + upload and try/finally state persistence
-            try:
-                push_tasks: List[
-                    Tuple[
-                        str,
-                        Path,
-                        str,
-                        Optional[RemoteEntry],
-                        FileEntry,
-                        SyncActionType,
-                        Optional[FileEntry],
-                        Optional[FileEntry],
-                    ]
-                ] = []
-                pull_tasks: List[Tuple[str, Path, str, FileEntry]] = []
-
-                for act in actions:
-                    if background_worker and self.should_yield_background():
-                        report.yielded = True
-                        break
-
-                    rel_p = act.rel_path
-                    remote_branch_rel = self._repo_rel(f"{branch}/{rel_p}")
-
-                    if act.action == SyncActionType.IN_SYNC:
-                        if (
-                            act.local_entry
-                            and act.remote_entry
-                            and act.reason == "identical_digest"
-                        ):
-                            merged_entry = FileEntry(
-                                rel_path=rel_p,
-                                md5=act.local_entry.md5,
-                                sha256=act.local_entry.sha256,
-                                size=act.local_entry.size,
-                                mtime_ns=act.local_entry.mtime_ns,
-                                file_id=act.remote_entry.effective_file_id(),
-                                is_shortcut=act.remote_entry.is_shortcut,
-                                target_file_id=act.remote_entry.target_file_id,
-                            )
-                            branch_state_dict[rel_p] = merged_entry.to_dict()
-                        elif (
-                            act.local_entry is None
-                            and act.remote_entry is None
-                            and act.baseline_entry is not None
-                        ):
-                            branch_state_dict.pop(rel_p, None)
-                            if rel_p in curr_branch_files:
-                                curr_branch_files.pop(rel_p, None)
-                                meta_dirty = True
-                            self._update_cache_branch_entry(
-                                state, branch, rel_p, None
-                            )
-                            self._save_local_state(state)
-                        continue
-
-                    if act.action == SyncActionType.CONFLICT:
-                        continue
-
-                    if act.action in (
-                        SyncActionType.PUSH_NEW,
-                        SyncActionType.PUSH_UPDATE,
-                    ):
-                        abs_local = local_path_map.get(
-                            rel_p
-                        ) or self._resolve_remote_rel_to_local_abs(rel_p)
-                        if abs_local is None or not abs_local.is_file():
-                            continue
-                        existing_rem = raw_remote_entries.get(rel_p)
-                        loc_ent = act.local_entry
-                        assert loc_ent is not None
-                        push_tasks.append(
-                            (
-                                rel_p,
-                                abs_local,
-                                remote_branch_rel,
-                                existing_rem,
-                                loc_ent,
-                                act.action,
-                                act.remote_entry,
-                                act.baseline_entry,
-                            )
-                        )
-                        continue
-
-                    if act.action in (
-                        SyncActionType.PULL_NEW,
-                        SyncActionType.PULL_UPDATE,
-                    ):
-                        abs_local = local_path_map.get(
-                            rel_p
-                        ) or self._resolve_remote_rel_to_local_abs(rel_p)
-                        if abs_local is None:
-                            continue
-                        if (
-                            backup
-                            and abs_local.is_file()
-                            and act.action == SyncActionType.PULL_UPDATE
-                        ):
-                            if (
-                                force
-                                and act.local_entry
-                                and act.baseline_entry
-                                and act.local_entry.md5 != act.baseline_entry.md5
-                            ):
-                                self._create_conflict_backup(abs_local)
-
-                        rem_ent = act.remote_entry
-                        assert rem_ent is not None
-                        pull_tasks.append(
-                            (rel_p, abs_local, remote_branch_rel, rem_ent)
-                        )
-                        continue
-
-                    if act.action == SyncActionType.DELETE_LOCAL:
-                        abs_local = local_path_map.get(
-                            rel_p
-                        ) or self._resolve_remote_rel_to_local_abs(rel_p)
-                        if abs_local and abs_local.is_file():
-                            if backup:
-                                self._create_conflict_backup(abs_local)
-                            abs_local.unlink()
-                        branch_state_dict.pop(rel_p, None)
-                        self._save_local_state(state)
-                        report.deleted_local.append(rel_p)
-                        continue
-
-                    if act.action == SyncActionType.DELETE_REMOTE:
-                        existing_rem = raw_remote_entries.get(rel_p)
-                        if existing_rem is not None:
-                            if (
-                                not existing_rem.is_shortcut
-                                and is_file_id_referenced_by_other_branches(
-                                    existing_rem.file_id, branch, branch_files_map
-                                )
-                            ):
-                                hist_dir_rel = self._repo_rel(".history")
-                                self.transport.mkdir(hist_dir_rel)
-                                hist_rel = f"{hist_dir_rel}/{existing_rem.file_id}_{Path(rel_p).name}"
-                                self.transport.move_file(
-                                    remote_branch_rel,
-                                    hist_rel,
-                                    entry_hint=existing_rem,
-                                )
-                                with self._meta_lock:
-                                    history_files[existing_rem.file_id] = hist_rel
-                                    report.moved_to_history.append(
-                                        existing_rem.file_id
-                                    )
-                            else:
-                                self._trash_repo_item(
-                                    remote_branch_rel, file_id=existing_rem.file_id
-                                )
-                        with self._meta_lock:
-                            curr_branch_files.pop(rel_p, None)
-                            meta_dirty = True
-                        branch_state_dict.pop(rel_p, None)
-                        self._update_cache_branch_entry(state, branch, rel_p, None)
-                        self._save_local_state(state)
-                        report.deleted_remote.append(rel_p)
-                        continue
-
-                if push_tasks and not report.yielded:
-                    created_dirs = self._precreate_remote_dirs(
-                        [
-                            remote_branch_rel
-                            for _, _, remote_branch_rel, _, _, _, _, _ in push_tasks
-                        ]
-                    )
-                    self._update_cache_dirs(state, branch, created_dirs)
-                    any_cow_needed = any(
-                        existing_rem is not None
-                        and not existing_rem.is_shortcut
-                        and is_file_id_referenced_by_other_branches(
-                            existing_rem.file_id, branch, branch_files_map
-                        )
-                        for _, _, _, existing_rem, _, _, _, _ in push_tasks
-                    )
-                    if any_cow_needed:
-                        self.transport.mkdir(self._repo_rel(".history"))
-
-                    def _upload_task(
-                        rel_p_item: str,
-                        abs_local_item: Path,
-                        remote_branch_rel_item: str,
-                        existing_rem_item: Optional[RemoteEntry],
-                        act_type_item: SyncActionType,
-                        rem_ent_item: Optional[FileEntry],
-                        base_ent_item: Optional[FileEntry],
-                    ) -> RemoteEntry:
-                        nonlocal meta_dirty
-                        if background_worker and self.should_yield_background():
-                            raise _BackgroundYieldRequested()
-                        if (
-                            backup
-                            and force
-                            and existing_rem_item is not None
-                            and act_type_item == SyncActionType.PUSH_UPDATE
-                            and rem_ent_item
-                            and base_ent_item
-                            and rem_ent_item.md5 != base_ent_item.md5
-                        ):
-                            rem_bak = abs_local_item.with_name(
-                                f"{abs_local_item.name}.remote_conflict.{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.bak"
-                            )
-                            self.transport.download_file(
-                                remote_branch_rel_item,
-                                rem_bak,
-                                entry_hint=existing_rem_item,
-                            )
-
-                        in_place_fid: Optional[str] = None
-                        if existing_rem_item is not None:
-                            if existing_rem_item.is_shortcut:
-                                self._trash_repo_item(
-                                    remote_branch_rel_item,
-                                    file_id=existing_rem_item.file_id,
-                                )
-                                in_place_fid = None
-                            else:
-                                old_fid = existing_rem_item.file_id
-                                with self._meta_lock:
-                                    needs_cow = (
-                                        is_file_id_referenced_by_other_branches(
-                                            old_fid, branch, branch_files_map
-                                        )
-                                    )
-                                if needs_cow:
-                                    hist_dir_rel = self._repo_rel(".history")
-                                    hist_rel = f"{hist_dir_rel}/{old_fid}_{Path(rel_p_item).name}"
-                                    self.transport.move_file(
-                                        remote_branch_rel_item,
-                                        hist_rel,
-                                        entry_hint=existing_rem_item,
-                                    )
-                                    with self._meta_lock:
-                                        history_files[old_fid] = hist_rel
-                                        report.moved_to_history.append(old_fid)
-                                        meta_dirty = True
-                                    in_place_fid = None
-                                else:
-                                    in_place_fid = old_fid
-
-                        return self.transport.upload_file(
-                            abs_local_item,
-                            remote_branch_rel_item,
-                            in_place_file_id=in_place_fid,
-                        )
-
-                    with ThreadPoolExecutor(
-                        max_workers=PARALLEL_TRANSFER_WORKERS
-                    ) as pool:
-                        fut_map = {
-                            pool.submit(
-                                _upload_task,
-                                rel_p,
-                                abs_local,
-                                remote_branch_rel,
-                                existing_rem,
-                                act_type,
-                                rem_ent,
-                                base_ent,
-                            ): (rel_p, loc_ent)
-                            for (
-                                rel_p,
-                                abs_local,
-                                remote_branch_rel,
-                                existing_rem,
-                                loc_ent,
-                                act_type,
-                                rem_ent,
-                                base_ent,
-                            ) in push_tasks
-                        }
-                        for fut in as_completed(fut_map):
-                            rel_p, loc_ent = fut_map[fut]
-                            if fut.cancelled():
-                                continue
-                            try:
-                                uploaded = fut.result()
-                            except _BackgroundYieldRequested:
-                                report.yielded = True
-                                continue
-                            except BaseException as exc:
-                                if first_push_err is None:
-                                    first_push_err = exc
-                                continue
-                            with self._meta_lock:
-                                curr_branch_files[rel_p] = uploaded.file_id
-                                meta_dirty = True
-                            new_base = FileEntry(
-                                rel_path=rel_p,
-                                md5=loc_ent.md5,
-                                sha256=loc_ent.sha256,
-                                size=loc_ent.size,
-                                mtime_ns=loc_ent.mtime_ns,
-                                file_id=uploaded.file_id,
-                                is_shortcut=False,
-                                target_file_id="",
-                            )
-                            branch_state_dict[rel_p] = new_base.to_dict()
-                            self._update_cache_branch_entry(
-                                state, branch, rel_p, uploaded
-                            )
-                            self._save_local_state(state)
-                            report.pushed.append(rel_p)
-                            if (
-                                background_worker
-                                and self.should_yield_background()
-                            ):
-                                report.yielded = True
-                                for pending_fut in fut_map:
-                                    if not pending_fut.done():
-                                        pending_fut.cancel()
-                                break
-                    report.pushed.sort()
-                    if first_push_err is not None:
-                        raise first_push_err
-
-                if pull_tasks and not report.yielded:
-
-                    def _download_and_hash(
-                        rel_p_item: str, remote_branch_rel: str, abs_local: Path
-                    ) -> Tuple[str, str, int, int]:
-                        if background_worker and self.should_yield_background():
-                            raise _BackgroundYieldRequested()
-                        self.transport.download_file(
-                            remote_branch_rel,
-                            abs_local,
-                            entry_hint=raw_remote_entries.get(rel_p_item),
-                        )
-                        md5_hex, sha_hex, sz = compute_local_hashes(abs_local)
-                        st = abs_local.stat()
-                        return md5_hex, sha_hex, sz, int(st.st_mtime_ns)
-
-                    with ThreadPoolExecutor(
-                        max_workers=PARALLEL_TRANSFER_WORKERS
-                    ) as pool:
-                        fut_map = {
-                            pool.submit(
-                                _download_and_hash, rel_p, remote_branch_rel, abs_local
-                            ): (rel_p, rem_ent)
-                            for rel_p, abs_local, remote_branch_rel, rem_ent in pull_tasks
-                        }
-                        for fut in as_completed(fut_map):
-                            rel_p, rem_ent = fut_map[fut]
-                            if fut.cancelled():
-                                continue
-                            try:
-                                md5_hex, sha_hex, sz, mtime_ns = fut.result()
-                            except _BackgroundYieldRequested:
-                                report.yielded = True
-                                continue
-                            except BaseException as exc:
-                                if first_pull_err is None:
-                                    first_pull_err = exc
-                                continue
-                            new_base = FileEntry(
-                                rel_path=rel_p,
-                                md5=md5_hex,
-                                sha256=sha_hex,
-                                size=sz,
-                                mtime_ns=mtime_ns,
-                                file_id=rem_ent.effective_file_id(),
-                                is_shortcut=rem_ent.is_shortcut,
-                                target_file_id=rem_ent.target_file_id,
-                            )
-                            branch_state_dict[rel_p] = new_base.to_dict()
-                            self._save_local_state(state)
-                            report.pulled.append(rel_p)
-                            if (
-                                background_worker
-                                and self.should_yield_background()
-                            ):
-                                report.yielded = True
-                                for pending_fut in fut_map:
-                                    if not pending_fut.done():
-                                        pending_fut.cancel()
-                                break
-                    report.pulled.sort()
-                    if first_pull_err is not None:
-                        raise first_pull_err
-
-                if not report.yielded:
-                    if report.deleted_remote or branch_dir_ids_current:
-                        self._prune_empty_remote_branch_dirs(
-                            state=state,
-                            branch=branch,
-                            curr_branch_files=curr_branch_files,
-                            deleted_remote=report.deleted_remote,
-                            fallback_dir_ids=branch_dir_ids_current,
-                        )
-                    if not (
-                        cache_hit_level == 0
-                        and not report.pushed
-                        and not report.deleted_remote
-                        and not report.moved_to_history
-                    ):
-                        gc_trashed = self._gc_unreferenced_history_files(
-                            meta, scan_physical=(cache_hit_level == 2)
-                        )
-                        if gc_trashed:
-                            report.gc_history_to_trash.extend(gc_trashed)
-                            meta_dirty = True
-
-                if meta_dirty:
-                    meta_ent = self._write_remote_repo_meta(meta)
-                    self._update_cache_meta(state, meta, meta_ent)
-                    meta_dirty = False
-            finally:
-                if meta_dirty:
-                    try:
-                        meta_ent = self._write_remote_repo_meta(meta)
-                        self._update_cache_meta(state, meta, meta_ent)
-                        meta_dirty = False
-                    except Exception:
-                        if first_push_err is None and first_pull_err is None:
-                            raise
-                else:
-                    self._update_cache_meta(state, meta, None)
-                self._save_local_state(state)
 
             self._append_log("run_sync", report.to_dict())
             return report
@@ -1616,18 +1194,636 @@ class SyncCoordinator:
             self._background_abort_check = None
             lock.release()
 
+    def _collect_remote_stage_snapshot(
+        self,
+        state: Dict[str, Any],
+        branch: str,
+        background_worker: bool,
+    ) -> Optional[_RemoteStageSnapshot]:
+        """Stage 1 remote snapshot resolution via Level 0/1 incremental cache or Level 2 full scan."""
+        inc_res = self._try_incremental_remote_cache(state, branch)
+        if inc_res is not None:
+            cache_hit_level, meta, remote_snap, raw_remote_entries, pending_token = (
+                inc_res
+            )
+            self._warm_transport_folder_cache(state, branch)
+            branch_dir_ids_current = dict(
+                (
+                    state.get("remote_repo_cache", {})
+                    .get("branches", {})
+                    .get(branch, {})
+                    .get("dir_ids")
+                    or {}
+                )
+            )
+            self.reconcile_root_readme()
+            return _RemoteStageSnapshot(
+                cache_hit_level=cache_hit_level,
+                meta=meta,
+                remote_snap=remote_snap,
+                raw_remote_entries=raw_remote_entries,
+                branch_dir_ids_current=branch_dir_ids_current,
+                flushed_external_trash=[],
+                pending_page_token=pending_token,
+            )
+
+        start_token = ""
+        try:
+            start_token = self.transport.get_start_page_token()
+        except Exception:
+            start_token = ""
+
+        meta = self._ensure_remote_repo_initialized()
+        if branch not in meta.get("branches", {}):
+            raise GDriveConfigError(
+                f"Active branch '{branch}' is not registered in {self._repo_rel(REPO_CONFIG_FILENAME)}."
+            )
+        if background_worker and self.should_yield_background():
+            return None
+
+        flushed_ext_stage1 = self._flush_external_repo_trash()
+        remote_snap, raw_remote_entries, branch_dir_ids, branch_dir_meta = (
+            self._scan_remote_branch_with_dirs(branch)
+        )
+        branch_dir_ids_current = dict(branch_dir_ids)
+
+        cache_branches: Dict[str, Any] = {
+            branch: {
+                "raw_entries": {
+                    k: v.to_dict() for k, v in raw_remote_entries.items()
+                },
+                "dir_ids": branch_dir_ids,
+            }
+        }
+        all_folder_meta: Dict[str, Dict[str, str]] = dict(branch_dir_meta)
+        branch_files_map_init: Dict[str, Dict[str, str]] = meta.setdefault(
+            "branch_files", {}
+        )
+        branch_files_map_init[branch] = {
+            rel_p: r_ent.effective_file_id() for rel_p, r_ent in remote_snap.items()
+        }
+
+        for other_b in meta.get("branches", {}).keys():
+            if other_b == branch:
+                continue
+            if background_worker and self.should_yield_background():
+                return None
+            o_snap, o_raw, o_dirs, o_dmeta = self._scan_remote_branch_with_dirs(
+                other_b
+            )
+            cache_branches[other_b] = {
+                "raw_entries": {k: v.to_dict() for k, v in o_raw.items()},
+                "dir_ids": o_dirs,
+            }
+            all_folder_meta.update(o_dmeta)
+            branch_files_map_init[other_b] = {
+                rel_p: r_ent.effective_file_id() for rel_p, r_ent in o_snap.items()
+            }
+
+        self._populate_remote_repo_cache(
+            state=state,
+            page_token=start_token,
+            meta=meta,
+            cache_branches=cache_branches,
+            folder_meta=all_folder_meta,
+        )
+        return _RemoteStageSnapshot(
+            cache_hit_level=2,
+            meta=meta,
+            remote_snap=remote_snap,
+            raw_remote_entries=raw_remote_entries,
+            branch_dir_ids_current=branch_dir_ids_current,
+            flushed_external_trash=flushed_ext_stage1,
+            pending_page_token=start_token,
+        )
+
+    def _execute_stage3_reconciliation(
+        self,
+        state: Dict[str, Any],
+        branch: str,
+        branch_state_dict: Dict[str, Any],
+        rem_stage: _RemoteStageSnapshot,
+        actions: List[SyncAction],
+        local_path_map: Dict[str, Path],
+        report: SyncReport,
+        force: bool,
+        backup: bool,
+        background_worker: bool,
+    ) -> None:
+        """Stage 3: Execute immediate actions, parallel push/pull pools, empty-dir pruning, and history GC."""
+        meta = rem_stage.meta
+        branch_files_map: Dict[str, Dict[str, str]] = meta.setdefault(
+            "branch_files", {}
+        )
+        prev_branch_files = dict(branch_files_map.get(branch) or {})
+        curr_branch_files = {
+            rel_p: r_ent.effective_file_id()
+            for rel_p, r_ent in rem_stage.remote_snap.items()
+        }
+        branch_files_map[branch] = curr_branch_files
+        history_files: Dict[str, str] = meta.setdefault("history_files", {})
+        meta_dirty = bool(curr_branch_files != prev_branch_files)
+        first_push_err: Optional[BaseException] = None
+        first_pull_err: Optional[BaseException] = None
+
+        try:
+            push_tasks, pull_tasks, imm_dirty = self._partition_and_run_immediate_actions(
+                state=state,
+                branch=branch,
+                branch_state_dict=branch_state_dict,
+                curr_branch_files=curr_branch_files,
+                branch_files_map=branch_files_map,
+                history_files=history_files,
+                raw_remote_entries=rem_stage.raw_remote_entries,
+                local_path_map=local_path_map,
+                actions=actions,
+                report=report,
+                force=force,
+                backup=backup,
+                background_worker=background_worker,
+            )
+            if imm_dirty:
+                meta_dirty = True
+
+            if push_tasks and not report.yielded:
+                push_dirty, first_push_err = self._execute_push_batch(
+                    state=state,
+                    branch=branch,
+                    branch_state_dict=branch_state_dict,
+                    curr_branch_files=curr_branch_files,
+                    branch_files_map=branch_files_map,
+                    history_files=history_files,
+                    push_tasks=push_tasks,
+                    report=report,
+                    force=force,
+                    backup=backup,
+                    background_worker=background_worker,
+                )
+                if push_dirty:
+                    meta_dirty = True
+                if first_push_err is not None:
+                    raise first_push_err
+
+            if pull_tasks and not report.yielded:
+                first_pull_err = self._execute_pull_batch(
+                    state=state,
+                    branch_state_dict=branch_state_dict,
+                    raw_remote_entries=rem_stage.raw_remote_entries,
+                    pull_tasks=pull_tasks,
+                    report=report,
+                    background_worker=background_worker,
+                )
+                if first_pull_err is not None:
+                    raise first_pull_err
+
+            if not report.yielded:
+                if report.deleted_remote or rem_stage.branch_dir_ids_current:
+                    self._prune_empty_remote_branch_dirs(
+                        state=state,
+                        branch=branch,
+                        curr_branch_files=curr_branch_files,
+                        deleted_remote=report.deleted_remote,
+                        fallback_dir_ids=rem_stage.branch_dir_ids_current,
+                    )
+                if not (
+                    rem_stage.cache_hit_level == 0
+                    and not report.pushed
+                    and not report.deleted_remote
+                    and not report.moved_to_history
+                ):
+                    gc_trashed = self._gc_unreferenced_history_files(
+                        meta, scan_physical=(rem_stage.cache_hit_level == 2)
+                    )
+                    if gc_trashed:
+                        report.gc_history_to_trash.extend(gc_trashed)
+                        meta_dirty = True
+
+            if meta_dirty:
+                meta_ent = self._write_remote_repo_meta(meta)
+                self._update_cache_meta(state, meta, meta_ent)
+                meta_dirty = False
+        finally:
+            if meta_dirty:
+                try:
+                    meta_ent = self._write_remote_repo_meta(meta)
+                    self._update_cache_meta(state, meta, meta_ent)
+                    meta_dirty = False
+                except Exception:
+                    if first_push_err is None and first_pull_err is None:
+                        raise
+            else:
+                self._update_cache_meta(state, meta, None)
+
+            cache_obj = state.get("remote_repo_cache")
+            if (
+                isinstance(cache_obj, dict)
+                and rem_stage.pending_page_token
+                and not report.yielded
+                and first_push_err is None
+                and first_pull_err is None
+            ):
+                cache_obj["page_token"] = rem_stage.pending_page_token
+
+            self._save_local_state(state)
+
+    def _partition_and_run_immediate_actions(
+        self,
+        state: Dict[str, Any],
+        branch: str,
+        branch_state_dict: Dict[str, Any],
+        curr_branch_files: Dict[str, str],
+        branch_files_map: Dict[str, Dict[str, str]],
+        history_files: Dict[str, str],
+        raw_remote_entries: Dict[str, RemoteEntry],
+        local_path_map: Dict[str, Path],
+        actions: List[SyncAction],
+        report: SyncReport,
+        force: bool,
+        backup: bool,
+        background_worker: bool,
+    ) -> Tuple[List[_PushTask], List[_PullTask], bool]:
+        """Partition PUSH/PULL tasks and execute IN_SYNC, DELETE_LOCAL, and DELETE_REMOTE actions."""
+        push_tasks: List[_PushTask] = []
+        pull_tasks: List[_PullTask] = []
+        meta_dirty = False
+
+        for act in actions:
+            if background_worker and self.should_yield_background():
+                report.yielded = True
+                break
+
+            rel_p = act.rel_path
+            remote_branch_rel = self._repo_rel(f"{branch}/{rel_p}")
+
+            if act.action == SyncActionType.IN_SYNC:
+                if (
+                    act.local_entry
+                    and act.remote_entry
+                    and act.reason == "identical_digest"
+                ):
+                    merged_entry = FileEntry(
+                        rel_path=rel_p,
+                        md5=act.local_entry.md5,
+                        sha256=act.local_entry.sha256,
+                        size=act.local_entry.size,
+                        mtime_ns=act.local_entry.mtime_ns,
+                        file_id=act.remote_entry.effective_file_id(),
+                        is_shortcut=act.remote_entry.is_shortcut,
+                        target_file_id=act.remote_entry.target_file_id,
+                    )
+                    branch_state_dict[rel_p] = merged_entry.to_dict()
+                elif (
+                    act.local_entry is None
+                    and act.remote_entry is None
+                    and act.baseline_entry is not None
+                ):
+                    branch_state_dict.pop(rel_p, None)
+                    if rel_p in curr_branch_files:
+                        curr_branch_files.pop(rel_p, None)
+                        meta_dirty = True
+                    self._update_cache_branch_entry(state, branch, rel_p, None)
+                    self._save_local_state(state)
+                continue
+
+            if act.action == SyncActionType.CONFLICT:
+                continue
+
+            if act.action in (SyncActionType.PUSH_NEW, SyncActionType.PUSH_UPDATE):
+                abs_local = local_path_map.get(
+                    rel_p
+                ) or self._resolve_remote_rel_to_local_abs(rel_p)
+                if abs_local is None or not abs_local.is_file():
+                    continue
+                assert act.local_entry is not None
+                push_tasks.append(
+                    _PushTask(
+                        rel_path=rel_p,
+                        abs_local=abs_local,
+                        remote_branch_rel=remote_branch_rel,
+                        existing_remote=raw_remote_entries.get(rel_p),
+                        local_entry=act.local_entry,
+                        action_type=act.action,
+                        remote_entry=act.remote_entry,
+                        baseline_entry=act.baseline_entry,
+                    )
+                )
+                continue
+
+            if act.action in (SyncActionType.PULL_NEW, SyncActionType.PULL_UPDATE):
+                abs_local = local_path_map.get(
+                    rel_p
+                ) or self._resolve_remote_rel_to_local_abs(rel_p)
+                if abs_local is None:
+                    continue
+                if (
+                    backup
+                    and abs_local.is_file()
+                    and act.action == SyncActionType.PULL_UPDATE
+                    and force
+                    and act.local_entry
+                    and act.baseline_entry
+                    and act.local_entry.md5 != act.baseline_entry.md5
+                ):
+                    _create_conflict_backup(abs_local)
+
+                assert act.remote_entry is not None
+                pull_tasks.append(
+                    _PullTask(
+                        rel_path=rel_p,
+                        abs_local=abs_local,
+                        remote_branch_rel=remote_branch_rel,
+                        remote_entry=act.remote_entry,
+                    )
+                )
+                continue
+
+            if act.action == SyncActionType.DELETE_LOCAL:
+                abs_local = local_path_map.get(
+                    rel_p
+                ) or self._resolve_remote_rel_to_local_abs(rel_p)
+                if abs_local and abs_local.is_file():
+                    if backup:
+                        _create_conflict_backup(abs_local)
+                    abs_local.unlink()
+                branch_state_dict.pop(rel_p, None)
+                self._save_local_state(state)
+                report.deleted_local.append(rel_p)
+                continue
+
+            if act.action == SyncActionType.DELETE_REMOTE:
+                existing_rem = raw_remote_entries.get(rel_p)
+                if existing_rem is not None:
+                    if (
+                        not existing_rem.is_shortcut
+                        and is_file_id_referenced_by_other_branches(
+                            existing_rem.file_id, branch, branch_files_map
+                        )
+                    ):
+                        hist_dir_rel = self._repo_rel(".history")
+                        self.transport.mkdir(hist_dir_rel)
+                        hist_rel = f"{hist_dir_rel}/{existing_rem.file_id}_{Path(rel_p).name}"
+                        self.transport.move_file(
+                            remote_branch_rel, hist_rel, entry_hint=existing_rem
+                        )
+                        with self._meta_lock:
+                            history_files[existing_rem.file_id] = hist_rel
+                            report.moved_to_history.append(existing_rem.file_id)
+                    else:
+                        self.transport.trash_file(
+                            remote_branch_rel, file_id=existing_rem.file_id
+                        )
+                with self._meta_lock:
+                    curr_branch_files.pop(rel_p, None)
+                    meta_dirty = True
+                branch_state_dict.pop(rel_p, None)
+                self._update_cache_branch_entry(state, branch, rel_p, None)
+                self._save_local_state(state)
+                report.deleted_remote.append(rel_p)
+
+        return push_tasks, pull_tasks, meta_dirty
+
+    def _upload_single_push_task(
+        self,
+        task: _PushTask,
+        branch: str,
+        branch_files_map: Dict[str, Dict[str, str]],
+        history_files: Dict[str, str],
+        report: SyncReport,
+        force: bool,
+        backup: bool,
+        background_worker: bool,
+    ) -> Tuple[RemoteEntry, bool]:
+        """Execute a single push upload task with atomic Copy-on-Write into .history/ when needed."""
+        if background_worker and self.should_yield_background():
+            raise _BackgroundYieldRequested()
+
+        existing_rem = task.existing_remote
+        if (
+            backup
+            and force
+            and existing_rem is not None
+            and task.action_type == SyncActionType.PUSH_UPDATE
+            and task.remote_entry
+            and task.baseline_entry
+            and task.remote_entry.md5 != task.baseline_entry.md5
+        ):
+            rem_bak = task.abs_local.with_name(
+                f"{task.abs_local.name}.remote_conflict.{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.bak"
+            )
+            self.transport.download_file(
+                task.remote_branch_rel, rem_bak, entry_hint=existing_rem
+            )
+
+        in_place_fid: Optional[str] = None
+        cow_moved = False
+        if existing_rem is not None:
+            if existing_rem.is_shortcut:
+                self.transport.trash_file(
+                    task.remote_branch_rel, file_id=existing_rem.file_id
+                )
+            else:
+                old_fid = existing_rem.file_id
+                with self._meta_lock:
+                    needs_cow = is_file_id_referenced_by_other_branches(
+                        old_fid, branch, branch_files_map
+                    )
+                if needs_cow:
+                    hist_dir_rel = self._repo_rel(".history")
+                    hist_rel = f"{hist_dir_rel}/{old_fid}_{Path(task.rel_path).name}"
+                    self.transport.move_file(
+                        task.remote_branch_rel, hist_rel, entry_hint=existing_rem
+                    )
+                    with self._meta_lock:
+                        history_files[old_fid] = hist_rel
+                        report.moved_to_history.append(old_fid)
+                    cow_moved = True
+                else:
+                    in_place_fid = old_fid
+
+        uploaded = self.transport.upload_file(
+            task.abs_local,
+            task.remote_branch_rel,
+            in_place_file_id=in_place_fid,
+        )
+        return uploaded, cow_moved
+
+    def _execute_push_batch(
+        self,
+        state: Dict[str, Any],
+        branch: str,
+        branch_state_dict: Dict[str, Any],
+        curr_branch_files: Dict[str, str],
+        branch_files_map: Dict[str, Dict[str, str]],
+        history_files: Dict[str, str],
+        push_tasks: List[_PushTask],
+        report: SyncReport,
+        force: bool,
+        backup: bool,
+        background_worker: bool,
+    ) -> Tuple[bool, Optional[BaseException]]:
+        """Execute all push tasks concurrently and commit per-file state updates."""
+        created_dirs = self._precreate_remote_dirs(
+            [t.remote_branch_rel for t in push_tasks]
+        )
+        self._update_cache_dirs(state, branch, created_dirs)
+        any_cow_needed = any(
+            t.existing_remote is not None
+            and not t.existing_remote.is_shortcut
+            and is_file_id_referenced_by_other_branches(
+                t.existing_remote.file_id, branch, branch_files_map
+            )
+            for t in push_tasks
+        )
+        if any_cow_needed:
+            self.transport.mkdir(self._repo_rel(".history"))
+
+        meta_dirty = False
+        first_push_err: Optional[BaseException] = None
+
+        with ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS) as pool:
+            fut_map = {
+                pool.submit(
+                    self._upload_single_push_task,
+                    task,
+                    branch,
+                    branch_files_map,
+                    history_files,
+                    report,
+                    force,
+                    backup,
+                    background_worker,
+                ): task
+                for task in push_tasks
+            }
+            for fut in as_completed(fut_map):
+                task = fut_map[fut]
+                if fut.cancelled():
+                    continue
+                try:
+                    uploaded, cow_moved = fut.result()
+                except _BackgroundYieldRequested:
+                    report.yielded = True
+                    continue
+                except Exception as exc:
+                    if first_push_err is None:
+                        first_push_err = exc
+                        for pending_fut in fut_map:
+                            if not pending_fut.done():
+                                pending_fut.cancel()
+                    continue
+
+                if cow_moved:
+                    meta_dirty = True
+                with self._meta_lock:
+                    curr_branch_files[task.rel_path] = uploaded.file_id
+                    meta_dirty = True
+                new_base = FileEntry(
+                    rel_path=task.rel_path,
+                    md5=task.local_entry.md5,
+                    sha256=task.local_entry.sha256,
+                    size=task.local_entry.size,
+                    mtime_ns=task.local_entry.mtime_ns,
+                    file_id=uploaded.file_id,
+                    is_shortcut=False,
+                    target_file_id="",
+                )
+                branch_state_dict[task.rel_path] = new_base.to_dict()
+                self._update_cache_branch_entry(state, branch, task.rel_path, uploaded)
+                self._save_local_state(state)
+                report.pushed.append(task.rel_path)
+                if background_worker and self.should_yield_background():
+                    report.yielded = True
+                    for pending_fut in fut_map:
+                        if not pending_fut.done():
+                            pending_fut.cancel()
+                    break
+
+        report.pushed.sort()
+        return meta_dirty, first_push_err
+
+    def _download_single_pull_task(
+        self,
+        task: _PullTask,
+        raw_remote_entries: Dict[str, RemoteEntry],
+        background_worker: bool,
+    ) -> Tuple[str, str, int, int]:
+        """Download a single remote file and compute its local hashes and mtime_ns."""
+        if background_worker and self.should_yield_background():
+            raise _BackgroundYieldRequested()
+        self.transport.download_file(
+            task.remote_branch_rel,
+            task.abs_local,
+            entry_hint=raw_remote_entries.get(task.rel_path),
+        )
+        md5_hex, sha_hex, sz = compute_local_hashes(task.abs_local)
+        st = task.abs_local.stat()
+        return md5_hex, sha_hex, sz, int(st.st_mtime_ns)
+
+    def _execute_pull_batch(
+        self,
+        state: Dict[str, Any],
+        branch_state_dict: Dict[str, Any],
+        raw_remote_entries: Dict[str, RemoteEntry],
+        pull_tasks: List[_PullTask],
+        report: SyncReport,
+        background_worker: bool,
+    ) -> Optional[BaseException]:
+        """Execute all pull tasks concurrently and commit per-file state updates."""
+        first_pull_err: Optional[BaseException] = None
+
+        with ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS) as pool:
+            fut_map = {
+                pool.submit(
+                    self._download_single_pull_task,
+                    task,
+                    raw_remote_entries,
+                    background_worker,
+                ): task
+                for task in pull_tasks
+            }
+            for fut in as_completed(fut_map):
+                task = fut_map[fut]
+                if fut.cancelled():
+                    continue
+                try:
+                    md5_hex, sha_hex, sz, mtime_ns = fut.result()
+                except _BackgroundYieldRequested:
+                    report.yielded = True
+                    continue
+                except Exception as exc:
+                    if first_pull_err is None:
+                        first_pull_err = exc
+                        for pending_fut in fut_map:
+                            if not pending_fut.done():
+                                pending_fut.cancel()
+                    continue
+
+                new_base = FileEntry(
+                    rel_path=task.rel_path,
+                    md5=md5_hex,
+                    sha256=sha_hex,
+                    size=sz,
+                    mtime_ns=mtime_ns,
+                    file_id=task.remote_entry.effective_file_id(),
+                    is_shortcut=task.remote_entry.is_shortcut,
+                    target_file_id=task.remote_entry.target_file_id,
+                )
+                branch_state_dict[task.rel_path] = new_base.to_dict()
+                self._save_local_state(state)
+                report.pulled.append(task.rel_path)
+                if background_worker and self.should_yield_background():
+                    report.yielded = True
+                    for pending_fut in fut_map:
+                        if not pending_fut.done():
+                            pending_fut.cancel()
+                    break
+
+        report.pulled.sort()
+        return first_pull_err
+
     # ------------------------------------------------------------------
     # Internal Snapshot & GC Helpers
     # ------------------------------------------------------------------
-
-    def _trash_repo_item(
-        self, remote_rel_path: str, file_id: Optional[str] = None
-    ) -> bool:
-        """
-        Move an item inside <repo_sync_root>/ directly to Google Drive's native 30-day Trash
-        (or sandbox .trash/ in LocalSandboxTransport) via transport.trash_file().
-        """
-        return self.transport.trash_file(remote_rel_path, file_id=file_id)
 
     def _prune_empty_remote_branch_dirs(
         self,
@@ -1695,11 +1891,11 @@ class SyncCoordinator:
             fids = rel_to_dir_fids.get(rel_dir) or []
             if fids:
                 for fid in fids:
-                    if self._trash_repo_item(remote_dir_rel, file_id=fid):
+                    if self.transport.trash_file(remote_dir_rel, file_id=fid):
                         pruned_dirs.append(rel_dir)
                     self._remove_cached_branch_dir(state, branch, fid)
             else:
-                if self._trash_repo_item(remote_dir_rel):
+                if self.transport.trash_file(remote_dir_rel):
                     pruned_dirs.append(rel_dir)
         return pruned_dirs
 
@@ -1824,7 +2020,7 @@ class SyncCoordinator:
                 and bool(branch_files_map.get(other_b))
             )
             if not has_cached_refs:
-                o_snap, _ = self._collect_remote_branch_snapshot(other_b)
+                o_snap, _, _, _ = self._scan_remote_branch_with_dirs(other_b)
                 branch_files_map[other_b] = {
                     rel_p: r_ent.effective_file_id()
                     for rel_p, r_ent in o_snap.items()
@@ -1837,7 +2033,7 @@ class SyncCoordinator:
         for fid in orphan_ids:
             hist_rel = history_files.get(fid, "")
             if hist_rel and self.transport.get_entry(hist_rel) is not None:
-                self._trash_repo_item(hist_rel, file_id=fid)
+                self.transport.trash_file(hist_rel, file_id=fid)
             history_files.pop(fid, None)
             trashed_ids.append(fid)
         return trashed_ids
@@ -1916,12 +2112,6 @@ class SyncCoordinator:
                 local_path_map[remote_rel] = abs_path
 
         return local_snap, local_path_map, sorted(set(stabilizing))
-
-    def _collect_remote_branch_snapshot(
-        self, branch: str
-    ) -> Tuple[Dict[str, FileEntry], Dict[str, RemoteEntry]]:
-        snap, raw_map, _, _ = self._scan_remote_branch_with_dirs(branch)
-        return snap, raw_map
 
     def _scan_remote_branch_with_dirs(
         self, branch: str
@@ -2098,36 +2288,25 @@ class SyncCoordinator:
             cache["meta_file_id"] = meta_entry.file_id
             cache["meta_md5"] = meta_entry.md5
 
+    # ------------------------------------------------------------------
+    # Level 0 / Level 1 Incremental Remote Cache Pipeline
+    # ------------------------------------------------------------------
+
     def _try_incremental_remote_cache(
         self, state: Dict[str, Any], branch: str
     ) -> Optional[
-        Tuple[int, Dict[str, Any], Dict[str, FileEntry], Dict[str, RemoteEntry]]
+        Tuple[int, Dict[str, Any], Dict[str, FileEntry], Dict[str, RemoteEntry], str]
     ]:
+        """
+        Attempt Level 0 / Level 1 incremental remote cache patching via changes.list.
+        Operates strictly on deep-copied working structures so any fallback (return None)
+        leaves state['remote_repo_cache'] completely untouched.
+        """
         cache = state.get("remote_repo_cache")
-        if not isinstance(cache, dict):
+        ctx_and_token = self._build_incremental_patch_context(cache, branch)
+        if ctx_and_token is None:
             return None
-        if cache.get("root_folder_id") != self.config.root_folder_id:
-            return None
-        if cache.get("repo_sync_prefix") != self.repo_sync_prefix:
-            return None
-        page_token = str(cache.get("page_token") or "")
-        if not page_token:
-            return None
-        repo_meta = cache.get("repo_meta")
-        cache_branches = cache.get("branches")
-        if not isinstance(repo_meta, dict) or not isinstance(cache_branches, dict):
-            return None
-        if branch not in cache_branches:
-            return None
-        for reg_b, reg_b_info in (repo_meta.get("branches") or {}).items():
-            if reg_b not in cache_branches:
-                return None
-            if (
-                isinstance(reg_b_info, dict)
-                and reg_b_info.get("auto_discovered")
-                and not (repo_meta.get("branch_files") or {}).get(reg_b)
-            ):
-                return None
+        ctx, page_token = ctx_and_token
 
         try:
             changes, new_token = self.transport.list_changes(page_token)
@@ -2139,13 +2318,98 @@ class SyncCoordinator:
         if not new_token:
             return None
 
-        meta_file_id = str(cache.get("meta_file_id") or "")
-        meta_md5 = str(cache.get("meta_md5") or "")
-        repo_folder_id = str(cache.get("repo_folder_id") or "")
-        history_folder_id = str(cache.get("history_folder_id") or "")
-        trash_folder_id = str(cache.get("trash_folder_id") or "")
+        classified = self._classify_incremental_changes(ctx, changes)
+        if classified is None:
+            return None
+        folder_changes, non_folder_changes = classified
+
+        unresolved_folder_ids = self._apply_incremental_folder_changes(
+            ctx, folder_changes
+        )
+        if unresolved_folder_ids is None:
+            return None
+
+        level1_ops = self._validate_incremental_file_changes(
+            ctx, non_folder_changes, unresolved_folder_ids
+        )
+        if level1_ops is None:
+            return None
+
+        if level1_ops:
+            self._apply_incremental_file_ops(ctx, level1_ops)
+
+        assert isinstance(cache, dict)
+        cache["branches"] = ctx.cache_branches
+        if ctx.folder_patched:
+            cache["known_folder_ids"] = sorted(ctx.known_folder_ids)
+            cache["folder_meta"] = ctx.folder_meta
+
+        branch_files_map = ctx.repo_meta.setdefault("branch_files", {})
+        for b_name, b_data in ctx.cache_branches.items():
+            b_files: Dict[str, str] = {}
+            for rel_p, r_dict in (b_data.get("raw_entries") or {}).items():
+                r_ent = RemoteEntry.from_dict(r_dict)
+                b_files[rel_p] = (
+                    r_ent.target_file_id if r_ent.is_shortcut else r_ent.file_id
+                )
+            branch_files_map[b_name] = b_files
+        cache["repo_meta"] = copy.deepcopy(ctx.repo_meta)
+
+        active_raw_dict = ctx.cache_branches[branch].get("raw_entries") or {}
+        remote_snap: Dict[str, FileEntry] = {}
+        raw_remote_entries: Dict[str, RemoteEntry] = {}
+        for rel_p, r_dict in active_raw_dict.items():
+            r_ent = RemoteEntry.from_dict(r_dict)
+            raw_remote_entries[rel_p] = r_ent
+            remote_snap[rel_p] = FileEntry(
+                rel_path=rel_p,
+                md5=r_ent.md5,
+                sha256="",
+                size=r_ent.size,
+                mtime_ns=r_ent.mtime_ns,
+                file_id=r_ent.file_id,
+                is_shortcut=r_ent.is_shortcut,
+                target_file_id=r_ent.target_file_id,
+            )
+
+        hit_level = 1 if (level1_ops or ctx.folder_patched) else 0
+        return hit_level, ctx.repo_meta, remote_snap, raw_remote_entries, new_token
+
+    def _build_incremental_patch_context(
+        self, cache: Any, branch: str
+    ) -> Optional[Tuple[_IncrementalPatchContext, str]]:
+        """Validate remote_repo_cache preconditions and construct an isolated working copy."""
+        if not isinstance(cache, dict):
+            return None
+        if cache.get("root_folder_id") != self.config.root_folder_id:
+            return None
+        if cache.get("repo_sync_prefix") != self.repo_sync_prefix:
+            return None
+        page_token = str(cache.get("page_token") or "")
+        if not page_token:
+            return None
+        raw_repo_meta = cache.get("repo_meta")
+        raw_cache_branches = cache.get("branches")
+        if not isinstance(raw_repo_meta, dict) or not isinstance(
+            raw_cache_branches, dict
+        ):
+            return None
+        if branch not in raw_cache_branches:
+            return None
+        for reg_b, reg_b_info in (raw_repo_meta.get("branches") or {}).items():
+            if reg_b not in raw_cache_branches:
+                return None
+            if (
+                isinstance(reg_b_info, dict)
+                and reg_b_info.get("auto_discovered")
+                and not (raw_repo_meta.get("branch_files") or {}).get(reg_b)
+            ):
+                return None
+
+        repo_meta = copy.deepcopy(raw_repo_meta)
+        cache_branches = copy.deepcopy(raw_cache_branches)
         known_folder_ids: Set[str] = set(cache.get("known_folder_ids") or [])
-        folder_meta: Dict[str, Dict[str, str]] = dict(
+        folder_meta: Dict[str, Dict[str, str]] = copy.deepcopy(
             cache.get("folder_meta") or {}
         )
         history_file_ids: Set[str] = set(
@@ -2173,34 +2437,53 @@ class SyncCoordinator:
                             (b_name, rel_p)
                         )
 
+        ctx = _IncrementalPatchContext(
+            repo_meta=repo_meta,
+            cache_branches=cache_branches,
+            known_folder_ids=known_folder_ids,
+            folder_meta=folder_meta,
+            all_branch_dir_ids=all_branch_dir_ids,
+            file_id_to_branch_paths=file_id_to_branch_paths,
+            target_id_to_shortcuts=target_id_to_shortcuts,
+            history_file_ids=history_file_ids,
+            meta_file_id=str(cache.get("meta_file_id") or ""),
+            meta_md5=str(cache.get("meta_md5") or ""),
+            repo_folder_id=str(cache.get("repo_folder_id") or ""),
+            history_folder_id=str(cache.get("history_folder_id") or ""),
+            trash_folder_id=str(cache.get("trash_folder_id") or ""),
+        )
+        return ctx, page_token
+
+    def _classify_incremental_changes(
+        self, ctx: _IncrementalPatchContext, changes: List[ChangeRecord]
+    ) -> Optional[Tuple[List[ChangeRecord], List[ChangeRecord]]]:
+        """Deduplicate change records, filter managed READMEs, check .yscb_gdrive.json, and split folder vs file changes."""
         dedup_changes: Dict[str, ChangeRecord] = {}
         for ch in changes:
             if ch.file_id:
                 dedup_changes[ch.file_id] = ch
 
-        level1_ops: List[ChangeRecord] = []
         folder_changes: List[ChangeRecord] = []
         non_folder_changes: List[ChangeRecord] = []
-        repo_prefix = self._repo_rel()
-        folder_patched = False
 
         for ch in dedup_changes.values():
             fid = ch.file_id
             ent = ch.entry
 
-            # 1. Ignore system READMEs (root/README.md and <repo>/README.md)
             if not ch.removed and ent is not None:
                 if ent.rel_path == self._repo_rel(REPO_README_FILENAME) or (
                     ch.name == REPO_README_FILENAME
                     and ch.parent_id
-                    in (repo_folder_id, self.config.root_folder_id, "sandbox_root")
+                    in (ctx.repo_folder_id, self.config.root_folder_id, "sandbox_root")
                 ):
                     continue
 
-            # 2. Check .yscb_gdrive.json
             if (
-                fid == meta_file_id
-                or (ch.name == REPO_CONFIG_FILENAME and ch.parent_id == repo_folder_id)
+                fid == ctx.meta_file_id
+                or (
+                    ch.name == REPO_CONFIG_FILENAME
+                    and ch.parent_id == ctx.repo_folder_id
+                )
                 or (
                     ent is not None
                     and ent.rel_path == self._repo_rel(REPO_CONFIG_FILENAME)
@@ -2209,16 +2492,16 @@ class SyncCoordinator:
                 if (
                     not ch.removed
                     and ent is not None
-                    and fid == meta_file_id
-                    and meta_md5
-                    and ent.md5 == meta_md5
+                    and fid == ctx.meta_file_id
+                    and ctx.meta_md5
+                    and ent.md5 == ctx.meta_md5
                 ):
                     continue
                 return None
 
             is_folder_change = (
-                fid in known_folder_ids
-                or fid in all_branch_dir_ids
+                fid in ctx.known_folder_ids
+                or fid in ctx.all_branch_dir_ids
                 or ch.mime_type == FOLDER_MIME_TYPE
                 or (ent is not None and ent.is_dir)
             )
@@ -2227,66 +2510,23 @@ class SyncCoordinator:
             else:
                 non_folder_changes.append(ch)
 
-        # 3. Process folder changes first (removals, renames/moves, topological new subfolders)
+        return folder_changes, non_folder_changes
+
+    def _apply_incremental_folder_changes(
+        self, ctx: _IncrementalPatchContext, folder_changes: List[ChangeRecord]
+    ) -> Optional[Set[str]]:
+        """Process folder removals, renames, and topological new subdirectories in Level 1."""
         pending_new_folders: List[ChangeRecord] = []
         for ch in folder_changes:
             fid = ch.file_id
             if ch.removed:
-                if fid in known_folder_ids or fid in all_branch_dir_ids:
-                    if fid in (repo_folder_id, history_folder_id, trash_folder_id):
-                        return None
-                    matched_branch = False
-                    for b_name, b_data in cache_branches.items():
-                        b_dirs: Dict[str, str] = b_data.setdefault("dir_ids", {})
-                        if fid not in b_dirs:
-                            continue
-                        matched_branch = True
-                        rel_dir = b_dirs[fid]
-                        if not rel_dir:
-                            return None
-                        dir_prefix = f"{rel_dir}/"
-                        sub_dir_ids = [
-                            d_id
-                            for d_id, d_rel in list(b_dirs.items())
-                            if d_rel == rel_dir or d_rel.startswith(dir_prefix)
-                        ]
-                        for d_id in sub_dir_ids:
-                            b_dirs.pop(d_id, None)
-                            all_branch_dir_ids.discard(d_id)
-                            known_folder_ids.discard(d_id)
-                            folder_meta.pop(d_id, None)
-
-                        raw_entries: Dict[str, Dict[str, Any]] = b_data.setdefault(
-                            "raw_entries", {}
-                        )
-                        removed_rel_paths = [
-                            r_path
-                            for r_path in list(raw_entries.keys())
-                            if r_path == rel_dir or r_path.startswith(dir_prefix)
-                        ]
-                        for r_path in removed_rel_paths:
-                            r_dict = raw_entries.pop(r_path, None) or {}
-                            entry_fid = str(r_dict.get("file_id") or "")
-                            if entry_fid:
-                                file_id_to_branch_paths.pop(entry_fid, None)
-                                for sc_b, sc_rel in target_id_to_shortcuts.pop(
-                                    entry_fid, []
-                                ):
-                                    if sc_b in cache_branches:
-                                        sc_dict = (
-                                            cache_branches[sc_b].get("raw_entries")
-                                            or {}
-                                        ).pop(sc_rel, None) or {}
-                                        sc_fid = str(sc_dict.get("file_id") or "")
-                                        if sc_fid:
-                                            file_id_to_branch_paths.pop(sc_fid, None)
-                        folder_patched = True
-                    if not matched_branch:
+                if fid in ctx.known_folder_ids or fid in ctx.all_branch_dir_ids:
+                    if not self._remove_incremental_folder_subtree(ctx, fid):
                         return None
                 continue
 
-            if fid in known_folder_ids or fid in all_branch_dir_ids:
-                fm = folder_meta.get(fid)
+            if fid in ctx.known_folder_ids or fid in ctx.all_branch_dir_ids:
+                fm = ctx.folder_meta.get(fid)
                 if (
                     fm is not None
                     and ch.name == fm.get("name")
@@ -2295,7 +2535,7 @@ class SyncCoordinator:
                     continue
                 return None
 
-            if ch.parent_id == repo_folder_id:
+            if ch.parent_id == ctx.repo_folder_id:
                 return None
 
             pending_new_folders.append(ch)
@@ -2304,48 +2544,19 @@ class SyncCoordinator:
             progress = False
             remaining_folders: List[ChangeRecord] = []
             for ch in pending_new_folders:
-                fid = ch.file_id
-                ent = ch.entry
-                if ch.parent_id in all_branch_dir_ids:
+                if ch.parent_id in ctx.all_branch_dir_ids:
                     progress = True
-                    dir_name = (
-                        ch.name or (ent.name if ent is not None else "")
-                    ).strip()
-                    if not dir_name or dir_name in BRANCH_INTERNAL_SYSTEM_NAMES:
+                    if not self._register_incremental_new_subfolder(ctx, ch):
                         return None
-                    for b_name, b_data in cache_branches.items():
-                        b_dirs = b_data.setdefault("dir_ids", {})
-                        if ch.parent_id not in b_dirs:
-                            continue
-                        parent_rel = b_dirs[ch.parent_id]
-                        rel_dir = (
-                            f"{parent_rel}/{dir_name}".strip("/")
-                            if parent_rel
-                            else dir_name
-                        )
-                        if (
-                            rel_dir in BRANCH_INTERNAL_SYSTEM_NAMES
-                            or rel_dir in b_dirs.values()
-                            or rel_dir in (b_data.get("raw_entries") or {})
-                        ):
-                            return None
-                        b_dirs[fid] = rel_dir
-                        all_branch_dir_ids.add(fid)
-                        known_folder_ids.add(fid)
-                        folder_meta[fid] = {
-                            "name": dir_name,
-                            "parent_id": ch.parent_id,
-                        }
-                        folder_patched = True
-                elif ch.parent_id in known_folder_ids:
+                elif ch.parent_id in ctx.known_folder_ids:
                     return None
                 else:
                     remaining_folders.append(ch)
-            if not progress:
-                pending_new_folders = remaining_folders
-                break
             pending_new_folders = remaining_folders
+            if not progress:
+                break
 
+        repo_prefix = self._repo_rel()
         unresolved_folder_ids: Set[str] = set()
         for ch in pending_new_folders:
             ent = ch.entry
@@ -2355,13 +2566,106 @@ class SyncCoordinator:
             ):
                 return None
             unresolved_folder_ids.add(ch.file_id)
+        return unresolved_folder_ids
+
+    def _remove_incremental_folder_subtree(
+        self, ctx: _IncrementalPatchContext, fid: str
+    ) -> bool:
+        """Purge a removed branch subdirectory and any cross-branch shortcuts targeting its files."""
+        if fid in (ctx.repo_folder_id, ctx.history_folder_id, ctx.trash_folder_id):
+            return False
+        matched_branch = False
+        for b_data in ctx.cache_branches.values():
+            b_dirs: Dict[str, str] = b_data.setdefault("dir_ids", {})
+            if fid not in b_dirs:
+                continue
+            matched_branch = True
+            rel_dir = b_dirs[fid]
+            if not rel_dir:
+                return False
+            dir_prefix = f"{rel_dir}/"
+            sub_dir_ids = [
+                d_id
+                for d_id, d_rel in list(b_dirs.items())
+                if d_rel == rel_dir or d_rel.startswith(dir_prefix)
+            ]
+            for d_id in sub_dir_ids:
+                b_dirs.pop(d_id, None)
+                ctx.all_branch_dir_ids.discard(d_id)
+                ctx.known_folder_ids.discard(d_id)
+                ctx.folder_meta.pop(d_id, None)
+
+            raw_entries: Dict[str, Dict[str, Any]] = b_data.setdefault(
+                "raw_entries", {}
+            )
+            removed_rel_paths = [
+                r_path
+                for r_path in list(raw_entries.keys())
+                if r_path == rel_dir or r_path.startswith(dir_prefix)
+            ]
+            for r_path in removed_rel_paths:
+                r_dict = raw_entries.pop(r_path, None) or {}
+                entry_fid = str(r_dict.get("file_id") or "")
+                if not entry_fid:
+                    continue
+                ctx.file_id_to_branch_paths.pop(entry_fid, None)
+                for sc_b, sc_rel in ctx.target_id_to_shortcuts.pop(entry_fid, []):
+                    if sc_b in ctx.cache_branches:
+                        sc_dict = (
+                            ctx.cache_branches[sc_b].get("raw_entries") or {}
+                        ).pop(sc_rel, None) or {}
+                        sc_fid = str(sc_dict.get("file_id") or "")
+                        if sc_fid:
+                            ctx.file_id_to_branch_paths.pop(sc_fid, None)
+            ctx.folder_patched = True
+        return matched_branch
+
+    def _register_incremental_new_subfolder(
+        self, ctx: _IncrementalPatchContext, ch: ChangeRecord
+    ) -> bool:
+        """Register a newly created branch subdirectory into the working cache."""
+        fid = ch.file_id
+        ent = ch.entry
+        dir_name = (ch.name or (ent.name if ent is not None else "")).strip()
+        if not dir_name or dir_name in BRANCH_INTERNAL_SYSTEM_NAMES:
+            return False
+        for b_data in ctx.cache_branches.values():
+            b_dirs = b_data.setdefault("dir_ids", {})
+            if ch.parent_id not in b_dirs:
+                continue
+            parent_rel = b_dirs[ch.parent_id]
+            rel_dir = f"{parent_rel}/{dir_name}".strip("/") if parent_rel else dir_name
+            if (
+                rel_dir in BRANCH_INTERNAL_SYSTEM_NAMES
+                or rel_dir in b_dirs.values()
+                or rel_dir in (b_data.get("raw_entries") or {})
+            ):
+                return False
+            b_dirs[fid] = rel_dir
+            ctx.all_branch_dir_ids.add(fid)
+            ctx.known_folder_ids.add(fid)
+            ctx.folder_meta[fid] = {
+                "name": dir_name,
+                "parent_id": ch.parent_id,
+            }
+            ctx.folder_patched = True
+        return True
+
+    def _validate_incremental_file_changes(
+        self,
+        ctx: _IncrementalPatchContext,
+        non_folder_changes: List[ChangeRecord],
+        unresolved_folder_ids: Set[str],
+    ) -> Optional[List[ChangeRecord]]:
+        """Validate non-folder change records and collect eligible Level 1 file patch operations."""
+        level1_ops: List[ChangeRecord] = []
+        repo_prefix = self._repo_rel()
 
         for ch in non_folder_changes:
             fid = ch.file_id
             ent = ch.entry
 
-            # 4. Check external repo/.trash additions
-            if ch.parent_id == trash_folder_id or (
+            if ch.parent_id == ctx.trash_folder_id or (
                 ent is not None
                 and ent.rel_path.startswith(f"{self._repo_rel('.trash')}/")
             ):
@@ -2369,9 +2673,11 @@ class SyncCoordinator:
                     return None
                 continue
 
-            # 5. Non-folder file/shortcut change
             if ch.removed:
-                if fid in file_id_to_branch_paths or fid in target_id_to_shortcuts:
+                if (
+                    fid in ctx.file_id_to_branch_paths
+                    or fid in ctx.target_id_to_shortcuts
+                ):
                     level1_ops.append(ch)
                 continue
 
@@ -2381,196 +2687,178 @@ class SyncCoordinator:
             if ch.parent_id in unresolved_folder_ids:
                 return None
 
-            if fid in file_id_to_branch_paths or fid in target_id_to_shortcuts:
-                for b_name, rel_p in file_id_to_branch_paths.get(fid, []):
-                    old_d = cache_branches[b_name]["raw_entries"].get(rel_p)
-                    if not old_d:
-                        return None
-                    if ent.name != old_d.get("name") or ent.parent_id != old_d.get(
-                        "parent_id"
-                    ):
-                        return None
-
-                changed_vs_cache = False
-                for b_name, rel_p in file_id_to_branch_paths.get(fid, []):
-                    old_d = cache_branches[b_name]["raw_entries"][rel_p]
-                    if (
-                        old_d.get("md5") != ent.md5
-                        or old_d.get("size") != ent.size
-                        or old_d.get("target_file_id") != ent.target_file_id
-                        or old_d.get("dangling_shortcut") != ent.dangling_shortcut
-                    ):
-                        changed_vs_cache = True
-                for b_name, rel_p in target_id_to_shortcuts.get(fid, []):
-                    sc_d = cache_branches[b_name]["raw_entries"][rel_p]
-                    if (
-                        sc_d.get("md5") != ent.md5
-                        or sc_d.get("size") != ent.size
-                        or sc_d.get("dangling_shortcut")
-                    ):
-                        changed_vs_cache = True
-
-                if changed_vs_cache:
+            if (
+                fid in ctx.file_id_to_branch_paths
+                or fid in ctx.target_id_to_shortcuts
+            ):
+                if not self._is_known_file_change_valid(ctx, fid, ent):
+                    return None
+                if self._has_known_file_changed_vs_cache(ctx, fid, ent):
                     level1_ops.append(ch)
                 continue
 
-            if fid in history_file_ids:
+            if fid in ctx.history_file_ids:
                 continue
-            if ch.parent_id == history_folder_id:
+            if ch.parent_id == ctx.history_folder_id:
                 if not ch.removed:
                     return None
                 continue
 
-            if ch.parent_id in all_branch_dir_ids:
-                for b_name, b_data in cache_branches.items():
-                    b_dirs = b_data.get("dir_ids") or {}
-                    if ch.parent_id in b_dirs:
-                        sub_dir = b_dirs[ch.parent_id]
-                        rel_p = (
-                            f"{sub_dir}/{ent.name}".strip("/")
-                            if sub_dir
-                            else ent.name
-                        )
-                        if (
-                            rel_p in BRANCH_INTERNAL_SYSTEM_NAMES
-                            or rel_p in (b_data.get("raw_entries") or {})
-                        ):
-                            return None
+            if ch.parent_id in ctx.all_branch_dir_ids:
+                if not self._is_new_branch_file_valid(ctx, ch.parent_id, ent.name):
+                    return None
                 level1_ops.append(ch)
                 continue
 
-            if ch.parent_id in known_folder_ids or (
+            if ch.parent_id in ctx.known_folder_ids or (
                 ent.rel_path == repo_prefix
                 or ent.rel_path.startswith(f"{repo_prefix}/")
             ):
                 return None
 
-        # Apply Level 1 patches if any
-        if level1_ops:
-            for ch in level1_ops:
-                fid = ch.file_id
-                ent = ch.entry
-                if ch.removed:
-                    for b_name, rel_p in file_id_to_branch_paths.get(fid, []):
-                        cache_branches[b_name]["raw_entries"].pop(rel_p, None)
-                    for b_name, rel_p in target_id_to_shortcuts.get(fid, []):
-                        cache_branches[b_name]["raw_entries"].pop(rel_p, None)
+        return level1_ops
+
+    def _is_known_file_change_valid(
+        self, ctx: _IncrementalPatchContext, fid: str, ent: RemoteEntry
+    ) -> bool:
+        for b_name, rel_p in ctx.file_id_to_branch_paths.get(fid, []):
+            old_d = ctx.cache_branches[b_name]["raw_entries"].get(rel_p)
+            if not old_d:
+                return False
+            if ent.name != old_d.get("name") or ent.parent_id != old_d.get("parent_id"):
+                return False
+        return True
+
+    def _has_known_file_changed_vs_cache(
+        self, ctx: _IncrementalPatchContext, fid: str, ent: RemoteEntry
+    ) -> bool:
+        for b_name, rel_p in ctx.file_id_to_branch_paths.get(fid, []):
+            old_d = ctx.cache_branches[b_name]["raw_entries"][rel_p]
+            if (
+                old_d.get("md5") != ent.md5
+                or old_d.get("size") != ent.size
+                or old_d.get("target_file_id") != ent.target_file_id
+                or old_d.get("dangling_shortcut") != ent.dangling_shortcut
+            ):
+                return True
+        for b_name, rel_p in ctx.target_id_to_shortcuts.get(fid, []):
+            sc_d = ctx.cache_branches[b_name]["raw_entries"][rel_p]
+            if (
+                sc_d.get("md5") != ent.md5
+                or sc_d.get("size") != ent.size
+                or sc_d.get("dangling_shortcut")
+            ):
+                return True
+        return False
+
+    def _is_new_branch_file_valid(
+        self, ctx: _IncrementalPatchContext, parent_id: str, file_name: str
+    ) -> bool:
+        for b_data in ctx.cache_branches.values():
+            b_dirs = b_data.get("dir_ids") or {}
+            if parent_id in b_dirs:
+                sub_dir = b_dirs[parent_id]
+                rel_p = f"{sub_dir}/{file_name}".strip("/") if sub_dir else file_name
+                if (
+                    rel_p in BRANCH_INTERNAL_SYSTEM_NAMES
+                    or rel_p in (b_data.get("raw_entries") or {})
+                ):
+                    return False
+        return True
+
+    def _apply_incremental_file_ops(
+        self, ctx: _IncrementalPatchContext, level1_ops: List[ChangeRecord]
+    ) -> None:
+        """Apply validated Level 1 file/shortcut additions, updates, and removals to the working cache."""
+        for ch in level1_ops:
+            fid = ch.file_id
+            ent = ch.entry
+            if ch.removed:
+                for b_name, rel_p in ctx.file_id_to_branch_paths.get(fid, []):
+                    ctx.cache_branches[b_name]["raw_entries"].pop(rel_p, None)
+                for b_name, rel_p in ctx.target_id_to_shortcuts.get(fid, []):
+                    ctx.cache_branches[b_name]["raw_entries"].pop(rel_p, None)
+                continue
+
+            assert ent is not None
+            if (
+                fid in ctx.file_id_to_branch_paths
+                or fid in ctx.target_id_to_shortcuts
+            ):
+                self._patch_existing_cached_file_or_shortcut(ctx, fid, ent)
+                continue
+
+            for b_name, b_data in ctx.cache_branches.items():
+                b_dirs = b_data.get("dir_ids") or {}
+                if ch.parent_id not in b_dirs:
                     continue
+                sub_dir = b_dirs[ch.parent_id]
+                rel_p = f"{sub_dir}/{ent.name}".strip("/") if sub_dir else ent.name
+                if (
+                    not ent.skipped_reason
+                    and rel_p not in BRANCH_INTERNAL_SYSTEM_NAMES
+                ):
+                    full_rel = self._repo_rel(f"{b_name}/{rel_p}")
+                    added = RemoteEntry(
+                        rel_path=full_rel,
+                        name=ent.name,
+                        file_id=ent.file_id,
+                        mime_type=ent.mime_type,
+                        is_dir=False,
+                        size=ent.size,
+                        md5=ent.md5,
+                        mtime_ns=ent.mtime_ns,
+                        parent_id=ent.parent_id,
+                        is_shortcut=ent.is_shortcut,
+                        target_file_id=ent.target_file_id,
+                        target_mime_type=ent.target_mime_type,
+                        dangling_shortcut=ent.dangling_shortcut,
+                        skipped_reason=ent.skipped_reason,
+                    )
+                    b_data.setdefault("raw_entries", {})[rel_p] = added.to_dict()
+                break
 
-                assert ent is not None
-                if fid in file_id_to_branch_paths or fid in target_id_to_shortcuts:
-                    for b_name, rel_p in file_id_to_branch_paths.get(fid, []):
-                        old_d = cache_branches[b_name]["raw_entries"].get(rel_p)
-                        if not old_d:
-                            continue
-                        if ent.skipped_reason:
-                            cache_branches[b_name]["raw_entries"].pop(rel_p, None)
-                        else:
-                            patched = RemoteEntry(
-                                rel_path=str(old_d.get("rel_path") or ""),
-                                name=ent.name,
-                                file_id=ent.file_id,
-                                mime_type=ent.mime_type,
-                                is_dir=False,
-                                size=ent.size,
-                                md5=ent.md5,
-                                mtime_ns=ent.mtime_ns,
-                                parent_id=ent.parent_id,
-                                is_shortcut=ent.is_shortcut,
-                                target_file_id=ent.target_file_id,
-                                target_mime_type=ent.target_mime_type,
-                                dangling_shortcut=ent.dangling_shortcut,
-                                skipped_reason=ent.skipped_reason,
-                            )
-                            cache_branches[b_name]["raw_entries"][
-                                rel_p
-                            ] = patched.to_dict()
-
-                    for b_name, rel_p in target_id_to_shortcuts.get(fid, []):
-                        sc_d = cache_branches[b_name]["raw_entries"].get(rel_p)
-                        if not sc_d:
-                            continue
-                        if ent.skipped_reason:
-                            cache_branches[b_name]["raw_entries"].pop(rel_p, None)
-                        else:
-                            sc_d["md5"] = ent.md5
-                            sc_d["size"] = ent.size
-                            sc_d["mtime_ns"] = ent.mtime_ns
-                            sc_d["target_mime_type"] = ent.mime_type
-                            sc_d["dangling_shortcut"] = False
-                            sc_d["skipped_reason"] = ""
-                    continue
-
-                for b_name, b_data in cache_branches.items():
-                    b_dirs = b_data.get("dir_ids") or {}
-                    if ch.parent_id in b_dirs:
-                        sub_dir = b_dirs[ch.parent_id]
-                        rel_p = (
-                            f"{sub_dir}/{ent.name}".strip("/")
-                            if sub_dir
-                            else ent.name
-                        )
-                        if (
-                            not ent.skipped_reason
-                            and rel_p not in BRANCH_INTERNAL_SYSTEM_NAMES
-                        ):
-                            full_rel = self._repo_rel(f"{b_name}/{rel_p}")
-                            added = RemoteEntry(
-                                rel_path=full_rel,
-                                name=ent.name,
-                                file_id=ent.file_id,
-                                mime_type=ent.mime_type,
-                                is_dir=False,
-                                size=ent.size,
-                                md5=ent.md5,
-                                mtime_ns=ent.mtime_ns,
-                                parent_id=ent.parent_id,
-                                is_shortcut=ent.is_shortcut,
-                                target_file_id=ent.target_file_id,
-                                target_mime_type=ent.target_mime_type,
-                                dangling_shortcut=ent.dangling_shortcut,
-                                skipped_reason=ent.skipped_reason,
-                            )
-                            b_data.setdefault("raw_entries", {})[
-                                rel_p
-                            ] = added.to_dict()
-
-        if folder_patched:
-            cache["known_folder_ids"] = sorted(known_folder_ids)
-            cache["folder_meta"] = folder_meta
-
-        cache["page_token"] = new_token
-        meta_copy = copy.deepcopy(repo_meta)
-        branch_files_map = meta_copy.setdefault("branch_files", {})
-        for b_name, b_data in cache_branches.items():
-            b_files: Dict[str, str] = {}
-            for rel_p, r_dict in (b_data.get("raw_entries") or {}).items():
-                r_ent = RemoteEntry.from_dict(r_dict)
-                b_files[rel_p] = (
-                    r_ent.target_file_id if r_ent.is_shortcut else r_ent.file_id
+    def _patch_existing_cached_file_or_shortcut(
+        self, ctx: _IncrementalPatchContext, fid: str, ent: RemoteEntry
+    ) -> None:
+        for b_name, rel_p in ctx.file_id_to_branch_paths.get(fid, []):
+            old_d = ctx.cache_branches[b_name]["raw_entries"].get(rel_p)
+            if not old_d:
+                continue
+            if ent.skipped_reason:
+                ctx.cache_branches[b_name]["raw_entries"].pop(rel_p, None)
+            else:
+                patched = RemoteEntry(
+                    rel_path=str(old_d.get("rel_path") or ""),
+                    name=ent.name,
+                    file_id=ent.file_id,
+                    mime_type=ent.mime_type,
+                    is_dir=False,
+                    size=ent.size,
+                    md5=ent.md5,
+                    mtime_ns=ent.mtime_ns,
+                    parent_id=ent.parent_id,
+                    is_shortcut=ent.is_shortcut,
+                    target_file_id=ent.target_file_id,
+                    target_mime_type=ent.target_mime_type,
+                    dangling_shortcut=ent.dangling_shortcut,
+                    skipped_reason=ent.skipped_reason,
                 )
-            branch_files_map[b_name] = b_files
-        cache["repo_meta"] = copy.deepcopy(meta_copy)
+                ctx.cache_branches[b_name]["raw_entries"][rel_p] = patched.to_dict()
 
-        active_raw_dict = cache_branches[branch].get("raw_entries") or {}
-        remote_snap: Dict[str, FileEntry] = {}
-        raw_remote_entries: Dict[str, RemoteEntry] = {}
-        for rel_p, r_dict in active_raw_dict.items():
-            r_ent = RemoteEntry.from_dict(r_dict)
-            raw_remote_entries[rel_p] = r_ent
-            remote_snap[rel_p] = FileEntry(
-                rel_path=rel_p,
-                md5=r_ent.md5,
-                sha256="",
-                size=r_ent.size,
-                mtime_ns=r_ent.mtime_ns,
-                file_id=r_ent.file_id,
-                is_shortcut=r_ent.is_shortcut,
-                target_file_id=r_ent.target_file_id,
-            )
-
-        hit_level = 1 if (level1_ops or folder_patched) else 0
-        return hit_level, meta_copy, remote_snap, raw_remote_entries
+        for b_name, rel_p in ctx.target_id_to_shortcuts.get(fid, []):
+            sc_d = ctx.cache_branches[b_name]["raw_entries"].get(rel_p)
+            if not sc_d:
+                continue
+            if ent.skipped_reason:
+                ctx.cache_branches[b_name]["raw_entries"].pop(rel_p, None)
+            else:
+                sc_d["md5"] = ent.md5
+                sc_d["size"] = ent.size
+                sc_d["mtime_ns"] = ent.mtime_ns
+                sc_d["target_mime_type"] = ent.mime_type
+                sc_d["dangling_shortcut"] = False
+                sc_d["skipped_reason"] = ""
 
     def _persist_active_branch_to_config(self, target_branch: str) -> None:
         """
@@ -2618,10 +2906,3 @@ class SyncCoordinator:
                 ) and not is_sensitive_credential_path(candidate, self.project_root):
                     return candidate
         return None
-
-    @staticmethod
-    def _create_conflict_backup(local_path: Path) -> Path:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        bak_path = local_path.with_name(f"{local_path.name}.conflict.{ts}.bak")
-        shutil.copy2(local_path, bak_path)
-        return bak_path

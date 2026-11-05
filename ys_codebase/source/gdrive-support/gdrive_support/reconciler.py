@@ -96,6 +96,228 @@ def _same_digest(a: FileEntry, b: FileEntry) -> bool:
     return a.size == b.size and a.mtime_ns == b.mtime_ns
 
 
+def _reconcile_both_present(
+    rel_p: str,
+    loc: FileEntry,
+    rem: FileEntry,
+    base: Optional[FileEntry],
+    norm_mode: str,
+    force: bool,
+) -> SyncAction:
+    """Reconcile a path present on both local and remote snapshots."""
+    if _same_digest(loc, rem):
+        return SyncAction(
+            rel_path=rel_p,
+            action=SyncActionType.IN_SYNC,
+            local_entry=loc,
+            remote_entry=rem,
+            baseline_entry=base,
+            reason="identical_digest",
+        )
+
+    if base is None:
+        if force and norm_mode == "push":
+            return SyncAction(
+                rel_path=rel_p,
+                action=SyncActionType.PUSH_UPDATE,
+                local_entry=loc,
+                remote_entry=rem,
+                baseline_entry=None,
+                reason="forced_push_on_add_add_conflict",
+            )
+        if force and norm_mode == "pull":
+            return SyncAction(
+                rel_path=rel_p,
+                action=SyncActionType.PULL_UPDATE,
+                local_entry=loc,
+                remote_entry=rem,
+                baseline_entry=None,
+                reason="forced_pull_on_add_add_conflict",
+            )
+        return SyncAction(
+            rel_path=rel_p,
+            action=SyncActionType.CONFLICT,
+            local_entry=loc,
+            remote_entry=rem,
+            baseline_entry=None,
+            reason="add_add_diverged",
+        )
+
+    loc_changed = not _same_digest(loc, base)
+    rem_changed = not _same_digest(rem, base)
+
+    if loc_changed and not rem_changed:
+        act = (
+            (SyncActionType.PULL_UPDATE if force else SyncActionType.IN_SYNC)
+            if norm_mode == "pull"
+            else SyncActionType.PUSH_UPDATE
+        )
+        return SyncAction(
+            rel_path=rel_p,
+            action=act,
+            local_entry=loc,
+            remote_entry=rem,
+            baseline_entry=base,
+            reason="modified_local_only",
+        )
+
+    if rem_changed and not loc_changed:
+        act = (
+            (SyncActionType.PUSH_UPDATE if force else SyncActionType.IN_SYNC)
+            if norm_mode == "push"
+            else SyncActionType.PULL_UPDATE
+        )
+        return SyncAction(
+            rel_path=rel_p,
+            action=act,
+            local_entry=loc,
+            remote_entry=rem,
+            baseline_entry=base,
+            reason="modified_remote_only",
+        )
+
+    if force and norm_mode == "push":
+        act = SyncActionType.PUSH_UPDATE
+    elif force and norm_mode == "pull":
+        act = SyncActionType.PULL_UPDATE
+    else:
+        act = SyncActionType.CONFLICT
+    return SyncAction(
+        rel_path=rel_p,
+        action=act,
+        local_entry=loc,
+        remote_entry=rem,
+        baseline_entry=base,
+        reason="both_modified_diverged",
+    )
+
+
+def _reconcile_local_only(
+    rel_p: str,
+    loc: FileEntry,
+    base: Optional[FileEntry],
+    norm_mode: str,
+    allow_pull_delete: bool,
+    force: bool,
+) -> Optional[SyncAction]:
+    """Reconcile a path present only on the local snapshot (remote is None)."""
+    if base is None:
+        if norm_mode in ("sync", "push"):
+            return SyncAction(
+                rel_path=rel_p,
+                action=SyncActionType.PUSH_NEW,
+                local_entry=loc,
+                baseline_entry=None,
+                reason="added_local",
+            )
+        if norm_mode == "pull" and allow_pull_delete:
+            return SyncAction(
+                rel_path=rel_p,
+                action=SyncActionType.DELETE_LOCAL,
+                local_entry=loc,
+                baseline_entry=None,
+                reason="pull_delete_untracked_local",
+            )
+        return None
+
+    loc_changed = not _same_digest(loc, base)
+    if loc_changed:
+        if force and norm_mode == "push":
+            act = SyncActionType.PUSH_NEW
+        elif force and norm_mode == "pull" and allow_pull_delete:
+            act = SyncActionType.DELETE_LOCAL
+        else:
+            act = SyncActionType.CONFLICT
+        return SyncAction(
+            rel_path=rel_p,
+            action=act,
+            local_entry=loc,
+            baseline_entry=base,
+            reason="modify_local_delete_remote_conflict",
+        )
+
+    if norm_mode in ("sync", "pull") and allow_pull_delete:
+        return SyncAction(
+            rel_path=rel_p,
+            action=SyncActionType.DELETE_LOCAL,
+            local_entry=loc,
+            baseline_entry=base,
+            reason="deleted_on_remote",
+        )
+    if norm_mode == "push":
+        return SyncAction(
+            rel_path=rel_p,
+            action=SyncActionType.PUSH_NEW,
+            local_entry=loc,
+            baseline_entry=base,
+            reason="restore_deleted_remote_on_push",
+        )
+    return None
+
+
+def _reconcile_remote_only(
+    rel_p: str,
+    rem: FileEntry,
+    base: Optional[FileEntry],
+    norm_mode: str,
+    allow_push_delete: bool,
+    force: bool,
+) -> Optional[SyncAction]:
+    """Reconcile a path present only on the remote snapshot (local is None)."""
+    if base is None:
+        if norm_mode in ("sync", "pull"):
+            return SyncAction(
+                rel_path=rel_p,
+                action=SyncActionType.PULL_NEW,
+                remote_entry=rem,
+                baseline_entry=None,
+                reason="added_remote",
+            )
+        if norm_mode == "push" and allow_push_delete:
+            return SyncAction(
+                rel_path=rel_p,
+                action=SyncActionType.DELETE_REMOTE,
+                remote_entry=rem,
+                baseline_entry=None,
+                reason="push_delete_untracked_remote",
+            )
+        return None
+
+    rem_changed = not _same_digest(rem, base)
+    if rem_changed:
+        if force and norm_mode == "pull":
+            act = SyncActionType.PULL_NEW
+        elif force and norm_mode == "push" and allow_push_delete:
+            act = SyncActionType.DELETE_REMOTE
+        else:
+            act = SyncActionType.CONFLICT
+        return SyncAction(
+            rel_path=rel_p,
+            action=act,
+            remote_entry=rem,
+            baseline_entry=base,
+            reason="delete_local_modify_remote_conflict",
+        )
+
+    if norm_mode in ("sync", "push") and allow_push_delete:
+        return SyncAction(
+            rel_path=rel_p,
+            action=SyncActionType.DELETE_REMOTE,
+            remote_entry=rem,
+            baseline_entry=base,
+            reason="deleted_locally",
+        )
+    if norm_mode == "pull":
+        return SyncAction(
+            rel_path=rel_p,
+            action=SyncActionType.PULL_NEW,
+            remote_entry=rem,
+            baseline_entry=base,
+            reason="restore_deleted_local_on_pull",
+        )
+    return None
+
+
 def reconcile_three_way(
     local_snap: Dict[str, FileEntry],
     remote_snap: Dict[str, FileEntry],
@@ -120,245 +342,29 @@ def reconcile_three_way(
         rem = remote_snap.get(rel_p)
         base = baseline_snap.get(rel_p)
 
-        # Case 1: Present on both local and remote
         if loc is not None and rem is not None:
-            if _same_digest(loc, rem):
-                actions.append(
-                    SyncAction(
-                        rel_path=rel_p,
-                        action=SyncActionType.IN_SYNC,
-                        local_entry=loc,
-                        remote_entry=rem,
-                        baseline_entry=base,
-                        reason="identical_digest",
-                    )
-                )
-                continue
-
-            if base is None:
-                # Both sides added different content without prior baseline
-                if force and norm_mode == "push":
-                    actions.append(
-                        SyncAction(
-                            rel_path=rel_p,
-                            action=SyncActionType.PUSH_UPDATE,
-                            local_entry=loc,
-                            remote_entry=rem,
-                            baseline_entry=base,
-                            reason="forced_push_on_add_add_conflict",
-                        )
-                    )
-                elif force and norm_mode == "pull":
-                    actions.append(
-                        SyncAction(
-                            rel_path=rel_p,
-                            action=SyncActionType.PULL_UPDATE,
-                            local_entry=loc,
-                            remote_entry=rem,
-                            baseline_entry=base,
-                            reason="forced_pull_on_add_add_conflict",
-                        )
-                    )
-                else:
-                    actions.append(
-                        SyncAction(
-                            rel_path=rel_p,
-                            action=SyncActionType.CONFLICT,
-                            local_entry=loc,
-                            remote_entry=rem,
-                            baseline_entry=None,
-                            reason="add_add_diverged",
-                        )
-                    )
-                continue
-
-            loc_changed = not _same_digest(loc, base)
-            rem_changed = not _same_digest(rem, base)
-
-            if loc_changed and not rem_changed:
-                if norm_mode == "pull":
-                    act = SyncActionType.PULL_UPDATE if force else SyncActionType.IN_SYNC
-                else:
-                    act = SyncActionType.PUSH_UPDATE
-                actions.append(
-                    SyncAction(
-                        rel_path=rel_p,
-                        action=act,
-                        local_entry=loc,
-                        remote_entry=rem,
-                        baseline_entry=base,
-                        reason="modified_local_only",
-                    )
-                )
-            elif rem_changed and not loc_changed:
-                if norm_mode == "push":
-                    act = SyncActionType.PUSH_UPDATE if force else SyncActionType.IN_SYNC
-                else:
-                    act = SyncActionType.PULL_UPDATE
-                actions.append(
-                    SyncAction(
-                        rel_path=rel_p,
-                        action=act,
-                        local_entry=loc,
-                        remote_entry=rem,
-                        baseline_entry=base,
-                        reason="modified_remote_only",
-                    )
-                )
-            else:
-                # Both modified differently relative to baseline
-                if force and norm_mode == "push":
-                    act = SyncActionType.PUSH_UPDATE
-                elif force and norm_mode == "pull":
-                    act = SyncActionType.PULL_UPDATE
-                else:
-                    act = SyncActionType.CONFLICT
-                actions.append(
-                    SyncAction(
-                        rel_path=rel_p,
-                        action=act,
-                        local_entry=loc,
-                        remote_entry=rem,
-                        baseline_entry=base,
-                        reason="both_modified_diverged",
-                    )
-                )
+            actions.append(
+                _reconcile_both_present(rel_p, loc, rem, base, norm_mode, force)
+            )
             continue
 
-        # Case 2: Present only on local (rem is None)
         if loc is not None and rem is None:
-            if base is None:
-                # Brand new local file
-                if norm_mode in ("sync", "push"):
-                    actions.append(
-                        SyncAction(
-                            rel_path=rel_p,
-                            action=SyncActionType.PUSH_NEW,
-                            local_entry=loc,
-                            baseline_entry=None,
-                            reason="added_local",
-                        )
-                    )
-                elif norm_mode == "pull" and allow_pull_delete:
-                    actions.append(
-                        SyncAction(
-                            rel_path=rel_p,
-                            action=SyncActionType.DELETE_LOCAL,
-                            local_entry=loc,
-                            baseline_entry=None,
-                            reason="pull_delete_untracked_local",
-                        )
-                    )
-            else:
-                # File existed in baseline, deleted on remote
-                loc_changed = not _same_digest(loc, base)
-                if loc_changed:
-                    if force and norm_mode == "push":
-                        act = SyncActionType.PUSH_NEW
-                    elif force and norm_mode == "pull" and allow_pull_delete:
-                        act = SyncActionType.DELETE_LOCAL
-                    else:
-                        act = SyncActionType.CONFLICT
-                    actions.append(
-                        SyncAction(
-                            rel_path=rel_p,
-                            action=act,
-                            local_entry=loc,
-                            baseline_entry=base,
-                            reason="modify_local_delete_remote_conflict",
-                        )
-                    )
-                else:
-                    if norm_mode in ("sync", "pull") and allow_pull_delete:
-                        actions.append(
-                            SyncAction(
-                                rel_path=rel_p,
-                                action=SyncActionType.DELETE_LOCAL,
-                                local_entry=loc,
-                                baseline_entry=base,
-                                reason="deleted_on_remote",
-                            )
-                        )
-                    elif norm_mode == "push":
-                        actions.append(
-                            SyncAction(
-                                rel_path=rel_p,
-                                action=SyncActionType.PUSH_NEW,
-                                local_entry=loc,
-                                baseline_entry=base,
-                                reason="restore_deleted_remote_on_push",
-                            )
-                        )
+            loc_action = _reconcile_local_only(
+                rel_p, loc, base, norm_mode, allow_pull_delete, force
+            )
+            if loc_action is not None:
+                actions.append(loc_action)
             continue
 
-        # Case 3: Present only on remote (loc is None)
         if rem is not None and loc is None:
-            if base is None:
-                # Brand new remote file
-                if norm_mode in ("sync", "pull"):
-                    actions.append(
-                        SyncAction(
-                            rel_path=rel_p,
-                            action=SyncActionType.PULL_NEW,
-                            remote_entry=rem,
-                            baseline_entry=None,
-                            reason="added_remote",
-                        )
-                    )
-                elif norm_mode == "push" and allow_push_delete:
-                    actions.append(
-                        SyncAction(
-                            rel_path=rel_p,
-                            action=SyncActionType.DELETE_REMOTE,
-                            remote_entry=rem,
-                            baseline_entry=None,
-                            reason="push_delete_untracked_remote",
-                        )
-                    )
-            else:
-                # File existed in baseline, deleted locally
-                rem_changed = not _same_digest(rem, base)
-                if rem_changed:
-                    if force and norm_mode == "pull":
-                        act = SyncActionType.PULL_NEW
-                    elif force and norm_mode == "push" and allow_push_delete:
-                        act = SyncActionType.DELETE_REMOTE
-                    else:
-                        act = SyncActionType.CONFLICT
-                    actions.append(
-                        SyncAction(
-                            rel_path=rel_p,
-                            action=act,
-                            remote_entry=rem,
-                            baseline_entry=base,
-                            reason="delete_local_modify_remote_conflict",
-                        )
-                    )
-                else:
-                    if norm_mode in ("sync", "push") and allow_push_delete:
-                        actions.append(
-                            SyncAction(
-                                rel_path=rel_p,
-                                action=SyncActionType.DELETE_REMOTE,
-                                remote_entry=rem,
-                                baseline_entry=base,
-                                reason="deleted_locally",
-                            )
-                        )
-                    elif norm_mode == "pull":
-                        actions.append(
-                            SyncAction(
-                                rel_path=rel_p,
-                                action=SyncActionType.PULL_NEW,
-                                remote_entry=rem,
-                                baseline_entry=base,
-                                reason="restore_deleted_local_on_pull",
-                            )
-                        )
+            rem_action = _reconcile_remote_only(
+                rel_p, rem, base, norm_mode, allow_push_delete, force
+            )
+            if rem_action is not None:
+                actions.append(rem_action)
             continue
 
-        # Case 4: Deleted on both local and remote, but ghost entry remains in baseline
-        if loc is None and rem is None and base is not None:
+        if base is not None:
             actions.append(
                 SyncAction(
                     rel_path=rel_p,
@@ -369,7 +375,6 @@ def reconcile_three_way(
                     reason="both_deleted_prune_baseline",
                 )
             )
-            continue
 
     return actions
 
@@ -419,4 +424,3 @@ def is_file_id_referenced_by_other_branches(
         if file_id in rel_map.values():
             return True
     return False
-

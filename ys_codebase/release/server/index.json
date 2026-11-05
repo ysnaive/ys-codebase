@@ -7,7 +7,8 @@
     "1.0.2.0",
     "1.0.3.2",
     "1.0.4.0",
-    "1.0.4.1"
+    "1.0.4.1",
+    "1.0.4.2"
   ],
   "releases": {
     "1.0.0.4": {
@@ -107,6 +108,16 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "WarmWorker.pre_warm 對齊 core.platform 統一 sys.path 注入與五大語意空間組態指引"
+    },
+    "1.0.4.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7"
+      },
+      "sha256": "20f3d40671ed74542a8d96c0a070a2243a247b7a16f0dc18267035e039f1ebf4",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正 Worker 握手雜訊容錯、WarmWorker 例外串流回傳、UTF-8 編碼注入與 dispatch 路徑校驗"
     }
   }
 }

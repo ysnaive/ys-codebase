@@ -1,6 +1,6 @@
 {
   "name": "dev",
-  "version": "1.1.4.3",
+  "version": "1.1.4.4",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -22,8 +22,8 @@
     "Run isolated sandbox tests: python yscb.py dev test --all --quiet"
   ],
   "release": {
-    "type": "feature",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "checker 新增非 core 模組 sys.path 零豁免 AST 守門並支援五大語意空間沙盒與合規檢查"
+    "summary": "修正 cleanup_sandbox 鎖釋放時序、環境變數差量還原與連字號模組名正規化"
   }
 }

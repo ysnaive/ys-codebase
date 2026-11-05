@@ -1,6 +1,6 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.4.1",
+  "version": "1.2.4.2",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -22,8 +22,8 @@
     "Publish AGENTS.md & skills to project workspace: python yscb.py agents-workflow release"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "optional",
-    "summary": "session-trace 軌跡解析支援 kdb 短別名歸一化至 knowledge-db"
+    "type": "bugfix",
+    "urgency": "recommended",
+    "summary": "補回 workflow 轉 skill 相容轉譯、promote_todos 寫入順序保護與 PXX-05_auto 驗證支援"
   }
 }

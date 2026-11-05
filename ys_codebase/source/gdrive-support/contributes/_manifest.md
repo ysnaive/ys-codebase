@@ -18,4 +18,4 @@
 | :--- | :--- | :--- |
 | **`core`** | `contributes/core.json` | 註冊 `gdrive-support`（短別名 `gdrive`）CLI 命令群（原子指令：`status`, `auth`, `ls`, `get`, `put`, `rm`, `mkdir`, `shortcut`；`repo_sync` 指令：`init`, `branch`, `checkout`, `pull`, `push`, `sync`）與預設 `gitignore` 憑證保護規則。 |
 | **`server`** | `contributes/server.json` | 註冊 `gdrive-sync` (`GDriveSyncServiceWorker`) 背景服務（受 `repo_sync.enable: false` 與 `repo_sync.auto_sync: false` 雙重預設待機守門）。 |
-| **`agents-workflow`** | `contributes/agents-workflow.json` | 匯出本地專用的 `gdrive-local-ops` 技能（`module://gdrive-support/assets/skills/gdrive-local-ops`），並向 `AGENTS_SKILL_ROUTING`、`HOW_TO_CONFIG_MODULES` 與 `HOW_TO_YSCB_MODULES` 注入使用與組態導引（註：給外部雲端 AI 的隨包 Skill `assets/external_cloud_skill/SKILL.md` 僅隨包封存，不注入本地 `agents-workflow`）。 |
+| **`agents-workflow`** | `contributes/agents-workflow.json` | 匯出本地專用的 `gdrive-local-ops` 技能（`module://gdrive-support/assets/skills/gdrive-local-ops`），並向 `AGENTS_SKILL_ROUTING`、`HOW_TO_CONFIG_MODULES` 與 `HOW_TO_YSCB_MODULES` 注入使用與組態導引（註：給外部雲端 AI 的隨包資產 `assets/external_skill/gdrive-external-ops/SKILL.md` 與 `assets/external_skill/gemini-drive-guide/GEMINI_BOOTSTRAP_GUIDE.md` 僅隨包封存，不注入本地 `agents-workflow`）。 |

@@ -4,7 +4,8 @@
   "versions": [
     "1.0.0.5",
     "1.0.1.0",
-    "1.0.1.1"
+    "1.0.1.1",
+    "1.0.1.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -86,6 +87,16 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "YFP3 世代位元組增量快照、Racy-Clean 防護與 diff_since_cursor 消費者增量游標管線"
+    },
+    "1.0.1.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7"
+      },
+      "sha256": "cba5ce4420a88ea8b8f7c77e74e0f86dc5009af31bc154e34760efc398c60166",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正 .watcher_dirty 跨行程信標與世代對齊、follow_symlinks 邏輯路徑保留及沙盒空間隔離"
     }
   }
 }

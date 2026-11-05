@@ -12,7 +12,8 @@
     "1.2.2.3",
     "1.2.3.5",
     "1.2.4.0",
-    "1.2.4.1"
+    "1.2.4.1",
+    "1.2.4.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -201,6 +202,16 @@
       "type": "refactor",
       "urgency": "optional",
       "summary": "session-trace 軌跡解析支援 kdb 短別名歸一化至 knowledge-db"
+    },
+    "1.2.4.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7"
+      },
+      "sha256": "6fe76389fb97c8d9296d7bc208f5254474ce80be2a8a9da5a1f33fb7bb1478aa",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "補回 workflow 轉 skill 相容轉譯、promote_todos 寫入順序保護與 PXX-05_auto 驗證支援"
     }
   }
 }

@@ -1,7 +1,7 @@
 {
   "id": "vscode-support",
   "name": "vscode-support",
-  "version": "1.0.0.3",
+  "version": "1.0.0.4",
   "description": "YS-Codebase VS Code 工作區投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯模組",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -15,8 +15,8 @@
     "若欲移除所有 YSCB 注入之 VS Code 設定與 Schema，請執行 `python yscb.py vscode-support revert`（或直接 `remove vscode-support`）。"
   ],
   "release": {
-    "type": "refactor",
-    "urgency": "optional",
-    "summary": "extraPaths 對齊 core.platform 並擴充 JSON Schema 支援五大語意空間 URI"
+    "type": "bugfix",
+    "urgency": "recommended",
+    "summary": "修正 on_remove Fail-Closed 守衛、.mirror 四段式 SemVer 排序與 JSONC/懸空連結狀態檢核"
   }
 }

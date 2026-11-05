@@ -10,7 +10,8 @@
     "1.1.2.3",
     "1.2.0.5",
     "1.2.1.0",
-    "1.2.1.1"
+    "1.2.1.1",
+    "1.2.1.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -186,6 +187,18 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "新增 kdb 短別名、CLI/JSON 預設精簡與 --file-uri、InvertedIndex doc_idx 駐留與 status 快照直讀"
+    },
+    "1.2.1.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7",
+        "file-space": ">=1.0.1",
+        "ast": ">=1.0.1"
+      },
+      "sha256": "b518f63667d5eaf718e887b008aecc90c7e1174f933f5fabe1ed976162e73717",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正冷啟動水位線自癒、補齊 _kdb_index_file_lock 與 HybridSearchEngine 副檔名解析"
     }
   }
 }

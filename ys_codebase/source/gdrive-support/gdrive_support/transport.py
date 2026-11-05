@@ -32,6 +32,7 @@ from core import vfs
 from .config import (
     GDriveConfig,
     GDriveConfigError,
+    GDriveError,
     GDriveFileNotFoundError,
     GDrivePathError,
     GDriveTransportError,
@@ -43,6 +44,20 @@ FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut"
 GOOGLE_APPS_MIME_PREFIX = "application/vnd.google-apps."
 SANDBOX_META_FILENAME = ".yscb_sandbox_meta.json"
+OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+DRIVE_DEFAULT_SCOPE = "https://www.googleapis.com/auth/drive"
+
+
+def _parse_rfc3339_ns(ts_str: str) -> int:
+    """Parse an RFC 3339 timestamp string into epoch nanoseconds (0 on invalid/empty input)."""
+    if not ts_str:
+        return 0
+    try:
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        return int(dt.timestamp() * 1_000_000_000)
+    except ValueError:
+        return 0
 
 
 def compute_local_hashes(file_path: Path) -> Tuple[str, str, int]:
@@ -210,6 +225,10 @@ class AbstractSyncTransport(ABC):
         """Pre-populate known remote directory entries into the transport folder cache."""
         return None
 
+    def close(self) -> None:
+        """Release any open transport connections or resources."""
+        return None
+
     def get_start_page_token(self) -> str:
         """Retrieve the starting page token for incremental change tracking."""
         return ""
@@ -242,7 +261,7 @@ class LocalSandboxTransport(AbstractSyncTransport):
                     data = json.loads(self._meta_path.read_text(encoding="utf-8"))
                     if isinstance(data, dict) and "items" in data:
                         return data
-                except Exception:
+                except (OSError, ValueError):
                     pass
             init_data: Dict[str, Any] = {
                 "root_id": "sandbox_root",
@@ -493,37 +512,38 @@ class LocalSandboxTransport(AbstractSyncTransport):
         self, remote_path: str = "", recursive: bool = False
     ) -> List[RemoteEntry]:
         norm_prefix = normalize_remote_rel_path(remote_path)
-        meta = self._sync_filesystem_into_meta()
-        items = self._deduplicate_same_path_items(meta)
+        with self._lock:
+            meta = self._sync_filesystem_into_meta()
+            items = self._deduplicate_same_path_items(meta)
 
-        results: List[RemoteEntry] = []
-        for info in items.values():
-            rel_p = str(info.get("rel_path") or "")
-            if not rel_p:
-                continue
-            if not norm_prefix:
-                if not recursive and "/" in rel_p:
+            results: List[RemoteEntry] = []
+            for info in items.values():
+                rel_p = str(info.get("rel_path") or "")
+                if not rel_p:
                     continue
-            else:
-                if not rel_p.startswith(f"{norm_prefix}/"):
-                    continue
-                sub_rel = rel_p[len(norm_prefix) + 1 :]
-                if not sub_rel:
-                    continue
-                if not recursive and "/" in sub_rel:
-                    continue
+                if not norm_prefix:
+                    if not recursive and "/" in rel_p:
+                        continue
+                else:
+                    if not rel_p.startswith(f"{norm_prefix}/"):
+                        continue
+                    sub_rel = rel_p[len(norm_prefix) + 1 :]
+                    if not sub_rel:
+                        continue
+                    if not recursive and "/" in sub_rel:
+                        continue
 
-            if not info.get("is_shortcut") and not is_unsupported_google_workspace_mime(
-                str(info.get("mime_type") or "")
-            ):
-                phys = self._phys_path(rel_p)
-                if not phys.exists():
-                    continue
+                if not info.get("is_shortcut") and not is_unsupported_google_workspace_mime(
+                    str(info.get("mime_type") or "")
+                ):
+                    phys = self._phys_path(rel_p)
+                    if not phys.exists():
+                        continue
 
-            results.append(self._build_entry(info, items))
+                results.append(self._build_entry(info, items))
 
-        results.sort(key=lambda e: e.rel_path)
-        return results
+            results.sort(key=lambda e: e.rel_path)
+            return results
 
     def get_entry(self, remote_path: str) -> Optional[RemoteEntry]:
         norm = normalize_remote_rel_path(remote_path)
@@ -631,10 +651,15 @@ class LocalSandboxTransport(AbstractSyncTransport):
             if in_place_file_id and in_place_file_id in items:
                 target_fid = in_place_file_id
             else:
+                stale_shortcut_fids: List[str] = []
                 for fid, info in items.items():
-                    if info.get("rel_path") == norm and not info.get("is_shortcut"):
-                        target_fid = fid
-                        break
+                    if info.get("rel_path") == norm:
+                        if info.get("is_shortcut"):
+                            stale_shortcut_fids.append(fid)
+                        elif target_fid is None:
+                            target_fid = fid
+                for sc_fid in stale_shortcut_fids:
+                    items.pop(sc_fid, None)
 
             if target_fid is None:
                 target_fid = in_place_file_id or f"sbx_{uuid.uuid4().hex[:12]}"
@@ -777,8 +802,13 @@ class LocalSandboxTransport(AbstractSyncTransport):
 
             meta = self._ensure_meta()
             items = meta["items"]
+            src_prefix = f"{src_norm}/"
+            dst_prefix = f"{dst_norm}/"
             for fid, existing in list(items.items()):
-                if existing.get("rel_path") == dst_norm and fid != entry.file_id:
+                if fid == entry.file_id:
+                    continue
+                ex_rel = str(existing.get("rel_path") or "")
+                if ex_rel == dst_norm or (entry.is_dir and ex_rel.startswith(dst_prefix)):
                     del items[fid]
 
             info = items.get(entry.file_id)
@@ -788,8 +818,18 @@ class LocalSandboxTransport(AbstractSyncTransport):
                 src_phys = self._phys_path(src_norm)
                 dst_phys = self._phys_path(dst_norm)
                 dst_phys.parent.mkdir(parents=True, exist_ok=True)
-                if src_phys.exists():
+                if src_phys.exists() and src_phys != dst_phys:
+                    if dst_phys.is_dir():
+                        shutil.rmtree(dst_phys)
+                    elif dst_phys.exists():
+                        dst_phys.unlink()
                     shutil.move(str(src_phys), str(dst_phys))
+
+            if entry.is_dir:
+                for child_info in items.values():
+                    c_rel = str(child_info.get("rel_path") or "")
+                    if c_rel.startswith(src_prefix):
+                        child_info["rel_path"] = f"{dst_norm}/{c_rel[len(src_prefix):]}"
 
             info["rel_path"] = dst_norm
             info["name"] = Path(dst_norm).name
@@ -955,7 +995,6 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
 
     DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
     DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3"
-    OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
     FILE_FIELDS = (
         "id,name,mimeType,size,md5Checksum,modifiedTime,parents,"
         "shortcutDetails(targetId,targetMimeType)"
@@ -1017,8 +1056,21 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         if conns and host in conns:
             try:
                 conns.pop(host).close()
-            except Exception:
+            except OSError:
                 pass
+
+    def close(self) -> None:
+        """Close any open thread-local HTTPS connections."""
+        conns: Optional[Dict[str, HTTPSConnection]] = getattr(self._tls, "conns", None)
+        if not conns:
+            return
+        for host in list(conns.keys()):
+            self._drop_https_conn(host)
+
+    def _clear_cached_token(self) -> None:
+        with self._token_lock:
+            self._access_token = None
+            self._token_expiry_epoch = 0.0
 
     def _resolve_uri_path(self, raw_uri: str) -> Path:
         if "://" in raw_uri:
@@ -1066,7 +1118,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 }
             ).encode("utf-8")
             req = urllib.request.Request(
-                self.OAUTH_TOKEN_URL,
+                OAUTH_TOKEN_URL,
                 data=payload,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 method="POST",
@@ -1121,9 +1173,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                     return json.loads(raw.decode("utf-8")) if raw else {}
                 if status == 401 and not refreshed_on_401 and attempt < 3:
                     refreshed_on_401 = True
-                    with self._token_lock:
-                        self._access_token = None
-                        self._token_expiry_epoch = 0.0
+                    self._clear_cached_token()
                     token = self._ensure_access_token()
                     req_headers["Authorization"] = f"Bearer {token}"
                     continue
@@ -1140,19 +1190,11 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             except Exception as exc:
                 self._drop_https_conn(host)
                 if attempt < 3:
+                    time.sleep(backoff)
+                    backoff *= 2
                     continue
                 raise GDriveTransportError(f"Drive API request failed: {exc}") from exc
         raise GDriveTransportError("Drive API request exhausted retries.")
-
-    @staticmethod
-    def _parse_rfc3339_ns(ts_str: str) -> int:
-        if not ts_str:
-            return 0
-        try:
-            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-            return int(dt.timestamp() * 1_000_000_000)
-        except Exception:
-            return 0
 
     def _raw_to_entry(
         self,
@@ -1176,7 +1218,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
 
         size = int(item.get("size") or 0)
         md5 = str(item.get("md5Checksum") or "")
-        mtime_ns = self._parse_rfc3339_ns(str(item.get("modifiedTime") or ""))
+        mtime_ns = _parse_rfc3339_ns(str(item.get("modifiedTime") or ""))
 
         if is_shortcut:
             t_obj = (target_lookup or {}).get(target_id)
@@ -1190,7 +1232,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 else:
                     size = int(t_obj.get("size") or 0)
                     md5 = str(t_obj.get("md5Checksum") or "")
-                    mtime_ns = self._parse_rfc3339_ns(
+                    mtime_ns = _parse_rfc3339_ns(
                         str(t_obj.get("modifiedTime") or "")
                     )
         elif is_unsupported_google_workspace_mime(mime):
@@ -1308,7 +1350,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             if not matches:
                 return None
             matches.sort(
-                key=lambda c: self._parse_rfc3339_ns(str(c.get("modifiedTime") or "")),
+                key=lambda c: _parse_rfc3339_ns(str(c.get("modifiedTime") or "")),
                 reverse=True,
             )
             chosen = matches[0]
@@ -1341,7 +1383,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 by_name.setdefault(str(ch.get("name") or ""), []).append(ch)
             for name, group in by_name.items():
                 group.sort(
-                    key=lambda c: self._parse_rfc3339_ns(str(c.get("modifiedTime") or "")),
+                    key=lambda c: _parse_rfc3339_ns(str(c.get("modifiedTime") or "")),
                     reverse=True,
                 )
                 winner = group[0]
@@ -1361,7 +1403,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                                 body=json.dumps({"trashed": True}).encode("utf-8"),
                                 headers={"Content-Type": "application/json; charset=utf-8"},
                             )
-                        except Exception:
+                        except (GDriveError, OSError):
                             pass
                 child_rel = f"{curr_prefix}/{name}".strip("/") if curr_prefix else name
                 collected_raw.append((child_rel, winner))
@@ -1441,7 +1483,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             ]
             if folder_matches:
                 folder_matches.sort(
-                    key=lambda c: self._parse_rfc3339_ns(str(c.get("modifiedTime") or "")),
+                    key=lambda c: _parse_rfc3339_ns(str(c.get("modifiedTime") or "")),
                     reverse=True,
                 )
                 chosen = folder_matches[0]
@@ -1512,13 +1554,17 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 f"{self.DRIVE_UPLOAD_BASE}/files/{urllib.parse.quote(target_fid)}"
                 f"?uploadType=media&fields={urllib.parse.quote(self.FILE_FIELDS)}&supportsAllDrives=true"
             )
-            updated = self._request_json(
-                "PATCH",
-                url,
-                body=file_bytes,
-                headers={"Content-Type": mime},
-            )
-            return self._raw_to_entry(updated, norm)
+            try:
+                updated = self._request_json(
+                    "PATCH",
+                    url,
+                    body=file_bytes,
+                    headers={"Content-Type": mime},
+                )
+                return self._raw_to_entry(updated, norm)
+            except GDriveFileNotFoundError:
+                self._invalidate_cache_path(norm)
+                target_fid = None
 
         boundary = f"yscb_boundary_{uuid.uuid4().hex}"
         meta_json = json.dumps({"name": Path(norm).name, "parents": [parent_id]}).encode(
@@ -1596,9 +1642,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                     tmp_dst.unlink(missing_ok=True)
                 if exc.code == 401 and not refreshed_on_401 and attempt < 3:
                     refreshed_on_401 = True
-                    with self._token_lock:
-                        self._access_token = None
-                        self._token_expiry_epoch = 0.0
+                    self._clear_cached_token()
                     continue
                 if exc.code in (429, 500, 502, 503, 504) and attempt < 3:
                     time.sleep(backoff)
@@ -1817,11 +1861,6 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         return records, new_start_token or page_token
 
 
-OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
-DRIVE_DEFAULT_SCOPE = "https://www.googleapis.com/auth/drive"
-
-
 def load_oauth_client_config(cred_path: Path) -> Tuple[str, str]:
     """
     Parse Google OAuth 2.0 Client ID JSON ('installed' or 'web' format) and return (client_id, client_secret).
@@ -1936,7 +1975,7 @@ def exchange_oauth_code_for_token(
         try:
             old_data = json.loads(token_path.read_text(encoding="utf-8"))
             existing_refresh = str(old_data.get("refresh_token") or "")
-        except Exception:
+        except (OSError, ValueError):
             existing_refresh = ""
 
     expires_in = float(token_resp.get("expires_in", 3600))
@@ -2018,7 +2057,7 @@ def run_oauth_loopback_flow(
     if open_browser:
         try:
             webbrowser.open(auth_url)
-        except Exception:
+        except (OSError, webbrowser.Error):
             pass
 
     server.timeout = 1.0

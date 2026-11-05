@@ -46,7 +46,7 @@ def _upgrade_config_uris_in_dir(target_dir: str) -> None:
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except Exception:
+        except (OSError, ValueError):
             continue
 
         if not isinstance(data, dict):

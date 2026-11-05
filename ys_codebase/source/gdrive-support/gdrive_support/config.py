@@ -2,7 +2,7 @@
 Configuration parsing, file-space integration, and path mapping validation for gdrive-support.
 """
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from core import config as core_config

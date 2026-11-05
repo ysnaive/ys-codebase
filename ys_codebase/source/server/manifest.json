@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.4.1",
+  "version": "1.0.4.2",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -12,8 +12,8 @@
     "Stop daemon and view session summary: python yscb.py server stop"
   ],
   "release": {
-    "type": "refactor",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "WarmWorker.pre_warm 對齊 core.platform 統一 sys.path 注入與五大語意空間組態指引"
+    "summary": "修正 Worker 握手雜訊容錯、WarmWorker 例外串流回傳、UTF-8 編碼注入與 dispatch 路徑校驗"
   }
 }

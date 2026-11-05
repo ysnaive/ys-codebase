@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.1.1",
+  "version": "1.2.1.2",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -27,8 +27,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "refactor",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "新增 kdb 短別名、CLI/JSON 預設精簡與 --file-uri、InvertedIndex doc_idx 駐留與 status 快照直讀"
+    "summary": "修正冷啟動水位線自癒、補齊 _kdb_index_file_lock 與 HybridSearchEngine 副檔名解析"
   }
 }

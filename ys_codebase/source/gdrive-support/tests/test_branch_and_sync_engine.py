@@ -5,6 +5,7 @@ Unit, integration, and edge-case tests for module:gdrive-support branch manageme
 No external Google Drive API calls or user credentials are required or tested here.
 """
 from contextlib import redirect_stdout
+import copy
 import importlib.util
 import io
 import json
@@ -817,7 +818,7 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
     @require(Requirement.ENV)
     def test_ft_10_sandbox_changes_api_physical_and_shortcut_virtual_items(self) -> None:
         """
-        Verify LocalSandboxTransport.get_start_page_token() and list_changes() (FT-01):
+        Verify LocalSandboxTransport.get_start_page_token() and list_changes():
         - Tracks physical file creation/modification/trash, Shortcut target changes, and virtual entries.
         - Rejects invalid or expired page_token with GDriveTransportError.
         """
@@ -1190,7 +1191,7 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         self,
     ) -> None:
         """
-        Verify foreground CLI lock preemption and atomic per-file CoW safety (FT-03):
+        Verify foreground CLI lock preemption and atomic per-file CoW safety:
         1. Orphan cli_yield.signal (expired ts > 120s or dead PID) is auto-cleaned and does not yield.
         2. Foreground _acquire_lock(non_blocking=False) writes cli_yield.signal when lock is busy,
            preempts background_worker=True sync, and immediately unlinks cli_yield.signal upon lock acquisition.
@@ -1399,7 +1400,7 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
             self.transport.get_entry("repo/main/docs/2026_11_05_archived_shell")
         )
 
-        # 3c. EC-03 / Redline 1: auto_discovered branch forces remote scan during .history/ GC
+        # 3c. Auto-discovered branch forces live remote scan during .history/ GC
         hist_src = self.tmp_root / "frozen_hist_target.md"
         hist_src.write_text("Frozen History Content\n", encoding="utf-8")
         hist_ent = self.transport.upload_file(
@@ -1523,6 +1524,110 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
             built_coord.readme_state_path,
             isolated_sbx.resolve() / ".yscb_readme_state.json",
         )
+
+        # 6. Level 1 fallback does NOT mutate state["remote_repo_cache"] in-place,
+        #    and mid-Stage-3 transfer failure does NOT advance cache["page_token"]
+        from gdrive_support.transport import ChangeRecord, RemoteEntry
+
+        self.coord.checkout_branch("main", force=True)
+        self.coord.run_sync(mode="sync")
+        state_before_fallback = self.coord._load_local_state()
+        cache_before = copy.deepcopy(state_before_fallback["remote_repo_cache"])
+        first_branch_name = next(iter(cache_before["branches"]))
+        first_branch_dir_ids = cache_before["branches"][first_branch_name]["dir_ids"]
+        known_dir_fid = next(iter(first_branch_dir_ids))
+
+        orig_list_changes = self.transport.list_changes
+        self.transport.list_changes = lambda _tok: (  # type: ignore[method-assign]
+            [
+                ChangeRecord(
+                    file_id="fid_mutated_before_abort",
+                    removed=True,
+                    entry=None,
+                ),
+                ChangeRecord(
+                    file_id=known_dir_fid,
+                    removed=False,
+                    entry=RemoteEntry(
+                        rel_path="",
+                        name="renamed_triggering_fallback",
+                        file_id=known_dir_fid,
+                        mime_type="application/vnd.google-apps.folder",
+                        is_dir=True,
+                        parent_id="unknown_parent_fid",
+                    ),
+                    parent_id="unknown_parent_fid",
+                    name="renamed_triggering_fallback",
+                    mime_type="application/vnd.google-apps.folder",
+                ),
+            ],
+            "sbx_999999_uncommitted",
+        )
+        try:
+            inc_res = self.coord._try_incremental_remote_cache(
+                state_before_fallback,
+                self.coord.config.active_branch,
+            )
+            self.assertIsNone(inc_res)
+            self.assertEqual(
+                state_before_fallback["remote_repo_cache"],
+                cache_before,
+            )
+        finally:
+            self.transport.list_changes = orig_list_changes  # type: ignore[method-assign]
+
+        # Verify page_token is NOT committed when Stage 3 push fails mid-batch
+        tok_before_err = self.coord._load_local_state()["remote_repo_cache"]["page_token"]
+        rem_new_f = self.tmp_root / "rem_before_push_err.md"
+        rem_new_f.write_text("Remote Change Before Push Error\n", encoding="utf-8")
+        self.transport.upload_file(rem_new_f, "repo/main/docs/rem_before_push_err.md")
+        loc_fail_f = self.docs_dir / "loc_fail_push.md"
+        loc_fail_f.write_text("Will Fail On Upload\n", encoding="utf-8")
+
+        orig_upload_err = self.transport.upload_file
+
+        def _failing_upload(local_path: Path, remote_path: str, in_place_file_id=None):
+            if remote_path.endswith("loc_fail_push.md"):
+                raise GDriveTransportError("Simulated mid-Stage-3 upload failure")
+            return orig_upload_err(local_path, remote_path, in_place_file_id=in_place_file_id)
+
+        self.transport.upload_file = _failing_upload  # type: ignore[method-assign]
+        try:
+            with self.assertRaises(GDriveTransportError):
+                self.coord.run_sync(mode="sync")
+        finally:
+            self.transport.upload_file = orig_upload_err  # type: ignore[method-assign]
+            loc_fail_f.unlink(missing_ok=True)
+
+        tok_after_err = self.coord._load_local_state()["remote_repo_cache"]["page_token"]
+        self.assertEqual(tok_after_err, tok_before_err)
+
+        # 7. reconcile_root_readme_state updates README when repo_sync_root changes while enabled
+        custom_root_cfg = GDriveConfig(
+            root_folder_id="sandbox_root",
+            active_branch="main",
+            repo_sync_enabled=True,
+            repo_sync_root="custom_vault",
+            sandbox_dir=self.sandbox_dir.as_posix(),
+            sync_spaces=self.cfg.sync_spaces,
+        )
+        custom_root_coord = SyncCoordinator(
+            config=custom_root_cfg,
+            transport=self.transport,
+            project_root=self.proj_dir,
+            state_path=self.coord.state_path,
+            lock_path=self.coord.lock_path,
+            log_path=self.coord.log_path,
+            readme_state_path=self.coord.readme_state_path,
+            file_space_manager=self.fs_mgr,
+        )
+        res_changed = custom_root_coord.reconcile_root_readme()
+        self.assertTrue(res_changed["changed"])
+        dl_root_readme = self.tmp_root / "dl_root_readme_custom.md"
+        self.transport.download_file("README.md", dl_root_readme)
+        self.assertIn("`custom_vault/`", dl_root_readme.read_text(encoding="utf-8"))
+        res_noop = custom_root_coord.reconcile_root_readme()
+        self.assertFalse(res_noop["changed"])
         self.mark_passed()
 
 

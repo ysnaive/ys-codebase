@@ -2,9 +2,9 @@
   "name": "vscode-support",
   "description": "YS-Codebase VS Code 工作區投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯模組",
   "versions": [
-    "1.0.0.1",
     "1.0.0.2",
-    "1.0.0.3"
+    "1.0.0.3",
+    "1.0.0.4"
   ],
   "releases": {
     "1.0.0.0": {
@@ -18,7 +18,7 @@
       "summary": "VS Code 工作區設定投影、current-site-packages 穩定連結與單檔級 JSON Schema 編譯器初始發布"
     },
     "1.0.0.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5"
       },
@@ -46,6 +46,16 @@
       "type": "refactor",
       "urgency": "optional",
       "summary": "extraPaths 對齊 core.platform 並擴充 JSON Schema 支援五大語意空間 URI"
+    },
+    "1.0.0.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7"
+      },
+      "sha256": "2a7d82d0d16f22ee67bc247a878a1714febd9d747aa26a2c9ed1099ff86567f3",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正 on_remove Fail-Closed 守衛、.mirror 四段式 SemVer 排序與 JSONC/懸空連結狀態檢核"
     }
   }
 }
