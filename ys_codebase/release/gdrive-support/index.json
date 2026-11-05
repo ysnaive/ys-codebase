@@ -3,7 +3,8 @@
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "versions": [
     "1.0.0.0",
-    "1.0.1.0"
+    "1.0.1.0",
+    "1.0.1.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -27,6 +28,17 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "HTTPS Keep-Alive 與 8 執行緒平行同步加速、憑證與同步帳本對齊 config.local:// 與 storage.local://"
+    },
+    "1.0.1.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7",
+        "file-space": ">=1.0.1"
+      },
+      "sha256": "ca8a82cae8ff80c15e3b07c504747b96c8e34ce995111f8276035aee1be0b699",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "Google Drive changes API 3-level remote cache short-circuit and foreground CLI lock preemption"
     }
   }
 }

@@ -1,5 +1,11 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_05_0528_gdrive_changes_api_and_lock_preemption (Completed)
+
+- **`gdrive-support` Google Drive `changes` API 三級遠端快取 (`remote_repo_cache`) 增量短路、前景 CLI 協同搶占讓鎖 (`cli_yield.signal`) 與單檔原子 Copy-on-Write (`FR-01` ~ `FR-03`, `EC-01` ~ `EC-03`, `NFR-01` ~ `NFR-02`)**：
+  - **`AbstractSyncTransport` 雙模 `changes` API 與三級遠端快取短路 (`FR-01`, `FR-02`, `EC-01`, `EC-02`, `NFR-01`)**：於 `AbstractSyncTransport` 新增 `ChangeRecord`、`get_start_page_token()` 與 `list_changes(page_token)`（支援 `GoogleDriveApiTransport` `/drive/v3/changes` 分頁拉取與 `LocalSandboxTransport` `.yscb_sandbox_meta.json` 含虛擬項目與 Shortcut 目標指紋之同構差異游標）；於 `storage.local://gdrive-support/sync_state.json` 維護 `remote_repo_cache`，實作 Level 0（零雲端變更時 `0` 次 `list_files` 呼叫，2,200+ 雲端檔案對帳由 `~138s` 降至 `~0.30s`）、Level 1（已知檔案/Shortcut `target_file_id` 更新或刪除、已知目錄新增檔案之記憶體增量 Patch，`0` 次 `list_files` 呼叫）與 Level 2（資料夾結構或 `.yscb_gdrive.json` 外部變動時全量重掃並於掃描前取得 `start_token` 防禦 TOCTOU）。
+  - **前景 CLI 協同搶占讓鎖 (`cli_yield.signal`)、孤兒訊號 PID/TTL 自癒與 Stage 3 單檔原子 CoW (`FR-03`, `EC-03`, `NFR-02`)**：前景 CLI (`_acquire_lock(non_blocking=False)`) 於 `sync.lock` 被佔用時寫入 `cache://gdrive-support/cli_yield.signal` (`{pid, ts}`)，於取得鎖或退出的瞬間立即於 `finally` 刪除；背景 `GDriveSyncServiceWorker` (`background_worker=True`) 透過 `should_yield_background()` 偵測讓鎖訊號（自動清理 `age > 120s` 或死進程之孤兒訊號），並在 Stage 3 將單檔 Copy-on-Write (`.history/` 搬移) 與 `upload_file` 封裝於單一 worker task 內（由 `_meta_lock` 保護），於 `finally` 確保 `meta_dirty` 寫回雲端 `.yscb_gdrive.json`，通過 `gdrive-support` (30/30) 全量單元測試與實機雲端驗收。
+
 ## 2026_11_04_1739_sys_path_and_five_semantic_spaces (Completed)
 
 ### sub_03_ecosystem_modules_space_alignment (Completed)

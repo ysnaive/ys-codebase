@@ -1,7 +1,7 @@
 {
   "id": "gdrive-support",
   "name": "gdrive-support",
-  "version": "1.0.1.0",
+  "version": "1.0.1.1",
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -31,6 +31,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "HTTPS Keep-Alive 與 8 執行緒平行同步加速、憑證與同步帳本對齊 config.local:// 與 storage.local://"
+    "summary": "Google Drive changes API 3-level remote cache short-circuit and foreground CLI lock preemption"
   }
 }

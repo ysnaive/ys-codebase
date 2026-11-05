@@ -96,6 +96,42 @@ class RemoteEntry:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RemoteEntry":
+        return cls(
+            rel_path=str(data.get("rel_path") or ""),
+            name=str(data.get("name") or ""),
+            file_id=str(data.get("file_id") or ""),
+            mime_type=str(data.get("mime_type") or "application/octet-stream"),
+            is_dir=bool(data.get("is_dir", False)),
+            size=int(data.get("size") or 0),
+            md5=str(data.get("md5") or ""),
+            mtime_ns=int(data.get("mtime_ns") or 0),
+            parent_id=str(data.get("parent_id") or ""),
+            is_shortcut=bool(data.get("is_shortcut", False)),
+            target_file_id=str(data.get("target_file_id") or ""),
+            target_mime_type=str(data.get("target_mime_type") or ""),
+            dangling_shortcut=bool(data.get("dangling_shortcut", False)),
+            skipped_reason=str(data.get("skipped_reason") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class ChangeRecord:
+    """
+    Incremental change record returned by AbstractSyncTransport.list_changes().
+    """
+
+    file_id: str
+    removed: bool = False
+    entry: Optional[RemoteEntry] = None
+    parent_id: str = ""
+    name: str = ""
+    mime_type: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 class AbstractSyncTransport(ABC):
     """
@@ -152,6 +188,16 @@ class AbstractSyncTransport(ABC):
         self, target_file_id: str, shortcut_remote_path: str
     ) -> RemoteEntry:
         """Create a Google Drive Shortcut at shortcut_remote_path pointing to target_file_id."""
+
+    def get_start_page_token(self) -> str:
+        """Retrieve the starting page token for incremental change tracking."""
+        return ""
+
+    def list_changes(
+        self, page_token: str
+    ) -> Tuple[List[ChangeRecord], str]:
+        """List incremental changes since page_token and return (changes, new_start_page_token)."""
+        return [], ""
 
 
 class LocalSandboxTransport(AbstractSyncTransport):
@@ -288,6 +334,7 @@ class LocalSandboxTransport(AbstractSyncTransport):
             "mime_type": mime_type,
             "is_dir": mime_type == FOLDER_MIME_TYPE,
             "is_shortcut": mime_type == SHORTCUT_MIME_TYPE,
+            "is_virtual": True,
             "target_file_id": "",
             "size": size,
             "md5": md5,
@@ -314,7 +361,12 @@ class LocalSandboxTransport(AbstractSyncTransport):
         md5 = str(info.get("md5") or "")
         mtime_ns = int(info.get("mtime_ns") or 0)
 
-        if not is_dir and not is_shortcut and not is_unsupported_google_workspace_mime(mime):
+        if (
+            not is_dir
+            and not is_shortcut
+            and not info.get("is_virtual")
+            and not is_unsupported_google_workspace_mime(mime)
+        ):
             phys = self._phys_path(rel_p)
             if phys.is_file():
                 md5, _, size = compute_local_hashes(phys)
@@ -322,7 +374,13 @@ class LocalSandboxTransport(AbstractSyncTransport):
 
         if is_shortcut:
             target_info = items_by_id.get(target_id)
-            if target_info is None:
+            target_rel = str(target_info.get("rel_path") or "") if target_info else ""
+            if (
+                target_info is None
+                or not target_rel
+                or target_rel == ".trash"
+                or target_rel.startswith(".trash/")
+            ):
                 dangling = True
                 skipped = "DANGLING_SHORTCUT"
             else:
@@ -330,7 +388,7 @@ class LocalSandboxTransport(AbstractSyncTransport):
                 if is_unsupported_google_workspace_mime(target_mime):
                     skipped = "SKIPPED_UNSUPPORTED_MIME"
                 else:
-                    target_phys = self._phys_path(str(target_info.get("rel_path") or ""))
+                    target_phys = self._phys_path(target_rel)
                     if target_phys.is_file():
                         md5, _, size = compute_local_hashes(target_phys)
                         mtime_ns = int(target_phys.stat().st_mtime_ns)
@@ -342,8 +400,16 @@ class LocalSandboxTransport(AbstractSyncTransport):
             skipped = "SKIPPED_UNSUPPORTED_MIME"
 
         parent_rel = Path(rel_p).parent.as_posix()
-        if parent_rel == ".":
-            parent_rel = ""
+        if parent_rel in ("", "."):
+            parent_id = "sandbox_root"
+        else:
+            parent_id = parent_rel
+            for p_info in items_by_id.values():
+                if p_info.get("rel_path") == parent_rel and (
+                    p_info.get("is_dir") or p_info.get("mime_type") == FOLDER_MIME_TYPE
+                ):
+                    parent_id = str(p_info.get("file_id") or parent_rel)
+                    break
 
         return RemoteEntry(
             rel_path=rel_p,
@@ -354,7 +420,7 @@ class LocalSandboxTransport(AbstractSyncTransport):
             size=size,
             md5=md5,
             mtime_ns=mtime_ns,
-            parent_id=parent_rel or "sandbox_root",
+            parent_id=parent_id,
             is_shortcut=is_shortcut,
             target_file_id=target_id,
             target_mime_type=target_mime,
@@ -715,6 +781,114 @@ class LocalSandboxTransport(AbstractSyncTransport):
             }
             self._save_meta(meta)
             return self._build_entry(items[sc_fid], items)
+
+    def _capture_change_snapshot(
+        self, items: Dict[str, Dict[str, Any]]
+    ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, RemoteEntry]]:
+        snap: Dict[str, Dict[str, Any]] = {}
+        entries: Dict[str, RemoteEntry] = {}
+        for fid, info in items.items():
+            rel_p = str(info.get("rel_path") or "")
+            if (
+                not rel_p
+                or rel_p == ".trash"
+                or rel_p.startswith(".trash/")
+                or bool(info.get("trashed"))
+            ):
+                continue
+            mime = str(info.get("mime_type") or "")
+            if (
+                not info.get("is_shortcut")
+                and not info.get("is_virtual")
+                and not is_unsupported_google_workspace_mime(mime)
+            ):
+                phys = self._phys_path(rel_p)
+                if not phys.exists():
+                    continue
+            entry = self._build_entry(info, items)
+            entries[fid] = entry
+            snap[fid] = {
+                "rel_path": entry.rel_path,
+                "name": entry.name,
+                "mime_type": entry.mime_type,
+                "is_dir": entry.is_dir,
+                "size": entry.size,
+                "md5": entry.md5,
+                "mtime_ns": int(info.get("mtime_ns") or entry.mtime_ns)
+                if entry.is_dir or entry.is_shortcut
+                else entry.mtime_ns,
+                "parent_id": entry.parent_id,
+                "is_shortcut": entry.is_shortcut,
+                "target_file_id": entry.target_file_id,
+                "target_md5": (
+                    entry.md5 if entry.is_shortcut and not entry.dangling_shortcut else ""
+                ),
+                "target_size": (
+                    entry.size if entry.is_shortcut and not entry.dangling_shortcut else 0
+                ),
+                "target_mtime_ns": (
+                    entry.mtime_ns
+                    if entry.is_shortcut and not entry.dangling_shortcut
+                    else 0
+                ),
+            }
+        return snap, entries
+
+    def _record_sandbox_snapshot(
+        self, meta: Dict[str, Any], snap: Dict[str, Dict[str, Any]]
+    ) -> str:
+        seq = int(meta.get("change_seq") or 0) + 1
+        meta["change_seq"] = seq
+        token = f"sbx_{seq}"
+        snapshots: Dict[str, Any] = meta.setdefault("change_snapshots", {})
+        snapshots[token] = snap
+        while len(snapshots) > 16:
+            oldest_key = next(iter(snapshots))
+            snapshots.pop(oldest_key, None)
+        self._save_meta(meta)
+        return token
+
+    def get_start_page_token(self) -> str:
+        with self._lock:
+            meta = self._sync_filesystem_into_meta()
+            items = self._deduplicate_same_path_items(meta)
+            snap, _ = self._capture_change_snapshot(items)
+            return self._record_sandbox_snapshot(meta, snap)
+
+    def list_changes(
+        self, page_token: str
+    ) -> Tuple[List[ChangeRecord], str]:
+        with self._lock:
+            meta = self._sync_filesystem_into_meta()
+            items = self._deduplicate_same_path_items(meta)
+            snapshots: Dict[str, Dict[str, Any]] = meta.setdefault(
+                "change_snapshots", {}
+            )
+            if not page_token or page_token not in snapshots:
+                raise GDriveTransportError(
+                    f"Invalid or expired sandbox page_token: {page_token}"
+                )
+            old_snap = snapshots[page_token]
+            curr_snap, curr_entries = self._capture_change_snapshot(items)
+            records: List[ChangeRecord] = []
+            for fid in sorted(old_snap.keys()):
+                if fid not in curr_snap:
+                    records.append(ChangeRecord(file_id=fid, removed=True))
+            for fid in sorted(curr_snap.keys()):
+                if fid not in old_snap or curr_snap[fid] != old_snap[fid]:
+                    ent = curr_entries[fid]
+                    records.append(
+                        ChangeRecord(
+                            file_id=fid,
+                            removed=False,
+                            entry=ent,
+                            parent_id=ent.parent_id,
+                            name=ent.name,
+                            mime_type=ent.mime_type,
+                        )
+                    )
+            new_token = self._record_sandbox_snapshot(meta, curr_snap)
+            return records, new_token
 
 
 class GoogleDriveApiTransport(AbstractSyncTransport):
@@ -1370,6 +1544,90 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         )
         target_map = self._resolve_shortcut_targets([created])
         return self._raw_to_entry(created, norm, target_map)
+
+    def get_start_page_token(self) -> str:
+        """Call GET /drive/v3/changes/startPageToken?supportsAllDrives=true and return startPageToken."""
+        url = f"{self.DRIVE_API_BASE}/changes/startPageToken?supportsAllDrives=true"
+        data = self._request_json("GET", url)
+        token = str(data.get("startPageToken") or "").strip()
+        if not token:
+            raise GDriveTransportError(
+                "Drive API changes/startPageToken returned an empty startPageToken."
+            )
+        return token
+
+    def list_changes(
+        self, page_token: str
+    ) -> Tuple[List[ChangeRecord], str]:
+        """
+        Paginate GET /drive/v3/changes until newStartPageToken is reached.
+        Returns (records, new_start_page_token).
+        """
+        if not page_token:
+            raise GDriveTransportError("page_token cannot be empty for list_changes().")
+        curr_token = page_token
+        new_start_token = ""
+        raw_changes: List[Dict[str, Any]] = []
+        fields_spec = (
+            "nextPageToken,newStartPageToken,"
+            "changes(fileId,removed,file(id,name,mimeType,size,md5Checksum,"
+            "modifiedTime,trashed,parents,shortcutDetails))"
+        )
+        while curr_token:
+            params = {
+                "pageToken": curr_token,
+                "includeItemsFromAllDrives": "true",
+                "supportsAllDrives": "true",
+                "pageSize": 1000,
+                "fields": fields_spec,
+            }
+            url = f"{self.DRIVE_API_BASE}/changes?{urllib.parse.urlencode(params)}"
+            data = self._request_json("GET", url)
+            raw_changes.extend(data.get("changes") or [])
+            if data.get("newStartPageToken"):
+                new_start_token = str(data["newStartPageToken"])
+            curr_token = str(data.get("nextPageToken") or "")
+            if not curr_token:
+                break
+
+        active_file_objs = [
+            ch["file"]
+            for ch in raw_changes
+            if isinstance(ch.get("file"), dict)
+            and not ch.get("removed")
+            and not ch["file"].get("trashed")
+        ]
+        target_map = self._resolve_shortcut_targets(active_file_objs)
+
+        records: List[ChangeRecord] = []
+        for ch in raw_changes:
+            file_obj = ch.get("file") if isinstance(ch.get("file"), dict) else {}
+            fid = str(ch.get("fileId") or file_obj.get("id") or "")
+            if not fid:
+                continue
+            is_removed = bool(ch.get("removed")) or bool(file_obj.get("trashed"))
+            if is_removed:
+                records.append(ChangeRecord(file_id=fid, removed=True))
+                self._folder_cache = {
+                    k: v for k, v in self._folder_cache.items() if v.file_id != fid
+                }
+            else:
+                ent = self._raw_to_entry(file_obj, "", target_map)
+                if ent.is_dir:
+                    self._folder_cache = {
+                        k: v for k, v in self._folder_cache.items() if v.file_id != fid
+                    }
+                records.append(
+                    ChangeRecord(
+                        file_id=fid,
+                        removed=False,
+                        entry=ent,
+                        parent_id=ent.parent_id,
+                        name=ent.name,
+                        mime_type=ent.mime_type,
+                    )
+                )
+        return records, new_start_token or page_token
 
 
 OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"

@@ -8,10 +8,12 @@ from contextlib import redirect_stdout
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -32,6 +34,7 @@ from gdrive_support import (
     GDriveRepoSyncDisabledError,
     GDriveRepoUninitializedError,
     GDriveSyncServiceWorker,
+    GDriveTransportError,
     LocalSandboxTransport,
     ROOT_README_BEGIN_MARKER,
     ROOT_README_END_MARKER,
@@ -808,6 +811,311 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
                 (self.docs_dir / rel).read_text(encoding="utf-8"),
                 f"Content of {rel}\n",
             )
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_10_sandbox_changes_api_physical_and_shortcut_virtual_items(self) -> None:
+        """
+        Verify LocalSandboxTransport.get_start_page_token() and list_changes() (FT-01):
+        - Tracks physical file creation/modification/trash, Shortcut target changes, and virtual entries.
+        - Rejects invalid or expired page_token with GDriveTransportError.
+        """
+        tok0 = self.transport.get_start_page_token()
+        self.assertTrue(tok0.startswith("sbx_"))
+
+        src_f = self.tmp_root / "src_change.md"
+        src_f.write_text("Initial v1\n", encoding="utf-8")
+        ent_f = self.transport.upload_file(src_f, "docs/change_target.md")
+        ent_sc = self.transport.create_shortcut(
+            ent_f.file_id, "shortcuts/change_sc.md"
+        )
+        virt_fid = self.transport.inject_virtual_entry(
+            "virtual/doc.gdoc",
+            mime_type="application/vnd.google-apps.document",
+            md5="virt_md5_1",
+            size=42,
+        )
+
+        changes1, tok1 = self.transport.list_changes(tok0)
+        self.assertNotEqual(tok1, tok0)
+        by_id1 = {c.file_id: c for c in changes1}
+        self.assertIn(ent_f.file_id, by_id1)
+        self.assertFalse(by_id1[ent_f.file_id].removed)
+        self.assertIn(ent_sc.file_id, by_id1)
+        self.assertFalse(by_id1[ent_sc.file_id].removed)
+        self.assertIn(virt_fid, by_id1)
+        self.assertFalse(by_id1[virt_fid].removed)
+
+        # No-op check
+        changes_noop, tok2 = self.transport.list_changes(tok1)
+        self.assertEqual(changes_noop, [])
+
+        # Modify physical file (which is also the target of ent_sc) and trash virtual item
+        src_f.write_text("Updated v2 Content\n", encoding="utf-8")
+        self.transport.upload_file(
+            src_f, "docs/change_target.md", in_place_file_id=ent_f.file_id
+        )
+        self.transport.trash_file("virtual/doc.gdoc")
+
+        changes2, _tok3 = self.transport.list_changes(tok2)
+        by_id2 = {c.file_id: c for c in changes2}
+        self.assertIn(ent_f.file_id, by_id2)
+        self.assertFalse(by_id2[ent_f.file_id].removed)
+        self.assertIn(ent_sc.file_id, by_id2)
+        self.assertFalse(by_id2[ent_sc.file_id].removed)
+        assert by_id2[ent_sc.file_id].entry is not None
+        assert by_id2[ent_f.file_id].entry is not None
+        self.assertEqual(
+            by_id2[ent_sc.file_id].entry.md5, by_id2[ent_f.file_id].entry.md5
+        )
+        self.assertIn(virt_fid, by_id2)
+        self.assertTrue(by_id2[virt_fid].removed)
+
+        # Negative assertion: invalid/expired token raises GDriveTransportError
+        with self.assertRaises(GDriveTransportError):
+            self.transport.list_changes("sbx_999999_expired")
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_11_changes_api_three_level_cache_short_circuit_and_shortcut_target_patch(
+        self,
+    ) -> None:
+        """
+        Verify SyncCoordinator 3-level remote_repo_cache with changes API (FT-02):
+        - Level 0: Second run_sync makes 0 list_files calls and reports cache_hit_level == 0.
+        - Level 1: Single remote file update, new file in known dir, and Shortcut target_file_id update
+          patch cache in-memory with 0 list_files calls (cache_hit_level == 1).
+        - Level 2: Adding a new remote directory automatically falls back to full scan (cache_hit_level == 2).
+        """
+        f_guide = self.docs_dir / "guide.md"
+        f_guide.write_text("Guide v1\n", encoding="utf-8")
+
+        rep_init = self.coord.run_sync(mode="sync")
+        self.assertEqual(rep_init.cache_hit_level, 2)
+        self.assertEqual(rep_init.pushed, ["docs/guide.md"])
+
+        list_files_calls = {"n": 0}
+        orig_list_files = self.transport.list_files
+
+        def _counting_list_files(remote_path: str = "", recursive: bool = False):
+            list_files_calls["n"] += 1
+            return orig_list_files(remote_path, recursive=recursive)
+
+        self.transport.list_files = _counting_list_files  # type: ignore[method-assign]
+        try:
+            # 1. Level 0: 0 cloud changes -> 0 list_files calls, cache_hit_level == 0
+            list_files_calls["n"] = 0
+            rep_l0 = self.coord.run_sync(mode="sync")
+            self.assertEqual(rep_l0.cache_hit_level, 0)
+            self.assertEqual(list_files_calls["n"], 0)
+
+            # 2. Level 1: Remote in-place file update + new file (including docs/README.md) in existing 'docs' directory
+            rem_v2 = self.tmp_root / "rem_guide_v2.md"
+            rem_v2.write_text("Guide v2 Remote Patch\n", encoding="utf-8")
+            guide_ent = self.transport.get_entry("repo/main/docs/guide.md")
+            assert guide_ent is not None
+            self.transport.upload_file(
+                rem_v2, "repo/main/docs/guide.md", in_place_file_id=guide_ent.file_id
+            )
+            rem_added = self.tmp_root / "rem_added.md"
+            rem_added.write_text("Added in known dir\n", encoding="utf-8")
+            self.transport.upload_file(rem_added, "repo/main/docs/added.md")
+            rem_sub_readme = self.tmp_root / "rem_sub_readme.md"
+            rem_sub_readme.write_text("Subdir README v1\n", encoding="utf-8")
+            self.transport.upload_file(rem_sub_readme, "repo/main/docs/README.md")
+
+            list_files_calls["n"] = 0
+            rep_l1 = self.coord.run_sync(mode="sync")
+            self.assertEqual(rep_l1.cache_hit_level, 1)
+            self.assertEqual(list_files_calls["n"], 0)
+            self.assertEqual(
+                sorted(rep_l1.pulled),
+                ["docs/README.md", "docs/added.md", "docs/guide.md"],
+            )
+            self.assertEqual(
+                f_guide.read_text(encoding="utf-8"), "Guide v2 Remote Patch\n"
+            )
+            self.assertEqual(
+                (self.docs_dir / "added.md").read_text(encoding="utf-8"),
+                "Added in known dir\n",
+            )
+            self.assertEqual(
+                (self.docs_dir / "README.md").read_text(encoding="utf-8"),
+                "Subdir README v1\n",
+            )
+
+            # 3. Level 1 Shortcut target_file_id update AND removal propagation:
+            # Create branch v1.0, checkout v1.0, warm cache on v1.0, then modify & delete target_file_id on main
+            self.coord.create_branch("v1.0", from_branch="main")
+            self.coord.checkout_branch("v1.0")
+            rep_v1_warm = self.coord.run_sync(mode="sync")
+            self.assertEqual(rep_v1_warm.cache_hit_level, 2)
+
+            rem_v3 = self.tmp_root / "rem_guide_v3_target.md"
+            rem_v3.write_text("Guide v3 Shortcut Target Updated\n", encoding="utf-8")
+            self.transport.upload_file(
+                rem_v3, "repo/main/docs/guide.md", in_place_file_id=guide_ent.file_id
+            )
+
+            list_files_calls["n"] = 0
+            rep_sc_l1 = self.coord.run_sync(mode="pull")
+            self.assertEqual(rep_sc_l1.cache_hit_level, 1)
+            self.assertEqual(list_files_calls["n"], 0)
+            self.assertIn("docs/guide.md", rep_sc_l1.pulled)
+            self.assertEqual(
+                f_guide.read_text(encoding="utf-8"),
+                "Guide v3 Shortcut Target Updated\n",
+            )
+
+            # Trash the Shortcut target file on main -> Level 1 removes referencing Shortcut entry from v1.0 cache
+            self.transport.trash_file("repo/main/docs/guide.md")
+            list_files_calls["n"] = 0
+            rep_sc_rm = self.coord.run_sync(mode="pull", delete=True)
+            self.assertEqual(rep_sc_rm.cache_hit_level, 1)
+            self.assertEqual(list_files_calls["n"], 0)
+            self.assertEqual(rep_sc_rm.deleted_local, ["docs/guide.md"])
+            self.assertFalse(f_guide.exists())
+
+            # 4. Level 2 Fallback: Create a new remote subdirectory under repo/v1.0/docs/new_sub/
+            rem_sub = self.tmp_root / "rem_sub_doc.md"
+            rem_sub.write_text("Deep Subdir Doc\n", encoding="utf-8")
+            self.transport.upload_file(
+                rem_sub, "repo/v1.0/docs/new_sub/deep_doc.md"
+            )
+
+            rep_l2 = self.coord.run_sync(mode="pull")
+            self.assertEqual(rep_l2.cache_hit_level, 2)
+            self.assertIn("docs/new_sub/deep_doc.md", rep_l2.pulled)
+            self.assertEqual(
+                (self.docs_dir / "new_sub" / "deep_doc.md").read_text(
+                    encoding="utf-8"
+                ),
+                "Deep Subdir Doc\n",
+            )
+        finally:
+            self.transport.list_files = orig_list_files  # type: ignore[method-assign]
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_12_cli_yield_signal_preemption_orphan_self_healing_and_atomic_cow_mid_sync(
+        self,
+    ) -> None:
+        """
+        Verify foreground CLI lock preemption and atomic per-file CoW safety (FT-03):
+        1. Orphan cli_yield.signal (expired ts > 120s or dead PID) is auto-cleaned and does not yield.
+        2. Foreground _acquire_lock(non_blocking=False) writes cli_yield.signal when lock is busy,
+           preempts background_worker=True sync, and immediately unlinks cli_yield.signal upon lock acquisition.
+        3. When Stage 3 yields mid-batch during PUSH_UPDATE with CoW, completed files have both CoW .history/
+           and .yscb_gdrive.json committed, while unstarted files are NOT prematurely moved to .history/.
+        """
+        # 1. Orphan signal self-healing (expired timestamp & dead PID)
+        self.coord.yield_signal_path.parent.mkdir(parents=True, exist_ok=True)
+        self.coord.yield_signal_path.write_text(
+            json.dumps({"pid": os.getpid(), "ts": time.time() - 250.0}),
+            encoding="utf-8",
+        )
+        self.assertFalse(self.coord.should_yield_background())
+        self.assertFalse(self.coord.yield_signal_path.exists())
+
+        self.coord.yield_signal_path.write_text(
+            json.dumps({"pid": 99999999, "ts": time.time()}),
+            encoding="utf-8",
+        )
+        self.assertFalse(self.coord.should_yield_background())
+        self.assertFalse(self.coord.yield_signal_path.exists())
+
+        # 2. Setup 2 tracked files referenced by branch 'v1.0' so updating on 'main' requires CoW
+        f1 = self.docs_dir / "cow_1.md"
+        f2 = self.docs_dir / "cow_2.md"
+        f1.write_text("CoW 1 v1\n", encoding="utf-8")
+        f2.write_text("CoW 2 v1\n", encoding="utf-8")
+        self.coord.run_sync(mode="push")
+        ent1_v1 = self.transport.get_entry("repo/main/docs/cow_1.md")
+        ent2_v1 = self.transport.get_entry("repo/main/docs/cow_2.md")
+        assert ent1_v1 is not None and ent2_v1 is not None
+        fid1_v1 = ent1_v1.file_id
+        fid2_v1 = ent2_v1.file_id
+
+        self.coord.create_branch("v1.0", from_branch="main")
+
+        # Modify both files locally on main
+        f1.write_text("CoW 1 v2 Updated\n", encoding="utf-8")
+        f2.write_text("CoW 2 v2 Updated\n", encoding="utf-8")
+
+        import gdrive_support.coordinator as coord_mod
+
+        orig_workers = coord_mod.PARALLEL_TRANSFER_WORKERS
+        coord_mod.PARALLEL_TRANSFER_WORKERS = 1
+        orig_upload = self.transport.upload_file
+        first_upload_entered = threading.Event()
+        fg_lock_acquired = threading.Event()
+        fg_errors: list[BaseException] = []
+
+        def _fg_lock_requester() -> None:
+            first_upload_entered.wait(timeout=5.0)
+            try:
+                fg_lock = self.coord._acquire_lock(
+                    non_blocking=False, timeout_sec=10.0
+                )
+                try:
+                    # Signal file must already be unlinked as soon as _acquire_lock returns
+                    if self.coord.yield_signal_path.exists():
+                        fg_errors.append(
+                            AssertionError("cli_yield.signal was not cleaned up!")
+                        )
+                    fg_lock_acquired.set()
+                finally:
+                    fg_lock.release()
+            except BaseException as exc:
+                fg_errors.append(exc)
+
+        def _hooked_upload(
+            local_path: Path, remote_path: str, in_place_file_id=None
+        ):
+            res = orig_upload(
+                local_path, remote_path, in_place_file_id=in_place_file_id
+            )
+            if remote_path.endswith("cow_1.md") and not first_upload_entered.is_set():
+                first_upload_entered.set()
+                # Wait briefly until foreground thread writes cli_yield.signal
+                deadline = time.time() + 3.0
+                while (
+                    time.time() < deadline
+                    and not self.coord.yield_signal_path.exists()
+                ):
+                    time.sleep(0.02)
+            return res
+
+        self.transport.upload_file = _hooked_upload  # type: ignore[method-assign]
+        fg_thread = threading.Thread(target=_fg_lock_requester, daemon=True)
+        fg_thread.start()
+        try:
+            rep_bg = self.coord.run_sync(
+                mode="push", non_blocking_lock=True, background_worker=True
+            )
+            fg_thread.join(timeout=10.0)
+        finally:
+            self.transport.upload_file = orig_upload  # type: ignore[method-assign]
+            coord_mod.PARALLEL_TRANSFER_WORKERS = orig_workers
+
+        self.assertEqual(fg_errors, [])
+        self.assertTrue(fg_lock_acquired.is_set())
+        self.assertFalse(self.coord.yield_signal_path.exists())
+        self.assertTrue(rep_bg.yielded)
+        self.assertEqual(rep_bg.pushed, ["docs/cow_1.md"])
+        self.assertIn(fid1_v1, rep_bg.moved_to_history)
+        self.assertNotIn(fid2_v1, rep_bg.moved_to_history)
+
+        # Verify cow_2.md was NOT prematurely moved to .history/ on remote!
+        rem_cow2 = self.transport.get_entry("repo/main/docs/cow_2.md")
+        assert rem_cow2 is not None
+        self.assertEqual(rem_cow2.file_id, fid2_v1)
+
+        # Verify remote .yscb_gdrive.json was atomically saved in finally with fid1_v1 in history_files
+        remote_meta = self.coord._read_remote_repo_meta()
+        assert remote_meta is not None
+        self.assertIn(fid1_v1, remote_meta["history_files"])
+        self.assertNotIn(fid2_v1, remote_meta["history_files"])
         self.mark_passed()
 
 

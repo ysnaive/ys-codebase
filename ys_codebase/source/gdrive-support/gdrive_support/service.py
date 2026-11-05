@@ -139,7 +139,10 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             except Exception:
                 pass
             report = self._coordinator.run_sync(
-                mode="sync", non_blocking_lock=True
+                mode="sync",
+                non_blocking_lock=True,
+                background_worker=True,
+                abort_check=self._stop_event.is_set,
             )
             self._sync_runs += 1
             self._last_error = ""
