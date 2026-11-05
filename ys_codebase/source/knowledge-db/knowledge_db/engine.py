@@ -365,11 +365,7 @@ class KnowledgeEngine:
     def clean(self, space: Optional[str] = None) -> None:
         self.pipeline.clean(space=space)
         try:
-            self.scanner.reset_cursor(space_name=space, consumer_id="knowledge-db")
-        except Exception:
-            pass
-        try:
-            reset_cursor(space_name=space, consumer_id="knowledge-db")
+            self.pipeline._reset_consumer_cursor(space_name=None, consumer_id="knowledge-db")
         except Exception:
             pass
 

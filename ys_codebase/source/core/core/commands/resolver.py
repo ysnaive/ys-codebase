@@ -17,22 +17,22 @@ class OptionResolutionError(Exception):
 
 
 class MutualExclusionError(OptionResolutionError):
-    """EC-02: 同正交群組多選互斥衝突異常。"""
+    """同正交群組多選互斥衝突異常。"""
     pass
 
 
 class MissingValueError(OptionResolutionError):
-    """EC-03: 帶參 Option 缺少參數值異常。"""
+    """帶參 Option 缺少參數值異常。"""
     pass
 
 
 class InvalidChoiceError(OptionResolutionError):
-    """EC-07: 參數或選項值不符合 choice 列舉約束異常。"""
+    """參數或選項值不符合 choice 列舉約束異常。"""
     pass
 
 
 class MissingArgumentError(OptionResolutionError):
-    """EC-08: 缺少必填位置參數異常。"""
+    """缺少必填位置參數異常。"""
     pass
 
 
@@ -73,8 +73,8 @@ class OptionResolver:
                 positional_args.extend(raw_args[idx + 1:])
                 break
 
-            # 選項標記 (- 開頭，且非負數純量)
-            if token.startswith("-") and not cls._is_negative_number_token(token, cmd_spec):
+            # 選項標記 (- 開頭，非單一連字號，且非負數純量)
+            if len(token) > 1 and token.startswith("-") and not cls._is_negative_number_token(token, cmd_spec):
                 # 切分 --key=val 形式
                 if "=" in token:
                     raw_key, raw_val = token.split("=", 1)
@@ -94,7 +94,7 @@ class OptionResolver:
                     canonical = opt_spec.canonical_name
                     grp = opt_spec.group_name
 
-                    # EC-02: 正交群組互斥約束檢查
+                    # 正交群組互斥約束檢查
                     if grp and grp != "default":
                         if grp in seen_groups and seen_groups[grp] != canonical:
                             prev_canonical = seen_groups[grp]
@@ -104,7 +104,7 @@ class OptionResolver:
                             )
                         seen_groups[grp] = canonical
 
-                    # EC-03: 帶參 Option 檢查
+                    # 帶參 Option 檢查
                     if opt_spec.takes_value:
                         if has_inline_val and raw_val is not None:
                             val: Any = raw_val
@@ -112,6 +112,7 @@ class OptionResolver:
                             # 需要消耗下一個參數
                             if idx + 1 < len(raw_args) and (
                                 not raw_args[idx + 1].startswith("-")
+                                or raw_args[idx + 1] == "-"
                                 or cls._is_negative_number_token(raw_args[idx + 1], cmd_spec)
                             ):
                                 idx += 1
@@ -123,7 +124,7 @@ class OptionResolver:
                                     f"(e.g. '{token}=<{first_arg_name}>' or '{token} <{first_arg_name}>')."
                                 )
 
-                        # EC-07: 選項 choice 約束檢查
+                        # 選項 choice 約束檢查
                         if opt_spec.args:
                             first_arg = next(iter(opt_spec.args.values()))
                             if first_arg.choice and str(val) not in first_arg.choice:
@@ -159,7 +160,7 @@ class OptionResolver:
 
             idx += 1
 
-        # EC-07 & EC-08: 位置參數必填性與 choice 檢查
+        # 位置參數必填性與 choice 檢查
         if cmd_spec and cmd_spec.args:
             cmd_args_list = list(cmd_spec.args.values())
             for i, arg_spec in enumerate(cmd_args_list):

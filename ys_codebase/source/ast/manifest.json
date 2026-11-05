@@ -1,7 +1,7 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.0.1.3",
+  "version": "1.0.1.4",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -41,6 +41,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "修正根目錄單檔 is_dirty_file_match、多空間 best_mtime_ns 消歧與 bundle_union 平行解析"
+    "summary": "linker line_number 指紋修正與 bundler 孤兒方法清理"
   }
 }

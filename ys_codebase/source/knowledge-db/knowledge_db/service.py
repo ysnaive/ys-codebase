@@ -118,6 +118,7 @@ def write_worker_state(
             _IDLE_EVENT.set()
 
     p = get_worker_state_path(indices_dir)
+    tmp_path = p.with_name(f"{WORKER_STATE_FILENAME}.tmp.{os.getpid()}.{threading.get_ident()}")
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -129,10 +130,20 @@ def write_worker_state(
             "phase": phase if busy else "idle",
             "progress": progress if busy else "",
         }
-        tmp_path = p.with_name(f"{WORKER_STATE_FILENAME}.tmp.{os.getpid()}.{threading.get_ident()}")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        os.replace(str(tmp_path), str(p))
+        for attempt in range(5):
+            try:
+                os.replace(str(tmp_path), str(p))
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.005 * (2 ** attempt))
     except Exception as exc:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         logger.debug("Failed writing worker state file %s: %s", p, exc)
 
 

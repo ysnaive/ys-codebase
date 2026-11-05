@@ -176,35 +176,42 @@ class ContributesValidator:
         }
 
         if raw.startswith("$"):
-            return {**base_meta, "type": "ref", "ref_name": raw[1:].strip()}
-
-        if raw.startswith("enum(") and raw.endswith(")"):
+            res = {**base_meta, "type": "ref", "ref_name": raw[1:].strip()}
+        elif raw.startswith("enum(") and raw.endswith(")"):
             enum_vals = [v.strip() for v in raw[5:-1].split(",") if v.strip()]
-            return {**base_meta, "type": "enum", "enum_values": enum_vals}
-
-        list_match = re.match(r"^list\[(.*)\]$", raw)
-        if list_match:
-            return {
+            res = {**base_meta, "type": "enum", "enum_values": enum_vals}
+        elif (list_match := re.match(r"^list\[(.*)\]$", raw)):
+            res = {
                 **base_meta,
                 "type": "list",
                 "item_type": cls.parse_type_signature(list_match.group(1).strip()),
                 "default": default_val if has_default else [],
             }
-
-        dict_match = re.match(r"^dict\[(.*),(.*)\]$", raw)
-        if dict_match:
-            return {
+        elif raw.startswith("dict[") and raw.endswith("]") and (kv := cls._split_top_level_comma(raw[5:-1])) is not None:
+            res = {
                 **base_meta,
                 "type": "dict",
-                "key_type": cls.parse_type_signature(dict_match.group(1).strip()),
-                "value_type": cls.parse_type_signature(dict_match.group(2).strip()),
+                "key_type": cls.parse_type_signature(kv[0]),
+                "value_type": cls.parse_type_signature(kv[1]),
                 "default": default_val if has_default else {},
             }
-
-        norm_type = cls.TYPE_ALIASES.get(raw.lower(), raw.lower())
-        res = {**base_meta, "type": norm_type}
+        else:
+            norm_type = cls.TYPE_ALIASES.get(raw.lower(), raw.lower())
+            res = {**base_meta, "type": norm_type}
         cls._SIGNATURE_PARSE_CACHE[sig] = copy.deepcopy(res)
         return res
+
+    @staticmethod
+    def _split_top_level_comma(inner: str) -> Optional[Tuple[str, str]]:
+        depth = 0
+        for i, ch in enumerate(inner):
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                depth = max(0, depth - 1)
+            elif ch == "," and depth == 0:
+                return inner[:i].strip(), inner[i + 1 :].strip()
+        return None
 
     @classmethod
     def _validate_primitive_or_container_rule(

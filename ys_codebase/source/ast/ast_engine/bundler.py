@@ -688,26 +688,6 @@ class SemanticBundler:
         )
         return file_symbols, call_sites, dict(imports or {})
 
-    def _parse_and_dedup_file(
-        self,
-        f_path: Union[str, Path],
-        relpath: str,
-        sorted_spaces: List[str],
-    ) -> List[UnifiedSymbol]:
-        """Read `f_path`, parse symbols via `parser_registry`, disambiguate overload IDs, and attach `spaces` metadata."""
-        primary_space = sorted_spaces[0] if sorted_spaces else "unified"
-        with open(f_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        file_symbols = self.parser_registry.parse_file(
-            file_path=relpath,
-            content=content,
-            space=primary_space,
-        )
-        file_symbols = ensure_unique_overload_ids(file_symbols, default_space=primary_space)
-        for sym in file_symbols:
-            sym.metadata["spaces"] = sorted_spaces
-        return file_symbols
-
     def _collect_space_files(
         self, target_spaces: List[FileSpaceConfig]
     ) -> Dict[str, Tuple[Path, str, Set[str]]]:

@@ -233,7 +233,7 @@ _JSON_FILE_CACHE: Dict[str, Tuple[int, int, Any]] = {}
 _LAST_CLEAN_SCAN_TS: Dict[str, Tuple[float, float]] = {}
 # Short window (seconds) within which consecutive get() calls skip full directory walk
 # provided contributes.meta.json and contributes.merged.json mtimes have not changed.
-_CLEAN_SCAN_WINDOW_SEC: float = 0.04
+_CLEAN_SCAN_WINDOW_SEC: float = 0.25
 
 
 def _read_json_cached(path_or_uri: str) -> Any:
@@ -464,9 +464,8 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
         and (now_mono - last_clean[1]) < _CLEAN_SCAN_WINDOW_SEC
     ):
         data = cached_entry[2]
-        if key is not None:
-            return data.get(key, default)
-        return data if data else default
+        res = data.get(key, default) if key is not None else (data if data else default)
+        return copy.deepcopy(res) if isinstance(res, (dict, list)) else res
 
     is_dirty, _ = _is_contributes_dirty(target_module)
     data = None
@@ -509,9 +508,8 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
             if merged_mtime > 0.0 and isinstance(data, dict):
                 _MERGED_MEMORY_CACHE[cache_key] = (meta_mtime, merged_mtime, data)
 
-    if key is not None:
-        return data.get(key, default)
-    return data if data else default
+    res = data.get(key, default) if key is not None else (data if data else default)
+    return copy.deepcopy(res) if isinstance(res, (dict, list)) else res
 
 
 def get_format(module: str) -> Optional[Dict[str, Any]]:
@@ -650,14 +648,25 @@ class ContributesAggregator:
                     for target, c_body in u_data.items():
                         if isinstance(c_body, dict):
                             aggregated.setdefault(target, {})
+                            val_res = validate(target, c_body, donor_module=donor)
+                            valid_body = val_res.payload if val_res.payload is not None else c_body
+                            tagged_body = _tag_payload_body(valid_body, donor)
+                            if target == "core" and "commands" in tagged_body:
+                                core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
+                            if target == "core" and "locales" in tagged_body and isinstance(tagged_body["locales"], dict):
+                                core_modules_locales[donor] = copy.deepcopy(tagged_body["locales"])
                             fmt_schema = get_format(target)
                             _deep_merge(
                                 aggregated[target],
-                                _tag_payload_body(c_body, donor),
+                                tagged_body,
                                 schema=fmt_schema,
                                 is_project_override=False,
                                 raw_overlay=c_body,
                             )
+                            if target == "core" and core_modules_commands:
+                                aggregated[target].setdefault("commands", {})["__modules__"] = core_modules_commands
+                            if target == "core" and core_modules_locales:
+                                aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
             except Exception:
                 pass
 

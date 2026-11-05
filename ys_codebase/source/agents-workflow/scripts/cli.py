@@ -51,6 +51,7 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
             "path-plans",
             "path-archived",
             "path-docs",
+            "path-roadmap",
             "target",
         }
         args = builtins.list(cmd_bags)
@@ -465,6 +466,8 @@ def init(cmd_bags: Any) -> int:
         paths_override["archived"] = str(bags.get_option_value("path-archived"))
     if bags.get_option_value("path-docs"):
         paths_override["docs"] = str(bags.get_option_value("path-docs"))
+    if bags.get_option_value("path-roadmap"):
+        paths_override["roadmap"] = str(bags.get_option_value("path-roadmap"))
 
     initializer = WorkflowInitializer()
     is_interactive = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()

@@ -29,7 +29,7 @@ def _compute_symbols_map_fingerprint(symbols_map: Dict[str, UnifiedSymbol]) -> i
     """Compute a lightweight structural fingerprint of `symbols_map` so in-place hot-patches invalidate cache."""
     acc = len(symbols_map)
     for sid, sym in symbols_map.items():
-        acc ^= hash((sid, id(sym), getattr(sym, "signature", ""), getattr(sym, "start_line", 0)))
+        acc ^= hash((sid, id(sym), getattr(sym, "signature", ""), getattr(sym, "line_number", getattr(sym, "start_line", 0))))
     return acc
 
 

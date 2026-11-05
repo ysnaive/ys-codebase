@@ -111,7 +111,7 @@ class SessionTraceEngine:
     ) -> List[Tuple[str, Path, float]]:
         """
         依啟用之 release_targets 收集本機近期活躍之 .jsonl 候選檔案。
-        全程防護 PermissionError / OSError (EC-05)。
+        全程防護 PermissionError / OSError。
         回傳 [(target_name, path, mtime), ...] 按 mtime 降序排列。
         """
         candidates: List[Tuple[str, Path, float]] = []
@@ -286,7 +286,7 @@ class SessionTraceEngine:
     def _resolve_plan_for_audit(
         self, plan_name_or_subpath: Optional[str] = None
     ) -> Tuple[Optional[Path], str]:
-        """定位待審計之計畫目錄 (EC-02)。"""
+        """定位待審計之計畫目錄。"""
         scanner = PlanScanner(plans_dir=self.plans_dir)
         target_dir, err_msg = scanner.resolve_target_plan_dir(plan_name_or_subpath)
         if target_dir is not None:
@@ -594,8 +594,11 @@ class SessionTraceEngine:
             proc = subprocess.run(
                 ["git", "status", "--short"],
                 cwd=str(self.project_root),
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3.0,
                 check=False,
             )

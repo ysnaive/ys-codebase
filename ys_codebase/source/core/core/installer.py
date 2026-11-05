@@ -68,7 +68,7 @@ def generate_internal_gitignore(yscb_dir: str) -> None:
             default_yscb = os.path.abspath(uri.resolve("yscb://", interactive=False))
         except Exception:
             pass
-        if default_yscb and os.path.normcase(abs_dir) == os.path.normcase(default_yscb):
+        if default_yscb and os.path.normcase(os.path.realpath(abs_dir)) == os.path.normcase(os.path.realpath(default_yscb)):
             gi_mod.sync()
         else:
             gi_mod.sync(proj_root=abs_dir, yscb_root=abs_dir)
@@ -497,7 +497,7 @@ class Installer:
                 _, cfg = self.engine._get_config()
                 installed = cfg.get("installed_modules", {})
                 old_versions: Dict[str, str] = {
-                    mod: installed.get(mod, {}).get("version", "0.0.0.0")
+                    mod: (installed.get(mod, {}).get("version", "0.0.0.0") if isinstance(installed.get(mod, {}), dict) else str(installed.get(mod)))
                     for mod in set(list(installed.keys()) + req_names_ordered)
                 }
                 snap_id = self.engine.act_snapshot(f"pre_install_{snap_suffix}")
@@ -590,7 +590,7 @@ class Installer:
                     ordered_targets = sorted(targets, key=lambda m: (0 if m == "core" else 1, targets.index(m)))
                     candidate_core_ver: Optional[str] = None
                     for mod in ordered_targets:
-                        cur_ver = installed.get(mod, {}).get("version", "1.0.0.0")
+                        cur_ver = installed.get(mod, {}).get("version", "1.0.0.0") if isinstance(installed.get(mod, {}), dict) else str(installed.get(mod))
                         cur_t = semver.parse_semver(cur_ver)
 
                         if cur_t.is_build or cur_ver == "build" or str(cur_ver).endswith(".build"):
@@ -746,8 +746,8 @@ class Installer:
                 print("  (No modules installed)")
             else:
                 for mod, meta in installed.items():
-                    ver = meta.get("version", "unknown")
-                    prov = meta.get("provider", "local")
+                    ver = meta.get("version", "unknown") if isinstance(meta, dict) else str(meta)
+                    prov = meta.get("provider", "local") if isinstance(meta, dict) else "local"
                     status = "Installed" if vfs.exists(f"module://{mod}") else "Missing files"
                     print(f"{mod:<20} {ver:<10} {prov:<15} {status:<15}")
             print("-" * 65)
@@ -772,7 +772,7 @@ class Installer:
         for mod in sorted(available_modules.keys()):
             latest_ver = available_modules[mod]
             if mod in installed:
-                loc_ver = installed[mod].get("version", "unknown")
+                loc_ver = installed[mod].get("version", "unknown") if isinstance(installed[mod], dict) else str(installed[mod])
                 loc_status = f"Installed (v{loc_ver})"
             else:
                 loc_status = "Available"
@@ -799,7 +799,7 @@ class Installer:
                 healthy = False
                 print(f"  [!] {mod}: Incomplete (manifest={mod_exists}, cli={cli_exists})")
             else:
-                print(f"  [*] {mod}@{meta.get('version')}: Healthy")
+                print(f"  [*] {mod}@{meta.get('version') if isinstance(meta, dict) else meta}: Healthy")
 
         print("-" * 60)
         print(f"Overall Status   : {'HEALTHY (100% Ready)' if healthy else 'DEGRADED (Run reload)'}")

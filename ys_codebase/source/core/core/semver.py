@@ -197,7 +197,14 @@ def _match_single_clause(version: str, clause: str) -> bool:
         
         target_tuple = parse_semver(target_v)
         v_tuple = parse_semver(version)
-        if "." not in target_v.lstrip("vV") or target_v.count(".") == 2:
+        main_target = target_v.lstrip("vV").partition("-")[0]
+        if (
+            not target_tuple.prerelease
+            and not v_tuple.prerelease
+            and not target_tuple.is_build
+            and not v_tuple.is_build
+            and ("." not in main_target or main_target.count(".") == 2)
+        ):
             return v_tuple.triplet == target_tuple.triplet
         return compare_semver(version, target_v) == 0
     elif op == "!=":

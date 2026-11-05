@@ -754,7 +754,10 @@ class AtomicEngine:
                         held_lock.release()
                         self._active_locks.pop(held_op, None)
                         self._lock_counts.pop(held_op, None)
-                    vfs.remove(lock_uri)
+                    probe = InterProcessLock(lock_path)
+                    if probe.acquire(blocking=False):
+                        probe.release()
+                        vfs.remove(lock_uri)
                 elif self._active_locks:
                     raise BlockingIOError(
                         f"Another yscb operation is currently holding the lock for operation '{operation}'."
@@ -1526,12 +1529,23 @@ class AtomicEngine:
             if mod_n in explicit_constraints:
                 prev_v = explicit_constraints[mod_n]
                 if prev_v and mod_v and prev_v != mod_v:
-                    if not (semver.match_constraint(prev_v, mod_v) or semver.match_constraint(mod_v, prev_v)):
+                    prev_is_op = prev_v.startswith((">=", "<=", "!=", "==", "~=", "^=", "^", ">", "<", "="))
+                    mod_is_op = mod_v.startswith((">=", "<=", "!=", "==", "~=", "^=", "^", ">", "<", "="))
+                    if not prev_is_op and not mod_is_op:
+                        compatible = semver.match_constraint(prev_v, mod_v) or semver.match_constraint(mod_v, prev_v)
+                    elif not prev_is_op:
+                        compatible = semver.match_constraint(prev_v, mod_v)
+                    elif not mod_is_op:
+                        compatible = semver.match_constraint(mod_v, prev_v)
+                    else:
+                        compatible = True
+                    if not compatible:
                         raise RuntimeError(
                             f"Conflicting version constraints for module '{mod_n}' in batch request: "
                             f"'{prev_v}' vs '{mod_v}'."
                         )
-                if mod_v and not prev_v:
+                    explicit_constraints[mod_n] = f"{prev_v},{mod_v}" if (prev_is_op and mod_is_op) else (prev_v if not prev_is_op else mod_v)
+                elif mod_v and not prev_v:
                     explicit_constraints[mod_n] = mod_v
             else:
                 explicit_constraints[mod_n] = mod_v
@@ -2079,7 +2093,7 @@ class AtomicEngine:
                     _clean_module_cache(mod)
 
         for mod, meta in installed.items():
-            ver = meta.get("version", "1.0.0.0")
+            ver = meta.get("version", "1.0.0.0") if isinstance(meta, dict) else str(meta)
             self._reload_materialize_single_module(mod, ver, modules_root_real)
 
         # Stage 3 fallback: 對任何未經由 mirror 更新但存在於 module:// 的模組（如自舉 core）確保組態模板已部署並剝離
@@ -2088,11 +2102,13 @@ class AtomicEngine:
 
         try:
             from core import config as cfg_mod, locale as loc_mod, symbols as sym_mod, contributes as contrib_mod
+            from core.commands import dispatcher as disp_mod
             cfg_mod.reload()
             loc_mod.clear_cache()
             sym_mod.clear_callable_cache()
             contrib_mod.invalidate_cache()
             uri.invalidate_uri_cache()
+            disp_mod.clear_cache()
         except Exception:
             pass
 

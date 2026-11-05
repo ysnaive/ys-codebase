@@ -1,6 +1,6 @@
 {
   "name": "dev",
-  "version": "1.1.4.4",
+  "version": "1.1.4.5",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -24,6 +24,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "修正 cleanup_sandbox 鎖釋放時序、環境變數差量還原與連字號模組名正規化"
+    "summary": "create_mock_source_module 跳過清單收斂、tester tested_mods 補齊、cleanup_sandbox 順序與 Git UTF-8 防護"
   }
 }

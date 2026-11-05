@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.4.2",
+  "version": "1.0.4.3",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -14,6 +14,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "修正 Worker 握手雜訊容錯、WarmWorker 例外串流回傳、UTF-8 編碼注入與 dispatch 路徑校驗"
+    "summary": "master Worker PID 區域變數快照讀取、watcher 鎖探測移入差異分支與註解純化"
   }
 }

@@ -11,10 +11,10 @@ host a persistent daemon. Any clean exit resets the counter.
 Records are keyed by ``env_fingerprint()`` so that hosts sharing the same
 ``.cache`` directory (e.g. Windows host + Linux guest) never pollute each other.
 
-All I/O failures are deliberately degraded to "no record" (EC-03): the probe
+All I/O failures are deliberately degraded to "no record": the probe
 file is observational data, never a business-critical artifact.
 
-Standard library only; must not import ``server`` (NFR-01).
+Standard library only; must not import ``server``.
 """
 
 import json
@@ -65,7 +65,7 @@ def _probe_path(yscb_root: str) -> str:
 
 
 def _load_all(yscb_root: str) -> Dict[str, Any]:
-    """Loads all fingerprint records; unreadable or malformed files degrade to empty (EC-03)."""
+    """Loads all fingerprint records; unreadable or malformed files degrade to empty."""
     path = _probe_path(yscb_root)
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -168,7 +168,7 @@ def mark_clean_exit(yscb_root: str) -> None:
 
 
 def is_daemon_lock_held(yscb_root: str) -> bool:
-    """Returns True when ``daemon.lock`` is held by a live daemon (EC-11: lock ownership is the truth)."""
+    """Returns True when ``daemon.lock`` is held by a live daemon (lock ownership is the truth)."""
     lock_file = os.path.join(yscb_root, DAEMON_LOCK_REL_PATH)
     if not os.path.isfile(lock_file):
         return False

@@ -85,7 +85,7 @@ def clear_cache() -> None:
 def parse_locale_chain(raw_chain: Optional[Union[str, List[str]]]) -> List[str]:
     """
     Normalize a comma-separated string or list of strings into a deduplicated,
-    order-preserving list of explicit lang-ids without implicit '-' splitting ([P01:DR-02]).
+    order-preserving list of explicit lang-ids without implicit '-' splitting.
     """
     if not raw_chain:
         return []
@@ -157,7 +157,7 @@ def detect_system_locale_chain(raw_tag: Optional[str] = None) -> List[str]:
 
 def get_host_dialect_rules() -> List[Dict[str, Any]]:
     """
-    Return the ordered list of declarative host dialect sniffing rules ([P00:DR-02], TODO-06).
+    Return the ordered list of declarative host dialect sniffing rules.
     Merges optional custom 'host_dialects' rules from config://core or contributes://core
     ahead of DEFAULT_HOST_DIALECT_RULES.
     """
@@ -191,7 +191,7 @@ def detect_active_host_dialect(
     Sniff the caller AI IDE / Agent environment variables using declarative rules and return
     the corresponding proper-noun dialect ID (e.g. 'nouns-claude', 'nouns-codex', 'nouns-antigravity',
     'nouns-cursor', 'nouns-windsurf', 'nouns-copilot', 'nouns-opencode', 'nouns-roo'),
-    or None if running in a standard human terminal ([P00:DR-02], FR-02, TODO-06).
+    or None if running in a standard human terminal.
     """
     env_map = env if env is not None else os.environ
     active_rules = rules if rules is not None else get_host_dialect_rules()
@@ -257,7 +257,7 @@ def get_active_chain(explicit_chain: Optional[Union[str, List[str]]] = None) -> 
 def extract_placeholders(template_text: str) -> Set[str]:
     """
     Extract all '{placeholder}' variable names from template_text after stripping
-    escaped double-braces '{{' and '}}' (EC-03, [P02:DR-02]).
+    escaped double-braces '{{' and '}}'.
     """
     if not isinstance(template_text, str) or "{" not in template_text:
         return set()
@@ -316,7 +316,7 @@ def _resolve_module_base_dir(module: str, base_dir: Optional[str] = None) -> Opt
 
 def _is_safe_subpath(base_dir: str, rel_path: str) -> Tuple[bool, str]:
     """
-    Verify that rel_path resolves strictly inside base_dir without '..' traversal (EC-05).
+    Verify that rel_path resolves strictly inside base_dir without '..' traversal.
     Returns (is_safe, resolved_abs_path).
     """
     if not isinstance(rel_path, str) or not rel_path.strip():
@@ -445,7 +445,7 @@ def _split_module_key(raw_key: str, explicit_module: Optional[str] = None) -> Tu
 
 def _get_all_registered_locale_modules(primary_module: str) -> List[str]:
     """
-    Build the deterministic module search order for unqualified locale keys ([P02:DR-01]):
+    Build the deterministic module search order for unqualified locale keys:
     [primary_module, 'agents-workflow', 'core', ...other registered modules sorted].
     """
     ordered: List[str] = []
@@ -586,7 +586,7 @@ def _interpolate_template(
                     depth=depth + 1,
                 )
 
-        # Unknown placeholder: preserve literal '{token}' without raising KeyError (EC-03)
+        # Unknown placeholder: preserve literal '{token}' without raising KeyError
         return match.group(0)
 
     interpolated = _PLACEHOLDER_RE.sub(_replace_match, protected)
@@ -604,7 +604,7 @@ def t(
 ) -> str:
     """
     Retrieve localized message for `key` along the explicit fallback chain and perform
-    parameter formatting + recursive proper-noun interpolation (FR-03, FR-04).
+    parameter formatting + recursive proper-noun interpolation.
     """
     active_chain = get_active_chain(chain)
     hit = resolve_raw(key, module=module, chain=active_chain, base_dir=base_dir)
@@ -855,7 +855,7 @@ def validate_module_locales(
          and optional 'placeholders' (list of strings).
       3. Verify every '<lang-id>' file exists inside module root, is a valid JSON object,
          contains no orphan keys (keys absent from 'definition'), and its '{placeholder}'
-         set matches 'definition[key].placeholders' ([P04:DR-01]).
+         set matches 'definition[key].placeholders'.
     """
     issues: List[ValidationIssue] = []
 

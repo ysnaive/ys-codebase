@@ -573,18 +573,20 @@ class SandboxProvisioner:
         """Tears down the virtual sandbox safely with active running sandbox guardrail."""
         target_abs = os.path.abspath(sandbox_dir)
         with SandboxProvisioner._SANDBOX_LOCK:
-            SandboxProvisioner._ACTIVE_SANDBOXES.discard(target_abs)
             if not os.path.exists(sandbox_dir):
+                SandboxProvisioner._ACTIVE_SANDBOXES.discard(target_abs)
                 return True
 
             if not is_harness_cleanup and os.environ.get("YSCB_TEST_SANDBOX") == "1":
-                real_target = os.path.normpath(os.path.realpath(target_abs))
+                real_target = os.path.normcase(os.path.normpath(os.path.realpath(target_abs)))
                 active_sb = os.environ.get("YSCB_SANDBOX_DIR")
-                if active_sb and os.path.normpath(os.path.realpath(active_sb)) == real_target:
+                if active_sb and os.path.normcase(os.path.normpath(os.path.realpath(active_sb))) == real_target:
                     return True
-                curr_cwd = os.path.normpath(os.path.realpath(os.getcwd()))
+                curr_cwd = os.path.normcase(os.path.normpath(os.path.realpath(os.getcwd())))
                 if curr_cwd == real_target or curr_cwd.startswith(real_target + os.sep):
                     return True
+
+            SandboxProvisioner._ACTIVE_SANDBOXES.discard(target_abs)
 
         try:
             ctx = SandboxContext(sandbox_dir)

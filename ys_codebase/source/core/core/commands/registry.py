@@ -42,7 +42,7 @@ class CommandSpec:
     groups: Dict[str, List[str]] = field(default_factory=dict)           # group_name -> list of canonical names
     usage_pros: List[str] = field(default_factory=list)
     usage_cons: List[str] = field(default_factory=list)
-    cmd: Dict[str, "CommandSpec"] = field(default_factory=dict)          # FR-12: 遞迴同構子指令樹
+    cmd: Dict[str, "CommandSpec"] = field(default_factory=dict)          # 遞迴同構子指令樹
 
 
 @dataclass
@@ -57,7 +57,7 @@ class ModuleSpec:
 class CommandsRegistry:
     """
     Commands Contributes 註冊中心。
-    負責解析 Contributes Commands Schema、維護別名索引、檢查衝突 (EC-06)。
+    負責解析 Contributes Commands Schema、維護別名索引、檢查別名衝突。
     """
 
     def __init__(self) -> None:
@@ -115,7 +115,7 @@ class CommandsRegistry:
             module_aliases = [module_aliases]
         module_aliases = [str(a).strip() for a in module_aliases if str(a).strip()]
 
-        # EC-06: 檢查模組別名衝突
+        # 檢查模組別名衝突
         for alias in module_aliases:
             existing_mod = self._alias_to_module.get(alias)
             if existing_mod is not None and existing_mod != module_name:
@@ -154,7 +154,7 @@ class CommandsRegistry:
     def _parse_command_spec(self, cmd_name: str, raw_spec: Dict[str, Any]) -> CommandSpec:
         desc = raw_spec.get("description", "")
         tier = raw_spec.get("tier", "safe")
-        # FR-06: server_compatible 為指令層級原生布林宣告
+        # server_compatible 為指令層級原生布林宣告
         server_compatible = bool(raw_spec.get("server_compatible", False))
         cmd_args = self._parse_args_dict(raw_spec.get("args"))
 
@@ -205,7 +205,7 @@ class CommandsRegistry:
                         cmd_spec.options[a] = option_spec
                     cmd_spec.groups[group_name].append(canonical)
 
-        # FR-12: 遞迴解析子指令樹 (cmd: { <sub_name>: { ... } })
+        # 遞迴解析子指令樹 (cmd: { <sub_name>: { ... } })
         raw_sub_cmd = raw_spec.get("cmd", {})
         if isinstance(raw_sub_cmd, dict):
             for sub_name, sub_spec in raw_sub_cmd.items():

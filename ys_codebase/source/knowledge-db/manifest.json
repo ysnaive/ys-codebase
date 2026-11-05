@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.1.2",
+  "version": "1.2.1.3",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -29,6 +29,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "修正冷啟動水位線自癒、補齊 _kdb_index_file_lock 與 HybridSearchEngine 副檔名解析"
+    "summary": "write_worker_state 退避重試與 .tmp 清理、clean 委派游標重置與 C# 分部鍵值擴充"
   }
 }

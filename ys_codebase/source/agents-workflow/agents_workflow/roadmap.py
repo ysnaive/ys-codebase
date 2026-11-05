@@ -172,7 +172,7 @@ class RoadmapManager:
         for file_path in sorted(self.roadmap_dir.glob("*.md"), key=lambda p: p.name):
             if not file_path.is_file():
                 continue
-            # EC-06: 自動排除 Tier 1 集中式待辦帳本 TODO.md
+            # 自動排除 Tier 1 集中式待辦帳本 TODO.md
             if file_path.name.lower() == "todo.md":
                 continue
             item = self._parse_roadmap_file(file_path)

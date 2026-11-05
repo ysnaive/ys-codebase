@@ -11,9 +11,9 @@
     "1.2.1.1",
     "1.2.2.3",
     "1.2.3.5",
-    "1.2.4.0",
     "1.2.4.1",
-    "1.2.4.2"
+    "1.2.4.2",
+    "1.2.4.3"
   ],
   "releases": {
     "1.0.0.0": {
@@ -184,7 +184,7 @@
       "summary": "publisher 對齊 core.gitignore 根目錄統一分組軟合併引擎並更新 manifest.json optional"
     },
     "1.2.4.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7"
       },
@@ -212,6 +212,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "補回 workflow 轉 skill 相容轉譯、promote_todos 寫入順序保護與 PXX-05_auto 驗證支援"
+    },
+    "1.2.4.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7"
+      },
+      "sha256": "33f002ec9fe81ebc8ea096eedbd4a08e6836fe8a6d2c5df671e2ef50a9e7bfeb",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "verifier 子計畫三步自癒對齊、status 動態 P00 解析、init 選項補齊與 Git UTF-8 防護"
     }
   }
 }

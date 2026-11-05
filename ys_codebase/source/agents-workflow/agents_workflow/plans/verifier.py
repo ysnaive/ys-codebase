@@ -926,12 +926,9 @@ class PlanVerifier:
         if phase_norm in ("ALL", "CURRENT"):
             for sub in sorted(p.iterdir(), key=lambda x: x.name):
                 if sub.is_dir() and sub.name.startswith("sub_"):
-                    self._check_nested_depth_and_structure(sub, sub.name, report)
-                    sub_changelog = sub / "changelog.md"
-                    self._check_changelog_content(sub_changelog, f"{sub.name}/changelog.md", report)
-                    for sub_md in sorted(sub.glob("*.md")):
-                        if sub_md.name == "changelog.md":
-                            continue
+                    sub_fails_before = sum(1 for i in report.issues if i.severity == PlanSeverity.FAIL)
+                    sub_mds = [m for m in sorted(sub.glob("*.md")) if m.name != "changelog.md"]
+                    for sub_md in sub_mds:
                         self._verify_markdown_file(
                             sub_md,
                             f"{sub.name}/{sub_md.name}",
@@ -939,6 +936,24 @@ class PlanVerifier:
                             report,
                             enable_auto_heal=enable_auto_heal,
                         )
+                    sub_has_new_fails = sum(1 for i in report.issues if i.severity == PlanSeverity.FAIL) > sub_fails_before
+                    has_non_seed_md = any(m.name not in _ORIGIN_SEED_FILES for m in sub_mds)
+                    if not sub_has_new_fails and enable_auto_heal and has_non_seed_md:
+                        _auto_heal_companions(sub, phase_norm, model, report)
+                        sub_p06_rel = f"{sub.name}/P06_test_plan.md"
+                        if sub_p06_rel in report.companion_created:
+                            sub_p06 = sub / "P06_test_plan.md"
+                            if sub_p06.is_file() and sub_p06 not in sub_mds:
+                                self._verify_markdown_file(
+                                    sub_p06,
+                                    sub_p06_rel,
+                                    True,
+                                    report,
+                                    enable_auto_heal=enable_auto_heal,
+                                )
+                    self._check_nested_depth_and_structure(sub, sub.name, report)
+                    sub_changelog = sub / "changelog.md"
+                    self._check_changelog_content(sub_changelog, f"{sub.name}/changelog.md", report)
                     self._check_cross_file_and_traceability(sub, sub.name, phase_norm, report)
 
         # Step 4: 彙總狀態

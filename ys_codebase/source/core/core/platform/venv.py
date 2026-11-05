@@ -22,13 +22,25 @@ def _norm_key(path: str) -> str:
 def _is_source_tree_path(path: str, yscb_root: Optional[str] = None) -> bool:
     if not path:
         return False
+    eff_root = yscb_root or _resolve_yscb_root(None)
+    root_real = os.path.normpath(os.path.realpath(eff_root)) if eff_root and os.path.exists(eff_root) else None
+    host_real = os.path.dirname(root_real) if root_real else None
     for cand in (_norm_abs(path), os.path.normpath(os.path.realpath(path))):
         slash_p = cand.replace("\\", "/")
-        if "/source/" in slash_p or slash_p.endswith("/source"):
-            return True
         if yscb_root:
             src_dir = _norm_abs(os.path.join(yscb_root, "source")).replace("\\", "/")
             if slash_p == src_dir or slash_p.startswith(src_dir + "/"):
+                return True
+        matched_workspace = False
+        if root_real:
+            for base in (root_real, host_real):
+                if base and (cand == base or cand.startswith(base + os.sep)):
+                    matched_workspace = True
+                    rel_slash = os.path.relpath(cand, base).replace("\\", "/")
+                    if rel_slash == "source" or rel_slash.startswith("source/") or "/source/" in f"/{rel_slash}/":
+                        return True
+        if not matched_workspace:
+            if "/source/" in slash_p or slash_p.endswith("/source"):
                 return True
     return False
 

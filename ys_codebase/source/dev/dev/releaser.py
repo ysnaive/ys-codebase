@@ -81,17 +81,21 @@ class Releaser:
         self.checker = checker or Checker()
         self.tester = tester
 
-    def _run_git_cmd(self, args: List[str], cwd: Optional[str] = None) -> Tuple[int, str, str]:
+    def _run_git_cmd(self, args: List[str], cwd: Optional[str] = None, timeout: float = 30.0) -> Tuple[int, str, str]:
         """Runs a Git command safely within local repository."""
         try:
             res = subprocess.run(
                 ["git"] + args,
                 cwd=cwd or uri.resolve("yscb://"),
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
                 check=False,
             )
-            return res.returncode, res.stdout.strip(), res.stderr.strip()
+            return res.returncode, (res.stdout or "").strip(), (res.stderr or "").strip()
         except Exception as e:
             return -1, "", str(e)
 

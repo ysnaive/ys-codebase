@@ -363,6 +363,7 @@ def uri(cmd_bags: CmdBags) -> int:
 def install(cmd_bags: CmdBags) -> int:
     """Install one or more modules from provider or local build package (@build)."""
     guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags, "install")
     if not cmd_bags.args:
         print("[core:install] Error: Module name is required.")
         return 1
@@ -395,6 +396,7 @@ def install(cmd_bags: CmdBags) -> int:
 def update(cmd_bags: CmdBags) -> int:
     """Update installed module(s) to latest version."""
     guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags, "update")
     if not cmd_bags.args:
         mod_target = None
     elif len(cmd_bags.args) == 1:
@@ -410,6 +412,7 @@ def update(cmd_bags: CmdBags) -> int:
 def remove(cmd_bags: CmdBags) -> int:
     """Remove one or more installed modules from environment."""
     guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags, "remove")
     if not cmd_bags.args:
         mod_target = ""
     elif len(cmd_bags.args) == 1:
@@ -426,6 +429,7 @@ def remove(cmd_bags: CmdBags) -> int:
 def list(cmd_bags: CmdBags) -> int:
     """List all installed modules, versions and providers."""
     guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags, "list")
     remote = cmd_bags.has_option("remote")
     provider = cmd_bags.get_option_value("provider")
     installer = Installer()
@@ -449,6 +453,7 @@ def reload(cmd_bags: CmdBags) -> int:
 def rollback(cmd_bags: CmdBags) -> int:
     """Revert environment to the previous snapshot state."""
     guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags, "rollback")
     target = cmd_bags.args[0] if cmd_bags.args else None
     installer = Installer()
     return installer.cmd_rollback(target)
@@ -457,6 +462,7 @@ def rollback(cmd_bags: CmdBags) -> int:
 def restore(cmd_bags: CmdBags) -> int:
     """Restore missing installed modules from mirror or provider."""
     guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags, "restore")
     force_flag = cmd_bags.has_option("force")
     provider = cmd_bags.get_option_value("provider")
     ignore_sha256 = cmd_bags.has_option("ignore-sha256")

@@ -674,7 +674,12 @@ class Tester:
                     print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
 
         if ret_code == 0 and not cfg.is_nested:
-            tested_mods = [cfg.target_mod] if (cfg.target_mod and cfg.target_mod != "--all") else []
+            if cfg.target_mod and cfg.target_mod != "--all":
+                tested_mods = [cfg.target_mod]
+            elif cfg.is_all or not cfg.target_param:
+                tested_mods = TestDiscovery.discover_modules(None)
+            else:
+                tested_mods = []
             self._handle_post_test_sync(tested_mods, cfg.sync_requested, quiet=cfg.quiet_mode)
 
         return ret_code

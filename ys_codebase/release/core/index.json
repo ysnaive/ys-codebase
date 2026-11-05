@@ -16,7 +16,8 @@
     "1.2.5.1",
     "1.2.6.0",
     "1.2.7.0",
-    "1.2.7.1"
+    "1.2.7.1",
+    "1.2.7.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -174,6 +175,14 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "core.uri 狀態執行緒本地化 (TLS)、路徑逃逸與 VFS.open 安全守衛、IPC ProxyHandler 隔離及快照排序加固"
+    },
+    "1.2.7.2": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "2a7c715923da23dfd4df6c970f3e987a7e7245719ec966b524acba27fcdb032e",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "POSIX flock Inode 核對、Win32 4-byte BOOL、dispatcher 快取重載失效、realpath 對齊與 contributes.get 深拷貝隔離"
     }
   }
 }

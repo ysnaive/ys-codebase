@@ -417,11 +417,16 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
             return []
 
         proj_prefix = self.space_manager.project_root.as_posix().rstrip("/") + "/"
-        rel_check = (
-            raw_str[len(proj_prefix) :]
-            if raw_str.startswith(proj_prefix)
-            else raw_str
-        )
+        if raw_str.startswith(proj_prefix):
+            rel_check = raw_str[len(proj_prefix) :]
+        elif os.name == "nt" and raw_str.lower().startswith(proj_prefix.lower()):
+            rel_check = raw_str[len(proj_prefix) :]
+        elif proj_prefix.startswith("/private/") and raw_str.startswith(proj_prefix[8:]):
+            rel_check = raw_str[len(proj_prefix) - 8 :]
+        elif raw_str.startswith("/private/") and raw_str[8:].startswith(proj_prefix):
+            rel_check = raw_str[8 + len(proj_prefix) :]
+        else:
+            rel_check = raw_str
         if any(
             seg in _FAST_IGNORED_SEGMENTS
             for seg in rel_check.split("/")

@@ -3,9 +3,9 @@
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
     "1.0.0.5",
-    "1.0.1.0",
     "1.0.1.1",
-    "1.0.1.2"
+    "1.0.1.2",
+    "1.0.1.3"
   ],
   "releases": {
     "1.0.0.0": {
@@ -69,7 +69,7 @@
       "summary": "FileSpaceWatcherService 背景掃描整合 server.touch_activity() 保活探針"
     },
     "1.0.1.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7"
       },
@@ -97,6 +97,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "修正 .watcher_dirty 跨行程信標與世代對齊、follow_symlinks 邏輯路徑保留及沙盒空間隔離"
+    },
+    "1.0.1.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7"
+      },
+      "sha256": "5c02eb41d5066f1d2ec20039a5288e0571e87e4fe58a77389b915ab1d20d1a08",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "notify_file_event O(1) 前綴正規化與單檔 include 之 is_file_included 過濾"
     }
   }
 }

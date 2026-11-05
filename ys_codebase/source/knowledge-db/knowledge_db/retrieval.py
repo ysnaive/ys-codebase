@@ -659,7 +659,8 @@ class InvertedIndex:
         doc_ids_set = set(doc_ids_to_remove)
 
         def _cs_type_key(s: UnifiedSymbol) -> Optional[Tuple[str, str, str]]:
-            if s.language == "c_sharp" and s.kind in ("class", "struct", "interface"):
+            is_cs_or_partial = s.language in ("c_sharp", "csharp") or bool((s.metadata or {}).get("is_partial"))
+            if is_cs_or_partial and s.kind in ("class", "struct", "interface"):
                 sp_key = ",".join(sorted(s.spaces)) if s.spaces else ""
                 return (sp_key, s.kind, s.fqn or s.name)
             return None

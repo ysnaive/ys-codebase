@@ -153,18 +153,30 @@ class PipManager:
         import zipfile
         os.makedirs(site_pkg, exist_ok=True)
         # 優先方案：自 ensurepip._WHEEL_PKG_DIR 提取 pip*.whl，零 subprocess 權限阻礙
+        candidate_wheel_dirs = []
         try:
             import ensurepip
-            wheel_dir = getattr(ensurepip, "_WHEEL_PKG_DIR", "/usr/share/python-wheels")
-            if os.path.isdir(wheel_dir):
-                for fname in os.listdir(wheel_dir):
-                    if fname.startswith("pip-") and fname.endswith(".whl"):
-                        whl_path = os.path.join(wheel_dir, fname)
-                        with zipfile.ZipFile(whl_path, "r") as zf:
-                            zf.extractall(site_pkg)
-                        return
+            pkg_dir = getattr(ensurepip, "_WHEEL_PKG_DIR", None)
+            if isinstance(pkg_dir, str) and pkg_dir:
+                candidate_wheel_dirs.append(pkg_dir)
+            else:
+                bundled_dir = os.path.join(os.path.dirname(ensurepip.__file__), "_bundled")
+                candidate_wheel_dirs.append(bundled_dir)
+                candidate_wheel_dirs.append("/usr/share/python-wheels")
         except Exception:
             pass
+
+        for wheel_dir in candidate_wheel_dirs:
+            try:
+                if isinstance(wheel_dir, str) and os.path.isdir(wheel_dir):
+                    for fname in sorted(os.listdir(wheel_dir)):
+                        if fname.startswith("pip-") and fname.endswith(".whl"):
+                            whl_path = os.path.join(wheel_dir, fname)
+                            with zipfile.ZipFile(whl_path, "r") as zf:
+                                zf.extractall(site_pkg)
+                            return
+            except Exception:
+                continue
 
         # 次選方案：呼叫 python -m ensurepip
         try:

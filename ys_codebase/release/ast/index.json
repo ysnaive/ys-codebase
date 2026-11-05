@@ -3,9 +3,9 @@
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "versions": [
     "1.0.0.5",
-    "1.0.1.1",
     "1.0.1.2",
-    "1.0.1.3"
+    "1.0.1.3",
+    "1.0.1.4"
   ],
   "releases": {
     "1.0.0.0": {
@@ -86,7 +86,7 @@
       "summary": "預設 indices 與 bundles 遷移至 storage.local://、跨進程鎖分離至 cache:// 並附帶 1.0.1.x 遷移腳本"
     },
     "1.0.1.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7",
         "file-space": ">=1.0.1"
@@ -117,6 +117,17 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "修正根目錄單檔 is_dirty_file_match、多空間 best_mtime_ns 消歧與 bundle_union 平行解析"
+    },
+    "1.0.1.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7",
+        "file-space": ">=1.0.1"
+      },
+      "sha256": "af57ca1f386c497ee0adb20c218802cf41a0d853cdecbdf71c4bc9c87ada82c2",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "linker line_number 指紋修正與 bundler 孤兒方法清理"
     }
   }
 }

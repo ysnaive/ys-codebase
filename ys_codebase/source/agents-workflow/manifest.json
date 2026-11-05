@@ -1,6 +1,6 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.4.2",
+  "version": "1.2.4.3",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -24,6 +24,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "補回 workflow 轉 skill 相容轉譯、promote_todos 寫入順序保護與 PXX-05_auto 驗證支援"
+    "summary": "verifier 子計畫三步自癒對齊、status 動態 P00 解析、init 選項補齊與 Git UTF-8 防護"
   }
 }

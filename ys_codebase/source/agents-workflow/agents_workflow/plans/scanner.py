@@ -244,7 +244,7 @@ class PlanScanner:
         """
         解析目標計畫或子計畫目錄路徑。
         - 若指定 plan_name_or_subpath：支援完整路徑、`<plan_name>`、`<plan_name>/sub_XX` 或唯一 `sub_XX` 名稱。
-        - 若未指定：自動篩選尚未 Completed / Concluded 之活躍計畫；若僅有 1 個則自動定位，若超過 1 個則拒絕盲猜並回傳提示訊息（EC-01）。
+        - 若未指定：自動篩選尚未 Completed / Concluded 之活躍計畫；若僅有 1 個則自動定位，若超過 1 個則拒絕盲猜並回傳提示訊息。
 
         Args:
             plan_name_or_subpath: 計畫名稱、子計畫相對路徑或 None

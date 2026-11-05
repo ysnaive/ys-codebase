@@ -130,7 +130,7 @@ def start(cmd_bags: CmdBags) -> int:
             print(format_startup_banner(status_info))
             return 0
 
-    # FR-06: distinguish a still-booting daemon from one that died during startup
+    # Distinguish a still-booting daemon from one that died during startup
     if is_process_alive(pid):
         print(f"[Server] Daemon (PID: {pid}) is still starting up; readiness probe timed out. Check 'server status' shortly.")
         return 0
@@ -183,7 +183,7 @@ def stop(cmd_bags: CmdBags) -> int:
 
     print(f"[Server] Terminating process tree for PID: {state.pid}...")
     kill_process_tree(state.pid, timeout_sec=2.0)
-    # User-initiated stop is not environment reaping: reset empirical detection (FR-03)
+    # User-initiated stop is not environment reaping: reset empirical detection
     daemon_probe.mark_clean_exit(yscb_root)
     uptime = time.time() - state.start_time
     fallback_summary = {
@@ -200,7 +200,7 @@ def stop(cmd_bags: CmdBags) -> int:
 
 
 def _format_current_task(task: Optional[Dict[str, Any]]) -> str:
-    """Formats the in-flight dispatch task (FR-02) for the status dashboard."""
+    """Formats the in-flight dispatch task for the status dashboard."""
     if not task:
         return "Idle"
     args = " ".join(str(a) for a in task.get("args") or [])

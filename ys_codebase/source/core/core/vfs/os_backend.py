@@ -19,12 +19,14 @@ from core.vfs.base import VFSBackend
 
 
 def _maybe_invalidate_uri_cache(norm_path: str) -> None:
-    """When contribute.json or contributes cache files are mutated via VFS, invalidate URI token map cache."""
+    """When contribute.json or contributes cache files are mutated via VFS, invalidate URI and contributes scan caches."""
     base = os.path.basename(norm_path)
     if base in ("contribute.json", "contributes.merged.json", "contributes.meta.json", "core.json"):
         try:
-            from core import uri
+            from core import uri, contributes
             uri._TOKEN_MAP_CACHE.clear()
+            contributes._LAST_CLEAN_SCAN_TS.clear()
+            contributes._JSON_FILE_CACHE.pop(norm_path, None)
         except Exception:
             pass
 
@@ -345,12 +347,18 @@ class OSBackend(VFSBackend):
         """複製檔案或目錄至目標路徑。"""
         src_norm = self.assert_safe_path(src)
         dst_norm = self.assert_safe_path(dst)
+        src_real = os.path.normcase(os.path.realpath(src_norm))
+        dst_real = os.path.normcase(os.path.realpath(dst_norm))
+        if src_real == dst_real:
+            return
         if os.path.islink(src_norm):
             os.makedirs(os.path.dirname(dst_norm), exist_ok=True)
             if os.path.lexists(dst_norm):
                 os.remove(dst_norm)
             os.symlink(os.readlink(src_norm), dst_norm)
         elif os.path.isdir(src_norm):
+            if dst_real.startswith(src_real + os.sep):
+                raise ValueError(f"Cannot copy directory '{src_norm}' into its own subdirectory '{dst_norm}'.")
             if os.path.exists(dst_norm):
                 robust_rmtree(dst_norm, ignore_errors=True)
             self._safe_copytree(src_norm, dst_norm)

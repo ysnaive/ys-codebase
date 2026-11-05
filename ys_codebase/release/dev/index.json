@@ -8,9 +8,9 @@
     "1.1.1.1",
     "1.1.2.2",
     "1.1.3.4",
-    "1.1.4.2",
     "1.1.4.3",
-    "1.1.4.4"
+    "1.1.4.4",
+    "1.1.4.5"
   ],
   "releases": {
     "1.0.0.5": {
@@ -151,7 +151,7 @@
       "summary": "沙盒清理串接 vfs.robust_rmtree、成對 realpath 校驗與平行測試超時進程樹回收"
     },
     "1.1.4.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5"
       },
@@ -179,6 +179,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "修正 cleanup_sandbox 鎖釋放時序、環境變數差量還原與連字號模組名正規化"
+    },
+    "1.1.4.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7"
+      },
+      "sha256": "ee9210b37cd3411b33ecb636546b972e40b3d3bd043e1c54f1f79a91766fdaa3",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "create_mock_source_module 跳過清單收斂、tester tested_mods 補齊、cleanup_sandbox 順序與 Git UTF-8 防護"
     }
   }
 }

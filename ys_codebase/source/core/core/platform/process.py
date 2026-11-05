@@ -58,14 +58,15 @@ def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional
     if sys.platform == "win32":
         try:
             import ctypes
+            from ctypes import wintypes
             k32 = ctypes.windll.kernel32
-            k32.GetCurrentProcess.restype = ctypes.c_void_p
-            k32.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_bool)]
-            k32.IsProcessInJob.restype = ctypes.c_bool
+            k32.GetCurrentProcess.restype = wintypes.HANDLE
+            k32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+            k32.IsProcessInJob.restype = wintypes.BOOL
 
-            in_job = ctypes.c_bool(False)
+            in_job = wintypes.BOOL(0)
             res = k32.IsProcessInJob(k32.GetCurrentProcess(), None, ctypes.byref(in_job))
-            if res and not in_job.value:
+            if res and not bool(in_job.value):
                 _CAN_SPAWN_DAEMON_CACHE = True
                 return True
 

@@ -60,6 +60,20 @@ class InterProcessLock:
             start_time = time.time()
             while True:
                 if self._try_lock_fd(fd):
+                    if sys.platform != "win32":
+                        try:
+                            st_fd = os.fstat(fd)
+                            st_path = os.stat(self.lock_file)
+                            if (st_fd.st_dev, st_fd.st_ino) != (st_path.st_dev, st_path.st_ino):
+                                self._unlock_fd(fd)
+                                os.close(fd)
+                                fd = self._open_lock_fd()
+                                continue
+                        except FileNotFoundError:
+                            self._unlock_fd(fd)
+                            os.close(fd)
+                            fd = self._open_lock_fd()
+                            continue
                     self._fd = fd
                     self._is_locked = True
                     return True

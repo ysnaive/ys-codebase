@@ -612,6 +612,41 @@
             "yes": {
               "description": "自動確認模式",
               "alias": ["y"]
+            },
+            "default": {
+              "description": "套用建議預設目錄結構"
+            },
+            "path-plans": {
+              "description": "自訂活躍計畫目錄路徑",
+              "args": {
+                "path": {
+                  "description": "自訂活躍計畫目錄路徑"
+                }
+              }
+            },
+            "path-archived": {
+              "description": "自訂歷史歸檔計畫目錄路徑",
+              "args": {
+                "path": {
+                  "description": "自訂歷史歸檔計畫目錄路徑"
+                }
+              }
+            },
+            "path-docs": {
+              "description": "自訂專案知識庫文檔目錄路徑",
+              "args": {
+                "path": {
+                  "description": "自訂專案知識庫文檔目錄路徑"
+                }
+              }
+            },
+            "path-roadmap": {
+              "description": "自訂長期演進路線圖目錄路徑",
+              "args": {
+                "path": {
+                  "description": "自訂長期演進路線圖目錄路徑"
+                }
+              }
             }
           }
         },

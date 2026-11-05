@@ -659,7 +659,7 @@ class FileSpaceManager:
         for inc_root in cfg.resolved_include_paths:
             if inc_root.is_file():
                 if candidate == inc_root or candidate.resolve() == inc_root.resolve():
-                    return True
+                    return cfg.is_file_included(inc_root.name)
                 continue
             try:
                 rel = candidate.relative_to(inc_root).as_posix()

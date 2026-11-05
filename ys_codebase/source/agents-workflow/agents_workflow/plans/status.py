@@ -444,7 +444,7 @@ class PlanStatusResolver:
     def _resolve_p00_next_action(
         cls, p: Path, ref_base: str, has_handoff: bool
     ) -> Optional[Dict[str, Any]]:
-        p00_file = p / "P00_discuss.md"
+        p00_file = cls.resolve_phase_file(p, "P00")
         if not p00_file.exists():
             return None
         st = cls.get_doc_header_status(p00_file)

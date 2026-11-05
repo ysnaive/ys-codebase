@@ -86,7 +86,7 @@ def _resolve_roots(
     eff_proj = os.path.abspath(proj_root) if proj_root else default_proj
     if yscb_root:
         eff_yscb = os.path.abspath(yscb_root)
-    elif proj_root and os.path.normcase(eff_proj) != os.path.normcase(default_proj):
+    elif proj_root and os.path.normcase(os.path.realpath(eff_proj)) != os.path.normcase(os.path.realpath(default_proj)):
         cand_yscb = os.path.join(eff_proj, "ys_codebase")
         cand_dot_yscb = os.path.join(eff_proj, ".yscb")
         if os.path.isdir(cand_yscb):
@@ -99,7 +99,7 @@ def _resolve_roots(
         eff_yscb = default_yscb
 
     is_custom = bool(
-        proj_root and os.path.normcase(eff_proj) != os.path.normcase(default_proj)
+        proj_root and os.path.normcase(os.path.realpath(eff_proj)) != os.path.normcase(os.path.realpath(default_proj))
     )
     return eff_proj, eff_yscb, is_custom
 
@@ -131,8 +131,8 @@ def normalize_pattern(
         scheme_lower = scheme.strip().lower()
         rest_clean = rest.strip().lstrip("/\\").replace("\\", "/")
 
-        eff_proj = os.path.abspath(proj_root)
-        eff_yscb = os.path.abspath(yscb_root) if yscb_root else eff_proj
+        eff_proj = os.path.realpath(os.path.abspath(proj_root))
+        eff_yscb = os.path.realpath(os.path.abspath(yscb_root)) if yscb_root else eff_proj
 
         if scheme_lower in ("project", "yscb.host"):
             target_abs = os.path.join(eff_proj, rest_clean) if rest_clean else eff_proj
@@ -157,7 +157,7 @@ def normalize_pattern(
                 return None
 
         try:
-            rel = os.path.relpath(target_abs, eff_proj).replace("\\", "/")
+            rel = os.path.relpath(os.path.realpath(target_abs), eff_proj).replace("\\", "/")
         except ValueError:
             return None
 
@@ -422,7 +422,7 @@ def _cleanup_obsolete_nested_gitignores(proj_root: str, yscb_root: str) -> List[
     """
     cleaned_paths: List[str] = []
 
-    if os.path.normcase(os.path.abspath(proj_root)) != os.path.normcase(os.path.abspath(yscb_root)):
+    if os.path.normcase(os.path.realpath(os.path.abspath(proj_root))) != os.path.normcase(os.path.realpath(os.path.abspath(yscb_root))):
         yscb_gi = os.path.join(yscb_root, ".gitignore")
         if vfs.is_file(yscb_gi):
             try:

@@ -258,7 +258,7 @@ class YSCBTestCase(unittest.TestCase):
 
         if files:
             for rel_p, content in files.items():
-                if rel_p in ("manifest.json", "scripts/cli.py", "tests/__init__.py", "tests/test_dummy.py", "contributes/_manifest.md", "contributes/core.json"):
+                if rel_p in ("manifest.json", "scripts/cli.py"):
                     continue
                 full_p = os.path.join(src_dir, rel_p)
                 os.makedirs(os.path.dirname(full_p), exist_ok=True)

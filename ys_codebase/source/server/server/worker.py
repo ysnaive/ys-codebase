@@ -249,7 +249,7 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
 
     worker: Optional[WarmWorker] = None
     try:
-        # FR-09: 兩段式握手第一段，啟動即宣告存活（pre_warm 可能耗時，由 worker_ready 宣告就緒）
+        # 兩段式握手第一段，啟動即宣告存活（pre_warm 可能耗時，由 worker_ready 宣告就緒）
         emit_fn({"type": "worker_alive", "worker_pid": os.getpid()})
         worker = WarmWorker(yscb_root=yscb_root, emit_packet_fn=emit_fn)
         worker.pre_warm()

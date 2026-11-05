@@ -101,11 +101,10 @@ class ModulesWatcher:
             if not self._is_running:
                 break
 
-            if self._is_core_transaction_locked():
-                continue
-
             current_snapshot = _scan_modules_dir(self.modules_dir)
             if self._last_snapshot != current_snapshot:
+                if self._is_core_transaction_locked():
+                    continue
                 if self.debounce_sec > 0:
                     time.sleep(self.debounce_sec)
                     if not self._is_running or self._is_core_transaction_locked():

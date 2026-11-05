@@ -30,8 +30,16 @@ _GLOBAL_REGISTRY_ROOT: Optional[str] = None
 _MODULE_CACHE: Dict[str, Any] = {}
 _AUTO_SPAWN_WARNED: bool = False
 _LAST_DISPATCH_ERROR_HINT: str = ""
-# FR-07: strict 模式 auto-spawn 後等待 daemon 活躍之上限秒數
+# strict 模式 auto-spawn 後等待 daemon 活躍之上限秒數
 _STRICT_SPAWN_WAIT_SEC: float = 10.0
+
+
+def clear_cache() -> None:
+    """清空已快取之 CommandsRegistry 與 CLI 模組快取。"""
+    global _GLOBAL_REGISTRY, _GLOBAL_REGISTRY_ROOT
+    _GLOBAL_REGISTRY = None
+    _GLOBAL_REGISTRY_ROOT = None
+    _MODULE_CACHE.clear()
 
 # 環境與模組生命週期變異指令（執行前禁止自動拉起背景 Server，防範解壓/重載中途引發重啟風暴）
 _LIFECYCLE_MUTATION_COMMANDS = {
@@ -74,7 +82,7 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
     # =========================================================================
     modules_dir = os.path.join(yscb_abs, ".modules")
     if os.path.isdir(modules_dir):
-        for mod_name in os.listdir(modules_dir):
+        for mod_name in sorted(os.listdir(modules_dir), key=lambda m: (0 if m == "core" else 1, m)):
             if mod_name.startswith("."):
                 continue
             mod_path = os.path.join(modules_dir, mod_name)
@@ -95,6 +103,8 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
                             if "commands" in data and isinstance(data["commands"], dict):
                                 registry.register_module(mod_name, data["commands"])
                                 break
+                    except ValueError as err:
+                        print(f"[yscb:registry] Warning: {err}", file=sys.stderr)
                     except Exception:
                         pass
 
@@ -230,7 +240,7 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
                         rc = pkt.get("exit_code", 0)
                         err_field = pkt.get("error")
                         if rc != 0 and err_field:
-                            # OBS-02: surface server-side failures (e.g. worker preempted) instead of failing silently
+                            # Surface server-side failures (e.g. worker preempted) instead of failing silently
                             err_line = f"[yscb] Error: {err_field}\n"
                             sys.stderr.write(err_line)
                             sys.stderr.flush()
@@ -373,7 +383,7 @@ def _print_agent_daemon_blocker(strict: bool = False) -> None:
 
 
 def _spawn_server_daemon(host_dir: str, yscb_abs: str) -> Optional[int]:
-    """以脫鉤背景進程拉起 Server 並記錄 spawn 探針（FR-03）；失敗回傳 None。"""
+    """以脫鉤背景進程拉起 Server 並記錄 spawn 探針；失敗回傳 None。"""
     yscb_py = os.path.join(host_dir, "yscb.py")
     if not os.path.isfile(yscb_py):
         yscb_py = sys.argv[0]
@@ -437,7 +447,7 @@ def _strict_hot_dispatch_or_block(
     yscb_abs: str,
 ) -> int:
     """
-    FR-07: strict_hot_dispatch 模式之熱派發（含首次嘗試），絕不冷派發。
+    strict_hot_dispatch 模式之熱派發（含首次嘗試），絕不冷派發。
 
     1. 首次熱派發成功即回傳退出碼。
     2. 請求已送達但送出後失敗（逾時、重置、被搶占）→ 不重試（防重複執行），回傳 1。
@@ -537,7 +547,7 @@ def dispatch_local(
     4. 調用精確命令函式
     5. 觸發 post_cli_dispatch Hook
     """
-    # FR-10: 對稱觸發 pre_cli_dispatch Hook
+    # 對稱觸發 pre_cli_dispatch Hook
     is_verbose = (
         os.environ.get("YSCB_VERBOSE") == "1"
         or os.environ.get("YSCB_DEBUG") == "1"
@@ -615,7 +625,7 @@ def dispatch_local(
         try:
             spec.loader.exec_module(mod)
         except Exception as load_err:
-            # FR-12 / EC-09: 載入期例外（含 SyntaxError）移除半初始化模組並回傳 1
+            # 載入期例外（含 SyntaxError）移除半初始化模組並回傳 1
             sys.modules.pop(spec.name, None)
             err_msg = f"[yscb] Error loading CLI for '{module_name}': {type(load_err).__name__}: {load_err}"
             _LAST_DISPATCH_ERROR_HINT = err_msg
@@ -647,7 +657,7 @@ def dispatch_local(
             print(HelpRenderer.render_cmd_help(module_name, disp_cmd, cmd_spec))
             exit_code = 0
         else:
-            # EC-05: 既無精確函式亦非純分支 (Hard Sunset: 徹底移除 process fallback)
+            # 既無精確函式亦非純分支 (Hard Sunset: 徹底移除 process fallback)
             disp_cmd = " ".join(cmd_path)
             err_msg = (
                 f"[yscb] Error (EC-05): Module '{module_name}' CLI script does not define "
@@ -666,7 +676,7 @@ def dispatch_local(
         exit_code = 1
     finally:
         sys.argv = orig_argv
-        # FR-10: 對稱觸發 post_cli_dispatch Hook
+        # 對稱觸發 post_cli_dispatch Hook
         _ensure_hooks("post_cli_dispatch", verbose=is_verbose)
 
     return exit_code
@@ -748,7 +758,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
                 module_name = first_token
                 target_tokens = rest_tokens
             else:
-                # EC-01: 未知模組或未知指令，模糊拼寫比對
+                # 未知模組或未知指令，模糊拼寫比對
                 all_candidates = list(core_commands) + registry.list_modules()
                 sugg = _suggest_command(first_token, all_candidates)
                 err_msg = f"[yscb] Error: Unknown command or module '{first_token}'."
@@ -777,7 +787,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
             print(f"YS-Codebase Module: {module_name}\n(Run 'python yscb.py {module_name} --help' for options)")
         return 0
 
-    # 5. 沿 target_tokens 走訪指令樹 (FR-12)
+    # 5. 沿 target_tokens 走訪指令樹
     cmd_path, cmd_spec, sub_args = registry.resolve_command_path(module_name, target_tokens)
 
     if not cmd_path:
@@ -850,11 +860,11 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         )
         return 1
 
-    # 9. FR-06: 指令級 server_compatible 雙管道分流
+    # 9. 指令級 server_compatible 雙管道分流
     if cmd_spec is not None and cmd_spec.server_compatible:
         spawn_cfg = _read_server_spawn_config(yscb_abs)
         if spawn_cfg.enabled and spawn_cfg.strict_hot_dispatch:
-            # FR-07: strict_hot_dispatch 啟用（且 server enable=true）時僅允許熱派發，禁止冷派發兜底
+            # strict_hot_dispatch 啟用（且 server enable=true）時僅允許熱派發，禁止冷派發兜底
             hot_res: Optional[int] = _strict_hot_dispatch_or_block(module_name, cmd_path, sub_args, host_dir, yscb_abs)
         else:
             hot_res = _try_hot_dispatch(module_name, cmd_path, sub_args, yscb_abs)
@@ -871,7 +881,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
             )
             _maybe_check_and_print_updates()
             return hot_res
-        # EC-04: 熱派發通訊失敗或常駐離線，透明降級至本地冷派發
+        # 熱派發通訊失敗或常駐離線，透明降級至本地冷派發
 
     # 非 server / dev 指令且非 core 生命週期變異指令時，在背景按需喚醒 Server 常駐進程
     primary_cmd_token = cmd_path[0] if cmd_path else ""

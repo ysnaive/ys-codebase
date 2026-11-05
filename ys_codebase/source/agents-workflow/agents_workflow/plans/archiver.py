@@ -76,7 +76,7 @@ class PlanArchiver:
         year, month = match.group(1), match.group(2)
         dest_dir = self.archive_dir / year / month / plan_name
 
-        # 1. 執行 PlanVerifier 剛性合規檢核 (FR-07)
+        # 1. 執行 PlanVerifier 剛性合規檢核
         from .verifier import PlanVerifier
         verifier = self.verifier or PlanVerifier(
             self.plans_dir, self.archive_dir, self.templates_dir
