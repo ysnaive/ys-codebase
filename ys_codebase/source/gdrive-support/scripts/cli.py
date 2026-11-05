@@ -527,21 +527,45 @@ def shortcut(cmd_bags: CmdBags) -> int:
     return 0
 
 
-def init(cmd_bags: CmdBags) -> int:
-    """Initialize cloud/sandbox root with .yscb_gdrive.json, README.md, .history/, .trash/, and main/."""
-    guard_dispatch("gdrive-support")
-    from gdrive_support.config import GDriveError, load_gdrive_config
+def _build_coordinator(sandbox_dir: str = "") -> Any:
+    """
+    Construct a SyncCoordinator instance. When sandbox_dir (or config.sandbox_dir) is active,
+    bind state_path, lock_path, log_path, and readme_state_path inside the sandbox directory
+    so sandbox runs remain isolated from production local storage and configuration.
+    """
+    from gdrive_support.config import load_gdrive_config
     from gdrive_support.coordinator import SyncCoordinator
     from gdrive_support.transport import create_transport
 
+    cfg = load_gdrive_config()
+    effective_sandbox = str(sandbox_dir or cfg.sandbox_dir or "").strip()
+    if effective_sandbox:
+        object.__setattr__(cfg, "sandbox_dir", effective_sandbox)
+        sbx_root = Path(effective_sandbox).resolve()
+        transport = create_transport(cfg, sandbox_dir=effective_sandbox)
+        return SyncCoordinator(
+            config=cfg,
+            transport=transport,
+            state_path=sbx_root / ".yscb_sync_state.json",
+            lock_path=sbx_root / ".yscb_sync.lock",
+            log_path=sbx_root / ".yscb_sync.log",
+            readme_state_path=sbx_root / ".yscb_readme_state.json",
+        )
+    transport = create_transport(cfg, sandbox_dir=None)
+    return SyncCoordinator(config=cfg, transport=transport)
+
+
+def init(cmd_bags: CmdBags) -> int:
+    """Initialize cloud/sandbox root with .yscb_gdrive.json, README.md, .history/, .trash/, and main/."""
+    guard_dispatch("gdrive-support")
+    from gdrive_support.config import GDriveError
+
     as_json = bool(cmd_bags.options.get("json"))
     force = bool(cmd_bags.options.get("force"))
-    sandbox_dir = cmd_bags.get_option_value("sandbox-dir", default="")
+    sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
 
     try:
-        cfg = load_gdrive_config()
-        transport = create_transport(cfg, sandbox_dir=sandbox_dir or None)
-        coord = SyncCoordinator(config=cfg, transport=transport)
+        coord = _build_coordinator(sandbox_dir)
         res = coord.init_repo(force=force)
     except GDriveError as exc:
         _emit(
@@ -562,17 +586,13 @@ def init(cmd_bags: CmdBags) -> int:
 def branch_list(cmd_bags: CmdBags) -> int:
     """List registered cloud branches."""
     guard_dispatch("gdrive-support")
-    from gdrive_support.config import GDriveError, load_gdrive_config
-    from gdrive_support.coordinator import SyncCoordinator
-    from gdrive_support.transport import create_transport
+    from gdrive_support.config import GDriveError
 
     as_json = bool(cmd_bags.options.get("json"))
-    sandbox_dir = cmd_bags.get_option_value("sandbox-dir", default="")
+    sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
 
     try:
-        cfg = load_gdrive_config()
-        transport = create_transport(cfg, sandbox_dir=sandbox_dir or None)
-        coord = SyncCoordinator(config=cfg, transport=transport)
+        coord = _build_coordinator(sandbox_dir)
         res = coord.list_branches()
     except GDriveError as exc:
         _emit(
@@ -595,12 +615,10 @@ def branch_list(cmd_bags: CmdBags) -> int:
 def branch_create(cmd_bags: CmdBags) -> int:
     """Create a new delta branch populated with Google Drive Shortcuts."""
     guard_dispatch("gdrive-support")
-    from gdrive_support.config import GDriveError, load_gdrive_config
-    from gdrive_support.coordinator import SyncCoordinator
-    from gdrive_support.transport import create_transport
+    from gdrive_support.config import GDriveError
 
     as_json = bool(cmd_bags.options.get("json"))
-    sandbox_dir = cmd_bags.get_option_value("sandbox-dir", default="")
+    sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
     from_branch = cmd_bags.get_option_value("from", default="main")
     if not cmd_bags.args:
         _emit(
@@ -612,9 +630,7 @@ def branch_create(cmd_bags: CmdBags) -> int:
 
     branch_name = cmd_bags.args[0]
     try:
-        cfg = load_gdrive_config()
-        transport = create_transport(cfg, sandbox_dir=sandbox_dir or None)
-        coord = SyncCoordinator(config=cfg, transport=transport)
+        coord = _build_coordinator(sandbox_dir)
         res = coord.create_branch(branch_name=branch_name, from_branch=str(from_branch))
     except GDriveError as exc:
         _emit(
@@ -636,12 +652,10 @@ def branch_create(cmd_bags: CmdBags) -> int:
 def branch_delete(cmd_bags: CmdBags) -> int:
     """Delete a branch and garbage-collect unreferenced .history/ files to .trash/."""
     guard_dispatch("gdrive-support")
-    from gdrive_support.config import GDriveError, load_gdrive_config
-    from gdrive_support.coordinator import SyncCoordinator
-    from gdrive_support.transport import create_transport
+    from gdrive_support.config import GDriveError
 
     as_json = bool(cmd_bags.options.get("json"))
-    sandbox_dir = cmd_bags.get_option_value("sandbox-dir", default="")
+    sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
     if not cmd_bags.args:
         _emit(
             {"status": "error", "error": "branch delete requires <branch_name>."},
@@ -652,9 +666,7 @@ def branch_delete(cmd_bags: CmdBags) -> int:
 
     branch_name = cmd_bags.args[0]
     try:
-        cfg = load_gdrive_config()
-        transport = create_transport(cfg, sandbox_dir=sandbox_dir or None)
-        coord = SyncCoordinator(config=cfg, transport=transport)
+        coord = _build_coordinator(sandbox_dir)
         res = coord.delete_branch(branch_name=branch_name)
     except GDriveError as exc:
         _emit(
@@ -676,14 +688,12 @@ def branch_delete(cmd_bags: CmdBags) -> int:
 def checkout(cmd_bags: CmdBags) -> int:
     """Atomically switch active_branch and align local tracked worktree."""
     guard_dispatch("gdrive-support")
-    from gdrive_support.config import GDriveError, load_gdrive_config
-    from gdrive_support.coordinator import SyncCoordinator
-    from gdrive_support.transport import create_transport
+    from gdrive_support.config import GDriveError
 
     as_json = bool(cmd_bags.options.get("json"))
     force = bool(cmd_bags.options.get("force"))
     backup = bool(cmd_bags.options.get("backup"))
-    sandbox_dir = cmd_bags.get_option_value("sandbox-dir", default="")
+    sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
     if not cmd_bags.args:
         _emit(
             {"status": "error", "error": "checkout requires <target_branch>."},
@@ -694,9 +704,7 @@ def checkout(cmd_bags: CmdBags) -> int:
 
     target_branch = cmd_bags.args[0]
     try:
-        cfg = load_gdrive_config()
-        transport = create_transport(cfg, sandbox_dir=sandbox_dir or None)
-        coord = SyncCoordinator(config=cfg, transport=transport)
+        coord = _build_coordinator(sandbox_dir)
         res = coord.checkout_branch(
             target_branch=target_branch, force=force, backup=backup
         )
@@ -719,20 +727,16 @@ def checkout(cmd_bags: CmdBags) -> int:
 
 def _run_sync_cmd(cmd_bags: CmdBags, mode: str) -> int:
     guard_dispatch("gdrive-support")
-    from gdrive_support.config import GDriveError, load_gdrive_config
-    from gdrive_support.coordinator import SyncCoordinator
-    from gdrive_support.transport import create_transport
+    from gdrive_support.config import GDriveError
 
     as_json = bool(cmd_bags.options.get("json"))
     delete = bool(cmd_bags.options.get("delete"))
     force = bool(cmd_bags.options.get("force"))
     backup = bool(cmd_bags.options.get("backup"))
-    sandbox_dir = cmd_bags.get_option_value("sandbox-dir", default="")
+    sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
 
     try:
-        cfg = load_gdrive_config()
-        transport = create_transport(cfg, sandbox_dir=sandbox_dir or None)
-        coord = SyncCoordinator(config=cfg, transport=transport)
+        coord = _build_coordinator(sandbox_dir)
         report = coord.run_sync(
             mode=mode, delete=delete, force=force, backup=backup
         )

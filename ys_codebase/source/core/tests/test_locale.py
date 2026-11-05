@@ -482,5 +482,17 @@ class TestCoreLocaleEngine(YSCBTestCase):
         )
         self.mark_passed()
 
+    def test_module_base_dir_cache_keyed_by_yscb_root(self):
+        """驗證 _MODULE_BASE_DIR_CACHE 以 (yscb_root, module) 隔離多工作區快取。"""
+        from core import uri
+
+        locale.clear_cache()
+        resolved = locale._resolve_module_base_dir("core")
+        self.assertIsNotNone(resolved)
+        root_key = os.path.normpath(uri.resolve_yscb_root())
+        self.assertIn((root_key, "core"), locale._MODULE_BASE_DIR_CACHE)
+        self.mark_passed()
+
+
 
 

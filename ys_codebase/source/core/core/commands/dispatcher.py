@@ -122,6 +122,17 @@ class _HotDispatchResult:
     accepted: bool
 
 
+_ORIGINAL_URLOPEN = urllib.request.urlopen
+
+
+def _open_localhost_no_proxy(req: urllib.request.Request, timeout: float) -> Any:
+    """透過無代理 Opener 發送 Localhost 請求；若測試已替換 urlopen 則委派予 urlopen。"""
+    if urllib.request.urlopen is not _ORIGINAL_URLOPEN:
+        return urllib.request.urlopen(req, timeout=timeout)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(req, timeout=timeout)
+
+
 def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[str], yscb_abs: str) -> _HotDispatchResult:
     """
     管道 B 單次嘗試：透過 Localhost HTTP 將 server_compatible 指令熱派發至常駐 Server Worker。
@@ -168,13 +179,17 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
     captured_err: List[str] = []
     timeout_sec = float(os.environ.get("YSCB_DISPATCH_TIMEOUT", "120.0"))
     try:
-        resp = urllib.request.urlopen(req, timeout=timeout_sec)
+        resp = _open_localhost_no_proxy(req, timeout=timeout_sec)
     except urllib.error.HTTPError:
         # Server 於串流前即拒絕（鑑權失敗、根目錄不符等），任務未執行
         return _HotDispatchResult(None, False)
     except urllib.error.URLError as err:
-        # 連線階段失敗（拒絕連線、無法解析）任務未送達；其餘（如等待回應逾時）無法確認是否已執行
-        unreachable = isinstance(err.reason, OSError) and not isinstance(err.reason, TimeoutError)
+        # 連線階段失敗（拒絕連線、無法解析）任務未送達；若為逾時或連線重置/中斷則視為已送達
+        accepted_err = isinstance(
+            err.reason,
+            (TimeoutError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError),
+        )
+        unreachable = isinstance(err.reason, OSError) and not accepted_err
         return _HotDispatchResult(None, not unreachable)
     except ConnectionRefusedError:
         return _HotDispatchResult(None, False)
@@ -447,7 +462,8 @@ def _strict_hot_dispatch_or_block(
             while time.time() < deadline:
                 if os.path.isfile(state_file):
                     result = _hot_dispatch_attempt(module_name, cmd_path, sub_args, yscb_abs)
-                    break
+                    if result.accepted or result.exit_code is not None:
+                        break
                 time.sleep(0.2)
 
     if result.exit_code is not None:

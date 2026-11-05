@@ -138,8 +138,6 @@ def _create_module_archive_atomic(
                         payload = raw_bytes
                 zf.writestr(zinfo, payload)
 
-        if os.path.exists(target_zip_path):
-            os.remove(target_zip_path)
         os.replace(tmp_zip_path, target_zip_path)
         return len(entries)
     finally:

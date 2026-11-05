@@ -1,10 +1,10 @@
 # 技術路線圖：跨層宣告式與動態符號連結器 (`declarative_ref` Call Graph Linking) (Roadmap)
 
 > 主題：跨層宣告式與動態符號連結器 (`declarative_and_dynamic_call_graph_linking`)  
-> 歸檔日期：2026-11-03  
+> 歸檔日期：2026-11-05  
 > 狀態：Proposed  
 > 目標範疇：`ast`（`ast_engine` 拓撲連結器、呼叫圖譜索引與跨空間宣告式配置解析）、`knowledge-db`（消費端轉發同步）  
-> 前置解鎖條件：無  
+> 前置解鎖條件：[Tier 2 - 排序 #4] 獨立小型高價值升級；建議於 #5 (ast 大型編譯管線重構) 之前先行落地，消除 contributes/*.json 插件入口 0 callers 盲區  
 > 模型：Gemini 4 Argon (Low)  
 > 模板版本：v1.1  
 
@@ -37,7 +37,7 @@
 ## 3. 解鎖條件與演進構想 (Unlock Criteria & Evolution Stages)
 
 - **前置解鎖條件與觸發時機**：
-  - 無外部阻塞依賴；`module:ast@1.0.0.0` 與 `DeterministicSymbolResolver` 基礎拓撲已穩定落地，可隨時按需啟動。
+  - **[Tier 2 - 排序 #4]** 無外部阻塞依賴；建議於啟動 `#5 (ast_compile_pipeline_and_kdb_doc_governance)` 大型重構前先行獨立交付，讓後續跨模組重構與靜態審計直接受惠於完整的 `contributes/*.json` (`code.symbol://` / `code.class://`) 跨層呼叫圖譜。
 - **階段演進構想 (High-Level Stages)**：
   1. **Stage 1（`contributes/*.json` 與 `code.*://` 宣告式邊提取器）**：於 `ast_engine` 實作宣告式配置符號掃描與 `declarative_ref` 圖譜邊連通，支援增量熱修補。
   2. **Stage 2（`TopologyQueryService` 與 CLI 輸出整合）**：於 `ast callers`、`ast callees`、`ast impact` 查詢結果中呈現宣告式掛載來源，消除插件入口函式的孤兒節點假象。

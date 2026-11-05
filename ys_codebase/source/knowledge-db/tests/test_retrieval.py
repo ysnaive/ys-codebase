@@ -61,7 +61,7 @@ class DummyIndex:
             if not sym:
                 continue
             if norm_ftypes:
-                ext = sym.file_path.split(".")[-1].lower() if "." in sym.file_path else ""
+                ext = Path(sym.file_path).suffix.lstrip(".").lower() if sym.file_path else ""
                 if ext not in norm_ftypes:
                     continue
             if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
@@ -1098,6 +1098,58 @@ class TestHybridSearchEngine(YSCBTestCase):
 
         s2 = extractor.extract(sample_file, line_number=2, end_line=2, context_before=0, context_after=0)
         self.assertEqual(s2.lines[0], (2, "beta = 999"))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_hybrid_dot_directory_extension_and_pre_aggregated_index(self):
+        """驗證含隱藏點目錄但無副檔名路徑之 file_types 過濾精確度，以及 InvertedIndex.build(pre_aggregated=True) 快徑。"""
+        sym_dotdir_no_ext = UnifiedSymbol(
+            id="sym_makefile",
+            name="build_target",
+            kind=SymbolKind.FUNCTION,
+            file_path=".agents/skills/Makefile",
+            line_number=1,
+            language="python",
+        )
+        sym_py = UnifiedSymbol(
+            id="sym_py_ok",
+            name="build_target",
+            kind=SymbolKind.FUNCTION,
+            file_path=".agents/skills/runner.py",
+            line_number=1,
+            language="python",
+        )
+        symbols = {"sym_makefile": sym_dotdir_no_ext, "sym_py_ok": sym_py}
+        dummy_idx = DummyIndex(
+            symbols=symbols,
+            hits=[
+                {"doc_id": "sym_makefile", "score": 1.0},
+                {"doc_id": "sym_py_ok", "score": 1.0},
+            ],
+        )
+        vec_idx = VectorIndex(model_name="mock-model", dim=self.service.dimension)
+        vecs = self.service.embed_texts(["build_target makefile", "build_target runner"])
+        vec_idx.build(["sym_makefile", "sym_py_ok"], vecs)
+        engine = HybridSearchEngine(
+            inverted_index=dummy_idx,
+            vector_index=vec_idx,
+            embedding_service=self.service,
+            bm25_engine=dummy_idx,
+        )
+        # 過濾 file_types=["skills/makefile"] 不應誤將 .agents/skills/Makefile 當成副檔名匹配
+        res_fake_ext = engine.search("build_target", file_types=["skills/makefile"], lexical_only=False)
+        self.assertEqual(len(res_fake_ext), 0)
+
+        res_py = engine.search("build_target", file_types=["py"], lexical_only=False)
+        self.assertEqual(len(res_py), 1)
+        self.assertEqual(res_py[0]["symbol"].id, "sym_py_ok")
+
+        # 驗證 pre_aggregated=True 直接建立索引而不重複呼叫 aggregate_partial_symbols
+        idx = InvertedIndex(space_name="unified")
+        tok = MultilingualTokenizer()
+        idx.build([sym_py], tokenizer=tok, pre_aggregated=True)
+        self.assertEqual(idx.doc_count, 1)
+        self.assertIn("sym_py_ok", idx.symbols)
         self.mark_passed()
 
 

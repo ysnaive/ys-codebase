@@ -2,10 +2,13 @@
 Core Commands - Option Resolver & Orthogonal Group Validation.
 100% Python Standard Library.
 """
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.commands.bags import CmdOption
 from core.commands.registry import CommandSpec, OptionSpec
+
+_NEGATIVE_NUMBER_RE = re.compile(r"^-\d+(?:\.\d+)?$")
 
 
 class OptionResolutionError(Exception):
@@ -40,6 +43,15 @@ class OptionResolver:
     """
 
     @classmethod
+    def _is_negative_number_token(cls, token: str, cmd_spec: Optional[CommandSpec]) -> bool:
+        """判斷 token 是否為負數純量（且未被註冊為顯式選項名稱）。"""
+        if not isinstance(token, str) or not _NEGATIVE_NUMBER_RE.match(token):
+            return False
+        if cmd_spec is not None and token.lstrip("-") in cmd_spec.options:
+            return False
+        return True
+
+    @classmethod
     def resolve(
         cls,
         cmd_spec: Optional[CommandSpec],
@@ -61,8 +73,8 @@ class OptionResolver:
                 positional_args.extend(raw_args[idx + 1:])
                 break
 
-            # 選項標記 (- 開頭)
-            if token.startswith("-"):
+            # 選項標記 (- 開頭，且非負數純量)
+            if token.startswith("-") and not cls._is_negative_number_token(token, cmd_spec):
                 # 切分 --key=val 形式
                 if "=" in token:
                     raw_key, raw_val = token.split("=", 1)
@@ -98,7 +110,10 @@ class OptionResolver:
                             val: Any = raw_val
                         else:
                             # 需要消耗下一個參數
-                            if idx + 1 < len(raw_args) and not raw_args[idx + 1].startswith("-"):
+                            if idx + 1 < len(raw_args) and (
+                                not raw_args[idx + 1].startswith("-")
+                                or cls._is_negative_number_token(raw_args[idx + 1], cmd_spec)
+                            ):
                                 idx += 1
                                 val = raw_args[idx]
                             else:

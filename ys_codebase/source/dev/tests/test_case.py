@@ -224,3 +224,28 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
             if os.path.exists(src_path):
                 shutil.rmtree(src_path, ignore_errors=True)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_teardown_incremental_env_restore_and_run_cli_tree_timeout(self):
+        """Verify YSCBTestCase.tearDown restores os.environ without calling clear() and run_cli delegates to run_subprocess_with_tree_timeout."""
+        from unittest.mock import patch
+
+        class EnvAndCliCase(YSCBTestCase):
+            def test_noop(self):
+                self.mark_passed()
+
+        case = EnvAndCliCase("test_noop")
+        case.setUp()
+        os.environ["YSCB_TEST_TEMP_ADDED_VAR"] = "added"
+        with patch.object(os.environ, "clear", side_effect=AssertionError("os.environ.clear() must not be called")):
+            case.tearDown()
+        self.assertNotIn("YSCB_TEST_TEMP_ADDED_VAR", os.environ)
+
+        with patch("dev.testing.runner.run_subprocess_with_tree_timeout", return_value=(124, "", "[TimeoutError]")) as mock_run:
+            rc, out, err = self.run_cli(["status"], timeout=12.5)
+            self.assertEqual(rc, 124)
+            self.assertEqual(err, "[TimeoutError]")
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args.kwargs.get("timeout_sec"), 12.5)
+
+        self.mark_passed()

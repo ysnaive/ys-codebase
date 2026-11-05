@@ -298,7 +298,8 @@ def _notify_server_release_handles(yscb_root: Optional[str] = None) -> bool:
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=1.5) as resp:
             return resp.status == 200
     except Exception:
         return False
@@ -810,7 +811,15 @@ class Installer:
             print("[core:rollback] No snapshots found.")
             return 1
 
-        snaps = sorted(vfs.listdir("snapshot://"))
+        snap_root = uri.resolve("snapshot://")
+
+        def _snap_sort_key(name: str) -> Tuple[float, str]:
+            try:
+                return (os.path.getmtime(os.path.join(snap_root, name)), name)
+            except OSError:
+                return (0.0, name)
+
+        snaps = sorted(vfs.listdir("snapshot://"), key=_snap_sort_key)
         if not snaps:
             print("[core:rollback] No snapshots available.")
             return 1
@@ -1005,18 +1014,27 @@ class Installer:
         if found_b:
             is_newer = not os.path.isfile(mirror_zip) or (os.path.getmtime(found_b) >= os.path.getmtime(mirror_zip))
             if version == "build" or version.endswith(".build") or is_newer:
+                copied_to_mirror = False
                 try:
-                    if not _is_build_version_request(version) and os.path.isfile(found_b) and found_b.endswith(".zip"):
-                        self.engine._verify_zip_sha256(module_name, version, found_b, provider_arg, ignore_sha256=ignore_sha256)
-                    fetch_and_extract_zip(found_b, dest_dir)
                     if os.path.isfile(found_b) and (found_b.endswith(".zip") or zipfile.is_zipfile(found_b)):
-                        try:
+                        os.makedirs(mirror_dir, exist_ok=True)
+                        if os.path.abspath(found_b) != os.path.abspath(mirror_zip):
                             shutil.copy2(found_b, mirror_zip)
-                        except Exception:
-                            pass
+                            copied_to_mirror = True
+                        if not _is_build_version_request(version) and found_b.endswith(".zip"):
+                            self.engine._verify_zip_sha256(
+                                module_name, version, mirror_zip, provider_arg, ignore_sha256=ignore_sha256
+                            )
+                        fetch_and_extract_zip(mirror_zip, dest_dir)
+                    else:
+                        fetch_and_extract_zip(found_b, dest_dir)
                     return True
                 except Exception:
-                    pass
+                    if copied_to_mirror and os.path.isfile(mirror_zip):
+                        try:
+                            os.remove(mirror_zip)
+                        except OSError:
+                            pass
 
         # 2. 檢查本地鏡像庫 (.mirror/<mod>/<ver>.zip)
         if os.path.isfile(mirror_zip):
@@ -1051,16 +1069,23 @@ class Installer:
                     continue
                 if os.path.isdir(cand) and not os.path.isfile(os.path.join(cand, "manifest.json")):
                     continue
+                copied_cand_to_mirror = False
                 try:
                     if os.path.isfile(cand) and (cand.endswith(".zip") or zipfile.is_zipfile(cand)):
-                        shutil.copy2(cand, mirror_zip)
+                        if os.path.abspath(cand) != os.path.abspath(mirror_zip):
+                            shutil.copy2(cand, mirror_zip)
+                            copied_cand_to_mirror = True
                         self.engine._verify_zip_sha256(module_name, version, mirror_zip, p_abs, ignore_sha256=ignore_sha256)
                         fetch_and_extract_zip(mirror_zip, dest_dir)
                     else:
                         fetch_and_extract_zip(cand, dest_dir)
                     return True
                 except Exception:
-                    pass
+                    if copied_cand_to_mirror and os.path.isfile(mirror_zip):
+                        try:
+                            os.remove(mirror_zip)
+                        except OSError:
+                            pass
 
         # 3b. 本地同版 source/<mod> 動態打包自給自足（含 @build 同三元組匹配，但 .build 絕不寫入 release/）
         src_dir = find_matching_local_source_dir(module_name, [yscb_abs, p_abs or "", base_dir])

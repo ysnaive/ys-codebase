@@ -694,3 +694,29 @@ class TestDevTesterThrottle(YSCBTestCase):
             self.assertNotIn("--q", captured_argv)
 
         self.mark_passed()
+
+    def test_execute_single_module_in_sandbox_uses_tree_timeout(self):
+        """Verify _execute_single_module_in_sandbox delegates to run_subprocess_with_tree_timeout by default."""
+        sb_dir = tempfile.mkdtemp()
+        try:
+            mock_ctx = MagicMock(sandbox_dir=sb_dir, host_dir=sb_dir, engine_dir=sb_dir)
+            with patch("dev.testing.sandbox.SandboxProvisioner.create_sandbox", return_value=mock_ctx), \
+                 patch("dev.tester.run_subprocess_with_tree_timeout", return_value=(124, "", "[TimeoutError] Process tree terminated")) as mock_tree:
+                rc, rep, out_sb, res_obj = self.tester._execute_single_module_in_sandbox(
+                    op_test_args=["core"],
+                    report_filename="rep.json",
+                    sandbox_idx=1,
+                    quiet_mode=True,
+                    timeout_sec=45.0,
+                )
+                self.assertEqual(rc, 124)
+                self.assertIsNone(rep)
+                self.assertEqual(out_sb, sb_dir)
+                self.assertIsNotNone(res_obj)
+                self.assertEqual(res_obj.returncode, 124)
+                self.assertIn("[TimeoutError]", res_obj.stderr)
+                mock_tree.assert_called_once()
+                self.assertEqual(mock_tree.call_args.kwargs.get("timeout_sec"), 45.0)
+        finally:
+            shutil.rmtree(sb_dir, ignore_errors=True)
+        self.mark_passed()

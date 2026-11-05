@@ -795,22 +795,7 @@ class TodoManager:
         remaining_items = [it for it in existing_items if it.number not in set(req_nums)]
         max_ever = max(header_last_id, max((it.number for it in existing_items), default=0))
 
-        # 1. 原子寫回更新後之 TODO.md（保留單調計數器 max_ever 不倒退）
-        updated_preamble = self._update_preamble_headers(
-            preamble_lines, today_str=today_str, last_id=max_ever, model=None
-        )
-        if remaining_items:
-            rem_text = (
-                "\n".join(updated_preamble)
-                + "\n\n"
-                + "\n\n".join(it.raw_block for it in remaining_items)
-                + "\n"
-            )
-        else:
-            rem_text = "\n".join(updated_preamble) + "\n"
-        self.todo_file.write_text(rem_text, encoding="utf-8")
-
-        # 2. 寫入目標計畫目錄下之 todo.md
+        # 1. 先寫入目標計畫目錄下之 todo.md 與伴隨 changelog.md，確認成功後方移除 TODO.md 條目
         dest_todo = target_dir / "todo.md"
         promoted_blocks_str = "\n\n".join(it.raw_block for it in promoted_items)
         if dest_todo.exists():
@@ -831,13 +816,28 @@ class TodoManager:
 
         promoted_id_strs = [it.todo_id for it in promoted_items]
 
-        # 3. 自動初始化或追加伴隨 changelog.md
+        # 2. 自動初始化或追加伴隨 changelog.md
         disp_plan = _append_promoted_changelog(
             self.plans_dir,
             target_dir,
             summary=f"自 TODO.md 原子拔除立項 ({', '.join(promoted_id_strs)}) 遷入為 todo.md",
             model=clean_model,
         )
+
+        # 3. 原子寫回更新後之 TODO.md（保留單調計數器 max_ever 不倒退）
+        updated_preamble = self._update_preamble_headers(
+            preamble_lines, today_str=today_str, last_id=max_ever, model=None
+        )
+        if remaining_items:
+            rem_text = (
+                "\n".join(updated_preamble)
+                + "\n\n"
+                + "\n\n".join(it.raw_block for it in remaining_items)
+                + "\n"
+            )
+        else:
+            rem_text = "\n".join(updated_preamble) + "\n"
+        self.todo_file.write_text(rem_text, encoding="utf-8")
 
         msg = (
             f"[agents-workflow:todo] [SUCCESS] 已完成待辦原子拔除並遷入計畫目錄：\n"

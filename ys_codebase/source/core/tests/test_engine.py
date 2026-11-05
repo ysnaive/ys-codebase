@@ -644,6 +644,30 @@ def on_test_event(context):
             shutil.rmtree(provider_dir, ignore_errors=True)
             self.engine.act_reload(clean_stage=True, inject_stage=True, reconcile_deps=False)
 
+    def test_snapshot_collision_cleanup_and_lock_reentrancy(self):
+        """驗證 act_snapshot 覆寫同名舊快照時清除殘留檔案，以及 act_lock / act_unlock 同操作重入計數。"""
+        snap_uri = "snapshot://snap_collision_test"
+        try:
+            vfs.makedirs(f"{snap_uri}/modules/GhostMod", exist_ok=True)
+            vfs.write_text(f"{snap_uri}/modules/GhostMod/stale.txt", "stale")
+            self.engine.act_snapshot("snap_collision_test")
+            self.assertFalse(vfs.exists(f"{snap_uri}/modules/GhostMod/stale.txt"))
+        finally:
+            if vfs.exists(snap_uri):
+                vfs.rmtree(snap_uri, ignore_errors=True)
+
+        # Reentrancy for same operation name
+        self.engine.act_lock("test_reentrant_op")
+        try:
+            self.engine.act_lock("test_reentrant_op")
+            self.engine.act_unlock("test_reentrant_op")
+            # Outer lock must still be held until final unlock
+            self.assertTrue(vfs.exists("cache://.yscb.lock"))
+        finally:
+            self.engine.act_unlock("test_reentrant_op")
+        self.assertFalse(vfs.exists("cache://.yscb.lock"))
+        self.mark_passed()
+
 
 
 

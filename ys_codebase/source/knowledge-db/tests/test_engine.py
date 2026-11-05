@@ -498,6 +498,57 @@ class TestEngine(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_worker_cold_start_watermark_and_multi_space_bundle_export(self):
+        """驗證 KnowledgeDBServiceWorker 冷啟動載入 unified_index 檢出雙水位線落差，以及多空間 bundle 導出不互相覆寫。"""
+        from knowledge_db.service import KnowledgeDBServiceWorker
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            sp_a_dir = temp_path / "sp_a"
+            sp_b_dir = temp_path / "sp_b"
+            sp_a_dir.mkdir(parents=True)
+            sp_b_dir.mkdir(parents=True)
+            (sp_a_dir / "mod_a.py").write_text("def func_a():\n    return 1\n", encoding="utf-8")
+            (sp_b_dir / "mod_b.py").write_text("def func_b():\n    return 2\n", encoding="utf-8")
+
+            contributes = {
+                "spaces": {
+                    "sp_a": FileSpaceConfig(name="sp_a", include=[str(sp_a_dir)]).to_dict(),
+                    "sp_b": FileSpaceConfig(name="sp_b", include=[str(sp_b_dir)]).to_dict(),
+                }
+            }
+            storage_dir = temp_path / "storage"
+            eng1 = KnowledgeEngine(storage_dir=storage_dir, contributes_data=contributes)
+            eng1.build_unified_index(force=True)
+
+            # 模擬 AST 快照推進至更高代次，但磁碟 unified.index.bin.gz 的 acked_ast_generation 仍停留在舊值
+            indices_dir = eng1.pipeline.get_indices_dir()
+            bin_file = indices_dir / "unified.index.bin.gz"
+            eng1.pipeline.unified_index.acked_ast_generation = 0
+            eng1.pipeline.unified_index.save_binary(bin_file)
+
+            # 全新冷啟動引擎（unified_index 尚未載入記憶體）由 Worker 檢查水位線
+            eng_cold = KnowledgeEngine(storage_dir=storage_dir, contributes_data=contributes)
+            self.assertIsNone(eng_cold.pipeline.unified_index)
+            worker = KnowledgeDBServiceWorker(context={"project_root": str(temp_path)})
+            worker._engine = eng_cold
+            self.assertTrue(worker._has_pending_space_work(eng_cold, eng_cold.pipeline.get_indices_dir()))
+
+            # 驗證多空間 bundle(space=None, export_path=...) 派生獨立檔名不覆寫
+            export_base = temp_path / "exports" / "bundle_out.json"
+            bundle_res = eng1.bundle(space=None, export_path=export_base)
+            bundled_spaces = [b.space_name for b in bundle_res]
+            self.assertIn("sp_a", bundled_spaces)
+            self.assertIn("sp_b", bundled_spaces)
+            exp_a = temp_path / "exports" / "bundle_out_sp_a.json"
+            exp_b = temp_path / "exports" / "bundle_out_sp_b.json"
+            self.assertTrue(exp_a.exists())
+            self.assertTrue(exp_b.exists())
+            self.assertNotEqual(exp_a.read_text(encoding="utf-8"), exp_b.read_text(encoding="utf-8"))
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

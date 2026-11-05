@@ -190,3 +190,36 @@ class TestDevBuilder(YSCBTestCase):
         rel_meta = idx.get("releases", {}).get("1.0.0.1", {})
         self.assertEqual(rel_meta.get("sha256"), sha_lf_1)
         self.mark_passed()
+
+    def test_atomic_archive_replaces_without_pre_remove(self):
+        """Verify _create_module_archive_atomic overwrites existing archive via os.replace without pre-removing target_zip_path."""
+        from unittest.mock import patch
+        from dev.builder import _create_module_archive_atomic
+
+        self.create_mock_source_module("mock_det_pkg", "1.0.0.1")
+        src_dir = uri.resolve("module.source://mock_det_pkg")
+        out_dir = uri.resolve("module.build://mock_det_pkg")
+        os.makedirs(out_dir, exist_ok=True)
+        target_zip = os.path.join(out_dir, "atomic_test.zip")
+        with open(target_zip, "wb") as f:
+            f.write(b"old_zip_bytes")
+
+        orig_remove = os.remove
+        removed_paths = []
+
+        def spy_remove(p):
+            removed_paths.append(os.path.abspath(p))
+            return orig_remove(p)
+
+        with patch("os.remove", side_effect=spy_remove):
+            cnt = _create_module_archive_atomic(
+                source_dir=src_dir,
+                target_zip_path=target_zip,
+                ignores=[],
+                manifest_data={"name": "mock_det_pkg", "version": "1.0.0.1"},
+                target_version="1.0.0.1",
+            )
+        self.assertGreater(cnt, 0)
+        self.assertTrue(os.path.isfile(target_zip))
+        self.assertNotIn(os.path.abspath(target_zip), removed_paths)
+        self.mark_passed()

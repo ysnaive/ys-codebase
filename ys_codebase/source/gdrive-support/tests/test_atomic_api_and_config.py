@@ -664,6 +664,304 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
         )
         self.mark_passed()
 
+    @require(Requirement.ENV)
+    def test_ft_09_drive_api_transport_401_retry_folder_protection_and_mkdir_sorting(
+        self,
+    ) -> None:
+        """
+        Verify GoogleDriveApiTransport HTTP resilience, folder deduplication safety, and cache thread-safety:
+        1. HTTP 401 on _request_json and download_file clears cached token under _token_lock and retries once.
+        2. Download transient HTTP 503 retries with exponential backoff and succeeds.
+        3. list_files same-name deduplication never auto-trashes FOLDER_MIME_TYPE entries.
+        4. mkdir with duplicate remote folders selects the newest modifiedTime folder deterministically.
+        5. warm_folder_cache and reset_scan_state safely manage _folder_cache and _scanned_prefixes under _cache_lock.
+        """
+        import io
+        import time
+        import urllib.error
+        import urllib.request
+        from gdrive_support.config import GDriveConfig
+        from gdrive_support.transport import (
+            FOLDER_MIME_TYPE,
+            GoogleDriveApiTransport,
+            RemoteEntry,
+        )
+
+        cfg = GDriveConfig(
+            root_folder_id="root_fid_123",
+            credentials_uri=str(self.tmp_root / "creds.json"),
+            token_uri=str(self.tmp_root / "tok.json"),
+        )
+        transport = GoogleDriveApiTransport(cfg)
+        transport._access_token = "stale_token"
+        transport._token_expiry_epoch = time.time() + 3600.0
+
+        refresh_calls: list[int] = []
+        orig_ensure_token = transport._ensure_access_token
+
+        def _fake_ensure_token() -> str:
+            if not transport._access_token:
+                refresh_calls.append(1)
+                transport._access_token = "fresh_token_after_401"
+                transport._token_expiry_epoch = time.time() + 3600.0
+            return transport._access_token
+
+        transport._ensure_access_token = _fake_ensure_token  # type: ignore[method-assign]
+
+        # 1. _request_json 401 -> token refresh -> retry success
+        conn_auth_headers: list[str] = []
+
+        class _FakeHttpsResp:
+            def __init__(self, status: int, body_bytes: bytes) -> None:
+                self.status = status
+                self._body = body_bytes
+
+            def read(self, amt: int = -1) -> bytes:
+                return self._body
+
+        class _FakeHttpsConn:
+            def request(
+                self,
+                method: str,
+                path_query: str,
+                body: bytes | None = None,
+                headers: dict[str, str] | None = None,
+            ) -> None:
+                conn_auth_headers.append((headers or {}).get("Authorization", ""))
+
+            def getresponse(self) -> _FakeHttpsResp:
+                if len(conn_auth_headers) == 1:
+                    return _FakeHttpsResp(
+                        401,
+                        b'{"error":{"code":401,"message":"Invalid Credentials"}}',
+                    )
+                return _FakeHttpsResp(200, b'{"startPageToken":"tok_999"}')
+
+        orig_get_https_conn = transport._get_https_conn
+        transport._get_https_conn = lambda _host: _FakeHttpsConn()  # type: ignore[method-assign, return-value]
+        try:
+            tok = transport.get_start_page_token()
+            self.assertEqual(tok, "tok_999")
+            self.assertEqual(len(refresh_calls), 1)
+            self.assertEqual(len(conn_auth_headers), 2)
+            self.assertIn("stale_token", conn_auth_headers[0])
+            self.assertIn("fresh_token_after_401", conn_auth_headers[1])
+        finally:
+            transport._get_https_conn = orig_get_https_conn  # type: ignore[method-assign]
+
+        # 2. download_file with entry_hint + 401 refresh + 503 retry
+        dl_Target = self.tmp_root / "downloaded_via_hint.txt"
+        hint_entry = RemoteEntry(
+            rel_path="docs/hinted.txt",
+            name="hinted.txt",
+            file_id="fid_hint_1",
+            mime_type="text/plain",
+            is_dir=False,
+            size=12,
+            md5="abc",
+        )
+        dl_attempts: list[int] = []
+
+        class _FakeUrlopenResp:
+            def __init__(self, body_bytes: bytes) -> None:
+                self._buf = io.BytesIO(body_bytes)
+
+            def read(self, amt: int = -1) -> bytes:
+                return self._buf.read(amt)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+        def _fake_urlopen_dl(req, timeout=120):
+            dl_attempts.append(1)
+            if len(dl_attempts) == 1:
+                raise urllib.error.HTTPError(
+                    req.full_url,
+                    401,
+                    "Unauthorized",
+                    hdrs=None,  # type: ignore[arg-type]
+                    fp=io.BytesIO(b"Unauthorized"),
+                )
+            if len(dl_attempts) == 2:
+                raise urllib.error.HTTPError(
+                    req.full_url,
+                    503,
+                    "Service Unavailable",
+                    hdrs=None,  # type: ignore[arg-type]
+                    fp=io.BytesIO(b"Backend Error"),
+                )
+            return _FakeUrlopenResp(b"Hello Hinted")
+
+        orig_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = _fake_urlopen_dl  # type: ignore[assignment]
+        orig_sleep = time.sleep
+        time.sleep = lambda _s: None  # type: ignore[assignment]
+        try:
+            ret_ent = transport.download_file(
+                "docs/hinted.txt", dl_Target, entry_hint=hint_entry
+            )
+            self.assertEqual(ret_ent.file_id, "fid_hint_1")
+            self.assertEqual(dl_Target.read_text(encoding="utf-8"), "Hello Hinted")
+            self.assertEqual(len(dl_attempts), 3)
+        finally:
+            urllib.request.urlopen = orig_urlopen  # type: ignore[assignment]
+            time.sleep = orig_sleep  # type: ignore[assignment]
+
+        # 3. list_files duplicate folder protection & mkdir modifiedTime descending selection
+        trashed_ids: list[str] = []
+        orig_request_json = transport._request_json
+
+        def _fake_request_json_patch(
+            method: str,
+            url: str,
+            body: bytes | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> dict[str, object]:
+            if method == "PATCH" and "/files/" in url:
+                fid = url.split("/files/", 1)[1].split("?", 1)[0]
+                trashed_ids.append(fid)
+                return {"id": fid}
+            return orig_request_json(method, url, body=body, headers=headers)
+
+        transport._request_json = _fake_request_json_patch  # type: ignore[method-assign]
+        transport._list_children_raw = lambda parent_id: [  # type: ignore[method-assign]
+            {
+                "id": "dir_older",
+                "name": "sub",
+                "mimeType": FOLDER_MIME_TYPE,
+                "modifiedTime": "2026-11-05T01:00:00Z",
+                "parents": [parent_id],
+            },
+            {
+                "id": "dir_newer",
+                "name": "sub",
+                "mimeType": FOLDER_MIME_TYPE,
+                "modifiedTime": "2026-11-05T02:00:00Z",
+                "parents": [parent_id],
+            },
+            {
+                "id": "file_older",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-11-05T01:00:00Z",
+                "md5Checksum": "111",
+                "size": "3",
+                "parents": [parent_id],
+            },
+            {
+                "id": "file_newer",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-11-05T02:00:00Z",
+                "md5Checksum": "222",
+                "size": "3",
+                "parents": [parent_id],
+            },
+        ]
+
+        try:
+            listed = transport.list_files("", recursive=False)
+            self.assertEqual(trashed_ids, ["file_older"])
+            by_name = {e.name: e for e in listed}
+            self.assertEqual(by_name["sub"].file_id, "dir_newer")
+            self.assertEqual(by_name["note.md"].file_id, "file_newer")
+
+            transport.reset_scan_state()
+            mkdir_ent = transport.mkdir("sub")
+            self.assertEqual(mkdir_ent.file_id, "dir_newer")
+
+            # 4. warm_folder_cache and direct file_id trash_file
+            transport.reset_scan_state()
+            transport.warm_folder_cache(
+                {
+                    "repo": RemoteEntry(
+                        rel_path="repo",
+                        name="repo",
+                        file_id="fid_repo_warm",
+                        mime_type=FOLDER_MIME_TYPE,
+                        is_dir=True,
+                    ),
+                    "repo/main": RemoteEntry(
+                        rel_path="repo/main",
+                        name="main",
+                        file_id="fid_main_warm",
+                        mime_type=FOLDER_MIME_TYPE,
+                        is_dir=True,
+                    ),
+                    "repo/main/docs": RemoteEntry(
+                        rel_path="repo/main/docs",
+                        name="docs",
+                        file_id="fid_docs_warm",
+                        mime_type=FOLDER_MIME_TYPE,
+                        is_dir=True,
+                    ),
+                }
+            )
+            resolved_warm = transport._resolve_folder_id_by_path("repo/main/docs")
+            self.assertIsNotNone(resolved_warm)
+            self.assertEqual(resolved_warm[0], "fid_docs_warm")  # type: ignore[index]
+            trashed_ids.clear()
+            self.assertTrue(
+                transport.trash_file("repo/main/docs/obsolete.md", file_id="fid_direct_del")
+            )
+            self.assertEqual(trashed_ids, ["fid_direct_del"])
+
+            # 5. _resolve_shortcut_targets multi-target parallel resolution
+            fetched_targets: list[str] = []
+
+            def _fake_request_json_shortcuts(
+                method: str,
+                url: str,
+                body: bytes | None = None,
+                headers: dict[str, str] | None = None,
+            ) -> dict[str, object]:
+                if method == "GET" and "/files/tgt_" in url:
+                    tid = url.split("/files/", 1)[1].split("?", 1)[0]
+                    fetched_targets.append(tid)
+                    return {
+                        "id": tid,
+                        "name": f"{tid}.md",
+                        "mimeType": "text/markdown",
+                        "md5Checksum": f"md5_{tid}",
+                        "size": "10",
+                        "trashed": False,
+                    }
+                return _fake_request_json_patch(
+                    method, url, body=body, headers=headers
+                )
+
+            transport._request_json = _fake_request_json_shortcuts  # type: ignore[method-assign]
+            sc_items = [
+                {
+                    "id": "sc_1",
+                    "name": "a.md",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "shortcutDetails": {"targetId": "tgt_1", "targetMimeType": "text/markdown"},
+                },
+                {
+                    "id": "sc_2",
+                    "name": "b.md",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "shortcutDetails": {"targetId": "tgt_2", "targetMimeType": "text/markdown"},
+                },
+                {
+                    "id": "sc_3",
+                    "name": "c.md",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "shortcutDetails": {"targetId": "tgt_3", "targetMimeType": "text/markdown"},
+                },
+            ]
+            resolved_sc = transport._resolve_shortcut_targets(sc_items)
+            self.assertEqual(sorted(resolved_sc.keys()), ["tgt_1", "tgt_2", "tgt_3"])
+            self.assertEqual(sorted(fetched_targets), ["tgt_1", "tgt_2", "tgt_3"])
+        finally:
+            transport._request_json = orig_request_json  # type: ignore[method-assign]
+            transport._ensure_access_token = orig_ensure_token  # type: ignore[method-assign]
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

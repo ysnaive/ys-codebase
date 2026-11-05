@@ -5,6 +5,7 @@ No legacy process(args) fallback.
 import builtins
 import json
 import os
+import re
 import sys
 from typing import Any, List
 
@@ -27,7 +28,7 @@ def _render_subcommand_group_help(cmd_name: str) -> int:
 
 
 def _parse_cli_scalar_or_json(raw_val: str) -> Any:
-    """Parse CLI raw string value into boolean, null, integer, JSON container, or plain string."""
+    """Parse CLI raw string value into boolean, null, integer, float, JSON container, or plain string."""
     low = raw_val.lower()
     if low == "true":
         return True
@@ -35,10 +36,11 @@ def _parse_cli_scalar_or_json(raw_val: str) -> Any:
         return False
     if low in ("none", "null"):
         return None
-    if raw_val.isdigit():
+    if re.match(r"^[+-]?\d+$", raw_val):
         return int(raw_val)
+    if re.match(r"^[+-]?\d+\.\d+$", raw_val):
+        return float(raw_val)
     if raw_val.startswith(("[", "{")) and raw_val.endswith(("]", "}")):
-        import json
         try:
             return json.loads(raw_val)
         except Exception:

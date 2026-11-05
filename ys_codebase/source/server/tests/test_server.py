@@ -1214,6 +1214,109 @@ class TestServerModule(YSCBTestCase):
             streamer.stop_capture()
         self.mark_passed()
 
+    def test_handshake_ignores_non_json_noise_and_sets_utf8_env(self):
+        """Verify _read_handshake tolerates non-JSON stdout noise and non-dict JSON values, and _spawn_worker_locked sets PYTHONIOENCODING=utf-8."""
+        script = self._write_fake_worker(
+            "sys.stdout.write('C-extension startup banner noise\\n')\n"
+            "sys.stdout.write('12345\\n')\n"
+            "sys.stdout.flush()\n"
+            "emit({'type': 'worker_alive'})\n"
+            "sys.stdout.write('another non-json line before ready\\n')\n"
+            "sys.stdout.flush()\n"
+            "emit({'type': 'worker_ready', 'services': []})\n"
+            "for line in sys.stdin:\n"
+            "    req = json.loads(line)\n"
+            "    if req.get('action') == 'exit':\n        break\n"
+        )
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        captured_env = {}
+        real_popen = subprocess.Popen
+
+        def popen_spy(cmd, **kwargs):
+            captured_env.update(kwargs.get("env") or {})
+            return real_popen([sys.executable, script], **kwargs)
+
+        with unittest.mock.patch("server.master.subprocess.Popen", side_effect=popen_spy):
+            try:
+                with sup._worker_lock:
+                    pid = sup._spawn_worker_locked()
+                self.assertGreater(pid, 0)
+                self.assertEqual(captured_env.get("PYTHONIOENCODING"), "utf-8")
+                self.assertTrue(sup._wait_worker_ready(timeout_sec=5.0))
+                self.assertEqual(sup.get_status_dict()["state"], "ready")
+            finally:
+                with sup._worker_lock:
+                    sup._kill_worker_locked(timeout_sec=1.0)
+        self.mark_passed()
+
+    def test_worker_unhandled_exception_streams_stderr_and_finish_error(self):
+        """Verify WarmWorker.execute_task flushes unhandled exception to stderr before closing streamer and passes error to task_finish."""
+        packets = []
+        worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=packets.append)
+
+        with unittest.mock.patch(
+            "core.commands.dispatcher.dispatch_local",
+            side_effect=RuntimeError("unexpected worker boom"),
+        ):
+            rc = worker.execute_task("mock_boom", [], cwd=self.root_dir)
+        self.assertEqual(rc, 1)
+
+        stderr_texts = [p.get("text", "") for p in packets if p.get("type") == "terminal_stream" and p.get("stream") == "stderr"]
+        self.assertTrue(any("[Server Worker Error] RuntimeError: unexpected worker boom" in t for t in stderr_texts))
+
+        finish_pkts = [p for p in packets if p.get("type") == "task_finish"]
+        self.assertEqual(len(finish_pkts), 1)
+        self.assertEqual(finish_pkts[0]["exit_code"], 1)
+        self.assertIn("RuntimeError: unexpected worker boom", finish_pkts[0].get("error", ""))
+        self.mark_passed()
+
+    def test_dispatch_payload_validation_root_normalization_and_touch_throttling(self):
+        """Verify /api/dispatch rejects invalid payloads with 400, normalizes yscb_root across symlinks/case, and throttles touch_activity."""
+        from server.service import touch_activity
+
+        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
+            sup.start(foreground=False)
+
+        try:
+            auth_headers = {"Authorization": f"Bearer {sup.token}", "Content-Type": "application/json"}
+            url_dispatch = f"http://127.0.0.1:{sup.port}/api/dispatch"
+
+            for bad_body in (b"[]", b'{"args": []}', b'{"module": "  "}', b'{"module": "core", "args": "not-a-list"}'):
+                req_bad = urllib.request.Request(url_dispatch, data=bad_body, headers=auth_headers, method="POST")
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    urllib.request.urlopen(req_bad)
+                self.assertEqual(cm.exception.code, 400)
+                cm.exception.close()
+
+            # Symlinked workspace root should be accepted after realpath/normcase normalization
+            link_root = os.path.join(self.root_dir, "symlink_ws")
+            has_symlink = False
+            try:
+                os.symlink(self.root_dir, link_root)
+                has_symlink = True
+            except OSError:
+                has_symlink = False
+
+            if has_symlink:
+                with unittest.mock.patch.object(sup, "dispatch_task", return_value=0) as mock_disp:
+                    payload = json.dumps({"module": "core", "args": ["status"], "yscb_root": link_root}).encode("utf-8")
+                    req_ok = urllib.request.Request(url_dispatch, data=payload, headers=auth_headers, method="POST")
+                    with urllib.request.urlopen(req_ok) as resp:
+                        self.assertEqual(resp.status, 200)
+                    mock_disp.assert_called_once()
+
+            # touch_activity throttling with explicit yscb_root
+            self.assertTrue(touch_activity(self.root_dir, force=True))
+            with unittest.mock.patch("urllib.request.urlopen") as mock_urlopen:
+                # Within 1.0s debounce window, even with explicit yscb_root, should short-circuit without HTTP call
+                self.assertTrue(touch_activity(self.root_dir, force=False))
+                mock_urlopen.assert_not_called()
+        finally:
+            sup.stop()
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

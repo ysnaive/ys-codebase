@@ -846,6 +846,36 @@ class TestPublisherCrossPlatform(YSCBTestCase):
         self.assertEqual(proj_m2.get("fingerprint"), "fp_cache_proj")
         self.mark_passed()
 
+    def test_prune_removes_legacy_workflows_and_commands_dirs(self):
+        """驗證原子發布清理時自動偵測並物理移除遺留的 .agents/workflows/ 與 .claude/commands/ 目錄。"""
+        proj_dir = os.path.join(self.temp_dir, "legacy_prune_proj")
+        legacy_wf_dir = os.path.join(proj_dir, ".agents", "workflows")
+        legacy_cmd_dir = os.path.join(proj_dir, ".claude", "commands")
+        active_skill_dir = os.path.join(proj_dir, ".agents", "skills", "auto")
+        os.makedirs(legacy_wf_dir, exist_ok=True)
+        os.makedirs(legacy_cmd_dir, exist_ok=True)
+        os.makedirs(active_skill_dir, exist_ok=True)
+
+        old_wf_file = os.path.join(legacy_wf_dir, "old.md")
+        old_cmd_file = os.path.join(legacy_cmd_dir, "old_cmd.md")
+        active_skill_file = os.path.join(active_skill_dir, "SKILL.md")
+        for fp in (old_wf_file, old_cmd_file, active_skill_file):
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write("# doc\n")
+
+        removed = self.publisher._prune_orphaned_managed_files(
+            old_proj_manifest={"published_files": []},
+            old_local_manifest={"published_files": []},
+            current_published_set={active_skill_file},
+            all_registered_targets={},
+            proj_root=proj_dir,
+        )
+        self.assertFalse(os.path.exists(legacy_wf_dir))
+        self.assertFalse(os.path.exists(legacy_cmd_dir))
+        self.assertTrue(os.path.isfile(active_skill_file))
+        self.assertGreaterEqual(len(removed), 2)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

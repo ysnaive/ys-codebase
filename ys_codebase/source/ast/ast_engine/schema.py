@@ -446,6 +446,12 @@ class ASTSnapshot:
                     lst.append(sid)
             self.file_to_symbol_ids = mapping
 
+    def list_symbols(self) -> List[UnifiedSymbol]:
+        """Return all symbols in the snapshot as a list."""
+        if isinstance(self.symbols, dict):
+            return list(self.symbols.values())
+        return list(self.symbols)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "ast_generation": self.ast_generation,
@@ -471,6 +477,15 @@ class ASTSnapshot:
                     symbols[str(sid)] = s_val
                 elif isinstance(s_val, dict):
                     symbols[str(sid)] = UnifiedSymbol.from_dict(s_val)
+        elif isinstance(raw_syms, (list, tuple, set)):
+            for item in raw_syms:
+                if isinstance(item, UnifiedSymbol):
+                    if item.id:
+                        symbols[str(item.id)] = item
+                elif isinstance(item, dict):
+                    sym_obj = UnifiedSymbol.from_dict(item)
+                    if sym_obj.id:
+                        symbols[str(sym_obj.id)] = sym_obj
         return cls(
             ast_generation=int(data.get("ast_generation", 0)),
             space_generations={str(k): int(v) for k, v in data.get("space_generations", {}).items()},

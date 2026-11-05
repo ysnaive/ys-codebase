@@ -2268,6 +2268,48 @@ class TestPlansModelRecord(YSCBTestCase):
         self.assertEqual(tp_state.transcript_cli_by_module.get("knowledge-db"), 1)
         self.assertNotIn("kdb", tp_state.transcript_cli_by_module)
 
+        # --- 8. 驗證 _check_nested_depth_and_structure 對合併檔 P01-05_auto.md + sub_01 仍要求 umbrella_overview.md ---
+        p_auto_with_sub = self.plans_dir / "2026_11_01_1055_auto_with_sub"
+        (p_auto_with_sub / "sub_01_part").mkdir(parents=True, exist_ok=True)
+        (p_auto_with_sub / "revision_log.md").write_text("# Rev\n\n" + hdr + "> 狀態：Completed\n", encoding="utf-8")
+        (p_auto_with_sub / "P01-05_auto.md").write_text(
+            auto_doc_unbackpropped.replace("尚未同步", "已回寫 §2 與 §3"),
+            encoding="utf-8",
+        )
+        rep_sub_struct = real_verifier.verify_plan(p_auto_with_sub)
+        self.assertTrue(
+            any("umbrella_overview.md" in iss.message and iss.severity == PlanSeverity.FAIL for iss in rep_sub_struct.issues),
+            "包含 P01-05_auto.md 與 sub_01 的主計畫不得被誤判為純修訂根目錄",
+        )
+
+        # --- 9. 驗證 parse_transcript_file 單趟提取 topic 且 SessionTraceEngine.list_sessions 不二次重讀 ---
+        from agents_workflow.plans._trace_parser import parse_transcript_file
+        from agents_workflow.plans.session_trace import SessionTraceEngine
+
+        sample_jsonl = self.root / "sample_single_pass.jsonl"
+        sample_jsonl.write_text(
+            json.dumps({"step_index": 1, "type": "USER_INPUT", "content": "<USER_REQUEST>/context-init</USER_REQUEST>"}) + "\n"
+            + json.dumps({"step_index": 2, "type": "USER_INPUT", "content": "<USER_REQUEST>Single pass topic extraction test</USER_REQUEST>"}) + "\n",
+            encoding="utf-8",
+        )
+        _, _, _, t1_single = parse_transcript_file(sample_jsonl)
+        self.assertEqual(t1_single.get("topic"), "Single pass topic extraction test")
+
+        trace_eng = SessionTraceEngine(project_root=self.root, plans_dir=self.plans_dir)
+        with patch.object(trace_eng, "_get_configured_release_targets", return_value=["antigravity"]), patch.object(
+            trace_eng, "_collect_candidate_jsonls", return_value=[("antigravity", sample_jsonl, time.time())]
+        ), patch.object(
+            trace_eng,
+            "_inspect_candidate_beacon",
+            return_value={"matches_workspace": True, "is_subagent": False, "detected_workspace": str(self.root)},
+        ), patch(
+            "agents_workflow.plans.session_trace.parse_transcript_file", wraps=parse_transcript_file
+        ) as spy_parse:
+            sess_list = trace_eng.list_sessions(limit=5)
+            self.assertEqual(spy_parse.call_count, 1)
+            self.assertEqual(len(sess_list), 1)
+            self.assertEqual(sess_list[0]["topic"], "Single pass topic extraction test")
+
         self.mark_passed()
 
 

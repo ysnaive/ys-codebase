@@ -360,7 +360,12 @@ class IndexingPipeline:
             if fs is not None
         ]
         idx = InvertedIndex(space_name="unified")
-        idx.build(filtered_symbols, tokenizer=self.tokenizer, space="unified")
+        idx.build(
+            filtered_symbols,
+            tokenizer=self.tokenizer,
+            space="unified",
+            pre_aggregated=True,
+        )
         idx.acked_ast_generation = snapshot.ast_generation
         _report(2, f"BM25 倒排索引建置 ({idx.doc_count} 符號)", (time.time() - t0) * 1000)
 
@@ -738,7 +743,8 @@ class IndexingPipeline:
                                 new_doc_ids=[],
                                 new_vectors=None,
                             )
-                            vec_idx.save_binary(vector_file)
+                            with self._kdb_index_file_lock():
+                                vec_idx.save_binary(vector_file)
                     except Exception as ve:
                         logger.warning(f"Failed evicting old vectors during skip_vectors hot patch: {ve}")
                 vector_degraded = False
@@ -1008,11 +1014,17 @@ class IndexingPipeline:
             if not sym.spaces or sp_name in sym.spaces
         ]
         idx = InvertedIndex(space_name=sp_name)
-        idx.build(space_symbols, tokenizer=self.tokenizer, space=sp_name)
+        idx.build(
+            space_symbols,
+            tokenizer=self.tokenizer,
+            space=sp_name,
+            pre_aggregated=True,
+        )
         idx.acked_ast_generation = snapshot.ast_generation
 
         try:
-            idx.save_binary(bin_file)
+            with self._kdb_index_file_lock():
+                idx.save_binary(bin_file)
         except Exception as e:
             raise KnowledgeDBError(f"Failed saving binary index cache for '{sp_name}': {e}") from e
 
@@ -1111,8 +1123,6 @@ class IndexingPipeline:
                     )
                 self._reset_consumer_cursor(consumer_id="knowledge-db")
                 self.build_unified_index(force=True)
-                with self._consume_space_diff(consumer_id="knowledge-db"):
-                    pass
             return self._unified_index  # type: ignore[return-value]
 
         if auto_rebuild:

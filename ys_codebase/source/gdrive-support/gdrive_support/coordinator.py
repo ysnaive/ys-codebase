@@ -71,6 +71,11 @@ SYSTEM_NAMES = {
     ".history",
     ".trash",
 }
+BRANCH_INTERNAL_SYSTEM_NAMES = {
+    REPO_CONFIG_FILENAME,
+    ".history",
+    ".trash",
+}
 STABILIZATION_WINDOW_NS = 2_000_000_000  # 2.0 seconds
 MAX_LOG_BYTES = 2 * 1024 * 1024  # 2 MB
 PARALLEL_TRANSFER_WORKERS = 8
@@ -367,8 +372,8 @@ class SyncCoordinator:
 
     def _precreate_remote_dirs(self, remote_file_paths: List[str]) -> List[RemoteEntry]:
         """
-        Pre-create all ancestor parent directories sequentially on the main thread
-        sorted by path depth before dispatching concurrent worker threads.
+        Pre-create all ancestor parent directories grouped by depth level (BFS)
+        before dispatching concurrent file transfer threads.
         """
         parents: Set[str] = set()
         for p in remote_file_paths:
@@ -376,9 +381,32 @@ class SyncCoordinator:
             while curr not in ("", "."):
                 parents.add(curr)
                 curr = Path(curr).parent.as_posix()
+        if not parents:
+            return []
+
+        by_depth: Dict[int, List[str]] = {}
+        for parent_rel in sorted(parents):
+            by_depth.setdefault(parent_rel.count("/"), []).append(parent_rel)
+
         created: List[RemoteEntry] = []
-        for parent_rel in sorted(parents, key=lambda x: (x.count("/"), x)):
-            created.append(self.transport.mkdir(parent_rel))
+        for depth in sorted(by_depth.keys()):
+            level_dirs = by_depth[depth]
+            if len(level_dirs) == 1:
+                created.append(self.transport.mkdir(level_dirs[0]))
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=min(PARALLEL_TRANSFER_WORKERS, len(level_dirs))
+                ) as pool:
+                    fut_map = {
+                        pool.submit(self.transport.mkdir, d_rel): d_rel
+                        for d_rel in level_dirs
+                    }
+                    level_results: Dict[str, RemoteEntry] = {}
+                    for fut in as_completed(fut_map):
+                        d_rel = fut_map[fut]
+                        level_results[d_rel] = fut.result()
+                    for d_rel in level_dirs:
+                        created.append(level_results[d_rel])
         return created
 
     def reconcile_root_readme(self) -> Dict[str, Any]:
@@ -969,6 +997,10 @@ class SyncCoordinator:
         Stage 4: Write structured sync.log entry and return SyncReport.
         """
         self.ensure_repo_sync_enabled()
+        if not self.config.sync_spaces:
+            raise GDriveConfigError(
+                "No sync_spaces configured for gdrive-support; refusing to run sync."
+            )
         norm_mode = (mode or "sync").strip().lower()
         if norm_mode not in ("sync", "pull", "push"):
             raise GDriveConfigError(f"Unsupported sync mode: '{mode}'")
@@ -983,6 +1015,7 @@ class SyncCoordinator:
                     branch=branch, mode=norm_mode, yielded=True, cache_hit_level=None
                 )
 
+            self.transport.reset_scan_state()
             state = self._load_local_state()
             branch_state_dict = (
                 state.setdefault("branches", {})
@@ -1005,9 +1038,20 @@ class SyncCoordinator:
 
             cache_hit_level = 2
             flushed_ext_stage1: List[str] = []
+            branch_dir_ids_current: Dict[str, str] = {}
             inc_res = self._try_incremental_remote_cache(state, branch)
             if inc_res is not None:
                 cache_hit_level, meta, remote_snap, raw_remote_entries = inc_res
+                self._warm_transport_folder_cache(state, branch)
+                branch_dir_ids_current = dict(
+                    (
+                        state.get("remote_repo_cache", {})
+                        .get("branches", {})
+                        .get(branch, {})
+                        .get("dir_ids")
+                        or {}
+                    )
+                )
                 self.reconcile_root_readme()
             else:
                 cache_hit_level = 2
@@ -1035,6 +1079,7 @@ class SyncCoordinator:
                 remote_snap, raw_remote_entries, branch_dir_ids, branch_dir_meta = (
                     self._scan_remote_branch_with_dirs(branch)
                 )
+                branch_dir_ids_current = dict(branch_dir_ids)
 
                 cache_branches: Dict[str, Any] = {
                     branch: {
@@ -1168,7 +1213,11 @@ class SyncCoordinator:
                     remote_branch_rel = self._repo_rel(f"{branch}/{rel_p}")
 
                     if act.action == SyncActionType.IN_SYNC:
-                        if act.local_entry and act.remote_entry:
+                        if (
+                            act.local_entry
+                            and act.remote_entry
+                            and act.reason == "identical_digest"
+                        ):
                             merged_entry = FileEntry(
                                 rel_path=rel_p,
                                 md5=act.local_entry.md5,
@@ -1279,7 +1328,9 @@ class SyncCoordinator:
                                 self.transport.mkdir(hist_dir_rel)
                                 hist_rel = f"{hist_dir_rel}/{existing_rem.file_id}_{Path(rel_p).name}"
                                 self.transport.move_file(
-                                    remote_branch_rel, hist_rel
+                                    remote_branch_rel,
+                                    hist_rel,
+                                    entry_hint=existing_rem,
                                 )
                                 with self._meta_lock:
                                     history_files[existing_rem.file_id] = hist_rel
@@ -1287,7 +1338,9 @@ class SyncCoordinator:
                                         existing_rem.file_id
                                     )
                             else:
-                                self._trash_repo_item(remote_branch_rel)
+                                self._trash_repo_item(
+                                    remote_branch_rel, file_id=existing_rem.file_id
+                                )
                         with self._meta_lock:
                             curr_branch_files.pop(rel_p, None)
                             meta_dirty = True
@@ -1341,13 +1394,18 @@ class SyncCoordinator:
                                 f"{abs_local_item.name}.remote_conflict.{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.bak"
                             )
                             self.transport.download_file(
-                                remote_branch_rel_item, rem_bak
+                                remote_branch_rel_item,
+                                rem_bak,
+                                entry_hint=existing_rem_item,
                             )
 
                         in_place_fid: Optional[str] = None
                         if existing_rem_item is not None:
                             if existing_rem_item.is_shortcut:
-                                self._trash_repo_item(remote_branch_rel_item)
+                                self._trash_repo_item(
+                                    remote_branch_rel_item,
+                                    file_id=existing_rem_item.file_id,
+                                )
                                 in_place_fid = None
                             else:
                                 old_fid = existing_rem_item.file_id
@@ -1361,7 +1419,9 @@ class SyncCoordinator:
                                     hist_dir_rel = self._repo_rel(".history")
                                     hist_rel = f"{hist_dir_rel}/{old_fid}_{Path(rel_p_item).name}"
                                     self.transport.move_file(
-                                        remote_branch_rel_item, hist_rel
+                                        remote_branch_rel_item,
+                                        hist_rel,
+                                        entry_hint=existing_rem_item,
                                     )
                                     with self._meta_lock:
                                         history_files[old_fid] = hist_rel
@@ -1450,11 +1510,15 @@ class SyncCoordinator:
                 if pull_tasks and not report.yielded:
 
                     def _download_and_hash(
-                        remote_branch_rel: str, abs_local: Path
+                        rel_p_item: str, remote_branch_rel: str, abs_local: Path
                     ) -> Tuple[str, str, int, int]:
                         if background_worker and self.should_yield_background():
                             raise _BackgroundYieldRequested()
-                        self.transport.download_file(remote_branch_rel, abs_local)
+                        self.transport.download_file(
+                            remote_branch_rel,
+                            abs_local,
+                            entry_hint=raw_remote_entries.get(rel_p_item),
+                        )
                         md5_hex, sha_hex, sz = compute_local_hashes(abs_local)
                         st = abs_local.stat()
                         return md5_hex, sha_hex, sz, int(st.st_mtime_ns)
@@ -1464,7 +1528,7 @@ class SyncCoordinator:
                     ) as pool:
                         fut_map = {
                             pool.submit(
-                                _download_and_hash, remote_branch_rel, abs_local
+                                _download_and_hash, rel_p, remote_branch_rel, abs_local
                             ): (rel_p, rem_ent)
                             for rel_p, abs_local, remote_branch_rel, rem_ent in pull_tasks
                         }
@@ -1508,6 +1572,14 @@ class SyncCoordinator:
                         raise first_pull_err
 
                 if not report.yielded:
+                    if report.deleted_remote or branch_dir_ids_current:
+                        self._prune_empty_remote_branch_dirs(
+                            state=state,
+                            branch=branch,
+                            curr_branch_files=curr_branch_files,
+                            deleted_remote=report.deleted_remote,
+                            fallback_dir_ids=branch_dir_ids_current,
+                        )
                     if not (
                         cache_hit_level == 0
                         and not report.pushed
@@ -1548,12 +1620,170 @@ class SyncCoordinator:
     # Internal Snapshot & GC Helpers
     # ------------------------------------------------------------------
 
-    def _trash_repo_item(self, remote_rel_path: str) -> bool:
+    def _trash_repo_item(
+        self, remote_rel_path: str, file_id: Optional[str] = None
+    ) -> bool:
         """
         Move an item inside <repo_sync_root>/ directly to Google Drive's native 30-day Trash
         (or sandbox .trash/ in LocalSandboxTransport) via transport.trash_file().
         """
-        return self.transport.trash_file(remote_rel_path)
+        return self.transport.trash_file(remote_rel_path, file_id=file_id)
+
+    def _prune_empty_remote_branch_dirs(
+        self,
+        state: Dict[str, Any],
+        branch: str,
+        curr_branch_files: Dict[str, str],
+        deleted_remote: List[str],
+        fallback_dir_ids: Optional[Dict[str, str]] = None,
+    ) -> List[str]:
+        """
+        Bottom-up prune empty directories inside <repo_sync_root>/<branch>/ that no longer
+        contain any tracked files, never touching the branch root or system directories.
+        """
+        cache = state.get("remote_repo_cache")
+        cache_dir_ids: Dict[str, str] = {}
+        if isinstance(cache, dict):
+            b_cache = (cache.get("branches") or {}).get(branch)
+            if isinstance(b_cache, dict) and isinstance(b_cache.get("dir_ids"), dict):
+                cache_dir_ids = b_cache["dir_ids"]
+
+        effective_dir_ids = cache_dir_ids if cache_dir_ids else dict(fallback_dir_ids or {})
+        rel_to_dir_fids: Dict[str, List[str]] = {}
+        for d_fid, d_rel in effective_dir_ids.items():
+            norm_d = normalize_remote_rel_path(d_rel)
+            if norm_d:
+                rel_to_dir_fids.setdefault(norm_d, []).append(d_fid)
+
+        candidate_dirs: Set[str] = set()
+        for del_rel in deleted_remote:
+            curr_parent = Path(del_rel).parent.as_posix()
+            while curr_parent not in ("", "."):
+                candidate_dirs.add(curr_parent)
+                curr_parent = Path(curr_parent).parent.as_posix()
+        for d_rel in rel_to_dir_fids.keys():
+            candidate_dirs.add(d_rel)
+
+        if not candidate_dirs:
+            return []
+
+        occupied_dirs: Set[str] = set()
+        for f_rel in curr_branch_files.keys():
+            curr_parent = Path(f_rel).parent.as_posix()
+            while curr_parent not in ("", "."):
+                occupied_dirs.add(curr_parent)
+                curr_parent = Path(curr_parent).parent.as_posix()
+
+        empty_candidates = [
+            d
+            for d in candidate_dirs
+            if d
+            and d not in occupied_dirs
+            and d not in SYSTEM_NAMES
+            and d not in BRANCH_INTERNAL_SYSTEM_NAMES
+            and Path(d).name not in SYSTEM_NAMES
+            and Path(d).name not in BRANCH_INTERNAL_SYSTEM_NAMES
+        ]
+        if not empty_candidates:
+            return []
+
+        pruned_dirs: List[str] = []
+        for rel_dir in sorted(
+            empty_candidates, key=lambda d: (d.count("/"), d), reverse=True
+        ):
+            remote_dir_rel = self._repo_rel(f"{branch}/{rel_dir}")
+            fids = rel_to_dir_fids.get(rel_dir) or []
+            if fids:
+                for fid in fids:
+                    if self._trash_repo_item(remote_dir_rel, file_id=fid):
+                        pruned_dirs.append(rel_dir)
+                    self._remove_cached_branch_dir(state, branch, fid)
+            else:
+                if self._trash_repo_item(remote_dir_rel):
+                    pruned_dirs.append(rel_dir)
+        return pruned_dirs
+
+    def _remove_cached_branch_dir(
+        self, state: Dict[str, Any], branch: str, dir_fid: str
+    ) -> None:
+        cache = state.get("remote_repo_cache")
+        if not isinstance(cache, dict) or not dir_fid:
+            return
+        branches = cache.get("branches")
+        if isinstance(branches, dict) and branch in branches:
+            b_dirs = branches[branch].get("dir_ids")
+            if isinstance(b_dirs, dict):
+                b_dirs.pop(dir_fid, None)
+        folder_meta = cache.get("folder_meta")
+        if isinstance(folder_meta, dict):
+            folder_meta.pop(dir_fid, None)
+        known = set(cache.get("known_folder_ids") or [])
+        if dir_fid in known:
+            known.discard(dir_fid)
+            cache["known_folder_ids"] = sorted(known)
+
+    def _warm_transport_folder_cache(
+        self, state: Dict[str, Any], branch: str
+    ) -> None:
+        cache = state.get("remote_repo_cache")
+        if not isinstance(cache, dict):
+            return
+        folder_meta: Dict[str, Dict[str, str]] = cache.get("folder_meta") or {}
+        warm_map: Dict[str, RemoteEntry] = {}
+
+        repo_fid = str(cache.get("repo_folder_id") or "")
+        if repo_fid:
+            repo_rel = self._repo_rel()
+            fm = folder_meta.get(repo_fid) or {}
+            warm_map[repo_rel] = RemoteEntry(
+                rel_path=repo_rel,
+                name=str(fm.get("name") or Path(repo_rel).name),
+                file_id=repo_fid,
+                mime_type=FOLDER_MIME_TYPE,
+                is_dir=True,
+                parent_id=str(fm.get("parent_id") or self.config.root_folder_id),
+            )
+
+        for sys_sub, fid_key in (
+            (".history", "history_folder_id"),
+            (".trash", "trash_folder_id"),
+        ):
+            sfid = str(cache.get(fid_key) or "")
+            if sfid:
+                srel = self._repo_rel(sys_sub)
+                fm = folder_meta.get(sfid) or {}
+                warm_map[srel] = RemoteEntry(
+                    rel_path=srel,
+                    name=str(fm.get("name") or sys_sub),
+                    file_id=sfid,
+                    mime_type=FOLDER_MIME_TYPE,
+                    is_dir=True,
+                    parent_id=str(fm.get("parent_id") or repo_fid),
+                )
+
+        b_cache = (cache.get("branches") or {}).get(branch)
+        if isinstance(b_cache, dict):
+            b_dirs: Dict[str, str] = b_cache.get("dir_ids") or {}
+            for d_fid, d_rel in b_dirs.items():
+                if not d_fid:
+                    continue
+                full_rel = (
+                    self._repo_rel(f"{branch}/{d_rel}")
+                    if d_rel
+                    else self._repo_rel(branch)
+                )
+                fm = folder_meta.get(d_fid) or {}
+                warm_map[full_rel] = RemoteEntry(
+                    rel_path=full_rel,
+                    name=str(fm.get("name") or Path(full_rel).name),
+                    file_id=d_fid,
+                    mime_type=FOLDER_MIME_TYPE,
+                    is_dir=True,
+                    parent_id=str(fm.get("parent_id") or ""),
+                )
+
+        if warm_map:
+            self.transport.warm_folder_cache(warm_map)
 
     def _flush_external_repo_trash(self) -> List[str]:
         """
@@ -1563,7 +1793,7 @@ class SyncCoordinator:
         trash_dir_rel = self._repo_rel(".trash")
         flushed_ids: List[str] = []
         for entry in self.transport.list_files(trash_dir_rel, recursive=False):
-            if self.transport.trash_file(entry.rel_path):
+            if self.transport.trash_file(entry.rel_path, file_id=entry.file_id):
                 flushed_ids.append(entry.file_id)
         return flushed_ids
 
@@ -1585,7 +1815,21 @@ class SyncCoordinator:
         if not history_files:
             return []
 
-        branch_files_map: Dict[str, Dict[str, str]] = meta.get("branch_files", {})
+        branches_meta: Dict[str, Any] = meta.get("branches", {})
+        branch_files_map: Dict[str, Dict[str, str]] = meta.setdefault("branch_files", {})
+        for other_b, b_info in list(branches_meta.items()):
+            has_cached_refs = (
+                isinstance(b_info, dict)
+                and not b_info.get("auto_discovered")
+                and bool(branch_files_map.get(other_b))
+            )
+            if not has_cached_refs:
+                o_snap, _ = self._collect_remote_branch_snapshot(other_b)
+                branch_files_map[other_b] = {
+                    rel_p: r_ent.effective_file_id()
+                    for rel_p, r_ent in o_snap.items()
+                }
+
         orphan_ids = compute_orphan_history_file_ids(
             set(history_files.keys()), branch_files_map
         )
@@ -1593,7 +1837,7 @@ class SyncCoordinator:
         for fid in orphan_ids:
             hist_rel = history_files.get(fid, "")
             if hist_rel and self.transport.get_entry(hist_rel) is not None:
-                self._trash_repo_item(hist_rel)
+                self._trash_repo_item(hist_rel, file_id=fid)
             history_files.pop(fid, None)
             trashed_ids.append(fid)
         return trashed_ids
@@ -1709,7 +1953,7 @@ class SyncCoordinator:
             if not ent.rel_path.startswith(prefix):
                 continue
             rel_p = ent.rel_path[len(prefix) :]
-            if not rel_p or rel_p in SYSTEM_NAMES:
+            if not rel_p or rel_p in BRANCH_INTERNAL_SYSTEM_NAMES:
                 continue
             if ent.is_dir:
                 dir_ids[ent.file_id] = rel_p
@@ -1875,8 +2119,14 @@ class SyncCoordinator:
             return None
         if branch not in cache_branches:
             return None
-        for reg_b in (repo_meta.get("branches") or {}).keys():
+        for reg_b, reg_b_info in (repo_meta.get("branches") or {}).items():
             if reg_b not in cache_branches:
+                return None
+            if (
+                isinstance(reg_b_info, dict)
+                and reg_b_info.get("auto_discovered")
+                and not (repo_meta.get("branch_files") or {}).get(reg_b)
+            ):
                 return None
 
         try:
@@ -2061,12 +2311,7 @@ class SyncCoordinator:
                     dir_name = (
                         ch.name or (ent.name if ent is not None else "")
                     ).strip()
-                    if (
-                        not dir_name
-                        or dir_name in SYSTEM_NAMES
-                        or dir_name.startswith(".")
-                        or dir_name.startswith("_")
-                    ):
+                    if not dir_name or dir_name in BRANCH_INTERNAL_SYSTEM_NAMES:
                         return None
                     for b_name, b_data in cache_branches.items():
                         b_dirs = b_data.setdefault("dir_ids", {})
@@ -2079,7 +2324,7 @@ class SyncCoordinator:
                             else dir_name
                         )
                         if (
-                            rel_dir in SYSTEM_NAMES
+                            rel_dir in BRANCH_INTERNAL_SYSTEM_NAMES
                             or rel_dir in b_dirs.values()
                             or rel_dir in (b_data.get("raw_entries") or {})
                         ):
@@ -2187,7 +2432,7 @@ class SyncCoordinator:
                             else ent.name
                         )
                         if (
-                            rel_p in SYSTEM_NAMES
+                            rel_p in BRANCH_INTERNAL_SYSTEM_NAMES
                             or rel_p in (b_data.get("raw_entries") or {})
                         ):
                             return None
@@ -2265,7 +2510,10 @@ class SyncCoordinator:
                             if sub_dir
                             else ent.name
                         )
-                        if not ent.skipped_reason and rel_p not in SYSTEM_NAMES:
+                        if (
+                            not ent.skipped_reason
+                            and rel_p not in BRANCH_INTERNAL_SYSTEM_NAMES
+                        ):
                             full_rel = self._repo_rel(f"{b_name}/{rel_p}")
                             added = RemoteEntry(
                                 rel_path=full_rel,
@@ -2327,8 +2575,10 @@ class SyncCoordinator:
     def _persist_active_branch_to_config(self, target_branch: str) -> None:
         """
         Persist updated active_branch into config://gdrive-support/ while preserving all existing
-        repo_sync fields. In isolated test environments where core_config is unavailable, log and continue.
+        repo_sync fields. In isolated test environments or when sandbox_dir is active, skip global write.
         """
+        if bool(self.config.sandbox_dir):
+            return
         repo_sync_block: Dict[str, Any] = {
             "enable": bool(self.config.repo_sync_enabled),
             "repo_sync_root": str(self.config.repo_sync_root or DEFAULT_REPO_SYNC_ROOT),

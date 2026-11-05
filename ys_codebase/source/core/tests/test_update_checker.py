@@ -282,6 +282,24 @@ class TestUpdateChecker(YSCBTestCase):
 
         tips = checker.get_tips(updates_drift)
         self.assertTrue(any("內容漂移" in t and "SHA-256 mismatch" in t for t in tips))
+
+        # 驗證無顯式 config_path 時透過 yscb.host:// 探測 yscb.config.json 與 yscb.py
+        from core import uri
+        with open(os.path.join(self.temp_dir, "yscb.py"), "wb") as f:
+            f.write(b'__version__: str = "1.2.2.0"\ndef main():\n    return 0\n')
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("YSCB_HOST_DIR", None)
+            with uri.host_scope(self.temp_dir, "ys_codebase"):
+                checker_host = UpdateChecker(
+                    cache_uri=self.cache_uri,
+                    throttle_seconds=10,
+                    config_path=None,
+                )
+                loaded_cfg = checker_host._load_config()
+                self.assertIn("installed_modules", loaded_cfg)
+                ver, sha = checker_host._get_local_host_script_info()
+                self.assertEqual(ver, "1.2.2.0")
+                self.assertIsNotNone(sha)
         self.mark_passed()
 
 

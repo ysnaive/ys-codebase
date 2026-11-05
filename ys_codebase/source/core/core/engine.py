@@ -660,6 +660,7 @@ class AtomicEngine:
     def __init__(self) -> None:
         self.contributes_aggregator = ContributesAggregator()
         self._active_locks: Dict[str, InterProcessLock] = {}
+        self._lock_counts: Dict[str, int] = {}
 
     def _get_config(self) -> Tuple[str, Dict[str, Any]]:
         host_dir, _ = uri._get_host_config()
@@ -731,30 +732,72 @@ class AtomicEngine:
         except Exception as e:
             return False, str(e)
 
-    def act_lock(self, operation: str, timeout: float = 10.0) -> None:
+    def act_lock(self, operation: str = "global", timeout: float = 10.0) -> None:
         """
         Acquire inter-process lock on cache://.yscb.lock using core.platform.InterProcessLock.
+        Supports same-operation reentrancy and stale-lock auto-healing.
         """
+        existing = self._active_locks.get(operation)
+        if existing is not None and existing.is_locked:
+            self._lock_counts[operation] = self._lock_counts.get(operation, 1) + 1
+            return
+
         lock_uri = "cache://.yscb.lock"
         lock_path = uri.resolve(lock_uri)
         vfs.makedirs("cache://", exist_ok=True)
 
+        if os.path.exists(lock_path):
+            try:
+                mtime = os.path.getmtime(lock_path)
+                if (time.time() - mtime) > timeout:
+                    for held_op, held_lock in list(self._active_locks.items()):
+                        held_lock.release()
+                        self._active_locks.pop(held_op, None)
+                        self._lock_counts.pop(held_op, None)
+                    vfs.remove(lock_uri)
+                elif self._active_locks:
+                    raise BlockingIOError(
+                        f"Another yscb operation is currently holding the lock for operation '{operation}'."
+                    )
+            except BlockingIOError:
+                raise
+            except OSError:
+                pass
+
         lock = InterProcessLock(lock_path)
         if not lock.acquire(blocking=True, timeout_sec=timeout):
             raise BlockingIOError(f"Another yscb process is currently holding the lock for operation '{operation}'.")
+        try:
+            os.utime(lock_path, None)
+        except OSError:
+            pass
         self._active_locks[operation] = lock
+        self._lock_counts[operation] = 1
 
-    def act_unlock(self, operation: str) -> None:
+    def act_unlock(self, operation: str = "global") -> None:
         """Release inter-process lock on cache://.yscb.lock."""
+        count = self._lock_counts.get(operation, 0)
+        if count > 1:
+            self._lock_counts[operation] = count - 1
+            return
+
+        self._lock_counts.pop(operation, None)
         lock = self._active_locks.pop(operation, None)
+        lock_uri = "cache://.yscb.lock"
         if lock is not None:
             lock.release()
+            if not self._active_locks and vfs.exists(lock_uri):
+                try:
+                    vfs.remove(lock_uri)
+                except OSError:
+                    pass
         else:
-            lock_uri = "cache://.yscb.lock"
             try:
                 lock_p = uri.resolve(lock_uri)
                 if os.path.exists(lock_p):
                     InterProcessLock(lock_p).release()
+                    if not self._active_locks:
+                        vfs.remove(lock_uri)
             except Exception:
                 pass
 
@@ -2043,6 +2086,16 @@ class AtomicEngine:
         self.act_deploy_configs_from_modules()
         _cleanup_stale_swap_dirs(modules_root_real)
 
+        try:
+            from core import config as cfg_mod, locale as loc_mod, symbols as sym_mod, contributes as contrib_mod
+            cfg_mod.reload()
+            loc_mod.clear_cache()
+            sym_mod.clear_callable_cache()
+            contrib_mod.invalidate_cache()
+            uri.invalidate_uri_cache()
+        except Exception:
+            pass
+
         # Stage 4: 依賴注入與事件廣播
         if inject_stage:
             self.contributes_aggregator.scan_and_inject()
@@ -2065,6 +2118,8 @@ class AtomicEngine:
         host_cfg = os.path.join(host_dir, "yscb.config.json")
         snapshot_id = tag or f"snap_{int(time.time())}"
         snap_dir = f"snapshot://{snapshot_id}"
+        if vfs.exists(snap_dir):
+            vfs.rmtree(snap_dir, ignore_errors=True)
         vfs.makedirs(snap_dir)
 
         if os.path.isfile(host_cfg):

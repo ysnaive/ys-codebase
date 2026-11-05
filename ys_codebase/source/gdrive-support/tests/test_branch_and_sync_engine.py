@@ -1307,6 +1307,224 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         self.assertNotIn(fid2_v1, remote_meta["history_files"])
         self.mark_passed()
 
+    @require(Requirement.ENV)
+    def test_ft_14_audit_remediation_baseline_preservation_readme_dot_dirs_prune_and_sandbox_isolation(
+        self,
+    ) -> None:
+        """
+        Verify deep audit remediations across SyncCoordinator and CLI sandbox isolation:
+        1. Unpushed local changes in pull mode preserve their baseline entry (not overwritten by IN_SYNC),
+           so a subsequent push mode detects and uploads the local modification.
+        2. Empty sync_spaces raises GDriveConfigError instead of silently treating worktree as empty.
+        3. Branch-root README.md (e.g. <repo>/<branch>/README.md) and dot/underscore directories
+           (e.g. .github/workflows/ci.yml, _internal/spec.md) are synced and incrementally patched in Level 1.
+        4. Deleting the last file inside a remote subdirectory prunes empty remote subdirectories bottom-up
+           while preserving the branch root and system directories.
+        5. Sandbox checkout and CLI --sandbox-dir isolate state/lock/log/readme_state and never pollute
+           global config://gdrive-support/ active_branch.
+        """
+        from gdrive_support.config import GDriveConfig, GDriveConfigError, PathMappingRule, SyncSpaceSpec
+        from gdrive_support.coordinator import SyncCoordinator
+
+        # 1. Empty sync_spaces guard
+        empty_cfg = GDriveConfig(
+            root_folder_id="dummy_root",
+            sandbox_dir=str(self.sandbox_dir),
+            repo_sync_enabled=True,
+            sync_spaces=(),
+        )
+        empty_coord = SyncCoordinator(
+            config=empty_cfg,
+            transport=self.transport,
+            project_root=self.proj_dir,
+            state_path=self.coord.state_path,
+            lock_path=self.coord.lock_path,
+            log_path=self.coord.log_path,
+            readme_state_path=self.coord.readme_state_path,
+            file_space_manager=self.fs_mgr,
+        )
+        with self.assertRaises(GDriveConfigError):
+            empty_coord.run_sync(mode="sync")
+
+        # 2. Local modification during pull mode must NOT overwrite baseline, so subsequent push uploads it
+        doc_a = self.docs_dir / "keep_baseline.md"
+        doc_a.write_text("v1 baseline\n", encoding="utf-8")
+        self.coord.run_sync(mode="push")
+
+        doc_a.write_text("v2 local unpushed edit\n", encoding="utf-8")
+        rep_pull = self.coord.run_sync(mode="pull")
+        self.assertEqual(rep_pull.pushed, [])
+        self.assertEqual(rep_pull.pulled, [])
+
+        rep_push = self.coord.run_sync(mode="push")
+        self.assertIn("docs/keep_baseline.md", rep_push.pushed)
+        dl_check = self.tmp_root / "dl_keep_baseline.md"
+        self.transport.download_file("repo/main/docs/keep_baseline.md", dl_check)
+        self.assertEqual(
+            dl_check.read_text(encoding="utf-8"), "v2 local unpushed edit\n"
+        )
+
+        # 3. Empty remote directory bottom-up pruning on DELETE_REMOTE
+        deep_file = self.docs_dir / "2026_11_05_prune" / "nested" / "P01.md"
+        deep_file.parent.mkdir(parents=True, exist_ok=True)
+        deep_file.write_text("# Prune Me\n", encoding="utf-8")
+        self.coord.run_sync(mode="push")
+        self.assertIsNotNone(
+            self.transport.get_entry("repo/main/docs/2026_11_05_prune/nested")
+        )
+
+        deep_file.unlink()
+        shutil.rmtree(self.docs_dir / "2026_11_05_prune")
+        rep_del = self.coord.run_sync(mode="push", delete=True)
+        self.assertIn("docs/2026_11_05_prune/nested/P01.md", rep_del.deleted_remote)
+        self.assertIsNone(
+            self.transport.get_entry("repo/main/docs/2026_11_05_prune/nested")
+        )
+        self.assertIsNone(
+            self.transport.get_entry("repo/main/docs/2026_11_05_prune")
+        )
+        self.assertIsNotNone(self.transport.get_entry("repo/main"))
+
+        # 3b. Pre-existing empty remote directory shells are pruned even when deleted_remote is empty
+        self.transport.mkdir("repo/main/docs/2026_11_05_archived_shell/sub_shell")
+        self.assertIsNotNone(
+            self.transport.get_entry("repo/main/docs/2026_11_05_archived_shell/sub_shell")
+        )
+        rep_shell_prune = self.coord.run_sync(mode="sync")
+        self.assertEqual(rep_shell_prune.deleted_remote, [])
+        self.assertIsNone(
+            self.transport.get_entry("repo/main/docs/2026_11_05_archived_shell/sub_shell")
+        )
+        self.assertIsNone(
+            self.transport.get_entry("repo/main/docs/2026_11_05_archived_shell")
+        )
+
+        # 3c. EC-03 / Redline 1: auto_discovered branch forces remote scan during .history/ GC
+        hist_src = self.tmp_root / "frozen_hist_target.md"
+        hist_src.write_text("Frozen History Content\n", encoding="utf-8")
+        hist_ent = self.transport.upload_file(
+            hist_src, "repo/.history/frozen_hist_target.md"
+        )
+        self.transport.mkdir("repo/ext_web_branch/docs")
+        self.transport.create_shortcut(
+            hist_ent.file_id, "repo/ext_web_branch/docs/ref_from_auto.md"
+        )
+        meta_ec03 = self.coord._read_remote_repo_meta()
+        assert meta_ec03 is not None
+        meta_ec03.setdefault("history_files", {})[hist_ent.file_id] = (
+            "repo/.history/frozen_hist_target.md"
+        )
+        meta_ec03.setdefault("branches", {})["ext_web_branch"] = {
+            "auto_discovered": True
+        }
+        # Even if branch_files has a stale non-empty dict without hist_ent.file_id, auto_discovered=True must force a live scan!
+        meta_ec03.setdefault("branch_files", {})["ext_web_branch"] = {
+            "docs/stale_dummy.md": "fid_stale_dummy"
+        }
+        trashed_by_gc = self.coord._gc_unreferenced_history_files(
+            meta_ec03, scan_physical=False
+        )
+        self.assertNotIn(hist_ent.file_id, trashed_by_gc)
+        self.assertIsNotNone(
+            self.transport.get_entry("repo/.history/frozen_hist_target.md")
+        )
+        self.assertEqual(
+            meta_ec03["branch_files"]["ext_web_branch"].get("docs/ref_from_auto.md"),
+            hist_ent.file_id,
+        )
+
+        # 4. Branch-root README.md and dot/underscore directories (.github, _internal) in Level 1 & Level 2
+        root_mapped_cfg = GDriveConfig(
+            root_folder_id="dummy_root",
+            sandbox_dir=str(self.sandbox_dir),
+            repo_sync_enabled=True,
+            active_branch="main",
+            sync_spaces=(
+                SyncSpaceSpec(
+                    space="root_proj",
+                    mappings=(
+                        PathMappingRule(
+                            local_uri="project://",
+                            local_rel_prefix="",
+                            remote_rel_prefix="",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        root_coord = SyncCoordinator(
+            config=root_mapped_cfg,
+            transport=self.transport,
+            project_root=self.proj_dir,
+            state_path=self.tmp_root / "root_state.json",
+            lock_path=self.tmp_root / "root_sync.lock",
+            log_path=self.tmp_root / "root_sync.log",
+            readme_state_path=self.tmp_root / "root_readme_state.json",
+            file_space_manager=_SimpleFileSpaceManager(self.proj_dir),
+        )
+        proj_readme = self.proj_dir / "README.md"
+        proj_readme.write_text("# Project Root README\n", encoding="utf-8")
+        dot_wf = self.proj_dir / ".github" / "workflows" / "ci.yml"
+        dot_wf.parent.mkdir(parents=True, exist_ok=True)
+        dot_wf.write_text("name: CI\n", encoding="utf-8")
+
+        rep_root_init = root_coord.run_sync(mode="push")
+        self.assertIn("README.md", rep_root_init.pushed)
+        self.assertIn(".github/workflows/ci.yml", rep_root_init.pushed)
+
+        # Remote addition of branch-root README update and new _internal/guide.md via Level 1 incremental cache
+        rem_tmp = self.tmp_root / "rem_internal.md"
+        rem_tmp.write_text("Internal Guide\n", encoding="utf-8")
+        self.transport.upload_file(rem_tmp, "repo/main/_internal/guide.md")
+        rem_readme_v2 = self.tmp_root / "rem_readme_v2.md"
+        rem_readme_v2.write_text("# Project Root README v2\n", encoding="utf-8")
+        self.transport.upload_file(rem_readme_v2, "repo/main/README.md")
+
+        rep_l1 = root_coord.run_sync(mode="pull")
+        self.assertEqual(rep_l1.cache_hit_level, 1)
+        self.assertIn("README.md", rep_l1.pulled)
+        self.assertIn("_internal/guide.md", rep_l1.pulled)
+        self.assertEqual(
+            proj_readme.read_text(encoding="utf-8"), "# Project Root README v2\n"
+        )
+        self.assertTrue((self.proj_dir / "_internal" / "guide.md").is_file())
+
+        # 5. Sandbox checkout does not write to core_config and CLI _build_coordinator isolates state paths
+        from core import config as core_config
+
+        self.coord.create_branch("sbx_branch", from_branch="main")
+        orig_cfg_set = core_config.set
+        cfg_set_calls: list[tuple] = []
+
+        def _spy_cfg_set(*args, **kwargs):
+            cfg_set_calls.append((args, kwargs))
+            return orig_cfg_set(*args, **kwargs)
+
+        core_config.set = _spy_cfg_set  # type: ignore[assignment]
+        try:
+            self.coord.checkout_branch("sbx_branch", force=True)
+            self.assertEqual(cfg_set_calls, [])
+        finally:
+            core_config.set = orig_cfg_set  # type: ignore[assignment]
+
+        isolated_sbx = self.tmp_root / "cli_isolated_sbx"
+        isolated_sbx.mkdir(parents=True, exist_ok=True)
+        built_coord = cli._build_coordinator(str(isolated_sbx))
+        self.assertEqual(
+            built_coord.state_path, isolated_sbx.resolve() / ".yscb_sync_state.json"
+        )
+        self.assertEqual(
+            built_coord.lock_path, isolated_sbx.resolve() / ".yscb_sync.lock"
+        )
+        self.assertEqual(
+            built_coord.log_path, isolated_sbx.resolve() / ".yscb_sync.log"
+        )
+        self.assertEqual(
+            built_coord.readme_state_path,
+            isolated_sbx.resolve() / ".yscb_readme_state.json",
+        )
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

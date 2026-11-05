@@ -451,6 +451,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
                     self._dirty_spaces.update(matched)
                     self._full_rescan_spaces.update(matched)
                     self._last_event_time = time.monotonic()
+                self.scanner.mark_watcher_dirty(True)
             return matched
 
         for s_name, cfg in self.space_manager.get_all_spaces().items():
@@ -468,6 +469,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
                         abs_p
                     )
                 self._last_event_time = time.monotonic()
+            self.scanner.mark_watcher_dirty(True)
 
         return matched
 
@@ -558,6 +560,12 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
                     self._dirty_spaces.add(space_name)
                     if self._last_event_time == 0.0:
                         self._last_event_time = time.monotonic()
+                self.scanner.mark_watcher_dirty(True)
+            else:
+                with self._lock:
+                    has_remaining = bool(self._dirty_spaces)
+                if not has_remaining:
+                    self.scanner.mark_watcher_dirty(False)
             return diff_res.to_dict()
         except Exception as exc:
             logger.error(
@@ -627,6 +635,12 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
                     self._dirty_spaces.add(s_name)
                 if self._last_event_time == 0.0:
                     self._last_event_time = time.monotonic()
+            self.scanner.mark_watcher_dirty(True)
+        else:
+            with self._lock:
+                has_remaining = bool(self._dirty_spaces)
+            if not has_remaining:
+                self.scanner.mark_watcher_dirty(False)
 
         return results
 
@@ -664,6 +678,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
             logger.debug("Failed to write watcher_state.json: %s", exc)
 
     def _remove_watcher_state_file(self) -> None:
+        self.scanner.mark_watcher_dirty(False)
         if self._state_file_path is not None and self._state_file_path.exists():
             try:
                 self._state_file_path.unlink()
@@ -680,7 +695,8 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         for s_name, cfg in self.space_manager.get_all_spaces().items():
             if not cfg.watch:
                 continue
-            for inc_dir in self.space_manager.resolve_space_include(s_name):
+            for inc_path in self.space_manager.resolve_space_include(s_name):
+                inc_dir = inc_path.parent if inc_path.is_file() else inc_path
                 key = inc_dir.as_posix()
                 if key not in watched_dirs:
                     watched_dirs.add(key)

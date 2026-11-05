@@ -1,10 +1,10 @@
 # 技術路線圖：工作流宣告式階段拓撲引擎與可插拔領域擴充架構 (Roadmap)
 
 > 主題：工作流宣告式階段拓撲引擎與可插拔領域擴充架構 (`declarative_track_schema_and_domain_packs`)  
-> 歸檔日期：2026-11-03  
+> 歸檔日期：2026-11-05  
 > 狀態：Proposed  
 > 目標範疇：`agents-workflow`（階段拓撲狀態機、結構檢核引擎與 `contributes` 領域擴充契約）  
-> 前置解鎖條件：實際出現非純軟開發領域專案（如企劃設計、遊戲引擎資產、硬體工程）之工作流擴充需求時啟動  
+> 前置解鎖條件：[Tier 3 - 排序 #6] 承接 #5 (ast_compile_pipeline_and_kdb_doc_governance Stage 1~2) 完成編譯器下沉後，與其 Stage 3 協同推進工作流骨幹純化與 agents-workflow-coding 領域包抽離  
 > 模型：Gemini 4 Argon (Low)  
 > 模板版本：v1.1  
 

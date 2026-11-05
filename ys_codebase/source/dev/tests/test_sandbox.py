@@ -416,3 +416,50 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertEqual(host_cfg["installed_modules"]["mod_corrupt"]["version"], "1.0.0.0")
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_cleanup_sandbox_releases_lock_before_teardown_and_rmtree(self):
+        """Verify cleanup_sandbox does not hold _SANDBOX_LOCK during on_test_teardown broadcast or robust_rmtree."""
+        import threading
+
+        sb_dir = self._mkdtemp()
+        ctx = SandboxContext(sb_dir)
+        for d in (ctx.sandbox_dir, ctx.project_dir, ctx.host_dir, ctx.engine_dir, ctx.provider_dir):
+            os.makedirs(d, exist_ok=True)
+        SandboxProvisioner._ACTIVE_SANDBOXES.add(os.path.abspath(sb_dir))
+
+        lock_held_states = []
+
+        def _is_lock_held_by_another_thread() -> bool:
+            holder = []
+
+            def _probe():
+                acquired = SandboxProvisioner._SANDBOX_LOCK.acquire(blocking=False)
+                if acquired:
+                    SandboxProvisioner._SANDBOX_LOCK.release()
+                holder.append(not acquired)
+
+            t = threading.Thread(target=_probe)
+            t.start()
+            t.join(timeout=2.0)
+            return holder[0] if holder else True
+
+        def spy_broadcast(event_name, **kwargs):
+            lock_held_states.append(("broadcast", _is_lock_held_by_another_thread()))
+            return {}
+
+        orig_rmtree = vfs.robust_rmtree
+
+        def spy_rmtree(target_p, **kwargs):
+            lock_held_states.append(("rmtree", _is_lock_held_by_another_thread()))
+            return orig_rmtree(target_p, **kwargs)
+
+        with patch("core.events.broadcast", side_effect=spy_broadcast), \
+             patch("core.vfs.robust_rmtree", side_effect=spy_rmtree):
+            ok = SandboxProvisioner.cleanup_sandbox(sb_dir, force=True, is_harness_cleanup=True)
+
+        self.assertTrue(ok)
+        self.assertNotIn(os.path.abspath(sb_dir), SandboxProvisioner._ACTIVE_SANDBOXES)
+        self.assertEqual(lock_held_states, [("broadcast", False), ("rmtree", False)])
+        self.mark_passed()
+
+

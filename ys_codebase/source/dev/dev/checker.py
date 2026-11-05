@@ -1257,31 +1257,55 @@ class Checker:
                     func_name = "check"
 
                 donor_pkg = donor.split(".")[0]
-                donor_uri = f"module://{donor_pkg}"
+                donor_candidates = list(dict.fromkeys([
+                    donor_pkg,
+                    donor_pkg.replace("_", "-"),
+                    donor_pkg.replace("-", "_"),
+                ]))
                 donor_real = None
-                if vfs.exists(donor_uri):
-                    try:
-                        donor_real = uri.resolve(donor_uri)
-                    except Exception:
-                        donor_real = None
+                priority_mod_name = donor_pkg
+                for cand_pkg in donor_candidates:
+                    donor_uri = f"module://{cand_pkg}"
+                    if vfs.exists(donor_uri):
+                        try:
+                            donor_real = uri.resolve(donor_uri)
+                            priority_mod_name = cand_pkg
+                            break
+                        except Exception:
+                            donor_real = None
 
                 from core.platform import ensure_installed_modules_path, restore_sys_path
 
                 orig_sys_path = list(sys.path)
                 try:
                     ensure_installed_modules_path(
-                        priority_module=donor_pkg,
+                        priority_module=priority_mod_name,
                         extra_paths=[donor_real] if (donor_real and os.path.isdir(donor_real)) else None,
                     )
+
+                    def _import_with_normalized_fallback(mod_target: str) -> Any:
+                        try:
+                            return importlib.import_module(mod_target)
+                        except ModuleNotFoundError:
+                            parts = mod_target.split(".")
+                            norm_first = parts[0].replace("-", "_")
+                            norm_target = ".".join([norm_first] + parts[1:])
+                            if norm_target != mod_target:
+                                return importlib.import_module(norm_target)
+                            alt_first = parts[0].replace("_", "-")
+                            alt_target = ".".join([alt_first] + parts[1:])
+                            if alt_target != mod_target:
+                                return importlib.import_module(alt_target)
+                            raise
 
                     if c_func.startswith("code.func://"):
                         fn = resolve_callable(c_func, use_cache=False)
                     elif "." in c_func and ":" not in c_func:
                         mod_path, fn_name = c_func.rsplit(".", 1)
-                        mod = importlib.import_module(mod_path)
+                        mod = _import_with_normalized_fallback(mod_path)
                         fn = getattr(mod, fn_name)
                     else:
-                        mod = importlib.import_module(donor)
+                        mod = _import_with_normalized_fallback(donor)
                         fn = getattr(mod, func_name)
 
                     if not callable(fn):

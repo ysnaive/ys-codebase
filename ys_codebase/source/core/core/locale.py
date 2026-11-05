@@ -66,7 +66,7 @@ DEFAULT_HOST_DIALECT_RULES: List[Dict[str, Any]] = [
 
 # Memory cache: abs_file_path -> (mtime, parsed_dict)
 _LOCALE_FILE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_MODULE_BASE_DIR_CACHE: Dict[str, str] = {}
+_MODULE_BASE_DIR_CACHE: Dict[Any, str] = {}
 _SAFE_SUBPATH_CACHE: Dict[Tuple[str, str], Tuple[bool, str]] = {}
 
 # Sentinel strings for protecting escaped braces '{{' and '}}'
@@ -269,14 +269,19 @@ def _resolve_module_base_dir(module: str, base_dir: Optional[str] = None) -> Opt
     """Resolve the physical root directory of a module."""
     if base_dir:
         return os.path.abspath(base_dir)
-    if module in _MODULE_BASE_DIR_CACHE:
-        cached_dir = _MODULE_BASE_DIR_CACHE[module]
+    from core import uri
+    from core import vfs
+    try:
+        yscb_root_key = os.path.normpath(uri.resolve_yscb_root())
+    except Exception:
+        yscb_root_key = ""
+    cache_key = (yscb_root_key, module)
+    if cache_key in _MODULE_BASE_DIR_CACHE:
+        cached_dir = _MODULE_BASE_DIR_CACHE[cache_key]
         if os.path.isdir(cached_dir):
             return cached_dir
     resolved: Optional[str] = None
     try:
-        from core import uri
-        from core import vfs
         if module == "project":
             resolved = uri.resolve("config://core", interactive=False)
         else:
@@ -305,7 +310,7 @@ def _resolve_module_base_dir(module: str, base_dir: Optional[str] = None) -> Opt
         except Exception:
             pass
     if resolved and os.path.isdir(resolved):
-        _MODULE_BASE_DIR_CACHE[module] = resolved
+        _MODULE_BASE_DIR_CACHE[cache_key] = resolved
     return resolved
 
 

@@ -419,4 +419,56 @@ class TestFileSpaceManager(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft06_single_file_include_and_symlink_logical_rel_path(self) -> None:
+        """Verify single-file include resolution/iteration and logical relative path preservation under symlinks."""
+        root_file = self.proj_root / "yscb.py"
+        root_file.write_text("print('entry')\n", encoding="utf-8")
+
+        mgr = FileSpaceManager(
+            project_root=self.proj_root,
+            storage_root=self.storage_root,
+            spaces_config={
+                "entry_space": {
+                    "include": [root_file.as_posix(), self.src_dir.as_posix()],
+                    "exclude": [".git"],
+                    "file_patterns": ["*.py"],
+                }
+            },
+            contributed_spaces={},
+        )
+        inc_paths = mgr.resolve_space_include("entry_space")
+        self.assertIn(root_file.resolve(), inc_paths)
+        entries = list(mgr.iter_space_files_with_stat("entry_space"))
+        rel_map = {item[0]: item[1] for item in entries}
+        self.assertIn("yscb.py", rel_map)
+        self.assertEqual(rel_map["yscb.py"], root_file.resolve())
+
+        # Symlink logical relative path preservation when follow_symlinks=True
+        ext_target = self.tmp_dir / "external_pkg"
+        ext_target.mkdir(parents=True, exist_ok=True)
+        (ext_target / "ext_mod.py").write_text("v = 1\n", encoding="utf-8")
+        link_in_src = self.src_dir / "linked_pkg"
+        try:
+            os.symlink(ext_target, link_in_src, target_is_directory=True)
+            symlink_ok = True
+        except OSError:
+            symlink_ok = False
+
+        if symlink_ok:
+            mgr.define_ephemeral_space(
+                "symlink_logical",
+                {
+                    "include": [self.src_dir.as_posix()],
+                    "file_patterns": ["*.py"],
+                    "follow_symlinks": True,
+                },
+            )
+            sym_rels = [item[0] for item in mgr.iter_space_files_with_stat("symlink_logical")]
+            self.assertIn("linked_pkg/ext_mod.py", sym_rels)
+            self.assertFalse(any(r.startswith("..") for r in sym_rels))
+
+        self.mark_passed()
+
+
 

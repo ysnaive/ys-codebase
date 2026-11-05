@@ -534,5 +534,20 @@ class TestCorePlatform(YSCBTestCase):
             restore_sys_path(snap)
         self.mark_passed()
 
+    def test_posix_zombie_detection_without_procfs(self):
+        """驗證無 /proc 時透過 ps stat 識別殭屍進程為非存活。"""
+        from unittest.mock import MagicMock, patch
+        import core.platform.process as proc_mod
+
+        if sys.platform != "win32":
+            mock_res = MagicMock()
+            mock_res.returncode = 0
+            mock_res.stdout = "Z+\n"
+            with patch("core.platform.process.os.path.exists", return_value=False), \
+                 patch("core.platform.process.os.kill", return_value=None), \
+                 patch("core.platform.process.subprocess.run", return_value=mock_res):
+                self.assertFalse(proc_mod.is_process_alive(99999))
+        self.mark_passed()
+
 if __name__ == "__main__":
     unittest.main()

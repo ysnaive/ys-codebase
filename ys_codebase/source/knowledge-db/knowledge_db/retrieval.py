@@ -552,10 +552,17 @@ class InvertedIndex:
             )
             self.index[term].append(posting)
 
-    def build(self, symbols: List[UnifiedSymbol], tokenizer: Optional[MultilingualTokenizer] = None, space: str = "") -> None:
+    def build(
+        self,
+        symbols: List[UnifiedSymbol],
+        tokenizer: Optional[MultilingualTokenizer] = None,
+        space: str = "",
+        pre_aggregated: bool = False,
+    ) -> None:
         """批次建立倒排索引並計算 avgdl"""
-        from ast_engine.bundler import aggregate_partial_symbols
-        symbols = aggregate_partial_symbols(symbols)
+        if not pre_aggregated:
+            from ast_engine.bundler import aggregate_partial_symbols
+            symbols = aggregate_partial_symbols(symbols)
         tok = tokenizer or MultilingualTokenizer()
         if space:
             self.space_name = space

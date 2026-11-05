@@ -221,12 +221,14 @@ class PlanVerifier:
 
         sub_dirs = [d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")]
         if sub_dirs:
+            from .status import PlanStatusResolver
+
             umbrella_md = plan_dir / "umbrella_overview.md"
             rev_log_md = plan_dir / "revision_log.md"
             is_revision_root = (
                 rev_log_md.exists()
-                and not (plan_dir / "P01_requirements_spec.md").exists()
-                and not (plan_dir / "P07_walkthrough.md").exists()
+                and not PlanStatusResolver.resolve_phase_file(plan_dir, "P01").is_file()
+                and not PlanStatusResolver.resolve_phase_file(plan_dir, "P07").is_file()
             )
             if not umbrella_md.exists() and not is_revision_root:
                 report.issues.append(

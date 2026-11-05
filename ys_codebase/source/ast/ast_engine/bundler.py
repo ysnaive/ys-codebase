@@ -782,20 +782,35 @@ class SemanticBundler:
 
             clean_p = raw_p.strip("/")
             matched_this = False
+            snap_matches: List[Any] = []
             for sp in target_spaces:
                 entries = snap_entries_by_space.get(sp.name, {})
                 fp_rec = entries.get(clean_p)
                 if fp_rec is not None and not getattr(fp_rec, "is_deleted", False) and getattr(fp_rec, "source_root", ""):
+                    snap_matches.append(fp_rec)
+
+            if snap_matches:
+                if len(snap_matches) > 1 and "/" not in clean_p:
+                    best_mtime_ns = max((int(getattr(fp, "mtime_ns", 0)) for fp in snap_matches), default=0)
+                    snap_matches = [fp for fp in snap_matches if int(getattr(fp, "mtime_ns", 0)) >= best_mtime_ns]
+                for fp_rec in snap_matches:
                     src_root = Path(fp_rec.source_root)
                     _add_candidate(src_root / clean_p, src_root)
                     matched_this = True
 
-            for sp in target_spaces:
-                for inc_root in space_inc_roots.get(sp.name, []):
-                    cand = inc_root / clean_p
-                    if cand.is_file():
-                        _add_candidate(cand, inc_root)
-                        matched_this = True
+            if not matched_this:
+                inc_matches: List[Tuple[Path, Path]] = []
+                for sp in target_spaces:
+                    for inc_root in space_inc_roots.get(sp.name, []):
+                        cand = inc_root / clean_p
+                        if cand.is_file():
+                            inc_matches.append((cand, inc_root))
+                if len(inc_matches) > 1 and "/" not in clean_p:
+                    max_mtime = max((c.stat().st_mtime_ns for c, _ in inc_matches), default=0)
+                    inc_matches = [(c, r) for c, r in inc_matches if c.stat().st_mtime_ns >= max_mtime]
+                for cand, inc_root in inc_matches:
+                    _add_candidate(cand, inc_root)
+                    matched_this = True
 
             if proj_root is not None:
                 cand_proj = Path(proj_root) / clean_p
@@ -881,7 +896,18 @@ class SemanticBundler:
             sorted_spaces = sorted(list(sp_set))
             tasks.append((c_key, str(f_path), relpath, sorted_spaces))
 
-        has_custom_configs = bool(self.parser_registry.language_configs)
+        from .parsers.registry import DEFAULT_LANGUAGES
+
+        lang_cfgs = self.parser_registry.language_configs
+        has_custom_configs = len(getattr(self.parser_registry, "_parsers", ())) > len(lang_cfgs) or any(
+            lang_id not in DEFAULT_LANGUAGES
+            or cfg.mode != DEFAULT_LANGUAGES[lang_id].get("mode", "tree_sitter")
+            or cfg.grammar != DEFAULT_LANGUAGES[lang_id].get("grammar")
+            or cfg.query_file != DEFAULT_LANGUAGES[lang_id].get("query_file")
+            or cfg.parser_entry != DEFAULT_LANGUAGES[lang_id].get("parser_entry")
+            or tuple(cfg.extensions) != tuple(DEFAULT_LANGUAGES[lang_id].get("extensions", ()))
+            for lang_id, cfg in lang_cfgs.items()
+        )
         cpu_cnt = os.cpu_count() or 1
         use_parallel = (
             allow_parallel

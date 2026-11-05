@@ -31,7 +31,7 @@ class SymbolNotFoundError(SymbolError):
 
 
 # Cache resolved modules to prevent redundant disk I/O and imports
-_RESOLVED_CALLABLE_CACHE: Dict[str, Callable[..., Any]] = {}
+_RESOLVED_CALLABLE_CACHE: Dict[Any, Callable[..., Any]] = {}
 
 
 def parse_code_func_uri(uri_str: str) -> Tuple[str, str, str]:
@@ -104,8 +104,16 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
         InvalidSymbolURIError: 格式錯誤
         SymbolNotFoundError: 模組或函式符號不存在、非 Callable
     """
-    if use_cache and uri_str in _RESOLVED_CALLABLE_CACHE:
-        return _RESOLVED_CALLABLE_CACHE[uri_str]
+    try:
+        yscb_root_key = os.path.normpath(uri.resolve_yscb_root())
+    except Exception:
+        yscb_root_key = ""
+    cache_key = (yscb_root_key, uri_str)
+    if use_cache:
+        if cache_key in _RESOLVED_CALLABLE_CACHE:
+            return _RESOLVED_CALLABLE_CACHE[cache_key]
+        if uri_str in _RESOLVED_CALLABLE_CACHE:
+            return _RESOLVED_CALLABLE_CACHE[uri_str]
 
     module_name, subpath, function_name = parse_code_func_uri(uri_str)
     mod_pkg = module_name.replace("-", "_")
@@ -201,7 +209,7 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
         )
 
     if use_cache:
-        _RESOLVED_CALLABLE_CACHE[uri_str] = target_fn
+        _RESOLVED_CALLABLE_CACHE[cache_key] = target_fn
 
     return target_fn
 

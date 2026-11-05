@@ -18,7 +18,9 @@ import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
 _LAST_TOUCH_TS: float = 0.0
+_LAST_TOUCH_BY_ROOT: Dict[str, float] = {}
 _TOUCH_MIN_INTERVAL_SEC: float = 1.0
+_TOUCH_LOCK = threading.Lock()
 
 
 def touch_activity(
@@ -40,8 +42,12 @@ def touch_activity(
     """
     global _LAST_TOUCH_TS
     now = time.monotonic()
-    if not force and yscb_root is None and (now - _LAST_TOUCH_TS) < _TOUCH_MIN_INTERVAL_SEC:
-        return True
+    root_key = os.path.normcase(os.path.abspath(yscb_root)) if yscb_root else "__default__"
+    if not force:
+        with _TOUCH_LOCK:
+            last_ts = _LAST_TOUCH_TS if yscb_root is None else _LAST_TOUCH_BY_ROOT.get(root_key, 0.0)
+            if last_ts > 0.0 and (now - last_ts) < _TOUCH_MIN_INTERVAL_SEC:
+                return True
 
     resolved_root = yscb_root
     if not resolved_root:
@@ -81,7 +87,9 @@ def touch_activity(
         )
         with urllib.request.urlopen(req, timeout=1.5) as resp:
             if resp.status == 200:
-                _LAST_TOUCH_TS = now
+                with _TOUCH_LOCK:
+                    _LAST_TOUCH_TS = now
+                    _LAST_TOUCH_BY_ROOT[root_key] = now
                 return True
             return False
     except Exception:

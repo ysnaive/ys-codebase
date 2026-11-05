@@ -1438,7 +1438,40 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_legacy_workflow_export_translation_and_cli_normalize_bags(self):
+        """驗證舊版 type: 'workflow' 於記憶體無痛轉譯為 'skill'，且 cli._normalize_bags 支援空白分隔 --key val。"""
+        from unittest import mock
 
+        compiler = ArtifactCompiler(host_dir=str(Path(_pkg_root).parent.parent))
+        with mock.patch("core.contributes.get") as mock_get:
+            mock_get.return_value = {
+                "export": [
+                    {"source": "module://agents-workflow/assets/skills/auto", "type": "workflow", "name": "auto"},
+                    {"source": "module://agents-workflow/assets/templates/P00_discuss.md", "type": "template"},
+                ],
+                "insert": [],
+                "token": [],
+                "release_target": [],
+            }
+            data = compiler.get_contributes_data()
+            self.assertEqual(data["export"][0]["type"], "skill")
+            self.assertEqual(data["export"][1]["type"], "template")
+
+        desc = compiler.resolve_export_description(
+            {"source": "module://agents-workflow/assets/skills/auto", "type": "workflow"}
+        )
+        self.assertTrue(len(desc) > 0)
+
+        bags_todo = cli._normalize_bags(["Fix bug", "--scope", "dev", "--note", "detail"], "todo_add")
+        self.assertEqual(bags_todo.args, ["Fix bug"])
+        self.assertEqual(bags_todo.get_option_value("scope"), "dev")
+        self.assertEqual(bags_todo.get_option_value("note"), "detail")
+
+        bags_rt = cli._normalize_bags(["--add", "claude", "--proj"], "release-target")
+        self.assertEqual(bags_rt.args, [])
+        self.assertEqual(bags_rt.get_option_value("add"), "claude")
+        self.assertTrue(bags_rt.has_option("proj"))
+        self.mark_passed()
 
 
 if __name__ == "__main__":

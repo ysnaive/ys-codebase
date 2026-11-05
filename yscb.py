@@ -1121,18 +1121,25 @@ def _extract_and_cache_mirror(
     mirror_zip: str,
     expected_sha256: Optional[str] = None,
 ) -> bool:
-    """提取套件至 dest_dir 並於來源為 zip 檔時同步快取至 mirror_zip。"""
+    """提取套件至 dest_dir 並於來源為 zip 檔時先同步快取至 mirror_zip 再執行校驗與解壓。"""
+    copied_to_mirror = False
     try:
         os.makedirs(dest_dir, exist_ok=True)
         os.makedirs(mirror_dir, exist_ok=True)
-        _fetch_and_extract_zip(src_path, dest_dir, expected_sha256=expected_sha256)
-        if os.path.isfile(src_path) and zipfile.is_zipfile(src_path) and os.path.abspath(src_path) != os.path.abspath(mirror_zip):
-            try:
+        target_src = src_path
+        if os.path.isfile(src_path) and (src_path.endswith(".zip") or zipfile.is_zipfile(src_path)):
+            if os.path.abspath(src_path) != os.path.abspath(mirror_zip):
                 shutil.copy2(src_path, mirror_zip)
-            except Exception:
-                pass
+                copied_to_mirror = True
+            target_src = mirror_zip
+        _fetch_and_extract_zip(target_src, dest_dir, expected_sha256=expected_sha256)
         return True
     except Exception:
+        if copied_to_mirror and os.path.isfile(mirror_zip):
+            try:
+                os.remove(mirror_zip)
+            except OSError:
+                pass
         return False
 
 

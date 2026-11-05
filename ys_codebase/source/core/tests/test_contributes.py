@@ -1,6 +1,7 @@
 """
 Official test suite for core.contributes.ContributesAggregator and SDK.
 """
+import os
 import time
 from dev.testing import YSCBTestCase, require, Requirement
 from core import contributes
@@ -423,6 +424,12 @@ class TestContributesJIT(YSCBTestCase):
         repaired = contributes.get("core", "commands")
         self.assertIsInstance(repaired, dict)
         self.assertTrue(vfs.exists(merged_uri))
+
+        # 驗證 _scan_contributes_inputs 追蹤 yscb.host://yscb.config.json
+        snap_inputs = contributes._scan_contributes_inputs()
+        host_cfg_abs = uri.resolve("yscb.host://yscb.config.json", interactive=False)
+        if os.path.isfile(host_cfg_abs):
+            self.assertIn(os.path.abspath(host_cfg_abs), snap_inputs)
         self.mark_passed()
 
 

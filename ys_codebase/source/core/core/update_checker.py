@@ -78,9 +78,10 @@ class UpdateChecker:
             except Exception:
                 return {}
         try:
-            if vfs.is_file("project://yscb.config.json"):
-                data = vfs.read_json("project://yscb.config.json")
-                return data if isinstance(data, dict) else {}
+            for cfg_uri in ("yscb.host://yscb.config.json", "project://yscb.config.json"):
+                if vfs.is_file(cfg_uri):
+                    data = vfs.read_json(cfg_uri)
+                    return data if isinstance(data, dict) else {}
         except Exception:
             pass
         return {}
@@ -206,11 +207,12 @@ class UpdateChecker:
         host_env = os.environ.get("YSCB_HOST_DIR")
         if host_env:
             candidates.append(os.path.join(host_env, "yscb.py"))
-        try:
-            proj_root = uri.resolve("project://", interactive=False)
-            candidates.append(os.path.join(proj_root, "yscb.py"))
-        except Exception:
-            pass
+        for host_uri in ("yscb.host://", "project://"):
+            try:
+                host_root = uri.resolve(host_uri, interactive=False)
+                candidates.append(os.path.join(host_root, "yscb.py"))
+            except Exception:
+                pass
 
         for cand in candidates:
             if vfs.is_file(cand):
@@ -348,10 +350,14 @@ class UpdateChecker:
             resolved_p = provider_url
             if not os.path.isabs(resolved_p):
                 try:
-                    proj_root = uri.resolve("project://", interactive=False)
-                    resolved_p = os.path.normpath(os.path.join(proj_root, provider_url))
+                    host_root = uri.resolve("yscb.host://", interactive=False)
+                    resolved_p = os.path.normpath(os.path.join(host_root, provider_url))
                 except Exception:
-                    resolved_p = os.path.abspath(provider_url)
+                    try:
+                        proj_root = uri.resolve("project://", interactive=False)
+                        resolved_p = os.path.normpath(os.path.join(proj_root, provider_url))
+                    except Exception:
+                        resolved_p = os.path.abspath(provider_url)
 
             cand_paths = [
                 os.path.join(resolved_p, module_name, "index.json"),

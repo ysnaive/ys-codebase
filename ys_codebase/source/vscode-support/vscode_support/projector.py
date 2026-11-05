@@ -555,6 +555,8 @@ class SettingsProjector:
             for sec, pattern in managed_excludes.items():
                 if sec in settings and isinstance(settings[sec], dict):
                     settings[sec].pop(pattern, None)
+                    if not settings[sec]:
+                        settings.pop(sec, None)
 
         # 剔除 YSCB 注入之 analysisExclude
         managed_analysis_excl = set(managed_record.get("analysisExclude", []))
@@ -600,13 +602,26 @@ class SettingsProjector:
                 link_target = os.path.realpath(link_path)
             except OSError:
                 link_target = None
+        link_active = bool(
+            link_exists
+            and link_target
+            and os.path.isdir(link_path)
+            and os.path.isdir(link_target)
+        )
 
         is_managed = False
         managed_extra_paths: List[str] = []
         managed_schemas: List[str] = []
         if vfs.is_file(settings_path):
             try:
-                data = vfs.read_json(settings_path)
+                try:
+                    data = vfs.read_json(settings_path)
+                except Exception:
+                    raw_text = vfs.read_text(settings_path)
+                    try:
+                        data = json.loads(raw_text)
+                    except Exception:
+                        data = json.loads(strip_jsonc(raw_text))
                 if isinstance(data, dict) and self.YSCB_MANAGED_KEY in data:
                     is_managed = True
                     rec = data[self.YSCB_MANAGED_KEY]
@@ -621,7 +636,7 @@ class SettingsProjector:
             "vscode_dir_exists": os.path.isdir(vscode_dir),
             "settings_managed": is_managed,
             "stable_link_path": link_path,
-            "stable_link_active": bool(link_exists and link_target),
+            "stable_link_active": link_active,
             "stable_link_target": link_target,
             "schemas_dir_exists": os.path.isdir(schemas_dir),
             "managed_extra_paths": managed_extra_paths,

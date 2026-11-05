@@ -223,6 +223,189 @@ class TestASTEnginePolish(YSCBTestCase):
         self.assertIn("](file:///", out_txt_uri)
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_is_dirty_file_match_and_mtime_disambiguation(self):
+        """驗證根目錄單段檔案與子目錄 dirty_files 匹配，以及多空間同名根目錄檔案之 mtime_ns 消歧。"""
+        from ast_engine.io_utils import is_dirty_file_match
+
+        # 1. 含目錄結構路徑維持雙向後綴匹配，不會誤中子目錄同名檔
+        self.assertTrue(
+            is_dirty_file_match(
+                "src/utils.py",
+                {"/workspace/proj/src/utils.py"},
+            )
+        )
+        self.assertFalse(
+            is_dirty_file_match(
+                "pkg/utils.py",
+                {"/workspace/proj/src/utils.py"},
+            )
+        )
+        # 2. 根目錄單檔（無 '/'）可匹配絕對路徑 dirty_files
+        self.assertTrue(
+            is_dirty_file_match(
+                "yscb.py",
+                {"/workspace/proj/yscb.py"},
+            )
+        )
+
+        # 3. _resolve_dirty_files_only 於多空間同名根目錄檔案時選取最新 mtime_ns 空間
+        from ast_engine.engine import ASTEngine
+        from file_space.schema import FileSpaceConfig
+
+        space_a = self.temp_dir / "space_a"
+        space_b = self.temp_dir / "space_b"
+        space_a.mkdir(parents=True, exist_ok=True)
+        space_b.mkdir(parents=True, exist_ok=True)
+        file_a = space_a / "root_mod.py"
+        file_b = space_b / "root_mod.py"
+        file_a.write_text("x = 1\n", encoding="utf-8")
+        file_b.write_text("x = 2\n", encoding="utf-8")
+        st_a = file_a.stat()
+        os.utime(file_b, ns=(st_a.st_atime_ns, st_a.st_mtime_ns + 5_000_000))
+
+        sp_cfg_a = FileSpaceConfig(name="space_a", include=[space_a])
+        sp_cfg_b = FileSpaceConfig(name="space_b", include=[space_b])
+
+        engine = ASTEngine(project_root=self.temp_dir, storage_dir=self.temp_dir / ".ast_store_mtime")
+        resolved = engine.bundler._resolve_dirty_files_only(
+            dirty_raw_paths=["root_mod.py"],
+            target_spaces=[sp_cfg_a, sp_cfg_b],
+            snap_entries_by_space={},
+        )
+        self.assertEqual(len(resolved), 1)
+        abs_p, rel_p, matched_spaces = next(iter(resolved.values()))
+        self.assertEqual(Path(abs_p).resolve(), file_b.resolve())
+        self.assertTrue(rel_p.endswith("root_mod.py"))
+        self.assertEqual(matched_spaces, {"space_b"})
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_csharp_file_scoped_namespace_and_snapshot_list_symbols(self):
+        """驗證 C# file-scoped namespace 範圍延伸至檔尾與 ASTSnapshot.from_dict 串列反序列化。"""
+        from ast_engine.dialects.csharp import CSharpDialect
+        from ast_engine.schema import ASTSnapshot, SymbolKind
+
+        dialect = CSharpDialect()
+        raw_items = [
+            {
+                "short_name": "MyCorp.App",
+                "kind": SymbolKind.CLASS,
+                "start_line": 1,
+                "end_line": 1,
+                "start_byte": 0,
+                "end_byte": 21,
+                "is_file_scoped_namespace": True,
+            },
+            {
+                "short_name": "OrderService",
+                "kind": SymbolKind.CLASS,
+                "start_line": 3,
+                "end_line": 10,
+                "start_byte": 23,
+                "end_byte": 120,
+            },
+        ]
+        source_lines = ["namespace MyCorp.App;", "", "public class OrderService {", "}"]
+        dialect.finalize_raw_items(raw_items, source_lines)
+        self.assertEqual(raw_items[0]["end_byte"], 120)
+        self.assertGreaterEqual(raw_items[0]["end_line"], 10)
+
+        snap_dict = {
+            "space_name": "core",
+            "version": "1.0",
+            "symbols": [
+                {
+                    "id": "sym_1",
+                    "name": "OrderService",
+                    "kind": "class",
+                    "file_path": "OrderService.cs",
+                    "line_number": 3,
+                    "end_line": 10,
+                    "language": "c_sharp",
+                }
+            ],
+        }
+        snap = ASTSnapshot.from_dict(snap_dict)
+        self.assertIn("sym_1", snap.symbols)
+        self.assertEqual(snap.symbols["sym_1"].name, "OrderService")
+        self.assertEqual(len(snap.list_symbols()), 1)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_linker_cache_invalidation_on_inplace_symbol_update(self):
+        """驗證符號表原地更新（長度不變但符號實例替換）時 expand_contract_symbol_ids 快取自動失效重算。"""
+        from ast_engine.linker import expand_contract_symbol_ids
+        from ast_engine.schema import SymbolKind, UnifiedSymbol
+
+        base_v1 = UnifiedSymbol(
+            id="cls_base",
+            name="BaseWorker",
+            kind=SymbolKind.CLASS,
+            file_path="a.py",
+            line_number=1,
+            end_line=5,
+            language="python",
+            metadata={"short_name": "BaseWorker", "base_types": []},
+        )
+        child_v1 = UnifiedSymbol(
+            id="cls_child",
+            name="ChildWorker",
+            kind=SymbolKind.CLASS,
+            file_path="b.py",
+            line_number=1,
+            end_line=5,
+            language="python",
+            metadata={"short_name": "ChildWorker", "base_types": []},
+        )
+        method_target = UnifiedSymbol(
+            id="m_run",
+            name="BaseWorker.run_task",
+            kind=SymbolKind.METHOD,
+            file_path="a.py",
+            line_number=2,
+            end_line=4,
+            language="python",
+            parent_id="cls_base",
+            metadata={"short_name": "run_task", "parent_scope": "BaseWorker"},
+        )
+        method_child = UnifiedSymbol(
+            id="m_child_run",
+            name="ChildWorker.run_task",
+            kind=SymbolKind.METHOD,
+            file_path="b.py",
+            line_number=2,
+            end_line=4,
+            language="python",
+            parent_id="cls_child",
+            metadata={"short_name": "run_task", "parent_scope": "ChildWorker"},
+        )
+        symbols_map = {
+            "cls_base": base_v1,
+            "cls_child": child_v1,
+            "m_run": method_target,
+            "m_child_run": method_child,
+        }
+        expanded1 = expand_contract_symbol_ids(symbols_map, method_target)
+        self.assertEqual(expanded1, ["m_run"])
+
+        # 原地替換 cls_child（新增繼承 BaseWorker），字典長度與 id(symbols_map) 皆不變
+        child_v2 = UnifiedSymbol(
+            id="cls_child",
+            name="ChildWorker",
+            kind=SymbolKind.CLASS,
+            file_path="b.py",
+            line_number=1,
+            end_line=5,
+            language="python",
+            metadata={"short_name": "ChildWorker", "base_types": ["BaseWorker"]},
+        )
+        symbols_map["cls_child"] = child_v2
+        expanded2 = expand_contract_symbol_ids(symbols_map, method_target)
+        self.assertIn("m_run", expanded2)
+        self.assertIn("m_child_run", expanded2)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

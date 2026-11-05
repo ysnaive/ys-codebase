@@ -137,8 +137,12 @@ class YSCBTestCase(unittest.TestCase):
         from core.platform import restore_sys_path
 
         restore_sys_path(self._orig_sys_path)
-        os.environ.clear()
-        os.environ.update(self._orig_env)
+        for env_key in list(os.environ.keys()):
+            if env_key not in self._orig_env:
+                os.environ.pop(env_key, None)
+        for env_key, env_val in self._orig_env.items():
+            if os.environ.get(env_key) != env_val:
+                os.environ[env_key] = env_val
         uri.set_host_dir(getattr(self, "_orig_uri_host", None))
         uri.set_yscb_root(getattr(self, "_orig_uri_yscb", None))
         uri.set_module_context(getattr(self, "_orig_uri_mod", None))
@@ -298,8 +302,14 @@ class YSCBTestCase(unittest.TestCase):
         elapsed = time.perf_counter() - start
         self.assertLessEqual(elapsed, max_seconds, f"Execution took {elapsed:.4f}s > {max_seconds:.4f}s")
 
-    def run_cli(self, args: List[str], cwd: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Tuple[int, str, str]:
-        """Execute yscb host CLI in subprocess with isolated sandbox working directory (default: sandbox_host_dir)."""
+    def run_cli(
+        self,
+        args: List[str],
+        cwd: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+        timeout: float = 60.0,
+    ) -> Tuple[int, str, str]:
+        """Execute yscb host CLI in subprocess with isolated sandbox working directory and process-tree timeout protection."""
         work_dir = cwd or self.sandbox_host_dir
 
         sandbox_yscb = os.path.join(self.sandbox_host_dir, "yscb.py")
@@ -315,13 +325,11 @@ class YSCBTestCase(unittest.TestCase):
         p_env["YSCB_TEST_SANDBOX"] = "1"
         if env:
             p_env.update(env)
-        res = subprocess.run(
+        from dev.testing.runner import run_subprocess_with_tree_timeout
+
+        return run_subprocess_with_tree_timeout(
             cmd,
+            timeout_sec=timeout,
             cwd=work_dir,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             env=p_env,
         )
-        return res.returncode, res.stdout, res.stderr

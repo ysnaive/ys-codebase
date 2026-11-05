@@ -629,28 +629,7 @@ class SessionTraceEngine:
             if not include_subagents and st.get("user_turns", 0) == 0 and beacon["is_subagent"]:
                 continue
 
-            topic = ""
-            try:
-                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                    for ln in f:
-                        o = json.loads(ln)
-                        if isinstance(o, dict) and (
-                            o.get("type") == "USER_INPUT"
-                            or o.get("source") == "USER_EXPLICIT"
-                            or o.get("role") == "user"
-                            or (isinstance(o.get("message"), dict) and o["message"].get("role") == "user")
-                        ):
-                            c = str(o.get("content") or "")
-                            if not c and isinstance(o.get("message"), dict):
-                                c = str(o["message"].get("content") or "")
-                            if "<USER_REQUEST>" in c:
-                                c = c.split("<USER_REQUEST>", 1)[1].split("</USER_REQUEST>", 1)[0].strip()
-                            c = " ".join(c.split())
-                            if c and c.lower() not in ("/context-init", "context-init"):
-                                topic = c[:60]
-                                break
-            except Exception:
-                pass
+            topic = str(t1.get("topic") or "")
 
             conv_id = fpath.parent.parent.parent.name if ".system_generated" in str(fpath) else fpath.stem
             mtime_iso = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")

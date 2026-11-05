@@ -35,10 +35,10 @@ def on_reload(ctx: Any = None) -> bool:
 
 
 def on_remove(ctx: Any = None) -> bool:
-    """當移除目標包含 `vscode-support` 時，100% 乾淨還原 `.vscode/settings.json` 並清除 `.vscode/schemas/` 與穩定連結。"""
+    """當移除目標包含 `vscode-support`（或其別名 `vsc`）時，100% 乾淨還原 `.vscode/settings.json` 並清除 `.vscode/schemas/` 與穩定連結。"""
     try:
         targets = getattr(ctx, "args", None) if ctx is not None else None
-        if isinstance(targets, (list, tuple)) and "vscode-support" not in targets:
+        if not isinstance(targets, (list, tuple)) or not ({"vscode-support", "vsc"} & set(targets)):
             return False
         from vscode_support.projector import SettingsProjector
 

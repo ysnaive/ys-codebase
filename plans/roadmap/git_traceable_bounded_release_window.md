@@ -4,7 +4,7 @@
 > 歸檔日期：2026-11-05  
 > 狀態：Proposed  
 > 目標範疇：dev / core 發布生命週期治理、二維度滑動視窗與 Git 歷史確定性重建體系  
-> 前置解鎖條件：無  
+> 前置解鎖條件：[Tier 1 - 排序 #2b] 與 #2 (declarative_dev_changeset_and_auto_bump) 及 [TODO-01] 合流推進（同屬 dev/releaser.py 與 index.json 發布管線升級）  
 > 模型：Gemini 4 Argon (Medium)  
 > 模板版本：v1.1  
 
@@ -27,7 +27,7 @@
 
 - **核心設計不變量 (Core Invariants)**：
   - **熱快取空間常數上界不變量 ($O(1)$ Bounded Active Window)**：遠端發布分支與活躍版本清單（`versions`）僅作為近期活躍版本之「高速下載熱快取層」，每個模組同時保留之活躍二進位包數量必須受雙重上界（同三元組修訂上限 $\times$ 跨三元組保留上限）嚴格約束，徹底消除隨時間線性增長之維度。
-  - **源碼即真理與位元級可重現不變量 (Bit-for-Bit Reproducibility via Git SSOT)**：版本帳本（`releases[<ver>]`）永久保留全歷史版本之元數據、相依宣告、預期 `sha256` 與對應源碼版本座標（如 Commit / Tree 錨點或版本標籤）；任何歷史版本皆須能由對應源碼快照經確定性打包器重現出 `sha256` 100% 吻合之二進位包。
+  - **源碼樹雙重錨定與可重現封裝不變量 (`git_tree_sha` + Versioned Deterministic Packer)**：版本帳本（`releases[<ver>]`）永久保留全歷史版本之元數據、相依宣告、`.zip` 之 `sha256`、打包格式版本（`pack_format_version`）以及該模組源碼目錄之 **`git_tree_sha`（Git Tree Object SHA-1）** 與 Commit 座標。將源碼完整性驗證錨定於 `git_tree_sha` 並固定打包器壓縮參數與排除規則版本，徹底防範未來 `releaser.py` 演進或跨 Python 版本 `zlib` 壓縮字典微調導致歷史重建包雜湊漂移；同時於執行 `dev release` 前強制驗證目標模組目錄為 **Clean Worktree（無未 commit 之修改）**。
   - **消費端無感相容不變量 (Transparent Consumer Fallback)**：當外部下游專案請求已移出熱快取視窗之歷史 `pruned` 版本時，解析引擎須具備相容版本區間內之自動平滑遞補或按需溯源重建能力，確保舊專案環境初始化與還原不中斷。
 - **概念機制與互動協議 (Conceptual Mechanism)**：
   - **二維度有界滑動視窗 (2D Bounded Sliding Window)**：在既有「同三元組保留最新 $N$ 個 Revision」基礎上，引入「跨三元組僅保留最近 $K$ 個歷史三元組最高版本」之第二維度淘汰規則，將超出視窗之古老三元組自動轉為 `pruned` 並回收實體二進位包。
@@ -38,7 +38,7 @@
 
 ## 3. 解鎖條件與演進構想 (Unlock Criteria & Evolution Stages)
 
-- **前置解鎖條件與觸發時機**：無硬性前置阻塞；可於日常維護週期或當遠端 `releases` 分支活躍包數量接近設定水位時隨時啟動立項。
+- **前置解鎖條件與觸發時機**：**[Tier 1 - 排序 #2b]** 建議與 `#2 (declarative_dev_changeset_and_auto_bump)` 及 `[TODO-01]` 於同一發布管線升級計畫中合流實作（透過 `roadmap promote` 追加合併至同一計畫目錄之 `roadmap.md`），避免二次拆改 `dev/releaser.py`。
 - **階段演進構想 (High-Level Stages)**：
   1. **Stage 1（帳本溯源錨點與按需確定性重建）**：擴充發布流程於 `index.json` 記錄源碼溯源座標（並回填存量版本錨點），實作從 Git 歷史重建指定 `pruned` 版本 `.zip` 並通過 `sha256` 校驗之工具鏈。
   2. **Stage 2（二維度有界滑動視窗與跨三元組平滑遞補）**：升級索引滑動視窗為「同三元組 $N$ 個 + 跨三元組 $K$ 個」雙重封頂，並擴充 `core` 與單檔宿主對古老 `pruned` 版本之同 `Major.Minor` 相容遞補機制。

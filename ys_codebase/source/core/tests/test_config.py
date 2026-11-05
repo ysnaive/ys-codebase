@@ -360,7 +360,37 @@ class TestConfigManager(YSCBTestCase):
         self.assertEqual(vfs.read_json(new_sub_uri).get("sub_flag"), 42)
         self.mark_passed()
 
+    def test_config_cache_isolated_by_yscb_root_and_cli_signed_scalars(self):
+        """驗證 ConfigManager 快取以 (yscb_root, module) 隔離，以及 _parse_cli_scalar_or_json 支援負數與浮點數。"""
+        import importlib.util
+        import tempfile
 
+        cli_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "cli.py"))
+        spec = importlib.util.spec_from_file_location("core_scripts_cli_scalar", cli_path)
+        cli_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli_mod)
+
+        self.assertEqual(cli_mod._parse_cli_scalar_or_json("-1"), -1)
+        self.assertEqual(cli_mod._parse_cli_scalar_or_json("+42"), 42)
+        self.assertAlmostEqual(cli_mod._parse_cli_scalar_or_json("0.5"), 0.5)
+        self.assertAlmostEqual(cli_mod._parse_cli_scalar_or_json("-3.14"), -3.14)
+
+        with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b:
+            for r_dir, label in ((root_a, "from_a"), (root_b, "from_b")):
+                cfg_dir = os.path.join(r_dir, "ys_codebase", "config", "demo_mod")
+                os.makedirs(cfg_dir, exist_ok=True)
+                with open(os.path.join(cfg_dir, "config.project.json"), "w", encoding="utf-8") as f:
+                    json.dump({"origin": label}, f)
+
+            with uri.host_scope(root_a, "ys_codebase"):
+                val_a = config.get("demo_mod", "origin")
+            with uri.host_scope(root_b, "ys_codebase"):
+                val_b = config.get("demo_mod", "origin")
+
+            self.assertEqual(val_a, "from_a")
+            self.assertEqual(val_b, "from_b")
+
+        self.mark_passed()
 
 
 if __name__ == "__main__":

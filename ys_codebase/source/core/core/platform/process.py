@@ -300,6 +300,22 @@ def is_process_alive(pid: int) -> bool:
 
         try:
             os.kill(pid, 0)
+            if not os.path.exists(proc_status):
+                try:
+                    res = subprocess.run(
+                        ["ps", "-o", "stat=", "-p", str(pid)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                        timeout=1.0,
+                        check=False,
+                    )
+                    if res.returncode == 0:
+                        stat_str = (res.stdout or "").strip().upper()
+                        if stat_str.startswith(("Z", "X")):
+                            return False
+                except Exception:
+                    pass
             return True
         except OSError as err:
             if err.errno == errno.ESRCH:
@@ -329,6 +345,7 @@ def kill_process_tree(pid: int, timeout_sec: float = 3.0) -> bool:
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                timeout=max(1.0, float(timeout_sec)),
                 check=False,
             )
             time.sleep(0.1)
@@ -399,12 +416,16 @@ def terminate_popen_tree(proc: subprocess.Popen, timeout_sec: float = 2.0) -> bo
         return True
 
     if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=max(1.0, float(timeout_sec)),
+                check=False,
+            )
+        except Exception:
+            pass
         try:
             proc.wait(timeout=timeout_sec)
         except subprocess.TimeoutExpired:

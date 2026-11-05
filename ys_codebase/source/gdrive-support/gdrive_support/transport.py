@@ -5,6 +5,7 @@ Enforces 100% original file type preservation (no Google Workspace document conv
 and resolves Google Drive Shortcuts to their target file metadata.
 """
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -169,18 +170,30 @@ class AbstractSyncTransport(ABC):
         """
 
     @abstractmethod
-    def download_file(self, remote_path: str, local_path: Path) -> RemoteEntry:
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: Path,
+        entry_hint: Optional[RemoteEntry] = None,
+    ) -> RemoteEntry:
         """
         Download remote_path (or the target of a shortcut) into local_path preserving original bytes.
         Raises GDriveUnsupportedMimeError if target is a cloud-native Google Workspace item.
         """
 
     @abstractmethod
-    def trash_file(self, remote_path: str) -> bool:
+    def trash_file(
+        self, remote_path: str, file_id: Optional[str] = None
+    ) -> bool:
         """Move the item at remote_path into .trash/ (returns True if moved, False if not found)."""
 
     @abstractmethod
-    def move_file(self, src_remote_path: str, dst_remote_path: str) -> RemoteEntry:
+    def move_file(
+        self,
+        src_remote_path: str,
+        dst_remote_path: str,
+        entry_hint: Optional[RemoteEntry] = None,
+    ) -> RemoteEntry:
         """Move or rename an item from src_remote_path to dst_remote_path preserving its file_id."""
 
     @abstractmethod
@@ -188,6 +201,14 @@ class AbstractSyncTransport(ABC):
         self, target_file_id: str, shortcut_remote_path: str
     ) -> RemoteEntry:
         """Create a Google Drive Shortcut at shortcut_remote_path pointing to target_file_id."""
+
+    def reset_scan_state(self) -> None:
+        """Reset per-run scanned prefix tracking before a new synchronization pass."""
+        return None
+
+    def warm_folder_cache(self, entries: Dict[str, RemoteEntry]) -> None:
+        """Pre-populate known remote directory entries into the transport folder cache."""
+        return None
 
     def get_start_page_token(self) -> str:
         """Retrieve the starting page token for incremental change tracking."""
@@ -449,6 +470,8 @@ class LocalSandboxTransport(AbstractSyncTransport):
                 continue
             group.sort(key=lambda x: (int(x.get("mtime_ns") or 0), str(x.get("file_id") or "")), reverse=True)
             for older in group[1:]:
+                if bool(older.get("is_dir")) or older.get("mime_type") == FOLDER_MIME_TYPE:
+                    continue
                 old_fid = str(older.get("file_id") or "")
                 trash_rel = f".trash/{old_fid}_{Path(rel_p).name}"
                 older["rel_path"] = trash_rel
@@ -591,16 +614,16 @@ class LocalSandboxTransport(AbstractSyncTransport):
         if parent_rel and parent_rel != ".":
             self.mkdir(parent_rel)
 
-        dst = self._phys_path(norm)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-
-        md5_hex, _, sz = compute_local_hashes(dst)
-        mtime_ns = int(dst.stat().st_mtime_ns)
-        guessed_mime, _ = mimetypes.guess_type(dst.name)
-        mime = guessed_mime or "application/octet-stream"
-
         with self._lock:
+            dst = self._phys_path(norm)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+            md5_hex, _, sz = compute_local_hashes(dst)
+            mtime_ns = int(dst.stat().st_mtime_ns)
+            guessed_mime, _ = mimetypes.guess_type(dst.name)
+            mime = guessed_mime or "application/octet-stream"
+
             meta = self._ensure_meta()
             items = meta["items"]
 
@@ -631,9 +654,18 @@ class LocalSandboxTransport(AbstractSyncTransport):
             self._save_meta(meta)
             return self._build_entry(items[target_fid], items)
 
-    def download_file(self, remote_path: str, local_path: Path) -> RemoteEntry:
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: Path,
+        entry_hint: Optional[RemoteEntry] = None,
+    ) -> RemoteEntry:
         norm = normalize_remote_rel_path(remote_path)
-        entry = self.get_entry(norm)
+        entry = (
+            entry_hint
+            if (entry_hint is not None and entry_hint.rel_path == norm)
+            else self.get_entry(norm)
+        )
         if entry is None:
             raise GDriveFileNotFoundError(f"Remote file not found: '{norm}'")
         if entry.is_dir:
@@ -650,95 +682,119 @@ class LocalSandboxTransport(AbstractSyncTransport):
                 f"('{entry.target_mime_type or entry.mime_type}'). Original file types only."
             )
 
-        meta = self._ensure_meta()
-        items = meta["items"]
-        if entry.is_shortcut:
-            target_info = items.get(entry.target_file_id)
-            if not target_info:
-                raise GDriveFileNotFoundError(
-                    f"Shortcut target '{entry.target_file_id}' not found."
-                )
-            src_phys = self._phys_path(str(target_info.get("rel_path") or ""))
-        else:
-            src_phys = self._phys_path(norm)
+        with self._lock:
+            meta = self._ensure_meta()
+            items = meta["items"]
+            if entry.is_shortcut:
+                target_info = items.get(entry.target_file_id)
+                if not target_info:
+                    raise GDriveFileNotFoundError(
+                        f"Shortcut target '{entry.target_file_id}' not found."
+                    )
+                src_phys = self._phys_path(str(target_info.get("rel_path") or ""))
+            else:
+                src_phys = self._phys_path(norm)
 
-        if not src_phys.is_file():
-            raise GDriveFileNotFoundError(f"Sandbox backing file missing for '{norm}'.")
+            if not src_phys.is_file():
+                raise GDriveFileNotFoundError(f"Sandbox backing file missing for '{norm}'.")
 
-        dst = Path(local_path).resolve()
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        tmp_dst = dst.with_name(f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp")
-        shutil.copy2(src_phys, tmp_dst)
-        os.replace(tmp_dst, dst)
-        return entry
+            dst = Path(local_path).resolve()
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp_dst = dst.with_name(f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp")
+            shutil.copy2(src_phys, tmp_dst)
+            os.replace(tmp_dst, dst)
+            return entry
 
-    def trash_file(self, remote_path: str) -> bool:
+    def trash_file(
+        self, remote_path: str, file_id: Optional[str] = None
+    ) -> bool:
         norm = normalize_remote_rel_path(remote_path)
-        if not norm:
+        if not norm and not file_id:
             raise GDrivePathError("Cannot trash root directory.")
-        entry = self.get_entry(norm)
-        if entry is None:
-            return False
+        with self._lock:
+            entry: Optional[RemoteEntry] = None
+            if file_id:
+                entry = self.get_entry_by_id(file_id)
+            if entry is None and norm:
+                entry = self.get_entry(norm)
+            if entry is None:
+                return False
 
-        self.mkdir(".trash")
-        meta = self._ensure_meta()
-        items = meta["items"]
-        info = items.get(entry.file_id)
-        if not info:
-            return False
+            effective_norm = norm or entry.rel_path
+            if not effective_norm:
+                return False
 
-        trash_rel = f".trash/{entry.file_id}_{entry.name}"
-        if not entry.is_shortcut and not is_unsupported_google_workspace_mime(entry.mime_type):
-            src_phys = self._phys_path(norm)
-            dst_phys = self._phys_path(trash_rel)
-            dst_phys.parent.mkdir(parents=True, exist_ok=True)
-            if src_phys.exists():
-                shutil.move(str(src_phys), str(dst_phys))
+            self.mkdir(".trash")
+            meta = self._ensure_meta()
+            items = meta["items"]
+            info = items.get(entry.file_id)
+            if not info:
+                return False
 
-        if entry.is_dir:
-            prefix = f"{norm}/"
-            for child_info in items.values():
-                c_rel = str(child_info.get("rel_path") or "")
-                if c_rel.startswith(prefix):
-                    child_info["rel_path"] = f"{trash_rel}/{c_rel[len(prefix):]}"
+            trash_rel = f".trash/{entry.file_id}_{entry.name}"
+            if not entry.is_shortcut and not is_unsupported_google_workspace_mime(entry.mime_type):
+                src_phys = self._phys_path(effective_norm)
+                dst_phys = self._phys_path(trash_rel)
+                dst_phys.parent.mkdir(parents=True, exist_ok=True)
+                if src_phys.exists():
+                    shutil.move(str(src_phys), str(dst_phys))
 
-        info["rel_path"] = trash_rel
-        info["name"] = Path(trash_rel).name
-        self._save_meta(meta)
-        return True
+            if entry.is_dir:
+                prefix = f"{effective_norm}/"
+                for child_info in items.values():
+                    c_rel = str(child_info.get("rel_path") or "")
+                    if c_rel.startswith(prefix):
+                        child_info["rel_path"] = f"{trash_rel}/{c_rel[len(prefix):]}"
 
-    def move_file(self, src_remote_path: str, dst_remote_path: str) -> RemoteEntry:
+            info["rel_path"] = trash_rel
+            info["name"] = Path(trash_rel).name
+            self._save_meta(meta)
+            return True
+
+    def move_file(
+        self,
+        src_remote_path: str,
+        dst_remote_path: str,
+        entry_hint: Optional[RemoteEntry] = None,
+    ) -> RemoteEntry:
         src_norm = normalize_remote_rel_path(src_remote_path)
         dst_norm = normalize_remote_rel_path(dst_remote_path)
         if not src_norm or not dst_norm:
             raise GDrivePathError("move_file requires non-empty src and dst paths.")
 
-        entry = self.get_entry(src_norm)
-        if entry is None:
-            raise GDriveFileNotFoundError(f"Source path not found: '{src_norm}'")
+        with self._lock:
+            entry = (
+                entry_hint
+                if (entry_hint is not None and entry_hint.rel_path == src_norm)
+                else self.get_entry(src_norm)
+            )
+            if entry is None:
+                raise GDriveFileNotFoundError(f"Source path not found: '{src_norm}'")
 
-        dst_parent = Path(dst_norm).parent.as_posix()
-        if dst_parent and dst_parent != ".":
-            self.mkdir(dst_parent)
+            dst_parent = Path(dst_norm).parent.as_posix()
+            if dst_parent and dst_parent != ".":
+                self.mkdir(dst_parent)
 
-        meta = self._ensure_meta()
-        items = meta["items"]
-        for fid, existing in list(items.items()):
-            if existing.get("rel_path") == dst_norm and fid != entry.file_id:
-                del items[fid]
+            meta = self._ensure_meta()
+            items = meta["items"]
+            for fid, existing in list(items.items()):
+                if existing.get("rel_path") == dst_norm and fid != entry.file_id:
+                    del items[fid]
 
-        info = items[entry.file_id]
-        if not entry.is_shortcut and not is_unsupported_google_workspace_mime(entry.mime_type):
-            src_phys = self._phys_path(src_norm)
-            dst_phys = self._phys_path(dst_norm)
-            dst_phys.parent.mkdir(parents=True, exist_ok=True)
-            if src_phys.exists():
-                shutil.move(str(src_phys), str(dst_phys))
+            info = items.get(entry.file_id)
+            if info is None:
+                raise GDriveFileNotFoundError(f"Source path not found: '{src_norm}'")
+            if not entry.is_shortcut and not is_unsupported_google_workspace_mime(entry.mime_type):
+                src_phys = self._phys_path(src_norm)
+                dst_phys = self._phys_path(dst_norm)
+                dst_phys.parent.mkdir(parents=True, exist_ok=True)
+                if src_phys.exists():
+                    shutil.move(str(src_phys), str(dst_phys))
 
-        info["rel_path"] = dst_norm
-        info["name"] = Path(dst_norm).name
-        self._save_meta(meta)
-        return self._build_entry(info, items)
+            info["rel_path"] = dst_norm
+            info["name"] = Path(dst_norm).name
+            self._save_meta(meta)
+            return self._build_entry(info, items)
 
     def create_shortcut(
         self, target_file_id: str, shortcut_remote_path: str
@@ -917,16 +973,33 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         self._token_expiry_epoch: float = 0.0
         self._folder_cache: Dict[str, RemoteEntry] = {}
         self._scanned_prefixes: set[str] = set()
+        self._cache_lock = threading.RLock()
         self._token_lock = threading.RLock()
         self._tls = threading.local()
 
-    def _invalidate_cache_path(self, norm_path: str) -> None:
-        if not norm_path:
-            self._folder_cache.clear()
+    def reset_scan_state(self) -> None:
+        with self._cache_lock:
+            self._scanned_prefixes.clear()
+
+    def warm_folder_cache(self, entries: Dict[str, RemoteEntry]) -> None:
+        if not entries:
             return
-        prefix = f"{norm_path}/"
-        for k in [k for k in self._folder_cache if k == norm_path or k.startswith(prefix)]:
-            self._folder_cache.pop(k, None)
+        with self._cache_lock:
+            for rel_p, entry in entries.items():
+                norm = normalize_remote_rel_path(rel_p)
+                if norm and entry.is_dir and entry.file_id:
+                    self._folder_cache[norm] = entry
+
+    def _invalidate_cache_path(self, norm_path: str) -> None:
+        with self._cache_lock:
+            if not norm_path:
+                self._folder_cache.clear()
+                return
+            prefix = f"{norm_path}/"
+            for k in [
+                k for k in self._folder_cache if k == norm_path or k.startswith(prefix)
+            ]:
+                self._folder_cache.pop(k, None)
 
     def _get_https_conn(self, host: str) -> HTTPSConnection:
         conns: Dict[str, HTTPSConnection] = getattr(self._tls, "conns", None)
@@ -1036,6 +1109,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         path_with_query = parsed.path + (f"?{parsed.query}" if parsed.query else "")
 
         backoff = 1.0
+        refreshed_on_401 = False
         for attempt in range(4):
             try:
                 conn = self._get_https_conn(host)
@@ -1045,6 +1119,14 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 status = resp.status
                 if 200 <= status < 300:
                     return json.loads(raw.decode("utf-8")) if raw else {}
+                if status == 401 and not refreshed_on_401 and attempt < 3:
+                    refreshed_on_401 = True
+                    with self._token_lock:
+                        self._access_token = None
+                        self._token_expiry_epoch = 0.0
+                    token = self._ensure_access_token()
+                    req_headers["Authorization"] = f"Bearer {token}"
+                    continue
                 if status in (429, 500, 502, 503, 504) and attempt < 3:
                     time.sleep(backoff)
                     backoff *= 2
@@ -1157,14 +1239,18 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
     def _resolve_shortcut_targets(
         self, raw_items: List[Dict[str, Any]]
     ) -> Dict[str, Dict[str, Any]]:
-        target_ids = {
-            str((it.get("shortcutDetails") or {}).get("targetId") or "")
-            for it in raw_items
-            if it.get("mimeType") == SHORTCUT_MIME_TYPE
-        }
-        target_ids.discard("")
-        resolved: Dict[str, Dict[str, Any]] = {}
-        for tid in target_ids:
+        target_ids = sorted(
+            {
+                str((it.get("shortcutDetails") or {}).get("targetId") or "")
+                for it in raw_items
+                if it.get("mimeType") == SHORTCUT_MIME_TYPE
+            }
+            - {""}
+        )
+        if not target_ids:
+            return {}
+
+        def _fetch_target(tid: str) -> Optional[Tuple[str, Dict[str, Any]]]:
             try:
                 url = (
                     f"{self.DRIVE_API_BASE}/files/{urllib.parse.quote(tid)}"
@@ -1172,9 +1258,24 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 )
                 obj = self._request_json("GET", url)
                 if obj and not obj.get("trashed"):
-                    resolved[tid] = obj
+                    return tid, obj
             except GDriveFileNotFoundError:
-                continue
+                return None
+            return None
+
+        resolved: Dict[str, Dict[str, Any]] = {}
+        if len(target_ids) == 1:
+            pair = _fetch_target(target_ids[0])
+            if pair is not None:
+                resolved[pair[0]] = pair[1]
+            return resolved
+
+        with ThreadPoolExecutor(max_workers=min(8, len(target_ids))) as pool:
+            futs = [pool.submit(_fetch_target, tid) for tid in target_ids]
+            for fut in as_completed(futs):
+                pair = fut.result()
+                if pair is not None:
+                    resolved[pair[0]] = pair[1]
         return resolved
 
     def _resolve_folder_id_by_path(self, rel_path: str) -> Optional[Tuple[str, Dict[str, Any]]]:
@@ -1191,9 +1292,17 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         last_item: Optional[Dict[str, Any]] = None
         for idx, part in enumerate(parts):
             curr_rel = f"{curr_rel}/{part}".strip("/") if curr_rel else part
-            if idx < len(parts) - 1 and curr_rel in self._folder_cache:
-                curr_parent = self._folder_cache[curr_rel].file_id
-                continue
+            with self._cache_lock:
+                cached_folder = self._folder_cache.get(curr_rel)
+            if cached_folder is not None:
+                if idx < len(parts) - 1:
+                    curr_parent = cached_folder.file_id
+                    continue
+                return cached_folder.file_id, {
+                    "id": cached_folder.file_id,
+                    "name": cached_folder.name,
+                    "mimeType": FOLDER_MIME_TYPE,
+                }
             children = self._list_children_raw(curr_parent)
             matches = [c for c in children if c.get("name") == part]
             if not matches:
@@ -1205,7 +1314,8 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             chosen = matches[0]
             last_item = chosen
             if chosen.get("mimeType") == FOLDER_MIME_TYPE:
-                self._folder_cache[curr_rel] = self._raw_to_entry(chosen, curr_rel)
+                with self._cache_lock:
+                    self._folder_cache[curr_rel] = self._raw_to_entry(chosen, curr_rel)
             if idx < len(parts) - 1:
                 if chosen.get("mimeType") != FOLDER_MIME_TYPE:
                     return None
@@ -1236,6 +1346,8 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 )
                 winner = group[0]
                 for loser in group[1:]:
+                    if loser.get("mimeType") == FOLDER_MIME_TYPE:
+                        continue
                     loser_id = str(loser.get("id") or "")
                     if loser_id:
                         try:
@@ -1254,13 +1366,15 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 child_rel = f"{curr_prefix}/{name}".strip("/") if curr_prefix else name
                 collected_raw.append((child_rel, winner))
                 if winner.get("mimeType") == FOLDER_MIME_TYPE:
-                    self._folder_cache[child_rel] = self._raw_to_entry(winner, child_rel)
+                    with self._cache_lock:
+                        self._folder_cache[child_rel] = self._raw_to_entry(winner, child_rel)
                     if recursive:
                         _walk(str(winner["id"]), child_rel)
 
         _walk(folder_id, norm)
         if recursive:
-            self._scanned_prefixes.add(norm)
+            with self._cache_lock:
+                self._scanned_prefixes.add(norm)
         target_map = self._resolve_shortcut_targets([it for _, it in collected_raw])
         entries = [
             self._raw_to_entry(it, rel_p, target_map) for rel_p, it in collected_raw
@@ -1270,8 +1384,10 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
 
     def get_entry(self, remote_path: str) -> Optional[RemoteEntry]:
         norm = normalize_remote_rel_path(remote_path)
-        if norm in self._folder_cache:
-            return self._folder_cache[norm]
+        with self._cache_lock:
+            cached = self._folder_cache.get(norm)
+        if cached is not None:
+            return cached
         res = self._resolve_folder_id_by_path(norm)
         if res is None:
             return None
@@ -1301,16 +1417,20 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 mime_type=FOLDER_MIME_TYPE,
                 is_dir=True,
             )
-        if norm in self._folder_cache:
-            return self._folder_cache[norm]
+        with self._cache_lock:
+            cached_leaf = self._folder_cache.get(norm)
+        if cached_leaf is not None:
+            return cached_leaf
         parts = norm.split("/")
         curr_parent = self.root_folder_id
         curr_rel = ""
         last_entry: Optional[RemoteEntry] = None
         for part in parts:
             curr_rel = f"{curr_rel}/{part}".strip("/") if curr_rel else part
-            if curr_rel in self._folder_cache:
-                last_entry = self._folder_cache[curr_rel]
+            with self._cache_lock:
+                cached_part = self._folder_cache.get(curr_rel)
+            if cached_part is not None:
+                last_entry = cached_part
                 curr_parent = last_entry.file_id
                 continue
             children = self._list_children_raw(curr_parent)
@@ -1320,6 +1440,10 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 if c.get("name") == part and c.get("mimeType") == FOLDER_MIME_TYPE
             ]
             if folder_matches:
+                folder_matches.sort(
+                    key=lambda c: self._parse_rfc3339_ns(str(c.get("modifiedTime") or "")),
+                    reverse=True,
+                )
                 chosen = folder_matches[0]
             else:
                 meta_body = json.dumps(
@@ -1341,12 +1465,15 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 )
             curr_parent = str(chosen["id"])
             last_entry = self._raw_to_entry(chosen, curr_rel)
-            self._folder_cache[curr_rel] = last_entry
+            with self._cache_lock:
+                self._folder_cache[curr_rel] = last_entry
         assert last_entry is not None
         return last_entry
 
     def _is_under_scanned_prefix(self, norm_path: str) -> bool:
-        for pfx in self._scanned_prefixes:
+        with self._cache_lock:
+            prefixes = tuple(self._scanned_prefixes)
+        for pfx in prefixes:
             if not pfx or norm_path.startswith(f"{pfx}/"):
                 return True
         return False
@@ -1416,9 +1543,18 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         )
         return self._raw_to_entry(created, norm)
 
-    def download_file(self, remote_path: str, local_path: Path) -> RemoteEntry:
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: Path,
+        entry_hint: Optional[RemoteEntry] = None,
+    ) -> RemoteEntry:
         norm = normalize_remote_rel_path(remote_path)
-        entry = self.get_entry(norm)
+        entry = (
+            entry_hint
+            if (entry_hint is not None and entry_hint.file_id)
+            else self.get_entry(norm)
+        )
         if entry is None:
             raise GDriveFileNotFoundError(f"Remote file not found: '{norm}'")
         if entry.is_dir:
@@ -1434,57 +1570,105 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             )
 
         download_fid = entry.target_file_id if entry.is_shortcut else entry.file_id
-        token = self._ensure_access_token()
         url = (
             f"{self.DRIVE_API_BASE}/files/{urllib.parse.quote(download_fid)}"
             "?alt=media&supportsAllDrives=true"
         )
-        req = urllib.request.Request(
-            url, headers={"Authorization": f"Bearer {token}"}, method="GET"
-        )
         dst = Path(local_path).resolve()
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp_dst = dst.with_name(f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp")
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp, open(
-                tmp_dst, "wb"
-            ) as out_f:
-                shutil.copyfileobj(resp, out_f)
-            os.replace(tmp_dst, dst)
-        except Exception as exc:
-            if tmp_dst.exists():
-                tmp_dst.unlink(missing_ok=True)
-            raise GDriveTransportError(f"Failed to download '{norm}': {exc}") from exc
-        return entry
+        backoff = 1.0
+        refreshed_on_401 = False
+        for attempt in range(4):
+            token = self._ensure_access_token()
+            req = urllib.request.Request(
+                url, headers={"Authorization": f"Bearer {token}"}, method="GET"
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp, open(
+                    tmp_dst, "wb"
+                ) as out_f:
+                    shutil.copyfileobj(resp, out_f)
+                os.replace(tmp_dst, dst)
+                return entry
+            except urllib.error.HTTPError as exc:
+                if tmp_dst.exists():
+                    tmp_dst.unlink(missing_ok=True)
+                if exc.code == 401 and not refreshed_on_401 and attempt < 3:
+                    refreshed_on_401 = True
+                    with self._token_lock:
+                        self._access_token = None
+                        self._token_expiry_epoch = 0.0
+                    continue
+                if exc.code in (429, 500, 502, 503, 504) and attempt < 3:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                if exc.code == 404:
+                    raise GDriveFileNotFoundError(
+                        f"Remote file not found during download: '{norm}'"
+                    ) from exc
+                raise GDriveTransportError(
+                    f"Failed to download '{norm}' (HTTP {exc.code}): {exc}"
+                ) from exc
+            except Exception as exc:
+                if tmp_dst.exists():
+                    tmp_dst.unlink(missing_ok=True)
+                if attempt < 3:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                raise GDriveTransportError(
+                    f"Failed to download '{norm}': {exc}"
+                ) from exc
+        raise GDriveTransportError(f"Failed to download '{norm}': exhausted retries.")
 
-    def trash_file(self, remote_path: str) -> bool:
+    def trash_file(
+        self, remote_path: str, file_id: Optional[str] = None
+    ) -> bool:
         """
         Move remote_path into Google Drive's native 30-day Trash (trashed=true) without creating a .trash/ folder.
         """
         norm = normalize_remote_rel_path(remote_path)
-        entry = self.get_entry(norm)
-        if entry is None:
-            return False
+        target_fid = str(file_id or "").strip()
+        if not target_fid:
+            entry = self.get_entry(norm)
+            if entry is None:
+                return False
+            target_fid = entry.file_id
         params = urllib.parse.urlencode(
             {
                 "fields": self.FILE_FIELDS,
                 "supportsAllDrives": "true",
             }
         )
-        url = f"{self.DRIVE_API_BASE}/files/{urllib.parse.quote(entry.file_id)}?{params}"
-        self._request_json(
-            "PATCH",
-            url,
-            body=json.dumps({"trashed": True}).encode("utf-8"),
-            headers={"Content-Type": "application/json; charset=utf-8"},
-        )
+        url = f"{self.DRIVE_API_BASE}/files/{urllib.parse.quote(target_fid)}?{params}"
+        try:
+            self._request_json(
+                "PATCH",
+                url,
+                body=json.dumps({"trashed": True}).encode("utf-8"),
+                headers={"Content-Type": "application/json; charset=utf-8"},
+            )
+        except GDriveFileNotFoundError:
+            self._invalidate_cache_path(norm)
+            return False
         self._invalidate_cache_path(norm)
         return True
 
-    def move_file(self, src_remote_path: str, dst_remote_path: str) -> RemoteEntry:
+    def move_file(
+        self,
+        src_remote_path: str,
+        dst_remote_path: str,
+        entry_hint: Optional[RemoteEntry] = None,
+    ) -> RemoteEntry:
         src_norm = normalize_remote_rel_path(src_remote_path)
         dst_norm = normalize_remote_rel_path(dst_remote_path)
-        entry = self.get_entry(src_norm)
+        entry = (
+            entry_hint
+            if (entry_hint is not None and entry_hint.file_id and entry_hint.parent_id)
+            else self.get_entry(src_norm)
+        )
         if entry is None:
             raise GDriveFileNotFoundError(f"Source path not found: '{src_norm}'")
         dst_parent_rel = Path(dst_norm).parent.as_posix()
@@ -1510,7 +1694,8 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         self._invalidate_cache_path(src_norm)
         res_entry = self._raw_to_entry(updated, dst_norm)
         if res_entry.is_dir:
-            self._folder_cache[dst_norm] = res_entry
+            with self._cache_lock:
+                self._folder_cache[dst_norm] = res_entry
         return res_entry
 
     def create_shortcut(
@@ -1608,15 +1793,17 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             is_removed = bool(ch.get("removed")) or bool(file_obj.get("trashed"))
             if is_removed:
                 records.append(ChangeRecord(file_id=fid, removed=True))
-                self._folder_cache = {
-                    k: v for k, v in self._folder_cache.items() if v.file_id != fid
-                }
-            else:
-                ent = self._raw_to_entry(file_obj, "", target_map)
-                if ent.is_dir:
+                with self._cache_lock:
                     self._folder_cache = {
                         k: v for k, v in self._folder_cache.items() if v.file_id != fid
                     }
+            else:
+                ent = self._raw_to_entry(file_obj, "", target_map)
+                if ent.is_dir:
+                    with self._cache_lock:
+                        self._folder_cache = {
+                            k: v for k, v in self._folder_cache.items() if v.file_id != fid
+                        }
                 records.append(
                     ChangeRecord(
                         file_id=fid,

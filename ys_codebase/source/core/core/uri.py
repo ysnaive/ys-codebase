@@ -16,10 +16,43 @@ from typing import Optional, List, Dict, Any, Tuple, Generator, Set
 from core.context import ExecutionContext
 
 CONFIG_FILENAME = "yscb.config.json"
-_active_module_context: Optional[str] = None
-_active_host_dir: Optional[str] = None
-_active_yscb_dir: Optional[str] = None
-_reconciling_tokens: Set[str] = set()
+
+
+class _ThreadLocalSet:
+    """Thread-local set proxy for URI reconciliation reentrancy tracking."""
+
+    def __init__(self, tls: threading.local, attr: str) -> None:
+        self._tls = tls
+        self._attr = attr
+
+    def _get_set(self) -> Set[str]:
+        s = getattr(self._tls, self._attr, None)
+        if s is None:
+            s = set()
+            setattr(self._tls, self._attr, s)
+        return s
+
+    def add(self, item: str) -> None:
+        self._get_set().add(item)
+
+    def discard(self, item: str) -> None:
+        self._get_set().discard(item)
+
+    def clear(self) -> None:
+        self._get_set().clear()
+
+    def __contains__(self, item: object) -> bool:
+        return item in self._get_set()
+
+    def __iter__(self):
+        return iter(self._get_set())
+
+    def __len__(self) -> int:
+        return len(self._get_set())
+
+
+_URI_TLS = threading.local()
+_reconciling_tokens: _ThreadLocalSet = _ThreadLocalSet(_URI_TLS, "reconciling_tokens")
 
 # Bootstrap fallback schemes (Option B: Canonical Rooted Schemes)
 _BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
@@ -96,19 +129,18 @@ class CyclicURIDependencyError(ValueError):
 
 
 def set_module_context(module_name: Optional[str]) -> None:
-    global _active_module_context
-    _active_module_context = module_name
+    _URI_TLS.active_module_context = module_name
 
 
 def get_module_context() -> Optional[str]:
-    return _active_module_context
+    return getattr(_URI_TLS, "active_module_context", None)
 
 
 @contextmanager
 def module_scope(module_name: Optional[str]) -> Generator[None, None, None]:
     """
     模組上下文安全作用域 (Context Manager)：
-    退出區塊時以 finally 100% 保證還原舊全域 _active_module_context，防止測試與 Hook 污染。
+    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_module_context，防止測試與 Hook 污染。
     """
     old = get_module_context()
     set_module_context(module_name)
@@ -120,14 +152,14 @@ def module_scope(module_name: Optional[str]) -> Generator[None, None, None]:
 
 def set_host_dir(host_dir: Optional[str]) -> None:
     """Explicitly inject host directory."""
-    global _active_host_dir
-    _active_host_dir = os.path.normpath(os.path.abspath(host_dir)) if host_dir else None
+    _URI_TLS.active_host_dir = os.path.normpath(os.path.abspath(host_dir)) if host_dir else None
 
 
 def get_host_dir() -> Optional[str]:
-    """Get active host directory from memory context or YSCB_HOST_DIR environment variable."""
-    if _active_host_dir:
-        return _active_host_dir
+    """Get active host directory from thread-local memory context or YSCB_HOST_DIR environment variable."""
+    active_host = getattr(_URI_TLS, "active_host_dir", None)
+    if active_host:
+        return active_host
     env_dir = os.environ.get("YSCB_HOST_DIR")
     if env_dir and os.path.isdir(env_dir):
         return os.path.normpath(os.path.abspath(env_dir))
@@ -135,29 +167,37 @@ def get_host_dir() -> Optional[str]:
 
 
 @contextmanager
-def host_scope(host_dir: Optional[str]) -> Generator[None, None, None]:
+def host_scope(host_dir: Optional[str], yscb_dir: Optional[str] = None) -> Generator[None, None, None]:
     """
     宿主目錄安全作用域 (Context Manager)：
-    退出區塊時以 finally 100% 保證還原舊全域 _active_host_dir。
+    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_host_dir（與可選之 active_yscb_dir）。
     """
-    old = get_host_dir()
+    old_host = getattr(_URI_TLS, "active_host_dir", None)
+    old_yscb = getattr(_URI_TLS, "active_yscb_dir", None)
     set_host_dir(host_dir)
+    if yscb_dir is not None:
+        if host_dir and not os.path.isabs(yscb_dir):
+            set_yscb_root(os.path.join(os.path.abspath(host_dir), yscb_dir))
+        else:
+            set_yscb_root(yscb_dir)
     try:
         yield
     finally:
-        set_host_dir(old)
+        _URI_TLS.active_host_dir = old_host
+        if yscb_dir is not None:
+            _URI_TLS.active_yscb_dir = old_yscb
 
 
 def set_yscb_root(yscb_dir: Optional[str]) -> None:
     """Explicitly inject YSCB toolchain root directory."""
-    global _active_yscb_dir
-    _active_yscb_dir = os.path.normpath(os.path.abspath(yscb_dir)) if yscb_dir else None
+    _URI_TLS.active_yscb_dir = os.path.normpath(os.path.abspath(yscb_dir)) if yscb_dir else None
 
 
 def get_yscb_root() -> Optional[str]:
-    """Get active YSCB toolchain root directory from memory context or YSCB_ROOT_DIR environment variable."""
-    if _active_yscb_dir:
-        return _active_yscb_dir
+    """Get active YSCB toolchain root directory from thread-local memory context or YSCB_ROOT_DIR environment variable."""
+    active_yscb = getattr(_URI_TLS, "active_yscb_dir", None)
+    if active_yscb:
+        return active_yscb
     env_dir = os.environ.get("YSCB_ROOT_DIR")
     if env_dir and os.path.isdir(env_dir):
         return os.path.normpath(os.path.abspath(env_dir))
@@ -168,14 +208,14 @@ def get_yscb_root() -> Optional[str]:
 def yscb_scope(yscb_dir: Optional[str]) -> Generator[None, None, None]:
     """
     工具庫核心目錄安全作用域 (Context Manager)：
-    退出區塊時以 finally 100% 保證還原舊全域 _active_yscb_dir。
+    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_yscb_dir。
     """
-    old = get_yscb_root()
+    old = getattr(_URI_TLS, "active_yscb_dir", None)
     set_yscb_root(yscb_dir)
     try:
         yield
     finally:
-        set_yscb_root(old)
+        _URI_TLS.active_yscb_dir = old
 
 
 def resolve_yscb_root() -> str:
@@ -497,6 +537,32 @@ def _expand_module_placeholder_in_rel(rel: str, active_mod: Optional[str], raw_u
     return rel
 
 
+def _ensure_safe_subpath(target_base: str, rel: str, raw_uri: str) -> str:
+    """
+    Verifies that a non-empty relative URI subpath stays within target_base
+    without '..' escape or Windows drive reset.
+    """
+    base_norm = os.path.normpath(os.path.abspath(target_base))
+    if not rel:
+        return base_norm
+    if len(rel) > 1 and rel[1] == ":":
+        raise PermissionError(
+            f"Path traversal or drive reset detected in URI '{raw_uri}': escaped base '{base_norm}'."
+        )
+    joined_norm = os.path.normpath(os.path.join(base_norm, rel))
+    try:
+        common = os.path.commonpath([base_norm, joined_norm])
+    except ValueError as err:
+        raise PermissionError(
+            f"Path traversal or drive reset detected in URI '{raw_uri}': escaped base '{base_norm}'."
+        ) from err
+    if common != base_norm:
+        raise PermissionError(
+            f"Path traversal detected in URI '{raw_uri}': subpath '{rel}' escaped base '{base_norm}'."
+        )
+    return joined_norm
+
+
 def _resolve_const_scheme(
     raw_uri: str,
     sval: str,
@@ -521,20 +587,7 @@ def _resolve_const_scheme(
     val_expanded = val_expanded.replace("{yscb_root}", yscb_dir).replace("{yscb_host}", host_dir or "")
 
     target_base = resolve(val_expanded, current_module=active_mod, context=context, interactive=interactive)
-    if rel:
-        resolved_path = os.path.normpath(os.path.join(target_base, rel))
-        real_base = os.path.normpath(os.path.realpath(target_base))
-        real_resolved = os.path.normpath(os.path.realpath(resolved_path))
-        is_safe = (
-            (resolved_path == target_base)
-            or resolved_path.startswith(target_base + os.sep)
-            or (real_resolved == real_base)
-            or real_resolved.startswith(real_base + os.sep)
-        )
-        if not is_safe and ".." in rel:
-            raise PermissionError(f"Path traversal detected in URI '{raw_uri}': escaped root '{target_base}'.")
-        return resolved_path
-    return os.path.normpath(target_base)
+    return _ensure_safe_subpath(target_base, rel, raw_uri)
 
 
 def _resolve_config_scheme(
@@ -561,6 +614,7 @@ def _resolve_config_scheme(
     except Exception:
         curr_val = None
 
+    raw_uri = f"{scheme_token}://{rel}" if rel else f"{scheme_token}://"
     if curr_val is None or str(curr_val).startswith("!undefined"):
         target_base = reconcile_undefined_uri(
             scheme_token=scheme_token,
@@ -570,7 +624,7 @@ def _resolve_config_scheme(
             description=scheme.get("description", ""),
             interactive=interactive,
         )
-        return os.path.normpath(os.path.join(target_base, rel)) if rel else target_base
+        return _ensure_safe_subpath(target_base, rel, raw_uri)
 
     val_str = str(curr_val)
     if "://" in val_str:
@@ -579,7 +633,7 @@ def _resolve_config_scheme(
         target_base = os.path.normpath(val_str)
     else:
         target_base = os.path.normpath(os.path.join(yscb_dir, val_str))
-    return os.path.normpath(os.path.join(target_base, rel)) if rel else target_base
+    return _ensure_safe_subpath(target_base, rel, raw_uri)
 
 
 def resolve(
@@ -605,14 +659,14 @@ def resolve(
         return os.path.normpath(uri)
 
     yscb_dir = resolve_yscb_root()
-    active_mod = current_module or _active_module_context or (
+    active_mod = current_module or get_module_context() or (
         context.module_name if context and hasattr(context, "module_name") else None
     )
 
     # Fast-path for root anchor protocol yscb:// (No need to read host config)
     if uri.startswith("yscb://"):
         rel = uri[len("yscb://"):].lstrip("/\\")
-        return os.path.normpath(os.path.join(yscb_dir, rel)) if rel else yscb_dir
+        return _ensure_safe_subpath(yscb_dir, rel, uri)
 
     # Fast-path for host anchor protocol yscb.host:// (Force points to yscb.py/yscb.config.json directory)
     if uri.startswith("yscb.host://"):
@@ -621,7 +675,7 @@ def resolve(
         except Exception:
             host_dir = get_host_dir() or os.path.normpath(os.path.dirname(yscb_dir))
         rel = uri[len("yscb.host://"):].lstrip("/\\")
-        return os.path.normpath(os.path.join(host_dir, rel)) if rel else host_dir
+        return _ensure_safe_subpath(host_dir, rel, uri)
 
     # 1. Check project:// with strict explicit configuration rule & JIT Hot-Reconciliation
     if uri.startswith("project://"):
@@ -637,7 +691,7 @@ def resolve(
                 interactive=interactive
             )
         rel = uri[len("project://"):].lstrip("/\\")
-        return os.path.normpath(os.path.join(proj_dir, rel)) if rel else proj_dir
+        return _ensure_safe_subpath(proj_dir, rel, uri)
 
     # 2. Dynamic contributed protocols lookup
     if "://" in uri:
@@ -670,7 +724,7 @@ def resolve(
 def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
     norm = os.path.normpath(os.path.abspath(abs_path))
     yscb_dir = resolve_yscb_root()
-    mod = current_module or _active_module_context or "core"
+    mod = current_module or get_module_context() or "core"
 
     proj_dir = None
     try:

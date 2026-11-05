@@ -2,6 +2,7 @@
 Official test suite for core.installer.Installer.
 """
 import os
+import time
 from dev.testing import YSCBTestCase, require, Requirement
 from core.installer import Installer
 from core import uri, vfs
@@ -740,6 +741,83 @@ class TestCoreInstaller(YSCBTestCase):
                 guarded_vfs.read_text(symlink_path)
             with self.assertRaises(PermissionError):
                 guarded_vfs.exists(symlink_path)
+
+        self.mark_passed()
+
+    def test_rollback_mtime_sorting_and_restore_mirror_before_sha256(self):
+        """驗證 cmd_rollback 依 mtime 排序快照，且 _restore_module_package 先複製至 .mirror 再驗 SHA256。"""
+        import hashlib
+        import tempfile
+        import zipfile
+        from unittest.mock import patch
+
+        # 1. Verify _restore_module_package copies release zip to .mirror before engine._verify_zip_sha256
+        mod_name = "mock_restore_order_mod"
+        ver = "1.0.0.0"
+        with tempfile.TemporaryDirectory() as tmp_root:
+            rel_mod_dir = os.path.join(tmp_root, "release", mod_name)
+            os.makedirs(rel_mod_dir, exist_ok=True)
+            rel_zip_abs = os.path.join(rel_mod_dir, f"{ver}.zip")
+            with zipfile.ZipFile(rel_zip_abs, "w") as zf:
+                zf.writestr("manifest.json", f'{{"name": "{mod_name}", "version": "{ver}"}}')
+            expected_sha = hashlib.sha256(open(rel_zip_abs, "rb").read()).hexdigest()
+            with open(os.path.join(rel_mod_dir, "index.json"), "w", encoding="utf-8") as f:
+                import json
+                json.dump(
+                    {
+                        "name": mod_name,
+                        "versions": [ver],
+                        "releases": {ver: {"sha256": expected_sha}},
+                    },
+                    f,
+                )
+
+            dest_dir = os.path.join(tmp_root, ".modules", mod_name)
+            mirror_dir = os.path.join(tmp_root, ".mirror", mod_name)
+            mirror_zip_abs = os.path.join(mirror_dir, f"{ver}.zip")
+
+            observed_mirror_exists = []
+            orig_verify = self.installer.engine._verify_zip_sha256
+
+            def spy_verify(m_name, v_str, zip_path, prov_arg, ignore_sha256=False):
+                observed_mirror_exists.append(os.path.isfile(mirror_zip_abs))
+                return orig_verify(m_name, v_str, zip_path, prov_arg, ignore_sha256=ignore_sha256)
+
+            with patch.object(self.installer.engine, "_verify_zip_sha256", side_effect=spy_verify):
+                ok = self.installer._restore_module_package(
+                    tmp_root, ".", mod_name, ver, os.path.join(tmp_root, "release"), dest_dir, mirror_dir
+                )
+            self.assertTrue(ok)
+            self.assertEqual(observed_mirror_exists, [True])
+
+            # Negative test: when _verify_zip_sha256 fails, newly copied mirror_zip is cleaned up so Tier 2 does not bypass verification
+            os.remove(mirror_zip_abs)
+            with patch.object(self.installer.engine, "_verify_zip_sha256", side_effect=ValueError("SHA256 mismatch")):
+                ok_bad = self.installer._restore_module_package(
+                    tmp_root, ".", mod_name, ver, os.path.join(tmp_root, "release"), dest_dir, mirror_dir
+                )
+            self.assertFalse(ok_bad)
+            self.assertFalse(os.path.isfile(mirror_zip_abs))
+
+        # 2. Verify cmd_rollback selects latest snapshot by (mtime, name) even when lexicographical order differs
+        snap_root = uri.resolve("snapshot://")
+        snap_lex_high_old = os.path.join(snap_root, "z_older_snap")
+        snap_lex_low_new = os.path.join(snap_root, "a_newer_snap")
+        try:
+            os.makedirs(snap_lex_high_old, exist_ok=True)
+            os.makedirs(snap_lex_low_new, exist_ok=True)
+            now_ts = time.time()
+            os.utime(snap_lex_high_old, (now_ts + 100.0, now_ts + 100.0))
+            os.utime(snap_lex_low_new, (now_ts + 200.0, now_ts + 200.0))
+            with patch.object(self.installer.engine, "act_restore_snapshot") as mock_restore_snap:
+                rc_rb = self.installer.cmd_rollback()
+            self.assertEqual(rc_rb, 0)
+            mock_restore_snap.assert_called_once_with("a_newer_snap")
+        finally:
+            for p in (snap_lex_high_old, snap_lex_low_new):
+                if os.path.isdir(p):
+                    import shutil
+                    shutil.rmtree(p, ignore_errors=True)
 
         self.mark_passed()
 

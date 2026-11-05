@@ -571,8 +571,8 @@ class SandboxProvisioner:
     @staticmethod
     def cleanup_sandbox(sandbox_dir: str, force: bool = False, is_harness_cleanup: bool = False) -> bool:
         """Tears down the virtual sandbox safely with active running sandbox guardrail."""
+        target_abs = os.path.abspath(sandbox_dir)
         with SandboxProvisioner._SANDBOX_LOCK:
-            target_abs = os.path.abspath(sandbox_dir)
             SandboxProvisioner._ACTIVE_SANDBOXES.discard(target_abs)
             if not os.path.exists(sandbox_dir):
                 return True
@@ -586,19 +586,19 @@ class SandboxProvisioner:
                 if curr_cwd == real_target or curr_cwd.startswith(real_target + os.sep):
                     return True
 
-            try:
-                ctx = SandboxContext(sandbox_dir)
-                scanned_roots = [
-                    os.path.join(ctx.engine_dir, "source"),
-                    os.path.join(ctx.engine_dir, ".modules"),
-                ]
-                with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
-                    events.broadcast("on_test_teardown", context=ctx, emit_module="dev", search_roots=scanned_roots)
+        try:
+            ctx = SandboxContext(sandbox_dir)
+            scanned_roots = [
+                os.path.join(ctx.engine_dir, "source"),
+                os.path.join(ctx.engine_dir, ".modules"),
+            ]
+            with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
+                events.broadcast("on_test_teardown", context=ctx, emit_module="dev", search_roots=scanned_roots)
 
-                SandboxProvisioner._unlink_projected_venv(ctx.engine_dir)
-                vfs.robust_rmtree(sandbox_dir)
-                return True
-            except Exception as e:
-                if not force:
-                    print(f"[dev:sandbox] Warning: Failed to clean sandbox '{sandbox_dir}': {e}", file=sys.stderr)
-                return False
+            SandboxProvisioner._unlink_projected_venv(ctx.engine_dir)
+            vfs.robust_rmtree(sandbox_dir)
+            return True
+        except Exception as e:
+            if not force:
+                print(f"[dev:sandbox] Warning: Failed to clean sandbox '{sandbox_dir}': {e}", file=sys.stderr)
+            return False

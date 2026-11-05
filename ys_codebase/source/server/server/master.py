@@ -232,6 +232,7 @@ class MasterSupervisor:
 
         self._start_time = time.time()
         self._last_active_time = self._start_time
+        self._activity_lock = threading.Lock()
         self._tasks_executed = 0
         self._is_running = False
         self._is_stopped = False
@@ -738,6 +739,7 @@ class MasterSupervisor:
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
 
         from core.platform import build_runtime_pythonpath
 
@@ -796,7 +798,12 @@ class MasterSupervisor:
                     line_str = line.decode("utf-8", errors="replace").strip()
                     if not line_str:
                         continue
-                    data = json.loads(line_str)
+                    try:
+                        data = json.loads(line_str)
+                    except ValueError:
+                        continue
+                    if not isinstance(data, dict):
+                        continue
                     pkt_type = data.get("type")
                     if pkt_type == "log":
                         self.logger.log(data.get("level", "INFO"), data.get("msg", ""), component=data.get("component", "worker"))
@@ -817,7 +824,7 @@ class MasterSupervisor:
                         self.logger.info(f"Warm Worker (PID: {proc.pid}) ready")
                         break
             except (OSError, ValueError) as err:
-                # Pipe closed by kill or malformed handshake line: the worker is treated as not ready
+                # Pipe closed by kill: the worker is treated as not ready
                 self.logger.warning(f"Warm Worker (PID: {proc.pid}) handshake reader stopped: {err}")
 
         t = threading.Thread(target=_read_handshake, daemon=True, name=f"worker-handshake-{proc.pid}")
@@ -842,9 +849,9 @@ class MasterSupervisor:
 
     def touch_activity(self, source: str = "probe") -> float:
         """Refreshes `_last_active_time` to prevent idle auto-shutdown while background workers are active."""
-        now = time.time()
-        self._last_active_time = now
-        return max(0.0, self.idle_timeout_sec - (now - self._last_active_time))
+        with self._activity_lock:
+            self._last_active_time = time.time()
+            return max(0.0, self.idle_timeout_sec)
 
     def _idle_ttl_loop(self) -> None:
         while self._is_running:
@@ -888,6 +895,11 @@ class MasterSupervisor:
             self.logger.warning(f"Failed to remove daemon state file {self.state_file}: {err}")
 
 
+def _normalize_root_path(path_str: str) -> str:
+    """Normalizes a workspace or engine root path across symlinks, junctions, and case-insensitive filesystems."""
+    return os.path.normcase(os.path.realpath(os.path.abspath(path_str)))
+
+
 def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
     class DispatcherHTTPHandler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -927,8 +939,18 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 supervisor.logger.warning(f"HTTP GET {parsed.path} -> 404 Not Found")
 
         def _handle_post_dispatch(self, t0: float) -> None:
-            content_len = int(self.headers.get("Content-Length", 0))
-            raw_body = self.rfile.read(content_len).decode("utf-8")
+            try:
+                content_len = int(self.headers.get("Content-Length", 0))
+            except (TypeError, ValueError):
+                self._send_json_response(400, {"error": "Invalid Content-Length"})
+                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid Content-Length")
+                return
+            if content_len < 0:
+                self._send_json_response(400, {"error": "Invalid Content-Length"})
+                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Negative Content-Length")
+                return
+
+            raw_body = self.rfile.read(content_len).decode("utf-8", errors="replace") if content_len > 0 else ""
             try:
                 req_data = json.loads(raw_body)
             except ValueError:
@@ -936,12 +958,34 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid JSON")
                 return
 
+            if not isinstance(req_data, dict):
+                self._send_json_response(400, {"error": "Invalid dispatch payload: expected JSON object"})
+                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Payload Not Object")
+                return
+
+            mod_val = req_data.get("module")
+            if not isinstance(mod_val, str) or not mod_val.strip():
+                self._send_json_response(400, {"error": "Missing or invalid 'module' field"})
+                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid Module Field")
+                return
+
+            args_val = req_data.get("args", [])
+            if not isinstance(args_val, list):
+                self._send_json_response(400, {"error": "Invalid 'args' field: expected list"})
+                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid Args Field")
+                return
+
             req_root = req_data.get("yscb_root")
             if req_root:
-                req_abs = os.path.abspath(req_root)
-                if req_abs != supervisor.yscb_root and req_abs != os.path.dirname(supervisor.yscb_root):
+                if not isinstance(req_root, str):
+                    self._send_json_response(400, {"error": "Invalid 'yscb_root' field"})
+                    return
+                req_norm = _normalize_root_path(req_root)
+                sup_norm = _normalize_root_path(supervisor.yscb_root)
+                parent_norm = _normalize_root_path(os.path.dirname(supervisor.yscb_root))
+                if req_norm != sup_norm and req_norm != parent_norm:
                     self._send_json_response(400, {"error": "Workspace Root Mismatch"})
-                    supervisor.logger.warning(f"HTTP POST /api/dispatch -> 400 Workspace Root Mismatch ({req_abs})")
+                    supervisor.logger.warning(f"HTTP POST /api/dispatch -> 400 Workspace Root Mismatch ({req_root})")
                     return
 
             self.send_response(200)

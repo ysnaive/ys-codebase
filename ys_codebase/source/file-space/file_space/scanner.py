@@ -219,7 +219,15 @@ def _atomic_write_bytes(target_path: Path, payload: bytes) -> None:
             f.write(payload)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_name, target_path)
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                os.replace(tmp_name, target_path)
+                break
+            except PermissionError:
+                if attempt >= max_retries - 1:
+                    raise
+                time.sleep(0.01 * (2**attempt))
     except Exception:
         if os.path.exists(tmp_name):
             try:
@@ -659,6 +667,45 @@ class FingerprintScanner:
         """Return the YFP2 snapshot file path for a specific space or unified view."""
         key = space_name if space_name is not None else "unified"
         return self.snapshots_dir / f"{key}.yfp2.bin"
+
+    def get_watcher_dirty_beacon_path(self) -> Path:
+        """Return the cross-process dirty beacon file path in the snapshots directory."""
+        return self.snapshots_dir / ".watcher_dirty"
+
+    def mark_watcher_dirty(self, dirty: bool = True) -> None:
+        """Create or remove the cross-process `.watcher_dirty` beacon file."""
+        beacon = self.get_watcher_dirty_beacon_path()
+        try:
+            if dirty:
+                beacon.parent.mkdir(parents=True, exist_ok=True)
+                beacon.write_bytes(b"1")
+            elif beacon.exists():
+                beacon.unlink()
+        except OSError:
+            pass
+
+    def is_watcher_dirty(self, space_name: Optional[str] = None) -> bool:
+        """Return True if an active watcher has pending un-flushed changes on disk or in-process."""
+        beacon = self.get_watcher_dirty_beacon_path()
+        if beacon.exists():
+            return True
+        with _WATCHER_STATE_LOCK:
+            refs = list(_ACTIVE_WATCHER_WORKERS)
+        for ref in refs:
+            worker = ref()
+            if worker is None:
+                continue
+            try:
+                w_root = getattr(getattr(worker, "space_manager", None), "project_root", None)
+                if w_root is not None and Path(w_root).resolve() != self.space_manager.project_root.resolve():
+                    continue
+                dirty_spaces = getattr(worker, "_dirty_spaces", None)
+                if dirty_spaces:
+                    if space_name is None or space_name in dirty_spaces:
+                        return True
+            except Exception:
+                continue
+        return False
 
     @staticmethod
     def compute_file_hash(
@@ -1109,6 +1156,15 @@ class FingerprintScanner:
                         rel_to_root = norm_rel
                 else:
                     for inc_root in inc_roots:
+                        if inc_root.is_file():
+                            if inc_root.name == norm_rel or self.space_manager._compute_rel_path(
+                                inc_root, inc_root, multi_root, proj_root=proj_root
+                            ) == norm_rel:
+                                matched_root = inc_root
+                                abs_file = inc_root
+                                rel_to_root = inc_root.name
+                                break
+                            continue
                         cand_abs = inc_root / norm_rel
                         if cand_abs.exists() or len(inc_roots) == 1:
                             matched_root = inc_root
@@ -1120,6 +1176,12 @@ class FingerprintScanner:
                     cand_path.resolve() if cfg.follow_symlinks else cand_path
                 )
                 for inc_root in inc_roots:
+                    if inc_root.is_file():
+                        if abs_file == inc_root or abs_file.resolve() == inc_root.resolve():
+                            matched_root = inc_root
+                            rel_to_root = inc_root.name
+                            break
+                        continue
                     try:
                         rel_to_root = abs_file.relative_to(inc_root).as_posix()
                         matched_root = inc_root
@@ -1537,6 +1599,7 @@ class FingerprintScanner:
             )
             return target_gen
 
+        resolved_space_gens: Dict[str, int] = {}
         for s_name in self.space_manager.list_spaces():
             s_state, _ = self._load_or_recover_state(s_name)
             s_cfg_hash = self.space_manager.compute_config_hash(s_name)
@@ -1545,6 +1608,7 @@ class FingerprintScanner:
                 if space_generations and s_name in space_generations
                 else s_state.head_generation
             )
+            resolved_space_gens[s_name] = s_target_gen
             self.cursor_store.set_cursor(
                 space_key=s_name,
                 consumer_id=consumer_id,
@@ -1554,10 +1618,11 @@ class FingerprintScanner:
             )
 
         u_state, _ = self._load_or_recover_state(None)
+        dynamic_u_gen = sum(resolved_space_gens.values())
         target_u_gen = (
             int(generation)
             if generation is not None
-            else u_state.head_generation
+            else max(u_state.head_generation, dynamic_u_gen)
         )
         u_cfg_hash = self.space_manager.compute_config_hash(None)
         self.cursor_store.set_cursor(
@@ -1597,6 +1662,8 @@ class FingerprintScanner:
                 space_name=space_name,
                 space_manager=self.space_manager,
             ):
+                auto_refresh = True
+            elif self.is_watcher_dirty(space_name=space_name):
                 auto_refresh = True
             elif space_name is not None:
                 s_cfg = self.space_manager.get_space(space_name)

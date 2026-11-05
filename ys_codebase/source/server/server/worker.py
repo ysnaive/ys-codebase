@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core import events, uri
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
@@ -118,7 +118,7 @@ class WarmWorker:
         module: str,
         args: List[str],
         streamer: DebouncedIOStreamer,
-    ) -> int:
+    ) -> Tuple[int, Optional[str]]:
         """Resolves command path, dispatches local CLI under captured IO streams, and contains SystemExit."""
         with streamer:
             try:
@@ -135,15 +135,27 @@ class WarmWorker:
                 else:
                     cmd_name = cmd_path
 
-                return dispatch_local(
+                rc = dispatch_local(
                     module_name=module,
                     cmd_name=cmd_name,
                     raw_args=sub_args,
                     cmd_spec=cmd_spec,
                     yscb_abs=self.yscb_root,
                 )
+                return rc, None
             except SystemExit as se:
-                return se.code if isinstance(se.code, int) else (1 if se.code else 0)
+                code = se.code if isinstance(se.code, int) else (1 if se.code else 0)
+                return code, None
+            except Exception as ex:
+                err_text = f"{type(ex).__name__}: {str(ex)}"
+                streamer.write("stderr", f"[Server Worker Error] {err_text}\n")
+                self.emit_packet_fn({
+                    "type": "log",
+                    "level": "ERROR",
+                    "component": "worker",
+                    "msg": f"Task execution failed for module='{module}', args={args}: {err_text}",
+                })
+                return 1, err_text
 
     def execute_task(
         self,
@@ -162,20 +174,23 @@ class WarmWorker:
 
             streamer = DebouncedIOStreamer(emit_chunk=self.emit_packet_fn, debounce_ms=500)
             exit_code = 1
+            err_text: Optional[str] = None
 
             try:
                 self._prepare_execution_env(cwd, env)
                 host_env = os.environ.get(GUARD_ENV_HOST)
                 host_ctx = uri.host_scope(host_env) if (host_env and os.path.isdir(host_env)) else nullcontext()
                 with host_ctx:
-                    exit_code = self._dispatch_command_with_captured_streams(module, args, streamer)
+                    exit_code, err_text = self._dispatch_command_with_captured_streams(module, args, streamer)
             except Exception as ex:
-                streamer.write("stderr", f"[Server Worker Error] {type(ex).__name__}: {str(ex)}\n")
+                err_text = f"{type(ex).__name__}: {str(ex)}"
+                streamer.write("stderr", f"[Server Worker Error] {err_text}\n")
+                streamer.stop_capture()
                 self.emit_packet_fn({
                     "type": "log",
                     "level": "ERROR",
                     "component": "worker",
-                    "msg": f"Task execution failed for module='{module}', args={args}: {type(ex).__name__}: {str(ex)}",
+                    "msg": f"Task execution failed for module='{module}', args={args}: {err_text}",
                 })
                 exit_code = 1
             finally:
@@ -186,7 +201,7 @@ class WarmWorker:
                 _restore_env_diff(orig_env)
 
                 duration_ms = (time.time() - start_time) * 1000.0
-                streamer.send_task_finish(exit_code=exit_code, duration_ms=duration_ms)
+                streamer.send_task_finish(exit_code=exit_code, duration_ms=duration_ms, error=err_text)
 
             return exit_code
 
@@ -200,6 +215,22 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
         pass
 
     orig_stdout = sys.stdout
+    if out_stream is None:
+        for stream_obj in (orig_stdout, sys.stderr):
+            reconf = getattr(stream_obj, "reconfigure", None)
+            if callable(reconf):
+                try:
+                    reconf(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+    if in_stream is None:
+        reconf_in = getattr(sys.stdin, "reconfigure", None)
+        if callable(reconf_in):
+            try:
+                reconf_in(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
     ipc_out = out_stream or orig_stdout
     in_io = in_stream or sys.stdin
 

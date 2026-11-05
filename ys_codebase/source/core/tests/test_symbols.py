@@ -83,6 +83,18 @@ class TestSymbolsProtocol(YSCBTestCase):
             resolve_callable("code.func://core/symbols:non_existent_func_xyz", use_cache=False)
         self.mark_passed()
 
+    def test_st_05_resolve_callable_cache_keyed_by_yscb_root(self):
+        """驗證 _RESOLVED_CALLABLE_CACHE 以 (yscb_root, uri_str) 為複合鍵。"""
+        from core import uri
+        from core.symbols import _RESOLVED_CALLABLE_CACHE
+
+        clear_callable_cache()
+        fn = resolve_callable("code.func://core/symbols:parse_code_func_uri")
+        self.assertTrue(callable(fn))
+        expected_key = (uri.resolve_yscb_root(), "code.func://core/symbols:parse_code_func_uri")
+        self.assertIn((expected_key[0], expected_key[1]), _RESOLVED_CALLABLE_CACHE)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

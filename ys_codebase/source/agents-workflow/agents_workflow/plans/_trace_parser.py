@@ -73,6 +73,7 @@ class _TranscriptParseState:
     """串流解析 .jsonl 過程之累積狀態容器。"""
     first_ts: Optional[str] = None
     last_ts: Optional[str] = None
+    topic: str = ""
     signals: List[FrictionSignal] = field(default_factory=list)
     thinking_excerpts: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -203,6 +204,13 @@ def _extract_step_content_and_role(
         else:
             state.user_turns += 1
             state.tok_user += content_tok
+            if not state.topic and content_str:
+                raw_topic = content_str
+                if "<USER_REQUEST>" in raw_topic:
+                    raw_topic = raw_topic.split("<USER_REQUEST>", 1)[1].split("</USER_REQUEST>", 1)[0].strip()
+                clean_topic = " ".join(raw_topic.split())
+                if clean_topic and clean_topic.lower() not in ("/context-init", "context-init"):
+                    state.topic = clean_topic[:60]
     elif step_type == "PLANNER_RESPONSE" or step_source == "MODEL" or msg_role == "assistant":
         state.model_turns += 1
         state.tok_model += content_tok
@@ -806,6 +814,7 @@ def _compile_tier1_stats(
             "cli_by_module": state.transcript_cli_by_module,
             "gate_bounces": state.transcript_gate_bounces,
         },
+        "topic": state.topic,
     }
 
 

@@ -332,7 +332,11 @@ class OSBackend(VFSBackend):
             seen_lower.add(item.lower())
             s = os.path.join(src, item)
             d = os.path.join(dst, item)
-            if os.path.isdir(s):
+            if os.path.islink(s):
+                if os.path.lexists(d):
+                    os.remove(d)
+                os.symlink(os.readlink(s), d)
+            elif os.path.isdir(s):
                 self._safe_copytree(s, d)
             elif os.path.isfile(s):
                 shutil.copy2(s, d)
@@ -341,7 +345,12 @@ class OSBackend(VFSBackend):
         """複製檔案或目錄至目標路徑。"""
         src_norm = self.assert_safe_path(src)
         dst_norm = self.assert_safe_path(dst)
-        if os.path.isdir(src_norm):
+        if os.path.islink(src_norm):
+            os.makedirs(os.path.dirname(dst_norm), exist_ok=True)
+            if os.path.lexists(dst_norm):
+                os.remove(dst_norm)
+            os.symlink(os.readlink(src_norm), dst_norm)
+        elif os.path.isdir(src_norm):
             if os.path.exists(dst_norm):
                 robust_rmtree(dst_norm, ignore_errors=True)
             self._safe_copytree(src_norm, dst_norm)

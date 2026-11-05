@@ -2,9 +2,9 @@
 
 > 主題：宣告式受控檔案唯讀鎖定 SDK 與 VFS 透明穿隧防護機制  
 > 歸檔日期：2026-11-05  
-> 狀態：Proposed  
+> 狀態：Ready  
 > 目標範疇：core (file_lock / vfs) 與各模組 CLI 受控資產（物化產物與帳本檔）之作業系統級唯讀保護  
-> 前置解鎖條件：無  
+> 前置解鎖條件：[Tier 1 - 排序 #1] 完成 2026_11_05_0104 深層審計修繕後第一優先啟動（作為 #2 鎖定 manifest.json/index.json 與 #5 物化目錄防護之底層基石；已吸收 git-support 受保護檔案防誤改需求）  
 > 模型：Gemini 4 Argon (Medium)  
 > 模板版本：v1.1  
 
@@ -30,14 +30,15 @@
   - **宣告式正交歸屬不變量 (Declarative Ownership via Contributes)**：微內核不硬編碼特定業務模組之檔案路徑；各模組透過 `contributes/core.json`（及動態註冊介面）自主宣告其管轄之唯讀語意 URI 或 Glob 模式（涵蓋編譯產物與 `index.json`、`changelog.md`、`TODO.md` 等 CLI 帳本檔）。
 - **概念機制與互動協議 (Conceptual Mechanism)**：
   - **跨平台檔案唯讀鎖定 SDK (`core.file_lock`)**：提供 `is_protected(uri_or_path)`、`lock_path(uri_or_path)`、`unlock_path(uri_or_path)`、`writable_scope(uri_or_path)` 與全倉批量校驗/上鎖 `sync_all()` 等核心原語，內建語意 URI 展開、Glob 模式匹配（含記憶體快取）及跨平台權限控制（POSIX `stat.S_IREAD` 與 Windows `FILE_ATTRIBUTE_READONLY`）。
-  - **VFS 與雲端同步無縫協同**：於 `OSBackend` 寫入與複製收尾階段掛載受控路徑檢核，命中時自動執行 `lock_path`；同時確保 `gdrive-support` 拉取遠端變更落盤時亦經由受控寫入通道平滑更新並維持落盤後唯讀。
+  - **VFS 與雲端同步無縫協同（防 Windows `WinError 5` 唯讀替換陷阱）**：於 `OSBackend` 寫入與複製收尾階段掛載受控路徑檢核，命中時自動執行 `lock_path`；同時強制將 `gdrive-support` 之 `download_file()`（`transport.py`）與 `checkout_branch()`（`coordinator.py`）的本地落盤與孤兒刪除統一改經由 `core.vfs.robust_replace` / `vfs.remove` 穿隧（先自動剝離目標檔 `0o444` / `FILE_ATTRIBUTE_READONLY` 再執行原子替換，並於落盤後重新鎖回 `0o444`），且沙盒測試 `tearDown` 統一使用 `vfs.robust_rmtree`，徹底杜絕 Windows 下直接 `os.replace` 或 `shutil.rmtree` 遭遇唯讀檔拋出 `PermissionError`。
+  - **吸收 `git-support` 受保護路徑防無心改動需求**：以作業系統級靜態唯讀鎖（`0o444`）直接於寫入當下物理阻斷未授權修改，取代高開銷的事後 SHA-256 CLI Veto 掃描。
   - **開發者逃生閥與狀態診斷 CLI**：提供標準 CLI 指令（如 `yscb file-lock <status|sync|unlock|lock>`），供開發者於特殊除錯或手動維護情境下檢視受保護檔案狀態、一鍵暫時解鎖指定檔案或全倉重新上鎖。
 
 ---
 
 ## 3. 解鎖條件與演進構想 (Unlock Criteria & Evolution Stages)
 
-- **前置解鎖條件與觸發時機**：無硬性前置阻塞，隨時可透過 `roadmap promote` 立項實作。
+- **前置解鎖條件與觸發時機**：**[Tier 1 - 排序 #1（第一優先基石）]** 無前置阻塞，於 `2026_11_05_0104_codebase_deep_audit_remediation` 結案後立即可透過 `roadmap promote declarative_readonly_file_lock_sdk` 啟動，為後續 `#2 (declarative_dev_changeset_and_auto_bump)` 鎖定 `manifest.json` 提供物理保障。
 - **階段演進構想 (High-Level Stages)**：
   1. **Stage 1（`core.file_lock` SDK 與 `contributes` Schema 建立）**：於 `core` 實作跨平台唯讀鎖定 SDK、動態註冊表、`contributes/core.json` 擴充點（支援語意 URI 與萬用字元模式）及 `OSBackend` 透明自動上鎖整合。
   2. **Stage 2（全生態系模組受控資產與帳本掛載）**：於 `core`（`module://`, `module.mirror://`）、`dev`（`module.release://*/index.json`）、`agents-workflow`（`.agents/**`, `workflow.plans://**/changelog.md`, `workflow.roadmap://TODO.md`）與 `vscode-support`（`project://.vscode/schemas/`）完成宣告掛載與雲端同步相容性驗證。

@@ -18,10 +18,19 @@ logger = logging.getLogger("ast.linker")
 _LAST_LINKER_CACHE: Dict[str, Any] = {
     "symbols_map_id": None,
     "symbols_count": 0,
+    "symbols_fingerprint": 0,
     "class_bases": None,
     "base_derived": None,
     "methods_by_class_and_short": None,
 }
+
+
+def _compute_symbols_map_fingerprint(symbols_map: Dict[str, UnifiedSymbol]) -> int:
+    """Compute a lightweight structural fingerprint of `symbols_map` so in-place hot-patches invalidate cache."""
+    acc = len(symbols_map)
+    for sid, sym in symbols_map.items():
+        acc ^= hash((sid, id(sym), getattr(sym, "signature", ""), getattr(sym, "start_line", 0)))
+    return acc
 
 
 def _extract_param_count_from_signature(signature: str) -> Optional[int]:
@@ -155,6 +164,7 @@ class TopologyLinker:
 
         _LAST_LINKER_CACHE["symbols_map_id"] = id(self.symbols_map)
         _LAST_LINKER_CACHE["symbols_count"] = len(self.symbols_map)
+        _LAST_LINKER_CACHE["symbols_fingerprint"] = _compute_symbols_map_fingerprint(self.symbols_map)
         _LAST_LINKER_CACHE["class_bases"] = self._class_bases
         _LAST_LINKER_CACHE["base_derived"] = self._base_derived
         _LAST_LINKER_CACHE["methods_by_class_and_short"] = self._methods_by_class_and_short
@@ -719,10 +729,12 @@ def expand_contract_symbol_ids(
     for t in targets:
         _add(t.id)
 
+    current_fp = _compute_symbols_map_fingerprint(sym_dict)
     if (
         cached_bases is None
         and _LAST_LINKER_CACHE["symbols_map_id"] == id(sym_dict)
         and _LAST_LINKER_CACHE["symbols_count"] == len(sym_dict)
+        and _LAST_LINKER_CACHE.get("symbols_fingerprint") == current_fp
     ):
         cached_bases = _LAST_LINKER_CACHE["class_bases"]
         cached_derived = _LAST_LINKER_CACHE["base_derived"]
@@ -754,6 +766,7 @@ def expand_contract_symbol_ids(
                         base_derived[bt_str].add(s_short)
         _LAST_LINKER_CACHE["symbols_map_id"] = id(sym_dict)
         _LAST_LINKER_CACHE["symbols_count"] = len(sym_dict)
+        _LAST_LINKER_CACHE["symbols_fingerprint"] = current_fp
         _LAST_LINKER_CACHE["class_bases"] = class_bases
         _LAST_LINKER_CACHE["base_derived"] = base_derived
         _LAST_LINKER_CACHE["methods_by_class_and_short"] = methods_by_class_and_short

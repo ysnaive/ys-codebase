@@ -650,6 +650,21 @@ class KnowledgeEngine:
         snapshot = self.ast_engine.ensure_jit_synced()
         created_at = datetime.now(timezone.utc).isoformat()
         bundles: List[SemanticBundle] = []
+        if not targets and export_path is not None:
+            b_unified = SemanticBundle(
+                version="1.0.0",
+                space_name="unified",
+                created_at=created_at,
+                symbols=list(snapshot.symbols.values()),
+                metadata={
+                    "source_count": 0,
+                    "file_count": len({sym.file_path for sym in snapshot.symbols.values() if sym.file_path}),
+                    "origin": "unified",
+                    "ast_generation": snapshot.ast_generation,
+                },
+            )
+            self.bundler.export_bundle(b_unified, target_path=export_path)
+            return [b_unified]
         for sp in targets:
             sp_name = sp.name
             sp_syms = [
@@ -669,8 +684,35 @@ class KnowledgeEngine:
                     "ast_generation": snapshot.ast_generation,
                 },
             )
-            self.bundler.export_bundle(b, target_path=export_path)
+            if export_path is not None:
+                if len(targets) > 1:
+                    exp_p = Path(export_path)
+                    if exp_p.suffix:
+                        target_export_path = exp_p.with_name(f"{exp_p.stem}_{sp_name}{exp_p.suffix}")
+                    else:
+                        target_export_path = exp_p / f"{sp_name}.bundle.json"
+                else:
+                    target_export_path = export_path
+                self.bundler.export_bundle(b, target_path=target_export_path)
+            else:
+                self.bundler.export_bundle(b, target_path=None)
             bundles.append(b)
+        if export_path is not None and len(targets) > 1:
+            exp_p = Path(export_path)
+            if exp_p.suffix and not exp_p.exists():
+                b_unified = SemanticBundle(
+                    version="1.0.0",
+                    space_name="unified",
+                    created_at=created_at,
+                    symbols=list(snapshot.symbols.values()),
+                    metadata={
+                        "source_count": sum(len(t.include) for t in targets),
+                        "file_count": len({sym.file_path for sym in snapshot.symbols.values() if sym.file_path}),
+                        "origin": "unified",
+                        "ast_generation": snapshot.ast_generation,
+                    },
+                )
+                self.bundler.export_bundle(b_unified, target_path=export_path)
         return bundles
 
     # ----------------------------------------------------------------------

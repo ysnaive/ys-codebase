@@ -881,6 +881,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             # 重試仍失敗 -> strict BLOCKER 回傳 1
             err_buf = io.StringIO()
             with patch("core.commands.dispatcher._read_server_spawn_config", return_value=cfg), \
+                 patch("core.commands.dispatcher._STRICT_SPAWN_WAIT_SEC", 0.05), \
                  patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=True), \
                  patch("core.commands.dispatcher._is_server_daemon_active_or_locked", return_value=True), \
                  patch("core.commands.dispatcher.spawn_detached") as mock_spawn2, \
@@ -1085,6 +1086,50 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             with patch("core.commands.dispatcher.urllib.request.urlopen", return_value=ok), redirect_stderr(ok_buf):
                 self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir).exit_code, 0)
             self.assertEqual(ok_buf.getvalue(), "")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_negative_number_arguments_and_proxy_bypass(self):
+        """驗證 OptionResolver 負數參數支援，以及 _hot_dispatch_attempt 對 URLError 斷線異常之 accepted 判定。"""
+        import tempfile
+        import urllib.error
+        from core.commands import dispatcher
+        from core.commands.registry import CommandSpec, OptionSpec, ArgSpec
+        from core.commands.resolver import OptionResolver
+
+        spec = CommandSpec(
+            name="calc",
+            description="calc test",
+            args={"x": ArgSpec(name="x", description="x", required=True)},
+            options={
+                "offset": OptionSpec(
+                    canonical_name="offset",
+                    group_name="default",
+                    description="offset",
+                    args={"val": ArgSpec(name="val", description="val", required=True)},
+                )
+            },
+        )
+        pos, opts = OptionResolver.resolve(spec, ["--offset", "-5", "-3.14"])
+        self.assertEqual(pos, ["-3.14"])
+        self.assertEqual(opts["offset"].params, "-5")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_dir = os.path.join(tmp_dir, ".cache", "server")
+            os.makedirs(state_dir, exist_ok=True)
+            with open(os.path.join(state_dir, "daemon.json"), "w", encoding="utf-8") as f:
+                import json
+                json.dump({"pid": os.getpid(), "port": 1, "token": "t", "root": tmp_dir}, f)
+
+            for err_reason in (ConnectionResetError("reset"), BrokenPipeError("broken")):
+                with patch(
+                    "core.commands.dispatcher._open_localhost_no_proxy",
+                    side_effect=urllib.error.URLError(err_reason),
+                ):
+                    res = dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir)
+                    self.assertTrue(res.accepted)
+                    self.assertIsNone(res.exit_code)
+
         self.mark_passed()
 
 if __name__ == "__main__":

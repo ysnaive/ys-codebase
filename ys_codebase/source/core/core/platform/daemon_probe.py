@@ -22,14 +22,37 @@ import os
 import socket
 import sys
 import time
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Generator, Optional
 
 from core.platform.lock import InterProcessLock
 
 PROBE_REL_PATH: str = os.path.join(".cache", "server", "spawn_probe.json")
+PROBE_LOCK_REL_PATH: str = os.path.join(".cache", "server", "spawn_probe.lock")
 DAEMON_LOCK_REL_PATH: str = os.path.join(".cache", "server", "daemon.lock")
 DAEMON_STATE_REL_PATH: str = os.path.join(".cache", "server", "daemon.json")
 REAP_THRESHOLD: int = 2
+
+
+@contextmanager
+def _probe_file_lock(yscb_root: str) -> Generator[None, None, None]:
+    """Acquires a best-effort inter-process lock around spawn_probe.json read-modify-write."""
+    lock_path = os.path.join(yscb_root, PROBE_LOCK_REL_PATH)
+    lock = InterProcessLock(lock_path)
+    acquired = False
+    try:
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        acquired = lock.acquire(blocking=True, timeout_sec=1.0)
+    except OSError:
+        acquired = False
+    try:
+        yield
+    finally:
+        if acquired:
+            try:
+                lock.release()
+            except OSError:
+                pass
 
 
 def env_fingerprint() -> str:
@@ -96,11 +119,12 @@ def record_spawn(yscb_root: str, pid: int) -> None:
         yscb_root: Absolute yscb root directory.
         pid: PID of the freshly spawned detached daemon process.
     """
-    data = _load_all(yscb_root)
-    entry = _get_entry(data)
-    entry.update({"pid": int(pid), "spawned_at": time.time(), "clean_exit": False})
-    data[env_fingerprint()] = entry
-    _save_all(yscb_root, data)
+    with _probe_file_lock(yscb_root):
+        data = _load_all(yscb_root)
+        entry = _get_entry(data)
+        entry.update({"pid": int(pid), "spawned_at": time.time(), "clean_exit": False})
+        data[env_fingerprint()] = entry
+        _save_all(yscb_root, data)
 
 
 def bind_master_pid(yscb_root: str, pid: int) -> None:
@@ -115,15 +139,16 @@ def bind_master_pid(yscb_root: str, pid: int) -> None:
         yscb_root: Absolute yscb root directory.
         pid: PID of the running master supervisor.
     """
-    data = _load_all(yscb_root)
-    if env_fingerprint() not in data:
-        return
-    entry = _get_entry(data)
-    if entry["clean_exit"]:
-        return
-    entry["pid"] = int(pid)
-    data[env_fingerprint()] = entry
-    _save_all(yscb_root, data)
+    with _probe_file_lock(yscb_root):
+        data = _load_all(yscb_root)
+        if env_fingerprint() not in data:
+            return
+        entry = _get_entry(data)
+        if entry["clean_exit"]:
+            return
+        entry["pid"] = int(pid)
+        data[env_fingerprint()] = entry
+        _save_all(yscb_root, data)
 
 
 def mark_clean_exit(yscb_root: str) -> None:
@@ -134,11 +159,12 @@ def mark_clean_exit(yscb_root: str) -> None:
     Args:
         yscb_root: Absolute yscb root directory.
     """
-    data = _load_all(yscb_root)
-    entry = _get_entry(data)
-    entry.update({"pid": 0, "clean_exit": True, "reaped_count": 0})
-    data[env_fingerprint()] = entry
-    _save_all(yscb_root, data)
+    with _probe_file_lock(yscb_root):
+        data = _load_all(yscb_root)
+        entry = _get_entry(data)
+        entry.update({"pid": 0, "clean_exit": True, "reaped_count": 0})
+        data[env_fingerprint()] = entry
+        _save_all(yscb_root, data)
 
 
 def is_daemon_lock_held(yscb_root: str) -> bool:
@@ -192,16 +218,17 @@ def is_reaping_env(yscb_root: str, daemon_active: Optional[bool] = None) -> bool
     """
     from core.platform.process import is_process_alive
 
-    data = _load_all(yscb_root)
-    if env_fingerprint() not in data:
-        return False
-    entry = _get_entry(data)
-    pid = entry["pid"]
-    if pid > 0 and not entry["clean_exit"] and not is_process_alive(pid):
-        active = daemon_active if daemon_active is not None else _is_daemon_active(yscb_root)
-        if not active:
-            entry["reaped_count"] += 1
-            entry["pid"] = 0
-            data[env_fingerprint()] = entry
-            _save_all(yscb_root, data)
-    return entry["reaped_count"] >= REAP_THRESHOLD
+    with _probe_file_lock(yscb_root):
+        data = _load_all(yscb_root)
+        if env_fingerprint() not in data:
+            return False
+        entry = _get_entry(data)
+        pid = entry["pid"]
+        if pid > 0 and not entry["clean_exit"] and not is_process_alive(pid):
+            active = daemon_active if daemon_active is not None else _is_daemon_active(yscb_root)
+            if not active:
+                entry["reaped_count"] += 1
+                entry["pid"] = 0
+                data[env_fingerprint()] = entry
+                _save_all(yscb_root, data)
+        return entry["reaped_count"] >= REAP_THRESHOLD

@@ -26,27 +26,57 @@ from agents_workflow.roadmap import RoadmapManager, TodoManager
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
-    """容錯正規化：若傳入 List[str] 則包裝為 CmdBags，支援內部測試直呼。"""
+    """容錯正規化：若傳入 List[str] 則包裝為 CmdBags，支援內部測試直呼與空白分隔之 --key <val> 參數。"""
     if isinstance(cmd_bags, CmdBags):
         return cmd_bags
     if isinstance(cmd_bags, (builtins.list, tuple)):
+        value_option_names = {
+            "status",
+            "plan",
+            "model",
+            "scope",
+            "note",
+            "slug",
+            "add",
+            "remove",
+            "rm",
+            "phase",
+            "log",
+            "type",
+            "transcript",
+            "since",
+            "limit",
+            "year",
+            "month",
+            "path-plans",
+            "path-archived",
+            "path-docs",
+            "target",
+        }
         args = builtins.list(cmd_bags)
-        raw_cmd = " ".join(args)
+        raw_cmd = " ".join(str(x) for x in args)
         opts = {}
         pos = []
-        for a in args:
+        i = 0
+        n = len(args)
+        while i < n:
+            a = str(args[i])
             if a.startswith("--"):
                 k = a[2:]
-                v = True
+                v: Any = True
                 if "=" in k:
                     k, val = k.split("=", 1)
                     v = val
+                elif k in value_option_names and (i + 1) < n and not str(args[i + 1]).startswith("-"):
+                    v = str(args[i + 1])
+                    i += 1
                 opts[k] = CmdOption(name=k, params=v)
             elif a.startswith("-") and len(a) > 1:
                 k = a[1:]
                 opts[k] = CmdOption(name=k, params=True)
             else:
                 pos.append(a)
+            i += 1
         return CmdBags(raw_cmd=raw_cmd, command=default_cmd, args=pos, options=opts)
     return CmdBags(raw_cmd="", command=default_cmd, args=[], options={})
 

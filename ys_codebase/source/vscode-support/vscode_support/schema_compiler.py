@@ -5,6 +5,7 @@ and meta schemas (`format-meta.schema.json`, `manifest.schema.json`) into `proje
 Strictly adheres to Zero-Probing (reads only from `module://` and `module.mirror://`).
 """
 
+import functools
 import glob
 import json
 import os
@@ -12,6 +13,7 @@ import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core import contributes, uri, vfs
+from core.semver import compare_semver, parse_semver
 from core.validator import ContributesValidator
 
 DRAFT_07_URI = "http://json-schema.org/draft-07/schema#"
@@ -26,12 +28,16 @@ class SchemaCompiler:
 
     def __init__(self, yscb_dir: Optional[str] = None) -> None:
         self.yscb_dir = os.path.abspath(yscb_dir or uri.resolve_yscb_root())
+        self._cached_uri_snippets: Optional[List[Dict[str, Any]]] = None
 
     def _collect_uri_scheme_snippets(self) -> List[Dict[str, Any]]:
         """
         動態收集全系統已註冊之語意 URI 協議與相對路徑前綴，
         生成 VS Code JSON Schema 原生支援之 `defaultSnippets` 補全清單。
         """
+        if self._cached_uri_snippets is not None:
+            return list(self._cached_uri_snippets)
+
         schemes: Dict[str, str] = {
             "project": "專案業務根目錄 (project_root)",
             "yscb": "YS-Codebase 工具庫根目錄",
@@ -491,6 +497,38 @@ class SchemaCompiler:
             pass
         return sorted(mods)
 
+    @staticmethod
+    def _select_latest_mirror_zip(mirror_dir: str) -> Optional[str]:
+        """Select the latest module mirror archive in `mirror_dir` using four-segment SemVer ordering."""
+        if not os.path.isdir(mirror_dir):
+            return None
+        zip_files = glob.glob(os.path.join(mirror_dir, "*.zip"))
+        if not zip_files:
+            return None
+
+        def _cmp_zip_paths(p1: str, p2: str) -> int:
+            s1 = os.path.splitext(os.path.basename(p1))[0]
+            s2 = os.path.splitext(os.path.basename(p2))[0]
+            v1_ok = True
+            v2_ok = True
+            try:
+                parse_semver(s1)
+            except Exception:
+                v1_ok = False
+            try:
+                parse_semver(s2)
+            except Exception:
+                v2_ok = False
+            if v1_ok and v2_ok:
+                return compare_semver(s1, s2)
+            if v1_ok and not v2_ok:
+                return 1
+            if not v1_ok and v2_ok:
+                return -1
+            return 1 if s1 > s2 else (-1 if s1 < s2 else 0)
+
+        return sorted(zip_files, key=functools.cmp_to_key(_cmp_zip_paths))[-1]
+
     def _load_module_config_format(self, mod_name: str) -> Optional[Dict[str, Any]]:
         """
         優先自 `module://<mod>/configurable/_format.json` 或 `module.mirror://<mod>/*.zip` 讀取組態 `_format.json` 契約。
@@ -505,13 +543,11 @@ class SchemaCompiler:
                 pass
 
         mirror_dir = os.path.join(self.yscb_dir, ".mirror", mod_name)
-        if not os.path.isdir(mirror_dir):
-            return None
-        zip_files = sorted(glob.glob(os.path.join(mirror_dir, "*.zip")))
-        if not zip_files:
+        latest_zip = self._select_latest_mirror_zip(mirror_dir)
+        if not latest_zip:
             return None
         try:
-            with zipfile.ZipFile(zip_files[-1], "r") as zf:
+            with zipfile.ZipFile(latest_zip, "r") as zf:
                 for member in sorted(zf.namelist()):
                     norm_m = member.replace("\\", "/")
                     if norm_m == "configurable/_format.json":
@@ -529,15 +565,10 @@ class SchemaCompiler:
         若模組無 `configurable/` 則回傳 `None`。
         """
         mirror_dir = os.path.join(self.yscb_dir, ".mirror", mod_name)
-        if not os.path.isdir(mirror_dir):
+        latest_zip = self._select_latest_mirror_zip(mirror_dir)
+        if not latest_zip:
             return None
 
-        zip_files = sorted(glob.glob(os.path.join(mirror_dir, "*.zip")))
-        if not zip_files:
-            return None
-
-        # 取最新鏡像包讀取 configurable/config.*.json
-        latest_zip = zip_files[-1]
         merged_tpl: Dict[str, Any] = {}
         found_any = False
         try:
@@ -576,6 +607,14 @@ class SchemaCompiler:
         清理已移除模組之孤兒 Schema 與舊版子目錄 `.gitignore`，
         並回傳應寫入 `.vscode/settings.json` `"json.schemas"` 之綁定條目清單。
         """
+        self._cached_uri_snippets = None
+        self._cached_uri_snippets = self._collect_uri_scheme_snippets()
+        try:
+            return self._sync_all_schemas_impl(proj_root)
+        finally:
+            self._cached_uri_snippets = None
+
+    def _sync_all_schemas_impl(self, proj_root: str) -> List[Dict[str, Any]]:
         schemas_root = os.path.join(proj_root, ".vscode", "schemas")
         os.makedirs(schemas_root, exist_ok=True)
 

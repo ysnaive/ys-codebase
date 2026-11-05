@@ -474,6 +474,7 @@ class FileSpaceManager:
                 )
             elif (
                 has_explicit_project_override
+                or self._explicit_project_root is None
                 or str(p_cfg.get("override_mode", "")).strip().lower() == "replace"
             ):
                 merged_spaces[name] = self._merge_project_space_override(
@@ -588,13 +589,13 @@ class FileSpaceManager:
         return self._spaces[name]
 
     def resolve_space_include(self, name: str) -> List[Path]:
-        """Return existing directory paths for a workspace's include roots."""
+        """Return existing directory or single-file paths for a workspace's include roots."""
         cfg = self.get_space(name)
-        valid_dirs: List[Path] = []
+        valid_paths: List[Path] = []
         for inc_path in cfg.resolved_include_paths:
-            if inc_path.exists() and inc_path.is_dir():
-                valid_dirs.append(inc_path.resolve())
-        return valid_dirs
+            if inc_path.exists() and (inc_path.is_dir() or inc_path.is_file()):
+                valid_paths.append(inc_path.resolve())
+        return valid_paths
 
     def compute_config_hash(self, space_name: Optional[str] = None) -> str:
         """Compute a deterministic digest of workspace geometry and filter rules."""
@@ -782,6 +783,27 @@ class FileSpaceManager:
             collected: List[Tuple[str, Path, Path, int, int, int]] = []
 
             for inc_root in inc_roots:
+                if inc_root.is_file():
+                    try:
+                        if not cfg.follow_symlinks and inc_root.is_symlink():
+                            continue
+                        st = inc_root.stat()
+                        mtime_ns = int(st.st_mtime_ns)
+                        ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
+                        size = int(st.st_size)
+                        rel_path = self._compute_rel_path(
+                            inc_root,
+                            inc_root,
+                            multi_root,
+                            proj_root=proj_root,
+                        )
+                        if cfg.is_file_included(inc_root.name):
+                            collected.append(
+                                (rel_path, inc_root, inc_root, mtime_ns, ctime_ns, size)
+                            )
+                    except OSError:
+                        continue
+                    continue
                 self._walk_root(
                     current_dir=inc_root,
                     inc_root=inc_root,
@@ -816,10 +838,11 @@ class FileSpaceManager:
         if cfg.follow_symlinks:
             try:
                 dir_stat = current_dir.stat()
-                dir_key = (dir_stat.st_dev, dir_stat.st_ino)
-                if dir_key in visited_dirs:
-                    return
-                visited_dirs.add(dir_key)
+                if dir_stat.st_ino != 0:
+                    dir_key = (dir_stat.st_dev, dir_stat.st_ino)
+                    if dir_key in visited_dirs:
+                        return
+                    visited_dirs.add(dir_key)
             except OSError:
                 return
         elif multi_root and visited_dir_paths is not None:
@@ -868,16 +891,11 @@ class FileSpaceManager:
                     ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
                     size = int(st.st_size)
                     entry_path = Path(entry.path)
-                    if not cfg.follow_symlinks and not multi_root:
+                    if not multi_root:
                         rel_path = rel_to_root
                     else:
-                        target_file_path = (
-                            entry_path
-                            if (not is_symlink and not cfg.follow_symlinks)
-                            else (entry_path.resolve() if not is_symlink else entry_path)
-                        )
                         rel_path = self._compute_rel_path(
-                            target_file_path,
+                            entry_path,
                             inc_root,
                             multi_root,
                             proj_root=proj_root,

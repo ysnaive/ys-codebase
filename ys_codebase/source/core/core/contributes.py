@@ -343,7 +343,7 @@ def _scan_contributes_inputs() -> Dict[str, Tuple[float, int]]:
     files_snapshot: Dict[str, Tuple[float, int]] = {}
 
     try:
-        _record_file_stat(files_snapshot, uri.resolve("project://yscb.config.json", interactive=False))
+        _record_file_stat(files_snapshot, uri.resolve("yscb.host://yscb.config.json", interactive=False))
     except Exception:
         pass
 

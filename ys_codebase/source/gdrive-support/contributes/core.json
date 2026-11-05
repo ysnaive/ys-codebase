@@ -332,7 +332,7 @@
       "init": {
         "description": "初始化雲端或沙盒根目錄（建立 .yscb_gdrive.json、README.md、.history/、.trash/ 與 main/）",
         "tier": "conditional",
-        "server_compatible": true,
+        "server_compatible": false,
         "options": {
           "force": {
             "force": {
@@ -371,7 +371,7 @@
           "list": {
             "description": "列出所有已註冊之雲端分支與當前活躍分支",
             "tier": "safe",
-            "server_compatible": true,
+            "server_compatible": false,
             "options": {
               "sandbox": {
                 "sandbox-dir": {
@@ -399,7 +399,7 @@
           "create": {
             "description": "建立新差量分支（真實資料夾骨架 + 指向來源分支檔案之 Google Drive Shortcut）",
             "tier": "conditional",
-            "server_compatible": true,
+            "server_compatible": false,
             "args": {
               "branch_name": {
                 "description": "新分支名稱 (如 v1.0)",
@@ -445,7 +445,7 @@
           "delete": {
             "description": "將指定分支移入 .trash/ 並自動將 .history/ 中無引用之歷史檔案回收至 .trash/",
             "tier": "conditional",
-            "server_compatible": true,
+            "server_compatible": false,
             "args": {
               "branch_name": {
                 "description": "欲刪除之分支名稱 (禁止刪除 main 或當前活躍分支)",
@@ -483,7 +483,7 @@
       "checkout": {
         "description": "原子切換活躍分支並同步對齊本地受管工作樹（含清理舊分支獨有檔案）",
         "tier": "conditional",
-        "server_compatible": true,
+        "server_compatible": false,
         "args": {
           "target_branch": {
             "description": "目標分支名稱 (如 main 或 v1.0)",
@@ -530,7 +530,7 @@
       "pull": {
         "description": "從雲端活躍分支單向拉取新增與更新檔案至本地受管空間",
         "tier": "conditional",
-        "server_compatible": true,
+        "server_compatible": false,
         "options": {
           "delete": {
             "delete": {
@@ -576,7 +576,7 @@
       "push": {
         "description": "將本地受管空間新增與修改檔案單向推送至雲端活躍分支（含受引用時 Copy-on-Write 移入 .history/）",
         "tier": "conditional",
-        "server_compatible": true,
+        "server_compatible": false,
         "options": {
           "delete": {
             "delete": {
@@ -622,7 +622,7 @@
       "sync": {
         "description": "執行三方狀態機雙向同步（遇衝突按檔隔離保留雙邊原狀並回傳 Exit Code 2，其餘檔案照常同步）",
         "tier": "conditional",
-        "server_compatible": true,
+        "server_compatible": false,
         "options": {
           "delete": {
             "delete": {

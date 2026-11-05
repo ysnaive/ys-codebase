@@ -609,7 +609,7 @@ class TestDevChecker(YSCBTestCase):
             self.assertTrue(rep2.has_warns)
             self.assertTrue(any("Failed to parse custom check URI" in w for w in rep2.warnings))
 
-        # Test 3: Working custom rule via mod:func and code.func://
+        # Test 3: Working custom rule via mod:func, code.func://, and hyphenated module name normalization
         dummy_mod = types.ModuleType("mock_donor_rule_pkg")
         def custom_rule_fn(mod_name, mod_dir, report):
             report.issues.append(CheckIssue(CheckSeverity.WARN, "CUSTOM", f"Custom rule fired for {mod_name}"))
@@ -619,6 +619,7 @@ class TestDevChecker(YSCBTestCase):
             rep3 = CheckReport("mock_target")
             with patch("core.contributes.get", return_value=[
                 {"checker_func": "mock_donor_rule_pkg:custom_rule_fn", "_contribute_by": "core"},
+                {"checker_func": "mock-donor-rule-pkg:custom_rule_fn", "_contribute_by": "core"},
                 {"checker_func": "code.func://core/mock_donor_rule_pkg.py:custom_rule_fn"},
             ]):
                 orig_path3 = list(sys.path)
@@ -626,7 +627,7 @@ class TestDevChecker(YSCBTestCase):
                 self.assertEqual(sys.path, orig_path3)
                 self.assertFalse(any("module.source://" in p or "/source" in p for p in sys.path if p not in orig_path3))
                 custom_msgs = [i.message for i in rep3.issues if i.category == "CUSTOM"]
-                self.assertEqual(len(custom_msgs), 2)
+                self.assertEqual(len(custom_msgs), 3)
         finally:
             sys.modules.pop("mock_donor_rule_pkg", None)
 

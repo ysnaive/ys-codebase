@@ -385,4 +385,25 @@ class TestRoadmapManager(YSCBTestCase):
         ambig_err = mgr.promote_roadmap("ambig")
         self.assertFalse(ambig_err["success"])
         self.assertIn("同時匹配多個路線圖檔案", ambig_err["error"])
+
+        # 驗證 TodoManager.promote_todos 若目標 todo.md 寫入失敗，來源 TODO.md 保持無損
+        from agents_workflow.roadmap import TodoManager
+        from unittest import mock
+
+        todo_mgr = TodoManager(roadmap_dir=roadmap_dir, plans_dir=self.plans_dir)
+        item = todo_mgr.add_todo(title="Atomic Todo Safety", scope="agents-workflow", note="keep intact on error")
+        before_todo_text = todo_mgr.todo_file.read_text(encoding="utf-8")
+        orig_write_text = Path.write_text
+
+        def _fail_on_dest_todo(path_self: Path, data: str, *args, **kwargs):
+            if path_self.name == "todo.md":
+                raise OSError("Simulated disk write failure on todo.md")
+            return orig_write_text(path_self, data, *args, **kwargs)
+
+        with mock.patch.object(Path, "write_text", new=_fail_on_dest_todo):
+            with self.assertRaises(OSError):
+                todo_mgr.promote_todos([item.todo_id], slug="atomic_fail_test")
+
+        after_todo_text = todo_mgr.todo_file.read_text(encoding="utf-8")
+        self.assertEqual(before_todo_text, after_todo_text)
         self.mark_passed()

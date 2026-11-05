@@ -283,3 +283,25 @@ class TestContributesValidator(YSCBTestCase):
         self.assertIn("_types.SpaceDef.include", err_paths)
         self.assertIn("spaces.merge", err_paths)
         self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_validator_dict_primitive_skips_dunder_metadata_keys(self):
+        """驗證 dict[K, V] 容器型別校驗跳過 __comment__ 等雙底線元資料鍵。"""
+        schema = {
+            "_types": {
+                "Entry": {"title": "str!"}
+            },
+            "registry": {
+                "description": "dict container with dunder comment",
+                "format": "dict[str, $Entry]!"
+            }
+        }
+        payload = {
+            "registry": {
+                "__comment__": "human note inside dict container",
+                "item_a": {"title": "Valid Title"}
+            }
+        }
+        res = ContributesValidator.validate("core", payload, format_schema=schema)
+        self.assertTrue(res.is_valid, f"Unexpected errors: {res.errors}")
+        self.mark_passed()

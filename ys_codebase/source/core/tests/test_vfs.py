@@ -313,3 +313,45 @@ class TestVFS(YSCBTestCase):
         self.assertEqual(_read_json_cached(dst_file), {"ok": True})
         invalidate_cache()
         self.mark_passed()
+
+    def test_vfs_open_boundary_guard_lf_newline_and_symlink_copy(self):
+        """驗證 VFS.open 邊界檢查與 LF 換行強制，以及 OSBackend.copy 對符號連結之非展開安全拷貝。"""
+        from core.vfs.vfs import VFS
+        from core.vfs.os_backend import OSBackend
+
+        box_dir = os.path.join(self.sandbox_dir, "vfs_open_box")
+        outside_dir = os.path.join(self.sandbox_dir, "vfs_open_outside")
+        os.makedirs(box_dir, exist_ok=True)
+        os.makedirs(outside_dir, exist_ok=True)
+        outside_file = os.path.join(outside_dir, "forbidden.txt")
+        with open(outside_file, "w", encoding="utf-8") as f:
+            f.write("forbidden")
+
+        scoped_vfs = VFS(default_backend=OSBackend(root_dir=box_dir))
+        with self.assertRaises(PermissionError):
+            scoped_vfs.open(outside_file, "r")
+
+        lf_file = os.path.join(box_dir, "lf_test.txt")
+        with scoped_vfs.open(lf_file, "w", encoding="utf-8") as f:
+            f.write("line1\nline2\n")
+        with open(lf_file, "rb") as bf:
+            self.assertEqual(bf.read(), b"line1\nline2\n")
+
+        # Symlink directory copy safety
+        src_tree = os.path.join(box_dir, "src_tree")
+        dst_tree = os.path.join(box_dir, "dst_tree")
+        os.makedirs(src_tree, exist_ok=True)
+        link_in_tree = os.path.join(src_tree, "ext_dir_link")
+        try:
+            os.symlink(outside_dir, link_in_tree)
+            has_symlink = True
+        except OSError:
+            has_symlink = False
+
+        if has_symlink:
+            scoped_vfs.copy(src_tree, dst_tree)
+            copied_link = os.path.join(dst_tree, "ext_dir_link")
+            self.assertTrue(os.path.islink(copied_link))
+            self.assertEqual(os.readlink(copied_link), outside_dir)
+
+        self.mark_passed()

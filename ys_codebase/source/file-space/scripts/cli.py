@@ -269,6 +269,7 @@ def diff(bags: Any = None) -> int:
                 space_name=space_name,
                 consumer_id=consumer_id,
                 generation=diff_res.to_generation,
+                space_generations=getattr(diff_res, "space_generations", None),
             )
 
         payload = {

@@ -295,10 +295,13 @@ class ReleasePublisher:
 
         for it in resolved_items:
             exp = it.get("export", {})
-            exp_type = exp.get("type", "template")
+            raw_type = str(exp.get("type", "template")).strip()
+            exp_type = "skill" if raw_type.lower() in ("workflow", "workflows") else raw_type
             source_uri = exp.get("source", "")
             base_name = it.get("base_name", "")
             sub_folder = it.get("sub_folder", "templates")
+            if sub_folder in ("workflow", "workflows"):
+                sub_folder = "skills"
             is_skill = it.get("is_skill", False) or exp_type in ("skill", "skills")
             skill_name = it.get("skill_name", exp.get("name", os.path.splitext(base_name)[0]))
             rel_path = it.get("rel_path", base_name)
@@ -309,6 +312,8 @@ class ReleasePublisher:
                     if k.rstrip("s") == exp_type.rstrip("s"):
                         proj_rule = v
                         break
+            if not proj_rule and is_skill:
+                proj_rule = projections.get("workflow") or projections.get("workflows") or {}
 
             if not proj_rule:
                 if is_skill:
@@ -516,26 +521,29 @@ class ReleasePublisher:
                 except Exception:
                     return False, []
 
-            for ar in t_cfg.get("agent_rules", []):
-                if not isinstance(ar, dict):
-                    continue
-                ar_target = ar.get("target") or ar.get("path") or ar.get("agents_md")
-                if not ar_target or not str(ar_target).strip():
-                    continue
-                a_abs = self._resolve_project_uri(str(ar_target).strip(), proj_root)
-                if not os.path.isfile(a_abs):
-                    return False, []
-                if ar.get("mode", "inject") == "inject":
-                    marker = ar.get("marker", "YSCB_AGENTS")
-                    begin_tag = f"<!-- {marker}_BEGIN -->"
-                    end_tag = f"<!-- {marker}_END -->"
-                    try:
-                        with open(a_abs, "r", encoding="utf-8") as f:
-                            a_text = f.read()
-                        if begin_tag not in a_text or end_tag not in a_text:
-                            return False, []
-                    except Exception:
+            agent_rules = t_cfg.get("agent_rules")
+            if isinstance(agent_rules, list):
+                for rule_item in agent_rules:
+                    if not isinstance(rule_item, dict):
+                        continue
+                    r_target = str(rule_item.get("target") or "").strip()
+                    if not r_target:
+                        continue
+                    r_abs = self._resolve_project_uri(r_target, proj_root)
+                    if not os.path.isfile(r_abs):
                         return False, []
+                    r_mode = str(rule_item.get("mode") or "inject").strip().lower()
+                    if r_mode == "inject":
+                        r_marker = str(rule_item.get("marker") or "").strip()
+                        b_mark = f"<!-- {r_marker}_BEGIN -->" if r_marker else AGENTS_MD_BEGIN
+                        e_mark = f"<!-- {r_marker}_END -->" if r_marker else AGENTS_MD_END
+                        try:
+                            with open(r_abs, "r", encoding="utf-8") as f:
+                                r_text = f.read()
+                            if b_mark not in r_text or e_mark not in r_text:
+                                return False, []
+                        except Exception:
+                            return False, []
 
         return bool(total_short_circuited_files), total_short_circuited_files
 
@@ -726,6 +734,31 @@ class ReleasePublisher:
                         parent_d = os.path.dirname(parent_d)
                 except Exception as e:
                     print(f"[publisher:warning] Failed removing stale file {f_rem}: {e}", file=sys.stderr)
+
+        if proj_root:
+            for legacy_rel in ((".agents", "workflows"), (".claude", "commands")):
+                legacy_dir = os.path.normpath(os.path.join(proj_root, *legacy_rel))
+                if os.path.isdir(legacy_dir):
+                    has_active_managed = any(
+                        os.path.normpath(p).startswith(legacy_dir + os.sep)
+                        for p in current_published_set
+                    )
+                    if not has_active_managed:
+                        try:
+                            for root_d, _, fnames in os.walk(legacy_dir):
+                                for fn in fnames:
+                                    files_to_remove.add(os.path.join(root_d, fn))
+                            if vfs:
+                                vfs.robust_rmtree(legacy_dir)
+                            else:
+                                import shutil
+                                shutil.rmtree(legacy_dir, ignore_errors=True)
+                            parent_d = os.path.dirname(legacy_dir)
+                            while parent_d and parent_d != proj_root and os.path.isdir(parent_d) and not os.listdir(parent_d):
+                                os.rmdir(parent_d)
+                                parent_d = os.path.dirname(parent_d)
+                        except Exception as e:
+                            print(f"[publisher:warning] Failed removing legacy workflow directory {legacy_dir}: {e}", file=sys.stderr)
 
         return files_to_remove
 

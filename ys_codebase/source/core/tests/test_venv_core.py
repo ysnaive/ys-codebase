@@ -128,7 +128,7 @@ class TestVenvCore(YSCBTestCase):
 
         cfg_path, cfg = installer.engine._get_config()
         orig_installed = dict(cfg.get("installed_modules", {}))
-        cfg.setdefault("installed_modules", {})[mod_name] = {"version": "1.0.0"}
+        cfg["installed_modules"] = {mod_name: {"version": "1.0.0"}}
         installer.engine._save_config(cfg_path, cfg)
 
         try:
@@ -211,7 +211,7 @@ class TestVenvCore(YSCBTestCase):
         })
         cfg_path, cfg = installer.engine._get_config()
         orig_installed = dict(cfg.get("installed_modules", {}))
-        cfg.setdefault("installed_modules", {})[mod_name] = {"version": "1.0.0"}
+        cfg["installed_modules"] = {mod_name: {"version": "1.0.0"}}
         installer.engine._save_config(cfg_path, cfg)
         try:
             with patch.object(PipManager, "ensure_venv", side_effect=PipInstallError("[PipManager] no ensurepip")):

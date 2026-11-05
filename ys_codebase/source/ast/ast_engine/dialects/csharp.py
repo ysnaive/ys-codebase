@@ -4,7 +4,7 @@ Supports partial class/struct/interface aggregation, compound visibility modifie
 """
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .base import DialectAdapter
 
@@ -13,6 +13,26 @@ class CSharpDialect(DialectAdapter):
     language = "c_sharp"
     scope_separator = "."
     supports_partial_aggregation = True
+
+    def post_process_raw_item(self, item: Dict[str, Any], def_node: Any) -> None:
+        if def_node is not None and getattr(def_node, "type", "") == "file_scoped_namespace_declaration":
+            item["is_file_scoped_namespace"] = True
+            root_node = def_node
+            while getattr(root_node, "parent", None) is not None:
+                root_node = root_node.parent
+            if getattr(root_node, "end_byte", 0) > item.get("end_byte", 0):
+                item["end_byte"] = root_node.end_byte
+
+    def finalize_raw_items(self, raw_items: List[Dict[str, Any]], lines: List[str]) -> List[Dict[str, Any]]:
+        if not raw_items:
+            return raw_items
+        max_end_byte = max((int(it.get("end_byte", 0)) for it in raw_items), default=0)
+        total_lines = max(len(lines), max((int(it.get("end_line", 0)) for it in raw_items), default=0))
+        for item in raw_items:
+            if item.get("is_file_scoped_namespace"):
+                item["end_line"] = max(int(item.get("end_line", 0)), total_lines)
+                item["end_byte"] = max(int(item.get("end_byte", 0)), max_end_byte)
+        return raw_items
 
     def extract_visibility(
         self,

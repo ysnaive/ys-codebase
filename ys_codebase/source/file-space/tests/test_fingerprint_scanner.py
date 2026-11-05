@@ -331,3 +331,51 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         self.assertFalse(is_watcher_active(self.proj_root, space_name="space_b", space_manager=scanner.space_manager))
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_ft_06_watcher_dirty_beacon_and_atomic_write_retry(self) -> None:
+        """Verify .watcher_dirty beacon triggers auto_refresh during debounce and _atomic_write_bytes retries PermissionError."""
+        from file_space.scanner import _atomic_write_bytes
+        from file_space.service import FileSpaceWatcherServiceWorker
+
+        (self.space_a_dir / "a.py").write_text("v1\n", encoding="utf-8")
+        scanner = self._build_multi_space_scanner()
+        scanner.refresh(None)
+        scanner.ack(None, consumer_id="kdb")
+
+        worker = FileSpaceWatcherServiceWorker(
+            space_manager=scanner.space_manager,
+            scanner=scanner,
+        )
+        # Edit file and notify watcher (without flushing yet) -> .watcher_dirty beacon is created
+        f_a = self.space_a_dir / "a.py"
+        f_a.write_text("v2_dirty_window\n", encoding="utf-8")
+        worker.notify_file_event(str(f_a), is_directory=False, event_type="modified")
+        self.assertTrue(scanner.is_watcher_dirty("space_a"))
+
+        with patch("file_space.scanner.is_watcher_active", return_value=True):
+            with scanner.consume_diff("space_a", consumer_id="kdb") as diff_a:
+                self.assertIn("a.py", diff_a.modified)
+                self.assertEqual(diff_a.to_generation, 2)
+
+        worker.flush_space_now("space_a")
+        self.assertFalse(scanner.is_watcher_dirty("space_a"))
+
+        # Verify _atomic_write_bytes retries transient PermissionError on os.replace
+        retry_target = self.tmp_dir / "atomic_retry.bin"
+        real_replace = os.replace
+        attempts = {"count": 0}
+
+        def _flaky_replace(src: str, dst: str) -> None:
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                raise PermissionError("Simulated Windows file lock")
+            real_replace(src, dst)
+
+        with patch("file_space.scanner.os.replace", side_effect=_flaky_replace):
+            _atomic_write_bytes(retry_target, b"ok_payload")
+
+        self.assertEqual(attempts["count"], 3)
+        self.assertEqual(retry_target.read_bytes(), b"ok_payload")
+        self.mark_passed()
+
+

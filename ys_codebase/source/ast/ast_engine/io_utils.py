@@ -112,10 +112,17 @@ def is_dirty_file_match(doc_file_path: str, dirty_paths_norm: Set[str]) -> bool:
     """Check whether doc_file_path matches any normalized path in dirty_paths_norm."""
     if not dirty_paths_norm:
         return False
-    sym_path_norm = str(doc_file_path).replace("\\", "/").lower()
-    if sym_path_norm in dirty_paths_norm:
+    sym_path_norm = str(doc_file_path).replace("\\", "/").strip("/").lower()
+    if not sym_path_norm:
+        return False
+    if sym_path_norm in dirty_paths_norm or ("/" + sym_path_norm) in dirty_paths_norm:
         return True
     if "/" not in sym_path_norm:
+        suffix = "/" + sym_path_norm
+        for p in dirty_paths_norm:
+            is_abs_p = p.startswith("/") or (len(p) > 2 and p[1] == ":" and p[2] == "/")
+            if is_abs_p and p.endswith(suffix):
+                return True
         return False
     for p in dirty_paths_norm:
         if "/" in p and (p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p)):

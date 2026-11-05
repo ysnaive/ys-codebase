@@ -228,15 +228,18 @@ class VFS:
     ) -> IO:
         """
         以原生檔案物件模式打開檔案。
-        若開啟寫入模式，自動確保父目錄存在。
+        若開啟寫入模式，自動確保父目錄存在並強制 LF 換行。
         """
-        resolved = self.resolve_path(path_or_uri)
-        if any(m in mode for m in ("w", "a", "x")):
+        resolved = self.assert_safe_path(path_or_uri)
+        is_write = any(m in mode for m in ("w", "a", "x", "+"))
+        if is_write:
             parent = os.path.dirname(resolved)
             if parent:
                 os.makedirs(parent, exist_ok=True)
         if "b" in mode:
             return open(resolved, mode)
+        if is_write:
+            return open(resolved, mode, encoding=encoding or "utf-8", newline="\n")
         return open(resolved, mode, encoding=encoding or "utf-8")
 
     def assert_safe_path(self, path_or_uri: Union[str, Any], root: Optional[str] = None) -> str:

@@ -494,6 +494,8 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 if diff_res.has_changes:
                     return True
             ast_eng = getattr(engine, "ast_engine", None)
+            if hasattr(engine.pipeline, "_ensure_indices_loaded"):
+                engine.pipeline._ensure_indices_loaded(load_vectors=False)
             idx = getattr(engine.pipeline, "unified_index", None)
             if ast_eng is not None and idx is not None and ast_eng._ensure_loaded_from_disk():
                 snap = ast_eng._snapshot
@@ -506,6 +508,8 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
     def _sync_stage1_lexical_and_graph(self, engine: Any, indices_dir: Path) -> None:
         """Stage 1 Fast Path: Update AST and BM25 inverted index without blocking on vectors."""
         bin_file = indices_dir / "unified.index.bin.gz"
+        if hasattr(engine.pipeline, "_ensure_indices_loaded"):
+            engine.pipeline._ensure_indices_loaded(load_vectors=False)
         with engine.pipeline._consume_space_diff(consumer_id="knowledge-db") as diff_res:
             if not bin_file.exists() and engine.pipeline.unified_index is None:
                 engine.pipeline.build_unified_index(

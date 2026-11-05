@@ -161,7 +161,7 @@ def on_file_space_changed(
     ) as diff_res:
         if not diff_res.has_changes:
             if not has_existing_snapshot and diff_summary:
-                snap = engine.build_index(spaces=spaces, allow_parallel=False)
+                snap = engine.build_index(spaces=None, allow_parallel=False)
                 payload = {
                     "status": "rebuilt",
                     "ast_generation": snap.ast_generation,
@@ -179,7 +179,7 @@ def on_file_space_changed(
             }
 
         if not has_existing_snapshot:
-            snap = engine.build_index(spaces=spaces, allow_parallel=False)
+            snap = engine.build_index(spaces=None, allow_parallel=False)
             payload = {
                 "status": "rebuilt",
                 "ast_generation": snap.ast_generation,
@@ -190,7 +190,11 @@ def on_file_space_changed(
             _broadcast_ast_updated(payload)
             return payload
 
-        snap = engine.hot_patch_index(diff_res.detail, spaces=spaces)
+        snap = engine.hot_patch_index(
+            diff_res.detail,
+            spaces=spaces,
+            _cursor_already_consumed=True,
+        )
         payload = {
             "status": "patched",
             "ast_generation": snap.ast_generation,

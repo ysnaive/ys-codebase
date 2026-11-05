@@ -1,10 +1,10 @@
 # 技術路線圖：`module:git-support` 獨立模組與 Git 操作解耦及變更守門架構 (Roadmap)
 
 > 主題：`module:git-support` 獨立模組與 Git 操作解耦及變更守門架構 (`git_support_module_and_guardrails`)  
-> 歸檔日期：2026-11-03  
+> 歸檔日期：2026-11-05  
 > 狀態：Backlog  
 > 目標範疇：`core`（CLI 派發否決權契約 `pre_cli_dispatch` Veto）、新模組 `module:git-support`（Git 操作封裝、受保護路徑指紋簽認守門）、`agents-workflow`、`dev`  
-> 前置解鎖條件：出現跨模組 Git 操作擴增或多團隊防疏漏變更守門需求時啟動  
+> 前置解鎖條件：[Tier 4 - 排序 #7 (Backlog)] 受保護檔案防誤改已由 #1 (core.file_lock) 物理覆蓋、Git 快照與溯源已由 #2b/#3 覆蓋；本項收斂為選配 CLI pre-flight Veto (與 [TODO-21] 協同) 及跨模組 Git 輔助擴充，待多團隊簽認需求出現時啟動  
 > 模型：Gemini 4 Argon (Low)  
 > 模板版本：v1.1  
 

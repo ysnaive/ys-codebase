@@ -4,6 +4,7 @@ knowledge-db 複合檢索與 RRF 倒數排名融合引擎 (HybridSearchEngine)
 """
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from .embedding import EmbeddingService, VectorIndex
@@ -193,7 +194,7 @@ class HybridSearchEngine:
             if sym is None:
                 continue
             if norm_ftypes:
-                ext = sym.file_path.split(".")[-1].lower() if "." in sym.file_path else ""
+                ext = Path(sym.file_path).suffix.lstrip(".").lower() if sym.file_path else ""
                 if ext not in norm_ftypes:
                     continue
             if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):

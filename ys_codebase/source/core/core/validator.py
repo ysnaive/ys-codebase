@@ -268,6 +268,9 @@ class ContributesValidator:
                 return data, issues
             out_dict = {}
             for k, v in data.items():
+                if isinstance(k, str) and k.startswith("__") and k.endswith("__"):
+                    out_dict[k] = v
+                    continue
                 out_v, sub_issues = cls.validate_node(v, rule["value_type"]["raw"], f"{path}.{k}", types_map, depth + 1)
                 issues.extend(sub_issues)
                 out_dict[k] = out_v

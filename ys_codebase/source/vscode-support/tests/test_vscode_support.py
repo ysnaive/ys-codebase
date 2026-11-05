@@ -22,6 +22,7 @@ from core.context import ExecutionContext
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 from vscode_support.projector import SettingsProjector
+from vscode_support import schema_compiler as schema_compiler_mod
 from vscode_support.schema_compiler import SchemaCompiler
 
 
@@ -390,6 +391,146 @@ class TestVSCodeSupport(YSCBTestCase):
         reverted = vfs.read_json(settings_path)
         self.assertEqual(reverted.get("python.analysis.extraPaths"), ["./user_custom"])
         self.assertNotIn("_yscb_managed", reverted)
+        self.mark_passed()
+
+    def test_ft_08_audit_remediation_hook_alias_semver_mirror_and_clean_status(
+        self,
+    ) -> None:
+        """
+        驗證 vscode-support 深度審計收斂項目：
+        1. hook.core.py on_remove 於 ctx=None 或 args=None 時安全回傳 False，且支援別名 'vsc' 觸發還原。
+        2. SchemaCompiler._select_latest_mirror_zip 採用四段式 SemVer 排序（1.0.0.10 > 1.0.0.2），並於 sync_all_schemas 內快取 URI snippets。
+        3. revert_vscode_settings 清空受管 exclude pattern 後若節點為空字典則連同頂層空鍵一併移除。
+        4. get_status 針對損毀之穩定連結回報 stable_link_active=False，且支援讀取含註解與尾隨逗號之 JSONC settings.json。
+        """
+        import importlib.util
+        import zipfile
+
+        # 1. hook.core.py on_remove safety when ctx is None or args is None, and alias 'vsc' support
+        hook_path = os.path.join(str(_pkg_root), "scripts", "hook.core.py")
+        spec = importlib.util.spec_from_file_location("_test_vsc_hook_audit", hook_path)
+        self.assertIsNotNone(spec)
+        hook_mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(hook_mod)  # type: ignore[union-attr]
+
+        self.assertFalse(hook_mod.on_remove(None))
+        ctx_none_args = ExecutionContext("core", "remove", None)  # type: ignore[arg-type]
+        self.assertFalse(hook_mod.on_remove(ctx_none_args))
+        ctx_other_mod = ExecutionContext("core", "remove", ["knowledge-db"])
+        self.assertFalse(hook_mod.on_remove(ctx_other_mod))
+
+        orig_resolve = hook_mod.uri.resolve
+        orig_revert = SettingsProjector.revert_vscode_settings
+        hook_revert_calls: list[str] = []
+
+        def _stub_revert(proj_self, proj_root: str) -> bool:
+            hook_revert_calls.append(proj_root)
+            return True
+
+        hook_mod.uri.resolve = lambda u, interactive=False: self.project_root if u == "project://" else orig_resolve(u, interactive=interactive)
+        SettingsProjector.revert_vscode_settings = _stub_revert  # type: ignore[method-assign]
+        try:
+            ctx_vsc_alias = ExecutionContext("core", "remove", ["vsc"])
+            self.assertTrue(hook_mod.on_remove(ctx_vsc_alias))
+            self.assertEqual(hook_revert_calls, [self.project_root])
+        finally:
+            hook_mod.uri.resolve = orig_resolve
+            SettingsProjector.revert_vscode_settings = orig_revert  # type: ignore[method-assign]
+
+        # 2. SemVer mirror zip selection (1.0.0.10.zip > 1.0.0.2.zip) and URI snippet caching in sync_all_schemas
+        mirror_mod_dir = os.path.join(self.yscb_dir, ".mirror", "semver-mod")
+        os.makedirs(mirror_mod_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.yscb_dir, ".modules", "semver-mod"), exist_ok=True)
+
+        zip_v2 = os.path.join(mirror_mod_dir, "1.0.0.2.zip")
+        with zipfile.ZipFile(zip_v2, "w") as zf:
+            zf.writestr(
+                "configurable/_format.json",
+                json.dumps({"old_v2_key": "str = 'v2'"}),
+            )
+
+        zip_v10 = os.path.join(mirror_mod_dir, "1.0.0.10.zip")
+        with zipfile.ZipFile(zip_v10, "w") as zf:
+            zf.writestr(
+                "configurable/_format.json",
+                json.dumps({"new_v10_key": "str = 'v10'"}),
+            )
+
+        compiler = SchemaCompiler(yscb_dir=self.yscb_dir)
+        selected_zip = compiler._select_latest_mirror_zip(mirror_mod_dir)
+        self.assertIsNotNone(selected_zip)
+        self.assertTrue(str(selected_zip).endswith("1.0.0.10.zip"))
+
+        loaded_fmt = compiler._load_module_config_format("semver-mod")
+        self.assertIsNotNone(loaded_fmt)
+        self.assertIn("new_v10_key", loaded_fmt or {})
+        self.assertNotIn("old_v2_key", loaded_fmt or {})
+
+        snippet_call_count = {"n": 0}
+        orig_contributes_get = schema_compiler_mod.contributes.get
+
+        def _counting_contributes_get(mod: str, key: str):
+            if mod == "core" and key == "uri_schemes":
+                snippet_call_count["n"] += 1
+            return orig_contributes_get(mod, key)
+
+        schema_compiler_mod.contributes.get = _counting_contributes_get  # type: ignore[assignment]
+        try:
+            compiler.sync_all_schemas(self.project_root)
+            self.assertEqual(snippet_call_count["n"], 1)
+            self.assertIsNone(compiler._cached_uri_snippets)
+        finally:
+            schema_compiler_mod.contributes.get = orig_contributes_get  # type: ignore[assignment]
+
+        # 3. revert_vscode_settings cleans up empty exclude dictionaries
+        vscode_dir = os.path.join(self.project_root, ".vscode")
+        os.makedirs(vscode_dir, exist_ok=True)
+        settings_path = os.path.join(vscode_dir, "settings.json")
+        if os.path.exists(settings_path):
+            os.remove(settings_path)
+
+        self.assertTrue(
+            self.projector.sync_vscode_settings(self.project_root, py_tag="py312")
+        )
+        synced_data = vfs.read_json(settings_path)
+        self.assertIn("files.watcherExclude", synced_data)
+        self.assertIn("search.exclude", synced_data)
+
+        self.assertTrue(self.projector.revert_vscode_settings(self.project_root))
+        reverted_clean = vfs.read_json(settings_path)
+        self.assertNotIn("files.watcherExclude", reverted_clean)
+        self.assertNotIn("search.exclude", reverted_clean)
+        self.assertEqual(reverted_clean, {})
+
+        # 4. get_status with JSONC settings.json and broken symlink detection
+        jsonc_managed = (
+            '{\n  // JSONC managed settings\n  "_yscb_managed": {\n'
+            '    "extraPaths": ["./.yscb/source/core"],\n'
+            '    "jsonSchemas": ["./.vscode/schemas/meta/manifest.schema.json"],\n'
+            "  },\n}\n"
+        )
+        vfs.write_text(settings_path, jsonc_managed, encoding="utf-8")
+        st_info = self.projector.get_status(self.project_root)
+        self.assertTrue(st_info["settings_managed"])
+        self.assertEqual(st_info["managed_extra_paths"], ["./.yscb/source/core"])
+        self.assertEqual(st_info["managed_schema_count"], 1)
+
+        # Broken symlink check
+        link_path = self.projector.get_stable_link_path()
+        os.makedirs(os.path.dirname(link_path), exist_ok=True)
+        if os.path.lexists(link_path):
+            self.projector.remove_stable_site_packages_link()
+        non_existent_target = os.path.join(self.yscb_dir, ".venv", "missing_target_dir")
+        try:
+            os.symlink(non_existent_target, link_path)
+            st_broken = self.projector.get_status(self.project_root)
+            self.assertFalse(st_broken["stable_link_active"])
+        except OSError:
+            pass
+        finally:
+            if os.path.lexists(link_path):
+                self.projector.remove_stable_site_packages_link()
+
         self.mark_passed()
 
 

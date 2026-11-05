@@ -10,8 +10,16 @@ import subprocess
 import concurrent.futures
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
-from dev.testing.runner import TestDiscovery, TestRunner, ASCIIReportFormatter, get_test_category
+from dev.testing.runner import (
+    TestDiscovery,
+    TestRunner,
+    ASCIIReportFormatter,
+    get_test_category,
+    run_subprocess_with_tree_timeout,
+)
 from dev.testing.sandbox import SandboxProvisioner
+
+_ORIG_SUBPROCESS_RUN = subprocess.run
 
 
 def safe_print(text: Any = "", file: Any = None, end: str = "\n", flush: bool = False) -> None:
@@ -505,8 +513,9 @@ class Tester:
         quiet_mode: bool = False,
         is_nested: bool = False,
         mod_label: Optional[str] = None,
+        timeout_sec: float = 300.0,
     ) -> Tuple[int, Optional[Dict[str, Any]], str, Optional[subprocess.CompletedProcess]]:
-        """Unified helper to create sandbox, invoke dev op-test subprocess, and parse report JSON."""
+        """Unified helper to create sandbox, invoke dev op-test subprocess with process-tree timeout protection, and parse report JSON."""
         ctx = SandboxProvisioner.create_sandbox(target_modules=target_modules)
         sandbox_dir = ctx.sandbox_dir
         sandbox_display_id = f"sandbox {sandbox_idx}"
@@ -537,16 +546,25 @@ class Tester:
         res = None
         mod_start = time.perf_counter()
         try:
-            res = subprocess.run(
-                cmd,
-                cwd=host_dir,
-                env=p_env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+            if subprocess.run is _ORIG_SUBPROCESS_RUN:
+                rc_val, out_val, err_val = run_subprocess_with_tree_timeout(
+                    cmd,
+                    timeout_sec=timeout_sec,
+                    cwd=host_dir,
+                    env=p_env,
+                )
+                res = subprocess.CompletedProcess(cmd, rc_val, out_val, err_val)
+            else:
+                res = subprocess.run(
+                    cmd,
+                    cwd=host_dir,
+                    env=p_env,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
             ret_code = res.returncode
             mod_duration = time.perf_counter() - mod_start
             if mod_label and not is_nested and not quiet_mode:

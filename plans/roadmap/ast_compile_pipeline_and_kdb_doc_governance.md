@@ -4,7 +4,7 @@
 > 歸檔日期：2026-11-05  
 > 狀態：Proposed  
 > 目標範疇：`ast`、`knowledge-db`、`agents-workflow`、`server`、`file-space`（跨模組語法樹編譯管線、文檔與術語治理、語言伺服器及工作流骨幹解耦）  
-> 前置解鎖條件：完成底層核心與知識庫既有結構優化及深層審計修繕後啟動  
+> 前置解鎖條件：[Tier 3 - 排序 #5] 完成 Tier 1 (#1 唯讀檔案鎖、#2 發布管線) 與 Tier 2 (#4 跨層宣告式呼叫圖) 後，以 Umbrella 主從計畫分階段啟動（已整併吸收 doc_and_plan_archive_governance 與 skill_release_prefix_isolation）  
 > 模型：Gemini 4 Argon (Medium)  
 > 模板版本：v1.1  
 
@@ -22,7 +22,10 @@
   - 將 **`docs/` 文檔規範與知識庫治理全權回歸 `module:knowledge-db`**：由 `knowledge-db` 向 `ast` 貢獻文檔編譯與程式碼符號綁定規則（動態連結原始碼區段與 Docstring），並內建結構化術語字庫與 `yscb kdb means "<專有名詞>"` 精準語意解析指令。
   - 將 **`module:agents-workflow` 純化為乾淨的工作流骨幹框架與 CLI 工具**：移除內部私有編譯器，改為向 `ast` 貢獻工作流語意規則並調用 `ast` 物化 SDK；同時將領域專屬之 `plan` 軌道與技能資產改由外部 `contributes` 注入（如純軟工程下沉至 `agents-workflow-coding`，未來可平行擴充 `agents-workflow-unity`、`agents-workflow-pixel-art` 等領域包）。
 - **範疇與邊界約束**：
-  - 涵蓋 `module:ast` 之 `LosslessCST`、虛擬產物圖譜（`ArtifactGraph`）、五相位可插拔編譯管線與物化 SDK；`module:knowledge-db` 之 `docs/` 規範接管、原始碼 AST 符號動態關聯與 `kdb means` 術語字典；以及 `module:agents-workflow` 編譯能力委派與領域包解耦介面（領域軌道解耦細節與 `declarative_track_schema_and_domain_packs` 協同演進）。
+  - 涵蓋 `module:ast` 之 `LosslessCST`、虛擬產物圖譜（`ArtifactGraph`）、五相位可插拔編譯管線與物化 SDK（建議於 `ast_engine` 內部嚴格分包為 `ast_engine/symbols/` 與 `ast_engine/compiler/` 維持內聚）；`module:knowledge-db` 之 `docs/` 規範接管、原始碼 AST 符號動態關聯、`kdb means` 術語與歷史決策字典；以及 `module:agents-workflow` 編譯能力委派與發布期 `skill_prefix` 動態前綴防撞投影（領域軌道解耦細節與 `#6 declarative_track_schema_and_domain_packs` 協同演進）。
+  - **已正式整併吸收之原獨立路線圖**：
+    1. **吸收原 `doc_and_plan_archive_governance.md`**：其中「預設檢索隔離 `plans/archived/`」已於 `2026_11_04_1425_kdb_opt_in_space_weights` 完成；剩餘之「`docs/` 量化宣稱與代碼雙向綁定」、「歷史架構決策（`[DN-*]`）快速反查索引」與「`CHANGELOG.md` 資訊分層規範」統一併入本路線圖 Stage 2（`module:knowledge-db` 文檔接管與 `kdb means` 引擎）。
+    2. **吸收原 `skill_release_prefix_isolation.md`**：將 `config.project.json` 之可配置 `skill_prefix`（如 `'yscb-'`，含防雙重前綴正規化、目標資料夾改名、`SKILL.md` YAML frontmatter `name:` 動態改寫、`AGENTS.md` 路由表與 `__#{skills/...}__` 交叉引用同步改寫、及舊版無前綴技能切換時之 Manifest 遷移清理）直接作為本路線圖 Stage 1/3 新編譯管線（`Phase 300/400` 與 `ast.materialize()`）之原生能力，避免在舊 `ArtifactCompiler` 上重複施工。
 
 ---
 
@@ -46,8 +49,8 @@
     2. **`yscb kdb means "<專有名詞>"` 秒級術語字典**：於 `docs/`、設計決策（`[DN-*]`）與模組契約中提取結構化術語定義、別名與上下游關聯符號並建立輕量索引，提供毫秒級概念釋義、定義座標與關聯設計筆記查詢，消除 Agent 在廣域檢索中途遭遇未知專有名詞時的二次廣搜開銷。
     3. **`documentation` 技能歸位**：將三層文檔架構規範與 `documentation` 技能自 `agents-workflow` 遷移至 `knowledge-db` 統一維護與貢獻。
   - **`module:agents-workflow` 骨幹純化與領域包注入**：
-    1. **編譯邏輯下沉委派**：`agents-workflow` 將原本內建之工作流模板拼裝、錨點注入與目標環境剪枝改寫為 `contributes/ast.json` 規則，並透過 `ast` SDK 完成技能與規範物化。
-    2. **領域工作流外掛化**：`agents-workflow` 本體僅保留無領域偏見之計畫生命周期框架與通用 CLI；純軟研發專屬之階段定義、模板與檢核器抽離聚合為 `agents-workflow-coding`，使骨幹得以無縫支撐非純軟領域擴充包。
+    1. **編譯邏輯下沉委派與 `skill_prefix` 動態前綴防撞（吸收 `skill_release_prefix_isolation`）**：`agents-workflow` 將原本內建之工作流模板拼裝、錨點注入與目標環境剪枝改寫為 `contributes/ast.json` 規則，並透過 `ast` SDK 完成技能與規範物化；物化管線原生支援可配置之 `skill_prefix`（自動同步改寫 `.agents/skills/<prefix><name>/SKILL.md` 之目錄名、frontmatter `name:`、`AGENTS.md` 技能路由表與跨檔引用連結，並於切換前綴時自動清理舊無前綴物化目錄）。
+    2. **領域工作流外掛化（與 `#6 declarative_track_schema_and_domain_packs` 銜接）**：`agents-workflow` 本體僅保留無領域偏見之計畫生命周期框架與通用 CLI；純軟研發專屬之階段定義、模板與檢核器抽離聚合為 `agents-workflow-coding`，使骨幹得以無縫支撐非純軟領域擴充包。
 
 ---
 
@@ -58,5 +61,6 @@
 - **階段演進構想 (High-Level Stages)**：
   1. **Stage 1（`module:ast` `LosslessCST` 與五相位可插拔編譯管線基座）**：於 `ast` 實作 100% 標準庫之 `LosslessCST`、`ArtifactGraph`、五大 `contributes` 擴充槽位與自我注入之核心通用指令集，並提供記憶體編譯與磁碟物化 SDK。
   2. **Stage 2（`module:knowledge-db` 接管 `docs/` 規範、AST 符號動態連結與 `kdb means`）**：將 `documentation` 技能與文檔治理移交 `knowledge-db`，實作 `DESIGN_NOTES.md` 原始碼區段/Docstring 動態綁定校驗器與 `yscb kdb means "<專有名詞>"` 術語字典引擎。
-  3. **Stage 3（`module:agents-workflow` 編譯委派與 `agents-workflow-coding` 領域解耦）**：將 `agents-workflow` 內部編譯器切換至 `ast` 編譯管線 SDK，並結合 `TrackSpec` 擴充機制將軟體工程專屬計畫資產下沉至 `agents-workflow-coding`，同時打通 `server` + `file-space` 常駐 Language Server 與 GUI Kit 雙向關聯閉環。
+  3. **Stage 3（`module:agents-workflow` 編譯委派、`skill_prefix` 投影與 `#6` 領域解耦對接）**：將 `agents-workflow` 內部編譯器切換至 `ast` 編譯管線 SDK（內建 `skill_prefix` 命名空間防撞投影），並無縫銜接 `#6 (declarative_track_schema_and_domain_packs)` 將軟體工程專屬計畫資產下沉至 `agents-workflow-coding`。
+  4. **Stage 4（選配遠期擴充：`server` + `file-space` 常駐 Language Server 與 GUI Kit 投射）**：在前三階段靜態編譯與知識庫閉環穩定後，按需打通增量 Language Server 與 GUI Kit 雙向關聯投射（與前三階段解耦，不阻塞核心編譯管線交付）。
 

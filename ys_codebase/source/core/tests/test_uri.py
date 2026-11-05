@@ -333,6 +333,58 @@ class TestCoreURI(YSCBTestCase):
         self.assertLess(elapsed, 0.005)
         self.mark_passed()
 
+    def test_thread_local_scope_isolation_and_subpath_traversal_guard(self):
+        """驗證 host_scope / module_scope 跨執行緒 TLS 隔離，以及 URI 子路徑 '..' 逃逸阻斷且不誤傷 sval '..'。"""
+        import tempfile
+        import threading
+
+        results = {}
+        barrier = threading.Barrier(2)
+        with tempfile.TemporaryDirectory() as tmp_root:
+            host_a = os.path.join(tmp_root, "fake_host_a")
+            host_b = os.path.join(tmp_root, "fake_host_b")
+            for hd in (host_a, host_b):
+                os.makedirs(hd, exist_ok=True)
+                with open(os.path.join(hd, "yscb.config.json"), "w", encoding="utf-8") as f:
+                    f.write('{"yscb_root": "./ys_codebase"}\n')
+
+            def worker(name: str, host_p: str, mod_p: str):
+                with uri.host_scope(host_p, "ys_codebase"):
+                    with uri.module_scope(mod_p):
+                        barrier.wait(timeout=5.0)
+                        results[name] = (
+                            uri.get_module_context(),
+                            os.path.normpath(uri.resolve("yscb.host://", interactive=False)),
+                        )
+
+            t1 = threading.Thread(target=worker, args=("t1", host_a, "mod_a"))
+            t2 = threading.Thread(target=worker, args=("t2", host_b, "mod_b"))
+            t1.start()
+            t2.start()
+            t1.join(timeout=5.0)
+            t2.join(timeout=5.0)
+
+            self.assertEqual(results["t1"], ("mod_a", os.path.normpath(os.path.abspath(host_a))))
+            self.assertEqual(results["t2"], ("mod_b", os.path.normpath(os.path.abspath(host_b))))
+
+        # project:// root (sval = "yscb://..") must remain valid
+        proj_root = uri.resolve("project://", interactive=False)
+        self.assertTrue(os.path.isabs(proj_root))
+
+        # Traversal in rel subpath must be rejected with PermissionError
+        for bad_uri in (
+            "project://../../etc/passwd",
+            "yscb://../escape",
+            "config://core/../../secret",
+            "module://core/../../outside",
+            "project://C:/Windows/System32",
+        ):
+            with self.assertRaises(PermissionError, msg=f"Expected PermissionError for {bad_uri}"):
+                uri.resolve(bad_uri, interactive=False)
+
+        self.mark_passed()
+
+
 
 
 

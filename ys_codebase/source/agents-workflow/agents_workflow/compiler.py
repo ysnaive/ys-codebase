@@ -476,7 +476,17 @@ class ArtifactCompiler:
             if isinstance(data, dict):
                 for k in ("export", "insert", "token", "release_target"):
                     if k in data and isinstance(data[k], list):
-                        aggregated[k].extend(data[k])
+                        if k == "export":
+                            for item in data[k]:
+                                if isinstance(item, dict):
+                                    norm_item = dict(item)
+                                    if str(norm_item.get("type", "")).strip().lower() in ("workflow", "workflows"):
+                                        norm_item["type"] = "skill"
+                                    aggregated[k].append(norm_item)
+                                else:
+                                    aggregated[k].append(item)
+                        else:
+                            aggregated[k].extend(data[k])
         except Exception:
             pass
 
@@ -693,7 +703,9 @@ class ArtifactCompiler:
             "template": "templates",
             "templates": "templates",
             "skill": "skills",
-            "skills": "skills"
+            "skills": "skills",
+            "workflow": "skills",
+            "workflows": "skills",
         }
 
         stage1_insert_cache: Dict[str, str] = {}
@@ -702,7 +714,11 @@ class ArtifactCompiler:
             for exp in exports:
                 if not isinstance(exp, dict):
                     continue
-                exp_type = exp.get("type", "template")
+                raw_type = str(exp.get("type", "template")).strip()
+                exp_type = "skill" if raw_type.lower() in ("workflow", "workflows") else raw_type
+                if exp.get("type") != exp_type:
+                    exp = dict(exp)
+                    exp["type"] = exp_type
                 source_p = exp.get("source", "")
                 exp_name = exp.get("name", "")
                 sub_folder = folder_map.get(exp_type, "templates")
@@ -934,6 +950,8 @@ class ArtifactCompiler:
             return explicit_desc
 
         exp_type = str(export_item.get("type", "")).strip()
+        if exp_type.lower() in ("workflow", "workflows"):
+            exp_type = "skill"
         source_p = str(export_item.get("source", "")).strip()
         if exp_type not in ("skill", "skills") or not source_p:
             return ""
