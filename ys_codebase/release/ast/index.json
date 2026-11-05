@@ -3,7 +3,8 @@
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "versions": [
     "1.0.0.5",
-    "1.0.1.0"
+    "1.0.1.0",
+    "1.0.1.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -82,6 +83,17 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "預設 indices 與 bundles 遷移至 storage.local://、跨進程鎖分離至 cache:// 並附帶 1.0.1.x 遷移腳本"
+    },
+    "1.0.1.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7",
+        "file-space": ">=1.0.1"
+      },
+      "sha256": "1a55de3ffe5357a494079b2bef12c42ad09a30d73dcadfaba3052dd72821c7fa",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "CLI 預設去重相對路徑與 --file-uri 旗標、呼叫圖譜惰性載入與 unified.meta.json 快照探針"
     }
   }
 }

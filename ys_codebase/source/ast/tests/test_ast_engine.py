@@ -177,5 +177,52 @@ class TestASTEnginePolish(YSCBTestCase):
         self.mark_passed()
 
 
+    @require(Requirement.LOGIC)
+    def test_t36_file_uri_opt_in_and_lazy_graph_meta(self):
+        """T-36 (OPT-01, OPT-03, OPT-05): Verify file_uri=False default vs file_uri=True, and lazy graph loading + unified.meta.json."""
+        from ast_engine.engine import ASTEngine
+        from ast_engine.formatter import ASTResultFormatter
+
+        src_f = self.temp_dir / "demo.py"
+        src_f.write_text(
+            "def alpha():\n    return beta()\n\ndef beta():\n    return 42\n",
+            encoding="utf-8",
+        )
+        fmt = ASTResultFormatter(workspace_root=self.temp_dir)
+        link_default = fmt.format_file_link(src_f, line=1, end_line=2)
+        self.assertEqual(link_default, "demo.py:L1-2")
+        self.assertNotIn("file://", link_default)
+
+        link_uri = fmt.format_file_link(src_f, line=1, end_line=2, file_uri=True)
+        self.assertIn("[demo.py:L1-2](file:///", link_uri)
+
+        eng = ASTEngine(project_root=self.temp_dir, storage_dir=self.temp_dir / ".ast_store")
+        snap = eng.build_index(allow_parallel=False)
+        self.assertGreaterEqual(snap.ast_generation, 1)
+        self.assertTrue(eng.meta_index_path.exists())
+
+        # Fresh engine instance: get_persisted_meta() should read unified.meta.json without loading _snapshot or _graph
+        eng2 = ASTEngine(project_root=self.temp_dir, storage_dir=self.temp_dir / ".ast_store")
+        meta = eng2.get_persisted_meta()
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta["ast_generation"], snap.ast_generation)
+        self.assertIsNone(eng2._snapshot)
+        self.assertIsNone(eng2._graph)
+
+        # ensure_jit_synced on clean workspace should load _snapshot without loading _graph
+        eng2.ensure_jit_synced()
+        self.assertIsNotNone(eng2._snapshot)
+        self.assertIsNone(eng2._graph)
+
+        # Calling callers() loads _graph on demand
+        res_callers = eng2.callers("beta")
+        self.assertIsNotNone(eng2._graph)
+        out_txt = eng2.formatter.format_callers_output(res_callers)
+        self.assertNotIn("](file:///", out_txt)
+        out_txt_uri = eng2.formatter.format_callers_output(res_callers, file_uri=True)
+        self.assertIn("](file:///", out_txt_uri)
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

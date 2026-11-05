@@ -228,10 +228,12 @@ class ResultFormatter:
         workspace_root: Optional[Path] = None,
         redundancy_filter: Optional[UniversalRedundancyFilter] = None,
         styler: Optional[TerminalStyler] = None,
+        file_uri: bool = False,
     ):
         self.workspace_root = workspace_root
         self.redundancy_filter = redundancy_filter or UniversalRedundancyFilter()
         self.styler = styler or TerminalStyler()
+        self.file_uri = bool(file_uri)
 
     def get_workspace_root(self) -> Path:
         if self.workspace_root:
@@ -297,8 +299,18 @@ class ResultFormatter:
         line: Optional[int] = None,
         end_line: Optional[int] = None,
         use_basename: bool = True,
+        file_uri: Optional[bool] = None,
     ) -> str:
-        """格式化為 IDE 相容之 Markdown 檔案超連結標籤: [filename:Lxx~Lyy](file:///abs_path#Lxx)"""
+        """格式化為相對路徑行號標籤 rel/path.py:Lxx-yy，或於 file_uri=True 時輸出 [filename:Lxx-yy](file:///abs_path#Lxx)"""
+        use_uri = self.file_uri if file_uri is None else bool(file_uri)
+        if not use_uri:
+            base_label = self.normalize_workspace_path(file_path)
+            if line is not None:
+                if end_line is not None and end_line > line:
+                    return f"{base_label}:L{line}-{end_line}"
+                return f"{base_label}:L{line}"
+            return base_label
+
         base_label = Path(file_path).name if use_basename else self.normalize_workspace_path(file_path)
         if line is not None:
             if end_line is not None and end_line > line:
@@ -319,6 +331,7 @@ class ResultFormatter:
         snippet: bool = False,
         format_type: str = "text",
         limit_mode: Union[int, str] = "auto",
+        file_uri: Optional[bool] = None,
     ) -> str:
         """
         格式化 search 檢索結果為結構化終端或 Markdown 報告。
@@ -351,6 +364,7 @@ class ResultFormatter:
 
         total_nodes = len(filtered_results)
         is_md = (format_type == "md")
+        eff_file_uri = True if is_md else (self.file_uri if file_uri is None else bool(file_uri))
         mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
         if mode not in ("simple", "detail"):
             mode = "auto"
@@ -378,7 +392,15 @@ class ResultFormatter:
             first_sym = res.items[0].symbol if res.items else None
             first_line = first_sym.line_number if first_sym else None
             first_end = first_sym.end_line if first_sym else None
-            file_link = self.format_file_link(res.file_path, line=first_line, end_line=first_end)
+            if not is_md and mode == "auto" and not snippet and len(res.items) > 1:
+                file_link = self.format_file_link(res.file_path, use_basename=False, file_uri=eff_file_uri)
+            else:
+                file_link = self.format_file_link(
+                    res.file_path,
+                    line=first_line,
+                    end_line=first_end,
+                    file_uri=eff_file_uri,
+                )
 
             max_snip_lines: Optional[int] = None
             if limit_mode == "auto":
@@ -574,16 +596,35 @@ class ResultFormatter:
                     else:
                         if len(res.items) == 1:
                             sym = res.items[0].symbol
-                            sym_link = self.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
-                            node_lines.append(f"#{rank:02d} 檔案: {self.styler.path(sym_link)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}) [{res.total_score:05.2f}]")
+                            sym_link = self.format_file_link(
+                                sym.file_path,
+                                line=sym.line_number,
+                                end_line=sym.end_line,
+                                file_uri=eff_file_uri,
+                            )
+                            node_lines.append(
+                                f"#{rank:02d} 檔案: {self.styler.path(sym_link)} "
+                                f"({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}) [{res.total_score:05.2f}]"
+                            )
                         else:
-                            node_lines.append(f"#{rank:02d} 檔案: {self.styler.path(file_link)} (總分: {res.total_score:05.2f}, {len(res.items)} 項命中):")
+                            node_lines.append(
+                                f"#{rank:02d} 檔案: {self.styler.path(file_link)} "
+                                f"(總分: {res.total_score:05.2f}, {len(res.items)} 項命中):"
+                            )
                             for itm_idx, itm in enumerate(res.items, start=1):
                                 is_last = (itm_idx == len(res.items))
                                 branch = "└──" if is_last else "├──"
                                 sym = itm.symbol
-                                sym_link = self.format_file_link(sym.file_path, line=sym.line_number, end_line=sym.end_line)
-                                node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} {self.styler.path(sym_link)} ({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}) [{itm.score:05.2f}]")
+                                line_range = (
+                                    f"Lines {sym.line_number}~{sym.end_line}"
+                                    if sym.end_line and sym.end_line > sym.line_number
+                                    else f"Line {sym.line_number}"
+                                )
+                                node_lines.append(
+                                    f"  {branch} #{rank:02d}.{itm_idx} "
+                                    f"{self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)} "
+                                    f"{self.styler.line(f'({line_range})')} [{itm.score:05.2f}]"
+                                )
 
             lines.extend(node_lines)
             rendered_nodes += 1

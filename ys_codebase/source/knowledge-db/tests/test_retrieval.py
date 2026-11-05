@@ -898,16 +898,44 @@ class TestHybridSearchEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_posting_slots_and_memory_savings(self):
-        """FT-PERF-01: 驗證 Posting __slots__ 屬性約束與記憶體瘦身"""
-        p = Posting(doc_id="doc_1", field_freqs={"name": 2}, space="core", spaces=["core", "unified"])
+        """FT-PERF-01 (OPT-07): 驗證 Posting __slots__、SparseFieldFreqs 稀疏化與 InvertedIndex 0..n doc_idx 映射"""
+        p = Posting(
+            doc_id="doc_1",
+            field_freqs={"name": 2, "signature": 0, "docstring": 0},
+            space="core",
+            spaces=["core", "unified"],
+        )
         self.assertEqual(p.doc_id, "doc_1")
         self.assertEqual(p.field_freqs["name"], 2)
+        self.assertEqual(p.field_freqs["signature"], 0)
+        self.assertEqual(p.field_freqs.get("members", 0), 0)
+        self.assertEqual(list(p.field_freqs.keys()), ["name"])
         self.assertEqual(p.space, "core")
         self.assertEqual(p.spaces, ["core", "unified"])
 
         self.assertFalse(hasattr(p, "__dict__"))
         with self.assertRaises(AttributeError):
             p.arbitrary_attr = "invalid"
+
+        # 驗證 InvertedIndex 0..n 整數文檔碼映射與增量刪除之 free_doc_indices 回收
+        idx = InvertedIndex(space_name="core")
+        tok = MultilingualTokenizer()
+        s1 = UnifiedSymbol(id="sym_a", name="Alpha", kind="class", file_path="a.py", line_number=1, language="python")
+        s2 = UnifiedSymbol(id="sym_b", name="Beta", kind="class", file_path="b.py", line_number=1, language="python")
+        idx.build([s1, s2], tokenizer=tok, space="core")
+        self.assertEqual(idx._doc_id_table, ["sym_a", "sym_b"])
+        p_alpha = idx.index["alpha"][0]
+        self.assertEqual(p_alpha.doc_idx, 0)
+        self.assertIsNone(p_alpha._doc_id)
+        self.assertEqual(p_alpha.doc_id, "sym_a")
+
+        # 增量替換 a.py -> 釋放 idx 0 並由新符號重用，且 b.py 之 doc_idx=1 不偏移
+        s1_new = UnifiedSymbol(id="sym_a2", name="AlphaV2", kind="class", file_path="a.py", line_number=1, language="python")
+        idx.patch_incremental(dirty_file_paths={"a.py"}, new_symbols=[s1_new], tokenizer=tok)
+        self.assertEqual(idx._doc_id_table[0], "sym_a2")
+        self.assertEqual(idx._doc_id_table[1], "sym_b")
+        self.assertEqual(idx.index["beta"][0].doc_id, "sym_b")
+        self.assertEqual(idx.index["alphav2"][0].doc_idx, 0)
 
         self.mark_passed()
 

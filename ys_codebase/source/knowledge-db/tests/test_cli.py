@@ -204,7 +204,7 @@ class TestCLI(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_cli_search_modes(self):
         """FT-01 ~ FT-03, ET-01: 驗證 search 模式 (simple, detail, auto, md, json, limit=auto/N)"""
-        # 1. 預設 auto 模式
+        # 1. 預設 auto 模式 (預設不含 file:/// URI，單檔與多檔自適應壓縮)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             ret = process(["search", "PIDController"])
@@ -212,7 +212,15 @@ class TestCLI(YSCBTestCase):
         out = buf.getvalue()
         self.assertIn("檢索查詢", out)
         self.assertIn("#01", out)
-        self.assertIn("](file:///", out)
+        self.assertNotIn("](file:///", out)
+        self.assertNotIn("清單模式", out)
+
+        # 1b. 顯式 --file-uri 旗標開啟 file:/// 超連結
+        buf_uri = io.StringIO()
+        with contextlib.redirect_stdout(buf_uri):
+            ret = process(["search", "PIDController", "--file-uri"])
+        self.assertEqual(ret, 0)
+        self.assertIn("](file:///", buf_uri.getvalue())
 
         # 2. 清單模式 (--simple)
         buf_simple = io.StringIO()
@@ -223,7 +231,7 @@ class TestCLI(YSCBTestCase):
         self.assertIn("#01", out_simple)
         self.assertIn("清單模式", out_simple)
         self.assertNotIn("命中詞:", out_simple)
-        self.assertIn("](file:///", out_simple)
+        self.assertNotIn("](file:///", out_simple)
 
         # 3. 詳細模式 (--detail, -d, --verbose)
         for flag in ["--detail", "-d", "--verbose"]:
@@ -234,9 +242,9 @@ class TestCLI(YSCBTestCase):
             out_detail = buf_detail.getvalue()
             self.assertIn("#01", out_detail)
             self.assertIn("詳細模式", out_detail)
-            self.assertIn("](file:///", out_detail)
+            self.assertNotIn("](file:///", out_detail)
 
-        # 4. Markdown 模式 (--md, --markdown)
+        # 4. Markdown 模式 (--md, --markdown 預設保留完整連結)
         for flag in ["--md", "--markdown"]:
             buf_md = io.StringIO()
             with contextlib.redirect_stdout(buf_md):
@@ -244,6 +252,7 @@ class TestCLI(YSCBTestCase):
             self.assertEqual(ret, 0)
             out_md = buf_md.getvalue()
             self.assertIn("知識庫檢索", out_md)
+            self.assertIn("](file:///", out_md)
 
         # 5. Limit 參數 (--limit=auto, --limit=2)
         buf_lim = io.StringIO()
@@ -256,7 +265,7 @@ class TestCLI(YSCBTestCase):
             ret = process(["search", "PIDController", "--limit=auto"])
         self.assertEqual(ret, 0)
 
-        # 6. JSON 模式 (--json)
+        # 6. JSON 模式 (--json 預設精簡省略 file_uri，--detail 或 --file-uri 保留 file_uri)
         buf_json = io.StringIO()
         with contextlib.redirect_stdout(buf_json):
             ret = process(["search", "PIDController", "--json"])
@@ -267,9 +276,18 @@ class TestCLI(YSCBTestCase):
         self.assertIn("results", data)
         if data["total"] > 0:
             item = data["results"][0]
-            self.assertIn("file_uri", item)
-            self.assertTrue(item["file_uri"].startswith("file:///"))
+            self.assertNotIn("file_uri", item)
             self.assertIn("total_score", item)
+
+        buf_json_uri = io.StringIO()
+        with contextlib.redirect_stdout(buf_json_uri):
+            ret = process(["search", "PIDController", "--json", "--file-uri"])
+        self.assertEqual(ret, 0)
+        data_uri = json.loads(buf_json_uri.getvalue())
+        if data_uri["total"] > 0:
+            item_uri = data_uri["results"][0]
+            self.assertIn("file_uri", item_uri)
+            self.assertTrue(item_uri["file_uri"].startswith("file:///"))
 
         # 7. Snippet 模式 (--snippet, -s, --preview)
         for flag in ["--snippet", "-s", "--preview"]:
@@ -282,7 +300,7 @@ class TestCLI(YSCBTestCase):
             self.assertIn("#01", out_snip)
             self.assertIn("預覽模式", out_snip)
             self.assertIn("檔案:", out_snip)
-            self.assertIn("](file:///", out_snip)
+            self.assertNotIn("](file:///", out_snip)
 
         # 8. 0 筆結果情境 (ET-01)
         buf_empty = io.StringIO()

@@ -38,7 +38,7 @@ last_updated: "2026-11-05"
 
 | 複雜度層級 (Tier) | 觸發旗標 | 適用情境與終端輸出 | Agent 推薦 `--json` 格式 |
 | :--- | :---: | :--- | :--- |
-| **Tier 1: 極簡大綱 (Simple)**<br/>*(預設模式)* | *(無旗標)*<br/>`--simple` | 僅列出命中檔案、符號名稱、行號區間與分數，零代碼負擔。 | **超緊湊 JSON** (`--json`)：<br/>Token 消耗 $< 50$ Tokens，適合快速存在性確認。 |
+| **Tier 1: 自適應大綱 (Auto / Simple)**<br/>*(預設模式)* | *(無旗標: `auto`)*<br/>`--simple` | 預設採相對路徑 `path:Lstart-end`（省去 `file:///` 絕對路徑重複膨脹，可加 `--file-uri` 顯式開啟）；單檔單命中自動壓縮為單行，多命中父子節點消滅重複檔名。 | **超緊湊 JSON** (`--json`)：<br/>預設省略 `file_uri` 與空字串欄位，Token 消耗最小化。 |
 | **Tier 2: 內文瀏覽 (Preview)**<br/>*(Agent 探索首選)* | `-s` / `--snippet`<br/>`--preview` | 一步到位取得帶行號之 AST 代碼切片、簽名與 Docstrings。 | **高密度業務 JSON** (`--json -s`)：<br/>剪除雜湊 ID 與除錯欄位，資訊密度高達 86%+。 |
 | **Tier 3: 全量除錯 (Detail)** | `-d` / `--detail`<br/>`--verbose` | 包含 40 碼 SHA-1、BM25 分詞矩陣 (`matched_terms`) 與全量屬性。 | **全量除錯 JSON** (`--json -d`)：<br/>保留完整 Schema 與 2-space 縮排。 |
 
@@ -49,7 +49,8 @@ last_updated: "2026-11-05"
 `knowledge-db` 專注於語意與全文檢索指令集（`status`, `index`, `search`, `clean`, `model`）；單檔結構大綱（`outline`）與靜態調用拓撲（`callers`, `callees`, `impact`）正統入口位於 [`yscb ast`](../ast/README.md)（`knowledge-db` 亦保留向下相容轉發）：
 
 ```bash
-# 1. 查看所有已註冊空間、快取、索引狀態與 acked_ast_generation 水位
+# 1. 查看所有已註冊空間、快取、索引狀態與 acked_ast_generation 水位 (支援頂層短別名 kdb)
+python yscb.py kdb status
 python yscb.py knowledge-db status
 python yscb.py knowledge-db status --scan
 
@@ -61,8 +62,9 @@ python yscb.py knowledge-db index --export ./output/project.bundle.json
 python yscb.py knowledge-db model status
 python yscb.py knowledge-db model download
 
-# 4. 執行 BM25 + 向量雙軌複合檢索 (預設為 Simple 單行排版，支援自動懶建置與 JIT 熱自癒)
-python yscb.py knowledge-db search PIDController
+# 4. 執行 BM25 + 向量雙軌複合檢索 (預設為 Auto 自適應大綱與相對路徑，支援 --file-uri 顯式附帶超連結)
+python yscb.py kdb search PIDController
+python yscb.py kdb search PIDController --file-uri
 python yscb.py knowledge-db search "狀態機更新" --kind=class --limit=5
 
 # 5. 代碼/文檔分流檢索 (--ftype 與 -s / --snippet 預覽代碼切片與 Docstring 摘要)

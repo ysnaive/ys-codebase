@@ -10,6 +10,7 @@ Coordinates:
 """
 
 from contextlib import contextmanager
+import json
 import logging
 from pathlib import Path
 import re
@@ -364,6 +365,7 @@ class ASTEngine:
 
         self.symbols_index_path = self.indices_dir / "unified.symbols.bin.gz"
         self.graph_index_path = self.indices_dir / "unified.graph.bin.gz"
+        self.meta_index_path = self.indices_dir / "unified.meta.json"
 
         if space_manager is not None:
             self.space_manager = space_manager
@@ -383,7 +385,14 @@ class ASTEngine:
             elif project_root is not None:
                 default_proj = self._resolve_default_project_root()
                 if self.project_root != default_proj:
-                    sm_kwargs["spaces_config"] = {"default": {"include": [str(self.project_root)]}}
+                    default_sp_cfg: Dict[str, Any] = {"include": [str(self.project_root)]}
+                    try:
+                        rel_st = self.storage_dir.resolve().relative_to(self.project_root.resolve()).as_posix()
+                        if rel_st and rel_st != ".":
+                            default_sp_cfg["exclude"] = [f"{rel_st}/**", f"**/{rel_st}/**"]
+                    except ValueError:
+                        pass
+                    sm_kwargs["spaces_config"] = {"default": default_sp_cfg}
                     sm_kwargs["contributed_spaces"] = {}
                     sm_kwargs["storage_root"] = self.storage_dir / "file_space"
             self.space_manager = FileSpaceManager(**sm_kwargs)
@@ -562,6 +571,22 @@ class ASTEngine:
         fallback.parent.mkdir(parents=True, exist_ok=True)
         return fallback
 
+    def _build_meta_payload(self, snapshot: ASTSnapshot) -> Dict[str, Any]:
+        sym_mtime_ns = 0
+        sym_size = 0
+        if self.symbols_index_path.exists():
+            st = self.symbols_index_path.stat()
+            sym_mtime_ns = int(st.st_mtime_ns)
+            sym_size = int(st.st_size)
+        return {
+            "ast_generation": int(snapshot.ast_generation),
+            "space_generations": dict(snapshot.space_generations),
+            "total_symbols": len(snapshot.symbols),
+            "total_files": len(snapshot.file_to_symbol_ids),
+            "symbols_mtime_ns": sym_mtime_ns,
+            "symbols_size": sym_size,
+        }
+
     def _save_snapshot_and_graph(self, snapshot: ASTSnapshot, graph: CallGraphIndex) -> None:
         from core.platform.lock import InterProcessLock
 
@@ -569,6 +594,14 @@ class ASTEngine:
         with InterProcessLock(lock_file, timeout=15.0):
             atomic_save_gzip_pickle(self.symbols_index_path, snapshot.to_dict(), compresslevel=1)
             graph.save_binary(self.graph_index_path, compresslevel=1)
+            try:
+                meta_payload = self._build_meta_payload(snapshot)
+                self.meta_index_path.write_text(
+                    json.dumps(meta_payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.debug(f"Failed writing AST meta index: {exc}")
         self._snapshot = snapshot
         self._graph = graph
         if self.symbols_index_path.exists():
@@ -576,25 +609,71 @@ class ASTEngine:
         if self.graph_index_path.exists():
             self._graph_mtime = self.graph_index_path.stat().st_mtime
 
-    def _ensure_loaded_from_disk(self, force_reload: bool = False) -> bool:
-        if not self.symbols_index_path.exists() or not self.graph_index_path.exists():
+    def _ensure_symbols_loaded(self, force_reload: bool = False) -> bool:
+        if not self.symbols_index_path.exists():
             return False
         try:
             s_mtime = self.symbols_index_path.stat().st_mtime
-            g_mtime = self.graph_index_path.stat().st_mtime
             if force_reload or self._snapshot is None or s_mtime > self._symbols_mtime:
                 raw = load_gzip_pickle(self.symbols_index_path, raise_on_missing=True)
                 if not isinstance(raw, dict):
                     raise ASTCorruptedError("Corrupted ASTSnapshot payload")
                 self._snapshot = ASTSnapshot.from_dict(raw)
                 self._symbols_mtime = s_mtime
+            return self._snapshot is not None
+        except Exception as exc:
+            logger.warning(f"Failed loading AST snapshot from disk: {exc}")
+            return False
+
+    def _ensure_graph_loaded(self, force_reload: bool = False) -> bool:
+        if not self.graph_index_path.exists():
+            return False
+        try:
+            g_mtime = self.graph_index_path.stat().st_mtime
             if force_reload or self._graph is None or g_mtime > self._graph_mtime:
                 self._graph = CallGraphIndex.load_binary(self.graph_index_path)
                 self._graph_mtime = g_mtime
-            return self._snapshot is not None and self._graph is not None
+            return self._graph is not None
         except Exception as exc:
-            logger.warning(f"Failed loading AST snapshot/graph from disk: {exc}")
+            logger.warning(f"Failed loading AST call graph from disk: {exc}")
             return False
+
+    def _ensure_loaded_from_disk(self, force_reload: bool = False) -> bool:
+        if not self.symbols_index_path.exists() or not self.graph_index_path.exists():
+            return False
+        return self._ensure_symbols_loaded(force_reload=force_reload) and self._ensure_graph_loaded(
+            force_reload=force_reload
+        )
+
+    def get_persisted_meta(self) -> Optional[Dict[str, Any]]:
+        """Read lightweight AST generation/metadata without decompressing unified.symbols.bin.gz or unified.graph.bin.gz."""
+        if not self.symbols_index_path.exists():
+            return None
+        try:
+            sym_st = self.symbols_index_path.stat()
+            if self._snapshot is not None and sym_st.st_mtime <= self._symbols_mtime:
+                return self._build_meta_payload(self._snapshot)
+            if self.meta_index_path.exists():
+                meta = json.loads(self.meta_index_path.read_text(encoding="utf-8"))
+                if (
+                    isinstance(meta, dict)
+                    and meta.get("symbols_mtime_ns") == int(sym_st.st_mtime_ns)
+                    and meta.get("symbols_size") == int(sym_st.st_size)
+                ):
+                    return meta
+            if self._ensure_symbols_loaded() and self._snapshot is not None:
+                meta_payload = self._build_meta_payload(self._snapshot)
+                try:
+                    self.meta_index_path.write_text(
+                        json.dumps(meta_payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+                return meta_payload
+        except Exception as exc:
+            logger.debug(f"get_persisted_meta fallback skipped: {exc}")
+        return None
 
     def build_index(
         self,
@@ -911,7 +990,7 @@ class ASTEngine:
             elif isinstance(spaces, (list, tuple)):
                 norm_spaces = [str(s).strip() for s in spaces if str(s).strip()]
 
-            if force or not self._ensure_loaded_from_disk():
+            if force or not (self.symbols_index_path.exists() and self.graph_index_path.exists()) or not self._ensure_symbols_loaded():
                 return self.build_index(spaces=norm_spaces)
 
             target_sp = norm_spaces[0] if (norm_spaces and len(norm_spaces) == 1) else None
@@ -933,7 +1012,7 @@ class ASTEngine:
         """Return the current `ASTSnapshot` (triggering `ensure_jit_synced()` if `auto_sync=True`)."""
         if auto_sync:
             return self.ensure_jit_synced()
-        if not self._ensure_loaded_from_disk():
+        if not self._ensure_symbols_loaded():
             raise ASTIndexNotFoundError(f"AST snapshot not found at {self.symbols_index_path}")
         assert self._snapshot is not None
         return self._snapshot
@@ -942,7 +1021,7 @@ class ASTEngine:
         """Return the current `CallGraphIndex`."""
         if auto_sync:
             self.ensure_jit_synced()
-        elif not self._ensure_loaded_from_disk():
+        if not self._ensure_graph_loaded():
             raise ASTIndexNotFoundError(f"AST call graph not found at {self.graph_index_path}")
         assert self._graph is not None
         return self._graph

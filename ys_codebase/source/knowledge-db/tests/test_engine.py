@@ -123,12 +123,19 @@ class TestEngine(YSCBTestCase):
             uri_with_line = engine.to_file_uri("source/core/core/uri.py", line=42)
             self.assertTrue(uri_with_line.endswith("#L42"))
 
-            link_single = engine.format_file_link("source/core/core/uri.py", line=10)
+            link_default_single = engine.format_file_link("source/core/core/uri.py", line=10)
+            self.assertEqual(link_default_single, "source/core/core/uri.py:L10")
+            self.assertNotIn("file:///", link_default_single)
+
+            link_default_range = engine.format_file_link("source/core/core/uri.py", line=10, end_line=25)
+            self.assertEqual(link_default_range, "source/core/core/uri.py:L10-25")
+
+            link_single = engine.format_file_link("source/core/core/uri.py", line=10, file_uri=True)
             self.assertTrue(link_single.startswith("["))
             self.assertIn("[uri.py:L10](file:///", link_single)
             self.assertTrue(link_single.endswith("#L10)"))
 
-            link_range = engine.format_file_link("source/core/core/uri.py", line=10, end_line=25)
+            link_range = engine.format_file_link("source/core/core/uri.py", line=10, end_line=25, file_uri=True)
             self.assertIn("[uri.py:L10-25](file:///", link_range)
             self.assertTrue(link_range.endswith("#L10)"))
 
@@ -438,6 +445,56 @@ class TestEngine(YSCBTestCase):
                 st["spaces"]["main_sp"]["head_generation"],
             )
             self.assertTrue(st["spaces"]["main_sp"]["in_sync"])
+
+        self.mark_passed()
+
+
+    @require(Requirement.WORKFLOW)
+    def test_opt05_06_08_meta_adaptive_limit_and_status_snapshot(self):
+        """OPT-05, OPT-06, OPT-08: 驗證 status 輕量讀取 unified.meta.json 與 snap_state.entries，以及 adaptive_limit 斷層預裁切"""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            src_dir = temp_path / "src"
+            src_dir.mkdir(parents=True)
+            (src_dir / "top_hit.py").write_text(
+                "class ExactTargetAlpha:\n"
+                "    '''ExactTargetAlpha ExactTargetAlpha ExactTargetAlpha'''\n"
+                "    def run_alpha(self):\n"
+                "        return 'ExactTargetAlpha'\n",
+                encoding="utf-8",
+            )
+            for idx in range(1, 8):
+                (src_dir / f"weak_{idx}.py").write_text(
+                    f"class OtherNode{idx}:\n"
+                    f"    '''mentions ExactTargetAlpha once in docstring {idx}'''\n",
+                    encoding="utf-8",
+                )
+
+            space_cfg = FileSpaceConfig(name="opt_space", include=[str(src_dir)])
+            engine = KnowledgeEngine(
+                storage_dir=temp_path / "storage",
+                contributes_data={"spaces": {"opt_space": space_cfg.to_dict()}},
+            )
+
+            # 建置索引並確認 unified.meta.json 生成
+            engine.build_unified_index(force=True)
+            self.assertTrue(engine.ast_engine.meta_index_path.exists())
+
+            # OPT-08: 驗證 status() 優先從 snap_state.entries 讀取檔案數，不觸發 iter_space_files 磁碟遍歷
+            with patch.object(engine.space_manager, "iter_space_files", side_effect=AssertionError("Should not walk disk")) as mock_walk:
+                st = engine.status(space="opt_space")
+                self.assertEqual(st["spaces"]["opt_space"]["cached_files"], 8)
+                self.assertGreaterEqual(st["ast_generation"], 1)
+                mock_walk.assert_not_called()
+
+            # OPT-06: 驗證 adaptive_limit=True 於相對斷層處預先截斷低分長尾
+            res_full = engine.search("ExactTargetAlpha", space="opt_space", limit=20, adaptive_limit=False)
+            res_adapt = engine.search("ExactTargetAlpha", space="opt_space", limit=20, adaptive_limit=True)
+            self.assertGreaterEqual(len(res_full), 5)
+            self.assertLessEqual(len(res_adapt), len(res_full))
+            self.assertGreaterEqual(len(res_adapt), 3)
 
         self.mark_passed()
 

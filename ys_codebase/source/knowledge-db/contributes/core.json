@@ -14,7 +14,9 @@
     }
   ],
   "commands": {
-    "module_alias": [],
+    "module_alias": [
+      "kdb"
+    ],
     "description": "YS-Codebase Knowledge Database & Semantic Retrieval Subsystem",
     "cmd": {
       "status": {
@@ -31,7 +33,9 @@
           "scope": {
             "all": {
               "description": "顯示全空間狀態",
-              "alias": ["a"]
+              "alias": [
+                "a"
+              ]
             },
             "space": {
               "description": "指定空間名稱",
@@ -71,13 +75,17 @@
           "scope": {
             "all": {
               "description": "索引全空間",
-              "alias": ["a"]
+              "alias": [
+                "a"
+              ]
             }
           },
           "force": {
             "force": {
               "description": "強制重建全量索引與特徵快取",
-              "alias": ["f"]
+              "alias": [
+                "f"
+              ]
             }
           },
           "export": {
@@ -115,14 +123,19 @@
           "display": {
             "preview": {
               "description": "顯示程式碼切片預覽",
-              "alias": ["s", "snippet"]
+              "alias": [
+                "s",
+                "snippet"
+              ]
             },
             "detail": {
               "description": "顯示完整詳細資訊",
-              "alias": ["d"]
+              "alias": [
+                "d"
+              ]
             },
             "simple": {
-              "description": "精簡清單輸出 (預設)"
+              "description": "極簡清單輸出 (省略分數與同檔單一命中展開)"
             }
           },
           "format": {
@@ -195,6 +208,11 @@
             "lexical-only": {
               "description": "僅使用 BM25 詞彙搜尋，略過向量"
             }
+          },
+          "uri": {
+            "file-uri": {
+              "description": "於輸出中附帶完整 file:/// 絕對路徑超連結"
+            }
           }
         },
         "usage": {
@@ -220,7 +238,9 @@
           "scope": {
             "all": {
               "description": "清理全空間",
-              "alias": ["a"]
+              "alias": [
+                "a"
+              ]
             }
           }
         },
@@ -264,7 +284,9 @@
               "force": {
                 "force": {
                   "description": "強制覆蓋重新下載",
-                  "alias": ["f"]
+                  "alias": [
+                    "f"
+                  ]
                 }
               }
             },

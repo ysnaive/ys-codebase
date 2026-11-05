@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_05_0321_kdb_cli_and_engine_optimization (Completed)
+
+- **`knowledge-db` 與 `ast` 雙模組 CLI 輸出路徑去重瘦身、`kdb` 頂層模組別名、呼叫圖譜按需惰性載入與 `InvertedIndex` 內部 `0..n` 整數文檔碼映射優化 (`OPT-01` ~ `OPT-08`)**：
+  - **CLI/JSON 輸出路徑預設去重與 `--file-uri` 顯式開關 (`OPT-01` ~ `OPT-03`)**：將 `ResultFormatter` (`knowledge-db`) 與 `ASTResultFormatter` (`ast`) 之 `file_uri` 預設改為 `False`（預設輸出標準工作區相對路徑 `rel/path.py:Lstart-end`，消除每行重複的 `[basename](file:///abs_path)` 雙軌路徑膨脹，並於 `search`/`outline`/`callers`/`callees`/`impact` 新增 `--file-uri` 顯式旗標，Markdown `--md` 模式維持完整超連結）；將 `kdb search` 無旗標預設顯示對齊 `detail_mode="auto"`（單命中單行化、多命中子項僅顯示行號區間不重複印出檔名），並在 `simple`/`preview` JSON 階層預設省略冗餘 `file_uri` 與空字串欄位（`--detail` 階層 100% 保留）。
+  - **`kdb` 頂層模組別名與 `session-trace` 歸一化 (`OPT-04`)**：於 `knowledge-db/contributes/core.json` 註冊 `"module_alias": ["kdb"]`（支援 `python yscb.py kdb search/status/index/clean/model`），並更新 `agents_workflow/plans/_trace_parser.py` 識別 `kdb` 搜尋指令並將模組計數統一歸一化至 `knowledge-db`。
+  - **`ASTEngine` 呼叫圖譜惰性載入、`unified.meta.json` 輕量水位探針、前置斷層截斷與 `InvertedIndex` `0..n` 整數文檔碼映射 (`OPT-05` ~ `OPT-08`)**：於 `ASTEngine` 拆分 `_ensure_symbols_loaded()` 與 `_ensure_graph_loaded()` 並持久化 `unified.meta.json`（透過 `get_persisted_meta()` 讓 `knowledge-db` 在無變更時免解壓縮 `unified.symbols.bin.gz` 與 `unified.graph.bin.gz` 即完成 `ast_generation` 對齊檢查）；於 `IndexingPipeline.search(adaptive_limit=True)` 實作切片提取前之相對分數斷層截斷；於 `InvertedIndex` 實作 `_doc_id_table` / `_free_doc_indices` `0..n` 整數文檔碼映射與 `SparseFieldFreqs` 稀疏欄位詞頻；並將 `KnowledgeEngine.status()` 空間檔案數統計改為優先讀取 `snap_state.entries`，通過 `ast` (27/27)、`knowledge-db` (114/114) 與 `agents-workflow` (141/141) 全量單元測試。
+
 ## 2026_11_05_0528_gdrive_changes_api_and_lock_preemption (Completed)
 
 - **`gdrive-support` Google Drive `changes` API 三級遠端快取 (`remote_repo_cache`) 增量短路、前景 CLI 協同搶占讓鎖 (`cli_yield.signal`) 與單檔原子 Copy-on-Write (`FR-01` ~ `FR-03`, `EC-01` ~ `EC-03`, `NFR-01` ~ `NFR-02`)**：

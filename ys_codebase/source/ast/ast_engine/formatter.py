@@ -64,9 +64,11 @@ class ASTResultFormatter:
         self,
         workspace_root: Optional[Path] = None,
         styler: Optional[TerminalStyler] = None,
+        file_uri: bool = False,
     ):
         self.workspace_root = workspace_root
         self.styler = styler or TerminalStyler()
+        self.file_uri = bool(file_uri)
 
     def get_workspace_root(self) -> Path:
         if self.workspace_root:
@@ -132,7 +134,17 @@ class ASTResultFormatter:
         line: Optional[int] = None,
         end_line: Optional[int] = None,
         use_basename: bool = True,
+        file_uri: Optional[bool] = None,
     ) -> str:
+        use_uri = self.file_uri if file_uri is None else bool(file_uri)
+        if not use_uri:
+            base_label = self.normalize_workspace_path(file_path)
+            if line is not None:
+                if end_line is not None and end_line > line:
+                    return f"{base_label}:L{line}-{end_line}"
+                return f"{base_label}:L{line}"
+            return base_label
+
         base_label = Path(str(file_path)).name if use_basename else self.normalize_workspace_path(file_path)
         if line is not None:
             if end_line is not None and end_line > line:
@@ -149,6 +161,7 @@ class ASTResultFormatter:
         result: Union[OutlineResult, Dict[str, Any]],
         as_json: bool = False,
         detail: bool = False,
+        file_uri: Optional[bool] = None,
     ) -> str:
         data = result.to_dict() if hasattr(result, "to_dict") else dict(result)
         if as_json:
@@ -204,7 +217,7 @@ class ASTResultFormatter:
             f_parts = [f"{k}={v}" for k, v in filters.items() if v]
             if f_parts:
                 mode_tag = f"{mode_tag}, filters: {', '.join(f_parts)}"
-        file_link = self.format_file_link(file_path, use_basename=False)
+        file_link = self.format_file_link(file_path, use_basename=False, file_uri=file_uri)
 
         lines: List[str] = [
             f"[ast] 檔案大綱 (Outline): {self.styler.path(file_link)} ({lang}, {mode_tag}):",
@@ -301,7 +314,9 @@ class ASTResultFormatter:
         title: str,
         result: Dict[str, Any],
         is_md: bool = False,
+        file_uri: Optional[bool] = None,
     ) -> str:
+        eff_file_uri = True if is_md else (self.file_uri if file_uri is None else bool(file_uri))
         query = result.get("target_query") or result.get("query") or ""
         candidates = result.get("candidates") or []
         if is_md:
@@ -312,7 +327,12 @@ class ASTResultFormatter:
                 "",
             ]
             for c in candidates:
-                link = self.format_file_link(c.get("file_path", ""), line=c.get("line_number", 1), end_line=c.get("end_line"))
+                link = self.format_file_link(
+                    c.get("file_path", ""),
+                    line=c.get("line_number", 1),
+                    end_line=c.get("end_line"),
+                    file_uri=eff_file_uri,
+                )
                 lines.append(
                     f"- `{c.get('kind', '')}` **{c.get('fqn') or c.get('name', '')}** — `{c.get('signature', '')}` ({link})"
                 )
@@ -323,7 +343,12 @@ class ASTResultFormatter:
             "請使用 `[kind] [scope.]name[(param_types...)]` 消除歧義：",
         ]
         for c in candidates:
-            link = self.format_file_link(c.get("file_path", ""), line=c.get("line_number", 1), end_line=c.get("end_line"))
+            link = self.format_file_link(
+                c.get("file_path", ""),
+                line=c.get("line_number", 1),
+                end_line=c.get("end_line"),
+                file_uri=eff_file_uri,
+            )
             lines.append(
                 f"  - [{c.get('kind', '')}] {c.get('fqn') or c.get('name', '')} :: {c.get('signature', '')} ({link})"
             )
@@ -356,13 +381,15 @@ class ASTResultFormatter:
         snippet: bool = True,
         format_type: str = "text",
         limit_mode: Union[int, str] = "auto",
+        file_uri: Optional[bool] = None,
     ) -> str:
         is_md = format_type == "md"
+        eff_file_uri = True if is_md else (self.file_uri if file_uri is None else bool(file_uri))
         is_callers = direction == "callers"
         title = "調用源查詢" if is_callers else "下游被調用者查詢"
 
         if result.get("status") == "ambiguous" or result.get("ambiguous"):
-            return self._format_ambiguous_output(title, result, is_md=is_md)
+            return self._format_ambiguous_output(title, result, is_md=is_md, file_uri=eff_file_uri)
 
         raw_target = result.get("target_symbol") or result.get("target")
         if not raw_target:
@@ -383,6 +410,7 @@ class ASTResultFormatter:
             target["file_path"],
             line=target["line_number"],
             end_line=target.get("end_line"),
+            file_uri=eff_file_uri,
         )
 
         filtered_items = raw_items
@@ -436,9 +464,14 @@ class ASTResultFormatter:
             sites = item.get("call_sites", [])
             if is_callers:
                 primary_line = sites[0].get("line_number", sym["line_number"]) if sites else sym["line_number"]
-                link_str = self.format_file_link(sym["file_path"], line=primary_line)
+                link_str = self.format_file_link(sym["file_path"], line=primary_line, file_uri=eff_file_uri)
             else:
-                link_str = self.format_file_link(sym["file_path"], line=sym["line_number"], end_line=sym.get("end_line"))
+                link_str = self.format_file_link(
+                    sym["file_path"],
+                    line=sym["line_number"],
+                    end_line=sym.get("end_line"),
+                    file_uri=eff_file_uri,
+                )
             is_last = idx == len(filtered_items)
             branch = "└──" if is_last else "├──"
             pipe = "   " if is_last else "│  "
@@ -478,6 +511,7 @@ class ASTResultFormatter:
         snippet: bool = True,
         format_type: str = "text",
         limit_mode: Union[int, str] = "auto",
+        file_uri: Optional[bool] = None,
     ) -> str:
         return self._format_topology_tree(
             direction="callers",
@@ -486,6 +520,7 @@ class ASTResultFormatter:
             snippet=snippet,
             format_type=format_type,
             limit_mode=limit_mode,
+            file_uri=file_uri,
         )
 
     def format_callees_output(
@@ -495,6 +530,7 @@ class ASTResultFormatter:
         snippet: bool = True,
         format_type: str = "text",
         limit_mode: Union[int, str] = "auto",
+        file_uri: Optional[bool] = None,
     ) -> str:
         return self._format_topology_tree(
             direction="callees",
@@ -503,6 +539,7 @@ class ASTResultFormatter:
             snippet=snippet,
             format_type=format_type,
             limit_mode=limit_mode,
+            file_uri=file_uri,
         )
 
     def format_impact_output(
@@ -511,10 +548,12 @@ class ASTResultFormatter:
         detail_mode: str = "auto",
         format_type: str = "text",
         limit_mode: Union[int, str] = "auto",
+        file_uri: Optional[bool] = None,
     ) -> str:
         is_md = format_type == "md"
+        eff_file_uri = True if is_md else (self.file_uri if file_uri is None else bool(file_uri))
         if result.get("status") == "ambiguous" or result.get("ambiguous"):
-            return self._format_ambiguous_output("影響面拓撲查詢", result, is_md=is_md)
+            return self._format_ambiguous_output("影響面拓撲查詢", result, is_md=is_md, file_uri=eff_file_uri)
 
         raw_target = result.get("target_symbol") or result.get("target")
         if not raw_target:
@@ -524,7 +563,7 @@ class ASTResultFormatter:
             return f"[ast] 查無相符目標符號: '{q}'"
 
         target = self._coerce_symbol_dict(raw_target)
-        target_link = self.format_file_link(target["file_path"], line=target["line_number"], end_line=target.get("end_line"))
+        target_link = self.format_file_link(target["file_path"], line=target["line_number"], end_line=target.get("end_line"), file_uri=eff_file_uri)
         depth = result.get("max_depth", result.get("depth", 2))
         total_syms = result.get("total_impacted_symbols", result.get("total_affected_symbols", 0))
         total_files = result.get("total_impacted_files", len(result.get("affected_files") or []))
@@ -579,7 +618,7 @@ class ASTResultFormatter:
                 s = self._coerce_symbol_dict(raw_s)
                 is_last_sym = s_idx == len(syms) - 1
                 sub_branch = "└──" if is_last_sym else "├──"
-                link_str = self.format_file_link(s["file_path"], line=s["line_number"], end_line=s.get("end_line"))
+                link_str = self.format_file_link(s["file_path"], line=s["line_number"], end_line=s.get("end_line"), file_uri=eff_file_uri)
                 rendered_nodes += 1
                 if is_md:
                     lines.append(f"- **#{rendered_nodes:02d}** 檔案: {link_str} (`{s['kind']}`: **{s['name']}**)")

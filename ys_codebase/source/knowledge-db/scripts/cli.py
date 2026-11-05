@@ -317,8 +317,9 @@ def search(cmd_bags: Any) -> int:
         limit_val = opts["limit_val"]
         is_json = opts["is_json"]
         is_md = opts["is_md"]
+        file_uri = opts["file_uri"]
         is_snippet = opts["is_snippet"]
-        detail_mode = "detail" if tier == "detail" else ("auto" if tier == "snippet" else "simple")
+        detail_mode = opts["detail_mode"]
         if limit_val == "auto":
             fetch_limit = 10 if (is_json and tier == "snippet") else 50
         else:
@@ -393,6 +394,7 @@ def search(cmd_bags: Any) -> int:
             limit=fetch_limit,
             snippet=is_snippet,
             lexical_only=lexical_only,
+            adaptive_limit=(not is_json and limit_val == "auto"),
         )
 
         if is_json:
@@ -428,7 +430,7 @@ def search(cmd_bags: Any) -> int:
                 data = [
                     {
                         "file_path": engine.normalize_workspace_path(res.file_path),
-                        "file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None),
+                        **({"file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None)} if file_uri else {}),
                         "total_score": round(res.total_score, 2),
                         "language": res.language,
                         "items": [
@@ -438,8 +440,8 @@ def search(cmd_bags: Any) -> int:
                                 "line_number": itm.symbol.line_number,
                                 "end_line": itm.symbol.end_line,
                                 "score": round(itm.score, 2),
-                                "signature": itm.symbol.signature,
-                                "summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else ""),
+                                **({"signature": itm.symbol.signature} if itm.symbol.signature else {}),
+                                **({"summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else "")} if (itm.snippet or (itm.code_snippet and itm.code_snippet.docstring_summary)) else {}),
                                 **_cap_json_snippet(itm.code_snippet),
                             }
                             for itm in res.items
@@ -452,7 +454,7 @@ def search(cmd_bags: Any) -> int:
                 data = [
                     {
                         "file_path": engine.normalize_workspace_path(res.file_path),
-                        "file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None),
+                        **({"file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None)} if file_uri else {}),
                         "total_score": round(res.total_score, 2),
                         "language": res.language,
                         "items": [
@@ -462,7 +464,7 @@ def search(cmd_bags: Any) -> int:
                                 "line_number": itm.symbol.line_number,
                                 "end_line": itm.symbol.end_line,
                                 "score": round(itm.score, 2),
-                                "signature": itm.symbol.signature,
+                                **({"signature": itm.symbol.signature} if itm.symbol.signature else {}),
                             }
                             for itm in res.items
                         ],
@@ -480,6 +482,7 @@ def search(cmd_bags: Any) -> int:
             snippet=is_snippet,
             format_type=fmt_type,
             limit_mode=limit_val,
+            file_uri=file_uri,
         )
         print(formatted_output)
         return 0
@@ -496,7 +499,7 @@ def search(cmd_bags: Any) -> int:
 
 def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
     """解析查詢命令共用之 tier / limit / json / md 顯示選項。"""
-    tier = "simple"
+    tier = "auto"
     if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
         tier = "detail"
     elif bags.has_option("snippet") or bags.has_option("s") or bags.has_option("preview"):
@@ -506,6 +509,7 @@ def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
 
     is_json = bags.has_option("json")
     is_md = bags.has_option("md") or bags.has_option("markdown")
+    file_uri = bags.has_option("file-uri") or bags.has_option("file_uri")
     limit_val: Union[int, str] = "auto"
     l_opt = bags.get_option_value("limit")
     if l_opt:
@@ -523,9 +527,10 @@ def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
         "tier": tier,
         "is_json": is_json,
         "is_md": is_md,
+        "file_uri": file_uri,
         "limit_val": limit_val,
         "is_snippet": is_snippet,
-        "detail_mode": "detail" if tier == "detail" else "simple",
+        "detail_mode": "detail" if tier == "detail" else ("simple" if tier == "simple" else "auto"),
         "fmt_type": "md" if is_md else "text",
     }
 

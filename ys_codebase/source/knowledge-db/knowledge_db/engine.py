@@ -320,8 +320,11 @@ class KnowledgeEngine:
         line: Optional[int] = None,
         end_line: Optional[int] = None,
         use_basename: bool = True,
+        file_uri: Optional[bool] = None,
     ) -> str:
-        return self.formatter.format_file_link(file_path, line=line, end_line=end_line, use_basename=use_basename)
+        return self.formatter.format_file_link(
+            file_path, line=line, end_line=end_line, use_basename=use_basename, file_uri=file_uri
+        )
 
     # ----------------------------------------------------------------------
     # 呈現層格式化輸出委派
@@ -440,7 +443,11 @@ class KnowledgeEngine:
 
         ast_gen = 0
         try:
-            if self.ast_engine._ensure_loaded_from_disk() and self.ast_engine._snapshot is not None:
+            if hasattr(self.ast_engine, "get_persisted_meta"):
+                ast_meta = self.ast_engine.get_persisted_meta()
+                if isinstance(ast_meta, dict):
+                    ast_gen = int(ast_meta.get("ast_generation", 0))
+            elif self.ast_engine._ensure_loaded_from_disk() and self.ast_engine._snapshot is not None:
                 ast_gen = int(self.ast_engine._snapshot.ast_generation)
         except Exception:
             ast_gen = 0
@@ -513,14 +520,7 @@ class KnowledgeEngine:
 
         space_details = {}
         for sp_name, sp in spaces.items():
-            try:
-                file_count = sum(1 for _ in self.space_manager.iter_space_files(sp_name))
-            except Exception:
-                file_count = 0
-
-            bin_idx = indices_dir / f"{sp_name}.index.bin.gz"
-            has_index = bin_idx.exists() or has_unified_index
-
+            file_count: Optional[int] = None
             head_gen = 0
             acked_gen = 0
             in_sync = False
@@ -529,11 +529,25 @@ class KnowledgeEngine:
                 if snap_path.exists():
                     snap_state = self.scanner.snapshot_mgr.load_state(snap_path)
                     head_gen = int(snap_state.head_generation)
+                    entries = getattr(snap_state, "entries", None)
+                    if isinstance(entries, dict):
+                        file_count = sum(
+                            1 for fp in entries.values() if not getattr(fp, "is_deleted", False)
+                        )
                 cur_data = self.scanner.cursor_store.get_cursor(sp_name, "knowledge-db")
                 acked_gen = int(cur_data.get("acked_gen", cur_data.get("acked_generation", 0)) or 0)
-                in_sync = (head_gen > 0 and acked_gen == head_gen) or (file_count == 0 and head_gen == acked_gen)
             except Exception:
                 pass
+
+            if file_count is None:
+                try:
+                    file_count = sum(1 for _ in self.space_manager.iter_space_files(sp_name))
+                except Exception:
+                    file_count = 0
+
+            in_sync = (head_gen > 0 and acked_gen == head_gen) or (file_count == 0 and head_gen == acked_gen)
+            bin_idx = indices_dir / f"{sp_name}.index.bin.gz"
+            has_index = bin_idx.exists() or has_unified_index
 
             space_details[sp_name] = {
                 "origin": getattr(sp.origin, "value", str(sp.origin)),
@@ -678,6 +692,7 @@ class KnowledgeEngine:
         verbose: bool = True,
         aggregate: bool = True,
         lexical_only: bool = False,
+        adaptive_limit: bool = False,
     ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
         return self.pipeline.search(
             query=query,
@@ -693,6 +708,7 @@ class KnowledgeEngine:
             verbose=verbose,
             aggregate=aggregate,
             lexical_only=lexical_only,
+            adaptive_limit=adaptive_limit,
         )
 
     @classmethod

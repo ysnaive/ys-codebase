@@ -3,7 +3,7 @@ knowledge-db 倒排索引、多欄位加權 BM25 語意評分與二進位 Gzip �
 100% 採用純 Python 原生標準庫 (Zero External Dependency)
 """
 
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 import logging
 import math
@@ -24,38 +24,123 @@ from .tokenizer import MultilingualTokenizer
 logger = logging.getLogger("knowledge-db.retrieval")
 
 
-class Posting:
-    """輕量倒排索引節點 (消滅 Symbol 深拷貝冗餘與 field_lengths 字典冗餘，節省 40%+ 節點記憶體)"""
+class SparseFieldFreqs(dict):
+    """稀疏欄位詞頻映射表：僅儲存 > 0 之欄位，讀取未命中欄位時自動回傳 0。"""
 
-    __slots__ = ("doc_id", "field_freqs", "space", "spaces")
+    def __missing__(self, key: str) -> int:
+        return 0
+
+
+class Posting:
+    """輕量倒排索引節點 (支援 0..n 整數文檔碼映射與稀疏欄位詞頻，大幅降低常駐記憶體)"""
+
+    __slots__ = (
+        "doc_idx",
+        "_index_ref",
+        "field_freqs",
+        "space_idx",
+        "space_indices",
+        "_doc_id",
+        "_space",
+        "_spaces",
+    )
 
     def __init__(
         self,
-        doc_id: str,
+        doc_id: str = "",
         field_freqs: Optional[Dict[str, int]] = None,
         space: str = "",
         spaces: Optional[List[str]] = None,
+        *,
+        doc_idx: int = -1,
+        index_ref: Optional["InvertedIndex"] = None,
+        space_idx: int = -1,
+        space_indices: Optional[Tuple[int, ...]] = None,
     ):
-        self.doc_id: str = doc_id
-        self.field_freqs: Dict[str, int] = field_freqs or {}
-        self.space: str = space or (spaces[0] if spaces else "")
-        self.spaces: List[str] = list(spaces) if spaces else ([space] if space else [])
+        self.doc_idx: int = doc_idx
+        self._index_ref: Optional["InvertedIndex"] = index_ref
+        self.field_freqs: Dict[str, int] = SparseFieldFreqs(
+            {k: v for k, v in (field_freqs or {}).items() if v > 0}
+        )
+        self.space_idx: int = space_idx
+        self.space_indices: Tuple[int, ...] = space_indices if space_indices is not None else ()
+        if index_ref is not None and doc_idx >= 0:
+            self._doc_id: Optional[str] = None
+            self._space: Optional[str] = None
+            self._spaces: Optional[Tuple[str, ...]] = None
+        else:
+            self._doc_id = doc_id
+            resolved_space = space or (spaces[0] if spaces else "")
+            self._space = resolved_space
+            self._spaces = tuple(spaces) if spaces else ((resolved_space,) if resolved_space else ())
+
+    @property
+    def doc_id(self) -> str:
+        if self._index_ref is not None and 0 <= self.doc_idx < len(self._index_ref._doc_id_table):
+            val = self._index_ref._doc_id_table[self.doc_idx]
+            if val is not None:
+                return val
+        return self._doc_id or ""
+
+    @doc_id.setter
+    def doc_id(self, value: str) -> None:
+        self._doc_id = value
+        if self._index_ref is not None:
+            self.doc_idx = self._index_ref._intern_doc_id(value)
+
+    @property
+    def space(self) -> str:
+        if self._index_ref is not None and 0 <= self.space_idx < len(self._index_ref._space_table):
+            return self._index_ref._space_table[self.space_idx]
+        return self._space or ""
+
+    @space.setter
+    def space(self, value: str) -> None:
+        self._space = value
+        if self._index_ref is not None and value:
+            self.space_idx = self._index_ref._intern_space(value)
+
+    @property
+    def spaces(self) -> List[str]:
+        if self._index_ref is not None and self.space_indices:
+            tbl = self._index_ref._space_table
+            return [tbl[i] for i in self.space_indices if 0 <= i < len(tbl)]
+        return list(self._spaces) if self._spaces else ([self._space] if self._space else [])
+
+    @spaces.setter
+    def spaces(self, value: List[str]) -> None:
+        self._spaces = tuple(value) if value else ()
+        if self._index_ref is not None and value:
+            self.space_indices = tuple(self._index_ref._intern_space(s) for s in value)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "doc_id": self.doc_id,
-            "field_freqs": self.field_freqs,
+            "field_freqs": dict(self.field_freqs),
             "space": self.space,
             "spaces": self.spaces,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Posting":
+    def from_dict(cls, data: Dict[str, Any], index_ref: Optional["InvertedIndex"] = None) -> "Posting":
         spaces = data.get("spaces") or ([data["space"]] if data.get("space") else [])
+        doc_id = data["doc_id"]
+        space = data.get("space", "") or (spaces[0] if spaces else "")
+        if index_ref is not None:
+            d_idx = index_ref._intern_doc_id(doc_id)
+            s_idx = index_ref._intern_space(space) if space else -1
+            s_indices = tuple(index_ref._intern_space(s) for s in spaces if s)
+            return cls(
+                field_freqs=data.get("field_freqs", {}),
+                doc_idx=d_idx,
+                index_ref=index_ref,
+                space_idx=s_idx,
+                space_indices=s_indices,
+            )
         return cls(
-            doc_id=data["doc_id"],
+            doc_id=doc_id,
             field_freqs=data.get("field_freqs", {}),
-            space=data.get("space", ""),
+            space=space,
             spaces=spaces,
         )
 
@@ -215,6 +300,9 @@ class SnippetExtractor:
                             cand = root / p
                             if cand.exists():
                                 return cand
+                            cand_parent = root.parent / p
+                            if cand_parent.exists():
+                                return cand_parent
             except Exception:
                 pass
         cand_cwd = Path.cwd() / p
@@ -351,6 +439,40 @@ class InvertedIndex:
         self.doc_lengths: Dict[str, Dict[str, int]] = {}  # 頂層文檔長度共享池
         self.field_avgdl: Dict[str, float] = {f: 1.0 for f in self.INDEXED_FIELDS}
         self.field_total_lengths: Dict[str, int] = {f: 0 for f in self.INDEXED_FIELDS}
+        self._doc_id_table: List[Optional[str]] = []
+        self._doc_id_to_idx: Dict[str, int] = {}
+        self._free_doc_indices: deque[int] = deque()
+        self._space_table: List[str] = []
+        self._space_to_idx: Dict[str, int] = {}
+
+    def _intern_doc_id(self, doc_id: str) -> int:
+        existing = self._doc_id_to_idx.get(doc_id)
+        if existing is not None:
+            return existing
+        if self._free_doc_indices:
+            idx = self._free_doc_indices.popleft()
+            self._doc_id_table[idx] = doc_id
+        else:
+            idx = len(self._doc_id_table)
+            self._doc_id_table.append(doc_id)
+        self._doc_id_to_idx[doc_id] = idx
+        return idx
+
+    def _release_doc_id(self, doc_id: str) -> Optional[int]:
+        idx = self._doc_id_to_idx.pop(doc_id, None)
+        if idx is not None and 0 <= idx < len(self._doc_id_table):
+            self._doc_id_table[idx] = None
+            self._free_doc_indices.append(idx)
+        return idx
+
+    def _intern_space(self, space: str) -> int:
+        existing = self._space_to_idx.get(space)
+        if existing is not None:
+            return existing
+        idx = len(self._space_table)
+        self._space_table.append(space)
+        self._space_to_idx[space] = idx
+        return idx
 
     def get_symbol(self, doc_id: str) -> Optional[UnifiedSymbol]:
         """自符號池中以 O(1) 獲取符號實例"""
@@ -411,14 +533,22 @@ class InvertedIndex:
             all_unique_terms.update(counts.keys())
 
         self.doc_lengths[doc_id] = field_lengths
+        d_idx = self._intern_doc_id(doc_id)
+        s_idx = self._intern_space(curr_space) if curr_space else -1
+        s_indices = tuple(self._intern_space(s) for s in effective_spaces if s)
 
         for term in all_unique_terms:
-            t_freqs = {f_name: field_freqs_map[f_name][term] for f_name in self.INDEXED_FIELDS}
+            t_freqs = {
+                f_name: field_freqs_map[f_name][term]
+                for f_name in self.INDEXED_FIELDS
+                if field_freqs_map[f_name][term] > 0
+            }
             posting = Posting(
-                doc_id=doc_id,
                 field_freqs=t_freqs,
-                space=curr_space,
-                spaces=list(effective_spaces),
+                doc_idx=d_idx,
+                index_ref=self,
+                space_idx=s_idx,
+                space_indices=s_indices,
             )
             self.index[term].append(posting)
 
@@ -433,6 +563,11 @@ class InvertedIndex:
         self.symbols.clear()
         self.index.clear()
         self.doc_lengths.clear()
+        self._doc_id_table.clear()
+        self._doc_id_to_idx.clear()
+        self._free_doc_indices.clear()
+        self._space_table.clear()
+        self._space_to_idx.clear()
         self.field_total_lengths = {f: 0 for f in self.INDEXED_FIELDS}
 
         for sym in symbols:
@@ -482,10 +617,13 @@ class InvertedIndex:
             for doc_id, s_dict in raw_symbols.items():
                 if isinstance(s_dict, dict):
                     idx.symbols[doc_id] = UnifiedSymbol.from_dict(s_dict)
+                    idx._intern_doc_id(doc_id)
 
         raw_index = data.get("index", {})
         for term, postings_raw in raw_index.items():
-            idx.index[term] = [Posting.from_dict(p) for p in postings_raw if isinstance(p, dict)]
+            idx.index[term] = [
+                Posting.from_dict(p, index_ref=idx) for p in postings_raw if isinstance(p, dict)
+            ]
 
         return idx
 
@@ -565,15 +703,28 @@ class InvertedIndex:
                     )
 
         if doc_ids_set:
+            removed_doc_indices = {
+                self._doc_id_to_idx[d] for d in doc_ids_set if d in self._doc_id_to_idx
+            }
             target_terms = removed_terms if removed_terms else list(self.index.keys())
             for term in target_terms:
                 if term not in self.index:
                     continue
-                new_postings = [p for p in self.index[term] if p.doc_id not in doc_ids_set]
+                new_postings = [
+                    p
+                    for p in self.index[term]
+                    if (
+                        p.doc_idx not in removed_doc_indices
+                        if p.doc_idx >= 0
+                        else p.doc_id not in doc_ids_set
+                    )
+                ]
                 if new_postings:
                     self.index[term] = new_postings
                 else:
                     del self.index[term]
+            for doc_id in doc_ids_to_remove:
+                self._release_doc_id(doc_id)
 
         if affected_cs_keys and not pre_aggregated:
             from ast_engine.bundler import aggregate_partial_symbols

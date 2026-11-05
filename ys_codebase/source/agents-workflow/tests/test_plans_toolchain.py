@@ -2248,6 +2248,26 @@ class TestPlansModelRecord(YSCBTestCase):
         auto_ok_cats = {i.category for i in rep_auto_ok.issues if i.severity == PlanSeverity.WARN}
         self.assertNotIn("BACKPROP", auto_ok_cats)
 
+        # --- 7. 驗證 _trace_parser 對 yscb.py kdb search 頂層別名之識別與模組歸一化 (OPT-04) ---
+        from agents_workflow.plans._trace_parser import _TranscriptParseState, _process_tool_calls_in_step
+
+        tp_state = _TranscriptParseState(
+            consecutive_source_reads=2,
+            has_recent_kdb_query=False,
+        )
+        _process_tool_calls_in_step(
+            step_no=1,
+            tool_calls=[{"name": "run_command", "args": {"CommandLine": "python yscb.py kdb search InvertedIndex"}}],
+            step_thinking_tok=0,
+            content_tok=0,
+            was_truncated=False,
+            state=tp_state,
+        )
+        self.assertTrue(tp_state.has_recent_kdb_query)
+        self.assertEqual(tp_state.consecutive_source_reads, 0)
+        self.assertEqual(tp_state.transcript_cli_by_module.get("knowledge-db"), 1)
+        self.assertNotIn("kdb", tp_state.transcript_cli_by_module)
+
         self.mark_passed()
 
 

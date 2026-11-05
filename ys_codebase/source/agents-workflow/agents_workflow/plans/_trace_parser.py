@@ -472,7 +472,7 @@ def _process_tool_calls_in_step(
         cmd_line = str(t_args.get("CommandLine") or t_args.get("command") or t_args.get("cmd") or "").strip()
 
         if (
-            ("knowledge-db" in cmd_line and any(k in cmd_line for k in ("search", "callers", "callees", "impact")))
+            (any(m in cmd_line for m in ("knowledge-db", "kdb")) and any(k in cmd_line for k in ("search", "callers", "callees", "impact")))
             or ("ast" in cmd_line and any(k in cmd_line for k in ("outline", "callers", "callees", "impact")))
         ):
             state.consecutive_source_reads = 0
@@ -480,7 +480,8 @@ def _process_tool_calls_in_step(
 
         if "yscb.py" in cmd_line:
             for m_cli in re.finditer(r"yscb\.py[\"\']?\s+([a-zA-Z0-9_-]+)(?:\s+([a-zA-Z0-9_-]+))?(?:\s+([a-zA-Z0-9_-]+))?", cmd_line):
-                mod_tok, sub1, sub2 = m_cli.group(1), m_cli.group(2) or "", m_cli.group(3) or ""
+                raw_mod_tok, sub1, sub2 = m_cli.group(1), m_cli.group(2) or "", m_cli.group(3) or ""
+                mod_tok = "knowledge-db" if raw_mod_tok == "kdb" else raw_mod_tok
                 state.transcript_cli_calls += 1
                 state.transcript_cli_by_module[mod_tok] = state.transcript_cli_by_module.get(mod_tok, 0) + 1
                 sub_pair = f"{sub1} {sub2}".strip()

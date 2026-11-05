@@ -13,13 +13,13 @@
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "1.2.4.0",
-      "installed_at": "2026-11-05 04:50:26",
+      "version": "1.2.4.1",
+      "installed_at": "2026-11-05 08:47:16",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.2.1.0",
-      "installed_at": "2026-11-05 04:50:25",
+      "version": "1.2.1.1",
+      "installed_at": "2026-11-05 08:46:41",
       "provider": "./ys_codebase/release"
     },
     "server": {
@@ -29,12 +29,12 @@
     },
     "file-space": {
       "version": "1.0.1.0",
-      "installed_at": "2026-11-05 06:13:10",
+      "installed_at": "2026-11-05 08:46:41",
       "provider": "./ys_codebase/release"
     },
     "ast": {
-      "version": "1.0.1.0",
-      "installed_at": "2026-11-05 04:50:25",
+      "version": "1.0.1.1",
+      "installed_at": "2026-11-05 08:46:41",
       "provider": "./ys_codebase/release"
     },
     "vscode-support": {

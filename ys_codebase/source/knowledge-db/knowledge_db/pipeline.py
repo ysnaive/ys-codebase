@@ -338,7 +338,7 @@ class IndexingPipeline:
 
         # Stage 1: Single-Parse Symbol Sharing via ASTEngine
         t0 = time.time()
-        ast_has_disk = self.ast_engine._ensure_loaded_from_disk()
+        ast_has_disk = self.ast_engine._ensure_symbols_loaded() if hasattr(self.ast_engine, "_ensure_symbols_loaded") else self.ast_engine._ensure_loaded_from_disk()
         has_ast_diff = False
         try:
             if self.scanner is not None and hasattr(self.scanner, "diff"):
@@ -994,7 +994,7 @@ class IndexingPipeline:
             except Exception as e:
                 logger.warning(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
 
-        ast_has_disk = self.ast_engine._ensure_loaded_from_disk()
+        ast_has_disk = self.ast_engine._ensure_symbols_loaded() if hasattr(self.ast_engine, "_ensure_symbols_loaded") else self.ast_engine._ensure_loaded_from_disk()
         has_ast_diff = False
         try:
             if self.scanner is not None and hasattr(self.scanner, "diff"):
@@ -1119,9 +1119,18 @@ class IndexingPipeline:
             with self._consume_space_diff(consumer_id="knowledge-db") as diff_res:
                 if not diff_res.has_changes:
                     self._ensure_indices_loaded(load_vectors=require_vectors)
-                    if self._unified_index is not None and self.ast_engine._ensure_loaded_from_disk():
-                        snap = self.ast_engine._snapshot
-                        if snap is not None and int(getattr(self._unified_index, "acked_ast_generation", 0) or 0) != int(snap.ast_generation):
+                    if self._unified_index is not None:
+                        ast_gen_now: Optional[int] = None
+                        if hasattr(self.ast_engine, "get_persisted_meta"):
+                            meta = self.ast_engine.get_persisted_meta()
+                            if isinstance(meta, dict):
+                                ast_gen_now = int(meta.get("ast_generation", 0))
+                        elif self.ast_engine._ensure_loaded_from_disk() and self.ast_engine._snapshot is not None:
+                            ast_gen_now = int(self.ast_engine._snapshot.ast_generation)
+                        if (
+                            ast_gen_now is not None
+                            and int(getattr(self._unified_index, "acked_ast_generation", 0) or 0) != ast_gen_now
+                        ):
                             self.build_unified_index(force=True)
                     return self._unified_index  # type: ignore[return-value]
 
@@ -1477,6 +1486,7 @@ class IndexingPipeline:
         verbose: bool = False,
         aggregate: bool = True,
         lexical_only: bool = False,
+        adaptive_limit: bool = False,
     ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
         """全域聯集多欄位加權語意檢索"""
         if not query or not query.strip():
@@ -1508,6 +1518,20 @@ class IndexingPipeline:
             aggregate=aggregate,
             can_use_vector=can_use_vector,
         )
+        if adaptive_limit and aggregate and len(raw_results) > 3:
+            top_score = raw_results[0].total_score  # type: ignore[union-attr]
+            if top_score > 0:
+                cutoff_results = list(raw_results[:3])
+                for idx_r in range(3, len(raw_results)):
+                    curr_r = raw_results[idx_r]
+                    prev_r = raw_results[idx_r - 1]
+                    if (
+                        curr_r.total_score < top_score * 0.38  # type: ignore[union-attr]
+                        or curr_r.total_score < prev_r.total_score * 0.55  # type: ignore[union-attr]
+                    ):
+                        break
+                    cutoff_results.append(curr_r)
+                raw_results = cutoff_results
         return self._enrich_snippets_and_expand_ast(
             raw_results,
             aggregate=aggregate,

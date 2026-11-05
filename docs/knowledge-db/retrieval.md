@@ -102,9 +102,9 @@ for r in results:
 
 `knowledge-db` 倒排索引採用 **符號池解耦 (Symbol Pool Normalization)**、**`Posting` `__slots__` 節點瘦身** 與 **頂層 `doc_lengths` 共享池** 架構：
 
-1. **`Posting` 節點輕量化**：
-   - 節點配置 `__slots__ = ('doc_id', 'field_freqs', 'space', 'spaces')`，徹底消滅 Python 動態字典 `__dict__` 開銷。
-   - 欄位長度字典抽離至頂層 `InvertedIndex.doc_lengths: Dict[str, Dict[str, int]]` 共享池，消除數十萬個重複字典物件（記憶體瘦身 40%+）。
+1. **`Posting` 節點輕量化、內部 `0..n` 整數文檔碼映射與稀疏詞頻 (`SparseFieldFreqs`)**：
+   - 節點配置 `__slots__ = ('doc_idx', '_index_ref', 'field_freqs', 'space_idx', 'space_indices', '_doc_id', '_space', '_spaces')`，於 `InvertedIndex` 內部透過 `_doc_id_table` / `_free_doc_indices` 將冗長字串 `doc_id` 轉為 `0..n` 整數索引 `doc_idx`（保留 `Posting.doc_id` 屬性 100% 向下相容）。
+   - `field_freqs` 採用 `SparseFieldFreqs` 僅儲存詞頻 `> 0` 之命中欄位，並結合頂層 `InvertedIndex.doc_lengths` 共享池，大幅降低常駐記憶體開銷。
 2. **Schema 自省相容升級**：
    - `InvertedIndex.from_dict` 具備自動遷移能力，載入舊版二進位快取時自動將 `Posting` 內部之 `field_lengths` 提取至頂層共享池。
 3. **二進位快取持久化**：

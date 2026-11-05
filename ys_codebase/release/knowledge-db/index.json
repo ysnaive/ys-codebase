@@ -9,7 +9,8 @@
     "1.1.1.2",
     "1.1.2.3",
     "1.2.0.5",
-    "1.2.1.0"
+    "1.2.1.0",
+    "1.2.1.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -173,6 +174,18 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "預設 indices、bundles 與 91MB models 遷移至 storage.local:// 並附帶 1.2.1.x 遷移腳本"
+    },
+    "1.2.1.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7",
+        "file-space": ">=1.0.1",
+        "ast": ">=1.0.1"
+      },
+      "sha256": "429c9ebcfe42d783933103822ceacef894071e0fd54779d33989d387293aaa1b",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "新增 kdb 短別名、CLI/JSON 預設精簡與 --file-uri、InvertedIndex doc_idx 駐留與 status 快照直讀"
     }
   }
 }

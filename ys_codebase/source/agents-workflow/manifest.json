@@ -1,6 +1,6 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.4.0",
+  "version": "1.2.4.1",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -22,8 +22,8 @@
     "Publish AGENTS.md & skills to project workspace: python yscb.py agents-workflow release"
   ],
   "release": {
-    "type": "feature",
-    "urgency": "recommended",
-    "summary": "三大持久清冊遷移至 storage.local://、拔除執行期歷史遷移分支並附帶 1.2.4.x 遷移腳本"
+    "type": "refactor",
+    "urgency": "optional",
+    "summary": "session-trace 軌跡解析支援 kdb 短別名歸一化至 knowledge-db"
   }
 }

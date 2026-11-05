@@ -76,6 +76,7 @@ def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
 
     is_json = bags.has_option("json")
     is_md = bags.has_option("md") or bags.has_option("markdown")
+    file_uri = bags.has_option("file-uri") or bags.has_option("file_uri")
     limit_val: Union[int, str] = "auto"
     l_opt = bags.get_option_value("limit")
     if l_opt:
@@ -98,6 +99,7 @@ def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
         "tier": tier,
         "is_json": is_json,
         "is_md": is_md,
+        "file_uri": file_uri,
         "limit_val": limit_val,
         "is_snippet": is_snippet,
         "detail_mode": "detail" if tier == "detail" else "simple",
@@ -111,9 +113,12 @@ def _get_engine() -> Any:
     return get_engine()
 
 
-def _serialize_target_symbol(engine: Any, tsym: Any, tier: str) -> Optional[Dict[str, Any]]:
+def _serialize_target_symbol(
+    engine: Any, tsym: Any, tier: str, file_uri: bool = False
+) -> Optional[Dict[str, Any]]:
     if not tsym:
         return None
+    include_uri = (tier == "detail") or bool(file_uri)
     if isinstance(tsym, dict):
         fp = tsym.get("file_path", "")
         ln = int(tsym.get("line_number", 1))
@@ -124,7 +129,7 @@ def _serialize_target_symbol(engine: Any, tsym: Any, tier: str) -> Optional[Dict
                 "fqn": tsym.get("fqn") or tsym.get("name", ""),
                 "kind": tsym.get("kind", ""),
                 "file_path": engine.formatter.normalize_workspace_path(fp),
-                "file_uri": engine.formatter.to_file_uri(fp, line=ln),
+                **({"file_uri": engine.formatter.to_file_uri(fp, line=ln)} if include_uri else {}),
                 "line_number": ln,
                 "end_line": el,
                 "signature": tsym.get("signature", ""),
@@ -137,6 +142,7 @@ def _serialize_target_symbol(engine: Any, tsym: Any, tier: str) -> Optional[Dict
             "fqn": tsym.get("fqn") or tsym.get("name", ""),
             "kind": tsym.get("kind", ""),
             "file_path": engine.formatter.normalize_workspace_path(fp),
+            **({"file_uri": engine.formatter.to_file_uri(fp, line=ln)} if include_uri else {}),
             "line_number": ln,
         }
 
@@ -146,7 +152,7 @@ def _serialize_target_symbol(engine: Any, tsym: Any, tier: str) -> Optional[Dict
             "fqn": tsym.fqn or tsym.name,
             "kind": tsym.kind,
             "file_path": engine.formatter.normalize_workspace_path(tsym.file_path),
-            "file_uri": engine.formatter.to_file_uri(tsym.file_path, line=tsym.line_number),
+            **({"file_uri": engine.formatter.to_file_uri(tsym.file_path, line=tsym.line_number)} if include_uri else {}),
             "line_number": tsym.line_number,
             "end_line": tsym.end_line,
             "signature": tsym.signature,
@@ -159,6 +165,7 @@ def _serialize_target_symbol(engine: Any, tsym: Any, tier: str) -> Optional[Dict
         "fqn": tsym.fqn or tsym.name,
         "kind": tsym.kind,
         "file_path": engine.formatter.normalize_workspace_path(tsym.file_path),
+        **({"file_uri": engine.formatter.to_file_uri(tsym.file_path, line=tsym.line_number)} if include_uri else {}),
         "line_number": tsym.line_number,
     }
 
@@ -204,7 +211,8 @@ def outline(cmd_bags: Any) -> int:
             member_kind=kind_filter,
         )
         is_detail = bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose")
-        print(engine.formatter.format_outline_output(res, as_json=is_json, detail=is_detail))
+        file_uri = bags.has_option("file-uri") or bags.has_option("file_uri")
+        print(engine.formatter.format_outline_output(res, as_json=is_json, detail=is_detail, file_uri=file_uri))
         return 0
     except FileNotFoundError as exc:
         if bags.has_option("json"):
@@ -233,7 +241,7 @@ def _serialize_ambiguous_json(res: Dict[str, Any]) -> str:
     )
 
 
-def _serialize_impact_json(engine: Any, res: Dict[str, Any], tier: str, depth: int) -> str:
+def _serialize_impact_json(engine: Any, res: Dict[str, Any], tier: str, depth: int, file_uri: bool = False) -> str:
     if res.get("status") == "ambiguous" or res.get("ambiguous"):
         return _serialize_ambiguous_json(res)
     tsym = res.get("target_symbol")
@@ -241,16 +249,16 @@ def _serialize_impact_json(engine: Any, res: Dict[str, Any], tier: str, depth: i
         "status": res.get("status", "matched"),
         "target_query": res.get("target_query"),
         "tier": "detail" if tier == "detail" else "simple",
-        "target_symbol": _serialize_target_symbol(engine, tsym, tier),
+        "target_symbol": _serialize_target_symbol(engine, tsym, tier, file_uri=file_uri),
         "overloads": [
-            _serialize_target_symbol(engine, ov, tier)
+            _serialize_target_symbol(engine, ov, tier, file_uri=file_uri)
             for ov in (res.get("overload_symbols") or res.get("overloads") or [])
         ],
         "max_depth": res.get("max_depth", depth),
         "total_impacted_symbols": res.get("total_impacted_symbols", 0),
         "total_impacted_files": res.get("total_impacted_files", 0),
         "layers": {
-            str(d): [_serialize_target_symbol(engine, s, tier) for s in syms]
+            str(d): [_serialize_target_symbol(engine, s, tier, file_uri=file_uri) for s in syms]
             for d, syms in res.get("layers", {}).items()
         },
     }
@@ -267,6 +275,7 @@ def _serialize_call_edges_json(
     tier: str,
     limit_val: Union[int, str],
     is_snippet: bool,
+    file_uri: bool = False,
 ) -> str:
     if res.get("status") == "ambiguous" or res.get("ambiguous"):
         return _serialize_ambiguous_json(res)
@@ -281,15 +290,15 @@ def _serialize_call_edges_json(
         "status": res.get("status", "matched"),
         "target_query": res.get("target_query"),
         "tier": "detail" if tier == "detail" else ("preview" if tier == "snippet" else "simple"),
-        "target_symbol": _serialize_target_symbol(engine, tsym, tier),
+        "target_symbol": _serialize_target_symbol(engine, tsym, tier, file_uri=file_uri),
         "overloads": [
-            _serialize_target_symbol(engine, ov, tier)
+            _serialize_target_symbol(engine, ov, tier, file_uri=file_uri)
             for ov in (res.get("overload_symbols") or res.get("overloads") or [])
         ],
         total_key: len(filtered_items),
         list_key: [
             {
-                sym_key: _serialize_target_symbol(engine, c["symbol"], tier),
+                sym_key: _serialize_target_symbol(engine, c["symbol"], tier, file_uri=file_uri),
                 "call_sites": [
                     s.get("line_number")
                     for s in c.get("call_sites", [])
@@ -346,7 +355,7 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
                     depth = 2
             res = engine.impact(target_query=query_str, depth=depth, space=space_target, ftypes=ftype_filter)
             if opts["is_json"]:
-                print(_serialize_impact_json(engine, res, tier, depth))
+                print(_serialize_impact_json(engine, res, tier, depth, file_uri=opts["file_uri"]))
                 return 0
 
             print(
@@ -355,6 +364,7 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
                     detail_mode=opts["detail_mode"],
                     format_type=opts["fmt_type"],
                     limit_mode=limit_val,
+                    file_uri=opts["file_uri"],
                 )
             )
             return 0
@@ -366,7 +376,7 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
             res = engine.callees(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
 
         if opts["is_json"]:
-            print(_serialize_call_edges_json(engine, res, is_callers, tier, limit_val, is_snippet))
+            print(_serialize_call_edges_json(engine, res, is_callers, tier, limit_val, is_snippet, file_uri=opts["file_uri"]))
             return 0
 
         formatter_fn = engine.formatter.format_callers_output if is_callers else engine.formatter.format_callees_output
@@ -377,6 +387,7 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
                 snippet=is_snippet,
                 format_type=opts["fmt_type"],
                 limit_mode=limit_val,
+                file_uri=opts["file_uri"],
             )
         )
         return 0

@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.1.0",
+  "version": "1.2.1.1",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -27,8 +27,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "feature",
+    "type": "refactor",
     "urgency": "recommended",
-    "summary": "預設 indices、bundles 與 91MB models 遷移至 storage.local:// 並附帶 1.2.1.x 遷移腳本"
+    "summary": "新增 kdb 短別名、CLI/JSON 預設精簡與 --file-uri、InvertedIndex doc_idx 駐留與 status 快照直讀"
   }
 }

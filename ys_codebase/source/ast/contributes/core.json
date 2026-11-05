@@ -36,7 +36,9 @@
           "view": {
             "merged": {
               "description": "針對 partial 型別展開跨分部檔案合併後之完整成員視圖",
-              "alias": ["m"]
+              "alias": [
+                "m"
+              ]
             }
           },
           "visibility": {
@@ -54,7 +56,9 @@
             },
             "non-private": {
               "description": "顯示所有非私有 (public / protected / internal) 符號與成員",
-              "alias": ["api"]
+              "alias": [
+                "api"
+              ]
             }
           },
           "binding": {
@@ -63,7 +67,10 @@
             },
             "non-static": {
               "description": "僅顯示非靜態 (instance) 成員與型別",
-              "alias": ["nonstatic", "instance"]
+              "alias": [
+                "nonstatic",
+                "instance"
+              ]
             }
           },
           "member_kind": {
@@ -80,6 +87,11 @@
           "format": {
             "json": {
               "description": "以結構化 JSON 格式輸出"
+            }
+          },
+          "uri": {
+            "file-uri": {
+              "description": "於輸出中附帶完整 file:/// 絕對路徑超連結"
             }
           }
         },
@@ -127,11 +139,16 @@
           "display": {
             "snippet": {
               "description": "附上調用點上下文程式碼切片預覽",
-              "alias": ["s", "preview"]
+              "alias": [
+                "s",
+                "preview"
+              ]
             },
             "detail": {
               "description": "顯示完整詳細簽名與調用點資訊",
-              "alias": ["d"]
+              "alias": [
+                "d"
+              ]
             },
             "simple": {
               "description": "精簡清單輸出"
@@ -153,6 +170,11 @@
                   "description": "筆數"
                 }
               }
+            }
+          },
+          "uri": {
+            "file-uri": {
+              "description": "於輸出中附帶完整 file:/// 絕對路徑超連結"
             }
           }
         },
@@ -199,11 +221,16 @@
           "display": {
             "snippet": {
               "description": "附上被調用目標之程式碼切片預覽",
-              "alias": ["s", "preview"]
+              "alias": [
+                "s",
+                "preview"
+              ]
             },
             "detail": {
               "description": "顯示完整詳細簽名資訊",
-              "alias": ["d"]
+              "alias": [
+                "d"
+              ]
             },
             "simple": {
               "description": "精簡清單輸出"
@@ -225,6 +252,11 @@
                   "description": "筆數"
                 }
               }
+            }
+          },
+          "uri": {
+            "file-uri": {
+              "description": "於輸出中附帶完整 file:/// 絕對路徑超連結"
             }
           }
         },
@@ -281,7 +313,9 @@
           "display": {
             "detail": {
               "description": "顯示完整詳細資訊",
-              "alias": ["d"]
+              "alias": [
+                "d"
+              ]
             },
             "simple": {
               "description": "精簡清單輸出"
@@ -303,6 +337,11 @@
                   "description": "筆數"
                 }
               }
+            }
+          },
+          "uri": {
+            "file-uri": {
+              "description": "於輸出中附帶完整 file:/// 絕對路徑超連結"
             }
           }
         },

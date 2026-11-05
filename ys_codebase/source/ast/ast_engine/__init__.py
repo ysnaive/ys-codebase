@@ -6,7 +6,7 @@ Uses PEP 562 module-level `__getattr__` lazy loading so top-level package import
 import importlib
 from typing import Any, Dict, List, Tuple
 
-__version__ = "1.0.1.0"
+__version__ = "1.0.1.1"
 
 _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "SemanticBundler": (".bundler", "SemanticBundler"),
