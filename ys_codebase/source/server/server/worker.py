@@ -56,6 +56,14 @@ class WarmWorker:
 
     def __init__(self, yscb_root: str, emit_packet_fn: Any) -> None:
         self.yscb_root = os.path.abspath(yscb_root)
+        os.environ["YSCB_ROOT_DIR"] = self.yscb_root
+        host_dir = os.environ.get(GUARD_ENV_HOST)
+        if not host_dir or not os.path.isdir(host_dir):
+            cand = os.path.dirname(self.yscb_root)
+            host_dir = cand if os.path.isfile(os.path.join(cand, "yscb.config.json")) else self.yscb_root
+        os.environ[GUARD_ENV_HOST] = host_dir
+        uri.set_yscb_root(self.yscb_root)
+        uri.set_host_dir(host_dir)
         ensure_private_venv(self.yscb_root)
         self.emit_packet_fn = emit_packet_fn
         self.service_manager = ServiceManager()

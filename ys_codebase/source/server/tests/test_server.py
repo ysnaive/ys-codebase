@@ -171,6 +171,8 @@ class TestServerModule(YSCBTestCase):
 
         with patch.object(events, "broadcast", side_effect=mock_broadcast):
             worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
+            self.assertEqual(os.environ.get("YSCB_ROOT_DIR"), os.path.abspath(self.root_dir))
+            self.assertTrue(os.environ.get("YSCB_HOST_DIR"))
             worker.pre_warm()
 
         event_names = [e[0] for e in captured_events]

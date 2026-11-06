@@ -1,7 +1,7 @@
 {
   "id": "file-space",
   "name": "file-space",
-  "version": "1.0.1.4",
+  "version": "1.0.1.5",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -28,6 +28,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "新增可重入 _snapshot_lock、單檔 include 相對路徑修正、中繼 symlink 攔截與髒集合回滾"
+    "summary": "根治 watcher_state.json 與 storage_root 下游路徑洩漏並收口至 core.vfs 原子寫入"
   }
 }

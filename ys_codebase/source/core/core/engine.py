@@ -1027,7 +1027,7 @@ class AtomicEngine:
         return None
 
     def _get_installed_core_version_for_compat(self, candidate_core_version: Optional[str] = None) -> Optional[str]:
-        """Returns the normalized installed core version (stripping .build suffix for compatibility matching)."""
+        """Returns the normalized installed core version (resolving .build to source/module manifest version when available)."""
         raw_ver: Optional[str] = candidate_core_version
         if not raw_ver:
             try:
@@ -1048,8 +1048,17 @@ class AtomicEngine:
         if not raw_ver:
             return None
         s = str(raw_ver).strip()
-        if s.endswith(".build"):
-            s = s[:-len(".build")]
+        if s.endswith(".build") or s == "build":
+            for mf_uri in ("module.source://core/manifest.json", "module://core/manifest.json"):
+                try:
+                    if vfs.is_file(mf_uri):
+                        mf = vfs.read_json(mf_uri)
+                        mv = str(mf.get("version", "")).strip() if isinstance(mf, dict) else ""
+                        if mv and not mv.endswith(".build") and mv != "build":
+                            return mv
+                except Exception:
+                    pass
+            return s[:-len(".build")] if s.endswith(".build") else s
         return s
 
     def _is_dependencies_compatible_with_env(self, deps: Any, candidate_core_version: Optional[str] = None) -> bool:
@@ -1592,10 +1601,8 @@ class AtomicEngine:
         def _check_resolved_compatibility(mod_name: str, resolved_ver: str, req_constraint: Optional[str]) -> None:
             if not req_constraint:
                 return
-            if _is_build_version_request(resolved_ver) and not _is_build_version_request(req_constraint):
-                base_ver = resolved_ver[:-len(".build")] if resolved_ver.endswith(".build") else resolved_ver
-                if semver.match_constraint(base_ver, req_constraint):
-                    return
+            if _is_build_version_request(resolved_ver):
+                return
             if not semver.match_constraint(resolved_ver, req_constraint):
                 detail = _format_conflict_sources(mod_name)
                 suffix = f" [constraints: {detail}]" if detail else ""
@@ -1623,9 +1630,7 @@ class AtomicEngine:
                 inst_meta = installed_map.get(mod_name) if isinstance(installed_map, dict) else None
                 inst_ver = str(inst_meta.get("version", "")) if isinstance(inst_meta, dict) else ""
                 if _is_build_version_request(inst_ver):
-                    base_ver = inst_ver[:-len(".build")] if inst_ver.endswith(".build") else inst_ver
-                    if not effective_req or semver.match_constraint(base_ver, effective_req):
-                        manifest = self._find_manifest_in_build_tier(mod_name, "build")
+                    manifest = self._find_manifest_in_build_tier(mod_name, "build")
             if manifest is None:
                 try:
                     manifest = self._get_module_manifest_from_provider_or_local(mod_name, provider_url, effective_req)
@@ -1722,16 +1727,18 @@ class AtomicEngine:
 
             # Verify core compatibility first
             if "core" in req_map:
-                cur_core = self._get_installed_core_version_for_compat(
-                    candidate_core_version=effective_versions.get("core")
-                )
-                if cur_core:
-                    for requester_label, core_c in req_map["core"]:
-                        if not semver.match_constraint(cur_core, core_c):
-                            raise RuntimeError(
-                                f"Cannot resolve dependency on 'core': required '{core_c}' by '{requester_label}', "
-                                f"but core@{cur_core} is active."
-                            )
+                raw_core_ver = effective_versions.get("core", "")
+                if not _is_build_version_request(raw_core_ver):
+                    cur_core = self._get_installed_core_version_for_compat(
+                        candidate_core_version=raw_core_ver or None
+                    )
+                    if cur_core and not _is_build_version_request(cur_core):
+                        for requester_label, core_c in req_map["core"]:
+                            if not semver.match_constraint(cur_core, core_c):
+                                raise RuntimeError(
+                                    f"Cannot resolve dependency on 'core': required '{core_c}' by '{requester_label}', "
+                                    f"but core@{cur_core} is active."
+                                )
 
             round_changed = False
             for dep_mod, req_list in req_map.items():
@@ -1746,10 +1753,9 @@ class AtomicEngine:
 
                 cur_dep_ver = effective_versions.get(dep_mod)
                 if cur_dep_ver is not None:
-                    check_v = cur_dep_ver[:-len(".build")] if cur_dep_ver.endswith(".build") else cur_dep_ver
-                    if _is_build_version_request(cur_dep_ver) and check_v == "build":
+                    if _is_build_version_request(cur_dep_ver):
                         continue
-                    if semver.match_constraint(check_v, joint_constraint):
+                    if semver.match_constraint(cur_dep_ver, joint_constraint):
                         continue
 
                 # Needs self-heal: either dep_mod is missing or its current version violates joint_constraint

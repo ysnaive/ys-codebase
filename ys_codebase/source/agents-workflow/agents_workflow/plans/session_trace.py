@@ -104,27 +104,33 @@ class SessionTraceEngine:
         except Exception:
             pass
         if not targets:
-            for uri_cand, rel_cand in (
+            for uri_cand, rel_sub in (
                 (
                     "config.local://agents-workflow/config.local.json",
-                    "ys_codebase/.config.local/agents-workflow/config.local.json",
+                    ".config.local/agents-workflow/config.local.json",
                 ),
                 (
                     "config://agents-workflow/config.project.json",
-                    "ys_codebase/config/agents-workflow/config.project.json",
+                    "config/agents-workflow/config.project.json",
                 ),
             ):
-                cfg_file = _resolve_uri_safe(uri_cand, rel_cand)
-                if cfg_file.is_file():
-                    try:
-                        data = json.loads(cfg_file.read_text(encoding="utf-8"))
+                try:
+                    from core import uri, vfs
+
+                    if vfs.exists(uri_cand):
+                        data = vfs.read_json(uri_cand)
+                    else:
+                        yscb_root = uri.resolve_yscb_root()
+                        cfg_file = Path(yscb_root).resolve() / rel_sub if yscb_root else None
+                        data = vfs.read_json(str(cfg_file)) if (cfg_file and cfg_file.is_file()) else None
+                    if isinstance(data, dict):
                         raw_t = data.get("release_targets", [])
                         if isinstance(raw_t, list) and raw_t:
                             targets = [str(x).strip().lower() for x in raw_t if str(x).strip()]
                             if targets:
                                 break
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
         return targets or ["antigravity", "claude", "codex"]
 
     def _collect_candidate_jsonls(

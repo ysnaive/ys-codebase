@@ -3,9 +3,9 @@
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
     "1.0.0.5",
-    "1.0.1.2",
     "1.0.1.3",
-    "1.0.1.4"
+    "1.0.1.4",
+    "1.0.1.5"
   ],
   "releases": {
     "1.0.0.0": {
@@ -97,7 +97,7 @@
       "commit": "3576d7d2f2ee85497bc2da64b76f5203d1f41781"
     },
     "1.0.1.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.1"
       },
@@ -128,6 +128,16 @@
       "urgency": "recommended",
       "summary": "新增可重入 _snapshot_lock、單檔 include 相對路徑修正、中繼 symlink 攔截與髒集合回滾",
       "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.0.1.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3"
+      },
+      "sha256": "d5fc4448e3bd7afe638a177615d0ea1fe0efb592509711d07f9de303c3165785",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "根治 watcher_state.json 與 storage_root 下游路徑洩漏並收口至 core.vfs 原子寫入"
     }
   }
 }

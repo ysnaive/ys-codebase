@@ -6,9 +6,9 @@
     "1.0.1.3",
     "1.0.2.0",
     "1.0.3.2",
-    "1.0.4.2",
     "1.0.4.3",
-    "1.0.4.4"
+    "1.0.4.4",
+    "1.0.4.5"
   ],
   "releases": {
     "1.0.0.4": {
@@ -120,7 +120,7 @@
       "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
     },
     "1.0.4.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.1"
       },
@@ -151,6 +151,16 @@
       "urgency": "recommended",
       "summary": "修正 stop 強殺後立即歸檔日誌、強化 Master/Worker IPC 生命週期與併發防護",
       "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.0.4.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3"
+      },
+      "sha256": "37bf14055ae1926313f3b7187ee6010a08249008a1a7c233626496a4242a4c2e",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "WarmWorker 初始化預先固化 YSCB_ROOT_DIR 與 YSCB_HOST_DIR 環境變數"
     }
   }
 }

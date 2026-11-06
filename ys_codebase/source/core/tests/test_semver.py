@@ -153,8 +153,10 @@ class SemVerCoreTest(YSCBTestCase):
         self.assertTrue(match_constraint("0.2.5.0", "~=0.2.1"))
         self.assertFalse(match_constraint("0.3.0.0", "~=0.2.1"))
 
-        # build 特殊約束
+        # build 特殊約束與開發包萬用相容 (build 作為被檢驗版本時可滿足任意條件，作為約束時僅匹配 build)
         self.assertTrue(match_constraint("1.0.1.build", "build"))
+        self.assertTrue(match_constraint("1.0.1.build", ">=1.0.1.4"))
+        self.assertTrue(match_constraint("1.0.1.build", "==2.0.0.0"))
         self.assertFalse(match_constraint("1.0.1.0", "build"))
         self.mark_passed()
 

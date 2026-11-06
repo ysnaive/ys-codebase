@@ -232,12 +232,15 @@ def _match_single_clause(version: str, clause: str) -> bool:
     return False
 
 def match_constraint(version: Union[str, VersionTuple], constraint: Optional[str]) -> bool:
-    v_str = str(version)
+    v_str = str(version).strip()
     if not constraint or constraint.strip() == "" or constraint.strip() == "*":
         return True
-    
+
+    if v_str == "build" or v_str.endswith(".build"):
+        return True
+
     if constraint.strip() == "build" or constraint.strip() == "==build":
-        return ("build" in v_str or v_str.endswith(".build"))
+        return False
     
     clauses = [c.strip() for c in constraint.split(",") if c.strip()]
     for c in clauses:

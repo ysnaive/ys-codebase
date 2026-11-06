@@ -580,6 +580,30 @@ class TestASTEngineCore(ASTTestCase):
         self.assertEqual(set(expanded2), {"m_run", "m_child_run"})
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_storage_and_lock_fallback_anchors_to_yscb_root(self) -> None:
+        """Verify _resolve_default_ast_storage_dir and _resolve_index_lock_path fallback to resolve_yscb_root without leaking into project_root."""
+        from unittest.mock import patch
+        from ast_engine.bundler import _resolve_default_ast_storage_dir
+
+        fake_yscb_root = Path(self.temp_dir) / "fake_yscb_root"
+        fake_yscb_root.mkdir(parents=True, exist_ok=True)
+        fake_proj = Path(self.temp_dir) / "downstream_project"
+        fake_proj.mkdir(parents=True, exist_ok=True)
+
+        with patch("core.uri.resolve", return_value="!undefined"), patch(
+            "core.uri.resolve_yscb_root", return_value=str(fake_yscb_root)
+        ):
+            storage_dir = _resolve_default_ast_storage_dir(fake_proj)
+            self.assertEqual(storage_dir, (fake_yscb_root / ".storage.local" / "ast").resolve())
+            self.assertFalse((fake_proj / ".storage.local").exists())
+
+            eng = ASTEngine(project_root=fake_proj, storage_dir=None)
+            lock_path = eng._resolve_index_lock_path()
+            self.assertEqual(lock_path, (fake_yscb_root / ".cache" / "ast" / ".ast_index.lock").resolve())
+            self.assertFalse((fake_proj / ".cache").exists())
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

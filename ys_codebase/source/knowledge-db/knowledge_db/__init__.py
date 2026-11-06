@@ -7,7 +7,7 @@ Uses PEP 562 module-level `__getattr__` lazy loading so top-level package import
 import importlib
 from typing import Any, Dict, List, Tuple
 
-__version__ = "1.2.1.4"
+__version__ = "1.2.1.5"
 
 _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "ASTEngine": ("ast_engine", "ASTEngine"),

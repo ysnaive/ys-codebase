@@ -151,8 +151,23 @@ class PlanVerifier:
             if not res_tmpl or not res_tmpl.exists():
                 res_tmpl = resolve_plan_uri("project://.agents/.yscb/templates")
             if not res_tmpl or not res_tmpl.exists():
-                cand = Path.cwd() / ".cache" / "agents-workflow" / "resolved_contents" / "templates"
-                res_tmpl = cand if cand.exists() else None
+                try:
+                    from core import uri
+
+                    yscb_root = uri.resolve_yscb_root()
+                    if yscb_root:
+                        cand = (
+                            Path(yscb_root).resolve()
+                            / ".cache"
+                            / "agents-workflow"
+                            / "resolved_contents"
+                            / "templates"
+                        )
+                        res_tmpl = cand if cand.exists() else None
+                    else:
+                        res_tmpl = None
+                except Exception:
+                    res_tmpl = None
             self.templates_dir = res_tmpl
 
         self._template_header_specs_cache: Dict[str, List[Tuple[str, str]]] = {}

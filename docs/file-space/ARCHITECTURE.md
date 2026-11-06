@@ -75,5 +75,5 @@ sequenceDiagram
 - **局部路徑修補 (`patch_space_files`)**：針對背景監聽捕獲之少量變動檔案（`<= 200` 筆），僅對目標路徑執行 `stat()` 與條件式雜湊計算；若檔案已從磁碟刪除或不再符合空間過濾規則，則於既有 `SnapshotState.entries` 原地標記 `is_deleted = True` 與 `updated_gen = next_gen_candidate`，並重算 `merkle_root` 後寫回 `YFP2` 快照。
 - **目錄級搬移/刪除回退全量掃描**：當 `watchdog` 收到 `is_directory=True` 且 `event_type in ("moved", "deleted")` 時，因 OS 不一定逐一派發子檔案刪除事件，`FileSpaceWatcherServiceWorker` 將該空間加入 `_full_rescan_spaces`，強制於防抖收斂時執行 `scan_space` 完整清理子樹墓碑。
 - **真實監聽活性與同進程即時刷新**：
-  - `is_watcher_active(project_root, space_name)` 同時檢驗空間 `cfg.watch` 旗標與 `.cache/file-space/watcher_state.json` 之 `watchdog_running` 狀態（若 `watchdog` 未就緒或空間未納入監聽，自動回退同步掃描）。
+  - `is_watcher_active(project_root, space_name)` 同時檢驗空間 `cfg.watch` 旗標與 `file-space.cache://watcher_state.json`（`.cache/file-space/watcher_state.json`）之 `watchdog_running` 狀態（若 `watchdog` 未就緒或空間未納入監聽，自動回退同步掃描），並以 `core.uri.resolve_yscb_root()` 作為降級錨點，杜絕在下游 `project://` 根目錄產生 `.cache/file-space` 或 `.storage.local/file-space` 路徑洩漏。
   - 同進程內呼叫 `snapshot()`、`merkle_root()` 或 `diff()` 前，若 `_ACTIVE_WATCHER_WORKER` 存在該空間之待防抖事件，會自動呼叫 `flush_space_now(space_name)` 同步落盤，消除防抖時間窗造成的讀舊快照問題。

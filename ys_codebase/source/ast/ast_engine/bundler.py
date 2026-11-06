@@ -426,25 +426,22 @@ def _parse_file_task_worker(
 
 def _resolve_default_ast_storage_dir(project_root: Optional[Path] = None) -> Path:
     """Resolve `ast.storage://` -> `storage.local://ast/`."""
-    try:
-        from core import uri
+    from core import uri
 
-        res = uri.resolve("ast.storage://", interactive=False)
-        if res and not str(res).startswith("!undefined"):
-            return _safe_resolve_path(str(res))
-    except Exception:
-        pass
+    for scheme in ("ast.storage://", "storage.local://ast"):
+        try:
+            res = uri.resolve(scheme, interactive=False)
+            if res and not str(res).startswith("!undefined"):
+                return _safe_resolve_path(str(res))
+        except Exception:
+            pass
     try:
-        from core import uri
-
-        res_storage = uri.resolve("storage.local://ast", interactive=False)
-        if res_storage and not str(res_storage).startswith("!undefined"):
-            return _safe_resolve_path(str(res_storage))
+        yscb_root = uri.resolve_yscb_root()
+        if yscb_root:
+            return _safe_resolve_path(yscb_root) / ".storage.local" / "ast"
     except Exception:
         pass
     base = _safe_resolve_path(project_root) if project_root else _safe_resolve_path(Path.cwd())
-    if (base / "ys_codebase").is_dir():
-        return base / "ys_codebase" / ".storage.local" / "ast"
     return base / ".storage.local" / "ast"
 
 

@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.4.4",
+  "version": "1.0.4.5",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -14,6 +14,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "修正 stop 強殺後立即歸檔日誌、強化 Master/Worker IPC 生命週期與併發防護"
+    "summary": "WarmWorker 初始化預先固化 YSCB_ROOT_DIR 與 YSCB_HOST_DIR 環境變數"
   }
 }

@@ -32,13 +32,13 @@ MODEL_SHORT_NAME_ALIASES: Dict[str, str] = {
 def is_agents_workflow_installed() -> bool:
     """檢查當前環境是否已安裝 agents-workflow 模組 (用於判定是否注入 AI Agent 專屬導引提示)。"""
     try:
-        from core.uri import resolve
-        resolved = resolve("module://agents-workflow", interactive=False)
-        if resolved and Path(resolved).exists():
+        from core import uri, vfs
+
+        if vfs.is_dir("module://agents-workflow"):
             return True
-        proj_res = resolve("project://", interactive=False)
-        if proj_res:
-            cand = Path(proj_res) / ".modules" / "agents-workflow"
+        yscb_root = uri.resolve_yscb_root()
+        if yscb_root:
+            cand = Path(yscb_root).resolve() / ".modules" / "agents-workflow"
             if cand.exists():
                 return True
     except Exception:

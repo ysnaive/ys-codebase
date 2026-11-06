@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_06_0615_vfs_unification_and_path_leak_fix (Completed)
+
+- **跨模組路徑洩漏根治、背景服務執行緒 URI 上下文固化、VFS 原子寫入收口與 `@build` 無視版號約束直通（`core`、`server`、`file-space`、`ast`、`knowledge-db`、`agents-workflow` 六大模組更新）**：
+  - **Category A — 根除下游專案目錄 (`project://`) 路徑洩漏與 `"ys_codebase"` 硬編碼退避**：重構 `file-space`（`FileSpaceManager.storage_root`、`FileSpaceWatcherServiceWorker.is_transaction_locked`、`_resolve_watcher_state_path`、`_is_daemon_pid_alive`、`_read_watcher_state_file`）、`ast`（`_resolve_default_ast_storage_dir`、`_resolve_index_lock_path`）、`knowledge-db`（`_resolve_default_knowledge_storage_dir`、`is_agents_workflow_installed`）與 `agents-workflow`（`PlanComplianceVerifier.__init__`、`SessionTraceEngine._get_configured_release_targets`），全面優先走語意 URI 且降級時一律錨定 `core.uri.resolve_yscb_root()`，徹底消除在下游 `project_root` 產生 `.cache/file-space` 或 `.storage.local/*` 的路徑洩漏。
+  - **Category B — 背景服務執行緒 URI 上下文固化 (`server`)**：於 `server/worker.py` (`WarmWorker.__init__`) 啟動 `pre_warm()` 與背景服務前，預先將 `YSCB_ROOT_DIR` 與 `YSCB_HOST_DIR` (`GUARD_ENV_HOST`) 固化至 `os.environ` 並注入 `core.uri`，確保背景 Daemon 執行緒在無 `contextvars` 繼承時仍能精準解析所有語意 URI。
+  - **Category C — 自建 `.tmp` + `os.replace` 統一委派 `core.vfs`**：將 `file-space` (`_atomic_write_bytes`)、`ast` (`_atomic_write_meta`)、`knowledge-db` (`write_worker_state`) 與 `agents-workflow` (`compiler._write_cache_file`、`publisher._write_text_atomic`、`roadmap._atomic_write_text`、`plans._verifier_healer._atomic_write_text`) 統一委派至 `core.vfs`（`write_bytes`、`write_text`、`write_json(..., atomic=True)`），共享 10 次指數退避重試與殘留 `.tmp` 自動清理。
+  - **本地開發包 (`@build`) 無視版號約束直通 (`core`)**：於 `core/semver.py` (`match_constraint`) 與 `core/engine.py` 將 `build` / `*.build` 被檢驗版本設為開發階段萬用相容，並於 `_get_installed_core_version_for_compat` 對 `core@build` 自動讀取 `source/core/manifest.json` 基底版本，支援四段式相依下限環境下之多模組 `@build` 熱調試。
+
 ## 2026_11_06_0110_codebase_deterministic_optimization_umbrella (Completed)
 
 - **全專案九大模組確定性代碼優化、實作邏輯與併發缺陷修復、WAL 狀態持久化及測試套件純化（`sub_01_vscode_support` ~ `sub_09_gdrive_support` 全數完成閉環驗證與 `P07_walkthrough.md` 結案；全倉 9 大模組 797/797 單元測試 100% 通過、`0 ResourceWarning`、`Checker` `0 FAIL, 0 WARN`）**：

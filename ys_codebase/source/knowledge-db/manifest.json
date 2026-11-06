@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.1.4",
+  "version": "1.2.1.5",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -29,6 +29,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "升級 EmbeddingService._init_lock 為 RLock 防重入死鎖、修正同 doc_id 詞頻累積與執行緒安全"
+    "summary": "根治儲存與模組檢查路徑退避洩漏並收口 worker_state 至 core.vfs"
   }
 }

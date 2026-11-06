@@ -9,9 +9,9 @@
     "1.1.1.2",
     "1.1.2.3",
     "1.2.0.5",
-    "1.2.1.2",
     "1.2.1.3",
-    "1.2.1.4"
+    "1.2.1.4",
+    "1.2.1.5"
   ],
   "releases": {
     "1.0.0.0": {
@@ -205,7 +205,7 @@
       "commit": "33b896dc1037bd8175b4214b72efa7f8cb358011"
     },
     "1.2.1.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.1",
         "file-space": ">=1.0.1.2",
@@ -242,6 +242,18 @@
       "urgency": "recommended",
       "summary": "升級 EmbeddingService._init_lock 為 RLock 防重入死鎖、修正同 doc_id 詞頻累積與執行緒安全",
       "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.2.1.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3",
+        "file-space": ">=1.0.1.4",
+        "ast": ">=1.0.1.5"
+      },
+      "sha256": "dd7370ffad1a7434b44d49f216da1a3eb4703c87631f6c8d8c0147f25777fd73",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "根治儲存與模組檢查路徑退避洩漏並收口 worker_state 至 core.vfs"
     }
   }
 }

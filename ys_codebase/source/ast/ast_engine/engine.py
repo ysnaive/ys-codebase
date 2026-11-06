@@ -586,10 +586,10 @@ class ASTEngine:
         if self._custom_storage_dir:
             self.indices_dir.mkdir(parents=True, exist_ok=True)
             return self.indices_dir / ".ast_index.lock"
+        from core import uri
+
         for scheme in ("ast.cache://.ast_index.lock", "cache://ast/.ast_index.lock"):
             try:
-                from core import uri
-
                 res = uri.resolve(scheme, interactive=False)
                 if res and not str(res).startswith("!undefined"):
                     lock_path = Path(str(res)).resolve()
@@ -597,10 +597,15 @@ class ASTEngine:
                     return lock_path
             except Exception:
                 pass
-        if (self.project_root / "ys_codebase").is_dir():
-            fallback = self.project_root / "ys_codebase" / ".cache" / "ast" / ".ast_index.lock"
-        else:
-            fallback = self.project_root / ".cache" / "ast" / ".ast_index.lock"
+        try:
+            yscb_root = uri.resolve_yscb_root()
+            if yscb_root:
+                fallback = Path(yscb_root).resolve() / ".cache" / "ast" / ".ast_index.lock"
+                fallback.parent.mkdir(parents=True, exist_ok=True)
+                return fallback
+        except Exception:
+            pass
+        fallback = self.indices_dir / ".ast_index.lock"
         fallback.parent.mkdir(parents=True, exist_ok=True)
         return fallback
 
@@ -621,16 +626,9 @@ class ASTEngine:
         }
 
     def _atomic_write_meta(self, meta_payload: Dict[str, Any]) -> None:
-        raw_bytes = json.dumps(meta_payload, ensure_ascii=False, indent=2).encode("utf-8")
-        self.meta_index_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            from core.vfs import write_bytes
+        from core import vfs
 
-            write_bytes(str(self.meta_index_path), raw_bytes)
-        except Exception:
-            tmp_path = self.meta_index_path.with_suffix(self.meta_index_path.suffix + ".tmp")
-            tmp_path.write_bytes(raw_bytes)
-            os.replace(str(tmp_path), str(self.meta_index_path))
+        vfs.write_json(str(self.meta_index_path), meta_payload, indent=2, atomic=True)
 
     def _save_snapshot_and_graph(self, snapshot: ASTSnapshot, graph: CallGraphIndex) -> None:
         from core.platform.lock import InterProcessLock

@@ -3,9 +3,9 @@
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "versions": [
     "1.0.0.5",
-    "1.0.1.3",
     "1.0.1.4",
-    "1.0.1.5"
+    "1.0.1.5",
+    "1.0.1.6"
   ],
   "releases": {
     "1.0.0.0": {
@@ -117,7 +117,7 @@
       "commit": "3576d7d2f2ee85497bc2da64b76f5203d1f41781"
     },
     "1.0.1.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.1",
         "file-space": ">=1.0.1.2"
@@ -151,6 +151,17 @@
       "urgency": "recommended",
       "summary": "補齊 ASTEngine 與 GrammarProvisioner 執行緒鎖、修正重載符號子項 parent_id 同步與註解解析",
       "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.0.1.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3",
+        "file-space": ">=1.0.1.4"
+      },
+      "sha256": "d9234bb2726f0ab0e1f107c8ac6cc9e50f05ad3eaac1df5eecb5ef75f1f350df",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "根治 AST 儲存與鎖檔路徑退避洩漏並收口至 core.vfs.write_json"
     }
   }
 }

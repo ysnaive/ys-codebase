@@ -15,9 +15,9 @@
     "1.2.4.0",
     "1.2.5.1",
     "1.2.6.0",
-    "1.2.7.1",
     "1.2.7.2",
-    "1.2.7.3"
+    "1.2.7.3",
+    "1.2.7.4"
   ],
   "releases": {
     "1.0.0.0": {
@@ -188,7 +188,7 @@
       "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
     },
     "1.2.7.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "d9532cb8422fcfef36e878b123acde32c81342b1d91103f73e5ecf5fbb83e934",
       "type": "bugfix",
@@ -213,6 +213,14 @@
       "urgency": "recommended",
       "summary": "補齊跨子系統執行緒鎖與深拷貝隔離、修正 reconcile provider 回退與指數退避鎖",
       "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.2.7.4": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "88ffac8d99a232ee2c6330498e520c314d93f744b3f16de0218cf44a770eaee2",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "支援 @build 開發包無視版號約束直通與環境基底版本解析"
     }
   }
 }

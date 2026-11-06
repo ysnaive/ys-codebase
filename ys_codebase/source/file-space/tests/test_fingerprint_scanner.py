@@ -336,7 +336,7 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         self.assertEqual(all_diff.space_generations.get("space_a"), 1)
         self.assertEqual(all_diff.space_generations.get("space_b"), 1)
 
-        state_file = self.proj_root / "ys_codebase" / ".cache" / "file-space" / "watcher_state.json"
+        state_file = self.storage_root / "watcher_state.json"
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state_file.write_text(
             json.dumps(
@@ -368,11 +368,12 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         self.assertFalse(
             is_watcher_active(self.proj_root, space_name="space_b", space_manager=scanner.space_manager)
         )
+        self.assertFalse((self.proj_root / ".cache").exists())
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_watcher_dirty_beacon_and_atomic_write_retry(self) -> None:
-        """Verify .watcher_dirty beacon triggers auto_refresh during debounce and _atomic_write_bytes retries PermissionError."""
+        """Verify .watcher_dirty beacon triggers auto_refresh during debounce and _atomic_write_bytes retries PermissionError via core.vfs."""
         (self.space_a_dir / "a.py").write_text("v1\n", encoding="utf-8")
         scanner = self._build_multi_space_scanner()
         scanner.refresh(None)
@@ -395,7 +396,7 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         worker.flush_space_now("space_a")
         self.assertFalse(scanner.is_watcher_dirty("space_a"))
 
-        # 1. Verify _atomic_write_bytes retries transient PermissionError on os.replace (2 failures -> 3rd succeeds)
+        # 1. Verify _atomic_write_bytes retries transient PermissionError on os.replace via core.vfs (2 failures -> 3rd succeeds)
         retry_target = self.tmp_dir / "atomic_retry.bin"
         real_replace = os.replace
         attempts = {"count": 0}
@@ -406,34 +407,28 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
                 raise PermissionError("Simulated Windows file lock")
             real_replace(src, dst)
 
-        with patch("file_space.scanner.os.replace", side_effect=_flaky_replace), patch(
-            "file_space.scanner.time.sleep"
+        with patch("core.vfs.os_backend.os.replace", side_effect=_flaky_replace), patch(
+            "core.vfs.os_backend.time.sleep"
         ) as mock_sleep:
             _atomic_write_bytes(retry_target, b"ok_payload")
 
         self.assertEqual(attempts["count"], 3)
         self.assertEqual(retry_target.read_bytes(), b"ok_payload")
-        self.assertEqual(
-            [c.args[0] for c in mock_sleep.call_args_list],
-            [0.01, 0.02],
-        )
+        self.assertEqual(len(mock_sleep.call_args_list), 2)
 
-        # 2. Verify _atomic_write_bytes exhausts all 5 attempts, raises PermissionError, and cleans up .tmp file
+        # 2. Verify _atomic_write_bytes exhausts retries, raises PermissionError, and cleans up .tmp file
         exhaust_dir = self.tmp_dir / "exhaust_atomic"
         exhaust_dir.mkdir(parents=True, exist_ok=True)
         exhaust_target = exhaust_dir / "failed.bin"
 
         with patch(
-            "file_space.scanner.os.replace",
+            "core.vfs.os_backend.os.replace",
             side_effect=PermissionError("Permanent file lock"),
-        ), patch("file_space.scanner.time.sleep") as mock_sleep_exhaust:
+        ), patch("core.vfs.os_backend.time.sleep") as mock_sleep_exhaust:
             with self.assertRaises(PermissionError):
                 _atomic_write_bytes(exhaust_target, b"never_written")
 
-        self.assertEqual(
-            [c.args[0] for c in mock_sleep_exhaust.call_args_list],
-            [0.01, 0.02, 0.04, 0.08],
-        )
+        self.assertEqual(len(mock_sleep_exhaust.call_args_list), 9)
         self.assertFalse(exhaust_target.exists())
         self.assertEqual(
             [p for p in exhaust_dir.iterdir() if p.name.endswith(".tmp")],

@@ -206,7 +206,12 @@ class FileSpaceManager:
         if resolved is not None:
             resolved.mkdir(parents=True, exist_ok=True)
             return resolved.resolve()
-        fallback = self.project_root / "ys_codebase" / ".storage.local" / "file-space"
+        try:
+            from core import uri as core_uri
+
+            fallback = Path(core_uri.resolve_yscb_root()).resolve() / ".storage.local" / "file-space"
+        except Exception:
+            fallback = Path(__file__).resolve().parents[3] / ".storage.local" / "file-space"
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
 

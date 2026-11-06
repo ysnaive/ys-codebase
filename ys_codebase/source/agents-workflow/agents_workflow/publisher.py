@@ -75,25 +75,15 @@ class ReleasePublisher:
 
     @staticmethod
     def _write_text_atomic(file_path: str, content: str) -> None:
-        """以 VFS 優先、本機暫存檔原子替換降級之方式寫入純 LF 文字檔。"""
-        parent_dir = os.path.dirname(os.path.abspath(file_path))
-        if parent_dir:
-            os.makedirs(parent_dir, exist_ok=True)
+        """透過 core.vfs 執行純 LF 原子文字寫入。"""
         if vfs is not None:
             vfs.write_text(file_path, content, encoding="utf-8", atomic=True)
             return
-        tmp_path = f"{file_path}.tmp.{os.getpid()}"
-        try:
-            with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
-            os.replace(tmp_path, file_path)
-        except Exception:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-            raise
+        parent_dir = os.path.dirname(os.path.abspath(file_path))
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        with open(file_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
 
     def _load_sha1_cache(self) -> Dict[str, List[Any]]:
         """載入持久化之來源檔案 SHA-1 快取 (storage.local://)。"""

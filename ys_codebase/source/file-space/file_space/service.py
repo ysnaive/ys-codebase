@@ -364,20 +364,25 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
                 except Exception:
                     return True
 
-        for legacy_cand in (p_root / ".yscb.lock", p_root / "ys_codebase" / ".yscb.lock"):
-            if legacy_cand.exists():
-                return True
+        if (p_root / ".yscb.lock").exists():
+            return True
 
-        cache_lock_candidates = [
-            p_root / "ys_codebase" / ".cache" / ".yscb.lock",
-            p_root / ".cache" / ".yscb.lock",
-        ]
+        cache_lock_candidates: List[Path] = []
         try:
             from core import uri
 
             resolved_lock = uri.resolve("cache://.yscb.lock", interactive=False)
             if resolved_lock and not str(resolved_lock).startswith("!undefined"):
-                cache_lock_candidates.insert(0, Path(str(resolved_lock)))
+                cache_lock_candidates.append(Path(str(resolved_lock)))
+        except Exception:
+            pass
+        try:
+            from core import uri
+
+            yscb_root = Path(uri.resolve_yscb_root()).resolve()
+            for cand in (yscb_root / ".yscb.lock", yscb_root / ".cache" / ".yscb.lock"):
+                if cand not in cache_lock_candidates:
+                    cache_lock_candidates.append(cand)
         except Exception:
             pass
 
@@ -392,7 +397,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
                     else:
                         return True
                 except Exception:
-                    pass
+                    return True
         return False
 
     def _dir_belongs_to_space(self, dir_path: Path, cfg: FileSpaceConfig) -> bool:
@@ -727,15 +732,33 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
     def _resolve_watcher_state_path(self) -> Path:
         if self._state_file_path is not None:
             return self._state_file_path
-        p_root = self.space_manager.project_root
-        if (p_root / "ys_codebase").is_dir():
-            self._state_file_path = (
-                p_root / "ys_codebase" / ".cache" / "file-space" / "watcher_state.json"
-            )
-        else:
-            self._state_file_path = (
-                p_root / ".cache" / "file-space" / "watcher_state.json"
-            )
+        if "state_file" in self.context and self.context["state_file"]:
+            self._state_file_path = Path(self.context["state_file"]).resolve()
+            return self._state_file_path
+        explicit_storage = getattr(self.space_manager, "_explicit_storage_root", None)
+        if explicit_storage is not None:
+            self._state_file_path = Path(explicit_storage).resolve() / "watcher_state.json"
+            return self._state_file_path
+        for scheme in (
+            "file-space.cache://watcher_state.json",
+            "cache://file-space/watcher_state.json",
+        ):
+            try:
+                from core import uri
+
+                res = uri.resolve(scheme, interactive=False)
+                if res and not str(res).startswith("!undefined"):
+                    self._state_file_path = Path(str(res)).resolve()
+                    return self._state_file_path
+            except Exception:
+                pass
+        try:
+            from core import uri
+
+            yscb_root = Path(uri.resolve_yscb_root()).resolve()
+        except Exception:
+            yscb_root = Path(__file__).resolve().parents[3]
+        self._state_file_path = yscb_root / ".cache" / "file-space" / "watcher_state.json"
         return self._state_file_path
 
     def _write_watcher_state_file(self) -> None:
@@ -761,9 +784,14 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         self.scanner.mark_watcher_dirty(False)
         if self._state_file_path is not None and self._state_file_path.exists():
             try:
-                self._state_file_path.unlink()
-            except OSError:
-                pass
+                from core import vfs
+
+                vfs.remove(str(self._state_file_path), missing_ok=True)
+            except Exception:
+                try:
+                    self._state_file_path.unlink()
+                except OSError:
+                    pass
 
     def _start_watchdog_observer(self) -> None:
         if not HAS_WATCHDOG or Observer is None:

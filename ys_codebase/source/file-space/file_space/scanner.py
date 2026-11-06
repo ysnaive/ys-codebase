@@ -109,46 +109,105 @@ def _check_pid_alive(pid: int) -> bool:
             return False
 
 
-def _is_daemon_pid_alive(project_root: Optional[Path]) -> bool:
-    """Probe whether a background server/file-space daemon process is alive for project_root."""
-    if project_root is None:
-        return False
-    p_root = Path(project_root)
-    candidates = [
-        p_root / "ys_codebase" / ".cache" / "server" / "daemon.json",
-        p_root / ".cache" / "server" / "daemon.json",
-        p_root / "ys_codebase" / ".cache" / "file-space" / "daemon.json",
-        p_root / ".cache" / "file-space" / "daemon.json",
-    ]
+def _is_daemon_pid_alive(
+    project_root: Optional[Path] = None,
+    space_manager: Optional[FileSpaceManager] = None,
+) -> bool:
+    """Probe whether a background server/file-space daemon process is alive."""
+    candidates: List[Path] = []
+    if space_manager is not None:
+        explicit_storage = getattr(space_manager, "_explicit_storage_root", None)
+        if explicit_storage is not None:
+            candidates.append(Path(explicit_storage).resolve() / "daemon.json")
+    for scheme in ("cache://server/daemon.json", "file-space.cache://daemon.json"):
+        try:
+            from core import uri
+
+            res = uri.resolve(scheme, interactive=False)
+            if res and not str(res).startswith("!undefined"):
+                cand = Path(str(res)).resolve()
+                if cand not in candidates:
+                    candidates.append(cand)
+        except Exception:
+            pass
+    try:
+        from core import uri
+
+        yscb_root = Path(uri.resolve_yscb_root()).resolve()
+        for cand in (
+            yscb_root / ".cache" / "server" / "daemon.json",
+            yscb_root / ".cache" / "file-space" / "daemon.json",
+        ):
+            if cand not in candidates:
+                candidates.append(cand)
+    except Exception:
+        pass
+
     for status_file in candidates:
         if not status_file.is_file():
             continue
         try:
-            data = json.loads(status_file.read_text(encoding="utf-8"))
-            pid = int(data.get("pid", 0)) if isinstance(data, dict) else 0
+            from core import vfs
+
+            data = vfs.read_json(str(status_file))
+        except Exception:
+            try:
+                data = json.loads(status_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        if isinstance(data, dict):
+            pid = int(data.get("pid", 0) or 0)
             if _check_pid_alive(pid):
                 return True
-        except Exception:
-            continue
     return False
 
 
-def _read_watcher_state_file(project_root: Optional[Path]) -> Optional[Dict[str, Any]]:
-    if project_root is None:
-        return None
-    p_root = Path(project_root)
-    candidates = [
-        p_root / "ys_codebase" / ".cache" / "file-space" / "watcher_state.json",
-        p_root / ".cache" / "file-space" / "watcher_state.json",
-    ]
+def _read_watcher_state_file(
+    project_root: Optional[Path] = None,
+    space_manager: Optional[FileSpaceManager] = None,
+) -> Optional[Dict[str, Any]]:
+    candidates: List[Path] = []
+    if space_manager is not None:
+        explicit_storage = getattr(space_manager, "_explicit_storage_root", None)
+        if explicit_storage is not None:
+            candidates.append(Path(explicit_storage).resolve() / "watcher_state.json")
+    for scheme in (
+        "file-space.cache://watcher_state.json",
+        "cache://file-space/watcher_state.json",
+    ):
+        try:
+            from core import uri
+
+            res = uri.resolve(scheme, interactive=False)
+            if res and not str(res).startswith("!undefined"):
+                cand = Path(str(res)).resolve()
+                if cand not in candidates:
+                    candidates.append(cand)
+        except Exception:
+            pass
+    try:
+        from core import uri
+
+        yscb_root = Path(uri.resolve_yscb_root()).resolve()
+        cand = yscb_root / ".cache" / "file-space" / "watcher_state.json"
+        if cand not in candidates:
+            candidates.append(cand)
+    except Exception:
+        pass
+
     for cand in candidates:
         if cand.is_file():
             try:
-                data = json.loads(cand.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
+                from core import vfs
+
+                data = vfs.read_json(str(cand))
             except Exception:
-                continue
+                try:
+                    data = json.loads(cand.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+            if isinstance(data, dict):
+                return data
     return None
 
 
@@ -213,7 +272,7 @@ def is_watcher_active(
         return True
 
     # 3. Check watcher_state.json and daemon status
-    state_data = _read_watcher_state_file(project_root)
+    state_data = _read_watcher_state_file(project_root, space_manager=space_manager)
     if state_data is not None:
         if not bool(state_data.get("watchdog_running", False)):
             return False
@@ -227,7 +286,7 @@ def is_watcher_active(
 
     daemon_alive = (
         (in_proc_active and project_root is None)
-        or _is_daemon_pid_alive(project_root)
+        or _is_daemon_pid_alive(project_root, space_manager=space_manager)
         or (state_data is not None and bool(state_data.get("watchdog_running", False)))
     )
     if not daemon_alive:
@@ -258,34 +317,10 @@ def is_watcher_active(
 
 
 def _atomic_write_bytes(target_path: Path, payload: bytes) -> None:
-    """Write bytes to a temporary sibling file, fsync, and atomically replace target_path."""
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(target_path.parent),
-        prefix=f".{target_path.name}.",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                os.replace(tmp_name, target_path)
-                break
-            except PermissionError:
-                if attempt >= max_retries - 1:
-                    raise
-                time.sleep(0.01 * (2**attempt))
-    except Exception:
-        if os.path.exists(tmp_name):
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-        raise
+    """Atomically write bytes to target_path via core.vfs.write_bytes."""
+    from core import vfs
+
+    vfs.write_bytes(str(target_path), payload, atomic=True)
 
 
 def compute_merkle_root(entries: Dict[str, FileFingerprint]) -> str:
@@ -773,12 +808,13 @@ class FingerprintScanner:
         """Create or remove the cross-process `.watcher_dirty` beacon file."""
         beacon = self.get_watcher_dirty_beacon_path()
         try:
+            from core import vfs
+
             if dirty:
-                beacon.parent.mkdir(parents=True, exist_ok=True)
-                beacon.write_bytes(b"1")
-            elif beacon.exists():
-                beacon.unlink()
-        except OSError:
+                vfs.write_bytes(str(beacon), b"1", atomic=True)
+            else:
+                vfs.remove(str(beacon), missing_ok=True)
+        except Exception:
             pass
 
     def is_watcher_dirty(self, space_name: Optional[str] = None) -> bool:

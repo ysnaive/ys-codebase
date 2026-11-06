@@ -56,25 +56,22 @@ logger = logging.getLogger("knowledge-db.pipeline")
 
 def _resolve_default_knowledge_storage_dir(project_root: Optional[Path] = None) -> Path:
     """解析 knowledge-db 預設持久儲存目錄 (`knowledge.storage://` 或 `.storage.local/knowledge-db`)"""
-    try:
-        from core import uri
+    from core import uri
 
-        res = uri.resolve("knowledge.storage://", interactive=False)
-        if res and not str(res).startswith("!undefined"):
-            return Path(str(res)).resolve()
-    except Exception:
-        pass
+    for scheme in ("knowledge.storage://", "storage.local://knowledge-db/"):
+        try:
+            res = uri.resolve(scheme, interactive=False)
+            if res and not str(res).startswith("!undefined"):
+                return Path(str(res)).resolve()
+        except Exception:
+            pass
     try:
-        from core import uri
-
-        s_res = uri.resolve("storage.local://knowledge-db/", interactive=False)
-        if s_res and not str(s_res).startswith("!undefined"):
-            return Path(str(s_res)).resolve()
+        yscb_root = uri.resolve_yscb_root()
+        if yscb_root:
+            return Path(yscb_root).resolve() / ".storage.local" / "knowledge-db"
     except Exception:
         pass
     base = project_root.resolve() if project_root else Path.cwd().resolve()
-    if (base / "ys_codebase").is_dir():
-        return base / "ys_codebase" / ".storage.local" / "knowledge-db"
     return base / ".storage.local" / "knowledge-db"
 
 

@@ -71,8 +71,8 @@ last_updated: "2026-11-05"
   3. 若僅憑 Server `daemon.json` PID 存在即判定 Watcher 活躍，當 `watchdog` 因未安裝或空間設為 `watch=False` 時，`consume_diff` 跳過 `auto_refresh` 會讀到陳舊快照。
 - **工程妥協與解法**：
   1. **混合式局部修補 (`patch_space_files`) 與目錄事件升級 (`_full_rescan_spaces`)**：一般檔案事件累積 `<= 200` 筆時呼叫 `scanner.patch_space_files` 進行 $O(|\text{dirty}|)$ 局部更新；一旦收到 `is_directory=True` 且 `event_type in ("moved", "deleted")`，立即將該空間排入 `_full_rescan_spaces` 強制執行全量 `scan_space`。
-  2. **`.yscb.lock` 交易鎖延遲讓路**：防抖計時器觸發時若偵測到 `.yscb.lock` 被持有，自動重設防抖計時器延後執行。
-  3. **`watcher_state.json` 與空間級 `watch` 校驗**：`FileSpaceWatcherServiceWorker` 維護 `.cache/file-space/watcher_state.json`（記錄 `watchdog_running` 與 `watched_spaces`）；`is_watcher_active(project_root, space_name)` 同時驗證該空間 `cfg.watch` 與 `watchdog_running` 真實狀態。
+  2. **`.yscb.lock` 交易鎖延遲讓路**：防抖計時器觸發時若偵測到 `cache://.yscb.lock` 或專案 `.yscb.lock` 被持有，自動重設防抖計時器延後執行。
+  3. **`watcher_state.json` 與空間級 `watch` 校驗**：`FileSpaceWatcherServiceWorker` 透過 `file-space.cache://watcher_state.json`（降級錨定 `core.uri.resolve_yscb_root()`）維護 `watchdog_running` 與 `watched_spaces`；`is_watcher_active(project_root, space_name)` 同時驗證該空間 `cfg.watch` 與 `watchdog_running` 真實狀態，並委託 `core.vfs.write_bytes(..., atomic=True)` 完成二進位快照與信標之原子寫入。
 
 > [!WARNING]
 > **修改 `FileSpaceWatcherServiceWorker.start/stop` 時，務必保證 `finally` 區塊更新/清理 `watcher_state.json`、`.watcher_active` 與 `.watcher_dirty` 信標！**

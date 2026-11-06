@@ -1,6 +1,6 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.4.4",
+  "version": "1.2.4.5",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -24,6 +24,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "修正部署路徑後綴邊界比對、新增發布原子回滾、修正 PlanVerifier 箭頭與代碼塊標題誤判"
+    "summary": "收口編譯、發布、路線圖與檢核修復器之原子寫入至 core.vfs 並移除硬編碼退避"
   }
 }

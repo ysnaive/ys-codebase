@@ -19,21 +19,14 @@ _STDLIB_WRITE_TEXT = Path.write_text
 
 
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
-    """透過同目錄暫存檔與 os.replace 執行原子文字寫入。"""
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = file_path.with_name(f"{file_path.name}.tmp.{os.getpid()}")
-    try:
-        tmp_path.write_text(content, encoding=encoding)
-        if Path.write_text is not _STDLIB_WRITE_TEXT:
-            file_path.write_text(content, encoding=encoding)
-        os.replace(tmp_path, file_path)
-    except Exception:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
-        raise
+    """透過 core.vfs 執行原子文字寫入。"""
+    if Path.write_text is not _STDLIB_WRITE_TEXT:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding=encoding)
+        return
+    from core import vfs
+
+    vfs.write_text(str(file_path), content, encoding=encoding, atomic=True)
 
 
 def _resolve_workflow_dir(uri_scheme: str, fallback_rel: str, host_dir: Optional[str] = None) -> Path:

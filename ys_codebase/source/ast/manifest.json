@@ -1,7 +1,7 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.0.1.5",
+  "version": "1.0.1.6",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -41,6 +41,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "補齊 ASTEngine 與 GrammarProvisioner 執行緒鎖、修正重載符號子項 parent_id 同步與註解解析"
+    "summary": "根治 AST 儲存與鎖檔路徑退避洩漏並收口至 core.vfs.write_json"
   }
 }

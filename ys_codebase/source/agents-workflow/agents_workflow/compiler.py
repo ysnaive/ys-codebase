@@ -741,26 +741,32 @@ class ArtifactCompiler:
             try:
                 local_cache = uri.resolve(cache_uri)
             except Exception:
-                yscb_root = uri._get_yscb_root()
+                yscb_root = uri.resolve_yscb_root()
                 sub_rel = cache_uri.replace("cache://agents-workflow/resolved_contents/", "")
-                local_cache = os.path.join(yscb_root, ".cache", "agents-workflow", "resolved_contents", sub_rel.replace("/", os.sep))
+                local_cache = os.path.join(
+                    yscb_root,
+                    ".cache",
+                    "agents-workflow",
+                    "resolved_contents",
+                    sub_rel.replace("/", os.sep),
+                )
         else:
             sub_rel = cache_uri.replace("cache://agents-workflow/resolved_contents/", "")
-            local_cache = os.path.join(os.path.dirname(os.path.dirname(self.module_root)), ".cache", "agents-workflow", "resolved_contents", sub_rel.replace("/", os.sep))
+            local_cache = os.path.join(
+                os.path.dirname(os.path.dirname(self.module_root)),
+                ".cache",
+                "agents-workflow",
+                "resolved_contents",
+                sub_rel.replace("/", os.sep),
+            )
+
+        if vfs:
+            vfs.write_text(local_cache, content, atomic=True)
+            return local_cache
 
         os.makedirs(os.path.dirname(local_cache), exist_ok=True)
-        tmp_path = f"{local_cache}.tmp.{os.getpid()}"
-        try:
-            with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
-            os.replace(tmp_path, local_cache)
-        except Exception:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-            raise
+        with open(local_cache, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
         return local_cache
 
     def compile_stage1(self) -> Dict[str, Any]:

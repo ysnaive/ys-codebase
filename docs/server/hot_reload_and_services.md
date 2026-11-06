@@ -73,7 +73,7 @@ graph TD
 }
 ```
 
-1. **動態發現與拉起**：`WarmWorker` 啟動時，`ServiceManager` 透過 `core.contributes.get("server", "services")` 動態載入所有模組之服務宣告，動態將 `.modules/<provider>` 注入 `sys.path`，支援連字號名稱正規化、相容 `code.class://` 前綴，並依 `auto_start` 旗標決定是否在 Worker 啟動時自動喚醒。
+1. **動態發現與拉起**：`WarmWorker` 初始化時即錨定進程級環境變數 `YSCB_ROOT_DIR` 與 `YSCB_HOST_DIR`（確保後續由 `ServiceManager` 衍生之背景 Daemon 執行緒在無 `contextvars` 繼承時仍能精準解析 `core.uri` 語意路徑），隨後透過 `core.contributes.get("server", "services")` 動態載入所有模組之服務宣告，動態將 `.modules/<provider>` 注入 `sys.path`，支援連字號名稱正規化、相容 `code.class://` 前綴，並依 `auto_start` 旗標決定是否在 Worker 啟動時自動喚醒。
 2. **`worker_ready` 狀態回傳**：Worker 完成預熱與背景服務初始化後，於發送給 Master 的 `worker_ready` IPC 握手封包中附帶已啟動之服務清單與健康狀態，供 Master 快取並於啟動橫幅 (`format_startup_banner`) 及 `/api/status` 端點即時呈現。
 3. **兩階段停機安全卸載**：當 Server 或 Worker 關閉/重載時，Master 發送 `{"action": "exit"}` 握手，Worker 依序呼叫所有常駐服務的 `stop()` 進行資源釋放，保障資料一致性。
 

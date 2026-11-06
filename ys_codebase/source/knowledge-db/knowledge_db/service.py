@@ -118,9 +118,9 @@ def write_worker_state(
             _IDLE_EVENT.set()
 
     p = get_worker_state_path(indices_dir)
-    tmp_path = p.with_name(f"{WORKER_STATE_FILENAME}.tmp.{os.getpid()}.{threading.get_ident()}")
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
+        from core import vfs
+
         payload = {
             "worker_running": bool(worker_running),
             "busy": bool(busy),
@@ -130,20 +130,8 @@ def write_worker_state(
             "phase": phase if busy else "idle",
             "progress": progress if busy else "",
         }
-        tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        for attempt in range(5):
-            try:
-                os.replace(str(tmp_path), str(p))
-                break
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.005 * (2 ** attempt))
+        vfs.write_json(str(p), payload, indent=None, atomic=True)
     except Exception as exc:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         logger.debug("Failed writing worker state file %s: %s", p, exc)
 
 
@@ -167,12 +155,14 @@ def read_worker_state(indices_dir: Union[str, Path]) -> Dict[str, Any]:
     p = get_worker_state_path(indices_dir)
     if p.exists():
         try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
+            from core import vfs
+
+            raw = vfs.read_json(str(p))
             if isinstance(raw, dict):
                 pid = int(raw.get("pid", 0) or 0)
                 if pid > 0 and not _check_pid_alive(pid):
                     try:
-                        p.unlink()
+                        vfs.remove(str(p), missing_ok=True)
                     except OSError:
                         pass
                 else:
