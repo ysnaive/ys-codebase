@@ -256,6 +256,91 @@ class SandboxProvisioner:
             return 0
 
     @staticmethod
+    def _read_module_manifest(
+        mod_name: str,
+        cand_host_modules: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Reads manifest.json for a module from module.build://, module.source://, or host module directories."""
+        latest_zip = SandboxProvisioner._find_latest_build_zip(mod_name)
+        if latest_zip:
+            try:
+                with zipfile.ZipFile(latest_zip, "r") as zf:
+                    if "manifest.json" in zf.namelist():
+                        with zf.open("manifest.json") as mf:
+                            data = json.load(mf)
+                            if isinstance(data, dict):
+                                return data
+            except (zipfile.BadZipFile, OSError, json.JSONDecodeError):
+                pass
+
+        src_uri = f"module.source://{mod_name}"
+        if vfs.exists(src_uri):
+            src_manifest = os.path.join(uri.resolve(src_uri), "manifest.json")
+            if os.path.isfile(src_manifest):
+                try:
+                    with open(src_manifest, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, dict):
+                            return data
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+        for host_dir in (cand_host_modules or []):
+            mf_path = os.path.join(host_dir, mod_name, "manifest.json")
+            if os.path.isfile(mf_path):
+                try:
+                    with open(mf_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, dict):
+                            return data
+                except (OSError, json.JSONDecodeError):
+                    pass
+        return None
+
+    @staticmethod
+    def _resolve_dependency_closure(
+        target_modules: Optional[List[str]] = None,
+        cand_host_modules: Optional[List[str]] = None,
+        include_base_modules: bool = True,
+    ) -> Optional[Set[str]]:
+        """
+        Computes the transitive dependency closure for target_modules (falling back to YSCB_TEST_TARGET_MODULES).
+        Returns None when all modules should be deployed (target_modules is None with no env restriction, or '--all').
+        """
+        eff_targets = target_modules
+        if eff_targets is None:
+            env_targets = os.environ.get("YSCB_TEST_TARGET_MODULES", "").strip()
+            if env_targets:
+                eff_targets = [m.strip() for m in env_targets.split(",") if m.strip()]
+        if eff_targets is None or "--all" in eff_targets or "-a" in eff_targets:
+            return None
+
+        seeds = [m for m in eff_targets if m and not m.startswith("-")]
+        if not seeds:
+            return None
+
+        closure: Set[str] = {"core", "dev"} if include_base_modules else set()
+        queue: List[str] = list(closure | set(seeds))
+        closure.update(seeds)
+
+        while queue:
+            curr = queue.pop(0)
+            m_data = SandboxProvisioner._read_module_manifest(curr, cand_host_modules)
+            if not m_data:
+                continue
+            deps = m_data.get("dependencies")
+            dep_names: List[str] = []
+            if isinstance(deps, dict):
+                dep_names = [str(k) for k in deps.keys() if k]
+            elif isinstance(deps, list):
+                dep_names = [str(x) for x in deps if isinstance(x, str) and x]
+            for dep in dep_names:
+                if dep not in closure:
+                    closure.add(dep)
+                    queue.append(dep)
+        return closure
+
+    @staticmethod
     def adapt_build_pip_dependencies(
         target_modules: Optional[List[str]] = None,
     ) -> List[str]:
@@ -265,7 +350,16 @@ class SandboxProvisioner:
         """
         scan_modules: List[str] = []
         if target_modules is not None and "--all" not in target_modules:
-            scan_modules = [m for m in target_modules if m and not m.startswith("-")]
+            closure = SandboxProvisioner._resolve_dependency_closure(
+                target_modules=target_modules,
+                include_base_modules=False,
+            )
+            ordered = [m for m in target_modules if m and not m.startswith("-")]
+            if closure:
+                for m in sorted(closure):
+                    if m not in ordered:
+                        ordered.append(m)
+            scan_modules = ordered
         else:
             cand_modules = set(discover_source_modules(require_manifest=False))
             if vfs.exists("module.build://"):
@@ -278,28 +372,7 @@ class SandboxProvisioner:
 
         all_specs: List[str] = []
         for mod_name in scan_modules:
-            m_data = None
-            latest_zip = SandboxProvisioner._find_latest_build_zip(mod_name)
-            if latest_zip:
-                try:
-                    with zipfile.ZipFile(latest_zip, "r") as zf:
-                        if "manifest.json" in zf.namelist():
-                            with zf.open("manifest.json") as mf:
-                                m_data = json.load(mf)
-                except (zipfile.BadZipFile, OSError, json.JSONDecodeError):
-                    pass
-
-            if m_data is None:
-                src_uri = f"module.source://{mod_name}"
-                if vfs.exists(src_uri):
-                    src_manifest = os.path.join(uri.resolve(src_uri), "manifest.json")
-                    if os.path.isfile(src_manifest):
-                        try:
-                            with open(src_manifest, "r", encoding="utf-8") as f:
-                                m_data = json.load(f)
-                        except (OSError, json.JSONDecodeError):
-                            pass
-
+            m_data = SandboxProvisioner._read_module_manifest(mod_name)
             if m_data and "pip_dependencies" in m_data:
                 parsed = PipManager.parse_pip_dependencies(m_data.get("pip_dependencies"))
                 all_specs.extend(parsed)
@@ -430,13 +503,30 @@ class SandboxProvisioner:
             return ctx
 
     @staticmethod
-    def _deploy_target_and_dependency_modules(ctx: SandboxContext, copy_source: bool) -> Dict[str, Any]:
+    def _deploy_target_and_dependency_modules(
+        ctx: SandboxContext,
+        copy_source: bool,
+        target_modules: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         prov_uri = f"file:///{ctx.provider_dir.replace(os.sep, '/').lstrip('/')}"
         host_config: Dict[str, Any] = {
             "yscb_root": "./engine",
             "default_provider": prov_uri,
             "installed_modules": {},
         }
+
+        cand_host_modules = []
+        if vfs.exists("module://"):
+            cand_host_modules.append(uri.resolve("module://"))
+        yscb_d = uri.resolve("yscb://")
+        cand_host_modules.append(os.path.join(yscb_d, ".modules"))
+        cand_host_modules.append(os.path.join(yscb_d, "modules"))
+
+        allowed_modules = SandboxProvisioner._resolve_dependency_closure(
+            target_modules=target_modules,
+            cand_host_modules=cand_host_modules,
+            include_base_modules=True,
+        )
 
         sandbox_modules_dir = os.path.join(ctx.engine_dir, ".modules")
         os.makedirs(sandbox_modules_dir, exist_ok=True)
@@ -446,6 +536,8 @@ class SandboxProvisioner:
             if os.path.isdir(build_root_dir):
                 for mod_name in sorted(os.listdir(build_root_dir)):
                     if mod_name.startswith(".") or mod_name.startswith("mock_"):
+                        continue
+                    if allowed_modules is not None and mod_name not in allowed_modules:
                         continue
                     latest_zip = SandboxProvisioner._find_latest_build_zip(mod_name)
                     if latest_zip:
@@ -460,17 +552,12 @@ class SandboxProvisioner:
                         except (zipfile.BadZipFile, OSError):
                             shutil.rmtree(dest_mod, ignore_errors=True)
 
-        cand_host_modules = []
-        if vfs.exists("module://"):
-            cand_host_modules.append(uri.resolve("module://"))
-        yscb_d = uri.resolve("yscb://")
-        cand_host_modules.append(os.path.join(yscb_d, ".modules"))
-        cand_host_modules.append(os.path.join(yscb_d, "modules"))
-
         for host_modules_dir in cand_host_modules:
             if os.path.isdir(host_modules_dir):
                 for mod_name in sorted(os.listdir(host_modules_dir)):
                     if mod_name.startswith(".") or mod_name in deployed_from_build:
+                        continue
+                    if allowed_modules is not None and mod_name not in allowed_modules:
                         continue
                     mod_src_path = os.path.join(host_modules_dir, mod_name)
                     if os.path.isdir(mod_src_path):
@@ -562,7 +649,11 @@ class SandboxProvisioner:
 
         ctx = SandboxProvisioner._allocate_sandbox_root(target_dir)
         try:
-            host_config = SandboxProvisioner._deploy_target_and_dependency_modules(ctx, copy_source)
+            host_config = SandboxProvisioner._deploy_target_and_dependency_modules(
+                ctx,
+                copy_source,
+                target_modules=target_modules,
+            )
             SandboxProvisioner._provision_core_and_config(ctx, host_config)
             SandboxProvisioner._link_virtual_environment(ctx)
             return ctx

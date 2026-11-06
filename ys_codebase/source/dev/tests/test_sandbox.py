@@ -492,7 +492,8 @@ class TestSandboxArchitecture(YSCBTestCase):
 
         with patch("core.vfs.exists", side_effect=mock_exists), \
              patch("core.uri.resolve", side_effect=mock_resolve), \
-             patch("shutil.copytree", side_effect=tracking_copytree):
+             patch("shutil.copytree", side_effect=tracking_copytree), \
+             patch.dict(os.environ, {"YSCB_TEST_TARGET_MODULES": ""}):
             host_cfg = SandboxProvisioner._deploy_target_and_dependency_modules(ctx, copy_source=False)
 
         self.assertNotIn("mod_valid", copied_srcs)
@@ -549,4 +550,81 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertTrue(ok)
         self.assertNotIn(os.path.abspath(sb_dir), SandboxProvisioner._ACTIVE_SANDBOXES)
         self.assertEqual(lock_held_states, [("broadcast", False), ("rmtree", False)])
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_deploy_modules_prunes_to_transitive_dependency_closure(self):
+        """Verify _deploy_target_and_dependency_modules only deploys core, dev, target_modules, and their recursive dependencies."""
+        fake_root = self._mkdtemp()
+        fake_host_modules = os.path.join(fake_root, ".modules")
+        fake_build_root = os.path.join(fake_root, ".build")
+        os.makedirs(fake_host_modules, exist_ok=True)
+        os.makedirs(fake_build_root, exist_ok=True)
+
+        modules_spec = {
+            "core": {"version": "1.0.0.0", "dependencies": {}},
+            "dev": {"version": "1.0.0.0", "dependencies": {"core": ">=1.0.0"}},
+            "mod_leaf": {"version": "1.0.0.0", "dependencies": {"core": ">=1.0.0"}},
+            "mod_mid": {"version": "1.0.0.0", "dependencies": {"core": ">=1.0.0", "mod_leaf": ">=1.0.0"}},
+            "mod_top": {"version": "1.0.0.0", "dependencies": ["core", "mod_mid"]},
+            "mod_unrelated": {"version": "1.0.0.0", "dependencies": {"core": ">=1.0.0"}},
+        }
+        for m_name, mf in modules_spec.items():
+            m_dir = os.path.join(fake_host_modules, m_name)
+            os.makedirs(m_dir, exist_ok=True)
+            with open(os.path.join(m_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": m_name, **mf}, f)
+
+        for b_name in ("mod_top", "mod_unrelated"):
+            b_dir = os.path.join(fake_build_root, b_name)
+            os.makedirs(b_dir, exist_ok=True)
+            with zipfile.ZipFile(os.path.join(b_dir, "1.0.0.build.zip"), "w") as zf:
+                zf.writestr("manifest.json", json.dumps({"name": b_name, **modules_spec[b_name]}))
+
+        def mock_exists(u: str) -> bool:
+            return u in ("module://", "module.build://")
+
+        def mock_resolve(u: str) -> str:
+            if u == "module://":
+                return fake_host_modules
+            if u == "module.build://":
+                return fake_build_root
+            return fake_root
+
+        sb_pruned = self._mkdtemp()
+        ctx_pruned = SandboxContext(sb_pruned)
+        for d in (ctx_pruned.sandbox_dir, ctx_pruned.project_dir, ctx_pruned.host_dir, ctx_pruned.engine_dir, ctx_pruned.provider_dir):
+            os.makedirs(d, exist_ok=True)
+
+        sb_env_inherited = self._mkdtemp()
+        ctx_env = SandboxContext(sb_env_inherited)
+        for d in (ctx_env.sandbox_dir, ctx_env.project_dir, ctx_env.host_dir, ctx_env.engine_dir, ctx_env.provider_dir):
+            os.makedirs(d, exist_ok=True)
+
+        with patch("core.vfs.exists", side_effect=mock_exists), \
+             patch("core.uri.resolve", side_effect=mock_resolve):
+            cfg_pruned = SandboxProvisioner._deploy_target_and_dependency_modules(
+                ctx_pruned,
+                copy_source=False,
+                target_modules=["mod_top"],
+            )
+            with patch.dict(os.environ, {"YSCB_TEST_TARGET_MODULES": "mod_mid"}):
+                cfg_env = SandboxProvisioner._deploy_target_and_dependency_modules(
+                    ctx_env,
+                    copy_source=False,
+                    target_modules=None,
+                )
+
+        self.assertEqual(
+            set(cfg_pruned["installed_modules"].keys()),
+            {"core", "dev", "mod_top", "mod_mid", "mod_leaf"},
+        )
+        self.assertFalse(os.path.exists(os.path.join(ctx_pruned.engine_dir, ".modules", "mod_unrelated")))
+
+        self.assertEqual(
+            set(cfg_env["installed_modules"].keys()),
+            {"core", "dev", "mod_mid", "mod_leaf"},
+        )
+        self.assertFalse(os.path.exists(os.path.join(ctx_env.engine_dir, ".modules", "mod_top")))
+        self.assertFalse(os.path.exists(os.path.join(ctx_env.engine_dir, ".modules", "mod_unrelated")))
         self.mark_passed()

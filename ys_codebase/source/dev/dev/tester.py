@@ -244,11 +244,18 @@ class Tester:
 
     def _run_op_mksb(self, argv: List[str]) -> int:
         target_dir = None
+        target_mods: List[str] = []
         for a in argv:
             if a.startswith("--dir="):
                 target_dir = a.split("=", 1)[1]
+            elif not a.startswith("-"):
+                target_mods.append(a)
         try:
-            ctx = SandboxProvisioner.create_sandbox(target_dir)
+            ctx = (
+                SandboxProvisioner.create_sandbox(target_dir, target_modules=target_mods)
+                if target_mods
+                else SandboxProvisioner.create_sandbox(target_dir)
+            )
             print(f"[dev:op-mksb] Provisioned virtual sandbox at: {ctx.sandbox_dir}")
             return 0
         except Exception as e:
@@ -538,6 +545,13 @@ class Tester:
         p_env["YSCB_SANDBOX_DIR"] = sandbox_dir
         p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
         p_env["YSCB_SANDBOX_INDEX"] = str(sandbox_idx)
+        if target_modules is not None:
+            if "--all" in target_modules or "-a" in target_modules:
+                p_env.pop("YSCB_TEST_TARGET_MODULES", None)
+            else:
+                clean_mods = [m for m in target_modules if m and not m.startswith("-")]
+                if clean_mods:
+                    p_env["YSCB_TEST_TARGET_MODULES"] = ",".join(clean_mods)
         if quiet_mode:
             p_env["YSCB_TEST_QUIET"] = "1"
 
@@ -618,7 +632,7 @@ class Tester:
                         print(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", file=sys.stderr)
                         return 1
 
-        cand_targets = ["--all"] if cfg.is_all else ([cfg.target_mod] if cfg.target_mod else None)
+        cand_targets = ["--all"] if cfg.is_all else ([cfg.target_mod] if cfg.target_mod else ["core"])
         sandbox_idx = int(os.environ.get("YSCB_SANDBOX_INDEX", "1"))
         sandbox_display_id = f"sandbox {sandbox_idx}"
         op_test_args = [a for a in cfg.clean_argv if a != "test"]

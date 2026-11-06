@@ -57,7 +57,7 @@ last_updated: "2026-10-15"
   │     ├── yscb.py                     # 宿主派發腳本（嚴格僅調用 .modules/）
   │     ├── yscb.config.json            # 宿主設定檔 (yscb_root="./engine", installed_modules)
   │     └── engine/                     # 【工具庫空間 yscb://】
-  │           ├── .modules/             # 繼承父層已安裝模組 (core, dev 等，動態讀取 manifest 版本)
+  │           ├── .modules/             # 依待測目標模組之遞迴 dependencies 閉包（含 core、dev）精準部署
   │           ├── source/               # 複製待測最新源碼
   │           ├── config/               # 模組設定檔 (config/core/config.project.json)
   │           └── .cache/               # 沙盒內部快取暫存檔案

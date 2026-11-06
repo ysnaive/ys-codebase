@@ -1,5 +1,11 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_06_1212_sandbox_dependency_pruning (Completed)
+
+- **`dev` 測試沙盒 (`SandboxProvisioner`) 遞迴相依閉包剪枝與跨子行程環境繼承 (`TASK-01`, `TASK-02`, `FT-01`, `RT-01`)**：
+  - **遞迴相依閉包解析 (`_resolve_dependency_closure`) 與 `.modules/` 精準部署**：於 `SandboxProvisioner` 新增 `_read_module_manifest` 與 `_resolve_dependency_closure`，支援從 `target_modules` 參數或 `YSCB_TEST_TARGET_MODULES` 環境變數解析目標模組，並以 `{"core", "dev", *targets}` 為起點依 `manifest.json` 之 `dependencies` 計算遞迴閉包；`_deploy_target_and_dependency_modules` 與 `adapt_build_pip_dependencies` 僅部署與適配閉包內的模組（未指定且無環境變數約束或含 `--all` 時維持全量部署向後相容），徹底消除執行 `dev test core` 時不相干下游模組（如 `agents-workflow`）被帶入沙盒並在每次 `on_reload` 觸發全量技能編譯之效能退化。
+  - **跨子行程 `YSCB_TEST_TARGET_MODULES` 傳遞與預設目標對齊 (`Tester`)**：於 `Tester._execute_single_module_in_sandbox` 自動寫入 `YSCB_TEST_TARGET_MODULES` 供沙盒內 `@require(Requirement.ISOLATED_SANDBOX)` 建立之獨立沙盒繼承相同剪枝範圍，並於 `_run_test` 省略模組名時對齊預設 `"core"`，通過 `dev` (109/109) 與 `core` (263/263) 全量單元測試。
+
 ## 2026_11_06_1020_core_file_space_architecture (In Progress)
 
 ### sub_01_atomic_core_and_l0_cli (Completed)
